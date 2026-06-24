@@ -272,7 +272,7 @@ func TestAppendOORChangeRecipient(t *testing.T) {
 		)
 	})
 
-	t.Run("dust change rejected", func(t *testing.T) {
+	t.Run("below-floor change rejected", func(t *testing.T) {
 		t.Parallel()
 
 		_, change, err := appendOORChangeRecipient(
@@ -285,10 +285,10 @@ func TestAppendOORChangeRecipient(t *testing.T) {
 		st, ok := status.FromError(err)
 		require.True(t, ok)
 		require.Equal(t, codes.InvalidArgument, st.Code())
-		require.Contains(t, st.Message(), "below dust limit")
+		require.Contains(t, st.Message(), "below VTXO minimum")
 	})
 
-	t.Run("limit change accepted", func(t *testing.T) {
+	t.Run("floor change accepted", func(t *testing.T) {
 		t.Parallel()
 
 		recipients, change, err := appendOORChangeRecipient(
@@ -981,6 +981,39 @@ func TestGetInfoIncludesServerInfo(t *testing.T) {
 	require.Equal(t, uint32(2), resp.ServerInfo.MinConfirmations)
 }
 
+// TestGetInfoFloorsMinVTXOAmountAtDust verifies GetInfo never exposes a
+// VTXO minimum below the cached dust limit.
+func TestGetInfoFloorsMinVTXOAmountAtDust(t *testing.T) {
+	t.Parallel()
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	server := &Server{
+		cfg: &Config{
+			Network: "regtest",
+			Wallet: &WalletConfig{
+				Type: WalletTypeBtcwallet,
+			},
+		},
+		log: btclog.Disabled,
+	}
+	server.setServerConnected(true)
+	server.storeOperatorTerms(&types.OperatorTerms{
+		PubKey:        operatorPriv.PubKey(),
+		DustLimit:     btcutil.Amount(546),
+		MinVTXOAmount: btcutil.Amount(100),
+	})
+	r := &RPCServer{server: server}
+
+	resp, err := r.GetInfo(
+		context.Background(), &daemonrpc.GetInfoRequest{},
+	)
+	require.NoError(t, err)
+	require.NotNil(t, resp.ServerInfo)
+	require.Equal(t, uint64(546), resp.ServerInfo.MinVtxoAmountSat)
+}
+
 // TestOperatorPubKeyFetchesFreshTerms verifies callers that construct new
 // policy scripts can bypass GetInfo's cached server-info snapshot and refresh
 // it after a successful direct operator fetch.
@@ -1045,6 +1078,54 @@ func TestOperatorPubKeyFetchesFreshTerms(t *testing.T) {
 	)
 	require.Equal(
 		t, uint32(99), server.loadOperatorTerms().MaxOORLineageVBytes,
+	)
+}
+
+// TestOperatorPubKeyFloorsFetchedMinVTXOAmountAtDust verifies direct
+// operator refreshes normalize below-dust VTXO floors before caching them.
+func TestOperatorPubKeyFloorsFetchedMinVTXOAmountAtDust(t *testing.T) {
+	t.Parallel()
+
+	freshPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	server := &Server{
+		cfg: &Config{
+			Network: "regtest",
+			Wallet: &WalletConfig{
+				Type: WalletTypeBtcwallet,
+			},
+		},
+		log: btclog.Disabled,
+		serverConn: newBufconnClient(t, &fakeArkService{
+			getInfoResponse: &arkrpc.GetInfoResponse{
+				Pubkey: freshPriv.
+					PubKey().
+					SerializeCompressed(),
+				BoardingExitDelay: 144,
+				VtxoExitDelay:     288,
+				DustLimit:         546,
+				MinVtxoAmountSat:  100,
+			},
+		}),
+	}
+	r := &RPCServer{server: server}
+
+	key, err := r.OperatorPubKey(context.Background())
+	require.NoError(t, err)
+	require.True(t, key.IsEqual(freshPriv.PubKey()))
+
+	require.Equal(
+		t, btcutil.Amount(546),
+		server.loadOperatorTerms().MinVTXOAmount,
+	)
+
+	info, err := r.GetInfo(
+		context.Background(), &daemonrpc.GetInfoRequest{},
+	)
+	require.NoError(t, err)
+	require.Equal(
+		t, uint64(546), info.GetServerInfo().GetMinVtxoAmountSat(),
 	)
 }
 

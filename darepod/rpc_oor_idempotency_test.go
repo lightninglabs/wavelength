@@ -220,13 +220,13 @@ func (a *capturingSendOORActor) capturedRequests() []*oor.StartTransferRequest {
 	return requests
 }
 
-// TestSendOORRejectsRecipientBelowDustBeforeWalletSelection verifies the
-// daemon enforces the operator's advertised dust limit before it selects wallet
-// inputs or submits work to the OOR actor. This is the daemon-side guard behind
-// `darepocli ark send oor`: a caller that asks to create a sub-dust recipient
-// VTXO must fail synchronously instead of leaving the receiver with a live VTXO
-// they cannot later spend cooperatively.
-func TestSendOORRejectsRecipientBelowDustBeforeWalletSelection(t *testing.T) {
+// TestSendOORRejectsRecipientBelowFloorBeforeWalletSelection verifies the
+// daemon enforces the operator's VTXO floor before it selects wallet inputs or
+// submits work to the OOR actor. This is the daemon-side guard behind
+// `darepocli ark send oor`: a caller that asks to create a below-floor
+// recipient VTXO must fail synchronously instead of leaving the receiver with a
+// live VTXO they cannot later spend cooperatively.
+func TestSendOORRejectsRecipientBelowFloorBeforeWalletSelection(t *testing.T) {
 	t.Parallel()
 
 	operatorKey, err := btcec.NewPrivateKey()
@@ -271,7 +271,7 @@ func TestSendOORRejectsRecipientBelowDustBeforeWalletSelection(t *testing.T) {
 	})
 	require.Equal(t, codes.InvalidArgument, status.Code(err))
 	require.ErrorContains(
-		t, err, "amount 999 below operator dust_limit 1000",
+		t, err, "amount 999 below operator min_vtxo_amount_sat 1000",
 	)
 }
 

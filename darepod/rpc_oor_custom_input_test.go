@@ -204,13 +204,13 @@ func TestRequireCustomSpendsMature(t *testing.T) {
 	}
 }
 
-// TestPrepareOORRejectsRecipientBelowDust verifies prepared custom-input OOR
-// packages use the same recipient dust guard as submitted OOR sends. The swap
-// cooperative-refund flow asks PrepareOOR to build a deterministic package
-// before any operator authorization happens, so a sub-dust recipient amount
-// must be rejected at this boundary instead of producing checkpoint material
-// that would later create an unusable receiver VTXO.
-func TestPrepareOORRejectsRecipientBelowDust(t *testing.T) {
+// TestPrepareOORRejectsRecipientBelowFloor verifies prepared custom-input
+// OOR packages use the same recipient VTXO-floor guard as submitted OOR sends.
+// The swap cooperative-refund flow asks PrepareOOR to build a deterministic
+// package before any operator authorization happens, so a sub-floor recipient
+// amount must be rejected at this boundary instead of producing checkpoint
+// material that would later create an unusable receiver VTXO.
+func TestPrepareOORRejectsRecipientBelowFloor(t *testing.T) {
 	t.Parallel()
 
 	fixture := newCustomOORRPCFixture(t)
@@ -226,7 +226,7 @@ func TestPrepareOORRejectsRecipientBelowDust(t *testing.T) {
 	)
 	require.Equal(t, codes.InvalidArgument, status.Code(err))
 	require.ErrorContains(
-		t, err, "amount 999 below operator dust_limit 1000",
+		t, err, "amount 999 below operator min_vtxo_amount_sat 1000",
 	)
 }
 

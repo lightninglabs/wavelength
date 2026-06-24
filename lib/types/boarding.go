@@ -76,6 +76,21 @@ type OperatorTerms struct {
 	MaxOORLineageVBytes uint32
 }
 
+// MinVTXOAmountFloor returns the effective minimum for a VTXO output. The
+// advertised VTXO minimum is authoritative when it is above dust, but dust
+// remains the floor for older or misconfigured operator snapshots.
+func (t *OperatorTerms) MinVTXOAmountFloor() btcutil.Amount {
+	if t == nil {
+		return 0
+	}
+
+	if t.MinVTXOAmount < t.DustLimit {
+		return t.DustLimit
+	}
+
+	return t.MinVTXOAmount
+}
+
 // JoinRoundRequest represents a participant's request to join a round.
 type JoinRoundRequest struct {
 	// Identifier is the participant's public key identifier associated with

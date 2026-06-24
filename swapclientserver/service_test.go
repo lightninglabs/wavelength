@@ -533,18 +533,25 @@ func TestStartReceiveRejectsAmountBelowOperatorVTXOMin(t *testing.T) {
 	require.Equal(t, 0, fakeClient.startReceiveCount())
 }
 
-func TestReceiveSwapMinAmountUsesMinVTXOAmount(t *testing.T) {
+func TestVTXOMinAmountUsesMinVTXOAmount(t *testing.T) {
 	t.Parallel()
 
-	amount, err := receiveSwapMinAmountSat(&sdkark.ServerInfo{
+	amount, err := vtxoMinAmountSat(&sdkark.ServerInfo{
 		DustLimit:        546,
 		MinVTXOAmountSat: 1_234,
 	})
 	require.NoError(t, err)
 	require.Equal(t, uint64(1_234), amount)
 
-	amount, err = receiveSwapMinAmountSat(&sdkark.ServerInfo{
+	amount, err = vtxoMinAmountSat(&sdkark.ServerInfo{
 		DustLimit: 546,
+	})
+	require.NoError(t, err)
+	require.Equal(t, uint64(546), amount)
+
+	amount, err = vtxoMinAmountSat(&sdkark.ServerInfo{
+		DustLimit:        546,
+		MinVTXOAmountSat: 100,
 	})
 	require.NoError(t, err)
 	require.Equal(t, uint64(546), amount)

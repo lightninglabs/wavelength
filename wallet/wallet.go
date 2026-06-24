@@ -2521,10 +2521,10 @@ func (a *Ark) handleSendVTXOs(ctx context.Context,
 		)
 	}
 
-	if change > 0 && change <= req.DustLimit {
+	if change > 0 && change < req.DustLimit {
 		return fn.Err[WalletResp](
-			fmt.Errorf("change %d is below dust limit %d; adjust "+
-				"send amount", change, req.DustLimit),
+			fmt.Errorf("change %d is below VTXO minimum %d; "+
+				"adjust send amount", change, req.DustLimit),
 		)
 	}
 
@@ -2889,8 +2889,8 @@ func (a *Ark) handleSendOnChain(ctx context.Context,
 		change = totalSelected - req.TargetAmountSat
 		if change < req.DustLimit {
 			return fn.Err[WalletResp](
-				fmt.Errorf("change amount %d is below dust "+
-					"limit %d", change, req.DustLimit),
+				fmt.Errorf("change amount %d is below VTXO "+
+					"minimum %d", change, req.DustLimit),
 			)
 		}
 	}
