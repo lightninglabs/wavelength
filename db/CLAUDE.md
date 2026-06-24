@@ -71,7 +71,7 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   safety bounds enforced during `DeserializeTree`.
 - `resolveInputPackage` / `loadPackageBundleBySessionID` — two-stage
   OOR ancestry resolver (`oor_unroll_resolver.go`).
-- `LatestMigrationVersion = 19` — current schema version.
+- `LatestMigrationVersion = 20` — current schema version.
 - `PendingIntentPersistenceStore` — implements `wallet.PendingIntentStore`,
   the persistence half of the generic restart-safe intent outbox (header
   `pending_intents` + per-kind detail tables + `pending_intent_anchors`).
@@ -140,11 +140,13 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
 
 ### Migration notes
 
-- `000019_accounting_wallet_sweeps` — adds `wallet_clearing`,
+- `000020_accounting_wallet_sweeps` — adds `wallet_clearing`,
   `wallet_utxo_spent`, and `wallet_sweep_transfer` for sweep
   accounting. Rebuilds the round idempotency index so keyed
   round events use `idx_client_ledger_idempotent_key` instead of
   collapsing on `(round_id, event_type, debit_account, credit_account)`.
+  Renumbered from 000019 to land after `000019_oor_session_registry`,
+  which merged to main while this work was in review.
 - `000018_pending_intents` — generalizes the Board-only
   `pending_board_requests` outbox into a supertype/subtype set:
   `pending_intent_kinds` (enum table), `pending_intents` (header: 32-byte
