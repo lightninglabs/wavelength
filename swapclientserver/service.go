@@ -198,6 +198,11 @@ type swapRuntimeClient interface {
 	// ListSwapSummaries reads durable swap summaries, optionally filtering
 	// to swaps that sdk/swaps still considers pending.
 	ListSwapSummaries(context.Context, bool) ([]swaps.SwapSummary, error)
+
+	// RecoverSwapserverVHTLCs discovers swapserver-owned recoverable vHTLC
+	// rows and arms daemon-owned recovery jobs.
+	RecoverSwapserverVHTLCs(context.Context) (
+		*swaps.SwapserverRecoveryResult, error)
 }
 
 // paySwapSession is the subset of a pay swap FSM that the daemon executor
@@ -310,6 +315,26 @@ func Register(ctx context.Context, grpcServer *grpc.Server,
 // wallet-level lifecycle policy.
 func (s *swapClientService) ResumePending(ctx context.Context) {
 	s.resumePending(ctx)
+}
+
+// RecoverVHTLCs discovers swapserver-owned recoverable vHTLC rows and arms
+// daemon-owned recovery jobs. The method satisfies darepod.SwapBackend.
+func (s *swapClientService) RecoverVHTLCs(ctx context.Context) (
+	*darepod.SwapRecoveryResult, error) {
+
+	result, err := s.client.RecoverSwapserverVHTLCs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if result == nil {
+		return &darepod.SwapRecoveryResult{}, nil
+	}
+
+	return &darepod.SwapRecoveryResult{
+		RecoveredVHTLCs:       result.RecoveredVHTLCs,
+		RecoveredVHTLCRefunds: result.RecoveredVHTLCRefunds,
+		RecoveredVHTLCClaims:  result.RecoveredVHTLCClaims,
+	}, nil
 }
 
 // RegisterGateway installs the optional SwapClientService handlers on the
@@ -623,6 +648,13 @@ func (a *swapClientAdapter) ResumeReceiveViaLightning(ctx context.Context,
 	}
 
 	return &receiveSessionAdapter{session: session}, nil
+}
+
+// RecoverSwapserverVHTLCs delegates seed-restore vHTLC recovery to sdk/swaps.
+func (a *swapClientAdapter) RecoverSwapserverVHTLCs(ctx context.Context) (
+	*swaps.SwapserverRecoveryResult, error) {
+
+	return a.client.RecoverSwapserverVHTLCs(ctx)
 }
 
 // GetSwapSummary forwards direct payment-hash lookups to sdk/swaps so the

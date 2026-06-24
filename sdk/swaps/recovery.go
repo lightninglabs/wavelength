@@ -277,6 +277,69 @@ func pubKeyBytesForRecovery(pubKey *btcec.PublicKey,
 	return pubKey.SerializeCompressed(), nil
 }
 
+// armVHTLCRecoveryParams is the stable request shape shared by live swap
+// sessions and seed-restore recovery.
+type armVHTLCRecoveryParams struct {
+	RequestID   string
+	PaymentHash lntypes.Hash
+	Direction   daemonrpc.VHTLCRecoveryDirection
+	Action      daemonrpc.VHTLCRecoveryAction
+
+	VTXOOutpoint  string
+	VTXOAmountSat int64
+
+	SenderPubkey   []byte
+	ReceiverPubkey []byte
+	ServerPubkey   []byte
+
+	RefundLocktime                       int32
+	UnilateralClaimDelay                 int32
+	UnilateralRefundDelay                int32
+	UnilateralRefundWithoutReceiverDelay int32
+
+	DestinationScript []byte
+	MaxFeeRateSatKW   int32
+}
+
+// buildArmVHTLCRecoveryRequest clones the durable request fields so retries
+// compare against stable bytes regardless of the caller's backing slices.
+func buildArmVHTLCRecoveryRequest(
+	params armVHTLCRecoveryParams) *daemonrpc.ArmVHTLCRecoveryRequest {
+
+	return &daemonrpc.ArmVHTLCRecoveryRequest{
+		RequestId:     params.RequestID,
+		SwapId:        append([]byte(nil), params.PaymentHash[:]...),
+		Direction:     params.Direction,
+		Action:        params.Action,
+		VtxoOutpoint:  params.VTXOOutpoint,
+		VtxoAmountSat: params.VTXOAmountSat,
+		SenderPubkey: append(
+			[]byte(nil), params.SenderPubkey...,
+		),
+		ReceiverPubkey: append(
+			[]byte(nil), params.ReceiverPubkey...,
+		),
+		ServerPubkey: append(
+			[]byte(nil), params.ServerPubkey...,
+		),
+		RefundLocktime:       params.RefundLocktime,
+		UnilateralClaimDelay: params.UnilateralClaimDelay,
+		UnilateralRefundDelay: params.
+			UnilateralRefundDelay,
+		UnilateralRefundWithoutReceiverDelay: params.
+			UnilateralRefundWithoutReceiverDelay,
+		PreimageHash: append(
+			[]byte(nil), params.PaymentHash[:]...,
+		),
+		SignerKeyFamily: recoverySignerFamily(),
+		SignerKeyIndex:  recoverySignerKeyIndex,
+		DestinationScript: append(
+			[]byte(nil), params.DestinationScript...,
+		),
+		MaxFeeRateSatPerKw: params.MaxFeeRateSatKW,
+	}
+}
+
 // ensurePayRefundRecoveryArmed stores a dormant refund-without-receiver
 // recovery row for the funded pay-side vHTLC. The row is armed before refund
 // locktime pressure so escalation later only flips existing durable state.
@@ -310,47 +373,36 @@ func (s *paySession) ensurePayRefundRecoveryArmed(ctx context.Context) error {
 		return err
 	}
 
-	resp, err := s.client.daemon.ArmVHTLCRecovery(
-		ctx, &daemonrpc.ArmVHTLCRecoveryRequest{
-			RequestId: recoveryRequestID(
-				string(SwapDirectionPay), s.cfg.PaymentHash,
-				recoveryActionRefundWithoutReceiver,
-			),
-			SwapId: append(
-				[]byte(nil), s.cfg.PaymentHash[:]...,
-			),
-			Direction:      recoveryDirectionPay,
-			Action:         recoveryActionRefundWithoutReceiver,
-			VtxoOutpoint:   s.vhtlcOutpoint,
-			VtxoAmountSat:  s.vhtlcAmount,
-			SenderPubkey:   sender,
-			ReceiverPubkey: receiver,
-			ServerPubkey:   server,
-			RefundLocktime: int32(
-				s.cfg.VHTLCConfig.RefundLocktime,
-			),
-			UnilateralClaimDelay: int32(
-				s.cfg.VHTLCConfig.UnilateralClaimDelay,
-			),
-			UnilateralRefundDelay: int32(
-				s.cfg.VHTLCConfig.UnilateralRefundDelay,
-			),
-			UnilateralRefundWithoutReceiverDelay: int32(
-				s.cfg.VHTLCConfig.
-					UnilateralRefundWithoutReceiverDelay,
-			),
-			PreimageHash: append(
-				[]byte(nil), s.cfg.PaymentHash[:]...,
-			),
-			SignerKeyFamily: recoverySignerFamily(),
-			SignerKeyIndex:  recoverySignerKeyIndex,
-			DestinationScript: append(
-				[]byte(nil), s.refundReceiveScript...,
-			),
-			MaxFeeRateSatPerKw: s.client.recoveryPolicy.
-				MaxFeeRateSatPerKW,
-		},
-	)
+	req := buildArmVHTLCRecoveryRequest(armVHTLCRecoveryParams{
+		RequestID: recoveryRequestID(
+			string(SwapDirectionPay), s.cfg.PaymentHash,
+			recoveryActionRefundWithoutReceiver,
+		),
+		PaymentHash:    s.cfg.PaymentHash,
+		Direction:      recoveryDirectionPay,
+		Action:         recoveryActionRefundWithoutReceiver,
+		VTXOOutpoint:   s.vhtlcOutpoint,
+		VTXOAmountSat:  s.vhtlcAmount,
+		SenderPubkey:   sender,
+		ReceiverPubkey: receiver,
+		ServerPubkey:   server,
+		RefundLocktime: int32(
+			s.cfg.VHTLCConfig.RefundLocktime,
+		),
+		UnilateralClaimDelay: int32(
+			s.cfg.VHTLCConfig.UnilateralClaimDelay,
+		),
+		UnilateralRefundDelay: int32(
+			s.cfg.VHTLCConfig.UnilateralRefundDelay,
+		),
+		UnilateralRefundWithoutReceiverDelay: int32(
+			s.cfg.VHTLCConfig.UnilateralRefundWithoutReceiverDelay,
+		),
+		DestinationScript: s.refundReceiveScript,
+		MaxFeeRateSatKW:   s.client.recoveryPolicy.MaxFeeRateSatPerKW,
+	})
+
+	resp, err := s.client.daemon.ArmVHTLCRecovery(ctx, req)
 	if err != nil {
 		return fmt.Errorf("arm pay refund recovery: %w", err)
 	}
@@ -417,47 +469,36 @@ func (s *ReceiveSession) ensureReceiveClaimRecoveryArmed(
 		return err
 	}
 
-	resp, err := s.client.daemon.ArmVHTLCRecovery(
-		ctx, &daemonrpc.ArmVHTLCRecoveryRequest{
-			RequestId: recoveryRequestID(
-				string(SwapDirectionReceive), s.PaymentHash,
-				recoveryActionClaim,
-			),
-			SwapId: append(
-				[]byte(nil), s.PaymentHash[:]...,
-			),
-			Direction:      recoveryDirectionReceive,
-			Action:         recoveryActionClaim,
-			VtxoOutpoint:   s.vhtlcOutpoint,
-			VtxoAmountSat:  s.vhtlcAmount,
-			SenderPubkey:   sender,
-			ReceiverPubkey: receiver,
-			ServerPubkey:   server,
-			RefundLocktime: int32(
-				s.vhtlcConfig.RefundLocktime,
-			),
-			UnilateralClaimDelay: int32(
-				s.vhtlcConfig.UnilateralClaimDelay,
-			),
-			UnilateralRefundDelay: int32(
-				s.vhtlcConfig.UnilateralRefundDelay,
-			),
-			UnilateralRefundWithoutReceiverDelay: int32(
-				s.vhtlcConfig.
-					UnilateralRefundWithoutReceiverDelay,
-			),
-			PreimageHash: append(
-				[]byte(nil), s.PaymentHash[:]...,
-			),
-			SignerKeyFamily: recoverySignerFamily(),
-			SignerKeyIndex:  recoverySignerKeyIndex,
-			DestinationScript: append(
-				[]byte(nil), s.claimReceiveScript...,
-			),
-			MaxFeeRateSatPerKw: s.client.recoveryPolicy.
-				MaxFeeRateSatPerKW,
-		},
-	)
+	req := buildArmVHTLCRecoveryRequest(armVHTLCRecoveryParams{
+		RequestID: recoveryRequestID(
+			string(SwapDirectionReceive), s.PaymentHash,
+			recoveryActionClaim,
+		),
+		PaymentHash:    s.PaymentHash,
+		Direction:      recoveryDirectionReceive,
+		Action:         recoveryActionClaim,
+		VTXOOutpoint:   s.vhtlcOutpoint,
+		VTXOAmountSat:  s.vhtlcAmount,
+		SenderPubkey:   sender,
+		ReceiverPubkey: receiver,
+		ServerPubkey:   server,
+		RefundLocktime: int32(
+			s.vhtlcConfig.RefundLocktime,
+		),
+		UnilateralClaimDelay: int32(
+			s.vhtlcConfig.UnilateralClaimDelay,
+		),
+		UnilateralRefundDelay: int32(
+			s.vhtlcConfig.UnilateralRefundDelay,
+		),
+		UnilateralRefundWithoutReceiverDelay: int32(
+			s.vhtlcConfig.UnilateralRefundWithoutReceiverDelay,
+		),
+		DestinationScript: s.claimReceiveScript,
+		MaxFeeRateSatKW:   s.client.recoveryPolicy.MaxFeeRateSatPerKW,
+	})
+
+	resp, err := s.client.daemon.ArmVHTLCRecovery(ctx, req)
 	if err != nil {
 		return fmt.Errorf("arm receive claim recovery: %w", err)
 	}

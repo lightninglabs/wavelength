@@ -46,6 +46,8 @@ type DaemonServiceMailboxServer interface {
 	SignReceiveAuthMessage(ctx context.Context, req *SignReceiveAuthMessageRequest) (*SignReceiveAuthMessageResponse, error)
 	// SignReceiveAuthMessageCompact handles SignReceiveAuthMessageCompact.
 	SignReceiveAuthMessageCompact(ctx context.Context, req *SignReceiveAuthMessageCompactRequest) (*SignReceiveAuthMessageCompactResponse, error)
+	// SignIdentitySchnorr handles SignIdentitySchnorr.
+	SignIdentitySchnorr(ctx context.Context, req *SignIdentitySchnorrRequest) (*SignIdentitySchnorrResponse, error)
 	// ReceiveAuthECDH handles ReceiveAuthECDH.
 	ReceiveAuthECDH(ctx context.Context, req *ReceiveAuthECDHRequest) (*ReceiveAuthECDHResponse, error)
 	// GetIndexedVTXOByPkScript handles GetIndexedVTXOByPkScript.
@@ -217,6 +219,16 @@ func RegisterDaemonServiceMailboxServer(r rpc.Router, impl DaemonServiceMailboxS
 		}
 
 		return impl.SignReceiveAuthMessageCompact(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "SignIdentitySchnorr", func() proto.Message {
+		return &SignIdentitySchnorrRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*SignIdentitySchnorrRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.SignIdentitySchnorr(ctx, req)
 	})
 	r.Handle("daemonrpc.DaemonService", "ReceiveAuthECDH", func() proto.Message {
 		return &ReceiveAuthECDHRequest{}
@@ -756,6 +768,29 @@ func (c *DaemonServiceMailboxClient) SignReceiveAuthMessageCompact(ctx context.C
 	}
 
 	resp := new(SignReceiveAuthMessageCompactResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// SignIdentitySchnorr calls the SignIdentitySchnorr RPC.
+func (c *DaemonServiceMailboxClient) SignIdentitySchnorr(ctx context.Context, req *SignIdentitySchnorrRequest, opts ...rpc.RPCOptions) (*SignIdentitySchnorrResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "SignIdentitySchnorr",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(SignIdentitySchnorrResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

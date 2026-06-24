@@ -24,6 +24,7 @@ const (
 	SwapService_QuoteInSwap_FullMethodName            = "/swaprpc.SwapService/QuoteInSwap"
 	SwapService_AuthorizeInSwapRefund_FullMethodName  = "/swaprpc.SwapService/AuthorizeInSwapRefund"
 	SwapService_AcknowledgeOutSwapHtlc_FullMethodName = "/swaprpc.SwapService/AcknowledgeOutSwapHtlc"
+	SwapService_ListRecoverableSwaps_FullMethodName   = "/swaprpc.SwapService/ListRecoverableSwaps"
 )
 
 // SwapServiceClient is the client API for SwapService service.
@@ -49,6 +50,11 @@ type SwapServiceClient interface {
 	// accepted the out-swap HTLC mailbox event. The swap server waits for this
 	// acknowledgement before funding the Ark vHTLC.
 	AcknowledgeOutSwapHtlc(ctx context.Context, in *AcknowledgeOutSwapHtlcRequest, opts ...grpc.CallOption) (*AcknowledgeOutSwapHtlcResponse, error)
+	// ListRecoverableSwaps returns non-terminal swap rows owned by the
+	// authenticated client identity. The swap server is the discovery source;
+	// clients still verify live/spent vHTLC state against the indexer before
+	// starting recovery.
+	ListRecoverableSwaps(ctx context.Context, in *ListRecoverableSwapsRequest, opts ...grpc.CallOption) (*ListRecoverableSwapsResponse, error)
 }
 
 type swapServiceClient struct {
@@ -109,6 +115,16 @@ func (c *swapServiceClient) AcknowledgeOutSwapHtlc(ctx context.Context, in *Ackn
 	return out, nil
 }
 
+func (c *swapServiceClient) ListRecoverableSwaps(ctx context.Context, in *ListRecoverableSwapsRequest, opts ...grpc.CallOption) (*ListRecoverableSwapsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListRecoverableSwapsResponse)
+	err := c.cc.Invoke(ctx, SwapService_ListRecoverableSwaps_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // SwapServiceServer is the server API for SwapService service.
 // All implementations must embed UnimplementedSwapServiceServer
 // for forward compatibility.
@@ -132,6 +148,11 @@ type SwapServiceServer interface {
 	// accepted the out-swap HTLC mailbox event. The swap server waits for this
 	// acknowledgement before funding the Ark vHTLC.
 	AcknowledgeOutSwapHtlc(context.Context, *AcknowledgeOutSwapHtlcRequest) (*AcknowledgeOutSwapHtlcResponse, error)
+	// ListRecoverableSwaps returns non-terminal swap rows owned by the
+	// authenticated client identity. The swap server is the discovery source;
+	// clients still verify live/spent vHTLC state against the indexer before
+	// starting recovery.
+	ListRecoverableSwaps(context.Context, *ListRecoverableSwapsRequest) (*ListRecoverableSwapsResponse, error)
 	mustEmbedUnimplementedSwapServiceServer()
 }
 
@@ -156,6 +177,9 @@ func (UnimplementedSwapServiceServer) AuthorizeInSwapRefund(context.Context, *Au
 }
 func (UnimplementedSwapServiceServer) AcknowledgeOutSwapHtlc(context.Context, *AcknowledgeOutSwapHtlcRequest) (*AcknowledgeOutSwapHtlcResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method AcknowledgeOutSwapHtlc not implemented")
+}
+func (UnimplementedSwapServiceServer) ListRecoverableSwaps(context.Context, *ListRecoverableSwapsRequest) (*ListRecoverableSwapsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListRecoverableSwaps not implemented")
 }
 func (UnimplementedSwapServiceServer) mustEmbedUnimplementedSwapServiceServer() {}
 func (UnimplementedSwapServiceServer) testEmbeddedByValue()                     {}
@@ -268,6 +292,24 @@ func _SwapService_AcknowledgeOutSwapHtlc_Handler(srv interface{}, ctx context.Co
 	return interceptor(ctx, in, info, handler)
 }
 
+func _SwapService_ListRecoverableSwaps_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListRecoverableSwapsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwapServiceServer).ListRecoverableSwaps(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SwapService_ListRecoverableSwaps_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwapServiceServer).ListRecoverableSwaps(ctx, req.(*ListRecoverableSwapsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // SwapService_ServiceDesc is the grpc.ServiceDesc for SwapService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -294,6 +336,10 @@ var SwapService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "AcknowledgeOutSwapHtlc",
 			Handler:    _SwapService_AcknowledgeOutSwapHtlc_Handler,
+		},
+		{
+			MethodName: "ListRecoverableSwaps",
+			Handler:    _SwapService_ListRecoverableSwaps_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

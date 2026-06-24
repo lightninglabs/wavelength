@@ -46,6 +46,33 @@ service SwapService {
     // acknowledgement before funding the Ark vHTLC.
     rpc AcknowledgeOutSwapHtlc (AcknowledgeOutSwapHtlcRequest)
         returns (AcknowledgeOutSwapHtlcResponse);
+
+    // ListRecoverableSwaps returns non-terminal swap rows owned by the
+    // authenticated client identity. The swap server is the discovery source;
+    // clients still verify live/spent vHTLC state against the indexer before
+    // starting recovery.
+    rpc ListRecoverableSwaps (ListRecoverableSwapsRequest)
+        returns (ListRecoverableSwapsResponse);
+}
+
+// SwapOwnerProof proves control of one client identity key for swap recovery
+// ownership. The signature is a BIP-340 tagged Schnorr signature over the
+// server-defined canonical request message.
+message SwapOwnerProof {
+    // client_identity_pubkey is the compressed daemon identity pubkey that
+    // owns recoverable swap rows.
+    bytes client_identity_pubkey = 1;
+
+    // timestamp_unix is the caller's current unix timestamp. The server uses
+    // this to bound replay of list requests.
+    int64 timestamp_unix = 2;
+
+    // nonce is 16 cryptographically random bytes generated uniquely for each
+    // request and included in the signed message.
+    bytes nonce = 3;
+
+    // signature is the raw 64-byte BIP-340 Schnorr signature.
+    bytes signature = 4;
 }
 
 // RequestChannelIdRequest starts one Lightning-to-Ark receive negotiation.
@@ -68,6 +95,16 @@ message RequestChannelIdRequest {
     // the Lightning payer through the route hint and does not reduce this
     // amount.
     uint64 amount_msat = 4;
+
+    // owner_proof authenticates the daemon identity that may later list this
+    // receive negotiation for seed recovery. Rows created without this proof
+    // remain usable but are not returned by ListRecoverableSwaps.
+    SwapOwnerProof owner_proof = 5;
+
+    // encrypted_recovery_blob is opaque client-encrypted recovery metadata.
+    // For out-swaps it contains the invoice preimage, sealed so only the
+    // restored client seed can decrypt it.
+    bytes encrypted_recovery_blob = 6;
 }
 
 // RequestChannelIdResponse returns the route hint for one receive negotiation.
@@ -229,6 +266,62 @@ message CreateInSwapRequest {
     // client_vhtlc_pubkey is the client's public key used in the vHTLC spend
     // paths.
     bytes client_vhtlc_pubkey = 3;
+
+    // owner_proof authenticates the daemon identity that may later list this
+    // in-swap for seed recovery. Rows created without this proof remain usable
+    // but are not returned by ListRecoverableSwaps.
+    SwapOwnerProof owner_proof = 4;
+}
+
+// RecoverableSwapDirection identifies which recovery path a row belongs to.
+enum RecoverableSwapDirection {
+    RECOVERABLE_SWAP_DIRECTION_UNSPECIFIED = 0;
+
+    // RECOVERABLE_SWAP_DIRECTION_IN identifies an Ark-to-Lightning in-swap
+    // where the client is the vHTLC sender/refunder.
+    RECOVERABLE_SWAP_DIRECTION_IN = 1;
+
+    // RECOVERABLE_SWAP_DIRECTION_OUT identifies a Lightning-to-Ark out-swap
+    // where the client is the vHTLC receiver/claimer.
+    RECOVERABLE_SWAP_DIRECTION_OUT = 2;
+}
+
+// ListRecoverableSwapsRequest lists server-owned recovery metadata for one
+// authenticated client identity.
+message ListRecoverableSwapsRequest {
+    // owner_proof authenticates the client identity whose recoverable rows are
+    // requested.
+    SwapOwnerProof owner_proof = 1;
+}
+
+// ListRecoverableSwapsResponse returns every server row that is safe for the
+// client to inspect during seed recovery.
+message ListRecoverableSwapsResponse {
+    // swaps are sorted by creation time within the server store.
+    repeated RecoverableSwap swaps = 1;
+}
+
+// RecoverableSwap carries enough server-owned metadata for a restored client
+// to rebuild a candidate vHTLC and then verify its chain/indexer state.
+message RecoverableSwap {
+    RecoverableSwapDirection direction = 1;
+    bytes payment_hash = 2;
+    uint64 amount_sat = 3;
+    int32 state = 4;
+    string state_name = 5;
+    bytes sender_pubkey = 6;
+    bytes receiver_pubkey = 7;
+    bytes operator_pubkey = 8;
+    bytes preimage_hash = 9;
+    uint32 refund_locktime = 10;
+    uint32 unilateral_claim_delay = 11;
+    uint32 unilateral_refund_delay = 12;
+    uint32 unilateral_refund_without_receiver_delay = 13;
+    bytes vhtlc_pk_script = 14;
+    string vhtlc_outpoint = 15;
+    bool refund_authorization_available = 16;
+    bytes encrypted_recovery_blob = 17;
+    google.protobuf.Timestamp expires_at = 18;
 }
 
 // CreateInSwapResponse returns the negotiated parameters for one in-swap.

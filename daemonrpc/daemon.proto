@@ -60,6 +60,11 @@ service DaemonService {
     rpc SignReceiveAuthMessageCompact (SignReceiveAuthMessageCompactRequest)
         returns (SignReceiveAuthMessageCompactResponse);
 
+    // SignIdentitySchnorr signs one domain-separated message with the daemon
+    // identity key. The private key never leaves the daemon.
+    rpc SignIdentitySchnorr (SignIdentitySchnorrRequest)
+        returns (SignIdentitySchnorrResponse);
+
     // ReceiveAuthECDH derives one Sphinx shared secret with the
     // per-payment receive-auth key.
     rpc ReceiveAuthECDH (ReceiveAuthECDHRequest)
@@ -423,6 +428,18 @@ message InitWalletResponse {
     // recovered_oor_events is the number of OOR recipient events processed
     // during recovery.
     uint32 recovered_oor_events = 7;
+
+    // recovered_vhtlcs is the number of swapserver recoverable vHTLC rows
+    // validated during recovery.
+    uint32 recovered_vhtlcs = 8;
+
+    // recovered_vhtlc_refunds is the number of pay-side refund recovery rows
+    // armed from recovered in-swaps.
+    uint32 recovered_vhtlc_refunds = 9;
+
+    // recovered_vhtlc_claims is the number of receive-side claim recovery
+    // rows armed from recovered out-swaps.
+    uint32 recovered_vhtlc_claims = 10;
 }
 
 message UnlockWalletRequest {
@@ -677,6 +694,19 @@ message SignReceiveAuthMessageCompactRequest {
 
 message SignReceiveAuthMessageCompactResponse {
     // signature is the compact public-key-recoverable ECDSA signature.
+    bytes signature = 1;
+}
+
+message SignIdentitySchnorrRequest {
+    // message is the raw domain-separated message to sign.
+    bytes message = 1;
+
+    // tag is the BIP-340 tag used for tagged Schnorr signing.
+    bytes tag = 2;
+}
+
+message SignIdentitySchnorrResponse {
+    // signature is the raw 64-byte BIP-340 Schnorr signature.
     bytes signature = 1;
 }
 

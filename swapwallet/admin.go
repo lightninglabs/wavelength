@@ -86,6 +86,9 @@ func (s *Service) create(ctx context.Context, req *walletdkrpc.CreateRequest) (
 		RecoveredVtxos:             initResp.GetRecoveredVtxos(),
 		RecoveredOorReceiveScripts: initResp.GetRecoveredOorReceiveScripts(),
 		RecoveredOorEvents:         initResp.GetRecoveredOorEvents(),
+		RecoveredVhtlcs:            initResp.GetRecoveredVhtlcs(),
+		RecoveredVhtlcRefunds:      initResp.GetRecoveredVhtlcRefunds(),
+		RecoveredVhtlcClaims:       initResp.GetRecoveredVhtlcClaims(),
 	}, nil
 }
 

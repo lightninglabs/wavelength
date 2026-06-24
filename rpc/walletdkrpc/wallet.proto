@@ -242,6 +242,18 @@ message CreateResponse {
     // recovered_oor_events is the number of OOR recipient events processed
     // during recovery.
     uint32 recovered_oor_events = 8;
+
+    // recovered_vhtlcs is the number of swapserver recoverable vHTLC rows
+    // validated during recovery.
+    uint32 recovered_vhtlcs = 9;
+
+    // recovered_vhtlc_refunds is the number of pay-side refund recovery rows
+    // armed from recovered in-swaps.
+    uint32 recovered_vhtlc_refunds = 10;
+
+    // recovered_vhtlc_claims is the number of receive-side claim recovery
+    // rows armed from recovered out-swaps.
+    uint32 recovered_vhtlc_claims = 11;
 }
 
 message UnlockRequest {

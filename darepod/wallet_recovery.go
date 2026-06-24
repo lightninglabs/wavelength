@@ -45,6 +45,9 @@ type walletRecoveryResult struct {
 	VTXOs             uint32
 	OORReceiveScripts uint32
 	OOREvents         uint32
+	VHTLCs            uint32
+	VHTLCRefunds      uint32
+	VHTLCClaims       uint32
 }
 
 // retryRecoveryIndexerRPC retries recovery-local indexer calls that hit the
@@ -84,6 +87,9 @@ func (r walletRecoveryResult) apply(resp *daemonrpc.InitWalletResponse) {
 	resp.RecoveredVtxos = r.VTXOs
 	resp.RecoveredOorReceiveScripts = r.OORReceiveScripts
 	resp.RecoveredOorEvents = r.OOREvents
+	resp.RecoveredVhtlcs = r.VHTLCs
+	resp.RecoveredVhtlcRefunds = r.VHTLCRefunds
+	resp.RecoveredVhtlcClaims = r.VHTLCClaims
 }
 
 func (r *RPCServer) recoverWalletState(ctx context.Context, window uint32) (
@@ -135,8 +141,35 @@ func (r *RPCServer) recoverWalletState(ctx context.Context, window uint32) (
 	); err != nil {
 		return nil, fmt.Errorf("recover OOR receive scripts: %w", err)
 	}
+	if err := r.recoverSwapVHTLCs(ctx, &result); err != nil {
+		return nil, fmt.Errorf("recover swap vHTLCs: %w", err)
+	}
 
 	return &result, nil
+}
+
+// recoverSwapVHTLCs delegates swapserver-owned vHTLC discovery to the
+// configured swap runtime after the wallet seed is available for signing.
+func (r *RPCServer) recoverSwapVHTLCs(ctx context.Context,
+	result *walletRecoveryResult) error {
+
+	if r.server.cfg.Swap == nil || r.server.cfg.Swap.Backend == nil {
+		return nil
+	}
+
+	recovered, err := r.server.cfg.Swap.Backend.RecoverVHTLCs(ctx)
+	if err != nil {
+		return err
+	}
+	if recovered == nil {
+		return nil
+	}
+
+	result.VHTLCs += recovered.RecoveredVHTLCs
+	result.VHTLCRefunds += recovered.RecoveredVHTLCRefunds
+	result.VHTLCClaims += recovered.RecoveredVHTLCClaims
+
+	return nil
 }
 
 func (r *RPCServer) recoverBoardingKeys(ctx context.Context,

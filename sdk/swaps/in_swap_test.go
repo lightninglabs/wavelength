@@ -18,6 +18,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	swapsqlc "github.com/lightninglabs/darepo-client/sdk/swaps/sqlc"
+	"github.com/lightninglabs/darepo-client/swaprpc"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/zpay32"
 	"github.com/stretchr/testify/require"
@@ -98,8 +99,8 @@ func (f *failAtExecDBTX) QueryRowContext(ctx context.Context, query string,
 
 // RequestChannelID is unused in these tests.
 func (c *testInSwapServerConn) RequestChannelID(_ context.Context,
-	_ *btcec.PublicKey, _ lntypes.Hash, _ btcutil.Amount, _ uint32) (
-	*OutSwapQuote, error) {
+	_ *btcec.PublicKey, _ lntypes.Hash, _ btcutil.Amount, _ uint32,
+	_ *swaprpc.SwapOwnerProof, _ []byte) (*OutSwapQuote, error) {
 
 	return nil, nil
 }
@@ -113,11 +114,18 @@ func (c *testInSwapServerConn) AcknowledgeOutSwapHTLC(context.Context,
 
 // CreateInSwap returns the preconfigured in-swap config.
 func (c *testInSwapServerConn) CreateInSwap(context.Context, string, uint64,
-	*btcec.PublicKey) (*InSwapConfig, error) {
+	*btcec.PublicKey, *swaprpc.SwapOwnerProof) (*InSwapConfig, error) {
 
 	c.createCalls++
 
 	return c.cfg, nil
+}
+
+// ListRecoverableSwaps is unused in these tests.
+func (c *testInSwapServerConn) ListRecoverableSwaps(context.Context,
+	*swaprpc.SwapOwnerProof) ([]*swaprpc.RecoverableSwap, error) {
+
+	return nil, nil
 }
 
 // QuoteInSwap returns the preconfigured in-swap quote.

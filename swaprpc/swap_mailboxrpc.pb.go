@@ -34,6 +34,8 @@ type SwapServiceMailboxServer interface {
 	AuthorizeInSwapRefund(ctx context.Context, req *AuthorizeInSwapRefundRequest) (*AuthorizeInSwapRefundResponse, error)
 	// AcknowledgeOutSwapHtlc handles AcknowledgeOutSwapHtlc.
 	AcknowledgeOutSwapHtlc(ctx context.Context, req *AcknowledgeOutSwapHtlcRequest) (*AcknowledgeOutSwapHtlcResponse, error)
+	// ListRecoverableSwaps handles ListRecoverableSwaps.
+	ListRecoverableSwaps(ctx context.Context, req *ListRecoverableSwapsRequest) (*ListRecoverableSwapsResponse, error)
 }
 
 // RegisterSwapServiceMailboxServer registers handlers for SwapService.
@@ -87,6 +89,16 @@ func RegisterSwapServiceMailboxServer(r rpc.Router, impl SwapServiceMailboxServe
 		}
 
 		return impl.AcknowledgeOutSwapHtlc(ctx, req)
+	})
+	r.Handle("swaprpc.SwapService", "ListRecoverableSwaps", func() proto.Message {
+		return &ListRecoverableSwapsRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*ListRecoverableSwapsRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.ListRecoverableSwaps(ctx, req)
 	})
 }
 
@@ -198,6 +210,29 @@ func (c *SwapServiceMailboxClient) AcknowledgeOutSwapHtlc(ctx context.Context, r
 	}
 
 	resp := new(AcknowledgeOutSwapHtlcResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// ListRecoverableSwaps calls the ListRecoverableSwaps RPC.
+func (c *SwapServiceMailboxClient) ListRecoverableSwaps(ctx context.Context, req *ListRecoverableSwapsRequest, opts ...rpc.RPCOptions) (*ListRecoverableSwapsResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "swaprpc.SwapService",
+		Method:  "ListRecoverableSwaps",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(ListRecoverableSwapsResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

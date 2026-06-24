@@ -199,6 +199,19 @@ func (c *SwapServiceClient) AuthorizeInSwapRefund(ctx context.Context,
 	return out, err
 }
 
+// ListRecoverableSwaps returns authenticated recovery candidates.
+func (c *SwapServiceClient) ListRecoverableSwaps(ctx context.Context,
+	in *swaprpc.ListRecoverableSwapsRequest, _ ...grpc.CallOption) (
+	*swaprpc.ListRecoverableSwapsResponse, error) {
+
+	out := new(swaprpc.ListRecoverableSwapsResponse)
+	err := c.client.Post(
+		ctx, "/v1/swap/list-recoverable-swaps", in, out,
+	)
+
+	return out, err
+}
+
 // AcknowledgeOutSwapHtlc tells the swap server an out-swap receiver durably
 // accepted the HTLC event.
 func (c *SwapServiceClient) AcknowledgeOutSwapHtlc(ctx context.Context,
@@ -365,6 +378,19 @@ func (c *DaemonServiceClient) ReceiveAuthECDH(ctx context.Context,
 
 	out := new(daemonrpc.ReceiveAuthECDHResponse)
 	err := c.client.Post(ctx, "/v1/daemon/receive-auth-ecdh", in, out)
+
+	return out, err
+}
+
+// SignIdentitySchnorr signs a tagged message with the daemon identity key.
+func (c *DaemonServiceClient) SignIdentitySchnorr(ctx context.Context,
+	in *daemonrpc.SignIdentitySchnorrRequest, _ ...grpc.CallOption) (
+	*daemonrpc.SignIdentitySchnorrResponse, error) {
+
+	out := new(daemonrpc.SignIdentitySchnorrResponse)
+	err := c.client.Post(
+		ctx, "/v1/daemon/sign-identity-schnorr", in, out,
+	)
 
 	return out, err
 }
