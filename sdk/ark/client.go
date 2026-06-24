@@ -176,6 +176,41 @@ type WalletInitResult struct {
 	IdentityPubKey string
 }
 
+// VTXOExpiryInfo is the SDK-owned typed view of a VTXO expiry
+// classification.
+type VTXOExpiryInfo struct {
+	// Status is the daemon's current expiry posture for the VTXO.
+	Status daemonrpc.VTXOExpiryStatus
+
+	// CurrentHeight is the chain height used for classification.
+	CurrentHeight int32
+
+	// BatchExpiry is the VTXO batch expiry height.
+	BatchExpiry int32
+
+	// BlocksRemaining is BatchExpiry - CurrentHeight.
+	BlocksRemaining int32
+
+	// RefreshThresholdBlocks is the blocks-before-expiry threshold at
+	// which cooperative refresh should begin.
+	RefreshThresholdBlocks int32
+
+	// CriticalThresholdBlocks is the blocks-before-expiry threshold at
+	// which recovery/unilateral-exit handling should begin.
+	CriticalThresholdBlocks int32
+
+	// RelativeExpiry is the CSV delay used in the threshold calculation.
+	RelativeExpiry uint32
+
+	// MaxTreeDepth is the worst-case VTXO tree depth used in the threshold
+	// calculation.
+	MaxTreeDepth uint32
+
+	// ChainDepth is the number of OOR checkpoint hops between this VTXO
+	// and the most recent on-chain commitment.
+	ChainDepth uint32
+}
+
 // VTXOInfo is the SDK-owned typed view of a daemon VTXO record.
 type VTXOInfo struct {
 	// Outpoint is the VTXO's outpoint in "txid:index" format.
@@ -217,6 +252,10 @@ type VTXOInfo struct {
 
 	// SpentByTxID is the Ark or OOR txid that spent this VTXO when known.
 	SpentByTxID string
+
+	// ExpiryInfo is the daemon's current expiry posture for this VTXO when
+	// available.
+	ExpiryInfo *VTXOExpiryInfo
 }
 
 // ReceiveInfo is the SDK-owned typed view of a wallet-owned receive
@@ -705,6 +744,24 @@ func (c *Client) GetIndexedVTXOByPkScript(ctx context.Context,
 	resp, err := c.daemon.GetIndexedVTXOByPkScript(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("get indexed vtxo by script: %w", err)
+	}
+
+	return resp, nil
+}
+
+// GetVTXOExpiryInfo asks the daemon to classify a VTXO using the
+// authoritative wallet/VTXO expiry policy. Passing nil uses an empty request.
+func (c *Client) GetVTXOExpiryInfo(ctx context.Context,
+	req *daemonrpc.GetVTXOExpiryInfoRequest) (
+	*daemonrpc.GetVTXOExpiryInfoResponse, error) {
+
+	if req == nil {
+		req = &daemonrpc.GetVTXOExpiryInfoRequest{}
+	}
+
+	resp, err := c.daemon.GetVTXOExpiryInfo(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("get vtxo expiry info: %w", err)
 	}
 
 	return resp, nil
@@ -1378,7 +1435,28 @@ func newVTXOInfo(vtxo *daemonrpc.VTXO) (*VTXOInfo, error) {
 		ChainDepth:           vtxo.GetChainDepth(),
 		FinalCheckpointPSBTs: checkpoints,
 		SpentByTxID:          vtxo.GetSpentByTxid(),
+		ExpiryInfo:           newVTXOExpiryInfo(vtxo.GetExpiryInfo()),
 	}, nil
+}
+
+// newVTXOExpiryInfo converts one daemon protobuf VTXO expiry info message into
+// the SDK-owned typed model.
+func newVTXOExpiryInfo(info *daemonrpc.VTXOExpiryInfo) *VTXOExpiryInfo {
+	if info == nil {
+		return nil
+	}
+
+	return &VTXOExpiryInfo{
+		Status:                  info.GetStatus(),
+		CurrentHeight:           info.GetCurrentHeight(),
+		BatchExpiry:             info.GetBatchExpiry(),
+		BlocksRemaining:         info.GetBlocksRemaining(),
+		RefreshThresholdBlocks:  info.GetRefreshThresholdBlocks(),
+		CriticalThresholdBlocks: info.GetCriticalThresholdBlocks(),
+		RelativeExpiry:          info.GetRelativeExpiry(),
+		MaxTreeDepth:            info.GetMaxTreeDepth(),
+		ChainDepth:              info.GetChainDepth(),
+	}
 }
 
 // newReceiveInfo converts one daemon protobuf receive-script response

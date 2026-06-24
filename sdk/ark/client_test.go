@@ -39,11 +39,13 @@ type fakeDaemonService struct {
 	listVtxosResp         *daemonrpc.ListVTXOsResponse
 	newReceiveResp        *daemonrpc.NewReceiveScriptResponse
 	indexedVTXOResp       *daemonrpc.GetIndexedVTXOByPkScriptResponse
+	expiryInfoResp        *daemonrpc.GetVTXOExpiryInfoResponse
 	indexedOORSessionResp *daemonrpc.GetIndexedOORSessionByTxidResponse
 	sendOORResp           *daemonrpc.SendOORResponse
 
 	lastListVTXOsReq   *daemonrpc.ListVTXOsRequest
 	lastIndexedVTXOReq *daemonrpc.GetIndexedVTXOByPkScriptRequest
+	lastExpiryInfoReq  *daemonrpc.GetVTXOExpiryInfoRequest
 	lastIndexedOORReq  *daemonrpc.GetIndexedOORSessionByTxidRequest
 	lastSendOORReq     *daemonrpc.SendOORRequest
 }
@@ -52,6 +54,18 @@ const (
 	// testLiveVTXOStatus keeps the fake VTXO response readable while
 	// staying within the repository's line-length limit.
 	testLiveVTXOStatus = daemonrpc.VTXOStatus_VTXO_STATUS_LIVE
+
+	// testSafeExpiryStatus keeps fake expiry info fixtures readable while
+	// staying within the repository's line-length limit.
+	testSafeExpiryStatus = daemonrpc.VTXOExpiryStatus_VTXO_EXPIRY_STATUS_SAFE
+
+	// testRefreshExpiryStatus keeps fake expiry info fixtures readable while
+	// staying within the repository's line-length limit.
+	testRefreshExpiryStatus = daemonrpc.VTXOExpiryStatus_VTXO_EXPIRY_STATUS_NEEDS_REFRESH
+
+	// testCriticalExpiryStatus keeps fake expiry info fixtures readable while
+	// staying within the repository's line-length limit.
+	testCriticalExpiryStatus = daemonrpc.VTXOExpiryStatus_VTXO_EXPIRY_STATUS_CRITICAL
 )
 
 // watchRoundsResponse shortens the generic stream signature used by the fake
@@ -110,6 +124,17 @@ func newFakeDaemonService() *fakeDaemonService {
 						},
 					},
 					SpentByTxid: "spent-txid",
+					ExpiryInfo: &daemonrpc.VTXOExpiryInfo{
+						Status:                  testSafeExpiryStatus,
+						CurrentHeight:           700,
+						BatchExpiry:             1000,
+						BlocksRemaining:         300,
+						RefreshThresholdBlocks:  216,
+						CriticalThresholdBlocks: 144,
+						RelativeExpiry:          144,
+						MaxTreeDepth:            0,
+						ChainDepth:              0,
+					},
 				},
 			},
 		},
@@ -134,6 +159,37 @@ func newFakeDaemonService() *fakeDaemonService {
 					},
 				},
 				SpentByTxid: "indexed-spender",
+				ExpiryInfo: &daemonrpc.VTXOExpiryInfo{
+					Status:                  testRefreshExpiryStatus,
+					CurrentHeight:           784,
+					BatchExpiry:             1000,
+					BlocksRemaining:         216,
+					RefreshThresholdBlocks:  216,
+					CriticalThresholdBlocks: 144,
+					RelativeExpiry:          144,
+					MaxTreeDepth:            0,
+					ChainDepth:              1,
+				},
+			},
+		},
+		expiryInfoResp: &daemonrpc.GetVTXOExpiryInfoResponse{
+			Found: true,
+			ExpiryInfo: &daemonrpc.VTXOExpiryInfo{
+				Status:                  testCriticalExpiryStatus,
+				CurrentHeight:           900,
+				BatchExpiry:             1000,
+				BlocksRemaining:         100,
+				RefreshThresholdBlocks:  216,
+				CriticalThresholdBlocks: 144,
+				RelativeExpiry:          144,
+				MaxTreeDepth:            0,
+				ChainDepth:              2,
+			},
+			Vtxo: &daemonrpc.VTXO{
+				Outpoint:  "expiry:0",
+				AmountSat: 21_000,
+				Status:    testLiveVTXOStatus,
+				PkScript:  "5120c0ffee",
 			},
 		},
 		indexedOORSessionResp: &daemonrpc.
@@ -417,6 +473,19 @@ func (f *fakeDaemonService) GetIndexedVTXOByPkScript(_ context.Context,
 	return f.indexedVTXOResp, nil
 }
 
+// GetVTXOExpiryInfo returns one deterministic expiry classification and
+// records the lookup request for helper assertions.
+func (f *fakeDaemonService) GetVTXOExpiryInfo(_ context.Context,
+	req *daemonrpc.GetVTXOExpiryInfoRequest) (
+	*daemonrpc.GetVTXOExpiryInfoResponse, error) {
+
+	f.mu.Lock()
+	f.lastExpiryInfoReq = req
+	f.mu.Unlock()
+
+	return f.expiryInfoResp, nil
+}
+
 // GetIndexedOORSessionByTxid returns one deterministic indexed OOR session
 // and records the lookup request for helper assertions.
 func (f *fakeDaemonService) GetIndexedOORSessionByTxid(_ context.Context,
@@ -695,6 +764,12 @@ func TestDialRemotePolicyHelpers(t *testing.T) {
 	require.Equal(
 		t, []byte{0x51, 0x20, 0xc0, 0xff, 0xee}, liveVTXOs[0].PkScript,
 	)
+	require.NotNil(t, liveVTXOs[0].ExpiryInfo)
+	require.Equal(t, testSafeExpiryStatus, liveVTXOs[0].ExpiryInfo.Status)
+	require.Equal(t, int32(300), liveVTXOs[0].ExpiryInfo.BlocksRemaining)
+	require.Equal(
+		t, int32(216), liveVTXOs[0].ExpiryInfo.RefreshThresholdBlocks,
+	)
 
 	service.mu.Lock()
 	listReq := service.lastListVTXOsReq
@@ -712,6 +787,11 @@ func TestDialRemotePolicyHelpers(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, indexedVTXO)
 	require.Equal(t, "indexed:1", indexedVTXO.Outpoint)
+	require.NotNil(t, indexedVTXO.ExpiryInfo)
+	require.Equal(
+		t, testRefreshExpiryStatus, indexedVTXO.ExpiryInfo.Status,
+	)
+	require.Equal(t, uint32(1), indexedVTXO.ExpiryInfo.ChainDepth)
 
 	service.mu.Lock()
 	indexedReq := service.lastIndexedVTXOReq
@@ -725,6 +805,33 @@ func TestDialRemotePolicyHelpers(t *testing.T) {
 	require.Equal(t, []daemonrpc.VTXOStatus{
 		daemonrpc.VTXOStatus_VTXO_STATUS_SPENT,
 	}, indexedReq.GetStatusFilter())
+
+	expiryResp, err := client.GetVTXOExpiryInfo(
+		context.Background(),
+		&daemonrpc.GetVTXOExpiryInfoRequest{
+			Target: &daemonrpc.GetVTXOExpiryInfoRequest_PkScript{
+				PkScript: []byte{0x51, 0x20, 0xc0, 0xff, 0xee},
+			},
+			StatusFilter: []daemonrpc.VTXOStatus{
+				daemonrpc.VTXOStatus_VTXO_STATUS_LIVE,
+			},
+			CurrentHeight: 900,
+		},
+	)
+	require.NoError(t, err)
+	require.True(t, expiryResp.GetFound())
+	require.Equal(t, testCriticalExpiryStatus, expiryResp.GetExpiryInfo().GetStatus())
+
+	service.mu.Lock()
+	expiryReq := service.lastExpiryInfoReq
+	service.mu.Unlock()
+
+	require.NotNil(t, expiryReq)
+	require.Equal(t, int32(900), expiryReq.GetCurrentHeight())
+	require.Equal(
+		t, []byte{0x51, 0x20, 0xc0, 0xff, 0xee},
+		expiryReq.GetPkScript(),
+	)
 
 	receiveInfo, err := client.AllocateReceiveScript(
 		context.Background(),

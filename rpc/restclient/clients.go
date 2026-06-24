@@ -382,6 +382,19 @@ func (c *DaemonServiceClient) GetIndexedVTXOByPkScript(ctx context.Context,
 	return out, err
 }
 
+// GetVTXOExpiryInfo classifies one VTXO's expiry posture.
+func (c *DaemonServiceClient) GetVTXOExpiryInfo(ctx context.Context,
+	in *daemonrpc.GetVTXOExpiryInfoRequest, _ ...grpc.CallOption) (
+	*daemonrpc.GetVTXOExpiryInfoResponse, error) {
+
+	out := new(daemonrpc.GetVTXOExpiryInfoResponse)
+	err := c.client.Post(
+		ctx, "/v1/daemon/get-vtxo-expiry-info", in, out,
+	)
+
+	return out, err
+}
+
 // GetIndexedOORSessionByTxid looks up one indexed OOR session by txid.
 func (c *DaemonServiceClient) GetIndexedOORSessionByTxid(ctx context.Context,
 	in *daemonrpc.GetIndexedOORSessionByTxidRequest, _ ...grpc.CallOption) (

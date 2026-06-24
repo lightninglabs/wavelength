@@ -32,6 +32,7 @@ const (
 	DaemonService_SignReceiveAuthMessageCompact_FullMethodName = "/daemonrpc.DaemonService/SignReceiveAuthMessageCompact"
 	DaemonService_ReceiveAuthECDH_FullMethodName               = "/daemonrpc.DaemonService/ReceiveAuthECDH"
 	DaemonService_GetIndexedVTXOByPkScript_FullMethodName      = "/daemonrpc.DaemonService/GetIndexedVTXOByPkScript"
+	DaemonService_GetVTXOExpiryInfo_FullMethodName             = "/daemonrpc.DaemonService/GetVTXOExpiryInfo"
 	DaemonService_GetIndexedOORSessionByTxid_FullMethodName    = "/daemonrpc.DaemonService/GetIndexedOORSessionByTxid"
 	DaemonService_SendVTXO_FullMethodName                      = "/daemonrpc.DaemonService/SendVTXO"
 	DaemonService_SendOOR_FullMethodName                       = "/daemonrpc.DaemonService/SendOOR"
@@ -113,6 +114,9 @@ type DaemonServiceClient interface {
 	// GetIndexedVTXOByPkScript queries the authoritative indexer for the
 	// first VTXO matching the given script and status filter.
 	GetIndexedVTXOByPkScript(ctx context.Context, in *GetIndexedVTXOByPkScriptRequest, opts ...grpc.CallOption) (*GetIndexedVTXOByPkScriptResponse, error)
+	// GetVTXOExpiryInfo returns the wallet/VTXO layer's expiry posture for a
+	// VTXO identified by outpoint or pkScript.
+	GetVTXOExpiryInfo(ctx context.Context, in *GetVTXOExpiryInfoRequest, opts ...grpc.CallOption) (*GetVTXOExpiryInfoResponse, error)
 	// GetIndexedOORSessionByTxid queries the authoritative indexer for one
 	// OOR session using a spent script proof and deterministic session txid.
 	GetIndexedOORSessionByTxid(ctx context.Context, in *GetIndexedOORSessionByTxidRequest, opts ...grpc.CallOption) (*GetIndexedOORSessionByTxidResponse, error)
@@ -352,6 +356,16 @@ func (c *daemonServiceClient) GetIndexedVTXOByPkScript(ctx context.Context, in *
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetIndexedVTXOByPkScriptResponse)
 	err := c.cc.Invoke(ctx, DaemonService_GetIndexedVTXOByPkScript_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) GetVTXOExpiryInfo(ctx context.Context, in *GetVTXOExpiryInfoRequest, opts ...grpc.CallOption) (*GetVTXOExpiryInfoResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetVTXOExpiryInfoResponse)
+	err := c.cc.Invoke(ctx, DaemonService_GetVTXOExpiryInfo_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -689,6 +703,9 @@ type DaemonServiceServer interface {
 	// GetIndexedVTXOByPkScript queries the authoritative indexer for the
 	// first VTXO matching the given script and status filter.
 	GetIndexedVTXOByPkScript(context.Context, *GetIndexedVTXOByPkScriptRequest) (*GetIndexedVTXOByPkScriptResponse, error)
+	// GetVTXOExpiryInfo returns the wallet/VTXO layer's expiry posture for a
+	// VTXO identified by outpoint or pkScript.
+	GetVTXOExpiryInfo(context.Context, *GetVTXOExpiryInfoRequest) (*GetVTXOExpiryInfoResponse, error)
 	// GetIndexedOORSessionByTxid queries the authoritative indexer for one
 	// OOR session using a spent script proof and deterministic session txid.
 	GetIndexedOORSessionByTxid(context.Context, *GetIndexedOORSessionByTxidRequest) (*GetIndexedOORSessionByTxidResponse, error)
@@ -842,6 +859,9 @@ func (UnimplementedDaemonServiceServer) ReceiveAuthECDH(context.Context, *Receiv
 }
 func (UnimplementedDaemonServiceServer) GetIndexedVTXOByPkScript(context.Context, *GetIndexedVTXOByPkScriptRequest) (*GetIndexedVTXOByPkScriptResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetIndexedVTXOByPkScript not implemented")
+}
+func (UnimplementedDaemonServiceServer) GetVTXOExpiryInfo(context.Context, *GetVTXOExpiryInfoRequest) (*GetVTXOExpiryInfoResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetVTXOExpiryInfo not implemented")
 }
 func (UnimplementedDaemonServiceServer) GetIndexedOORSessionByTxid(context.Context, *GetIndexedOORSessionByTxidRequest) (*GetIndexedOORSessionByTxidResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetIndexedOORSessionByTxid not implemented")
@@ -1175,6 +1195,24 @@ func _DaemonService_GetIndexedVTXOByPkScript_Handler(srv interface{}, ctx contex
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(DaemonServiceServer).GetIndexedVTXOByPkScript(ctx, req.(*GetIndexedVTXOByPkScriptRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_GetVTXOExpiryInfo_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetVTXOExpiryInfoRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).GetVTXOExpiryInfo(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_GetVTXOExpiryInfo_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).GetVTXOExpiryInfo(ctx, req.(*GetVTXOExpiryInfoRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1716,6 +1754,10 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetIndexedVTXOByPkScript",
 			Handler:    _DaemonService_GetIndexedVTXOByPkScript_Handler,
+		},
+		{
+			MethodName: "GetVTXOExpiryInfo",
+			Handler:    _DaemonService_GetVTXOExpiryInfo_Handler,
 		},
 		{
 			MethodName: "GetIndexedOORSessionByTxid",
