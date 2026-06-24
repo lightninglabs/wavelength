@@ -20,6 +20,13 @@ func configureWalletRPC(cfg *darepod.Config, enabled bool) {
 	cfg.RPCServiceRegistrars = append(
 		cfg.RPCServiceRegistrars, swapwallet.Register,
 	)
+
+	// Map walletdkrpc sentinel errors to machine-readable status codes so
+	// the embedded client's reconstruct interceptor can surface typed
+	// failures, matching the standalone daemon's behavior.
+	cfg.UnaryServerInterceptors = append(
+		cfg.UnaryServerInterceptors, swapwallet.ErrorMappingInterceptor,
+	)
 }
 
 // walletRPCAvailable reports whether this build can register walletdkrpc.

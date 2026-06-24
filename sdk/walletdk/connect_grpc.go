@@ -20,6 +20,13 @@ func connectGRPC(ctx context.Context, cfg ConnectConfig) (*Client, error) {
 		)
 	}
 
+	// Reconstruct errors.Is-able sentinels from the daemon's walletdk
+	// ErrorInfo details on every wallet RPC.
+	dialOpts = append(
+		dialOpts,
+		grpc.WithChainUnaryInterceptor(errorReconstructInterceptor),
+	)
+
 	conn, err := grpc.NewClient(cfg.Address, dialOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("dial wallet daemon: %w", err)
