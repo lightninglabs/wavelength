@@ -269,7 +269,7 @@ func sumOORInputAmounts(inputs []oor.TransferInput) (btcutil.Amount, error) {
 // fee-less, so the selected input sum must be paid out exactly.
 func appendOORChangeRecipient(ctx context.Context,
 	recipients []oortx.RecipientOutput,
-	inputTotal, dustLimit btcutil.Amount,
+	inputTotal, outputFloor btcutil.Amount,
 	buildChange oorChangeRecipientBuilder) ([]oortx.RecipientOutput,
 	btcutil.Amount, error) {
 
@@ -300,11 +300,11 @@ func appendOORChangeRecipient(ctx context.Context,
 		return out, 0, nil
 	}
 
-	if dustLimit > 0 && change < dustLimit {
+	if outputFloor > 0 && change < outputFloor {
 		return nil, change, status.Errorf(codes.InvalidArgument, "OOR "+
-			"change output %d sat is below dust limit %d sat; "+
+			"change output %d sat is below VTXO minimum %d sat; "+
 			"choose exact inputs or a larger amount", change,
-			dustLimit)
+			outputFloor)
 	}
 
 	if buildChange == nil {
@@ -334,22 +334,24 @@ func appendOORChangeRecipient(ctx context.Context,
 	return out, change, nil
 }
 
-// validateOORRecipientDust enforces the operator's advertised output floor for
+// validateOORRecipientFloor enforces the operator's output floor for
 // caller-selected OOR recipients. Change outputs are checked later after input
 // selection; this guard prevents creating a receiver VTXO that the operator
 // would not accept in subsequent cooperative spends.
-func validateOORRecipientDust(amountSat int64, dustLimit btcutil.Amount) error {
-	if dustLimit <= 0 {
+func validateOORRecipientFloor(amountSat int64,
+	outputFloor btcutil.Amount) error {
+
+	if outputFloor <= 0 {
 		return nil
 	}
 
 	amount := btcutil.Amount(amountSat)
-	if amount >= dustLimit {
+	if amount >= outputFloor {
 		return nil
 	}
 
 	return status.Errorf(codes.InvalidArgument, "amount %d below operator "+
-		"dust_limit %d", amount, dustLimit)
+		"min_vtxo_amount_sat %d", amount, outputFloor)
 }
 
 // sendOORRequestRecipients returns the caller-requested OOR recipients in
@@ -430,8 +432,8 @@ func (r *RPCServer) buildSendOORRecipients(ctx context.Context,
 			return nil, indexedSendOORRecipientError(i, err)
 		}
 
-		if err := validateOORRecipientDust(
-			out.AmountSat, terms.DustLimit,
+		if err := validateOORRecipientFloor(
+			out.AmountSat, terms.MinVTXOAmountFloor(),
 		); err != nil {
 			return nil, indexedSendOORRecipientError(i, err)
 		}
@@ -617,10 +619,7 @@ func (r *RPCServer) GetInfo(ctx context.Context, _ *daemonrpc.GetInfoRequest) (
 			return resp, nil
 		}
 
-		minVTXOAmount := terms.MinVTXOAmount
-		if minVTXOAmount == 0 {
-			minVTXOAmount = terms.DustLimit
-		}
+		minVTXOAmount := terms.MinVTXOAmountFloor()
 
 		// The forfeit penalty key, sweep key and delay are no longer
 		// global operator terms; they are delivered per round in the
@@ -1947,7 +1946,7 @@ func (r *RPCServer) SendOnChain(ctx context.Context,
 		TargetAmountSat:     targetAmount,
 		SweepOutpoints:      sweepOutpoints,
 		OperatorFee:         terms.MinOperatorFee,
-		DustLimit:           terms.DustLimit,
+		DustLimit:           terms.MinVTXOAmountFloor(),
 		OperatorKey:         terms.PubKey,
 		VTXOExitDelay:       terms.VTXOExitDelay,
 		DryRun:              req.DryRun,
@@ -2265,7 +2264,7 @@ func (r *RPCServer) SendVTXO(ctx context.Context,
 	sendReq := &wallet.SendVTXOsRequest{
 		Recipients:    recipients,
 		OperatorFee:   terms.MinOperatorFee,
-		DustLimit:     terms.DustLimit,
+		DustLimit:     terms.MinVTXOAmountFloor(),
 		OperatorKey:   terms.PubKey,
 		VTXOExitDelay: terms.VTXOExitDelay,
 		DryRun:        req.DryRun,
@@ -2500,7 +2499,7 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 
 		selectReq := &wallet.SelectAndLockVTXOsRequest{
 			TargetAmount:    targetAmt,
-			MinChangeAmount: terms.DustLimit,
+			MinChangeAmount: terms.MinVTXOAmountFloor(),
 		}
 		selectFuture := wRef.Ask(ctx, selectReq)
 		selectResult := selectFuture.Await(ctx)
@@ -2558,7 +2557,7 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 	}
 
 	recipients, changeAmt, err := appendOORChangeRecipient(
-		ctx, recipients, inputTotal, terms.DustLimit,
+		ctx, recipients, inputTotal, terms.MinVTXOAmountFloor(),
 		func(ctx context.Context, change btcutil.Amount) (
 			oortx.RecipientOutput, error) {
 
@@ -2758,8 +2757,8 @@ func (r *RPCServer) PrepareOOR(ctx context.Context,
 			"operator terms: %v", err)
 	}
 
-	if err := validateOORRecipientDust(
-		req.GetRecipient().GetAmountSat(), terms.DustLimit,
+	if err := validateOORRecipientFloor(
+		req.GetRecipient().GetAmountSat(), terms.MinVTXOAmountFloor(),
 	); err != nil {
 		return nil, err
 	}
@@ -2796,7 +2795,7 @@ func (r *RPCServer) PrepareOOR(ctx context.Context,
 	}}
 
 	recipients, _, err = appendOORChangeRecipient(
-		ctx, recipients, inputTotal, terms.DustLimit,
+		ctx, recipients, inputTotal, terms.MinVTXOAmountFloor(),
 		func(ctx context.Context, change btcutil.Amount) (
 			oortx.RecipientOutput, error) {
 

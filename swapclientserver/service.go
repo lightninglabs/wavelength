@@ -471,7 +471,7 @@ func newSwapClientService(ctx context.Context, rpcServer *darepod.RPCServer,
 			return 0, err
 		}
 
-		return receiveSwapMinAmountSat(info.ServerInfo)
+		return vtxoMinAmountSat(info.ServerInfo)
 	}
 
 	service := &swapClientService{
@@ -943,17 +943,16 @@ func chainParamsForNetwork(network string) (*chaincfg.Params, error) {
 	}
 }
 
-// receiveSwapMinAmountSat returns the operator-advertised minimum VTXO output
-// amount for receive swaps. A Lightning-to-Ark receive is funded as an Ark
-// vHTLC, not as an on-chain boarding deposit, so the VTXO floor is the
-// relevant local preflight. The swap server may still apply additional
-// server-side policy before returning a route hint.
-func receiveSwapMinAmountSat(info *sdkark.ServerInfo) (uint64, error) {
+// vtxoMinAmountSat returns the effective minimum VTXO output amount. Pay
+// and receive swaps both create Ark VTXOs, so both rails use the same VTXO
+// floor before asking the swap server for route hints or persisting local
+// swap state.
+func vtxoMinAmountSat(info *sdkark.ServerInfo) (uint64, error) {
 	if info == nil {
 		return 0, fmt.Errorf("operator terms unavailable")
 	}
 
-	if info.MinVTXOAmountSat > 0 {
+	if info.MinVTXOAmountSat > info.DustLimit {
 		return info.MinVTXOAmountSat, nil
 	}
 

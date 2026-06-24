@@ -4209,7 +4209,7 @@ func (s *Server) fetchOperatorTerms(ctx context.Context) (*types.OperatorTerms,
 	}
 
 	minVTXOAmount := resp.MinVtxoAmountSat
-	if minVTXOAmount == 0 {
+	if minVTXOAmount < resp.DustLimit {
 		minVTXOAmount = resp.DustLimit
 	}
 

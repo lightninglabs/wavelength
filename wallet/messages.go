@@ -669,8 +669,8 @@ type SendVTXOsRequest struct {
 	// operator.
 	OperatorFee btcutil.Amount
 
-	// DustLimit is the minimum viable VTXO output amount. Change
-	// below this threshold causes the send to be rejected.
+	// DustLimit is the effective minimum viable VTXO output amount.
+	// Change below this threshold causes the send to be rejected.
 	DustLimit btcutil.Amount
 
 	// OperatorKey is the operator's public key for constructing
@@ -761,9 +761,9 @@ type SendOnChainRequest struct {
 	// binding fee comes from the server's seal-time quote.
 	OperatorFee btcutil.Amount
 
-	// DustLimit is the change-VTXO dust floor (typically
-	// OperatorTerms.DustLimit). Added to OperatorFee when computing
-	// coin-selection headroom in bounded mode.
+	// DustLimit is the effective change-VTXO floor. Added to
+	// OperatorFee when computing coin-selection headroom in bounded
+	// mode.
 	DustLimit btcutil.Amount
 
 	// OperatorKey is the operator's pubkey for the change-VTXO

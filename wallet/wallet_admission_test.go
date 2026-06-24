@@ -1254,9 +1254,9 @@ func TestSendVTXOsMultiRecipientZeroChangeRejects(t *testing.T) {
 	require.Zero(t, roundActor.registerCalls)
 }
 
-// TestSendVTXOsDustChange verifies that change below the dust limit
+// TestSendVTXOsBelowFloorChange verifies that change below the VTXO floor
 // is rejected.
-func TestSendVTXOsDustChange(t *testing.T) {
+func TestSendVTXOsBelowFloorChange(t *testing.T) {
 	t.Parallel()
 
 	mgr := &mockVTXOManagerBehavior{
@@ -1291,10 +1291,54 @@ func TestSendVTXOsDustChange(t *testing.T) {
 	})
 	_, err := result.Unpack()
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "below dust limit")
+	require.Contains(t, err.Error(), "below VTXO minimum")
 
 	// Round should not have been called.
 	require.Equal(t, 0, roundActor.registerCalls)
+}
+
+// TestSendVTXOsFloorChange verifies that change exactly at the VTXO floor
+// is accepted.
+func TestSendVTXOsFloorChange(t *testing.T) {
+	t.Parallel()
+
+	mgr := &mockVTXOManagerBehavior{
+		selectForfeitResp: &actormsg.SelectAndReserveForfeitResponse{
+			SelectedVTXOs: []actormsg.SelectedVTXO{
+				{
+					Outpoint: testOutpoint(0),
+					Amount:   41546,
+					PkScript: []byte{
+						0x51,
+						0x20,
+						0x01,
+					},
+				},
+			},
+			TotalSelected: 41546,
+		},
+		forfeitReleaseResp: &actormsg.ReleaseForfeitResponse{
+			ReleasedCount: 1,
+		},
+	}
+	roundActor := &mockRoundActorBehavior{}
+
+	w := newTestWalletForSend(t, mgr, roundActor)
+
+	result := w.Receive(t.Context(), &SendVTXOsRequest{
+		Recipients:    []SendRecipient{testSendRecipient(40000)},
+		OperatorFee:   1000,
+		DustLimit:     546,
+		OperatorKey:   testOperatorKey(),
+		VTXOExitDelay: 144,
+	})
+	resp, err := result.Unpack()
+	require.NoError(t, err)
+
+	sendResp, ok := resp.(*SendVTXOsResponse)
+	require.True(t, ok)
+	require.Equal(t, btcutil.Amount(546), sendResp.ChangeAmount)
+	require.Equal(t, 1, roundActor.registerCalls)
 }
 
 // TestSendVTXOsDryRun verifies that dry-run validates selection then
