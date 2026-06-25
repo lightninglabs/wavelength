@@ -569,6 +569,11 @@ type Entry struct {
 	// (a Lightning invoice, an on-chain address, or an Ark address). It is
 	// nil when the backing subsystem did not persist one.
 	Request *EntryRequest
+
+	// FailureCode is a stable, machine-readable classification of why the
+	// entry failed. It is EntryFailureCodeUnspecified unless Status is
+	// failed; FailureReason remains the human-readable supplement.
+	FailureCode EntryFailureCode
 }
 
 // EntryPhase is a coarse, wrapper-owned lifecycle phase for an Entry. It does
@@ -684,3 +689,33 @@ type EntryRequest struct {
 	// Populated when Type is EntryRequestTypeArk.
 	ArkAddress string
 }
+
+// EntryFailureCode is a wrapper-owned, stable classification of why a failed
+// Entry failed. Like the other Entry enums it is a lowercase string decoupled
+// from the proto enum; switch on it rather than comparing proto values.
+type EntryFailureCode string
+
+const (
+	// EntryFailureCodeUnspecified means the entry has not failed, or the
+	// cause is unknown.
+	EntryFailureCodeUnspecified EntryFailureCode = "unspecified"
+
+	// EntryFailureCodeTimedOut means the operation exceeded the wallet
+	// deadline before reaching a terminal state.
+	EntryFailureCodeTimedOut EntryFailureCode = "timed_out"
+
+	// EntryFailureCodeExpired means the swap expired before it was funded.
+	EntryFailureCodeExpired EntryFailureCode = "expired"
+
+	// EntryFailureCodeRefunded means an outbound payment was refunded back
+	// to the wallet.
+	EntryFailureCodeRefunded EntryFailureCode = "refunded"
+
+	// EntryFailureCodeNeedsIntervention means the swap reached an anomalous
+	// state requiring manual recovery.
+	EntryFailureCodeNeedsIntervention EntryFailureCode = "needs_intervention" //nolint:ll
+
+	// EntryFailureCodeFailed is a generic terminal failure with no more
+	// specific classification.
+	EntryFailureCodeFailed EntryFailureCode = "failed"
+)

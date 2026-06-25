@@ -282,6 +282,9 @@ func entryFromProto(entry *walletdkrpc.WalletEntry) Entry {
 		FailureReason: entry.GetFailureReason(),
 		Progress:      entryProgressFromProto(entry.GetProgress()),
 		Request:       entryRequestFromProto(entry.GetRequest()),
+		FailureCode: entryFailureCodeFromProto(
+			entry.GetFailureCode(),
+		),
 	}
 }
 
@@ -373,6 +376,32 @@ func entryRequestFromProto(
 
 	default:
 		return nil
+	}
+}
+
+// entryFailureCodeFromProto maps the generated failure-code enum into
+// walletdk's string-like code, decoupled from proto enum renumbering.
+func entryFailureCodeFromProto(
+	code walletdkrpc.EntryFailureCode) EntryFailureCode {
+
+	switch code {
+	case walletdkrpc.EntryFailureCode_ENTRY_FAILURE_CODE_TIMED_OUT:
+		return EntryFailureCodeTimedOut
+
+	case walletdkrpc.EntryFailureCode_ENTRY_FAILURE_CODE_EXPIRED:
+		return EntryFailureCodeExpired
+
+	case walletdkrpc.EntryFailureCode_ENTRY_FAILURE_CODE_REFUNDED:
+		return EntryFailureCodeRefunded
+
+	case walletdkrpc.EntryFailureCode_ENTRY_FAILURE_CODE_NEEDS_INTERVENTION:
+		return EntryFailureCodeNeedsIntervention
+
+	case walletdkrpc.EntryFailureCode_ENTRY_FAILURE_CODE_FAILED:
+		return EntryFailureCodeFailed
+
+	default:
+		return EntryFailureCodeUnspecified
 	}
 }
 
