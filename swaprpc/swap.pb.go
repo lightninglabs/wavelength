@@ -161,11 +161,18 @@ func (x *RequestChannelIdRequest) GetAmountMsat() uint64 {
 type RequestChannelIdResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// route_hint contains the hop hint the client should embed in the invoice.
+	// It is kept for older clients that only understand a single virtual hop.
 	RouteHint *RouteHint `protobuf:"bytes,1,opt,name=route_hint,json=routeHint,proto3" json:"route_hint,omitempty"`
 	// payer_fee_msat is the quoted Lightning route fee paid by the sender for
 	// the swap server's virtual hop. Callers that want a "payer pays" total
 	// compute it as amount_msat plus payer_fee_msat.
-	PayerFeeMsat  uint64 `protobuf:"varint,2,opt,name=payer_fee_msat,json=payerFeeMsat,proto3" json:"payer_fee_msat,omitempty"`
+	PayerFeeMsat uint64 `protobuf:"varint,2,opt,name=payer_fee_msat,json=payerFeeMsat,proto3" json:"payer_fee_msat,omitempty"`
+	// route_hint_path contains the full private path the client should embed in
+	// the invoice. The last hop is the swap server's virtual channel. Earlier
+	// hops may route from a public gateway node into a private swap LND node.
+	// New clients should prefer this field when present and fall back to
+	// route_hint otherwise.
+	RouteHintPath []*RouteHint `protobuf:"bytes,3,rep,name=route_hint_path,json=routeHintPath,proto3" json:"route_hint_path,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -212,6 +219,13 @@ func (x *RequestChannelIdResponse) GetPayerFeeMsat() uint64 {
 		return x.PayerFeeMsat
 	}
 	return 0
+}
+
+func (x *RequestChannelIdResponse) GetRouteHintPath() []*RouteHint {
+	if x != nil {
+		return x.RouteHintPath
+	}
+	return nil
 }
 
 // AcknowledgeOutSwapHtlcRequest confirms that the receiver has validated and
@@ -1814,11 +1828,12 @@ const file_swap_proto_rawDesc = "" +
 	"\x13client_vhtlc_pubkey\x18\x02 \x01(\fR\x11clientVhtlcPubkey\x12!\n" +
 	"\fpayment_hash\x18\x03 \x01(\fR\vpaymentHash\x12\x1f\n" +
 	"\vamount_msat\x18\x04 \x01(\x04R\n" +
-	"amountMsat\"s\n" +
+	"amountMsat\"\xaf\x01\n" +
 	"\x18RequestChannelIdResponse\x121\n" +
 	"\n" +
 	"route_hint\x18\x01 \x01(\v2\x12.swaprpc.RouteHintR\trouteHint\x12$\n" +
-	"\x0epayer_fee_msat\x18\x02 \x01(\x04R\fpayerFeeMsat\"r\n" +
+	"\x0epayer_fee_msat\x18\x02 \x01(\x04R\fpayerFeeMsat\x12:\n" +
+	"\x0froute_hint_path\x18\x03 \x03(\v2\x12.swaprpc.RouteHintR\rrouteHintPath\"r\n" +
 	"\x1dAcknowledgeOutSwapHtlcRequest\x12!\n" +
 	"\fpayment_hash\x18\x01 \x01(\fR\vpaymentHash\x12.\n" +
 	"\x13client_vhtlc_pubkey\x18\x02 \x01(\fR\x11clientVhtlcPubkey\" \n" +
@@ -1987,42 +2002,43 @@ var file_swap_proto_goTypes = []any{
 }
 var file_swap_proto_depIdxs = []int32{
 	9,  // 0: swaprpc.RequestChannelIdResponse.route_hint:type_name -> swaprpc.RouteHint
-	10, // 1: swaprpc.OutSwapHtlcEvent.vhtlc_config:type_name -> swaprpc.VHTLCConfig
-	6,  // 2: swaprpc.OutSwapHtlcEvent.parts:type_name -> swaprpc.OutSwapHtlcPart
-	5,  // 3: swaprpc.SwapMailboxEvent.out_swap_htlc:type_name -> swaprpc.OutSwapHtlcEvent
-	8,  // 4: swaprpc.SwapMailboxEvent.in_ark_htlc:type_name -> swaprpc.InArkHtlcEvent
-	21, // 5: swaprpc.SwapMailboxEvent.out_swap_forfeit_signature_request:type_name -> swaprpc.OutSwapForfeitSignatureRequest
-	10, // 6: swaprpc.InArkHtlcEvent.vhtlc_config:type_name -> swaprpc.VHTLCConfig
-	10, // 7: swaprpc.CreateInSwapResponse.vhtlc_config:type_name -> swaprpc.VHTLCConfig
-	25, // 8: swaprpc.CreateInSwapResponse.expiry:type_name -> google.protobuf.Timestamp
-	0,  // 9: swaprpc.CreateInSwapResponse.settlement_type:type_name -> swaprpc.SettlementType
-	0,  // 10: swaprpc.QuoteInSwapResponse.settlement_type:type_name -> swaprpc.SettlementType
-	25, // 11: swaprpc.QuoteInSwapResponse.expiry:type_name -> google.protobuf.Timestamp
-	24, // 12: swaprpc.AuthorizeInSwapRefundResponse.signature:type_name -> swaprpc.TaprootScriptSignature
-	17, // 13: swaprpc.SignInSwapForfeitRequest.payload:type_name -> swaprpc.ForfeitSignaturePayload
-	18, // 14: swaprpc.SignInSwapForfeitResponse.signature:type_name -> swaprpc.ForfeitParticipantSignature
-	17, // 15: swaprpc.OutSwapForfeitSignatureRequest.payload:type_name -> swaprpc.ForfeitSignaturePayload
-	17, // 16: swaprpc.SubmitOutSwapForfeitSignatureRequest.payload:type_name -> swaprpc.ForfeitSignaturePayload
-	18, // 17: swaprpc.SubmitOutSwapForfeitSignatureRequest.signature:type_name -> swaprpc.ForfeitParticipantSignature
-	1,  // 18: swaprpc.SwapService.RequestChannelId:input_type -> swaprpc.RequestChannelIdRequest
-	11, // 19: swaprpc.SwapService.CreateInSwap:input_type -> swaprpc.CreateInSwapRequest
-	13, // 20: swaprpc.SwapService.QuoteInSwap:input_type -> swaprpc.QuoteInSwapRequest
-	15, // 21: swaprpc.SwapService.AuthorizeInSwapRefund:input_type -> swaprpc.AuthorizeInSwapRefundRequest
-	3,  // 22: swaprpc.SwapService.AcknowledgeOutSwapHtlc:input_type -> swaprpc.AcknowledgeOutSwapHtlcRequest
-	19, // 23: swaprpc.SwapService.SignInSwapForfeit:input_type -> swaprpc.SignInSwapForfeitRequest
-	22, // 24: swaprpc.SwapService.SubmitOutSwapForfeitSignature:input_type -> swaprpc.SubmitOutSwapForfeitSignatureRequest
-	2,  // 25: swaprpc.SwapService.RequestChannelId:output_type -> swaprpc.RequestChannelIdResponse
-	12, // 26: swaprpc.SwapService.CreateInSwap:output_type -> swaprpc.CreateInSwapResponse
-	14, // 27: swaprpc.SwapService.QuoteInSwap:output_type -> swaprpc.QuoteInSwapResponse
-	16, // 28: swaprpc.SwapService.AuthorizeInSwapRefund:output_type -> swaprpc.AuthorizeInSwapRefundResponse
-	4,  // 29: swaprpc.SwapService.AcknowledgeOutSwapHtlc:output_type -> swaprpc.AcknowledgeOutSwapHtlcResponse
-	20, // 30: swaprpc.SwapService.SignInSwapForfeit:output_type -> swaprpc.SignInSwapForfeitResponse
-	23, // 31: swaprpc.SwapService.SubmitOutSwapForfeitSignature:output_type -> swaprpc.SubmitOutSwapForfeitSignatureResponse
-	25, // [25:32] is the sub-list for method output_type
-	18, // [18:25] is the sub-list for method input_type
-	18, // [18:18] is the sub-list for extension type_name
-	18, // [18:18] is the sub-list for extension extendee
-	0,  // [0:18] is the sub-list for field type_name
+	9,  // 1: swaprpc.RequestChannelIdResponse.route_hint_path:type_name -> swaprpc.RouteHint
+	10, // 2: swaprpc.OutSwapHtlcEvent.vhtlc_config:type_name -> swaprpc.VHTLCConfig
+	6,  // 3: swaprpc.OutSwapHtlcEvent.parts:type_name -> swaprpc.OutSwapHtlcPart
+	5,  // 4: swaprpc.SwapMailboxEvent.out_swap_htlc:type_name -> swaprpc.OutSwapHtlcEvent
+	8,  // 5: swaprpc.SwapMailboxEvent.in_ark_htlc:type_name -> swaprpc.InArkHtlcEvent
+	21, // 6: swaprpc.SwapMailboxEvent.out_swap_forfeit_signature_request:type_name -> swaprpc.OutSwapForfeitSignatureRequest
+	10, // 7: swaprpc.InArkHtlcEvent.vhtlc_config:type_name -> swaprpc.VHTLCConfig
+	10, // 8: swaprpc.CreateInSwapResponse.vhtlc_config:type_name -> swaprpc.VHTLCConfig
+	25, // 9: swaprpc.CreateInSwapResponse.expiry:type_name -> google.protobuf.Timestamp
+	0,  // 10: swaprpc.CreateInSwapResponse.settlement_type:type_name -> swaprpc.SettlementType
+	0,  // 11: swaprpc.QuoteInSwapResponse.settlement_type:type_name -> swaprpc.SettlementType
+	25, // 12: swaprpc.QuoteInSwapResponse.expiry:type_name -> google.protobuf.Timestamp
+	24, // 13: swaprpc.AuthorizeInSwapRefundResponse.signature:type_name -> swaprpc.TaprootScriptSignature
+	17, // 14: swaprpc.SignInSwapForfeitRequest.payload:type_name -> swaprpc.ForfeitSignaturePayload
+	18, // 15: swaprpc.SignInSwapForfeitResponse.signature:type_name -> swaprpc.ForfeitParticipantSignature
+	17, // 16: swaprpc.OutSwapForfeitSignatureRequest.payload:type_name -> swaprpc.ForfeitSignaturePayload
+	17, // 17: swaprpc.SubmitOutSwapForfeitSignatureRequest.payload:type_name -> swaprpc.ForfeitSignaturePayload
+	18, // 18: swaprpc.SubmitOutSwapForfeitSignatureRequest.signature:type_name -> swaprpc.ForfeitParticipantSignature
+	1,  // 19: swaprpc.SwapService.RequestChannelId:input_type -> swaprpc.RequestChannelIdRequest
+	11, // 20: swaprpc.SwapService.CreateInSwap:input_type -> swaprpc.CreateInSwapRequest
+	13, // 21: swaprpc.SwapService.QuoteInSwap:input_type -> swaprpc.QuoteInSwapRequest
+	15, // 22: swaprpc.SwapService.AuthorizeInSwapRefund:input_type -> swaprpc.AuthorizeInSwapRefundRequest
+	3,  // 23: swaprpc.SwapService.AcknowledgeOutSwapHtlc:input_type -> swaprpc.AcknowledgeOutSwapHtlcRequest
+	19, // 24: swaprpc.SwapService.SignInSwapForfeit:input_type -> swaprpc.SignInSwapForfeitRequest
+	22, // 25: swaprpc.SwapService.SubmitOutSwapForfeitSignature:input_type -> swaprpc.SubmitOutSwapForfeitSignatureRequest
+	2,  // 26: swaprpc.SwapService.RequestChannelId:output_type -> swaprpc.RequestChannelIdResponse
+	12, // 27: swaprpc.SwapService.CreateInSwap:output_type -> swaprpc.CreateInSwapResponse
+	14, // 28: swaprpc.SwapService.QuoteInSwap:output_type -> swaprpc.QuoteInSwapResponse
+	16, // 29: swaprpc.SwapService.AuthorizeInSwapRefund:output_type -> swaprpc.AuthorizeInSwapRefundResponse
+	4,  // 30: swaprpc.SwapService.AcknowledgeOutSwapHtlc:output_type -> swaprpc.AcknowledgeOutSwapHtlcResponse
+	20, // 31: swaprpc.SwapService.SignInSwapForfeit:output_type -> swaprpc.SignInSwapForfeitResponse
+	23, // 32: swaprpc.SwapService.SubmitOutSwapForfeitSignature:output_type -> swaprpc.SubmitOutSwapForfeitSignatureResponse
+	26, // [26:33] is the sub-list for method output_type
+	19, // [19:26] is the sub-list for method input_type
+	19, // [19:19] is the sub-list for extension type_name
+	19, // [19:19] is the sub-list for extension extendee
+	0,  // [0:19] is the sub-list for field type_name
 }
 
 func init() { file_swap_proto_init() }
