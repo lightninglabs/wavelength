@@ -52,6 +52,7 @@ func TestDeadlineWatcherFlagsStuckEntries(t *testing.T) {
 		t, walletdkrpc.EntryStatus_ENTRY_STATUS_FAILED, overlay.status,
 	)
 	require.Equal(t, "timed_out", overlay.failureReason)
+	require.Equal(t, timedOutCode, overlay.failureCode)
 
 	// freshID is identical to staleID for the watcher purposes here
 	// (both deadlines are equally past). To assert the "fresh" guard
@@ -260,6 +261,7 @@ func TestDeadlineWatcherEmitsTimeoutToSubscribers(t *testing.T) {
 			got.GetStatus(),
 		)
 		require.Equal(t, "timed_out", got.GetFailureReason())
+		require.Equal(t, timedOutCode, got.GetFailureCode())
 		require.Equal(
 			t, tick.Unix(), got.GetUpdatedAtUnix(),
 			"updated_at must reflect the watcher tick time",
