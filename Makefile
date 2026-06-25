@@ -3,6 +3,7 @@
 .PHONY: ast-lint ast-grep-fix
 .PHONY: unit unit-cover unit-race unit-swapruntime check-go-version build install clean release
 .PHONY: build build-swapruntime build-swapclient build-walletdkrpc rpc install install-swapruntime install-walletdkrpc help clean-networks
+.PHONY: mobile mobile-android mobile-ios
 .PHONY: systest systest-verbose
 .PHONY: commitmsg-lint commitmsg-fmt commitmsg-reword
 
@@ -435,6 +436,18 @@ build-swapclient: build-swapruntime #? Alias for build-swapruntime
 build-walletdkrpc: #? Build debug binaries with walletdkrpc + swapruntime enabled
 	@$(call print, "Building debug binaries with walletdkrpc and swapruntime.")
 	$(MAKE) build tags="walletdkrpc swapruntime"
+
+mobile: #? Build gomobile bindings for sdk/walletdk (target=android|ios|all)
+	@$(call print, "Building gomobile walletdk bindings.")
+	./sdk/walletdk/mobile/gen_bindings.sh $(or $(target),android)
+
+mobile-android: #? Build the Android .aar for sdk/walletdk
+	@$(call print, "Building Android .aar for walletdk.")
+	./sdk/walletdk/mobile/gen_bindings.sh android
+
+mobile-ios: #? Build the iOS .xcframework for sdk/walletdk
+	@$(call print, "Building iOS .xcframework for walletdk.")
+	./sdk/walletdk/mobile/gen_bindings.sh ios
 
 install: #? Build and install binaries to GOPATH/bin
 	@$(call print, "Installing binaries.")
