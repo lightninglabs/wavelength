@@ -162,6 +162,7 @@ func Start(ctx context.Context, cfg Config, opts ...Option) (*Client, error) {
 
 			return listener.DialContext(dialCtx)
 		}),
+		grpc.WithChainUnaryInterceptor(errorReconstructInterceptor),
 	}
 
 	conn, err := grpc.NewClient("passthrough:///bufnet", dialOpts...)
@@ -364,6 +365,10 @@ func cloneDaemonConfig(cfg *darepod.Config) *darepod.Config {
 
 	clone.RPCServiceRegistrars = append(
 		[]darepod.RPCServiceRegistrar(nil), cfg.RPCServiceRegistrars...,
+	)
+	clone.UnaryServerInterceptors = append(
+		[]grpc.UnaryServerInterceptor(nil),
+		cfg.UnaryServerInterceptors...,
 	)
 	clone.WalletReadyHooks = append(
 		[]darepod.WalletReadyHook(nil), cfg.WalletReadyHooks...,

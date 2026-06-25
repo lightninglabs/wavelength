@@ -172,7 +172,17 @@ func TestServiceRecvWithoutRPCServerReturnsUnavailable(t *testing.T) {
 		},
 	)
 	require.Error(t, err)
-	require.Equal(t, codes.Unavailable, status.Code(err))
+	st, ok := status.FromError(err)
+	require.True(t, ok)
+	require.Equal(t, codes.Unavailable, st.Code())
+
+	// The readiness gate's pre-formed status carries the machine-readable
+	// reason so the SDK can reconstruct it like an interceptor-mapped
+	// sentinel.
+	require.Equal(
+		t, walletdkrpc.ReasonSwapBackendUnavailable,
+		errorInfoReason(t, st),
+	)
 	require.Equal(t, 0, swap.startReceiveCalls)
 }
 

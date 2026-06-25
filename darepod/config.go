@@ -193,6 +193,12 @@ type Config struct {
 	// user-provided daemon settings.
 	RPCServiceRegistrars []RPCServiceRegistrar
 
+	// UnaryServerInterceptors wrap every unary RPC handler on the daemon
+	// gRPC server. Like RPCServiceRegistrars they wire compiled-in runtime
+	// capabilities (such as mapping walletdkrpc sentinel errors to
+	// machine-readable status codes), not user-provided daemon settings.
+	UnaryServerInterceptors []grpc.UnaryServerInterceptor
+
 	// RPCGatewayRegistrars are programmatic hooks that may register
 	// optional subservers on the daemon HTTP/JSON gateway after
 	// DaemonService is registered.

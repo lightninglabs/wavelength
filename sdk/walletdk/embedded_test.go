@@ -66,6 +66,13 @@ func TestCloneDaemonConfigIsolation(t *testing.T) {
 			return nil
 		},
 	}
+	original.UnaryServerInterceptors = []grpc.UnaryServerInterceptor{
+		func(ctx context.Context, req any, _ *grpc.UnaryServerInfo,
+			handler grpc.UnaryHandler) (any, error) {
+
+			return handler(ctx, req)
+		},
+	}
 
 	clone := cloneDaemonConfig(original)
 

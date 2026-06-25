@@ -34,9 +34,7 @@ func (s *Service) create(ctx context.Context, req *walletdkrpc.CreateRequest) (
 	*walletdkrpc.CreateResponse, error) {
 
 	if s.deps == nil || s.deps.RPCServer == nil {
-		return nil, status.Error(
-			codes.Unavailable, ErrSwapBackendUnavailable.Error(),
-		)
+		return nil, statusSwapBackendUnavailable()
 	}
 
 	if len(req.GetWalletPassword()) == 0 {
@@ -95,9 +93,7 @@ func (s *Service) unlock(ctx context.Context, req *walletdkrpc.UnlockRequest) (
 	*walletdkrpc.UnlockResponse, error) {
 
 	if s.deps == nil || s.deps.RPCServer == nil {
-		return nil, status.Error(
-			codes.Unavailable, ErrSwapBackendUnavailable.Error(),
-		)
+		return nil, statusSwapBackendUnavailable()
 	}
 
 	if len(req.GetWalletPassword()) == 0 {
@@ -127,9 +123,7 @@ func (s *Service) exit(ctx context.Context, req *walletdkrpc.ExitRequest) (
 	*walletdkrpc.ExitResponse, error) {
 
 	if s.deps == nil || s.deps.RPCServer == nil {
-		return nil, status.Error(
-			codes.Unavailable, ErrSwapBackendUnavailable.Error(),
-		)
+		return nil, statusSwapBackendUnavailable()
 	}
 
 	if req.GetOutpoint() == "" {
@@ -276,9 +270,7 @@ func (s *Service) getExitPlan(ctx context.Context,
 	error) {
 
 	if s.deps == nil || s.deps.RPCServer == nil {
-		return nil, status.Error(
-			codes.Unavailable, ErrSwapBackendUnavailable.Error(),
-		)
+		return nil, statusSwapBackendUnavailable()
 	}
 
 	if len(req.GetOutpoints()) == 0 {
@@ -336,9 +328,7 @@ func (s *Service) sweepWallet(ctx context.Context,
 	error) {
 
 	if s.deps == nil || s.deps.RPCServer == nil {
-		return nil, status.Error(
-			codes.Unavailable, ErrSwapBackendUnavailable.Error(),
-		)
+		return nil, statusSwapBackendUnavailable()
 	}
 
 	resp, err := s.deps.RPCServer.SweepWallet(
@@ -383,9 +373,7 @@ func (s *Service) exitStatus(ctx context.Context,
 	error) {
 
 	if s.deps == nil || s.deps.RPCServer == nil {
-		return nil, status.Error(
-			codes.Unavailable, ErrSwapBackendUnavailable.Error(),
-		)
+		return nil, statusSwapBackendUnavailable()
 	}
 
 	if req.GetOutpoint() == "" {
