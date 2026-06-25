@@ -505,8 +505,44 @@ func (s *Failed) ProcessEvent(ctx context.Context, event Event,
 	return unexpectedEvent(s), nil
 }
 
+// prePONRInputOutpoints returns the session's reserved input outpoints
+// when the session has not yet crossed the point of no return (the
+// server co-signing the checkpoints). Past that point the inputs must
+// stay reserved: the server holds a co-signed spend of them, so
+// releasing locally would invite double-spend attempts. Pre-PONR the
+// server never locked anything, so a terminal failure can hand the
+// inputs straight back to the spendable set.
+func prePONRInputOutpoints(state State) []wire.OutPoint {
+	var inputs []TransferInput
+	switch s := state.(type) {
+	case *AwaitingArkSignatures:
+		inputs = s.TransferInputs
+
+	case *AwaitingSubmitAccepted:
+		inputs = s.TransferInputs
+
+	default:
+		return nil
+	}
+
+	outpoints := make([]wire.OutPoint, 0, len(inputs))
+	for _, input := range inputs {
+		if input.VTXO == nil {
+			continue
+		}
+
+		outpoints = append(outpoints, input.VTXO.Outpoint)
+	}
+
+	return outpoints
+}
+
 // handleOutboxError emits retry scheduling for retryable errors while keeping
-// the FSM in the current protocol state.
+// the FSM in the current protocol state. Non-retryable errors drive the
+// session to terminal Failed; when the failure lands before the point of
+// no return, the transition also releases the reserved input VTXOs so a
+// rejected submit (e.g. an output policy violation) does not strand
+// spendable funds until a restart sweep.
 func handleOutboxError(env *Environment, current State,
 	evt *OutboxErrorEvent) (*StateTransition, error) {
 
@@ -515,9 +551,23 @@ func handleOutboxError(env *Environment, current State,
 	}
 
 	if !evt.Retryable {
+		newEvents := fn.None[EmittedEvent]()
+		if outpoints := prePONRInputOutpoints(
+			current,
+		); len(outpoints) > 0 {
+
+			newEvents = fn.Some(EmittedEvent{
+				Outbox: []OutboxEvent{
+					&ReleaseInputsRequest{
+						Outpoints: outpoints,
+					},
+				},
+			})
+		}
+
 		return &StateTransition{
 			NextState: failedState(evt.ErrorReason, current),
-			NewEvents: fn.None[EmittedEvent](),
+			NewEvents: newEvents,
 		}, nil
 	}
 

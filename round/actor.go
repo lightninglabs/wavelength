@@ -3056,10 +3056,26 @@ func (a *RoundClientActor) handleTriggerBoard(ctx context.Context,
 		}
 	}
 
-	// Register the VTXO output requests into the round FSM.
+	// Register the VTXO output requests into the round FSM. A change
+	// leave output rides along when the wallet clipped the boarding
+	// balance to the operator's limits: it pays the remainder back to
+	// a fresh boarding script owned by the wallet.
+	var leaves []*types.LeaveRequest
+	if cmd.Change != nil {
+		if cmd.Change.Output == nil ||
+			cmd.Change.Output.Value <= 0 {
+			return fn.Err[actormsg.RoundActorResp](
+				fmt.Errorf("board change output is invalid"),
+			)
+		}
+
+		leaves = append(leaves, cmd.Change)
+	}
+
 	pkg := &IntentPackage{Intents: Intents{
 		Boarding: boardingIntents,
 		VTXOs:    requests,
+		Leaves:   leaves,
 	}}
 
 	err = a.askEventAndProcessOutbox(ctx, roundFSM, pkg)

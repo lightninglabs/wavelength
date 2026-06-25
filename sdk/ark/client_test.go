@@ -133,7 +133,7 @@ func newFakeDaemonService() *fakeDaemonService {
 				DustLimit:         546,
 				MinVtxoAmountSat:  1234,
 				MinBoardingAmount: 10_000,
-				MaxBoardingAmount: 20_000,
+				MaxVtxoAmount:     20_000,
 				FeeRate:           15,
 				MinOperatorFee:    20,
 				MinConfirmations:  2,

@@ -280,6 +280,48 @@ func (b *sessionBehavior) completeSpend(ctx context.Context,
 	return nil
 }
 
+// releaseSpend returns the session's reserved input VTXOs from SpendingState
+// to LiveState after a pre-point-of-no-return terminal failure. Like
+// completeSpend it filters to locally-known outpoints (a non-local input
+// carries no local reservation to release) and routes the rest through the
+// VTXO manager via SpendReleaser. The caller treats this as best-effort: the
+// FSM is already terminal Failed, so the startup sweep remains the backstop
+// for any reservation this path fails to clear.
+func (b *sessionBehavior) releaseSpend(ctx context.Context,
+	outpoints []wire.OutPoint) error {
+
+	if len(outpoints) == 0 {
+		return nil
+	}
+
+	known := outpoints
+	if b.cfg.VTXOStore != nil {
+		known = make([]wire.OutPoint, 0, len(outpoints))
+		for _, op := range outpoints {
+			_, err := b.cfg.VTXOStore.GetVTXO(ctx, op)
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			if err != nil {
+				return fmt.Errorf("load local vtxo %s: %w", op,
+					err)
+			}
+
+			known = append(known, op)
+		}
+	}
+
+	if len(known) == 0 {
+		return nil
+	}
+
+	if b.cfg.SpendReleaser == nil {
+		return fmt.Errorf("no spend releaser configured")
+	}
+
+	return b.cfg.SpendReleaser(ctx, known)
+}
+
 // persistOutgoingPackage writes the finalized outgoing package and its input
 // bindings. Non-local input bindings are skipped.
 func (b *sessionBehavior) persistOutgoingPackage(ctx context.Context,

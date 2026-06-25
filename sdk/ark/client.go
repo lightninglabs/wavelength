@@ -143,9 +143,10 @@ type ServerInfo struct {
 	// operator.
 	MinBoardingAmount uint64
 
-	// MaxBoardingAmount is the largest boarding amount accepted by the
-	// operator. A value of zero means no cap.
-	MaxBoardingAmount uint64
+	// MaxVTXOAmount is the largest amount accepted per VTXO by the
+	// operator, applied to boarding requests, round outputs and OOR
+	// recipient outputs alike. A value of zero means no cap.
+	MaxVTXOAmount uint64
 
 	// FeeRate is the operator's target package feerate in sat/vbyte.
 	FeeRate uint64
@@ -156,6 +157,10 @@ type ServerInfo struct {
 	// MinConfirmations is the minimum confirmations required on boarding
 	// inputs.
 	MinConfirmations uint32
+
+	// MaxUserBalance is the maximum total balance in satoshis a single
+	// user should hold in the system. A value of zero means no cap.
+	MaxUserBalance uint64
 }
 
 // Seed contains the mnemonic and enciphered seed bytes returned by GenSeed.
@@ -452,10 +457,11 @@ func (c *Client) GetInfo(ctx context.Context) (*Info, error) {
 			DustLimit:         resp.ServerInfo.DustLimit,
 			MinVTXOAmountSat:  resp.ServerInfo.MinVtxoAmountSat,
 			MinBoardingAmount: resp.ServerInfo.MinBoardingAmount,
-			MaxBoardingAmount: resp.ServerInfo.MaxBoardingAmount,
+			MaxVTXOAmount:     resp.ServerInfo.MaxVtxoAmount,
 			FeeRate:           resp.ServerInfo.FeeRate,
 			MinOperatorFee:    resp.ServerInfo.MinOperatorFee,
 			MinConfirmations:  resp.ServerInfo.MinConfirmations,
+			MaxUserBalance:    resp.ServerInfo.MaxUserBalance,
 		}
 	}
 

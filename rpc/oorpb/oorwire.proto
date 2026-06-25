@@ -90,6 +90,14 @@ enum OORRejectCode {
     // and may be retried after the client restructures the input set
     // (e.g. fewer inputs, same-commitment cluster, or in-round fallback).
     OOR_REJECT_LINEAGE_TOO_LARGE = 1;
+
+    // OOR_REJECT_OUTPUT_POLICY indicates one of the Ark recipient
+    // outputs violates the operator's output policy, e.g. an amount
+    // above the advertised per-VTXO maximum. The submit was not locked;
+    // retrying the same output shape will fail again, so the client
+    // must restructure the outputs (smaller amounts, more outputs)
+    // before resubmitting.
+    OOR_REJECT_OUTPUT_POLICY = 2;
 }
 
 // SubmitPackageRejection carries a typed rejection of an OOR submit.

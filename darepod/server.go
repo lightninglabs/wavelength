@@ -667,6 +667,96 @@ func (s *Server) fetchCurrentOperatorPubKey(ctx context.Context) (
 	return terms.PubKey, nil
 }
 
+// oorCompleteSpend routes OOR spend completion through the VTXO manager
+// so each consumed VTXO transitions to SpentState via its own FSM,
+// rather than writing VTXOStatusSpent directly to the store. The
+// synchronous Ask intentionally keeps the OOR transaction in scope: the
+// manager and VTXO actor complete before the durable OOR turn can
+// commit or roll back, avoiding a second SQLite writer inside the same
+// local completion step.
+func (s *Server) oorCompleteSpend(ctx context.Context,
+	outpoints []wire.OutPoint) error {
+
+	mgrKey := actormsg.VTXOManagerServiceKey()
+	result := mgrKey.Ref(s.actorSystem).Ask(
+		ctx, &actormsg.CompleteSpendRequest{
+			Outpoints: outpoints,
+		},
+	).Await(ctx)
+
+	_, err := result.Unpack()
+
+	return err
+}
+
+// oorReleaseSpend is the mirror of oorCompleteSpend for the failure
+// path: a session that fails terminally before the server co-signs
+// releases its input reservation through the manager so each VTXO actor
+// transitions from SpendingState back to LiveState.
+func (s *Server) oorReleaseSpend(ctx context.Context,
+	outpoints []wire.OutPoint) error {
+
+	mgrKey := actormsg.VTXOManagerServiceKey()
+	result := mgrKey.Ref(s.actorSystem).Ask(
+		ctx, &actormsg.ReleaseSpendRequest{
+			Outpoints: outpoints,
+		},
+	).Await(ctx)
+
+	_, err := result.Unpack()
+
+	return err
+}
+
+// fetchCachedOperatorTerms returns the cached operator terms snapshot,
+// falling back to a fresh GetInfo round-trip when the daemon-startup
+// cache has not been hydrated yet. The boarding limit clamp consumes
+// this: terms change rarely enough that the cache is an acceptable
+// source, and the operator re-validates every limit server-side
+// regardless.
+func (s *Server) fetchCachedOperatorTerms(ctx context.Context) (
+	*types.OperatorTerms, error) {
+
+	if terms := s.loadOperatorTerms(); terms != nil {
+		return terms, nil
+	}
+
+	terms, err := s.fetchOperatorTerms(ctx)
+	if err != nil {
+		return nil, err
+	}
+	s.storeOperatorTerms(terms)
+
+	return terms, nil
+}
+
+// fetchLiveVTXOBalance sums the wallet's non-terminal VTXO holdings for
+// the boarding headroom computation. The full non-terminal set (Live,
+// PendingForfeit, Forfeiting, Spending) is deliberately counted rather
+// than just the spendable subset: in-flight outbound value still
+// occupies the user's balance until it terminally leaves, so counting
+// it keeps back-to-back boards from overshooting the operator's cap.
+//
+// We use the "light" variant: balance summing only reads each
+// descriptor's amount, so we skip the ancestry side-table join whose
+// TLV tree fragments grow with OOR chain depth and sort through SQLite's
+// external sorter on every call. The underlying row set is identical to
+// ListLiveVTXOs.
+func (s *Server) fetchLiveVTXOBalance(ctx context.Context) (btcutil.Amount,
+	error) {
+
+	if s.vtxoStore == nil {
+		return 0, fmt.Errorf("vtxo store is not initialized")
+	}
+
+	descs, err := s.vtxoStore.ListLiveVTXOsLight(ctx)
+	if err != nil {
+		return 0, err
+	}
+
+	return vtxo.SumBalance(descs), nil
+}
+
 // isServerConnected returns the latest mailbox-ingress connectivity signal
 // reported by the daemon runtime.
 func (s *Server) isServerConnected() bool {
@@ -2574,12 +2664,23 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) { //noli
 			if errors.As(err, &rejected) {
 				const submitOutbox = "SendSubmitPackageRequest"
 
+				// Route the typed code through the client
+				// classifier so the session failure reason
+				// carries the typed cause (lineage cap,
+				// output policy, ...) rather than the raw
+				// proto enum text. The classified error is
+				// what GetOORSession / ListOORSessions
+				// surface to the user as failure_reason.
+				classified := oor.ClassifySubmitError(
+					rejected,
+				)
+
 				return &oor.DriveEventRequest{
 					SessionID: oor.SessionID(sessionID),
 					Event: &oor.OutboxErrorEvent{
 						OutboxType:  submitOutbox,
 						Retryable:   false,
-						ErrorReason: rejected.Error(),
+						ErrorReason: classified.Error(),
 					},
 				}, nil
 			}
@@ -3597,6 +3698,8 @@ func (s *Server) initWalletActor(ctx context.Context,
 		wallet.WithEagerRoundJoin(s.cfg.EagerRoundJoin),
 		wallet.WithFetchOperatorKey(s.fetchCurrentOperatorPubKey),
 		wallet.WithMetricsSink(s.metricsSink),
+		wallet.WithFetchOperatorTerms(s.fetchCachedOperatorTerms),
+		wallet.WithFetchLiveBalance(s.fetchLiveVTXOBalance),
 	)
 	walletKey := actor.NewServiceKey[
 		wallet.WalletMsg, wallet.WalletResp,
@@ -3969,31 +4072,6 @@ func (s *Server) initOORActor(ctx context.Context,
 	// no separate signing-effect actor. signingHandler remains the Next
 	// delegate of the local-persistence handler for retry scheduling.
 
-	// Wire spend completion through the VTXO manager so each consumed
-	// VTXO transitions to SpentState via its own FSM, rather than
-	// writing VTXOStatusSpent directly to the store. This synchronous
-	// Ask drives a write in the VTXO actor's own transaction, a SECOND
-	// writer that does not join the OOR turn tx. The OOR session actor
-	// therefore runs it inline in dispatch with no OOR writer held (see
-	// oor.completeSpend); awaiting it inside a held OOR writer tx would
-	// deadlock under the single SQLite/Postgres writer lock. The
-	// completion is non-atomic with the OOR snapshot but re-driven
-	// idempotently on boot.
-	mgrKey := actormsg.VTXOManagerServiceKey()
-	completeSpend := func(ctx context.Context,
-		outpoints []wire.OutPoint) error {
-
-		result := mgrKey.Ref(s.actorSystem).Ask(
-			ctx, &actormsg.CompleteSpendRequest{
-				Outpoints: outpoints,
-			},
-		).Await(ctx)
-
-		_, err := result.Unpack()
-
-		return err
-	}
-
 	outboxHandler := &oor.LocalPersistenceOutboxHandler{
 		Next:         signingHandler,
 		Store:        vtxoStore,
@@ -4010,7 +4088,6 @@ func (s *Server) initOORActor(ctx context.Context,
 				},
 			)
 		},
-		CompleteSpend: completeSpend,
 		ResolveIncomingClientKey: func(ctx context.Context,
 			recipient oor.ArkRecipientOutput) (
 			keychain.KeyDescriptor, error) {
@@ -4061,7 +4138,8 @@ func (s *Server) initOORActor(ctx context.Context,
 		DeliveryStore:    s.deliveryStore,
 		ServerConn:       s.runtime.TellRef(),
 		VTXOManager:      vtxoManagerRef,
-		SpendCompleter:   completeSpend,
+		SpendCompleter:   s.oorCompleteSpend,
+		SpendReleaser:    s.oorReleaseSpend,
 		ReservationStore: reservationStore,
 		PackageStore:     packageStore,
 		VTXOStore:        vtxoStore,
@@ -4244,11 +4322,12 @@ func (s *Server) fetchOperatorTerms(ctx context.Context) (*types.OperatorTerms,
 		DustLimit:           btcutil.Amount(resp.DustLimit),
 		MinVTXOAmount:       btcutil.Amount(minVTXOAmount),
 		MinBoardingAmount:   btcutil.Amount(resp.MinBoardingAmount),
-		MaxBoardingAmount:   btcutil.Amount(resp.MaxBoardingAmount),
+		MaxVTXOAmount:       btcutil.Amount(resp.MaxVtxoAmount),
 		FeeRate:             btcutil.Amount(resp.FeeRate),
 		MinOperatorFee:      btcutil.Amount(resp.MinOperatorFee),
 		MinConfirmations:    resp.MinConfirmations,
 		MaxOORLineageVBytes: resp.MaxOorLineageVbytes,
+		MaxUserBalance:      btcutil.Amount(resp.MaxUserBalance),
 	}
 
 	return terms, nil

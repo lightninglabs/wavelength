@@ -652,11 +652,12 @@ func (r *RPCServer) GetInfo(ctx context.Context, _ *daemonrpc.GetInfoRequest) (
 			VtxoExitDelay:     terms.VTXOExitDelay,
 			DustLimit:         uint64(terms.DustLimit),
 			MinBoardingAmount: uint64(terms.MinBoardingAmount),
-			MaxBoardingAmount: uint64(terms.MaxBoardingAmount),
+			MaxVtxoAmount:     uint64(terms.MaxVTXOAmount),
 			FeeRate:           uint64(terms.FeeRate),
 			MinOperatorFee:    uint64(terms.MinOperatorFee),
 			MinConfirmations:  terms.MinConfirmations,
 			MinVtxoAmountSat:  uint64(minVTXOAmount),
+			MaxUserBalance:    uint64(terms.MaxUserBalance),
 		}
 	}
 

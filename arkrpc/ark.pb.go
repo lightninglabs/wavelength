@@ -78,9 +78,10 @@ type GetInfoResponse struct {
 	// The minimum amount (satoshis) clients must contribute per boarding
 	// input.
 	MinBoardingAmount int64 `protobuf:"varint,11,opt,name=min_boarding_amount,json=minBoardingAmount,proto3" json:"min_boarding_amount,omitempty"`
-	// The maximum amount (satoshis) accepted per boarding request. Zero
-	// means no cap.
-	MaxBoardingAmount int64 `protobuf:"varint,12,opt,name=max_boarding_amount,json=maxBoardingAmount,proto3" json:"max_boarding_amount,omitempty"`
+	// The maximum amount (satoshis) accepted per VTXO. The cap applies
+	// to every VTXO the operator creates: boarding requests, round
+	// outputs, and OOR recipient outputs. Zero means no cap.
+	MaxVtxoAmount int64 `protobuf:"varint,12,opt,name=max_vtxo_amount,json=maxVtxoAmount,proto3" json:"max_vtxo_amount,omitempty"`
 	// The operator's target package feerate (sat/vByte).
 	FeeRate int64 `protobuf:"varint,13,opt,name=fee_rate,json=feeRate,proto3" json:"fee_rate,omitempty"`
 	// The minimum confirmations required on boarding inputs.
@@ -108,8 +109,13 @@ type GetInfoResponse struct {
 	// Clients can use this wallet-facing floor to decide whether an
 	// amount can materialize as a VTXO or must use a different rail.
 	MinVtxoAmountSat int64 `protobuf:"varint,19,opt,name=min_vtxo_amount_sat,json=minVtxoAmountSat,proto3" json:"min_vtxo_amount_sat,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// The maximum total balance (satoshis) a single user should hold in
+	// the system. The cap is advisory: clients enforce it locally on
+	// receive and boarding flows before funds enter the system. Zero
+	// means no cap.
+	MaxUserBalance int64 `protobuf:"varint,20,opt,name=max_user_balance,json=maxUserBalance,proto3" json:"max_user_balance,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *GetInfoResponse) Reset() {
@@ -198,9 +204,9 @@ func (x *GetInfoResponse) GetMinBoardingAmount() int64 {
 	return 0
 }
 
-func (x *GetInfoResponse) GetMaxBoardingAmount() int64 {
+func (x *GetInfoResponse) GetMaxVtxoAmount() int64 {
 	if x != nil {
-		return x.MaxBoardingAmount
+		return x.MaxVtxoAmount
 	}
 	return 0
 }
@@ -250,6 +256,13 @@ func (x *GetInfoResponse) GetMaxOorLineageVbytes() uint32 {
 func (x *GetInfoResponse) GetMinVtxoAmountSat() int64 {
 	if x != nil {
 		return x.MinVtxoAmountSat
+	}
+	return 0
+}
+
+func (x *GetInfoResponse) GetMaxUserBalance() int64 {
+	if x != nil {
+		return x.MaxUserBalance
 	}
 	return 0
 }
@@ -432,7 +445,7 @@ var File_ark_proto protoreflect.FileDescriptor
 const file_ark_proto_rawDesc = "" +
 	"\n" +
 	"\tark.proto\x12\x06arkrpc\"\x10\n" +
-	"\x0eGetInfoRequest\"\xf6\x04\n" +
+	"\x0eGetInfoRequest\"\x98\x05\n" +
 	"\x0fGetInfoResponse\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\x12\x16\n" +
 	"\x06pubkey\x18\x02 \x01(\fR\x06pubkey\x12\x18\n" +
@@ -443,8 +456,8 @@ const file_ark_proto_rawDesc = "" +
 	"\n" +
 	"dust_limit\x18\n" +
 	" \x01(\x03R\tdustLimit\x12.\n" +
-	"\x13min_boarding_amount\x18\v \x01(\x03R\x11minBoardingAmount\x12.\n" +
-	"\x13max_boarding_amount\x18\f \x01(\x03R\x11maxBoardingAmount\x12\x19\n" +
+	"\x13min_boarding_amount\x18\v \x01(\x03R\x11minBoardingAmount\x12&\n" +
+	"\x0fmax_vtxo_amount\x18\f \x01(\x03R\rmaxVtxoAmount\x12\x19\n" +
 	"\bfee_rate\x18\r \x01(\x03R\afeeRate\x12+\n" +
 	"\x11min_confirmations\x18\x0e \x01(\rR\x10minConfirmations\x12(\n" +
 	"\x10min_operator_fee\x18\x0f \x01(\x03R\x0eminOperatorFee\x12\x1f\n" +
@@ -452,7 +465,8 @@ const file_ark_proto_rawDesc = "" +
 	"annualRate\x12&\n" +
 	"\x0fbase_margin_sat\x18\x11 \x01(\x03R\rbaseMarginSat\x123\n" +
 	"\x16max_oor_lineage_vbytes\x18\x12 \x01(\rR\x13maxOorLineageVbytes\x12-\n" +
-	"\x13min_vtxo_amount_sat\x18\x13 \x01(\x03R\x10minVtxoAmountSat\"\x7f\n" +
+	"\x13min_vtxo_amount_sat\x18\x13 \x01(\x03R\x10minVtxoAmountSat\x12(\n" +
+	"\x10max_user_balance\x18\x14 \x01(\x03R\x0emaxUserBalance\"\x7f\n" +
 	"\x12EstimateFeeRequest\x12\x1d\n" +
 	"\n" +
 	"amount_sat\x18\x01 \x01(\x03R\tamountSat\x12\x1f\n" +

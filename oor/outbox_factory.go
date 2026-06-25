@@ -42,10 +42,6 @@ type OutboxHandlerConfig struct {
 	// durably materialized.
 	NotifyIncomingVTXOs IncomingVTXONotifier
 
-	// CompleteSpend routes OOR spend completion through the
-	// VTXO manager.
-	CompleteSpend SpendCompleter
-
 	// ResolveIncomingClientKey resolves the wallet key for each
 	// incoming recipient output.
 	ResolveIncomingClientKey IncomingClientKeyResolver
@@ -75,7 +71,6 @@ func NewOutboxHandler(cfg OutboxHandlerConfig) *LocalPersistenceOutboxHandler {
 		OperatorKey:              cfg.OperatorKey,
 		ExitDelay:                cfg.ExitDelay,
 		NotifyIncomingVTXOs:      cfg.NotifyIncomingVTXOs,
-		CompleteSpend:            cfg.CompleteSpend,
 		ResolveIncomingClientKey: cfg.ResolveIncomingClientKey,
 		ResolveIncomingMetadata:  cfg.ResolveIncomingMetadata,
 	}

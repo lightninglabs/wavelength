@@ -75,6 +75,7 @@ type OORRegistryConfig struct {
 	ServerConn           actor.TellOnlyRef[serverconn.ServerConnMsg]
 	VTXOManager          actor.TellOnlyRef[vtxo.ManagerMsg]
 	SpendCompleter       SpendCompleter
+	SpendReleaser        SpendReleaser
 	ReservationStore     ReservationStore
 	PackageStore         PackagePersistence
 	VTXOStore            vtxo.VTXOStore
@@ -196,6 +197,14 @@ func NewOORRegistryActor(cfg OORRegistryConfig) (*OORRegistryActor, error) {
 	if cfg.SpendCompleter != nil && cfg.VTXOStore == nil {
 		return nil, fmt.Errorf("vtxo store must be provided when a " +
 			"spend completer is set")
+	}
+
+	// SpendReleaser is coupled to VTXOStore for the same reason as
+	// SpendCompleter: releaseSpend filters to locally-known outpoints via
+	// VTXOStore before routing them to the manager.
+	if cfg.SpendReleaser != nil && cfg.VTXOStore == nil {
+		return nil, fmt.Errorf("vtxo store must be provided when a " +
+			"spend releaser is set")
 	}
 
 	// Normalize the receive limits once so the registry's own admission cap
@@ -1426,6 +1435,7 @@ func (r *oorRegistryBehavior) childConfig(sessionID SessionID,
 		ServerConn:           r.cfg.ServerConn,
 		VTXOManager:          r.cfg.VTXOManager,
 		SpendCompleter:       r.cfg.SpendCompleter,
+		SpendReleaser:        r.cfg.SpendReleaser,
 		ReservationStore:     r.cfg.ReservationStore,
 		PackageStore:         r.cfg.PackageStore,
 		VTXOStore:            r.cfg.VTXOStore,

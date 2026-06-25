@@ -949,7 +949,7 @@ func TestGetInfoIncludesServerInfo(t *testing.T) {
 		DustLimit:         btcutil.Amount(546),
 		MinVTXOAmount:     btcutil.Amount(1234),
 		MinBoardingAmount: btcutil.Amount(10_000),
-		MaxBoardingAmount: btcutil.Amount(500_000),
+		MaxVTXOAmount:     btcutil.Amount(500_000),
 		FeeRate:           btcutil.Amount(12),
 		MinOperatorFee:    btcutil.Amount(34),
 		MinConfirmations:  2,
@@ -974,7 +974,7 @@ func TestGetInfoIncludesServerInfo(t *testing.T) {
 		resp.ServerInfo.MinBoardingAmount,
 	)
 	require.Equal(t, uint64(500_000),
-		resp.ServerInfo.MaxBoardingAmount,
+		resp.ServerInfo.MaxVtxoAmount,
 	)
 	require.Equal(t, uint64(12), resp.ServerInfo.FeeRate)
 	require.Equal(t, uint64(34), resp.ServerInfo.MinOperatorFee)
@@ -1044,7 +1044,7 @@ func TestOperatorPubKeyFetchesFreshTerms(t *testing.T) {
 				DustLimit:           546,
 				MinVtxoAmountSat:    1234,
 				MinBoardingAmount:   10_000,
-				MaxBoardingAmount:   500_000,
+				MaxVtxoAmount:       500_000,
 				FeeRate:             12,
 				MinOperatorFee:      34,
 				MinConfirmations:    2,
@@ -1162,7 +1162,7 @@ func TestGetInfoConcurrentOperatorTermsAccess(t *testing.T) {
 				VTXOExitDelay:     200 + i,
 				DustLimit:         btcutil.Amount(546),
 				MinBoardingAmount: btcutil.Amount(10_000),
-				MaxBoardingAmount: btcutil.Amount(500_000),
+				MaxVTXOAmount:     btcutil.Amount(500_000),
 				FeeRate:           btcutil.Amount(12),
 				MinOperatorFee:    btcutil.Amount(34),
 				MinConfirmations:  2,
