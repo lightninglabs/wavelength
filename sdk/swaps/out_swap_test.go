@@ -65,6 +65,24 @@ func (c *testInvoiceCreator) CreateInvoiceWithKey(ctx context.Context,
 	return c.CreateInvoice(ctx, amount, memo, hint, expiry, preimage)
 }
 
+// CreateInvoiceWithKeyRouteHintPath returns the preconfigured invoice and
+// payment hash for path-aware receive tests.
+func (c *testInvoiceCreator) CreateInvoiceWithKeyRouteHintPath(
+	ctx context.Context, amount btcutil.Amount, memo string,
+	hints []*RouteHint, expiry time.Duration,
+	authKey keychain.SingleKeyMessageSigner, preimage *lntypes.Preimage) (
+	*invoices.Invoice, lntypes.Hash, error) {
+
+	var hint *RouteHint
+	if len(hints) > 0 {
+		hint = hints[len(hints)-1]
+	}
+
+	return c.CreateInvoiceWithKey(
+		ctx, amount, memo, hint, expiry, authKey, preimage,
+	)
+}
+
 // TestStartReceiveRejectsInvalidAmount verifies invalid amounts are rejected
 // before the SDK requests route metadata or creates an invoice.
 func TestStartReceiveRejectsInvalidAmount(t *testing.T) {
@@ -662,7 +680,10 @@ func (c *testSwapServerConn) RequestChannelID(_ context.Context,
 	c.lastAmountSat = amountSat
 
 	return &OutSwapQuote{
-		RouteHint:        c.hint,
+		RouteHint: c.hint,
+		RouteHintPath: []*RouteHint{
+			c.hint,
+		},
 		ReceiveAmountSat: amountSat,
 		PayerFeeMsat:     c.payerFeeMsat,
 	}, nil

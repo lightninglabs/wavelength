@@ -670,19 +670,22 @@ func (s *ReceiveSession) prepareInvoice(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("request channel ID: %w", err)
 	}
-	if quote == nil || quote.RouteHint == nil {
+	if quote == nil || len(quote.RouteHintPath) == 0 ||
+		quote.RouteHint == nil {
 		return fmt.Errorf("route quote must be provided")
 	}
 
 	s.client.log.InfoS(ctx, "Received route hint from swap server",
 		slog.Uint64("channel_id", quote.RouteHint.ChannelID),
+		slog.Int("path_hops", len(quote.RouteHintPath)),
 		slog.Uint64("payer_fee_msat", quote.PayerFeeMsat),
 	)
 
-	inv, hash, err := s.client.invoiceGen.CreateInvoiceWithKey(
-		ctx, s.amountSat, s.memo, quote.RouteHint, expiry, authKey,
-		&preimage,
-	)
+	inv, hash, err := s.client.invoiceGen.
+		CreateInvoiceWithKeyRouteHintPath(
+			ctx, s.amountSat, s.memo, quote.RouteHintPath, expiry,
+			authKey, &preimage,
+		)
 	if err != nil {
 		return fmt.Errorf("create invoice: %w", err)
 	}

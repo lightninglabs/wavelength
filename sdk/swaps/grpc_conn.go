@@ -67,13 +67,22 @@ func (g *GRPCSwapServerConn) RequestChannelID(ctx context.Context,
 		return nil, fmt.Errorf("RequestChannelId RPC: %w", err)
 	}
 
-	hint, err := routeHintFromProto(resp.GetRouteHint())
+	hintPath, err := routeHintPathFromProto(resp.GetRouteHintPath())
 	if err != nil {
 		return nil, err
 	}
+	if len(hintPath) == 0 {
+		hint, err := routeHintFromProto(resp.GetRouteHint())
+		if err != nil {
+			return nil, err
+		}
+
+		hintPath = []*RouteHint{hint}
+	}
 
 	return &OutSwapQuote{
-		RouteHint: hint,
+		RouteHint:     hintPath[len(hintPath)-1],
+		RouteHintPath: hintPath,
 		// The server binds the route to the requested amount but does
 		// not echo it, so keep the caller's amount in the quote.
 		ReceiveAmountSat: amountSat,
@@ -280,6 +289,27 @@ func routeHintFromProto(hint *swaprpc.RouteHint) (*RouteHint, error) {
 	}
 
 	return routeHint, nil
+}
+
+// routeHintPathFromProto converts one generated route-hint path into the SDK
+// shape while preserving hop order.
+func routeHintPathFromProto(hints []*swaprpc.RouteHint) ([]*RouteHint, error) {
+	if len(hints) == 0 {
+		return nil, nil
+	}
+
+	routeHintPath := make([]*RouteHint, 0, len(hints))
+	for i, hint := range hints {
+		routeHint, err := routeHintFromProto(hint)
+		if err != nil {
+			return nil, fmt.Errorf("route hint path hop %d: %w", i,
+				err)
+		}
+
+		routeHintPath = append(routeHintPath, routeHint)
+	}
+
+	return routeHintPath, nil
 }
 
 // vhtlcConfigFromProto converts one generated swaprpc vHTLC config into the

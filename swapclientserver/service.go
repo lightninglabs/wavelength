@@ -795,6 +795,19 @@ func (d *daemonAuthOnlyInvoiceCreator) CreateInvoiceWithKey(ctx context.Context,
 	)
 }
 
+// CreateInvoiceWithKeyRouteHintPath delegates to the underlying generator with
+// the full private route-hint path and daemon-derived auth key.
+func (d *daemonAuthOnlyInvoiceCreator) CreateInvoiceWithKeyRouteHintPath(
+	ctx context.Context, amountSat btcutil.Amount, memo string,
+	routeHintPath []*swaps.RouteHint, expiry time.Duration,
+	authKey keychain.SingleKeyMessageSigner, preimage *lntypes.Preimage) (
+	*invoices.Invoice, lntypes.Hash, error) {
+
+	return d.inner.CreateInvoiceWithKeyRouteHintPath(
+		ctx, amountSat, memo, routeHintPath, expiry, authKey, preimage,
+	)
+}
+
 // swapServerDialOptions maps daemon swap config into gRPC transport options
 // for swapdk-server.
 func swapServerDialOptions(cfg *darepod.SwapConfig, addr string,

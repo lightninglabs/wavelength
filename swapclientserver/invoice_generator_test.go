@@ -18,8 +18,9 @@ import (
 
 // stubInvoiceCreator records calls and returns canned responses.
 type stubInvoiceCreator struct {
-	withKeyCalls int
-	noKeyCalls   int
+	withKeyCalls     int
+	withKeyPathCalls int
+	noKeyCalls       int
 }
 
 // CreateInvoice records a no-key invocation. The daemonAuthOnlyInvoiceCreator
@@ -45,6 +46,18 @@ func (s *stubInvoiceCreator) CreateInvoiceWithKey(_ context.Context,
 	return &invoices.Invoice{}, lntypes.Hash{}, nil
 }
 
+// CreateInvoiceWithKeyRouteHintPath records a keyed full-path invocation so
+// the test can confirm that the wrapper forwards new route-hint-aware calls.
+func (s *stubInvoiceCreator) CreateInvoiceWithKeyRouteHintPath(
+	_ context.Context, _ btcutil.Amount, _ string, _ []*swaps.RouteHint,
+	_ time.Duration, _ keychain.SingleKeyMessageSigner,
+	_ *lntypes.Preimage) (*invoices.Invoice, lntypes.Hash, error) {
+
+	s.withKeyPathCalls++
+
+	return &invoices.Invoice{}, lntypes.Hash{}, nil
+}
+
 // TestDaemonAuthOnlyInvoiceCreatorRejectsNoKey asserts that the daemon swap
 // path can never silently fall back to ephemeral-key signing: a direct
 // CreateInvoice call returns an error and the underlying generator is never
@@ -66,6 +79,7 @@ func TestDaemonAuthOnlyInvoiceCreatorRejectsNoKey(t *testing.T) {
 		"inner CreateInvoice must not be reached",
 	)
 	require.Equal(t, 0, stub.withKeyCalls)
+	require.Equal(t, 0, stub.withKeyPathCalls)
 }
 
 // TestDaemonAuthOnlyInvoiceCreatorForwardsKeyedPath asserts that the wrapper
@@ -91,5 +105,31 @@ func TestDaemonAuthOnlyInvoiceCreatorForwardsKeyedPath(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Equal(t, 1, stub.withKeyCalls)
+	require.Equal(t, 0, stub.withKeyPathCalls)
+	require.Equal(t, 0, stub.noKeyCalls)
+}
+
+// TestDaemonAuthOnlyInvoiceCreatorForwardsKeyedRouteHintPath asserts that the
+// daemon wrapper preserves the full route-hint path used for hidden-primary
+// payments.
+func TestDaemonAuthOnlyInvoiceCreatorForwardsKeyedRouteHintPath(t *testing.T) {
+	t.Parallel()
+
+	stub := &stubInvoiceCreator{}
+	wrapper := &daemonAuthOnlyInvoiceCreator{inner: stub}
+
+	priv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	authKey := keychain.NewPrivKeyMessageSigner(
+		priv, keychain.KeyLocator{},
+	)
+
+	_, _, err = wrapper.CreateInvoiceWithKeyRouteHintPath(
+		t.Context(), btcutil.Amount(1000),
+		"memo", nil, time.Minute, authKey, nil,
+	)
+	require.NoError(t, err)
+	require.Equal(t, 0, stub.withKeyCalls)
+	require.Equal(t, 1, stub.withKeyPathCalls)
 	require.Equal(t, 0, stub.noKeyCalls)
 }

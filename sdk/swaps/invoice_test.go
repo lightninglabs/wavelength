@@ -8,6 +8,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/zpay32"
 	"github.com/stretchr/testify/require"
@@ -23,22 +24,51 @@ func TestValidateRouteHintRejectsTruncatedFields(t *testing.T) {
 	nodeID := privKey.PubKey().SerializeCompressed()
 
 	routeHint := &RouteHint{
-		NodeID:      nodeID,
-		FeeBaseMsat: uint64(^uint32(0)) + 1,
+		NodeID:          nodeID,
+		ChannelID:       42,
+		FeeBaseMsat:     uint64(^uint32(0)) + 1,
+		CltvExpiryDelta: 40,
 	}
 	err = validateRouteHint(routeHint)
 	require.ErrorContains(t, err, "fee base msat")
 
 	routeHint = &RouteHint{
-		NodeID:     nodeID,
-		FeePropPpm: uint64(^uint32(0)) + 1,
+		NodeID:          nodeID,
+		ChannelID:       42,
+		FeePropPpm:      uint64(^uint32(0)) + 1,
+		CltvExpiryDelta: 40,
 	}
 	err = validateRouteHint(routeHint)
 	require.ErrorContains(t, err, "fee proportional ppm")
 
 	routeHint = &RouteHint{
 		NodeID:          nodeID,
+		ChannelID:       42,
 		CltvExpiryDelta: uint32(^uint16(0)) + 1,
+	}
+	err = validateRouteHint(routeHint)
+	require.ErrorContains(t, err, "CLTV expiry delta")
+}
+
+// TestValidateRouteHintRejectsZeroFields verifies unusable zero-valued hop
+// fields are rejected before invoice creation.
+func TestValidateRouteHintRejectsZeroFields(t *testing.T) {
+	t.Parallel()
+
+	privKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	nodeID := privKey.PubKey().SerializeCompressed()
+
+	routeHint := &RouteHint{
+		NodeID:          nodeID,
+		CltvExpiryDelta: 40,
+	}
+	err = validateRouteHint(routeHint)
+	require.ErrorContains(t, err, "channel ID")
+
+	routeHint = &RouteHint{
+		NodeID:    nodeID,
+		ChannelID: 42,
 	}
 	err = validateRouteHint(routeHint)
 	require.ErrorContains(t, err, "CLTV expiry delta")
@@ -144,4 +174,71 @@ func TestInvoiceGeneratorPreservesPayerFeeRouteHint(t *testing.T) {
 	require.Equal(t, uint32(10_000), hop.FeeProportionalMillionths)
 	require.True(t, decoded.Features.IsSet(lnwire.MPPOptional))
 	require.False(t, decoded.Features.IsSet(lnwire.MPPRequired))
+}
+
+// TestInvoiceGeneratorEmbedsRouteHintPath verifies receive invoices encode a
+// private ingress hop before the swap server's virtual hop.
+func TestInvoiceGeneratorEmbedsRouteHintPath(t *testing.T) {
+	t.Parallel()
+
+	privKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	gatewayKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	creator := NewEphemeralInvoiceGenerator(
+		privKey, nil, &chaincfg.RegressionNetParams,
+	)
+
+	preimage, err := NewPreimage()
+	require.NoError(t, err)
+
+	routeHintPath := []*RouteHint{{
+		NodeID:          gatewayKey.PubKey().SerializeCompressed(),
+		ChannelID:       21,
+		FeeBaseMsat:     1,
+		FeePropPpm:      2,
+		CltvExpiryDelta: 40,
+	}, {
+		NodeID:          privKey.PubKey().SerializeCompressed(),
+		ChannelID:       42,
+		FeeBaseMsat:     0,
+		FeePropPpm:      10_000,
+		CltvExpiryDelta: 60,
+	}}
+
+	authKey := keychain.NewPrivKeyMessageSigner(
+		privKey, keychain.KeyLocator{},
+	)
+	invoice, _, err := creator.CreateInvoiceWithKeyRouteHintPath(
+		context.Background(), btcutil.Amount(50_000),
+		"swap", routeHintPath, time.Hour, authKey, &preimage,
+	)
+	require.NoError(t, err)
+
+	decoded, err := zpay32.Decode(
+		string(invoice.PaymentRequest), &chaincfg.RegressionNetParams,
+	)
+	require.NoError(t, err)
+	require.Len(t, decoded.RouteHints, 1)
+	require.Len(t, decoded.RouteHints[0], 2)
+
+	require.Equal(t, uint64(21), decoded.RouteHints[0][0].ChannelID)
+	require.Equal(t, uint32(1), decoded.RouteHints[0][0].FeeBaseMSat)
+	require.Equal(
+		t, uint32(2),
+		decoded.RouteHints[0][0].FeeProportionalMillionths,
+	)
+	require.Equal(
+		t, uint16(40), decoded.RouteHints[0][0].CLTVExpiryDelta,
+	)
+	require.Equal(t, uint64(42), decoded.RouteHints[0][1].ChannelID)
+	require.Equal(
+		t, uint32(10_000),
+		decoded.RouteHints[0][1].FeeProportionalMillionths,
+	)
+	require.Equal(
+		t, uint16(60), decoded.RouteHints[0][1].CLTVExpiryDelta,
+	)
 }
