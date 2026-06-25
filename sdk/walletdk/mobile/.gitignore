@@ -1,0 +1,2 @@
+# gomobile bind outputs are large (100MB+ .so); rebuild with `make mobile-*`.
+/build/
