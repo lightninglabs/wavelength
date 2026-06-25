@@ -15,7 +15,7 @@ require (
 	github.com/btcsuite/btcwallet v0.16.17
 	github.com/btcsuite/btcwallet/walletdb v1.5.1
 	github.com/btcsuite/btcwallet/wtxmgr v1.5.6
-	github.com/golang-migrate/migrate/v4 v4.19.0
+	github.com/golang-migrate/migrate/v4 v4.19.1
 	github.com/google/uuid v1.6.0
 	github.com/grpc-ecosystem/go-grpc-middleware/providers/prometheus v1.1.0
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0
