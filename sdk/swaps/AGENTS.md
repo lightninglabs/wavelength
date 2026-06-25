@@ -17,8 +17,9 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/s
 
 - `SwapClient` — top-level entry point. Constructed via `NewSwapClient`
   (no persistence) or `NewSwapClientWithStore` (SQLite-backed). Holds
-  an `OutSwapEventReceiver` overridable via
-  `SetOutSwapEventReceiver`.
+  an `OutSwapEventReceiver` overridable via `SetOutSwapEventReceiver`.
+  `QuotePayViaLightning` previews a pay swap fee and rail without creating
+  durable state.
 - `PaySession` — Ark-to-Lightning pay FSM:
   `Created → SwapCreated → FundingInitiated → VHTLCFunded →
   WaitingForClaim → Completed` (or `Expired` / `RefundInitiated →
@@ -32,9 +33,24 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/s
 - `MailboxOutSwapEventReceiver` — mailbox-backed receiver. Pulls
   out-swap HTLC events from a `mailbox/pb` edge keyed by a per-session
   mailbox ID derived from the client identity key and payment hash.
-  Implements both `OutSwapEventReceiver` and
-  `IncomingVHTLCEventReceiver`. Drives `AckUpTo` only after the
+  Implements `OutSwapEventReceiver`, `IncomingVHTLCEventReceiver`, AND
+  `OutSwapForfeitSignatureReceiver`. Drives `AckUpTo` only after the
   caller durably accepts the event.
+- `OutSwapForfeitSignatureReceiver` — interface for receivers that
+  deliver server-pushed vHTLC refresh signing requests
+  (`OutSwapForfeitSignatureNotification`). Implemented by
+  `MailboxOutSwapEventReceiver`.
+- `ForfeitSignaturePayload` / `ForfeitParticipantSignature` — exact
+  transcript for one vHTLC refresh forfeit signing round. Payload binds
+  the signer to a concrete round assignment (unsigned forfeit tx, connector
+  outpoint/amount, vHTLC outpoint/amount/script). `RequestID` is the
+  SHA-256 of the stable proto encoding.
+- `OutSwapForfeitSignatureNotification` — mailbox-delivered request for the
+  receiver's participant signature on one out-swap vHTLC refresh.
+- `InSwapQuote` — server preview for an Ark-to-Lightning pay swap:
+  payment hash, invoice amount, total vHTLC amount (invoice + fee),
+  fee, expiry, settlement type, and `ExceedsMaxFee` flag. Returned by
+  `QuotePayViaLightning` / `SwapServerConn.QuoteInSwap`.
 - `ReceiveAuthKey` — interface combining
   `keychain.SingleKeyMessageSigner` and `sphinx.SingleKeyECDH`. Used
   to sign receive invoices and decode the forwarded final-hop onion.
@@ -56,11 +72,14 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/s
 - `Store` — isolated SQLite persistence. Runs its own migration table
   (`swap_client_schema_migrations`) separate from the main daemon DB.
 - `SwapServerConn` / `GRPCSwapServerConn` — remote swap-server gRPC
-  (`RequestChannelID`, `CreateInSwap`).
+  (`RequestChannelID`, `CreateInSwap`, `QuoteInSwap`,
+  `AuthorizeInSwapRefund`, `SignInSwapForfeit`,
+  `SubmitOutSwapForfeitSignature`).
 - `DaemonConn` — wallet operations (OOR sends, VTXO lookups, key
-  queries, receive-auth signing/ECDH) provided by the Ark daemon.
-  Includes `ReceiveAuthKey`, `SignReceiveAuthMessage[Compact]`, and
-  `ReceiveAuthECDH` for payment-scoped auth.
+  queries, receive-auth signing/ECDH, forfeit signing) provided by the
+  Ark daemon. Includes `ReceiveAuthKey`, `SignReceiveAuthMessage[Compact]`,
+  and `ReceiveAuthECDH` for payment-scoped auth; and `SignVTXOForfeit` for
+  refresh participant signing.
 - `InvoiceCreator` — BOLT-11 invoice building; `CreateInvoiceWithKey`
   for invoices signed with a `ReceiveAuthKey`.
 - `PayState` / `ReceiveState` — typed FSM enums with `IsTerminal()` /
@@ -87,7 +106,7 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/s
 ## Sends / Receives
 
 Both FSMs tick via `loopfsm.StateMachine.SendEvent(ctx, OnAdvance,
-nil)`. Pay calls `DaemonConn.SendOORWithPolicy` to fund and
+nil)`. Pay calls `DaemonConn.SendOORWithPolicyDetails` to fund and
 `SendOORWithCustomInputs` to refund. Receive calls
 `SendOORWithCustomInputs` to claim via the preimage spend path.
 
@@ -96,6 +115,23 @@ same-Ark vHTLC event: if `outEvents` implements
 `IncomingVHTLCEventReceiver`, `WaitIncomingVHTLC` is called;
 otherwise the flow falls back to `WaitOutSwapHtlc` and converts the
 result into an `IncomingVHTLCNotification`.
+
+**Refresh signing**: when the receive FSM targets `VHTLCFunded`,
+`ClaimInitiated`, or `Completed`, `runUntil` concurrently launches
+`respondToOutSwapForfeitSignatureRequests` in a child goroutine backed
+by the same `outEvents` (cast to `OutSwapForfeitSignatureReceiver`).
+That goroutine loops on `WaitOutSwapForfeitSignature`, validates the
+payload (payment hash + vHTLC outpoint/amount/script), calls
+`DaemonConn.SignVTXOForfeit`, submits the signature to the swap server
+via `SwapServerConn.SubmitOutSwapForfeitSignature`, and acks the
+mailbox envelope. This keeps the receive session's vHTLC alive through
+cooperative rounds while it waits to claim.
+
+**MPP out-swap events**: `OutSwapHtlcEvent.Parts` carries per-shard
+onion blobs when the server funds a multi-part payment. Each shard's
+onion is decoded and validated independently; the total amount is
+cross-checked against the invoice. Legacy single-part events land in
+the legacy `OnionBlob` field with an empty `Parts` slice.
 
 ## Invariants
 
@@ -125,6 +161,21 @@ result into an `IncomingVHTLCNotification`.
   the SDK never holds the raw private key for receive-auth.
 - Error sentinels (`ErrSwapExpired`, `ErrSwapRefunded`,
   `ErrSwapSummaryNotFound`) are exported; callers use `errors.Is`.
+- Refresh-signing goroutine is only launched when the target state
+  requires it (`receiveTargetNeedsForfeitResponder`) AND both the
+  receiver cast to `OutSwapForfeitSignatureReceiver` and the client
+  pubkey are non-nil. The goroutine runs under a child context
+  canceled by `defer stopResponder()` in `runUntil`, so it exits
+  cleanly when the FSM reaches its target or a terminal state.
+- `ForfeitSignaturePayloadFromVTXORequest` / `SignVTXOForfeitRequestFromPayload`
+  are exported helpers that translate between the vtxo manager's
+  `ForfeitParticipantSignRequest` and the swap-server transcript; they
+  are used by `swapclientserver` to wire the daemon's VTXO forfeit
+  participant signer into the swap server's in-swap forfeit round.
+- `InSwapQuote` validation in `validateInSwapPreview` enforces that
+  `AmountSat == InvoiceAmountSat + FeeSat` and that the payment hash in
+  the quote matches the decoded invoice before the preview is surfaced to
+  callers.
 
 ## Deep Docs
 

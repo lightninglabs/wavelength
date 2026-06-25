@@ -13,7 +13,12 @@ or LND node.
 - `NeutrinoService` — Manages the neutrino `ChainService`, its bbolt DB, and lifecycle. Pre-started by the daemon for early P2P sync.
 - `ChainBackend` — Implements `chainsource.ChainBackend` using neutrino's native `ChainNotifier` for confirmation tracking, spend detection, fee estimation, and optional direct package relay via `chainbackends.PackageSubmitter`.
 - `BoardingBackendAdapter` — Implements `wallet.BoardingBackend` and `wallet.OutputLeaser` by embedding `walletcore.BoardingBackendBase` and adding neutrino-backed `ListUnspent`, `GetTransaction`, `GetBlock`, `LeaseOutput`, and `ReleaseOutput`. Output leasing forwards to btcwallet's native lock table, casting `wallet.LockID` → `wtxmgr.LockID`.
-- `Config` — Embeds `walletcore.Config` and adds neutrino-specific fields (peers, fee URL, persist filters) plus an optional `PackageSubmitter` for v3 parent+child relay.
+- `Config` — Embeds `walletcore.Config` and adds neutrino-specific fields (peers,
+  fee URL, persist filters) plus an optional `PackageSubmitter` for v3
+  parent+child relay. `BlockHeadersSource` and `FilterHeadersSource` are paired
+  file paths or HTTP(S) URLs that neutrino imports block and compact-filter
+  headers from before falling back to P2P sync; both must be set together or
+  neither.
 
 ## Relationships
 
@@ -23,6 +28,12 @@ or LND node.
 ## Invariants
 
 - `NewWithNeutrino` does not own the neutrino service lifecycle; the caller is responsible for stopping it. `New` owns the service and stops it on error or via `Wallet.Stop()`.
+- `ListUnspent` returns an error (rather than an empty UTXO set) while btcwallet
+  is still scanning imported watch-only scripts. This preserves the wallet
+  actor's "tip not yet processed" state so its tick retry sees recovered UTXOs
+  once sync finishes.
+- `BlockHeadersSource` / `FilterHeadersSource` must both be set or both absent;
+  partial configuration is rejected early at daemon startup and wallet construction.
 - Chain notifier cancel functions are wrapped in `sync.Once` to prevent double-cancel panics from lnd's notificationDispatcher.
 - `SubmitPackage` requires a configured direct package submitter. Individual
   neutrino P2P broadcast is not equivalent to v3 package relay when the parent

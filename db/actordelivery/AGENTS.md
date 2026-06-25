@@ -49,6 +49,26 @@ other services can reuse durable actor storage without pulling unrelated tables.
 - `MigrationOption` — Functional options for migration configuration
   (`WithDatabaseName`, `WithMigrationsTable`).
 
+## Benchmark Tests
+
+The package ships three benchmark files that characterize write-path costs and
+throughput under different actor configurations:
+
+- `store_bench_test.go` — three "drip-box" benchmarks covering the core write
+  paths: `BenchmarkDeliveryCheckpointWrite` (FSM checkpoint write cost as the
+  blob grows, isolating the pre-refactor global-actor worst case),
+  `BenchmarkDeliveryMailboxRoundTrip` (single-mailbox enqueue/lease/ack round
+  trip, the per-message floor for a sharded actor), and
+  `BenchmarkDeliveryConcurrentActors` (N independent mailboxes processing in
+  parallel, showing that per-session sharding removes cross-session queueing).
+- `durable_actor_pool_bench_test.go` — four `BenchmarkEgress*` variants that
+  compare classic vs. Read/Commit actor behavior under single and multi-worker
+  configurations. `BenchmarkEgressClassicW1/W4` show the classic path holds
+  the writer across the simulated send, serializing throughput regardless of
+  worker count. `BenchmarkEgressReadCommitW1/W4` show the Read/Commit pool
+  frees the writer before the send, so multiple workers run concurrently and
+  throughput scales with worker count.
+
 ## Sub-Packages
 
 - `db/actordelivery/migrations` — Migration runner and embedded SQL migration

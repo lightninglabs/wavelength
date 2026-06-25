@@ -32,7 +32,13 @@ transport, without duplicating Ark runtime behavior.
   already-connected `daemonrpc.DaemonServiceClient` and a caller-supplied
   `closeFn`.
 - `Info` / `ServerInfo` / `Seed` / `WalletInitResult` — SDK-owned typed
-  models for daemon status and wallet bootstrap flows.
+  models for daemon status and wallet bootstrap flows. `ServerInfo`
+  carries operator terms: `OperatorPubKey`, `BoardingExitDelay`,
+  `VTXOExitDelay`, `DustLimit`, `MinVTXOAmountSat`, `MinBoardingAmount`,
+  `MaxVTXOAmount` (largest amount accepted per VTXO for boarding
+  requests, round outputs, and OOR recipient outputs alike; zero means
+  no cap), `FeeRate`, `MinOperatorFee`, `MinConfirmations`, and
+  `MaxUserBalance` (maximum total balance per user; zero means no cap).
 - `VTXOInfo` — Typed VTXO view (Outpoint, AmountSat, Status, BatchExpiry,
   RoundID, CreatedHeight, etc.) returned by `ListLiveVTXOs` /
   `ListSpentVTXOs`.

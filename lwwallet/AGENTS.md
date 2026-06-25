@@ -28,6 +28,14 @@ without an external LND node. Implements `wallet.BoardingBackend`,
   converts untyped `interface{}` updates to `T` on a per-subscriber goroutine.
 - `Subscription[T]` — Typed subscription handle with `Updates() <-chan T`,
   `Quit() <-chan struct{}`, and idempotent `Cancel()`.
+- `Config` — wallet construction parameters. Key fields: `Seed` (32-byte
+  master seed for HD key derivation), `Birthday` (seed creation time;
+  passed to btcwallet to bound recovery rescans instead of starting from
+  genesis — set whenever the seed was created at a known point in time,
+  e.g. during wallet creation or import), `EsploraURL`, `ChainParams`,
+  `PollInterval`, `RecoveryWindow` (address look-ahead for restart key
+  rediscovery), `DBDir`, and `Log`. `WithLogger` is a convenience
+  copy-constructor.
 - `ChainBackend` — Implements `chainsource.ChainBackend` by subscribing to a
   shared `TipPoller`. On each `TipBlock` event it dispatches block epoch
   notifications and re-checks pending confirmation/spend registrations.

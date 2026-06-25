@@ -98,6 +98,35 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
   policy by `(ExitPolicyKind, ExitPolicyRef)`. Implemented by
   `vhtlcrecovery/unrollpolicy.ExitSpendPolicyResolver`.
 
+### Exit Feasibility & Funding Plan
+
+- `ExitFeasibilityInput` / `ExitFeasibility` / `ExitFeasibilityConfig`
+  (`feasibility.go`) — pure economic pre-flight model. `AssessExitFeasibility`
+  runs four ordered checks: sweep-below-dust (impossible), uneconomical (cost
+  ≥ configured fraction of VTXO value), wallet-underfunded (balance < CPFP
+  total), wallet-too-few-inputs (fewer confirmed UTXOs than ancestry paths).
+  Returns a structured `ExitFeasibility` verdict with the full cost breakdown
+  (`CPFPFeeTotalSat`, `SweepFeeSat`, `TotalRecoveryCostSat`, `NetRecoveredSat`)
+  and wallet snapshot. `ExitInfeasibilityReason` enumerates the reason;
+  `Impossible()` is true only for `ExitSweepBelowDust` (unrelayable sweep that
+  wallet funding cannot fix). Default config: 100% max cost fraction
+  (blocks only net-loss exits), 155 vB CPFP child estimate, 330 sat P2TR
+  dust limit, `estimatedSweepVBytes` (200 vB) sweep size.
+- `RecoveryTxCount(desc)` — derives `(numTxs, numPaths)` from a VTXO
+  descriptor: iterates `desc.Ancestry` accumulating per-path tree-path tx
+  counts (floor 1 per path), then adds `desc.ChainDepth` (OOR checkpoint
+  hops). Used by both `AssessExitFeasibility` and `PlanExitFunding`.
+- `ExitFundingSnapshot` / `ExitFundingPlan` / `PlanExitFunding`
+  (`exit_plan.go`) — wallet-side funding projection. `PlanExitFunding` wraps
+  `AssessExitFeasibility` and adds `RecommendedUTXOAmountSat` (per-input CPFP
+  fee rounded up to the dust ceiling), `RecommendedTotalFundingSat`, and
+  `FundingShortfallSat`. `RequiredFeeInputConfirmations` = 1 (minimum
+  confirmations a wallet UTXO must have to fund CPFP). `DefaultFeeInputMinAmountSat`
+  = 10,000 sat (soft floor for counting a UTXO as independently usable).
+- `ExitFundingAddressBook` (`exit_plan.go`) — per-key address cache that
+  returns an existing funding address or derives a new one, preventing the BIP32
+  wallet index from advancing on repeated polling of the same infeasible VTXO.
+
 ### Support
 
 - `LocalProofAssembler` — assembles a `recovery.Proof` from the VTXO
@@ -146,9 +175,11 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
   estimate), `vtxo` (`Descriptor`, `VTXOStore`), `db`
   (`UnilateralExitStore`, `RegistryRecord` shape), `lib/arkscript`.
 - **Depended on by**: `darepod` (wires the registry via the lazy
-  chain-resolver seam, PR #264), `vhtlcrecovery/coordinator` (admission via
-  `EnsureUnrollRequest`), `vhtlcrecovery/unrollpolicy` (implements
-  `ExitSpendPolicyResolver` and `ExitSpendPolicy`).
+  chain-resolver seam, PR #264; uses `PlanExitFunding` / `AssessExitFeasibility`
+  / `ExitFundingAddressBook` for the `GetExitPlan` RPC),
+  `vhtlcrecovery/coordinator` (admission via `EnsureUnrollRequest`),
+  `vhtlcrecovery/unrollpolicy` (implements `ExitSpendPolicyResolver` and
+  `ExitSpendPolicy`).
 - **Sends**:
   - → `txconfirm` (Ask): `EnsureConfirmedReq` per proof node and for
     the final sweep; txid dedup makes retries idempotent.
@@ -160,7 +191,11 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
   - → `ledger` actor (Tell, via `RegistryConfig.LedgerSink`):
     `ExitCostMsg` after the final sweep confirms. The amount is the proof
     target output value and the fee is derived from the persisted sweep tx
-    outputs.
+    outputs (`targetOutput.Value - Σ(non-anchor outputs)`). Emission happens
+    inside the child actor (`emitExitCostIfCompleted`) before the terminal
+    handoff to the registry. If the ledger Tell fails, the terminal handoff
+    is deferred until the next actor run so the sweep-confirmed exit cost is
+    never lost (deferred-handoff guard: `b.exitCostNotified` flag).
   - → `vtxo` (indirect via chain-resolver seam, #264).
   - → `vtxo` manager (Tell, via `RegistryConfig.VTXOExitObserver`):
     `ExitOutcomeNotification` on each child's terminal outcome — the
@@ -190,6 +225,19 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
   path, tolerating overlapping ancestry (duplicate txids silently
   deduped; conflicting duplicates — same txid, different bytes — are
   rejected).
+
+## Fee-Input Fanout
+
+The `txconfirm` broadcaster owns the fee-input fanout lifecycle (see
+`txconfirm/AGENTS.md`). When a CPFP child cannot find a confirmed wallet fee
+input, `txconfirm` builds a fanout transaction (splits a larger UTXO into
+multiple confirmed inputs) before retrying the CPFP child. The unroll actor
+participates via the `PhaseSweepBroadcast` and `PhaseSweepConfirmation`
+retry/reissue loop: `ReissueInFlightTransactions` asks `txconfirm` again on
+each `HeightObservedMsg`, allowing the broadcaster's own state machine to
+decide when the fanout has confirmed and CPFP can proceed. The unroll actor
+has no direct fanout coupling — it only drives re-submission; `txconfirm`
+handles the fanout-pause-and-resume internally.
 
 ## Invariants
 
@@ -260,6 +308,16 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
   operator-sourced OOR artifacts flow into proof assembly, so a
   zero- or short-output node maps to a retryable error rather than
   a goroutine panic.
+- **Terminal handoff deferred until exit cost delivered.** The child actor
+  (`emitExitCostIfCompleted`) sends `ExitCostMsg` to the ledger actor before
+  telling the registry `UnrollTerminatedMsg`. If the ledger Tell fails, the
+  handoff is not issued and the actor retries on the next message delivery.
+  `b.exitCostNotified` guards the one-shot emission so the ledger entry is
+  never doubled on retry.
+- **`ExitFundingAddressBook` is in-memory only.** Cleared on process restart;
+  a new address may be derived for the same infeasible VTXO after restart.
+  This is intentional: the cache is advisory (avoid BIP32 index churn while
+  polling `GetExitPlan`), not a durability guarantee.
 
 ## Deep Docs
 

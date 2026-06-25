@@ -22,7 +22,11 @@ validated invariants.
 - `VTXOPolicy` — Compiled VTXO taproot policy with collab and exit spend paths.
   Provides `CollabSpendInfo()` and `ExitSpendInfo()`.
 - `VHTLCPolicy` — 6-leaf vHTLC policy with claim/refund/unilateral paths for
-  hash-time-locked conditional transfers.
+  hash-time-locked conditional transfers. Named `SpendPath` accessors:
+  `ClaimPath(preimage)`, `UnilateralClaimPath(preimage)`,
+  `RefundPath()`, `RefundWithoutReceiverPath()`,
+  `UnilateralRefundWithoutReceiverPath()`. Named `SpendInfo` accessors for all
+  6 leaves (e.g. `ClaimSpendInfo()`, `UnilateralClaimSpendInfo()`, etc.).
 - `CheckpointPolicy` — Parameters for OOR checkpoint taproot tree construction. `CheckpointTapScript` / `CheckpointPkScript` derive the checkpoint output.
 - `SpendInfo` — Witness script + control block needed to spend a specific leaf. Methods: `BuildSignDescriptor`, `CollabWitness`, `TimeoutWitness`.
 - `SpendPath` — Serializable spend path (leaf index + encoded leaf data) with `Witness` and `AttachTapLeafScript` helpers for PSBT integration.
@@ -48,6 +52,14 @@ validated invariants.
   shape (custom vHTLC, etc.). Enforces: collab leaf with operator key, exit
   leaf without operator key, no operator-unilateral leaf, CSV gating on exit
   paths. `opts.MinExitDelay = 0` skips the CSV minimum check.
+- `SigningKeys(node Node) ([]*btcec.PublicKey, error)` — Returns the tapscript
+  CHECKSIG public keys committed to by a node in witness-stack order. Traverses
+  CSV and Condition wrappers to reach the inner `Multisig`. Lets callers
+  assemble or validate witnesses without parsing compiled script bytes.
+- `SigningKeysForSpendPath(template *PolicyTemplate, spendPath *SpendPath) ([]*btcec.PublicKey, error)` —
+  Locates the semantic template leaf selected by a `SpendPath` and returns its
+  signing keys in witness-stack order. Used by multi-signer refund paths to
+  build witnesses consistently.
 - Decode budget constants: `MaxPolicyTemplateBytes` (64 KiB),
   `MaxLeafTemplateBytes` (16 KiB), `MaxPolicyLeaves` (32),
   `MaxPolicyDepth` (16), `MaxPolicyNodes` (256), `MaxMultisigKeys` (64) —

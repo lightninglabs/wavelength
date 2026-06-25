@@ -38,6 +38,49 @@ refresh, leave, OOR spend, and directed send flows.
 - `SendOnChainStatus` — Terminal outcome enum: `SendOnChainStatusSubmitted` (intent queued for next round), `SendOnChainStatusDryRun` (dry-run preview, no commitment).
 - `GetConfirmedBoardingIntentsRequest` / `GetConfirmedBoardingIntentsResponse` — Ask-request to retrieve currently confirmed boarding intents (used by the RPC/CLI layer to report boarding balance with policy metadata).
 - `VTXODescriptor.EffectivePolicyTemplate` — Decodes the serialized `PolicyTemplate` field on the wallet-level VTXO descriptor using `lib/arkscript`.
+- `WalletBackingSweeper` — narrow interface the wallet actor needs to
+  preview, sign, and broadcast a general backing-wallet sweep:
+  `ListUnspent`, `FinalizePsbt`, `LeaseOutput`, `ReleaseOutput`. The
+  concrete per-backend adapters satisfy it structurally.
+- `WithWalletSweep(backing WalletBackingSweeper, maxFeeRateSatPerVByte int64) ArkOption`
+  — wires the general sweep backend into the actor. When omitted,
+  `SweepWalletFundsRequest` returns a clear error.
+- `SweepWalletFundsRequest` — Ask-request to preview or broadcast a
+  general backing-wallet sweep. Fields: `DestinationAddress`,
+  `Broadcast` (false = preview only), `FeeRateSatPerVByte` (0 =
+  estimate), `ConfTarget` (0 = default 6 blocks).
+- `SweepWalletFundsResponse` — Carries `Inputs []WalletSweepInputInfo`,
+  `TotalInputSat`, `EstimatedFeeSat`, `NetAmountSat`,
+  `FeeRateSatPerVByte`, `CanBroadcast`, `Txid`/`HasTxid`,
+  `FailureReason`.
+- `WalletSweepInputInfo` — `Outpoint`, `AmountSat` for one selected
+  backing-wallet UTXO.
+- `SweepBoardingUTXOsRequest`/`SweepBoardingUTXOsResponse` — Ask the
+  wallet actor to build, sign, and submit a boarding-UTXO sweep via
+  txconfirm (shared submit path with `SweepWalletFundsRequest`).
+- `ProcessTipTickNotification` — self-Tell from the wallet's internal
+  tick loop. Decouples per-block notification rate from actor
+  processing rate: a burst of `BlockEpochNotification`s resolves to
+  one tick's worth of per-tip work (ListUnspent + sweep resume kick)
+  rather than one heavy handler per block.
+- `ErrBoardAmountBelowFloor` — confirmed boarding balance (or what
+  survives the change-floor adjustment) is below the minimum boardable
+  amount. Distinct from `ErrBoardingCapReached`.
+- `ErrTooManyBoardOutputs` — satisfying the per-VTXO maximum would
+  require more than `maxBoardOutputs` (1000) outputs. Guards against
+  pathologically small per-VTXO maxima.
+- `ErrMaxVTXOBelowFloor` — operator's per-VTXO maximum is itself below
+  the dust floor; no spendable board output is possible.
+- `CustomRefreshInput` — caller-supplied custom-policy VTXO input that
+  should be forfeited into a new round output. The wallet does not
+  select it from live balance but materializes a `PendingForfeit`
+  signer actor for the later connector-bound round request.
+- `CustomRefreshOutput` — replacement VTXO descriptor for one
+  `CustomRefreshInput`.
+- `RefreshCustomVTXOsRequest`/`RefreshCustomVTXOsResponse` — Ask-request
+  to queue custom-policy VTXOs for refresh in the next round.
+- `DropCustomRefreshVTXOsRequest`/`DropCustomRefreshVTXOsResponse` —
+  Ask-request to remove temporary custom-refresh signer actors.
 
 ## Relationships
 
@@ -56,7 +99,8 @@ refresh, leave, OOR spend, and directed send flows.
 - **Receives**:
   - ← `chainsource`: `BlockEpochNotification` (triggers UTXO polling)
   - ← `round`: `RegisterConfirmationNotifierRequest`, `UnregisterConfirmationNotifierRequest`
-  - ← API: `CreateBoardingAddressRequest`, `GetActiveBoardingAddressesRequest`, `GetBoardingBalanceRequest`, `GetConfirmedBoardingIntentsRequest`, `RefreshVTXOsRequest`, `SelectAndLockVTXOsRequest`, `LeaveVTXOsRequest`, `BoardRequest`, `CompleteSpendVTXOsRequest`, `UnlockVTXOsRequest`, `SendVTXOsRequest`, `SendOnChainRequest`
+  - ← API: `CreateBoardingAddressRequest`, `GetActiveBoardingAddressesRequest`, `GetBoardingBalanceRequest`, `GetConfirmedBoardingIntentsRequest`, `RefreshVTXOsRequest`, `SelectAndLockVTXOsRequest`, `LeaveVTXOsRequest`, `BoardRequest`, `CompleteSpendVTXOsRequest`, `UnlockVTXOsRequest`, `SendVTXOsRequest`, `SendOnChainRequest`, `SweepWalletFundsRequest`, `SweepBoardingUTXOsRequest`, `ResumeBoardingSweepsRequest`, `RefreshCustomVTXOsRequest`, `DropCustomRefreshVTXOsRequest`
+  - ← self (tick loop): `ProcessTipTickNotification`
 
 ## Invariants
 
@@ -72,6 +116,19 @@ refresh, leave, OOR spend, and directed send flows.
 - `handleSendVTXOs` rejects pre-flight any directed send with multiple recipients and exactly-zero change residual under the #270 seal-time fee handshake. The server is the amount authority and absorbs the operator fee out of the designated `IsChange=true` slot; if there is no residual to absorb the fee against, the server has no slack to deduct fees without silently shifting them onto a recipient leg. The wallet refuses the request rather than letting the server pick the loser.
 - `VTXOReader` / `VTXODescriptor` / `SelectedVTXO` break the vtxo → round → wallet import cycle by providing wallet-level types that don't reference `vtxo.Descriptor` directly.
 - Per-subsystem logging via `build.LoggerFromContext` (no global mutable loggers).
+- Boarding and wallet sweeps share a single txconfirm submit path.
+  Both build a v3 (TRUC) transaction and route it through
+  `txconfirm.EnsureConfirmedReq`. The boarding-sweep actor and the
+  general sweep handler both use the same code path; neither can bypass
+  the TRUC version gate.
+- Background task errors (boarding sweep, wallet sweep, boarding UTXO
+  poll failures) increment the `darepod_background_task_errors_total`
+  counter labelled by task kind. The counter is the primary signal for
+  operators monitoring daemon health without log parsing.
+- `ErrBoardingCapReached` is returned by the boarding path when the
+  operator's per-user maximum leaves no usable headroom.
+  `ErrBoardAmountBelowFloor` is distinct: it fires when the confirmed
+  balance is simply too small to board regardless of any cap.
 
 ## Deep Docs
 

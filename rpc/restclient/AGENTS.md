@@ -25,6 +25,10 @@ interface, and per-service factory functions so callers are channel-agnostic
 - Per-service client types with `New*ServiceClient(addr, ...Option)` factories:
   `ArkServiceClient`, `DaemonServiceClient`, `MailboxServiceClient`,
   `SwapClientServiceClient`, `SwapServiceClient`, `WalletServiceClient`.
+  `SwapClientServiceClient` includes `QuotePay` (preview an Ark-to-Lightning
+  payment without creating durable swap state) in addition to the
+  `StartPay`/`StartReceive`/`ResumeSwap`/`ListSwaps`/`GetSwap`/`SubscribeSwaps`
+  methods.
 
 ## Relationships
 

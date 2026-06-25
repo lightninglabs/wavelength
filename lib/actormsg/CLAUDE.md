@@ -15,6 +15,19 @@ package boundaries. Lives in `lib/` to break import cycles between `vtxo`,
 - `SelectAndReserveSpendRequest` / `SelectAndReserveSpendResponse` — Ask-message to select and lock VTXOs for OOR spend.
 - `SelectAndReserveForfeitRequest` / `SelectAndReserveForfeitResponse` — Ask-message to atomically select and reserve VTXOs for cooperative forfeit (directed sends). Combines coin selection and PendingForfeit reservation in one step to close a race window.
 - `ReserveForfeitRequest` / `ReleaseForfeitRequest` — Forfeit reservation admission messages.
+- `CustomForfeitInput` — Describes a caller-supplied VTXO that is not in the
+  wallet's live coin set but needs a temporary VTXO actor to sign the round
+  forfeit transaction. Carries outpoint, amount, pkscript, policy template
+  bytes, client signing key, operator key, and full lineage metadata
+  (RoundID, CommitmentTxID, BatchExpiry, ChainDepth, CreatedHeight, Ancestry).
+- `ActivateCustomForfeitInputsRequest` / `ActivateCustomForfeitInputsResponse` —
+  Starts temporary `PendingForfeit` VTXO actors for custom inputs before
+  registering a round intent. Synthetic signer rows are persisted for inputs
+  not already known to the wallet; pre-existing rows are overlaid without change.
+- `DropCustomForfeitInputsRequest` / `DropCustomForfeitInputsResponse` —
+  Removes custom `PendingForfeit` signer overlays when a round intent is rejected
+  before signing. Deletes synthetic rows; restores ordinary actors for pre-existing
+  VTXO rows.
 - `ReleaseSpendRequest` / `CompleteSpendRequest` — Spend lifecycle completion messages.
 - `ForceUnrollRequest` / `ForceUnrollResponse` — Ask-message that routes an operator or chain-resolver unroll trigger through the VTXO manager into the per-VTXO FSM. `ForceUnrollResponse.Accepted` is true when the request caused a state transition; when false, `Reason` distinguishes `"no such vtxo"` from `"already terminal"` so callers don't misread a silent self-loop as success.
 - `RegisterIntentMsg` — Carries pre-composed cooperative intent package to

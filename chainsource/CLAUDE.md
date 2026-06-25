@@ -15,6 +15,10 @@ communication alongside the raw registration API.
   request. Registered under `ChainSourceKey`.
 - `ChainSourceConfig` — Config struct: `Backend ChainBackend`, `System
   *actor.ActorSystem`, `Log fn.Option[btclog.Logger]`.
+- `BlockEpochConfig` — Config for `BlockEpochActor`: `Backend`, `Log`, and
+  optional `ReconnectBackoff` / `MaxReconnectBackoff` for tuning the
+  exponential backoff used when the backend stream closes unexpectedly. Defaults
+  are 1 s initial / 30 s max. `WithLogger` returns a derived config.
 - `ChainSourceMsg` / `ChainSourceResp` — Sealed actor message interfaces for
   requests and responses sent to the `ChainSourceActor`.
 - `FeeEstimateRequest/Response`, `BestHeightRequest/Response`,
@@ -56,6 +60,11 @@ communication alongside the raw registration API.
 - Confirmation sub-actors support two notification modes: Future-based (blocking
   await) and actor-based (async `Tell` via `NotifyActor`). Callers use the actor
   mode when blocking inside a durable actor transaction is unsafe.
+- `BlockEpochActor` automatically reconnects when the backend stream closes after
+  initial registration succeeds (e.g., LND notifier churn or restart). It cancels
+  the stale registration, applies exponential backoff up to
+  `MaxReconnectBackoff`, and re-registers. The poll ticker is the fallback for
+  cross-process wakes; a closed stream triggers an immediate reconnect loop.
 
 ## Deep Docs
 

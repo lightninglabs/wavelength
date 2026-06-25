@@ -16,10 +16,17 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
   not per-RPC), the process-local `active` worker map, and the `subscribers`
   map for `SubscribeSwaps` streaming.
 - `swapRuntimeClient` — Narrow interface over `sdk/swaps.SwapClient` that the
-  subserver uses for all RPC handlers and worker restarts. Methods: `StartPayViaLightning`,
+  subserver uses for all RPC handlers and worker restarts. Methods:
+  `QuotePayViaLightning`, `StartPayViaLightning`,
   `StartReceiveViaLightning`, `ResumePayViaLightning`,
   `ResumeReceiveViaLightning`, `GetSwapSummary`, `ListSwapSummaries`. Keeps
   the subserver unit-testable without running real swap FSMs.
+- `liveOperatorDaemonConn` — Thin wrapper over any `swaps.DaemonConn` that
+  overrides `OperatorPubKey` with a live fetch via
+  `darepod.RPCServer.OperatorPubKey`. This ensures newly-created vHTLC
+  policies see operator-key rotations before OOR funding is submitted,
+  rather than consuming the cached value in `GetInfo`'s server-info snapshot.
+  Constructed by `daemonWithLiveOperatorKey` and wired in `newSwapClientService`.
 - `swapClientAdapter` — Thin production adapter that forwards calls to
   `*swaps.SwapClient`.
 - `paySwapSession` / `receiveSwapSession` — Minimal session interfaces
@@ -43,6 +50,7 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
 
 | RPC | Description |
 |-----|-------------|
+| `QuotePay` | Preview a pay swap fee and rail without creating durable state |
 | `StartPay` | Persist a pay swap, start or reuse its daemon worker, return summary |
 | `StartReceive` | Persist a receive swap, start or reuse its daemon worker, return invoice + summary |
 | `ResumeSwap` | Manual wake-up for a persisted swap (idempotent if worker already active) |
@@ -92,6 +100,16 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
   receiver was previously installed. `Register` therefore installs the
   mailbox receiver immediately after `NewSwapClientWithStore`, before
   `resumePending` revives persisted sessions.
+- **VTXO minimum floor** (`vtxoMinAmountSat`): both `StartPay` and
+  `StartReceive` gate on `max(MinVTXOAmountSat, DustLimit)` from the
+  operator's `ServerInfo`. The same floor applies to both rails so neither
+  pay nor receive can create a below-dust vHTLC. The floor is advisory:
+  `receiveMinAmount` / `payMinAmount` are nil-able and the checks skip when
+  the operator is unreachable.
+- **Live operator key**: `daemonWithLiveOperatorKey` wraps the Ark SDK daemon
+  connection so `OperatorPubKey` is fetched live from `darepod.RPCServer`
+  instead of from the cached `GetInfo` snapshot. This guarantees vHTLC
+  policies see operator-key rotations before OOR funding is submitted.
 
 ## Deep Docs
 

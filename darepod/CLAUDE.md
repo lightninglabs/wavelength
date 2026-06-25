@@ -44,6 +44,29 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
 ### RPC Handlers
 
 - `Board` — non-blocking; delegates to wallet actor.
+- `GetVTXOExpiryInfo` — VTXO expiry classification RPC. Accepts either a
+  local outpoint (`getLocalVTXOExpiryInfo`) or an indexed pkScript
+  (`getIndexedVTXOExpiryInfo`). Returns `VTXOExpiryInfo` with
+  `BlocksRemaining`, `CriticalThresholdBlocks`, `RefreshThresholdBlocks`,
+  and `Status` (unknown/safe/needs_refresh/critical/expired). Uses
+  `vtxo.DefaultExpiryConfig()` for threshold calculation. Empty
+  `status_filter` on pkScript lookups defaults to live VTXOs only,
+  because refreshed vHTLCs share the same pkScript across generations.
+- `GetExitPlan` — previews wallet-side funding readiness for a batch of
+  VTXO outpoints before initiating unilateral exits. Computes a shared
+  `ExitFundingSnapshot` once, then iterates outpoints in request order
+  reserving fee inputs from a running `remaining` snapshot so cross-VTXO
+  budget overlap is correctly reported. Per-outpoint failures record on
+  `ExitPlanEntry.Err` rather than failing the whole batch. Returns
+  aggregate `TotalFundingShortfallSat` and `CanStart`. On infeasible
+  entries, derives a stable `FundingAddress` via `exitFundingAddresses`
+  (`ExitFundingAddressBook`) so repeated polls don't advance the BIP32
+  index.
+- `SweepWallet` — previews or broadcasts a normal backing-wallet sweep
+  (excluding boarding outputs). Thin shim: validates request surface,
+  Asks the wallet actor (`wallet.SweepWalletFundsRequest`), maps reply
+  onto `SweepWalletResponse`. Types `WalletSweepInput`, `SweepWalletRequest`,
+  `SweepWalletResponse` defined in `rpc_exit_plan.go`.
 - `GetRound` / `ListRounds` — round operation status. Live rounds come
   from the round actor; persisted rounds from SQL summaries. Live
   rounds surface `commitment_txid` once the FSM reaches
@@ -122,6 +145,26 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
   `SendOnChainRequest`. Routes through coin selection, leave output
   construction, and eager round join. Supports bounded and sweep-all modes.
 
+### Forfeit Signature Broker
+
+- `forfeitSignatureBroker` (in `forfeit_signature_broker.go`) — daemon-local
+  in-memory broker exposing connector-bound VTXO signer callbacks to external
+  swap coordination over daemon RPC. Supports two signing routes:
+  `FORFEIT_SIGNING_ROUTE_LOCAL_SIGNER` (delegates immediately to
+  `localSigner`) and `FORFEIT_SIGNING_ROUTE_PENDING_REQUEST` (queues a
+  `PendingForfeitParticipantSignatureRequest` and blocks until an external
+  caller submits signatures via `ListPendingForfeitParticipantSignatureRequests`
+  / `SubmitForfeitParticipantSignatures`). State is deliberately daemon-local:
+  restart drops in-flight requests rather than resuming stale transcripts.
+  `DefaultForfeitCollectionTimeout` bounds the wait per request.
+  `forfeitSignatureBroker.deleteContexts` cleans up signing metadata for
+  outpoints when a round rolls back before forfeit signing completes,
+  preventing stale context reuse on a later refresh of the same vHTLC.
+  `verifyExternalForfeitParticipantSignatures` verifies that submitted
+  signatures satisfy the external participants in the exact connector-bound
+  signing request; empty-participants is valid when the local client key and
+  operator key are the only signers.
+
 ### Adapters & Helpers
 
 - `serverDurableUnaryBuilder` — implements
@@ -171,6 +214,32 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
   spend notifications per input, marks inputs spent on confirmation.
   Started by `startBoardingSweepWatcher` on wallet unlock;
   idempotent.
+- `startMetricsServer` / `systemStatsAdapter` — metrics wiring in
+  `metrics.go`. Starts a Prometheus HTTP server at `cfg.Metrics.ListenAddr`;
+  no-op when empty. Uses a per-daemon `prometheus.NewRegistry()` (not the
+  global default) to avoid collisions in multi-daemon test processes. Spawns
+  `metricsActorWorkers` (= 4) in-memory `metrics.MetricsActor` workers under
+  `metrics.ActorKey` for concurrent event-driven counter draining. Registers
+  a scrape-driven `metrics.SystemCollector` via `systemStatsAdapter`, which
+  delegates VTXO inventory, wallet balance, chain height, OOR session counts,
+  and live round counts to the running daemon stores and RPC server. Emits
+  metric events via `s.emitMetric` (no-op when sink is `fn.None`; Tell
+  failure is debug-logged only).
+- `recoverWalletState` / `recoverBoardingKeys` / `recoverIndexedVTXOs` /
+  `recoverOORReceiveScripts` — seed recovery in `wallet_recovery.go`. Driven
+  by `InitWallet` when a `RecoveryWindow` is provided. Waits for
+  `DaemonReady()` before scanning (wallet-backed services must be running).
+  Iterates BIP32 key indices up to `window` for boarding keys
+  (`BoardingKeyFamily`), VTXO keys (`VTXOOwnerKeyFamily`), and OOR receive
+  keys (`oorReceiveKeyFamily`). Uses `retryRecoveryIndexerRPC` (up to 8
+  attempts, 150ms delay) to handle operator per-client rate limits. Reports
+  counts back through `walletRecoveryResult` applied to `InitWalletResponse`.
+- `OOR per-session registry` — `Server.oorSessionStore` (`oor.SessionRegistryStore`)
+  exposes OOR session-registry control-plane rows for `GetOORSession` /
+  `ListOORSessions` queries. The actor drives input release through per-session
+  actors (see commit `oor+darepod: drive input release through the per-session
+  actor`), so the registry store is the authoritative source for persisted
+  session state after actor termination.
 - `vhtlcRecoveryTargetMaterializer` — darepod adapter implementing
   `coordinator.TargetMaterializer`. Binds vHTLC recovery rows to local OOR
   packages and VTXO descriptors so the generic unroll subsystem can assemble
@@ -351,6 +420,17 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
 - `OORConfig.OOR.Limits.MaxMailboxScriptBytes` must be at least
   `minOORMailboxScriptBytes = 34` (P2TR script length); validated
   during `Config.Validate()`.
+- `forfeitSignatureBroker` is daemon-local state; it is not durable across
+  restarts. VTXO actors waiting for connector-bound forfeit signatures will
+  time out against their original vHTLCs on restart rather than resuming a
+  stale transcript. `deleteContexts` must be called on round rollback to
+  prevent stale metadata from being matched by a later refresh of the same
+  vHTLC outpoints.
+- `GetExitPlan` uses `exitFundingAddresses` (`unroll.ExitFundingAddressBook`)
+  to cache one funding address per infeasible outpoint so repeated polls do
+  not advance the BIP32 wallet address index. The cache is in-memory and
+  cleared on restart; a fresh address may be derived after restart for the
+  same outpoint.
 - `Config.EagerRoundJoin` is seeded by build-tag-aware
   `defaultEagerRoundJoin()`: `false` on the standalone non-walletdkrpc
   build, `true` under the `walletdkrpc` tag (both `cmd/darepod` and

@@ -49,6 +49,22 @@ background ingress polling with event routing.
 
 ## Invariants
 
+- **Ingress dispatch and checkpoint in one transaction.** When the delivery
+  store implements `actor.TxAwareDeliveryStore`, `runFoldedDispatch` folds the
+  durable batch dispatch AND the cursor/ack checkpoint into a single
+  `ExecTx` call. The ack watermark then rides along with the next dispatch
+  checkpoint instead of paying its own commit, so a crash between dispatch and
+  checkpoint never re-delivers an already-committed batch. An `ackDirty` flag
+  in the ingress loop tracks when the in-memory watermark has advanced ahead of
+  a persisted checkpoint, ensuring the remote `AckUpTo` call still fires even
+  when no new envelopes arrive.
+- **Post-commit mailbox wakes targeted by mailbox ID.** The delivery store may
+  implement `actor.MailboxWakeRegistrar` (see `baselib/actor`). When it does,
+  each durable mailbox registers a wake callback keyed by its mailbox ID so an
+  ingress enqueue in one transaction fires the correct actor's wake channel
+  rather than a global broadcast. This is how the serverconn ingress loop wakes
+  the round and OOR actors on a post-commit message arrival without holding the
+  writer lock.
 - Ack watermark only advances AFTER durable local dispatch commit (prevents message loss on crash).
 - Unary RPC responses use in-memory registry first; if no waiter exists (crash replay), the ingress falls back to durable EventRouter dispatch. The ResponseRegistry returns a tri-state delivery result (waiter/buffered/dropped) so the ingress knows whether to route durably.
 - `SendClientEventRequest` auto-derives `Service`/`Method` from `Message.ServiceMethod()` when callers leave them empty, preventing silent drops.

@@ -31,7 +31,8 @@ state transitions and validation rules live under [Invariants](#invariants).
   `SubmitForfeitSigRequest`, `StartTimeoutReq`, `CancelTimeoutReq`,
   `RoundCheckpointedNotification`, `RoundCompletedNotification`,
   `RoundFailedNotification`, `ForfeitRequestToVTXO`,
-  `ForfeitConfirmedToVTXO`.
+  `ForfeitConfirmedToVTXO`, `ReleaseForfeitReservation`,
+  `DropCustomForfeitReservation`.
 
 ### Quote & Intent (`interfaces.go`, `events.go`)
 
@@ -89,6 +90,13 @@ state transitions and validation rules live under [Invariants](#invariants).
   `SpendReleasedEvent`, `SpendCompletedEvent`, `ForfeitReleasedEvent`,
   `ForfeitSignedEvent`, `VTXOFailedEvent`, `ResumeVTXOEvent`,
   `PendingForfeitEvent`, `VTXOTerminatedMsg`.
+  `ForfeitRequestEvent.ForfeitSpend *arkscript.SpendPath` overrides the
+  default collaborative leaf when the live output being settled uses a
+  custom script policy; without it the VTXO actor would build a forfeit
+  against the wrong tapscript branch.
+  `ForfeitSignatureResponse.ParticipantVTXOSigs []*types.ForfeitParticipantSig`
+  carries keyed non-operator signatures collected by custom VTXO policy
+  actors before the response is relayed back to the round FSM.
 
 ### Misc
 
@@ -109,6 +117,16 @@ state transitions and validation rules live under [Invariants](#invariants).
 - `RoundClientConfig.LedgerSink` — optional `fn.Option[ledger.Sink]`
   plumbed onto the round actor; `emitVTXOsReceived` and `emitRoundFee`
   fire-and-forget messages when `fn.Some`.
+- `RoundClientConfig.MetricsSink` — optional `fn.Option[metrics.Sink]`;
+  when set the round actor emits a `RoundCompletedMsg` at each terminal
+  round outcome so the `darepod_rounds_completed_total` counter stays in
+  sync with on-chain reality. Mirrors `LedgerSink`.
+- `RoundClientConfig.DropCustomForfeitSigningContexts` — optional
+  `func(context.Context, []wire.OutPoint) error` called when a round
+  fails before the connector-bound forfeit signing request is produced.
+  Clears daemon-local signing metadata for custom refresh inputs; when
+  nil, only the VTXO manager's custom forfeit actors are dropped via
+  `DropCustomForfeitReservation`.
 - `RoundClientConfig.RegistrationTimeout` — max wall-clock duration to wait in
   `IntentSentState` for the server's `RoundJoined` admission watermark. Zero
   selects `defaultRegistrationTimeout` (60 s); negative disables the timeout
@@ -245,6 +263,20 @@ state transitions and validation rules live under [Invariants](#invariants).
   collaborative leaf when the live output uses a custom script policy;
   without it the VTXO actor would build a forfeit against the wrong
   tapscript branch.
+- **Custom forfeit cleanup is distinct from forfeit release.**
+  `DropCustomForfeitReservation` (not `ReleaseForfeitReservation`) is
+  emitted when a round fails for custom refresh inputs, because those
+  inputs are not ordinary wallet VTXOs and must not be returned to
+  `LiveState`. The actor also calls
+  `RoundClientConfig.DropCustomForfeitSigningContexts` (when set) to
+  purge any daemon-local signing metadata. Only real wallet-managed
+  VTXOs in `PendingForfeitState` are released via
+  `ReleaseForfeitReservation`.
+- `SubmitVTXOForfeitSigsToServer` serializes `ParticipantVTXOSigs` per
+  forfeit when the custom policy path was used. The proto field is
+  `ForfeitParticipantSig`; requests without participant sigs (standard
+  policy) omit the repeated field entirely so the wire format stays
+  backward-compatible with pre-custom-policy servers.
 
 ## Deep Docs
 

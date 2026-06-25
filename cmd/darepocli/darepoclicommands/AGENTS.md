@@ -21,9 +21,9 @@ The CLI surface is split into three tiers:
 
 | Command | RPC | Description |
 |---------|-----|-------------|
-| `create` | `walletdkrpc.Create` | Initialize a new wallet (proxies GenSeed + InitWallet). Password from stdin / DAREPOD_WALLET_PASSWORD / --wallet_password_file |
+| `create` | `walletdkrpc.Create` | Initialize a new wallet (proxies GenSeed + InitWallet). Password from stdin / DAREPOD_WALLET_PASSWORD / --wallet_password_file. `--recover --mnemonic-file <path>` imports an existing 24-word aezeed mnemonic and recovers Ark wallet state; `--recovery-window` tunes the key-index scan depth |
 | `unlock` | `walletdkrpc.Unlock` | Unlock an existing wallet (proxies UnlockWallet) |
-| `send <dest>` | `walletdkrpc.Send` | Outbound payment. `--offchain` (default) for Lightning invoice, `--onchain` for cooperative leave. No prefix sniff |
+| `send <dest>` | `walletdkrpc.PrepareSend` + `walletdkrpc.Send` | Outbound payment. Two-step: PrepareSend validates and returns a quote (rail, expected fee, total outflow, destination summary, invoice description, payment hash, warning); Send dispatches the confirmed intent. `--offchain` (default) for Lightning invoice, `--onchain` for cooperative leave. `--force`/`--yes` skips interactive confirmation. No prefix sniff |
 | `recv` | `walletdkrpc.Recv` / `walletdkrpc.Deposit` | Inbound. `--offchain` (default) returns a Lightning invoice; `--onchain` returns a boarding address |
 | `activity` | `walletdkrpc.List` | Unified wallet activity view. Defaults to table output; `--format json` returns structured JSON. `--pending` and `--kind` narrow rows |
 | `balance` | `walletdkrpc.Balance` | Flat balance (confirmed_sat, pending_in_sat, pending_out_sat) |
@@ -66,6 +66,7 @@ who want direct access.
 | `swap pay` | `StartPay` | Pay a Lightning invoice from Ark funds |
 | `swap resume` | `ResumeSwap` | Wake a persisted swap worker |
 | `swap watch` | `SubscribeSwaps` | Stream swap summary updates |
+| `dev swap-client QuotePay` | `swapclientrpc.QuotePay` | Preview an Ark-to-Lightning payment quote without creating durable swap state (dev subtree only) |
 
 ## Key Helpers
 
@@ -94,6 +95,15 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/cmd/d
   `validateFreeText()` — input hardening shared across the seven
   top-level verbs (reject control chars, query/fragment chars,
   malformed outpoints, ambiguous flag combos).
+- `confirmSendIfNeeded()` / `promptSendConfirmation()` — interactive
+  send-quote confirmation. Prints the PrepareSend quote (rail label,
+  expected fee, expected total outflow, destination summary, invoice
+  description, payment hash, warning) to stderr and prompts `[y/N]`.
+  Non-interactive callers must pass `--force` or `--yes`; omitting both
+  on non-TTY stdin returns `INVALID_ARGS` rather than hanging.
+- `readMnemonicFile()` / `aliasedFlag()` — helpers for the `--recover`
+  path: read words from a file and resolve hyphenated/underscored flag
+  alias pairs without ambiguity.
 
 ## Relationships
 

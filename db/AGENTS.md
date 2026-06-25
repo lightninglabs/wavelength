@@ -29,8 +29,14 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   client-tree queries).
 - `RoundSummary` / `VTXOSummary` — lightweight projections for
   paginated listing (avoids deserializing full trees).
-- `VTXOPersistenceStore` — VTXO descriptor store
-  (`InsertClientVTXO`, `FetchByOutpoint`). Persists `ChainDepth`.
+- `VTXOPersistenceStore` — VTXO descriptor store. Methods:
+  `SaveVTXO`, `GetVTXO`, `DeleteVTXO`, `ListLiveVTXOs`,
+  `ListLiveVTXOsLight`, `ListVTXOsByStatus`, `ListVTXOsByStatusLight`,
+  `ListSelectionCandidatesByStatus`, `UpdateVTXOStatus`,
+  `UpdateVTXOStatusReleasingReservation`, `MarkForfeiting`,
+  `MarkForfeited`, `GetForfeitTx`. Persists `ChainDepth`. Holds an
+  `ancestryCache` and a `descriptorCache` (see below) to amortize
+  repeated per-row decode work across list and selection queries.
 - `OORArtifactStore`, `OwnedReceiveScriptStore` — OOR session state
   and locally owned receive-script metadata.
 - `LedgerStoreDB` — implements `ledger.LedgerStore`. Wraps
@@ -65,6 +71,12 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   committed). `groupAncestryRowsWithCache` /
   `loadAncestryPathsWithCache` accept the cache to avoid
   re-deserializing the same fragment across `ListLiveVTXOs` batches.
+- `vtxoDescriptorCache` — process-local per-outpoint cache for the
+  immutable derived parts of VTXO rows (parsed keys, reconstructed
+  taproot script, policy-resolved expiry). `VTXOPersistenceStore`
+  holds an instance and bypasses the per-row secp256k1 + policy-decode
+  work on repeated `GetVTXO` / `ListLiveVTXOs` calls for already-seen
+  outpoints.
 - `isDBClosedError(err) bool` — classifies teardown-path errors for
   demotion to debug-level logging.
 - `MaxTreeDeserializeDepth = 32` / `MaxTreeChildrenPerNode = 64` —
@@ -72,6 +84,40 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
 - `resolveInputPackage` / `loadPackageBundleBySessionID` — two-stage
   OOR ancestry resolver (`oor_unroll_resolver.go`).
 - `LatestMigrationVersion = 21` — current schema version.
+- `InternalKeyQuerier` — minimal query interface (`UpsertInternalKey` +
+  `GetInternalKeyByID`) that `*sqlc.Queries` and every consumer-store
+  interface (RoundStore, BoardingStore, …) satisfy, so callers can
+  register-then-reference an internal key in the same transaction.
+- `RegisterInternalKeyTx(ctx, qtx, now, desc)` — idempotently upserts a
+  `keychain.KeyDescriptor` into the `internal_keys` registry and returns
+  the surrogate id. Re-registering the same `(pubkey, family, index)`
+  triple returns the existing id.
+- `InternalKeyDescByIDTx(ctx, qtx, id)` — reconstructs a
+  `keychain.KeyDescriptor` from a registry surrogate id; used by stores
+  to hydrate FK-referenced keys on load.
+- `ErrInternalKeyNotFound` / `ErrInternalKeyPubKeyMissing` — sentinels
+  for the internal-key registry helpers.
+- `OORSessionRegistryStoreDB` — bridges the OOR session registry
+  control-plane to sqlc. Methods: `UpsertSession`, `GetSession`,
+  `LookupActiveSessionByIdempotencyKey`, `ListNonTerminal`,
+  `ListSessions`. Each write joins an outer durable-actor transaction
+  when one is present in ctx, or opens its own short tx otherwise.
+- `OORSessionRegistryRecord` — full durable state for one OOR session:
+  `SessionID`, `ActorID`, `Direction`, `Phase`, `IdempotencyKey`,
+  `Status`, `LastError`, `SnapshotData`/`SnapshotVersion`,
+  `CreatedAt`/`UpdatedAt`.
+- `OORSessionDirection` — `Outgoing(1)`, `Incoming(2)`. Append-only.
+- `OORSessionStatus` — `Pending(0)`, `Completed(1)`, `Failed(2)`.
+  `IsTerminal()` returns true for Completed and Failed.
+- `ErrOORSessionNotFound` — sentinel for missing OOR session registry
+  rows.
+- `SqliteSynchronousFull` / `SqliteSynchronousNormal` /
+  `SqliteSynchronousOff` — exported constants for the three valid
+  SQLite `synchronous` pragma levels. `SqliteConfig.Synchronous`
+  accepts these values; empty defaults to `"normal"`.
+  `SqliteConfig.NoFullfsync` disables the macOS fullfsync pragma for
+  higher sustained write throughput at the cost of weaker power-loss
+  guarantees on that platform.
 - `PendingIntentPersistenceStore` — implements `wallet.PendingIntentStore`,
   the persistence half of the generic restart-safe intent outbox (header
   `pending_intents` + per-kind detail tables + `pending_intent_anchors`).
@@ -147,6 +193,14 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   collapsing on `(round_id, event_type, debit_account, credit_account)`.
   Renumbered from 000019 to land after `000019_oor_session_registry`,
   which merged to main while this work was in review.
+- `000021_vhtlc_recovery_job_generations` — rebuilds `vhtlc_recovery_jobs`
+  to widen the uniqueness key from `(swap_id, action)` to
+  `(swap_id, action, vtxo_txid, vtxo_vout)`, so a refreshed vHTLC (new
+  outpoint) arms a new recovery "generation" instead of colliding with the
+  prior job. SQLite cannot widen a UNIQUE constraint in place, so the table
+  is recreated, rows are copied, and the state / swap-action / unroll-target
+  indexes are rebuilt. The down migration collapses each `(swap_id, action)`
+  to its newest row before restoring the narrower constraint.
 - `000018_pending_intents` — generalizes the Board-only
   `pending_board_requests` outbox into a supertype/subtype set:
   `pending_intent_kinds` (enum table), `pending_intents` (header: 32-byte
@@ -156,14 +210,6 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   anchored outpoint, PK on the outpoint so a newer intent rebinds, FK to the
   header). Drops `pending_board_requests` outright (alpha; rows only exist
   in the narrow crash window between admission and round seal).
-- `000021_vhtlc_recovery_job_generations` — rebuilds `vhtlc_recovery_jobs`
-  to widen the uniqueness key from `(swap_id, action)` to
-  `(swap_id, action, vtxo_txid, vtxo_vout)`, so a refreshed vHTLC (new
-  outpoint) arms a new recovery "generation" instead of colliding with the
-  prior job. SQLite cannot widen a UNIQUE constraint in place, so the table
-  is recreated, rows are copied, and the state / swap-action / unroll-target
-  indexes are rebuilt. The down migration collapses each `(swap_id, action)`
-  to its newest row before restoring the narrower constraint.
 - `000017_spending_reservations` — adds `spending_reservations` table with
   `(outpoint_hash, outpoint_index)` PK, `owner_kind`, `owner_id`, and
   `created_at`. A row exists IFF the owning spend session was durably

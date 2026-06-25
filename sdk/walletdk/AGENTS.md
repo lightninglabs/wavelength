@@ -33,6 +33,10 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
   waits for gRPC readiness, and returns a ready `*Client`. The daemon
   lifetime is owned by walletdk's `runCtx`, not the caller's `ctx`, so
   a tight startup deadline cancels dialing only.
+- `Connect(ctx, ConnectConfig)` — dials an already-running external
+  daemon (no embedded boot). Supports gRPC and REST transports. The
+  returned `*Client` has no daemon lifetime; `Stop`/`Close` releases
+  the connection only.
 - `Option` — functional option accepted as variadic trailing args.
   Options apply **after** the `Config`/`DaemonConfig` merge and after
   `configureSwapRuntime` / `configureWalletRPC`, so they can override
@@ -49,8 +53,10 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
   bounded send and the swept total for sweep-all), `DepositRequest`/`Result` (boarding
   address + initial `Entry`), `ListRequest`, `ListResult` (tagged union
   on `View`, populates one of `Activity`/`VTXOs`/`Onchain`),
-  `ActivityList`, `VTXOInventory`, `OnchainHistory`, `Entry`,
-  `WalletVTXO`, `OnchainTx`.
+  `ActivityList`, `VTXOInventory`, `OnchainHistory`, `Entry`
+  (optional `Progress *EntryProgress` and `Request *EntryRequest`
+  sub-objects, both nil when absent; `Request` is a `Type`-tagged
+  union over lightning/onchain/ark), `WalletVTXO`, `OnchainTx`.
 - `ExitRequest` / `ExitResult` / `ExitStatusRequest` /
   `ExitStatusResult` / `ExitJobStatus` — exit DTOs. `ExitRequest`
   carries the target outpoint plus an optional on-chain `Destination`
@@ -67,6 +73,39 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
   populated by current behavior. Status strings are the wrapper-owned
   lowercase set
   (`pending`/`materializing`/`csv_pending`/`sweeping`/`completed`/`failed`/`unspecified`).
+- `GetExitPlanRequest` / `GetExitPlanResult` / `ExitPlanEntry` — exit
+  plan DTOs. `GetExitPlanRequest` carries a slice of outpoints plus an
+  optional `ConfTarget`. `GetExitPlanResult` bundles per-outpoint
+  `Plans` (one `ExitPlanEntry` each) with aggregate totals
+  (`CanStart`, `TotalFundingShortfallSat`,
+  `TotalRecommendedFundingSat`, `FeeRateSatPerVByte`). Each
+  `ExitPlanEntry` describes backing-wallet funding readiness for a
+  single outpoint: `FundingAddress`, UTXO counts and amounts, per-
+  outpoint `CanStart`, and any `ExitJobFound`/`ExitStatus`/`SweepTxid`
+  from an already-running exit job. `Err` is non-empty on a
+  per-outpoint lookup failure.
+- `SweepWalletRequest` / `WalletSweepInput` / `SweepWalletResult` —
+  backing-wallet sweep DTOs. `SweepWalletRequest` selects inputs and
+  either previews or broadcasts (`Broadcast bool`). When `Broadcast`
+  is false the result's `Txid` is empty and `CanBroadcast` signals
+  whether the wallet has enough funds. `SweepWalletResult` contains
+  the selected `Inputs`, fee and net amounts, and the broadcast
+  `Txid` on success.
+- `ConnectConfig` — config for `Connect`, which dials an already-
+  running external daemon instead of embedding one. Selects the
+  transport (`Transport` enum: `grpc` default or `rest`), `Address`,
+  `DialOptions` (gRPC only), and `HTTPClient` (REST only).
+- `SendRail` — wrapper-owned lowercase enum identifying the settlement
+  rail for a prepared send (`lightning`, `onchain`, `ark`, or
+  `unspecified`). Populated in `PrepareSendResult`.
+- `SendQuoteStatus` — describes how complete the prepare-time quote
+  is (`exact`, `estimated`, or `unspecified`). Populated in
+  `PrepareSendResult`.
+- `WalletState` — mirrors the daemon's wallet lifecycle enum
+  (`unspecified`/`locked`/`syncing`/`ready`). `WalletStateSyncing`
+  and `WalletStateReady` both mean seed material is loaded; only
+  `WalletStateReady` means the wallet is fully usable. Populated in
+  `Status`.
 - `ErrWalletRPCUnavailable` — sentinel returned by every wallet method
   on builds without the `walletdkrpc` tag.
 - `ErrSwapRuntimeUnavailable` — back-compat alias for
@@ -87,11 +126,14 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
 | `List` | Unified history view (Activity / VTXOs / Onchain) as a tagged-union `ListResult`. |
 | `Exit` | Trigger cooperative leave or unilateral unroll for a VTXO. |
 | `ExitStatus` | Query the phase of an exit job. |
+| `GetExitPlan` | Preview backing-wallet funding readiness for a slice of VTXO outpoints before calling `Exit`. |
+| `SweepWallet` | Preview or broadcast a sweep of all backing-wallet UTXOs to a destination address. |
 | `Status` | Wallet readiness, balance, pending-entry count. |
 | `Subscribe` | Stream wallet activity (`Entry`) updates. |
 | `Stop` / `Close` | Shut down the embedded daemon, release the private transport. |
 | `Wait` | Single shared channel yielding the daemon's terminal run error. |
 | `GRPCConn` / `ArkRPC` / `SwapRPC` / `WalletRPC` | Escape hatches to the underlying private gRPC conn and raw clients. |
+| `BtcwalletRPC` / `BtcwalletVersionRPC` | Escape hatches to btcwallet's native `walletrpc` service (on-chain wallet ops). |
 
 ## Relationships
 
@@ -142,15 +184,21 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
   the wrapper boundary on builds without the `walletdkrpc` tag, before
   any RPC is attempted. `ErrSwapRuntimeUnavailable` is an alias for
   source-level compatibility with older swap-only callers.
-- `Entry.Kind`/`Entry.Status` / `ListResult.View` /
-  `WalletVTXO.Status` / `OnchainTx.Kind` / `ExitJobStatus` are
-  wrapper-owned lowercase strings (not proto enums). Projection lives
-  in `convert.go`, intentionally decoupled from proto enum
-  renumbering.
+- `Entry.Kind`/`Entry.Status` / `Entry.Progress.Phase` /
+  `Entry.Request.Type` / `ListResult.View` / `WalletVTXO.Status` /
+  `OnchainTx.Kind` / `ExitJobStatus` are wrapper-owned lowercase
+  strings (not proto enums). Projection lives in `convert.go`,
+  intentionally decoupled from proto enum renumbering.
 - `ListResult` is a discriminated union: read the variant named by
   `View` and treat the others as `nil`. Exhaustiveness is not
   enforced at compile time — switch on `View` rather than chaining
   nil checks.
+- `Entry.Progress` and `Entry.Request` are optional pointers: both are
+  `nil` when the daemon supplied no progress hint / persisted no
+  request, so nil-check before dereferencing. `Entry.Request` is a
+  discriminated union — read the variant named by `Type`
+  (`lightning`/`onchain`/`ark`) and treat the other fields as zero,
+  the same idiom as `ListResult.View`.
 - `Wait()` is single-reader: same shared channel on every call. The
   channel delivers the daemon's terminal run error then closes; a
   closed channel reads as the zero error indefinitely.

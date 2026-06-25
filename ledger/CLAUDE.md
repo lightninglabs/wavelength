@@ -12,6 +12,17 @@ Event types: `wallet_utxo_created`, `wallet_utxo_spent`,
 `onchain_fee_paid`, `boarding_sweep_fee_paid`, `vtxo_received`,
 `vtxo_sent`.
 
+**Recent changes (2025):**
+- `FeeTypeOnchainSweep` in `FeePaidMsg` now requires `IdempotencyKey` to
+  be exactly `chainhash.HashSize` (32) bytes (sweep txid). Callers that omit
+  or truncate the key get `ErrInvalidMessage` rather than a confusingly
+  silent DB constraint failure.
+- `VTXOSentMsg.IdempotencyKey` disambiguates round-scoped recipient/leave
+  outflows that have no local VTXO outpoint. The `round` package sets this
+  via `roundOutflowKey(roundID, kind, index)` so a directed-send recipient
+  output and a cooperative-leave output in the same round never collide on
+  `idx_client_ledger_idempotent_round`.
+
 ## Chart of Accounts
 
 Seeded by `000006_fee_accounting.up.sql`:
@@ -154,7 +165,7 @@ or balance reconciliation. Required emission pairs:
 | In-round participant receive | `VTXOReceivedMsg{SourceRoundTransfer}` net. No `FeePaidMsg`. |
 | OOR receive | `VTXOReceivedMsg{SourceOOR}` net. No `FeePaidMsg`. |
 | OOR send | `VTXOSentMsg{SessionID}` net. No `FeePaidMsg`. |
-| In-round send | `VTXOSentMsg{RoundID}` net. Recipient/leave sends without outpoints must set `IdempotencyKey`. `SessionID`/`RoundID` are mutually exclusive. |
+| In-round send | `VTXOSentMsg{RoundID}` net. Recipient/leave sends without outpoints must set `IdempotencyKey` (use `roundOutflowKey(roundID, kind, index)` from `round` package). `SessionID`/`RoundID` are mutually exclusive. |
 | Unilateral exit | `ExitCostMsg{AmountSat=gross, ExitCostSat=fee}`. Handler expands to send-leg + fee-leg internally. |
 
 ## Invariants
@@ -197,6 +208,17 @@ or balance reconciliation. Required emission pairs:
 - Handler-level errors (`ErrInvalidMessage` + DB failures) log at
   `WarnS`. Error-level is reserved for internal bugs; both handler
   failure classes are externally triggered.
+- `FeePaidMsg{FeeTypeOnchainSweep}` requires `IdempotencyKey` to be exactly
+  32 bytes (a sweep txid). Missing or wrong-length keys produce
+  `ErrInvalidMessage` rather than hitting the DB constraint. Round-scoped
+  boarding/refresh fees leave `IdempotencyKey` empty and use the
+  `(round_id, event_type)` partial unique index instead; the two dedup
+  mechanisms are mutually exclusive per fee type.
+- `VTXOSentMsg.IdempotencyKey` takes precedence over `Outpoint` for ledger
+  entry deduplication. Callers that set both get `IdempotencyKey`-keyed
+  dedup. The `round` package scopes outflow keys with
+  `roundOutflowKey(roundID, kind, index)` to prevent cross-round collisions
+  between recipient and leave outputs sharing the same ledger entry shape.
 
 ## Deep Docs
 

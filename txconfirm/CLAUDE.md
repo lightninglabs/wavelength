@@ -15,9 +15,10 @@ but each still receives its own terminal notification.
 For field-level detail, use `go doc github.com/lightninglabs/darepo-client/txconfirm.<Symbol>`.
 
 - `TxBroadcasterActor` (`actor.go`) — message-driven orchestrator. Holds
-  a txid-keyed tracked-tx map, runs a protofsm lifecycle per txid, and
-  fans chainsource callbacks (confirmations, block epochs) into per-txid
-  transitions.
+  a txid-keyed tracked-tx map, runs a protofsm lifecycle per txid, fans
+  chainsource callbacks (confirmations, block epochs) into per-txid
+  transitions, and drives the fee-input fanout FSM (`feeBumpFSM`) via
+  `driveFeeBump` / `maybeEnsureFeeInputSupply`.
 - `CPFPBroadcaster` (`broadcaster.go`) — actor-free helper for broadcast
   mechanics: direct submission for txs without anchors, CPFP child
   construction for anchor parents, fee estimation, script-aware child
@@ -55,6 +56,37 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/txcon
 - `Config.BroadcastFailureAlertThreshold` — consecutive no-mempool
   failures before the operator escalation fires (default 3). Time to
   first alert ≈ threshold × `FeeBumpIntervalBlocks` blocks.
+- `feeBumpStateMachine` / `feeBumpEnvironment` — protofsm state machine
+  that owns the entire fee-input fanout lifecycle. A single instance
+  per `TxBroadcasterActor`; at most one fanout tx is ever in flight.
+  The actor serializes every event fed to it, so the FSM does its own
+  blocking wallet/broadcast IO inside transitions without a separate
+  goroutine lock. States: `feeBumpStateIdle` (resting) →
+  `feeBumpStateFanoutPending` (fanout on the wire).
+- `feeBumpDemandsObserved` — event fed when a CPFP child hit
+  `ErrCPFPFeeInputUnavailable`. Idle state uses it to broadcast a
+  fresh fanout; pending state uses it to rebroadcast the in-flight one.
+- `feeBumpFanoutConfirmedEvent` — event fed on a fanout confirmation
+  callback. Pending state promotes predicted outputs into used fee
+  inputs and emits outbox events to unwatch and retry stuck parents.
+- `feeBumpParentEvicted` — event fed when a tracked parent is
+  evicted. Pending state drops that parent's fanout assignments;
+  when none remain it releases the whole fanout.
+- `feeBumpWatchFanout` / `feeBumpUnwatchFanout` / `feeBumpRetryParents`
+  — outbox events the FSM returns for the actor to apply: register /
+  unregister a chainsource conf watch, and retry all `Broadcasting`
+  parents once supply is available.
+- `feeInputDemand` — `{parentTxid, minAmount}` tuple the actor computes
+  from its tracked-tx map and hands to the FSM.
+- `pendingFeeInputFanout` — payload of `feeBumpStateFanoutPending`:
+  `txid`, `tx` (for rebroadcast), `watchScript`, `assignments` (parent
+  → fanout output mapping), `lastBroadcastHeight`.
+- `driveFeeBump(ctx, event)` / `maybeEnsureFeeInputSupply(ctx, err)` —
+  actor entry points. `maybeEnsureFeeInputSupply` filters for
+  `ErrCPFPFeeInputUnavailable` and `errCPFPFeeInputShortfall` then
+  calls `driveFeeBump`; all errors are logged, never propagated.
+- `ensureFeeBumpStarted(ctx)` — lazily starts the fanout FSM goroutine
+  on first use using the actor's long-lived context.
 
 ## Relationships
 
@@ -140,6 +172,19 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/txcon
   wallet leases), and deletes the tracked-tx entry. Late callers
   after eviction re-register from scratch and receive an immediate
   `TxConfirmed` via the normal path if the tx is already on chain.
+- **Single long-lived fanout FSM**: the fee-input fanout is owned by a
+  single `feeBumpStateMachine` instance per actor. Transition errors
+  are stashed on `feeBumpEnvironment.lastErr` rather than returned (to
+  prevent protofsm from tearing the long-lived machine down on a
+  transient failure). The actor reads `takeLastErr()` after each
+  `AskEvent` to surface per-turn failures without threatening the FSM's
+  liveness. A genuinely impossible event (default branch) is still
+  returned as an error — that is a programming bug.
+- **Fanout eviction on parent terminal**: when a tracked parent is
+  evicted, `feeBumpParentEvicted` is fed to the fanout FSM. If no
+  parents remain waiting on fanout outputs, the FSM releases the
+  in-flight fanout state and returns to idle rather than waiting for a
+  confirmation that no longer serves any parent.
 
 ## Deep Docs
 

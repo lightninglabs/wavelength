@@ -41,6 +41,10 @@ containers with network isolation for end-to-end testing.
 ## Key Constants
 
 - `numInitialBlocks` = 106, `defaultTimeout` = 30s, `pollInterval` = 200ms.
+- `lndStartupTimeout` = 90s — dedicated longer timeout for LND bootstrap
+  and chain-sync waits (`SERVER_ACTIVE`, chain height polling). Separate
+  from `defaultTimeout` because serialized systest runs can take longer
+  to bring up fresh LND instances.
 - `BitcoindRPCUser` / `BitcoindRPCPass` — RPC credentials shared across
   tests.
 - `electrsReadyTimeout` = 2 minutes — separate extended timeout for the
