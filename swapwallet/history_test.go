@@ -1103,6 +1103,7 @@ func TestHistorySwapRowsIgnoreTimedOutOverlay(t *testing.T) {
 		status: walletdkrpc.
 			EntryStatus_ENTRY_STATUS_FAILED,
 		failureReason: "timed_out",
+		failureCode:   timedOutCode,
 	}
 	h.runtime.pendingMu.Unlock()
 
@@ -1118,6 +1119,10 @@ func TestHistorySwapRowsIgnoreTimedOutOverlay(t *testing.T) {
 		resp.GetActivity().GetEntries()[0].GetKind(),
 	)
 	require.Empty(t, resp.GetActivity().GetEntries()[0].GetFailureReason())
+	require.Equal(
+		t, unspecCode,
+		resp.GetActivity().GetEntries()[0].GetFailureCode(),
+	)
 }
 
 // TestHistoryWalletRowsApplyTimedOutOverlay confirms wallet-local pending rows
@@ -1144,6 +1149,7 @@ func TestHistoryWalletRowsApplyTimedOutOverlay(t *testing.T) {
 		status: walletdkrpc.
 			EntryStatus_ENTRY_STATUS_FAILED,
 		failureReason: "timed_out",
+		failureCode:   timedOutCode,
 	}
 	h.runtime.pendingMu.Unlock()
 
@@ -1157,6 +1163,10 @@ func TestHistoryWalletRowsApplyTimedOutOverlay(t *testing.T) {
 	require.Equal(
 		t, "timed_out",
 		resp.GetActivity().GetEntries()[0].GetFailureReason(),
+	)
+	require.Equal(
+		t, timedOutCode,
+		resp.GetActivity().GetEntries()[0].GetFailureCode(),
 	)
 }
 
@@ -1521,6 +1531,10 @@ func TestHistoryIncludesUnilateralExitVTXO(t *testing.T) {
 	)
 	require.Equal(t, int64(-7_000), entries[0].GetAmountSat())
 	require.Equal(t, "broadcast failed", entries[0].GetFailureReason())
+	require.Equal(
+		t, walletdkrpc.EntryFailureCode_ENTRY_FAILURE_CODE_FAILED,
+		entries[0].GetFailureCode(),
+	)
 	require.Equal(
 		t, daemonrpc.VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT,
 		rpc.listVTXOsLastReq.GetStatusFilter(),
