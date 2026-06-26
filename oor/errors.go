@@ -64,6 +64,35 @@ func (e *ErrOutputPolicyViolation) Is(target error) bool {
 	return ok
 }
 
+// ErrUserBalanceExceeded is the client-facing typed error returned when
+// the operator rejects an OOR submit because a recipient mailbox's
+// aggregate VTXO balance would exceed the operator's MaxUserBalance cap.
+//
+// Unlike ErrOutputPolicyViolation, this is NOT terminal for the same
+// output shape: the rejection clears once the recipient spends or
+// refreshes its balance down, so a custodial sender (e.g. a swap server
+// holding the value on the recipient's behalf) should retain the value
+// and retry later rather than restructuring the outputs. The wrapped
+// Reason carries the operator's human-readable explanation and is
+// suitable for surfacing directly in UX.
+type ErrUserBalanceExceeded struct {
+	Reason string
+}
+
+// Error returns a human-readable description of the rejection cause.
+func (e *ErrUserBalanceExceeded) Error() string {
+	return fmt.Sprintf("oor user balance exceeded: %s", e.Reason)
+}
+
+// Is reports whether target is also an *ErrUserBalanceExceeded,
+// supporting the standard errors.Is comparison without forcing callers
+// to compare reasons.
+func (e *ErrUserBalanceExceeded) Is(target error) bool {
+	_, ok := target.(*ErrUserBalanceExceeded)
+
+	return ok
+}
+
 // ErrInvalidAncestry is the typed error returned by the receive-side
 // ancestry cross-check when an operator-supplied IncomingVTXOMetadata
 // fails one of the structural invariants required to bind the produced
@@ -115,6 +144,11 @@ func ClassifySubmitError(err error) error {
 
 		case oorpb.OORRejectCode_OOR_REJECT_OUTPUT_POLICY:
 			return &ErrOutputPolicyViolation{
+				Reason: rejected.Reason,
+			}
+
+		case oorpb.OORRejectCode_OOR_REJECT_USER_BALANCE:
+			return &ErrUserBalanceExceeded{
 				Reason: rejected.Reason,
 			}
 
