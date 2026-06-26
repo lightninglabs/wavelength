@@ -26,6 +26,7 @@ type Registry struct {
 	tellRef  actor.TellOnlyRef[CreditMsg]
 	actor    *actor.Actor[CreditMsg, CreditResp]
 	behavior *registryBehavior
+	redeemer *autoRedeemer
 }
 
 // Ref returns the public registry actor reference.
@@ -44,6 +45,7 @@ func (r *Registry) Stop() {
 		return
 	}
 
+	r.redeemer.stop()
 	r.actor.Stop()
 	r.behavior.stopChildren()
 }
@@ -100,7 +102,19 @@ func NewRegistry(cfg RegistryConfig) (*Registry, error) {
 		tellRef:  supervisor.TellRef(),
 		actor:    supervisor,
 		behavior: behavior,
+		redeemer: newAutoRedeemer(cfg, supervisor.TellRef()),
 	}, nil
+}
+
+// StartAutoRedeem launches the wallet-owned auto-redeem sweep loop (a no-op
+// when the policy is disabled). It is anchored to ctx, which must be a
+// daemon-lifetime context, not an RPC-call context.
+func (r *Registry) StartAutoRedeem(ctx context.Context) {
+	if r == nil {
+		return
+	}
+
+	r.redeemer.start(ctx)
 }
 
 // registryBehavior coordinates credit operations on a plain in-memory mailbox.
