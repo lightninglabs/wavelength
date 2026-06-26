@@ -80,7 +80,7 @@ func TestWalletKitEstimatorFallsBackToLastGoodRate(t *testing.T) {
 	require.Equal(t, walletKit.rate, gotRate)
 }
 
-func TestWalletKitEstimatorFallsBackToFloorBeforeFirstSuccess(t *testing.T) {
+func TestWalletKitEstimatorFailsClosedBeforeFirstSuccess(t *testing.T) {
 	t.Parallel()
 
 	walletKit := &testWalletKit{
@@ -89,11 +89,11 @@ func TestWalletKitEstimatorFallsBackToFloorBeforeFirstSuccess(t *testing.T) {
 	estimator, err := NewFallbackWalletKitEstimator(walletKit, nil)
 	require.NoError(t, err)
 
-	// With no successful estimate cached yet, a fallback estimator returns
-	// the relay floor (not an error).
-	gotRate, err := estimator.EstimateFeePerKW(6)
-	require.NoError(t, err)
-	require.Equal(t, chainfee.FeePerKwFloor, gotRate)
+	// With no successful estimate cached yet, even a fallback estimator
+	// fails closed rather than serving the relay floor, which would
+	// silently underpay.
+	_, err = estimator.EstimateFeePerKW(6)
+	require.ErrorContains(t, err, "no cached rate for fallback")
 }
 
 func TestWalletKitEstimatorFailsFastByDefault(t *testing.T) {

@@ -139,7 +139,17 @@ func (e *WalletKitEstimator) EstimateFeePerKW(confTarget uint32) (
 				err)
 		}
 
-		fallback := e.fallbackRate()
+		fallback, ok := e.cachedRate()
+		if !ok {
+
+			// We have no prior successful estimate to fall back
+			// to, so we fail closed rather than serving the relay
+			// floor, which would silently underpay a transaction
+			// on a cold start.
+			return 0, fmt.Errorf("estimate walletkit fee rate (no "+
+				"cached rate for fallback): %w", err)
+		}
+
 		e.log.WarnS(
 			context.Background(),
 			"WalletKit EstimateFeeRate failed; falling back "+
@@ -188,18 +198,21 @@ func (e *WalletKitEstimator) RelayFeePerKW() chainfee.SatPerKWeight {
 	return chainfee.FeePerKwFloor
 }
 
-// fallbackRate returns the last successful WalletKit rate, clamped to the relay
-// floor.
-func (e *WalletKitEstimator) fallbackRate() chainfee.SatPerKWeight {
+// cachedRate returns the last successful WalletKit rate and whether one has
+// been recorded yet. Successful estimates are clamped to the relay floor before
+// caching, so a sub-floor cached value means no estimate has succeeded yet. A
+// fallback estimator has nothing safe to serve before its first success, so
+// callers must fail closed when ok is false rather than inventing a floor rate.
+func (e *WalletKitEstimator) cachedRate() (chainfee.SatPerKWeight, bool) {
 	e.mu.Lock()
 	cached := e.lastRate
 	e.mu.Unlock()
 
 	if cached < chainfee.FeePerKwFloor {
-		return chainfee.FeePerKwFloor
+		return 0, false
 	}
 
-	return cached
+	return cached, true
 }
 
 var _ chainfee.Estimator = (*WalletKitEstimator)(nil)
