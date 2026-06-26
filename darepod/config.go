@@ -263,6 +263,10 @@ type Config struct {
 	// OOR configures off-band receive/send actor behavior.
 	OOR *OORConfig `mapstructure:"oor"`
 
+	// FeeEstimation configures optional external chain fee providers for
+	// the lnd wallet backend (e.g. mempool.space). Disabled by default.
+	FeeEstimation *FeeEstimationConfig `mapstructure:"feeestimation"`
+
 	// EagerRoundJoin makes the wallet actor drive round-joining
 	// without waiting for a follow-up Board / LeaveVTXOs RPC. With
 	// the flag on, every freshly confirmed boarding UTXO runs the
@@ -373,6 +377,50 @@ type UnrollConfig struct {
 	// MaxFeeRateSatPerVByte caps fee estimates to prevent runaway
 	// fees. Zero uses the default of 100 sat/vB.
 	MaxFeeRateSatPerVByte int64 `mapstructure:"maxfeeratesatpervbyte"`
+}
+
+// FeeEstimationConfig groups optional external chain fee providers used by the
+// lnd wallet backend's fee estimator. It is namespaced separately from the
+// wallet config so its mempool.space provider is not confused with the
+// Esplora/mempool.space chain backend that powers the lwwallet.
+type FeeEstimationConfig struct {
+	// MempoolSpace configures the optional mempool.space fee provider.
+	MempoolSpace *MempoolSpaceFeeConfig `mapstructure:"mempoolspace"`
+}
+
+// MempoolSpaceFeeConfig configures the optional mempool.space fee provider.
+// When enabled, the lnd chain backend composes a minimum-selecting fee
+// estimator over the local WalletKit estimator and a mempool.space estimator,
+// choosing the lower of the two live estimates.
+type MempoolSpaceFeeConfig struct {
+	// Enabled turns on the mempool.space fee provider. It applies only to
+	// the lnd wallet backend; the lwwallet and btcwallet backends own their
+	// own fee sources.
+	Enabled bool `mapstructure:"enabled"`
+
+	// URL optionally overrides the network-default mempool.space
+	// recommended-fee endpoint. It must be an absolute https URL (plaintext
+	// http is rejected except for a loopback host). When empty, the
+	// network-default endpoint is used.
+	URL string `mapstructure:"url"`
+}
+
+// MempoolSpaceFeeEnabled reports whether the mempool.space fee provider is
+// enabled. It is nil-safe so callers do not need to probe the nested config.
+func (c *Config) MempoolSpaceFeeEnabled() bool {
+	return c.FeeEstimation != nil &&
+		c.FeeEstimation.MempoolSpace != nil &&
+		c.FeeEstimation.MempoolSpace.Enabled
+}
+
+// MempoolSpaceFeeURL returns the configured mempool.space endpoint override, or
+// the empty string when none is set (the network default is then used).
+func (c *Config) MempoolSpaceFeeURL() string {
+	if c.FeeEstimation == nil || c.FeeEstimation.MempoolSpace == nil {
+		return ""
+	}
+
+	return c.FeeEstimation.MempoolSpace.URL
 }
 
 // OORConfig configures off-band transfer actor behavior.
@@ -820,7 +868,10 @@ func DefaultConfig() *Config {
 		},
 		MaxOperatorFeeSat: DefaultMaxOperatorFeeSat,
 		OOR:               defaultOORConfig(),
-		EagerRoundJoin:    defaultEagerRoundJoin(),
+		FeeEstimation: &FeeEstimationConfig{
+			MempoolSpace: &MempoolSpaceFeeConfig{},
+		},
+		EagerRoundJoin: defaultEagerRoundJoin(),
 	}
 }
 
@@ -904,6 +955,14 @@ func (c *Config) Validate() error {
 	default:
 		return fmt.Errorf("unknown wallet type %q, valid values: lnd, "+
 			"lwwallet, btcwallet", c.Wallet.Type)
+	}
+
+	// The mempool.space fee provider only composes with the lnd backend's
+	// fee estimator; the lwwallet and btcwallet backends own their own fee
+	// sources, so enabling it there would silently do nothing.
+	if c.MempoolSpaceFeeEnabled() && c.Wallet.Type != WalletTypeLnd {
+		return fmt.Errorf("feeestimation.mempoolspace is only "+
+			"supported with wallet.type lnd, not %q", c.Wallet.Type)
 	}
 
 	if c.Server == nil {

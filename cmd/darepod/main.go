@@ -263,6 +263,8 @@ func newRootCmd() *cobra.Command {
 			"100; must be at least 34",
 	)
 
+	registerFeeEstimationFlags(f, cfg)
+
 	// Bind all flags to viper so Unmarshal populates the config
 	// struct from the combined flag/env/file sources.
 	v.SetEnvPrefix("DAREPOD")
@@ -272,6 +274,26 @@ func newRootCmd() *cobra.Command {
 	_ = v.BindPFlags(f)
 
 	return cmd
+}
+
+// registerFeeEstimationFlags registers the optional external fee-provider
+// flags for the lnd wallet backend. Disabled by default; when enabled, the lnd
+// fee estimator selects the lower of the local WalletKit estimate and the
+// mempool.space estimate.
+func registerFeeEstimationFlags(f *pflag.FlagSet, cfg *darepod.Config) {
+	f.Bool(
+		"feeestimation.mempoolspace.enabled",
+		cfg.MempoolSpaceFeeEnabled(),
+		"enable the mempool.space fee provider for the lnd wallet "+
+			"backend; the estimator then selects the lower of "+
+			"the local lnd and mempool.space fee rates",
+	)
+	f.String(
+		"feeestimation.mempoolspace.url", cfg.MempoolSpaceFeeURL(),
+		"override the network-default mempool.space "+
+			"recommended-fee endpoint; must be an absolute "+
+			"https URL",
+	)
 }
 
 // registerArkServerFlags registers the daemon's outbound Ark operator flags.

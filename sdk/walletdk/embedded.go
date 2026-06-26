@@ -362,6 +362,14 @@ func cloneDaemonConfig(cfg *darepod.Config) *darepod.Config {
 		oorCfg := *cfg.OOR
 		clone.OOR = &oorCfg
 	}
+	if cfg.FeeEstimation != nil {
+		feeCfg := *cfg.FeeEstimation
+		if cfg.FeeEstimation.MempoolSpace != nil {
+			mempoolCfg := *cfg.FeeEstimation.MempoolSpace
+			feeCfg.MempoolSpace = &mempoolCfg
+		}
+		clone.FeeEstimation = &feeCfg
+	}
 
 	clone.RPCServiceRegistrars = append(
 		[]darepod.RPCServiceRegistrar(nil), cfg.RPCServiceRegistrars...,
