@@ -168,6 +168,8 @@ func (h *Harness) startLNDContainer(cfg lndConfig) *dockertest.Resource {
 		"--noseedbackup",
 		"--nobootstrap",
 		"--accept-keysend",
+		"--protocol.option-scid-alias",
+		"--protocol.zero-conf",
 	}
 
 	lndHostDir, err := filepath.Abs(cfg.dataDir)

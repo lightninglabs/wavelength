@@ -35,10 +35,13 @@ func TestRESTSwapServerConnRequestChannelID(t *testing.T) {
 					r.URL.Path,
 				)
 
+				routeHintPath := []*swaprpc.RouteHint{
+					routeHint,
+				}
 				body, err := protojson.Marshal(
 					&swaprpc.RequestChannelIdResponse{
-						RouteHint:    routeHint,
-						PayerFeeMsat: 123,
+						RouteHintPath: routeHintPath,
+						PayerFeeMsat:  123,
 					},
 				)
 				require.NoError(t, err)
@@ -62,7 +65,8 @@ func TestRESTSwapServerConnRequestChannelID(t *testing.T) {
 		btcutil.Amount(42_000), 30,
 	)
 	require.NoError(t, err)
-	hint := quote.RouteHint
+	require.Len(t, quote.RouteHintPath, 1)
+	hint := quote.RouteHintPath[0]
 	require.Equal(t, uint64(42), hint.ChannelID)
 	require.Equal(t, nodeID, hint.NodeID)
 	require.EqualValues(t, 42_000, quote.ReceiveAmountSat)

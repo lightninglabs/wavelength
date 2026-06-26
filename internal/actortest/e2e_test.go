@@ -174,15 +174,16 @@ func eventuallyWithOutboxPublish(t *testing.T, publisher *actor.OutboxPublisher,
 }
 
 // durableAskResponseTimeout is a shared timeout budget for DurableAsk response
-// delivery assertions in this test suite.
-const durableAskResponseTimeout = 10 * time.Second
+// delivery assertions in this test suite. Keep this aligned with the outbox
+// delivery timeout because DurableAsk responses are also delivered through the
+// outbox in these end-to-end tests.
+const durableAskResponseTimeout = 30 * time.Second
 
 // outboxForwardProcessingTimeout is the timeout budget for waiting on the
 // source actor to durably process a forward request before any outbox delivery
-// assertions. This is intentionally looser than basic actor assertions because
-// these end-to-end tests run with real SQLite persistence and under `-race` in
-// CI.
-const outboxForwardProcessingTimeout = 5 * time.Second
+// assertions. Keep this aligned with the delivery timeout because CI can
+// schedule these SQLite-backed tests slowly under `-race`.
+const outboxForwardProcessingTimeout = 30 * time.Second
 
 // outboxDeliveryTimeout is the timeout budget for waiting on OutboxPublisher
 // delivery in end-to-end tests. The helper actively triggers publish attempts
