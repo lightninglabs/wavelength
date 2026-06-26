@@ -397,7 +397,7 @@ func (r *Runtime) markTimedOut(now time.Time) []*walletdkrpc.WalletEntry {
 		}
 		notifyEntry.Status = ov.status
 		notifyEntry.FailureReason = ov.failureReason
-		notifyEntry.FailureCode = ov.failureCode
+		notifyEntry.FailureCode = failureCodePtr(ov.failureCode)
 		notifyEntry.UpdatedAtUnix = now.Unix()
 		notify = append(notify, notifyEntry)
 	}

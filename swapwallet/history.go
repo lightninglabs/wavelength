@@ -961,9 +961,7 @@ func (h *history) applyOverlays(entries []*walletdkrpc.WalletEntry,
 		if ov.failureReason != "" {
 			e.FailureReason = ov.failureReason
 		}
-		if ov.failureCode != unspecCode {
-			e.FailureCode = ov.failureCode
-		}
+		e.FailureCode = failureCodePtr(ov.failureCode)
 	}
 }
 

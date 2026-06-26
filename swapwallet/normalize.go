@@ -73,8 +73,10 @@ func swapEntryFromSummary(s *swapclientrpc.SwapSummary, note string,
 		FailureReason: failureReasonFromTerminal(s.GetTerminalReason()),
 		Request:       requestFromSwapSummary(s, counterparty, kind),
 		Progress:      progressFromSwapSummary(s),
-		FailureCode: failureCodeFromSwapState(
-			s.GetState(), s.GetPending(),
+		FailureCode: failureCodePtr(
+			failureCodeFromSwapState(
+				s.GetState(), s.GetPending(),
+			),
 		),
 	}
 
@@ -281,6 +283,20 @@ func failureCodeFromSwapState(state swapclientrpc.SwapState,
 	default:
 		return unspecCode
 	}
+}
+
+// failureCodePtr adapts a classifier result to the optional failure_code proto
+// field. It returns nil for the unspecified (no-failure) sentinel so the field
+// stays absent on the wire, and a pointer to a concrete code otherwise; only a
+// genuinely failed entry carries a failure_code.
+func failureCodePtr(
+	code walletdkrpc.EntryFailureCode) *walletdkrpc.EntryFailureCode {
+
+	if code == unspecCode {
+		return nil
+	}
+
+	return code.Enum()
 }
 
 // failureReasonFromTerminal surfaces the SDK's terminal reason string only
@@ -555,8 +571,8 @@ func applyUnrollStatus(entry *walletdkrpc.WalletEntry,
 	case daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_FAILED:
 		entry.Status = walletdkrpc.EntryStatus_ENTRY_STATUS_FAILED
 		entry.FailureReason = resp.GetLastError()
-		entry.FailureCode =
-			walletdkrpc.EntryFailureCode_ENTRY_FAILURE_CODE_FAILED
+		entry.FailureCode = walletdkrpc.
+			EntryFailureCode_ENTRY_FAILURE_CODE_FAILED.Enum()
 		progress.Phase = walletdkrpc.
 			WalletEntryPhase_WALLET_ENTRY_PHASE_FAILED
 		progress.PhaseLabel = "failed"

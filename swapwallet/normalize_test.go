@@ -3,6 +3,7 @@
 package swapwallet
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
 	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 // TestTruncate confirms truncate clips a long string to n bytes and
@@ -548,5 +550,76 @@ func TestSwapEntryFromSummaryNilSafe(t *testing.T) {
 	require.NotNil(t, out)
 	require.Equal(
 		t, walletdkrpc.EntryKind_ENTRY_KIND_UNSPECIFIED, out.GetKind(),
+	)
+
+	// A nil summary is not a failure, so failure_code stays unset.
+	require.Nil(t, out.FailureCode)
+}
+
+// TestSwapEntryFromSummaryFailureCodePresence confirms failure_code is
+// presence-tracked: a non-failed entry leaves it unset (its absence is the
+// canonical "no failure" signal), while a failed entry carries the concrete
+// code. GetFailureCode still reads back UNSPECIFIED when absent.
+func TestSwapEntryFromSummaryFailureCodePresence(t *testing.T) {
+	t.Parallel()
+
+	ok := swapEntryFromSummary(&swapclientrpc.SwapSummary{
+		PaymentHash: "ph-ok",
+		State:       swapclientrpc.SwapState_SWAP_STATE_COMPLETED,
+	}, "", "", walletdkrpc.EntryKind_ENTRY_KIND_RECV)
+	require.Nil(
+		t, ok.FailureCode, "non-failed entry must omit failure_code",
+	)
+	require.Equal(t, unspecCode, ok.GetFailureCode())
+
+	failed := swapEntryFromSummary(&swapclientrpc.SwapSummary{
+		PaymentHash: "ph-expired",
+		State:       swapclientrpc.SwapState_SWAP_STATE_EXPIRED,
+	}, "", "", walletdkrpc.EntryKind_ENTRY_KIND_RECV)
+	require.NotNil(
+		t, failed.FailureCode, "failed entry must set failure_code",
+	)
+	require.Equal(t, fcEnum("EXPIRED"), failed.GetFailureCode())
+}
+
+// TestWalletEntryFailureCodeJSONShape reproduces the gateway's JSON marshaling
+// (UseProtoNames + EmitUnpopulated, per gateway.ServeMuxOptions) and confirms
+// the presence-tracked failure_code is omitted for a non-failed entry and
+// present for a failed one. Before failure_code was made optional it serialized
+// as "ENTRY_FAILURE_CODE_UNSPECIFIED" on every non-failed entry; this is the
+// shape guard that pins that regression shut.
+func TestWalletEntryFailureCodeJSONShape(t *testing.T) {
+	t.Parallel()
+
+	marshal := protojson.MarshalOptions{
+		UseProtoNames:   true,
+		EmitUnpopulated: true,
+	}
+	decode := func(e *walletdkrpc.WalletEntry) map[string]any {
+		raw, err := marshal.Marshal(e)
+		require.NoError(t, err)
+
+		var m map[string]any
+		require.NoError(t, json.Unmarshal(raw, &m))
+
+		return m
+	}
+
+	ok := swapEntryFromSummary(&swapclientrpc.SwapSummary{
+		PaymentHash: "ph-ok",
+		State:       swapclientrpc.SwapState_SWAP_STATE_COMPLETED,
+	}, "", "", walletdkrpc.EntryKind_ENTRY_KIND_RECV)
+	_, present := decode(ok)["failure_code"]
+	require.False(
+		t, present, "non-failed entry JSON must not carry failure_code",
+	)
+
+	failed := swapEntryFromSummary(&swapclientrpc.SwapSummary{
+		PaymentHash: "ph-expired",
+		State:       swapclientrpc.SwapState_SWAP_STATE_EXPIRED,
+	}, "", "", walletdkrpc.EntryKind_ENTRY_KIND_RECV)
+	require.Equal(
+		t, "ENTRY_FAILURE_CODE_EXPIRED", decode(failed)["failure_code"],
+		"failed entry JSON must carry the concrete failure_code",
 	)
 }

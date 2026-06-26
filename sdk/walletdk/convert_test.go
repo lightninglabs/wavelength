@@ -43,7 +43,7 @@ func TestEntryFromProto(t *testing.T) {
 		FailureReason: "reason",
 		Progress:      prog,
 		Request:       req,
-		FailureCode:   failureCodeEnum("TIMED_OUT"),
+		FailureCode:   failureCodeEnum("TIMED_OUT").Enum(),
 	}
 
 	entry := entryFromProto(proto)
