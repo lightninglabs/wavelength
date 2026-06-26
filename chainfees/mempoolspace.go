@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 
@@ -20,6 +23,14 @@ const (
 	defaultMempoolSpaceCacheTTL = 30 * time.Second
 	maxMempoolSpaceSatPerVByte  = 1_000_000
 	satPerVByteToSatPerKWeight  = 250
+
+	// maxMempoolSpaceResponseBytes bounds the recommended-fee response body
+	// we are willing to read. A valid response is a small JSON object with
+	// five integer fields (well under 1 KiB); the generous 64 KiB cap
+	// guards against a malicious or misbehaving endpoint streaming an
+	// unbounded body to exhaust memory, since http.Client.Timeout bounds
+	// wall-clock time but not the number of bytes read.
+	maxMempoolSpaceResponseBytes = 64 << 10
 
 	mempoolSpaceMainnetURL = "https://mempool.space/api/v1/fees/recommended"
 	mempoolSpaceTestnetURL = "https://mempool.space/testnet/api/v1/fees/" +
@@ -75,13 +86,21 @@ type mempoolSpaceRecommendedFees struct {
 func NewMempoolSpaceEstimator(cfg MempoolSpaceConfig) (*MempoolSpaceEstimator,
 	error) {
 
-	url := cfg.URL
-	if url == "" {
+	endpoint := cfg.URL
+	if endpoint == "" {
 		var err error
-		url, err = DefaultMempoolSpaceURL(cfg.Params)
+		endpoint, err = DefaultMempoolSpaceURL(cfg.Params)
 		if err != nil {
 			return nil, err
 		}
+	}
+
+	// Reject a non-TLS override before it can leak fee data to a network
+	// attacker who could tamper with the response (plaintext http is
+	// allowed only for loopback, which the local httptest server relies
+	// on).
+	if err := validateMempoolSpaceURL(endpoint); err != nil {
+		return nil, err
 	}
 
 	log := cfg.Log
@@ -100,7 +119,7 @@ func NewMempoolSpaceEstimator(cfg MempoolSpaceConfig) (*MempoolSpaceEstimator,
 	}
 
 	return &MempoolSpaceEstimator{
-		url: url,
+		url: endpoint,
 		client: &http.Client{
 			Timeout: timeout,
 		},
@@ -133,6 +152,51 @@ func DefaultMempoolSpaceURL(params *chaincfg.Params) (string, error) {
 		return "", fmt.Errorf("unsupported mempool.space network %q",
 			params.Name)
 	}
+}
+
+// validateMempoolSpaceURL rejects an endpoint that would expose fee data to
+// tampering. It requires an absolute https URL, permitting plaintext http only
+// for a loopback host (used by the local test server).
+func validateMempoolSpaceURL(raw string) error {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("invalid mempool.space URL %q: %w", raw, err)
+	}
+
+	if parsed.Host == "" {
+		return fmt.Errorf("mempool.space URL %q must be absolute "+
+			"with a host", raw)
+	}
+
+	switch parsed.Scheme {
+	case "https":
+		return nil
+
+	case "http":
+		if isLoopbackHost(parsed.Hostname()) {
+			return nil
+		}
+
+		return fmt.Errorf("mempool.space URL %q must use https; "+
+			"plaintext http is only allowed for loopback", raw)
+
+	default:
+		return fmt.Errorf("mempool.space URL %q has unsupported "+
+			"scheme %q", raw, parsed.Scheme)
+	}
+}
+
+// isLoopbackHost reports whether host is "localhost" or a loopback IP literal.
+func isLoopbackHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+
+	return false
 }
 
 // EstimateFeePerKW returns a mempool.space recommended fee for confTarget.
@@ -197,8 +261,12 @@ func (e *MempoolSpaceEstimator) fetchRecommendedFees() (
 			"mempool.space fees: status %s", resp.Status)
 	}
 
+	// Bound the body we read so a malicious or misbehaving endpoint cannot
+	// exhaust memory with an unbounded response.
+	body := io.LimitReader(resp.Body, maxMempoolSpaceResponseBytes)
+
 	var fees mempoolSpaceRecommendedFees
-	if err := json.NewDecoder(resp.Body).Decode(&fees); err != nil {
+	if err := json.NewDecoder(body).Decode(&fees); err != nil {
 		return mempoolSpaceRecommendedFees{}, fmt.Errorf("decode "+
 			"mempool.space fees: %w", err)
 	}

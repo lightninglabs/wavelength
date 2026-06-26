@@ -65,7 +65,7 @@ func TestWalletKitEstimatorFallsBackToLastGoodRate(t *testing.T) {
 	walletKit := &testWalletKit{
 		rate: 1_200,
 	}
-	estimator := NewWalletKitEstimator(walletKit, nil)
+	estimator := NewFallbackWalletKitEstimator(walletKit, nil)
 
 	gotRate, err := estimator.EstimateFeePerKW(6)
 	require.NoError(t, err)
@@ -77,13 +77,28 @@ func TestWalletKitEstimatorFallsBackToLastGoodRate(t *testing.T) {
 	require.Equal(t, walletKit.rate, gotRate)
 }
 
-func TestWalletKitEstimatorCanPropagateErrors(t *testing.T) {
+func TestWalletKitEstimatorFallsBackToFloorBeforeFirstSuccess(t *testing.T) {
 	t.Parallel()
 
 	walletKit := &testWalletKit{
 		err: fmt.Errorf("offline"),
 	}
-	estimator := NewFailFastWalletKitEstimator(walletKit, nil)
+	estimator := NewFallbackWalletKitEstimator(walletKit, nil)
+
+	// With no successful estimate cached yet, a fallback estimator returns
+	// the relay floor (not an error).
+	gotRate, err := estimator.EstimateFeePerKW(6)
+	require.NoError(t, err)
+	require.Equal(t, chainfee.FeePerKwFloor, gotRate)
+}
+
+func TestWalletKitEstimatorFailsFastByDefault(t *testing.T) {
+	t.Parallel()
+
+	walletKit := &testWalletKit{
+		err: fmt.Errorf("offline"),
+	}
+	estimator := NewWalletKitEstimator(walletKit, nil)
 
 	_, err := estimator.EstimateFeePerKW(6)
 	require.ErrorContains(t, err, "estimate walletkit fee rate")

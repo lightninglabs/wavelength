@@ -35,8 +35,9 @@ type MinEstimator struct {
 // NewMinEstimator constructs a chainfee.Estimator that chooses the lowest
 // successful estimate from children. Children should propagate backend errors
 // instead of returning stale fallback rates, otherwise a fallback floor can
-// incorrectly win over another provider's live estimate. Use
-// NewFailFastWalletKitEstimator when composing WalletKit in this selector.
+// incorrectly win over another provider's live estimate. The default
+// NewWalletKitEstimator is fail-fast and safe to compose here; do not pass a
+// NewFallbackWalletKitEstimator child into this selector.
 func NewMinEstimator(log btclog.Logger,
 	children ...NamedEstimator) (*MinEstimator, error) {
 

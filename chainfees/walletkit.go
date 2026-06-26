@@ -40,44 +40,52 @@ type WalletKitEstimatorConfig struct {
 	Timeout time.Duration
 
 	// FallbackOnError makes WalletKit errors return the last successful
-	// rate, or the relay floor before any successful estimate. Leave this
-	// disabled when composing WalletKit inside a selector so stale/floor
-	// values cannot beat another live provider.
+	// rate, or the relay floor before any successful estimate. It defaults
+	// to disabled (fail-fast): errors propagate to the caller. Only enable
+	// it for a standalone estimator that prefers a stale rate over a hard
+	// failure; never enable it when composing WalletKit inside a selector,
+	// where a stale/floor value could beat another live provider.
 	FallbackOnError bool
 }
 
-// NewWalletKitEstimator builds a WalletKitEstimator backed by walletKit.
+// NewWalletKitEstimator builds a fail-fast WalletKitEstimator backed by
+// walletKit: WalletKit errors propagate to the caller. This is the safe
+// default for composing WalletKit inside a selector. Use
+// NewFallbackWalletKitEstimator for a standalone estimator that should serve a
+// stale rate instead of failing.
 func NewWalletKitEstimator(walletKit lndclient.WalletKitClient,
-	log btclog.Logger) *WalletKitEstimator {
-
-	return NewWalletKitEstimatorWithConfig(WalletKitEstimatorConfig{
-		WalletKit:       walletKit,
-		Log:             log,
-		FallbackOnError: true,
-	})
-}
-
-// NewWalletKitEstimatorWithTimeout builds a WalletKitEstimator with a custom
-// per-call timeout.
-func NewWalletKitEstimatorWithTimeout(walletKit lndclient.WalletKitClient,
-	log btclog.Logger, timeout time.Duration) *WalletKitEstimator {
-
-	return NewWalletKitEstimatorWithConfig(WalletKitEstimatorConfig{
-		WalletKit:       walletKit,
-		Log:             log,
-		Timeout:         timeout,
-		FallbackOnError: true,
-	})
-}
-
-// NewFailFastWalletKitEstimator builds a WalletKitEstimator that propagates
-// WalletKit errors to the caller instead of returning a cached fallback rate.
-func NewFailFastWalletKitEstimator(walletKit lndclient.WalletKitClient,
 	log btclog.Logger) *WalletKitEstimator {
 
 	return NewWalletKitEstimatorWithConfig(WalletKitEstimatorConfig{
 		WalletKit: walletKit,
 		Log:       log,
+	})
+}
+
+// NewWalletKitEstimatorWithTimeout builds a fail-fast WalletKitEstimator with a
+// custom per-call timeout.
+func NewWalletKitEstimatorWithTimeout(walletKit lndclient.WalletKitClient,
+	log btclog.Logger, timeout time.Duration) *WalletKitEstimator {
+
+	return NewWalletKitEstimatorWithConfig(WalletKitEstimatorConfig{
+		WalletKit: walletKit,
+		Log:       log,
+		Timeout:   timeout,
+	})
+}
+
+// NewFallbackWalletKitEstimator builds a WalletKitEstimator that returns the
+// last successful rate (or the relay floor before any success) instead of
+// propagating WalletKit errors. Use this only for a standalone estimator;
+// never compose it inside a selector, where a stale fallback could beat
+// another live provider.
+func NewFallbackWalletKitEstimator(walletKit lndclient.WalletKitClient,
+	log btclog.Logger) *WalletKitEstimator {
+
+	return NewWalletKitEstimatorWithConfig(WalletKitEstimatorConfig{
+		WalletKit:       walletKit,
+		Log:             log,
+		FallbackOnError: true,
 	})
 }
 

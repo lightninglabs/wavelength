@@ -46,10 +46,14 @@ var _ TxBroadcaster = (*LndClientTxBroadcaster)(nil)
 type LndClientFeeEstimator = chainfees.WalletKitEstimator
 
 // NewLndClientFeeEstimator creates a new fee estimator backed by lndclient.
+// It uses last-good fallback semantics: a WalletKit error returns the last
+// successful rate (or the relay floor before any success) rather than
+// propagating the error, so a transient WalletKit outage does not abort fee
+// estimation on the standalone LND backend path.
 func NewLndClientFeeEstimator(
 	walletKit lndclient.WalletKitClient) *LndClientFeeEstimator {
 
-	return chainfees.NewWalletKitEstimator(walletKit, nil)
+	return chainfees.NewFallbackWalletKitEstimator(walletKit, nil)
 }
 
 // Ensure LndClientFeeEstimator implements chainfee.Estimator.
