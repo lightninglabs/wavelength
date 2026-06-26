@@ -157,11 +157,14 @@ func (x *RequestChannelIdRequest) GetAmountMsat() uint64 {
 	return 0
 }
 
-// RequestChannelIdResponse returns the route hint for one receive negotiation.
+// RequestChannelIdResponse returns the route hint path for one receive
+// negotiation.
 type RequestChannelIdResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// route_hint contains the hop hint the client should embed in the invoice.
-	RouteHint *RouteHint `protobuf:"bytes,1,opt,name=route_hint,json=routeHint,proto3" json:"route_hint,omitempty"`
+	// route_hint_path contains the full private path the client should embed in
+	// the invoice. The last hop is the swap server's virtual channel. Earlier
+	// hops may route from a public gateway node into a private swap LND node.
+	RouteHintPath []*RouteHint `protobuf:"bytes,1,rep,name=route_hint_path,json=routeHintPath,proto3" json:"route_hint_path,omitempty"`
 	// payer_fee_msat is the quoted Lightning route fee paid by the sender for
 	// the swap server's virtual hop. Callers that want a "payer pays" total
 	// compute it as amount_msat plus payer_fee_msat.
@@ -200,9 +203,9 @@ func (*RequestChannelIdResponse) Descriptor() ([]byte, []int) {
 	return file_swap_proto_rawDescGZIP(), []int{1}
 }
 
-func (x *RequestChannelIdResponse) GetRouteHint() *RouteHint {
+func (x *RequestChannelIdResponse) GetRouteHintPath() []*RouteHint {
 	if x != nil {
-		return x.RouteHint
+		return x.RouteHintPath
 	}
 	return nil
 }
@@ -1814,10 +1817,9 @@ const file_swap_proto_rawDesc = "" +
 	"\x13client_vhtlc_pubkey\x18\x02 \x01(\fR\x11clientVhtlcPubkey\x12!\n" +
 	"\fpayment_hash\x18\x03 \x01(\fR\vpaymentHash\x12\x1f\n" +
 	"\vamount_msat\x18\x04 \x01(\x04R\n" +
-	"amountMsat\"s\n" +
-	"\x18RequestChannelIdResponse\x121\n" +
-	"\n" +
-	"route_hint\x18\x01 \x01(\v2\x12.swaprpc.RouteHintR\trouteHint\x12$\n" +
+	"amountMsat\"|\n" +
+	"\x18RequestChannelIdResponse\x12:\n" +
+	"\x0froute_hint_path\x18\x01 \x03(\v2\x12.swaprpc.RouteHintR\rrouteHintPath\x12$\n" +
 	"\x0epayer_fee_msat\x18\x02 \x01(\x04R\fpayerFeeMsat\"r\n" +
 	"\x1dAcknowledgeOutSwapHtlcRequest\x12!\n" +
 	"\fpayment_hash\x18\x01 \x01(\fR\vpaymentHash\x12.\n" +
@@ -1986,7 +1988,7 @@ var file_swap_proto_goTypes = []any{
 	(*timestamppb.Timestamp)(nil),                 // 25: google.protobuf.Timestamp
 }
 var file_swap_proto_depIdxs = []int32{
-	9,  // 0: swaprpc.RequestChannelIdResponse.route_hint:type_name -> swaprpc.RouteHint
+	9,  // 0: swaprpc.RequestChannelIdResponse.route_hint_path:type_name -> swaprpc.RouteHint
 	10, // 1: swaprpc.OutSwapHtlcEvent.vhtlc_config:type_name -> swaprpc.VHTLCConfig
 	6,  // 2: swaprpc.OutSwapHtlcEvent.parts:type_name -> swaprpc.OutSwapHtlcPart
 	5,  // 3: swaprpc.SwapMailboxEvent.out_swap_htlc:type_name -> swaprpc.OutSwapHtlcEvent

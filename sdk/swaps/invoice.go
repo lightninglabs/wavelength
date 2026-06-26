@@ -221,7 +221,8 @@ func (g *InvoiceGenerator) CreateInvoice(ctx context.Context,
 	lntypes.Hash, error) {
 
 	return g.createInvoice(
-		ctx, g.invoiceCfg, amountSat, memo, routeHint, expiry, preimage,
+		ctx, g.invoiceCfg, amountSat, memo, []*RouteHint{routeHint},
+		expiry, preimage,
 	)
 }
 
@@ -244,14 +245,41 @@ func (g *InvoiceGenerator) CreateInvoiceWithKey(ctx context.Context,
 	invoiceCfg.NodeSigner = netann.NewNodeSigner(authKey)
 
 	return g.createInvoice(
-		ctx, &invoiceCfg, amountSat, memo, routeHint, expiry, preimage,
+		ctx, &invoiceCfg, amountSat, memo, []*RouteHint{routeHint},
+		expiry, preimage,
+	)
+}
+
+// CreateInvoiceWithKeyRouteHintPath creates one invoice signed by the supplied
+// auth key and carrying the full route-hint path.
+func (g *InvoiceGenerator) CreateInvoiceWithKeyRouteHintPath(
+	ctx context.Context, amountSat btcutil.Amount, memo string,
+	routeHintPath []*RouteHint, expiry time.Duration,
+	authKey keychain.SingleKeyMessageSigner, preimage *lntypes.Preimage) (
+	*invoices.Invoice, lntypes.Hash, error) {
+
+	if authKey == nil {
+		return nil, lntypes.Hash{}, fmt.Errorf("invoice auth key is " +
+			"required")
+	}
+	if g == nil || g.invoiceCfg == nil {
+		return nil, lntypes.Hash{}, fmt.Errorf("invoice generator is " +
+			"required")
+	}
+
+	invoiceCfg := *g.invoiceCfg
+	invoiceCfg.NodeSigner = netann.NewNodeSigner(authKey)
+
+	return g.createInvoice(
+		ctx, &invoiceCfg, amountSat, memo, routeHintPath, expiry,
+		preimage,
 	)
 }
 
 // createInvoice builds one signed BOLT-11 invoice through invoicesrpc.
 func (g *InvoiceGenerator) createInvoice(ctx context.Context,
 	cfg *invoicesrpc.AddInvoiceConfig, amountSat btcutil.Amount,
-	memo string, routeHint *RouteHint, expiry time.Duration,
+	memo string, routeHintPath []*RouteHint, expiry time.Duration,
 	preimage *lntypes.Preimage) (*invoices.Invoice, lntypes.Hash, error) {
 
 	if g == nil || cfg == nil || cfg.NodeSigner == nil {
@@ -266,7 +294,7 @@ func (g *InvoiceGenerator) createInvoice(ctx context.Context,
 		return nil, lntypes.Hash{}, err
 	}
 
-	hopHint, err := zpayHopHint(routeHint)
+	hopHints, err := zpayHopHintPath(routeHintPath)
 	if err != nil {
 		return nil, lntypes.Hash{}, err
 	}
@@ -281,9 +309,7 @@ func (g *InvoiceGenerator) createInvoice(ctx context.Context,
 			amountSat,
 		),
 		RouteHints: [][]zpay32.HopHint{
-			{
-				hopHint,
-			},
+			hopHints,
 		},
 		Expiry: int64(expiry.Seconds()),
 	}
@@ -331,6 +357,24 @@ func (g *DirectInvoiceCreator) CreateInvoiceWithKey(ctx context.Context,
 	)
 }
 
+// CreateInvoiceWithKeyRouteHintPath creates one signed invoice with the full
+// route-hint path and the supplied auth key.
+func (g *DirectInvoiceCreator) CreateInvoiceWithKeyRouteHintPath(
+	ctx context.Context, amountSat btcutil.Amount, memo string,
+	routeHintPath []*RouteHint, expiry time.Duration,
+	authKey keychain.SingleKeyMessageSigner, preimage *lntypes.Preimage) (
+	*invoices.Invoice, lntypes.Hash, error) {
+
+	if g == nil || g.generator == nil {
+		return nil, lntypes.Hash{}, fmt.Errorf("invoice generator is " +
+			"required")
+	}
+
+	return g.generator.CreateInvoiceWithKeyRouteHintPath(
+		ctx, amountSat, memo, routeHintPath, expiry, authKey, preimage,
+	)
+}
+
 func validateInvoiceAmount(amountSat btcutil.Amount) error {
 	return validateSatoshiAmount(amountSat, "invoice amount")
 }
@@ -369,6 +413,29 @@ func zpayHopHint(routeHint *RouteHint) (zpay32.HopHint, error) {
 	}, nil
 }
 
+// zpayHopHintPath converts the ordered SDK route-hint path into the zpay32
+// representation embedded in a BOLT-11 invoice.
+func zpayHopHintPath(routeHintPath []*RouteHint) ([]zpay32.HopHint, error) {
+	if len(routeHintPath) == 0 {
+		return nil, fmt.Errorf("route hint path is required")
+	}
+
+	hopHints := make([]zpay32.HopHint, 0, len(routeHintPath))
+	for i, routeHint := range routeHintPath {
+		hopHint, err := zpayHopHint(routeHint)
+		if err != nil {
+			return nil, fmt.Errorf("route hint path hop %d: %w", i,
+				err)
+		}
+
+		hopHints = append(hopHints, hopHint)
+	}
+
+	return hopHints, nil
+}
+
+// validateRouteHint checks that one SDK route hint can be safely converted
+// into the narrower zpay32 hop hint shape.
 func validateRouteHint(routeHint *RouteHint) error {
 	if routeHint == nil {
 		return fmt.Errorf("route hint is required")
@@ -376,6 +443,10 @@ func validateRouteHint(routeHint *RouteHint) error {
 
 	if len(routeHint.NodeID) == 0 {
 		return fmt.Errorf("route hint node ID is required")
+	}
+
+	if routeHint.ChannelID == 0 {
+		return fmt.Errorf("route hint channel ID is required")
 	}
 
 	if routeHint.FeeBaseMsat > uint64(^uint32(0)) {
@@ -391,6 +462,9 @@ func validateRouteHint(routeHint *RouteHint) error {
 	if routeHint.CltvExpiryDelta > uint32(^uint16(0)) {
 		return fmt.Errorf("route hint CLTV expiry delta %d "+
 			"exceeds uint16", routeHint.CltvExpiryDelta)
+	}
+	if routeHint.CltvExpiryDelta == 0 {
+		return fmt.Errorf("route hint CLTV expiry delta is required")
 	}
 
 	return nil

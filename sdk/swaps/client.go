@@ -190,6 +190,16 @@ type InvoiceCreator interface {
 		authKey keychain.SingleKeyMessageSigner,
 		preimage *lntypes.Preimage) (*invoices.Invoice, lntypes.Hash,
 		error)
+
+	// CreateInvoiceWithKeyRouteHintPath builds one signed invoice with the
+	// client's receive auth key and private route-hint path from the
+	// server.
+	CreateInvoiceWithKeyRouteHintPath(ctx context.Context,
+		amountSat btcutil.Amount, memo string,
+		routeHintPath []*RouteHint, expiry time.Duration,
+		authKey keychain.SingleKeyMessageSigner,
+		preimage *lntypes.Preimage) (*invoices.Invoice, lntypes.Hash,
+		error)
 }
 
 // RouteHint describes a single hop hint for Lightning invoices.
@@ -217,8 +227,9 @@ type RouteHint struct {
 // OutSwapQuote is the complete server quote for one Lightning-to-Ark receive
 // route.
 type OutSwapQuote struct {
-	// RouteHint is the private hop hint the SDK embeds in the invoice.
-	RouteHint *RouteHint
+	// RouteHintPath is the full private route-hint path the SDK embeds in
+	// the invoice. The final hop is the swap server's virtual channel.
+	RouteHintPath []*RouteHint
 
 	// ReceiveAmountSat is the exact Ark amount the receiver expects.
 	ReceiveAmountSat btcutil.Amount

@@ -82,10 +82,13 @@ message RequestChannelIdRequest {
     uint64 amount_msat = 4;
 }
 
-// RequestChannelIdResponse returns the route hint for one receive negotiation.
+// RequestChannelIdResponse returns the route hint path for one receive
+// negotiation.
 message RequestChannelIdResponse {
-    // route_hint contains the hop hint the client should embed in the invoice.
-    RouteHint route_hint = 1;
+    // route_hint_path contains the full private path the client should embed in
+    // the invoice. The last hop is the swap server's virtual channel. Earlier
+    // hops may route from a public gateway node into a private swap LND node.
+    repeated RouteHint route_hint_path = 1;
 
     // payer_fee_msat is the quoted Lightning route fee paid by the sender for
     // the swap server's virtual hop. Callers that want a "payer pays" total
