@@ -56,6 +56,7 @@ type Querier interface {
 	GetClientTreeByTxid(ctx context.Context, txid []byte) (RoundClientTree, error)
 	GetClientTreeTxidInfo(ctx context.Context, txid []byte) (ClientTreeTxid, error)
 	GetClientTreeTxids(ctx context.Context, arg GetClientTreeTxidsParams) ([]GetClientTreeTxidsRow, error)
+	GetCreditOperation(ctx context.Context, opID string) (CreditOperation, error)
 	GetInternalKeyByID(ctx context.Context, id int64) (InternalKey, error)
 	GetOORPackage(ctx context.Context, sessionID []byte) (OorPackage, error)
 	GetOORPackageByOutpoint(ctx context.Context, arg GetOORPackageByOutpointParams) (GetOORPackageByOutpointRow, error)
@@ -139,6 +140,7 @@ type Querier interface {
 	ListActiveRounds(ctx context.Context) ([]Round, error)
 	ListAllBoardingAddresses(ctx context.Context) ([]BoardingAddress, error)
 	ListAllBoardingIntents(ctx context.Context) ([]BoardingIntent, error)
+	ListAllCreditOperations(ctx context.Context) ([]CreditOperation, error)
 	ListAllOORSessionRegistry(ctx context.Context) ([]OorSessionRegistry, error)
 	ListAllVTXOs(ctx context.Context) ([]Vtxo, error)
 	ListBoardingIntentOutpoints(ctx context.Context) ([]ListBoardingIntentOutpointsRow, error)
@@ -169,6 +171,9 @@ type Querier interface {
 	// Also filter on spent = FALSE to handle VTXOs marked spent via the earlier
 	// flag before the status field was introduced.
 	ListLiveVTXOs(ctx context.Context) ([]Vtxo, error)
+	// Status 1 = Completed, 2 = Failed (anchored to Go iota in
+	// db/credit_operation_store.go CreditOpStatus).
+	ListNonTerminalCreditOperations(ctx context.Context) ([]CreditOperation, error)
 	// Status 1 = Completed, 2 = Failed (anchored to Go iota in
 	// db/oor_session_registry_store.go OORSessionStatus).
 	ListNonTerminalOORSessionRegistry(ctx context.Context) ([]OorSessionRegistry, error)
@@ -229,6 +234,10 @@ type Querier interface {
 	ListWalletUTXOLog(ctx context.Context, arg ListWalletUTXOLogParams) ([]WalletUtxoLog, error)
 	ListWalletUTXOLogByBlock(ctx context.Context, blockHeight int32) ([]WalletUtxoLog, error)
 	ListWalletUTXOLogByClassification(ctx context.Context, arg ListWalletUTXOLogByClassificationParams) ([]WalletUtxoLog, error)
+	// Status 2 = Failed (anchored to Go iota in db/credit_operation_store.go
+	// CreditOpStatus). Failed operations never dedup a keyed retry, so the lookup
+	// skips them: only a pending or completed operation answers for an op_key.
+	LookupActiveCreditOperationByKey(ctx context.Context, opKey string) (CreditOperation, error)
 	// Status 2 = Failed (anchored to Go iota in
 	// db/oor_session_registry_store.go OORSessionStatus). Failed sessions never
 	// dedup a keyed retry, so the lookup skips them: only a pending or completed
@@ -266,6 +275,8 @@ type Querier interface {
 	// method for state transitions that don't require additional data.
 	UpdateVTXOStatus(ctx context.Context, arg UpdateVTXOStatusParams) error
 	UpsertChainInfo(ctx context.Context, arg UpsertChainInfoParams) error
+	// Credit operations control-plane queries.
+	UpsertCreditOperation(ctx context.Context, arg UpsertCreditOperationParams) error
 	// Internal key registry queries.
 	// Register an internal key and return the stored row's id in a single
 	// round-trip on both backends. ON CONFLICT (pubkey, key_family, key_index)
