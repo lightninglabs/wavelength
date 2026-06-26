@@ -1,0 +1,144 @@
+name: Mobile Bindings
+
+# The mobile binding package compiles on every relevant PR (a fast, host-tagged
+# build), but the expensive gomobile .aar / .xcframework builds (which cross
+# compile the whole embedded daemon for every ABI) run only when a
+# `mobile-v*` tag is pushed, so routine merges do not trigger them.
+on:
+  push:
+    tags:
+      - "mobile-v*"
+  pull_request:
+    paths:
+      - "sdk/walletdk/**"
+      - "swapwallet/**"
+      - "Makefile"
+      - ".github/workflows/mobile-bindings.yml"
+  merge_group:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mobile-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  # If you change this please also update GO_VERSION in Makefile.
+  GO_VERSION: 1.25.5
+  MOBILE_TAGS: "mobile walletdkrpc swapruntime"
+
+jobs:
+  ########################################################################
+  # Fast gate: the facade must compile and its boundary tests must pass.
+  # Runs on PRs and the merge queue, not on tag builds.
+  ########################################################################
+  unit:
+    name: Compile + test (host)
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Git checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Go ${{ env.GO_VERSION }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Test mobile facade
+        run: go test -tags="${MOBILE_TAGS}" ./sdk/walletdk/mobile/...
+
+  ########################################################################
+  # Android .aar — tag builds only.
+  ########################################################################
+  android:
+    name: Build Android .aar
+    if: startsWith(github.ref, 'refs/tags/mobile-v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Git checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Go ${{ env.GO_VERSION }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: r27c
+
+      - name: Install gomobile
+        run: |
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          go install golang.org/x/mobile/cmd/gobind@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Build .aar
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+        run: |
+          gomobile init
+          make mobile-android
+
+      - name: Upload .aar
+        uses: actions/upload-artifact@v4
+        with:
+          name: Walletdk-aar
+          path: sdk/walletdk/mobile/build/android/Walletdk.aar
+          if-no-files-found: error
+
+  ########################################################################
+  # iOS .xcframework — tag builds only (macOS runner for Xcode).
+  ########################################################################
+  ios:
+    name: Build iOS .xcframework
+    if: startsWith(github.ref, 'refs/tags/mobile-v')
+    runs-on: macos-latest
+    steps:
+      - name: Git checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Go ${{ env.GO_VERSION }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Install gomobile
+        run: |
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          go install golang.org/x/mobile/cmd/gobind@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Build .xcframework
+        run: |
+          gomobile init
+          make mobile-ios
+
+      - name: Package .xcframework
+        run: |
+          tar -czf Walletdk.xcframework.tar.gz \
+            -C sdk/walletdk/mobile/build/ios Walletdk.xcframework
+
+      - name: Upload .xcframework
+        uses: actions/upload-artifact@v4
+        with:
+          name: Walletdk-xcframework
+          path: Walletdk.xcframework.tar.gz
+          if-no-files-found: error
