@@ -45,6 +45,13 @@ const (
 	// must restructure the outputs (smaller amounts, more outputs)
 	// before resubmitting.
 	OORRejectCode_OOR_REJECT_OUTPUT_POLICY OORRejectCode = 2
+	// OOR_REJECT_USER_BALANCE indicates the submit would push a recipient
+	// mailbox's aggregate VTXO balance above the operator's advertised
+	// MaxUserBalance cap. Unlike OOR_REJECT_OUTPUT_POLICY, retrying the
+	// same shape can succeed once the recipient's balance drops (e.g. it
+	// spends or refreshes down), so a custodial sender may hold the value
+	// and retry later rather than restructuring the outputs.
+	OORRejectCode_OOR_REJECT_USER_BALANCE OORRejectCode = 3
 )
 
 // Enum value maps for OORRejectCode.
@@ -53,11 +60,13 @@ var (
 		0: "OOR_REJECT_UNSPECIFIED",
 		1: "OOR_REJECT_LINEAGE_TOO_LARGE",
 		2: "OOR_REJECT_OUTPUT_POLICY",
+		3: "OOR_REJECT_USER_BALANCE",
 	}
 	OORRejectCode_value = map[string]int32{
 		"OOR_REJECT_UNSPECIFIED":       0,
 		"OOR_REJECT_LINEAGE_TOO_LARGE": 1,
 		"OOR_REJECT_OUTPUT_POLICY":     2,
+		"OOR_REJECT_USER_BALANCE":      3,
 	}
 )
 
@@ -725,11 +734,12 @@ const file_oorwire_proto_rawDesc = "" +
 	"\x16final_checkpoint_psbts\x18\x02 \x03(\fR\x14finalCheckpointPsbts\"8\n" +
 	"\x17FinalizePackageResponse\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x01 \x01(\fR\tsessionId*k\n" +
+	"session_id\x18\x01 \x01(\fR\tsessionId*\x88\x01\n" +
 	"\rOORRejectCode\x12\x1a\n" +
 	"\x16OOR_REJECT_UNSPECIFIED\x10\x00\x12 \n" +
 	"\x1cOOR_REJECT_LINEAGE_TOO_LARGE\x10\x01\x12\x1c\n" +
-	"\x18OOR_REJECT_OUTPUT_POLICY\x10\x022\xb1\x01\n" +
+	"\x18OOR_REJECT_OUTPUT_POLICY\x10\x02\x12\x1b\n" +
+	"\x17OOR_REJECT_USER_BALANCE\x10\x032\xb1\x01\n" +
 	"\x11OORMailboxService\x12J\n" +
 	"\rSubmitPackage\x12\x1b.oorpb.SubmitPackageRequest\x1a\x1c.oorpb.SubmitPackageResponse\x12P\n" +
 	"\x0fFinalizePackage\x12\x1d.oorpb.FinalizePackageRequest\x1a\x1e.oorpb.FinalizePackageResponseB2Z0github.com/lightninglabs/darepo-client/rpc/oorpbb\x06proto3"
