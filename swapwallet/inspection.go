@@ -577,6 +577,7 @@ func swapTraceFromSummary(
 			swap.GetSettlementType(),
 		),
 		SenderPubkey: swap.GetSenderPubkey(),
+		Preimage:     swap.GetPreimage(),
 	}
 }
 

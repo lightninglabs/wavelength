@@ -1033,7 +1033,11 @@ type SwapSummary struct {
 	// settlement_type identifies the rail selected for the swap when known.
 	SettlementType SwapSettlementType `protobuf:"varint,19,opt,name=settlement_type,json=settlementType,proto3,enum=swapclientrpc.SwapSettlementType" json:"settlement_type,omitempty"`
 	// sender_pubkey is the compressed SEC-encoded vHTLC sender key when known.
-	SenderPubkey  string `protobuf:"bytes,20,opt,name=sender_pubkey,json=senderPubkey,proto3" json:"sender_pubkey,omitempty"`
+	SenderPubkey string `protobuf:"bytes,20,opt,name=sender_pubkey,json=senderPubkey,proto3" json:"sender_pubkey,omitempty"`
+	// preimage is the hex-encoded Lightning payment preimage once the swap
+	// revealed it. For a completed pay swap this is the proof of payment for
+	// the paid invoice; it is empty until the preimage is durably known.
+	Preimage      string `protobuf:"bytes,21,opt,name=preimage,proto3" json:"preimage,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1208,6 +1212,13 @@ func (x *SwapSummary) GetSenderPubkey() string {
 	return ""
 }
 
+func (x *SwapSummary) GetPreimage() string {
+	if x != nil {
+		return x.Preimage
+	}
+	return ""
+}
+
 var File_swap_client_proto protoreflect.FileDescriptor
 
 const file_swap_client_proto_rawDesc = "" +
@@ -1258,7 +1269,7 @@ const file_swap_client_proto_rawDesc = "" +
 	"\x10include_existing\x18\x01 \x01(\bR\x0fincludeExisting\x12!\n" +
 	"\fpending_only\x18\x02 \x01(\bR\vpendingOnly\"H\n" +
 	"\x16SubscribeSwapsResponse\x12.\n" +
-	"\x04swap\x18\x01 \x01(\v2\x1a.swapclientrpc.SwapSummaryR\x04swap\"\xb5\x06\n" +
+	"\x04swap\x18\x01 \x01(\v2\x1a.swapclientrpc.SwapSummaryR\x04swap\"\xd1\x06\n" +
 	"\vSwapSummary\x12:\n" +
 	"\tdirection\x18\x01 \x01(\x0e2\x1c.swapclientrpc.SwapDirectionR\tdirection\x12!\n" +
 	"\fpayment_hash\x18\x02 \x01(\tR\vpaymentHash\x12.\n" +
@@ -1281,7 +1292,8 @@ const file_swap_client_proto_rawDesc = "" +
 	"\x0frefund_locktime\x18\x11 \x01(\rR\x0erefundLocktime\x12\x18\n" +
 	"\ainvoice\x18\x12 \x01(\tR\ainvoice\x12J\n" +
 	"\x0fsettlement_type\x18\x13 \x01(\x0e2!.swapclientrpc.SwapSettlementTypeR\x0esettlementType\x12#\n" +
-	"\rsender_pubkey\x18\x14 \x01(\tR\fsenderPubkey*c\n" +
+	"\rsender_pubkey\x18\x14 \x01(\tR\fsenderPubkey\x12\x1a\n" +
+	"\bpreimage\x18\x15 \x01(\tR\bpreimage*c\n" +
 	"\rSwapDirection\x12\x1e\n" +
 	"\x1aSWAP_DIRECTION_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12SWAP_DIRECTION_PAY\x10\x01\x12\x1a\n" +

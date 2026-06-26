@@ -54,6 +54,7 @@ func TestInspectActivityShowsPayFundingTrace(t *testing.T) {
 				SettlementType: swapclientrpc.
 					SwapSettlementType_SWAP_SETTLEMENT_TYPE_IN_ARK,
 				SenderPubkey:     "sender-pubkey",
+				Preimage:         "deadbeef",
 				VhtlcOutpoint:    "vhtlc-txid:0",
 				VhtlcAmountSat:   1_234,
 				UpdatedAtUnix:    200,
@@ -101,6 +102,7 @@ func TestInspectActivityShowsPayFundingTrace(t *testing.T) {
 		resp.GetSwap().GetSettlementType(),
 	)
 	require.Equal(t, "sender-pubkey", resp.GetSwap().GetSenderPubkey())
+	require.Equal(t, "deadbeef", resp.GetSwap().GetPreimage())
 	require.Len(t, resp.GetLedgerRows(), 2)
 	require.Len(t, resp.GetVtxos(), 3)
 

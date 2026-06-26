@@ -626,6 +626,11 @@ message ActivitySwapTrace {
 
     // sender_pubkey is the compressed SEC-encoded vHTLC sender key when known.
     string sender_pubkey = 19;
+
+    // preimage is the hex-encoded Lightning payment preimage once the swap
+    // revealed it. For a completed pay swap this is the proof of payment for
+    // the paid invoice; it is empty until the preimage is durably known.
+    string preimage = 20;
 }
 
 // ActivityVTXOTrace describes one VTXO movement correlated to a wallet activity

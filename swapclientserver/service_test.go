@@ -1030,6 +1030,7 @@ type fakeSwapRuntime struct {
 	quotePayCalls      int
 	quotePayInvoice    string
 	quotePayMaxFeeSat  uint64
+	startPayMaxFeeSat  uint64
 	startPayCalls      int
 	startReceiveCalls  int
 	startReceiveMemo   string
@@ -1071,13 +1072,14 @@ func (f *fakeSwapRuntime) QuotePayViaLightning(_ context.Context,
 	return f.quotePayResp, nil
 }
 
-func (f *fakeSwapRuntime) StartPayViaLightning(context.Context, string,
-	uint64) (paySwapSession, error) {
+func (f *fakeSwapRuntime) StartPayViaLightning(_ context.Context, _ string,
+	maxFeeSat uint64) (paySwapSession, error) {
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
 	f.startPayCalls++
+	f.startPayMaxFeeSat = maxFeeSat
 	if f.startPayErr != nil {
 		return nil, f.startPayErr
 	}

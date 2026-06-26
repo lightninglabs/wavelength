@@ -1058,6 +1058,96 @@ func (s *swapClientService) validateReceiveAmount(ctx context.Context,
 		amountSat, minAmountSat)
 }
 
+// Default in-swap fee cap parameters. When the caller does not pin a max fee
+// (max_fee_sat == 0), the daemon derives a proportional cap from the invoice
+// amount so a normal payment routes without the caller having to reason about
+// the swap server's quoted fee. The proportional rate is applied in parts per
+// million for integer precision, and a small absolute floor keeps tiny swaps
+// routable when 1% rounds down below the server's flat fee component.
+const (
+	// defaultInSwapMaxFeePPM is the proportional in-swap fee cap applied
+	// when the caller does not set max_fee_sat. 10_000 ppm == 1% of the
+	// invoice amount.
+	defaultInSwapMaxFeePPM = 10_000
+
+	// defaultInSwapMaxFeeFloorSat is the absolute lower bound on the
+	// derived in-swap fee cap. Tiny invoices (a 5_000 sat swap quotes 1
+	// sat) would otherwise floor the 1% cap below the server's flat fee, so
+	// the floor guarantees a small payment still clears.
+	defaultInSwapMaxFeeFloorSat = 10
+)
+
+// defaultInSwapMaxFeeSat derives the effective in-swap fee cap for a swap of
+// amountSat satoshis. It returns the larger of the proportional 1% cap and the
+// absolute floor so the cap never collapses below the server's flat fee on a
+// small payment.
+func defaultInSwapMaxFeeSat(amountSat uint64) uint64 {
+	// We multiply before dividing so the proportional cap scales with the
+	// invoice for amounts below 1_000_000 sat. Integer division first would
+	// truncate amountSat/1_000_000 to 0 and collapse every routine swap to
+	// the floor. amountSat is a uint64 sat value, so this product cannot
+	// overflow at any realistic invoice size.
+	proportional := amountSat * defaultInSwapMaxFeePPM / 1_000_000
+
+	if proportional < defaultInSwapMaxFeeFloorSat {
+		return defaultInSwapMaxFeeFloorSat
+	}
+
+	return proportional
+}
+
+// effectiveMaxFeeSat resolves the in-swap fee cap to forward to sdk/swaps. A
+// caller-supplied non-zero max fee is honoured verbatim; a zero max fee (the
+// CLI default) is replaced with the proportional ~1% default so a routine
+// payment is not rejected by a 0 sat hard cap. The decoded invoice amount is
+// used to size the proportional cap; if the invoice cannot be decoded the
+// caller's zero is preserved so the existing downstream validation surfaces the
+// original error.
+func (s *swapClientService) effectiveMaxFeeSat(requested uint64,
+	invoice string) uint64 {
+
+	if requested != 0 {
+		return requested
+	}
+	if s.chainParams == nil {
+		return requested
+	}
+
+	amountSat, err := payInvoiceAmountSat(invoice, s.chainParams)
+	if err != nil {
+		return requested
+	}
+
+	return defaultInSwapMaxFeeSat(amountSat)
+}
+
+// errMsgInSwapFeeExceedsCap recognizes the in-swap fee-cap rejection. The
+// substring is shared by both the client's own pre-funding check in
+// sdk/swaps (validateInSwapQuote) and the swap server's CreateInSwap
+// INVALID_ARGUMENT response, so matching on the substring catches the
+// rejection regardless of which side quoted the offending fee.
+const errMsgInSwapFeeExceedsCap = "exceeds max fee"
+
+// wrapInSwapFeeError rewrites the terse "in-swap fee N exceeds max fee M"
+// rejection into an actionable message that names the client-side max-fee cap
+// and tells the caller how to raise it. The effective cap is included because
+// the daemon may have derived it from the ~1% default rather than from a
+// caller-supplied --max_fee, so a bare "max fee 0" would otherwise be
+// misleading. Errors that are not a fee-cap rejection pass through untouched.
+func wrapInSwapFeeError(err error, maxFeeSat uint64) error {
+	if err == nil {
+		return nil
+	}
+	if !strings.Contains(err.Error(), errMsgInSwapFeeExceedsCap) {
+		return err
+	}
+
+	return fmt.Errorf("the swap server's quoted in-swap fee exceeds the "+
+		"client's max-fee cap of %d sat; raise it with `da send "+
+		"--max_fee <sat>` (the cap defaults to ~1%% of the amount "+
+		"when unset): %w", maxFeeSat, err)
+}
+
 // payInvoiceAmountSat decodes the BOLT-11 invoice amount in whole satoshis.
 // The swap pay path funds one Ark vHTLC of this value, so a nil, zero, or
 // millisatoshi-only invoice cannot be admitted through the daemon subserver.
@@ -1140,11 +1230,17 @@ func (s *swapClientService) QuotePay(ctx context.Context,
 		return nil, err
 	}
 
+	maxFeeSat := s.effectiveMaxFeeSat(
+		req.GetMaxFeeSat(), req.GetInvoice(),
+	)
+
 	quote, err := s.client.QuotePayViaLightning(
-		ctx, req.GetInvoice(), req.GetMaxFeeSat(),
+		ctx, req.GetInvoice(), maxFeeSat,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("quote pay swap: %w", err)
+		return nil, fmt.Errorf("quote pay swap: %w", wrapInSwapFeeError(
+			err, maxFeeSat,
+		))
 	}
 
 	return quotePayToProto(quote)
@@ -1182,11 +1278,17 @@ func (s *swapClientService) StartPay(ctx context.Context,
 		return existing, nil
 	}
 
+	maxFeeSat := s.effectiveMaxFeeSat(
+		req.GetMaxFeeSat(), req.GetInvoice(),
+	)
+
 	session, err := s.client.StartPayViaLightning(
-		ctx, req.GetInvoice(), req.GetMaxFeeSat(),
+		ctx, req.GetInvoice(), maxFeeSat,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("start pay swap: %w", err)
+		return nil, fmt.Errorf("start pay swap: %w", wrapInSwapFeeError(
+			err, maxFeeSat,
+		))
 	}
 
 	hash := session.PaymentHash()
@@ -1632,6 +1734,11 @@ func swapSummaryToProto(summary swaps.SwapSummary) *swapclientrpc.SwapSummary {
 		)
 	}
 
+	var preimage string
+	if summary.Preimage != nil {
+		preimage = hex.EncodeToString(summary.Preimage[:])
+	}
+
 	return &swapclientrpc.SwapSummary{
 		Direction:        swapDirectionToProto(summary.Direction),
 		PaymentHash:      hex.EncodeToString(summary.PaymentHash[:]),
@@ -1655,6 +1762,7 @@ func swapSummaryToProto(summary swaps.SwapSummary) *swapclientrpc.SwapSummary {
 			summary.SettlementType,
 		),
 		SenderPubkey: senderPubKey,
+		Preimage:     preimage,
 	}
 }
 

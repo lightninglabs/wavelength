@@ -231,7 +231,8 @@ func newSwapPayCmd() *cobra.Command {
 	cmd.Flags().String("invoice", "",
 		"BOLT-11 Lightning invoice to pay (required; or via --json)")
 	cmd.Flags().Uint64("maxfee", 0,
-		"maximum fee in satoshis (0 = no limit)")
+		"maximum swap fee in satoshis (0 lets the daemon default the "+
+			"cap to ~1% of the amount, with a small floor)")
 
 	return cmd
 }
