@@ -1033,9 +1033,11 @@ message WalletEntry {
     WalletEntryProgress progress = 12;
 
     // failure_code is a stable, machine-readable classification of why a
-    // FAILED entry failed. It is ENTRY_FAILURE_CODE_UNSPECIFIED unless status
-    // is FAILED. failure_reason remains the human-readable supplement.
-    EntryFailureCode failure_code = 13;
+    // FAILED entry failed. It is set ONLY on FAILED entries; a non-failed
+    // entry omits the field entirely (presence-tracked), so its absence is the
+    // canonical "no failure" signal and ENTRY_FAILURE_CODE_UNSPECIFIED is never
+    // sent on the wire. failure_reason remains the human-readable supplement.
+    optional EntryFailureCode failure_code = 13;
 }
 
 // WalletEntryRequest describes the user-recognizable request that created a
