@@ -1,0 +1,586 @@
+package credit
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"time"
+
+	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/build"
+	"github.com/lightninglabs/darepo-client/db"
+	"github.com/lightninglabs/darepo-client/timeout"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
+)
+
+// ActorIDForOp returns the deterministic durable mailbox id for one credit
+// operation. It is derived from the stable op id so the same mailbox is used
+// across restarts.
+func ActorIDForOp(opID string) string {
+	return "credit-op-" + opID
+}
+
+// OpActor wraps one durable per-operation credit actor.
+type OpActor struct {
+	ref     actor.ActorRef[CreditDurableMsg, CreditResp]
+	tellRef actor.TellOnlyRef[CreditDurableMsg]
+	durable *actor.DurableActor[CreditDurableMsg, CreditResp]
+}
+
+// Ref returns the public actor reference.
+func (a *OpActor) Ref() actor.ActorRef[CreditDurableMsg, CreditResp] {
+	return a.ref
+}
+
+// TellRef returns a tell-only reference.
+func (a *OpActor) TellRef() actor.TellOnlyRef[CreditDurableMsg] {
+	return a.tellRef
+}
+
+// Stop stops the underlying durable actor.
+func (a *OpActor) Stop() {
+	if a == nil || a.durable == nil {
+		return
+	}
+
+	a.durable.Stop()
+}
+
+// NewOpActor creates and starts one durable per-operation credit actor,
+// restoring its state from the credit_operations row before the mailbox starts
+// draining.
+func NewOpActor(cfg OpActorConfig) (*OpActor, error) {
+	if cfg.OpID == "" {
+		return nil, fmt.Errorf("op id must be provided")
+	}
+	if cfg.Store == nil {
+		return nil, fmt.Errorf("credit store must be provided")
+	}
+	if cfg.DeliveryStore == nil {
+		return nil, fmt.Errorf("delivery store must be provided")
+	}
+	if cfg.Server == nil {
+		return nil, fmt.Errorf("credit server must be provided")
+	}
+	if cfg.Daemon == nil {
+		return nil, fmt.Errorf("credit daemon must be provided")
+	}
+	if cfg.PollInterval <= 0 {
+		cfg.PollInterval = DefaultPollInterval
+	}
+
+	actorID := ActorIDForOp(cfg.OpID)
+	behavior := &opBehavior{
+		cfg:     cfg,
+		actorID: actorID,
+		log:     cfg.Log.UnwrapOr(btclog.Disabled),
+	}
+	if err := behavior.restore(context.Background()); err != nil {
+		return nil, err
+	}
+
+	durableCfg := actor.DefaultDurableTxActorConfig[
+		CreditDurableMsg, CreditResp, creditTx,
+	](
+		actorID, behavior, behavior.bindStores, cfg.DeliveryStore,
+		NewCodec(),
+	)
+	durableCfg.Log = cfg.Log
+
+	durable, err := actor.NewDurableActor(durableCfg).Unpack()
+	if err != nil {
+		return nil, err
+	}
+	behavior.selfRef = durable.TellRef()
+	durable.Start()
+
+	return &OpActor{
+		ref:     durable.Ref(),
+		tellRef: durable.TellRef(),
+		durable: durable,
+	}, nil
+}
+
+// creditTx is the transaction-scoped store handed to the op behavior inside
+// each Read/Stage/Commit phase. The control-plane snapshot write joins the same
+// framework transaction via the behavior's Store, which reads the *sql.Tx off
+// the closure context.
+type creditTx struct {
+	store   actor.DeliveryStore
+	actorID string
+}
+
+// opBehavior runs on the durable actor Read/Stage/Commit path for one credit
+// operation. Every external call (CreateCredit, SendOOR, ListCredits, StartPay,
+// RedeemCredit, VTXO lookup) is idempotent by the op key or the invoice payment
+// hash, so the behavior runs them inline in dispatch with no writer held and
+// folds only the control-plane snapshot write plus the lease-fenced ack into
+// commitAck.
+type opBehavior struct {
+	cfg     OpActorConfig
+	actorID string
+	log     btclog.Logger
+	selfRef actor.TellOnlyRef[CreditDurableMsg]
+
+	// rec is the current in-memory control-plane record, lazily restored or
+	// created on admission.
+	rec *db.CreditOperationRecord
+
+	// redeemPkScript is the wallet-owned receive pkScript a redemption
+	// watches, decoded from the snapshot blob.
+	redeemPkScript []byte
+
+	// receiveMemo is the memo carried from a receive admission message into
+	// the first ReceiveCreating turn. It is not persisted: the admission
+	// message is durable and redelivered until that turn commits.
+	receiveMemo string
+
+	// creditOnly marks a pay that settles entirely from credit with no
+	// Lightning swap leg. It is round-tripped through the snapshot blob so
+	// a terminal row keeps the marker the wallet projector reads.
+	creditOnly bool
+
+	// awaitPolls counts reconciliation polls taken in the current awaiting
+	// state, checked against cfg.MaxAwaitingPolls. Reset to zero whenever
+	// the FSM advances into a different state.
+	awaitPolls uint32
+
+	// acctKey caches the wallet identity pubkey that keys the credit
+	// account.
+	acctKey []byte
+
+	// armRetry reports that this turn ended in an awaiting state and a poll
+	// timer should be armed after commit.
+	armRetry bool
+
+	// terminalCommitted reports that the committed snapshot reached a
+	// terminal status, consumed by the registry reap notification.
+	terminalCommitted bool
+
+	// commitFailed reports that the previous turn advanced rec in memory
+	// but its Commit rolled back, so the next driving turn re-loads from
+	// the durable row before dispatch.
+	commitFailed bool
+}
+
+// Compile-time check that opBehavior runs on the Read/Stage/Commit path.
+var _ actor.TxBehavior[
+	CreditDurableMsg, CreditResp, creditTx,
+] = (*opBehavior)(nil)
+
+// bindStores is the StoreFactory for the op Read/Stage/Commit path.
+func (b *opBehavior) bindStores(_ context.Context,
+	ds actor.DeliveryStore) creditTx {
+
+	return creditTx{
+		store:   ds,
+		actorID: b.actorID,
+	}
+}
+
+// logger returns the behavior logger bound to ctx.
+func (b *opBehavior) logger(ctx context.Context) btclog.Logger {
+	if b.log != btclog.Disabled {
+		return b.log
+	}
+
+	return build.LoggerFromContext(ctx)
+}
+
+// restore rebuilds the in-memory record from the durable row, if one exists.
+func (b *opBehavior) restore(ctx context.Context) error {
+	rec, err := b.cfg.Store.GetOperation(ctx, b.cfg.OpID)
+	if errors.Is(err, db.ErrCreditOperationNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	snap, err := decodeOpSnapshot(rec.SnapshotData)
+	if err != nil {
+		return err
+	}
+
+	b.rec = rec
+	b.redeemPkScript = snap.RedeemPkScript
+	b.receiveMemo = snap.Memo
+	b.creditOnly = snap.CreditOnly
+	b.awaitPolls = snap.AwaitPolls
+
+	return nil
+}
+
+// Receive is the single entry point for every message that drives this
+// operation. Read-only probes return directly; everything else drains the FSM
+// in dispatch and is consumed by one lease-fenced commitAck.
+func (b *opBehavior) Receive(ctx context.Context, msg CreditDurableMsg,
+	ax actor.Exec[creditTx]) fn.Result[CreditResp] {
+
+	if _, ok := msg.(*actor.RestartMessage); ok {
+
+		// Restore already ran at construction; nothing to persist.
+		return fn.Ok[CreditResp](&AckResponse{})
+	}
+
+	// If the previous turn's Commit rolled back after advancing rec in
+	// memory, reload from the durable row before dispatch so the
+	// redelivered event re-applies against the last-committed state.
+	if b.commitFailed {
+		if err := b.restore(ctx); err != nil {
+			return fn.Err[CreditResp](err)
+		}
+		b.commitFailed = false
+	}
+
+	if err := b.dispatch(ctx, msg, ax); err != nil {
+		// A mid-turn failure (a failed Stage checkpoint or a step error
+		// after setState) may have advanced rec in memory past the last
+		// durable checkpoint. Force a reload before the next turn so
+		// redelivery re-drives from durable truth, not a stale
+		// in-memory advance. Effects re-run from the reloaded state
+		// stay safe because each is idempotent by the op key or payment
+		// hash.
+		b.commitFailed = true
+
+		return fn.Err[CreditResp](err)
+	}
+
+	if b.rec == nil {
+
+		// Unknown operation (resume for a row that no longer exists);
+		// ack as a benign no-op.
+		return fn.Ok[CreditResp](&AckResponse{})
+	}
+
+	if err := b.commitAck(ctx, ax); err != nil {
+		b.commitFailed = true
+
+		return fn.Err[CreditResp](err)
+	}
+
+	b.afterCommit(ctx)
+
+	return fn.Ok[CreditResp](&AckResponse{})
+}
+
+// dispatch drives the already-loaded record forward until it reaches a terminal
+// or awaiting state. The supervisor pre-writes the control-plane row before
+// spawning a child and drives it with ResumeCreditOpRequest, so a child never
+// admits its own operation: it always restores from the durable row at
+// construction and re-drives from there.
+func (b *opBehavior) dispatch(ctx context.Context, msg CreditDurableMsg,
+	ax actor.Exec[creditTx]) error {
+
+	b.armRetry = false
+
+	switch msg.(type) {
+	case *ResumeCreditOpRequest:
+		// Drive the already-loaded record; nothing to admit.
+
+	default:
+		return fmt.Errorf("unexpected credit message %T", msg)
+	}
+
+	if b.rec == nil {
+		return nil
+	}
+	if State(b.rec.State).IsTerminal() {
+		return nil
+	}
+
+	return b.runFSM(ctx, ax)
+}
+
+// buildRecord constructs the durable admission record and resume snapshot for
+// one credit operation from its admission message. It is the single source of
+// record construction, shared by the supervisor's admit path and the unit tests
+// that drive a child directly, so both produce identical rows.
+func buildRecord(opID string,
+	msg CreditMsg) (*db.CreditOperationRecord, *opSnapshot) {
+
+	switch m := msg.(type) {
+	case *StartCreditPayRequest:
+		return &db.CreditOperationRecord{
+			OpID:         opID,
+			OpKey:        m.OpKey,
+			Kind:         KindPay,
+			State:        string(initialState(KindPay)),
+			Status:       db.CreditOpStatusPending,
+			PaymentHash:  append([]byte(nil), m.PaymentHash[:]...),
+			Invoice:      m.Invoice,
+			AmountSat:    int64(m.AmountSat),
+			TopupSat:     int64(m.TopupSat),
+			MaxCreditSat: int64(m.MaxCreditSat),
+			MaxFeeSat:    int64(m.MaxFeeSat),
+		}, &opSnapshot{CreditOnly: m.CreditOnly}
+
+	case *StartCreditReceiveRequest:
+		return &db.CreditOperationRecord{
+			OpID:      opID,
+			OpKey:     m.OpKey,
+			Kind:      KindReceive,
+			State:     string(initialState(KindReceive)),
+			Status:    db.CreditOpStatusPending,
+			AmountSat: int64(m.AmountSat),
+		}, &opSnapshot{Memo: m.Memo}
+
+	case *RedeemRequest:
+		return &db.CreditOperationRecord{
+			OpID:      opID,
+			OpKey:     m.OpKey,
+			Kind:      KindRedeem,
+			State:     string(initialState(KindRedeem)),
+			Status:    db.CreditOpStatusPending,
+			AmountSat: int64(m.AmountSat),
+		}, &opSnapshot{}
+
+	default:
+		return nil, &opSnapshot{}
+	}
+}
+
+// runFSM advances the operation forward until it reaches a terminal state or an
+// awaiting state that must park on a poll timer.
+func (b *opBehavior) runFSM(ctx context.Context,
+	ax actor.Exec[creditTx]) error {
+
+	for {
+		if State(b.rec.State).IsTerminal() {
+			return nil
+		}
+
+		awaiting, err := b.advance(ctx, ax)
+		if err != nil {
+			return err
+		}
+		if awaiting {
+			b.armRetry = true
+
+			return nil
+		}
+	}
+}
+
+// advance runs exactly one FSM step for the current state. It returns awaiting
+// when the operation must park until a poll timer re-pokes it. A deterministic
+// failure transitions to StateFailed and returns (false, nil); a transient
+// error returns it so the turn redelivers. The Exec handle is threaded to the
+// steps that must Stage a recorded server identifier before their next
+// side-effect call, preserving the persist-before-effect invariant.
+func (b *opBehavior) advance(ctx context.Context, ax actor.Exec[creditTx]) (
+	bool, error) {
+
+	switch State(b.rec.State) {
+	case StateQuoting:
+		return b.stepQuoting()
+
+	case StateTopupCreating:
+		return b.stepTopupCreating(ctx, ax)
+
+	case StateTopupFunding:
+		return b.stepTopupFunding(ctx)
+
+	case StateTopupAwaitingCredit:
+		return b.stepAwaitingCredit(ctx)
+
+	case StatePaying:
+		return b.stepPaying(ctx)
+
+	case StatePayAwaitingSettlement:
+		return b.stepPayAwaitingSettlement(ctx)
+
+	case StateReceiveCreating:
+		return b.stepReceiveCreating(ctx)
+
+	case StateAwaitingSettlement:
+		return b.stepAwaitingSettlement(ctx)
+
+	case StateRedeemReserving:
+		return b.stepRedeemReserving(ctx, ax)
+
+	case StateAwaitingOOR:
+		return b.stepAwaitingOOR(ctx)
+
+	default:
+		// An unknown state is a deterministic, non-recoverable
+		// corruption of the row, not a transient condition: terminal-
+		// fail it rather than redeliver forever.
+		b.failOp(
+			ctx, fmt.Sprintf("unexpected credit state %s",
+				b.rec.State),
+		)
+
+		return false, nil
+	}
+}
+
+// checkpoint durably persists the current record via a Stage write, so a server
+// identifier recorded this turn survives a crash before the next side-effect
+// call. Staging keeps the persist-before-effect invariant without holding the
+// writer across the following IO; the message is still consumed once, at the
+// final commit.
+func (b *opBehavior) checkpoint(ctx context.Context,
+	ax actor.Exec[creditTx]) error {
+
+	return ax.Stage(ctx, func(stageCtx context.Context, _ creditTx) error {
+		return b.persist(stageCtx)
+	})
+}
+
+// awaitExhausted records one reconciliation poll for the current awaiting state
+// and reports whether the configured poll cap has been exceeded. A zero cap
+// means unlimited: the wait is bounded only by the server-reported terminal
+// states.
+func (b *opBehavior) awaitExhausted() bool {
+	b.awaitPolls++
+
+	limit := b.cfg.MaxAwaitingPolls
+
+	return limit > 0 && b.awaitPolls > limit
+}
+
+// setState advances the FSM state in memory. Entering a different state resets
+// the awaiting-poll counter so each awaiting state gets a fresh poll budget.
+func (b *opBehavior) setState(state State) {
+	if b.rec.State != string(state) {
+		b.awaitPolls = 0
+	}
+	b.rec.State = string(state)
+	b.rec.Status = state.Status()
+}
+
+// failOp records a deterministic terminal failure.
+func (b *opBehavior) failOp(ctx context.Context, reason string) {
+	b.logger(ctx).WarnS(ctx, "Credit operation failed",
+		nil,
+		slog.String("op_id", b.cfg.OpID),
+		slog.String("op_key", b.rec.OpKey),
+		slog.String("reason", reason),
+	)
+	b.rec.LastError = reason
+	b.setState(StateFailed)
+}
+
+// accountKey returns the cached wallet identity pubkey that keys the account.
+func (b *opBehavior) accountKey(ctx context.Context) ([]byte, error) {
+	if len(b.acctKey) > 0 {
+		return b.acctKey, nil
+	}
+
+	key, err := b.cfg.Daemon.IdentityPubKey(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("get identity pubkey: %w", err)
+	}
+	b.acctKey = key
+
+	return key, nil
+}
+
+// commitAck folds the control-plane snapshot write and the lease-fenced ack
+// into one short transaction.
+func (b *opBehavior) commitAck(ctx context.Context,
+	ax actor.Exec[creditTx]) error {
+
+	terminal := State(b.rec.State).IsTerminal()
+
+	err := ax.Commit(
+		ctx,
+		func(commitCtx context.Context, _ creditTx) error {
+			return b.persist(commitCtx)
+		},
+	)
+	if err != nil {
+		return err
+	}
+
+	b.terminalCommitted = terminal
+
+	return nil
+}
+
+// persist writes the current record snapshot, joining the ambient framework
+// transaction via commitCtx.
+func (b *opBehavior) persist(ctx context.Context) error {
+	snap := &opSnapshot{
+		RedeemPkScript: b.redeemPkScript,
+		Memo:           b.receiveMemo,
+		CreditOnly:     b.creditOnly,
+		AwaitPolls:     b.awaitPolls,
+	}
+	raw, err := snap.encode()
+	if err != nil {
+		return err
+	}
+
+	rec := *b.rec
+	rec.SnapshotData = raw
+	rec.SnapshotVersion = snapshotVersion
+
+	return b.cfg.Store.UpsertOperation(ctx, rec)
+}
+
+// afterCommit arms the poll timer and notifies the registry of a terminal
+// operation. Both are best-effort: a crash in this window re-arms on boot via
+// RestoreNonTerminal, and the registry re-checks the durable row before
+// reaping.
+func (b *opBehavior) afterCommit(ctx context.Context) {
+	if b.terminalCommitted {
+		b.notifyTerminal(ctx)
+
+		return
+	}
+
+	if b.armRetry {
+		b.armPollTimer(ctx)
+	}
+}
+
+// armPollTimer schedules a poll timer that re-pokes this operation after the
+// configured backoff so an awaiting state reconciles against the server ledger
+// or the chain without a hot loop.
+func (b *opBehavior) armPollTimer(ctx context.Context) {
+	if b.cfg.TimeoutActor == nil || b.cfg.CallbackRef == nil {
+		return
+	}
+
+	err := b.cfg.TimeoutActor.Tell(ctx, &timeout.ScheduleTimeoutRequest{
+		ID:       timeout.ID(b.cfg.OpID),
+		Duration: b.cfg.PollInterval,
+		Callback: b.cfg.CallbackRef,
+	})
+	if err != nil {
+		b.logger(ctx).DebugS(ctx, "Unable to arm credit poll timer",
+			slog.String("op_id", b.cfg.OpID),
+			slog.String("err", err.Error()),
+		)
+	}
+}
+
+// notifyTerminal tells the registry this operation reached a terminal status so
+// the child can be reaped.
+func (b *opBehavior) notifyTerminal(ctx context.Context) {
+	if b.cfg.Registry == nil {
+		return
+	}
+
+	notifyCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	err := b.cfg.Registry.Tell(notifyCtx, &CreditTerminalNotification{
+		OpID: b.cfg.OpID,
+	})
+	if err != nil {
+		b.
+			logger(ctx).
+			DebugS(
+				ctx,
+				"Unable to notify credit registry of "+
+					"terminal op",
+				slog.String("op_id", b.cfg.OpID),
+				slog.String("err", err.Error()),
+			)
+	}
+}
