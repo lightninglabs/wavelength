@@ -571,8 +571,8 @@ type Entry struct {
 	Request *EntryRequest
 
 	// FailureCode is a stable, machine-readable classification of why the
-	// entry failed. It is EntryFailureCodeUnspecified unless Status is
-	// failed; FailureReason remains the human-readable supplement.
+	// entry failed. It is empty unless Status is failed, mirroring
+	// FailureReason, which remains the human-readable supplement.
 	FailureCode EntryFailureCode
 }
 
@@ -696,10 +696,6 @@ type EntryRequest struct {
 type EntryFailureCode string
 
 const (
-	// EntryFailureCodeUnspecified means the entry has not failed, or the
-	// cause is unknown.
-	EntryFailureCodeUnspecified EntryFailureCode = "unspecified"
-
 	// EntryFailureCodeTimedOut means the operation exceeded the wallet
 	// deadline before reaching a terminal state.
 	EntryFailureCodeTimedOut EntryFailureCode = "timed_out"
