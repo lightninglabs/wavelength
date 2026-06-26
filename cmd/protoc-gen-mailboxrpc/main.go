@@ -5,6 +5,7 @@ import (
 
 	"github.com/lightninglabs/darepo-client/cmd/protoc-gen-mailboxrpc/internal/gen"
 	"google.golang.org/protobuf/compiler/protogen"
+	"google.golang.org/protobuf/types/pluginpb"
 )
 
 // main runs the protoc plugin entrypoint.
@@ -21,6 +22,10 @@ func main() {
 	}
 
 	opts.Run(func(plugin *protogen.Plugin) error {
+		plugin.SupportedFeatures = uint64(
+			pluginpb.CodeGeneratorResponse_FEATURE_PROTO3_OPTIONAL,
+		)
+
 		cfg := gen.Config{
 			ExcludeService: *excludeService,
 		}
