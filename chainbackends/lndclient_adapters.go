@@ -50,8 +50,8 @@ type LndClientFeeEstimator = chainfees.WalletKitEstimator
 // successful rate (or the relay floor before any success) rather than
 // propagating the error, so a transient WalletKit outage does not abort fee
 // estimation on the standalone LND backend path.
-func NewLndClientFeeEstimator(
-	walletKit lndclient.WalletKitClient) *LndClientFeeEstimator {
+func NewLndClientFeeEstimator(walletKit lndclient.WalletKitClient) (
+	*LndClientFeeEstimator, error) {
 
 	return chainfees.NewFallbackWalletKitEstimator(walletKit, nil)
 }
@@ -372,7 +372,9 @@ func (c LNDBackendFromLndClientConfig) WithLogger(
 // services. This is a convenience function for creating a backend from a
 // remote lnd connection. The config must include LND; use WithLogger() to
 // inject a specific logger.
-func NewLNDBackendFromLndClient(cfg LNDBackendFromLndClientConfig) *LNDBackend {
+func NewLNDBackendFromLndClient(cfg LNDBackendFromLndClientConfig) (*LNDBackend,
+	error) {
+
 	cfg.Log.UnwrapOr(btclog.Disabled).InfoS(
 		context.Background(),
 		"Creating LND backend from lndclient services",
@@ -384,12 +386,15 @@ func NewLNDBackendFromLndClient(cfg LNDBackendFromLndClientConfig) *LNDBackend {
 		LND: cfg.LND,
 		Log: cfg.Log,
 	})
-	feeEstimator := NewLndClientFeeEstimator(cfg.LND.WalletKit)
+	feeEstimator, err := NewLndClientFeeEstimator(cfg.LND.WalletKit)
+	if err != nil {
+		return nil, fmt.Errorf("create fee estimator: %w", err)
+	}
 	broadcaster := NewLndClientTxBroadcaster(cfg.LND.WalletKit)
 
 	backend := NewLNDBackend(notifier, feeEstimator, broadcaster)
 	backend.Log = cfg.Log
 	backend.packageSubmitter = cfg.PackageSubmitter
 
-	return backend
+	return backend, nil
 }

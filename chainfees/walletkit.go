@@ -54,7 +54,7 @@ type WalletKitEstimatorConfig struct {
 // NewFallbackWalletKitEstimator for a standalone estimator that should serve a
 // stale rate instead of failing.
 func NewWalletKitEstimator(walletKit lndclient.WalletKitClient,
-	log btclog.Logger) *WalletKitEstimator {
+	log btclog.Logger) (*WalletKitEstimator, error) {
 
 	return NewWalletKitEstimatorWithConfig(WalletKitEstimatorConfig{
 		WalletKit: walletKit,
@@ -65,7 +65,7 @@ func NewWalletKitEstimator(walletKit lndclient.WalletKitClient,
 // NewWalletKitEstimatorWithTimeout builds a fail-fast WalletKitEstimator with a
 // custom per-call timeout.
 func NewWalletKitEstimatorWithTimeout(walletKit lndclient.WalletKitClient,
-	log btclog.Logger, timeout time.Duration) *WalletKitEstimator {
+	log btclog.Logger, timeout time.Duration) (*WalletKitEstimator, error) {
 
 	return NewWalletKitEstimatorWithConfig(WalletKitEstimatorConfig{
 		WalletKit: walletKit,
@@ -80,7 +80,7 @@ func NewWalletKitEstimatorWithTimeout(walletKit lndclient.WalletKitClient,
 // never compose it inside a selector, where a stale fallback could beat
 // another live provider.
 func NewFallbackWalletKitEstimator(walletKit lndclient.WalletKitClient,
-	log btclog.Logger) *WalletKitEstimator {
+	log btclog.Logger) (*WalletKitEstimator, error) {
 
 	return NewWalletKitEstimatorWithConfig(WalletKitEstimatorConfig{
 		WalletKit:       walletKit,
@@ -89,12 +89,14 @@ func NewFallbackWalletKitEstimator(walletKit lndclient.WalletKitClient,
 	})
 }
 
-// NewWalletKitEstimatorWithConfig builds a WalletKitEstimator from cfg.
-func NewWalletKitEstimatorWithConfig(
-	cfg WalletKitEstimatorConfig) *WalletKitEstimator {
+// NewWalletKitEstimatorWithConfig builds a WalletKitEstimator from cfg. It
+// returns an error when the WalletKit client is missing, rather than a typed
+// nil pointer that would panic on first use once boxed into an interface.
+func NewWalletKitEstimatorWithConfig(cfg WalletKitEstimatorConfig) (
+	*WalletKitEstimator, error) {
 
 	if cfg.WalletKit == nil {
-		return nil
+		return nil, fmt.Errorf("walletkit client is required")
 	}
 
 	log := cfg.Log
@@ -112,7 +114,7 @@ func NewWalletKitEstimatorWithConfig(
 		log:             log,
 		estimateTimeout: timeout,
 		fallbackOnError: cfg.FallbackOnError,
-	}
+	}, nil
 }
 
 // EstimateFeePerKW returns the current chain fee rate for the given

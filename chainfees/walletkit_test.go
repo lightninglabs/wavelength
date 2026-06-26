@@ -38,7 +38,8 @@ func TestWalletKitEstimatorReturnsSatPerKW(t *testing.T) {
 	walletKit := &testWalletKit{
 		rate: wantRate,
 	}
-	estimator := NewWalletKitEstimator(walletKit, nil)
+	estimator, err := NewWalletKitEstimator(walletKit, nil)
+	require.NoError(t, err)
 
 	gotRate, err := estimator.EstimateFeePerKW(6)
 	require.NoError(t, err)
@@ -52,7 +53,8 @@ func TestWalletKitEstimatorClampsSubFloorRate(t *testing.T) {
 	walletKit := &testWalletKit{
 		rate: 1,
 	}
-	estimator := NewWalletKitEstimator(walletKit, nil)
+	estimator, err := NewWalletKitEstimator(walletKit, nil)
+	require.NoError(t, err)
 
 	gotRate, err := estimator.EstimateFeePerKW(6)
 	require.NoError(t, err)
@@ -65,7 +67,8 @@ func TestWalletKitEstimatorFallsBackToLastGoodRate(t *testing.T) {
 	walletKit := &testWalletKit{
 		rate: 1_200,
 	}
-	estimator := NewFallbackWalletKitEstimator(walletKit, nil)
+	estimator, err := NewFallbackWalletKitEstimator(walletKit, nil)
+	require.NoError(t, err)
 
 	gotRate, err := estimator.EstimateFeePerKW(6)
 	require.NoError(t, err)
@@ -83,7 +86,8 @@ func TestWalletKitEstimatorFallsBackToFloorBeforeFirstSuccess(t *testing.T) {
 	walletKit := &testWalletKit{
 		err: fmt.Errorf("offline"),
 	}
-	estimator := NewFallbackWalletKitEstimator(walletKit, nil)
+	estimator, err := NewFallbackWalletKitEstimator(walletKit, nil)
+	require.NoError(t, err)
 
 	// With no successful estimate cached yet, a fallback estimator returns
 	// the relay floor (not an error).
@@ -98,8 +102,17 @@ func TestWalletKitEstimatorFailsFastByDefault(t *testing.T) {
 	walletKit := &testWalletKit{
 		err: fmt.Errorf("offline"),
 	}
-	estimator := NewWalletKitEstimator(walletKit, nil)
+	estimator, err := NewWalletKitEstimator(walletKit, nil)
+	require.NoError(t, err)
 
-	_, err := estimator.EstimateFeePerKW(6)
+	_, err = estimator.EstimateFeePerKW(6)
 	require.ErrorContains(t, err, "estimate walletkit fee rate")
+}
+
+func TestWalletKitEstimatorRequiresWalletKit(t *testing.T) {
+	t.Parallel()
+
+	estimator, err := NewWalletKitEstimator(nil, nil)
+	require.ErrorContains(t, err, "walletkit client is required")
+	require.Nil(t, estimator)
 }

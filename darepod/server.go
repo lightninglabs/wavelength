@@ -2049,10 +2049,14 @@ func (s *Server) initChainBackend(ctx context.Context) error {
 				),
 			},
 		)
+		feeEstimator, err := chainbackends.NewLndClientFeeEstimator(
+			lndSvc.WalletKit,
+		)
+		if err != nil {
+			return fmt.Errorf("create lnd fee estimator: %w", err)
+		}
 		backend := chainbackends.NewLNDBackend(
-			notifier, chainbackends.NewLndClientFeeEstimator(
-				lndSvc.WalletKit,
-			),
+			notifier, feeEstimator,
 			chainbackends.NewLndClientTxBroadcaster(
 				lndSvc.WalletKit,
 			),
