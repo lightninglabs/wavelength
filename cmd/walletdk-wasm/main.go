@@ -77,6 +77,9 @@ func walletCall(_ js.Value, args []js.Value) any {
 	case "unlockWallet":
 		return promise(jsonVerb(req, mobile.UnlockWallet))
 
+	case "openWalletFromPasskey":
+		return promise(jsonVerb(req, mobile.OpenWalletFromPasskey))
+
 	case "deposit":
 		return promise(jsonVerb(req, mobile.Deposit))
 
