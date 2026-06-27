@@ -127,6 +127,19 @@ export type SendResult = {
   PaymentHash?: string;
 };
 
+// PrepareSendResult is the quote the facade returns from the prepare step of a
+// two-step send. The browser bridge composes prepare+dispatch into one send(),
+// so the demo only consumes SendIntentID (to dispatch) and PaymentHash (to echo
+// back to the UI); the remaining quote fields are surfaced for completeness.
+export type PrepareSendResult = {
+  SendIntentID: string;
+  AmountSat?: number;
+  ExpectedFeeSat?: number;
+  Rail?: string;
+  PaymentHash?: string;
+  Warning?: string;
+};
+
 export type ListRequest = {
   view?: 'activity' | 'vtxos' | 'onchain';
   pendingOnly?: boolean;
@@ -192,6 +205,11 @@ export interface WalletDKClient {
   exitStatus(req: ExitStatusRequest): Promise<ExitStatusResult>;
   callRaw<T = unknown>(method: string, params?: unknown): Promise<T>;
   subscribe(listener: WalletDKListener): () => void;
+  // startActivity opens the wallet activity stream and forwards each entry to
+  // subscribers as an 'activity' event until stopActivity is called.
+  startActivity(opts?: { includeExisting?: boolean }): Promise<void>;
+  // stopActivity closes the activity stream opened by startActivity.
+  stopActivity(): void;
 }
 
 export class WalletDKError extends Error {

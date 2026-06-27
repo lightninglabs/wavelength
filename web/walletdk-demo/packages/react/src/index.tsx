@@ -180,9 +180,7 @@ export function WalletDKProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    client.callRaw("subscribeActivity", { includeExisting: true }).catch(
-      () => undefined,
-    );
+    client.startActivity({ includeExisting: true }).catch(() => undefined);
 
     let debounce: number | undefined;
     const unsubscribe = client.subscribe((event) => {
@@ -199,6 +197,7 @@ export function WalletDKProvider({ children }: { children: ReactNode }) {
     return () => {
       window.clearTimeout(debounce);
       unsubscribe();
+      client.stopActivity();
     };
   }, [client, phase]);
 

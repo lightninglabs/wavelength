@@ -12,6 +12,7 @@ import {
   ListResult,
   OpenWalletFromPasskeyRequest,
   OpenWalletFromPasskeyResult,
+  PrepareSendResult,
   ReceiveRequest,
   ReceiveResult,
   RuntimeConfig,
@@ -24,6 +25,7 @@ import {
   WalletDKEvent,
   WalletDKListener,
   WalletInfo,
+  WalletState,
   WalletStatus,
 } from '@lightninglabs/walletdk-core';
 
@@ -31,6 +33,75 @@ type PendingCall = {
   resolve: (value: unknown) => void;
   reject: (err: Error) => void;
 };
+
+// ActivityHandle is the pull-based subscription the 803 bridge's `subscribe`
+// verb resolves to: next() yields the next activity entry (or null at end of
+// stream) and close() cancels it.
+type ActivityHandle = {
+  next: () => Promise<unknown>;
+  close: () => unknown;
+};
+
+// MobileConfig is the flat, snake_case config the walletdk mobile facade's
+// `start` verb decodes (sdk/walletdk/mobile.mobileConfig). The browser bridge
+// forwards it verbatim to mobile.Start.
+type MobileConfig = {
+  data_dir?: string;
+  network?: string;
+  debug_level?: string;
+  wallet_type?: string;
+  wallet_esplora_url?: string;
+  server_address?: string;
+  server_transport?: string;
+  server_insecure?: boolean;
+  swap_server_address?: string;
+  swap_server_transport?: string;
+  swap_server_insecure?: boolean;
+  swap_database_file_name?: string;
+};
+
+// toMobileConfig maps the demo's RuntimeConfig onto the flat config the mobile
+// facade expects. The embedded daemon runs in the browser and reaches the Ark
+// operator and swap server over grpc-gateway REST — a browser cannot speak
+// native gRPC — so the gateway URLs become REST server addresses. The Ark and
+// mailbox gateways address the same edge server, so the *MailboxGatewayURL
+// fields fold into the single server address the facade exposes. Only the
+// lightweight Esplora-backed wallet runs under wasm.
+function toMobileConfig(config: RuntimeConfig): MobileConfig {
+  const out: MobileConfig = {
+    network: config.network,
+    data_dir: config.dataDir,
+    debug_level: config.debugLevel,
+    wallet_type: 'lwwallet',
+    wallet_esplora_url: config.walletEsploraURL,
+    server_address: config.arkGatewayURL,
+    server_transport: 'rest',
+    server_insecure: config.serverInsecure,
+  };
+
+  // Leaving the swap server address unset disables the swap subsystem, so omit
+  // every swap field when the host asked to run without swaps.
+  if (!config.disableSwaps) {
+    out.swap_server_address = config.swapServerGatewayURL;
+    out.swap_server_transport = 'rest';
+    out.swap_server_insecure = config.swapServerInsecure;
+    out.swap_database_file_name = config.swapDatabaseFileName;
+  }
+
+  return out;
+}
+
+// withWalletReady backfills the WalletReady predicate the 803 facade omits: it
+// marshals walletdk.Info, whose WalletReady() is a Go method rather than a
+// field, so the JSON lacks it. Mirror the Go rule (ready iff WalletState ==
+// Ready) so hosts see the same convenience flag the old bridge provided.
+function withWalletReady(info: WalletInfo): WalletInfo {
+  if (info.WalletReady === undefined && info.WalletState !== undefined) {
+    return { ...info, WalletReady: info.WalletState === WalletState.Ready };
+  }
+
+  return info;
+}
 
 export type WasmWalletDKClientOptions = {
   workerURL?: string;
@@ -45,14 +116,11 @@ export function createWasmWalletDKClient(
 export class MainThreadWalletDKClient implements WalletDKClient {
   private readonly listeners = new Set<WalletDKListener>();
   private loadPromise: Promise<void> | null = null;
+  private activityHandle: ActivityHandle | null = null;
 
   constructor(_options: WasmWalletDKClientOptions = {}) {
     globalThis.addEventListener('walletdk-ready', () => {
       this.emit({ type: 'runtimeReady' });
-    });
-    globalThis.addEventListener('walletdk-activity', (event) => {
-      const detail = (event as CustomEvent).detail;
-      this.emit({ type: 'activity', payload: detail });
     });
   }
 
@@ -60,8 +128,14 @@ export class MainThreadWalletDKClient implements WalletDKClient {
     return this.ensureLoaded();
   }
 
-  start(config: RuntimeConfig): Promise<WalletInfo> {
-    return this.callRaw<WalletInfo>('start', config);
+  // start boots the embedded daemon and returns the post-boot WalletInfo. The
+  // 803 bridge's start verb resolves null (it only calls mobile.Start), so the
+  // client fetches getInfo afterwards — the old bridge returned info inline and
+  // the React provider derives the runtime phase from it.
+  async start(config: RuntimeConfig): Promise<WalletInfo> {
+    await this.callRaw('start', toMobileConfig(config));
+
+    return this.getInfo();
   }
 
   async stop(): Promise<void> {
@@ -69,8 +143,8 @@ export class MainThreadWalletDKClient implements WalletDKClient {
     this.emit({ type: 'runtimeStopped' });
   }
 
-  getInfo(): Promise<WalletInfo> {
-    return this.callRaw<WalletInfo>('getInfo');
+  async getInfo(): Promise<WalletInfo> {
+    return withWalletReady(await this.callRaw<WalletInfo>('getInfo'));
   }
 
   status(): Promise<WalletStatus> {
@@ -108,8 +182,20 @@ export class MainThreadWalletDKClient implements WalletDKClient {
     return this.callRaw<ReceiveResult>('receive', req);
   }
 
-  send(req: SendRequest): Promise<SendResult> {
-    return this.callRaw<SendResult>('send', req);
+  // send composes the facade's two-step prepare/dispatch into one call: it
+  // quotes the payment with prepareSend, then dispatches the returned
+  // single-use SendIntentID with sendPrepared. The prepare-time PaymentHash is
+  // folded into the result so the UI can echo it (sendPrepared omits it).
+  async send(req: SendRequest): Promise<SendResult> {
+    const prepared = await this.callRaw<PrepareSendResult>('prepareSend', req);
+    const result = await this.callRaw<SendResult>('sendPrepared', {
+      SendIntentID: prepared.SendIntentID,
+    });
+
+    return {
+      ...result,
+      PaymentHash: result.PaymentHash ?? prepared.PaymentHash,
+    };
   }
 
   list(req: ListRequest = {}): Promise<ListResult> {
@@ -164,6 +250,54 @@ export class MainThreadWalletDKClient implements WalletDKClient {
     return () => {
       this.listeners.delete(listener);
     };
+  }
+
+  // startActivity opens the facade's pull-based activity stream and pumps each
+  // entry to subscribers as an 'activity' event. The old bridge pushed a
+  // 'walletdk-activity' DOM event; the 803 bridge hands back a subscription
+  // handle instead, so the client drives the loop. Idempotent: a second call
+  // while a stream is open is a no-op.
+  async startActivity(opts: { includeExisting?: boolean } = {}): Promise<void> {
+    await this.ensureLoaded();
+    if (this.activityHandle) {
+      return;
+    }
+
+    const call = walletdkCall();
+    if (typeof call !== 'function') {
+      throw new WalletDKError('walletdk wasm runtime is not ready');
+    }
+
+    const handle = (await call('subscribe', {
+      includeExisting: opts.includeExisting ?? false,
+    })) as ActivityHandle;
+    this.activityHandle = handle;
+    void this.pumpActivity(handle);
+  }
+
+  stopActivity(): void {
+    const handle = this.activityHandle;
+    this.activityHandle = null;
+    handle?.close();
+  }
+
+  // pumpActivity drains the subscription handle until it ends (next() resolves
+  // null) or stopActivity swaps the handle out from under it.
+  private async pumpActivity(handle: ActivityHandle): Promise<void> {
+    try {
+      for (
+        let entry = await handle.next();
+        entry !== null && this.activityHandle === handle;
+        entry = await handle.next()
+      ) {
+        this.emit({ type: 'activity', payload: entry });
+      }
+    } catch (err) {
+      this.emit({
+        type: 'log',
+        payload: { level: 'error', message: errorMessage(err) },
+      });
+    }
   }
 
   private ensureLoaded(): Promise<void> {
@@ -240,16 +374,22 @@ export class WorkerWalletDKClient implements WalletDKClient {
     return this.callRaw('$ready').then(() => undefined);
   }
 
-  start(config: RuntimeConfig): Promise<WalletInfo> {
-    return this.callRaw<WalletInfo>('start', config);
+  // start boots the embedded daemon and returns the post-boot WalletInfo. The
+  // 803 bridge's start verb resolves null (it only calls mobile.Start), so the
+  // client fetches getInfo afterwards — the old bridge returned info inline and
+  // the React provider derives the runtime phase from it.
+  async start(config: RuntimeConfig): Promise<WalletInfo> {
+    await this.callRaw('start', toMobileConfig(config));
+
+    return this.getInfo();
   }
 
   async stop(): Promise<void> {
     await this.callRaw('stop');
   }
 
-  getInfo(): Promise<WalletInfo> {
-    return this.callRaw<WalletInfo>('getInfo');
+  async getInfo(): Promise<WalletInfo> {
+    return withWalletReady(await this.callRaw<WalletInfo>('getInfo'));
   }
 
   status(): Promise<WalletStatus> {
@@ -287,8 +427,20 @@ export class WorkerWalletDKClient implements WalletDKClient {
     return this.callRaw<ReceiveResult>('receive', req);
   }
 
-  send(req: SendRequest): Promise<SendResult> {
-    return this.callRaw<SendResult>('send', req);
+  // send composes the facade's two-step prepare/dispatch into one call: it
+  // quotes the payment with prepareSend, then dispatches the returned
+  // single-use SendIntentID with sendPrepared. The prepare-time PaymentHash is
+  // folded into the result so the UI can echo it (sendPrepared omits it).
+  async send(req: SendRequest): Promise<SendResult> {
+    const prepared = await this.callRaw<PrepareSendResult>('prepareSend', req);
+    const result = await this.callRaw<SendResult>('sendPrepared', {
+      SendIntentID: prepared.SendIntentID,
+    });
+
+    return {
+      ...result,
+      PaymentHash: result.PaymentHash ?? prepared.PaymentHash,
+    };
   }
 
   list(req: ListRequest = {}): Promise<ListResult> {
@@ -324,6 +476,20 @@ export class WorkerWalletDKClient implements WalletDKClient {
     return () => {
       this.listeners.delete(listener);
     };
+  }
+
+  // startActivity asks the worker to open the activity stream. The 803 bridge's
+  // subscription handle holds JS callbacks that cannot cross postMessage, so the
+  // worker drives the pull loop and forwards each entry as an 'activity' event
+  // message instead of returning the handle.
+  async startActivity(opts: { includeExisting?: boolean } = {}): Promise<void> {
+    await this.callRaw('$startActivity', {
+      includeExisting: opts.includeExisting ?? false,
+    });
+  }
+
+  stopActivity(): void {
+    void this.callRaw('$stopActivity').catch(() => undefined);
   }
 
   private handleMessage(message: unknown) {

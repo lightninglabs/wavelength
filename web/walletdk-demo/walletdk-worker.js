@@ -1,5 +1,6 @@
 let wasmReady = false;
 let loadPromise = null;
+let activityHandle = null;
 
 function postEvent(type, payload) {
   self.postMessage({
@@ -27,6 +28,30 @@ self.onmessage = async (event) => {
 
     if (method === "$ready") {
       self.postMessage({ id, ok: true, result: { ready: true } });
+
+      return;
+    }
+
+    // The 803 bridge's `subscribe` verb resolves to a handle whose JS callbacks
+    // cannot cross postMessage, so the worker owns the pull loop and forwards
+    // each entry to the main thread as an 'activity' event.
+    if (method === "$startActivity") {
+      if (!activityHandle) {
+        activityHandle = await self.walletdkCall("subscribe", params || {});
+        pumpActivity(activityHandle);
+      }
+      self.postMessage({ id, ok: true, result: { subscribed: true } });
+
+      return;
+    }
+
+    if (method === "$stopActivity") {
+      const handle = activityHandle;
+      activityHandle = null;
+      if (handle) {
+        handle.close();
+      }
+      self.postMessage({ id, ok: true, result: { stopped: true } });
 
       return;
     }
@@ -121,6 +146,23 @@ async function instantiateRawWasm(importObject) {
   }
 
   return WebAssembly.instantiateStreaming(response, importObject);
+}
+
+// pumpActivity drains the subscription handle, forwarding each entry to the
+// main thread until the stream ends (next() resolves null) or $stopActivity
+// swaps the handle out.
+async function pumpActivity(handle) {
+  try {
+    for (
+      let entry = await handle.next();
+      entry !== null && activityHandle === handle;
+      entry = await handle.next()
+    ) {
+      postEvent("activity", entry);
+    }
+  } catch (err) {
+    postEvent("log", { level: "error", message: String(err?.message || err) });
+  }
 }
 
 function publishSQLiteOpenResults() {
