@@ -3921,9 +3921,11 @@ type WalletEntry struct {
 	// phase without inferring meaning from swap/ledger internals.
 	Progress *WalletEntryProgress `protobuf:"bytes,12,opt,name=progress,proto3" json:"progress,omitempty"`
 	// failure_code is a stable, machine-readable classification of why a
-	// FAILED entry failed. It is ENTRY_FAILURE_CODE_UNSPECIFIED unless status
-	// is FAILED. failure_reason remains the human-readable supplement.
-	FailureCode   EntryFailureCode `protobuf:"varint,13,opt,name=failure_code,json=failureCode,proto3,enum=walletdkrpc.EntryFailureCode" json:"failure_code,omitempty"`
+	// FAILED entry failed. It is set ONLY on FAILED entries; a non-failed
+	// entry omits the field entirely (presence-tracked), so its absence is the
+	// canonical "no failure" signal and ENTRY_FAILURE_CODE_UNSPECIFIED is never
+	// sent on the wire. failure_reason remains the human-readable supplement.
+	FailureCode   *EntryFailureCode `protobuf:"varint,13,opt,name=failure_code,json=failureCode,proto3,enum=walletdkrpc.EntryFailureCode,oneof" json:"failure_code,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4043,8 +4045,8 @@ func (x *WalletEntry) GetProgress() *WalletEntryProgress {
 }
 
 func (x *WalletEntry) GetFailureCode() EntryFailureCode {
-	if x != nil {
-		return x.FailureCode
+	if x != nil && x.FailureCode != nil {
+		return *x.FailureCode
 	}
 	return EntryFailureCode_ENTRY_FAILURE_CODE_UNSPECIFIED
 }
@@ -4648,7 +4650,7 @@ const file_wallet_proto_rawDesc = "" +
 	"last_error\x18\x04 \x01(\tR\tlastError\"q\n" +
 	"\x16SubscribeWalletRequest\x12)\n" +
 	"\x10include_existing\x18\x01 \x01(\bR\x0fincludeExisting\x12,\n" +
-	"\x05kinds\x18\x02 \x03(\x0e2\x16.walletdkrpc.EntryKindR\x05kinds\"\x9d\x04\n" +
+	"\x05kinds\x18\x02 \x03(\x0e2\x16.walletdkrpc.EntryKindR\x05kinds\"\xb3\x04\n" +
 	"\vWalletEntry\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12*\n" +
 	"\x04kind\x18\x02 \x01(\x0e2\x16.walletdkrpc.EntryKindR\x04kind\x120\n" +
@@ -4663,8 +4665,9 @@ const file_wallet_proto_rawDesc = "" +
 	"\x0efailure_reason\x18\n" +
 	" \x01(\tR\rfailureReason\x129\n" +
 	"\arequest\x18\v \x01(\v2\x1f.walletdkrpc.WalletEntryRequestR\arequest\x12<\n" +
-	"\bprogress\x18\f \x01(\v2 .walletdkrpc.WalletEntryProgressR\bprogress\x12@\n" +
-	"\ffailure_code\x18\r \x01(\x0e2\x1d.walletdkrpc.EntryFailureCodeR\vfailureCode\"\x86\x02\n" +
+	"\bprogress\x18\f \x01(\v2 .walletdkrpc.WalletEntryProgressR\bprogress\x12E\n" +
+	"\ffailure_code\x18\r \x01(\x0e2\x1d.walletdkrpc.EntryFailureCodeH\x00R\vfailureCode\x88\x01\x01B\x0f\n" +
+	"\r_failure_code\"\x86\x02\n" +
 	"\x12WalletEntryRequest\x12S\n" +
 	"\x11lightning_invoice\x18\x01 \x01(\v2$.walletdkrpc.LightningInvoiceRequestH\x00R\x10lightningInvoice\x12M\n" +
 	"\x0fonchain_address\x18\x02 \x01(\v2\".walletdkrpc.OnchainAddressRequestH\x00R\x0eonchainAddress\x12A\n" +
@@ -4916,6 +4919,7 @@ func file_wallet_proto_init() {
 		(*ListResponse_Vtxos)(nil),
 		(*ListResponse_Onchain)(nil),
 	}
+	file_wallet_proto_msgTypes[39].OneofWrappers = []any{}
 	file_wallet_proto_msgTypes[40].OneofWrappers = []any{
 		(*WalletEntryRequest_LightningInvoice)(nil),
 		(*WalletEntryRequest_OnchainAddress)(nil),

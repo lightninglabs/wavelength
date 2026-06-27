@@ -43,7 +43,7 @@ func TestEntryFromProto(t *testing.T) {
 		FailureReason: "reason",
 		Progress:      prog,
 		Request:       req,
-		FailureCode:   failureCodeEnum("TIMED_OUT"),
+		FailureCode:   failureCodeEnum("TIMED_OUT").Enum(),
 	}
 
 	entry := entryFromProto(proto)
@@ -80,10 +80,14 @@ func TestEntryFromProtoNoProgressOrRequest(t *testing.T) {
 	require.Equal(t, "id", entry.ID)
 	require.Nil(t, entry.Progress)
 	require.Nil(t, entry.Request)
+
+	// A non-failed entry carries no failure code: the empty string, not a
+	// sentinel, parallels the empty FailureReason.
+	require.Empty(t, entry.FailureCode)
 }
 
 // TestEntryFailureCodeFromProto exhaustively maps every walletdkrpc failure
-// code to the wrapper-owned string, including the unspecified fallback.
+// code to the wrapper-owned string, including the empty no-failure case.
 func TestEntryFailureCodeFromProto(t *testing.T) {
 	codes := walletdkrpc.EntryFailureCode_value
 	cases := []struct {
@@ -91,7 +95,7 @@ func TestEntryFailureCodeFromProto(t *testing.T) {
 		want EntryFailureCode
 	}{{
 		in:   failureCodeEnum("UNSPECIFIED"),
-		want: EntryFailureCodeUnspecified,
+		want: "",
 	}, {
 		in:   failureCodeEnum("TIMED_OUT"),
 		want: EntryFailureCodeTimedOut,

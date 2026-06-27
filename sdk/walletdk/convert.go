@@ -400,8 +400,11 @@ func entryFailureCodeFromProto(
 	case walletdkrpc.EntryFailureCode_ENTRY_FAILURE_CODE_FAILED:
 		return EntryFailureCodeFailed
 
+	// An absent (presence-tracked) or unrecognized code is not a failure;
+	// surface the empty string, mirroring FailureReason, rather than a
+	// sentinel a non-failed entry would carry.
 	default:
-		return EntryFailureCodeUnspecified
+		return ""
 	}
 }
 
