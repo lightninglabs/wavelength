@@ -19,8 +19,9 @@ estimation, and optional v3 package relay via a pluggable `PackageSubmitter`.
   environments that do not support package relay.
 - `LndClientTxBroadcaster` — Implements `TxBroadcaster` using
   `lndclient.WalletKitClient`.
-- `LndClientFeeEstimator` — Implements `chainfee.Estimator` using
-  `lndclient.WalletKitClient` with a 30-second per-call timeout.
+- `LndClientFeeEstimator` — Type alias for
+  `chainfees.WalletKitEstimator`, backed by `lndclient.WalletKitClient` with
+  a 15-second per-call timeout and last-good fallback semantics.
 - `LndClientChainNotifier` / `LndClientChainNotifierConfig` — Implements
   `chainntnfs.ChainNotifier` using lndclient. Uses a 15-second registration
   timeout and goroutine-based forwarding to bridge lndclient's height-only

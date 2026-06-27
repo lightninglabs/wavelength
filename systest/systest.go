@@ -182,13 +182,16 @@ func (h *SysTestHarness) NewBoardingBackend() wallet.BoardingBackend {
 // NewChainBackend creates a new ChainBackend connected to the shared LND.
 // The subsystem logger is passed via config to enable proper logging.
 func (h *SysTestHarness) NewChainBackend() chainsource.ChainBackend {
-	return chainbackends.NewLNDBackendFromLndClient(
+	backend, err := chainbackends.NewLNDBackendFromLndClient(
 		chainbackends.LNDBackendFromLndClientConfig{
 			LND: h.Harness.LND,
 		}.WithLogger(
 			h.SubLogger(chainbackends.LndClientSubsystem),
 		),
 	)
+	require.NoError(h.t, err)
+
+	return backend
 }
 
 // NewChainSourceActor creates and spawns a ChainSourceActor using the shared

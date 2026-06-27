@@ -10,6 +10,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/build"
+	"github.com/lightninglabs/darepo-client/chainfees"
 	"github.com/lightninglabs/lndclient"
 	"github.com/lightningnetwork/lnd/chainntnfs"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -42,55 +43,17 @@ func (b *LndClientTxBroadcaster) PublishTransaction(ctx context.Context,
 var _ TxBroadcaster = (*LndClientTxBroadcaster)(nil)
 
 // LndClientFeeEstimator implements chainfee.Estimator using lndclient.
-type LndClientFeeEstimator struct {
-	walletKit lndclient.WalletKitClient
-}
+type LndClientFeeEstimator = chainfees.WalletKitEstimator
 
 // NewLndClientFeeEstimator creates a new fee estimator backed by lndclient.
-func NewLndClientFeeEstimator(
-	walletKit lndclient.WalletKitClient) *LndClientFeeEstimator {
+// It uses last-good fallback semantics: a WalletKit error returns the last
+// successful rate (or the relay floor before any success) rather than
+// propagating the error, so a transient WalletKit outage does not abort fee
+// estimation on the standalone LND backend path.
+func NewLndClientFeeEstimator(walletKit lndclient.WalletKitClient) (
+	*LndClientFeeEstimator, error) {
 
-	return &LndClientFeeEstimator{
-		walletKit: walletKit,
-	}
-}
-
-// Start is a no-op for lndclient-backed estimators since the connection is
-// already established.
-func (e *LndClientFeeEstimator) Start() error {
-	return nil
-}
-
-// Stop is a no-op for lndclient-backed estimators.
-func (e *LndClientFeeEstimator) Stop() error {
-	return nil
-}
-
-// EstimateFeePerKW returns the estimated fee rate in satoshis per kilo-weight
-// unit for the given confirmation target.
-func (e *LndClientFeeEstimator) EstimateFeePerKW(numBlocks uint32) (
-	chainfee.SatPerKWeight, error) {
-
-	ctx, cancel := context.WithTimeout(
-		context.Background(), 30*time.Second,
-	)
-	defer cancel()
-	satPerKw, err := e.walletKit.EstimateFeeRate(
-		ctx, int32(numBlocks),
-	)
-	if err != nil {
-		return 0, fmt.Errorf("estimate fee rate: %w", err)
-	}
-
-	return satPerKw, nil
-}
-
-// RelayFeePerKW returns the minimum fee rate required for transactions to be
-// relayed. For remote lnd, we return a reasonable default.
-func (e *LndClientFeeEstimator) RelayFeePerKW() chainfee.SatPerKWeight {
-
-	// Default relay fee of 1 sat/vbyte = 250 sat/kw.
-	return chainfee.SatPerKWeight(250)
+	return chainfees.NewFallbackWalletKitEstimator(walletKit, nil)
 }
 
 // Ensure LndClientFeeEstimator implements chainfee.Estimator.
@@ -409,7 +372,9 @@ func (c LNDBackendFromLndClientConfig) WithLogger(
 // services. This is a convenience function for creating a backend from a
 // remote lnd connection. The config must include LND; use WithLogger() to
 // inject a specific logger.
-func NewLNDBackendFromLndClient(cfg LNDBackendFromLndClientConfig) *LNDBackend {
+func NewLNDBackendFromLndClient(cfg LNDBackendFromLndClientConfig) (*LNDBackend,
+	error) {
+
 	cfg.Log.UnwrapOr(btclog.Disabled).InfoS(
 		context.Background(),
 		"Creating LND backend from lndclient services",
@@ -421,12 +386,15 @@ func NewLNDBackendFromLndClient(cfg LNDBackendFromLndClientConfig) *LNDBackend {
 		LND: cfg.LND,
 		Log: cfg.Log,
 	})
-	feeEstimator := NewLndClientFeeEstimator(cfg.LND.WalletKit)
+	feeEstimator, err := NewLndClientFeeEstimator(cfg.LND.WalletKit)
+	if err != nil {
+		return nil, fmt.Errorf("create fee estimator: %w", err)
+	}
 	broadcaster := NewLndClientTxBroadcaster(cfg.LND.WalletKit)
 
 	backend := NewLNDBackend(notifier, feeEstimator, broadcaster)
 	backend.Log = cfg.Log
 	backend.packageSubmitter = cfg.PackageSubmitter
 
-	return backend
+	return backend, nil
 }

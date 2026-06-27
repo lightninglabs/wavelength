@@ -5,6 +5,7 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/btcwbackend"
 	"github.com/lightninglabs/darepo-client/chainbackends"
+	"github.com/lightninglabs/darepo-client/chainfees"
 	"github.com/lightninglabs/darepo-client/db"
 	"github.com/lightninglabs/darepo-client/indexer"
 	"github.com/lightninglabs/darepo-client/lndbackend"
@@ -34,6 +35,7 @@ var allSubsystems = []string{
 	serverconn.Subsystem,
 	chainbackends.Subsystem,
 	chainbackends.LndClientSubsystem,
+	chainfees.Subsystem,
 	lndbackend.Subsystem,
 	indexer.Subsystem,
 	db.Subsystem,

@@ -113,7 +113,8 @@ func TestLndClientFeeEstimatorReturnsWalletKitSatPerKW(t *testing.T) {
 	walletKit := &stubWalletKitFeeEstimator{
 		rate: wantRate,
 	}
-	estimator := NewLndClientFeeEstimator(walletKit)
+	estimator, err := NewLndClientFeeEstimator(walletKit)
+	require.NoError(t, err)
 
 	gotRate, err := estimator.EstimateFeePerKW(6)
 	require.NoError(t, err)

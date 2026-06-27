@@ -31,6 +31,7 @@ import (
 	"github.com/lightninglabs/darepo-client/btcwbackend"
 	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/darepo-client/chainbackends"
+	"github.com/lightninglabs/darepo-client/chainfees"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/db"
@@ -2024,6 +2025,64 @@ func (s *Server) registerChainSourceActor(
 	return ref
 }
 
+// lndFeeEstimator builds the chain fee estimator for the lnd wallet backend.
+// By default it returns the WalletKit-backed estimator with last-good fallback.
+// When the mempool.space provider is enabled, it instead returns a
+// minimum-selecting estimator composed over a fail-fast WalletKit estimator and
+// a mempool.space estimator, so the lower of the two live rates wins.
+func (s *Server) lndFeeEstimator(ctx context.Context,
+	walletKit lndclient.WalletKitClient) (chainfee.Estimator, error) {
+
+	if !s.cfg.MempoolSpaceFeeEnabled() {
+		return chainbackends.NewLndClientFeeEstimator(walletKit)
+	}
+
+	// Inside the selector the WalletKit child must fail fast: a stale
+	// fallback rate could otherwise beat the mempool.space live estimate.
+	walletKitEst, err := chainfees.NewWalletKitEstimator(
+		walletKit, s.subLogger(chainbackends.LndClientSubsystem),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("create walletkit fee estimator: %w",
+			err)
+	}
+
+	mempoolEst, err := chainfees.NewMempoolSpaceEstimator(
+		chainfees.MempoolSpaceConfig{
+			URL:    s.cfg.MempoolSpaceFeeURL(),
+			Params: s.chainParams,
+			Log:    s.subLogger(chainfees.Subsystem),
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("create mempool.space fee estimator: %w",
+			err)
+	}
+
+	estimator, err := chainfees.NewMinEstimator(
+		s.subLogger(chainfees.Subsystem),
+		chainfees.NamedEstimator{
+			Name:      "walletkit",
+			Estimator: walletKitEst,
+		},
+		chainfees.NamedEstimator{
+			Name:      "mempoolspace",
+			Estimator: mempoolEst,
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("create min fee estimator: %w", err)
+	}
+
+	s.log.InfoS(
+		ctx, "mempool.space fee provider enabled; lnd fee "+
+			"estimator selects the minimum of the local and "+
+			"mempool.space rates",
+	)
+
+	return estimator, nil
+}
+
 // initChainBackend creates and starts the chain backend appropriate
 // for the configured wallet type. In lnd mode it uses the lndclient
 // chain notifier and fee estimator. In lwwallet mode it uses the
@@ -2049,10 +2108,12 @@ func (s *Server) initChainBackend(ctx context.Context) error {
 				),
 			},
 		)
+		feeEstimator, err := s.lndFeeEstimator(ctx, lndSvc.WalletKit)
+		if err != nil {
+			return fmt.Errorf("create lnd fee estimator: %w", err)
+		}
 		backend := chainbackends.NewLNDBackend(
-			notifier, chainbackends.NewLndClientFeeEstimator(
-				lndSvc.WalletKit,
-			),
+			notifier, feeEstimator,
 			chainbackends.NewLndClientTxBroadcaster(
 				lndSvc.WalletKit,
 			),

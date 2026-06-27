@@ -1,0 +1,118 @@
+package chainfees
+
+import (
+	"context"
+	"fmt"
+	"testing"
+
+	"github.com/lightninglabs/lndclient"
+	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
+	"github.com/stretchr/testify/require"
+)
+
+type testWalletKit struct {
+	lndclient.WalletKitClient
+
+	rate      chainfee.SatPerKWeight
+	err       error
+	gotTarget int32
+}
+
+func (w *testWalletKit) EstimateFeeRate(_ context.Context, target int32) (
+	chainfee.SatPerKWeight, error) {
+
+	w.gotTarget = target
+
+	if w.err != nil {
+		return 0, w.err
+	}
+
+	return w.rate, nil
+}
+
+func TestWalletKitEstimatorReturnsSatPerKW(t *testing.T) {
+	t.Parallel()
+
+	const wantRate = chainfee.SatPerKWeight(1_250)
+
+	walletKit := &testWalletKit{
+		rate: wantRate,
+	}
+	estimator, err := NewWalletKitEstimator(walletKit, nil)
+	require.NoError(t, err)
+
+	gotRate, err := estimator.EstimateFeePerKW(6)
+	require.NoError(t, err)
+	require.Equal(t, wantRate, gotRate)
+	require.Equal(t, int32(6), walletKit.gotTarget)
+}
+
+func TestWalletKitEstimatorClampsSubFloorRate(t *testing.T) {
+	t.Parallel()
+
+	walletKit := &testWalletKit{
+		rate: 1,
+	}
+	estimator, err := NewWalletKitEstimator(walletKit, nil)
+	require.NoError(t, err)
+
+	gotRate, err := estimator.EstimateFeePerKW(6)
+	require.NoError(t, err)
+	require.Equal(t, chainfee.FeePerKwFloor, gotRate)
+}
+
+func TestWalletKitEstimatorFallsBackToLastGoodRate(t *testing.T) {
+	t.Parallel()
+
+	walletKit := &testWalletKit{
+		rate: 1_200,
+	}
+	estimator, err := NewFallbackWalletKitEstimator(walletKit, nil)
+	require.NoError(t, err)
+
+	gotRate, err := estimator.EstimateFeePerKW(6)
+	require.NoError(t, err)
+	require.Equal(t, walletKit.rate, gotRate)
+
+	walletKit.err = fmt.Errorf("offline")
+	gotRate, err = estimator.EstimateFeePerKW(6)
+	require.NoError(t, err)
+	require.Equal(t, walletKit.rate, gotRate)
+}
+
+func TestWalletKitEstimatorFailsClosedBeforeFirstSuccess(t *testing.T) {
+	t.Parallel()
+
+	walletKit := &testWalletKit{
+		err: fmt.Errorf("offline"),
+	}
+	estimator, err := NewFallbackWalletKitEstimator(walletKit, nil)
+	require.NoError(t, err)
+
+	// With no successful estimate cached yet, even a fallback estimator
+	// fails closed rather than serving the relay floor, which would
+	// silently underpay.
+	_, err = estimator.EstimateFeePerKW(6)
+	require.ErrorContains(t, err, "no cached rate for fallback")
+}
+
+func TestWalletKitEstimatorFailsFastByDefault(t *testing.T) {
+	t.Parallel()
+
+	walletKit := &testWalletKit{
+		err: fmt.Errorf("offline"),
+	}
+	estimator, err := NewWalletKitEstimator(walletKit, nil)
+	require.NoError(t, err)
+
+	_, err = estimator.EstimateFeePerKW(6)
+	require.ErrorContains(t, err, "estimate walletkit fee rate")
+}
+
+func TestWalletKitEstimatorRequiresWalletKit(t *testing.T) {
+	t.Parallel()
+
+	estimator, err := NewWalletKitEstimator(nil, nil)
+	require.ErrorContains(t, err, "walletkit client is required")
+	require.Nil(t, estimator)
+}
