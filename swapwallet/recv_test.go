@@ -6,6 +6,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/lightninglabs/darepo-client/credit"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
 	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
@@ -73,17 +74,13 @@ func TestRecvDispatchesStartReceive(t *testing.T) {
 	)
 }
 
-func TestRecvBelowDustCreatesCreditReceive(t *testing.T) {
+// TestRecvBelowDustHandsToCreditRegistry asserts a sub-dust receive is handed
+// to the durable credit registry, which returns the server-owned invoice
+// synchronously, instead of the wallet calling CreateCredit inline.
+func TestRecvBelowDustHandsToCreditRegistry(t *testing.T) {
 	t.Parallel()
 
-	swap := &fakeSwapService{
-		createCreditResp: &swapclientrpc.CreateCreditResponse{
-			OperationId: "cr_recv",
-			Invoice:     "lnbc1credit",
-			PaymentHash: "hash-credit",
-			AmountSat:   500,
-		},
-	}
+	swap := &fakeSwapService{}
 	rpc := &fakeRPCServer{
 		getInfoResp: &daemonrpc.GetInfoResponse{
 			ServerInfo: &daemonrpc.ServerInfo{
@@ -91,9 +88,20 @@ func TestRecvBelowDustCreatesCreditReceive(t *testing.T) {
 			},
 		},
 	}
+	reg := &fakeCreditRegistry{
+		receiveResp: &credit.StartCreditResponse{
+			OpID:    "cr_recv",
+			Invoice: "lnbc1credit",
+			PaymentHash: []byte{
+				0xab,
+				0xcd,
+			},
+		},
+	}
 	deps := &Deps{
-		SwapService: swap,
-		RPCServer:   rpc,
+		SwapService:    swap,
+		RPCServer:      rpc,
+		CreditRegistry: reg,
 	}
 	runtime := newRuntime(t.Context(), deps)
 	t.Cleanup(runtime.stop)
@@ -106,17 +114,20 @@ func TestRecvBelowDustCreatesCreditReceive(t *testing.T) {
 		},
 	)
 	require.NoError(t, err)
+
+	// The receive was handed to the registry, not driven inline.
 	require.Equal(t, 0, swap.startReceiveCalls)
-	require.Equal(t, 1, swap.createCreditCalls)
-	require.Equal(
-		t, swapclientrpc.
-			CreditFundingSource_CREDIT_FUNDING_SOURCE_LIGHTNING_RECEIVE,
-		swap.createCreditLast.GetSource(),
-	)
-	require.Equal(t, uint64(500), swap.createCreditLast.GetAmountSat())
-	require.Equal(t, "tiny", swap.createCreditLast.GetMemo())
+	require.Equal(t, 0, swap.createCreditCalls)
+	require.Equal(t, 1, reg.receiveCalls)
+	require.NotNil(t, reg.lastReceive)
+	require.Equal(t, uint64(500), reg.lastReceive.AmountSat)
+	require.Equal(t, "tiny", reg.lastReceive.Memo)
+	require.Contains(t, reg.lastReceive.OpKey, "recv:")
+
+	// The invoice and pending entry come from the registry response.
 	require.Equal(t, "lnbc1credit", resp.GetInvoice())
 	require.Equal(t, "cr_recv", resp.GetCreditReceive().GetOperationId())
+	require.Equal(t, "abcd", resp.GetCreditReceive().GetPaymentHash())
 	require.Equal(t, int64(500), resp.GetEntry().GetAmountSat())
 	require.Equal(
 		t, walletdkrpc.EntryKind_ENTRY_KIND_RECV,

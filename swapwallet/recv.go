@@ -4,9 +4,11 @@ package swapwallet
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/lightninglabs/darepo-client/credit"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
 	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
@@ -143,48 +145,68 @@ func (r *receiver) availableCreditSat(ctx context.Context) (uint64, error) {
 	return credits.GetAvailableSat(), nil
 }
 
+// recvCredit hands a sub-dust receive to the durable credit subsystem. The
+// registry creates the server-owned receive invoice synchronously and returns
+// it, while durably tracking the operation so the pending row survives a
+// restart. Each Recv is a distinct receive, so the op key is freshly random
+// (inbound receives carry no double-spend risk that would need cross-call
+// dedup).
 func (r *receiver) recvCredit(ctx context.Context, req *walletdkrpc.RecvRequest,
 	amt uint64) (*walletdkrpc.RecvResponse, error) {
 
-	idempotencyKey, err := newSendIntentID()
+	if r.deps.CreditRegistry == nil {
+		return nil, fmt.Errorf("%w: credit subsystem unavailable",
+			ErrSwapBackendUnavailable)
+	}
+
+	keyID, err := newSendIntentID()
 	if err != nil {
 		return nil, fmt.Errorf("create credit receive id: %w", err)
 	}
 
-	creditResp, err := r.deps.SwapService.CreateCredit(
-		ctx, &swapclientrpc.CreateCreditRequest{
-			IdempotencyKey: idempotencyKey,
-			Source: swapclientrpc.
-				CreditFundingSource_CREDIT_FUNDING_SOURCE_LIGHTNING_RECEIVE,
+	resp, err := r.deps.CreditRegistry.Ask(
+		ctx, &credit.StartCreditReceiveRequest{
+			OpKey:     "recv:" + keyID,
 			AmountSat: amt,
 			Memo:      req.GetMemo(),
 		},
-	)
+	).Await(ctx).Unpack()
 	if err != nil {
-		return nil, fmt.Errorf("create credit receive: %w", err)
+		return nil, fmt.Errorf("start credit receive: %w", err)
 	}
 
-	entry := creditReceiveEntry(req, creditResp, amt)
+	start, ok := resp.(*credit.StartCreditResponse)
+	if !ok {
+		return nil, fmt.Errorf("unexpected credit receive response %T",
+			resp)
+	}
+	if start.Invoice == "" {
+		return nil, fmt.Errorf("credit receive invoice missing")
+	}
+
+	paymentHashHex := hex.EncodeToString(start.PaymentHash)
+	entry := creditReceiveEntry(
+		req, start.OpID, start.Invoice, paymentHashHex, amt,
+	)
 
 	return &walletdkrpc.RecvResponse{
-		Invoice: creditResp.GetInvoice(),
+		Invoice: start.Invoice,
 		Entry:   entry,
 		CreditReceive: &walletdkrpc.CreditReceive{
-			OperationId: creditResp.GetOperationId(),
-			AmountSat:   creditResp.GetAmountSat(),
-			PaymentHash: creditResp.GetPaymentHash(),
+			OperationId: start.OpID,
+			AmountSat:   amt,
+			PaymentHash: paymentHashHex,
 		},
 	}, nil
 }
 
-func creditReceiveEntry(req *walletdkrpc.RecvRequest,
-	resp *swapclientrpc.CreateCreditResponse,
-	amt uint64) *walletdkrpc.WalletEntry {
+func creditReceiveEntry(req *walletdkrpc.RecvRequest, opID, invoice,
+	paymentHashHex string, amt uint64) *walletdkrpc.WalletEntry {
 
 	now := nowUnix()
 
 	return &walletdkrpc.WalletEntry{
-		Id:            resp.GetOperationId(),
+		Id:            opID,
 		Kind:          walletdkrpc.EntryKind_ENTRY_KIND_RECV,
 		Status:        walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
 		AmountSat:     int64(amt),
@@ -196,8 +218,8 @@ func creditReceiveEntry(req *walletdkrpc.RecvRequest,
 			Request: &walletdkrpc.WalletEntryRequest_LightningInvoice{
 				LightningInvoice: &walletdkrpc.
 					LightningInvoiceRequest{
-					Invoice:     resp.GetInvoice(),
-					PaymentHash: resp.GetPaymentHash(),
+					Invoice:     invoice,
+					PaymentHash: paymentHashHex,
 				},
 			},
 		},
@@ -205,7 +227,7 @@ func creditReceiveEntry(req *walletdkrpc.RecvRequest,
 			Phase: walletdkrpc.
 				WalletEntryPhase_WALLET_ENTRY_PHASE_WAITING_FOR_PAYMENT,
 			PhaseLabel:  "waiting_for_payment",
-			PaymentHash: resp.GetPaymentHash(),
+			PaymentHash: paymentHashHex,
 		},
 	}
 }
