@@ -83,6 +83,9 @@ func NewRegistry(cfg RegistryConfig) (*Registry, error) {
 	if cfg.PollInterval <= 0 {
 		cfg.PollInterval = DefaultPollInterval
 	}
+	if cfg.AdmitTimeout <= 0 {
+		cfg.AdmitTimeout = DefaultAdmitTimeout
+	}
 
 	behavior := &registryBehavior{
 		cfg:    cfg,
@@ -96,6 +99,21 @@ func NewRegistry(cfg RegistryConfig) (*Registry, error) {
 	})
 	behavior.selfRef = supervisor.TellRef()
 	supervisor.Start()
+
+	// Register under the credit service key so a timeout retry-callback ref
+	// (built from the service key) resolves to this registry at Tell time.
+	if cfg.ActorSystem != nil {
+		err := actor.RegisterWithReceptionist(
+			cfg.ActorSystem.Receptionist(), NewServiceKey(),
+			supervisor.Ref(),
+		)
+		if err != nil {
+			supervisor.Stop()
+
+			return nil, fmt.Errorf("register credit registry: %w",
+				err)
+		}
+	}
 
 	return &Registry{
 		ref:      supervisor.Ref(),
@@ -115,6 +133,19 @@ func (r *Registry) StartAutoRedeem(ctx context.Context) {
 	}
 
 	r.redeemer.start(ctx)
+}
+
+// SetEarmarkProvider wires the credit-earmark provider the auto-redeem sweep
+// consults to avoid redeeming credits an in-flight wallet operation is about to
+// spend. It is safe to call after StartAutoRedeem: the wallet's prepared-send
+// store is built after the registry, so the daemon wires this once that store
+// exists.
+func (r *Registry) SetEarmarkProvider(fn EarmarkFunc) {
+	if r == nil {
+		return
+	}
+
+	r.redeemer.setEarmark(fn)
 }
 
 // registryBehavior coordinates credit operations on a plain in-memory mailbox.
@@ -282,6 +313,13 @@ func (b *registryBehavior) admit(ctx context.Context, msg CreditMsg,
 // settlement, so the spawned child only has to reconcile the credit against the
 // server ledger. The invoice is returned to the caller in the admission
 // response.
+//
+// This is the one server round-trip an admission makes on the supervisor
+// goroutine, which serializes every admission, resume, and reap. It is bounded
+// by AdmitTimeout so one slow or hung receive cannot head-of-line-block the
+// whole subsystem; on timeout the synchronous caller retries under the same
+// stable op key, and CreateCredit is idempotent, so the retry reuses the same
+// invoice.
 func (b *registryBehavior) createReceiveInvoice(ctx context.Context,
 	rec *db.CreditOperationRecord, memo string) error {
 
@@ -290,8 +328,11 @@ func (b *registryBehavior) createReceiveInvoice(ctx context.Context,
 		return fmt.Errorf("get identity pubkey: %w", err)
 	}
 
+	callCtx, cancel := context.WithTimeout(ctx, b.cfg.AdmitTimeout)
+	defer cancel()
+
 	res, err := b.cfg.Server.CreateCredit(
-		ctx, acctKey, rec.OpKey, SourceLightningReceive,
+		callCtx, acctKey, rec.OpKey, SourceLightningReceive,
 		uint64(rec.AmountSat), memo,
 	)
 	if err != nil {
@@ -463,16 +504,17 @@ func (b *registryBehavior) handleList(ctx context.Context,
 // childConfig builds the per-operation actor config for one op id.
 func (b *registryBehavior) childConfig(opID string) OpActorConfig {
 	return OpActorConfig{
-		OpID:          opID,
-		Log:           b.cfg.Log,
-		Server:        b.cfg.Server,
-		Daemon:        b.cfg.Daemon,
-		Store:         b.cfg.Store,
-		DeliveryStore: b.cfg.DeliveryStore,
-		TimeoutActor:  b.cfg.TimeoutActor,
-		CallbackRef:   b.cfg.CallbackRef,
-		Registry:      b.selfRef,
-		PollInterval:  b.cfg.PollInterval,
+		OpID:             opID,
+		Log:              b.cfg.Log,
+		Server:           b.cfg.Server,
+		Daemon:           b.cfg.Daemon,
+		Store:            b.cfg.Store,
+		DeliveryStore:    b.cfg.DeliveryStore,
+		TimeoutActor:     b.cfg.TimeoutActor,
+		CallbackRef:      b.cfg.CallbackRef,
+		Registry:         b.selfRef,
+		PollInterval:     b.cfg.PollInterval,
+		MaxAwaitingPolls: b.cfg.MaxAwaitingPolls,
 	}
 }
 
