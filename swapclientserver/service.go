@@ -354,7 +354,7 @@ func newSwapClientService(ctx context.Context, rpcServer *darepod.RPCServer,
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
+	if err := ensureSwapDBDir(dbPath); err != nil {
 		return nil, nil, fmt.Errorf("create swap db dir: %w", err)
 	}
 

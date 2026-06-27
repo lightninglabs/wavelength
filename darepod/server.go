@@ -3292,7 +3292,7 @@ func (s *Server) handleInboundRPC(ctx context.Context,
 func (s *Server) initDatabase(ctx context.Context) error {
 	networkDir := s.cfg.NetworkDir()
 
-	if err := os.MkdirAll(networkDir, 0700); err != nil {
+	if err := ensureDataDir(networkDir); err != nil {
 		return fmt.Errorf("unable to create data dir: %w", err)
 	}
 
