@@ -66,6 +66,11 @@ type swapClientService struct {
 	// background workers that read from it.
 	store *swaps.Store
 
+	// daemonConn is the in-process Ark/daemon surface used by the credit
+	// bridge for identity-key, receive-script, and indexed-VTXO lookups.
+	// Kept so Register can build the credit CreditDaemon adapter.
+	daemonConn swaps.DaemonConn
+
 	// log is the swapruntime subsystem logger derived from darepod's logger
 	// manager. It is used only for daemon-owned orchestration events; the
 	// SDK continues logging its own lower-layer details.
@@ -296,6 +301,15 @@ func Register(ctx context.Context, grpcServer *grpc.Server,
 	// own sweep.
 	if cfg.Swap != nil {
 		cfg.Swap.Backend = svc
+
+		// Publish the credit bridges so the daemon can construct the
+		// credit durable-actor subsystem over the swap-server credit
+		// surface and the wallet/daemon surface.
+		cfg.Swap.CreditServer = &creditServerBridge{svc: svc}
+		cfg.Swap.CreditDaemon = &creditDaemonBridge{
+			daemon: svc.daemonConn,
+			rpc:    rpcServer,
+		}
 	}
 
 	suppressResume := cfg.Swap != nil && cfg.Swap.SuppressResume
@@ -492,11 +506,12 @@ func newSwapClientService(ctx context.Context, rpcServer *darepod.RPCServer,
 		client: &swapClientAdapter{
 			client: swapClient,
 		},
-		store:   store,
-		log:     log,
-		rootCtx: rootCtx,
-		cancel:  cancel,
-		active:  make(map[string]struct{}),
+		store:      store,
+		daemonConn: daemonConn,
+		log:        log,
+		rootCtx:    rootCtx,
+		cancel:     cancel,
+		active:     make(map[string]struct{}),
 		subscribers: make(
 			map[chan *swapclientrpc.SwapSummary]struct{},
 		),

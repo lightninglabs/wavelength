@@ -33,6 +33,7 @@ import (
 	"github.com/lightninglabs/darepo-client/chainbackends"
 	"github.com/lightninglabs/darepo-client/chainfees"
 	"github.com/lightninglabs/darepo-client/chainsource"
+	"github.com/lightninglabs/darepo-client/credit"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/db"
 	"github.com/lightninglabs/darepo-client/db/actordelivery"
@@ -328,6 +329,7 @@ type Server struct {
 		wallet.WalletMsg, wallet.WalletResp,
 	]]
 	oorRegistry        *oor.OORRegistryActor
+	creditRegistry     *credit.Registry
 	vhtlcRecoveryStore *db.VHTLCRecoveryStoreDB
 	vhtlcRecovery      *coordinator.Service
 	vhtlcPreimages     *unrollpolicy.PreimageResolverRegistry
@@ -1067,6 +1069,10 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 
 		if s.oorRegistry != nil {
 			s.oorRegistry.Stop()
+		}
+
+		if s.creditRegistry != nil {
+			s.creditRegistry.Stop()
 		}
 
 		if s.outboxPublisher != nil {
@@ -2282,6 +2288,16 @@ func (s *Server) startWalletDependentActors(ctx context.Context,
 	// 14. Register the OOR client actor.
 	// -------------------------------------------------------
 	if err := s.initOORActor(ctx, vtxoManagerRef); err != nil {
+		return err
+	}
+
+	// -------------------------------------------------------
+	// 14b. Start the credit durable-actor subsystem when the swap
+	// runtime published its credit bridges. By this point both the
+	// actor infrastructure and cfg.Swap.* (populated by the swap
+	// subserver registrar above) are ready.
+	// -------------------------------------------------------
+	if err := s.initCreditRegistry(ctx); err != nil {
 		return err
 	}
 
