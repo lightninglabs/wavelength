@@ -9,6 +9,8 @@ import (
 
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/credit"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/darepod"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
@@ -156,6 +158,12 @@ type Deps struct {
 	// (unified history), GetInfo / GetBalance (status), NewAddress
 	// (deposit), ListVTXOs (coin selection for onchain sends).
 	RPCServer RPCServer
+
+	// CreditRegistry is the lazy reference to the credit registry actor
+	// used to route credit-backed Send/Recv through the durable credit
+	// subsystem. Nil when the swap runtime did not publish it, in which
+	// case the router falls back to declining credit-backed sends.
+	CreditRegistry actor.ActorRef[credit.CreditMsg, credit.CreditResp]
 
 	// ChainParams is the daemon's configured Bitcoin network. Invoice
 	// prepare must decode against this exact network so a cross-network

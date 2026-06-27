@@ -9,11 +9,11 @@ import (
 	"fmt"
 	"math"
 	"strings"
-	"time"
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/lightninglabs/darepo-client/coinselect"
+	"github.com/lightninglabs/darepo-client/credit"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
 	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
@@ -189,8 +189,10 @@ func (r *router) prepareInvoice(ctx context.Context, invoice string,
 	return prepareResponseFromIntent(intent, preview), nil
 }
 
-// sendInvoiceIntent routes a prepared BOLT-11 invoice through the
-// daemon-owned swap subserver.
+// sendInvoiceIntent routes a prepared BOLT-11 invoice. A credit-backed pay
+// (credit-only or mixed rail) is handed off to the durable credit subsystem,
+// which performs any Ark top-up and the pay crash-safely under a stable
+// idempotency key. A pure-Lightning pay goes straight to the swap subserver.
 func (r *router) sendInvoiceIntent(ctx context.Context,
 	intent *preparedSendIntent) (*walletdkrpc.SendResponse, error) {
 
@@ -198,8 +200,8 @@ func (r *router) sendInvoiceIntent(ctx context.Context,
 		return nil, ErrSwapBackendUnavailable
 	}
 
-	if err := r.fundInvoiceCreditShortfall(ctx, intent); err != nil {
-		return nil, err
+	if intentUsesCredit(intent) {
+		return r.sendCreditInvoiceIntent(ctx, intent)
 	}
 
 	startResp, err := r.deps.SwapService.StartPay(
@@ -232,133 +234,115 @@ func (r *router) sendInvoiceIntent(ctx context.Context,
 	}, nil
 }
 
-func (r *router) fundInvoiceCreditShortfall(ctx context.Context,
-	intent *preparedSendIntent) error {
+// sendCreditInvoiceIntent hands a credit-backed pay to the durable credit
+// registry under a payment-hash-derived idempotency key, then returns a pending
+// wallet entry. The registry's per-operation actor performs the Ark top-up
+// (idempotently) and the pay on the daemon root context, so a client disconnect
+// or restart never strands or double-funds the credits.
+func (r *router) sendCreditInvoiceIntent(ctx context.Context,
+	intent *preparedSendIntent) (*walletdkrpc.SendResponse, error) {
 
-	if intent == nil || intent.creditPreview == nil ||
-		intent.creditPreview.GetCreditShortfallSat() == 0 {
-		return nil
-	}
-	if r.deps.RPCServer == nil {
-		return ErrSwapBackendUnavailable
-	}
-
-	topupSat := intent.creditPreview.GetCreditTopupSat()
-	if topupSat == 0 {
-		return fmt.Errorf("%w: credit top-up amount missing",
-			ErrAmountInvalid)
-	}
-	if topupSat > math.MaxInt64 {
-		return fmt.Errorf("%w: credit top-up exceeds int64 range",
-			ErrAmountInvalid)
+	if r.deps.CreditRegistry == nil {
+		return nil, fmt.Errorf("%w: credit subsystem unavailable",
+			ErrSwapBackendUnavailable)
 	}
 
-	idempotencyKey := "credit-topup-" + intent.id
-	creditResp, err := r.deps.SwapService.CreateCredit(
-		ctx, &swapclientrpc.CreateCreditRequest{
-			IdempotencyKey: idempotencyKey,
-			Source: swapclientrpc.
-				CreditFundingSource_CREDIT_FUNDING_SOURCE_ARK_TOPUP,
-			AmountSat: topupSat,
-		},
+	decoded, err := decodePreparedInvoice(
+		intent.invoice, r.deps.ChainParams,
 	)
 	if err != nil {
-		return fmt.Errorf("create credit top-up: %w", err)
+		return nil, err
+	}
+	if decoded.PaymentHash == nil {
+		return nil, fmt.Errorf("%w: invoice payment hash is required",
+			ErrInvalidDestination)
+	}
+	paymentHash := *decoded.PaymentHash
+
+	var topupSat uint64
+	if cp := intent.creditPreview; cp != nil {
+		topupSat = cp.GetCreditTopupSat()
 	}
 
-	if creditResp.GetState() != swapclientrpc.
-		CreditOperationState_CREDIT_OPERATION_STATE_CREDITED {
-
-		if len(creditResp.GetDestinationPubkey()) == 0 {
-			return fmt.Errorf("credit top-up destination missing")
-		}
-
-		_, err = r.deps.RPCServer.SendOOR(
-			ctx, &daemonrpc.SendOORRequest{
-				Recipients: []*daemonrpc.Output{{
-					Destination: &daemonrpc.Output_Pubkey{
-						Pubkey: append(
-							[]byte(nil),
-							creditResp.GetDestinationPubkey()...,
-						),
-					},
-					AmountSat: int64(topupSat),
-				}},
-				IdempotencyKey: idempotencyKey,
-			},
-		)
-		if err != nil {
-			return fmt.Errorf("fund credit top-up: %w", err)
-		}
+	opKey := "pay:" + hex.EncodeToString(paymentHash[:])
+	resp, err := r.deps.CreditRegistry.Ask(ctx, &credit.StartCreditPayRequest{
+		OpKey:        opKey,
+		Invoice:      intent.invoice,
+		PaymentHash:  paymentHash,
+		AmountSat:    intent.amountSat,
+		TopupSat:     topupSat,
+		MaxCreditSat: intent.maxCreditSat,
+		MaxFeeSat:    intent.maxFeeSat,
+	}).Await(ctx).Unpack()
+	if err != nil {
+		return nil, fmt.Errorf("start credit pay: %w", err)
+	}
+	if _, ok := resp.(*credit.StartCreditResponse); !ok {
+		return nil, fmt.Errorf("unexpected credit pay response %T",
+			resp)
 	}
 
-	return r.waitCreditTopUp(
-		ctx, creditResp.GetOperationId(), intent.maxCreditSat,
-	)
+	// Emit a pending entry keyed by the payment hash. A mixed pay's swap
+	// session updates this same row through the monitor loop; a credit-only
+	// pay completes server-side and the row is reconciled from credit
+	// state.
+	entry := creditPayEntry(intent, paymentHash)
+	r.runtime.trackPendingEntryWithoutTimeout(entry)
+	r.runtime.emit(entry)
+
+	return &walletdkrpc.SendResponse{
+		Entry:           entry,
+		ActualAmountSat: int64(intent.amountSat),
+	}, nil
 }
 
-func (r *router) waitCreditTopUp(ctx context.Context, operationID string,
-	requiredAvailableSat uint64) error {
-
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		credits, err := r.deps.SwapService.ListCredits(
-			ctx, &swapclientrpc.ListCreditsRequest{
-				Limit: ^uint32(0),
-			},
-		)
-		if err != nil {
-			return fmt.Errorf("list credits: %w", err)
-		}
-		credited, terminalErr := creditOperationCredited(
-			credits, operationID,
-		)
-		if terminalErr != nil {
-			return terminalErr
-		}
-		if credits.GetAvailableSat() >= requiredAvailableSat &&
-			credited {
-			return nil
-		}
-
-		select {
-		case <-ticker.C:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
+// intentUsesCredit reports whether a prepared invoice intent's quote actually
+// reserves or requires credits, in which case the send must route through the
+// durable credit subsystem rather than the direct pay path.
+func intentUsesCredit(intent *preparedSendIntent) bool {
+	cp := intent.creditPreview
+	if cp == nil {
+		return false
 	}
+
+	return cp.GetMustUseCredit() || cp.GetCreditAppliedSat() > 0 ||
+		cp.GetCreditShortfallSat() > 0
 }
 
-func creditOperationCredited(snapshot *swapclientrpc.ListCreditsResponse,
-	operationID string) (bool, error) {
+// creditPayEntry builds the pending wallet entry for a credit-backed pay,
+// keyed by the payment hash so later swap-session or credit-state updates
+// reconcile the same row.
+func creditPayEntry(intent *preparedSendIntent,
+	paymentHash [32]byte) *walletdkrpc.WalletEntry {
 
-	for _, op := range snapshot.GetOperations() {
-		if op.GetOperationId() != operationID {
-			continue
-		}
+	now := nowUnix()
+	paymentHashHex := hex.EncodeToString(paymentHash[:])
 
-		switch op.GetState() {
-		case swapclientrpc.
-			CreditOperationState_CREDIT_OPERATION_STATE_CREDITED:
-			return true, nil
-
-		case swapclientrpc.
-			CreditOperationState_CREDIT_OPERATION_STATE_FAILED,
-			swapclientrpc.
-				CreditOperationState_CREDIT_OPERATION_STATE_EXPIRED,
-			swapclientrpc.
-				CreditOperationState_CREDIT_OPERATION_STATE_RELEASED:
-			return false, fmt.Errorf("credit top-up %s ended in %s",
-				operationID, op.GetState())
-
-		default:
-			return false, nil
-		}
+	return &walletdkrpc.WalletEntry{
+		Id:            paymentHashHex,
+		Kind:          walletdkrpc.EntryKind_ENTRY_KIND_SEND,
+		Status:        walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		AmountSat:     int64(intent.amountSat),
+		Counterparty:  "credit",
+		CreatedAtUnix: now,
+		UpdatedAtUnix: now,
+		Note:          intent.note,
+		Request: &walletdkrpc.WalletEntryRequest{
+			Request: &walletdkrpc.WalletEntryRequest_LightningInvoice{
+				LightningInvoice: &walletdkrpc.
+					LightningInvoiceRequest{
+					Invoice:     intent.invoice,
+					PaymentHash: paymentHashHex,
+				},
+			},
+		},
+		Progress: &walletdkrpc.WalletEntryProgress{
+			Phase: walletdkrpc.
+				WalletEntryPhase_WALLET_ENTRY_PHASE_SETTLING,
+			PhaseLabel:  "settling",
+			PaymentHash: paymentHashHex,
+		},
 	}
-
-	return false, nil
 }
 
 // prepareOnchain validates an onchain destination and builds a fee-aware

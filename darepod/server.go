@@ -1236,6 +1236,17 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 	if cleanup := registerBtcwalletRPC(s.grpcServer, s); cleanup != nil {
 		defer cleanup()
 	}
+
+	// Publish a lazy credit-registry reference before the swap registrars
+	// run so the walletdkrpc subserver can route credit-backed Send/Recv
+	// through the credit subsystem. The service-key ref resolves at Ask
+	// time, after initCreditRegistry registers the registry under the key.
+	if s.cfg.Swap != nil {
+		s.cfg.Swap.CreditRegistry = credit.NewServiceKey().Ref(
+			s.actorSystem,
+		)
+	}
+
 	for _, registrar := range s.cfg.RPCServiceRegistrars {
 		cleanup, err := registrar(ctx, s.grpcServer, s.rpcServer, s.cfg)
 		if err != nil {

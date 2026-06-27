@@ -407,10 +407,17 @@ func TestRouterSendInvoiceDispatchesStartPay(t *testing.T) {
 	)
 }
 
-func TestRouterSendInvoiceTopsUpCreditsBeforeStartPay(t *testing.T) {
+// TestRouterSendInvoiceHandsCreditPayToRegistry asserts that a credit-backed
+// pay is handed off to the durable credit registry under a payment-hash-derived
+// idempotency key, rather than driving the top-up and pay inline. The router no
+// longer calls CreateCredit/SendOOR/StartPay directly for credit pays.
+func TestRouterSendInvoiceHandsCreditPayToRegistry(t *testing.T) {
 	t.Parallel()
 
 	r, swap, rpc := newRouterFixture(t)
+	reg := &fakeCreditRegistry{}
+	r.deps.CreditRegistry = reg
+
 	invoice, paymentHash := testPreparedInvoice(t, 500, "tiny")
 	swap.quotePayResp = &swapclientrpc.QuotePayResponse{
 		PaymentHash:      paymentHash,
@@ -424,38 +431,6 @@ func TestRouterSendInvoiceTopsUpCreditsBeforeStartPay(t *testing.T) {
 			CreditTopupSat:     1_000,
 		},
 		ExpiresAtUnix: time.Now().Add(time.Minute).Unix(),
-	}
-	swap.createCreditResp = &swapclientrpc.CreateCreditResponse{
-		OperationId: "cr_topup",
-		State:       swapclientrpc.CreditOperationState_CREDIT_OPERATION_STATE_AWAITING_PAYMENT,
-		AmountSat:   1_000,
-		DestinationPubkey: []byte{
-			9,
-			9,
-			9,
-		},
-	}
-	swap.listCreditsResp = &swapclientrpc.ListCreditsResponse{
-		AvailableSat: 500_000,
-		Operations: []*swapclientrpc.CreditOperation{{
-			OperationId: "cr_topup",
-			State: swapclientrpc.
-				CreditOperationState_CREDIT_OPERATION_STATE_CREDITED,
-		}},
-	}
-	swap.startPayResp = &swapclientrpc.StartPayResponse{
-		PaymentHash: paymentHash,
-		Swap: &swapclientrpc.SwapSummary{
-			PaymentHash: paymentHash,
-			Direction: swapclientrpc.
-				SwapDirection_SWAP_DIRECTION_PAY,
-			AmountSat:      0,
-			Pending:        false,
-			SettlementType: swapclientrpc.SwapSettlementType_SWAP_SETTLEMENT_TYPE_CREDIT,
-		},
-	}
-	rpc.sendOORResp = &daemonrpc.SendOORResponse{
-		SessionId: "oor-topup",
 	}
 
 	prepareResp, err := r.PrepareSend(
@@ -474,29 +449,26 @@ func TestRouterSendInvoiceTopsUpCreditsBeforeStartPay(t *testing.T) {
 	resp, err := sendPrepared(t, r, prepareResp)
 	require.NoError(t, err)
 	require.Equal(t, int64(500), resp.GetActualAmountSat())
-	require.Equal(t, 1, swap.createCreditCalls)
+
+	// The pay was handed to the registry with the stable payment-hash key
+	// and the quote's top-up amount.
+	require.Equal(t, 1, reg.payCalls)
+	require.NotNil(t, reg.lastPay)
+	require.Equal(t, "pay:"+paymentHash, reg.lastPay.OpKey)
+	require.Equal(t, uint64(1_000), reg.lastPay.TopupSat)
+	require.Equal(t, invoice, reg.lastPay.Invoice)
+	require.Equal(t, uint64(500_000), reg.lastPay.MaxCreditSat)
+
+	// The router no longer drives the top-up or pay inline.
+	require.Zero(t, swap.createCreditCalls)
+	require.Zero(t, rpc.sendOORCalls)
+	require.Zero(t, swap.startPayCalls)
+
+	// A pending SEND entry keyed by the payment hash is surfaced.
+	require.Equal(t, paymentHash, resp.GetEntry().GetId())
 	require.Equal(
-		t,
-		swapclientrpc.CreditFundingSource_CREDIT_FUNDING_SOURCE_ARK_TOPUP,
-		swap.createCreditLast.GetSource(),
-	)
-	require.Equal(t, uint64(1_000), swap.createCreditLast.GetAmountSat())
-	require.Equal(t, 1, rpc.sendOORCalls)
-	require.Equal(
-		t, "credit-topup-"+prepareResp.GetSendIntentId(),
-		rpc.sendOORLastReq.GetIdempotencyKey(),
-	)
-	require.Equal(
-		t, []byte{9, 9, 9},
-		rpc.sendOORLastReq.GetRecipients()[0].GetPubkey(),
-	)
-	require.Equal(
-		t, int64(1_000),
-		rpc.sendOORLastReq.GetRecipients()[0].GetAmountSat(),
-	)
-	require.Equal(t, 1, swap.startPayCalls)
-	require.Equal(
-		t, uint64(500_000), swap.startPayLastReq.GetMaxCreditSat(),
+		t, walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		resp.GetEntry().GetStatus(),
 	)
 }
 
