@@ -98,6 +98,14 @@ enum OORRejectCode {
     // must restructure the outputs (smaller amounts, more outputs)
     // before resubmitting.
     OOR_REJECT_OUTPUT_POLICY = 2;
+
+    // OOR_REJECT_USER_BALANCE indicates the submit would push a recipient
+    // mailbox's aggregate VTXO balance above the operator's advertised
+    // MaxUserBalance cap. Unlike OOR_REJECT_OUTPUT_POLICY, retrying the
+    // same shape can succeed once the recipient's balance drops (e.g. it
+    // spends or refreshes down), so a custodial sender may hold the value
+    // and retry later rather than restructuring the outputs.
+    OOR_REJECT_USER_BALANCE = 3;
 }
 
 // SubmitPackageRejection carries a typed rejection of an OOR submit.
