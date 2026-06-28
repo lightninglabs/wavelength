@@ -122,6 +122,7 @@ func (r *Runtime) start() {
 		go r.deadlineWatcher()
 
 		r.startMonitorLoop()
+		r.startCreditProjectorLoop()
 	})
 }
 

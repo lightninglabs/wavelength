@@ -167,15 +167,11 @@ func (r *router) prepareInvoice(ctx context.Context, invoice string,
 	if quote != nil && quote.GetCreditQuote() != nil {
 		creditQuote := quote.GetCreditQuote()
 		intent.creditPreview = preview.creditPreview
-		intent.maxCreditSat = creditQuote.GetCreditAppliedSat()
-		if creditQuote.GetCreditShortfallSat() >
-			^uint64(0)-intent.maxCreditSat {
-
-			intent.maxCreditSat = ^uint64(0)
-		} else {
-			intent.maxCreditSat += creditQuote.GetCreditShortfallSat()
-		}
-		if quote.GetCreditQuote().GetMustUseCredit() {
+		intent.maxCreditSat = saturatingAddSat(
+			creditQuote.GetCreditAppliedSat(),
+			creditQuote.GetCreditShortfallSat(),
+		)
+		if creditQuote.GetMustUseCredit() {
 			if uint64(amountSat) > intent.maxCreditSat {
 				intent.maxCreditSat = uint64(amountSat)
 			}
@@ -259,9 +255,24 @@ func (r *router) sendCreditInvoiceIntent(ctx context.Context,
 	}
 	paymentHash := *decoded.PaymentHash
 
-	var topupSat uint64
+	var (
+		topupSat   uint64
+		creditOnly bool
+	)
 	if cp := intent.creditPreview; cp != nil {
 		topupSat = cp.GetCreditTopupSat()
+
+		// A pay is credit-only when it carries no Lightning swap leg:
+		// either the server pins it to credit (sub-dust), or the
+		// applied credits plus the planned top-up already cover the
+		// full principal. A mixed pay leaves this false so the swap
+		// monitor stays the single terminal authority for the shared
+		// payment-hash row. The cover sum is computed overflow-safe so
+		// a wrapped server quote cannot flip the routing decision.
+		creditOnly = cp.GetMustUseCredit() || creditCoversSat(
+			cp.GetCreditAppliedSat(), cp.GetCreditTopupSat(),
+			intent.amountSat,
+		)
 	}
 
 	opKey := "pay:" + hex.EncodeToString(paymentHash[:])
@@ -273,6 +284,7 @@ func (r *router) sendCreditInvoiceIntent(ctx context.Context,
 		TopupSat:     topupSat,
 		MaxCreditSat: intent.maxCreditSat,
 		MaxFeeSat:    intent.maxFeeSat,
+		CreditOnly:   creditOnly,
 	}).Await(ctx).Unpack()
 	if err != nil {
 		return nil, fmt.Errorf("start credit pay: %w", err)
@@ -647,11 +659,8 @@ func extractPreparedInvoiceAmountSat(decoded *zpay32.Invoice) (uint64, error) {
 		return 0, fmt.Errorf("%w: invoice amount must be positive",
 			ErrAmountInvalid)
 	}
-	if amountMSat%1000 != 0 {
-		return (amountMSat + 999) / 1000, nil
-	}
 
-	return amountMSat / 1000, nil
+	return ceilMsatToSat(amountMSat), nil
 }
 
 // quotePayUnavailable reports whether a quote failure means the configured
