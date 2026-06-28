@@ -121,9 +121,18 @@ type ConnectorConfig struct {
 	// envelopes are addressed to this mailbox.
 	RemoteMailboxID string
 
-	// ProtocolVersion is the protocol version stamped on outbound
-	// envelopes.
-	ProtocolVersion uint32
+	// MailboxProtocolVersion is the immutable mailbox transport version
+	// stamped on every outbound envelope. It defines envelope framing and
+	// delivery semantics and is a stable code constant
+	// (mailboxpb.MailboxProtocolVersionV1), not a negotiated value.
+	MailboxProtocolVersion uint32
+
+	// ArkProtocolVersion is the immutable Ark protocol version negotiated
+	// through the direct GetInfo bootstrap RPC and bound to this runtime
+	// for its lifetime. It is stamped on every outbound envelope and
+	// validated on every inbound envelope. Runtime construction rejects a
+	// zero value: a runtime must always carry an explicit Ark version.
+	ArkProtocolVersion uint32
 
 	// Dispatchers maps (service, method) pairs to envelope dispatchers.
 	// The ingress loop uses this table to route KIND_REQUEST and
@@ -157,6 +166,13 @@ type ConnectorConfig struct {
 
 	// Log is an optional logger for this connector instance.
 	Log fn.Option[btclog.Logger]
+
+	// OnIncompatible is an optional callback invoked exactly once when the
+	// connector transitions to a terminal incompatible state after the
+	// first permanent version error. It receives the typed status error so
+	// the caller can surface structured compatibility details. It must not
+	// block; the connector invokes it inline on the transition.
+	OnIncompatible func(*mailboxconn.StatusError)
 
 	// PullMaxEnvelopes bounds the number of envelopes returned per Pull
 	// call.
@@ -289,16 +305,35 @@ func (c *ConnectorConfig) mergeAuthHeaders(
 // per-correlation-key FIFO claim.
 const DefaultEgressWorkers = 4
 
+// stampEnvelope stamps the runtime's immutable mailbox transport and Ark
+// protocol versions onto an envelope immediately before it is sent. It
+// overwrites any pre-existing version values so no send path — including a
+// pre-built or replayed envelope — can rely on a caller-provided Ark version.
+// The bound version pair is immutable for the runtime's lifetime, so
+// re-stamping a replayed envelope is always correct.
+func (c *ConnectorConfig) stampEnvelope(env *mailboxpb.Envelope) {
+	stampEnvelopeVersions(
+		env, c.MailboxProtocolVersion, c.ArkProtocolVersion,
+	)
+}
+
 // DefaultConnectorConfig returns a ConnectorConfig with sensible defaults for
 // polling and retry behavior. The caller must still set Edge, mailbox IDs,
 // and Store. Codec is optional — NewRuntime fills a default.
 func DefaultConnectorConfig() ConnectorConfig {
 	return ConnectorConfig{
-		PullMaxEnvelopes:  50,
-		PullWaitTimeout:   5 * time.Second,
-		RetryBaseDelay:    200 * time.Millisecond,
-		RetryMaxDelay:     30 * time.Second,
-		ResponseWaiterTTL: mailboxconn.DefaultResponseWaiterTTL,
-		EgressWorkers:     DefaultEgressWorkers,
+		// Mailbox transport v1 is the stable bootstrap endpoint, so the
+		// default is a code constant rather than a negotiated value.
+		// ArkProtocolVersion is intentionally left zero: the caller
+		// must set the negotiated Ark version, and NewRuntime rejects a
+		// zero value so a runtime can never start without an explicit
+		// Ark version binding.
+		MailboxProtocolVersion: mailboxpb.MailboxProtocolVersionV1,
+		PullMaxEnvelopes:       50,
+		PullWaitTimeout:        5 * time.Second,
+		RetryBaseDelay:         200 * time.Millisecond,
+		RetryMaxDelay:          30 * time.Second,
+		ResponseWaiterTTL:      mailboxconn.DefaultResponseWaiterTTL,
+		EgressWorkers:          DefaultEgressWorkers,
 	}
 }

@@ -682,6 +682,23 @@ type ServerConnectionActor struct {
 	// checks this to skip sending when real traffic already
 	// proves liveness.
 	lastSendNano atomic.Int64
+
+	// compatErr caches the first permanent version error that moved the
+	// connector to the terminal INCOMPATIBLE state. A nil pointer means the
+	// connector is still COMPATIBLE. Once set, new sends return this error
+	// without contacting the edge.
+	compatErr atomic.Pointer[mailboxconn.StatusError]
+
+	// compatOnce guarantees the incompatibility transition (cache, cancel,
+	// fail waiters, callback) runs exactly once even under concurrent
+	// permanent failures.
+	compatOnce sync.Once
+
+	// ingressCancel holds the ingress/heartbeat context cancel function so
+	// the incompatibility transition can stop them asynchronously without
+	// joining its own goroutine. CancelFunc is idempotent, so StopIngress
+	// may also invoke it.
+	ingressCancel atomic.Pointer[context.CancelFunc]
 }
 
 // NewServerConnectionActor creates a new server connection actor with the
@@ -690,6 +707,14 @@ type ServerConnectionActor struct {
 func NewServerConnectionActor(
 	cfg ConnectorConfig,
 ) *ServerConnectionActor {
+
+	// Stamp the runtime-bound version pair onto every outbound envelope in
+	// one place by wrapping the edge, so no individual send path has to
+	// remember to stamp. This mirrors the auth decorator layered over the
+	// same edge.
+	cfg.Edge = newVersionStampingMailboxClient(
+		cfg.Edge, cfg.MailboxProtocolVersion, cfg.ArkProtocolVersion,
+	)
 
 	return &ServerConnectionActor{
 		cfg: cfg,
@@ -776,6 +801,10 @@ func (a *ServerConnectionActor) handleSendClientEvent(ctx context.Context,
 	req *SendClientEventRequest,
 	ax actor.Exec[egressTx]) fn.Result[ServerConnResp] {
 
+	if ce := a.compatibilityError(); ce != nil {
+		return fn.Err[ServerConnResp](ce)
+	}
+
 	protoMsg, err := req.Message.ToProto().Unpack()
 	if err != nil {
 		a.log.WarnS(ctx, "Failed to convert to proto", err)
@@ -824,7 +853,6 @@ func (a *ServerConnectionActor) handleSendClientEvent(ctx context.Context,
 	service, method := eventRoutingMetadata(req)
 
 	envelope := &mailboxpb.Envelope{
-		ProtocolVersion: a.cfg.ProtocolVersion,
 		MsgId:           msgID,
 		IdempotencyKey:  idempotencyKey,
 		Sender:          a.cfg.LocalMailboxID,
@@ -851,17 +879,13 @@ func (a *ServerConnectionActor) handleSendClientEvent(ctx context.Context,
 	resp, err := a.cfg.Edge.Send(sendCtx, &mailboxpb.SendRequest{
 		Envelope: envelope,
 	})
-	if err != nil {
-		return fn.Err[ServerConnResp](
-			fmt.Errorf("send client event: %w", err),
-		)
-	}
+	if sErr := edgeResponseError(
+		"send client event", resp, err,
+	); sErr != nil {
 
-	if resp.Status != nil && !resp.Status.Ok {
-		return fn.Err[ServerConnResp](
-			fmt.Errorf("send client event: %s (%s)",
-				resp.Status.Message, resp.Status.Code),
-		)
+		a.checkPermanentStatus(ctx, sErr)
+
+		return fn.Err[ServerConnResp](sErr)
 	}
 
 	a.lastSendNano.Store(time.Now().UnixNano())
@@ -993,8 +1017,11 @@ func (a *ServerConnectionActor) sendUnaryEnvelope(ctx context.Context,
 	correlationID string, msgID string,
 	idempotencyKey string) fn.Result[ServerConnResp] {
 
+	if ce := a.compatibilityError(); ce != nil {
+		return fn.Err[ServerConnResp](ce)
+	}
+
 	envelope := &mailboxpb.Envelope{
-		ProtocolVersion: a.cfg.ProtocolVersion,
 		MsgId:           msgID,
 		IdempotencyKey:  idempotencyKey,
 		Sender:          a.cfg.LocalMailboxID,
@@ -1019,17 +1046,13 @@ func (a *ServerConnectionActor) sendUnaryEnvelope(ctx context.Context,
 	resp, err := a.cfg.Edge.Send(sendCtx, &mailboxpb.SendRequest{
 		Envelope: envelope,
 	})
-	if err != nil {
-		return fn.Err[ServerConnResp](
-			fmt.Errorf("send unary request: %w", err),
-		)
-	}
+	if sErr := edgeResponseError(
+		"send unary request", resp, err,
+	); sErr != nil {
 
-	if resp.Status != nil && !resp.Status.Ok {
-		return fn.Err[ServerConnResp](
-			fmt.Errorf("send unary request: %s (%s)",
-				resp.Status.Message, resp.Status.Code),
-		)
+		a.checkPermanentStatus(ctx, sErr)
+
+		return fn.Err[ServerConnResp](sErr)
 	}
 
 	if err := a.commitSend(ctx, ax); err != nil {
@@ -1077,20 +1100,20 @@ func (a *ServerConnectionActor) handleSendRPCRequest(ctx context.Context,
 	req *SendRPCRequest,
 	ax actor.Exec[egressTx]) fn.Result[ServerConnResp] {
 
+	if ce := a.compatibilityError(); ce != nil {
+		return fn.Err[ServerConnResp](ce)
+	}
+
 	resp, err := a.cfg.Edge.Send(ctx, &mailboxpb.SendRequest{
 		Envelope: req.Envelope,
 	})
-	if err != nil {
-		return fn.Err[ServerConnResp](
-			fmt.Errorf("send rpc request: %w", err),
-		)
-	}
+	if sErr := edgeResponseError(
+		"send rpc request", resp, err,
+	); sErr != nil {
 
-	if resp.Status != nil && !resp.Status.Ok {
-		return fn.Err[ServerConnResp](
-			fmt.Errorf("send rpc request: %s (%s)",
-				resp.Status.Message, resp.Status.Code),
-		)
+		a.checkPermanentStatus(ctx, sErr)
+
+		return fn.Err[ServerConnResp](sErr)
 	}
 
 	a.lastSendNano.Store(time.Now().UnixNano())
@@ -1155,12 +1178,39 @@ func (a *ServerConnectionActor) StartIngress(
 	ctx context.Context,
 ) error {
 
+	// Fast path: if the connector already transitioned to the terminal
+	// incompatible state (e.g. a durable egress replay hit a permanent
+	// version error before ingress started), refuse to start polling or
+	// load checkpoints. Returning the cached error keeps the caller from
+	// marking the connection healthy.
+	if ce := a.compatibilityError(); ce != nil {
+		return ce
+	}
+
 	state, err := a.loadCheckpoint(ctx)
 	if err != nil {
 		return fmt.Errorf("load ingress checkpoint: %w", err)
 	}
 
 	ingressCtx, cancel := context.WithCancel(ctx)
+
+	// Publish the cancel func so the incompatibility transition can stop
+	// ingress and heartbeat asynchronously. CancelFunc is idempotent, so
+	// StopIngress invoking it again via cancelCh is harmless.
+	a.ingressCancel.Store(&cancel)
+
+	// Recheck after publishing the cancel func to close the race with a
+	// concurrent markIncompatible. The two transitions touch the compat
+	// error and the cancel pointer in opposite orders: markIncompatible
+	// stores the compat error then loads the cancel; we store the cancel
+	// then load the compat error. So at least one of us observes the
+	// other — either we see the incompatible state here and abort, or
+	// markIncompatible sees our published cancel and stops the goroutines.
+	if ce := a.compatibilityError(); ce != nil {
+		cancel()
+
+		return ce
+	}
 
 	a.wg.Add(2)
 	a.cancelCh <- cancel

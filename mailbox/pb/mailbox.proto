@@ -70,6 +70,12 @@ message Envelope {
 
     // event_seq is assigned by the mailbox edge to define per-mailbox ordering.
     uint64 event_seq = 12;
+
+    // ark_protocol_version is the negotiated Ark protocol version selected
+    // through the direct GetInfo bootstrap RPC. It is distinct from
+    // protocol_version, which is the mailbox transport version. Every envelope
+    // sent after negotiation carries the runtime-bound Ark protocol version.
+    uint32 ark_protocol_version = 13;
 }
 
 // Status describes the result of a mailbox edge operation.
@@ -89,8 +95,22 @@ message Status {
     // server_protocol_version is populated for upgrade-required errors.
     uint32 server_protocol_version = 5;
 
-    // upgrade_url is populated for upgrade-required errors.
-    string upgrade_url = 6;
+    // Field 6 previously held upgrade_url, which was removed. Keep the tag and
+    // name reserved so a future field can never silently reuse it and collide
+    // on the wire with a peer still emitting the old value.
+    reserved 6;
+    reserved "upgrade_url";
+
+    // supported_mailbox_versions lists the mailbox transport versions the
+    // responder supports. It is populated for permanent version errors so the
+    // sender can surface actionable guidance without parsing gRPC status
+    // details.
+    repeated uint32 supported_mailbox_versions = 7;
+
+    // supported_ark_versions lists the Ark protocol versions the responder has
+    // enabled. It is populated for permanent version errors so the sender can
+    // surface actionable guidance without parsing gRPC status details.
+    repeated uint32 supported_ark_versions = 8;
 }
 
 // SendRequest sends a single envelope.

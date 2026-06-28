@@ -311,6 +311,12 @@ type Server struct {
 	// concurrent GetInfo RPC reads.
 	operatorTerms atomic.Pointer[types.OperatorTerms]
 
+	// arkProtocolVersion is the Ark protocol version negotiated during
+	// bootstrap and bound to the mailbox runtime for its lifetime. Later
+	// refresh-only GetInfo calls pin this version and never change it; a
+	// fresh negotiation only happens on a daemon restart.
+	arkProtocolVersion uint32
+
 	// serverConnected reports whether mailbox ingress is currently
 	// running against the Ark operator. It flips true once ingress
 	// starts successfully and flips false again during shutdown.
@@ -2334,11 +2340,20 @@ func (s *Server) resumeBoardingSweeps(ctx context.Context,
 // startMailboxIngress starts mailbox ingress once all actor dispatch targets
 // have been registered.
 func (s *Server) startMailboxIngress(ctx context.Context) error {
+	// Mark connected BEFORE starting ingress. An incompatibility that lands
+	// concurrently (e.g. the ingress loop immediately hits a permanent
+	// version error) invokes the compatibility callback, which writes
+	// server_connected=false. Because that write necessarily happens after
+	// this unconditional true, the false always wins and we never leave a
+	// stale "connected" after an incompatibility. On a synchronous start
+	// failure we clear it back to false ourselves.
+	s.setServerConnected(true)
+
 	if err := s.runtime.StartIngress(ctx); err != nil {
+		s.setServerConnected(false)
+
 		return fmt.Errorf("start serverconn ingress: %w", err)
 	}
-
-	s.setServerConnected(true)
 
 	return nil
 }
@@ -3261,11 +3276,10 @@ func (s *Server) handleInboundRPC(ctx context.Context,
 	}
 
 	responseEnv := &mailboxpb.Envelope{
-		ProtocolVersion: env.ProtocolVersion,
-		Sender:          s.localMailboxID,
-		Recipient:       env.Rpc.ReplyTo,
-		Headers:         headers,
-		Body:            body,
+		Sender:    s.localMailboxID,
+		Recipient: env.Rpc.ReplyTo,
+		Headers:   headers,
+		Body:      body,
 		Rpc: &mailboxpb.RpcMeta{
 			Kind:          mailboxpb.RpcMeta_KIND_RESPONSE,
 			CorrelationId: env.Rpc.CorrelationId,
@@ -3273,6 +3287,11 @@ func (s *Server) handleInboundRPC(ctx context.Context,
 			Method:        env.Rpc.Method,
 		},
 	}
+
+	// Stamp the runtime-bound version pair rather than copying the
+	// caller-controlled inbound versions, so responses always carry this
+	// client's negotiated mailbox transport and Ark protocol versions.
+	s.runtime.StampEnvelope(responseEnv)
 
 	_, err = edge.Send(ctx, &mailboxpb.SendRequest{
 		Envelope: responseEnv,
@@ -3534,14 +3553,30 @@ func (s *Server) connectAndBootstrapMailbox(ctx context.Context) error {
 
 	s.log.InfoS(ctx, "Connected to ark server")
 
-	// Fetch the operator's public key via direct ArkService before
-	// wiring the mailbox transport.
-	operatorPubKey, err := s.fetchOperatorPubKeyDirect(ctx)
+	// Negotiate the Ark protocol version via direct ArkService before
+	// wiring the mailbox transport. This is the sole negotiation owner: it
+	// selects the runtime version and caches the initial operator terms so
+	// the round actor never renegotiates.
+	negotiation, err := s.negotiateArkBootstrap(
+		ctx, clientSupportedArkVersions(),
+	)
 	if err != nil {
-		return fmt.Errorf("fetch operator pubkey: %w", err)
+		return fmt.Errorf("negotiate ark protocol version: %w", err)
 	}
 
-	s.log.InfoS(ctx, "Fetched operator pubkey via direct ArkService",
+	operatorPubKey := negotiation.operatorPubKey
+
+	// Cache the negotiation outcome before constructing the runtime so
+	// every later consumer reads the bound version and initial terms
+	// instead of issuing a second negotiating call.
+	s.arkProtocolVersion = negotiation.selectedArkVersion
+	s.storeOperatorTerms(negotiation.terms)
+
+	s.log.InfoS(ctx, "Negotiated ark protocol version",
+		slog.Uint64(
+			"ark_protocol_version",
+			uint64(negotiation.selectedArkVersion),
+		),
 		slog.String(
 			"operator_mailbox_id",
 			serverconn.PubKeyMailboxID(operatorPubKey),
@@ -3612,7 +3647,10 @@ func (s *Server) connectAndBootstrapMailbox(ctx context.Context) error {
 	connCfg.Edge = edge
 	connCfg.LocalMailboxID = s.localMailboxID
 	connCfg.RemoteMailboxID = remoteMailboxID
-	connCfg.ProtocolVersion = 1
+
+	// Bind the runtime to the negotiated Ark protocol version.
+	// DefaultConnectorConfig already binds mailbox transport v1.
+	connCfg.ArkProtocolVersion = s.arkProtocolVersion
 	connCfg.Store = s.deliveryStore
 	connCfg.Dispatchers = dispatchers
 	connCfg.AuthSignature = authSig
@@ -3622,6 +3660,7 @@ func (s *Server) connectAndBootstrapMailbox(ctx context.Context) error {
 		server: s,
 	}
 	connCfg.Log = fn.Some(s.subLogger(serverconn.Subsystem))
+	connCfg.OnIncompatible = s.onServerIncompatible
 
 	s.runtime, err = serverconn.NewRuntime(connCfg)
 	if err != nil {
@@ -3833,16 +3872,14 @@ func (s *Server) initRoundActor(ctx context.Context,
 	roundStore := dbStore.NewRoundStore(s.chainParams, s.clk)
 	s.roundStore = roundStore
 
-	// Fetch the operator's terms from the server. These include
-	// the operator pubkey, sweep delay, exit delay, dust limit,
-	// and other round parameters.
-	operatorTerms, err := s.fetchOperatorTerms(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("unable to fetch operator terms: %w",
-			err)
+	// Consume the operator terms cached by the bootstrap negotiation
+	// instead of issuing a second negotiating GetInfo call. The bootstrap
+	// is the sole version owner, so the round actor must not renegotiate.
+	operatorTerms := s.loadOperatorTerms()
+	if operatorTerms == nil {
+		return nil, fmt.Errorf("operator terms not cached: bootstrap " +
+			"negotiation must run before the round actor starts")
 	}
-
-	s.storeOperatorTerms(operatorTerms)
 
 	// Maximum operator fee the client is willing to pay per
 	// round, sourced from the daemon config. Config.Validate
@@ -4335,19 +4372,20 @@ func mapRoundVTXOManagerMsg(msg round.VTXOManagerMsg) vtxo.ManagerMsg {
 	return mapped
 }
 
-// fetchOperatorTerms retrieves the operator's terms from the Ark
-// server via a direct ArkService.GetInfo RPC on the configured
-// transport. This must not depend on mailbox ingress during startup:
-// a restarted client can already have queued server-push envelopes in
-// its mailbox, and those envelopes may target actors that have not yet
-// been registered. Using the mailbox transport here can therefore
-// deadlock round/OOR bootstrap behind redelivery of those pending
-// events.
+// fetchOperatorTerms refreshes the operator's terms from the Ark server via a
+// direct ArkService.GetInfo RPC. It is refresh-only: it is NOT a negotiation.
+// connectAndBootstrapMailbox is the sole owner of Ark protocol version
+// selection, so this call pins the runtime-bound version by sending it as the
+// singleton supported list and rejects any response that selects a different
+// or zero version. It never mutates the runtime version.
+//
+// This must not depend on mailbox ingress: a restarted client can already have
+// queued server-push envelopes in its mailbox targeting actors that have not
+// yet been registered, so using the mailbox transport here can deadlock
+// round/OOR bootstrap behind redelivery of those pending events.
 //
 // The terms include the operator pubkey, sweep delay, VTXO exit delay,
-// forfeit script, dust limit, and fee rate. These are required before
-// the round actor can start, as they govern all round signing and
-// validation parameters.
+// forfeit script, dust limit, and fee rate.
 func (s *Server) fetchOperatorTerms(ctx context.Context) (*types.OperatorTerms,
 	error) {
 
@@ -4356,44 +4394,33 @@ func (s *Server) fetchOperatorTerms(ctx context.Context) (*types.OperatorTerms,
 		return nil, fmt.Errorf("operator connection not initialized")
 	}
 
-	resp, err := client.GetInfo(ctx, &arkrpc.GetInfoRequest{})
+	// Pin the runtime-bound version: send it as the singleton supported
+	// list so a conforming operator re-selects exactly this version.
+	boundVersion := s.arkProtocolVersion
+
+	resp, err := client.GetInfo(ctx, &arkrpc.GetInfoRequest{
+		SupportedArkVersions: []uint32{boundVersion},
+	})
 	if err != nil {
 		return nil, fmt.Errorf("GetInfo RPC: %w", err)
 	}
 
-	if len(resp.Pubkey) == 0 {
-		return nil, fmt.Errorf("operator pubkey is missing")
+	// A refresh that selects a different version is a terminal
+	// compatibility failure: the runtime is bound for its lifetime, so the
+	// runtime must be torn down and renegotiated. Drive the connector to
+	// its incompatible state and surface the typed error.
+	if statusErr := serverconn.ValidateRefreshSelection(
+		resp, boundVersion,
+	); statusErr != nil {
+
+		if s.runtime != nil {
+			s.runtime.MarkIncompatible(ctx, statusErr)
+		}
+
+		return nil, statusErr
 	}
 
-	pubKey, err := btcec.ParsePubKey(resp.Pubkey)
-	if err != nil {
-		return nil, fmt.Errorf("parse operator pubkey: %w", err)
-	}
-
-	minVTXOAmount := resp.MinVtxoAmountSat
-	if minVTXOAmount < resp.DustLimit {
-		minVTXOAmount = resp.DustLimit
-	}
-
-	// The forfeit penalty key, sweep key and sweep delay are no longer
-	// global operator terms; they are delivered per round in the batch
-	// info, so GetInfo no longer carries them.
-	terms := &types.OperatorTerms{
-		PubKey:              pubKey,
-		BoardingExitDelay:   resp.BoardingExitDelay,
-		VTXOExitDelay:       resp.VtxoExitDelay,
-		DustLimit:           btcutil.Amount(resp.DustLimit),
-		MinVTXOAmount:       btcutil.Amount(minVTXOAmount),
-		MinBoardingAmount:   btcutil.Amount(resp.MinBoardingAmount),
-		MaxVTXOAmount:       btcutil.Amount(resp.MaxVtxoAmount),
-		FeeRate:             btcutil.Amount(resp.FeeRate),
-		MinOperatorFee:      btcutil.Amount(resp.MinOperatorFee),
-		MinConfirmations:    resp.MinConfirmations,
-		MaxOORLineageVBytes: resp.MaxOorLineageVbytes,
-		MaxUserBalance:      btcutil.Amount(resp.MaxUserBalance),
-	}
-
-	return terms, nil
+	return operatorTermsFromResponse(resp)
 }
 
 // deriveIdentityKeyEarly derives the client's identity key before the
@@ -4505,35 +4532,6 @@ func (s *Server) deriveIdentityKeyEarly(ctx context.Context) error {
 		))
 
 	return nil
-}
-
-// fetchOperatorPubKeyDirect fetches the operator's public key via a direct
-// ArkService.GetInfo call, bypassing the mailbox
-// transport. This is needed before the mailbox runtime starts because
-// the remote mailbox ID is derived from the operator's pubkey.
-func (s *Server) fetchOperatorPubKeyDirect(ctx context.Context) (
-	*btcec.PublicKey, error) {
-
-	client := s.operatorArkClient()
-	if client == nil {
-		return nil, fmt.Errorf("operator connection not initialized")
-	}
-
-	resp, err := client.GetInfo(ctx, &arkrpc.GetInfoRequest{})
-	if err != nil {
-		return nil, fmt.Errorf("GetInfo RPC: %w", err)
-	}
-
-	if len(resp.Pubkey) == 0 {
-		return nil, fmt.Errorf("operator pubkey is missing")
-	}
-
-	pubKey, err := btcec.ParsePubKey(resp.Pubkey)
-	if err != nil {
-		return nil, fmt.Errorf("parse operator pubkey: %w", err)
-	}
-
-	return pubKey, nil
 }
 
 // signMailboxAuth computes the Schnorr auth signature for the

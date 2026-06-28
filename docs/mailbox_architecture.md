@@ -170,9 +170,8 @@ classDiagram
         +bool ok
         +string code
         +string message
-        +uint32 min_supported_protocol_version
-        +uint32 server_protocol_version
-        +string upgrade_url
+        +uint32[] supported_mailbox_versions
+        +uint32[] supported_ark_versions
     }
 
     Envelope *-- RpcMeta : rpc

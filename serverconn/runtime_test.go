@@ -49,6 +49,56 @@ func TestNewRuntime_ValidateConfig(t *testing.T) {
 	)
 }
 
+// TestNewRuntimeArkVersionBinding verifies runtime construction rejects a zero
+// Ark protocol version and accepts an explicit v1 as well as a synthetic v2.
+// The synthetic v2 case proves selection and binding work without adding v2 to
+// any production default.
+func TestNewRuntimeArkVersionBinding(t *testing.T) {
+	t.Parallel()
+
+	mb := newInMemoryMailbox()
+
+	baseCfg := func() ConnectorConfig {
+		cfg := DefaultConnectorConfig()
+		cfg.Store = newMemCheckpointStore()
+		cfg.Edge = &fakeMailboxServiceClient{mb: mb}
+		cfg.LocalMailboxID = "client-1"
+		cfg.RemoteMailboxID = "server-1"
+
+		return cfg
+	}
+
+	// A zero Ark protocol version is rejected: a runtime must always carry
+	// an explicit bound version.
+	zeroCfg := baseCfg()
+	zeroCfg.ArkProtocolVersion = 0
+	_, err := NewRuntime(zeroCfg)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "ark protocol version")
+
+	// An explicit Ark v1 is accepted, and the default mailbox transport
+	// version is bound.
+	v1Cfg := baseCfg()
+	v1Cfg.ArkProtocolVersion = 1
+	rt, err := NewRuntime(v1Cfg)
+	require.NoError(t, err)
+	require.NotNil(t, rt)
+	require.Equal(
+		t, uint32(1), rt.Connector().cfg.ArkProtocolVersion,
+	)
+	require.NotZero(t, rt.Connector().cfg.MailboxProtocolVersion)
+
+	// A synthetic Ark v2 is accepted too, proving binding is not pinned to
+	// v1 even though no production default advertises v2.
+	v2Cfg := baseCfg()
+	v2Cfg.ArkProtocolVersion = 2
+	rt2, err := NewRuntime(v2Cfg)
+	require.NoError(t, err)
+	require.Equal(
+		t, uint32(2), rt2.Connector().cfg.ArkProtocolVersion,
+	)
+}
+
 // TestNewRuntime_DefaultCodec verifies runtime construction fills a default
 // codec when one is not supplied.
 func TestNewRuntime_DefaultCodec(t *testing.T) {
