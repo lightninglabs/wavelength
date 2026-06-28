@@ -19,6 +19,33 @@ import (
 // off the JS call stack (the verb goroutines spawned by promise() satisfy
 // this).
 
+// errOPFSUnavailable is returned when the OPFS API is absent from the current
+// JS context. This is a deterministic capability gap rather than a transient
+// failure, so callers can safely treat it as "no seed has ever been persisted".
+var errOPFSUnavailable = errors.New("OPFS (navigator.storage.getDirectory) " +
+	"is unavailable")
+
+// opfsError wraps a rejected OPFS promise, preserving the DOMException name
+// (e.g. "NotFoundError") alongside its string form so callers can tell a
+// genuinely-absent file apart from an ambiguous runtime failure.
+type opfsError struct {
+	name string
+	msg  string
+}
+
+// Error returns the string form of the underlying OPFS rejection.
+func (e *opfsError) Error() string {
+	return e.msg
+}
+
+// isNotFound reports whether err is an OPFS rejection caused by a missing file
+// or directory (a DOMException with name "NotFoundError").
+func isNotFound(err error) bool {
+	var oerr *opfsError
+
+	return errors.As(err, &oerr) && oerr.name == "NotFoundError"
+}
+
 // awaitJSPromise blocks the calling goroutine until the JS promise settles and
 // returns its resolved value, or an error built from the rejection reason. The
 // channel is buffered so the settle callback never blocks the JS event loop.
@@ -41,11 +68,19 @@ func awaitJSPromise(p js.Value) (js.Value, error) {
 	defer onResolve.Release()
 
 	onReject := js.FuncOf(func(_ js.Value, args []js.Value) any {
-		msg := "promise rejected"
+		oerr := &opfsError{msg: "promise rejected"}
 		if len(args) > 0 && args[0].Truthy() {
-			msg = args[0].Call("toString").String()
+			reason := args[0]
+			oerr.msg = reason.Call("toString").String()
+
+			// DOMExceptions carry the failure kind on .name
+			// (e.g. "NotFoundError"); preserve it so callers can
+			// distinguish a missing file from other failures.
+			if n := reason.Get("name"); n.Type() == js.TypeString {
+				oerr.name = n.String()
+			}
 		}
-		ch <- settled{err: errors.New(msg)}
+		ch <- settled{err: oerr}
 
 		return nil
 	})
@@ -63,8 +98,7 @@ func awaitJSPromise(p js.Value) (js.Value, error) {
 func opfsRootDir() (js.Value, error) {
 	storage := js.Global().Get("navigator").Get("storage")
 	if !storage.Truthy() || storage.Get("getDirectory").IsUndefined() {
-		return js.Value{}, errors.New("OPFS " +
-			"(navigator.storage.getDirectory) is unavailable")
+		return js.Value{}, errOPFSUnavailable
 	}
 
 	return awaitJSPromise(storage.Call("getDirectory"))
@@ -201,10 +235,23 @@ func LoadEncryptedSeed(path string) ([]byte, error) {
 	return data, nil
 }
 
-// SeedFileExists returns true if an encrypted seed file exists in OPFS for the
-// network data directory.
+// SeedFileExists reports whether an encrypted seed file exists in OPFS for the
+// network data directory. It returns false only when absence is confirmed: a
+// NotFoundError for the file or one of its parent directories, or OPFS being
+// unavailable (so nothing could ever have been persisted). Any other error is
+// ambiguous (transient I/O, quota, a handle locked by a concurrent writer), so
+// the seed is reported as present to keep the daemon out of the "no wallet"
+// state, where a later InitWallet would overwrite a seed that may exist.
 func SeedFileExists(networkDir string) bool {
 	_, err := openSeedFile(SeedFilePath(networkDir))
+	switch {
+	case err == nil:
+		return true
 
-	return err == nil
+	case isNotFound(err), errors.Is(err, errOPFSUnavailable):
+		return false
+
+	default:
+		return true
+	}
 }
