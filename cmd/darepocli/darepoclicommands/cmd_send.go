@@ -2,11 +2,32 @@ package darepoclicommands
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 	"github.com/spf13/cobra"
+)
+
+const (
+	// defaultSendWaitTimeout bounds how long `send` blocks on settlement
+	// before returning the last observed status. A pay swap that has to
+	// route over real Lightning can take a while, so the ceiling is
+	// generous.
+	defaultSendWaitTimeout = 5 * time.Minute
+
+	// defaultSendWaitPollInterval is how often `send` re-inspects the
+	// dispatched entry while it is still pending. It is kept tight so a
+	// fast same-Ark p2p settlement is reported with minimal latency.
+	defaultSendWaitPollInterval = 200 * time.Millisecond
+
+	entryStatusUnspecified = walletdkrpc.
+				EntryStatus_ENTRY_STATUS_UNSPECIFIED
+	entryStatusPending  = walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING
+	entryStatusComplete = walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE
+	entryStatusFailed   = walletdkrpc.EntryStatus_ENTRY_STATUS_FAILED
 )
 
 // newSendCmd builds the top-level `send` verb. It dispatches an
@@ -50,7 +71,10 @@ func newSendCmd() *cobra.Command {
 		"amount in satoshis (required for onchain unless "+
 			"--sweep-all; ignored for amount-bearing invoices)")
 	cmd.Flags().Uint64("max_fee", 0,
-		"max fee in satoshis; 0 lets the daemon use defaults")
+		"max swap fee in satoshis for invoice (Lightning) sends; 0 "+
+			"lets the daemon default the cap to ~1% of the amount "+
+			"(with a small floor), so a normal payment routes "+
+			"without setting this")
 	cmd.Flags().String("note", "",
 		"caller-supplied label to attach to the entry")
 	cmd.Flags().Bool("sweep-all", false,
@@ -62,6 +86,17 @@ func newSendCmd() *cobra.Command {
 		"skip interactive confirmation after prepare")
 	cmd.Flags().Bool("yes", false,
 		"alias for --force")
+	cmd.Flags().Bool("no-wait", false,
+		"return as soon as the send is dispatched instead of blocking "+
+			"until it reaches a terminal state; by default send "+
+			"waits and Lightning sends print the payment preimage")
+	cmd.Flags().Duration("wait-timeout", defaultSendWaitTimeout,
+		"while waiting: give up after this long and return the last "+
+			"observed status (0 waits indefinitely; ignored with "+
+			"--no-wait)")
+	cmd.Flags().Duration("wait-poll-interval", defaultSendWaitPollInterval,
+		"while waiting: how often to poll the daemon for status "+
+			"updates (ignored with --no-wait)")
 
 	return cmd
 }
@@ -172,9 +207,143 @@ func walletSend(cmd *cobra.Command, args []string) error {
 					err)
 			}
 
-			return printWalletProto(resp)
+			if err := printWalletProto(resp); err != nil {
+				return err
+			}
+
+			if noWait, _ := cmd.Flags().GetBool("no-wait"); noWait {
+				return nil
+			}
+
+			return waitForSendTerminal(cmd, resp.GetEntry())
 		},
 	)
+}
+
+// waitForSendTerminal blocks until the dispatched send entry reaches a terminal
+// status (complete or failed), printing each lifecycle phase transition as it
+// is observed and rendering the final inspection trace at the end. For a
+// Lightning send the trace carries the payment preimage, the proof of payment.
+//
+// The poll runs over the always-available WalletInspectionService so the wait
+// surface does not depend on the optional swapruntime build. A failed terminal
+// state returns an error so an agent or shell sees a non-zero exit; a timeout
+// returns the last observed status without claiming success or failure.
+func waitForSendTerminal(cmd *cobra.Command,
+	entry *walletdkrpc.WalletEntry) error {
+
+	id := entry.GetId()
+	if id == "" {
+		return PrintError(
+			"WAIT_UNAVAILABLE", "send did not return an entry "+
+				"id to wait on; poll `da activity inspect "+
+				"<id>` manually",
+		)
+	}
+
+	timeout, _ := cmd.Flags().GetDuration("wait-timeout")
+	pollInterval, _ := cmd.Flags().GetDuration("wait-poll-interval")
+	if pollInterval <= 0 {
+		pollInterval = defaultSendWaitPollInterval
+	}
+
+	ctx := cmd.Context()
+	if timeout > 0 {
+		var cancel func()
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+
+	out := cmd.ErrOrStderr()
+	lastPhase := ""
+	failedMsg := "send reached a failed state"
+	timeoutErr := func() error {
+		return PrintError(
+			"WAIT_TIMEOUT",
+			fmt.Sprintf(
+				"timed out after %s waiting for %s; last "+
+					"phase: %s", timeout, id,
+				emptyDash(lastPhase),
+			),
+		)
+	}
+
+	return withWalletInspectionClient(
+		cmd, func(c walletdkrpc.WalletInspectionServiceClient) error {
+			ticker := time.NewTicker(pollInterval)
+			defer ticker.Stop()
+
+			for {
+				req := &walletdkrpc.InspectActivityRequest{
+					Id: id,
+				}
+				resp, err := c.InspectActivity(ctx, req)
+				if err != nil {
+					// A deadline hit while polling is a
+					// timeout, not a hard failure: report
+					// the last phase the user saw.
+					if ctx.Err() != nil {
+						return timeoutErr()
+					}
+
+					return fmt.Errorf("inspect "+
+						"activity: %w", err)
+				}
+
+				inspected := resp.GetEntry()
+				phase := formatEntryPhase(
+					inspected.GetProgress(),
+				)
+				if phase != lastPhase {
+					fmt.Fprintf(out, "phase: %s\n", phase)
+					lastPhase = phase
+				}
+
+				switch inspected.GetStatus() {
+				case entryStatusComplete:
+					return printWalletInspectionExpanded(
+						resp,
+					)
+
+				case entryStatusFailed:
+					rerr := printWalletInspectionExpanded(
+						resp,
+					)
+					if rerr != nil {
+						return rerr
+					}
+
+					reason := inspected.GetFailureReason()
+
+					return PrintError(
+						"SEND_FAILED", emptyNonEmpty(
+							reason, failedMsg,
+						),
+					)
+
+				case entryStatusUnspecified, entryStatusPending:
+				}
+
+				select {
+				case <-ctx.Done():
+					return timeoutErr()
+
+				case <-ticker.C:
+				}
+			}
+		},
+	)
+}
+
+// emptyNonEmpty returns value when it is non-empty after trimming, otherwise
+// the fallback. It keeps the failure-reason rendering terse without importing a
+// second nonEmpty helper into the CLI package.
+func emptyNonEmpty(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+
+	return value
 }
 
 func confirmSendIfNeeded(cmd *cobra.Command,

@@ -29,6 +29,7 @@ func TestRenderWalletInspectionExpanded(t *testing.T) {
 			AmountSat:        1234,
 			SettlementType:   "SWAP_SETTLEMENT_TYPE_IN_ARK",
 			SenderPubkey:     "sender-pubkey",
+			Preimage:         "abcd1234",
 			VhtlcOutpoint:    "vhtlc-txid:0",
 			VhtlcAmountSat:   1234,
 			FundingSessionId: "funding-session",
@@ -75,6 +76,7 @@ func TestRenderWalletInspectionExpanded(t *testing.T) {
 		t, got, "- settlement_type: SWAP_SETTLEMENT_TYPE_IN_ARK",
 	)
 	require.Contains(t, got, "- sender_pubkey: sender-pubkey")
+	require.Contains(t, got, "- preimage: abcd1234")
 	require.Contains(t, got, "VTXOs\n")
 	require.Contains(t, got, "spent_input")
 	require.Contains(t, got, "Ledger\n")

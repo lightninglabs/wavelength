@@ -55,6 +55,11 @@ type SwapSummary struct {
 	// PaymentHash is the Lightning payment hash for the swap.
 	PaymentHash lntypes.Hash
 
+	// Preimage is the Lightning payment preimage once the swap revealed it.
+	// For a completed pay swap this is the proof of payment for the paid
+	// invoice; it is nil until the preimage is durably known.
+	Preimage *lntypes.Preimage
+
 	// Invoice is the BOLT-11 invoice associated with the swap.
 	Invoice string
 

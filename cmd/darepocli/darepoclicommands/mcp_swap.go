@@ -125,8 +125,8 @@ func registerMCPSwapMutateTools(s *mcp.Server,
 	})
 
 	type payArgs struct {
-		Invoice   string `json:"invoice" jsonschema:"BOLT-11 invoice to pay (required)"`                          //nolint:ll
-		MaxFeeSat uint64 `json:"max_fee_sat,omitempty" jsonschema:"maximum fee in satoshis; zero means no limit"` //nolint:ll
+		Invoice   string `json:"invoice" jsonschema:"BOLT-11 invoice to pay (required)"`                                                                     //nolint:ll
+		MaxFeeSat uint64 `json:"max_fee_sat,omitempty" jsonschema:"maximum swap fee in satoshis; zero lets the daemon default the cap to ~1% of the amount"` //nolint:ll
 	}
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "swap.pay",

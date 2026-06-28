@@ -2211,7 +2211,11 @@ type ActivitySwapTrace struct {
 	// when known.
 	SettlementType string `protobuf:"bytes,18,opt,name=settlement_type,json=settlementType,proto3" json:"settlement_type,omitempty"`
 	// sender_pubkey is the compressed SEC-encoded vHTLC sender key when known.
-	SenderPubkey  string `protobuf:"bytes,19,opt,name=sender_pubkey,json=senderPubkey,proto3" json:"sender_pubkey,omitempty"`
+	SenderPubkey string `protobuf:"bytes,19,opt,name=sender_pubkey,json=senderPubkey,proto3" json:"sender_pubkey,omitempty"`
+	// preimage is the hex-encoded Lightning payment preimage once the swap
+	// revealed it. For a completed pay swap this is the proof of payment for
+	// the paid invoice; it is empty until the preimage is durably known.
+	Preimage      string `protobuf:"bytes,20,opt,name=preimage,proto3" json:"preimage,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2375,6 +2379,13 @@ func (x *ActivitySwapTrace) GetSettlementType() string {
 func (x *ActivitySwapTrace) GetSenderPubkey() string {
 	if x != nil {
 		return x.SenderPubkey
+	}
+	return ""
+}
+
+func (x *ActivitySwapTrace) GetPreimage() string {
+	if x != nil {
+		return x.Preimage
 	}
 	return ""
 }
@@ -4508,7 +4519,7 @@ const file_wallet_proto_rawDesc = "" +
 	"\x05vtxos\x18\x03 \x03(\v2\x1e.walletdkrpc.ActivityVTXOTraceR\x05vtxos\x12A\n" +
 	"\vledger_rows\x18\x04 \x03(\v2 .walletdkrpc.ActivityLedgerTraceR\n" +
 	"ledgerRows\x12\x14\n" +
-	"\x05notes\x18\x05 \x03(\tR\x05notes\"\xc0\x05\n" +
+	"\x05notes\x18\x05 \x03(\tR\x05notes\"\xdc\x05\n" +
 	"\x11ActivitySwapTrace\x12!\n" +
 	"\fpayment_hash\x18\x01 \x01(\tR\vpaymentHash\x12\x1c\n" +
 	"\tdirection\x18\x02 \x01(\tR\tdirection\x12\x14\n" +
@@ -4530,7 +4541,8 @@ const file_wallet_proto_rawDesc = "" +
 	"\rdeadline_unix\x18\x10 \x01(\x03R\fdeadlineUnix\x12'\n" +
 	"\x0frefund_locktime\x18\x11 \x01(\rR\x0erefundLocktime\x12'\n" +
 	"\x0fsettlement_type\x18\x12 \x01(\tR\x0esettlementType\x12#\n" +
-	"\rsender_pubkey\x18\x13 \x01(\tR\fsenderPubkey\"\xc4\x01\n" +
+	"\rsender_pubkey\x18\x13 \x01(\tR\fsenderPubkey\x12\x1a\n" +
+	"\bpreimage\x18\x14 \x01(\tR\bpreimage\"\xc4\x01\n" +
 	"\x11ActivityVTXOTrace\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1d\n" +
 	"\n" +

@@ -308,9 +308,23 @@ func paySummaryFromRow(row swapsqlc.PaySwap) (SwapSummary, error) {
 		return SwapSummary{}, err
 	}
 
+	// The preimage column is only populated once the server's vHTLC claim
+	// reveals it, so a pending pay swap leaves it nil. When present it is
+	// the proof of payment for the paid invoice.
+	var preimage *lntypes.Preimage
+	if len(row.Preimage) != 0 {
+		decoded, err := preimageFromBytes(row.Preimage)
+		if err != nil {
+			return SwapSummary{}, err
+		}
+
+		preimage = &decoded
+	}
+
 	return SwapSummary{
 		Direction:        SwapDirectionPay,
 		PaymentHash:      paymentHash,
+		Preimage:         preimage,
 		Invoice:          row.Invoice,
 		State:            state.String(),
 		Pending:          !state.IsTerminal(),

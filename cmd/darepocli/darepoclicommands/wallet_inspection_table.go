@@ -147,6 +147,7 @@ func renderSwapSection(out io.Writer, swap *walletdkrpc.ActivitySwapTrace) {
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Swap")
 	printBullet(out, 0, "payment_hash", emptyDash(swap.GetPaymentHash()))
+	printOptionalBullet(out, "preimage", swap.GetPreimage())
 	printBullet(out, 0, "direction", emptyDash(swap.GetDirection()))
 	printBullet(out, 0, "state", emptyDash(swap.GetState()))
 	printBullet(out, 0, "pending", fmt.Sprintf("%t", swap.GetPending()))
