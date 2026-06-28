@@ -13,11 +13,12 @@ import (
 // system (OPFS). OPFS is reachable from both the window and worker globals,
 // unlike localStorage which is window-only, so the daemon can run inside a Web
 // Worker. SeedFilePath produces a "/dir/dir/wallet_seed.enc" path; it is split
-// on "/" and walked as OPFS directory handles, placing the seed alongside the
-// daemon's other OPFS data. These functions block the calling goroutine on the
-// async OPFS promises, so they keep their synchronous signatures; they must run
-// off the JS call stack (the verb goroutines spawned by promise() satisfy
-// this).
+// on "/" and walked as OPFS directory handles, persisting the seed at that
+// nested path in the OPFS origin (the daemon's SQLite data is stored
+// separately, under hashed flat names at the OPFS root). These functions block
+// the calling goroutine on the async OPFS promises, so they keep their
+// synchronous signatures; they must run off the JS call stack (the verb
+// goroutines spawned by promise() satisfy this).
 
 // errOPFSUnavailable is returned when the OPFS API is absent from the current
 // JS context. This is a deterministic capability gap rather than a transient
@@ -48,7 +49,8 @@ func isNotFound(err error) bool {
 
 // awaitJSPromise blocks the calling goroutine until the JS promise settles and
 // returns its resolved value, or an error built from the rejection reason. The
-// channel is buffered so the settle callback never blocks the JS event loop.
+// channel is buffered so the settle callback never blocks the JS event loop. p
+// must be a thenable (a real Promise); every OPFS caller here passes one.
 func awaitJSPromise(p js.Value) (js.Value, error) {
 	type settled struct {
 		value js.Value
