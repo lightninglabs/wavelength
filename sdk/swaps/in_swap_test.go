@@ -48,6 +48,13 @@ type testInSwapServerConn struct {
 	createCalls         int
 	createAccountKey    []byte
 	createMaxCreditSat  uint64
+	creditCreateResp    *CreditOperation
+	creditCreateReq     CreateCreditRequest
+	creditCreateCalls   int
+	creditAccountKey    []byte
+	listCreditsResp     *CreditSnapshot
+	listCreditsHook     func(int) *CreditSnapshot
+	listCreditsCalls    int
 	refundAuthorization *InSwapRefundAuthorization
 	refundAuthorizeErr  error
 	refundAuthorizeReq  *testRefundAuthorizeReq

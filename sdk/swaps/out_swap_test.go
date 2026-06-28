@@ -1454,6 +1454,7 @@ type testDaemonConn struct {
 	preparedOOR       *PreparedOOR
 	prepareOOREErr    error
 	sendPolicyErr     error
+	sendPubKeyErr     error
 	sendCustomErr     error
 	oorSession        *daemonrpc.OORSessionInfo
 	oorSessionErr     error
@@ -1464,11 +1465,14 @@ type testDaemonConn struct {
 	spentLookupBlock  time.Duration
 	spendOnCustom     bool
 	sendPolicyCalls   int
+	sendPubKeyCalls   int
 	sendCustomCalls   int
 	oorSessionCalls   int
 	liveLookupCalls   int
 	spentLookupCalls  int
 	lastSendPolicy    []byte
+	lastSendPubKey    []byte
+	lastSendTopUpKey  string
 	lastClaimPubKey   []byte
 	lastClaimInput    []CustomInput
 	lastOORSessionID  string
@@ -1510,6 +1514,24 @@ func (d *testDaemonConn) SendOORWithPolicyDetails(_ context.Context, _ int64,
 
 	if d.sendPolicyErr != nil {
 		return nil, d.sendPolicyErr
+	}
+
+	return &OORSendResult{
+		SessionID:         d.sendSessionID,
+		RecipientOutpoint: d.sendOutpoint,
+	}, nil
+}
+
+// SendOORToPubKey records a standard pubkey OOR transfer request.
+func (d *testDaemonConn) SendOORToPubKey(_ context.Context,
+	recipientPubKey []byte, _ int64, idempotencyKey string) (
+	*OORSendResult, error) {
+
+	d.sendPubKeyCalls++
+	d.lastSendPubKey = append([]byte(nil), recipientPubKey...)
+	d.lastSendTopUpKey = idempotencyKey
+	if d.sendPubKeyErr != nil {
+		return nil, d.sendPubKeyErr
 	}
 
 	return &OORSendResult{

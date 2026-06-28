@@ -75,6 +75,37 @@ func TestResumePendingStartsWorkersAndDedupes(t *testing.T) {
 	require.True(t, fakeClient.sawPendingOnlyList())
 }
 
+// TestResumePendingStartsPaymentIntentBeforePayWorker verifies a restart first
+// resumes the wallet payment-intent runner that may still need to reconcile a
+// credit top-up. The ordinary pay worker must not also drive the same payment
+// hash while the intent runner owns it.
+func TestResumePendingStartsPaymentIntentBeforePayWorker(t *testing.T) {
+	t.Parallel()
+
+	payHash := testHash(40)
+	fakeClient := newFakeSwapRuntime(swaps.SwapSummary{
+		Direction:   swaps.SwapDirectionPay,
+		PaymentHash: payHash,
+		State:       "created",
+		Pending:     true,
+	})
+	fakeClient.pendingPaymentIntents = []swaps.PaymentIntentSummary{
+		{
+			PaymentHash: payHash,
+			State:       swaps.PaymentIntentCreditTopUpSent,
+			Pending:     true,
+		},
+	}
+	service := newTestSwapClientService(fakeClient)
+	defer service.cancel()
+
+	service.resumePending(t.Context())
+	fakeClient.awaitPaymentIntentResume(t, payHash)
+
+	require.Equal(t, 1, fakeClient.paymentIntentResumeCount(payHash))
+	require.Equal(t, 0, fakeClient.payResumeCount(payHash))
+}
+
 // TestResumeSwapConcurrentCallsStartOnePayWorker drives many manual resume RPCs
 // for the same pay swap at the same time. ResumeSwap is allowed to be retried
 // by clients, but it must not create parallel FSM drivers for one payment hash.
@@ -237,6 +268,42 @@ func TestStartPayReturnsSummaryAndStartsWorker(t *testing.T) {
 	fakeClient.awaitPayResume(t, payHash)
 	require.Equal(t, 1, fakeClient.startPayCount())
 	require.Equal(t, 1, fakeClient.payResumeCount(payHash))
+}
+
+// TestStartPayForwardsCreditTopUpBound verifies walletdk's accepted credit
+// funding cap reaches the durable payment runner instead of being discarded by
+// the daemon RPC facade.
+func TestStartPayForwardsCreditTopUpBound(t *testing.T) {
+	t.Parallel()
+
+	payHash := testHash(41)
+	fakeClient := newFakeSwapRuntime(
+		swaps.SwapSummary{
+			Direction:   swaps.SwapDirectionPay,
+			PaymentHash: payHash,
+			State:       "created",
+			Pending:     true,
+			AmountSat:   1,
+			MaxFeeSat:   25,
+		},
+	)
+	fakeClient.startPaySession = &fakePaySession{hash: payHash}
+	service := newTestSwapClientService(fakeClient)
+	defer service.cancel()
+
+	_, err := service.StartPay(
+		t.Context(), &swapclientrpc.StartPayRequest{
+			Invoice:           "lnbc1credit",
+			MaxFeeSat:         25,
+			MaxCreditSat:      1,
+			MaxCreditTopupSat: 1_000,
+		},
+	)
+	require.NoError(t, err)
+
+	creditSat, topUpSat := fakeClient.startPayCreditBounds()
+	require.Equal(t, uint64(1), creditSat)
+	require.Equal(t, uint64(1_000), topUpSat)
 }
 
 // TestQuotePayReturnsRemotePreview verifies the local swap client RPC exposes
@@ -1125,7 +1192,8 @@ func testSwapPayInvoice(t *testing.T, amountSat btcutil.Amount) string {
 type fakeSwapRuntime struct {
 	mu sync.Mutex
 
-	summaries []swaps.SwapSummary
+	summaries             []swaps.SwapSummary
+	pendingPaymentIntents []swaps.PaymentIntentSummary
 
 	startPaySession     paySwapSession
 	startReceiveSession receiveSwapSession
@@ -1139,34 +1207,42 @@ type fakeSwapRuntime struct {
 	listCreditsResp     *swaps.CreditSnapshot
 	listCreditsErr      error
 
-	quotePayCalls      int
-	quotePayInvoice    string
-	quotePayMaxFeeSat  uint64
-	startPayCalls      int
-	startReceiveCalls  int
-	startReceiveMemo   string
-	createCreditCalls  int
-	createCreditReq    swaps.CreateCreditRequest
-	redeemCreditCalls  int
-	redeemCreditReq    swaps.RedeemCreditRequest
-	listCreditsCalls   int
-	listCreditsLimit   uint32
-	getSummaryCalls    int
-	listPendingOnly    []bool
-	payResumeCalls     map[lntypes.Hash]int
-	receiveResumeCalls map[lntypes.Hash]int
+	quotePayCalls               int
+	quotePayInvoice             string
+	quotePayMaxFeeSat           uint64
+	quotePayMaxCreditSat        uint64
+	startPayCalls               int
+	startPayMaxCreditSat        uint64
+	startPayMaxCreditTopUpSat   uint64
+	startReceiveCalls           int
+	startReceiveMemo            string
+	paymentIntentResumeCalls    map[lntypes.Hash]int
+	createCreditCalls           int
+	createCreditReq             swaps.CreateCreditRequest
+	redeemCreditCalls           int
+	redeemCreditReq             swaps.RedeemCreditRequest
+	listCreditsCalls            int
+	listCreditsLimit            uint32
+	getSummaryCalls             int
+	listPendingOnly             []bool
+	listPendingPaymentIntentHit int
+	payResumeCalls              map[lntypes.Hash]int
+	receiveResumeCalls          map[lntypes.Hash]int
 
-	payResumeCh     chan lntypes.Hash
-	receiveResumeCh chan lntypes.Hash
+	payResumeCh           chan lntypes.Hash
+	receiveResumeCh       chan lntypes.Hash
+	paymentIntentResumeCh chan lntypes.Hash
 }
 
 func newFakeSwapRuntime(summaries ...swaps.SwapSummary) *fakeSwapRuntime {
 	return &fakeSwapRuntime{
-		summaries:          summaries,
-		payResumeCalls:     make(map[lntypes.Hash]int),
-		receiveResumeCalls: make(map[lntypes.Hash]int),
-		payResumeCh:        make(chan lntypes.Hash, 8),
-		receiveResumeCh:    make(chan lntypes.Hash, 8),
+		summaries:                summaries,
+		paymentIntentResumeCalls: make(map[lntypes.Hash]int),
+		payResumeCalls:           make(map[lntypes.Hash]int),
+		receiveResumeCalls:       make(map[lntypes.Hash]int),
+		payResumeCh:              make(chan lntypes.Hash, 8),
+		receiveResumeCh:          make(chan lntypes.Hash, 8),
+		paymentIntentResumeCh:    make(chan lntypes.Hash, 8),
 	}
 }
 
@@ -1189,13 +1265,46 @@ func (f *fakeSwapRuntime) QuotePayViaLightning(_ context.Context,
 	return f.quotePayResp, nil
 }
 
+func (f *fakeSwapRuntime) QuotePayViaLightningWithCredits(
+	ctx context.Context, invoice string, maxFeeSat uint64,
+	maxCreditSat uint64) (*swaps.InSwapQuote, error) {
+
+	f.mu.Lock()
+	f.quotePayMaxCreditSat = maxCreditSat
+	f.mu.Unlock()
+
+	return f.QuotePayViaLightning(ctx, invoice, maxFeeSat)
+}
+
 func (f *fakeSwapRuntime) StartPayViaLightning(context.Context, string,
 	uint64) (paySwapSession, error) {
+
+	return f.startPay(0, 0)
+}
+
+func (f *fakeSwapRuntime) StartPayViaLightningWithCredits(
+	_ context.Context, _ string, _ uint64, maxCreditSat uint64) (
+	paySwapSession, error) {
+
+	return f.startPay(maxCreditSat, 0)
+}
+
+func (f *fakeSwapRuntime) StartPayViaLightningWithCreditTopUp(
+	_ context.Context, _ string, _ uint64, maxCreditSat uint64,
+	maxCreditTopUpSat uint64) (paySwapSession, error) {
+
+	return f.startPay(maxCreditSat, maxCreditTopUpSat)
+}
+
+func (f *fakeSwapRuntime) startPay(maxCreditSat uint64,
+	maxCreditTopUpSat uint64) (paySwapSession, error) {
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
 	f.startPayCalls++
+	f.startPayMaxCreditSat = maxCreditSat
+	f.startPayMaxCreditTopUpSat = maxCreditTopUpSat
 	if f.startPayErr != nil {
 		return nil, f.startPayErr
 	}
@@ -1204,6 +1313,33 @@ func (f *fakeSwapRuntime) StartPayViaLightning(context.Context, string,
 	}
 
 	return f.startPaySession, nil
+}
+
+func (f *fakeSwapRuntime) ResumePaymentIntent(_ context.Context,
+	hash lntypes.Hash) (paySwapSession, error) {
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.paymentIntentResumeCalls[hash]++
+	f.paymentIntentResumeCh <- hash
+
+	return &fakePaySession{hash: hash}, nil
+}
+
+func (f *fakeSwapRuntime) ListPendingPaymentIntents(_ context.Context) (
+	[]swaps.PaymentIntentSummary, error) {
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.listPendingPaymentIntentHit++
+	intents := make(
+		[]swaps.PaymentIntentSummary, len(f.pendingPaymentIntents),
+	)
+	copy(intents, f.pendingPaymentIntents)
+
+	return intents, nil
 }
 
 func (f *fakeSwapRuntime) StartReceiveViaLightning(_ context.Context,
@@ -1350,11 +1486,32 @@ func (f *fakeSwapRuntime) awaitReceiveResume(t *testing.T, hash lntypes.Hash) {
 	}
 }
 
+func (f *fakeSwapRuntime) awaitPaymentIntentResume(t *testing.T,
+	hash lntypes.Hash) {
+
+	t.Helper()
+
+	select {
+	case got := <-f.paymentIntentResumeCh:
+		require.Equal(t, hash, got)
+
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for payment intent resume")
+	}
+}
+
 func (f *fakeSwapRuntime) startPayCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
 	return f.startPayCalls
+}
+
+func (f *fakeSwapRuntime) startPayCreditBounds() (uint64, uint64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return f.startPayMaxCreditSat, f.startPayMaxCreditTopUpSat
 }
 
 func (f *fakeSwapRuntime) startReceiveCount() int {
@@ -1376,6 +1533,13 @@ func (f *fakeSwapRuntime) receiveResumeCount(hash lntypes.Hash) int {
 	defer f.mu.Unlock()
 
 	return f.receiveResumeCalls[hash]
+}
+
+func (f *fakeSwapRuntime) paymentIntentResumeCount(hash lntypes.Hash) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return f.paymentIntentResumeCalls[hash]
 }
 
 func (f *fakeSwapRuntime) sawPendingOnlyList() bool {

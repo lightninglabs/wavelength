@@ -162,3 +162,48 @@ WHERE state NOT IN (
     'Completed', 'Expired', 'Refunded', 'NeedsIntervention', 'Failed'
 )
 ORDER BY created_at_unix ASC;
+
+-- name: UpsertPaymentIntent :exec
+INSERT INTO payment_intents (
+    payment_hash,
+    invoice,
+    max_fee_sat,
+    max_credit_sat,
+    max_credit_topup_sat,
+    state,
+    credit_idempotency_key,
+    credit_operation_id,
+    credit_topup_sat,
+    credit_destination_pubkey,
+    credit_oor_session_id,
+    pay_started_hash,
+    last_error,
+    created_at_unix,
+    updated_at_unix
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
+)
+ON CONFLICT (payment_hash) DO UPDATE SET
+    invoice = EXCLUDED.invoice,
+    max_fee_sat = EXCLUDED.max_fee_sat,
+    max_credit_sat = EXCLUDED.max_credit_sat,
+    max_credit_topup_sat = EXCLUDED.max_credit_topup_sat,
+    state = EXCLUDED.state,
+    credit_idempotency_key = EXCLUDED.credit_idempotency_key,
+    credit_operation_id = EXCLUDED.credit_operation_id,
+    credit_topup_sat = EXCLUDED.credit_topup_sat,
+    credit_destination_pubkey = EXCLUDED.credit_destination_pubkey,
+    credit_oor_session_id = EXCLUDED.credit_oor_session_id,
+    pay_started_hash = EXCLUDED.pay_started_hash,
+    last_error = EXCLUDED.last_error,
+    updated_at_unix = EXCLUDED.updated_at_unix;
+
+-- name: GetPaymentIntent :one
+SELECT * FROM payment_intents
+WHERE payment_hash = $1
+LIMIT 1;
+
+-- name: ListPendingPaymentIntents :many
+SELECT * FROM payment_intents
+WHERE state NOT IN ('PayStarted', 'Expired', 'Failed')
+ORDER BY created_at_unix ASC;

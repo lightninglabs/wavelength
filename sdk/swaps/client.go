@@ -714,6 +714,11 @@ type DaemonConn interface {
 	SendOORWithPolicyDetails(ctx context.Context, amountSat int64,
 		recipientPolicyTemplate []byte) (*OORSendResult, error)
 
+	// SendOORToPubKey sends an OOR transfer to a standard pubkey
+	// destination using the supplied idempotency key.
+	SendOORToPubKey(ctx context.Context, recipientPubKey []byte,
+		amountSat int64, idempotencyKey string) (*OORSendResult, error)
+
 	// SendOORWithCustomInputs sends an OOR with custom inputs into one
 	// standard pubkey-backed Ark receive destination.
 	SendOORWithCustomInputs(ctx context.Context, recipientPubKey []byte,

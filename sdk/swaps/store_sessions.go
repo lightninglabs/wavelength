@@ -50,7 +50,7 @@ func (c *SwapClient) ResumePayViaLightning(ctx context.Context,
 	row, err := c.store.queries.GetPaySwap(ctx, paymentHash[:])
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("pay session not found")
+			return nil, ErrPaySessionNotFound
 		}
 
 		return nil, fmt.Errorf("load pay session: %w", err)

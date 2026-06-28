@@ -420,28 +420,10 @@ func TestRouterSendInvoiceTopsUpCreditsBeforeStartPay(t *testing.T) {
 			SwapSettlementType_SWAP_SETTLEMENT_TYPE_CREDIT,
 		CreditQuote: &swapclientrpc.CreditQuote{
 			MustUseCredit:      true,
-			CreditShortfallSat: 500_000,
+			CreditShortfallSat: 500,
 			CreditTopupSat:     1_000,
 		},
 		ExpiresAtUnix: time.Now().Add(time.Minute).Unix(),
-	}
-	swap.createCreditResp = &swapclientrpc.CreateCreditResponse{
-		OperationId: "cr_topup",
-		State:       swapclientrpc.CreditOperationState_CREDIT_OPERATION_STATE_AWAITING_PAYMENT,
-		AmountSat:   1_000,
-		DestinationPubkey: []byte{
-			9,
-			9,
-			9,
-		},
-	}
-	swap.listCreditsResp = &swapclientrpc.ListCreditsResponse{
-		AvailableSat: 500_000,
-		Operations: []*swapclientrpc.CreditOperation{{
-			OperationId: "cr_topup",
-			State: swapclientrpc.
-				CreditOperationState_CREDIT_OPERATION_STATE_CREDITED,
-		}},
 	}
 	swap.startPayResp = &swapclientrpc.StartPayResponse{
 		PaymentHash: paymentHash,
@@ -474,29 +456,13 @@ func TestRouterSendInvoiceTopsUpCreditsBeforeStartPay(t *testing.T) {
 	resp, err := sendPrepared(t, r, prepareResp)
 	require.NoError(t, err)
 	require.Equal(t, int64(500), resp.GetActualAmountSat())
-	require.Equal(t, 1, swap.createCreditCalls)
-	require.Equal(
-		t,
-		swapclientrpc.CreditFundingSource_CREDIT_FUNDING_SOURCE_ARK_TOPUP,
-		swap.createCreditLast.GetSource(),
-	)
-	require.Equal(t, uint64(1_000), swap.createCreditLast.GetAmountSat())
-	require.Equal(t, 1, rpc.sendOORCalls)
-	require.Equal(
-		t, "credit-topup-"+prepareResp.GetSendIntentId(),
-		rpc.sendOORLastReq.GetIdempotencyKey(),
-	)
-	require.Equal(
-		t, []byte{9, 9, 9},
-		rpc.sendOORLastReq.GetRecipients()[0].GetPubkey(),
-	)
-	require.Equal(
-		t, int64(1_000),
-		rpc.sendOORLastReq.GetRecipients()[0].GetAmountSat(),
-	)
+	require.Equal(t, 0, swap.createCreditCalls)
+	require.Equal(t, 0, rpc.sendOORCalls)
 	require.Equal(t, 1, swap.startPayCalls)
+	require.Equal(t, uint64(500), swap.startPayLastReq.GetMaxCreditSat())
 	require.Equal(
-		t, uint64(500_000), swap.startPayLastReq.GetMaxCreditSat(),
+		t, uint64(1_000),
+		swap.startPayLastReq.GetMaxCreditTopupSat(),
 	)
 }
 

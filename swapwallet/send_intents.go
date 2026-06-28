@@ -26,14 +26,15 @@ type preparedSendIntent struct {
 	kind      preparedSendKind
 	expiresAt time.Time
 
-	invoice        string
-	onchainAddress string
-	amountSat      uint64
-	note           string
-	maxFeeSat      uint64
-	maxCreditSat   uint64
-	creditPreview  *walletdkrpc.CreditPreview
-	sweepAll       bool
+	invoice           string
+	onchainAddress    string
+	amountSat         uint64
+	note              string
+	maxFeeSat         uint64
+	maxCreditSat      uint64
+	maxCreditTopUpSat uint64
+	creditPreview     *walletdkrpc.CreditPreview
+	sweepAll          bool
 
 	selectedOutpoints []string
 	actualAmountSat   int64

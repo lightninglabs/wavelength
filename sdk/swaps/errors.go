@@ -28,6 +28,10 @@ var (
 	// ErrSwapSummaryNotFound is returned when no persisted pay or receive
 	// swap summary exists for a requested payment hash.
 	ErrSwapSummaryNotFound = errors.New("swap summary not found")
+
+	// ErrPaySessionNotFound is returned when no persisted pay session
+	// exists for a requested payment hash.
+	ErrPaySessionNotFound = errors.New("pay session not found")
 )
 
 // errSwapExpired is kept as an internal alias for older tests and helpers.

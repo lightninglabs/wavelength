@@ -35,6 +35,24 @@ type PaySwap struct {
 	SettlementType                       string
 }
 
+type PaymentIntent struct {
+	PaymentHash             []byte
+	Invoice                 string
+	MaxFeeSat               int64
+	MaxCreditSat            int64
+	MaxCreditTopupSat       int64
+	State                   string
+	CreditIdempotencyKey    string
+	CreditOperationID       string
+	CreditTopupSat          int64
+	CreditDestinationPubkey []byte
+	CreditOorSessionID      string
+	PayStartedHash          []byte
+	LastError               string
+	CreatedAtUnix           int64
+	UpdatedAtUnix           int64
+}
+
 type ReceiveSwap struct {
 	PaymentHash                          []byte
 	AmountSat                            int64

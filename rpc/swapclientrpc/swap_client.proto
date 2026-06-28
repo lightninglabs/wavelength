@@ -162,6 +162,10 @@ message StartPayRequest {
     // max_credit_sat is the maximum credit amount the caller authorizes this
     // pay to reserve.
     uint64 max_credit_sat = 4;
+
+    // max_credit_topup_sat is the accepted Ark credit top-up bound. Zero means
+    // StartPay must not fund new credits before paying.
+    uint64 max_credit_topup_sat = 5;
 }
 
 message StartPayResponse {

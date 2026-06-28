@@ -998,6 +998,40 @@ func (c *Client) SendOORWithPolicyAndKeyDetails(ctx context.Context,
 	}, nil
 }
 
+// SendOORToPubKey sends one OOR transfer to a standard x-only pubkey
+// destination using the supplied idempotency key.
+func (c *Client) SendOORToPubKey(ctx context.Context, recipientPubKey []byte,
+	amountSat int64, idempotencyKey string) (*OORSendResult, error) {
+
+	resp, err := c.SendOOR(ctx, &daemonrpc.SendOORRequest{
+		Recipients: []*daemonrpc.Output{
+			{
+				Destination: &daemonrpc.Output_Pubkey{
+					Pubkey: append(
+						[]byte(nil), recipientPubKey...,
+					),
+				},
+				AmountSat: amountSat,
+			},
+		},
+		IdempotencyKey: idempotencyKey,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	recipientOutpoints := resp.GetRecipientOutpoints()
+	recipientOutpoint := ""
+	if len(recipientOutpoints) > 0 {
+		recipientOutpoint = recipientOutpoints[0]
+	}
+
+	return &OORSendResult{
+		SessionID:         resp.GetSessionId(),
+		RecipientOutpoint: recipientOutpoint,
+	}, nil
+}
+
 // SendOORWithCustomInputs sends one OOR transfer using caller-specified
 // inputs and a standard x-only pubkey destination.
 func (c *Client) SendOORWithCustomInputs(ctx context.Context,

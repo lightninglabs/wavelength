@@ -51,6 +51,35 @@ func (q *Queries) GetPaySwap(ctx context.Context, paymentHash []byte) (PaySwap, 
 	return i, err
 }
 
+const GetPaymentIntent = `-- name: GetPaymentIntent :one
+SELECT payment_hash, invoice, max_fee_sat, max_credit_sat, max_credit_topup_sat, state, credit_idempotency_key, credit_operation_id, credit_topup_sat, credit_destination_pubkey, credit_oor_session_id, pay_started_hash, last_error, created_at_unix, updated_at_unix FROM payment_intents
+WHERE payment_hash = $1
+LIMIT 1
+`
+
+func (q *Queries) GetPaymentIntent(ctx context.Context, paymentHash []byte) (PaymentIntent, error) {
+	row := q.db.QueryRowContext(ctx, GetPaymentIntent, paymentHash)
+	var i PaymentIntent
+	err := row.Scan(
+		&i.PaymentHash,
+		&i.Invoice,
+		&i.MaxFeeSat,
+		&i.MaxCreditSat,
+		&i.MaxCreditTopupSat,
+		&i.State,
+		&i.CreditIdempotencyKey,
+		&i.CreditOperationID,
+		&i.CreditTopupSat,
+		&i.CreditDestinationPubkey,
+		&i.CreditOorSessionID,
+		&i.PayStartedHash,
+		&i.LastError,
+		&i.CreatedAtUnix,
+		&i.UpdatedAtUnix,
+	)
+	return i, err
+}
+
 const GetReceiveSwap = `-- name: GetReceiveSwap :one
 SELECT payment_hash, amount_sat, payer_fee_msat, state, invoice, preimage, deadline_unix, client_pubkey, payment_addr, operator_pubkey, swap_server_pubkey, refund_locktime, unilateral_claim_delay, unilateral_refund_delay, unilateral_refund_without_receiver_delay, vhtlc_pkscript, vhtlc_policy_template, vhtlc_outpoint, vhtlc_amount, pending_htlc_ack_cursor, claim_receive_pubkey, claim_receive_pkscript, claim_session_id, claim_recovery_id, intervention_reason, created_at_unix, updated_at_unix, settlement_type, requested_amount_sat, available_credit_sat, attached_credit_sat, dust_limit_sat FROM receive_swaps
 WHERE payment_hash = $1
@@ -200,6 +229,51 @@ func (q *Queries) ListPendingPaySwaps(ctx context.Context) ([]PaySwap, error) {
 			&i.CreatedAtUnix,
 			&i.UpdatedAtUnix,
 			&i.SettlementType,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const ListPendingPaymentIntents = `-- name: ListPendingPaymentIntents :many
+SELECT payment_hash, invoice, max_fee_sat, max_credit_sat, max_credit_topup_sat, state, credit_idempotency_key, credit_operation_id, credit_topup_sat, credit_destination_pubkey, credit_oor_session_id, pay_started_hash, last_error, created_at_unix, updated_at_unix FROM payment_intents
+WHERE state NOT IN ('PayStarted', 'Expired', 'Failed')
+ORDER BY created_at_unix ASC
+`
+
+func (q *Queries) ListPendingPaymentIntents(ctx context.Context) ([]PaymentIntent, error) {
+	rows, err := q.db.QueryContext(ctx, ListPendingPaymentIntents)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []PaymentIntent
+	for rows.Next() {
+		var i PaymentIntent
+		if err := rows.Scan(
+			&i.PaymentHash,
+			&i.Invoice,
+			&i.MaxFeeSat,
+			&i.MaxCreditSat,
+			&i.MaxCreditTopupSat,
+			&i.State,
+			&i.CreditIdempotencyKey,
+			&i.CreditOperationID,
+			&i.CreditTopupSat,
+			&i.CreditDestinationPubkey,
+			&i.CreditOorSessionID,
+			&i.PayStartedHash,
+			&i.LastError,
+			&i.CreatedAtUnix,
+			&i.UpdatedAtUnix,
 		); err != nil {
 			return nil, err
 		}
@@ -460,6 +534,81 @@ func (q *Queries) UpsertPaySwap(ctx context.Context, arg UpsertPaySwapParams) er
 		arg.RefundRecoveryID,
 		arg.Preimage,
 		arg.InterventionReason,
+		arg.CreatedAtUnix,
+		arg.UpdatedAtUnix,
+	)
+	return err
+}
+
+const UpsertPaymentIntent = `-- name: UpsertPaymentIntent :exec
+INSERT INTO payment_intents (
+    payment_hash,
+    invoice,
+    max_fee_sat,
+    max_credit_sat,
+    max_credit_topup_sat,
+    state,
+    credit_idempotency_key,
+    credit_operation_id,
+    credit_topup_sat,
+    credit_destination_pubkey,
+    credit_oor_session_id,
+    pay_started_hash,
+    last_error,
+    created_at_unix,
+    updated_at_unix
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
+)
+ON CONFLICT (payment_hash) DO UPDATE SET
+    invoice = EXCLUDED.invoice,
+    max_fee_sat = EXCLUDED.max_fee_sat,
+    max_credit_sat = EXCLUDED.max_credit_sat,
+    max_credit_topup_sat = EXCLUDED.max_credit_topup_sat,
+    state = EXCLUDED.state,
+    credit_idempotency_key = EXCLUDED.credit_idempotency_key,
+    credit_operation_id = EXCLUDED.credit_operation_id,
+    credit_topup_sat = EXCLUDED.credit_topup_sat,
+    credit_destination_pubkey = EXCLUDED.credit_destination_pubkey,
+    credit_oor_session_id = EXCLUDED.credit_oor_session_id,
+    pay_started_hash = EXCLUDED.pay_started_hash,
+    last_error = EXCLUDED.last_error,
+    updated_at_unix = EXCLUDED.updated_at_unix
+`
+
+type UpsertPaymentIntentParams struct {
+	PaymentHash             []byte
+	Invoice                 string
+	MaxFeeSat               int64
+	MaxCreditSat            int64
+	MaxCreditTopupSat       int64
+	State                   string
+	CreditIdempotencyKey    string
+	CreditOperationID       string
+	CreditTopupSat          int64
+	CreditDestinationPubkey []byte
+	CreditOorSessionID      string
+	PayStartedHash          []byte
+	LastError               string
+	CreatedAtUnix           int64
+	UpdatedAtUnix           int64
+}
+
+func (q *Queries) UpsertPaymentIntent(ctx context.Context, arg UpsertPaymentIntentParams) error {
+	_, err := q.db.ExecContext(ctx, UpsertPaymentIntent,
+		arg.PaymentHash,
+		arg.Invoice,
+		arg.MaxFeeSat,
+		arg.MaxCreditSat,
+		arg.MaxCreditTopupSat,
+		arg.State,
+		arg.CreditIdempotencyKey,
+		arg.CreditOperationID,
+		arg.CreditTopupSat,
+		arg.CreditDestinationPubkey,
+		arg.CreditOorSessionID,
+		arg.PayStartedHash,
+		arg.LastError,
 		arg.CreatedAtUnix,
 		arg.UpdatedAtUnix,
 	)

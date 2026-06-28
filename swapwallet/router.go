@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"math"
 	"strings"
-	"time"
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
@@ -175,11 +174,12 @@ func (r *router) prepareInvoice(ctx context.Context, invoice string,
 		} else {
 			intent.maxCreditSat += creditQuote.GetCreditShortfallSat()
 		}
-		if quote.GetCreditQuote().GetMustUseCredit() {
+		if creditQuote.GetMustUseCredit() {
 			if uint64(amountSat) > intent.maxCreditSat {
 				intent.maxCreditSat = uint64(amountSat)
 			}
 		}
+		intent.maxCreditTopUpSat = creditQuote.GetCreditTopupSat()
 	}
 
 	if _, err := r.intents.put(intent); err != nil {
@@ -198,15 +198,12 @@ func (r *router) sendInvoiceIntent(ctx context.Context,
 		return nil, ErrSwapBackendUnavailable
 	}
 
-	if err := r.fundInvoiceCreditShortfall(ctx, intent); err != nil {
-		return nil, err
-	}
-
 	startResp, err := r.deps.SwapService.StartPay(
 		ctx, &swapclientrpc.StartPayRequest{
-			Invoice:      intent.invoice,
-			MaxFeeSat:    intent.maxFeeSat,
-			MaxCreditSat: intent.maxCreditSat,
+			Invoice:           intent.invoice,
+			MaxFeeSat:         intent.maxFeeSat,
+			MaxCreditSat:      intent.maxCreditSat,
+			MaxCreditTopupSat: intent.maxCreditTopUpSat,
 		},
 	)
 	if err != nil {
@@ -230,135 +227,6 @@ func (r *router) sendInvoiceIntent(ctx context.Context,
 		Entry:           entry,
 		ActualAmountSat: actualAmountSat,
 	}, nil
-}
-
-func (r *router) fundInvoiceCreditShortfall(ctx context.Context,
-	intent *preparedSendIntent) error {
-
-	if intent == nil || intent.creditPreview == nil ||
-		intent.creditPreview.GetCreditShortfallSat() == 0 {
-		return nil
-	}
-	if r.deps.RPCServer == nil {
-		return ErrSwapBackendUnavailable
-	}
-
-	topupSat := intent.creditPreview.GetCreditTopupSat()
-	if topupSat == 0 {
-		return fmt.Errorf("%w: credit top-up amount missing",
-			ErrAmountInvalid)
-	}
-	if topupSat > math.MaxInt64 {
-		return fmt.Errorf("%w: credit top-up exceeds int64 range",
-			ErrAmountInvalid)
-	}
-
-	idempotencyKey := "credit-topup-" + intent.id
-	creditResp, err := r.deps.SwapService.CreateCredit(
-		ctx, &swapclientrpc.CreateCreditRequest{
-			IdempotencyKey: idempotencyKey,
-			Source: swapclientrpc.
-				CreditFundingSource_CREDIT_FUNDING_SOURCE_ARK_TOPUP,
-			AmountSat: topupSat,
-		},
-	)
-	if err != nil {
-		return fmt.Errorf("create credit top-up: %w", err)
-	}
-
-	if creditResp.GetState() != swapclientrpc.
-		CreditOperationState_CREDIT_OPERATION_STATE_CREDITED {
-
-		if len(creditResp.GetDestinationPubkey()) == 0 {
-			return fmt.Errorf("credit top-up destination missing")
-		}
-
-		_, err = r.deps.RPCServer.SendOOR(
-			ctx, &daemonrpc.SendOORRequest{
-				Recipients: []*daemonrpc.Output{{
-					Destination: &daemonrpc.Output_Pubkey{
-						Pubkey: append(
-							[]byte(nil),
-							creditResp.GetDestinationPubkey()...,
-						),
-					},
-					AmountSat: int64(topupSat),
-				}},
-				IdempotencyKey: idempotencyKey,
-			},
-		)
-		if err != nil {
-			return fmt.Errorf("fund credit top-up: %w", err)
-		}
-	}
-
-	return r.waitCreditTopUp(
-		ctx, creditResp.GetOperationId(), intent.maxCreditSat,
-	)
-}
-
-func (r *router) waitCreditTopUp(ctx context.Context, operationID string,
-	requiredAvailableSat uint64) error {
-
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		credits, err := r.deps.SwapService.ListCredits(
-			ctx, &swapclientrpc.ListCreditsRequest{
-				Limit: ^uint32(0),
-			},
-		)
-		if err != nil {
-			return fmt.Errorf("list credits: %w", err)
-		}
-		credited, terminalErr := creditOperationCredited(
-			credits, operationID,
-		)
-		if terminalErr != nil {
-			return terminalErr
-		}
-		if credits.GetAvailableSat() >= requiredAvailableSat &&
-			credited {
-			return nil
-		}
-
-		select {
-		case <-ticker.C:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-}
-
-func creditOperationCredited(snapshot *swapclientrpc.ListCreditsResponse,
-	operationID string) (bool, error) {
-
-	for _, op := range snapshot.GetOperations() {
-		if op.GetOperationId() != operationID {
-			continue
-		}
-
-		switch op.GetState() {
-		case swapclientrpc.
-			CreditOperationState_CREDIT_OPERATION_STATE_CREDITED:
-			return true, nil
-
-		case swapclientrpc.
-			CreditOperationState_CREDIT_OPERATION_STATE_FAILED,
-			swapclientrpc.
-				CreditOperationState_CREDIT_OPERATION_STATE_EXPIRED,
-			swapclientrpc.
-				CreditOperationState_CREDIT_OPERATION_STATE_RELEASED:
-			return false, fmt.Errorf("credit top-up %s ended in %s",
-				operationID, op.GetState())
-
-		default:
-			return false, nil
-		}
-	}
-
-	return false, nil
 }
 
 // prepareOnchain validates an onchain destination and builds a fee-aware

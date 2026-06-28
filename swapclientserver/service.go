@@ -631,6 +631,32 @@ func (a *swapClientAdapter) StartPayViaLightningWithCredits(ctx context.Context,
 	)
 }
 
+// StartPayViaLightningWithCreditTopUp starts a real sdk/swaps pay session
+// through the durable wallet payment intent runner.
+func (a *swapClientAdapter) StartPayViaLightningWithCreditTopUp(
+	ctx context.Context, invoice string, maxFeeSat uint64, maxCreditSat uint64,
+	maxCreditTopUpSat uint64) (paySwapSession, error) {
+
+	return a.client.StartPayViaLightningWithCreditTopUp(
+		ctx, invoice, maxFeeSat, maxCreditSat, maxCreditTopUpSat,
+	)
+}
+
+// ResumePaymentIntent resumes a durable wallet payment intent by payment hash.
+func (a *swapClientAdapter) ResumePaymentIntent(ctx context.Context,
+	hash lntypes.Hash) (paySwapSession, error) {
+
+	return a.client.ResumePaymentIntent(ctx, hash)
+}
+
+// ListPendingPaymentIntents returns durable wallet payment intents that must
+// resume before a pay swap row necessarily exists.
+func (a *swapClientAdapter) ListPendingPaymentIntents(ctx context.Context) (
+	[]swaps.PaymentIntentSummary, error) {
+
+	return a.client.ListPendingPaymentIntents(ctx)
+}
+
 // QuotePayViaLightning previews a pay swap without creating durable state.
 func (a *swapClientAdapter) QuotePayViaLightning(ctx context.Context,
 	invoice string, maxFeeSat uint64) (*swaps.InSwapQuote, error) {
@@ -1037,7 +1063,26 @@ func (s *swapClientService) quotePay(ctx context.Context, invoice string,
 }
 
 func (s *swapClientService) startPay(ctx context.Context, invoice string,
-	maxFeeSat uint64, maxCreditSat uint64) (paySwapSession, error) {
+	maxFeeSat uint64, maxCreditSat uint64,
+	maxCreditTopUpSat uint64) (paySwapSession, error) {
+
+	if maxCreditTopUpSat > 0 {
+		if client, ok := s.client.(interface {
+			StartPayViaLightningWithCreditTopUp(context.Context,
+				string, uint64, uint64, uint64) (paySwapSession,
+				error)
+		}); ok {
+			return client.StartPayViaLightningWithCreditTopUp(
+				ctx, invoice, maxFeeSat, maxCreditSat,
+				maxCreditTopUpSat,
+			)
+		}
+
+		return nil, status.Error(
+			codes.Unimplemented,
+			"credit top-up payment intents are not supported",
+		)
+	}
 
 	if client, ok := s.client.(interface {
 		StartPayViaLightningWithCredits(context.Context, string, uint64,
@@ -1101,7 +1146,7 @@ func (s *swapClientService) StartPay(ctx context.Context,
 
 	session, err := s.startPay(
 		ctx, req.GetInvoice(), req.GetMaxFeeSat(),
-		req.GetMaxCreditSat(),
+		req.GetMaxCreditSat(), req.GetMaxCreditTopupSat(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("start pay swap: %w", err)
@@ -1483,6 +1528,21 @@ func (s *swapClientService) SubscribeSwaps(
 // swapruntime daemon starts, the store is scanned before the RPC server begins
 // accepting control calls.
 func (s *swapClientService) resumePending(ctx context.Context) {
+	if client, ok := s.client.(interface {
+		ListPendingPaymentIntents(context.Context) (
+			[]swaps.PaymentIntentSummary, error)
+	}); ok {
+		intents, err := client.ListPendingPaymentIntents(ctx)
+		if err != nil {
+			s.log.Warnf("unable to list pending payment intents on "+
+				"startup: %v", err)
+		} else {
+			for _, intent := range intents {
+				s.startPaymentIntentWorker(intent.PaymentHash)
+			}
+		}
+	}
+
 	summaries, err := s.client.ListSwapSummaries(ctx, true)
 	if err != nil {
 		s.log.Warnf("unable to list pending swaps on startup: %v", err)
@@ -1499,6 +1559,45 @@ func (s *swapClientService) resumePending(ctx context.Context) {
 			s.startReceiveWorker(summary.PaymentHash)
 		}
 	}
+}
+
+// startPaymentIntentWorker claims process-local ownership for the wallet-level
+// payment intent and runs it until the underlying sdk/swaps pay FSM exists.
+// Once the pay session is available, the same goroutine waits on the pay FSM so
+// another worker cannot concurrently drive the same payment hash.
+func (s *swapClientService) startPaymentIntentWorker(hash lntypes.Hash) {
+	key := hex.EncodeToString(hash[:])
+	if !s.markActive(key) {
+		return
+	}
+
+	go func() {
+		defer s.markInactive(key)
+		defer s.publishHash(hash)
+
+		client, ok := s.client.(interface {
+			ResumePaymentIntent(context.Context,
+				lntypes.Hash) (paySwapSession, error)
+		})
+		if !ok {
+			s.log.Warnf("unable to resume payment intent %s: "+
+				"runtime does not support payment intents", key)
+
+			return
+		}
+
+		session, err := client.ResumePaymentIntent(s.rootCtx, hash)
+		if err != nil {
+			s.log.Warnf("payment intent %s stopped: %v", key, err)
+
+			return
+		}
+
+		_, err = session.Wait(s.rootCtx)
+		if err != nil && !errors.Is(err, context.Canceled) {
+			s.log.Warnf("pay swap %s stopped: %v", key, err)
+		}
+	}()
 }
 
 // startPayWorker claims process-local ownership for a pay swap FSM and runs

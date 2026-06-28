@@ -10,12 +10,15 @@ import (
 
 type Querier interface {
 	GetPaySwap(ctx context.Context, paymentHash []byte) (PaySwap, error)
+	GetPaymentIntent(ctx context.Context, paymentHash []byte) (PaymentIntent, error)
 	GetReceiveSwap(ctx context.Context, paymentHash []byte) (ReceiveSwap, error)
 	ListPaySwaps(ctx context.Context) ([]PaySwap, error)
 	ListPendingPaySwaps(ctx context.Context) ([]PaySwap, error)
+	ListPendingPaymentIntents(ctx context.Context) ([]PaymentIntent, error)
 	ListPendingReceiveSwaps(ctx context.Context) ([]ReceiveSwap, error)
 	ListReceiveSwaps(ctx context.Context) ([]ReceiveSwap, error)
 	UpsertPaySwap(ctx context.Context, arg UpsertPaySwapParams) error
+	UpsertPaymentIntent(ctx context.Context, arg UpsertPaymentIntentParams) error
 	UpsertReceiveSwap(ctx context.Context, arg UpsertReceiveSwapParams) error
 }
 
