@@ -51,6 +51,10 @@ func (s *Server) initCreditRegistry(ctx context.Context) error {
 	)
 	creditStore := db.NewCreditOperationStore(dbStore, s.clk)
 
+	// The registry actor is daemon-owned: its construction-time restore
+	// and durable mailbox lifetime belong to the actor system, not the
+	// boot ctx threaded into this init, so it must not inherit that ctx.
+	//nolint:contextcheck
 	registry, err := credit.NewRegistry(credit.RegistryConfig{
 		Log:           fn.Some(s.subLogger(creditSubsystem)),
 		Server:        s.cfg.Swap.CreditServer,
@@ -61,13 +65,22 @@ func (s *Server) initCreditRegistry(ctx context.Context) error {
 		CallbackRef:   callbackRef,
 		ActorSystem:   s.actorSystem,
 		AutoRedeem: credit.AutoRedeemConfig{
-			Enabled: true,
+			Enabled:      !s.cfg.Swap.Credit.AutoRedeemDisabled,
+			MinRedeemSat: s.cfg.Swap.Credit.AutoRedeemMinSat,
+			Interval:     s.cfg.Swap.Credit.AutoRedeemInterval,
 		},
 	})
 	if err != nil {
 		return err
 	}
 	s.creditRegistry = registry
+
+	// Publish the earmark setter so the walletdkrpc subserver can wire its
+	// prepared-send store into the auto-redeem interlock once that store
+	// exists (the subserver is registered after this runs). Until then the
+	// sweep has no earmark provider and redeems on available credits alone,
+	// which is safe because no credit-backed send has been prepared yet.
+	s.cfg.Swap.CreditEarmarkSetter = registry.SetEarmarkProvider
 
 	// Restore any in-flight credit operations interrupted by a restart,
 	// then start the wallet-owned auto-redeem sweep on the daemon root

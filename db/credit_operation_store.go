@@ -181,8 +181,9 @@ func (s *CreditOperationStoreDB) UpsertOperation(ctx context.Context,
 					ServerOpID: nullString(
 						record.ServerOpID,
 					),
-					PaymentHash:       record.PaymentHash,
-					DestinationPubkey: record.DestinationPubkey,
+					PaymentHash: record.PaymentHash,
+					DestinationPubkey: record.
+						DestinationPubkey,
 					OorSessionID: nullString(
 						record.OORSessionID,
 					),
