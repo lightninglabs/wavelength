@@ -28,6 +28,7 @@ package may import from a higher layer.
 | [`lib/recovery`](lib/recovery/) | Immutable recovery proof graph, session state machine, TLV codec for unilateral exit |
 | [`unrollplan`](unrollplan/) | Pure dependency-resolution planner driving unilateral-exit broadcast/sweep ordering |
 | [`vhtlcrecovery`](vhtlcrecovery/) | Durable control-plane types for vHTLC on-chain recovery jobs (action, state, script parameters, swap linkage) |
+| [`coinselect`](coinselect/) | Coin-type-agnostic coin-selection algorithm (largest-first) shared by vtxo and swapwallet; no wallet or RPC dependencies |
 
 ### Layer 2: Infrastructure (Chain, Storage, Messaging)
 
@@ -43,6 +44,8 @@ package may import from a higher layer.
 | [`lwwallet`](lwwallet/) | Lightweight in-process wallet (btcwallet + Esplora, no external LND) |
 | [`btcwbackend`](btcwbackend/) | Neutrino-backed wallet backend (btcwallet + compact block filters) |
 | [`walletcore`](walletcore/) | Shared wallet abstractions and boarding logic used by lwwallet and btcwbackend |
+| [`chainfees`](chainfees/) | `chainfee.Estimator` implementations and combinators (WalletKit, mempool.space, MinEstimator) |
+| [`internal/sqlbase`](internal/sqlbase/) | WASM-only SQL walletdb backend for lwwallet (js/wasm build tag); maps btcwallet nested-bucket semantics to SQL |
 | [`proofkeys`](proofkeys/) | Interface for wallet-managed key derivation and indexer proof signing |
 | [`fraud`](fraud/) | Fraud detection actor: watches OOR ancestor outpoints on-chain and triggers unilateral exit when an ancestor is spent |
 | [`vhtlcrecovery/coordinator`](vhtlcrecovery/coordinator/) | Runtime coordinator for durable vHTLC recovery jobs: arms, escalates into unroll, cancels, and reconciles after restart |
@@ -61,10 +64,12 @@ package may import from a higher layer.
 | [`sdk/ark`](sdk/ark/) | Consumer-facing Go SDK facade: remote or embedded daemon access with typed models |
 | [`sdk/swaps`](sdk/swaps/) | Lightning-to-Ark / Ark-to-Lightning atomic swap SDK with durable FSM flows |
 | [`sdk/walletdk`](sdk/walletdk/) | Wallet-shaped SDK facade for host apps: embeds the daemon in-process, dials it over a private bufconn transport, exposes typed methods for the seven core wallet verbs (create, unlock, send, recv, list, balance, exit). The highest-level layer in the stack; wraps `walletdkrpc.WalletService`. Wallet RPC methods gated behind `walletdkrpc` (which transitively requires `swapruntime`) |
+| [`sdk/walletdk/mobile`](sdk/walletdk/mobile/) | Gomobile-safe JSON-bytes-in/out facade over sdk/walletdk for iOS/Android/WASM targets; singleton lifecycle, pull-based Subscribe |
 | [`swapwallet`](swapwallet/) | Optional daemon-side `walletdkrpc.WalletService` implementation (build tags `walletdkrpc swapruntime`): composes the swap subsystem, cooperative leave, boarding, ledger, and unilateral-exit registry behind one flat, swap-vocabulary-free wallet API |
 | [`swapclientserver`](swapclientserver/) | Optional daemon-side swap subserver (build tag `swapruntime`): translates `swapclientrpc` RPCs into `sdk/swaps` operations and manages the daemon-local worker registry |
 | [`cmd/darepod`](cmd/darepod/) | Daemon entry point |
 | [`cmd/darepocli`](cmd/darepocli/) | CLI client |
+| [`cmd/walletdk-wasm`](cmd/walletdk-wasm/) | Browser/WASM entry point: installs `walletdkCall` JS bridge over sdk/walletdk/mobile (js/wasm only) |
 | [`timeout`](timeout/) | Generic timeout scheduling actor |
 | [`indexer`](indexer/) | Server indexing client for receive script registration |
 | [`arkrpc`](arkrpc/) | Server-side gRPC service definitions (ArkService, IndexerService) |

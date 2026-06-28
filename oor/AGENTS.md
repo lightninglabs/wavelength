@@ -241,6 +241,22 @@ per-session durable actor's turn.
   `ClassifySubmitError` maps it to `*ErrLineageTooLarge` so wallet
   callers can switch on the cause without depending on the proto type.
 
+## Client-Facing Submit Errors
+
+`ClassifySubmitError` converts a generic submit-pipeline error into one of
+three typed, `errors.Is`-able sentinels. Callers receive the sentinel directly
+and can `errors.As` for detail fields without importing oorpb.
+
+- `*ErrLineageTooLarge` — operator rejected because the VTXO ancestry chain
+  exceeds the maximum allowed depth. Terminal for the same VTXO set.
+- `*ErrOutputPolicyViolation` — operator rejected because the output violates
+  its policy (e.g. per-VTXO amount cap). Terminal for the same output shape;
+  the caller must restructure the transfer.
+- `*ErrUserBalanceExceeded` — operator rejected because the recipient's total
+  balance would exceed `MaxUserBalance`. **Not terminal**: the caller can retry
+  after the recipient spends down its balance. Both `*ErrOutputPolicyViolation`
+  and `*ErrUserBalanceExceeded` carry a `Reason string` for diagnostics.
+
 ## Invariants
 
 - Checkpoint output collab path is 2-of-2

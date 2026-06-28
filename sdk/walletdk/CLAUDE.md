@@ -51,8 +51,30 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
   on `View`, populates one of `Activity`/`VTXOs`/`Onchain`),
   `ActivityList`, `VTXOInventory`, `OnchainHistory`, `Entry`
   (optional `Progress *EntryProgress` and `Request *EntryRequest`
-  sub-objects, both nil when absent; `Request` is a `Type`-tagged
-  union over lightning/onchain/ark), `WalletVTXO`, `OnchainTx`.
+  sub-objects, both nil when absent; `Request` is a `Type`-tagged union
+  over lightning/onchain/ark; `FailureCode EntryFailureCode` classifies
+  terminal failure, empty on non-failed entries), `WalletVTXO`,
+  `OnchainTx`.
+- `EntryPhase` — wrapper-owned lifecycle phase string for an `Entry`
+  (`request_created`, `waiting_for_payment`, `payment_detected`,
+  `settling`, `confirmed`, `refunding`, `refunded`, `failed`,
+  `waiting_for_confirmation`, `unspecified`). Decoupled from proto enum
+  numbering.
+- `EntryProgress` — optional lifecycle metadata carried on `Entry.Progress`:
+  `Phase EntryPhase`, `PhaseLabel string`, `PaymentHash string`,
+  `Txid string`, `ConfirmationHeight int64`, `VTXOOutpoint string`.
+- `EntryRequest` — optional persisted request shape on `Entry.Request`;
+  discriminated by `Type` (`lightning`/`onchain`/`ark`).
+- `EntryFailureCode` — machine-readable failure classification on
+  `Entry.FailureCode` (`timed_out`, `expired`, `refunded`,
+  `needs_intervention`, `failed`, empty when not failed).
+- `GetExitPlanRequest` / `ExitPlanEntry` / `GetExitPlanResult` — exit-plan
+  preview DTOs. `GetExitPlan` returns a per-VTXO backing-wallet funding
+  plan: required sweepable amount, estimated on-chain fee, and whether the
+  backing wallet already holds sufficient funds.
+- `SweepWalletRequest` / `WalletSweepInput` / `SweepWalletResult` — sweep
+  DTOs. `SweepWallet` previews or broadcasts a backing-wallet sweep;
+  `SweepWalletRequest.Broadcast` controls whether the tx is actually sent.
 - `ExitRequest` / `ExitResult` / `ExitStatusRequest` /
   `ExitStatusResult` / `ExitJobStatus` — exit DTOs. `ExitRequest`
   carries the target outpoint plus an optional on-chain `Destination`
@@ -89,11 +111,23 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
 | `List` | Unified history view (Activity / VTXOs / Onchain) as a tagged-union `ListResult`. |
 | `Exit` | Trigger cooperative leave or unilateral unroll for a VTXO. |
 | `ExitStatus` | Query the phase of an exit job. |
+| `GetExitPlan` | Preview unilateral-exit readiness; returns per-VTXO backing-wallet funding plan. |
+| `SweepWallet` | Preview or broadcast a backing-wallet sweep. |
 | `Status` | Wallet readiness, balance, pending-entry count. |
 | `Subscribe` | Stream wallet activity (`Entry`) updates. |
 | `Stop` / `Close` | Shut down the embedded daemon, release the private transport. |
 | `Wait` | Single shared channel yielding the daemon's terminal run error. |
 | `GRPCConn` / `ArkRPC` / `SwapRPC` / `WalletRPC` | Escape hatches to the underlying private gRPC conn and raw clients. |
+
+## Error Reconstruction
+
+`errmap.go` installs a unary gRPC client interceptor (`errorReconstructInterceptor`)
+on both the embedded and remote client connections. The interceptor rewrites
+daemon rejection reasons (carried as gRPC status details of type
+`walletdkrpc.RejectionReason`) into `errors.Is`-able Go sentinels, so callers
+can match specific wallet failures without importing proto types. The
+interceptor is transparent on success and on errors that carry no rejection
+detail.
 
 ## Relationships
 
@@ -159,6 +193,8 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
   discriminated union — read the variant named by `Type`
   (`lightning`/`onchain`/`ark`) and treat the other fields as zero,
   the same idiom as `ListResult.View`.
+- `Entry.FailureCode` is the zero `EntryFailureCode` (empty string) for
+  non-failed entries. Only condition on it when `Entry.Status == "failed"`.
 - `Wait()` is single-reader: same shared channel on every call. The
   channel delivers the daemon's terminal run error then closes; a
   closed channel reads as the zero error indefinitely.
