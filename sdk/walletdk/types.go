@@ -124,6 +124,16 @@ type UnlockWalletResult struct {
 	IdentityPubKey string
 }
 
+// OpenWalletResult reports the outcome of OpenWalletFromPasskey. Imported is
+// true when a new local wallet was created from the derived seed (fresh
+// device); false when an existing local wallet was unlocked. Mnemonic is set
+// only on import, for backup display.
+type OpenWalletResult struct {
+	Imported       bool
+	Mnemonic       []string
+	IdentityPubKey string
+}
+
 // Balance is the wallet-level balance view.
 type Balance struct {
 	ConfirmedSat  int64

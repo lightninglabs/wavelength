@@ -220,6 +220,26 @@ func (c *Client) CreateWallet(ctx context.Context, req CreateWalletRequest) (
 	}, nil
 }
 
+// initFromMnemonic runs the daemon InitWallet step for an already-derived
+// mnemonic, returning the daemon identity pubkey. The passkey import path uses
+// it; CreateWallet inlines its own InitWallet call.
+func (c *Client) initFromMnemonic(ctx context.Context, mnemonic []string,
+	seedPassphrase, walletPassword []byte) (string, error) {
+
+	initResp, err := c.daemon.InitWallet(ctx,
+		&daemonrpc.InitWalletRequest{
+			Mnemonic:       mnemonic,
+			SeedPassphrase: bytes.Clone(seedPassphrase),
+			WalletPassword: bytes.Clone(walletPassword),
+		},
+	)
+	if err != nil {
+		return "", fmt.Errorf("initialize wallet: %w", err)
+	}
+
+	return initResp.GetIdentityPubkey(), nil
+}
+
 // UnlockWallet unlocks an existing embedded daemon wallet.
 func (c *Client) UnlockWallet(ctx context.Context, req UnlockWalletRequest) (
 	*UnlockWalletResult, error) {
