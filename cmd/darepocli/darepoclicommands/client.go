@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/lightninglabs/darepo-client/daemonrpc"
+	"github.com/lightninglabs/darepo-client/rpcauth"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -17,6 +18,7 @@ func getDaemonConn(cmd *cobra.Command) (*grpc.ClientConn, error) {
 	rpcServer, _ := cmd.Flags().GetString("rpcserver")
 	noTLS, _ := cmd.Flags().GetBool("no-tls")
 	tlsCertPath, _ := cmd.Flags().GetString("tlscertpath")
+	macaroonPath, _ := cmd.Flags().GetString("macaroonpath")
 
 	var opts []grpc.DialOption
 
@@ -51,6 +53,17 @@ func getDaemonConn(cmd *cobra.Command) (*grpc.ClientConn, error) {
 		opts = append(opts, grpc.WithTransportCredentials(
 			creds,
 		))
+	}
+
+	if macaroonPath != "" {
+		macaroonOpt, err := rpcauth.DialOptionFromFile(
+			macaroonPath,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		opts = append(opts, macaroonOpt)
 	}
 
 	conn, err := grpc.NewClient(rpcServer, opts...)

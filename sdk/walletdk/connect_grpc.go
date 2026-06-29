@@ -7,17 +7,17 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/lightninglabs/darepo-client/rpcauth"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
+// connectGRPC connects to an external daemon over native gRPC.
 func connectGRPC(ctx context.Context, cfg ConnectConfig) (*Client, error) {
-	dialOpts := append([]grpc.DialOption(nil), cfg.DialOptions...)
-	if len(dialOpts) == 0 {
-		creds := insecure.NewCredentials()
-		dialOpts = append(
-			dialOpts, grpc.WithTransportCredentials(creds),
-		)
+	dialOpts, err := connectGRPCDialOptions(cfg)
+	if err != nil {
+		return nil, err
 	}
 
 	// Reconstruct errors.Is-able sentinels from the daemon's walletdk
@@ -43,4 +43,37 @@ func connectGRPC(ctx context.Context, cfg ConnectConfig) (*Client, error) {
 	}
 
 	return newClient(conn, true, closedWaitChan(), closeFn), nil
+}
+
+// connectGRPCDialOptions returns transport and macaroon dial options.
+func connectGRPCDialOptions(cfg ConnectConfig) ([]grpc.DialOption, error) {
+	var creds credentials.TransportCredentials
+	if cfg.Insecure {
+		creds = insecure.NewCredentials()
+	} else {
+		var err error
+		creds, err = rpcauth.ClientTLSCredentials(cfg.TLSCertPath)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	dialOpts := []grpc.DialOption{
+		grpc.WithTransportCredentials(creds),
+	}
+
+	if cfg.MacaroonPath != "" {
+		macaroonOpt, err := rpcauth.DialOptionFromFile(
+			cfg.MacaroonPath,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		dialOpts = append(dialOpts, macaroonOpt)
+	}
+
+	dialOpts = append(dialOpts, cfg.DialOptions...)
+
+	return dialOpts, nil
 }

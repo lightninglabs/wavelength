@@ -18,8 +18,8 @@ const (
 )
 
 // NewRootCmd creates the top-level cobra command for darepocli. Global
-// flags (--rpcserver, --format, --tlscertpath, --no-tls) are registered
-// here and made available to all subcommands via PersistentFlags.
+// flags (--rpcserver, --format, --tlscertpath, --macaroonpath, --no-tls) are
+// registered here and made available to all subcommands via PersistentFlags.
 func NewRootCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "darepocli",
@@ -46,6 +46,9 @@ func NewRootCmd() *cobra.Command {
 
 	pf.String("tlscertpath", "",
 		"path to daemon TLS certificate")
+
+	pf.String("macaroonpath", "",
+		"path to daemon RPC macaroon")
 
 	pf.Bool(
 		"no-tls", false,

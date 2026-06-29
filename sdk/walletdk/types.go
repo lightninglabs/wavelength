@@ -18,13 +18,23 @@ type ConnectConfig struct {
 	// TransportGRPC.
 	Transport Transport
 
-	// DialOptions are appended to the default dial options. When empty,
-	// walletdk uses insecure transport credentials for local development.
+	// TLSCertPath is an optional daemon TLS certificate path. When empty,
+	// walletdk uses system roots unless Insecure is set.
+	TLSCertPath string
+
+	// MacaroonPath is an optional daemon RPC macaroon path.
+	MacaroonPath string
+
+	// Insecure disables TLS for local development or injected listeners.
+	Insecure bool
+
+	// DialOptions are appended to the transport and auth dial options.
 	// Only used with TransportGRPC.
 	DialOptions []grpc.DialOption
 
 	// HTTPClient is the HTTP client used with TransportREST. Nil uses
-	// http.DefaultClient.
+	// http.DefaultClient, or a TLS-cert-specific client when TLSCertPath
+	// is set.
 	HTTPClient *http.Client
 }
 

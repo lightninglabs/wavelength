@@ -33,7 +33,8 @@ var errOffchainOnchainConflict = errors.New("--offchain and --onchain are " +
 // withWalletClient dials the daemon's WalletService and invokes fn with
 // the resulting client. The transport reuses the existing getDaemonConn
 // helper so the top-level wallet verbs honor the same global flags
-// (--rpcserver, --tlscertpath, --no-tls) as every other darepocli verb.
+// (--rpcserver, --tlscertpath, --macaroonpath, --no-tls) as every other
+// darepocli verb.
 // gRPC UNIMPLEMENTED is mapped to errWalletRPCDisabled so stub-build
 // daemons surface a clear, actionable error.
 func withWalletClient(cmd *cobra.Command,
