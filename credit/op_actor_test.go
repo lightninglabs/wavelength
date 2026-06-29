@@ -403,8 +403,10 @@ func drive(t *testing.T, b *opBehavior, msg CreditDurableMsg) {
 // Stage or Commit failure and the recovery path is faithful to production.
 func driveTurn(b *opBehavior, ax actor.Exec[creditTx]) error {
 	res := b.Receive(
-		context.Background(),
-		&ResumeCreditOpRequest{OpID: b.cfg.OpID}, ax,
+		context.Background(), &ResumeCreditOpRequest{
+			OpID: b.cfg.OpID,
+		},
+		ax,
 	)
 	_, err := res.Unpack()
 

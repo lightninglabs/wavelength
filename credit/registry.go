@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
@@ -27,6 +28,7 @@ type Registry struct {
 	actor    *actor.Actor[CreditMsg, CreditResp]
 	behavior *registryBehavior
 	redeemer *autoRedeemer
+	wg       *sync.WaitGroup
 }
 
 // Ref returns the public registry actor reference.
@@ -47,7 +49,9 @@ func (r *Registry) Stop() {
 
 	r.redeemer.stop()
 	r.actor.Stop()
-	r.behavior.stopChildren()
+	if r.wg != nil {
+		r.wg.Wait()
+	}
 }
 
 // RestoreNonTerminal respawns and resumes every non-terminal operation. It runs
@@ -93,9 +97,11 @@ func NewRegistry(cfg RegistryConfig) (*Registry, error) {
 		active: make(map[string]*OpActor),
 	}
 
+	var wg sync.WaitGroup
 	supervisor := actor.NewActor(actor.ActorConfig[CreditMsg, CreditResp]{
 		ID:       CreditActorServiceKeyName,
 		Behavior: behavior,
+		Wg:       &wg,
 	})
 	behavior.selfRef = supervisor.TellRef()
 	supervisor.Start()
@@ -109,6 +115,7 @@ func NewRegistry(cfg RegistryConfig) (*Registry, error) {
 		)
 		if err != nil {
 			supervisor.Stop()
+			wg.Wait()
 
 			return nil, fmt.Errorf("register credit registry: %w",
 				err)
@@ -121,6 +128,7 @@ func NewRegistry(cfg RegistryConfig) (*Registry, error) {
 		actor:    supervisor,
 		behavior: behavior,
 		redeemer: newAutoRedeemer(cfg, supervisor.TellRef()),
+		wg:       &wg,
 	}, nil
 }
 
@@ -160,13 +168,15 @@ type registryBehavior struct {
 	selfRef actor.TellOnlyRef[CreditMsg]
 
 	// active maps op id to its resident child. Only ever touched on the
-	// registry goroutine (turns are serialized), except stopChildren on
-	// teardown.
+	// registry goroutine (turns are serialized).
 	active map[string]*OpActor
 }
 
 // Compile-time check that registryBehavior is a plain actor behavior.
 var _ actor.ActorBehavior[CreditMsg, CreditResp] = (*registryBehavior)(nil)
+
+// Compile-time check that registryBehavior owns actor shutdown cleanup.
+var _ actor.Stoppable = (*registryBehavior)(nil)
 
 // logger returns the behavior logger bound to ctx.
 func (b *registryBehavior) logger(ctx context.Context) btclog.Logger {
@@ -218,6 +228,15 @@ func (b *registryBehavior) Receive(ctx context.Context,
 				msg),
 		)
 	}
+}
+
+// OnStop stops resident child actors from the registry actor goroutine. Keeping
+// teardown inside the actor prevents shutdown from racing with terminal-child
+// reaping, which also mutates the active child map.
+func (b *registryBehavior) OnStop(context.Context) error {
+	b.stopChildren()
+
+	return nil
 }
 
 // admit dedups by op key and, for a fresh operation, writes the control-plane

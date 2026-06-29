@@ -472,6 +472,8 @@ type mockRoundActorBehavior struct {
 	capturedTriggerBoards []*actormsg.TriggerBoardMsg
 }
 
+type triggerBoardMsgs = []*actormsg.TriggerBoardMsg
+
 // TriggerBoardCalls returns a snapshot of triggerBoardCalls under the
 // mock's mutex so test goroutines can poll the counter without racing
 // the actor's Receive loop.
@@ -484,11 +486,11 @@ func (m *mockRoundActorBehavior) TriggerBoardCalls() int {
 
 // CapturedTriggerBoards returns a snapshot of every TriggerBoardMsg the
 // mock received, in order, under the mock's mutex.
-func (m *mockRoundActorBehavior) CapturedTriggerBoards() []*actormsg.TriggerBoardMsg {
+func (m *mockRoundActorBehavior) CapturedTriggerBoards() triggerBoardMsgs {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	out := make([]*actormsg.TriggerBoardMsg, len(m.capturedTriggerBoards))
+	out := make(triggerBoardMsgs, len(m.capturedTriggerBoards))
 	copy(out, m.capturedTriggerBoards)
 
 	return out
