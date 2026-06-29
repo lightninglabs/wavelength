@@ -733,6 +733,10 @@ type ServerConfig struct {
 	// be used in regtest or development environments.
 	Insecure bool `mapstructure:"insecure"`
 
+	// MacaroonPath is the path to the operator macaroon used for
+	// outbound ArkService and MailboxService requests.
+	MacaroonPath string `mapstructure:"macaroonpath"`
+
 	// MaxTreeNodes caps the number of nodes accepted in a VTXO tree
 	// received from the server. This prevents memory exhaustion from
 	// oversized tree payloads. If zero, the default of
@@ -766,6 +770,19 @@ type RPCConfig struct {
 	// TLSKeyPath is the path to the daemon's TLS private key. If empty,
 	// one is auto-generated in the data directory.
 	TLSKeyPath string `mapstructure:"tlskeypath"`
+
+	// NoTLS disables TLS on the daemon RPC listener. This should only be
+	// used by explicit local development or injected-listener paths.
+	NoTLS bool `mapstructure:"notls"`
+
+	// MacaroonPath is the path to the daemon RPC macaroon. If empty, one
+	// is auto-generated under the network data directory.
+	MacaroonPath string `mapstructure:"macaroonpath"`
+
+	// NoMacaroons disables daemon RPC macaroon authentication. This should
+	// only be used by explicit local development or injected-listener
+	// paths.
+	NoMacaroons bool `mapstructure:"no-macaroons"`
 }
 
 // GatewayConfig contains configuration for an HTTP/JSON grpc-gateway
@@ -1057,6 +1074,9 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("rpc listen address or injected listener " +
 			"is required")
 	}
+	if err := c.validateRPCSecurity(); err != nil {
+		return err
+	}
 	if c.RPC.Gateway == nil {
 		return fmt.Errorf("rpc gateway config is required")
 	}
@@ -1210,6 +1230,58 @@ func (c *Config) LogDir() string {
 	return filepath.Join(c.DataDir, "logs", c.Network)
 }
 
+// rpcTLSCertPath returns the default daemon RPC TLS certificate path.
+func (c *Config) rpcTLSCertPath() string {
+	return filepath.Join(c.NetworkDir(), "tls.cert")
+}
+
+// rpcTLSKeyPath returns the default daemon RPC TLS key path.
+func (c *Config) rpcTLSKeyPath() string {
+	return filepath.Join(c.NetworkDir(), "tls.key")
+}
+
+// rpcMacaroonPath returns the default daemon RPC macaroon path.
+func (c *Config) rpcMacaroonPath() string {
+	return filepath.Join(c.NetworkDir(), "admin.macaroon")
+}
+
+// rpcMacaroonDBPath returns the daemon RPC macaroon DB path.
+func (c *Config) rpcMacaroonDBPath() string {
+	return filepath.Join(c.NetworkDir(), "macaroons.db")
+}
+
+// validateRPCSecurity normalizes daemon RPC TLS and macaroon paths.
+func (c *Config) validateRPCSecurity() error {
+	if c.Network == "mainnet" && c.RPC.Listener == nil {
+		if c.RPC.NoTLS {
+			return fmt.Errorf("rpc.notls cannot be used on " +
+				"mainnet TCP listeners")
+		}
+		if c.RPC.NoMacaroons {
+			return fmt.Errorf("rpc.no-macaroons cannot be used " +
+				"on mainnet TCP listeners")
+		}
+	}
+
+	if !c.RPC.NoTLS {
+		switch {
+		case c.RPC.TLSCertPath == "" && c.RPC.TLSKeyPath == "":
+			c.RPC.TLSCertPath = c.rpcTLSCertPath()
+			c.RPC.TLSKeyPath = c.rpcTLSKeyPath()
+
+		case c.RPC.TLSCertPath == "" || c.RPC.TLSKeyPath == "":
+			return fmt.Errorf("rpc.tlscertpath and " +
+				"rpc.tlskeypath must be set together")
+		}
+	}
+
+	if !c.RPC.NoMacaroons && c.RPC.MacaroonPath == "" {
+		c.RPC.MacaroonPath = c.rpcMacaroonPath()
+	}
+
+	return nil
+}
+
 // expandPaths normalizes filesystem path fields by expanding a leading tilde to
 // the user's home directory. expandTilde is a no-op on empty strings and on
 // paths that don't start with "~", so URL-or-path fields (e.g. BtcwBlockSource,
@@ -1227,12 +1299,15 @@ func (c *Config) expandPaths() error {
 	}
 
 	if c.Server != nil {
-		fields = append(fields, &c.Server.TLSCertPath)
+		fields = append(
+			fields, &c.Server.TLSCertPath, &c.Server.MacaroonPath,
+		)
 	}
 
 	if c.RPC != nil {
 		fields = append(
 			fields, &c.RPC.TLSCertPath, &c.RPC.TLSKeyPath,
+			&c.RPC.MacaroonPath,
 		)
 	}
 

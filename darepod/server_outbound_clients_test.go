@@ -3,13 +3,16 @@ package darepod
 import (
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
+	"github.com/lightninglabs/darepo-client/rpcauth"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/encoding/protojson"
+	"gopkg.in/macaroon-bakery.v2/bakery"
 )
 
 // TestConnectOperatorClientsREST verifies the daemon can construct all
@@ -20,10 +23,32 @@ func TestConnectOperatorClientsREST(t *testing.T) {
 	operatorKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
 	operatorPubKey := operatorKey.PubKey().SerializeCompressed()
+	tempDir := t.TempDir()
+	macaroonDBPath := filepath.Join(tempDir, "macaroons.db")
+	macaroonPath := filepath.Join(tempDir, "operator.macaroon")
+	authService, err := rpcauth.NewService(
+		macaroonDBPath, macaroonPath, "arkd",
+		[]bakery.Op{{
+			Entity: "arkd",
+			Action: "client",
+		}}, nil,
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, authService.Close())
+	})
+
+	macHex, err := rpcauth.HexFromFile(macaroonPath)
+	require.NoError(t, err)
 
 	server := httptest.NewServer(
 		http.HandlerFunc(
 			func(w http.ResponseWriter, r *http.Request) {
+				require.Equal(
+					t, macHex, r.Header.Get(
+						rpcauth.MacaroonMetadataKey,
+					),
+				)
 				w.Header().Set(
 					"Content-Type", "application/json",
 				)
@@ -62,9 +87,10 @@ func TestConnectOperatorClientsREST(t *testing.T) {
 	s := &Server{
 		cfg: &Config{
 			Server: &ServerConfig{
-				Host:      server.URL,
-				Transport: RPCTransportREST,
-				Insecure:  true,
+				Host:         server.URL,
+				Transport:    RPCTransportREST,
+				Insecure:     true,
+				MacaroonPath: macaroonPath,
 			},
 		},
 	}

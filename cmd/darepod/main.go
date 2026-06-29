@@ -161,23 +161,7 @@ func newRootCmd() *cobra.Command {
 
 	registerBitcoindFlags(f)
 
-	// Daemon RPC server flags.
-	f.String(
-		"rpc.listenaddr", cfg.RPC.ListenAddr,
-		"daemon gRPC listen address",
-	)
-	f.Bool(
-		"rpc.gateway.enabled", cfg.RPC.Gateway.Enabled,
-		"enable daemon HTTP/JSON gateway",
-	)
-	f.String(
-		"rpc.gateway.listenaddr", cfg.RPC.Gateway.ListenAddr,
-		"daemon HTTP/JSON gateway listen address",
-	)
-	f.StringSlice(
-		"rpc.gateway.allowedorigins", cfg.RPC.Gateway.AllowedOrigins,
-		"trusted browser origins allowed to call the daemon gateway",
-	)
+	registerDaemonRPCFlags(f, cfg)
 
 	registerSwapRuntimeFlags(f, cfg)
 
@@ -268,7 +252,7 @@ func newRootCmd() *cobra.Command {
 	// Bind all flags to viper so Unmarshal populates the config
 	// struct from the combined flag/env/file sources.
 	v.SetEnvPrefix("DAREPOD")
-	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_", "-", "_"))
 	v.AutomaticEnv()
 	bindOORLimitFlags(v, f)
 	_ = v.BindPFlags(f)
@@ -296,6 +280,46 @@ func registerFeeEstimationFlags(f *pflag.FlagSet, cfg *darepod.Config) {
 	)
 }
 
+// registerDaemonRPCFlags registers daemon-owned local RPC flags.
+func registerDaemonRPCFlags(f *pflag.FlagSet, cfg *darepod.Config) {
+	f.String(
+		"rpc.listenaddr", cfg.RPC.ListenAddr,
+		"daemon gRPC listen address",
+	)
+	f.String(
+		"rpc.tlscertpath", cfg.RPC.TLSCertPath,
+		"path to daemon RPC TLS certificate",
+	)
+	f.String(
+		"rpc.tlskeypath", cfg.RPC.TLSKeyPath,
+		"path to daemon RPC TLS private key",
+	)
+	f.Bool(
+		"rpc.notls", cfg.RPC.NoTLS,
+		"disable TLS for daemon RPC (dev only)",
+	)
+	f.String(
+		"rpc.macaroonpath", cfg.RPC.MacaroonPath,
+		"path to daemon RPC macaroon",
+	)
+	f.Bool(
+		"rpc.no-macaroons", cfg.RPC.NoMacaroons,
+		"disable daemon RPC macaroon auth (dev only)",
+	)
+	f.Bool(
+		"rpc.gateway.enabled", cfg.RPC.Gateway.Enabled,
+		"enable daemon HTTP/JSON gateway",
+	)
+	f.String(
+		"rpc.gateway.listenaddr", cfg.RPC.Gateway.ListenAddr,
+		"daemon HTTP/JSON gateway listen address",
+	)
+	f.StringSlice(
+		"rpc.gateway.allowedorigins", cfg.RPC.Gateway.AllowedOrigins,
+		"trusted browser origins allowed to call the daemon gateway",
+	)
+}
+
 // registerArkServerFlags registers the daemon's outbound Ark operator flags.
 func registerArkServerFlags(f *pflag.FlagSet, cfg *darepod.Config) {
 	f.String(
@@ -313,6 +337,10 @@ func registerArkServerFlags(f *pflag.FlagSet, cfg *darepod.Config) {
 	f.Bool(
 		"server.insecure", cfg.Server.Insecure,
 		"disable TLS for the server connection (dev only)",
+	)
+	f.String(
+		"server.macaroonpath", cfg.Server.MacaroonPath,
+		"path to ark operator RPC macaroon",
 	)
 }
 

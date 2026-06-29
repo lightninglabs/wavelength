@@ -53,6 +53,7 @@ import (
 	"github.com/lightninglabs/darepo-client/round"
 	"github.com/lightninglabs/darepo-client/rpc/oorpb"
 	"github.com/lightninglabs/darepo-client/rpc/roundpb"
+	"github.com/lightninglabs/darepo-client/rpcauth"
 	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightninglabs/darepo-client/timeout"
 	"github.com/lightninglabs/darepo-client/txconfirm"
@@ -1228,13 +1229,23 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 	// -------------------------------------------------------
 	s.rpcServer = NewRPCServer(s)
 
+	//nolint:contextcheck // stream auth checks the live stream context.
+	authService, serverOptions, err := s.localRPCServerOptions()
+	if err != nil {
+		return err
+	}
+	if authService != nil {
+		defer func() {
+			if err := authService.Close(); err != nil {
+				s.log.WarnS(ctx, "RPC auth shutdown failed",
+					err,
+				)
+			}
+		}()
+	}
+
 	// Register the DaemonService for local gRPC access (CLI, GUI).
-	//
-	// TODO(roasbeef): Wire RPC.TLSCertPath/TLSKeyPath into
-	// grpc.Creds() once the auto-gen TLS material is in place.
-	s.grpcServer = grpc.NewServer(
-		grpc.ChainUnaryInterceptor(s.cfg.UnaryServerInterceptors...),
-	)
+	s.grpcServer = grpc.NewServer(serverOptions...)
 	daemonrpc.RegisterDaemonServiceServer(
 		s.grpcServer, s.rpcServer,
 	)
@@ -1260,6 +1271,14 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 		if cleanup != nil {
 			defer cleanup()
 		}
+	}
+	if authService != nil {
+		permissions, err := registeredRPCPermissions(s.grpcServer)
+		if err != nil {
+			return err
+		}
+
+		authService.SetPermissions(permissions)
 	}
 
 	// Register the DaemonService for mailbox RPC access. The
@@ -2584,6 +2603,17 @@ func (s *Server) dialServer() (*grpc.ClientConn, error) {
 		dialOpts = append(
 			dialOpts, grpc.WithTransportCredentials(creds),
 		)
+	}
+
+	if s.cfg.Server.MacaroonPath != "" {
+		macaroonOpt, err := rpcauth.DialOptionFromFile(
+			s.cfg.Server.MacaroonPath,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		dialOpts = append(dialOpts, macaroonOpt)
 	}
 
 	return grpc.NewClient(s.cfg.Server.Host, dialOpts...)

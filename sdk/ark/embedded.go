@@ -52,6 +52,11 @@ func StartEmbedded(ctx context.Context, cfg EmbeddedConfig) (*Client, error) {
 		daemonCfg.RPC = &darepod.RPCConfig{}
 	}
 	daemonCfg.RPC.Listener = listener
+	daemonCfg.RPC.NoTLS = true
+	daemonCfg.RPC.NoMacaroons = true
+	if daemonCfg.RPC.Gateway != nil {
+		daemonCfg.RPC.Gateway.Enabled = false
+	}
 
 	// Validate normalizes path fields (e.g. tilde expansion) and fills
 	// in subsystem defaults that NewServer assumes are present, so the

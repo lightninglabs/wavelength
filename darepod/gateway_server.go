@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/gateway"
+	"github.com/lightninglabs/darepo-client/rpcauth"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -73,10 +75,15 @@ func (g *gatewayServer) Start(ctx context.Context) error {
 			return fmt.Errorf("daemon gateway listen: %w", err)
 		}
 	}
-	mux := runtime.NewServeMux(gateway.ServeMuxOptions(nil)...)
+	mux := runtime.NewServeMux(
+		gateway.ServeMuxOptions(macaroonHeaderMatcher)...,
+	)
 
-	dialOpts := []grpc.DialOption{
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	dialOpts, err := g.gatewayDialOptions()
+	if err != nil {
+		_ = listener.Close()
+
+		return err
 	}
 	endpoint := gateway.NormalizeEndpoint(g.endpoint)
 	registerCtx, cancelRegister := context.WithCancel(ctx)
@@ -109,7 +116,7 @@ func (g *gatewayServer) Start(ctx context.Context) error {
 	g.cancel = cancelRegister
 	g.httpSrv = &http.Server{
 		Handler: gateway.BrowserHeaders(
-			mux, g.cfg.AllowedOrigins,
+			mux, g.cfg.AllowedOrigins, rpcauth.MacaroonMetadataKey,
 		),
 		ReadTimeout:       defaultGatewayReadTimeout,
 		ReadHeaderTimeout: defaultGatewayReadHeaderTimeout,
@@ -132,6 +139,37 @@ func (g *gatewayServer) Start(ctx context.Context) error {
 	}()
 
 	return nil
+}
+
+// gatewayDialOptions returns gRPC dial options for the local gateway proxy.
+func (g *gatewayServer) gatewayDialOptions() ([]grpc.DialOption, error) {
+	if g.daemonCfg.RPC.NoTLS {
+		return []grpc.DialOption{
+			grpc.WithTransportCredentials(
+				insecure.NewCredentials(),
+			),
+		}, nil
+	}
+
+	creds, err := rpcauth.ClientTLSCredentials(
+		g.daemonCfg.RPC.TLSCertPath,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("gateway rpc tls credentials: %w", err)
+	}
+
+	return []grpc.DialOption{
+		grpc.WithTransportCredentials(creds),
+	}, nil
+}
+
+// macaroonHeaderMatcher forwards macaroon HTTP headers to gRPC metadata.
+func macaroonHeaderMatcher(key string) (string, bool) {
+	if strings.EqualFold(key, rpcauth.MacaroonMetadataKey) {
+		return rpcauth.MacaroonMetadataKey, true
+	}
+
+	return runtime.DefaultHeaderMatcher(key)
 }
 
 // Stop stops the HTTP/JSON gateway.
