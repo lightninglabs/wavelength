@@ -97,6 +97,24 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   `vtxo.SpendingReservationStore`.
 - `SpendingReservationStore` / `BatchedSpendingReservationStore` — Internal
   sqlc-backed query interfaces for the reservation table.
+- `OORSessionRegistryStoreDB` — durable OOR session registry store.
+  Persists inbound/outbound session direction and status (pending,
+  terminal); enables the daemon to enumerate non-terminal sessions on
+  restart and resume or time them out. Methods: `UpsertOORSession`,
+  `GetOORSession`, `ListNonTerminalOORSessions`.
+- `OORSessionDirection` / `OORSessionStatus` — typed enum values
+  (`Inbound`/`Outbound` and `Pending`/`Terminal`).
+- `OORSessionRegistryRecord` — persistent OOR session row: session ID,
+  direction, status, timestamps.
+- `InternalKeyQuerier` interface + `RegisterInternalKeyTx` /
+  `InternalKeyDescByIDTx` — transaction-scoped helpers for deriving and
+  looking up internal wallet keys by their DB row ID. Used to associate
+  a key descriptor with a wallet-generated key without carrying the full
+  key manager across package boundaries.
+- `wasmSQLiteDriver` — internal `database/sql` driver registered under
+  the `"wasm_sqlite"` name that forwards to the browser's SQLite WASM
+  build. Enabled only on `js/wasm` builds; native builds use the standard
+  sqlite3 cgo driver.
 
 ## Relationships
 

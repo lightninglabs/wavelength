@@ -39,6 +39,27 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
   (`MaxCheckpoints`, `MaxVTXOMatches`, `MaxMailboxItems`,
   `MaxMailboxScriptBytes`). `Config.OORReceiveLimits()` normalizes
   into `oor.ReceiveLimits`.
+- `DBConfig` — groups per-backend DB tuning knobs under the `db.*`
+  namespace. `Sqlite DBSqliteConfig` (WAL, page size, busy timeout,
+  cache size) and `Postgres DBPostgresConfig` (reserved, empty today).
+  Only SQLite is wired; Postgres tuning is deferred.
+- `FeeEstimationConfig` / `MempoolSpaceFeeConfig` — optional external
+  chain fee providers under the `feeestimation.*` namespace. When
+  `MempoolSpace` is non-nil and enabled, the daemon wires a
+  `chainfees.MinEstimator` that selects the lowest of WalletKit and
+  mempool.space estimates. `Config.MempoolSpaceFeeEnabled()` and
+  `Config.MempoolSpaceFeeURL()` are nil-safe accessors.
+- `forfeitSignatureBroker` (internal) — coordinates VTXO forfeit
+  participant signing. Exposes connector-bound signer callbacks to the
+  vtxo actor via `vtxo.ForfeitParticipantSigner`. Manages pending
+  signature requests (list, submit, wait, prune) so the RPC layer and
+  the vtxo FSM can rendezvous on forfeit signatures without coupling.
+- `SaveEncryptedSeed` / `LoadEncryptedSeed` / `SeedFileExists` —
+  platform-split seed storage. Native builds use the filesystem
+  (`seed_storage_native.go`); WASM builds use the browser's Origin
+  Private File System (OPFS) via `syscall/js` promises
+  (`seed_storage_wasm.go`). `SeedFileExists` fails closed on OPFS
+  errors (returns `false` rather than panicking or blocking).
 - `WalletState` — `None` / `Locked` / `Ready`.
 
 ### RPC Handlers
@@ -229,7 +250,9 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
 ## Relationships
 
 - **Depends on**: `baselib/actor`, `btcwbackend`, `chainbackends`,
-  `chainsource`, `lib/actormsg`, `db`, `ledger`, `round`, `txconfirm`,
+  `chainfees` (min-estimator wiring for mempool.space fee provider),
+  `chainsource`, `coinselect` (boarding sweep coin selection),
+  `lib/actormsg`, `db`, `ledger`, `round`, `txconfirm`,
   `unroll`, `vtxo`, `wallet`, `walletcore`, `oor`, `serverconn`,
   `indexer`, `arkrpc`, `lndbackend`, `harness` (bitcoind package
   submitter wiring in `cmd/darepod`), `fraud`, `gateway`,

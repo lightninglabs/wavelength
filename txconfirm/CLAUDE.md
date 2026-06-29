@@ -55,6 +55,22 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/txcon
 - `Config.BroadcastFailureAlertThreshold` — consecutive no-mempool
   failures before the operator escalation fires (default 3). Time to
   first alert ≈ threshold × `FeeBumpIntervalBlocks` blocks.
+- Fee-input fanout FSM (internal) — separates the concern of supplying
+  fee inputs for multiple concurrent anchor parents:
+  - `feeBumpState` / `feeBumpEvent` / `feeBumpOutboxEvent` — protofsm
+    interfaces for the two-state machine.
+  - `feeBumpStateIdle` — initial state; collects fee-input demands from
+    all tracked parent txids and fans out a single fee-input tx.
+  - `feeBumpStateFanoutPending` — waits for the fanout tx to confirm,
+    retrying parents on each block epoch.
+  - `feeBumpEnvironment` — shared broadcaster context and demand list
+    threaded through FSM transitions.
+  - `pendingFeeInputFanout` — tracks the outstanding fanout tx (txid,
+    reserved outputs, predicted outputs for reuse).
+  - `feeInputDemand` — one parent's fee-input requirement (outpoint,
+    amount, weight, script).
+  - Outbox events: `feeBumpWatchFanout`, `feeBumpUnwatchFanout`,
+    `feeBumpRetryParents`.
 
 ## Relationships
 

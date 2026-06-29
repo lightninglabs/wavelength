@@ -53,6 +53,21 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
   (optional `Progress *EntryProgress` and `Request *EntryRequest`
   sub-objects, both nil when absent; `Request` is a `Type`-tagged
   union over lightning/onchain/ark), `WalletVTXO`, `OnchainTx`.
+- `GetExitPlanRequest` / `GetExitPlanResult` / `ExitPlanEntry` — exit
+  plan DTOs. `GetExitPlan` previews unilateral-exit readiness for a
+  set of VTXOs: each `ExitPlanEntry` lists the required on-chain
+  funding amount and whether the backing wallet already has sufficient
+  confirmed balance.
+- `SweepWalletRequest` / `SweepWalletResult` / `WalletSweepInput` —
+  backing-wallet sweep DTOs. `SweepWallet` previews or broadcasts a
+  sweep of confirmed backing-wallet UTXOs (e.g. to fund a forced exit).
+  `BroadcastSweep=false` is preview-only; `true` broadcasts and
+  returns the txid.
+- `OpenWalletFromPasskey(ctx, passkeyPRFOutput []byte)` —
+  deterministically creates or unlocks the embedded wallet from a
+  WebAuthn PRF output. Derives seed entropy + DB password via HKDF so
+  the caller never handles raw seed material. Raises an error if the
+  PRF output is shorter than 32 bytes.
 - `ExitRequest` / `ExitResult` / `ExitStatusRequest` /
   `ExitStatusResult` / `ExitJobStatus` — exit DTOs. `ExitRequest`
   carries the target outpoint plus an optional on-chain `Destination`
@@ -81,12 +96,15 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
 | `GetInfo` | Daemon readiness snapshot (version, network, identity, wallet/server readiness). |
 | `CreateWallet` | Create or import the embedded wallet (auto-generates seed when mnemonic empty); proxies daemonrpc. |
 | `UnlockWallet` | Unlock an existing wallet; proxies daemonrpc. |
+| `OpenWalletFromPasskey` | Create or unlock wallet from WebAuthn PRF output; seed derived via HKDF. |
 | `Balance` | Flat balance (`confirmed_sat`, `pending_in_sat`, `pending_out_sat`). |
 | `Deposit` | Allocate a fresh boarding address (`recv --onchain` from CLI). |
 | `Receive` | Open a Lightning invoice receive (`recv --offchain`). Returns `{Invoice, Entry}`. |
 | `PrepareSend` | Validate + quote an outbound payment; returns a single-use `SendIntentID`. |
 | `SendPrepared` | Dispatch a prepared send (consumes `SendIntentID`). Returns `{Entry, ActualAmountSat}`. |
 | `List` | Unified history view (Activity / VTXOs / Onchain) as a tagged-union `ListResult`. |
+| `GetExitPlan` | Preview unilateral-exit readiness and required backing-wallet funding. |
+| `SweepWallet` | Preview or broadcast a confirmed backing-wallet UTXO sweep (for exit funding). |
 | `Exit` | Trigger cooperative leave or unilateral unroll for a VTXO. |
 | `ExitStatus` | Query the phase of an exit job. |
 | `Status` | Wallet readiness, balance, pending-entry count. |

@@ -32,9 +32,21 @@ default builds avoid the swap executor's dependency graph.
   covering every daemonrpc method swapwallet composes against:
   LeaveVTXOs, SendOnChain, ListVTXOs, ListTransactions, NewAddress, GetInfo,
   GetBalance, GenSeed, InitWallet, UnlockWallet, Unroll,
-  GetUnrollStatus, JoinNextRound. The admin-shape methods (GenSeed/InitWallet/
-  UnlockWallet/Unroll/GetUnrollStatus) are reachable BEFORE the swap
-  runtime is live.
+  GetUnrollStatus, JoinNextRound, GetExitPlan, SweepWallet. The
+  admin-shape methods (GenSeed/InitWallet/UnlockWallet/Unroll/
+  GetUnrollStatus) are reachable BEFORE the swap runtime is live.
+- `ErrorMappingInterceptor` — gRPC unary server interceptor that maps
+  internal sentinel errors to structured `google.rpc.Status` errors
+  (with `ErrorInfo.Reason` strings) so `sdk/walletdk` can reconstruct
+  typed sentinels on the client side without depending on server-side
+  error types.
+- `sentinelMapping` — table-driven mapping from sentinel error to the
+  walletdkrpc wire contract string (domain + reason). Covers swap
+  backend unavailability, receive limit errors, and other typed
+  failures.
+- `checkReceiveLimits` (internal helper) — validates an incoming
+  receive request against daemon-configured limits before issuing the
+  invoice, surfacing limit errors as mapped sentinels.
 - `WalletEntry` (re-exported from walletdkrpc) — Flat row type the entire
   history/streaming surface returns. Every internal correlator
   (session_id, round_id, settlement_type, mailbox subtype) is dropped
