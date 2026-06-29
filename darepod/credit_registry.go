@@ -67,7 +67,6 @@ func (s *Server) initCreditRegistry(ctx context.Context) error {
 		AutoRedeem: credit.AutoRedeemConfig{
 			Enabled:      !s.cfg.Swap.Credit.AutoRedeemDisabled,
 			MinRedeemSat: s.cfg.Swap.Credit.AutoRedeemMinSat,
-			Interval:     s.cfg.Swap.Credit.AutoRedeemInterval,
 		},
 	})
 	if err != nil {

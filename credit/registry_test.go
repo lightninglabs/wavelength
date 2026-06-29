@@ -3,6 +3,7 @@ package credit
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -272,6 +273,130 @@ func TestRegistryReapStoreErrorKeepsChild(t *testing.T) {
 
 	behavior.reap(context.Background(), opID)
 	require.Contains(t, behavior.active, opID)
+}
+
+// TestConsiderRedeemInterlock asserts the registry's no-pending-pay/redeem
+// interlock: an auto-redeem signal admits a redeem only when no pay or redeem
+// operation is already in flight that could consume the same fungible credits.
+// A pending pay might spend the credits a redeem would materialize, and a
+// pending redeem already owns the materialize, so both block; a pending receive
+// only adds credits, so it does not. This is the money-safety guard that moved
+// out of the deleted redeemDecision into considerRedeem, exercised here
+// directly.
+func TestConsiderRedeemInterlock(t *testing.T) {
+	t.Parallel()
+
+	seedRow := func(opID string, kind OpKind,
+		state State) db.CreditOperationRecord {
+
+		return db.CreditOperationRecord{
+			OpID:   opID,
+			OpKey:  "seed:" + opID,
+			Kind:   kind,
+			State:  string(state),
+			Status: db.CreditOpStatusPending,
+		}
+	}
+
+	cases := []struct {
+		name       string
+		seed       []db.CreditOperationRecord
+		wantRedeem bool
+	}{
+		{
+			name: "pending pay blocks redeem",
+			seed: []db.CreditOperationRecord{
+				seedRow("p", KindPay, StatePaying),
+			},
+			wantRedeem: false,
+		},
+		{
+			name: "pending redeem blocks redeem",
+			seed: []db.CreditOperationRecord{
+				seedRow("r", KindRedeem, StateAwaitingOOR),
+			},
+			wantRedeem: false,
+		},
+		{
+			name: "pending receive does not block",
+			seed: []db.CreditOperationRecord{
+				seedRow(
+					"rc", KindReceive,
+					StateAwaitingSettlement,
+				),
+			},
+			wantRedeem: true,
+		},
+		{
+			name:       "no in-flight ops admits redeem",
+			seed:       nil,
+			wantRedeem: true,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			store, delivery := newFakeStore(), newTestDelivery(t)
+			server, daemon := newFakeServer(), newFakeDaemon()
+			for _, rec := range tc.seed {
+				store.ops[rec.OpID] = rec
+			}
+
+			registry, err := NewRegistry(RegistryConfig{
+				Store:         store,
+				DeliveryStore: delivery,
+				Server:        server,
+				Daemon:        daemon,
+				PollInterval:  50 * time.Millisecond,
+			})
+			require.NoError(t, err)
+			t.Cleanup(registry.Stop)
+
+			ctx := context.Background()
+			require.NoError(
+				t,
+				registry.Ref().Tell(
+					ctx, &ConsiderRedeemRequest{
+						AvailableSat: 1000,
+					},
+				),
+			)
+
+			// A redeem admission is identified by the "redeem:"
+			// op-key prefix considerRedeem mints, so a seeded
+			// redeem row (keyed "seed:r") never counts as a fresh
+			// admission.
+			if tc.wantRedeem {
+				require.Eventually(t, func() bool {
+					return redeemAdmissions(store) >= 1
+				}, 5*time.Second, 20*time.Millisecond)
+
+				return
+			}
+
+			require.Never(t, func() bool {
+				return redeemAdmissions(store) >= 1
+			}, 500*time.Millisecond, 50*time.Millisecond)
+		})
+	}
+}
+
+// redeemAdmissions counts the auto-redeem operations the registry has admitted,
+// identified by the "redeem:" op-key prefix considerRedeem mints.
+func redeemAdmissions(store Store) int {
+	ops, _ := store.ListOperations(context.Background())
+
+	var n int
+	for _, op := range ops {
+		if strings.HasPrefix(op.OpKey, "redeem:") {
+			n++
+		}
+	}
+
+	return n
 }
 
 // findOp returns the summary with the given op id, if present.

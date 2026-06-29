@@ -1,76 +1,96 @@
 package credit
 
 import (
+	"context"
+	"sync/atomic"
 	"testing"
 
-	"github.com/lightninglabs/darepo-client/db"
+	"github.com/btcsuite/btclog/v2"
 	"github.com/stretchr/testify/require"
 )
 
-// TestRedeemDecision asserts the auto-redeem interlock: redeem only when the
-// available balance clears the threshold and no credit-consuming pay or
-// in-flight redemption is pending; a pending receive never blocks.
-func TestRedeemDecision(t *testing.T) {
+// TestRedeemWatermarkCleared asserts the receive-driven auto-redeem watermark
+// check: a settled receive triggers a redeem only when auto-redeem is enabled
+// and the earmark-adjusted available balance strictly clears the threshold. The
+// no-pending-pay/redeem interlock is applied separately by the registry.
+func TestRedeemWatermarkCleared(t *testing.T) {
 	t.Parallel()
 
-	pay := db.CreditOperationRecord{Kind: db.CreditOpKindPay}
-	recv := db.CreditOperationRecord{Kind: db.CreditOpKindReceive}
-	redeem := db.CreditOperationRecord{Kind: db.CreditOpKindRedeem}
+	const threshold = 354
+
+	earmarkOf := func(v uint64) *atomic.Pointer[EarmarkFunc] {
+		var p atomic.Pointer[EarmarkFunc]
+		var fn EarmarkFunc = func(context.Context) (uint64, error) {
+			return v, nil
+		}
+		p.Store(&fn)
+
+		return &p
+	}
+	earmarkErr := func() *atomic.Pointer[EarmarkFunc] {
+		var p atomic.Pointer[EarmarkFunc]
+		var fn EarmarkFunc = func(context.Context) (uint64, error) {
+			return 0, context.DeadlineExceeded
+		}
+		p.Store(&fn)
+
+		return &p
+	}
 
 	cases := []struct {
 		name      string
+		enabled   bool
 		available uint64
-		threshold uint64
-		ops       []db.CreditOperationRecord
+		earmark   *atomic.Pointer[EarmarkFunc]
 		wantAmt   uint64
 		wantOK    bool
 	}{
 		{
-			name:      "above threshold no ops",
+			name:      "above threshold no earmark",
+			enabled:   true,
 			available: 1000,
-			threshold: 354,
 			wantAmt:   1000,
 			wantOK:    true,
 		},
 		{
 			name:      "at threshold",
-			available: 354,
-			threshold: 354,
+			enabled:   true,
+			available: threshold,
 			wantOK:    false,
 		},
 		{
 			name:      "below threshold",
+			enabled:   true,
 			available: 100,
-			threshold: 354,
 			wantOK:    false,
 		},
 		{
-			name:      "pending pay blocks",
+			name:      "disabled never redeems",
+			enabled:   false,
 			available: 1000,
-			threshold: 354,
-			ops: []db.CreditOperationRecord{
-				pay,
-			},
-			wantOK: false,
+			wantOK:    false,
 		},
 		{
-			name:      "pending redeem blocks",
+			name:      "earmark drops below threshold",
+			enabled:   true,
 			available: 1000,
-			threshold: 354,
-			ops: []db.CreditOperationRecord{
-				redeem,
-			},
-			wantOK: false,
+			earmark:   earmarkOf(800),
+			wantOK:    false,
 		},
 		{
-			name:      "pending receive does not block",
+			name:      "earmark leaves headroom",
+			enabled:   true,
 			available: 1000,
-			threshold: 354,
-			ops: []db.CreditOperationRecord{
-				recv,
-			},
-			wantAmt: 1000,
-			wantOK:  true,
+			earmark:   earmarkOf(200),
+			wantAmt:   800,
+			wantOK:    true,
+		},
+		{
+			name:      "earmark error fails safe",
+			enabled:   true,
+			available: 1000,
+			earmark:   earmarkErr(),
+			wantOK:    false,
 		},
 	}
 
@@ -79,8 +99,21 @@ func TestRedeemDecision(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			amt, ok := redeemDecision(
-				tc.available, tc.threshold, tc.ops,
+			b := &opBehavior{
+				cfg: OpActorConfig{
+					OpID:              "op",
+					AutoRedeemEnabled: tc.enabled,
+					MinRedeemSat:      threshold,
+					Daemon:            newFakeDaemon(),
+					Earmark:           tc.earmark,
+				},
+				log: btclog.Disabled,
+			}
+
+			amt, ok := b.redeemWatermarkCleared(
+				context.Background(), &CreditSnapshot{
+					AvailableSat: tc.available,
+				},
 			)
 			require.Equal(t, tc.wantOK, ok)
 			require.Equal(t, tc.wantAmt, amt)

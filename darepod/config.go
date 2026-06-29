@@ -568,20 +568,16 @@ type SwapConfig struct {
 
 // CreditConfig configures the daemon-owned credit subsystem.
 type CreditConfig struct {
-	// AutoRedeemDisabled turns off the wallet-owned auto-redeem sweep that
+	// AutoRedeemDisabled turns off the wallet-owned auto-redeem that
 	// materializes idle available credits back into a vTXO. Auto-redeem is
 	// on by default; operators who prefer to manage credit redemption
 	// manually set this to true.
 	AutoRedeemDisabled bool `mapstructure:"autoredeemdisabled"`
 
 	// AutoRedeemMinSat is the available-credit threshold above which a
-	// sweep redeems. Zero defaults to the operator dust limit, the smallest
-	// amount that can legally become a vTXO.
+	// settled receive triggers a redeem. Zero defaults to the operator dust
+	// limit, the smallest amount that can legally become a vTXO.
 	AutoRedeemMinSat uint64 `mapstructure:"autoredeemminsat"`
-
-	// AutoRedeemInterval is the period between idle watermark sweeps. Zero
-	// defaults to the credit package default.
-	AutoRedeemInterval time.Duration `mapstructure:"autoredeeminterval"`
 }
 
 // SwapVHTLCRecoveryConfig controls automatic escalation from cooperative vHTLC

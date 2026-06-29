@@ -433,6 +433,49 @@ type errInjectedT struct{}
 
 func (errInjectedT) Error() string { return "injected failure" }
 
+// TestDispatchFailsCorruptState asserts that an operation whose persisted state
+// string does not decode to a known FSM state is driven to a durable terminal
+// failure, so it terminal-commits and is reaped rather than being restored as a
+// non-terminal row on every boot.
+func TestDispatchFailsCorruptState(t *testing.T) {
+	t.Parallel()
+
+	store := newFakeStore()
+	server, daemon := newFakeServer(), newFakeDaemon()
+	b := testBehavior("op-corrupt", store, server, daemon)
+
+	ctx := context.Background()
+	raw, err := (&opSnapshot{}).encode()
+	require.NoError(t, err)
+	require.NoError(
+		t,
+		store.UpsertOperation(
+			ctx, db.CreditOperationRecord{
+				OpID:            "op-corrupt",
+				OpKey:           "pay:corrupt",
+				Kind:            KindPay,
+				State:           "not_a_real_state",
+				Status:          db.CreditOpStatusPending,
+				SnapshotData:    raw,
+				SnapshotVersion: snapshotVersion,
+			},
+		),
+	)
+	require.NoError(t, b.restore(ctx))
+	require.True(t, b.corruptState)
+
+	// One turn drives the corrupt row to a durable failure and commits it.
+	require.NoError(t, driveTurn(b, &fakeExec{}))
+	require.True(t, b.terminalCommitted)
+	require.Equal(t, string(StateFailed), b.rec.State)
+	require.NotEmpty(t, b.rec.LastError)
+
+	got, gerr := store.GetOperation(ctx, "op-corrupt")
+	require.NoError(t, gerr)
+	require.Equal(t, string(StateFailed), got.State)
+	require.Equal(t, db.CreditOpStatusFailed, got.Status)
+}
+
 // TestPayTopupCommitRollbackPreservesCheckpoint asserts the persist-before-
 // effect guarantee: when the final commit rolls back after the FSM advanced and
 // fired its effects, the Stage checkpoint taken after CreateCredit survives, so
@@ -803,4 +846,84 @@ func TestRedeemReserveIdempotentAcrossRestart(t *testing.T) {
 	require.Equal(t, 1, daemon.allocCalls)
 	require.Equal(t, 1, server.redeemCalls["redeem:abc"])
 	require.NotEmpty(t, reloaded.redeemPkScript)
+}
+
+// TestReceiveTriggersRedeemOnWatermark asserts the redeem-on-receive fold: when
+// auto-redeem is enabled and a settled receive pushes the earmark-adjusted
+// available balance over the watermark, the receive FSM completes and emits a
+// triggerRedeem the actor signals to the registry — replacing the periodic
+// background sweep with a causal, event-driven trigger.
+func TestReceiveTriggersRedeemOnWatermark(t *testing.T) {
+	t.Parallel()
+
+	store := newFakeStore()
+	server, daemon := newFakeServer(), newFakeDaemon()
+	b := testBehavior("recv1", store, server, daemon)
+	b.cfg.AutoRedeemEnabled = true
+	b.cfg.MinRedeemSat = 354
+
+	admit(t, b, store, &StartCreditReceiveRequest{
+		OpKey: "recv:1", AmountSat: 500,
+	})
+
+	// First turn creates the invoice and parks awaiting settlement; no
+	// redeem is triggered yet.
+	drive(t, b, &ResumeCreditOpRequest{OpID: "recv1"})
+	require.Equal(t, string(StateAwaitingSettlement), b.rec.State)
+	require.Nil(t, b.pendingRedeem)
+
+	// Settle the receive with an over-watermark available balance: the
+	// receive completes and emits the redeem trigger.
+	server.markCredited("recv:1", 1000)
+	drive(t, b, &ResumeCreditOpRequest{OpID: "recv1"})
+
+	require.Equal(t, string(StateCompleted), b.rec.State)
+	require.NotNil(t, b.pendingRedeem)
+	require.Equal(t, uint64(1000), b.pendingRedeem.AvailableSat)
+}
+
+// TestReceiveSkipsRedeemBelowWatermark asserts a settled receive whose
+// available balance does not clear the watermark completes without triggering a
+// redeem, and that a disabled policy never triggers one.
+func TestReceiveSkipsRedeemBelowWatermark(t *testing.T) {
+	t.Parallel()
+
+	t.Run("below watermark", func(t *testing.T) {
+		t.Parallel()
+
+		store := newFakeStore()
+		server, daemon := newFakeServer(), newFakeDaemon()
+		b := testBehavior("recv1", store, server, daemon)
+		b.cfg.AutoRedeemEnabled = true
+		b.cfg.MinRedeemSat = 354
+
+		admit(t, b, store, &StartCreditReceiveRequest{
+			OpKey: "recv:1", AmountSat: 100,
+		})
+		drive(t, b, &ResumeCreditOpRequest{OpID: "recv1"})
+		server.markCredited("recv:1", 100)
+		drive(t, b, &ResumeCreditOpRequest{OpID: "recv1"})
+
+		require.Equal(t, string(StateCompleted), b.rec.State)
+		require.Nil(t, b.pendingRedeem)
+	})
+
+	t.Run("auto-redeem disabled", func(t *testing.T) {
+		t.Parallel()
+
+		store := newFakeStore()
+		server, daemon := newFakeServer(), newFakeDaemon()
+		b := testBehavior("recv1", store, server, daemon)
+		// AutoRedeemEnabled defaults to false.
+
+		admit(t, b, store, &StartCreditReceiveRequest{
+			OpKey: "recv:1", AmountSat: 500,
+		})
+		drive(t, b, &ResumeCreditOpRequest{OpID: "recv1"})
+		server.markCredited("recv:1", 1000)
+		drive(t, b, &ResumeCreditOpRequest{OpID: "recv1"})
+
+		require.Equal(t, string(StateCompleted), b.rec.State)
+		require.Nil(t, b.pendingRedeem)
+	})
 }

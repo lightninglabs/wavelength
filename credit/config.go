@@ -2,6 +2,7 @@ package credit
 
 import (
 	"context"
+	"sync/atomic"
 	"time"
 
 	"github.com/btcsuite/btclog/v2"
@@ -265,6 +266,26 @@ type OpActorConfig struct {
 	// state. Zero means unlimited: rely on the server-reported terminal
 	// states (expired/failed/released) to bound the wait.
 	MaxAwaitingPolls uint32
+
+	// AutoRedeemEnabled turns on the receive-driven auto-redeem: a settled
+	// receive that clears the watermark signals the registry to materialize
+	// the available balance into a vTXO. When false, a receive completes
+	// without ever considering a redeem.
+	AutoRedeemEnabled bool
+
+	// MinRedeemSat is the available-credit watermark above which a settled
+	// receive triggers an auto-redeem. Zero defaults to the operator dust
+	// limit at runtime, the smallest amount that can legally become a vTXO.
+	MinRedeemSat uint64
+
+	// Earmark, when set, reports the credit balance reserved by in-flight
+	// wallet operations that have not yet written a durable
+	// credit_operations row. A settled receive subtracts it before deciding
+	// to trigger an auto-redeem, so it never redeems credits a pending send
+	// is about to spend. The pointer is shared with the registry so the
+	// daemon can wire the provider after the registry is built, without
+	// re-spawning resident children.
+	Earmark *atomic.Pointer[EarmarkFunc]
 }
 
 // RegistryConfig configures the credit registry coordinator actor.
@@ -318,44 +339,40 @@ type RegistryConfig struct {
 }
 
 // EarmarkFunc reports the credit balance reserved by in-flight wallet
-// operations that have not yet written a durable credit_operations row. The
-// auto-redeem sweep subtracts it from available credits so it never redeems
-// credits a pending operation is about to spend.
+// operations that have not yet written a durable credit_operations row.
+// Auto-redeem subtracts it from available credits so it never redeems credits a
+// pending operation is about to spend.
 type EarmarkFunc = func(context.Context) (uint64, error)
 
 // AutoRedeemConfig configures the wallet-owned auto-redeem policy. Redemption
 // is never exposed to the user: the wallet decides when to materialize
-// available credits back into a vTXO.
+// available credits back into a vTXO. Auto-redeem is driven by the receive
+// state machine (a settled receive that clears the watermark) plus a single
+// boot-time reconcile; there is no periodic sweep.
 type AutoRedeemConfig struct {
-	// Enabled turns the periodic auto-redeem sweep on.
+	// Enabled turns receive-driven auto-redeem and the boot-time reconcile
+	// on.
 	Enabled bool
 
-	// MinRedeemSat is the available-credit threshold above which a sweep
-	// redeems. Zero defaults to the operator dust limit at runtime, the
-	// smallest amount that can legally become a vTXO.
+	// MinRedeemSat is the available-credit threshold above which a settled
+	// receive triggers a redeem. Zero defaults to the operator dust limit
+	// at runtime, the smallest amount that can legally become a vTXO.
 	MinRedeemSat uint64
-
-	// Interval is the period between idle watermark sweeps.
-	Interval time.Duration
 
 	// EarmarkedSat, when set, reports the credit balance reserved by
 	// in-flight wallet operations that have not yet written a durable
 	// credit_operations row — chiefly a credit-backed PrepareSend whose row
-	// is created only at Send. The sweep subtracts this from available
-	// credits before deciding, so an idle watermark sweep never redeems
-	// credits the user is about to spend. Nil disables the earmark
-	// interlock (the boot path wires it from the wallet's prepared-send
-	// store, often after the registry is constructed, via
-	// Registry.SetEarmarkProvider).
+	// is created only at Send. Auto-redeem subtracts this from available
+	// credits before deciding, so it never redeems credits the user is
+	// about to spend. Nil disables the earmark interlock (the boot path
+	// wires it from the wallet's prepared-send store, often after the
+	// registry is constructed, via Registry.SetEarmarkProvider).
 	EarmarkedSat EarmarkFunc
 }
 
 const (
 	// DefaultPollInterval is the default reconciliation poll backoff.
 	DefaultPollInterval = 2 * time.Second
-
-	// DefaultAutoRedeemInterval is the default idle watermark sweep period.
-	DefaultAutoRedeemInterval = 5 * time.Minute
 
 	// DefaultAdmitTimeout bounds the synchronous server work an admission
 	// performs on the supervisor goroutine.
