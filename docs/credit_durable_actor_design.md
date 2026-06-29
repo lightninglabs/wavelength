@@ -1,168 +1,148 @@
 # Credit Durable-Actor Design
 
-Status: **shipped** (PR #772). The client-side credit orchestration moved off
-the synchronous, RPC-context-bound, in-memory path onto a crash-safe durable
-execution model. This document weighed **two implementations** — a full
-durable-actor subsystem (Version A) and a lighter hybrid that reuses the
-existing `sdk/swaps` durability (Version B). What shipped is a trimmed Version
-A: a plain-supervisor registry in front of a durable per-operation child.
-Section 3 describes the shipped topology; section 5 keeps the full comparison as
-the decision record.
+The credit subsystem orchestrates server-custodial sat "credits" through three
+multi-step flows:
+
+- a sub-dust or shortfall **pay** (an optional Ark top-up, then a credit or
+  mixed pay),
+- a sub-dust **credit receive**, and
+- a **redeem** that materializes available credits back into an Ark vTXO.
+
+The server ledger is authoritative and guarantees no fund loss. The *client
+orchestration* of these flows, however, must be fault-tolerant on its own: it has
+to survive a daemon restart and a client disconnect, it must never fund a top-up
+twice, and it must never strand credits with no way to recover them. This
+document describes how the subsystem meets those requirements.
 
 ---
 
-## 1. Problem statement
+## 1. Requirements
 
-PR #772 added server-custodial sat "credits" and routed three multi-step flows
-through them. The server ledger is authoritative and guarantees **no fund
-loss**, but the *client orchestration* of the multi-step flows is not
-fault-tolerant.
+Two properties make the orchestration crash-safe.
 
-### Current fault-tolerance gaps
-
-| Flow | Where it lives | Gap |
-|---|---|---|
-| Sub-dust / shortfall **pay** (Ark top-up → wait → pay) | `swapwallet/router.go` `fundInvoiceCreditShortfall` / `waitCreditTopUp` | Synchronous, in-memory, **bound to the client RPC context**. Idempotency key = `"credit-topup-"+intent.id` where `intent.id` is a random per-`PrepareSend` value held in an in-memory map with a 5-min TTL. No durable orchestration row, no daemon-side resume. |
-| Sub-dust **credit receive** | `swapwallet/recv.go` `recvCredit` | `CreateCredit` with a random `newSendIntentID()` key; pending `WalletEntry` lives only in `runtime.pending` (in-memory). On restart the pending row vanishes (a credit receive has no `sdk/swaps` session to resume). |
-| **Redeem** (credits → vTXO) | `sdk/swaps` → `swapclientserver` → server | Fully wired at the raw layer, but a **synchronous one-shot passthrough**: no wait for the redeemed VTXO to land, no persistence, no resume. **Not exposed in walletdk at all**, so over-funded/stranded credits have no wallet-level recovery path. |
-
-### The two concrete bugs that fall out
-
-1. **Double top-up window.** Crash (or client disconnect) after `SendOOR` fires
-   but before the server finalizes the credit: on retry the caller
-   re-`PrepareSend`s, mints a *new* `intent.id` → *new* idempotency key → a
-   *second* `CreateCredit` with a *different* destination → a *second*
-   `SendOOR`. Both transfers credit. No loss, but the excess is parked as credit
-   balance.
-2. **Stranded credits.** The excess from (1) — or any credit balance — can only
-   be spent by a *future* credit/mixed send. walletdk exposes no redemption, so
-   for a normal wallet user the value is effectively trapped.
-
-### Root cause
-
-The client orchestration holds an **ephemeral idempotency key** and runs as a
-**synchronous, cancelable, non-durable** sequence. The fix is two-part and is
-**shared by both versions** below:
-
-- **Stable idempotency keys** derived from durable identifiers (payment hash /
-  persisted operation id), persisted *before* the first server call.
+- **Stable idempotency keys** derived from durable identifiers (a payment hash or
+  a persisted operation id), written *before* the first server call.
 - **Durable, daemon-owned execution** that survives restart and client
-  disconnect, re-driving from persisted state and reconciling against the
-  server ledger (`ListCredits`) as the source of truth.
+  disconnect, re-driving from persisted state and reconciling against the server
+  ledger (`ListCredits`) as the source of truth.
+
+Both exist to prevent two failure modes.
+
+1. **Double top-up.** A crash or client disconnect after the top-up transfer
+   fires but before the server finalizes the credit must not cause a second
+   transfer. With an ephemeral key, a retry would mint a new key, create a second
+   server credit operation with a new destination, and send a second transfer.
+   Both would credit the account; the excess would park as credit balance. A
+   stable key reused across the retry collapses this to a single operation and a
+   single transfer.
+2. **Stranded credits.** Any credit balance, including the excess from a
+   double-funded top-up, can otherwise only be spent by a future credit or mixed
+   send. Auto-redeem (section 6) recovers it back into a spendable vTXO without
+   exposing redemption to the user.
 
 ---
 
-## 2. Shared design (applies to both versions)
+## 2. Foundations
 
 ### 2.1 Three logical operations
 
-Everything reduces to three durable operations with one stable key each:
+Everything reduces to three durable operations with one stable key each.
 
-| Op | Stable key | Completion signal (authoritative) |
+| Op | Stable key | Authoritative completion signal |
 |---|---|---|
 | `pay` (with optional top-up) | `pay:<paymentHash>` | server ledger shows credits available, then `StartPay` idempotent by payment hash |
 | `recv` (credit receive) | `recv:<paymentHash>` | server ledger shows the receive op `CREDITED` |
-| `redeem` (credits → vTXO) | `redeem:<clientRedeemID>` | redeemed VTXO lands locally (`FindLiveVTXOByPkScript`) |
+| `redeem` (credits to vTXO) | `redeem:<random>` | redeemed vTXO lands locally (`FindLiveVTXOByPkScript`) |
 
-The **same key** is passed to the server `CreateCredit`/`RedeemCredit` **and** to
-the OOR transfer. On any resume, `CreateCredit(key)` returns the existing op +
-same destination, and the OOR transfer dedups — so **at most one OOR transfer
-ever exists per operation**, regardless of crash timing. This single change
-closes the double-top-up window; durability just guarantees the key is actually
-reused.
+The **same key** goes to the server `CreateCredit` or `RedeemCredit` *and* to the
+OOR transfer. On any resume, `CreateCredit(key)` returns the existing op and the
+same destination, and the OOR transfer dedups, so **at most one OOR transfer ever
+exists per operation**, regardless of crash timing.
 
 ### 2.2 OOR is delegated, never re-implemented
 
-The top-up (client → server-owned credit destination) and the redeem
-(server → client destination) are **OOR transfers**. The existing `oor`
-subsystem already runs durable, idempotency-key-deduped, crash-safe OOR
-sessions. Both versions delegate the transfer to OOR with `key` as the OOR
-`StartTransferRequest.IdempotencyKey`, rather than calling `daemon.SendOOR`
-inline.
+The top-up (client to server-owned credit destination) and the redeem (server to
+client destination) are **OOR transfers**. The `oor` subsystem already runs
+durable, idempotency-key-deduped, crash-safe OOR sessions, so both transfers pass
+`key` as the OOR `StartTransferRequest.IdempotencyKey` rather than calling
+`daemon.SendOOR` inline.
 
-Elegant consequence: the credit layer does **not** need to track the OOR
-session's terminal state for the top-up. The OOR actor owns transfer
-crash-safety; the **server ledger** (`ListCredits` → `CREDITED`) is the
-completion signal. The credit layer waits on the ledger, not on OOR internals.
-(Redeem is the exception: its completion signal is the local VTXO landing,
-because the value flows server → client.)
+This has a clean consequence: the credit layer does not track the OOR session's
+terminal state for the top-up. The OOR actor owns transfer crash-safety, and the
+**server ledger** (`ListCredits` reaching `CREDITED`) is the completion signal.
+The credit layer waits on the ledger, not on OOR internals. Redeem is the one
+exception: its completion signal is the local vTXO landing, because there the
+value flows server to client.
 
 ### 2.3 Auto-redeem policy (wallet-owned, never user-facing)
 
-Per the decision that the wallet decides when to redeem and redemption is **not
-exposed to the user**, a `creditRedeemPolicy` runs inside the credit subsystem.
-It is conservative to avoid churn and to never strand value:
+The wallet decides when to redeem, and redemption is **not exposed to the user**.
+A settled receive is the only event that grows the available balance, so
+auto-redeem is driven by the receive state machine: when a receive settles and
+the available balance clears the watermark, it signals a redeem (section 6). A
+single boot-time reconcile covers the one case the receive trigger cannot, a
+balance already sitting over the watermark at startup. There is no periodic
+sweep.
 
-- **Trigger A — over-funded top-up.** When a `pay` op finishes and the server
-  reports `available_sat > 0` left over from a top-up that over-shot, schedule a
-  `redeem` of the excess back to a fresh wallet vTXO.
-- **Trigger B — idle watermark sweep.** A periodic check (timer-driven): if
-  `available_sat ≥ dust_limit` **and** no `pay`/`redeem` op is in flight that is
-  expected to consume credits, redeem the available balance down. The interlock
-  has two parts: the in-flight check on durable `credit_operations` rows, **and**
-  an earmark provider wired from the wallet's prepared-send store. A credit-
-  backed `PrepareSend` reserves nothing server-side and writes no row until
-  `Send`, so the sweep subtracts the credits earmarked by live prepared sends
-  before deciding — without it, a sweep could redeem credits the user is about
-  to spend, forcing the pending send to re-top-up.
-- **Never** auto-redeem below the operator dust limit (it cannot become a vTXO),
-  and never redeem reserved balance (`reserved_sat`), only `available_sat`.
+The policy stays conservative, to avoid churn and to never strand value:
 
-**Threshold (decided):** auto-redeem fires once `available_sat` exceeds a
-configured `MinAutoRedeemSat`, which **defaults to the operator dust limit**.
-That is the smallest amount that can legally become a vTXO, so the default both
-recovers stranded value as early as possible and never attempts an impossible
-sub-dust redemption. `MinAutoRedeemSat` and `AutoRedeemInterval` are config knobs
-with sane defaults; auto-redeem can be disabled entirely for raw/advanced
-callers. The redeemed amount is `available_sat` rounded down to a dust-clearing
-value (never leaving a sub-dust remainder that would immediately re-trigger).
+- **Threshold.** Auto-redeem fires once `available_sat` strictly exceeds
+  `MinRedeemSat`, which **defaults to the operator dust limit**. The dust limit
+  is the smallest amount that can legally become a vTXO, so the default recovers
+  stranded value as early as possible and never attempts an impossible sub-dust
+  redemption.
+- **Earmark interlock.** A credit-backed `PrepareSend` reserves nothing
+  server-side and writes no durable row until `Send`. Before deciding,
+  auto-redeem subtracts the credits earmarked by such in-flight sends (an
+  `EarmarkFunc` wired from the wallet's prepared-send store), so it never redeems
+  credits the user is about to spend.
+- **In-flight interlock.** The registry blocks a redeem while any pay or redeem
+  operation is in flight on a durable `credit_operations` row (section 6).
+- Auto-redeem reads only `available_sat`, never reserved balance, and can be
+  disabled entirely for raw or advanced callers.
 
 ### 2.4 Error discipline
 
-Following the established durable-actor rule (returning an error from a turn =
-retry until dead-letter), the credit layer classifies server responses:
+Returning an error from a turn means retry until dead-letter, so each transition
+classifies server responses:
 
 - **Deterministic rejections** (insufficient balance, idempotency-key reuse with
-  different params, expired invoice, sub-dust impossible) → **terminal-fail** the
-  op with a durable reason (mirrors `sdk/swaps` `failTerminal` /
-  `oor` `terminalOutboxError`). Never wedge in redelivery.
-- **Transient errors** (network, `Unavailable`) → return the error for the free
-  retry / backoff.
+  different params, expired invoice, impossible sub-dust) **terminal-fail** the
+  op with a durable reason. They never wedge in redelivery.
+- **Transient errors** (network, `Unavailable`) return the error for the
+  framework's free retry and backoff.
 
-### 2.5 walletdk handoff (identical surface for both versions)
+### 2.5 walletdk handoff
 
-`Send`/`Recv` stop doing the multi-step work inline. They hand off and return a
-**pending `WalletEntry`** immediately:
+`Send` and `Recv` do not run the multi-step work inline. They hand off and return
+a **pending `WalletEntry`** immediately:
 
-- `router.Send`: when the quote rail is `CREDIT`/`MIXED` (or amount < dust),
-  hand the prepared invoice + quote to the credit subsystem and return the
-  pending entry. The old `fundInvoiceCreditShortfall` / `waitCreditTopUp` is
-  deleted.
-- `recv.Recv`: when amount < dust and not credit-assisted, hand off a
-  `recv` op and return the server invoice + pending entry.
+- `router.Send`: when the quote rail is `CREDIT` or `MIXED` (or the amount is
+  below dust), it hands the prepared invoice and quote to the credit subsystem
+  and returns the pending entry.
+- `recv.Recv`: when the amount is below dust and not credit-assisted, it hands
+  off a `recv` op and returns the server invoice and pending entry.
 - The runtime monitor loop projects credit-op state transitions onto
-  `WalletEntry` exactly as it already does for swaps (the entry id is the stable
-  `opKey` / server operation id).
+  `WalletEntry` exactly as it does for swaps; the entry id is the stable op key or
+  server operation id.
 
-The public RPC shape (`PrepareSend` → preview → `Send`) is unchanged.
+The public RPC shape (`PrepareSend`, preview, `Send`) is unchanged.
 
 ---
 
-## 3. Version A (shipped) — Plain supervisor + durable per-op actor
+## 3. Architecture: plain supervisor, durable per-op actor
 
-The shipped design is Version A with **one deliberate trim**: the registry is a
-**plain (non-durable) supervisor actor**, not a durable one. Durability lives in
-exactly two places — the `credit_operations` control-plane table and the
-per-operation child's durable mailbox — because that is all the correctness
+Durability lives in exactly two places: the `credit_operations` control-plane
+table and the per-operation child's durable mailbox. That is all the correctness
 argument needs. Every external effect is idempotent by the stable op key (or the
-invoice payment hash), and the server ledger (`ListCredits`) is the authoritative
-completion signal, so durability collapses to "persist the row, then re-drive
-non-terminal rows on boot/timer." A second durable mailbox on the registry would
-buy at-least-once delivery of the admission request, but the synchronous caller
-already retries under the same stable key and the boot scan already finds any
-committed row — so it is omitted.
+invoice payment hash), and the server ledger is the authoritative completion
+signal, so durability reduces to "persist the row, then re-drive non-terminal
+rows on boot." The registry that admits operations holds no durable state worth a
+second mailbox, so it is a plain supervisor: the synchronous caller already
+retries under the same stable key, and the boot scan already finds any committed
+row.
 
-### 3.1 Package + topology
+### 3.1 Topology
 
 ```
 walletdk Send/Recv
@@ -173,120 +153,263 @@ CreditRegistry              plain in-memory mailbox "credit-client"  (RestoreNon
    ├─ write credit_operations row (ordinary txn)      ◄── the one durable table
    ├─ lazy-spawn + route Resume to child
    ├─ reap on CreditTerminalNotification
-   └─ runs creditRedeemPolicy (timer-driven watermark sweep)
+   ├─ arbitrate ConsiderRedeemRequest (in-flight interlock, admit redeem)
+   └─ run the auto-redeem boot reconcile (one-shot)
       │  Tell Resume   (the only durable message into the child)
       ▼
-CreditOpActor (per op)      durable mailbox "credit-op-<opID>"  (Read/Commit; FSM + snapshot)
+CreditOpActor (per op)      durable mailbox "credit-op-<opID>"  (Read/Stage/Commit; protofsm FSM)
    ├─ gRPC → swap server         CreateCredit / ListCredits / RedeemCredit   (key = opKey)
    ├─ DurableTell → OOR registry StartTransfer{IdempotencyKey: opKey, ...}
    ├─ gRPC → swapclientserver    StartPay(invoice, maxCreditSat)             (terminal pay)
-   └─ Tell → ledger (optional)   accounting, joins commit tx
+   └─ Tell → registry            ConsiderRedeemRequest (after a settled receive)
 ```
 
-This keeps `oor`'s registry + child split, but only the **child** carries a
-durable inbound mailbox (its FSM advance + snapshot are written in one
-transaction). The registry is a supervisor: it serializes admissions on its
-in-memory mailbox, writes the row in an ordinary transaction before spawning, and
-the partial `UNIQUE` index on `op_key` is the hard dedup backstop. Because the
-supervisor pre-writes the row, `Resume` is the child's only application-level
-message — every admission detail is reloaded from the durable row, so no `Start*`
-message is ever serialized.
+Only the **child** carries a durable inbound mailbox. The registry serializes
+admissions on its in-memory mailbox, writes the row in an ordinary transaction
+before spawning, and relies on the partial `UNIQUE` index on `op_key` as the hard
+dedup backstop. Because the supervisor pre-writes the row, `Resume` is the child's
+only application-level message: every admission detail is reloaded from the
+durable row, so no `Start*` message is ever serialized into the child.
 
 ### 3.2 Messages
 
-The registry mailbox is an ordinary in-memory mailbox, so the messages that
-cross it are plain `CreditMsg` values, not TLV-serialized ones. Only the message
-that re-enters the durable child mailbox needs a codec entry.
+The registry mailbox is an ordinary in-memory mailbox, so the messages crossing
+it are plain `CreditMsg` values, not TLV-serialized. Only the message that
+re-enters the durable child mailbox needs a codec entry.
 
 | Message | Kind | Path |
 |---|---|---|
-| `StartCreditPayRequest{invoice, maxFeeSat, quote, paymentHash}` | plain `CreditMsg` | walletdk → registry (Ask) |
-| `StartCreditReceiveRequest{amountSat, memo, paymentHash}` | plain `CreditMsg` | walletdk → registry (Ask) |
-| `RedeemRequest{amountSat}` | plain `CreditMsg` | auto-redeem policy → registry (Tell) |
-| `CreditTerminalNotification{opKey, terminal}` | plain `CreditMsg` | child → registry (reap) |
+| `StartCreditPayRequest{invoice, maxFeeSat, quote, paymentHash}` | plain `CreditMsg` | walletdk to registry (Ask) |
+| `StartCreditReceiveRequest{amountSat, memo, paymentHash}` | plain `CreditMsg` | walletdk to registry (Ask) |
+| `RedeemRequest{opKey, amountSat}` | plain `CreditMsg` | registry-internal (admitted by `considerRedeem`) |
+| `ConsiderRedeemRequest{availableSat}` | plain `CreditMsg` | child or boot reconcile to registry (Tell) |
+| `CreditTerminalNotification{opKey, terminal}` | plain `CreditMsg` | child to registry (reap) |
 | `ListCreditOpsRequest/Response` | plain `CreditMsg` | status RPC |
-| `RestoreNonTerminalRequest` | plain `CreditMsg` | boot scan → registry |
-| `ResumeCreditOpRequest{opID, fromRetryTimer}` | **durable TLV** (`0x7102`) | registry → child mailbox; boot restore and retry-timer wake |
+| `RestoreNonTerminalRequest` | plain `CreditMsg` | boot scan to registry |
+| `ResumeCreditOpRequest{opID, fromRetryTimer}` | **durable TLV** (`0x7102`) | registry to child mailbox; boot restore and retry-timer wake |
 
 `ResumeCreditOpRequest` is the only application message the codec registers,
 because it is the only one that crosses the child's durable mailbox. The
-framework adds two entries of its own: `RestartMessage` (injected as the first
-message after a restart) and `AskResponse` (how a `DurableAsk` reply returns).
-There is deliberately no `Start*` or `Drive*` message into the child — the
-supervisor pre-writes the durable row before spawning, so the child reloads
-every admission detail from the row instead of from a redelivered message.
+framework adds `RestartMessage` and `AskResponse` of its own. There is
+deliberately no `Start*` or `Drive*` message into the child.
 
-Child config (`CreditOpActorConfig`) carries the swap-server conn, the OOR
-registry `TellOnlyRef`, the `swapclientserver` StartPay handle, the
-`RegistryStore`, `DeliveryStore`, optional `LedgerSink`, and a `TimeoutActor`
-ref for backoff timers — the same shape as `oor.SessionActorConfig`.
+---
 
-### 3.3 Pay FSM
+## 4. The operation state machine on protofsm
+
+Each operation is a state machine built from `baselib/protofsm`'s types, the same
+way `round` builds the boarding machine. The durable per-operation actor drives
+it.
+
+### 4.1 What protofsm supplies, and what the actor owns
+
+protofsm supplies the **types**: `State`, `StateTransition`, `EmittedEvent`,
+`TransitionTable`. The credit package aliases them in `states.go` and lists every
+concrete state (`quotingState`, `topupCreatingState`, and so on, one zero-sized
+marker per persisted `state` string). The credit machine does **not** run on
+protofsm's `StateMachine` runner, and that is deliberate: the runner chains
+internal events within a single turn, which would collapse several steps into one
+and defeat the per-step durable checkpoint. Instead the durable actor drives the
+states itself, one step per turn, so it can interleave a `Stage` write between two
+states.
+
+The driver lives in `op_actor.go` (`runFSM`). One step is:
+
+1. Call the current state's `ProcessEvent`. It runs the state's idempotent side
+   effect (a server or daemon call), records the result on the operation record,
+   and returns the next state plus a set of **outbox directives**.
+2. Mirror the next state onto the record (`applyState`), *then* execute the
+   directives.
+3. Loop, until a state parks on a poll or reaches a terminal state.
+
+The outbox directives (`events.go`) are how the FSM dictates persistence and
+cross-actor effects while the actor keeps owning the lease-fenced writes and the
+exactly-once ack:
+
+| Directive | Actor action |
+|---|---|
+| `stageRecord` | `ax.Stage` a durable checkpoint of the record before the next state runs its effect |
+| `parkOp` | stop driving this turn and arm the reconciliation poll timer |
+| `triggerRedeem` | after the turn commits, Tell the registry a `ConsiderRedeemRequest` |
+
+Each turn ends with one `ax.Commit` that folds the final record snapshot and the
+mailbox ack into a single short transaction. So the transition decides *what* to
+persist and signal; the actor decides *how*.
+
+If a resumed row carries a `state` string that does not decode to a known FSM
+state, the driver treats it as a corrupt row and drives it to a durable failure,
+so it terminal-commits and is reaped rather than being respawned on every boot as
+a non-terminal row that can never advance.
+
+### 4.2 Persist-before-effect
+
+The ordering invariant is that a server identifier the *next* effect depends on
+is durable before that effect runs. It falls out of the drive loop directly. A
+state that mints such an identifier (a top-up destination, a redeem destination)
+returns `stageRecord`. The driver mirrors the advanced state onto the record and
+then flushes the `Stage`, so the checkpoint persists the *advanced* state with
+the *recorded* identifier. Only after the checkpoint commits does the loop run
+the next state's effect. A crash before the turn commits therefore re-drives from
+the checkpointed state against the same identifier the in-flight effect is bound
+to, rather than minting a fresh one the server or chain-watch would never match.
+
+Plain advances that mint no such identifier carry no `stageRecord`; they run
+successive effects within one turn and rely on idempotency by op key or payment
+hash, persisting only at the turn's `Commit`. A crash there re-drives the same
+state and re-issues the same idempotent call.
+
+### 4.3 The transition table
+
+`CreditTransitions` in `transition_table.go` enumerates every state, its outgoing
+edges, and the directives each edge emits, mirroring round's
+`BoardingClientTransitions`. It documents the machine in one place; the live
+dispatch is each state's `ProcessEvent`, maintained alongside the table by hand.
+
+---
+
+## 5. The three flows
+
+### 5.1 Pay
 
 ```
-Quoting → TopupCreating → TopupFunding → TopupAwaitingCredit → Paying → PayAwaitingSettlement → Completed
-   │            │              │                  │              │              │
-   └────────────┴──────────────┴──────────────────┴──────────────┴──────────────┴──► Failed (terminal, classified)
+quoting → topup_creating → topup_funding → topup_awaiting_credit → paying → pay_awaiting_settlement → completed
+   │            │                │                  │                │              │
+   └────────────┴────────────────┴──────────────────┴────────────────┴──────────────┴──► failed (terminal, classified)
 ```
 
-- `Quoting`: shortfall/topup amounts known from the quote (no top-up needed →
-  jump to `Paying`).
-- `TopupCreating`: `CreateCredit(ARK_TOPUP, opKey)`, then **`Stage`** the
-  `serverOperationID` + `destinationPubkey` durably **before** advancing — the
-  persist-before-effect checkpoint that keeps the OOR send from re-creating the
-  credit on resume.
-- `TopupFunding`: delegated OOR `SendOOR{key: opKey, dest, amt: topupSat}`. Crash
-  here → resume re-issues; OOR dedups by `opKey`.
-- `TopupAwaitingCredit`: arm a `timeout`-actor backoff timer; on each
-  `ResumeCreditOpRequest` re-`ListCredits` and check the funding op is
-  `CREDITED`. Gating on `CREDITED` alone (not `available_sat ≥ maxCreditSat`,
-  which can be the sentinel max for a must-use-credit pay) avoids parking
-  forever; `StartPay` reserves what it needs. Deterministic op failure
-  (`EXPIRED`/`FAILED`/`RELEASED`) → `Failed`.
-- `Paying`: `StartPay(invoice, maxCreditSat)`, idempotent by payment hash. A
+- `quoting`: shortfall and top-up amounts are known from the quote. No top-up
+  needed jumps straight to `paying`.
+- `topup_creating`: `CreateCredit(ARK_TOPUP, opKey)`, record the
+  `serverOperationID` and `destinationPubkey`, then `stageRecord`. The checkpoint
+  is what keeps the OOR send from re-creating the credit on resume.
+- `topup_funding`: delegated OOR `SendOOR{key: opKey, dest, amt: topupSat}`. A
+  crash here re-issues on resume; OOR dedups by `opKey`.
+- `topup_awaiting_credit`: arm the poll timer; on each drive re-`ListCredits` and
+  check the funding op is `CREDITED`. Gating on `CREDITED` alone (rather than
+  `available_sat >= maxCreditSat`, which can be a sentinel max for a
+  must-use-credit pay) avoids parking forever; `StartPay` reserves what it needs.
+  A deterministic op failure (`EXPIRED` / `FAILED` / `RELEASED`) fails the op.
+- `paying`: `StartPay(invoice, maxCreditSat)`, idempotent by payment hash. A
   mixed pay hands terminal authority to the swap monitor and completes on
-  hand-off. A credit-only pay advances to `PayAwaitingSettlement` instead of
-  declaring success on hand-off.
-- `PayAwaitingSettlement` (credit-only): timer-driven `ListCredits`, correlating
-  the pay operation by the invoice payment hash. `DEBITED` → `Completed`;
-  `RELEASED`/`FAILED`/`EXPIRED` → `Failed`. This closes the window where a
-  credit-only pay was reported complete before the Lightning leg settled.
+  hand-off. A credit-only pay advances to `pay_awaiting_settlement` instead.
+- `pay_awaiting_settlement` (credit-only): poll-driven `ListCredits`, correlating
+  the pay operation by the invoice payment hash. `DEBITED` completes; `RELEASED`
+  / `FAILED` / `EXPIRED` fails. This closes the window where a credit-only pay was
+  reported complete before the Lightning leg settled.
 
-Every awaiting state also honors an optional `MaxAwaitingPolls` cap: an
-operation the server never resolves terminal-fails after the cap rather than
-polling forever. Zero (the default) relies on the server-reported terminal
-states to bound the wait.
+Every awaiting state honors an optional `MaxAwaitingPolls` cap: an operation the
+server never resolves terminal-fails after the cap rather than polling forever.
+Zero (the default) relies on the server-reported terminal states to bound the
+wait.
 
-### 3.4 Receive FSM
-
-```
-ReceiveCreating → AwaitingSettlement → Completed
-                        └──► Expired/Failed (terminal)
-```
-
-`CreateCredit(LIGHTNING_RECEIVE, opKey)` persisted before the invoice is
-returned to walletdk, so the pending wallet row **survives restart**.
-`AwaitingSettlement` is timer-driven `ListCredits` polling for `CREDITED` (or a
-server-push event if/when available).
-
-### 3.5 Redeem FSM
+### 5.2 Receive
 
 ```
-RedeemReserving → AwaitingOOR → Completed
-                       └──► Failed (terminal)
+receive_creating → awaiting_settlement → completed
+                          └──► failed (terminal)
 ```
 
-`RedeemReserving`: allocate a fresh receive script, then **`Stage`** the
-destination durably **before** calling `RedeemCredit(opKey, dest)`. This is
-load-bearing: without the checkpoint, a crash between the reservation and the
-commit would re-allocate a new script on resume, leaving the server reservation
-bound to the first (now-forgotten) destination and the chain-watch looking at
-the wrong `pkScript` — stranding the redemption forever. `AwaitingOOR`:
-timer-driven `FindLiveVTXOByPkScript(dest)` until the redeemed VTXO lands, and
-`ListCredits` to terminal-fail on a server `RELEASED`/`FAILED`. Driven by the
-auto-redeem policy; no user-facing verb.
+The registry creates the server-owned invoice synchronously at admission
+(`createReceiveInvoice`), so the pending wallet row carries the invoice back to
+the caller and survives restart. The spawned child therefore enters at
+`awaiting_settlement`, a poll-driven `ListCredits` for `CREDITED`.
+`receive_creating` remains the resume and fallback path; its `CreateCredit` is
+idempotent by op key.
 
-### 3.6 Schema
+When the receive settles, the same step evaluates the auto-redeem watermark
+(section 6) and, when it clears, emits `triggerRedeem` on the edge to
+`completed`.
+
+### 5.3 Redeem
+
+```
+redeem_reserving → redeem_submitting → awaiting_oor → completed
+                                            └──► failed (terminal)
+```
+
+The reservation is split across two states so the destination checkpoint is
+strictly a state boundary, not a mid-step write:
+
+- `redeem_reserving`: allocate a fresh wallet-owned receive script, record the
+  destination, then `stageRecord`. A resumed op that already recorded a
+  destination skips straight to `redeem_submitting` without re-allocating.
+- `redeem_submitting`: `RedeemCredit(opKey, dest)` against the checkpointed
+  destination, idempotent by op key. A crash after the call but before the turn
+  commits re-drives this state and re-issues the same reservation.
+- `awaiting_oor`: poll-driven `FindLiveVTXOByPkScript(dest)` until the redeemed
+  vTXO lands, plus `ListCredits` to fail on a server `RELEASED` / `FAILED`. The
+  destination is allocated fresh per op, so a live vTXO at it is this
+  redemption's payout. The step reconciles the landed amount against the reserved
+  amount: it records what actually materialized (so the completed op, and the
+  wallet entry projected from it, reflects the value that landed) and logs a
+  warning on any divergence. It never terminal-fails on a divergence; the value is
+  already home, so failing would mismark a settled redemption.
+
+Without the checkpoint before `RedeemCredit`, a crash between the reservation and
+the commit would re-allocate a new script on resume, leaving the server
+reservation bound to the first, now-forgotten destination and the chain-watch
+looking at the wrong `pkScript`, stranding the redemption forever. The split
+makes that checkpoint a durable state rather than an in-step `Stage`.
+
+---
+
+## 6. Auto-redeem: receive trigger plus boot reconcile
+
+Auto-redeem is folded into the receive state machine. The receive FSM signals
+intent; the registry owns the decision.
+
+**Receive trigger.** On `awaiting_settlement` reaching `CREDITED`,
+`redeemWatermarkCleared` decides whether to redeem:
+
+1. Gate on `AutoRedeemEnabled`.
+2. Resolve the threshold: `MinRedeemSat`, or the operator dust limit when zero.
+3. Subtract the earmark. The earmark provider is an `atomic.Pointer[EarmarkFunc]`
+   shared by the registry and every child, so the daemon can wire it once after
+   construction. A nil provider subtracts nothing (safe before any credit-backed
+   send has been prepared); an error from the provider redeems nothing.
+4. Redeem only when the earmark-adjusted balance strictly exceeds the threshold.
+   The subtraction floors at zero, so it cannot underflow.
+
+When it clears, the step emits `triggerRedeem{AvailableSat}`. The actor stashes it
+and, *after* the terminal receive snapshot commits, Tells the registry a
+`ConsiderRedeemRequest`. A crash in that window leaves the credits available and
+safe; nothing is half-applied, and the next receive trigger or the boot reconcile
+re-derives the signal. A failed Tell is logged loudly rather than dropped
+silently.
+
+**Registry arbitration.** `considerRedeem` applies the in-flight interlock the
+receive FSM does not own. It scans non-terminal `credit_operations` rows and
+defers when any pay or redeem is in flight: a pending pay may consume the same
+credits, and a pending redeem already owns the materialize. A pending receive only
+adds credits, so it does not block. When nothing blocks, it admits a fresh
+`RedeemRequest` under a random `redeem:<...>` key, which always admits a new
+operation rather than deduping against an old one. Because the registry runs on a
+single goroutine, the scan and the admit are atomic with respect to every other
+admission, so two near-simultaneous signals cannot both pass and double-redeem the
+same balance. The admitted amount is the balance the trigger observed, which may
+be slightly stale by the time it reserves; that is safe because the server
+revalidates the reservation, so an amount the balance no longer supports fails the
+redeem cleanly rather than over-materializing.
+
+**Boot reconcile.** A balance already over the watermark at startup is the one
+case no receive trigger covers, because no new receive settles to re-evaluate it.
+The `autoRedeemer` handles exactly that: when enabled, it runs `reconcile` **once**
+at boot (no ticker, no loop), reading the snapshot, subtracting the same shared
+earmark, and Telling the registry a `ConsiderRedeemRequest` when the balance
+clears the threshold. The interlock then applies as for any other signal.
+
+One liveness gap remains: a mid-session balance increase from a *released* pay
+reservation is re-evaluated only at the next receive trigger or restart, not the
+moment the blocking pay clears. Closing it causally means routing credit-backed
+send reservations through the registry, so reserve, receive-settle, and
+redeem-decide all serialize on the one goroutine, at which point the earmark
+bridge disappears entirely.
+
+---
+
+## 7. Durability
+
+### 7.1 Schema
 
 ```
 credit_operations(
@@ -304,152 +427,51 @@ credit_operations(
   snapshot          BLOB,                  -- opaque resume blob (TLV)
   created_at, updated_at
 )
--- partial UNIQUE index on op_key for live-or-completed rows (oor pattern)
+-- partial UNIQUE index on op_key for live-or-completed rows
 ```
 
-Lives in the daemon-owned swap DB (alongside the existing swap store), via
-`db/queries` + sqlc. Terminal rows retained for status/diagnostics, as `oor`
-does.
+It lives in the daemon-owned swap DB, via `db/queries` and sqlc. Terminal rows
+are retained for status and diagnostics. The `state` column holds the persisted
+state string; on resume, `decodeCreditState` maps it back to the typed protofsm
+state, and an unrecognized string drives the row to a terminal failure rather than
+wedging it.
 
-### 3.7 Boot / resume
+### 7.2 Boot and resume
 
 `credit.Register(...)` (called by `swapruntime`-tagged `darepod`, next to
 `swapclientserver.Register` and the OOR registry) opens the store, wires the
-registry actor, and calls `RestoreNonTerminal` **synchronously** before serving:
-each non-terminal row respawns its child and is told `ResumeCreditOpRequest` so
-it re-drives from persisted state (retry timers are in-memory and do not survive
-restart — re-armed on resume, same as `oor`).
+registry actor, and calls `RestoreNonTerminal` **synchronously** before serving.
+Each non-terminal row respawns its child and is told `ResumeCreditOpRequest`, so
+it re-drives from persisted state. Retry timers are in-memory and do not survive
+restart; they are re-armed on resume. After the restore, the daemon starts the
+one-shot auto-redeem boot reconcile on the root context.
 
-### 3.8 Crash-recovery walkthrough
+### 7.3 Crash-recovery walkthrough
 
 | Crash point | Behavior |
 |---|---|
-| after `CreateCredit`, before OOR | resume → `TopupCreating` re-calls `CreateCredit(opKey)` → same op + dest |
-| after OOR Tell, before server credits | resume → `TopupFunding` re-Tells OOR; **OOR dedups by opKey → no second transfer** |
-| server credited, before `StartPay` | resume → `TopupAwaitingCredit` sees `CREDITED` → `Paying` |
-| client disconnect mid-wait | irrelevant — child runs on daemon root context |
-| redeem OOR in flight at crash | resume → `AwaitingOOR` reconciles the landed VTXO |
+| after `CreateCredit`, before OOR | resume re-runs `topup_creating` `CreateCredit(opKey)`; same op and dest |
+| after OOR Tell, before server credits | resume re-Tells OOR; **OOR dedups by opKey, no second transfer** |
+| server credited, before `StartPay` | resume sees `CREDITED`, advances to `paying` |
+| client disconnect mid-wait | irrelevant; the child runs on the daemon root context |
+| redeem reserved, before vTXO lands | resume re-drives `awaiting_oor`, reconciles the landed vTXO |
+| settled receive committed, before redeem Tell | credits stay available; boot reconcile re-derives the signal |
 
 ---
 
-## 4. Version B — Hybrid (sdk/swaps store + resume workers, OOR via actor)
+## 8. Open questions
 
-Same shared design (§2), but the orchestration is **not** a new actor subsystem.
-It reuses the durability the pay/receive FSMs already use: the `sdk/swaps`
-SQLite store plus the `swapclientserver` resume-worker registry. The OOR
-transfer is still delegated to the OOR durable actor.
-
-### 4.1 What changes
-
-- **Stable key + durable row.** Add a `credit_operations` table (or extend the
-  existing swap session tables) in the `sdk/swaps` store. `Send`/`Recv` persist
-  the op row with a stable `op_key` **before** the first `CreateCredit`. The
-  ephemeral `intent.id` key is gone.
-- **Orchestration as an FSM in `sdk/swaps`.** Add a small credit-op FSM (the same
-  states as §3.3–3.5) driven by the Loop FSM engine the pay/receive sessions
-  already use, persisted via the existing `mutateAndPersist` discipline.
-- **Resume via the existing worker registry.** `swapclientserver.resumePending`
-  already revives persisted pay/receive sessions on boot using `rootCtx` (not the
-  RPC context). Extend it to also revive non-terminal credit ops: a credit-op
-  worker re-drives from the persisted row and reconciles against `ListCredits`.
-- **OOR via the actor.** The top-up/redeem transfer is delegated to the OOR
-  registry actor with `op_key` as the idempotency key (same as Version A) — the
-  `sdk/swaps` layer already holds an in-process Ark facade and can reach the OOR
-  registry ref.
-- **Auto-redeem.** Runs as a small periodic task inside the swap runtime
-  (alongside the resume sweep), gated by the same policy (§2.3).
-
-### 4.2 walletdk handoff
-
-`Send`/`Recv` call a new `swapclientserver` RPC (e.g. `StartCreditPay` /
-`StartCreditReceive`) that persists the op row, starts/reuses a worker, and
-returns the pending summary — exactly the shape of the existing
-`StartPay`/`StartReceive`. The worker runs on `rootCtx`, so a client disconnect
-cannot cancel it.
-
-### 4.3 Why this is lighter
-
-It introduces **no new actor mailbox, no codec, no registry/child split, no
-cross-durability straddle for the pay handoff** — the credit op and the terminal
-pay live in the *same* `sdk/swaps` store and resume mechanism, so the
-"reconcile whether StartPay already happened" boundary collapses to a normal
-intra-store FSM transition. The only cross-subsystem hop is the OOR transfer,
-which is already a clean durable-actor boundary.
-
----
-
-## 5. Compare & contrast
-
-| Dimension | Version A (full actor) | Version B (hybrid) |
-|---|---|---|
-| New infra | New `credit` package: registry + per-op actors, TLV codec, mailbox tables | Extend `sdk/swaps` store + `swapclientserver` workers; no new actor |
-| Durability mechanism | `baselib/actor` durable mailbox (dedup, dead-letter, lease, outbox for free) | `sdk/swaps` Store + Loop FSM + resume-worker registry |
-| Crash-safety of orchestration | Yes | Yes |
-| Stable idempotency key (fixes double top-up) | Yes | Yes |
-| OOR transfer reuse | Yes (DurableTell into OOR registry) | Yes (same) |
-| Pay-handoff boundary | **Straddles two durability systems** (actor → `sdk/swaps` pay). Reconciled via payment-hash idempotency + `GetSwap`, but it is a real seam | **No straddle** — credit op and pay live in the same store/resume path |
-| Cross-actor atomicity | Strong: Tell-into-mailbox joins the commit tx; ledger accounting atomic with op state | Weaker: `sdk/swaps` persists, then issues gRPC `StartPay`; reconciled, not transactional |
-| Dead-letter / lease / backpressure | Built in | Hand-rolled (retry counts in the row, like `oor` `MetadataAttempts`) |
-| Consistency with codebase direction | Matches the `oor` migration trajectory (darepo#527) | Matches how swaps are durably executed today |
-| Code volume | Higher (new subsystem, messages, registry, wiring) | Lower (extend existing tables + workers) |
-| Testability | Actor unit tests + `internal/actortest` harness | Existing `swapclientserver` worker test patterns |
-| Operational surface | New actor in the system, new mailbox ids, restore path | New worker class in an existing registry |
-
-### Recommendation
-
-For **correctness alone**, both are equivalent — both adopt the shared stable-key
-+ durable-resume fix (§2) that actually closes the double-top-up and
-stranded-credit bugs. The decision is about *architecture fit*:
-
-- Choose **Version A** if the priority is cross-actor atomicity (credit-op state
-  + ledger accounting + OOR handoff all transactional) and long-term consistency
-  with the `oor`/`ledger`/`unroll` durable-actor direction. Cost: a new
-  subsystem and one genuine straddle at the pay handoff.
-- Choose **Version B** if the priority is minimal new surface and avoiding the
-  straddle — the credit op and the terminal pay share one store and one resume
-  path, which is the simplest correct thing and reuses battle-tested swap
-  resume code.
-
-A reasonable sequencing: **ship Version B's shared fix first** (stable keys +
-durable rows + worker resume + auto-redeem) to stop the bleeding with minimal
-risk, then migrate the orchestration to the Version A actor topology if/when the
-broader durable-actor migration (darepo#527) reaches this subsystem. The stable
-key and the OOR-delegation boundary are identical in both, so Version B is a
-strict subset of the work, not a throwaway.
-
-### Shipped decision
-
-The implementation lands the **per-operation FSM as a durable actor** (the part
-that genuinely benefits from the framework's atomic advance-and-ack, resume
-scaffolding, and timer-driven redelivery) while keeping the **registry a plain
-supervisor** (it owns no durable state worth a second mailbox). This is the
-middle of the two versions: it reuses the existing durable-actor infrastructure
-for the one place that needs it and reduces the durability surface to a single
-table plus a single per-op mailbox — not two stacked durable mailboxes. The
-auto-redeem policy and the OOR-delegation boundary are unchanged from the
-sketch above.
-
----
-
-## 6. Open questions
-
-1. **Credit-only pay settlement contract (server).** `PayAwaitingSettlement`
+1. **Credit-only pay settlement contract (server).** `pay_awaiting_settlement`
    reconciles a credit-only pay by matching the invoice payment hash against the
-   pay operation in `ListCredits`, reading its `DEBITED`/`RELEASED`/`FAILED`
-   state. This relies on the swap server surfacing the credit pay operation in
-   `ListCredits` with the invoice payment hash and the documented pay-lifecycle
-   states (the `CreditOperation` proto already carries `payment_hash`). Confirm
-   swapdk-server#134 does so; a server that does not list the pay op leaves a
-   credit-only pay parked in `PayAwaitingSettlement` (bounded only by
-   `MaxAwaitingPolls`, if configured).
-2. **Receive completion signal.** Is there (or will there be) a server push for
-   credit-receive settlement, or is timer-driven `ListCredits` polling the only
-   option? Affects how snappy the pending→complete transition is.
-3. **Credit-assisted receive.** Today this is already durable inside the
-   `sdk/swaps` receive FSM (migration 000003). Does it stay there, or also move
-   under the credit subsystem for a single status surface? (Recommend: leave it —
-   it is already crash-safe and validated.)
-
-The original auto-redeem-interlock open question is now resolved: the sweep
-consults both durable `credit_operations` rows and an earmark provider wired
-from the wallet's prepared-send store (§2.3).
+   pay operation in `ListCredits` and reading its `DEBITED` / `RELEASED` /
+   `FAILED` state. This relies on the swap server surfacing the credit pay
+   operation in `ListCredits` keyed by the invoice payment hash. A server that
+   does not list the pay op leaves a credit-only pay parked in
+   `pay_awaiting_settlement`, bounded only by `MaxAwaitingPolls` if configured.
+2. **Receive completion signal.** Is there, or will there be, a server push for
+   credit-receive settlement, or is poll-driven `ListCredits` the only option? It
+   affects how quickly a pending receive transitions to complete.
+3. **Single-authority credit balance.** The remaining auto-redeem liveness gap
+   (section 6) closes cleanly by routing credit-backed send reservations through
+   the registry, so reserve, receive-settle, and redeem-decide all serialize on
+   the one goroutine and the earmark bridge disappears.
