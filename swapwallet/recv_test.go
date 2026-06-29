@@ -140,6 +140,54 @@ func TestRecvBelowDustHandsToCreditRegistry(t *testing.T) {
 	)
 }
 
+// TestRecvDustLimitLookupFailureFallsBackOpen asserts that advisory dust
+// planning does not block receives when the daemon has not fetched terms.
+func TestRecvDustLimitLookupFailureFallsBackOpen(t *testing.T) {
+	t.Parallel()
+
+	swap := &fakeSwapService{
+		startReceiveResp: &swapclientrpc.StartReceiveResponse{
+			PaymentHash: "abc123",
+			Invoice:     "lnbc1invoice",
+			Swap: &swapclientrpc.SwapSummary{
+				PaymentHash: "abc123",
+				Direction: swapclientrpc.
+					SwapDirection_SWAP_DIRECTION_RECEIVE,
+				Pending: true,
+			},
+		},
+	}
+	rpc := &fakeRPCServer{
+		getInfoErr: errors.New("terms unavailable"),
+	}
+	reg := &fakeCreditRegistry{
+		receiveResp: &credit.StartCreditResponse{
+			OpID:    "cr_recv",
+			Invoice: "lnbc1credit",
+		},
+	}
+	deps := &Deps{
+		SwapService:    swap,
+		RPCServer:      rpc,
+		CreditRegistry: reg,
+	}
+	runtime := newRuntime(t.Context(), deps)
+	t.Cleanup(runtime.stop)
+	receiver := newReceiver(deps, runtime)
+
+	resp, err := receiver.Recv(
+		t.Context(), &walletdkrpc.RecvRequest{
+			AmtSat: 500,
+			Memo:   "tiny",
+		},
+	)
+	require.NoError(t, err)
+
+	require.Equal(t, 1, swap.startReceiveCalls)
+	require.Equal(t, 0, reg.receiveCalls)
+	require.Equal(t, "lnbc1invoice", resp.GetInvoice())
+}
+
 // TestRecvAmtZeroRejected asserts a missing amount returns
 // ErrAmountRequired without invoking the swap service.
 func TestRecvAmtZeroRejected(t *testing.T) {

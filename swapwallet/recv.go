@@ -56,7 +56,9 @@ func (r *receiver) Recv(ctx context.Context, req *walletdkrpc.RecvRequest) (
 	plannedVHTLCSat := amt
 	dustLimit, err := r.receiveDustLimit(ctx)
 	if err != nil {
-		return nil, err
+		r.deps.resolveLog().WarnS(ctx, "Skipping receive dust "+
+			"planning: operator terms unavailable", err)
+		dustLimit = 0
 	}
 	if dustLimit > 0 && amt < dustLimit {
 		availableCreditSat, err := r.availableCreditSat(ctx)

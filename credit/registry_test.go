@@ -2,6 +2,7 @@ package credit
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -242,6 +243,35 @@ func TestRegistryListSurfacesTerminalCreditOnly(t *testing.T) {
 	require.True(t, ok)
 	_, found = findOp(pendingList.Ops, start.OpID)
 	require.False(t, found, "terminal op leaked into pending-only list")
+}
+
+// TestRegistryReapStoreErrorKeepsChild asserts that a transient row lookup
+// error cannot stop a resident child. Reaping is safe only after a confirmed
+// terminal or missing durable row.
+func TestRegistryReapStoreErrorKeepsChild(t *testing.T) {
+	t.Parallel()
+
+	store := newFakeStore()
+	opID := "op-reap-error"
+	store.ops[opID] = db.CreditOperationRecord{
+		OpID:   opID,
+		State:  string(StatePaying),
+		Status: db.CreditOpStatusPending,
+	}
+	store.getErr = errors.New("temporary store failure")
+
+	behavior := &registryBehavior{
+		cfg: RegistryConfig{
+			Store: store,
+		},
+		log: btclog.Disabled,
+		active: map[string]*OpActor{
+			opID: {},
+		},
+	}
+
+	behavior.reap(context.Background(), opID)
+	require.Contains(t, behavior.active, opID)
 }
 
 // findOp returns the summary with the given op id, if present.

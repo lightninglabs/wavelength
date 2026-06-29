@@ -64,8 +64,9 @@ var _ actor.Exec[creditTx] = (*fakeExec)(nil)
 
 // fakeStore is an in-memory credit.Store for FSM tests.
 type fakeStore struct {
-	mu  sync.Mutex
-	ops map[string]db.CreditOperationRecord
+	mu     sync.Mutex
+	ops    map[string]db.CreditOperationRecord
+	getErr error
 }
 
 func newFakeStore() *fakeStore {
@@ -77,6 +78,10 @@ func (s *fakeStore) GetOperation(_ context.Context, opID string) (
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if s.getErr != nil {
+		return nil, s.getErr
+	}
 
 	rec, ok := s.ops[opID]
 	if !ok {

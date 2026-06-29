@@ -437,9 +437,15 @@ func (b *registryBehavior) ensureChild(ctx context.Context, opID string) (
 // The durable row is re-checked so a stale notification is harmless.
 func (b *registryBehavior) reap(ctx context.Context, opID string) {
 	rec, err := b.cfg.Store.GetOperation(ctx, opID)
-	if err == nil && !rec.Status.IsTerminal() {
-
+	switch {
+	case err == nil && !rec.Status.IsTerminal():
 		// Not actually terminal; ignore the stale notification.
+		return
+
+	case err != nil && !errors.Is(err, db.ErrCreditOperationNotFound):
+		b.logger(ctx).WarnS(ctx, "Unable to confirm credit terminal "+
+			"state", err, slog.String("op_id", opID))
+
 		return
 	}
 
