@@ -106,6 +106,18 @@ type Ark struct {
 	// confirmations from ListUnspent.
 	seenUtxos fn.Set[UtxoKey]
 
+	// boardingShipped tracks boarding outpoints this session has already
+	// handed to the round actor via TriggerBoardMsg and that have not yet
+	// left the Confirmed set. handleBoard ships the full confirmed set on
+	// every call, so without this guard a second deposit confirming while
+	// an earlier round is still in flight would re-ship the earlier
+	// outpoint, which the round actor would re-register under a freshly
+	// derived owner key — two divergent registrations of one boarding
+	// UTXO, surfacing as a quote pkScript-echo mismatch. The set is
+	// in-memory on purpose: it is empty after a restart so the board
+	// replayer still re-boards an outpoint stranded by a failed round.
+	boardingShipped fn.Set[wire.OutPoint]
+
 	// wg tracks background goroutines spawned by the wallet actor.
 	wg sync.WaitGroup
 
@@ -295,16 +307,17 @@ func NewArk(backend BoardingBackend, store BoardingStore, vtxoReader VTXOReader,
 	}
 
 	a := &Ark{
-		backend:       backend,
-		store:         store,
-		vtxoReader:    vtxoReader,
-		chainSource:   chainSource,
-		actorSystem:   actorSystem,
-		ledgerSink:    ledgerSink,
-		notifiers:     make(map[string]notifierInfo),
-		seenUtxos:     fn.NewSet[UtxoKey](),
-		actorLog:      optLog,
-		pendingSweeps: make(map[chainhash.Hash]*pendingSweepState),
+		backend:         backend,
+		store:           store,
+		vtxoReader:      vtxoReader,
+		chainSource:     chainSource,
+		actorSystem:     actorSystem,
+		ledgerSink:      ledgerSink,
+		notifiers:       make(map[string]notifierInfo),
+		seenUtxos:       fn.NewSet[UtxoKey](),
+		boardingShipped: fn.NewSet[wire.OutPoint](),
+		actorLog:        optLog,
+		pendingSweeps:   make(map[chainhash.Hash]*pendingSweepState),
 		pendingSweepInputs: make(
 			map[wire.OutPoint]chainhash.Hash,
 		),
@@ -2181,15 +2194,70 @@ func (a *Ark) handleBoard(ctx context.Context,
 		)
 	}
 
-	var totalBalance btcutil.Amount
+	var confirmedBalance btcutil.Amount
+	confirmedSet := fn.NewSet[wire.OutPoint]()
 	for _, intent := range intents {
-		totalBalance += intent.ChainInfo.Amount
+		confirmedBalance += intent.ChainInfo.Amount
+		confirmedSet.Add(intent.Outpoint)
 	}
 
-	if totalBalance == 0 {
+	if confirmedBalance == 0 {
 		return fn.Err[WalletResp](
 			fmt.Errorf("no confirmed boarding balance"),
 		)
+	}
+
+	// Drop boarding outpoints this session already shipped into an
+	// in-flight round, so a trigger fired when a second deposit confirms
+	// does not re-register an already-in-flight outpoint under a freshly
+	// derived owner key. handleBoard re-fetches the FULL confirmed set on
+	// every call, but the round actor mints a new owner key per
+	// registration, so re-shipping an in-flight outpoint produces two
+	// divergent registrations of one boarding UTXO — the server quotes
+	// one, the client validates the other, and the round fails with a
+	// quote pkScript-echo mismatch. First prune the in-flight set against
+	// the live confirmed set so outpoints that have since been adopted or
+	// swept (no longer confirmed) free up, then exclude what remains.
+	for _, op := range a.boardingShipped.ToSlice() {
+		if !confirmedSet.Contains(op) {
+			a.boardingShipped.Remove(op)
+		}
+	}
+
+	boardable := make([]BoardingIntent, 0, len(intents))
+	boardOutpoints := make([]wire.OutPoint, 0, len(intents))
+	for _, intent := range intents {
+		if a.boardingShipped.Contains(intent.Outpoint) {
+			continue
+		}
+
+		boardable = append(boardable, intent)
+		boardOutpoints = append(boardOutpoints, intent.Outpoint)
+	}
+
+	// Every confirmed boarding outpoint is already in flight in a round
+	// this session shipped: the trigger is redundant. Report the confirmed
+	// balance but do not re-dispatch, so we never mint a divergent second
+	// registration. The outpoints free up here once their round adopts the
+	// deposit (the intent leaves the confirmed set) or a restart clears
+	// the in-memory set and the board replayer re-boards a failed round.
+	if len(boardable) == 0 {
+		a.logger(ctx).InfoS(ctx, "Board trigger redundant; all "+
+			"confirmed boarding outpoints already in flight",
+			slog.Int("confirmed_count", len(intents)),
+			slog.Int64("confirmed_balance", int64(confirmedBalance)),
+		)
+
+		return fn.Ok[WalletResp](&BoardResponse{
+			BoardingBalance: confirmedBalance,
+		})
+	}
+
+	intents = boardable
+
+	var totalBalance btcutil.Amount
+	for _, intent := range intents {
+		totalBalance += intent.ChainInfo.Amount
 	}
 
 	// Apply the operator's advertised limits before composing the
@@ -2312,8 +2380,9 @@ func (a *Ark) handleBoard(ctx context.Context,
 
 	if err := roundRef.Tell(
 		ctx, &actormsg.TriggerBoardMsg{
-			Amounts: vtxoAmounts,
-			Change:  changeLeave,
+			Amounts:   vtxoAmounts,
+			Outpoints: boardOutpoints,
+			Change:    changeLeave,
 		},
 	); err != nil {
 		// The persisted row stays in place so the next daemon
@@ -2323,6 +2392,14 @@ func (a *Ark) handleBoard(ctx context.Context,
 		return fn.Err[WalletResp](
 			fmt.Errorf("forward board to round actor: %w", err),
 		)
+	}
+
+	// Record the outpoints we just handed to the round actor so a later
+	// trigger fired before this round adopts them does not re-ship them
+	// under a freshly derived owner key. Pruned back out above once they
+	// leave the confirmed set.
+	for _, op := range boardOutpoints {
+		a.boardingShipped.Add(op)
 	}
 
 	resp := &BoardResponse{

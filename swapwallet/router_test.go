@@ -407,6 +407,71 @@ func TestRouterSendInvoiceDispatchesStartPay(t *testing.T) {
 	)
 }
 
+// TestRouterSendInvoiceHandsCreditPayToRegistry asserts that a credit-backed
+// pay is handed off to the durable credit registry under a payment-hash-derived
+// idempotency key, rather than driving the top-up and pay inline. The router no
+// longer calls CreateCredit/SendOOR/StartPay directly for credit pays.
+func TestRouterSendInvoiceHandsCreditPayToRegistry(t *testing.T) {
+	t.Parallel()
+
+	r, swap, rpc := newRouterFixture(t)
+	reg := &fakeCreditRegistry{}
+	r.deps.CreditRegistry = reg
+
+	invoice, paymentHash := testPreparedInvoice(t, 500, "tiny")
+	swap.quotePayResp = &swapclientrpc.QuotePayResponse{
+		PaymentHash:      paymentHash,
+		InvoiceAmountSat: 500,
+		AmountSat:        0,
+		SettlementType: swapclientrpc.
+			SwapSettlementType_SWAP_SETTLEMENT_TYPE_CREDIT,
+		CreditQuote: &swapclientrpc.CreditQuote{
+			MustUseCredit:      true,
+			CreditShortfallSat: 500_000,
+			CreditTopupSat:     1_000,
+		},
+		ExpiresAtUnix: time.Now().Add(time.Minute).Unix(),
+	}
+
+	prepareResp, err := r.PrepareSend(
+		t.Context(), &walletdkrpc.PrepareSendRequest{
+			Destination: &walletdkrpc.PrepareSendRequest_Invoice{
+				Invoice: invoice,
+			},
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(
+		t, uint64(1_000),
+		prepareResp.GetCreditPreview().GetCreditTopupSat(),
+	)
+
+	resp, err := sendPrepared(t, r, prepareResp)
+	require.NoError(t, err)
+	require.Equal(t, int64(500), resp.GetActualAmountSat())
+
+	// The pay was handed to the registry with the stable payment-hash key
+	// and the quote's top-up amount.
+	require.Equal(t, 1, reg.payCalls)
+	require.NotNil(t, reg.lastPay)
+	require.Equal(t, "pay:"+paymentHash, reg.lastPay.OpKey)
+	require.Equal(t, uint64(1_000), reg.lastPay.TopupSat)
+	require.Equal(t, invoice, reg.lastPay.Invoice)
+	require.Equal(t, uint64(500_000), reg.lastPay.MaxCreditSat)
+
+	// The router no longer drives the top-up or pay inline.
+	require.Zero(t, swap.createCreditCalls)
+	require.Zero(t, rpc.sendOORCalls)
+	require.Zero(t, swap.startPayCalls)
+
+	// A pending SEND entry keyed by the payment hash is surfaced.
+	require.Equal(t, paymentHash, resp.GetEntry().GetId())
+	require.Equal(
+		t, walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		resp.GetEntry().GetStatus(),
+	)
+}
+
 // TestRouterSendOnchainSelectsVTXOsAndCallsLeave confirms that an onchain
 // destination triggers a local VTXO snapshot via ListVTXOs during prepare
 // (for the preview), and that the Send step then dispatches to the

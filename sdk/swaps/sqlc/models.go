@@ -64,4 +64,8 @@ type ReceiveSwap struct {
 	CreatedAtUnix                        int64
 	UpdatedAtUnix                        int64
 	SettlementType                       string
+	RequestedAmountSat                   int64
+	AvailableCreditSat                   int64
+	AttachedCreditSat                    int64
+	DustLimitSat                         int64
 }

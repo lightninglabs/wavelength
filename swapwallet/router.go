@@ -13,6 +13,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/lightninglabs/darepo-client/coinselect"
+	"github.com/lightninglabs/darepo-client/credit"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
 	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
@@ -138,8 +139,9 @@ func (r *router) prepareInvoice(ctx context.Context, invoice string,
 
 	quote, err := r.deps.SwapService.QuotePay(
 		ctx, &swapclientrpc.QuotePayRequest{
-			Invoice:   invoice,
-			MaxFeeSat: req.GetMaxFeeSat(),
+			Invoice:      invoice,
+			MaxFeeSat:    req.GetMaxFeeSat(),
+			MaxCreditSat: ^uint64(0),
 		},
 	)
 	if err != nil {
@@ -162,6 +164,19 @@ func (r *router) prepareInvoice(ctx context.Context, invoice string,
 	if err != nil {
 		return nil, err
 	}
+	if quote != nil && quote.GetCreditQuote() != nil {
+		creditQuote := quote.GetCreditQuote()
+		intent.creditPreview = preview.creditPreview
+		intent.maxCreditSat = saturatingAddSat(
+			creditQuote.GetCreditAppliedSat(),
+			creditQuote.GetCreditShortfallSat(),
+		)
+		if creditQuote.GetMustUseCredit() {
+			if uint64(amountSat) > intent.maxCreditSat {
+				intent.maxCreditSat = uint64(amountSat)
+			}
+		}
+	}
 
 	if _, err := r.intents.put(intent); err != nil {
 		return nil, err
@@ -170,8 +185,10 @@ func (r *router) prepareInvoice(ctx context.Context, invoice string,
 	return prepareResponseFromIntent(intent, preview), nil
 }
 
-// sendInvoiceIntent routes a prepared BOLT-11 invoice through the
-// daemon-owned swap subserver.
+// sendInvoiceIntent routes a prepared BOLT-11 invoice. A credit-backed pay
+// (credit-only or mixed rail) is handed off to the durable credit subsystem,
+// which performs any Ark top-up and the pay crash-safely under a stable
+// idempotency key. A pure-Lightning pay goes straight to the swap subserver.
 func (r *router) sendInvoiceIntent(ctx context.Context,
 	intent *preparedSendIntent) (*walletdkrpc.SendResponse, error) {
 
@@ -179,10 +196,15 @@ func (r *router) sendInvoiceIntent(ctx context.Context,
 		return nil, ErrSwapBackendUnavailable
 	}
 
+	if intentUsesCredit(intent) {
+		return r.sendCreditInvoiceIntent(ctx, intent)
+	}
+
 	startResp, err := r.deps.SwapService.StartPay(
 		ctx, &swapclientrpc.StartPayRequest{
-			Invoice:   intent.invoice,
-			MaxFeeSat: intent.maxFeeSat,
+			Invoice:      intent.invoice,
+			MaxFeeSat:    intent.maxFeeSat,
+			MaxCreditSat: intent.maxCreditSat,
 		},
 	)
 	if err != nil {
@@ -197,10 +219,142 @@ func (r *router) sendInvoiceIntent(ctx context.Context,
 	// For invoice sends actual_amount_sat is the swap's negotiated
 	// principal: that's what is being paid to the BOLT-11 destination
 	// (routing fees are tracked separately via fee_sat on the entry).
+	actualAmountSat := startResp.GetSwap().GetAmountSat()
+	if actualAmountSat == 0 {
+		actualAmountSat = int64(intent.amountSat)
+	}
+
 	return &walletdkrpc.SendResponse{
 		Entry:           entry,
-		ActualAmountSat: startResp.GetSwap().GetAmountSat(),
+		ActualAmountSat: actualAmountSat,
 	}, nil
+}
+
+// sendCreditInvoiceIntent hands a credit-backed pay to the durable credit
+// registry under a payment-hash-derived idempotency key, then returns a pending
+// wallet entry. The registry's per-operation actor performs the Ark top-up
+// (idempotently) and the pay on the daemon root context, so a client disconnect
+// or restart never strands or double-funds the credits.
+func (r *router) sendCreditInvoiceIntent(ctx context.Context,
+	intent *preparedSendIntent) (*walletdkrpc.SendResponse, error) {
+
+	if r.deps.CreditRegistry == nil {
+		return nil, fmt.Errorf("%w: credit subsystem unavailable",
+			ErrSwapBackendUnavailable)
+	}
+
+	decoded, err := decodePreparedInvoice(
+		intent.invoice, r.deps.ChainParams,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if decoded.PaymentHash == nil {
+		return nil, fmt.Errorf("%w: invoice payment hash is required",
+			ErrInvalidDestination)
+	}
+	paymentHash := *decoded.PaymentHash
+
+	var (
+		topupSat   uint64
+		creditOnly bool
+	)
+	if cp := intent.creditPreview; cp != nil {
+		topupSat = cp.GetCreditTopupSat()
+
+		// A pay is credit-only when it carries no Lightning swap leg:
+		// either the server pins it to credit (sub-dust), or the
+		// applied credits plus the planned top-up already cover the
+		// full principal. A mixed pay leaves this false so the swap
+		// monitor stays the single terminal authority for the shared
+		// payment-hash row. The cover sum is computed overflow-safe so
+		// a wrapped server quote cannot flip the routing decision.
+		creditOnly = cp.GetMustUseCredit() || creditCoversSat(
+			cp.GetCreditAppliedSat(), cp.GetCreditTopupSat(),
+			intent.amountSat,
+		)
+	}
+
+	opKey := "pay:" + hex.EncodeToString(paymentHash[:])
+	resp, err := r.deps.CreditRegistry.Ask(ctx, &credit.StartCreditPayRequest{
+		OpKey:        opKey,
+		Invoice:      intent.invoice,
+		PaymentHash:  paymentHash,
+		AmountSat:    intent.amountSat,
+		TopupSat:     topupSat,
+		MaxCreditSat: intent.maxCreditSat,
+		MaxFeeSat:    intent.maxFeeSat,
+		CreditOnly:   creditOnly,
+	}).Await(ctx).Unpack()
+	if err != nil {
+		return nil, fmt.Errorf("start credit pay: %w", err)
+	}
+	if _, ok := resp.(*credit.StartCreditResponse); !ok {
+		return nil, fmt.Errorf("unexpected credit pay response %T",
+			resp)
+	}
+
+	// Emit a pending entry keyed by the payment hash. A mixed pay's swap
+	// session updates this same row through the monitor loop; a credit-only
+	// pay completes server-side and the row is reconciled from credit
+	// state.
+	entry := creditPayEntry(intent, paymentHash)
+	r.runtime.trackPendingEntryWithoutTimeout(entry)
+	r.runtime.emit(entry)
+
+	return &walletdkrpc.SendResponse{
+		Entry:           entry,
+		ActualAmountSat: int64(intent.amountSat),
+	}, nil
+}
+
+// intentUsesCredit reports whether a prepared invoice intent's quote actually
+// reserves or requires credits, in which case the send must route through the
+// durable credit subsystem rather than the direct pay path.
+func intentUsesCredit(intent *preparedSendIntent) bool {
+	cp := intent.creditPreview
+	if cp == nil {
+		return false
+	}
+
+	return cp.GetMustUseCredit() || cp.GetCreditAppliedSat() > 0 ||
+		cp.GetCreditShortfallSat() > 0
+}
+
+// creditPayEntry builds the pending wallet entry for a credit-backed pay,
+// keyed by the payment hash so later swap-session or credit-state updates
+// reconcile the same row.
+func creditPayEntry(intent *preparedSendIntent,
+	paymentHash [32]byte) *walletdkrpc.WalletEntry {
+
+	now := nowUnix()
+	paymentHashHex := hex.EncodeToString(paymentHash[:])
+
+	return &walletdkrpc.WalletEntry{
+		Id:            paymentHashHex,
+		Kind:          walletdkrpc.EntryKind_ENTRY_KIND_SEND,
+		Status:        walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		AmountSat:     int64(intent.amountSat),
+		Counterparty:  "credit",
+		CreatedAtUnix: now,
+		UpdatedAtUnix: now,
+		Note:          intent.note,
+		Request: &walletdkrpc.WalletEntryRequest{
+			Request: &walletdkrpc.WalletEntryRequest_LightningInvoice{
+				LightningInvoice: &walletdkrpc.
+					LightningInvoiceRequest{
+					Invoice:     intent.invoice,
+					PaymentHash: paymentHashHex,
+				},
+			},
+		},
+		Progress: &walletdkrpc.WalletEntryProgress{
+			Phase: walletdkrpc.
+				WalletEntryPhase_WALLET_ENTRY_PHASE_SETTLING,
+			PhaseLabel:  "settling",
+			PaymentHash: paymentHashHex,
+		},
+	}
 }
 
 // prepareOnchain validates an onchain destination and builds a fee-aware
@@ -505,12 +659,8 @@ func extractPreparedInvoiceAmountSat(decoded *zpay32.Invoice) (uint64, error) {
 		return 0, fmt.Errorf("%w: invoice amount must be positive",
 			ErrAmountInvalid)
 	}
-	if amountMSat%1000 != 0 {
-		return 0, fmt.Errorf("%w: invoice amount must be whole "+
-			"satoshis", ErrAmountInvalid)
-	}
 
-	return amountMSat / 1000, nil
+	return ceilMsatToSat(amountMSat), nil
 }
 
 // quotePayUnavailable reports whether a quote failure means the configured
@@ -593,6 +743,11 @@ func prepareInvoicePreviewFromQuote(invoice, description, paymentHash string,
 		warning = "quoted fee exceeds max_fee_sat; Send will fail " +
 			"unless prepared with a higher fee cap"
 	}
+	creditPreview := creditPreviewFromQuote(quote.GetCreditQuote())
+	if creditPreview != nil && creditPreview.GetCreditShortfallSat() > 0 {
+		warning = fmt.Sprintf("credit shortfall requires %d sat top-up",
+			creditPreview.GetCreditTopupSat())
+	}
 
 	return prepareSendPreview{
 		rail: rail,
@@ -607,7 +762,24 @@ func prepareInvoicePreviewFromQuote(invoice, description, paymentHash string,
 		invoiceDescription:      description,
 		paymentHash:             quote.GetPaymentHash(),
 		warning:                 warning,
+		creditPreview:           creditPreview,
 	}, nil
+}
+
+func creditPreviewFromQuote(
+	quote *swapclientrpc.CreditQuote) *walletdkrpc.CreditPreview {
+
+	if quote == nil {
+		return nil
+	}
+
+	return &walletdkrpc.CreditPreview{
+		MustUseCredit:      quote.GetMustUseCredit(),
+		CreditAppliedSat:   quote.GetCreditAppliedSat(),
+		CreditShortfallSat: quote.GetCreditShortfallSat(),
+		CreditTopupSat:     quote.GetCreditTopupSat(),
+		ArkFundingSat:      quote.GetArkFundingSat(),
+	}
 }
 
 func sendRailFromQuoteSettlement(
@@ -621,6 +793,12 @@ func sendRailFromQuoteSettlement(
 
 	case swapclientrpc.SwapSettlementType_SWAP_SETTLEMENT_TYPE_IN_ARK:
 		return walletdkrpc.SendRail_SEND_RAIL_IN_ARK, nil
+
+	case swapclientrpc.SwapSettlementType_SWAP_SETTLEMENT_TYPE_CREDIT:
+		return walletdkrpc.SendRail_SEND_RAIL_CREDIT, nil
+
+	case swapclientrpc.SwapSettlementType_SWAP_SETTLEMENT_TYPE_MIXED:
+		return walletdkrpc.SendRail_SEND_RAIL_MIXED, nil
 
 	default:
 		return walletdkrpc.SendRail_SEND_RAIL_OFFCHAIN_UNKNOWN, nil

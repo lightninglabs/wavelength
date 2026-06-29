@@ -12,6 +12,15 @@ http:
     - selector: swapclientrpc.SwapClientService.StartReceive
       post: /v1/swapclient/start-receive
       body: "*"
+    - selector: swapclientrpc.SwapClientService.CreateCredit
+      post: /v1/swapclient/create-credit
+      body: "*"
+    - selector: swapclientrpc.SwapClientService.RedeemCredit
+      post: /v1/swapclient/redeem-credit
+      body: "*"
+    - selector: swapclientrpc.SwapClientService.ListCredits
+      post: /v1/swapclient/list-credits
+      body: "*"
     - selector: swapclientrpc.SwapClientService.ResumeSwap
       post: /v1/swapclient/resume-swap
       body: "*"

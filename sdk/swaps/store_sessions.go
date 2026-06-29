@@ -364,24 +364,33 @@ func receiveSummaryFromRow(row swapsqlc.ReceiveSwap) (SwapSummary, error) {
 		return SwapSummary{}, err
 	}
 
+	requestedAmountSat := uint64(row.RequestedAmountSat)
+	if requestedAmountSat == 0 {
+		requestedAmountSat = uint64(row.AmountSat)
+	}
+
 	return SwapSummary{
-		Direction:      SwapDirectionReceive,
-		PaymentHash:    paymentHash,
-		Invoice:        row.Invoice,
-		State:          state.String(),
-		Pending:        !state.IsTerminal(),
-		AmountSat:      row.AmountSat,
-		PayerFeeMsat:   uint64(row.PayerFeeMsat),
-		VHTLCOutpoint:  row.VhtlcOutpoint,
-		VHTLCAmountSat: row.VhtlcAmount,
-		ClaimSessionID: row.ClaimSessionID,
-		SettlementType: SettlementType(row.SettlementType),
-		SenderPubkey:   senderPubKey,
-		TerminalReason: row.InterventionReason,
-		CreatedAt:      time.Unix(row.CreatedAtUnix, 0),
-		UpdatedAt:      time.Unix(row.UpdatedAtUnix, 0),
-		Deadline:       time.Unix(row.DeadlineUnix, 0),
-		RefundLocktime: uint32(row.RefundLocktime),
+		Direction:          SwapDirectionReceive,
+		PaymentHash:        paymentHash,
+		Invoice:            row.Invoice,
+		State:              state.String(),
+		Pending:            !state.IsTerminal(),
+		AmountSat:          row.AmountSat,
+		PayerFeeMsat:       uint64(row.PayerFeeMsat),
+		VHTLCOutpoint:      row.VhtlcOutpoint,
+		VHTLCAmountSat:     row.VhtlcAmount,
+		ClaimSessionID:     row.ClaimSessionID,
+		SettlementType:     SettlementType(row.SettlementType),
+		RequestedAmountSat: requestedAmountSat,
+		AvailableCreditSat: uint64(row.AvailableCreditSat),
+		AttachedCreditSat:  uint64(row.AttachedCreditSat),
+		DustLimitSat:       uint64(row.DustLimitSat),
+		SenderPubkey:       senderPubKey,
+		TerminalReason:     row.InterventionReason,
+		CreatedAt:          time.Unix(row.CreatedAtUnix, 0),
+		UpdatedAt:          time.Unix(row.UpdatedAtUnix, 0),
+		Deadline:           time.Unix(row.DeadlineUnix, 0),
+		RefundLocktime:     uint32(row.RefundLocktime),
 	}, nil
 }
 
@@ -502,6 +511,10 @@ func (s *ReceiveSession) persist(ctx context.Context) error {
 		ClaimSessionID:       s.claimSessionID,
 		ClaimRecoveryID:      s.claimRecoveryID,
 		InterventionReason:   s.interventionReason,
+		RequestedAmountSat:   int64(s.requestedAmountSat),
+		AvailableCreditSat:   int64(s.availableCreditSat),
+		AttachedCreditSat:    int64(s.attachedCreditSat),
+		DustLimitSat:         int64(s.dustLimitSat),
 		CreatedAtUnix:        s.createdAt.Unix(),
 		UpdatedAtUnix:        now,
 	}
@@ -658,24 +671,18 @@ func (s *paySession) persist(ctx context.Context) error {
 		UnilateralRefundWithoutReceiverDelay: int64(
 			s.cfg.VHTLCConfig.UnilateralRefundWithoutReceiverDelay,
 		),
-		VhtlcPkscript: append([]byte(nil), s.vhtlcPkScript...),
-		VhtlcPolicyTemplate: append(
-			[]byte(nil), s.vhtlcPolicyTemplate...,
-		),
-		VhtlcOutpoint:    s.vhtlcOutpoint,
-		VhtlcAmount:      s.vhtlcAmount,
-		FundingSessionID: s.fundingSessionID,
-		RefundReceivePubkey: append(
-			[]byte(nil), s.refundReceivePubKey...,
-		),
-		RefundReceivePkscript: append(
-			[]byte(nil), s.refundReceiveScript...,
-		),
-		RefundSessionID:    s.refundSessionID,
-		RefundRecoveryID:   s.refundRecoveryID,
-		InterventionReason: s.interventionReason,
-		CreatedAtUnix:      s.createdAt.Unix(),
-		UpdatedAtUnix:      now,
+		VhtlcPkscript:         cloneBytesOrEmpty(s.vhtlcPkScript),
+		VhtlcPolicyTemplate:   cloneBytesOrEmpty(s.vhtlcPolicyTemplate),
+		VhtlcOutpoint:         s.vhtlcOutpoint,
+		VhtlcAmount:           s.vhtlcAmount,
+		FundingSessionID:      s.fundingSessionID,
+		RefundReceivePubkey:   cloneBytesOrEmpty(s.refundReceivePubKey),
+		RefundReceivePkscript: cloneBytesOrEmpty(s.refundReceiveScript),
+		RefundSessionID:       s.refundSessionID,
+		RefundRecoveryID:      s.refundRecoveryID,
+		InterventionReason:    s.interventionReason,
+		CreatedAtUnix:         s.createdAt.Unix(),
+		UpdatedAtUnix:         now,
 	}
 	if s.preimage != nil {
 		params.Preimage = append([]byte(nil), s.preimage[:]...)
@@ -791,6 +798,13 @@ func receiveSessionFromRow(c *SwapClient,
 		vhtlcPkScript: append([]byte(nil), row.VhtlcPkscript...),
 		vhtlcOutpoint: row.VhtlcOutpoint,
 		vhtlcAmount:   row.VhtlcAmount,
+		requestedAmountSat: uint64(
+			row.RequestedAmountSat,
+		),
+		availableCreditSat: uint64(row.AvailableCreditSat),
+		attachedCreditSat:  uint64(row.AttachedCreditSat),
+		expectedVHTLCSat:   receiveExpectedVHTLCSat(row),
+		dustLimitSat:       uint64(row.DustLimitSat),
 		pendingHTLCAckCursor: uint64(
 			row.PendingHtlcAckCursor,
 		),
@@ -811,6 +825,15 @@ func receiveSessionFromRow(c *SwapClient,
 		createdAt:          time.Unix(row.CreatedAtUnix, 0),
 		updatedAt:          time.Unix(row.UpdatedAtUnix, 0),
 	}, nil
+}
+
+func receiveExpectedVHTLCSat(row swapsqlc.ReceiveSwap) uint64 {
+	requestedAmountSat := uint64(row.RequestedAmountSat)
+	if requestedAmountSat == 0 {
+		requestedAmountSat = uint64(row.AmountSat)
+	}
+
+	return requestedAmountSat + uint64(row.AttachedCreditSat)
 }
 
 // paySessionFromRow reconstructs one pay session from its persisted SQL row.
@@ -842,36 +865,39 @@ func paySessionFromRow(c *SwapClient,
 		return nil, err
 	}
 
-	policy, err := arkscript.NewVHTLCPolicy(arkscript.VHTLCOpts{
-		Sender:       clientKey,
-		Receiver:     serverKey,
-		Server:       operatorKey,
-		PreimageHash: paymentHash,
-		RefundLocktime: uint32(
-			row.RefundLocktime,
-		),
-		UnilateralClaimDelay: uint32(
-			row.UnilateralClaimDelay,
-		),
-		UnilateralRefundDelay: uint32(
-			row.UnilateralRefundDelay,
-		),
-		UnilateralRefundWithoutReceiverDelay: uint32(
-			row.UnilateralRefundWithoutReceiverDelay,
-		),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("rebuild pay vHTLC policy: %w", err)
+	settlementType := SettlementType(row.SettlementType)
+	var policy *arkscript.VHTLCPolicy
+	if settlementType != SettlementTypeCredit {
+		policy, err = arkscript.NewVHTLCPolicy(arkscript.VHTLCOpts{
+			Sender:       clientKey,
+			Receiver:     serverKey,
+			Server:       operatorKey,
+			PreimageHash: paymentHash,
+			RefundLocktime: uint32(
+				row.RefundLocktime,
+			),
+			UnilateralClaimDelay: uint32(
+				row.UnilateralClaimDelay,
+			),
+			UnilateralRefundDelay: uint32(
+				row.UnilateralRefundDelay,
+			),
+			UnilateralRefundWithoutReceiverDelay: uint32(
+				row.UnilateralRefundWithoutReceiverDelay,
+			),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("rebuild pay vHTLC policy: %w",
+				err)
+		}
 	}
 
 	cfg := &InSwapConfig{
-		PaymentHash:  paymentHash,
-		AmountSat:    row.AmountSat,
-		FeeSat:       uint64(row.FeeSat),
-		ServerPubkey: serverKey,
-		SettlementType: SettlementType(
-			row.SettlementType,
-		),
+		PaymentHash:    paymentHash,
+		AmountSat:      row.AmountSat,
+		FeeSat:         uint64(row.FeeSat),
+		ServerPubkey:   serverKey,
+		SettlementType: settlementType,
 		VHTLCConfig: restoreVHTLCConfig(
 			row.RefundLocktime, row.UnilateralClaimDelay,
 			row.UnilateralRefundDelay,

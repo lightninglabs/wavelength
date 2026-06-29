@@ -22,6 +22,9 @@ const (
 	SwapClientService_QuotePay_FullMethodName       = "/swapclientrpc.SwapClientService/QuotePay"
 	SwapClientService_StartPay_FullMethodName       = "/swapclientrpc.SwapClientService/StartPay"
 	SwapClientService_StartReceive_FullMethodName   = "/swapclientrpc.SwapClientService/StartReceive"
+	SwapClientService_CreateCredit_FullMethodName   = "/swapclientrpc.SwapClientService/CreateCredit"
+	SwapClientService_RedeemCredit_FullMethodName   = "/swapclientrpc.SwapClientService/RedeemCredit"
+	SwapClientService_ListCredits_FullMethodName    = "/swapclientrpc.SwapClientService/ListCredits"
 	SwapClientService_ResumeSwap_FullMethodName     = "/swapclientrpc.SwapClientService/ResumeSwap"
 	SwapClientService_ListSwaps_FullMethodName      = "/swapclientrpc.SwapClientService/ListSwaps"
 	SwapClientService_GetSwap_FullMethodName        = "/swapclientrpc.SwapClientService/GetSwap"
@@ -44,6 +47,12 @@ type SwapClientServiceClient interface {
 	// StartReceive starts a Lightning-to-Ark receive swap and lets the daemon
 	// continue the claim flow after the invoice is paid.
 	StartReceive(ctx context.Context, in *StartReceiveRequest, opts ...grpc.CallOption) (*StartReceiveResponse, error)
+	// CreateCredit starts a durable credit funding session.
+	CreateCredit(ctx context.Context, in *CreateCreditRequest, opts ...grpc.CallOption) (*CreateCreditResponse, error)
+	// RedeemCredit materializes available credits back into an Ark output.
+	RedeemCredit(ctx context.Context, in *RedeemCreditRequest, opts ...grpc.CallOption) (*RedeemCreditResponse, error)
+	// ListCredits returns the server-authoritative credit account snapshot.
+	ListCredits(ctx context.Context, in *ListCreditsRequest, opts ...grpc.CallOption) (*ListCreditsResponse, error)
 	// ResumeSwap asks the daemon to resume one persisted pending swap.
 	ResumeSwap(ctx context.Context, in *ResumeSwapRequest, opts ...grpc.CallOption) (*ResumeSwapResponse, error)
 	// ListSwaps lists persisted swap sessions from the daemon-owned store.
@@ -89,6 +98,36 @@ func (c *swapClientServiceClient) StartReceive(ctx context.Context, in *StartRec
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(StartReceiveResponse)
 	err := c.cc.Invoke(ctx, SwapClientService_StartReceive_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *swapClientServiceClient) CreateCredit(ctx context.Context, in *CreateCreditRequest, opts ...grpc.CallOption) (*CreateCreditResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateCreditResponse)
+	err := c.cc.Invoke(ctx, SwapClientService_CreateCredit_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *swapClientServiceClient) RedeemCredit(ctx context.Context, in *RedeemCreditRequest, opts ...grpc.CallOption) (*RedeemCreditResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RedeemCreditResponse)
+	err := c.cc.Invoke(ctx, SwapClientService_RedeemCredit_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *swapClientServiceClient) ListCredits(ctx context.Context, in *ListCreditsRequest, opts ...grpc.CallOption) (*ListCreditsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListCreditsResponse)
+	err := c.cc.Invoke(ctx, SwapClientService_ListCredits_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -160,6 +199,12 @@ type SwapClientServiceServer interface {
 	// StartReceive starts a Lightning-to-Ark receive swap and lets the daemon
 	// continue the claim flow after the invoice is paid.
 	StartReceive(context.Context, *StartReceiveRequest) (*StartReceiveResponse, error)
+	// CreateCredit starts a durable credit funding session.
+	CreateCredit(context.Context, *CreateCreditRequest) (*CreateCreditResponse, error)
+	// RedeemCredit materializes available credits back into an Ark output.
+	RedeemCredit(context.Context, *RedeemCreditRequest) (*RedeemCreditResponse, error)
+	// ListCredits returns the server-authoritative credit account snapshot.
+	ListCredits(context.Context, *ListCreditsRequest) (*ListCreditsResponse, error)
 	// ResumeSwap asks the daemon to resume one persisted pending swap.
 	ResumeSwap(context.Context, *ResumeSwapRequest) (*ResumeSwapResponse, error)
 	// ListSwaps lists persisted swap sessions from the daemon-owned store.
@@ -189,6 +234,15 @@ func (UnimplementedSwapClientServiceServer) StartPay(context.Context, *StartPayR
 }
 func (UnimplementedSwapClientServiceServer) StartReceive(context.Context, *StartReceiveRequest) (*StartReceiveResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method StartReceive not implemented")
+}
+func (UnimplementedSwapClientServiceServer) CreateCredit(context.Context, *CreateCreditRequest) (*CreateCreditResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CreateCredit not implemented")
+}
+func (UnimplementedSwapClientServiceServer) RedeemCredit(context.Context, *RedeemCreditRequest) (*RedeemCreditResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RedeemCredit not implemented")
+}
+func (UnimplementedSwapClientServiceServer) ListCredits(context.Context, *ListCreditsRequest) (*ListCreditsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListCredits not implemented")
 }
 func (UnimplementedSwapClientServiceServer) ResumeSwap(context.Context, *ResumeSwapRequest) (*ResumeSwapResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ResumeSwap not implemented")
@@ -277,6 +331,60 @@ func _SwapClientService_StartReceive_Handler(srv interface{}, ctx context.Contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _SwapClientService_CreateCredit_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateCreditRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwapClientServiceServer).CreateCredit(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SwapClientService_CreateCredit_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwapClientServiceServer).CreateCredit(ctx, req.(*CreateCreditRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SwapClientService_RedeemCredit_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RedeemCreditRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwapClientServiceServer).RedeemCredit(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SwapClientService_RedeemCredit_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwapClientServiceServer).RedeemCredit(ctx, req.(*RedeemCreditRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SwapClientService_ListCredits_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListCreditsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SwapClientServiceServer).ListCredits(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SwapClientService_ListCredits_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SwapClientServiceServer).ListCredits(ctx, req.(*ListCreditsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _SwapClientService_ResumeSwap_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ResumeSwapRequest)
 	if err := dec(in); err != nil {
@@ -360,6 +468,18 @@ var SwapClientService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "StartReceive",
 			Handler:    _SwapClientService_StartReceive_Handler,
+		},
+		{
+			MethodName: "CreateCredit",
+			Handler:    _SwapClientService_CreateCredit_Handler,
+		},
+		{
+			MethodName: "RedeemCredit",
+			Handler:    _SwapClientService_RedeemCredit_Handler,
+		},
+		{
+			MethodName: "ListCredits",
+			Handler:    _SwapClientService_ListCredits_Handler,
 		},
 		{
 			MethodName: "ResumeSwap",

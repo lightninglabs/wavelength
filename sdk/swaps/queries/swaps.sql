@@ -23,14 +23,19 @@ INSERT INTO receive_swaps (
     pending_htlc_ack_cursor,
     claim_receive_pubkey,
     claim_receive_pkscript,
-    claim_session_id,
-    claim_recovery_id,
-    intervention_reason,
-    created_at_unix,
-    updated_at_unix
+	claim_session_id,
+	claim_recovery_id,
+	intervention_reason,
+	requested_amount_sat,
+	available_credit_sat,
+	attached_credit_sat,
+	dust_limit_sat,
+	created_at_unix,
+	updated_at_unix
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-    $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28
+	$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+	$16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28,
+	$29, $30, $31, $32
 )
 ON CONFLICT (payment_hash) DO UPDATE SET
     amount_sat = EXCLUDED.amount_sat,
@@ -56,10 +61,14 @@ ON CONFLICT (payment_hash) DO UPDATE SET
     pending_htlc_ack_cursor = EXCLUDED.pending_htlc_ack_cursor,
     claim_receive_pubkey = EXCLUDED.claim_receive_pubkey,
     claim_receive_pkscript = EXCLUDED.claim_receive_pkscript,
-    claim_session_id = EXCLUDED.claim_session_id,
-    claim_recovery_id = EXCLUDED.claim_recovery_id,
-    intervention_reason = EXCLUDED.intervention_reason,
-    updated_at_unix = EXCLUDED.updated_at_unix;
+	claim_session_id = EXCLUDED.claim_session_id,
+	claim_recovery_id = EXCLUDED.claim_recovery_id,
+	intervention_reason = EXCLUDED.intervention_reason,
+	requested_amount_sat = EXCLUDED.requested_amount_sat,
+	available_credit_sat = EXCLUDED.available_credit_sat,
+	attached_credit_sat = EXCLUDED.attached_credit_sat,
+	dust_limit_sat = EXCLUDED.dust_limit_sat,
+	updated_at_unix = EXCLUDED.updated_at_unix;
 
 -- name: GetReceiveSwap :one
 SELECT * FROM receive_swaps

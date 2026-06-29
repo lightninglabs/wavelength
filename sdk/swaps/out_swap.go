@@ -253,16 +253,21 @@ type ReceiveSession struct {
 	// PaymentHash is the Lightning payment hash for this receive flow.
 	PaymentHash lntypes.Hash
 
-	client         *SwapClient
-	amountSat      btcutil.Amount
-	memo           string
-	payerFeeMsat   uint64
-	state          ReceiveState
-	deadline       time.Time
-	createdAt      time.Time
-	updatedAt      time.Time
-	clientPubKey   *btcec.PublicKey
-	operatorPubKey *btcec.PublicKey
+	client             *SwapClient
+	amountSat          btcutil.Amount
+	memo               string
+	payerFeeMsat       uint64
+	requestedAmountSat uint64
+	availableCreditSat uint64
+	attachedCreditSat  uint64
+	expectedVHTLCSat   uint64
+	dustLimitSat       uint64
+	state              ReceiveState
+	deadline           time.Time
+	createdAt          time.Time
+	updatedAt          time.Time
+	clientPubKey       *btcec.PublicKey
+	operatorPubKey     *btcec.PublicKey
 	// swapServerPubKey is the remote sender in the accepted vHTLC policy.
 	// For Lightning-backed receives this is the swap server key; for
 	// direct same-Ark receives this is the paying client's sender key.
@@ -675,10 +680,37 @@ func (s *ReceiveSession) prepareInvoice(ctx context.Context) error {
 	}
 	finalHop := quote.RouteHintPath[len(quote.RouteHintPath)-1]
 
+	requestedAmountSat := quote.RequestedAmountSat
+	if requestedAmountSat == 0 {
+		requestedAmountSat = uint64(s.amountSat)
+	}
+	if requestedAmountSat != uint64(s.amountSat) {
+		return fmt.Errorf("route quote amount %d does not match "+
+			"requested receive amount %d", requestedAmountSat,
+			s.amountSat)
+	}
+	expectedVHTLCSat := quote.VHTLCAmountSat
+	if expectedVHTLCSat == 0 {
+		expectedVHTLCSat = requestedAmountSat
+	}
+	if quote.AttachedCreditSat > ^uint64(0)-requestedAmountSat {
+		return fmt.Errorf("route quote attached credit overflows " +
+			"vHTLC amount")
+	}
+	if quote.AttachedCreditSat > 0 &&
+		expectedVHTLCSat != requestedAmountSat+quote.AttachedCreditSat {
+		return fmt.Errorf("route quote vHTLC amount %d does not equal "+
+			"requested amount %d plus attached credit %d",
+			expectedVHTLCSat, requestedAmountSat,
+			quote.AttachedCreditSat)
+	}
+
 	s.client.log.InfoS(ctx, "Received route hint from swap server",
 		slog.Uint64("channel_id", finalHop.ChannelID),
 		slog.Int("path_hops", len(quote.RouteHintPath)),
 		slog.Uint64("payer_fee_msat", quote.PayerFeeMsat),
+		slog.Uint64("attached_credit_sat", quote.AttachedCreditSat),
+		slog.Uint64("vhtlc_amount_sat", expectedVHTLCSat),
 	)
 
 	inv, hash, err := s.client.invoiceGen.
@@ -707,6 +739,12 @@ func (s *ReceiveSession) prepareInvoice(ctx context.Context) error {
 		s.Preimage = preimage
 		s.PaymentHash = hash
 		s.payerFeeMsat = quote.PayerFeeMsat
+		s.requestedAmountSat = requestedAmountSat
+		s.availableCreditSat = quote.AvailableCreditSat
+		s.attachedCreditSat = quote.AttachedCreditSat
+		s.expectedVHTLCSat = expectedVHTLCSat
+		s.dustLimitSat = quote.DustLimitSat
+		s.settlementType = quote.SettlementType
 		s.deadline = s.client.currentTime().Add(expiry)
 		if s.createdAt.IsZero() {
 			s.createdAt = s.client.currentTime()
@@ -948,11 +986,37 @@ func (s *ReceiveSession) acceptOutSwapHtlcEvent(ctx context.Context,
 			nil,
 		)
 	}
-	if event.AmountSat != int64(s.amountSat) {
+	requestedAmountSat := event.RequestedAmountSat
+	if requestedAmountSat == 0 {
+		requestedAmountSat = uint64(s.amountSat)
+	}
+	if requestedAmountSat != uint64(s.amountSat) {
+		return s.failTerminal(
+			ctx, fmt.Sprintf("out-swap HTLC requested amount %d "+
+				"does not match invoice amount %d",
+				requestedAmountSat, s.amountSat),
+			nil,
+			nil,
+		)
+	}
+	if event.AttachedCreditSat != s.attachedCreditSat {
+		return s.failTerminal(
+			ctx, fmt.Sprintf("out-swap HTLC attached credit %d "+
+				"does not match expected credit %d",
+				event.AttachedCreditSat, s.attachedCreditSat),
+			nil,
+			nil,
+		)
+	}
+	expectedVHTLCSat := s.expectedVHTLCSat
+	if expectedVHTLCSat == 0 {
+		expectedVHTLCSat = uint64(s.amountSat)
+	}
+	if event.AmountSat != int64(expectedVHTLCSat) {
 		return s.failTerminal(
 			ctx, fmt.Sprintf("out-swap HTLC amount %d does not "+
-				"match invoice amount %d", event.AmountSat,
-				s.amountSat),
+				"match expected vHTLC amount %d",
+				event.AmountSat, expectedVHTLCSat),
 			nil,
 			nil,
 		)
@@ -1000,7 +1064,9 @@ func (s *ReceiveSession) acceptOutSwapHtlcEvent(ctx context.Context,
 
 	return s.mutateAndPersist(ctx, func() error {
 		s.swapServerPubKey = serverKey
-		s.settlementType = SettlementTypeLightning
+		if s.settlementType == "" {
+			s.settlementType = SettlementTypeLightning
+		}
 		s.vhtlcConfig = event.VHTLCConfig
 		s.vhtlcPolicy = policy
 		s.vhtlcPolicyTemplate = policyTemplate
@@ -1054,8 +1120,7 @@ func (s *ReceiveSession) ackAcceptedHTLCEvent(ctx context.Context,
 // acknowledgeOutSwapHTLC records the receiver's durable event acceptance with
 // the swap server before clearing the local pending ACK marker.
 func (s *ReceiveSession) acknowledgeOutSwapHTLC(ctx context.Context) error {
-	if s.settlementType != "" &&
-		s.settlementType != SettlementTypeLightning {
+	if s.settlementType == SettlementTypeInArk {
 		return nil
 	}
 	if s.client == nil || s.client.server == nil {
@@ -1325,10 +1390,16 @@ func (s *ReceiveSession) ensureReceiveFundingStillPossible(
 func (s *ReceiveSession) validateReceiveFunding(ctx context.Context,
 	outpoint string, amount int64) error {
 
-	if amount != int64(s.amountSat) {
+	expectedAmountSat := s.expectedVHTLCSat
+	if expectedAmountSat == 0 {
+		expectedAmountSat = uint64(s.amountSat)
+	}
+
+	if amount != int64(expectedAmountSat) {
 		return s.failTerminal(ctx, fmt.Sprintf("funded "+
 			"vHTLC amount %d does not match "+
-			"invoice amount %d", amount, s.amountSat), nil, func() {
+			"expected vHTLC amount %d", amount,
+			expectedAmountSat), nil, func() {
 			s.vhtlcOutpoint = outpoint
 			s.vhtlcAmount = amount
 		})

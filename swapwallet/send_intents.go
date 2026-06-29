@@ -31,6 +31,8 @@ type preparedSendIntent struct {
 	amountSat      uint64
 	note           string
 	maxFeeSat      uint64
+	maxCreditSat   uint64
+	creditPreview  *walletdkrpc.CreditPreview
 	sweepAll       bool
 
 	selectedOutpoints []string
@@ -49,6 +51,7 @@ type prepareSendPreview struct {
 	invoiceDescription      string
 	paymentHash             string
 	warning                 string
+	creditPreview           *walletdkrpc.CreditPreview
 }
 
 type preparedSendStore struct {
@@ -112,6 +115,36 @@ func (s *preparedSendStore) consume(id string) (*preparedSendIntent, error) {
 	return intent, nil
 }
 
+// earmarkedCreditSat sums the credit balance reserved by live prepared sends
+// that intend to use credits (a non-zero credit cap). The auto-redeem sweep
+// subtracts this so it never redeems credits a prepared-but-unsent credit send
+// is about to spend. A prepared intent only earmarks for its TTL, after which
+// the credits are free again.
+func (s *preparedSendStore) earmarkedCreditSat() uint64 {
+	if s == nil {
+		return 0
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+	s.pruneExpiredLocked(now)
+
+	var total uint64
+	for _, intent := range s.intents {
+		if now.After(intent.expiresAt) || intent.maxCreditSat == 0 {
+			continue
+		}
+		if total > ^uint64(0)-intent.maxCreditSat {
+			return ^uint64(0)
+		}
+		total += intent.maxCreditSat
+	}
+
+	return total
+}
+
 func (s *preparedSendStore) pruneExpiredLocked(now time.Time) {
 	for id, intent := range s.intents {
 		if now.After(intent.expiresAt) {
@@ -148,6 +181,7 @@ func prepareResponseFromIntent(intent *preparedSendIntent,
 		SelectedOutpoints: append(
 			[]string(nil), intent.selectedOutpoints...,
 		),
-		Warning: preview.warning,
+		Warning:       preview.warning,
+		CreditPreview: preview.creditPreview,
 	}
 }

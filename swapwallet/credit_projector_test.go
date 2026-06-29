@@ -1,0 +1,214 @@
+//go:build walletdkrpc && swapruntime
+
+package swapwallet
+
+import (
+	"testing"
+
+	"github.com/lightninglabs/darepo-client/credit"
+	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
+	"github.com/stretchr/testify/require"
+)
+
+// payHashHex is an arbitrary 32-byte payment-hash hex; the projector only
+// strips the "pay:" op-key prefix, so the exact value is immaterial.
+const payHashHex = "00112233445566778899aabbccddeeff" +
+	"00112233445566778899aabbccddeeff"
+
+// drainEntries non-blockingly collects every WalletEntry currently queued on a
+// subscriber channel.
+func drainEntries(ch chan *walletdkrpc.WalletEntry) []*walletdkrpc.WalletEntry {
+	var out []*walletdkrpc.WalletEntry
+	for {
+		select {
+		case e := <-ch:
+			out = append(out, e)
+
+		default:
+			return out
+		}
+	}
+}
+
+// indexEntriesByID indexes entries by their id for assertion lookups.
+func indexEntriesByID(
+	entries []*walletdkrpc.WalletEntry) map[string]*walletdkrpc.WalletEntry {
+
+	out := make(map[string]*walletdkrpc.WalletEntry, len(entries))
+	for _, e := range entries {
+		out[e.GetId()] = e
+	}
+
+	return out
+}
+
+// TestCreditProjectorProjectsOwnedTerminals asserts the projector emits a
+// terminal WalletEntry for the operations it owns — credit-only pays (keyed by
+// payment hash) and credit receives (keyed by op id) — and stays silent for
+// mixed pays (owned by the swap monitor) and redemptions (wallet-internal).
+func TestCreditProjectorProjectsOwnedTerminals(t *testing.T) {
+	t.Parallel()
+
+	reg := &fakeCreditRegistry{
+		listResp: &credit.ListCreditOpsResponse{
+			Ops: []credit.CreditOpSummary{
+				{
+					OpID:       "op-pay",
+					OpKey:      "pay:" + payHashHex,
+					Kind:       credit.KindPay,
+					State:      credit.StateCompleted,
+					CreditOnly: true,
+					AmountSat:  500,
+				},
+				{
+					OpID:      "op-recv",
+					OpKey:     "recv:xyz",
+					Kind:      credit.KindReceive,
+					State:     credit.StateCompleted,
+					AmountSat: 42,
+				},
+				{
+					OpID:       "op-mixed",
+					OpKey:      "pay:beefbeef",
+					Kind:       credit.KindPay,
+					State:      credit.StateCompleted,
+					CreditOnly: false,
+					AmountSat:  1000,
+				},
+				{
+					OpID:      "op-redeem",
+					OpKey:     "redeem:r",
+					Kind:      credit.KindRedeem,
+					State:     credit.StateCompleted,
+					AmountSat: 9,
+				},
+			},
+		},
+	}
+	deps := &Deps{CreditRegistry: reg}
+	runtime := newRuntime(t.Context(), deps)
+	t.Cleanup(runtime.stop)
+
+	ch := runtime.subscribe()
+	projected := make(map[string]credit.State)
+	runtime.pollCreditOps(projected)
+
+	got := drainEntries(ch)
+	require.Len(t, got, 2)
+	byID := indexEntriesByID(got)
+
+	// Credit-only pay -> SEND COMPLETE keyed by the payment-hash hex.
+	pay := byID[payHashHex]
+	require.NotNil(t, pay)
+	require.Equal(
+		t, walletdkrpc.EntryKind_ENTRY_KIND_SEND, pay.GetKind(),
+	)
+	require.Equal(
+		t, walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		pay.GetStatus(),
+	)
+	require.Equal(t, int64(500), pay.GetAmountSat())
+	require.Equal(
+		t, walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_CONFIRMED,
+		pay.GetProgress().GetPhase(),
+	)
+
+	// Receive -> RECV COMPLETE keyed by the op id.
+	recv := byID["op-recv"]
+	require.NotNil(t, recv)
+	require.Equal(
+		t, walletdkrpc.EntryKind_ENTRY_KIND_RECV, recv.GetKind(),
+	)
+	require.Equal(
+		t, walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		recv.GetStatus(),
+	)
+	require.Equal(t, int64(42), recv.GetAmountSat())
+
+	// Mixed pay and redeem are not projected.
+	require.Nil(t, byID["beefbeef"])
+	require.Nil(t, byID["op-mixed"])
+	require.Nil(t, byID["op-redeem"])
+
+	// A second poll with unchanged state emits nothing.
+	runtime.pollCreditOps(projected)
+	require.Empty(t, drainEntries(ch))
+}
+
+// TestCreditProjectorProjectsFailure asserts a failed credit op surfaces as a
+// FAILED WalletEntry carrying the operation's terminal error.
+func TestCreditProjectorProjectsFailure(t *testing.T) {
+	t.Parallel()
+
+	reg := &fakeCreditRegistry{
+		listResp: &credit.ListCreditOpsResponse{
+			Ops: []credit.CreditOpSummary{
+				{
+					OpID:      "op-recv",
+					OpKey:     "recv:z",
+					Kind:      credit.KindReceive,
+					State:     credit.StateFailed,
+					AmountSat: 7,
+					LastError: "receive funding ended in FAILED",
+				},
+			},
+		},
+	}
+	deps := &Deps{CreditRegistry: reg}
+	runtime := newRuntime(t.Context(), deps)
+	t.Cleanup(runtime.stop)
+
+	ch := runtime.subscribe()
+	runtime.pollCreditOps(make(map[string]credit.State))
+
+	got := drainEntries(ch)
+	require.Len(t, got, 1)
+	entry := got[0]
+	require.Equal(t, "op-recv", entry.GetId())
+	require.Equal(
+		t, walletdkrpc.EntryStatus_ENTRY_STATUS_FAILED,
+		entry.GetStatus(),
+	)
+	require.Equal(
+		t, "receive funding ended in FAILED", entry.GetFailureReason(),
+	)
+	require.Equal(
+		t, walletdkrpc.EntryFailureCode_ENTRY_FAILURE_CODE_FAILED,
+		entry.GetFailureCode(),
+	)
+}
+
+// TestCreditProjectorTracksPendingForRestart asserts an in-flight credit-only
+// op is re-tracked as a wallet-local pending row so it survives in List
+// snapshots even though the runtime pending map is in-memory only.
+func TestCreditProjectorTracksPendingForRestart(t *testing.T) {
+	t.Parallel()
+
+	reg := &fakeCreditRegistry{
+		listResp: &credit.ListCreditOpsResponse{
+			Ops: []credit.CreditOpSummary{
+				{
+					OpID:       "op-pay",
+					OpKey:      "pay:" + payHashHex,
+					Kind:       credit.KindPay,
+					State:      credit.StatePaying,
+					CreditOnly: true,
+					AmountSat:  500,
+				},
+			},
+		},
+	}
+	deps := &Deps{CreditRegistry: reg}
+	runtime := newRuntime(t.Context(), deps)
+	t.Cleanup(runtime.stop)
+
+	runtime.pollCreditOps(make(map[string]credit.State))
+
+	snapshot := runtime.pendingSnapshot()
+	require.Len(t, snapshot, 1)
+	require.Equal(t, payHashHex, snapshot[0].GetId())
+	require.Equal(
+		t, walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		snapshot[0].GetStatus(),
+	)
+}

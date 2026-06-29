@@ -6,6 +6,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/lightninglabs/darepo-client/credit"
+	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
 	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 	"github.com/stretchr/testify/require"
@@ -70,6 +72,120 @@ func TestRecvDispatchesStartReceive(t *testing.T) {
 		t, walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_SETTLING,
 		resp.GetEntry().GetProgress().GetPhase(),
 	)
+}
+
+// TestRecvBelowDustHandsToCreditRegistry asserts a sub-dust receive is handed
+// to the durable credit registry, which returns the server-owned invoice
+// synchronously, instead of the wallet calling CreateCredit inline.
+func TestRecvBelowDustHandsToCreditRegistry(t *testing.T) {
+	t.Parallel()
+
+	swap := &fakeSwapService{}
+	rpc := &fakeRPCServer{
+		getInfoResp: &daemonrpc.GetInfoResponse{
+			ServerInfo: &daemonrpc.ServerInfo{
+				DustLimit: 1_000,
+			},
+		},
+	}
+	reg := &fakeCreditRegistry{
+		receiveResp: &credit.StartCreditResponse{
+			OpID:    "cr_recv",
+			Invoice: "lnbc1credit",
+			PaymentHash: []byte{
+				0xab,
+				0xcd,
+			},
+		},
+	}
+	deps := &Deps{
+		SwapService:    swap,
+		RPCServer:      rpc,
+		CreditRegistry: reg,
+	}
+	runtime := newRuntime(t.Context(), deps)
+	t.Cleanup(runtime.stop)
+	receiver := newReceiver(deps, runtime)
+
+	resp, err := receiver.Recv(
+		t.Context(), &walletdkrpc.RecvRequest{
+			AmtSat: 500,
+			Memo:   "tiny",
+		},
+	)
+	require.NoError(t, err)
+
+	// The receive was handed to the registry, not driven inline.
+	require.Equal(t, 0, swap.startReceiveCalls)
+	require.Equal(t, 0, swap.createCreditCalls)
+	require.Equal(t, 1, reg.receiveCalls)
+	require.NotNil(t, reg.lastReceive)
+	require.Equal(t, uint64(500), reg.lastReceive.AmountSat)
+	require.Equal(t, "tiny", reg.lastReceive.Memo)
+	require.Contains(t, reg.lastReceive.OpKey, "recv:")
+
+	// The invoice and pending entry come from the registry response.
+	require.Equal(t, "lnbc1credit", resp.GetInvoice())
+	require.Equal(t, "cr_recv", resp.GetCreditReceive().GetOperationId())
+	require.Equal(t, "abcd", resp.GetCreditReceive().GetPaymentHash())
+	require.Equal(t, int64(500), resp.GetEntry().GetAmountSat())
+	require.Equal(
+		t, walletdkrpc.EntryKind_ENTRY_KIND_RECV,
+		resp.GetEntry().GetKind(),
+	)
+	require.Equal(
+		t, walletdkrpc.
+			WalletEntryPhase_WALLET_ENTRY_PHASE_WAITING_FOR_PAYMENT,
+		resp.GetEntry().GetProgress().GetPhase(),
+	)
+}
+
+// TestRecvDustLimitLookupFailureFallsBackOpen asserts that advisory dust
+// planning does not block receives when the daemon has not fetched terms.
+func TestRecvDustLimitLookupFailureFallsBackOpen(t *testing.T) {
+	t.Parallel()
+
+	swap := &fakeSwapService{
+		startReceiveResp: &swapclientrpc.StartReceiveResponse{
+			PaymentHash: "abc123",
+			Invoice:     "lnbc1invoice",
+			Swap: &swapclientrpc.SwapSummary{
+				PaymentHash: "abc123",
+				Direction: swapclientrpc.
+					SwapDirection_SWAP_DIRECTION_RECEIVE,
+				Pending: true,
+			},
+		},
+	}
+	rpc := &fakeRPCServer{
+		getInfoErr: errors.New("terms unavailable"),
+	}
+	reg := &fakeCreditRegistry{
+		receiveResp: &credit.StartCreditResponse{
+			OpID:    "cr_recv",
+			Invoice: "lnbc1credit",
+		},
+	}
+	deps := &Deps{
+		SwapService:    swap,
+		RPCServer:      rpc,
+		CreditRegistry: reg,
+	}
+	runtime := newRuntime(t.Context(), deps)
+	t.Cleanup(runtime.stop)
+	receiver := newReceiver(deps, runtime)
+
+	resp, err := receiver.Recv(
+		t.Context(), &walletdkrpc.RecvRequest{
+			AmtSat: 500,
+			Memo:   "tiny",
+		},
+	)
+	require.NoError(t, err)
+
+	require.Equal(t, 1, swap.startReceiveCalls)
+	require.Equal(t, 0, reg.receiveCalls)
+	require.Equal(t, "lnbc1invoice", resp.GetInvoice())
 }
 
 // TestRecvAmtZeroRejected asserts a missing amount returns

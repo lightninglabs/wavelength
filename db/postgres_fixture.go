@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -22,7 +23,11 @@ const (
 	testPgDBName = "test"
 	testPgRepo   = "mirror.gcr.io/library/postgres"
 	PostgresTag  = "15"
+
+	testPgFixtureParallelism = 4
 )
+
+var testPgFixtureSem = make(chan struct{}, testPgFixtureParallelism)
 
 // TestPgFixture is a test fixture that starts a Postgres 15 instance in a
 // docker container.
@@ -32,6 +37,8 @@ type TestPgFixture struct {
 	resource *dockertest.Resource
 	host     string
 	port     int
+
+	releaseSlot func()
 }
 
 // NewTestPgFixture constructs a new TestPgFixture starting up a docker
@@ -39,6 +46,14 @@ type TestPgFixture struct {
 // the passed duration.
 func NewTestPgFixture(t testing.TB, expiry time.Duration,
 	autoRemove bool) *TestPgFixture {
+
+	releaseSlot := acquireTestPgFixtureSlot()
+	success := false
+	defer func() {
+		if !success {
+			releaseSlot()
+		}
+	}()
 
 	// Use a sensible default on Windows (tcp/http) and linux/osx (socket)
 	// by specifying an empty endpoint.
@@ -75,8 +90,9 @@ func NewTestPgFixture(t testing.TB, expiry time.Duration,
 	require.NoError(t, err)
 
 	fixture := &TestPgFixture{
-		host: host,
-		port: int(port),
+		host:        host,
+		port:        int(port),
+		releaseSlot: releaseSlot,
 	}
 	databaseURL := fixture.GetDSN()
 	t.Logf("Connecting to Postgres fixture: %v\n", databaseURL)
@@ -104,7 +120,25 @@ func NewTestPgFixture(t testing.TB, expiry time.Duration,
 	fixture.pool = pool
 	fixture.resource = resource
 
+	success = true
+
 	return fixture
+}
+
+// acquireTestPgFixtureSlot bounds active Postgres containers in parallel test
+// runs. The db package marks most tests parallel, and unbounded docker startup
+// can starve CI runners enough that stores observe partially initialized
+// schemas.
+func acquireTestPgFixtureSlot() func() {
+	testPgFixtureSem <- struct{}{}
+
+	var once sync.Once
+
+	return func() {
+		once.Do(func() {
+			<-testPgFixtureSem
+		})
+	}
 }
 
 // GetDSN returns the DSN (Data Source Name) for the started Postgres node.
@@ -127,6 +161,9 @@ func (f *TestPgFixture) GetConfig() *PostgresConfig {
 // TearDown stops the underlying docker container.
 func (f *TestPgFixture) TearDown(t testing.TB) {
 	err := f.pool.Purge(f.resource)
+	if f.releaseSlot != nil {
+		f.releaseSlot()
+	}
 	require.NoError(t, err, "Could not purge resource")
 }
 

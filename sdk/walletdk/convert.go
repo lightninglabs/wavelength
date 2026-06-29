@@ -131,7 +131,8 @@ func prepareSendResultFromProto(
 		SelectedOutpoints: append(
 			[]string(nil), resp.GetSelectedOutpoints()...,
 		),
-		Warning: resp.GetWarning(),
+		Warning:       resp.GetWarning(),
+		CreditPreview: creditPreviewFromProto(resp.GetCreditPreview()),
 	}
 }
 
@@ -149,8 +150,28 @@ func sendRailFromProto(rail walletdkrpc.SendRail) SendRail {
 	case walletdkrpc.SendRail_SEND_RAIL_ONCHAIN:
 		return SendRailOnchain
 
+	case walletdkrpc.SendRail_SEND_RAIL_CREDIT:
+		return SendRailCredit
+
+	case walletdkrpc.SendRail_SEND_RAIL_MIXED:
+		return SendRailMixed
+
 	default:
 		return SendRailUnspecified
+	}
+}
+
+func creditPreviewFromProto(preview *walletdkrpc.CreditPreview) *CreditPreview {
+	if preview == nil {
+		return nil
+	}
+
+	return &CreditPreview{
+		MustUseCredit:      preview.GetMustUseCredit(),
+		CreditAppliedSat:   preview.GetCreditAppliedSat(),
+		CreditShortfallSat: preview.GetCreditShortfallSat(),
+		CreditTopupSat:     preview.GetCreditTopupSat(),
+		ArkFundingSat:      preview.GetArkFundingSat(),
 	}
 }
 
@@ -492,9 +513,11 @@ func balanceFromProto(balance *walletdkrpc.BalanceResponse) Balance {
 	}
 
 	return Balance{
-		ConfirmedSat:  balance.GetConfirmedSat(),
-		PendingInSat:  balance.GetPendingInSat(),
-		PendingOutSat: balance.GetPendingOutSat(),
+		ConfirmedSat:       balance.GetConfirmedSat(),
+		PendingInSat:       balance.GetPendingInSat(),
+		PendingOutSat:      balance.GetPendingOutSat(),
+		CreditAvailableSat: balance.GetCreditAvailableSat(),
+		CreditReservedSat:  balance.GetCreditReservedSat(),
 	}
 }
 

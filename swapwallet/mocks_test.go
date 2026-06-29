@@ -90,6 +90,11 @@ type fakeRPCServer struct {
 	sendOnChainCalls   int
 	sendOnChainLastReq *daemonrpc.SendOnChainRequest
 
+	sendOORResp    *daemonrpc.SendOORResponse
+	sendOORErr     error
+	sendOORCalls   int
+	sendOORLastReq *daemonrpc.SendOORRequest
+
 	estimateFeeResp    *daemonrpc.EstimateFeeResponse
 	estimateFeeErr     error
 	estimateFeeCalls   int
@@ -299,6 +304,18 @@ func (f *fakeRPCServer) SendOnChain(_ context.Context,
 	return f.sendOnChainResp, f.sendOnChainErr
 }
 
+func (f *fakeRPCServer) SendOOR(_ context.Context,
+	req *daemonrpc.SendOORRequest) (*daemonrpc.SendOORResponse, error) {
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.sendOORCalls++
+	f.sendOORLastReq = req
+
+	return f.sendOORResp, f.sendOORErr
+}
+
 // fakeSwapService is a minimal swapclientrpc.SwapClientServiceServer used
 // by router/recv/history/service tests. Each method returns canned
 // responses or errors set by the test. Streaming methods are not invoked
@@ -326,6 +343,16 @@ type fakeSwapService struct {
 	listSwapsErr   error
 	listSwapsCalls int
 	listSwapsLast  *swapclientrpc.ListSwapsRequest
+
+	createCreditResp  *swapclientrpc.CreateCreditResponse
+	createCreditErr   error
+	createCreditCalls int
+	createCreditLast  *swapclientrpc.CreateCreditRequest
+
+	listCreditsResp  *swapclientrpc.ListCreditsResponse
+	listCreditsErr   error
+	listCreditsCalls int
+	listCreditsLast  *swapclientrpc.ListCreditsRequest
 }
 
 func (f *fakeSwapService) QuotePay(_ context.Context,
@@ -356,6 +383,26 @@ func (f *fakeSwapService) StartReceive(_ context.Context,
 	f.startReceiveLast = req
 
 	return f.startReceiveResp, f.startReceiveErr
+}
+
+func (f *fakeSwapService) CreateCredit(_ context.Context,
+	req *swapclientrpc.CreateCreditRequest) (
+	*swapclientrpc.CreateCreditResponse, error) {
+
+	f.createCreditCalls++
+	f.createCreditLast = req
+
+	return f.createCreditResp, f.createCreditErr
+}
+
+func (f *fakeSwapService) ListCredits(_ context.Context,
+	req *swapclientrpc.ListCreditsRequest) (
+	*swapclientrpc.ListCreditsResponse, error) {
+
+	f.listCreditsCalls++
+	f.listCreditsLast = req
+
+	return f.listCreditsResp, f.listCreditsErr
 }
 
 func (f *fakeSwapService) ListSwaps(_ context.Context,

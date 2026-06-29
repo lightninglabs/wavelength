@@ -2,6 +2,7 @@ package actormsg
 
 import (
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/lib/types"
 )
@@ -105,6 +106,18 @@ type TriggerBoardMsg struct {
 	// round. Typically a single amount equal to the confirmed boarding
 	// balance minus the operator fee.
 	Amounts []btcutil.Amount
+
+	// Outpoints names the confirmed boarding inputs this trigger sized
+	// its Amounts over. The wallet excludes boarding outpoints it has
+	// already shipped into an in-flight round, so a later trigger fired
+	// when a second deposit confirms does not re-register an
+	// already-in-flight outpoint under a freshly derived owner key (which
+	// produced divergent registrations and a quote pkScript-echo
+	// mismatch). The round actor filters its own confirmed-boarding fetch
+	// to exactly this set so the proven inputs stay coherent with the
+	// Amounts. Empty means "all confirmed boarding inputs" — the
+	// pre-existing behavior for legacy callers and tests.
+	Outpoints []wire.OutPoint
 
 	// Change optionally carries an on-chain leave output for the
 	// portion of the confirmed boarding balance that exceeds the

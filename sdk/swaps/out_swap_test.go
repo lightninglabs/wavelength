@@ -345,6 +345,80 @@ func TestReceiveSessionSkipsServerAckForSameArkHTLCEvent(t *testing.T) {
 	require.Zero(t, session.pendingHTLCAckCursor)
 }
 
+// TestReceiveSessionAcksServerForCreditAssistedOutSwap verifies a
+// credit-assisted receive still follows the server-funded out-swap ACK path.
+func TestReceiveSessionAcksServerForCreditAssistedOutSwap(t *testing.T) {
+	t.Parallel()
+
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	serverPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	preimage := lntypes.Preimage{0x7, 0x8, 0x9}
+	hash := preimage.Hash()
+	serverConn := &testSwapServerConn{}
+	daemonConn := &testDaemonConn{}
+	client := NewSwapClient(serverConn, daemonConn, nil, nil)
+	useTestOnionDecoder(client, 300)
+
+	cfg := VHTLCConfig{}
+	cfg.RefundLocktime = 144
+	cfg.UnilateralClaimDelay = 12
+	cfg.UnilateralRefundDelay = 24
+	cfg.UnilateralRefundWithoutReceiverDelay = 36
+	cfg.SwapServerPubkey = serverPriv.PubKey().SerializeCompressed()
+
+	ackCalls := 0
+	client.outEvents = &testIncomingEventReceiver{
+		notification: &IncomingVHTLCNotification{
+			OutSwap: &OutSwapHtlcEvent{
+				PaymentHash:        hash,
+				AmountSat:          1_100,
+				RequestedAmountSat: 300,
+				AttachedCreditSat:  800,
+				VHTLCConfig:        cfg,
+			},
+			AckCursor: 24,
+			Ack: func(context.Context) error {
+				ackCalls++
+
+				return nil
+			},
+		},
+	}
+
+	session := &ReceiveSession{
+		client:            client,
+		amountSat:         300,
+		expectedVHTLCSat:  1_100,
+		attachedCreditSat: 800,
+		settlementType:    SettlementTypeMixed,
+		state:             ReceiveStateInvoiceCreated,
+		PaymentHash:       hash,
+		clientPubKey:      clientPriv.PubKey(),
+		operatorPubKey:    operatorPriv.PubKey(),
+	}
+
+	err = session.waitForHTLCEvent(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, ReceiveStateHTLCEventAccepted, session.State())
+	require.Equal(t, 1, ackCalls)
+	require.Equal(t, 1, serverConn.serverAckCalls)
+	require.Equal(t, hash, serverConn.lastServerAckHash)
+	require.True(
+		t,
+		serverConn.lastServerAckPubkey.IsEqual(
+			clientPriv.PubKey(),
+		),
+	)
+	require.Zero(t, session.pendingHTLCAckCursor)
+}
+
 // TestReceiveSessionHandlesOutSwapForfeitSignatureRequest verifies the
 // receive side signs a mailbox forfeit-signature request locally, submits the
 // signature to the swap server, then acknowledges the mailbox event.
@@ -834,6 +908,88 @@ func useMappedOnionDecoder(client *SwapClient,
 
 		return payload, nil
 	}
+}
+
+// TestReceiveSessionAcceptsCreditAssistedOutSwapHTLC verifies the client checks
+// the funded vHTLC against the server's planned invoice amount plus attached
+// credits while the onion payload still commits to the invoice amount.
+func TestReceiveSessionAcceptsCreditAssistedOutSwapHTLC(t *testing.T) {
+	t.Parallel()
+
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	serverPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	preimage := lntypes.Preimage{0x1, 0x2, 0x3}
+	hash := preimage.Hash()
+	client := &SwapClient{}
+	useTestOnionDecoder(client, 300)
+
+	session := &ReceiveSession{
+		client:            client,
+		amountSat:         300,
+		expectedVHTLCSat:  1_100,
+		attachedCreditSat: 800,
+		settlementType:    SettlementTypeMixed,
+		state:             ReceiveStateInvoiceCreated,
+		PaymentHash:       hash,
+		clientPubKey:      clientPriv.PubKey(),
+		operatorPubKey:    operatorPriv.PubKey(),
+	}
+	cfg := VHTLCConfig{
+		RefundLocktime:                       900,
+		UnilateralClaimDelay:                 5,
+		UnilateralRefundDelay:                6,
+		UnilateralRefundWithoutReceiverDelay: 7,
+		SwapServerPubkey: serverPriv.PubKey().
+			SerializeCompressed(),
+	}
+
+	err = session.acceptOutSwapHtlcEvent(
+		t.Context(), &OutSwapHtlcEvent{
+			PaymentHash:        hash,
+			AmountSat:          1_100,
+			RequestedAmountSat: 300,
+			AttachedCreditSat:  800,
+			VHTLCConfig:        cfg,
+		}, &daemonReceiveAuthKey{}, 0,
+	)
+	require.NoError(t, err)
+	require.Equal(t, ReceiveStateHTLCEventAccepted, session.State())
+	require.Equal(t, SettlementTypeMixed, session.settlementType)
+}
+
+// TestReceiveSessionRejectsCreditAssistedFundingMismatch verifies a
+// credit-assisted receive cannot be accepted if the event funds only the
+// invoice amount instead of the invoice amount plus attached credits.
+func TestReceiveSessionRejectsCreditAssistedFundingMismatch(t *testing.T) {
+	t.Parallel()
+
+	preimage := lntypes.Preimage{0x4, 0x5, 0x6}
+	session := &ReceiveSession{
+		client:            NewSwapClient(nil, nil, nil, nil),
+		amountSat:         300,
+		expectedVHTLCSat:  1_100,
+		attachedCreditSat: 800,
+		state:             ReceiveStateInvoiceCreated,
+		PaymentHash:       preimage.Hash(),
+	}
+
+	err := session.acceptOutSwapHtlcEvent(
+		t.Context(), &OutSwapHtlcEvent{
+			PaymentHash:        preimage.Hash(),
+			AmountSat:          300,
+			RequestedAmountSat: 300,
+			AttachedCreditSat:  800,
+		}, &daemonReceiveAuthKey{}, 0,
+	)
+	require.ErrorContains(t, err, "expected vHTLC amount 1100")
+	require.Equal(t, ReceiveStateFailed, session.State())
 }
 
 // TestReceiveSessionValidateOnionPayloadAcceptsMPPParts verifies the client
@@ -2958,7 +3114,7 @@ func TestReceiveSessionOverdueInvoiceAcceptsDeliveredEvent(t *testing.T) {
 
 // TestReceiveSessionFailsOnAmountMismatch asserts the client stops with an
 // ordinary terminal failure when the funded vHTLC amount does not match the
-// invoice amount it requested.
+// amount it expected.
 func TestReceiveSessionFailsOnAmountMismatch(t *testing.T) {
 	t.Parallel()
 
@@ -3019,7 +3175,7 @@ func TestReceiveSessionFailsOnAmountMismatch(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = session.Wait(t.Context())
-	require.ErrorContains(t, err, "does not match invoice amount")
+	require.ErrorContains(t, err, "does not match expected vHTLC amount")
 
 	resumed, err := client.ResumeReceiveViaLightning(
 		t.Context(), session.PaymentHash,
@@ -3028,7 +3184,7 @@ func TestReceiveSessionFailsOnAmountMismatch(t *testing.T) {
 	require.Equal(t, ReceiveStateFailed, resumed.State())
 	require.Contains(
 		t, resumed.TerminalReason(),
-		"does not match invoice amount",
+		"does not match expected vHTLC amount",
 	)
 	require.Empty(t, resumed.InterventionReason())
 	require.Equal(t, "funding:0", resumed.vhtlcOutpoint)
@@ -3234,11 +3390,11 @@ func TestReceiveSessionClaimFailsOnAmountMismatch(t *testing.T) {
 	acceptTestOutSwapHtlcEvent(t, client, session, cfg)
 
 	_, err = session.Claim(t.Context(), "funding:0", 41_999)
-	require.ErrorContains(t, err, "does not match invoice amount")
+	require.ErrorContains(t, err, "does not match expected vHTLC amount")
 	require.Equal(t, ReceiveStateFailed, session.State())
 	require.Contains(
 		t, session.TerminalReason(),
-		"does not match invoice amount",
+		"does not match expected vHTLC amount",
 	)
 	require.Empty(t, session.InterventionReason())
 	require.Zero(t, daemonConn.sendCustomCalls)

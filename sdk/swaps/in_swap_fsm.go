@@ -225,6 +225,9 @@ func (m *payLoopFSM) eventForProgress(prev PayState) loopfsm.EventType {
 	if m.session.state == prev || m.session.state == m.target {
 		return loopfsm.NoOp
 	}
+	if m.session.state.IsTerminal() {
+		return loopfsm.NoOp
+	}
 
 	return payEventForState(m.session.state)
 }

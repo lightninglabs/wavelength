@@ -12,7 +12,9 @@ import (
 
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
+	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/chainbackends"
+	"github.com/lightninglabs/darepo-client/credit"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	"github.com/lightninglabs/darepo-client/metrics"
 	"github.com/lightninglabs/darepo-client/oor"
@@ -516,6 +518,10 @@ type SwapConfig struct {
 	// on-chain unroll.
 	VHTLCRecovery SwapVHTLCRecoveryConfig `mapstructure:"vhtlcrecovery"`
 
+	// Credit configures the daemon-owned credit subsystem, chiefly the
+	// wallet-owned auto-redeem policy.
+	Credit CreditConfig `mapstructure:"credit"`
+
 	// SuppressResume disables swapclientserver's own synchronous
 	// resume-on-startup sweep so a higher layer (walletdkrpc subserver) can
 	// own the unified resume policy. Default false preserves identical
@@ -531,6 +537,51 @@ type SwapConfig struct {
 	// going through the gRPC stub. The field is set programmatically by
 	// the registrar; it is never loaded from config files.
 	Backend SwapBackend `mapstructure:"-"`
+
+	// CreditServer and CreditDaemon are populated by
+	// swapclientserver.Register (only under the swapruntime build tag) so
+	// the daemon can construct the credit durable-actor subsystem with the
+	// swap-server credit surface and the wallet/daemon surface. Both are
+	// nil in builds without the swap runtime, in which case the credit
+	// subsystem is not started. They are set programmatically by the
+	// registrar; never loaded from config files.
+	CreditServer credit.CreditServer `mapstructure:"-"`
+	CreditDaemon credit.CreditDaemon `mapstructure:"-"`
+
+	// CreditRegistry is a lazy service-key reference to the credit registry
+	// actor, published by the daemon before the swap registrars run so the
+	// walletdkrpc subserver can route credit-backed Send/Recv through the
+	// credit subsystem. It resolves at Tell/Ask time, after the registry
+	// has registered under the credit service key. Nil until the daemon
+	// publishes it; set programmatically, never loaded from config files.
+	CreditRegistry actor.ActorRef[credit.CreditMsg,
+		credit.CreditResp] `mapstructure:"-"`
+
+	// CreditEarmarkSetter wires the wallet's credit-earmark provider into
+	// the auto-redeem policy. The daemon populates it when it builds the
+	// credit registry; the walletdkrpc subserver calls it once its
+	// prepared-send store exists, so the sweep never redeems credits a
+	// pending credit-backed send is about to spend. Nil in builds without
+	// the credit subsystem; set programmatically, never from config files.
+	CreditEarmarkSetter func(credit.EarmarkFunc) `mapstructure:"-"`
+}
+
+// CreditConfig configures the daemon-owned credit subsystem.
+type CreditConfig struct {
+	// AutoRedeemDisabled turns off the wallet-owned auto-redeem sweep that
+	// materializes idle available credits back into a vTXO. Auto-redeem is
+	// on by default; operators who prefer to manage credit redemption
+	// manually set this to true.
+	AutoRedeemDisabled bool `mapstructure:"autoredeemdisabled"`
+
+	// AutoRedeemMinSat is the available-credit threshold above which a
+	// sweep redeems. Zero defaults to the operator dust limit, the smallest
+	// amount that can legally become a vTXO.
+	AutoRedeemMinSat uint64 `mapstructure:"autoredeemminsat"`
+
+	// AutoRedeemInterval is the period between idle watermark sweeps. Zero
+	// defaults to the credit package default.
+	AutoRedeemInterval time.Duration `mapstructure:"autoredeeminterval"`
 }
 
 // SwapVHTLCRecoveryConfig controls automatic escalation from cooperative vHTLC

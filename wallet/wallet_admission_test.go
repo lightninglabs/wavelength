@@ -465,7 +465,14 @@ type mockRoundActorBehavior struct {
 	// tests can inspect the VTXO amounts and target count handed
 	// across. Read under mu.
 	capturedTriggerBoard *actormsg.TriggerBoardMsg
+
+	// capturedTriggerBoards holds every TriggerBoardMsg received in
+	// order, so idempotency tests can inspect the Outpoints each
+	// successive trigger sized its amounts over. Read under mu.
+	capturedTriggerBoards []*actormsg.TriggerBoardMsg
 }
+
+type triggerBoardMsgs = []*actormsg.TriggerBoardMsg
 
 // TriggerBoardCalls returns a snapshot of triggerBoardCalls under the
 // mock's mutex so test goroutines can poll the counter without racing
@@ -475,6 +482,18 @@ func (m *mockRoundActorBehavior) TriggerBoardCalls() int {
 	defer m.mu.Unlock()
 
 	return m.triggerBoardCalls
+}
+
+// CapturedTriggerBoards returns a snapshot of every TriggerBoardMsg the
+// mock received, in order, under the mock's mutex.
+func (m *mockRoundActorBehavior) CapturedTriggerBoards() triggerBoardMsgs {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	out := make(triggerBoardMsgs, len(m.capturedTriggerBoards))
+	copy(out, m.capturedTriggerBoards)
+
+	return out
 }
 
 // Receive processes round actor messages from the wallet.
@@ -498,6 +517,9 @@ func (m *mockRoundActorBehavior) Receive(_ context.Context,
 		m.mu.Lock()
 		m.triggerBoardCalls++
 		m.capturedTriggerBoard = typedMsg
+		m.capturedTriggerBoards = append(
+			m.capturedTriggerBoards, typedMsg,
+		)
 		m.mu.Unlock()
 
 		return fn.Ok[actormsg.RoundActorResp](nil)

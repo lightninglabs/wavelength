@@ -2977,6 +2977,76 @@ func (a *RoundClientActor) handleTriggerBoard(ctx context.Context,
 		)
 	}
 
+	// Resolve the boarding inputs before minting any VTXO owner keys, so a
+	// redundant trigger short-circuits without advancing the wallet key
+	// ring or registering owned scripts for outputs we never send.
+	confirmedBoarding, err := a.cfg.WalletActor.Ask(
+		ctx, &wallet.GetConfirmedBoardingIntentsRequest{},
+	).Await(ctx).Unpack()
+	if err != nil {
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("fetch confirmed boarding intents: %w", err),
+		)
+	}
+
+	boardingResp, ok :=
+		confirmedBoarding.(*wallet.GetConfirmedBoardingIntentsResponse)
+	if !ok {
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("unexpected wallet response type: %T",
+				confirmedBoarding),
+		)
+	}
+
+	// When the trigger names the boarding outpoints it sized its amounts
+	// over, register exactly those inputs. The wallet excludes outpoints
+	// it has already shipped into an in-flight round, so honoring the set
+	// keeps the proven inputs coherent with the amounts and prevents a
+	// second deposit's trigger from re-proving an already-in-flight
+	// outpoint under a fresh owner key. An empty set means "all confirmed
+	// inputs" — the pre-existing behavior for legacy callers and tests.
+	var wantOutpoints fn.Set[wire.OutPoint]
+	if len(cmd.Outpoints) > 0 {
+		wantOutpoints = fn.NewSet(cmd.Outpoints...)
+	}
+
+	boardingIntents := make(
+		[]BoardingIntent, 0, len(boardingResp.Intents),
+	)
+	for i := range boardingResp.Intents {
+		if wantOutpoints != nil &&
+			!wantOutpoints.Contains(
+				boardingResp.Intents[i].Outpoint,
+			) {
+
+			continue
+		}
+
+		intent, err := buildBoardingIntentFromWallet(
+			&boardingResp.Intents[i],
+		)
+		if err != nil {
+			return fn.Err[actormsg.RoundActorResp](
+				fmt.Errorf("convert confirmed boarding "+
+					"intent %d: %w", i, err),
+			)
+		}
+
+		boardingIntents = append(boardingIntents, intent)
+	}
+
+	// A named-outpoint trigger whose inputs are all gone (adopted between
+	// the wallet's dispatch and this fetch) is redundant: skip it rather
+	// than mint owner keys for outputs with no inputs to fund them.
+	if wantOutpoints != nil && len(boardingIntents) == 0 {
+		a.log.InfoS(ctx, "Skipping board trigger; named boarding "+
+			"outpoints are no longer confirmed",
+			slog.Int("named_outpoint_count", len(cmd.Outpoints)),
+		)
+
+		return fn.Ok[actormsg.RoundActorResp](nil)
+	}
+
 	// Build VTXO requests from the provided amounts.
 	requests := make([]types.VTXORequest, 0, len(cmd.Amounts))
 	for i, amount := range cmd.Amounts {
@@ -3008,42 +3078,8 @@ func (a *RoundClientActor) handleTriggerBoard(ctx context.Context,
 
 	a.log.InfoS(ctx, "Processing board request",
 		slog.Int("vtxo_count", len(requests)),
+		slog.Int("boarding_input_count", len(boardingIntents)),
 	)
-
-	confirmedBoarding, err := a.cfg.WalletActor.Ask(
-		ctx, &wallet.GetConfirmedBoardingIntentsRequest{},
-	).Await(ctx).Unpack()
-	if err != nil {
-		return fn.Err[actormsg.RoundActorResp](
-			fmt.Errorf("fetch confirmed boarding intents: %w", err),
-		)
-	}
-
-	boardingResp, ok :=
-		confirmedBoarding.(*wallet.GetConfirmedBoardingIntentsResponse)
-	if !ok {
-		return fn.Err[actormsg.RoundActorResp](
-			fmt.Errorf("unexpected wallet response type: %T",
-				confirmedBoarding),
-		)
-	}
-
-	boardingIntents := make(
-		[]BoardingIntent, 0, len(boardingResp.Intents),
-	)
-	for i := range boardingResp.Intents {
-		intent, err := buildBoardingIntentFromWallet(
-			&boardingResp.Intents[i],
-		)
-		if err != nil {
-			return fn.Err[actormsg.RoundActorResp](
-				fmt.Errorf("convert confirmed boarding "+
-					"intent %d: %w", i, err),
-			)
-		}
-
-		boardingIntents = append(boardingIntents, intent)
-	}
 
 	// Find an existing assembling round or create a new one.
 	roundFSM := a.findAssemblingRound()

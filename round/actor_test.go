@@ -2295,6 +2295,99 @@ func TestHandleTriggerBoardMultipleVTXOs(t *testing.T) {
 	)
 }
 
+// TestHandleTriggerBoardFiltersToNamedOutpoints verifies that when a board
+// trigger names the boarding outpoints it sized its amounts over, the round
+// actor registers exactly those inputs and ignores other confirmed boarding
+// intents. This keeps the proven inputs coherent with the wallet's amounts
+// and is the round-side half of the darepo-client#772 boarding idempotency
+// fix: the wallet excludes an already-in-flight outpoint, and the round actor
+// must not silently re-add it from its own confirmed-boarding fetch.
+func TestHandleTriggerBoardFiltersToNamedOutpoints(t *testing.T) {
+	t.Parallel()
+
+	h := newActorTestHarness(t)
+	h.setupMockRoundStoreForStart()
+
+	err := h.start()
+	require.NoError(t, err)
+
+	intentA := h.newTestBoardingIntentWithSuffix("-a")
+	intentB := h.newTestBoardingIntentWithSuffix("-b")
+	h.walletActor.setConfirmedIntents(*intentA, *intentB)
+
+	h.wallet.On(
+		"DeriveNextKey", mock.Anything, types.VTXOOwnerKeyFamily,
+	).Return(&keychain.KeyDescriptor{
+		PubKey: h.clientPubKey,
+		KeyLocator: keychain.KeyLocator{
+			Family: types.VTXOOwnerKeyFamily,
+			Index:  0,
+		},
+	}, nil).Once()
+	h.wallet.On(
+		"DeriveNextKey", mock.Anything, types.VTXOSigningKeyFamily,
+	).Return(&keychain.KeyDescriptor{
+		PubKey: h.clientPubKey,
+		KeyLocator: keychain.KeyLocator{
+			Family: types.VTXOSigningKeyFamily,
+			Index:  1,
+		},
+	}, nil).Once()
+
+	// The trigger names only A even though both A and B are confirmed.
+	result := h.receive(&actormsg.TriggerBoardMsg{
+		Amounts:   []btcutil.Amount{49_000},
+		Outpoints: []wire.OutPoint{intentA.Outpoint},
+	})
+	require.True(t, result.IsOk(), "expected Ok, got: %v", result.Err())
+
+	states := h.queryState()
+	tempState, exists := h.findTempState(states)
+	require.True(t, exists, "expected temp-keyed FSM state")
+
+	regState, ok := tempState.State.(*IntentSentState)
+	require.True(t, ok, "expected IntentSentState, got %T",
+		tempState.State)
+
+	// Only the named outpoint A is registered as a boarding input.
+	require.Len(t, regState.Intents.Boarding, 1)
+	require.Equal(
+		t, intentA.Outpoint, regState.Intents.Boarding[0].Outpoint,
+	)
+}
+
+// TestHandleTriggerBoardSkipsWhenNamedOutpointAbsent verifies that a board
+// trigger whose named outpoints are no longer confirmed (adopted between the
+// wallet's dispatch and the round actor's fetch) is skipped without minting
+// VTXO owner keys or creating a round. The unmocked DeriveNextKey would panic
+// if the short-circuit failed to fire.
+func TestHandleTriggerBoardSkipsWhenNamedOutpointAbsent(t *testing.T) {
+	t.Parallel()
+
+	h := newActorTestHarness(t)
+	h.setupMockRoundStoreForStart()
+
+	err := h.start()
+	require.NoError(t, err)
+
+	intentA := h.newTestBoardingIntentWithSuffix("-a")
+	intentB := h.newTestBoardingIntentWithSuffix("-b")
+
+	// Only A is confirmed, but the trigger names B (already adopted).
+	h.walletActor.setConfirmedIntents(*intentA)
+
+	result := h.receive(&actormsg.TriggerBoardMsg{
+		Amounts:   []btcutil.Amount{49_000},
+		Outpoints: []wire.OutPoint{intentB.Outpoint},
+	})
+	require.True(t, result.IsOk(), "expected Ok, got: %v", result.Err())
+
+	// No round was created: the trigger short-circuited before assembly.
+	states := h.queryState()
+	_, exists := h.findTempState(states)
+	require.False(t, exists, "redundant trigger must not create a round")
+}
+
 // TestHandleForfeitCollectionTimeout verifies timeout-message handling for
 // rounds waiting on forfeit signatures.
 func TestHandleForfeitCollectionTimeout(t *testing.T) {

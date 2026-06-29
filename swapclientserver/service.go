@@ -66,6 +66,11 @@ type swapClientService struct {
 	// background workers that read from it.
 	store *swaps.Store
 
+	// daemonConn is the in-process Ark/daemon surface used by the credit
+	// bridge for identity-key, receive-script, and indexed-VTXO lookups.
+	// Kept so Register can build the credit CreditDaemon adapter.
+	daemonConn swaps.DaemonConn
+
 	// log is the swapruntime subsystem logger derived from darepod's logger
 	// manager. It is used only for daemon-owned orchestration events; the
 	// SDK continues logging its own lower-layer details.
@@ -296,6 +301,15 @@ func Register(ctx context.Context, grpcServer *grpc.Server,
 	// own sweep.
 	if cfg.Swap != nil {
 		cfg.Swap.Backend = svc
+
+		// Publish the credit bridges so the daemon can construct the
+		// credit durable-actor subsystem over the swap-server credit
+		// surface and the wallet/daemon surface.
+		cfg.Swap.CreditServer = &creditServerBridge{svc: svc}
+		cfg.Swap.CreditDaemon = &creditDaemonBridge{
+			daemon: svc.daemonConn,
+			rpc:    rpcServer,
+		}
 	}
 
 	suppressResume := cfg.Swap != nil && cfg.Swap.SuppressResume
@@ -492,11 +506,12 @@ func newSwapClientService(ctx context.Context, rpcServer *darepod.RPCServer,
 		client: &swapClientAdapter{
 			client: swapClient,
 		},
-		store:   store,
-		log:     log,
-		rootCtx: rootCtx,
-		cancel:  cancel,
-		active:  make(map[string]struct{}),
+		store:      store,
+		daemonConn: daemonConn,
+		log:        log,
+		rootCtx:    rootCtx,
+		cancel:     cancel,
+		active:     make(map[string]struct{}),
 		subscribers: make(
 			map[chan *swapclientrpc.SwapSummary]struct{},
 		),
@@ -644,11 +659,53 @@ func (a *swapClientAdapter) StartPayViaLightning(ctx context.Context,
 	return a.client.StartPayViaLightning(ctx, invoice, maxFeeSat)
 }
 
+// StartPayViaLightningWithCredits starts a real sdk/swaps pay session with
+// optional credit use.
+func (a *swapClientAdapter) StartPayViaLightningWithCredits(ctx context.Context,
+	invoice string, maxFeeSat uint64, maxCreditSat uint64) (paySwapSession,
+	error) {
+
+	return a.client.StartPayViaLightningWithCredits(
+		ctx, invoice, maxFeeSat, maxCreditSat,
+	)
+}
+
 // QuotePayViaLightning previews a pay swap without creating durable state.
 func (a *swapClientAdapter) QuotePayViaLightning(ctx context.Context,
 	invoice string, maxFeeSat uint64) (*swaps.InSwapQuote, error) {
 
 	return a.client.QuotePayViaLightning(ctx, invoice, maxFeeSat)
+}
+
+// QuotePayViaLightningWithCredits previews a pay swap with optional credit use.
+func (a *swapClientAdapter) QuotePayViaLightningWithCredits(ctx context.Context,
+	invoice string, maxFeeSat uint64, maxCreditSat uint64) (
+	*swaps.InSwapQuote, error) {
+
+	return a.client.QuotePayViaLightningWithCredits(
+		ctx, invoice, maxFeeSat, maxCreditSat,
+	)
+}
+
+// CreateCredit forwards credit funding requests to sdk/swaps.
+func (a *swapClientAdapter) CreateCredit(ctx context.Context,
+	req swaps.CreateCreditRequest) (*swaps.CreditOperation, error) {
+
+	return a.client.CreateCredit(ctx, req)
+}
+
+// RedeemCredit forwards credit redemption requests to sdk/swaps.
+func (a *swapClientAdapter) RedeemCredit(ctx context.Context,
+	req swaps.RedeemCreditRequest) (*swaps.CreditRedemption, error) {
+
+	return a.client.RedeemCredit(ctx, req)
+}
+
+// ListCredits forwards credit account snapshots to sdk/swaps.
+func (a *swapClientAdapter) ListCredits(ctx context.Context, limit uint32) (
+	*swaps.CreditSnapshot, error) {
+
+	return a.client.ListCredits(ctx, limit)
 }
 
 // StartReceiveViaLightning starts a real sdk/swaps receive session and wraps
@@ -1213,6 +1270,39 @@ func (s *swapClientService) validatePayInvoiceAmount(ctx context.Context,
 		"minimum)", amountSat, minAmountSat)
 }
 
+// quotePay previews a pay swap, routing through the credit-aware quote path
+// when the SDK client supports credits so a sub-dust or credit-assisted pay is
+// quoted against the caller's credit balance.
+func (s *swapClientService) quotePay(ctx context.Context, invoice string,
+	maxFeeSat uint64, maxCreditSat uint64) (*swaps.InSwapQuote, error) {
+
+	if client, ok := s.client.(interface {
+		QuotePayViaLightningWithCredits(context.Context, string, uint64,
+			uint64) (*swaps.InSwapQuote, error)
+	}); ok {
+		return client.QuotePayViaLightningWithCredits(
+			ctx, invoice, maxFeeSat, maxCreditSat,
+		)
+	}
+
+	return s.client.QuotePayViaLightning(ctx, invoice, maxFeeSat)
+}
+
+func (s *swapClientService) startPay(ctx context.Context, invoice string,
+	maxFeeSat uint64, maxCreditSat uint64) (paySwapSession, error) {
+
+	if client, ok := s.client.(interface {
+		StartPayViaLightningWithCredits(context.Context, string, uint64,
+			uint64) (paySwapSession, error)
+	}); ok {
+		return client.StartPayViaLightningWithCredits(
+			ctx, invoice, maxFeeSat, maxCreditSat,
+		)
+	}
+
+	return s.client.StartPayViaLightning(ctx, invoice, maxFeeSat)
+}
+
 // QuotePay previews a pay swap through sdk/swaps without starting a daemon
 // worker or creating durable swap state.
 func (s *swapClientService) QuotePay(ctx context.Context,
@@ -1224,18 +1314,27 @@ func (s *swapClientService) QuotePay(ctx context.Context,
 			codes.InvalidArgument, "invoice is required",
 		)
 	}
-	if err := s.validatePayInvoiceAmount(
-		ctx, req.GetInvoice(),
-	); err != nil {
-		return nil, err
+
+	// The VTXO-minimum preflight only applies to plain Lightning pay swaps,
+	// which fund a vHTLC that must clear the operator's VTXO floor. A
+	// credit-eligible pay (max_credit_sat > 0) routes sub-dust amounts
+	// through the credit subsystem instead of funding a sub-dust VTXO, so
+	// the floor must not reject it; the server credit quote decides whether
+	// credits cover the amount.
+	if req.GetMaxCreditSat() == 0 {
+		if err := s.validatePayInvoiceAmount(
+			ctx, req.GetInvoice(),
+		); err != nil {
+			return nil, err
+		}
 	}
 
 	maxFeeSat := s.effectiveMaxFeeSat(
 		req.GetMaxFeeSat(), req.GetInvoice(),
 	)
 
-	quote, err := s.client.QuotePayViaLightning(
-		ctx, req.GetInvoice(), maxFeeSat,
+	quote, err := s.quotePay(
+		ctx, req.GetInvoice(), maxFeeSat, req.GetMaxCreditSat(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("quote pay swap: %w", wrapInSwapFeeError(
@@ -1264,12 +1363,6 @@ func (s *swapClientService) StartPay(ctx context.Context,
 			"idempotency_key is reserved for future use",
 		)
 	}
-	if err := s.validatePayInvoiceAmount(
-		ctx, req.GetInvoice(),
-	); err != nil {
-		return nil, err
-	}
-
 	existing, ok, err := s.pendingSwapForInvoice(ctx, req.GetInvoice())
 	if err != nil {
 		return nil, err
@@ -1282,8 +1375,8 @@ func (s *swapClientService) StartPay(ctx context.Context,
 		req.GetMaxFeeSat(), req.GetInvoice(),
 	)
 
-	session, err := s.client.StartPayViaLightning(
-		ctx, req.GetInvoice(), maxFeeSat,
+	session, err := s.startPay(
+		ctx, req.GetInvoice(), maxFeeSat, req.GetMaxCreditSat(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("start pay swap: %w", wrapInSwapFeeError(
@@ -1323,10 +1416,6 @@ func (s *swapClientService) StartReceive(ctx context.Context,
 			"idempotency_key is reserved for future use",
 		)
 	}
-	if err := s.validateReceiveAmount(ctx, req.GetAmountSat()); err != nil {
-		return nil, err
-	}
-
 	session, err := s.client.StartReceiveViaLightning(
 		ctx,
 		btcutil.Amount(
@@ -1348,10 +1437,143 @@ func (s *swapClientService) StartReceive(ctx context.Context,
 	}
 
 	return &swapclientrpc.StartReceiveResponse{
-		PaymentHash: hex.EncodeToString(hash[:]),
-		Invoice:     session.Invoice(),
-		Swap:        summary,
+		PaymentHash:        hex.EncodeToString(hash[:]),
+		Invoice:            session.Invoice(),
+		Swap:               summary,
+		RequestedAmountSat: summary.GetRequestedAmountSat(),
+		AvailableCreditSat: summary.GetAvailableCreditSat(),
+		AttachedCreditSat:  summary.GetAttachedCreditSat(),
+		VhtlcAmountSat:     receivePlanVHTLCAmount(summary),
+		DustLimitSat:       summary.GetDustLimitSat(),
+		SettlementType:     summary.GetSettlementType(),
 	}, nil
+}
+
+func receivePlanVHTLCAmount(summary *swapclientrpc.SwapSummary) uint64 {
+	if summary == nil {
+		return 0
+	}
+	if summary.GetVhtlcAmountSat() > 0 {
+		return uint64(summary.GetVhtlcAmountSat())
+	}
+
+	requested := summary.GetRequestedAmountSat()
+	if requested == 0 {
+		requested = uint64(summary.GetAmountSat())
+	}
+
+	return requested + summary.GetAttachedCreditSat()
+}
+
+// CreateCredit starts one server-owned credit funding operation for the daemon
+// wallet identity account.
+func (s *swapClientService) CreateCredit(ctx context.Context,
+	req *swapclientrpc.CreateCreditRequest) (
+	*swapclientrpc.CreateCreditResponse, error) {
+
+	if req.GetIdempotencyKey() == "" {
+		return nil, status.Error(
+			codes.InvalidArgument, "idempotency_key is required",
+		)
+	}
+
+	source, err := creditFundingSourceFromProto(req.GetSource())
+	if err != nil {
+		return nil, err
+	}
+
+	client, ok := s.client.(interface {
+		CreateCredit(context.Context,
+			swaps.CreateCreditRequest) (
+			*swaps.CreditOperation,
+			error,
+		)
+	})
+	if !ok {
+		return nil, status.Error(
+			codes.Unimplemented, "credits are not supported",
+		)
+	}
+
+	op, err := client.CreateCredit(ctx, swaps.CreateCreditRequest{
+		IdempotencyKey: req.GetIdempotencyKey(),
+		Source:         source,
+		AmountSat:      req.GetAmountSat(),
+		Memo:           req.GetMemo(),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create credit: %w", err)
+	}
+
+	return creditCreateResponseToProto(op), nil
+}
+
+// RedeemCredit materializes available credits back into an Ark output.
+func (s *swapClientService) RedeemCredit(ctx context.Context,
+	req *swapclientrpc.RedeemCreditRequest) (
+	*swapclientrpc.RedeemCreditResponse, error) {
+
+	if req.GetIdempotencyKey() == "" {
+		return nil, status.Error(
+			codes.InvalidArgument, "idempotency_key is required",
+		)
+	}
+
+	client, ok := s.client.(interface {
+		RedeemCredit(context.Context,
+			swaps.RedeemCreditRequest) (
+			*swaps.CreditRedemption,
+			error,
+		)
+	})
+	if !ok {
+		return nil, status.Error(
+			codes.Unimplemented, "credits are not supported",
+		)
+	}
+
+	result, err := client.RedeemCredit(ctx, swaps.RedeemCreditRequest{
+		IdempotencyKey: req.GetIdempotencyKey(),
+		AmountSat:      req.GetAmountSat(),
+		DestinationPubKey: append(
+			[]byte(nil), req.GetDestinationPubkey()...,
+		),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("redeem credit: %w", err)
+	}
+
+	return &swapclientrpc.RedeemCreditResponse{
+		OperationId: result.Operation.OperationID,
+		State:       creditStateToProto(result.Operation.State),
+		DebitedSat:  result.DebitedSat,
+		RedeemedSat: result.RedeemedSat,
+		SessionId:   result.SessionID,
+	}, nil
+}
+
+// ListCredits returns the server-authoritative credit snapshot for the daemon
+// wallet identity account.
+func (s *swapClientService) ListCredits(ctx context.Context,
+	req *swapclientrpc.ListCreditsRequest) (
+	*swapclientrpc.ListCreditsResponse, error) {
+
+	client, ok := s.client.(interface {
+		ListCredits(context.Context,
+			uint32) (*swaps.CreditSnapshot, error)
+	})
+	if !ok {
+		return nil, status.Error(
+			codes.Unimplemented, "credits are not supported",
+		)
+	}
+
+	snapshot, err := client.ListCredits(ctx, req.GetLimit())
+	if err != nil {
+		return nil, fmt.Errorf("list credits: %w", err)
+	}
+
+	return creditSnapshotToProto(snapshot), nil
 }
 
 // pendingSwapForInvoice decodes a real BOLT-11 invoice and checks whether the
@@ -1761,8 +1983,13 @@ func swapSummaryToProto(summary swaps.SwapSummary) *swapclientrpc.SwapSummary {
 		SettlementType: swapSettlementTypeToProto(
 			summary.SettlementType,
 		),
-		SenderPubkey: senderPubKey,
-		Preimage:     preimage,
+		SenderPubkey:       senderPubKey,
+		Preimage:           preimage,
+		CreditQuote:        creditQuoteToProto(summary.CreditQuote),
+		RequestedAmountSat: summary.RequestedAmountSat,
+		AttachedCreditSat:  summary.AttachedCreditSat,
+		DustLimitSat:       summary.DustLimitSat,
+		AvailableCreditSat: summary.AvailableCreditSat,
 	}
 }
 
@@ -1785,7 +2012,211 @@ func quotePayToProto(quote *swaps.InSwapQuote) (*swapclientrpc.QuotePayResponse,
 		),
 		ExpiresAtUnix: quote.Expiry.Unix(),
 		ExceedsMaxFee: quote.ExceedsMaxFee,
+		CreditQuote:   creditQuoteToProto(quote.CreditQuote),
 	}, nil
+}
+
+func creditQuoteToProto(quote *swaps.CreditQuote) *swapclientrpc.CreditQuote {
+	if quote == nil {
+		return nil
+	}
+
+	return &swapclientrpc.CreditQuote{
+		MustUseCredit:      quote.MustUseCredit,
+		CreditAppliedSat:   quote.CreditAppliedSat,
+		CreditShortfallSat: quote.CreditShortfallSat,
+		CreditTopupSat:     quote.CreditTopupSat,
+		ArkFundingSat:      quote.ArkFundingSat,
+	}
+}
+
+func creditFundingSourceFromProto(source swapclientrpc.CreditFundingSource) (
+	swaps.CreditFundingSource, error) {
+
+	switch source {
+	case swapclientrpc.
+		CreditFundingSource_CREDIT_FUNDING_SOURCE_LIGHTNING_RECEIVE:
+		return swaps.CreditFundingLightningReceive, nil
+
+	case swapclientrpc.CreditFundingSource_CREDIT_FUNDING_SOURCE_ARK_TOPUP:
+		return swaps.CreditFundingArkTopUp, nil
+
+	default:
+		return "", status.Error(
+			codes.InvalidArgument, "credit source is required",
+		)
+	}
+}
+
+func creditCreateResponseToProto(
+	op *swaps.CreditOperation) *swapclientrpc.CreateCreditResponse {
+
+	if op == nil {
+		return nil
+	}
+
+	resp := &swapclientrpc.CreateCreditResponse{
+		OperationId:       op.OperationID,
+		State:             creditStateToProto(op.State),
+		Invoice:           op.Invoice,
+		PaymentHash:       creditPaymentHashString(op.PaymentHash),
+		AmountSat:         op.AmountSat,
+		DestinationPubkey: append([]byte(nil), op.DestinationKey...),
+	}
+	if op.ExpiresAt != nil {
+		resp.ExpiresAtUnix = op.ExpiresAt.Unix()
+	}
+
+	return resp
+}
+
+func creditSnapshotToProto(
+	snapshot *swaps.CreditSnapshot) *swapclientrpc.ListCreditsResponse {
+
+	if snapshot == nil {
+		return nil
+	}
+
+	resp := &swapclientrpc.ListCreditsResponse{
+		FinalizedSat: snapshot.FinalizedSat,
+		ReservedSat:  snapshot.ReservedSat,
+		AvailableSat: snapshot.AvailableSat,
+	}
+	for _, op := range snapshot.Operations {
+		resp.Operations = append(
+			resp.Operations, creditOperationToProto(op),
+		)
+	}
+	for _, entry := range snapshot.LedgerEntries {
+		resp.LedgerEntries = append(
+			resp.LedgerEntries, creditLedgerEntryToProto(entry),
+		)
+	}
+
+	return resp
+}
+
+func creditOperationToProto(
+	op swaps.CreditOperation) *swapclientrpc.CreditOperation {
+
+	resp := &swapclientrpc.CreditOperation{
+		OperationId:       op.OperationID,
+		Type:              creditTypeToProto(op.Type),
+		State:             creditStateToProto(op.State),
+		AmountSat:         op.AmountSat,
+		PaymentHash:       creditPaymentHashString(op.PaymentHash),
+		Invoice:           op.Invoice,
+		DestinationPubkey: append([]byte(nil), op.DestinationKey...),
+		SessionId:         op.SessionID,
+		CreatedAtUnix:     op.CreatedAt.Unix(),
+		UpdatedAtUnix:     op.UpdatedAt.Unix(),
+		LastError:         op.LastError,
+	}
+	if op.CompletedAt != nil {
+		resp.CompletedAtUnix = op.CompletedAt.Unix()
+	}
+
+	return resp
+}
+
+func creditLedgerEntryToProto(
+	entry swaps.CreditLedgerEntry) *swapclientrpc.CreditLedgerEntry {
+
+	return &swapclientrpc.CreditLedgerEntry{
+		EntryId:       entry.EntryID,
+		OperationId:   entry.OperationID,
+		Direction:     entry.Direction,
+		AmountSat:     entry.AmountSat,
+		CreatedAtUnix: entry.CreatedAt.Unix(),
+	}
+}
+
+func creditPaymentHashString(hash *lntypes.Hash) string {
+	if hash == nil {
+		return ""
+	}
+
+	return hex.EncodeToString(hash[:])
+}
+
+func creditTypeToProto(
+	typ swaps.CreditOperationType) swapclientrpc.CreditOperationType {
+
+	switch typ {
+	case swaps.CreditOperationFunding:
+		return swapclientrpc.
+			CreditOperationType_CREDIT_OPERATION_TYPE_FUNDING
+
+	case swaps.CreditOperationPay:
+		return swapclientrpc.
+			CreditOperationType_CREDIT_OPERATION_TYPE_PAY
+
+	case swaps.CreditOperationRedemption:
+		return swapclientrpc.
+			CreditOperationType_CREDIT_OPERATION_TYPE_REDEMPTION
+
+	case swaps.CreditOperationReceive:
+		return swapclientrpc.
+			CreditOperationType_CREDIT_OPERATION_TYPE_RECEIVE
+
+	default:
+		return swapclientrpc.
+			CreditOperationType_CREDIT_OPERATION_TYPE_UNSPECIFIED
+	}
+}
+
+func creditStateToProto(
+	state swaps.CreditOperationState) swapclientrpc.CreditOperationState {
+
+	switch state {
+	case swaps.CreditStateCreated:
+		return swapclientrpc.
+			CreditOperationState_CREDIT_OPERATION_STATE_CREATED
+
+	case swaps.CreditStateAwaitingPayment:
+		return swapclientrpc.
+			CreditOperationState_CREDIT_OPERATION_STATE_AWAITING_PAYMENT
+
+	case swaps.CreditStateCredited:
+		return swapclientrpc.
+			CreditOperationState_CREDIT_OPERATION_STATE_CREDITED
+
+	case swaps.CreditStateReserved:
+		return swapclientrpc.
+			CreditOperationState_CREDIT_OPERATION_STATE_RESERVED
+
+	case swaps.CreditStatePayingLightning:
+		return swapclientrpc.
+			CreditOperationState_CREDIT_OPERATION_STATE_PAYING_LIGHTNING
+
+	case swaps.CreditStateDebited:
+		return swapclientrpc.
+			CreditOperationState_CREDIT_OPERATION_STATE_DEBITED
+
+	case swaps.CreditStateSendingOOR:
+		return swapclientrpc.
+			CreditOperationState_CREDIT_OPERATION_STATE_SENDING_OOR
+
+	case swaps.CreditStateRedeemed:
+		return swapclientrpc.
+			CreditOperationState_CREDIT_OPERATION_STATE_REDEEMED
+
+	case swaps.CreditStateReleased:
+		return swapclientrpc.
+			CreditOperationState_CREDIT_OPERATION_STATE_RELEASED
+
+	case swaps.CreditStateExpired:
+		return swapclientrpc.
+			CreditOperationState_CREDIT_OPERATION_STATE_EXPIRED
+
+	case swaps.CreditStateFailed:
+		return swapclientrpc.
+			CreditOperationState_CREDIT_OPERATION_STATE_FAILED
+
+	default:
+		return swapclientrpc.
+			CreditOperationState_CREDIT_OPERATION_STATE_UNSPECIFIED
+	}
 }
 
 // swapStateToProto maps sdk/swaps persisted state names into the stable public
@@ -1866,6 +2297,13 @@ func swapSettlementTypeToProto(
 
 	case swaps.SettlementTypeInArk:
 		return swapclientrpc.SwapSettlementType_SWAP_SETTLEMENT_TYPE_IN_ARK
+
+	case swaps.SettlementTypeCredit:
+		return swapclientrpc.
+			SwapSettlementType_SWAP_SETTLEMENT_TYPE_CREDIT
+
+	case swaps.SettlementTypeMixed:
+		return swapclientrpc.SwapSettlementType_SWAP_SETTLEMENT_TYPE_MIXED
 
 	default:
 		return swapclientrpc.

@@ -81,10 +81,11 @@ func Register(ctx context.Context, grpcServer *grpc.Server,
 	}
 
 	deps := &Deps{
-		SwapBackend: cfg.Swap.Backend,
-		SwapService: swapService,
-		RPCServer:   coreRPC,
-		ChainParams: chainParams,
+		SwapBackend:    cfg.Swap.Backend,
+		SwapService:    swapService,
+		RPCServer:      coreRPC,
+		CreditRegistry: cfg.Swap.CreditRegistry,
+		ChainParams:    chainParams,
 	}
 	if rpcServer != nil {
 		deps.Log = rpcServer.SubLogger(darepod.WalletRPCSubsystem)
@@ -104,6 +105,13 @@ func Register(ctx context.Context, grpcServer *grpc.Server,
 	runtime := newRuntime(ctx, deps)
 	service := newService(deps, runtime)
 	inspectionService := newInspectionService(deps, runtime)
+
+	// Wire the prepared-send store into the credit auto-redeem interlock
+	// now that the service (and its store) exists, so the sweep subtracts
+	// credits a pending credit-backed send has earmarked before redeeming.
+	if cfg.Swap.CreditEarmarkSetter != nil {
+		cfg.Swap.CreditEarmarkSetter(service.earmarkedCreditSat)
+	}
 
 	walletdkrpc.RegisterWalletServiceServer(grpcServer, service)
 	walletdkrpc.RegisterWalletInspectionServiceServer(
