@@ -1438,6 +1438,14 @@ func TestPaySessionResumeAfterAcceptedRefundFindsOutput(t *testing.T) {
 	require.Equal(t, 1, daemonConn.sendCustomCalls)
 	require.Equal(t, PayStateWaitingForClaim, session.State())
 
+	daemonConn.liveByPkScript = map[string]*VTXOInfo{
+		hex.EncodeToString(refundScript): {
+			Outpoint:  daemonConn.sendSessionID + ":0",
+			AmountSat: testInSwapAmountSat,
+			PkScript:  refundScript,
+		},
+	}
+
 	store.queries = swapsqlc.New(store.db)
 	resumedClient := configureTestPayClient(
 		NewSwapClientWithStore(
