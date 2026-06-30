@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/lightninglabs/darepo-client/daemonrpc"
+	"github.com/lightninglabs/darepo-client/ledger"
 	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 	"github.com/stretchr/testify/require"
 )
@@ -157,6 +158,24 @@ func TestListViewOnchainFlattensLedgerRows(t *testing.T) {
 				Txid:               "sweep-txid",
 				CreatedAtUnixS:     600,
 				Description:        "boarding sweep",
+			},
+			{
+				Source:             "ledger",
+				Type:               "sweep",
+				Subtype:            ledger.EventBoardingSweepFeePaid,
+				ConfirmationStatus: "recorded",
+				AmountSat:          469,
+				CreatedAtUnixS:     601,
+				Description:        "internal boarding sweep fee",
+			},
+			{
+				Source:             "ledger",
+				Type:               "sweep",
+				Subtype:            ledger.EventOnchainFeePaid,
+				ConfirmationStatus: "recorded",
+				AmountSat:          812,
+				CreatedAtUnixS:     602,
+				Description:        "internal exit fee",
 			},
 		},
 		HasMore: true,

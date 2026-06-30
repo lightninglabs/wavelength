@@ -512,6 +512,10 @@ func (h *history) listOnchain(ctx context.Context,
 
 	txs := make([]*walletdkrpc.OnchainTx, 0, len(resp.GetTransactions()))
 	for _, t := range resp.GetTransactions() {
+		if isInternalLedgerSweep(t) {
+			continue
+		}
+
 		txs = append(txs, onchainTxFromLedgerRow(t))
 	}
 
@@ -1548,6 +1552,17 @@ func classifyLedgerRow(t *daemonrpc.TransactionHistoryEntry) (
 		return walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT, +1, true
 
 	case "sweep":
+		// Ledger-sourced sweep rows are internal fee-clearing legs:
+		// onchain_fee_paid for unilateral exits and
+		// boarding_sweep_fee_paid for boarding sweeps. User-facing
+		// sweep rows come from domain sources such as
+		// boarding_sweep, which carry the aggregate amount, miner fee,
+		// txid, and terminal sweep status.
+		if isInternalLedgerSweep(t) {
+			return walletdkrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
+				0, false
+		}
+
 		return walletdkrpc.EntryKind_ENTRY_KIND_EXIT, -1, true
 
 	case "oor":
@@ -1574,6 +1589,12 @@ func classifyLedgerRow(t *daemonrpc.TransactionHistoryEntry) (
 		// operations in v1.
 		return walletdkrpc.EntryKind_ENTRY_KIND_UNSPECIFIED, 0, false
 	}
+}
+
+// isInternalLedgerSweep returns true for ledger-sourced sweep rows that
+// represent internal fee-clearing legs rather than user-facing exits.
+func isInternalLedgerSweep(t *daemonrpc.TransactionHistoryEntry) bool {
+	return t.GetSource() == "ledger" && t.GetType() == "sweep"
 }
 
 // statusFromLedgerConfirmation maps the ledger row's confirmation_status
