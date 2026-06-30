@@ -30,6 +30,36 @@ func IsAnchorOutput(out *wire.TxOut) bool {
 	return bytes.Equal(out.PkScript, arkscript.AnchorPkScript)
 }
 
+// IsP2AAnchorScript returns true if pkScript is the keyless P2A anchor
+// script, regardless of the spending output's value. Unlike IsAnchorOutput,
+// this does not require the zero-value ephemeral-dust form: it also matches a
+// "funded" anchor whose value has been lifted above the P2A dust threshold
+// (see arkscript.WithAnchorValue) so that its parent transaction can pay a
+// non-zero miner fee and confirm on its own. Use this when locating a CPFP
+// anchor to spend on a parent that is already independently valid, where the
+// anchor is a spare fee-bump handle rather than the parent's only fee source.
+func IsP2AAnchorScript(pkScript []byte) bool {
+	return bytes.Equal(pkScript, arkscript.AnchorPkScript)
+}
+
+// IsFundedAnchorOutput returns true if out is a P2A anchor output carrying a
+// non-zero value (the "funded" anchor form). A funded anchor lets its parent
+// pay its own fee and confirm standalone, with the anchor reserved as an
+// optional CPFP handle for fee-bumping only when the parent is stuck. This is
+// the complement of IsAnchorOutput, which matches only the zero-value
+// ephemeral form used by TRUC parents that pay zero fee themselves.
+func IsFundedAnchorOutput(out *wire.TxOut) bool {
+	if out == nil {
+		return false
+	}
+
+	if out.Value == 0 {
+		return false
+	}
+
+	return bytes.Equal(out.PkScript, arkscript.AnchorPkScript)
+}
+
 // ValidateCanonicalTx validates canonical ordering rules for an Ark tx
 // (as a raw transaction), including that it contains exactly one anchor output
 // and that the anchor output is the last output.
