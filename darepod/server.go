@@ -4883,24 +4883,20 @@ func (w *lwUnrollWallet) ListUnspent(ctx context.Context, minConfs,
 		return nil, fmt.Errorf("wait for wallet sync: %w", err)
 	}
 
+	// Restrict CPFP fee selection to the default account. Imported,
+	// watch-only taproot outputs (e.g. boarding outputs imported via
+	// ImportTaprootScript) live in the imported account: they carry no
+	// BIP32 derivation and no spendable key, so the FinalizePsbt path
+	// cannot sign them and finalization fails with "PSBT is not
+	// finalizable". The default-account filter already surfaces every
+	// wallet-derived (key-spendable) fee input, so a broader all-accounts
+	// query would only readmit the unspendable imported outputs we must
+	// avoid.
 	lnUtxos, err := w.Wallet.BtcWallet.ListUnspentWitness(
 		minConfs, maxConfs, lnwallet.DefaultAccountName,
 	)
 	if err != nil {
 		return nil, err
-	}
-
-	// btcwallet's default-account filter can miss wallet-managed P2TR
-	// outputs in lwwallet mode even though the same UTXOs are visible when
-	// enumerating across all accounts. Fall back to the broader query so
-	// harness-funded fee inputs remain available for CPFP package relay.
-	if len(lnUtxos) == 0 {
-		lnUtxos, err = w.Wallet.BtcWallet.ListUnspentWitness(
-			minConfs, maxConfs, "",
-		)
-		if err != nil {
-			return nil, err
-		}
 	}
 
 	result := make([]*wallet.Utxo, 0, len(lnUtxos))
