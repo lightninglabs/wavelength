@@ -24,19 +24,16 @@ func TestConnectOperatorClientsREST(t *testing.T) {
 	require.NoError(t, err)
 	operatorPubKey := operatorKey.PubKey().SerializeCompressed()
 	tempDir := t.TempDir()
-	macaroonDBPath := filepath.Join(tempDir, "macaroons.db")
 	macaroonPath := filepath.Join(tempDir, "operator.macaroon")
-	authService, err := rpcauth.NewService(
-		macaroonDBPath, macaroonPath, "arkd",
-		[]bakery.Op{{
-			Entity: "arkd",
-			Action: "client",
-		}}, nil,
+	newTestMacaroonService(
+		t, macaroonPath, "arkd",
+		map[string][]bakery.Op{
+			"/arkrpc.ArkService/GetInfo": {{
+				Entity: "arkd",
+				Action: "client",
+			}},
+		},
 	)
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		require.NoError(t, authService.Close())
-	})
 
 	macHex, err := rpcauth.HexFromFile(macaroonPath)
 	require.NoError(t, err)

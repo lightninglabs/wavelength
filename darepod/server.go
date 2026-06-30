@@ -1229,14 +1229,13 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 	// -------------------------------------------------------
 	s.rpcServer = NewRPCServer(s)
 
-	//nolint:contextcheck // stream auth checks the live stream context.
 	authService, serverOptions, err := s.localRPCServerOptions()
 	if err != nil {
 		return err
 	}
 	if authService != nil {
 		defer func() {
-			if err := authService.Close(); err != nil {
+			if err := authService.Stop(); err != nil {
 				s.log.WarnS(ctx, "RPC auth shutdown failed",
 					err,
 				)
@@ -1273,12 +1272,11 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 		}
 	}
 	if authService != nil {
-		permissions, err := registeredRPCPermissions(s.grpcServer)
-		if err != nil {
+		if _, err := registeredRPCPermissions(
+			s.grpcServer,
+		); err != nil {
 			return err
 		}
-
-		authService.SetPermissions(permissions)
 	}
 
 	// Register the DaemonService for mailbox RPC access. The

@@ -154,15 +154,6 @@ func newDarepodRPCPermissions() map[string][]bakery.Op {
 	return permissions
 }
 
-// darepodDefaultMacaroonOps returns the permissions granted to the default
-// local daemon macaroon.
-func darepodDefaultMacaroonOps() []bakery.Op {
-	return []bakery.Op{
-		darepodReadOp,
-		darepodWriteOp,
-	}
-}
-
 // registeredRPCPermissions maps every registered gRPC method to the macaroon
 // permission it requires.
 func registeredRPCPermissions(grpcServer *grpc.Server) (map[string][]bakery.Op,

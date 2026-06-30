@@ -38,24 +38,21 @@ func TestGatewayForwardsMacaroonToGRPC(t *testing.T) {
 		Action: "read",
 	}
 	tempDir := t.TempDir()
-	authService, err := rpcauth.NewService(
-		filepath.Join(tempDir, "macaroons.db"),
-		filepath.Join(tempDir, "admin.macaroon"),
-		"darepod", []bakery.Op{readOp},
+	macaroonPath := filepath.Join(tempDir, "admin.macaroon")
+	authService := newTestMacaroonService(
+		t, macaroonPath, "darepod",
 		map[string][]bakery.Op{
 			daemonrpc.DaemonService_GetInfo_FullMethodName: {
 				readOp,
 			},
 		},
 	)
+	macaroonUnaryInterceptor, _, err := authService.Interceptors()
 	require.NoError(t, err)
-	t.Cleanup(func() {
-		require.NoError(t, authService.Close())
-	})
 
 	grpcServer := grpc.NewServer(
 		grpc.UnaryInterceptor(
-			authService.UnaryServerInterceptor(),
+			macaroonUnaryInterceptor,
 		),
 	)
 	daemonrpc.RegisterDaemonServiceServer(
@@ -91,8 +88,7 @@ func TestGatewayForwardsMacaroonToGRPC(t *testing.T) {
 	require.NotEqual(t, http.StatusOK, rec.Code)
 
 	macHex, err := rpcauth.HexFromFile(
-		filepath.Join(tempDir, "admin.macaroon"),
-	)
+		macaroonPath)
 	require.NoError(t, err)
 	req = httptest.NewRequest(
 		http.MethodPost, "/v1/daemon/get-info",

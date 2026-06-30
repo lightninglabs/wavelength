@@ -1245,11 +1245,6 @@ func (c *Config) rpcMacaroonPath() string {
 	return filepath.Join(c.NetworkDir(), "admin.macaroon")
 }
 
-// rpcMacaroonDBPath returns the daemon RPC macaroon DB path.
-func (c *Config) rpcMacaroonDBPath() string {
-	return filepath.Join(c.NetworkDir(), "macaroons.db")
-}
-
 // validateRPCSecurity normalizes daemon RPC TLS and macaroon paths.
 func (c *Config) validateRPCSecurity() error {
 	if c.Network == "mainnet" && c.RPC.Listener == nil {

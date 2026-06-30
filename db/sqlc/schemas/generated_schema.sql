@@ -666,6 +666,11 @@ CREATE TABLE ledger_event_types (
     event_type TEXT PRIMARY KEY
 );
 
+CREATE TABLE macaroons (
+    id BLOB PRIMARY KEY,
+    root_key BLOB NOT NULL
+);
+
 CREATE TABLE mailbox_messages (
     -- id is a UUIDv7 providing time-ordering and uniqueness.
     id TEXT PRIMARY KEY,

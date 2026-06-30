@@ -63,6 +63,8 @@ type Querier interface {
 	GetClientTreeTxids(ctx context.Context, arg GetClientTreeTxidsParams) ([]GetClientTreeTxidsRow, error)
 	GetCreditOperation(ctx context.Context, opID string) (CreditOperation, error)
 	GetInternalKeyByID(ctx context.Context, id int64) (InternalKey, error)
+	// Macaroon root key store queries.
+	GetMacaroonRootKey(ctx context.Context, id []byte) (Macaroon, error)
 	GetOORPackage(ctx context.Context, sessionID []byte) (OorPackage, error)
 	GetOORPackageByOutpoint(ctx context.Context, arg GetOORPackageByOutpointParams) (GetOORPackageByOutpointRow, error)
 	GetOORPackageByOutpointAndKind(ctx context.Context, arg GetOORPackageByOutpointAndKindParams) (GetOORPackageByOutpointAndKindRow, error)
@@ -117,6 +119,7 @@ type Querier interface {
 	InsertClientLedgerEntry(ctx context.Context, arg InsertClientLedgerEntryParams) error
 	// Client tree txids queries.
 	InsertClientTreeTxid(ctx context.Context, arg InsertClientTreeTxidParams) error
+	InsertMacaroonRootKey(ctx context.Context, arg InsertMacaroonRootKeyParams) error
 	InsertOORPackageCheckpoint(ctx context.Context, arg InsertOORPackageCheckpointParams) error
 	// Round queries.
 	InsertRound(ctx context.Context, arg InsertRoundParams) error
