@@ -214,6 +214,28 @@ func (m *ResumeCreditOpRequest) Decode(r io.Reader) error {
 	return nil
 }
 
+// ConsiderRedeemRequest asks the supervisor to materialize available credits
+// into a vTXO, now that a settled receive cleared the auto-redeem watermark (or
+// the boot-time reconcile observed an over-watermark balance). The supervisor
+// applies the no-pending-pay/redeem interlock before admitting a redeem
+// operation, so the caller signals intent without owning the redeem decision.
+// It crosses only the in-memory supervisor mailbox, so it is not
+// TLV-serializable.
+type ConsiderRedeemRequest struct {
+	actor.BaseMessage
+
+	// AvailableSat is the earmark-adjusted available balance the caller
+	// observed, the upper bound on what may be redeemed.
+	AvailableSat uint64
+}
+
+// MessageType returns the human-readable message type.
+func (m *ConsiderRedeemRequest) MessageType() string {
+	return "ConsiderRedeemRequest"
+}
+
+func (m *ConsiderRedeemRequest) creditMsgSealed() {}
+
 // CreditTerminalNotification tells the supervisor that a per-operation child
 // committed a terminal snapshot, so the supervisor can reap the child. The
 // supervisor re-checks the durable row before reaping, so a stale or duplicate

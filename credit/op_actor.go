@@ -163,6 +163,24 @@ type opBehavior struct {
 	// but its Commit rolled back, so the next driving turn re-loads from
 	// the durable row before dispatch.
 	commitFailed bool
+
+	// curState is the live protofsm state this operation is in. It is
+	// reconstructed from the persisted state string on restore and advanced
+	// by each transition the driving loop runs, kept in lockstep with
+	// rec.State (the persisted mirror) via applyState.
+	curState CreditState
+
+	// corruptState records that the persisted state string did not decode
+	// to a known FSM state, so the next dispatch drives the row to a
+	// durable failure instead of treating the fallback failedState as
+	// already committed.
+	corruptState bool
+
+	// pendingRedeem holds an auto-redeem trigger a settled receive emitted
+	// this turn, fired at the registry after the turn commits so a crash
+	// before it never leaves a half-applied redeem. Reset at the start of
+	// every drive.
+	pendingRedeem *triggerRedeem
 }
 
 // Compile-time check that opBehavior runs on the Read/Stage/Commit path.
@@ -209,6 +227,14 @@ func (b *opBehavior) restore(ctx context.Context) error {
 	b.receiveMemo = snap.Memo
 	b.creditOnly = snap.CreditOnly
 	b.awaitPolls = snap.AwaitPolls
+
+	// Reconstruct the live protofsm state from the persisted state string
+	// so a resumed operation re-enters its FSM exactly where the durable
+	// row left off. An unrecognized string is flagged so the next dispatch
+	// fails the corrupt row durably rather than wedging it.
+	curState, known := decodeCreditState(State(rec.State))
+	b.curState = curState
+	b.corruptState = !known
 
 	return nil
 }
@@ -275,6 +301,7 @@ func (b *opBehavior) dispatch(ctx context.Context, msg CreditDurableMsg,
 	ax actor.Exec[creditTx]) error {
 
 	b.armRetry = false
+	b.pendingRedeem = nil
 
 	switch msg.(type) {
 	case *ResumeCreditOpRequest:
@@ -287,11 +314,46 @@ func (b *opBehavior) dispatch(ctx context.Context, msg CreditDurableMsg,
 	if b.rec == nil {
 		return nil
 	}
-	if State(b.rec.State).IsTerminal() {
+	if b.curState == nil {
+		curState, known := decodeCreditState(State(b.rec.State))
+		b.curState = curState
+		b.corruptState = !known
+	}
+
+	// A persisted state that did not decode to a known FSM state is a
+	// corrupt row. Drive it to a durable failure so it terminal-commits and
+	// is reaped, rather than treating the in-memory failed fallback as
+	// already committed and leaving the row non-terminal forever.
+	if b.corruptState {
+		return b.failCorrupt(ctx)
+	}
+	if b.curState.IsTerminal() {
 		return nil
 	}
 
 	return b.runFSM(ctx, ax)
+}
+
+// failCorrupt drives an operation whose persisted state string did not decode
+// to a known FSM state into a durable terminal failure. It mirrors the failed
+// state onto the record so the turn's commit persists StateFailed and the
+// registry reaps the row, rather than leaving a non-terminal row that
+// restoreNonTerminal would respawn on every boot without ever being able to
+// advance it.
+func (b *opBehavior) failCorrupt(ctx context.Context) error {
+	reason := fmt.Sprintf("unrecognized persisted state %q", b.rec.State)
+	b.logger(ctx).WarnS(ctx, "Failing corrupt credit operation",
+		nil,
+		slog.String("op_id", b.cfg.OpID),
+		slog.String("state", b.rec.State),
+	)
+
+	b.rec.LastError = reason
+	b.applyState(&failedState{})
+	b.curState = &failedState{}
+	b.corruptState = false
+
+	return nil
 }
 
 // buildRecord constructs the durable admission record and resume snapshot for
@@ -348,15 +410,42 @@ func (b *opBehavior) runFSM(ctx context.Context,
 	ax actor.Exec[creditTx]) error {
 
 	for {
-		if State(b.rec.State).IsTerminal() {
+		if b.curState.IsTerminal() {
 			return nil
 		}
 
-		awaiting, err := b.advance(ctx, ax)
+		transition, err := b.curState.ProcessEvent(ctx, &opDrive{}, b)
 		if err != nil {
 			return err
 		}
-		if awaiting {
+
+		// Mirror the next state onto the durable record before flushing
+		// any checkpoint, so a Stage write persists the advanced state.
+		b.applyState(transition.NextState)
+		b.curState = transition.NextState
+
+		var outbox []CreditOutMsg
+		transition.NewEvents.WhenSome(func(ev CreditEmittedEvent) {
+			outbox = ev.Outbox
+		})
+
+		park := false
+		for _, out := range outbox {
+			switch o := out.(type) {
+			case *stageRecord:
+				if serr := b.checkpoint(ctx, ax); serr != nil {
+					return serr
+				}
+
+			case *parkOp:
+				park = true
+
+			case *triggerRedeem:
+				b.pendingRedeem = o
+			}
+		}
+
+		if park {
 			b.armRetry = true
 
 			return nil
@@ -364,57 +453,16 @@ func (b *opBehavior) runFSM(ctx context.Context,
 	}
 }
 
-// advance runs exactly one FSM step for the current state. It returns awaiting
-// when the operation must park until a poll timer re-pokes it. A deterministic
-// failure transitions to StateFailed and returns (false, nil); a transient
-// error returns it so the turn redelivers. The Exec handle is threaded to the
-// steps that must Stage a recorded server identifier before their next
-// side-effect call, preserving the persist-before-effect invariant.
-func (b *opBehavior) advance(ctx context.Context, ax actor.Exec[creditTx]) (
-	bool, error) {
-
-	switch State(b.rec.State) {
-	case StateQuoting:
-		return b.stepQuoting()
-
-	case StateTopupCreating:
-		return b.stepTopupCreating(ctx, ax)
-
-	case StateTopupFunding:
-		return b.stepTopupFunding(ctx)
-
-	case StateTopupAwaitingCredit:
-		return b.stepAwaitingCredit(ctx)
-
-	case StatePaying:
-		return b.stepPaying(ctx)
-
-	case StatePayAwaitingSettlement:
-		return b.stepPayAwaitingSettlement(ctx)
-
-	case StateReceiveCreating:
-		return b.stepReceiveCreating(ctx)
-
-	case StateAwaitingSettlement:
-		return b.stepAwaitingSettlement(ctx)
-
-	case StateRedeemReserving:
-		return b.stepRedeemReserving(ctx, ax)
-
-	case StateAwaitingOOR:
-		return b.stepAwaitingOOR(ctx)
-
-	default:
-		// An unknown state is a deterministic, non-recoverable
-		// corruption of the row, not a transient condition: terminal-
-		// fail it rather than redeliver forever.
-		b.failOp(
-			ctx, fmt.Sprintf("unexpected credit state %s",
-				b.rec.State),
-		)
-
-		return false, nil
+// applyState mirrors the FSM's next protofsm state onto the durable record's
+// state and status columns. Entering a different state resets the awaiting-poll
+// counter so each awaiting state gets a fresh poll budget.
+func (b *opBehavior) applyState(next CreditState) {
+	s := State(next.String())
+	if b.rec.State != string(s) {
+		b.awaitPolls = 0
 	}
+	b.rec.State = string(s)
+	b.rec.Status = s.Status()
 }
 
 // checkpoint durably persists the current record via a Stage write, so a server
@@ -440,28 +488,6 @@ func (b *opBehavior) awaitExhausted() bool {
 	limit := b.cfg.MaxAwaitingPolls
 
 	return limit > 0 && b.awaitPolls > limit
-}
-
-// setState advances the FSM state in memory. Entering a different state resets
-// the awaiting-poll counter so each awaiting state gets a fresh poll budget.
-func (b *opBehavior) setState(state State) {
-	if b.rec.State != string(state) {
-		b.awaitPolls = 0
-	}
-	b.rec.State = string(state)
-	b.rec.Status = state.Status()
-}
-
-// failOp records a deterministic terminal failure.
-func (b *opBehavior) failOp(ctx context.Context, reason string) {
-	b.logger(ctx).WarnS(ctx, "Credit operation failed",
-		nil,
-		slog.String("op_id", b.cfg.OpID),
-		slog.String("op_key", b.rec.OpKey),
-		slog.String("reason", reason),
-	)
-	b.rec.LastError = reason
-	b.setState(StateFailed)
 }
 
 // accountKey returns the cached wallet identity pubkey that keys the account.
@@ -527,6 +553,16 @@ func (b *opBehavior) persist(ctx context.Context) error {
 // RestoreNonTerminal, and the registry re-checks the durable row before
 // reaping.
 func (b *opBehavior) afterCommit(ctx context.Context) {
+	// A settled receive that cleared the auto-redeem watermark signals the
+	// registry now, after its terminal snapshot committed, so a crash in
+	// this window leaves no half-applied redeem: nothing is staged, the
+	// credits stay available, and the next receive trigger or the boot-time
+	// reconcile re-derives the signal.
+	if b.pendingRedeem != nil {
+		b.considerRedeem(ctx, b.pendingRedeem.AvailableSat)
+		b.pendingRedeem = nil
+	}
+
 	if b.terminalCommitted {
 		b.notifyTerminal(ctx)
 
@@ -535,6 +571,38 @@ func (b *opBehavior) afterCommit(ctx context.Context) {
 
 	if b.armRetry {
 		b.armPollTimer(ctx)
+	}
+}
+
+// considerRedeem asks the registry to materialize the supplied available
+// balance into a vTXO, now that a settled receive cleared the auto-redeem
+// watermark. The registry arbitrates the no-pending-pay/redeem interlock, so a
+// stale or redundant signal is harmless. Best-effort: a missed signal is
+// re-derived by the next receive trigger or the boot-time reconcile.
+func (b *opBehavior) considerRedeem(ctx context.Context, available uint64) {
+	if b.cfg.Registry == nil {
+		return
+	}
+
+	notifyCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	err := b.cfg.Registry.Tell(notifyCtx, &ConsiderRedeemRequest{
+		AvailableSat: available,
+	})
+	if err != nil {
+		// A dropped signal leaves the credits available and safe; the
+		// boot-time reconcile re-derives it on the next start, but not
+		// before, so log loudly rather than silently degrading.
+		b.
+			logger(ctx).
+			WarnS(
+				ctx,
+				"Unable to signal credit auto-redeem; "+
+					"deferring to boot reconcile",
+				err,
+				slog.String("op_id", b.cfg.OpID),
+			)
 	}
 }
 

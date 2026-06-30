@@ -8,64 +8,57 @@ import (
 	"log/slog"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/build"
-	"github.com/lightninglabs/darepo-client/db"
 )
 
 // autoRedeemer runs the wallet-owned auto-redeem policy. Redemption is never
-// exposed to the user: this loop decides when to materialize available credits
-// back into a vTXO. It periodically sweeps the account and, when the available
-// balance clears the configured threshold and no credit-consuming or in-flight
-// redemption operation is pending, asks the registry to redeem.
+// exposed to the user: the wallet decides when to materialize available credits
+// back into a vTXO.
+//
+// Steady-state auto-redeem is folded into the receive state machine: a settled
+// receive that clears the watermark signals the registry directly (see
+// awaitingSettlementState). The autoRedeemer therefore no longer runs a
+// periodic sweep; it performs a single boot-time reconcile so a balance that
+// accumulated over the watermark before this start — which no receive trigger
+// will re-evaluate — is still materialized.
 type autoRedeemer struct {
 	cfg      AutoRedeemConfig
-	store    Store
 	server   CreditServer
 	daemon   CreditDaemon
 	registry actor.TellOnlyRef[CreditMsg]
 	log      btclog.Logger
 
-	// earmark is the credit-earmark provider, read on every sweep. It is an
-	// atomic pointer so it can be wired after construction (the wallet's
-	// prepared-send store is built after the registry), without locking the
-	// sweep against the setter.
-	earmark atomic.Pointer[EarmarkFunc]
+	// earmark is the shared credit-earmark provider, read on the boot
+	// reconcile. It is the same atomic pointer the per-operation children
+	// consult, so wiring the provider once (after construction) reaches
+	// every redeem decision.
+	earmark *atomic.Pointer[EarmarkFunc]
 
-	wg   sync.WaitGroup
-	quit chan struct{}
-	once sync.Once
+	wg sync.WaitGroup
 }
 
-// newAutoRedeemer builds an auto-redeemer from the registry config.
-func newAutoRedeemer(cfg RegistryConfig,
-	registry actor.TellOnlyRef[CreditMsg]) *autoRedeemer {
+// newAutoRedeemer builds an auto-redeemer from the registry config, sharing the
+// registry's earmark pointer so the provider can be wired once after
+// construction.
+func newAutoRedeemer(cfg RegistryConfig, registry actor.TellOnlyRef[CreditMsg],
+	earmark *atomic.Pointer[EarmarkFunc]) *autoRedeemer {
 
-	policy := cfg.AutoRedeem
-	if policy.Interval <= 0 {
-		policy.Interval = DefaultAutoRedeemInterval
-	}
-
-	a := &autoRedeemer{
-		cfg:      policy,
-		store:    cfg.Store,
+	return &autoRedeemer{
+		cfg:      cfg.AutoRedeem,
 		server:   cfg.Server,
 		daemon:   cfg.Daemon,
 		registry: registry,
 		log:      cfg.Log.UnwrapOr(btclog.Disabled),
-		quit:     make(chan struct{}),
+		earmark:  earmark,
 	}
-	if policy.EarmarkedSat != nil {
-		a.setEarmark(policy.EarmarkedSat)
-	}
-
-	return a
 }
 
-// setEarmark wires (or rewires) the credit-earmark provider read on each sweep.
+// setEarmark wires (or rewires) the shared credit-earmark provider. The
+// per-operation children read the same pointer, so this reaches both the boot
+// reconcile and every receive-driven redeem decision.
 func (a *autoRedeemer) setEarmark(fn EarmarkFunc) {
 	if a == nil || fn == nil {
 		return
@@ -74,62 +67,39 @@ func (a *autoRedeemer) setEarmark(fn EarmarkFunc) {
 	a.earmark.Store(&fn)
 }
 
-// start launches the sweep loop when the policy is enabled.
+// start runs the single boot-time reconcile when the policy is enabled. There
+// is no periodic loop: the receive state machine drives steady-state
+// auto-redeem. It is anchored to ctx, which must be a daemon-lifetime context.
 func (a *autoRedeemer) start(ctx context.Context) {
 	if a == nil || !a.cfg.Enabled {
 		return
 	}
 
 	a.wg.Add(1)
-	go a.run(ctx)
+	go func() {
+		defer a.wg.Done()
+
+		if err := a.reconcile(ctx); err != nil {
+			a.logger(ctx).DebugS(ctx, "Boot auto-redeem reconcile "+
+				"failed", slog.String("err", err.Error()))
+		}
+	}()
 }
 
-// stop signals the sweep loop to exit and waits for it.
+// stop waits for the boot reconcile goroutine to exit.
 func (a *autoRedeemer) stop() {
 	if a == nil {
 		return
 	}
 
-	a.once.Do(func() {
-		close(a.quit)
-	})
 	a.wg.Wait()
 }
 
-// run is the periodic sweep loop.
-func (a *autoRedeemer) run(ctx context.Context) {
-	defer a.wg.Done()
-
-	ticker := time.NewTicker(a.cfg.Interval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-a.quit:
-			return
-
-		case <-ctx.Done():
-			return
-
-		case <-ticker.C:
-			if err := a.sweep(ctx); err != nil {
-				a.logger(ctx).DebugS(ctx, "Auto-redeem sweep "+
-					"failed", slog.String(
-					"err", err.Error(),
-				))
-			}
-		}
-	}
-}
-
-// sweep performs one auto-redeem evaluation and, when warranted, asks the
-// registry to redeem the available balance.
-func (a *autoRedeemer) sweep(ctx context.Context) error {
-	ops, err := a.store.ListNonTerminal(ctx)
-	if err != nil {
-		return fmt.Errorf("list non-terminal credit ops: %w", err)
-	}
-
+// reconcile evaluates the auto-redeem watermark once and signals the registry
+// when an over-watermark balance is already sitting available. The registry
+// applies the no-pending-pay/redeem interlock before admitting the redeem, so
+// this only has to clear the threshold against the earmark-adjusted balance.
+func (a *autoRedeemer) reconcile(ctx context.Context) error {
 	threshold, err := a.threshold(ctx)
 	if err != nil {
 		return err
@@ -148,41 +118,36 @@ func (a *autoRedeemer) sweep(ctx context.Context) error {
 	// Subtract any credits earmarked by an in-flight wallet operation that
 	// has not yet written a durable credit_operations row — chiefly a
 	// credit-backed PrepareSend, whose row is created only at Send. Without
-	// this, the sweep could redeem credits the user is about to spend,
-	// forcing the pending send to re-top-up. The interlock fails safe: an
-	// error or a missing provider redeems nothing it should not, but does
-	// not block a legitimate sweep.
+	// this, the reconcile could redeem credits the user is about to spend,
+	// forcing the pending send to re-top-up. Fail-safe: an error redeems
+	// nothing.
 	available := snapshot.AvailableSat
-	if fn := a.earmark.Load(); fn != nil {
-		earmarked, err := (*fn)(ctx)
-		if err != nil {
-			return fmt.Errorf("read earmarked credits: %w", err)
-		}
-		if earmarked >= available {
-			available = 0
-		} else {
-			available -= earmarked
+	if a.earmark != nil {
+		if earmarkFn := a.earmark.Load(); earmarkFn != nil {
+			earmarked, err := (*earmarkFn)(ctx)
+			if err != nil {
+				return fmt.Errorf("read earmarked credits: %w",
+					err)
+			}
+			if earmarked >= available {
+				available = 0
+			} else {
+				available -= earmarked
+			}
 		}
 	}
 
-	amount, ok := redeemDecision(available, threshold, ops)
-	if !ok {
+	if available <= threshold {
 		return nil
 	}
 
-	opKey, err := redeemOpKey()
-	if err != nil {
-		return err
-	}
-
-	a.logger(ctx).InfoS(ctx, "Auto-redeeming available credits",
-		slog.Uint64("amount_sat", amount),
+	a.logger(ctx).InfoS(ctx, "Boot reconcile signaling auto-redeem",
+		slog.Uint64("available_sat", available),
 		slog.Uint64("threshold_sat", threshold),
 	)
 
-	return a.registry.Tell(ctx, &RedeemRequest{
-		OpKey:     opKey,
-		AmountSat: amount,
+	return a.registry.Tell(ctx, &ConsiderRedeemRequest{
+		AvailableSat: available,
 	})
 }
 
@@ -210,35 +175,9 @@ func (a *autoRedeemer) logger(ctx context.Context) btclog.Logger {
 	return build.LoggerFromContext(ctx)
 }
 
-// redeemDecision decides whether to auto-redeem. It returns the amount to
-// redeem and true only when the available balance strictly exceeds the
-// threshold and no operation is pending that would consume credits (an
-// in-flight pay) or that is itself an in-flight redemption. A pending receive
-// does not block: it only adds credits.
-func redeemDecision(availableSat, thresholdSat uint64,
-	nonTerminal []db.CreditOperationRecord) (uint64, bool) {
-
-	if availableSat <= thresholdSat {
-		return 0, false
-	}
-
-	for _, op := range nonTerminal {
-		switch op.Kind {
-		case db.CreditOpKindPay, db.CreditOpKindRedeem:
-			return 0, false
-
-		case db.CreditOpKindReceive:
-			// A pending receive only adds credits, so it does not
-			// block an auto-redeem.
-		}
-	}
-
-	return availableSat, true
-}
-
 // redeemOpKey mints a fresh stable idempotency key for one auto-redeem
-// operation. A redemption is a one-shot materialization, so each sweep that
-// passes the in-flight interlock uses a fresh key.
+// operation. A redemption is a one-shot materialization, so each trigger that
+// passes the registry's in-flight interlock uses a fresh key.
 func redeemOpKey() (string, error) {
 	var buf [16]byte
 	if _, err := rand.Read(buf[:]); err != nil {

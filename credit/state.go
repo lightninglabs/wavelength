@@ -63,10 +63,17 @@ const (
 	// the operation is waiting for the server ledger to report it CREDITED.
 	StateAwaitingSettlement State = "awaiting_settlement"
 
-	// StateRedeemReserving means RedeemCredit has been requested with a
-	// wallet-owned destination and the server reservation is being
-	// recorded.
+	// StateRedeemReserving means a wallet-owned redemption destination is
+	// being allocated and durably checkpointed before the server
+	// reservation is requested against it.
 	StateRedeemReserving State = "redeem_reserving"
+
+	// StateRedeemSubmitting means the redemption destination is durably
+	// recorded and RedeemCredit is being requested (or reused, by op key)
+	// against it. Splitting it out from reserving keeps the destination
+	// checkpoint strictly before the reservation effect, so a crash
+	// re-drives against the destination the chain-watch will match.
+	StateRedeemSubmitting State = "redeem_submitting"
 
 	// StateAwaitingOOR means the redemption OOR is in flight and the
 	// operation is waiting for the redeemed vTXO to land locally.

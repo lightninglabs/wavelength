@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
@@ -91,10 +92,17 @@ func NewRegistry(cfg RegistryConfig) (*Registry, error) {
 		cfg.AdmitTimeout = DefaultAdmitTimeout
 	}
 
+	earmark := &atomic.Pointer[EarmarkFunc]{}
+	if cfg.AutoRedeem.EarmarkedSat != nil {
+		fn := cfg.AutoRedeem.EarmarkedSat
+		earmark.Store(&fn)
+	}
+
 	behavior := &registryBehavior{
-		cfg:    cfg,
-		log:    cfg.Log.UnwrapOr(btclog.Disabled),
-		active: make(map[string]*OpActor),
+		cfg:     cfg,
+		log:     cfg.Log.UnwrapOr(btclog.Disabled),
+		active:  make(map[string]*OpActor),
+		earmark: earmark,
 	}
 
 	var wg sync.WaitGroup
@@ -127,14 +135,16 @@ func NewRegistry(cfg RegistryConfig) (*Registry, error) {
 		tellRef:  supervisor.TellRef(),
 		actor:    supervisor,
 		behavior: behavior,
-		redeemer: newAutoRedeemer(cfg, supervisor.TellRef()),
+		redeemer: newAutoRedeemer(cfg, supervisor.TellRef(), earmark),
 		wg:       &wg,
 	}, nil
 }
 
-// StartAutoRedeem launches the wallet-owned auto-redeem sweep loop (a no-op
-// when the policy is disabled). It is anchored to ctx, which must be a
-// daemon-lifetime context, not an RPC-call context.
+// StartAutoRedeem runs the wallet-owned auto-redeem boot reconcile (a no-op
+// when the policy is disabled). Steady-state auto-redeem is driven by the
+// receive state machine; this only covers a balance already over the watermark
+// at start. It is anchored to ctx, which must be a daemon-lifetime context, not
+// an RPC-call context.
 func (r *Registry) StartAutoRedeem(ctx context.Context) {
 	if r == nil {
 		return
@@ -143,11 +153,10 @@ func (r *Registry) StartAutoRedeem(ctx context.Context) {
 	r.redeemer.start(ctx)
 }
 
-// SetEarmarkProvider wires the credit-earmark provider the auto-redeem sweep
-// consults to avoid redeeming credits an in-flight wallet operation is about to
-// spend. It is safe to call after StartAutoRedeem: the wallet's prepared-send
-// store is built after the registry, so the daemon wires this once that store
-// exists.
+// SetEarmarkProvider wires the credit-earmark provider auto-redeem consults to
+// avoid redeeming credits an in-flight wallet operation is about to spend. It
+// is safe to call after StartAutoRedeem: the wallet's prepared-send store is
+// built after the registry, so the daemon wires this once that store exists.
 func (r *Registry) SetEarmarkProvider(fn EarmarkFunc) {
 	if r == nil {
 		return
@@ -170,6 +179,13 @@ type registryBehavior struct {
 	// active maps op id to its resident child. Only ever touched on the
 	// registry goroutine (turns are serialized).
 	active map[string]*OpActor
+
+	// earmark is the shared credit-earmark provider every child and the
+	// boot-time reconcile consult before deciding to auto-redeem. It is an
+	// atomic pointer so the daemon can wire the provider after the registry
+	// (and its resident children) are built, via SetEarmarkProvider,
+	// without re-spawning anything.
+	earmark *atomic.Pointer[EarmarkFunc]
 }
 
 // Compile-time check that registryBehavior is a plain actor behavior.
@@ -204,6 +220,11 @@ func (b *registryBehavior) Receive(ctx context.Context,
 
 	case *ResumeCreditOpRequest:
 		b.routeResume(ctx, m.OpID)
+
+		return fn.Ok[CreditResp](&AckResponse{})
+
+	case *ConsiderRedeemRequest:
+		b.considerRedeem(ctx, m.AvailableSat)
 
 		return fn.Ok[CreditResp](&AckResponse{})
 
@@ -526,20 +547,102 @@ func (b *registryBehavior) handleList(ctx context.Context,
 	return fn.Ok[CreditResp](resp)
 }
 
+// considerRedeem materializes the supplied available balance into a vTXO when
+// the no-pending-pay/redeem interlock allows it. A receive that cleared the
+// auto-redeem watermark (or the boot-time reconcile) signals the amount; this
+// applies the interlock the receive FSM does not own — a pending pay may be
+// about to consume credits, and a pending redeem already owns the materialize —
+// and admits a fresh redeem operation when neither is in flight. The redeem op
+// key is random, so it always admits a new operation rather than deduping.
+func (b *registryBehavior) considerRedeem(ctx context.Context,
+	available uint64) {
+
+	if available == 0 {
+		return
+	}
+
+	ops, err := b.cfg.Store.ListNonTerminal(ctx)
+	if err != nil {
+		// Dropping the signal leaves the credits available and safe,
+		// but nothing re-evaluates them until the next receive trigger
+		// or a restart, so log loudly rather than silently skipping.
+		b.logger(ctx).WarnS(ctx, "Unable to evaluate auto-redeem", err)
+
+		return
+	}
+	for i := range ops {
+		switch ops[i].Kind {
+		case KindPay, KindRedeem:
+			// A pending pay may consume the credits, and a pending
+			// redeem already owns the materialize, so defer to it.
+			// The over-watermark balance is then re-evaluated only
+			// at the next receive trigger or a restart's boot
+			// reconcile, not the moment this blocking op clears.
+			// Closing that gap causally is the single-authority
+			// follow-up that routes credit-backed send reservations
+			// through this registry.
+			b.logger(ctx).DebugS(ctx, "Deferring auto-redeem; an "+
+				"operation is in flight",
+				slog.String("blocking_op", ops[i].OpID),
+				slog.Int("kind", int(ops[i].Kind)),
+			)
+
+			return
+
+		case KindReceive:
+			// A pending receive only adds credits, so it does not
+			// block an auto-redeem.
+		}
+	}
+
+	opKey, err := redeemOpKey()
+	if err != nil {
+		b.logger(ctx).WarnS(ctx, "Unable to mint redeem op key", err)
+
+		return
+	}
+
+	b.logger(ctx).InfoS(ctx, "Auto-redeeming available credits",
+		slog.Uint64("amount_sat", available),
+	)
+
+	// The amount is the available balance the trigger observed, which may
+	// be slightly stale by the time it reserves. That is safe: the server
+	// revalidates the reservation in redeemSubmittingState, so an amount
+	// the balance no longer supports fails the redeem op cleanly rather
+	// than over-materializing.
+	//
+	// admit can also fail to write the control-plane row; surface it, since
+	// the redeem is then dropped until the next receive trigger or a
+	// restart's boot reconcile re-derives the signal.
+	if err := b.admit(
+		ctx, &RedeemRequest{OpKey: opKey, AmountSat: available}, opKey,
+	).Err(); err != nil {
+
+		b.logger(ctx).WarnS(ctx, "Auto-redeem admission failed; "+
+			"deferring to boot reconcile", err,
+			slog.Uint64("amount_sat", available),
+		)
+	}
+}
+
 // childConfig builds the per-operation actor config for one op id.
 func (b *registryBehavior) childConfig(opID string) OpActorConfig {
 	return OpActorConfig{
-		OpID:             opID,
-		Log:              b.cfg.Log,
-		Server:           b.cfg.Server,
-		Daemon:           b.cfg.Daemon,
-		Store:            b.cfg.Store,
-		DeliveryStore:    b.cfg.DeliveryStore,
-		TimeoutActor:     b.cfg.TimeoutActor,
-		CallbackRef:      b.cfg.CallbackRef,
-		Registry:         b.selfRef,
-		PollInterval:     b.cfg.PollInterval,
-		MaxAwaitingPolls: b.cfg.MaxAwaitingPolls,
+		OpID:              opID,
+		Log:               b.cfg.Log,
+		Server:            b.cfg.Server,
+		Daemon:            b.cfg.Daemon,
+		Store:             b.cfg.Store,
+		DeliveryStore:     b.cfg.DeliveryStore,
+		TimeoutActor:      b.cfg.TimeoutActor,
+		CallbackRef:       b.cfg.CallbackRef,
+		Registry:          b.selfRef,
+		PollInterval:      b.cfg.PollInterval,
+		MaxAwaitingPolls:  b.cfg.MaxAwaitingPolls,
+		AutoRedeemEnabled: b.cfg.AutoRedeem.Enabled,
+		MinRedeemSat:      b.cfg.AutoRedeem.MinRedeemSat,
+		Earmark:           b.earmark,
 	}
 }
 
