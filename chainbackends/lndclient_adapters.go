@@ -142,14 +142,19 @@ func (n *LndClientChainNotifier) RegisterConfirmationsNtfn(txid *chainhash.Hash,
 	}
 
 	// Ask lndclient to keep the confirmation stream alive past the first
-	// Confirmed event and forward any subsequent reorg signal on a
-	// dedicated channel. Without WithReOrgChan, lndclient's receive
-	// loop tears the stream down after one delivery and any later
-	// reorg is silently dropped at the gRPC layer.
-	reorgPing := make(chan struct{}, 1)
+	// Confirmed event and forward any subsequent reorg signal (with depth)
+	// and the terminal Done signal on dedicated channels. Without these the
+	// receive loop tears the stream down after one delivery and any later
+	// reorg is silently dropped at the gRPC layer. WithReOrgDepthChan
+	// carries both the reorg signal and its depth, and WithDoneChan
+	// delivers lnd's "past reorg-safety depth" signal that this transport
+	// previously could not surface.
+	reorgDepth := make(chan int32, 1)
+	doneChan := make(chan struct{}, 1)
 
 	lndOpts := []lndclient.NotifierOption{
-		lndclient.WithReOrgChan(reorgPing),
+		lndclient.WithReOrgDepthChan(reorgDepth),
+		lndclient.WithDoneChan(doneChan),
 	}
 	if notifierOpts.IncludeBlock {
 		lndOpts = append(lndOpts, lndclient.WithIncludeBlock())
@@ -231,9 +236,7 @@ func (n *LndClientChainNotifier) RegisterConfirmationsNtfn(txid *chainhash.Hash,
 	// makes the ConfActor observe exactly the forwarder's (lndclient's)
 	// order.
 	//
-	// lndclient does not preserve the reorg depth across the gRPC boundary,
-	// so a sentinel value of 0 is forwarded on NegativeConf; callers over
-	// this transport must not rely on the integer value.
+	// lndclient now forwards the real reorg depth on NegativeConf.
 	orderedConfirmed := make(chan *chainntnfs.TxConfirmation, 1)
 	negativeConf := make(chan int32, 1)
 	go func() {
@@ -241,52 +244,72 @@ func (n *LndClientChainNotifier) RegisterConfirmationsNtfn(txid *chainhash.Hash,
 		defer close(negativeConf)
 
 		forwardOrderedReorg(
-			ctx, reorgPing, confChan, orderedConfirmed,
+			ctx, reorgDepth, confChan, orderedConfirmed,
 			negativeConf,
 		)
 	}()
 
-	// Done is allocated but never written to because lnd's internal
-	// "past reorg-safety depth" signal is not surfaced through the
-	// lndclient gRPC transport. Consumers needing such a gate must
-	// compute it themselves from block height.
+	// Done is now driven by lnd's "past reorg-safety depth" signal, which
+	// lndclient surfaces via WithDoneChan. It is a terminal, post-finality
+	// signal so it is forwarded directly rather than through the ordered
+	// confirmation forwarder.
 	return &chainntnfs.ConfirmationEvent{
 		Confirmed:    orderedConfirmed,
 		NegativeConf: negativeConf,
 		Cancel:       cancel,
-		Done:         make(chan struct{}, 1),
+		Done:         doneChan,
 	}, nil
 }
 
 // forwardOrderedReorg copies confirmations and reorg pings from lndclient's two
-// source channels onto the downstream Confirmed / NegativeConf channels,
-// forwarding each event in the order this single goroutine observes it. It does
-// not bias either channel: the authoritative lifecycle ordering is
-// re-established downstream by the per-registration sequence number the
-// LNDBackend forwarder stamps (see chainsource.TxConfirmation.Seq), so the
-// consumer applies highest-seq-wins regardless of how near-simultaneous events
-// interleave here. lndclient's two-channel split makes a perfectly ordered
-// merge impossible at this layer, so forwarding in natural arrival order keeps
-// the stamped sequence faithful to what was actually observed rather than
-// injecting an artificial reorg-first bias. lndclient does not preserve the
-// reorg depth across the gRPC boundary, so a sentinel value of 0 is forwarded
-// on NegativeConf; callers over this transport must not rely on the value.
-func forwardOrderedReorg(ctx context.Context, reorgPing <-chan struct{},
+// source channels onto the downstream Confirmed / NegativeConf channels in
+// lndclient's emission order. A pending reorg is drained with priority before
+// any confirmation on each iteration, and every forwarded event is handed off
+// with a blocking send, so the single downstream consumer observes the events
+// strictly in order (it never has two of our channels ready at once). This
+// preserves the reorg-before-reconfirmation ordering lndclient guarantees from
+// its single ordered receive loop, which the two-channel split would otherwise
+// lose at the consumer's select.
+func forwardOrderedReorg(ctx context.Context, reorgDepth <-chan int32,
 	confChan <-chan *chainntnfs.TxConfirmation,
 	outConfirmed chan<- *chainntnfs.TxConfirmation,
 	outNegConf chan<- int32) {
 
-	for confChan != nil || reorgPing != nil {
+	for confChan != nil || reorgDepth != nil {
+		// Priority: forward a reorg that is already pending before
+		// looking at confirmations, so a reorg lndclient wrote before
+		// the replacement Confirmed is delivered first.
+		if reorgDepth != nil {
+			select {
+			case depth, ok := <-reorgDepth:
+				if !ok {
+					reorgDepth = nil
+
+					continue
+				}
+
+				select {
+				case outNegConf <- depth:
+				case <-ctx.Done():
+					return
+				}
+
+				continue
+
+			default:
+			}
+		}
+
 		select {
-		case _, ok := <-reorgPing:
+		case depth, ok := <-reorgDepth:
 			if !ok {
-				reorgPing = nil
+				reorgDepth = nil
 
 				continue
 			}
 
 			select {
-			case outNegConf <- 0:
+			case outNegConf <- depth:
 			case <-ctx.Done():
 				return
 			}
@@ -316,10 +339,13 @@ func (n *LndClientChainNotifier) RegisterSpendNtfn(outpoint *wire.OutPoint,
 	pkScript []byte, heightHint uint32) (*chainntnfs.SpendEvent, error) {
 
 	// Ask lndclient to keep the spend stream alive past the first
-	// Spend event so it can forward reorg pings. Without WithReOrgChan
-	// the stream is torn down after the first delivery and any later
-	// spend reorg is silently dropped at the gRPC layer.
+	// Spend event so it can forward reorg pings and the terminal Done
+	// signal. Without these the stream is torn down after the first
+	// delivery and any later spend reorg is silently dropped at the gRPC
+	// layer. The spend notifier does not track a reorg depth, so the bare
+	// WithReOrgChan signal is sufficient on this path.
 	reorgPing := make(chan struct{}, 1)
+	doneChan := make(chan struct{}, 1)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -336,6 +362,7 @@ func (n *LndClientChainNotifier) RegisterSpendNtfn(outpoint *wire.OutPoint,
 		sc, ec, err := n.cfg.LND.ChainNotifier.RegisterSpendNtfn(
 			ctx, outpoint, pkScript, int32(heightHint),
 			lndclient.WithReOrgChan(reorgPing),
+			lndclient.WithDoneChan(doneChan),
 		)
 		resultCh <- regResult{sc, ec, err}
 	}()
@@ -395,13 +422,14 @@ func (n *LndClientChainNotifier) RegisterSpendNtfn(outpoint *wire.OutPoint,
 		)
 	}()
 
-	// Done is allocated but never written to because lnd's "past
-	// reorg-safety depth" signal is not surfaced through the lndclient
-	// gRPC transport.
+	// Done is now driven by lnd's "past reorg-safety depth" signal, which
+	// lndclient surfaces via WithDoneChan. It is a terminal, post-finality
+	// signal so it is forwarded directly rather than through the ordered
+	// spend forwarder.
 	return &chainntnfs.SpendEvent{
 		Spend:  orderedSpend,
 		Reorg:  reorgChan,
-		Done:   make(chan struct{}, 1),
+		Done:   doneChan,
 		Cancel: cancel,
 	}, nil
 }
