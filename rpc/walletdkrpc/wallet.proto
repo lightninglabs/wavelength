@@ -1182,6 +1182,12 @@ message WalletEntryProgress {
 
     // vtxo_outpoint is populated when a swap observes the Ark vHTLC output.
     string vtxo_outpoint = 6;
+
+    // preimage is the hex-encoded Lightning payment preimage once the swap
+    // revealed it. For a completed Lightning-backed send this is the proof of
+    // payment for the paid invoice (sha256(preimage) == payment_hash); it is
+    // empty until the preimage is durably known and for non-Lightning entries.
+    string preimage = 7;
 }
 
 // EntryFailureCode is a stable, machine-readable classification of why a FAILED
