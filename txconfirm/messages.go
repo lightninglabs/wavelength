@@ -3,6 +3,7 @@ package txconfirm
 import (
 	"fmt"
 
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
@@ -118,6 +119,13 @@ type EnsureConfirmedReq struct {
 	// TargetConfs is the required confirmation count. Zero defaults to one.
 	TargetConfs uint32
 
+	// ParentFee is the absolute miner fee, in satoshis, that Tx already
+	// pays. It is used only for a funded-anchor parent so a later CPFP fee
+	// bump subtracts the parent's own fee and lands the combined fee on the
+	// target rate. Zero (the default) is correct for zero-fee ephemeral
+	// parents and for callers that do not fee-bump.
+	ParentFee btcutil.Amount
+
 	// Subscriber receives TxConfirmed or TxFailed notifications for this
 	// request.
 	Subscriber actor.TellOnlyRef[Notification]
@@ -204,6 +212,63 @@ func (m *CancelInterestResp) MessageType() string {
 
 // txConfirmRespSealed seals CancelInterestResp into the package response set.
 func (m *CancelInterestResp) txConfirmRespSealed() {}
+
+// BumpNowReq asks the actor to force an immediate CPFP fee bump of an
+// already-tracked transaction at an operator-supplied fee rate, rather than
+// waiting for the next interval-paced bump. It is the mechanism behind an
+// operator "bump this stuck transaction now" command. The transaction must
+// carry a CPFP anchor for the bump to do anything; a plain transaction has no
+// handle to attach a child to.
+type BumpNowReq struct {
+	actor.BaseMessage
+
+	// Txid identifies the tracked transaction to bump.
+	Txid chainhash.Hash
+
+	// TargetFeeRateSatPerVByte is the fee rate the forced CPFP package
+	// should target, clamped to the broadcaster's configured maximum. Zero
+	// defers to the fee estimator, matching an interval-paced bump.
+	TargetFeeRateSatPerVByte int64
+}
+
+// MessageType returns the stable message type identifier.
+func (m *BumpNowReq) MessageType() string {
+	return "BumpNowReq"
+}
+
+// txConfirmMsgSealed seals BumpNowReq into the package message set.
+func (m *BumpNowReq) txConfirmMsgSealed() {}
+
+// BumpNowResp reports the outcome of a forced fee bump.
+type BumpNowResp struct {
+	actor.BaseMessage
+
+	// Txid echoes the bumped transaction's hash.
+	Txid chainhash.Hash
+
+	// State is the tracked transaction's state after the bump attempt.
+	State TxState
+
+	// Bumped is true when a fresh CPFP child was built and submitted, and
+	// false when the bump was a no-op (e.g. the txid is not tracked, is
+	// already terminal, or carries no anchor to bump).
+	Bumped bool
+
+	// ChildTxid is the hash of the CPFP child submitted by this bump, set
+	// only when Bumped is true.
+	ChildTxid *chainhash.Hash
+
+	// Reason is a stable human-readable explanation when Bumped is false.
+	Reason string
+}
+
+// MessageType returns the stable message type identifier.
+func (m *BumpNowResp) MessageType() string {
+	return "BumpNowResp"
+}
+
+// txConfirmRespSealed seals BumpNowResp into the package response set.
+func (m *BumpNowResp) txConfirmRespSealed() {}
 
 // TxConfirmed notifies a subscriber that the tracked transaction reached its
 // requested confirmation target.

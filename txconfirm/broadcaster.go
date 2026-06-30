@@ -180,6 +180,33 @@ type BroadcastRequest struct {
 
 	// Label is a human-readable label for logging.
 	Label string
+
+	// IsFeeBump distinguishes an initial broadcast from a fee-bump
+	// re-attempt. It only matters for a funded-anchor parent: such a
+	// parent is independently valid and pays its own miner fee, so its
+	// initial broadcast goes out directly (no CPFP child, no fee-input
+	// reservation) and a CPFP child is built only when a bump is actually
+	// needed. A zero-value ephemeral-anchor parent ignores this flag: it
+	// pays zero fee and must always ride a CPFP package, on the initial
+	// submission and on every bump.
+	IsFeeBump bool
+
+	// ParentFee is the absolute miner fee the parent transaction already
+	// pays, in satoshis. It is used only on the funded-anchor CPFP path to
+	// avoid double-counting the parent's fee: the CPFP child pays the
+	// package-fee target minus what the parent already contributes, so the
+	// combined parent+child fee lands on the requested rate rather than
+	// overshooting it by the parent's own fee. Zero (the default, and the
+	// only value used by the zero-fee ephemeral path) makes the child pay
+	// the full package fee, which is correct when the parent pays nothing.
+	ParentFee btcutil.Amount
+
+	// TargetFeeRateSatPerVByte, when positive, overrides the estimator and
+	// forces the CPFP package to a specific fee rate, clamped to
+	// MaxFeeRateSatPerVByte. It is how an operator-driven "bump now to this
+	// rate" request reaches the broadcaster. Zero defers to the fee
+	// estimator, the default behaviour for interval-paced bumps.
+	TargetFeeRateSatPerVByte int64
 }
 
 // BroadcastResult describes the outcome of one broadcast attempt.
@@ -543,18 +570,38 @@ func (b *CPFPBroadcaster) Submit(ctx context.Context, height int32,
 		return nil, fmt.Errorf("broadcast request and tx required")
 	}
 
-	if req.Tx.Version != arktx.TxVersion {
-		return nil, fmt.Errorf("%w: got version %d, want %d",
-			ErrNonTRUCParent, req.Tx.Version, arktx.TxVersion)
-	}
-
 	txid := req.Tx.TxHash()
 	anchorIdx := findAnchorOutput(req.Tx)
-	if anchorIdx < 0 {
-		return b.broadcastDirect(ctx, req, txid)
-	}
 
-	return b.broadcastWithCPFP(ctx, height, req, txid, anchorIdx)
+	switch {
+	// No anchor at all: a plain transaction with no CPFP handle. Broadcast
+	// it directly and let it ride; there is nothing to fee-bump.
+	case anchorIdx < 0:
+		return b.broadcastDirect(ctx, req, txid)
+
+	// Funded anchor: the parent pays its own fee and is independently
+	// valid, so it does not need TRUC/package semantics. On the initial
+	// broadcast we send the parent directly and reserve no fee input — the
+	// anchor is a spare handle we only spend when a bump is requested. On a
+	// fee-bump we build the CPFP child off the funded anchor.
+	case anchorIsFunded(req.Tx, anchorIdx):
+		if !req.IsFeeBump {
+			return b.broadcastDirect(ctx, req, txid)
+		}
+
+		return b.broadcastWithCPFP(ctx, height, req, txid, anchorIdx)
+
+	// Zero-value ephemeral anchor: the parent pays zero fee and can only
+	// relay as part of a CPFP package, so it must be v3 (TRUC) and always
+	// rides a child — on the initial submission and on every bump.
+	default:
+		if req.Tx.Version != arktx.TxVersion {
+			return nil, fmt.Errorf("%w: got version %d, want %d",
+				ErrNonTRUCParent, req.Tx.Version, arktx.TxVersion)
+		}
+
+		return b.broadcastWithCPFP(ctx, height, req, txid, anchorIdx)
+	}
 }
 
 // broadcastDirect broadcasts a transaction without CPFP.
@@ -707,7 +754,13 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context, height int32,
 	// side, which is safer than under-estimating.
 	childVSize := estimateChildVSize(changePkScript, changePkScript)
 
-	feeRate, err := b.EstimateFeeRate(ctx)
+	// An operator-supplied target rate (a "bump now to this rate" request)
+	// overrides the estimator; otherwise we use the current estimate. Both
+	// are clamped to MaxFeeRateSatPerVByte inside the respective helpers so
+	// a stuck-tx bump can never blow past the configured ceiling.
+	feeRate, err := b.targetOrEstimatedFeeRate(
+		ctx, req.TargetFeeRateSatPerVByte,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("estimate fee: %w", err)
 	}
@@ -781,9 +834,20 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context, height int32,
 	anchorOutpoint := wire.OutPoint{Hash: txid, Index: uint32(anchorIdx)}
 	anchorOutput := req.Tx.TxOut[anchorIdx]
 
+	// The child only needs to pay the package fee that the parent does not
+	// already cover. For a zero-fee ephemeral parent ParentFee is zero and
+	// the child pays the whole package fee (unchanged behaviour). For a
+	// funded parent we subtract the fee it already pays so the combined
+	// parent+child fee lands on the target rate instead of overshooting it.
+	// totalFee remains the combined package fee recorded for BIP-125
+	// replacement accounting; only the child's share is reduced here. The
+	// fee input was selected against totalFee+DustLimit, so a smaller child
+	// fee just yields a larger (still valid) change output.
+	childFee := childFeeFromPackageFee(totalFee, req.ParentFee)
+
 	child, err := BuildCPFPChild(
 		req.Tx.Version, anchorOutpoint, anchorOutput, feeInput,
-		changePkScript, totalFee,
+		changePkScript, childFee,
 	)
 	if err != nil {
 		return b.fallbackDirectBroadcast(
@@ -1000,6 +1064,43 @@ func (b *CPFPBroadcaster) EstimateFeeRate(ctx context.Context) (int64, error) {
 	}
 
 	return rate, nil
+}
+
+// targetOrEstimatedFeeRate returns the fee rate to use for a CPFP package. A
+// positive target (an operator-driven "bump now to this rate" request)
+// overrides the estimator and is clamped to MaxFeeRateSatPerVByte so a manual
+// bump can never exceed the configured ceiling; a non-positive target defers
+// to the estimator, which applies the same clamp.
+func (b *CPFPBroadcaster) targetOrEstimatedFeeRate(ctx context.Context,
+	targetRate int64) (int64, error) {
+
+	if targetRate <= 0 {
+		return b.EstimateFeeRate(ctx)
+	}
+
+	if b.cfg.MaxFeeRateSatPerVByte > 0 &&
+		targetRate > b.cfg.MaxFeeRateSatPerVByte {
+
+		targetRate = b.cfg.MaxFeeRateSatPerVByte
+	}
+
+	return targetRate, nil
+}
+
+// childFeeFromPackageFee splits the combined package fee into the portion the
+// CPFP child must pay, given the fee the parent already contributes. The
+// parent's fee is subtracted so the combined parent+child fee equals the
+// package target rather than overshooting it; the result is floored at one
+// satoshi so the child always pays a positive fee even when the parent's fee
+// already covers (or exceeds) the target, which can happen on a flat-rate
+// re-bump.
+func childFeeFromPackageFee(packageFee, parentFee btcutil.Amount) btcutil.Amount {
+	childFee := packageFee - parentFee
+	if childFee < 1 {
+		childFee = 1
+	}
+
+	return childFee
 }
 
 // selectFeeInput finds the smallest confirmed wallet UTXO that covers the
@@ -1302,16 +1403,28 @@ func (b *CPFPBroadcaster) broadcastIndividually(ctx context.Context,
 	return nil
 }
 
-// findAnchorOutput returns the index of the anchor output in the transaction
-// or -1 if none is found.
+// findAnchorOutput returns the index of the P2A anchor output in the
+// transaction or -1 if none is found. It matches the anchor by script
+// regardless of value, so it locates both the zero-value ephemeral anchor
+// used by TRUC parents and the funded anchor used by an independently-valid
+// parent. Callers that need to distinguish the two forms inspect the value
+// of the returned output (see anchorIsFunded).
 func findAnchorOutput(tx *wire.MsgTx) int {
 	for i, out := range tx.TxOut {
-		if arktx.IsAnchorOutput(out) {
+		if arktx.IsP2AAnchorScript(out.PkScript) {
 			return i
 		}
 	}
 
 	return -1
+}
+
+// anchorIsFunded reports whether the anchor at anchorIdx carries a non-zero
+// value, i.e. it is the funded form whose parent pays its own fee and can
+// confirm standalone, rather than the zero-value ephemeral form that relies
+// on a CPFP descendant to fund the package.
+func anchorIsFunded(tx *wire.MsgTx, anchorIdx int) bool {
+	return arktx.IsFundedAnchorOutput(tx.TxOut[anchorIdx])
 }
 
 // estimateChildVSize returns the vbyte size of the CPFP child this

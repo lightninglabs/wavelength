@@ -3,6 +3,7 @@ package txconfirm
 import (
 	"fmt"
 
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
@@ -70,6 +71,14 @@ type trackedTxData struct {
 
 	// TargetConfs is the required confirmation count.
 	TargetConfs uint32
+
+	// ParentFee is the absolute miner fee, in satoshis, that the tracked
+	// transaction already pays on its own. It is used only for a funded-
+	// anchor parent, where the CPFP child subtracts it so a fee bump lands
+	// the combined parent+child fee on the target rate instead of
+	// overshooting by the parent's own fee. Zero for zero-fee ephemeral
+	// parents and for callers that do not supply it.
+	ParentFee btcutil.Amount
 }
 
 // trackedTxProgress is the mutable per-broadcast progress carried by FSM
