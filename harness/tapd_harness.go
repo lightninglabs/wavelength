@@ -15,7 +15,6 @@ import (
 	"github.com/ory/dockertest/v3/docker"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
 )
 
 // TapdHarness represents a paired LND and tapd instance for test clients.
@@ -347,8 +346,7 @@ func (th *TapdHarness) setupLNDPaths() {
 
 	// Wait for TLS cert to be available.
 	require.Eventually(th.h.T, func() bool {
-		_, err := os.Stat(th.LNDTLSCert)
-		if err != nil {
+		if !lndTLSReady(th.LNDTLSCert) {
 			return false
 		}
 
@@ -386,13 +384,16 @@ func (th *TapdHarness) setupTapdPaths() {
 // initAndWaitLND initializes the LND wallet and waits until it's active.
 func (th *TapdHarness) initAndWaitLND() {
 	addr := net.JoinHostPort("127.0.0.1", th.LNDGRPCPort)
-	tlsCert, err := credentials.NewClientTLSFromFile(th.LNDTLSCert, "")
-	require.NoError(th.h.T, err, "failed to load "+th.Name+" lnd TLS")
-
 	// Wait for LND's state service to report SERVER_ACTIVE.
 	th.h.Logf("Waiting for %s LND to reach SERVER_ACTIVE state...", th.Name)
 	require.Eventually(th.h.T, func() bool {
 		const checkTimeout = 5 * time.Second
+
+		tlsCert, err := loadClientTLSCredentials(th.LNDTLSCert)
+		if err != nil {
+			return false
+		}
+
 		ctx, cancel := context.WithTimeout(
 			context.Background(), checkTimeout,
 		)
@@ -418,7 +419,7 @@ func (th *TapdHarness) initAndWaitLND() {
 	}, defaultTimeout, time.Second, th.Name+" LND not active")
 
 	// Wait for macaroon file.
-	err = th.h.pool.Retry(func() error {
+	err := th.h.pool.Retry(func() error {
 		if _, err := os.Stat(th.LNDMacaroon); err != nil {
 			return err
 		}

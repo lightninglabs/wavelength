@@ -2201,8 +2201,7 @@ func (h *Harness) startLNDInstance(name, dataDir string) *LndInstance {
 
 	require.Eventually(
 		h.T, func() bool {
-			_, err := os.Stat(inst.TLSCert)
-			if err != nil {
+			if !lndTLSReady(inst.TLSCert) {
 				return false
 			}
 
@@ -2247,12 +2246,14 @@ func (h *Harness) initAndWaitLNDInstance(
 	}
 
 	addr := net.JoinHostPort("127.0.0.1", inst.GRPCPort)
-	tlsCert, err := credentials.NewClientTLSFromFile(inst.TLSCert, "")
-	require.NoError(h.T, err, "failed to load %s TLS", inst.Name)
-
 	h.Logf("Waiting for %s to reach SERVER_ACTIVE state...", inst.Name)
 	require.Eventually(h.T, func() bool {
 		const checkTimeout = 5 * time.Second
+
+		tlsCert, err := loadClientTLSCredentials(inst.TLSCert)
+		if err != nil {
+			return false
+		}
 
 		ctxt, cancel := context.WithTimeout(
 			context.Background(), checkTimeout,
@@ -2280,7 +2281,7 @@ func (h *Harness) initAndWaitLNDInstance(
 		fmt.Sprintf("%s not active", inst.Name),
 	)
 
-	err = h.pool.Retry(func() error {
+	err := h.pool.Retry(func() error {
 		if _, err := os.Stat(inst.Macaroon); err != nil {
 			return err
 		}
@@ -2303,6 +2304,22 @@ func (h *Harness) initAndWaitLNDInstance(
 	h.waitForLNDChainSyncInstance(inst)
 
 	return services
+}
+
+// lndTLSReady reports whether the TLS certificate at the given path can be
+// parsed into client transport credentials.
+func lndTLSReady(tlsPath string) bool {
+	_, err := loadClientTLSCredentials(tlsPath)
+
+	return err == nil
+}
+
+// loadClientTLSCredentials loads gRPC client credentials from a TLS
+// certificate file.
+func loadClientTLSCredentials(tlsPath string) (credentials.TransportCredentials,
+	error) {
+
+	return credentials.NewClientTLSFromFile(tlsPath, "")
 }
 
 // StartAdditionalLND launches an extra LND instance with the given name and
