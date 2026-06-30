@@ -155,6 +155,7 @@ func progressFromSwapSummary(
 		PhaseLabel:   label,
 		PaymentHash:  s.GetPaymentHash(),
 		VtxoOutpoint: s.GetVhtlcOutpoint(),
+		Preimage:     s.GetPreimage(),
 	}
 }
 
