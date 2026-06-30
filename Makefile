@@ -72,7 +72,9 @@ LOG_TAGS := $(log)
 endif
 
 # Coverage settings.
-COVER_PKG = $$($(GOCC) list -deps -tags="$(DEV_TAGS)" ./... | grep '$(PKG)')
+COVER_PKG = $$($(GOCC) list -deps -tags="$(DEV_TAGS)" \
+	-f '{{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}' \
+	./... | grep '$(PKG)')
 COVER_FLAGS = -coverprofile=coverage.txt -covermode=atomic -coverpkg=$(PKG)/...
 
 # Default: list all packages for testing.
