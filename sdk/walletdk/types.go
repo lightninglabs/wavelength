@@ -670,6 +670,12 @@ type EntryProgress struct {
 
 	// VTXOOutpoint is populated when a swap observes the Ark vHTLC output.
 	VTXOOutpoint string
+
+	// Preimage is the hex-encoded Lightning payment preimage once the swap
+	// revealed it. For a completed Lightning-backed send this is the proof
+	// of payment for the paid invoice (sha256(preimage) == PaymentHash); it
+	// is empty until durably known and for non-Lightning entries.
+	Preimage string
 }
 
 // EntryRequestType discriminates which request shape an EntryRequest carries.

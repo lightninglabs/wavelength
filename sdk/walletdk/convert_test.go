@@ -18,6 +18,7 @@ func TestEntryFromProto(t *testing.T) {
 		Txid:               "txid",
 		ConfirmationHeight: 7,
 		VtxoOutpoint:       "vtxo:0",
+		Preimage:           "deadbeef",
 	}
 	prog.Phase = walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_SETTLING
 
@@ -64,6 +65,7 @@ func TestEntryFromProto(t *testing.T) {
 	require.Equal(t, "txid", entry.Progress.Txid)
 	require.EqualValues(t, 7, entry.Progress.ConfirmationHeight)
 	require.Equal(t, "vtxo:0", entry.Progress.VTXOOutpoint)
+	require.Equal(t, "deadbeef", entry.Progress.Preimage)
 
 	require.NotNil(t, entry.Request)
 	require.Equal(t, EntryRequestTypeLightning, entry.Request.Type)
