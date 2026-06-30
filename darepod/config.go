@@ -689,9 +689,11 @@ type SwapWalletConfig struct {
 }
 
 // MailboxEdgeFactory constructs the mailbox edge client used by the
-// serverconn runtime from the underlying gRPC connection to the operator.
+// serverconn runtime. The base client already carries the daemon's configured
+// operator RPC auth, so wrappers must delegate to it rather than rebuilding a
+// client from the raw connection.
 type MailboxEdgeFactory func(
-	conn grpc.ClientConnInterface,
+	conn grpc.ClientConnInterface, base mailboxpb.MailboxServiceClient,
 ) mailboxpb.MailboxServiceClient
 
 // LndConfig holds connection parameters for the backing lnd node.

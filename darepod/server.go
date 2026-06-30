@@ -2621,14 +2621,22 @@ func (s *Server) dialServer() (*grpc.ClientConn, error) {
 // connection. The runtime uses this to send and pull envelopes through the
 // operator's mailbox edge service.
 func (s *Server) newMailboxEdge() mailboxpb.MailboxServiceClient {
-	if s.cfg.MailboxEdgeFactory != nil {
-		return s.cfg.MailboxEdgeFactory(s.serverConn)
-	}
 	if s.mailboxClient != nil {
+		if s.cfg.MailboxEdgeFactory != nil {
+			return s.cfg.MailboxEdgeFactory(
+				s.serverConn, s.mailboxClient,
+			)
+		}
+
 		return s.mailboxClient
 	}
 
-	return mailboxpb.NewMailboxServiceClient(s.serverConn)
+	base := mailboxpb.NewMailboxServiceClient(s.serverConn)
+	if s.cfg.MailboxEdgeFactory != nil {
+		return s.cfg.MailboxEdgeFactory(s.serverConn, base)
+	}
+
+	return base
 }
 
 // buildRPCDispatchers creates the dispatcher map for inbound envelopes.
