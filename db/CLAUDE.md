@@ -71,7 +71,7 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   safety bounds enforced during `DeserializeTree`.
 - `resolveInputPackage` / `loadPackageBundleBySessionID` — two-stage
   OOR ancestry resolver (`oor_unroll_resolver.go`).
-- `LatestMigrationVersion = 21` — current schema version.
+- `LatestMigrationVersion = 22` — current schema version.
 - `PendingIntentPersistenceStore` — implements `wallet.PendingIntentStore`,
   the persistence half of the generic restart-safe intent outbox (header
   `pending_intents` + per-kind detail tables + `pending_intent_anchors`).
@@ -97,6 +97,18 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   `vtxo.SpendingReservationStore`.
 - `SpendingReservationStore` / `BatchedSpendingReservationStore` — Internal
   sqlc-backed query interfaces for the reservation table.
+- `CreditOperationStoreDB` — implements `credit.Store`. Bridges
+  credit-operation control-plane rows to sqlc queries. Every method
+  wraps the query in `ExecTx` so writes join an ambient actor tx
+  (via `actor.TxFromContext`) or open their own short tx. Methods:
+  `UpsertOperation`, `GetOperation`, `LookupActiveOperationByKey`,
+  `ListNonTerminal`, `ListOperations`.
+- `CreditOperationRecord` — Domain type for a single credit operation
+  row: `OperationID`, `Kind`, `Status`, `IdempotencyKey`,
+  `CreatedAt`, `UpdatedAt`.
+- `CreditOpKind` / `CreditOpStatus` — Append-only enumerations for
+  credit operation family (`Pay`, `Receive`, `Redeem`) and terminal
+  state (`Pending`, `Completed`, `Failed`).
 
 ## Relationships
 
@@ -105,7 +117,8 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   persistence), `ledger` (interfaces + domain types), `wallet`
   (`BoardingStore` interface + domain types).
 - **Depended on by**: `round`, `vtxo`, `oor`, `wallet` (storage
-  interfaces), `darepod` (wires DB backends).
+  interfaces), `credit` (CreditOperationStoreDB satisfies credit.Store),
+  `darepod` (wires DB backends).
 
 ## Invariants
 
@@ -147,6 +160,13 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   collapsing on `(round_id, event_type, debit_account, credit_account)`.
   Renumbered from 000019 to land after `000019_oor_session_registry`,
   which merged to main while this work was in review.
+- `000022_credit_operations` — adds the `credit_operations` table for
+  the durable credit subsystem. Columns: `operation_id` (TEXT PK),
+  `kind` (INTEGER, append-only `CreditOpKind`), `status` (INTEGER,
+  append-only `CreditOpStatus`), `idempotency_key` (TEXT, nullable),
+  `created_at` / `updated_at`. The table is the sole durable
+  control-plane record per credit operation; the per-operation actor
+  mailbox in `db/actordelivery` holds the durable message log.
 - `000021_vhtlc_recovery_job_generations` — rebuilds `vhtlc_recovery_jobs`
   to widen the uniqueness key from `(swap_id, action)` to
   `(swap_id, action, vtxo_txid, vtxo_vout)`, so a refreshed vHTLC (new

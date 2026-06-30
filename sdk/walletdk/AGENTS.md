@@ -49,8 +49,10 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
   bounded send and the swept total for sweep-all), `DepositRequest`/`Result` (boarding
   address + initial `Entry`), `ListRequest`, `ListResult` (tagged union
   on `View`, populates one of `Activity`/`VTXOs`/`Onchain`),
-  `ActivityList`, `VTXOInventory`, `OnchainHistory`, `Entry`,
-  `WalletVTXO`, `OnchainTx`.
+  `ActivityList`, `VTXOInventory`, `OnchainHistory`, `Entry`
+  (optional `Progress *EntryProgress` and `Request *EntryRequest`
+  sub-objects, both nil when absent; `Request` is a `Type`-tagged
+  union over lightning/onchain/ark), `WalletVTXO`, `OnchainTx`.
 - `ExitRequest` / `ExitResult` / `ExitStatusRequest` /
   `ExitStatusResult` / `ExitJobStatus` — exit DTOs. `ExitRequest`
   carries the target outpoint plus an optional on-chain `Destination`
@@ -67,6 +69,15 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
   populated by current behavior. Status strings are the wrapper-owned
   lowercase set
   (`pending`/`materializing`/`csv_pending`/`sweeping`/`completed`/`failed`/`unspecified`).
+- `OpenWalletFromPasskey(ctx, passkeyPRFOutput)` — derives a
+  reproducible wallet seed from a WebAuthn passkey PRF output via HKDF
+  and either imports it (fresh device) or unlocks an existing local
+  wallet. Returns `*OpenWalletResult` (`Imported bool`, `Mnemonic`,
+  `IdentityPubKey`). The PRF input salt must be fixed and identical
+  on every device; varying it yields a different seed and makes funds
+  unrecoverable.
+- `OpenWalletResult` — outcome of `OpenWalletFromPasskey`: `Imported`
+  is true on a fresh device (new wallet created), false on unlock.
 - `ErrWalletRPCUnavailable` — sentinel returned by every wallet method
   on builds without the `walletdkrpc` tag.
 - `ErrSwapRuntimeUnavailable` — back-compat alias for
@@ -79,6 +90,7 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
 | `GetInfo` | Daemon readiness snapshot (version, network, identity, wallet/server readiness). |
 | `CreateWallet` | Create or import the embedded wallet (auto-generates seed when mnemonic empty); proxies daemonrpc. |
 | `UnlockWallet` | Unlock an existing wallet; proxies daemonrpc. |
+| `OpenWalletFromPasskey` | Derive wallet from WebAuthn passkey PRF output; imports on fresh device, unlocks on existing. |
 | `Balance` | Flat balance (`confirmed_sat`, `pending_in_sat`, `pending_out_sat`). |
 | `Deposit` | Allocate a fresh boarding address (`recv --onchain` from CLI). |
 | `Receive` | Open a Lightning invoice receive (`recv --offchain`). Returns `{Invoice, Entry}`. |
@@ -102,8 +114,8 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
   `swapclientserver` (registered as daemon-side swap subserver in
   `swapruntime` builds), `swapwallet` (daemon-side walletdkrpc subserver
   in `walletdkrpc` builds), `google.golang.org/grpc/test/bufconn`.
-- **Depended on by**: host Go apps, gomobile / React Native / WASM
-  bridges, and `cmd/walletdk-tui`.
+- **Depended on by**: host Go apps, `sdk/walletdk/mobile` (gomobile
+  facade), `cmd/walletdk-wasm` (WASM binary), and `cmd/walletdk-tui`.
 - **Sends** → `darepod` (in-process via bufconn): all daemon RPCs are
   routed across the private gRPC connection, not the daemon's public
   listener.
@@ -142,15 +154,21 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
   the wrapper boundary on builds without the `walletdkrpc` tag, before
   any RPC is attempted. `ErrSwapRuntimeUnavailable` is an alias for
   source-level compatibility with older swap-only callers.
-- `Entry.Kind`/`Entry.Status` / `ListResult.View` /
-  `WalletVTXO.Status` / `OnchainTx.Kind` / `ExitJobStatus` are
-  wrapper-owned lowercase strings (not proto enums). Projection lives
-  in `convert.go`, intentionally decoupled from proto enum
-  renumbering.
+- `Entry.Kind`/`Entry.Status` / `Entry.Progress.Phase` /
+  `Entry.Request.Type` / `ListResult.View` / `WalletVTXO.Status` /
+  `OnchainTx.Kind` / `ExitJobStatus` are wrapper-owned lowercase
+  strings (not proto enums). Projection lives in `convert.go`,
+  intentionally decoupled from proto enum renumbering.
 - `ListResult` is a discriminated union: read the variant named by
   `View` and treat the others as `nil`. Exhaustiveness is not
   enforced at compile time — switch on `View` rather than chaining
   nil checks.
+- `Entry.Progress` and `Entry.Request` are optional pointers: both are
+  `nil` when the daemon supplied no progress hint / persisted no
+  request, so nil-check before dereferencing. `Entry.Request` is a
+  discriminated union — read the variant named by `Type`
+  (`lightning`/`onchain`/`ark`) and treat the other fields as zero,
+  the same idiom as `ListResult.View`.
 - `Wait()` is single-reader: same shared channel on every call. The
   channel delivers the daemon's terminal run error then closes; a
   closed channel reads as the zero error indefinitely.
@@ -159,6 +177,11 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
   single terminal error.
 - New options should follow the "apply after merge" placement so
   override semantics stay consistent.
+- `OpenWalletFromPasskey` requires at least 32 bytes of PRF output;
+  shorter input is rejected to prevent a caller bug from deriving a
+  publicly-known seed. The PRF input salt (WebAuthn evaluation salt)
+  must be fixed per application — any variation yields a different
+  seed and makes the wallet irrecoverable.
 
 ## Deep Docs
 
@@ -168,6 +191,8 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
 - [docs/sdk_layered_architecture.md](../../docs/sdk_layered_architecture.md)
   — Layering rationale; walletdk sits one layer above `sdk/ark` for
   wallet-shaped hosts.
+- [sdk/walletdk/mobile/CLAUDE.md](mobile/CLAUDE.md) — gomobile/WASM
+  facade over this package.
 - [sdk/ark/CLAUDE.md](../ark/CLAUDE.md) — Lower-level Ark SDK facade.
 - [sdk/swaps/CLAUDE.md](../swaps/CLAUDE.md) — Swap FSM and durable
   session semantics. Reach the underlying swap RPC client via

@@ -16,6 +16,8 @@ into specific topics below.
 | [fee_ledger.md](fee_ledger.md) | Client-side double-entry fee ledger: chart of accounts, per-flow walkthroughs, emission sites, replay safety |
 | [fee-change-model.md](fee-change-model.md) | Seal-time fee handshake (#270): change-output designation rules, 11-scenario catalogue, proto contract, CLI mapping |
 | [credit_system.md](credit_system.md) | Sat-native credit accounts for below-dust receives, credit-assisted receives, credit-backed sends, top-ups, and walletdk integration, with mermaid diagrams |
+| [credit_durable_actor_design.md](credit_durable_actor_design.md) | Technical design of the durable credit subsystem: FSM states and transitions for pay/receive/redeem flows, durable schema, actor wiring, and crash-recovery path |
+| [walletdk_mobile.md](walletdk_mobile.md) | gomobile facade over `sdk/walletdk`: Android/iOS/WASM integration guide, JSON bytes-in/out convention, pull-based streaming, build tags, and passkey PRF-based wallet derivation |
 | [sdk_layered_architecture.md](sdk_layered_architecture.md) | SDK layering rationale: `sdk/ark` facade, remote vs. embedded modes, `sdk/swaps` future direction |
 | [swap_system.md](swap_system.md) | End-to-end swap walkthrough: vHTLC tree (collaborative vs. unilateral-exit leaves), receive (out-swap) and pay (in-swap) flows, the off-chain-first cancellation/timeout recovery ladder, same-Ark p2p detection, swap-server RPCs, and proof-gated indexer authorization, with mermaid diagrams |
 | [walletdk_integration.md](walletdk_integration.md) | Basic `walletdk` integration flow, startup/config examples, swap accounting, and wrapper guidance |

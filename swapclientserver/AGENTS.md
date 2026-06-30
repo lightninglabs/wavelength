@@ -38,6 +38,11 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
   `SwapClient` so out-swap HTLC events flow over the mailbox transport,
   registers the gRPC subserver, calls `resumePending`, and returns a cleanup
   function.
+- `creditServerBridge` — Adapts the swap subserver to the `credit.CreditServer`
+  interface so the credit actor reuses the existing swapclientrpc handlers
+  (CreateCredit, ListCredits, RedeemCredit, QuoteCredit) without importing
+  gRPC stubs into the credit package. Returned by `Register` and injected
+  into the credit `Registry`.
 
 ## RPC Methods
 
@@ -55,7 +60,8 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
 - **Depends on**: `sdk/swaps` (swap FSM, `SwapClient`, `Store`, session
   types), `sdk/ark` (`WrapDaemonServer`, in-process Ark facade), `darepod`
   (`RPCServer`, `Config`, `SwapConfig`, `SwapSubsystem`), `rpc/swapclientrpc`
-  (generated gRPC stubs + proto types).
+  (generated gRPC stubs + proto types), `credit` (CreditServer interface
+  satisfied by creditServerBridge).
 - **Depended on by**: `cmd/darepod` (calls `swapclientserver.Register` when
   built with the `swapruntime` tag), `cmd/darepocli/darepoclicommands`
   (swap RPC CLI commands under `swapruntime`).

@@ -10,7 +10,10 @@ the seven wallet verbs (Create, Unlock, Send, Recv, List, Balance,
 Exit) plus the supporting Deposit / Status / SubscribeWallet methods.
 
 The whole package lives behind `//go:build walletdkrpc && swapruntime` so
-default builds avoid the swap executor's dependency graph.
+default builds avoid the swap executor's dependency graph. Sub-dust and
+shortfall payments are routed through the credit subsystem (`credit.Registry`)
+instead of failing; received credits are tracked and projected onto wallet rows
+by the `Runtime` credit projector.
 
 ## Key Types
 
@@ -24,10 +27,13 @@ default builds avoid the swap executor's dependency graph.
   never cancel in-flight work.
 - `Deps` — Composition struct: `SwapBackend` (in-Go swap runtime),
   `SwapService` (gRPC-shaped swap subserver handle), `RPCServer`
-  (narrow daemonrpc contract), `ChainParams` (Bitcoin network — used to
-  validate BOLT-11 invoice decoding in `PrepareSend` so a cross-network
-  invoice is rejected before a send intent is issued), plus wallet-level
-  deadline, list-limit, and subscribe-buffer knobs.
+  (narrow daemonrpc contract), `CreditRegistry`
+  (`actor.ActorRef[credit.CreditMsg, credit.CreditResp]` — credit
+  supervisor reference injected at daemon startup), `ChainParams`
+  (Bitcoin network — used to validate BOLT-11 invoice decoding in
+  `PrepareSend` so a cross-network invoice is rejected before a send
+  intent is issued), plus wallet-level deadline, list-limit, and
+  subscribe-buffer knobs.
 - `RPCServer` interface — Narrow contract over `*darepod.RPCServer`
   covering every daemonrpc method swapwallet composes against:
   LeaveVTXOs, SendOnChain, ListVTXOs, ListTransactions, NewAddress, GetInfo,
@@ -54,6 +60,10 @@ default builds avoid the swap executor's dependency graph.
     StartPay, StartReceive)
   - `swapclientserver` (typed `Backend` handle and runtime resume)
   - `darepod` (`SwapBackend` interface)
+  - `credit` (CreditMsg/CreditResp types for the CreditRegistry ref;
+    StartCreditPayRequest, StartCreditReceiveRequest, ConsiderRedeemRequest,
+    ListCreditOpsRequest for credit routing)
+  - `coinselect` (LargestFirst for VTXO selection in the send path)
   - `ledger` (account name constants for OOR ledger projection)
   - `btclog/v2` (subsystem logger)
 - **Depended on by**:
