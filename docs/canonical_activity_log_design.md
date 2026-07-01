@@ -271,9 +271,41 @@ in one transaction per transition:
    allocated `canonical_id`, and append the first `activity_events` row.
 2. On each transition: `UPDATE` the `activity_entries` row by `canonical_id`
    (status/phase/txid/conf-height/failure_*), bump `updated_at_unix`, and append
-   one `activity_events` row carrying the new projection.
+   one `activity_events` row carrying the new projection — but **only when the
+   projected state actually changed**. A redundant re-emit (the startup backfill,
+   the swap monitor's include-existing replay) upserts the current-state row
+   without appending a duplicate event, so the append-only log stays "one row per
+   real transition" and a resumable subscriber never replays a bogus transition.
 3. On terminal/reversing events (C2): set the terminal status deterministically
    (COMPLETE / FAILED / refunded-as-failed) — no more "stuck PENDING."
+
+**Every producer must be a projector source.** The gap to watch is a producer
+that reaches the user-facing feed by some path *other* than the runtime's emit
+sites. The credit subsystem (sub-dust credit-only sends, #830) is exactly this
+case: it is a separate actor whose rows are projected at *read time* in
+`listActivity` (`collectCreditEntries`), not through `Runtime.emit`. If the read
+path were cut over to the store without a credit-registry projector hook,
+credit-only sends would vanish from the canonical log — the same class of bug
+(#829) this epic exists to kill. So C1 hooks the credit registry too (mint
+`canonical_id` = `payment_hash` at credit-op acceptance, advance it on terminal
+state), and any future producer must be wired at its transition, not only at read
+time.
+
+**Write-path consistency: best-effort + startup reconcile (not outbox).** The two
+activity tables are atomic *with each other* (one transaction), but the projection
+is **not** committed in the same transaction as the underlying swap/ledger/credit
+state write. Projection is best-effort: it runs project-then-emit and a store
+error is logged, never blocking or failing the state change. A crash between the
+state commit and the projection therefore defers an activity row, and the §3.5
+startup backfill/reconcile is the load-bearing recovery that repairs it. The
+alternative — a transactional outbox that appends the activity row in the *same*
+txn as each producer's state write (mirroring the ledger's idempotent
+`InsertClientLedgerEntry` against a partial unique index) — would close that crash
+window at the cost of coupling every producer's commit to the activity schema.
+This design deliberately chooses best-effort + reconcile for its simplicity; the
+choice is stated explicitly here because C4's "no silent drops" guarantee leans on
+whether the log is crash-atomic with state or eventually-consistent via reconcile,
+and here it is the latter.
 
 `List` and `SubscribeWallet` then read **only** from these tables. The multi-source
 merge in `listActivity` is deleted once the projector is authoritative; the
@@ -303,9 +335,11 @@ existing collectors are reused once, during backfill (3.5).
 - **Additive schema.** The sqlc migration only adds tables and seeds the enum
   rows; nothing existing changes. Down-migration drops them.
 - **Backfill, with an honest limit.** On first start after the migration, run the
-  existing derive collectors once to project current state into the store. This
-  recovers full state only for the kinds that already have a stable id
-  (SEND-invoice/RECV via `payment_hash`, OOR via `session_id`). It **cannot**
+  existing derive collectors once to project current state into the store —
+  including `collectCreditEntries` (#830), so credit-only sends are seeded
+  alongside swaps, the ledger, boarding, and VTXO exits. This recovers full state
+  only for the kinds that already have a stable id (SEND-invoice/RECV and credit
+  via `payment_hash`, OOR via `session_id`). It **cannot**
   reconstruct a request-time `canonical_id` for in-flight EXIT/DEPOSIT/on-chain-send
   rows, because that id does not exist in durable state until 3.2's daemon records
   land — the pending handles live only in the in-memory `Runtime.pending` map.
