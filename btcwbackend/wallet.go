@@ -179,9 +179,24 @@ func NewWithNeutrino(cfg Config,
 func (w *Wallet) Start() error {
 	ctx := context.Background()
 
+	// NewWithNeutrino opened the wallet database, so a failed start
+	// must close it again or a retried unlock deadlocks on the
+	// bbolt file lock. This matters in particular for a wrong
+	// wallet passphrase, which surfaces from BtcWallet.Start.
+	closeDB := func() {
+		err := w.BtcWallet.InternalWallet().Database().Close()
+		if err != nil {
+			w.Logger(ctx).WarnS(ctx, "Failed to close btcwallet DB",
+				err,
+			)
+		}
+	}
+
 	// btcWallet.Start() unlocks the wallet, creates key scopes,
 	// starts the chain client, and begins wallet synchronization.
 	if err := w.BtcWallet.Start(); err != nil {
+		closeDB()
+
 		return fmt.Errorf("start btcwallet: %w", err)
 	}
 
@@ -189,6 +204,9 @@ func (w *Wallet) Start() error {
 	// it is safe even if the daemon's startBtcwallet also calls
 	// Start().
 	if err := w.chainBackend.Start(); err != nil {
+		_ = w.BtcWallet.Stop()
+		closeDB()
+
 		return fmt.Errorf("start chain backend: %w", err)
 	}
 

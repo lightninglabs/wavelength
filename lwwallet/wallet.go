@@ -173,6 +173,22 @@ func (w *Wallet) Start() error {
 		}
 	}()
 
+	// New opened the wallet database, so a failed start must close
+	// it again or a retried unlock deadlocks on the database's
+	// exclusive lock (bbolt flock natively, EXCLUSIVE OPFS locking
+	// in browser builds). This matters in particular for a wrong
+	// wallet passphrase, which surfaces from BtcWallet.Start below.
+	// Appended first so the reverse-order unwind runs it last, after
+	// every subsystem that may touch the database has stopped.
+	rollback = append(rollback, func() {
+		err := w.BtcWallet.InternalWallet().Database().Close()
+		if err != nil {
+			w.Logger(ctx).WarnS(ctx, "Failed to close btcwallet DB",
+				err,
+			)
+		}
+	})
+
 	// Spin up the shared tip poller before any consumer subscribes.
 	if err := w.tipPoller.Start(); err != nil {
 		return fmt.Errorf("start tip poller: %w", err)
