@@ -135,6 +135,52 @@ func TestCreditProjectorProjectsOwnedTerminals(t *testing.T) {
 	require.Empty(t, drainEntries(ch))
 }
 
+// TestCreditProjectorWritesToStore asserts the projector persists the credit
+// rows it owns into the canonical activity store (not only emits them), so
+// credit-only sends are in the store before the read path cuts over to it. A
+// re-poll of unchanged state projects nothing further.
+func TestCreditProjectorWritesToStore(t *testing.T) {
+	t.Parallel()
+
+	reg := &fakeCreditRegistry{
+		listResp: &credit.ListCreditOpsResponse{
+			Ops: []credit.CreditOpSummary{
+				{
+					OpID:       "op-pay",
+					OpKey:      "pay:" + payHashHex,
+					Kind:       credit.KindPay,
+					State:      credit.StateCompleted,
+					CreditOnly: true,
+					AmountSat:  500,
+				},
+				{
+					OpID:      "op-recv",
+					OpKey:     "recv:xyz",
+					Kind:      credit.KindReceive,
+					State:     credit.StateCompleted,
+					AmountSat: 42,
+				},
+			},
+		},
+	}
+	store := &fakeActivityProjector{}
+	deps := &Deps{CreditRegistry: reg, ActivityStore: store}
+	runtime := newRuntime(t.Context(), deps)
+	t.Cleanup(runtime.stop)
+
+	projected := make(map[string]credit.State)
+	runtime.pollCreditOps(projected)
+
+	require.Equal(t, 2, store.count())
+	ids := store.ids()
+	require.True(t, ids[payHashHex], "credit-only pay projected by hash")
+	require.True(t, ids["op-recv"], "credit receive projected by op id")
+
+	// A second poll with unchanged state projects nothing further.
+	runtime.pollCreditOps(projected)
+	require.Equal(t, 2, store.count())
+}
+
 // TestCreditProjectorProjectsFailure asserts a failed credit op surfaces as a
 // FAILED WalletEntry carrying the operation's terminal error.
 func TestCreditProjectorProjectsFailure(t *testing.T) {

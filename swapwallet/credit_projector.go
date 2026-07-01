@@ -127,7 +127,15 @@ func (r *Runtime) pollCreditOps(projected map[string]credit.State) {
 			r.trackPendingEntryWithoutTimeout(entry)
 		}
 
-		r.emit(entry)
+		// Project the credit row into the canonical activity log before
+		// fanning it out. Credit-only sends reach the feed only through
+		// this poll (never Runtime.emit from the swap monitor), so
+		// without this they would be absent from the store and vanish
+		// once the read path cuts over to it (issue #774; the #829
+		// class of bug). The store suppresses no-op re-projections, so
+		// the coarse re-poll of unchanged terminal rows appends no
+		// duplicate events.
+		r.projectAndEmit(r.rootCtx, entry)
 	}
 }
 
