@@ -187,6 +187,7 @@ type Server struct {
 	db            *db.SqliteStore
 	deliveryStore actor.DeliveryStore
 	vtxoStore     *db.VTXOPersistenceStore
+	activityStore *db.ActivityPersistenceStore
 	roundStore    *db.RoundPersistenceStore
 	ueStore       *db.UnilateralExitPersistenceStore
 
@@ -1185,6 +1186,10 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 		s.subLogger(db.Subsystem),
 	)
 	s.vtxoStore = dbStore.NewVTXOStore(s.clk)
+
+	// Build the activity-log store for the walletdkrpc subserver.
+	s.activityStore = dbStore.NewActivityStore(s.clk)
+	s.cfg.ActivityStore = s.activityStore
 
 	// -------------------------------------------------------
 	// Optional Prometheus metrics server (disabled by default).
