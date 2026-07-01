@@ -22,6 +22,10 @@ estimation, and optional v3 package relay via a pluggable `PackageSubmitter`.
 - `LndClientFeeEstimator` — Type alias for
   `chainfees.WalletKitEstimator`, backed by `lndclient.WalletKitClient` with
   a 15-second per-call timeout and last-good fallback semantics.
+  `NewLndClientFeeEstimator(walletKit)` delegates to
+  `chainfees.NewFallbackWalletKitEstimator` and returns
+  `(*LndClientFeeEstimator, error)`; callers must check the error instead of
+  assuming construction always succeeds.
 - `LndClientChainNotifier` / `LndClientChainNotifierConfig` — Implements
   `chainntnfs.ChainNotifier` using lndclient. Uses a 15-second registration
   timeout and goroutine-based forwarding to bridge lndclient's height-only
@@ -29,7 +33,8 @@ estimation, and optional v3 package relay via a pluggable `PackageSubmitter`.
 - `LNDBackendFromLndClientConfig` — Config struct for building an `LNDBackend`
   from lndclient services (notifier, wallet kit, chain kit).
 - `NewLNDBackendFromLndClient(cfg)` — Factory constructing a full `LNDBackend`
-  from an `LNDBackendFromLndClientConfig`.
+  from an `LNDBackendFromLndClientConfig`. Returns `(*LNDBackend, error)`;
+  fails if the underlying `NewLndClientFeeEstimator` construction errors.
 - `PackageTxError` — Per-tx result error from a `SubmitPackage` response.
   Carries `Wtxid`, `Txid`, and raw `Reason`; unwraps to the mapped
   `rpcclient`-sentinel (via `rpcclient.MapRPCErr`) so callers can use
@@ -46,7 +51,10 @@ estimation, and optional v3 package relay via a pluggable `PackageSubmitter`.
 
 ## Relationships
 
-- **Depends on**: `chainsource` (implements `ChainBackend` interface).
+- **Depends on**: `chainsource` (implements `ChainBackend` interface);
+  `chainfees` (`LndClientFeeEstimator` is a type alias for
+  `chainfees.WalletKitEstimator`, constructed via
+  `chainfees.NewFallbackWalletKitEstimator`).
 - **Depended on by**: `darepod` (instantiates backend and wires a
   `PackageSubmitter` from operator config: production uses
   `chainbackends/bitcoindrpc.PackageSubmitter` directly, itests inject the

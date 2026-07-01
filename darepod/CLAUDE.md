@@ -40,6 +40,14 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
   `MaxMailboxScriptBytes`). `Config.OORReceiveLimits()` normalizes
   into `oor.ReceiveLimits`.
 - `WalletState` — `None` / `Locked` / `Ready`.
+- `Config.Metrics metrics.ServerConfig` — opt-in Prometheus wiring;
+  empty `ListenAddr` disables the `/metrics` server and all collector
+  registration (see `startMetricsServer`). `Config.Swap` carries the
+  optional credit bridges (`CreditServer`, `CreditDaemon`,
+  `Credit.AutoRedeemDisabled` / `AutoRedeemMinSat`,
+  `CreditEarmarkSetter`) published by the swap subserver; both are
+  nil in builds without the swap runtime, which is how
+  `initCreditRegistry` decides to no-op.
 
 ### RPC Handlers
 
@@ -121,6 +129,105 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
 - `SendOnChain` — RPC handler delegating to the wallet actor's
   `SendOnChainRequest`. Routes through coin selection, leave output
   construction, and eager round join. Supports bounded and sweep-all modes.
+- `GetExitPlan` — previews unilateral-exit CPFP funding readiness for a
+  batch of VTXO outpoints (`ExitPlanRequest`/`ExitPlanResponse`/
+  `ExitPlanEntry`); per-outpoint failures populate `Err` rather than
+  failing the whole batch. `SweepWallet` estimates fee and sweeps
+  on-chain wallet funds via `estimateWalletFeeRate`.
+- `GetVTXOExpiryInfo` — resolves a VTXO's exit-eligibility height from
+  either the local store (`getLocalVTXOExpiryInfo`) or, when not
+  locally known, the indexer (`getIndexedVTXOExpiryInfo`), against
+  `currentBlockHeight`.
+
+### Ark Protocol Negotiation
+
+- `negotiateArkBootstrap` — the single bootstrap `GetInfo` call (via
+  `serverconn.ArkVersionNegotiator`) that selects the Ark protocol
+  version and parses initial `types.OperatorTerms` from the same
+  response, so the round actor never renegotiates.
+  `clientSupportedArkVersions()` currently advertises only
+  `arkrpc.ArkProtocolVersionV1`. Called from
+  `connectAndBootstrapMailbox` before the mailbox transport is wired;
+  the outcome (`arkVersionNegotiation`) is cached on `Server`
+  (`arkProtocolVersion`, operator terms) before anything else can run.
+- `onServerIncompatible` — connector compatibility callback invoked
+  once when the mailbox connector hits a permanent version mismatch;
+  marks `serverConnected=false` and logs the supported
+  mailbox/Ark version sets at warn level (external condition, not a
+  bug).
+
+### Credit Durable-Actor Subsystem
+
+- `initCreditRegistry` — builds and starts `credit.Registry` (package
+  `credit`) when `cfg.Swap.CreditServer` / `cfg.Swap.CreditDaemon` are
+  non-nil (absent in builds without the swap runtime, in which case
+  this is a no-op). Wires a dedicated `timeout.NewActor()` for
+  per-operation poll timers, a `credit.NewRetryCallbackRef` bound
+  lazily to `credit.NewServiceKey()`, and a `db.CreditOperationStore`.
+  Registered under service key `"credit-timeout"` for the timeout
+  actor; the registry actor itself registers under
+  `credit.NewServiceKey()` inside `credit.NewRegistry`. Calls
+  `registry.RestoreNonTerminal(ctx)` then `registry.StartAutoRedeem(ctx)`
+  on the daemon root context (deliberately not the boot ctx) so a CLI
+  disconnect never cancels an in-flight credit operation.
+- `s.creditRegistry` publishes `SetEarmarkProvider` onto
+  `s.cfg.Swap.CreditEarmarkSetter` so a later-registered walletdkrpc
+  subserver can wire its prepared-send store into the auto-redeem
+  interlock.
+
+### Forfeit-Signature Broker
+
+- `forfeitSignatureBroker` (field `s.forfeitSignatures`, always
+  non-nil via `newForfeitSignatureBroker`) — exposes connector-bound
+  VTXO forfeit-participant signer callbacks to external swap
+  coordination over daemon RPC. Request/waiter state
+  (`forfeitSignatureRequest`, keyed by outpoint) is deliberately
+  daemon-local and not persisted: after a restart, waiting VTXO actors
+  retry or time out against their original vHTLCs rather than
+  resuming a stale connector transcript. `registerContext` /
+  `sign` correlate a queued custom-refresh input's payment hash and
+  `daemonrpc.ForfeitSigningRoute` to the eventual
+  `vtxo.ForfeitParticipantSignRequest`.
+
+### Prometheus Metrics
+
+- `startMetricsServer` — no-op when `cfg.Metrics.ListenAddr == ""`.
+  Otherwise builds an isolated `prometheus.NewRegistry()` (never the
+  global `DefaultRegisterer`, to avoid `AlreadyRegisteredError` across
+  multiple daemons in one process or a restarted daemon), registers Go
+  runtime/process collectors, calls `metrics.RegisterAll(reg)`, spawns
+  a pool of `metricsActorWorkers = 4` stateless `metrics.NewMetricsActor`
+  workers under `metrics.ActorKey` (round-robin via `metrics.NewSink`),
+  and registers a scrape-driven `metrics.NewSystemCollector` backed by
+  `systemStatsAdapter`.
+- `systemStatsAdapter` — implements `metrics.SystemStatsQuerier` over
+  the running daemon (VTXO counts/values by status, wallet balance,
+  block height, live OOR/round counts by state); the `metrics` package
+  itself stays free of DB/wallet/chain dependencies.
+- `emitMetric` — Tells a `metrics.Msg` through `s.metricsSink`
+  (`fn.Option[metrics.Sink]`); no-op and never returns an error when
+  metrics are disabled, since instrumentation must never block or fail
+  the operation being recorded.
+
+### Wasm / Native Storage Split
+
+Build-tag pairs split filesystem-touching helpers so the package also
+compiles under `js/wasm` (browser) targets:
+
+- `ensureDataDir` — `fs_native.go` (`!js || !wasm`) calls
+  `os.MkdirAll`; `fs_wasm.go` (`js && wasm`) is a no-op because
+  `os.MkdirAll` is unimplemented under wasm and persistent state uses
+  OPFS-backed SQLite instead.
+- `SaveEncryptedSeed` / `LoadEncryptedSeed` / `SeedFileExists` —
+  `seed_storage_native.go` uses `os.WriteFile`/`os.ReadFile` with
+  `0600`/`0700` permissions; `seed_storage_wasm.go` persists the same
+  ciphertext as a single file in the browser's origin-private file
+  system (OPFS), reachable from both window and worker globals (unlike
+  `localStorage`), blocking the calling goroutine on the async OPFS
+  promises via `awaitJSPromise`. `isNotFound` distinguishes a
+  genuinely-absent file (`NotFoundError` `DOMException`) from an
+  ambiguous OPFS failure. `seed_manager.go` itself (mnemonic/AEZeed
+  crypto) stays build-tag-neutral; only the disk/OPFS I/O is split.
 
 ### Adapters & Helpers
 
@@ -234,7 +341,10 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
   `indexer`, `arkrpc`, `lndbackend`, `harness` (bitcoind package
   submitter wiring in `cmd/darepod`), `fraud`, `gateway`,
   `rpc/restclient`, `vhtlcrecovery`, `vhtlcrecovery/coordinator`,
-  `vhtlcrecovery/unrollpolicy`.
+  `vhtlcrecovery/unrollpolicy`, `credit` (durable-actor credit
+  registry), `metrics` (opt-in Prometheus wiring), `daemonrpc`
+  (forfeit-signature broker and custom-refresh proto types),
+  `timeout` (credit poll-timer actor), `lib/recovery`, `proofkeys`.
 - **Depended on by**: `cmd/darepod`.
 
 ## Invariants
@@ -280,7 +390,21 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
 - Actor startup order: VTXO manager starts BEFORE round actor and
   OOR actor so the manager ref is available for both. The round
   actor ref in the VTXO manager is lazy (service-key-based, resolved
-  at Tell time).
+  at Tell time). The credit registry (`initCreditRegistry`) starts
+  AFTER the OOR actor (step 14b, `startWalletDependentActors`) since
+  it depends on `cfg.Swap.*` handles populated by the swap subserver
+  registrar; it is a no-op (not an error) when those handles are nil.
+- `negotiateArkBootstrap` is the sole owner of Ark protocol version
+  selection: it runs once in `connectAndBootstrapMailbox`, before the
+  mailbox transport is constructed, and caches `arkProtocolVersion`
+  plus the initial `OperatorTerms` on `Server`. No other code path may
+  renegotiate; the round actor and refresh-only `GetInfo` calls both
+  read the cached outcome.
+- `retryRecoveryIndexerRPC` retries wallet-recovery indexer calls only
+  on `codes.ResourceExhausted` (the operator's per-client query
+  limiter), up to `recoveryIndexerRetryAttempts = 8` with a fixed
+  `recoveryIndexerRetryDelay = 150ms`; any other error or context
+  cancellation returns immediately without retrying.
 - `mapRoundVTXOManagerMsg` bridges `round.VTXOManagerMsg` →
   `vtxo.ManagerMsg` via `MapInputRef`. Compile-time assertions
   enforce that all `round.VTXOManagerMsg` implementors satisfy

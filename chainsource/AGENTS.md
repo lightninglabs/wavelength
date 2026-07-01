@@ -34,6 +34,10 @@ communication alongside the raw registration API.
   Block subscription lifecycle.
 - `ConfRegistration` / `SpendRegistration` / `BlockRegistration` — Structs with
   buffered notification channels and a `Cancel()` function.
+- `BlockEpochConfig` — Config for `BlockEpochActor`, including
+  `ReconnectBackoff`/`MaxReconnectBackoff` (both optional, default 1s/30s)
+  controlling how fast the actor re-subscribes after its backend block
+  stream closes.
 - `ConfirmationEvent`, `SpendEvent`, `BlockEpoch` — Notification payload types.
 - `MapBlockEpoch`, `MapConfirmationEvent`, `MapSpendEvent` — Generic helpers
   that wrap a target `TellOnlyRef[Out]` and a mapping function, producing a
@@ -56,6 +60,11 @@ communication alongside the raw registration API.
 - Confirmation sub-actors support two notification modes: Future-based (blocking
   await) and actor-based (async `Tell` via `NotifyActor`). Callers use the actor
   mode when blocking inside a durable actor transaction is unsafe.
+- `BlockEpochActor` reconnects (exponential backoff, capped) instead of exiting
+  when its backend block stream closes. Backends such as LND can close all
+  chain-notifier streams on restart or internal churn; the actor must heal the
+  subscription without a daemon restart. Backoff resets to the initial value
+  after a successful reconnect.
 
 ## Deep Docs
 

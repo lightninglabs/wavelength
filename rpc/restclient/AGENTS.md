@@ -25,6 +25,16 @@ interface, and per-service factory functions so callers are channel-agnostic
 - Per-service client types with `New*ServiceClient(addr, ...Option)` factories:
   `ArkServiceClient`, `DaemonServiceClient`, `MailboxServiceClient`,
   `SwapClientServiceClient`, `SwapServiceClient`, `WalletServiceClient`.
+  Each type grows one method per RPC added to its proto service; recent
+  additions include `DaemonServiceClient.GetVTXOExpiryInfo`/
+  `SignVTXOForfeit`/`RefreshCustomVTXOs`/
+  `ListPendingForfeitParticipantSignatureRequests`/
+  `SubmitForfeitParticipantSignatures` (daemonrpc VTXO expiry/forfeit-signing/
+  custom-refresh surface), `WalletServiceClient.GetExitPlan`/`SweepWallet`
+  (walletdkrpc exit-plan/sweep surface), and `SwapServiceClient`/
+  `SwapClientServiceClient` credit methods (`CreateCredit`, `RedeemCredit`,
+  `ListCredits`, plus swap-side `QuoteInSwap`/`AcknowledgeOutSwapHtlc`/
+  `SignInSwapForfeit`/`SubmitOutSwapForfeitSignature`/`QuotePay`).
 
 ## Relationships
 

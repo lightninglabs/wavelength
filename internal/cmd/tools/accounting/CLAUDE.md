@@ -31,9 +31,17 @@ missing path instead of reporting against an empty database it just made.
   settings.
 - `--apply-migrations` — off by default; when set, runs migrations before
   reporting (the only path that may mutate schema).
-- `--format` — `text` (default), `json`, or `csv`.
-- `--price-source` — `none` (default) or `coingecko`.
-- `--fiat`, `--timeout`.
+- `--format` — `text` (default), `json`, or `csv`. `text` prints a compact
+  operator-readable summary; `csv` emits one flat table (an `account`/`event`
+  discriminator column plus shared amount columns) so both line-item kinds
+  share a single parseable stream.
+- `--price-source` — `none` (default, no fiat conversion) or `coingecko`
+  (queries CoinGecko's public simple-price endpoint once per run, response
+  body capped at 1 MiB, price validated non-zero/finite).
+- `--fiat` — fiat currency code for price lookups, default `usd`. Only
+  consulted when `--price-source` is not `none`.
+- `--timeout` — overall report deadline (DB queries + optional price fetch),
+  default `15s`.
 
 ## Relationships
 

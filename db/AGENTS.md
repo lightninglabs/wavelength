@@ -17,6 +17,14 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   sqlc-backed store for boarding addresses, intents, and the aggregate
   sweep lifecycle (consumed by `wallet.BoardingStore`). Sweep ops:
   `Create/MarkPublished/MarkFailed/List/ListPending/MarkInputSpent`.
+  `BoardingStore` embeds `InternalKeyQuerier` so `InsertBoardingAddress`
+  registers the client wallet key via `RegisterInternalKeyTx` and stores a
+  `ClientKeyID` foreign key instead of an inlined pubkey/family/index triple;
+  `BoardingWalletStore` embeds `*PendingIntentPersistenceStore` so it also
+  satisfies `wallet.PendingIntentStore` directly.
+  `NewBoardingWalletStore(db, intentDB, chainParams, clock)` takes a second
+  `BatchedPendingIntentStore` argument (same underlying DB, separate generic
+  executor) to construct the embedded pending-intent store.
 - `NewBoardingSweep` / `BoardingSweepRecord` /
   `BoardingSweepInputRecord` — control-plane domain types. Sweep
   statuses: `pending`, `published`, `confirmed`, `external_resolved`,
@@ -71,7 +79,41 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   safety bounds enforced during `DeserializeTree`.
 - `resolveInputPackage` / `loadPackageBundleBySessionID` — two-stage
   OOR ancestry resolver (`oor_unroll_resolver.go`).
-- `LatestMigrationVersion = 21` — current schema version.
+- `LatestMigrationVersion = 22` — current schema version.
+- `CreditOperationStoreDB` — durable control-plane store for client-side
+  credit orchestration operations (top-up+pay, receive, redeem). Backed by
+  `credit_operations` (one row per op id; `TransactionExecutor`-based like
+  `OORSessionRegistryStoreDB`, so a write joins an ambient durable-actor tx via
+  `actor.TxFromContext` or opens its own short tx). Created via
+  `NewCreditOperationStore(store, clk)`. Methods: `UpsertOperation`,
+  `GetOperation`, `LookupActiveOperationByKey` (enforces the partial-unique
+  `op_key` dedup for non-failed rows), `ListNonTerminal` (boot-time actor
+  restore scan), `ListOperations`. `CreditOpKind` (`Pay`/`Receive`/`Redeem`)
+  and `CreditOpStatus` (`Pending`/`Completed`/`Failed`, `IsTerminal()`) are
+  append-only int32 enums. The server credit ledger stays authoritative for
+  the money; this store only tracks client-side flow progress so it survives
+  a crash and resumes with a stable idempotency key instead of a fresh one.
+- `OORSessionRegistryStoreDB` — durable control-plane store for OOR transfer
+  sessions, mirroring `CreditOperationStoreDB`'s shape. Backed by
+  `oor_session_registry`. Created via `NewOORSessionRegistryStore(store,
+  clk)`. Methods: `UpsertSession`, `GetSession`,
+  `LookupActiveSessionByIdempotencyKey`, `ListNonTerminal`, `ListSessions`.
+  `OORSessionDirection` (`Outgoing`/`Incoming`) and `OORSessionStatus`
+  (`Pending`/`Completed`/`Failed`) are append-only int32 enums. Both this and
+  `CreditOperationStoreDB` write their queryable control-plane fields plus an
+  opaque TLV `SnapshotData` resume blob directly from the owning per-op/
+  per-session actor's Read/Stage/Commit phases — neither uses the generic
+  actor-delivery `fsm_checkpoints` blob.
+- `InternalKeyQuerier` / `RegisterInternalKeyTx` / `InternalKeyDescByIDTx`
+  (`internal_key.go`) — shared `internal_keys` registry helpers. Any store
+  whose `BatchedTx`-backed query interface embeds `InternalKeyQuerier` (e.g.
+  `BoardingStore`) can call `RegisterInternalKeyTx(ctx, qtx, now, desc)` inside
+  its own transaction to idempotently upsert a `keychain.KeyDescriptor` by its
+  `(pubkey, key_family, key_index)` triple and get back a surrogate registry
+  id to store as a `*_key_id` foreign key, instead of inlining the raw triple
+  on every referencing row. `InternalKeyDescByIDTx` reverses the lookup on
+  read. Client keys carry no role (unlike the server registry), so there is no
+  same-pubkey-different-locator conflict to detect.
 - `PendingIntentPersistenceStore` — implements `wallet.PendingIntentStore`,
   the persistence half of the generic restart-safe intent outbox (header
   `pending_intents` + per-kind detail tables + `pending_intent_anchors`).
@@ -97,6 +139,26 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   `vtxo.SpendingReservationStore`.
 - `SpendingReservationStore` / `BatchedSpendingReservationStore` — Internal
   sqlc-backed query interfaces for the reservation table.
+
+### WASM build split
+
+Several files are split into a `!js || !wasm` ("native") half and a
+`js && wasm` ("browser") half so the browser build never pulls in a CGo/
+modernc SQLite driver:
+
+- `sqlite_open.go` (driver-neutral `SQLiteOpenConfig`/`SQLitePragma`) +
+  `sqlite_open_native.go` (registers `modernc.org/sqlite`, builds the DSN with
+  `_pragma`/`_txlock=immediate`) + `sqlite_open_wasm.go` (registers
+  `go-wasmsqlite` against an OPFS-backed virtual file system).
+  `OpenSQLiteDatabase(cfg)` is the shared entry point; only the driver
+  registration and DSN construction differ per build.
+- `sqlerrors.go` (backend-agnostic `MapSQLError`/`Is*Error` classifiers) +
+  `sqlerrors_native.go` (`mapSQLiteError` via `modernc.org/sqlite` typed
+  errors) + `sqlerrors_wasm.go` (`mapSQLiteError` via string-matching the
+  wasmsqlite bridge's error messages, since the browser driver does not
+  surface typed SQLite errors).
+- `db/migrate` mirrors the same split one level down (`driver_native.go` /
+  `driver_wasm.go`); see [db/migrate/CLAUDE.md](migrate/CLAUDE.md).
 
 ## Relationships
 
@@ -137,9 +199,26 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   jobs use `standard_vtxo_timeout` with an empty ref; policy-specific
   jobs store their registered kind plus the domain-owned durable ref
   needed to reconstruct the same spend policy after restart.
+- `credit_operations.op_key` and `oor_session_registry`'s idempotency key are
+  each guarded by a partial UNIQUE index that excludes terminal-failed rows —
+  callers must not attempt to "clean up" a failed row before retrying under
+  the same key; the schema already lets a fresh row through.
+- `RegisterInternalKeyTx` must run inside the same transaction as the insert
+  of the referencing row (it is designed to be called with the transaction's
+  own `qtx`, not a fresh connection); calling it outside that transaction
+  reopens the read-then-insert race the RETURNING-on-conflict UPSERT is meant
+  to close.
 
 ### Migration notes
 
+- `000022_credit_operations` — adds `credit_operations`, the durable
+  control-plane table backing `CreditOperationStoreDB`. One row per credit
+  op id; `idx_credit_operations_op_key` is a partial UNIQUE index on `op_key`
+  `WHERE status != 2 (failed)`, so the schema itself enforces the
+  at-most-one-live-or-completed-operation-per-idempotency-key invariant and a
+  keyed retry after a terminal failure can admit a fresh op under the same
+  key. `idx_credit_operations_status_created` serves the boot-time
+  non-terminal restore scan.
 - `000020_accounting_wallet_sweeps` — adds `wallet_clearing`,
   `wallet_utxo_spent`, and `wallet_sweep_transfer` for sweep
   accounting. Rebuilds the round idempotency index so keyed
@@ -147,6 +226,14 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   collapsing on `(round_id, event_type, debit_account, credit_account)`.
   Renumbered from 000019 to land after `000019_oor_session_registry`,
   which merged to main while this work was in review.
+- `000021_vhtlc_recovery_job_generations` — rebuilds `vhtlc_recovery_jobs`
+  to widen the uniqueness key from `(swap_id, action)` to
+  `(swap_id, action, vtxo_txid, vtxo_vout)`, so a refreshed vHTLC (new
+  outpoint) arms a new recovery "generation" instead of colliding with the
+  prior job. SQLite cannot widen a UNIQUE constraint in place, so the table
+  is recreated, rows are copied, and the state / swap-action / unroll-target
+  indexes are rebuilt. The down migration collapses each `(swap_id, action)`
+  to its newest row before restoring the narrower constraint.
 - `000018_pending_intents` — generalizes the Board-only
   `pending_board_requests` outbox into a supertype/subtype set:
   `pending_intent_kinds` (enum table), `pending_intents` (header: 32-byte
@@ -156,14 +243,6 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   anchored outpoint, PK on the outpoint so a newer intent rebinds, FK to the
   header). Drops `pending_board_requests` outright (alpha; rows only exist
   in the narrow crash window between admission and round seal).
-- `000021_vhtlc_recovery_job_generations` — rebuilds `vhtlc_recovery_jobs`
-  to widen the uniqueness key from `(swap_id, action)` to
-  `(swap_id, action, vtxo_txid, vtxo_vout)`, so a refreshed vHTLC (new
-  outpoint) arms a new recovery "generation" instead of colliding with the
-  prior job. SQLite cannot widen a UNIQUE constraint in place, so the table
-  is recreated, rows are copied, and the state / swap-action / unroll-target
-  indexes are rebuilt. The down migration collapses each `(swap_id, action)`
-  to its newest row before restoring the narrower constraint.
 - `000017_spending_reservations` — adds `spending_reservations` table with
   `(outpoint_hash, outpoint_index)` PK, `owner_kind`, `owner_id`, and
   `created_at`. A row exists IFF the owning spend session was durably

@@ -72,9 +72,12 @@ Use `go doc metrics.<Symbol>` for signatures.
   everything (no HTTP server, no actor spawn, no collector registration).
 - `RegisterAll` uses `Register` + `AlreadyRegisteredError`, not `MustRegister`.
 - Non-counter metrics must not use the `_total` suffix (promlinter enforced).
-- Emission never blocks or fails the operation being recorded:
-  `Server.emitMetric` Tells through an `fn.Option[Sink]` and only debug-logs a
-  Tell error.
+- Emission never blocks or fails the operation being recorded: producers
+  (`round`, `wallet`, `vtxo`) hold an `fn.Option[metrics.Sink]` and call
+  `sink.WhenSome(func(sink metrics.Sink) { ... sink.Tell(ctx, msg) ... })` at
+  the observation site; a `Tell` error (e.g. no metrics actor registered) is
+  logged at debug level and never propagated. `Server` itself has no emit
+  method — it is only the opt-in HTTP `/metrics` scrape endpoint.
 
 ## Deep Docs
 

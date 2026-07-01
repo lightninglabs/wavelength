@@ -7,13 +7,20 @@ Lightweight in-process Bitcoin wallet backed by LND's btcwallet and a neutrino
 directly to the Bitcoin P2P network without requiring an external Esplora server
 or LND node.
 
+All native source files carry a `//go:build !js || !wasm` tag. `wasm_stub.go`
+(`//go:build js && wasm`) provides a browser build of the same exported
+surface (`Config`, `NeutrinoService`, `Wallet`, `New`, `NewWithNeutrino`, ...)
+where every constructor/method returns an "unavailable in wasm" error — this
+package is native-only; browser builds link the stub instead of neutrino/
+btcwallet.
+
 ## Key Types
 
 - `Wallet` — Top-level wallet wrapping `walletcore.Wallet` with neutrino chain service, chain backend, and boarding adapter. Constructors: `New` (owns neutrino lifecycle) and `NewWithNeutrino` (reuses pre-started service).
 - `NeutrinoService` — Manages the neutrino `ChainService`, its bbolt DB, and lifecycle. Pre-started by the daemon for early P2P sync.
 - `ChainBackend` — Implements `chainsource.ChainBackend` using neutrino's native `ChainNotifier` for confirmation tracking, spend detection, fee estimation, and optional direct package relay via `chainbackends.PackageSubmitter`.
 - `BoardingBackendAdapter` — Implements `wallet.BoardingBackend` and `wallet.OutputLeaser` by embedding `walletcore.BoardingBackendBase` and adding neutrino-backed `ListUnspent`, `GetTransaction`, `GetBlock`, `LeaseOutput`, and `ReleaseOutput`. Output leasing forwards to btcwallet's native lock table, casting `wallet.LockID` → `wtxmgr.LockID`.
-- `Config` — Embeds `walletcore.Config` and adds neutrino-specific fields (peers, fee URL, persist filters) plus an optional `PackageSubmitter` for v3 parent+child relay.
+- `Config` — Embeds `walletcore.Config` (Seed, ChainParams, `Birthday`, RecoveryWindow, DBDir, Log) and adds neutrino-specific fields (peers, fee URL, persist filters) plus an optional `PackageSubmitter` for v3 parent+child relay.
 
 ## Relationships
 
@@ -28,6 +35,11 @@ or LND node.
   neutrino P2P broadcast is not equivalent to v3 package relay when the parent
   is non-relayable without its fee-paying child.
 - Block cache size is in bytes (2 MiB default), not block count. This differs from neutrino's count-based API.
+- `NewWithNeutrino` threads `cfg.Birthday` (from `walletcore.Config`) into the
+  underlying `btcwallet.Config`. An unset (zero) `Birthday` makes btcwallet
+  rescan from the chain's genesis-era default instead of the seed's actual
+  creation time, which is slower but not unsafe; do not drop this field when
+  changing wallet construction.
 - Taproot script imports use `KeyScopeBIP0086` (via `walletcore.BoardingBackendBase`) to ensure btcwallet's block processing tracks credits correctly.
 
 ## Deep Docs

@@ -10,7 +10,13 @@ validated invariants.
 ## Key Types
 
 - `Node` — Sealed interface for all AST nodes representing spending conditions.
-  Implementations: `Multisig`, `CSV`, `Condition`, `Preimage`, `CLTV`.
+  Implementations: `Multisig` (N-of-N CHECKSIG chain), `CSV` (relative-timelock
+  gate wrapping an inner node), `Condition` (opaque predicate script prefix
+  wrapping an inner node, e.g. a hash/preimage or CLTV check). There is no
+  dedicated `Preimage` or `CLTV` node type — preimage and absolute-locktime
+  checks are plain script fragments (`PaymentHash160Condition`,
+  `AbsoluteLockTimeCondition`, `Hash160Condition`) used as a `Condition`'s
+  `Predicate`.
 - `PolicyTemplate` — Semantic representation of a tapscript policy with named
   leaves. Supports encode/decode for persistence.
   - `PolicyTemplate.MatchesPkScript(pkScript []byte) bool` — Compiles the
@@ -22,7 +28,16 @@ validated invariants.
 - `VTXOPolicy` — Compiled VTXO taproot policy with collab and exit spend paths.
   Provides `CollabSpendInfo()` and `ExitSpendInfo()`.
 - `VHTLCPolicy` — 6-leaf vHTLC policy with claim/refund/unilateral paths for
-  hash-time-locked conditional transfers.
+  hash-time-locked conditional transfers. `*SpendInfo` accessors exist for all
+  6 leaves (`ClaimSpendInfo`, `RefundSpendInfo`, `RefundWithoutReceiverSpendInfo`,
+  `UnilateralClaimSpendInfo`, `UnilateralRefundSpendInfo`,
+  `UnilateralRefundWithoutReceiverSpendInfo`). Tx-context-bearing `*Path`
+  helpers (which also set `SpendPath.RequiredSequence`/lock fields) exist for
+  `ClaimPath(preimage)`, `RefundPath()`, `RefundWithoutReceiverPath()`,
+  `UnilateralClaimPath(preimage)`, and
+  `UnilateralRefundWithoutReceiverPath()`. There is no dedicated
+  `UnilateralRefundPath` helper — that leaf's `SpendPath` is built directly via
+  `CompiledPolicy.SpendPathForNode(policy.UnilateralRefundClosure, nil)`.
 - `CheckpointPolicy` — Parameters for OOR checkpoint taproot tree construction. `CheckpointTapScript` / `CheckpointPkScript` derive the checkpoint output.
 - `SpendInfo` — Witness script + control block needed to spend a specific leaf. Methods: `BuildSignDescriptor`, `CollabWitness`, `TimeoutWitness`.
 - `SpendPath` — Serializable spend path (leaf index + encoded leaf data) with `Witness` and `AttachTapLeafScript` helpers for PSBT integration.
@@ -48,6 +63,16 @@ validated invariants.
   shape (custom vHTLC, etc.). Enforces: collab leaf with operator key, exit
   leaf without operator key, no operator-unilateral leaf, CSV gating on exit
   paths. `opts.MinExitDelay = 0` skips the CSV minimum check.
+- `SigningKeys(node Node) ([]*btcec.PublicKey, error)` — Returns the tapscript
+  CHECKSIG public keys committed to by a node in witness-stack order, walking
+  through `CSV`/`Condition` wrappers to the inner `Multisig`. Lets callers
+  assemble or validate witnesses without parsing compiled script bytes.
+- `SigningKeysForSpendPath(template *PolicyTemplate, spendPath *SpendPath)
+  ([]*btcec.PublicKey, error)` — Locates the semantic template leaf whose
+  compiled script matches `spendPath.WitnessScript` and returns
+  `SigningKeys` for that leaf. Round forfeit validation uses this to recover
+  the exact signer order for multi-participant custom-policy witnesses (e.g.
+  vHTLC refund-style forfeit paths).
 - Decode budget constants: `MaxPolicyTemplateBytes` (64 KiB),
   `MaxLeafTemplateBytes` (16 KiB), `MaxPolicyLeaves` (32),
   `MaxPolicyDepth` (16), `MaxPolicyNodes` (256), `MaxMultisigKeys` (64) —

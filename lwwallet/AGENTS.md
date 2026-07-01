@@ -54,11 +54,21 @@ without an external LND node. Implements `wallet.BoardingBackend`,
 - `Wallet.FinalizePsbtDirect(packet)` — Signs and finalizes a PSBT via
   `BtcWallet.FinalizePsbt` under `DefaultAccountName`. Used by the darepod
   unroll sweep adapter since lwwallet has no gRPC surface.
+- `Config.Birthday` — Seed creation time, forwarded to
+  `btcwallet.Config.Birthday` so recovery rescans start from the seed's
+  birthday instead of genesis.
+- `newWalletLoaderOptions(cfg)` — Build-tag-split constructor for
+  `btcwallet.LoaderOption`s, called from `Wallet.New`. See
+  `walletdb_native.go`/`walletdb_wasm.go` below for the two implementations.
 
 ## Relationships
 
 - **Depends on**: `chainsource` (implements `ChainBackend`), `wallet`
-  (implements `BoardingBackend`).
+  (implements `BoardingBackend`). `walletdb_wasm.go` (browser build only,
+  `js && wasm`) additionally depends on `internal/sqlbase` and
+  `go-wasmsqlite` for an OPFS-backed SQLite walletdb; the native build
+  (`walletdb_native.go`, `!js || !wasm`) has no such dependency and stores
+  btcwallet's database as local bbolt files under `Config.DBDir`.
 - **Depended on by**: `darepod` (alternative to LND-backed wallet).
 
 ## Invariants
@@ -76,6 +86,14 @@ without an external LND node. Implements `wallet.BoardingBackend`,
   UTXO set, because btcwallet does not credit-mark non-default scope outputs.
 - `Stop()` explicitly closes btcwallet's internal database to prevent resource
   leaks.
+- `newWalletLoaderOptions` is the only place that should choose between
+  bbolt (native) and OPFS SQLite (wasm) storage; `Wallet.New` must stay
+  build-tag agnostic and call it rather than constructing
+  `btcwallet.LoaderOption`s directly.
+- `walletdb_wasm.go`'s DB filename is derived from a hash of the normalized
+  `Config.DBDir`, not the literal path, since OPFS is a flat origin-local
+  namespace; callers must not rely on inspecting the OPFS filename to
+  recover the original `DBDir`.
 
 ## Deep Docs
 

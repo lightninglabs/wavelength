@@ -3,10 +3,12 @@
 ## Purpose
 
 Dynamic low-level RPC CLI for daemon introspection. Constructs a `cobra`
-command tree at init-time by walking proto descriptors from `daemonrpc` and
-`swapclientrpc`, exposing every gRPC method as a subcommand with auto-derived
-flags. Used by agents and power users to invoke any daemon RPC without
-hand-written code.
+command tree at init-time by walking proto descriptors from `daemonrpc`,
+`swapclientrpc`, and `walletdkrpc`, exposing every gRPC method as a
+subcommand with auto-derived flags. Used by agents and power users to
+invoke any daemon RPC without hand-written code — including the
+`walletdkrpc` verbs that also have dedicated top-level shortcuts
+(`create`, `send`, `recv`, ...) elsewhere in `darepoclicommands`.
 
 ## Key Types
 
@@ -25,8 +27,8 @@ hand-written code.
 - **Build-time generated registry.** The command tree is built at startup
   from the static `generatedRegistry()` table in `registry_generated.go`,
   produced at build time by `cmd/darepocli/internal/gen-devrpc` walking
-  `daemonrpc.File_daemon_proto` and
-  `swapclientrpc.File_swap_client_proto`. New gRPC methods require
+  `daemonrpc.File_daemon_proto`, `swapclientrpc.File_swap_client_proto`,
+  and `walletdkrpc.File_wallet_proto`. New gRPC methods require
   regenerating the registry (`go generate` or the corresponding make
   target) — they do NOT appear at runtime.
 - **`--describe` mode.** Invoking a method command with `--describe`
@@ -40,7 +42,11 @@ hand-written code.
 ## Relationships
 
 - **Depends on**: `daemonrpc` (service descriptors), `rpc/swapclientrpc`
-  (service descriptors).
+  (service descriptors), `rpc/walletdkrpc` (service descriptors for
+  `WalletService` and `WalletInspectionService` — the same high-level
+  wallet API that backs the top-level `create`/`send`/`recv`/... verbs,
+  vendored here so its methods are also reachable as raw
+  `dev wallet *` / `dev wallet-inspection *` commands for debugging).
 - **Depended on by**: `cmd/darepocli/darepoclicommands` (registered as the
   `dev` subcommand).
 

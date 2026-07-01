@@ -18,9 +18,20 @@ actor. See [docs/oor_subsystem.md](../docs/oor_subsystem.md) for the full design
 
 - `OORSessionActor` / `sessionBehavior` — one durable actor per session on the
   Read/Commit execution path. The FSM emits outbox events as before, but the
-  actor handles them itself in one shared `driveOutbox` switch (sign inline,
-  enqueue cross-actor transport to serverconn, materialize incoming VTXOs,
-  schedule retries) rather than routing them through an `OutboxHandler`.
+  actor handles them itself in one shared `driveOutboxEvents` switch (sign
+  inline, enqueue cross-actor transport to serverconn, materialize incoming
+  VTXOs, schedule retries, release reserved inputs) rather than routing them
+  through an `OutboxHandler`. `driveOutbox` wraps `driveOutboxEvents` and is
+  the sole top-level classifier: a deterministic `*terminalOutboxError` (an
+  effect that fails identically on every redelivery, e.g. an operator-supplied
+  metadata query whose recipients this wallet owns none of) drives the FSM to
+  terminal `Failed` via `failTerminal` so the turn commits and acks instead of
+  redelivering forever into a dead letter; any other (transient) error is
+  returned plain so the framework redelivers. `continueWith` and the
+  commit-path materialization call the raw `driveOutboxEvents` (not
+  `driveOutbox`) so a deterministic error propagates up to this single
+  classification point instead of failing the FSM mid-recursion or
+  mid-commit.
 - `OORRegistryActor` — thin coordinator registered under the OOR service key,
   with a **durable inbound mailbox** (Read/Stage/Commit path, mailbox id
   `oor-client`): a server-push event is persisted before the ingress loop acks
@@ -55,7 +66,16 @@ actor. See [docs/oor_subsystem.md](../docs/oor_subsystem.md) for the full design
   Commit join the turn tx); optional `IncomingVTXOObserver IncomingVTXONotifier`
   fires after incoming VTXOs are durably materialized (lets daemon subsystems arm
   work without depending on `oor`); `Limits ReceiveLimits` bounds incoming
-  receive payloads.
+  receive payloads. `SpendCompleter`/`SpendReleaser` route completed/released
+  outgoing input reservations through the VTXO manager and are the only
+  genuinely optional deps besides `LedgerSink`, `TimeoutActor`, `CallbackRef`,
+  `VTXOManager`, and the observer — `NewOORRegistryActor` requires
+  `RegistryStore`, `DeliveryStore`, `ServerConn`, `Signer`, `IncomingHandler`,
+  `PackageStore`, and `ReservationStore` at construction, and rejects a
+  non-nil `SpendCompleter` or `SpendReleaser` paired with a nil `VTXOStore`
+  (both filter to locally-known outpoints via `VTXOStore` before routing to
+  the manager, so a completer/releaser without a store would leak unfiltered
+  outpoints — including a counterparty's — to it).
 
 The legacy single global actor and the separate signing-effect actor have been
 deleted; all per-session state and all wallet signing now live on the
@@ -143,14 +163,28 @@ per-session durable actor's turn.
 
 ### Outbox Handler Chain & Callbacks
 
-- `LocalPersistenceOutboxHandler` — handles `MarkInputsSpentRequest`,
-  `QueryIncomingMetadataRequest`, `MaterializeIncomingVTXOsRequest`,
-  `SendIncomingAckRequest`; delegates everything else to `Next`. Also
-  implements `IncomingMetadataRecipientFilter` so the transport layer
-  can pre-filter owned recipients.
+- `LocalPersistenceOutboxHandler` — purely an incoming-materialization
+  handler: handles `QueryIncomingMetadataRequest`,
+  `MaterializeIncomingVTXOsRequest`, `SendIncomingAckRequest`; delegates
+  everything else to `Next`. Also implements
+  `IncomingMetadataRecipientFilter` so the transport layer can pre-filter
+  owned recipients. It no longer handles `MarkInputsSpentRequest` or
+  `ReleaseInputsRequest` — those outgoing effects moved onto the
+  session actor's own `driveOutboxEvents` switch when the per-session-actor
+  migration landed; the handler's `CompleteSpend`/`ReleaseSpend` members
+  were dead code and were removed.
 - `SpendCompleter` — `func(ctx, []wire.OutPoint) error` routing OOR
   spend completion through the VTXO manager. `nil` ⇒ direct store
   writes (migration compat).
+- `SpendReleaser` — `func(ctx, []wire.OutPoint) error` routing input-
+  reservation release (return to `LiveState`) through the VTXO manager.
+  Fires from `driveOutboxEvents`'s `*ReleaseInputsRequest` case, which a
+  pre-point-of-no-return terminal FSM failure (e.g. a typed submit
+  rejection or the lineage-cap path) emits so rejected inputs are not
+  stranded until the startup sweep. Best-effort: a release error is
+  logged and swallowed rather than failing the turn, because the emitting
+  transition already committed the terminal `Failed` snapshot and
+  re-driving it would re-wedge the session.
 - `IncomingClientKeyResolver` — `func(ctx, ArkRecipientOutput)
   (keychain.KeyDescriptor, error)`. Returns
   `ErrIncomingRecipientNotOwned` for outputs belonging to other
@@ -402,10 +436,28 @@ per-session durable actor's turn.
   On a drain timeout the registry turn may still be mutating the map,
   so `stopChildren` is skipped (children are torn down by actor-system
   shutdown) to avoid a fatal concurrent map iteration and write.
+- Deterministic vs. transient outbox failure: a durable actor turn error
+  means "redeliver," which is correct for a transient failure (busy
+  store, unavailable peer) but wedges the session forever for a
+  deterministic one (fails identically every redelivery, e.g.
+  `buildTransportMessage` rejecting an operator-supplied metadata query
+  whose recipient set contains nothing this wallet owns, or a transport
+  event that does not implement `serverconn.ServerMessage`). Such
+  effects wrap `*terminalOutboxError`; `driveOutbox` is the single
+  top-level classifier that converts one into a terminal `FailEvent` via
+  `failTerminal` so the turn commits a `Failed` snapshot and acks instead
+  of dead-lettering. Only wrap an error this way when re-running the
+  identical turn could never succeed.
+- `NewOORRegistryActor` validates every dependency a spawned child needs
+  at construction — `RegistryStore`, `DeliveryStore`, `ServerConn`,
+  `Signer`, `IncomingHandler`, `PackageStore`, `ReservationStore` — so a
+  misconfiguration fails loudly up front rather than surfacing
+  mid-transfer (possibly past the point of no return) or, for a nil
+  `ReservationStore`, silently turning the spending-reservation write
+  into a no-op that defeats the startup orphan-sweep crash-safety net
+  with no error, log, or test failure.
 
 ## Deep Docs
 
 - [oor/doc.go](doc.go) — Package overview.
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map.
-</content>
-</invoke>

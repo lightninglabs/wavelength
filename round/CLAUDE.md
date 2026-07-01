@@ -31,7 +31,8 @@ state transitions and validation rules live under [Invariants](#invariants).
   `SubmitForfeitSigRequest`, `StartTimeoutReq`, `CancelTimeoutReq`,
   `RoundCheckpointedNotification`, `RoundCompletedNotification`,
   `RoundFailedNotification`, `ForfeitRequestToVTXO`,
-  `ForfeitConfirmedToVTXO`.
+  `ForfeitConfirmedToVTXO`, `ReleaseForfeitReservation`,
+  `DropCustomForfeitReservation`.
 
 ### Quote & Intent (`interfaces.go`, `events.go`)
 
@@ -82,6 +83,20 @@ state transitions and validation rules live under [Invariants](#invariants).
   handshake (#270) `OperatorFee` is **advisory only**: the FSM does NOT
   subtract it from `Amount`. The actor's `designateChangeMarker` stamps
   exactly one `IsChange=true` across the assembled intent.
+- `RoundClientConfig.MetricsSink` — optional `fn.Option[metrics.Sink]`;
+  when `fn.Some`, `emitRoundJoined` (from `createNewRound`) and
+  `emitRoundCompleted` (from `processOutbox` on
+  `RoundCompletedNotification`/`RoundFailedNotification`) fire-and-forget
+  `metrics.RoundJoinedMsg` / `metrics.RoundCompletedMsg{Status: "confirmed"|"failed"}`
+  so `darepod_rounds_joined_total` / `darepod_rounds_completed_total`
+  reflect reality. Mirrors `LedgerSink`; a Tell failure is logged at
+  debug and never fails the enclosing dispatch.
+- `RoundClientConfig.DropCustomForfeitSigningContexts` — optional
+  `func(ctx, []wire.OutPoint) error` callback that clears daemon-local
+  signing metadata for custom refresh inputs when a round fails before
+  the connector-bound forfeit signing request is produced. When nil,
+  only the VTXO manager's custom forfeit actors are dropped (via
+  `actormsg.DropCustomForfeitInputsRequest`).
 - `ConfirmationEvent`, `TimeoutMsg` — chain confirmation / timeout
   delivery to the actor.
 - VTXO-actor messages (`vtxo_messages.go`): `ForfeitRequestEvent`,
@@ -105,10 +120,30 @@ state transitions and validation rules live under [Invariants](#invariants).
   `CommitmentTxBuilt`, `AwaitingBoardingSigs`, `NoncesAggregated`,
   `OperatorSigned`, `BoardingFailed`, `JoinRoundRequest` — all
   satisfy the private `inboundServerMessage` interface
-  (compile-time-asserted).
+  (compile-time-asserted). `CommitmentTxBuilt.FromProto` also decodes
+  the round's `TreeCosignKey`, `ConnectorOperatorKey`, `SweepKey`,
+  `SweepDelay`, and `ForfeitKey` (all optional, nil/zero for servers
+  that predate them); `BoardingFailed.FromProto` decodes an optional
+  `RoundID` (validated against `roundIDLen`) so failures that arrive
+  after admission route deterministically instead of via the
+  sole-round heuristic.
 - `RoundClientConfig.LedgerSink` — optional `fn.Option[ledger.Sink]`
   plumbed onto the round actor; `emitVTXOsReceived` and `emitRoundFee`
-  fire-and-forget messages when `fn.Some`.
+  fire-and-forget messages when `fn.Some`. `emitVTXOsReceived` also
+  emits a `ledger.VTXOSentMsg` per `VTXOCreatedNotification.Outflows`
+  entry (foreign directed-send recipients, cooperative leave outputs)
+  so recipient value is not misreported as operator fee.
+  `roundOperatorFeeType` classifies the fee as `FeeTypeBoarding` when
+  the round carries any boarding intent (or a boarding-origin VTXO),
+  else `FeeTypeRefresh`, carried on
+  `VTXOCreatedNotification.OperatorFeeType`.
+- `validateVTXOTreeBinding` / `verifyVTXOTreeRoot` (`transitions.go`)
+  — see [Invariants](#invariants) (darepo-client#680).
+- `confirmationWatchScript(commitmentTx, vtxoTrees)` (`transitions.go`)
+  — picks the pkScript the actor asks the chain backend to watch for
+  round confirmation: the lowest-indexed proven VTXO batch output, not
+  always output 0. Falls back to output 0 for refresh-less/harness
+  rounds with no `VTXOTreePaths`.
 - `RoundClientConfig.RegistrationTimeout` — max wall-clock duration to wait in
   `IntentSentState` for the server's `RoundJoined` admission watermark. Zero
   selects `defaultRegistrationTimeout` (60 s); negative disables the timeout
@@ -123,14 +158,17 @@ state transitions and validation rules live under [Invariants](#invariants).
 
 - **Depends on**: `baselib/protofsm` (FSM engine), `lib/tree`,
   `lib/types`, `lib/arkscript`, `wallet`, `ledger` (`Sink` +
-  `VTXOReceivedMsg` / `Source*` constants), `timeout`, `google/uuid`.
+  `VTXOReceivedMsg` / `Source*` constants), `metrics` (`Sink` +
+  `RoundJoinedMsg` / `RoundCompletedMsg`), `timeout`, `google/uuid`.
 - **Depended on by**: `vtxo`, `db`, `darepod`.
 - **Sends → `serverconn`**: `JoinRoundRequest`,
   `JoinRoundAcceptOutbox`, `JoinRoundRejectOutbox`,
   `SubmitNoncesRequest`, `SubmitPartialSigRequest`,
   `SubmitForfeitSigRequest`, `SubmitVTXOForfeitSigsToServer`.
 - **Sends → `vtxo`**: forfeit/spend/block-epoch events listed above;
-  manager-level `VTXOCreatedNotification`, `VTXOTerminatedMsg`.
+  manager-level `VTXOCreatedNotification`, `VTXOTerminatedMsg`,
+  `actormsg.DropCustomForfeitInputsRequest` (custom forfeit-actor
+  teardown on round failure).
 - **Sends → `wallet`**: `RegisterConfirmationRequest`.
 - **Sends → `OwnedScriptRegistrar`** (darepod adapter over the OOR
   artifact store): `RegisterOwnedScript(pkScript, ownerKey)`.
@@ -138,9 +176,17 @@ state transitions and validation rules live under [Invariants](#invariants).
   per owned `ClientVTXO`: `VTXOReceivedMsg{Source=SourceRoundBoarding}`;
   paired `VTXOSentMsg{Outpoint}` +
   `VTXOReceivedMsg{Source=SourceRoundRefresh}`;
-  `VTXOReceivedMsg{Source=SourceRoundTransfer}`. One
-  `FeePaidMsg{FeeType=FeeTypeRefresh}` per round when
-  `OperatorFeeSat > 0` and any refresh-origin VTXO was emitted.
+  `VTXOReceivedMsg{Source=SourceRoundTransfer}`; one
+  `VTXOSentMsg{AmountSat}` per `VTXOCreatedNotification.Outflows` entry
+  (non-owned recipients/leave outputs). One `FeePaidMsg` per round when
+  `OperatorFeeSat > 0`, typed via `roundOperatorFeeType` as
+  `FeeTypeBoarding` (any boarding intent, or a boarding-origin VTXO) or
+  `FeeTypeRefresh` (otherwise) — no longer gated on seeing a
+  refresh-origin VTXO.
+- **Sends → `metrics`** (when `MetricsSink` is `fn.Some`):
+  `RoundJoinedMsg` (from `createNewRound`, every assembled round);
+  `RoundCompletedMsg{Status="confirmed"|"failed"}` (from
+  `RoundCompletedNotification` / `RoundFailedNotification` handling).
 - **Receives ← `serverconn`** (via `ServerMessageNotification`):
   `CommitmentTxBuilt`, `NoncesAggregated`, `OperatorSigned`,
   `RoundJoined`, `BoardingFailed`, `JoinRoundQuoteReceived`.
@@ -148,6 +194,10 @@ state transitions and validation rules live under [Invariants](#invariants).
 - **Receives ← `wallet`** (via `lib/actormsg`): `RegisterIntentMsg`
   (pre-admitted intent packages), `TriggerBoardMsg`. Boarding UTXO
   confirmations arrive wrapped in `WalletBoardingConfirmed`.
+  `TriggerBoardMsg.Outpoints` (optional) restricts `handleTriggerBoard`
+  to exactly those confirmed boarding inputs instead of all confirmed
+  intents; `TriggerBoardMsg.Change` (optional) adds a leave output that
+  pays clipped boarding balance back to a wallet-owned boarding script.
 - **Receives ← `timeout`**: `TimeoutMsg`.
 - **Receives ← `chainsource`**: `ConfirmationEvent`.
 
@@ -236,6 +286,38 @@ state transitions and validation rules live under [Invariants](#invariants).
   rebuilt on top of a real commitment output, the connector is only
   spendable once the commitment tx confirms, preserving round atomicity.
   No connector transactions cross the wire — only the four scalars.
+- **Every VTXO tree is proven rooted in this round's commitment tx**
+  (`validateVTXOTreeBinding` / `verifyVTXOTreeRoot`, darepo-client#680,
+  the VTXO-tree counterpart to #681). Internal tree self-consistency
+  (`ValidatePath`/`ValidateAnchors`) is not sufficient — a
+  self-consistent tree rooted at the wrong commitment output would
+  still pass those checks and get co-signed, leaving the client's new
+  VTXOs unrecoverable once the real commitment tx confirms. Run in
+  `CommitmentTxReceivedState` before any per-VTXO validation trusts
+  tree contents: for each `(outputIdx, tree)` pair it asserts the
+  tree's `BatchOutpoint` names this commitment txid, that `outputIdx`
+  equals `BatchOutpoint.Index` and is in range, that the committed
+  output byte-matches `BatchOutput`, and (implicitly, via the cosigner
+  set) that the committed script traces back to the tree root. A
+  binding failure is non-recoverable (`failBeforeForfeitSigning`,
+  `false`) since a mis-rooted tree is a structural defect, not a
+  transient condition.
+- `confirmationWatchScript` (used by `registerCommitmentConfirmation`
+  and the forfeit-collection/checkpoint outboxes) watches the
+  lowest-indexed key of `VTXOTreePaths` — the output proven by
+  `validateVTXOTreeBinding` to actually receive this client's funds —
+  rather than assuming commitment-tx output 0. Falls back to output 0
+  for refresh-less rounds or harness paths with no `VTXOTreePaths`.
+- **Sweep delay vs. VTXO exit delay is validated per round, not once at
+  actor construction.** `SweepDelay` is no longer a global operator
+  term (`OperatorTerms`) — the server delivers it per round on
+  `CommitmentTxBuilt`/`CommitmentTxReceivedState`. `NewRoundClientActor`
+  no longer calls `ValidateDelayParameters`; the check
+  (`SweepDelay > VTXOExitDelay`, so the operator has time to respond to
+  a unilateral exit before the batch sweep window opens) now runs in
+  `CommitmentTxReceivedState.processEvent` against each round's
+  delivered `SweepDelay`, failing the round (non-recoverable) on
+  violation.
 - `MaxQuoteEntriesPerClient = 1024` is enforced in `FromProto` before
   allocating quote slices to prevent resource exhaustion.
 - `SubmitForfeitSigRequest` (boarding input signatures) is distinct
@@ -245,11 +327,31 @@ state transitions and validation rules live under [Invariants](#invariants).
   collaborative leaf when the live output uses a custom script policy;
   without it the VTXO actor would build a forfeit against the wrong
   tapscript branch.
+- `types.ForfeitTxSig.ParticipantVTXOSigs` (keyed non-operator
+  signatures for custom multi-participant spend paths) is accepted as
+  an alternative to `ClientVTXOSig` throughout the forfeit-signing
+  path — `SubmitVTXOForfeitSigsToServer.ToProto` requires at least one
+  of the two to be present per outpoint, and both are forwarded to the
+  server as `ForfeitParticipantSig` entries alongside the legacy
+  single-signer field.
+- On round failure before connector-bound forfeit signatures are sent,
+  `rollbackOutbox`/`releaseForfeitsOnFailure` split reserved forfeit
+  inputs by kind: standard wallet VTXOs get `ReleaseForfeitReservation`
+  (returned to `LiveState`), while caller-supplied custom refresh
+  inputs get `DropCustomForfeitReservation` (their `PendingForfeit`
+  signer actors, and any `DropCustomForfeitSigningContexts`-backed
+  daemon-local signing metadata, are dropped instead — they are not
+  wallet VTXOs and must never be returned to `LiveState`).
+- `roundLedgerOutflows`/`VTXOCreatedNotification.Outflows` account for
+  round value the client paid out without gaining a locally owned
+  VTXO — non-local-owner `VTXORequest`s (`!HasLocalOwner()`, e.g.
+  directed-send recipients) and leave outputs. Each entry carries an
+  `IdempotencyKey` derived from `(RoundID, kind, index)` so multiple
+  outflows in one round persist as distinct ledger rows instead of
+  colliding on the round-level idempotency index.
 
 ## Deep Docs
 
 - [round/README.md](README.md) — Full state machine walkthrough with
   diagrams.
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map.
-</content>
-</invoke>

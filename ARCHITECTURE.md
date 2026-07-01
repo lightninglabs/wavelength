@@ -18,6 +18,8 @@ package may import from a higher layer.
 | [`oor`](oor/) | Out-of-round transfer coordination FSM |
 | [`wallet`](wallet/) | On-chain boarding wallet actor (address derivation, UTXO monitoring) |
 | [`ledger`](ledger/) | Client-side durable ledger actor for double-entry fee accounting |
+| [`credit`](credit/) | Server-custodial sat "credit" orchestration for sub-dust/shortfall swap amounts, run as durable per-operation protofsm actors |
+| [`coinselect`](coinselect/) | Coin-type-agnostic coin-selection algorithm shared by wallet/swap consumers |
 | [`lib`](lib/) | Shared domain utilities: tree paths, BIP-322, arkscript policy, types |
 | [`lib/arkscript`](lib/arkscript/) | Tapscript AST compiler and policy system for Ark taproot outputs |
 | [`lib/bip322`](lib/bip322/) | BIP-322 intent-bound message authentication |
@@ -43,12 +45,17 @@ package may import from a higher layer.
 | [`lwwallet`](lwwallet/) | Lightweight in-process wallet (btcwallet + Esplora, no external LND) |
 | [`btcwbackend`](btcwbackend/) | Neutrino-backed wallet backend (btcwallet + compact block filters) |
 | [`walletcore`](walletcore/) | Shared wallet abstractions and boarding logic used by lwwallet and btcwbackend |
+| [`chainfees`](chainfees/) | Reusable `chainfee.Estimator` implementations (mempool.space, LND walletkit) plus fallback/composition helpers |
+| [`internal/sqlbase`](internal/sqlbase/) | WASM-only (`js && wasm`) `walletdb.DB` implementation over a SQL KV table, backing `lwwallet`'s browser build |
 | [`proofkeys`](proofkeys/) | Interface for wallet-managed key derivation and indexer proof signing |
 | [`fraud`](fraud/) | Fraud detection actor: watches OOR ancestor outpoints on-chain and triggers unilateral exit when an ancestor is spent |
 | [`vhtlcrecovery/coordinator`](vhtlcrecovery/coordinator/) | Runtime coordinator for durable vHTLC recovery jobs: arms, escalates into unroll, cancels, and reconciles after restart |
 | [`vhtlcrecovery/unrollpolicy`](vhtlcrecovery/unrollpolicy/) | Adapter that resolves `(exit_policy_kind, recovery_id)` into a concrete `unroll.ExitSpendPolicy` for vHTLC claim and refund exits |
 | [`db`](db/) | SQLite/PostgreSQL persistence: boarding, rounds, VTXOs, OOR artifacts, fee ledger |
+| [`db/sqlc`](db/sqlc/) | Generated (sqlc) type-safe query layer for the main client schema — never hand-edit |
+| [`db/actordelivery/sqlc`](db/actordelivery/sqlc/) | Generated (sqlc) type-safe query layer for the durable actor mailbox schema — never hand-edit |
 | [`mailbox`](mailbox/) | Mailbox protocol primitives across three sub-packages (pb, rpc, conn) |
+| [`mailbox/pb`](mailbox/pb/) | Generated protobuf/gRPC stubs for `mailbox.v1.MailboxService`, the wire-level envelope contract |
 | [`serverconn`](serverconn/) | Unified server connector: durable egress, ingress polling, unary RPC facade |
 | [`serverconn/mailboxpull`](serverconn/mailboxpull/) | Shared exponential-backoff retry primitives for mailbox pull loops (used by serverconn ingress and SDK swap consumers) |
 
@@ -60,19 +67,25 @@ package may import from a higher layer.
 | [`gateway`](gateway/) | HTTP gateway utilities (mux options, CORS, endpoint normalization) for grpc-gateway integration |
 | [`sdk/ark`](sdk/ark/) | Consumer-facing Go SDK facade: remote or embedded daemon access with typed models |
 | [`sdk/swaps`](sdk/swaps/) | Lightning-to-Ark / Ark-to-Lightning atomic swap SDK with durable FSM flows |
+| [`sdk/swaps/sqlc`](sdk/swaps/sqlc/) | Generated (sqlc) type-safe query layer for `sdk/swaps`'s isolated SQLite schema — never hand-edit |
 | [`sdk/walletdk`](sdk/walletdk/) | Wallet-shaped SDK facade for host apps: embeds the daemon in-process, dials it over a private bufconn transport, exposes typed methods for the seven core wallet verbs (create, unlock, send, recv, list, balance, exit). The highest-level layer in the stack; wraps `walletdkrpc.WalletService`. Wallet RPC methods gated behind `walletdkrpc` (which transitively requires `swapruntime`) |
+| [`sdk/walletdk/mobile`](sdk/walletdk/mobile/) | Gomobile-safe binding facade over `sdk/walletdk.Client` for iOS/Android hosts |
 | [`swapwallet`](swapwallet/) | Optional daemon-side `walletdkrpc.WalletService` implementation (build tags `walletdkrpc swapruntime`): composes the swap subsystem, cooperative leave, boarding, ledger, and unilateral-exit registry behind one flat, swap-vocabulary-free wallet API |
 | [`swapclientserver`](swapclientserver/) | Optional daemon-side swap subserver (build tag `swapruntime`): translates `swapclientrpc` RPCs into `sdk/swaps` operations and manages the daemon-local worker registry |
 | [`cmd/darepod`](cmd/darepod/) | Daemon entry point |
 | [`cmd/darepocli`](cmd/darepocli/) | CLI client |
+| [`cmd/walletdk-wasm`](cmd/walletdk-wasm/) | `js/wasm` build target exposing the embedded `sdk/walletdk` wallet over a JS bridge |
 | [`timeout`](timeout/) | Generic timeout scheduling actor |
 | [`indexer`](indexer/) | Server indexing client for receive script registration |
 | [`arkrpc`](arkrpc/) | Server-side gRPC service definitions (ArkService, IndexerService) |
 | [`arkrpc/treeconv`](arkrpc/treeconv/) | Narrow re-export of tree-path conversion helpers without the full gRPC surface |
 | [`rpc`](rpc/) | Client-side RPC message definitions (roundpb, oorpb, swapclientrpc, walletdkrpc) and HTTP transport (`rpc/restclient`) |
+| [`rpc/oorpb`](rpc/oorpb/) | Generated gRPC stubs for `oorpb.OORMailboxService`, the two-phase OOR submit/finalize mailbox contract |
+| [`rpc/swapclientrpc`](rpc/swapclientrpc/) | Generated gRPC stubs for `swapclientrpc.SwapClientService`, daemon-owned swap execution + credit account RPCs |
 | [`rpc/walletdkrpc`](rpc/walletdkrpc/) | Highest-level gRPC surface: `WalletService` with the seven core wallet verbs. Composes `daemonrpc` and `rpc/swapclientrpc` server-side via `swapwallet` |
 | [`rpc/restclient`](rpc/restclient/) | HTTP/protoJSON transport adapter: `Client`, `StreamClient[T]`, and per-service factory functions implementing the same gRPC stub interfaces over REST |
 | [`daemonrpc`](daemonrpc/) | Daemon gRPC API definitions |
+| [`swaprpc`](swaprpc/) | Generated gRPC stubs for `swaprpc.SwapService`, the external swap-server negotiation API |
 
 ### Layer 4: Testing & Tooling
 
@@ -83,6 +96,7 @@ package may import from a higher layer.
 | [`harness`](harness/) | Docker-based Bitcoin/LND integration test environment |
 | [`systest`](systest/) | System-level end-to-end tests |
 | [`internal/actortest`](internal/actortest/) | Durable actor integration tests with real DB backends |
+| [`serverconn/hellotestpb`](serverconn/hellotestpb/) | Generated stub code for a toy "hello world" service, used only by `serverconn`'s own tests |
 | [`internal/testutils`](internal/testutils/) | Deterministic key/signature generation for tests |
 | [`internal/indexerlimits`](internal/indexerlimits/) | Client-side bounds for indexer pagination cursors (defense-in-depth against misbehaving remotes) |
 | [`rules`](rules/) | ast-grep linting rules for code style enforcement |
@@ -119,6 +133,8 @@ darepod (orchestrator)
 │   ├── unrollplan  │ (pure dependency-resolution planner)
 │   └── db          │ (unilateral_exit_jobs store)
 ├── txconfirm       │ (shared tx confirmation + CPFP actor; wired by darepod)
+├── credit          │ (durable per-operation protofsm actors; wired by darepod)
+│   └── db          │ (credit_operations store)
 ├── ledger          │
 │   ├── baselib/actor (durable mailbox, TLV codec)
 │   └── db          │ (LedgerStoreDB + UTXOAuditStoreDB adapters)

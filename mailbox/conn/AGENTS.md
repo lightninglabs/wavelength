@@ -23,12 +23,30 @@ delivery.
   Maps `CorrelationID` to `actor.Promise[*mailboxpb.Envelope]`. Supports
   three scenarios: waiter registered before response, response arrives
   before waiter (buffered), and stale cleanup via configurable TTL.
+  `HasWaiter(id)` reports (after pruning stale entries) whether a live
+  waiter is registered — used by the ingress loop to decide, per
+  `KIND_RESPONSE`, whether it can take the fast pre-transaction delivery
+  path or must fold into the durable dispatch transaction so the enqueue
+  commits atomically with the cursor. `FailAll(err)` completes every
+  registered waiter's promise with `err` and clears the waiter set,
+  used when the connector transitions to a terminal incompatible state so
+  no caller blocks on a response that will never arrive.
 - `DeliveryResult` — Tri-state enum returned by `ResponseRegistry.DeliverResponse`:
   - `DeliveryWaiter` — Response completed an active in-memory waiter.
   - `DeliveryBuffered` — Response buffered; no waiter registered yet.
   - `DeliveryDropped` — Response could not be stored or delivered (nil
     envelope or proto clone failure).
   `DeliveryResult` implements `String()` for human-readable logging.
+- `StatusError` — Typed error wrapping a non-OK `mailboxpb.Status` from a
+  Send/Pull/AckUpTo edge call, replacing ad hoc string errors so callers can
+  recover the full structured payload (`Code()`, `SupportedMailboxVersions()`,
+  `SupportedArkVersions()`). `IsPermanentVersion()` reports whether the code
+  is one of the four permanent version-compatibility codes
+  (`StatusMailboxVersionUnsupported`, `StatusArkVersionUnsupported`,
+  `StatusArkVersionMismatch`, `StatusUpgradeRequired`). The free function
+  `IsPermanentVersionError(err)` unwraps (`errors.As`) to classify any
+  wrapped error, letting durable senders stop retrying and dead-letter the
+  message instead of treating a version failure as transient.
 - `WrappedProto` — TLV bridging type that adapts a `proto.Message` for use
   as a `tlv.RecordT` field; marshals/unmarshals via `proto.Marshal` /
   `proto.Unmarshal`.
@@ -47,7 +65,8 @@ delivery.
   (Envelope proto), `lnd/tlv`.
 - **Depended on by**: `serverconn` (uses `AckState`, `ResponseRegistry`,
   `WrappedProto`, `StableEventMsgID`/`StableEventIdempotencyKey`,
-  `CorrelationID`/`IdempotencyKey`).
+  `CorrelationID`/`IdempotencyKey`, `StatusError`/`IsPermanentVersionError`
+  for its version-compatibility subsystem).
 
 ## Invariants
 
@@ -61,6 +80,13 @@ delivery.
 - Stale waiters are completed with `ErrWaiterExpired` (not silently dropped)
   so blocked callers wake up with a clear error rather than hanging
   indefinitely.
+- `HasWaiter` prunes stale entries before answering, so an expired waiter
+  never masquerades as live and misroutes a response onto the fast
+  (non-durable) delivery path.
+- Permanent version-compatibility codes (see `StatusError.IsPermanentVersion`)
+  must never be retried by durable senders — `IsPermanentVersionError` is the
+  single source of truth callers use to distinguish them from transient
+  transport/internal failures.
 - `WrappedProto` callers must use `tlv.NewRecordT` to assign the real TLV
   type; calling `Record()` directly yields type 0 and would silently conflict
   with other type-0 records.

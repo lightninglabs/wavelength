@@ -7,6 +7,15 @@ daemon connections, embedded in-process daemon hosting, and wrapping an
 already-running in-process daemon RPC server behind a private bufconn
 transport, without duplicating Ark runtime behavior.
 
+`EmbeddedConfig`/`StartEmbedded` are split by build tag: `embedded.go`
+(`//go:build !js || !wasm`) hosts the real native darepod-backed
+implementation, while `embedded_wasm.go` (`//go:build js && wasm`) hosts a
+browser stub with an untyped `DaemonConfig any` and a `StartEmbedded` that
+always returns an error, so browser builds of dependents (e.g. `sdk/swaps`)
+don't have to import the native daemon. `transport.go` holds the
+build-tag-independent bufconn dial-readiness helper (`waitForReady`,
+`defaultBufConnSize`) shared by both.
+
 ## Key Types
 
 - `Client` — Concurrency-safe SDK handle around a `daemonrpc` client. Owns
@@ -32,9 +41,20 @@ transport, without duplicating Ark runtime behavior.
   already-connected `daemonrpc.DaemonServiceClient` and a caller-supplied
   `closeFn`.
 - `Info` / `ServerInfo` / `Seed` / `WalletInitResult` — SDK-owned typed
-  models for daemon status and wallet bootstrap flows.
+  models for daemon status and wallet bootstrap flows. `ServerInfo` no
+  longer carries `ForfeitScript`/`SweepKey`/`SweepDelay` (dropped); it now
+  has `MinVTXOAmountSat` and `MaxUserBalance`, and the old
+  `MaxBoardingAmount` field was renamed to `MaxVTXOAmount` (it caps
+  boarding requests, round outputs, and OOR recipient outputs alike, not
+  just boarding).
+- `VTXOExpiryInfo` — SDK-owned typed view of a VTXO's expiry
+  classification (`Status daemonrpc.VTXOExpiryStatus`, `CurrentHeight`,
+  `BatchExpiry`, `BlocksRemaining`, `RefreshThresholdBlocks`,
+  `CriticalThresholdBlocks`, `RelativeExpiry`, `MaxTreeDepth`,
+  `ChainDepth`). Embedded as `VTXOInfo.ExpiryInfo` (nil when the daemon
+  didn't attach it) and returned standalone by `GetVTXOExpiryInfo`.
 - `VTXOInfo` — Typed VTXO view (Outpoint, AmountSat, Status, BatchExpiry,
-  RoundID, CreatedHeight, etc.) returned by `ListLiveVTXOs` /
+  RoundID, CreatedHeight, ExpiryInfo, etc.) returned by `ListLiveVTXOs` /
   `ListSpentVTXOs`.
 - `ReceiveInfo` — Typed receive destination (PkScript, PubKeyXOnly) returned
   by `NewReceiveScript` / `AllocateReceiveScript`.
@@ -65,6 +85,25 @@ transport, without duplicating Ark runtime behavior.
 - `ListOORSessions` — Lower-level passthrough returning the raw
   `*daemonrpc.ListOORSessionsResponse`; `ListLocalOORSessions` is preferred
   for new callers.
+- `GetVTXOExpiryInfo(ctx, *daemonrpc.GetVTXOExpiryInfoRequest)
+  (*daemonrpc.GetVTXOExpiryInfoResponse, error)` — Passthrough asking the
+  daemon to classify a VTXO's expiry posture via the authoritative
+  wallet/VTXO expiry policy; nil request becomes an empty request.
+- `RefreshCustomVTXOs(ctx, *daemonrpc.RefreshCustomVTXOsRequest)
+  (*daemonrpc.RefreshCustomVTXOsResponse, error)` — Passthrough queuing
+  caller-supplied custom-policy VTXOs for refresh in the next round; nil
+  request becomes an empty request and surfaces the daemon's validation
+  error.
+- `SignVTXOForfeit(ctx, *daemonrpc.SignVTXOForfeitRequest)
+  (*daemonrpc.SignVTXOForfeitResponse, error)` — Passthrough asking the
+  daemon wallet to sign one exact connector-bound forfeit transaction
+  input.
+- `SendOOR` recipients are a slice: requests take `Recipients
+  []*daemonrpc.Output` (not a single `Recipient`), and
+  `SendOORResponse.RecipientOutpoints` is a `[]string` (not a singular
+  `RecipientOutpoint`). `SendOORWithPolicyAndKeyDetails` and
+  `SendOORWithCustomInputs` send one-element slices and read index `[0]`
+  of the outpoints slice.
 
 ## Relationships
 
@@ -88,8 +127,9 @@ transport, without duplicating Ark runtime behavior.
 - `WrapDaemonServer` owns only the private bufconn transport and gRPC server;
   it does not own the caller's `DaemonServer` runtime. `Close()` tears down
   only the private transport.
-- `ServerInfo` is a bootstrap-time operator-terms snapshot; refresh after
-  reconnect is not wired through yet.
+- `ServerInfo` is nil until the daemon reaches operator-bootstrap; beyond
+  the initial bootstrap fetch it can also be refreshed by daemon paths that
+  fetch the live operator key before building new policy scripts.
 - Pre-1.0, some methods intentionally return `daemonrpc` protobuf types
   directly. Those passthrough APIs are not yet treated as stable SDK-owned
   models.

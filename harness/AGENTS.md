@@ -45,4 +45,18 @@ containers with network isolation for end-to-end testing.
   tests.
 - `electrsReadyTimeout` = 2 minutes — separate extended timeout for the
   electrs container HTTP readiness check.
+- `lndStartupTimeout` = 90 seconds — extended timeout for LND bootstrap
+  steps (TLS/gRPC readiness, `SERVER_ACTIVE` wallet state, chain sync)
+  used instead of `defaultTimeout` because these can take meaningfully
+  longer than generic harness operations under serialized systest load.
 - Coinbase maturity: 100 blocks + 6-block buffer.
+
+## LND TLS Readiness
+
+- `lndTLSReady(tlsPath string) bool` (backed by `loadClientTLSCredentials`)
+  gates LND readiness polling instead of a plain `os.Stat` check on the
+  cert path. `os.Stat` only proves the file exists, which can observe a
+  partially-written cert during container startup; `lndTLSReady` requires
+  the file to parse into gRPC `TransportCredentials` before polling moves
+  on to the gRPC state check. `TapdHarness.setupLNDPaths` reuses the same
+  helper for its paired LND instance.
