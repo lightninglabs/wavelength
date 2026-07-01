@@ -16,3 +16,23 @@ func newWalletLoaderOptions(cfg Config) ([]btcwallet.LoaderOption, error) {
 		),
 	}, nil
 }
+
+// walletExists reports whether a btcwallet bbolt database already
+// exists in the configured directory. For local databases the loader
+// only checks file existence, so this probe does not take the bbolt
+// file lock.
+func walletExists(cfg Config) (bool, error) {
+	opts, err := newWalletLoaderOptions(cfg)
+	if err != nil {
+		return false, err
+	}
+
+	loader, err := btcwallet.NewWalletLoader(
+		cfg.ChainParams, cfg.RecoveryWindow, opts...,
+	)
+	if err != nil {
+		return false, err
+	}
+
+	return loader.WalletExists()
+}

@@ -49,8 +49,8 @@ const (
 	// WalletStateNone indicates no wallet has been created yet.
 	WalletStateNone WalletState = 1
 
-	// WalletStateLocked indicates an encrypted seed exists but the
-	// decryption key has not been provided.
+	// WalletStateLocked indicates a wallet database exists but its
+	// password has not been provided.
 	WalletStateLocked WalletState = 2
 
 	// WalletStateReady indicates the wallet is initialized, unlocked,

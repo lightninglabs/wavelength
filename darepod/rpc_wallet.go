@@ -288,31 +288,25 @@ func (r *RPCServer) InitWallet(ctx context.Context,
 		r.server.walletState.Store(int32(WalletStateNone))
 	}
 
-	// Resolve the network directory for seed storage.
-	networkDir := r.server.cfg.NetworkDir()
-
 	// Delegate to the package-level function that validates the
-	// mnemonic, derives the seed, encrypts it, and saves it to
-	// disk. This logic is extracted so a future SDK can call it
-	// directly without going through gRPC.
-	seed, birthday, err := InitWalletFromMnemonicWithBirthday(
+	// mnemonic and password and derives the seed. This logic is
+	// extracted so an SDK can call it directly without going
+	// through gRPC.
+	seed, birthday, err := WalletSeedFromMnemonic(
 		req.Mnemonic, req.SeedPassphrase, req.WalletPassword,
-		networkDir,
 	)
 	if err != nil {
 		rollbackState()
 
-		return nil, status.Errorf(codes.Internal, "unable to "+
+		return nil, status.Errorf(codes.InvalidArgument, "unable to "+
 			"initialize wallet: %v", err)
 	}
 
-	r.server.log.InfoS(ctx, "Wallet seed encrypted and saved",
-		"path", SeedFilePath(networkDir),
-	)
-
-	// Start the wallet with the derived seed.
+	// Create the wallet database from the derived seed, encrypted
+	// under the wallet password. The seed is persisted only inside
+	// btcwallet's own passphrase-encrypted key store.
 	if err := r.server.startSelfManagedWallet(
-		ctx, seed, birthday,
+		ctx, seed[:], req.WalletPassword, birthday,
 	); err != nil {
 
 		rollbackState()
@@ -349,9 +343,9 @@ func (r *RPCServer) InitWallet(ctx context.Context,
 	return resp, nil
 }
 
-// UnlockWallet decrypts an existing wallet seed using the provided
-// password and starts the wallet subsystem. Only available in
-// lwwallet mode when the wallet is locked.
+// UnlockWallet opens the existing wallet database using the provided
+// password as its private passphrase and starts the wallet subsystem.
+// Only available in lwwallet/btcwallet mode when the wallet is locked.
 func (r *RPCServer) UnlockWallet(ctx context.Context,
 	req *daemonrpc.UnlockWalletRequest) (*daemonrpc.UnlockWalletResponse,
 	error) {
@@ -380,32 +374,23 @@ func (r *RPCServer) UnlockWallet(ctx context.Context,
 		r.server.walletState.Store(int32(WalletStateLocked))
 	}
 
-	// Resolve the network directory for seed lookup.
-	networkDir := r.server.cfg.NetworkDir()
-
-	// Delegate to the package-level function that loads the
-	// encrypted seed from disk and decrypts it. This logic is
-	// extracted so a future SDK can call it directly.
-	seed, err := UnlockWalletFromDisk(
-		networkDir, req.WalletPassword,
-	)
-	if err != nil {
+	if err := ValidateWalletPassword(req.WalletPassword); err != nil {
 		rollbackState()
 
-		return nil, status.Errorf(codes.Internal, "unable to unlock "+
-			"wallet: %v", err)
+		return nil, status.Errorf(codes.InvalidArgument, "unable to "+
+			"unlock wallet: %v", err)
 	}
 
-	r.server.log.InfoS(ctx, "Wallet seed decrypted via UnlockWallet RPC")
-
-	// Start the wallet with the decrypted seed.
+	// Open the existing wallet database with the supplied password
+	// as btcwallet's private passphrase. A wrong password surfaces
+	// as an unlock failure from the wallet backend.
 	if err := r.server.startSelfManagedWallet(
-		ctx, seed, time.Time{},
+		ctx, nil, req.WalletPassword, time.Time{},
 	); err != nil {
 
 		rollbackState()
 
-		return nil, status.Errorf(codes.Internal, "unable to start "+
+		return nil, status.Errorf(codes.Internal, "unable to unlock "+
 			"wallet: %v", err)
 	}
 
@@ -486,16 +471,18 @@ func (s *Server) isSelfManagedWallet() bool {
 }
 
 // startSelfManagedWallet starts the appropriate self-managed wallet
-// based on the configured wallet type.
-func (s *Server) startSelfManagedWallet(ctx context.Context,
-	seed [rawSeedLen]byte, birthday time.Time) error {
+// based on the configured wallet type. A non-nil seed creates a new
+// wallet database encrypted under the wallet password; a nil seed
+// opens the existing database with it.
+func (s *Server) startSelfManagedWallet(ctx context.Context, seed []byte,
+	walletPassword []byte, birthday time.Time) error {
 
 	switch s.cfg.Wallet.Type {
 	case WalletTypeLwwallet:
-		return s.startLwwallet(ctx, seed, birthday)
+		return s.startLwwallet(ctx, seed, walletPassword, birthday)
 
 	case WalletTypeBtcwallet:
-		return s.startBtcwallet(ctx, seed, birthday)
+		return s.startBtcwallet(ctx, seed, walletPassword, birthday)
 
 	default:
 		return fmt.Errorf("unsupported wallet type %q",

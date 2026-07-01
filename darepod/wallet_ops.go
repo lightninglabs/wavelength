@@ -19,27 +19,14 @@ import (
 	"github.com/lightningnetwork/lnd/keychain"
 )
 
-// InitWalletFromMnemonic validates a mnemonic, derives the raw seed,
-// encrypts it with the given password, and saves the ciphertext to
-// disk. This is the core logic behind the InitWallet RPC, extracted
-// as a package-level function so it can be reused by a future SDK
-// that bypasses gRPC.
-func InitWalletFromMnemonic(mnemonic []string, seedPassphrase,
-	walletPassword []byte, networkDir string) ([rawSeedLen]byte, error) {
-
-	seed, _, err := InitWalletFromMnemonicWithBirthday(
-		mnemonic, seedPassphrase, walletPassword, networkDir,
-	)
-
-	return seed, err
-}
-
-// InitWalletFromMnemonicWithBirthday validates a mnemonic, derives the raw
-// seed and aezeed birthday, encrypts the seed with the given password, and
-// saves the ciphertext to disk.
-func InitWalletFromMnemonicWithBirthday(mnemonic []string, seedPassphrase,
-	walletPassword []byte, networkDir string) ([rawSeedLen]byte, time.Time,
-	error) {
+// WalletSeedFromMnemonic validates a mnemonic and wallet password and
+// derives the raw seed and aezeed birthday. This is the core logic
+// behind the InitWallet RPC, extracted as a package-level function so
+// it can be reused by an SDK that bypasses gRPC. The seed is handed to
+// the wallet backend, which persists it only inside btcwallet's own
+// passphrase-encrypted key store.
+func WalletSeedFromMnemonic(mnemonic []string, seedPassphrase,
+	walletPassword []byte) ([rawSeedLen]byte, time.Time, error) {
 
 	// Validate the mnemonic length.
 	if len(mnemonic) != aezeed.NumMnemonicWords {
@@ -49,9 +36,8 @@ func InitWalletFromMnemonicWithBirthday(mnemonic []string, seedPassphrase,
 	}
 
 	// Validate password length.
-	if len(walletPassword) < minPasswordLen {
-		return [rawSeedLen]byte{}, time.Time{}, fmt.Errorf("wallet "+
-			"password must be at least %d bytes", minPasswordLen)
+	if err := ValidateWalletPassword(walletPassword); err != nil {
+		return [rawSeedLen]byte{}, time.Time{}, err
 	}
 
 	// Convert the string slice to an aezeed.Mnemonic array.
@@ -65,54 +51,20 @@ func InitWalletFromMnemonicWithBirthday(mnemonic []string, seedPassphrase,
 			"mnemonic: %w", err)
 	}
 
-	// Encrypt the seed at rest.
-	ciphertext, err := EncryptSeed(seed, walletPassword)
-	if err != nil {
-		return [rawSeedLen]byte{}, time.Time{}, fmt.Errorf(
-			"encrypting seed: %w", err)
-	}
-
-	// Save the encrypted seed to disk.
-	seedPath := SeedFilePath(networkDir)
-
-	if err := SaveEncryptedSeed(seedPath, ciphertext); err != nil {
-		return [rawSeedLen]byte{}, time.Time{}, fmt.Errorf("saving "+
-			"encrypted seed: %w", err)
-	}
-
 	return seed, birthday, nil
 }
 
-// UnlockWalletFromDisk loads the encrypted seed from the network
-// directory and decrypts it with the given password. This is the core
-// logic behind the UnlockWallet RPC, extracted so it can be reused by
-// a future SDK.
-func UnlockWalletFromDisk(networkDir string,
-	walletPassword []byte) ([rawSeedLen]byte, error) {
-
-	// Validate password length.
+// ValidateWalletPassword enforces the daemon-wide minimum wallet
+// password length. btcwallet itself accepts any non-empty private
+// passphrase, so this floor is applied at every entry point that
+// accepts a user-chosen password.
+func ValidateWalletPassword(walletPassword []byte) error {
 	if len(walletPassword) < minPasswordLen {
-		return [rawSeedLen]byte{}, fmt.Errorf("wallet password must "+
-			"be at least %d bytes", minPasswordLen)
+		return fmt.Errorf("wallet password must be at least %d bytes",
+			minPasswordLen)
 	}
 
-	// Load the encrypted seed from disk.
-	seedPath := SeedFilePath(networkDir)
-
-	ciphertext, err := LoadEncryptedSeed(seedPath)
-	if err != nil {
-		return [rawSeedLen]byte{}, fmt.Errorf("loading encrypted "+
-			"seed: %w", err)
-	}
-
-	// Decrypt the seed.
-	seed, err := DecryptSeed(ciphertext, walletPassword)
-	if err != nil {
-		return [rawSeedLen]byte{}, fmt.Errorf("decrypting seed: %w",
-			err)
-	}
-
-	return seed, nil
+	return nil
 }
 
 // BuildTransferInputs looks up full VTXO descriptors from the store

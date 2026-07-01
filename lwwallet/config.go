@@ -8,15 +8,26 @@ import (
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
-// NOTE: coinTypeForNet, WalletPassphrase, and DefaultBlockCacheSize
-// are now in the walletcore package.
+// NOTE: coinTypeForNet, PublicWalletPassphrase, and
+// DefaultBlockCacheSize are now in the walletcore package.
 
 // Config holds the configuration for the lightweight wallet.
 type Config struct {
-	// Seed is the 32-byte master seed used for HD key derivation. The
-	// caller is responsible for seed generation, encryption at rest, and
-	// BIP39 mnemonic handling. The wallet only uses the raw seed bytes.
-	Seed [32]byte
+	// Seed is the raw master seed used for HD key derivation when
+	// creating a new wallet database. It must be exactly
+	// walletcore.SeedLen bytes when set. A nil Seed opens an
+	// existing wallet database instead. The caller is responsible
+	// for seed generation and mnemonic handling; the wallet never
+	// persists the seed outside btcwallet's own encrypted key
+	// store.
+	Seed []byte
+
+	// WalletPassword is the private passphrase that encrypts the
+	// wallet database's key material (btcwallet's PrivatePass). It
+	// is required both when creating a new wallet and when opening
+	// an existing one; opening fails when it does not match the
+	// passphrase the database was created with.
+	WalletPassword []byte
 
 	// Birthday is the time the wallet seed was created. When set, btcwallet
 	// uses it to bound recovery rescans instead of starting from genesis.

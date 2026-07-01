@@ -94,6 +94,11 @@ func New(Config) (*Wallet, error) {
 	return nil, fmt.Errorf("btcwallet backend is not available in wasm")
 }
 
+// WalletExists reports that btcwallet is unavailable in browser builds.
+func WalletExists(Config) (bool, error) {
+	return false, fmt.Errorf("btcwallet backend is not available in wasm")
+}
+
 // NewWithNeutrino reports that btcwallet is unavailable in browser builds.
 func NewWithNeutrino(Config, *NeutrinoService) (*Wallet, error) {
 	return nil, fmt.Errorf("btcwallet backend is not available in wasm")

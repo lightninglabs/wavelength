@@ -39,6 +39,31 @@ func newWalletLoaderOptions(cfg Config) ([]btcwallet.LoaderOption, error) {
 	}, nil
 }
 
+// walletExists reports whether a btcwallet database has already been
+// initialized inside the OPFS SQLite store. The probe opens the
+// database, checks for the wallet's namespace buckets, and closes it
+// again: the store uses EXCLUSIVE locking with a single connection, so
+// a handle left open here would block the real open in New.
+func walletExists(cfg Config) (bool, error) {
+	db, err := openWASMWalletDB(cfg.DBDir)
+	if err != nil {
+		return false, err
+	}
+	defer func() {
+		_ = db.Close()
+	}()
+
+	loader, err := btcwallet.NewWalletLoader(
+		cfg.ChainParams, cfg.RecoveryWindow,
+		btcwallet.LoaderWithExternalWalletDB(db),
+	)
+	if err != nil {
+		return false, err
+	}
+
+	return loader.WalletExists()
+}
+
 // openWASMWalletDB opens btcwallet's walletdb on top of the same browser
 // SQLite/OPFS driver used by the daemon and swap stores.
 func openWASMWalletDB(dbDir string) (walletdb.DB, error) {

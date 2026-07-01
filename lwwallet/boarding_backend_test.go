@@ -54,7 +54,8 @@ func TestBoardingBackendDuplicateImportRestoresTracking(t *testing.T) {
 	defer esplora.Close()
 
 	w, err := New(Config{
-		Seed:           seed,
+		Seed:           seed[:],
+		WalletPassword: []byte("test-wallet-password"),
 		EsploraURL:     esplora.URL,
 		ChainParams:    &chaincfg.RegressionNetParams,
 		PollInterval:   time.Hour,

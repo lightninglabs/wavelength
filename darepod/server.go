@@ -1526,13 +1526,14 @@ func (s *Server) refreshProofKeyBackend() {
 
 // tryAutoUnlockLwwallet attempts to initialize the lwwallet backend
 // at startup without user interaction. It checks for a seed in the
-// environment variable first, then checks for an encrypted seed file
-// on disk with a password from the environment or a password file.
-// If neither source provides a complete seed+password pair, the daemon
-// starts with the wallet in a non-ready state.
+// environment variable first, then probes for an existing wallet
+// database that can be opened with a password from the environment or
+// a password file. If no password source is available, the daemon
+// starts with the wallet in a non-ready state awaiting the InitWallet
+// or UnlockWallet RPC.
 func (s *Server) tryAutoUnlockLwwallet(ctx context.Context) {
 	// Check for a raw seed in the environment (dev/CI path).
-	seed, err := LoadSeedFromEnv()
+	envSeed, err := LoadSeedFromEnv()
 	if err != nil {
 		s.log.WarnS(ctx, "Invalid seed in environment variable",
 			err)
@@ -1540,11 +1541,38 @@ func (s *Server) tryAutoUnlockLwwallet(ctx context.Context) {
 		return
 	}
 
-	if seed != nil {
+	// Probe for an existing wallet database. This decides between
+	// the create path (seed required) and the open path (password
+	// only).
+	exists, err := lwwallet.WalletExists(lwwallet.Config{
+		ChainParams: s.chainParams,
+		DBDir:       s.cfg.NetworkDir(),
+	})
+	if err != nil {
+		s.log.ErrorS(ctx, "Failed to probe wallet database", err)
+
+		return
+	}
+
+	if envSeed != nil {
 		s.log.InfoS(ctx, "Loaded seed from environment variable")
 
+		// The env-seed path is create-or-open: the first run
+		// creates the wallet database, later runs open it. The
+		// database passphrase comes from the password env var
+		// when set, else an insecure dev-only fallback.
+		seed := envSeed[:]
+		if exists {
+			seed = nil
+		}
+
+		password, ok := LoadPasswordFromEnv()
+		if !ok {
+			password = devWalletPassword
+		}
+
 		if err := s.startLwwallet(
-			ctx, *seed, time.Time{},
+			ctx, seed, password, time.Time{},
 		); err != nil {
 
 			s.log.ErrorS(
@@ -1559,12 +1587,9 @@ func (s *Server) tryAutoUnlockLwwallet(ctx context.Context) {
 		return
 	}
 
-	networkDir := s.cfg.NetworkDir()
-
-	// Check for an encrypted seed file on disk.
-	if !SeedFileExists(networkDir) {
+	if !exists {
 		s.log.InfoS(
-			ctx, "No wallet seed found, awaiting InitWallet RPC",
+			ctx, "No wallet found, awaiting InitWallet RPC",
 		)
 
 		s.walletState.Store(int32(WalletStateNone))
@@ -1572,7 +1597,7 @@ func (s *Server) tryAutoUnlockLwwallet(ctx context.Context) {
 		return
 	}
 
-	// Encrypted seed exists. Try to find a password for
+	// A wallet database exists. Try to find a password for
 	// auto-unlock: check env var first, then password file.
 	s.walletState.Store(int32(WalletStateLocked))
 
@@ -1595,34 +1620,17 @@ func (s *Server) tryAutoUnlockLwwallet(ctx context.Context) {
 
 	if !ok {
 		s.log.InfoS(
-			ctx, "Encrypted seed found but no password "+
-				"available, awaiting UnlockWallet RPC",
+			ctx, "Wallet found but no password available, "+
+				"awaiting UnlockWallet RPC",
 		)
 
 		return
 	}
 
-	// We have both seed file and password: auto-unlock.
-	seedPath := SeedFilePath(networkDir)
-	ciphertext, err := LoadEncryptedSeed(seedPath)
-	if err != nil {
-		s.log.ErrorS(ctx, "Failed to load encrypted seed", err)
-
-		return
-	}
-
-	decryptedSeed, err := DecryptSeed(ciphertext, password)
-	if err != nil {
-		s.log.ErrorS(ctx, "Failed to decrypt seed at startup",
-			err)
-
-		return
-	}
-
-	s.log.InfoS(ctx, "Auto-unlocking lwwallet from encrypted seed")
+	s.log.InfoS(ctx, "Auto-unlocking lwwallet")
 
 	if err := s.startLwwallet(
-		ctx, decryptedSeed, time.Time{},
+		ctx, nil, password, time.Time{},
 	); err != nil {
 
 		s.log.ErrorS(ctx, "Failed to start lwwallet", err)
@@ -1631,13 +1639,15 @@ func (s *Server) tryAutoUnlockLwwallet(ctx context.Context) {
 	}
 }
 
-// startLwwallet creates and starts the lightweight wallet from the
-// given raw seed. On success it populates s.lwWallet and marks the
-// wallet as ready.
+// startLwwallet creates and starts the lightweight wallet. A non-nil
+// seed creates a new wallet database encrypted under the given
+// password; a nil seed opens the existing database, with the password
+// checked against the private passphrase it was created with. On
+// success it populates s.lwWallet and marks the wallet as ready.
 //
 //nolint:contextcheck // wallet backend owns lifecycle after daemon startup
-func (s *Server) startLwwallet(ctx context.Context, seed [rawSeedLen]byte,
-	birthday time.Time) error {
+func (s *Server) startLwwallet(ctx context.Context, seed []byte,
+	walletPassword []byte, birthday time.Time) error {
 
 	networkDir := s.cfg.NetworkDir()
 
@@ -1653,6 +1663,7 @@ func (s *Server) startLwwallet(ctx context.Context, seed [rawSeedLen]byte,
 
 	w, err := lwwallet.New(lwwallet.Config{
 		Seed:           seed,
+		WalletPassword: walletPassword,
 		Birthday:       birthday,
 		EsploraURL:     s.cfg.Wallet.EsploraURL,
 		ChainParams:    s.chainParams,
@@ -1722,7 +1733,7 @@ func (s *Server) tryAutoUnlockBtcwallet(ctx context.Context) {
 	}
 
 	// Check for a raw seed in the environment (dev/CI path).
-	seed, err := LoadSeedFromEnv()
+	envSeed, err := LoadSeedFromEnv()
 	if err != nil {
 		s.log.WarnS(ctx,
 			"Invalid seed in environment variable", err)
@@ -1730,12 +1741,41 @@ func (s *Server) tryAutoUnlockBtcwallet(ctx context.Context) {
 		return
 	}
 
-	if seed != nil {
+	// Probe for an existing wallet database. This decides between
+	// the create path (seed required) and the open path (password
+	// only).
+	exists, err := btcwbackend.WalletExists(btcwbackend.Config{
+		Config: walletcore.Config{
+			ChainParams: s.chainParams,
+			DBDir:       s.cfg.NetworkDir(),
+		},
+	})
+	if err != nil {
+		s.log.ErrorS(ctx, "Failed to probe wallet database", err)
+
+		return
+	}
+
+	if envSeed != nil {
 		s.log.InfoS(ctx,
 			"Loaded seed from environment variable")
 
+		// The env-seed path is create-or-open: the first run
+		// creates the wallet database, later runs open it. The
+		// database passphrase comes from the password env var
+		// when set, else an insecure dev-only fallback.
+		seed := envSeed[:]
+		if exists {
+			seed = nil
+		}
+
+		password, ok := LoadPasswordFromEnv()
+		if !ok {
+			password = devWalletPassword
+		}
+
 		if err := s.startBtcwallet(
-			ctx, *seed, time.Time{},
+			ctx, seed, password, time.Time{},
 		); err != nil {
 
 			s.log.ErrorS(
@@ -1750,12 +1790,9 @@ func (s *Server) tryAutoUnlockBtcwallet(ctx context.Context) {
 		return
 	}
 
-	networkDir := s.cfg.NetworkDir()
-
-	// Check for an encrypted seed file on disk.
-	if !SeedFileExists(networkDir) {
+	if !exists {
 		s.log.InfoS(
-			ctx, "No wallet seed found, awaiting InitWallet RPC",
+			ctx, "No wallet found, awaiting InitWallet RPC",
 		)
 
 		s.walletState.Store(int32(WalletStateNone))
@@ -1763,7 +1800,7 @@ func (s *Server) tryAutoUnlockBtcwallet(ctx context.Context) {
 		return
 	}
 
-	// Encrypted seed exists. Try to find a password for
+	// A wallet database exists. Try to find a password for
 	// auto-unlock.
 	s.walletState.Store(int32(WalletStateLocked))
 
@@ -1786,36 +1823,17 @@ func (s *Server) tryAutoUnlockBtcwallet(ctx context.Context) {
 
 	if !ok {
 		s.log.InfoS(
-			ctx, "Encrypted seed found but no password "+
-				"available, awaiting UnlockWallet RPC",
+			ctx, "Wallet found but no password available, "+
+				"awaiting UnlockWallet RPC",
 		)
 
 		return
 	}
 
-	// We have both seed file and password: auto-unlock.
-	seedPath := SeedFilePath(networkDir)
-	ciphertext, err := LoadEncryptedSeed(seedPath)
-	if err != nil {
-		s.log.ErrorS(ctx,
-			"Failed to load encrypted seed", err)
-
-		return
-	}
-
-	decryptedSeed, err := DecryptSeed(ciphertext, password)
-	if err != nil {
-		s.log.ErrorS(ctx,
-			"Failed to decrypt seed at startup", err)
-
-		return
-	}
-
-	s.log.InfoS(ctx,
-		"Auto-unlocking btcwallet from encrypted seed")
+	s.log.InfoS(ctx, "Auto-unlocking btcwallet")
 
 	if err := s.startBtcwallet(
-		ctx, decryptedSeed, time.Time{},
+		ctx, nil, password, time.Time{},
 	); err != nil {
 
 		s.log.ErrorS(ctx,
@@ -1866,15 +1884,17 @@ func (s *Server) preStartNeutrino(ctx context.Context) error {
 	return nil
 }
 
-// startBtcwallet creates and starts the neutrino-backed wallet from
-// the given raw seed. If a neutrino service was pre-started via
-// preStartNeutrino, it is reused; otherwise a new one is created.
-// On success it populates s.btcwWallet and marks the wallet as
-// ready.
+// startBtcwallet creates and starts the neutrino-backed wallet. A
+// non-nil seed creates a new wallet database encrypted under the given
+// password; a nil seed opens the existing database, with the password
+// checked against the private passphrase it was created with. If a
+// neutrino service was pre-started via preStartNeutrino, it is reused;
+// otherwise a new one is created. On success it populates s.btcwWallet
+// and marks the wallet as ready.
 //
 //nolint:contextcheck // wallet backend owns lifecycle after daemon startup
-func (s *Server) startBtcwallet(ctx context.Context, seed [rawSeedLen]byte,
-	birthday time.Time) error {
+func (s *Server) startBtcwallet(ctx context.Context, seed []byte,
+	walletPassword []byte, birthday time.Time) error {
 
 	networkDir := s.cfg.NetworkDir()
 
@@ -1886,6 +1906,7 @@ func (s *Server) startBtcwallet(ctx context.Context, seed [rawSeedLen]byte,
 	cfg := btcwbackend.Config{
 		Config: walletcore.Config{
 			Seed:           seed,
+			WalletPassword: walletPassword,
 			Birthday:       birthday,
 			ChainParams:    s.chainParams,
 			RecoveryWindow: recoveryWindow,

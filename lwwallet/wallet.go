@@ -2,6 +2,7 @@ package lwwallet
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -58,6 +59,53 @@ type Wallet struct {
 	boardingBackend *BoardingBackendAdapter
 }
 
+// ErrWalletNotFound is returned when opening an existing wallet was
+// requested (nil Config.Seed) but no wallet database exists yet.
+var ErrWalletNotFound = errors.New("no wallet database found")
+
+// ErrWalletExists is returned when creating a new wallet was requested
+// (non-nil Config.Seed) but a wallet database already exists.
+var ErrWalletExists = errors.New("wallet database already exists")
+
+// WalletExists reports whether a wallet database has already been
+// created for the given configuration. Only ChainParams, RecoveryWindow
+// and DBDir are consulted. Callers use this to decide between the
+// create (seed) and open (password-only) paths before constructing the
+// wallet.
+func WalletExists(cfg Config) (bool, error) {
+	return walletExists(cfg)
+}
+
+// checkWalletInvariants validates the seed, password, and database
+// state agree on whether the wallet is being created or opened.
+func checkWalletInvariants(cfg Config) error {
+	if len(cfg.WalletPassword) == 0 {
+		return fmt.Errorf("wallet password is required")
+	}
+
+	if cfg.Seed != nil && len(cfg.Seed) != walletcore.SeedLen {
+		return fmt.Errorf("seed must be %d bytes, got %d",
+			walletcore.SeedLen, len(cfg.Seed))
+	}
+
+	exists, err := walletExists(cfg)
+	if err != nil {
+		return fmt.Errorf("probe wallet database: %w", err)
+	}
+
+	switch {
+	case cfg.Seed == nil && !exists:
+		return fmt.Errorf("%w in %q: create the wallet with a "+
+			"seed first", ErrWalletNotFound, cfg.DBDir)
+
+	case cfg.Seed != nil && exists:
+		return fmt.Errorf("%w in %q: open it without a seed instead",
+			ErrWalletExists, cfg.DBDir)
+	}
+
+	return nil
+}
+
 // New creates a new lightweight wallet from the given configuration.
 // The caller must provide a DBDir for btcwallet's wallet database. Native
 // builds use that path for btcwallet's bbolt database, while browser builds
@@ -67,6 +115,16 @@ func New(cfg Config) (*Wallet, error) {
 	// so default to a disabled logger when one was not explicitly
 	// provided.
 	walletLog := cfg.Log.UnwrapOr(btclog.Disabled)
+
+	// Enforce the seed/existing-database invariant before any
+	// subsystem is constructed. btcwallet silently generates a
+	// random seed when asked to create a wallet without one, and
+	// silently ignores a supplied seed when a wallet database
+	// already exists. Both failure modes are unacceptable for a
+	// funds-bearing wallet, so fail loudly instead.
+	if err := checkWalletInvariants(cfg); err != nil {
+		return nil, err
+	}
 
 	esplora := NewEsploraClient(cfg.EsploraURL, walletLog)
 
@@ -103,9 +161,9 @@ func New(cfg Config) (*Wallet, error) {
 	}
 
 	btcw, err := btcwallet.New(btcwallet.Config{
-		PrivatePass:    walletcore.WalletPassphrase,
-		PublicPass:     walletcore.WalletPassphrase,
-		HdSeed:         cfg.Seed[:],
+		PrivatePass:    cfg.WalletPassword,
+		PublicPass:     walletcore.PublicWalletPassphrase,
+		HdSeed:         cfg.Seed,
 		Birthday:       cfg.Birthday,
 		ChainSource:    chainSvc,
 		NetParams:      cfg.ChainParams,

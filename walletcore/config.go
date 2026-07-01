@@ -12,10 +12,17 @@ import (
 // This prevents redundant block fetches during wallet sync.
 const DefaultBlockCacheSize uint64 = 20
 
-// WalletPassphrase is the default passphrase for the wallet DB.
-// Both lwwallet and btcwbackend use this for btcwallet's
-// PrivatePass and PublicPass.
-var WalletPassphrase = []byte("lwwallet")
+// SeedLen is the required length in bytes of a raw HD wallet seed.
+const SeedLen = 32
+
+// PublicWalletPassphrase encrypts btcwallet's public (watch-only)
+// data: addresses, transaction history, and public keys. It is a
+// static constant rather than a secret, analogous to lnd's default
+// "public" passphrase. The wallet's key material is encrypted
+// separately under the user-supplied private passphrase
+// (Config.WalletPassword), so this constant gates nothing an
+// attacker with database access could not already observe on chain.
+var PublicWalletPassphrase = []byte("lwwallet")
 
 // CoinTypeForNet returns the BIP44 coin type for the given network.
 // Mainnet uses coin type 0, while all test networks use coin type 1.
@@ -32,11 +39,19 @@ func CoinTypeForNet(params *chaincfg.Params) uint32 {
 // Config holds the base configuration shared by all wallet backends
 // that wrap btcwallet.
 type Config struct {
-	// Seed is the 32-byte master seed used for HD key derivation.
-	// The caller is responsible for seed generation, encryption at
-	// rest, and BIP39 mnemonic handling. The wallet only uses the
-	// raw seed bytes.
-	Seed [32]byte
+	// Seed is the raw master seed used for HD key derivation when
+	// creating a new wallet database. It must be exactly SeedLen
+	// bytes when set. A nil Seed opens an existing wallet database
+	// instead; the seed itself is never persisted by the wallet
+	// outside btcwallet's own encrypted key store.
+	Seed []byte
+
+	// WalletPassword is the private passphrase that encrypts the
+	// wallet database's key material (btcwallet's PrivatePass). It
+	// is required both when creating a new wallet and when opening
+	// an existing one; opening fails when it does not match the
+	// passphrase the database was created with.
+	WalletPassword []byte
 
 	// Birthday is the time the wallet seed was created. When set, btcwallet
 	// uses it to bound recovery rescans instead of starting from genesis.
