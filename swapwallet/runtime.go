@@ -149,6 +149,12 @@ func (r *Runtime) resumeAll(ctx context.Context) {
 	// wallet-level resume responsibilities (deadline re-arming, future
 	// wallet-managed pending tables) layer on top in subsequent phases.
 	r.deps.SwapBackend.ResumePending(ctx)
+
+	// Seed the canonical activity log (issue #774) from the current derived
+	// state so the store reflects every existing operation before the first
+	// live transition is projected. Idempotent on canonical_id; a no-op
+	// when no activity store is wired.
+	r.backfillActivity(ctx)
 }
 
 // trackPending records a new or refreshed wallet-local pending entry so the
@@ -352,7 +358,7 @@ func (r *Runtime) deadlineWatcher() {
 func (r *Runtime) applyDeadlines(now time.Time) {
 	timedOut := r.markTimedOut(now)
 	for _, entry := range timedOut {
-		r.emit(entry)
+		r.projectAndEmit(r.rootCtx, entry)
 	}
 }
 

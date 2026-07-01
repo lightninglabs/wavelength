@@ -207,7 +207,7 @@ func (r *Runtime) fanOutSwapUpdate(
 		r.clearPending(entry.GetId())
 	}
 
-	r.emit(entry)
+	r.projectAndEmit(r.rootCtx, entry)
 
 	return nil
 }

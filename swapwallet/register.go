@@ -86,6 +86,7 @@ func Register(ctx context.Context, grpcServer *grpc.Server,
 		RPCServer:      coreRPC,
 		CreditRegistry: cfg.Swap.CreditRegistry,
 		ChainParams:    chainParams,
+		ActivityStore:  cfg.ActivityStore,
 	}
 	if rpcServer != nil {
 		deps.Log = rpcServer.SubLogger(darepod.WalletRPCSubsystem)
