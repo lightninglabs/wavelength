@@ -16,6 +16,7 @@ import (
 	"github.com/lightninglabs/darepo-client/chainbackends"
 	"github.com/lightninglabs/darepo-client/credit"
 	"github.com/lightninglabs/darepo-client/db"
+	"github.com/lightninglabs/darepo-client/db/sqlc"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	"github.com/lightninglabs/darepo-client/metrics"
 	"github.com/lightninglabs/darepo-client/oor"
@@ -257,7 +258,7 @@ type Config struct {
 	// top-level field (not under SwapWallet) because the subserver is
 	// registered by build tag regardless of whether the operator supplied
 	// a [swapwallet] config section. A nil value disables projection.
-	ActivityStore ActivityProjector `mapstructure:"-"`
+	ActivityStore ActivityStore `mapstructure:"-"`
 
 	// MaxOperatorFeeSat caps the per-round operator fee the client
 	// is willing to pay under the #270 seal-time fee handshake.
@@ -643,15 +644,22 @@ type SwapBackend interface {
 	ResumePending(ctx context.Context)
 }
 
-// ActivityProjector persists wallet activity rows to the canonical activity
-// log as their lifecycle advances. *db.ActivityPersistenceStore satisfies it;
-// the walletdkrpc subserver's projector calls ProjectEntry from the existing
-// emit sites and the startup backfill. The interface keeps the daemon-side
-// store out of the swapwallet build-tag boundary and lets tests pass nil.
-type ActivityProjector interface {
+// ActivityStore is the walletdkrpc subserver's handle on the canonical
+// activity log. *db.ActivityPersistenceStore satisfies it; the projector
+// writes through ProjectEntry from the emit sites and the startup backfill,
+// and the List read path pages current-state rows through ListEntries. The
+// interface keeps the daemon-side store out of the swapwallet build-tag
+// boundary and lets tests pass nil.
+type ActivityStore interface {
 	// ProjectEntry advances the activity row to the projected state and
 	// records the transition, atomically.
 	ProjectEntry(ctx context.Context, p db.ActivityProjection) error
+
+	// ListEntries returns up to limit current-state rows newest-first,
+	// starting after the (cursorCreated, cursorID) keyset. A cursorCreated
+	// of 0 starts from the newest row.
+	ListEntries(ctx context.Context, cursorCreated int64, cursorID string,
+		limit int32) ([]sqlc.ActivityEntry, error)
 }
 
 // SwapWalletConfig configures the optional walletdkrpc subserver. The struct

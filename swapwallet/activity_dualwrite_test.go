@@ -75,8 +75,13 @@ func TestBackfillMirrorsLegacyMerge(t *testing.T) {
 		},
 	}
 
-	// Legacy merge result is the comparison oracle.
-	merged, err := h.listActivity(ctx, &walletdkrpc.ListRequest{Limit: 100})
+	// The derive-on-read merge is the comparison oracle — it is what the
+	// backfill seeds the store from (listActivity now reads the store).
+	merged, err := h.deriveActivity(
+		ctx, &walletdkrpc.ListRequest{
+			Limit: 100,
+		},
+	)
 	require.NoError(t, err)
 	wantStatus := make(map[string]int64)
 	for _, e := range merged.GetEntries() {

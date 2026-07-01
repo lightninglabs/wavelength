@@ -4,9 +4,12 @@ package swapwallet
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -93,12 +96,161 @@ func (h *history) List(ctx context.Context, req *walletdkrpc.ListRequest) (
 	}
 }
 
-// listActivity returns the merged WalletEntry stream — the v1 unified
-// history. The page size is capped at the daemon-level maximum so a
-// malformed request cannot fan out unbounded work; sources are queried
-// with the request's own limit so per-source pagination remains the
-// per-source contract.
+// errInvalidActivityCursor is returned when the ACTIVITY cursor token cannot be
+// decoded into a keyset position.
+var errInvalidActivityCursor = errors.New("invalid activity cursor")
+
+// listActivity returns an ACTIVITY page read from the canonical activity store,
+// newest-first and paged by the opaque cursor. Because the store orders by the
+// immutable (created_at_unix, canonical_id) keyset, paging is stable across
+// concurrent inserts: it neither skips nor duplicates rows. When no store is
+// wired (tests without a database) it falls back to the derive-on-read merge.
 func (h *history) listActivity(ctx context.Context,
+	req *walletdkrpc.ListRequest) (*walletdkrpc.ActivityList, error) {
+
+	if h.deps.ActivityStore == nil {
+		return h.deriveActivity(ctx, req)
+	}
+
+	limit := h.deps.resolveListLimit(req.GetLimit())
+	kindFilter, err := buildKindFilter(req.GetKinds())
+	if err != nil {
+		return nil, err
+	}
+
+	cursorCreated, cursorID, err := decodeActivityCursor(req.GetCursor())
+	if err != nil {
+		return nil, err
+	}
+
+	pendingOnly := req.GetPendingOnly()
+
+	// Scan the keyset, applying filters in Go, until limit+1 rows match so
+	// has_more can be computed with the standard extra-row trick even when
+	// filters skip store rows. The keyset advances by the last SCANNED row;
+	// next_cursor points at the last RETURNED row so the next page resumes
+	// exactly after it.
+	matched := make([]*walletdkrpc.WalletEntry, 0, limit+1)
+	lastCreated, lastID := cursorCreated, cursorID
+	for uint32(len(matched)) <= limit {
+		batch, err := h.deps.ActivityStore.ListEntries(
+			ctx, lastCreated, lastID, int32(limit)+1,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("list activity entries: %w", err)
+		}
+		if len(batch) == 0 {
+			break
+		}
+
+		for _, row := range batch {
+			lastCreated, lastID = row.CreatedAtUnix, row.CanonicalID
+
+			entry, err := rowToWalletEntry(row)
+			if err != nil {
+				return nil, fmt.Errorf("decode activity row "+
+					"%q: %w", row.CanonicalID, err)
+			}
+			if !matchesActivityFilter(
+				entry, pendingOnly, kindFilter,
+			) {
+
+				continue
+			}
+
+			matched = append(matched, entry)
+			if uint32(len(matched)) > limit {
+				break
+			}
+		}
+
+		// A short page means the store has no more rows to scan.
+		if uint32(len(batch)) < uint32(limit)+1 {
+			break
+		}
+	}
+
+	hasMore := uint32(len(matched)) > limit
+	if hasMore {
+		matched = matched[:limit]
+	}
+
+	var nextCursor string
+	if hasMore {
+		last := matched[len(matched)-1]
+		nextCursor = encodeActivityCursor(
+			last.GetCreatedAtUnix(), last.GetId(),
+		)
+	}
+
+	return &walletdkrpc.ActivityList{
+		Entries:    matched,
+		Total:      uint32(len(matched)),
+		HasMore:    hasMore,
+		NextCursor: nextCursor,
+	}, nil
+}
+
+// matchesActivityFilter reports whether an entry passes the pending_only and
+// kind filters. It is the single-entry form of filterEntries, applied per row
+// during the store keyset scan.
+func matchesActivityFilter(e *walletdkrpc.WalletEntry, pendingOnly bool,
+	kindFilter map[walletdkrpc.EntryKind]struct{}) bool {
+
+	if pendingOnly &&
+		e.GetStatus() != walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING {
+		return false
+	}
+	if len(kindFilter) > 0 {
+		if _, ok := kindFilter[e.GetKind()]; !ok {
+			return false
+		}
+	}
+
+	return true
+}
+
+// encodeActivityCursor encodes the immutable keyset position
+// (created_at_unix, canonical_id) as an opaque base64 token.
+func encodeActivityCursor(created int64, id string) string {
+	raw := strconv.FormatInt(created, 10) + ":" + id
+
+	return base64.RawURLEncoding.EncodeToString([]byte(raw))
+}
+
+// decodeActivityCursor decodes a cursor token back into its keyset position. An
+// empty cursor decodes to the newest-first start position (0, "").
+func decodeActivityCursor(cursor string) (int64, string, error) {
+	if cursor == "" {
+		return 0, "", nil
+	}
+
+	raw, err := base64.RawURLEncoding.DecodeString(cursor)
+	if err != nil {
+		return 0, "", fmt.Errorf("%w: %v", errInvalidActivityCursor,
+			err)
+	}
+
+	created, id, ok := strings.Cut(string(raw), ":")
+	if !ok {
+		return 0, "", errInvalidActivityCursor
+	}
+
+	createdUnix, err := strconv.ParseInt(created, 10, 64)
+	if err != nil {
+		return 0, "", fmt.Errorf("%w: %v", errInvalidActivityCursor,
+			err)
+	}
+
+	return createdUnix, id, nil
+}
+
+// deriveActivity returns the merged WalletEntry stream by re-joining the live
+// sources on read. It is the pre-canonical-log path, retained only to seed the
+// canonical store during the startup backfill; the RPC read path
+// (listActivity) reads the store instead. The page size is capped at the
+// daemon-level maximum so a malformed request cannot fan out unbounded work.
+func (h *history) deriveActivity(ctx context.Context,
 	req *walletdkrpc.ListRequest) (*walletdkrpc.ActivityList, error) {
 
 	limit := h.deps.resolveListLimit(req.GetLimit())

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/lightninglabs/darepo-client/db"
+	"github.com/lightninglabs/darepo-client/db/sqlc"
 	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -52,6 +53,15 @@ func (f *fakeActivityProjector) count() int {
 	defer f.mu.Unlock()
 
 	return len(f.projected)
+}
+
+// ListEntries satisfies darepod.ActivityStore. This fake exercises only the
+// write path; the store-backed read path is tested against a real DB store, so
+// this returns no rows.
+func (f *fakeActivityProjector) ListEntries(_ context.Context, _ int64,
+	_ string, _ int32) ([]sqlc.ActivityEntry, error) {
+
+	return nil, nil
 }
 
 // ids returns the set of canonical ids the fake has been asked to project.

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 
 	"github.com/lightninglabs/darepo-client/db"
+	"github.com/lightninglabs/darepo-client/db/sqlc"
 	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 	"google.golang.org/protobuf/encoding/protojson"
 )
@@ -79,7 +80,7 @@ func (r *Runtime) backfillActivity(ctx context.Context) {
 		projected int
 	)
 	for {
-		list, err := h.listActivity(ctx, &walletdkrpc.ListRequest{
+		list, err := h.deriveActivity(ctx, &walletdkrpc.ListRequest{
 			Limit:  limit,
 			Offset: offset,
 		})
@@ -194,4 +195,61 @@ func hexBytesOrNil(s string) []byte {
 	}
 
 	return b
+}
+
+// rowToWalletEntry reconstructs a WalletEntry from a stored current-state row —
+// the inverse of entryToProjection, used by the store-backed List read path.
+// It is lossless: every WalletEntry field has a backing column. BLOB handles
+// are hex-encoded back, the confirmation height is widened, and the request
+// oneof is decoded from its protojson form.
+func rowToWalletEntry(row sqlc.ActivityEntry) (*walletdkrpc.WalletEntry,
+	error) {
+
+	var request *walletdkrpc.WalletEntryRequest
+	if row.RequestJson != "" {
+		request = &walletdkrpc.WalletEntryRequest{}
+		if err := protojson.Unmarshal(
+			[]byte(row.RequestJson), request,
+		); err != nil {
+			return nil, fmt.Errorf("unmarshal request: %w", err)
+		}
+	}
+
+	var confHeight int32
+	if row.ConfirmationHeight.Valid {
+		confHeight = int32(row.ConfirmationHeight.Int64)
+	}
+
+	entry := &walletdkrpc.WalletEntry{
+		Id:            row.CanonicalID,
+		Kind:          walletdkrpc.EntryKind(row.Kind),
+		Status:        walletdkrpc.EntryStatus(row.Status),
+		AmountSat:     row.AmountSat,
+		FeeSat:        row.FeeSat,
+		Counterparty:  row.Counterparty,
+		Note:          row.Note,
+		FailureReason: row.FailureReason,
+		Request:       request,
+		Progress: &walletdkrpc.WalletEntryProgress{
+			Phase: walletdkrpc.WalletEntryPhase(
+				row.Phase,
+			),
+			PhaseLabel:         row.PhaseLabel,
+			PaymentHash:        hex.EncodeToString(row.PaymentHash),
+			Txid:               hex.EncodeToString(row.Txid),
+			ConfirmationHeight: confHeight,
+			VtxoOutpoint:       row.VtxoOutpoint,
+		},
+		CreatedAtUnix: row.CreatedAtUnix,
+		UpdatedAtUnix: row.UpdatedAtUnix,
+	}
+
+	// failure_code is presence-tracked on the wire: absent means "no
+	// failure", so only set it for a non-zero stored code.
+	if row.FailureCode != 0 {
+		code := walletdkrpc.EntryFailureCode(row.FailureCode)
+		entry.FailureCode = &code
+	}
+
+	return entry, nil
 }
