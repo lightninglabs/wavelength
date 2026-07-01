@@ -3,13 +3,18 @@ package darepod
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcwallet/waddrmgr"
+	"github.com/lightninglabs/darepo-client/btcwbackend"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
+	"github.com/lightninglabs/darepo-client/lwwallet"
+	"github.com/lightninglabs/darepo-client/walletcore"
 	"github.com/lightninglabs/lndclient"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lntypes"
@@ -268,11 +273,12 @@ func (r *RPCServer) InitWallet(ctx context.Context,
 	}
 
 	// Atomically check that no wallet exists and claim the
-	// transition so a concurrent InitWallet call cannot race
-	// past this point. CompareAndSwap ensures only one caller
-	// wins the None → Locked transition.
+	// transition so a concurrent InitWallet call cannot race past
+	// this point. The claimed state is Unlocking (not Locked) so a
+	// concurrent UnlockWallet cannot claim the wallet while the
+	// database is still being created.
 	if !r.server.walletState.CompareAndSwap(
-		int32(WalletStateNone), int32(WalletStateLocked),
+		int32(WalletStateNone), int32(WalletStateUnlocking),
 	) {
 
 		state := WalletState(r.server.walletState.Load())
@@ -281,11 +287,31 @@ func (r *RPCServer) InitWallet(ctx context.Context,
 			"already exists (state=%s)", state)
 	}
 
-	// rollbackState resets the wallet state to None so that a
-	// subsequent InitWallet call can retry after a transient
-	// failure (bad mnemonic, disk error, etc.).
-	rollbackState := func() {
-		r.server.walletState.Store(int32(WalletStateNone))
+	// rollbackState returns the wallet state to a value matching
+	// the on-disk reality after a failed attempt: Locked when a
+	// wallet database exists (so UnlockWallet is the retry path,
+	// e.g. after a transient chain-backend failure that struck
+	// AFTER the database was created), None otherwise. The swap is
+	// compare-and-set from the claimed state so a stale rollback
+	// can never clobber a state another path has since advanced.
+	rollbackState := func() WalletState {
+		target := WalletStateNone
+
+		exists, err := r.server.selfManagedWalletExists()
+		switch {
+		case err != nil:
+			r.server.log.WarnS(ctx, "Failed to probe wallet "+
+				"database during init rollback", err)
+
+		case exists:
+			target = WalletStateLocked
+		}
+
+		r.server.walletState.CompareAndSwap(
+			int32(WalletStateUnlocking), int32(target),
+		)
+
+		return target
 	}
 
 	// Delegate to the package-level function that validates the
@@ -302,6 +328,11 @@ func (r *RPCServer) InitWallet(ctx context.Context,
 			"initialize wallet: %v", err)
 	}
 
+	// The raw seed only needs to survive until the wallet backend
+	// has copied it into btcwallet's passphrase-encrypted key
+	// store; wipe our copy on the way out as best-effort hygiene.
+	defer zeroBytes(seed[:])
+
 	// Create the wallet database from the derived seed, encrypted
 	// under the wallet password. The seed is persisted only inside
 	// btcwallet's own passphrase-encrypted key store.
@@ -309,28 +340,46 @@ func (r *RPCServer) InitWallet(ctx context.Context,
 		ctx, seed[:], req.WalletPassword, birthday,
 	); err != nil {
 
-		rollbackState()
+		target := rollbackState()
+
+		switch {
+		case errors.Is(err, lwwallet.ErrWalletExists),
+			errors.Is(err, btcwbackend.ErrWalletExists):
+			return nil, status.Errorf(codes.FailedPrecondition,
+				"unable to start wallet: %v", err)
+
+		case target == WalletStateLocked:
+			return nil, status.Errorf(codes.Internal, "unable to "+
+				"start wallet: %v (the wallet database was "+
+				"created; retry via UnlockWallet)", err)
+		}
 
 		return nil, status.Errorf(codes.Internal, "unable to start "+
 			"wallet: %v", err)
 	}
 
+	// From here on the wallet has been created and started, so
+	// failures are reported as such: the caller must not retry
+	// InitWallet (the daemon is already unlocked), only the
+	// post-start step that failed.
 	var recoveryResult *walletRecoveryResult
 	if req.GetRecoverState() {
 		recoveryResult, err = r.recoverWalletState(
 			ctx, req.GetRecoveryWindow(),
 		)
 		if err != nil {
-			return nil, status.Errorf(codes.Internal, "unable to "+
-				"recover wallet state: %v", err)
+			return nil, status.Errorf(codes.Internal, "wallet "+
+				"created and unlocked, but state recovery "+
+				"failed: %v", err)
 		}
 	}
 
 	// Derive identity pubkey for the response.
 	identityPubkey, err := r.deriveIdentityPubkey(ctx)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "unable to derive "+
-			"identity pubkey: %v", err)
+		return nil, status.Errorf(codes.Internal, "wallet created and "+
+			"unlocked, but identity pubkey derivation failed: %v",
+			err)
 	}
 
 	resp := &daemonrpc.InitWalletResponse{
@@ -370,15 +419,15 @@ func (r *RPCServer) UnlockWallet(ctx context.Context,
 			"is not locked (state=%s)", currentState)
 	}
 
+	// The rollback is compare-and-set from the claimed state so a
+	// stale rollback can never clobber a state another path has
+	// since advanced. No password length check here: the minimum
+	// length applies at creation only, and the database itself is
+	// the arbiter of whether the supplied password is right.
 	rollbackState := func() {
-		r.server.walletState.Store(int32(WalletStateLocked))
-	}
-
-	if err := ValidateWalletPassword(req.WalletPassword); err != nil {
-		rollbackState()
-
-		return nil, status.Errorf(codes.InvalidArgument, "unable to "+
-			"unlock wallet: %v", err)
+		r.server.walletState.CompareAndSwap(
+			int32(WalletStateUnlocking), int32(WalletStateLocked),
+		)
 	}
 
 	// Open the existing wallet database with the supplied password
@@ -389,6 +438,11 @@ func (r *RPCServer) UnlockWallet(ctx context.Context,
 	); err != nil {
 
 		rollbackState()
+
+		if isWrongPassphraseErr(err) {
+			return nil, status.Errorf(codes.InvalidArgument,
+				"invalid wallet password")
+		}
 
 		return nil, status.Errorf(codes.Internal, "unable to unlock "+
 			"wallet: %v", err)
@@ -460,6 +514,45 @@ func (r *RPCServer) deriveIdentityPubkey(ctx context.Context) (string, error) {
 	}
 
 	return fmt.Sprintf("%x", desc.PubKey.SerializeCompressed()), nil
+}
+
+// isWrongPassphraseErr reports whether err is btcwallet's
+// wrong-private-passphrase failure surfaced through the wallet
+// backend's start path, so unlock callers can tell a typo apart from
+// a genuine daemon fault.
+func isWrongPassphraseErr(err error) bool {
+	var mgrErr waddrmgr.ManagerError
+	if errors.As(err, &mgrErr) {
+		return mgrErr.ErrorCode == waddrmgr.ErrWrongPassphrase
+	}
+
+	return false
+}
+
+// selfManagedWalletExists probes whether a wallet database has been
+// created for the configured self-managed wallet backend. Only the
+// chain params and data directory are consulted; the probe does not
+// open the database on native builds.
+func (s *Server) selfManagedWalletExists() (bool, error) {
+	switch s.cfg.Wallet.Type {
+	case WalletTypeLwwallet:
+		return lwwallet.WalletExists(lwwallet.Config{
+			ChainParams: s.chainParams,
+			DBDir:       s.cfg.NetworkDir(),
+		})
+
+	case WalletTypeBtcwallet:
+		return btcwbackend.WalletExists(btcwbackend.Config{
+			Config: walletcore.Config{
+				ChainParams: s.chainParams,
+				DBDir:       s.cfg.NetworkDir(),
+			},
+		})
+
+	default:
+		return false, fmt.Errorf("unsupported wallet type %q",
+			s.cfg.Wallet.Type)
+	}
 }
 
 // isSelfManagedWallet returns true if the wallet type manages its

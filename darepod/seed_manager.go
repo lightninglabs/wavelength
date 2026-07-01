@@ -31,6 +31,18 @@ const (
 	minPasswordLen = 8
 )
 
+// zeroBytes overwrites a byte slice with zeros. This is used to clear
+// sensitive key material from memory after use. The noinline directive
+// prevents the compiler from optimizing away the dead store when the
+// buffer is not read after zeroing.
+//
+//go:noinline
+func zeroBytes(b []byte) {
+	for i := range b {
+		b[i] = 0
+	}
+}
+
 // devWalletPassword is the insecure fallback private passphrase for
 // wallets created through the DAREPOD_LWWALLET_SEED dev/CI path when
 // DAREPOD_WALLET_PASSWORD is not also set. It is never used for

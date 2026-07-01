@@ -94,15 +94,15 @@ const (
 	// The daemon accepts GenSeed and InitWallet RPCs in this state.
 	WalletStateNone WalletState = iota
 
-	// WalletStateLocked indicates an encrypted seed file exists but
-	// the wallet has not been unlocked. The daemon accepts
-	// UnlockWallet RPCs in this state.
+	// WalletStateLocked indicates a wallet database exists but the
+	// wallet has not been unlocked. The daemon accepts UnlockWallet
+	// RPCs in this state.
 	WalletStateLocked
 
-	// WalletStateUnlocking indicates one UnlockWallet RPC has claimed
-	// the locked wallet and is decrypting the seed or starting the
-	// wallet backend. This state is internal and reports as LOCKED on
-	// the public GetInfo surface.
+	// WalletStateUnlocking indicates one InitWallet or UnlockWallet
+	// RPC has claimed the wallet and is creating or opening the
+	// wallet database. This state is internal and reports as LOCKED
+	// on the public GetInfo surface.
 	WalletStateUnlocking
 
 	// WalletStateSyncing indicates the wallet seed has been decrypted
@@ -1544,18 +1544,23 @@ func (s *Server) tryAutoUnlockLwwallet(ctx context.Context) {
 	// Probe for an existing wallet database. This decides between
 	// the create path (seed required) and the open path (password
 	// only).
-	exists, err := lwwallet.WalletExists(lwwallet.Config{
-		ChainParams: s.chainParams,
-		DBDir:       s.cfg.NetworkDir(),
-	})
+	exists, err := s.selfManagedWalletExists()
 	if err != nil {
 		s.log.ErrorS(ctx, "Failed to probe wallet database", err)
 
 		return
 	}
 
+	// Any existing database means the wallet is at least Locked, so
+	// a failed auto-unlock below leaves UnlockWallet as the recovery
+	// path rather than wedging the daemon in None.
+	if exists {
+		s.walletState.Store(int32(WalletStateLocked))
+	}
+
 	if envSeed != nil {
 		s.log.InfoS(ctx, "Loaded seed from environment variable")
+		defer zeroBytes(envSeed[:])
 
 		// The env-seed path is create-or-open: the first run
 		// creates the wallet database, later runs open it. The
@@ -1597,10 +1602,9 @@ func (s *Server) tryAutoUnlockLwwallet(ctx context.Context) {
 		return
 	}
 
-	// A wallet database exists. Try to find a password for
-	// auto-unlock: check env var first, then password file.
-	s.walletState.Store(int32(WalletStateLocked))
-
+	// A wallet database exists (state already marked Locked above).
+	// Try to find a password for auto-unlock: check env var first,
+	// then password file.
 	password, ok := LoadPasswordFromEnv()
 	if !ok && s.cfg.Wallet.PasswordFile != "" {
 		var err error
@@ -1712,7 +1716,8 @@ func (s *Server) startLwwallet(ctx context.Context, seed []byte,
 // tryAutoUnlockBtcwallet attempts to initialize the btcwallet+neutrino
 // backend at startup without user interaction. It follows the same
 // pattern as tryAutoUnlockLwwallet: check for a seed in the
-// environment, then check for an encrypted seed file with a password.
+// environment, then probe for an existing wallet database to open
+// with a password.
 //
 // Neutrino is started eagerly before checking for a wallet seed so
 // that P2P peer connection and header sync can proceed in parallel
@@ -1744,21 +1749,24 @@ func (s *Server) tryAutoUnlockBtcwallet(ctx context.Context) {
 	// Probe for an existing wallet database. This decides between
 	// the create path (seed required) and the open path (password
 	// only).
-	exists, err := btcwbackend.WalletExists(btcwbackend.Config{
-		Config: walletcore.Config{
-			ChainParams: s.chainParams,
-			DBDir:       s.cfg.NetworkDir(),
-		},
-	})
+	exists, err := s.selfManagedWalletExists()
 	if err != nil {
 		s.log.ErrorS(ctx, "Failed to probe wallet database", err)
 
 		return
 	}
 
+	// Any existing database means the wallet is at least Locked, so
+	// a failed auto-unlock below leaves UnlockWallet as the recovery
+	// path rather than wedging the daemon in None.
+	if exists {
+		s.walletState.Store(int32(WalletStateLocked))
+	}
+
 	if envSeed != nil {
 		s.log.InfoS(ctx,
 			"Loaded seed from environment variable")
+		defer zeroBytes(envSeed[:])
 
 		// The env-seed path is create-or-open: the first run
 		// creates the wallet database, later runs open it. The
@@ -1800,10 +1808,8 @@ func (s *Server) tryAutoUnlockBtcwallet(ctx context.Context) {
 		return
 	}
 
-	// A wallet database exists. Try to find a password for
-	// auto-unlock.
-	s.walletState.Store(int32(WalletStateLocked))
-
+	// A wallet database exists (state already marked Locked above).
+	// Try to find a password for auto-unlock.
 	password, ok := LoadPasswordFromEnv()
 	if !ok && s.cfg.Wallet.PasswordFile != "" {
 		var err error
