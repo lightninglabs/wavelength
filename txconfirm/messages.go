@@ -258,6 +258,18 @@ type BumpNowResp struct {
 	// only when Bumped is true.
 	ChildTxid *chainhash.Hash
 
+	// EffectiveFeeRateSatPerVByte is the fee rate the submitted package
+	// actually targets, set when Bumped is true. It can differ from the
+	// requested rate: an over-ceiling target is clamped down, and the
+	// BIP-125 replacement floor can ratchet a flat target up.
+	EffectiveFeeRateSatPerVByte int64
+
+	// Clamped is true when the operator-supplied target rate exceeded the
+	// broadcaster's configured maximum and was reduced. Callers should
+	// surface this: a "successful" bump at a clamped rate may still sit
+	// below the market rate the operator asked for.
+	Clamped bool
+
 	// Reason is a stable human-readable explanation when Bumped is false.
 	Reason string
 }

@@ -42,6 +42,13 @@ const (
 	// relay bandwidth on top of the replaced package's fee).
 	DefaultIncrementalRelayFeeSatPerVByte int64 = 1
 
+	// minRelayFeeRateSatPerVByte is Bitcoin Core's default minimum relay
+	// fee rate (minrelaytxfee, 1000 sat/kvB). A transaction paying less
+	// than this per vbyte is rejected by every default-configured
+	// mempool, so a CPFP child whose residual fee falls under
+	// vsize * this rate is doomed at relay and not worth building.
+	minRelayFeeRateSatPerVByte int64 = 1
+
 	// DefaultFeeInputLeaseExpiry is how long the broadcaster asks the
 	// wallet to lease a CPFP fee-input UTXO. The lease is explicitly
 	// released on terminal eviction and on fallback paths, but that
@@ -70,17 +77,29 @@ var (
 		"shortfall")
 
 	// ErrNonTRUCParent indicates that the caller submitted a parent
-	// transaction whose version is not v3 (TRUC). txconfirm relies on
-	// BIP-431 ephemeral-anchor and TRUC-package semantics for its
-	// CPFP fee-bump strategy: without v3, package RBF replacement
-	// rules and the zero-fee anchor are not policy-legal on a
-	// standard Bitcoin Core mempool, and anchor detection becomes
-	// structurally ambiguous (a legitimate output script could match
-	// the anyone-can-spend anchor pattern by accident). We therefore
-	// reject non-v3 parents at the Submit boundary rather than
-	// silently attaching a CPFP child that would never relay.
+	// carrying a zero-value ephemeral anchor whose version is not v3
+	// (TRUC). The ephemeral-anchor CPFP strategy relies on BIP-431
+	// package semantics: without v3, package RBF replacement rules and
+	// the zero-fee anchor are not policy-legal on a standard Bitcoin
+	// Core mempool. We therefore reject non-v3 ephemeral-anchor parents
+	// at the Submit boundary rather than silently attaching a CPFP
+	// child that would never relay. Funded-anchor parents (non-zero
+	// anchor value) pay their own fee and are exempt: they broadcast as
+	// ordinary v2 transactions and only spend the anchor when a bump is
+	// requested.
 	ErrNonTRUCParent = errors.New("parent transaction must be v3 (TRUC) " +
 		"for CPFP broadcast")
+
+	// ErrParentFeeSufficient indicates that a fee-bump request resolved
+	// to a target package fee the parent already pays on its own, so the
+	// CPFP child's share would fall below what a mempool will relay. The
+	// bump is refused as a no-op rather than burning a wallet round-trip
+	// on a child that is guaranteed a min-relay-fee reject. Callers
+	// should treat this as "nothing to do at this rate": either the fee
+	// estimator has fallen to (or below) the parent's own rate, or an
+	// operator supplied a target at or under it.
+	ErrParentFeeSufficient = errors.New("parent fee already meets target " +
+		"package fee; cpfp child would not relay")
 
 	// ErrParentAlreadyBroadcast indicates that the SubmitPackage RPC
 	// reported the parent transaction as already known to the network
@@ -597,7 +616,8 @@ func (b *CPFPBroadcaster) Submit(ctx context.Context, height int32,
 	default:
 		if req.Tx.Version != arktx.TxVersion {
 			return nil, fmt.Errorf("%w: got version %d, want %d",
-				ErrNonTRUCParent, req.Tx.Version, arktx.TxVersion)
+				ErrNonTRUCParent, req.Tx.Version,
+				arktx.TxVersion)
 		}
 
 		return b.broadcastWithCPFP(ctx, height, req, txid, anchorIdx)
@@ -775,6 +795,27 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context, height int32,
 	feeRate, totalFee = b.applyReplacementFloor(
 		req.Tx, txid, feeRate, totalFee, childVSize,
 	)
+
+	// A funded parent may already pay the whole package target on its own
+	// (a flat-rate re-bump, or an operator target at or under the parent's
+	// own rate). The child's residual share would then sit below the
+	// minimum relay fee for its vsize and every mempool would reject it,
+	// so refuse the bump up front as a no-op rather than deriving scripts,
+	// leasing a fee input, and signing a child that is doomed at relay.
+	// Zero-fee ephemeral parents (ParentFee == 0) never trip this: their
+	// child always carries the full package fee.
+	if req.ParentFee > 0 {
+		childFee := childFeeFromPackageFee(totalFee, req.ParentFee)
+		minChildFee := btcutil.Amount(
+			childVSize * minRelayFeeRateSatPerVByte,
+		)
+		if childFee < minChildFee {
+			return nil, fmt.Errorf("%w: parent pays %d of %d sat "+
+				"package fee at %d sat/vB",
+				ErrParentFeeSufficient, req.ParentFee, totalFee,
+				feeRate)
+		}
+	}
 
 	// Select a fee input that covers the package fee *plus* a spendable
 	// (non-dust) change output. Selecting for totalFee alone can pick a
@@ -1015,6 +1056,23 @@ func (b *CPFPBroadcaster) fallbackDirectBroadcast(ctx context.Context,
 
 	b.releaseFeeOutpoint(ctx, txid, releaseOutpoint)
 
+	// A fee bump of a funded-anchor parent must never take the direct
+	// fallback: the parent relayed on its own fee and is (or was) already
+	// in the mempool, so re-broadcasting it is answered with an ignorable
+	// "already known" reject and the call would report success with no
+	// child submitted. Surfacing the setup failure instead lets the caller
+	// report an honest Bumped=false with the real reason. The fallback
+	// remains the right hail-mary for a zero-fee ephemeral parent, whose
+	// only route into a mempool is a package, and for initial funded
+	// broadcasts, which are direct anyway.
+	if req.IsFeeBump {
+		anchorIdx := findAnchorOutput(req.Tx)
+		if anchorIdx >= 0 && anchorIsFunded(req.Tx, anchorIdx) {
+			return nil, fmt.Errorf("cpfp setup failed at %s: %w",
+				stage, err)
+		}
+	}
+
 	b.log.WarnS(ctx, "CPFP unavailable; broadcasting parent directly",
 		err, "txid", txid, "stage", stage, "label", req.Label)
 
@@ -1094,7 +1152,9 @@ func (b *CPFPBroadcaster) targetOrEstimatedFeeRate(ctx context.Context,
 // satoshi so the child always pays a positive fee even when the parent's fee
 // already covers (or exceeds) the target, which can happen on a flat-rate
 // re-bump.
-func childFeeFromPackageFee(packageFee, parentFee btcutil.Amount) btcutil.Amount {
+func childFeeFromPackageFee(
+	packageFee, parentFee btcutil.Amount) btcutil.Amount {
+
 	childFee := packageFee - parentFee
 	if childFee < 1 {
 		childFee = 1
