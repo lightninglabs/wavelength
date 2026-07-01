@@ -207,12 +207,18 @@ func walletSend(cmd *cobra.Command, args []string) error {
 					err)
 			}
 
-			if err := printWalletProto(resp); err != nil {
-				return err
-			}
-
 			if noWait, _ := cmd.Flags().GetBool("no-wait"); noWait {
-				return nil
+
+				// Without waiting there is no terminal state to
+				// summarize yet, so echo the dispatched entry
+				// as a compact pending receipt rather than the
+				// full proto dump.
+				return printSendResult(
+					cmd.OutOrStdout(),
+					sendResultFromEntry(
+						resp.GetEntry(),
+					),
+				)
 			}
 
 			return waitForSendTerminal(cmd, resp.GetEntry())
@@ -228,6 +234,7 @@ func walletSend(cmd *cobra.Command, args []string) error {
 // The poll runs over the always-available WalletInspectionService so the wait
 // surface does not depend on the optional swapruntime build. A failed terminal
 // state returns an error so an agent or shell sees a non-zero exit; a timeout
+// emits the latest observed entry as a compact pending receipt on stdout, then
 // returns the last observed status without claiming success or failure.
 func waitForSendTerminal(cmd *cobra.Command,
 	entry *walletdkrpc.WalletEntry) error {
@@ -257,7 +264,22 @@ func waitForSendTerminal(cmd *cobra.Command,
 	out := cmd.ErrOrStderr()
 	lastPhase := ""
 	failedMsg := "send reached a failed state"
+
+	// The daemon has already accepted the send by the time we start
+	// waiting, so any exit that is not a terminal verdict still owes the
+	// caller a machine-readable receipt: emit the latest observed entry as
+	// the compact pending summary on stdout before surfacing the error on
+	// stderr, so a JSON pipeline keeps the id of a payment that may still
+	// settle.
+	lastEntry := entry
+	emitReceipt := func() {
+		_ = printSendResult(
+			cmd.OutOrStdout(), sendResultFromEntry(lastEntry),
+		)
+	}
 	timeoutErr := func() error {
+		emitReceipt()
+
 		return PrintError(
 			"WAIT_TIMEOUT",
 			fmt.Sprintf(
@@ -286,11 +308,19 @@ func waitForSendTerminal(cmd *cobra.Command,
 						return timeoutErr()
 					}
 
+					// The send itself was accepted, so
+					// leave a pending receipt behind even
+					// though inspection broke.
+					emitReceipt()
+
 					return fmt.Errorf("inspect "+
 						"activity: %w", err)
 				}
 
 				inspected := resp.GetEntry()
+				if inspected != nil {
+					lastEntry = inspected
+				}
 				phase := formatEntryPhase(
 					inspected.GetProgress(),
 				)
@@ -301,8 +331,13 @@ func waitForSendTerminal(cmd *cobra.Command,
 
 				switch inspected.GetStatus() {
 				case entryStatusComplete:
-					return printWalletInspectionExpanded(
-						resp,
+					// On success collapse the verbose trace
+					// down to the compact summary; the full
+					// breakdown stays available via `da
+					// activity inspect <id>`.
+					return printSendResult(
+						cmd.OutOrStdout(),
+						sendResultFromInspection(resp),
 					)
 
 				case entryStatusFailed:
