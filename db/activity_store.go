@@ -1,0 +1,303 @@
+package db
+
+import (
+	"bytes"
+	"context"
+	"database/sql"
+	"errors"
+
+	"github.com/lightninglabs/darepo-client/db/sqlc"
+	"github.com/lightningnetwork/lnd/clock"
+)
+
+// ActivityStore groups the SQL methods needed to maintain the canonical
+// activity log: the current-state activity_entries projection and the
+// append-only activity_events transition log.
+type ActivityStore interface {
+	UpsertActivityEntry(ctx context.Context,
+		arg sqlc.UpsertActivityEntryParams) error
+
+	AppendActivityEvent(ctx context.Context,
+		arg sqlc.AppendActivityEventParams) error
+
+	GetActivityEntry(ctx context.Context,
+		canonicalID string) (sqlc.ActivityEntry, error)
+
+	ListActivityEntries(ctx context.Context,
+		arg sqlc.ListActivityEntriesParams) (
+		[]sqlc.ActivityEntry,
+		error,
+	)
+
+	PullActivityEvents(ctx context.Context,
+		arg sqlc.PullActivityEventsParams) ([]sqlc.ActivityEvent, error)
+}
+
+// BatchedActivityStore combines the query surface with batched transaction
+// execution.
+type BatchedActivityStore interface {
+	ActivityStore
+	BatchedTx[ActivityStore]
+}
+
+// ActivityProjection is the projector's input: a normalized snapshot of one
+// activity row at a single lifecycle transition. The persistence store maps it
+// to both an activity_entries upsert (current state) and an activity_events
+// append (the transition), so the projector never touches sqlc params.
+//
+// Empty BLOB handles MUST be passed as nil, never a zero-length slice, to avoid
+// the Postgres BYTEA `x”` pitfall. ConfirmationHeight is nil until known.
+type ActivityProjection struct {
+	CanonicalID   string
+	Kind          int64
+	Status        int64
+	AmountSat     int64
+	FeeSat        int64
+	Counterparty  string
+	Note          string
+	Phase         int64
+	PhaseLabel    string
+	FailureCode   int64
+	FailureReason string
+
+	PaymentHash        []byte
+	Txid               []byte
+	ConfirmationHeight *int64
+	VtxoOutpoint       string
+
+	SwapSessionID []byte
+	LedgerTxid    []byte
+	BoardingAddr  []byte
+	RequestJSON   string
+
+	// EntryJSON is the protojson snapshot of the WalletEntry emitted at
+	// this transition, stored verbatim on the activity_events row.
+	EntryJSON string
+
+	CreatedAtUnix int64
+	UpdatedAtUnix int64
+}
+
+// ActivityPersistenceStore persists the canonical activity log. ProjectEntry
+// performs the atomic dual-write (upsert the current-state row, then append the
+// transition row) that backs List and a resumable SubscribeWallet.
+type ActivityPersistenceStore struct {
+	db    BatchedActivityStore
+	clock clock.Clock
+}
+
+// NewActivityPersistenceStore creates an activity-log store using the
+// transaction executor pattern.
+func NewActivityPersistenceStore(
+	db BatchedActivityStore, clk clock.Clock,
+) *ActivityPersistenceStore {
+
+	return &ActivityPersistenceStore{
+		db:    db,
+		clock: clk,
+	}
+}
+
+// ProjectEntry advances the activity row to the projected state and records the
+// transition, atomically. The entry is upserted before the event is appended so
+// the activity_events foreign key is satisfied within the same transaction.
+func (s *ActivityPersistenceStore) ProjectEntry(ctx context.Context,
+	p ActivityProjection) error {
+
+	// A row must carry a creation and update time. When the projection
+	// omits them (a malformed or synthetic entry), fall back to the
+	// injected clock so the row sorts at "now" rather than the unix epoch.
+	now := s.clock.Now().Unix()
+	createdAt := p.CreatedAtUnix
+	if createdAt == 0 {
+		createdAt = now
+	}
+	updatedAt := p.UpdatedAtUnix
+	if updatedAt == 0 {
+		updatedAt = now
+	}
+
+	return s.db.ExecTx(ctx, WriteTxOption(), func(q ActivityStore) error {
+		// Only record a transition when the projection actually changes
+		// the current-state row. Redundant re-emits — the startup
+		// backfill on every wallet-ready start, and the swap monitor's
+		// include-existing replay — must not append duplicate
+		// activity_events rows, or a resumable subscriber would later
+		// replay bogus transitions for states that never changed.
+		existing, err := q.GetActivityEntry(ctx, p.CanonicalID)
+		switch {
+		case err == nil:
+			if !p.changesRow(existing) {
+				return nil
+			}
+
+		case errors.Is(err, sql.ErrNoRows):
+			// New operation: insert the row and its first event.
+
+		default:
+			return err
+		}
+
+		if err := q.UpsertActivityEntry(
+			ctx, sqlc.UpsertActivityEntryParams{
+				CanonicalID:   p.CanonicalID,
+				Kind:          p.Kind,
+				Status:        p.Status,
+				AmountSat:     p.AmountSat,
+				FeeSat:        p.FeeSat,
+				Counterparty:  p.Counterparty,
+				Note:          p.Note,
+				Phase:         p.Phase,
+				PhaseLabel:    p.PhaseLabel,
+				FailureCode:   p.FailureCode,
+				FailureReason: p.FailureReason,
+				PaymentHash:   p.PaymentHash,
+				Txid:          p.Txid,
+				ConfirmationHeight: nullInt64(
+					p.ConfirmationHeight,
+				),
+				VtxoOutpoint:  p.VtxoOutpoint,
+				SwapSessionID: p.SwapSessionID,
+				LedgerTxid:    p.LedgerTxid,
+				BoardingAddr:  p.BoardingAddr,
+				RequestJson:   p.RequestJSON,
+				CreatedAtUnix: createdAt,
+				UpdatedAtUnix: updatedAt,
+			},
+		); err != nil {
+			return err
+		}
+
+		return q.AppendActivityEvent(
+			ctx, sqlc.AppendActivityEventParams{
+				CanonicalID:   p.CanonicalID,
+				Status:        p.Status,
+				Phase:         p.Phase,
+				EntryJson:     p.EntryJSON,
+				CreatedAtUnix: updatedAt,
+			},
+		)
+	})
+}
+
+// GetEntry returns one current-state row by its canonical id.
+func (s *ActivityPersistenceStore) GetEntry(ctx context.Context,
+	canonicalID string) (sqlc.ActivityEntry, error) {
+
+	var entry sqlc.ActivityEntry
+
+	err := s.db.ExecTx(ctx, ReadTxOption(), func(q ActivityStore) error {
+		var err error
+		entry, err = q.GetActivityEntry(ctx, canonicalID)
+
+		return err
+	})
+
+	return entry, err
+}
+
+// ListEntries returns up to limit current-state rows newest-first, starting
+// after the (cursorCreated, cursorID) keyset. A cursorCreated of 0 starts from
+// the newest row. The cursor is the immutable (created_at_unix, canonical_id)
+// of the last row returned.
+func (s *ActivityPersistenceStore) ListEntries(ctx context.Context,
+	cursorCreated int64, cursorID string, limit int32) (
+	[]sqlc.ActivityEntry, error) {
+
+	var rows []sqlc.ActivityEntry
+
+	err := s.db.ExecTx(ctx, ReadTxOption(), func(q ActivityStore) error {
+		var err error
+		rows, err = q.ListActivityEntries(
+			ctx, sqlc.ListActivityEntriesParams{
+				CursorCreated: cursorCreated,
+				CursorID:      cursorID,
+				LimitCount:    limit,
+			},
+		)
+
+		return err
+	})
+
+	return rows, err
+}
+
+// PullEvents returns up to limit transition rows strictly after the event_seq
+// cursor, in ascending event_seq order — the resumable-subscribe replay.
+func (s *ActivityPersistenceStore) PullEvents(ctx context.Context, cursor int64,
+	limit int32) ([]sqlc.ActivityEvent, error) {
+
+	var rows []sqlc.ActivityEvent
+
+	err := s.db.ExecTx(ctx, ReadTxOption(), func(q ActivityStore) error {
+		var err error
+		rows, err = q.PullActivityEvents(
+			ctx, sqlc.PullActivityEventsParams{
+				Cursor:     cursor,
+				LimitCount: limit,
+			},
+		)
+
+		return err
+	})
+
+	return rows, err
+}
+
+// changesRow reports whether the projection would alter the current-state row
+// e, i.e. whether it represents a genuine lifecycle transition. It mirrors the
+// UpsertActivityEntry semantics: scalar lifecycle columns overwrite directly,
+// while the settlement/correlation handles are COALESCEd (a nil projection
+// value preserves the stored one, so it is a change only when non-nil AND
+// different). request_json and entry_json are deliberately NOT compared:
+// protojson output is not byte-stable, so comparing it would report spurious
+// changes; the request is immutable per operation anyway.
+func (p ActivityProjection) changesRow(e sqlc.ActivityEntry) bool {
+	if p.Kind != e.Kind ||
+		p.Status != e.Status ||
+		p.AmountSat != e.AmountSat ||
+		p.FeeSat != e.FeeSat ||
+		p.Counterparty != e.Counterparty ||
+		p.Note != e.Note ||
+		p.Phase != e.Phase ||
+		p.PhaseLabel != e.PhaseLabel ||
+		p.FailureCode != e.FailureCode ||
+		p.FailureReason != e.FailureReason ||
+		p.VtxoOutpoint != e.VtxoOutpoint {
+		return true
+	}
+
+	if blobChanges(p.PaymentHash, e.PaymentHash) ||
+		blobChanges(p.Txid, e.Txid) ||
+		blobChanges(p.SwapSessionID, e.SwapSessionID) ||
+		blobChanges(p.LedgerTxid, e.LedgerTxid) ||
+		blobChanges(p.BoardingAddr, e.BoardingAddr) {
+		return true
+	}
+
+	if p.ConfirmationHeight != nil {
+		if !e.ConfirmationHeight.Valid ||
+			*p.ConfirmationHeight != e.ConfirmationHeight.Int64 {
+			return true
+		}
+	}
+
+	return false
+}
+
+// blobChanges reports whether a COALESCEd blob handle changes the stored value:
+// a nil/empty next value preserves the stored one (no change), a non-empty next
+// value is a change only when it differs.
+func blobChanges(next, stored []byte) bool {
+	return len(next) > 0 && !bytes.Equal(next, stored)
+}
+
+// nullInt64 converts an optional int64 to sql.NullInt64, mapping nil to the
+// NULL sentinel so an unknown confirmation height stays NULL in the DB.
+func nullInt64(v *int64) sql.NullInt64 {
+	if v == nil {
+		return sql.NullInt64{}
+	}
+
+	return sql.NullInt64{Int64: *v, Valid: true}
+}
