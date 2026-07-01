@@ -327,6 +327,26 @@ func (s *Store) NewSpendingReservationStore(
 	return NewSpendingReservationPersistenceStore(reservationDB, clk)
 }
 
+// NewActivityStore builds the canonical activity-log persistence store with
+// transactional query execution.
+//
+// The activity store is the source of truth for the wallet activity feed: a
+// current-state activity_entries projection read by List and an append-only
+// activity_events transition log read by a resumable SubscribeWallet.
+func (s *Store) NewActivityStore(clk clock.Clock) *ActivityPersistenceStore {
+	baseDB := s.BaseDB()
+
+	activityDB := NewTransactionExecutor(
+		baseDB,
+		func(tx *sql.Tx) ActivityStore {
+			return s.queries.WithTx(tx)
+		},
+		s.log,
+	)
+
+	return NewActivityPersistenceStore(activityDB, clk)
+}
+
 // NewUnilateralExitStore builds the unilateral-exit persistence store with
 // transactional query execution.
 func (s *Store) NewUnilateralExitStore(

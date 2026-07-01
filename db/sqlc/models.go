@@ -18,6 +18,49 @@ type AccountType struct {
 	AccountType string
 }
 
+type ActivityEntry struct {
+	CanonicalID        string
+	Kind               int64
+	Status             int64
+	AmountSat          int64
+	FeeSat             int64
+	Counterparty       string
+	Note               string
+	Phase              int64
+	PhaseLabel         string
+	FailureCode        int64
+	FailureReason      string
+	PaymentHash        []byte
+	Txid               []byte
+	ConfirmationHeight sql.NullInt64
+	VtxoOutpoint       string
+	SwapSessionID      []byte
+	LedgerTxid         []byte
+	BoardingAddr       []byte
+	RequestJson        string
+	CreatedAtUnix      int64
+	UpdatedAtUnix      int64
+}
+
+type ActivityEvent struct {
+	EventSeq      int64
+	CanonicalID   string
+	Status        int64
+	Phase         int64
+	EntryJson     string
+	CreatedAtUnix int64
+}
+
+type ActivityKind struct {
+	ID   int64
+	Name string
+}
+
+type ActivityStatus struct {
+	ID   int64
+	Name string
+}
+
 type BoardingAddress struct {
 	PkScript            []byte
 	AddressString       string

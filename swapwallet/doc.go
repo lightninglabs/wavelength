@@ -68,4 +68,24 @@
 // explicitly and amt_sat must be zero; a typo'd amt_sat=0 without
 // sweep_all is rejected up front at the wallet layer and again at the
 // CLI.
+//
+// # CANONICAL ACTIVITY LOG
+//
+// The runtime dual-writes every emitted WalletEntry into a persisted
+// canonical activity log (the daemon-side db.ActivityPersistenceStore,
+// injected via Deps.ActivityStore): activity_entries is the current-state
+// projection and activity_events is the append-only transition log. Writes
+// happen project-then-emit at the swap monitor loop, the cooperative-leave
+// submit, and the deadline overlay, plus a one-time startup backfill from the
+// collectors below. The read path is UNCHANGED for now: List and
+// SubscribeWallet still derive from the live merge in history.go. A later
+// change cuts List over to the store's keyset cursor and SubscribeWallet over
+// to the activity_events event_seq cursor, then removes the merge.
+//
+// Until that cutover, the canonical id stored for a cooperative-leave EXIT is
+// still the consumed VTXO outpoint and a DEPOSIT is still keyed by txid:vout
+// (or the synthetic boarding-unconfirmed row), so the same operation can hold
+// different ids pending vs. confirmed — exactly the limitation above. Giving
+// EXIT/DEPOSIT/on-chain-send a stable cross-lifecycle id needs the daemon-side
+// hooks this V1 LIMITATIONS block describes and is tracked separately.
 package swapwallet

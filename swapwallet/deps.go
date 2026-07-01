@@ -190,6 +190,12 @@ type Deps struct {
 	// SubscribeBuffer is the per-subscriber channel buffer used by
 	// SubscribeWallet. Zero falls back to defaultSubscribeBufferConst.
 	SubscribeBuffer uint32
+
+	// ActivityStore is the canonical activity-log projector the runtime
+	// writes each emitted WalletEntry through as state advances; the
+	// startup backfill seeds it from the history collectors. Nil disables
+	// projection.
+	ActivityStore darepod.ActivityProjector
 }
 
 // resolveDeadline returns the effective wallet deadline, applying the

@@ -597,7 +597,10 @@ func (r *router) sendOnchainIntent(ctx context.Context,
 	// ledger row is deferred to v2 — see swapwallet/doc.go for the
 	// limitation note.
 	r.runtime.trackPendingEntryWithoutTimeout(entry)
-	r.runtime.emit(entry)
+
+	// Project off the RPC context so a CLI disconnect cannot cancel the
+	// write of an already-accepted leave intent; the daemon owns this row.
+	r.runtime.projectAndEmit(context.WithoutCancel(ctx), entry)
 
 	return &walletdkrpc.SendResponse{
 		Entry:           entry,

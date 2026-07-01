@@ -10,6 +10,9 @@ import (
 )
 
 type Querier interface {
+	// AppendActivityEvent records one immutable lifecycle-transition row. event_seq
+	// is assigned by the database (monotonic, not necessarily contiguous).
+	AppendActivityEvent(ctx context.Context, arg AppendActivityEventParams) error
 	CancelVHTLCRecoveryJob(ctx context.Context, arg CancelVHTLCRecoveryJobParams) (int64, error)
 	ClearPendingIntentAnchorByOutpoint(ctx context.Context, arg ClearPendingIntentAnchorByOutpointParams) error
 	CompleteVHTLCRecoveryJob(ctx context.Context, arg CompleteVHTLCRecoveryJobParams) (int64, error)
@@ -46,6 +49,8 @@ type Querier interface {
 	EscalateVHTLCRecoveryJob(ctx context.Context, arg EscalateVHTLCRecoveryJobParams) (int64, error)
 	FailVHTLCRecoveryJob(ctx context.Context, arg FailVHTLCRecoveryJobParams) (int64, error)
 	FinalizeRound(ctx context.Context, arg FinalizeRoundParams) error
+	// GetActivityEntry returns one entry by its canonical id.
+	GetActivityEntry(ctx context.Context, canonicalID string) (ActivityEntry, error)
 	GetBoardingAddress(ctx context.Context, pkScript []byte) (BoardingAddress, error)
 	GetBoardingIntent(ctx context.Context, arg GetBoardingIntentParams) (BoardingIntent, error)
 	GetBoardingSweep(ctx context.Context, txid []byte) (BoardingSweep, error)
@@ -138,6 +143,11 @@ type Querier interface {
 	// at-most-once per outpoint+event.
 	InsertWalletUTXOLog(ctx context.Context, arg InsertWalletUTXOLogParams) error
 	ListActiveRounds(ctx context.Context) ([]Round, error)
+	// ListActivityEntries returns entries newest-first, paged by the immutable
+	// (created_at_unix, canonical_id) cursor so a row that transitions in place
+	// keeps its position. An empty cursor (created = 0) starts from the newest.
+	// Callers pass limit_count + 1 and trim the extra row to compute has_more.
+	ListActivityEntries(ctx context.Context, arg ListActivityEntriesParams) ([]ActivityEntry, error)
 	ListAllBoardingAddresses(ctx context.Context) ([]BoardingAddress, error)
 	ListAllBoardingIntents(ctx context.Context) ([]BoardingIntent, error)
 	ListAllCreditOperations(ctx context.Context) ([]CreditOperation, error)
@@ -266,6 +276,9 @@ type Querier interface {
 	MarkVTXOForfeiting(ctx context.Context, arg MarkVTXOForfeitingParams) error
 	// Also sets status = 4 (Spent) to keep status in sync with spent flag.
 	MarkVTXOSpent(ctx context.Context, arg MarkVTXOSpentParams) error
+	// PullActivityEvents returns transition rows strictly after the cursor in
+	// event_seq order, the resumable-subscribe replay primitive.
+	PullActivityEvents(ctx context.Context, arg PullActivityEventsParams) ([]ActivityEvent, error)
 	SumBoardingIntentAmountsByStatus(ctx context.Context, status string) (interface{}, error)
 	SumUnspentVTXOAmounts(ctx context.Context) (interface{}, error)
 	UpdateBoardingIntentStatus(ctx context.Context, arg UpdateBoardingIntentStatusParams) error
@@ -274,6 +287,16 @@ type Querier interface {
 	// UpdateVTXOStatus atomically updates a VTXO's status. This is the primary
 	// method for state transitions that don't require additional data.
 	UpdateVTXOStatus(ctx context.Context, arg UpdateVTXOStatusParams) error
+	// Canonical activity log queries. activity_entries is the current-state
+	// projection read by List; activity_events is the append-only transition log
+	// read by a resumable SubscribeWallet. See docs/canonical_activity_log_design.md.
+	// UpsertActivityEntry inserts the activity row or advances it in place. On
+	// conflict the mutable lifecycle columns are overwritten with the new
+	// projection and updated_at_unix is bumped, but created_at_unix is preserved so
+	// the row keeps its position in the created-ordered feed. The settlement and
+	// correlation handles are COALESCEd so an early projection that does not yet
+	// know a txid never clobbers one a later projection already recorded.
+	UpsertActivityEntry(ctx context.Context, arg UpsertActivityEntryParams) error
 	UpsertChainInfo(ctx context.Context, arg UpsertChainInfoParams) error
 	// Credit operations control-plane queries.
 	UpsertCreditOperation(ctx context.Context, arg UpsertCreditOperationParams) error
