@@ -9,6 +9,75 @@ CREATE TABLE accounts (
         REFERENCES account_types(account_type)
 );
 
+CREATE TABLE activity_entries (
+    -- canonical_id is the stable cross-restart identity for the operation.
+    canonical_id TEXT PRIMARY KEY,
+
+    kind   BIGINT NOT NULL REFERENCES activity_kinds(id),
+    status BIGINT NOT NULL REFERENCES activity_statuses(id),
+
+    -- amount_sat is signed in the wallet convention (positive inbound,
+    -- negative outbound), matching WalletEntry.amount_sat on the wire. BIGINT
+    -- (not INTEGER) because a bare INTEGER is 32-bit on the Postgres backend
+    -- and overflows above ~21.47 BTC.
+    amount_sat BIGINT NOT NULL DEFAULT 0,
+    fee_sat    BIGINT NOT NULL DEFAULT 0,
+
+    counterparty TEXT NOT NULL DEFAULT '',
+    note         TEXT NOT NULL DEFAULT '',
+
+    -- Lifecycle projection fields the daemon already computes for the wire
+    -- WalletEntryProgress. phase / failure_code store the proto enum integers.
+    phase          BIGINT NOT NULL DEFAULT 0,
+    phase_label    TEXT   NOT NULL DEFAULT '',
+    failure_code   BIGINT NOT NULL DEFAULT 0,
+    failure_reason TEXT   NOT NULL DEFAULT '',
+
+    -- Settlement handles, populated as the operation confirms. Stored as the
+    -- raw bytes the source subsystems use (BLOB), nullable until known.
+    payment_hash        BLOB,
+    txid                BLOB,
+    confirmation_height BIGINT,
+    vtxo_outpoint       TEXT NOT NULL DEFAULT '',
+
+    -- Correlation handles back to the source subsystems so the projector can
+    -- locate the row to update without re-deriving it. Nullable.
+    swap_session_id BLOB,
+    ledger_txid     BLOB,
+    boarding_addr   BLOB,
+
+    -- request_json is the protojson of the WalletEntryRequest oneof, kept so
+    -- the schema stays stable as request shapes evolve.
+    request_json TEXT NOT NULL DEFAULT '',
+
+    created_at_unix BIGINT NOT NULL,
+    updated_at_unix BIGINT NOT NULL
+);
+
+CREATE TABLE activity_events (
+    event_seq INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    canonical_id TEXT   NOT NULL REFERENCES activity_entries(canonical_id),
+    status       BIGINT NOT NULL REFERENCES activity_statuses(id),
+    phase        BIGINT NOT NULL DEFAULT 0,
+
+    -- entry_json is the protojson snapshot of the WalletEntry as emitted at
+    -- this transition, so a replaying subscriber needs no second query.
+    entry_json TEXT NOT NULL,
+
+    created_at_unix BIGINT NOT NULL
+);
+
+CREATE TABLE activity_kinds (
+    id   BIGINT PRIMARY KEY,
+    name TEXT UNIQUE NOT NULL
+);
+
+CREATE TABLE activity_statuses (
+    id   BIGINT PRIMARY KEY,
+    name TEXT UNIQUE NOT NULL
+);
+
 CREATE TABLE ask_results (
     -- promise_id links to the original Ask message.
     promise_id TEXT PRIMARY KEY,
@@ -319,6 +388,15 @@ CREATE TABLE fsm_checkpoints (
     -- updated_at is the unix timestamp of the last checkpoint.
     updated_at BIGINT NOT NULL
 );
+
+CREATE INDEX idx_activity_entries_created
+    ON activity_entries (created_at_unix DESC, canonical_id);
+
+CREATE INDEX idx_activity_entries_updated
+    ON activity_entries (updated_at_unix DESC, canonical_id);
+
+CREATE INDEX idx_activity_events_canonical
+    ON activity_events (canonical_id);
 
 CREATE INDEX idx_ask_results_expires
     ON ask_results(expires_at);
