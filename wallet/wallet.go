@@ -3398,6 +3398,7 @@ func (a *Ark) handleSendOnChain(ctx context.Context,
 
 	return fn.Ok[WalletResp](&SendOnChainResponse{
 		Status:            SendOnChainStatusSubmitted,
+		IntentID:          pendingIntent.ID,
 		ActualAmountSat:   sendOnChainActualAmount(req, totalSelected),
 		SelectedOutpoints: selectedOutpoints,
 		TotalSelected:     totalSelected,

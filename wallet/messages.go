@@ -1011,6 +1011,12 @@ type SendOnChainResponse struct {
 	// Preview for a dry-run.
 	Status SendOnChainStatus
 
+	// IntentID is the stable pending-intent id for a submitted send —
+	// a deterministic hash of the consumed outpoints and payload, so it
+	// survives a restart and represents a multi-input sweep as one id.
+	// It is the zero value for a dry-run preview (no intent is persisted).
+	IntentID PendingIntentID
+
 	// ActualAmountSat is the on-chain amount that will land at
 	// DestinationPkScript. In bounded mode this equals the
 	// TargetAmountSat the caller requested (the server stamps fee

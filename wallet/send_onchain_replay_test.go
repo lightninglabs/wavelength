@@ -247,6 +247,15 @@ func TestHandleSendOnChainPersistsIntentBeforeRegistration(t *testing.T) {
 	require.Equal(t, sendReplayDestScript, payload.DestinationPkScript)
 
 	require.Equal(t, 1, roundActor.registerCalls)
+
+	// The submitted response surfaces the persisted intent id so callers
+	// can use it as the operation's stable handle (issue #610).
+	walletResp, err := result.Unpack()
+	require.NoError(t, err)
+	sendResp, ok := walletResp.(*SendOnChainResponse)
+	require.True(t, ok, "response must be a SendOnChainResponse")
+	require.NotEqual(t, PendingIntentID{}, sendResp.IntentID)
+	require.Equal(t, persisted.ID, sendResp.IntentID)
 }
 
 // TestHandleSendOnChainRoundRejectionDeletesIntent verifies that a round
