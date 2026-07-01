@@ -27,16 +27,26 @@ const (
 )
 
 // newWalletLoaderOptions opens btcwallet through an OPFS-backed SQLite
-// walletdb implementation for browser builds.
-func newWalletLoaderOptions(cfg Config) ([]btcwallet.LoaderOption, error) {
+// walletdb implementation for browser builds. The cleanup func closes
+// the just-opened database handle: btcwallet's loader only closes
+// external databases it fully adopted, so a constructor failure after
+// this point would otherwise hold the EXCLUSIVE OPFS lock for the
+// page runtime lifetime.
+func newWalletLoaderOptions(cfg Config) ([]btcwallet.LoaderOption, func(),
+	error) {
+
 	db, err := openWASMWalletDB(cfg.DBDir)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+
+	cleanup := func() {
+		_ = db.Close()
 	}
 
 	return []btcwallet.LoaderOption{
 		btcwallet.LoaderWithExternalWalletDB(db),
-	}, nil
+	}, cleanup, nil
 }
 
 // walletExists reports whether a btcwallet database has already been

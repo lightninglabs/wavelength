@@ -5,6 +5,7 @@ package btcwbackend
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -88,6 +89,12 @@ func (n *NeutrinoService) Stop() error {
 type Wallet struct {
 	walletcore.Wallet
 }
+
+// ErrWalletNotFound mirrors the native sentinel for browser builds.
+var ErrWalletNotFound = errors.New("no wallet database found")
+
+// ErrWalletExists mirrors the native sentinel for browser builds.
+var ErrWalletExists = errors.New("wallet database already exists")
 
 // New reports that btcwallet is unavailable in browser builds.
 func New(Config) (*Wallet, error) {

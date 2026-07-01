@@ -163,7 +163,8 @@ func TestWalletWrongPasswordRetry(t *testing.T) {
 		),
 	)
 	require.NoError(t, err)
-	require.Error(t, w.Start())
+	err = w.Start()
+	require.ErrorContains(t, err, "invalid passphrase")
 
 	// The failed Start must have unwound cleanly: retrying with the
 	// correct password would block on the bbolt file lock if the

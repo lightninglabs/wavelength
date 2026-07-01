@@ -214,7 +214,19 @@ func NewWithNeutrino(cfg Config,
 		cfg.feeMaxTimeout(), hintDBPath, walletLog,
 	)
 	if err != nil {
+		// btcwallet.New opened the wallet database and Stop does
+		// not close it, so close it explicitly or the bbolt file
+		// lock stays held and every retry wedges on the loader
+		// timeout.
 		_ = btcw.Stop()
+		dbErr := btcw.InternalWallet().Database().Close()
+		if dbErr != nil {
+			walletLog.WarnS(
+				context.Background(),
+				"Failed to close btcwallet DB",
+				dbErr,
+			)
+		}
 
 		return nil, fmt.Errorf("create chain backend: %w", err)
 	}

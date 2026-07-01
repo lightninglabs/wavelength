@@ -155,7 +155,7 @@ func New(cfg Config) (*Wallet, error) {
 		walletcore.DefaultBlockCacheSize,
 	)
 
-	loaderOptions, err := newWalletLoaderOptions(cfg)
+	loaderOptions, loaderCleanup, err := newWalletLoaderOptions(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("create wallet loader options: %w", err)
 	}
@@ -172,6 +172,11 @@ func New(cfg Config) (*Wallet, error) {
 		LoaderOptions:  loaderOptions,
 	}, blockCache)
 	if err != nil {
+		// On failure the wallet never adopted the loader's
+		// database handle, so release it here (a no-op natively,
+		// an OPFS handle close in browser builds).
+		loaderCleanup()
+
 		return nil, fmt.Errorf("create btcwallet: %w", err)
 	}
 
@@ -237,7 +242,7 @@ func (w *Wallet) Start() error {
 	// in browser builds). This matters in particular for a wrong
 	// wallet passphrase, which surfaces from BtcWallet.Start below.
 	// Appended first so the reverse-order unwind runs it last, after
-	// every subsystem that may touch the database has stopped.
+	// the subsystems armed below have been rolled back.
 	rollback = append(rollback, func() {
 		err := w.BtcWallet.InternalWallet().Database().Close()
 		if err != nil {
