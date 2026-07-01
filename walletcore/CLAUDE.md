@@ -36,7 +36,11 @@ btcwallet.BtcWallet regardless of the underlying chain source.
   `addressForTaprootScript`, repopulating the filter without a second
   import attempt — covers the case where btcwallet already persisted the
   script but the in-memory filter started empty.
-- `WalletPassphrase` is shared across all wallet backends for both `PrivatePass` and `PublicPass`.
+- The user-supplied `Config.WalletPassword` is btcwallet's `PrivatePass`; the
+  static `PublicWalletPassphrase` constant covers only public (watch-only)
+  data. A nil `Config.Seed` opens an existing wallet database; a non-nil seed
+  creates a new one, and backends must refuse a seed when a database already
+  exists (btcwallet would silently ignore it).
 
 ## Deep Docs
 
