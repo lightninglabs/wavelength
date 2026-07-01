@@ -4515,7 +4515,12 @@ type WalletEntryProgress struct {
 	// confirmation_height is populated once the source records it.
 	ConfirmationHeight int32 `protobuf:"varint,5,opt,name=confirmation_height,json=confirmationHeight,proto3" json:"confirmation_height,omitempty"`
 	// vtxo_outpoint is populated when a swap observes the Ark vHTLC output.
-	VtxoOutpoint  string `protobuf:"bytes,6,opt,name=vtxo_outpoint,json=vtxoOutpoint,proto3" json:"vtxo_outpoint,omitempty"`
+	VtxoOutpoint string `protobuf:"bytes,6,opt,name=vtxo_outpoint,json=vtxoOutpoint,proto3" json:"vtxo_outpoint,omitempty"`
+	// preimage is the hex-encoded Lightning payment preimage once the swap
+	// revealed it. For a completed Lightning-backed send this is the proof of
+	// payment for the paid invoice (sha256(preimage) == payment_hash); it is
+	// empty until the preimage is durably known and for non-Lightning entries.
+	Preimage      string `protobuf:"bytes,7,opt,name=preimage,proto3" json:"preimage,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4588,6 +4593,13 @@ func (x *WalletEntryProgress) GetConfirmationHeight() int32 {
 func (x *WalletEntryProgress) GetVtxoOutpoint() string {
 	if x != nil {
 		return x.VtxoOutpoint
+	}
+	return ""
+}
+
+func (x *WalletEntryProgress) GetPreimage() string {
+	if x != nil {
+		return x.Preimage
 	}
 	return ""
 }
@@ -4889,7 +4901,7 @@ const file_wallet_proto_rawDesc = "" +
 	"\x15OnchainAddressRequest\x12\x18\n" +
 	"\aaddress\x18\x01 \x01(\tR\aaddress\"-\n" +
 	"\x11ArkAddressRequest\x12\x18\n" +
-	"\aaddress\x18\x01 \x01(\tR\aaddress\"\xf8\x01\n" +
+	"\aaddress\x18\x01 \x01(\tR\aaddress\"\x94\x02\n" +
 	"\x13WalletEntryProgress\x123\n" +
 	"\x05phase\x18\x01 \x01(\x0e2\x1d.walletdkrpc.WalletEntryPhaseR\x05phase\x12\x1f\n" +
 	"\vphase_label\x18\x02 \x01(\tR\n" +
@@ -4897,7 +4909,8 @@ const file_wallet_proto_rawDesc = "" +
 	"\fpayment_hash\x18\x03 \x01(\tR\vpaymentHash\x12\x12\n" +
 	"\x04txid\x18\x04 \x01(\tR\x04txid\x12/\n" +
 	"\x13confirmation_height\x18\x05 \x01(\x05R\x12confirmationHeight\x12#\n" +
-	"\rvtxo_outpoint\x18\x06 \x01(\tR\fvtxoOutpoint*~\n" +
+	"\rvtxo_outpoint\x18\x06 \x01(\tR\fvtxoOutpoint\x12\x1a\n" +
+	"\bpreimage\x18\a \x01(\tR\bpreimage*~\n" +
 	"\tEntryKind\x12\x1a\n" +
 	"\x16ENTRY_KIND_UNSPECIFIED\x10\x00\x12\x13\n" +
 	"\x0fENTRY_KIND_SEND\x10\x01\x12\x13\n" +

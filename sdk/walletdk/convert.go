@@ -326,6 +326,7 @@ func entryProgressFromProto(
 		Txid:               progress.GetTxid(),
 		ConfirmationHeight: progress.GetConfirmationHeight(),
 		VTXOOutpoint:       progress.GetVtxoOutpoint(),
+		Preimage:           progress.GetPreimage(),
 	}
 }
 

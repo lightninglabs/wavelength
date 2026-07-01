@@ -539,6 +539,33 @@ func TestSwapEntryFromSummaryRequestMetadata(t *testing.T) {
 	require.Empty(t, req.GetInvoice())
 }
 
+// TestSwapEntryFromSummaryPreimage confirms the Lightning payment preimage
+// rides from the swap summary onto the entry's progress once durably known,
+// and stays empty while the send is still in flight. The preimage is the
+// L402 proof-of-payment surfaced on a settled Lightning send.
+func TestSwapEntryFromSummaryPreimage(t *testing.T) {
+	t.Parallel()
+
+	// A completed pay swap with a revealed preimage carries it onto the
+	// progress sub-object so a settle watcher can read it off the row.
+	settled := swapEntryFromSummary(&swapclientrpc.SwapSummary{
+		PaymentHash: "ph",
+		Direction:   swapclientrpc.SwapDirection_SWAP_DIRECTION_PAY,
+		State:       swapclientrpc.SwapState_SWAP_STATE_COMPLETED,
+		Preimage:    "deadbeef",
+	}, "", "", walletdkrpc.EntryKind_ENTRY_KIND_SEND)
+	require.Equal(t, "deadbeef", settled.GetProgress().GetPreimage())
+
+	// A still-pending send has no preimage yet, so the field stays empty.
+	pending := swapEntryFromSummary(&swapclientrpc.SwapSummary{
+		PaymentHash: "ph",
+		Direction:   swapclientrpc.SwapDirection_SWAP_DIRECTION_PAY,
+		State:       swapclientrpc.SwapState_SWAP_STATE_WAITING_FOR_CLAIM,
+		Pending:     true,
+	}, "", "", walletdkrpc.EntryKind_ENTRY_KIND_SEND)
+	require.Empty(t, pending.GetProgress().GetPreimage())
+}
+
 // TestSwapEntryFromSummaryNilSafe confirms a nil input does not
 // panic and returns a usable (empty) WalletEntry.
 func TestSwapEntryFromSummaryNilSafe(t *testing.T) {
