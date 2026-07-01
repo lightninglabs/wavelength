@@ -890,6 +890,21 @@ func (a *TxBroadcasterActor) handleBumpNow(ctx context.Context,
 
 	bumpedState, _ := entry.currentTxState()
 
+	// A submission that produced no CPFP child did not actually bump
+	// anything: the ephemeral path's hail-mary fallback re-broadcasts the
+	// parent directly when child setup fails, and reporting that as a
+	// successful bump would hide the failure from the operator. Report the
+	// honest no-op instead; the tracked tx remains live either way.
+	if result.ChildTxid == nil {
+		return &BumpNowResp{
+			Txid:   req.Txid,
+			State:  bumpedState,
+			Bumped: false,
+			Reason: "cpfp child unavailable; parent re-broadcast " +
+				"directly without a fee bump",
+		}, nil
+	}
+
 	// Surface the rate the package actually targets so a silently clamped
 	// operator request is visible: Clamped is true when the supplied target
 	// exceeded the broadcaster's ceiling and was reduced.

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
@@ -168,6 +169,93 @@ func TestTargetOrEstimatedFeeRate(t *testing.T) {
 	rate, err = b.targetOrEstimatedFeeRate(t.Context(), 999)
 	require.NoError(t, err)
 	require.EqualValues(t, 50, rate)
+}
+
+// TestBuildCPFPChildCreditsAnchorValue asserts the funded anchor's value is
+// credited into the child's change output rather than silently burned as
+// extra miner fee: the child's effective fee (inputs minus outputs) must
+// equal exactly the childFee the caller asked for.
+func TestBuildCPFPChildCreditsAnchorValue(t *testing.T) {
+	t.Parallel()
+
+	const (
+		anchorValue = int64(330)
+		feeInputVal = int64(50_000)
+		childFee    = btcutil.Amount(1_000)
+	)
+
+	parent := makeFundedAnchorTx(20, anchorValue)
+	anchorIdx := len(parent.TxOut) - 1
+	anchorOutpoint := wire.OutPoint{
+		Hash:  parent.TxHash(),
+		Index: uint32(anchorIdx),
+	}
+
+	feeInput := &FeeInput{
+		Outpoint: wire.OutPoint{
+			Hash: chainhash.Hash{
+				0xfe,
+			},
+			Index: 0,
+		},
+		Output: &wire.TxOut{
+			Value:    feeInputVal,
+			PkScript: dummyChildP2WKHScript(),
+		},
+		Confirmed: true,
+	}
+
+	child, err := BuildCPFPChild(
+		parent.Version, anchorOutpoint, parent.TxOut[anchorIdx],
+		feeInput, dummyChildP2WKHScript(), childFee,
+	)
+	require.NoError(t, err)
+	require.Len(t, child.TxOut, 1)
+
+	// Effective fee = value in - value out. Both inputs carry value: the
+	// funded anchor and the wallet fee input.
+	valueIn := anchorValue + feeInputVal
+	effectiveFee := valueIn - child.TxOut[0].Value
+	require.EqualValues(
+		t, childFee, effectiveFee,
+		"anchor value must be credited to change, not burned as fee",
+	)
+
+	// The change explicitly includes the anchor's value.
+	require.EqualValues(
+		t, feeInputVal+anchorValue-int64(childFee),
+		child.TxOut[0].Value,
+	)
+}
+
+// dummyChildP2WKHScript returns a syntactically valid P2WKH pkScript for
+// child-construction tests.
+func dummyChildP2WKHScript() []byte {
+	return append([]byte{txscript.OP_0, 0x14}, make([]byte, 20)...)
+}
+
+// TestChildFeeInputTarget asserts the wallet fee-input selection target is the
+// child's own need: fee plus dust buffer, net of the anchor value it recovers,
+// floored at one satoshi.
+func TestChildFeeInputTarget(t *testing.T) {
+	t.Parallel()
+
+	// Ephemeral anchor (zero value): target is fee + dust, the historical
+	// behaviour.
+	require.EqualValues(
+		t, 1_000+DustLimit, childFeeInputTarget(1_000, 0),
+	)
+
+	// Funded anchor: its value offsets the wallet's share.
+	require.EqualValues(
+		t, 1_000+DustLimit-330, childFeeInputTarget(1_000, 330),
+	)
+
+	// A large anchor covering the whole child fee still requires some
+	// confirmed wallet input, so the target floors at one satoshi.
+	require.EqualValues(
+		t, 1, childFeeInputTarget(500, 10_000),
+	)
 }
 
 // failingPkScriptWallet wraps fakeWallet so CPFP-child setup fails at the
