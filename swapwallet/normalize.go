@@ -494,15 +494,25 @@ func paginateVTXOs(vtxos []*walletdkrpc.WalletVTXO, offset,
 }
 
 // leaveEntryStub builds the initial WalletEntry returned by Send when the
-// caller targets an onchain destination. The id is populated with the first
-// queued outpoint so the row is correlatable; downstream history merges fill
-// in the broadcast txid once the leave registry produces one.
-func leaveEntryStub(queuedOutpoints []string, destination string, amtSat int64,
+// caller targets an onchain destination. The id is the daemon's stable
+// leave-job id (a deterministic hash of the consumed outpoints and payload),
+// so the row keeps one durable handle from initiation through confirmation,
+// across restarts, and represents a multi-input sweep as a single row. When
+// the daemon does not return one, it falls back to the first queued outpoint
+// (the pre-#610 behavior). The first consumed outpoint is retained in
+// vtxo_outpoint so the forfeit-driven completion can still correlate the row.
+func leaveEntryStub(leaveJobID string, queuedOutpoints []string,
+	destination string, amtSat int64,
 	note string) *walletdkrpc.WalletEntry {
 
-	id := ""
+	var firstOutpoint string
 	if len(queuedOutpoints) > 0 {
-		id = queuedOutpoints[0]
+		firstOutpoint = queuedOutpoints[0]
+	}
+
+	id := leaveJobID
+	if id == "" {
+		id = firstOutpoint
 	}
 	createdAt := nowUnix()
 
@@ -517,8 +527,9 @@ func leaveEntryStub(queuedOutpoints []string, destination string, amtSat int64,
 		Note:          note,
 		Request:       requestFromOnchainAddress(destination),
 		Progress: &walletdkrpc.WalletEntryProgress{
-			Phase:      walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_REQUEST_CREATED,
-			PhaseLabel: "request_created",
+			Phase:        walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_REQUEST_CREATED,
+			PhaseLabel:   "request_created",
+			VtxoOutpoint: firstOutpoint,
 		},
 	}
 }

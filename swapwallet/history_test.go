@@ -1186,7 +1186,7 @@ func TestHistoryIncludesWalletLocalPendingExit(t *testing.T) {
 	}
 
 	pending := leaveEntryStub(
-		[]string{
+		"", []string{
 			"leave-outpoint:1",
 		}, "bcrt1qdest",
 		50_000, "user note",
@@ -1241,7 +1241,7 @@ func TestHistoryCompletesWalletLocalExitWhenVTXOForfeited(t *testing.T) {
 	}
 
 	pending := leaveEntryStub(
-		[]string{
+		"", []string{
 			"leave-outpoint:1",
 		}, "bcrt1qdest",
 		50_000, "user note",
@@ -1312,7 +1312,7 @@ func TestHistoryKeepsWalletLocalExitPendingForUnmatchedForfeitedVTXO(
 	}
 
 	pending := leaveEntryStub(
-		[]string{
+		"", []string{
 			"leave-outpoint:1",
 		}, "bcrt1qdest",
 		50_000, "user note",
@@ -1369,7 +1369,7 @@ func TestHistoryScansForfeitedVTXOsOnceForWalletLocalExits(t *testing.T) {
 
 	h.runtime.trackPendingEntryWithoutTimeout(
 		leaveEntryStub(
-			[]string{
+			"", []string{
 				"leave-outpoint:1",
 			}, "bcrt1qdest",
 			50_000, "first note",
@@ -1377,7 +1377,7 @@ func TestHistoryScansForfeitedVTXOsOnceForWalletLocalExits(t *testing.T) {
 	)
 	h.runtime.trackPendingEntryWithoutTimeout(
 		leaveEntryStub(
-			[]string{
+			"", []string{
 				"other-leave-outpoint:0",
 			}, "bcrt1qdest",
 			25_000, "second note",
@@ -1471,7 +1471,7 @@ func TestHistoryExitKindFilterGatesWalletLocalPendingRows(t *testing.T) {
 
 	h.runtime.trackPendingEntryWithoutTimeout(
 		leaveEntryStub(
-			[]string{
+			"", []string{
 				"leave-outpoint:1",
 			}, "bcrt1qdest",
 			50_000, "",
@@ -1922,4 +1922,43 @@ func TestHistoryDepositCompletesAfterBoarding(t *testing.T) {
 		entry.GetStatus(),
 	)
 	require.Equal(t, "confirmed", entry.GetProgress().GetPhaseLabel())
+}
+
+// TestDecorateCooperativeLeaveMatchesRetainedOutpoint verifies that after #610
+// (row keyed by the stable leave-job id), the forfeit-driven completion
+// correlates on the retained consumed outpoint in vtxo_outpoint, not the id.
+func TestDecorateCooperativeLeaveMatchesRetainedOutpoint(t *testing.T) {
+	t.Parallel()
+
+	newEntry := func() *walletdkrpc.WalletEntry {
+		return &walletdkrpc.WalletEntry{
+			Id:     "sendjob-abc",
+			Kind:   walletdkrpc.EntryKind_ENTRY_KIND_EXIT,
+			Status: walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+			Progress: &walletdkrpc.WalletEntryProgress{
+				VtxoOutpoint: "abc:0",
+			},
+		}
+	}
+
+	// Forfeiting a set that contains the id (but not the retained
+	// outpoint) must NOT complete the row.
+	idOnly := newEntry()
+	decorateCooperativeLeaveEntry(
+		idOnly, map[string]struct{}{"sendjob-abc": {}},
+	)
+	require.Equal(
+		t, walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		idOnly.GetStatus(),
+	)
+
+	// Forfeiting the retained outpoint flips it to COMPLETE.
+	byOutpoint := newEntry()
+	decorateCooperativeLeaveEntry(
+		byOutpoint, map[string]struct{}{"abc:0": {}},
+	)
+	require.Equal(
+		t, walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		byOutpoint.GetStatus(),
+	)
 }

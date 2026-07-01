@@ -804,14 +804,20 @@ func decorateCooperativeLeaveEntry(entry *walletdkrpc.WalletEntry,
 	if forfeitedOutpoints == nil {
 		return
 	}
-	if _, ok := forfeitedOutpoints[entry.GetId()]; !ok {
+
+	// The row is now keyed by the stable leave-job id, so the forfeit
+	// correlation uses the retained consumed outpoint (vtxo_outpoint), not
+	// the id. Fall back to the id for legacy rows still keyed by the
+	// outpoint. A matching forfeited VTXO means the round that consumed the
+	// queued leave input confirmed.
+	outpoint := entry.GetProgress().GetVtxoOutpoint()
+	if outpoint == "" {
+		outpoint = entry.GetId()
+	}
+	if _, ok := forfeitedOutpoints[outpoint]; !ok {
 		return
 	}
 
-	// Cooperative leave rows are process-local in v1, so the source
-	// outpoint is the only stable link to daemon state. A matching
-	// forfeited VTXO means the round that consumed the queued leave
-	// input confirmed.
 	applyCooperativeLeaveForfeited(entry)
 }
 
