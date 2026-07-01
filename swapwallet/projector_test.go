@@ -54,6 +54,19 @@ func (f *fakeActivityProjector) count() int {
 	return len(f.projected)
 }
 
+// ids returns the set of canonical ids the fake has been asked to project.
+func (f *fakeActivityProjector) ids() map[string]bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	out := make(map[string]bool, len(f.projected))
+	for _, p := range f.projected {
+		out[p.CanonicalID] = true
+	}
+
+	return out
+}
+
 // sampleWalletEntry builds a fully populated SEND WalletEntry fixture.
 func sampleWalletEntry() *walletdkrpc.WalletEntry {
 	return &walletdkrpc.WalletEntry{

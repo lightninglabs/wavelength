@@ -297,10 +297,11 @@ func (r *router) sendCreditInvoiceIntent(ctx context.Context,
 	// Emit a pending entry keyed by the payment hash. A mixed pay's swap
 	// session updates this same row through the monitor loop; a credit-only
 	// pay completes server-side and the row is reconciled from credit
-	// state.
+	// state. Project off the RPC context so a CLI disconnect cannot cancel
+	// the write of an already-accepted pay.
 	entry := creditPayEntry(intent, paymentHash)
 	r.runtime.trackPendingEntryWithoutTimeout(entry)
-	r.runtime.emit(entry)
+	r.runtime.projectAndEmit(context.WithoutCancel(ctx), entry)
 
 	return &walletdkrpc.SendResponse{
 		Entry:           entry,
