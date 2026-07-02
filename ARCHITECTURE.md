@@ -28,6 +28,8 @@ package may import from a higher layer.
 | [`lib/recovery`](lib/recovery/) | Immutable recovery proof graph, session state machine, TLV codec for unilateral exit |
 | [`unrollplan`](unrollplan/) | Pure dependency-resolution planner driving unilateral-exit broadcast/sweep ordering |
 | [`vhtlcrecovery`](vhtlcrecovery/) | Durable control-plane types for vHTLC on-chain recovery jobs (action, state, script parameters, swap linkage) |
+| [`coinselect`](coinselect/) | Coin-type-agnostic, dependency-free coin-selection algorithm shared by the VTXO manager and swap wallet |
+| [`credit`](credit/) | Client-side "credit" subsystem: durable per-operation actors for borrowing/receiving/auto-redeeming against a server-managed Lightning credit line |
 
 ### Layer 2: Infrastructure (Chain, Storage, Messaging)
 
@@ -36,6 +38,8 @@ package may import from a higher layer.
 | [`baselib`](baselib/) | Actor framework (`baselib/actor`) and protofsm state machine engine (`baselib/protofsm`) |
 | [`chainsource`](chainsource/) | `ChainBackend` interface: fee estimation, block/conf/spend notifications |
 | [`chainbackends`](chainbackends/) | LND-backed `ChainBackend` implementation plus lndclient adapters (`TxBroadcaster`, `PackageSubmitter`) |
+| [`chainfees`](chainfees/) | `chainfee.Estimator` implementations: mempool.space HTTP client, lndclient WalletKit proxy, and a lowest-live-rate selector combinator |
+| [`rpcauth`](rpcauth/) | Transport-only macaroon load/serialize and TLS cert/key/credential helpers for gRPC/HTTP clients and servers (no permission/entity scoping — that lives in `darepod`) |
 | [`chain`](chain/) | Bitcoind RPC utilities (package relay, `SubmitPackage`) |
 | [`txconfirm`](txconfirm/) | Generic "broadcast + CPFP fee-bump + notify on confirm" actor with per-parent fee-input reservations and BIP-125 Rule 3/4 enforcement |
 | [`unroll`](unroll/) | Durable per-target unilateral-exit actor + thin registry: owns proof assembly, materialization, CSV maturity, final sweep build, persist-before-broadcast, and control-plane record persistence |
@@ -63,6 +67,8 @@ package may import from a higher layer.
 | [`sdk/walletdk`](sdk/walletdk/) | Wallet-shaped SDK facade for host apps: embeds the daemon in-process, dials it over a private bufconn transport, exposes typed methods for the seven core wallet verbs (create, unlock, send, recv, list, balance, exit). The highest-level layer in the stack; wraps `walletdkrpc.WalletService`. Wallet RPC methods gated behind `walletdkrpc` (which transitively requires `swapruntime`) |
 | [`swapwallet`](swapwallet/) | Optional daemon-side `walletdkrpc.WalletService` implementation (build tags `walletdkrpc swapruntime`): composes the swap subsystem, cooperative leave, boarding, ledger, and unilateral-exit registry behind one flat, swap-vocabulary-free wallet API |
 | [`swapclientserver`](swapclientserver/) | Optional daemon-side swap subserver (build tag `swapruntime`): translates `swapclientrpc` RPCs into `sdk/swaps` operations and manages the daemon-local worker registry |
+| [`sdk/walletdk/mobile`](sdk/walletdk/mobile/) | gomobile-safe JSON facade over `sdk/walletdk` for Android/iOS/WASM hosts without a Go runtime |
+| [`cmd/walletdk-wasm`](cmd/walletdk-wasm/) | Browser entry point exposing `sdk/walletdk/mobile` to JavaScript via `syscall/js`; the whole daemon/swap/OOR stack runs in-process in the browser VM |
 | [`cmd/darepod`](cmd/darepod/) | Daemon entry point |
 | [`cmd/darepocli`](cmd/darepocli/) | CLI client |
 | [`timeout`](timeout/) | Generic timeout scheduling actor |
@@ -85,6 +91,7 @@ package may import from a higher layer.
 | [`internal/actortest`](internal/actortest/) | Durable actor integration tests with real DB backends |
 | [`internal/testutils`](internal/testutils/) | Deterministic key/signature generation for tests |
 | [`internal/indexerlimits`](internal/indexerlimits/) | Client-side bounds for indexer pagination cursors (defense-in-depth against misbehaving remotes) |
+| [`internal/sqlbase`](internal/sqlbase/) | WASM-only `walletdb.DB` implementation backing wallet storage with `database/sql` when CGO-based bbolt/SQLite drivers are unavailable |
 | [`rules`](rules/) | ast-grep linting rules for code style enforcement |
 | [`tools`](tools/) | Development tool dependencies (protoc plugins, sqlc) |
 | [`cmd/protoc-gen-mailboxrpc`](cmd/protoc-gen-mailboxrpc/) | `protoc` plugin generating typed `mailbox/rpc` client/server stubs from `.proto` service definitions |

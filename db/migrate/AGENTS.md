@@ -33,6 +33,15 @@ both the main schema (`db/`) and the actor-delivery sub-schema
   without duplicate SQL files.
 - `migrationLogger` — Adapts `btclog.Logger` to the golang-migrate logger
   interface with level-aware routing.
+- `newMigrationDriver(db, backend, migrationsTable)` — Build-tag-selected
+  driver constructor with two implementations:
+  - `driver_native.go` (`!js || !wasm`): wraps golang-migrate's built-in
+    `sqlite`/`postgres` database drivers directly.
+  - `driver_wasm.go` (`js && wasm`): dispatches SQLite to
+    `wasmSQLiteDriver` (`sqlite_wasm_driver.go`), a hand-rolled
+    `database.Driver` implementation, since the CGO-based golang-migrate
+    SQLite driver is unavailable under `GOOS=js`; Postgres is
+    unsupported in the wasm build.
 
 ## Relationships
 

@@ -29,6 +29,15 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
 - `receiveSessionAdapter` — Adds method accessors over
   `sdk/swaps.ReceiveSession` so both production code and tests share the same
   interface without exposing struct fields.
+- `creditServerBridge` / `creditDaemonBridge` (`credit_bridge.go`) — Adapters
+  satisfying `credit.CreditServer` and `credit.CreditDaemon` respectively.
+  `creditServerBridge` routes `CreateCredit`/`ListCredits`/`RedeemCredit`/
+  `StartPay` back through the same `swapClientService` gRPC handlers the
+  credit actor's underlying payment hash dedup and worker registry, so no
+  swap logic is duplicated for the credit path. `creditDaemonBridge` exposes
+  daemon-level primitives (`IdentityPubKey`, `DustLimit`, `SendOOR`,
+  `AllocateReceiveScript`, `FindLiveVTXOByPkScript`) the credit durable actor
+  needs but that don't belong on the swap RPC surface.
 - `Register(ctx, grpcServer, rpcServer, cfg)` — Top-level entry point called
   by a `swapruntime`-tagged `darepod` binary. Opens the daemon-owned SQLite
   swap store, dials `swapdk-server`, creates an in-process Ark SDK facade over
@@ -36,35 +45,48 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
   `MailboxOutSwapEventReceiver` (empty mailbox ID — receiver derives the
   per-swap mailbox from client identity + payment hash) on the
   `SwapClient` so out-swap HTLC events flow over the mailbox transport,
-  registers the gRPC subserver, calls `resumePending`, and returns a cleanup
+  publishes `cfg.Swap.Backend`/`CreditServer`/`CreditDaemon` so the daemon's
+  `credit` durable-actor subsystem and the `walletdkrpc` registrar can reach
+  this subserver without a gRPC hop, registers the gRPC subserver, calls
+  `resumePending` (unless `cfg.Swap.SuppressResume`), and returns a cleanup
   function.
 
 ## RPC Methods
 
 | RPC | Description |
 |-----|-------------|
+| `QuotePay` | Preview a pay swap (fee, credit eligibility) without starting a worker or persisting state |
 | `StartPay` | Persist a pay swap, start or reuse its daemon worker, return summary |
 | `StartReceive` | Persist a receive swap, start or reuse its daemon worker, return invoice + summary |
 | `ResumeSwap` | Manual wake-up for a persisted swap (idempotent if worker already active) |
 | `ListSwaps` | List persisted swap summaries; optionally filter to pending only |
 | `GetSwap` | Fetch one persisted summary by hex payment hash |
 | `SubscribeSwaps` | Stream coarse summary updates; optionally emit existing rows first |
+| `CreateCredit` | Create a credit operation (Lightning-receive or Ark-topup funded) for the `credit` subsystem |
+| `RedeemCredit` | Debit reserved credit and route the redemption out via OOR |
+| `ListCredits` | Snapshot of finalized/reserved/available credit balances and in-flight operations |
 
 ## Relationships
 
 - **Depends on**: `sdk/swaps` (swap FSM, `SwapClient`, `Store`, session
   types), `sdk/ark` (`WrapDaemonServer`, in-process Ark facade), `darepod`
   (`RPCServer`, `Config`, `SwapConfig`, `SwapSubsystem`), `rpc/swapclientrpc`
-  (generated gRPC stubs + proto types).
+  (generated gRPC stubs + proto types), `credit` (`CreditServer`/
+  `CreditDaemon` interfaces the bridges implement, plus request/state enum
+  mapping in `credit_bridge.go`).
 - **Depended on by**: `cmd/darepod` (calls `swapclientserver.Register` when
   built with the `swapruntime` tag), `cmd/darepocli/darepoclicommands`
-  (swap RPC CLI commands under `swapruntime`).
+  (swap RPC CLI commands under `swapruntime`), `sdk/walletdk` (registers the
+  subserver under the `walletdkrpc`+`swapruntime` build).
 - **Sends**: daemon-root context to `sdk/swaps` session workers via
   `ResumePayViaLightning` / `ResumeReceiveViaLightning` — CLI disconnect does
   not cancel the worker because the subserver uses `rootCtx`, not the RPC
   context.
-- **Receives**: ← API: `StartPay`, `StartReceive`, `ResumeSwap`, `ListSwaps`,
-  `GetSwap`, `SubscribeSwaps` from gRPC callers.
+- **Receives**: ← API: `QuotePay`, `StartPay`, `StartReceive`, `ResumeSwap`,
+  `ListSwaps`, `GetSwap`, `SubscribeSwaps`, `CreateCredit`, `RedeemCredit`,
+  `ListCredits` from gRPC callers; ← `credit` durable actor (in-process, via
+  `creditServerBridge`): `CreateCredit`, `ListCredits`, `RedeemCredit`,
+  `StartPay`.
 
 ## Invariants
 
@@ -86,6 +108,12 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
 - `idempotency_key` on `StartPay` / `StartReceive` is explicitly reserved and
   returns `Unimplemented` to guard against accidental duplicate-start
   assumptions.
+- `QuotePay`/`StartPay` skip the VTXO-minimum preflight check only when
+  `max_credit_sat > 0`: a credit-eligible pay can legitimately fund a
+  sub-dust amount through the credit subsystem instead of a vHTLC, and the
+  server credit quote (not this preflight) is the authority on whether
+  credits cover it. A plain Lightning pay (`max_credit_sat == 0`) still
+  must clear the operator's VTXO floor.
 - `SetOutSwapEventReceiver` must run before any receive worker is started:
   `SwapClient` captures the receiver into the per-swap worker at start time,
   so a late install would leave already-running workers using whatever

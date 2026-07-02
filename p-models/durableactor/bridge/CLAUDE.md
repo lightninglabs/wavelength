@@ -14,10 +14,10 @@ than the P checker.
 - `MailboxTrace` — A named sequence of mailbox operations loaded from a JSON
   trace file (`trace_id`, `description`, `events`).
 - `MailboxTraceEvent` — One store operation in a trace: `op` (enqueue/lease/
-  nack/ack/commit/dead_letter/expire_leases), plus op-specific fields for id,
-  mailbox_id, lease_token, expected outcome, etc. `ExpectDuplicate` asserts
-  idempotent no-op enqueue semantics. `ExpectProcessed` verifies the dedup
-  mark after a fenced commit.
+  peek/nack/nack_by_id/ack/ack_by_id/commit/dead_letter/expire_leases), plus
+  op-specific fields for id, mailbox_id, lease_token, expected outcome, etc.
+  `ExpectDuplicate` asserts idempotent no-op enqueue semantics.
+  `ExpectProcessed` verifies the dedup mark after a fenced commit.
 - `ParseMailboxTrace(path)` — Parses one trace file from disk.
 - `ParseMailboxTraceDir(dir)` — Parses all `*.json` trace files in a directory,
   sorted by `TraceID`.

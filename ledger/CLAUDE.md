@@ -121,8 +121,9 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/ledge
   service keys), `lnd/clock` (injectable time source).
 - **Depended on by**: `db` (provides `LedgerStoreDB`,
   `UTXOAuditStoreDB`), `darepod` (wires actor; exposes
-  `LedgerStoreDB` to RPC), `round` / `oor` / `vtxo` / `wallet` (hold
-  `fn.Option[ledger.Sink]` and Tell on hot-path transitions).
+  `LedgerStoreDB` to RPC), `round` / `oor` / `vtxo` / `wallet` /
+  `unroll` (hold `fn.Option[ledger.Sink]` and Tell on hot-path
+  transitions).
 - **Receives** (via `Sink` Tell):
   - ← `round` (origin-routed on `VTXOCreatedNotification`):
     `VTXOReceivedMsg{SourceRoundBoarding}`, paired `VTXOSentMsg` +

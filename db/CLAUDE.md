@@ -71,7 +71,27 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   safety bounds enforced during `DeserializeTree`.
 - `resolveInputPackage` / `loadPackageBundleBySessionID` — two-stage
   OOR ancestry resolver (`oor_unroll_resolver.go`).
-- `LatestMigrationVersion = 21` — current schema version.
+- `ActivityStore` / `ActivityPersistenceStore` — canonical activity-log
+  store backing the wallet activity feed:
+  `UpsertActivityEntry`/`GetActivityEntry`/`ListActivityEntries` against
+  the current-state `activity_entries` projection, plus
+  `AppendActivityEvent`/`PullActivityEvents` against the append-only
+  `activity_events` transition log used by a resumable `SubscribeWallet`.
+  `ActivityProjection` is the projector's input snapshot; empty BLOB
+  fields must be passed as nil, never a zero-length slice, to avoid the
+  Postgres BYTEA `x''` pitfall.
+- `CreditOperationStoreDB` / `CreditOperationRecord` — durable store for
+  client-side credit orchestration (pay/receive/redeem). The
+  per-operation actor reads/writes `CreditOperationRecord` directly in
+  its Read/Stage/Commit phases instead of using the generic
+  actor-delivery `fsm_checkpoints` blob; the server credit ledger
+  remains authoritative for the money. `CreditOpKind`
+  (`Pay`/`Receive`/`Redeem`) and `CreditOpStatus`
+  (`Pending`/`Completed`/`Failed`, `IsTerminal()`) are append-only enums.
+- `RootKeyStore` / `MacaroonRootKeyStore` — implements
+  `bakery.RootKeyStore.Get` against the `macaroons` table for
+  darepod's RPC macaroon authentication.
+- `LatestMigrationVersion = 24` — current schema version.
 - `PendingIntentPersistenceStore` — implements `wallet.PendingIntentStore`,
   the persistence half of the generic restart-safe intent outbox (header
   `pending_intents` + per-kind detail tables + `pending_intent_anchors`).
@@ -104,8 +124,10 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   (generated query layer), `db/actordelivery` (actor delivery
   persistence), `ledger` (interfaces + domain types), `wallet`
   (`BoardingStore` interface + domain types).
-- **Depended on by**: `round`, `vtxo`, `oor`, `wallet` (storage
-  interfaces), `darepod` (wires DB backends).
+- **Depended on by**: `round`, `vtxo`, `wallet` (storage interfaces,
+  dependency-inverted: `db` implements interfaces those packages
+  define), `oor`, `credit`, `unroll`, `sdk/swaps`, `swapwallet`
+  (direct importers), `darepod` (wires DB backends).
 
 ## Invariants
 
@@ -140,6 +162,20 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
 
 ### Migration notes
 
+- `000024_macaroons` — adds the `macaroons` table (`id BLOB PRIMARY KEY`,
+  `root_key BLOB NOT NULL`) backing darepod's RPC macaroon root-key store.
+- `000023_canonical_activity_log` — adds `activity_kinds` /
+  `activity_statuses` lookup tables mirroring the wire enums `EntryKind` /
+  `EntryStatus` one-to-one (id column equals the proto enum integer, so
+  FKs reject any value that isn't a defined wire enum), the current-state
+  `activity_entries` projection, and the append-only `activity_events`
+  transition log ordered by a monotonic `event_seq`.
+- `000022_credit_operations` — adds `credit_operations`, the single
+  source of truth for one client-side credit orchestration op (pay /
+  receive / redeem). The credit registry actor spawns one durable
+  per-operation actor per non-terminal row and restores them on boot;
+  `snapshot_data` carries the opaque resume material that nothing
+  queries by.
 - `000020_accounting_wallet_sweeps` — adds `wallet_clearing`,
   `wallet_utxo_spent`, and `wallet_sweep_transfer` for sweep
   accounting. Rebuilds the round idempotency index so keyed

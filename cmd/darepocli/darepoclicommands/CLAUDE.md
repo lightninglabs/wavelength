@@ -10,12 +10,13 @@ embed the same command tree.
 
 The CLI surface is split into three tiers:
 
-1. **Top-level wallet verbs (implicit, no parent)** — the seven everyday
-   commands that map 1:1 to what a user does day-to-day. All seven are
+1. **Top-level wallet verbs (implicit, no parent)** — the everyday
+   commands that map 1:1 to what a user does day-to-day. All are
    walletdkrpc-backed.
 2. **Daemon introspection at root** — getinfo, schema, mcp, dev.
-3. **Advanced subtrees (`ark`, `swap`)** — raw daemonrpc/swapclientrpc
-   commands for power users and operator runbooks.
+3. **Advanced subtrees (`ark`, `recovery`, `swap`)** — raw
+   daemonrpc/swapclientrpc commands for power users and operator
+   runbooks.
 
 ### Top-level wallet verbs
 
@@ -27,8 +28,10 @@ The CLI surface is split into three tiers:
 | `recv` | `walletdkrpc.Recv` / `walletdkrpc.Deposit` | Inbound. `--offchain` (default) returns a Lightning invoice; `--onchain` returns a boarding address |
 | `activity` | `walletdkrpc.List` | Unified wallet activity view. Defaults to table output; `--format json` returns structured JSON. `--pending` and `--kind` narrow rows |
 | `balance` | `walletdkrpc.Balance` | Flat balance (confirmed_sat, pending_in_sat, pending_out_sat) |
-| `exit --outpoint TXID:VOUT` | `walletdkrpc.Exit` | Trigger a unilateral exit (proxies Unroll) |
-| `exit status --outpoint TXID:VOUT` | `walletdkrpc.ExitStatus` | Query an exit job's status (proxies GetUnrollStatus) |
+| `exit --outpoint TXID:VOUT` | `walletdkrpc.Exit` | Cooperative leave by default; unilateral unroll only when `--force-unroll-ack` matches the exact ack string |
+| `exit status --outpoint TXID:VOUT` | `walletdkrpc.ExitStatus` | Query a forced-unroll job's status (proxies GetUnrollStatus) |
+| `exit plan --outpoint TXID:VOUT` | `walletdkrpc.GetExitPlan` | Preview backing-wallet funding readiness for one or more outpoints without dispatching an exit |
+| `wallet-sweep --destination ADDR` | `walletdkrpc.SweepWallet` | Preview, or with `--broadcast` publish, a sweep of confirmed backing-wallet UTXOs (excludes boarding outputs, see `ark sweep`) |
 
 ### Daemon introspection
 
@@ -55,6 +58,19 @@ who want direct access.
 | `ark fees {estimate,history}` | `EstimateFee` / `GetFeeHistory` | Fee estimation and history |
 | `ark listtransactions` | `ListTransactions` | Raw paginated transaction history |
 | `ark send {inround,oor}` | `SendVTXO` / `SendOOR` | Raw in-round / OOR send (superseded by `send` for the wallet shape) |
+
+### `recovery.*` advanced commands
+
+Manual escalation/inspection for daemon-owned vHTLC recovery rows. The
+swap FSM arms and cancels recovery automatically in the normal case;
+this subtree is for operator intervention and debugging.
+
+| Command | RPC | Description |
+|---------|-----|-------------|
+| `recovery list` | `ListVHTLCRecoveries` | List recovery rows (ARMED rows are dormant unless escalated) |
+| `recovery status <id>` | `GetVHTLCRecoveryStatus` | Show one recovery row and its unroll status |
+| `recovery escalate <id>` | `EscalateVHTLCRecovery` | Start on-chain recovery for an armed vHTLC; requires `--yes` on non-interactive stdin |
+| `recovery cancel <id>` | `CancelVHTLCRecovery` | Record that cooperative settlement won and drop the armed row |
 
 ### `swap.*` advanced commands (swapruntime build tag)
 
@@ -91,25 +107,26 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/cmd/d
   `DAREPOD_WALLET_PASSWORD` → `--wallet_password_file` → stdin → TTY.
   **Never from CLI args.**
 - `validateDestination()` / `validateOutpoint()` /
-  `validateFreeText()` — input hardening shared across the seven
-  top-level verbs (reject control chars, query/fragment chars,
+  `validateFreeText()` — input hardening shared across the top-level
+  wallet verbs (reject control chars, query/fragment chars,
   malformed outpoints, ambiguous flag combos).
 
 ## Relationships
 
 - **Depends on**:
-  - `rpc/walletdkrpc` (generated stubs for the seven top-level verbs;
+  - `rpc/walletdkrpc` (generated stubs for the top-level wallet verbs;
     `WalletService` client).
-  - `daemonrpc` (generated stubs for `ark.*` commands and getinfo).
+  - `daemonrpc` (generated stubs for `ark.*`/`recovery.*` commands and
+    getinfo).
   - `rpc/swapclientrpc` (generated stubs for `swap.*` commands,
     `swapruntime` tag only).
 - **Depended on by**: `cmd/darepocli` (main entry point).
 
 ## Invariants
 
-- The seven top-level wallet verbs ALWAYS register at the root
-  regardless of build tags; if the daemon lacks the walletdkrpc tag,
-  gRPC `Unimplemented` is mapped to `errWalletRPCDisabled` with an
+- The top-level wallet verbs ALWAYS register at the root regardless of
+  build tags; if the daemon lacks the walletdkrpc tag, gRPC
+  `Unimplemented` is mapped to `errWalletRPCDisabled` with an
   actionable message pointing at the build doc.
 - The `--offchain` / `--onchain` flags on `send` and `recv` are
   mutually exclusive; if neither is set, offchain is the default. The

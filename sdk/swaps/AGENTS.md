@@ -50,9 +50,19 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/s
 - `IncomingVHTLCEventReceiver` — interface for receivers that
   handle both Lightning-backed and same-Ark vHTLC events; implemented
   by `MailboxOutSwapEventReceiver`.
-- `SettlementType` — `SettlementTypeLightning`, `SettlementTypeInArk`
-  (returned in `InSwapConfig` identifying how the server bridges
-  payment).
+- `SettlementType` — `SettlementTypeLightning`, `SettlementTypeInArk`,
+  `SettlementTypeCredit`, `SettlementTypeMixed` (returned in
+  `InSwapConfig`/`OutSwapQuote` identifying how the server bridges
+  payment or blends a reserved credit balance with vHTLC funding).
+- `CreditQuote`, `CreditOperation`, `CreditSnapshot`,
+  `CreditRedemption` — server-authoritative wallet-credit account
+  types (`credits.go`). `SwapClient.CreateCredit`, `RedeemCredit`, and
+  `ListCredits` proxy to the server's `creditServerConn` when the
+  configured `SwapServerConn` implements it, keyed by the daemon
+  identity pubkey. `SettlementTypeCredit` pays complete inside
+  `CreateInSwap` without a vHTLC (`InSwapConfig.Preimage` is set
+  directly); `SettlementTypeMixed` funds only the credit shortfall as
+  a normal vHTLC (`CreditQuote.ArkFundingSat`).
 - `Store` — isolated SQLite persistence. Runs its own migration table
   (`swap_client_schema_migrations`) separate from the main daemon DB.
 - `SwapServerConn` / `GRPCSwapServerConn` — remote swap-server gRPC
@@ -79,15 +89,22 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/s
 - **Depends on**: `lib/arkscript` (vHTLC policy + claim/refund
   tapscript paths), `sdk/ark` (type aliases), `swaprpc` (gRPC stubs),
   `mailbox/pb` (edge pull/ack), `serverconn` (`CompoundMailboxID`,
-  `PubKeyMailboxID`), `db/migrate` + `db/sqlc`, `sdk/swaps/sqlc`,
-  `loop/fsm` (FSM engine), `lightning-onion` (Sphinx ECDH).
-- **Depended on by**: `cmd/darepocli/darepoclicommands` (`pay` /
-  `receive` commands).
+  `PubKeyMailboxID`) + `serverconn/mailboxpull` (pull retry/backoff),
+  `daemonrpc` (vHTLC recovery + forfeit RPC request/response types
+  used by `DaemonConn`), `rpc/restclient` (REST-gateway swap-server
+  client), `vtxo` (forfeit participant sign request shape), `db` +
+  `db/migrate` + `db/sqlc`, `sdk/swaps/sqlc`, `loop/fsm` (FSM engine),
+  `lightning-onion` (Sphinx ECDH).
+- **Depended on by**: `swapclientserver` (build-tag-gated `darepod`
+  RPC subserver that wires `SwapClient` to `swapclientrpc`). CLI pay/
+  receive commands (`cmd/darepocli/darepoclicommands`) talk to that
+  subserver over `swapclientrpc`/REST rather than importing this
+  package directly.
 
 ## Sends / Receives
 
 Both FSMs tick via `loopfsm.StateMachine.SendEvent(ctx, OnAdvance,
-nil)`. Pay calls `DaemonConn.SendOORWithPolicy` to fund and
+nil)`. Pay calls `DaemonConn.SendOORWithPolicyDetails` to fund and
 `SendOORWithCustomInputs` to refund. Receive calls
 `SendOORWithCustomInputs` to claim via the preimage spend path.
 
@@ -129,5 +146,3 @@ result into an `IncomingVHTLCNotification`.
 ## Deep Docs
 
 - [ARCHITECTURE.md](../../ARCHITECTURE.md) — System-wide package map.
-</content>
-</invoke>

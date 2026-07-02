@@ -122,6 +122,22 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
   before declaring fatal gaps — a checkpoint whose earliest parent is
   a tree node is correctly accepted.
 - `SweepWallet` — `NewWalletPkScript`, `SignTaprootSpend`.
+- **Exit feasibility & funding** (`feasibility.go`, `exit_plan.go`):
+  `AssessExitFeasibility(ExitFeasibilityInput) ExitFeasibility` is the pure
+  economic pre-flight — before admission, it checks (most-fundamental
+  first) whether the swept output would be dust
+  (`ExitSweepBelowDust`, impossible regardless of funding), whether the
+  total recovery cost is uneconomical relative to the VTXO value
+  (`ExitUneconomical`), and whether the backing wallet has enough
+  confirmed balance (`ExitWalletUnderfunded`) or enough distinct usable
+  inputs, one per ancestry path (`ExitWalletTooFewInputs`). `RecoveryTxCount`
+  derives the tx/path counts from a `vtxo.Descriptor`. `PlanExitFunding`
+  wraps the verdict into a user-facing `ExitFundingPlan`
+  (`RecommendedUTXOAmountSat`, `RecommendedTotalFundingSat`,
+  `FundingShortfallSat`), and `ExitFundingAddressBook` caches one funding
+  address per target outpoint so polling a plan doesn't burn backing-wallet
+  address indices. Consumed by `darepod`'s exit-plan RPC and admission
+  gating (`rpc_exit_plan.go`, `rpc_server.go`), not by the FSM itself.
 - `safeTxOutPkScript(tx, index)` — bounds-checking helper used at
   every `tx.TxOut[i].PkScript` site; surfaces retryable errors for
   malformed proof artifacts instead of panicking the actor.
@@ -144,9 +160,14 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
   planner + TLV state codec), `txconfirm` (broadcast + CPFP +
   confirmation), `chainsource` (best-height, spend watch, fee
   estimate), `vtxo` (`Descriptor`, `VTXOStore`), `db`
-  (`UnilateralExitStore`, `RegistryRecord` shape), `lib/arkscript`.
+  (`UnilateralExitStore`, `RegistryRecord` shape), `lib/arkscript`,
+  `ledger` (`ExitCostMsg` via `RegistryConfig.LedgerSink`).
 - **Depended on by**: `darepod` (wires the registry via the lazy
-  chain-resolver seam, PR #264), `vhtlcrecovery/coordinator` (admission via
+  chain-resolver seam, PR #264; also calls `PlanExitFunding` /
+  `AssessExitFeasibility` for the exit-plan RPC and admission gating),
+  `fraud` (`WatcherActor` calls `EnsureUnrollRequest` with
+  `TriggerFraudSpend` when a watched ancestor is seen spent),
+  `vhtlcrecovery/coordinator` (admission via
   `EnsureUnrollRequest`), `vhtlcrecovery/unrollpolicy` (implements
   `ExitSpendPolicyResolver` and `ExitSpendPolicy`).
 - **Sends**:
@@ -252,10 +273,11 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
   CSV-relative timelocks work for any `version >= 2` but the
   anchor-detection heuristic requires v3.
 - **FSM outbox events are side-effect-only.** `RequestSweepBuild`,
-  `EnsureReadyTransactions`, `ReissueInFlightTransactions`, and
-  `ReissueSweepConfirmation` never mutate `JobState`; they are
-  routed by `behavior.routeOutbox` to `txconfirm.Ask` calls outside
-  the FSM.
+  `EnsureReadyTransactions`, `ReissueInFlightTransactions`,
+  `WatchDeferredCheckpoints`, and `ReissueSweepConfirmation` never mutate
+  `JobState`; they are routed by `behavior.routeOutbox` to `txconfirm.Ask`
+  calls (or, for `WatchDeferredCheckpoints`, `watchDeferredCheckpoint`)
+  outside the FSM.
 - **All TxOut indexing goes through `safeTxOutPkScript`** —
   operator-sourced OOR artifacts flow into proof assembly, so a
   zero- or short-output node maps to a retryable error rather than

@@ -62,7 +62,9 @@ other services can reuse durable actor storage without pulling unrelated tables.
   `OutboxWakeRegistrar` interfaces), `db` (uses `BatchedQuerier`, `WriteTxOption`,
   `ReadTxOption`).
 - **Depended on by**: `darepod` (wires delivery store at startup),
-  `internal/actortest` (integration tests).
+  `internal/actortest` (integration tests), `p-models/durableactor/bridge`
+  (mailbox trace/crash-restart tests), `credit`, `oor` (durable actor
+  registries), `systest`.
 
 ## Invariants
 

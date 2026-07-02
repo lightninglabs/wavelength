@@ -2,15 +2,20 @@
 
 ## Purpose
 
-Generated gRPC stubs for `walletdkrpc.WalletService` — the highest-level
-RPC surface in the daemon's API stack. The service is a small, flat,
+Generated gRPC stubs for `walletdkrpc.WalletService` and
+`walletdkrpc.WalletInspectionService` — the highest-level RPC surface in
+the daemon's API stack. `WalletService` is a small, flat,
 swap-vocabulary-free wallet API that lives ABOVE `daemonrpc` and
 `swapclientrpc` and composes them; the seven verbs map 1:1 to what a
-user does day-to-day.
+user does day-to-day. `WalletInspectionService` is a separate,
+operator-facing surface that exposes the internal correlators
+`WalletService.List` deliberately hides.
 
 Proto source: `rpc/walletdkrpc/wallet.proto`.
 
-## Service Methods (the 7 wallet verbs + supporting)
+## Service Methods
+
+### WalletService (the 7 wallet verbs + supporting)
 
 | Method | Purpose |
 |--------|---------|
@@ -21,11 +26,19 @@ Proto source: `rpc/walletdkrpc/wallet.proto`.
 | `Recv` | Inbound Lightning invoice (offchain receive) |
 | `List` | Unified wallet view; `ListView` selects activity/vtxos/onchain |
 | `Balance` | Flat balance (confirmed / pending_in / pending_out) |
+| `GetExitPlan` | Preview unilateral-exit readiness (fee inputs, funding shortfall) for one or more VTXOs |
+| `SweepWallet` | Preview or broadcast a backing-wallet sweep to a caller address |
 | `Exit` | Cooperative leave by default; unilateral unroll only with the exact force-ack |
 | `Deposit` | Fresh boarding address (used by `recv --onchain`) |
 | `Status` | Daemon + wallet readiness summary |
 | `ExitStatus` | Phase of an exit job (proxies `GetUnrollStatus`) |
 | `SubscribeWallet` | Streams normalized `WalletEntry` updates |
+
+### WalletInspectionService
+
+| Method | Purpose |
+|--------|---------|
+| `InspectActivity` | Technical trace for one `WalletEntry.id`: correlated swap, VTXO, and ledger rows that explain how the entry was derived |
 
 ## Key Messages
 
@@ -45,15 +58,32 @@ Proto source: `rpc/walletdkrpc/wallet.proto`.
   accounts, no round/session correlators).
 - `ExitJobStatus` — Wallet-facing projection of
   `daemonrpc.UnrollJobStatus`.
+- `ExitPlanEntry` / `GetExitPlanResponse` — Per-outpoint exit feasibility
+  (funding shortfall, required fee UTXOs) evaluated against a running
+  wallet allocation, so a batch verdict reflects simultaneous funding,
+  not one outpoint at a time.
+- `SweepWalletResponse` / `WalletSweepInput` — Backing-wallet sweep
+  preview or broadcast result; covers CPFP/change/unroll leftovers only,
+  never boarding outputs.
+- `InspectActivityResponse` — Pairs the friendly `WalletEntry` with the
+  lower-level records used to derive it: `ActivitySwapTrace` (swap
+  service snapshot), `ActivityVTXOTrace` (correlated VTXO movements),
+  and `ActivityLedgerTrace` (local accounting rows, including rows
+  hidden from the friendly activity feed via `hidden_from_activity`).
+  These traces intentionally DO leak internal correlators
+  (session_id, round_id, settlement_type) that `WalletEntry` hides.
 
 ## Relationships
 
 - **Depends on**: nothing (proto definitions).
 - **Depended on by**:
-  - `swapwallet` (implements the service server-side; consumes the
-    generated stubs).
+  - `swapwallet` (implements both services server-side — see
+    `swapwallet/admin.go` for `WalletService` and
+    `swapwallet/inspection.go` for `WalletInspectionService`; consumes
+    the generated stubs).
   - `cmd/darepocli/darepoclicommands` (the seven top-level CLI verbs
-    dial `walletdkrpc.WalletService`).
+    plus `sweep-wallet` and `inspect` dial `walletdkrpc.WalletService`
+    / `WalletInspectionService`).
   - `sdk/walletdk` (gomobile-friendly SDK wraps the same stubs).
 
 ## Invariants
@@ -61,8 +91,14 @@ Proto source: `rpc/walletdkrpc/wallet.proto`.
 - **Never edit generated code** — regenerate via `make rpc`.
 - The walletdkrpc layer is the highest-level RPC surface; new wallet
   verbs land HERE first and admin proxies pull from `daemonrpc`.
-  Internal correlators MUST NOT leak from `daemonrpc` into walletdkrpc
-  responses.
+  Internal correlators MUST NOT leak from `daemonrpc` into
+  `WalletService` responses.
+- `WalletInspectionService` is the sanctioned exception to the
+  no-leak rule above: `InspectActivity` deliberately surfaces
+  session_id, round_id, settlement_type, and other correlators via
+  `ActivitySwapTrace` / `ActivityVTXOTrace` / `ActivityLedgerTrace` so
+  operators can explain a `WalletEntry`. New internal fields exposed
+  for debugging belong on this service, never on `WalletService`.
 - `Create`, `Unlock`, `Exit`, and `ExitStatus` are admin-shape proxies
   that work BEFORE the swap subsystem is live; the server-side
   implementation (in `swapwallet/admin.go`) MUST NOT depend on the
@@ -74,6 +110,13 @@ Proto source: `rpc/walletdkrpc/wallet.proto`.
 - `Status` and `Deposit` are kept in the proto for programmatic
   callers (and `recv --onchain` plumbs through `Deposit`); they are
   NOT surfaced as top-level CLI verbs.
+- `GetExitPlan` evaluates every requested outpoint against a single
+  running wallet allocation (each feasible entry reserves its fee
+  inputs before the next is planned), so `can_start` and the shortfall
+  totals reflect simultaneous funding, not independent per-outpoint
+  checks.
+- `SweepWallet` only sweeps backing-wallet funds left over after
+  CPFP/change/unroll proceeds; it MUST NOT sweep boarding outputs.
 
 ## Deep Docs
 

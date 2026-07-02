@@ -3,10 +3,12 @@
 ## Purpose
 
 Wallet-shaped SDK facade for host apps that want a small, stable Go API over
-an embedded `darepod` client daemon. `Start` boots the daemon in-process,
-dials it over a private `bufconn` gRPC transport, and exposes typed methods
-that mirror the seven core CLI verbs (create, unlock, send, recv, list,
-balance, exit) plus supporting subscribe/deposit/status.
+a `darepod` client daemon. `Start` boots the daemon in-process, dials it over
+a private `bufconn` gRPC transport, and exposes typed methods that mirror the
+seven core CLI verbs (create, unlock, send, recv, list, balance, exit) plus
+supporting subscribe/deposit/status. `Connect` exposes the same typed API
+against an already-running external daemon over native gRPC or grpc-gateway
+REST/JSON, for hosts that do not want to embed the daemon process.
 
 Wallet methods are gated behind the `walletdkrpc` build tag (transitively
 requires `swapruntime`): stub builds compile, but wallet methods return
@@ -16,8 +18,8 @@ requires `swapruntime`): stub builds compile, but wallet methods return
 
 For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/walletdk.<Symbol>`.
 
-- `Client` — concurrency-safe wallet handle owning the embedded daemon
-  lifecycle, the private `bufconn` gRPC connection, and the
+- `Client` — concurrency-safe wallet handle owning the gRPC connection
+  (private `bufconn` for `Start`, external for `Connect`) and the
   daemonrpc/walletdkrpc/swapclientrpc clients. `Stop`/`Close` are
   idempotent aliases.
 - `Config` — embedded daemon + wallet facade config. Two usage modes:
@@ -33,6 +35,13 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
   waits for gRPC readiness, and returns a ready `*Client`. The daemon
   lifetime is owned by walletdk's `runCtx`, not the caller's `ctx`, so
   a tight startup deadline cancels dialing only.
+- `Connect(ctx, cfg)` / `ConnectConfig` / `Transport` — connects to an
+  external daemon instead of embedding one. `Transport` selects
+  `TransportGRPC` (default) or `TransportREST` (grpc-gateway HTTP/JSON);
+  `ConnectConfig` carries the address, optional TLS cert / macaroon
+  paths, and transport-specific dial knobs. The returned `*Client` has
+  the same method set as an embedded one, backed by
+  `restclient`-generated clients on the REST path.
 - `Option` — functional option accepted as variadic trailing args.
   Options apply **after** the `Config`/`DaemonConfig` merge and after
   `configureSwapRuntime` / `configureWalletRPC`, so they can override
@@ -69,6 +78,21 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
   populated by current behavior. Status strings are the wrapper-owned
   lowercase set
   (`pending`/`materializing`/`csv_pending`/`sweeping`/`completed`/`failed`/`unspecified`).
+- `GetExitPlanRequest`/`Result` / `ExitPlanEntry` — previews whether the
+  backing wallet has enough confirmed fee UTXOs to start a unilateral
+  exit for a slice of outpoints before the caller commits to `Exit`.
+- `SweepWalletRequest`/`Result` / `WalletSweepInput` — previews or
+  broadcasts a sweep of confirmed backing-wallet UTXOs to a
+  caller-supplied destination address (`Broadcast` gates dry-run vs.
+  send).
+- `OpenWalletFromPasskey` / `OpenWalletResult` — derives a reproducible
+  wallet seed and local DB password from a WebAuthn passkey PRF output
+  (HKDF-SHA256, domain-separated), then imports (fresh device) or
+  unlocks (existing local wallet) based on current `WalletState`.
+  `Imported` distinguishes the two outcomes; `Mnemonic` is populated
+  only on import. The caller owns running the PRF ceremony with a
+  fixed, app-controlled salt — see the doc comment in `passkey.go` for
+  the seed-recoverability contract.
 - `ErrWalletRPCUnavailable` — sentinel returned by every wallet method
   on builds without the `walletdkrpc` tag.
 - `ErrSwapRuntimeUnavailable` — back-compat alias for
@@ -89,11 +113,16 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
 | `List` | Unified history view (Activity / VTXOs / Onchain) as a tagged-union `ListResult`. |
 | `Exit` | Trigger cooperative leave or unilateral unroll for a VTXO. |
 | `ExitStatus` | Query the phase of an exit job. |
+| `GetExitPlan` | Preview backing-wallet funding readiness for unilateral exit across a slice of VTXOs. |
+| `SweepWallet` | Preview or broadcast a sweep of confirmed backing-wallet funds. |
+| `OpenWalletFromPasskey` | Derive a wallet from a WebAuthn passkey PRF output; import or unlock as appropriate. |
 | `Status` | Wallet readiness, balance, pending-entry count. |
 | `Subscribe` | Stream wallet activity (`Entry`) updates. |
-| `Stop` / `Close` | Shut down the embedded daemon, release the private transport. |
+| `Connect` | Attach to an already-running external daemon (gRPC or REST transport) instead of embedding one. |
+| `Stop` / `Close` | Shut down the embedded daemon or release the external transport. |
 | `Wait` | Single shared channel yielding the daemon's terminal run error. |
-| `GRPCConn` / `ArkRPC` / `SwapRPC` / `WalletRPC` | Escape hatches to the underlying private gRPC conn and raw clients. |
+| `GRPCConn` / `ArkRPC` / `SwapRPC` / `WalletRPC` | Escape hatches to the underlying gRPC conn and raw clients. |
+| `BtcwalletRPC` / `BtcwalletVersionRPC` | Escape hatches to btcsuite btcwallet's native `walletrpc` Wallet/Version services. |
 
 ## Relationships
 
@@ -101,11 +130,16 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
   (wallet, balance, info, address RPCs + direct paths for
   `CreateWallet`/`UnlockWallet`), `rpc/walletdkrpc` (unified wallet API
   the seven verbs target), `rpc/swapclientrpc` (raw-swap escape hatch),
-  `swapclientserver` (registered as daemon-side swap subserver in
-  `swapruntime` builds), `swapwallet` (daemon-side walletdkrpc subserver
-  in `walletdkrpc` builds), `google.golang.org/grpc/test/bufconn`.
-- **Depended on by**: host Go apps, gomobile / React Native / WASM
-  bridges, and `cmd/walletdk-tui`.
+  `rpc/restclient` (grpc-gateway HTTP/JSON clients for `Connect`'s REST
+  transport), `rpcauth` (TLS credentials + macaroon dial/header options
+  for `Connect`), `swapclientserver` (registered as daemon-side swap
+  subserver in `swapruntime` builds), `swapwallet` (daemon-side
+  walletdkrpc subserver in `walletdkrpc` builds),
+  `google.golang.org/grpc/test/bufconn`.
+- **Depended on by**: host Go apps, `sdk/walletdk/mobile` (gomobile
+  bindings layer that wraps this package's `Client`/`Config` for
+  mobile/React Native hosts), `cmd/walletdk-wasm` (WASM bridge, via
+  `sdk/walletdk/mobile`), and other host integrations.
 - **Sends** → `darepod` (in-process via bufconn): all daemon RPCs are
   routed across the private gRPC connection, not the daemon's public
   listener.

@@ -122,6 +122,32 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
   `SendOnChainRequest`. Routes through coin selection, leave output
   construction, and eager round join. Supports bounded and sweep-all modes.
 
+### RPC Auth & Macaroons
+
+- `rpc_auth.go` slices the RPC surface into ten logical macaroon
+  entities (`entityInfo`, `entityVTXO`, `entityAddress`,
+  `entityOnChain`, `entityOOR`, `entityRound`, `entitySwap`,
+  `entityRecovery`, `entityFees`, `entityActivity`) instead of one
+  catch-all entity, modeled on lnd's per-entity permission map.
+  `darepodMacaroonLocation` ("darepod") is only the macaroon's
+  `Location` field (issuer identity) — it is not a permission scope.
+- `newDarepodRPCPermissions` builds `darepodRPCPermissions` (full
+  method name -> required `[]bakery.Op`) via the internal
+  `grant(service, entity, action, methods...)` helper, grouped by
+  domain across `DaemonService`, `SwapClientService`,
+  `WalletService`/`WalletInspectionService` (walletdkrpc), and the
+  raw `walletrpc.{Version,Wallet}Service` passthrough surface.
+- `darepodReadOnlyPermissions` returns the `read` op for every entity
+  in `darepodEntities`. `bakeReadOnlyMacaroon`
+  (`rpc_security.go`, called from `localRPCServerOptions`) writes it
+  to `readonly.macaroon` next to the admin macaroon — created only
+  when absent, so a previously distributed copy is never invalidated.
+- `registeredRPCPermissions` (invoked from `Server.run` right after
+  `RPCServiceRegistrars` run) cross-checks every method actually
+  registered on `s.grpcServer` against `darepodRPCPermissions` and
+  fails daemon startup if any method has no mapping — fail-closed by
+  construction.
+
 ### Adapters & Helpers
 
 - `serverDurableUnaryBuilder` — implements
@@ -351,6 +377,18 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
 - `OORConfig.OOR.Limits.MaxMailboxScriptBytes` must be at least
   `minOORMailboxScriptBytes = 34` (P2TR script length); validated
   during `Config.Validate()`.
+- Every gRPC method registered on `s.grpcServer` must have a
+  corresponding `grant(...)` entry in `newDarepodRPCPermissions`
+  naming the correct entity/action; `registeredRPCPermissions` fails
+  daemon startup (`Server.run`) if a method has no mapping, so a new
+  RPC method without a grant crashes the daemon at boot rather than
+  silently over- or under-authorizing it.
+- The admin macaroon is baked from the union of every entity/action
+  op across `darepodRPCPermissions`, so it still has full access even
+  though each individual method now requires only one entity —
+  granting the wrong entity/action to a method is a silent
+  privilege-escalation bug (e.g. a mutating RPC mapped to a `read`
+  action becomes callable with `readonly.macaroon`).
 - `Config.EagerRoundJoin` is seeded by build-tag-aware
   `defaultEagerRoundJoin()`: `false` on the standalone non-walletdkrpc
   build, `true` under the `walletdkrpc` tag (both `cmd/darepod` and

@@ -9,7 +9,7 @@ crash-safe at-least-once delivery with exactly-once deduplication.
 ## Key Types
 
 - `Actor[M, R]` — Generic actor with typed message `M` and response `R`. Processes messages sequentially from its mailbox.
-- `ActorBehavior[M, R]` — Interface that actors implement: `Start`, `Receive`, `Stop`.
+- `ActorBehavior[M, R]` — Interface that actors implement: `Receive(ctx, msg) fn.Result[R]` only. Optional cleanup is a separate `Stoppable.OnStop(ctx) error` interface; optional startup wiring is the unexported `selfStartingBehavior[M]` interface (`Start(TellOnlyRef[M])`) used by `RegisterWithSystem` to hand a behavior its own ref before the mailbox loop starts.
 - `ActorConfig[M, R]` — Configuration for actor creation (behavior, mailbox, codec, delivery store).
 - `ActorRef[M, R]` — Typed reference for sending messages to an actor (`Tell`, `Ask`).
 - `TellOnlyRef[M]` — Fire-and-forget reference (no response type).
@@ -29,7 +29,7 @@ crash-safe at-least-once delivery with exactly-once deduplication.
 - `DeliveryStore` / `TxAwareDeliveryStore` — Interfaces for durable mailbox persistence (enqueue, claim, ack, dead-letter). The leaseless single-worker fast path adds `PeekNextMessage` (read-only claim, no lease, no attempts bump; yields an empty lease token), `AckMessageByID` (unfenced delete), and `NackMessageByID` (unfenced release that increments attempts). A `DurableActor` enables it (via `DurableMailboxConfig.SingleWorkerLeaseless`) strictly when `NumWorkers == 1` AND the behavior is the Read/Commit (Right/`TxBehavior`) path, eliminating the per-message lease write transaction. The multi-worker pool and the classic path are byte-for-byte unchanged: they keep `LeaseNextMessage` and the lease-fenced ack. Ack/nack route to the by-ID ops automatically whenever the delivery's lease token is empty; `Delivery.ShouldDeadLetter` counts the in-flight attempt as `Attempts + 1` on the leaseless path so the dead-letter boundary matches the leased path (where attempts is pre-incremented at lease).
 - `DurableActor` — Actor variant with crash-safe mailbox backed by SQL persistence. Provides `Wait(ctx)` to block until the actor stops and `StopAndWait(ctx)` to request a graceful shutdown and then wait.
 - `DurableActorConfig[M, R]` — Configuration struct for `DurableActor`: behavior, store, codec, clock, DLO, WaitGroup, `TellRetryPolicy`, lease/heartbeat/poll durations, max attempts, cleanup timeout, deduplication TTL, and `NumWorkers`.
-- `DurableActorConfig.NumWorkers` — How many concurrent worker loops drain the actor's single mailbox. Default and any value `<= 1` is one worker (strictly-sequential processing). A value `> 1` turns the actor into a competing-consumer pool: that many goroutines each lease distinct messages via `LeaseNextMailboxMessage`, so independent messages run in parallel while per-correlation-key FIFO still keeps same-key messages ordered. Only for behaviors whose handlers are concurrency-safe and hold no writer across their side effects (e.g. the serverconn egress sender on the Read/Commit path). `NewDurableActor` **fails closed** with `ErrConcurrentClassicBehavior` when `NumWorkers > 1` is paired with a classic (`Left`) `ActorBehavior`, since the classic path wraps the whole `Receive` in one write transaction and assumes sequential delivery; pools are only valid on the Read/Commit (`TxBehavior`) path. The test-only `DurableActorConfig.AllowConcurrentClassicBehavior()` escape hatch bypasses the guard for the egress benchmark that measures the forbidden config; production code must never call it.
+- `DurableActorConfig.NumWorkers` — How many concurrent worker loops drain the actor's single mailbox. Default and any value `<= 1` is one worker (strictly-sequential processing). A value `> 1` turns the actor into a competing-consumer pool: that many goroutines each lease distinct messages via `LeaseNextMessage`, so independent messages run in parallel while per-correlation-key FIFO still keeps same-key messages ordered. Only for behaviors whose handlers are concurrency-safe and hold no writer across their side effects (e.g. the serverconn egress sender on the Read/Commit path). `NewDurableActor` **fails closed** with `ErrConcurrentClassicBehavior` when `NumWorkers > 1` is paired with a classic (`Left`) `ActorBehavior`, since the classic path wraps the whole `Receive` in one write transaction and assumes sequential delivery; pools are only valid on the Read/Commit (`TxBehavior`) path. The test-only `DurableActorConfig.AllowConcurrentClassicBehavior()` escape hatch bypasses the guard for the egress benchmark that measures the forbidden config; production code must never call it.
 - `DefaultDurableActorConfig[M, R]()` — Constructor returning a `DurableActorConfig` with safe defaults (30s lease, 10 max attempts, 1s poll fallback, DefaultTellRetryPolicy).
 - `TellRetryPolicy` — Function type `func(attempts int, lastErr error) (bool, time.Duration)` determining retry behavior for failed Tell messages. Return `(false, _)` to dead-letter immediately.
 - `DefaultTellRetryPolicy` — Exponential backoff policy: up to 5 attempts, starting at 1s, capped at 60s.
@@ -65,8 +65,10 @@ crash-safe at-least-once delivery with exactly-once deduplication.
   earlier message is in retry backoff. Empty (the default on
   `BaseMessage`) means the message is unkeyed and uses the existing
   global `available_at` claim order. The override site is the concrete
-  message struct (e.g. `clientconn.ClientMessage` types in `rounds`),
-  not the framework — the framework just plumbs the value through
+  message struct (e.g. `round.JoinRoundRequest`/`round.SubmitNoncesRequest`
+  keyed by round ID, `oor.SendSubmitPackageRequest` keyed by session ID, or
+  `serverconn.SendClientEventRequest`, which forwards the inner message's
+  key), not the framework — the framework just plumbs the value through
   `EnqueueParams.CorrelationKey`.
 - `EnqueueParams.CorrelationKey` — Per-enqueue override stamped into the
   `mailbox_messages.correlation_key` column. Populated automatically from
@@ -75,8 +77,8 @@ crash-safe at-least-once delivery with exactly-once deduplication.
 
 ## Relationships
 
-- **Depends on**: `lnd/tlv` (message serialization).
-- **Depended on by**: All domain actors (`round`, `vtxo`, `oor`, `wallet`, `serverconn`, `timeout`, `indexer`), `baselib/protofsm` (FSM-to-actor bridge), `db/actordelivery` (persistence implementation).
+- **Depends on**: `lnd/tlv` (message serialization), `build` (logger-in-context plumbing via `build.ContextWithLogger`/`build.LoggerFromContext`).
+- **Depended on by**: virtually every domain package — `round`, `vtxo`, `oor`, `wallet`, `serverconn`, `timeout`, `db`, `db/actordelivery` (persistence implementation), `metrics`, `fraud`, `unroll`, `credit`, `ledger`, `swapwallet`, `chainsource`, `txconfirm`, `darepod`, `vhtlcrecovery/coordinator`, `mailbox/conn`, `lib/actormsg`, `p-models/durableactor/bridge`, `internal/actortest`, `baselib/example`, `baselib/protofsm` (FSM-to-actor bridge). Not `indexer`, which does not import this package.
 
 ## Invariants
 
@@ -109,7 +111,7 @@ crash-safe at-least-once delivery with exactly-once deduplication.
   regardless of retry backoff. Without this invariant, a transient Tell
   failure on msg1 would Nack-with-backoff (push `available_at` into the
   future), and a later-enqueued msg2 with a smaller `available_at` would
-  overtake msg1 in the `LeaseNextMailboxMessage` claim. The fix is an
+  overtake msg1 in the `LeaseNextMessage` claim. The fix is an
   anti-join on `mailbox_messages.id` (UUIDv7, strictly orderable at
   millisecond granularity) so the head of each correlation key drains
   before any later same-key row is claim-eligible. Unkeyed messages

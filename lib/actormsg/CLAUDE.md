@@ -16,6 +16,12 @@ package boundaries. Lives in `lib/` to break import cycles between `vtxo`,
 - `SelectAndReserveForfeitRequest` / `SelectAndReserveForfeitResponse` — Ask-message to atomically select and reserve VTXOs for cooperative forfeit (directed sends). Combines coin selection and PendingForfeit reservation in one step to close a race window.
 - `ReserveForfeitRequest` / `ReleaseForfeitRequest` — Forfeit reservation admission messages.
 - `ReleaseSpendRequest` / `CompleteSpendRequest` — Spend lifecycle completion messages.
+- `CustomForfeitInput` — Describes a caller-supplied VTXO (not part of the
+  wallet's live coin set) that still needs a local VTXO actor to sign the
+  exact round forfeit transaction; carries policy, key, and ancestry data
+  (including `Ancestry []types.Ancestry` from `lib/types`).
+- `ActivateCustomForfeitInputsRequest` / `ActivateCustomForfeitInputsResponse` — Starts temporary PendingForfeit actors for custom (non-wallet) forfeit inputs before round intent registration.
+- `DropCustomForfeitInputsRequest` / `DropCustomForfeitInputsResponse` — Removes custom PendingForfeit signer overlays after a rejected round intent.
 - `ForceUnrollRequest` / `ForceUnrollResponse` — Ask-message that routes an operator or chain-resolver unroll trigger through the VTXO manager into the per-VTXO FSM. `ForceUnrollResponse.Accepted` is true when the request caused a state transition; when false, `Reason` distinguishes `"no such vtxo"` from `"already terminal"` so callers don't misread a silent self-loop as success.
 - `RegisterIntentMsg` — Carries pre-composed cooperative intent package to
   round actor. The `TriggerRegistration bool` field controls whether the
@@ -28,8 +34,8 @@ package boundaries. Lives in `lib/` to break import cycles between `vtxo`,
 
 ## Relationships
 
-- **Depends on**: `baselib/actor` (ServiceKey, Message interfaces).
-- **Depended on by**: `vtxo` (re-exports admission types as aliases), `wallet` (sends admission requests), `round` (receives `RoundReceivable` messages), `darepod` (wiring service keys).
+- **Depends on**: `baselib/actor` (ServiceKey, Message interfaces), `lib/types` (`Ancestry` field on `CustomForfeitInput`).
+- **Depended on by**: `vtxo` (re-exports admission types as aliases), `wallet` (sends admission requests), `round` (receives `RoundReceivable` messages), `darepod` (wires service keys and also directly builds/sends admission messages such as `CompleteSpendRequest`, `ReleaseSpendRequest`, `ForceUnrollRequest`).
 
 ## Invariants
 

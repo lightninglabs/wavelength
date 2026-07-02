@@ -103,9 +103,12 @@ state transitions and validation rules live under [Invariants](#invariants).
   entry decoding to reject malformed envelopes before allocating slices.
 - `FromProto` methods on `JoinRoundQuoteReceived`, `RoundJoined`,
   `CommitmentTxBuilt`, `AwaitingBoardingSigs`, `NoncesAggregated`,
-  `OperatorSigned`, `BoardingFailed`, `JoinRoundRequest` — all
-  satisfy the private `inboundServerMessage` interface
-  (compile-time-asserted).
+  `OperatorSigned`, `BoardingFailed` — all satisfy the private
+  `inboundServerMessage` interface (compile-time-asserted). `JoinRoundRequest`
+  also has a `FromProto`, but it is an outbound (`clientOutMsgSealed`)
+  message — its `FromProto` is the inverse of `ToProto`, used only by test
+  code to deserialize captured mailbox envelopes, and it does NOT satisfy
+  `inboundServerMessage`.
 - `RoundClientConfig.LedgerSink` — optional `fn.Option[ledger.Sink]`
   plumbed onto the round actor; `emitVTXOsReceived` and `emitRoundFee`
   fire-and-forget messages when `fn.Some`.
@@ -123,7 +126,8 @@ state transitions and validation rules live under [Invariants](#invariants).
 
 - **Depends on**: `baselib/protofsm` (FSM engine), `lib/tree`,
   `lib/types`, `lib/arkscript`, `wallet`, `ledger` (`Sink` +
-  `VTXOReceivedMsg` / `Source*` constants), `timeout`, `google/uuid`.
+  `VTXOReceivedMsg` / `Source*` constants), `metrics` (`Sink` +
+  `RoundCompletedMsg`/`RoundJoinedMsg`), `timeout`, `google/uuid`.
 - **Depended on by**: `vtxo`, `db`, `darepod`.
 - **Sends → `serverconn`**: `JoinRoundRequest`,
   `JoinRoundAcceptOutbox`, `JoinRoundRejectOutbox`,
@@ -131,16 +135,32 @@ state transitions and validation rules live under [Invariants](#invariants).
   `SubmitForfeitSigRequest`, `SubmitVTXOForfeitSigsToServer`.
 - **Sends → `vtxo`**: forfeit/spend/block-epoch events listed above;
   manager-level `VTXOCreatedNotification`, `VTXOTerminatedMsg`.
-- **Sends → `wallet`**: `RegisterConfirmationRequest`.
+- **Sends → `wallet`**: `RegisterConfirmationNotifierRequest` (registers
+  for boarding-confirmation backlog delivery, sent once from `Start`),
+  `GetConfirmedBoardingIntentsRequest` (resolves confirmed boarding
+  inputs before minting VTXO owner keys in `handleTriggerBoard`).
+- **Sends → `chainsource`**: `BestHeightRequest` (HeightHint lookup for
+  confirmation registration), `RegisterConfRequest` (built by
+  `processConfirmationRequest` from the FSM's internally-emitted
+  `RegisterConfirmationRequest` outbox message; `RegisterConfirmationRequest`
+  never leaves the round actor).
+- **Sends → `metrics`** (when `MetricsSink` is `fn.Some`):
+  `RoundCompletedMsg` at each terminal round outcome (confirmed/failed),
+  `RoundJoinedMsg` from `createNewRound` for every assembled round.
 - **Sends → `OwnedScriptRegistrar`** (darepod adapter over the OOR
   artifact store): `RegisterOwnedScript(pkScript, ownerKey)`.
 - **Sends → `ledger`** (when `LedgerSink` is `fn.Some`), origin-routed
   per owned `ClientVTXO`: `VTXOReceivedMsg{Source=SourceRoundBoarding}`;
   paired `VTXOSentMsg{Outpoint}` +
   `VTXOReceivedMsg{Source=SourceRoundRefresh}`;
-  `VTXOReceivedMsg{Source=SourceRoundTransfer}`. One
-  `FeePaidMsg{FeeType=FeeTypeRefresh}` per round when
-  `OperatorFeeSat > 0` and any refresh-origin VTXO was emitted.
+  `VTXOReceivedMsg{Source=SourceRoundTransfer}`. Non-owned outputs the
+  client paid out (foreign directed-send recipients, cooperative leave)
+  are carried on `VTXOCreatedNotification.Outflows []RoundLedgerOutflow`
+  and emitted as bare `VTXOSentMsg{AmountSat, IdempotencyKey}` so
+  recipient value isn't misreported as operator fee. One `FeePaidMsg`
+  per round when `OperatorFeeSat > 0`, `FeeType` taken from
+  `VTXOCreatedNotification.OperatorFeeType` (falls back to
+  `FeeTypeRefresh` for notifications that predate fee typing).
 - **Receives ← `serverconn`** (via `ServerMessageNotification`):
   `CommitmentTxBuilt`, `NoncesAggregated`, `OperatorSigned`,
   `RoundJoined`, `BoardingFailed`, `JoinRoundQuoteReceived`.
@@ -245,6 +265,14 @@ state transitions and validation rules live under [Invariants](#invariants).
   collaborative leaf when the live output uses a custom script policy;
   without it the VTXO actor would build a forfeit against the wrong
   tapscript branch.
+- `handleTriggerBoard` honors a non-empty `actormsg.TriggerBoardMsg.Outpoints`
+  as the exact confirmed-boarding set to register (empty means "all
+  confirmed inputs", the legacy/test default). The wallet excludes
+  outpoints it has already handed to an in-flight round from later
+  triggers, so honoring the named set prevents a second deposit's
+  per-block trigger from re-registering an already-in-flight boarding
+  outpoint under a fresh VTXO owner key (which the server would reject
+  as a pkScript echo mismatch).
 
 ## Deep Docs
 

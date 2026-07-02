@@ -3,10 +3,10 @@
 ## Purpose
 
 Direct-to-bitcoind JSON-RPC implementation of
-`chainbackends.PackageSubmitter`. Used by the production daemon (and by
-integration tests) when v3 / TRUC CPFP package relay must go straight to a
-bitcoind node instead of through LND's `WalletKit`. Sibling to `lnd.go` in
-`chainbackends/`: one concrete backend per submitter source.
+`chainbackends.PackageSubmitter`. Used by the production daemon when v3 /
+TRUC CPFP package relay must go straight to a bitcoind node instead of
+through LND's `WalletKit`. Sibling to `lnd.go` in `chainbackends/`: one
+concrete backend per submitter source.
 
 ## Key Types
 
@@ -14,17 +14,28 @@ bitcoind node instead of through LND's `WalletKit`. Sibling to `lnd.go` in
   POSTs a `submitpackage` JSON-RPC call to bitcoind. Uses a dedicated
   `*http.Client` with a 30s backstop timeout so a wedged node can't stall
   the caller for the full parent context.
-- `New(host, user, password)` — Constructs a `PackageSubmitter`. `host` is
-  the `host:port` form; the submitter prefixes `http://` because bitcoind's
-  JSON-RPC server speaks plain HTTP by default. TLS termination (when
-  present) is expected to be handled by an external reverse proxy.
+- `New(host, user, password)` — Constructs a `PackageSubmitter` using the
+  legacy no-error form. Bare `host:port` input defaults to `http://`; full
+  `http://`/`https://` URLs are accepted as-is. Prefer `NewWithOptions` when
+  malformed URLs or TLS config errors need to surface to the caller.
+- `NewWithOptions(host, user, password, opts...)` — Constructs a
+  `PackageSubmitter`, returning parse/TLS errors instead of swallowing them.
+  Bare `host:port` defaults to `https://` when `WithTLSCertPath` is set,
+  `http://` otherwise.
+- `Option` / `WithTLSCertPath(path)` — Configures the HTTPS submitter to
+  trust a custom CA certificate at `path` (augments, not replaces, the
+  system trust store), for operators fronting bitcoind's RPC server with a
+  local TLS reverse proxy.
 
 ## Relationships
 
 - **Depends on**: `btcd/btcjson` (SubmitPackageResult), `btcd/wire` (MsgTx),
-  standard library `net/http`.
-- **Depended on by**: `cmd/darepod` (wires via `bitcoind.{host,user,pass}`
-  flags), `harness` (itest injection into `darepod.Config.PackageSubmitter`).
+  standard library `net/http`, `crypto/tls`, `crypto/x509` (custom CA
+  support).
+- **Depended on by**: `cmd/darepod` (constructs the submitter via
+  `bitcoindrpc.NewWithOptions` from the `bitcoind.*` CLI flags and assigns
+  it to `darepod.Config.PackageSubmitter`). No other package or itest
+  harness currently references this package.
 
 ## Invariants
 

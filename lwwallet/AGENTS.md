@@ -58,7 +58,11 @@ without an external LND node. Implements `wallet.BoardingBackend`,
 ## Relationships
 
 - **Depends on**: `chainsource` (implements `ChainBackend`), `wallet`
-  (implements `BoardingBackend`).
+  (implements `BoardingBackend`), `walletcore` (embeds `Wallet` and
+  `BoardingBackendBase` for shared btcwallet key derivation, signing, and
+  address tracking), `chainbackends` (typed `PackageTxError` for package-relay
+  rejections), `internal/sqlbase` (wasm builds only: OPFS-backed SQLite
+  walletdb).
 - **Depended on by**: `darepod` (alternative to LND-backed wallet).
 
 ## Invariants

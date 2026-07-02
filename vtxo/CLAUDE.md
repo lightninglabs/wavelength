@@ -14,7 +14,7 @@ when the local wallet owns the receive script.
 ## Key Types
 
 - `VTXOState` — Sealed interface for all states (Live, Spending, Spent, PendingForfeit, Forfeiting, Forfeited, UnilateralExit, Failed).
-- `Descriptor` — Complete VTXO metadata: `Outpoint`, `Amount`, `PkScript`, `OwnerKey` (keychain.KeyDescriptor), `OperatorKey`, `TapScript`, `TreePath`, `RoundID`, `CommitmentTxID`, `BatchExpiry`, `RelativeExpiry`, `TreeDepth`, `ChainDepth` (OOR hop count), `CreatedHeight`, `Status`.
+- `Descriptor` — Complete VTXO metadata: `Outpoint`, `Amount`, `PolicyTemplate` (semantic arkscript policy; authoritative representation for ownership and spend semantics), `PkScript`, `ClientKey` (keychain.KeyDescriptor), `OperatorKey`, `TapScript`, `Ancestry` (`[]Ancestry`, see Multi-Tree Ancestry below), `RoundID`, `CommitmentTxID`, `BatchExpiry`, `RelativeExpiry`, `ChainDepth` (OOR hop count), `CreatedHeight`, `Status`. `Ancestry` is a type alias for `lib/types.Ancestry` so `round.ClientVTXO` and `vtxo.Descriptor` share one canonical multi-fragment type without an import cycle.
 - `Manager` — Actor managing per-VTXO FSM instances, lifecycle, and admission gating. Configured via `ManagerConfig`.
 - `ManagerConfig` — Configuration holding Store, Wallet, ChainSource,
   ActorSystem, ChainParams, ExpiryConfig, RoundActor ref, ChainResolver ref,
@@ -53,11 +53,13 @@ when the local wallet owns the receive script.
 - `VTXOsMaterializedNotification` — Manager-facing notification carrying already-persisted descriptors; the manager spawns one actor per descriptor without performing another store write. Used by both the OOR receive path and the new incoming round VTXO handler.
 - `LazyChainResolver` — Forwarding `TellOnlyRef[ExpiringNotification]` that buffers notifications until `Set()` wires the real chain-resolver target. Breaks the init-order dependency between the VTXO manager (which spawns `LazyChainResolver` at startup) and the unroll registry (which is wired after the VTXO manager starts). Buffered notifications are replayed in-order on `Set()`.
 - `RefreshFeeQuoter` — Function type `func(ctx, amount btcutil.Amount, remainingBlocks uint32) btcutil.Amount`. Optional hook on `VTXOActorConfig`; invoked as an **advisory preview** before each auto-refresh emission to estimate the per-input operator fee for UX surfaces. Under the seal-time fee handshake (#270) the server is the binding fee authority — the quoter's return value is no longer attached to the wire intent. Nil quoter (legacy and test paths) yields `OperatorFee=0` on the harness-local `RefreshVTXORequest`, which has no effect on the round protocol.
+- `ForfeitParticipantSigner` — Function type on `VTXOEnvironment` (`func(ctx, *ForfeitParticipantSignRequest) ([]*types.ForfeitParticipantSig, error)`) that obtains keyed signatures from non-local participants for custom multi-participant VTXO policies, invoked only after the new round has assigned connector outputs (the connector prevout is part of the taproot sighash). `ForfeitParticipantSignRequest` carries the VTXO, spend path, exact forfeit tx, and connector/forfeit output details needed to compute the sighash; `sdk/swaps` and `swapclientserver` reference this type for their own forfeit-signing callbacks.
+- `ListLiveDescriptorsRequest` / `ListLiveDescriptorsResponse` — Ask-message returning the descriptors the manager recovered from durable state at `Start`. `darepod` uses the response to re-arm the recipient fraud watcher (`fraud.TrackVTXOs`) after a restart without the `fraud` package taking a direct dependency on the VTXO store.
 
 ## Relationships
 
-- **Depends on**: `baselib/protofsm` (FSM engine), `baselib/actor` (actor system), `lib/tree` (tree paths), `lib/arkscript` (taproot construction and policy helpers in `IncomingVTXOHandler`), `lib/actormsg` (admission message types), `arkrpc` (`IncomingVTXOEvent`), `chainsource` (block epochs), `ledger` (`Sink` type for compatibility with manager wiring), `unroll` (via `ExitOutcomeResolver` callback wired by `darepod`).
-- **Depended on by**: `round` (triggers forfeit requests), `oor` (incoming VTXOs), `wallet` (admission gating), `db` (persistence), `darepod` (wiring, owned-script adapters, incoming event route).
+- **Depends on**: `baselib/protofsm` (FSM engine), `baselib/actor` (actor system), `round` (event/message types: `BlockEpochEvent`, `ForfeitRequestEvent`, `VTXOTerminatedMsg`, `round.ClientVTXO`, `round.VTXOCreatedNotification`, etc. — vtxo depends on round for these types, not the reverse; round never imports vtxo), `lib/types` (`Ancestry`, `ForfeitParticipantSig`), `lib/arkscript` (taproot construction and policy helpers in `IncomingVTXOHandler` and `policy.go`), `lib/actormsg` (admission message types), `arkrpc` (`IncomingVTXOEvent`, `AncestryPath`), `chainsource` (block epochs), `coinselect` (VTXO coin selection in the manager), `metrics` (`MetricsSink` on `IncomingVTXOHandlerConfig`, emits `OORTransferReceivedMsg`), `ledger` (`Sink` type for compatibility with manager wiring), `unroll` (via `ExitOutcomeResolver` callback wired by `darepod`).
+- **Depended on by**: `oor` (incoming VTXOs), `wallet` (admission gating), `db` (persistence), `fraud` (`Descriptor`, `VTXOStatusLive` for recipient fraud-watch tracking), `unroll` (`VTXOStore`, `Descriptor`, `ManagerMsg`, `ExitOutcomeNotification`/`ExitOutcome*` for exit planning and lifecycle reconciliation — unroll imports vtxo directly in addition to the `ExitOutcomeResolver` callback seam, but no cycle exists since vtxo never imports unroll), `sdk/swaps` / `swapclientserver` (reference `ForfeitParticipantSignRequest` for custom forfeit-participant signing), `darepod` (wiring, owned-script adapters, incoming event route).
 - **Sends**:
   - → `round` (via manager relay): `RelayToRoundMsg` wrapping `ForfeitSignatureSubmission`
   - → `db` (via outbox): `VTXOStatusUpdate`
@@ -70,6 +72,7 @@ when the local wallet owns the receive script.
   - ← `chainsource` (via Manager): `BlockEpochEvent`
   - ← `serverconn` (via `EventRouter` route `MethodIncomingVTXO`): `IncomingVTXOMsg` (wrapping `arkrpc.IncomingVTXOEvent`), routed to `IncomingVTXOHandler`
   - ← `unroll` (via `RegistryConfig.VTXOExitObserver`, forwarded by `darepod`): `ExitOutcomeNotification` — terminal exit job result forwarded to reconcile VTXO lifecycle after an unroll completes or fails cleanly
+  - ← `darepod` (RPC handlers, `Ask`): `GetActiveVTXOCountRequest`, `ListLiveDescriptorsRequest`
 
 ## Multi-Tree Ancestry
 

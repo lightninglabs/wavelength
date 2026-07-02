@@ -13,7 +13,9 @@ server during round participation. These types are used across `round`, `vtxo`,
 - `VTXORequest` — Describes a new VTXO to create in a round (amount,
   owner key, cosigner keys). `IsChange bool` (TLV record 4) marks the
   output that absorbs the server-computed fee residual under the #270
-  seal-time handshake; serialized into `JoinRoundAuth`.
+  seal-time handshake; serialized into `JoinRoundAuth`. `FixedAmount bool`
+  (TLV record 5) marks a request whose amount must not be adjusted by
+  server-side fee distribution.
 - `ForfeitRequest` — Describes a VTXO being forfeited (outpoint,
   connector leaf info, forfeit tx signature). Local-only fields:
   `AuthSpend *arkscript.SpendPath` (proof-of-control path for custom-script
@@ -33,7 +35,14 @@ server during round participation. These types are used across `round`, `vtxo`,
 - `BatchOutputInfo` — Batch output metadata (outpoint, value, tree root).
 - `ConnectorLeafInfo` — Assigned connector leaf (outpoint + output) plus the connector-tree ancestry params (`RootOutputIndex`, `NumLeaves`, `Radix`, `LeafIndex`) the client uses to reconstruct the tree and prove the leaf descends from the commitment tx before signing the forfeit (darepo-client#681).
 - `BoardingInputSignature` — Signed boarding input for round commitment.
-- `ForfeitTxSig` — Forfeit transaction signature.
+- `ForfeitTxSig` — Forfeit transaction signature. `ParticipantVTXOSigs
+  []*ForfeitParticipantSig` carries each non-operator participant's tapscript
+  signature share.
+- `ForfeitParticipantSig` — One non-operator participant's tapscript signature
+  contribution to a forfeit transaction.
+- `SerializeTxProof` / `DeserializeTxProof` — TLV codec for `proof.TxProof`
+  (defined in `lib/types/proof_codec.go`); the canonical wire encoding shared
+  by `wallet` and `db` for `BoardingRequest.TxProof`.
 - `OORPackageDirection` / `OORPackageLinkKind` — Enums for OOR package direction and link types.
 - `VTXORequest.EffectivePolicyTemplate` / `DecodePolicyTemplate` / `DecodeStandardPolicyTemplate` / `EffectivePkScript` — Policy helpers that decode the serialized `PolicyTemplate` field into an `arkscript.PolicyTemplate` and derive the output pkScript.
 - `BoardingRequest.EffectivePolicyTemplate` / `DecodePolicyTemplate` / `DecodeStandardPolicyTemplate` — Equivalent policy helpers for boarding inputs.
@@ -43,13 +52,17 @@ server during round participation. These types are used across `round`, `vtxo`,
 ## Relationships
 
 - **Depends on**: `lib/arkscript` (policy template decoding, `StandardVTXOParams`), `lib/tree` (tree types, used by `Ancestry.TreePath`).
-- **Depended on by**: `round` (round protocol messages), `wallet` (boarding types), `db` (persistence), `rpc` (proto conversion).
+- **Depended on by**: `round` (round protocol messages), `wallet` (boarding types), `db` (persistence), `rpc/roundpb` (proto conversion), `vtxo` (FSM environment and outbox messages), `oor` (package persistence), `darepod` (wallet/forfeit wiring), `lib/actormsg` (admission message fields), `swapclientserver`.
 
 ## Invariants
 
 - `VTXOOwnerKeyFamily` (44) is the HD key family used for deriving VTXO owner signing keys.
 - `VTXOSigningKeyFamily` (45) is the HD key family used for per-round VTXO MuSig2 signing keys.
-- `JoinRoundAuthMessage` produces a deterministic byte encoding for Schnorr signature verification.
+- `JoinRoundAuthMessage` produces a deterministic byte encoding for Schnorr
+  signature verification; `DecodeJoinRoundAuthMessage` enforces the matching
+  decode-time size limits (`joinRoundAuthMaxRequestCount`,
+  `joinRoundAuthMaxBlobEntrySize`, `joinRoundAuthMaxScriptSize`) so a
+  malicious peer cannot force unbounded allocation during decode.
 
 ## Deep Docs
 

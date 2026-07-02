@@ -25,7 +25,7 @@ btcwallet.BtcWallet regardless of the underlying chain source.
 ## Relationships
 
 - **Depends on**: `build` (context logger extraction), `proofkeys` (implements Backend), `indexer` (SchnorrSigner interface).
-- **Depended on by**: `lwwallet` (embeds Wallet + BoardingBackendBase), `btcwbackend` (embeds Wallet + BoardingBackendBase), `darepod` (proof key backend).
+- **Depended on by**: `lwwallet` (embeds Wallet + BoardingBackendBase), `btcwbackend` (embeds Wallet + BoardingBackendBase), `darepod` (proof key backend), `wallet` (aliases `LockID`/`OutputLeaser`/`Utxo` in its interfaces), `txconfirm` (uses `LockID`, `Utxo`, `OutputLeaser` for fee-bump input leasing).
 
 ## Invariants
 

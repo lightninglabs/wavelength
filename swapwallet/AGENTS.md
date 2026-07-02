@@ -19,15 +19,23 @@ default builds avoid the swap executor's dependency graph.
   `history`, or admin proxy helpers; no business logic lives here.
 - `Runtime` — Owns the in-process swap lifecycle: synchronous
   resume-on-startup, deadline watcher (overlays stuck entries as
-  FAILED), monitor loop (fans normalized updates to subscribers).
-  Anchored to the daemon root context so an RPC client disconnect can
-  never cancel in-flight work.
+  FAILED), monitor loop (fans normalized updates to subscribers), and
+  (when `Deps.CreditRegistry` is set) a credit projector loop that polls
+  the credit registry every `creditProjectInterval` (5s) and projects
+  credit-only pay/receive terminal transitions onto wallet rows — the
+  only path that terminates those rows, since they have no swap session
+  feeding the monitor loop. Anchored to the daemon root context so an
+  RPC client disconnect can never cancel in-flight work.
 - `Deps` — Composition struct: `SwapBackend` (in-Go swap runtime),
   `SwapService` (gRPC-shaped swap subserver handle), `RPCServer`
-  (narrow daemonrpc contract), `ChainParams` (Bitcoin network — used to
-  validate BOLT-11 invoice decoding in `PrepareSend` so a cross-network
-  invoice is rejected before a send intent is issued), plus wallet-level
-  deadline, list-limit, and subscribe-buffer knobs.
+  (narrow daemonrpc contract), `CreditRegistry` (lazy
+  `actor.ActorRef[credit.CreditMsg, credit.CreditResp]` to the durable
+  `credit` subsystem — nil when the swap runtime did not publish it, in
+  which case credit-backed Send/Recv are declined), `ChainParams`
+  (Bitcoin network — used to validate BOLT-11 invoice decoding in
+  `PrepareSend` so a cross-network invoice is rejected before a send
+  intent is issued), plus wallet-level deadline, list-limit, and
+  subscribe-buffer knobs.
 - `RPCServer` interface — Narrow contract over `*darepod.RPCServer`
   covering every daemonrpc method swapwallet composes against:
   LeaveVTXOs, SendOnChain, ListVTXOs, ListTransactions, NewAddress, GetInfo,
@@ -55,6 +63,9 @@ default builds avoid the swap executor's dependency graph.
   - `swapclientserver` (typed `Backend` handle and runtime resume)
   - `darepod` (`SwapBackend` interface)
   - `ledger` (account name constants for OOR ledger projection)
+  - `credit` (`CreditMsg`/`CreditResp` actor messages, `CreditOpSummary`,
+    `State`/terminal check for credit-backed Send/Recv routing and the
+    credit projector loop)
   - `btclog/v2` (subsystem logger)
 - **Depended on by**:
   - `cmd/darepod` (`walletdkrpc.go` registers the subserver behind the
@@ -69,6 +80,10 @@ default builds avoid the swap executor's dependency graph.
     `GetInfoRequest`
   - → swapclientrpc (in-process via SwapService): `StartPayRequest`,
     `StartReceiveRequest`, `ListSwapsRequest`, `SubscribeSwapsRequest`
+  - → `credit` (Ask on `Deps.CreditRegistry`, request/response actor
+    messages): `StartCreditPayRequest` (credit-only or mixed-rail pay),
+    `StartCreditReceiveRequest` (sub-dust receive), `ListCreditOpsRequest`
+    (credit projector poll)
 - **Receives**:
   - ← API: `walletdkrpc.{Create,Unlock,Send,Recv,List,Balance,Deposit,
     Status,Exit,ExitStatus,SubscribeWallet}Request`
@@ -99,6 +114,27 @@ default builds avoid the swap executor's dependency graph.
   to the next round without a separate CLI step. If the implicit join fails,
   the error carries the explicit recovery hint (`ark rounds join`) so the
   leave intent — already queued in the round actor — is not stranded silently.
+- A pay routes through the durable `credit` subsystem
+  (`sendCreditInvoiceIntent`) instead of a plain Lightning swap whenever the
+  prepared invoice's quote reserves or requires credits
+  (`intentUsesCredit`); it is **credit-only** (no Lightning swap leg) when
+  the server pins it via `MustUseCredit` or when applied credit plus
+  planned top-up already covers the principal (`creditCoversSat`, computed
+  with saturating addition — an overflowed sum must never under-count and
+  mis-route a credit-backed pay to the wrong rail). `sendCreditInvoiceIntent`
+  and `recvCredit` return an error if `Deps.CreditRegistry` is nil rather
+  than silently falling through to a Lightning-only path.
+- A receive routes to `recvCredit` (sub-dust credit-backed receive) when the
+  requested amount plus available credit (`availableCreditSat`, sourced from
+  `SwapService.ListCredits`) would still land below the operator dust limit,
+  or when available credit alone can't be summed without overflow.
+- The credit projector only surfaces credit-only pays and all credit
+  receives as wallet activity; **mixed pays** (partial credit + Lightning
+  leg) are deliberately skipped by `creditEntryFromSummary` because their
+  payment-hash row is owned by the swap monitor, which is the single
+  terminal authority for the Lightning leg — projecting them here would
+  race the swap FSM. Redemptions are wallet-internal auto-redeem and never
+  surfaced as activity.
 - `ListView` defaults to Activity. Only Activity honors
   `pending_only` and `kinds`; those filters are ignored for VTXOs
   and Onchain.

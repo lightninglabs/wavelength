@@ -10,7 +10,10 @@ validated invariants.
 ## Key Types
 
 - `Node` — Sealed interface for all AST nodes representing spending conditions.
-  Implementations: `Multisig`, `CSV`, `Condition`, `Preimage`, `CLTV`.
+  Implementations: `Multisig`, `CSV`, `Condition`. Hashlock/CLTV semantics are
+  expressed as a `Condition{Predicate: ...}` built by the helper functions
+  `Hash160Condition`, `PaymentHash160Condition`, and
+  `AbsoluteLockTimeCondition` rather than by dedicated node types.
 - `PolicyTemplate` — Semantic representation of a tapscript policy with named
   leaves. Supports encode/decode for persistence.
   - `PolicyTemplate.MatchesPkScript(pkScript []byte) bool` — Compiles the
@@ -52,13 +55,49 @@ validated invariants.
   `MaxLeafTemplateBytes` (16 KiB), `MaxPolicyLeaves` (32),
   `MaxPolicyDepth` (16), `MaxPolicyNodes` (256), `MaxMultisigKeys` (64) —
   cap decode work to prevent amplification from untrusted blobs.
+- `SettlementPair` / `PolicyTemplate.SettlementPairsForParticipant` /
+  `ExtractAbsoluteLockTime` — Pairs a participant's forfeit leaf with its
+  matching auth leaf for signature verification (used by
+  `darepod/wallet_ops.go`).
+- Spend-witness builders (`spend_helpers.go`): `VTXOTapScript`, `VTXOTapKey`,
+  `MultiSigCollabTapLeaf`, `UnilateralCSVTimeoutTapLeaf`,
+  `SignVTXOCollabInput`, `VTXOTimeoutSpendWitness`,
+  `NewVTXOSpendInfoFromPolicy`, `MaybeAppendSighash` — construct the tap
+  leaves and witnesses that back `SpendInfo`'s methods.
+- Policy-structure helpers (`validate.go`): `PolicyValidationOpts`,
+  `ContainsKey`, `SigningKeys`, `SigningKeysForSpendPath`, `ExtractCSVDelay`,
+  `ScriptContainsKey`.
+- `DeriveSequence` / `DeriveLockTime` — Derive tx-context sequence/locktime
+  from a `Node`. `VTXOValidationError` plus sentinels `ErrMissingCollab`,
+  `ErrMissingExit`, `ErrExitNotCSVGated` report structural policy failures
+  (`vtxo.go`).
+- Condition-witness PSBT helpers (`psbt.go`): `EncodeConditionWitness`,
+  `DecodeConditionWitness`, `PutConditionWitnessPSBTInput`,
+  `GetConditionWitnessPSBTInput`, `PSBTKeyConditionWitness`,
+  `ErrConditionWitnessNotFound` — alongside `EncodedLeaf`/`EncodeTapTree`/
+  `DecodeTapTree`.
+- `PolicyLeaf` / `BuildTree` — Compiled-leaf type (with `CompareTo` for
+  canonical ordering) and the tree constructor behind `CompiledPolicy`.
+- `LeafTemplate` / `DecodeLeafTemplate` — Per-leaf building block of
+  `PolicyTemplate` (`Script`, `Encode`, `ParticipantKeys`).
+- `VHTLCOpts` — Constructor parameters for `NewVHTLCPolicy`.
+- `EncodeStandardVTXOTemplate` / `IsStandardVTXOTemplate` /
+  `PolicyTemplate.PkScript()` — Additional standard-VTXO template helpers
+  alongside `EncodeStandardVTXOArtifacts`.
+- `AnchorOption` / `WithAnchorValue` — Functional option overriding the
+  default zero-value P2A anchor output.
+- `PolicyRoot(policy *CompiledPolicy) chainhash.Hash` — Merkle root helper
+  alongside `ComposedPolicy`/`ComposeWithSiblingRoot`.
+- `ARKNUMSKey` / `ARKNUMSHex` / `ARKNUMSSeedPhrase` (`nums.go`) — The
+  unspendable NUMS key used for all taproot key-path spends (see Invariants).
 
 ## Relationships
 
 - **Depends on**: (no internal repo imports; pure cryptographic library).
 - **Depended on by**: `darepod`, `db`, `lib/tree`, `lib/types`, `lib/tx/arktx`,
   `lib/tx/checkpoint`, `lib/tx`, `lib/tx/oor`, `lib/tx/psbtutil`,
-  `oor`, `round`, `vtxo`, `wallet`.
+  `oor`, `round`, `vtxo`, `wallet`, `sdk/swaps`, `unroll`,
+  `lib/recovery`, `vhtlcrecovery/unrollpolicy`.
 
 ## Invariants
 

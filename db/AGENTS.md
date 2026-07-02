@@ -71,7 +71,27 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   safety bounds enforced during `DeserializeTree`.
 - `resolveInputPackage` / `loadPackageBundleBySessionID` — two-stage
   OOR ancestry resolver (`oor_unroll_resolver.go`).
-- `LatestMigrationVersion = 21` — current schema version.
+- `ActivityStore` / `ActivityPersistenceStore` — canonical activity-log
+  store backing the wallet activity feed:
+  `UpsertActivityEntry`/`GetActivityEntry`/`ListActivityEntries` against
+  the current-state `activity_entries` projection, plus
+  `AppendActivityEvent`/`PullActivityEvents` against the append-only
+  `activity_events` transition log used by a resumable `SubscribeWallet`.
+  `ActivityProjection` is the projector's input snapshot; empty BLOB
+  fields must be passed as nil, never a zero-length slice, to avoid the
+  Postgres BYTEA `x''` pitfall.
+- `CreditOperationStoreDB` / `CreditOperationRecord` — durable store for
+  client-side credit orchestration (pay/receive/redeem). The
+  per-operation actor reads/writes `CreditOperationRecord` directly in
+  its Read/Stage/Commit phases instead of using the generic
+  actor-delivery `fsm_checkpoints` blob; the server credit ledger
+  remains authoritative for the money. `CreditOpKind`
+  (`Pay`/`Receive`/`Redeem`) and `CreditOpStatus`
+  (`Pending`/`Completed`/`Failed`, `IsTerminal()`) are append-only enums.
+- `RootKeyStore` / `MacaroonRootKeyStore` — implements
+  `bakery.RootKeyStore.Get` against the `macaroons` table for
+  darepod's RPC macaroon authentication.
+- `LatestMigrationVersion = 24` — current schema version.
 - `PendingIntentPersistenceStore` — implements `wallet.PendingIntentStore`,
   the persistence half of the generic restart-safe intent outbox (header
   `pending_intents` + per-kind detail tables + `pending_intent_anchors`).
@@ -104,8 +124,10 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   (generated query layer), `db/actordelivery` (actor delivery
   persistence), `ledger` (interfaces + domain types), `wallet`
   (`BoardingStore` interface + domain types).
-- **Depended on by**: `round`, `vtxo`, `oor`, `wallet` (storage
-  interfaces), `darepod` (wires DB backends).
+- **Depended on by**: `round`, `vtxo`, `wallet` (storage interfaces,
+  dependency-inverted: `db` implements interfaces those packages
+  define), `oor`, `credit`, `unroll`, `sdk/swaps`, `swapwallet`
+  (direct importers), `darepod` (wires DB backends).
 
 ## Invariants
 
@@ -140,6 +162,20 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
 
 ### Migration notes
 
+- `000024_macaroons` — adds the `macaroons` table (`id BLOB PRIMARY KEY`,
+  `root_key BLOB NOT NULL`) backing darepod's RPC macaroon root-key store.
+- `000023_canonical_activity_log` — adds `activity_kinds` /
+  `activity_statuses` lookup tables mirroring the wire enums `EntryKind` /
+  `EntryStatus` one-to-one (id column equals the proto enum integer, so
+  FKs reject any value that isn't a defined wire enum), the current-state
+  `activity_entries` projection, and the append-only `activity_events`
+  transition log ordered by a monotonic `event_seq`.
+- `000022_credit_operations` — adds `credit_operations`, the single
+  source of truth for one client-side credit orchestration op (pay /
+  receive / redeem). The credit registry actor spawns one durable
+  per-operation actor per non-terminal row and restores them on boot;
+  `snapshot_data` carries the opaque resume material that nothing
+  queries by.
 - `000020_accounting_wallet_sweeps` — adds `wallet_clearing`,
   `wallet_utxo_spent`, and `wallet_sweep_transfer` for sweep
   accounting. Rebuilds the round idempotency index so keyed
@@ -147,6 +183,14 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   collapsing on `(round_id, event_type, debit_account, credit_account)`.
   Renumbered from 000019 to land after `000019_oor_session_registry`,
   which merged to main while this work was in review.
+- `000021_vhtlc_recovery_job_generations` — rebuilds `vhtlc_recovery_jobs`
+  to widen the uniqueness key from `(swap_id, action)` to
+  `(swap_id, action, vtxo_txid, vtxo_vout)`, so a refreshed vHTLC (new
+  outpoint) arms a new recovery "generation" instead of colliding with the
+  prior job. SQLite cannot widen a UNIQUE constraint in place, so the table
+  is recreated, rows are copied, and the state / swap-action / unroll-target
+  indexes are rebuilt. The down migration collapses each `(swap_id, action)`
+  to its newest row before restoring the narrower constraint.
 - `000018_pending_intents` — generalizes the Board-only
   `pending_board_requests` outbox into a supertype/subtype set:
   `pending_intent_kinds` (enum table), `pending_intents` (header: 32-byte
@@ -156,14 +200,6 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   anchored outpoint, PK on the outpoint so a newer intent rebinds, FK to the
   header). Drops `pending_board_requests` outright (alpha; rows only exist
   in the narrow crash window between admission and round seal).
-- `000021_vhtlc_recovery_job_generations` — rebuilds `vhtlc_recovery_jobs`
-  to widen the uniqueness key from `(swap_id, action)` to
-  `(swap_id, action, vtxo_txid, vtxo_vout)`, so a refreshed vHTLC (new
-  outpoint) arms a new recovery "generation" instead of colliding with the
-  prior job. SQLite cannot widen a UNIQUE constraint in place, so the table
-  is recreated, rows are copied, and the state / swap-action / unroll-target
-  indexes are rebuilt. The down migration collapses each `(swap_id, action)`
-  to its newest row before restoring the narrower constraint.
 - `000017_spending_reservations` — adds `spending_reservations` table with
   `(outpoint_hash, outpoint_index)` PK, `owner_kind`, `owner_id`, and
   `created_at`. A row exists IFF the owning spend session was durably

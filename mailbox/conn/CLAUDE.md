@@ -40,6 +40,20 @@ delivery.
   buffered response cleanup.
 - `ErrWaiterExpired` / `ErrWaiterCancelled` — Sentinel errors signaled to
   blocked `AwaitRPC` callers when a waiter is pruned or explicitly removed.
+- `StatusError` (`status_error.go`) — Wraps a non-OK `mailboxpb.Status` so
+  callers can classify the failure and recover the structured payload
+  (`Code`, `SupportedMailboxVersions`, `SupportedArkVersions`) instead of a
+  flattened error string. It is the single status type shared by every
+  client Send, Pull, and AckUpTo path. `NewStatusError(op, status)`
+  constructs it; `IsPermanentVersion()` reports whether the code is one of
+  the four permanent version-compatibility codes
+  (`StatusMailboxVersionUnsupported`, `StatusArkVersionUnsupported`,
+  `StatusArkVersionMismatch`, `StatusUpgradeRequired`).
+  `IsPermanentVersionError(err)` unwraps via `errors.As` so callers don't
+  need to type-assert directly. `serverconn` uses this to classify
+  version-drift/disable failures across the egress, ingress, heartbeat, and
+  bootstrap `GetInfo` paths and to stop retrying durable sends
+  permanently.
 
 ## Relationships
 
@@ -47,7 +61,10 @@ delivery.
   (Envelope proto), `lnd/tlv`.
 - **Depended on by**: `serverconn` (uses `AckState`, `ResponseRegistry`,
   `WrappedProto`, `StableEventMsgID`/`StableEventIdempotencyKey`,
-  `CorrelationID`/`IdempotencyKey`).
+  `CorrelationID`/`IdempotencyKey`, `StatusError`/`NewStatusError`/
+  `IsPermanentVersionError`/the permanent status code constants),
+  `darepod` (version-compatibility classification on the server-side
+  mailbox ingress path).
 
 ## Invariants
 

@@ -38,13 +38,20 @@ communication alongside the raw registration API.
 - `MapBlockEpoch`, `MapConfirmationEvent`, `MapSpendEvent` — Generic helpers
   that wrap a target `TellOnlyRef[Out]` and a mapping function, producing a
   `TellOnlyRef` of the source event type for actor-to-actor notification wiring.
+- `MempoolAcceptResult` — Per-tx outcome of `TestMempoolAccept`
+  (`Txid`/`Accepted`/`Reason`). `ErrPackageMempoolAcceptUnsupported` signals a
+  backend couldn't evaluate a multi-tx package at all.
+- `IsIgnorableBroadcastError`, `IsIgnorableMempoolRejectReason` — Classify
+  broadcast/mempool errors that indicate a tx is already known/confirmed, so
+  callers rebroadcasting for retry/fee-bumping don't treat them as failures.
 
 ## Relationships
 
-- **Depends on**: `baselib/actor` (ActorSystem, ActorBehavior, ServiceKey).
-- **Depended on by**: `round`, `vtxo`, `wallet` (monitoring), `chainbackends`
-  (implements `ChainBackend`), `btcwbackend`, `lwwallet` (also implement
-  `ChainBackend`), `darepod` (wiring).
+- **Depends on**: `baselib/actor` (ActorSystem, ActorBehavior, ServiceKey),
+  `build` (LoggerFromContext).
+- **Depended on by**: `round`, `vtxo`, `wallet`, `fraud`, `txconfirm`, `unroll`
+  (monitoring), `chainbackends` (implements `ChainBackend`), `btcwbackend`,
+  `lwwallet` (also implement `ChainBackend`), `darepod` (wiring).
 
 ## Invariants
 

@@ -35,9 +35,30 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/txcon
 - Exported helpers usable standalone: `BuildCPFPChild`,
   `EstimatePackageFee`, `EstimateWeight`, `SelectFeeInput`.
 - `Wallet` — interface required by the broadcaster: `ListUnspent`,
-  `NewWalletPkScript`, `FinalizePsbt`, plus `wallet.OutputLeaser`
+  `NewWalletPkScript`, `FinalizePsbt`, `FundPsbt` (used by the fee-input
+  fanout below to mint right-sized outputs), plus `walletcore.OutputLeaser`
   (`LeaseOutput` / `ReleaseOutput`) for cross-subsystem UTXO lock
   coordination.
+- Fee-input fanout FSM (`fee_bump_fsm_types.go`, `fee_bump_fsm_logic.go`,
+  `fee_input_actor.go`) — a single long-lived `feeBumpStateMachine` per
+  `TxBroadcasterActor`, cycling `feeBumpStateIdle` ⇄
+  `feeBumpStateFanoutPending`. When a CPFP child broadcast fails with
+  `ErrCPFPFeeInputUnavailable` (confirmed-UTXO shortfall),
+  `maybeEnsureFeeInputSupply` computes per-parent `feeInputDemand`s and
+  feeds a `feeBumpDemandsObserved` event; the idle state funds and
+  broadcasts a fanout transaction that mints right-sized wallet outputs,
+  tracked as a `pendingFeeInputFanout`. A `feeBumpFanoutConfirmedEvent`
+  promotes the reserved outputs into real fee inputs and emits
+  `feeBumpUnwatchFanout` + `feeBumpRetryParents` outbox events so the actor
+  tears down the watch and retries every parent that was stuck in
+  `Broadcasting`; `feeBumpParentEvicted` drops a served parent's
+  assignments on eviction. Falls back to re-spending inputs already
+  reserved by the blocked parents when the wallet has no free confirmed
+  supply. The FSM performs its own wallet/chainsource IO inside
+  transitions (safe because the actor serializes every event) and stashes
+  operational errors on `feeBumpEnvironment.lastErr` (read back via
+  `takeLastErr`) instead of returning them, so a transient fanout failure
+  never tears down the long-lived machine.
 - `EnsureConfirmedReq` / `EnsureConfirmedResp` — public Ask API:
   register interest in a txid with `TargetConfs`, `ConfirmationPkScript`,
   and a subscriber.
@@ -51,7 +72,8 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/txcon
   `AwaitingConfirmation` is reported only once the tx (or a redundant
   parent) is actually in a mempool.
 - Sentinels: `ErrNonTRUCParent`, `ErrCPFPFeeInputUnavailable`,
-  `ErrEnsureParamsMismatch`, `ErrFeeInputProducesDust`.
+  `ErrEnsureParamsMismatch`, `ErrFeeInputProducesDust`,
+  `ErrParentAlreadyBroadcast`.
 - `Config.BroadcastFailureAlertThreshold` — consecutive no-mempool
   failures before the operator escalation fires (default 3). Time to
   first alert ≈ threshold × `FeeBumpIntervalBlocks` blocks.
@@ -60,17 +82,20 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/txcon
 
 - **Depends on**: `baselib/actor`, `baselib/protofsm`, `chainsource`
   (confirmation watches, block epochs, broadcast, package submission,
-  fee estimation, preflight), `wallet` (`Utxo`, `OutputLeaser`,
-  `LockID`), `lib/tx/arktx` (`TxVersion` constant, `IsAnchorOutput`).
-- **Depended on by**: `unroll`, `btcwbackend` (fee-input selection
-  helper), `darepod`, `db`.
+  fee estimation, preflight), `chainbackends` (`PackageTxError` /
+  `WalkPackageTxErrors` for classifying package-submit rejections),
+  `walletcore` (`Utxo`, `OutputLeaser`, `LockID`), `lib/tx/arktx`
+  (`TxVersion` constant, `IsAnchorOutput`).
+- **Depended on by**: `unroll`, `wallet` (boarding-sweep and
+  wallet-sweep broadcast via `EnsureConfirmedReq` / `MapNotification`),
+  `darepod` (constructs and registers the actor under `ServiceKeyName`).
 - **Sends → `chainsource`** (Ask): `BestHeightRequest`,
   `SubscribeBlocksRequest`, `RegisterConfRequest`,
   `UnregisterConfRequest`, `BroadcastTxRequest`,
   `SubmitPackageRequest`, `TestMempoolAcceptRequest`,
   `FeeEstimateRequest`.
 - **Sends → `Wallet`** (direct): `ListUnspent`, `NewWalletPkScript`,
-  `FinalizePsbt`, `LeaseOutput`, `ReleaseOutput`.
+  `FinalizePsbt`, `FundPsbt`, `LeaseOutput`, `ReleaseOutput`.
 - **Sends → caller subscriber** (Tell): `TxConfirmed`, `TxFailed`.
 - **Receives ← `chainsource`** (mapped Tell refs): `BlockEpoch` →
   `blockEpochObservedMsg`; `ConfirmationEvent` →
@@ -117,6 +142,15 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/txcon
   `txconfirmLockID`) and released on eviction/fallback. Lease errors
   are soft — the in-memory reservation map is the source of truth —
   but the lease closes a narrow cross-subsystem race.
+- **Fee-input fanout resolves confirmed-UTXO shortfalls**: when
+  `selectFeeInput` cannot find a confirmed wallet UTXO covering a CPFP
+  child's fee (`ErrCPFPFeeInputUnavailable` wrapping
+  `errCPFPFeeInputShortfall`), the actor drives the shared `feeBumpFSM`
+  (see Key Types) to broadcast a fanout transaction sized to the blocked
+  parents' demands rather than leaving them to retry forever with no
+  path to supply. Only one fanout is ever in flight per actor; its
+  outputs are reserved as `PredictedFeeInputs` on the blocked parents
+  until confirmation promotes them to real `UsedFeeInputs`.
 - **Child vsize is script-aware**: `estimateChildVSize` uses
   `input.TxWeightEstimator` with the actual fee-input and change
   pkScripts (P2TR, P2WKH, nested-P2WKH, …). Unknown script classes

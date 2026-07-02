@@ -50,29 +50,37 @@ transport, without duplicating Ark runtime behavior.
   signing and Sphinx ECDH operations to the daemon wallet without exposing the
   raw private key to the SDK caller. Used by `sdk/swaps` for receive invoice
   signing and onion decoding.
-- `OORSessionDirection` — Enum (`OORSessionDirectionAll`,
-  `OORSessionDirectionOutgoing`, `OORSessionDirectionIncoming`) for
-  filtering local OOR session listings.
-- `ListOORSessionsRequest` — Filter struct: `PendingOnly bool`,
-  `Direction OORSessionDirection`.
-- `OORSessionInfo` — Typed view of one locally persisted OOR session:
-  `SessionID`, `Direction`, `Phase`, `Pending`, `RetryAfter`,
-  `RetryReason`, `InputOutpoints`, `InputAmountSat`, `RecipientCount`.
-- `ListLocalOORSessions(ctx, ListOORSessionsRequest) ([]OORSessionInfo,
-  error)` — Typed wrapper converting proto response to SDK types.
-- `ListPendingOORSessions(ctx) ([]OORSessionInfo, error)` — Convenience
-  wrapper calling `ListLocalOORSessions` with `PendingOnly: true`.
-- `ListOORSessions` — Lower-level passthrough returning the raw
-  `*daemonrpc.ListOORSessionsResponse`; `ListLocalOORSessions` is preferred
-  for new callers.
+- `GetOORSession(ctx, sessionID) (*daemonrpc.OORSessionInfo, error)` —
+  passthrough lookup of the daemon's local durable status for one OOR
+  session. There is no SDK-owned local-session-listing API; the previous
+  `ListLocalOORSessions`/`ListPendingOORSessions`/`OORSessionDirection`
+  surface was removed once caller-intent keys replaced local session
+  enumeration as the retry primitive.
+- `OORSendResult`, `SendOORWithPolicyDetails`,
+  `SendOORWithPolicyAndKeyDetails` — accepted-OOR metadata (session id,
+  resolved recipient outpoint) for policy-backed sends. `SendOORWithPolicy`
+  and `SendOORWithPolicyAndKey` are session-id-only convenience wrappers
+  over the same calls.
+- `PreparedOOR`, `PreparedOORCustomInput`, `TaprootScriptSignature` —
+  deterministic custom-input OOR package and external-signature types
+  produced by `PrepareOORWithCustomInputs` and consumed by
+  `SignOORCustomInput`, letting multi-party custom-input flows stage
+  signatures before submission.
+- `VTXOExpiryInfo` — Typed VTXO expiry classification (thresholds, chain
+  depth, tree depth) returned by `GetVTXOExpiryInfo`.
+- VHTLC recovery passthroughs `ArmVHTLCRecovery`, `EscalateVHTLCRecovery`,
+  `CancelVHTLCRecovery`, `GetVHTLCRecoveryStatus` — persist, escalate,
+  cancel, and poll dormant vHTLC unroll recovery jobs on behalf of
+  higher-level swap FSMs.
 
 ## Relationships
 
 - **Depends on**: `daemonrpc`, `darepod` (embedded mode only), gRPC,
   `google.golang.org/grpc/test/bufconn` (in-process transport).
 - **Depended on by**: `sdk/swaps` (type aliases, receive-auth RPCs, OOR
-  helpers), Go hosts that want remote, embedded, or in-process Ark client
-  access.
+  helpers), `swapclientserver` (`WrapDaemonServer` in-process wiring,
+  `ServerInfo`), Go hosts that want remote, embedded, or in-process Ark
+  client access.
 
 ## Invariants
 
@@ -95,3 +103,7 @@ transport, without duplicating Ark runtime behavior.
   models.
 - Receive-auth signing and ECDH are always delegated to the daemon; the SDK
   never holds raw private key material for receive-auth operations.
+- `StartEmbedded` is unavailable in `js/wasm` builds (`embedded_wasm.go`) and
+  always returns an error there; `EmbeddedConfig.DaemonConfig` is typed `any`
+  in that build so wasm-only callers can depend on `sdk/ark` without
+  importing the native `darepod` package.

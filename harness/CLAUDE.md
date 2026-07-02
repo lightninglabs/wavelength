@@ -7,7 +7,11 @@ containers with network isolation for end-to-end testing.
 
 ## Key Types
 
-- `Harness` — Top-level test harness owning bitcoind, lnd, and arkd lifecycle.
+- `Harness` — Top-level test harness owning bitcoind, lnd, electrs, and
+  (optionally) postgres/tapd container lifecycle. It does not start arkd
+  itself; `systest.SysTestHarness` wraps `harness.Harness` and boots arkd
+  separately, using `Options.ArkdLogStdOut` only to configure that arkd
+  process's log routing.
 - `LndInstance` — Manages an LND container's lifecycle and connection.
 - `TapdHarness` — Optional Tapd instance for asset-related tests.
 - `Options` — Configuration struct passed to `NewHarness`. Controls image
@@ -34,8 +38,8 @@ containers with network isolation for end-to-end testing.
 
 ## Relationships
 
-- **Depends on**: `chain` (bitcoind RPC), `lndbackend` (LND integration),
-  `chainbackends` (PackageSubmitter interface).
+- **Depends on**: `chain` (wraps `rpcclient.Client` in `chain.BitcoindRPCClient`
+  via `Harness.BitcoindClient()`). No other in-repo package imports.
 - **Depended on by**: `systest` (system-level tests).
 
 ## Key Constants

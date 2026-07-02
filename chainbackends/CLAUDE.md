@@ -46,11 +46,19 @@ estimation, and optional v3 package relay via a pluggable `PackageSubmitter`.
 
 ## Relationships
 
-- **Depends on**: `chainsource` (implements `ChainBackend` interface).
-- **Depended on by**: `darepod` (instantiates backend and wires a
-  `PackageSubmitter` from operator config: production uses
-  `chainbackends/bitcoindrpc.PackageSubmitter` directly, itests inject the
-  same submitter from the harness).
+- **Depends on**: `chainsource` (implements `ChainBackend` interface),
+  `chainfees` (fee estimation: `LndClientFeeEstimator` aliases
+  `chainfees.WalletKitEstimator`, built via
+  `chainfees.NewFallbackWalletKitEstimator`).
+- **Depended on by**: `darepod` (holds `Config.PackageSubmitter` as a
+  `chainbackends.PackageSubmitter` and wires `LNDBackend` for the daemon),
+  `cmd/darepod` (constructs the production
+  `chainbackends/bitcoindrpc.PackageSubmitter` and assigns it to
+  `Config.PackageSubmitter`), `btcwbackend` (uses the `PackageSubmitter`
+  interface and `PackageTxError`/`NewPackageTxError`), `lwwallet` and
+  `txconfirm` (classify `*chainbackends.PackageTxError` via
+  `WalkPackageTxErrors`), `systest` (builds `LNDBackend` via
+  `NewLNDBackendFromLndClient` for system tests).
 
 ## Invariants
 
@@ -58,10 +66,10 @@ estimation, and optional v3 package relay via a pluggable `PackageSubmitter`.
 - Provides real-time notifications via lnd's chainntnfs package.
 - `PackageSubmitter` is optional; package-capable backends return an error
   from `SubmitPackage` when no submitter is set. In production `cmd/darepod`
-  injects
-  `chainbackends/bitcoindrpc.PackageSubmitter` when bitcoind flags are
-  configured; the itest harness injects the same type via
-  `darepod.Config.PackageSubmitter`.
+  constructs a `chainbackends/bitcoindrpc.PackageSubmitter` (via
+  `bitcoindrpc.NewWithOptions`) from the `bitcoind.*` CLI flags and assigns
+  it to `darepod.Config.PackageSubmitter`; there is no separate itest
+  harness wiring for it today.
 - `LndClientChainNotifier` enforces a 15-second timeout on registration to
   prevent hanging under LND block load.
 - Log messages use canonical txid strings (not reversed byte slices).
