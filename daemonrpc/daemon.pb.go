@@ -5634,11 +5634,14 @@ type SendOnChainResponse struct {
 	// status is "submitted" on a successful intent registration,
 	// "preview" when dry_run is set.
 	Status string `protobuf:"bytes,5,opt,name=status,proto3" json:"status,omitempty"`
-	// send_job_id is the stable id of the submitted send intent, hex of
-	// a deterministic hash over the consumed outpoints and payload. It
-	// survives a restart and identifies a multi-input sweep as one send,
-	// so callers can use it as a durable handle for the operation. Empty
-	// in dry_run mode.
+	// send_job_id is the deterministic id of the submitted send intent:
+	// hex of a hash over the consumed outpoints and payload. It identifies
+	// a multi-input sweep as one send and is reproducible from the same
+	// inputs, so it is stable across a restart. It is a correlation id, not
+	// a lookup handle (no RPC resolves it), and it is non-secret and
+	// recomputable, so it must never gate a privileged action. Non-empty on
+	// a submitted response from a current daemon; empty only when status is
+	// "preview" (dry_run) or from an older daemon predating this field.
 	SendJobId     string `protobuf:"bytes,6,opt,name=send_job_id,json=sendJobId,proto3" json:"send_job_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
