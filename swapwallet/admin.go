@@ -219,9 +219,15 @@ func (s *Service) forceUnroll(ctx context.Context, req *walletdkrpc.ExitRequest,
 		return nil, status.Errorf(status.Code(err), "exit: %v", err)
 	}
 
+	// Project the new EXIT row into the canonical store as well as fanning
+	// it out, mirroring the cooperative-leave and credit-pay paths. Without
+	// this the store-backed List would miss a user-initiated unilateral
+	// exit until the next startup backfill. Use a cancel-safe context so a
+	// client disconnect after the accepted Unroll cannot drop the store
+	// write.
 	entry := unilateralExitEntryStub(req.GetOutpoint())
 	s.runtime.trackPendingEntryWithoutTimeout(entry)
-	s.runtime.emit(entry)
+	s.runtime.projectAndEmit(context.WithoutCancel(ctx), entry)
 
 	return &walletdkrpc.ExitResponse{
 		Created: resp.GetCreated(),
