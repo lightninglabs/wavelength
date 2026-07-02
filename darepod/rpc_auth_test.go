@@ -6,6 +6,8 @@ import (
 	btcrpcserver "github.com/btcsuite/btcwallet/rpc/rpcserver"
 	btcwalletrpc "github.com/btcsuite/btcwallet/rpc/walletrpc"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
+	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
+	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"gopkg.in/macaroon-bakery.v2/bakery"
@@ -193,6 +195,39 @@ func TestDarepodReadOnlyPermissions(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestDarepodRPCPermissionsCoverDaemonServices registers every service the
+// swapruntime/walletdkrpc daemon serves and asserts the permission map covers
+// all their methods, via the exact check the startup validator runs. Without
+// this, an RPC added without a grant — as happened with the credit RPCs
+// (CreateCredit/RedeemCredit/ListCredits) — only fails when the daemon refuses
+// to boot, not in CI.
+func TestDarepodRPCPermissionsCoverDaemonServices(t *testing.T) {
+	t.Parallel()
+
+	grpcServer := grpc.NewServer()
+	t.Cleanup(grpcServer.Stop)
+
+	daemonrpc.RegisterDaemonServiceServer(
+		grpcServer, &daemonrpc.UnimplementedDaemonServiceServer{},
+	)
+	swapclientrpc.RegisterSwapClientServiceServer(
+		grpcServer,
+		&swapclientrpc.UnimplementedSwapClientServiceServer{},
+	)
+	walletdkrpc.RegisterWalletServiceServer(
+		grpcServer, &walletdkrpc.UnimplementedWalletServiceServer{},
+	)
+	walletdkrpc.RegisterWalletInspectionServiceServer(
+		grpcServer,
+		&walletdkrpc.UnimplementedWalletInspectionServiceServer{},
+	)
+
+	_, err := registeredRPCPermissions(grpcServer)
+	require.NoError(
+		t, err, "every registered method needs a macaroon permission",
+	)
 }
 
 // opActions extracts macaroon action strings for assertions.
