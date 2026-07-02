@@ -53,6 +53,7 @@ import (
 	"github.com/lightninglabs/darepo-client/round"
 	"github.com/lightninglabs/darepo-client/rpc/oorpb"
 	"github.com/lightninglabs/darepo-client/rpc/roundpb"
+	"github.com/lightninglabs/darepo-client/rpcauth"
 	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightninglabs/darepo-client/timeout"
 	"github.com/lightninglabs/darepo-client/txconfirm"
@@ -1228,13 +1229,22 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 	// -------------------------------------------------------
 	s.rpcServer = NewRPCServer(s)
 
+	authService, serverOptions, err := s.localRPCServerOptions(ctx)
+	if err != nil {
+		return err
+	}
+	if authService != nil {
+		defer func() {
+			if err := authService.Stop(); err != nil {
+				s.log.WarnS(ctx, "RPC auth shutdown failed",
+					err,
+				)
+			}
+		}()
+	}
+
 	// Register the DaemonService for local gRPC access (CLI, GUI).
-	//
-	// TODO(roasbeef): Wire RPC.TLSCertPath/TLSKeyPath into
-	// grpc.Creds() once the auto-gen TLS material is in place.
-	s.grpcServer = grpc.NewServer(
-		grpc.ChainUnaryInterceptor(s.cfg.UnaryServerInterceptors...),
-	)
+	s.grpcServer = grpc.NewServer(serverOptions...)
 	daemonrpc.RegisterDaemonServiceServer(
 		s.grpcServer, s.rpcServer,
 	)
@@ -1259,6 +1269,13 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 		}
 		if cleanup != nil {
 			defer cleanup()
+		}
+	}
+	if authService != nil {
+		if _, err := registeredRPCPermissions(
+			s.grpcServer,
+		); err != nil {
+			return err
 		}
 	}
 
@@ -2586,6 +2603,17 @@ func (s *Server) dialServer() (*grpc.ClientConn, error) {
 		)
 	}
 
+	if s.cfg.Server.MacaroonPath != "" {
+		macaroonOpt, err := rpcauth.DialOptionFromFile(
+			s.cfg.Server.MacaroonPath,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		dialOpts = append(dialOpts, macaroonOpt)
+	}
+
 	return grpc.NewClient(s.cfg.Server.Host, dialOpts...)
 }
 
@@ -2593,14 +2621,22 @@ func (s *Server) dialServer() (*grpc.ClientConn, error) {
 // connection. The runtime uses this to send and pull envelopes through the
 // operator's mailbox edge service.
 func (s *Server) newMailboxEdge() mailboxpb.MailboxServiceClient {
-	if s.cfg.MailboxEdgeFactory != nil {
-		return s.cfg.MailboxEdgeFactory(s.serverConn)
-	}
 	if s.mailboxClient != nil {
+		if s.cfg.MailboxEdgeFactory != nil {
+			return s.cfg.MailboxEdgeFactory(
+				s.serverConn, s.mailboxClient,
+			)
+		}
+
 		return s.mailboxClient
 	}
 
-	return mailboxpb.NewMailboxServiceClient(s.serverConn)
+	base := mailboxpb.NewMailboxServiceClient(s.serverConn)
+	if s.cfg.MailboxEdgeFactory != nil {
+		return s.cfg.MailboxEdgeFactory(s.serverConn, base)
+	}
+
+	return base
 }
 
 // buildRPCDispatchers creates the dispatcher map for inbound envelopes.

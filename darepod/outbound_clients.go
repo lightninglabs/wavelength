@@ -11,6 +11,7 @@ import (
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	"github.com/lightninglabs/darepo-client/rpc/restclient"
+	"github.com/lightninglabs/darepo-client/rpcauth"
 	"github.com/lightninglabs/darepo-client/serverconn"
 	"google.golang.org/grpc"
 )
@@ -123,11 +124,25 @@ func (s *Server) operatorRESTOptions() ([]restclient.Option, error) {
 	httpTransport := cloneDefaultHTTPTransport()
 	httpTransport.TLSClientConfig = tlsCfg
 
-	return []restclient.Option{
+	opts := []restclient.Option{
 		restclient.WithHTTPClient(&http.Client{
 			Transport: httpTransport,
 		}),
-	}, nil
+	}
+	if s.cfg.Server.MacaroonPath != "" {
+		macHex, err := rpcauth.HexFromFile(s.cfg.Server.MacaroonPath)
+		if err != nil {
+			return nil, err
+		}
+
+		opts = append(
+			opts, restclient.WithHeader(
+				rpcauth.MacaroonMetadataKey, macHex,
+			),
+		)
+	}
+
+	return opts, nil
 }
 
 // cloneDefaultHTTPTransport returns a mutable copy of the default HTTP

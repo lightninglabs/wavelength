@@ -127,6 +127,8 @@ func Start(ctx context.Context, cfg Config, opts ...Option) (*Client, error) {
 		daemonCfg.RPC = &darepod.RPCConfig{}
 	}
 	daemonCfg.RPC.Listener = listener
+	daemonCfg.RPC.NoTLS = true
+	daemonCfg.RPC.NoMacaroons = true
 	if daemonCfg.RPC.Gateway != nil {
 		// Embedded walletdk talks to darepod through the private
 		// bufconn listener above. The public HTTP gateway would need a

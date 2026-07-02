@@ -182,6 +182,11 @@ type LedgerEventType struct {
 	EventType string
 }
 
+type Macaroon struct {
+	ID      []byte
+	RootKey []byte
+}
+
 type OorPackage struct {
 	SessionID []byte
 	Direction int32

@@ -1938,10 +1938,18 @@ func TestOORRegistryStopDuringInFlightAdmission(t *testing.T) {
 func TestNewOORRegistryActorValidatesRequiredDeps(t *testing.T) {
 	t.Parallel()
 
+	// Share one delivery store across every subtest. This test only
+	// exercises constructor dependency validation, so a single real store
+	// over the test backend is sufficient. Building one per subtest stands
+	// up a fresh Postgres fixture (and connection pool) for each case under
+	// the test_postgres tag, which exhausts the backend's connections and
+	// hangs the run until it times out.
+	deliveryStore := newTestDeliveryStore(t)
+
 	valid := func() OORRegistryConfig {
 		return OORRegistryConfig{
 			RegistryStore: newFakeRegistryStore(),
-			DeliveryStore: newTestDeliveryStore(t),
+			DeliveryStore: deliveryStore,
 			ServerConn:    fakeServerConnRef{},
 			Signer:        testSigner(t),
 			IncomingHandler: &fakeRecipientFilter{

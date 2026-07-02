@@ -28,6 +28,8 @@ func testConfigWithInjectedRPCListener(listener net.Listener) *Config {
 	cfg.RPC.ListenAddr = ""
 	cfg.RPC.Listener = listener
 	cfg.RPC.Gateway.Enabled = false
+	cfg.RPC.NoTLS = true
+	cfg.RPC.NoMacaroons = true
 
 	return cfg
 }

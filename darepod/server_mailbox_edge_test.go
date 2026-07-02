@@ -11,6 +11,19 @@ import (
 
 type stubMailboxServiceClient struct{}
 
+func stubMailboxEdgeFactory(
+	client mailboxpb.MailboxServiceClient,
+) MailboxEdgeFactory {
+
+	return func(
+		_ grpc.ClientConnInterface,
+		_ mailboxpb.MailboxServiceClient,
+	) mailboxpb.MailboxServiceClient {
+
+		return client
+	}
+}
+
 func (s *stubMailboxServiceClient) Send(context.Context, *mailboxpb.SendRequest,
 	...grpc.CallOption) (*mailboxpb.SendResponse, error) {
 
@@ -38,12 +51,7 @@ func TestServerNewMailboxEdgeUsesFactory(t *testing.T) {
 	expected := &stubMailboxServiceClient{}
 	server := &Server{
 		cfg: &Config{
-			MailboxEdgeFactory: func(
-				grpc.ClientConnInterface,
-			) mailboxpb.MailboxServiceClient {
-
-				return expected
-			},
+			MailboxEdgeFactory: stubMailboxEdgeFactory(expected),
 		},
 	}
 

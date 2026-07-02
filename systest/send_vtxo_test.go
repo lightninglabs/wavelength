@@ -503,6 +503,8 @@ func newDirectedSendFixture(t *testing.T,
 	cfg.Server.Insecure = true
 	cfg.RPC.ListenAddr = rpcAddr
 	cfg.RPC.Gateway.ListenAddr = newLoopbackAddr(t)
+	cfg.RPC.NoTLS = true
+	cfg.RPC.NoMacaroons = true
 
 	for _, mutate := range cfgMutators {
 		mutate(cfg)

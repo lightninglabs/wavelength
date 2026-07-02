@@ -54,8 +54,8 @@ func mcpServe(cmd *cobra.Command, _ []string) error {
 	defer conn.Close()
 
 	// The wallet verbs live on the WalletService client; reusing the
-	// existing connection keeps TLS, --no-tls, and --tlscertpath
-	// honored across both surfaces.
+	// existing connection keeps TLS, macaroons, --no-tls, and
+	// --tlscertpath honored across both surfaces.
 	walletClient := walletdkrpc.NewWalletServiceClient(conn)
 
 	server := mcp.NewServer(

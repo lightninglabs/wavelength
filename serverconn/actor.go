@@ -1214,6 +1214,20 @@ func (a *ServerConnectionActor) StartIngress(
 
 	a.wg.Add(2)
 	a.cancelCh <- cancel
+
+	if a.cfg.AuthSignature != nil || a.cfg.TLSBindSignature != nil {
+		// Prime server-side mailbox registration before the first Pull.
+		// The heartbeat envelope carries the same Schnorr and
+		// TLS-binding headers as normal outbound traffic, so the server
+		// can record the binding without waiting for the first ticker
+		// or user request.
+		heartbeatCtx, heartbeatCancel := context.WithTimeout(
+			ingressCtx, defaultSendEventTimeout,
+		)
+		a.sendHeartbeat(heartbeatCtx)
+		heartbeatCancel()
+	}
+
 	go a.ingressLoop(ingressCtx, state)
 	go func() {
 		defer a.wg.Done()

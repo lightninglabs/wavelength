@@ -15,6 +15,7 @@ import (
 	"github.com/lightninglabs/darepo-client/rpc/restclient"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
 	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
+	"github.com/lightninglabs/darepo-client/rpcauth"
 	"google.golang.org/grpc"
 )
 
@@ -57,9 +58,12 @@ func Connect(ctx context.Context, cfg ConnectConfig) (*Client, error) {
 }
 
 func connectREST(ctx context.Context, cfg ConnectConfig) (*Client, error) {
-	transport := restclient.New(
-		cfg.Address, restclient.WithHTTPClient(cfg.HTTPClient),
-	)
+	opts, err := connectRESTOptions(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	transport := restclient.New(cfg.Address, opts...)
 	daemon := restclient.NewDaemonServiceClientFromClient(transport)
 	swaps := restclient.NewSwapClientServiceClientFromClient(transport)
 	wallet := restclient.NewWalletServiceClientFromClient(transport)
@@ -78,6 +82,37 @@ func connectREST(ctx context.Context, cfg ConnectConfig) (*Client, error) {
 	return newClientWithRPC(
 		nil, daemon, swaps, wallet, true, closedWaitChan(), closeFn,
 	), nil
+}
+
+// connectRESTOptions returns HTTP and macaroon options for REST transports.
+func connectRESTOptions(cfg ConnectConfig) ([]restclient.Option, error) {
+	httpClient := cfg.HTTPClient
+	if httpClient == nil && cfg.TLSCertPath != "" {
+		var err error
+		httpClient, err = rpcauth.HTTPClientForCert(cfg.TLSCertPath)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	opts := []restclient.Option{
+		restclient.WithHTTPClient(httpClient),
+	}
+
+	if cfg.MacaroonPath != "" {
+		macHex, err := rpcauth.HexFromFile(cfg.MacaroonPath)
+		if err != nil {
+			return nil, err
+		}
+
+		opts = append(
+			opts, restclient.WithHeader(
+				rpcauth.MacaroonMetadataKey, macHex,
+			),
+		)
+	}
+
+	return opts, nil
 }
 
 // Stop shuts down the embedded daemon or releases the remote transport.

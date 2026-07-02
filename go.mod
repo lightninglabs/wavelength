@@ -137,7 +137,7 @@ require (
 	github.com/lightninglabs/gozmq v0.0.0-20191113021534-d20a764486bf // indirect
 	github.com/lightninglabs/lightning-node-connect/hashmailrpc v1.0.4-0.20250610182311-2f1d46ef18b7 // indirect
 	github.com/lightningnetwork/lnd/actor v0.0.6 // indirect
-	github.com/lightningnetwork/lnd/cert v1.2.2 // indirect
+	github.com/lightningnetwork/lnd/cert v1.2.2
 	github.com/lightningnetwork/lnd/healthcheck v1.2.6 // indirect
 	github.com/lightningnetwork/lnd/queue v1.1.2-0.20260417172355-dfb7d57826c7 // indirect
 	github.com/lightningnetwork/lnd/sqldb v1.0.13-0.20260417172355-dfb7d57826c7
@@ -215,7 +215,7 @@ require (
 	google.golang.org/genproto v0.0.0-20240213162025-012b6fc9bca9 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260414002931-afd174a4e478 // indirect
 	gopkg.in/errgo.v1 v1.0.1 // indirect
-	gopkg.in/macaroon-bakery.v2 v2.3.0 // indirect
+	gopkg.in/macaroon-bakery.v2 v2.3.0
 	gopkg.in/natefinch/lumberjack.v2 v2.0.0 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect

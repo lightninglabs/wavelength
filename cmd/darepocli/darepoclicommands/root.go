@@ -9,6 +9,7 @@ import (
 
 	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/darepo-client/cmd/darepocli/darepoclicommands/devrpc"
+	"github.com/lightninglabs/darepo-client/darepod"
 	"github.com/spf13/cobra"
 )
 
@@ -18,9 +19,10 @@ const (
 )
 
 // NewRootCmd creates the top-level cobra command for darepocli. Global
-// flags (--rpcserver, --format, --tlscertpath, --no-tls) are registered
-// here and made available to all subcommands via PersistentFlags.
+// flags (--rpcserver, --format, --tlscertpath, --macaroonpath, --no-tls) are
+// registered here and made available to all subcommands via PersistentFlags.
 func NewRootCmd() *cobra.Command {
+	defaultCfg := darepod.DefaultConfig()
 	cmd := &cobra.Command{
 		Use:   "darepocli",
 		Short: "Ark client daemon CLI",
@@ -44,12 +46,30 @@ func NewRootCmd() *cobra.Command {
 		"daemon gRPC server address (host:port)",
 	)
 
+	pf.String(
+		"datadir", defaultCfg.DataDir,
+		"root data directory for daemon state",
+	)
+
+	pf.String(
+		"network", defaultCfg.Network,
+		"bitcoin network for default TLS/macaroon paths",
+	)
+
 	pf.String("tlscertpath", "",
 		"path to daemon TLS certificate")
+
+	pf.String("macaroonpath", "",
+		"path to daemon RPC macaroon")
 
 	pf.Bool(
 		"no-tls", false,
 		"disable TLS for daemon connection (dev/regtest)",
+	)
+
+	pf.Bool(
+		"no-macaroons", false, "disable macaroon authentication "+
+			"for daemon connection (dev/regtest)",
 	)
 
 	pf.String(
