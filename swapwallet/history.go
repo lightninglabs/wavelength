@@ -191,6 +191,39 @@ func (h *history) listActivity(ctx context.Context,
 	}, nil
 }
 
+// countPending returns the total number of in-flight (PENDING) activity
+// entries. When the canonical store is wired it counts rows directly, so the
+// result is a true full-feed count instead of the single-page total the
+// paginated listActivity path reports. Without a store it derives the merged
+// pending set and counts that, matching the deadline-overlay semantics of the
+// derive path.
+func (h *history) countPending(ctx context.Context) (uint32, error) {
+	if h.deps.ActivityStore == nil {
+		list, err := h.deriveActivity(ctx, &walletdkrpc.ListRequest{
+			View:        walletdkrpc.ListView_LIST_VIEW_ACTIVITY,
+			PendingOnly: true,
+			Limit:       h.deps.resolveMaxListLimit(),
+		})
+		if err != nil {
+			return 0, err
+		}
+
+		return list.GetTotal(), nil
+	}
+
+	count, err := h.deps.ActivityStore.CountByStatus(
+		ctx, int64(walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING),
+	)
+	if err != nil {
+		return 0, err
+	}
+	if count < 0 {
+		count = 0
+	}
+
+	return uint32(count), nil
+}
+
 // matchesActivityFilter reports whether an entry passes the pending_only and
 // kind filters. It is the single-entry form of filterEntries, applied per row
 // during the store keyset scan.

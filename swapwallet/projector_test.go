@@ -64,6 +64,14 @@ func (f *fakeActivityProjector) ListEntries(_ context.Context, _ int64,
 	return nil, nil
 }
 
+// CountByStatus satisfies darepod.ActivityStore. The count path is tested
+// against a real DB store, so this fake reports nothing.
+func (f *fakeActivityProjector) CountByStatus(_ context.Context, _ int64) (
+	int64, error) {
+
+	return 0, nil
+}
+
 // ids returns the set of canonical ids the fake has been asked to project.
 func (f *fakeActivityProjector) ids() map[string]bool {
 	f.mu.Lock()

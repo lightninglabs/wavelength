@@ -76,6 +76,35 @@ func TestActivityStoreProjectInsertsEntryAndEvent(t *testing.T) {
 	require.EqualValues(t, 1, events[0].Status)
 }
 
+// TestActivityStoreCountByStatus verifies CountByStatus returns a full,
+// unpaginated count of the rows in a given status — the primitive the wallet
+// status summary's pending count relies on.
+func TestActivityStoreCountByStatus(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := newActivityStoreForTest(t)
+
+	// Two pending rows (status 1) and one complete row (status 2).
+	complete := sampleProjection("c1")
+	complete.Status = 2
+	require.NoError(t, store.ProjectEntry(ctx, sampleProjection("p1")))
+	require.NoError(t, store.ProjectEntry(ctx, sampleProjection("p2")))
+	require.NoError(t, store.ProjectEntry(ctx, complete))
+
+	pending, err := store.CountByStatus(ctx, 1)
+	require.NoError(t, err)
+	require.EqualValues(t, 2, pending)
+
+	completed, err := store.CountByStatus(ctx, 2)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, completed)
+
+	failed, err := store.CountByStatus(ctx, 3)
+	require.NoError(t, err)
+	require.EqualValues(t, 0, failed)
+}
+
 // TestActivityStoreProjectSuppressesUnchanged verifies that re-projecting an
 // identical state appends no new event, so the backfill and the swap monitor's
 // replay do not accumulate duplicate transitions in the append-only log.

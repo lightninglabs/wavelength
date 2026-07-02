@@ -98,6 +98,50 @@ func TestListActivityReadsStore(t *testing.T) {
 	require.Empty(t, page2.GetNextCursor())
 }
 
+// TestCountPendingReflectsFullFeed verifies countPending returns the full
+// number of pending rows rather than the single-page total the paginated read
+// path reports. This is the store-backed count behind the wallet status
+// summary's pending count.
+func TestCountPendingReflectsFullFeed(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	h, store := newStoreListFixture(t)
+
+	// Three pending rows plus one terminal row.
+	seedActivity(
+		t, store, "p1", walletdkrpc.EntryKind_ENTRY_KIND_SEND,
+		walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING, 100,
+	)
+	seedActivity(
+		t, store, "p2", walletdkrpc.EntryKind_ENTRY_KIND_SEND,
+		walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING, 200,
+	)
+	seedActivity(
+		t, store, "p3", walletdkrpc.EntryKind_ENTRY_KIND_RECV,
+		walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING, 300,
+	)
+	seedActivity(
+		t, store, "done", walletdkrpc.EntryKind_ENTRY_KIND_SEND,
+		walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE, 400,
+	)
+
+	// A single-page pending read caps its total at the page size, so it
+	// cannot stand in for the pending count.
+	page, err := h.listActivity(ctx, &walletdkrpc.ListRequest{
+		Limit:       1,
+		PendingOnly: true,
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, 1, page.GetTotal())
+	require.True(t, page.GetHasMore())
+
+	// countPending reports every pending row regardless of page size.
+	count, err := h.countPending(ctx)
+	require.NoError(t, err)
+	require.EqualValues(t, 3, count)
+}
+
 // TestListActivityStablePaginationUnderInsert verifies the #781 acceptance
 // criterion: a row inserted between page fetches never causes an existing row
 // to be skipped or duplicated, because the cursor is an immutable keyset.

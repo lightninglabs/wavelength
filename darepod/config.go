@@ -660,6 +660,11 @@ type ActivityStore interface {
 	// of 0 starts from the newest row.
 	ListEntries(ctx context.Context, cursorCreated int64, cursorID string,
 		limit int32) ([]sqlc.ActivityEntry, error)
+
+	// CountByStatus returns the number of current-state rows in the given
+	// status. It backs the wallet status summary's full-feed pending count,
+	// which the paginated List path cannot report.
+	CountByStatus(ctx context.Context, status int64) (int64, error)
 }
 
 // SwapWalletConfig configures the optional walletdkrpc subserver. The struct
