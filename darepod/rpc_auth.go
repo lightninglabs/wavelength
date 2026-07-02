@@ -157,11 +157,11 @@ func newDarepodRPCPermissions() map[string][]bakery.Op {
 	swap := swapclientrpc.SwapClientService_ServiceDesc.ServiceName
 	grant(
 		swap, entitySwap, "read", "QuotePay", "ListSwaps", "GetSwap",
-		"SubscribeSwaps",
+		"SubscribeSwaps", "ListCredits",
 	)
 	grant(
 		swap, entitySwap, "write", "StartPay", "StartReceive",
-		"ResumeSwap",
+		"ResumeSwap", "CreateCredit", "RedeemCredit",
 	)
 
 	walletdk := walletdkrpc.WalletService_ServiceDesc.ServiceName
