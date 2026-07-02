@@ -34,7 +34,7 @@ func TestGatewayForwardsMacaroonToGRPC(t *testing.T) {
 	t.Parallel()
 
 	readOp := bakery.Op{
-		Entity: darepodMacaroonEntity,
+		Entity: entityInfo,
 		Action: "read",
 	}
 	tempDir := t.TempDir()

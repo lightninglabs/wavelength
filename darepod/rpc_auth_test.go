@@ -90,6 +90,111 @@ func TestDarepodRPCPermissionsCoversBtcwallet(t *testing.T) {
 	}
 }
 
+// TestDarepodRPCPermissionsUseGranularEntities verifies the permission map is
+// sliced into multiple logical entities rather than a single all-or-nothing
+// entity, and that every method names a known entity.
+func TestDarepodRPCPermissionsUseGranularEntities(t *testing.T) {
+	t.Parallel()
+
+	known := make(map[string]struct{}, len(darepodEntities))
+	for _, entity := range darepodEntities {
+		known[entity] = struct{}{}
+	}
+
+	seen := make(map[string]struct{})
+	for fullMethod, ops := range darepodRPCPermissions {
+		require.NotEmpty(t, ops, fullMethod)
+		for _, op := range ops {
+			_, ok := known[op.Entity]
+			require.True(
+				t, ok, "%s: unknown entity %q", fullMethod,
+				op.Entity,
+			)
+			seen[op.Entity] = struct{}{}
+		}
+	}
+
+	// The whole point of the taxonomy: more than one entity is in use, so
+	// least-privilege macaroons are possible.
+	require.Greater(t, len(seen), 1)
+}
+
+// TestDarepodRPCPermissionsEntityMapping pins a representative method from each
+// domain to its expected entity so a careless remap is caught.
+func TestDarepodRPCPermissionsEntityMapping(t *testing.T) {
+	t.Parallel()
+
+	fullDaemonMethod := func(method string) string {
+		return "/" + daemonrpc.DaemonService_ServiceDesc.ServiceName +
+			"/" + method
+	}
+
+	cases := map[string]string{
+		fullDaemonMethod("GetInfo"):          entityInfo,
+		fullDaemonMethod("ListVTXOs"):        entityVTXO,
+		fullDaemonMethod("SendVTXO"):         entityVTXO,
+		fullDaemonMethod("NewAddress"):       entityAddress,
+		fullDaemonMethod("Board"):            entityOnChain,
+		fullDaemonMethod("SendOnChain"):      entityOnChain,
+		fullDaemonMethod("SendOOR"):          entityOOR,
+		fullDaemonMethod("JoinNextRound"):    entityRound,
+		fullDaemonMethod("EstimateFee"):      entityFees,
+		fullDaemonMethod("ArmVHTLCRecovery"): entityRecovery,
+		fullDaemonMethod("ListTransactions"): entityActivity,
+	}
+
+	for fullMethod, entity := range cases {
+		ops, ok := darepodRPCPermissions[fullMethod]
+		require.True(t, ok, fullMethod)
+		require.Len(t, ops, 1, fullMethod)
+		require.Equal(t, entity, ops[0].Entity, fullMethod)
+	}
+}
+
+// TestDarepodReadOnlyPermissions verifies the read-only permission set is one
+// read op per entity, authorizes every read method, and authorizes no mutating
+// method.
+func TestDarepodReadOnlyPermissions(t *testing.T) {
+	t.Parallel()
+
+	readOnly := darepodReadOnlyPermissions()
+
+	// The set must be exactly one read op per entity.
+	require.Len(t, readOnly, len(darepodEntities))
+	granted := make(map[bakery.Op]struct{}, len(readOnly))
+	for _, op := range readOnly {
+		require.Equal(t, "read", op.Action, op.Entity)
+		granted[op] = struct{}{}
+	}
+	require.Len(t, granted, len(darepodEntities))
+
+	// Every read method's ops must be granted; no write method's ops may be
+	// granted. This is what makes the token strictly read-only.
+	for fullMethod, ops := range darepodRPCPermissions {
+		allRead := true
+		for _, op := range ops {
+			if op.Action != "read" {
+				allRead = false
+			}
+		}
+
+		for _, op := range ops {
+			_, ok := granted[op]
+			if allRead {
+				require.True(
+					t, ok, "%s: %v not granted", fullMethod,
+					op,
+				)
+			} else if op.Action != "read" {
+				require.False(
+					t, ok, "%s: %v granted to read-only "+
+						"token", fullMethod, op,
+				)
+			}
+		}
+	}
+}
+
 // opActions extracts macaroon action strings for assertions.
 func opActions(ops []bakery.Op) []string {
 	actions := make([]string, 0, len(ops))

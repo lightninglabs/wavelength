@@ -1229,7 +1229,7 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 	// -------------------------------------------------------
 	s.rpcServer = NewRPCServer(s)
 
-	authService, serverOptions, err := s.localRPCServerOptions()
+	authService, serverOptions, err := s.localRPCServerOptions(ctx)
 	if err != nil {
 		return err
 	}
