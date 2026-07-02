@@ -268,3 +268,49 @@ func TestProjectAndEmitStoreErrorStillEmits(t *testing.T) {
 	runtime.projectAndEmit(context.Background(), sampleWalletEntry())
 	require.Equal(t, "payment-hash", recvEntry(t, ch).GetId())
 }
+
+// TestProjectAndEmitSkipsEphemeralBoardingRow verifies the synthetic
+// boarding-unconfirmed row is emitted to subscribers but never persisted: it
+// is ephemeral live state with no durable id, and a delete-free store could
+// never clear it once the deposit confirms under its real txid:vout id.
+func TestProjectAndEmitSkipsEphemeralBoardingRow(t *testing.T) {
+	t.Parallel()
+
+	store := &fakeActivityProjector{}
+	runtime, ch := newProjectorRuntime(t, store)
+
+	entry := sampleWalletEntry()
+	entry.Id = syntheticBoardingUnconfirmedID
+	runtime.projectAndEmit(context.Background(), entry)
+
+	require.Equal(
+		t, syntheticBoardingUnconfirmedID, recvEntry(t, ch).GetId(),
+	)
+	require.Equal(t, 0, store.count(), "ephemeral row must not be stored")
+}
+
+// TestRowToWalletEntryDiscardsUnknownRequestFields verifies a stored request
+// carrying a field this binary does not know (schema drift from a newer
+// daemon) still decodes, while genuinely malformed JSON still fails loudly —
+// a corrupt row is inconsistent state that must surface, not be skipped.
+func TestRowToWalletEntryDiscardsUnknownRequestFields(t *testing.T) {
+	t.Parallel()
+
+	forward := sqlc.ActivityEntry{
+		CanonicalID: "a",
+		RequestJson: `{"lightningInvoice":{"invoice":"lnbc1"},` +
+			`"futureField":42}`,
+	}
+	got, err := rowToWalletEntry(forward)
+	require.NoError(t, err)
+	require.Equal(
+		t, "lnbc1", got.GetRequest().GetLightningInvoice().GetInvoice(),
+	)
+
+	corrupt := sqlc.ActivityEntry{
+		CanonicalID: "b",
+		RequestJson: `{not valid json`,
+	}
+	_, err = rowToWalletEntry(corrupt)
+	require.Error(t, err, "a corrupt request row must fail loudly")
+}

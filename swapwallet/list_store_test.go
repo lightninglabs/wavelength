@@ -4,6 +4,7 @@ package swapwallet
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/btcsuite/btclog/v2"
@@ -235,6 +236,61 @@ func TestListActivityRejectsBadCursor(t *testing.T) {
 		Cursor: "!!!not-base64!!!",
 	})
 	require.ErrorIs(t, err, errInvalidActivityCursor)
+}
+
+// TestListActivityRejectsNonPositiveCursor verifies a cursor whose timestamp is
+// zero or negative is rejected rather than silently colliding with the
+// return-all sentinel and restarting paging from the newest row.
+func TestListActivityRejectsNonPositiveCursor(t *testing.T) {
+	t.Parallel()
+
+	h, _ := newStoreListFixture(t)
+
+	for _, created := range []int64{0, -1} {
+		cursor := encodeActivityCursor(created, "x")
+		_, err := h.listActivity(
+			context.Background(), &walletdkrpc.ListRequest{
+				Cursor: cursor,
+			},
+		)
+		require.ErrorIs(t, err, errInvalidActivityCursor)
+	}
+}
+
+// TestListActivityBoundsFilteredScan verifies a selective filter over a large
+// non-matching table does not scan the whole table in one request: the call
+// stops at the scan budget and returns an empty page plus a cursor to resume,
+// instead of decoding every row (the H-2 amplification cliff).
+func TestListActivityBoundsFilteredScan(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	h, store := newStoreListFixture(t)
+
+	// Seed far more terminal rows than one page's scan budget
+	// (limit * activityScanBudgetFactor), none of which match --pending.
+	const rows = 60
+	for i := 0; i < rows; i++ {
+		seedActivity(
+			t, store, fmt.Sprintf("c%02d", i),
+			walletdkrpc.EntryKind_ENTRY_KIND_SEND,
+			walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+			int64(100+i),
+		)
+	}
+
+	page, err := h.listActivity(ctx, &walletdkrpc.ListRequest{
+		Limit:       2,
+		PendingOnly: true,
+	})
+	require.NoError(t, err)
+
+	// The budget-bounded scan returns no matches but signals more work with
+	// a resume cursor, rather than draining the table (which would report
+	// has_more=false).
+	require.Empty(t, page.GetEntries())
+	require.True(t, page.GetHasMore())
+	require.NotEmpty(t, page.GetNextCursor())
 }
 
 // TestRowToWalletEntryRoundTrip verifies a WalletEntry survives the

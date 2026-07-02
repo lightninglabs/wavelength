@@ -100,6 +100,22 @@ func (h *history) List(ctx context.Context, req *walletdkrpc.ListRequest) (
 // decoded into a keyset position.
 var errInvalidActivityCursor = errors.New("invalid activity cursor")
 
+// syntheticBoardingUnconfirmedID is the id of the derive-path-only row that
+// represents an unconfirmed boarding deposit. It is recomputed live from
+// GetBalance and has no durable identity, so it is deliberately kept out of the
+// canonical store (see the projector's id guard): a delete-free upsert store
+// could never clear it once the deposit confirms under its real txid:vout id.
+const syntheticBoardingUnconfirmedID = "boarding-unconfirmed"
+
+// activityScanBudgetFactor bounds how many store rows a single filtered
+// ACTIVITY page may scan (and protojson-decode), as a multiple of the page
+// limit. Filters (pending_only/kinds) are applied in Go after decode, so a
+// highly selective filter over a large table could otherwise scan the whole
+// table for one page. When the budget is hit before the page fills, the call
+// returns a short page plus a cursor so the caller resumes — bounding the work
+// of any one request at the cost of an occasional extra round-trip.
+const activityScanBudgetFactor = 8
+
 // listActivity returns an ACTIVITY page read from the canonical activity store,
 // newest-first and paged by the opaque cursor. Because the store orders by the
 // immutable (created_at_unix, canonical_id) keyset, paging is stable across
@@ -132,6 +148,9 @@ func (h *history) listActivity(ctx context.Context,
 	// exactly after it.
 	matched := make([]*walletdkrpc.WalletEntry, 0, limit+1)
 	lastCreated, lastID := cursorCreated, cursorID
+	scanBudget := int(limit) * activityScanBudgetFactor
+	scanned := 0
+	budgetExhausted := false
 	for uint32(len(matched)) <= limit {
 		batch, err := h.deps.ActivityStore.ListEntries(
 			ctx, lastCreated, lastID, int32(limit)+1,
@@ -145,6 +164,7 @@ func (h *history) listActivity(ctx context.Context,
 
 		for _, row := range batch {
 			lastCreated, lastID = row.CreatedAtUnix, row.CanonicalID
+			scanned++
 
 			entry, err := rowToWalletEntry(row)
 			if err != nil {
@@ -168,6 +188,16 @@ func (h *history) listActivity(ctx context.Context,
 		if uint32(len(batch)) < uint32(limit)+1 {
 			break
 		}
+
+		// Stop once the scan budget is spent without filling the page.
+		// The last scanned row becomes the resume cursor so the caller
+		// continues rather than the server scanning the rest in one
+		// call.
+		if uint32(len(matched)) <= limit && scanned >= scanBudget {
+			budgetExhausted = true
+
+			break
+		}
 	}
 
 	hasMore := uint32(len(matched)) > limit
@@ -176,11 +206,18 @@ func (h *history) listActivity(ctx context.Context,
 	}
 
 	var nextCursor string
-	if hasMore {
+	switch {
+	case hasMore:
 		last := matched[len(matched)-1]
 		nextCursor = encodeActivityCursor(
 			last.GetCreatedAtUnix(), last.GetId(),
 		)
+
+	case budgetExhausted:
+		// The page did not fill but the store is not drained: resume
+		// strictly after the last scanned row.
+		hasMore = true
+		nextCursor = encodeActivityCursor(lastCreated, lastID)
 	}
 
 	return &walletdkrpc.ActivityList{
@@ -273,6 +310,17 @@ func decodeActivityCursor(cursor string) (int64, string, error) {
 	if err != nil {
 		return 0, "", fmt.Errorf("%w: %v", errInvalidActivityCursor,
 			err)
+	}
+
+	// A real row always has a positive created_at_unix (ProjectEntry
+	// substitutes the clock when a projection omits it), and the
+	// empty-cursor "start from newest" sentinel is handled above. So a
+	// non-positive decoded timestamp is a forged or corrupt token: reject
+	// it loudly rather than let created_at_unix == 0 collide with the
+	// return-all sentinel in the keyset query and silently restart paging
+	// from the newest row.
+	if createdUnix <= 0 {
+		return 0, "", errInvalidActivityCursor
 	}
 
 	return createdUnix, id, nil
@@ -537,7 +585,7 @@ func (h *history) collectPendingBoardingEntries(ctx context.Context) (
 
 	return []*walletdkrpc.WalletEntry{
 		{
-			Id:            "boarding-unconfirmed",
+			Id:            syntheticBoardingUnconfirmedID,
 			Kind:          walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT,
 			Status:        walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
 			AmountSat:     resp.GetBoardingUnconfirmedSat(),
