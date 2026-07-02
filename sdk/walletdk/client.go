@@ -419,6 +419,7 @@ func (c *Client) List(ctx context.Context, req ListRequest) (*ListResult,
 		Kinds:       kinds,
 		Limit:       req.Limit,
 		Offset:      req.Offset,
+		Cursor:      req.Cursor,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("list wallet entries: %w", err)

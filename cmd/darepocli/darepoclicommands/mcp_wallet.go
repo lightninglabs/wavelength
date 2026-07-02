@@ -54,10 +54,11 @@ func registerMCPWalletQueryTools(s *mcp.Server,
 	})
 
 	type activityArgs struct {
-		PendingOnly bool     `json:"pending_only,omitempty" jsonschema:"filter to in-flight entries"`      //nolint:ll
-		Kinds       []string `json:"kinds,omitempty" jsonschema:"kind filter (send, recv, deposit, exit)"` //nolint:ll
-		Limit       uint32   `json:"limit,omitempty" jsonschema:"page size; zero uses daemon default"`     //nolint:ll
-		Offset      uint32   `json:"offset,omitempty" jsonschema:"pagination offset"`                      //nolint:ll
+		PendingOnly bool     `json:"pending_only,omitempty" jsonschema:"filter to in-flight entries"`             //nolint:ll
+		Kinds       []string `json:"kinds,omitempty" jsonschema:"kind filter (send, recv, deposit, exit)"`        //nolint:ll
+		Limit       uint32   `json:"limit,omitempty" jsonschema:"page size; zero uses daemon default"`            //nolint:ll
+		Offset      uint32   `json:"offset,omitempty" jsonschema:"pagination offset (vtxos/onchain views only)"`  //nolint:ll
+		Cursor      string   `json:"cursor,omitempty" jsonschema:"activity page token; pass next_cursor to page"` //nolint:ll
 	}
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "activity",
@@ -67,6 +68,7 @@ func registerMCPWalletQueryTools(s *mcp.Server,
 
 		req, err := buildWalletActivityRequest(
 			args.PendingOnly, args.Kinds, args.Limit, args.Offset,
+			args.Cursor,
 		)
 		if err != nil {
 			return nil, nil, err
@@ -268,13 +270,14 @@ func registerMCPWalletMutateTools(s *mcp.Server,
 // applying the same activity filter parsing the CLI uses so the two
 // surfaces stay in lockstep.
 func buildWalletActivityRequest(pendingOnly bool, kinds []string, limit,
-	offset uint32) (*walletdkrpc.ListRequest, error) {
+	offset uint32, cursor string) (*walletdkrpc.ListRequest, error) {
 
 	req := &walletdkrpc.ListRequest{
 		View:        walletdkrpc.ListView_LIST_VIEW_ACTIVITY,
 		PendingOnly: pendingOnly,
 		Limit:       limit,
 		Offset:      offset,
+		Cursor:      cursor,
 	}
 
 	for _, k := range kinds {

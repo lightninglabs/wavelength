@@ -286,8 +286,15 @@ type ListRequest struct {
 	// Limit caps the page size; zero uses the daemon default.
 	Limit uint32
 
-	// Offset is the pagination offset within the chosen view.
+	// Offset is the pagination offset. It applies to the VTXOs and
+	// Onchain views; the Activity view paginates by Cursor and ignores
+	// Offset.
 	Offset uint32
+
+	// Cursor is the opaque pagination token for the Activity view. Empty
+	// starts from the newest entry; otherwise pass the NextCursor returned
+	// by the previous ActivityList page.
+	Cursor string
 }
 
 // ListResult is a tagged union: exactly one of Activity, VTXOs, or
@@ -312,7 +319,18 @@ type ListResult struct {
 // activity view.
 type ActivityList struct {
 	Entries []Entry
-	Total   uint32
+
+	// Total is the number of entries on this page, not a full-feed count:
+	// the feed is cursor-paged, so use HasMore to decide whether to fetch
+	// again.
+	Total uint32
+
+	// HasMore reports whether more entries exist after this page.
+	HasMore bool
+
+	// NextCursor is the token to pass as ListRequest.Cursor to fetch the
+	// next page. Empty when HasMore is false.
+	NextCursor string
 }
 
 // VTXOInventory is the live VTXO inventory returned by the vtxos view.
