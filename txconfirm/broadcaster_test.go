@@ -3039,3 +3039,134 @@ func makeWalletUTXOWithAmount(amount btcutil.Amount,
 		Amount: amount,
 	}
 }
+
+// TestSelectFeeInputDeprioritizesSuspects verifies that fee-input
+// selection prefers coins with a clean signing history over coins whose
+// CPFP child previously failed to sign, while still falling back to a
+// suspect coin when nothing else qualifies.
+func TestSelectFeeInputDeprioritizesSuspects(t *testing.T) {
+	t.Parallel()
+
+	tx := makeTestTx(true)
+	txid := tx.TxHash()
+
+	small := makeWalletUTXOWithAmount(5_000, 0x01)
+	big := makeWalletUTXOWithAmount(50_000, 0x02)
+
+	newBroadcaster := func() *CPFPBroadcaster {
+		return NewCPFPBroadcaster(BroadcasterConfig{
+			ChainSource: newFakeChainSourceRef(100),
+			Wallet: &fakeWallet{
+				utxos: []*walletcore.Utxo{small, big},
+			},
+		})
+	}
+
+	t.Run("clean history keeps smallest-first", func(t *testing.T) {
+		b := newBroadcaster()
+
+		feeInput, err := b.selectFeeInput(t.Context(), txid, 100)
+		require.NoError(t, err)
+		require.Equal(t, small.Outpoint, feeInput.Outpoint)
+	})
+
+	t.Run("suspect loses to bigger clean coin", func(t *testing.T) {
+		b := newBroadcaster()
+		b.suspectFeeInputs[small.Outpoint] = struct{}{}
+
+		feeInput, err := b.selectFeeInput(t.Context(), txid, 100)
+		require.NoError(t, err)
+		require.Equal(t, big.Outpoint, feeInput.Outpoint)
+	})
+
+	t.Run("suspect used as last resort", func(t *testing.T) {
+		b := newBroadcaster()
+		b.suspectFeeInputs[small.Outpoint] = struct{}{}
+		b.suspectFeeInputs[big.Outpoint] = struct{}{}
+
+		feeInput, err := b.selectFeeInput(t.Context(), txid, 100)
+		require.NoError(t, err)
+		require.Equal(t, small.Outpoint, feeInput.Outpoint)
+	})
+}
+
+// TestFallbackDirectBroadcastMarksSuspects verifies that only a failure
+// at the CPFP child signing stage indicts the selected fee input; other
+// setup stages leave the input's history clean.
+func TestFallbackDirectBroadcastMarksSuspects(t *testing.T) {
+	t.Parallel()
+
+	tx := makeTestTx(true)
+	txid := tx.TxHash()
+	req := &BroadcastRequest{Tx: tx, Label: "suspect-test"}
+	op := makeWalletUTXOWithAmount(5_000, 0x03).Outpoint
+
+	t.Run("sign failure marks the input", func(t *testing.T) {
+		b := NewCPFPBroadcaster(BroadcasterConfig{
+			ChainSource: newFakeChainSourceRef(100),
+		})
+
+		_, err := b.fallbackDirectBroadcast(
+			t.Context(), req, txid, op, stageSignCPFPChild,
+			fmt.Errorf("PSBT is not finalizable"),
+		)
+		require.NoError(t, err)
+		require.Contains(t, b.suspectFeeInputs, op)
+	})
+
+	t.Run("other stages do not mark", func(t *testing.T) {
+		b := NewCPFPBroadcaster(BroadcasterConfig{
+			ChainSource: newFakeChainSourceRef(100),
+		})
+
+		_, err := b.fallbackDirectBroadcast(
+			t.Context(), req, txid, op, "build_cpfp_child",
+			fmt.Errorf("boom"),
+		)
+		require.NoError(t, err)
+		require.NotContains(t, b.suspectFeeInputs, op)
+	})
+
+	t.Run("zero outpoint is never marked", func(t *testing.T) {
+		b := NewCPFPBroadcaster(BroadcasterConfig{
+			ChainSource: newFakeChainSourceRef(100),
+		})
+
+		_, err := b.fallbackDirectBroadcast(
+			t.Context(), req, txid, wire.OutPoint{},
+			stageSignCPFPChild, fmt.Errorf("boom"),
+		)
+		require.NoError(t, err)
+		require.Empty(t, b.suspectFeeInputs)
+	})
+}
+
+// TestSubmitClearsSuspectAfterSuccessfulSign verifies the end-to-end
+// recovery path: a coin marked suspect from an earlier transient signing
+// failure is still usable as a last resort, and a successful sign clears
+// the suspicion.
+func TestSubmitClearsSuspectAfterSuccessfulSign(t *testing.T) {
+	t.Parallel()
+
+	utxo := makeWalletUTXO(t)
+
+	b := NewCPFPBroadcaster(BroadcasterConfig{
+		ChainSource: newFakeChainSourceRef(100),
+		Wallet: &fakeWallet{
+			utxos: []*walletcore.Utxo{utxo},
+		},
+	})
+
+	// Simulate an earlier signing refusal of the wallet's only coin.
+	b.suspectFeeInputs[utxo.Outpoint] = struct{}{}
+
+	result, err := b.Submit(t.Context(), 100, &BroadcastRequest{
+		Tx:    makeTestTx(true),
+		Label: "suspect-recovery",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result.ChildTxid)
+
+	// The sign succeeded, so the coin's history is clean again.
+	require.NotContains(t, b.suspectFeeInputs, utxo.Outpoint)
+}

@@ -346,6 +346,17 @@ type CPFPBroadcaster struct {
 	// and released via Evict when the caller's FSM learns the parent
 	// has terminally confirmed or failed.
 	parentStates map[chainhash.Hash]*parentBumpState
+
+	// suspectFeeInputs records wallet outpoints whose CPFP child failed
+	// during signing. Selection deprioritizes these so a coin the signer
+	// has refused (e.g. an imported watch-only script output that leaked
+	// through the backend's UTXO enumeration) cannot keep winning the
+	// smallest-first pick on every retry while signable coins sit idle.
+	// A suspect is still used as a last resort when no other candidate
+	// qualifies, so a transient signing failure (wallet sync lag) cannot
+	// permanently starve fee bumping, and the mark is cleared the moment
+	// the input finalizes successfully.
+	suspectFeeInputs map[wire.OutPoint]struct{}
 }
 
 // NewCPFPBroadcaster creates a new generic CPFP broadcaster helper.
@@ -359,9 +370,10 @@ func NewCPFPBroadcaster(cfg BroadcasterConfig) *CPFPBroadcaster {
 	}
 
 	return &CPFPBroadcaster{
-		cfg:          cfg,
-		log:          cfg.Log.UnwrapOr(btclog.Disabled),
-		parentStates: make(map[chainhash.Hash]*parentBumpState),
+		cfg:              cfg,
+		log:              cfg.Log.UnwrapOr(btclog.Disabled),
+		parentStates:     make(map[chainhash.Hash]*parentBumpState),
+		suspectFeeInputs: make(map[wire.OutPoint]struct{}),
 	}
 }
 
@@ -911,10 +923,14 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context, height int32,
 	)
 	if err != nil {
 		return b.fallbackDirectBroadcast(
-			ctx, req, txid, feeInput.Outpoint, "sign_cpfp_child",
+			ctx, req, txid, feeInput.Outpoint, stageSignCPFPChild,
 			err,
 		)
 	}
+
+	// The input signed cleanly, so clear any suspicion recorded from an
+	// earlier transient failure (e.g. wallet sync lag at first pick).
+	delete(b.suspectFeeInputs, feeInput.Outpoint)
 
 	// Preflight the package (parent + signed child) against local node
 	// policy before asking the backend to relay it. A rejection here is
@@ -1050,6 +1066,12 @@ func (b *CPFPBroadcaster) applyReplacementFloor(parent *wire.MsgTx,
 	return feeRate, totalFee
 }
 
+// stageSignCPFPChild names the CPFP setup stage where the child PSBT is
+// signed and finalized. A failure at this stage indicts the selected fee
+// input specifically (the wallet refused to sign it), which is why
+// fallbackDirectBroadcast marks the input as suspect for this stage only.
+const stageSignCPFPChild = "sign_cpfp_child"
+
 // fallbackDirectBroadcast logs one CPFP setup failure and falls back to
 // broadcasting the parent transaction directly.
 //
@@ -1064,6 +1086,16 @@ func (b *CPFPBroadcaster) fallbackDirectBroadcast(ctx context.Context,
 	*BroadcastResult, error) {
 
 	b.releaseFeeOutpoint(ctx, txid, releaseOutpoint)
+
+	// A signing failure means the wallet refused this specific input;
+	// deprioritize it so the next selection prefers a coin with a clean
+	// history. Other stages (fee estimation, change derivation, child
+	// construction) do not indict the input.
+	if stage == stageSignCPFPChild &&
+		releaseOutpoint != (wire.OutPoint{}) {
+
+		b.suspectFeeInputs[releaseOutpoint] = struct{}{}
+	}
 
 	// A fee bump of a funded-anchor parent must never take the direct
 	// fallback: the parent relayed on its own fee and is (or was) already
@@ -1218,19 +1250,36 @@ func (b *CPFPBroadcaster) selectFeeInput(ctx context.Context,
 
 	deadline := time.Now().Add(2 * time.Second)
 
+	var lastSuspect *walletcore.Utxo
 	for {
 		utxos, err := b.cfg.Wallet.ListUnspent(ctx, 1, 9999999)
 		if err != nil {
 			return nil, fmt.Errorf("list unspent: %w", err)
 		}
 
-		var best *walletcore.Utxo
+		// Track the smallest qualifying candidate in two tiers:
+		// coins with a clean signing history, and coins whose CPFP
+		// child previously failed to sign. A suspect only wins when
+		// no clean candidate qualifies, so one unsignable output can
+		// never shadow a signable coin on every retry.
+		var best, bestSuspect *walletcore.Utxo
 		for _, utxo := range utxos {
 			if _, skip := excluded[utxo.Outpoint]; skip {
 				continue
 			}
 
 			if utxo.Amount < minAmount {
+				continue
+			}
+
+			_, suspect := b.suspectFeeInputs[utxo.Outpoint]
+			if suspect {
+				if bestSuspect == nil ||
+					utxo.Amount < bestSuspect.Amount {
+
+					bestSuspect = utxo
+				}
+
 				continue
 			}
 
@@ -1241,6 +1290,9 @@ func (b *CPFPBroadcaster) selectFeeInput(ctx context.Context,
 
 		if best != nil {
 			return feeInputFromWalletUTXO(best), nil
+		}
+		if bestSuspect != nil {
+			lastSuspect = bestSuspect
 		}
 
 		// After one CPFP package confirms, wallet backends
@@ -1259,6 +1311,15 @@ func (b *CPFPBroadcaster) selectFeeInput(ctx context.Context,
 
 		case <-time.After(100 * time.Millisecond):
 		}
+	}
+
+	// No clean candidate materialized within the poll window. Settle for
+	// a previously refused coin rather than giving up outright: if the
+	// earlier signing failure was transient (wallet sync lag), this
+	// retry recovers, and if the coin is genuinely unsignable the sign
+	// step fails exactly as it would have before the deprioritization.
+	if lastSuspect != nil {
+		return feeInputFromWalletUTXO(lastSuspect), nil
 	}
 
 	return nil, fmt.Errorf("%w: no confirmed wallet UTXOs available (need "+
