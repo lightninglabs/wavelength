@@ -76,16 +76,33 @@
 // injected via Deps.ActivityStore): activity_entries is the current-state
 // projection and activity_events is the append-only transition log. Writes
 // happen project-then-emit at the swap monitor loop, the cooperative-leave
-// submit, and the deadline overlay, plus a one-time startup backfill from the
-// collectors below. The read path is UNCHANGED for now: List and
-// SubscribeWallet still derive from the live merge in history.go. A later
-// change cuts List over to the store's keyset cursor and SubscribeWallet over
-// to the activity_events event_seq cursor, then removes the merge.
+// submit, the credit poll, the forced unilateral exit, and the deadline
+// overlay, plus a one-time startup backfill from the collectors below.
 //
-// Until that cutover, the canonical id stored for a cooperative-leave EXIT is
-// still the consumed VTXO outpoint and a DEPOSIT is still keyed by txid:vout
-// (or the synthetic boarding-unconfirmed row), so the same operation can hold
-// different ids pending vs. confirmed — exactly the limitation above. Giving
-// EXIT/DEPOSIT/on-chain-send a stable cross-lifecycle id needs the daemon-side
-// hooks this V1 LIMITATIONS block describes and is tracked separately.
+// The RPC read path now reads the store: List(ACTIVITY) pages activity_entries
+// by the immutable (created_at_unix, canonical_id) keyset cursor, and
+// SubscribeWallet's include_existing snapshot goes through the same
+// store-backed List. deriveActivity (the live merge) is retained only for the
+// store-less/test build and to seed the startup backfill. Because the store is
+// ordered by the immutable created_at keyset, the feed is newest-by-creation,
+// not newest-by-update.
+//
+// Consequences of the store-backed read that are tracked, not yet closed:
+//   - Producers without an ongoing projector — confirmed boarding DEPOSIT and
+//     daemon-side sweep/EXIT rows derived from ListTransactions — reach the
+//     store only via the startup backfill, so a newly-confirmed one appears in
+//     List after the next restart rather than immediately.
+//   - The synthetic boarding-unconfirmed DEPOSIT row is derive-path-only: it
+//     is ephemeral live state (recomputed from GetBalance, no durable id) and
+//     is deliberately NOT projected, so on a store build an unconfirmed
+//     boarding deposit surfaces via Balance rather than as an activity row
+//     until it confirms.
+//
+// The canonical id stored for a cooperative-leave EXIT is still the consumed
+// VTXO outpoint and a DEPOSIT is still keyed by txid:vout, so the same
+// operation can hold different ids pending vs. confirmed — exactly the
+// limitation above. Giving EXIT/DEPOSIT/on-chain-send a stable cross-lifecycle
+// id, and projecting the backfill-only producers on an ongoing basis, needs
+// the daemon-side hooks this V1 LIMITATIONS block describes and is tracked
+// separately.
 package swapwallet
