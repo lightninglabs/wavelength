@@ -1938,10 +1938,20 @@ func TestOORRegistryStopDuringInFlightAdmission(t *testing.T) {
 func TestNewOORRegistryActorValidatesRequiredDeps(t *testing.T) {
 	t.Parallel()
 
+	// Share one delivery store across all subtests. The constructor only
+	// checks the dependency for presence, and building the store per
+	// subtest is not just wasteful under the postgres tag, it deadlocks:
+	// each store spins up a docker fixture gated by a package-level
+	// semaphore of four slots, and because this closure captures the
+	// parent t, no fixture is torn down until the whole test ends. The
+	// first four sequential subtests would hold every slot and the fifth
+	// would block on the semaphore until the test binary's timeout.
+	deliveryStore := newTestDeliveryStore(t)
+
 	valid := func() OORRegistryConfig {
 		return OORRegistryConfig{
 			RegistryStore: newFakeRegistryStore(),
-			DeliveryStore: newTestDeliveryStore(t),
+			DeliveryStore: deliveryStore,
 			ServerConn:    fakeServerConnRef{},
 			Signer:        testSigner(t),
 			IncomingHandler: &fakeRecipientFilter{
