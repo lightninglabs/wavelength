@@ -202,6 +202,9 @@ func TestManagerStartReconcilesConfirmedExit(t *testing.T) {
 	store.On(
 		"ListVTXOsByStatus", t.Context(), VTXOStatusUnilateralExit,
 	).Return([]*Descriptor{vtxo}, nil)
+	store.On(
+		"ListVTXOsByStatus", t.Context(), VTXOStatusPendingForfeit,
+	).Return([]*Descriptor{}, nil)
 	store.On("GetVTXO", t.Context(), vtxo.Outpoint).Return(vtxo, nil)
 	store.On(
 		"UpdateVTXOStatus", t.Context(), vtxo.Outpoint, VTXOStatusSpent,

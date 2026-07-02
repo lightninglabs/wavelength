@@ -424,6 +424,20 @@ type directedSendFixture struct {
 	mailboxServer  *fakeMailboxServer
 	operatorKey    *btcec.PublicKey
 	seededOutpoint wire.OutPoint
+
+	// cfg is the daemon configuration. It is retained so the daemon can be
+	// torn down and relaunched against the same data directory by
+	// restart().
+	cfg *darepod.Config
+
+	// rpcAddr is the daemon's gRPC listen address, reused across restarts
+	// so the client reconnects to the same endpoint.
+	rpcAddr string
+
+	// serverCancel cancels the currently running daemon, and serverErrChan
+	// receives its run error. Both are replaced on every launch().
+	serverCancel  context.CancelFunc
+	serverErrChan chan error
 }
 
 // newDirectedSendFixture starts a full darepod instance against the systest
@@ -437,8 +451,6 @@ func newDirectedSendFixture(t *testing.T,
 	t.Helper()
 
 	h := NewSysTestHarness(t)
-	ctx, cancel := context.WithCancel(h.Context())
-	t.Cleanup(cancel)
 
 	operatorPriv, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
@@ -501,53 +513,93 @@ func newDirectedSendFixture(t *testing.T,
 		btcutil.Amount(testSeededAmountSat),
 	)
 
-	server, err := darepod.NewServer(cfg)
+	fixture := &directedSendFixture{
+		t:              t,
+		harness:        h,
+		mailboxServer:  mailboxServer,
+		operatorKey:    operatorPriv.PubKey(),
+		seededOutpoint: seededOutpoint,
+		cfg:            cfg,
+		rpcAddr:        rpcAddr,
+	}
+
+	// Register the shutdown before launching so a launch that fails its
+	// readiness wait (which t.Fatals) still tears down the server
+	// goroutine. shutdown is idempotent and a no-op when nothing started.
+	t.Cleanup(fixture.shutdown)
+	fixture.launch()
+
+	return fixture
+}
+
+// launch starts a fresh darepod instance from the fixture's retained config and
+// connects a new client to it, waiting for the daemon RPC to become ready. It
+// is used both for the initial start and for relaunch after restart().
+func (f *directedSendFixture) launch() {
+	t := f.t
+
+	ctx, cancel := context.WithCancel(f.harness.Context())
+
+	server, err := darepod.NewServer(f.cfg)
 	require.NoError(t, err)
 
-	serverErrChan := make(chan error, 1)
+	errChan := make(chan error, 1)
 	go func() {
-		serverErrChan <- server.RunWithContext(ctx)
+		errChan <- server.RunWithContext(ctx)
 	}()
 
-	t.Cleanup(func() {
-		cancel()
-
-		select {
-		case runErr := <-serverErrChan:
-			if runErr != nil &&
-				!errors.Is(runErr, context.Canceled) {
-
-				require.NoError(t, runErr)
-			}
-
-		case <-time.After(10 * time.Second):
-			t.Fatal("timeout waiting for darepod shutdown")
-		}
-	})
+	f.serverCancel = cancel
+	f.serverErrChan = errChan
 
 	conn, err := grpc.NewClient(
-		rpcAddr,
+		f.rpcAddr,
 		grpc.WithTransportCredentials(
 			insecure.NewCredentials(),
 		),
 	)
 	require.NoError(t, err)
-	t.Cleanup(func() {
-		require.NoError(t, conn.Close())
-	})
 
-	client := daemonrpc.NewDaemonServiceClient(conn)
-	waitForDaemonReady(t, client)
+	f.conn = conn
+	f.client = daemonrpc.NewDaemonServiceClient(conn)
 
-	return &directedSendFixture{
-		t:              t,
-		harness:        h,
-		client:         client,
-		conn:           conn,
-		mailboxServer:  mailboxServer,
-		operatorKey:    operatorPriv.PubKey(),
-		seededOutpoint: seededOutpoint,
+	waitForDaemonReady(t, f.client)
+}
+
+// shutdown stops the currently running daemon and closes its client connection,
+// waiting for a clean exit. It is idempotent so it is safe both as the test
+// cleanup and as the first half of restart().
+func (f *directedSendFixture) shutdown() {
+	t := f.t
+
+	if f.conn != nil {
+		require.NoError(t, f.conn.Close())
+		f.conn = nil
 	}
+
+	if f.serverCancel == nil {
+		return
+	}
+
+	f.serverCancel()
+	select {
+	case runErr := <-f.serverErrChan:
+		if runErr != nil && !errors.Is(runErr, context.Canceled) {
+			require.NoError(t, runErr)
+		}
+
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout waiting for darepod shutdown")
+	}
+
+	f.serverCancel = nil
+}
+
+// restart tears the daemon down and brings it back up against the same data
+// directory, simulating a crash/restart. Persisted state (including VTXOs
+// reserved into pending-forfeit) survives; the in-memory round FSM does not.
+func (f *directedSendFixture) restart() {
+	f.shutdown()
+	f.launch()
 }
 
 // waitForDaemonReady polls GetInfo until the daemon reports wallet

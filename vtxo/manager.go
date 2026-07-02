@@ -470,6 +470,11 @@ func (m *Manager) Start(ctx context.Context,
 	// spend died before its reservation was durably recorded (orphans).
 	m.sweepOrphanedReservations(ctx)
 
+	// Likewise, return any VTXOs stranded in PendingForfeitState to Live:
+	// their owning round FSM is in-memory only and cannot have survived the
+	// restart to release the reservation itself.
+	m.releaseOrphanedForfeits(ctx)
+
 	return nil
 }
 
@@ -1482,6 +1487,11 @@ func (m *Manager) sweepOrphanedReservations(ctx context.Context) {
 			continue
 		}
 
+		// Refresh the recovery-time liveDescriptors snapshot so the
+		// released VTXO no longer reads as Spending (see
+		// markDescriptorLive).
+		m.markDescriptorLive(op)
+
 		released++
 	}
 
@@ -1530,6 +1540,104 @@ func (m *Manager) sweepOrphanedReservations(ctx context.Context) {
 		slog.Int("released", released),
 		slog.Int("redriven", redriven),
 	)
+}
+
+// releaseOrphanedForfeits returns VTXOs stranded in PendingForfeitState back to
+// LiveState at startup. A VTXO enters PendingForfeitState when an in-flight
+// cooperative round (refresh, leave, or directed send) reserves it as a forfeit
+// input. That reservation is owned by the round FSM, which is in-memory only:
+// temp rounds are never persisted, and the rounds table is not written until
+// InputSigSentState, the point of no return. A daemon that restarts while a
+// round sits in any pre-signing state therefore loses the FSM that would have
+// released the reservation on failure (round.releaseForfeitsOnFailure), leaving
+// the VTXO orphaned in PendingForfeitState with no path back to Live.
+//
+// Any VTXO found in PendingForfeitState at startup is provably orphaned.
+// Forfeit signatures are only submitted on the PendingForfeit -> Forfeiting
+// transition, so a still-PendingForfeit VTXO has leaked no signature and the
+// operator cannot broadcast a forfeit; returning it to LiveState is safe and
+// cannot double-spend. VTXOs already in Forfeiting or Forfeited are past the
+// point of no return and are deliberately left untouched for chain-confirmation
+// reconciliation.
+func (m *Manager) releaseOrphanedForfeits(ctx context.Context) {
+	pending, err := m.cfg.Store.ListVTXOsByStatus(
+		ctx, VTXOStatusPendingForfeit,
+	)
+	if err != nil {
+		m.logger(ctx).ErrorS(
+			ctx,
+			"Forfeit sweep: list PendingForfeit VTXOs failed",
+			err,
+		)
+
+		return
+	}
+
+	var released int
+	for _, desc := range pending {
+		op := desc.Outpoint
+
+		ref, ok := m.actors[op]
+		if !ok {
+			m.logger(ctx).WarnS(ctx,
+				"Forfeit sweep: no actor for orphaned "+
+					"PendingForfeit VTXO", nil,
+				slog.String("outpoint", op.String()),
+			)
+
+			continue
+		}
+
+		// Bound the ask so a single wedged child actor cannot stall the
+		// daemon's startup critical path indefinitely; this matches
+		// every other forfeit-path ask in the manager.
+		result := m.askForfeitVTXOActor(
+			ctx, ref, &ForfeitReleasedEvent{},
+		)
+		if _, err := result.Unpack(); err != nil {
+			m.logger(ctx).WarnS(
+				ctx,
+				"Forfeit sweep: release failed",
+				err,
+				slog.String("outpoint", op.String()),
+			)
+
+			continue
+		}
+
+		// The release flipped the actor and DB status to Live, but the
+		// liveDescriptors snapshot was captured during actor recovery
+		// before this sweep ran. Refresh it so downstream consumers
+		// such as the fraud-watch restore do not see the stale
+		// PendingForfeit status and skip the now-live VTXO.
+		m.markDescriptorLive(op)
+
+		released++
+	}
+
+	m.logger(ctx).InfoS(ctx, "Forfeit sweep complete",
+		slog.Int("pending_forfeit", len(pending)),
+		slog.Int("released", released),
+	)
+}
+
+// markDescriptorLive updates the cached liveDescriptors snapshot so a VTXO that
+// a startup sweep returned to LiveState is reported with its true status. The
+// snapshot is captured during actor recovery, before the sweeps run, so without
+// this refresh a released VTXO would still read with its pre-sweep status
+// (PendingForfeit or Spending). Consumers that key on status would then act on
+// stale data: the fraud-watch restore, for one, skips any descriptor whose
+// status is not Live and would leave a swept OOR VTXO's ancestor spend watches
+// un-armed. The entries are pointers into the same descriptors the snapshot
+// shares, so mutating Status in place is visible to every reader.
+func (m *Manager) markDescriptorLive(op wire.OutPoint) {
+	for _, desc := range m.liveDescriptors {
+		if desc.Outpoint == op {
+			desc.Status = VTXOStatusLive
+
+			return
+		}
+	}
 }
 
 // handleReleaseSpend releases VTXOs from spend reservation back to
