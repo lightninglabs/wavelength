@@ -418,17 +418,14 @@ func (s *Service) fetchBalance(ctx context.Context) (
 	return resp, nil
 }
 
-// countPendingEntries asks the history merger for a pending-only page and
-// returns the size as the wallet-level pending count.
+// countPendingEntries returns the wallet-level count of in-flight entries. It
+// delegates to the history merger's full-feed pending count rather than a
+// List page total, which is capped at one page under cursor pagination.
 func (s *Service) countPendingEntries(ctx context.Context) (uint32, error) {
-	resp, err := s.history.List(ctx, &walletdkrpc.ListRequest{
-		View:        walletdkrpc.ListView_LIST_VIEW_ACTIVITY,
-		PendingOnly: true,
-		Limit:       s.deps.resolveMaxListLimit(),
-	})
+	count, err := s.history.countPending(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("count pending: %w", err)
 	}
 
-	return resp.GetActivity().GetTotal(), nil
+	return count, nil
 }

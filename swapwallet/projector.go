@@ -9,6 +9,7 @@ import (
 	"log/slog"
 
 	"github.com/lightninglabs/darepo-client/db"
+	"github.com/lightninglabs/darepo-client/db/sqlc"
 	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 	"google.golang.org/protobuf/encoding/protojson"
 )
@@ -26,8 +27,14 @@ func (r *Runtime) project(ctx context.Context, entry *walletdkrpc.WalletEntry) {
 	}
 
 	// A row with no canonical id cannot be keyed; skip it, matching the
-	// id-guard the pending tracker already applies.
-	if entry.GetId() == "" {
+	// id-guard the pending tracker already applies. The synthetic
+	// boarding-unconfirmed row is skipped for the same reason: it is
+	// ephemeral live state recomputed from GetBalance with no durable
+	// identity, so persisting it into a delete-free store would strand a
+	// PENDING row that never clears once the deposit confirms under its
+	// real txid:vout id.
+	if entry.GetId() == "" ||
+		entry.GetId() == syntheticBoardingUnconfirmedID {
 		return
 	}
 
@@ -79,7 +86,7 @@ func (r *Runtime) backfillActivity(ctx context.Context) {
 		projected int
 	)
 	for {
-		list, err := h.listActivity(ctx, &walletdkrpc.ListRequest{
+		list, err := h.deriveActivity(ctx, &walletdkrpc.ListRequest{
 			Limit:  limit,
 			Offset: offset,
 		})
@@ -194,4 +201,71 @@ func hexBytesOrNil(s string) []byte {
 	}
 
 	return b
+}
+
+// rowToWalletEntry reconstructs a WalletEntry from a stored current-state row —
+// the inverse of entryToProjection, used by the store-backed List read path.
+// Every WalletEntry field has a backing column: BLOB handles are hex-encoded
+// back, the confirmation height is widened, and the request oneof is decoded
+// from its protojson form. The reconstruction is not byte-for-byte identical in
+// one case: Progress is always materialized, so an entry projected with a nil
+// Progress round-trips to a non-nil empty Progress (no current producer emits a
+// nil-Progress row, so this is latent).
+//
+// request_json is decoded with DiscardUnknown so a row written by a newer
+// daemon (carrying a WalletEntryRequest field this binary does not know) still
+// decodes instead of failing the whole page. A genuinely malformed request
+// still errors — a corrupt row is inconsistent state that should surface, not
+// be silently skipped.
+func rowToWalletEntry(row sqlc.ActivityEntry) (*walletdkrpc.WalletEntry,
+	error) {
+
+	var request *walletdkrpc.WalletEntryRequest
+	if row.RequestJson != "" {
+		request = &walletdkrpc.WalletEntryRequest{}
+		opts := protojson.UnmarshalOptions{DiscardUnknown: true}
+		if err := opts.Unmarshal(
+			[]byte(row.RequestJson), request,
+		); err != nil {
+			return nil, fmt.Errorf("unmarshal request: %w", err)
+		}
+	}
+
+	var confHeight int32
+	if row.ConfirmationHeight.Valid {
+		confHeight = int32(row.ConfirmationHeight.Int64)
+	}
+
+	entry := &walletdkrpc.WalletEntry{
+		Id:            row.CanonicalID,
+		Kind:          walletdkrpc.EntryKind(row.Kind),
+		Status:        walletdkrpc.EntryStatus(row.Status),
+		AmountSat:     row.AmountSat,
+		FeeSat:        row.FeeSat,
+		Counterparty:  row.Counterparty,
+		Note:          row.Note,
+		FailureReason: row.FailureReason,
+		Request:       request,
+		Progress: &walletdkrpc.WalletEntryProgress{
+			Phase: walletdkrpc.WalletEntryPhase(
+				row.Phase,
+			),
+			PhaseLabel:         row.PhaseLabel,
+			PaymentHash:        hex.EncodeToString(row.PaymentHash),
+			Txid:               hex.EncodeToString(row.Txid),
+			ConfirmationHeight: confHeight,
+			VtxoOutpoint:       row.VtxoOutpoint,
+		},
+		CreatedAtUnix: row.CreatedAtUnix,
+		UpdatedAtUnix: row.UpdatedAtUnix,
+	}
+
+	// failure_code is presence-tracked on the wire: absent means "no
+	// failure", so only set it for a non-zero stored code.
+	if row.FailureCode != 0 {
+		code := walletdkrpc.EntryFailureCode(row.FailureCode)
+		entry.FailureCode = &code
+	}
+
+	return entry, nil
 }

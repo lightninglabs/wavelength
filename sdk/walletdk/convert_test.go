@@ -365,7 +365,9 @@ func TestListResultFromProtoActivity(t *testing.T) {
 						Kind: recv,
 					},
 				},
-				Total: 42,
+				Total:      42,
+				HasMore:    true,
+				NextCursor: "cursor-token",
 			},
 		},
 	}
@@ -375,6 +377,8 @@ func TestListResultFromProtoActivity(t *testing.T) {
 	require.Nil(t, out.VTXOs)
 	require.Nil(t, out.Onchain)
 	require.Equal(t, uint32(42), out.Activity.Total)
+	require.True(t, out.Activity.HasMore)
+	require.Equal(t, "cursor-token", out.Activity.NextCursor)
 	require.Len(t, out.Activity.Entries, 2)
 	require.Equal(t, "hash1", out.Activity.Entries[0].ID)
 	require.Equal(t, EntryKindSend, out.Activity.Entries[0].Kind)

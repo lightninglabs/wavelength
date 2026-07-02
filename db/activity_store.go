@@ -23,6 +23,9 @@ type ActivityStore interface {
 	GetActivityEntry(ctx context.Context,
 		canonicalID string) (sqlc.ActivityEntry, error)
 
+	CountActivityEntriesByStatus(ctx context.Context,
+		status int64) (int64, error)
+
 	ListActivityEntries(ctx context.Context,
 		arg sqlc.ListActivityEntriesParams) (
 		[]sqlc.ActivityEntry,
@@ -194,6 +197,24 @@ func (s *ActivityPersistenceStore) GetEntry(ctx context.Context,
 	})
 
 	return entry, err
+}
+
+// CountByStatus returns the number of current-state rows in the given status.
+// Unlike ListEntries it is not paginated, so it backs the wallet status
+// summary's pending count with a true full-feed total.
+func (s *ActivityPersistenceStore) CountByStatus(ctx context.Context,
+	status int64) (int64, error) {
+
+	var count int64
+
+	err := s.db.ExecTx(ctx, ReadTxOption(), func(q ActivityStore) error {
+		var err error
+		count, err = q.CountActivityEntriesByStatus(ctx, status)
+
+		return err
+	})
+
+	return count, err
 }
 
 // ListEntries returns up to limit current-state rows newest-first, starting

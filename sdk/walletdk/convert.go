@@ -47,8 +47,10 @@ func listResultFromProto(view ListView,
 			entries = append(entries, entryFromProto(e))
 		}
 		out.Activity = &ActivityList{
-			Entries: entries,
-			Total:   activity.GetTotal(),
+			Entries:    entries,
+			Total:      activity.GetTotal(),
+			HasMore:    activity.GetHasMore(),
+			NextCursor: activity.GetNextCursor(),
 		}
 
 	case ListViewVTXOs:

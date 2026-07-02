@@ -195,7 +195,7 @@ type Deps struct {
 	// writes each emitted WalletEntry through as state advances; the
 	// startup backfill seeds it from the history collectors. Nil disables
 	// projection.
-	ActivityStore darepod.ActivityProjector
+	ActivityStore darepod.ActivityStore
 }
 
 // resolveDeadline returns the effective wallet deadline, applying the

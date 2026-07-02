@@ -1607,8 +1607,16 @@ type ListRequest struct {
 	Kinds []EntryKind `protobuf:"varint,3,rep,packed,name=kinds,proto3,enum=walletdkrpc.EntryKind" json:"kinds,omitempty"`
 	// limit caps the response size. Zero means use the daemon default.
 	Limit uint32 `protobuf:"varint,4,opt,name=limit,proto3" json:"limit,omitempty"`
-	// offset is the pagination offset within the chosen view.
-	Offset        uint32 `protobuf:"varint,5,opt,name=offset,proto3" json:"offset,omitempty"`
+	// offset is the pagination offset within the chosen view. It applies
+	// to the VTXOS and ONCHAIN views; the ACTIVITY view paginates by the
+	// opaque cursor below instead and ignores offset.
+	Offset uint32 `protobuf:"varint,5,opt,name=offset,proto3" json:"offset,omitempty"`
+	// cursor is the opaque pagination token for the ACTIVITY view. Empty
+	// starts from the newest entry; otherwise it is the next_cursor
+	// returned by the previous ActivityList page. It is stable across
+	// concurrent inserts, so paging never skips or duplicates rows.
+	// Ignored for the VTXOS and ONCHAIN views.
+	Cursor        string `protobuf:"bytes,6,opt,name=cursor,proto3" json:"cursor,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1676,6 +1684,13 @@ func (x *ListRequest) GetOffset() uint32 {
 		return x.Offset
 	}
 	return 0
+}
+
+func (x *ListRequest) GetCursor() string {
+	if x != nil {
+		return x.Cursor
+	}
+	return ""
 }
 
 type ListResponse struct {
@@ -1791,9 +1806,15 @@ type ActivityList struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// entries are the unified, time-sorted wallet operations.
 	Entries []*WalletEntry `protobuf:"bytes,1,rep,name=entries,proto3" json:"entries,omitempty"`
-	// total is the total number of entries matching the filter before
-	// limit and offset are applied.
-	Total         uint32 `protobuf:"varint,2,opt,name=total,proto3" json:"total,omitempty"`
+	// total is the number of entries in this page. It is a page count,
+	// not a full-feed count: the feed is paged by an opaque cursor, so
+	// callers use has_more, not total, to decide whether to fetch again.
+	Total uint32 `protobuf:"varint,2,opt,name=total,proto3" json:"total,omitempty"`
+	// has_more reports whether more entries exist after this page.
+	HasMore bool `protobuf:"varint,3,opt,name=has_more,json=hasMore,proto3" json:"has_more,omitempty"`
+	// next_cursor is the opaque token to pass as ListRequest.cursor to
+	// fetch the next page. Empty when has_more is false.
+	NextCursor    string `protobuf:"bytes,4,opt,name=next_cursor,json=nextCursor,proto3" json:"next_cursor,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1840,6 +1861,20 @@ func (x *ActivityList) GetTotal() uint32 {
 		return x.Total
 	}
 	return 0
+}
+
+func (x *ActivityList) GetHasMore() bool {
+	if x != nil {
+		return x.HasMore
+	}
+	return false
+}
+
+func (x *ActivityList) GetNextCursor() string {
+	if x != nil {
+		return x.NextCursor
+	}
+	return ""
 }
 
 type VTXOInventory struct {
@@ -4676,21 +4711,25 @@ const file_wallet_proto_rawDesc = "" +
 	"\foperation_id\x18\x01 \x01(\tR\voperationId\x12\x1d\n" +
 	"\n" +
 	"amount_sat\x18\x02 \x01(\x04R\tamountSat\x12!\n" +
-	"\fpayment_hash\x18\x03 \x01(\tR\vpaymentHash\"\xb7\x01\n" +
+	"\fpayment_hash\x18\x03 \x01(\tR\vpaymentHash\"\xcf\x01\n" +
 	"\vListRequest\x12)\n" +
 	"\x04view\x18\x01 \x01(\x0e2\x15.walletdkrpc.ListViewR\x04view\x12!\n" +
 	"\fpending_only\x18\x02 \x01(\bR\vpendingOnly\x12,\n" +
 	"\x05kinds\x18\x03 \x03(\x0e2\x16.walletdkrpc.EntryKindR\x05kinds\x12\x14\n" +
 	"\x05limit\x18\x04 \x01(\rR\x05limit\x12\x16\n" +
-	"\x06offset\x18\x05 \x01(\rR\x06offset\"\xbc\x01\n" +
+	"\x06offset\x18\x05 \x01(\rR\x06offset\x12\x16\n" +
+	"\x06cursor\x18\x06 \x01(\tR\x06cursor\"\xbc\x01\n" +
 	"\fListResponse\x127\n" +
 	"\bactivity\x18\x01 \x01(\v2\x19.walletdkrpc.ActivityListH\x00R\bactivity\x122\n" +
 	"\x05vtxos\x18\x02 \x01(\v2\x1a.walletdkrpc.VTXOInventoryH\x00R\x05vtxos\x127\n" +
 	"\aonchain\x18\x03 \x01(\v2\x1b.walletdkrpc.OnchainHistoryH\x00R\aonchainB\x06\n" +
-	"\x04body\"X\n" +
+	"\x04body\"\x94\x01\n" +
 	"\fActivityList\x122\n" +
 	"\aentries\x18\x01 \x03(\v2\x18.walletdkrpc.WalletEntryR\aentries\x12\x14\n" +
-	"\x05total\x18\x02 \x01(\rR\x05total\"T\n" +
+	"\x05total\x18\x02 \x01(\rR\x05total\x12\x19\n" +
+	"\bhas_more\x18\x03 \x01(\bR\ahasMore\x12\x1f\n" +
+	"\vnext_cursor\x18\x04 \x01(\tR\n" +
+	"nextCursor\"T\n" +
 	"\rVTXOInventory\x12-\n" +
 	"\x05vtxos\x18\x01 \x03(\v2\x17.walletdkrpc.WalletVTXOR\x05vtxos\x12\x14\n" +
 	"\x05total\x18\x02 \x01(\rR\x05total\"\xd4\x01\n" +

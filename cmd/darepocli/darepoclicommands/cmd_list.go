@@ -20,6 +20,7 @@ func newActivityCmd() *cobra.Command {
 			"  darepocli activity\n" +
 			"  darepocli activity --pending --kind send,recv\n" +
 			"  darepocli activity --format json\n" +
+			"  darepocli activity --cursor <next_cursor>\n" +
 			"  darepocli activity inspect <id>",
 		Args: cobra.NoArgs,
 		RunE: walletActivity,
@@ -31,7 +32,8 @@ func newActivityCmd() *cobra.Command {
 		"filter by kind (send,recv,deposit,exit); repeatable")
 	cmd.Flags().Uint32("limit", 0,
 		"page size; 0 uses the daemon default")
-	cmd.Flags().Uint32("offset", 0, "pagination offset")
+	cmd.Flags().String("cursor", "",
+		"activity page token from a prior page's next_cursor")
 	cmd.Flags().String("format", "table",
 		"output format (table|expanded|x|json)")
 
@@ -45,7 +47,7 @@ func walletActivity(cmd *cobra.Command, _ []string) error {
 	pending, _ := cmd.Flags().GetBool("pending")
 	kinds, _ := cmd.Flags().GetStringSlice("kind")
 	limit, _ := cmd.Flags().GetUint32("limit")
-	offset, _ := cmd.Flags().GetUint32("offset")
+	cursor, _ := cmd.Flags().GetString("cursor")
 	format, _ := cmd.Flags().GetString("format")
 
 	if err := validateListFormat(
@@ -58,7 +60,7 @@ func walletActivity(cmd *cobra.Command, _ []string) error {
 		View:        walletdkrpc.ListView_LIST_VIEW_ACTIVITY,
 		PendingOnly: pending,
 		Limit:       limit,
-		Offset:      offset,
+		Cursor:      cursor,
 	}
 	for _, k := range kinds {
 		parsed, err := parseEntryKind(k)
@@ -77,10 +79,22 @@ func walletActivity(cmd *cobra.Command, _ []string) error {
 
 			switch format {
 			case "", "table":
-				return printWalletActivityTable(resp)
+				if err := printWalletActivityTable(
+					resp,
+				); err != nil {
+					return err
+				}
+
+				return printWalletActivityNextPage(resp)
 
 			case "expanded", "x":
-				return printWalletActivityExpanded(resp)
+				if err := printWalletActivityExpanded(
+					resp,
+				); err != nil {
+					return err
+				}
+
+				return printWalletActivityNextPage(resp)
 
 			case "json":
 				return printWalletProto(resp)

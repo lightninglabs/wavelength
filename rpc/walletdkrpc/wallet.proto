@@ -430,8 +430,17 @@ message ListRequest {
     // limit caps the response size. Zero means use the daemon default.
     uint32 limit = 4;
 
-    // offset is the pagination offset within the chosen view.
+    // offset is the pagination offset within the chosen view. It applies
+    // to the VTXOS and ONCHAIN views; the ACTIVITY view paginates by the
+    // opaque cursor below instead and ignores offset.
     uint32 offset = 5;
+
+    // cursor is the opaque pagination token for the ACTIVITY view. Empty
+    // starts from the newest entry; otherwise it is the next_cursor
+    // returned by the previous ActivityList page. It is stable across
+    // concurrent inserts, so paging never skips or duplicates rows.
+    // Ignored for the VTXOS and ONCHAIN views.
+    string cursor = 6;
 }
 
 message ListResponse {
@@ -456,9 +465,17 @@ message ActivityList {
     // entries are the unified, time-sorted wallet operations.
     repeated WalletEntry entries = 1;
 
-    // total is the total number of entries matching the filter before
-    // limit and offset are applied.
+    // total is the number of entries in this page. It is a page count,
+    // not a full-feed count: the feed is paged by an opaque cursor, so
+    // callers use has_more, not total, to decide whether to fetch again.
     uint32 total = 2;
+
+    // has_more reports whether more entries exist after this page.
+    bool has_more = 3;
+
+    // next_cursor is the opaque token to pass as ListRequest.cursor to
+    // fetch the next page. Empty when has_more is false.
+    string next_cursor = 4;
 }
 
 message VTXOInventory {

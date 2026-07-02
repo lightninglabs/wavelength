@@ -43,6 +43,24 @@ func printWalletActivityExpanded(resp *walletdkrpc.ListResponse) error {
 	return renderWalletActivityExpanded(os.Stdout, resp)
 }
 
+// printWalletActivityNextPage writes a next-page hint to stdout when the
+// activity feed has more entries. The human-facing table and expanded views
+// omit the raw cursor otherwise, so without this line a caller has no way to
+// discover the token needed to reach page two.
+func printWalletActivityNextPage(resp *walletdkrpc.ListResponse) error {
+	activity := resp.GetActivity()
+	if !activity.GetHasMore() {
+		return nil
+	}
+
+	_, err := fmt.Fprintf(
+		os.Stdout, "\nmore entries available; next page: --cursor %s\n",
+		activity.GetNextCursor(),
+	)
+
+	return err
+}
+
 // renderWalletActivityTable renders activity entries as a tabwriter table.
 func renderWalletActivityTable(out io.Writer,
 	resp *walletdkrpc.ListResponse) error {
