@@ -39,6 +39,20 @@ func (q *Queries) AppendActivityEvent(ctx context.Context, arg AppendActivityEve
 	return err
 }
 
+const CountActivityEntriesByStatus = `-- name: CountActivityEntriesByStatus :one
+SELECT COUNT(*) FROM activity_entries WHERE status = $1
+`
+
+// CountActivityEntriesByStatus returns the number of current-state rows in the
+// given status. It backs the wallet status summary's pending count, which must
+// reflect the whole feed rather than a single paginated page.
+func (q *Queries) CountActivityEntriesByStatus(ctx context.Context, status int64) (int64, error) {
+	row := q.db.QueryRowContext(ctx, CountActivityEntriesByStatus, status)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const GetActivityEntry = `-- name: GetActivityEntry :one
 SELECT canonical_id, kind, status, amount_sat, fee_sat, counterparty, note, phase, phase_label, failure_code, failure_reason, payment_hash, txid, confirmation_height, vtxo_outpoint, swap_session_id, ledger_txid, boarding_addr, request_json, created_at_unix, updated_at_unix FROM activity_entries WHERE canonical_id = $1
 `

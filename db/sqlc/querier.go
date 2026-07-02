@@ -16,6 +16,10 @@ type Querier interface {
 	CancelVHTLCRecoveryJob(ctx context.Context, arg CancelVHTLCRecoveryJobParams) (int64, error)
 	ClearPendingIntentAnchorByOutpoint(ctx context.Context, arg ClearPendingIntentAnchorByOutpointParams) error
 	CompleteVHTLCRecoveryJob(ctx context.Context, arg CompleteVHTLCRecoveryJobParams) (int64, error)
+	// CountActivityEntriesByStatus returns the number of current-state rows in the
+	// given status. It backs the wallet status summary's pending count, which must
+	// reflect the whole feed rather than a single paginated page.
+	CountActivityEntriesByStatus(ctx context.Context, status int64) (int64, error)
 	CountBoardingIntentsByStatus(ctx context.Context, status string) (int64, error)
 	CountClientLedgerEntries(ctx context.Context) (int64, error)
 	CountUnresolvedBoardingSweepInputs(ctx context.Context, txid []byte) (int64, error)
