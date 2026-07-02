@@ -56,6 +56,12 @@ INSERT INTO activity_events (
 -- GetActivityEntry returns one entry by its canonical id.
 SELECT * FROM activity_entries WHERE canonical_id = $1;
 
+-- name: CountActivityEntriesByStatus :one
+-- CountActivityEntriesByStatus returns the number of current-state rows in the
+-- given status. It backs the wallet status summary's pending count, which must
+-- reflect the whole feed rather than a single paginated page.
+SELECT COUNT(*) FROM activity_entries WHERE status = sqlc.arg(status);
+
 -- name: ListActivityEntries :many
 -- ListActivityEntries returns entries newest-first, paged by the immutable
 -- (created_at_unix, canonical_id) cursor so a row that transitions in place
