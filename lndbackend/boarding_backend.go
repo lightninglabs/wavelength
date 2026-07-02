@@ -19,6 +19,7 @@ import (
 	"github.com/lightninglabs/lndclient"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/lightningnetwork/lnd/lnwallet"
 )
 
 // BoardingBackend implements the wallet.BoardingBackend interface by
@@ -104,15 +105,46 @@ func (l *BoardingBackend) ImportTaprootScript(ctx context.Context,
 // ListUnspent returns all UTXOs known to the LND wallet with confirmation
 // counts between minConfs and maxConfs. Converts from lnwallet.Utxo to the
 // wallet package's Utxo type.
+//
+// The result spans every wallet account, including imported watch-only
+// script outputs (e.g. boarding scripts tracked via ImportTaprootScript).
+// Callers that need outputs the wallet can unilaterally sign, such as CPFP
+// fee-input selection, must use ListUnspentDefaultAccount instead.
 func (l *BoardingBackend) ListUnspent(ctx context.Context, minConfs,
 	maxConfs int32) ([]*wallet.Utxo, error) {
+
+	return l.listUnspent(ctx, minConfs, maxConfs)
+}
+
+// ListUnspentDefaultAccount returns UTXOs from LND's default wallet account
+// only. This excludes imported watch-only script outputs (boarding and exit
+// scripts imported via ImportTaprootScript), which the wallet merely tracks
+// and cannot unilaterally sign. CPFP fee-input selection must use this
+// variant: offering a watch-only output as a fee input makes the child PSBT
+// unsignable and the fee bump fails with "PSBT is not finalizable".
+func (l *BoardingBackend) ListUnspentDefaultAccount(ctx context.Context,
+	minConfs, maxConfs int32) ([]*wallet.Utxo, error) {
+
+	return l.listUnspent(
+		ctx, minConfs, maxConfs,
+		lndclient.WithUnspentAccount(lnwallet.DefaultAccountName),
+	)
+}
+
+// listUnspent performs the walletKit ListUnspent call with the supplied
+// options and converts the results to the wallet package's Utxo type.
+func (l *BoardingBackend) listUnspent(ctx context.Context, minConfs,
+	maxConfs int32, opts ...lndclient.ListUnspentOption) ([]*wallet.Utxo,
+	error) {
 
 	l.logger(ctx).TraceS(ctx, "Listing unspent UTXOs from LND wallet",
 		slog.Int("min_confs", int(minConfs)),
 		slog.Int("max_confs", int(maxConfs)),
 	)
 
-	lndUtxos, err := l.walletKit.ListUnspent(ctx, minConfs, maxConfs)
+	lndUtxos, err := l.walletKit.ListUnspent(
+		ctx, minConfs, maxConfs, opts...,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("list unspent: %w", err)
 	}
