@@ -769,14 +769,31 @@ func (h *history) decorateExitEntry(ctx context.Context,
 		return nil
 	}
 
+	// GetUnrollStatus is keyed by the VTXO outpoint. A unilateral-exit
+	// row's id IS that outpoint; a cooperative-leave row is keyed by the
+	// stable send_job_id (a bare hash, not an outpoint) and retains the
+	// consumed outpoint in vtxo_outpoint. Query by whichever is a real
+	// outpoint so the hash id is never fed to the outpoint-only RPC — doing
+	// so returns InvalidArgument, which would abort here and strand the
+	// leave row PENDING forever. With no queryable outpoint the row cannot
+	// be a unilateral exit, so treat it as a cooperative leave.
+	lookup := entry.GetId()
+	if !looksLikeOutpoint(lookup) {
+		lookup = entry.GetProgress().GetVtxoOutpoint()
+	}
+	if !looksLikeOutpoint(lookup) {
+		decorateCooperativeLeaveEntry(entry, forfeitedOutpoints)
+
+		return nil
+	}
+
 	resp, err := h.deps.RPCServer.GetUnrollStatus(
 		ctx, &daemonrpc.GetUnrollStatusRequest{
-			Outpoint: entry.GetId(),
+			Outpoint: lookup,
 		},
 	)
 	if err != nil {
-		return fmt.Errorf("get unroll status %s: %w", entry.GetId(),
-			err)
+		return fmt.Errorf("get unroll status %s: %w", lookup, err)
 	}
 	if !resp.GetFound() {
 		decorateCooperativeLeaveEntry(entry, forfeitedOutpoints)
@@ -787,6 +804,21 @@ func (h *history) decorateExitEntry(ctx context.Context,
 	applyUnrollStatus(entry, resp)
 
 	return nil
+}
+
+// looksLikeOutpoint reports whether s has the txid:vout shape the daemon's
+// outpoint parser accepts. A stable send_job_id (bare hex, no colon) does not,
+// so this distinguishes a cooperative-leave row keyed by the job id from a
+// unilateral-exit or legacy row keyed by the VTXO outpoint, keeping the hash
+// id out of the outpoint-only GetUnrollStatus RPC.
+func looksLikeOutpoint(s string) bool {
+	_, vout, ok := strings.Cut(s, ":")
+	if !ok {
+		return false
+	}
+	_, err := strconv.ParseUint(vout, 10, 32)
+
+	return err == nil
 }
 
 // decorateCooperativeLeaveEntry completes a wallet-local cooperative leave row
@@ -807,12 +839,16 @@ func decorateCooperativeLeaveEntry(entry *walletdkrpc.WalletEntry,
 
 	// The row is now keyed by the stable leave-job id, so the forfeit
 	// correlation uses the retained consumed outpoint (vtxo_outpoint), not
-	// the id. Fall back to the id for legacy rows still keyed by the
-	// outpoint. A matching forfeited VTXO means the round that consumed the
-	// queued leave input confirmed.
+	// the id. Fall back to the id only for legacy rows still keyed by the
+	// outpoint — never to a bare send_job_id hash, which can never be in
+	// the forfeited-outpoint set. A matching forfeited VTXO means the round
+	// that consumed the queued leave input confirmed.
 	outpoint := entry.GetProgress().GetVtxoOutpoint()
-	if outpoint == "" {
+	if outpoint == "" && looksLikeOutpoint(entry.GetId()) {
 		outpoint = entry.GetId()
+	}
+	if outpoint == "" {
+		return
 	}
 	if _, ok := forfeitedOutpoints[outpoint]; !ok {
 		return

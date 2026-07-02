@@ -252,6 +252,14 @@ func (f *fakeRPCServer) GetUnrollStatus(_ context.Context,
 	f.unrollStatusCalls++
 	f.unrollStatusLast = req
 
+	// Mirror the real daemon: GetUnrollStatus parses its argument as a
+	// txid:vout outpoint and rejects anything else. A caller that feeds it
+	// a bare send_job_id hash must fail here, so a regression that queries
+	// by the hash id is caught by a test rather than only at runtime.
+	if !looksLikeOutpoint(req.GetOutpoint()) {
+		return nil, errors.New("invalid outpoint: " + req.GetOutpoint())
+	}
+
 	return f.unrollStatusResp, f.unrollStatusErr
 }
 
