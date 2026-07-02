@@ -125,7 +125,7 @@ func TestBuildWalletActivityRequestHappyPath(t *testing.T) {
 	t.Parallel()
 
 	req, err := buildWalletActivityRequest(
-		true, []string{"send", "recv"}, 50, 100, "cursor-token",
+		true, []string{"send", "recv"}, 50, "cursor-token",
 	)
 	require.NoError(t, err)
 	require.Equal(
@@ -134,6 +134,5 @@ func TestBuildWalletActivityRequestHappyPath(t *testing.T) {
 	require.True(t, req.GetPendingOnly())
 	require.Len(t, req.GetKinds(), 2)
 	require.Equal(t, uint32(50), req.GetLimit())
-	require.Equal(t, uint32(100), req.GetOffset())
 	require.Equal(t, "cursor-token", req.GetCursor())
 }
