@@ -140,7 +140,8 @@ func newFundedLwWallet(t *testing.T) *lwwallet.Wallet {
 	t.Cleanup(esplora.Close)
 
 	w, err := lwwallet.New(lwwallet.Config{
-		Seed:           seed,
+		Seed:           seed[:],
+		WalletPassword: []byte("test-password"),
 		EsploraURL:     esplora.URL,
 		ChainParams:    &chaincfg.RegressionNetParams,
 		PollInterval:   time.Hour,
