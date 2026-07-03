@@ -42,6 +42,13 @@ const (
 	// relay bandwidth on top of the replaced package's fee).
 	DefaultIncrementalRelayFeeSatPerVByte int64 = 1
 
+	// minRelayFeeRateSatPerVByte is Bitcoin Core's default minimum relay
+	// fee rate (minrelaytxfee, 1000 sat/kvB). A transaction paying less
+	// than this per vbyte is rejected by every default-configured
+	// mempool, so a CPFP child whose residual fee falls under
+	// vsize * this rate is doomed at relay and not worth building.
+	minRelayFeeRateSatPerVByte int64 = 1
+
 	// DefaultFeeInputLeaseExpiry is how long the broadcaster asks the
 	// wallet to lease a CPFP fee-input UTXO. The lease is explicitly
 	// released on terminal eviction and on fallback paths, but that
@@ -70,17 +77,29 @@ var (
 		"shortfall")
 
 	// ErrNonTRUCParent indicates that the caller submitted a parent
-	// transaction whose version is not v3 (TRUC). txconfirm relies on
-	// BIP-431 ephemeral-anchor and TRUC-package semantics for its
-	// CPFP fee-bump strategy: without v3, package RBF replacement
-	// rules and the zero-fee anchor are not policy-legal on a
-	// standard Bitcoin Core mempool, and anchor detection becomes
-	// structurally ambiguous (a legitimate output script could match
-	// the anyone-can-spend anchor pattern by accident). We therefore
-	// reject non-v3 parents at the Submit boundary rather than
-	// silently attaching a CPFP child that would never relay.
+	// carrying a zero-value ephemeral anchor whose version is not v3
+	// (TRUC). The ephemeral-anchor CPFP strategy relies on BIP-431
+	// package semantics: without v3, package RBF replacement rules and
+	// the zero-fee anchor are not policy-legal on a standard Bitcoin
+	// Core mempool. We therefore reject non-v3 ephemeral-anchor parents
+	// at the Submit boundary rather than silently attaching a CPFP
+	// child that would never relay. Funded-anchor parents (non-zero
+	// anchor value) pay their own fee and are exempt: they broadcast as
+	// ordinary v2 transactions and only spend the anchor when a bump is
+	// requested.
 	ErrNonTRUCParent = errors.New("parent transaction must be v3 (TRUC) " +
 		"for CPFP broadcast")
+
+	// ErrParentFeeSufficient indicates that a fee-bump request resolved
+	// to a target package fee the parent already pays on its own, so the
+	// CPFP child's share would fall below what a mempool will relay. The
+	// bump is refused as a no-op rather than burning a wallet round-trip
+	// on a child that is guaranteed a min-relay-fee reject. Callers
+	// should treat this as "nothing to do at this rate": either the fee
+	// estimator has fallen to (or below) the parent's own rate, or an
+	// operator supplied a target at or under it.
+	ErrParentFeeSufficient = errors.New("parent fee already meets target " +
+		"package fee; cpfp child would not relay")
 
 	// ErrParentAlreadyBroadcast indicates that the SubmitPackage RPC
 	// reported the parent transaction as already known to the network
@@ -180,6 +199,33 @@ type BroadcastRequest struct {
 
 	// Label is a human-readable label for logging.
 	Label string
+
+	// IsFeeBump distinguishes an initial broadcast from a fee-bump
+	// re-attempt. It only matters for a funded-anchor parent: such a
+	// parent is independently valid and pays its own miner fee, so its
+	// initial broadcast goes out directly (no CPFP child, no fee-input
+	// reservation) and a CPFP child is built only when a bump is actually
+	// needed. A zero-value ephemeral-anchor parent ignores this flag: it
+	// pays zero fee and must always ride a CPFP package, on the initial
+	// submission and on every bump.
+	IsFeeBump bool
+
+	// ParentFee is the absolute miner fee the parent transaction already
+	// pays, in satoshis. It is used only on the funded-anchor CPFP path to
+	// avoid double-counting the parent's fee: the CPFP child pays the
+	// package-fee target minus what the parent already contributes, so the
+	// combined parent+child fee lands on the requested rate rather than
+	// overshooting it by the parent's own fee. Zero (the default, and the
+	// only value used by the zero-fee ephemeral path) makes the child pay
+	// the full package fee, which is correct when the parent pays nothing.
+	ParentFee btcutil.Amount
+
+	// TargetFeeRateSatPerVByte, when positive, overrides the estimator and
+	// forces the CPFP package to a specific fee rate, clamped to
+	// MaxFeeRateSatPerVByte. It is how an operator-driven "bump now to this
+	// rate" request reaches the broadcaster. Zero defers to the fee
+	// estimator, the default behaviour for interval-paced bumps.
+	TargetFeeRateSatPerVByte int64
 }
 
 // BroadcastResult describes the outcome of one broadcast attempt.
@@ -530,12 +576,15 @@ func (b *CPFPBroadcaster) excludedOutpointsForOtherParents(
 // "give me a signed parent, I'll handle the rest, including the CPFP
 // child and its fee-bump lifecycle."
 //
-// Parents that are not v3 (TRUC) are rejected with ErrNonTRUCParent: the
-// whole CPFP fee-bump strategy in this package assumes BIP-431 semantics
-// for anchor-bearing transactions, and relying on pattern-based anchor
-// detection against non-v3 parents is structurally unsafe (a coincidental
-// anyone-can-spend-looking output would silently receive a CPFP child
-// that the mempool then rejects, burning the caller's fee input).
+// The anchor's value picks the strategy. A zero-value ephemeral anchor
+// marks a BIP-431 TRUC parent that pays no fee of its own: such parents
+// must be v3 (non-v3 is rejected with ErrNonTRUCParent, since package RBF
+// and the zero-fee anchor are not policy-legal without TRUC semantics)
+// and always ride a CPFP package. A funded (non-zero) anchor marks an
+// independently valid parent that pays its own fee: it broadcasts
+// directly on the initial pass regardless of version, and the anchor is
+// only spent when a fee bump is requested. Anchorless transactions
+// broadcast directly with no fee-bump handle at all.
 func (b *CPFPBroadcaster) Submit(ctx context.Context, height int32,
 	req *BroadcastRequest) (*BroadcastResult, error) {
 
@@ -543,18 +592,39 @@ func (b *CPFPBroadcaster) Submit(ctx context.Context, height int32,
 		return nil, fmt.Errorf("broadcast request and tx required")
 	}
 
-	if req.Tx.Version != arktx.TxVersion {
-		return nil, fmt.Errorf("%w: got version %d, want %d",
-			ErrNonTRUCParent, req.Tx.Version, arktx.TxVersion)
-	}
-
 	txid := req.Tx.TxHash()
 	anchorIdx := findAnchorOutput(req.Tx)
-	if anchorIdx < 0 {
-		return b.broadcastDirect(ctx, req, txid)
-	}
 
-	return b.broadcastWithCPFP(ctx, height, req, txid, anchorIdx)
+	switch {
+	// No anchor at all: a plain transaction with no CPFP handle. Broadcast
+	// it directly and let it ride; there is nothing to fee-bump.
+	case anchorIdx < 0:
+		return b.broadcastDirect(ctx, req, txid)
+
+	// Funded anchor: the parent pays its own fee and is independently
+	// valid, so it does not need TRUC/package semantics. On the initial
+	// broadcast we send the parent directly and reserve no fee input — the
+	// anchor is a spare handle we only spend when a bump is requested. On a
+	// fee-bump we build the CPFP child off the funded anchor.
+	case anchorIsFunded(req.Tx, anchorIdx):
+		if !req.IsFeeBump {
+			return b.broadcastDirect(ctx, req, txid)
+		}
+
+		return b.broadcastWithCPFP(ctx, height, req, txid, anchorIdx)
+
+	// Zero-value ephemeral anchor: the parent pays zero fee and can only
+	// relay as part of a CPFP package, so it must be v3 (TRUC) and always
+	// rides a child — on the initial submission and on every bump.
+	default:
+		if req.Tx.Version != arktx.TxVersion {
+			return nil, fmt.Errorf("%w: got version %d, want %d",
+				ErrNonTRUCParent, req.Tx.Version,
+				arktx.TxVersion)
+		}
+
+		return b.broadcastWithCPFP(ctx, height, req, txid, anchorIdx)
+	}
 }
 
 // broadcastDirect broadcasts a transaction without CPFP.
@@ -707,7 +777,13 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context, height int32,
 	// side, which is safer than under-estimating.
 	childVSize := estimateChildVSize(changePkScript, changePkScript)
 
-	feeRate, err := b.EstimateFeeRate(ctx)
+	// An operator-supplied target rate (a "bump now to this rate" request)
+	// overrides the estimator; otherwise we use the current estimate. Both
+	// are clamped to MaxFeeRateSatPerVByte inside the respective helpers so
+	// a stuck-tx bump can never blow past the configured ceiling.
+	feeRate, err := b.targetOrEstimatedFeeRate(
+		ctx, req.TargetFeeRateSatPerVByte,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("estimate fee: %w", err)
 	}
@@ -723,14 +799,48 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context, height int32,
 		req.Tx, txid, feeRate, totalFee, childVSize,
 	)
 
-	// Select a fee input that covers the package fee *plus* a spendable
-	// (non-dust) change output. Selecting for totalFee alone can pick a
+	// A funded parent may already pay the whole package target on its own
+	// (a flat-rate re-bump, or an operator target at or under the parent's
+	// own rate). The child's residual share would then sit below the
+	// minimum relay fee for its vsize and every mempool would reject it,
+	// so refuse the bump up front as a no-op rather than deriving scripts,
+	// leasing a fee input, and signing a child that is doomed at relay.
+	// Zero-fee ephemeral parents (ParentFee == 0) never trip this: their
+	// child always carries the full package fee.
+	if req.ParentFee > 0 {
+		childFee := childFeeFromPackageFee(totalFee, req.ParentFee)
+		minChildFee := btcutil.Amount(
+			childVSize * minRelayFeeRateSatPerVByte,
+		)
+		if childFee < minChildFee {
+			return nil, fmt.Errorf("%w: parent pays %d of %d sat "+
+				"package fee at %d sat/vB",
+				ErrParentFeeSufficient, req.ParentFee, totalFee,
+				feeRate)
+		}
+	}
+
+	// The child's own fee is the package target minus what the parent
+	// already pays; that (not the full package fee) is what the wallet
+	// input must fund. The anchor's value is also credited into the
+	// child's change, so it reduces the wallet's share further. Selecting
+	// against the full package fee on a funded parent would reject
+	// perfectly adequate UTXOs and surface a false fee-input shortage.
+	anchorOutpoint := wire.OutPoint{Hash: txid, Index: uint32(anchorIdx)}
+	anchorOutput := req.Tx.TxOut[anchorIdx]
+	anchorValue := btcutil.Amount(anchorOutput.Value)
+	childFee := childFeeFromPackageFee(totalFee, req.ParentFee)
+
+	// Select a fee input that covers the child's fee *plus* a spendable
+	// (non-dust) change output. Selecting for the fee alone can pick a
 	// UTXO whose post-fee remainder is below the dust limit, which would
 	// force BuildCPFPChild to drop its only output and produce a
 	// zero-output child that FinalizePsbt rejects. Requiring the dust
 	// buffer up front skips near-dust UTXOs and lands on one that always
 	// yields a valid change output.
-	feeInput, err := b.selectFeeInput(ctx, txid, totalFee+DustLimit)
+	feeInput, err := b.selectFeeInput(
+		ctx, txid, childFeeInputTarget(childFee, anchorValue),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrCPFPFeeInputUnavailable,
 			err)
@@ -752,7 +862,13 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context, height int32,
 			req.Tx, btcutil.Amount(feeRate), preciseChildVSize,
 		)
 		if feeErr == nil && preciseFee > totalFee {
+			// totalFee remains the combined package fee recorded
+			// for BIP-125 replacement accounting; childFee tracks
+			// the child's own share of it.
 			totalFee = preciseFee
+			childFee = childFeeFromPackageFee(
+				totalFee, req.ParentFee,
+			)
 
 			// Growing the fee can push the already-selected
 			// input's change below the dust limit. Reselect
@@ -763,7 +879,8 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context, height int32,
 			// retry. The reservation cache keeps the current
 			// input when it already covers the larger fee.
 			reselected, selErr := b.selectFeeInput(
-				ctx, txid, totalFee+DustLimit,
+				ctx, txid,
+				childFeeInputTarget(childFee, anchorValue),
 			)
 			if selErr != nil {
 				return b.fallbackDirectBroadcast(
@@ -778,12 +895,9 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context, height int32,
 		}
 	}
 
-	anchorOutpoint := wire.OutPoint{Hash: txid, Index: uint32(anchorIdx)}
-	anchorOutput := req.Tx.TxOut[anchorIdx]
-
 	child, err := BuildCPFPChild(
 		req.Tx.Version, anchorOutpoint, anchorOutput, feeInput,
-		changePkScript, totalFee,
+		changePkScript, childFee,
 	)
 	if err != nil {
 		return b.fallbackDirectBroadcast(
@@ -951,6 +1065,23 @@ func (b *CPFPBroadcaster) fallbackDirectBroadcast(ctx context.Context,
 
 	b.releaseFeeOutpoint(ctx, txid, releaseOutpoint)
 
+	// A fee bump of a funded-anchor parent must never take the direct
+	// fallback: the parent relayed on its own fee and is (or was) already
+	// in the mempool, so re-broadcasting it is answered with an ignorable
+	// "already known" reject and the call would report success with no
+	// child submitted. Surfacing the setup failure instead lets the caller
+	// report an honest Bumped=false with the real reason. The fallback
+	// remains the right hail-mary for a zero-fee ephemeral parent, whose
+	// only route into a mempool is a package, and for initial funded
+	// broadcasts, which are direct anyway.
+	if req.IsFeeBump {
+		anchorIdx := findAnchorOutput(req.Tx)
+		if anchorIdx >= 0 && anchorIsFunded(req.Tx, anchorIdx) {
+			return nil, fmt.Errorf("cpfp setup failed at %s: %w",
+				stage, err)
+		}
+	}
+
 	b.log.WarnS(ctx, "CPFP unavailable; broadcasting parent directly",
 		err, "txid", txid, "stage", stage, "label", req.Label)
 
@@ -1000,6 +1131,61 @@ func (b *CPFPBroadcaster) EstimateFeeRate(ctx context.Context) (int64, error) {
 	}
 
 	return rate, nil
+}
+
+// targetOrEstimatedFeeRate returns the fee rate to use for a CPFP package. A
+// positive target (an operator-driven "bump now to this rate" request)
+// overrides the estimator and is clamped to MaxFeeRateSatPerVByte so a manual
+// bump can never exceed the configured ceiling; a non-positive target defers
+// to the estimator, which applies the same clamp.
+func (b *CPFPBroadcaster) targetOrEstimatedFeeRate(ctx context.Context,
+	targetRate int64) (int64, error) {
+
+	if targetRate <= 0 {
+		return b.EstimateFeeRate(ctx)
+	}
+
+	if b.cfg.MaxFeeRateSatPerVByte > 0 &&
+		targetRate > b.cfg.MaxFeeRateSatPerVByte {
+
+		targetRate = b.cfg.MaxFeeRateSatPerVByte
+	}
+
+	return targetRate, nil
+}
+
+// childFeeFromPackageFee splits the combined package fee into the portion the
+// CPFP child must pay, given the fee the parent already contributes. The
+// parent's fee is subtracted so the combined parent+child fee equals the
+// package target rather than overshooting it; the result is floored at one
+// satoshi so the child always pays a positive fee even when the parent's fee
+// already covers (or exceeds) the target, which can happen on a flat-rate
+// re-bump.
+func childFeeFromPackageFee(
+	packageFee, parentFee btcutil.Amount) btcutil.Amount {
+
+	childFee := packageFee - parentFee
+	if childFee < 1 {
+		childFee = 1
+	}
+
+	return childFee
+}
+
+// childFeeInputTarget returns the minimum wallet fee-input value needed to
+// fund a CPFP child paying childFee: the fee plus a dust buffer so the change
+// output is always spendable, minus the anchor's own value, which is credited
+// into the change alongside the fee input. The floor of one satoshi keeps the
+// selection meaningful when a large funded anchor covers the whole child fee
+// on its own — the child still structurally requires a confirmed wallet input
+// (it is what later RBF replacements double-spend), just not a big one.
+func childFeeInputTarget(childFee, anchorValue btcutil.Amount) btcutil.Amount {
+	target := childFee + DustLimit - anchorValue
+	if target < 1 {
+		target = 1
+	}
+
+	return target
 }
 
 // selectFeeInput finds the smallest confirmed wallet UTXO that covers the
@@ -1302,16 +1488,28 @@ func (b *CPFPBroadcaster) broadcastIndividually(ctx context.Context,
 	return nil
 }
 
-// findAnchorOutput returns the index of the anchor output in the transaction
-// or -1 if none is found.
+// findAnchorOutput returns the index of the P2A anchor output in the
+// transaction or -1 if none is found. It matches the anchor by script
+// regardless of value, so it locates both the zero-value ephemeral anchor
+// used by TRUC parents and the funded anchor used by an independently-valid
+// parent. Callers that need to distinguish the two forms inspect the value
+// of the returned output (see anchorIsFunded).
 func findAnchorOutput(tx *wire.MsgTx) int {
 	for i, out := range tx.TxOut {
-		if arktx.IsAnchorOutput(out) {
+		if arktx.IsP2AAnchorScript(out.PkScript) {
 			return i
 		}
 	}
 
 	return -1
+}
+
+// anchorIsFunded reports whether the anchor at anchorIdx carries a non-zero
+// value, i.e. it is the funded form whose parent pays its own fee and can
+// confirm standalone, rather than the zero-value ephemeral form that relies
+// on a CPFP descendant to fund the package.
+func anchorIsFunded(tx *wire.MsgTx, anchorIdx int) bool {
+	return arktx.IsFundedAnchorOutput(tx.TxOut[anchorIdx])
 }
 
 // estimateChildVSize returns the vbyte size of the CPFP child this
@@ -1433,13 +1631,20 @@ func EstimatePackageFee(parentTx *wire.MsgTx,
 }
 
 // BuildCPFPChild constructs an unsigned CPFP child that spends an anchor
-// output and one confirmed wallet fee input.
+// output and one confirmed wallet fee input. childFee is the fee the child
+// itself pays: for a zero-fee ephemeral parent that is the whole package fee,
+// for a funded parent it is the package fee minus what the parent already
+// contributes.
 func BuildCPFPChild(parentVersion int32, anchorOutpoint wire.OutPoint,
 	anchorOutput *wire.TxOut, feeInput *FeeInput, changePkScript []byte,
-	totalFee btcutil.Amount) (*wire.MsgTx, error) {
+	childFee btcutil.Amount) (*wire.MsgTx, error) {
 
 	if feeInput == nil || feeInput.Output == nil {
 		return nil, fmt.Errorf("fee input and output required")
+	}
+
+	if anchorOutput == nil {
+		return nil, fmt.Errorf("anchor output required")
 	}
 
 	if !feeInput.Confirmed {
@@ -1466,24 +1671,33 @@ func BuildCPFPChild(parentVersion int32, anchorOutpoint wire.OutPoint,
 		Sequence:         wire.MaxTxInSequenceNum - 2,
 	})
 
-	changeValue := btcutil.Amount(feeInput.Output.Value) - totalFee
+	// Every value-bearing input must be credited into the change or it is
+	// silently donated to miners as fee the caller never asked for. The
+	// anchor is such an input on the funded path: a non-zero anchor value
+	// recovered here is exactly how the operator gets the anchor's sats
+	// back when a bump fires. For a zero-value ephemeral anchor this
+	// credit is zero and the arithmetic reduces to the fee input alone.
+	anchorValue := btcutil.Amount(anchorOutput.Value)
+	changeValue := btcutil.Amount(feeInput.Output.Value) + anchorValue -
+		childFee
 	if changeValue < 0 {
-		return nil, fmt.Errorf("fee input value %d insufficient "+
-			"for fee %d", feeInput.Output.Value, int64(totalFee))
+		return nil, fmt.Errorf("fee input value %d plus anchor value "+
+			"%d insufficient for fee %d", feeInput.Output.Value,
+			int64(anchorValue), int64(childFee))
 	}
 
-	// The CPFP child's only spendable output is this change output: the
-	// other input is the parent's zero-value ephemeral anchor. If the
+	// The CPFP child's only spendable output is this change output. If the
 	// remainder after fees is below the dust limit we cannot emit a valid
 	// output, so refuse here rather than return a zero-output transaction
 	// that the wallet's FinalizePsbt rejects ("PSBT packet must contain at
-	// least one output"). Callers select fee inputs covering totalFee +
-	// DustLimit, so this is a defensive backstop against a post-selection
-	// fee top-up (mixed-type wallets) eroding the dust margin.
+	// least one output"). Callers select fee inputs against the child fee
+	// plus a dust buffer, so this is a defensive backstop against a
+	// post-selection fee top-up (mixed-type wallets) eroding the margin.
 	if changeValue < DustLimit {
-		return nil, fmt.Errorf("%w: fee input %d leaves %d change "+
-			"below dust limit %d", ErrFeeInputProducesDust,
-			feeInput.Output.Value, int64(changeValue),
+		return nil, fmt.Errorf("%w: fee input %d + anchor %d leaves "+
+			"%d change below dust limit %d",
+			ErrFeeInputProducesDust, feeInput.Output.Value,
+			int64(anchorValue), int64(changeValue),
 			int64(DustLimit))
 	}
 

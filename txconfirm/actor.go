@@ -212,6 +212,13 @@ type trackedTx struct {
 	// round trips for entries whose watch was never registered (e.g.
 	// entries that failed during block-subscription setup).
 	confWatchRegistered bool
+
+	// pendingTargetFeeRate carries a one-shot operator-supplied fee rate
+	// (sat/vB) for the next fee bump, set by a BumpNowReq. It overrides the
+	// estimator for exactly one bump and is cleared once consumed, so
+	// subsequent interval-paced bumps fall back to the estimator. Zero
+	// means "no override pending".
+	pendingTargetFeeRate int64
 }
 
 // confirmationObservedMsg routes a chainsource confirmation callback back into
@@ -325,6 +332,14 @@ func (a *TxBroadcasterActor) Receive(ctx context.Context,
 
 	case *CancelInterestReq:
 		resp, err := a.handleCancel(ctx, req)
+		if err != nil {
+			return fn.Err[Resp](err)
+		}
+
+		return fn.Ok[Resp](resp)
+
+	case *BumpNowReq:
+		resp, err := a.handleBumpNow(ctx, req)
 		if err != nil {
 			return fn.Err[Resp](err)
 		}
@@ -491,7 +506,7 @@ func (a *TxBroadcasterActor) handleEnsure(ctx context.Context,
 		return a.ensureResp(entry, true), nil
 	}
 
-	err = a.broadcastTrackedTx(ctx, entry, TxStateBroadcasting)
+	_, err = a.broadcastTrackedTx(ctx, entry, TxStateBroadcasting)
 	a.recordInitialBroadcastOutcome(ctx, entry, err)
 
 	return a.ensureResp(entry, true), nil
@@ -716,6 +731,195 @@ func (a *TxBroadcasterActor) handleCancel(ctx context.Context,
 	return resp, nil
 }
 
+// handleBumpNow forces an immediate CPFP fee bump of an already-tracked
+// transaction at an operator-supplied target rate, rather than waiting for the
+// next interval-paced bump. It is a no-op (reported via Bumped=false) when the
+// txid is not tracked, has already reached a terminal state, has not yet
+// reached a mempool (still broadcasting, so there is nothing to bump), or
+// carries no anchor to attach a child to. Otherwise it stamps the one-shot
+// target rate onto the entry and runs one fee-bump pass, returning the
+// submitted child's txid.
+func (a *TxBroadcasterActor) handleBumpNow(ctx context.Context,
+	req *BumpNowReq) (*BumpNowResp, error) {
+
+	if req == nil {
+		return nil, fmt.Errorf("bump request required")
+	}
+
+	entry, ok := a.tracked[req.Txid]
+	if !ok {
+		return &BumpNowResp{
+			Txid:   req.Txid,
+			Bumped: false,
+			Reason: "transaction not tracked",
+		}, nil
+	}
+
+	state, err := entry.currentTxState()
+	if err != nil {
+		return nil, err
+	}
+
+	// Locate the anchor up front: it decides both whether a bump is
+	// possible at all and whether a never-broadcast parent can be carried
+	// into the mempool by a package submit.
+	anchorIdx := findAnchorOutput(entry.data.Tx)
+	funded := anchorIdx >= 0 && anchorIsFunded(entry.data.Tx, anchorIdx)
+
+	switch {
+	case state == TxStateConfirmed:
+		return &BumpNowResp{
+			Txid:   req.Txid,
+			State:  state,
+			Reason: "transaction already confirmed",
+		}, nil
+
+	case state == TxStateFailed:
+		return &BumpNowResp{
+			Txid:   req.Txid,
+			State:  state,
+			Reason: "transaction in terminal failure",
+		}, nil
+
+	// An entry still in New never accepted its initial submission event;
+	// there is nothing coherent to bump yet.
+	case state == TxStateNew:
+		return &BumpNowResp{
+			Txid:   req.Txid,
+			State:  state,
+			Reason: "transaction not yet submitted",
+		}, nil
+
+	// A concurrent bump pass is already in flight (or the FSM was left
+	// mid-transition); stacking a second one would race the replacement
+	// accounting.
+	case state == TxStateFeeBumping:
+		return &BumpNowResp{
+			Txid:   req.Txid,
+			State:  state,
+			Reason: "fee bump already in progress",
+		}, nil
+
+	// An ephemeral (zero-fee) parent that has not reached any mempool is
+	// already being re-submitted as a full CPFP package by the retry loop
+	// on every interval; a forced pass adds nothing. A FUNDED parent in
+	// Broadcasting is different — its retries are plain direct broadcasts
+	// at its fixed fee, so it falls through to the forced package submit
+	// below, which is exactly what carries a never-in-mempool parent in.
+	case state == TxStateBroadcasting && !funded:
+		return &BumpNowResp{
+			Txid:   req.Txid,
+			State:  state,
+			Reason: "transaction not yet in mempool",
+		}, nil
+	}
+
+	// Only an anchor-bearing parent can be CPFP-bumped; a plain parent has
+	// no child handle, so report the no-op rather than spinning up a doomed
+	// fee-bump pass.
+	if anchorIdx < 0 {
+		return &BumpNowResp{
+			Txid:   req.Txid,
+			State:  state,
+			Reason: "transaction has no anchor to bump",
+		}, nil
+	}
+
+	// Stamp the one-shot operator target rate; broadcastTrackedTxOpts
+	// consumes and clears the override on every outcome.
+	entry.pendingTargetFeeRate = req.TargetFeeRateSatPerVByte
+
+	// A funded parent still in Broadcasting never reached a mempool on its
+	// own fee, so its bump stays on the Broadcasting state track (the
+	// success condition is "parent finally landed") while still submitting
+	// as a parent+child package.
+	nextState := TxStateFeeBumping
+	if state == TxStateBroadcasting {
+		nextState = TxStateBroadcasting
+	}
+
+	result, bumpErr := a.broadcastTrackedTxOpts(ctx, entry, nextState, true)
+	if bumpErr != nil {
+		// A never-broadcast parent routes its failure through the
+		// shared initial-outcome handler: it stays in Broadcasting
+		// (with the escalation counter ticking) or fails terminally on
+		// structural errors, identical to an interval retry.
+		if nextState == TxStateBroadcasting {
+			a.recordInitialBroadcastOutcome(ctx, entry, bumpErr)
+
+			bumpedState, _ := entry.currentTxState()
+
+			return &BumpNowResp{
+				Txid:   req.Txid,
+				State:  bumpedState,
+				Bumped: false,
+				Reason: fmt.Sprintf("fee bump failed: %v",
+					bumpErr),
+			}, nil
+		}
+
+		a.maybeEnsureFeeInputSupply(ctx, bumpErr)
+
+		// A failed forced bump is non-terminal, exactly like an
+		// interval-paced bump failure: the original broadcast is still
+		// live and the confirmation watch remains active. Recover the
+		// FSM back to AwaitingConfirmation with an updated broadcast
+		// height so the next interval bump waits the full interval.
+		a.log.WarnS(ctx, "Forced fee bump failed", bumpErr,
+			"txid", entry.data.Txid)
+
+		_ = a.advanceTrackedTxFSM(
+			ctx, entry, &trackedTxBroadcastAccepted{
+				Progress: trackedTxProgress{
+					LastBroadcastHeight: fn.Some(
+						a.bestHeight,
+					),
+				},
+			},
+		)
+
+		bumpedState, _ := entry.currentTxState()
+
+		return &BumpNowResp{
+			Txid:   req.Txid,
+			State:  bumpedState,
+			Bumped: false,
+			Reason: fmt.Sprintf("fee bump failed: %v", bumpErr),
+		}, nil
+	}
+
+	bumpedState, _ := entry.currentTxState()
+
+	// A submission that produced no CPFP child did not actually bump
+	// anything: the ephemeral path's hail-mary fallback re-broadcasts the
+	// parent directly when child setup fails, and reporting that as a
+	// successful bump would hide the failure from the operator. Report the
+	// honest no-op instead; the tracked tx remains live either way.
+	if result.ChildTxid == nil {
+		return &BumpNowResp{
+			Txid:   req.Txid,
+			State:  bumpedState,
+			Bumped: false,
+			Reason: "cpfp child unavailable; parent re-broadcast " +
+				"directly without a fee bump",
+		}, nil
+	}
+
+	// Surface the rate the package actually targets so a silently clamped
+	// operator request is visible: Clamped is true when the supplied target
+	// exceeded the broadcaster's ceiling and was reduced.
+	return &BumpNowResp{
+		Txid:      req.Txid,
+		State:     bumpedState,
+		Bumped:    true,
+		ChildTxid: copyHash(result.ChildTxid),
+
+		EffectiveFeeRateSatPerVByte: result.FeeRate,
+		Clamped: req.TargetFeeRateSatPerVByte > 0 &&
+			result.FeeRate < req.TargetFeeRateSatPerVByte,
+	}, nil
+}
+
 // handleConfirmationObserved marks a tracked txid as confirmed and fans the
 // result out to all subscribers.
 func (a *TxBroadcasterActor) handleConfirmationObserved(ctx context.Context,
@@ -811,14 +1015,14 @@ func (a *TxBroadcasterActor) handleBlockObserved(ctx context.Context,
 		// A tx that never reached any mempool is re-attempted from
 		// scratch and routed through the shared outcome handler.
 		case a.shouldRetryBroadcast(entry):
-			err := a.broadcastTrackedTx(
+			_, err := a.broadcastTrackedTx(
 				ctx, entry, TxStateBroadcasting,
 			)
 			a.recordInitialBroadcastOutcome(ctx, entry, err)
 
 		// A tx already in a mempool is fee-bumped.
 		case a.shouldFeeBump(entry):
-			if err := a.broadcastTrackedTx(
+			if _, err := a.broadcastTrackedTx(
 				ctx, entry, TxStateFeeBumping,
 			); err != nil {
 
@@ -938,6 +1142,7 @@ func (a *TxBroadcasterActor) newTrackedTx(ctx context.Context,
 		Label:       req.Label,
 		HeightHint:  heightHint,
 		TargetConfs: targetConfs,
+		ParentFee:   req.ParentFee,
 	}
 	fsm := newTrackedTxStateMachine(fsmLog, data)
 	fsm.Start(ctx)
@@ -1154,9 +1359,25 @@ func (a *TxBroadcasterActor) unregisterConfWatch(ctx context.Context,
 }
 
 // broadcastTrackedTx submits one tracked transaction and records the latest
-// broadcast metadata.
+// broadcast metadata. The fee-bump intent is derived from the FSM state being
+// entered: a FeeBumping pass builds a CPFP child, a Broadcasting pass is an
+// initial (or retried) submission.
 func (a *TxBroadcasterActor) broadcastTrackedTx(ctx context.Context,
-	entry *trackedTx, nextState TxState) error {
+	entry *trackedTx, nextState TxState) (*BroadcastResult, error) {
+
+	return a.broadcastTrackedTxOpts(
+		ctx, entry, nextState, nextState == TxStateFeeBumping,
+	)
+}
+
+// broadcastTrackedTxOpts is broadcastTrackedTx with an explicit fee-bump
+// intent, decoupled from the FSM state. A forced bump of a funded-anchor
+// parent that never reached a mempool stays on the Broadcasting state track
+// (its success path is "parent finally landed", not "replacement landed") but
+// must still submit as a CPFP package, which is what isFeeBump controls.
+func (a *TxBroadcasterActor) broadcastTrackedTxOpts(ctx context.Context,
+	entry *trackedTx, nextState TxState, isFeeBump bool) (*BroadcastResult,
+	error) {
 
 	var startEvent trackedTxEvent
 	switch nextState {
@@ -1167,21 +1388,40 @@ func (a *TxBroadcasterActor) broadcastTrackedTx(ctx context.Context,
 		startEvent = &trackedTxFeeBumpStarted{}
 
 	default:
-		return fmt.Errorf("unexpected broadcast state %v", nextState)
+		return nil, fmt.Errorf("unexpected broadcast state %v",
+			nextState)
+	}
+
+	// The one-shot target rate applies to exactly one bump attempt
+	// regardless of its outcome (including an early FSM-advance failure
+	// below), so clear it on every exit path: a failed forced bump must not
+	// silently pin the operator's rate onto later interval-paced bumps.
+	targetFeeRate := int64(0)
+	if isFeeBump {
+		targetFeeRate = entry.pendingTargetFeeRate
+		defer func() {
+			entry.pendingTargetFeeRate = 0
+		}()
 	}
 
 	if err := a.advanceTrackedTxFSM(ctx, entry, startEvent); err != nil {
-		return err
+		return nil, err
 	}
 
+	// A fee-bump pass is what builds a CPFP child for a funded-anchor
+	// parent (the initial pass broadcasts the parent directly). Carry the
+	// parent's own fee so the child only pays the package shortfall.
 	result, err := a.broadcaster.Submit(
 		ctx, a.bestHeight, &BroadcastRequest{
-			Tx:    entry.data.Tx,
-			Label: entry.data.Label,
+			Tx:                       entry.data.Tx,
+			Label:                    entry.data.Label,
+			IsFeeBump:                isFeeBump,
+			ParentFee:                entry.data.ParentFee,
+			TargetFeeRateSatPerVByte: targetFeeRate,
 		},
 	)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	if err := a.advanceTrackedTxFSM(
@@ -1193,10 +1433,10 @@ func (a *TxBroadcasterActor) broadcastTrackedTx(ctx context.Context,
 			},
 		},
 	); err != nil {
-		return err
+		return nil, err
 	}
 
-	return nil
+	return result, nil
 }
 
 // shouldFeeBump reports whether a tracked transaction that already reached a

@@ -307,7 +307,7 @@ func (a *TxBroadcasterActor) retryBroadcastingParents(ctx context.Context) {
 			continue
 		}
 
-		err = a.broadcastTrackedTx(ctx, entry, TxStateBroadcasting)
+		_, err = a.broadcastTrackedTx(ctx, entry, TxStateBroadcasting)
 		a.recordInitialBroadcastOutcome(ctx, entry, err)
 	}
 }

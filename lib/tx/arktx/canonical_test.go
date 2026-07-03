@@ -49,3 +49,34 @@ func TestCanonicalizeOrderingSortsAndValidates(t *testing.T) {
 
 	require.True(t, IsAnchorOutput(tx.TxOut[len(tx.TxOut)-1]))
 }
+
+// TestAnchorPredicates asserts the relationship between the zero-value
+// ephemeral anchor predicate (IsAnchorOutput), the funded anchor predicate
+// (IsFundedAnchorOutput), and the value-agnostic script matcher
+// (IsP2AAnchorScript). A funded anchor must be recognised as a P2A anchor by
+// script while being excluded from the strict zero-value ephemeral form.
+func TestAnchorPredicates(t *testing.T) {
+	t.Parallel()
+
+	ephemeral := arkscript.AnchorOutput()
+	funded := arkscript.AnchorOutput(arkscript.WithAnchorValue(330))
+	nonAnchor := &wire.TxOut{Value: 330, PkScript: []byte{0x51, 0x20}}
+
+	// The script matcher accepts both anchor forms and rejects everything
+	// else, since it ignores value entirely.
+	require.True(t, IsP2AAnchorScript(ephemeral.PkScript))
+	require.True(t, IsP2AAnchorScript(funded.PkScript))
+	require.False(t, IsP2AAnchorScript(nonAnchor.PkScript))
+
+	// The strict ephemeral predicate accepts only the zero-value form.
+	require.True(t, IsAnchorOutput(ephemeral))
+	require.False(t, IsAnchorOutput(funded))
+	require.False(t, IsAnchorOutput(nonAnchor))
+
+	// The funded predicate is the exact complement over P2A outputs: it
+	// accepts the non-zero anchor and rejects the ephemeral one.
+	require.False(t, IsFundedAnchorOutput(ephemeral))
+	require.True(t, IsFundedAnchorOutput(funded))
+	require.False(t, IsFundedAnchorOutput(nonAnchor))
+	require.False(t, IsFundedAnchorOutput(nil))
+}
