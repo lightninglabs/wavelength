@@ -27,16 +27,51 @@ const (
 )
 
 // newWalletLoaderOptions opens btcwallet through an OPFS-backed SQLite
-// walletdb implementation for browser builds.
-func newWalletLoaderOptions(cfg Config) ([]btcwallet.LoaderOption, error) {
+// walletdb implementation for browser builds. The cleanup func closes
+// the just-opened database handle: btcwallet's loader only closes
+// external databases it fully adopted, so a constructor failure after
+// this point would otherwise hold the EXCLUSIVE OPFS lock for the
+// page runtime lifetime.
+func newWalletLoaderOptions(cfg Config) ([]btcwallet.LoaderOption, func(),
+	error) {
+
 	db, err := openWASMWalletDB(cfg.DBDir)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+
+	cleanup := func() {
+		_ = db.Close()
 	}
 
 	return []btcwallet.LoaderOption{
 		btcwallet.LoaderWithExternalWalletDB(db),
-	}, nil
+	}, cleanup, nil
+}
+
+// walletExists reports whether a btcwallet database has already been
+// initialized inside the OPFS SQLite store. The probe opens the
+// database, checks for the wallet's namespace buckets, and closes it
+// again: the store uses EXCLUSIVE locking with a single connection, so
+// a handle left open here would block the real open in New.
+func walletExists(cfg Config) (bool, error) {
+	db, err := openWASMWalletDB(cfg.DBDir)
+	if err != nil {
+		return false, err
+	}
+	defer func() {
+		_ = db.Close()
+	}()
+
+	loader, err := btcwallet.NewWalletLoader(
+		cfg.ChainParams, cfg.RecoveryWindow,
+		btcwallet.LoaderWithExternalWalletDB(db),
+	)
+	if err != nil {
+		return false, err
+	}
+
+	return loader.WalletExists()
 }
 
 // openWASMWalletDB opens btcwallet's walletdb on top of the same browser

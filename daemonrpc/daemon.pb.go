@@ -33,11 +33,10 @@ const (
 	// safe non-ready state.
 	WalletState_WALLET_STATE_UNSPECIFIED WalletState = 0
 	// WALLET_STATE_NONE indicates no wallet has been created yet (no
-	// encrypted seed on disk).
+	// wallet database on disk).
 	WalletState_WALLET_STATE_NONE WalletState = 1
-	// WALLET_STATE_LOCKED indicates an encrypted seed file exists but
-	// no decryption key has been provided; signing is not yet
-	// available.
+	// WALLET_STATE_LOCKED indicates a wallet database exists but its
+	// password has not been provided; signing is not yet available.
 	WalletState_WALLET_STATE_LOCKED WalletState = 2
 	// WALLET_STATE_READY indicates the wallet is initialized, unlocked,
 	// and ready to sign / participate in rounds.

@@ -5,6 +5,7 @@ package btcwbackend
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -89,9 +90,20 @@ type Wallet struct {
 	walletcore.Wallet
 }
 
+// ErrWalletNotFound mirrors the native sentinel for browser builds.
+var ErrWalletNotFound = errors.New("no wallet database found")
+
+// ErrWalletExists mirrors the native sentinel for browser builds.
+var ErrWalletExists = errors.New("wallet database already exists")
+
 // New reports that btcwallet is unavailable in browser builds.
 func New(Config) (*Wallet, error) {
 	return nil, fmt.Errorf("btcwallet backend is not available in wasm")
+}
+
+// WalletExists reports that btcwallet is unavailable in browser builds.
+func WalletExists(Config) (bool, error) {
+	return false, fmt.Errorf("btcwallet backend is not available in wasm")
 }
 
 // NewWithNeutrino reports that btcwallet is unavailable in browser builds.

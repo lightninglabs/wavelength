@@ -16,9 +16,9 @@ func newUnlockCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "unlock",
 		Short: "Unlock an existing wallet",
-		Long: "Decrypts the on-disk wallet seed and starts the " +
-			"wallet subsystem. The password is read from " +
-			"stdin / DAREPOD_WALLET_PASSWORD env var / " +
+		Long: "Opens the wallet database with its password and " +
+			"starts the wallet subsystem. The password is " +
+			"read from stdin / DAREPOD_WALLET_PASSWORD env var / " +
 			"--wallet_password_file (never CLI args).\n\n" +
 			"Example:\n" +
 			"  echo -n 'hunter2hunter2' | darepocli unlock",

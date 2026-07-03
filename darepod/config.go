@@ -882,7 +882,7 @@ type WalletConfig struct {
 	// PasswordFile is the path to a file containing the wallet
 	// password for auto-unlock at daemon startup. The file contents
 	// are read and trailing newlines are stripped. When set alongside
-	// an existing encrypted seed file, the daemon unlocks the wallet
+	// an existing wallet database, the daemon unlocks the wallet
 	// automatically without requiring an UnlockWallet RPC call.
 	PasswordFile string `mapstructure:"password_file"`
 

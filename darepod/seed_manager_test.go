@@ -73,86 +73,6 @@ func TestMnemonicToSeedWrongPassphrase(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TestEncryptDecryptRoundtrip verifies that a seed survives
-// encrypt-then-decrypt.
-func TestEncryptDecryptRoundtrip(t *testing.T) {
-	password := []byte("a-secure-password")
-
-	// Generate a seed.
-	mnemonic, err := GenerateSeed(nil)
-	require.NoError(t, err)
-
-	seed, err := MnemonicToSeed(mnemonic, nil)
-	require.NoError(t, err)
-
-	// Encrypt.
-	ciphertext, err := EncryptSeed(seed, password)
-	require.NoError(t, err)
-	require.NotEmpty(t, ciphertext)
-
-	// Decrypt.
-	recovered, err := DecryptSeed(ciphertext, password)
-	require.NoError(t, err)
-	require.Equal(t, seed, recovered)
-}
-
-// TestDecryptWrongPassword verifies that decryption with the wrong
-// password fails cleanly.
-func TestDecryptWrongPassword(t *testing.T) {
-	password := []byte("correct-password")
-	var seed [rawSeedLen]byte
-	copy(seed[:], []byte("deterministic-test-seed-value!!!"))
-
-	ciphertext, err := EncryptSeed(seed, password)
-	require.NoError(t, err)
-
-	_, err = DecryptSeed(ciphertext, []byte("wrong-password!!"))
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "wrong password")
-}
-
-// TestEncryptSeedPasswordTooShort verifies the minimum password length
-// check.
-func TestEncryptSeedPasswordTooShort(t *testing.T) {
-	var seed [rawSeedLen]byte
-
-	_, err := EncryptSeed(seed, []byte("short"))
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "at least")
-}
-
-// TestSaveLoadEncryptedSeed verifies file I/O for encrypted seeds.
-func TestSaveLoadEncryptedSeed(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "test_seed.enc")
-	data := []byte("test-ciphertext-data")
-
-	err := SaveEncryptedSeed(path, data)
-	require.NoError(t, err)
-
-	loaded, err := LoadEncryptedSeed(path)
-	require.NoError(t, err)
-	require.Equal(t, data, loaded)
-
-	// Verify restrictive permissions.
-	info, err := os.Stat(path)
-	require.NoError(t, err)
-	require.Equal(t, os.FileMode(0600), info.Mode().Perm())
-}
-
-// TestSeedFileExists verifies the existence check.
-func TestSeedFileExists(t *testing.T) {
-	dir := t.TempDir()
-
-	require.False(t, SeedFileExists(dir))
-
-	path := SeedFilePath(dir)
-	err := SaveEncryptedSeed(path, []byte("data"))
-	require.NoError(t, err)
-
-	require.True(t, SeedFileExists(dir))
-}
-
 // TestLoadSeedFromEnv verifies the env var loading path.
 func TestLoadSeedFromEnv(t *testing.T) {
 	// Unset first — should return nil, nil.
@@ -205,37 +125,27 @@ func TestLoadPasswordFromFile(t *testing.T) {
 	require.Equal(t, []byte("clean-pass"), password)
 }
 
-// TestFullWorkflow exercises the complete create-save-load-unlock flow.
-func TestFullWorkflow(t *testing.T) {
-	dir := t.TempDir()
+// TestWalletSeedFromMnemonic verifies the InitWallet derivation path:
+// the raw seed matches direct mnemonic decoding and the aezeed
+// birthday that bounds btcwallet recovery rescans is preserved.
+func TestWalletSeedFromMnemonic(t *testing.T) {
 	password := []byte("workflow-password")
 	passphrase := []byte("optional-passphrase")
 
-	// Step 1: Generate seed.
 	mnemonic, err := GenerateSeed(passphrase)
 	require.NoError(t, err)
 
-	// Step 2: Derive raw seed from mnemonic.
-	seed, err := MnemonicToSeed(mnemonic, passphrase)
+	seed, birthday, err := WalletSeedFromMnemonic(
+		mnemonic[:], passphrase, password,
+	)
 	require.NoError(t, err)
+	require.NotEqual(t, [rawSeedLen]byte{}, seed)
+	require.False(t, birthday.IsZero())
+	require.WithinDuration(t, time.Now(), birthday, 48*time.Hour)
 
-	// Step 3: Encrypt and save.
-	ciphertext, err := EncryptSeed(seed, password)
-	require.NoError(t, err)
-
-	seedPath := SeedFilePath(dir)
-	err = SaveEncryptedSeed(seedPath, ciphertext)
-	require.NoError(t, err)
-
-	// Step 4: Load and decrypt (simulates daemon restart).
-	loaded, err := LoadEncryptedSeed(seedPath)
-	require.NoError(t, err)
-
-	recovered, err := DecryptSeed(loaded, password)
-	require.NoError(t, err)
-	require.Equal(t, seed, recovered)
-
-	// Verify we can also recover from the mnemonic words directly.
+	// The derived seed must match decoding the mnemonic directly,
+	// so a wallet restored from the recorded words reproduces the
+	// same keys.
 	var recoveredMnemonic aezeed.Mnemonic
 	copy(recoveredMnemonic[:], mnemonic[:])
 
@@ -244,29 +154,32 @@ func TestFullWorkflow(t *testing.T) {
 	require.Equal(t, seed, mnemonicSeed)
 }
 
-// TestInitWalletFromMnemonicWithBirthdayReturnsBirthday verifies the
-// InitWallet path keeps the aezeed birthday that btcwallet uses to bound
-// recovery rescans for fresh wallets.
-func TestInitWalletFromMnemonicWithBirthdayReturnsBirthday(t *testing.T) {
-	dir := t.TempDir()
-	password := []byte("workflow-password")
+// TestWalletSeedFromMnemonicValidation verifies the mnemonic word count
+// and minimum password length checks.
+func TestWalletSeedFromMnemonicValidation(t *testing.T) {
 	passphrase := []byte("optional-passphrase")
 
 	mnemonic, err := GenerateSeed(passphrase)
 	require.NoError(t, err)
 
-	seed, birthday, err := InitWalletFromMnemonicWithBirthday(
-		mnemonic[:], passphrase, password, dir,
+	// Too few mnemonic words.
+	_, _, err = WalletSeedFromMnemonic(
+		mnemonic[:12], passphrase, []byte("workflow-password"),
 	)
-	require.NoError(t, err)
-	require.NotEqual(t, [rawSeedLen]byte{}, seed)
-	require.False(t, birthday.IsZero())
-	require.WithinDuration(t, time.Now(), birthday, 48*time.Hour)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "mnemonic must be")
 
-	loaded, err := LoadEncryptedSeed(SeedFilePath(dir))
-	require.NoError(t, err)
+	// Password below the minimum length.
+	_, _, err = WalletSeedFromMnemonic(
+		mnemonic[:], passphrase, []byte("short"),
+	)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "at least")
 
-	recovered, err := DecryptSeed(loaded, password)
-	require.NoError(t, err)
-	require.Equal(t, seed, recovered)
+	// Wrong seed passphrase fails decoding.
+	_, _, err = WalletSeedFromMnemonic(
+		mnemonic[:], []byte("wrong"), []byte("workflow-password"),
+	)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "invalid mnemonic")
 }

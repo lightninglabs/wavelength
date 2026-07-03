@@ -253,7 +253,8 @@ rm "$(go env GOPATH)/bin/darepocli"
 # rm -rf ~/.darepod
 ```
 
-The wallet seed is stored encrypted under `~/.darepod/<network>/wallet_seed.enc`.
+The wallet key material lives in the wallet database under
+`~/.darepod/<network>/`, encrypted with your wallet password.
 Deleting `~/.darepod` is irreversible without the recorded mnemonic.
 
 ---

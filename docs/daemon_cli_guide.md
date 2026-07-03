@@ -146,9 +146,10 @@ auto-unlock via `--wallet.password_file` and skip the CLI step.
 
 ### Step 1: Create the Wallet (walletdkrpc only)
 
-In lwwallet mode, wallet creation generates a new aezeed mnemonic,
-encrypts the seed with your password, and saves it to
-`~/.darepod/<network>/wallet_seed.enc`.
+In lwwallet mode, wallet creation generates a new aezeed mnemonic
+and creates the wallet database with its key material encrypted under
+your password. Record the mnemonic offline: it is shown once and is
+the only backup.
 
 ```bash
 # Via environment variable (recommended for automation)

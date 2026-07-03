@@ -2,6 +2,7 @@ package lwwallet
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -58,6 +59,53 @@ type Wallet struct {
 	boardingBackend *BoardingBackendAdapter
 }
 
+// ErrWalletNotFound is returned when opening an existing wallet was
+// requested (nil Config.Seed) but no wallet database exists yet.
+var ErrWalletNotFound = errors.New("no wallet database found")
+
+// ErrWalletExists is returned when creating a new wallet was requested
+// (non-nil Config.Seed) but a wallet database already exists.
+var ErrWalletExists = errors.New("wallet database already exists")
+
+// WalletExists reports whether a wallet database has already been
+// created for the given configuration. Only ChainParams, RecoveryWindow
+// and DBDir are consulted. Callers use this to decide between the
+// create (seed) and open (password-only) paths before constructing the
+// wallet.
+func WalletExists(cfg Config) (bool, error) {
+	return walletExists(cfg)
+}
+
+// checkWalletInvariants validates the seed, password, and database
+// state agree on whether the wallet is being created or opened.
+func checkWalletInvariants(cfg Config) error {
+	if len(cfg.WalletPassword) == 0 {
+		return fmt.Errorf("wallet password is required")
+	}
+
+	if cfg.Seed != nil && len(cfg.Seed) != walletcore.SeedLen {
+		return fmt.Errorf("seed must be %d bytes, got %d",
+			walletcore.SeedLen, len(cfg.Seed))
+	}
+
+	exists, err := walletExists(cfg)
+	if err != nil {
+		return fmt.Errorf("probe wallet database: %w", err)
+	}
+
+	switch {
+	case cfg.Seed == nil && !exists:
+		return fmt.Errorf("%w in %q: create the wallet with a "+
+			"seed first", ErrWalletNotFound, cfg.DBDir)
+
+	case cfg.Seed != nil && exists:
+		return fmt.Errorf("%w in %q: open it without a seed instead",
+			ErrWalletExists, cfg.DBDir)
+	}
+
+	return nil
+}
+
 // New creates a new lightweight wallet from the given configuration.
 // The caller must provide a DBDir for btcwallet's wallet database. Native
 // builds use that path for btcwallet's bbolt database, while browser builds
@@ -67,6 +115,16 @@ func New(cfg Config) (*Wallet, error) {
 	// so default to a disabled logger when one was not explicitly
 	// provided.
 	walletLog := cfg.Log.UnwrapOr(btclog.Disabled)
+
+	// Enforce the seed/existing-database invariant before any
+	// subsystem is constructed. btcwallet silently generates a
+	// random seed when asked to create a wallet without one, and
+	// silently ignores a supplied seed when a wallet database
+	// already exists. Both failure modes are unacceptable for a
+	// funds-bearing wallet, so fail loudly instead.
+	if err := checkWalletInvariants(cfg); err != nil {
+		return nil, err
+	}
 
 	esplora := NewEsploraClient(cfg.EsploraURL, walletLog)
 
@@ -97,15 +155,15 @@ func New(cfg Config) (*Wallet, error) {
 		walletcore.DefaultBlockCacheSize,
 	)
 
-	loaderOptions, err := newWalletLoaderOptions(cfg)
+	loaderOptions, loaderCleanup, err := newWalletLoaderOptions(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("create wallet loader options: %w", err)
 	}
 
 	btcw, err := btcwallet.New(btcwallet.Config{
-		PrivatePass:    walletcore.WalletPassphrase,
-		PublicPass:     walletcore.WalletPassphrase,
-		HdSeed:         cfg.Seed[:],
+		PrivatePass:    cfg.WalletPassword,
+		PublicPass:     walletcore.PublicWalletPassphrase,
+		HdSeed:         cfg.Seed,
 		Birthday:       cfg.Birthday,
 		ChainSource:    chainSvc,
 		NetParams:      cfg.ChainParams,
@@ -114,6 +172,11 @@ func New(cfg Config) (*Wallet, error) {
 		LoaderOptions:  loaderOptions,
 	}, blockCache)
 	if err != nil {
+		// On failure the wallet never adopted the loader's
+		// database handle, so release it here (a no-op natively,
+		// an OPFS handle close in browser builds).
+		loaderCleanup()
+
 		return nil, fmt.Errorf("create btcwallet: %w", err)
 	}
 
@@ -172,6 +235,22 @@ func (w *Wallet) Start() error {
 			rollback[i]()
 		}
 	}()
+
+	// New opened the wallet database, so a failed start must close
+	// it again or a retried unlock deadlocks on the database's
+	// exclusive lock (bbolt flock natively, EXCLUSIVE OPFS locking
+	// in browser builds). This matters in particular for a wrong
+	// wallet passphrase, which surfaces from BtcWallet.Start below.
+	// Appended first so the reverse-order unwind runs it last, after
+	// the subsystems armed below have been rolled back.
+	rollback = append(rollback, func() {
+		err := w.BtcWallet.InternalWallet().Database().Close()
+		if err != nil {
+			w.Logger(ctx).WarnS(ctx, "Failed to close btcwallet DB",
+				err,
+			)
+		}
+	})
 
 	// Spin up the shared tip poller before any consumer subscribes.
 	if err := w.tipPoller.Start(); err != nil {

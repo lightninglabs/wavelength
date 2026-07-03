@@ -21,8 +21,9 @@ func newCreateCmd() *cobra.Command {
 		Short: "Create a new wallet from a fresh seed",
 		Long: "Initializes a new wallet. The daemon generates a " +
 			"24-word aezeed mnemonic, prints it to stderr (so " +
-			"the caller can record it offline), and encrypts " +
-			"the seed with the supplied password.\n\n" +
+			"the caller can record it offline), and creates " +
+			"the wallet database encrypted under the " +
+			"supplied password.\n\n" +
 			"The wallet password is read from stdin / " +
 			"DAREPOD_WALLET_PASSWORD env / " +
 			"--wallet_password_file (never CLI args). The " +

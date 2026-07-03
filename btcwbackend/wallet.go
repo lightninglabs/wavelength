@@ -4,6 +4,7 @@ package btcwbackend
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -49,6 +50,68 @@ type Wallet struct {
 	// (created via NewWithNeutrino), the caller manages neutrino
 	// shutdown.
 	ownsNeutrino bool
+}
+
+// ErrWalletNotFound is returned when opening an existing wallet was
+// requested (nil Config.Seed) but no wallet database exists yet.
+var ErrWalletNotFound = errors.New("no wallet database found")
+
+// ErrWalletExists is returned when creating a new wallet was requested
+// (non-nil Config.Seed) but a wallet database already exists.
+var ErrWalletExists = errors.New("wallet database already exists")
+
+// WalletExists reports whether a wallet database has already been
+// created in the configured DBDir. The loader only checks file
+// existence for local databases, so this probe does not take the
+// bbolt file lock.
+func WalletExists(cfg Config) (bool, error) {
+	return walletExists(cfg)
+}
+
+// walletExists implements the wallet database existence probe on top
+// of btcwallet's loader.
+func walletExists(cfg Config) (bool, error) {
+	loader, err := btcwallet.NewWalletLoader(
+		cfg.ChainParams, cfg.RecoveryWindow,
+		btcwallet.LoaderWithLocalWalletDB(
+			cfg.DBDir, false, 60*time.Second,
+		),
+	)
+	if err != nil {
+		return false, err
+	}
+
+	return loader.WalletExists()
+}
+
+// checkWalletInvariants validates the seed, password, and database
+// state agree on whether the wallet is being created or opened.
+func checkWalletInvariants(cfg Config) error {
+	if len(cfg.WalletPassword) == 0 {
+		return fmt.Errorf("wallet password is required")
+	}
+
+	if cfg.Seed != nil && len(cfg.Seed) != walletcore.SeedLen {
+		return fmt.Errorf("seed must be %d bytes, got %d",
+			walletcore.SeedLen, len(cfg.Seed))
+	}
+
+	exists, err := walletExists(cfg)
+	if err != nil {
+		return fmt.Errorf("probe wallet database: %w", err)
+	}
+
+	switch {
+	case cfg.Seed == nil && !exists:
+		return fmt.Errorf("%w in %q: create the wallet with a "+
+			"seed first", ErrWalletNotFound, cfg.DBDir)
+
+	case cfg.Seed != nil && exists:
+		return fmt.Errorf("%w in %q: open it without a seed instead",
+			ErrWalletExists, cfg.DBDir)
+	}
+
+	return nil
 }
 
 // New creates a new neutrino-backed wallet from the given
@@ -103,6 +166,16 @@ func NewWithNeutrino(cfg Config,
 	walletLog := cfg.Log.UnwrapOr(btclog.Disabled)
 	neutrinoDataDir := cfg.neutrinoDataDir()
 
+	// Enforce the seed/existing-database invariant before any
+	// subsystem is constructed. btcwallet silently generates a
+	// random seed when asked to create a wallet without one, and
+	// silently ignores a supplied seed when a wallet database
+	// already exists. Both failure modes are unacceptable for a
+	// funds-bearing wallet, so fail loudly instead.
+	if err := checkWalletInvariants(cfg); err != nil {
+		return nil, err
+	}
+
 	// Create the btcwallet chain client backed by neutrino.
 	chainClient := neutrinoSvc.ChainClient()
 
@@ -110,9 +183,9 @@ func NewWithNeutrino(cfg Config,
 	blockCache := neutrinoSvc.BlockCache()
 
 	btcw, err := btcwallet.New(btcwallet.Config{
-		PrivatePass:    walletcore.WalletPassphrase,
-		PublicPass:     walletcore.WalletPassphrase,
-		HdSeed:         cfg.Seed[:],
+		PrivatePass:    cfg.WalletPassword,
+		PublicPass:     walletcore.PublicWalletPassphrase,
+		HdSeed:         cfg.Seed,
 		Birthday:       cfg.Birthday,
 		ChainSource:    chainClient,
 		NetParams:      cfg.ChainParams,
@@ -141,7 +214,19 @@ func NewWithNeutrino(cfg Config,
 		cfg.feeMaxTimeout(), hintDBPath, walletLog,
 	)
 	if err != nil {
+		// btcwallet.New opened the wallet database and Stop does
+		// not close it, so close it explicitly or the bbolt file
+		// lock stays held and every retry wedges on the loader
+		// timeout.
 		_ = btcw.Stop()
+		dbErr := btcw.InternalWallet().Database().Close()
+		if dbErr != nil {
+			walletLog.WarnS(
+				context.Background(),
+				"Failed to close btcwallet DB",
+				dbErr,
+			)
+		}
 
 		return nil, fmt.Errorf("create chain backend: %w", err)
 	}
@@ -179,9 +264,24 @@ func NewWithNeutrino(cfg Config,
 func (w *Wallet) Start() error {
 	ctx := context.Background()
 
+	// NewWithNeutrino opened the wallet database, so a failed start
+	// must close it again or a retried unlock deadlocks on the
+	// bbolt file lock. This matters in particular for a wrong
+	// wallet passphrase, which surfaces from BtcWallet.Start.
+	closeDB := func() {
+		err := w.BtcWallet.InternalWallet().Database().Close()
+		if err != nil {
+			w.Logger(ctx).WarnS(ctx, "Failed to close btcwallet DB",
+				err,
+			)
+		}
+	}
+
 	// btcWallet.Start() unlocks the wallet, creates key scopes,
 	// starts the chain client, and begins wallet synchronization.
 	if err := w.BtcWallet.Start(); err != nil {
+		closeDB()
+
 		return fmt.Errorf("start btcwallet: %w", err)
 	}
 
@@ -189,6 +289,9 @@ func (w *Wallet) Start() error {
 	// it is safe even if the daemon's startBtcwallet also calls
 	// Start().
 	if err := w.chainBackend.Start(); err != nil {
+		_ = w.BtcWallet.Stop()
+		closeDB()
+
 		return fmt.Errorf("start chain backend: %w", err)
 	}
 

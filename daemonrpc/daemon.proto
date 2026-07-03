@@ -274,12 +274,11 @@ enum WalletState {
     WALLET_STATE_UNSPECIFIED = 0;
 
     // WALLET_STATE_NONE indicates no wallet has been created yet (no
-    // encrypted seed on disk).
+    // wallet database on disk).
     WALLET_STATE_NONE = 1;
 
-    // WALLET_STATE_LOCKED indicates an encrypted seed file exists but
-    // no decryption key has been provided; signing is not yet
-    // available.
+    // WALLET_STATE_LOCKED indicates a wallet database exists but its
+    // password has not been provided; signing is not yet available.
     WALLET_STATE_LOCKED = 2;
 
     // WALLET_STATE_READY indicates the wallet is initialized, unlocked,
