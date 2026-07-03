@@ -4783,12 +4783,21 @@ type lndUnrollWallet struct {
 	boardingBackend *lndbackend.BoardingBackend
 }
 
-// ListUnspent delegates to the boarding backend's wallet UTXO
-// enumeration.
+// ListUnspent returns UTXOs from LND's default wallet account only.
+//
+// The boarding backend's unfiltered enumeration also surfaces imported
+// watch-only script outputs (boarding and exit scripts tracked via
+// ImportTaprootScript). Those are not signable by LND's FinalizePsbt, so
+// offering them as CPFP fee inputs makes the child PSBT unsignable and the
+// fee bump fails with "PSBT is not finalizable". Restricting fee selection
+// to the default account keeps selection aligned with what the finalize
+// path can actually sign, mirroring the lwwallet and btcwallet adapters.
 func (w *lndUnrollWallet) ListUnspent(ctx context.Context, minConfs,
 	maxConfs int32) ([]*wallet.Utxo, error) {
 
-	return w.boardingBackend.ListUnspent(ctx, minConfs, maxConfs)
+	return w.boardingBackend.ListUnspentDefaultAccount(
+		ctx, minConfs, maxConfs,
+	)
 }
 
 // NewWalletPkScript returns a fresh wallet-managed taproot pkScript suitable
