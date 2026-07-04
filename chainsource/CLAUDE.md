@@ -56,6 +56,14 @@ communication alongside the raw registration API.
 - Confirmation sub-actors support two notification modes: Future-based (blocking
   await) and actor-based (async `Tell` via `NotifyActor`). Callers use the actor
   mode when blocking inside a durable actor transaction is unsafe.
+- `BlockEpochActor` treats a closed backend block-epoch stream as transient,
+  not terminal: it cancels the stale registration and re-registers with the
+  backend using exponential backoff (default 1s, doubling to a 30s cap;
+  configurable via `BlockEpochConfig.ReconnectBackoff`/`MaxReconnectBackoff`).
+  This differs from confirmation/spend sub-actors, which surface a closed
+  backend channel as a terminal `"confirmation/spend subscription closed"`
+  error to the caller — block monitoring must self-heal since LND can close
+  all chain-notifier streams during restart or internal notifier churn.
 
 ## Deep Docs
 

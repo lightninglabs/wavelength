@@ -13,22 +13,33 @@ other services can reuse durable actor storage without pulling unrelated tables.
 - `RunMigrations` — Applies only actor-delivery schema migrations with a
   dedicated migration bookkeeping table.
 - `Store` — Standalone (non-transactional) delivery store. Implements
-  `actor.DeliveryStore` and `actor.OutboxWakeRegistrar`. Created via
-  `NewStore(db, clock)`. `RegisterOutboxWake(wake func())` registers a
-  same-process callback fired after each `EnqueueOutbox` commit, allowing
-  outbox publishers to wake immediately rather than waiting for the next poll
-  tick. Multiple wakes can be registered; each is called after every enqueue.
+  `actor.DeliveryStore`, `actor.OutboxWakeRegistrar`, and
+  `actor.MailboxWakeRegistrar`. Created via `NewStore(db, clock)`.
+  `RegisterOutboxWake(wake func())` registers a same-process callback fired
+  after each `EnqueueOutbox` commit, allowing outbox publishers to wake
+  immediately rather than waiting for the next poll tick. Multiple wakes can
+  be registered; each is called after every enqueue.
+  `RegisterMailboxWake(mailboxID string, wake func()) func()` registers a
+  same-process callback fired after a commit that enqueued into that specific
+  mailbox, and returns a cancel function; it restores immediate delivery for
+  the folded outbox path where an enqueued row is invisible to its consumer
+  until the publisher's transaction commits.
 - `TxActorDeliveryStore` — Transaction-scoped delivery store wrapping a live
   `*sql.Tx`. Implements `actor.DeliveryStore` directly against the transaction
   without additional `ExecTx` wrapping. `EnqueueOutbox` sets a shared
   `*outboxEnqueued` flag so `TxAwareActorDeliveryStore.ExecTx` can fire
-  outbox-wake callbacks after commit.
+  outbox-wake callbacks after commit. `EnqueueMessage` records its target
+  mailbox in the transaction's mailbox-enqueue set (via `noteMailboxEnqueued`)
+  so `ExecTx` can fire a targeted post-commit mailbox wake.
 - `TxAwareActorDeliveryStore` — Extends `Store` with `ExecTx` support for
   atomic multi-operation workflows (implements `actor.TxAwareDeliveryStore`).
   Created via `NewTxAwareActorDeliveryStore(db, querier, clock)`. `ExecTx`
-  opens a raw `*sql.Tx`, attaches it to the context via `actor.WithTx`, passes
-  a `TxActorDeliveryStore` scoped to that transaction, and on successful commit
-  fires outbox-wake callbacks when outbox messages were enqueued inside the tx.
+  opens a raw `*sql.Tx`, attaches it to the context via `actor.WithTx` along
+  with a fresh per-transaction mailbox-enqueue set, passes a
+  `TxActorDeliveryStore` scoped to that transaction, and on successful commit
+  fires outbox-wake callbacks when outbox messages were enqueued inside the tx
+  and mailbox-wake callbacks targeted at exactly the mailboxes named in that
+  set — so idle mailboxes are never roused by an unrelated commit.
 - `ActorDeliveryQueries` — Interface for all actor delivery SQL operations:
   mailbox enqueue/lease/peek/ack/nack/extend/expire, ask results, outbox
   claim/complete/fail, deduplication, FSM checkpoints, dead letters, and
@@ -58,9 +69,9 @@ other services can reuse durable actor storage without pulling unrelated tables.
 
 ## Relationships
 
-- **Depends on**: `baselib/actor` (implements `TxAwareDeliveryStore` and
-  `OutboxWakeRegistrar` interfaces), `db` (uses `BatchedQuerier`, `WriteTxOption`,
-  `ReadTxOption`).
+- **Depends on**: `baselib/actor` (implements `TxAwareDeliveryStore`,
+  `OutboxWakeRegistrar`, and `MailboxWakeRegistrar` interfaces), `db` (uses
+  `BatchedQuerier`, `WriteTxOption`, `ReadTxOption`).
 - **Depended on by**: `darepod` (wires delivery store at startup),
   `internal/actortest` (integration tests).
 
@@ -74,6 +85,13 @@ other services can reuse durable actor storage without pulling unrelated tables.
 - Outbox-wake callbacks are called outside any lock and outside any transaction;
   callers must not assume ordering relative to future `ExecTx` calls from other
   goroutines.
+- Mailbox-wake callbacks are likewise fired outside any lock, after commit, and
+  only for the mailboxes that actually received a message in that transaction
+  (tracked via a context-scoped enqueue set installed by `ExecTx`); an idle
+  mailbox is never woken by an unrelated enqueue. This also covers the folded
+  outbox path, where `(*Store).EnqueueMessage` joins an ambient `ExecTx`
+  transaction via `TransactionExecutor.ExecTx` and records its target mailbox
+  through the same context.
 - `TxAwareActorDeliveryStore.ExecTx` always defers `tx.Rollback()` so partial
   writes cannot survive a function error; commit is the only success path.
 - `PeekNextMessage` is a read-only eligibility check, not an ownership write.

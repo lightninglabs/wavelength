@@ -44,6 +44,13 @@ validated invariants.
   requires a non-zero `minExitDelay`, failing closed so callers must specify
   an explicit floor rather than silently accepting any exit delay (including
   dangerously small values that would break forfeit incentives).
+- `SigningKeys(node Node)` — Returns the tapscript CHECKSIG public keys
+  committed to by a node in witness-stack order (walks through `CSV` /
+  `Condition` wrappers to the underlying `Multisig`). Lets callers assemble or
+  validate witnesses without parsing compiled script bytes.
+- `SigningKeysForSpendPath(template, spendPath)` — Locates the semantic
+  template leaf matching a `SpendPath`'s witness script and returns that
+  leaf's `SigningKeys` in witness-stack order.
 - `ValidatePolicy(nodes, opts)` — Structural admission check for any Ark policy
   shape (custom vHTLC, etc.). Enforces: collab leaf with operator key, exit
   leaf without operator key, no operator-unilateral leaf, CSV gating on exit

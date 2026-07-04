@@ -19,6 +19,14 @@ construction).
 - `CanonicalizeOrdering` — Sorts transaction inputs/outputs in-place according
   to v0 canonical rules (BIP69 ordering).
 - `IsAnchorOutput` — Identifies v0 Ark anchor outputs (P2A, value 0).
+- `IsP2AAnchorScript` — Matches the keyless P2A anchor pkScript regardless of
+  the output's value, i.e. it also matches a "funded" anchor whose value was
+  lifted above the P2A dust threshold. Use when locating a CPFP anchor to
+  spend on a parent that is already independently valid.
+- `IsFundedAnchorOutput` — Identifies the "funded" (non-zero value) anchor
+  form: a P2A output whose parent pays its own fee and confirms standalone,
+  with the anchor reserved as an optional CPFP fee-bump handle. Complement of
+  `IsAnchorOutput`, which matches only the zero-value ephemeral form.
 
 ## Relationships
 

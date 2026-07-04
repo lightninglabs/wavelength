@@ -8,6 +8,10 @@ build tag. Translates `swapclientrpc` control-plane RPC calls into
 receive sessions, and resumes all persisted pending swaps when the daemon
 starts. Swap FSM transitions, mailbox receive-event handling, and swap server
 protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
+Also bridges the daemon's Lightning credit subsystem (package `credit`) to
+`sdk/swaps`'s credit-aware pay/receive/quote paths, and derives a default
+in-swap fee cap when a caller does not pin one. Host filesystem setup for the
+swap store is split by build tag between native OS and browser/wasm targets.
 
 ## Key Types
 
@@ -16,12 +20,28 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
   not per-RPC), the process-local `active` worker map, and the `subscribers`
   map for `SubscribeSwaps` streaming.
 - `swapRuntimeClient` — Narrow interface over `sdk/swaps.SwapClient` that the
-  subserver uses for all RPC handlers and worker restarts. Methods: `StartPayViaLightning`,
-  `StartReceiveViaLightning`, `ResumePayViaLightning`,
-  `ResumeReceiveViaLightning`, `GetSwapSummary`, `ListSwapSummaries`. Keeps
-  the subserver unit-testable without running real swap FSMs.
+  subserver uses for all RPC handlers and worker restarts. Methods:
+  `QuotePayViaLightning`, `StartPayViaLightning`, `StartReceiveViaLightning`,
+  `ResumePayViaLightning`, `ResumeReceiveViaLightning`, `GetSwapSummary`,
+  `ListSwapSummaries`. Keeps the subserver unit-testable without running real
+  swap FSMs.
 - `swapClientAdapter` — Thin production adapter that forwards calls to
-  `*swaps.SwapClient`.
+  `*swaps.SwapClient`. It also implements optional credit-aware methods
+  (`StartPayViaLightningWithCredits`, `QuotePayViaLightningWithCredits`,
+  `CreateCredit`, `RedeemCredit`, `ListCredits`) that the service layer
+  detects via type assertion, so credit support degrades to `Unimplemented`
+  for any `swapRuntimeClient` that does not implement them.
+- `creditServerBridge` / `creditDaemonBridge` (`credit_bridge.go`) — Adapt the
+  daemon subserver and the Ark/daemon facade to the `credit` package's
+  `CreditServer` / `CreditDaemon` interfaces, so the credit durable-actor
+  subsystem creates, lists, and redeems credits and starts credit-funded pays
+  through the existing `swapclientrpc` handlers, and resolves identity
+  pubkey, dust limit, OOR sends, receive-script allocation, and indexed-VTXO
+  lookups through the daemon.
+- `ensureSwapDBDir` (`fs_native.go` / `fs_wasm.go`) — Creates the host
+  directory for the swap SQLite database on native builds; a no-op on
+  `js`/`wasm` builds, where the SQLite driver maps the database path to OPFS
+  and no host directory exists.
 - `paySwapSession` / `receiveSwapSession` — Minimal session interfaces
   (`PaymentHash`, `Wait`, and `Invoice` for receive) that the daemon
   goroutines drive. Production implementations are `sdk/swaps.PaySession` and
@@ -43,19 +63,27 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
 
 | RPC | Description |
 |-----|-------------|
+| `QuotePay` | Preview a pay swap's fee and settlement type without creating durable state or a worker |
 | `StartPay` | Persist a pay swap, start or reuse its daemon worker, return summary |
 | `StartReceive` | Persist a receive swap, start or reuse its daemon worker, return invoice + summary |
 | `ResumeSwap` | Manual wake-up for a persisted swap (idempotent if worker already active) |
 | `ListSwaps` | List persisted swap summaries; optionally filter to pending only |
 | `GetSwap` | Fetch one persisted summary by hex payment hash |
 | `SubscribeSwaps` | Stream coarse summary updates; optionally emit existing rows first |
+| `CreateCredit` | Start a server-owned credit funding operation (Lightning receive or Ark top-up) |
+| `RedeemCredit` | Materialize available credit back into an Ark output |
+| `ListCredits` | Return the server-authoritative credit snapshot (balances + ledger) |
 
 ## Relationships
 
 - **Depends on**: `sdk/swaps` (swap FSM, `SwapClient`, `Store`, session
   types), `sdk/ark` (`WrapDaemonServer`, in-process Ark facade), `darepod`
   (`RPCServer`, `Config`, `SwapConfig`, `SwapSubsystem`), `rpc/swapclientrpc`
-  (generated gRPC stubs + proto types).
+  (generated gRPC stubs + proto types), `credit` (`CreditServer` /
+  `CreditDaemon` interfaces implemented by `credit_bridge.go`, published onto
+  `cfg.Swap` for the daemon's credit durable-actor subsystem), `vtxo` and
+  `lib/types` (VTXO forfeit participant signing wired through
+  `darepod.RPCServer.SetVTXOForfeitParticipantSigner`).
 - **Depended on by**: `cmd/darepod` (calls `swapclientserver.Register` when
   built with the `swapruntime` tag), `cmd/darepocli/darepoclicommands`
   (swap RPC CLI commands under `swapruntime`).
@@ -63,8 +91,9 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
   `ResumePayViaLightning` / `ResumeReceiveViaLightning` — CLI disconnect does
   not cancel the worker because the subserver uses `rootCtx`, not the RPC
   context.
-- **Receives**: ← API: `StartPay`, `StartReceive`, `ResumeSwap`, `ListSwaps`,
-  `GetSwap`, `SubscribeSwaps` from gRPC callers.
+- **Receives**: ← API: `QuotePay`, `StartPay`, `StartReceive`, `ResumeSwap`,
+  `ListSwaps`, `GetSwap`, `SubscribeSwaps`, `CreateCredit`, `RedeemCredit`,
+  `ListCredits` from gRPC callers.
 
 ## Invariants
 
@@ -92,6 +121,23 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
   receiver was previously installed. `Register` therefore installs the
   mailbox receiver immediately after `NewSwapClientWithStore`, before
   `resumePending` revives persisted sessions.
+- When a caller does not pin `max_fee_sat`, `StartPay` and `QuotePay` derive a
+  proportional ~1% in-swap fee cap (`defaultInSwapMaxFeeSat`, with a small
+  absolute floor) from the decoded invoice amount via `effectiveMaxFeeSat`, so
+  a routine payment is not rejected by an implicit 0 sat cap. A fee-cap
+  rejection from either the client or the swap server is rewritten
+  (`wrapInSwapFeeError`) to name the effective cap.
+- `CreateCredit`, `RedeemCredit`, `ListCredits`, and the credit-aware
+  `StartPay`/`QuotePay` paths only work when the configured
+  `swapRuntimeClient` implements the corresponding optional interface
+  (detected via type assertion in `quotePay`/`startPay` and the RPC
+  handlers); otherwise they return `Unimplemented`.
+- `Register` installs the daemon's VTXO forfeit participant signer
+  (`installVTXOForfeitParticipantSigner`, via
+  `darepod.RPCServer.SetVTXOForfeitParticipantSigner`) before returning, so
+  in-swap forfeit transactions route through the swap server's
+  `SignInSwapForfeit`. Failure to install it aborts `Register` and tears down
+  the Ark client, swap server connection, and store already opened.
 
 ## Deep Docs
 

@@ -10,8 +10,8 @@ embed the same command tree.
 
 The CLI surface is split into three tiers:
 
-1. **Top-level wallet verbs (implicit, no parent)** — the seven everyday
-   commands that map 1:1 to what a user does day-to-day. All seven are
+1. **Top-level wallet verbs (implicit, no parent)** — the everyday
+   commands that map 1:1 to what a user does day-to-day. All are
    walletdkrpc-backed.
 2. **Daemon introspection at root** — getinfo, schema, mcp, dev.
 3. **Advanced subtrees (`ark`, `swap`)** — raw daemonrpc/swapclientrpc
@@ -21,14 +21,16 @@ The CLI surface is split into three tiers:
 
 | Command | RPC | Description |
 |---------|-----|-------------|
-| `create` | `walletdkrpc.Create` | Initialize a new wallet (proxies GenSeed + InitWallet). Password from stdin / DAREPOD_WALLET_PASSWORD / --wallet_password_file |
+| `create` | `walletdkrpc.Create` | Initialize a new wallet (proxies GenSeed + InitWallet). Password from stdin / DAREPOD_WALLET_PASSWORD / --wallet_password_file. `--recover --mnemonic-file <path>` imports an existing aezeed mnemonic and recovers Ark wallet state instead of generating a fresh seed; `--recovery-window` bounds the per-family key-index scan |
 | `unlock` | `walletdkrpc.Unlock` | Unlock an existing wallet (proxies UnlockWallet) |
-| `send <dest>` | `walletdkrpc.Send` | Outbound payment. `--offchain` (default) for Lightning invoice, `--onchain` for cooperative leave. No prefix sniff |
+| `send <dest>` | `walletdkrpc.Send` | Outbound payment. `--offchain` (default) for Lightning invoice, `--onchain` for cooperative leave. No prefix sniff. By default blocks until the dispatched entry reaches a terminal state, printing phase transitions and (for Lightning) the payment preimage on success; `--no-wait` returns immediately with a pending receipt, `--wait-timeout`/`--wait-poll-interval` tune the wait |
 | `recv` | `walletdkrpc.Recv` / `walletdkrpc.Deposit` | Inbound. `--offchain` (default) returns a Lightning invoice; `--onchain` returns a boarding address |
-| `activity` | `walletdkrpc.List` | Unified wallet activity view. Defaults to table output; `--format json` returns structured JSON. `--pending` and `--kind` narrow rows |
+| `activity` | `walletdkrpc.List` | Unified wallet activity view. Defaults to table output; `--format json` returns structured JSON. `--pending` and `--kind` narrow rows; `--cursor` pages via the response's `next_cursor` |
 | `balance` | `walletdkrpc.Balance` | Flat balance (confirmed_sat, pending_in_sat, pending_out_sat) |
 | `exit --outpoint TXID:VOUT` | `walletdkrpc.Exit` | Trigger a unilateral exit (proxies Unroll) |
 | `exit status --outpoint TXID:VOUT` | `walletdkrpc.ExitStatus` | Query an exit job's status (proxies GetUnrollStatus) |
+| `exit plan --outpoint TXID:VOUT` | `walletdkrpc.GetExitPlan` | Preview backing-wallet unroll funding readiness (fee inputs, funding amounts, shortfall) for one or more VTXO outpoints, without dispatching an exit |
+| `wallet-sweep --destination ADDR` | `walletdkrpc.SweepWallet` | Preview, or with `--broadcast` publish, a sweep of every confirmed backing-wallet UTXO (excluding boarding outputs) to a single destination address |
 
 ### Daemon introspection
 
@@ -72,9 +74,15 @@ who want direct access.
 For field-level detail, use `go doc github.com/lightninglabs/darepo-client/cmd/darepocli/darepoclicommands.<Symbol>`.
 
 - `NewRootCmd()` — top-level cobra command with all subcommands
-  registered.
-- `getDaemonConn()` / `getDaemonClient()` — TLS-by-default daemon
-  gRPC dial; `--no-tls` opts out for local dev.
+  registered. Global flags include `--datadir`/`--network` (used to
+  derive default `--tlscertpath`/`--macaroonpath` under the daemon's
+  data directory when those are not set explicitly).
+- `getDaemonConn()` / `getDaemonClient()` — TLS-by-default, macaroon-
+  authenticated daemon gRPC dial; `--no-tls`/`--no-macaroons` opt out
+  for local dev. `daemonTLSCertPath()`/`daemonMacaroonPath()` resolve
+  the effective cert/macaroon path from explicit flags or the
+  `--datadir`/`--network` defaults; `expandCLIPath()` expands a
+  leading `~`.
 - `withWalletClient()` — maps `codes.Unimplemented` to
   `errWalletRPCDisabled` (with a pointer to `docs/walletdkrpc_build.md`)
   for daemons built without the walletdkrpc tag.
@@ -103,14 +111,22 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/cmd/d
   - `daemonrpc` (generated stubs for `ark.*` commands and getinfo).
   - `rpc/swapclientrpc` (generated stubs for `swap.*` commands,
     `swapruntime` tag only).
+  - `darepod` (`DefaultConfig()` supplies the `--datadir`/`--network`
+    flag defaults used to derive TLS/macaroon paths).
+  - `rpcauth` (`DialOptionFromFile()` attaches macaroon credentials
+    to the daemon gRPC dial).
 - **Depended on by**: `cmd/darepocli` (main entry point).
 
 ## Invariants
 
-- The seven top-level wallet verbs ALWAYS register at the root
-  regardless of build tags; if the daemon lacks the walletdkrpc tag,
-  gRPC `Unimplemented` is mapped to `errWalletRPCDisabled` with an
+- The top-level wallet verbs ALWAYS register at the root regardless of
+  build tags; if the daemon lacks the walletdkrpc tag, gRPC
+  `Unimplemented` is mapped to `errWalletRPCDisabled` with an
   actionable message pointing at the build doc.
+- Macaroon auth is on by default: unless `--no-macaroons` is set, the
+  dial attaches credentials from `--macaroonpath`, defaulting to
+  `<datadir>/data/<network>/admin.macaroon`, mirroring how
+  `--tlscertpath` defaults under the same directory.
 - The `--offchain` / `--onchain` flags on `send` and `recv` are
   mutually exclusive; if neither is set, offchain is the default. The
   CLI does NOT sniff the destination string — the daemon performs

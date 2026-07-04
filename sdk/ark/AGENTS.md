@@ -13,6 +13,14 @@ transport, without duplicating Ark runtime behavior.
   transport shutdown and, in embedded mode, exposes `Wait()` for the daemon
   run result. Constructed via `DialRemote`, `StartEmbedded`,
   `WrapDaemonClient`, or `WrapDaemonServer`.
+- `StartEmbedded` is build-tag split: `embedded.go` (`!js || !wasm`) hosts
+  the real in-process `darepod` runtime; `embedded_wasm.go` (`js && wasm`)
+  defines a browser-build `EmbeddedConfig` stand-in and a `StartEmbedded`
+  stub that always errors, since the daemon runtime has no WASM-safe
+  construction path yet. `transport.go` holds the `waitForReady`
+  readiness-polling helper and `defaultBufConnSize` shared by `embedded.go`
+  and `inprocess.go` so both native embedded hosting and the always-built
+  `WrapDaemonServer` path compile under every build tag.
 - `RemoteConfig` — Remote daemon dialing config. Secure by default: callers
   must provide transport credentials or explicitly opt into insecure
   transport for local development.
@@ -34,8 +42,12 @@ transport, without duplicating Ark runtime behavior.
 - `Info` / `ServerInfo` / `Seed` / `WalletInitResult` — SDK-owned typed
   models for daemon status and wallet bootstrap flows.
 - `VTXOInfo` — Typed VTXO view (Outpoint, AmountSat, Status, BatchExpiry,
-  RoundID, CreatedHeight, etc.) returned by `ListLiveVTXOs` /
+  RoundID, CreatedHeight, ExpiryInfo, etc.) returned by `ListLiveVTXOs` /
   `ListSpentVTXOs`.
+- `VTXOExpiryInfo` — Typed VTXO expiry classification (Status, current and
+  batch-expiry heights, blocks remaining, refresh/critical thresholds,
+  chain depth) surfaced via `VTXOInfo.ExpiryInfo` and returned directly by
+  `GetVTXOExpiryInfo`.
 - `ReceiveInfo` — Typed receive destination (PkScript, PubKeyXOnly) returned
   by `NewReceiveScript` / `AllocateReceiveScript`.
 - `IndexedOORSessionInfo` — Indexed OOR session view (ArkPSBT,
@@ -84,12 +96,17 @@ transport, without duplicating Ark runtime behavior.
   before returning.
 - Embedded `Wait()` returns a blocking channel that surfaces the daemon's
   terminal run error.
+- In `js && wasm` builds, `StartEmbedded` always returns an error; embedded
+  in-process hosting is native-only until the daemon runtime gains a
+  WASM-safe construction path.
 - `Close()` is idempotent and bounds embedded shutdown wait time.
 - `WrapDaemonServer` owns only the private bufconn transport and gRPC server;
   it does not own the caller's `DaemonServer` runtime. `Close()` tears down
   only the private transport.
-- `ServerInfo` is a bootstrap-time operator-terms snapshot; refresh after
-  reconnect is not wired through yet.
+- `ServerInfo` is a cached operator-terms snapshot: it stays nil until the
+  daemon reaches the operator-bootstrap stage, and can also be refreshed by
+  daemon paths that fetch the live operator key before building new policy
+  scripts.
 - Pre-1.0, some methods intentionally return `daemonrpc` protobuf types
   directly. Those passthrough APIs are not yet treated as stable SDK-owned
   models.

@@ -23,6 +23,11 @@ delivery.
   Maps `CorrelationID` to `actor.Promise[*mailboxpb.Envelope]`. Supports
   three scenarios: waiter registered before response, response arrives
   before waiter (buffered), and stale cleanup via configurable TTL.
+  `HasWaiter` reports (after pruning stale entries) whether a live waiter
+  is registered, letting the ingress loop split fast-path delivery from
+  the durable dispatch transaction. `FailAll` completes every registered
+  waiter with a given error and clears the set, used when the connector
+  transitions to a terminal incompatible state.
 - `DeliveryResult` — Tri-state enum returned by `ResponseRegistry.DeliverResponse`:
   - `DeliveryWaiter` — Response completed an active in-memory waiter.
   - `DeliveryBuffered` — Response buffered; no waiter registered yet.
@@ -40,14 +45,30 @@ delivery.
   buffered response cleanup.
 - `ErrWaiterExpired` / `ErrWaiterCancelled` — Sentinel errors signaled to
   blocked `AwaitRPC` callers when a waiter is pruned or explicitly removed.
+- `StatusError` — Typed wrapper around a non-OK `mailboxpb.Status`, carrying
+  the failing `Op` (e.g. `"Send"`, `"Pull"`, `"AckUpTo"`) and the verbatim
+  `Status` payload. It is the shared status type for every client Send,
+  Pull, and AckUpTo path, replacing previously duplicated per-caller status
+  handling. `Code()`, `IsPermanentVersion()`, `SupportedMailboxVersions()`,
+  and `SupportedArkVersions()` expose the structured fields without
+  flattening them into a string.
+- `StatusMailboxVersionUnsupported` / `StatusArkVersionUnsupported` /
+  `StatusArkVersionMismatch` / `StatusUpgradeRequired` — The four permanent,
+  non-retryable mailbox status codes; the single source of truth consulted
+  by `StatusError.IsPermanentVersion()` and `IsPermanentVersionError()`.
+- `IsPermanentVersionError` — Free helper that unwraps (via `errors.As`) any
+  error to check for a `StatusError` carrying a permanent version code.
+  Durable senders use this to stop retrying and dead-letter the message.
 
 ## Relationships
 
 - **Depends on**: `baselib/actor` (Promise/Future types), `mailbox/pb`
-  (Envelope proto), `lnd/tlv`.
+  (Envelope proto, `Status`), `lnd/tlv`.
 - **Depended on by**: `serverconn` (uses `AckState`, `ResponseRegistry`,
   `WrappedProto`, `StableEventMsgID`/`StableEventIdempotencyKey`,
-  `CorrelationID`/`IdempotencyKey`).
+  `CorrelationID`/`IdempotencyKey`, `StatusError`); `darepod` (handles
+  `*mailboxconn.StatusError` in operator/version-negotiation compatibility
+  paths).
 
 ## Invariants
 
@@ -64,6 +85,10 @@ delivery.
 - `WrappedProto` callers must use `tlv.NewRecordT` to assign the real TLV
   type; calling `Record()` directly yields type 0 and would silently conflict
   with other type-0 records.
+- Permanent-version classification lives solely in `permanentVersionCodes`;
+  unary, durable event, heartbeat, pull, and ack paths must all consult
+  `StatusError.IsPermanentVersion()` / `IsPermanentVersionError()` rather than
+  re-deriving their own code lists, so they stay in agreement.
 
 ## Deep Docs
 

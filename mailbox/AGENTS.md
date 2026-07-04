@@ -9,7 +9,7 @@ primitives for durable transport (conn).
 ## Sub-Packages
 
 ### mailbox/pb
-- `Envelope` — Wire format: msg_id, idempotency_key, sender, recipient, body, rpc metadata, event_seq, headers.
+- `Envelope` — Wire format: msg_id, idempotency_key, sender, recipient, body, rpc metadata, event_seq, ark_protocol_version (negotiated Ark protocol version, distinct from the mailbox transport `protocol_version`), headers.
 - `RpcMeta` — RPC overlay with Kind enum (REQUEST, RESPONSE, EVENT) and correlation metadata.
 - `MailboxServiceClient` — Edge API (Send, Pull, AckUpTo).
 

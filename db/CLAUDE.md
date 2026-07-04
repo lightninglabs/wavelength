@@ -3,9 +3,10 @@
 ## Purpose
 
 Database abstractions and persistent storage for all darepo-client state:
-boarding intents, boarding sweeps, rounds, VTXOs, OOR sessions, actor
-delivery checkpoints, and client-side fee accounting. Supports SQLite and
-PostgreSQL backends.
+boarding intents, boarding sweeps, rounds, VTXOs, OOR sessions, credit
+operations, the canonical activity log, actor delivery checkpoints, and
+client-side fee accounting. Supports SQLite (native and a browser/WASM
+build) and PostgreSQL backends.
 
 ## Key Types
 
@@ -13,10 +14,22 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
 
 - `BatchedTx[Q]` — generic interface for atomic transactions (`ExecTx`,
   `Backend`).
+- `InternalKeyQuerier` / `RegisterInternalKeyTx` / `InternalKeyDescByIDTx`
+  (`internal_key.go`) — shared `internal_keys` registry helpers. Boarding,
+  OOR artifact, and VTXO rows reference a wallet key via a `client_key_id`
+  FK instead of inlining `(pubkey, family, index)` columns; `RoundStore`,
+  `BoardingStore`, and `OORArtifactStore` all embed `InternalKeyQuerier` so
+  registration/hydration happens inside the same transaction as the row
+  write.
 - `BoardingStore` / `BoardingWalletStore` — interface + concrete
   sqlc-backed store for boarding addresses, intents, and the aggregate
   sweep lifecycle (consumed by `wallet.BoardingStore`). Sweep ops:
   `Create/MarkPublished/MarkFailed/List/ListPending/MarkInputSpent`.
+  `BoardingWalletStore` embeds `*PendingIntentPersistenceStore` so it also
+  satisfies `wallet.PendingIntentStore`; `NewBoardingWalletStore` takes a
+  separate `intentDB` executor because the generic transaction executor is
+  typed per query-interface even though both share the same underlying
+  database.
 - `NewBoardingSweep` / `BoardingSweepRecord` /
   `BoardingSweepInputRecord` — control-plane domain types. Sweep
   statuses: `pending`, `published`, `confirmed`, `external_resolved`,
@@ -31,8 +44,23 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   paginated listing (avoids deserializing full trees).
 - `VTXOPersistenceStore` — VTXO descriptor store
   (`InsertClientVTXO`, `FetchByOutpoint`). Persists `ChainDepth`.
+  `ListSelectionCandidatesByStatus` returns the lightweight
+  `(outpoint, amount, pkScript)` projection coin selection runs on;
+  `ListLiveVTXOsLight`/`ListVTXOsByStatusLight` return descriptors with a
+  nil `Ancestry` for listing-only callers (e.g. the `ListVTXOs` RPC). All
+  three skip the batched ancestry-side-table join and/or the full
+  descriptor decode on hot paths. `descriptorCache`
+  (`vtxoDescriptorCache`, ≤ 8192 entries) memoizes the immutable derived
+  parts of a row (parsed keys, taproot script, policy-resolved expiry) by
+  outpoint alongside `ancestryCache`.
 - `OORArtifactStore`, `OwnedReceiveScriptStore` — OOR session state
   and locally owned receive-script metadata.
+- `OORSessionRegistryStoreDB` / `OORSessionRegistryRecord` /
+  `OORSessionDirection` / `OORSessionStatus` — durable OOR session
+  registry rows over the `oor_session_registry` table (schema landed in
+  `000019_oor_session_registry`; this Go store wrapper is new). Methods:
+  `UpsertSession`/`GetSession`/`LookupActiveSessionByIdempotencyKey`/
+  `ListNonTerminal`/`ListSessions`.
 - `LedgerStoreDB` — implements `ledger.LedgerStore`. Wraps
   `sqlc.InsertClientLedgerEntry` (ON CONFLICT DO NOTHING for replay
   idempotency). Joins the outer actor transaction via
@@ -41,6 +69,19 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   `CountLedgerEntries`/`ListAccounts`.
 - `UTXOAuditStoreDB` — implements `ledger.UTXOAuditStore` via
   `sqlc.InsertWalletUTXOLog` (ON CONFLICT DO NOTHING).
+- `ActivityStore` / `BatchedActivityStore` / `ActivityProjection` /
+  `ActivityPersistenceStore` — canonical wallet activity log. An
+  `activity_entries` current-state projection (`ProjectEntry`/`GetEntry`/
+  `ListEntries`/`CountByStatus`) backs the `List` RPC; an append-only
+  `activity_events` transition log with a monotonic but non-contiguous
+  `event_seq` (`PullEvents`) backs a resumable `SubscribeWallet`. Consumed
+  by the `swapwallet` package's projector.
+- `CreditOperationStoreDB` / `CreditOperationRecord` / `CreditOpKind` /
+  `CreditOpStatus` — durable per-operation state for the client-side
+  credit registry actor (pay/receive/redeem), keyed by `op_id` with a
+  stable idempotency `op_key`. Methods: `UpsertOperation`/`GetOperation`/
+  `LookupActiveOperationByKey`/`ListNonTerminal`/`ListOperations`.
+  Consumed by the `credit` package.
 - `UnilateralExitStore` / `UnilateralExitPersistenceStore` —
   control-plane store: `Upsert` / `Get` / `ListNonTerminal` /
   `MarkTerminal`.
@@ -60,6 +101,9 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   armed and escalated recovery jobs with request-id idempotency,
   explicit vHTLC script parameters, fee cap, unroll target linkage,
   exact exit transaction artifacts, and terminal/cancellation state.
+- `MacaroonRootKeyStore` / `RootKeyStore` — implements
+  `bakery.RootKeyStore` over the `macaroons` table, backing RPC macaroon
+  authentication.
 - `ancestryTreeCache` — process-local LRU decode cache (≤ 4096
   entries) for finalized VTXO ancestry trees (immutable once
   committed). `groupAncestryRowsWithCache` /
@@ -67,11 +111,22 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   re-deserializing the same fragment across `ListLiveVTXOs` batches.
 - `isDBClosedError(err) bool` — classifies teardown-path errors for
   demotion to debug-level logging.
+- `MapSQLError` classifies both `pgx` v4 and v5 `*pgconn.PgError` types
+  (distinct types from the two driver major versions, matched by shared
+  SQLSTATE code) plus sqlite errors into the package's agnostic `ErrSQL*`
+  types. sqlite classification is split by build tag: `sqlerrors_native.go`
+  (`!js || !wasm`) matches `modernc.org/sqlite` error codes;
+  `sqlerrors_wasm.go` (`js && wasm`) matches message substrings surfaced by
+  the browser driver.
+- `SQLiteOpenConfig` / `SQLitePragma` / `OpenSQLiteDatabase` — driver-open
+  layer split by the same build tags: `sqlite_open_native.go` opens via the
+  native `modernc.org/sqlite` driver; `sqlite_open_wasm.go` opens via
+  `go-wasmsqlite` over the browser's OPFS VFS.
 - `MaxTreeDeserializeDepth = 32` / `MaxTreeChildrenPerNode = 64` —
   safety bounds enforced during `DeserializeTree`.
 - `resolveInputPackage` / `loadPackageBundleBySessionID` — two-stage
   OOR ancestry resolver (`oor_unroll_resolver.go`).
-- `LatestMigrationVersion = 21` — current schema version.
+- `LatestMigrationVersion = 24` — current schema version.
 - `PendingIntentPersistenceStore` — implements `wallet.PendingIntentStore`,
   the persistence half of the generic restart-safe intent outbox (header
   `pending_intents` + per-kind detail tables + `pending_intent_anchors`).
@@ -105,7 +160,8 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   persistence), `ledger` (interfaces + domain types), `wallet`
   (`BoardingStore` interface + domain types).
 - **Depended on by**: `round`, `vtxo`, `oor`, `wallet` (storage
-  interfaces), `darepod` (wires DB backends).
+  interfaces), `credit` (`CreditOperationStoreDB`/`CreditOperationRecord`),
+  `darepod` (wires DB backends).
 
 ## Invariants
 
@@ -127,6 +183,14 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   3s cap).
 - SQLite `busy_timeout = 30 000 ms` under WAL mode tolerates
   multi-actor contention bursts.
+- SQLite `synchronous` defaults to `normal` (`SqliteConfig.Synchronous`,
+  `SqliteSynchronousNormal`), not `full`: under WAL mode this omits the
+  per-commit WAL fsync (synced only before a checkpoint) for better
+  throughput. This is safe for the at-least-once, idempotent, deterministic
+  OOR/outbox/serverconn stack, which recovers a process crash with zero
+  loss; only a power/OS crash can lose the un-synced WAL tail.
+  `SqliteConfig.NoFullfsync` opts out of the macOS `fullfsync` pragma for
+  write-heavy deployments.
 - `ledger_entries.entry_id` and `wallet_utxo_log.entry_id` use
   `INTEGER PRIMARY KEY AUTOINCREMENT` to prevent rowid reuse after
   deletion, preserving append-only ordering.
@@ -140,6 +204,21 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
 
 ### Migration notes
 
+- `000024_macaroons` — adds the `macaroons` table (`id` BLOB PK,
+  `root_key` BLOB) backing `MacaroonRootKeyStore`/`RootKeyStore` for RPC
+  macaroon authentication.
+- `000023_canonical_activity_log` — adds `activity_kinds`/
+  `activity_statuses` enum-mirror tables (ids equal the wire proto enum
+  integers) plus `activity_entries` (current-state projection, PK
+  `canonical_id`, paged newest-first by immutable `created_at_unix`) and
+  append-only `activity_events` (monotonic but non-contiguous
+  `event_seq`) backing the wallet activity feed and a resumable
+  `SubscribeWallet`.
+- `000022_credit_operations` — adds `credit_operations`: durable per-op
+  state for the client-side credit registry actor (pay/receive/redeem),
+  keyed by `op_id`, with a partial unique index on `op_key` excluding
+  failed rows (status `2`) so a keyed retry after a terminal failure can
+  admit a fresh operation under the same key.
 - `000020_accounting_wallet_sweeps` — adds `wallet_clearing`,
   `wallet_utxo_spent`, and `wallet_sweep_transfer` for sweep
   accounting. Rebuilds the round idempotency index so keyed
@@ -215,5 +294,3 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
 ## Deep Docs
 
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map.
-</content>
-</invoke>

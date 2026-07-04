@@ -69,10 +69,40 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
   populated by current behavior. Status strings are the wrapper-owned
   lowercase set
   (`pending`/`materializing`/`csv_pending`/`sweeping`/`completed`/`failed`/`unspecified`).
+- `GetExitPlanRequest` / `GetExitPlanResult` / `ExitPlanEntry` —
+  previews backing-wallet funding readiness for unilateral exit across
+  a slice of VTXO outpoints (required confirmations, fee-UTXO counts,
+  funding shortfall), aggregating per-outpoint plans into a total.
+- `SweepWalletRequest` / `SweepWalletResult` / `WalletSweepInput` —
+  previews (or, with `Broadcast`, executes) a sweep of confirmed
+  backing-wallet funds to a caller-supplied destination address.
+- `CreditPreview` (optional field on `PrepareSendResult`) — describes
+  how a prepared invoice send will draw on sat-native server credit;
+  `SendRail` gained `SendRailCredit`/`SendRailMixed` alongside the
+  existing rails.
+- `CreateWalletRequest`/`Result` gained a recovery path:
+  `RecoverState`/`RecoveryWindow` on the request opt into scanning for
+  existing chain state on import, and `Result.RecoveryRan` plus
+  recovered-object counters (`RecoveredBoardingAddresses`,
+  `RecoveredBoardingUTXOs`, `RecoveredVTXOs`,
+  `RecoveredOORReceiveScripts`, `RecoveredOORRecipientEvents`) report
+  what recovery found.
+- `OpenWalletFromPasskey` / `OpenWalletResult` — derives a
+  reproducible wallet seed and local DB password from a WebAuthn
+  passkey's PRF output (HKDF-SHA256) and imports (fresh device) or
+  unlocks (existing local wallet) accordingly; see `passkey.go`.
 - `ErrWalletRPCUnavailable` — sentinel returned by every wallet method
   on builds without the `walletdkrpc` tag.
 - `ErrSwapRuntimeUnavailable` — back-compat alias for
   `ErrWalletRPCUnavailable`.
+- Failure-reason sentinels (`ErrInvalidDestination`,
+  `ErrInvalidSendIntent`, `ErrAmountRequired`, `ErrAmountInvalid`,
+  `ErrUnsupportedKind`, `ErrSwapBackendUnavailable`,
+  `ErrAmountExceedsVTXOLimit`, `ErrBalanceLimitExceeded`) mirror the
+  daemon's walletdkrpc rejection taxonomy. `errmap.go` reconstructs
+  these `errors.Is`-able sentinels from a `google.rpc.ErrorInfo` detail
+  on the gRPC status via a unary client interceptor installed on every
+  wallet connection (embedded bufconn and external `Connect`).
 
 ## RPC Methods (host-facing API)
 
@@ -81,7 +111,8 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
 | `GetInfo` | Daemon readiness snapshot (version, network, identity, wallet/server readiness). |
 | `CreateWallet` | Create or import the embedded wallet (auto-generates seed when mnemonic empty); proxies daemonrpc. |
 | `UnlockWallet` | Unlock an existing wallet; proxies daemonrpc. |
-| `Balance` | Flat balance (`confirmed_sat`, `pending_in_sat`, `pending_out_sat`). |
+| `OpenWalletFromPasskey` | Derive a reproducible wallet from a WebAuthn passkey PRF output; imports (fresh device) or unlocks (existing local wallet). |
+| `Balance` | Flat balance (`confirmed_sat`, `pending_in_sat`, `pending_out_sat`, plus sat-native credit fields). |
 | `Deposit` | Allocate a fresh boarding address (`recv --onchain` from CLI). |
 | `Receive` | Open a Lightning invoice receive (`recv --offchain`). Returns `{Invoice, Entry}`. |
 | `PrepareSend` | Validate + quote an outbound payment; returns a single-use `SendIntentID`. |
@@ -89,6 +120,8 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
 | `List` | Unified history view (Activity / VTXOs / Onchain) as a tagged-union `ListResult`. |
 | `Exit` | Trigger cooperative leave or unilateral unroll for a VTXO. |
 | `ExitStatus` | Query the phase of an exit job. |
+| `GetExitPlan` | Preview backing-wallet funding readiness for unilateral exit across VTXO outpoints. |
+| `SweepWallet` | Preview or broadcast a sweep of confirmed backing-wallet funds. |
 | `Status` | Wallet readiness, balance, pending-entry count. |
 | `Subscribe` | Stream wallet activity (`Entry`) updates. |
 | `Stop` / `Close` | Shut down the embedded daemon, release the private transport. |
@@ -103,8 +136,11 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
   the seven verbs target), `rpc/swapclientrpc` (raw-swap escape hatch),
   `swapclientserver` (registered as daemon-side swap subserver in
   `swapruntime` builds), `swapwallet` (daemon-side walletdkrpc subserver
-  in `walletdkrpc` builds), `google.golang.org/grpc/test/bufconn`.
-- **Depended on by**: host Go apps, gomobile / React Native / WASM
+  in `walletdkrpc` builds), `rpcauth` (TLS cert / macaroon dial and HTTP
+  options for external `Connect`), `lnd/aezeed` + `golang.org/x/crypto/hkdf`
+  (passkey seed derivation), `google.golang.org/grpc/test/bufconn`.
+- **Depended on by**: host Go apps, `sdk/walletdk/mobile` (gomobile-safe
+  JSON bytes-in/bytes-out facade over this package), React Native / WASM
   bridges, and `cmd/walletdk-tui`.
 - **Sends** → `darepod` (in-process via bufconn): all daemon RPCs are
   routed across the private gRPC connection, not the daemon's public
@@ -144,15 +180,28 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
   the wrapper boundary on builds without the `walletdkrpc` tag, before
   any RPC is attempted. `ErrSwapRuntimeUnavailable` is an alias for
   source-level compatibility with older swap-only callers.
+- Every wallet gRPC connection (embedded bufconn and external
+  `Connect`) installs `errorReconstructInterceptor`, which rewrites a
+  daemon rejection's `google.rpc.ErrorInfo` reason into the matching
+  SDK sentinel from `errmap.go` before the error reaches the caller.
+- `OpenWalletFromPasskey` requires a fixed, app-controlled WebAuthn PRF
+  salt on every device and call for a given wallet: the entire seed is
+  HKDF-derived from the PRF output, so a varying salt silently derives
+  a different, unrecoverable wallet.
 - `Entry.Kind`/`Entry.Status` / `Entry.Progress.Phase` /
-  `Entry.Request.Type` / `ListResult.View` / `WalletVTXO.Status` /
-  `OnchainTx.Kind` / `ExitJobStatus` are wrapper-owned lowercase
-  strings (not proto enums). Projection lives in `convert.go`,
-  intentionally decoupled from proto enum renumbering.
+  `Entry.Request.Type` / `Entry.FailureCode` / `ListResult.View` /
+  `WalletVTXO.Status` / `OnchainTx.Kind` / `ExitJobStatus` are
+  wrapper-owned lowercase strings (not proto enums). Projection lives
+  in `convert.go`, intentionally decoupled from proto enum
+  renumbering.
 - `ListResult` is a discriminated union: read the variant named by
   `View` and treat the others as `nil`. Exhaustiveness is not
   enforced at compile time — switch on `View` rather than chaining
   nil checks.
+- The Activity view paginates by opaque `ListRequest.Cursor` /
+  `ActivityList.NextCursor`, not `ListRequest.Offset` (VTXOs/Onchain
+  still use `Offset`). Check `ActivityList.HasMore` rather than
+  `Total`, which counts only the current page.
 - `Entry.Progress` and `Entry.Request` are optional pointers: both are
   `nil` when the daemon supplied no progress hint / persisted no
   request, so nil-check before dereferencing. `Entry.Request` is a
@@ -185,5 +234,3 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
 - [swapclientserver/CLAUDE.md](../../swapclientserver/CLAUDE.md) —
   Daemon-side swap subserver (`-tags swapruntime`).
 - [ARCHITECTURE.md](../../ARCHITECTURE.md) — System-wide package map.
-</content>
-</invoke>

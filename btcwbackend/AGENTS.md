@@ -9,7 +9,7 @@ or LND node.
 
 ## Key Types
 
-- `Wallet` — Top-level wallet wrapping `walletcore.Wallet` with neutrino chain service, chain backend, and boarding adapter. Constructors: `New` (owns neutrino lifecycle) and `NewWithNeutrino` (reuses pre-started service).
+- `Wallet` — Top-level wallet wrapping `walletcore.Wallet` with neutrino chain service, chain backend, and boarding adapter. Constructors: `New` (owns neutrino lifecycle) and `NewWithNeutrino` (reuses pre-started service). `WalletExists` probes `DBDir` for an existing wallet database without taking the bbolt file lock.
 - `NeutrinoService` — Manages the neutrino `ChainService`, its bbolt DB, and lifecycle. Pre-started by the daemon for early P2P sync.
 - `ChainBackend` — Implements `chainsource.ChainBackend` using neutrino's native `ChainNotifier` for confirmation tracking, spend detection, fee estimation, and optional direct package relay via `chainbackends.PackageSubmitter`.
 - `BoardingBackendAdapter` — Implements `wallet.BoardingBackend` and `wallet.OutputLeaser` by embedding `walletcore.BoardingBackendBase` and adding neutrino-backed `ListUnspent`, `GetTransaction`, `GetBlock`, `LeaseOutput`, and `ReleaseOutput`. Output leasing forwards to btcwallet's native lock table, casting `wallet.LockID` → `wtxmgr.LockID`.
@@ -29,6 +29,22 @@ or LND node.
   is non-relayable without its fee-paying child.
 - Block cache size is in bytes (2 MiB default), not block count. This differs from neutrino's count-based API.
 - Taproot script imports use `KeyScopeBIP0086` (via `walletcore.BoardingBackendBase`) to ensure btcwallet's block processing tracks credits correctly.
+- `New`/`NewWithNeutrino` enforce a seed/database-existence invariant
+  (`checkWalletInvariants`) before constructing any subsystem: a nil
+  `Config.Seed` requires an existing wallet database (else
+  `ErrWalletNotFound`), and a non-nil `Config.Seed` requires no existing
+  database (else `ErrWalletExists`). This is deliberate — btcwallet otherwise
+  silently generates a random seed on create-without-seed, or silently
+  ignores a supplied seed on an already-initialized database, either of which
+  is unacceptable for a funds-bearing wallet. If a later step fails, the
+  newly-opened wallet DB is explicitly closed so a retry doesn't wedge on the
+  bbolt file lock.
+- The package only builds natively (`//go:build !js || !wasm`).
+  `wasm_stub.go` (`//go:build js && wasm`) provides an error-returning stub
+  implementation of the same exported surface (`Wallet`, `New`,
+  `NewWithNeutrino`, `WalletExists`, `NeutrinoService`, sentinels, etc.) so
+  callers built for browser/WASM targets still link, since neutrino P2P sync
+  and bbolt-backed btcwallet are unavailable in-browser.
 
 ## Deep Docs
 

@@ -138,9 +138,13 @@ state transitions and validation rules live under [Invariants](#invariants).
   per owned `ClientVTXO`: `VTXOReceivedMsg{Source=SourceRoundBoarding}`;
   paired `VTXOSentMsg{Outpoint}` +
   `VTXOReceivedMsg{Source=SourceRoundRefresh}`;
-  `VTXOReceivedMsg{Source=SourceRoundTransfer}`. One
-  `FeePaidMsg{FeeType=FeeTypeRefresh}` per round when
-  `OperatorFeeSat > 0` and any refresh-origin VTXO was emitted.
+  `VTXOReceivedMsg{Source=SourceRoundTransfer}`. A standalone
+  `VTXOSentMsg{AmountSat,IdempotencyKey}` (no paired Received) per
+  `VTXOCreatedNotification.Outflows` entry — non-owned value the client
+  paid out, e.g. foreign directed-send recipients and cooperative leave
+  outputs. One `FeePaidMsg` per round when `OperatorFeeSat > 0`, typed by
+  `OperatorFeeType` (`FeeTypeBoarding` when the round had boarding
+  intents, else `FeeTypeRefresh`; empty defaults to `FeeTypeRefresh`).
 - **Receives ← `serverconn`** (via `ServerMessageNotification`):
   `CommitmentTxBuilt`, `NoncesAggregated`, `OperatorSigned`,
   `RoundJoined`, `BoardingFailed`, `JoinRoundQuoteReceived`.
@@ -251,5 +255,3 @@ state transitions and validation rules live under [Invariants](#invariants).
 - [round/README.md](README.md) — Full state machine walkthrough with
   diagrams.
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map.
-</content>
-</invoke>

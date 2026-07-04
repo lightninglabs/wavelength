@@ -45,4 +45,7 @@ containers with network isolation for end-to-end testing.
   tests.
 - `electrsReadyTimeout` = 2 minutes — separate extended timeout for the
   electrs container HTTP readiness check.
+- `lndStartupTimeout` = 90s — extended timeout for LND TLS/gRPC readiness,
+  wallet-active, and chain-sync waits, since serialized systest load can make
+  LND bootstrap meaningfully slower than `defaultTimeout` allows.
 - Coinbase maturity: 100 blocks + 6-block buffer.

@@ -55,7 +55,9 @@ actor. See [docs/oor_subsystem.md](../docs/oor_subsystem.md) for the full design
   Commit join the turn tx); optional `IncomingVTXOObserver IncomingVTXONotifier`
   fires after incoming VTXOs are durably materialized (lets daemon subsystems arm
   work without depending on `oor`); `Limits ReceiveLimits` bounds incoming
-  receive payloads.
+  receive payloads; `SpendReleaser` returns an outgoing session's reserved
+  input VTXOs to `LiveState` when a terminal failure lands before the point
+  of no return.
 
 The legacy single global actor and the separate signing-effect actor have been
 deleted; all per-session state and all wallet signing now live on the
@@ -123,6 +125,11 @@ per-session durable actor's turn.
 - `IncomingTransferNotification` — emitted alongside metadata query.
 - `ScheduleRetryRequest` — retryable-outbox scheduling via the timeout
   actor.
+- `ReleaseInputsRequest` — emitted by the FSM's non-retryable failure
+  transition when the failure lands before the point of no return;
+  returns the session's reserved input VTXOs to `LiveState` via
+  `SpendReleaser` so a rejected submit does not strand spendable funds
+  until the startup sweep.
 
 ### FSM Events & Incoming Receive States
 
@@ -143,14 +150,22 @@ per-session durable actor's turn.
 
 ### Outbox Handler Chain & Callbacks
 
-- `LocalPersistenceOutboxHandler` — handles `MarkInputsSpentRequest`,
-  `QueryIncomingMetadataRequest`, `MaterializeIncomingVTXOsRequest`,
-  `SendIncomingAckRequest`; delegates everything else to `Next`. Also
-  implements `IncomingMetadataRecipientFilter` so the transport layer
-  can pre-filter owned recipients.
+- `LocalPersistenceOutboxHandler` — a purely incoming-materialization
+  handler: handles `QueryIncomingMetadataRequest`,
+  `MaterializeIncomingVTXOsRequest`, `SendIncomingAckRequest`;
+  delegates everything else to `Next`. Also implements
+  `IncomingMetadataRecipientFilter` so the transport layer can
+  pre-filter owned recipients. `MarkInputsSpentRequest` and
+  `ReleaseInputsRequest` (outgoing-side effects) are handled inline by
+  the session actor's `completeSpend`/`releaseSpend`, not here.
 - `SpendCompleter` — `func(ctx, []wire.OutPoint) error` routing OOR
   spend completion through the VTXO manager. `nil` ⇒ direct store
   writes (migration compat).
+- `SpendReleaser` — `func(ctx, []wire.OutPoint) error` routing pre-PONR
+  input release through the VTXO manager, mirroring `SpendCompleter`.
+  Invoked from the session actor's `driveOutboxEvents` on
+  `ReleaseInputsRequest`; best-effort (logs and swallows a release
+  error) since the emitting transition is already terminal.
 - `IncomingClientKeyResolver` — `func(ctx, ArkRecipientOutput)
   (keychain.KeyDescriptor, error)`. Returns
   `ErrIncomingRecipientNotOwned` for outputs belonging to other
@@ -211,7 +226,8 @@ per-session durable actor's turn.
     `SendListOORRecipientEventsByScriptRequest`;
     `QueryIncomingMetadataRequest` →
     `SendListVTXOsByScriptsRequest`.
-  - → `db` (via outbox): `MarkInputsSpentRequest`.
+  - → `vtxo` manager (via outbox, `SpendCompleter`/`SpendReleaser`):
+    `MarkInputsSpentRequest`, `ReleaseInputsRequest`.
   - → `wallet`: `MaterializeIncomingVTXOsRequest`.
   - → `vtxo` manager: `VTXOsMaterializedNotification`.
   - → `ledger` (when `LedgerSink` is `fn.Some`): `VTXOSentMsg` on
@@ -240,6 +256,24 @@ per-session durable actor's turn.
   `*oorpb.SubmitRejectedError{Code: OOR_REJECT_LINEAGE_TOO_LARGE}`;
   `ClassifySubmitError` maps it to `*ErrLineageTooLarge` so wallet
   callers can switch on the cause without depending on the proto type.
+  It likewise maps `OOR_REJECT_OUTPUT_POLICY` to
+  `*ErrOutputPolicyViolation` (terminal for the same output shape —
+  restructure before retrying) and `OOR_REJECT_USER_BALANCE` to
+  `*ErrUserBalanceExceeded` (not terminal — clears once the recipient's
+  aggregate balance drops, so a custodial sender should retain the
+  value and retry later). Both wrap the operator's human-readable
+  `Reason`, suitable for surfacing directly in UX. The darepod ingress
+  adapter routes every typed rejection through `ClassifySubmitError`
+  before failing the session, so `GetOORSession`/`ListOORSessions`
+  surface the classified cause.
+- `ArkRecipientOutput.VTXOPolicyTemplate` carries the server-supplied
+  arkscript policy template for a recipient output, when present.
+  `IncomingTransferEvent.Recipients` / `ReceiveNotified.Recipients` /
+  `IncomingSnapshot.Recipients` (TLV record 23) preserve this metadata
+  end-to-end from the recipient event through materialization; when
+  empty (older servers), receivers fall back to structural extraction
+  via `ExtractArkRecipients`. `CloneArkRecipients` deep-copies
+  recipients including the policy template bytes.
 
 ## Invariants
 
@@ -271,6 +305,22 @@ per-session durable actor's turn.
 - Point-of-no-return: server co-signing the checkpoint
   transaction(s). After that, client must resume with byte-identical
   co-signed PSBTs (deterministic construction).
+- `handleOutboxError`'s non-retryable failure transition releases the
+  session's reserved input VTXOs (`ReleaseInputsRequest` via
+  `prePONRInputOutpoints`) only when the failure lands before the
+  point of no return — the server never locked the inputs, so they can
+  return straight to `LiveState`. Past the PONR the inputs stay
+  reserved since the server holds a co-signed spend of them.
+- `driveOutbox` classifies outbox-effect failures as transient
+  (returned unchanged, redelivers) or deterministic
+  (`*terminalOutboxError`, e.g. `buildTransportMessage` rejecting a
+  metadata query whose recipient set contains nothing this wallet
+  owns): a deterministic failure drives the FSM to terminal `Failed`
+  instead of retrying forever, since replaying the same event against
+  the same inputs would hit the identical error on every redelivery.
+  The recursive `continueWith` and commit-path materialization use the
+  raw `driveOutboxEvents` so a deterministic error propagates up to
+  the single top-level classifier.
 - Transport events (submit / finalize / ack) are delivered directly
   into the `serverconn` durable actor during the commit transaction:
   serverconn is durable, so each `Tell` persists into its mailbox via
@@ -296,9 +346,14 @@ per-session durable actor's turn.
   `SigningOutboxHandler`) receives async materialization results so
   indexer queries run outside the actor tx, preventing SQLite
   write-lock starvation.
-- `handleMarkInputsSpent` skips non-local outpoints, routes the rest
-  to `CompleteSpend` (or direct store writes if `nil`).
-  `actor.ErrNoActorsAvailable` returns a retryable error.
+- `sessionBehavior.completeSpend` filters `MarkInputsSpentRequest` to
+  locally-known outpoints, then routes completion through
+  `SpendCompleter` (or direct store writes if `nil`).
+  `sessionBehavior.releaseSpend` mirrors this for `ReleaseInputsRequest`
+  via `SpendReleaser`, with no direct-store fallback (best-effort;
+  errors are logged and swallowed by the caller). Both must run inline
+  in dispatch with no OOR writer transaction held, since the manager
+  Ask drives a write in the VTXO actor's own transaction.
 - `handleMaterializeIncoming` only calls `NotifyIncomingVTXOs`
   directly when `hasActorDBTx` is false; inside a durable actor tx,
   notification is deferred to `notifyMaterializedVTXOs` via the
@@ -407,5 +462,3 @@ per-session durable actor's turn.
 
 - [oor/doc.go](doc.go) — Package overview.
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map.
-</content>
-</invoke>

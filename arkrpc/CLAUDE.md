@@ -22,6 +22,13 @@ Proto source: `arkrpc/ark.proto`, `arkrpc/indexer.proto`.
   PSBTs that `IncomingOOREvent` intentionally omits.
 - `VTXO` — Phase 2 query response from `ListVTXOsByScripts`. Carries
   authoritative lineage metadata including the structured `TreePath`.
+- `ArkProtocolVersionV1` — The initial Ark protocol version constant
+  (`version.go`). Negotiated through the `GetInfo` bootstrap RPC:
+  `GetInfoRequest.SupportedArkVersions` lists client-preferred versions,
+  `GetInfoResponse.SelectedArkVersion` carries the operator's pick (zero
+  means no common version), and `GetInfoResponse.ArkVersionPolicies`
+  advertises each known version's ACTIVE/DISABLED lifecycle state. Separate
+  from the mailbox transport version and the VTXO construction version.
 
 ## Relationships
 

@@ -4,11 +4,14 @@
 
 Generic "broadcast this signed tx, tell me when it confirms, and fee-bump
 it via CPFP until it does" actor. Subsystem-neutral: no unroll/, vtxo/,
-oor/, or round/ semantics leak in. Callers submit a signed v3/TRUC parent
-via `EnsureConfirmedReq` and receive a terminal `TxConfirmed` or `TxFailed`
-notification. Dedup is by txid: two callers asking to confirm the same
-txid share a single confirmation watch, broadcast attempt, and CPFP child,
-but each still receives its own terminal notification.
+oor/, or round/ semantics leak in. Callers submit a signed parent via
+`EnsureConfirmedReq` — either a zero-fee ephemeral-anchor v3/TRUC parent
+that always rides a CPFP package, or a funded (non-zero-value) anchor
+parent of any version that pays its own fee and is CPFP-bumped only when
+needed — and receive a terminal `TxConfirmed` or `TxFailed` notification.
+Dedup is by txid: two callers asking to confirm the same txid share a
+single confirmation watch, broadcast attempt, and CPFP child, but each
+still receives its own terminal notification.
 
 ## Key Types
 
@@ -35,14 +38,20 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/txcon
 - Exported helpers usable standalone: `BuildCPFPChild`,
   `EstimatePackageFee`, `EstimateWeight`, `SelectFeeInput`.
 - `Wallet` — interface required by the broadcaster: `ListUnspent`,
-  `NewWalletPkScript`, `FinalizePsbt`, plus `wallet.OutputLeaser`
-  (`LeaseOutput` / `ReleaseOutput`) for cross-subsystem UTXO lock
-  coordination.
+  `NewWalletPkScript`, `FinalizePsbt`, `FundPsbt`, plus
+  `wallet.OutputLeaser` (`LeaseOutput` / `ReleaseOutput`) for
+  cross-subsystem UTXO lock coordination.
 - `EnsureConfirmedReq` / `EnsureConfirmedResp` — public Ask API:
   register interest in a txid with `TargetConfs`, `ConfirmationPkScript`,
-  and a subscriber.
+  a subscriber, and (for a funded-anchor parent) `ParentFee` so a later
+  CPFP bump lands the combined fee on the target rate instead of
+  double-counting the parent's own fee.
 - `CancelInterestReq` / `CancelInterestResp` — drop a subscriber; the
   last subscriber's cancel tears down tracking.
+- `BumpNowReq` / `BumpNowResp` — operator Ask API: force an immediate
+  CPFP fee bump of an already-tracked txid at a supplied
+  `TargetFeeRateSatPerVByte` (clamped to the broadcaster's configured
+  ceiling), rather than waiting for the next interval-paced bump.
 - `TxConfirmed` / `TxFailed` — terminal `Notification` types delivered
   to each subscriber.
 - `TxState` — `New`, `Broadcasting`, `AwaitingConfirmation`,
@@ -51,7 +60,9 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/txcon
   `AwaitingConfirmation` is reported only once the tx (or a redundant
   parent) is actually in a mempool.
 - Sentinels: `ErrNonTRUCParent`, `ErrCPFPFeeInputUnavailable`,
-  `ErrEnsureParamsMismatch`, `ErrFeeInputProducesDust`.
+  `ErrEnsureParamsMismatch`, `ErrFeeInputProducesDust`,
+  `ErrParentFeeSufficient` (a funded-anchor bump would pay the child a
+  sub-relay-fee share because the parent already meets the target).
 - `Config.BroadcastFailureAlertThreshold` — consecutive no-mempool
   failures before the operator escalation fires (default 3). Time to
   first alert ≈ threshold × `FeeBumpIntervalBlocks` blocks.
@@ -61,21 +72,24 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/txcon
 - **Depends on**: `baselib/actor`, `baselib/protofsm`, `chainsource`
   (confirmation watches, block epochs, broadcast, package submission,
   fee estimation, preflight), `wallet` (`Utxo`, `OutputLeaser`,
-  `LockID`), `lib/tx/arktx` (`TxVersion` constant, `IsAnchorOutput`).
-- **Depended on by**: `unroll`, `btcwbackend` (fee-input selection
-  helper), `darepod`, `db`.
+  `LockID`), `lib/tx/arktx` (`TxVersion` constant, `IsP2AAnchorScript`,
+  `IsFundedAnchorOutput`).
+- **Depended on by**: `unroll`, `wallet` (boarding-sweep and
+  wallet-sweep actors), `darepod`.
 - **Sends → `chainsource`** (Ask): `BestHeightRequest`,
   `SubscribeBlocksRequest`, `RegisterConfRequest`,
   `UnregisterConfRequest`, `BroadcastTxRequest`,
   `SubmitPackageRequest`, `TestMempoolAcceptRequest`,
   `FeeEstimateRequest`.
 - **Sends → `Wallet`** (direct): `ListUnspent`, `NewWalletPkScript`,
-  `FinalizePsbt`, `LeaseOutput`, `ReleaseOutput`.
+  `FinalizePsbt`, `FundPsbt` (fee-input fanout funding),
+  `LeaseOutput`, `ReleaseOutput`.
 - **Sends → caller subscriber** (Tell): `TxConfirmed`, `TxFailed`.
 - **Receives ← `chainsource`** (mapped Tell refs): `BlockEpoch` →
   `blockEpochObservedMsg`; `ConfirmationEvent` →
   `confirmationObservedMsg`.
-- **Receives ← API**: `EnsureConfirmedReq`, `CancelInterestReq`.
+- **Receives ← API**: `EnsureConfirmedReq`, `CancelInterestReq`,
+  `BumpNowReq`.
 
 ## Invariants
 
@@ -96,9 +110,44 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/txcon
   must agree on `TargetConfs` and `ConfirmationPkScript`; mismatches
   return `ErrEnsureParamsMismatch` rather than silently reusing the
   existing watch.
-- **TRUC version gate**: `CPFPBroadcaster.Submit` rejects parents whose
-  `Tx.Version != arktx.TxVersion` (v3). Pattern-based anchor detection
-  on non-v3 parents is structurally unsafe.
+- **TRUC version gate applies only to zero-fee anchors**: a parent
+  carrying a zero-value ephemeral anchor must be v3
+  (`Tx.Version == arktx.TxVersion`) — `CPFPBroadcaster.Submit` rejects
+  it otherwise with `ErrNonTRUCParent`, since package RBF and the
+  zero-fee anchor are not policy-legal without TRUC semantics. A
+  funded (non-zero-value) anchor is exempt: it pays its own fee, so
+  `Submit` broadcasts it directly on the initial pass regardless of
+  version, and the anchor is spent only when a bump is requested.
+- **Funded-anchor parents pay their own way until bumped**: on the
+  initial broadcast a funded-anchor parent goes out directly with no
+  CPFP child and no fee-input reservation; the anchor is a spare
+  handle spent only by a later `BumpNowReq` or interval-paced bump. The
+  resulting CPFP child's own fee is the package-fee target minus
+  `ParentFee` (floored at 1 sat), and the anchor's value is credited
+  into the child's change, so the combined parent+child fee lands on
+  the target rate instead of double-counting the parent's own fee. A
+  bump whose target the parent already meets or exceeds is refused
+  with `ErrParentFeeSufficient` rather than building a child guaranteed
+  to fail the mempool's minimum relay fee.
+- **Fee inputs that fail to sign are deprioritized, not excluded**:
+  `CPFPBroadcaster` tracks `suspectFeeInputs` — wallet outpoints whose
+  CPFP child previously failed at the child-signing stage.
+  `selectFeeInput` only falls back to a suspect coin when no clean
+  candidate qualifies, so one unsignable UTXO (e.g. an imported
+  watch-only output that leaked through UTXO enumeration) cannot keep
+  winning smallest-first selection while signable coins sit idle; the
+  mark clears the moment the input signs successfully.
+- **A confirmed fee-input shortfall drives an active fanout, not just a
+  retry**: when a CPFP child broadcast fails because no confirmed
+  wallet UTXO covers the demand, the actor's single long-lived fanout
+  state machine (`feeBumpFSM`, one instance per `TxBroadcasterActor`)
+  funds and broadcasts a plain transaction that mints right-sized
+  fee-input outputs for every blocked anchor parent, watches it for
+  confirmation, and retries every parent still stuck in `Broadcasting`
+  once it lands. The FSM performs its own wallet/broadcast IO inside
+  transitions — safe because the actor serializes every event fed to
+  it — and a build or broadcast failure stashes on the FSM's
+  environment rather than tearing the long-lived machine down.
 - **Replacement floor**: every fee bump runs through
   `applyReplacementFloor` before selecting a fee input, enforcing
   BIP-125 Rule 4 (strictly higher feerate) and Rule 3 (strictly higher
@@ -147,5 +196,3 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/txcon
   lifecycle, CPFP correctness invariants, PSBT finalization,
   service-key round trip, and eviction.
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map.
-</content>
-</invoke>

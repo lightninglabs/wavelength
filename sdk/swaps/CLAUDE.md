@@ -50,9 +50,25 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/s
 - `IncomingVHTLCEventReceiver` — interface for receivers that
   handle both Lightning-backed and same-Ark vHTLC events; implemented
   by `MailboxOutSwapEventReceiver`.
-- `SettlementType` — `SettlementTypeLightning`, `SettlementTypeInArk`
-  (returned in `InSwapConfig` identifying how the server bridges
-  payment).
+- `SettlementType` — `SettlementTypeLightning`, `SettlementTypeInArk`,
+  `SettlementTypeCredit` (server pays from a reserved credit balance,
+  no client-funded vHTLC), `SettlementTypeMixed` (vHTLC funds only the
+  `CreditQuote.ArkFundingSat` shortfall) — returned in `InSwapConfig`
+  identifying how the server bridges payment.
+- `CreditOperation` / `CreditQuote` / `CreditSnapshot` — server-
+  authoritative credit account state (`credits.go`). `SwapClient`
+  exposes it via `CreateCredit`, `RedeemCredit`, and `ListCredits`,
+  each resolving the account key from the daemon identity pubkey.
+  These server capabilities are optional: `SwapServerConn`
+  implementations are duck-typed against small unexported interfaces
+  (e.g. `creditServerConn`, and the `CreateInSwapWithCredits` /
+  `QuoteInSwapWithCredits` checks in `in_swap.go` /
+  `in_swap_quote.go`) rather than required by the base interface.
+  `GRPCSwapServerConn` implements all of them.
+- `InSwapQuote` — stateless pay-side preview returned by
+  `QuotePayViaLightning[WithCredits]` / `SwapServerConn.QuoteInSwap`;
+  validated against the invoice the same way as `InSwapConfig` but
+  creates no durable state on either side.
 - `Store` — isolated SQLite persistence. Runs its own migration table
   (`swap_client_schema_migrations`) separate from the main daemon DB.
 - `SwapServerConn` / `GRPCSwapServerConn` — remote swap-server gRPC
@@ -66,9 +82,21 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/s
 - `PayState` / `ReceiveState` — typed FSM enums with `IsTerminal()` /
   `String()`. `ReceiveState` includes `ReceiveStateHTLCEventAccepted`.
 - `VHTLCConfig`, `InSwapConfig`, `RouteHint` — server-negotiation
-  DTOs. `SwapSummary` — flat list view for persisted sessions.
+  DTOs. `OutSwapQuote.RouteHintPath` is an ordered multi-hop route-hint
+  path (the final hop is the server's virtual channel); invoices embed
+  it via `CreateInvoiceWithKeyRouteHintPath`. `OutSwapHtlcEvent.Parts`
+  carries one onion per shard for multi-part (MPP) out-swap payments;
+  an event with no `Parts` is a legacy single-part payment carried by
+  `OnionBlob`. `SwapSummary` — flat list view for persisted sessions.
 - `OutSwapMailboxID` — derives a per-receive mailbox ID from the
   client identity key and invoice payment hash.
+- `ForfeitSignaturePayload` / `OutSwapForfeitSignatureReceiver` —
+  vHTLC-refresh forfeit-signing transcript and mailbox receiver
+  (`forfeit_refresh.go`). A funded/claiming/completing receive session
+  runs a background responder that signs the server's connector-bound
+  forfeit tx via the daemon's `SignVTXOForfeit` and submits the
+  participant signature back with
+  `SwapServerConn.SubmitOutSwapForfeitSignature`.
 - Error sentinels (exported): `ErrSwapExpired`, `ErrSwapRefunded`,
   `ErrSwapSummaryNotFound`. Internal classifiers
   (`interventionError`, `failureError`, `retryableActionError`) live
@@ -82,7 +110,8 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/s
   `PubKeyMailboxID`), `db/migrate` + `db/sqlc`, `sdk/swaps/sqlc`,
   `loop/fsm` (FSM engine), `lightning-onion` (Sphinx ECDH).
 - **Depended on by**: `cmd/darepocli/darepoclicommands` (`pay` /
-  `receive` commands).
+  `receive` commands), `swapclientserver` (daemon RPC control-plane,
+  including the credit bridge).
 
 ## Sends / Receives
 
@@ -96,6 +125,16 @@ same-Ark vHTLC event: if `outEvents` implements
 `IncomingVHTLCEventReceiver`, `WaitIncomingVHTLC` is called;
 otherwise the flow falls back to `WaitOutSwapHtlc` and converts the
 result into an `IncomingVHTLCNotification`.
+
+Before clearing the pending mailbox ACK cursor, a Lightning-backed
+receive first calls `SwapServerConn.AcknowledgeOutSwapHTLC` so the
+server has an authoritative record that the event was durably
+accepted; `SettlementTypeInArk` receives skip this call.
+
+While funded, claiming, or completing, a receive session also runs a
+background responder (started in `runUntil`) that waits on
+`OutSwapForfeitSignatureReceiver.WaitOutSwapForfeitSignature` and
+answers each vHTLC-refresh forfeit-signing request from the server.
 
 ## Invariants
 
@@ -125,9 +164,12 @@ result into an `IncomingVHTLCNotification`.
   the SDK never holds the raw private key for receive-auth.
 - Error sentinels (`ErrSwapExpired`, `ErrSwapRefunded`,
   `ErrSwapSummaryNotFound`) are exported; callers use `errors.Is`.
+- `SettlementTypeCredit` pay sessions complete inside `createSwap`
+  without ever funding a vHTLC — the FSM transitions straight from
+  `SwapCreated` to `Completed` using the preimage the server returns
+  in `InSwapConfig.Preimage`. `SettlementTypeMixed` funds only the
+  `CreditQuote.ArkFundingSat` shortfall via a normal vHTLC.
 
 ## Deep Docs
 
 - [ARCHITECTURE.md](../../ARCHITECTURE.md) — System-wide package map.
-</content>
-</invoke>

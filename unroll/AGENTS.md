@@ -136,6 +136,18 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
 - `proofNodeHeightHint = 1` — height hint for proof-node
   spend/confirmation watches (proof roots and intermediate ancestors
   can confirm before the target VTXO's creation height).
+- `PlanExitFunding` / `ExitFundingPlan` (`exit_plan.go`) — backing-wallet
+  funding projection for a unilateral exit, consumed by `darepod`'s exit
+  RPC surface (`rpc_exit_plan.go`). Wraps `AssessExitFeasibility` /
+  `RecoveryTxCount` (`feasibility.go`) and
+  `RecommendedExitFeeInputAmount` (per-UTXO CPFP fee suggestion, floored
+  at `DefaultFeeInputMinAmountSat`) into `RequiredConfirmations`
+  (`RequiredFeeInputConfirmations` = 1), `RecommendedTotalFundingSat`,
+  and `FundingShortfallSat`. `ExitFundingSnapshot` carries the caller's
+  confirmed wallet balance and usable-input count into the model.
+- `ExitFundingAddressBook` — caches one funding address per target
+  outpoint (`Address`) so repeated funding-plan polls don't advance the
+  backing wallet's address index.
 
 ## Relationships
 
@@ -272,5 +284,3 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
 - [lib/recovery/CLAUDE.md](../lib/recovery/CLAUDE.md) — immutable
   proof graph.
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — system-wide package map.
-</content>
-</invoke>

@@ -19,9 +19,22 @@ both the main schema (`db/`) and the actor-delivery sub-schema
   (called after each step number), `PostgresReplacements map[string]string`
   (SQLite→Postgres token map), optional `Log btclog.Logger`.
 - `RunMigrations(db, backend, sourceFS, sourcePath, target, cfg)` — Top-level
-  entry point. Builds the driver, wraps the `fs.FS` with `replacerFS` if
-  Postgres replacements are configured, creates the golang-migrate instance,
-  verifies version state, and applies the `Target`.
+  entry point. Builds the driver via `newMigrationDriver`, wraps the `fs.FS`
+  with `replacerFS` if Postgres replacements are configured, creates the
+  golang-migrate instance, verifies version state, and applies the `Target`.
+- `newMigrationDriver(db, backend, migrationsTable)` — build-tagged driver
+  factory. `driver_native.go` (`!js || !wasm`) wraps golang-migrate's
+  `sqlite`/`postgres` database drivers directly. `driver_wasm.go`
+  (`js && wasm`) only supports `sqlc.BackendTypeSqlite` and delegates to
+  `newWASMSQLiteMigrationDriver`, avoiding golang-migrate's modernc-backed
+  sqlite driver in browser builds.
+- `wasmSQLiteDriver` (`sqlite_wasm_driver.go`, `js && wasm` only) —
+  hand-rolled `database.Driver` implementation for the browser-backed
+  wasmsqlite `database/sql` driver: process-local `Lock`/`Unlock` via
+  `atomic.Bool`, transactional `Run`/`SetVersion`, `Version`, and `Drop`
+  (drops all non-`sqlite_%` tables then `VACUUM`). `ensureVersionTable`
+  creates the `(version, dirty)` bookkeeping table and its unique index
+  on first use.
 - `PostgresSchemaReplacements()` — Returns a copy of the canonical SQLite→Postgres
   replacement map (`BLOB→BYTEA`, `INTEGER PRIMARY KEY AUTOINCREMENT→BIGSERIAL
   PRIMARY KEY`, `INTEGER PRIMARY KEY→BIGSERIAL PRIMARY KEY`,
@@ -39,7 +52,8 @@ both the main schema (`db/`) and the actor-delivery sub-schema
 - **Depends on**: `db/sqlc` (BackendType enum for driver selection),
   `github.com/golang-migrate/migrate/v4`.
 - **Depended on by**: `db` (main schema runner), `db/actordelivery/migrations`
-  (actor-delivery schema runner).
+  (actor-delivery schema runner), `sdk/swaps` (wasm SQLite swap store
+  migrations).
 
 ## Invariants
 

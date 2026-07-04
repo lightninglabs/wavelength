@@ -27,6 +27,19 @@ crash-safe at-least-once delivery with exactly-once deduplication.
 - `Message` — Sealed interface for all actor messages (must embed `BaseMessage`).
 - `MessageCodec` — TLV-based codec for message serialization/deserialization.
 - `DeliveryStore` / `TxAwareDeliveryStore` — Interfaces for durable mailbox persistence (enqueue, claim, ack, dead-letter). The leaseless single-worker fast path adds `PeekNextMessage` (read-only claim, no lease, no attempts bump; yields an empty lease token), `AckMessageByID` (unfenced delete), and `NackMessageByID` (unfenced release that increments attempts). A `DurableActor` enables it (via `DurableMailboxConfig.SingleWorkerLeaseless`) strictly when `NumWorkers == 1` AND the behavior is the Read/Commit (Right/`TxBehavior`) path, eliminating the per-message lease write transaction. The multi-worker pool and the classic path are byte-for-byte unchanged: they keep `LeaseNextMessage` and the lease-fenced ack. Ack/nack route to the by-ID ops automatically whenever the delivery's lease token is empty; `Delivery.ShouldDeadLetter` counts the in-flight attempt as `Attempts + 1` on the leaseless path so the dead-letter boundary matches the leased path (where attempts is pre-incremented at lease).
+- `OutboxWakeRegistrar` / `MailboxWakeRegistrar` — Optional `DeliveryStore`
+  capabilities that let a same-process consumer skip its poll interval after
+  a commit; polling remains the cross-process/restart fallback either way.
+  `RegisterOutboxWake(wake func())` (used by `OutboxPublisher`) fires after
+  any outbox commit. `RegisterMailboxWake(mailboxID string, wake func())
+  (cancel func())` (used by `DurableMailbox`, registered on construction and
+  cancelled on `Close`) fires only for mailboxes named in a committed
+  transaction's enqueue set — targeted, not a broadcast to every registered
+  mailbox. The targeting matters for the outbox fold path: `EnqueueMessage`
+  there runs inside the publisher's ambient write tx, so the enqueued row is
+  invisible until commit and `DurableMailbox.Send`'s own pre-commit wake
+  races ahead of that visibility and finds nothing; the store's post-commit,
+  mailbox-ID-keyed wake is what actually re-triggers the target's poll.
 - `DurableActor` — Actor variant with crash-safe mailbox backed by SQL persistence. Provides `Wait(ctx)` to block until the actor stops and `StopAndWait(ctx)` to request a graceful shutdown and then wait.
 - `DurableActorConfig[M, R]` — Configuration struct for `DurableActor`: behavior, store, codec, clock, DLO, WaitGroup, `TellRetryPolicy`, lease/heartbeat/poll durations, max attempts, cleanup timeout, deduplication TTL, and `NumWorkers`.
 - `DurableActorConfig.NumWorkers` — How many concurrent worker loops drain the actor's single mailbox. Default and any value `<= 1` is one worker (strictly-sequential processing). A value `> 1` turns the actor into a competing-consumer pool: that many goroutines each lease distinct messages via `LeaseNextMailboxMessage`, so independent messages run in parallel while per-correlation-key FIFO still keeps same-key messages ordered. Only for behaviors whose handlers are concurrency-safe and hold no writer across their side effects (e.g. the serverconn egress sender on the Read/Commit path). `NewDurableActor` **fails closed** with `ErrConcurrentClassicBehavior` when `NumWorkers > 1` is paired with a classic (`Left`) `ActorBehavior`, since the classic path wraps the whole `Receive` in one write transaction and assumes sequential delivery; pools are only valid on the Read/Commit (`TxBehavior`) path. The test-only `DurableActorConfig.AllowConcurrentClassicBehavior()` escape hatch bypasses the guard for the egress benchmark that measures the forbidden config; production code must never call it.
@@ -76,7 +89,7 @@ crash-safe at-least-once delivery with exactly-once deduplication.
 ## Relationships
 
 - **Depends on**: `lnd/tlv` (message serialization).
-- **Depended on by**: All domain actors (`round`, `vtxo`, `oor`, `wallet`, `serverconn`, `timeout`, `indexer`), `baselib/protofsm` (FSM-to-actor bridge), `db/actordelivery` (persistence implementation).
+- **Depended on by**: All domain actors (`round`, `vtxo`, `oor`, `wallet`, `serverconn`, `timeout`, `indexer`, `credit`, `metrics`), `baselib/protofsm` (FSM-to-actor bridge), `db/actordelivery` (persistence implementation).
 
 ## Invariants
 
@@ -99,6 +112,11 @@ crash-safe at-least-once delivery with exactly-once deduplication.
   the claim expiry is the retry mechanism; the publisher must log the
   transaction failure even when the inner Tell/Complete operations returned nil,
   because begin/commit failures happen outside those operation-level logs.
+  Folding the enqueue into the publisher's tx means the target mailbox's own
+  pre-commit wake fires before the row is visible; the store's post-commit
+  `MailboxWakeRegistrar` wake (keyed by mailbox ID to only the mailboxes the
+  committing transaction actually enqueued into) is what restores same-process
+  delivery latency instead of the target waiting out a full poll interval.
 - `ServiceKey` lookup via `Receptionist` is type-safe: mismatched types return `ErrServiceKeyTypeMismatch`.
 - `RestartMessage` has `RestartPriority` (MaxInt32) ensuring it is processed before all other messages on recovery.
 - Transaction context (`WithTx`/`RequireTx`) enables same-DB-transaction joining between actors and their callers.

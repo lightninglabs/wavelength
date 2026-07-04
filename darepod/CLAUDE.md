@@ -39,7 +39,21 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
   (`MaxCheckpoints`, `MaxVTXOMatches`, `MaxMailboxItems`,
   `MaxMailboxScriptBytes`). `Config.OORReceiveLimits()` normalizes
   into `oor.ReceiveLimits`.
-- `WalletState` — `None` / `Locked` / `Ready`.
+- `WalletState` — `None` / `Locked` / `Unlocking` / `Syncing` / `Ready`.
+  `Unlocking` guards the window between `InitWallet`/`UnlockWallet`
+  accepting the RPC and `startWalletDependentActors` completing;
+  `Syncing` covers the period after the seed is decrypted but before
+  chain sync (e.g. neutrino) finishes.
+- `FeeEstimationConfig` / `MempoolSpaceFeeConfig` — optional external
+  chain fee provider config (`Config.MempoolSpaceFeeEnabled()` /
+  `MempoolSpaceFeeURL()`); mempool.space is disallowed for
+  `WalletTypeLnd` (lnd already provides fee estimation).
+- `metrics.ServerConfig` (`Config.Metrics`) — optional Prometheus
+  `/metrics` HTTP server config.
+- `RPCConfig` gained `NoTLS`, `MacaroonPath`, `NoMacaroons` for the
+  daemon's own gRPC listener; `ServerConfig.MacaroonPath` /
+  `LndConfig.MacaroonPath` are the operator- and lnd-side macaroon
+  paths respectively.
 
 ### RPC Handlers
 
@@ -121,6 +135,31 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
 - `SendOnChain` — RPC handler delegating to the wallet actor's
   `SendOnChainRequest`. Routes through coin selection, leave output
   construction, and eager round join. Supports bounded and sweep-all modes.
+- `GetExitPlan` — unilateral-exit funding readiness preview across a
+  batch of outpoints. Uses a shrinking `remaining` wallet-fund
+  allocation (`walletExitFundingSnapshot`) so per-outpoint checks
+  reflect one shared pool rather than double-counting available funds.
+- `SweepWallet` — thin RPC shim to the wallet actor for sweeping the
+  backing on-chain wallet.
+- `RefreshCustomVTXOs` — queues caller-supplied custom-policy VTXOs for
+  refresh; `enrichCustomRefreshInputs`/`resolveCustomRefreshMetadata`
+  (`rpc_custom_refresh_metadata.go`) resolve authoritative round/lineage
+  metadata via indexer pagination and reject a request whose claimed
+  amount or pkScript doesn't match the indexer's record
+  (`customRefreshAmountMismatch`/`PkScriptMismatch`) so a caller can't
+  lie about its own input.
+- `SignVTXOForfeit` — signs the VTXO input of an exact round forfeit
+  transaction; `validateSignVTXOForfeitLocalVTXOIfPresent` cross-checks
+  the request transcript against the local VTXO record when one exists.
+- `ListPendingForfeitParticipantSignatureRequests` /
+  `SubmitForfeitParticipantSignatures` — RPC surface over the
+  in-memory `forfeitSignatureBroker` (see Adapters & Helpers) for
+  collecting external-participant forfeit signatures (e.g. swap
+  counterparties).
+- `GetVTXOExpiryInfo` — authoritative VTXO expiry posture, looked up by
+  outpoint (local store) or pkScript (indexer). An empty status filter
+  defaults to `LIVE` only, since a refreshed vHTLC keeps its pkScript
+  while older generations remain indexed as spent/forfeited.
 
 ### Adapters & Helpers
 
@@ -185,8 +224,62 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
 - `signMailboxAuth` — Schnorr auth. LND uses the tagged Schnorr
   signing RPC (`withSchnorrTag`); lwwallet signs locally via
   `serverconn.SignMailboxAuth`.
-- `fetchOperatorPubKeyDirect` — fetches operator pubkey via direct
-  gRPC `GetInfo` before the mailbox runtime starts.
+- `negotiateArkBootstrap` — sole owner of Ark protocol version
+  negotiation. Makes one bootstrap `GetInfo` call via
+  `serverconn.ArkVersionNegotiator` over the direct operator
+  connection, returning `*arkVersionNegotiation` (operator pubkey,
+  selected version, parsed `types.OperatorTerms`) before the mailbox
+  runtime starts, so the round actor and any refresh-only `GetInfo`
+  calls never renegotiate. `onServerIncompatible` is the connector's
+  compatibility callback: marks the daemon disconnected on a
+  permanent version mismatch (logged below error level — external
+  condition, not a bug).
+- `forfeitSignatureBroker` (`s.forfeitSignatures`) — mutex-guarded,
+  daemon-local (non-persisted) correlator for VTXO forfeit signatures
+  that require an external participant (e.g. a swap counterparty).
+  Implements `vtxo.ForfeitParticipantSigner.sign`; `registerContext`/
+  `list`/`submit`/`deleteContext(s)` back the
+  `ListPendingForfeitParticipantSignatureRequests` /
+  `SubmitForfeitParticipantSignatures` RPCs.
+  `verifyExternalForfeitParticipantSignatures` checks each submitted
+  signature against the actual tapscript spend path. State is lost on
+  restart by design — callers retry; `submit` is idempotent for an
+  identical resubmission and returns `AlreadyExists` for a
+  conflicting one.
+- `initCreditRegistry` — starts the credit durable-actor subsystem
+  (`credit.NewRegistry`) only when the swap runtime has published
+  `cfg.Swap.CreditServer`/`CreditDaemon` (no-op otherwise). Runs a
+  dedicated `timeout.NewActor()` for poll timers, wires
+  `s.creditRegistry`, publishes
+  `cfg.Swap.CreditEarmarkSetter = registry.SetEarmarkProvider`, then
+  calls `RestoreNonTerminal` and `StartAutoRedeem`. Deliberately does
+  not inherit the boot ctx (daemon-owned, not request-owned).
+- `startMetricsServer` / `stopMetricsServer` — optional Prometheus
+  `/metrics` HTTP server on a per-daemon `prometheus.NewRegistry()`
+  (avoids cross-daemon collisions in tests). Backed by a 4-worker
+  `metrics.NewMetricsActor` pool behind `s.metricsSink
+  fn.Option[metrics.Sink]`; `emitMetric` is the fire-and-forget
+  instrumentation entry point. `systemStatsAdapter` implements
+  `metrics.SystemStatsQuerier` and is the sole seam between daemon
+  internals (VTXO stats, wallet balance, block height, OOR/round
+  session counts) and the metrics package.
+- `recoverWalletState` (on `RPCServer`) — seed-recovery driver invoked
+  from `InitWallet`/`UnlockWallet` when the caller sets
+  `RecoverState`/`RecoveryWindow`. Waits on `DaemonReady()`, then runs
+  `recoverBoardingKeys` → `recoverIndexedVTXOs` →
+  `recoverOORReceiveScripts` and applies the combined
+  `walletRecoveryResult`. Notifies the VTXO manager via a
+  `VTXOsMaterializedNotification` Tell (no separate RPC).
+  `saveRecoveredVTXO` heals/dedupes on conflict and tolerates indexer
+  `AlreadyExists`, so recovery is safe to re-run.
+- `localRPCServerOptions` / `bakeReadOnlyMacaroon` (`rpc_security.go`)
+  — assembles TLS + macaroon gRPC server options for the daemon's own
+  listener; `bakeReadOnlyMacaroon` only writes `readonly.macaroon`
+  (mode `0o600`) if absent, so distributed copies aren't invalidated.
+  `newDarepodRPCPermissions()` / `darepodReadOnlyPermissions()`
+  (`rpc_auth.go`) define the per-method macaroon permission map;
+  `registeredRPCPermissions` fails closed if any registered gRPC
+  method lacks a permission entry.
 - `initLedgerActor` — constructs `ledger.LedgerActor` with both
   `LedgerStoreDB` and `UTXOAuditStoreDB`, registers under
   `ledger.ServiceKeyName`, stashes `LedgerStoreDB` on the `Server`
@@ -234,7 +327,7 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
   `indexer`, `arkrpc`, `lndbackend`, `harness` (bitcoind package
   submitter wiring in `cmd/darepod`), `fraud`, `gateway`,
   `rpc/restclient`, `vhtlcrecovery`, `vhtlcrecovery/coordinator`,
-  `vhtlcrecovery/unrollpolicy`.
+  `vhtlcrecovery/unrollpolicy`, `credit`, `metrics`, `rpcauth`.
 - **Depended on by**: `cmd/darepod`.
 
 ## Invariants
@@ -245,8 +338,11 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
   connection pool tears down. Without this ordering, in-flight actor
   lease loops produce "sql: database is closed" warnings at the tail
   of every itest.
-- Wallet transitions `None → Locked → Ready` (or direct to Ready if
-  seed provided).
+- Wallet transitions `None → Locked → Unlocking → Syncing → Ready`
+  (or direct to `Ready` if the seed is already provided).
+  `InitWallet`/`UnlockWallet` CAS the state to `Unlocking` before
+  doing any work and back to the prior state on failure, so a
+  concurrent duplicate call is rejected rather than silently retried.
 - Three wallet modes: LND-backed, lightweight (`lwwallet`), or
   neutrino-backed (`btcwallet` via `btcwbackend`).
 - Mailbox IDs are derived from identity pubkeys (via
@@ -331,6 +427,10 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
 - `Server.run` registers a deferred `s.unrollRegistry.Stop()` during
   startup so the registry's durable persist writer drains before
   actor-system shutdown.
+- Credit registry (step 14b) starts LAST in
+  `startWalletDependentActors`, strictly after the OOR actor (14),
+  because it depends on `cfg.Swap.*` bridges populated by the swap
+  subserver registrar and on the actor infrastructure being fully up.
 - `registerOOREventRoutes` checks for `*oorpb.SubmitRejectedError`
   before a generic error check on the submit-package response. A
   typed server-side rejection (e.g. `OOR_REJECT_LINEAGE_TOO_LARGE`)
@@ -364,5 +464,3 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
 - [docs/daemon_cli_guide.md](../docs/daemon_cli_guide.md) —
   Installation, configuration, CLI reference.
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map.
-</content>
-</invoke>

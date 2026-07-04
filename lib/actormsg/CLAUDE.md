@@ -22,7 +22,19 @@ package boundaries. Lives in `lib/` to break import cycles between `vtxo`,
   round FSM immediately fires `IntentRequested` after accepting the intent
   (`true` for directed sends) or parks in `PendingRoundAssembly` for
   batching (`false` for refresh/leave flows).
-- `TriggerBoardMsg` — Carries VTXO amounts for boarding registration to round actor.
+- `TriggerBoardMsg` — Carries VTXO amounts for boarding registration to round
+  actor. `Outpoints` scopes the trigger to the confirmed boarding inputs its
+  `Amounts` were sized over (empty means "all confirmed boarding inputs"),
+  keeping a later trigger from re-registering an outpoint already in flight
+  under a divergent owner key. `Change` optionally carries a `*types.LeaveRequest`
+  for the portion of the confirmed balance that exceeds operator limits, so the
+  clipped remainder re-confirms as a fresh boarding intent.
+- `CustomForfeitInput` — Describes a caller-supplied VTXO outside the wallet's
+  live coin set that still needs a temporary local VTXO actor to sign the
+  round forfeit transaction. `ActivateCustomForfeitInputsRequest/Response` spin
+  up temporary `PendingForfeit` actors for these inputs before round intent
+  registration; `DropCustomForfeitInputsRequest/Response` tear down the
+  synthetic overlay if the round intent is rejected before signing starts.
 - `SelectedVTXO` — Describes a VTXO selected for spend (outpoint, amount, pkscript).
 - `RoundActorServiceKey()` / `VTXOManagerServiceKey()` / `VTXOActorServiceKey(outpoint wire.OutPoint)` — Service key constructors for actor discovery. `VTXOActorServiceKey` encodes the target outpoint into the key so each per-VTXO actor gets a unique, deterministic key.
 

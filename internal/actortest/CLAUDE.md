@@ -12,7 +12,7 @@ state+outbox checkpointing.
 
 - `testHarness` / `newTestHarness` — Central test scaffolding: sets up real DB, actor system, delivery store, and outbox publisher.
 - `eventuallyWithOutboxPublish` — Helper that actively triggers `OutboxPublisher.PublishPending()` on every polling iteration, making outbox delivery assertions robust under the race detector and CI scheduler pressure.
-- Timeout constants: `outboxForwardProcessingTimeout` (5s), `outboxDeliveryTimeout` (10s), `durableAskResponseTimeout` (10s).
+- Timeout constants: `outboxForwardProcessingTimeout` (30s), `outboxDeliveryTimeout` (30s), `durableAskResponseTimeout` (30s) — aligned to the same budget since DurableAsk responses and chained forwards are also delivered through the outbox and CI can starve these SQLite-backed, `-race` tests.
 
 ## Relationships
 

@@ -5,7 +5,9 @@
 Lightweight in-process Bitcoin wallet backed by LND's btcwallet for HD key
 management and a shared Esplora/mempool.space chain backend. Self-contained
 without an external LND node. Implements `wallet.BoardingBackend`,
-`input.Signer` + MuSig2, and `chainsource.ChainBackend`.
+`input.Signer` + MuSig2, and `chainsource.ChainBackend`. Builds natively
+(bbolt-backed wallet DB) and for the browser (`js`/`wasm`, OPFS-backed SQLite
+wallet DB) from the same `Wallet`/`Config` surface.
 
 ## Key Types
 
@@ -54,6 +56,18 @@ without an external LND node. Implements `wallet.BoardingBackend`,
 - `Wallet.FinalizePsbtDirect(packet)` — Signs and finalizes a PSBT via
   `BtcWallet.FinalizePsbt` under `DefaultAccountName`. Used by the darepod
   unroll sweep adapter since lwwallet has no gRPC surface.
+- `WalletExists(cfg)` — Reports whether a wallet database already exists for
+  `cfg.ChainParams`/`RecoveryWindow`/`DBDir`, so callers can pick the create
+  (seed) or open (password-only) path before calling `New`. `ErrWalletNotFound`
+  and `ErrWalletExists` are the sentinel errors `New` returns when the
+  supplied seed and on-disk state disagree.
+- `newWalletLoaderOptions(cfg)` / `walletExists(cfg)` — Build-tag-gated pair
+  giving `New` its `btcwallet.LoaderOption`s and existence probe.
+  `walletdb_native.go` (`!js || !wasm`) opens the local bbolt DB via
+  `LoaderWithLocalWalletDB`. `walletdb_wasm.go` (`js && wasm`) opens an
+  OPFS-backed SQLite `walletdb.DB` (via `internal/sqlbase` +
+  `go-wasmsqlite`) and adopts it with `LoaderWithExternalWalletDB`,
+  deriving a stable per-`DBDir` OPFS file name.
 
 ## Relationships
 
@@ -76,6 +90,16 @@ without an external LND node. Implements `wallet.BoardingBackend`,
   UTXO set, because btcwallet does not credit-mark non-default scope outputs.
 - `Stop()` explicitly closes btcwallet's internal database to prevent resource
   leaks.
+- `New` refuses to proceed unless the seed and on-disk database state agree:
+  a nil `Config.Seed` requires an existing database (else `ErrWalletNotFound`)
+  and a non-nil seed requires none exists yet (else `ErrWalletExists`).
+  btcwallet itself silently generates a random seed or silently ignores a
+  supplied one in these cases, which is unacceptable for a funds-bearing
+  wallet.
+- If `BtcWallet.Start` fails after `New` has already opened the wallet
+  database, the rollback path closes it again; otherwise a retried unlock
+  (e.g. after a wrong passphrase) deadlocks on the database's exclusive lock
+  (bbolt flock natively, OPFS EXCLUSIVE locking in browser builds).
 
 ## Deep Docs
 
