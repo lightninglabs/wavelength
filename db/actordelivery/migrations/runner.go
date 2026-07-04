@@ -16,7 +16,7 @@ const (
 	//
 	// NOTE: This MUST be updated when a new actor-delivery migration is
 	// added.
-	LatestMigrationVersion uint = 2
+	LatestMigrationVersion uint = 1
 
 	// DefaultMigrationsTable is the default migration bookkeeping table.
 	DefaultMigrationsTable = "actor_delivery_schema_migrations"

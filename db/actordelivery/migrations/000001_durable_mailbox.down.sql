@@ -23,6 +23,7 @@ DROP INDEX IF EXISTS idx_ask_results_expires;
 DROP TABLE IF EXISTS ask_results;
 
 -- Drop mailbox messages table and indexes.
+DROP INDEX IF EXISTS idx_mailbox_messages_correlation;
 DROP INDEX IF EXISTS idx_mailbox_messages_promise;
 DROP INDEX IF EXISTS idx_mailbox_messages_lease;
 DROP INDEX IF EXISTS idx_mailbox_messages_available;

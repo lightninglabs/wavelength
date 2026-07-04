@@ -62,7 +62,14 @@ CREATE TABLE IF NOT EXISTS mailbox_messages (
     max_attempts INTEGER NOT NULL DEFAULT 10,
 
     -- created_at is the unix timestamp when the message was enqueued.
-    created_at BIGINT NOT NULL
+    created_at BIGINT NOT NULL,
+
+    -- correlation_key is an optional per-key FIFO lane. The claim
+    -- query refuses to return a keyed row while an earlier same-key
+    -- row is still in the mailbox (even one in backoff), so keyed
+    -- messages process in order under transient Tell failures.
+    -- Unkeyed (NULL) messages keep the global available_at ordering.
+    correlation_key TEXT
 );
 
 -- Index for efficient polling of available messages.
@@ -82,6 +89,16 @@ CREATE INDEX IF NOT EXISTS idx_mailbox_messages_lease
 CREATE INDEX IF NOT EXISTS idx_mailbox_messages_promise
     ON mailbox_messages(promise_id)
     WHERE promise_id IS NOT NULL;
+
+-- Filtered composite index supports the anti-join in the claim query.
+-- The NOT EXISTS subquery probes for an earlier same-key row (by id)
+-- scoped to the same mailbox; this index makes that probe an index
+-- seek. We index by id rather than created_at because the claim's
+-- per-key FIFO uses the UUIDv7 id column for strict sub-second
+-- ordering (the id encodes millisecond timestamp + tiebreaker bits).
+CREATE INDEX IF NOT EXISTS idx_mailbox_messages_correlation
+    ON mailbox_messages(mailbox_id, correlation_key, id)
+    WHERE correlation_key IS NOT NULL;
 
 -- Ask results table.
 -- Persists results for Ask messages so callers can recover outcomes after crash.
