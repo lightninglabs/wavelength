@@ -138,79 +138,52 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   jobs store their registered kind plus the domain-owned durable ref
   needed to reconstruct the same spend policy after restart.
 
-### Migration notes
+### Migration baseline
 
-- `000020_accounting_wallet_sweeps` — adds `wallet_clearing`,
-  `wallet_utxo_spent`, and `wallet_sweep_transfer` for sweep
-  accounting. Rebuilds the round idempotency index so keyed
-  round events use `idx_client_ledger_idempotent_key` instead of
-  collapsing on `(round_id, event_type, debit_account, credit_account)`.
-  Renumbered from 000019 to land after `000019_oor_session_registry`,
-  which merged to main while this work was in review.
-- `000018_pending_intents` — generalizes the Board-only
-  `pending_board_requests` outbox into a supertype/subtype set:
-  `pending_intent_kinds` (enum table), `pending_intents` (header: 32-byte
-  hash-derived intent id + kind FK + requested_at, no payload blob),
-  per-kind detail tables `pending_board_intents` / `pending_send_intents`
-  with first-class typed columns, and `pending_intent_anchors` (one row per
-  anchored outpoint, PK on the outpoint so a newer intent rebinds, FK to the
-  header). Drops `pending_board_requests` outright (alpha; rows only exist
-  in the narrow crash window between admission and round seal).
-- `000021_vhtlc_recovery_job_generations` — rebuilds `vhtlc_recovery_jobs`
-  to widen the uniqueness key from `(swap_id, action)` to
-  `(swap_id, action, vtxo_txid, vtxo_vout)`, so a refreshed vHTLC (new
-  outpoint) arms a new recovery "generation" instead of colliding with the
-  prior job. SQLite cannot widen a UNIQUE constraint in place, so the table
-  is recreated, rows are copied, and the state / swap-action / unroll-target
-  indexes are rebuilt. The down migration collapses each `(swap_id, action)`
-  to its newest row before restoring the narrower constraint.
-- `000017_spending_reservations` — adds `spending_reservations` table with
-  `(outpoint_hash, outpoint_index)` PK, `owner_kind`, `owner_id`, and
-  `created_at`. A row exists IFF the owning spend session was durably
-  checkpointed. The table supports the startup orphan sweep in the VTXO
-  manager (`vtxo.Manager.sweepOrphanedReservations`).
-- `000016_unilateral_exit_policy` — adds `exit_policy_kind`
-  (NOT NULL, default `'standard_vtxo_timeout'`) and nullable
-  `exit_policy_ref` to `unilateral_exit_jobs` via ALTER TABLE so
-  policy-specific unroll jobs restart with the same final spend policy.
-  Backfills legacy rows via the column default.
-- `000015_vhtlc_recovery_jobs` — vHTLC recovery control-plane rows
-  with named script parameters, request-id idempotency, SQL-visible
-  timestamps, and an optional `claim_preimage` BLOB reserved for
-  cross-process claim recovery. Initial arm never stores a raw preimage;
-  only the execution-layer escalation path may populate it, and it must
-  never be logged.
-- `000014_ledger_chain_fields` — first-class `chain_txid` / `chain_vout`
-  / `confirmation_height` columns on `ledger_entries` so history reads
-  don't decode wallet UTXO idempotency keys per query.
-- `000013_pending_board_request` — records the user's explicit `Board`
-  RPC intent so a daemon restart between Board admission and round
-  seal does not silently drop the request. Keyed by the confirmed
-  boarding outpoint. Superseded by `000018_pending_intents`.
-- `000012_boarding_sweep_ledger_events` — registers the
-  `boarding_sweep_fee_paid` ledger event type so `FeePaidMsg` with
-  `FeeType=FeeTypeOnchainSweep` satisfies the `ledger_entries.event_type`
-  FK.
-- `000011_boarding_sweeps` — `boarding_sweeps` /
-  `boarding_sweep_inputs` tables + new `sweep_pending` boarding
-  status. Input FK on `previous_status` enforces the rollback
-  contract without Go-side re-validation.
-- `000010_boarding_tx_proof` — nullable `tx_proof BLOB` on
-  `boarding_intents`. TLV via `lib/types.SerializeTxProof`; NULL on
-  legacy rows decodes to `fn.None` (wallet rebuilds from
-  `conf_tx`/`conf_hash` on next read). Upsert uses
-  `COALESCE(excluded.tx_proof, …)` so a NULL re-insert never
-  clobbers a good proof. Zero-length slices normalize to nil in Go
-  to avoid the `x''` BYTEA pitfall on Postgres.
-- `000009_vtxo_ancestry_paths` — replaces scalar `tree_path` /
-  `tree_depth` with a normalized `vtxo_ancestry_paths` side table;
-  routine queries skip the join, the unroller loads ancestry only
-  when resolving an exit.
-- `000008_unilateral_exit_store` — adds `unilateral_exit_jobs`.
-- `000007_utxo_audit_log` — append-only UTXO audit log.
-- `000006_fee_accounting` — seeds the client chart of accounts and
-  `ledger_entries` with three partial unique indexes for idempotent
-  replay.
+The migration history was squashed to a domain-grouped baseline ahead of
+the public release, so each file lays down one domain of the schema
+rather than replaying feature-development order. New migrations append
+after the baseline; bump `LatestMigrationVersion` in `db/migrations.go`
+when adding one.
+
+- `000001_init` — `chain_info`, the normalized `internal_keys`
+  registry, and macaroon root keys.
+- `000002_boarding` — boarding statuses / addresses / intents
+  (including the SPV `tx_proof` column) plus `boarding_sweeps` /
+  `boarding_sweep_inputs`. The sweep-input FK on `previous_status`
+  enforces the rollback contract without Go-side re-validation, and
+  the partial unique index on active sweep inputs prevents two
+  concurrent sweeps racing on the same boarding UTXO.
+- `000003_rounds` — round FSM persistence: `rounds`,
+  `round_boarding_intents`, `round_vtxo_requests`,
+  `round_client_trees`, `client_tree_txids`.
+- `000004_vtxos` — `vtxos` plus the normalized `vtxo_ancestry_paths`
+  side table. Routine queries skip the ancestry join; the unroller
+  loads ancestry only when resolving an exit.
+- `000005_oor` — OOR artifact store (packages, checkpoints, VTXO
+  bindings), receiver-side polling state, and the
+  `oor_session_registry` that owns per-session durable actors.
+- `000006_accounting` — chart of accounts and `ledger_entries` with
+  three partial unique indexes for idempotent replay plus first-class
+  `chain_txid` / `chain_vout` / `confirmation_height` columns, and the
+  append-only `wallet_utxo_log` audit log.
+- `000007_unilateral_exit` — `unilateral_exit_jobs` (with the durable
+  `exit_policy_kind` / `exit_policy_ref` identity) and
+  `vhtlc_recovery_jobs`. The vHTLC uniqueness key is
+  `(swap_id, action, vtxo_txid, vtxo_vout)` so a refreshed vHTLC (new
+  outpoint) arms a new recovery generation instead of colliding with
+  the prior job.
+- `000008_intents` — `spending_reservations` (a row exists IFF the
+  owning spend session was durably checkpointed; supports the startup
+  orphan sweep in `vtxo.Manager.sweepOrphanedReservations`) plus the
+  pending-intent outbox supertype/subtype set: `pending_intent_kinds`,
+  `pending_intents` header, `pending_board_intents` /
+  `pending_send_intents` detail tables, and `pending_intent_anchors`.
+- `000009_credit_operations` — client-side credit orchestration
+  operations keyed by stable idempotency keys.
+- `000010_activity_log` — canonical activity feed: `activity_entries`
+  current-state projection plus the `activity_events` append-only
+  transition log.
 
 ## Deep Docs
 

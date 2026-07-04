@@ -1,2 +1,3 @@
--- Rollback the initial schema.
+DROP TABLE IF EXISTS macaroons;
+DROP TABLE IF EXISTS internal_keys;
 DROP TABLE IF EXISTS chain_info;

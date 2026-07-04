@@ -174,8 +174,8 @@ precision)
 `round_boarding_intents.tx_proof`, produced by
 `lib/types.SerializeTxProof`). Carries the SPV merkle inclusion proof
 that lets a server with no chain source verify the boarding UTXO
-without re-fetching the block. Nullable: rows written before migration
-`000010_boarding_tx_proof` decode as `None`, and the wallet's
+without re-fetching the block. Nullable: rows without a stored proof decode as `None`, and the
+wallet's
 `maybeRebuildBoardingProof` recovery path reconstructs the proof from
 `conf_tx`/`conf_hash` via the chain backend on the next read (then
 re-persists it via the same upsert). Decode failures on a non-NULL

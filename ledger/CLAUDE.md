@@ -14,7 +14,7 @@ Event types: `wallet_utxo_created`, `wallet_utxo_spent`,
 
 ## Chart of Accounts
 
-Seeded by `000006_fee_accounting.up.sql`:
+Seeded by `000006_accounting.up.sql`:
 
 - `wallet_balance` (asset) — on-chain wallet funds.
 - `vtxo_balance` (asset) — current VTXO holdings.

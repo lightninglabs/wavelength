@@ -1,54 +1,5 @@
--- Boarding tables migration.
--- This migration creates tables for boarding address and boarding intent management.
-
--- Durable internal key registry.
---
--- Several client tables inline the same key-locator triple: a 33-byte
--- compressed pubkey BLOB plus a key_family / key_index pair (an lnd
--- keychain.KeyLocator). The triple lets us reconstruct the signing descriptor
--- for a wallet key, so it rides along with anything we have to re-sign or
--- re-derive after the fact. internal_keys is a normalized registry of every
--- such wallet key: each row is the full KeyDescriptor (pubkey + locator) and
--- consumer tables reference a row by a *_key_id foreign key instead of
--- re-spelling the three columns. Unlike the server registry, client keys have
--- no role concept, so the table is keyed purely by (pubkey, key_family,
--- key_index).
---
--- This table is created first in this migration (before boarding_addresses,
--- its earliest referencer) because Postgres requires the FK target table to
--- exist when a referencing constraint is declared.
---
--- BIGINT (not INTEGER) for key_family/key_index because keychain.KeyLocator
--- fields are uint32; Postgres INTEGER is signed 32-bit, so locator values above
--- MaxInt32 would not round-trip without sign-extension corruption. BIGINT
--- (signed 64-bit) safely covers the entire uint32 range.
-CREATE TABLE IF NOT EXISTS internal_keys (
-    -- id is the monotonically increasing surrogate key referenced by
-    -- consumer tables' *_key_id foreign keys.
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-
-    -- pubkey is the 33-byte compressed public key.
-    pubkey BLOB NOT NULL,
-
-    -- key_family and key_index are the lnd KeyLocator that lets the wallet
-    -- reconstruct the signing descriptor for this key.
-    key_family BIGINT NOT NULL,
-    key_index BIGINT NOT NULL,
-
-    -- created_at is the Unix timestamp when the key was first registered.
-    created_at BIGINT NOT NULL,
-
-    -- A given (pubkey, key_family, key_index) triple maps to exactly one
-    -- canonical row. Registering the same triple again is idempotent and
-    -- returns the existing id; this guard turns an inconsistent
-    -- re-registration into a hard error rather than a silently divergent
-    -- second row.
-    UNIQUE (pubkey, key_family, key_index),
-
-    -- Compressed secp256k1 public keys are exactly 33 bytes. length()
-    -- returns the byte count for BLOB (SQLite) and BYTEA (Postgres).
-    CHECK (length(pubkey) = 33)
-);
+-- Boarding lifecycle: addresses, intents, and on-chain sweeps of
+-- boarding deposits.
 
 -- Enum-like table for boarding intent lifecycle states.
 -- From the wallet's perspective, intents start in 'confirmed' state since they
@@ -64,7 +15,8 @@ INSERT INTO boarding_statuses (id, status_name) VALUES
     (1, 'adopted'),
     (2, 'failed'),
     (3, 'expired'),
-    (4, 'swept');
+    (4, 'swept'),
+    (5, 'sweep_pending');
 
 -- Create table to store boarding addresses.
 -- Boarding addresses are taproot addresses that clients generate to receive
@@ -151,6 +103,15 @@ CREATE TABLE IF NOT EXISTS boarding_intents (
     -- last_update_time is the unix epoch timestamp of the last update.
     last_update_time BIGINT NOT NULL,
 
+    -- tx_proof is the SPV TxProof built when the boarding UTXO first
+    -- confirms, persisted so it survives a daemon restart and can be
+    -- replayed to the round actor (and onward to the server) without
+    -- rebuilding it from chain. The wire format matches
+    -- round_boarding_intents.tx_proof: a TLV encoding produced by
+    -- lib/types.SerializeTxProof. NULL when no proof has been built
+    -- yet (None on read).
+    tx_proof BLOB,
+
     PRIMARY KEY (outpoint_hash, outpoint_index),
     FOREIGN KEY (pk_script) REFERENCES boarding_addresses(pk_script),
     FOREIGN KEY (status) REFERENCES boarding_statuses(status_name)
@@ -171,3 +132,73 @@ CREATE INDEX IF NOT EXISTS idx_boarding_intents_conf_height
 -- Create index on creation_time for chronological queries.
 CREATE INDEX IF NOT EXISTS idx_boarding_intents_creation_time
     ON boarding_intents(creation_time DESC);
+
+-- Boarding sweep tracking.
+--
+-- A broadcast boarding sweep is not complete until the chain backend reports
+-- the swept boarding outpoints as spent. These tables persist the published
+-- sweep transaction and each input so the daemon can resume spend watches and
+-- rebroadcast the exact same transaction after restart.
+
+CREATE TABLE IF NOT EXISTS boarding_sweeps (
+    txid BLOB PRIMARY KEY NOT NULL,
+    raw_tx BLOB NOT NULL,
+    destination_address TEXT NOT NULL,
+    total_amount BIGINT NOT NULL,
+    fee_amount BIGINT NOT NULL,
+    fee_rate_sat_per_vbyte BIGINT NOT NULL,
+    vbytes BIGINT NOT NULL,
+    status TEXT NOT NULL CHECK (
+        status IN (
+            'pending',
+            'published',
+            'confirmed',
+            'external_resolved',
+            'failed'
+        )
+    ),
+    created_height INTEGER NOT NULL,
+    created_time BIGINT NOT NULL,
+    published_time BIGINT,
+    confirmed_height INTEGER,
+    last_error TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_boarding_sweeps_status
+    ON boarding_sweeps(status);
+
+CREATE TABLE IF NOT EXISTS boarding_sweep_inputs (
+    txid BLOB NOT NULL,
+    outpoint_hash BLOB NOT NULL,
+    outpoint_index INTEGER NOT NULL,
+    amount BIGINT NOT NULL,
+    previous_status TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (
+        status IN (
+            'pending',
+            'published',
+            'spent',
+            'external_spent',
+            'failed'
+        )
+    ),
+    spent_by_txid BLOB,
+    spent_height INTEGER,
+    last_update_time BIGINT NOT NULL,
+
+    PRIMARY KEY (txid, outpoint_hash, outpoint_index),
+    FOREIGN KEY (txid) REFERENCES boarding_sweeps(txid),
+    FOREIGN KEY (previous_status) REFERENCES boarding_statuses(status_name),
+    FOREIGN KEY (outpoint_hash, outpoint_index)
+        REFERENCES boarding_intents(outpoint_hash, outpoint_index)
+);
+
+CREATE INDEX IF NOT EXISTS idx_boarding_sweep_inputs_status
+    ON boarding_sweep_inputs(status);
+
+CREATE INDEX IF NOT EXISTS idx_boarding_sweep_inputs_outpoint
+    ON boarding_sweep_inputs(outpoint_hash, outpoint_index);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_boarding_sweep_inputs_active_outpoint
+    ON boarding_sweep_inputs(outpoint_hash, outpoint_index)
+    WHERE status IN ('pending', 'published');

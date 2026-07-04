@@ -1,5 +1,36 @@
--- pending_intents generalizes the restart-safe intent outbox that
--- pending_board_requests pioneered for the Board RPC. A row records a
+-- Restart-safe user intents: durable spending reservations plus the
+-- pending-intent outbox that replays accepted-but-not-yet-adopted
+-- user requests across a daemon restart.
+
+-- spending_reservations is a durable index of VTXO outpoints currently held
+-- in SpendingState by an active spend owner (e.g. an outgoing OOR session).
+-- A row exists IFF the owning session was durably checkpointed, so a startup
+-- sweep can deterministically identify orphaned Spending VTXOs (those with no
+-- reservation row) and release them.
+CREATE TABLE IF NOT EXISTS spending_reservations (
+    -- outpoint_hash identifies the reserved VTXO outpoint. The 32-byte
+    -- length check rejects truncated or malformed hashes at the DB layer.
+    outpoint_hash BLOB NOT NULL CHECK (length(outpoint_hash) = 32),
+
+    -- outpoint_index is the output index of the reserved outpoint.
+    outpoint_index INTEGER NOT NULL CHECK (outpoint_index >= 0),
+
+    -- owner_kind encodes the reservation owner type:
+    --   0 = oor outgoing session
+    owner_kind INTEGER NOT NULL,
+
+    -- owner_id is the owner's stable identifier (e.g. the OOR session id, a
+    -- 32-byte hash). The length check mirrors outpoint_hash.
+    owner_id BLOB NOT NULL CHECK (length(owner_id) = 32),
+
+    -- created_at is the unix timestamp when the reservation was created.
+    created_at BIGINT NOT NULL,
+
+    -- Primary key keeps one reservation row per reserved outpoint.
+    PRIMARY KEY (outpoint_hash, outpoint_index)
+);
+
+-- pending_intents is the restart-safe intent outbox. A row records a
 -- user-issued intent (Board, SendOnChain, ...) that has been accepted by the
 -- daemon but not yet durably adopted by a round, so a daemon restart inside
 -- that window can replay the intent instead of silently dropping it.
@@ -18,13 +49,6 @@
 -- pending_intents header carries only the identity, the kind discriminator,
 -- and the request time, so the shared anchor table can foreign-key one place
 -- and the round-state checkpoint clears anchors without knowing the kind.
---
--- This migration replaces pending_board_requests wholesale. The project is
--- in alpha, so in-flight rows (only ever populated inside the narrow crash
--- window between Board admission and round seal) are dropped rather than
--- migrated; a dropped row degrades to the user re-issuing the Board call.
-DROP TABLE IF EXISTS pending_board_requests;
-
 -- pending_intent_kinds is the enum table of valid intent kinds. The header's
 -- kind column foreign-keys here so an unknown discriminator is rejected at
 -- the DB layer rather than silently persisted.
