@@ -3,6 +3,7 @@ package indexer
 import (
 	"bytes"
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -17,6 +18,8 @@ import (
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/tlv"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -342,6 +345,40 @@ func TestBuildListVTXOsByScriptsTaprootRequestRejectsOversizedCursor(
 	require.ErrorContains(t, err, "after cursor: vtxo cursor length")
 }
 
+// TestListVTXOsByScriptsTaprootWrapsUnregisteredScriptError verifies that the
+// client exposes unregistered script failures as a stable sentinel error.
+func TestListVTXOsByScriptsTaprootWrapsUnregisteredScriptError(t *testing.T) {
+	t.Parallel()
+
+	privKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	pkScript := append(
+		[]byte{0x51, 0x20},
+		privKey.PubKey().SerializeCompressed()[1:]...,
+	)
+	rpcClient := &recordingRPCClient{
+		awaitErr: status.Error(
+			codes.Unauthenticated,
+			ErrScriptNotRegisteredForPrincipal.Error(),
+		),
+	}
+	client := New(
+		rpcClient, &PrivKeySchnorrSigner{
+			Key: privKey,
+		}, "test-server", "client:test",
+		fn.None[btclog.Logger](),
+	)
+
+	_, err = client.ListVTXOsByScriptsTaproot(
+		t.Context(), []TaprootScriptScope{{
+			PkScript: pkScript,
+		}}, nil, 1, nil,
+	)
+	require.Error(t, err)
+	require.True(t, errors.Is(err, ErrScriptNotRegisteredForPrincipal))
+}
+
 type testMessageSchnorrSigner struct {
 	result    []byte
 	message   []byte
@@ -486,8 +523,9 @@ func TestProofTagImmutable(t *testing.T) {
 }
 
 type recordingRPCClient struct {
-	mu      sync.Mutex
-	lastReq proto.Message
+	mu       sync.Mutex
+	lastReq  proto.Message
+	awaitErr error
 }
 
 // SendRPC records the last request and returns a static correlation pair.
@@ -509,7 +547,7 @@ func (r *recordingRPCClient) SendRPC(_ context.Context,
 func (r *recordingRPCClient) AwaitRPC(_ context.Context, _ string,
 	_ proto.Message) error {
 
-	return nil
+	return r.awaitErr
 }
 
 // lastRegisterReceiveScriptRequest returns the last recorded registration
