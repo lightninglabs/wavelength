@@ -10,6 +10,8 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chaincfg/v2"
+	"github.com/btcsuite/btcd/wire/v2"
+	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/graph/db/models"
 	"github.com/lightningnetwork/lnd/invoices"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -139,7 +141,7 @@ func genInvoiceCfg(nodeSigner *netann.NodeSigner,
 		ChainParams:       chainParams,
 		NodeSigner:        nodeSigner,
 		DefaultCLTVExpiry: defaultCLTVExpiry,
-		ChanDB:            nil,
+		ChanDB:            &mockChanDB{},
 		Graph:             &mockGraph{},
 		GenInvoiceFeatures: func() *lnwire.FeatureVector {
 			return lnwire.NewFeatureVector(
@@ -191,6 +193,70 @@ func (m *mockGraph) FetchChannelEdgesByID(_ context.Context, _ uint64) (
 	*models.ChannelEdgePolicy, error) {
 
 	return nil, nil, nil, nil
+}
+
+// mockChanDB satisfies chanstate.OpenChannelStore for the swap invoice
+// generator. These invoices are built from explicit caller-provided route
+// hints for virtual channels and have no backing channel database. lnd's
+// AddInvoice unconditionally dereferences ChanDB.FetchAllChannels while
+// assembling hop hints, so a nil store panics; every method here reports an
+// empty channel set instead.
+type mockChanDB struct{}
+
+// FetchAllChannels reports no stored channels.
+func (m *mockChanDB) FetchAllChannels() ([]*channeldb.OpenChannel, error) {
+	return nil, nil
+}
+
+// FetchAllOpenChannels reports no open channels.
+func (m *mockChanDB) FetchAllOpenChannels() ([]*channeldb.OpenChannel, error) {
+	return nil, nil
+}
+
+// FetchPendingChannels reports no pending channels.
+func (m *mockChanDB) FetchPendingChannels() ([]*channeldb.OpenChannel, error) {
+	return nil, nil
+}
+
+// FetchWaitingCloseChannels reports no waiting-close channels.
+func (m *mockChanDB) FetchWaitingCloseChannels() ([]*channeldb.OpenChannel,
+	error) {
+
+	return nil, nil
+}
+
+// FetchOpenChannels reports no channels for the given node.
+func (m *mockChanDB) FetchOpenChannels(_ *btcec.PublicKey) (
+	[]*channeldb.OpenChannel, error) {
+
+	return nil, nil
+}
+
+// FetchChannel reports no channel for the given outpoint.
+func (m *mockChanDB) FetchChannel(_ wire.OutPoint) (*channeldb.OpenChannel,
+	error) {
+
+	return nil, channeldb.ErrChannelNotFound
+}
+
+// FetchChannelByID reports no channel for the given channel ID.
+func (m *mockChanDB) FetchChannelByID(_ lnwire.ChannelID) (
+	*channeldb.OpenChannel, error) {
+
+	return nil, channeldb.ErrChannelNotFound
+}
+
+// FetchPermAndTempPeers reports no known peers.
+func (m *mockChanDB) FetchPermAndTempPeers(_ []byte) (
+	map[string]channeldb.ChanCount, error) {
+
+	return nil, nil
+}
+
+// RestoreChannelShells is a no-op; the swap invoice generator never restores
+// channel state.
+func (m *mockChanDB) RestoreChannelShells(_ ...*channeldb.ChannelShell) error {
+	return nil
 }
 
 // NewEphemeralInvoiceGenerator creates an ephemeral invoice creator backed by
