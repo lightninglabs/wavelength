@@ -2510,10 +2510,18 @@ func (r *RPCServer) SendOnChain(ctx context.Context,
 			int64(sendResp.ChangeAmount)),
 	)
 
+	// send_job_id is set only for a submitted intent; a dry-run preview
+	// persists no intent, so its zero id maps to an empty string.
+	var sendJobID string
+	if sendResp.IntentID != (wallet.PendingIntentID{}) {
+		sendJobID = hex.EncodeToString(sendResp.IntentID[:])
+	}
+
 	return &daemonrpc.SendOnChainResponse{
 		ActualAmountSat:   int64(sendResp.ActualAmountSat),
 		SelectedOutpoints: outpointStrs,
 		Status:            sendResp.Status.String(),
+		SendJobId:         sendJobID,
 
 		// FeeSat and ChangeOutpoint are populated once the round
 		// seals and the seal-time quote becomes known. The fast-

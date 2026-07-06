@@ -1186,7 +1186,7 @@ func TestHistoryIncludesWalletLocalPendingExit(t *testing.T) {
 	}
 
 	pending := leaveEntryStub(
-		[]string{
+		"", []string{
 			"leave-outpoint:1",
 		}, "bcrt1qdest",
 		50_000, "user note",
@@ -1241,7 +1241,7 @@ func TestHistoryCompletesWalletLocalExitWhenVTXOForfeited(t *testing.T) {
 	}
 
 	pending := leaveEntryStub(
-		[]string{
+		"", []string{
 			"leave-outpoint:1",
 		}, "bcrt1qdest",
 		50_000, "user note",
@@ -1312,7 +1312,7 @@ func TestHistoryKeepsWalletLocalExitPendingForUnmatchedForfeitedVTXO(
 	}
 
 	pending := leaveEntryStub(
-		[]string{
+		"", []string{
 			"leave-outpoint:1",
 		}, "bcrt1qdest",
 		50_000, "user note",
@@ -1369,7 +1369,7 @@ func TestHistoryScansForfeitedVTXOsOnceForWalletLocalExits(t *testing.T) {
 
 	h.runtime.trackPendingEntryWithoutTimeout(
 		leaveEntryStub(
-			[]string{
+			"", []string{
 				"leave-outpoint:1",
 			}, "bcrt1qdest",
 			50_000, "first note",
@@ -1377,7 +1377,7 @@ func TestHistoryScansForfeitedVTXOsOnceForWalletLocalExits(t *testing.T) {
 	)
 	h.runtime.trackPendingEntryWithoutTimeout(
 		leaveEntryStub(
-			[]string{
+			"", []string{
 				"other-leave-outpoint:0",
 			}, "bcrt1qdest",
 			25_000, "second note",
@@ -1471,7 +1471,7 @@ func TestHistoryExitKindFilterGatesWalletLocalPendingRows(t *testing.T) {
 
 	h.runtime.trackPendingEntryWithoutTimeout(
 		leaveEntryStub(
-			[]string{
+			"", []string{
 				"leave-outpoint:1",
 			}, "bcrt1qdest",
 			50_000, "",
@@ -1922,4 +1922,112 @@ func TestHistoryDepositCompletesAfterBoarding(t *testing.T) {
 		entry.GetStatus(),
 	)
 	require.Equal(t, "confirmed", entry.GetProgress().GetPhaseLabel())
+}
+
+// TestDecorateCooperativeLeaveMatchesRetainedOutpoint verifies that after #610
+// (row keyed by the stable leave-job id), the forfeit-driven completion
+// correlates on the retained consumed outpoint in vtxo_outpoint, not the id.
+func TestDecorateCooperativeLeaveMatchesRetainedOutpoint(t *testing.T) {
+	t.Parallel()
+
+	newEntry := func() *walletdkrpc.WalletEntry {
+		return &walletdkrpc.WalletEntry{
+			Id:     "sendjob-abc",
+			Kind:   walletdkrpc.EntryKind_ENTRY_KIND_EXIT,
+			Status: walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+			Progress: &walletdkrpc.WalletEntryProgress{
+				VtxoOutpoint: "abc:0",
+			},
+		}
+	}
+
+	// Forfeiting a set that contains the id (but not the retained
+	// outpoint) must NOT complete the row.
+	idOnly := newEntry()
+	decorateCooperativeLeaveEntry(
+		idOnly, map[string]struct{}{"sendjob-abc": {}},
+	)
+	require.Equal(
+		t, walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		idOnly.GetStatus(),
+	)
+
+	// Forfeiting the retained outpoint flips it to COMPLETE.
+	byOutpoint := newEntry()
+	decorateCooperativeLeaveEntry(
+		byOutpoint, map[string]struct{}{"abc:0": {}},
+	)
+	require.Equal(
+		t, walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		byOutpoint.GetStatus(),
+	)
+}
+
+// TestDecorateExitEntryCompletesHashKeyedLeave drives a hash-keyed
+// cooperative-leave row through the real decorateExitEntry gate (not
+// decorateCooperativeLeaveEntry directly). The daemon's GetUnrollStatus is
+// outpoint-only, so the gate must look it up by the retained vtxo_outpoint,
+// never the bare send_job_id hash. The fake GetUnrollStatus rejects a
+// non-outpoint argument like the real daemon, so a regression that queries by
+// the hash id aborts before completion and fails this test.
+func TestDecorateExitEntryCompletesHashKeyedLeave(t *testing.T) {
+	t.Parallel()
+
+	const outpoint = "aabbcc:0"
+
+	// A bare 64-hex send_job_id has no colon, unlike an outpoint.
+	jobID := "deadbeefdeadbeefdeadbeefdeadbeef" +
+		"deadbeefdeadbeefdeadbeefdeadbeef"
+
+	newEntry := func() *walletdkrpc.WalletEntry {
+		return &walletdkrpc.WalletEntry{
+			Id:     jobID,
+			Kind:   walletdkrpc.EntryKind_ENTRY_KIND_EXIT,
+			Status: walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+			Progress: &walletdkrpc.WalletEntryProgress{
+				VtxoOutpoint: outpoint,
+			},
+		}
+	}
+
+	// The retained outpoint is forfeited: the gate must query
+	// GetUnrollStatus by that outpoint (not the hash), find no unroll job,
+	// and complete.
+	h, _, rpc := newHistoryFixture(t)
+	rpc.unrollStatusResp = &daemonrpc.GetUnrollStatusResponse{Found: false}
+
+	entry := newEntry()
+	require.NoError(
+		t,
+		h.decorateExitEntry(
+			t.Context(), entry, map[string]struct{}{outpoint: {}},
+		),
+	)
+	require.Equal(
+		t, walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		entry.GetStatus(),
+	)
+	require.Equal(
+		t, outpoint, rpc.unrollStatusLast.GetOutpoint(),
+		"must query unroll status by the retained outpoint, not "+
+			"the job-id hash",
+	)
+
+	// When the retained outpoint is not forfeited, the row stays PENDING
+	// and the lookup still succeeds (no spurious error from a hash id).
+	h2, _, rpc2 := newHistoryFixture(t)
+	rpc2.unrollStatusResp = &daemonrpc.GetUnrollStatusResponse{Found: false}
+
+	pending := newEntry()
+	require.NoError(
+		t,
+		h2.decorateExitEntry(
+			t.Context(), pending,
+			map[string]struct{}{"other:1": {}},
+		),
+	)
+	require.Equal(
+		t, walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		pending.GetStatus(),
+	)
 }

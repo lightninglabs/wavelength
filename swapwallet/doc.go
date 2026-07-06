@@ -98,11 +98,17 @@
 //     boarding deposit surfaces via Balance rather than as an activity row
 //     until it confirms.
 //
-// The canonical id stored for a cooperative-leave EXIT is still the consumed
-// VTXO outpoint and a DEPOSIT is still keyed by txid:vout, so the same
-// operation can hold different ids pending vs. confirmed — exactly the
-// limitation above. Giving EXIT/DEPOSIT/on-chain-send a stable cross-lifecycle
-// id, and projecting the backfill-only producers on an ongoing basis, needs
-// the daemon-side hooks this V1 LIMITATIONS block describes and is tracked
-// separately.
+// An on-chain-send / cooperative-leave EXIT row now carries a stable canonical
+// id: the daemon returns its leave-job id (SendOnChainResponse.send_job_id, a
+// deterministic hash of the consumed outpoints) and the wallet uses it as the
+// row id, so a single handle represents a multi-input sweep and stays the same
+// across the round seal. The id is deterministic — reproducible from the same
+// inputs — but the row itself is wallet-local (in-memory) and its terminal
+// status is NOT reconciled across a restart yet: completion currently fires
+// only when the derive/backfill pass matches the retained consumed outpoint
+// (kept in vtxo_outpoint) against a forfeited VTXO. A DEPOSIT is still keyed by
+// txid:vout pending its own stable-id work. That DEPOSIT id, projecting the
+// backfill-only producers on an ongoing basis, and live cross-restart terminal
+// reconciliation under the id (projecting forfeit/settlement into the store
+// rather than relying on the startup backfill) are tracked separately (C2).
 package swapwallet

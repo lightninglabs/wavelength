@@ -588,15 +588,14 @@ func (r *router) sendOnchainIntent(ctx context.Context,
 		entryAmt = actualSat
 	}
 	entry := leaveEntryStub(
-		sendResp.GetSelectedOutpoints(), intent.onchainAddress,
-		entryAmt, intent.note,
+		sendResp.GetSendJobId(), sendResp.GetSelectedOutpoints(),
+		intent.onchainAddress, entryAmt, intent.note,
 	)
 
-	// v1 SCOPE: we track the pending row for the deadline watcher
-	// but do NOT register an intent index. EXIT/DEPOSIT canonical-id
-	// correlation between the pending row and the eventual sweep
-	// ledger row is deferred to v2 — see swapwallet/doc.go for the
-	// limitation note.
+	// The row is keyed by the daemon's stable leave-job id (id above).
+	// The forfeit-driven completion still correlates via the retained
+	// consumed outpoint (Progress.VtxoOutpoint); the live, cross-restart
+	// terminal reconciliation under this id is C2.
 	r.runtime.trackPendingEntryWithoutTimeout(entry)
 
 	// Project off the RPC context so a CLI disconnect cannot cancel the

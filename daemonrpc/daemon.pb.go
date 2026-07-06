@@ -5632,7 +5632,16 @@ type SendOnChainResponse struct {
 	ChangeOutpoint string `protobuf:"bytes,4,opt,name=change_outpoint,json=changeOutpoint,proto3" json:"change_outpoint,omitempty"`
 	// status is "submitted" on a successful intent registration,
 	// "preview" when dry_run is set.
-	Status        string `protobuf:"bytes,5,opt,name=status,proto3" json:"status,omitempty"`
+	Status string `protobuf:"bytes,5,opt,name=status,proto3" json:"status,omitempty"`
+	// send_job_id is the deterministic id of the submitted send intent:
+	// hex of a hash over the consumed outpoints and payload. It identifies
+	// a multi-input sweep as one send and is reproducible from the same
+	// inputs, so it is stable across a restart. It is a correlation id, not
+	// a lookup handle (no RPC resolves it), and it is non-secret and
+	// recomputable, so it must never gate a privileged action. Non-empty on
+	// a submitted response from a current daemon; empty only when status is
+	// "preview" (dry_run) or from an older daemon predating this field.
+	SendJobId     string `protobuf:"bytes,6,opt,name=send_job_id,json=sendJobId,proto3" json:"send_job_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -5698,6 +5707,13 @@ func (x *SendOnChainResponse) GetChangeOutpoint() string {
 func (x *SendOnChainResponse) GetStatus() string {
 	if x != nil {
 		return x.Status
+	}
+	return ""
+}
+
+func (x *SendOnChainResponse) GetSendJobId() string {
+	if x != nil {
+		return x.SendJobId
 	}
 	return ""
 }
@@ -9701,13 +9717,14 @@ const file_daemon_proto_rawDesc = "" +
 	"amount_sat\x18\x02 \x01(\x03H\x00R\tamountSat\x12\x1d\n" +
 	"\tsweep_all\x18\x03 \x01(\bH\x00R\bsweepAll\x12\x17\n" +
 	"\adry_run\x18\x05 \x01(\bR\x06dryRunB\b\n" +
-	"\x06amount\"\xca\x01\n" +
+	"\x06amount\"\xea\x01\n" +
 	"\x13SendOnChainResponse\x12*\n" +
 	"\x11actual_amount_sat\x18\x01 \x01(\x03R\x0factualAmountSat\x12\x17\n" +
 	"\afee_sat\x18\x02 \x01(\x03R\x06feeSat\x12-\n" +
 	"\x12selected_outpoints\x18\x03 \x03(\tR\x11selectedOutpoints\x12'\n" +
 	"\x0fchange_outpoint\x18\x04 \x01(\tR\x0echangeOutpoint\x12\x16\n" +
-	"\x06status\x18\x05 \x01(\tR\x06status\"Y\n" +
+	"\x06status\x18\x05 \x01(\tR\x06status\x12\x1e\n" +
+	"\vsend_job_id\x18\x06 \x01(\tR\tsendJobId\"Y\n" +
 	"\fBoardRequest\x12*\n" +
 	"\x11target_vtxo_count\x18\x01 \x01(\rR\x0ftargetVtxoCount\x12\x1d\n" +
 	"\n" +

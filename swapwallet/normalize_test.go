@@ -444,7 +444,7 @@ func TestLeaveEntryStub(t *testing.T) {
 	t.Parallel()
 
 	out := leaveEntryStub(
-		[]string{
+		"", []string{
 			"abc:0",
 			"def:1",
 		}, "bcrt1q...",
@@ -461,9 +461,39 @@ func TestLeaveEntryStub(t *testing.T) {
 	require.NotZero(t, out.GetCreatedAtUnix())
 	require.Equal(t, out.GetCreatedAtUnix(), out.GetUpdatedAtUnix())
 
-	// No queued outpoints → id is empty.
-	out = leaveEntryStub(nil, "bcrt1q...", 1_000, "")
+	// No leave-job id and no queued outpoints → id is empty.
+	out = leaveEntryStub("", nil, "bcrt1q...", 1_000, "")
 	require.Equal(t, "", out.GetId())
+}
+
+// TestLeaveEntryStubUsesLeaveJobID verifies that a returned leave-job id
+// becomes the row id (fixing #610) while the first consumed outpoint is
+// retained in vtxo_outpoint for the forfeit correlation.
+func TestLeaveEntryStubUsesLeaveJobID(t *testing.T) {
+	t.Parallel()
+
+	out := leaveEntryStub(
+		"sendjob-abc", []string{
+			"abc:0",
+			"def:1",
+		}, "bcrt1q...",
+		5_000, "rent",
+	)
+	require.Equal(
+		t, "sendjob-abc", out.GetId(),
+		"leave-job id is the canonical id",
+	)
+	require.Equal(
+		t, "abc:0", out.GetProgress().GetVtxoOutpoint(),
+		"first consumed outpoint retained for the forfeit match",
+	)
+
+	// Empty leave-job id falls back to the first outpoint (pre-#610).
+	fallback := leaveEntryStub(
+		"", []string{"abc:0"}, "bcrt1q...", 5_000, "",
+	)
+	require.Equal(t, "abc:0", fallback.GetId())
+	require.Equal(t, "abc:0", fallback.GetProgress().GetVtxoOutpoint())
 }
 
 // TestSwapEntryFromSummaryCallerKindOverride confirms the

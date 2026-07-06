@@ -1503,6 +1503,16 @@ message SendOnChainResponse {
     // status is "submitted" on a successful intent registration,
     // "preview" when dry_run is set.
     string status = 5;
+
+    // send_job_id is the deterministic id of the submitted send intent:
+    // hex of a hash over the consumed outpoints and payload. It identifies
+    // a multi-input sweep as one send and is reproducible from the same
+    // inputs, so it is stable across a restart. It is a correlation id, not
+    // a lookup handle (no RPC resolves it), and it is non-secret and
+    // recomputable, so it must never gate a privileged action. Non-empty on
+    // a submitted response from a current daemon; empty only when status is
+    // "preview" (dry_run) or from an older daemon predating this field.
+    string send_job_id = 6;
 }
 
 message BoardRequest {
