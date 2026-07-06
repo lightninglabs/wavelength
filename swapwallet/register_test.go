@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/lightninglabs/darepo-client/darepod"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
 	"github.com/stretchr/testify/require"
@@ -35,6 +36,16 @@ type fakeWalletBackend struct {
 
 func (f *fakeWalletBackend) ResumePending(_ context.Context) {
 	f.resumeCalls.Add(1)
+}
+
+// TestChainParamsForWalletNetworkAcceptsTestNet4 verifies the walletdkrpc
+// subserver accepts every network string the main daemon config advertises.
+func TestChainParamsForWalletNetworkAcceptsTestNet4(t *testing.T) {
+	t.Parallel()
+
+	params, err := chainParamsForWalletNetwork("testnet4")
+	require.NoError(t, err)
+	require.Same(t, &chaincfg.TestNet4Params, params)
 }
 
 // TestRegisterDefersResumeUntilWalletReadyHook confirms the wallet subserver

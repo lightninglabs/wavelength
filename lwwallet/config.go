@@ -40,7 +40,8 @@ type Config struct {
 	EsploraURL string
 
 	// ChainParams identifies the Bitcoin network (mainnet, testnet,
-	// regtest). Used for address encoding and HD derivation paths.
+	// testnet4, regtest). Used for address encoding and HD derivation
+	// paths.
 	ChainParams *chaincfg.Params
 
 	// PollInterval controls how frequently the chain backend polls the

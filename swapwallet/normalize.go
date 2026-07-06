@@ -351,6 +351,7 @@ func invoiceDecodeNetworks() []*chaincfg.Params {
 	return []*chaincfg.Params{
 		&chaincfg.MainNetParams,
 		&chaincfg.TestNet3Params,
+		&chaincfg.TestNet4Params,
 		&chaincfg.RegressionNetParams,
 		&chaincfg.SigNetParams,
 		&chaincfg.SimNetParams,

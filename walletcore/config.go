@@ -58,7 +58,8 @@ type Config struct {
 	Birthday time.Time
 
 	// ChainParams identifies the Bitcoin network (mainnet, testnet,
-	// regtest). Used for address encoding and HD derivation paths.
+	// testnet4, regtest). Used for address encoding and HD derivation
+	// paths.
 	ChainParams *chaincfg.Params
 
 	// RecoveryWindow specifies the address look-ahead for

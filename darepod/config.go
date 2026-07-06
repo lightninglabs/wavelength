@@ -137,8 +137,8 @@ type Config struct {
 	// files, logs, and TLS material are stored under this directory.
 	DataDir string `mapstructure:"datadir"`
 
-	// Network selects the bitcoin network: mainnet, testnet, regtest, or
-	// simnet.
+	// Network selects the bitcoin network: mainnet, testnet, testnet4,
+	// regtest, simnet, or signet.
 	Network string `mapstructure:"network"`
 
 	// DebugLevel controls the verbosity of daemon logging. A single value
@@ -982,7 +982,7 @@ func (c *Config) Validate() error {
 	}
 
 	switch c.Network {
-	case "mainnet", "testnet", "regtest", "simnet", "signet":
+	case "mainnet", "testnet", "testnet4", "regtest", "simnet", "signet":
 	default:
 		return fmt.Errorf("unknown network %q", c.Network)
 	}
@@ -1211,6 +1211,9 @@ func networkToChainParams(network string) (*chaincfg.Params, error) {
 
 	case "testnet":
 		return &chaincfg.TestNet3Params, nil
+
+	case "testnet4":
+		return &chaincfg.TestNet4Params, nil
 
 	case "regtest":
 		return &chaincfg.RegressionNetParams, nil

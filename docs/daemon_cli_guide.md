@@ -96,7 +96,7 @@ darepod \
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--datadir` | `~/.darepod` | Root data directory for all daemon state |
-| `--network` | `mainnet` | Bitcoin network: mainnet, testnet, regtest, simnet, signet |
+| `--network` | `mainnet` | Bitcoin network: mainnet, testnet, testnet4, regtest, simnet, signet |
 | `--debuglevel` | `info` | Logging verbosity: trace, debug, info, warn, error, critical |
 | `--logdir` | `~/.darepod/logs/<network>` | Directory for persistent daemon logs |
 | `--allow-mainnet` | `false` | Required to run on mainnet (safety guard) |

@@ -3950,25 +3950,29 @@ func (r *RPCServer) unlockVTXOs(ctx context.Context,
 	})
 }
 
-// addrNetName returns a best-effort network name for a decoded
-// address so cross-network error messages can be specific. We
-// iterate the four standard nets and pick the one the address
-// claims IsForNet on; if none match (structurally impossible for
-// anything DecodeAddress returned successfully) we fall back to
-// "unknown" rather than panic.
+// addrNetName returns a best-effort network name for a decoded address so
+// cross-network error messages can be specific. Testnet3 and testnet4 share
+// address encodings, so a single address can honestly match both networks.
+// Report both instead of pretending the address proves one over the other.
 func addrNetName(addr btcutil.Address) string {
+	var matches []string
 	for _, p := range []*chaincfg.Params{
 		&chaincfg.MainNetParams,
 		&chaincfg.TestNet3Params,
+		&chaincfg.TestNet4Params,
 		&chaincfg.SigNetParams,
 		&chaincfg.RegressionNetParams,
 	} {
 		if addr.IsForNet(p) {
-			return p.Name
+			matches = append(matches, p.Name)
 		}
 	}
 
-	return "unknown"
+	if len(matches) == 0 {
+		return "unknown"
+	}
+
+	return strings.Join(matches, "/")
 }
 
 // resolveLeaveDestination extracts the on-chain pkScript from a

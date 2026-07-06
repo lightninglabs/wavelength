@@ -67,6 +67,22 @@ func TestResolveLeaveDestinationValidTaproot(t *testing.T) {
 	)
 }
 
+// TestAddrNetNameAcceptsTestNet4 keeps cross-network address errors honest for
+// every daemon network accepted by Config.Validate. Testnet3, testnet4, and
+// signet share address encoding, so the label includes every possible network.
+func TestAddrNetNameAcceptsTestNet4(t *testing.T) {
+	t.Parallel()
+
+	xOnly := make([]byte, 32)
+	xOnly[0] = 0xcd
+	addr, err := btcutil.NewAddressTaproot(
+		xOnly, &chaincfg.TestNet4Params,
+	)
+	require.NoError(t, err)
+
+	require.Equal(t, "testnet3/testnet4/signet", addrNetName(addr))
+}
+
 // TestResolveLeaveDestinationPkScript verifies that the pk_script
 // branch returns the bytes verbatim once the class-whitelist guard
 // has accepted them (a structurally-valid P2TR script in this case).

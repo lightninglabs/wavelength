@@ -75,6 +75,16 @@ func TestResumePendingStartsWorkersAndDedupes(t *testing.T) {
 	require.True(t, fakeClient.sawPendingOnlyList())
 }
 
+// TestChainParamsForNetworkAcceptsTestNet4 verifies the swapruntime daemon
+// subserver accepts every network string the main daemon config advertises.
+func TestChainParamsForNetworkAcceptsTestNet4(t *testing.T) {
+	t.Parallel()
+
+	params, err := chainParamsForNetwork("testnet4")
+	require.NoError(t, err)
+	require.Same(t, &chaincfg.TestNet4Params, params)
+}
+
 // TestResumeSwapConcurrentCallsStartOnePayWorker drives many manual resume RPCs
 // for the same pay swap at the same time. ResumeSwap is allowed to be retried
 // by clients, but it must not create parallel FSM drivers for one payment hash.
