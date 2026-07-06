@@ -2074,6 +2074,62 @@ func TestHistoryDepositsSameAddressSummed(t *testing.T) {
 	)
 }
 
+// TestDecorateExitEntryClearsPendingOnTerminal verifies that once a
+// wallet-local EXIT row is decorated to a terminal status, its in-memory
+// pending record is cleared — so the reconciler does not re-decorate a settled
+// row every pass and the pending map does not leak.
+func TestDecorateExitEntryClearsPendingOnTerminal(t *testing.T) {
+	t.Parallel()
+
+	const (
+		jobID    = "sendjob-xyz"
+		outpoint = "aabbcc:0"
+	)
+
+	h, _, rpc := newHistoryFixture(t)
+	rpc.unrollStatusResp = &daemonrpc.GetUnrollStatusResponse{Found: false}
+
+	entry := &walletdkrpc.WalletEntry{
+		Id:     jobID,
+		Kind:   walletdkrpc.EntryKind_ENTRY_KIND_EXIT,
+		Status: walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		Progress: &walletdkrpc.WalletEntryProgress{
+			VtxoOutpoint: outpoint,
+		},
+	}
+	h.runtime.trackPendingEntryWithoutTimeout(entry)
+	require.Contains(t, pendingSnapshotIDs(h.runtime), jobID)
+
+	// Decorating it terminal (the retained outpoint is forfeited) flips it
+	// to COMPLETE and clears the pending record.
+	require.NoError(
+		t,
+		h.decorateExitEntry(
+			t.Context(), entry, map[string]struct{}{outpoint: {}},
+		),
+	)
+	require.Equal(
+		t, walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		entry.GetStatus(),
+	)
+	require.NotContains(
+		t, pendingSnapshotIDs(h.runtime), jobID,
+		"a terminal EXIT must be cleared from the pending map",
+	)
+}
+
+// pendingSnapshotIDs returns the ids currently tracked in the runtime's
+// in-memory pending map.
+func pendingSnapshotIDs(r *Runtime) []string {
+	entries := r.pendingSnapshot()
+	ids := make([]string, 0, len(entries))
+	for _, e := range entries {
+		ids = append(ids, e.GetId())
+	}
+
+	return ids
+}
+
 // TestDecorateCooperativeLeaveMatchesRetainedOutpoint verifies that after #610
 // (row keyed by the stable leave-job id), the forfeit-driven completion
 // correlates on the retained consumed outpoint in vtxo_outpoint, not the id.

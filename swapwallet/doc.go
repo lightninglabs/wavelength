@@ -54,7 +54,11 @@
 // appears only from the point the daemon records an incoming UTXO. The
 // Deposit RPC still returns that same deposit-<address> id so a caller can
 // correlate. An older daemon that does not populate boarding_address falls
-// back to per-UTXO txid:vout deposit rows (no summing, still correct).
+// back to per-UTXO txid:vout deposit rows (no summing, still correct). The
+// confirmed deposit is applied by the derive-and-project pass; the
+// reconciler (see CANONICAL ACTIVITY LOG) re-runs that pass on a periodic
+// tick, so it lands in the store within a tick rather than only at the
+// next startup backfill.
 //
 // This is address-granularity for the CONFIRMED (recorded) phase only. The
 // pre-confirmation phase cannot be per-address: the daemon exposes only an
@@ -84,7 +88,8 @@
 // projection and activity_events is the append-only transition log. Writes
 // happen project-then-emit at the swap monitor loop, the cooperative-leave
 // submit, the credit poll, the forced unilateral exit, and the deadline
-// overlay, plus a one-time startup backfill from the collectors below.
+// overlay, plus a one-time startup backfill and a periodic reconciler pass
+// (reprojectActivity), both from the collectors below.
 //
 // The RPC read path now reads the store: List(ACTIVITY) pages activity_entries
 // by the immutable (created_at_unix, canonical_id) keyset cursor, and
@@ -95,10 +100,13 @@
 // not newest-by-update.
 //
 // Consequences of the store-backed read that are tracked, not yet closed:
-//   - Producers without an ongoing projector — confirmed boarding DEPOSIT and
-//     daemon-side sweep/EXIT rows derived from ListTransactions — reach the
-//     store only via the startup backfill, so a newly-confirmed one appears in
-//     List after the next restart rather than immediately.
+//   - Producers without a per-event projector — confirmed boarding DEPOSIT and
+//     daemon-side sweep/EXIT rows derived from ListTransactions — are landed by
+//     the periodic reconciler (reconcileInterval) re-deriving and re-projecting
+//     them, so a newly-confirmed one appears in List within a reconcile tick
+//     rather than only after a restart. The tick is coarse, so there is a
+//     bounded delay; a per-block/confirmation hook (cheaper, lower latency) is
+//     a deferred optimization.
 //   - The synthetic boarding-unconfirmed DEPOSIT row is derive-path-only: it
 //     is ephemeral live state (recomputed from GetBalance, no durable id) and
 //     is deliberately NOT projected, so on a store build an unconfirmed
@@ -110,12 +118,13 @@
 // deterministic hash of the consumed outpoints) and the wallet uses it as the
 // row id, so a single handle represents a multi-input sweep and stays the same
 // across the round seal. The id is deterministic — reproducible from the same
-// inputs — but the row itself is wallet-local (in-memory) and its terminal
-// status is NOT reconciled across a restart yet: completion currently fires
-// only when the derive/backfill pass matches the retained consumed outpoint
-// (kept in vtxo_outpoint) against a forfeited VTXO. A DEPOSIT is still keyed by
-// txid:vout pending its own stable-id work. That DEPOSIT id, projecting the
-// backfill-only producers on an ongoing basis, and live cross-restart terminal
-// reconciliation under the id (projecting forfeit/settlement into the store
-// rather than relying on the startup backfill) are tracked separately (C2).
+// inputs — and the periodic reconciler lands its terminal transition into the
+// store live: each pass matches the retained consumed outpoint (kept in
+// vtxo_outpoint) against a forfeited VTXO and upserts the row to COMPLETE.
+// This stays best-effort — the row is wallet-local (in-memory) with no durable
+// leave-job → forfeit link, so a restarted daemon cannot rebuild the original
+// counterparty/note from durable state alone. A durable leave record (making
+// leave completion restart-survivable rather than best-effort), a
+// per-block/confirmation reconcile trigger, and startup-at-tip reconciliation
+// (C5) are deferred.
 package swapwallet

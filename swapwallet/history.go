@@ -769,6 +769,27 @@ func (h *history) decorateExitEntry(ctx context.Context,
 		return nil
 	}
 
+	// Once this row is decorated to a terminal status, drop its in-memory
+	// pending record: the store now holds the terminal row, and leaving the
+	// id in the pending map would leak it for the process lifetime and
+	// force every later reconcile pass to re-decorate a settled row
+	// (re-issuing its GetUnrollStatus / forfeit-scan work). Clearing here
+	// is a no-op for ids not in the map (e.g. unilateral rows
+	// re-synthesized from ListVTXOs). The deferred check reads the final
+	// status so it covers the cooperative and unilateral paths alike, and
+	// skips the error path where the status stays PENDING.
+	defer func() {
+		if h.runtime == nil {
+			return
+		}
+		switch entry.GetStatus() {
+		case walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+			walletdkrpc.EntryStatus_ENTRY_STATUS_FAILED:
+
+			h.runtime.clearPending(entry.GetId())
+		}
+	}()
+
 	// GetUnrollStatus is keyed by the VTXO outpoint. A unilateral-exit
 	// row's id IS that outpoint; a cooperative-leave row is keyed by the
 	// stable send_job_id (a bare hash, not an outpoint) and retains the
