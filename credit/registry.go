@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
@@ -16,6 +17,8 @@ import (
 	"github.com/lightninglabs/darepo-client/db"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
+
+const creditChildStopTimeout = 5 * time.Second
 
 // Registry is the credit subsystem coordinator. It is a plain (non-durable)
 // supervisor actor: it admits operations by writing their control-plane row in
@@ -251,13 +254,57 @@ func (b *registryBehavior) Receive(ctx context.Context,
 	}
 }
 
-// OnStop stops resident child actors from the registry actor goroutine. Keeping
-// teardown inside the actor prevents shutdown from racing with terminal-child
-// reaping, which also mutates the active child map.
-func (b *registryBehavior) OnStop(context.Context) error {
-	b.stopChildren()
+// OnStop stops resident child actors from the registry actor goroutine and
+// waits for their durable mailbox workers to exit. Keeping teardown inside the
+// actor prevents shutdown from racing with terminal-child reaping, which also
+// mutates the active child map.
+func (b *registryBehavior) OnStop(ctx context.Context) error {
+	return b.stopChildren(ctx)
+}
 
-	return nil
+// stopChild stops a terminal child and waits under a bounded context so reaping
+// cannot wedge the registry supervisor indefinitely.
+func (b *registryBehavior) stopChild(ctx context.Context, opID string,
+	child *OpActor) {
+
+	stopCtx, cancel := context.WithTimeout(
+		context.WithoutCancel(ctx), creditChildStopTimeout,
+	)
+	defer cancel()
+
+	if err := child.StopAndWait(stopCtx); err != nil {
+		b.logger(ctx).WarnS(ctx, "Unable to stop credit child cleanly",
+			err,
+			slog.String("op_id", opID),
+		)
+	}
+}
+
+// reap stops and drops a child once its operation reaches a terminal status.
+// The durable row is re-checked so a stale notification is harmless. Reaping
+// waits for the child to exit under a short timeout, keeping actor ownership
+// clear without letting one stuck child wedge the coordinator.
+func (b *registryBehavior) reap(ctx context.Context, opID string) {
+	rec, err := b.cfg.Store.GetOperation(ctx, opID)
+	switch {
+	case err == nil && !rec.Status.IsTerminal():
+		// Not actually terminal; ignore the stale notification.
+		return
+
+	case err != nil && !errors.Is(err, db.ErrCreditOperationNotFound):
+		b.logger(ctx).WarnS(ctx, "Unable to confirm credit terminal "+
+			"state", err, slog.String("op_id", opID))
+
+		return
+	}
+
+	if child, ok := b.active[opID]; ok {
+		b.stopChild(ctx, opID, child)
+		delete(b.active, opID)
+		b.logger(ctx).InfoS(ctx, "Credit child reaped",
+			slog.String("op_id", opID),
+		)
+	}
 }
 
 // admit dedups by op key and, for a fresh operation, writes the control-plane
@@ -454,31 +501,6 @@ func (b *registryBehavior) ensureChild(ctx context.Context, opID string) (
 	return child, nil
 }
 
-// reap stops and drops a child once its operation reaches a terminal status.
-// The durable row is re-checked so a stale notification is harmless.
-func (b *registryBehavior) reap(ctx context.Context, opID string) {
-	rec, err := b.cfg.Store.GetOperation(ctx, opID)
-	switch {
-	case err == nil && !rec.Status.IsTerminal():
-		// Not actually terminal; ignore the stale notification.
-		return
-
-	case err != nil && !errors.Is(err, db.ErrCreditOperationNotFound):
-		b.logger(ctx).WarnS(ctx, "Unable to confirm credit terminal "+
-			"state", err, slog.String("op_id", opID))
-
-		return
-	}
-
-	if child, ok := b.active[opID]; ok {
-		child.Stop()
-		delete(b.active, opID)
-		b.logger(ctx).InfoS(ctx, "Credit child reaped",
-			slog.String("op_id", opID),
-		)
-	}
-}
-
 // restoreNonTerminal respawns and resumes every non-terminal operation.
 func (b *registryBehavior) restoreNonTerminal(ctx context.Context) error {
 	rows, err := b.cfg.Store.ListNonTerminal(ctx)
@@ -647,11 +669,23 @@ func (b *registryBehavior) childConfig(opID string) OpActorConfig {
 }
 
 // stopChildren stops every resident child on teardown.
-func (b *registryBehavior) stopChildren() {
-	for opID, child := range b.active {
+func (b *registryBehavior) stopChildren(ctx context.Context) error {
+	for _, child := range b.active {
 		child.Stop()
+	}
+
+	var stopErr error
+	for opID, child := range b.active {
+		if err := child.Wait(ctx); err != nil {
+			stopErr = errors.Join(
+				stopErr, fmt.Errorf("stop credit child %s: %w",
+					opID, err),
+			)
+		}
 		delete(b.active, opID)
 	}
+
+	return stopErr
 }
 
 // newOpID mints a fresh random operation id.
