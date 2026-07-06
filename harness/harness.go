@@ -343,7 +343,7 @@ func DefaultOptions() Options {
 	return Options{
 		BitcoindImage: "mirror.gcr.io/lightninglabs/bitcoin-core:29",
 		LNDImage: "mirror.gcr.io/lightninglabs/lnd:" +
-			"daily-testing-20260115",
+			"daily-testing-20260701",
 		TapdImage: "mirror.gcr.io/lightninglabs/taproot-assets:" +
 			"v0.7.0-rc1",
 		ArtifactsBaseDir:    artifactsBaseDir,
