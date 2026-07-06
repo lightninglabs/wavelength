@@ -179,6 +179,49 @@ func TestRegistryReceiveReturnsInvoice(t *testing.T) {
 	require.Equal(t, 1, server.createCalls["recv:abc"])
 }
 
+// TestRegistryStopWaitsForResidentChildren asserts Registry.Stop does not
+// return until the per-operation durable actors it owns have exited. The
+// registry tests share a sqlite-backed delivery store with those children, so
+// returning early can race t.TempDir cleanup against a child mailbox still
+// touching the sqlite files.
+func TestRegistryStopWaitsForResidentChildren(t *testing.T) {
+	t.Parallel()
+
+	store, delivery := newFakeStore(), newTestDelivery(t)
+	server, daemon := newFakeServer(), newFakeDaemon()
+
+	registry, err := NewRegistry(RegistryConfig{
+		Store:         store,
+		DeliveryStore: delivery,
+		Server:        server,
+		Daemon:        daemon,
+		PollInterval:  50 * time.Millisecond,
+	})
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	resp, err := registry.Ref().Ask(ctx, &StartCreditReceiveRequest{
+		OpKey:     "recv:stop",
+		AmountSat: 42,
+		Memo:      "shutdown",
+	}).Await(ctx).Unpack()
+	require.NoError(t, err)
+
+	start, ok := resp.(*StartCreditResponse)
+	require.True(t, ok)
+
+	child := registry.behavior.active[start.OpID]
+	require.NotNil(t, child)
+
+	registry.Stop()
+
+	waitCtx, cancel := context.WithTimeout(
+		context.Background(), 5*time.Second,
+	)
+	defer cancel()
+	require.NoError(t, child.Wait(waitCtx))
+}
+
 // TestRegistryListSurfacesTerminalCreditOnly drives a credit-only pay to
 // completion, then asserts the full list surfaces the terminal row (carrying
 // the credit-only marker so the wallet projector can own its transition) while

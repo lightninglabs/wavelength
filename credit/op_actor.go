@@ -48,6 +48,25 @@ func (a *OpActor) Stop() {
 	a.durable.Stop()
 }
 
+// StopAndWait stops the underlying durable actor and waits for its worker loop
+// to exit.
+func (a *OpActor) StopAndWait(ctx context.Context) error {
+	if a == nil || a.durable == nil {
+		return nil
+	}
+
+	return a.durable.StopAndWait(ctx)
+}
+
+// Wait blocks until the underlying durable actor exits.
+func (a *OpActor) Wait(ctx context.Context) error {
+	if a == nil || a.durable == nil {
+		return nil
+	}
+
+	return a.durable.Wait(ctx)
+}
+
 // NewOpActor creates and starts one durable per-operation credit actor,
 // restoring its state from the credit_operations row before the mailbox starts
 // draining.
