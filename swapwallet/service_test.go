@@ -34,11 +34,8 @@ func newServiceFixture(t *testing.T) (*Service, *fakeSwapService,
 }
 
 // TestServiceDepositReturnsAddress confirms Deposit calls NewAddress and
-// returns a DEPOSIT-kind WalletEntry with the boarding address. v1 does
-// NOT register a canonical-id intent for deposits because the daemon
-// has no notification hook from boarding-address to the eventual
-// boarding txid; correlation between this entry and the later boarding
-// ledger row is a v2 task (see swapwallet/doc.go).
+// returns a DEPOSIT-kind WalletEntry with the boarding address, keyed by the
+// address-scoped canonical id.
 func TestServiceDepositReturnsAddress(t *testing.T) {
 	t.Parallel()
 
@@ -69,6 +66,43 @@ func TestServiceDepositReturnsAddress(t *testing.T) {
 	require.Equal(
 		t, "address_issued",
 		resp.GetEntry().GetProgress().GetPhaseLabel(),
+	)
+	require.Equal(
+		t, "deposit-bcrt1qboardingaddr", resp.GetEntry().GetId(),
+	)
+}
+
+// TestServiceDepositProjectsPendingRow confirms Deposit projects the pending
+// deposit row into the canonical store under its address-scoped id, so the
+// confirmed boarding-deposit ledger row (which carries the same boarding
+// address) later upserts onto the same canonical id instead of creating a
+// second, differently-keyed row.
+func TestServiceDepositProjectsPendingRow(t *testing.T) {
+	t.Parallel()
+
+	swap := &fakeSwapService{}
+	rpc := &fakeRPCServer{
+		newAddressResp: &daemonrpc.NewAddressResponse{
+			Address: "bcrt1qboardingaddr",
+		},
+	}
+	store := &fakeActivityProjector{}
+	deps := &Deps{SwapService: swap, RPCServer: rpc, ActivityStore: store}
+	runtime := newRuntime(t.Context(), deps)
+	t.Cleanup(runtime.stop)
+	svc := newService(deps, runtime)
+
+	_, err := svc.Deposit(
+		t.Context(), &walletdkrpc.DepositRequest{
+			AmtSatHint: 50_000,
+		},
+	)
+	require.NoError(t, err)
+
+	require.Equal(t, 1, store.count(), "pending deposit row must be stored")
+	require.True(
+		t, store.ids()["deposit-bcrt1qboardingaddr"],
+		"pending row must be keyed by deposit-<address>",
 	)
 }
 

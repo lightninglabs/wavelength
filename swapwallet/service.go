@@ -182,13 +182,15 @@ func (s *Service) Deposit(ctx context.Context,
 		},
 	}
 
-	// v1 SCOPE: deposit pending tracking is omitted because there is
-	// no daemon-side hook to observe the eventual boarding txid for
-	// this address. The boarding ledger row that lands later will
-	// surface under its own synthetic id; canonical-id correlation
-	// between the Deposit response and the ledger row is deferred to
-	// v2 — see swapwallet/doc.go for the limitation note.
-	_ = canonicalID
+	// Project the pending deposit row into the canonical activity store
+	// under its address-scoped id (deposit-<address>) so List surfaces it
+	// durably. The confirmed boarding-deposit ledger row later carries the
+	// same boarding address and keys to the same canonical id, so the
+	// delete-free upsert flips this row PENDING -> COMPLETE rather than
+	// creating a second, differently-keyed row. Use a cancel-safe context
+	// so a client disconnect cannot drop the store write of an
+	// already-issued address.
+	s.runtime.projectAndEmit(context.WithoutCancel(ctx), entry)
 
 	return &walletdkrpc.DepositResponse{
 		OnchainAddress: addrResp.GetAddress(),

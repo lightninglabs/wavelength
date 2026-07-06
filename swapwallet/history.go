@@ -1410,9 +1410,20 @@ func ledgerActivityID(t *daemonrpc.TransactionHistoryEntry,
 	}
 
 	if kind == walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT &&
-		t.GetSubtype() == ledger.EventWalletUTXOCreated &&
-		t.GetOutputIndex() >= 0 {
-		return fmt.Sprintf("%s:%d", t.GetTxid(), t.GetOutputIndex())
+		t.GetSubtype() == ledger.EventWalletUTXOCreated {
+
+		// Prefer the address-scoped id so the confirmed deposit row
+		// shares a canonical id with the pending deposit-<address> row
+		// projected by Deposit, letting the store upsert flip it to
+		// COMPLETE. Fall back to txid:vout for older daemons that do
+		// not surface the boarding address on the history row.
+		if addr := t.GetBoardingAddress(); addr != "" {
+			return fmt.Sprintf("deposit-%s", addr)
+		}
+		if t.GetOutputIndex() >= 0 {
+			return fmt.Sprintf("%s:%d", t.GetTxid(),
+				t.GetOutputIndex())
+		}
 	}
 
 	return t.GetTxid()

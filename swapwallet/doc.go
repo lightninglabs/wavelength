@@ -41,21 +41,25 @@
 // swap subserver's row keys by Lightning payment_hash, which the wallet
 // layer also uses as the canonical id, so the projection is a no-op.
 //
-// EXIT and DEPOSIT operations DO surface a row at submit time and a
-// separate confirmed ledger row later, but the two rows do NOT share an
-// id in v1 because there is no daemon-side notification hook that links
-// (a) an exit's queued outpoints to its eventual sweep txid, or (b) a
-// deposit's boarding address to its eventual boarding txid. Cooperative
-// leave rows can still complete while the original runtime-local row is
-// alive: once the source VTXO is terminally forfeited, the pending EXIT
-// row is shown as COMPLETE. After restart, however, the daemon cannot
-// recreate the original counterparty/note from durable state alone. A v2
-// canonical-id projection lands when the daemon exposes the missing
-// hooks; the right home for that link is the daemon-side persistence
-// (leave job, deposit address record), not a process-local map. Callers
-// that need to correlate EXIT/DEPOSIT pending → confirmed across restart
-// in v1 should track the WalletEntry.Counterparty (truncated bech32
-// address or txid) and the persisted ledger txid via separate queries.
+// An on-chain-send / cooperative-leave EXIT row keys by the daemon's
+// leave-job id (SendOnChainResponse.send_job_id); see the CANONICAL
+// ACTIVITY LOG note. A DEPOSIT keys by an address-scoped id
+// (deposit-<address>): Deposit projects the pending row under that id, and
+// the confirmed boarding-deposit ledger row carries the same allocated
+// boarding address (TransactionHistoryEntry.boarding_address) so it
+// upserts onto the same canonical id and flips the row to COMPLETE. This
+// is address-granularity, not per-outpoint: multiple UTXOs paid to the
+// same boarding address (which is single-use by design — Deposit issues a
+// fresh address each call) collapse into one DEPOSIT row. As with the
+// leave row, the pending → COMPLETE transition is applied by the
+// derive/backfill pass matching a confirmed/forfeited source, so LIVE
+// cross-restart terminal reconciliation is tracked separately (C2).
+//
+// Remaining v1 gaps: a unilateral EXIT row still keys by the consumed VTXO
+// outpoint with no durable link to its eventual sweep txid; and an older
+// daemon that does not populate boarding_address leaves a DEPOSIT's
+// pending and confirmed rows separately keyed (txid:vout), the pre-change
+// behavior.
 //
 // Onchain SEND sweep semantics: a bounded onchain send (amt_sat > 0)
 // lands exactly amt_sat at the destination and returns the remainder as
