@@ -10,7 +10,7 @@ import (
 	"errors"
 	"sort"
 
-	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/btcutil/v2"
 )
 
 // Selection errors. The selector stays policy-free: it reports why a pass

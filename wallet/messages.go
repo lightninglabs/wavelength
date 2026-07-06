@@ -1,10 +1,11 @@
 package wallet
 
 import (
+	btcaddr "github.com/btcsuite/btcd/address/v2"
 	"github.com/btcsuite/btcd/btcec/v2"
-	"github.com/btcsuite/btcd/btcutil"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
@@ -60,7 +61,7 @@ type CreateBoardingAddressResponse struct {
 	actor.BaseMessage
 
 	// Address is the boarding address that users can send funds to.
-	Address btcutil.Address
+	Address btcaddr.Address
 
 	// ClientKey is the derived client key used in the tapscript.
 	ClientKey *btcec.PublicKey

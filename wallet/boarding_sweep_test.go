@@ -7,15 +7,16 @@ import (
 	"fmt"
 	"testing"
 
+	btcaddr "github.com/btcsuite/btcd/address/v2"
 	"github.com/btcsuite/btcd/blockchain"
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
-	"github.com/btcsuite/btcd/btcutil"
-	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/txscript"
-	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/btcsuite/btcd/chaincfg/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/txscript/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tx/arktx"
 	"github.com/lightningnetwork/lnd/input"
@@ -130,7 +131,7 @@ func testBoardingSweepIntent(t *testing.T, amount btcutil.Amount,
 	taprootKey := txscript.ComputeTaprootOutputKey(
 		&arkscript.ARKNUMSKey, tapscript.RootHash,
 	)
-	address, err := btcutil.NewAddressTaproot(
+	address, err := btcaddr.NewAddressTaproot(
 		taprootKey.SerializeCompressed()[1:],
 		&chaincfg.RegressionNetParams,
 	)
@@ -337,7 +338,7 @@ func TestBoardingSweepPkScript(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, previewScript, 34)
 
-	addr, err := btcutil.NewAddressWitnessPubKeyHash(
+	addr, err := btcaddr.NewAddressWitnessPubKeyHash(
 		bytes.Repeat(
 			[]byte{2}, 20,
 		),
@@ -355,7 +356,7 @@ func TestBoardingSweepPkScript(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, expectedScript, addrScript)
 
-	mainnetAddr, err := btcutil.NewAddressWitnessPubKeyHash(
+	mainnetAddr, err := btcaddr.NewAddressWitnessPubKeyHash(
 		bytes.Repeat(
 			[]byte{3}, 20,
 		),

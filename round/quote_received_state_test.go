@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/rpc/roundpb"
 	"github.com/stretchr/testify/require"

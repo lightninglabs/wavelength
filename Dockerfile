@@ -8,7 +8,7 @@
 #   docker run darepod:local --network=regtest --wallet.type=lnd --lnd.host=lnd:10009
 
 # --- Builder ---
-FROM golang:1.25.5-alpine AS builder
+FROM golang:1.26.0-alpine AS builder
 
 RUN apk add --no-cache git
 

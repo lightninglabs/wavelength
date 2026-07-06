@@ -2,7 +2,7 @@ package tree
 
 import (
 	"github.com/btcsuite/btcd/btcec/v2"
-	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/btcutil/v2"
 )
 
 // LeafDescriptor is a generic descriptor for a leaf output in a transaction

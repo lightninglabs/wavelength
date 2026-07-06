@@ -6,8 +6,8 @@ import (
 	"log/slog"
 	"sync"
 
+	btcaddr "github.com/btcsuite/btcd/address/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
-	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -46,7 +46,7 @@ type BoardingBackendBase struct {
 	// by the wallet actor, which re-imports all persisted boarding
 	// addresses from the database during startup (see
 	// wallet.Ark.handleStartupRecovery).
-	ImportedAddrs map[string]btcutil.Address
+	ImportedAddrs map[string]btcaddr.Address
 }
 
 // NewBoardingBackendBase creates a new base boarding backend wrapping
@@ -66,7 +66,7 @@ func NewBoardingBackendBase(btcw *btcwallet.BtcWallet, coinType uint32,
 			Purpose: keychain.BIP0043Purpose,
 			Coin:    coinType,
 		},
-		ImportedAddrs: make(map[string]btcutil.Address),
+		ImportedAddrs: make(map[string]btcaddr.Address),
 	}
 }
 
@@ -103,7 +103,7 @@ func (b *BoardingBackendBase) DeriveNextKey(ctx context.Context,
 // tracking for addresses in non-default scopes
 // (chainntfns.go:IsDefaultScope check).
 func (b *BoardingBackendBase) ImportTaprootScript(ctx context.Context,
-	script *waddrmgr.Tapscript) (btcutil.Address, error) {
+	script *waddrmgr.Tapscript) (btcaddr.Address, error) {
 
 	managedAddr, err := b.BtcWallet.ImportTaprootScript(
 		waddrmgr.KeyScopeBIP0086, script,
@@ -145,7 +145,7 @@ func (b *BoardingBackendBase) ImportTaprootScript(ctx context.Context,
 // Returns the number of currently tracked addresses after the insert,
 // which lets callers log the count without a separate locked read or
 // a full map copy via SnapshotAddrs.
-func (b *BoardingBackendBase) trackImportedAddress(addr btcutil.Address) int {
+func (b *BoardingBackendBase) trackImportedAddress(addr btcaddr.Address) int {
 	b.Mu.Lock()
 	b.ImportedAddrs[addr.String()] = addr
 	numAddrs := len(b.ImportedAddrs)
@@ -158,14 +158,14 @@ func (b *BoardingBackendBase) trackImportedAddress(addr btcutil.Address) int {
 // a tapscript import. This lets restart recovery repopulate the in-memory
 // address filter when btcwallet reports that a persisted import already exists.
 func (b *BoardingBackendBase) addressForTaprootScript(
-	script *waddrmgr.Tapscript) (btcutil.Address, error) {
+	script *waddrmgr.Tapscript) (btcaddr.Address, error) {
 
 	taprootKey, err := script.TaprootKey()
 	if err != nil {
 		return nil, fmt.Errorf("calculate taproot key: %w", err)
 	}
 
-	return btcutil.NewAddressTaproot(
+	return btcaddr.NewAddressTaproot(
 		schnorr.SerializePubKey(taprootKey),
 		b.BtcWallet.InternalWallet().ChainParams(),
 	)
@@ -175,9 +175,9 @@ func (b *BoardingBackendBase) addressForTaprootScript(
 // addresses under the lock. This is a convenience for ListUnspent
 // implementations that need to iterate over addresses without
 // holding the lock for the duration of chain queries.
-func (b *BoardingBackendBase) SnapshotAddrs() map[string]btcutil.Address {
+func (b *BoardingBackendBase) SnapshotAddrs() map[string]btcaddr.Address {
 	b.Mu.Lock()
-	addrs := make(map[string]btcutil.Address, len(b.ImportedAddrs))
+	addrs := make(map[string]btcaddr.Address, len(b.ImportedAddrs))
 	for k, v := range b.ImportedAddrs {
 		addrs[k] = v
 	}

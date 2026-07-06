@@ -3,8 +3,8 @@ package arkscript
 import (
 	"testing"
 
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/txscript"
+	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/lightninglabs/darepo-client/internal/testutils"
 	"github.com/stretchr/testify/require"
 )

@@ -7,11 +7,11 @@ import (
 	"sync"
 	"time"
 
+	btcaddr "github.com/btcsuite/btcd/address/v2"
 	"github.com/btcsuite/btcd/btcjson"
-	"github.com/btcsuite/btcd/btcutil"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/txscript"
-	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/txscript/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/btcsuite/btcwallet/chain"
 	"github.com/btcsuite/btcwallet/waddrmgr"
@@ -46,7 +46,7 @@ type EsploraChainService struct {
 	// watchedAddrs holds addresses registered via NotifyReceived.
 	// These are used during block processing to detect relevant
 	// transactions for RelevantTx notifications.
-	watchedAddrs map[string]btcutil.Address
+	watchedAddrs map[string]btcaddr.Address
 
 	// bestBlock caches the current chain tip, updated on each
 	// processed TipBlock event.
@@ -96,7 +96,7 @@ func NewEsploraChainService(esplora *EsploraClient, tipPoller *TipPoller,
 		tipPoller:             tipPoller,
 		log:                   logger,
 		notifications:         make(chan interface{}, 100),
-		watchedAddrs:          make(map[string]btcutil.Address),
+		watchedAddrs:          make(map[string]btcaddr.Address),
 		maxGapFillPerTipEvent: defaultMaxGapFillPerTipEvent,
 		quit:                  make(chan struct{}),
 	}
@@ -303,7 +303,7 @@ type addressMatch struct {
 func (s *EsploraChainService) filterBlock(
 	block *wire.MsgBlock, meta wtxmgr.BlockMeta,
 	batchIdx uint32, addrScripts map[string]addressMatch,
-	watchedOPs map[wire.OutPoint]btcutil.Address,
+	watchedOPs map[wire.OutPoint]btcaddr.Address,
 ) *chain.FilterBlocksResponse {
 
 	var (
@@ -314,7 +314,7 @@ func (s *EsploraChainService) filterBlock(
 			map[waddrmgr.KeyScope]map[uint32]struct{},
 		)
 		foundOutpoints = make(
-			map[wire.OutPoint]btcutil.Address,
+			map[wire.OutPoint]btcaddr.Address,
 		)
 		relevantTxns []*wire.MsgTx
 	)
@@ -410,6 +410,17 @@ func (s *EsploraChainService) SendRawTransaction(tx *wire.MsgTx,
 	return &txHash, nil
 }
 
+// SubmitPackage is not supported by the Esplora backend. Esplora is a REST
+// block-explorer API with no package-relay (submitpackage) endpoint, so
+// atomic parent+child submission is unavailable; deployments that need
+// v3/TRUC CPFP package relay must use a bitcoind- or lnd-backed chain source.
+func (s *EsploraChainService) SubmitPackage(_ []*wire.MsgTx, _ *float64) (
+	*btcjson.SubmitPackageResult, error) {
+
+	return nil, fmt.Errorf("SubmitPackage not supported by Esplora chain " +
+		"backend")
+}
+
 // Rescan walks the chain from the block identified by startHash
 // forward to the current tip, checking each block for transactions
 // that match the given addresses or outpoints.
@@ -425,8 +436,8 @@ func (s *EsploraChainService) SendRawTransaction(tx *wire.MsgTx,
 // lets Rescan return immediately, unblocking handleChainNotifications
 // to drain the queued notifications.
 func (s *EsploraChainService) Rescan(startHash *chainhash.Hash,
-	addrs []btcutil.Address,
-	outpoints map[wire.OutPoint]btcutil.Address) error {
+	addrs []btcaddr.Address,
+	outpoints map[wire.OutPoint]btcaddr.Address) error {
 
 	ctx := s.requestContext()
 
@@ -568,7 +579,7 @@ func (s *EsploraChainService) Rescan(startHash *chainhash.Hash,
 // rescan criteria (address scripts or watched outpoints).
 func (s *EsploraChainService) txMatchesRescan(tx *wire.MsgTx,
 	addrScripts map[string]struct{},
-	outpoints map[wire.OutPoint]btcutil.Address) bool {
+	outpoints map[wire.OutPoint]btcaddr.Address) bool {
 
 	// Check outputs against watched address scripts.
 	for _, txOut := range tx.TxOut {
@@ -594,7 +605,7 @@ func (s *EsploraChainService) txMatchesRescan(tx *wire.MsgTx,
 // ImportTaprootScript, etc.) so the chain backend can include
 // transactions to those addresses in FilteredBlockConnected
 // notifications.
-func (s *EsploraChainService) NotifyReceived(addrs []btcutil.Address) error {
+func (s *EsploraChainService) NotifyReceived(addrs []btcaddr.Address) error {
 	s.mu.Lock()
 	for _, addr := range addrs {
 		s.watchedAddrs[addr.String()] = addr

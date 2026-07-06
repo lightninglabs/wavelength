@@ -8,12 +8,12 @@ import (
 	"testing"
 	"time"
 
+	btcaddr "github.com/btcsuite/btcd/address/v2"
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
-	"github.com/btcsuite/btcd/btcutil"
-	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcd/txscript"
-	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcd/chaincfg/v2"
+	"github.com/btcsuite/btcd/txscript/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/darepod"
 	"github.com/stretchr/testify/require"
@@ -219,7 +219,7 @@ func newRegtestTaprootAddr(t *testing.T) string {
 	require.NoError(t, err)
 
 	taprootKey := txscript.ComputeTaprootKeyNoScript(priv.PubKey())
-	addr, err := btcutil.NewAddressTaproot(
+	addr, err := btcaddr.NewAddressTaproot(
 		schnorr.SerializePubKey(taprootKey),
 		&chaincfg.RegressionNetParams,
 	)

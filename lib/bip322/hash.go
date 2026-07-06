@@ -1,6 +1,6 @@
 package bip322
 
-import "github.com/btcsuite/btcd/chaincfg/chainhash"
+import "github.com/btcsuite/btcd/chainhash/v2"
 
 // bip322TagStr is the BIP-340 tag used for BIP-322 message commitments.
 const bip322TagStr = "BIP0322-signed-message"

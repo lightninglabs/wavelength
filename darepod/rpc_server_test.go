@@ -6,14 +6,15 @@ import (
 	"fmt"
 	"testing"
 
+	btcaddr "github.com/btcsuite/btcd/address/v2"
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
-	"github.com/btcsuite/btcd/btcutil"
-	"github.com/btcsuite/btcd/btcutil/psbt"
-	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/txscript"
-	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/btcsuite/btcd/chaincfg/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/psbt/v2"
+	"github.com/btcsuite/btcd/txscript/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/google/uuid"
 	"github.com/lightninglabs/darepo-client/arkrpc"
@@ -430,7 +431,7 @@ func TestResolveRecipientOutputAddress(t *testing.T) {
 	)
 	xOnly := pub.SerializeCompressed()[1:]
 
-	addr, err := btcutil.NewAddressTaproot(
+	addr, err := btcaddr.NewAddressTaproot(
 		xOnly, &chaincfg.RegressionNetParams,
 	)
 	require.NoError(t, err)

@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"

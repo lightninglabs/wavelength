@@ -3,10 +3,11 @@ package wallet
 import (
 	"context"
 
+	btcaddr "github.com/btcsuite/btcd/address/v2"
 	"github.com/btcsuite/btcd/btcec/v2"
-	"github.com/btcsuite/btcd/btcutil"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/lightninglabs/darepo-client/walletcore"
 	"github.com/lightninglabs/taproot-assets/proof"
@@ -175,7 +176,7 @@ type BoardingBackend interface {
 	// and include them in ListUnspent queries. The script contains both
 	// collaborative (2-of-2) and timeout (CSV) spending paths.
 	ImportTaprootScript(ctx context.Context,
-		script *waddrmgr.Tapscript) (btcutil.Address, error)
+		script *waddrmgr.Tapscript) (btcaddr.Address, error)
 
 	// ListUnspent returns all UTXOs known to the wallet with confirmation
 	// counts between minConfs and maxConfs (inclusive). This is used to
@@ -273,7 +274,7 @@ const (
 // construct collaborative and timeout spending paths.
 type BoardingAddress struct {
 	// Address is the bech32m taproot address that can receive funds.
-	Address btcutil.Address
+	Address btcaddr.Address
 
 	// Tapscript contains the full taproot script tree with both
 	// collaborative (multisig) and timeout (CSV) spending paths.

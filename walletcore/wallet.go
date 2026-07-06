@@ -5,8 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/btcsuite/btcd/btcutil"
-	"github.com/btcsuite/btcd/chaincfg"
+	btcaddr "github.com/btcsuite/btcd/address/v2"
+	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/btcsuite/btcd/chaincfg/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/darepo-client/indexer"
@@ -92,7 +93,7 @@ func (w *Wallet) ProofSigner(
 
 // NewAddress generates a new BIP86 taproot receiving address (P2TR
 // key-path only) via btcwallet.
-func (w *Wallet) NewAddress(ctx context.Context) (btcutil.Address, error) {
+func (w *Wallet) NewAddress(ctx context.Context) (btcaddr.Address, error) {
 	addr, err := w.BtcWallet.NewAddress(
 		lnwallet.TaprootPubkey, false, lnwallet.DefaultAccountName,
 	)

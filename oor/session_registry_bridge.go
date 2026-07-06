@@ -3,7 +3,7 @@ package oor
 import (
 	"context"
 
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/chainhash/v2"
 	clientdb "github.com/lightninglabs/darepo-client/db"
 )
 

@@ -3,7 +3,7 @@ package round
 import (
 	"testing"
 
-	"github.com/btcsuite/btcd/txscript"
+	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/stretchr/testify/require"

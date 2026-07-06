@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	clientdb "github.com/lightninglabs/darepo-client/db"
 	"github.com/lightninglabs/darepo-client/ledger"
 	libtypes "github.com/lightninglabs/darepo-client/lib/types"

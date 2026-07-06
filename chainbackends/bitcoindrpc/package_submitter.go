@@ -25,7 +25,7 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcjson"
-	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcd/wire/v2"
 )
 
 // submitTimeout bounds the submitpackage RPC so a wedged bitcoind

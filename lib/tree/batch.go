@@ -7,12 +7,13 @@ import (
 	"math"
 	"sort"
 
+	btcaddr "github.com/btcsuite/btcd/address/v2"
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
-	"github.com/btcsuite/btcd/btcutil"
-	"github.com/btcsuite/btcd/txscript"
-	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/btcsuite/btcd/txscript/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 )
 
@@ -396,7 +397,7 @@ func xOnlyKeyString(key *btcec.PublicKey) string {
 // The total amount is numConnectors * dustAmount since each connector leaf
 // receives the dust amount.
 func BuildConnectorOutput(numConnectors int, dustAmount btcutil.Amount,
-	connectorAddr btcutil.Address) (*wire.TxOut, error) {
+	connectorAddr btcaddr.Address) (*wire.TxOut, error) {
 
 	if numConnectors == 0 {
 		return nil, fmt.Errorf("num connectors must be > 0")

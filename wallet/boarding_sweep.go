@@ -5,11 +5,12 @@ import (
 	"context"
 	"fmt"
 
+	btcaddr "github.com/btcsuite/btcd/address/v2"
 	"github.com/btcsuite/btcd/blockchain"
-	"github.com/btcsuite/btcd/btcutil"
-	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcd/txscript"
-	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/btcsuite/btcd/chaincfg/v2"
+	"github.com/btcsuite/btcd/txscript/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tx/arktx"
 	"github.com/lightningnetwork/lnd/input"
@@ -364,7 +365,7 @@ func boardingSweepPkScript(ctx context.Context, signer SweepSigner,
 		return pkScript, nil
 	}
 
-	addr, err := btcutil.DecodeAddress(sweepAddress, chainParams)
+	addr, err := btcaddr.DecodeAddress(sweepAddress, chainParams)
 	if err != nil {
 		return nil, fmt.Errorf("decode sweep address: %w", err)
 	}

@@ -4,9 +4,9 @@ import (
 	"encoding/hex"
 	"testing"
 
-	"github.com/btcsuite/btcd/btcutil"
-	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcd/txscript"
+	btcaddr "github.com/btcsuite/btcd/address/v2"
+	"github.com/btcsuite/btcd/chaincfg/v2"
+	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
@@ -45,7 +45,7 @@ func TestResolveLeaveDestinationValidTaproot(t *testing.T) {
 	// a structurally valid taproot address to feed DecodeAddress.
 	xOnly := make([]byte, 32)
 	xOnly[0] = 0xab
-	addr, err := btcutil.NewAddressTaproot(
+	addr, err := btcaddr.NewAddressTaproot(
 		xOnly, &chaincfg.RegressionNetParams,
 	)
 	require.NoError(t, err)
@@ -75,7 +75,7 @@ func TestAddrNetNameAcceptsTestNet4(t *testing.T) {
 
 	xOnly := make([]byte, 32)
 	xOnly[0] = 0xcd
-	addr, err := btcutil.NewAddressTaproot(
+	addr, err := btcaddr.NewAddressTaproot(
 		xOnly, &chaincfg.TestNet4Params,
 	)
 	require.NoError(t, err)
@@ -223,7 +223,7 @@ func TestResolveLeaveDestinationPkScriptAcceptsOPRETURN(t *testing.T) {
 
 // TestResolveLeaveDestinationCrossNetwork verifies that a mainnet
 // address under regtest chain params is rejected by
-// btcutil.DecodeAddress rather than silently yielding a pkScript.
+// btcaddr.DecodeAddress rather than silently yielding a pkScript.
 // Leave is funds-moving, so a cross-network address would send
 // real funds to an unintended script — this guard matters.
 func TestResolveLeaveDestinationCrossNetwork(t *testing.T) {
@@ -233,7 +233,7 @@ func TestResolveLeaveDestinationCrossNetwork(t *testing.T) {
 	// doesn't depend on a hand-encoded bech32m string.
 	xOnly := make([]byte, 32)
 	xOnly[0] = 0xcd
-	mainnetAddr, err := btcutil.NewAddressTaproot(
+	mainnetAddr, err := btcaddr.NewAddressTaproot(
 		xOnly, &chaincfg.MainNetParams,
 	)
 	require.NoError(t, err)

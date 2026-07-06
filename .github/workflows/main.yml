@@ -28,7 +28,7 @@ defaults:
 
 env:
   # If you change this please also update GO_VERSION in Makefile.
-  GO_VERSION: 1.25.5
+  GO_VERSION: 1.26.0
 
 jobs:
   ########################
