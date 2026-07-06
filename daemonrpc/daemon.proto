@@ -2195,6 +2195,12 @@ message TransactionHistoryEntry {
     // output_index is the transaction output index associated with txid.
     // A negative value means the source has no output index.
     int32 output_index = 16;
+
+    // boarding_address is the allocated boarding address a confirmed
+    // boarding-deposit (wallet_utxo_created) row paid to, letting a client
+    // correlate the confirmed row back to its pending deposit row by a
+    // shared, address-scoped id. Empty for every other row type.
+    string boarding_address = 17;
 }
 
 message ListTransactionsResponse {
