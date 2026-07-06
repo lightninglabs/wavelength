@@ -75,13 +75,19 @@ func NewTestDBHandleFromPath(t testing.TB, dbPath string) *PostgresStore {
 		)
 
 		store, err := NewPostgresStore(sqlFixture.GetConfig(), log)
-		require.NoError(t, err)
+		if err != nil {
+			sqlFixture.TearDown(t)
+			require.NoError(t, err)
+		}
 
 		testPgFixtureMtx.Lock()
 		existingFixture, alreadyCreated := testPgFixturesByPath[dbPath]
 		if alreadyCreated {
 			testPgFixtureMtx.Unlock()
 
+			// Defensive guard: callers should only reopen dbPath
+			// sequentially within one test, but avoid leaking an
+			// extra fixture if that invariant is violated.
 			_ = store.DB.Close()
 			sqlFixture.TearDown(t)
 
@@ -101,13 +107,13 @@ func NewTestDBHandleFromPath(t testing.TB, dbPath string) *PostgresStore {
 		testPgFixtureMtx.Unlock()
 
 		t.Cleanup(func() {
-			sqlFixture.TearDown(t)
-
 			testPgFixtureMtx.Lock()
 			if testPgFixturesByPath[dbPath] == sqlFixture {
 				delete(testPgFixturesByPath, dbPath)
 			}
 			testPgFixtureMtx.Unlock()
+
+			sqlFixture.TearDown(t)
 		})
 
 		// Close this pool at test end even if the caller's restart
