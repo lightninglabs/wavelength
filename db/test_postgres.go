@@ -61,12 +61,15 @@ func NewTestDBHandleFromPath(t testing.TB, dbPath string) *PostgresStore {
 	log := btclog.Disabled
 
 	testPgFixtureMtx.Lock()
-	defer testPgFixtureMtx.Unlock()
-
 	sqlFixture, ok := testPgFixturesByPath[dbPath]
+	testPgFixtureMtx.Unlock()
+
 	if !ok {
 		// First handle for this path: stand up the database, run
 		// migrations via the default store path, and register teardown.
+		// This must happen outside testPgFixtureMtx: creating the
+		// fixture can block on the global Postgres fixture semaphore,
+		// and cleanup needs the same mutex to evict finished fixtures.
 		sqlFixture = NewTestPgFixture(
 			t, DefaultPostgresFixtureLifetime, true,
 		)
@@ -74,11 +77,36 @@ func NewTestDBHandleFromPath(t testing.TB, dbPath string) *PostgresStore {
 		store, err := NewPostgresStore(sqlFixture.GetConfig(), log)
 		require.NoError(t, err)
 
+		testPgFixtureMtx.Lock()
+		existingFixture, alreadyCreated := testPgFixturesByPath[dbPath]
+		if alreadyCreated {
+			testPgFixtureMtx.Unlock()
+
+			_ = store.DB.Close()
+			sqlFixture.TearDown(t)
+
+			storeCfg := existingFixture.GetConfig()
+			storeCfg.SkipMigrations = true
+			store, err := NewPostgresStore(storeCfg, log)
+			require.NoError(t, err)
+
+			t.Cleanup(func() {
+				_ = store.DB.Close()
+			})
+
+			return store
+		}
+
+		testPgFixturesByPath[dbPath] = sqlFixture
+		testPgFixtureMtx.Unlock()
+
 		t.Cleanup(func() {
 			sqlFixture.TearDown(t)
 
 			testPgFixtureMtx.Lock()
-			delete(testPgFixturesByPath, dbPath)
+			if testPgFixturesByPath[dbPath] == sqlFixture {
+				delete(testPgFixturesByPath, dbPath)
+			}
 			testPgFixtureMtx.Unlock()
 		})
 
@@ -89,8 +117,6 @@ func NewTestDBHandleFromPath(t testing.TB, dbPath string) *PostgresStore {
 		t.Cleanup(func() {
 			_ = store.DB.Close()
 		})
-
-		testPgFixturesByPath[dbPath] = sqlFixture
 
 		return store
 	}
