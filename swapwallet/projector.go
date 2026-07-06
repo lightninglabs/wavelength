@@ -67,17 +67,18 @@ func (r *Runtime) projectAndEmit(ctx context.Context,
 	r.emit(entry)
 }
 
-// backfillActivity seeds the canonical activity log from the existing
-// derive-on-read collectors once at startup, so the store reflects current
-// state before any new transition lands. It pages through the merged feed and
-// projects every row; the upsert is idempotent on canonical_id, so re-running
-// across restarts is safe. No-op when no store is wired.
-func (r *Runtime) backfillActivity(ctx context.Context) {
+// reprojectActivity pages the derive-on-read feed and projects every row into
+// the canonical activity store, returning the number of rows projected. Because
+// ProjectEntry is idempotent on canonical_id and suppresses no-op changes,
+// re-running observes any terminal transition since the last pass (a confirmed
+// deposit, a forfeited leave, a completed unroll) while leaving unchanged rows
+// untouched. It backs both the one-time startup backfill and the ongoing
+// reconciler. Returns (0, nil) when no store is wired.
+func (r *Runtime) reprojectActivity(ctx context.Context) (int, error) {
 	if r.deps == nil || r.deps.ActivityStore == nil {
-		return
+		return 0, nil
 	}
 
-	log := r.deps.resolveLog()
 	h := newHistory(r.deps, r)
 	limit := r.deps.resolveMaxListLimit()
 
@@ -91,11 +92,7 @@ func (r *Runtime) backfillActivity(ctx context.Context) {
 			Offset: offset,
 		})
 		if err != nil {
-			log.WarnS(ctx, "Activity backfill stopped: list failed",
-				err,
-			)
-
-			return
+			return projected, err
 		}
 
 		entries := list.GetEntries()
@@ -116,6 +113,27 @@ func (r *Runtime) backfillActivity(ctx context.Context) {
 		if uint32(len(entries)) < limit || offset >= list.GetTotal() {
 			break
 		}
+	}
+
+	return projected, nil
+}
+
+// backfillActivity seeds the canonical activity log from the existing
+// derive-on-read collectors once at startup, so the store reflects current
+// state before any new transition lands. The upsert is idempotent on
+// canonical_id, so re-running across restarts is safe. No-op when no store is
+// wired.
+func (r *Runtime) backfillActivity(ctx context.Context) {
+	if r.deps == nil || r.deps.ActivityStore == nil {
+		return
+	}
+
+	log := r.deps.resolveLog()
+	projected, err := r.reprojectActivity(ctx)
+	if err != nil {
+		log.WarnS(ctx, "Activity backfill stopped: list failed", err)
+
+		return
 	}
 
 	log.InfoS(ctx, "Activity backfill complete",
