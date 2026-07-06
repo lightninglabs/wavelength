@@ -1,3 +1,6 @@
+-- Accounting: double-entry fee ledger plus the wallet UTXO audit
+-- log.
+
 -- Client-side fee accounting tables using double-entry
 -- bookkeeping, mirroring the server-side schema.
 
@@ -26,7 +29,10 @@ INSERT INTO ledger_event_types (event_type) VALUES
     ('onchain_fee_paid'),
     ('vtxo_received'),
     ('vtxo_sent'),
-    ('wallet_utxo_created')
+    ('wallet_utxo_created'),
+    ('boarding_sweep_fee_paid'),
+    ('wallet_utxo_spent'),
+    ('wallet_sweep_transfer')
 ON CONFLICT DO NOTHING;
 
 -- Chart of accounts from the client's perspective. transfers_in
@@ -58,7 +64,8 @@ INSERT INTO accounts (account_id, account_name, account_type) VALUES
     ('onchain_fees',     'On-Chain Fees Paid', 'expense'),  -- L1 chain/miner fees
     ('transfers_in',     'Transfers In',       'revenue'),  -- counterparty side of received VTXOs
     ('transfers_out',    'Transfers Out',      'expense'),  -- counterparty side of sent VTXOs
-    ('opening_balance',  'Opening Balance',    'equity')    -- source of funds for wallet UTXO deposits
+    ('opening_balance',  'Opening Balance',    'equity'),   -- source of funds for wallet UTXO deposits
+    ('wallet_clearing',  'Wallet Sweep Clearing', 'asset')  -- internal clearing so sweep return outputs are not double-counted
 ON CONFLICT DO NOTHING;
 
 -- Double-entry ledger for client fee tracking.
@@ -104,6 +111,13 @@ CREATE TABLE IF NOT EXISTS ledger_entries (
     -- created_at is the Unix timestamp.
     created_at BIGINT NOT NULL,
 
+    -- chain_txid, chain_vout, and confirmation_height are first-class
+    -- chain metadata so history reads do not need to decode wallet
+    -- UTXO idempotency keys on every query.
+    chain_txid BLOB,
+    chain_vout INTEGER,
+    confirmation_height INTEGER,
+
     -- Debit and credit must target different accounts.
     CHECK (debit_account != credit_account)
 );
@@ -127,10 +141,14 @@ CREATE INDEX IF NOT EXISTS idx_client_ledger_credit
 -- account pair. Entries with NULL round_id flow through the
 -- session_id or idempotency_key partial indexes instead so
 -- every event class gets its own at-least-once-idempotent path
--- without colliding.
+-- without colliding. Events that carry an explicit idempotency_key,
+-- such as per-recipient round sends, are excluded here and deduped
+-- by idx_client_ledger_idempotent_key instead so multiple sends in
+-- the same round can coexist.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_client_ledger_idempotent_round
     ON ledger_entries(round_id, event_type, debit_account, credit_account)
-    WHERE round_id IS NOT NULL;
+    WHERE round_id IS NOT NULL
+      AND idempotency_key IS NULL;
 
 -- Separate partial index covering OOR session-linked events so
 -- VTXO send idempotency works off session_id without colliding
@@ -147,3 +165,83 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_client_ledger_idempotent_key
         idempotency_key, event_type, debit_account, credit_account
     )
     WHERE idempotency_key IS NOT NULL;
+
+-- Serves history lookups by chain transaction.
+CREATE INDEX IF NOT EXISTS idx_client_ledger_chain_txid
+    ON ledger_entries(chain_txid)
+    WHERE chain_txid IS NOT NULL;
+
+-- UTXO audit log for tracking wallet UTXO set changes per
+-- block for tax and accounting purposes.
+
+-- Classification enum for wallet UTXO events.
+CREATE TABLE IF NOT EXISTS utxo_classifications (
+    classification TEXT PRIMARY KEY
+);
+
+INSERT INTO utxo_classifications (classification) VALUES
+    ('deposit'),
+    ('sweep_return'),
+    ('round_funding'),
+    ('change'),
+    ('unknown'),
+    ('boarding_sweep_input'),
+    ('boarding_sweep_return')
+ON CONFLICT DO NOTHING;
+
+-- UTXO event enum (created or spent).
+CREATE TABLE IF NOT EXISTS utxo_events (
+    event TEXT PRIMARY KEY
+);
+
+INSERT INTO utxo_events (event) VALUES
+    ('created'),
+    ('spent')
+ON CONFLICT DO NOTHING;
+
+-- Wallet UTXO audit log. Each row records a single UTXO being
+-- created or spent, classified by its likely cause.
+CREATE TABLE IF NOT EXISTS wallet_utxo_log (
+    entry_id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    -- outpoint_hash is the transaction hash (32 bytes).
+    outpoint_hash BLOB NOT NULL,
+
+    -- outpoint_index is the output index.
+    outpoint_index INTEGER NOT NULL,
+
+    -- amount_sat is the UTXO value.
+    amount_sat BIGINT NOT NULL,
+
+    -- event is 'created' or 'spent'.
+    event TEXT NOT NULL
+        REFERENCES utxo_events(event),
+
+    -- block_height is the block where this change occurred.
+    block_height INTEGER NOT NULL,
+
+    -- classified_as categorizes the UTXO event.
+    classified_as TEXT NOT NULL
+        REFERENCES utxo_classifications(classification),
+
+    -- created_at is the Unix timestamp when this entry was
+    -- recorded.
+    created_at BIGINT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_utxo_log_block
+    ON wallet_utxo_log(block_height);
+
+CREATE INDEX IF NOT EXISTS idx_utxo_log_outpoint
+    ON wallet_utxo_log(outpoint_hash, outpoint_index);
+
+CREATE INDEX IF NOT EXISTS idx_utxo_log_classification
+    ON wallet_utxo_log(classified_as);
+
+-- An outpoint can appear twice total (once 'created' and once
+-- 'spent') but never twice with the same (outpoint, event). The
+-- durable ledger actor replays unprocessed messages on startup via
+-- RestartMessage, so without this constraint a crash between the
+-- insert and the mailbox ack would produce duplicate rows.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_utxo_log_outpoint_event
+    ON wallet_utxo_log(outpoint_hash, outpoint_index, event);

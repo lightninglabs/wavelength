@@ -22,7 +22,7 @@ import (
 // Storing ancestry paths in a side table (rather than inline as a single
 // blob on the vtxos row) keeps routine queries (ListUnspentVTXOs,
 // GetVTXO) cheap and only joins ancestry data when the unroller actually
-// needs it. See 000009_vtxo_ancestry_paths.up.sql for the schema rationale.
+// needs it. See 000004_vtxos.up.sql for the schema rationale.
 
 // ancestryStore is the narrow query surface used to manage the
 // vtxo_ancestry_paths side table. RoundStore satisfies this interface,

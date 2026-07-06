@@ -38,8 +38,7 @@ grows to the right.**
 
 ## Chart of accounts
 
-Core accounts are seeded by migration `000006_fee_accounting.up.sql`;
-`wallet_clearing` is added by `000019_accounting_wallet_sweeps.up.sql`:
+The chart of accounts is seeded by migration `000006_accounting.up.sql`:
 
 | Account | Type | Meaning |
 |---|---|---|

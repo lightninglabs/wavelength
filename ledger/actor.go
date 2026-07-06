@@ -28,7 +28,7 @@ const (
 )
 
 // Client-side account identifiers matching the seeded accounts
-// in db/sqlc/migrations/000006_fee_accounting.up.sql.
+// in db/sqlc/migrations/000006_accounting.up.sql.
 //
 // TransfersIn is the counterparty side of received VTXOs (revenue-type),
 // TransfersOut is the counterparty side of sent VTXOs (expense-type).

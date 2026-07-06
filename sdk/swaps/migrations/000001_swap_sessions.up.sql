@@ -107,7 +107,19 @@ CREATE TABLE IF NOT EXISTS receive_swaps (
 
     -- updated_at_unix is when this durable receive session row was last
     -- updated.
-    updated_at_unix BIGINT NOT NULL
+    updated_at_unix BIGINT NOT NULL,
+
+    -- settlement_type is durable settlement-rail metadata recorded for
+    -- swap inspection.
+    settlement_type TEXT NOT NULL DEFAULT '',
+
+    -- requested_amount_sat, available_credit_sat, attached_credit_sat,
+    -- and dust_limit_sat are the durable receive credit-assist
+    -- planning metadata.
+    requested_amount_sat BIGINT NOT NULL DEFAULT 0,
+    available_credit_sat BIGINT NOT NULL DEFAULT 0,
+    attached_credit_sat BIGINT NOT NULL DEFAULT 0,
+    dust_limit_sat BIGINT NOT NULL DEFAULT 0
 );
 
 -- idx_receive_swaps_state supports resume sweeps over non-terminal receive
@@ -213,7 +225,11 @@ CREATE TABLE IF NOT EXISTS pay_swaps (
     created_at_unix BIGINT NOT NULL,
 
     -- updated_at_unix is when this durable pay session row was last updated.
-    updated_at_unix BIGINT NOT NULL
+    updated_at_unix BIGINT NOT NULL,
+
+    -- settlement_type is durable settlement-rail metadata recorded for
+    -- swap inspection.
+    settlement_type TEXT NOT NULL DEFAULT ''
 );
 
 -- idx_pay_swaps_state supports resume sweeps over non-terminal pay sessions
