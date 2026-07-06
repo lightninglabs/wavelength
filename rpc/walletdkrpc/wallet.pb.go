@@ -726,8 +726,14 @@ type CreateResponse struct {
 	// recovered_oor_events is the number of OOR recipient events processed
 	// during recovery.
 	RecoveredOorEvents uint32 `protobuf:"varint,8,opt,name=recovered_oor_events,json=recoveredOorEvents,proto3" json:"recovered_oor_events,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// recovered_vhtlcs is the number of indexed vHTLC recovery manifests
+	// matched during recovery.
+	RecoveredVhtlcs uint32 `protobuf:"varint,9,opt,name=recovered_vhtlcs,json=recoveredVhtlcs,proto3" json:"recovered_vhtlcs,omitempty"`
+	// recovered_vhtlc_refunds is the number of matched pay-side vHTLCs for
+	// which daemon-owned refund recovery is available.
+	RecoveredVhtlcRefunds uint32 `protobuf:"varint,10,opt,name=recovered_vhtlc_refunds,json=recoveredVhtlcRefunds,proto3" json:"recovered_vhtlc_refunds,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *CreateResponse) Reset() {
@@ -812,6 +818,20 @@ func (x *CreateResponse) GetRecoveredOorReceiveScripts() uint32 {
 func (x *CreateResponse) GetRecoveredOorEvents() uint32 {
 	if x != nil {
 		return x.RecoveredOorEvents
+	}
+	return 0
+}
+
+func (x *CreateResponse) GetRecoveredVhtlcs() uint32 {
+	if x != nil {
+		return x.RecoveredVhtlcs
+	}
+	return 0
+}
+
+func (x *CreateResponse) GetRecoveredVhtlcRefunds() uint32 {
+	if x != nil {
+		return x.RecoveredVhtlcRefunds
 	}
 	return 0
 }
@@ -4649,7 +4669,7 @@ const file_wallet_proto_rawDesc = "" +
 	"\x0fseed_passphrase\x18\x02 \x01(\fR\x0eseedPassphrase\x12\x1a\n" +
 	"\bmnemonic\x18\x03 \x03(\tR\bmnemonic\x12#\n" +
 	"\rrecover_state\x18\x04 \x01(\bR\frecoverState\x12'\n" +
-	"\x0frecovery_window\x18\x05 \x01(\rR\x0erecoveryWindow\"\x92\x03\n" +
+	"\x0frecovery_window\x18\x05 \x01(\rR\x0erecoveryWindow\"\xf5\x03\n" +
 	"\x0eCreateResponse\x12\x1a\n" +
 	"\bmnemonic\x18\x01 \x03(\tR\bmnemonic\x12'\n" +
 	"\x0fidentity_pubkey\x18\x02 \x01(\tR\x0eidentityPubkey\x12!\n" +
@@ -4658,7 +4678,10 @@ const file_wallet_proto_rawDesc = "" +
 	"\x18recovered_boarding_utxos\x18\x05 \x01(\rR\x16recoveredBoardingUtxos\x12'\n" +
 	"\x0frecovered_vtxos\x18\x06 \x01(\rR\x0erecoveredVtxos\x12A\n" +
 	"\x1drecovered_oor_receive_scripts\x18\a \x01(\rR\x1arecoveredOorReceiveScripts\x120\n" +
-	"\x14recovered_oor_events\x18\b \x01(\rR\x12recoveredOorEvents\"8\n" +
+	"\x14recovered_oor_events\x18\b \x01(\rR\x12recoveredOorEvents\x12)\n" +
+	"\x10recovered_vhtlcs\x18\t \x01(\rR\x0frecoveredVhtlcs\x126\n" +
+	"\x17recovered_vhtlc_refunds\x18\n" +
+	" \x01(\rR\x15recoveredVhtlcRefunds\"8\n" +
 	"\rUnlockRequest\x12'\n" +
 	"\x0fwallet_password\x18\x01 \x01(\fR\x0ewalletPassword\"9\n" +
 	"\x0eUnlockResponse\x12'\n" +

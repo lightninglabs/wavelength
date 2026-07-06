@@ -956,8 +956,21 @@ func (c *Client) SendOORWithPolicyAndKey(ctx context.Context, amountSat int64,
 func (c *Client) SendOORWithPolicyDetails(ctx context.Context, amountSat int64,
 	recipientPolicyTemplate []byte) (*OORSendResult, error) {
 
-	return c.SendOORWithPolicyAndKeyDetails(
+	return c.SendOORWithPolicyDetailsAndLabel(
 		ctx, amountSat, recipientPolicyTemplate, "",
+	)
+}
+
+// SendOORWithPolicyDetailsAndLabel sends one OOR transfer to a semantic
+// policy-backed destination, registers the output script with an indexer label,
+// and returns the accepted OOR metadata.
+func (c *Client) SendOORWithPolicyDetailsAndLabel(ctx context.Context,
+	amountSat int64, recipientPolicyTemplate []byte,
+	receiveScriptLabel string) (*OORSendResult, error) {
+
+	return c.SendOORWithPolicyAndKeyDetailsLabel(
+		ctx, amountSat, recipientPolicyTemplate, "",
+		receiveScriptLabel,
 	)
 }
 
@@ -968,6 +981,19 @@ func (c *Client) SendOORWithPolicyAndKeyDetails(ctx context.Context,
 	amountSat int64, recipientPolicyTemplate []byte,
 	idempotencyKey string) (*OORSendResult, error) {
 
+	return c.SendOORWithPolicyAndKeyDetailsLabel(
+		ctx, amountSat, recipientPolicyTemplate, idempotencyKey, "",
+	)
+}
+
+// SendOORWithPolicyAndKeyDetailsLabel sends one OOR transfer to a semantic
+// policy-backed destination using the supplied idempotency key and receive
+// script registration label, then returns the accepted OOR metadata.
+func (c *Client) SendOORWithPolicyAndKeyDetailsLabel(ctx context.Context,
+	amountSat int64, recipientPolicyTemplate []byte,
+	idempotencyKey string, receiveScriptLabel string) (*OORSendResult,
+	error) {
+
 	resp, err := c.SendOOR(ctx, &daemonrpc.SendOORRequest{
 		Recipients: []*daemonrpc.Output{
 			{
@@ -977,7 +1003,8 @@ func (c *Client) SendOORWithPolicyAndKeyDetails(ctx context.Context,
 						recipientPolicyTemplate...,
 					),
 				},
-				AmountSat: amountSat,
+				AmountSat:          amountSat,
+				ReceiveScriptLabel: receiveScriptLabel,
 			},
 		},
 		IdempotencyKey: idempotencyKey,

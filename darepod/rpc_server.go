@@ -77,6 +77,11 @@ const (
 	// RPC handler resolves scripts and policy templates before handing
 	// work to that actor, so it needs its own cheap request-size guard.
 	maxOORRecipients = 256
+
+	// vhtlcRecoveryManifestRegistrationTTL keeps swap recovery manifests
+	// available across realistic offline restore windows. The signed
+	// registration proof itself remains short lived in the indexer client.
+	vhtlcRecoveryManifestRegistrationTTL = 365 * 24 * time.Hour
 )
 
 // RPCServer implements the daemon's gRPC DaemonService interface.
@@ -480,6 +485,47 @@ func (r *RPCServer) buildSendOORRecipients(ctx context.Context,
 	}
 
 	return recipients, nil
+}
+
+// registerSendOORRecipientScripts stores caller-requested script labels with
+// the indexer after recipient scripts are resolved but before OOR submission.
+func (r *RPCServer) registerSendOORRecipientScripts(ctx context.Context,
+	requestRecipients []*daemonrpc.Output,
+	oorRecipients []oortx.RecipientOutput) error {
+
+	if len(requestRecipients) != len(oorRecipients) {
+		return status.Errorf(codes.Internal, "recipient count mismatch")
+	}
+
+	for i := range requestRecipients {
+		label := requestRecipients[i].GetReceiveScriptLabel()
+		if label == "" {
+			continue
+		}
+
+		if r.server.indexer == nil {
+			return status.Errorf(codes.Internal, "indexer client "+
+				"not initialized")
+		}
+
+		idx := r.server.indexer.WithSigner(
+			r.server.proofKeyBackend.ProofSigner(
+				r.server.clientKeyDesc,
+			),
+		)
+		expiresAt := r.server.clk.Now().Add(
+			vhtlcRecoveryManifestRegistrationTTL,
+		)
+		_, err := idx.RegisterReceiveScriptTaproot(
+			ctx, oorRecipients[i].PkScript, expiresAt, label,
+		)
+		if err != nil && status.Code(err) != codes.AlreadyExists {
+			return status.Errorf(codes.Internal, "register "+
+				"OOR recipient script %d: %v", i, err)
+		}
+	}
+
+	return nil
 }
 
 // resolveOORRecipientOutpoints maps each requested recipient to the outpoint it
@@ -2907,6 +2953,12 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 		return &daemonrpc.SendOORResponse{
 			Status: "preview",
 		}, nil
+	}
+
+	if err := r.registerSendOORRecipientScripts(
+		ctx, requestRecipients, oorRecipients,
+	); err != nil {
+		return nil, err
 	}
 
 	if r.server.actorSystem == nil {

@@ -18,6 +18,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	swapsqlc "github.com/lightninglabs/darepo-client/sdk/swaps/sqlc"
+	"github.com/lightninglabs/darepo-client/vhtlcrecovery"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/zpay32"
 	"github.com/stretchr/testify/require"
@@ -657,6 +658,18 @@ func TestPayViaLightningReturnsClaimPreimage(t *testing.T) {
 	require.Equal(t, "funding-session", result.FundingSessionID)
 	require.EqualValues(t, testInSwapFeeSat, result.FeeSat)
 	require.NotEmpty(t, daemonConn.lastSendPolicy)
+	require.Empty(t, daemonConn.lastSendLabel)
+	require.Equal(t, 1, daemonConn.receiveAllocCalls)
+	manifest, ok, err := vhtlcrecovery.DecodeManifestLabel(
+		daemonConn.lastReceiveLabel,
+	)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, vhtlcrecovery.ManifestRoleSender, manifest.Role)
+	require.Equal(t, vhtlcrecovery.ManifestDirectionPay, manifest.Direction)
+	paymentHash := preimage.Hash()
+	require.Equal(t, paymentHash[:], manifest.PaymentHash)
+	require.EqualValues(t, testInSwapAmountSat, manifest.AmountSat)
 }
 
 // TestPayViaLightningRequiresClaimPreimage asserts the pay FSM never treats an
@@ -1952,7 +1965,7 @@ func TestPaySessionCancelDoesNotPersistFailed(t *testing.T) {
 	require.NoError(t, err)
 
 	waitCtx, cancel := context.WithTimeout(
-		t.Context(), 5*time.Millisecond,
+		t.Context(), 50*time.Millisecond,
 	)
 	defer cancel()
 

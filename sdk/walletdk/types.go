@@ -122,6 +122,8 @@ type CreateWalletResult struct {
 	RecoveredVTXOs              uint32
 	RecoveredOORReceiveScripts  uint32
 	RecoveredOORRecipientEvents uint32
+	RecoveredVHTLCs             uint32
+	RecoveredVHTLCRefunds       uint32
 }
 
 // UnlockWalletRequest unlocks an existing embedded daemon wallet.
