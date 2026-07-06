@@ -8011,9 +8011,14 @@ type TransactionHistoryEntry struct {
 	ConfirmationHeight int32 `protobuf:"varint,15,opt,name=confirmation_height,json=confirmationHeight,proto3" json:"confirmation_height,omitempty"`
 	// output_index is the transaction output index associated with txid.
 	// A negative value means the source has no output index.
-	OutputIndex   int32 `protobuf:"varint,16,opt,name=output_index,json=outputIndex,proto3" json:"output_index,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	OutputIndex int32 `protobuf:"varint,16,opt,name=output_index,json=outputIndex,proto3" json:"output_index,omitempty"`
+	// boarding_address is the allocated boarding address a confirmed
+	// boarding-deposit (wallet_utxo_created) row paid to, letting a client
+	// correlate the confirmed row back to its pending deposit row by a
+	// shared, address-scoped id. Empty for every other row type.
+	BoardingAddress string `protobuf:"bytes,17,opt,name=boarding_address,json=boardingAddress,proto3" json:"boarding_address,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *TransactionHistoryEntry) Reset() {
@@ -8156,6 +8161,13 @@ func (x *TransactionHistoryEntry) GetOutputIndex() int32 {
 		return x.OutputIndex
 	}
 	return 0
+}
+
+func (x *TransactionHistoryEntry) GetBoardingAddress() string {
+	if x != nil {
+		return x.BoardingAddress
+	}
+	return ""
 }
 
 type ListTransactionsResponse struct {
@@ -9894,7 +9906,7 @@ const file_daemon_proto_rawDesc = "" +
 	"\tto_unix_s\x18\x02 \x01(\x03R\atoUnixS\x12\x14\n" +
 	"\x05limit\x18\x03 \x01(\rR\x05limit\x12\x16\n" +
 	"\x06offset\x18\x04 \x01(\rR\x06offset\x12\x12\n" +
-	"\x04type\x18\x05 \x01(\tR\x04type\"\x9e\x04\n" +
+	"\x04type\x18\x05 \x01(\tR\x04type\"\xc9\x04\n" +
 	"\x17TransactionHistoryEntry\x12\x16\n" +
 	"\x06source\x18\x01 \x01(\tR\x06source\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12\x18\n" +
@@ -9914,7 +9926,8 @@ const file_daemon_proto_rawDesc = "" +
 	"\n" +
 	"session_id\x18\x0e \x01(\fR\tsessionId\x12/\n" +
 	"\x13confirmation_height\x18\x0f \x01(\x05R\x12confirmationHeight\x12!\n" +
-	"\foutput_index\x18\x10 \x01(\x05R\voutputIndex\"\x9e\x01\n" +
+	"\foutput_index\x18\x10 \x01(\x05R\voutputIndex\x12)\n" +
+	"\x10boarding_address\x18\x11 \x01(\tR\x0fboardingAddress\"\x9e\x01\n" +
 	"\x18ListTransactionsResponse\x12F\n" +
 	"\ftransactions\x18\x01 \x03(\v2\".daemonrpc.TransactionHistoryEntryR\ftransactions\x12\x1f\n" +
 	"\vnext_offset\x18\x02 \x01(\rR\n" +
