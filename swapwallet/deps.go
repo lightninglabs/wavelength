@@ -271,6 +271,9 @@ func chainParamsForWalletNetwork(network string) (*chaincfg.Params, error) {
 	case "testnet", "testnet3":
 		return &chaincfg.TestNet3Params, nil
 
+	case "testnet4":
+		return &chaincfg.TestNet4Params, nil
+
 	case "regtest":
 		return &chaincfg.RegressionNetParams, nil
 

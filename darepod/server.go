@@ -4761,6 +4761,9 @@ func networkToLndclient(network string) (lndclient.Network, error) {
 	case "testnet":
 		return lndclient.NetworkTestnet, nil
 
+	case "testnet4":
+		return lndclient.NetworkTestnet4, nil
+
 	case "regtest":
 		return lndclient.NetworkRegtest, nil
 

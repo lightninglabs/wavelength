@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
 	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
@@ -90,6 +92,19 @@ func TestKindFromSwapDirection(t *testing.T) {
 			swapclientrpc.SwapDirection_SWAP_DIRECTION_UNSPECIFIED,
 		),
 	)
+}
+
+// TestInvoiceMemoDecodesTestNet4 verifies wallet history normalization can
+// read memos from persisted invoices on every supported daemon network.
+func TestInvoiceMemoDecodesTestNet4(t *testing.T) {
+	t.Parallel()
+
+	invoice, _ := testPreparedInvoiceOnNet(
+		t, &chaincfg.TestNet4Params, btcutil.Amount(12_345),
+		"testnet4 memo",
+	)
+
+	require.Equal(t, "testnet4 memo", invoiceMemo(invoice))
 }
 
 // TestStatusFromSwapState covers every branch: pending always wins,

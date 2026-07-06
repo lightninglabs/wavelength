@@ -823,7 +823,8 @@ message StatusResponse {
     bool unlocked = 2;
 
     // network is the bitcoin network the daemon is configured for, for
-    // example "mainnet", "testnet", "signet", or "regtest".
+    // example "mainnet", "testnet", "testnet4", "signet", or
+    // "regtest".
     string network = 3;
 
     // balance is the unified balance summary at the time of the call.

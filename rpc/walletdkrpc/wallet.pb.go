@@ -3169,7 +3169,8 @@ type StatusResponse struct {
 	// whether wallet RPCs are currently usable.
 	Unlocked bool `protobuf:"varint,2,opt,name=unlocked,proto3" json:"unlocked,omitempty"`
 	// network is the bitcoin network the daemon is configured for, for
-	// example "mainnet", "testnet", "signet", or "regtest".
+	// example "mainnet", "testnet", "testnet4", "signet", or
+	// "regtest".
 	Network string `protobuf:"bytes,3,opt,name=network,proto3" json:"network,omitempty"`
 	// balance is the unified balance summary at the time of the call.
 	Balance *BalanceResponse `protobuf:"bytes,4,opt,name=balance,proto3" json:"balance,omitempty"`

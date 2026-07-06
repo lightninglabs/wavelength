@@ -94,8 +94,8 @@ func newRootCmd() *cobra.Command {
 		"datadir", cfg.DataDir, "root data directory for daemon state",
 	)
 	f.String(
-		"network", cfg.Network,
-		"bitcoin network (mainnet, testnet, regtest, simnet, signet)",
+		"network", cfg.Network, "bitcoin network (mainnet, "+
+			"testnet, testnet4, regtest, simnet, signet)",
 	)
 	f.String(
 		"debuglevel", cfg.DebugLevel,

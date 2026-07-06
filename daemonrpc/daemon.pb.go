@@ -874,8 +874,8 @@ type GetInfoResponse struct {
 	Version string `protobuf:"bytes,1,opt,name=version,proto3" json:"version,omitempty"`
 	// commit is the short git commit hash of this build.
 	Commit string `protobuf:"bytes,2,opt,name=commit,proto3" json:"commit,omitempty"`
-	// network is the active bitcoin network (mainnet, testnet, regtest,
-	// etc.).
+	// network is the active bitcoin network (mainnet, testnet, testnet4,
+	// regtest, etc.).
 	Network string `protobuf:"bytes,3,opt,name=network,proto3" json:"network,omitempty"`
 	// lnd_identity_pubkey is the hex-encoded public identity key of the
 	// connected lnd node, used for Lightning Network peer identity and

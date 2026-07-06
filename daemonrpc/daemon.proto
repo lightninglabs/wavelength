@@ -300,8 +300,8 @@ message GetInfoResponse {
     // commit is the short git commit hash of this build.
     string commit = 2;
 
-    // network is the active bitcoin network (mainnet, testnet, regtest,
-    // etc.).
+    // network is the active bitcoin network (mainnet, testnet, testnet4,
+    // regtest, etc.).
     string network = 3;
 
     // lnd_identity_pubkey is the hex-encoded public identity key of the
