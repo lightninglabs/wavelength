@@ -12,6 +12,7 @@ import (
 	"github.com/lightninglabs/darepo-client/build"
 	clientdb "github.com/lightninglabs/darepo-client/db"
 	"github.com/lightninglabs/darepo-client/ledger"
+	"github.com/lightninglabs/darepo-client/rpc/oorpb"
 	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightninglabs/darepo-client/timeout"
 	"github.com/lightninglabs/darepo-client/vtxo"
@@ -1202,6 +1203,12 @@ func (b *sessionBehavior) restore(ctx context.Context) error {
 		return nil
 
 	case err != nil:
+		return err
+	}
+
+	// Fail closed on any OOR flow version this build does not understand: a
+	// session conducted under an unknown flow must not be resumed.
+	if err := oorpb.ValidateFlowVersion(record.FlowVersion); err != nil {
 		return err
 	}
 

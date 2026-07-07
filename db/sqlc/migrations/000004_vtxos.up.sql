@@ -108,6 +108,14 @@ CREATE TABLE IF NOT EXISTS vtxos (
     -- VTXOs have chain_depth 0.
     chain_depth INTEGER NOT NULL DEFAULT 0,
 
+    -- construction_version records the per-VTXO construction version: the
+    -- rules under which this VTXO was built and must be spent or exited. It
+    -- is stamped at creation and never changes. The versions are
+    -- zero-indexed, so the only understood value today is 0 (V1); a future,
+    -- genuinely different construction is added additively (V2 == 1, and so
+    -- on). NOT NULL DEFAULT 0 keeps every row a valid V1 object.
+    construction_version INTEGER NOT NULL DEFAULT 0,
+
     PRIMARY KEY (outpoint_hash, outpoint_index),
     FOREIGN KEY (round_id) REFERENCES rounds(round_id)
 );

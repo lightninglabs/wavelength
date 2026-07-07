@@ -3,9 +3,10 @@
 -- name: UpsertOORSessionRegistry :exec
 INSERT INTO oor_session_registry (
     session_id, actor_id, direction, phase, idempotency_key, status,
-    last_error, snapshot_data, snapshot_version, created_at, updated_at
+    last_error, snapshot_data, snapshot_version, created_at, updated_at,
+    flow_version
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
 )
 ON CONFLICT (session_id) DO UPDATE SET
     actor_id = EXCLUDED.actor_id,

@@ -177,6 +177,13 @@ func (m *SendSubmitPackageRequest) ToProto() fn.Result[proto.Message] {
 		return fn.Err[proto.Message](err)
 	}
 
+	// Stamp the OOR flow version this transfer is conducted under so the
+	// operator records the same value. Every transfer is V1 today.
+	//
+	// TODO(v2): once a second OOR flow exists, stamp the session's own
+	// version here instead of the V1 constant.
+	req.FlowVersion = uint32(oorpb.FlowVersionV1)
+
 	return fn.Ok[proto.Message](req)
 }
 

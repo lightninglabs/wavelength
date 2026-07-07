@@ -4,8 +4,8 @@
 INSERT INTO rounds (
     round_id, confirmation_height, confirmation_block_hash, commitment_tx,
     commitment_txid, vtxt_tree, status, creation_time, last_update_time,
-    start_height
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+    start_height, flow_version
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 ON CONFLICT (round_id) DO UPDATE SET
     confirmation_height = COALESCE(excluded.confirmation_height, rounds.confirmation_height),
     confirmation_block_hash = COALESCE(excluded.confirmation_block_hash, rounds.confirmation_block_hash),
@@ -134,9 +134,11 @@ INSERT INTO vtxos (
     outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry,
     policy_template, client_key_id,
     operator_pubkey, batch_expiry, chain_depth,
-    created_height, commitment_txid, spent, creation_time, last_update_time
+    created_height, commitment_txid, spent, creation_time, last_update_time,
+    construction_version
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
+    $17
 )
 ON CONFLICT (outpoint_hash, outpoint_index) DO UPDATE SET
     pk_script = CASE WHEN excluded.pk_script IS NOT NULL AND length(excluded.pk_script) > 0 THEN excluded.pk_script ELSE vtxos.pk_script END,

@@ -8,6 +8,7 @@ import (
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btcwallet/waddrmgr"
+	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/round"
@@ -394,6 +395,25 @@ type Descriptor struct {
 
 	// Status is the current lifecycle status of the VTXO.
 	Status VTXOStatus
+
+	// ConstructionVersion is the per-VTXO construction version: the rules
+	// under which this VTXO was built and must be spent/exited. It is
+	// stamped at creation and never changes. Today the only understood
+	// value is ConstructionVersionV1; a future, genuinely different
+	// construction is added additively here. Versions are zero-indexed, so
+	// ConstructionVersionV1 is the Go zero value: an unstamped descriptor
+	// reads as V1 with no separate unset sentinel. The value is validated
+	// at the ingress edge (where it is adopted from the operator); the db
+	// stamps/reads it verbatim without validating.
+	//
+	// TODO(v2): the operator stamps construction_version on the indexer
+	// VTXO wire message (arkrpc.VTXO), but the client materialization path
+	// does not yet read it onto this field (the IncomingVTXOEvent the
+	// client actually materializes from carries no version field), so a
+	// freshly materialized VTXO is stamped V1 at persistence. When a second
+	// construction exists, add the field to IncomingVTXOEvent and thread it
+	// here so the receive path mirrors the operator's value.
+	ConstructionVersion arkrpc.ConstructionVersion
 }
 
 // MaxTreeDepth returns the largest TreeDepth across the Descriptor's

@@ -14,9 +14,11 @@ import (
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/btcsuite/btcwallet/waddrmgr"
+	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/darepo-client/db/sqlc"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
+	"github.com/lightninglabs/darepo-client/rpc/roundpb"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightningnetwork/lnd/clock"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -161,6 +163,12 @@ func (s *VTXOPersistenceStore) ensureRoundExists(ctx context.Context,
 		Status:             "confirmed",
 		CreationTime:       nowUnix,
 		LastUpdateTime:     nowUnix,
+
+		// Stamp the flow version explicitly at creation rather than
+		// relying on the column DEFAULT. Versions are zero-indexed, so
+		// V1 is the zero value; stamping it explicitly keeps "stamped
+		// at creation" true on this synthetic path.
+		FlowVersion: int32(roundpb.FlowVersionV1),
 	}
 
 	return q.InsertRound(ctx, params)
@@ -651,6 +659,13 @@ func (s *VTXOPersistenceStore) descriptorToInsertParams(ctx context.Context,
 		Spent:          false,
 		CreationTime:   nowUnix,
 		LastUpdateTime: nowUnix,
+
+		// Stamp the VTXO's construction version. Versions are
+		// zero-indexed, so an unstamped descriptor reads as V1 (the
+		// zero value) with no normalization needed. The version is
+		// immutable, so the InsertVTXO upsert never updates it on
+		// conflict.
+		ConstructionVersion: int32(desc.ConstructionVersion),
 	}, nil
 }
 
@@ -767,6 +782,9 @@ func (s *VTXOPersistenceStore) rowToDescriptor(ctx context.Context,
 		ChainDepth:     int(row.ChainDepth),
 		CreatedHeight:  row.CreatedHeight,
 		Status:         vtxo.VTXOStatus(row.Status),
+		ConstructionVersion: arkrpc.ConstructionVersion(
+			row.ConstructionVersion,
+		),
 	}, nil
 }
 

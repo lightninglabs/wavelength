@@ -13,11 +13,13 @@ import (
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/wire/v2"
+	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/db/sqlc"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/round"
+	"github.com/lightninglabs/darepo-client/rpc/roundpb"
 	"github.com/lightninglabs/taproot-assets/proof"
 	"github.com/lightningnetwork/lnd/clock"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -296,6 +298,11 @@ func (s *RoundPersistenceStore) CommitState(ctx context.Context, r *round.Round,
 			CreationTime:          nowUnix,
 			LastUpdateTime:        nowUnix,
 			StartHeight:           int32(r.StartHeight),
+
+			// Stamp the round flow version. Versions are
+			// zero-indexed, so an unstamped round reads as V1
+			// (the zero value) with no normalization needed.
+			FlowVersion: int32(r.FlowVersion),
 		}
 		if err := q.InsertRound(ctx, roundParams); err != nil {
 			return fmt.Errorf("insert round: %w", err)
@@ -847,6 +854,7 @@ func (s *RoundPersistenceStore) dbRoundToDomainRound(ctx context.Context,
 	r := &round.Round{
 		RoundID:     roundID,
 		StartHeight: uint32(dbRound.StartHeight),
+		FlowVersion: roundpb.FlowVersion(dbRound.FlowVersion),
 	}
 
 	// Populate confirmation info if present.
@@ -1089,6 +1097,10 @@ func (s *RoundPersistenceStore) reconstructInputSigSentState(
 	state := &round.InputSigSentState{
 		RoundID:     roundID,
 		ClientTrees: make(map[round.SignerKey]*tree.Tree),
+
+		// Carry the persisted flow version onto the reconstructed
+		// state so a mid-round resume does not silently downgrade it.
+		FlowVersion: roundpb.FlowVersion(dbRound.FlowVersion),
 	}
 
 	// Deserialize commitment tx.
@@ -1488,6 +1500,13 @@ func (s *RoundPersistenceStore) domainVTXOToInsertParams(ctx context.Context,
 		Spent:          false,
 		CreationTime:   nowUnix,
 		LastUpdateTime: nowUnix,
+
+		// Round-created VTXOs are built under the current construction
+		// version (V1 today). Versions are zero-indexed, so V1 is the
+		// zero value; stamp it explicitly here as well as on the
+		// descriptor-heal path so the write-once construction_version
+		// is set deliberately at creation rather than defaulted.
+		ConstructionVersion: int32(arkrpc.ConstructionVersionV1),
 	}, nil
 }
 

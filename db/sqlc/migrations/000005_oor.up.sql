@@ -267,6 +267,14 @@ CREATE TABLE IF NOT EXISTS oor_session_registry (
     -- snapshot_version is the encoding version of snapshot_data.
     snapshot_version INTEGER NOT NULL DEFAULT 0,
 
+    -- flow_version is the permanent OOR flow version this session was
+    -- conducted under (the protocol choreography, distinct from
+    -- snapshot_version which only versions the resume blob's encoding). It is
+    -- stamped write-once at creation and validated on load. The versions are
+    -- zero-indexed, so the DEFAULT 0 is V1 (the Go zero value); V2 == 1, and
+    -- so on.
+    flow_version INTEGER NOT NULL DEFAULT 0,
+
     -- created_at is the unix timestamp when the row was first written.
     created_at BIGINT NOT NULL,
 
