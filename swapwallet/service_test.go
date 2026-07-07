@@ -72,12 +72,11 @@ func TestServiceDepositReturnsAddress(t *testing.T) {
 	)
 }
 
-// TestServiceDepositProjectsPendingRow confirms Deposit projects the pending
-// deposit row into the canonical store under its address-scoped id, so the
-// confirmed boarding-deposit ledger row (which carries the same boarding
-// address) later upserts onto the same canonical id instead of creating a
-// second, differently-keyed row.
-func TestServiceDepositProjectsPendingRow(t *testing.T) {
+// TestServiceDepositDoesNotProjectAtAllocation confirms Deposit does NOT
+// persist a row when an address is merely generated — allocating an address is
+// not a pending deposit. The returned entry still carries the address-scoped
+// id the confirmed deposit will later use, so a caller can correlate.
+func TestServiceDepositDoesNotProjectAtAllocation(t *testing.T) {
 	t.Parallel()
 
 	swap := &fakeSwapService{}
@@ -92,17 +91,18 @@ func TestServiceDepositProjectsPendingRow(t *testing.T) {
 	t.Cleanup(runtime.stop)
 	svc := newService(deps, runtime)
 
-	_, err := svc.Deposit(
+	resp, err := svc.Deposit(
 		t.Context(), &walletdkrpc.DepositRequest{
 			AmtSatHint: 50_000,
 		},
 	)
 	require.NoError(t, err)
-
-	require.Equal(t, 1, store.count(), "pending deposit row must be stored")
-	require.True(
-		t, store.ids()["deposit-bcrt1qboardingaddr"],
-		"pending row must be keyed by deposit-<address>",
+	require.Equal(
+		t, "deposit-bcrt1qboardingaddr", resp.GetEntry().GetId(),
+	)
+	require.Equal(
+		t, 0, store.count(),
+		"generating an address must not persist a pending row",
 	)
 }
 

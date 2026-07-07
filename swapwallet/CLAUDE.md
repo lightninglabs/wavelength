@@ -114,15 +114,17 @@ default builds avoid the swap executor's dependency graph.
   stuck row appears as FAILED even when the caller asks for
   `pending_only=false`.
 - **DEPOSIT rows backed by the `wallet_utxo_created` ledger event**
-  mirror the ledger confirmation status. `Deposit` projects a pending
-  row keyed `deposit-<address>`; the confirmed boarding-deposit ledger
-  row carries the same allocated address
-  (`TransactionHistoryEntry.boarding_address`) and keys to the same id,
-  so the store upsert flips it to `ENTRY_STATUS_COMPLETE`. This is
-  address-granularity: multiple UTXOs to one (single-use-by-design)
-  boarding address collapse into one row. The synthetic
-  `boarding-unconfirmed` row from `GetBalance` is a derive-path-only
-  aggregate, never projected into the store.
+  mirror the ledger confirmation status and are keyed
+  `deposit-<address>` from the confirmed row's
+  `TransactionHistoryEntry.boarding_address`; every UTXO paid to that
+  address is SUMMED into one row (`sumDepositsByAddress`) so a reused
+  address shows its total. `Deposit` does NOT project a row — allocating
+  an address is not a pending deposit — it only returns that id so a
+  caller can correlate the eventual confirmed row. Per-address is the
+  CONFIRMED phase only: unconfirmed boarding funds have no per-address
+  source (the daemon exposes only aggregate `boarding_unconfirmed_sat`),
+  so they surface via `Balance` and the single derive-path-only
+  `boarding-unconfirmed` row, never projected into the store.
 - **`Balance` projection** maps daemonrpc fields onto the walletdkrpc
   shape: `confirmed_sat` is VTXO-only (`vtxo_balance_sat`),
   `pending_in_sat` sums `boarding_confirmed_sat +

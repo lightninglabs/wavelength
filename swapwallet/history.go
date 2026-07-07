@@ -936,14 +936,56 @@ func (h *history) collectLedgerEntries(ctx context.Context, offset,
 			entry.AmountSat = amount
 		}
 
-		// v1 SCOPE: EXIT and DEPOSIT ledger rows carry txid but no
-		// link back to the original pending intent, so they
-		// surface under their synthetic id (the ledger txid or
-		// the entry_id fallback). See swapwallet/doc.go.
 		out = append(out, entry)
 	}
 
-	return out, nil
+	// Confirmed boarding deposits keyed by deposit-<address> (the daemon
+	// surfaced the boarding address) are summed per address so multiple
+	// UTXOs paid to the same address show their total rather than
+	// overwriting each other. See sumDepositsByAddress.
+	return sumDepositsByAddress(out), nil
+}
+
+// sumDepositsByAddress collapses boarding-deposit rows that share a canonical
+// id into one row whose amount is the SUM of every UTXO under that id, so a
+// reused boarding address (multiple UTXOs → one deposit-<address> id) shows the
+// total received instead of a single UTXO's amount. Rows with a unique id
+// (older-daemon txid:vout deposits, and every non-deposit row) form a group of
+// one and pass through unchanged. The most-recently-updated row in each group
+// supplies the non-amount fields (status, phase, txid), so the collapsed row
+// reflects the latest deposit's state with the correct running total. Order is
+// not preserved; deriveActivity re-sorts by updated_at.
+func sumDepositsByAddress(
+	entries []*walletdkrpc.WalletEntry) []*walletdkrpc.WalletEntry {
+
+	sums := make(map[string]int64)
+	rep := make(map[string]*walletdkrpc.WalletEntry)
+	out := make([]*walletdkrpc.WalletEntry, 0, len(entries))
+
+	for _, e := range entries {
+		id := e.GetId()
+		if e.GetKind() != walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT ||
+			id == "" {
+
+			out = append(out, e)
+
+			continue
+		}
+
+		sums[id] += e.GetAmountSat()
+		if cur, ok := rep[id]; !ok ||
+			e.GetUpdatedAtUnix() >= cur.GetUpdatedAtUnix() {
+
+			rep[id] = e
+		}
+	}
+
+	for id, e := range rep {
+		e.AmountSat = sums[id]
+		out = append(out, e)
+	}
+
+	return out
 }
 
 // swapOORCorrelations keeps the swap-side session metadata needed to hide

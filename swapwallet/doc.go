@@ -44,22 +44,25 @@
 // An on-chain-send / cooperative-leave EXIT row keys by the daemon's
 // leave-job id (SendOnChainResponse.send_job_id); see the CANONICAL
 // ACTIVITY LOG note. A DEPOSIT keys by an address-scoped id
-// (deposit-<address>): Deposit projects the pending row under that id, and
-// the confirmed boarding-deposit ledger row carries the same allocated
-// boarding address (TransactionHistoryEntry.boarding_address) so it
-// upserts onto the same canonical id and flips the row to COMPLETE. This
-// is address-granularity, not per-outpoint: multiple UTXOs paid to the
-// same boarding address (which is single-use by design — Deposit issues a
-// fresh address each call) collapse into one DEPOSIT row. As with the
-// leave row, the pending → COMPLETE transition is applied by the
-// derive/backfill pass matching a confirmed/forfeited source, so LIVE
-// cross-restart terminal reconciliation is tracked separately (C2).
+// (deposit-<address>) once the daemon records it on-chain: the confirmed
+// boarding-deposit ledger row carries the allocated boarding address
+// (TransactionHistoryEntry.boarding_address), and every UTXO paid to that
+// address is SUMMED into one deposit-<address> row (sumDepositsByAddress),
+// so a reused boarding address shows its total received rather than
+// hiding funds behind one UTXO. Generating an address does NOT create a
+// row — allocating an address is not a pending deposit — so the row
+// appears only from the point the daemon records an incoming UTXO. The
+// Deposit RPC still returns that same deposit-<address> id so a caller can
+// correlate. An older daemon that does not populate boarding_address falls
+// back to per-UTXO txid:vout deposit rows (no summing, still correct).
 //
-// Remaining v1 gaps: a unilateral EXIT row still keys by the consumed VTXO
-// outpoint with no durable link to its eventual sweep txid; and an older
-// daemon that does not populate boarding_address leaves a DEPOSIT's
-// pending and confirmed rows separately keyed (txid:vout), the pre-change
-// behavior.
+// This is address-granularity for the CONFIRMED (recorded) phase only. The
+// pre-confirmation phase cannot be per-address: the daemon exposes only an
+// aggregate boarding_unconfirmed_sat, so unconfirmed boarding funds surface
+// via Balance and as the single synthetic boarding-unconfirmed row, not a
+// per-address row. Per-address unconfirmed deposits need a daemon change and
+// are deferred. A unilateral EXIT row likewise still keys by the consumed
+// VTXO outpoint with no durable link to its eventual sweep txid.
 //
 // Onchain SEND sweep semantics: a bounded onchain send (amt_sat > 0)
 // lands exactly amt_sat at the destination and returns the remainder as

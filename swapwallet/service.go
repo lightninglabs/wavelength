@@ -165,10 +165,18 @@ func (s *Service) Deposit(ctx context.Context,
 		return nil, fmt.Errorf("new boarding address: %w", err)
 	}
 
+	// The returned entry is keyed by the address-scoped id the confirmed
+	// deposit will later carry (deposit-<address>), so a caller can
+	// correlate this response with the eventual activity row. It is
+	// deliberately NOT projected into the store: merely allocating an
+	// address is not a pending deposit (no funds are in flight), so
+	// persisting it would strand a PENDING row for every unfunded address a
+	// user ever requests. A deposit becomes an activity row only once the
+	// daemon records the incoming UTXO (at confirmation); before that,
+	// unconfirmed boarding funds surface via Balance.
 	createdAt := nowUnix()
-	canonicalID := fmt.Sprintf("deposit-%s", addrResp.GetAddress())
 	entry := &walletdkrpc.WalletEntry{
-		Id:            canonicalID,
+		Id:            fmt.Sprintf("deposit-%s", addrResp.GetAddress()),
 		Kind:          walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT,
 		Status:        walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
 		AmountSat:     int64(req.GetAmtSatHint()),
@@ -181,16 +189,6 @@ func (s *Service) Deposit(ctx context.Context,
 			PhaseLabel: "address_issued",
 		},
 	}
-
-	// Project the pending deposit row into the canonical activity store
-	// under its address-scoped id (deposit-<address>) so List surfaces it
-	// durably. The confirmed boarding-deposit ledger row later carries the
-	// same boarding address and keys to the same canonical id, so the
-	// delete-free upsert flips this row PENDING -> COMPLETE rather than
-	// creating a second, differently-keyed row. Use a cancel-safe context
-	// so a client disconnect cannot drop the store write of an
-	// already-issued address.
-	s.runtime.projectAndEmit(context.WithoutCancel(ctx), entry)
 
 	return &walletdkrpc.DepositResponse{
 		OnchainAddress: addrResp.GetAddress(),

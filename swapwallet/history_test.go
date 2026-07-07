@@ -2023,6 +2023,53 @@ func TestHistoryDepositKeyedByBoardingAddress(t *testing.T) {
 	)
 }
 
+// TestHistoryDepositsSameAddressSummed verifies two confirmed boarding UTXOs
+// paid to the same address collapse into one activity row whose amount is the
+// SUM, so a reused boarding address never hides funds in the feed.
+func TestHistoryDepositsSameAddressSummed(t *testing.T) {
+	t.Parallel()
+
+	h, swap, rpc := newHistoryFixture(t)
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
+	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
+		Transactions: []*daemonrpc.TransactionHistoryEntry{
+			{
+				Type:               "boarding",
+				Subtype:            ledger.EventWalletUTXOCreated,
+				ConfirmationStatus: "confirmed",
+				AmountSat:          100_000,
+				Txid:               "txid-a",
+				OutputIndex:        0,
+				BoardingAddress:    "bcrt1qshared",
+				CreatedAtUnixS:     100,
+			},
+			{
+				Type:               "boarding",
+				Subtype:            ledger.EventWalletUTXOCreated,
+				ConfirmationStatus: "confirmed",
+				AmountSat:          250_000,
+				Txid:               "txid-b",
+				OutputIndex:        1,
+				BoardingAddress:    "bcrt1qshared",
+				CreatedAtUnixS:     200,
+			},
+		},
+	}
+
+	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{})
+	require.NoError(t, err)
+	require.Len(
+		t, resp.GetActivity().GetEntries(), 1,
+		"two UTXOs to one address collapse into one row",
+	)
+	entry := resp.GetActivity().GetEntries()[0]
+	require.Equal(t, "deposit-bcrt1qshared", entry.GetId())
+	require.EqualValues(
+		t, 350_000, entry.GetAmountSat(),
+		"the row must show the summed total, not one UTXO",
+	)
+}
+
 // TestDecorateCooperativeLeaveMatchesRetainedOutpoint verifies that after #610
 // (row keyed by the stable leave-job id), the forfeit-driven completion
 // correlates on the retained consumed outpoint in vtxo_outpoint, not the id.
