@@ -111,8 +111,8 @@ FROM (
            -- boarding_address links a confirmed boarding-deposit
            -- (wallet_utxo_created) row back to the allocated boarding
            -- address, so the client can key the confirmed DEPOSIT row by
-           -- the same stable id as its pending row. NULL for every other
-           -- event type.
+           -- the same stable id as its pending row. Empty ('') for every
+           -- other event type; the CASE/COALESCE never yields NULL.
            CASE
                WHEN le.event_type = 'wallet_utxo_created'
                THEN COALESCE(deposit_ba.address_string, '')

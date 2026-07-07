@@ -1399,9 +1399,13 @@ func walletEntryFromLedgerRow(t *daemonrpc.TransactionHistoryEntry) (
 }
 
 // ledgerActivityID returns the stable activity id for one ledger-backed row.
-// Boarding UTXO creation rows are identified by outpoint, not bare txid, so a
-// single Bitcoin transaction that pays multiple wallet-owned outputs surfaces
-// every deposit instead of collapsing them during activity de-duplication.
+// A confirmed boarding-deposit (wallet_utxo_created) row is keyed by
+// deposit-<boarding_address> when the daemon surfaces the address, so it shares
+// the id of the pending row Deposit projected and upserts onto it. It falls
+// back to txid:vout for an older daemon that does not set boarding_address, and
+// then to the bare txid. Because the key is the address, multiple UTXOs paid to
+// the same (single-use-by-design) boarding address collapse into one row; the
+// ledger and the ONCHAIN view retain the per-UTXO truth.
 func ledgerActivityID(t *daemonrpc.TransactionHistoryEntry,
 	kind walletdkrpc.EntryKind) string {
 
