@@ -214,10 +214,11 @@ func NewOORRegistryActor(cfg OORRegistryConfig) (*OORRegistryActor, error) {
 	cfg.Limits = normalizeReceiveLimits(cfg.Limits)
 
 	behavior := &oorRegistryBehavior{
-		cfg:      cfg,
-		log:      cfg.Log.UnwrapOr(btclog.Disabled),
-		active:   make(map[SessionID]*OORSessionActor),
-		incoming: make(map[SessionID]struct{}),
+		cfg:        cfg,
+		log:        cfg.Log.UnwrapOr(btclog.Disabled),
+		active:     make(map[SessionID]*OORSessionActor),
+		activeDirs: make(map[SessionID]clientdb.OORSessionDirection),
+		incoming:   make(map[SessionID]struct{}),
 		parkedSelfHints: make(
 			map[SessionID]*ResolveIncomingTransferRequest,
 		),
@@ -302,6 +303,13 @@ type oorRegistryBehavior struct {
 	cfg    OORRegistryConfig
 	log    btclog.Logger
 	active map[SessionID]*OORSessionActor
+
+	// activeDirs tracks the direction of each resident child in active. A
+	// terminal notification carries only the session id, so the registry
+	// uses this map to distinguish a stale outgoing-child notification from
+	// a replacement incoming child admitted under the same self-transfer
+	// session id.
+	activeDirs map[SessionID]clientdb.OORSessionDirection
 
 	// incoming tracks the session ids of resident incoming receive children
 	// so admission can bound their count. It is a subset of active,
@@ -1093,6 +1101,21 @@ func (r *oorRegistryBehavior) handleSessionTerminal(ctx context.Context,
 	case err != nil:
 		return fn.Err[ActorResp](err)
 
+	case r.activeDirectionKnown(msg.SessionID) &&
+		record.Direction != r.activeDirs[msg.SessionID]:
+
+		r.logger(ctx).DebugS(ctx, "Ignoring stale terminal OOR "+
+			"session notification for replaced child",
+			slog.String("session_id", msg.SessionID.String()),
+			slog.Int("record_direction", int(record.Direction)),
+			slog.Int(
+				"active_direction",
+				int(r.activeDirs[msg.SessionID]),
+			),
+		)
+
+		return fn.Ok[ActorResp](&DriveEventResponse{})
+
 	// The row is authoritative: a notification that races a later
 	// non-terminal write (or a replaced session) must not reap a live
 	// child.
@@ -1116,6 +1139,16 @@ func (r *oorRegistryBehavior) handleSessionTerminal(ctx context.Context,
 	// retention sweep, if ever needed, should age out all terminal rows
 	// uniformly rather than deleting one class at reap time.
 	return fn.Ok[ActorResp](&DriveEventResponse{})
+}
+
+// activeDirectionKnown reports whether the registry knows the direction of the
+// resident child. Production children are installed through ensureChild, which
+// records the direction; tests and hand-constructed behaviors may still install
+// active entries directly, and those should keep the historical reap behavior.
+func (r *oorRegistryBehavior) activeDirectionKnown(sessionID SessionID) bool {
+	_, ok := r.activeDirs[sessionID]
+
+	return ok
 }
 
 // handleResumeSession routes a retry-timer expiry to its session's child so
@@ -1388,6 +1421,7 @@ func (r *oorRegistryBehavior) ensureChild(sessionID SessionID,
 	}
 
 	r.active[sessionID] = child
+	r.activeDirs[sessionID] = direction
 	if direction == clientdb.OORSessionDirectionIncoming {
 		r.incoming[sessionID] = struct{}{}
 	}
@@ -1409,6 +1443,7 @@ func (r *oorRegistryBehavior) dropChild(sessionID SessionID,
 
 	child.Stop()
 	delete(r.active, sessionID)
+	delete(r.activeDirs, sessionID)
 	delete(r.incoming, sessionID)
 }
 
