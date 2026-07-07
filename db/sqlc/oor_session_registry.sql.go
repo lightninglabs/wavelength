@@ -11,7 +11,7 @@ import (
 )
 
 const GetOORSessionRegistry = `-- name: GetOORSessionRegistry :one
-SELECT session_id, actor_id, direction, phase, idempotency_key, status, last_error, snapshot_data, snapshot_version, created_at, updated_at FROM oor_session_registry
+SELECT session_id, actor_id, direction, phase, idempotency_key, status, last_error, snapshot_data, snapshot_version, flow_version, created_at, updated_at FROM oor_session_registry
 WHERE session_id = $1
 `
 
@@ -28,6 +28,7 @@ func (q *Queries) GetOORSessionRegistry(ctx context.Context, sessionID []byte) (
 		&i.LastError,
 		&i.SnapshotData,
 		&i.SnapshotVersion,
+		&i.FlowVersion,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -35,7 +36,7 @@ func (q *Queries) GetOORSessionRegistry(ctx context.Context, sessionID []byte) (
 }
 
 const ListAllOORSessionRegistry = `-- name: ListAllOORSessionRegistry :many
-SELECT session_id, actor_id, direction, phase, idempotency_key, status, last_error, snapshot_data, snapshot_version, created_at, updated_at FROM oor_session_registry
+SELECT session_id, actor_id, direction, phase, idempotency_key, status, last_error, snapshot_data, snapshot_version, flow_version, created_at, updated_at FROM oor_session_registry
 ORDER BY created_at ASC
 `
 
@@ -58,6 +59,7 @@ func (q *Queries) ListAllOORSessionRegistry(ctx context.Context) ([]OorSessionRe
 			&i.LastError,
 			&i.SnapshotData,
 			&i.SnapshotVersion,
+			&i.FlowVersion,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -75,7 +77,7 @@ func (q *Queries) ListAllOORSessionRegistry(ctx context.Context) ([]OorSessionRe
 }
 
 const ListNonTerminalOORSessionRegistry = `-- name: ListNonTerminalOORSessionRegistry :many
-SELECT session_id, actor_id, direction, phase, idempotency_key, status, last_error, snapshot_data, snapshot_version, created_at, updated_at FROM oor_session_registry
+SELECT session_id, actor_id, direction, phase, idempotency_key, status, last_error, snapshot_data, snapshot_version, flow_version, created_at, updated_at FROM oor_session_registry
 WHERE status NOT IN (1, 2)
 ORDER BY created_at ASC
 `
@@ -101,6 +103,7 @@ func (q *Queries) ListNonTerminalOORSessionRegistry(ctx context.Context) ([]OorS
 			&i.LastError,
 			&i.SnapshotData,
 			&i.SnapshotVersion,
+			&i.FlowVersion,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -118,7 +121,7 @@ func (q *Queries) ListNonTerminalOORSessionRegistry(ctx context.Context) ([]OorS
 }
 
 const LookupActiveOORSessionRegistryByIdempotencyKey = `-- name: LookupActiveOORSessionRegistryByIdempotencyKey :one
-SELECT session_id, actor_id, direction, phase, idempotency_key, status, last_error, snapshot_data, snapshot_version, created_at, updated_at FROM oor_session_registry
+SELECT session_id, actor_id, direction, phase, idempotency_key, status, last_error, snapshot_data, snapshot_version, flow_version, created_at, updated_at FROM oor_session_registry
 WHERE idempotency_key = $1 AND status != 2
 `
 
@@ -139,6 +142,7 @@ func (q *Queries) LookupActiveOORSessionRegistryByIdempotencyKey(ctx context.Con
 		&i.LastError,
 		&i.SnapshotData,
 		&i.SnapshotVersion,
+		&i.FlowVersion,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -149,9 +153,10 @@ const UpsertOORSessionRegistry = `-- name: UpsertOORSessionRegistry :exec
 
 INSERT INTO oor_session_registry (
     session_id, actor_id, direction, phase, idempotency_key, status,
-    last_error, snapshot_data, snapshot_version, created_at, updated_at
+    last_error, snapshot_data, snapshot_version, created_at, updated_at,
+    flow_version
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
 )
 ON CONFLICT (session_id) DO UPDATE SET
     actor_id = EXCLUDED.actor_id,
@@ -177,6 +182,7 @@ type UpsertOORSessionRegistryParams struct {
 	SnapshotVersion int32
 	CreatedAt       int64
 	UpdatedAt       int64
+	FlowVersion     int32
 }
 
 // OOR session registry control-plane queries.
@@ -193,6 +199,7 @@ func (q *Queries) UpsertOORSessionRegistry(ctx context.Context, arg UpsertOORSes
 		arg.SnapshotVersion,
 		arg.CreatedAt,
 		arg.UpdatedAt,
+		arg.FlowVersion,
 	)
 	return err
 }

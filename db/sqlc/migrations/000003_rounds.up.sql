@@ -58,6 +58,15 @@ CREATE TABLE IF NOT EXISTS rounds (
     -- last_update_time is the unix epoch timestamp of the last update.
     last_update_time BIGINT NOT NULL,
 
+    -- flow_version records the per-round flow version: the choreography
+    -- rules under which this round was created. The operator stamps it and
+    -- the client records the same value from the batch info. It never
+    -- changes. The versions are zero-indexed, so the only understood value
+    -- today is 0 (V1); a future, genuinely different round flow is added
+    -- additively (V2 == 1, and so on). NOT NULL DEFAULT 0 keeps every row a
+    -- valid V1 round.
+    flow_version INTEGER NOT NULL DEFAULT 0,
+
     FOREIGN KEY (status) REFERENCES round_statuses(status_name)
 );
 

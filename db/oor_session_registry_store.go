@@ -9,6 +9,7 @@ import (
 
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/lightninglabs/darepo-client/db/sqlc"
+	"github.com/lightninglabs/darepo-client/rpc/oorpb"
 	"github.com/lightningnetwork/lnd/clock"
 )
 
@@ -86,6 +87,12 @@ type OORSessionRegistryRecord struct {
 	// SnapshotVersion is the encoding version of SnapshotData.
 	SnapshotVersion int32
 
+	// FlowVersion is the permanent OOR flow version this session was
+	// conducted under (distinct from SnapshotVersion, which versions only
+	// the resume blob's encoding). Stamped at creation and validated on
+	// load. Until a second flow exists it is always FlowVersionV1.
+	FlowVersion oorpb.FlowVersion
+
 	// CreatedAt is when the row was first written.
 	CreatedAt time.Time
 
@@ -159,6 +166,13 @@ func (s *OORSessionRegistryStoreDB) UpsertSession(ctx context.Context,
 					SnapshotVersion: record.SnapshotVersion,
 					CreatedAt:       createdAt,
 					UpdatedAt:       nowUnix,
+
+					// flow_version is write-once (not in
+					// the ON CONFLICT update set); the oor
+					// package stamps the value and applies
+					// the load guard, since db cannot
+					// import oor.
+					FlowVersion: int32(record.FlowVersion),
 				},
 			)
 		},
@@ -334,6 +348,7 @@ func oorSessionRecordFromRow(row sqlc.OorSessionRegistry) (
 		Status:          OORSessionStatus(row.Status),
 		SnapshotData:    row.SnapshotData,
 		SnapshotVersion: row.SnapshotVersion,
+		FlowVersion:     oorpb.FlowVersion(row.FlowVersion),
 		CreatedAt:       time.Unix(row.CreatedAt, 0),
 		UpdatedAt:       time.Unix(row.UpdatedAt, 0),
 	}

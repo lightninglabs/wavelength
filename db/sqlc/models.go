@@ -224,6 +224,7 @@ type OorSessionRegistry struct {
 	LastError       sql.NullString
 	SnapshotData    []byte
 	SnapshotVersion int32
+	FlowVersion     int32
 	CreatedAt       int64
 	UpdatedAt       int64
 }
@@ -300,6 +301,7 @@ type Round struct {
 	Status                string
 	CreationTime          int64
 	LastUpdateTime        int64
+	FlowVersion           int32
 }
 
 type RoundBoardingIntent struct {
@@ -411,28 +413,29 @@ type VhtlcRecoveryJob struct {
 }
 
 type Vtxo struct {
-	OutpointHash    []byte
-	OutpointIndex   int32
-	RoundID         string
-	Amount          int64
-	PkScript        []byte
-	Expiry          int32
-	PolicyTemplate  []byte
-	ClientKeyID     sql.NullInt64
-	OperatorPubkey  []byte
-	BatchExpiry     int32
-	CreatedHeight   int32
-	CommitmentTxid  []byte
-	Spent           bool
-	Status          int32
-	ForfeitRoundID  sql.NullString
-	ForfeitTx       []byte
-	ForfeitTxid     []byte
-	ReplacedByHash  []byte
-	ReplacedByIndex sql.NullInt32
-	CreationTime    int64
-	LastUpdateTime  int64
-	ChainDepth      int32
+	OutpointHash        []byte
+	OutpointIndex       int32
+	RoundID             string
+	Amount              int64
+	PkScript            []byte
+	Expiry              int32
+	PolicyTemplate      []byte
+	ClientKeyID         sql.NullInt64
+	OperatorPubkey      []byte
+	BatchExpiry         int32
+	CreatedHeight       int32
+	CommitmentTxid      []byte
+	Spent               bool
+	Status              int32
+	ForfeitRoundID      sql.NullString
+	ForfeitTx           []byte
+	ForfeitTxid         []byte
+	ReplacedByHash      []byte
+	ReplacedByIndex     sql.NullInt32
+	CreationTime        int64
+	LastUpdateTime      int64
+	ChainDepth          int32
+	ConstructionVersion int32
 }
 
 type VtxoAncestryPath struct {

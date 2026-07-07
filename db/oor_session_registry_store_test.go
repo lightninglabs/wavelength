@@ -64,6 +64,7 @@ func TestOORSessionRegistryRoundTrip(t *testing.T) {
 		Status:          OORSessionStatusPending,
 		SnapshotData:    snapshot,
 		SnapshotVersion: 1,
+		FlowVersion:     1,
 	}
 
 	require.NoError(t, store.UpsertSession(ctx, want))
@@ -79,6 +80,7 @@ func TestOORSessionRegistryRoundTrip(t *testing.T) {
 	require.Equal(t, want.Status, got.Status)
 	require.True(t, bytes.Equal(want.SnapshotData, got.SnapshotData))
 	require.Equal(t, want.SnapshotVersion, got.SnapshotVersion)
+	require.Equal(t, want.FlowVersion, got.FlowVersion)
 	require.False(t, got.CreatedAt.IsZero())
 	require.False(t, got.UpdatedAt.IsZero())
 }
