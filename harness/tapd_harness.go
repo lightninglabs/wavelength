@@ -74,6 +74,11 @@ type lndConfig struct {
 	group        string
 	image        string
 	tag          string
+
+	// requireInterceptor starts the node with --requireinterceptor so held
+	// HTLCs survive an interceptor disconnect. Only the primary swap node
+	// sets it.
+	requireInterceptor bool
 }
 
 // tapdConfig holds the configuration for starting a tapd container.
@@ -169,6 +174,13 @@ func (h *Harness) startLNDContainer(cfg lndConfig) *dockertest.Resource {
 		"--accept-keysend",
 		"--protocol.option-scid-alias",
 		"--protocol.zero-conf",
+	}
+
+	// The swap node must retain and replay held HTLCs across an interceptor
+	// disconnect rather than resuming (and thus failing) them, which is
+	// what out-swap fund safety depends on.
+	if cfg.requireInterceptor {
+		cmd = append(cmd, "--requireinterceptor")
 	}
 
 	lndHostDir, err := filepath.Abs(cfg.dataDir)

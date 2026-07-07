@@ -302,6 +302,12 @@ type Options struct {
 	// LNDImage is the docker image:tag to use for lnd.
 	LNDImage string
 
+	// LNDRequireInterceptor, when true, starts the main lnd node with
+	// --requireinterceptor so held HTLCs are retained on interceptor
+	// disconnect and replayed on reconnect, rather than resumed and failed.
+	// It applies only to the primary lnd; additional nodes never set it.
+	LNDRequireInterceptor bool
+
 	// LNDBuildPath is optional: build LND image from local path instead of
 	// pulling tag. Leave empty to skip build and pull image instead.
 	LNDBuildPath string
@@ -2155,7 +2161,9 @@ func (h *Harness) bitcoindSendToAddress(address string, amount float64) string {
 // startLND launches an lnd container and waits until its gRPC is responsive
 // and TLS cert and admin macaroon are available.
 func (h *Harness) startLND() *LndInstance {
-	inst := h.startLNDInstance("lnd", h.lndDataDir)
+	inst := h.startLNDInstance(
+		"lnd", h.lndDataDir, h.opts.LNDRequireInterceptor,
+	)
 	h.lnd = inst.Resource
 	h.LNDGRPCPort = inst.GRPCPort
 	h.LNDRestPort = inst.RESTPort
@@ -2165,19 +2173,22 @@ func (h *Harness) startLND() *LndInstance {
 	return inst
 }
 
-func (h *Harness) startLNDInstance(name, dataDir string) *LndInstance {
+func (h *Harness) startLNDInstance(name, dataDir string,
+	requireInterceptor bool) *LndInstance {
+
 	h.T.Helper()
 
 	require.NoError(h.T, os.MkdirAll(dataDir, 0o755))
 
 	res := h.startLNDContainer(lndConfig{
-		name:         name,
-		dataDir:      dataDir,
-		bitcoindName: h.bitcoindName,
-		network:      h.network,
-		group:        h.group,
-		image:        imageRepo(h.opts.LNDImage),
-		tag:          imageTag(h.opts.LNDImage),
+		name:               name,
+		dataDir:            dataDir,
+		bitcoindName:       h.bitcoindName,
+		network:            h.network,
+		group:              h.group,
+		image:              imageRepo(h.opts.LNDImage),
+		tag:                imageTag(h.opts.LNDImage),
+		requireInterceptor: requireInterceptor,
 	})
 
 	inst := &LndInstance{
@@ -2336,7 +2347,7 @@ func (h *Harness) StartAdditionalLND(name string) *LndInstance {
 	}
 
 	dataDir := filepath.Join(h.artifactsDir, name)
-	inst := h.startLNDInstance(name, dataDir)
+	inst := h.startLNDInstance(name, dataDir, false)
 	h.initAndWaitLNDInstance(inst)
 	h.extraLNDs[name] = inst
 
