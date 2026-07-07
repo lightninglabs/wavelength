@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"fmt"
 
-	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/darepo-client/unrollplan"
 	"github.com/lightningnetwork/lnd/tlv"
 )

@@ -1,6 +1,6 @@
 package fraud
 
-import "github.com/btcsuite/btcd/wire"
+import "github.com/btcsuite/btcd/wire/v2"
 
 // ancestorWatch is the per-outpoint state the watcher keeps for one
 // ancestor it is monitoring on chain. The targets set doubles as a

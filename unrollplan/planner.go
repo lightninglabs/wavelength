@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/lightninglabs/darepo-client/lib/recovery"
 	"github.com/lightningnetwork/lnd/fn/v2"
 )

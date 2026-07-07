@@ -3,8 +3,9 @@ package darepod
 import (
 	"testing"
 
-	"github.com/btcsuite/btcd/btcutil"
-	"github.com/btcsuite/btcd/chaincfg"
+	btcaddr "github.com/btcsuite/btcd/address/v2"
+	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/btcsuite/btcd/chaincfg/v2"
 	"github.com/lightninglabs/darepo-client/unroll"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
@@ -58,7 +59,7 @@ func TestSweepWalletRejectsMissingDestination(t *testing.T) {
 func TestSweepWalletRejectsNegativeFeeRate(t *testing.T) {
 	t.Parallel()
 
-	addr, err := btcutil.NewAddressWitnessPubKeyHash(
+	addr, err := btcaddr.NewAddressWitnessPubKeyHash(
 		make([]byte, 20), &chaincfg.RegressionNetParams,
 	)
 	require.NoError(t, err)

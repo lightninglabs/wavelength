@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/darepo-client/db/sqlc"
 	"github.com/lightningnetwork/lnd/clock"
 )

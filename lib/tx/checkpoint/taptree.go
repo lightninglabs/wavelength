@@ -5,7 +5,7 @@ import (
 	"errors"
 	"io"
 
-	"github.com/btcsuite/btcd/txscript"
+	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/lightningnetwork/lnd/tlv"
 )
 

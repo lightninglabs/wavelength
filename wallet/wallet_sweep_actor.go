@@ -8,11 +8,11 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/btcsuite/btcd/btcutil"
-	"github.com/btcsuite/btcd/btcutil/psbt"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/txscript"
-	"github.com/btcsuite/btcd/wire"
+	btcaddr "github.com/btcsuite/btcd/address/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/psbt/v2"
+	"github.com/btcsuite/btcd/txscript/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/lib/tx/arktx"
@@ -366,7 +366,7 @@ func (a *Ark) handleSweepWalletFunds(ctx context.Context,
 func (a *Ark) walletSweepDestScript(address string) (txscript.PkScript, error) {
 	var zero txscript.PkScript
 
-	addr, err := btcutil.DecodeAddress(address, a.sweepChainParams)
+	addr, err := btcaddr.DecodeAddress(address, a.sweepChainParams)
 	if err != nil {
 		return zero, fmt.Errorf("invalid destination_address: %w", err)
 	}

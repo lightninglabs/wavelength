@@ -9,11 +9,12 @@ import (
 	"math"
 	"time"
 
-	"github.com/btcsuite/btcd/btcutil"
-	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/txscript"
-	"github.com/btcsuite/btcd/wire"
+	btcaddr "github.com/btcsuite/btcd/address/v2"
+	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/btcsuite/btcd/chaincfg/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/txscript/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/btcsuite/btcwallet/wtxmgr"
 	"github.com/lightninglabs/darepo-client/wallet"
@@ -96,7 +97,7 @@ func (b *BoardingBackendAdapter) ListUnspent(ctx context.Context, minConfs,
 	var utxos []*wallet.Utxo
 
 	for _, r := range results {
-		addr, err := btcutil.DecodeAddress(
+		addr, err := btcaddr.DecodeAddress(
 			r.Address, b.chainParams,
 		)
 		if err != nil {

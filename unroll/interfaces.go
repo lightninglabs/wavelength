@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo-client/lib/recovery"
 	"github.com/lightninglabs/darepo-client/txconfirm"

@@ -8,15 +8,16 @@ import (
 	"testing"
 	"time"
 
+	btcaddr "github.com/btcsuite/btcd/address/v2"
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
-	"github.com/btcsuite/btcd/btcutil"
-	"github.com/btcsuite/btcd/btcutil/psbt"
-	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/txscript"
-	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/btcsuite/btcd/chaincfg/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/psbt/v2"
+	"github.com/btcsuite/btcd/txscript/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
@@ -535,7 +536,7 @@ func (h *boardingTestHarness) newTestBoardingAddress() wallet.BoardingAddress {
 	taprootKey, err := tapscript.TaprootKey()
 	require.NoError(h.t, err)
 
-	address, err := btcutil.NewAddressTaproot(
+	address, err := btcaddr.NewAddressTaproot(
 		schnorr.SerializePubKey(taprootKey),
 		&chaincfg.RegressionNetParams,
 	)
@@ -1824,7 +1825,7 @@ func (h *realSigningTestHarness) newTestBoardingIntentWithTapscript() BoardingIn
 	require.NoError(h.t, err)
 
 	// Create the bech32m address from the taproot key.
-	addr, err := btcutil.NewAddressTaproot(
+	addr, err := btcaddr.NewAddressTaproot(
 		schnorr.SerializePubKey(taprootKey), &chaincfg.MainNetParams,
 	)
 	require.NoError(h.t, err)

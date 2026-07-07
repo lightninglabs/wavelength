@@ -3,7 +3,7 @@ package lwwallet
 import (
 	"errors"
 
-	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcd/wire/v2"
 )
 
 // errNilCacheEntry is returned by the cached-value Size methods when

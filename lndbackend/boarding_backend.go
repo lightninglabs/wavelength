@@ -8,9 +8,9 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/btcsuite/btcd/btcutil"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/wire"
+	btcaddr "github.com/btcsuite/btcd/address/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/btcsuite/btcwallet/wtxmgr"
@@ -86,7 +86,7 @@ func (l *BoardingBackend) DeriveNextKey(ctx context.Context,
 // ImportTaprootScript imports a taproot script into the LND wallet. After
 // import, LND will track UTXOs paying to this script.
 func (l *BoardingBackend) ImportTaprootScript(ctx context.Context,
-	script *waddrmgr.Tapscript) (btcutil.Address, error) {
+	script *waddrmgr.Tapscript) (btcaddr.Address, error) {
 
 	l.logger(ctx).DebugS(ctx, "Importing taproot script into LND wallet")
 

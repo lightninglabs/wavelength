@@ -3,9 +3,9 @@ package oor
 import (
 	"fmt"
 
-	"github.com/btcsuite/btcd/btcutil/psbt"
-	"github.com/btcsuite/btcd/txscript"
-	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcd/psbt/v2"
+	"github.com/btcsuite/btcd/txscript/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/darepo-client/lib/tx"
 	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
 	"github.com/lightningnetwork/lnd/input"

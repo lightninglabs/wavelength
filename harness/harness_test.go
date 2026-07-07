@@ -11,7 +11,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/btcutil/v2"
 	_ "github.com/lib/pq"
 	"github.com/lightninglabs/darepo-client/harness"
 	"github.com/stretchr/testify/require"

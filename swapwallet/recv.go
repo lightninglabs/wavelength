@@ -7,7 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 
-	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/lightninglabs/darepo-client/credit"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"

@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/btcsuite/btcd/btcutil/psbt"
+	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/walletcore"
 	"github.com/lightningnetwork/lnd/blockcache"

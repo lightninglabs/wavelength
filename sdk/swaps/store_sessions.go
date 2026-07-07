@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
-	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	swapsqlc "github.com/lightninglabs/darepo-client/sdk/swaps/sqlc"
 	"github.com/lightningnetwork/lnd/lntypes"

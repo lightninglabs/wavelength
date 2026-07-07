@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/btcsuite/btcd/btcutil/psbt"
-	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcd/psbt/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 )
 
 // PSBTKeyPrefix is the namespace prefix for Ark PSBT keys.

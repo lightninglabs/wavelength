@@ -7,9 +7,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/btcsuite/btcd/btcutil"
-	"github.com/btcsuite/btcd/btcutil/psbt"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
 )

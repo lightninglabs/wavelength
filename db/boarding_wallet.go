@@ -6,12 +6,13 @@ import (
 	"database/sql"
 	"fmt"
 
+	btcaddr "github.com/btcsuite/btcd/address/v2"
 	"github.com/btcsuite/btcd/btcec/v2"
-	"github.com/btcsuite/btcd/btcutil"
-	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/txscript"
-	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/btcsuite/btcd/chaincfg/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/txscript/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/darepo-client/db/sqlc"
@@ -690,7 +691,7 @@ func dbAddrToDomainAddr(ctx context.Context, q InternalKeyQuerier,
 		return nil, fmt.Errorf("reconstruct tapscript: %w", err)
 	}
 
-	address, err := btcutil.DecodeAddress(
+	address, err := btcaddr.DecodeAddress(
 		dbAddr.AddressString, chainParams,
 	)
 	if err != nil {

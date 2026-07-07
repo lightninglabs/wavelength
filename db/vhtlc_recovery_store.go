@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/google/uuid"
 	"github.com/lightninglabs/darepo-client/db/sqlc"
 	"github.com/lightninglabs/darepo-client/vhtlcrecovery"

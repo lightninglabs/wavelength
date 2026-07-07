@@ -6,7 +6,7 @@ import (
 	"math"
 	"strconv"
 
-	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/wallet"
 	"google.golang.org/grpc/codes"

@@ -3,8 +3,8 @@ package db
 import (
 	"context"
 
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/darepo-client/db/sqlc"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightningnetwork/lnd/clock"

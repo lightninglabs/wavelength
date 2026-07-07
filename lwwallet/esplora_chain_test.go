@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/btcsuite/btcd/btcutil"
-	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/wire"
+	btcaddr "github.com/btcsuite/btcd/address/v2"
+	"github.com/btcsuite/btcd/chaincfg/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/btcsuite/btcwallet/chain"
 	"github.com/stretchr/testify/require"
@@ -392,11 +392,11 @@ func TestEsploraChainServiceRecoversFromTransientGetRawBlockFailure(
 	// block-fetch path. The actual script does not need to match
 	// anything in the synthesized blocks; the only branch we care
 	// about here is whether the raw-block fetch is even attempted.
-	addr, err := btcutil.NewAddressPubKeyHash(
+	addr, err := btcaddr.NewAddressPubKeyHash(
 		make([]byte, 20), &chaincfg.RegressionNetParams,
 	)
 	require.NoError(t, err)
-	require.NoError(t, svc.NotifyReceived([]btcutil.Address{addr}))
+	require.NoError(t, svc.NotifyReceived([]btcaddr.Address{addr}))
 
 	require.NoError(t, svc.Start(t.Context()))
 	defer svc.Stop()
@@ -490,11 +490,11 @@ func tipEventFor(c *rawBlockStubChain, height int32) *TipBlock {
 func watchOne(t *testing.T, svc *EsploraChainService) {
 	t.Helper()
 
-	addr, err := btcutil.NewAddressPubKeyHash(
+	addr, err := btcaddr.NewAddressPubKeyHash(
 		make([]byte, 20), &chaincfg.RegressionNetParams,
 	)
 	require.NoError(t, err)
-	require.NoError(t, svc.NotifyReceived([]btcutil.Address{addr}))
+	require.NoError(t, svc.NotifyReceived([]btcaddr.Address{addr}))
 }
 
 // requireNoNotification asserts the chain service emitted no

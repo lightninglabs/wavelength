@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcd/wire/v2"
 )
 
 // MaterializeParams contains the parameters for materializing a single node.

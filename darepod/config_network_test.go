@@ -3,7 +3,7 @@ package darepod
 import (
 	"testing"
 
-	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcd/chaincfg/v2"
 	"github.com/lightninglabs/lndclient"
 	"github.com/stretchr/testify/require"
 )

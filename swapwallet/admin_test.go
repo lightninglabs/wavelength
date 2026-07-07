@@ -6,7 +6,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/darepod"
 	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"

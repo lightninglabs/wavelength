@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/btcsuite/btcd/txscript"
+	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/lightninglabs/darepo-client/lndbackend"
 	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"

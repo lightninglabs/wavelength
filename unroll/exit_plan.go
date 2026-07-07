@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/lightninglabs/darepo-client/txconfirm"
 	"github.com/lightninglabs/darepo-client/vtxo"
 )

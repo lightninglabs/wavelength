@@ -6,7 +6,7 @@ import (
 	"log/slog"
 
 	"github.com/btcsuite/btcd/btcec/v2"
-	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	mailboxconn "github.com/lightninglabs/darepo-client/mailbox/conn"

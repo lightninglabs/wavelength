@@ -6,10 +6,11 @@ import (
 	"sync"
 	"testing"
 
+	btcaddr "github.com/btcsuite/btcd/address/v2"
 	"github.com/btcsuite/btcd/btcec/v2"
-	"github.com/btcsuite/btcd/btcutil"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
@@ -1312,7 +1313,7 @@ func (s *stubBackend) DeriveNextKey(_ context.Context,
 
 // ImportTaprootScript is a no-op stub.
 func (s *stubBackend) ImportTaprootScript(_ context.Context,
-	_ *waddrmgr.Tapscript) (btcutil.Address, error) {
+	_ *waddrmgr.Tapscript) (btcaddr.Address, error) {
 
 	return nil, fmt.Errorf("not implemented")
 }

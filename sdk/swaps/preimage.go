@@ -6,8 +6,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/btcsuite/btcd/btcutil/psbt"
-	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcd/psbt/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightningnetwork/lnd/lntypes"
 )

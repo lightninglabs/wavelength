@@ -1,6 +1,6 @@
 package vtxo
 
-import "github.com/btcsuite/btcd/btcutil"
+import "github.com/btcsuite/btcd/btcutil/v2"
 
 // FilterOptions specifies the criteria for filtering a set of VTXO
 // descriptors. A zero-value FilterOptions matches everything.

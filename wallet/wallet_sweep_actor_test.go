@@ -3,10 +3,11 @@ package wallet
 import (
 	"testing"
 
-	"github.com/btcsuite/btcd/btcutil"
-	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcd/txscript"
-	"github.com/btcsuite/btcd/wire"
+	btcaddr "github.com/btcsuite/btcd/address/v2"
+	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/btcsuite/btcd/chaincfg/v2"
+	"github.com/btcsuite/btcd/txscript/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/darepo-client/txconfirm"
 	"github.com/stretchr/testify/require"
 )
@@ -16,7 +17,7 @@ import (
 func testWalletSweepDestPkScript(t *testing.T) txscript.PkScript {
 	t.Helper()
 
-	addr, err := btcutil.NewAddressWitnessPubKeyHash(
+	addr, err := btcaddr.NewAddressWitnessPubKeyHash(
 		make([]byte, 20), &chaincfg.RegressionNetParams,
 	)
 	require.NoError(t, err)
@@ -158,7 +159,7 @@ func TestWalletSweepDestScriptRejectsWrongNetwork(t *testing.T) {
 	a := &Ark{sweepChainParams: &chaincfg.RegressionNetParams}
 
 	// Encode a mainnet address; decoding it against regtest must fail.
-	mainnetAddr, err := btcutil.NewAddressWitnessPubKeyHash(
+	mainnetAddr, err := btcaddr.NewAddressWitnessPubKeyHash(
 		make([]byte, 20), &chaincfg.MainNetParams,
 	)
 	require.NoError(t, err)
@@ -185,7 +186,7 @@ func TestWalletSweepDestScriptAcceptsCorrectNetwork(t *testing.T) {
 
 	a := &Ark{sweepChainParams: &chaincfg.RegressionNetParams}
 
-	addr, err := btcutil.NewAddressWitnessPubKeyHash(
+	addr, err := btcaddr.NewAddressWitnessPubKeyHash(
 		make([]byte, 20), &chaincfg.RegressionNetParams,
 	)
 	require.NoError(t, err)
@@ -321,7 +322,7 @@ func TestEstimateWalletSweepVSizeDispatchesScriptClass(t *testing.T) {
 func taprootPkScript(t *testing.T) []byte {
 	t.Helper()
 
-	addr, err := btcutil.NewAddressTaproot(
+	addr, err := btcaddr.NewAddressTaproot(
 		make([]byte, 32), &chaincfg.RegressionNetParams,
 	)
 	require.NoError(t, err)
@@ -336,7 +337,7 @@ func taprootPkScript(t *testing.T) []byte {
 func p2pkhPkScript(t *testing.T) []byte {
 	t.Helper()
 
-	addr, err := btcutil.NewAddressPubKeyHash(
+	addr, err := btcaddr.NewAddressPubKeyHash(
 		make([]byte, 20), &chaincfg.RegressionNetParams,
 	)
 	require.NoError(t, err)

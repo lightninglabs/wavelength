@@ -14,14 +14,15 @@ import (
 	"sync"
 	"time"
 
+	btcaddr "github.com/btcsuite/btcd/address/v2"
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
-	"github.com/btcsuite/btcd/btcutil"
-	"github.com/btcsuite/btcd/btcutil/psbt"
-	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/txscript"
-	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/btcsuite/btcd/chaincfg/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/psbt/v2"
+	"github.com/btcsuite/btcd/txscript/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/btcwbackend"
@@ -3954,7 +3955,7 @@ func (r *RPCServer) unlockVTXOs(ctx context.Context,
 // cross-network error messages can be specific. Testnet3 and testnet4 share
 // address encodings, so a single address can honestly match both networks.
 // Report both instead of pretending the address proves one over the other.
-func addrNetName(addr btcutil.Address) string {
+func addrNetName(addr btcaddr.Address) string {
 	var matches []string
 	for _, p := range []*chaincfg.Params{
 		&chaincfg.MainNetParams,
@@ -3999,7 +4000,7 @@ func (r *RPCServer) resolveLeaveDestination(d *daemonrpc.LeaveDestination) (
 				"empty")
 		}
 
-		addr, err := btcutil.DecodeAddress(
+		addr, err := btcaddr.DecodeAddress(
 			t.Address, r.server.chainParams,
 		)
 		if err != nil {
@@ -4118,7 +4119,7 @@ func (r *RPCServer) resolveRecipientOutput(out *daemonrpc.Output) ([]byte,
 
 		// Derive the BIP-86 taproot pkScript from the
 		// x-only pubkey.
-		addr, err := btcutil.NewAddressTaproot(
+		addr, err := btcaddr.NewAddressTaproot(
 			d.Pubkey, r.server.chainParams,
 		)
 		if err != nil {
@@ -4134,7 +4135,7 @@ func (r *RPCServer) resolveRecipientOutput(out *daemonrpc.Output) ([]byte,
 		return pkScript, clientKey, nil
 
 	case *daemonrpc.Output_Address:
-		addr, err := btcutil.DecodeAddress(
+		addr, err := btcaddr.DecodeAddress(
 			d.Address, r.server.chainParams,
 		)
 		if err != nil {
@@ -4143,7 +4144,7 @@ func (r *RPCServer) resolveRecipientOutput(out *daemonrpc.Output) ([]byte,
 
 		// Only taproot addresses carry the x-only pubkey
 		// needed for VTXO construction.
-		tapAddr, ok := addr.(*btcutil.AddressTaproot)
+		tapAddr, ok := addr.(*btcaddr.AddressTaproot)
 		if !ok {
 			return nil, nil, fmt.Errorf("directed sends require a "+
 				"taproot address, got %T", addr)
@@ -4394,7 +4395,7 @@ func (r *RPCServer) resolveOutputPkScript(ctx context.Context,
 
 	switch d := out.Destination.(type) {
 	case *daemonrpc.Output_Address:
-		addr, err := btcutil.DecodeAddress(
+		addr, err := btcaddr.DecodeAddress(
 			d.Address, r.server.chainParams,
 		)
 		if err != nil {

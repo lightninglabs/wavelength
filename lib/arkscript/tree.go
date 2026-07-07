@@ -5,8 +5,8 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcec/v2"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/txscript"
+	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/txscript/v2"
 )
 
 // PolicyLeaf represents a compiled tapscript leaf in canonical ordering.

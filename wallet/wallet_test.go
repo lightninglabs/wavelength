@@ -5,12 +5,13 @@ import (
 	"fmt"
 	"testing"
 
+	btcaddr "github.com/btcsuite/btcd/address/v2"
 	"github.com/btcsuite/btcd/btcec/v2"
-	"github.com/btcsuite/btcd/btcutil"
-	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/txscript"
-	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/btcsuite/btcd/chaincfg/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/txscript/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
@@ -41,7 +42,7 @@ func (m *MockBoardingBackend) DeriveNextKey(ctx context.Context,
 }
 
 func (m *MockBoardingBackend) ImportTaprootScript(ctx context.Context,
-	script *waddrmgr.Tapscript) (btcutil.Address, error) {
+	script *waddrmgr.Tapscript) (btcaddr.Address, error) {
 
 	args := m.Called(ctx, script)
 	if args.Get(0) == nil {
@@ -49,7 +50,7 @@ func (m *MockBoardingBackend) ImportTaprootScript(ctx context.Context,
 	}
 
 	//nolint:forcetypeassert
-	return args.Get(0).(btcutil.Address), args.Error(1)
+	return args.Get(0).(btcaddr.Address), args.Error(1)
 }
 
 func (m *MockBoardingBackend) ListUnspent(ctx context.Context, minConfs,
@@ -312,7 +313,7 @@ func TestCreateBoardingAddress(t *testing.T) {
 	taprootKey := txscript.ComputeTaprootOutputKey(
 		testKey.PubKey(), rootHash,
 	)
-	testAddr, err := btcutil.NewAddressTaproot(
+	testAddr, err := btcaddr.NewAddressTaproot(
 		taprootKey.SerializeCompressed()[1:],
 		&chaincfg.RegressionNetParams,
 	)
@@ -465,7 +466,7 @@ func TestProcessNewUtxo(t *testing.T) {
 	taprootKey := txscript.ComputeTaprootOutputKey(
 		clientKey.PubKey(), rootHash,
 	)
-	address, err := btcutil.NewAddressTaproot(
+	address, err := btcaddr.NewAddressTaproot(
 		taprootKey.SerializeCompressed()[1:],
 		&chaincfg.RegressionNetParams,
 	)
@@ -638,7 +639,7 @@ func TestProcessUtxoMinConfFiltering(t *testing.T) {
 	taprootKey := txscript.ComputeTaprootOutputKey(
 		clientKey.PubKey(), rootHash,
 	)
-	address, err := btcutil.NewAddressTaproot(
+	address, err := btcaddr.NewAddressTaproot(
 		taprootKey.SerializeCompressed()[1:],
 		&chaincfg.RegressionNetParams,
 	)
@@ -863,7 +864,7 @@ func TestProcessUtxoProofOmittedWhenTxNotInBlock(t *testing.T) {
 	taprootKey := txscript.ComputeTaprootOutputKey(
 		clientKey.PubKey(), rootHash,
 	)
-	address, err := btcutil.NewAddressTaproot(
+	address, err := btcaddr.NewAddressTaproot(
 		taprootKey.SerializeCompressed()[1:],
 		&chaincfg.RegressionNetParams,
 	)
@@ -1028,7 +1029,7 @@ func TestProcessUtxoUsesActualConfirmationBlock(t *testing.T) {
 	taprootKey := txscript.ComputeTaprootOutputKey(
 		clientKey.PubKey(), rootHash,
 	)
-	address, err := btcutil.NewAddressTaproot(
+	address, err := btcaddr.NewAddressTaproot(
 		taprootKey.SerializeCompressed()[1:],
 		&chaincfg.RegressionNetParams,
 	)
@@ -1157,7 +1158,7 @@ func TestGetActiveBoardingAddresses(t *testing.T) {
 		taprootKey := txscript.ComputeTaprootOutputKey(
 			privKey.PubKey(), rootHash,
 		)
-		addr, err := btcutil.NewAddressTaproot(
+		addr, err := btcaddr.NewAddressTaproot(
 			taprootKey.SerializeCompressed()[1:],
 			&chaincfg.RegressionNetParams,
 		)
@@ -1533,7 +1534,7 @@ func TestSendBacklog(t *testing.T) {
 		taprootKey := txscript.ComputeTaprootOutputKey(
 			privKey.PubKey(), rootHash,
 		)
-		address, err := btcutil.NewAddressTaproot(
+		address, err := btcaddr.NewAddressTaproot(
 			taprootKey.SerializeCompressed()[1:],
 			&chaincfg.RegressionNetParams,
 		)
@@ -1849,7 +1850,7 @@ func TestSendBacklog(t *testing.T) {
 		taprootKey := txscript.ComputeTaprootOutputKey(
 			&arkscript.ARKNUMSKey, tapscript.RootHash,
 		)
-		address, err := btcutil.NewAddressTaproot(
+		address, err := btcaddr.NewAddressTaproot(
 			taprootKey.SerializeCompressed()[1:],
 			&chaincfg.RegressionNetParams,
 		)
@@ -2128,7 +2129,7 @@ func TestSendBacklog(t *testing.T) {
 		taprootKey := txscript.ComputeTaprootOutputKey(
 			&arkscript.ARKNUMSKey, tapscript.RootHash,
 		)
-		address, err := btcutil.NewAddressTaproot(
+		address, err := btcaddr.NewAddressTaproot(
 			taprootKey.SerializeCompressed()[1:],
 			&chaincfg.RegressionNetParams,
 		)

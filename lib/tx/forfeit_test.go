@@ -4,13 +4,14 @@ import (
 	"bytes"
 	"testing"
 
+	btcaddr "github.com/btcsuite/btcd/address/v2"
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
-	"github.com/btcsuite/btcd/btcutil"
-	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/txscript"
-	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/btcsuite/btcd/chaincfg/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/txscript/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/darepo-client/internal/testutils"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
@@ -213,8 +214,8 @@ func TestForfeitTransactionFlow(t *testing.T) {
 
 // mustTaprootAddr creates a taproot address from a public key for testing.
 // It panics if address creation fails.
-func mustTaprootAddr(key *btcec.PublicKey) btcutil.Address {
-	addr, err := btcutil.NewAddressTaproot(
+func mustTaprootAddr(key *btcec.PublicKey) btcaddr.Address {
+	addr, err := btcaddr.NewAddressTaproot(
 		schnorr.SerializePubKey(key), &chaincfg.RegressionNetParams,
 	)
 	if err != nil {

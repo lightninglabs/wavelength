@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
-	"github.com/btcsuite/btcd/txscript"
+	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/lightninglabs/darepo-client/db"
 	"github.com/lightninglabs/darepo-client/indexer"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"

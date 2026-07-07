@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/indexer"
 	"github.com/lightninglabs/darepo-client/oor"
