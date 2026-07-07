@@ -17,7 +17,7 @@ func newRecvCmd() *cobra.Command {
 		Short: "Receive a payment (offchain invoice / onchain addr)",
 		Long: "Asks the daemon to materialize an inbound payment " +
 			"surface. With --offchain (default) the daemon opens " +
-			"a swap-in and returns a BOLT-11 invoice signed " +
+			"an out-swap and returns a BOLT-11 invoice signed " +
 			"with a daemon-managed key. With --onchain the " +
 			"daemon returns a fresh boarding address; fund it " +
 			"and the daemon rolls the boarding output into the " +
