@@ -1710,8 +1710,16 @@ type VTXO struct {
 	// operator_pubkey is the compressed operator public key committed to this
 	// VTXO's collaborative spend path.
 	OperatorPubkey []byte `protobuf:"bytes,19,opt,name=operator_pubkey,json=operatorPubkey,proto3" json:"operator_pubkey,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// construction_version is the per-VTXO construction version: the rules
+	// under which this VTXO was built and must be spent or exited. The
+	// operator stamps it at creation. A client recovering a VTXO from this
+	// indexer response validates it fail-closed and records the normalized
+	// value so both sides agree; the live-receive push path (VTXOEvent /
+	// IncomingVTXOEvent) does not yet carry this field and adopts it as a
+	// fast-follow. Today the only understood value is 1.
+	ConstructionVersion uint32 `protobuf:"varint,20,opt,name=construction_version,json=constructionVersion,proto3" json:"construction_version,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *VTXO) Reset() {
@@ -1861,6 +1869,13 @@ func (x *VTXO) GetOperatorPubkey() []byte {
 		return x.OperatorPubkey
 	}
 	return nil
+}
+
+func (x *VTXO) GetConstructionVersion() uint32 {
+	if x != nil {
+		return x.ConstructionVersion
+	}
+	return 0
 }
 
 type ListVTXOsByScriptsRequest struct {
@@ -2789,7 +2804,7 @@ const file_indexer_proto_rawDesc = "" +
 	"\x0ftaproot_schnorr\x18\n" +
 	" \x01(\v2\x1b.arkrpc.TaprootSchnorrProofH\x00R\x0etaprootSchnorr\x12-\n" +
 	"\x06bip322\x18\v \x01(\v2\x13.arkrpc.BIP322ProofH\x00R\x06bip322B\a\n" +
-	"\x05proof\"\xaf\x05\n" +
+	"\x05proof\"\xe2\x05\n" +
 	"\x04VTXO\x12,\n" +
 	"\boutpoint\x18\x01 \x01(\v2\x10.arkrpc.OutPointR\boutpoint\x12\x1b\n" +
 	"\tvalue_sat\x18\x02 \x01(\x04R\bvalueSat\x12\x1b\n" +
@@ -2810,7 +2825,8 @@ const file_indexer_proto_rawDesc = "" +
 	"chainDepth\x12\"\n" +
 	"\rspent_by_txid\x18\x11 \x01(\fR\vspentByTxid\x12;\n" +
 	"\x0eancestry_paths\x18\x12 \x03(\v2\x14.arkrpc.AncestryPathR\rancestryPaths\x12'\n" +
-	"\x0foperator_pubkey\x18\x13 \x01(\fR\x0eoperatorPubkey\"\xb1\x01\n" +
+	"\x0foperator_pubkey\x18\x13 \x01(\fR\x0eoperatorPubkey\x121\n" +
+	"\x14construction_version\x18\x14 \x01(\rR\x13constructionVersion\"\xb1\x01\n" +
 	"\x19ListVTXOsByScriptsRequest\x12-\n" +
 	"\ascripts\x18\x01 \x03(\v2\x13.arkrpc.ScriptScopeR\ascripts\x127\n" +
 	"\rstatus_filter\x18\x02 \x03(\x0e2\x12.arkrpc.VTXOStatusR\fstatusFilter\x12\x16\n" +

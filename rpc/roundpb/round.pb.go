@@ -666,7 +666,12 @@ type ClientBatchInfo struct {
 	// operator terms — so an operator key rotation never changes the penalty
 	// script clients must agree on for the round they joined. It is a key
 	// family distinct from the operator identity/connector key.
-	ForfeitKey    []byte `protobuf:"bytes,9,opt,name=forfeit_key,json=forfeitKey,proto3" json:"forfeit_key,omitempty"`
+	ForfeitKey []byte `protobuf:"bytes,9,opt,name=forfeit_key,json=forfeitKey,proto3" json:"forfeit_key,omitempty"`
+	// flow_version is the per-round flow version: the choreography rules
+	// under which the operator created this round. The client records the
+	// same value so both sides agree on how the round was conducted. Today
+	// the only understood value is 1.
+	FlowVersion   uint32 `protobuf:"varint,10,opt,name=flow_version,json=flowVersion,proto3" json:"flow_version,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -762,6 +767,13 @@ func (x *ClientBatchInfo) GetForfeitKey() []byte {
 		return x.ForfeitKey
 	}
 	return nil
+}
+
+func (x *ClientBatchInfo) GetFlowVersion() uint32 {
+	if x != nil {
+		return x.FlowVersion
+	}
+	return 0
 }
 
 // ClientAwaitingInputSigsResp notifies a client that the server is ready
@@ -2595,7 +2607,7 @@ const file_round_proto_rawDesc = "" +
 	"\x11ClientSuccessResp\x12\x19\n" +
 	"\bround_id\x18\x01 \x01(\fR\aroundId\x12R\n" +
 	"\x1baccepted_boarding_outpoints\x18\x02 \x03(\v2\x12.round.v1.OutpointR\x19acceptedBoardingOutpoints\x12J\n" +
-	"\x17accepted_vtxo_outpoints\x18\x03 \x03(\v2\x12.round.v1.OutpointR\x15acceptedVtxoOutpoints\"\xf5\x04\n" +
+	"\x17accepted_vtxo_outpoints\x18\x03 \x03(\v2\x12.round.v1.OutpointR\x15acceptedVtxoOutpoints\"\x98\x05\n" +
 	"\x0fClientBatchInfo\x12\x19\n" +
 	"\bround_id\x18\x01 \x01(\fR\aroundId\x12\x1d\n" +
 	"\n" +
@@ -2608,7 +2620,9 @@ const file_round_proto_rawDesc = "" +
 	"\vsweep_delay\x18\b \x01(\rR\n" +
 	"sweepDelay\x12\x1f\n" +
 	"\vforfeit_key\x18\t \x01(\fR\n" +
-	"forfeitKey\x1aT\n" +
+	"forfeitKey\x12!\n" +
+	"\fflow_version\x18\n" +
+	" \x01(\rR\vflowVersion\x1aT\n" +
 	"\x12VtxoTreePathsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\x05R\x03key\x12(\n" +
 	"\x05value\x18\x02 \x01(\v2\x12.round.v1.VTXOTreeR\x05value:\x028\x01\x1a`\n" +

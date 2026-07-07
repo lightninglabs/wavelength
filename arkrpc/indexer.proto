@@ -442,6 +442,15 @@ message VTXO {
     // operator_pubkey is the compressed operator public key committed to this
     // VTXO's collaborative spend path.
     bytes operator_pubkey = 19;
+
+    // construction_version is the per-VTXO construction version: the rules
+    // under which this VTXO was built and must be spent or exited. The
+    // operator stamps it at creation. A client recovering a VTXO from this
+    // indexer response validates it fail-closed and records the normalized
+    // value so both sides agree; the live-receive push path (VTXOEvent /
+    // IncomingVTXOEvent) does not yet carry this field and adopts it as a
+    // fast-follow. Today the only understood value is 1.
+    uint32 construction_version = 20;
 }
 
 message ListVTXOsByScriptsRequest {

@@ -205,6 +205,12 @@ message ClientBatchInfo {
     // script clients must agree on for the round they joined. It is a key
     // family distinct from the operator identity/connector key.
     bytes forfeit_key = 9;
+
+    // flow_version is the per-round flow version: the choreography rules
+    // under which the operator created this round. The client records the
+    // same value so both sides agree on how the round was conducted. Today
+    // the only understood value is 1.
+    uint32 flow_version = 10;
 }
 
 // ClientAwaitingInputSigsResp notifies a client that the server is ready

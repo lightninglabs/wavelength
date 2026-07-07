@@ -307,8 +307,14 @@ type SubmitPackageRequest struct {
 	// recipient_outputs carry the canonical Ark recipient outputs plus
 	// optional semantic policy metadata for persistence on the operator.
 	RecipientOutputs []*OORRecipientOutput `protobuf:"bytes,4,rep,name=recipient_outputs,json=recipientOutputs,proto3" json:"recipient_outputs,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// flow_version is the OOR flow version the client conducted this
+	// transfer under (the choreography rules, e.g. whether per-input
+	// checkpoints are used). The operator validates it at admission and
+	// persists it with the session. Every transfer is V1 today; an unset
+	// value is treated as V1.
+	FlowVersion   uint32 `protobuf:"varint,5,opt,name=flow_version,json=flowVersion,proto3" json:"flow_version,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SubmitPackageRequest) Reset() {
@@ -367,6 +373,13 @@ func (x *SubmitPackageRequest) GetRecipientOutputs() []*OORRecipientOutput {
 		return x.RecipientOutputs
 	}
 	return nil
+}
+
+func (x *SubmitPackageRequest) GetFlowVersion() uint32 {
+	if x != nil {
+		return x.FlowVersion
+	}
+	return 0
 }
 
 // SubmitPackageRejection carries a typed rejection of an OOR submit.
@@ -708,12 +721,13 @@ const file_oorwire_proto_rawDesc = "" +
 	"\x12OORRecipientOutput\x12\x1b\n" +
 	"\tpk_script\x18\x01 \x01(\fR\bpkScript\x12\x1b\n" +
 	"\tvalue_sat\x18\x02 \x01(\x03R\bvalueSat\x120\n" +
-	"\x14vtxo_policy_template\x18\x03 \x01(\fR\x12vtxoPolicyTemplate\"\xf2\x01\n" +
+	"\x14vtxo_policy_template\x18\x03 \x01(\fR\x12vtxoPolicyTemplate\"\x95\x02\n" +
 	"\x14SubmitPackageRequest\x12\x19\n" +
 	"\bark_psbt\x18\x01 \x01(\fR\aarkPsbt\x12)\n" +
 	"\x10checkpoint_psbts\x18\x02 \x03(\fR\x0fcheckpointPsbts\x12L\n" +
 	"\x13signing_descriptors\x18\x03 \x03(\v2\x1b.oorpb.OORSigningDescriptorR\x12signingDescriptors\x12F\n" +
-	"\x11recipient_outputs\x18\x04 \x03(\v2\x19.oorpb.OORRecipientOutputR\x10recipientOutputs\"y\n" +
+	"\x11recipient_outputs\x18\x04 \x03(\v2\x19.oorpb.OORRecipientOutputR\x10recipientOutputs\x12!\n" +
+	"\fflow_version\x18\x05 \x01(\rR\vflowVersion\"y\n" +
 	"\x16SubmitPackageRejection\x12(\n" +
 	"\x04code\x18\x01 \x01(\x0e2\x14.oorpb.OORRejectCodeR\x04code\x12\x16\n" +
 	"\x06reason\x18\x02 \x01(\tR\x06reason\x12\x1d\n" +

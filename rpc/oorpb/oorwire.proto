@@ -72,6 +72,13 @@ message SubmitPackageRequest {
     // recipient_outputs carry the canonical Ark recipient outputs plus
     // optional semantic policy metadata for persistence on the operator.
     repeated OORRecipientOutput recipient_outputs = 4;
+
+    // flow_version is the OOR flow version the client conducted this
+    // transfer under (the choreography rules, e.g. whether per-input
+    // checkpoints are used). The operator validates it at admission and
+    // persists it with the session. Every transfer is V1 today; an unset
+    // value is treated as V1.
+    uint32 flow_version = 5;
 }
 
 // OORRejectCode discriminates server-side OOR rejections so clients can
