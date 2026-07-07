@@ -27,11 +27,19 @@ const (
 type EntryKind int32
 
 const (
+	// ENTRY_KIND_UNSPECIFIED is the proto zero value used when the
+	// operation category is unknown.
 	EntryKind_ENTRY_KIND_UNSPECIFIED EntryKind = 0
-	EntryKind_ENTRY_KIND_SEND        EntryKind = 1
-	EntryKind_ENTRY_KIND_RECV        EntryKind = 2
-	EntryKind_ENTRY_KIND_DEPOSIT     EntryKind = 3
-	EntryKind_ENTRY_KIND_EXIT        EntryKind = 4
+	// ENTRY_KIND_SEND is an outbound payment over any rail (Lightning,
+	// same-Ark, onchain, or credit).
+	EntryKind_ENTRY_KIND_SEND EntryKind = 1
+	// ENTRY_KIND_RECV is an inbound receive.
+	EntryKind_ENTRY_KIND_RECV EntryKind = 2
+	// ENTRY_KIND_DEPOSIT is a boarding deposit rolled into a VTXO.
+	EntryKind_ENTRY_KIND_DEPOSIT EntryKind = 3
+	// ENTRY_KIND_EXIT is a cooperative leave or unilateral exit to
+	// on-chain funds.
+	EntryKind_ENTRY_KIND_EXIT EntryKind = 4
 )
 
 // Enum value maps for EntryKind.
@@ -84,10 +92,17 @@ func (EntryKind) EnumDescriptor() ([]byte, []int) {
 type EntryStatus int32
 
 const (
+	// ENTRY_STATUS_UNSPECIFIED is the proto zero value used when the
+	// backing state has not been mapped yet.
 	EntryStatus_ENTRY_STATUS_UNSPECIFIED EntryStatus = 0
-	EntryStatus_ENTRY_STATUS_PENDING     EntryStatus = 1
-	EntryStatus_ENTRY_STATUS_COMPLETE    EntryStatus = 2
-	EntryStatus_ENTRY_STATUS_FAILED      EntryStatus = 3
+	// ENTRY_STATUS_PENDING means the operation is still in flight.
+	EntryStatus_ENTRY_STATUS_PENDING EntryStatus = 1
+	// ENTRY_STATUS_COMPLETE means the operation reached a durable
+	// success state.
+	EntryStatus_ENTRY_STATUS_COMPLETE EntryStatus = 2
+	// ENTRY_STATUS_FAILED means the operation reached a terminal
+	// failure state.
+	EntryStatus_ENTRY_STATUS_FAILED EntryStatus = 3
 )
 
 // Enum value maps for EntryStatus.
@@ -140,6 +155,8 @@ func (EntryStatus) EnumDescriptor() ([]byte, []int) {
 type ListView int32
 
 const (
+	// LIST_VIEW_UNSPECIFIED is the proto zero value; List treats it as
+	// LIST_VIEW_ACTIVITY.
 	ListView_LIST_VIEW_UNSPECIFIED ListView = 0
 	// LIST_VIEW_ACTIVITY returns the merged WalletEntry stream (send /
 	// recv / deposit / exit) across the swap subsystem, OOR sessions, the
@@ -201,16 +218,27 @@ func (ListView) EnumDescriptor() ([]byte, []int) {
 type SendRail int32
 
 const (
+	// SEND_RAIL_UNSPECIFIED is the proto zero value used when no rail
+	// has been determined.
 	SendRail_SEND_RAIL_UNSPECIFIED SendRail = 0
 	// SEND_RAIL_OFFCHAIN_UNKNOWN is used when the wallet can parse the
 	// invoice locally but the swapserver has not supplied a quote that
 	// distinguishes same-Ark settlement from Lightning settlement.
 	SendRail_SEND_RAIL_OFFCHAIN_UNKNOWN SendRail = 1
-	SendRail_SEND_RAIL_IN_ARK           SendRail = 2
-	SendRail_SEND_RAIL_LIGHTNING        SendRail = 3
-	SendRail_SEND_RAIL_ONCHAIN          SendRail = 4
-	SendRail_SEND_RAIL_CREDIT           SendRail = 5
-	SendRail_SEND_RAIL_MIXED            SendRail = 6
+	// SEND_RAIL_IN_ARK is same-Ark peer-to-peer settlement, where the
+	// payment never touches Lightning.
+	SendRail_SEND_RAIL_IN_ARK SendRail = 2
+	// SEND_RAIL_LIGHTNING is settlement over the real Lightning network.
+	SendRail_SEND_RAIL_LIGHTNING SendRail = 3
+	// SEND_RAIL_ONCHAIN is an on-chain send via a cooperative leave to
+	// the destination address.
+	SendRail_SEND_RAIL_ONCHAIN SendRail = 4
+	// SEND_RAIL_CREDIT is settlement drawn from the wallet's
+	// server-side credit balance.
+	SendRail_SEND_RAIL_CREDIT SendRail = 5
+	// SEND_RAIL_MIXED is settlement that combines credit with the
+	// normal vHTLC path.
+	SendRail_SEND_RAIL_MIXED SendRail = 6
 )
 
 // Enum value maps for SendRail.
@@ -266,6 +294,8 @@ func (SendRail) EnumDescriptor() ([]byte, []int) {
 type SendQuoteStatus int32
 
 const (
+	// SEND_QUOTE_STATUS_UNSPECIFIED is the proto zero value; quote
+	// completeness was not reported.
 	SendQuoteStatus_SEND_QUOTE_STATUS_UNSPECIFIED SendQuoteStatus = 0
 	// SEND_QUOTE_STATUS_COMPLETE means every user-visible amount and fee
 	// field is backed by a remote quote.
@@ -322,9 +352,15 @@ func (SendQuoteStatus) EnumDescriptor() ([]byte, []int) {
 type ExitMode int32
 
 const (
+	// EXIT_MODE_UNSPECIFIED is the proto zero value used when the exit
+	// path was not reported.
 	ExitMode_EXIT_MODE_UNSPECIFIED ExitMode = 0
+	// EXIT_MODE_COOPERATIVE means Exit queued a cooperative leave
+	// (VTXO-to-onchain).
 	ExitMode_EXIT_MODE_COOPERATIVE ExitMode = 1
-	ExitMode_EXIT_MODE_UNILATERAL  ExitMode = 2
+	// EXIT_MODE_UNILATERAL means Exit started a forced unilateral
+	// unroll.
+	ExitMode_EXIT_MODE_UNILATERAL ExitMode = 2
 )
 
 // Enum value maps for ExitMode.
@@ -373,6 +409,8 @@ func (ExitMode) EnumDescriptor() ([]byte, []int) {
 type ExitJobStatus int32
 
 const (
+	// EXIT_JOB_STATUS_UNSPECIFIED — the proto zero value; no job phase
+	// has been reported.
 	ExitJobStatus_EXIT_JOB_STATUS_UNSPECIFIED ExitJobStatus = 0
 	// EXIT_JOB_STATUS_PENDING — job created but recovery transactions
 	// not yet materialized.
@@ -606,6 +644,8 @@ func (EntryFailureCode) EnumDescriptor() ([]byte, []int) {
 	return file_wallet_proto_rawDescGZIP(), []int{8}
 }
 
+// CreateRequest carries the parameters for WalletService.Create: the
+// encryption password, optional seed material, and recovery options.
 type CreateRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// wallet_password is the password used to encrypt the on-disk seed.
@@ -697,6 +737,8 @@ func (x *CreateRequest) GetRecoveryWindow() uint32 {
 	return 0
 }
 
+// CreateResponse returns the wallet mnemonic and identity, plus a summary of
+// any Ark-state recovery performed during Create.
 type CreateResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// mnemonic is the 24-word aezeed mnemonic for the wallet. For fresh
@@ -816,6 +858,8 @@ func (x *CreateResponse) GetRecoveredOorEvents() uint32 {
 	return 0
 }
 
+// UnlockRequest carries the password used to decrypt the on-disk seed for
+// WalletService.Unlock.
 type UnlockRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// wallet_password is the password used to decrypt the on-disk seed.
@@ -861,6 +905,8 @@ func (x *UnlockRequest) GetWalletPassword() []byte {
 	return nil
 }
 
+// UnlockResponse returns the identity of the wallet unlocked by
+// WalletService.Unlock.
 type UnlockResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// identity_pubkey is the hex-encoded daemon wallet identity public
@@ -907,6 +953,8 @@ func (x *UnlockResponse) GetIdentityPubkey() string {
 	return ""
 }
 
+// PrepareSendRequest describes the outbound payment to validate and preview
+// via WalletService.PrepareSend, before any funds move.
 type PrepareSendRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// destination selects the outbound payment target. Exactly one
@@ -1045,6 +1093,9 @@ func (*PrepareSendRequest_Invoice) isPrepareSendRequest_Destination() {}
 
 func (*PrepareSendRequest_OnchainAddress) isPrepareSendRequest_Destination() {}
 
+// PrepareSendResponse is the preview of a prepared send: the single-use
+// intent token plus the amount, fee, rail, and quote detail a caller should
+// confirm before calling Send.
 type PrepareSendResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// send_intent_id is a short-lived, single-use token consumed by Send.
@@ -1060,9 +1111,21 @@ type PrepareSendResponse struct {
 	ExpectedTotalOutflowSat int64 `protobuf:"varint,5,opt,name=expected_total_outflow_sat,json=expectedTotalOutflowSat,proto3" json:"expected_total_outflow_sat,omitempty"`
 	// total_outflow_known is false when the final outflow depends on a
 	// remote quote that is not available yet.
-	TotalOutflowKnown bool            `protobuf:"varint,6,opt,name=total_outflow_known,json=totalOutflowKnown,proto3" json:"total_outflow_known,omitempty"`
-	Rail              SendRail        `protobuf:"varint,7,opt,name=rail,proto3,enum=walletdkrpc.SendRail" json:"rail,omitempty"`
-	QuoteStatus       SendQuoteStatus `protobuf:"varint,8,opt,name=quote_status,json=quoteStatus,proto3,enum=walletdkrpc.SendQuoteStatus" json:"quote_status,omitempty"`
+	TotalOutflowKnown bool `protobuf:"varint,6,opt,name=total_outflow_known,json=totalOutflowKnown,proto3" json:"total_outflow_known,omitempty"`
+	// rail is the expected settlement rail for this prepared send. Onchain
+	// prepares always return SEND_RAIL_ONCHAIN. Invoice prepares map the
+	// swap quote settlement type when a remote quote is available; when
+	// no quote is available (LOCAL_ONLY) or the quote does not
+	// distinguish same-Ark from Lightning, the value is
+	// SEND_RAIL_OFFCHAIN_UNKNOWN until Send starts.
+	Rail SendRail `protobuf:"varint,7,opt,name=rail,proto3,enum=walletdkrpc.SendRail" json:"rail,omitempty"`
+	// quote_status describes how complete the prepare-time quote is.
+	// Invoice sends: COMPLETE when every amount and fee is backed by a
+	// swap remote quote; LOCAL_ONLY when the invoice parsed locally but
+	// the swap quote API was unavailable. Onchain sends: COMPLETE when
+	// daemonrpc.EstimateFee returned a binding operator quote;
+	// LOCAL_ONLY when only a local fee floor could be computed.
+	QuoteStatus SendQuoteStatus `protobuf:"varint,8,opt,name=quote_status,json=quoteStatus,proto3,enum=walletdkrpc.SendQuoteStatus" json:"quote_status,omitempty"`
 	// destination_summary is a short display string suitable for CLI and
 	// UI confirmation prompts.
 	DestinationSummary string `protobuf:"bytes,9,opt,name=destination_summary,json=destinationSummary,proto3" json:"destination_summary,omitempty"`
@@ -1221,6 +1284,8 @@ func (x *PrepareSendResponse) GetCreditPreview() *CreditPreview {
 	return nil
 }
 
+// SendRequest dispatches a previously prepared send by consuming the
+// single-use intent token returned by PrepareSend.
 type SendRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// send_intent_id is returned by PrepareSend and may be consumed once.
@@ -1266,6 +1331,8 @@ func (x *SendRequest) GetSendIntentId() string {
 	return ""
 }
 
+// SendResponse returns the initial WalletEntry for a dispatched send and the
+// actual amount that will leave the wallet.
 type SendResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// entry is the initial WalletEntry persisted for this send. The
@@ -1330,6 +1397,7 @@ func (x *SendResponse) GetActualAmountSat() int64 {
 	return 0
 }
 
+// RecvRequest describes the inbound receive to open via WalletService.Recv.
 type RecvRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// amt_sat is the amount the caller wants to receive in satoshis.
@@ -1384,6 +1452,8 @@ func (x *RecvRequest) GetMemo() string {
 	return ""
 }
 
+// RecvResponse returns the BOLT-11 invoice to hand out and the initial
+// WalletEntry tracking the pending receive.
 type RecvResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// invoice is the BOLT-11 payment request the caller hands out to
@@ -1449,15 +1519,29 @@ func (x *RecvResponse) GetCreditReceive() *CreditReceive {
 	return nil
 }
 
+// CreditPreview describes how server-side sat-native credits factor into a
+// prepared send. It is populated on PrepareSendResponse when the invoice
+// send will or can draw on credits.
 type CreditPreview struct {
-	state              protoimpl.MessageState `protogen:"open.v1"`
-	MustUseCredit      bool                   `protobuf:"varint,1,opt,name=must_use_credit,json=mustUseCredit,proto3" json:"must_use_credit,omitempty"`
-	CreditAppliedSat   uint64                 `protobuf:"varint,2,opt,name=credit_applied_sat,json=creditAppliedSat,proto3" json:"credit_applied_sat,omitempty"`
-	CreditShortfallSat uint64                 `protobuf:"varint,3,opt,name=credit_shortfall_sat,json=creditShortfallSat,proto3" json:"credit_shortfall_sat,omitempty"`
-	CreditTopupSat     uint64                 `protobuf:"varint,4,opt,name=credit_topup_sat,json=creditTopupSat,proto3" json:"credit_topup_sat,omitempty"`
-	ArkFundingSat      uint64                 `protobuf:"varint,5,opt,name=ark_funding_sat,json=arkFundingSat,proto3" json:"ark_funding_sat,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// must_use_credit is true when the invoice amount cannot be
+	// represented by the normal vHTLC path and the send must be settled
+	// from the credit balance.
+	MustUseCredit bool `protobuf:"varint,1,opt,name=must_use_credit,json=mustUseCredit,proto3" json:"must_use_credit,omitempty"`
+	// credit_applied_sat is the credit balance in satoshis the quote
+	// expects to reserve for this send.
+	CreditAppliedSat uint64 `protobuf:"varint,2,opt,name=credit_applied_sat,json=creditAppliedSat,proto3" json:"credit_applied_sat,omitempty"`
+	// credit_shortfall_sat is the additional credit in satoshis needed
+	// before this payment can be admitted.
+	CreditShortfallSat uint64 `protobuf:"varint,3,opt,name=credit_shortfall_sat,json=creditShortfallSat,proto3" json:"credit_shortfall_sat,omitempty"`
+	// credit_topup_sat is the Ark top-up amount in satoshis required to
+	// cover the shortfall. It is rounded up and dust-limited by the server.
+	CreditTopupSat uint64 `protobuf:"varint,4,opt,name=credit_topup_sat,json=creditTopupSat,proto3" json:"credit_topup_sat,omitempty"`
+	// ark_funding_sat is the amount in satoshis the client must still fund
+	// through the normal vHTLC path.
+	ArkFundingSat uint64 `protobuf:"varint,5,opt,name=ark_funding_sat,json=arkFundingSat,proto3" json:"ark_funding_sat,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CreditPreview) Reset() {
@@ -1525,11 +1609,21 @@ func (x *CreditPreview) GetArkFundingSat() uint64 {
 	return 0
 }
 
+// CreditReceive describes a receive backed by server credits rather than a
+// client-claimable vHTLC. It is populated on RecvResponse for the credit
+// path.
 type CreditReceive struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	OperationId   string                 `protobuf:"bytes,1,opt,name=operation_id,json=operationId,proto3" json:"operation_id,omitempty"`
-	AmountSat     uint64                 `protobuf:"varint,2,opt,name=amount_sat,json=amountSat,proto3" json:"amount_sat,omitempty"`
-	PaymentHash   string                 `protobuf:"bytes,3,opt,name=payment_hash,json=paymentHash,proto3" json:"payment_hash,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// operation_id is the durable credit-subsystem operation id tracking
+	// this receive. It is the WalletEntry.id for credit RECV rows; the
+	// server-owned payment_hash is in payment_hash below.
+	OperationId string `protobuf:"bytes,1,opt,name=operation_id,json=operationId,proto3" json:"operation_id,omitempty"`
+	// amount_sat is the amount in satoshis the caller asked to receive,
+	// credited to the wallet account once the server-owned invoice settles.
+	AmountSat uint64 `protobuf:"varint,2,opt,name=amount_sat,json=amountSat,proto3" json:"amount_sat,omitempty"`
+	// payment_hash is the hex-encoded payment hash of the server-owned
+	// receive invoice.
+	PaymentHash   string `protobuf:"bytes,3,opt,name=payment_hash,json=paymentHash,proto3" json:"payment_hash,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1585,6 +1679,7 @@ func (x *CreditReceive) GetPaymentHash() string {
 	return ""
 }
 
+// ListRequest selects the wallet view and filters for WalletService.List.
 type ListRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// view selects which slice of wallet state to return. The default
@@ -1693,6 +1788,8 @@ func (x *ListRequest) GetCursor() string {
 	return ""
 }
 
+// ListResponse carries the typed result of WalletService.List as a oneof
+// discriminated by the requested view.
 type ListResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// WIRE-BREAKING CHANGE: PR #440 had
@@ -1785,14 +1882,20 @@ type isListResponse_Body interface {
 }
 
 type ListResponse_Activity struct {
+	// activity is set when the request view is ACTIVITY (the default):
+	// the merged, time-sorted WalletEntry stream.
 	Activity *ActivityList `protobuf:"bytes,1,opt,name=activity,proto3,oneof"`
 }
 
 type ListResponse_Vtxos struct {
+	// vtxos is set when the request view is VTXOS: the live spendable
+	// VTXO inventory.
 	Vtxos *VTXOInventory `protobuf:"bytes,2,opt,name=vtxos,proto3,oneof"`
 }
 
 type ListResponse_Onchain struct {
+	// onchain is set when the request view is ONCHAIN: the on-chain
+	// transaction history.
 	Onchain *OnchainHistory `protobuf:"bytes,3,opt,name=onchain,proto3,oneof"`
 }
 
@@ -1802,6 +1905,8 @@ func (*ListResponse_Vtxos) isListResponse_Body() {}
 
 func (*ListResponse_Onchain) isListResponse_Body() {}
 
+// ActivityList is the ACTIVITY-view body of ListResponse: the merged,
+// time-sorted WalletEntry stream.
 type ActivityList struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// entries are the unified, time-sorted wallet operations.
@@ -1877,6 +1982,8 @@ func (x *ActivityList) GetNextCursor() string {
 	return ""
 }
 
+// VTXOInventory is the VTXOS-view body of ListResponse: the live spendable
+// VTXO inventory.
 type VTXOInventory struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// vtxos are the live spendable VTXOs in the wallet. Order is
@@ -2031,6 +2138,8 @@ func (x *WalletVTXO) GetCommitmentTxid() string {
 	return ""
 }
 
+// OnchainHistory is the ONCHAIN-view body of ListResponse: the on-chain
+// transaction history.
 type OnchainHistory struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// txs are the on-chain transaction history rows: boarding deposits,
@@ -2899,6 +3008,7 @@ func (x *ActivityLedgerTrace) GetOutputIndex() int32 {
 	return 0
 }
 
+// DepositRequest asks WalletService.Deposit for a fresh boarding address.
 type DepositRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// amt_sat_hint is an optional caller hint about the expected deposit
@@ -2946,6 +3056,8 @@ func (x *DepositRequest) GetAmtSatHint() uint64 {
 	return 0
 }
 
+// DepositResponse returns a fresh boarding address and the initial
+// DEPOSIT-kind WalletEntry tracking the pending boarding operation.
 type DepositResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// onchain_address is a fresh boarding address the caller should
@@ -3003,6 +3115,7 @@ func (x *DepositResponse) GetEntry() *WalletEntry {
 	return nil
 }
 
+// BalanceRequest is the empty request for WalletService.Balance.
 type BalanceRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -3039,6 +3152,8 @@ func (*BalanceRequest) Descriptor() ([]byte, []int) {
 	return file_wallet_proto_rawDescGZIP(), []int{26}
 }
 
+// BalanceResponse is the unified balance summary returned by
+// WalletService.Balance across confirmed, in-flight, and credit amounts.
 type BalanceResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// confirmed_sat is the total spendable VTXO amount in satoshis.
@@ -3124,6 +3239,7 @@ func (x *BalanceResponse) GetCreditReservedSat() uint64 {
 	return 0
 }
 
+// StatusRequest is the empty request for WalletService.Status.
 type StatusRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -3160,6 +3276,8 @@ func (*StatusRequest) Descriptor() ([]byte, []int) {
 	return file_wallet_proto_rawDescGZIP(), []int{28}
 }
 
+// StatusResponse is the wallet-level readiness summary returned by
+// WalletService.Status.
 type StatusResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// ready is true when the daemon and its dependencies are up.
@@ -3246,6 +3364,8 @@ func (x *StatusResponse) GetPendingCount() uint32 {
 	return 0
 }
 
+// GetExitPlanRequest lists the VTXO outpoints to preview for unilateral exit
+// via WalletService.GetExitPlan.
 type GetExitPlanRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// outpoints are the VTXO outpoints to preview, each "txid:index".
@@ -3301,23 +3421,52 @@ func (x *GetExitPlanRequest) GetConfTarget() uint32 {
 	return 0
 }
 
+// ExitPlanEntry is the per-outpoint unilateral-exit readiness preview: the
+// backing-wallet fee requirements and, when an unroll job already exists,
+// its current state.
 type ExitPlanEntry struct {
-	state    protoimpl.MessageState `protogen:"open.v1"`
-	Outpoint string                 `protobuf:"bytes,1,opt,name=outpoint,proto3" json:"outpoint,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// outpoint is the previewed VTXO outpoint, formatted as "txid:index".
+	Outpoint string `protobuf:"bytes,1,opt,name=outpoint,proto3" json:"outpoint,omitempty"`
 	// funding_address is empty when can_start is true (no shortfall, so no
 	// address is allocated).
-	FundingAddress             string        `protobuf:"bytes,2,opt,name=funding_address,json=fundingAddress,proto3" json:"funding_address,omitempty"`
-	RequiredConfirmations      uint32        `protobuf:"varint,3,opt,name=required_confirmations,json=requiredConfirmations,proto3" json:"required_confirmations,omitempty"`
-	RequiredFeeUtxoCount       uint32        `protobuf:"varint,4,opt,name=required_fee_utxo_count,json=requiredFeeUtxoCount,proto3" json:"required_fee_utxo_count,omitempty"`
-	UsableFeeUtxoCount         uint32        `protobuf:"varint,5,opt,name=usable_fee_utxo_count,json=usableFeeUtxoCount,proto3" json:"usable_fee_utxo_count,omitempty"`
-	RecommendedUtxoAmountSat   int64         `protobuf:"varint,6,opt,name=recommended_utxo_amount_sat,json=recommendedUtxoAmountSat,proto3" json:"recommended_utxo_amount_sat,omitempty"`
-	RecommendedTotalFundingSat int64         `protobuf:"varint,7,opt,name=recommended_total_funding_sat,json=recommendedTotalFundingSat,proto3" json:"recommended_total_funding_sat,omitempty"`
-	FundingShortfallSat        int64         `protobuf:"varint,8,opt,name=funding_shortfall_sat,json=fundingShortfallSat,proto3" json:"funding_shortfall_sat,omitempty"`
-	CanStart                   bool          `protobuf:"varint,9,opt,name=can_start,json=canStart,proto3" json:"can_start,omitempty"`
-	ExitJobFound               bool          `protobuf:"varint,10,opt,name=exit_job_found,json=exitJobFound,proto3" json:"exit_job_found,omitempty"`
-	ExitStatus                 ExitJobStatus `protobuf:"varint,11,opt,name=exit_status,json=exitStatus,proto3,enum=walletdkrpc.ExitJobStatus" json:"exit_status,omitempty"`
-	SweepTxid                  string        `protobuf:"bytes,12,opt,name=sweep_txid,json=sweepTxid,proto3" json:"sweep_txid,omitempty"`
-	LastError                  string        `protobuf:"bytes,13,opt,name=last_error,json=lastError,proto3" json:"last_error,omitempty"`
+	FundingAddress string `protobuf:"bytes,2,opt,name=funding_address,json=fundingAddress,proto3" json:"funding_address,omitempty"`
+	// required_confirmations is the number of confirmations a
+	// backing-wallet UTXO must have before it can fund the unroll CPFP.
+	RequiredConfirmations uint32 `protobuf:"varint,3,opt,name=required_confirmations,json=requiredConfirmations,proto3" json:"required_confirmations,omitempty"`
+	// required_fee_utxo_count is the number of distinct confirmed wallet
+	// UTXOs the exit needs to fund CPFP fees, one per unroll ancestry path.
+	RequiredFeeUtxoCount uint32 `protobuf:"varint,4,opt,name=required_fee_utxo_count,json=requiredFeeUtxoCount,proto3" json:"required_fee_utxo_count,omitempty"`
+	// usable_fee_utxo_count is the number of confirmed wallet UTXOs large
+	// enough to each fund a CPFP child on their own.
+	UsableFeeUtxoCount uint32 `protobuf:"varint,5,opt,name=usable_fee_utxo_count,json=usableFeeUtxoCount,proto3" json:"usable_fee_utxo_count,omitempty"`
+	// recommended_utxo_amount_sat is the suggested value in satoshis for
+	// each fee-funding UTXO the caller provisions.
+	RecommendedUtxoAmountSat int64 `protobuf:"varint,6,opt,name=recommended_utxo_amount_sat,json=recommendedUtxoAmountSat,proto3" json:"recommended_utxo_amount_sat,omitempty"`
+	// recommended_total_funding_sat is the suggested total backing-wallet
+	// funding in satoshis: recommended_utxo_amount_sat times the required
+	// fee UTXO count.
+	RecommendedTotalFundingSat int64 `protobuf:"varint,7,opt,name=recommended_total_funding_sat,json=recommendedTotalFundingSat,proto3" json:"recommended_total_funding_sat,omitempty"`
+	// funding_shortfall_sat is the additional backing-wallet funding in
+	// satoshis needed before this exit can start. Zero when can_start is
+	// true.
+	FundingShortfallSat int64 `protobuf:"varint,8,opt,name=funding_shortfall_sat,json=fundingShortfallSat,proto3" json:"funding_shortfall_sat,omitempty"`
+	// can_start is true when the backing wallet already has the fee inputs
+	// and balance to fund this exit's forced unroll.
+	CanStart bool `protobuf:"varint,9,opt,name=can_start,json=canStart,proto3" json:"can_start,omitempty"`
+	// exit_job_found is true when an unroll job already exists for this
+	// outpoint, in which case exit_status, sweep_txid, and last_error
+	// describe it.
+	ExitJobFound bool `protobuf:"varint,10,opt,name=exit_job_found,json=exitJobFound,proto3" json:"exit_job_found,omitempty"`
+	// exit_status is the current phase of the existing unroll job, when
+	// exit_job_found is true.
+	ExitStatus ExitJobStatus `protobuf:"varint,11,opt,name=exit_status,json=exitStatus,proto3,enum=walletdkrpc.ExitJobStatus" json:"exit_status,omitempty"`
+	// sweep_txid is the hex-encoded txid of the existing job's sweep
+	// transaction, set once it has been broadcast.
+	SweepTxid string `protobuf:"bytes,12,opt,name=sweep_txid,json=sweepTxid,proto3" json:"sweep_txid,omitempty"`
+	// last_error is the failure reason of the existing unroll job, when it
+	// is in a failed state.
+	LastError string `protobuf:"bytes,13,opt,name=last_error,json=lastError,proto3" json:"last_error,omitempty"`
 	// error is a per-outpoint failure (e.g. VTXO not found) so one bad
 	// outpoint does not fail the whole batch. Empty on success.
 	Error         string `protobuf:"bytes,14,opt,name=error,proto3" json:"error,omitempty"`
@@ -3453,6 +3602,8 @@ func (x *ExitPlanEntry) GetError() string {
 	return ""
 }
 
+// GetExitPlanResponse returns one ExitPlanEntry per requested outpoint, plus
+// the batch-level fee estimate and aggregate funding verdict.
 type GetExitPlanResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// plans holds one entry per requested outpoint, in request order.
@@ -3545,6 +3696,8 @@ func (x *GetExitPlanResponse) GetTotalRecommendedFundingSat() int64 {
 	return 0
 }
 
+// SweepWalletRequest describes a backing-wallet sweep to preview or broadcast
+// via WalletService.SweepWallet.
 type SweepWalletRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// destination_address is the Bitcoin address that receives the backing
@@ -3621,10 +3774,14 @@ func (x *SweepWalletRequest) GetConfTarget() uint32 {
 	return 0
 }
 
+// WalletSweepInput is one backing-wallet UTXO selected for a sweep.
 type WalletSweepInput struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Outpoint      string                 `protobuf:"bytes,1,opt,name=outpoint,proto3" json:"outpoint,omitempty"`
-	AmountSat     int64                  `protobuf:"varint,2,opt,name=amount_sat,json=amountSat,proto3" json:"amount_sat,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// outpoint is the selected backing-wallet UTXO, formatted as
+	// "txid:index".
+	Outpoint string `protobuf:"bytes,1,opt,name=outpoint,proto3" json:"outpoint,omitempty"`
+	// amount_sat is the value of the selected UTXO in satoshis.
+	AmountSat     int64 `protobuf:"varint,2,opt,name=amount_sat,json=amountSat,proto3" json:"amount_sat,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3673,18 +3830,36 @@ func (x *WalletSweepInput) GetAmountSat() int64 {
 	return 0
 }
 
+// SweepWalletResponse is the preview or broadcast result of
+// WalletService.SweepWallet.
 type SweepWalletResponse struct {
-	state              protoimpl.MessageState `protogen:"open.v1"`
-	Inputs             []*WalletSweepInput    `protobuf:"bytes,1,rep,name=inputs,proto3" json:"inputs,omitempty"`
-	TotalInputSat      int64                  `protobuf:"varint,2,opt,name=total_input_sat,json=totalInputSat,proto3" json:"total_input_sat,omitempty"`
-	EstimatedFeeSat    int64                  `protobuf:"varint,3,opt,name=estimated_fee_sat,json=estimatedFeeSat,proto3" json:"estimated_fee_sat,omitempty"`
-	NetAmountSat       int64                  `protobuf:"varint,4,opt,name=net_amount_sat,json=netAmountSat,proto3" json:"net_amount_sat,omitempty"`
-	FeeRateSatPerVbyte int64                  `protobuf:"varint,5,opt,name=fee_rate_sat_per_vbyte,json=feeRateSatPerVbyte,proto3" json:"fee_rate_sat_per_vbyte,omitempty"`
-	CanBroadcast       bool                   `protobuf:"varint,6,opt,name=can_broadcast,json=canBroadcast,proto3" json:"can_broadcast,omitempty"`
-	Txid               string                 `protobuf:"bytes,7,opt,name=txid,proto3" json:"txid,omitempty"`
-	FailureReason      string                 `protobuf:"bytes,8,opt,name=failure_reason,json=failureReason,proto3" json:"failure_reason,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// inputs are the confirmed backing-wallet UTXOs selected for the sweep.
+	Inputs []*WalletSweepInput `protobuf:"bytes,1,rep,name=inputs,proto3" json:"inputs,omitempty"`
+	// total_input_sat is the gross value in satoshis of every selected
+	// input.
+	TotalInputSat int64 `protobuf:"varint,2,opt,name=total_input_sat,json=totalInputSat,proto3" json:"total_input_sat,omitempty"`
+	// estimated_fee_sat is the absolute miner fee in satoshis for the
+	// aggregate sweep transaction at the resolved fee rate.
+	EstimatedFeeSat int64 `protobuf:"varint,3,opt,name=estimated_fee_sat,json=estimatedFeeSat,proto3" json:"estimated_fee_sat,omitempty"`
+	// net_amount_sat is total_input_sat minus estimated_fee_sat: the amount
+	// in satoshis paid to the destination address.
+	NetAmountSat int64 `protobuf:"varint,4,opt,name=net_amount_sat,json=netAmountSat,proto3" json:"net_amount_sat,omitempty"`
+	// fee_rate_sat_per_vbyte is the (capped) fee rate used to build the
+	// sweep transaction.
+	FeeRateSatPerVbyte int64 `protobuf:"varint,5,opt,name=fee_rate_sat_per_vbyte,json=feeRateSatPerVbyte,proto3" json:"fee_rate_sat_per_vbyte,omitempty"`
+	// can_broadcast is true when the preview cleared the dust floor and the
+	// sweep can be published.
+	CanBroadcast bool `protobuf:"varint,6,opt,name=can_broadcast,json=canBroadcast,proto3" json:"can_broadcast,omitempty"`
+	// txid is the hex-encoded sweep transaction id, set only when the sweep
+	// was broadcast.
+	Txid string `protobuf:"bytes,7,opt,name=txid,proto3" json:"txid,omitempty"`
+	// failure_reason is populated when the sweep cannot broadcast (no
+	// confirmed inputs, dust after fees) or the broadcast failed after
+	// preview.
+	FailureReason string `protobuf:"bytes,8,opt,name=failure_reason,json=failureReason,proto3" json:"failure_reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SweepWalletResponse) Reset() {
@@ -3773,6 +3948,9 @@ func (x *SweepWalletResponse) GetFailureReason() string {
 	return ""
 }
 
+// ExitRequest identifies the VTXO to exit and selects the exit path for
+// WalletService.Exit: cooperative leave by default, or unilateral unroll
+// when force_unroll_ack is supplied.
 type ExitRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// outpoint is the VTXO outpoint to exit, formatted as "txid:index".
@@ -3840,6 +4018,8 @@ func (x *ExitRequest) GetForceUnrollAck() string {
 	return ""
 }
 
+// ExitResponse reports the exit path the daemon took and its per-path detail
+// for WalletService.Exit.
 type ExitResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// created indicates whether a new unilateral exit job was spawned.
@@ -3924,6 +4104,8 @@ func (x *ExitResponse) GetOnchainAddress() string {
 	return ""
 }
 
+// ExitStatusRequest identifies the VTXO whose exit job to query via
+// WalletService.ExitStatus.
 type ExitStatusRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// outpoint is the VTXO outpoint to query, formatted as
@@ -3970,6 +4152,8 @@ func (x *ExitStatusRequest) GetOutpoint() string {
 	return ""
 }
 
+// ExitStatusResponse reports the current phase of an unroll job for
+// WalletService.ExitStatus.
 type ExitStatusResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// found is true if an exit job exists for the requested outpoint.
@@ -4044,6 +4228,7 @@ func (x *ExitStatusResponse) GetLastError() string {
 	return ""
 }
 
+// SubscribeWalletRequest configures the WalletService.SubscribeWallet stream.
 type SubscribeWalletRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// include_existing instructs the daemon to emit the current
@@ -4107,9 +4292,12 @@ func (x *SubscribeWalletRequest) GetKinds() []EntryKind {
 // belongs in WalletInspectionService.InspectActivity.
 type WalletEntry struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// id is the stable identifier for this entry. Concretely it is the
-	// Lightning payment_hash for swap rows, the leave_job_id (or sweep
-	// txid) for exits, the boarding outpoint or txid for deposits.
+	// id is the stable identifier for this entry. Swap-backed SEND and
+	// RECV rows use the Lightning payment_hash. Credit-backed RECV rows
+	// use the credit operation id (see CreditReceive.operation_id); the
+	// payment_hash lives on recv progress/detail instead. EXIT rows use
+	// leave_job_id (or sweep txid); DEPOSIT rows use the boarding
+	// outpoint or txid.
 	Id string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	// kind is the user-visible category.
 	Kind EntryKind `protobuf:"varint,2,opt,name=kind,proto3,enum=walletdkrpc.EntryKind" json:"kind,omitempty"`
