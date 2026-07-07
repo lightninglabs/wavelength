@@ -123,6 +123,7 @@ func (r *Runtime) start() {
 
 		r.startMonitorLoop()
 		r.startCreditProjectorLoop()
+		r.startReconcilerLoop()
 	})
 }
 

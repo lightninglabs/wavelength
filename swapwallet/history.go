@@ -644,8 +644,18 @@ func (h *history) collectUnilateralExitEntries(ctx context.Context) (
 			}
 		}
 
+		// A per-row GetUnrollStatus error must not abort the whole
+		// derive pass: that would block every other terminal flip
+		// (deposits, other exits) on this and every reconcile/backfill
+		// pass. Log-and-skip like collectWalletLocalPendingEntries; the
+		// row stays at its pre-decoration (PENDING) status and is
+		// retried next pass.
 		if err := h.decorateExitEntry(ctx, entry, nil); err != nil {
-			return nil, err
+			h.deps.resolveLog().DebugS(
+				ctx,
+				"Unilateral exit status decorate skipped",
+				err,
+			)
 		}
 
 		out = append(out, entry)
@@ -768,6 +778,13 @@ func (h *history) decorateExitEntry(ctx context.Context,
 	if h.deps.RPCServer == nil || entry == nil || entry.GetId() == "" {
 		return nil
 	}
+
+	// decorateExitEntry only reads/annotates: it never clears the pending
+	// map. Clearing a terminal wallet-local EXIT is done exclusively from
+	// reprojectActivity, after the terminal row is durably projected
+	// (clearProjectedTerminalExit) — decorating happens on the read/derive
+	// path too, where clearing a cooperative-leave row (which lives only in
+	// the pending map) before it is persisted would strand it forever.
 
 	// GetUnrollStatus is keyed by the VTXO outpoint. A unilateral-exit
 	// row's id IS that outpoint; a cooperative-leave row is keyed by the

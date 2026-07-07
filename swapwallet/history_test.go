@@ -2074,6 +2074,64 @@ func TestHistoryDepositsSameAddressSummed(t *testing.T) {
 	)
 }
 
+// TestDecorateExitEntryDoesNotClearPending verifies that decorating a
+// wallet-local EXIT row to a terminal status does NOT clear its in-memory
+// pending record. Decoration runs on the read/derive path, and a
+// cooperative-leave row lives only in the pending map, so clearing it before
+// its terminal row is durably projected would strand it. The clear is done
+// exclusively by reprojectActivity, after a successful project.
+func TestDecorateExitEntryDoesNotClearPending(t *testing.T) {
+	t.Parallel()
+
+	const (
+		jobID    = "sendjob-xyz"
+		outpoint = "aabbcc:0"
+	)
+
+	h, _, rpc := newHistoryFixture(t)
+	rpc.unrollStatusResp = &daemonrpc.GetUnrollStatusResponse{Found: false}
+
+	entry := &walletdkrpc.WalletEntry{
+		Id:     jobID,
+		Kind:   walletdkrpc.EntryKind_ENTRY_KIND_EXIT,
+		Status: walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		Progress: &walletdkrpc.WalletEntryProgress{
+			VtxoOutpoint: outpoint,
+		},
+	}
+	h.runtime.trackPendingEntryWithoutTimeout(entry)
+	require.Contains(t, pendingSnapshotIDs(h.runtime), jobID)
+
+	// Decorating it terminal (the retained outpoint is forfeited) flips it
+	// to COMPLETE but leaves the pending record in place.
+	require.NoError(
+		t,
+		h.decorateExitEntry(
+			t.Context(), entry, map[string]struct{}{outpoint: {}},
+		),
+	)
+	require.Equal(
+		t, walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		entry.GetStatus(),
+	)
+	require.Contains(
+		t, pendingSnapshotIDs(h.runtime), jobID, "decorate must "+
+			"not clear the pending map; reprojectActivity does",
+	)
+}
+
+// pendingSnapshotIDs returns the ids currently tracked in the runtime's
+// in-memory pending map.
+func pendingSnapshotIDs(r *Runtime) []string {
+	entries := r.pendingSnapshot()
+	ids := make([]string, 0, len(entries))
+	for _, e := range entries {
+		ids = append(ids, e.GetId())
+	}
+
+	return ids
+}
+
 // TestDecorateCooperativeLeaveMatchesRetainedOutpoint verifies that after #610
 // (row keyed by the stable leave-job id), the forfeit-driven completion
 // correlates on the retained consumed outpoint in vtxo_outpoint, not the id.

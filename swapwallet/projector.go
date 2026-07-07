@@ -21,9 +21,15 @@ import (
 // the caller still fans the update out to live subscribers. When no store is
 // wired (tests, or a build without a database) projection is a no-op and the
 // legacy derive-on-read path continues unchanged.
-func (r *Runtime) project(ctx context.Context, entry *walletdkrpc.WalletEntry) {
+// project writes entry into the canonical activity store. It returns nil on a
+// successful (or intentionally skipped) projection and the underlying error
+// when the durable write failed, so a caller can gate a follow-up side effect
+// on the row actually landing.
+func (r *Runtime) project(ctx context.Context,
+	entry *walletdkrpc.WalletEntry) error {
+
 	if r.deps == nil || r.deps.ActivityStore == nil {
-		return
+		return nil
 	}
 
 	// A row with no canonical id cannot be keyed; skip it, matching the
@@ -35,7 +41,7 @@ func (r *Runtime) project(ctx context.Context, entry *walletdkrpc.WalletEntry) {
 	// real txid:vout id.
 	if entry.GetId() == "" ||
 		entry.GetId() == syntheticBoardingUnconfirmedID {
-		return
+		return nil
 	}
 
 	projection, err := entryToProjection(entry)
@@ -43,7 +49,7 @@ func (r *Runtime) project(ctx context.Context, entry *walletdkrpc.WalletEntry) {
 		r.deps.resolveLog().WarnS(ctx, "Activity projection skipped: "+
 			"encode failed", err)
 
-		return
+		return err
 	}
 
 	if err := r.deps.ActivityStore.ProjectEntry(
@@ -53,7 +59,11 @@ func (r *Runtime) project(ctx context.Context, entry *walletdkrpc.WalletEntry) {
 		r.deps.resolveLog().WarnS(ctx, "Activity projection failed",
 			err,
 		)
+
+		return err
 	}
+
+	return nil
 }
 
 // projectAndEmit projects the entry into the canonical activity log and then
@@ -67,17 +77,30 @@ func (r *Runtime) projectAndEmit(ctx context.Context,
 	r.emit(entry)
 }
 
-// backfillActivity seeds the canonical activity log from the existing
-// derive-on-read collectors once at startup, so the store reflects current
-// state before any new transition lands. It pages through the merged feed and
-// projects every row; the upsert is idempotent on canonical_id, so re-running
-// across restarts is safe. No-op when no store is wired.
-func (r *Runtime) backfillActivity(ctx context.Context) {
+// reprojectActivity pages the derive-on-read feed and projects every row into
+// the canonical activity store, returning the number of rows projected. Because
+// ProjectEntry is idempotent on canonical_id and suppresses no-op changes,
+// re-running observes any terminal transition since the last pass (a confirmed
+// deposit, a forfeited leave, a completed unroll) while leaving unchanged rows
+// untouched. It backs both the one-time startup backfill and the ongoing
+// reconciler. Returns (0, nil) when no store is wired.
+//
+// kinds optionally restricts the derived feed: the startup backfill passes nil
+// to seed every kind, while the reconciler passes only the backfill-only
+// producers (DEPOSIT, EXIT) so it neither re-projects nor contends with the
+// monitor-owned SEND/RECV rows.
+//
+// A wallet-local EXIT's pending record is cleared only here, and only after its
+// terminal row is durably projected — never from the read/derive path — so a
+// failed projection or a row that paged out is retried on a later pass instead
+// of being stranded PENDING in the store.
+func (r *Runtime) reprojectActivity(ctx context.Context,
+	kinds []walletdkrpc.EntryKind) (int, error) {
+
 	if r.deps == nil || r.deps.ActivityStore == nil {
-		return
+		return 0, nil
 	}
 
-	log := r.deps.resolveLog()
 	h := newHistory(r.deps, r)
 	limit := r.deps.resolveMaxListLimit()
 
@@ -89,13 +112,10 @@ func (r *Runtime) backfillActivity(ctx context.Context) {
 		list, err := h.deriveActivity(ctx, &walletdkrpc.ListRequest{
 			Limit:  limit,
 			Offset: offset,
+			Kinds:  kinds,
 		})
 		if err != nil {
-			log.WarnS(ctx, "Activity backfill stopped: list failed",
-				err,
-			)
-
-			return
+			return projected, err
 		}
 
 		entries := list.GetEntries()
@@ -108,7 +128,14 @@ func (r *Runtime) backfillActivity(ctx context.Context) {
 		}
 
 		for _, entry := range entries {
-			r.project(ctx, entry)
+			if err := r.project(ctx, entry); err != nil {
+				// Best-effort: the next pass retries. Do not
+				// clear any pending record when the write did
+				// not land.
+				continue
+			}
+
+			r.clearProjectedTerminalExit(entry)
 		}
 		projected += len(entries)
 
@@ -116,6 +143,47 @@ func (r *Runtime) backfillActivity(ctx context.Context) {
 		if uint32(len(entries)) < limit || offset >= list.GetTotal() {
 			break
 		}
+	}
+
+	return projected, nil
+}
+
+// clearProjectedTerminalExit drops a wallet-local EXIT's in-memory pending
+// record once its terminal row has been durably projected. A cooperative-leave
+// EXIT exists only in the pending map, so this must run strictly after a
+// successful project (not while decorating): the store now holds the terminal
+// row, and dropping the record stops later passes from re-decorating a settled
+// row. It is a no-op for ids not in the map (e.g. unilateral rows synthesized
+// from ListVTXOs) and for non-terminal or non-EXIT rows.
+func (r *Runtime) clearProjectedTerminalExit(entry *walletdkrpc.WalletEntry) {
+	if entry.GetKind() != walletdkrpc.EntryKind_ENTRY_KIND_EXIT {
+		return
+	}
+
+	switch entry.GetStatus() {
+	case walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		walletdkrpc.EntryStatus_ENTRY_STATUS_FAILED:
+
+		r.clearPending(entry.GetId())
+	}
+}
+
+// backfillActivity seeds the canonical activity log from the existing
+// derive-on-read collectors once at startup, so the store reflects current
+// state before any new transition lands. The upsert is idempotent on
+// canonical_id, so re-running across restarts is safe. No-op when no store is
+// wired.
+func (r *Runtime) backfillActivity(ctx context.Context) {
+	if r.deps == nil || r.deps.ActivityStore == nil {
+		return
+	}
+
+	log := r.deps.resolveLog()
+	projected, err := r.reprojectActivity(ctx, nil)
+	if err != nil {
+		log.WarnS(ctx, "Activity backfill stopped: list failed", err)
+
+		return
 	}
 
 	log.InfoS(ctx, "Activity backfill complete",
