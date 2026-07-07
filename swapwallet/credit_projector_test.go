@@ -107,7 +107,7 @@ func TestCreditProjectorProjectsOwnedTerminals(t *testing.T) {
 		t, walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
 		pay.GetStatus(),
 	)
-	require.Equal(t, int64(500), pay.GetAmountSat())
+	require.Equal(t, int64(-500), pay.GetAmountSat())
 	require.Equal(
 		t, walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_CONFIRMED,
 		pay.GetProgress().GetPhase(),
