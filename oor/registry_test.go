@@ -140,9 +140,10 @@ func newTestRegistryBehavior(store SessionRegistryStore) (*oorRegistryBehavior,
 			RegistryStore: store,
 			Limits:        DefaultReceiveLimits(),
 		},
-		log:      btclog.Disabled,
-		active:   make(map[SessionID]*OORSessionActor),
-		incoming: make(map[SessionID]struct{}),
+		log:        btclog.Disabled,
+		active:     make(map[SessionID]*OORSessionActor),
+		activeDirs: make(map[SessionID]clientdb.OORSessionDirection),
+		incoming:   make(map[SessionID]struct{}),
 	}
 	b.spawnFunc = func(id SessionID, dir clientdb.OORSessionDirection) (
 		*OORSessionActor, error) {
@@ -1076,6 +1077,38 @@ func TestOORRegistrySelfTransferParkAndRedrive(t *testing.T) {
 		rec.dirs,
 	)
 	require.Empty(t, b.parkedSelfHints)
+}
+
+// TestOORRegistryStaleTerminalDoesNotReapReplacementIncoming verifies that an
+// outgoing terminal notification racing an incoming self-transfer replacement
+// cannot reap the fresh incoming child before it commits its first snapshot.
+func TestOORRegistryStaleTerminalDoesNotReapReplacementIncoming(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	id := oorSessionID(0x72)
+
+	store := newFakeRegistryStore()
+	upsertRegistryRow(
+		t, store, id, clientdb.OORSessionDirectionOutgoing, "completed",
+		"", clientdb.OORSessionStatusCompleted,
+	)
+
+	b, rec := newTestRegistryBehavior(store)
+	child, err := b.ensureChild(id, clientdb.OORSessionDirectionIncoming)
+	require.NoError(t, err)
+	require.NotNil(t, child)
+
+	res := b.Receive(ctx, &SessionTerminalNotification{
+		SessionID: id,
+	}, fakeExec{})
+	require.True(t, res.IsOk(), res.Err())
+
+	require.Contains(t, b.active, id)
+	require.Equal(
+		t, clientdb.OORSessionDirectionIncoming, b.activeDirs[id],
+	)
+	require.Equal(t, 0, rec.stopCount())
 }
 
 // TestOORRegistryDurableEndToEnd exercises the durable registry against a
