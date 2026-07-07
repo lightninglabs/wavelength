@@ -211,9 +211,10 @@ func TestInvoiceGeneratorEmbedsRouteHintPath(t *testing.T) {
 	authKey := keychain.NewPrivKeyMessageSigner(
 		privKey, keychain.KeyLocator{},
 	)
-	invoice, _, err := creator.CreateInvoiceWithKeyRouteHintPath(
+	invoice, _, err := creator.CreateInvoiceWithKeyRouteHintPaths(
 		context.Background(), btcutil.Amount(50_000),
-		"swap", routeHintPath, time.Hour, authKey, &preimage,
+		"swap", [][]*RouteHint{routeHintPath}, time.Hour, authKey,
+		&preimage,
 	)
 	require.NoError(t, err)
 
@@ -241,4 +242,119 @@ func TestInvoiceGeneratorEmbedsRouteHintPath(t *testing.T) {
 	require.Equal(
 		t, uint16(60), decoded.RouteHints[0][1].CLTVExpiryDelta,
 	)
+}
+
+// TestInvoiceGeneratorEmbedsMultipleRouteHintPaths verifies that a receive
+// invoice carries one BOLT-11 "r" field per alternative route-hint path, all
+// terminating at the same virtual channel. This is the multi-backend fan-out
+// shape: each path enters through a different backend node.
+func TestInvoiceGeneratorEmbedsMultipleRouteHintPaths(t *testing.T) {
+	t.Parallel()
+
+	privKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	backendOneKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	backendTwoKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	creator := NewEphemeralInvoiceGenerator(
+		privKey, nil, &chaincfg.RegressionNetParams,
+	)
+
+	preimage, err := NewPreimage()
+	require.NoError(t, err)
+
+	const virtualChannelID = 42
+	routeHintPaths := [][]*RouteHint{{{
+		NodeID:          backendOneKey.PubKey().SerializeCompressed(),
+		ChannelID:       virtualChannelID,
+		FeeBaseMsat:     0,
+		FeePropPpm:      10_000,
+		CltvExpiryDelta: 60,
+	}}, {{
+		NodeID:          backendTwoKey.PubKey().SerializeCompressed(),
+		ChannelID:       virtualChannelID,
+		FeeBaseMsat:     0,
+		FeePropPpm:      10_000,
+		CltvExpiryDelta: 60,
+	}}}
+
+	authKey := keychain.NewPrivKeyMessageSigner(
+		privKey, keychain.KeyLocator{},
+	)
+	invoice, _, err := creator.CreateInvoiceWithKeyRouteHintPaths(
+		context.Background(), btcutil.Amount(50_000),
+		"swap", routeHintPaths, time.Hour, authKey, &preimage,
+	)
+	require.NoError(t, err)
+
+	decoded, err := zpay32.Decode(
+		string(invoice.PaymentRequest), &chaincfg.RegressionNetParams,
+	)
+	require.NoError(t, err)
+	require.Len(t, decoded.RouteHints, 2)
+
+	for i, hint := range decoded.RouteHints {
+		require.Len(t, hint, 1, "path %d", i)
+		require.Equal(
+			t, uint64(virtualChannelID), hint[0].ChannelID, "pat"+
+				"h %d", i,
+		)
+		require.Equal(
+			t, uint32(10_000), hint[0].FeeProportionalMillionths,
+			"path %d", i,
+		)
+	}
+	require.Equal(
+		t, backendOneKey.PubKey().SerializeCompressed(),
+		decoded.RouteHints[0][0].NodeID.SerializeCompressed(),
+	)
+	require.Equal(
+		t, backendTwoKey.PubKey().SerializeCompressed(),
+		decoded.RouteHints[1][0].NodeID.SerializeCompressed(),
+	)
+}
+
+// TestInvoiceGeneratorRejectsTooManyRouteHintPaths verifies a quote carrying
+// more paths than lnd accepts as hop hints fails fast with the path count.
+func TestInvoiceGeneratorRejectsTooManyRouteHintPaths(t *testing.T) {
+	t.Parallel()
+
+	privKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	backendKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	creator := NewEphemeralInvoiceGenerator(
+		privKey, nil, &chaincfg.RegressionNetParams,
+	)
+
+	preimage, err := NewPreimage()
+	require.NoError(t, err)
+
+	routeHintPaths := make([][]*RouteHint, maxRouteHintPaths+1)
+	for i := range routeHintPaths {
+		routeHintPaths[i] = []*RouteHint{{
+			NodeID: backendKey.
+				PubKey().
+				SerializeCompressed(),
+			ChannelID:       42,
+			FeeBaseMsat:     0,
+			FeePropPpm:      10_000,
+			CltvExpiryDelta: 60,
+		}}
+	}
+
+	authKey := keychain.NewPrivKeyMessageSigner(
+		privKey, keychain.KeyLocator{},
+	)
+	_, _, err = creator.CreateInvoiceWithKeyRouteHintPaths(
+		context.Background(), btcutil.Amount(50_000),
+		"swap", routeHintPaths, time.Hour, authKey, &preimage,
+	)
+	require.ErrorContains(t, err, "21 route hint paths exceed the maximum")
 }

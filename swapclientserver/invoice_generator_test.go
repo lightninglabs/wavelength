@@ -46,10 +46,10 @@ func (s *stubInvoiceCreator) CreateInvoiceWithKey(_ context.Context,
 	return &invoices.Invoice{}, lntypes.Hash{}, nil
 }
 
-// CreateInvoiceWithKeyRouteHintPath records a keyed full-path invocation so
+// CreateInvoiceWithKeyRouteHintPaths records a keyed multi-path invocation so
 // the test can confirm that the wrapper forwards new route-hint-aware calls.
-func (s *stubInvoiceCreator) CreateInvoiceWithKeyRouteHintPath(
-	_ context.Context, _ btcutil.Amount, _ string, _ []*swaps.RouteHint,
+func (s *stubInvoiceCreator) CreateInvoiceWithKeyRouteHintPaths(
+	_ context.Context, _ btcutil.Amount, _ string, _ [][]*swaps.RouteHint,
 	_ time.Duration, _ keychain.SingleKeyMessageSigner,
 	_ *lntypes.Preimage) (*invoices.Invoice, lntypes.Hash, error) {
 
@@ -109,10 +109,10 @@ func TestDaemonAuthOnlyInvoiceCreatorForwardsKeyedPath(t *testing.T) {
 	require.Equal(t, 0, stub.noKeyCalls)
 }
 
-// TestDaemonAuthOnlyInvoiceCreatorForwardsKeyedRouteHintPath asserts that the
-// daemon wrapper preserves the full route-hint path used for hidden-primary
+// TestDaemonAuthOnlyInvoiceCreatorForwardsKeyedRouteHintPaths asserts that
+// the daemon wrapper preserves the route-hint paths used for hidden-primary
 // payments.
-func TestDaemonAuthOnlyInvoiceCreatorForwardsKeyedRouteHintPath(t *testing.T) {
+func TestDaemonAuthOnlyInvoiceCreatorForwardsKeyedRouteHintPaths(t *testing.T) {
 	t.Parallel()
 
 	stub := &stubInvoiceCreator{}
@@ -124,7 +124,7 @@ func TestDaemonAuthOnlyInvoiceCreatorForwardsKeyedRouteHintPath(t *testing.T) {
 		priv, keychain.KeyLocator{},
 	)
 
-	_, _, err = wrapper.CreateInvoiceWithKeyRouteHintPath(
+	_, _, err = wrapper.CreateInvoiceWithKeyRouteHintPaths(
 		t.Context(), btcutil.Amount(1000),
 		"memo", nil, time.Minute, authKey, nil,
 	)

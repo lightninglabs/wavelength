@@ -31,11 +31,12 @@ import (
 )
 
 type testInvoiceCreator struct {
-	invoice     *invoices.Invoice
-	paymentHash lntypes.Hash
-	lastAuthKey keychain.SingleKeyMessageSigner
-	lastMemo    string
-	authKeys    []keychain.SingleKeyMessageSigner
+	invoice       *invoices.Invoice
+	paymentHash   lntypes.Hash
+	lastAuthKey   keychain.SingleKeyMessageSigner
+	lastMemo      string
+	authKeys      []keychain.SingleKeyMessageSigner
+	lastHintPaths [][]*RouteHint
 }
 
 // CreateInvoice returns the preconfigured invoice and payment hash.
@@ -65,17 +66,20 @@ func (c *testInvoiceCreator) CreateInvoiceWithKey(ctx context.Context,
 	return c.CreateInvoice(ctx, amount, memo, hint, expiry, preimage)
 }
 
-// CreateInvoiceWithKeyRouteHintPath returns the preconfigured invoice and
-// payment hash for path-aware receive tests.
-func (c *testInvoiceCreator) CreateInvoiceWithKeyRouteHintPath(
+// CreateInvoiceWithKeyRouteHintPaths records the alternative paths and
+// returns the preconfigured invoice for multi-path receive tests.
+func (c *testInvoiceCreator) CreateInvoiceWithKeyRouteHintPaths(
 	ctx context.Context, amount btcutil.Amount, memo string,
-	hints []*RouteHint, expiry time.Duration,
+	hintPaths [][]*RouteHint, expiry time.Duration,
 	authKey keychain.SingleKeyMessageSigner, preimage *lntypes.Preimage) (
 	*invoices.Invoice, lntypes.Hash, error) {
 
+	c.lastHintPaths = hintPaths
+
 	var hint *RouteHint
-	if len(hints) > 0 {
-		hint = hints[len(hints)-1]
+	if len(hintPaths) > 0 && len(hintPaths[0]) > 0 {
+		firstPath := hintPaths[0]
+		hint = firstPath[len(firstPath)-1]
 	}
 
 	return c.CreateInvoiceWithKey(
@@ -201,6 +205,116 @@ func TestStartReceiveDerivesReceiveAuthKeyPerPaymentHash(t *testing.T) {
 			creator.authKeys[1].PubKey(),
 		),
 	)
+}
+
+// TestStartReceiveEmbedsAllRouteHintPaths verifies every alternative
+// route-hint path from the quote flows through to invoice creation when all
+// paths terminate at the same virtual channel.
+func TestStartReceiveEmbedsAllRouteHintPaths(t *testing.T) {
+	t.Parallel()
+
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	backendOnePriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	backendTwoPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	creator := &testInvoiceCreator{
+		invoice: &invoices.Invoice{
+			PaymentRequest: []byte("lnrtest1swap"),
+		},
+	}
+	hintPaths := [][]*RouteHint{{{
+		NodeID:          backendOnePriv.PubKey().SerializeCompressed(),
+		ChannelID:       99,
+		FeeBaseMsat:     1,
+		FeePropPpm:      2,
+		CltvExpiryDelta: 40,
+	}}, {{
+		NodeID:          backendTwoPriv.PubKey().SerializeCompressed(),
+		ChannelID:       99,
+		FeeBaseMsat:     1,
+		FeePropPpm:      2,
+		CltvExpiryDelta: 40,
+	}}}
+	serverConn := &testSwapServerConn{
+		hintPaths: hintPaths,
+	}
+	daemonConn := &testDaemonConn{
+		identityKey: clientPriv.PubKey(),
+		operatorKey: operatorPriv.PubKey(),
+	}
+
+	client := NewSwapClient(serverConn, daemonConn, nil, creator)
+	_, err = client.StartReceiveViaLightning(
+		t.Context(), btcutil.Amount(42_000),
+	)
+	require.NoError(t, err)
+	require.Equal(t, hintPaths, creator.lastHintPaths)
+}
+
+// TestStartReceiveRejectsDivergentRouteHintPaths verifies a quote whose
+// alternative paths terminate at different virtual channels is rejected
+// before an invoice is created, as is a quote carrying an empty path.
+func TestStartReceiveRejectsDivergentRouteHintPaths(t *testing.T) {
+	t.Parallel()
+
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	backendPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	backendPub := backendPriv.PubKey().SerializeCompressed()
+	pathToChannel := func(channelID uint64) []*RouteHint {
+		return []*RouteHint{{
+			NodeID:          backendPub,
+			ChannelID:       channelID,
+			FeeBaseMsat:     1,
+			FeePropPpm:      2,
+			CltvExpiryDelta: 40,
+		}}
+	}
+
+	creator := &testInvoiceCreator{
+		invoice: &invoices.Invoice{
+			PaymentRequest: []byte("lnrtest1swap"),
+		},
+	}
+	serverConn := &testSwapServerConn{
+		hintPaths: [][]*RouteHint{
+			pathToChannel(99), pathToChannel(100),
+		},
+	}
+	daemonConn := &testDaemonConn{
+		identityKey: clientPriv.PubKey(),
+		operatorKey: operatorPriv.PubKey(),
+	}
+
+	client := NewSwapClient(serverConn, daemonConn, nil, creator)
+	_, err = client.StartReceiveViaLightning(
+		t.Context(), btcutil.Amount(42_000),
+	)
+	require.ErrorContains(
+		t, err, "route hint path 1 terminates at channel 100, want 99",
+	)
+	require.Nil(t, creator.lastHintPaths)
+
+	serverConn.hintPaths = [][]*RouteHint{pathToChannel(99), {}}
+	_, err = client.StartReceiveViaLightning(
+		t.Context(), btcutil.Amount(42_000),
+	)
+	require.ErrorContains(t, err, "route hint path 1 is empty")
+	require.Nil(t, creator.lastHintPaths)
 }
 
 // TestAcceptInArkHtlcEventBuildsSenderReceiverPolicy verifies that same-Ark
@@ -679,6 +793,7 @@ func testReceiveForfeitSignaturePayload(
 
 type testSwapServerConn struct {
 	hint           *RouteHint
+	hintPaths      [][]*RouteHint
 	payerFeeMsat   uint64
 	cfg            *VHTLCConfig
 	htlcAmountSat  uint64
@@ -745,7 +860,8 @@ func (r *testIncomingEventReceiver) WaitIncomingVHTLC(context.Context,
 	return r.notification, nil
 }
 
-// RequestChannelID returns the preconfigured out-swap route hint.
+// RequestChannelID returns the preconfigured out-swap route hint paths, or
+// a single path wrapping the lone configured hint.
 func (c *testSwapServerConn) RequestChannelID(_ context.Context,
 	vhtlcPubkey *btcec.PublicKey, _ lntypes.Hash, amountSat btcutil.Amount,
 	_ uint32) (*OutSwapQuote, error) {
@@ -753,10 +869,15 @@ func (c *testSwapServerConn) RequestChannelID(_ context.Context,
 	c.lastVhtlcPubkey = vhtlcPubkey
 	c.lastAmountSat = amountSat
 
-	return &OutSwapQuote{
-		RouteHintPath: []*RouteHint{
+	hintPaths := c.hintPaths
+	if hintPaths == nil {
+		hintPaths = [][]*RouteHint{{
 			c.hint,
-		},
+		}}
+	}
+
+	return &OutSwapQuote{
+		RouteHintPaths:   hintPaths,
 		ReceiveAmountSat: amountSat,
 		PayerFeeMsat:     c.payerFeeMsat,
 	}, nil

@@ -852,16 +852,16 @@ func (d *daemonAuthOnlyInvoiceCreator) CreateInvoiceWithKey(ctx context.Context,
 	)
 }
 
-// CreateInvoiceWithKeyRouteHintPath delegates to the underlying generator with
-// the full private route-hint path and daemon-derived auth key.
-func (d *daemonAuthOnlyInvoiceCreator) CreateInvoiceWithKeyRouteHintPath(
+// CreateInvoiceWithKeyRouteHintPaths delegates to the underlying generator
+// with every private route-hint path and the daemon-derived auth key.
+func (d *daemonAuthOnlyInvoiceCreator) CreateInvoiceWithKeyRouteHintPaths(
 	ctx context.Context, amountSat btcutil.Amount, memo string,
-	routeHintPath []*swaps.RouteHint, expiry time.Duration,
+	routeHintPaths [][]*swaps.RouteHint, expiry time.Duration,
 	authKey keychain.SingleKeyMessageSigner, preimage *lntypes.Preimage) (
 	*invoices.Invoice, lntypes.Hash, error) {
 
-	return d.inner.CreateInvoiceWithKeyRouteHintPath(
-		ctx, amountSat, memo, routeHintPath, expiry, authKey, preimage,
+	return d.inner.CreateInvoiceWithKeyRouteHintPaths(
+		ctx, amountSat, memo, routeHintPaths, expiry, authKey, preimage,
 	)
 }
 

@@ -88,6 +88,78 @@ func testForfeitSignaturePayload() *ForfeitSignaturePayload {
 	}
 }
 
+// TestRouteHintPathsFromProto verifies alternative route-hint paths convert
+// to the SDK shape with path and hop order preserved, and that empty or
+// invalid paths are rejected with the offending path index.
+func TestRouteHintPathsFromProto(t *testing.T) {
+	t.Parallel()
+
+	backendOnePriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	backendTwoPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	backendOneID := backendOnePriv.PubKey().SerializeCompressed()
+	backendTwoID := backendTwoPriv.PubKey().SerializeCompressed()
+
+	hintToChannel := func(nodeID []byte,
+		channelID uint64) *swaprpc.RouteHint {
+
+		return &swaprpc.RouteHint{
+			NodeId:             nodeID,
+			ChannelId:          channelID,
+			FeeBaseMsat:        1,
+			FeeProportionalPpm: 2,
+			CltvExpiryDelta:    40,
+		}
+	}
+
+	// Two alternative paths convert in order, the first carrying two
+	// ordered hops.
+	hintPaths, err := routeHintPathsFromProto([]*swaprpc.RouteHintPath{{
+		Hops: []*swaprpc.RouteHint{
+			hintToChannel(backendOneID, 21),
+			hintToChannel(backendOneID, 42),
+		},
+	}, {
+		Hops: []*swaprpc.RouteHint{
+			hintToChannel(backendTwoID, 42),
+		},
+	}})
+	require.NoError(t, err)
+	require.Len(t, hintPaths, 2)
+	require.Len(t, hintPaths[0], 2)
+	require.Len(t, hintPaths[1], 1)
+	require.Equal(t, uint64(21), hintPaths[0][0].ChannelID)
+	require.Equal(t, uint64(42), hintPaths[0][1].ChannelID)
+	require.Equal(t, backendTwoID, hintPaths[1][0].NodeID)
+
+	// A path without hops is rejected with its index.
+	_, err = routeHintPathsFromProto([]*swaprpc.RouteHintPath{{
+		Hops: []*swaprpc.RouteHint{
+			hintToChannel(backendOneID, 42),
+		},
+	}, {}})
+	require.ErrorContains(t, err, "route hint path 1 is empty")
+
+	// An invalid hint inside a path wraps the path and hop index. A zero
+	// channel ID never routes, so it must be rejected at conversion time.
+	_, err = routeHintPathsFromProto([]*swaprpc.RouteHintPath{{
+		Hops: []*swaprpc.RouteHint{
+			hintToChannel(backendOneID, 0),
+		},
+	}})
+	require.ErrorContains(t, err, "route hint path 0")
+	require.ErrorContains(t, err, "hop 0")
+
+	// No paths at all convert to an empty list; the caller decides
+	// whether that is fatal.
+	hintPaths, err = routeHintPathsFromProto(nil)
+	require.NoError(t, err)
+	require.Empty(t, hintPaths)
+}
+
 // TestAuthorizeInSwapRefundPreservesStatusCode verifies the pay session can
 // still distinguish retryable "not ready" authorization responses.
 func TestAuthorizeInSwapRefundPreservesStatusCode(t *testing.T) {
