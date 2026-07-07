@@ -69,9 +69,9 @@ type WalletServiceClient interface {
 	// total-outflow details before funds move.
 	Send(ctx context.Context, in *SendRequest, opts ...grpc.CallOption) (*SendResponse, error)
 	// Recv asks the daemon for a Lightning invoice the caller can hand
-	// out. Internally this opens a swap-in via the daemon-owned swap
-	// subsystem; the invoice is signed with a daemon-managed key, not an
-	// ephemeral process-local key.
+	// out. Internally the daemon sets up the inbound receive via its
+	// owned swap subsystem; the invoice is signed with a daemon-managed
+	// key, not an ephemeral process-local key.
 	Recv(ctx context.Context, in *RecvRequest, opts ...grpc.CallOption) (*RecvResponse, error)
 	// List returns the unified wallet view selected by ListRequest.view:
 	// ACTIVITY (default) is the merged WalletEntry stream; VTXOS is the
@@ -306,9 +306,9 @@ type WalletServiceServer interface {
 	// total-outflow details before funds move.
 	Send(context.Context, *SendRequest) (*SendResponse, error)
 	// Recv asks the daemon for a Lightning invoice the caller can hand
-	// out. Internally this opens a swap-in via the daemon-owned swap
-	// subsystem; the invoice is signed with a daemon-managed key, not an
-	// ephemeral process-local key.
+	// out. Internally the daemon sets up the inbound receive via its
+	// owned swap subsystem; the invoice is signed with a daemon-managed
+	// key, not an ephemeral process-local key.
 	Recv(context.Context, *RecvRequest) (*RecvResponse, error)
 	// List returns the unified wallet view selected by ListRequest.view:
 	// ACTIVITY (default) is the merged WalletEntry stream; VTXOS is the
