@@ -936,14 +936,56 @@ func (h *history) collectLedgerEntries(ctx context.Context, offset,
 			entry.AmountSat = amount
 		}
 
-		// v1 SCOPE: EXIT and DEPOSIT ledger rows carry txid but no
-		// link back to the original pending intent, so they
-		// surface under their synthetic id (the ledger txid or
-		// the entry_id fallback). See swapwallet/doc.go.
 		out = append(out, entry)
 	}
 
-	return out, nil
+	// Confirmed boarding deposits keyed by deposit-<address> (the daemon
+	// surfaced the boarding address) are summed per address so multiple
+	// UTXOs paid to the same address show their total rather than
+	// overwriting each other. See sumDepositsByAddress.
+	return sumDepositsByAddress(out), nil
+}
+
+// sumDepositsByAddress collapses boarding-deposit rows that share a canonical
+// id into one row whose amount is the SUM of every UTXO under that id, so a
+// reused boarding address (multiple UTXOs → one deposit-<address> id) shows the
+// total received instead of a single UTXO's amount. Rows with a unique id
+// (older-daemon txid:vout deposits, and every non-deposit row) form a group of
+// one and pass through unchanged. The most-recently-updated row in each group
+// supplies the non-amount fields (status, phase, txid), so the collapsed row
+// reflects the latest deposit's state with the correct running total. Order is
+// not preserved; deriveActivity re-sorts by updated_at.
+func sumDepositsByAddress(
+	entries []*walletdkrpc.WalletEntry) []*walletdkrpc.WalletEntry {
+
+	sums := make(map[string]int64)
+	rep := make(map[string]*walletdkrpc.WalletEntry)
+	out := make([]*walletdkrpc.WalletEntry, 0, len(entries))
+
+	for _, e := range entries {
+		id := e.GetId()
+		if e.GetKind() != walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT ||
+			id == "" {
+
+			out = append(out, e)
+
+			continue
+		}
+
+		sums[id] += e.GetAmountSat()
+		if cur, ok := rep[id]; !ok ||
+			e.GetUpdatedAtUnix() >= cur.GetUpdatedAtUnix() {
+
+			rep[id] = e
+		}
+	}
+
+	for id, e := range rep {
+		e.AmountSat = sums[id]
+		out = append(out, e)
+	}
+
+	return out
 }
 
 // swapOORCorrelations keeps the swap-side session metadata needed to hide
@@ -1394,14 +1436,25 @@ func walletEntryFromLedgerRow(t *daemonrpc.TransactionHistoryEntry) (
 		Counterparty:  ledgerCounterparty(t, kind),
 		CreatedAtUnix: t.GetCreatedAtUnixS(),
 		UpdatedAtUnix: t.GetCreatedAtUnixS(),
-		Progress:      progressFromLedgerRow(t),
+		// A confirmed boarding deposit carries its allocated address as
+		// a structured onchain-address request, so a client reads the
+		// deposit address from request.onchain_address rather than
+		// parsing it out of the deposit-<address> id. Nil for every
+		// non-deposit row and for an older daemon that does not surface
+		// boarding_address.
+		Request:  requestFromOnchainAddress(t.GetBoardingAddress()),
+		Progress: progressFromLedgerRow(t),
 	}, true
 }
 
 // ledgerActivityID returns the stable activity id for one ledger-backed row.
-// Boarding UTXO creation rows are identified by outpoint, not bare txid, so a
-// single Bitcoin transaction that pays multiple wallet-owned outputs surfaces
-// every deposit instead of collapsing them during activity de-duplication.
+// A confirmed boarding-deposit (wallet_utxo_created) row is keyed by
+// deposit-<boarding_address> when the daemon surfaces the address, so it shares
+// the id of the pending row Deposit projected and upserts onto it. It falls
+// back to txid:vout for an older daemon that does not set boarding_address, and
+// then to the bare txid. Because the key is the address, multiple UTXOs paid to
+// the same (single-use-by-design) boarding address collapse into one row; the
+// ledger and the ONCHAIN view retain the per-UTXO truth.
 func ledgerActivityID(t *daemonrpc.TransactionHistoryEntry,
 	kind walletdkrpc.EntryKind) string {
 
@@ -1410,9 +1463,20 @@ func ledgerActivityID(t *daemonrpc.TransactionHistoryEntry,
 	}
 
 	if kind == walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT &&
-		t.GetSubtype() == ledger.EventWalletUTXOCreated &&
-		t.GetOutputIndex() >= 0 {
-		return fmt.Sprintf("%s:%d", t.GetTxid(), t.GetOutputIndex())
+		t.GetSubtype() == ledger.EventWalletUTXOCreated {
+
+		// Prefer the address-scoped id so the confirmed deposit row
+		// shares a canonical id with the pending deposit-<address> row
+		// projected by Deposit, letting the store upsert flip it to
+		// COMPLETE. Fall back to txid:vout for older daemons that do
+		// not surface the boarding address on the history row.
+		if addr := t.GetBoardingAddress(); addr != "" {
+			return fmt.Sprintf("deposit-%s", addr)
+		}
+		if t.GetOutputIndex() >= 0 {
+			return fmt.Sprintf("%s:%d", t.GetTxid(),
+				t.GetOutputIndex())
+		}
 	}
 
 	return t.GetTxid()

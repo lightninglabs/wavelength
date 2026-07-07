@@ -314,6 +314,103 @@ func TestLedgerStoreTransactionHistoryFiltersBeforePagination(t *testing.T) {
 	require.Equal(t, int64(40), sweepRows[0].FeeSat)
 }
 
+// TestLedgerStoreTransactionHistorySurfacesBoardingAddress verifies the
+// history query resolves a confirmed boarding-deposit row back to its
+// allocated boarding address (via boarding_intents -> boarding_addresses), so
+// the client can key the confirmed DEPOSIT row by the same id as its pending
+// row. Non-deposit rows carry no boarding address.
+func TestLedgerStoreTransactionHistorySurfacesBoardingAddress(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store, db := newLedgerStoreAndDBForTest(t)
+
+	// Seed the durable outpoint -> address link: internal key ->
+	// boarding_addresses -> boarding_intents for a confirmed outpoint.
+	keyID := insertTestInternalKey(ctx, t, db, 0x10)
+	pkScript := testBytes(34, 0x20)
+	const addr = "bcrt1qtestboardingaddr"
+	outpointHash := testBytes(32, 0x30)
+	var outpointIndex int32
+
+	require.NoError(
+		t,
+		db.InsertBoardingAddress(
+			ctx, sqlc.InsertBoardingAddressParams{
+				PkScript:       pkScript,
+				AddressString:  addr,
+				ClientKeyID:    keyID,
+				OperatorPubkey: testBytes(33, 0x40),
+				ExitDelay:      144,
+			},
+		),
+	)
+	require.NoError(
+		t,
+		db.InsertBoardingIntent(
+			ctx, sqlc.InsertBoardingIntentParams{
+				OutpointHash:  outpointHash,
+				OutpointIndex: outpointIndex,
+				PkScript:      pkScript,
+				Amount:        100_000,
+				ConfHeight:    500,
+				ConfHash:      testBytes(32, 0x70),
+				ConfTx:        testBytes(64, 0x80),
+				Status:        "confirmed",
+			},
+		),
+	)
+
+	// The confirmed boarding-deposit ledger row, keyed by the same
+	// outpoint.
+	idx := outpointIndex
+	require.NoError(
+		t,
+		store.InsertLedgerEntry(
+			ctx, ledger.LedgerEntry{
+				DebitAccount:   ledger.AccountWalletBalance,
+				CreditAccount:  ledger.AccountOpeningBalance,
+				AmountSat:      100_000,
+				EventType:      ledger.EventWalletUTXOCreated,
+				Description:    "boarding deposit",
+				CreatedAt:      300,
+				IdempotencyKey: testBytes(36, 0x50),
+				ChainTxid:      outpointHash,
+				ChainVout:      &idx,
+			},
+		),
+	)
+
+	rows, err := store.ListTransactionHistory(ctx, "boarding", 0, 0, 10, 0)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	require.Equal(t, ledger.EventWalletUTXOCreated, rows[0].Subtype)
+	require.Equal(
+		t, addr, rows[0].BoardingAddress,
+		"confirmed boarding deposit must surface its allocated address",
+	)
+
+	// A non-deposit row must not carry a boarding address.
+	require.NoError(
+		t,
+		store.InsertLedgerEntry(
+			ctx, ledger.LedgerEntry{
+				DebitAccount:  ledger.AccountTransfersOut,
+				CreditAccount: ledger.AccountVTXOBalance,
+				AmountSat:     1_000,
+				SessionID:     testBytes(32, 0x60),
+				EventType:     ledger.EventVTXOSent,
+				Description:   "oor send",
+				CreatedAt:     400,
+			},
+		),
+	)
+	oorRows, err := store.ListTransactionHistory(ctx, "oor", 0, 0, 10, 0)
+	require.NoError(t, err)
+	require.Len(t, oorRows, 1)
+	require.Empty(t, oorRows[0].BoardingAddress)
+}
+
 // TestLedgerStoreTransactionHistoryClassifiesOORReceiveWithoutSessionID
 // verifies OOR receive rows are user-visible OOR history even though the
 // ledger cannot stamp session_id on them without colliding on multi-output

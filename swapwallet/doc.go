@@ -41,21 +41,28 @@
 // swap subserver's row keys by Lightning payment_hash, which the wallet
 // layer also uses as the canonical id, so the projection is a no-op.
 //
-// EXIT and DEPOSIT operations DO surface a row at submit time and a
-// separate confirmed ledger row later, but the two rows do NOT share an
-// id in v1 because there is no daemon-side notification hook that links
-// (a) an exit's queued outpoints to its eventual sweep txid, or (b) a
-// deposit's boarding address to its eventual boarding txid. Cooperative
-// leave rows can still complete while the original runtime-local row is
-// alive: once the source VTXO is terminally forfeited, the pending EXIT
-// row is shown as COMPLETE. After restart, however, the daemon cannot
-// recreate the original counterparty/note from durable state alone. A v2
-// canonical-id projection lands when the daemon exposes the missing
-// hooks; the right home for that link is the daemon-side persistence
-// (leave job, deposit address record), not a process-local map. Callers
-// that need to correlate EXIT/DEPOSIT pending → confirmed across restart
-// in v1 should track the WalletEntry.Counterparty (truncated bech32
-// address or txid) and the persisted ledger txid via separate queries.
+// An on-chain-send / cooperative-leave EXIT row keys by the daemon's
+// leave-job id (SendOnChainResponse.send_job_id); see the CANONICAL
+// ACTIVITY LOG note. A DEPOSIT keys by an address-scoped id
+// (deposit-<address>) once the daemon records it on-chain: the confirmed
+// boarding-deposit ledger row carries the allocated boarding address
+// (TransactionHistoryEntry.boarding_address), and every UTXO paid to that
+// address is SUMMED into one deposit-<address> row (sumDepositsByAddress),
+// so a reused boarding address shows its total received rather than
+// hiding funds behind one UTXO. Generating an address does NOT create a
+// row — allocating an address is not a pending deposit — so the row
+// appears only from the point the daemon records an incoming UTXO. The
+// Deposit RPC still returns that same deposit-<address> id so a caller can
+// correlate. An older daemon that does not populate boarding_address falls
+// back to per-UTXO txid:vout deposit rows (no summing, still correct).
+//
+// This is address-granularity for the CONFIRMED (recorded) phase only. The
+// pre-confirmation phase cannot be per-address: the daemon exposes only an
+// aggregate boarding_unconfirmed_sat, so unconfirmed boarding funds surface
+// via Balance and as the single synthetic boarding-unconfirmed row, not a
+// per-address row. Per-address unconfirmed deposits need a daemon change and
+// are deferred. A unilateral EXIT row likewise still keys by the consumed
+// VTXO outpoint with no durable link to its eventual sweep txid.
 //
 // Onchain SEND sweep semantics: a bounded onchain send (amt_sat > 0)
 // lands exactly amt_sat at the destination and returns the remainder as

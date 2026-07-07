@@ -365,7 +365,7 @@ const ListTransactionHistory = `-- name: ListTransactionHistory :many
 SELECT source, entry_id, txid, transaction_type, subtype,
        amount_sat, fee_sat, created_at, status, description,
        debit_account, credit_account, round_id, session_id,
-       confirmation_height, output_index
+       confirmation_height, output_index, boarding_address
 FROM (
     SELECT 0 AS source_order,
            'ledger' AS source,
@@ -421,7 +421,17 @@ FROM (
            COALESCE(le.session_id, oor_created.session_id) AS session_id,
            COALESCE(le.confirmation_height, 0) AS confirmation_height,
            COALESCE(le.chain_vout, oor_created.outpoint_index, -1) AS
-               output_index
+               output_index,
+           -- boarding_address links a confirmed boarding-deposit
+           -- (wallet_utxo_created) row back to the allocated boarding
+           -- address, so the client can key the confirmed DEPOSIT row by
+           -- the same stable id as its pending row. Empty ('') for every
+           -- other event type; the CASE/COALESCE never yields NULL.
+           CASE
+               WHEN le.event_type = 'wallet_utxo_created'
+               THEN COALESCE(deposit_ba.address_string, '')
+               ELSE ''
+           END AS boarding_address
     FROM ledger_entries AS le
     LEFT JOIN oor_vtxo_bindings AS oor_created
         ON oor_created.outpoint_hash = le.chain_txid
@@ -512,6 +522,11 @@ FROM (
     ) AS boarding_round
         ON boarding_round.outpoint_hash = le.chain_txid
        AND boarding_round.outpoint_index = le.chain_vout
+    LEFT JOIN boarding_intents AS deposit_bi
+        ON deposit_bi.outpoint_hash = le.chain_txid
+       AND deposit_bi.outpoint_index = le.chain_vout
+    LEFT JOIN boarding_addresses AS deposit_ba
+        ON deposit_ba.pk_script = deposit_bi.pk_script
 
     UNION ALL
 
@@ -534,7 +549,8 @@ FROM (
            NULL AS round_id,
            b.session_id,
            CAST(0 AS INTEGER) AS confirmation_height,
-           b.outpoint_index AS output_index
+           b.outpoint_index AS output_index,
+           '' AS boarding_address
     FROM oor_vtxo_bindings AS b
     JOIN vtxos AS v
         ON v.outpoint_hash = b.outpoint_hash
@@ -568,7 +584,8 @@ FROM (
            NULL AS round_id,
            NULL AS session_id,
            COALESCE(confirmed_height, 0) AS confirmation_height,
-           CAST(-1 AS INTEGER) AS output_index
+           CAST(-1 AS INTEGER) AS output_index,
+           '' AS boarding_address
     FROM boarding_sweeps
 ) AS history
 WHERE ($1 = ''
@@ -607,6 +624,7 @@ type ListTransactionHistoryRow struct {
 	SessionID          []byte
 	ConfirmationHeight int32
 	OutputIndex        int32
+	BoardingAddress    string
 }
 
 // ListTransactionHistory returns a unified newest-first history from the
@@ -645,6 +663,7 @@ func (q *Queries) ListTransactionHistory(ctx context.Context, arg ListTransactio
 			&i.SessionID,
 			&i.ConfirmationHeight,
 			&i.OutputIndex,
+			&i.BoardingAddress,
 		); err != nil {
 			return nil, err
 		}

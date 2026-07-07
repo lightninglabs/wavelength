@@ -82,10 +82,15 @@ default builds avoid the swap executor's dependency graph.
 - Background goroutines (monitor loop, deadline watcher, resume
   sweep) are anchored to the daemon root context, NEVER to RPC-call
   contexts. An RPC client disconnect cannot cancel in-flight work.
-- `WalletEntry.id` is the stable canonical id for SEND-invoice and
-  RECV (Lightning payment_hash) across the entire pending → terminal
-  lifecycle. EXIT and DEPOSIT rows do not yet share an id between
-  pending and confirmed in v1; see `doc.go`.
+- `WalletEntry.id` is the stable canonical id across the entire pending
+  → terminal lifecycle for SEND-invoice and RECV (Lightning
+  payment_hash), on-chain-send / cooperative-leave EXIT (the daemon's
+  leave-job id / `send_job_id`), and DEPOSIT (`deposit-<address>`, keyed
+  on the allocated boarding address surfaced on the confirmed history
+  row). A unilateral EXIT still keys by the consumed VTXO outpoint. The
+  pending → COMPLETE transition for EXIT/DEPOSIT lands via the
+  derive/backfill pass; live cross-restart reconciliation is C2. See
+  `doc.go`.
 - Onchain SEND is routed through `RPCServer.SendOnChain` which delegates to
   `wallet.SendOnChainRequest`. Two modes: **sweep-all** (non-empty
   `SweepOutpoints` — drains those VTXOs exactly, no change, leave output
@@ -109,10 +114,17 @@ default builds avoid the swap executor's dependency graph.
   stuck row appears as FAILED even when the caller asks for
   `pending_only=false`.
 - **DEPOSIT rows backed by the `wallet_utxo_created` ledger event**
-  mirror the ledger confirmation status. Confirmed on-chain boarding
-  deposits surface as `ENTRY_STATUS_COMPLETE`, while unconfirmed
-  boarding funds are represented by the synthetic
-  `boarding-unconfirmed` pending row from `GetBalance`.
+  mirror the ledger confirmation status and are keyed
+  `deposit-<address>` from the confirmed row's
+  `TransactionHistoryEntry.boarding_address`; every UTXO paid to that
+  address is SUMMED into one row (`sumDepositsByAddress`) so a reused
+  address shows its total. `Deposit` does NOT project a row — allocating
+  an address is not a pending deposit — it only returns that id so a
+  caller can correlate the eventual confirmed row. Per-address is the
+  CONFIRMED phase only: unconfirmed boarding funds have no per-address
+  source (the daemon exposes only aggregate `boarding_unconfirmed_sat`),
+  so they surface via `Balance` and the single derive-path-only
+  `boarding-unconfirmed` row, never projected into the store.
 - **`Balance` projection** maps daemonrpc fields onto the walletdkrpc
   shape: `confirmed_sat` is VTXO-only (`vtxo_balance_sat`),
   `pending_in_sat` sums `boarding_confirmed_sat +

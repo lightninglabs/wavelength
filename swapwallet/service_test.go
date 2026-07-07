@@ -34,11 +34,8 @@ func newServiceFixture(t *testing.T) (*Service, *fakeSwapService,
 }
 
 // TestServiceDepositReturnsAddress confirms Deposit calls NewAddress and
-// returns a DEPOSIT-kind WalletEntry with the boarding address. v1 does
-// NOT register a canonical-id intent for deposits because the daemon
-// has no notification hook from boarding-address to the eventual
-// boarding txid; correlation between this entry and the later boarding
-// ledger row is a v2 task (see swapwallet/doc.go).
+// returns a DEPOSIT-kind WalletEntry with the boarding address, keyed by the
+// address-scoped canonical id.
 func TestServiceDepositReturnsAddress(t *testing.T) {
 	t.Parallel()
 
@@ -69,6 +66,43 @@ func TestServiceDepositReturnsAddress(t *testing.T) {
 	require.Equal(
 		t, "address_issued",
 		resp.GetEntry().GetProgress().GetPhaseLabel(),
+	)
+	require.Equal(
+		t, "deposit-bcrt1qboardingaddr", resp.GetEntry().GetId(),
+	)
+}
+
+// TestServiceDepositDoesNotProjectAtAllocation confirms Deposit does NOT
+// persist a row when an address is merely generated — allocating an address is
+// not a pending deposit. The returned entry still carries the address-scoped
+// id the confirmed deposit will later use, so a caller can correlate.
+func TestServiceDepositDoesNotProjectAtAllocation(t *testing.T) {
+	t.Parallel()
+
+	swap := &fakeSwapService{}
+	rpc := &fakeRPCServer{
+		newAddressResp: &daemonrpc.NewAddressResponse{
+			Address: "bcrt1qboardingaddr",
+		},
+	}
+	store := &fakeActivityProjector{}
+	deps := &Deps{SwapService: swap, RPCServer: rpc, ActivityStore: store}
+	runtime := newRuntime(t.Context(), deps)
+	t.Cleanup(runtime.stop)
+	svc := newService(deps, runtime)
+
+	resp, err := svc.Deposit(
+		t.Context(), &walletdkrpc.DepositRequest{
+			AmtSatHint: 50_000,
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(
+		t, "deposit-bcrt1qboardingaddr", resp.GetEntry().GetId(),
+	)
+	require.Equal(
+		t, 0, store.count(),
+		"generating an address must not persist a pending row",
 	)
 }
 

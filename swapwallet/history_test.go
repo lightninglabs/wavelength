@@ -1924,6 +1924,156 @@ func TestHistoryDepositCompletesAfterBoarding(t *testing.T) {
 	require.Equal(t, "confirmed", entry.GetProgress().GetPhaseLabel())
 }
 
+// TestLedgerActivityIDDeposit verifies confirmed-deposit id keying: the
+// address-scoped id when the daemon surfaces boarding_address, falling back to
+// txid:vout (then bare txid) for older daemons, only for the
+// wallet_utxo_created subtype.
+func TestLedgerActivityIDDeposit(t *testing.T) {
+	t.Parallel()
+
+	dep := walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT
+	tests := []struct {
+		name  string
+		entry *daemonrpc.TransactionHistoryEntry
+		want  string
+	}{
+		{
+			name: "boarding_address present keys by address",
+			entry: &daemonrpc.TransactionHistoryEntry{
+				Txid:            "boardingtx",
+				Subtype:         ledger.EventWalletUTXOCreated,
+				OutputIndex:     1,
+				BoardingAddress: "bcrt1qaddr",
+			},
+			want: "deposit-bcrt1qaddr",
+		},
+		{
+			name: "older daemon without address falls back to txid:vout",
+			entry: &daemonrpc.TransactionHistoryEntry{
+				Txid:        "boardingtx",
+				Subtype:     ledger.EventWalletUTXOCreated,
+				OutputIndex: 1,
+			},
+			want: "boardingtx:1",
+		},
+		{
+			name: "no address and no output index falls back to txid",
+			entry: &daemonrpc.TransactionHistoryEntry{
+				Txid:        "boardingtx",
+				Subtype:     ledger.EventWalletUTXOCreated,
+				OutputIndex: -1,
+			},
+			want: "boardingtx",
+		},
+		{
+			name: "non-deposit subtype ignores boarding_address",
+			entry: &daemonrpc.TransactionHistoryEntry{
+				Txid:            "boardingtx",
+				Subtype:         "boarding_fee_paid",
+				BoardingAddress: "bcrt1qaddr",
+			},
+			want: "boardingtx",
+		},
+		{
+			name:  "empty txid returns empty",
+			entry: &daemonrpc.TransactionHistoryEntry{},
+			want:  "",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(
+				t, tc.want, ledgerActivityID(tc.entry, dep),
+			)
+		})
+	}
+}
+
+// TestHistoryDepositKeyedByBoardingAddress verifies a confirmed boarding
+// deposit surfaced through List is keyed by the shared deposit-<address> id
+// when the daemon populates boarding_address, so it matches the pending row
+// Deposit projected under the same id.
+func TestHistoryDepositKeyedByBoardingAddress(t *testing.T) {
+	t.Parallel()
+
+	h, swap, rpc := newHistoryFixture(t)
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
+	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
+		Transactions: []*daemonrpc.TransactionHistoryEntry{
+			{
+				Type:               "boarding",
+				Subtype:            ledger.EventWalletUTXOCreated,
+				ConfirmationStatus: "confirmed",
+				AmountSat:          100_000,
+				Txid:               "boarding-txid",
+				OutputIndex:        0,
+				BoardingAddress:    "bcrt1qboardingaddr",
+				CreatedAtUnixS:     100,
+			},
+		},
+	}
+
+	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{})
+	require.NoError(t, err)
+	require.Len(t, resp.GetActivity().GetEntries(), 1)
+	entry := resp.GetActivity().GetEntries()[0]
+	require.Equal(t, "deposit-bcrt1qboardingaddr", entry.GetId())
+	require.Equal(
+		t, "bcrt1qboardingaddr",
+		entry.GetRequest().GetOnchainAddress().GetAddress(),
+		"confirmed deposit must carry its address as a structured "+
+			"request",
+	)
+}
+
+// TestHistoryDepositsSameAddressSummed verifies two confirmed boarding UTXOs
+// paid to the same address collapse into one activity row whose amount is the
+// SUM, so a reused boarding address never hides funds in the feed.
+func TestHistoryDepositsSameAddressSummed(t *testing.T) {
+	t.Parallel()
+
+	h, swap, rpc := newHistoryFixture(t)
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
+	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
+		Transactions: []*daemonrpc.TransactionHistoryEntry{
+			{
+				Type:               "boarding",
+				Subtype:            ledger.EventWalletUTXOCreated,
+				ConfirmationStatus: "confirmed",
+				AmountSat:          100_000,
+				Txid:               "txid-a",
+				OutputIndex:        0,
+				BoardingAddress:    "bcrt1qshared",
+				CreatedAtUnixS:     100,
+			},
+			{
+				Type:               "boarding",
+				Subtype:            ledger.EventWalletUTXOCreated,
+				ConfirmationStatus: "confirmed",
+				AmountSat:          250_000,
+				Txid:               "txid-b",
+				OutputIndex:        1,
+				BoardingAddress:    "bcrt1qshared",
+				CreatedAtUnixS:     200,
+			},
+		},
+	}
+
+	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{})
+	require.NoError(t, err)
+	require.Len(
+		t, resp.GetActivity().GetEntries(), 1,
+		"two UTXOs to one address collapse into one row",
+	)
+	entry := resp.GetActivity().GetEntries()[0]
+	require.Equal(t, "deposit-bcrt1qshared", entry.GetId())
+	require.EqualValues(
+		t, 350_000, entry.GetAmountSat(),
+		"the row must show the summed total, not one UTXO",
+	)
+}
+
 // TestDecorateCooperativeLeaveMatchesRetainedOutpoint verifies that after #610
 // (row keyed by the stable leave-job id), the forfeit-driven completion
 // correlates on the retained consumed outpoint in vtxo_outpoint, not the id.
