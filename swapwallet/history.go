@@ -1436,7 +1436,14 @@ func walletEntryFromLedgerRow(t *daemonrpc.TransactionHistoryEntry) (
 		Counterparty:  ledgerCounterparty(t, kind),
 		CreatedAtUnix: t.GetCreatedAtUnixS(),
 		UpdatedAtUnix: t.GetCreatedAtUnixS(),
-		Progress:      progressFromLedgerRow(t),
+		// A confirmed boarding deposit carries its allocated address as
+		// a structured onchain-address request, so a client reads the
+		// deposit address from request.onchain_address rather than
+		// parsing it out of the deposit-<address> id. Nil for every
+		// non-deposit row and for an older daemon that does not surface
+		// boarding_address.
+		Request:  requestFromOnchainAddress(t.GetBoardingAddress()),
+		Progress: progressFromLedgerRow(t),
 	}, true
 }
 

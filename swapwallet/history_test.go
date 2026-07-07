@@ -2017,9 +2017,13 @@ func TestHistoryDepositKeyedByBoardingAddress(t *testing.T) {
 	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{})
 	require.NoError(t, err)
 	require.Len(t, resp.GetActivity().GetEntries(), 1)
+	entry := resp.GetActivity().GetEntries()[0]
+	require.Equal(t, "deposit-bcrt1qboardingaddr", entry.GetId())
 	require.Equal(
-		t, "deposit-bcrt1qboardingaddr",
-		resp.GetActivity().GetEntries()[0].GetId(),
+		t, "bcrt1qboardingaddr",
+		entry.GetRequest().GetOnchainAddress().GetAddress(),
+		"confirmed deposit must carry its address as a structured "+
+			"request",
 	)
 }
 
