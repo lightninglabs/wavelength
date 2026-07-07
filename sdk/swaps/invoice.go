@@ -30,6 +30,12 @@ const (
 
 	// defaultCLTVExpiry is the default CLTV expiry delta for invoices.
 	defaultCLTVExpiry = 40
+
+	// maxRouteHintPaths caps the number of BOLT-11 "r" fields embedded in
+	// one invoice, matching lnd's invoicesrpc hop-hint limit. Rejecting an
+	// oversized quote here names the actual path count instead of failing
+	// later inside lnd with a generic error.
+	maxRouteHintPaths = 20
 )
 
 // InvoiceStore persists created invoices so they can be looked up when HTLCs
@@ -287,7 +293,7 @@ func (g *InvoiceGenerator) CreateInvoice(ctx context.Context,
 	lntypes.Hash, error) {
 
 	return g.createInvoice(
-		ctx, g.invoiceCfg, amountSat, memo, []*RouteHint{routeHint},
+		ctx, g.invoiceCfg, amountSat, memo, [][]*RouteHint{{routeHint}},
 		expiry, preimage,
 	)
 }
@@ -311,16 +317,19 @@ func (g *InvoiceGenerator) CreateInvoiceWithKey(ctx context.Context,
 	invoiceCfg.NodeSigner = netann.NewNodeSigner(authKey)
 
 	return g.createInvoice(
-		ctx, &invoiceCfg, amountSat, memo, []*RouteHint{routeHint},
+		ctx, &invoiceCfg, amountSat, memo, [][]*RouteHint{{routeHint}},
 		expiry, preimage,
 	)
 }
 
-// CreateInvoiceWithKeyRouteHintPath creates one invoice signed by the supplied
-// auth key and carrying the full route-hint path.
-func (g *InvoiceGenerator) CreateInvoiceWithKeyRouteHintPath(
+// CreateInvoiceWithKeyRouteHintPaths creates one invoice signed by the
+// supplied auth key and carrying one BOLT-11 "r" field per route-hint path.
+// A multi-backend swap server hands back one path per backend node, all
+// terminating at the same virtual channel, so the sender can route through
+// whichever backend its pathfinding can reach.
+func (g *InvoiceGenerator) CreateInvoiceWithKeyRouteHintPaths(
 	ctx context.Context, amountSat btcutil.Amount, memo string,
-	routeHintPath []*RouteHint, expiry time.Duration,
+	routeHintPaths [][]*RouteHint, expiry time.Duration,
 	authKey keychain.SingleKeyMessageSigner, preimage *lntypes.Preimage) (
 	*invoices.Invoice, lntypes.Hash, error) {
 
@@ -337,7 +346,7 @@ func (g *InvoiceGenerator) CreateInvoiceWithKeyRouteHintPath(
 	invoiceCfg.NodeSigner = netann.NewNodeSigner(authKey)
 
 	return g.createInvoice(
-		ctx, &invoiceCfg, amountSat, memo, routeHintPath, expiry,
+		ctx, &invoiceCfg, amountSat, memo, routeHintPaths, expiry,
 		preimage,
 	)
 }
@@ -345,7 +354,7 @@ func (g *InvoiceGenerator) CreateInvoiceWithKeyRouteHintPath(
 // createInvoice builds one signed BOLT-11 invoice through invoicesrpc.
 func (g *InvoiceGenerator) createInvoice(ctx context.Context,
 	cfg *invoicesrpc.AddInvoiceConfig, amountSat btcutil.Amount,
-	memo string, routeHintPath []*RouteHint, expiry time.Duration,
+	memo string, routeHintPaths [][]*RouteHint, expiry time.Duration,
 	preimage *lntypes.Preimage) (*invoices.Invoice, lntypes.Hash, error) {
 
 	if g == nil || cfg == nil || cfg.NodeSigner == nil {
@@ -360,9 +369,24 @@ func (g *InvoiceGenerator) createInvoice(ctx context.Context,
 		return nil, lntypes.Hash{}, err
 	}
 
-	hopHints, err := zpayHopHintPath(routeHintPath)
-	if err != nil {
-		return nil, lntypes.Hash{}, err
+	if len(routeHintPaths) == 0 {
+		return nil, lntypes.Hash{}, fmt.Errorf("route hint path is " +
+			"required")
+	}
+	if len(routeHintPaths) > maxRouteHintPaths {
+		return nil, lntypes.Hash{}, fmt.Errorf("%d route hint paths "+
+			"exceed the maximum of %d", len(routeHintPaths),
+			maxRouteHintPaths)
+	}
+	routeHints := make([][]zpay32.HopHint, 0, len(routeHintPaths))
+	for i, routeHintPath := range routeHintPaths {
+		hopHints, err := zpayHopHintPath(routeHintPath)
+		if err != nil {
+			return nil, lntypes.Hash{}, fmt.Errorf("route hint "+
+				"path %d: %w", i, err)
+		}
+
+		routeHints = append(routeHints, hopHints)
 	}
 	if expiry == 0 {
 		expiry = defaultInvoiceExpiry
@@ -374,10 +398,8 @@ func (g *InvoiceGenerator) createInvoice(ctx context.Context,
 		Value: lnwire.NewMSatFromSatoshis(
 			amountSat,
 		),
-		RouteHints: [][]zpay32.HopHint{
-			hopHints,
-		},
-		Expiry: int64(expiry.Seconds()),
+		RouteHints: routeHints,
+		Expiry:     int64(expiry.Seconds()),
 	}
 
 	paymentHash, invoice, err := invoicesrpc.AddInvoice(
@@ -423,11 +445,11 @@ func (g *DirectInvoiceCreator) CreateInvoiceWithKey(ctx context.Context,
 	)
 }
 
-// CreateInvoiceWithKeyRouteHintPath creates one signed invoice with the full
-// route-hint path and the supplied auth key.
-func (g *DirectInvoiceCreator) CreateInvoiceWithKeyRouteHintPath(
+// CreateInvoiceWithKeyRouteHintPaths creates one signed invoice carrying one
+// BOLT-11 "r" field per route-hint path, signed by the supplied auth key.
+func (g *DirectInvoiceCreator) CreateInvoiceWithKeyRouteHintPaths(
 	ctx context.Context, amountSat btcutil.Amount, memo string,
-	routeHintPath []*RouteHint, expiry time.Duration,
+	routeHintPaths [][]*RouteHint, expiry time.Duration,
 	authKey keychain.SingleKeyMessageSigner, preimage *lntypes.Preimage) (
 	*invoices.Invoice, lntypes.Hash, error) {
 
@@ -436,8 +458,8 @@ func (g *DirectInvoiceCreator) CreateInvoiceWithKeyRouteHintPath(
 			"required")
 	}
 
-	return g.generator.CreateInvoiceWithKeyRouteHintPath(
-		ctx, amountSat, memo, routeHintPath, expiry, authKey, preimage,
+	return g.generator.CreateInvoiceWithKeyRouteHintPaths(
+		ctx, amountSat, memo, routeHintPaths, expiry, authKey, preimage,
 	)
 }
 

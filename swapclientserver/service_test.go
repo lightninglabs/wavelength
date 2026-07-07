@@ -884,9 +884,11 @@ func TestNewSwapServerClientsREST(t *testing.T) {
 		CltvExpiryDelta:    40,
 	}
 	channelIDResp := &swaprpc.RequestChannelIdResponse{
-		RouteHintPath: []*swaprpc.RouteHint{
-			routeHint,
-		},
+		RouteHintPaths: []*swaprpc.RouteHintPath{{
+			Hops: []*swaprpc.RouteHint{
+				routeHint,
+			},
+		}},
 	}
 
 	server := httptest.NewServer(
@@ -962,9 +964,10 @@ func TestNewSwapServerClientsREST(t *testing.T) {
 		btcutil.Amount(42_000), 30,
 	)
 	require.NoError(t, err)
-	require.Len(t, hint.RouteHintPath, 1)
-	require.Equal(t, uint64(42), hint.RouteHintPath[0].ChannelID)
-	require.Equal(t, nodeID, hint.RouteHintPath[0].NodeID)
+	require.Len(t, hint.RouteHintPaths, 1)
+	require.Len(t, hint.RouteHintPaths[0], 1)
+	require.Equal(t, uint64(42), hint.RouteHintPaths[0][0].ChannelID)
+	require.Equal(t, nodeID, hint.RouteHintPaths[0][0].NodeID)
 
 	_, err = clients.mailbox.Pull(
 		t.Context(), &mailboxpb.PullRequest{

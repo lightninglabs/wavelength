@@ -70,12 +70,12 @@ func (g *GRPCSwapServerConn) RequestChannelID(ctx context.Context,
 		return nil, fmt.Errorf("RequestChannelId RPC: %w", err)
 	}
 
-	hintPath, err := routeHintPathFromProto(resp.GetRouteHintPath())
+	hintPaths, err := routeHintPathsFromProto(resp.GetRouteHintPaths())
 	if err != nil {
 		return nil, err
 	}
-	if len(hintPath) == 0 {
-		return nil, fmt.Errorf("route hint path must be provided")
+	if len(hintPaths) == 0 {
+		return nil, fmt.Errorf("route hint paths must be provided")
 	}
 
 	settlementType, err := settlementTypeFromProto(resp.GetSettlementType())
@@ -93,7 +93,7 @@ func (g *GRPCSwapServerConn) RequestChannelID(ctx context.Context,
 	}
 
 	return &OutSwapQuote{
-		RouteHintPath:      hintPath,
+		RouteHintPaths:     hintPaths,
 		ReceiveAmountSat:   btcutil.Amount(requestedAmountSat),
 		PayerFeeMsat:       resp.GetPayerFeeMsat(),
 		RequestedAmountSat: requestedAmountSat,
@@ -420,6 +420,28 @@ func routeHintFromProto(hint *swaprpc.RouteHint) (*RouteHint, error) {
 	}
 
 	return routeHint, nil
+}
+
+// routeHintPathsFromProto converts every alternative route-hint path from a
+// RequestChannelId response into the SDK shape. The swap server returns one
+// path per Lightning backend; each path must carry at least one hop.
+func routeHintPathsFromProto(protoPaths []*swaprpc.RouteHintPath) (
+	[][]*RouteHint, error) {
+
+	hintPaths := make([][]*RouteHint, 0, len(protoPaths))
+	for i, protoPath := range protoPaths {
+		hintPath, err := routeHintPathFromProto(protoPath.GetHops())
+		if err != nil {
+			return nil, fmt.Errorf("route hint path %d: %w", i, err)
+		}
+		if len(hintPath) == 0 {
+			return nil, fmt.Errorf("route hint path %d is empty", i)
+		}
+
+		hintPaths = append(hintPaths, hintPath)
+	}
+
+	return hintPaths, nil
 }
 
 // routeHintPathFromProto converts one generated route-hint path into the SDK

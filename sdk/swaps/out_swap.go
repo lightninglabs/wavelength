@@ -675,10 +675,32 @@ func (s *ReceiveSession) prepareInvoice(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("request channel ID: %w", err)
 	}
-	if quote == nil || len(quote.RouteHintPath) == 0 {
+	if quote == nil || len(quote.RouteHintPaths) == 0 {
 		return fmt.Errorf("route quote must be provided")
 	}
-	finalHop := quote.RouteHintPath[len(quote.RouteHintPath)-1]
+	hintPaths := quote.RouteHintPaths
+
+	// Every alternative path must terminate at the same virtual channel:
+	// the sender can enter through any backend, but all of them intercept
+	// into the one vSCID this receive is registered under. A divergent
+	// final hop would let a malformed quote split the receive across two
+	// different registrations.
+	var finalHop *RouteHint
+	for i, hintPath := range hintPaths {
+		if len(hintPath) == 0 {
+			return fmt.Errorf("route hint path %d is empty", i)
+		}
+		lastHop := hintPath[len(hintPath)-1]
+		if finalHop == nil {
+			finalHop = lastHop
+			continue
+		}
+		if lastHop.ChannelID != finalHop.ChannelID {
+			return fmt.Errorf("route hint path %d terminates at "+
+				"channel %d, want %d", i, lastHop.ChannelID,
+				finalHop.ChannelID)
+		}
+	}
 
 	requestedAmountSat := quote.RequestedAmountSat
 	if requestedAmountSat == 0 {
@@ -707,16 +729,17 @@ func (s *ReceiveSession) prepareInvoice(ctx context.Context) error {
 
 	s.client.log.InfoS(ctx, "Received route hint from swap server",
 		slog.Uint64("channel_id", finalHop.ChannelID),
-		slog.Int("path_hops", len(quote.RouteHintPath)),
+		slog.Int("path_count", len(hintPaths)),
+		slog.Int("path_hops", len(hintPaths[0])),
 		slog.Uint64("payer_fee_msat", quote.PayerFeeMsat),
 		slog.Uint64("attached_credit_sat", quote.AttachedCreditSat),
 		slog.Uint64("vhtlc_amount_sat", expectedVHTLCSat),
 	)
 
 	inv, hash, err := s.client.invoiceGen.
-		CreateInvoiceWithKeyRouteHintPath(
-			ctx, s.amountSat, s.memo, quote.RouteHintPath, expiry,
-			authKey, &preimage,
+		CreateInvoiceWithKeyRouteHintPaths(
+			ctx, s.amountSat, s.memo, hintPaths, expiry, authKey,
+			&preimage,
 		)
 	if err != nil {
 		return fmt.Errorf("create invoice: %w", err)

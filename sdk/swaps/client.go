@@ -331,12 +331,14 @@ type InvoiceCreator interface {
 		preimage *lntypes.Preimage) (*invoices.Invoice, lntypes.Hash,
 		error)
 
-	// CreateInvoiceWithKeyRouteHintPath builds one signed invoice with the
-	// client's receive auth key and private route-hint path from the
-	// server.
-	CreateInvoiceWithKeyRouteHintPath(ctx context.Context,
+	// CreateInvoiceWithKeyRouteHintPaths builds one signed invoice with
+	// the client's receive auth key and one BOLT-11 "r" field per
+	// alternative route-hint path from the server. Multi-backend swap
+	// servers return one path per backend so the sender can route
+	// through any of them.
+	CreateInvoiceWithKeyRouteHintPaths(ctx context.Context,
 		amountSat btcutil.Amount, memo string,
-		routeHintPath []*RouteHint, expiry time.Duration,
+		routeHintPaths [][]*RouteHint, expiry time.Duration,
 		authKey keychain.SingleKeyMessageSigner,
 		preimage *lntypes.Preimage) (*invoices.Invoice, lntypes.Hash,
 		error)
@@ -367,9 +369,12 @@ type RouteHint struct {
 // OutSwapQuote is the complete server quote for one Lightning-to-Ark receive
 // route.
 type OutSwapQuote struct {
-	// RouteHintPath is the full private route-hint path the SDK embeds in
-	// the invoice. The final hop is the swap server's virtual channel.
-	RouteHintPath []*RouteHint
+	// RouteHintPaths is every alternative private route-hint path for
+	// the receive, one per swap-server backend. The final hop of every
+	// path is the swap server's virtual channel. The SDK embeds one
+	// BOLT-11 "r" field per path so the sender's pathfinding can pick
+	// whichever backend is reachable.
+	RouteHintPaths [][]*RouteHint
 
 	// ReceiveAmountSat is the exact Ark amount the receiver expects.
 	ReceiveAmountSat btcutil.Amount
