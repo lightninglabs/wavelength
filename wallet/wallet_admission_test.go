@@ -441,6 +441,11 @@ type mockRoundActorBehavior struct {
 	// registerErr when set causes RegisterIntentMsg to fail.
 	registerErr error
 
+	// registerGate, when set, blocks RegisterIntentMsg handling until
+	// the channel is closed. Tests use this to keep the Ask pending
+	// while exercising caller-side Await cancellation.
+	registerGate <-chan struct{}
+
 	// registerCalls tracks how many times RegisterIntentMsg was received.
 	registerCalls int
 
@@ -502,6 +507,10 @@ func (m *mockRoundActorBehavior) Receive(_ context.Context,
 
 	switch typedMsg := msg.(type) {
 	case *actormsg.RegisterIntentMsg:
+		if m.registerGate != nil {
+			<-m.registerGate
+		}
+
 		m.registerCalls++
 		m.capturedIntent = typedMsg
 

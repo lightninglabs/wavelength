@@ -344,7 +344,10 @@ func TestHandleSendOnChainCallerCancelKeepsIntent(t *testing.T) {
 			ReleasedCount: 1,
 		},
 	}
-	roundActor := &mockRoundActorBehavior{}
+	registerGate := make(chan struct{})
+	roundActor := &mockRoundActorBehavior{
+		registerGate: registerGate,
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -360,6 +363,9 @@ func TestHandleSendOnChainCallerCancelKeepsIntent(t *testing.T) {
 	}).Return(nil)
 
 	w := newSendReplayTestWallet(t, mgr, roundActor, store, nil)
+	t.Cleanup(func() {
+		close(registerGate)
+	})
 
 	priv, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
