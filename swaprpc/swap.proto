@@ -133,13 +133,13 @@ message RequestChannelIdRequest {
     uint64 amount_sat = 4;
 }
 
-// RequestChannelIdResponse returns the route hint path for one receive
+// RequestChannelIdResponse returns the route hint paths for one receive
 // negotiation.
 message RequestChannelIdResponse {
-    // route_hint_path contains the full private path the client should embed in
-    // the invoice. The last hop is the swap server's virtual channel. Earlier
-    // hops may route from a public gateway node into a private swap LND node.
-    repeated RouteHint route_hint_path = 1;
+    // Field 1 carried the single legacy route_hint_path before multi-path
+    // hints landed in route_hint_paths.
+    reserved 1;
+    reserved "route_hint_path";
 
     // payer_fee_msat is the quoted Lightning route fee paid by the sender for
     // the swap server's virtual hop. Callers that want a "payer pays" total
@@ -167,6 +167,14 @@ message RequestChannelIdResponse {
     // settlement_type identifies whether the route is normal Lightning or
     // credit-assisted.
     SettlementType settlement_type = 8;
+
+    // route_hint_paths contains every alternative private path the client
+    // should embed in the invoice, one BOLT-11 "r" field per path. The last
+    // hop of every path is the swap server's virtual channel. When the swap
+    // server fronts multiple Lightning backends, each path routes through a
+    // different backend node into the same virtual channel, so the sender's
+    // pathfinding can pick whichever backend is reachable.
+    repeated RouteHintPath route_hint_paths = 9;
 }
 
 // AcknowledgeOutSwapHtlcRequest confirms that the receiver has validated and
@@ -292,6 +300,15 @@ message RouteHint {
 
     // cltv_expiry_delta is the hop's required CLTV delta.
     uint32 cltv_expiry_delta = 5;
+}
+
+// RouteHintPath is one ordered private path of hop hints. Multiple paths in
+// a response are alternatives: each becomes its own BOLT-11 "r" field so the
+// sender can route through any of them.
+message RouteHintPath {
+    // hops is the ordered hop list from the first hinted node to the virtual
+    // channel terminating at the swap server.
+    repeated RouteHint hops = 1;
 }
 
 // VHTLCConfig describes the timelocks and keys that define a vHTLC output.
