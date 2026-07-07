@@ -1029,9 +1029,9 @@ type isPrepareSendRequest_Destination interface {
 }
 
 type PrepareSendRequest_Invoice struct {
-	// invoice is a BOLT-11 Lightning invoice. The daemon opens an
-	// out-swap; the swap server picks same-Ark p2p vs real Lightning
-	// transparently.
+	// invoice is a BOLT-11 Lightning invoice. The daemon pays it via
+	// its owned swap subsystem; the swap server picks same-Ark p2p vs
+	// real Lightning transparently.
 	Invoice string `protobuf:"bytes,1,opt,name=invoice,proto3,oneof"`
 }
 

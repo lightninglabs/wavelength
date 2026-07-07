@@ -38,9 +38,9 @@ service WalletService {
     rpc Send (SendRequest) returns (SendResponse);
 
     // Recv asks the daemon for a Lightning invoice the caller can hand
-    // out. Internally this opens a swap-in via the daemon-owned swap
-    // subsystem; the invoice is signed with a daemon-managed key, not an
-    // ephemeral process-local key.
+    // out. Internally the daemon sets up the inbound receive via its
+    // owned swap subsystem; the invoice is signed with a daemon-managed
+    // key, not an ephemeral process-local key.
     rpc Recv (RecvRequest) returns (RecvResponse);
 
     // List returns the unified wallet view selected by ListRequest.view:
@@ -261,9 +261,9 @@ message PrepareSendRequest {
     // destination selects the outbound payment target. Exactly one
     // variant must be set.
     oneof destination {
-        // invoice is a BOLT-11 Lightning invoice. The daemon opens an
-        // out-swap; the swap server picks same-Ark p2p vs real Lightning
-        // transparently.
+        // invoice is a BOLT-11 Lightning invoice. The daemon pays it via
+        // its owned swap subsystem; the swap server picks same-Ark p2p vs
+        // real Lightning transparently.
         string invoice = 1;
 
         // onchain_address is a bech32 onchain destination. The daemon

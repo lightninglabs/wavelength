@@ -15,7 +15,7 @@
 //     the swap subsystem (which may settle as a same-Ark p2p vHTLC or a real
 //     Lightning hop, transparently); onchain destinations are routed through
 //     LeaveVTXOs cooperative exits. The caller never sees swap vocabulary.
-//   - Recv asks the daemon to open a swap-in and returns a BOLT-11 invoice
+//   - Recv asks the daemon to open an out-swap and returns a BOLT-11 invoice
 //     signed with a daemon-managed payment-scoped auth key.
 //   - List merges swap, OOR, boarding, and exit history into the flat
 //     WalletEntry shape sorted by updated-at descending.

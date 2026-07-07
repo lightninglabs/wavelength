@@ -126,7 +126,7 @@ func (s *Service) ExitStatus(ctx context.Context,
 	return s.exitStatus(ctx, req)
 }
 
-// Recv opens a swap-in via the daemon-owned swap subserver and returns the
+// Recv opens an out-swap via the daemon-owned swap subserver and returns the
 // daemon-signed BOLT-11 invoice plus the initial WalletEntry. The invoice
 // is signed with a payment-scoped daemon-managed auth key (PR #337);
 // nothing in the wallet layer generates or holds raw private keys.

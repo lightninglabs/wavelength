@@ -29,7 +29,7 @@ func newReceiver(deps *Deps, runtime *Runtime) *receiver {
 	return &receiver{deps: deps, runtime: runtime}
 }
 
-// Recv opens a swap-in session via the daemon-owned swap subserver and
+// Recv opens an out-swap session via the daemon-owned swap subserver and
 // returns the daemon-signed BOLT-11 invoice plus the initial WalletEntry.
 // Background lifecycle (waiting for the LN payer, claiming the vHTLC,
 // terminal transitions) is owned by the swap subsystem; the wallet layer
