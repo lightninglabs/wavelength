@@ -332,10 +332,14 @@ func creditPayEntry(intent *preparedSendIntent,
 	paymentHashHex := hex.EncodeToString(paymentHash[:])
 
 	return &walletdkrpc.WalletEntry{
-		Id:            paymentHashHex,
-		Kind:          walletdkrpc.EntryKind_ENTRY_KIND_SEND,
-		Status:        walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
-		AmountSat:     int64(intent.amountSat),
+		Id:     paymentHashHex,
+		Kind:   walletdkrpc.EntryKind_ENTRY_KIND_SEND,
+		Status: walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+
+		// A SEND is an outflow, so the pending credit-pay row carries a
+		// negative amount to match every other outgoing row; otherwise
+		// a sub-dust send renders as an incoming transfer (issue #829).
+		AmountSat:     -int64(intent.amountSat),
 		Counterparty:  "credit",
 		CreatedAtUnix: now,
 		UpdatedAtUnix: now,

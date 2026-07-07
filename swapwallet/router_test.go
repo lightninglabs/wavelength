@@ -470,6 +470,10 @@ func TestRouterSendInvoiceHandsCreditPayToRegistry(t *testing.T) {
 		t, walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
 		resp.GetEntry().GetStatus(),
 	)
+
+	// A SEND is an outflow, so the pending row carries a negative amount
+	// (issue #829).
+	require.Equal(t, int64(-500), resp.GetEntry().GetAmountSat())
 }
 
 // TestRouterSendOnchainSelectsVTXOsAndCallsLeave confirms that an onchain

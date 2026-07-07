@@ -191,12 +191,23 @@ func creditEntryFromSummary(op credit.CreditOpSummary) (
 		return nil, false
 	}
 
+	// A SEND is an outflow, so it carries a negative amount to match the
+	// sign convention of every other outgoing row (normal swap sends are
+	// normalized to negative by swapEntryFromSummary). Credit-only sends
+	// reach the feed only through this projector, so without the flip a
+	// sub-dust pay renders as positive and looks like an incoming transfer
+	// (issue #829).
+	amountSat := op.AmountSat
+	if kind == walletdkrpc.EntryKind_ENTRY_KIND_SEND {
+		amountSat = -op.AmountSat
+	}
+
 	now := nowUnix()
 	entry := &walletdkrpc.WalletEntry{
 		Id:            id,
 		Kind:          kind,
 		Status:        walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
-		AmountSat:     op.AmountSat,
+		AmountSat:     amountSat,
 		Counterparty:  creditCounterparty,
 		UpdatedAtUnix: now,
 		Progress: &walletdkrpc.WalletEntryProgress{
