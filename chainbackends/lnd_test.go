@@ -335,6 +335,33 @@ func TestSubmitPackageRejectedWithoutTxErrors(t *testing.T) {
 	require.NotContains(t, err.Error(), "%!w(<nil>)")
 }
 
+// TestSubmitPackageNeutrinoBestEffort verifies that a neutrino-backed lnd's
+// best-effort broadcast ("broadcast-unverified", no per-tx errors) is treated
+// as a successful submit rather than a package rejection, so the caller does
+// not spuriously fail an exit that lnd has already broadcast one-by-one.
+func TestSubmitPackageNeutrinoBestEffort(t *testing.T) {
+	t.Parallel()
+
+	backend := NewLNDBackend(
+		&stubNotifier{}, &stubFeeEstimator{}, &stubBroadcaster{},
+	)
+	backend.SetPackageSubmitter(&stubPackageSubmitter{
+		result: &btcjson.SubmitPackageResult{
+			PackageMsg: lndNeutrinoBroadcastMsg,
+			TxResults: map[string]btcjson.SubmitPackageTxResult{
+				"wtxid-1": {
+					TxID: chainhash.Hash{1},
+				},
+			},
+		},
+	})
+
+	err := backend.SubmitPackage(
+		t.Context(), []*wire.MsgTx{wire.NewMsgTx(3)}, wire.NewMsgTx(3),
+	)
+	require.NoError(t, err)
+}
+
 const (
 	pollInterval = 50 * time.Millisecond
 	testTimeout  = 5 * pollInterval

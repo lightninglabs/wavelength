@@ -18,6 +18,15 @@ import (
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 )
 
+// lndNeutrinoBroadcastMsg mirrors the PackageMsg that a neutrino-backed lnd
+// returns from WalletKit.SubmitPackage. A light client has no mempool and
+// cannot validate or atomically accept a package, so lnd instead broadcasts
+// each transaction individually over P2P (relying on a peer's 1p1c relay to
+// reassemble the package) and reports this sentinel rather than "success". It
+// is kept in sync with lnd's btcwallet.neutrinoBroadcastMsg, which is
+// unexported there and so must be matched by value.
+const lndNeutrinoBroadcastMsg = "broadcast-unverified"
+
 // TxBroadcaster is a minimal interface for broadcasting transactions. This
 // allows LNDBackend to work with both lnwallet.WalletController (in-process
 // lnd) and lndclient wrappers (remote lnd via gRPC).
@@ -241,6 +250,22 @@ func (b *LNDBackend) SubmitPackage(ctx context.Context, parents []*wire.MsgTx,
 				),
 			)
 		}
+	}
+
+	// A neutrino-backed lnd cannot return a package-accept verdict; it
+	// broadcasts each tx individually over P2P and reports the best-effort
+	// sentinel instead of "success". The transactions are already on the
+	// wire and carry no per-tx errors, so treat this as a successful
+	// broadcast and let the confirmation watch decide the outcome, rather
+	// than failing the submit as if the package had been rejected.
+	if result.PackageMsg == lndNeutrinoBroadcastMsg && len(txErrors) == 0 {
+		b.logger(ctx).InfoS(
+			ctx,
+			"Package broadcast best-effort via light client",
+			slog.Int("tx_count", len(parents)+1),
+		)
+
+		return nil
 	}
 
 	// On rejection, only wrap txErrors via %w when we actually have
