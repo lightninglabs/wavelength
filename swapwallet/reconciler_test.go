@@ -4,10 +4,12 @@ package swapwallet
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
+	"github.com/lightninglabs/darepo-client/darepod"
 	"github.com/lightninglabs/darepo-client/db"
 	"github.com/lightninglabs/darepo-client/ledger"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
@@ -125,4 +127,103 @@ func TestReconcileActivityNoStoreIsNoOp(t *testing.T) {
 		runtime.startReconcilerLoop()
 		runtime.reconcileActivity(context.Background())
 	})
+}
+
+// trackForfeitedCooperativeExit tracks a wallet-local cooperative-leave EXIT
+// whose retained VTXO outpoint is reported forfeited, so a reconcile pass
+// decorates it COMPLETE. It returns the leave-job id.
+func trackForfeitedCooperativeExit(runtime *Runtime,
+	rpc *fakeRPCServer) string {
+
+	const (
+		jobID    = "sendjob-abc"
+		outpoint = "aabbcc:0"
+	)
+
+	// A cooperative leave has no unroll job, and its retained outpoint is
+	// in the forfeited set — so decorateExitEntry flips it to COMPLETE.
+	rpc.unrollStatusResp = &daemonrpc.GetUnrollStatusResponse{Found: false}
+	rpc.listVTXOsByStatus = map[daemonrpc.VTXOStatus]*daemonrpc.ListVTXOsResponse{
+		daemonrpc.VTXOStatus_VTXO_STATUS_FORFEITED: {
+			Vtxos: []*daemonrpc.VTXO{
+				{
+					Outpoint: outpoint,
+				},
+			},
+		},
+	}
+
+	runtime.trackPendingEntryWithoutTimeout(&walletdkrpc.WalletEntry{
+		Id:     jobID,
+		Kind:   walletdkrpc.EntryKind_ENTRY_KIND_EXIT,
+		Status: walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		Progress: &walletdkrpc.WalletEntryProgress{
+			VtxoOutpoint: outpoint,
+		},
+	})
+
+	return jobID
+}
+
+// TestReconcileClearsTerminalExitAfterProject verifies that once a
+// cooperative-leave EXIT flips terminal, one reconcile pass durably projects
+// the COMPLETE row AND clears the in-memory pending record — the clear happens
+// after the successful project, not while decorating.
+func TestReconcileClearsTerminalExitAfterProject(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	runtime, store, rpc := newReconcileFixture(t)
+
+	jobID := trackForfeitedCooperativeExit(runtime, rpc)
+	require.Contains(t, pendingSnapshotIDs(runtime), jobID)
+
+	runtime.reconcileActivity(ctx)
+
+	entry, err := store.GetEntry(ctx, jobID)
+	require.NoError(t, err)
+	require.EqualValues(
+		t, walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE, entry.Status,
+		"reconciler must land the forfeited leave COMPLETE",
+	)
+	require.NotContains(
+		t, pendingSnapshotIDs(runtime), jobID,
+		"pending record must be cleared after a durable project",
+	)
+}
+
+// TestReconcileRetainsPendingExitOnProjectFailure is the H-1 regression guard:
+// when the terminal projection fails, the pending record must be retained so a
+// later pass can retry, rather than stranding the row PENDING in the store with
+// its only in-memory source destroyed.
+func TestReconcileRetainsPendingExitOnProjectFailure(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	runtime, store, rpc := newReconcileFixture(t)
+
+	// Wrap the store so every terminal projection fails.
+	runtime.deps.ActivityStore = failingProjectStore{ActivityStore: store}
+
+	jobID := trackForfeitedCooperativeExit(runtime, rpc)
+	require.Contains(t, pendingSnapshotIDs(runtime), jobID)
+
+	runtime.reconcileActivity(ctx)
+
+	require.Contains(
+		t, pendingSnapshotIDs(runtime), jobID, "a failed terminal "+
+			"projection must not clear the pending record",
+	)
+}
+
+// failingProjectStore wraps a real activity store but fails every ProjectEntry,
+// to exercise the reconciler's must-not-clear-on-write-failure path.
+type failingProjectStore struct {
+	darepod.ActivityStore
+}
+
+func (failingProjectStore) ProjectEntry(context.Context,
+	db.ActivityProjection) error {
+
+	return errors.New("injected project failure")
 }

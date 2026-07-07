@@ -2074,11 +2074,13 @@ func TestHistoryDepositsSameAddressSummed(t *testing.T) {
 	)
 }
 
-// TestDecorateExitEntryClearsPendingOnTerminal verifies that once a
-// wallet-local EXIT row is decorated to a terminal status, its in-memory
-// pending record is cleared — so the reconciler does not re-decorate a settled
-// row every pass and the pending map does not leak.
-func TestDecorateExitEntryClearsPendingOnTerminal(t *testing.T) {
+// TestDecorateExitEntryDoesNotClearPending verifies that decorating a
+// wallet-local EXIT row to a terminal status does NOT clear its in-memory
+// pending record. Decoration runs on the read/derive path, and a
+// cooperative-leave row lives only in the pending map, so clearing it before
+// its terminal row is durably projected would strand it. The clear is done
+// exclusively by reprojectActivity, after a successful project.
+func TestDecorateExitEntryDoesNotClearPending(t *testing.T) {
 	t.Parallel()
 
 	const (
@@ -2101,7 +2103,7 @@ func TestDecorateExitEntryClearsPendingOnTerminal(t *testing.T) {
 	require.Contains(t, pendingSnapshotIDs(h.runtime), jobID)
 
 	// Decorating it terminal (the retained outpoint is forfeited) flips it
-	// to COMPLETE and clears the pending record.
+	// to COMPLETE but leaves the pending record in place.
 	require.NoError(
 		t,
 		h.decorateExitEntry(
@@ -2112,9 +2114,9 @@ func TestDecorateExitEntryClearsPendingOnTerminal(t *testing.T) {
 		t, walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
 		entry.GetStatus(),
 	)
-	require.NotContains(
-		t, pendingSnapshotIDs(h.runtime), jobID,
-		"a terminal EXIT must be cleared from the pending map",
+	require.Contains(
+		t, pendingSnapshotIDs(h.runtime), jobID, "decorate must "+
+			"not clear the pending map; reprojectActivity does",
 	)
 }
 

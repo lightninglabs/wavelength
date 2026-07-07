@@ -644,8 +644,18 @@ func (h *history) collectUnilateralExitEntries(ctx context.Context) (
 			}
 		}
 
+		// A per-row GetUnrollStatus error must not abort the whole
+		// derive pass: that would block every other terminal flip
+		// (deposits, other exits) on this and every reconcile/backfill
+		// pass. Log-and-skip like collectWalletLocalPendingEntries; the
+		// row stays at its pre-decoration (PENDING) status and is
+		// retried next pass.
 		if err := h.decorateExitEntry(ctx, entry, nil); err != nil {
-			return nil, err
+			h.deps.resolveLog().DebugS(
+				ctx,
+				"Unilateral exit status decorate skipped",
+				err,
+			)
 		}
 
 		out = append(out, entry)
@@ -769,26 +779,12 @@ func (h *history) decorateExitEntry(ctx context.Context,
 		return nil
 	}
 
-	// Once this row is decorated to a terminal status, drop its in-memory
-	// pending record: the store now holds the terminal row, and leaving the
-	// id in the pending map would leak it for the process lifetime and
-	// force every later reconcile pass to re-decorate a settled row
-	// (re-issuing its GetUnrollStatus / forfeit-scan work). Clearing here
-	// is a no-op for ids not in the map (e.g. unilateral rows
-	// re-synthesized from ListVTXOs). The deferred check reads the final
-	// status so it covers the cooperative and unilateral paths alike, and
-	// skips the error path where the status stays PENDING.
-	defer func() {
-		if h.runtime == nil {
-			return
-		}
-		switch entry.GetStatus() {
-		case walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
-			walletdkrpc.EntryStatus_ENTRY_STATUS_FAILED:
-
-			h.runtime.clearPending(entry.GetId())
-		}
-	}()
+	// decorateExitEntry only reads/annotates: it never clears the pending
+	// map. Clearing a terminal wallet-local EXIT is done exclusively from
+	// reprojectActivity, after the terminal row is durably projected
+	// (clearProjectedTerminalExit) — decorating happens on the read/derive
+	// path too, where clearing a cooperative-leave row (which lives only in
+	// the pending map) before it is persisted would strand it forever.
 
 	// GetUnrollStatus is keyed by the VTXO outpoint. A unilateral-exit
 	// row's id IS that outpoint; a cooperative-leave row is keyed by the
