@@ -16,11 +16,51 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	clientdb "github.com/lightninglabs/darepo-client/db"
 	"github.com/lightninglabs/darepo-client/ledger"
+	"github.com/lightninglabs/darepo-client/rpc/oorpb"
 	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
 )
+
+// TestSessionRestoreRejectsUnknownFlowVersion proves the OOR flow-version guard
+// fires in the real restore path: a session whose persisted registry row
+// carries a flow version this build does not understand (V2) is rejected before
+// any FSM reconstruction rather than silently resumed.
+func TestSessionRestoreRejectsUnknownFlowVersion(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newFakeRegistryStore()
+	id := oorSessionID(0x07)
+
+	require.NoError(t, store.UpsertSession(ctx,
+		clientdb.OORSessionRegistryRecord{
+			SessionID:    chainHashOf(id),
+			ActorID:      ActorIDForSession(id),
+			Direction:    clientdb.OORSessionDirectionOutgoing,
+			Phase:        "submit_sent",
+			Status:       clientdb.OORSessionStatusPending,
+			SnapshotData: []byte{0x01},
+
+			// A flow version from a hypothetical future build.
+			FlowVersion: oorpb.FlowVersionV1 + 1,
+		},
+	))
+
+	b := &sessionBehavior{
+		cfg: SessionActorConfig{
+			RegistryStore: store,
+		},
+		actorID:   ActorIDForSession(id),
+		log:       btclog.Disabled,
+		sessionID: id,
+		direction: clientdb.OORSessionDirectionOutgoing,
+	}
+
+	err := b.restore(ctx)
+	require.ErrorContains(t, err, "unknown OOR flow version")
+}
 
 // fakeIncomingHandler answers the materialization request with a fixed
 // IncomingHandledEvent, standing in for the local-persistence handler.

@@ -299,6 +299,12 @@ type CommitmentTxReceivedState struct {
 	// computation for VTXOs created in this round.
 	SweepDelay uint32
 
+	// FlowVersion is this round's flow version, carried from the
+	// operator's stamp on CommitmentTxBuilt so the checkpointed round
+	// records the choreography rules it was conducted under. Validated
+	// on receipt; an unknown version fails the round closed before join.
+	FlowVersion roundpb.FlowVersion
+
 	// ForfeitKey is the operator's dedicated forfeit penalty key for this
 	// round, delivered with the commitment tx. The forfeit-tx penalty
 	// output script is a BIP-86 key-spend to this key; it replaces the
@@ -348,6 +354,12 @@ type CommitmentTxValidatedState struct {
 	// so batch expiry can be computed on confirmation. Delivered per round
 	// (not a global operator term).
 	SweepDelay uint32
+
+	// FlowVersion is this round's flow version, carried from the
+	// operator's stamp on CommitmentTxBuilt so the checkpointed round
+	// records the choreography rules it was conducted under. Validated
+	// on receipt; an unknown version fails the round closed before join.
+	FlowVersion roundpb.FlowVersion
 
 	// ForfeitKey is the operator's dedicated forfeit penalty key for this
 	// round, carried through the signing ceremony so the forfeit-tx
@@ -408,6 +420,12 @@ type ForfeitSignaturesCollectingState struct {
 	// (not a global operator term).
 	SweepDelay uint32
 
+	// FlowVersion is this round's flow version, carried from the
+	// operator's stamp on CommitmentTxBuilt so the checkpointed round
+	// records the choreography rules it was conducted under. Validated
+	// on receipt; an unknown version fails the round closed before join.
+	FlowVersion roundpb.FlowVersion
+
 	// ForfeitKey is the operator's dedicated forfeit penalty key for this
 	// round, carried through the signing ceremony so the forfeit-tx
 	// penalty output (a BIP-86 key-spend to this key) can be built and
@@ -461,6 +479,12 @@ type NoncesSentState struct {
 	// so batch expiry can be computed on confirmation. Delivered per round
 	// (not a global operator term).
 	SweepDelay uint32
+
+	// FlowVersion is this round's flow version, carried from the
+	// operator's stamp on CommitmentTxBuilt so the checkpointed round
+	// records the choreography rules it was conducted under. Validated
+	// on receipt; an unknown version fails the round closed before join.
+	FlowVersion roundpb.FlowVersion
 
 	// ForfeitKey is the operator's dedicated forfeit penalty key for this
 	// round, carried through the signing ceremony so the forfeit-tx
@@ -516,6 +540,12 @@ type NoncesAggregatedState struct {
 	// so batch expiry can be computed on confirmation. Delivered per round
 	// (not a global operator term).
 	SweepDelay uint32
+
+	// FlowVersion is this round's flow version, carried from the
+	// operator's stamp on CommitmentTxBuilt so the checkpointed round
+	// records the choreography rules it was conducted under. Validated
+	// on receipt; an unknown version fails the round closed before join.
+	FlowVersion roundpb.FlowVersion
 
 	// ForfeitKey is the operator's dedicated forfeit penalty key for this
 	// round, carried through the signing ceremony so the forfeit-tx
@@ -575,6 +605,12 @@ type PartialSigsSentState struct {
 	// (not a global operator term).
 	SweepDelay uint32
 
+	// FlowVersion is this round's flow version, carried from the
+	// operator's stamp on CommitmentTxBuilt so the checkpointed round
+	// records the choreography rules it was conducted under. Validated
+	// on receipt; an unknown version fails the round closed before join.
+	FlowVersion roundpb.FlowVersion
+
 	// ForfeitKey is the operator's dedicated forfeit penalty key for this
 	// round, carried through the signing ceremony so the forfeit-tx
 	// penalty output (a BIP-86 key-spend to this key) can be built and
@@ -629,6 +665,12 @@ type InputSigSentState struct {
 	// so batch expiry can be computed on confirmation. Delivered per round
 	// (not a global operator term).
 	SweepDelay uint32
+
+	// FlowVersion is this round's flow version, carried from the
+	// operator's stamp on CommitmentTxBuilt so the checkpointed round
+	// records the choreography rules it was conducted under. Validated
+	// on receipt; an unknown version fails the round closed before join.
+	FlowVersion roundpb.FlowVersion
 
 	// ForfeitKey is the operator's dedicated forfeit penalty key for this
 	// round, carried through the signing ceremony so the forfeit-tx

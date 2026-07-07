@@ -204,6 +204,12 @@ type CommitmentTxBuilt struct {
 	// even across an operator key rotation. It replaces the global GetInfo
 	// forfeit script entirely; a well-formed round always carries it.
 	ForfeitKey *btcec.PublicKey
+
+	// FlowVersion is the per-round flow version the operator stamped on
+	// this round. The client records it so both sides agree on the
+	// choreography rules the round was conducted under. Validated on
+	// receipt; today the only understood value is FlowVersionV1.
+	FlowVersion roundpb.FlowVersion
 }
 
 func (e *CommitmentTxBuilt) clientEventSealed() {}

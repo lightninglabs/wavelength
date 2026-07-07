@@ -15,6 +15,7 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
+	"github.com/lightninglabs/darepo-client/rpc/roundpb"
 	"github.com/lightninglabs/darepo-client/wallet"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/input"
@@ -385,6 +386,17 @@ type Round struct {
 
 	// Intents contains all intents participating in this round.
 	Intents Intents
+
+	// FlowVersion is the per-round flow version describing the choreography
+	// rules the round was conducted under. The operator's value is
+	// validated on receipt in CommitmentTxBuilt.FromProto (an unknown
+	// version fails the round closed before it is joined), threaded from
+	// CommitmentTxBuilt.FlowVersion through the FSM state onto this field
+	// at checkpoint, and stamped/read back verbatim by the db (validation
+	// lives at the ingress edge, not the store). Versions are zero-indexed,
+	// so V1 is the Go zero value: an unstamped round reads as V1 with no
+	// separate unset sentinel.
+	FlowVersion roundpb.FlowVersion
 
 	// Future extensions:
 	// Refreshes []*RefreshIntent

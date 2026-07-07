@@ -350,6 +350,19 @@ func recoveryDescriptorFromIndexer(indexed *arkrpc.VTXO,
 		return nil, false, err
 	}
 
+	// Fail closed on a construction version this build does not understand
+	// rather than silently recovering the VTXO as V1. The stamp is
+	// write-once, so mis-recording a V2 VTXO as V1 here would permanently
+	// defeat every later load guard (strictly worse than a missing guard).
+	constructionVersion := arkrpc.ConstructionVersion(
+		indexed.GetConstructionVersion(),
+	)
+	if err := arkrpc.ValidateConstructionVersion(
+		constructionVersion,
+	); err != nil {
+		return nil, false, fmt.Errorf("vtxo %s: %w", outpoint, err)
+	}
+
 	operatorKey := terms.PubKey
 	if len(indexed.GetOperatorPubkey()) > 0 {
 		operatorKey, err = btcec.ParsePubKey(
@@ -408,6 +421,12 @@ func recoveryDescriptorFromIndexer(indexed *arkrpc.VTXO,
 		ChainDepth:     int(indexed.GetChainDepth()),
 		CreatedHeight:  indexed.GetCreatedHeight(),
 		Status:         status,
+
+		// Thread the operator's stamped construction version onto the
+		// recovered descriptor so both sides agree on the rules this
+		// VTXO must be spent under. Versions are zero-indexed, so an
+		// omitted indexer field reads as V1.
+		ConstructionVersion: constructionVersion,
 	}, true, nil
 }
 

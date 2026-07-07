@@ -5,6 +5,7 @@ import (
 
 	"github.com/btcsuite/btcd/chainhash/v2"
 	clientdb "github.com/lightninglabs/darepo-client/db"
+	"github.com/lightninglabs/darepo-client/rpc/oorpb"
 )
 
 // SessionRegistryStore is the durable control-plane store used by the
@@ -114,6 +115,18 @@ func outgoingRegistryRecord(sessionID SessionID,
 		LastError:       lastError,
 		SnapshotData:    raw,
 		SnapshotVersion: int32(snapshot.Version),
+
+		// Stamp the OOR flow version this session is conducted under.
+		// It is write-once on the DB row, so re-stamping V1 on every
+		// staged write is a no-op after the first insert.
+		//
+		// TODO(construction-versioning): this stamps the build constant
+		// rather than a version carried on the session. Write-once
+		// protects re-stamps, but the FIRST insert of a session is not:
+		// once a second OOR flow exists, a V2 session staged here would
+		// be mis-stamped V1 unless the session's own version is
+		// threaded through here (and its incoming twin below).
+		FlowVersion: oorpb.FlowVersionV1,
 	}, nil
 }
 
@@ -148,6 +161,10 @@ func incomingRegistryRecord(sessionID SessionID,
 		LastError:       lastError,
 		SnapshotData:    raw,
 		SnapshotVersion: int32(snapshot.Version),
+
+		// Stamp the OOR flow version this session is conducted under
+		// (see outgoingRegistryRecord).
+		FlowVersion: oorpb.FlowVersionV1,
 	}, nil
 }
 

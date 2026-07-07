@@ -315,6 +315,19 @@ func (e *CommitmentTxBuilt) FromProto(p proto.Message) error {
 		e.ForfeitKey = key
 	}
 
+	// Record and validate the round flow version stamped by the operator.
+	// Fail closed on a version this build does not understand rather than
+	// joining a round conducted under unknown choreography rules. Versions
+	// are zero-indexed, so an omitted wire field reads as V1.
+	if err := roundpb.ValidateFlowVersion(
+		roundpb.FlowVersion(
+			pb.GetFlowVersion(),
+		),
+	); err != nil {
+		return err
+	}
+	e.FlowVersion = roundpb.FlowVersion(pb.GetFlowVersion())
+
 	return nil
 }
 
