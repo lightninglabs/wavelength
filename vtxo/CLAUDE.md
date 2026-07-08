@@ -28,6 +28,14 @@ when the local wallet owns the receive script.
   context. `ExitOutcomeResolver` is called at startup to reconcile VTXOs still
   persisted in `VTXOStatusUnilateralExit` with their terminal job outcome.
   `ReservationStore` is used at startup to sweep orphaned Spending VTXOs.
+  `BatchCanonicality` (optional `batchcanon.Store`), when set, gates coin
+  selection on batch lineage canonicality: `selectAndReserveVTXOs` drops any
+  candidate whose batch is in limbo (reorged-out) or invalidated
+  (conflict-finalized) state via `batchcanon.LineageBlocked`, reading the
+  candidate's direct commitment txid through `GetVTXO`. Nil disables the gate
+  (a complete no-op, the default until the batch producers register batches);
+  it is permissive otherwise (unseen / unregistered lineage does not block).
+  Full multi-parent ancestry gating is a follow-up.
 - `ExitOutcomeResolution` — Terminal result for an exiting VTXO: `Outcome`
   (`ExitOutcomeRecoverable` or `ExitOutcomeConfirmed`) and `Reason`.
 - `ExitOutcomeResolver` — Function type
