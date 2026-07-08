@@ -658,8 +658,25 @@ func (c *Client) Subscribe(ctx context.Context, req SubscribeRequest) (
 				return
 			}
 
+			// A gap tells the consumer it fell behind the live
+			// stream. Surface it as a terminal error so the host
+			// reconciles current state via List and re-subscribes,
+			// rather than silently dropping the missed updates.
+			if gap := resp.GetGap(); gap != nil {
+				errs <- fmt.Errorf("wallet subscription gap: "+
+					"%s: reconcile via List and "+
+					"re-subscribe", gap.GetReason())
+
+				return
+			}
+
+			entry := resp.GetEntry()
+			if entry == nil {
+				continue
+			}
+
 			select {
-			case updates <- entryFromProto(resp):
+			case updates <- entryFromProto(entry):
 			case <-ctx.Done():
 				errs <- fmt.Errorf("wallet subscription "+
 					"closed: %w", ctx.Err())

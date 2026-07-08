@@ -223,7 +223,7 @@ type failingProjectStore struct {
 }
 
 func (failingProjectStore) ProjectEntry(context.Context,
-	db.ActivityProjection) error {
+	db.ActivityProjection) (int64, error) {
 
-	return errors.New("injected project failure")
+	return 0, errors.New("injected project failure")
 }

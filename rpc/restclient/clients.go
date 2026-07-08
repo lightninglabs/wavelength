@@ -25,10 +25,10 @@ type (
 	}
 	subscribeSwapsREST = StreamClient[swapclientrpc.SubscribeSwapsResponse]
 
-	walletEntryStream interface {
-		grpc.ServerStreamingClient[walletdkrpc.WalletEntry]
+	subscribeWalletStream interface {
+		grpc.ServerStreamingClient[walletdkrpc.SubscribeWalletResponse]
 	}
-	walletEntryREST = StreamClient[walletdkrpc.WalletEntry]
+	subscribeWalletREST = StreamClient[walletdkrpc.SubscribeWalletResponse]
 )
 
 var (
@@ -40,7 +40,7 @@ var (
 	_ walletdkrpc.WalletServiceClient = (*WalletServiceClient)(nil)
 	_ watchRoundsStream               = (*watchRoundsREST)(nil)
 	_ subscribeSwapsStream            = (*subscribeSwapsREST)(nil)
-	_ walletEntryStream               = (*walletEntryREST)(nil)
+	_ subscribeWalletStream           = (*subscribeWalletREST)(nil)
 )
 
 // NewArkServiceClient creates an ArkService REST client.
@@ -1134,7 +1134,8 @@ func (c *WalletServiceClient) ExitStatus(ctx context.Context,
 // SubscribeWallet streams wallet updates.
 func (c *WalletServiceClient) SubscribeWallet(ctx context.Context,
 	in *walletdkrpc.SubscribeWalletRequest, _ ...grpc.CallOption) (
-	grpc.ServerStreamingClient[walletdkrpc.WalletEntry], error) {
+	grpc.ServerStreamingClient[walletdkrpc.SubscribeWalletResponse],
+	error) {
 
 	resp, err := c.client.Stream( //nolint:bodyclose // Stream owns body.
 		ctx, "/v1/wallet/subscribe", in,
@@ -1143,9 +1144,10 @@ func (c *WalletServiceClient) SubscribeWallet(ctx context.Context,
 		return nil, err
 	}
 
-	return NewStreamClient[walletdkrpc.WalletEntry](
-		resp, "SubscribeWallet", func() *walletdkrpc.WalletEntry {
-			return new(walletdkrpc.WalletEntry)
+	return NewStreamClient[walletdkrpc.SubscribeWalletResponse](
+		resp, "SubscribeWallet",
+		func() *walletdkrpc.SubscribeWalletResponse {
+			return new(walletdkrpc.SubscribeWalletResponse)
 		},
 	), nil
 }

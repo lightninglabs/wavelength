@@ -9,6 +9,7 @@ import (
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
 	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 // Service implements the daemon-side WalletService gRPC handler. It is a
@@ -296,47 +297,59 @@ func (s *Service) Status(ctx context.Context, req *walletdkrpc.StatusRequest) (
 	}, nil
 }
 
-// SubscribeWallet streams WalletEntry updates. v1 optionally emits the
-// current snapshot before live updates and then forwards updates from the
-// runtime event bus until the caller disconnects or the daemon shuts down.
+// SubscribeWallet streams activity updates and is resumable: each response
+// carries the monotonic event_seq of the update as its cursor, and a client
+// reconnects with SubscribeWalletRequest.cursor set to the last value it
+// processed to replay everything after it without gaps.
+//
+// Replay start:
+//   - cursor > 0: replay events after cursor, then stream live.
+//   - cursor == 0 && include_existing: replay the full history, then live.
+//   - cursor == 0 && !include_existing: stream live only.
+//
+// A slow consumer that overflows the send buffer receives a SubscribeGap
+// rather than losing updates silently; it reconciles via List and resumes from
+// the cursor. Without a canonical store the stream degrades to the legacy
+// live-only behaviour (an optional List snapshot, then best-effort updates).
 func (s *Service) SubscribeWallet(req *walletdkrpc.SubscribeWalletRequest,
 	stream walletdkrpc.WalletService_SubscribeWalletServer) error {
 
 	ctx := stream.Context()
 
-	// Subscribe BEFORE taking the snapshot so the runtime starts
-	// buffering updates immediately. Otherwise any update that fires
-	// between snapshot fetch and subscribe registration is lost to this
-	// stream. Clients dedupe by WalletEntry.id, so the snapshot+stream
-	// overlap window is harmless.
-	updates := s.runtime.subscribe()
-	defer s.runtime.unsubscribe(updates)
-
-	if req.GetIncludeExisting() {
-		// Use the configured hard cap rather than the default page
-		// size so wallets with more than defaultListLimit entries
-		// receive a complete initial snapshot. A truncated snapshot
-		// would let the subscriber observe live updates that
-		// reference rows it never saw.
-		snapshot, err := s.history.List(ctx, &walletdkrpc.ListRequest{
-			View:  walletdkrpc.ListView_LIST_VIEW_ACTIVITY,
-			Kinds: req.GetKinds(),
-			Limit: s.deps.resolveMaxListLimit(),
-		})
-		if err != nil {
-			return fmt.Errorf("snapshot: %w", err)
-		}
-
-		for _, e := range snapshot.GetActivity().GetEntries() {
-			if err := stream.Send(e); err != nil {
-				return err
-			}
-		}
-	}
-
 	kindFilter, err := buildKindFilter(req.GetKinds())
 	if err != nil {
 		return err
+	}
+
+	// Subscribe BEFORE the replay/snapshot so live updates that fire during
+	// it are buffered rather than lost; the cursor dedupes the overlap.
+	sub := s.runtime.subscribe()
+	defer s.runtime.unsubscribe(sub)
+
+	store := s.deps.ActivityStore
+
+	// lastSeq is the highest cursor sent so far. It bounds the live loop's
+	// dedup against the replay and is the resume point advertised in a gap.
+	var lastSeq int64
+	switch {
+	case store != nil:
+		from, replay := replayStart(req)
+		if replay {
+			last, replayErr := s.replayEvents(
+				ctx, stream, from, kindFilter,
+			)
+			if replayErr != nil {
+				return replayErr
+			}
+			lastSeq = last
+		}
+
+	case req.GetIncludeExisting():
+		// Legacy no-store fallback: a one-shot List snapshot with no
+		// cursor, then best-effort live updates.
+		if err := s.streamListSnapshot(ctx, stream, req); err != nil {
+			return err
+		}
 	}
 
 	for {
@@ -344,19 +357,190 @@ func (s *Service) SubscribeWallet(req *walletdkrpc.SubscribeWalletRequest,
 		case <-ctx.Done():
 			return ctx.Err()
 
-		case e, ok := <-updates:
+		case upd, ok := <-sub.ch:
 			if !ok {
 				return nil
 			}
-			if len(kindFilter) > 0 {
-				if _, in := kindFilter[e.GetKind()]; !in {
-					continue
+
+			// A consumer that fell behind is told to reconcile
+			// rather than silently missing the dropped updates.
+			if sub.overflowed.Swap(false) {
+				if err := stream.Send(
+					gapResponse(lastSeq),
+				); err != nil {
+					return err
 				}
 			}
-			if err := stream.Send(e); err != nil {
+
+			// With a store, skip anything the replay already sent;
+			// the no-store path has no cursor, so it forwards all.
+			if store != nil && upd.seq <= lastSeq {
+				continue
+			}
+			if !kindAllowed(kindFilter, upd.entry) {
+				continue
+			}
+
+			if err := stream.Send(
+				entryResponse(upd.seq, upd.entry),
+			); err != nil {
 				return err
 			}
+			if upd.seq > lastSeq {
+				lastSeq = upd.seq
+			}
 		}
+	}
+}
+
+// replayStart resolves where a resumable subscribe replays from. A non-zero
+// cursor resumes strictly after it; a zero cursor with include_existing
+// replays the full history; a zero cursor without it skips replay and streams
+// live only.
+func replayStart(req *walletdkrpc.SubscribeWalletRequest) (int64, bool) {
+	switch {
+	case req.GetCursor() > 0:
+		return req.GetCursor(), true
+
+	case req.GetIncludeExisting():
+		return 0, true
+
+	default:
+		return 0, false
+	}
+}
+
+// replayEvents pages the append-only event log from cursor and streams each
+// transition, returning the highest event_seq sent. The client's cursor
+// selects the start and every row past it is new: the sequence is monotonic
+// but not contiguous, so a burned value is simply absent, never a dropped
+// event.
+func (s *Service) replayEvents(ctx context.Context,
+	stream walletdkrpc.WalletService_SubscribeWalletServer, from int64,
+	kindFilter map[walletdkrpc.EntryKind]struct{}) (int64, error) {
+
+	store := s.deps.ActivityStore
+	limit := int32(s.deps.resolveMaxListLimit())
+	cursor := from
+	for {
+		events, err := store.PullEvents(ctx, cursor, limit)
+		if err != nil {
+			return cursor, fmt.Errorf("subscribe replay: %w", err)
+		}
+		if len(events) == 0 {
+			return cursor, nil
+		}
+
+		for _, ev := range events {
+			cursor = ev.EventSeq
+
+			entry, err := walletEntryFromEventJSON(ev.EntryJson)
+			if err != nil {
+				// A single corrupt row must not kill the
+				// stream; the cursor has already advanced past
+				// it.
+				s.deps.resolveLog().WarnS(ctx, "Subscribe "+
+					"replay skipped: decode failed", err)
+
+				continue
+			}
+			if !kindAllowed(kindFilter, entry) {
+				continue
+			}
+			if err := stream.Send(
+				entryResponse(ev.EventSeq, entry),
+			); err != nil {
+				return cursor, err
+			}
+		}
+
+		if len(events) < int(limit) {
+			return cursor, nil
+		}
+	}
+}
+
+// streamListSnapshot sends the current activity snapshot as cursor-0 entry
+// responses. It is the no-store legacy path: without an event log there is no
+// resumable cursor, so a fresh List stands in for the replay.
+func (s *Service) streamListSnapshot(ctx context.Context,
+	stream walletdkrpc.WalletService_SubscribeWalletServer,
+	req *walletdkrpc.SubscribeWalletRequest) error {
+
+	// Use the configured hard cap rather than the default page size so a
+	// wallet with more than defaultListLimit entries gets a complete
+	// snapshot; a truncated one would let the subscriber observe live
+	// updates referencing rows it never saw.
+	snapshot, err := s.history.List(ctx, &walletdkrpc.ListRequest{
+		View:  walletdkrpc.ListView_LIST_VIEW_ACTIVITY,
+		Kinds: req.GetKinds(),
+		Limit: s.deps.resolveMaxListLimit(),
+	})
+	if err != nil {
+		return fmt.Errorf("snapshot: %w", err)
+	}
+
+	for _, e := range snapshot.GetActivity().GetEntries() {
+		if err := stream.Send(entryResponse(0, e)); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// kindAllowed reports whether entry passes the kind filter. A nil/empty filter
+// admits every kind.
+func kindAllowed(filter map[walletdkrpc.EntryKind]struct{},
+	entry *walletdkrpc.WalletEntry) bool {
+
+	if len(filter) == 0 {
+		return true
+	}
+	_, ok := filter[entry.GetKind()]
+
+	return ok
+}
+
+// walletEntryFromEventJSON reconstructs the emitted WalletEntry from an event
+// row's protojson snapshot.
+func walletEntryFromEventJSON(entryJSON string) (*walletdkrpc.WalletEntry,
+	error) {
+
+	var entry walletdkrpc.WalletEntry
+	opts := protojson.UnmarshalOptions{DiscardUnknown: true}
+	if err := opts.Unmarshal([]byte(entryJSON), &entry); err != nil {
+		return nil, err
+	}
+
+	return &entry, nil
+}
+
+// entryResponse wraps a projected activity row and its cursor as a stream item.
+func entryResponse(cursor int64,
+	entry *walletdkrpc.WalletEntry) *walletdkrpc.SubscribeWalletResponse {
+
+	return &walletdkrpc.SubscribeWalletResponse{
+		Cursor: cursor,
+		Update: &walletdkrpc.SubscribeWalletResponse_Entry{
+			Entry: entry,
+		},
+	}
+}
+
+// gapResponse signals the consumer fell behind the live buffer. It carries the
+// resume cursor: the consumer reconciles current state via List, then resumes
+// the subscription from it.
+func gapResponse(cursor int64) *walletdkrpc.SubscribeWalletResponse {
+	return &walletdkrpc.SubscribeWalletResponse{
+		Cursor: cursor,
+		Update: &walletdkrpc.SubscribeWalletResponse_Gap{
+			Gap: &walletdkrpc.SubscribeGap{
+				Reason: "subscriber fell behind the live " +
+					"buffer; reconcile via List and " +
+					"resume from cursor",
+			},
+		},
 	}
 }
 

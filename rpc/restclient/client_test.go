@@ -207,7 +207,8 @@ func TestWalletStream(t *testing.T) {
 
 			w.Header().Set("Content-Type", "application/json")
 			_, err := w.Write([]byte(
-				`{"result":{"id":"entry-1"}}` + "\n",
+				`{"result":{"cursor":"5",` +
+					`"entry":{"id":"entry-1"}}}` + "\n",
 			))
 			require.NoError(t, err)
 		},
@@ -220,9 +221,10 @@ func TestWalletStream(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	entry, err := stream.Recv()
+	resp, err := stream.Recv()
 	require.NoError(t, err)
-	require.Equal(t, "entry-1", entry.GetId())
+	require.Equal(t, int64(5), resp.GetCursor())
+	require.Equal(t, "entry-1", resp.GetEntry().GetId())
 
 	_, err = stream.Recv()
 	require.True(t, errors.Is(err, io.EOF))

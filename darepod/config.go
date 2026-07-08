@@ -652,14 +652,24 @@ type SwapBackend interface {
 // boundary and lets tests pass nil.
 type ActivityStore interface {
 	// ProjectEntry advances the activity row to the projected state and
-	// records the transition, atomically.
-	ProjectEntry(ctx context.Context, p db.ActivityProjection) error
+	// records the transition, atomically. It returns the event_seq assigned
+	// to the appended transition, or 0 when the projection was
+	// change-suppressed (no transition, so nothing to emit).
+	ProjectEntry(ctx context.Context,
+		p db.ActivityProjection) (int64, error)
 
 	// ListEntries returns up to limit current-state rows newest-first,
 	// starting after the (cursorCreated, cursorID) keyset. A cursorCreated
 	// of 0 starts from the newest row.
 	ListEntries(ctx context.Context, cursorCreated int64, cursorID string,
 		limit int32) ([]sqlc.ActivityEntry, error)
+
+	// PullEvents returns up to limit append-only transition rows with
+	// event_seq strictly greater than cursor, oldest-first. It is the
+	// resumable-subscribe replay primitive: a reconnecting client passes
+	// the last event_seq it processed and receives everything after it.
+	PullEvents(ctx context.Context, cursor int64,
+		limit int32) ([]sqlc.ActivityEvent, error)
 
 	// CountByStatus returns the number of current-state rows in the given
 	// status. It backs the wallet status summary's full-feed pending count,

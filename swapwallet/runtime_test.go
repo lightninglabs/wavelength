@@ -251,19 +251,20 @@ func TestDeadlineWatcherEmitsTimeoutToSubscribers(t *testing.T) {
 	r.applyDeadlines(tick)
 
 	select {
-	case got := <-sub:
-		require.Equal(t, "stuck", got.GetId())
+	case got := <-sub.ch:
+		require.Equal(t, "stuck", got.entry.GetId())
 		require.Equal(
-			t, walletdkrpc.EntryKind_ENTRY_KIND_EXIT, got.GetKind(),
+			t, walletdkrpc.EntryKind_ENTRY_KIND_EXIT,
+			got.entry.GetKind(),
 		)
 		require.Equal(
 			t, walletdkrpc.EntryStatus_ENTRY_STATUS_FAILED,
-			got.GetStatus(),
+			got.entry.GetStatus(),
 		)
-		require.Equal(t, "timed_out", got.GetFailureReason())
-		require.Equal(t, timedOutCode, got.GetFailureCode())
+		require.Equal(t, "timed_out", got.entry.GetFailureReason())
+		require.Equal(t, timedOutCode, got.entry.GetFailureCode())
 		require.Equal(
-			t, tick.Unix(), got.GetUpdatedAtUnix(),
+			t, tick.Unix(), got.entry.GetUpdatedAtUnix(),
 			"updated_at must reflect the watcher tick time",
 		)
 
@@ -333,11 +334,11 @@ func TestDeadlineWatcherDoesNotReEmitAlreadyTimedOut(t *testing.T) {
 	)
 	tick := time.Now().Add(2 * deadline)
 	r.applyDeadlines(tick)
-	<-sub // drain the first emit
+	<-sub.ch // drain the first emit
 
 	r.applyDeadlines(tick)
 	select {
-	case <-sub:
+	case <-sub.ch:
 		t.Fatal(
 			"watcher must not re-emit on an already-timed-out " +
 				"entry",
@@ -373,17 +374,19 @@ func TestDeadlineWatcherSkipsNoTimeoutEntries(t *testing.T) {
 	require.False(t, ok, "no-timeout row must not receive overlay")
 
 	select {
-	case got := <-sub:
-		t.Fatalf("no-timeout row must not emit timeout update: %v", got)
+	case got := <-sub.ch:
+		t.Fatalf("no-timeout row must not emit timeout update: %v",
+			got.entry)
 
 	case <-time.After(50 * time.Millisecond):
 	}
 }
 
-// TestSubscribeFanOutAndDropOnSlowConsumer asserts that emit delivers
-// updates to live subscribers and drops on a saturated buffer rather than
-// blocking the runtime.
-func TestSubscribeFanOutAndDropOnSlowConsumer(t *testing.T) {
+// TestSubscribeFanOutAndFlagsOverflow asserts that emit delivers updates to
+// live subscribers with their event_seq, and on a saturated buffer sets the
+// subscriber's overflowed flag (so the handler can signal a gap) rather than
+// dropping silently or blocking the runtime.
+func TestSubscribeFanOutAndFlagsOverflow(t *testing.T) {
 	t.Parallel()
 
 	deps := &Deps{}
@@ -397,26 +400,32 @@ func TestSubscribeFanOutAndDropOnSlowConsumer(t *testing.T) {
 		Id:   "abc",
 		Kind: walletdkrpc.EntryKind_ENTRY_KIND_EXIT,
 	}
-	r.emit(entry)
+	r.emit(1, entry)
 
 	select {
-	case got := <-fast:
-		require.Equal(t, entry, got)
+	case got := <-fast.ch:
+		require.Equal(t, entry, got.entry)
+		require.Equal(t, int64(1), got.seq)
 
 	case <-time.After(time.Second):
 		t.Fatal("fast subscriber did not receive update")
 	}
 
-	// Now saturate slow's buffer so subsequent emits are dropped on
-	// that subscriber. The runtime must not block.
+	// Saturate slow's buffer so subsequent emits cannot enqueue. The
+	// runtime must not block, and slow must be flagged overflowed rather
+	// than losing the updates silently.
 	for i := 0; i < int(defaultSubscribeBufferConst)+5; i++ {
-		r.emit(entry)
+		r.emit(int64(i+2), entry)
 	}
+	require.True(
+		t, slow.overflowed.Load(),
+		"a saturated subscriber must be flagged overflowed",
+	)
 
 	// Drain fast so the runtime is not stuck on it either.
 	for {
 		select {
-		case <-fast:
+		case <-fast.ch:
 		default:
 			r.unsubscribe(slow)
 
