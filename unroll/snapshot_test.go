@@ -82,6 +82,28 @@ func TestCheckpointCodecRoundTripHandcrafted(t *testing.T) {
 			},
 		},
 		{
+			name: "sweep_finalized",
+			checkpoint: &actorCheckpoint{
+				Version: checkpointVersion,
+				Height:  210,
+				Started: true,
+				Trigger: TriggerManual,
+				State: unrollplan.State{
+					ConfirmedTxids: []chainhash.Hash{
+						targetTxid,
+					},
+					Sweep: unrollplan.SweepState{
+						Status: unrollplan.
+							SweepStatusBroadcasted,
+						Txid: fn.Some(sweepTxid),
+					},
+				},
+				SweepTx:        sweepTx,
+				SweepAttempts:  1,
+				SweepFinalized: true,
+			},
+		},
+		{
 			name: "failed",
 			checkpoint: &actorCheckpoint{
 				Version: checkpointVersion,
@@ -109,6 +131,31 @@ func TestCheckpointCodecRoundTripHandcrafted(t *testing.T) {
 					Txid:           targetTxid,
 					DeadlineHeight: 270,
 				}},
+			},
+		},
+		{
+			name: "provisional_external_spend",
+			checkpoint: &actorCheckpoint{
+				Version: checkpointVersion,
+				Height:  155,
+				Started: true,
+				Trigger: TriggerManual,
+				State: unrollplan.State{
+					ConfirmedTxids: []chainhash.Hash{
+						targetTxid,
+					},
+					TargetConfirmHeight: fn.Some[int32](
+						154,
+					),
+				},
+				ProvisionalExternalSpend: fn.Some(
+					ExternalSpendAnchor{
+						SpendingTxid: hashFromByteCk(
+							0xee,
+						),
+						SpendingHeight: 155,
+					},
+				),
 			},
 		},
 	}
@@ -597,6 +644,16 @@ func requireCheckpointEqual(t *testing.T, want, got *actorCheckpoint) {
 		t, txsEqualCk(want.SweepTx, got.SweepTx),
 		"sweep transactions differ",
 	)
+	require.Equal(
+		t, want.ProvisionalExternalSpend.IsSome(),
+		got.ProvisionalExternalSpend.IsSome(),
+	)
+	if want.ProvisionalExternalSpend.IsSome() {
+		require.Equal(
+			t, want.ProvisionalExternalSpend.UnsafeFromSome(),
+			got.ProvisionalExternalSpend.UnsafeFromSome(),
+		)
+	}
 }
 
 // hashFromByteCk builds a chainhash.Hash with the first byte set to b, useful

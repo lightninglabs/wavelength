@@ -74,6 +74,21 @@ type Config struct {
 	// LedgerSink receives the confirmed on-chain exit fee once the
 	// final sweep has confirmed.
 	LedgerSink fn.Option[ledger.Sink]
+
+	// ChainReconcilerFactory, when set, is invoked after the actor
+	// loads its proof to construct a ChainReconciler that reconciles
+	// the persisted checkpoint against the canonical chain at
+	// startup. Anchors that are no longer live on chain (typically
+	// reorged out while the daemon was offline) are pruned before
+	// the FSM session is built so the actor does not broadcast a
+	// sweep on top of stale planner state.
+	//
+	// The factory shape lets the production implementation
+	// (NewChainSourceReconciler) bind to the actor's proof for
+	// pkScript lookups while still letting unit tests inject a stub
+	// that ignores the proof. When None the actor skips
+	// reconciliation entirely.
+	ChainReconcilerFactory fn.Option[ChainReconcilerFactory]
 }
 
 // VTXOUnrollActor wraps one durable per-target unroll actor.
@@ -157,6 +172,22 @@ type behavior struct {
 	proofSpendWatches map[wire.OutPoint]struct{}
 	terminalNotified  bool
 	exitCostNotified  bool
+
+	// reconciled records that the restored checkpoint has been
+	// reconciled against the canonical chain via cfg.ChainReconciler.
+	// Reconciliation runs exactly once per actor lifetime, on the
+	// first ensureLoaded call, before the FSM session is bound.
+	reconciled bool
+
+	// sweepFinalized latches true after a TxFinalizedMsg arrives for
+	// the txid currently recorded as the sweep in PlannerState. While
+	// false, PhaseCompleted is treated as PROVISIONAL: the registry is
+	// NOT told the actor has terminated, so a reorg of the sweep
+	// confirmation still has a live actor to deliver the rollback to.
+	// Once sweepFinalized is true the next notifyRegistryOfTerminal
+	// call fires UnrollTerminatedMsg and the registry evicts the
+	// child.
+	sweepFinalized bool
 }
 
 // unrollTx is the transaction-scoped store handed to the unroll behavior inside
@@ -287,8 +318,36 @@ func (b *behavior) dispatch(ctx context.Context, ax actor.Exec[unrollTx],
 			Reason: b.failureReasonForTx(m.Txid, m.Reason),
 		})
 
+	case *TxReorgedMsg:
+		return b.handleEvent(ctx, ax, &TxReorgedEvent{
+			Txid: m.Txid,
+		})
+
+	case *TxFinalizedMsg:
+		// Latch sweepFinalized BEFORE handleEvent so the
+		// notifyRegistry call inside driveEvent sees the
+		// post-finalization view and fires UnrollTerminatedMsg
+		// instead of holding the actor in provisional Completed.
+		if err := b.ensureLoaded(ctx); err != nil {
+			return fn.Err[Resp](err)
+		}
+		b.maybeLatchSweepFinalized(m.Txid)
+
+		return b.handleEvent(ctx, ax, &TxFinalizedEvent{
+			Txid: m.Txid,
+		})
+
 	case *SpendObservedMsg:
 		return b.handleSpendObserved(ctx, ax, m)
+
+	case *SpendReorgedMsg:
+		return b.handleEvent(ctx, ax, &SpendReorgedEvent{})
+
+	case *SpendFinalizedMsg:
+		return b.handleEvent(ctx, ax, &SpendFinalizedEvent{})
+
+	case *GetStateRequest:
+		return fn.Ok[Resp](b.stateResponse())
 
 	default:
 		return fn.Err[Resp](
@@ -779,14 +838,35 @@ func (b *behavior) watchDeferredCheckpoint(ctx context.Context,
 		},
 	)
 
+	// Deferred-checkpoint watches register directly against
+	// chainsource rather than txconfirm, but the rollback contract
+	// is identical: an operator-confirmed checkpoint that reorgs out
+	// while the actor is live must drop from ConfirmedTxids so the
+	// planner does not advance off a stale anchor, and a finality
+	// signal lets the chainsource sub-actor release its registration
+	// at the reorg-safety horizon. Wire both lifecycle refs through
+	// the same selfRef the positive event uses.
+	reorgRef := chainsource.MapConfReorgedEvent(
+		b.selfRef, func(event chainsource.ConfReorgedEvent) Msg {
+			return &TxReorgedMsg{Txid: event.Txid}
+		},
+	)
+	doneRef := chainsource.MapConfDoneEvent(
+		b.selfRef, func(event chainsource.ConfDoneEvent) Msg {
+			return &TxFinalizedMsg{Txid: event.Txid}
+		},
+	)
+
 	txidCopy := txid
 	_, err = b.cfg.ChainSource.Ask(ctx, &chainsource.RegisterConfRequest{
-		CallerID:    b.deferredCheckpointCallerID(),
-		Txid:        &txidCopy,
-		PkScript:    append([]byte(nil), pkScript...),
-		TargetConfs: 1,
-		HeightHint:  proofNodeHeightHint,
-		NotifyActor: fn.Some(notifyRef),
+		CallerID:      b.deferredCheckpointCallerID(),
+		Txid:          &txidCopy,
+		PkScript:      append([]byte(nil), pkScript...),
+		TargetConfs:   1,
+		HeightHint:    proofNodeHeightHint,
+		NotifyActor:   fn.Some(notifyRef),
+		NotifyReorged: fn.Some(reorgRef),
+		NotifyDone:    fn.Some(doneRef),
 	}).Await(ctx).Unpack()
 	if err != nil {
 		return err
@@ -884,6 +964,23 @@ func (b *behavior) ensureLoaded(ctx context.Context) error {
 		b.planner = planner
 	}
 
+	// Reconcile the restored checkpoint against the canonical chain
+	// before binding the FSM session. Any confirmed-tx anchor the
+	// reconciler reports as absent gets dropped (with its
+	// descendants), and a target / sweep confirmation that vanished
+	// while the daemon was offline downgrades the sweep state. This
+	// must run before stateFromCheckpoint so the FSM is built from
+	// the post-reconciliation snapshot, and before any side effects
+	// (block subscription, spend watch, ResumeEvent reissue) so a
+	// stale sweep is never re-broadcast on a now-unconfirmed target.
+	if !b.reconciled {
+		if err := b.reconcileOnRestart(ctx); err != nil {
+			return err
+		}
+
+		b.reconciled = true
+	}
+
 	if b.session == nil {
 		initialState := State(&Idle{})
 		if b.pending != nil && b.pending.Started {
@@ -946,6 +1043,16 @@ func (b *behavior) notificationRef() actor.TellOnlyRef[txconfirm.Notification] {
 					Reason: m.Reason,
 				}
 
+			case *txconfirm.TxReorged:
+				return &TxReorgedMsg{
+					Txid: m.Txid,
+				}
+
+			case *txconfirm.TxFinalized:
+				return &TxFinalizedMsg{
+					Txid: m.Txid,
+				}
+
 			default:
 				return &TxFailedMsg{
 					Reason: fmt.Sprintf(
@@ -988,8 +1095,38 @@ func (b *behavior) restoreCheckpoint(ctx context.Context) error {
 
 	b.pending = decoded
 	b.sweepTx = copyTx(decoded.SweepTx)
+	b.sweepFinalized = decoded.SweepFinalized
 
 	return nil
+}
+
+// reconcileOnRestart asks the configured ChainReconciler whether each
+// anchor recorded in the restored checkpoint is still live on the
+// canonical chain, and prunes the in-memory checkpoint accordingly.
+// Called from ensureLoaded exactly once per actor lifetime, BEFORE the
+// FSM session is bound.
+//
+// A missing reconciler is a no-op: backends that cannot answer
+// historical confirmation queries fall back to the conservative
+// behavior of treating the restored checkpoint as authoritative.
+// Transport errors from the reconciler are surfaced upward; the actor
+// must not proceed to broadcast off a checkpoint we could not verify.
+func (b *behavior) reconcileOnRestart(ctx context.Context) error {
+	if b.cfg.ChainReconcilerFactory.IsNone() {
+		return nil
+	}
+
+	if b.pending == nil || !b.pending.Started {
+		return nil
+	}
+
+	factory := b.cfg.ChainReconcilerFactory.UnsafeFromSome()
+	reconciler := factory(b.cfg.TargetOutpoint, b.proof)
+	if reconciler == nil {
+		return nil
+	}
+
+	return reconcileCheckpoint(ctx, reconciler, b.proof, b.pending)
 }
 
 // ensureBlockSubscription starts the actor's shared block epoch subscription on
@@ -1077,14 +1214,28 @@ func (b *behavior) ensureSpendWatch(ctx context.Context) error {
 			}
 		},
 	)
+	reorgRef := chainsource.MapSpendReorgedEvent(
+		b.selfRef,
+		func(_ chainsource.SpendReorgedEvent) Msg {
+			return &SpendReorgedMsg{}
+		},
+	)
+	doneRef := chainsource.MapSpendDoneEvent(
+		b.selfRef,
+		func(_ chainsource.SpendDoneEvent) Msg {
+			return &SpendFinalizedMsg{}
+		},
+	)
 
 	_, err = b.cfg.ChainSource.Ask(
 		ctx, &chainsource.RegisterSpendRequest{
-			CallerID:    b.spendCallerID(),
-			Outpoint:    &targetOutpoint,
-			PkScript:    pkScript,
-			HeightHint:  uint32(b.desc.CreatedHeight),
-			NotifyActor: fn.Some(notifyRef),
+			CallerID:      b.spendCallerID(),
+			Outpoint:      &targetOutpoint,
+			PkScript:      pkScript,
+			HeightHint:    uint32(b.desc.CreatedHeight),
+			NotifyActor:   fn.Some(notifyRef),
+			NotifyReorged: fn.Some(reorgRef),
+			NotifyDone:    fn.Some(doneRef),
 		},
 	).Await(ctx).Unpack()
 	if err != nil {
@@ -1340,18 +1491,36 @@ func (b *behavior) handleSpendObserved(ctx context.Context,
 		}
 	}
 
-	// Case 4: neither of the above. Someone else spent the watched output.
-	// This happens if the operator cooperatively claimed the VTXO,
-	// if a reorg replaced history, or in fraud scenarios. There is
-	// no way for this unroll to proceed, so terminate with a
-	// reason string that identifies the spender for operator
-	// triage.
-	spentOutpoint := b.cfg.TargetOutpoint
-	if msg.Outpoint != (wire.OutPoint{}) {
-		spentOutpoint = msg.Outpoint
+	// Case 4: neither of the above. Someone else spent the watched
+	// output. This can happen for two structurally different
+	// outputs, with different reversibility properties:
+	//
+	//   a. The target outpoint was spent by an unknown party. This
+	//      is the cooperative-claim / fraud scenario the external-
+	//      spend reorg-safety work is built for: a reorg of the
+	//      spending block can resurrect the recovery job, so the
+	//      actor parks in AwaitingExternalSpendFinality. A
+	//      subsequent SpendFinalizedMsg promotes the spend to a
+	//      permanent FailReason; a SpendReorgedMsg clears the
+	//      observation and resumes planning.
+	//
+	//   b. A proof-node output was spent by a transaction that is
+	//      not itself part of the proof graph (ackProofOutputSpend
+	//      acked the parent confirmation already, but returned
+	//      false for the spender lookup). The proof graph cannot
+	//      complete through this fork, so the unroll job is
+	//      terminally dead. Fail with a reason that identifies the
+	//      spender for operator triage.
+	if msg.Outpoint == (wire.OutPoint{}) ||
+		msg.Outpoint == b.cfg.TargetOutpoint {
+		return b.handleEvent(ctx, ax, &ExternalSpendObservedEvent{
+			SpendingTxid:   msg.SpendingTxid,
+			SpendingHeight: msg.SpendingHeight,
+		})
 	}
+
 	reason := fmt.Sprintf("watched outpoint %s spent externally by tx %s "+
-		"at height %d", spentOutpoint, msg.SpendingTxid,
+		"at height %d", msg.Outpoint, msg.SpendingTxid,
 		msg.SpendingHeight)
 
 	return b.handleEvent(ctx, ax, &FailEvent{Reason: reason})
@@ -1424,6 +1593,14 @@ func (b *behavior) checkpointWrite() (*actorCheckpoint,
 	}
 
 	checkpoint := checkpointFromState(state, b.sweepTx)
+
+	// Persist the sweep-finalized latch so it survives restart: commitAck
+	// re-persists this checkpoint atomically with the message ack, so a
+	// finalized sweep whose terminal handoff was deferred/failed is not
+	// lost — the actor rehydrates as terminal-eligible rather than stuck
+	// "provisional completed".
+	checkpoint.SweepFinalized = b.sweepFinalized
+
 	raw, err := encodeCheckpoint(checkpoint)
 	if err != nil {
 		return nil, nil, err
@@ -1728,19 +1905,60 @@ func (b *behavior) failureReasonForTx(txid chainhash.Hash,
 	return fmt.Sprintf("proof tx %s failed: %s", txid, reason)
 }
 
+// maybeLatchSweepFinalized sets b.sweepFinalized when an incoming
+// TxFinalizedMsg refers to the txid currently recorded as the sweep in
+// PlannerState. The flag gates notifyRegistryIfTerminal so that a
+// PhaseCompleted entry without a matching finalization stays
+// provisional — the actor is kept alive by the registry until the
+// sweep is past the backend's reorg-safety depth, so a reorg of the
+// sweep confirmation has a live actor to receive the rollback.
+//
+// Late finalizations (e.g. for a proof tx, or for a sweep txid that has
+// since been replaced by a re-broadcast) are ignored.
+func (b *behavior) maybeLatchSweepFinalized(txid chainhash.Hash) {
+	state, err := b.currentState()
+	if err != nil {
+		return
+	}
+
+	job := stateJob(state)
+	if job.PlannerState.Sweep.Txid.IsNone() {
+		return
+	}
+	if job.PlannerState.Sweep.Txid.UnsafeFromSome() != txid {
+		return
+	}
+
+	b.sweepFinalized = true
+}
+
 // notifyRegistryIfTerminal forwards one UnrollTerminatedMsg to the
-// registry when the FSM reaches Completed or Failed, at most once per
-// actor lifetime.
+// registry when the FSM reaches a TRULY terminal state, at most once
+// per actor lifetime.
 //
-// The registry uses this to move the outpoint out of its active map and
-// mark the durable store terminal. If the FSM receives additional events
-// after reaching terminal (e.g. a late TxConfirmed for a proof node that
-// materialized before we failed for other reasons) terminalNotified
-// keeps us from spamming the registry with repeats.
+// PhaseFailed always means FailReason has been set (proof-tx terminal
+// failure, sweep retry budget exhausted, or a finalized external
+// spend); none of those are reorg-recoverable so the actor is terminal
+// the moment we get there.
 //
-// Failure to Tell is warned but not fatal — the registry will rediscover
-// the terminal phase the next time it queries child state, and it holds
-// its own persistence retry loop for the control-plane record.
+// PhaseCompleted is treated as PROVISIONAL until b.sweepFinalized is
+// latched by a matching TxFinalizedMsg for the recorded sweep txid.
+// While provisional, the registry keeps the child in its active map so
+// a reorg of the sweep confirmation has a live actor to deliver the
+// rollback to. The chainsource transport (lndclient over gRPC) does
+// not surface a finality signal today, so production deployments may
+// retain the child indefinitely after a sweep confirms; height-based
+// finality gating is a Phase 7 follow-up.
+//
+// PhaseExternalSpendObserved is reversible by design and never reaches
+// this function as terminal; SpendFinalizedMsg promotes the
+// provisional anchor to FailReason and the actor moves through
+// PhaseFailed instead.
+//
+// Failure to Tell is warned but not fatal — the registry will
+// rediscover the terminal phase the next time it queries child state,
+// and it holds its own persistence retry loop for the control-plane
+// record.
 func (b *behavior) notifyRegistryIfTerminal(ctx context.Context) {
 	state, err := b.currentState()
 	if err != nil {
@@ -1750,7 +1968,9 @@ func (b *behavior) notifyRegistryIfTerminal(ctx context.Context) {
 	}
 
 	phase := phaseFromState(state)
-	if phase != PhaseCompleted && phase != PhaseFailed {
+	trulyTerminal := phase == PhaseFailed ||
+		(phase == PhaseCompleted && b.sweepFinalized)
+	if !trulyTerminal {
 		return
 	}
 
