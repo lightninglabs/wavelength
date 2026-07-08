@@ -11,6 +11,7 @@ import (
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/batchcanon"
 	"github.com/lightninglabs/wavelength/chainsource"
 	"github.com/lightninglabs/wavelength/ledger"
 	"github.com/lightninglabs/wavelength/lib/actormsg"
@@ -74,7 +75,7 @@ type RegistryRecord struct {
 	// on-chain footprint, so the target VTXO is safe to roll back to
 	// live. It is persisted (as a distinct DB status) so boot-time
 	// reconciliation can recover a VTXO whose recovery notification was
-	// lost before the manager applied it (wavelength#602).
+	// lost before the manager applied it (darepo-client#602).
 	RecoverableFailure bool
 }
 
@@ -118,6 +119,17 @@ type RegistryConfig struct {
 
 	// VTXOStore loads target descriptors for child actors.
 	VTXOStore vtxo.VTXOStore
+
+	// BatchCanonicality, when set, gates fresh unroll admission on the
+	// target VTXO's source-lineage canonicality (darepo#454): an unroll is
+	// refused only when a batch in the VTXO's lineage is permanently
+	// invalidated (conflict-finalized), since the exit tree can then never
+	// confirm. Transient reorgs are admitted and the unroll self-reconciles
+	// its anchors (#410). Nil disables the gate (the default until the
+	// batch producers register batches); it is permissive otherwise (unseen
+	// / unregistered lineage does not block), and only fresh admissions are
+	// gated — an already-running unroll is never interrupted.
+	BatchCanonicality batchcanon.Store
 
 	// TxConfirmRef is the shared tx-confirmation actor.
 	TxConfirmRef actor.ActorRef[txconfirm.Msg, txconfirm.Resp]
@@ -165,7 +177,7 @@ type RegistryConfig struct {
 	// to live, and a completed exit asks it to retire the VTXO to spent.
 	// This is the feedback edge that keeps VTXO lifecycle gated on the
 	// unroll job's terminal on-chain outcome rather than the user's intent
-	// to exit (wavelength#602). When None, terminal outcomes are not
+	// to exit (darepo-client#602). When None, terminal outcomes are not
 	// forwarded (used by tests that don't exercise the manager).
 	VTXOExitObserver fn.Option[actor.TellOnlyRef[vtxo.ManagerMsg]]
 }
@@ -406,6 +418,105 @@ func (r *registryBehavior) OnStop(context.Context) error {
 	return nil
 }
 
+// ErrSourceLineageUnavailable is returned by EnsureUnroll when the target
+// VTXO's source lineage is permanently off the canonical chain (a batch in its
+// lineage had a consumed input double-spent past finality), so its exit tree
+// can never confirm. This is terminal — there is nothing to retry.
+var ErrSourceLineageUnavailable = errors.New("vtxo source lineage " +
+	"unavailable for unroll")
+
+// refuseIfSourceLineageInvalidated returns ErrSourceLineageUnavailable (wrapped
+// with the target outpoint) when the target VTXO's source lineage is
+// permanently invalidated, so a fresh unroll must not be admitted. It is a
+// no-op when the gate is dormant or the lineage is still recoverable.
+func (r *registryBehavior) refuseIfSourceLineageInvalidated(ctx context.Context,
+	outpoint wire.OutPoint) error {
+
+	if r.sourceLineageInvalidated(ctx, outpoint) {
+		return fmt.Errorf("%w: %s", ErrSourceLineageUnavailable,
+			outpoint)
+	}
+
+	return nil
+}
+
+// sourceLineageInvalidated reports whether the target VTXO's source lineage is
+// PERMANENTLY invalidated (a batch in its lineage is conflict-finalized), in
+// which case the exit tree can never confirm and a fresh unroll is pointless.
+//
+// It deliberately blocks ONLY the terminal Invalidated verdict, not the
+// transient LimboReorg / LimboConflict states: a reorged-out batch (no input
+// conflict) is expected to re-confirm on its own, and a not-yet-final conflict
+// may still resolve in the batch's favor. Blocking those would risk dropping a
+// needed critical-expiry / fraud-triggered exit during exactly the window it
+// matters — and the critical-expiry safety net reaches this gate via a
+// fire-and-forget Tell, so a refusal cannot be observed or retried. An
+// already-admitted unroll tolerates a transiently-absent parent by reconciling
+// its own chain anchors (#410), so a fresh safety exit should be admitted for
+// the same transient condition rather than refused.
+//
+// It is a no-op (returns false) when no canonicality store is wired, and it is
+// fail-permissive: any descriptor-load or canonicality lookup error logs and
+// returns false rather than blocking an exit, mirroring the gate's permissive
+// "unseen / unregistered lineage does not block" stance.
+func (r *registryBehavior) sourceLineageInvalidated(ctx context.Context,
+	outpoint wire.OutPoint) bool {
+
+	if r.cfg.BatchCanonicality == nil {
+		return false
+	}
+
+	desc, err := r.cfg.VTXOStore.GetVTXO(ctx, outpoint)
+	if err != nil {
+		r.log.DebugS(ctx, "Unroll lineage gate: vtxo load failed, "+
+			"permitting admission", err,
+			slog.String("outpoint", outpoint.String()))
+
+		return false
+	}
+
+	avail, err := batchcanon.LineageAvailability(
+		ctx, r.cfg.BatchCanonicality,
+		unrollLineageCommitmentTxids(desc)...,
+	)
+	if err != nil {
+		r.log.DebugS(ctx, "Unroll lineage gate: availability lookup "+
+			"failed, permitting admission", err,
+			slog.String("outpoint", outpoint.String()))
+
+		return false
+	}
+
+	return avail == batchcanon.Invalidated
+}
+
+// unrollLineageCommitmentTxids returns the deduped commitment txids in a VTXO's
+// lineage: its direct commitment tx plus every distinct ancestor commitment tx
+// (zero-skipped). Mirrors the vtxo package's selection-gate helper for the
+// unroll admission gate.
+func unrollLineageCommitmentTxids(desc *vtxo.Descriptor) []chainhash.Hash {
+	seen := make(map[chainhash.Hash]struct{}, len(desc.Ancestry)+1)
+	txids := make([]chainhash.Hash, 0, len(desc.Ancestry)+1)
+
+	add := func(txid chainhash.Hash) {
+		if txid == (chainhash.Hash{}) {
+			return
+		}
+		if _, ok := seen[txid]; ok {
+			return
+		}
+		seen[txid] = struct{}{}
+		txids = append(txids, txid)
+	}
+
+	add(desc.CommitmentTxID)
+	for i := range desc.Ancestry {
+		add(desc.Ancestry[i].CommitmentTxID)
+	}
+
+	return txids
+}
+
 // handleEnsure is the admission gate for new unroll jobs. It runs a
 // four-stage check to decide whether the caller is re-asking for an
 // already-tracked target or requesting a brand-new unroll, spawns and
@@ -460,7 +571,7 @@ func (r *registryBehavior) handleEnsure(ctx context.Context,
 	//
 	// A recoverable failure is the exception: the prior exit failed
 	// cleanly with no on-chain footprint and the VTXO was rolled back to
-	// live (wavelength#602), so a fresh exit must be admittable rather
+	// live (darepo-client#602), so a fresh exit must be admittable rather
 	// than deduped against the dead attempt. Fall through to the spawn
 	// path, whose UpsertRecord overwrites the stale recoverable row.
 	if record, ok := r.pending[req.Outpoint]; ok &&
@@ -486,7 +597,7 @@ func (r *registryBehavior) handleEnsure(ctx context.Context,
 		//      stable identity and do not clobber the recorded sweep
 		//      txid or failure reason. A *recoverable* terminal
 		//      failure is the exception: the VTXO was rolled back to
-		//      live (wavelength#602), so it falls through to a
+		//      live (darepo-client#602), so it falls through to a
 		//      fresh spawn (handled below).
 		//
 		//   2. Non-terminal record — the actor was admitted in a
@@ -552,6 +663,15 @@ func (r *registryBehavior) handleEnsure(ctx context.Context,
 				Created: false,
 			})
 		}
+	}
+
+	// Refuse a fresh unroll only when the target's source lineage is
+	// permanently invalidated (see sourceLineageInvalidated); transient
+	// reorgs are admitted and self-reconcile.
+	if err := r.refuseIfSourceLineageInvalidated(
+		ctx, req.Outpoint,
+	); err != nil {
+		return fn.Err[RegistryResp](err)
 	}
 
 	height, err := r.queryBestHeight(ctx)
@@ -762,7 +882,7 @@ func (r *registryBehavior) handleChildAdmissionResult(ctx context.Context,
 // the child broadcasts anything, so the VTXO has no on-chain footprint and is
 // recoverable to live. The record is persisted as a recoverable failure and
 // the VTXO manager is notified so the VTXO is rolled back rather than
-// stranded in unilateral exit (wavelength#602).
+// stranded in unilateral exit (darepo-client#602).
 func (r *registryBehavior) failAdmittedChild(ctx context.Context,
 	target wire.OutPoint, child *VTXOUnrollActor, err error) {
 
@@ -1000,7 +1120,7 @@ func (r *registryBehavior) handleTerminated(ctx context.Context,
 	// outlives r.pending: a completed async persist can evict the cached
 	// record before this terminal handoff. Prefer the message's kind so a
 	// recovery-only target is still held in exit rather than relived as a
-	// live coin (wavelength#602). We only feed it to the manager, not
+	// live coin (darepo-client#602). We only feed it to the manager, not
 	// the persisted record: the message has no policy ref, so stamping its
 	// kind onto the record would drop the store's (kind, ref) identity.
 	policyKind := req.ExitPolicyKind
@@ -1010,7 +1130,7 @@ func (r *registryBehavior) handleTerminated(ctx context.Context,
 
 	// Forward the terminal outcome to the VTXO manager so the VTXO's
 	// lifecycle tracks the unroll job's terminal on-chain result rather
-	// than the user's intent to exit (wavelength#602). The handoff must
+	// than the user's intent to exit (darepo-client#602). The handoff must
 	// survive caller-context cancellation, so detach the context. The exit
 	// policy rides along so the manager can hold a recovery-only target in
 	// exit rather than relive it as a live coin.
