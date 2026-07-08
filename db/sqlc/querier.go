@@ -15,6 +15,9 @@ type Querier interface {
 	// contiguous). Callers use it as the resumable-subscribe cursor for the update.
 	AppendActivityEvent(ctx context.Context, arg AppendActivityEventParams) (int64, error)
 	CancelVHTLCRecoveryJob(ctx context.Context, arg CancelVHTLCRecoveryJobParams) (int64, error)
+	// ClearBatchConfirmation nulls the confirmation observation, reflecting that
+	// the confirming block left the best chain. It sets no terminal flag.
+	ClearBatchConfirmation(ctx context.Context, arg ClearBatchConfirmationParams) error
 	ClearPendingIntentAnchorByOutpoint(ctx context.Context, arg ClearPendingIntentAnchorByOutpointParams) error
 	CompleteVHTLCRecoveryJob(ctx context.Context, arg CompleteVHTLCRecoveryJobParams) (int64, error)
 	// CountActivityEntriesByStatus returns the number of current-state rows in the
@@ -33,6 +36,12 @@ type Querier interface {
 	// CountVTXOsByStatus returns the count of VTXOs with the specified status.
 	CountVTXOsByStatus(ctx context.Context, status int32) (int64, error)
 	CountWalletUTXOLog(ctx context.Context) (int64, error)
+	// DeleteBatchConsumedInputs removes every consumed-input row for a batch,
+	// used by the store's upsert to replace the set atomically.
+	DeleteBatchConsumedInputs(ctx context.Context, batchTxid []byte) error
+	// DeleteBatchDependentVTXOs removes every dependent-VTXO row for a batch,
+	// used by the store's upsert to replace the set atomically.
+	DeleteBatchDependentVTXOs(ctx context.Context, batchTxid []byte) error
 	DeleteClientTreeTxids(ctx context.Context, arg DeleteClientTreeTxidsParams) error
 	DeleteOORPackageCheckpoints(ctx context.Context, sessionID []byte) error
 	DeleteOrphanedPendingBoardIntents(ctx context.Context) error
@@ -53,6 +62,9 @@ type Querier interface {
 	DeletePendingIntentsByKind(ctx context.Context, kind string) error
 	DeletePendingSendIntentByID(ctx context.Context, intentID []byte) error
 	DeletePendingSendIntentsAll(ctx context.Context) error
+	// DeleteProvisionalConsumersForBatch removes every reverse-dependency edge
+	// for the given consumer batch.
+	DeleteProvisionalConsumersForBatch(ctx context.Context, consumerBatchTxid []byte) error
 	// DeleteSpendingReservation removes the reservation for one outpoint. Called
 	// when the VTXO leaves SpendingState (released or completed).
 	DeleteSpendingReservation(ctx context.Context, arg DeleteSpendingReservationParams) error
@@ -66,8 +78,13 @@ type Querier interface {
 	EscalateVHTLCRecoveryJob(ctx context.Context, arg EscalateVHTLCRecoveryJobParams) (int64, error)
 	FailVHTLCRecoveryJob(ctx context.Context, arg FailVHTLCRecoveryJobParams) (int64, error)
 	FinalizeRound(ctx context.Context, arg FinalizeRoundParams) error
+	// FindBatchesByConsumedOutpoint returns the txids of every batch that
+	// consumes the given outpoint.
+	FindBatchesByConsumedOutpoint(ctx context.Context, arg FindBatchesByConsumedOutpointParams) ([][]byte, error)
 	// GetActivityEntry returns one entry by its canonical id.
 	GetActivityEntry(ctx context.Context, canonicalID string) (ActivityEntry, error)
+	// GetBatchCanonicality returns the canonicality row for a batch txid.
+	GetBatchCanonicality(ctx context.Context, batchTxid []byte) (GetBatchCanonicalityRow, error)
 	GetBoardingAddress(ctx context.Context, pkScript []byte) (BoardingAddress, error)
 	GetBoardingIntent(ctx context.Context, arg GetBoardingIntentParams) (BoardingIntent, error)
 	GetBoardingSweep(ctx context.Context, txid []byte) (BoardingSweep, error)
@@ -114,6 +131,10 @@ type Querier interface {
 	// GetVTXOReplacement retrieves the replacement VTXO outpoint for a forfeited
 	// VTXO. Returns NULL if not forfeited or no replacement recorded.
 	GetVTXOReplacement(ctx context.Context, arg GetVTXOReplacementParams) (GetVTXOReplacementRow, error)
+	// InsertBatchConsumedInput records one outpoint consumed by a batch.
+	InsertBatchConsumedInput(ctx context.Context, arg InsertBatchConsumedInputParams) error
+	// InsertBatchDependentVTXO records one VTXO outpoint anchored by a batch.
+	InsertBatchDependentVTXO(ctx context.Context, arg InsertBatchDependentVTXOParams) error
 	// Boarding address queries.
 	InsertBoardingAddress(ctx context.Context, arg InsertBoardingAddressParams) error
 	// Boarding intent queries.
@@ -144,6 +165,9 @@ type Querier interface {
 	InsertExitFundingAddress(ctx context.Context, arg InsertExitFundingAddressParams) error
 	InsertMacaroonRootKey(ctx context.Context, arg InsertMacaroonRootKeyParams) error
 	InsertOORPackageCheckpoint(ctx context.Context, arg InsertOORPackageCheckpointParams) error
+	// InsertProvisionalConsumer records a reverse-dependency edge: consumed_vtxo
+	// is provisionally consumed by consumer_batch. Idempotent.
+	InsertProvisionalConsumer(ctx context.Context, arg InsertProvisionalConsumerParams) error
 	// Round queries.
 	InsertRound(ctx context.Context, arg InsertRoundParams) error
 	// Round boarding intents queries.
@@ -179,6 +203,13 @@ type Querier interface {
 	ListAllCreditOperations(ctx context.Context) ([]CreditOperation, error)
 	ListAllOORSessionRegistry(ctx context.Context) ([]OorSessionRegistry, error)
 	ListAllVTXOs(ctx context.Context) ([]Vtxo, error)
+	// ListBatchCanonicalityByState returns every batch currently in the given
+	// state.
+	ListBatchCanonicalityByState(ctx context.Context, state int32) ([]ListBatchCanonicalityByStateRow, error)
+	// ListBatchConsumedInputs returns the outpoints a batch consumes.
+	ListBatchConsumedInputs(ctx context.Context, batchTxid []byte) ([]ListBatchConsumedInputsRow, error)
+	// ListBatchDependentVTXOs returns the VTXO outpoints a batch anchors.
+	ListBatchDependentVTXOs(ctx context.Context, batchTxid []byte) ([]ListBatchDependentVTXOsRow, error)
 	ListBoardingIntentOutpoints(ctx context.Context) ([]ListBoardingIntentOutpointsRow, error)
 	ListBoardingIntentsByConfHeight(ctx context.Context, confHeight int32) ([]BoardingIntent, error)
 	ListBoardingIntentsByPkScript(ctx context.Context, pkScript []byte) ([]BoardingIntent, error)
@@ -238,6 +269,10 @@ type Querier interface {
 	// Only status = 'pending' rows replay; a 'failed' intent is terminally
 	// retired and must not be re-submitted on restart.
 	ListPendingSendIntents(ctx context.Context) ([]ListPendingSendIntentsRow, error)
+	// ListProvisionalConsumersForBatch returns the VTXO outpoints that the given
+	// consumer batch provisionally consumes (the VTXOs to restore if the batch
+	// is invalidated).
+	ListProvisionalConsumersForBatch(ctx context.Context, consumerBatchTxid []byte) ([]ListProvisionalConsumersForBatchRow, error)
 	ListRoundsByStatus(ctx context.Context, status string) ([]Round, error)
 	// ListRoundsPaginated returns rounds ordered by round_id with cursor-
 	// based pagination. When cursor is empty, returns from the beginning.
@@ -282,6 +317,13 @@ type Querier interface {
 	// unknown (all non-forfeited VTXOs, and forfeited ones whose round row is
 	// absent), so consumers must treat them as optional.
 	ListVTXOsByStatus(ctx context.Context, status int32) ([]ListVTXOsByStatusRow, error)
+	// ListVTXOsForCanonicalityBackfill returns the columns needed to derive
+	// initial batch canonicality records from already-persisted VTXOs: each
+	// VTXO's outpoint, its commitment (batch) txid, the absolute batch expiry
+	// height, and the height at which it was created (confirmed). The backfill
+	// groups these by commitment txid in Go and recomputes the CSV-relative
+	// expiry delta as batch_expiry - created_height.
+	ListVTXOsForCanonicalityBackfill(ctx context.Context) ([]ListVTXOsForCanonicalityBackfillRow, error)
 	ListWalletUTXOLog(ctx context.Context, arg ListWalletUTXOLogParams) ([]WalletUtxoLog, error)
 	ListWalletUTXOLogByBlock(ctx context.Context, blockHeight int32) ([]WalletUtxoLog, error)
 	ListWalletUTXOLogByClassification(ctx context.Context, arg ListWalletUTXOLogByClassificationParams) ([]WalletUtxoLog, error)
@@ -326,8 +368,16 @@ type Querier interface {
 	// PullActivityEvents returns transition rows strictly after the cursor in
 	// event_seq order, the resumable-subscribe replay primitive.
 	PullActivityEvents(ctx context.Context, arg PullActivityEventsParams) ([]ActivityEvent, error)
+	// RecordBatchConfirmation records the best-chain height and block hash at
+	// which the batch tx is confirmed. A later call at a different height (after
+	// a reorg) overwrites the observation so effective expiry tracks the new
+	// confirmation.
+	RecordBatchConfirmation(ctx context.Context, arg RecordBatchConfirmationParams) error
 	SumBoardingIntentAmountsByStatus(ctx context.Context, status string) (interface{}, error)
 	SumUnspentVTXOAmounts(ctx context.Context) (interface{}, error)
+	// UpdateBatchCanonicalityState transitions a batch to a new state without
+	// touching its other fields.
+	UpdateBatchCanonicalityState(ctx context.Context, arg UpdateBatchCanonicalityStateParams) error
 	UpdateBoardingIntentStatus(ctx context.Context, arg UpdateBoardingIntentStatusParams) error
 	UpdateRoundBoardingIntentSignature(ctx context.Context, arg UpdateRoundBoardingIntentSignatureParams) error
 	UpdateRoundStatus(ctx context.Context, arg UpdateRoundStatusParams) error
@@ -344,6 +394,15 @@ type Querier interface {
 	// correlation handles are COALESCEd so an early projection that does not yet
 	// know a txid never clobbers one a later projection already recorded.
 	UpsertActivityEntry(ctx context.Context, arg UpsertActivityEntryParams) error
+	// Batch canonicality queries.
+	// These maintain the durable, reorg-aware record of how each batch
+	// (commitment) transaction is faring against the best chain, the inputs it
+	// consumes, the VTXOs it anchors, and the reverse-dependency edges needed to
+	// restore a provisionally consumed VTXO. The queries are behavior-free; all
+	// interpretation lives in the batch canonicality manager.
+	// UpsertBatchCanonicality inserts or replaces the canonicality row for a
+	// batch. created_at is preserved on conflict; everything else is overwritten.
+	UpsertBatchCanonicality(ctx context.Context, arg UpsertBatchCanonicalityParams) error
 	UpsertChainInfo(ctx context.Context, arg UpsertChainInfoParams) error
 	// Credit operations control-plane queries.
 	UpsertCreditOperation(ctx context.Context, arg UpsertCreditOperationParams) error
