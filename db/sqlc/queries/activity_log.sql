@@ -43,14 +43,16 @@ ON CONFLICT (canonical_id) DO UPDATE SET
     request_json    = EXCLUDED.request_json,
     updated_at_unix = EXCLUDED.updated_at_unix;
 
--- name: AppendActivityEvent :exec
--- AppendActivityEvent records one immutable lifecycle-transition row. event_seq
--- is assigned by the database (monotonic, not necessarily contiguous).
+-- name: AppendActivityEvent :one
+-- AppendActivityEvent records one immutable lifecycle-transition row and
+-- returns the event_seq the database assigned (monotonic, not necessarily
+-- contiguous). Callers use it as the resumable-subscribe cursor for the update.
 INSERT INTO activity_events (
     canonical_id, status, phase, entry_json, created_at_unix
 ) VALUES (
     $1, $2, $3, $4, $5
-);
+)
+RETURNING event_seq;
 
 -- name: GetActivityEntry :one
 -- GetActivityEntry returns one entry by its canonical id.
