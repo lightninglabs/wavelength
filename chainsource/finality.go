@@ -21,6 +21,16 @@ var finalityBlockSubscriptionBackoffs = []time.Duration{
 	2 * time.Second,
 }
 
+// finalityBlockSubscriptionAttemptTimeout bounds each individual
+// RegisterBlocks attempt. Without it a single hung RegisterBlocks call
+// (e.g. a wedged lndclient gRPC stream) would block the conf/spend
+// monitoring goroutine indefinitely — stalling Confirmed/Reorged/Done
+// delivery on that watch — since the retry schedule only bounds the gaps
+// between attempts, not the attempts themselves. 10s mirrors the per-call
+// registration timeout used in conf_actor.go's handleRegisterConf so the
+// whole file behaves consistently under a slow backend.
+const finalityBlockSubscriptionAttemptTimeout = 10 * time.Second
+
 // registerBlocksForFinality registers a block-epoch subscription used
 // to synthesize a Done signal at FinalityDepth past an observed
 // confirmation or spend. The call is retried with a short bounded
@@ -29,22 +39,11 @@ var finalityBlockSubscriptionBackoffs = []time.Duration{
 // lndclient over gRPC); a one-shot RegisterBlocks attempt that
 // briefly hiccups would leak the per-watch sub-actor indefinitely.
 //
-// The retries run in a dedicated arming goroutine (not the sub-actor's
-// select loop), so brief blocking here is safe: more confirmation/spend
-// events on this specific watch are not expected during the retry window
-// (we already consumed the one that triggered the arm), and ctx
-// cancellation breaks out promptly.
-//
-// The passed ctx MUST be the sub-actor's long-lived context, and it is
-// handed to RegisterBlocks unwrapped: for in-process backends the
-// block-epoch forwarder goroutine is tied to the ctx it receives, so
-// bounding each attempt with a cancellable child ctx (and cancelling it
-// once the call returns) would tear the subscription down the instant it
-// was armed — starving finality synthesis of the very epochs it needs.
-// A hung RegisterBlocks can therefore stall this arming goroutine, but
-// that is contained: it is off the select loop (fix moved arming there
-// precisely so a slow backend cannot wedge Confirmed/Reorged/Done
-// delivery), and a genuinely wedged backend is a lost watch regardless.
+// The retries run in the calling sub-actor's monitoring goroutine, so
+// brief blocking here is safe: more confirmation/spend events on this
+// specific watch are not expected during the retry window (we already
+// consumed the one that triggered the arm), and ctx cancellation
+// breaks out promptly.
 //
 // Returns the registration on success, or a non-nil error after
 // retries are exhausted. Callers should log the error at warn level
@@ -55,7 +54,14 @@ func registerBlocksForFinality(ctx context.Context, backend ChainBackend,
 
 	var lastErr error
 	for attempt, backoff := range finalityBlockSubscriptionBackoffs {
-		reg, err := backend.RegisterBlocks(ctx)
+		// Bound each attempt so a hung RegisterBlocks cannot wedge the
+		// monitoring goroutine; the retry schedule only bounds the gaps
+		// between attempts, not a single stuck call.
+		attemptCtx, cancel := context.WithTimeout(
+			ctx, finalityBlockSubscriptionAttemptTimeout,
+		)
+		reg, err := backend.RegisterBlocks(attemptCtx)
+		cancel()
 		if err == nil {
 			return reg, nil
 		}
