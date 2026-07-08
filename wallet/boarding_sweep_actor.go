@@ -210,19 +210,63 @@ func (m *ReplayPendingIntentsResponse) MessageType() string {
 
 func (m *ReplayPendingIntentsResponse) walletRespSealed() {}
 
-// BoardingSweepSpendNotification is a Tell carrying a chainsource spend
-// event for a boarding-sweep input. Emitted by the chainsource subscription
-// the wallet actor sets up via MapSpendEvent.
+// BoardingSweepSpendStatus identifies which point in the chainsource
+// spend-watch reorg-aware lifecycle drove this notification. Splitting
+// the status out makes it impossible for the handler to confuse a
+// reorg-out with a fresh spend: a reorged-out spending block should
+// not advance the input's persistent state machine further than the
+// canonical chain has.
+type BoardingSweepSpendStatus int
+
+const (
+	// BoardingSweepSpendStatusUnknown is the zero value; receiving it
+	// indicates a programmer error (MapSpendEvent fell through).
+	BoardingSweepSpendStatusUnknown BoardingSweepSpendStatus = iota
+
+	// BoardingSweepSpendStatusSpent reports that the watched outpoint
+	// was observed spent on the canonical chain by SpendingTxid at
+	// SpendingHeight. The observation is provisional until
+	// BoardingSweepSpendStatusDone arrives — a reorg can roll it back
+	// via BoardingSweepSpendStatusReorged.
+	BoardingSweepSpendStatusSpent
+
+	// BoardingSweepSpendStatusReorged reports that a previously
+	// delivered Spent observation was reorged out. The handler logs
+	// the divergence and leaves the watch armed; the chainsource
+	// sub-actor stays alive in reorg-aware mode so a subsequent
+	// re-spend on the new canonical chain re-fires
+	// BoardingSweepSpendStatusSpent.
+	BoardingSweepSpendStatusReorged
+
+	// BoardingSweepSpendStatusDone reports that the spend observation
+	// is past the chainsource backend's reorg-safety depth and is no
+	// longer reversible. Synthesized by the spend-actor's
+	// FinalityDepth synthesizer when the backend (notably lndclient
+	// over gRPC) does not surface a native Done signal.
+	BoardingSweepSpendStatusDone
+)
+
+// BoardingSweepSpendNotification is a Tell carrying one event from the
+// chainsource spend-watch reorg-aware lifecycle for a boarding-sweep
+// input. Emitted by the subscription the wallet actor sets up via
+// MapSpendEvent / MapSpendReorgedEvent / MapSpendDoneEvent.
 type BoardingSweepSpendNotification struct {
 	actor.BaseMessage
 
-	// Outpoint is the boarding UTXO that was spent.
+	// Status identifies which lifecycle event this notification
+	// carries. See BoardingSweepSpendStatus.
+	Status BoardingSweepSpendStatus
+
+	// Outpoint is the boarding UTXO whose spend lifecycle changed.
 	Outpoint wire.OutPoint
 
-	// SpendingTxid is the transaction that confirmed the spend.
+	// SpendingTxid is the transaction that spent the outpoint when
+	// Status=Spent; zero on Reorged / Done (the wire-level event
+	// carries no spender identity past the first Spent observation).
 	SpendingTxid chainhash.Hash
 
-	// SpendingHeight is the block height of the spending transaction.
+	// SpendingHeight is the block height of the spending transaction
+	// when Status=Spent; zero on Reorged / Done.
 	SpendingHeight int32
 }
 
@@ -924,9 +968,36 @@ func (a *Ark) registerSweepSpendWatch(ctx context.Context,
 	notify := chainsource.MapSpendEvent(a.selfRef,
 		func(ev chainsource.SpendEvent) WalletMsg {
 			return BoardingSweepSpendNotification{
+				Status:         BoardingSweepSpendStatusSpent,
 				Outpoint:       ev.Outpoint,
 				SpendingTxid:   ev.SpendingTxid,
 				SpendingHeight: ev.SpendingHeight,
+			}
+		},
+	)
+
+	// Reorg-aware lifecycle refs. Without these, a reorged-out
+	// external spender would leave the input row marked
+	// external_spent in the persistent store with no rollback path —
+	// the chainsource SpendActor would either tear the registration
+	// down (legacy mode) or hold reorg events for nobody (reorg-aware
+	// mode missing the refs). Wiring them keeps the registration
+	// alive past the first Spent event, surfaces Reorged on rollback,
+	// and lets the FinalityDepth synthesizer eventually fire Done so
+	// the sub-actor exits cleanly.
+	reorgedNotify := chainsource.MapSpendReorgedEvent(a.selfRef,
+		func(ev chainsource.SpendReorgedEvent) WalletMsg {
+			return BoardingSweepSpendNotification{
+				Status:   BoardingSweepSpendStatusReorged,
+				Outpoint: ev.Outpoint,
+			}
+		},
+	)
+	doneNotify := chainsource.MapSpendDoneEvent(a.selfRef,
+		func(ev chainsource.SpendDoneEvent) WalletMsg {
+			return BoardingSweepSpendNotification{
+				Status:   BoardingSweepSpendStatusDone,
+				Outpoint: ev.Outpoint,
 			}
 		},
 	)
@@ -936,11 +1007,13 @@ func (a *Ark) registerSweepSpendWatch(ctx context.Context,
 		notify,
 	)
 	req := &chainsource.RegisterSpendRequest{
-		CallerID:    callerID,
-		Outpoint:    &op,
-		PkScript:    out.PkScript,
-		HeightHint:  heightHint,
-		NotifyActor: notifyOpt,
+		CallerID:      callerID,
+		Outpoint:      &op,
+		PkScript:      out.PkScript,
+		HeightHint:    heightHint,
+		NotifyActor:   notifyOpt,
+		NotifyReorged: fn.Some(reorgedNotify),
+		NotifyDone:    fn.Some(doneNotify),
 	}
 
 	future := a.chainSource.Ask(ctx, req)
@@ -1070,12 +1143,74 @@ func (a *Ark) submitSweepToConfirm(ctx context.Context, tx *wire.MsgTx,
 	return nil
 }
 
-// handleSweepSpendNotification updates persistent state when an input of
-// an in-flight aggregate sweep is observed spent on chain.
+// handleSweepSpendNotification updates persistent state when the
+// reorg-aware spend lifecycle on an in-flight aggregate-sweep input
+// changes:
+//
+//   - Status=Spent: record the spend in the persistent store via
+//     MarkBoardingSweepInputSpent. This is the existing happy path.
+//
+//   - Status=Reorged: a previously delivered Spent observation was
+//     rolled back on the canonical chain. The handler logs and does
+//     NOT undo the store row — the txid-keyed idempotency of
+//     MarkBoardingSweepInputSpent means a re-spend on the new
+//     canonical chain (which chainsource will surface as another
+//     Spent event because the watch stays alive in reorg-aware mode)
+//     either matches the already-stored spender (no-op) or rejects
+//     the row update with sql.ErrNoRows (existing handler treats as
+//     debug). Rolling the row back to pending on reorg would require
+//     a new store method; for now we accept the brief inconsistency
+//     window, which is bounded by the FinalityDepth synthesizer
+//     firing Done at the reorg-safety horizon. Documented as a
+//     known limitation in the boarding-sweep reorg handler.
+//
+//   - Status=Done: the spend is past the reorg-safety horizon and
+//     the chainsource sub-actor will exit. Informational at the
+//     wallet layer; the row state was already committed on the
+//     original Spent event and is no longer reversible.
 func (a *Ark) handleSweepSpendNotification(ctx context.Context,
 	notif BoardingSweepSpendNotification) fn.Result[WalletResp] {
 
 	if a.sweepStore == nil {
+		return fn.Ok[WalletResp](&BoardingSweepNotificationAck{})
+	}
+
+	switch notif.Status {
+	case BoardingSweepSpendStatusSpent:
+		// Fall through to the existing Spent handling below.
+
+	case BoardingSweepSpendStatusReorged:
+		// Reorg-out of a previously delivered Spent observation.
+		// Leave the store row in place; the next Spent event on
+		// the canonical chain (or, in the worst case, manual
+		// reconciliation at restart) brings local state back in
+		// sync. We log so operators have a signal and so future
+		// regression tests can assert the reorg path actually
+		// reaches the wallet layer.
+		a.logger(ctx).WarnS(ctx, "Boarding-sweep input spend "+
+			"reorged out; leaving store row as-is and "+
+			"waiting for re-spend on the canonical chain",
+			nil,
+			slog.String("outpoint", notif.Outpoint.String()),
+		)
+
+		return fn.Ok[WalletResp](&BoardingSweepNotificationAck{})
+
+	case BoardingSweepSpendStatusDone:
+		a.logger(ctx).DebugS(ctx, "Boarding-sweep input spend "+
+			"finalized past reorg-safety depth",
+			slog.String("outpoint", notif.Outpoint.String()),
+		)
+
+		return fn.Ok[WalletResp](&BoardingSweepNotificationAck{})
+
+	default:
+		a.logger(ctx).WarnS(ctx, "Boarding-sweep spend notification "+
+			"with unknown status",
+			fmt.Errorf("status=%d", notif.Status),
+			slog.String("outpoint", notif.Outpoint.String()),
+		)
+
 		return fn.Ok[WalletResp](&BoardingSweepNotificationAck{})
 	}
 
