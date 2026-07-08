@@ -795,6 +795,25 @@ type VTXOCreatedNotification struct {
 	// CommitmentTxID is the txid of the confirmed commitment transaction.
 	CommitmentTxID chainhash.Hash
 
+	// ConsumedInputs are the outpoints the commitment tx spends that this
+	// client contributed: boarding input outpoints plus forfeited VTXO
+	// outpoints. The round actor forwards them to the
+	// BatchCanonicalityManager so a reorg-out or double-spend of a consumed
+	// input invalidates the round-born VTXOs (darepo#454, F1/F3/F6).
+	ConsumedInputs []wire.OutPoint
+
+	// ConfirmationPkScript is the commitment-tx batch output script the
+	// canonicality confirmation watch keys on. Confirmation detection is by
+	// txid; the script only matters for script-filtering light-client
+	// backends (e.g. Neutrino, Esplora).
+	ConfirmationPkScript []byte
+
+	// CSVExpiryDelta is the batch's CSV-relative expiry in blocks (the
+	// round's SweepDelay). The canonicality manager derives the effective
+	// absolute expiry as confirmation height plus this delta, so it is
+	// recomputed cleanly across reorgs rather than stored absolute.
+	CSVExpiryDelta int32
+
 	// BatchExpiry is the absolute block height when the batch expires.
 	BatchExpiry int32
 

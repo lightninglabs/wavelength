@@ -268,6 +268,55 @@ func (m *ConfirmationEvent) MessageType() string {
 // RoundReceivable implements actormsg.RoundReceivable marker interface.
 func (m *ConfirmationEvent) RoundReceivable() {}
 
+// CommitmentReorgedEvent wraps a chainsource ConfReorgedEvent that
+// reports a previously delivered ConfirmationEvent for a commitment
+// transaction was rolled back by a reorg of the canonical chain.
+//
+// Reorg semantics for the round FSM are not yet implemented: the
+// commitment-tx confirmation drives the FSM's `InputSigSent ->
+// Confirmed` transition (and the actor's `onRoundComplete` cleanup),
+// both of which are terminal. Until the FSM gains a provisional/
+// finalized split, the actor-level handler for this event can only
+// log the divergence so an operator notices and the future systests
+// have something to assert against. Routing to the (now stopped) FSM
+// would be a no-op even if the round were still tracked, because
+// ConfirmedState has no transition for a "commitment reorged" event.
+type CommitmentReorgedEvent struct {
+	actor.BaseMessage
+
+	// Txid identifies the commitment transaction whose previously
+	// observed confirmation has been rolled back.
+	Txid chainhash.Hash
+}
+
+func (m *CommitmentReorgedEvent) MessageType() string {
+	return "CommitmentReorgedEvent"
+}
+
+// RoundReceivable implements actormsg.RoundReceivable marker interface.
+func (m *CommitmentReorgedEvent) RoundReceivable() {}
+
+// CommitmentFinalizedEvent wraps a chainsource ConfDoneEvent that
+// reports a commitment-tx confirmation is past the backend's reorg-
+// safety depth and is no longer reversible. The current FSM treats
+// the first confirmation as terminal; once the provisional/finalized
+// FSM split lands, this is the signal that promotes the round from
+// provisional to truly final.
+type CommitmentFinalizedEvent struct {
+	actor.BaseMessage
+
+	// Txid identifies the commitment transaction whose confirmation
+	// is now past the reorg-safety horizon.
+	Txid chainhash.Hash
+}
+
+func (m *CommitmentFinalizedEvent) MessageType() string {
+	return "CommitmentFinalizedEvent"
+}
+
+// RoundReceivable implements actormsg.RoundReceivable marker interface.
+func (m *CommitmentFinalizedEvent) RoundReceivable() {}
+
 // TimeoutMsg is sent to the round actor when a timeout expires.
 type TimeoutMsg struct {
 	actor.BaseMessage
