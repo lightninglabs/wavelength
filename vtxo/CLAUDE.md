@@ -31,11 +31,13 @@ when the local wallet owns the receive script.
   `BatchCanonicality` (optional `batchcanon.Store`), when set, gates coin
   selection on batch lineage canonicality: `selectAndReserveVTXOs` drops any
   candidate whose batch is in limbo (reorged-out) or invalidated
-  (conflict-finalized) state via `batchcanon.LineageBlocked`, reading the
-  candidate's direct commitment txid through `GetVTXO`. Nil disables the gate
-  (a complete no-op, the default until the batch producers register batches);
-  it is permissive otherwise (unseen / unregistered lineage does not block).
-  Full multi-parent ancestry gating is a follow-up.
+  (conflict-finalized) state via `batchcanon.LineageBlocked`. It gates on the
+  FULL lineage (`lineageCommitmentTxids`): the candidate's direct commitment
+  txid plus every cross-commitment ancestor batch in `Descriptor.Ancestry`, so
+  a multi-input OOR VTXO is blocked if ANY contributing batch is off the
+  canonical chain. Nil disables the gate (a complete no-op, the default until
+  the batch producers register batches); it is permissive otherwise (unseen /
+  unregistered lineage does not block).
 - `ExitOutcomeResolution` — Terminal result for an exiting VTXO: `Outcome`
   (`ExitOutcomeRecoverable` or `ExitOutcomeConfirmed`) and `Reason`.
 - `ExitOutcomeResolver` — Function type
