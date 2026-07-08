@@ -633,6 +633,7 @@ func (c *Client) Subscribe(ctx context.Context, req SubscribeRequest) (
 		ctx, &walletdkrpc.SubscribeWalletRequest{
 			IncludeExisting: req.IncludeExisting,
 			Kinds:           kinds,
+			Cursor:          req.Cursor,
 		},
 	)
 	if err != nil {
@@ -659,24 +660,32 @@ func (c *Client) Subscribe(ctx context.Context, req SubscribeRequest) (
 			}
 
 			// A gap tells the consumer it fell behind the live
-			// stream. Surface it as a terminal error so the host
-			// reconciles current state via List and re-subscribes,
-			// rather than silently dropping the missed updates.
+			// stream. Surface it as a typed terminal error carrying
+			// the resume cursor: the host opens a new subscription
+			// with SubscribeRequest.Cursor set to it, and the
+			// replay is gap-free rather than silently dropping
+			// updates.
 			if gap := resp.GetGap(); gap != nil {
-				errs <- fmt.Errorf("wallet subscription gap: "+
-					"%s: reconcile via List and "+
-					"re-subscribe", gap.GetReason())
+				errs <- &SubscribeGapError{
+					Cursor: resp.GetCursor(),
+					Reason: gap.GetReason(),
+				}
 
 				return
 			}
 
-			entry := resp.GetEntry()
-			if entry == nil {
+			protoEntry := resp.GetEntry()
+			if protoEntry == nil {
 				continue
 			}
 
+			// Stamp the event-log cursor so the host can persist it
+			// and resume from it on reconnect.
+			entry := entryFromProto(protoEntry)
+			entry.Cursor = resp.GetCursor()
+
 			select {
-			case updates <- entryFromProto(entry):
+			case updates <- entry:
 			case <-ctx.Done():
 				errs <- fmt.Errorf("wallet subscription "+
 					"closed: %w", ctx.Err())
