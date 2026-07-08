@@ -290,6 +290,24 @@ func TestActorRecovery(t *testing.T) {
 		reg := h.chainSource.registrations[0]
 		require.NotNil(t, reg.Txid)
 		require.True(t, reg.Txid.IsEqual(&txid))
+
+		// Reorg-aware lifecycle refs must be wired so the chainsource
+		// conf sub-actor keeps the registration alive past first
+		// confirmation, synthesizes a Done at the reorg-safety
+		// horizon, and surfaces TxReorged on rollback. Without these
+		// refs, the actor would never see reorg or finality signals
+		// for the commitment tx.
+		require.True(
+			t, reg.NotifyReorged.IsSome(),
+			"RegisterConfRequest must wire NotifyReorged so "+
+				"the commitment-tx reorg lifecycle reaches "+
+				"the actor",
+		)
+		require.True(
+			t, reg.NotifyDone.IsSome(),
+			"RegisterConfRequest must wire NotifyDone so the "+
+				"finality horizon reaches the actor",
+		)
 	})
 
 	t.Run("multiple_active_rounds", func(t *testing.T) {
@@ -985,6 +1003,235 @@ func TestActorGetStateWithActiveRounds(t *testing.T) {
 		require.True(t, exists, "expected state for %s", round.RoundID)
 		require.Equal(t, round.RoundID, roundState.RoundID)
 	}
+}
+
+// TestActorRoundCommitmentLifecycleGatedOnFinality pins the round's
+// reorg-safety contract end-to-end at the actor level:
+//
+//   - A ConfirmationEvent is PROVISIONAL. It caches the event on
+//     pendingCommitmentConfs[txid] and does NOT advance the FSM —
+//     user-visible side effects (VTXOs marked live in the local
+//     store, ledger emissions, indexer notifications, onRoundComplete
+//     cleanup) must not fire until the commitment is past the
+//     reorg-safety horizon.
+//
+//   - A CommitmentReorgedEvent leaves the FSM in its pre-confirmation
+//     state (no rollback needed; nothing was committed). The cached
+//     entry is retained so a follow-up re-confirmation overwrites it
+//     before the chainsource finality synthesizer can fire.
+//
+//   - A second ConfirmationEvent (re-confirmation after a reorg)
+//     overwrites the cached entry with the new canonical-chain
+//     height; the finality synthesizer's depth counter resets on
+//     reorg, so the eventual Done event always reflects the latest
+//     re-confirmation.
+//
+//   - A CommitmentFinalizedEvent consumes the cached entry, drives
+//     BoardingConfirmed into the FSM, and the FSM's terminal-state
+//     transition fires onRoundComplete which clears the round from
+//     the actor's tracking maps.
+//
+//   - A CommitmentFinalizedEvent without a cached prior conf
+//     (defensive: chainsource should not synthesize Done without a
+//     prior positive event) is a no-op rather than a crash.
+//
+//   - Events for untracked / already-cleaned-up txids ack without
+//     affecting any other rounds.
+func TestActorRoundCommitmentLifecycleGatedOnFinality(t *testing.T) {
+	t.Parallel()
+
+	t.Run("untracked_txid_is_benign", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.setupMockRoundStoreForStart()
+		require.NoError(t, h.start())
+
+		untrackedTxid := chainhash.Hash{0xfe}
+
+		require.True(
+			t, h.receive(
+				&ConfirmationEvent{Txid: untrackedTxid},
+			).IsOk(),
+			"ConfirmationEvent on untracked txid must ack",
+		)
+		require.True(
+			t, h.receive(
+				&CommitmentReorgedEvent{Txid: untrackedTxid},
+			).IsOk(),
+			"Reorged on untracked txid must ack",
+		)
+		require.True(
+			t, h.receive(
+				&CommitmentFinalizedEvent{Txid: untrackedTxid},
+			).IsOk(),
+			"Finalized on untracked txid must ack",
+		)
+
+		// No cache entries should have been installed for the
+		// untracked txid (the index gate prevents it).
+		require.NotContains(
+			t, h.actor.pendingCommitmentConfs, untrackedTxid,
+		)
+	})
+
+	t.Run("confirmation_caches_without_fsm_transition",
+		func(t *testing.T) {
+			t.Parallel()
+
+			h := newActorTestHarness(t)
+			h.setupMockRoundStoreForStart()
+			require.NoError(t, h.start())
+
+			roundID := testRoundID("test-round-conf")
+			packet := h.setupRoundInInputSigSentState(roundID)
+			txid := packet.UnsignedTx.TxHash()
+			h.actor.commitmentTxIndex[txid] = RoundKeyStr(
+				roundID.KeyString(),
+			)
+
+			require.True(
+				t, h.receive(&ConfirmationEvent{
+					Txid:          txid,
+					BlockHeight:   105,
+					Confirmations: 1,
+				}).IsOk(),
+			)
+
+			// Cache populated, FSM untouched: the round is still
+			// in the actor's tracking maps because onRoundComplete
+			// has not run.
+			cached, ok := h.actor.pendingCommitmentConfs[txid]
+			require.True(
+				t, ok,
+				"ConfirmationEvent must populate the cache",
+			)
+			require.Equal(t, int32(105), cached.BlockHeight)
+			require.Contains(
+				t, h.actor.rounds,
+				RoundKeyStr(
+					roundID.KeyString(),
+				),
+				"FSM must remain tracked before finality",
+			)
+			require.Contains(t, h.actor.commitmentTxIndex, txid)
+		})
+
+	t.Run("reorg_before_finality_keeps_state",
+		func(t *testing.T) {
+			t.Parallel()
+
+			h := newActorTestHarness(t)
+			h.setupMockRoundStoreForStart()
+			require.NoError(t, h.start())
+
+			roundID := testRoundID("test-round-reorg")
+			packet := h.setupRoundInInputSigSentState(roundID)
+			txid := packet.UnsignedTx.TxHash()
+			keyStr := RoundKeyStr(roundID.KeyString())
+			h.actor.commitmentTxIndex[txid] = keyStr
+
+			require.True(
+				t, h.receive(&ConfirmationEvent{
+					Txid:          txid,
+					BlockHeight:   200,
+					Confirmations: 1,
+				}).IsOk(),
+			)
+			require.True(
+				t, h.receive(
+					&CommitmentReorgedEvent{Txid: txid},
+				).IsOk(),
+			)
+
+			// Reorg before finality: no rollback work to do
+			// because nothing user-visible was committed. The
+			// round stays tracked; the cache stays populated
+			// (a follow-up re-confirmation will overwrite it).
+			require.Contains(t, h.actor.rounds, keyStr)
+			require.Contains(t, h.actor.commitmentTxIndex, txid)
+			require.Contains(
+				t, h.actor.pendingCommitmentConfs, txid,
+			)
+		})
+
+	t.Run("reconfirmation_overwrites_cache_with_canonical_height",
+		func(t *testing.T) {
+			t.Parallel()
+
+			h := newActorTestHarness(t)
+			h.setupMockRoundStoreForStart()
+			require.NoError(t, h.start())
+
+			roundID := testRoundID("test-round-reconf")
+			packet := h.setupRoundInInputSigSentState(roundID)
+			txid := packet.UnsignedTx.TxHash()
+			h.actor.commitmentTxIndex[txid] = RoundKeyStr(
+				roundID.KeyString(),
+			)
+
+			require.True(
+				t, h.receive(&ConfirmationEvent{
+					Txid:          txid,
+					BlockHeight:   300,
+					Confirmations: 1,
+				}).IsOk(),
+			)
+			require.True(
+				t, h.receive(
+					&CommitmentReorgedEvent{Txid: txid},
+				).IsOk(),
+			)
+			require.True(
+				t, h.receive(&ConfirmationEvent{
+					Txid:          txid,
+					BlockHeight:   301,
+					Confirmations: 1,
+				}).IsOk(),
+			)
+
+			cached := h.actor.pendingCommitmentConfs[txid]
+			require.NotNil(t, cached)
+			require.Equal(
+				t, int32(301), cached.BlockHeight, "second "+
+					"confirmation must overwrite the "+
+					"cache with the canonical-chain "+
+					"height; finality will replay the "+
+					"latest entry, not a stale "+
+					"pre-reorg observation",
+			)
+		})
+
+	t.Run("finality_without_prior_conf_is_a_no_op",
+		func(t *testing.T) {
+			t.Parallel()
+
+			h := newActorTestHarness(t)
+			h.setupMockRoundStoreForStart()
+			require.NoError(t, h.start())
+
+			roundID := testRoundID("test-round-bare-final")
+			packet := h.setupRoundInInputSigSentState(roundID)
+			txid := packet.UnsignedTx.TxHash()
+			keyStr := RoundKeyStr(roundID.KeyString())
+			h.actor.commitmentTxIndex[txid] = keyStr
+
+			// Defensive path: chainsource should not synthesize
+			// Done without a prior positive event (the depth
+			// synthesizer is gated on confirmHeight != 0), but
+			// the handler must not crash if it ever does.
+			require.True(
+				t, h.receive(
+					&CommitmentFinalizedEvent{Txid: txid},
+				).IsOk(),
+			)
+
+			require.Contains(
+				t, h.actor.rounds, keyStr, "Finalized "+
+					"without cached conf must not "+
+					"trigger an FSM transition",
+			)
+		})
 }
 
 // TestActorReceiveUnknownMessageType ensures that the actor rejects
