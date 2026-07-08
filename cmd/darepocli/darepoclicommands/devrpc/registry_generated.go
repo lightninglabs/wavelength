@@ -512,7 +512,7 @@ func generatedRegistry() []serviceSpec {
 					Name:            "SubscribeWallet",
 					Aliases:         []string{"subscribe-wallet"},
 					Input:           "walletdkrpc.SubscribeWalletRequest",
-					Output:          "walletdkrpc.WalletEntry",
+					Output:          "walletdkrpc.SubscribeWalletResponse",
 					ServerStreaming: true,
 					Comments:        "",
 				},

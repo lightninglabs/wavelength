@@ -109,10 +109,10 @@ type WalletServiceClient interface {
 	// specified VTXO outpoint, including recovery chain progress and
 	// sweep state. Proxies daemonrpc.GetUnrollStatus.
 	ExitStatus(ctx context.Context, in *ExitStatusRequest, opts ...grpc.CallOption) (*ExitStatusResponse, error)
-	// SubscribeWallet streams normalized WalletEntry updates as they
-	// happen. When include_existing is set, the daemon emits the current
-	// snapshot before live updates.
-	SubscribeWallet(ctx context.Context, in *SubscribeWalletRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[WalletEntry], error)
+	// SubscribeWallet streams activity updates as they happen. The stream
+	// is resumable: each response carries a monotonic cursor the client can
+	// reconnect from to replay everything after it without gaps.
+	SubscribeWallet(ctx context.Context, in *SubscribeWalletRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SubscribeWalletResponse], error)
 }
 
 type walletServiceClient struct {
@@ -253,13 +253,13 @@ func (c *walletServiceClient) ExitStatus(ctx context.Context, in *ExitStatusRequ
 	return out, nil
 }
 
-func (c *walletServiceClient) SubscribeWallet(ctx context.Context, in *SubscribeWalletRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[WalletEntry], error) {
+func (c *walletServiceClient) SubscribeWallet(ctx context.Context, in *SubscribeWalletRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SubscribeWalletResponse], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	stream, err := c.cc.NewStream(ctx, &WalletService_ServiceDesc.Streams[0], WalletService_SubscribeWallet_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
-	x := &grpc.GenericClientStream[SubscribeWalletRequest, WalletEntry]{ClientStream: stream}
+	x := &grpc.GenericClientStream[SubscribeWalletRequest, SubscribeWalletResponse]{ClientStream: stream}
 	if err := x.ClientStream.SendMsg(in); err != nil {
 		return nil, err
 	}
@@ -270,7 +270,7 @@ func (c *walletServiceClient) SubscribeWallet(ctx context.Context, in *Subscribe
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type WalletService_SubscribeWalletClient = grpc.ServerStreamingClient[WalletEntry]
+type WalletService_SubscribeWalletClient = grpc.ServerStreamingClient[SubscribeWalletResponse]
 
 // WalletServiceServer is the server API for WalletService service.
 // All implementations must embed UnimplementedWalletServiceServer
@@ -346,10 +346,10 @@ type WalletServiceServer interface {
 	// specified VTXO outpoint, including recovery chain progress and
 	// sweep state. Proxies daemonrpc.GetUnrollStatus.
 	ExitStatus(context.Context, *ExitStatusRequest) (*ExitStatusResponse, error)
-	// SubscribeWallet streams normalized WalletEntry updates as they
-	// happen. When include_existing is set, the daemon emits the current
-	// snapshot before live updates.
-	SubscribeWallet(*SubscribeWalletRequest, grpc.ServerStreamingServer[WalletEntry]) error
+	// SubscribeWallet streams activity updates as they happen. The stream
+	// is resumable: each response carries a monotonic cursor the client can
+	// reconnect from to replay everything after it without gaps.
+	SubscribeWallet(*SubscribeWalletRequest, grpc.ServerStreamingServer[SubscribeWalletResponse]) error
 	mustEmbedUnimplementedWalletServiceServer()
 }
 
@@ -399,7 +399,7 @@ func (UnimplementedWalletServiceServer) Exit(context.Context, *ExitRequest) (*Ex
 func (UnimplementedWalletServiceServer) ExitStatus(context.Context, *ExitStatusRequest) (*ExitStatusResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ExitStatus not implemented")
 }
-func (UnimplementedWalletServiceServer) SubscribeWallet(*SubscribeWalletRequest, grpc.ServerStreamingServer[WalletEntry]) error {
+func (UnimplementedWalletServiceServer) SubscribeWallet(*SubscribeWalletRequest, grpc.ServerStreamingServer[SubscribeWalletResponse]) error {
 	return status.Errorf(codes.Unimplemented, "method SubscribeWallet not implemented")
 }
 func (UnimplementedWalletServiceServer) mustEmbedUnimplementedWalletServiceServer() {}
@@ -662,11 +662,11 @@ func _WalletService_SubscribeWallet_Handler(srv interface{}, stream grpc.ServerS
 	if err := stream.RecvMsg(m); err != nil {
 		return err
 	}
-	return srv.(WalletServiceServer).SubscribeWallet(m, &grpc.GenericServerStream[SubscribeWalletRequest, WalletEntry]{ServerStream: stream})
+	return srv.(WalletServiceServer).SubscribeWallet(m, &grpc.GenericServerStream[SubscribeWalletRequest, SubscribeWalletResponse]{ServerStream: stream})
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type WalletService_SubscribeWalletServer = grpc.ServerStreamingServer[WalletEntry]
+type WalletService_SubscribeWalletServer = grpc.ServerStreamingServer[SubscribeWalletResponse]
 
 // WalletService_ServiceDesc is the grpc.ServiceDesc for WalletService service.
 // It's only intended for direct use with grpc.RegisterService,
