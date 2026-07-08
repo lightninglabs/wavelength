@@ -432,6 +432,7 @@ func TestSweepSpendNotificationMarksInputSpent(t *testing.T) {
 
 	result := a.handleSweepSpendNotification(
 		t.Context(), BoardingSweepSpendNotification{
+			Status:         BoardingSweepSpendStatusSpent,
 			Outpoint:       op,
 			SpendingTxid:   spendingTxid,
 			SpendingHeight: 220,
@@ -1226,6 +1227,135 @@ func TestSweepTxNotificationUnknownStatusIsBenign(t *testing.T) {
 	)
 	require.True(t, result.IsOk())
 	require.Same(t, pending, a.pendingSweeps[txid])
+
+	store.AssertExpectations(t)
+}
+
+// TestSweepSpendNotificationReorgedDoesNotMarkSpent verifies that a
+// chainsource SpendReorgedEvent on a watched boarding-sweep input is
+// classified as BoardingSweepSpendStatusReorged and processed by the
+// Reorged arm of handleSweepSpendNotification — specifically, the
+// store's MarkBoardingSweepInputSpent must NOT be called (would
+// double-spend the row's state machine) and pendingSweeps tracking
+// must be left intact (the chainsource sub-actor stays alive in
+// reorg-aware mode; a follow-up Spent on the canonical chain will
+// drive the row through the existing happy path).
+func TestSweepSpendNotificationReorgedDoesNotMarkSpent(t *testing.T) {
+	t.Parallel()
+
+	op := wire.OutPoint{Hash: chainhash.Hash{0xb1}, Index: 0}
+
+	store := &MockBoardingSweepStore{}
+	// CRITICAL: MarkBoardingSweepInputSpent must NOT be called on
+	// reorg. The testify/mock will fail the test if any unexpected
+	// method is invoked, so we simply do not register
+	// MarkBoardingSweepInputSpent here.
+
+	a := newSweepTestArk(t, store, nil, 0, 0)
+
+	pendingTxid := chainhash.Hash{0xb2}
+	pending := &pendingSweepState{
+		txid: pendingTxid,
+		inputs: map[wire.OutPoint]string{
+			op: boardingSweepCallerID(op),
+		},
+	}
+	a.pendingSweeps[pendingTxid] = pending
+	a.pendingSweepInputs[op] = pendingTxid
+
+	result := a.handleSweepSpendNotification(
+		t.Context(), BoardingSweepSpendNotification{
+			Status:   BoardingSweepSpendStatusReorged,
+			Outpoint: op,
+		},
+	)
+	require.True(t, result.IsOk())
+
+	// Reorg must leave both in-memory tracking maps alone — the
+	// sub-actor stays alive in reorg-aware mode and a follow-up
+	// Spent event on the canonical chain will re-drive the row.
+	require.Same(
+		t, pending, a.pendingSweeps[pendingTxid],
+		"reorg must not evict pending sweep tracking",
+	)
+	require.Equal(
+		t, pendingTxid, a.pendingSweepInputs[op],
+		"reorg must not evict per-input back-pointer",
+	)
+
+	store.AssertExpectations(t)
+}
+
+// TestSweepSpendNotificationDoneIsBenign verifies that a chainsource
+// SpendDoneEvent (the reorg-safety horizon is reached for the spend
+// observation) does not call any store method and does not perturb
+// in-memory tracking. The row state was already committed on the
+// original Spent event; Done is informational at the wallet layer.
+func TestSweepSpendNotificationDoneIsBenign(t *testing.T) {
+	t.Parallel()
+
+	op := wire.OutPoint{Hash: chainhash.Hash{0xc1}, Index: 0}
+
+	store := &MockBoardingSweepStore{}
+	// No store expectations — Done must touch nothing.
+
+	a := newSweepTestArk(t, store, nil, 0, 0)
+
+	pendingTxid := chainhash.Hash{0xc2}
+	pending := &pendingSweepState{
+		txid: pendingTxid,
+		inputs: map[wire.OutPoint]string{
+			op: boardingSweepCallerID(op),
+		},
+	}
+	a.pendingSweeps[pendingTxid] = pending
+	a.pendingSweepInputs[op] = pendingTxid
+
+	result := a.handleSweepSpendNotification(
+		t.Context(), BoardingSweepSpendNotification{
+			Status:   BoardingSweepSpendStatusDone,
+			Outpoint: op,
+		},
+	)
+	require.True(t, result.IsOk())
+
+	require.Same(t, pending, a.pendingSweeps[pendingTxid])
+	require.Equal(t, pendingTxid, a.pendingSweepInputs[op])
+
+	store.AssertExpectations(t)
+}
+
+// TestSweepSpendNotificationUnknownStatusIsBenign verifies the default
+// arm of handleSweepSpendNotification handles an unrecognised status
+// without touching the store. Guards against a future chainsource
+// lifecycle addition being delivered without a matching MapSpendEvent
+// classification arm.
+func TestSweepSpendNotificationUnknownStatusIsBenign(t *testing.T) {
+	t.Parallel()
+
+	op := wire.OutPoint{Hash: chainhash.Hash{0xd1}, Index: 0}
+	store := &MockBoardingSweepStore{}
+	// No expectations — unknown must touch nothing.
+
+	a := newSweepTestArk(t, store, nil, 0, 0)
+	pendingTxid := chainhash.Hash{0xd2}
+	pending := &pendingSweepState{
+		txid: pendingTxid,
+		inputs: map[wire.OutPoint]string{
+			op: boardingSweepCallerID(op),
+		},
+	}
+	a.pendingSweeps[pendingTxid] = pending
+	a.pendingSweepInputs[op] = pendingTxid
+
+	result := a.handleSweepSpendNotification(
+		t.Context(), BoardingSweepSpendNotification{
+			Status:   BoardingSweepSpendStatusUnknown,
+			Outpoint: op,
+		},
+	)
+	require.True(t, result.IsOk())
+	require.Same(t, pending, a.pendingSweeps[pendingTxid])
 
 	store.AssertExpectations(t)
 }

@@ -229,6 +229,29 @@ type RoundClientActor struct {
 	// keys for routing confirmation events.
 	commitmentTxIndex map[chainhash.Hash]RoundKeyStr
 
+	// pendingCommitmentConfs caches the most recent ConfirmationEvent
+	// for each tracked commitment tx, so handleCommitmentFinalized can
+	// build the BoardingConfirmed FSM event using the canonical-chain
+	// confirmation height observed before finality. The entry is
+	// installed on every ConfirmationEvent (first conf or any
+	// re-confirmation after a reorg) and consumed on the matching
+	// CommitmentFinalizedEvent. A reorg without a follow-up
+	// re-confirmation leaves the stale entry in place, but the
+	// chainsource finality synthesizer requires a non-zero
+	// confirmHeight to fire a Done event, so finality cannot land on
+	// the stale entry; the next re-confirmation overwrites it before
+	// any Done could be synthesized.
+	//
+	// The cache exists because the round FSM intentionally delays its
+	// terminal transition (InputSigSent -> ConfirmedState) until the
+	// commitment-tx confirmation is past the chainsource backend's
+	// reorg-safety depth. The first ConfirmationEvent on its own is
+	// not sufficient to commit user-visible state (VTXOs marked live,
+	// ledger emissions, indexer notifications) because a reorg of the
+	// confirmation block would otherwise leave that state inconsistent
+	// with the canonical chain.
+	pendingCommitmentConfs map[chainhash.Hash]*ConfirmationEvent
+
 	// pendingQuotes buffers JoinRoundQuoteReceived envelopes that
 	// arrive before the matching RoundJoined re-keys the FSM. The
 	// mailbox contract (docs/RPC_MAILBOX_CONTRACT.md:90-98) allows
@@ -423,8 +446,11 @@ func NewRoundClientActor(cfg *RoundClientConfig) fn.Result[*RoundClientActor] {
 		log:               actorLog,
 		rounds:            make(map[RoundKeyStr]*RoundFSM),
 		commitmentTxIndex: make(map[chainhash.Hash]RoundKeyStr),
-		pendingQuotes:     make(map[RoundID]*JoinRoundQuoteReceived),
-		env:               env,
+		pendingCommitmentConfs: make(
+			map[chainhash.Hash]*ConfirmationEvent,
+		),
+		pendingQuotes: make(map[RoundID]*JoinRoundQuoteReceived),
+		env:           env,
 	}
 
 	// The base env is used as a template for per-round FSM environments.
@@ -1007,6 +1033,25 @@ func (a *RoundClientActor) registerCommitmentConfirmation(ctx context.Context,
 		},
 	)
 
+	// Reorg-aware lifecycle refs. The actor currently logs these
+	// rather than reversing state: see the doc on CommitmentReorgedEvent
+	// for why FSM-level rollback is a follow-up. Wiring the refs now
+	// means the chainsource conf sub-actor stays alive past first
+	// confirmation, height-based finality synthesis fires, and a
+	// future FSM-rollback patch only has to consume the events.
+	reorgedRef := chainsource.MapConfReorgedEvent(
+		a.cfg.SelfRef,
+		func(ev chainsource.ConfReorgedEvent) actormsg.RoundReceivable {
+			return &CommitmentReorgedEvent{Txid: ev.Txid}
+		},
+	)
+	finalizedRef := chainsource.MapConfDoneEvent(
+		a.cfg.SelfRef,
+		func(ev chainsource.ConfDoneEvent) actormsg.RoundReceivable {
+			return &CommitmentFinalizedEvent{Txid: ev.Txid}
+		},
+	)
+
 	// Extract the pkScript LND needs for confirmation tracking. Watch the
 	// validated batch output (the output that receives this client's
 	// funds) rather than assuming output 0; confirmationWatchScript falls
@@ -1042,12 +1087,14 @@ func (a *RoundClientActor) registerCommitmentConfirmation(ctx context.Context,
 	}
 
 	confReq := &chainsource.RegisterConfRequest{
-		CallerID:    callerID,
-		Txid:        &txid,
-		PkScript:    pkScript,
-		TargetConfs: a.cfg.OperatorTerms.MinConfirmations,
-		HeightHint:  heightHint,
-		NotifyActor: fn.Some(mappedRef),
+		CallerID:      callerID,
+		Txid:          &txid,
+		PkScript:      pkScript,
+		TargetConfs:   a.cfg.OperatorTerms.MinConfirmations,
+		HeightHint:    heightHint,
+		NotifyActor:   fn.Some(mappedRef),
+		NotifyReorged: fn.Some(reorgedRef),
+		NotifyDone:    fn.Some(finalizedRef),
 	}
 
 	if err := a.cfg.ChainSource.Tell(
@@ -1299,6 +1346,12 @@ func (a *RoundClientActor) Receive(ctx context.Context,
 
 	case *ConfirmationEvent:
 		return a.handleConfirmation(ctx, m)
+
+	case *CommitmentReorgedEvent:
+		return a.handleCommitmentReorged(ctx, m)
+
+	case *CommitmentFinalizedEvent:
+		return a.handleCommitmentFinalized(ctx, m)
 
 	case *TimeoutMsg:
 		return a.handleTimeout(ctx, m)
@@ -2140,12 +2193,27 @@ func (a *RoundClientActor) reapFailedRounds(ctx context.Context) {
 // from ChainSource. Boarding address confirmations are now handled via
 // WalletBoardingConfirmed events from the wallet actor.
 //
+// The commitment-tx confirmation is treated as PROVISIONAL: the FSM
+// is NOT transitioned to terminal ConfirmedState on first conf. The
+// event is cached on pendingCommitmentConfs so that the matching
+// CommitmentFinalizedEvent (synthesized by the chainsource backend at
+// the reorg-safety horizon, default six blocks past the latest
+// confirmation) can replay it as BoardingConfirmed. A re-confirmation
+// after a reorg overwrites the cache entry with the new canonical-
+// chain height, and the finality synthesizer's depth counter resets
+// on the reorg, so finality is only ever reported for the latest
+// re-confirmation. This preserves the property the round FSM relies
+// on for safety: user-visible side effects (VTXOs marked live in the
+// local store, ledger entries, indexer notifications) only fire once
+// the commitment is past the reorg-safety horizon.
+//
 // Concurrency: The actor framework serializes all messages through Receive(),
 // so no synchronization is needed for rounds map access.
 func (a *RoundClientActor) handleConfirmation(ctx context.Context,
 	event *ConfirmationEvent) fn.Result[actormsg.RoundActorResp] {
 
-	a.log.InfoS(ctx, "Received commitment transaction confirmation",
+	a.log.InfoS(ctx, "Received provisional commitment-tx confirmation; "+
+		"deferring FSM terminal transition to finality",
 		slog.String("txid", event.Txid.String()),
 		slog.Int("block_height", int(event.BlockHeight)),
 		slog.Int("confirmations", int(event.Confirmations)),
@@ -2165,7 +2233,90 @@ func (a *RoundClientActor) handleConfirmation(ctx context.Context,
 		return fn.Ok[actormsg.RoundActorResp](nil)
 	}
 
-	// Route to the specific round's FSM.
+	// Sanity-check the routing target exists, but do NOT advance the
+	// FSM yet. handleCommitmentFinalized is the trigger for the
+	// terminal transition.
+	if _, exists := a.rounds[keyStr]; !exists {
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("round FSM not found for key %s", keyStr),
+		)
+	}
+
+	// Cache the conf so the matching finality event can replay it.
+	// Every ConfirmationEvent overwrites — the cache always reflects
+	// the LATEST positive confirmation, which is what the finality
+	// synthesizer counts depth from.
+	cached := *event
+	a.pendingCommitmentConfs[event.Txid] = &cached
+
+	return fn.Ok[actormsg.RoundActorResp](nil)
+}
+
+// handleCommitmentReorged processes a chainsource ConfReorgedEvent on
+// a commitment transaction. The provisional/finalized split means the
+// FSM is still in its pre-confirmation state when a reorg lands —
+// user-visible side effects have not yet committed — so there is
+// nothing to roll back. The cached ConfirmationEvent stays in place;
+// either a follow-up re-confirmation overwrites it before the
+// chainsource finality synthesizer can fire (the synthesizer's depth
+// counter resets on the reorg), or the chain genuinely abandons the
+// confirmation and no Done event is ever synthesized.
+func (a *RoundClientActor) handleCommitmentReorged(ctx context.Context,
+	event *CommitmentReorgedEvent) fn.Result[actormsg.RoundActorResp] {
+
+	keyStr, tracked := a.commitmentTxIndex[event.Txid]
+	if !tracked {
+		// Round is no longer tracked: either it finalized cleanly
+		// and the cleanup path already ran, or it was never one of
+		// ours. Either way there's nothing to undo here.
+		a.log.DebugS(ctx, "Commitment-tx reorged on untracked txid",
+			slog.String("txid", event.Txid.String()),
+		)
+
+		return fn.Ok[actormsg.RoundActorResp](nil)
+	}
+
+	a.log.InfoS(ctx, "Commitment-tx provisional confirmation reorged "+
+		"out; FSM remains pre-confirmation, awaiting "+
+		"re-confirmation or finality on the canonical chain",
+		slog.String("txid", event.Txid.String()),
+		slog.String("round_key", string(keyStr)),
+	)
+
+	return fn.Ok[actormsg.RoundActorResp](nil)
+}
+
+// handleCommitmentFinalized processes a chainsource ConfDoneEvent on a
+// commitment transaction. This is the trigger for the FSM's
+// InputSigSent -> ConfirmedState transition: the cached
+// ConfirmationEvent's height/hash/numConfs are replayed as the
+// BoardingConfirmed FSM event so the terminal-state side effects
+// (ledger emission, indexer publish, onRoundComplete cleanup) fire
+// only after the chainsource backend has reported the confirmation is
+// past the reorg-safety horizon.
+//
+// If the cache is empty for this txid (no prior ConfirmationEvent
+// observed, e.g. a late or duplicate Done event after the round was
+// already cleaned up), the handler logs and acks without touching
+// the FSM.
+func (a *RoundClientActor) handleCommitmentFinalized(ctx context.Context,
+	event *CommitmentFinalizedEvent) fn.Result[actormsg.RoundActorResp] {
+
+	a.log.InfoS(ctx, "Commitment-tx confirmation finalized; promoting "+
+		"round FSM to ConfirmedState",
+		slog.String("txid", event.Txid.String()),
+	)
+
+	keyStr, tracked := a.commitmentTxIndex[event.Txid]
+	if !tracked {
+		a.log.DebugS(ctx, "Commitment-tx finalized on untracked txid; "+
+			"round already cleaned up",
+			slog.String("txid", event.Txid.String()),
+		)
+
+		return fn.Ok[actormsg.RoundActorResp](nil)
+	}
+
 	roundFSM, exists := a.rounds[keyStr]
 	if !exists {
 		return fn.Err[actormsg.RoundActorResp](
@@ -2173,23 +2324,37 @@ func (a *RoundClientActor) handleConfirmation(ctx context.Context,
 		)
 	}
 
-	a.log.InfoS(ctx, "Routing confirmation to round FSM",
-		slog.String("key", string(keyStr)),
-		slog.String("round_id", roundFSM.RoundID.String()),
-	)
+	cached, ok := a.pendingCommitmentConfs[event.Txid]
+	if !ok {
+		// Defensive: chainsource should not synthesize a Done event
+		// without a prior positive ConfirmationEvent (the
+		// finality-depth synthesizer is gated on a non-zero
+		// confirmHeight). If we see one anyway, ack without
+		// transitioning — the FSM cannot reach ConfirmedState
+		// without the confirmation's height/hash.
+		a.log.WarnS(ctx, "Commitment-tx finalized without a cached "+
+			"prior ConfirmationEvent; skipping FSM transition",
+			nil,
+			slog.String("txid", event.Txid.String()),
+			slog.String("round_key", string(keyStr)),
+		)
+
+		return fn.Ok[actormsg.RoundActorResp](nil)
+	}
+	delete(a.pendingCommitmentConfs, event.Txid)
 
 	confirmEvt := &BoardingConfirmed{
-		TxID:          event.Txid,
-		BlockHeight:   event.BlockHeight,
-		BlockHash:     event.BlockHash,
-		Confirmations: int32(event.Confirmations),
+		TxID:          cached.Txid,
+		BlockHeight:   cached.BlockHeight,
+		BlockHash:     cached.BlockHash,
+		Confirmations: int32(cached.Confirmations),
 	}
 
 	err := a.askEventAndProcessOutbox(ctx, roundFSM, confirmEvt)
 	if err != nil {
 		return fn.Err[actormsg.RoundActorResp](
-			fmt.Errorf("FSM error processing commitment "+
-				"confirmation: %w", err),
+			fmt.Errorf("FSM error promoting round on finality: %w",
+				err),
 		)
 	}
 
@@ -2687,6 +2852,22 @@ func (a *RoundClientActor) processConfirmationRequest(
 		},
 	)
 
+	// Reorg-aware lifecycle refs — see registerCommitmentConfirmation
+	// for the rationale. Detection-only today; FSM rollback is a
+	// follow-up.
+	reorgedRef := chainsource.MapConfReorgedEvent(
+		a.cfg.SelfRef,
+		func(ev chainsource.ConfReorgedEvent) actormsg.RoundReceivable {
+			return &CommitmentReorgedEvent{Txid: ev.Txid}
+		},
+	)
+	finalizedRef := chainsource.MapConfDoneEvent(
+		a.cfg.SelfRef,
+		func(ev chainsource.ConfDoneEvent) actormsg.RoundReceivable {
+			return &CommitmentFinalizedEvent{Txid: ev.Txid}
+		},
+	)
+
 	// Query ChainSource for current block height to use as
 	// HeightHint. LND requires HeightHint > 0 for confirmation
 	// scanning.
@@ -2712,12 +2893,14 @@ func (a *RoundClientActor) processConfirmationRequest(
 	// Build the complete RegisterConfRequest with the mapper as
 	// the NotifyActor target.
 	confReq := &chainsource.RegisterConfRequest{
-		CallerID:    callerID,
-		Txid:        m.Txid,
-		PkScript:    m.PkScript,
-		TargetConfs: m.TargetConfs,
-		HeightHint:  heightHint,
-		NotifyActor: fn.Some(mappedRef),
+		CallerID:      callerID,
+		Txid:          m.Txid,
+		PkScript:      m.PkScript,
+		TargetConfs:   m.TargetConfs,
+		HeightHint:    heightHint,
+		NotifyActor:   fn.Some(mappedRef),
+		NotifyReorged: fn.Some(reorgedRef),
+		NotifyDone:    fn.Some(finalizedRef),
 	}
 
 	a.log.InfoS(ctx, "Sending RegisterConfRequest to ChainSource",
