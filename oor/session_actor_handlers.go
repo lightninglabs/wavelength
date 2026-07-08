@@ -9,6 +9,7 @@ import (
 
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
+	"github.com/lightninglabs/wavelength/batchcanon"
 	clientdb "github.com/lightninglabs/wavelength/db"
 	"github.com/lightninglabs/wavelength/ledger"
 	libtypes "github.com/lightninglabs/wavelength/lib/types"
@@ -757,8 +758,109 @@ func (b *sessionBehavior) notifyMaterialized(ctx context.Context, event Event) {
 						"observer failed", err)
 				}
 			}
+
+			b.registerLineageBatches(ctx, descs)
 		}()
 	})
+}
+
+// registerLineageBatches registers every commitment batch in the received
+// VTXOs' lineage with the canonicality manager so the multi-parent admission
+// gate can govern these OOR-received VTXOs: a reorg-out or invalidation of any
+// ancestor batch marks the dependent VTXO limbo, excluding it from selection
+// until its lineage is canonical again (darepo#454, F4/F5).
+//
+// It is a no-op when no manager ref is wired (the gate stays dormant). It runs
+// on the post-commit best-effort goroutine alongside the VTXO-manager
+// notification: a dropped registration only leaves the gate permissive for
+// these VTXOs (the safe default), and the manager's RegisterBatch is
+// idempotent so a re-materialization re-registers harmlessly.
+//
+// The batch-output pkScript comes from each ancestry fragment's tree root
+// (BatchOutput), which is what script-filtering light-client backends filter
+// on, so confirmation detection of the ancestor batch works on Esplora/Neutrino
+// receivers too. ConsumedInputs are left empty: the receiver does not hold the
+// ancestor commitment txs' inputs at this seam, so per-input double-spend
+// watches are a follow-up — a reorg-out of an ancestor batch is still detected
+// via its confirmation watch and marks the VTXO limbo.
+func (b *sessionBehavior) registerLineageBatches(ctx context.Context,
+	descs []*vtxo.Descriptor) {
+
+	if b.cfg.BatchCanonicality.IsNone() {
+		return
+	}
+	ref := b.cfg.BatchCanonicality.UnsafeFromSome()
+
+	// Collect, per distinct ancestor commitment tx, its batch-output
+	// pkScript and the deduped set of received VTXO outpoints that depend
+	// on it (a desc may carry the same commitment txid across more than one
+	// ancestry fragment).
+	type batchReg struct {
+		pkScript   []byte
+		depSeen    map[wire.OutPoint]struct{}
+		dependents []wire.OutPoint
+	}
+	batches := make(map[chainhash.Hash]*batchReg)
+	order := make([]chainhash.Hash, 0)
+
+	for _, desc := range descs {
+		for i := range desc.Ancestry {
+			frag := desc.Ancestry[i]
+			if frag.TreePath == nil ||
+				frag.TreePath.BatchOutput == nil {
+
+				continue
+			}
+			txid := frag.CommitmentTxID
+			if txid == (chainhash.Hash{}) {
+				continue
+			}
+
+			reg, ok := batches[txid]
+			if !ok {
+				reg = &batchReg{
+					pkScript: frag.TreePath.
+						BatchOutput.PkScript,
+					depSeen: make(
+						map[wire.OutPoint]struct{},
+					),
+				}
+				batches[txid] = reg
+				order = append(order, txid)
+			}
+			if _, dup := reg.depSeen[desc.Outpoint]; !dup {
+				reg.depSeen[desc.Outpoint] = struct{}{}
+				reg.dependents = append(
+					reg.dependents, desc.Outpoint,
+				)
+			}
+		}
+	}
+
+	for _, txid := range order {
+		reg := batches[txid]
+
+		// CSVExpiryDelta is intentionally left zero here: the
+		// admission gate consults only the batch State (reorged /
+		// conflict), never EffectiveExpiry, and the per-batch
+		// effective expiry is not consumed for OOR-registered ancestor
+		// batches (each received VTXO carries its own BatchExpiry).
+		// Threading the real per-fragment CSV delta is a follow-up
+		// alongside ConsumedInputs.
+		err := ref.Tell(ctx, &batchcanon.RegisterBatchRequest{
+			BatchTxID:            txid,
+			ConfirmationPkScript: reg.pkScript,
+			DependentVTXOs:       reg.dependents,
+		})
+		if err != nil {
+			b.log.WarnS(ctx, "Failed to register OOR lineage "+
+				"batch canonicality", err,
+				slog.String("commitment_txid", txid.String()),
+				slog.Int("dependent_vtxos",
+					len(reg.dependents)),
+			)
+		}
+	}
 }
 
 // queueVTXOsReceived stages one VTXOReceivedMsg per materialized incoming
