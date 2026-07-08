@@ -16,6 +16,7 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/batchcanon"
 	"github.com/lightninglabs/wavelength/build"
 	"github.com/lightninglabs/wavelength/chainsource"
 	"github.com/lightninglabs/wavelength/coinselect"
@@ -140,6 +141,16 @@ type ManagerConfig struct {
 	// VTXOs leave SpendingState. When nil, the reservation index is not
 	// maintained and the startup sweep is skipped.
 	ReservationStore SpendingReservationStore
+
+	// BatchCanonicality, when set, gates coin selection on batch lineage
+	// canonicality: a VTXO whose batch reorged out (limbo) or was
+	// conflict-invalidated is excluded from selection so it is never spent
+	// or forfeited while its lineage is not on the canonical chain
+	// (darepo#454). Nil disables the gate, which is the default until the
+	// batch producers (round, OOR) register their batches with the
+	// canonicality manager; the gate is permissive for unregistered or
+	// unseen lineage either way.
+	BatchCanonicality batchcanon.Store
 }
 
 // Manager coordinates VTXO actor lifecycle - spawning new actors when VTXOs
@@ -1260,6 +1271,51 @@ type reserveParams struct {
 // its actor. On partial failure the rollback function is called for
 // already-reserved outpoints. Returns the selected VTXO details and
 // total amount on success.
+// gateUnavailableLineage drops candidates whose batch lineage is in a limbo
+// (reorged-out) or invalidated (conflict-finalized) canonicality state, so a
+// VTXO is never selected while its batch is off the canonical chain. It is a
+// no-op when no canonicality store is configured (the gate stays dormant until
+// the batch producers register their batches). It reads each candidate's
+// direct commitment txid via the store; full multi-parent ancestry gating for
+// cross-commitment OOR VTXOs is a follow-up. The gate is permissive: an
+// unregistered or unseen batch does not block selection.
+func (m *Manager) gateUnavailableLineage(ctx context.Context,
+	candidates []*Descriptor) ([]*Descriptor, error) {
+
+	if m.cfg.BatchCanonicality == nil {
+		return candidates, nil
+	}
+
+	kept := make([]*Descriptor, 0, len(candidates))
+	for _, c := range candidates {
+		desc, err := m.cfg.Store.GetVTXO(ctx, c.Outpoint)
+		if err != nil {
+			return nil, fmt.Errorf("load vtxo for lineage gate "+
+				"%s: %w", c.Outpoint, err)
+		}
+
+		blocked, avail, err := batchcanon.LineageBlocked(
+			ctx, m.cfg.BatchCanonicality, desc.CommitmentTxID,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("lineage gate %s: %w",
+				c.Outpoint, err)
+		}
+		if blocked {
+			m.logger(ctx).DebugS(ctx, "Excluding VTXO with "+
+				"unavailable batch lineage from selection",
+				slog.String("outpoint", c.Outpoint.String()),
+				slog.String("availability", avail.String()))
+
+			continue
+		}
+
+		kept = append(kept, c)
+	}
+
+	return kept, nil
+}
+
 func (m *Manager) selectAndReserveVTXOs(ctx context.Context, p reserveParams) (
 	[]SelectedVTXO, btcutil.Amount, error) {
 
@@ -1303,6 +1359,15 @@ func (m *Manager) selectAndReserveVTXOs(ctx context.Context, p reserveParams) (
 			PkScript: row.PkScript,
 			Status:   VTXOStatusLive,
 		})
+	}
+
+	// Drop any candidate whose batch lineage is in limbo or invalidated, so
+	// a VTXO whose batch reorged out or was conflict-invalidated is never
+	// selected while its lineage is off the canonical chain. No-op when no
+	// canonicality store is configured.
+	candidates, err = m.gateUnavailableLineage(ctx, candidates)
+	if err != nil {
+		return nil, 0, err
 	}
 
 	// Run largest-first selection through the shared selector. Map its
@@ -1924,6 +1989,26 @@ func (m *Manager) handleReserveForfeit(ctx context.Context,
 					ErrVTXOLiquidityLocked, op),
 			)
 		}
+
+		// Refuse to forfeit a VTXO whose batch lineage is in limbo
+		// (reorged out) or invalidated: forfeiting commits the VTXO
+		// into a round, and a VTXO that is not on the canonical chain
+		// must not be spent. The coin-selection gate
+		// (gateUnavailableLineage) already excludes such VTXOs, but the
+		// wallet's explicit-outpoint paths (refresh / leave / sweep-all
+		// / replay) reserve by name and bypass selection, so the same
+		// gate is enforced here (darepo#454).
+		blocked, avail, err := m.forfeitLineageBlocked(ctx, op)
+		if err != nil {
+			return fn.Err[ManagerResp](err)
+		}
+		if blocked {
+			return fn.Err[ManagerResp](
+				fmt.Errorf("%w: outpoint %s batch lineage "+
+					"unavailable (%s)",
+					ErrVTXOLiquidityLocked, op, avail),
+			)
+		}
 	}
 
 	// Reserve each VTXO. Track successes for rollback on failure.
@@ -1953,6 +2038,33 @@ func (m *Manager) handleReserveForfeit(ctx context.Context,
 	)
 
 	return fn.Ok[ManagerResp](&ReserveForfeitResponse{})
+}
+
+// forfeitLineageBlocked reports whether the named VTXO's batch lineage is in a
+// limbo (reorged-out) or invalidated (conflict-finalized) canonicality state,
+// so an explicit forfeit reservation must be refused. It mirrors the
+// coin-selection gate (gateUnavailableLineage) for the explicit-outpoint
+// reserve path: a no-op when no canonicality store is configured, and
+// permissive for unseen / unregistered lineage. It reads the candidate's
+// direct commitment txid; full multi-parent ancestry gating arrives with the
+// selection gate's multi-parent extension.
+func (m *Manager) forfeitLineageBlocked(ctx context.Context, op wire.OutPoint) (
+	bool, batchcanon.Availability, error) {
+
+	if m.cfg.BatchCanonicality == nil {
+		return false, batchcanon.AvailabilityUnknown, nil
+	}
+
+	desc, err := m.cfg.Store.GetVTXO(ctx, op)
+	if err != nil {
+		return false, batchcanon.AvailabilityUnknown,
+			fmt.Errorf("load vtxo for forfeit lineage gate %s: %w",
+				op, err)
+	}
+
+	return batchcanon.LineageBlocked(
+		ctx, m.cfg.BatchCanonicality, desc.CommitmentTxID,
+	)
 }
 
 // rollbackForfeit sends ForfeitReleasedEvent to previously reserved VTXOs.

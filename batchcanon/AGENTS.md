@@ -32,6 +32,16 @@ in its own package, separate from `chainsource` (raw observation) and `vtxo`
   reconfirmation rather than frozen.
 - `ProvisionalConsumer` — reverse-dependency edge (consumed VTXO → consumer
   batch) enabling VTXO restore if a consumer batch never becomes canonical.
+- `Availability` — derived (never persisted) VTXO-lineage spendability:
+  `AvailableFinal`, `AvailableProvisional`, `AvailabilityUnknown`,
+  `LimboReorg`, `LimboConflict`, `Invalidated`. `AvailabilityForState`
+  maps one batch's `State`; `CombineAvailability` takes the worst across a
+  multi-parent lineage; `Usable()` is true only for confirmed lineage.
+  `LineageAvailability`/`LineageBlocked` load each parent batch from the
+  `Store` and produce the combined availability / block decision the VTXO
+  manager's admission gate (C5 wiring) calls per candidate. The gate is
+  permissive: unseen / not-yet-registered lineage does not block — only
+  limbo/invalidated lineage does.
 - `Store` — behavior-free durable query/update interface. Implemented by
   `db.BatchCanonicalityPersistenceStore` over the `000020`/`000021` schema;
   backfilled from existing VTXOs via
@@ -79,7 +89,7 @@ BatchCanonicalityManager (task C3/C4) rewires expiry consumers onto
   frozen absolute `vtxo.BatchExpiry`; must consume effective (recomputable)
   expiry instead.
 - `vtxo/actor.go` — schedules on the frozen absolute `BatchExpiry`.
-- `darepod/vhtlc_recovery_target.go` — folds multiple roots into a
+- `waved/vhtlc_recovery_target.go` — folds multiple roots into a
   most-restrictive absolute `batchExpiry`.
 - `unroll/proof_assembler.go` (`BatchExpiry == 0`) — treats zero as "unset",
   not terminal; benign, documented for completeness.
