@@ -31,6 +31,7 @@ import (
 	"github.com/lightninglabs/darepo-client/btcwbackend"
 	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/darepo-client/chainbackends"
+	"github.com/lightninglabs/darepo-client/chainbackends/lndsubmitter"
 	"github.com/lightninglabs/darepo-client/chainfees"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo-client/credit"
@@ -2192,8 +2193,19 @@ func (s *Server) initChainBackend(ctx context.Context) error {
 		)
 		backend.Log = fn.Some(s.subLogger(chainbackends.Subsystem))
 
-		if s.cfg.PackageSubmitter != nil {
+		// Wire v3 CPFP package relay. An explicitly injected submitter
+		// (bitcoind) takes precedence; otherwise relay through lnd's
+		// own WalletKit.SubmitPackage so an lnd-backed daemon needs no
+		// separate bitcoind RPC or Esplora endpoint to broadcast its
+		// zero-fee unilateral-exit parents (darepo-client#590/#678).
+		switch {
+		case s.cfg.PackageSubmitter != nil:
 			backend.SetPackageSubmitter(s.cfg.PackageSubmitter)
+
+		default:
+			backend.SetPackageSubmitter(
+				lndsubmitter.New(lndSvc.WalletKit),
+			)
 		}
 
 		s.chainBackend = backend
