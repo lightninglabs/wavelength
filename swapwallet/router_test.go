@@ -407,6 +407,53 @@ func TestRouterSendInvoiceDispatchesStartPay(t *testing.T) {
 	)
 }
 
+// TestRouterSendInvoiceProjectsActivityImmediately verifies direct Lightning
+// pays land in the canonical activity store as soon as StartPay accepts them.
+func TestRouterSendInvoiceProjectsActivityImmediately(t *testing.T) {
+	t.Parallel()
+
+	swap := &fakeSwapService{}
+	store := &fakeActivityProjector{}
+	deps := &Deps{
+		SwapBackend:   nil,
+		SwapService:   swap,
+		ActivityStore: store,
+		ChainParams:   &chaincfg.RegressionNetParams,
+	}
+	runtime := newRuntime(t.Context(), deps)
+	t.Cleanup(runtime.stop)
+
+	ch := runtime.subscribe()
+	t.Cleanup(func() { runtime.unsubscribe(ch) })
+
+	r := newRouter(deps, runtime)
+	swap.startPayResp = &swapclientrpc.StartPayResponse{
+		PaymentHash: "deadbeef",
+		Swap: &swapclientrpc.SwapSummary{
+			PaymentHash:   "deadbeef",
+			Direction:     swapclientrpc.SwapDirection_SWAP_DIRECTION_PAY,
+			State:         swapclientrpc.SwapState_SWAP_STATE_SWAP_CREATED,
+			Pending:       true,
+			AmountSat:     1001,
+			FeeSat:        1,
+			CreatedAtUnix: 100,
+			UpdatedAtUnix: 100,
+		},
+	}
+
+	resp, err := sendPreparedInvoice(t, r, "lnbc1example", 25)
+	require.NoError(t, err)
+	require.Equal(t, "deadbeef", resp.GetEntry().GetId())
+	require.Equal(t, 1, store.count())
+
+	emitted := recvEntry(t, ch)
+	require.Equal(t, "deadbeef", emitted.GetId())
+	require.Equal(
+		t, walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		emitted.GetStatus(),
+	)
+}
+
 // TestRouterSendInvoiceHandsCreditPayToRegistry asserts that a credit-backed
 // pay is handed off to the durable credit registry under a payment-hash-derived
 // idempotency key, rather than driving the top-up and pay inline. The router no

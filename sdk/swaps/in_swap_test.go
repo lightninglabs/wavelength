@@ -1972,6 +1972,103 @@ func TestPaySessionCancelDoesNotPersistFailed(t *testing.T) {
 	require.NotEqual(t, PayStateNeedsIntervention, resumed.State())
 }
 
+// TestPaySessionClaimWaitBlockHeightErrorDoesNotPersistFailed asserts a
+// transient daemon read failure after vHTLC funding does not durably fail the
+// pay. The server may still settle Lightning and claim the vHTLC, so a later
+// resume must keep observing for the preimage.
+func TestPaySessionClaimWaitBlockHeightErrorDoesNotPersistFailed(
+	t *testing.T) {
+
+	t.Parallel()
+
+	store := newTestSwapStore(t)
+
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	serverPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	preimage, err := NewPreimage()
+	require.NoError(t, err)
+	invoice := testValidPayInvoice(t, preimage)
+
+	serverConn := &testInSwapServerConn{
+		cfg: &InSwapConfig{
+			PaymentHash:  preimage.Hash(),
+			AmountSat:    testInSwapAmountSat,
+			FeeSat:       testInSwapFeeSat,
+			ServerPubkey: serverPriv.PubKey(),
+			VHTLCConfig: VHTLCConfig{
+				RefundLocktime:                       144,
+				UnilateralClaimDelay:                 12,
+				UnilateralRefundDelay:                24,
+				UnilateralRefundWithoutReceiverDelay: 36,
+			},
+			Expiry: time.Now().Add(time.Minute),
+		},
+	}
+
+	daemonConn := &testDaemonConn{
+		identityKey:   clientPriv.PubKey(),
+		operatorKey:   operatorPriv.PubKey(),
+		blockHeight:   50,
+		sendSessionID: "funding-session",
+		sendOutpoint:  "funding:0",
+	}
+
+	client := configureTestPayClient(
+		NewSwapClientWithStore(
+			serverConn, daemonConn, nil, nil, store,
+		),
+	)
+	client.waitPollInterval = time.Millisecond
+
+	session, err := client.StartPayViaLightning(
+		t.Context(), invoice, testInSwapFeeSat,
+	)
+	require.NoError(t, err)
+
+	err = session.runUntil(t.Context(), PayStateWaitingForClaim)
+	require.NoError(t, err)
+	require.Equal(t, PayStateWaitingForClaim, session.State())
+
+	daemonConn.blockHeightErr = errors.New("height unavailable")
+	waitCtx, cancel := context.WithTimeout(t.Context(), 5*time.Millisecond)
+	defer cancel()
+
+	_, err = session.Wait(waitCtx)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Equal(t, PayStateWaitingForClaim, session.State())
+
+	resumed, err := client.ResumePayViaLightning(
+		t.Context(), preimage.Hash(),
+	)
+	require.NoError(t, err)
+	require.Equal(t, PayStateWaitingForClaim, resumed.State())
+
+	daemonConn.blockHeightErr = nil
+	daemonConn.spentVTXO = &VTXOInfo{
+		Outpoint:  "funding:0",
+		AmountSat: testInSwapAmountSat,
+		SpentByTxID: "0123456789abcdef0123456789abcdef" +
+			"0123456789abcdef0123456789abcdef",
+	}
+	daemonConn.indexedPackage = &OORPackageInfo{
+		CheckpointPSBTs: [][]byte{
+			testCheckpointPSBTWithPreimage(t, preimage[:]),
+		},
+	}
+
+	result, err := resumed.Wait(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, preimage.Hash(), result.PaymentHash)
+	require.Equal(t, preimage, result.Preimage)
+}
+
 // TestPaySessionUsesFundingResponseOutpointWhenIndexerRejectsLiveLookup
 // asserts the pay FSM can adopt its funded vHTLC from local OOR metadata
 // instead of depending on the remote pkScript indexer to reveal the outpoint.

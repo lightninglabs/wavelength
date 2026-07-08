@@ -1044,7 +1044,24 @@ func (s *paySession) waitForClaimPreimage(ctx context.Context) error {
 
 		height, err := s.client.daemon.BlockHeight(ctx)
 		if err != nil {
-			return fmt.Errorf("get block height: %w", err)
+			s.client.log.DebugS(
+				ctx,
+				"Unable to query block height while waiting "+
+					"for in-swap claim",
+				slog.String("err", err.Error()),
+				btclog.Hex("hash", s.cfg.PaymentHash[:]),
+			)
+			if err := s.waitForNextPoll(ctx); err != nil {
+				if errors.Is(err, errSwapExpired) {
+					return s.initiateRefund(
+						ctx, "claim deadline elapsed",
+					)
+				}
+
+				return err
+			}
+
+			continue
 		}
 		if height >= s.cfg.VHTLCConfig.RefundLocktime {
 			return s.initiateRefund(
@@ -1136,7 +1153,15 @@ func (s *paySession) completeRefund(ctx context.Context) error {
 
 	height, err := s.client.daemon.BlockHeight(ctx)
 	if err != nil {
-		return fmt.Errorf("get block height: %w", err)
+		s.client.log.DebugS(
+			ctx,
+			"Unable to query block height while waiting for "+
+				"in-swap refund maturity",
+			slog.String("err", err.Error()),
+			btclog.Hex("hash", s.cfg.PaymentHash[:]),
+		)
+
+		return waitForFixedPoll(ctx, s.client.waitPollInterval)
 	}
 	if height < s.cfg.VHTLCConfig.RefundLocktime {
 		wait := s.refundLocktimePollInterval(height)

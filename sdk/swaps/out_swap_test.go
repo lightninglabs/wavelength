@@ -1579,6 +1579,7 @@ type testDaemonConn struct {
 	identityKey       *btcec.PublicKey
 	operatorKey       *btcec.PublicKey
 	blockHeight       uint32
+	blockHeightErr    error
 	liveVTXOs         []VTXOInfo
 	spentVTXOs        []VTXOInfo
 	vhtlc             *VTXOInfo
@@ -1637,6 +1638,10 @@ type testDaemonConn struct {
 
 // BlockHeight returns the configured best block height.
 func (d *testDaemonConn) BlockHeight(context.Context) (uint32, error) {
+	if d.blockHeightErr != nil {
+		return 0, d.blockHeightErr
+	}
+
 	return d.blockHeight, nil
 }
 

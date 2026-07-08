@@ -216,6 +216,12 @@ func (r *router) sendInvoiceIntent(ctx context.Context,
 		walletdkrpc.EntryKind_ENTRY_KIND_SEND,
 	)
 
+	// Project the admitted pay immediately. SubscribeSwaps only publishes
+	// this row again after the daemon worker exits, so relying on the
+	// monitor alone can leave activity empty until the next startup
+	// backfill.
+	r.runtime.projectAndEmit(context.WithoutCancel(ctx), entry)
+
 	// For invoice sends actual_amount_sat is the swap's negotiated
 	// principal: that's what is being paid to the BOLT-11 destination
 	// (routing fees are tracked separately via fee_sat on the entry).
