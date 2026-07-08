@@ -40,6 +40,7 @@ func checkpointFromState(state State, sweepTx *wire.MsgTx) *actorCheckpoint {
 	}
 	checkpoint.Fail = job.FailReason
 	checkpoint.SweepAttempts = job.SweepAttempts
+	checkpoint.ProvisionalExternalSpend = job.ProvisionalExternalSpend
 
 	return checkpoint
 }
@@ -102,14 +103,17 @@ func stateFromCheckpoint(checkpoint *actorCheckpoint) State {
 
 	deferred := copyDeferredCheckpoints(checkpoint.DeferredCheckpoints)
 	job := &JobState{
-		Height:              checkpoint.Height,
-		Trigger:             checkpoint.Trigger,
-		ExitPolicyKind:      exitPolicyKind(checkpoint.ExitPolicyKind),
-		ExitPolicyRef:       checkpoint.ExitPolicyRef,
-		PlannerState:        copyPlannerState(checkpoint.State),
-		DeferredCheckpoints: deferred,
-		FailReason:          checkpoint.Fail,
-		SweepAttempts:       checkpoint.SweepAttempts,
+		Height:  checkpoint.Height,
+		Trigger: checkpoint.Trigger,
+		ExitPolicyKind: exitPolicyKind(
+			checkpoint.ExitPolicyKind,
+		),
+		ExitPolicyRef:            checkpoint.ExitPolicyRef,
+		PlannerState:             copyPlannerState(checkpoint.State),
+		DeferredCheckpoints:      deferred,
+		FailReason:               checkpoint.Fail,
+		SweepAttempts:            checkpoint.SweepAttempts,
+		ProvisionalExternalSpend: checkpoint.ProvisionalExternalSpend,
 	}
 
 	switch phaseFromPlannerState(job) {
@@ -118,6 +122,9 @@ func stateFromCheckpoint(checkpoint *actorCheckpoint) State {
 
 	case PhaseFailed:
 		return &Failed{Job: job}
+
+	case PhaseExternalSpendObserved:
+		return &AwaitingExternalSpendFinality{Job: job}
 
 	case PhaseSweepConfirmation:
 		return &AwaitingSweepConfirmation{Job: job}
@@ -152,6 +159,9 @@ func phaseFromState(state State) Phase {
 	case *AwaitingSweepConfirmation:
 		return PhaseSweepConfirmation
 
+	case *AwaitingExternalSpendFinality:
+		return PhaseExternalSpendObserved
+
 	case *Completed:
 		return PhaseCompleted
 
@@ -172,6 +182,15 @@ func phaseFromPlannerState(job *JobState) Phase {
 
 	if job.FailReason != "" {
 		return PhaseFailed
+	}
+
+	// A persisted provisional external spend takes precedence over the
+	// sweep-based phase derivation: the actor was parked waiting for
+	// either a reorg (which clears the anchor) or finality (which
+	// promotes it to FailReason). Surfacing this phase keeps restart
+	// reconciliation and the live reducer aligned on the same state.
+	if job.ProvisionalExternalSpend.IsSome() {
+		return PhaseExternalSpendObserved
 	}
 
 	switch {
@@ -205,6 +224,9 @@ func stateJob(state State) *JobState {
 		return s.Job.Copy()
 
 	case *AwaitingSweepConfirmation:
+		return s.Job.Copy()
+
+	case *AwaitingExternalSpendFinality:
 		return s.Job.Copy()
 
 	case *Completed:

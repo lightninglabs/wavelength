@@ -5489,6 +5489,36 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 		exitObserver = fn.Some[actor.TellOnlyRef[vtxo.ManagerMsg]](ref)
 	})
 
+	// Build a chainsource-backed reconciler factory so every per-
+	// target actor verifies its checkpoint anchors against the
+	// canonical chain on restart. Without this, a daemon that was
+	// offline during a reorg would silently resume against stale
+	// PlannerState — see unroll/reconcile.go for the safety
+	// rationale.
+	//
+	// The factory bakes the target outpoint into the chainsource
+	// caller-ID prefix so two actors that reconcile the same
+	// shared proof-graph ancestor concurrently land on distinct
+	// service keys (chainsource keys on (CallerID, Txid, PkScript,
+	// TargetConfs)); a static prefix would collide.
+	reconcileLog := s.subLogger("UREC")
+	probeTimeout := s.unrollReconcileProbeTimeout()
+	reconcilerFactory := func(target wire.OutPoint,
+		proof *recovery.Proof) unroll.ChainReconciler {
+
+		return unroll.NewChainSourceReconciler(
+			unroll.ChainSourceReconcilerConfig{
+				ChainSource: chainSourceRef,
+				Proof:       proof,
+				CallerID: fmt.Sprintf(
+					"unroll-reconcile-%s", target,
+				),
+				ProbeTimeout: probeTimeout,
+				Log:          fn.Some(reconcileLog),
+			},
+		)
+	}
+
 	registry := unroll.NewUnrollRegistryActor(unroll.RegistryConfig{
 		Store: &unroll.DBRegistryStore{
 			UEStore: ueStore,
@@ -5510,6 +5540,9 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 			Preimage: preimages,
 		},
 		VTXOExitObserver: exitObserver,
+		ChainReconcilerFactory: fn.Some(
+			unroll.ChainReconcilerFactory(reconcilerFactory),
+		),
 	})
 	s.unrollRegistry = registry
 	s.unrollRegistryRef = fn.Some(registry.Ref())
@@ -5976,6 +6009,20 @@ func (s *Server) unrollMaxFeeRate() int64 {
 	if s.cfg != nil && s.cfg.Unroll != nil &&
 		s.cfg.Unroll.MaxFeeRateSatPerVByte > 0 {
 		return s.cfg.Unroll.MaxFeeRateSatPerVByte
+	}
+
+	return 0
+}
+
+// unrollReconcileProbeTimeout returns the configured per-anchor probe
+// timeout for the chainsource-backed restart reconciler, or zero so
+// the reconciler falls back to defaultReconcileProbeTimeout.
+func (s *Server) unrollReconcileProbeTimeout() time.Duration {
+	if s.cfg.Unroll != nil &&
+		s.cfg.Unroll.ReconcileProbeTimeoutSec > 0 {
+		return time.Duration(
+			s.cfg.Unroll.ReconcileProbeTimeoutSec,
+		) * time.Second
 	}
 
 	return 0

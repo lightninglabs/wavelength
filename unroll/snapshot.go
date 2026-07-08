@@ -2,10 +2,13 @@ package unroll
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/unrollplan"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/tlv"
 )
 
@@ -93,21 +96,76 @@ const (
 	// checkpointExitPolicyRefRecordType carries the policy-specific
 	// durable-state reference.
 	checkpointExitPolicyRefRecordType tlv.Type = 21
+
+	// checkpointExternalSpendRecordType is optional; present only when
+	// the actor has observed an external spend of the target outpoint
+	// that has not yet been finalized. Payload is a fixed-layout
+	// 36-byte blob (32-byte SpendingTxid + 4-byte big-endian
+	// SpendingHeight) so a daemon restarting mid-spend-finality-window
+	// can rehydrate into AwaitingExternalSpendFinality instead of
+	// dropping the provisional anchor and broadcasting a sweep on a
+	// target the chain says no longer exists.
+	checkpointExternalSpendRecordType tlv.Type = 23
+
+	// checkpointSweepFinalizedRecordType is optional; present (value 1)
+	// only when the sweep has finalized past the backend's reorg-safety
+	// depth. It makes the in-memory sweep-finalized latch durable so a
+	// PhaseCompleted entry whose terminal handoff was deferred or failed
+	// does not restart as permanently "provisional completed" (the latch
+	// gates notifyRegistryIfTerminal). Omitted when false.
+	checkpointSweepFinalizedRecordType tlv.Type = 25
 )
+
+// externalSpendBlobSize is the canonical wire size of the persisted
+// ProvisionalExternalSpend payload: 32-byte txid + 4-byte big-endian
+// height.
+const externalSpendBlobSize = chainhash.HashSize + 4
 
 // actorCheckpoint is the durable checkpoint shape for one VTXO unroll actor.
 type actorCheckpoint struct {
-	Version             uint8
-	Height              int32
-	Started             bool
-	Trigger             StartTrigger
-	State               unrollplan.State
-	ExitPolicyKind      ExitPolicyKind
-	ExitPolicyRef       string
-	SweepTx             *wire.MsgTx
-	Fail                string
-	SweepAttempts       int
-	DeferredCheckpoints []DeferredCheckpoint
+	Version                  uint8
+	Height                   int32
+	Started                  bool
+	Trigger                  StartTrigger
+	State                    unrollplan.State
+	ExitPolicyKind           ExitPolicyKind
+	ExitPolicyRef            string
+	SweepTx                  *wire.MsgTx
+	Fail                     string
+	SweepAttempts            int
+	DeferredCheckpoints      []DeferredCheckpoint
+	ProvisionalExternalSpend fn.Option[ExternalSpendAnchor]
+	SweepFinalized           bool
+}
+
+// encodeExternalSpendBlob serializes an ExternalSpendAnchor into the
+// fixed-layout payload carried by checkpointExternalSpendRecordType.
+func encodeExternalSpendBlob(anchor ExternalSpendAnchor) []byte {
+	blob := make([]byte, externalSpendBlobSize)
+	copy(blob[:chainhash.HashSize], anchor.SpendingTxid[:])
+	binary.BigEndian.PutUint32(
+		blob[chainhash.HashSize:], uint32(anchor.SpendingHeight),
+	)
+
+	return blob
+}
+
+// decodeExternalSpendBlob parses a fixed-layout external-spend payload
+// back into an ExternalSpendAnchor.
+func decodeExternalSpendBlob(blob []byte) (ExternalSpendAnchor, error) {
+	if len(blob) != externalSpendBlobSize {
+		return ExternalSpendAnchor{}, fmt.Errorf("external spend blob "+
+			"has %d bytes, want %d", len(blob),
+			externalSpendBlobSize)
+	}
+
+	var anchor ExternalSpendAnchor
+	copy(anchor.SpendingTxid[:], blob[:chainhash.HashSize])
+	anchor.SpendingHeight = int32(
+		binary.BigEndian.Uint32(blob[chainhash.HashSize:]),
+	)
+
+	return anchor, nil
 }
 
 // encodeCheckpoint serializes one actor checkpoint into canonical TLV
@@ -226,6 +284,27 @@ func encodeCheckpoint(value *actorCheckpoint) ([]byte, error) {
 		)
 	}
 
+	value.ProvisionalExternalSpend.WhenSome(
+		func(anchor ExternalSpendAnchor) {
+			blob := encodeExternalSpendBlob(anchor)
+			records = append(
+				records, tlv.MakePrimitiveRecord(
+					checkpointExternalSpendRecordType,
+					&blob,
+				),
+			)
+		},
+	)
+
+	if value.SweepFinalized {
+		finalized := uint8(1)
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				checkpointSweepFinalizedRecordType, &finalized,
+			),
+		)
+	}
+
 	stream, err := tlv.NewStream(records...)
 	if err != nil {
 		return nil, fmt.Errorf("create checkpoint stream: %w", err)
@@ -255,17 +334,19 @@ func encodeCheckpoint(value *actorCheckpoint) ([]byte, error) {
 // truncated state.
 func decodeCheckpoint(raw []byte) (*actorCheckpoint, error) {
 	var (
-		version       uint8
-		height        uint32
-		started       uint8
-		trigger       uint32
-		stateBytes    []byte
-		sweepBytes    []byte
-		failBytes     []byte
-		attempts      uint32
-		deferredBytes []byte
-		policyKind    []byte
-		policyRef     []byte
+		version        uint8
+		height         uint32
+		started        uint8
+		trigger        uint32
+		stateBytes     []byte
+		sweepBytes     []byte
+		failBytes      []byte
+		attempts       uint32
+		deferredBytes  []byte
+		policyKind     []byte
+		policyRef      []byte
+		extSpendBlob   []byte
+		sweepFinalized uint8
 	)
 
 	stream, err := tlv.NewStream(
@@ -301,6 +382,12 @@ func decodeCheckpoint(raw []byte) (*actorCheckpoint, error) {
 		),
 		tlv.MakePrimitiveRecord(
 			checkpointExitPolicyRefRecordType, &policyRef,
+		),
+		tlv.MakePrimitiveRecord(
+			checkpointExternalSpendRecordType, &extSpendBlob,
+		),
+		tlv.MakePrimitiveRecord(
+			checkpointSweepFinalizedRecordType, &sweepFinalized,
 		),
 	)
 	if err != nil {
@@ -365,6 +452,18 @@ func decodeCheckpoint(raw []byte) (*actorCheckpoint, error) {
 				"checkpoints: %w", err)
 		}
 		checkpoint.DeferredCheckpoints = checkpoints
+	}
+
+	if _, ok := parsed[checkpointExternalSpendRecordType]; ok {
+		anchor, err := decodeExternalSpendBlob(extSpendBlob)
+		if err != nil {
+			return nil, fmt.Errorf("decode external spend: %w", err)
+		}
+		checkpoint.ProvisionalExternalSpend = fn.Some(anchor)
+	}
+
+	if _, ok := parsed[checkpointSweepFinalizedRecordType]; ok {
+		checkpoint.SweepFinalized = sweepFinalized != 0
 	}
 
 	return checkpoint, nil

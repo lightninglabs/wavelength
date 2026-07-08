@@ -501,6 +501,15 @@ type UnrollConfig struct {
 	// MaxFeeRateSatPerVByte caps fee estimates to prevent runaway
 	// fees. Zero uses the default of 100 sat/vB.
 	MaxFeeRateSatPerVByte int64 `mapstructure:"maxfeeratesatpervbyte"`
+
+	// ReconcileProbeTimeoutSec bounds each per-anchor restart-
+	// reconciliation probe issued by the chainsource-backed
+	// ChainReconciler (in seconds). A probe that times out is
+	// treated as "not on chain" and triggers a conservative
+	// rollback of the affected anchor; operators running against
+	// a slow backend can raise this to avoid spurious rollbacks.
+	// Zero uses the reconciler's internal default (10s).
+	ReconcileProbeTimeoutSec int64 `mapstructure:"reconcileprobetimeoutsec"`
 }
 
 // FeeEstimationConfig groups optional external chain fee providers used by the

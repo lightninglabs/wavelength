@@ -180,6 +180,16 @@ type RegistryConfig struct {
 	// to exit (darepo-client#602). When None, terminal outcomes are not
 	// forwarded (used by tests that don't exercise the manager).
 	VTXOExitObserver fn.Option[actor.TellOnlyRef[vtxo.ManagerMsg]]
+
+	// ChainReconcilerFactory, when set, is forwarded to each spawned
+	// per-target actor so it can verify its checkpoint anchors
+	// against the canonical chain on restart. The factory is invoked
+	// once per actor lifetime after the proof loads. When None
+	// children skip reconciliation; production wiring should pass a
+	// factory backed by NewChainSourceReconciler so an offline
+	// reorg window does not silently leave actors driving side
+	// effects off stale planner state.
+	ChainReconcilerFactory fn.Option[ChainReconcilerFactory]
 }
 
 // UnrollRegistryActor wraps the thin unroll registry actor.
@@ -1603,6 +1613,7 @@ func (r *registryBehavior) childConfig(target wire.OutPoint) Config {
 		ExitSpendPolicyResolver:     r.cfg.ExitSpendPolicyResolver,
 		FraudCheckpointSafetyMargin: r.cfg.FraudCheckpointSafetyMargin,
 		RegistryRef:                 r.selfRef,
+		ChainReconcilerFactory:      r.cfg.ChainReconcilerFactory,
 	}
 }
 

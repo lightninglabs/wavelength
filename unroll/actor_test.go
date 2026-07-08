@@ -392,6 +392,42 @@ func (f *fakeTxConfirmRef) emitFailed(t *testing.T, index int,
 	require.NoError(t, err)
 }
 
+// emitReorged delivers a txconfirm reorg notification to the subscriber
+// behind the request at index.
+func (f *fakeTxConfirmRef) emitReorged(t *testing.T, index int,
+	txid chainhash.Hash) {
+
+	t.Helper()
+
+	f.mu.Lock()
+	require.Less(t, index, len(f.requests))
+	subscriber := f.requests[index].Subscriber
+	f.mu.Unlock()
+
+	err := subscriber.Tell(t.Context(), &txconfirm.TxReorged{
+		Txid: txid,
+	})
+	require.NoError(t, err)
+}
+
+// emitFinalized delivers a txconfirm finalized notification to the
+// subscriber behind the request at index.
+func (f *fakeTxConfirmRef) emitFinalized(t *testing.T, index int,
+	txid chainhash.Hash) {
+
+	t.Helper()
+
+	f.mu.Lock()
+	require.Less(t, index, len(f.requests))
+	subscriber := f.requests[index].Subscriber
+	f.mu.Unlock()
+
+	err := subscriber.Tell(t.Context(), &txconfirm.TxFinalized{
+		Txid: txid,
+	})
+	require.NoError(t, err)
+}
+
 // confRef aliases the chainsource confirmation notification target.
 type confRef = actor.TellOnlyRef[chainsource.ConfirmationEvent]
 
@@ -401,15 +437,17 @@ type confReq = chainsource.RegisterConfRequest
 // fakeChainSourceRef is a minimal chainsource actor ref for sweep fee
 // estimation tests.
 type fakeChainSourceRef struct {
-	mu         sync.Mutex
-	bestHeight int32
-	feeRate    int64
-	feeErr     error
-	blockRef   actor.TellOnlyRef[chainsource.BlockEpoch]
-	spendRefs  map[wire.OutPoint]spendEventRef
-	spendRegs  []wire.OutPoint
-	confRefs   map[chainhash.Hash]confRef
-	confReqs   map[chainhash.Hash]*confReq
+	mu                sync.Mutex
+	bestHeight        int32
+	feeRate           int64
+	feeErr            error
+	blockRef          actor.TellOnlyRef[chainsource.BlockEpoch]
+	spendRefs         map[wire.OutPoint]spendEventRef
+	spendRegs         []wire.OutPoint
+	spendReorgedRef   actor.TellOnlyRef[chainsource.SpendReorgedEvent]
+	spendFinalizedRef actor.TellOnlyRef[chainsource.SpendDoneEvent]
+	confRefs          map[chainhash.Hash]confRef
+	confReqs          map[chainhash.Hash]*confReq
 }
 
 // spendEventRef is the fake chain-source spend notification actor reference.
@@ -507,6 +545,18 @@ func (f *fakeChainSourceRef) Ask(_ context.Context,
 		}
 		f.spendRefs[outpoint] = msg.NotifyActor.UnwrapOr(nil)
 		f.spendRegs = append(f.spendRegs, outpoint)
+
+		// Reorg/finalized refs are only wired by ensureSpendWatch
+		// (target outpoint). Proof-node spend watches from
+		// ensureProofSpendWatches leave these unset; capture them
+		// only when the caller actually provided them so a later
+		// proof-node registration cannot wipe the target's refs.
+		if msg.NotifyReorged.IsSome() {
+			f.spendReorgedRef = msg.NotifyReorged.UnwrapOr(nil)
+		}
+		if msg.NotifyDone.IsSome() {
+			f.spendFinalizedRef = msg.NotifyDone.UnwrapOr(nil)
+		}
 		f.mu.Unlock()
 		promise.Complete(
 			fn.Ok[chainsource.ChainSourceResp](
@@ -635,6 +685,40 @@ func (f *fakeChainSourceRef) spendRegistrations() []wire.OutPoint {
 	defer f.mu.Unlock()
 
 	return append([]wire.OutPoint(nil), f.spendRegs...)
+}
+
+// emitSpendReorged delivers a SpendReorgedEvent to the subscribed actor.
+func (f *fakeChainSourceRef) emitSpendReorged(t *testing.T) {
+	t.Helper()
+
+	f.mu.Lock()
+	ref := f.spendReorgedRef
+	f.mu.Unlock()
+
+	require.NotNil(t, ref)
+	require.NoError(
+		t,
+		ref.Tell(
+			t.Context(), chainsource.SpendReorgedEvent{},
+		),
+	)
+}
+
+// emitSpendFinalized delivers a SpendDoneEvent to the subscribed actor.
+func (f *fakeChainSourceRef) emitSpendFinalized(t *testing.T) {
+	t.Helper()
+
+	f.mu.Lock()
+	ref := f.spendFinalizedRef
+	f.mu.Unlock()
+
+	require.NotNil(t, ref)
+	require.NoError(
+		t,
+		ref.Tell(
+			t.Context(), chainsource.SpendDoneEvent{},
+		),
+	)
 }
 
 // fakeSweepWallet is a minimal signer plus wallet-destination test double.
@@ -2923,6 +3007,12 @@ func TestSweepConfirmationCompletesActor(t *testing.T) {
 	)
 	require.True(t, checkpoint.State.Sweep.ConfirmHeight.IsSome())
 
+	// Reorg-safe completion treats PhaseCompleted as provisional on
+	// confirmation and defers the terminal handoff (and the ExitCostMsg
+	// emission) until the sweep finalizes past reorg-safety depth. Drive
+	// the finalize so the exit cost lands.
+	txconfirmRef.emitFinalized(t, 2, sweepTxid)
+
 	ledgerMsg, ok := ledgerSink.AwaitMessage(testTimeout)
 	require.True(t, ok)
 	exitCostMsg, ok := ledgerMsg.(*ledger.ExitCostMsg)
@@ -3023,6 +3113,12 @@ func TestExitCostTellFailureDefersTerminalHandoff(t *testing.T) {
 
 		return stateResp.Phase == PhaseCompleted
 	}, testTimeout, 10*time.Millisecond)
+
+	// Finalize the sweep so PhaseCompleted is no longer provisional and
+	// the actor becomes terminal-eligible. The terminal handoff still
+	// requires a successful exit-cost emission, which fails here because
+	// the sink has no ledger actor behind it.
+	txconfirmRef.emitFinalized(t, 2, sweepTxid)
 
 	// The failing ledger sink must have deferred the terminal handoff:
 	// the registry sees no UnrollTerminatedMsg.
@@ -3387,8 +3483,11 @@ func TestSweepFailureRetriesThenFails(t *testing.T) {
 	require.Equal(t, maxSweepAttempts, checkpoint.SweepAttempts)
 }
 
-// TestExternalSpendTerminatesActor verifies that an external spend of the
-// target VTXO (not our proof nodes or sweep) terminates the actor.
+// TestExternalSpendTerminatesActor verifies that an external spend of
+// the target VTXO is treated as a provisional block, and that
+// finalization promotes it to a terminal failure. Without the
+// finalization signal the actor stays in AwaitingExternalSpendFinality
+// so a reorg of the spending block has a live actor to resume.
 func TestExternalSpendTerminatesActor(t *testing.T) {
 	proof := buildLinearProof(t)
 	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
@@ -3402,15 +3501,26 @@ func TestExternalSpendTerminatesActor(t *testing.T) {
 		Trigger: TriggerManual,
 	})
 
-	// Ensure spend watch is registered.
+	// Ensure spend watch is registered for the target outpoint with
+	// reorg / done callback refs wired so the actor can be driven
+	// through the full reversible lifecycle.
 	require.Eventually(t, func() bool {
+		var targetRegistered bool
 		for _, outpoint := range chainSource.spendRegistrations() {
 			if outpoint == proof.TargetOutpoint() {
-				return true
+				targetRegistered = true
+				break
 			}
 		}
+		if !targetRegistered {
+			return false
+		}
 
-		return false
+		chainSource.mu.Lock()
+		defer chainSource.mu.Unlock()
+
+		return chainSource.spendReorgedRef != nil &&
+			chainSource.spendFinalizedRef != nil
 	}, testTimeout, 10*time.Millisecond)
 
 	// Simulate an external party spending the target VTXO.
@@ -3418,6 +3528,21 @@ func TestExternalSpendTerminatesActor(t *testing.T) {
 	chainSource.emitSpendForOutpoint(
 		t, proof.TargetOutpoint(), externalTxid, 101,
 	)
+
+	// The actor must enter the reversible
+	// AwaitingExternalSpendFinality phase rather than terminating.
+	require.Eventually(t, func() bool {
+		stateResp, ok := mustAsk(
+			t, unrollActor.Ref(), &GetStateRequest{},
+		).(*GetStateResp)
+		require.True(t, ok)
+
+		return stateResp.Phase == PhaseExternalSpendObserved
+	}, testTimeout, 10*time.Millisecond)
+
+	// Finalize the spend. The actor promotes the provisional anchor
+	// to a permanent FailReason and transitions to PhaseFailed.
+	chainSource.emitSpendFinalized(t)
 
 	require.Eventually(t, func() bool {
 		stateResp, ok := mustAsk(

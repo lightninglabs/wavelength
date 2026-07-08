@@ -42,6 +42,10 @@ const (
 	txFailedMsgTLVType         tlv.Type = 0x7904
 	getStateRequestTLVType     tlv.Type = 0x7905
 	spendObservedMsgTLVType    tlv.Type = 0x7906
+	txReorgedMsgTLVType        tlv.Type = 0x7907
+	txFinalizedMsgTLVType      tlv.Type = 0x7908
+	spendReorgedMsgTLVType     tlv.Type = 0x7909
+	spendFinalizedMsgTLVType   tlv.Type = 0x790a
 )
 
 // Durable mailbox priorities. Admission stays at the default priority so a
@@ -77,6 +81,9 @@ const (
 	spendObservedHeightRecType   tlv.Type = 3
 	spendObservedOutHashRecType  tlv.Type = 5
 	spendObservedOutIndexRecType tlv.Type = 7
+
+	txReorgedTxidRecType   tlv.Type = 1
+	txFinalizedTxidRecType tlv.Type = 1
 )
 
 // StartTrigger identifies what caused the unroll actor to start.
@@ -130,6 +137,14 @@ const (
 
 	// PhaseFailed indicates the actor reached terminal failure.
 	PhaseFailed Phase = "failed"
+
+	// PhaseExternalSpendObserved indicates the actor has observed an
+	// external spend of the target outpoint that has not yet been
+	// finalized past the backend's reorg-safety depth. The actor is
+	// parked: it does not advance toward a sweep, but it has not
+	// terminated either, since a reorg of the spending block can
+	// resurrect the recovery job.
+	PhaseExternalSpendObserved Phase = "external_spend_observed"
 )
 
 // Msg is the durable mailbox surface accepted by the VTXO unroll actor.
@@ -800,6 +815,258 @@ func newCodec() *actor.MessageCodec {
 		spendObservedMsgTLVType,
 		func() actor.TLVMessage { return &SpendObservedMsg{} },
 	)
+	codec.MustRegister(
+		txReorgedMsgTLVType,
+		func() actor.TLVMessage { return &TxReorgedMsg{} },
+	)
+	codec.MustRegister(
+		txFinalizedMsgTLVType,
+		func() actor.TLVMessage { return &TxFinalizedMsg{} },
+	)
+	codec.MustRegister(
+		spendReorgedMsgTLVType,
+		func() actor.TLVMessage { return &SpendReorgedMsg{} },
+	)
+	codec.MustRegister(
+		spendFinalizedMsgTLVType,
+		func() actor.TLVMessage { return &SpendFinalizedMsg{} },
+	)
 
 	return codec
 }
+
+// SpendReorgedMsg reports that a previously delivered SpendObservedMsg
+// for the target outpoint has been reorged out of the canonical chain.
+// The actor must roll back any provisional external-spend state it
+// recorded for the prior observation; if a new spend on the new tip
+// follows, it arrives as a fresh SpendObservedMsg on the same
+// subscription.
+//
+// The payload is intentionally empty: each unroll actor watches
+// exactly one target outpoint, and the chainsource sub-actor is
+// already keyed on that outpoint, so no additional correlation
+// metadata is needed.
+type SpendReorgedMsg struct {
+	actor.BaseMessage
+}
+
+// MessageType returns the stable message type identifier.
+func (m *SpendReorgedMsg) MessageType() string {
+	return "SpendReorgedMsg"
+}
+
+// TLVType returns the durable mailbox type ID.
+func (m *SpendReorgedMsg) TLVType() tlv.Type {
+	return spendReorgedMsgTLVType
+}
+
+// Priority returns the durable mailbox priority for spend reorg events.
+func (m *SpendReorgedMsg) Priority() int {
+	return unrollProgressPriority
+}
+
+// Encode serializes the message as a (currently empty) TLV stream.
+func (m *SpendReorgedMsg) Encode(w io.Writer) error {
+	stream, err := tlv.NewStream()
+	if err != nil {
+		return fmt.Errorf("create stream: %w", err)
+	}
+
+	return stream.Encode(w)
+}
+
+// Decode deserializes the message from a TLV stream.
+func (m *SpendReorgedMsg) Decode(r io.Reader) error {
+	stream, err := tlv.NewStream()
+	if err != nil {
+		return fmt.Errorf("create stream: %w", err)
+	}
+
+	if err := stream.Decode(r); err != nil {
+		return fmt.Errorf("decode: %w", err)
+	}
+
+	return nil
+}
+
+// unrollMsgSealed seals SpendReorgedMsg into the message surface.
+func (m *SpendReorgedMsg) unrollMsgSealed() {}
+
+// SpendFinalizedMsg reports that a previously observed external spend
+// of the target outpoint is past the backend's reorg-safety depth.
+// Receiving it converts any provisional external-spend block on the
+// actor into a terminal failure.
+type SpendFinalizedMsg struct {
+	actor.BaseMessage
+}
+
+// MessageType returns the stable message type identifier.
+func (m *SpendFinalizedMsg) MessageType() string {
+	return "SpendFinalizedMsg"
+}
+
+// TLVType returns the durable mailbox type ID.
+func (m *SpendFinalizedMsg) TLVType() tlv.Type {
+	return spendFinalizedMsgTLVType
+}
+
+// Priority returns the durable mailbox priority for spend finality
+// events.
+func (m *SpendFinalizedMsg) Priority() int {
+	return unrollProgressPriority
+}
+
+// Encode serializes the message as a (currently empty) TLV stream.
+func (m *SpendFinalizedMsg) Encode(w io.Writer) error {
+	stream, err := tlv.NewStream()
+	if err != nil {
+		return fmt.Errorf("create stream: %w", err)
+	}
+
+	return stream.Encode(w)
+}
+
+// Decode deserializes the message from a TLV stream.
+func (m *SpendFinalizedMsg) Decode(r io.Reader) error {
+	stream, err := tlv.NewStream()
+	if err != nil {
+		return fmt.Errorf("create stream: %w", err)
+	}
+
+	if err := stream.Decode(r); err != nil {
+		return fmt.Errorf("decode: %w", err)
+	}
+
+	return nil
+}
+
+// unrollMsgSealed seals SpendFinalizedMsg into the message surface.
+func (m *SpendFinalizedMsg) unrollMsgSealed() {}
+
+// TxReorgedMsg reports that a previously delivered TxConfirmedMsg has
+// been reorged out of the canonical chain. Subscribers should treat the
+// prior confirmation as no longer valid; if the transaction re-confirms,
+// a fresh TxConfirmedMsg will follow on the same subscription.
+type TxReorgedMsg struct {
+	actor.BaseMessage
+
+	// Txid identifies the reorged transaction.
+	Txid chainhash.Hash
+}
+
+// MessageType returns the stable message type identifier.
+func (m *TxReorgedMsg) MessageType() string {
+	return "TxReorgedMsg"
+}
+
+// TLVType returns the durable mailbox type ID.
+func (m *TxReorgedMsg) TLVType() tlv.Type {
+	return txReorgedMsgTLVType
+}
+
+// Priority returns the durable mailbox priority for reorg events. Reorg
+// rollback must run before low-value reads and height ticks because
+// downstream side effects (e.g. sweep gating) gate on its outcome.
+func (m *TxReorgedMsg) Priority() int {
+	return unrollProgressPriority
+}
+
+// Encode serializes the message as a TLV stream.
+func (m *TxReorgedMsg) Encode(w io.Writer) error {
+	txid := [32]byte(m.Txid)
+
+	stream, err := tlv.NewStream(
+		tlv.MakePrimitiveRecord(txReorgedTxidRecType, &txid),
+	)
+	if err != nil {
+		return fmt.Errorf("create stream: %w", err)
+	}
+
+	return stream.Encode(w)
+}
+
+// Decode deserializes the message from a TLV stream.
+func (m *TxReorgedMsg) Decode(r io.Reader) error {
+	var txid [32]byte
+
+	stream, err := tlv.NewStream(
+		tlv.MakePrimitiveRecord(txReorgedTxidRecType, &txid),
+	)
+	if err != nil {
+		return fmt.Errorf("create stream: %w", err)
+	}
+
+	if err := stream.Decode(r); err != nil {
+		return fmt.Errorf("decode: %w", err)
+	}
+
+	m.Txid = chainhash.Hash(txid)
+
+	return nil
+}
+
+// unrollMsgSealed seals TxReorgedMsg into the message surface.
+func (m *TxReorgedMsg) unrollMsgSealed() {}
+
+// TxFinalizedMsg reports that a tracked transaction is past the
+// backend's reorg-safety depth and will receive no further events.
+// Consumers may use this signal to drop any reorg-recovery bookkeeping
+// they were holding for the watch.
+type TxFinalizedMsg struct {
+	actor.BaseMessage
+
+	// Txid identifies the finalized transaction.
+	Txid chainhash.Hash
+}
+
+// MessageType returns the stable message type identifier.
+func (m *TxFinalizedMsg) MessageType() string {
+	return "TxFinalizedMsg"
+}
+
+// TLVType returns the durable mailbox type ID.
+func (m *TxFinalizedMsg) TLVType() tlv.Type {
+	return txFinalizedMsgTLVType
+}
+
+// Priority returns the durable mailbox priority for finality events.
+func (m *TxFinalizedMsg) Priority() int {
+	return unrollProgressPriority
+}
+
+// Encode serializes the message as a TLV stream.
+func (m *TxFinalizedMsg) Encode(w io.Writer) error {
+	txid := [32]byte(m.Txid)
+
+	stream, err := tlv.NewStream(
+		tlv.MakePrimitiveRecord(txFinalizedTxidRecType, &txid),
+	)
+	if err != nil {
+		return fmt.Errorf("create stream: %w", err)
+	}
+
+	return stream.Encode(w)
+}
+
+// Decode deserializes the message from a TLV stream.
+func (m *TxFinalizedMsg) Decode(r io.Reader) error {
+	var txid [32]byte
+
+	stream, err := tlv.NewStream(
+		tlv.MakePrimitiveRecord(txFinalizedTxidRecType, &txid),
+	)
+	if err != nil {
+		return fmt.Errorf("create stream: %w", err)
+	}
+
+	if err := stream.Decode(r); err != nil {
+		return fmt.Errorf("decode: %w", err)
+	}
+
+	m.Txid = chainhash.Hash(txid)
+
+	return nil
+}
+
+// unrollMsgSealed seals TxFinalizedMsg into the message surface.
+func (m *TxFinalizedMsg) unrollMsgSealed() {}
