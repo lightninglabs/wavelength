@@ -2247,6 +2247,128 @@ func TestPaySessionResumeFundingGraceEventuallyRetries(t *testing.T) {
 	require.Equal(t, PayStateFundingInitiated, reloaded.State())
 }
 
+// TestPaySessionResumeDoesNotDoubleFireVHTLCFunded is a regression test for a
+// pay-FSM resume defect (reported as a settled Lightning payment shown as
+// FAILED). A session resumed in FundingInitiated advances to VHTLCFunded via
+// local funding metadata, then the SAME waitForFundedVHTLC loop observes the
+// vHTLC live and fires OnVHTLCFunded a second time — this time from
+// VHTLCFunded, which has no such transition — so the swap is wrongly marked
+// Failed even though its vHTLC is funded and the server can still claim it.
+//
+// The fix belongs in the pay FSM: guard the funded transition on the current
+// state (as markVHTLCFundedFromLocalMetadata already does) and stop the loop
+// once VHTLCFunded is reached. This test asserts the desired post-fix
+// behaviour, so it FAILS on the current code (the resume errors with "invalid
+// pay transition VHTLCFunded -> OnVHTLCFunded" and lands in PayStateFailed) and
+// PASSES once the FSM stops re-firing OnVHTLCFunded.
+func TestPaySessionResumeDoesNotDoubleFireVHTLCFunded(t *testing.T) {
+	t.Parallel()
+
+	store := newTestSwapStore(t)
+
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	serverPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	preimage, err := NewPreimage()
+	require.NoError(t, err)
+	invoice := testValidPayInvoice(t, preimage)
+
+	serverConn := &testInSwapServerConn{
+		cfg: &InSwapConfig{
+			PaymentHash:  preimage.Hash(),
+			AmountSat:    testInSwapAmountSat,
+			FeeSat:       testInSwapFeeSat,
+			ServerPubkey: serverPriv.PubKey(),
+			VHTLCConfig: VHTLCConfig{
+				RefundLocktime:                       144,
+				UnilateralClaimDelay:                 12,
+				UnilateralRefundDelay:                24,
+				UnilateralRefundWithoutReceiverDelay: 36,
+			},
+			Expiry: time.Now().Add(time.Minute),
+		},
+	}
+
+	// The daemon returns a funding outpoint (so the resume marks the vHTLC
+	// funded from local metadata) and reports the vHTLC live only after the
+	// funding send — the exact ordering that makes the loop re-fire
+	// OnVHTLCFunded from VHTLCFunded.
+	daemonConn := &testDaemonConn{
+		identityKey:   clientPriv.PubKey(),
+		operatorKey:   operatorPriv.PubKey(),
+		blockHeight:   50,
+		sendSessionID: "funding-session",
+		sendOutpoint:  "funding:0",
+	}
+	daemonConn.liveLookupHook = func(_ int) (*VTXOInfo, error) {
+		if daemonConn.sendPolicyCalls == 0 {
+			return nil, unregisteredScriptIndexerErr()
+		}
+
+		return &VTXOInfo{
+			Outpoint:  "funding:0",
+			AmountSat: testInSwapAmountSat,
+		}, nil
+	}
+
+	// Seed a session persisted in FundingInitiated with no funding session
+	// id: the state a client rests in when it records the funding intent
+	// but stops before the OOR funding send is submitted.
+	client := configureTestPayClient(
+		NewSwapClientWithStore(serverConn, daemonConn, nil, nil, store),
+	)
+	client.waitPollInterval = time.Millisecond
+	client.refundLocktimeBuffer = 0
+	client.fundingResumeGracePeriod = 0
+
+	session, err := client.StartPayViaLightning(
+		t.Context(), invoice, testInSwapFeeSat,
+	)
+	require.NoError(t, err)
+	require.NoError(
+		t,
+		session.mutateAndPersist(
+			t.Context(),
+			func() error {
+				return session.transition(
+					payEventFundingInitiated,
+				)
+			},
+		),
+	)
+
+	resumedClient := configureTestPayClient(
+		NewSwapClientWithStore(serverConn, daemonConn, nil, nil, store),
+	)
+	resumedClient.waitPollInterval = time.Millisecond
+	resumedClient.refundLocktimeBuffer = 0
+	resumedClient.fundingResumeGracePeriod = 0
+
+	resumed, err := resumedClient.ResumePayViaLightning(
+		t.Context(), preimage.Hash(),
+	)
+	require.NoError(t, err)
+	require.Equal(t, PayStateFundingInitiated, resumed.State())
+
+	runCtx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+
+	// The resumed swap must advance to WaitingForClaim, not be failed by a
+	// re-fired OnVHTLCFunded.
+	err = resumed.runUntil(runCtx, PayStateWaitingForClaim)
+	require.NoError(
+		t, err,
+		"resume re-fired OnVHTLCFunded and failed a funded swap",
+	)
+	require.Equal(t, PayStateWaitingForClaim, resumed.State())
+}
+
 // TestPaySessionRefundsAmountMismatch asserts the client preserves mismatch
 // context while still sweeping the funded vHTLC back once refund matures.
 func TestPaySessionRefundsAmountMismatch(t *testing.T) {
