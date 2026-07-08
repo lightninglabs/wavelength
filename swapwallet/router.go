@@ -224,6 +224,16 @@ func (r *router) sendInvoiceIntent(ctx context.Context,
 		actualAmountSat = int64(intent.amountSat)
 	}
 
+	// Project the pending SEND row synchronously so it is store-addressable
+	// the instant Send returns; an immediate read (List / inspect) must not
+	// race the swap monitor's first push. The monitor drives this same
+	// payment-hash-keyed row to its terminal, and projectAndEmit is
+	// idempotent on the canonical id, so that later push is a safe upsert.
+	// Project off the RPC context so a client disconnect cannot cancel the
+	// write of an already-accepted pay.
+	r.runtime.trackPendingEntryWithoutTimeout(entry)
+	r.runtime.projectAndEmit(context.WithoutCancel(ctx), entry)
+
 	return &walletdkrpc.SendResponse{
 		Entry:           entry,
 		ActualAmountSat: actualAmountSat,

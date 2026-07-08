@@ -407,6 +407,54 @@ func TestRouterSendInvoiceDispatchesStartPay(t *testing.T) {
 	)
 }
 
+// TestRouterSendInvoiceProjectsPendingRow asserts a pure-Lightning invoice send
+// projects its PENDING SEND row into the activity store synchronously, so an
+// immediate store-backed read (List / inspect) cannot race the swap monitor's
+// first push. The credit and on-chain send paths already project inline; this
+// covers the Lightning path.
+func TestRouterSendInvoiceProjectsPendingRow(t *testing.T) {
+	t.Parallel()
+
+	r, swap, _ := newRouterFixture(t)
+	store := &fakeActivityProjector{}
+	r.deps.ActivityStore = store
+
+	invoice, paymentHash := testPreparedInvoice(t, 500, "tiny")
+	swap.startPayResp = &swapclientrpc.StartPayResponse{
+		PaymentHash: paymentHash,
+		Swap: &swapclientrpc.SwapSummary{
+			PaymentHash: paymentHash,
+			Direction: swapclientrpc.
+				SwapDirection_SWAP_DIRECTION_PAY,
+			Pending: true,
+		},
+	}
+
+	resp, err := sendPreparedInvoice(t, r, invoice, 25)
+	require.NoError(t, err)
+	require.Equal(t, paymentHash, resp.GetEntry().GetId())
+	require.Equal(
+		t, walletdkrpc.EntryKind_ENTRY_KIND_SEND,
+		resp.GetEntry().GetKind(),
+	)
+	require.Equal(
+		t, walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		resp.GetEntry().GetStatus(),
+	)
+
+	// The pending row must be in the store the instant Send returns, keyed
+	// by the payment hash, so an immediate inspect finds it rather than
+	// racing the monitor's deferred projection.
+	require.Equal(
+		t, 1, store.count(),
+		"invoice send must project its pending row synchronously",
+	)
+	require.True(
+		t, store.ids()[paymentHash],
+		"pending row must be keyed by the payment hash",
+	)
+}
+
 // TestRouterSendInvoiceHandsCreditPayToRegistry asserts that a credit-backed
 // pay is handed off to the durable credit registry under a payment-hash-derived
 // idempotency key, rather than driving the top-up and pay inline. The router no
