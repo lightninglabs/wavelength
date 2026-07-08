@@ -71,7 +71,8 @@ type Querier interface {
 	FindBatchesByConsumedOutpoint(ctx context.Context, arg FindBatchesByConsumedOutpointParams) ([][]byte, error)
 	// GetActivityEntry returns one entry by its canonical id.
 	GetActivityEntry(ctx context.Context, canonicalID string) (ActivityEntry, error)
-	// GetBatchCanonicality returns the canonicality row for a batch txid.
+	// GetBatchCanonicality returns the canonicality row for a batch txid. The
+	// column order matches the table so sqlc reuses the BatchCanonicality model.
 	GetBatchCanonicality(ctx context.Context, batchTxid []byte) (BatchCanonicality, error)
 	GetBoardingAddress(ctx context.Context, pkScript []byte) (BoardingAddress, error)
 	GetBoardingIntent(ctx context.Context, arg GetBoardingIntentParams) (BoardingIntent, error)

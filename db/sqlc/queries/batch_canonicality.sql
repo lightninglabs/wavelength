@@ -10,9 +10,10 @@
 -- batch. created_at is preserved on conflict; everything else is overwritten.
 INSERT INTO batch_canonicality (
     batch_txid, state, confirmation_height, confirmation_block_hash,
-    csv_expiry_delta, policy_state, created_at, updated_at
+    csv_expiry_delta, policy_state, created_at, updated_at,
+    confirmation_pk_script
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8
+    $1, $2, $3, $4, $5, $6, $7, $8, $9
 )
 ON CONFLICT (batch_txid) DO UPDATE SET
     state = EXCLUDED.state,
@@ -20,12 +21,15 @@ ON CONFLICT (batch_txid) DO UPDATE SET
     confirmation_block_hash = EXCLUDED.confirmation_block_hash,
     csv_expiry_delta = EXCLUDED.csv_expiry_delta,
     policy_state = EXCLUDED.policy_state,
+    confirmation_pk_script = EXCLUDED.confirmation_pk_script,
     updated_at = EXCLUDED.updated_at;
 
 -- name: GetBatchCanonicality :one
--- GetBatchCanonicality returns the canonicality row for a batch txid.
+-- GetBatchCanonicality returns the canonicality row for a batch txid. The
+-- column order matches the table so sqlc reuses the BatchCanonicality model.
 SELECT batch_txid, state, confirmation_height, confirmation_block_hash,
-    csv_expiry_delta, policy_state, created_at, updated_at
+    csv_expiry_delta, policy_state, created_at, updated_at,
+    confirmation_pk_script
 FROM batch_canonicality
 WHERE batch_txid = $1;
 
@@ -33,7 +37,8 @@ WHERE batch_txid = $1;
 -- ListBatchCanonicalityByState returns every batch currently in the given
 -- state.
 SELECT batch_txid, state, confirmation_height, confirmation_block_hash,
-    csv_expiry_delta, policy_state, created_at, updated_at
+    csv_expiry_delta, policy_state, created_at, updated_at,
+    confirmation_pk_script
 FROM batch_canonicality
 WHERE state = $1;
 

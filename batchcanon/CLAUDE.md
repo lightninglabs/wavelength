@@ -33,8 +33,23 @@ in its own package, separate from `chainsource` (raw observation) and `vtxo`
 - `ProvisionalConsumer` — reverse-dependency edge (consumed VTXO → consumer
   batch) enabling VTXO restore if a consumer batch never becomes canonical.
 - `Store` — behavior-free durable query/update interface. Implemented by
-  `db.BatchCanonicalityPersistenceStore` over the `000020` schema; backfilled
-  from existing VTXOs via `db.BatchCanonicalityPersistenceStore.BackfillFromVTXOs`.
+  `db.BatchCanonicalityPersistenceStore` over the `000020`/`000021` schema;
+  backfilled from existing VTXOs via
+  `db.BatchCanonicalityPersistenceStore.BackfillFromVTXOs`.
+- `Manager` — the actor that interprets chain observation into canonicality
+  state (the sole client-side interpreter). Registered under
+  `ManagerServiceKey`. `RegisterBatchRequest` arms one reorg-aware
+  confirmation watch on the batch tx and one reorg-aware spend watch per
+  consumed input (deduped per batch, idempotent — repeats merge dependent
+  VTXOs). It maps chainsource `ConfirmationEvent`/`ConfReorgedEvent`/
+  `ConfDoneEvent` and `SpendEvent`/`SpendReorgedEvent`/`SpendDoneEvent` onto
+  its own mailbox and derives `State` per the priority
+  `conflict_finalized > conflict_provisional > reorged_out >
+  finalized/provisional > unseen`. `Reconcile` re-arms watches for non-final
+  batches after restart without downgrading persisted state.
+  `GetBatchStateRequest` reads the persisted record. `NewManager` returns the
+  behavior; the caller registers it, then calls `SetSelfRef(ref.TellRef())`
+  and `Reconcile`.
 
 ## Relationships
 
