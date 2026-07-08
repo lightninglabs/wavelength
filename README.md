@@ -56,11 +56,14 @@ darepod \
   --server.insecure \
   --rpc.listenaddr=localhost:10029
 
-# In another shell: create the wallet, get a boarding address, board.
-darepocli create --no-tls
-darepocli recv   --onchain --no-tls
-darepocli balance --no-tls
-darepocli ark board --no-tls
+# In another shell. darepocli needs TLS + the daemon's admin macaroon; for
+# this local regtest daemon use plaintext instead (no TLS, no macaroon) on
+# the regtest network. See INSTALL.md for the TLS setup a real instance uses.
+alias da='darepocli --no-tls --no-macaroons --network=regtest'
+da create
+da recv   --onchain
+da balance
+da ark board
 ```
 
 For a full end-to-end regtest walkthrough (with `nigiri` and a funded

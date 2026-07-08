@@ -190,14 +190,29 @@ darepod \
 After starting the daemon, the wallet must be created and unlocked before
 any operation can proceed.
 
+`darepocli` authenticates to the daemon over TLS with the daemon's admin
+macaroon, both derived from `--datadir` / `--network` (defaults `~/.darepod`
+and `mainnet`). Match those to your daemon, or use `--no-tls --no-macaroons`
+for a local plaintext daemon (a macaroon can't ride an unencrypted connection,
+so `--no-tls` alone fails). Set it once via an alias — the commands below use
+`da`:
+
+```bash
+# Pick the one that matches your daemon:
+#   regtest, plaintext:
+#     alias da='darepocli --no-tls --no-macaroons --network=regtest'
+#   signet under ~/.darepod-signet, TLS:
+alias da='darepocli --network=signet --datadir=~/.darepod-signet'
+```
+
 With a `walletdkrpc`-enabled build (`make install-walletdkrpc`):
 
 ```bash
 # Create a wallet (prints the seed mnemonic on stderr; write it down!).
-DAREPOD_WALLET_PASSWORD=your_password darepocli create --no-tls
+DAREPOD_WALLET_PASSWORD=your_password da create
 
 # Unlock the wallet after every restart.
-DAREPOD_WALLET_PASSWORD=your_password darepocli unlock --no-tls
+DAREPOD_WALLET_PASSWORD=your_password da unlock
 ```
 
 To skip manual unlock entirely, pass `--wallet.password_file=/path/to/file`
@@ -212,19 +227,21 @@ build. Full password-handling rules:
 
 ## Verifying the Install
 
+Using the `da` alias from the previous section:
+
 ```bash
 # 1. Daemon answers basic status.
-darepocli getinfo --no-tls
+da getinfo
 
 # 2. (walletdkrpc only) wallet verbs work.
-darepocli balance --no-tls
-darepocli activity --no-tls
+da balance
+da activity
 
 # VTXO inventory lives under the ark subtree (available in every build).
-darepocli ark vtxos list --no-tls
+da ark vtxos list
 
 # 3. Schema dump (useful for tooling and AI agents).
-darepocli schema --no-tls
+da schema
 ```
 
 If you see `daemon was not built with -tags walletdkrpc` for the wallet
@@ -267,7 +284,9 @@ Deleting `~/.darepod` is irreversible without the recorded mnemonic.
 | `connection refused` on `darepocli`                    | Daemon not running, or wrong `--rpcserver` address.                                  |
 | `wallet not ready`                                     | Run `darepocli unlock` (walletdkrpc), or restart `darepod` with `--wallet.password_file`. |
 | `wallet already exists`                                | Use `darepocli unlock` instead of `create`.                                          |
-| TLS / x509 errors against the daemon                   | Use `--no-tls` on regtest, or pass `--tlscertpath` to `darepocli`.                   |
+| `read macaroon: ... no such file`                      | CLI is looking under the wrong data dir/network; pass `--datadir` / `--network` to match the daemon (or `--macaroonpath`). |
+| `credentials require transport level security`         | A macaroon can't ride a plaintext connection; use TLS, or add `--no-macaroons` alongside `--no-tls`. |
+| TLS / x509 errors against the daemon                   | Point `--datadir` / `--network` at the daemon's cert, pass `--tlscertpath`, or use `--no-tls --no-macaroons` on regtest. |
 | `go: module ... requires go 1.25.5` or similar         | Upgrade to Go 1.25.5+ (see Prerequisites).                                           |
 | `make: command not found` / build fails inside Docker  | The `lint` and `rpc` targets need Docker; the `*-local` variants do not.             |
 
