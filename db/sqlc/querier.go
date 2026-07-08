@@ -83,8 +83,9 @@ type Querier interface {
 	FindBatchesByConsumedOutpoint(ctx context.Context, arg FindBatchesByConsumedOutpointParams) ([][]byte, error)
 	// GetActivityEntry returns one entry by its canonical id.
 	GetActivityEntry(ctx context.Context, canonicalID string) (ActivityEntry, error)
-	// GetBatchCanonicality returns the canonicality row for a batch txid.
-	GetBatchCanonicality(ctx context.Context, batchTxid []byte) (GetBatchCanonicalityRow, error)
+	// GetBatchCanonicality returns the canonicality row for a batch txid. The
+	// column order matches the table so sqlc reuses the BatchCanonicality model.
+	GetBatchCanonicality(ctx context.Context, batchTxid []byte) (BatchCanonicality, error)
 	GetBoardingAddress(ctx context.Context, pkScript []byte) (BoardingAddress, error)
 	GetBoardingIntent(ctx context.Context, arg GetBoardingIntentParams) (BoardingIntent, error)
 	GetBoardingSweep(ctx context.Context, txid []byte) (BoardingSweep, error)
@@ -205,7 +206,7 @@ type Querier interface {
 	ListAllVTXOs(ctx context.Context) ([]Vtxo, error)
 	// ListBatchCanonicalityByState returns every batch currently in the given
 	// state.
-	ListBatchCanonicalityByState(ctx context.Context, state int32) ([]ListBatchCanonicalityByStateRow, error)
+	ListBatchCanonicalityByState(ctx context.Context, state int32) ([]BatchCanonicality, error)
 	// ListBatchConsumedInputs returns the outpoints a batch consumes.
 	ListBatchConsumedInputs(ctx context.Context, batchTxid []byte) ([]ListBatchConsumedInputsRow, error)
 	// ListBatchDependentVTXOs returns the VTXO outpoints a batch anchors.

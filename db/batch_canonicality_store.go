@@ -106,6 +106,7 @@ func (s *BatchCanonicalityPersistenceStore) UpsertBatch(ctx context.Context,
 
 	now := s.clock.Now().Unix()
 	txid := record.BatchTxID
+	pkScript := record.ConfirmationPkScript
 
 	return s.db.ExecTx(ctx, WriteTxOption(), func(
 		q BatchCanonicalityStore) error {
@@ -120,10 +121,11 @@ func (s *BatchCanonicalityPersistenceStore) UpsertBatch(ctx context.Context,
 				ConfirmationBlockHash: optionHashToBytes(
 					record.ConfirmationBlock,
 				),
-				CsvExpiryDelta: record.CSVExpiryDelta,
-				PolicyState:    int32(record.PolicyState),
-				CreatedAt:      now,
-				UpdatedAt:      now,
+				CsvExpiryDelta:       record.CSVExpiryDelta,
+				PolicyState:          int32(record.PolicyState),
+				ConfirmationPkScript: pkScript,
+				CreatedAt:            now,
+				UpdatedAt:            now,
 			},
 		)
 		if err != nil {
@@ -588,14 +590,15 @@ func (s *BatchCanonicalityPersistenceStore) hydrateRecord(ctx context.Context,
 	}
 
 	return &batchcanon.Record{
-		BatchTxID:          *txid,
-		State:              batchcanon.State(row.State),
-		ConfirmationHeight: nullInt32ToOption(row.ConfirmationHeight),
-		ConfirmationBlock:  confBlock,
-		CSVExpiryDelta:     row.CsvExpiryDelta,
-		PolicyState:        batchcanon.PolicyState(row.PolicyState),
-		ConsumedInputs:     inputs,
-		DependentVTXOs:     deps,
+		BatchTxID:            *txid,
+		State:                batchcanon.State(row.State),
+		ConfirmationHeight:   nullInt32ToOption(row.ConfirmationHeight),
+		ConfirmationBlock:    confBlock,
+		CSVExpiryDelta:       row.CsvExpiryDelta,
+		PolicyState:          batchcanon.PolicyState(row.PolicyState),
+		ConfirmationPkScript: row.ConfirmationPkScript,
+		ConsumedInputs:       inputs,
+		DependentVTXOs:       deps,
 	}, nil
 }
 
