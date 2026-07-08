@@ -55,6 +55,14 @@ type Runtime struct {
 	// deadline goroutines if future wiring accidentally invokes it twice.
 	startOnce sync.Once
 
+	// projectMu serializes project-then-emit so the event_seq a
+	// transition is assigned and the emit that carries it stay in the same
+	// order across the concurrent producers (monitor, reconciler, credit
+	// poll, deadline watcher, RPC handlers). Without it a later-committed
+	// but lower-seq event could emit after a higher one, and the live
+	// cursor would advance past it and drop it silently.
+	projectMu sync.Mutex
+
 	// subsMu guards subscribers.
 	subsMu sync.Mutex
 
@@ -498,8 +506,15 @@ func (r *Runtime) emit(seq int64, entry *walletdkrpc.WalletEntry) {
 	r.subsMu.Lock()
 	defer r.subsMu.Unlock()
 
-	update := subscribeUpdate{seq: seq, entry: entry}
 	for sub := range r.subscribers {
+		// Each subscriber gets its own copy: the handler goroutines
+		// marshal their responses concurrently, and Marshal mutates a
+		// *WalletEntry's internal size cache, so a shared pointer would
+		// race across two subscribers (e.g. CLI + app).
+		update := subscribeUpdate{
+			seq:   seq,
+			entry: cloneWalletEntry(entry),
+		}
 		select {
 		case sub.ch <- update:
 		default:

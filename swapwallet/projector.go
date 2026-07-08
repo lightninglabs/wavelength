@@ -75,7 +75,21 @@ func (r *Runtime) project(ctx context.Context, entry *walletdkrpc.WalletEntry) (
 func (r *Runtime) projectAndEmit(ctx context.Context,
 	entry *walletdkrpc.WalletEntry) {
 
-	seq, _ := r.project(ctx, entry)
+	r.projectEmitLocked(ctx, entry)
+}
+
+// projectEmitLocked projects entry and fans it out, holding projectMu across
+// both so the event_seq assigned in the projection and the emit that carries it
+// stay in the same order across concurrent producers. It returns the projected
+// seq (0 when change-suppressed / no store) and the projection error, so the
+// reconciler can gate its pending-clear on a durable write. See projectMu.
+func (r *Runtime) projectEmitLocked(ctx context.Context,
+	entry *walletdkrpc.WalletEntry) (int64, error) {
+
+	r.projectMu.Lock()
+	defer r.projectMu.Unlock()
+
+	seq, err := r.project(ctx, entry)
 
 	switch {
 	case r.deps == nil || r.deps.ActivityStore == nil:
@@ -84,6 +98,8 @@ func (r *Runtime) projectAndEmit(ctx context.Context,
 	case seq > 0:
 		r.emit(seq, entry)
 	}
+
+	return seq, err
 }
 
 // reprojectActivity pages the derive-on-read feed and projects every row into
@@ -137,21 +153,18 @@ func (r *Runtime) reprojectActivity(ctx context.Context,
 		}
 
 		for _, entry := range entries {
-			seq, err := r.project(ctx, entry)
-			if err != nil {
+			// projectEmitLocked serializes the project+emit so a
+			// reconciled transition (a confirmed deposit, a
+			// forfeited leave) reaches live subscribers in seq
+			// order; a change-suppressed no-op fans out nothing.
+			if _, err := r.projectEmitLocked(
+				ctx, entry,
+			); err != nil {
+
 				// Best-effort: the next pass retries. Do not
 				// clear any pending record when the write did
 				// not land.
 				continue
-			}
-
-			// A real transition observed here (a confirmed deposit,
-			// a forfeited leave) must also reach live subscribers,
-			// not just the store; a change-suppressed no-op (seq 0)
-			// does not, so a re-poll of unchanged rows fans out
-			// nothing.
-			if seq > 0 {
-				r.emit(seq, entry)
 			}
 
 			r.clearProjectedTerminalExit(entry)

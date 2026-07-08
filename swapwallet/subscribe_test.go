@@ -4,6 +4,7 @@ package swapwallet
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -345,4 +346,65 @@ func TestSubscribeSignalsGapOnOverflow(t *testing.T) {
 
 	cancel()
 	require.ErrorIs(t, <-done, context.Canceled)
+}
+
+// TestProjectAndEmitConcurrentProducersMonotonic is the H-1 regression: many
+// producers projecting and emitting concurrently must reach a subscriber in
+// strictly ascending event_seq order with no drops. Without the project/emit
+// serialization a later-committed but lower seq could emit after a higher one,
+// and the live cursor would skip it silently.
+func TestProjectAndEmitConcurrentProducersMonotonic(t *testing.T) {
+	t.Parallel()
+
+	// A large buffer so nothing overflows: this exercises ordering, not the
+	// gap path.
+	_, _, runtime := newSubscribeFixture(t, 256)
+	sub := runtime.subscribe()
+	defer runtime.unsubscribe(sub)
+
+	const producers = 50
+	var wg sync.WaitGroup
+	for i := 0; i < producers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+
+			runtime.projectAndEmit(context.Background(),
+				&walletdkrpc.WalletEntry{
+					Id: fmt.Sprintf("op-%d", i),
+					Kind: walletdkrpc.
+						EntryKind_ENTRY_KIND_EXIT,
+					Status: walletdkrpc.
+						EntryStatus_ENTRY_STATUS_PENDING,
+					CreatedAtUnix: 100,
+					UpdatedAtUnix: 100,
+				})
+		}(i)
+	}
+	wg.Wait()
+
+	// Every distinct projection must arrive exactly once, strictly
+	// ascending.
+	var last int64
+	seen := make(map[string]bool)
+	for i := 0; i < producers; i++ {
+		select {
+		case u := <-sub.ch:
+			require.Greater(
+				t, u.seq, last,
+				"emits must arrive in strictly ascending seq",
+			)
+			last = u.seq
+			require.False(
+				t, seen[u.entry.GetId()], "duplicate entry %q",
+				u.entry.GetId(),
+			)
+			seen[u.entry.GetId()] = true
+
+		case <-time.After(5 * time.Second):
+			t.Fatalf("received only %d of %d concurrent emits", i,
+				producers)
+		}
+	}
+	require.Len(t, seen, producers)
 }
