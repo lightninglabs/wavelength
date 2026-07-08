@@ -18,7 +18,7 @@ type ActivityStore interface {
 		arg sqlc.UpsertActivityEntryParams) error
 
 	AppendActivityEvent(ctx context.Context,
-		arg sqlc.AppendActivityEventParams) error
+		arg sqlc.AppendActivityEventParams) (int64, error)
 
 	GetActivityEntry(ctx context.Context,
 		canonicalID string) (sqlc.ActivityEntry, error)
@@ -103,9 +103,11 @@ func NewActivityPersistenceStore(
 
 // ProjectEntry advances the activity row to the projected state and records the
 // transition, atomically. The entry is upserted before the event is appended so
-// the activity_events foreign key is satisfied within the same transaction.
+// the activity_events foreign key is satisfied within the same transaction. It
+// returns the event_seq assigned to the appended transition, or 0 when the
+// projection was change-suppressed (no transition, so nothing to emit).
 func (s *ActivityPersistenceStore) ProjectEntry(ctx context.Context,
-	p ActivityProjection) error {
+	p ActivityProjection) (int64, error) {
 
 	// A row must carry a creation and update time. When the projection
 	// omits them (a malformed or synthetic entry), fall back to the
@@ -120,7 +122,11 @@ func (s *ActivityPersistenceStore) ProjectEntry(ctx context.Context,
 		updatedAt = now
 	}
 
-	return s.db.ExecTx(ctx, WriteTxOption(), func(q ActivityStore) error {
+	var eventSeq int64
+	err := s.db.ExecTx(ctx, WriteTxOption(), func(q ActivityStore) error {
+		// Reset per attempt: ExecTx may retry the closure.
+		eventSeq = 0
+
 		// Only record a transition when the projection actually changes
 		// the current-state row. Redundant re-emits — the startup
 		// backfill on every wallet-ready start, and the swap monitor's
@@ -171,7 +177,7 @@ func (s *ActivityPersistenceStore) ProjectEntry(ctx context.Context,
 			return err
 		}
 
-		return q.AppendActivityEvent(
+		seq, err := q.AppendActivityEvent(
 			ctx, sqlc.AppendActivityEventParams{
 				CanonicalID:   p.CanonicalID,
 				Status:        p.Status,
@@ -180,7 +186,15 @@ func (s *ActivityPersistenceStore) ProjectEntry(ctx context.Context,
 				CreatedAtUnix: updatedAt,
 			},
 		)
+		if err != nil {
+			return err
+		}
+		eventSeq = seq
+
+		return nil
 	})
+
+	return eventSeq, err
 }
 
 // GetEntry returns one current-state row by its canonical id.

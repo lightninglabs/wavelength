@@ -58,15 +58,13 @@ func (f *streamingFakeSwap) SubscribeSwaps(
 
 // drainOne pulls the next emitted WalletEntry from a subscriber channel
 // within the test deadline.
-func drainOne(t *testing.T,
-	ch <-chan *walletdkrpc.WalletEntry) *walletdkrpc.WalletEntry {
-
+func drainOne(t *testing.T, sub *subscriber) *walletdkrpc.WalletEntry {
 	t.Helper()
 	select {
-	case e, ok := <-ch:
+	case u, ok := <-sub.ch:
 		require.True(t, ok, "subscriber channel closed unexpectedly")
 
-		return e
+		return u.entry
 
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for monitor update")
@@ -250,8 +248,8 @@ func TestMonitorLoopRecoversAfterTransientFailure(t *testing.T) {
 		}
 
 		select {
-		case e := <-sub:
-			require.Equal(t, "after-recovery", e.GetId())
+		case u := <-sub.ch:
+			require.Equal(t, "after-recovery", u.entry.GetId())
 
 			// Reconnect must NOT replay the existing-row
 			// snapshot. The first subscribe gets

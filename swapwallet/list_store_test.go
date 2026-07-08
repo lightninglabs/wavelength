@@ -50,7 +50,9 @@ func seedActivity(t *testing.T, store *db.ActivityPersistenceStore, id string,
 		UpdatedAtUnix: created,
 	})
 	require.NoError(t, err)
-	require.NoError(t, store.ProjectEntry(context.Background(), proj))
+
+	_, err = store.ProjectEntry(context.Background(), proj)
+	require.NoError(t, err)
 }
 
 func activityIDs(list *walletdkrpc.ActivityList) []string {
@@ -305,7 +307,9 @@ func TestRowToWalletEntryRoundTrip(t *testing.T) {
 
 	proj, err := entryToProjection(entry)
 	require.NoError(t, err)
-	require.NoError(t, store.ProjectEntry(ctx, proj))
+
+	_, err = store.ProjectEntry(ctx, proj)
+	require.NoError(t, err)
 
 	row, err := store.GetEntry(ctx, entry.GetId())
 	require.NoError(t, err)

@@ -16,13 +16,13 @@ const payHashHex = "00112233445566778899aabbccddeeff" +
 	"00112233445566778899aabbccddeeff"
 
 // drainEntries non-blockingly collects every WalletEntry currently queued on a
-// subscriber channel.
-func drainEntries(ch chan *walletdkrpc.WalletEntry) []*walletdkrpc.WalletEntry {
+// subscriber.
+func drainEntries(sub *subscriber) []*walletdkrpc.WalletEntry {
 	var out []*walletdkrpc.WalletEntry
 	for {
 		select {
-		case e := <-ch:
-			out = append(out, e)
+		case u := <-sub.ch:
+			out = append(out, u.entry)
 
 		default:
 			return out

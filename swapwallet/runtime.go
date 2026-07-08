@@ -5,6 +5,7 @@ package swapwallet
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
@@ -54,15 +55,24 @@ type Runtime struct {
 	// deadline goroutines if future wiring accidentally invokes it twice.
 	startOnce sync.Once
 
+	// projectMu serializes project-then-emit so the event_seq a
+	// transition is assigned and the emit that carries it stay in the same
+	// order across the concurrent producers (monitor, reconciler, credit
+	// poll, deadline watcher, RPC handlers). Without it a later-committed
+	// but lower-seq event could emit after a higher one, and the live
+	// cursor would advance past it and drop it silently.
+	projectMu sync.Mutex
+
 	// subsMu guards subscribers.
 	subsMu sync.Mutex
 
-	// subscribers receive normalized WalletEntry updates from the
-	// monitor loop. Channels are best-effort, buffered, and
-	// non-blocking: a slow consumer drops updates rather than stalling
-	// the runtime. SubscribeWallet handlers reconcile with List on
-	// reconnect.
-	subscribers map[chan *walletdkrpc.WalletEntry]struct{}
+	// subscribers receive activity updates from the projection paths.
+	// Each update carries the event_seq its transition was assigned so a
+	// SubscribeWallet stream can hand the consumer a resumable cursor.
+	// Sends are non-blocking: a slow consumer's buffer fills and its
+	// overflowed flag is set rather than dropping silently, so the handler
+	// signals a gap and the consumer reconciles via List.
+	subscribers map[*subscriber]struct{}
 
 	// pendingMu guards pending and overlay.
 	pendingMu sync.Mutex
@@ -104,7 +114,7 @@ func newRuntime(parent context.Context, deps *Deps) *Runtime {
 		rootCtx: rootCtx,
 		cancel:  cancel,
 		subscribers: make(
-			map[chan *walletdkrpc.WalletEntry]struct{},
+			map[*subscriber]struct{},
 		),
 		pending: make(map[string]pendingEntry),
 		overlay: make(map[string]overlayStatus),
@@ -439,48 +449,76 @@ func isSwapKind(kind walletdkrpc.EntryKind) bool {
 		kind == walletdkrpc.EntryKind_ENTRY_KIND_RECV
 }
 
-// subscribe registers a channel to receive normalized WalletEntry updates
-// from the monitor loop. The caller must drain the channel; the runtime
-// drops updates rather than blocking on a slow consumer.
-func (r *Runtime) subscribe() chan *walletdkrpc.WalletEntry {
-	ch := make(
-		chan *walletdkrpc.WalletEntry,
-		int(
-			r.deps.resolveSubscribeBuffer(),
+// subscribeUpdate is one activity update fanned to a subscriber: the projected
+// WalletEntry plus the event_seq its transition was assigned, which a
+// SubscribeWallet stream surfaces as the resumable cursor.
+type subscribeUpdate struct {
+	seq   int64
+	entry *walletdkrpc.WalletEntry
+}
+
+// subscriber is a registered SubscribeWallet consumer. Updates arrive on ch;
+// when a send would block (the consumer is slower than the producer),
+// overflowed is set instead of dropping silently, so the handler can signal a
+// gap and let the consumer reconcile via List.
+type subscriber struct {
+	ch         chan subscribeUpdate
+	overflowed atomic.Bool
+}
+
+// subscribe registers a consumer to receive activity updates. The caller must
+// drain the channel and unsubscribe when done.
+func (r *Runtime) subscribe() *subscriber {
+	sub := &subscriber{
+		ch: make(
+			chan subscribeUpdate,
+			int(
+				r.deps.resolveSubscribeBuffer(),
+			),
 		),
-	)
+	}
 
 	r.subsMu.Lock()
-	r.subscribers[ch] = struct{}{}
+	r.subscribers[sub] = struct{}{}
 	r.subsMu.Unlock()
 
-	return ch
+	return sub
 }
 
 // unsubscribe removes a previously-registered subscriber. Safe to call
 // multiple times; the channel is closed exactly once.
-func (r *Runtime) unsubscribe(ch chan *walletdkrpc.WalletEntry) {
+func (r *Runtime) unsubscribe(sub *subscriber) {
 	r.subsMu.Lock()
 	defer r.subsMu.Unlock()
 
-	if _, ok := r.subscribers[ch]; !ok {
+	if _, ok := r.subscribers[sub]; !ok {
 		return
 	}
-	delete(r.subscribers, ch)
-	close(ch)
+	delete(r.subscribers, sub)
+	close(sub.ch)
 }
 
-// emit fans a WalletEntry update out to every subscribed channel using a
-// non-blocking send. Slow consumers drop updates; they can reconcile via
-// List on reconnect.
-func (r *Runtime) emit(entry *walletdkrpc.WalletEntry) {
+// emit fans one activity update out to every subscriber with a non-blocking
+// send. A consumer whose buffer is full has its overflowed flag set rather
+// than losing the update silently: the handler turns that into a gap signal so
+// the consumer reconciles via List and resumes from its cursor.
+func (r *Runtime) emit(seq int64, entry *walletdkrpc.WalletEntry) {
 	r.subsMu.Lock()
 	defer r.subsMu.Unlock()
 
-	for ch := range r.subscribers {
+	for sub := range r.subscribers {
+		// Each subscriber gets its own copy: the handler goroutines
+		// marshal their responses concurrently, and Marshal mutates a
+		// *WalletEntry's internal size cache, so a shared pointer would
+		// race across two subscribers (e.g. CLI + app).
+		update := subscribeUpdate{
+			seq:   seq,
+			entry: cloneWalletEntry(entry),
+		}
 		select {
-		case ch <- entry:
+		case sub.ch <- update:
 		default:
+			sub.overflowed.Store(true)
 		}
 	}
 }
@@ -495,9 +533,9 @@ func (r *Runtime) stop() {
 	r.wg.Wait()
 
 	r.subsMu.Lock()
-	for ch := range r.subscribers {
-		delete(r.subscribers, ch)
-		close(ch)
+	for sub := range r.subscribers {
+		delete(r.subscribers, sub)
+		close(sub.ch)
 	}
 	r.subsMu.Unlock()
 }

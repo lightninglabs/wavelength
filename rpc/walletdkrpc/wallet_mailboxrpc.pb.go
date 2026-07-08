@@ -51,7 +51,7 @@ type WalletServiceMailboxServer interface {
 	// ExitStatus handles ExitStatus.
 	ExitStatus(ctx context.Context, req *ExitStatusRequest) (*ExitStatusResponse, error)
 	// SubscribeWallet handles SubscribeWallet.
-	SubscribeWallet(ctx context.Context, req *SubscribeWalletRequest) (*WalletEntry, error)
+	SubscribeWallet(ctx context.Context, req *SubscribeWalletRequest) (*SubscribeWalletResponse, error)
 }
 
 // RegisterWalletServiceMailboxServer registers handlers for WalletService.
@@ -498,7 +498,7 @@ func (c *WalletServiceMailboxClient) ExitStatus(ctx context.Context, req *ExitSt
 }
 
 // SubscribeWallet calls the SubscribeWallet RPC.
-func (c *WalletServiceMailboxClient) SubscribeWallet(ctx context.Context, req *SubscribeWalletRequest, opts ...rpc.RPCOptions) (*WalletEntry, error) {
+func (c *WalletServiceMailboxClient) SubscribeWallet(ctx context.Context, req *SubscribeWalletRequest, opts ...rpc.RPCOptions) (*SubscribeWalletResponse, error) {
 	var opt rpc.RPCOptions
 	if len(opts) > 0 {
 		opt = opts[0]
@@ -512,7 +512,7 @@ func (c *WalletServiceMailboxClient) SubscribeWallet(ctx context.Context, req *S
 		return nil, err
 	}
 
-	resp := new(WalletEntry)
+	resp := new(SubscribeWalletResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

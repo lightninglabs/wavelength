@@ -1,6 +1,28 @@
 package walletdk
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
+
+// SubscribeGapError signals that a live SubscribeWallet stream fell behind (the
+// server-side send buffer overflowed). No activity is lost: the consumer should
+// open a new subscription with SubscribeRequest.Cursor set to Cursor, and the
+// replay from it is gap-free because the event log retains everything after it.
+type SubscribeGapError struct {
+	// Cursor is the resume point: the last event-log position the stream
+	// is known to have covered before falling behind.
+	Cursor int64
+
+	// Reason is the daemon's human-readable description of the gap.
+	Reason string
+}
+
+// Error implements the error interface.
+func (e *SubscribeGapError) Error() string {
+	return fmt.Sprintf("wallet subscription gap at cursor %d: %s: resume "+
+		"a new subscription from the cursor", e.Cursor, e.Reason)
+}
 
 // ErrWalletRPCUnavailable reports that an embedded walletdk runtime was built
 // without the wallet RPC subserver needed by wallet payment methods.

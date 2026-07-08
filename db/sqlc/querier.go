@@ -10,9 +10,10 @@ import (
 )
 
 type Querier interface {
-	// AppendActivityEvent records one immutable lifecycle-transition row. event_seq
-	// is assigned by the database (monotonic, not necessarily contiguous).
-	AppendActivityEvent(ctx context.Context, arg AppendActivityEventParams) error
+	// AppendActivityEvent records one immutable lifecycle-transition row and
+	// returns the event_seq the database assigned (monotonic, not necessarily
+	// contiguous). Callers use it as the resumable-subscribe cursor for the update.
+	AppendActivityEvent(ctx context.Context, arg AppendActivityEventParams) (int64, error)
 	CancelVHTLCRecoveryJob(ctx context.Context, arg CancelVHTLCRecoveryJobParams) (int64, error)
 	ClearPendingIntentAnchorByOutpoint(ctx context.Context, arg ClearPendingIntentAnchorByOutpointParams) error
 	CompleteVHTLCRecoveryJob(ctx context.Context, arg CompleteVHTLCRecoveryJobParams) (int64, error)

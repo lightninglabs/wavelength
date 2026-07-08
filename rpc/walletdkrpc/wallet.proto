@@ -87,10 +87,11 @@ service WalletService {
     // sweep state. Proxies daemonrpc.GetUnrollStatus.
     rpc ExitStatus (ExitStatusRequest) returns (ExitStatusResponse);
 
-    // SubscribeWallet streams normalized WalletEntry updates as they
-    // happen. When include_existing is set, the daemon emits the current
-    // snapshot before live updates.
-    rpc SubscribeWallet (SubscribeWalletRequest) returns (stream WalletEntry);
+    // SubscribeWallet streams activity updates as they happen. The stream
+    // is resumable: each response carries a monotonic cursor the client can
+    // reconnect from to replay everything after it without gaps.
+    rpc SubscribeWallet (SubscribeWalletRequest)
+        returns (stream SubscribeWalletResponse);
 }
 
 // WalletInspectionService exposes technical drill-downs for wallet activity.
@@ -1243,13 +1244,52 @@ message ExitStatusResponse {
 
 // SubscribeWalletRequest configures the WalletService.SubscribeWallet stream.
 message SubscribeWalletRequest {
-    // include_existing instructs the daemon to emit the current
-    // snapshot before the live subscription is registered.
+    // include_existing replays the full activity history before live
+    // updates. It is ignored when cursor is set (cursor already selects the
+    // replay start).
     bool include_existing = 1;
 
-    // kinds optionally narrows the live stream to specific entry
-    // categories. When empty, all kinds are streamed.
+    // kinds optionally narrows the stream to specific entry categories.
+    // When empty, all kinds are streamed.
     repeated EntryKind kinds = 2;
+
+    // cursor resumes the stream from a prior SubscribeWalletResponse.cursor:
+    // the daemon replays every event after it, then continues live. Zero
+    // (unset) starts from the full history when include_existing is set, or
+    // from the current tip otherwise.
+    int64 cursor = 3;
+}
+
+// SubscribeWalletResponse is one item in the SubscribeWallet stream: either a
+// projected activity row or a gap signal telling the subscriber it fell behind
+// and must reconcile.
+message SubscribeWalletResponse {
+    // cursor is the monotonic event-log position of this update. A client
+    // persists it and reconnects with SubscribeWalletRequest.cursor set to the
+    // last value it processed to resume without gaps. The sequence is
+    // monotonic but NOT contiguous: a value may be skipped, so a client treats
+    // any cursor past its last as new and never infers a dropped event from a
+    // gap in the numbers.
+    int64 cursor = 1;
+
+    oneof update {
+        // entry is a projected activity row at cursor.
+        WalletEntry entry = 2;
+
+        // gap signals the subscriber fell behind the live buffer and should
+        // reconcile current state via List, then resume from cursor.
+        SubscribeGap gap = 3;
+    }
+}
+
+// SubscribeGap tells a subscriber the daemon could not keep it current on the
+// live stream (a slow consumer overflowed the send buffer). The subscriber
+// should reconcile via List and resume from the enclosing cursor. No activity
+// is lost: the canonical event log retains every event, so the resume replays
+// anything missed.
+message SubscribeGap {
+    // reason is a short human-readable description of why the gap was emitted.
+    string reason = 1;
 }
 
 // WalletEntry is the single flat row type returned by the ACTIVITY view of

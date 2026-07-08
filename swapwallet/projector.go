@@ -16,20 +16,18 @@ import (
 
 // project writes one emitted WalletEntry into the canonical activity log: it
 // upserts the current-state row and appends the transition event, atomically.
-// Projection is best-effort and MUST NOT block or fail emit — a store error is
-// logged at warn level (it is an operational hiccup, not an internal bug) and
-// the caller still fans the update out to live subscribers. When no store is
-// wired (tests, or a build without a database) projection is a no-op and the
-// legacy derive-on-read path continues unchanged.
-// project writes entry into the canonical activity store. It returns nil on a
-// successful (or intentionally skipped) projection and the underlying error
-// when the durable write failed, so a caller can gate a follow-up side effect
-// on the row actually landing.
-func (r *Runtime) project(ctx context.Context,
-	entry *walletdkrpc.WalletEntry) error {
+// It returns the event_seq assigned to the appended transition with a nil error
+// on success, (0, nil) when the projection was intentionally skipped (no store,
+// no id, or a change-suppressed no-op), and (0, err) when the durable write
+// failed. A caller stamps a live update with the returned seq and can gate a
+// follow-up side effect on the row actually landing. When no store is wired
+// (tests, or a build without a database) projection is a no-op and the legacy
+// derive-on-read path continues unchanged.
+func (r *Runtime) project(ctx context.Context, entry *walletdkrpc.WalletEntry) (
+	int64, error) {
 
 	if r.deps == nil || r.deps.ActivityStore == nil {
-		return nil
+		return 0, nil
 	}
 
 	// A row with no canonical id cannot be keyed; skip it, matching the
@@ -41,7 +39,7 @@ func (r *Runtime) project(ctx context.Context,
 	// real txid:vout id.
 	if entry.GetId() == "" ||
 		entry.GetId() == syntheticBoardingUnconfirmedID {
-		return nil
+		return 0, nil
 	}
 
 	projection, err := entryToProjection(entry)
@@ -49,32 +47,59 @@ func (r *Runtime) project(ctx context.Context,
 		r.deps.resolveLog().WarnS(ctx, "Activity projection skipped: "+
 			"encode failed", err)
 
-		return err
+		return 0, err
 	}
 
-	if err := r.deps.ActivityStore.ProjectEntry(
-		ctx, projection,
-	); err != nil {
-
+	seq, err := r.deps.ActivityStore.ProjectEntry(ctx, projection)
+	if err != nil {
 		r.deps.resolveLog().WarnS(ctx, "Activity projection failed",
 			err,
 		)
 
-		return err
+		return 0, err
 	}
 
-	return nil
+	return seq, nil
 }
 
 // projectAndEmit projects the entry into the canonical activity log and then
 // fans it out to live subscribers. Projection runs first so a row is durable
-// before any subscriber observes it, but a projection failure never suppresses
-// the emit.
+// before any subscriber observes it.
+//
+// With a canonical store, a live update carries the event_seq the transition
+// was assigned, and only real transitions (seq > 0) are emitted: a
+// change-suppressed re-projection is not a new event, and a failed projection
+// is not durable, so neither reaches subscribers — they recover from the event
+// log or a List reconcile. Without a store there is no event log, so it emits
+// best-effort at seq 0 for a live-only stream.
 func (r *Runtime) projectAndEmit(ctx context.Context,
 	entry *walletdkrpc.WalletEntry) {
 
-	r.project(ctx, entry)
-	r.emit(entry)
+	r.projectEmitLocked(ctx, entry)
+}
+
+// projectEmitLocked projects entry and fans it out, holding projectMu across
+// both so the event_seq assigned in the projection and the emit that carries it
+// stay in the same order across concurrent producers. It returns the projected
+// seq (0 when change-suppressed / no store) and the projection error, so the
+// reconciler can gate its pending-clear on a durable write. See projectMu.
+func (r *Runtime) projectEmitLocked(ctx context.Context,
+	entry *walletdkrpc.WalletEntry) (int64, error) {
+
+	r.projectMu.Lock()
+	defer r.projectMu.Unlock()
+
+	seq, err := r.project(ctx, entry)
+
+	switch {
+	case r.deps == nil || r.deps.ActivityStore == nil:
+		r.emit(0, entry)
+
+	case seq > 0:
+		r.emit(seq, entry)
+	}
+
+	return seq, err
 }
 
 // reprojectActivity pages the derive-on-read feed and projects every row into
@@ -128,7 +153,14 @@ func (r *Runtime) reprojectActivity(ctx context.Context,
 		}
 
 		for _, entry := range entries {
-			if err := r.project(ctx, entry); err != nil {
+			// projectEmitLocked serializes the project+emit so a
+			// reconciled transition (a confirmed deposit, a
+			// forfeited leave) reaches live subscribers in seq
+			// order; a change-suppressed no-op fans out nothing.
+			if _, err := r.projectEmitLocked(
+				ctx, entry,
+			); err != nil {
+
 				// Best-effort: the next pass retries. Do not
 				// clear any pending record when the write did
 				// not land.

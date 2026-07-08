@@ -566,6 +566,12 @@ type Status struct {
 type SubscribeRequest struct {
 	IncludeExisting bool
 	Kinds           []EntryKind
+
+	// Cursor resumes the stream after a prior Entry.Cursor (or a
+	// *SubscribeGapError.Cursor): the daemon replays every activity event
+	// after it, then streams live. Zero replays the full history when
+	// IncludeExisting is set, or streams live-only otherwise.
+	Cursor int64
 }
 
 // EntryKind is the user-visible wallet activity category.
@@ -611,6 +617,12 @@ type Entry struct {
 	UpdatedAt     time.Time
 	Note          string
 	FailureReason string
+
+	// Cursor is the monotonic event-log position of this update on a
+	// SubscribeWallet stream. Persist it and pass it back as
+	// SubscribeRequest.Cursor to resume without gaps. It is zero outside
+	// the subscription path (List / Send / Recv / Deposit results).
+	Cursor int64
 
 	// Progress carries the lifecycle metadata the daemon already
 	// normalized for this entry (phase, payment hash, txid, confirmation

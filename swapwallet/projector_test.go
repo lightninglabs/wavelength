@@ -30,7 +30,7 @@ type fakeActivityProjector struct {
 }
 
 func (f *fakeActivityProjector) ProjectEntry(_ context.Context,
-	p db.ActivityProjection) error {
+	p db.ActivityProjection) (int64, error) {
 
 	if f.onProject != nil {
 		f.onProject()
@@ -40,12 +40,14 @@ func (f *fakeActivityProjector) ProjectEntry(_ context.Context,
 	defer f.mu.Unlock()
 
 	if f.err != nil {
-		return f.err
+		return 0, f.err
 	}
 
 	f.projected = append(f.projected, p)
 
-	return nil
+	// Return a positive, increasing seq so projectAndEmit treats each
+	// successful projection as a real transition worth emitting.
+	return int64(len(f.projected)), nil
 }
 
 func (f *fakeActivityProjector) count() int {
@@ -70,6 +72,15 @@ func (f *fakeActivityProjector) CountByStatus(_ context.Context, _ int64) (
 	int64, error) {
 
 	return 0, nil
+}
+
+// PullEvents satisfies darepod.ActivityStore. This fake exercises only the
+// write path; the resumable-subscribe replay is tested against a real DB
+// store, so this returns no events.
+func (f *fakeActivityProjector) PullEvents(_ context.Context, _ int64,
+	_ int32) ([]sqlc.ActivityEvent, error) {
+
+	return nil, nil
 }
 
 // ids returns the set of canonical ids the fake has been asked to project.
@@ -169,8 +180,7 @@ func TestEntryToProjectionEmptyHandles(t *testing.T) {
 // newProjectorRuntime builds a runtime wired with the given projector (which
 // may be nil) and a subscriber channel.
 func newProjectorRuntime(t *testing.T,
-	store *fakeActivityProjector) (*Runtime,
-	chan *walletdkrpc.WalletEntry) {
+	store *fakeActivityProjector) (*Runtime, *subscriber) {
 
 	t.Helper()
 
@@ -188,15 +198,13 @@ func newProjectorRuntime(t *testing.T,
 	return runtime, ch
 }
 
-// recvEntry reads one entry from the subscriber channel within a short window.
-func recvEntry(t *testing.T,
-	ch chan *walletdkrpc.WalletEntry) *walletdkrpc.WalletEntry {
-
+// recvEntry reads one entry from the subscriber within a short window.
+func recvEntry(t *testing.T, sub *subscriber) *walletdkrpc.WalletEntry {
 	t.Helper()
 
 	select {
-	case e := <-ch:
-		return e
+	case u := <-sub.ch:
+		return u.entry
 
 	case <-time.After(time.Second):
 		t.Fatal("expected an emitted entry")
@@ -215,7 +223,7 @@ func TestProjectAndEmitProjectsBeforeEmitting(t *testing.T) {
 	var chLenAtProject int
 	runtime, ch := newProjectorRuntime(t, store)
 	store.onProject = func() {
-		chLenAtProject = len(ch)
+		chLenAtProject = len(ch.ch)
 	}
 
 	runtime.projectAndEmit(context.Background(), sampleWalletEntry())
@@ -241,8 +249,9 @@ func TestProjectAndEmitNilStore(t *testing.T) {
 	require.Equal(t, "payment-hash", recvEntry(t, ch).GetId())
 }
 
-// TestProjectAndEmitSkipsEmptyID verifies an id-less entry is not projected but
-// is still emitted.
+// TestProjectAndEmitSkipsEmptyID verifies an id-less entry is neither projected
+// nor emitted: with a store wired it cannot be keyed, so it has no event_seq to
+// carry as a cursor.
 func TestProjectAndEmitSkipsEmptyID(t *testing.T) {
 	t.Parallel()
 
@@ -253,26 +262,31 @@ func TestProjectAndEmitSkipsEmptyID(t *testing.T) {
 	entry.Id = ""
 	runtime.projectAndEmit(context.Background(), entry)
 
-	require.NotNil(t, recvEntry(t, ch))
+	require.Empty(t, drainEntries(ch), "id-less entry must not be emitted")
 	require.Equal(t, 0, store.count())
 }
 
-// TestProjectAndEmitStoreErrorStillEmits verifies a store failure never
-// suppresses the emit.
-func TestProjectAndEmitStoreErrorStillEmits(t *testing.T) {
+// TestProjectAndEmitStoreErrorDoesNotEmit verifies a failed projection is not
+// emitted: without a durable event there is no cursor to advance, so the update
+// is left for the consumer to recover from the log or a List reconcile rather
+// than delivered un-cursored.
+func TestProjectAndEmitStoreErrorDoesNotEmit(t *testing.T) {
 	t.Parallel()
 
 	store := &fakeActivityProjector{err: context.DeadlineExceeded}
 	runtime, ch := newProjectorRuntime(t, store)
 
 	runtime.projectAndEmit(context.Background(), sampleWalletEntry())
-	require.Equal(t, "payment-hash", recvEntry(t, ch).GetId())
+	require.Empty(
+		t, drainEntries(ch),
+		"a failed projection must not be emitted",
+	)
 }
 
 // TestProjectAndEmitSkipsEphemeralBoardingRow verifies the synthetic
-// boarding-unconfirmed row is emitted to subscribers but never persisted: it
-// is ephemeral live state with no durable id, and a delete-free store could
-// never clear it once the deposit confirms under its real txid:vout id.
+// boarding-unconfirmed row is neither persisted nor emitted: it is ephemeral
+// live state with no durable id (the store-backed List omits it too), so it
+// carries no event_seq to stream.
 func TestProjectAndEmitSkipsEphemeralBoardingRow(t *testing.T) {
 	t.Parallel()
 
@@ -283,8 +297,9 @@ func TestProjectAndEmitSkipsEphemeralBoardingRow(t *testing.T) {
 	entry.Id = syntheticBoardingUnconfirmedID
 	runtime.projectAndEmit(context.Background(), entry)
 
-	require.Equal(
-		t, syntheticBoardingUnconfirmedID, recvEntry(t, ch).GetId(),
+	require.Empty(
+		t, drainEntries(ch),
+		"ephemeral boarding row must not be emitted",
 	)
 	require.Equal(t, 0, store.count(), "ephemeral row must not be stored")
 }

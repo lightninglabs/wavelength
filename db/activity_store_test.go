@@ -28,6 +28,12 @@ func newActivityStoreForTest(t *testing.T) *ActivityPersistenceStore {
 	return NewActivityPersistenceStore(activityDB, clock.NewDefaultClock())
 }
 
+// projected discards the event_seq returned by ProjectEntry so a call slots
+// straight into require.NoError / require.Error.
+func projected(_ int64, err error) error {
+	return err
+}
+
 // sampleProjection returns a populated projection for the given canonical id.
 func sampleProjection(id string) ActivityProjection {
 	return ActivityProjection{
@@ -59,7 +65,14 @@ func TestActivityStoreProjectInsertsEntryAndEvent(t *testing.T) {
 	ctx := context.Background()
 	store := newActivityStoreForTest(t)
 
-	require.NoError(t, store.ProjectEntry(ctx, sampleProjection("a")))
+	require.NoError(
+		t,
+		projected(
+			store.ProjectEntry(
+				ctx, sampleProjection("a"),
+			),
+		),
+	)
 
 	entry, err := store.GetEntry(ctx, "a")
 	require.NoError(t, err)
@@ -88,9 +101,23 @@ func TestActivityStoreCountByStatus(t *testing.T) {
 	// Two pending rows (status 1) and one complete row (status 2).
 	complete := sampleProjection("c1")
 	complete.Status = 2
-	require.NoError(t, store.ProjectEntry(ctx, sampleProjection("p1")))
-	require.NoError(t, store.ProjectEntry(ctx, sampleProjection("p2")))
-	require.NoError(t, store.ProjectEntry(ctx, complete))
+	require.NoError(
+		t,
+		projected(
+			store.ProjectEntry(
+				ctx, sampleProjection("p1"),
+			),
+		),
+	)
+	require.NoError(
+		t,
+		projected(
+			store.ProjectEntry(
+				ctx, sampleProjection("p2"),
+			),
+		),
+	)
+	require.NoError(t, projected(store.ProjectEntry(ctx, complete)))
 
 	pending, err := store.CountByStatus(ctx, 1)
 	require.NoError(t, err)
@@ -114,8 +141,22 @@ func TestActivityStoreProjectSuppressesUnchanged(t *testing.T) {
 	ctx := context.Background()
 	store := newActivityStoreForTest(t)
 
-	require.NoError(t, store.ProjectEntry(ctx, sampleProjection("a")))
-	require.NoError(t, store.ProjectEntry(ctx, sampleProjection("a")))
+	require.NoError(
+		t,
+		projected(
+			store.ProjectEntry(
+				ctx, sampleProjection("a"),
+			),
+		),
+	)
+	require.NoError(
+		t,
+		projected(
+			store.ProjectEntry(
+				ctx, sampleProjection("a"),
+			),
+		),
+	)
 
 	events, err := store.PullEvents(ctx, 0, 10)
 	require.NoError(t, err)
@@ -133,7 +174,14 @@ func TestActivityStoreReProjectUpdatesInPlace(t *testing.T) {
 	ctx := context.Background()
 	store := newActivityStoreForTest(t)
 
-	require.NoError(t, store.ProjectEntry(ctx, sampleProjection("a")))
+	require.NoError(
+		t,
+		projected(
+			store.ProjectEntry(
+				ctx, sampleProjection("a"),
+			),
+		),
+	)
 
 	// Advance the row: complete, new phase, later update time, and a nil
 	// payment hash + zero created time that must NOT clobber the originals.
@@ -144,7 +192,7 @@ func TestActivityStoreReProjectUpdatesInPlace(t *testing.T) {
 	next.CreatedAtUnix = 0
 	next.PaymentHash = nil
 	next.Txid = []byte{0x11, 0x22}
-	require.NoError(t, store.ProjectEntry(ctx, next))
+	require.NoError(t, projected(store.ProjectEntry(ctx, next)))
 
 	entry, err := store.GetEntry(ctx, "a")
 	require.NoError(t, err)
@@ -177,11 +225,11 @@ func TestActivityStoreEnumForeignKey(t *testing.T) {
 
 	badKind := sampleProjection("a")
 	badKind.Kind = 99
-	require.Error(t, store.ProjectEntry(ctx, badKind))
+	require.Error(t, projected(store.ProjectEntry(ctx, badKind)))
 
 	badStatus := sampleProjection("b")
 	badStatus.Status = 99
-	require.Error(t, store.ProjectEntry(ctx, badStatus))
+	require.Error(t, projected(store.ProjectEntry(ctx, badStatus)))
 }
 
 // TestActivityStoreNilBlobStaysNull verifies an empty hash handle is stored as
@@ -195,7 +243,7 @@ func TestActivityStoreNilBlobStaysNull(t *testing.T) {
 	p := sampleProjection("a")
 	p.PaymentHash = nil
 	p.Txid = nil
-	require.NoError(t, store.ProjectEntry(ctx, p))
+	require.NoError(t, projected(store.ProjectEntry(ctx, p)))
 
 	entry, err := store.GetEntry(ctx, "a")
 	require.NoError(t, err)
@@ -217,7 +265,7 @@ func TestActivityStoreListKeyset(t *testing.T) {
 		p := sampleProjection(id)
 		p.CreatedAtUnix = created
 		p.UpdatedAtUnix = created
-		require.NoError(t, store.ProjectEntry(ctx, p))
+		require.NoError(t, projected(store.ProjectEntry(ctx, p)))
 	}
 
 	page, err := store.ListEntries(ctx, 0, "", 2)
@@ -243,8 +291,22 @@ func TestActivityStorePullEventsAfterCursor(t *testing.T) {
 	ctx := context.Background()
 	store := newActivityStoreForTest(t)
 
-	require.NoError(t, store.ProjectEntry(ctx, sampleProjection("a")))
-	require.NoError(t, store.ProjectEntry(ctx, sampleProjection("b")))
+	require.NoError(
+		t,
+		projected(
+			store.ProjectEntry(
+				ctx, sampleProjection("a"),
+			),
+		),
+	)
+	require.NoError(
+		t,
+		projected(
+			store.ProjectEntry(
+				ctx, sampleProjection("b"),
+			),
+		),
+	)
 
 	all, err := store.PullEvents(ctx, 0, 10)
 	require.NoError(t, err)
