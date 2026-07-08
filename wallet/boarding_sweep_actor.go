@@ -233,29 +233,154 @@ func (m BoardingSweepSpendNotification) MessageType() string {
 
 func (m BoardingSweepSpendNotification) walletMsgSealed() {}
 
-// BoardingSweepTxNotification is a Tell carrying a txconfirm terminal
-// notification (confirmation or failure) for a tracked sweep tx,
-// re-wrapped from txconfirm.TxConfirmed / txconfirm.TxFailed via
+// BoardingSweepTxStatus identifies which point in the txconfirm
+// reorg-aware lifecycle drove this notification. Splitting the status
+// out (instead of a single `Confirmed bool`) makes it impossible for
+// the handler to confuse a reorg-out with a terminal failure: txconfirm
+// fan-outs a TxReorged whenever a previously delivered TxConfirmed is
+// rolled back on chain, and we must NOT treat that as a sweep failure.
+type BoardingSweepTxStatus int
+
+const (
+	// BoardingSweepTxStatusUnknown is the zero value; receiving it
+	// indicates a programmer error (MapNotification missed a kind).
+	BoardingSweepTxStatusUnknown BoardingSweepTxStatus = iota
+
+	// BoardingSweepTxStatusConfirmed reports that the sweep
+	// transaction has been observed on the canonical chain at
+	// BlockHeight with NumConfs confirmations. The observation is
+	// provisional until BoardingSweepTxStatusFinalized arrives — a
+	// reorg can roll it back via BoardingSweepTxStatusReorged.
+	BoardingSweepTxStatusConfirmed
+
+	// BoardingSweepTxStatusReorged reports that a previously
+	// delivered TxConfirmed for this sweep was reorged out. The
+	// handler must NOT call MarkBoardingSweepFailed; instead it
+	// leaves the spend watches and pending state armed so the next
+	// TxConfirmed on the new canonical chain (or an eventual
+	// TxFailed) drives the terminal decision.
+	BoardingSweepTxStatusReorged
+
+	// BoardingSweepTxStatusFinalized reports that the sweep
+	// confirmation is past the chainsource backend's reorg-safety
+	// depth and is no longer reversible. The handler can release
+	// any reorg-recovery bookkeeping for this sweep.
+	BoardingSweepTxStatusFinalized
+
+	// BoardingSweepTxStatusFailed reports a terminal failure from
+	// txconfirm (broadcast rejected, retry budget exhausted, etc.).
+	// The handler marks the sweep failed in the store and cleans up
+	// pending state.
+	BoardingSweepTxStatusFailed
+)
+
+// classifyTxconfirmNotificationForBoardingSweep maps one event from
+// the txconfirm reorg-aware lifecycle into the wallet-domain
+// BoardingSweepTxNotification shape consumed by
+// handleSweepTxNotification. Pulled out of submitSweepConfirmer so the
+// systest (TestBoardingSweepReorgRoundTrip) can reuse the exact same
+// classifier the production wiring uses; if the production wiring
+// drifts from the systest classifier, the test stops validating
+// production behavior.
+func classifyTxconfirmNotificationForBoardingSweep(
+	n txconfirm.Notification) BoardingSweepTxNotification {
+
+	switch ev := n.(type) {
+	case *txconfirm.TxConfirmed:
+		return BoardingSweepTxNotification{
+			Status: BoardingSweepTxStatusConfirmed,
+
+			Txid:        ev.Txid,
+			BlockHeight: ev.BlockHeight,
+			NumConfs:    ev.NumConfs,
+		}
+
+	case *txconfirm.TxReorged:
+		// Reorg-out: do NOT mark the sweep as failed in the
+		// handler. Leave spend watches and pending state armed so
+		// the next TxConfirmed on the new canonical chain (or an
+		// eventual TxFailed) drives the terminal decision.
+		return BoardingSweepTxNotification{
+			Status: BoardingSweepTxStatusReorged,
+			Txid:   ev.Txid,
+		}
+
+	case *txconfirm.TxFinalized:
+		// Reorg-safety horizon reached. The sweep observation is
+		// no longer reversible; the handler may release reorg-
+		// recovery bookkeeping. Audit/ledger emission already
+		// fired on the original Confirmed (idempotent on replay).
+		return BoardingSweepTxNotification{
+			Status: BoardingSweepTxStatusFinalized,
+
+			Txid:        ev.Txid,
+			BlockHeight: ev.BlockHeight,
+			NumConfs:    ev.NumConfs,
+		}
+
+	case *txconfirm.TxFailed:
+		return BoardingSweepTxNotification{
+			Status: BoardingSweepTxStatusFailed,
+			Txid:   ev.Txid,
+			Reason: ev.Reason,
+		}
+	}
+
+	return BoardingSweepTxNotification{}
+}
+
+// NewBoardingSweepTxconfirmSubscriber wires the production boarding-
+// sweep classifier onto a txconfirm.MapNotification anchored at
+// selfRef. The returned ref can be set as the Subscriber field on a
+// txconfirm.EnsureConfirmedReq; every TxConfirmed / TxReorged /
+// TxFinalized / TxFailed delivered for that sweep will be classified
+// into a BoardingSweepTxNotification and Tell'd to selfRef as a
+// WalletMsg, which the wallet actor's Receive arm dispatches to
+// handleSweepTxNotification.
+//
+// Exported so the systest can construct the exact same subscriber
+// chain that submitSweepConfirmer uses in production.
+func NewBoardingSweepTxconfirmSubscriber(
+	selfRef actor.TellOnlyRef[WalletMsg],
+) actor.TellOnlyRef[txconfirm.Notification] {
+
+	walletNotif := actor.NewMapInputRef[
+		BoardingSweepTxNotification, WalletMsg,
+	](
+		selfRef,
+		func(n BoardingSweepTxNotification) WalletMsg {
+			return n
+		},
+	)
+
+	return txconfirm.MapNotification(
+		walletNotif, classifyTxconfirmNotificationForBoardingSweep,
+	)
+}
+
+// BoardingSweepTxNotification is a Tell carrying one event from the
+// txconfirm reorg-aware lifecycle for a tracked sweep tx, re-wrapped
+// from txconfirm.{TxConfirmed,TxReorged,TxFinalized,TxFailed} via
 // txconfirm.MapNotification.
 type BoardingSweepTxNotification struct {
 	actor.BaseMessage
 
-	// Confirmed is true when the underlying txconfirm.TxConfirmed event
-	// fired; false when it was txconfirm.TxFailed.
-	Confirmed bool
+	// Status identifies which lifecycle event this notification
+	// carries. See BoardingSweepTxStatus.
+	Status BoardingSweepTxStatus
 
 	// Txid identifies the tracked sweep transaction.
 	Txid chainhash.Hash
 
 	// BlockHeight is the height at which the sweep confirmed when
-	// Confirmed=true; zero otherwise.
+	// Status=Confirmed or Finalized; zero otherwise.
 	BlockHeight int32
 
-	// NumConfs is the confirmation count when Confirmed=true; zero
-	// otherwise.
+	// NumConfs is the confirmation count when Status=Confirmed or
+	// Finalized; zero otherwise.
 	NumConfs uint32
 
-	// Reason is the human-readable failure reason when Confirmed=false.
+	// Reason is the human-readable failure reason when Status=Failed.
 	Reason string
 }
 
@@ -428,6 +553,16 @@ func (a *Ark) loadSweepCandidates(ctx context.Context,
 	}
 
 	return intents, nil
+}
+
+// isTerminalSuccessSweepStatus reports whether a persisted boarding-sweep
+// status represents a resolved sweep whose accounting is already booked and
+// must not be rolled back to failed: confirmed (our sweep landed) or
+// external_resolved (the input was spent by another path). A spurious
+// TxFailed for such a sweep is ignored.
+func isTerminalSuccessSweepStatus(status string) bool {
+	return status == BoardingSweepStatusConfirmed ||
+		status == BoardingSweepStatusExternalResolved
 }
 
 // defaultBoardingSweepStatuses are the boarding-intent statuses considered
@@ -868,37 +1003,11 @@ func (a *Ark) cancelSweepSpendWatches(ctx context.Context,
 func (a *Ark) submitSweepConfirmer(ctx context.Context, tx *wire.MsgTx,
 	pkScript []byte, heightHint uint32) error {
 
-	walletNotif := actor.NewMapInputRef[
-		BoardingSweepTxNotification, WalletMsg,
-	](
-		a.selfRef,
-		func(n BoardingSweepTxNotification) WalletMsg {
-			return n
-		},
-	)
+	if a.actorSystem == nil {
+		return fmt.Errorf("actor system unavailable")
+	}
 
-	subscriber := txconfirm.MapNotification(walletNotif,
-		func(n txconfirm.Notification) BoardingSweepTxNotification {
-			switch ev := n.(type) {
-			case *txconfirm.TxConfirmed:
-				return BoardingSweepTxNotification{
-					Confirmed:   true,
-					Txid:        ev.Txid,
-					BlockHeight: ev.BlockHeight,
-					NumConfs:    ev.NumConfs,
-				}
-
-			case *txconfirm.TxFailed:
-				return BoardingSweepTxNotification{
-					Confirmed: false,
-					Txid:      ev.Txid,
-					Reason:    ev.Reason,
-				}
-			}
-
-			return BoardingSweepTxNotification{}
-		},
-	)
+	subscriber := NewBoardingSweepTxconfirmSubscriber(a.selfRef)
 
 	return a.submitSweepToConfirm(
 		ctx, tx, pkScript, heightHint, boardingSweepBroadcastLabel,
@@ -1061,8 +1170,8 @@ func (a *Ark) handleSweepTxNotification(ctx context.Context,
 		return fn.Ok[WalletResp](&BoardingSweepNotificationAck{})
 	}
 
-	switch {
-	case notif.Confirmed:
+	switch notif.Status {
+	case BoardingSweepTxStatusConfirmed:
 		a.logger(ctx).DebugS(
 			ctx,
 			"Boarding sweep confirmation observed by broadcaster",
@@ -1074,7 +1183,74 @@ func (a *Ark) handleSweepTxNotification(ctx context.Context,
 
 		a.emitSweepConfirmedLedger(ctx, notif)
 
-	default:
+	case BoardingSweepTxStatusReorged:
+		// A previously delivered TxConfirmed for this sweep was
+		// reorged out. Do NOT mark the sweep as failed and do NOT
+		// tear down the pending entry: txconfirm keeps the watch
+		// alive, so a subsequent TxConfirmed on the new canonical
+		// chain will re-run reconcileSweepInputsOnConfirm with the
+		// new height. MarkBoardingSweepInputSpent is idempotent on
+		// (outpoint, txid), and the ledger emissions use txid-keyed
+		// idempotency, so the second confirmation will not produce
+		// duplicate audit/balance entries.
+		//
+		// Best-effort backstop only: the per-input chainsource
+		// spend watch fires handleSweepSpendNotification if some
+		// other party spends an input. That spend-watch path is
+		// not itself reorg-symmetric — MapSpendEvent collapses the
+		// chainsource SpendEvent lifecycle to a single
+		// BoardingSweepSpendNotification without surfacing
+		// Reorged / Done — so a reorged-out external spender will
+		// leave the input row marked external_spent until manual
+		// reconciliation. Closing that gap is tracked separately.
+		a.logger(ctx).WarnS(
+			ctx,
+			"Boarding sweep confirmation reorged out; waiting "+
+				"for re-confirmation or external spend",
+			nil,
+			slog.String("txid", notif.Txid.String()),
+		)
+
+	case BoardingSweepTxStatusFinalized:
+		// Confirmation is past the backend's reorg-safety depth.
+		// No further reversible events will fire for this sweep —
+		// reorg-recovery bookkeeping can drop. Audit/ledger
+		// emission already ran on Confirmed and is idempotent on
+		// replay, so we do not re-emit here.
+		a.logger(ctx).DebugS(
+			ctx,
+			"Boarding sweep confirmation finalized",
+			nil,
+			slog.String("txid", notif.Txid.String()),
+			slog.Int("block_height", int(notif.BlockHeight)),
+		)
+
+	case BoardingSweepTxStatusFailed:
+		// Defensive guard against a failure arriving for a sweep that
+		// already confirmed. txconfirm's contract is that TxFailed
+		// never follows a real TxConfirmed, but the confirmed sweep's
+		// ledger legs (fee + per-input + destination) are irreversible
+		// and txid-keyed, so rolling the intents back to failed here
+		// would diverge the store from the ledger. If the persisted
+		// record shows the sweep already reached a terminal-success
+		// status, ignore the failure rather than undo a booked sweep.
+		if rec, ok := a.lookupSweepRecord(ctx, notif.Txid); ok &&
+			isTerminalSuccessSweepStatus(rec.Status) {
+
+			a.logger(ctx).WarnS(
+				ctx,
+				"Ignoring boarding sweep failure for an "+
+					"already-resolved sweep",
+				errors.New(notif.Reason),
+				slog.String("txid", notif.Txid.String()),
+				slog.String("status", rec.Status),
+			)
+
+			return fn.Ok[WalletResp](
+				&BoardingSweepNotificationAck{},
+			)
+		}
+
 		a.logger(ctx).WarnS(
 			ctx,
 			"Boarding sweep broadcaster reported failure",
@@ -1104,6 +1280,14 @@ func (a *Ark) handleSweepTxNotification(ctx context.Context,
 		if pending != nil {
 			a.cancelSweepSpendWatches(ctx, pending)
 		}
+
+	default:
+		a.logger(ctx).WarnS(
+			ctx,
+			"Boarding sweep tx notification with unknown status",
+			fmt.Errorf("status=%d", notif.Status),
+			slog.String("txid", notif.Txid.String()),
+		)
 	}
 
 	return fn.Ok[WalletResp](&BoardingSweepNotificationAck{})
@@ -1116,6 +1300,18 @@ func (a *Ark) handleSweepTxNotification(ctx context.Context,
 // the spending txid is the sweep's own txid. MarkBoardingSweepInputSpent
 // is idempotent, so inputs already resolved via the spend-notification path
 // are left untouched.
+//
+// Under the reorg-aware lifecycle a second TxConfirmed can land after a
+// TxReorged / re-confirmation cycle. The store's status guard rejects
+// the redundant transition with sql.ErrNoRows; that signals "input row
+// already advanced past pending/published" and is treated as a benign
+// no-op, mirroring how handleSweepSpendNotification classifies the
+// same error. Other errors still log at warn because they indicate a
+// real persistence problem. Note: the input row's confirmed_height
+// stays pinned to the FIRST Confirmed observation — a deliberate
+// first-observation-wins audit policy that survives reorg-reconfirm
+// at a different height; the reorg-safety horizon is reported
+// separately via the Finalized lifecycle event.
 func (a *Ark) reconcileSweepInputsOnConfirm(ctx context.Context,
 	notif BoardingSweepTxNotification) {
 
@@ -1128,7 +1324,17 @@ func (a *Ark) reconcileSweepInputsOnConfirm(ctx context.Context,
 		_, err := a.sweepStore.MarkBoardingSweepInputSpent(
 			ctx, op, notif.Txid, notif.BlockHeight,
 		)
-		if err != nil {
+		switch {
+		case err == nil:
+			// Success.
+
+		case errors.Is(err, sql.ErrNoRows):
+			// Row already past pending/published — likely
+			// resolved via handleSweepSpendNotification or a
+			// previous Confirmed in a reorg-reconfirm cycle.
+			// Idempotent no-op.
+
+		default:
 			a.logger(ctx).WarnS(
 				ctx,
 				"Failed to mark sweep input spent on confirm",

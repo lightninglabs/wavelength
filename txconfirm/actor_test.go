@@ -29,6 +29,11 @@ import (
 // testTimeout is the default timeout used by txconfirm actor tests.
 const testTimeout = time.Second
 
+// confReorgedRef / confDoneRef are the reorg / done notification ref
+// types used in the fake chain-source ref.
+type confReorgedRef = actor.TellOnlyRef[chainsource.ConfReorgedEvent]
+type confDoneRef = actor.TellOnlyRef[chainsource.ConfDoneEvent]
+
 // confNotifyRef is the confirmation-event notification ref type used in
 // the fake chainsource test double.
 type confNotifyRef = actor.TellOnlyRef[chainsource.ConfirmationEvent]
@@ -54,6 +59,8 @@ type fakeChainSourceRef struct {
 
 	blockNotify actor.TellOnlyRef[chainsource.BlockEpoch]
 	confNotify  map[chainhash.Hash]confNotifyRef
+	confReorged map[chainhash.Hash]confReorgedRef
+	confDone    map[chainhash.Hash]confDoneRef
 	confConfs   map[chainhash.Hash]uint32
 
 	alreadyConfirmed map[chainhash.Hash]chainsource.ConfirmationEvent
@@ -148,6 +155,93 @@ func (b *blockingNotifyRef) attemptsCount() int {
 	return b.attempts
 }
 
+// deferringNotifyRef blocks Tell until released, then completes
+// successfully (returns nil regardless of ctx state). Used to drive the
+// async-completion path of notifyOneTerminal: Tell exceeds the actor-path
+// budget, so the caller observes a timeout and parks the result on the
+// completeTerminalNotifyAsync goroutine; the test then releases the Tell
+// to simulate the underlying mailbox eventually accepting the
+// notification, producing a terminalNotifyResultMsg{err: nil} that the
+// actor mailbox processes via handleTerminalNotifyResult.
+type deferringNotifyRef struct {
+	id string
+
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+
+	mu       sync.Mutex
+	attempts int
+	msgs     []Notification
+}
+
+// newDeferringNotifyRef creates a subscriber that blocks on the first Tell
+// until release is closed.
+func newDeferringNotifyRef(id string) *deferringNotifyRef {
+	return &deferringNotifyRef{
+		id:      id,
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+}
+
+// ID returns the fake subscriber ID.
+func (d *deferringNotifyRef) ID() string {
+	return d.id
+}
+
+// Tell blocks until release is closed, records the notification, and
+// returns nil. ctx cancellation is intentionally ignored so the test can
+// drive the "Tell eventually succeeded" path even after the actor-side
+// notifyCtx timed out.
+func (d *deferringNotifyRef) Tell(_ context.Context, n Notification) error {
+	d.mu.Lock()
+	d.attempts++
+	d.mu.Unlock()
+
+	d.once.Do(func() {
+		close(d.started)
+	})
+
+	<-d.release
+
+	d.mu.Lock()
+	d.msgs = append(d.msgs, n)
+	d.mu.Unlock()
+
+	return nil
+}
+
+// waitStarted blocks until the first Tell has begun, so the test can
+// release after the actor-side timeout has fired.
+func (d *deferringNotifyRef) waitStarted(t *testing.T) {
+	t.Helper()
+
+	select {
+	case <-d.started:
+	case <-time.After(testTimeout):
+		t.Fatal("deferringNotifyRef Tell never started")
+	}
+}
+
+// releaseTell unblocks every parked Tell call so the deferred deliveries
+// complete and the test observes the async-completion path.
+func (d *deferringNotifyRef) releaseTell() {
+	close(d.release)
+}
+
+// snapshotMessages returns a defensive copy of every notification that
+// has landed in the subscriber's mailbox so far.
+func (d *deferringNotifyRef) snapshotMessages() []Notification {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	out := make([]Notification, len(d.msgs))
+	copy(out, d.msgs)
+
+	return out
+}
+
 // ID returns the fake subscriber ID.
 func (r *contextInspectNotifyRef) ID() string {
 	return r.id
@@ -232,10 +326,12 @@ func (r *retryNotifyRef) awaitMessage(timeout time.Duration) (Notification,
 // newFakeChainSourceRef creates a new controllable chainsource test double.
 func newFakeChainSourceRef(bestHeight int32) *fakeChainSourceRef {
 	return &fakeChainSourceRef{
-		bestHeight: bestHeight,
-		feeRate:    5,
-		confNotify: make(map[chainhash.Hash]confNotifyRef),
-		confConfs:  make(map[chainhash.Hash]uint32),
+		bestHeight:  bestHeight,
+		feeRate:     5,
+		confNotify:  make(map[chainhash.Hash]confNotifyRef),
+		confReorged: make(map[chainhash.Hash]confReorgedRef),
+		confDone:    make(map[chainhash.Hash]confDoneRef),
+		confConfs:   make(map[chainhash.Hash]uint32),
 		alreadyConfirmed: make(
 			map[chainhash.Hash]chainsource.ConfirmationEvent,
 		),
@@ -344,6 +440,12 @@ func (f *fakeChainSourceRef) handleAsk(_ context.Context,
 		if req.Txid != nil && req.NotifyActor.IsSome() {
 			f.confNotify[*req.Txid] = req.NotifyActor.UnwrapOr(nil)
 			f.confConfs[*req.Txid] = req.TargetConfs
+			req.NotifyReorged.WhenSome(func(r confReorgedRef) {
+				f.confReorged[*req.Txid] = r
+			})
+			req.NotifyDone.WhenSome(func(r confDoneRef) {
+				f.confDone[*req.Txid] = r
+			})
 			if event, ok := f.alreadyConfirmed[*req.Txid]; ok {
 				notifyRef := req.NotifyActor.UnwrapOr(nil)
 				//nolint:contextcheck // fake backend
@@ -358,6 +460,8 @@ func (f *fakeChainSourceRef) handleAsk(_ context.Context,
 		if req.Txid != nil {
 			delete(f.confNotify, *req.Txid)
 			delete(f.confConfs, *req.Txid)
+			delete(f.confReorged, *req.Txid)
+			delete(f.confDone, *req.Txid)
 		}
 
 		return &chainsource.UnregisterConfResponse{}, nil
@@ -414,6 +518,34 @@ func (f *fakeChainSourceRef) emitConfirmation(t *testing.T, txid chainhash.Hash,
 		BlockHeight: blockHeight,
 		NumConfs:    targetConfs,
 	})
+	require.NoError(t, err)
+}
+
+// emitConfReorged delivers a reorg event for one tracked txid.
+func (f *fakeChainSourceRef) emitConfReorged(t *testing.T,
+	txid chainhash.Hash) {
+
+	t.Helper()
+
+	f.mu.Lock()
+	ref := f.confReorged[txid]
+	f.mu.Unlock()
+
+	require.NotNil(t, ref)
+	err := ref.Tell(t.Context(), chainsource.ConfReorgedEvent{Txid: txid})
+	require.NoError(t, err)
+}
+
+// emitConfDone delivers a finality event for one tracked txid.
+func (f *fakeChainSourceRef) emitConfDone(t *testing.T, txid chainhash.Hash) {
+	t.Helper()
+
+	f.mu.Lock()
+	ref := f.confDone[txid]
+	f.mu.Unlock()
+
+	require.NotNil(t, ref)
+	err := ref.Tell(t.Context(), chainsource.ConfDoneEvent{Txid: txid})
 	require.NoError(t, err)
 }
 
@@ -815,15 +947,27 @@ func TestEnsureConfirmedDedupesTwoSubscribers(t *testing.T) {
 
 	require.IsType(t, &TxConfirmed{}, confirmedA)
 	require.IsType(t, &TxConfirmed{}, confirmedB)
+
+	// TxConfirmed alone does not release the chainsource conf watch in
+	// the reorg-aware model: the watch stays alive until the backend
+	// finalizes the confirmation. Driving Done evicts the tracked
+	// entry and unregisters.
+	chain.emitConfDone(t, tx.TxHash())
+	mustAwaitNotification(t, subA)
+	mustAwaitNotification(t, subB)
 	mustEventually(t, func() bool {
 		return chain.unregisterConfCount() == 1
 	})
 }
 
-// TestConfirmationDeliveryRetriesAfterTellFailure verifies that a transient
-// subscriber delivery failure does not permanently drop a terminal
-// confirmation notification.
-func TestConfirmationDeliveryRetriesAfterTellFailure(t *testing.T) {
+// TestLifecycleDeliveryRetriesAfterTellFailure verifies that a transient
+// subscriber delivery failure does not permanently drop a lifecycle
+// notification. Both the initial TxConfirmed and the terminal
+// TxFinalized are reliable: if the first Tell attempt fails, the
+// per-tick retry path keeps re-attempting until delivery lands, and
+// the entry only evicts after every retained subscriber has
+// acknowledged both events.
+func TestLifecycleDeliveryRetriesAfterTellFailure(t *testing.T) {
 	chain := newFakeChainSourceRef(100)
 	ref, _ := newTestActor(t, Config{
 		ChainSource: chain,
@@ -831,6 +975,9 @@ func TestConfirmationDeliveryRetriesAfterTellFailure(t *testing.T) {
 
 	tx := makeTestTx(false)
 	txid := tx.TxHash()
+	// Fail the first Tell attempt: TxConfirmed delivery has to be
+	// retried before pendingConfirmed clears, after which TxFinalized
+	// can be attempted.
 	sub := newRetryNotifyRef("sub-retry", 1)
 
 	resp := mustEnsure(t, ref.Ref(), &EnsureConfirmedReq{
@@ -844,31 +991,40 @@ func TestConfirmationDeliveryRetriesAfterTellFailure(t *testing.T) {
 		return sub.attemptsCount() == 1
 	})
 
+	// First TxConfirmed attempt failed; the entry stays alive with
+	// pendingConfirmed=true and no notification has reached the
+	// subscriber mailbox yet.
 	msg, ok := sub.awaitMessage(100 * time.Millisecond)
-	require.False(t, ok, "unexpected notification: %v", msg)
+	require.False(t, ok, "unexpected early notification: %v", msg)
+	require.Equal(t, 0, chain.unregisterConfCount())
+
+	// Finalization fires. notifyFinalized retries TxConfirmed first
+	// (the at-least-once initial-confirmation contract must land
+	// before TxFinalized is allowed through). The second Tell
+	// succeeds, so TxConfirmed lands and TxFinalized follows in the
+	// same notifyFinalized pass.
+	chain.emitConfDone(t, txid)
+
+	first, ok := sub.awaitMessage(testTimeout)
+	require.True(t, ok, "expected retried TxConfirmed")
+	confirmed, ok := first.(*TxConfirmed)
+	require.True(
+		t, ok, "first notification must be TxConfirmed, got %T", first,
+	)
+	require.Equal(t, txid, confirmed.Txid)
+
+	second, ok := sub.awaitMessage(testTimeout)
+	require.True(t, ok, "expected TxFinalized")
+	finalized, ok := second.(*TxFinalized)
+	require.True(
+		t, ok, "second notification must be TxFinalized, got %T",
+		second,
+	)
+	require.Equal(t, txid, finalized.Txid)
+
 	mustEventually(t, func() bool {
 		return chain.unregisterConfCount() == 1
 	})
-
-	chain.emitBlock(t, 102)
-	msg, ok = sub.awaitMessage(testTimeout)
-	require.True(t, ok, "expected retried notification")
-
-	confirmed, ok := msg.(*TxConfirmed)
-	require.True(t, ok)
-	require.Equal(t, txid, confirmed.Txid)
-	require.Equal(t, int32(101), confirmed.BlockHeight)
-	require.Equal(t, uint32(1), confirmed.NumConfs)
-	require.Equal(t, 2, sub.attemptsCount())
-
-	freshSub := actor.NewChannelTellOnlyRef[Notification]("sub-fresh", 4)
-	replayResp := mustEnsure(t, ref.Ref(), &EnsureConfirmedReq{
-		Tx:         tx,
-		Subscriber: freshSub,
-	})
-	require.True(t, replayResp.Created)
-	require.Equal(t, 2, chain.registerConfCount())
-	require.Equal(t, 2, chain.broadcastCallCount())
 }
 
 // TestTerminalNotificationsDoNotInheritCallerContext verifies that terminal
@@ -884,17 +1040,17 @@ func TestTerminalNotificationsDoNotInheritCallerContext(t *testing.T) {
 	cancel()
 
 	txid := chainhash.Hash{1}
-	confirmedSub := &contextInspectNotifyRef{id: "confirmed-sub"}
-	ok := behavior.notifyOneConfirmed(
-		ctx, confirmedSub, txid, 101, 1,
+	finalizedSub := &contextInspectNotifyRef{id: "finalized-sub"}
+	ok := behavior.notifyOneFinalized(
+		ctx, finalizedSub, txid, 101, 1,
 	)
 	require.True(t, ok)
 
-	hasTx, ctxErr, msgs := confirmedSub.snapshot()
+	hasTx, ctxErr, msgs := finalizedSub.snapshot()
 	require.False(t, hasTx)
 	require.NoError(t, ctxErr)
 	require.Len(t, msgs, 1)
-	require.IsType(t, &TxConfirmed{}, msgs[0])
+	require.IsType(t, &TxFinalized{}, msgs[0])
 
 	failedSub := &contextInspectNotifyRef{id: "failed-sub"}
 	ok = behavior.notifyOneFailed(ctx, failedSub, txid, "boom")
@@ -937,14 +1093,14 @@ func TestTerminalNotificationTimeoutDoesNotBlockActor(t *testing.T) {
 	}()
 
 	start := time.Now()
-	ok := behavior.notifyOneConfirmed(
+	ok := behavior.notifyOneFinalized(
 		context.Background(), sub, txid, 101, 1,
 	)
 	require.False(t, ok)
 	require.Less(t, time.Since(start), testTimeout)
 	require.True(t, <-started)
 
-	key := terminalNotifyKey(txid, sub.ID(), "confirmed")
+	key := terminalNotifyKey(txid, sub.ID(), "finalized")
 	_, inflight := behavior.terminalNotifyInflight[key]
 	require.True(t, inflight)
 	require.Equal(t, 1, sub.attemptsCount())
@@ -1051,6 +1207,9 @@ func TestEnsureConfirmedAlreadyConfirmedUsesSuccessPath(t *testing.T) {
 	subA := actor.NewChannelTellOnlyRef[Notification]("sub-a", 4)
 	subB := actor.NewChannelTellOnlyRef[Notification]("sub-b", 4)
 
+	// Opt in to reorg-aware notifications so the tracked entry stays
+	// alive past TxConfirmed and the second EnsureConfirmedReq can
+	// attach to the existing tracking state.
 	resp := mustEnsure(t, ref.Ref(), &EnsureConfirmedReq{
 		Tx:         tx,
 		Subscriber: subA,
@@ -1062,21 +1221,21 @@ func TestEnsureConfirmedAlreadyConfirmedUsesSuccessPath(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, int32(99), confirmed.BlockHeight)
 
-	// Once subA's TxConfirmed has been delivered, terminal eviction drops
-	// the tracked entry. A subsequent EnsureConfirmedReq for the same
-	// txid therefore starts fresh tracking rather than replaying cached
-	// state. Chainsource immediately re-fires the confirmation for the
-	// already-confirmed tx, so subB still receives TxConfirmed.
+	// TxConfirmed is no longer terminal: the tracked entry remains alive
+	// (still subscribed to chainsource reorg/done) until a Done event
+	// fires. A subsequent EnsureConfirmedReq therefore attaches to the
+	// existing tracking state and replays TxConfirmed without
+	// re-broadcasting or re-registering with chainsource.
 	replayResp := mustEnsure(t, ref.Ref(), &EnsureConfirmedReq{
 		Tx:         tx,
 		Subscriber: subB,
 	})
-	require.True(t, replayResp.Created)
+	require.False(t, replayResp.Created)
 
 	replayed := mustAwaitNotification(t, subB)
 	require.IsType(t, &TxConfirmed{}, replayed)
-	require.Equal(t, 2, chain.broadcastCallCount())
-	require.Equal(t, 2, chain.registerConfCount())
+	require.Equal(t, 1, chain.broadcastCallCount())
+	require.Equal(t, 1, chain.registerConfCount())
 }
 
 // TestEnsureConfirmedBroadcastFailureNotifiesFailure verifies that terminal
@@ -1462,6 +1621,11 @@ func TestUnregisterConfMatchesRegisterServiceKey(t *testing.T) {
 	confirmed := mustAwaitNotification(t, sub)
 	require.IsType(t, &TxConfirmed{}, confirmed)
 
+	// The conf watch is only released once chainsource fires Done.
+	chain.emitConfDone(t, tx.TxHash())
+	finalized := mustAwaitNotification(t, sub)
+	require.IsType(t, &TxFinalized{}, finalized)
+
 	mustEventually(t, func() bool {
 		return chain.unregisterConfCount() == 1
 	})
@@ -1531,7 +1695,17 @@ func TestTerminalEntriesEvictedAfterConfirmation(t *testing.T) {
 		require.IsType(t, &TxConfirmed{}, confirmed)
 	}
 
-	// Every confirmation should have produced exactly one unregister.
+	// Finalization drives terminal eviction: TxConfirmed alone is now
+	// reversible and the tracked entry stays alive until the backend
+	// fires Done.
+	for i := 0; i < numTxs; i++ {
+		chain.emitConfDone(t, txids[i])
+
+		finalized := mustAwaitNotification(t, subs[i])
+		require.IsType(t, &TxFinalized{}, finalized)
+	}
+
+	// Every finalized entry should have produced exactly one unregister.
 	mustEventually(t, func() bool {
 		return chain.unregisterConfCount() == numTxs
 	})
@@ -1906,4 +2080,82 @@ func TestEnsureConfirmedFailsPermanentBroadcastError(t *testing.T) {
 
 	failed := mustAwaitNotification(t, sub)
 	require.IsType(t, &TxFailed{}, failed)
+}
+
+// TestInitialConfirmedAsyncDeliveryRetainsSubscriber regression-tests an
+// initial TxConfirmed delivery whose Tell exceeds terminalNotifyTimeout
+// before landing successfully via the async-completion goroutine. The
+// subscriber must remain attached to the entry afterwards so the
+// reorg-aware tail of its lifecycle (TxReorged / TxFinalized) still
+// reaches it; the previous handleTerminalNotifyResult deleted the
+// subscriber on any successful async terminal completion, silently
+// dropping every subsequent reorg event for slow mailboxes.
+func TestInitialConfirmedAsyncDeliveryRetainsSubscriber(t *testing.T) {
+	// Shorten the actor-path budget so the test reliably exercises the
+	// async-completion code path within a normal test runtime.
+	oldTimeout := terminalNotifyTimeout
+	terminalNotifyTimeout = 20 * time.Millisecond
+	t.Cleanup(func() {
+		terminalNotifyTimeout = oldTimeout
+	})
+
+	chain := newFakeChainSourceRef(100)
+	ref, _ := newTestActor(t, Config{
+		ChainSource: chain,
+	})
+
+	tx := makeTestTx(false)
+	txid := tx.TxHash()
+	sub := newDeferringNotifyRef("sub-async-confirmed")
+
+	resp := mustEnsure(t, ref.Ref(), &EnsureConfirmedReq{
+		Tx:         tx,
+		Subscriber: sub,
+	})
+	require.True(t, resp.Created)
+
+	// Fire the confirmation. notifyOneConfirmed -> notifyOneTerminal
+	// will park on sub.Tell, blow through terminalNotifyTimeout, and
+	// hand the in-flight Tell off to completeTerminalNotifyAsync.
+	chain.emitConfirmation(t, txid, 101)
+	sub.waitStarted(t)
+
+	// Wait long enough that the actor-side notifyCtx is guaranteed to
+	// have timed out and the async-completion goroutine is in flight.
+	// Without this delay the Tell could land synchronously and the
+	// async path the regression targets would not be exercised.
+	time.Sleep(10 * terminalNotifyTimeout)
+
+	// Release the parked Tell so the async goroutine reports back to
+	// the txconfirm actor with a successful terminalNotifyResultMsg.
+	sub.releaseTell()
+
+	// Wait for TxConfirmed to actually land in the subscriber mailbox.
+	require.Eventually(t, func() bool {
+		for _, m := range sub.snapshotMessages() {
+			if _, ok := m.(*TxConfirmed); ok {
+				return true
+			}
+		}
+
+		return false
+	}, testTimeout, 10*time.Millisecond, "TxConfirmed never delivered")
+
+	// Drive a reorg. If the subscriber was wrongly evicted on the
+	// async-confirmed completion, notifyReorged has nobody to fan to
+	// and the TxReorged below never arrives.
+	chain.emitConfReorged(t, txid)
+
+	require.Eventually(t, func() bool {
+		for _, m := range sub.snapshotMessages() {
+			if _, ok := m.(*TxReorged); ok {
+				return true
+			}
+		}
+
+		return false
+	}, testTimeout, 10*time.Millisecond,
+		"TxReorged never reached subscriber whose initial TxConfirmed "+
+			"completed via the async path — handleTerminalNotify"+
+			"Result probably evicted it on completion")
 }

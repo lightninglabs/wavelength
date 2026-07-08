@@ -575,9 +575,12 @@ func TestBumpNowParentFeeSufficient(t *testing.T) {
 }
 
 // TestBumpNowUntrackedAndTerminal covers the remaining no-op guards: an
-// untracked txid, and a transaction that confirmed and was evicted from
-// tracking (a confirmed entry whose terminal notification is delivered is
-// dropped from the map, so a late bump lands in the untracked branch).
+// untracked txid, and a transaction that has reached its confirmation target.
+// Under the reorg-aware lifecycle a confirmed entry is NOT evicted at its
+// confirmation — it stays tracked in the reversible Confirmed state until the
+// backend signals finality (Done), so it can observe a later reorg — so a bump
+// of a confirmed-but-not-final tx lands in the "already confirmed" no-op
+// branch rather than the untracked branch.
 func TestBumpNowUntrackedAndTerminal(t *testing.T) {
 	t.Parallel()
 
@@ -608,9 +611,10 @@ func TestBumpNowUntrackedAndTerminal(t *testing.T) {
 		Subscriber: sub,
 	})
 
-	// Drain the confirmation callback the fake chain delivered to the
-	// self ref so the entry reaches its terminal state and, with its
-	// notification delivered, is evicted from tracking.
+	// Drain the confirmation callback the fake chain delivered to the self
+	// ref so the entry advances into the reversible Confirmed state and its
+	// TxConfirmed notification is delivered. It is NOT evicted: the entry
+	// stays tracked until finality so a reorg can still be observed.
 	selfRef, ok := behavior.selfRef.(*actor.ChannelTellOnlyRef[Msg])
 	require.True(t, ok)
 	for {
@@ -622,11 +626,13 @@ func TestBumpNowUntrackedAndTerminal(t *testing.T) {
 	}
 	require.NotNil(t, mustAwaitNotification(t, sub))
 
-	// A bump after eviction reports the untracked no-op: there is no
-	// entry left to bump, which is the correct answer for a confirmed tx.
+	// A bump of the confirmed (but not-yet-final) entry is the confirmed
+	// no-op: it is still tracked, so the handler reports "already
+	// confirmed" rather than the untracked branch. Either way a confirmed
+	// tx cannot be fee-bumped.
 	bumpResp = mustReceiveBump(t, behavior, &BumpNowReq{
 		Txid: tx.TxHash(),
 	})
 	require.False(t, bumpResp.Bumped)
-	require.Contains(t, bumpResp.Reason, "not tracked")
+	require.Contains(t, bumpResp.Reason, "already confirmed")
 }

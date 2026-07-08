@@ -33,6 +33,25 @@ func MapConfirmationEvent[Out actor.Message](
 	return actor.NewMapInputRef(targetRef, mapFn)
 }
 
+// MapConfReorgedEvent creates a transformed TellOnlyRef that accepts
+// ConfReorgedEvent and transforms it to the caller's desired output message
+// type.
+func MapConfReorgedEvent[Out actor.Message](
+	targetRef actor.TellOnlyRef[Out], mapFn func(ConfReorgedEvent) Out,
+) actor.TellOnlyRef[ConfReorgedEvent] {
+
+	return actor.NewMapInputRef(targetRef, mapFn)
+}
+
+// MapConfDoneEvent creates a transformed TellOnlyRef that accepts
+// ConfDoneEvent and transforms it to the caller's desired output message type.
+func MapConfDoneEvent[Out actor.Message](
+	targetRef actor.TellOnlyRef[Out], mapFn func(ConfDoneEvent) Out,
+) actor.TellOnlyRef[ConfDoneEvent] {
+
+	return actor.NewMapInputRef(targetRef, mapFn)
+}
+
 // MapSpendEvent creates a transformed TellOnlyRef that accepts SpendEvent and
 // transforms it to the caller's desired output message type. This is a
 // convenience wrapper for the common pattern of adapting chainsource spend
@@ -60,6 +79,25 @@ func MapConfirmationEvent[Out actor.Message](
 func MapSpendEvent[Out actor.Message](
 	targetRef actor.TellOnlyRef[Out], mapFn func(SpendEvent) Out,
 ) actor.TellOnlyRef[SpendEvent] {
+
+	return actor.NewMapInputRef(targetRef, mapFn)
+}
+
+// MapSpendReorgedEvent creates a transformed TellOnlyRef that accepts
+// SpendReorgedEvent and transforms it to the caller's desired output message
+// type.
+func MapSpendReorgedEvent[Out actor.Message](
+	targetRef actor.TellOnlyRef[Out], mapFn func(SpendReorgedEvent) Out,
+) actor.TellOnlyRef[SpendReorgedEvent] {
+
+	return actor.NewMapInputRef(targetRef, mapFn)
+}
+
+// MapSpendDoneEvent creates a transformed TellOnlyRef that accepts
+// SpendDoneEvent and transforms it to the caller's desired output message type.
+func MapSpendDoneEvent[Out actor.Message](
+	targetRef actor.TellOnlyRef[Out], mapFn func(SpendDoneEvent) Out,
+) actor.TellOnlyRef[SpendDoneEvent] {
 
 	return actor.NewMapInputRef(targetRef, mapFn)
 }

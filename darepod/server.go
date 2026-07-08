@@ -2085,6 +2085,13 @@ func (s *Server) registerChainSourceActor(
 		chainsource.ChainSourceConfig{
 			Backend: s.chainBackend,
 			System:  s.actorSystem,
+			// Enable height-based Done synthesis at the default
+			// safety depth. Without this, conf/spend sub-actors
+			// driven through lndclient (whose Done channel is
+			// allocated-but-never-written) would never receive a
+			// finality signal, and reorg-aware consumers like
+			// txconfirm would leak watch state forever.
+			FinalityDepth: chainsource.DefaultFinalityDepth,
 		},
 	)
 
