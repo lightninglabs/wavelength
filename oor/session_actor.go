@@ -9,6 +9,7 @@ import (
 
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/batchcanon"
 	"github.com/lightninglabs/darepo-client/build"
 	clientdb "github.com/lightninglabs/darepo-client/db"
 	"github.com/lightninglabs/darepo-client/ledger"
@@ -63,6 +64,14 @@ type SessionActorConfig struct {
 	// VTXOManager receives notifications after incoming VTXOs are
 	// materialized so it can spawn monitoring actors.
 	VTXOManager actor.TellOnlyRef[vtxo.ManagerMsg]
+
+	// BatchCanonicality, when set, receives a RegisterBatchRequest for
+	// each commitment batch in a received OOR VTXO's lineage so the
+	// reorg-safety availability gate (darepo#454) can govern the received
+	// VTXO: a reorg-out or invalidation of any ancestor batch marks the
+	// VTXO limbo. None disables registration (the gate stays dormant),
+	// matching the C5/C6 dormancy contract.
+	BatchCanonicality fn.Option[actor.TellOnlyRef[batchcanon.ManagerMsg]]
 
 	// SpendCompleter routes outgoing input-spend completion through the
 	// VTXO manager. The manager's status write commits in the VTXO actor's
