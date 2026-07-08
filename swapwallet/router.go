@@ -216,6 +216,26 @@ func (r *router) sendInvoiceIntent(ctx context.Context,
 		walletdkrpc.EntryKind_ENTRY_KIND_SEND,
 	)
 
+	// Eagerly project the just-dispatched entry into the canonical activity
+	// store so it is inspectable the instant Send returns. The swap monitor
+	// stays the terminal authority and supersedes this row idempotently
+	// (keyed by payment hash) as the pay progresses, but its SubscribeSwaps
+	// projection is asynchronous: without this eager write a caller that
+	// polls InspectActivity to block on settlement — `da send` does exactly
+	// this by default — races the monitor and sees NOT_FOUND on the first
+	// poll, aborting the wait and surfacing a still-in-flight pay as merely
+	// pending. Projected off the RPC context so a client disconnect cannot
+	// cancel the write of an already-accepted pay. This mirrors the credit
+	// pay path, which projects its pending row for the same reason.
+	//
+	// We call project rather than projectAndEmit on purpose: this row is
+	// swap-backed, so the monitor loop owns the live SubscribeWallet emit
+	// for it. Emitting here too would fan the same pending row out twice.
+	// We only need the durable store write so pollers
+	// (InspectActivity/List) can see it immediately; the monitor's first
+	// update handles the live emit.
+	r.runtime.project(context.WithoutCancel(ctx), entry)
+
 	// For invoice sends actual_amount_sat is the swap's negotiated
 	// principal: that's what is being paid to the BOLT-11 destination
 	// (routing fees are tracked separately via fee_sat on the entry).

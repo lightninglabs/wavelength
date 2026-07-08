@@ -83,6 +83,15 @@ func (f *fakeActivityProjector) PullEvents(_ context.Context, _ int64,
 	return nil, nil
 }
 
+// lastProjection returns the most recent projection the fake recorded. It
+// panics when nothing has been projected, so a caller must guard with count.
+func (f *fakeActivityProjector) lastProjection() db.ActivityProjection {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return f.projected[len(f.projected)-1]
+}
+
 // ids returns the set of canonical ids the fake has been asked to project.
 func (f *fakeActivityProjector) ids() map[string]bool {
 	f.mu.Lock()
