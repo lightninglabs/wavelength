@@ -1,0 +1,82 @@
+package batchcanon
+
+import (
+	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/wire/v2"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
+)
+
+// Record is the durable canonicality view of one batch (commitment)
+// transaction, keyed by its txid. It bundles the interpreted State, the
+// current confirmation observation, the recompute inputs for effective
+// expiry, the consumed inputs and dependent VTXOs, and the reserved policy
+// slot.
+type Record struct {
+	// BatchTxID is the commitment transaction id and the record's
+	// identity. Identity is by txid, never by (txid, block hash): a reorg
+	// that re-mines the same tx in a different block is the same batch.
+	BatchTxID chainhash.Hash
+
+	// State is the interpreted canonicality state.
+	State State
+
+	// ConfirmationHeight is the best-chain height at which the batch tx
+	// is currently observed confirmed. None when the batch is not
+	// currently confirmed (unseen or reorged out). A reorg clears it; a
+	// reconfirmation sets it to the new height.
+	ConfirmationHeight fn.Option[int32]
+
+	// ConfirmationBlock is the hash of the block currently confirming the
+	// batch tx. It is an observation attribute only and is NOT part of
+	// the batch identity. None when the batch is not currently confirmed.
+	ConfirmationBlock fn.Option[chainhash.Hash]
+
+	// CSVExpiryDelta is the batch's CSV-relative expiry timeout, in
+	// blocks. The effective (absolute) expiry height is derived from this
+	// plus the current confirmation height, so it tracks reconfirmations
+	// after a reorg instead of being frozen at first confirmation.
+	CSVExpiryDelta int32
+
+	// PolicyState is the reserved policy classification slot. See
+	// PolicyState.
+	PolicyState PolicyState
+
+	// ConsumedInputs are the outpoints this batch tx spends. They are
+	// tracked so the manager can watch each one for a conflicting spend.
+	ConsumedInputs []wire.OutPoint
+
+	// DependentVTXOs are the VTXO outpoints anchored by this batch. Their
+	// derived availability follows this batch's canonicality.
+	DependentVTXOs []wire.OutPoint
+}
+
+// EffectiveExpiry derives the absolute expiry height from the current
+// confirmation observation: ConfirmationHeight + CSVExpiryDelta. It returns
+// None when the batch is not currently confirmed.
+//
+// Deriving expiry on demand (rather than persisting an absolute height) is
+// what keeps expiry reorg-safe: a confirmation that is reorged out clears
+// ConfirmationHeight and so erases the effective expiry, and a
+// reconfirmation at a different height yields a fresh effective expiry.
+// Expiry is therefore never a one-way terminal fact at this layer.
+func (r *Record) EffectiveExpiry() fn.Option[int32] {
+	return fn.MapOption(
+		func(height int32) int32 {
+			return height + r.CSVExpiryDelta
+		})(r.ConfirmationHeight)
+}
+
+// ProvisionalConsumer records that a (locally relevant) VTXO has been
+// provisionally consumed by a not-yet-canonical consumer batch. It is the
+// reverse-dependency edge that lets a provisionally consumed VTXO be restored
+// if the consumer batch never becomes canonical — for example a round-2
+// forfeit whose commitment tx is reorged out, which must restore the round-1
+// VTXO it consumed.
+type ProvisionalConsumer struct {
+	// ConsumedVTXO is the outpoint of the VTXO consumed by ConsumerBatch.
+	ConsumedVTXO wire.OutPoint
+
+	// ConsumerBatch is the batch tx that provisionally consumes
+	// ConsumedVTXO.
+	ConsumerBatch chainhash.Hash
+}

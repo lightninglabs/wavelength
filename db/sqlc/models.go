@@ -61,6 +61,36 @@ type ActivityStatus struct {
 	Name string
 }
 
+type BatchCanonicality struct {
+	BatchTxid             []byte
+	State                 int32
+	ConfirmationHeight    sql.NullInt32
+	ConfirmationBlockHash []byte
+	CsvExpiryDelta        int32
+	PolicyState           int32
+	CreatedAt             int64
+	UpdatedAt             int64
+}
+
+type BatchConsumedInput struct {
+	BatchTxid  []byte
+	InputHash  []byte
+	InputIndex int32
+}
+
+type BatchDependentVtxo struct {
+	BatchTxid         []byte
+	VtxoOutpointHash  []byte
+	VtxoOutpointIndex int32
+}
+
+type BatchProvisionalConsumer struct {
+	ConsumedVtxoHash  []byte
+	ConsumedVtxoIndex int32
+	ConsumerBatchTxid []byte
+	CreatedAt         int64
+}
+
 type BoardingAddress struct {
 	PkScript            []byte
 	AddressString       string

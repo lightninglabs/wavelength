@@ -71,7 +71,16 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   safety bounds enforced during `DeserializeTree`.
 - `resolveInputPackage` / `loadPackageBundleBySessionID` — two-stage
   OOR ancestry resolver (`oor_unroll_resolver.go`).
-- `LatestMigrationVersion = 21` — current schema version.
+- `LatestMigrationVersion = 22` — current schema version.
+- `BatchCanonicalityPersistenceStore` — Persists the reorg-safety batch
+  canonicality data model (implements `batchcanon.Store`): per-batch
+  canonicality records (state + nullable confirmation observation +
+  CSV-relative expiry delta, keyed by txid), consumed inputs, dependent
+  VTXOs, and the `batch_provisional_consumers` reverse-dependency edges used
+  to restore a provisionally consumed VTXO. Effective expiry is derived, never
+  stored. `BackfillFromVTXOs(ctx, bestHeight, finalityDepth)` seeds initial
+  records from existing VTXOs (idempotent, create-only). Behavior-free;
+  interpretation lives in the batch canonicality manager.
 - `PendingIntentPersistenceStore` — implements `wallet.PendingIntentStore`,
   the persistence half of the generic restart-safe intent outbox (header
   `pending_intents` + per-kind detail tables + `pending_intent_anchors`).
