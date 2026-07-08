@@ -4201,18 +4201,52 @@ func (s *InputSigSentState) ProcessEvent(ctx context.Context, event ClientEvent,
 		operatorFeeType := roundOperatorFeeType(s.Intents)
 		outflows := roundLedgerOutflows(s.RoundID, s.Intents)
 
+		// Collect the inputs this client contributed to the commitment
+		// tx (boarding outpoints + forfeited VTXO outpoints) so the
+		// round actor can register the batch's reorg-safety lineage. A
+		// double-spend or reorg-out of any of these invalidates the
+		// round-born VTXOs anchored by this batch (darepo#454).
+		consumedInputs := make(
+			[]wire.OutPoint, 0,
+			len(s.Intents.Boarding)+len(s.ForfeitedVTXOs),
+		)
+		for i := range s.Intents.Boarding {
+			consumedInputs = append(
+				consumedInputs, s.Intents.Boarding[i].Outpoint,
+			)
+		}
+		consumedInputs = append(consumedInputs, s.ForfeitedVTXOs...)
+
+		// The batch confirmation watch keys on the commitment tx's
+		// batch output. Detection is by txid; the script is what
+		// script-filtering light-client backends (Neutrino, Esplora)
+		// filter on, so it must be the real batch output, not output 0
+		// (which can be a filler/anchor on rounds whose batch output
+		// sits at a higher index — see TestCommitmentTreeBindingNonZero
+		// Index). Reuse the helper the round's own commitment conf
+		// watch uses so both watches key on byte-identical scripts.
+		var confPkScript []byte
+		if s.CommitmentTx != nil {
+			confPkScript = confirmationWatchScript(
+				s.CommitmentTx.UnsignedTx, s.VTXOTreePaths,
+			)
+		}
+
 		// Build outbox messages starting with standard notifications.
 		outbox := make([]ClientOutMsg, 0, 2)
 		if len(vtxos) > 0 || len(outflows) > 0 || operatorFee > 0 {
 			outbox = append(outbox, &VTXOCreatedNotification{
-				VTXOs:           vtxos,
-				Outflows:        outflows,
-				RoundID:         s.RoundID.String(),
-				CommitmentTxID:  evt.TxID,
-				BatchExpiry:     batchExpiry,
-				CreatedHeight:   evt.BlockHeight,
-				OperatorFeeSat:  operatorFee,
-				OperatorFeeType: operatorFeeType,
+				VTXOs:                vtxos,
+				Outflows:             outflows,
+				RoundID:              s.RoundID.String(),
+				CommitmentTxID:       evt.TxID,
+				ConsumedInputs:       consumedInputs,
+				ConfirmationPkScript: confPkScript,
+				CSVExpiryDelta:       sweepDelay,
+				BatchExpiry:          batchExpiry,
+				CreatedHeight:        evt.BlockHeight,
+				OperatorFeeSat:       operatorFee,
+				OperatorFeeType:      operatorFeeType,
 			})
 		}
 		outbox = append(outbox, &RoundCompletedNotification{
