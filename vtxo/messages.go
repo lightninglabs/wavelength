@@ -282,6 +282,12 @@ type ReleaseForfeitRequest = actormsg.ReleaseForfeitRequest
 // ReleaseForfeitResponse is an alias for the canonical type in actormsg.
 type ReleaseForfeitResponse = actormsg.ReleaseForfeitResponse
 
+// RestoreForfeitedVTXORequest is an alias for the canonical type in actormsg.
+type RestoreForfeitedVTXORequest = actormsg.RestoreForfeitedVTXORequest
+
+// RestoreForfeitedVTXOResponse is an alias for the canonical type in actormsg.
+type RestoreForfeitedVTXOResponse = actormsg.RestoreForfeitedVTXOResponse
+
 // CustomForfeitInput is an alias for the canonical type in actormsg.
 type CustomForfeitInput = actormsg.CustomForfeitInput
 

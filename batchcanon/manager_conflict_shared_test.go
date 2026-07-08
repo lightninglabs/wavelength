@@ -3,7 +3,6 @@ package batchcanon
 import (
 	"testing"
 
-	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/stretchr/testify/require"
 )
 
@@ -24,12 +23,12 @@ func TestManagerSharedInputSpendClassifiesPerBatch(t *testing.T) {
 	h.registerBatch(t, &RegisterBatchRequest{
 		BatchTxID:            txA,
 		ConfirmationPkScript: []byte{0x51, 0x20, 0x01},
-		ConsumedInputs:       []wire.OutPoint{shared},
+		ConsumedInputs:       []ConsumedInput{ci(shared)},
 	})
 	h.registerBatch(t, &RegisterBatchRequest{
 		BatchTxID:            txB,
 		ConfirmationPkScript: []byte{0x51, 0x20, 0x02},
-		ConsumedInputs:       []wire.OutPoint{shared},
+		ConsumedInputs:       []ConsumedInput{ci(shared)},
 	})
 
 	// Batch A wins the input and confirms; B never confirms.

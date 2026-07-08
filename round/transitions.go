@@ -18,6 +18,7 @@ import (
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo-client/batchcanon"
 	"github.com/lightninglabs/darepo-client/ledger"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
@@ -4095,6 +4096,30 @@ func buildClientVTXOs(ctx context.Context, checker OwnedScriptChecker,
 	return vtxos, nil
 }
 
+// commitmentInputScripts maps each commitment-tx input outpoint to the
+// pkScript of the output it spends, read from the PSBT's per-input witness
+// UTXO. It is used to stamp the consumed-input pkScripts the batch-canonicality
+// manager needs to register reorg-aware spend watches. Returns nil for a nil
+// packet; an input whose witness UTXO is absent is simply omitted (its watch is
+// skipped downstream rather than failing the whole batch registration).
+func commitmentInputScripts(pkt *psbt.Packet) map[wire.OutPoint][]byte {
+	if pkt == nil {
+		return nil
+	}
+
+	scripts := make(map[wire.OutPoint][]byte, len(pkt.UnsignedTx.TxIn))
+	for i, txIn := range pkt.UnsignedTx.TxIn {
+		if i >= len(pkt.Inputs) {
+			break
+		}
+		if wu := pkt.Inputs[i].WitnessUtxo; wu != nil {
+			scripts[txIn.PreviousOutPoint] = wu.PkScript
+		}
+	}
+
+	return scripts
+}
+
 // ProcessEvent for InputSigSentState.
 func (s *InputSigSentState) ProcessEvent(ctx context.Context, event ClientEvent,
 	env *ClientEnvironment) (*ClientStateTransition, error) {
@@ -4206,16 +4231,32 @@ func (s *InputSigSentState) ProcessEvent(ctx context.Context, event ClientEvent,
 		// round actor can register the batch's reorg-safety lineage. A
 		// double-spend or reorg-out of any of these invalidates the
 		// round-born VTXOs anchored by this batch (darepo#454).
+		// Each consumed input carries the pkScript of the spent output,
+		// sourced from the commitment PSBT's witness UTXOs. The spend
+		// watch the manager arms needs it (lnd filters spend
+		// notifications by output script).
+		inputScripts := commitmentInputScripts(s.CommitmentTx)
 		consumedInputs := make(
-			[]wire.OutPoint, 0,
+			[]batchcanon.ConsumedInput, 0,
 			len(s.Intents.Boarding)+len(s.ForfeitedVTXOs),
 		)
 		for i := range s.Intents.Boarding {
+			op := s.Intents.Boarding[i].Outpoint
 			consumedInputs = append(
-				consumedInputs, s.Intents.Boarding[i].Outpoint,
+				consumedInputs, batchcanon.ConsumedInput{
+					Outpoint: op,
+					PkScript: inputScripts[op],
+				},
 			)
 		}
-		consumedInputs = append(consumedInputs, s.ForfeitedVTXOs...)
+		for _, op := range s.ForfeitedVTXOs {
+			consumedInputs = append(
+				consumedInputs, batchcanon.ConsumedInput{
+					Outpoint: op,
+					PkScript: inputScripts[op],
+				},
+			)
+		}
 
 		// The batch confirmation watch keys on the commitment tx's
 		// batch output. Detection is by txid; the script is what
@@ -4241,6 +4282,7 @@ func (s *InputSigSentState) ProcessEvent(ctx context.Context, event ClientEvent,
 				RoundID:              s.RoundID.String(),
 				CommitmentTxID:       evt.TxID,
 				ConsumedInputs:       consumedInputs,
+				ForfeitedVTXOs:       s.ForfeitedVTXOs,
 				ConfirmationPkScript: confPkScript,
 				CSVExpiryDelta:       sweepDelay,
 				BatchExpiry:          batchExpiry,

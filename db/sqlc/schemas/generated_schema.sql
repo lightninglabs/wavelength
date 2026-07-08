@@ -146,6 +146,14 @@ CREATE TABLE batch_consumed_inputs (
     input_hash BLOB NOT NULL CHECK (length(input_hash) = 32),
     input_index INTEGER NOT NULL CHECK (input_index >= 0),
 
+    -- input_pk_script is the scriptPubKey of the spent output. It is
+    -- required to register the reorg-aware spend watch: lnd's spend
+    -- notifier filters by output script, so a bare outpoint is rejected
+    -- ("an output script must be provided"). Persisting it lets restart
+    -- reconciliation re-arm every watch. NULL only on legacy rows that
+    -- predate script tracking.
+    input_pk_script BLOB,
+
     PRIMARY KEY (batch_txid, input_hash, input_index),
     FOREIGN KEY (batch_txid)
         REFERENCES batch_canonicality(batch_txid) ON DELETE CASCADE

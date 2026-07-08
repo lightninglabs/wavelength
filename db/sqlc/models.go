@@ -74,9 +74,10 @@ type BatchCanonicality struct {
 }
 
 type BatchConsumedInput struct {
-	BatchTxid  []byte
-	InputHash  []byte
-	InputIndex int32
+	BatchTxid     []byte
+	InputHash     []byte
+	InputIndex    int32
+	InputPkScript []byte
 }
 
 type BatchDependentVtxo struct {

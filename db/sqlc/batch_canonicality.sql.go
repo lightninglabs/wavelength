@@ -125,20 +125,29 @@ func (q *Queries) GetBatchCanonicality(ctx context.Context, batchTxid []byte) (B
 }
 
 const InsertBatchConsumedInput = `-- name: InsertBatchConsumedInput :exec
-INSERT INTO batch_consumed_inputs (batch_txid, input_hash, input_index)
-VALUES ($1, $2, $3)
+INSERT INTO batch_consumed_inputs (
+    batch_txid, input_hash, input_index, input_pk_script
+)
+VALUES ($1, $2, $3, $4)
 ON CONFLICT (batch_txid, input_hash, input_index) DO NOTHING
 `
 
 type InsertBatchConsumedInputParams struct {
-	BatchTxid  []byte
-	InputHash  []byte
-	InputIndex int32
+	BatchTxid     []byte
+	InputHash     []byte
+	InputIndex    int32
+	InputPkScript []byte
 }
 
-// InsertBatchConsumedInput records one outpoint consumed by a batch.
+// InsertBatchConsumedInput records one input consumed by a batch, together
+// with the pkScript of the spent output (needed to register the spend watch).
 func (q *Queries) InsertBatchConsumedInput(ctx context.Context, arg InsertBatchConsumedInputParams) error {
-	_, err := q.db.ExecContext(ctx, InsertBatchConsumedInput, arg.BatchTxid, arg.InputHash, arg.InputIndex)
+	_, err := q.db.ExecContext(ctx, InsertBatchConsumedInput,
+		arg.BatchTxid,
+		arg.InputHash,
+		arg.InputIndex,
+		arg.InputPkScript,
+	)
 	return err
 }
 
@@ -233,17 +242,19 @@ func (q *Queries) ListBatchCanonicalityByState(ctx context.Context, state int32)
 }
 
 const ListBatchConsumedInputs = `-- name: ListBatchConsumedInputs :many
-SELECT input_hash, input_index
+SELECT input_hash, input_index, input_pk_script
 FROM batch_consumed_inputs
 WHERE batch_txid = $1
 `
 
 type ListBatchConsumedInputsRow struct {
-	InputHash  []byte
-	InputIndex int32
+	InputHash     []byte
+	InputIndex    int32
+	InputPkScript []byte
 }
 
-// ListBatchConsumedInputs returns the outpoints a batch consumes.
+// ListBatchConsumedInputs returns the inputs a batch consumes, with the
+// pkScript of each spent output.
 func (q *Queries) ListBatchConsumedInputs(ctx context.Context, batchTxid []byte) ([]ListBatchConsumedInputsRow, error) {
 	rows, err := q.db.QueryContext(ctx, ListBatchConsumedInputs, batchTxid)
 	if err != nil {
@@ -253,7 +264,7 @@ func (q *Queries) ListBatchConsumedInputs(ctx context.Context, batchTxid []byte)
 	var items []ListBatchConsumedInputsRow
 	for rows.Next() {
 		var i ListBatchConsumedInputsRow
-		if err := rows.Scan(&i.InputHash, &i.InputIndex); err != nil {
+		if err := rows.Scan(&i.InputHash, &i.InputIndex, &i.InputPkScript); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

@@ -34,9 +34,16 @@ func newFakeStore() *fakeStore {
 	}
 }
 
+// ci builds a ConsumedInput from an outpoint with a placeholder non-empty
+// pkScript. The mock chainsource ignores the script's value, but it must be
+// non-empty so the manager arms the spend watch rather than skipping it.
+func ci(op wire.OutPoint) ConsumedInput {
+	return ConsumedInput{Outpoint: op, PkScript: []byte{0x51}}
+}
+
 func cloneRecord(r *Record) *Record {
 	cp := *r
-	cp.ConsumedInputs = append([]wire.OutPoint(nil), r.ConsumedInputs...)
+	cp.ConsumedInputs = append([]ConsumedInput(nil), r.ConsumedInputs...)
 	cp.DependentVTXOs = append([]wire.OutPoint(nil), r.DependentVTXOs...)
 	cp.ConfirmationPkScript = append(
 		[]byte(nil), r.ConfirmationPkScript...,
@@ -127,7 +134,7 @@ func (s *fakeStore) FindBatchesConsumingOutpoint(_ context.Context,
 	var out []chainhash.Hash
 	for txid, r := range s.records {
 		for _, in := range r.ConsumedInputs {
-			if in == op {
+			if in.Outpoint == op {
 				out = append(out, txid)
 			}
 		}
@@ -339,6 +346,16 @@ type managerHarness struct {
 }
 
 func newManagerHarness(t *testing.T, bestHeight int32) *managerHarness {
+	return newManagerHarnessWithRestore(t, bestHeight, nil)
+}
+
+// newManagerHarnessWithRestore is newManagerHarness with a RestoreConsumedVTXO
+// callback wired into the manager config, for the reverse-dependency
+// (provisional-forfeit restore) tests.
+func newManagerHarnessWithRestore(t *testing.T, bestHeight int32,
+	restore func(ctx context.Context, vtxo wire.OutPoint) error,
+) *managerHarness {
+
 	t.Helper()
 
 	mock := newMockChainSource(bestHeight)
@@ -354,8 +371,9 @@ func newManagerHarness(t *testing.T, bestHeight int32) *managerHarness {
 
 	store := newFakeStore()
 	mgr := NewManager(ManagerConfig{
-		Store:       store,
-		ChainSource: mockActor.Ref(),
+		Store:               store,
+		ChainSource:         mockActor.Ref(),
+		RestoreConsumedVTXO: restore,
 	})
 	mgrActor := actor.NewActor(actor.ActorConfig[ManagerMsg, ManagerResp]{
 		ID:          "batch-canonicality",
@@ -588,7 +606,7 @@ func TestManagerInputConflict(t *testing.T) {
 	h.registerBatch(t, &RegisterBatchRequest{
 		BatchTxID:      txid,
 		CSVExpiryDelta: 50,
-		ConsumedInputs: []wire.OutPoint{input},
+		ConsumedInputs: []ConsumedInput{ci(input)},
 	})
 
 	h.fireConfirmed(t, txid, 101, testBatchTxid(0x33))
@@ -621,7 +639,7 @@ func TestManagerConflictClearsOnSpendReorg(t *testing.T) {
 	h.registerBatch(t, &RegisterBatchRequest{
 		BatchTxID:      txid,
 		CSVExpiryDelta: 50,
-		ConsumedInputs: []wire.OutPoint{input},
+		ConsumedInputs: []ConsumedInput{ci(input)},
 	})
 	h.fireConfirmed(t, txid, 101, testBatchTxid(0x43))
 
@@ -648,7 +666,7 @@ func TestManagerBatchSelfSpendNotConflict(t *testing.T) {
 	h.registerBatch(t, &RegisterBatchRequest{
 		BatchTxID:      txid,
 		CSVExpiryDelta: 50,
-		ConsumedInputs: []wire.OutPoint{input},
+		ConsumedInputs: []ConsumedInput{ci(input)},
 	})
 	h.fireConfirmed(t, txid, 101, testBatchTxid(0x53))
 
@@ -673,7 +691,7 @@ func TestManagerConflictDominatesReorg(t *testing.T) {
 	h.registerBatch(t, &RegisterBatchRequest{
 		BatchTxID:      txid,
 		CSVExpiryDelta: 50,
-		ConsumedInputs: []wire.OutPoint{input},
+		ConsumedInputs: []ConsumedInput{ci(input)},
 	})
 	h.fireConfirmed(t, txid, 101, testBatchTxid(0x63))
 	h.fireConfReorged(t, txid)
@@ -699,7 +717,7 @@ func TestManagerFinalizeReleasesSpendWatches(t *testing.T) {
 	h.registerBatch(t, &RegisterBatchRequest{
 		BatchTxID:      txid,
 		CSVExpiryDelta: 50,
-		ConsumedInputs: []wire.OutPoint{input},
+		ConsumedInputs: []ConsumedInput{ci(input)},
 	})
 	h.fireConfirmed(t, txid, 101, testBatchTxid(0x73))
 	h.fireConfDone(t, txid)
@@ -762,7 +780,7 @@ func TestManagerReconcileReArmsWatches(t *testing.T) {
 				State:              StateProvisional,
 				ConfirmationHeight: fn.Some[int32](90),
 				CSVExpiryDelta:     50,
-				ConsumedInputs:     []wire.OutPoint{input},
+				ConsumedInputs:     []ConsumedInput{ci(input)},
 			},
 		),
 	)

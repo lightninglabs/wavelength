@@ -42,6 +42,20 @@ func outpoint(b byte, index uint32) wire.OutPoint {
 	return wire.OutPoint{Hash: chainhash.Hash{b}, Index: index}
 }
 
+// consumedInput builds a batchcanon.ConsumedInput from an outpoint with a
+// deterministic non-empty pkScript so persistence round-trips can assert the
+// script is stored and reloaded alongside the outpoint.
+func consumedInput(op wire.OutPoint) batchcanon.ConsumedInput {
+	return batchcanon.ConsumedInput{
+		Outpoint: op,
+		PkScript: []byte{
+			0x51,
+			0x20,
+			op.Hash[0],
+		},
+	}
+}
+
 // TestBatchCanonicalityUpsertRoundTrip verifies a record survives an upsert
 // and read with all of its fields, consumed inputs, and dependent VTXOs.
 func TestBatchCanonicalityUpsertRoundTrip(t *testing.T) {
@@ -58,8 +72,9 @@ func TestBatchCanonicalityUpsertRoundTrip(t *testing.T) {
 		ConfirmationBlock:  fn.Some(chainhash.Hash{0xbb}),
 		CSVExpiryDelta:     144,
 		PolicyState:        batchcanon.PolicyStateDefault,
-		ConsumedInputs: []wire.OutPoint{
-			outpoint(0x01, 0), outpoint(0x02, 3),
+		ConsumedInputs: []batchcanon.ConsumedInput{
+			consumedInput(outpoint(0x01, 0)),
+			consumedInput(outpoint(0x02, 3)),
 		},
 		DependentVTXOs: []wire.OutPoint{
 			outpoint(0x03, 1),
@@ -109,8 +124,8 @@ func TestBatchCanonicalityUpsertReplacesEdges(t *testing.T) {
 				BatchTxID:      txid,
 				State:          batchcanon.StateUnseen,
 				CSVExpiryDelta: 10,
-				ConsumedInputs: []wire.OutPoint{
-					outpoint(0x01, 0),
+				ConsumedInputs: []batchcanon.ConsumedInput{
+					consumedInput(outpoint(0x01, 0)),
 				},
 				DependentVTXOs: []wire.OutPoint{
 					outpoint(0x02, 0),
@@ -127,8 +142,8 @@ func TestBatchCanonicalityUpsertReplacesEdges(t *testing.T) {
 				BatchTxID:      txid,
 				State:          batchcanon.StateProvisional,
 				CSVExpiryDelta: 10,
-				ConsumedInputs: []wire.OutPoint{
-					outpoint(0x09, 2),
+				ConsumedInputs: []batchcanon.ConsumedInput{
+					consumedInput(outpoint(0x09, 2)),
 				},
 				DependentVTXOs: nil,
 			},
@@ -137,7 +152,10 @@ func TestBatchCanonicalityUpsertReplacesEdges(t *testing.T) {
 
 	got, err := store.GetBatch(ctx, txid)
 	require.NoError(t, err)
-	require.Equal(t, []wire.OutPoint{outpoint(0x09, 2)}, got.ConsumedInputs)
+	require.Equal(
+		t, []batchcanon.ConsumedInput{consumedInput(outpoint(0x09, 2))},
+		got.ConsumedInputs,
+	)
 	require.Empty(t, got.DependentVTXOs)
 }
 
@@ -297,7 +315,9 @@ func TestBatchCanonicalityFindByConsumedOutpoint(t *testing.T) {
 				BatchTxID:      batchA,
 				State:          batchcanon.StateProvisional,
 				CSVExpiryDelta: 1,
-				ConsumedInputs: []wire.OutPoint{shared},
+				ConsumedInputs: []batchcanon.ConsumedInput{
+					consumedInput(shared),
+				},
 			},
 		),
 	)
@@ -308,7 +328,9 @@ func TestBatchCanonicalityFindByConsumedOutpoint(t *testing.T) {
 				BatchTxID:      batchB,
 				State:          batchcanon.StateProvisional,
 				CSVExpiryDelta: 1,
-				ConsumedInputs: []wire.OutPoint{shared},
+				ConsumedInputs: []batchcanon.ConsumedInput{
+					consumedInput(shared),
+				},
 			},
 		),
 	)

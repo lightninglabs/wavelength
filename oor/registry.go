@@ -10,6 +10,7 @@ import (
 
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/batchcanon"
 	"github.com/lightninglabs/darepo-client/build"
 	clientdb "github.com/lightninglabs/darepo-client/db"
 	"github.com/lightninglabs/darepo-client/ledger"
@@ -85,6 +86,11 @@ type OORRegistryConfig struct {
 	TimeoutActor         actor.TellOnlyRef[timeout.Msg]
 	CallbackRef          actor.TellOnlyRef[*timeout.ExpiredMsg]
 	ActorSystem          actor.SystemContext
+
+	// BatchCanonicality, when set, is forwarded to every spawned session
+	// actor so a received VTXO's lineage batches get registered with the
+	// reorg-safety gate as they materialize. None disables registration.
+	BatchCanonicality fn.Option[actor.TellOnlyRef[batchcanon.ManagerMsg]]
 }
 
 // OORRegistryActor is the thin coordinator over per-session OOR actors. It
@@ -1479,6 +1485,7 @@ func (r *oorRegistryBehavior) childConfig(sessionID SessionID,
 		Limits:               normalizeReceiveLimits(r.cfg.Limits),
 		TimeoutActor:         r.cfg.TimeoutActor,
 		CallbackRef:          r.cfg.CallbackRef,
+		BatchCanonicality:    r.cfg.BatchCanonicality,
 		Registry:             r.selfRef,
 	}
 }

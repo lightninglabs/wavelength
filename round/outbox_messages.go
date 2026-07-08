@@ -11,6 +11,7 @@ import (
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/batchcanon"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
@@ -795,12 +796,21 @@ type VTXOCreatedNotification struct {
 	// CommitmentTxID is the txid of the confirmed commitment transaction.
 	CommitmentTxID chainhash.Hash
 
-	// ConsumedInputs are the outpoints the commitment tx spends that this
-	// client contributed: boarding input outpoints plus forfeited VTXO
-	// outpoints. The round actor forwards them to the
-	// BatchCanonicalityManager so a reorg-out or double-spend of a consumed
-	// input invalidates the round-born VTXOs (darepo#454, F1/F3/F6).
-	ConsumedInputs []wire.OutPoint
+	// ConsumedInputs are the inputs the commitment tx spends that this
+	// client contributed: boarding inputs plus forfeited VTXOs, each
+	// carrying the pkScript of the spent output. The round actor forwards
+	// them to the BatchCanonicalityManager so a reorg-out or double-spend
+	// of a consumed input invalidates the round-born VTXOs (darepo#454,
+	// F1/F3/F6). The pkScript is required to register the spend watch (lnd
+	// filters spend notifications by output script).
+	ConsumedInputs []batchcanon.ConsumedInput
+
+	// ForfeitedVTXOs are the VTXOs (from prior rounds) this round forfeits.
+	// The round actor forwards them to the BatchCanonicalityManager as
+	// reverse-dependency edges so that if THIS round's commitment is later
+	// invalidated (its forfeit reversed by a reorg/conflict), the forfeited
+	// VTXOs are restored to a spendable state (darepo#454, F6).
+	ForfeitedVTXOs []wire.OutPoint
 
 	// ConfirmationPkScript is the commitment-tx batch output script the
 	// canonicality confirmation watch keys on. Confirmation detection is by

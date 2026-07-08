@@ -106,6 +106,24 @@ const (
 	// config knob.
 	DefaultMaxOperatorFeeSat int64 = 1_000_000
 
+	// DefaultReorgSafetyDepth is the reorg-safety / finality depth on
+	// networks with conventional reorg behavior (mainnet, regtest, simnet,
+	// signet): the confirmation depth at which a batch (commitment) tx is
+	// treated as final and its reorg-aware chain watches (confirmation +
+	// consumed-input spend) are released. It bounds the deepest reorg the
+	// daemon actively detects and recovers from. Six matches the wider
+	// Lightning stack's finality threshold.
+	DefaultReorgSafetyDepth uint32 = 6
+
+	// DefaultTestnetReorgSafetyDepth is the deeper default used on testnet,
+	// whose 20-minute minimum-difficulty rule routinely produces reorgs far
+	// past the conventional six blocks (occasionally many tens to hundreds
+	// of blocks). 100 covers the deep reorgs observed on testnet3 with
+	// margin while keeping watch lifetimes bounded; operators on an
+	// unusually volatile network can raise it via the `reorgsafetydepth`
+	// knob.
+	DefaultTestnetReorgSafetyDepth uint32 = 100
+
 	// RPCTransportGRPC selects native gRPC for daemon-owned outbound RPCs.
 	RPCTransportGRPC = "grpc"
 
@@ -271,6 +289,17 @@ type Config struct {
 	// (0.01 BTC), generous enough for regtest/testnet but well
 	// below any reasonable mainnet abuse threshold.
 	MaxOperatorFeeSat int64 `mapstructure:"maxoperatorfeesat"`
+
+	// ReorgSafetyDepth is the confirmation depth at which a batch
+	// (commitment) tx is treated as final and its reorg-aware chain watches
+	// (confirmation + consumed-input spend) are released. It bounds the
+	// deepest reorg the daemon actively detects and recovers from across
+	// the batch-canonicality gate and the unilateral-exit txconfirm
+	// watches. Zero selects a network-aware default via
+	// ResolveReorgSafetyDepth (DefaultReorgSafetyDepth, or the deeper
+	// DefaultTestnetReorgSafetyDepth on testnet). Raise it on networks
+	// prone to deep reorgs.
+	ReorgSafetyDepth uint32 `mapstructure:"reorgsafetydepth"`
 
 	// OOR configures off-band receive/send actor behavior.
 	OOR *OORConfig `mapstructure:"oor"`
@@ -1245,6 +1274,25 @@ func networkToChainParams(network string) (*chaincfg.Params, error) {
 // this helper.
 func (c *Config) NetworkDir() string {
 	return filepath.Join(c.DataDir, "data", c.Network)
+}
+
+// ResolveReorgSafetyDepth returns the configured reorg-safety / finality
+// depth, or a network-aware default when unset (zero). Testnet gets the
+// deeper DefaultTestnetReorgSafetyDepth because its minimum-difficulty rule
+// produces reorgs far past the conventional six blocks; every other network
+// uses DefaultReorgSafetyDepth. The result is always positive, so chain
+// watches always finalize (a zero depth would disable Done synthesis and leak
+// watch state).
+func (c *Config) ResolveReorgSafetyDepth() uint32 {
+	if c.ReorgSafetyDepth > 0 {
+		return c.ReorgSafetyDepth
+	}
+
+	if c.Network == "testnet" {
+		return DefaultTestnetReorgSafetyDepth
+	}
+
+	return DefaultReorgSafetyDepth
 }
 
 // LogDir returns the network-scoped log directory. Path fields are

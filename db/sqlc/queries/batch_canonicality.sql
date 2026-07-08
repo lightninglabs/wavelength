@@ -66,9 +66,12 @@ SET confirmation_height = NULL, confirmation_block_hash = NULL, updated_at = $2
 WHERE batch_txid = $1;
 
 -- name: InsertBatchConsumedInput :exec
--- InsertBatchConsumedInput records one outpoint consumed by a batch.
-INSERT INTO batch_consumed_inputs (batch_txid, input_hash, input_index)
-VALUES ($1, $2, $3)
+-- InsertBatchConsumedInput records one input consumed by a batch, together
+-- with the pkScript of the spent output (needed to register the spend watch).
+INSERT INTO batch_consumed_inputs (
+    batch_txid, input_hash, input_index, input_pk_script
+)
+VALUES ($1, $2, $3, $4)
 ON CONFLICT (batch_txid, input_hash, input_index) DO NOTHING;
 
 -- name: DeleteBatchConsumedInputs :exec
@@ -77,8 +80,9 @@ ON CONFLICT (batch_txid, input_hash, input_index) DO NOTHING;
 DELETE FROM batch_consumed_inputs WHERE batch_txid = $1;
 
 -- name: ListBatchConsumedInputs :many
--- ListBatchConsumedInputs returns the outpoints a batch consumes.
-SELECT input_hash, input_index
+-- ListBatchConsumedInputs returns the inputs a batch consumes, with the
+-- pkScript of each spent output.
+SELECT input_hash, input_index, input_pk_script
 FROM batch_consumed_inputs
 WHERE batch_txid = $1;
 

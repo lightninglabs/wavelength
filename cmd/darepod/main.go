@@ -175,14 +175,7 @@ func newRootCmd() *cobra.Command {
 			"run on mainnet (required when network=mainnet)",
 	)
 
-	// Cap the per-round operator fee the client is willing to pay
-	// under the #270 seal-time fee handshake. Zero is rejected at
-	// config-load time as an explicit misconfiguration.
-	f.Int64(
-		"maxoperatorfeesat", cfg.MaxOperatorFeeSat, "maximum "+
-			"operator fee (sats) the client will accept per "+
-			"seal-time quote; must be positive",
-	)
+	registerProtocolSafetyFlags(f, cfg)
 
 	// EagerRoundJoin makes the wallet actor drive round-joining
 	// without a follow-up Board / LeaveVTXOs RPC. The default is
@@ -341,6 +334,32 @@ func registerArkServerFlags(f *pflag.FlagSet, cfg *darepod.Config) {
 	f.String(
 		"server.macaroonpath", cfg.Server.MacaroonPath,
 		"path to ark operator RPC macaroon",
+	)
+}
+
+// registerProtocolSafetyFlags registers the client-side protocol safety knobs:
+// the per-round operator fee cap and the reorg-safety / finality depth.
+func registerProtocolSafetyFlags(f *pflag.FlagSet, cfg *darepod.Config) {
+	// Cap the per-round operator fee the client is willing to pay under the
+	// #270 seal-time fee handshake. Zero is rejected at config-load time as
+	// an explicit misconfiguration.
+	f.Int64(
+		"maxoperatorfeesat", cfg.MaxOperatorFeeSat, "maximum "+
+			"operator fee (sats) the client will accept per "+
+			"seal-time quote; must be positive",
+	)
+
+	// Reorg-safety / finality depth: the confirmation depth at which a
+	// batch is treated as final and its reorg-aware chain watches are
+	// released. Bounds the deepest reorg the daemon detects and recovers
+	// from. Zero selects a network-aware default (6, or 100 on testnet,
+	// whose minimum-difficulty rule produces deep reorgs).
+	f.Uint32(
+		"reorgsafetydepth", cfg.ReorgSafetyDepth, "confirmation "+
+			"depth at which a batch is treated as final and "+
+			"its reorg-aware chain watches are released; "+
+			"bounds the deepest reorg the daemon recovers "+
+			"from. 0 = network-aware default (6; 100 on testnet)",
 	)
 }
 

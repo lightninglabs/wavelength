@@ -202,6 +202,17 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
   hands it to `lazyChainResolver.Set`.
 - `unrollMaxFeeRate` — `cfg.Unroll.MaxFeeRateSatPerVByte` if
   positive, else zero (each downstream uses its own default).
+- `initBatchCanonicality` — wires the reorg-safety gate live during
+  `startWalletDependentActors` (step 9b, AFTER the wallet but BEFORE the
+  VTXO manager). Builds the durable `db.BatchCanonicalityStore`,
+  backfills records from existing VTXOs anchored to the current best
+  height (via `batchCanonBestHeight` → chainsource `BestHeightRequest`),
+  registers + `SetSelfRef`s the `batchcanon.Manager` under
+  `"batch-canonicality"`, and calls `Reconcile` so a reorg that landed
+  while the daemon was down is re-detected on boot. Stashes the store on
+  `s.batchCanonStore` (fed to the VTXO + unroll gates) and the manager
+  ref on `s.batchCanonRef` (fed to the round + OOR batch-registration
+  paths). Uses `s.clk`, never `clock.NewDefaultClock()`.
 
 ### Test Hooks (NOT for production)
 
@@ -324,6 +335,15 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
   `initUnrollSubsystem` later calls `lazyChainResolver.Set(...)`.
   Any code that also needs this seam must run AFTER
   `initUnrollSubsystem` or it will see an unset target.
+- **Batch-canonicality ordering**: `initBatchCanonicality` runs in
+  `startWalletDependentActors` AFTER the wallet but BEFORE the VTXO
+  manager, so `s.batchCanonStore` / `s.batchCanonRef` are populated when
+  the VTXO, round, unroll, and OOR configs are assembled. All four gate
+  fields default to nil/`None` (a permissive no-op) when unset, so the
+  reorg-safety gate is dormant unless this wiring runs — which it always
+  does in the daemon, but tests that build those configs directly can
+  leave it off. Manager registration needs the chain source ref, so this
+  must stay after the chain source is registered.
 - `initUnrollSubsystem` creates its own `dbStore` + `vtxoStore` to
   decouple the unroll store lifecycle from the VTXO manager's; the
   persisted `s.ueStore` is reused by the `GetUnrollStatus` fallback

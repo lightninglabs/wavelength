@@ -49,13 +49,30 @@ type Record struct {
 	// PolicyState.
 	PolicyState PolicyState
 
-	// ConsumedInputs are the outpoints this batch tx spends. They are
-	// tracked so the manager can watch each one for a conflicting spend.
-	ConsumedInputs []wire.OutPoint
+	// ConsumedInputs are the inputs this batch tx spends. They are tracked
+	// so the manager can watch each one for a conflicting spend.
+	ConsumedInputs []ConsumedInput
 
 	// DependentVTXOs are the VTXO outpoints anchored by this batch. Their
 	// derived availability follows this batch's canonicality.
 	DependentVTXOs []wire.OutPoint
+}
+
+// ConsumedInput is one input a batch (commitment) tx spends, paired with the
+// pkScript of the output being spent. The pkScript is required to register the
+// reorg-aware spend watch: lnd's spend notifier filters by the output's script,
+// so a bare outpoint is rejected ("an output script must be provided"). It is
+// persisted alongside the outpoint so the watch can be re-armed after a
+// restart.
+type ConsumedInput struct {
+	// Outpoint is the spent output.
+	Outpoint wire.OutPoint
+
+	// PkScript is the scriptPubKey of the spent output, used to register
+	// the spend watch. May be empty only for legacy/backfilled rows that
+	// predate script tracking; such inputs cannot be watched on
+	// light-client backends.
+	PkScript []byte
 }
 
 // EffectiveExpiry derives the absolute expiry height from the current
