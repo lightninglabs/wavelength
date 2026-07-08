@@ -12,14 +12,14 @@ const (
 	AppMajor uint = 0
 
 	// AppMinor defines the minor version of this binary.
-	AppMinor uint = 0
+	AppMinor uint = 1
 
 	// AppPatch defines the application patch for this binary.
-	AppPatch uint = 2
+	AppPatch uint = 99
 
 	// AppPreRelease defines the pre-release version suffix for this
 	// binary.
-	AppPreRelease = "alpha"
+	AppPreRelease = ""
 )
 
 var (
