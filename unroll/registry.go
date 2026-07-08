@@ -11,6 +11,7 @@ import (
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/batchcanon"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo-client/ledger"
 	"github.com/lightninglabs/darepo-client/txconfirm"
@@ -110,6 +111,17 @@ type RegistryConfig struct {
 
 	// VTXOStore loads target descriptors for child actors.
 	VTXOStore vtxo.VTXOStore
+
+	// BatchCanonicality, when set, gates fresh unroll admission on the
+	// target VTXO's source-lineage canonicality (darepo#454): an unroll is
+	// refused only when a batch in the VTXO's lineage is permanently
+	// invalidated (conflict-finalized), since the exit tree can then never
+	// confirm. Transient reorgs are admitted and the unroll self-reconciles
+	// its anchors (#410). Nil disables the gate (the default until the
+	// batch producers register batches); it is permissive otherwise (unseen
+	// / unregistered lineage does not block), and only fresh admissions are
+	// gated — an already-running unroll is never interrupted.
+	BatchCanonicality batchcanon.Store
 
 	// TxConfirmRef is the shared tx-confirmation actor.
 	TxConfirmRef actor.ActorRef[txconfirm.Msg, txconfirm.Resp]
@@ -398,6 +410,105 @@ func (r *registryBehavior) OnStop(context.Context) error {
 	return nil
 }
 
+// ErrSourceLineageUnavailable is returned by EnsureUnroll when the target
+// VTXO's source lineage is permanently off the canonical chain (a batch in its
+// lineage had a consumed input double-spent past finality), so its exit tree
+// can never confirm. This is terminal — there is nothing to retry.
+var ErrSourceLineageUnavailable = errors.New("vtxo source lineage " +
+	"unavailable for unroll")
+
+// refuseIfSourceLineageInvalidated returns ErrSourceLineageUnavailable (wrapped
+// with the target outpoint) when the target VTXO's source lineage is
+// permanently invalidated, so a fresh unroll must not be admitted. It is a
+// no-op when the gate is dormant or the lineage is still recoverable.
+func (r *registryBehavior) refuseIfSourceLineageInvalidated(ctx context.Context,
+	outpoint wire.OutPoint) error {
+
+	if r.sourceLineageInvalidated(ctx, outpoint) {
+		return fmt.Errorf("%w: %s", ErrSourceLineageUnavailable,
+			outpoint)
+	}
+
+	return nil
+}
+
+// sourceLineageInvalidated reports whether the target VTXO's source lineage is
+// PERMANENTLY invalidated (a batch in its lineage is conflict-finalized), in
+// which case the exit tree can never confirm and a fresh unroll is pointless.
+//
+// It deliberately blocks ONLY the terminal Invalidated verdict, not the
+// transient LimboReorg / LimboConflict states: a reorged-out batch (no input
+// conflict) is expected to re-confirm on its own, and a not-yet-final conflict
+// may still resolve in the batch's favor. Blocking those would risk dropping a
+// needed critical-expiry / fraud-triggered exit during exactly the window it
+// matters — and the critical-expiry safety net reaches this gate via a
+// fire-and-forget Tell, so a refusal cannot be observed or retried. An
+// already-admitted unroll tolerates a transiently-absent parent by reconciling
+// its own chain anchors (#410), so a fresh safety exit should be admitted for
+// the same transient condition rather than refused.
+//
+// It is a no-op (returns false) when no canonicality store is wired, and it is
+// fail-permissive: any descriptor-load or canonicality lookup error logs and
+// returns false rather than blocking an exit, mirroring the gate's permissive
+// "unseen / unregistered lineage does not block" stance.
+func (r *registryBehavior) sourceLineageInvalidated(ctx context.Context,
+	outpoint wire.OutPoint) bool {
+
+	if r.cfg.BatchCanonicality == nil {
+		return false
+	}
+
+	desc, err := r.cfg.VTXOStore.GetVTXO(ctx, outpoint)
+	if err != nil {
+		r.log.DebugS(ctx, "Unroll lineage gate: vtxo load failed, "+
+			"permitting admission", err,
+			slog.String("outpoint", outpoint.String()))
+
+		return false
+	}
+
+	avail, err := batchcanon.LineageAvailability(
+		ctx, r.cfg.BatchCanonicality,
+		unrollLineageCommitmentTxids(desc)...,
+	)
+	if err != nil {
+		r.log.DebugS(ctx, "Unroll lineage gate: availability lookup "+
+			"failed, permitting admission", err,
+			slog.String("outpoint", outpoint.String()))
+
+		return false
+	}
+
+	return avail == batchcanon.Invalidated
+}
+
+// unrollLineageCommitmentTxids returns the deduped commitment txids in a VTXO's
+// lineage: its direct commitment tx plus every distinct ancestor commitment tx
+// (zero-skipped). Mirrors the vtxo package's selection-gate helper for the
+// unroll admission gate.
+func unrollLineageCommitmentTxids(desc *vtxo.Descriptor) []chainhash.Hash {
+	seen := make(map[chainhash.Hash]struct{}, len(desc.Ancestry)+1)
+	txids := make([]chainhash.Hash, 0, len(desc.Ancestry)+1)
+
+	add := func(txid chainhash.Hash) {
+		if txid == (chainhash.Hash{}) {
+			return
+		}
+		if _, ok := seen[txid]; ok {
+			return
+		}
+		seen[txid] = struct{}{}
+		txids = append(txids, txid)
+	}
+
+	add(desc.CommitmentTxID)
+	for i := range desc.Ancestry {
+		add(desc.Ancestry[i].CommitmentTxID)
+	}
+
+	return txids
+}
+
 // handleEnsure is the admission gate for new unroll jobs. It runs a
 // four-stage check to decide whether the caller is re-asking for an
 // already-tracked target or requesting a brand-new unroll, spawns and
@@ -544,6 +655,15 @@ func (r *registryBehavior) handleEnsure(ctx context.Context,
 				Created: false,
 			})
 		}
+	}
+
+	// Refuse a fresh unroll only when the target's source lineage is
+	// permanently invalidated (see sourceLineageInvalidated); transient
+	// reorgs are admitted and self-reconcile.
+	if err := r.refuseIfSourceLineageInvalidated(
+		ctx, req.Outpoint,
+	); err != nil {
+		return fn.Err[RegistryResp](err)
 	}
 
 	height, err := r.queryBestHeight(ctx)
