@@ -541,6 +541,7 @@ func (a *RoundClientActor) registerBatchCanonicality(ctx context.Context,
 		ConfirmationPkScript: n.ConfirmationPkScript,
 		CSVExpiryDelta:       n.CSVExpiryDelta,
 		ConsumedInputs:       n.ConsumedInputs,
+		ForfeitedVTXOs:       n.ForfeitedVTXOs,
 		DependentVTXOs:       dependents,
 	}
 

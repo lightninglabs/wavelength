@@ -29,6 +29,7 @@ import (
 	"github.com/lightninglabs/lndclient"
 	"github.com/lightninglabs/wavelength/arkrpc"
 	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/batchcanon"
 	"github.com/lightninglabs/wavelength/btcwbackend"
 	"github.com/lightninglabs/wavelength/build"
 	"github.com/lightninglabs/wavelength/chainbackends"
@@ -385,6 +386,19 @@ type Server struct {
 	// immediately, then wired to the real target once the unroll
 	// subsystem is initialized.
 	lazyChainResolver *vtxo.LazyChainResolver
+
+	// batchCanonStore is the durable batch-canonicality store backing the
+	// VTXO coin-selection and unroll-admission reorg-safety gates. They
+	// read batch lineage canonicality lazily at admission time, so a nil
+	// store (e.g. before the wallet-dependent actors start) is a no-op
+	// gate rather than a hard dependency.
+	batchCanonStore batchcanon.Store
+
+	// batchCanonRef is the BatchCanonicalityManager actor ref. The round
+	// and OOR producers Tell it a RegisterBatchRequest as their VTXOs are
+	// born so each lineage batch gets reorg-aware conf/spend watches.
+	// None until startWalletDependentActors registers the manager.
+	batchCanonRef fn.Option[actor.TellOnlyRef[batchcanon.ManagerMsg]]
 
 	serverConn        *grpc.ClientConn
 	arkClient         arkrpc.ArkServiceClient
@@ -2082,13 +2096,16 @@ func (s *Server) registerChainSourceActor(
 		chainsource.ChainSourceConfig{
 			Backend: s.chainBackend,
 			System:  s.actorSystem,
-			// Enable height-based Done synthesis at the default
-			// safety depth. Without this, conf/spend sub-actors
-			// driven through lndclient (whose Done channel is
-			// allocated-but-never-written) would never receive a
-			// finality signal, and reorg-aware consumers like
-			// txconfirm would leak watch state forever.
-			FinalityDepth: chainsource.DefaultFinalityDepth,
+			// Enable height-based Done synthesis at the
+			// operator-configured reorg-safety depth (network-aware
+			// default; deeper on testnet). Without this, conf/spend
+			// sub-actors driven through lndclient (whose Done
+			// channel is allocated-but-never-written) would never
+			// receive a finality signal, and reorg-aware consumers
+			// like txconfirm and the batch-canonicality manager
+			// would leak watch state forever. The depth also bounds
+			// the deepest reorg those consumers detect.
+			FinalityDepth: s.cfg.ResolveReorgSafetyDepth(),
 		},
 	)
 
@@ -2292,6 +2309,18 @@ func (s *Server) startWalletDependentActors(ctx context.Context,
 		return err
 	}
 	s.walletRef = fn.Some(walletRef)
+
+	// -------------------------------------------------------
+	// 9b. Build the batch-canonicality store and manager. The
+	//     store backs the VTXO and unroll reorg-safety gates;
+	//     the manager ref lets the round and OOR producers
+	//     register batches as their VTXOs are born. Built before
+	//     the VTXO manager so its config can carry the store
+	//     directly without a post-Start mutation.
+	// -------------------------------------------------------
+	if err := s.initBatchCanonicality(ctx, chainSourceRef); err != nil {
+		return err
+	}
 
 	// -------------------------------------------------------
 	// 10. Start the VTXO manager before the round actor so
@@ -4069,6 +4098,7 @@ func (s *Server) initRoundActor(ctx context.Context,
 		OwnedScriptChecker:   scriptChecker,
 		OwnedScriptRegistrar: scriptRegistrar,
 		LedgerSink:           fn.Some(ledger.NewSink(s.actorSystem)),
+		BatchCanonicality:    s.batchCanonRef,
 		MetricsSink:          s.metricsSink,
 		ForfeitCollectionTimeout: s.cfg.
 			ForfeitCollectionTimeout,
@@ -4118,6 +4148,135 @@ func (s *Server) dropCustomForfeitSigningContexts(_ context.Context,
 // initVTXOManager creates, registers, and starts the VTXO manager actor.
 // The manager recovers persisted VTXOs on startup and spawns one VTXO actor
 // per live descriptor.
+// initBatchCanonicality builds the durable batch-canonicality store, backfills
+// canonicality records from the VTXOs already in the DB, and starts the
+// BatchCanonicalityManager actor that arms reorg-aware confirmation and spend
+// watches on every tracked batch. The store and manager ref are stashed on the
+// Server so the VTXO, round, unroll, and OOR subsystems can consult and feed
+// the reorg-safety gate. It must run after the chain source is registered: it
+// needs the current best height to anchor backfilled records and the chain
+// source ref to arm watches.
+func (s *Server) initBatchCanonicality(ctx context.Context,
+	chainSourceRef actor.ActorRef[
+		chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
+	]) error {
+
+	dbStore := db.NewStore(
+		s.db.DB, s.db.Queries, s.db.Backend(),
+		s.subLogger(db.Subsystem),
+	)
+	canonStore := dbStore.NewBatchCanonicalityStore(s.clk)
+
+	// Seed canonicality records for batches anchoring VTXOs already in the
+	// DB so historical lineage is gated too, not just batches born after
+	// this start. Backfill anchors each record relative to the live tip,
+	// so a record's confirmation depth is correct on the first reconcile.
+	bestHeight, err := s.batchCanonBestHeight(ctx, chainSourceRef)
+	if err != nil {
+		return fmt.Errorf("unable to read best height for batch "+
+			"canonicality backfill: %w", err)
+	}
+	created, err := canonStore.BackfillFromVTXOs(
+		ctx, bestHeight, s.cfg.ResolveReorgSafetyDepth(),
+	)
+	if err != nil {
+		return fmt.Errorf("unable to backfill batch canonicality: %w",
+			err)
+	}
+
+	mgr := batchcanon.NewManager(batchcanon.ManagerConfig{
+		Store:               canonStore,
+		ChainSource:         chainSourceRef,
+		Log:                 fn.Some(s.subLogger("BCAN")),
+		RestoreConsumedVTXO: s.restoreForfeitedVTXO,
+	})
+	mgrRef := actor.RegisterWithSystem(
+		s.actorSystem, "batch-canonicality",
+		batchcanon.ManagerServiceKey, mgr,
+	)
+	mgr.SetSelfRef(mgrRef)
+
+	// Reconcile re-arms watches for every persisted record (the freshly
+	// backfilled ones plus any that survived a restart) so a reorg that
+	// lands while the daemon is down is still detected on the next start.
+	if err := mgr.Reconcile(ctx); err != nil {
+		s.actorSystem.StopAndRemoveActor("batch-canonicality")
+
+		return fmt.Errorf("unable to reconcile batch canonicality: %w",
+			err)
+	}
+
+	s.batchCanonStore = canonStore
+	s.batchCanonRef = fn.Some[actor.TellOnlyRef[batchcanon.ManagerMsg]](
+		mgrRef,
+	)
+
+	s.log.InfoS(ctx, "Batch canonicality manager registered and started",
+		slog.Int("backfilled_records", created),
+	)
+
+	return nil
+}
+
+// batchCanonBestHeight asks the chain source for the current best block height,
+// used to anchor batch-canonicality records during backfill.
+func (s *Server) batchCanonBestHeight(ctx context.Context,
+	chainSourceRef actor.ActorRef[
+		chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
+	]) (int32, error) {
+
+	resp, err := chainSourceRef.Ask(
+		ctx, &chainsource.BestHeightRequest{},
+	).Await(ctx).Unpack()
+	if err != nil {
+		return 0, err
+	}
+
+	heightResp, ok := resp.(*chainsource.BestHeightResponse)
+	if !ok {
+		return 0, fmt.Errorf("unexpected best-height response type %T",
+			resp)
+	}
+
+	return heightResp.Height, nil
+}
+
+// restoreForfeitedVTXOTimeout bounds the cross-actor ask the batch-canonicality
+// manager issues to the VTXO manager to roll a forfeited VTXO back to live. It
+// runs on the canonicality manager's actor turn, so the bound stops a slow or
+// wedged VTXO manager from stalling canonicality processing. 30s is generous
+// for an in-process spawn + single status write while still being a hard cap.
+const restoreForfeitedVTXOTimeout = 30 * time.Second
+
+// restoreForfeitedVTXO rolls a forfeited VTXO back to a spendable state when
+// the batch that consumed it via forfeit has been invalidated. It is wired as
+// the batch-canonicality manager's RestoreConsumedVTXO callback. The VTXO
+// manager ref is resolved lazily from s.vtxoMgrRef: this callback only fires on
+// a chain event, long after the VTXO manager registers (step 10), so the ref is
+// always populated by the time it runs.
+func (s *Server) restoreForfeitedVTXO(ctx context.Context,
+	outpoint wire.OutPoint) error {
+
+	if !s.vtxoMgrRef.IsSome() {
+		return fmt.Errorf("vtxo manager not ready to restore "+
+			"forfeited vtxo %s", outpoint)
+	}
+
+	// Detach from the canonicality manager's turn context (this runs on its
+	// actor goroutine) and bound the ask so a slow VTXO manager cannot
+	// stall canonicality processing indefinitely.
+	askCtx, cancel := context.WithTimeout(
+		context.WithoutCancel(ctx), restoreForfeitedVTXOTimeout,
+	)
+	defer cancel()
+
+	_, err := s.vtxoMgrRef.UnsafeFromSome().Ask(
+		askCtx, &vtxo.RestoreForfeitedVTXORequest{Outpoint: outpoint},
+	).Await(askCtx).Unpack()
+
+	return err
+}
+
 func (s *Server) initVTXOManager(ctx context.Context,
 	chainSourceRef actor.ActorRef[
 		chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
@@ -4163,6 +4322,7 @@ func (s *Server) initVTXOManager(ctx context.Context,
 		RoundActor:               roundActor,
 		LedgerSink:               fn.Some(ledgerSink),
 		ChainResolver:            chainResolver,
+		BatchCanonicality:        s.batchCanonStore,
 		RefreshFeeQuoter:         s.autoRefreshFeeQuoter(),
 		FetchOperatorKey:         s.fetchCurrentOperatorPubKey,
 		ForfeitParticipantSigner: s.forfeitSignatures.sign,
@@ -4373,19 +4533,20 @@ func (s *Server) initOORActor(ctx context.Context,
 	s.oorSessionStore = registryStore
 
 	s.oorRegistry, err = oor.NewOORRegistryActor(oor.OORRegistryConfig{
-		Log:              fn.Some(s.subLogger(oor.Subsystem)),
-		Signer:           oorSigner,
-		IncomingHandler:  outboxHandler,
-		RegistryStore:    registryStore,
-		DeliveryStore:    s.deliveryStore,
-		ServerConn:       s.runtime.TellRef(),
-		VTXOManager:      vtxoManagerRef,
-		SpendCompleter:   s.oorCompleteSpend,
-		SpendReleaser:    s.oorReleaseSpend,
-		ReservationStore: reservationStore,
-		PackageStore:     packageStore,
-		VTXOStore:        vtxoStore,
-		LedgerSink:       fn.Some(ledger.NewSink(s.actorSystem)),
+		Log:               fn.Some(s.subLogger(oor.Subsystem)),
+		Signer:            oorSigner,
+		IncomingHandler:   outboxHandler,
+		RegistryStore:     registryStore,
+		DeliveryStore:     s.deliveryStore,
+		ServerConn:        s.runtime.TellRef(),
+		VTXOManager:       vtxoManagerRef,
+		SpendCompleter:    s.oorCompleteSpend,
+		SpendReleaser:     s.oorReleaseSpend,
+		ReservationStore:  reservationStore,
+		PackageStore:      packageStore,
+		VTXOStore:         vtxoStore,
+		BatchCanonicality: s.batchCanonRef,
+		LedgerSink:        fn.Some(ledger.NewSink(s.actorSystem)),
 		IncomingVTXOObserver: func(ctx context.Context,
 			descs []*vtxo.Descriptor) error {
 
@@ -5332,12 +5493,13 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 		Store: &unroll.DBRegistryStore{
 			UEStore: ueStore,
 		},
-		DeliveryStore:  s.deliveryStore,
-		ProofAssembler: proofAssembler,
-		VTXOStore:      vtxoStore,
-		TxConfirmRef:   unrollTxConfirmRef,
-		ChainSource:    chainSourceRef,
-		Wallet:         unrollWallet,
+		DeliveryStore:     s.deliveryStore,
+		ProofAssembler:    proofAssembler,
+		VTXOStore:         vtxoStore,
+		TxConfirmRef:      unrollTxConfirmRef,
+		ChainSource:       chainSourceRef,
+		Wallet:            unrollWallet,
+		BatchCanonicality: s.batchCanonStore,
 		LedgerSink: fn.Some(
 			ledger.NewSink(s.actorSystem),
 		),

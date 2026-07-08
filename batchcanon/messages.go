@@ -41,12 +41,23 @@ type RegisterBatchRequest struct {
 	// CSVExpiryDelta is the batch's CSV-relative expiry timeout in blocks.
 	CSVExpiryDelta int32
 
-	// ConsumedInputs are the outpoints the batch tx spends. Each gets a
-	// reorg-aware spend watch so a conflicting double-spend is detected.
-	ConsumedInputs []wire.OutPoint
+	// ConsumedInputs are the inputs the batch tx spends, each carrying the
+	// pkScript of the spent output. Each gets a reorg-aware spend watch so
+	// a conflicting double-spend is detected; the pkScript is required to
+	// register that watch (lnd's spend notifier filters by output script).
+	ConsumedInputs []ConsumedInput
 
 	// DependentVTXOs are the VTXO outpoints anchored by this batch.
 	DependentVTXOs []wire.OutPoint
+
+	// ForfeitedVTXOs are VTXOs from prior batches that this batch consumes
+	// via forfeit. The manager records a reverse-dependency edge for each
+	// so the VTXO is restored if this batch is later invalidated (its
+	// forfeit reversed by a finalized conflict). This is distinct from
+	// ConsumedInputs, which are the batch tx's own inputs watched for a
+	// conflicting spend; a forfeited VTXO is a tree leaf, not necessarily a
+	// direct input of this batch tx.
+	ForfeitedVTXOs []wire.OutPoint
 }
 
 // MessageType returns the message type identifier.

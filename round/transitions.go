@@ -19,6 +19,7 @@ import (
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/wavelength/batchcanon"
 	"github.com/lightninglabs/wavelength/ledger"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/lib/tree"
@@ -751,7 +752,7 @@ func (s *PendingRoundAssembly) processEvent(ctx context.Context,
 		// Arm the registration (admission) timeout so a server that
 		// never returns a RoundJoined watermark cannot park us in
 		// IntentSentState forever. On expiry the FSM fails the round
-		// and releases any forfeit-reserved inputs (wavelength#653).
+		// and releases any forfeit-reserved inputs (darepo-client#653).
 		// A non-positive timeout disables the safety net.
 		if env.RegistrationTimeout > 0 {
 			outbox = append(outbox, &StartTimeoutReq{
@@ -877,7 +878,7 @@ func (s *IntentSentState) processEvent(ctx context.Context, event ClientEvent,
 		// admission window. Fail the round as recoverable (the client
 		// may retry) and release any forfeit-reserved inputs back to
 		// LiveState so they are not stranded in pending-forfeit
-		// (wavelength#653). Releasing is safe here: at this phase no
+		// (darepo-client#653). Releasing is safe here: at this phase no
 		// forfeit signatures have been produced or sent to the server,
 		// so there is nothing to double-spend.
 		const reason = "round admission timed out"
@@ -2147,7 +2148,7 @@ func (s *CommitmentTxReceivedState) processEvent(ctx context.Context,
 		// proves internal self-consistency; without this binding a
 		// self-consistent tree rooted at the wrong commitment output
 		// would be co-signed, after which the client's new VTXOs are
-		// unrecoverable (wavelength#680).
+		// unrecoverable (darepo-client#680).
 		if err := validateVTXOTreeBinding(
 			s.CommitmentTx.UnsignedTx, s.VTXOTreePaths,
 		); err != nil {
@@ -2281,7 +2282,7 @@ func (s *CommitmentTxReceivedState) processEvent(ctx context.Context,
 		// exists independently of the commitment tx; signing the
 		// forfeit over it would make the old VTXO claimable even if
 		// the replacement round never commits, breaking round
-		// atomicity (wavelength#681).
+		// atomicity (darepo-client#681).
 		//
 		//nolint:contextcheck // Connector-tree reconstruction is pure,
 		// deterministic CPU work (the lib/tree materializer ignores its
@@ -3652,7 +3653,7 @@ const (
 // Binding the connector to the commitment tx is what preserves round
 // atomicity: a connector leaf is only ever spendable once the commitment tx
 // confirms, so the old VTXO cannot be forfeited unless the replacement round
-// also commits (wavelength#681).
+// also commits (darepo-client#681).
 func validateConnectorAncestry(commitmentTx *wire.MsgTx,
 	operatorKey *btcec.PublicKey,
 	mappings map[wire.OutPoint]*ConnectorLeafInfo) error {
@@ -3858,7 +3859,7 @@ func connectorLeafOutput(leaf *tree.Node) (*wire.TxOut, error) {
 // real batch output, so the client's new VTXOs (whose outpoints are derived
 // from the tree root) are unrecoverable. This is the VTXO-tree counterpart to
 // validateConnectorAncestry; together they restore round atomicity
-// (wavelength#680, companion to #681).
+// (darepo-client#680, companion to #681).
 //
 // For each (outputIdx, tree) pair it asserts that the tree's BatchOutpoint
 // names this commitment tx, that outputIdx agrees with BatchOutpoint.Index,
@@ -4307,6 +4308,30 @@ func buildClientVTXOs(ctx context.Context, checker OwnedScriptChecker,
 	return vtxos, nil
 }
 
+// commitmentInputScripts maps each commitment-tx input outpoint to the
+// pkScript of the output it spends, read from the PSBT's per-input witness
+// UTXO. It is used to stamp the consumed-input pkScripts the batch-canonicality
+// manager needs to register reorg-aware spend watches. Returns nil for a nil
+// packet; an input whose witness UTXO is absent is simply omitted (its watch is
+// skipped downstream rather than failing the whole batch registration).
+func commitmentInputScripts(pkt *psbt.Packet) map[wire.OutPoint][]byte {
+	if pkt == nil {
+		return nil
+	}
+
+	scripts := make(map[wire.OutPoint][]byte, len(pkt.UnsignedTx.TxIn))
+	for i, txIn := range pkt.UnsignedTx.TxIn {
+		if i >= len(pkt.Inputs) {
+			break
+		}
+		if wu := pkt.Inputs[i].WitnessUtxo; wu != nil {
+			scripts[txIn.PreviousOutPoint] = wu.PkScript
+		}
+	}
+
+	return scripts
+}
+
 // ProcessEvent for InputSigSentState.
 func (s *InputSigSentState) ProcessEvent(ctx context.Context, event ClientEvent,
 	env *ClientEnvironment) (*ClientStateTransition, error) {
@@ -4419,16 +4444,32 @@ func (s *InputSigSentState) ProcessEvent(ctx context.Context, event ClientEvent,
 		// round actor can register the batch's reorg-safety lineage. A
 		// double-spend or reorg-out of any of these invalidates the
 		// round-born VTXOs anchored by this batch (darepo#454).
+		// Each consumed input carries the pkScript of the spent output,
+		// sourced from the commitment PSBT's witness UTXOs. The spend
+		// watch the manager arms needs it (lnd filters spend
+		// notifications by output script).
+		inputScripts := commitmentInputScripts(s.CommitmentTx)
 		consumedInputs := make(
-			[]wire.OutPoint, 0,
+			[]batchcanon.ConsumedInput, 0,
 			len(s.Intents.Boarding)+len(s.ForfeitedVTXOs),
 		)
 		for i := range s.Intents.Boarding {
+			op := s.Intents.Boarding[i].Outpoint
 			consumedInputs = append(
-				consumedInputs, s.Intents.Boarding[i].Outpoint,
+				consumedInputs, batchcanon.ConsumedInput{
+					Outpoint: op,
+					PkScript: inputScripts[op],
+				},
 			)
 		}
-		consumedInputs = append(consumedInputs, s.ForfeitedVTXOs...)
+		for _, op := range s.ForfeitedVTXOs {
+			consumedInputs = append(
+				consumedInputs, batchcanon.ConsumedInput{
+					Outpoint: op,
+					PkScript: inputScripts[op],
+				},
+			)
+		}
 
 		// The batch confirmation watch keys on the commitment tx's
 		// batch output. Detection is by txid; the script is what
@@ -4454,6 +4495,7 @@ func (s *InputSigSentState) ProcessEvent(ctx context.Context, event ClientEvent,
 				RoundID:              s.RoundID.String(),
 				CommitmentTxID:       evt.TxID,
 				ConsumedInputs:       consumedInputs,
+				ForfeitedVTXOs:       s.ForfeitedVTXOs,
 				ConfirmationPkScript: confPkScript,
 				CSVExpiryDelta:       sweepDelay,
 				BatchExpiry:          batchExpiry,

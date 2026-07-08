@@ -610,6 +610,9 @@ func (m *Manager) Receive(ctx context.Context,
 	case *ReleaseForfeitRequest:
 		return m.handleReleaseForfeit(ctx, req)
 
+	case *RestoreForfeitedVTXORequest:
+		return m.handleRestoreForfeitedVTXO(ctx, req)
+
 	case *ActivateCustomForfeitInputsRequest:
 		return m.handleActivateCustomForfeitInputs(ctx, req)
 
@@ -1047,6 +1050,82 @@ func (m *Manager) recoverExitedVTXO(ctx context.Context,
 	)
 
 	return fn.Ok[ManagerResp](&ExitOutcomeResp{})
+}
+
+// handleRestoreForfeitedVTXO rolls a forfeited VTXO back to LiveState because
+// the batch that consumed it via forfeit has been invalidated (its forfeit
+// reversed by a finalized reorg / conflict). The forfeit transition reaped the
+// VTXO actor and persisted VTXOStatusForfeited, so this re-materializes a live
+// actor from the persisted descriptor, mirroring recoverExitedVTXO. It is
+// idempotent: a VTXO that is not currently forfeited is left untouched.
+func (m *Manager) handleRestoreForfeitedVTXO(ctx context.Context,
+	req *RestoreForfeitedVTXORequest) fn.Result[ManagerResp] {
+
+	descriptor, err := m.cfg.Store.GetVTXO(ctx, req.Outpoint)
+	if err != nil {
+		return fn.Err[ManagerResp](
+			fmt.Errorf("load vtxo for forfeit restore: %w", err),
+		)
+	}
+	if descriptor == nil {
+		m.logger(ctx).WarnS(ctx, "No descriptor to restore forfeited "+
+			"VTXO", nil,
+			slog.String("outpoint", req.Outpoint.String()))
+
+		return fn.Ok[ManagerResp](&RestoreForfeitedVTXOResponse{})
+	}
+
+	// Idempotency guard: only relive a VTXO that is actually forfeited. A
+	// re-delivered restore must not clobber a VTXO that already moved on or
+	// was never forfeited.
+	if descriptor.Status != VTXOStatusForfeited {
+		m.logger(ctx).DebugS(ctx, "Skipping forfeit restore for "+
+			"non-forfeited VTXO",
+			slog.String("outpoint", req.Outpoint.String()),
+			slog.String("status", descriptor.Status.String()))
+
+		return fn.Ok[ManagerResp](&RestoreForfeitedVTXOResponse{})
+	}
+
+	// The forfeit transition reaps the actor, so none should be resident.
+	// If one somehow is, do not spawn a duplicate; treat it as already
+	// restored.
+	if _, ok := m.actors[req.Outpoint]; ok {
+		m.logger(ctx).DebugS(ctx, "Forfeited VTXO already has a live "+
+			"actor; skipping restore",
+			slog.String("outpoint", req.Outpoint.String()))
+
+		return fn.Ok[ManagerResp](&RestoreForfeitedVTXOResponse{})
+	}
+
+	// Spawn the live actor BEFORE persisting the status flip (same ordering
+	// rationale as recoverExitedVTXO: the coin must be monitored the moment
+	// its status becomes recoverable, and a failed status write is
+	// re-driven by the persisted Forfeited status on the next restore
+	// attempt).
+	descriptor.Status = VTXOStatusLive
+
+	ref, err := m.spawnVTXOActor(ctx, descriptor)
+	if err != nil {
+		return fn.Err[ManagerResp](
+			fmt.Errorf("respawn restored vtxo actor: %w", err),
+		)
+	}
+	m.actors[req.Outpoint] = ref
+
+	if err := m.cfg.Store.UpdateVTXOStatus(
+		ctx, req.Outpoint, VTXOStatusLive,
+	); err != nil {
+		return fn.Err[ManagerResp](
+			fmt.Errorf("restore forfeited vtxo status: %w", err),
+		)
+	}
+
+	m.logger(ctx).InfoS(ctx, "Restored forfeited VTXO to live after "+
+		"batch invalidation",
+		slog.String("outpoint", req.Outpoint.String()))
+
+	return fn.Ok[ManagerResp](&RestoreForfeitedVTXOResponse{Restored: true})
 }
 
 // confirmExitedVTXO retires a VTXO to the terminal SpentState after its

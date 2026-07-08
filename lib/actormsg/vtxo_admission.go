@@ -177,6 +177,38 @@ type ReleaseForfeitResponse struct {
 // VTXOManagerResp implements the VTXOManagerResp marker interface.
 func (r *ReleaseForfeitResponse) VTXOManagerResp() {}
 
+// RestoreForfeitedVTXORequest asks the VTXO manager to roll a forfeited VTXO
+// back to a spendable (Live) state because the batch that consumed it via
+// forfeit has been invalidated (its forfeit reversed by a finalized reorg /
+// conflict). The manager re-materializes the VTXO from its persisted
+// descriptor, mirroring unilateral-exit recovery. It is idempotent: a VTXO
+// that is not currently forfeited is left untouched.
+type RestoreForfeitedVTXORequest struct {
+	actor.BaseMessage
+
+	// Outpoint identifies the forfeited VTXO to restore.
+	Outpoint wire.OutPoint
+}
+
+// VTXOManagerMsg implements the VTXOManagerMsg marker interface.
+func (m *RestoreForfeitedVTXORequest) VTXOManagerMsg() {}
+
+// MessageType returns the message type for logging.
+func (m *RestoreForfeitedVTXORequest) MessageType() string {
+	return "RestoreForfeitedVTXORequest"
+}
+
+// RestoreForfeitedVTXOResponse confirms the restore request was processed.
+// Restored reports whether the VTXO was actually rolled back to Live (false
+// when it was not in a forfeited state, i.e. the request was a no-op).
+type RestoreForfeitedVTXOResponse struct {
+	// Restored is true when the VTXO was rolled back to Live.
+	Restored bool
+}
+
+// VTXOManagerResp implements the VTXOManagerResp marker interface.
+func (r *RestoreForfeitedVTXOResponse) VTXOManagerResp() {}
+
 // CustomForfeitInput describes a caller-supplied VTXO that is not part of the
 // wallet's live coin set but still needs a local VTXO actor to sign the exact
 // round forfeit transaction once connector details are known.

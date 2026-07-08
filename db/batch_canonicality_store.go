@@ -141,9 +141,10 @@ func (s *BatchCanonicalityPersistenceStore) UpsertBatch(ctx context.Context,
 		for _, in := range record.ConsumedInputs {
 			err := q.InsertBatchConsumedInput(
 				ctx, sqlc.InsertBatchConsumedInputParams{
-					BatchTxid:  txid[:],
-					InputHash:  in.Hash[:],
-					InputIndex: int32(in.Index),
+					BatchTxid:     txid[:],
+					InputHash:     in.Outpoint.Hash[:],
+					InputIndex:    int32(in.Outpoint.Index),
+					InputPkScript: in.PkScript,
 				},
 			)
 			if err != nil {
@@ -561,15 +562,18 @@ func (s *BatchCanonicalityPersistenceStore) hydrateRecord(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
-	inputs := make([]wire.OutPoint, 0, len(inputRows))
+	inputs := make([]batchcanon.ConsumedInput, 0, len(inputRows))
 	for _, in := range inputRows {
 		hash, err := chainhash.NewHash(in.InputHash)
 		if err != nil {
 			return nil, err
 		}
-		inputs = append(inputs, wire.OutPoint{
-			Hash:  *hash,
-			Index: uint32(in.InputIndex),
+		inputs = append(inputs, batchcanon.ConsumedInput{
+			Outpoint: wire.OutPoint{
+				Hash:  *hash,
+				Index: uint32(in.InputIndex),
+			},
+			PkScript: in.InputPkScript,
 		})
 	}
 

@@ -57,11 +57,29 @@ func TestRegisterBatchCanonicalityEmitsRequest(t *testing.T) {
 	forfeit := bcTestOutpoint(2)
 	vtxoOut := bcTestOutpoint(3)
 	pkScript := []byte{0x51, 0x20, 0x01}
+	consumed := []batchcanon.ConsumedInput{
+		{
+			Outpoint: board,
+			PkScript: []byte{
+				0x51,
+				0x20,
+				0x0b,
+			},
+		},
+		{
+			Outpoint: forfeit,
+			PkScript: []byte{
+				0x51,
+				0x20,
+				0x0f,
+			},
+		},
+	}
 
 	a.registerBatchCanonicality(t.Context(), &VTXOCreatedNotification{
 		VTXOs:                []*ClientVTXO{{Outpoint: vtxoOut}},
 		CommitmentTxID:       commitment,
-		ConsumedInputs:       []wire.OutPoint{board, forfeit},
+		ConsumedInputs:       consumed,
 		ConfirmationPkScript: pkScript,
 		CSVExpiryDelta:       144,
 	})
@@ -72,7 +90,7 @@ func TestRegisterBatchCanonicalityEmitsRequest(t *testing.T) {
 	req, ok := msg.(*batchcanon.RegisterBatchRequest)
 	require.True(t, ok)
 	require.Equal(t, commitment, req.BatchTxID)
-	require.Equal(t, []wire.OutPoint{board, forfeit}, req.ConsumedInputs)
+	require.Equal(t, consumed, req.ConsumedInputs)
 	require.Equal(t, []wire.OutPoint{vtxoOut}, req.DependentVTXOs)
 	require.Equal(t, pkScript, req.ConfirmationPkScript)
 	require.Equal(t, int32(144), req.CSVExpiryDelta)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
@@ -78,6 +79,16 @@ type ManagerConfig struct {
 		chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
 	]
 
+	// RestoreConsumedVTXO, when set, is invoked for each VTXO outpoint that
+	// was provisionally forfeited into a batch that has now been
+	// invalidated (a finalized conflict reversed its forfeit). The daemon
+	// wires this to the VTXO manager to roll the VTXO back to a spendable
+	// state. Nil leaves the reverse-dependency edges in place without
+	// acting -- the default until the FSM restore path is wired -- so the
+	// data model stays consistent and a later run can still act on the
+	// persisted edges.
+	RestoreConsumedVTXO func(ctx context.Context, vtxo wire.OutPoint) error
+
 	// Log is an optional logger.
 	Log fn.Option[btclog.Logger]
 }
@@ -88,11 +99,11 @@ type ManagerConfig struct {
 // persists the result. It is an actor behavior: chainsource events arrive as
 // internal messages re-wrapped onto the manager's own mailbox.
 //
-// Light-client backends (neutrino, Esplora) filter spend notifications by the
-// prevout pkScript, which the manager does not yet carry per consumed input;
-// spend watches are registered by outpoint, which is sufficient for the
-// full-node (LND) path. Threading per-input pkScripts is a follow-up for when
-// the producers (round, OOR) — which hold those scripts — wire in.
+// Spend watches on consumed inputs are registered with the prevout pkScript
+// carried on each RegisterBatchRequest.ConsumedInput, which lnd's spend
+// notifier requires (it filters by output script). An input with no pkScript
+// is skipped rather than failing the whole batch registration, so the
+// confirmation watch and the remaining inputs still arm.
 type Manager struct {
 	cfg     ManagerConfig
 	log     btclog.Logger
@@ -197,6 +208,22 @@ func (m *Manager) handleRegisterBatch(ctx context.Context,
 		)
 	}
 
+	// Record a reverse-dependency edge for every VTXO this batch forfeits,
+	// so the VTXO can be restored if this batch is later invalidated. The
+	// edges are persisted and idempotent on (consumedVTXO, consumerBatch).
+	for _, forfeited := range req.ForfeitedVTXOs {
+		err := m.cfg.Store.AddProvisionalConsumer(
+			ctx, forfeited, req.BatchTxID,
+		)
+		if err != nil {
+			return fn.Err[ManagerResp](
+				fmt.Errorf("record provisional consumer %s "+
+					"-> %s: %w", forfeited, req.BatchTxID,
+					err),
+			)
+		}
+	}
+
 	w := &batchWatch{
 		txid:     req.BatchTxID,
 		pkScript: req.ConfirmationPkScript,
@@ -204,7 +231,7 @@ func (m *Manager) handleRegisterBatch(ctx context.Context,
 		inputs:   make(map[wire.OutPoint]*inputWatch),
 	}
 	for _, in := range req.ConsumedInputs {
-		w.inputs[in] = &inputWatch{}
+		w.inputs[in.Outpoint] = &inputWatch{}
 	}
 
 	// Record the watch only AFTER arming succeeds. If we recorded it first
@@ -255,7 +282,7 @@ func (m *Manager) mergeDependents(ctx context.Context, w *batchWatch,
 // armWatches registers the reorg-aware confirmation watch on the batch tx and
 // a reorg-aware spend watch on each consumed input.
 func (m *Manager) armWatches(ctx context.Context, w *batchWatch,
-	inputs []wire.OutPoint) error {
+	inputs []ConsumedInput) error {
 
 	heightHint := m.bestHeightHint(ctx)
 
@@ -309,9 +336,27 @@ func (m *Manager) armWatches(ctx context.Context, w *batchWatch,
 	}
 
 	for i := range inputs {
-		op := inputs[i]
+		// A consumed input with no pkScript cannot be watched: lnd's
+		// spend notifier filters by output script. Rather than fail the
+		// whole batch registration (which would also drop the working
+		// confirmation watch), skip just this input's spend watch.
+		// Conf- based reorg tracking still works; only conflict
+		// detection on this one input is degraded. Empty scripts should
+		// only occur on legacy/backfilled inputs that predate script
+		// tracking.
+		if len(inputs[i].PkScript) == 0 {
+			m.logger(ctx).InfoS(ctx, "Skipping spend watch for "+
+				"consumed input with no pkScript",
+				slog.String("batch", w.txid.String()),
+				slog.String(
+					"outpoint", inputs[i].Outpoint.String(),
+				))
+
+			continue
+		}
+
 		if err := m.armSpendWatch(
-			ctx, w.txid, op, heightHint,
+			ctx, w.txid, inputs[i], heightHint,
 		); err != nil {
 			return err
 		}
@@ -320,13 +365,18 @@ func (m *Manager) armWatches(ctx context.Context, w *batchWatch,
 	return nil
 }
 
-// armSpendWatch registers one reorg-aware spend watch on a consumed input.
+// armSpendWatch registers one reorg-aware spend watch on a consumed input. The
+// input's pkScript is forwarded to the spend notifier, which filters by output
+// script; without it lnd rejects the registration ("an output script must be
+// provided") and the conflict-detection watch never arms.
 func (m *Manager) armSpendWatch(ctx context.Context, txid chainhash.Hash,
-	op wire.OutPoint, heightHint uint32) error {
+	in ConsumedInput, heightHint uint32) error {
 
+	op := in.Outpoint
 	spendReq := &chainsource.RegisterSpendRequest{
 		CallerID:   spendCallerID(txid, op),
 		Outpoint:   &op,
+		PkScript:   in.PkScript,
 		HeightHint: heightHint,
 		NotifyActor: fn.Some(
 			chainsource.MapSpendEvent(
@@ -586,6 +636,94 @@ func (m *Manager) deriveAndPersist(ctx context.Context, w *batchWatch) {
 		return
 	}
 	w.persisted = next
+
+	m.handleConsumerLifecycle(ctx, w.txid, next)
+}
+
+// handleConsumerLifecycle reacts to a batch's canonicality transition for the
+// VTXOs it provisionally forfeits (its reverse-dependency edges):
+//
+//   - StateConflictFinalized: the batch is permanently off the canonical chain
+//     (a conflicting spend matured past the reorg-safety depth), so its forfeit
+//     is reversed -- restore every consumed VTXO, then drop the edges.
+//   - StateFinalized: the batch is itself canonical and final, so the forfeit
+//     is now safe and the restore window closes -- drop the edges without
+//     restoring.
+//
+// Transient states (provisional / reorged-out / conflict-provisional) are left
+// untouched: a reorged-out batch may still reconfirm, so its forfeit must not
+// be reversed until the invalidation is final.
+func (m *Manager) handleConsumerLifecycle(ctx context.Context,
+	txid chainhash.Hash, next State) {
+
+	switch next {
+	case StateConflictFinalized:
+		m.restoreProvisionalConsumers(ctx, txid)
+
+	case StateFinalized:
+		err := m.cfg.Store.DeleteProvisionalConsumersForBatch(ctx, txid)
+		if err != nil {
+			m.logger(ctx).WarnS(ctx, "Failed to clear provisional "+
+				"consumer edges for finalized batch", err,
+				slog.String("batch", txid.String()))
+		}
+
+	case StateUnseen, StateProvisional, StateReorgedOut,
+		StateConflictProvisional:
+
+		// Transient/non-final states: the forfeit's fate is not yet
+		// decided, so the reverse-dependency edges are left untouched.
+		// A reorged-out batch may still reconfirm, so its forfeit must
+		// not be reversed until the invalidation (or finalization) is
+		// final.
+	}
+}
+
+// restoreProvisionalConsumers restores every VTXO the given (now invalidated)
+// batch provisionally forfeited, then drops the edges so the restore fires at
+// most once. A nil RestoreConsumedVTXO callback leaves the edges in place (the
+// data model stays consistent for a later wired run).
+func (m *Manager) restoreProvisionalConsumers(ctx context.Context,
+	txid chainhash.Hash) {
+
+	consumed, err := m.cfg.Store.ListProvisionalConsumersForBatch(ctx, txid)
+	if err != nil {
+		m.logger(ctx).WarnS(ctx, "Failed to list provisional "+
+			"consumers for invalidated batch", err,
+			slog.String("batch", txid.String()))
+
+		return
+	}
+	if len(consumed) == 0 {
+		return
+	}
+
+	if m.cfg.RestoreConsumedVTXO == nil {
+
+		// No restore path wired: leave the edges so a future run with a
+		// callback can still act on them.
+		return
+	}
+
+	for _, op := range consumed {
+		if err := m.cfg.RestoreConsumedVTXO(ctx, op); err != nil {
+			m.logger(ctx).WarnS(ctx, "Failed to restore forfeited "+
+				"VTXO after batch invalidation", err,
+				slog.String("batch", txid.String()),
+				slog.String("vtxo", op.String()))
+
+			// Keep the edges so the restore can be retried; do not
+			// drop them on partial failure.
+			return
+		}
+	}
+
+	err = m.cfg.Store.DeleteProvisionalConsumersForBatch(ctx, txid)
+	if err != nil {
+		m.logger(ctx).WarnS(ctx, "Failed to clear provisional "+
+			"consumer edges after restore", err,
+			slog.String("batch", txid.String()))
+	}
 }
 
 // releaseSpendWatches unregisters the per-input spend watches for a batch,
@@ -667,7 +805,7 @@ func (m *Manager) reconcileOne(ctx context.Context, record *Record) {
 	}
 
 	for _, in := range record.ConsumedInputs {
-		w.inputs[in] = &inputWatch{}
+		w.inputs[in.Outpoint] = &inputWatch{}
 	}
 	m.watches[record.BatchTxID] = w
 

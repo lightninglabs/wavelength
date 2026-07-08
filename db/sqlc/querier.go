@@ -132,7 +132,8 @@ type Querier interface {
 	// GetVTXOReplacement retrieves the replacement VTXO outpoint for a forfeited
 	// VTXO. Returns NULL if not forfeited or no replacement recorded.
 	GetVTXOReplacement(ctx context.Context, arg GetVTXOReplacementParams) (GetVTXOReplacementRow, error)
-	// InsertBatchConsumedInput records one outpoint consumed by a batch.
+	// InsertBatchConsumedInput records one input consumed by a batch, together
+	// with the pkScript of the spent output (needed to register the spend watch).
 	InsertBatchConsumedInput(ctx context.Context, arg InsertBatchConsumedInputParams) error
 	// InsertBatchDependentVTXO records one VTXO outpoint anchored by a batch.
 	InsertBatchDependentVTXO(ctx context.Context, arg InsertBatchDependentVTXOParams) error
@@ -207,7 +208,8 @@ type Querier interface {
 	// ListBatchCanonicalityByState returns every batch currently in the given
 	// state.
 	ListBatchCanonicalityByState(ctx context.Context, state int32) ([]BatchCanonicality, error)
-	// ListBatchConsumedInputs returns the outpoints a batch consumes.
+	// ListBatchConsumedInputs returns the inputs a batch consumes, with the
+	// pkScript of each spent output.
 	ListBatchConsumedInputs(ctx context.Context, batchTxid []byte) ([]ListBatchConsumedInputsRow, error)
 	// ListBatchDependentVTXOs returns the VTXO outpoints a batch anchors.
 	ListBatchDependentVTXOs(ctx context.Context, batchTxid []byte) ([]ListBatchDependentVTXOsRow, error)

@@ -1629,8 +1629,45 @@ func (h *Harness) ReorgDepth(depth int) ReorgResult {
 
 // Reorg invalidates the current tip's last depth blocks, mines newBlocks on
 // top of the fork point, and waits for the primary LND node to resync. The
-// harness must be fully started before calling Reorg.
+// harness must be fully started before calling Reorg. The replacement branch
+// is mined with generatetoaddress, which sweeps the mempool, so a transaction
+// from the disconnected branch re-confirms on the first replacement block. Use
+// ReorgExcludingMempool when the disconnected transaction must stay off-chain.
 func (h *Harness) Reorg(depth, newBlocks int) ReorgResult {
+	h.T.Helper()
+
+	return h.reorgWith(depth, newBlocks, "", h.Generate)
+}
+
+// ReorgExcludingMempool performs a reorg like Reorg, but mines the replacement
+// branch with EMPTY blocks (via the generateblock RPC) so transactions from the
+// disconnected branch are NOT automatically re-confirmed on the new branch.
+// This lets a caller observe the post-reorg "transaction off-chain" window
+// deterministically -- e.g. a confirmation watch staying in its reorged-out
+// state, or a canonicality record holding ReorgedOut -- instead of the tx
+// silently re-confirming on the first replacement block as it would under
+// Reorg's generatetoaddress (which pulls the mempool). The stranded tx stays in
+// the mempool; mine a normal block afterwards with Generate to re-confirm it.
+//
+// newBlocks must be > depth so the replacement branch strictly outweighs the
+// disconnected one and becomes active.
+func (h *Harness) ReorgExcludingMempool(depth, newBlocks int) ReorgResult {
+	h.T.Helper()
+
+	return h.reorgWith(
+		depth, newBlocks, " (empty replacement)", h.generateEmptyBlocks,
+	)
+}
+
+// reorgWith is the shared reorg driver behind Reorg and ReorgExcludingMempool.
+// It invalidates the last depth blocks, waits for bitcoind to roll the active
+// chain back to the fork point, mines the replacement branch via the supplied
+// generate function, asserts the new branch became active, and waits for the
+// primary LND node to resync. logSuffix is appended to the progress log line so
+// the variant is identifiable.
+func (h *Harness) reorgWith(depth, newBlocks int, logSuffix string,
+	generate func(int) []BlockHeader) ReorgResult {
+
 	h.T.Helper()
 
 	require.Positive(h.T, depth, "reorg depth must be positive")
@@ -1657,13 +1694,14 @@ func (h *Harness) Reorg(depth, newBlocks int) ReorgResult {
 
 	invalidateHash := disconnected[0].Hash
 	h.Logf(
-		"Reorging depth=%d from old_tip=%s fork_point=%s "+
-			"invalidate=%s new_blocks=%d", depth, oldTip.Hash,
-		forkPoint.Hash, invalidateHash, newBlocks,
+		"Reorging%s depth=%d from old_tip=%s fork_point=%s "+
+			"invalidate=%s new_blocks=%d", logSuffix, depth,
+		oldTip.Hash, forkPoint.Hash, invalidateHash, newBlocks,
 	)
 
 	_, err := h.bitcoinRPCCall("invalidateblock", invalidateHash)
 	require.NoError(h.T, err, "invalidateblock %s", invalidateHash)
+
 	// forkHeight is validated non-negative above.
 	expectedForkHeight := uint32(forkHeight)
 	require.Eventually(
@@ -1673,7 +1711,7 @@ func (h *Harness) Reorg(depth, newBlocks int) ReorgResult {
 		"bitcoind did not roll back to fork height %d", forkHeight,
 	)
 
-	connected := h.Generate(newBlocks)
+	connected := generate(newBlocks)
 	newTip := h.BestBlockHeader()
 	require.Equal(
 		h.T, connected[len(connected)-1].Hash, newTip.Hash,
@@ -1692,6 +1730,39 @@ func (h *Harness) Reorg(depth, newBlocks int) ReorgResult {
 		Disconnected: disconnected,
 		Connected:    connected,
 	}
+}
+
+// generateEmptyBlocks mines the given number of blocks that contain only their
+// coinbase, using the generateblock RPC with an empty transaction list so the
+// mempool is NOT swept into them. Returns the new block headers in height
+// order. Used by ReorgExcludingMempool to build a replacement branch that does
+// not re-confirm the disconnected branch's transactions.
+func (h *Harness) generateEmptyBlocks(blocks int) []BlockHeader {
+	h.T.Helper()
+
+	addr := h.bitcoindGetNewAddress()
+
+	headers := make([]BlockHeader, 0, blocks)
+	for range blocks {
+		// generateblock mines a single block containing only the
+		// listed transactions (plus coinbase); an empty list yields an
+		// empty block that ignores the mempool entirely.
+		res, err := h.bitcoinRPCCall(
+			"generateblock", addr, []string{},
+		)
+		require.NoError(h.T, err, "generateblock rpc failed")
+
+		var out struct {
+			Hash string `json:"hash"`
+		}
+		require.NoError(
+			h.T, json.Unmarshal(res, &out),
+			"generateblock unmarshal failed",
+		)
+		headers = append(headers, h.BlockHeader(out.Hash))
+	}
+
+	return headers
 }
 
 // ReconsiderBlock asks bitcoind to reconsider a previously invalidated block.
@@ -1827,7 +1898,7 @@ func (h *Harness) SignedV3Tx(destPkScript []byte,
 
 	// Find a confirmed wallet UTXO with enough value to cover the
 	// destination + change + a generous fee.
-	utxoTxid, utxoVout, utxoValueBTC := h.bitcoindFirstSpendableUTXO()
+	utxoTxid, utxoVout, utxoValueBTC, _ := h.bitcoindFirstSpendableUTXO()
 	utxoValue := btcutil.Amount(utxoValueBTC * btcutil.SatoshiPerBitcoin)
 
 	feeSat := btcutil.Amount(2_000) // ~5 sat/vB on a ~400 vB tx.
@@ -1918,7 +1989,9 @@ func (h *Harness) SignedV3Tx(destPkScript []byte,
 
 // bitcoindFirstSpendableUTXO picks the first confirmed wallet UTXO via
 // `listunspent` and returns its txid, vout, and amount in BTC.
-func (h *Harness) bitcoindFirstSpendableUTXO() (string, uint32, float64) {
+func (h *Harness) bitcoindFirstSpendableUTXO() (string, uint32, float64,
+	string) {
+
 	h.T.Helper()
 
 	// Restrict to confirmed and spendable; bitcoind defaults are
@@ -1927,9 +2000,10 @@ func (h *Harness) bitcoindFirstSpendableUTXO() (string, uint32, float64) {
 	require.NoError(h.T, err, "listunspent rpc failed")
 
 	var utxos []struct {
-		Txid   string  `json:"txid"`
-		Vout   uint32  `json:"vout"`
-		Amount float64 `json:"amount"`
+		Txid         string  `json:"txid"`
+		Vout         uint32  `json:"vout"`
+		Amount       float64 `json:"amount"`
+		ScriptPubKey string  `json:"scriptPubKey"`
 	}
 	require.NoError(
 		h.T, json.Unmarshal(res, &utxos),
@@ -1939,7 +2013,107 @@ func (h *Harness) bitcoindFirstSpendableUTXO() (string, uint32, float64) {
 
 	first := utxos[0]
 
-	return first.Txid, first.Vout, first.Amount
+	return first.Txid, first.Vout, first.Amount, first.ScriptPubKey
+}
+
+// FirstSpendableOutpoint returns a confirmed, spendable wallet outpoint along
+// with its value in BTC and the pkScript of the output, WITHOUT spending it. It
+// is used to obtain an outpoint a test can register as a batch's consumed input
+// (the pkScript is needed to arm the spend watch) and later double-spend (via
+// SpendOutpoint) to exercise conflict detection.
+func (h *Harness) FirstSpendableOutpoint() (wire.OutPoint, float64, []byte) {
+	h.T.Helper()
+
+	h.bitcoindEnsureWallet()
+
+	txid, vout, valueBTC, scriptHex := h.bitcoindFirstSpendableUTXO()
+	hash, err := chainhash.NewHashFromStr(txid)
+	require.NoError(h.T, err, "parse spendable utxo txid")
+
+	pkScript, err := hex.DecodeString(scriptHex)
+	require.NoError(h.T, err, "decode spendable utxo pkScript")
+
+	return wire.OutPoint{Hash: *hash, Index: vout}, valueBTC, pkScript
+}
+
+// SpendOutpoint builds, signs, and broadcasts a transaction that spends the
+// given wallet-owned outpoint (worth valueBTC) to a fresh wallet address,
+// returning the spending txid. The output value is valueBTC minus a flat fee.
+// The transaction is broadcast to the mempool but NOT mined -- the caller mines
+// it -- so a test can register watches before the spend confirms. Used to
+// create a controlled double-spend of a batch's registered consumed input.
+func (h *Harness) SpendOutpoint(op wire.OutPoint, valueBTC float64) string {
+	h.T.Helper()
+
+	h.bitcoindEnsureWallet()
+
+	value := btcutil.Amount(valueBTC * btcutil.SatoshiPerBitcoin)
+	feeSat := btcutil.Amount(2_000) // ~5 sat/vB on a ~400 vB tx.
+	require.Greater(
+		h.T, value, feeSat, "outpoint value too small to cover fee",
+	)
+
+	destAddrRes, err := h.bitcoinRPCCall("getnewaddress")
+	require.NoError(h.T, err, "getnewaddress for spend dest failed")
+	var destAddrStr string
+	require.NoError(
+		h.T, json.Unmarshal(destAddrRes, &destAddrStr),
+		"getnewaddress unmarshal failed",
+	)
+	destAddr, err := btcaddr.DecodeAddress(
+		destAddrStr, &chaincfg.RegressionNetParams,
+	)
+	require.NoError(h.T, err, "decode spend dest address failed")
+	destPkScript, err := txscript.PayToAddrScript(destAddr)
+	require.NoError(h.T, err, "derive spend dest pkScript failed")
+
+	tx := wire.NewMsgTx(2)
+	tx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: op,
+		Sequence:         wire.MaxTxInSequenceNum,
+	})
+	tx.AddTxOut(&wire.TxOut{
+		Value:    int64(value - feeSat),
+		PkScript: destPkScript,
+	})
+
+	var buf bytes.Buffer
+	require.NoError(h.T, tx.Serialize(&buf), "serialize spend tx failed")
+
+	signRes, err := h.bitcoinRPCCall(
+		"signrawtransactionwithwallet",
+		hex.EncodeToString(
+			buf.Bytes(),
+		),
+	)
+	require.NoError(h.T, err, "signrawtransactionwithwallet failed")
+
+	var signResult struct {
+		Hex      string `json:"hex"`
+		Complete bool   `json:"complete"`
+	}
+	require.NoError(
+		h.T, json.Unmarshal(signRes, &signResult),
+		"signrawtransactionwithwallet unmarshal failed",
+	)
+	require.True(
+		h.T, signResult.Complete, "spend tx signing incomplete: %s",
+		signResult.Hex,
+	)
+
+	sendRes, err := h.bitcoinRPCCall(
+		"sendrawtransaction", signResult.Hex,
+	)
+	require.NoError(h.T, err, "sendrawtransaction failed")
+	var txid string
+	require.NoError(
+		h.T, json.Unmarshal(sendRes, &txid),
+		"sendrawtransaction unmarshal failed",
+	)
+
+	h.Logf("Spent outpoint %s in tx %s", op, txid)
+
+	return txid
 }
 
 // Faucet funds a test address by sending the specified amount from bitcoind's
