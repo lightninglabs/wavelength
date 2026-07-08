@@ -37,6 +37,14 @@ type Record struct {
 	// after a reorg instead of being frozen at first confirmation.
 	CSVExpiryDelta int32
 
+	// ConfirmationPkScript is the pkScript of the batch-tx output the
+	// confirmation watch keys on. It is persisted so the manager can
+	// re-register the watch after a restart, since light-client backends
+	// (neutrino, Esplora) filter confirmation notifications by pkScript.
+	// May be empty for records seeded by descriptor backfill, which has no
+	// batch-output pkScript to derive.
+	ConfirmationPkScript []byte
+
 	// PolicyState is the reserved policy classification slot. See
 	// PolicyState.
 	PolicyState PolicyState

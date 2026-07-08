@@ -136,7 +136,7 @@ CREATE TABLE batch_canonicality (
 
     -- created_at / updated_at are unix timestamps.
     created_at BIGINT NOT NULL,
-    updated_at BIGINT NOT NULL,
+    updated_at BIGINT NOT NULL, confirmation_pk_script BLOB,
 
     PRIMARY KEY (batch_txid)
 );

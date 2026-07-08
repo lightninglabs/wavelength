@@ -99,12 +99,14 @@ func (q *Queries) FindBatchesByConsumedOutpoint(ctx context.Context, arg FindBat
 
 const GetBatchCanonicality = `-- name: GetBatchCanonicality :one
 SELECT batch_txid, state, confirmation_height, confirmation_block_hash,
-    csv_expiry_delta, policy_state, created_at, updated_at
+    csv_expiry_delta, policy_state, created_at, updated_at,
+    confirmation_pk_script
 FROM batch_canonicality
 WHERE batch_txid = $1
 `
 
-// GetBatchCanonicality returns the canonicality row for a batch txid.
+// GetBatchCanonicality returns the canonicality row for a batch txid. The
+// column order matches the table so sqlc reuses the BatchCanonicality model.
 func (q *Queries) GetBatchCanonicality(ctx context.Context, batchTxid []byte) (BatchCanonicality, error) {
 	row := q.db.QueryRowContext(ctx, GetBatchCanonicality, batchTxid)
 	var i BatchCanonicality
@@ -117,6 +119,7 @@ func (q *Queries) GetBatchCanonicality(ctx context.Context, batchTxid []byte) (B
 		&i.PolicyState,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ConfirmationPkScript,
 	)
 	return i, err
 }
@@ -188,7 +191,8 @@ func (q *Queries) InsertProvisionalConsumer(ctx context.Context, arg InsertProvi
 
 const ListBatchCanonicalityByState = `-- name: ListBatchCanonicalityByState :many
 SELECT batch_txid, state, confirmation_height, confirmation_block_hash,
-    csv_expiry_delta, policy_state, created_at, updated_at
+    csv_expiry_delta, policy_state, created_at, updated_at,
+    confirmation_pk_script
 FROM batch_canonicality
 WHERE state = $1
 `
@@ -213,6 +217,7 @@ func (q *Queries) ListBatchCanonicalityByState(ctx context.Context, state int32)
 			&i.PolicyState,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ConfirmationPkScript,
 		); err != nil {
 			return nil, err
 		}
@@ -434,9 +439,10 @@ const UpsertBatchCanonicality = `-- name: UpsertBatchCanonicality :exec
 
 INSERT INTO batch_canonicality (
     batch_txid, state, confirmation_height, confirmation_block_hash,
-    csv_expiry_delta, policy_state, created_at, updated_at
+    csv_expiry_delta, policy_state, created_at, updated_at,
+    confirmation_pk_script
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8
+    $1, $2, $3, $4, $5, $6, $7, $8, $9
 )
 ON CONFLICT (batch_txid) DO UPDATE SET
     state = EXCLUDED.state,
@@ -444,6 +450,7 @@ ON CONFLICT (batch_txid) DO UPDATE SET
     confirmation_block_hash = EXCLUDED.confirmation_block_hash,
     csv_expiry_delta = EXCLUDED.csv_expiry_delta,
     policy_state = EXCLUDED.policy_state,
+    confirmation_pk_script = EXCLUDED.confirmation_pk_script,
     updated_at = EXCLUDED.updated_at
 `
 
@@ -456,6 +463,7 @@ type UpsertBatchCanonicalityParams struct {
 	PolicyState           int32
 	CreatedAt             int64
 	UpdatedAt             int64
+	ConfirmationPkScript  []byte
 }
 
 // Batch canonicality queries.
@@ -476,6 +484,7 @@ func (q *Queries) UpsertBatchCanonicality(ctx context.Context, arg UpsertBatchCa
 		arg.PolicyState,
 		arg.CreatedAt,
 		arg.UpdatedAt,
+		arg.ConfirmationPkScript,
 	)
 	return err
 }

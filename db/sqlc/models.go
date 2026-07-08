@@ -70,6 +70,7 @@ type BatchCanonicality struct {
 	PolicyState           int32
 	CreatedAt             int64
 	UpdatedAt             int64
+	ConfirmationPkScript  []byte
 }
 
 type BatchConsumedInput struct {
