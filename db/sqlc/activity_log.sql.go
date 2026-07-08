@@ -10,12 +10,13 @@ import (
 	"database/sql"
 )
 
-const AppendActivityEvent = `-- name: AppendActivityEvent :exec
+const AppendActivityEvent = `-- name: AppendActivityEvent :one
 INSERT INTO activity_events (
     canonical_id, status, phase, entry_json, created_at_unix
 ) VALUES (
     $1, $2, $3, $4, $5
 )
+RETURNING event_seq
 `
 
 type AppendActivityEventParams struct {
@@ -26,17 +27,20 @@ type AppendActivityEventParams struct {
 	CreatedAtUnix int64
 }
 
-// AppendActivityEvent records one immutable lifecycle-transition row. event_seq
-// is assigned by the database (monotonic, not necessarily contiguous).
-func (q *Queries) AppendActivityEvent(ctx context.Context, arg AppendActivityEventParams) error {
-	_, err := q.db.ExecContext(ctx, AppendActivityEvent,
+// AppendActivityEvent records one immutable lifecycle-transition row and
+// returns the event_seq the database assigned (monotonic, not necessarily
+// contiguous). Callers use it as the resumable-subscribe cursor for the update.
+func (q *Queries) AppendActivityEvent(ctx context.Context, arg AppendActivityEventParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, AppendActivityEvent,
 		arg.CanonicalID,
 		arg.Status,
 		arg.Phase,
 		arg.EntryJson,
 		arg.CreatedAtUnix,
 	)
-	return err
+	var event_seq int64
+	err := row.Scan(&event_seq)
+	return event_seq, err
 }
 
 const CountActivityEntriesByStatus = `-- name: CountActivityEntriesByStatus :one
