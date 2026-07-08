@@ -5,11 +5,25 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/wire/v2"
+	"github.com/lightninglabs/darepo-client/lib/recovery"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
+	"github.com/lightninglabs/darepo-client/txconfirm"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/stretchr/testify/require"
 )
+
+// p2trTestOut returns a wire output with a P2TR-sized (34-byte) pkScript, for
+// sizing recovery-tx estimates in tests.
+func p2trTestOut() *wire.TxOut {
+	return wire.NewTxOut(1000, make([]byte, 34))
+}
+
+// anchorTestOut returns a wire output with a P2A-sized (4-byte) pkScript.
+func anchorTestOut() *wire.TxOut {
+	return wire.NewTxOut(0, make([]byte, 4))
+}
 
 // TestAssessExitFeasibility exercises the pure economic model across the
 // feasible path and every infeasibility reason, asserting both the
@@ -325,4 +339,294 @@ func TestRecoveryTxCount(t *testing.T) {
 		require.Equal(t, 1, numPaths)
 		require.Equal(t, 1, numTxs)
 	})
+}
+
+// TestRecoveryTxVBytes verifies the parent-weight estimate that the exit
+// funding model now folds into the CPFP budget: the fallback per-tx constant
+// for pruned fragments and OOR checkpoints, and the exact per-node sum for a
+// real extracted tree path (including its radix sensitivity).
+func TestRecoveryTxVBytes(t *testing.T) {
+	t.Parallel()
+
+	// A nil descriptor costs nothing.
+	require.Zero(t, RecoveryTxVBytes(nil))
+
+	// A pruned fragment (depth persisted, no path) falls back to the
+	// per-tx constant, once per level.
+	pruned := &vtxo.Descriptor{
+		Ancestry: []types.Ancestry{
+			{
+				TreeDepth: 3,
+			},
+		},
+	}
+	require.Equal(
+		t, 3*defaultRecoveryTxVBytes, RecoveryTxVBytes(pruned),
+	)
+
+	// A fragment with neither path nor depth still floors at one tx, so
+	// a malformed fragment never silently costs nothing.
+	bare := &vtxo.Descriptor{
+		Ancestry: []types.Ancestry{
+			{
+				CommitmentTxID: chainhash.Hash{
+					1,
+				},
+			},
+		},
+	}
+	require.Equal(t, defaultRecoveryTxVBytes, RecoveryTxVBytes(bare))
+
+	// Each OOR checkpoint hop is one more fallback-sized recovery tx.
+	chain := &vtxo.Descriptor{ChainDepth: 2}
+	require.Equal(
+		t, 2*defaultRecoveryTxVBytes, RecoveryTxVBytes(chain),
+	)
+
+	// A real extracted path sums the actual per-node tx sizes: a root
+	// branch funding three children plus a leaf, each carrying an anchor.
+	leaf := &tree.Node{
+		Outputs: []*wire.TxOut{
+			p2trTestOut(),
+			anchorTestOut(),
+		},
+	}
+	root := &tree.Node{
+		Outputs: []*wire.TxOut{
+			p2trTestOut(), p2trTestOut(), p2trTestOut(),
+			anchorTestOut(),
+		},
+		Children: map[uint32]*tree.Node{
+			0: leaf,
+		},
+	}
+	realPath := &vtxo.Descriptor{
+		Ancestry: []types.Ancestry{
+			{
+				TreePath: &tree.Tree{
+					Root: root,
+				},
+			},
+		},
+	}
+	want := nodeTxVBytes(root) + nodeTxVBytes(leaf)
+	require.Equal(t, want, RecoveryTxVBytes(realPath))
+	require.Greater(t, want, int64(0))
+
+	// Radix sensitivity: a wider branch (more child outputs) is a larger
+	// recovery tx, so it must cost strictly more than a narrow one.
+	narrow := &tree.Node{
+		Outputs: []*wire.TxOut{
+			p2trTestOut(), p2trTestOut(), anchorTestOut(),
+		},
+	}
+	wide := &tree.Node{Outputs: []*wire.TxOut{anchorTestOut()}}
+	for i := 0; i < 8; i++ {
+		wide.Outputs = append(wide.Outputs, p2trTestOut())
+	}
+	require.Greater(t, nodeTxVBytes(wide), nodeTxVBytes(narrow))
+}
+
+// testRecoveryTx builds a finalized-shape recovery transaction with the given
+// number of P2TR outputs plus an anchor, for sizing OOR extra-node estimates.
+func testRecoveryTx(numOut int) *wire.MsgTx {
+	tx := wire.NewMsgTx(2)
+	tx.AddTxIn(&wire.TxIn{})
+	for i := 0; i < numOut; i++ {
+		tx.AddTxOut(p2trTestOut())
+	}
+	tx.AddTxOut(anchorTestOut())
+
+	return tx
+}
+
+// TestRecoveryEstimateMaterialSizesOOR verifies that when resolved lineage
+// material is supplied, the OOR chain is counted and sized from the actual
+// checkpoint/ark transactions rather than the ChainDepth scalar — so a single
+// hop that carries multiple checkpoint PSBTs is no longer undercounted.
+func TestRecoveryEstimateMaterialSizesOOR(t *testing.T) {
+	t.Parallel()
+
+	// A two-hop OOR VTXO whose descriptor only records ChainDepth == 2.
+	desc := &vtxo.Descriptor{
+		Outpoint: wire.OutPoint{
+			Index: 1,
+		},
+		ChainDepth: 2,
+	}
+
+	// Descriptor-only: two hops at the fallback size, and two recovery txs.
+	numTxs, _, vbytes := recoveryEstimate(desc, nil)
+	require.Equal(t, 2, numTxs)
+	require.Equal(t, 2*defaultRecoveryTxVBytes, vbytes)
+
+	// The real hops: the first hop spent a multi-input source, so it
+	// carries two checkpoint PSBTs plus its ark tx; the second hop a single
+	// checkpoint plus its ark tx. That is four checkpoints/arks, not two.
+	mat := &LineageMaterial{
+		TargetOutpoint: desc.Outpoint,
+		ExtraNodes: []*recovery.Node{
+			{
+				Kind: recovery.NodeKindCheckpoint,
+				Tx:   testRecoveryTx(1),
+			},
+			{
+				Kind: recovery.NodeKindCheckpoint,
+				Tx:   testRecoveryTx(1),
+			},
+			{
+				Kind: recovery.NodeKindArk,
+				Tx:   testRecoveryTx(1),
+			},
+			{
+				Kind: recovery.NodeKindArk,
+				Tx:   testRecoveryTx(2),
+			},
+		},
+	}
+
+	var wantVBytes int64
+	for _, n := range mat.ExtraNodes {
+		wantVBytes += extraNodeVBytes(n)
+	}
+
+	matTxs, _, matVBytes := recoveryEstimate(desc, mat)
+
+	// The material path counts every checkpoint/ark tx and sizes each
+	// exactly, so it exceeds the ChainDepth approximation on both axes.
+	require.Equal(t, len(mat.ExtraNodes), matTxs)
+	require.Greater(t, matTxs, numTxs)
+	require.Equal(t, wantVBytes, matVBytes)
+	require.Greater(t, matVBytes, vbytes)
+
+	// extraNodeVBytes measures a real tx, and a nil node or tx falls back
+	// to the conservative default rather than costing nothing.
+	require.Greater(t, extraNodeVBytes(mat.ExtraNodes[0]), int64(0))
+	require.Equal(t, defaultRecoveryTxVBytes, extraNodeVBytes(nil))
+	require.Equal(
+		t, defaultRecoveryTxVBytes,
+		extraNodeVBytes(
+			&recovery.Node{},
+		),
+	)
+}
+
+// TestExtraNodeVBytesMatchesBroadcaster locks the OOR parent-sizing to the
+// exact primitive the txconfirm broadcaster uses to compute the ancestor
+// package fee. computePackageFee sizes a parent as (EstimateWeight(tx)+3)/4;
+// if extraNodeVBytes ever drifts from that, the up-front funding
+// recommendation would stop matching what the broadcaster actually pays, so
+// this test fails the moment either side changes.
+func TestExtraNodeVBytesMatchesBroadcaster(t *testing.T) {
+	t.Parallel()
+
+	for _, numOut := range []int{1, 2, 4, 8} {
+		tx := testRecoveryTx(numOut)
+		node := &recovery.Node{
+			Kind: recovery.NodeKindCheckpoint,
+			Tx:   tx,
+		}
+
+		want := (txconfirm.EstimateWeight(tx) + 3) / 4
+		require.Equal(t, want, extraNodeVBytes(node))
+	}
+}
+
+// TestRecoveryEstimateNilRootFallsThrough verifies that a descriptor whose
+// TreePath is non-nil but carries a nil Root degrades to the malformed-tx
+// floor instead of panicking in Tree.NumTx, preserving the "estimate always
+// degrades, never blocks the exit" contract.
+func TestRecoveryEstimateNilRootFallsThrough(t *testing.T) {
+	t.Parallel()
+
+	desc := &vtxo.Descriptor{
+		Ancestry: []types.Ancestry{
+			{
+				TreePath: &tree.Tree{
+					Root: nil,
+				},
+			},
+		},
+	}
+
+	var (
+		numTxs   int
+		numPaths int
+		vbytes   int64
+	)
+	require.NotPanics(t, func() {
+		numTxs, numPaths, vbytes = recoveryEstimate(desc, nil)
+	})
+
+	// The fragment still counts as one recovery tx and one path, sized at
+	// the fallback — count and vBytes stay in lockstep.
+	require.Equal(t, 1, numTxs)
+	require.Equal(t, 1, numPaths)
+	require.Equal(t, defaultRecoveryTxVBytes, vbytes)
+}
+
+// TestRecoveryEstimateMixedTreeAndOOR covers the realistic OOR-on-round case:
+// a descriptor with a real commitment-tree ancestry path plus resolved OOR
+// checkpoint/ark material. Both contributions must be summed, on both the
+// count and the vBytes axes.
+func TestRecoveryEstimateMixedTreeAndOOR(t *testing.T) {
+	t.Parallel()
+
+	leaf := &tree.Node{
+		Outputs: []*wire.TxOut{
+			p2trTestOut(),
+			anchorTestOut(),
+		},
+	}
+	root := &tree.Node{
+		Outputs: []*wire.TxOut{
+			p2trTestOut(), p2trTestOut(), anchorTestOut(),
+		},
+		Children: map[uint32]*tree.Node{
+			0: leaf,
+		},
+	}
+	treePath := &tree.Tree{Root: root}
+
+	desc := &vtxo.Descriptor{
+		Outpoint: wire.OutPoint{
+			Index: 1,
+		},
+		ChainDepth: 1,
+		Ancestry: []types.Ancestry{
+			{
+				TreePath: treePath,
+			},
+		},
+	}
+	mat := &LineageMaterial{
+		TargetOutpoint: desc.Outpoint,
+		TreePaths: []*tree.Tree{
+			treePath,
+		},
+		ExtraNodes: []*recovery.Node{
+			{
+				Kind: recovery.NodeKindCheckpoint,
+				Tx:   testRecoveryTx(1),
+			},
+			{
+				Kind: recovery.NodeKindArk,
+				Tx:   testRecoveryTx(1),
+			},
+		},
+	}
+
+	numTxs, numPaths, vbytes := recoveryEstimate(desc, mat)
+
+	// The tree path contributes its node txs; the OOR material adds its
+	// two extra nodes. numPaths counts only the ancestry fragment.
+	wantTreeVBytes := treePathVBytes(treePath)
+	var wantOORVBytes int64
+	for _, n := range mat.ExtraNodes {
+		wantOORVBytes += extraNodeVBytes(n)
+	}
+
+	require.Equal(t, treePath.NumTx()+len(mat.ExtraNodes), numTxs)
+	require.Equal(t, 1, numPaths)
+	require.Equal(t, wantTreeVBytes+wantOORVBytes, vbytes)
 }

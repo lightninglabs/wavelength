@@ -39,10 +39,16 @@ type ExitFundingPlan struct {
 
 // PlanExitFunding computes the backing-wallet funding plan for a unilateral
 // exit using the same recovery counts and economic model as unroll admission.
-func PlanExitFunding(desc *vtxo.Descriptor, feeRate btcutil.Amount,
-	wallet ExitFundingSnapshot) ExitFundingPlan {
+//
+// mat is the resolved lineage material for the target and may be nil. When
+// supplied it lets the estimate size the OOR checkpoint/ark transactions
+// exactly; when nil the OOR chain is approximated from the descriptor's
+// ChainDepth scalar, so a caller that cannot (or need not) resolve artifacts
+// still gets a sound descriptor-only plan.
+func PlanExitFunding(desc *vtxo.Descriptor, mat *LineageMaterial,
+	feeRate btcutil.Amount, wallet ExitFundingSnapshot) ExitFundingPlan {
 
-	numTxs, numPaths := RecoveryTxCount(desc)
+	numTxs, numPaths, vbytes := recoveryEstimate(desc, mat)
 	var amount btcutil.Amount
 	if desc != nil {
 		amount = desc.Amount
@@ -50,6 +56,7 @@ func PlanExitFunding(desc *vtxo.Descriptor, feeRate btcutil.Amount,
 
 	feasibility := AssessExitFeasibility(ExitFeasibilityInput{
 		NumRecoveryTxs:     numTxs,
+		RecoveryTxVBytes:   vbytes,
 		NumAncestryPaths:   numPaths,
 		VTXOAmountSat:      amount,
 		FeeRateSatPerVByte: feeRate,

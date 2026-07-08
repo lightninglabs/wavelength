@@ -4,7 +4,12 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/btcsuite/btcd/txscript/v2"
+	"github.com/lightninglabs/darepo-client/lib/recovery"
+	"github.com/lightninglabs/darepo-client/lib/tree"
+	"github.com/lightninglabs/darepo-client/txconfirm"
 	"github.com/lightninglabs/darepo-client/vtxo"
+	"github.com/lightningnetwork/lnd/input"
 )
 
 // A unilateral exit is the trust-minimized escape hatch a client uses to
@@ -38,6 +43,16 @@ const (
 	// one P2TR change output. Taproot is the dominant path and 155 vB
 	// gives comfortable headroom over the exact size.
 	defaultCPFPChildVBytes int64 = 155
+
+	// defaultRecoveryTxVBytes is the fallback virtual size charged for a
+	// single recovery (branch / checkpoint) transaction when its actual
+	// size can't be measured — a pruned ancestry fragment that persisted
+	// only a depth, or an OOR checkpoint hop. When the extracted tree
+	// path is present we sum the real per-node sizes instead (see
+	// RecoveryTxVBytes), which is exact across any tree radix. The
+	// constant is deliberately generous so the fallback does not
+	// under-fund an exit.
+	defaultRecoveryTxVBytes int64 = 200
 
 	// defaultSweepOutputDustSat is the floor the swept output must clear
 	// for the sweep transaction to relay. 330 sat is the standard
@@ -179,6 +194,13 @@ type ExitFeasibilityInput struct {
 	// broadcast (and CPFP-bumped) to materialize the target output.
 	NumRecoveryTxs int
 
+	// RecoveryTxVBytes is the summed virtual size of those recovery
+	// transactions themselves. Each recovery tx is zero-fee, so its CPFP
+	// child pays the ancestor-package fee over parent+child weight; the
+	// wallet-funded cost therefore includes these parent vBytes, not just
+	// the children. Resolve it with RecoveryTxVBytes(desc).
+	RecoveryTxVBytes int64
+
 	// NumAncestryPaths is the number of independent commitment-tree
 	// roots in the VTXO's ancestry — one concurrent CPFP parent each.
 	NumAncestryPaths int
@@ -266,9 +288,17 @@ func AssessExitFeasibility(in ExitFeasibilityInput) ExitFeasibility {
 	sweepFee := btcutil.Amount(
 		int64(in.FeeRateSatPerVByte) * cfg.SweepVBytes,
 	)
+
+	// The wallet funds, per recovery tx, a CPFP child AND the ancestor
+	// package fee for the zero-fee recovery tx itself. So the CPFP budget
+	// is the fee over (sum of child vBytes) + (sum of recovery-tx vBytes),
+	// matching the ancestor-aware package fee the txconfirm broadcaster
+	// actually pays. Omitting RecoveryTxVBytes here (the old behavior)
+	// under-counted the exit cost and under-recommended funding.
+	cpfpVBytes := cfg.CPFPChildVBytes*int64(in.NumRecoveryTxs) +
+		in.RecoveryTxVBytes
 	cpfpTotal := btcutil.Amount(
-		int64(in.FeeRateSatPerVByte) * cfg.CPFPChildVBytes *
-			int64(in.NumRecoveryTxs),
+		int64(in.FeeRateSatPerVByte) * cpfpVBytes,
 	)
 	totalCost := cpfpTotal + sweepFee
 	net := in.VTXOAmountSat - sweepFee
@@ -343,39 +373,185 @@ func AssessExitFeasibility(in ExitFeasibilityInput) ExitFeasibility {
 // contributes its tree-path transactions; OOR VTXOs add one checkpoint
 // transaction per hop in the OOR chain (ChainDepth). A nil descriptor
 // yields (0, 0).
+//
+// This is the descriptor-only estimate: it approximates the OOR chain from
+// the ChainDepth scalar. Pass resolved lineage material to recoveryEstimate
+// (via PlanExitFunding) to size the OOR checkpoint/ark transactions exactly.
 func RecoveryTxCount(desc *vtxo.Descriptor) (int, int) {
+	numTxs, numPaths, _ := recoveryEstimate(desc, nil)
+
+	return numTxs, numPaths
+}
+
+// RecoveryTxVBytes estimates the summed virtual size of every recovery
+// transaction that must be broadcast to materialize the target output. It is
+// the parent-weight companion to RecoveryTxCount: the CPFP child that drives
+// each zero-fee recovery tx on chain pays the ancestor-package fee over
+// parent+child, so the exit's wallet-funded cost depends on these sizes.
+//
+// For a fragment that still carries its extracted tree path we sum the actual
+// per-node transaction size, which is exact for any tree radix (a wider branch
+// simply has more child outputs). For a pruned fragment (depth only) or an OOR
+// checkpoint hop, where the real transactions aren't on hand, we fall back to
+// defaultRecoveryTxVBytes per transaction. A nil descriptor yields 0.
+//
+// This is the descriptor-only estimate; see recoveryEstimate for the
+// material-aware path that sizes OOR transactions exactly.
+func RecoveryTxVBytes(desc *vtxo.Descriptor) int64 {
+	_, _, vbytes := recoveryEstimate(desc, nil)
+
+	return vbytes
+}
+
+// recoveryEstimate derives, in one pass, the three quantities the exit-cost
+// model needs from a VTXO's lineage: the recovery-transaction count (one CPFP
+// child each), the number of independent commitment-tree roots (one concurrent
+// CPFP parent each), and the summed virtual size of the recovery transactions
+// themselves (the zero-fee parents the CPFP children must pay for at ancestor
+// feerate). Computing all three together guarantees the count and the vBytes
+// stay in lockstep — a fragment that contributes a tx to the count always
+// contributes a parent size, and vice versa.
+//
+// The commitment-tree ancestry is always sized from the descriptor's extracted
+// paths, which is exact for any radix. The OOR chain is sized from the resolved
+// lineage material when it is supplied (each finalized checkpoint/ark tx
+// measured directly), and otherwise falls back to the ChainDepth scalar at the
+// default per-tx size. A nil descriptor yields (0, 0, 0).
+func recoveryEstimate(desc *vtxo.Descriptor, mat *LineageMaterial) (int, int,
+	int64) {
+
 	if desc == nil {
-		return 0, 0
+		return 0, 0, 0
 	}
 
-	var numTxs, numPaths int
+	var (
+		numTxs   int
+		numPaths int
+		vbytes   int64
+	)
 	for _, a := range desc.Ancestry {
 		numPaths++
 
 		pathTxs := 0
+		var pathVBytes int64
 		switch {
-		case a.TreePath != nil:
+		// Require a non-nil Root, not just a non-nil TreePath:
+		// Tree.NumTx dereferences Root without a guard, so a
+		// TreePath with a nil Root would panic here. Falling through
+		// to the depth or malformed-floor arms instead keeps the
+		// count and the parent weight in lockstep and preserves the
+		// "degrade, never block the exit" contract.
+		case a.TreePath != nil && a.TreePath.Root != nil:
 			pathTxs = a.TreePath.NumTx()
+			pathVBytes = treePathVBytes(a.TreePath)
 
 		case a.TreeDepth > 0:
 			// Tree pruned but depth persisted: use it as a rough
 			// lower bound on the transactions in this fragment.
 			pathTxs = int(a.TreeDepth)
+			pathVBytes = int64(a.TreeDepth) *
+				defaultRecoveryTxVBytes
 		}
 
 		// An ancestry path that exists always has at least one
-		// commitment transaction. Floor at 1 so a malformed fragment
-		// (nil TreePath and zero TreeDepth) still contributes to the
-		// CPFP-fee estimate rather than silently costing nothing,
-		// which would let a wallet-underfunded exit slip through.
+		// commitment transaction. Floor both the count and the parent
+		// weight so a malformed fragment (nil TreePath and zero
+		// TreeDepth) still budgets a CPFP child AND its parent, rather
+		// than silently costing nothing and letting a
+		// wallet-underfunded exit slip through.
 		if pathTxs < 1 {
 			pathTxs = 1
 		}
+		if pathVBytes == 0 {
+			pathVBytes = defaultRecoveryTxVBytes
+		}
 
 		numTxs += pathTxs
+		vbytes += pathVBytes
 	}
 
-	numTxs += desc.ChainDepth
+	oorTxs, oorVBytes := oorRecovery(desc, mat)
+	numTxs += oorTxs
+	vbytes += oorVBytes
 
-	return numTxs, numPaths
+	return numTxs, numPaths, vbytes
+}
+
+// oorRecovery returns the (txCount, vBytes) the OOR checkpoint chain adds to
+// the recovery estimate. When resolved lineage material carrying the finalized
+// checkpoint/ark transactions is supplied it counts and sizes each one exactly
+// — a single OOR hop can carry several checkpoint PSBTs plus one ark tx, which
+// the ChainDepth scalar alone cannot capture. Without material it falls back to
+// one default-sized transaction per ChainDepth hop, matching RecoveryTxCount's
+// long-standing approximation.
+func oorRecovery(desc *vtxo.Descriptor, mat *LineageMaterial) (int, int64) {
+	if mat != nil && len(mat.ExtraNodes) > 0 {
+		var vbytes int64
+		for _, n := range mat.ExtraNodes {
+			vbytes += extraNodeVBytes(n)
+		}
+
+		return len(mat.ExtraNodes), vbytes
+	}
+
+	return desc.ChainDepth, int64(desc.ChainDepth) * defaultRecoveryTxVBytes
+}
+
+// extraNodeVBytes measures the virtual size of a finalized OOR recovery
+// transaction (a checkpoint or ark tx). These carry real witnesses, so unlike
+// the modeled tree nodes we size them directly with the same weight estimator
+// the txconfirm broadcaster uses, keeping the funding recommendation aligned
+// with the fee the broadcaster actually pays. A nil node or tx falls back to
+// the default per-tx size so it still contributes a conservative parent weight.
+func extraNodeVBytes(n *recovery.Node) int64 {
+	if n == nil || n.Tx == nil {
+		return defaultRecoveryTxVBytes
+	}
+
+	return (txconfirm.EstimateWeight(n.Tx) + 3) / 4
+}
+
+// treePathVBytes sums the estimated transaction size of every node on an
+// extracted ancestry tree path.
+func treePathVBytes(t *tree.Tree) int64 {
+	if t == nil || t.Root == nil {
+		return 0
+	}
+
+	var total int64
+	_ = t.Root.ForEach(func(n *tree.Node) error {
+		total += nodeTxVBytes(n)
+
+		return nil
+	})
+
+	return total
+}
+
+// nodeTxVBytes estimates the virtual size of the transaction a tree node
+// represents: a single pre-signed MuSig2 key-spend input plus the node's own
+// outputs (its child outputs and P2A anchor for a branch, or the VTXO output
+// and anchor for a leaf). Extraction preserves each node's full output set, so
+// this matches the transaction the broadcaster fee-bumps, radix and all.
+func nodeTxVBytes(n *tree.Node) int64 {
+	// ForEach can hand us a nil node if the tree carries a nil child, and
+	// a node's Outputs slice can hold nil entries; guard both so a
+	// well-formed-but-empty node can't panic the estimate. (A nil entry
+	// in a node's Children map would still panic inside ForEach itself, on
+	// the nil-receiver traversal — but built and deserialized trees never
+	// carry nil children, so that path is unreachable in practice.)
+	if n == nil {
+		return 0
+	}
+
+	var est input.TxWeightEstimator
+	est.AddTaprootKeySpendInput(txscript.SigHashDefault)
+	for _, out := range n.Outputs {
+		if out == nil {
+			continue
+		}
+		est.AddTxOutput(out)
+	}
+
+	return int64(est.Weight().ToVB())
 }

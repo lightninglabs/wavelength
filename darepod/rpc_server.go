@@ -4631,8 +4631,9 @@ func (r *RPCServer) preflightUnrollFeasibility(ctx context.Context,
 		return status.Errorf(codes.Internal, "preflight wallet "+
 			"unspent: %v", err)
 	}
+	mat := r.resolveExitLineage(ctx, desc.Outpoint, desc)
 	plan := unroll.PlanExitFunding(
-		desc, r.estimateUnrollFeeRate(ctx), walletSnapshot,
+		desc, mat, r.estimateUnrollFeeRate(ctx), walletSnapshot,
 	)
 	verdict := plan.Feasibility
 	if verdict.Feasible {
@@ -4640,6 +4641,41 @@ func (r *RPCServer) preflightUnrollFeasibility(ctx context.Context,
 	}
 
 	return unrollInfeasibleError(verdict)
+}
+
+// resolveExitLineage resolves the OOR lineage material for an exit target so
+// the funding estimate can size the checkpoint/ark transactions of each OOR hop
+// exactly. It returns nil for a round-direct VTXO (ChainDepth == 0), where
+// there are no OOR transactions and the descriptor's extracted tree paths
+// already size the recovery cost exactly, and nil on any resolution failure, so
+// a missing or partial artifact store degrades to the descriptor-only
+// ChainDepth estimate rather than blocking the exit.
+func (r *RPCServer) resolveExitLineage(ctx context.Context,
+	target wire.OutPoint, desc *vtxo.Descriptor) *unroll.LineageMaterial {
+
+	if desc == nil || desc.ChainDepth == 0 {
+		return nil
+	}
+
+	resolver := &unroll.DescriptorLineageResolver{
+		VTXOStore:     r.server.vtxoStore,
+		ArtifactStore: r.newLocalOORArtifactStore(),
+	}
+
+	mat, err := resolver.ResolveLineage(ctx, target)
+	if err != nil {
+		// The exact OOR sizing is a refinement, not a gate: fall back
+		// to the ChainDepth approximation so a resolution hiccup can
+		// never make an otherwise-viable exit look infeasible.
+		r.server.log.DebugS(ctx, "Exit-plan lineage resolve failed; "+
+			"falling back to ChainDepth funding estimate",
+			slog.String("target", target.String()),
+			btclog.Fmt("err", "%v", err))
+
+		return nil
+	}
+
+	return mat
 }
 
 // estimateUnrollFeeRate returns the current fee rate (sat/vByte) for the
