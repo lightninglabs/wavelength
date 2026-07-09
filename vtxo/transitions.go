@@ -134,6 +134,8 @@ func (s *LiveState) handleForceUnroll(_ context.Context,
 			VTXO:            s.VTXO,
 			BlocksRemaining: 0,
 			Reason:          reason,
+			Trigger:         evt.Trigger,
+			ExitPolicy:      evt.ExitPolicy,
 		},
 		&VTXOStatusUpdate{
 			Outpoint:  s.VTXO.Outpoint,
@@ -670,6 +672,8 @@ func (s *PendingForfeitState) ProcessEvent(ctx context.Context, event VTXOEvent,
 				VTXO:            s.VTXO,
 				BlocksRemaining: 0,
 				Reason:          reason,
+				Trigger:         evt.Trigger,
+				ExitPolicy:      evt.ExitPolicy,
 			},
 			&VTXOStatusUpdate{
 				Outpoint:  s.VTXO.Outpoint,
@@ -938,6 +942,8 @@ func (s *ForfeitingState) ProcessEvent(ctx context.Context, event VTXOEvent,
 				VTXO:            s.VTXO,
 				BlocksRemaining: 0,
 				Reason:          reason,
+				Trigger:         evt.Trigger,
+				ExitPolicy:      evt.ExitPolicy,
 			},
 			&VTXOStatusUpdate{
 				Outpoint:  s.VTXO.Outpoint,
@@ -1143,6 +1149,8 @@ func (s *SpendingState) ProcessEvent(_ context.Context, event VTXOEvent,
 				VTXO:            s.VTXO,
 				BlocksRemaining: 0,
 				Reason:          reason,
+				Trigger:         evt.Trigger,
+				ExitPolicy:      evt.ExitPolicy,
 			},
 			&VTXOStatusUpdate{
 				Outpoint:  s.VTXO.Outpoint,
@@ -1206,7 +1214,40 @@ func (s *ForfeitedState) ProcessEvent(_ context.Context, _ VTXOEvent,
 func (s *UnilateralExitState) ProcessEvent(_ context.Context, event VTXOEvent,
 	_ *VTXOEnvironment) (*VTXOStateTransition, error) {
 
-	switch event.(type) {
+	switch evt := event.(type) {
+	case *ForceUnrollEvent:
+		// A ForceUnrollEvent on an already-exiting VTXO is an
+		// idempotent re-admission, not a no-op: the manager drives one
+		// whenever an external trigger (vHTLC recovery restore, a
+		// repeated fraud spend) re-asks for the exit, and the registry
+		// record may not have been written yet (the first admission's
+		// ExpiringNotification is a best-effort Tell that can be lost
+		// to a crash before the registry's UpsertRecord). Re-emit the
+		// notification so the chain resolver bridge re-admits under the
+		// same trigger/policy; the registry dedups against a live
+		// record, so a redundant re-admit is a benign no-op. Stay in
+		// UnilateralExitState and do not re-persist the status (already
+		// UnilateralExit).
+		reason := evt.Reason
+		if reason == "" {
+			reason = s.Reason
+		}
+
+		return &VTXOStateTransition{
+			NextState: s,
+			NewEvents: fn.Some(VTXOEmittedEvent{
+				Outbox: []VTXOOutMsg{
+					&ExpiringNotification{
+						VTXO:            s.VTXO,
+						BlocksRemaining: 0,
+						Reason:          reason,
+						Trigger:         evt.Trigger,
+						ExitPolicy:      evt.ExitPolicy,
+					},
+				},
+			}),
+		}, nil
+
 	case *ExitFailedEvent:
 		// The unroll job failed without any on-chain footprint, so the
 		// VTXO is still live from the operator's perspective. Roll back
