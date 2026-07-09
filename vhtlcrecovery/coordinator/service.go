@@ -10,6 +10,7 @@ import (
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/unroll"
 	"github.com/lightninglabs/darepo-client/vhtlcrecovery"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -56,20 +57,31 @@ type Store interface {
 	FailRecovery(ctx context.Context, id string, failure error) error
 }
 
-// UnrollRegistry is the small unroll control surface used by recovery. It is
-// narrower than the actor ref so tests can model admission/status without
-// spinning up the full unroll subsystem.
+// UnrollRegistry is the small unroll status surface used by recovery. It is
+// narrower than the actor ref so tests can model status without spinning up
+// the full unroll subsystem. Admission no longer lives here: recovery forces
+// the exit through the VTXO manager (see ExitAdmitter) so the target is
+// visible to the manager and to restart recovery, and only reads status back
+// from the registry.
 type UnrollRegistry interface {
-	// EnsureUnroll admits or deduplicates one unroll target.
-	EnsureUnroll(ctx context.Context,
-		req unroll.EnsureUnrollRequest) (
-		*unroll.EnsureUnrollResp,
-		error,
-	)
-
 	// GetStatus returns the current registry view for one target.
 	GetStatus(ctx context.Context,
 		target wire.OutPoint) (*unroll.GetStatusResp, error)
+}
+
+// ExitAdmitter forces a recovery target into unilateral exit through the VTXO
+// manager's single admission gate. The manager owns the state transition
+// (persisting the target into VTXOStatusUnilateralExit, out of the live set)
+// and, via its chain-resolver seam, starts the durable unroll job under the
+// request's exit policy. Recovery hands off to the manager rather than
+// admitting the registry job directly so a vHTLC exit converges on the same
+// path as manual, critical-expiry, and fraud exits: the manager knows the
+// coin is exiting, and the #400 restart orphan scan covers it.
+type ExitAdmitter interface {
+	// ForceExit drives one target into unilateral exit and returns once
+	// the manager has accepted (or declined) the transition. The registry
+	// job is started asynchronously through the manager's outbox.
+	ForceExit(ctx context.Context, req actormsg.ForceUnrollRequest) error
 }
 
 // TargetMaterializer ensures the vHTLC target has the local descriptor and
@@ -98,24 +110,6 @@ func NewActorUnrollRegistry(ref actor.ActorRef[
 	return ActorUnrollRegistry{ref: ref}
 }
 
-// EnsureUnroll asks the live unroll registry to admit one target.
-func (r ActorUnrollRegistry) EnsureUnroll(ctx context.Context,
-	req unroll.EnsureUnrollRequest) (*unroll.EnsureUnrollResp, error) {
-
-	resp, err := r.ref.Ask(ctx, &req).Await(ctx).Unpack()
-	if err != nil {
-		return nil, err
-	}
-
-	ensureResp, ok := resp.(*unroll.EnsureUnrollResp)
-	if !ok {
-		return nil, fmt.Errorf("unexpected unroll ensure response %T",
-			resp)
-	}
-
-	return ensureResp, nil
-}
-
 // GetStatus asks the live unroll registry for one target's current status.
 func (r ActorUnrollRegistry) GetStatus(ctx context.Context,
 	target wire.OutPoint) (*unroll.GetStatusResp, error) {
@@ -141,8 +135,12 @@ type ServiceConfig struct {
 	// Store persists recovery jobs and terminal reconciliation.
 	Store Store
 
-	// Unroll admits and queries the generic unroll subsystem.
+	// Unroll queries the generic unroll subsystem for per-target status.
 	Unroll UnrollRegistry
+
+	// Exiter forces a recovery target into unilateral exit through the
+	// VTXO manager's admission gate.
+	Exiter ExitAdmitter
 
 	// Log is an optional structured subsystem logger.
 	Log fn.Option[btclog.Logger]
@@ -172,12 +170,13 @@ type RecoveryStatus struct {
 type Service struct {
 	store              Store
 	unroll             UnrollRegistry
+	exiter             ExitAdmitter
 	targetMaterializer TargetMaterializer
 	log                btclog.Logger
 }
 
-// NewService creates a vHTLC recovery service from durable storage and the
-// unroll admission/status surface.
+// NewService creates a vHTLC recovery service from durable storage, the unroll
+// status surface, and the VTXO manager exit-admission seam.
 func NewService(cfg ServiceConfig) (*Service, error) {
 	if cfg.Store == nil {
 		return nil, fmt.Errorf("vhtlc recovery store is required")
@@ -185,10 +184,14 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 	if cfg.Unroll == nil {
 		return nil, fmt.Errorf("unroll registry is required")
 	}
+	if cfg.Exiter == nil {
+		return nil, fmt.Errorf("exit admitter is required")
+	}
 
 	return &Service{
 		store:              cfg.Store,
 		unroll:             cfg.Unroll,
+		exiter:             cfg.Exiter,
 		targetMaterializer: cfg.TargetMaterializer,
 		log:                cfg.Log.UnwrapOr(btclog.Disabled),
 	}, nil
@@ -444,8 +447,17 @@ func (s *Service) RestoreNonTerminal(ctx context.Context) error {
 }
 
 // ensureUnroll admits the target into unroll using the recovery row's durable
-// exit policy identity and verifies that any pre-existing unroll job did not
-// claim the same target with a different policy.
+// exit policy identity, then forces the target into unilateral exit through
+// the VTXO manager, which owns the transition and starts the durable unroll
+// job through its chain-resolver seam.
+//
+// Admission is asynchronous now: the manager Ask returns once the VTXO is
+// transitioned to UnilateralExitState, but the registry job is started by the
+// manager's outbox, so the coordinator no longer reads the registry record
+// back for synchronous policy-conflict verification. The registry admission
+// boundary still validates the (kind, ref) identity, and the recovery row's
+// durable policy is re-driven on restart, so the exit policy survives without
+// the inline check.
 func (s *Service) ensureUnroll(ctx context.Context,
 	job vhtlcrecovery.RecoveryJob) error {
 
@@ -458,37 +470,47 @@ func (s *Service) ensureUnroll(ctx context.Context,
 		}
 	}
 
-	resp, err := s.unroll.EnsureUnroll(ctx, unroll.EnsureUnrollRequest{
-		Outpoint:       job.VTXOOutpoint,
-		Trigger:        unroll.TriggerManual,
-		ExitPolicyKind: unroll.ExitPolicyKind(job.ExitPolicyKind),
-		ExitPolicyRef:  job.ID,
+	err := s.exiter.ForceExit(ctx, actormsg.ForceUnrollRequest{
+		Outpoint: job.VTXOOutpoint,
+		Reason:   "vhtlc recovery",
+		Trigger:  actormsg.UnrollTriggerManual,
+		ExitPolicy: fn.Some(actormsg.ExitPolicy{
+			Kind: actormsg.ExitPolicyKind(job.ExitPolicyKind),
+			Ref:  actormsg.ExitPolicyRef(job.ID),
+		}),
 	})
 	if err != nil {
-		return err
+		return fmt.Errorf("force vhtlc recovery exit: %w", err)
 	}
 
-	s.log.InfoS(ctx, "starting unroll for vhtlc recovery",
+	s.log.InfoS(ctx, "forced vhtlc recovery exit through vtxo manager",
 		append(
 			recoveryLogAttrs(job),
-			slog.String("unroll_actor_id", resp.ActorID),
-			slog.Bool("created", resp.Created),
 			slog.String("vtxo_outpoint", job.VTXOOutpoint.String()),
+			slog.String("exit_policy_kind", job.ExitPolicyKind),
 			slog.String("exit_policy_ref", job.ID),
 		)...,
 	)
 
+	// Best-effort policy-conflict guard. The registry admission boundary is
+	// first-writer-wins and does not reject a later request that names a
+	// different policy, so a pre-existing unroll record (e.g. a standard
+	// timeout exit that claimed this outpoint first) would silently keep
+	// its policy while this recovery believes it exits under the refund
+	// policy. Fail the recovery in that case rather than exit under the
+	// wrong policy. A not-yet-visible record is the normal case now that
+	// admission is asynchronous through the manager, so it is left to the
+	// registry's own validation plus the restart re-drive, not treated as
+	// an error.
 	status, err := s.unroll.GetStatus(ctx, job.VTXOOutpoint)
 	if err != nil {
-		s.log.WarnS(ctx, "unable to verify vhtlc recovery "+
-			"unroll status after admission", err,
-			recoveryLogAttrs(job)...)
+		s.log.WarnS(ctx, "unable to verify vhtlc recovery unroll "+
+			"status after force exit", err, recoveryLogAttrs(job)...)
 
 		return nil
 	}
 	if !status.Found {
-		return fmt.Errorf("unroll admission returned without visible " +
-			"status")
+		return nil
 	}
 	if status.ExitPolicyKind != "" &&
 		string(status.ExitPolicyKind) != job.ExitPolicyKind {

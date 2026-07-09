@@ -8,6 +8,7 @@ import (
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/db"
+	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/unroll"
 	"github.com/lightninglabs/darepo-client/vhtlcrecovery"
 	"github.com/lightninglabs/darepo-client/vhtlcrecovery/coordinator"
@@ -52,6 +53,7 @@ func TestCancelVHTLCRecoveryMissingIsIdempotent(t *testing.T) {
 		coordinator.ServiceConfig{
 			Store:  missingRecoveryStore{},
 			Unroll: noopUnrollRegistry{},
+			Exiter: noopUnrollRegistry{},
 		},
 	)
 	require.NoError(t, err)
@@ -157,10 +159,10 @@ func (missingRecoveryStore) FailRecovery(context.Context, string, error) error {
 
 type noopUnrollRegistry struct{}
 
-func (noopUnrollRegistry) EnsureUnroll(context.Context,
-	unroll.EnsureUnrollRequest) (*unroll.EnsureUnrollResp, error) {
+func (noopUnrollRegistry) ForceExit(context.Context,
+	actormsg.ForceUnrollRequest) error {
 
-	return nil, errors.New("unexpected ensure unroll")
+	return errors.New("unexpected force exit")
 }
 
 func (noopUnrollRegistry) GetStatus(context.Context, wire.OutPoint) (
