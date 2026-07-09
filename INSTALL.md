@@ -170,9 +170,9 @@ darepod \
   --wallet.feeurl=https://mempool.space/signet/api/v1/fees/recommended
 ```
 
-The Ark and swap connections resolve to the public staging signet endpoints
+The Ark and swap connections resolve from the configured public test network
 unless explicitly overridden. See [`docs/signet.md`](docs/signet.md) for the
-gRPC and REST addresses.
+testnet3, testnet4, and signet gRPC and REST addresses.
 
 ### `lnd`
 

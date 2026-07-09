@@ -112,7 +112,7 @@ darepod \
 | `--lnd.tlspath` | | Path to lnd TLS certificate |
 | `--lnd.macaroonpath` | | Path to lnd admin macaroon |
 | `--lnd.rpctimeout` | `30s` | Timeout for lnd RPC calls |
-| `--server.host` | `localhost:10010`; signet: `arkd-signet.staging.lightningcluster.com:443` | Ark operator address for the selected transport |
+| `--server.host` | network default | Ark operator address override for the selected transport |
 | `--server.transport` | `grpc` | Ark operator transport: `grpc` or `rest` |
 | `--server.insecure` | `false` | Disable TLS for server connection |
 | `--server.tlscertpath` | | Operator TLS certificate path |
@@ -121,12 +121,12 @@ darepod \
 | `--rpc.listenaddr` | `localhost:10029` | Daemon gRPC listen address |
 | `--rpc.tlscertpath` | | Custom TLS cert for daemon RPC |
 | `--rpc.tlskeypath` | | Custom TLS key for daemon RPC |
-| `--swap.serveraddress` | `localhost:10030`; signet: `swapd-signet.staging.lightningcluster.com:443` | Swap server address for swapruntime builds |
+| `--swap.serveraddress` | network default | Swap server address override for swapruntime builds |
 | `--swap.servertransport` | `grpc` | Swap server transport: `grpc` or `rest` |
 
-When either transport is `rest`, signet resolves the matching HTTPS gateway
-instead of the gRPC endpoint. See [signet.md](signet.md) for the four public
-endpoints and override examples.
+Empty Ark and swap addresses resolve from the selected network and transport.
+See [signet.md](signet.md) for the testnet3, testnet4, and signet endpoints and
+override examples.
 
 ### Environment Variables
 

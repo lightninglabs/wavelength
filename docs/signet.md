@@ -1,33 +1,17 @@
-# Signet Endpoints
+# Public Test Network Endpoints
 
-`darepod` connects to the public staging Ark and swap services when the
-configured Bitcoin network is `signet`. The default outbound transport is
-gRPC, so a signet config with no server overrides resolves to:
+`darepod` has built-in Ark and swap service endpoints for testnet3, testnet4,
+and signet. Leave `server.host` and `swap.serveraddress` empty to select the
+endpoint for the configured Bitcoin network and outbound transport.
 
-| Service | Transport | Endpoint |
-|---------|-----------|----------|
-| Ark operator | gRPC | `arkd-signet.staging.lightningcluster.com:443` |
-| Swap server | gRPC | `swapd-signet.staging.lightningcluster.com:443` |
+| Network config | Ark gRPC | Ark REST | Swap gRPC | Swap REST |
+|----------------|----------|----------|-----------|-----------|
+| `testnet` | `arkd.testnet.lightningcluster.com:443` | `https://arkd-rest.testnet.lightningcluster.com` | `swapd.testnet.lightningcluster.com:443` | `https://swapd-rest.testnet.lightningcluster.com` |
+| `testnet4` | `arkd-testnet4.testnet.lightningcluster.com:443` | `https://arkd-testnet4-rest.testnet.lightningcluster.com` | `swapd-testnet4.testnet.lightningcluster.com:443` | `https://swapd-testnet4-rest.testnet.lightningcluster.com` |
+| `signet` | `arkd-signet.staging.lightningcluster.com:443` | `https://arkd-signet-rest.staging.lightningcluster.com` | `swapd-signet.staging.lightningcluster.com:443` | `https://swapd-signet-rest.staging.lightningcluster.com` |
 
-Both endpoints use publicly trusted TLS certificates. Leave
-`server.insecure` and `swap.serverinsecure` disabled, and leave the custom TLS
-certificate paths empty so the clients use the system certificate pool.
-
-The wallet backend still needs its own signet chain source. As an example, an
-`lwwallet` deployment can start with an operator-provided signet Esplora URL:
-
-```bash
-darepod \
-  --network=signet \
-  --wallet.type=lwwallet \
-  --wallet.esploraurl=https://your-signet-esplora.example/api
-```
-
-The swap endpoint is consumed only by builds that include `swapruntime`.
-
-## REST Transport
-
-Set both transport selectors to `rest` when the host cannot use native gRPC:
+The daemon defaults both outbound transports to gRPC. Set the selectors to
+`rest` when the host cannot use native gRPC:
 
 ```bash
 darepod \
@@ -38,49 +22,48 @@ darepod \
   --wallet.esploraurl=https://your-signet-esplora.example/api
 ```
 
-The resolved HTTPS gateways are:
+All public endpoints use publicly trusted TLS certificates. Leave
+`server.insecure` and `swap.serverinsecure` disabled, and leave the custom TLS
+certificate paths empty so the clients use the system certificate pool. The
+swap endpoint is consumed only by builds that include `swapruntime`.
 
-| Service | Endpoint |
-|---------|----------|
-| Ark operator | `https://arkd-signet-rest.staging.lightningcluster.com` |
-| Swap server | `https://swapd-signet-rest.staging.lightningcluster.com` |
+The testnet4 REST gateways are live. The testnet4 gRPC hostnames are already
+the deployment names, but their public NLBs remain disabled until the
+certificate work in
+[lightning-infra#3517](https://github.com/lightninglabs/lightning-infra/pull/3517)
+lands.
 
-The same Ark gateway carries both `ArkService` and `MailboxService`. The swap
-gateway carries the swap RPC surface used by the daemon-owned swap runtime.
+## Config Resolution
 
-## Custom Deployments
+`darepod.DefaultConfig()` leaves the two explicit address fields empty. The
+config accessors resolve the effective values without mutating those fields:
 
-Custom endpoint values take precedence over the public signet defaults:
+- `Config.ArkServerAddress()` selects from `network`, `server.transport`, and
+  `server.host`.
+- `Config.SwapServerAddress()` selects from `network`,
+  `swap.servertransport`, and `swap.serveraddress`.
 
-```bash
-darepod \
-  --network=signet \
-  --server.host=ark.example.com:443 \
-  --swap.serveraddress=swap.example.com:443 \
-  --wallet.type=lwwallet \
-  --wallet.esploraurl=https://your-signet-esplora.example/api
-```
-
-For a local signet development stack, keep the local endpoint defaults and
-enable the two insecure flags:
+An explicit address always wins. This includes local test-network stacks:
 
 ```bash
 darepod \
   --network=signet \
+  --server.host=localhost:10010 \
   --server.insecure \
+  --swap.serveraddress=localhost:10030 \
   --swap.serverinsecure \
   --wallet.type=lwwallet \
   --wallet.esploraurl=http://localhost:3000
 ```
 
-The insecure flags are an explicit local-development signal, so the daemon
-keeps `localhost:10010` and `localhost:10030` instead of replacing them with
-the public staging endpoints.
+Mainnet, regtest, and simnet have no public service deployment in the default
+table, so empty address fields resolve to `localhost:10010` and
+`localhost:10030`.
 
 ## walletdk
 
-The embedded Go SDK uses the same network-aware defaults. Set the network and
-wallet chain source, but leave the Ark and swap address fields untouched:
+The embedded Go SDK uses the same config-level lookup. Set the network and
+wallet chain source, but leave the Ark and swap address fields empty:
 
 ```go
 cfg := walletdk.DefaultConfig()
@@ -91,6 +74,5 @@ cfg.WalletEsploraURL = "https://your-signet-esplora.example/api"
 client, err := walletdk.Start(ctx, cfg)
 ```
 
-`walletdk.Start` resolves the gRPC staging endpoints while it validates the
-embedded daemon config. Set `ServerTransport` and `SwapServerTransport` to
+Set `ServerTransport` and `SwapServerTransport` to
 `walletdk.TransportREST` to select the two HTTPS gateways instead.
