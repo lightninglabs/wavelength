@@ -509,6 +509,13 @@ func generatedRegistry() []serviceSpec {
 					Comments: "",
 				},
 				{
+					Name:     "ExitSummary",
+					Aliases:  []string{"exit-summary"},
+					Input:    "walletdkrpc.ExitSummaryRequest",
+					Output:   "walletdkrpc.ExitSummaryResponse",
+					Comments: "",
+				},
+				{
 					Name:            "SubscribeWallet",
 					Aliases:         []string{"subscribe-wallet"},
 					Input:           "walletdkrpc.SubscribeWalletRequest",

@@ -32,6 +32,7 @@ const (
 	WalletService_SweepWallet_FullMethodName     = "/walletdkrpc.WalletService/SweepWallet"
 	WalletService_Exit_FullMethodName            = "/walletdkrpc.WalletService/Exit"
 	WalletService_ExitStatus_FullMethodName      = "/walletdkrpc.WalletService/ExitStatus"
+	WalletService_ExitSummary_FullMethodName     = "/walletdkrpc.WalletService/ExitSummary"
 	WalletService_SubscribeWallet_FullMethodName = "/walletdkrpc.WalletService/SubscribeWallet"
 )
 
@@ -109,6 +110,10 @@ type WalletServiceClient interface {
 	// specified VTXO outpoint, including recovery chain progress and
 	// sweep state. Proxies daemonrpc.GetUnrollStatus.
 	ExitStatus(ctx context.Context, in *ExitStatusRequest, opts ...grpc.CallOption) (*ExitStatusResponse, error)
+	// ExitSummary reports the wallet-wide portfolio of in-progress exits:
+	// one row per active exit plus aggregate totals for the amount still
+	// being recovered, the estimated fees, and the estimated net recoverable.
+	ExitSummary(ctx context.Context, in *ExitSummaryRequest, opts ...grpc.CallOption) (*ExitSummaryResponse, error)
 	// SubscribeWallet streams activity updates as they happen. The stream
 	// is resumable: each response carries a monotonic cursor the client can
 	// reconnect from to replay everything after it without gaps.
@@ -253,6 +258,16 @@ func (c *walletServiceClient) ExitStatus(ctx context.Context, in *ExitStatusRequ
 	return out, nil
 }
 
+func (c *walletServiceClient) ExitSummary(ctx context.Context, in *ExitSummaryRequest, opts ...grpc.CallOption) (*ExitSummaryResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ExitSummaryResponse)
+	err := c.cc.Invoke(ctx, WalletService_ExitSummary_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *walletServiceClient) SubscribeWallet(ctx context.Context, in *SubscribeWalletRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SubscribeWalletResponse], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	stream, err := c.cc.NewStream(ctx, &WalletService_ServiceDesc.Streams[0], WalletService_SubscribeWallet_FullMethodName, cOpts...)
@@ -346,6 +361,10 @@ type WalletServiceServer interface {
 	// specified VTXO outpoint, including recovery chain progress and
 	// sweep state. Proxies daemonrpc.GetUnrollStatus.
 	ExitStatus(context.Context, *ExitStatusRequest) (*ExitStatusResponse, error)
+	// ExitSummary reports the wallet-wide portfolio of in-progress exits:
+	// one row per active exit plus aggregate totals for the amount still
+	// being recovered, the estimated fees, and the estimated net recoverable.
+	ExitSummary(context.Context, *ExitSummaryRequest) (*ExitSummaryResponse, error)
 	// SubscribeWallet streams activity updates as they happen. The stream
 	// is resumable: each response carries a monotonic cursor the client can
 	// reconnect from to replay everything after it without gaps.
@@ -398,6 +417,9 @@ func (UnimplementedWalletServiceServer) Exit(context.Context, *ExitRequest) (*Ex
 }
 func (UnimplementedWalletServiceServer) ExitStatus(context.Context, *ExitStatusRequest) (*ExitStatusResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ExitStatus not implemented")
+}
+func (UnimplementedWalletServiceServer) ExitSummary(context.Context, *ExitSummaryRequest) (*ExitSummaryResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ExitSummary not implemented")
 }
 func (UnimplementedWalletServiceServer) SubscribeWallet(*SubscribeWalletRequest, grpc.ServerStreamingServer[SubscribeWalletResponse]) error {
 	return status.Errorf(codes.Unimplemented, "method SubscribeWallet not implemented")
@@ -657,6 +679,24 @@ func _WalletService_ExitStatus_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _WalletService_ExitSummary_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ExitSummaryRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WalletServiceServer).ExitSummary(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WalletService_ExitSummary_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WalletServiceServer).ExitSummary(ctx, req.(*ExitSummaryRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _WalletService_SubscribeWallet_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(SubscribeWalletRequest)
 	if err := stream.RecvMsg(m); err != nil {
@@ -726,6 +766,10 @@ var WalletService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ExitStatus",
 			Handler:    _WalletService_ExitStatus_Handler,
+		},
+		{
+			MethodName: "ExitSummary",
+			Handler:    _WalletService_ExitSummary_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{
