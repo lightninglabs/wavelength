@@ -23,6 +23,13 @@ const (
 	// start a newly-admitted child before falling back to durable retry.
 	childAdmissionTimeout = 30 * time.Second
 
+	// detailedStatusAskTimeout bounds the registry's synchronous Ask to a
+	// live child for a detailed status probe. The registry is single-
+	// goroutine, so an unbounded Ask against a wedged child would stall
+	// every other outpoint; on timeout the probe degrades to the coarse
+	// cached record.
+	detailedStatusAskTimeout = 3 * time.Second
+
 	// initialPersistRetryDelay is the first delay used when retrying
 	// control-plane persistence for a live unroll child.
 	initialPersistRetryDelay = 250 * time.Millisecond
@@ -855,15 +862,22 @@ func (r *registryBehavior) handleGetStatus(ctx context.Context,
 	req *GetStatusRequest) fn.Result[RegistryResp] {
 
 	if child, ok := r.active[req.Outpoint]; ok {
+		// A detailed probe enriches the coarse record with the live
+		// child's planner-derived progress. The child Ask is
+		// best-effort: on failure we fall through to the coarse record
+		// so status never hard-fails on the detail path.
+		detail := r.detailedChildState(ctx, req, child)
+
 		if record, ok := r.pending[req.Outpoint]; ok {
 			cached := cloneRegistryRecord(record)
 			if cached.ActorID == "" {
 				cached.ActorID = child.Ref().ID()
 			}
 
-			return fn.Ok[RegistryResp](
-				statusFromRegistryRecord(cached, true),
-			)
+			resp := statusFromRegistryRecord(cached, true)
+			resp.State = detail
+
+			return fn.Ok[RegistryResp](resp)
 		}
 
 		record, err := r.cfg.Store.GetRecord(ctx, req.Outpoint)
@@ -879,9 +893,10 @@ func (r *registryBehavior) handleGetStatus(ctx context.Context,
 				cached.ActorID = child.Ref().ID()
 			}
 
-			return fn.Ok[RegistryResp](
-				statusFromRegistryRecord(cached, true),
-			)
+			resp := statusFromRegistryRecord(cached, true)
+			resp.State = detail
+
+			return fn.Ok[RegistryResp](resp)
 		}
 
 		return fn.Ok[RegistryResp](&GetStatusResp{
@@ -889,6 +904,7 @@ func (r *registryBehavior) handleGetStatus(ctx context.Context,
 			Active:  true,
 			ActorID: child.Ref().ID(),
 			Phase:   PhasePending,
+			State:   detail,
 		})
 	}
 
@@ -1464,6 +1480,41 @@ func (r *registryBehavior) queryBestHeight(ctx context.Context) (int32, error) {
 	}
 
 	return bestHeight.Height, nil
+}
+
+// detailedChildState returns the live child's planner-derived state for a
+// detailed status probe, or nil for a coarse probe or on any child-Ask
+// failure. It is deliberately best-effort: the caller always has the coarse
+// registry record to fall back on, and a status probe must never fail just
+// because the child was momentarily busy. Only a detailed probe Asks the
+// child, so the common polling path never writes a read-only mailbox row.
+func (r *registryBehavior) detailedChildState(ctx context.Context,
+	req *GetStatusRequest, child *VTXOUnrollActor) *GetStateResp {
+
+	if !req.Detailed {
+		return nil
+	}
+
+	// Bound the child Ask with a local timeout. The registry runs on a
+	// single goroutine, and the caller's context is the (possibly
+	// deadline-free) RPC context, so a child wedged in a redelivery-retry
+	// loop would otherwise stall the whole registry -- admission,
+	// persistence, and every other outpoint's status -- for as long as the
+	// caller waits. On timeout we fall back to the coarse record.
+	askCtx, cancel := context.WithTimeout(ctx, detailedStatusAskTimeout)
+	defer cancel()
+
+	state, err := r.childState(askCtx, child)
+	if err != nil {
+		r.log.DebugS(ctx, "detailed child state unavailable",
+			slog.String("outpoint", req.Outpoint.String()),
+			slog.String("err", err.Error()),
+		)
+
+		return nil
+	}
+
+	return state
 }
 
 // childState reads the detailed state from one active child actor.

@@ -71,6 +71,10 @@ type fakeRPCServer struct {
 	unrollStatusCalls int
 	unrollStatusLast  *daemonrpc.GetUnrollStatusRequest
 
+	exitSummaryResp  *darepod.ExitSummaryResult
+	exitSummaryErr   error
+	exitSummaryCalls int
+
 	exitPlanResp  *darepod.ExitPlanResponse
 	exitPlanErr   error
 	exitPlanCalls int
@@ -261,6 +265,17 @@ func (f *fakeRPCServer) GetUnrollStatus(_ context.Context,
 	}
 
 	return f.unrollStatusResp, f.unrollStatusErr
+}
+
+func (f *fakeRPCServer) ExitSummary(_ context.Context) (
+	*darepod.ExitSummaryResult, error) {
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.exitSummaryCalls++
+
+	return f.exitSummaryResp, f.exitSummaryErr
 }
 
 func (f *fakeRPCServer) GetExitPlan(_ context.Context,

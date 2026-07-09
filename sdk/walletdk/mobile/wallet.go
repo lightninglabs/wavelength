@@ -233,6 +233,28 @@ func ExitStatus(reqJSON []byte) ([]byte, error) {
 	return marshal(res)
 }
 
+// ExitSummary reports the wallet-wide portfolio of in-progress exits. reqJSON
+// decodes to walletdk.ExitSummaryRequest (an empty object is fine); the
+// response is walletdk.ExitSummaryResult.
+func ExitSummary(reqJSON []byte) ([]byte, error) {
+	client, ctx, err := activeClient()
+	if err != nil {
+		return nil, err
+	}
+
+	var req walletdk.ExitSummaryRequest
+	if err := decode(reqJSON, &req); err != nil {
+		return nil, err
+	}
+
+	res, err := client.ExitSummary(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	return marshal(res)
+}
+
 // GetExitPlan previews unilateral-exit readiness for a set of VTXOs. reqJSON
 // decodes to walletdk.GetExitPlanRequest; the response is
 // walletdk.GetExitPlanResult.

@@ -2233,6 +2233,103 @@ message UnrollResponse {
 message GetUnrollStatusRequest {
     // outpoint is the VTXO outpoint to query, formatted as "txid:index".
     string outpoint = 1;
+
+    // detailed enriches the response with tree/CSV progress and a fee
+    // breakdown by querying the live unroll actor. It costs one extra child
+    // actor round-trip plus a fee estimate, so automated pollers should leave
+    // it false and only interactive status commands should set it.
+    bool detailed = 2;
+}
+
+// UnrollProgress describes materialization progress through the exit proof
+// tree. It is populated only for a detailed query against a live unroll job.
+message UnrollProgress {
+    // confirmed_txs is the number of proof transactions confirmed on-chain.
+    uint32 confirmed_txs = 1;
+
+    // in_flight_txs is the number of proof transactions broadcast but not yet
+    // observed confirmed.
+    uint32 in_flight_txs = 2;
+
+    // ready_txs is the number of proof transactions ready to broadcast now
+    // (all in-proof parents confirmed).
+    uint32 ready_txs = 3;
+
+    // blocked_txs is the number of proof transactions still waiting on an
+    // unconfirmed in-proof parent.
+    uint32 blocked_txs = 4;
+
+    // total_txs is the total number of transactions in the exit proof tree.
+    uint32 total_txs = 5;
+
+    // current_layer is the frontier layer index: the shallowest topological
+    // layer (roots first) that still holds an unconfirmed transaction. It
+    // equals total_layers once every proof node has confirmed.
+    uint32 current_layer = 6;
+
+    // total_layers is the depth of the exit proof tree.
+    uint32 total_layers = 7;
+
+    // target_confirmed is true once the target VTXO transaction itself has
+    // confirmed on-chain.
+    bool target_confirmed = 8;
+
+    // all_proof_confirmed is true once every proof-tree transaction has
+    // confirmed, so only the CSV wait and final sweep remain.
+    bool all_proof_confirmed = 9;
+}
+
+// UnrollCSV describes the target's CSV maturity countdown. It is populated only
+// once the target transaction has confirmed.
+message UnrollCSV {
+    // target_confirm_height is the block height at which the target confirmed.
+    int32 target_confirm_height = 1;
+
+    // maturity_height is the block height at which the target becomes
+    // timeout-spendable.
+    int32 maturity_height = 2;
+
+    // blocks_remaining is how many blocks remain until CSV maturity.
+    int32 blocks_remaining = 3;
+
+    // mature is true once the current height is at or past maturity.
+    bool mature = 4;
+}
+
+// UnrollFees breaks down the on-chain cost of the exit. The CPFP total is
+// estimated from the current fee rate and the recovery-transaction count; the
+// sweep fee is the actual built-sweep fee once known, otherwise estimated.
+message UnrollFees {
+    // cpfp_fee_sat is the wallet-funded CPFP fee across every recovery
+    // transaction (estimated).
+    int64 cpfp_fee_sat = 1;
+
+    // sweep_fee_sat is the fee the final sweep pays out of the VTXO value.
+    int64 sweep_fee_sat = 2;
+
+    // total_cost_sat is cpfp_fee_sat + sweep_fee_sat.
+    int64 total_cost_sat = 3;
+
+    // vtxo_amount_sat is the value of the VTXO being exited.
+    int64 vtxo_amount_sat = 4;
+
+    // net_recovered_sat is vtxo_amount_sat - sweep_fee_sat: the value that
+    // lands back in the wallet from the sweep.
+    int64 net_recovered_sat = 5;
+
+    // fee_rate_sat_vbyte is the fee rate used for the estimate.
+    int64 fee_rate_sat_vbyte = 6;
+
+    // sweep_fee_actual is true when sweep_fee_sat is the real built-sweep fee
+    // rather than an estimate.
+    bool sweep_fee_actual = 7;
+
+    // spent_so_far_sat is the estimated on-chain fee already committed at this
+    // point in the exit: CPFP for the confirmed and in-flight recovery
+    // transactions, plus the sweep fee once the sweep is broadcast. It is an
+    // estimate derived from the per-transaction cost model, not a realized
+    // total; total_cost_sat remains the projected cost of the whole exit.
+    int64 spent_so_far_sat = 8;
 }
 
 // UnrollJobStatus represents the high-level phase of an unroll job.
@@ -2278,6 +2375,31 @@ message GetUnrollStatusResponse {
     // last_error contains the failure reason if the job is in FAILED
     // status.
     string last_error = 4;
+
+    // phase_detail is a human-readable one-line description of the current
+    // phase, e.g. "materializing layer 2 of 4 (3/7 txs confirmed)". Set only
+    // on a detailed query.
+    string phase_detail = 5;
+
+    // progress is the tree materialization progress. Set only on a detailed
+    // query against a live job.
+    UnrollProgress progress = 6;
+
+    // csv is the CSV maturity countdown. Set only on a detailed query, once
+    // the target has confirmed.
+    UnrollCSV csv = 7;
+
+    // fees is the on-chain cost breakdown for the exit. Set only on a detailed
+    // query.
+    UnrollFees fees = 8;
+
+    // best_case_blocks_remaining is the optimistic block count until a
+    // confirmed sweep. Set only on a detailed query.
+    int32 best_case_blocks_remaining = 9;
+
+    // current_height is the best block height the unroll actor has observed.
+    // Set only on a detailed query against a live job.
+    int32 current_height = 10;
 }
 
 // VHTLCRecoveryDirection records which side owns a recovery job.

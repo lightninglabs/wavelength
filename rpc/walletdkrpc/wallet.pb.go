@@ -4110,7 +4110,12 @@ type ExitStatusRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// outpoint is the VTXO outpoint to query, formatted as
 	// "txid:index".
-	Outpoint      string `protobuf:"bytes,1,opt,name=outpoint,proto3" json:"outpoint,omitempty"`
+	Outpoint string `protobuf:"bytes,1,opt,name=outpoint,proto3" json:"outpoint,omitempty"`
+	// detailed enriches the response with tree/CSV progress and a fee
+	// breakdown. It costs one extra child actor round-trip plus a fee
+	// estimate, so it should be set only for interactive status commands, not
+	// automated polling.
+	Detailed      bool `protobuf:"varint,2,opt,name=detailed,proto3" json:"detailed,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4152,6 +4157,328 @@ func (x *ExitStatusRequest) GetOutpoint() string {
 	return ""
 }
 
+func (x *ExitStatusRequest) GetDetailed() bool {
+	if x != nil {
+		return x.Detailed
+	}
+	return false
+}
+
+// ExitProgress describes materialization progress through the exit proof tree.
+// It is populated only for a detailed query against a live exit job.
+type ExitProgress struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// confirmed_txs is the number of proof transactions confirmed on-chain.
+	ConfirmedTxs uint32 `protobuf:"varint,1,opt,name=confirmed_txs,json=confirmedTxs,proto3" json:"confirmed_txs,omitempty"`
+	// in_flight_txs is the number of proof transactions broadcast but not yet
+	// observed confirmed.
+	InFlightTxs uint32 `protobuf:"varint,2,opt,name=in_flight_txs,json=inFlightTxs,proto3" json:"in_flight_txs,omitempty"`
+	// ready_txs is the number of proof transactions ready to broadcast now.
+	ReadyTxs uint32 `protobuf:"varint,3,opt,name=ready_txs,json=readyTxs,proto3" json:"ready_txs,omitempty"`
+	// blocked_txs is the number of proof transactions still waiting on an
+	// unconfirmed in-proof parent.
+	BlockedTxs uint32 `protobuf:"varint,4,opt,name=blocked_txs,json=blockedTxs,proto3" json:"blocked_txs,omitempty"`
+	// total_txs is the total number of transactions in the exit proof tree.
+	TotalTxs uint32 `protobuf:"varint,5,opt,name=total_txs,json=totalTxs,proto3" json:"total_txs,omitempty"`
+	// current_layer is the frontier layer index: the shallowest topological
+	// layer (roots first) that still holds an unconfirmed transaction.
+	CurrentLayer uint32 `protobuf:"varint,6,opt,name=current_layer,json=currentLayer,proto3" json:"current_layer,omitempty"`
+	// total_layers is the depth of the exit proof tree.
+	TotalLayers uint32 `protobuf:"varint,7,opt,name=total_layers,json=totalLayers,proto3" json:"total_layers,omitempty"`
+	// target_confirmed is true once the target VTXO transaction has confirmed.
+	TargetConfirmed bool `protobuf:"varint,8,opt,name=target_confirmed,json=targetConfirmed,proto3" json:"target_confirmed,omitempty"`
+	// all_proof_confirmed is true once every proof-tree transaction has
+	// confirmed, so only the CSV wait and final sweep remain.
+	AllProofConfirmed bool `protobuf:"varint,9,opt,name=all_proof_confirmed,json=allProofConfirmed,proto3" json:"all_proof_confirmed,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *ExitProgress) Reset() {
+	*x = ExitProgress{}
+	mi := &file_wallet_proto_msgTypes[39]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExitProgress) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExitProgress) ProtoMessage() {}
+
+func (x *ExitProgress) ProtoReflect() protoreflect.Message {
+	mi := &file_wallet_proto_msgTypes[39]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExitProgress.ProtoReflect.Descriptor instead.
+func (*ExitProgress) Descriptor() ([]byte, []int) {
+	return file_wallet_proto_rawDescGZIP(), []int{39}
+}
+
+func (x *ExitProgress) GetConfirmedTxs() uint32 {
+	if x != nil {
+		return x.ConfirmedTxs
+	}
+	return 0
+}
+
+func (x *ExitProgress) GetInFlightTxs() uint32 {
+	if x != nil {
+		return x.InFlightTxs
+	}
+	return 0
+}
+
+func (x *ExitProgress) GetReadyTxs() uint32 {
+	if x != nil {
+		return x.ReadyTxs
+	}
+	return 0
+}
+
+func (x *ExitProgress) GetBlockedTxs() uint32 {
+	if x != nil {
+		return x.BlockedTxs
+	}
+	return 0
+}
+
+func (x *ExitProgress) GetTotalTxs() uint32 {
+	if x != nil {
+		return x.TotalTxs
+	}
+	return 0
+}
+
+func (x *ExitProgress) GetCurrentLayer() uint32 {
+	if x != nil {
+		return x.CurrentLayer
+	}
+	return 0
+}
+
+func (x *ExitProgress) GetTotalLayers() uint32 {
+	if x != nil {
+		return x.TotalLayers
+	}
+	return 0
+}
+
+func (x *ExitProgress) GetTargetConfirmed() bool {
+	if x != nil {
+		return x.TargetConfirmed
+	}
+	return false
+}
+
+func (x *ExitProgress) GetAllProofConfirmed() bool {
+	if x != nil {
+		return x.AllProofConfirmed
+	}
+	return false
+}
+
+// ExitCSV describes the target's CSV maturity countdown. It is populated only
+// once the target transaction has confirmed.
+type ExitCSV struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// target_confirm_height is the block height at which the target confirmed.
+	TargetConfirmHeight int32 `protobuf:"varint,1,opt,name=target_confirm_height,json=targetConfirmHeight,proto3" json:"target_confirm_height,omitempty"`
+	// maturity_height is the block height at which the target becomes
+	// timeout-spendable.
+	MaturityHeight int32 `protobuf:"varint,2,opt,name=maturity_height,json=maturityHeight,proto3" json:"maturity_height,omitempty"`
+	// blocks_remaining is how many blocks remain until CSV maturity.
+	BlocksRemaining int32 `protobuf:"varint,3,opt,name=blocks_remaining,json=blocksRemaining,proto3" json:"blocks_remaining,omitempty"`
+	// mature is true once the current height is at or past maturity.
+	Mature        bool `protobuf:"varint,4,opt,name=mature,proto3" json:"mature,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ExitCSV) Reset() {
+	*x = ExitCSV{}
+	mi := &file_wallet_proto_msgTypes[40]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExitCSV) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExitCSV) ProtoMessage() {}
+
+func (x *ExitCSV) ProtoReflect() protoreflect.Message {
+	mi := &file_wallet_proto_msgTypes[40]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExitCSV.ProtoReflect.Descriptor instead.
+func (*ExitCSV) Descriptor() ([]byte, []int) {
+	return file_wallet_proto_rawDescGZIP(), []int{40}
+}
+
+func (x *ExitCSV) GetTargetConfirmHeight() int32 {
+	if x != nil {
+		return x.TargetConfirmHeight
+	}
+	return 0
+}
+
+func (x *ExitCSV) GetMaturityHeight() int32 {
+	if x != nil {
+		return x.MaturityHeight
+	}
+	return 0
+}
+
+func (x *ExitCSV) GetBlocksRemaining() int32 {
+	if x != nil {
+		return x.BlocksRemaining
+	}
+	return 0
+}
+
+func (x *ExitCSV) GetMature() bool {
+	if x != nil {
+		return x.Mature
+	}
+	return false
+}
+
+// ExitFees breaks down the on-chain cost of the exit. The CPFP total is
+// estimated from the current fee rate; the sweep fee is the actual built-sweep
+// fee once known, otherwise estimated.
+type ExitFees struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// cpfp_fee_sat is the wallet-funded CPFP fee across every recovery
+	// transaction (estimated).
+	CpfpFeeSat int64 `protobuf:"varint,1,opt,name=cpfp_fee_sat,json=cpfpFeeSat,proto3" json:"cpfp_fee_sat,omitempty"`
+	// sweep_fee_sat is the fee the final sweep pays out of the VTXO value.
+	SweepFeeSat int64 `protobuf:"varint,2,opt,name=sweep_fee_sat,json=sweepFeeSat,proto3" json:"sweep_fee_sat,omitempty"`
+	// total_cost_sat is cpfp_fee_sat + sweep_fee_sat.
+	TotalCostSat int64 `protobuf:"varint,3,opt,name=total_cost_sat,json=totalCostSat,proto3" json:"total_cost_sat,omitempty"`
+	// vtxo_amount_sat is the value of the VTXO being exited.
+	VtxoAmountSat int64 `protobuf:"varint,4,opt,name=vtxo_amount_sat,json=vtxoAmountSat,proto3" json:"vtxo_amount_sat,omitempty"`
+	// net_recovered_sat is vtxo_amount_sat - sweep_fee_sat.
+	NetRecoveredSat int64 `protobuf:"varint,5,opt,name=net_recovered_sat,json=netRecoveredSat,proto3" json:"net_recovered_sat,omitempty"`
+	// fee_rate_sat_vbyte is the fee rate used for the estimate.
+	FeeRateSatVbyte int64 `protobuf:"varint,6,opt,name=fee_rate_sat_vbyte,json=feeRateSatVbyte,proto3" json:"fee_rate_sat_vbyte,omitempty"`
+	// sweep_fee_actual is true when sweep_fee_sat is the real built-sweep fee
+	// rather than an estimate.
+	SweepFeeActual bool `protobuf:"varint,7,opt,name=sweep_fee_actual,json=sweepFeeActual,proto3" json:"sweep_fee_actual,omitempty"`
+	// spent_so_far_sat is the estimated on-chain fee already committed at this
+	// point in the exit: CPFP for the confirmed and in-flight recovery
+	// transactions, plus the sweep fee once the sweep is broadcast. It is an
+	// estimate, not a realized total; total_cost_sat remains the projected cost
+	// of the whole exit.
+	SpentSoFarSat int64 `protobuf:"varint,8,opt,name=spent_so_far_sat,json=spentSoFarSat,proto3" json:"spent_so_far_sat,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ExitFees) Reset() {
+	*x = ExitFees{}
+	mi := &file_wallet_proto_msgTypes[41]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExitFees) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExitFees) ProtoMessage() {}
+
+func (x *ExitFees) ProtoReflect() protoreflect.Message {
+	mi := &file_wallet_proto_msgTypes[41]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExitFees.ProtoReflect.Descriptor instead.
+func (*ExitFees) Descriptor() ([]byte, []int) {
+	return file_wallet_proto_rawDescGZIP(), []int{41}
+}
+
+func (x *ExitFees) GetCpfpFeeSat() int64 {
+	if x != nil {
+		return x.CpfpFeeSat
+	}
+	return 0
+}
+
+func (x *ExitFees) GetSweepFeeSat() int64 {
+	if x != nil {
+		return x.SweepFeeSat
+	}
+	return 0
+}
+
+func (x *ExitFees) GetTotalCostSat() int64 {
+	if x != nil {
+		return x.TotalCostSat
+	}
+	return 0
+}
+
+func (x *ExitFees) GetVtxoAmountSat() int64 {
+	if x != nil {
+		return x.VtxoAmountSat
+	}
+	return 0
+}
+
+func (x *ExitFees) GetNetRecoveredSat() int64 {
+	if x != nil {
+		return x.NetRecoveredSat
+	}
+	return 0
+}
+
+func (x *ExitFees) GetFeeRateSatVbyte() int64 {
+	if x != nil {
+		return x.FeeRateSatVbyte
+	}
+	return 0
+}
+
+func (x *ExitFees) GetSweepFeeActual() bool {
+	if x != nil {
+		return x.SweepFeeActual
+	}
+	return false
+}
+
+func (x *ExitFees) GetSpentSoFarSat() int64 {
+	if x != nil {
+		return x.SpentSoFarSat
+	}
+	return 0
+}
+
 // ExitStatusResponse reports the current phase of an unroll job for
 // WalletService.ExitStatus.
 type ExitStatusResponse struct {
@@ -4165,14 +4492,33 @@ type ExitStatusResponse struct {
 	SweepTxid string `protobuf:"bytes,3,opt,name=sweep_txid,json=sweepTxid,proto3" json:"sweep_txid,omitempty"`
 	// last_error contains the failure reason if the job is in FAILED
 	// status.
-	LastError     string `protobuf:"bytes,4,opt,name=last_error,json=lastError,proto3" json:"last_error,omitempty"`
+	LastError string `protobuf:"bytes,4,opt,name=last_error,json=lastError,proto3" json:"last_error,omitempty"`
+	// phase_detail is a human-readable one-line description of the current
+	// phase, e.g. "materializing layer 2 of 4 (3/7 txs confirmed)". Set only
+	// on a detailed query.
+	PhaseDetail string `protobuf:"bytes,5,opt,name=phase_detail,json=phaseDetail,proto3" json:"phase_detail,omitempty"`
+	// progress is the tree materialization progress. Set only on a detailed
+	// query against a live job.
+	Progress *ExitProgress `protobuf:"bytes,6,opt,name=progress,proto3" json:"progress,omitempty"`
+	// csv is the CSV maturity countdown. Set only on a detailed query, once
+	// the target has confirmed.
+	Csv *ExitCSV `protobuf:"bytes,7,opt,name=csv,proto3" json:"csv,omitempty"`
+	// fees is the on-chain cost breakdown for the exit. Set only on a detailed
+	// query.
+	Fees *ExitFees `protobuf:"bytes,8,opt,name=fees,proto3" json:"fees,omitempty"`
+	// best_case_blocks_remaining is the optimistic block count until a
+	// confirmed sweep. Set only on a detailed query.
+	BestCaseBlocksRemaining int32 `protobuf:"varint,9,opt,name=best_case_blocks_remaining,json=bestCaseBlocksRemaining,proto3" json:"best_case_blocks_remaining,omitempty"`
+	// current_height is the best block height the exit job has observed. Set
+	// only on a detailed query against a live job.
+	CurrentHeight int32 `protobuf:"varint,10,opt,name=current_height,json=currentHeight,proto3" json:"current_height,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ExitStatusResponse) Reset() {
 	*x = ExitStatusResponse{}
-	mi := &file_wallet_proto_msgTypes[39]
+	mi := &file_wallet_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4184,7 +4530,7 @@ func (x *ExitStatusResponse) String() string {
 func (*ExitStatusResponse) ProtoMessage() {}
 
 func (x *ExitStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_wallet_proto_msgTypes[39]
+	mi := &file_wallet_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4197,7 +4543,7 @@ func (x *ExitStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExitStatusResponse.ProtoReflect.Descriptor instead.
 func (*ExitStatusResponse) Descriptor() ([]byte, []int) {
-	return file_wallet_proto_rawDescGZIP(), []int{39}
+	return file_wallet_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *ExitStatusResponse) GetFound() bool {
@@ -4228,6 +4574,259 @@ func (x *ExitStatusResponse) GetLastError() string {
 	return ""
 }
 
+func (x *ExitStatusResponse) GetPhaseDetail() string {
+	if x != nil {
+		return x.PhaseDetail
+	}
+	return ""
+}
+
+func (x *ExitStatusResponse) GetProgress() *ExitProgress {
+	if x != nil {
+		return x.Progress
+	}
+	return nil
+}
+
+func (x *ExitStatusResponse) GetCsv() *ExitCSV {
+	if x != nil {
+		return x.Csv
+	}
+	return nil
+}
+
+func (x *ExitStatusResponse) GetFees() *ExitFees {
+	if x != nil {
+		return x.Fees
+	}
+	return nil
+}
+
+func (x *ExitStatusResponse) GetBestCaseBlocksRemaining() int32 {
+	if x != nil {
+		return x.BestCaseBlocksRemaining
+	}
+	return 0
+}
+
+func (x *ExitStatusResponse) GetCurrentHeight() int32 {
+	if x != nil {
+		return x.CurrentHeight
+	}
+	return 0
+}
+
+// ExitSummaryRequest asks for the wallet-wide portfolio of in-progress exits.
+type ExitSummaryRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ExitSummaryRequest) Reset() {
+	*x = ExitSummaryRequest{}
+	mi := &file_wallet_proto_msgTypes[43]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExitSummaryRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExitSummaryRequest) ProtoMessage() {}
+
+func (x *ExitSummaryRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_wallet_proto_msgTypes[43]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExitSummaryRequest.ProtoReflect.Descriptor instead.
+func (*ExitSummaryRequest) Descriptor() ([]byte, []int) {
+	return file_wallet_proto_rawDescGZIP(), []int{43}
+}
+
+// ExitSummaryItem is one in-progress exit's coarse contribution to the
+// portfolio. It is intentionally cheap (phase plus amounts and estimated fees
+// from the persisted descriptor), so the summary does not query each live
+// actor; use ExitStatus --detailed for one exit's tree/CSV progress.
+type ExitSummaryItem struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// outpoint is the exiting VTXO outpoint, formatted as "txid:index".
+	Outpoint string `protobuf:"bytes,1,opt,name=outpoint,proto3" json:"outpoint,omitempty"`
+	// status is the current high-level phase of the exit job.
+	Status ExitJobStatus `protobuf:"varint,2,opt,name=status,proto3,enum=walletdkrpc.ExitJobStatus" json:"status,omitempty"`
+	// vtxo_amount_sat is the value of the VTXO being exited.
+	VtxoAmountSat int64 `protobuf:"varint,3,opt,name=vtxo_amount_sat,json=vtxoAmountSat,proto3" json:"vtxo_amount_sat,omitempty"`
+	// est_total_fee_sat is the projected total on-chain fee for this exit
+	// (estimated CPFP total plus sweep fee).
+	EstTotalFeeSat int64 `protobuf:"varint,4,opt,name=est_total_fee_sat,json=estTotalFeeSat,proto3" json:"est_total_fee_sat,omitempty"`
+	// est_net_recovered_sat is the estimated value that lands back in the
+	// wallet after the sweep fee.
+	EstNetRecoveredSat int64 `protobuf:"varint,5,opt,name=est_net_recovered_sat,json=estNetRecoveredSat,proto3" json:"est_net_recovered_sat,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *ExitSummaryItem) Reset() {
+	*x = ExitSummaryItem{}
+	mi := &file_wallet_proto_msgTypes[44]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExitSummaryItem) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExitSummaryItem) ProtoMessage() {}
+
+func (x *ExitSummaryItem) ProtoReflect() protoreflect.Message {
+	mi := &file_wallet_proto_msgTypes[44]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExitSummaryItem.ProtoReflect.Descriptor instead.
+func (*ExitSummaryItem) Descriptor() ([]byte, []int) {
+	return file_wallet_proto_rawDescGZIP(), []int{44}
+}
+
+func (x *ExitSummaryItem) GetOutpoint() string {
+	if x != nil {
+		return x.Outpoint
+	}
+	return ""
+}
+
+func (x *ExitSummaryItem) GetStatus() ExitJobStatus {
+	if x != nil {
+		return x.Status
+	}
+	return ExitJobStatus_EXIT_JOB_STATUS_UNSPECIFIED
+}
+
+func (x *ExitSummaryItem) GetVtxoAmountSat() int64 {
+	if x != nil {
+		return x.VtxoAmountSat
+	}
+	return 0
+}
+
+func (x *ExitSummaryItem) GetEstTotalFeeSat() int64 {
+	if x != nil {
+		return x.EstTotalFeeSat
+	}
+	return 0
+}
+
+func (x *ExitSummaryItem) GetEstNetRecoveredSat() int64 {
+	if x != nil {
+		return x.EstNetRecoveredSat
+	}
+	return 0
+}
+
+// ExitSummaryResponse is the wallet-wide portfolio of in-progress exits plus
+// aggregate totals. Only non-terminal exits are included: a completed or failed
+// exit has no amount "left" to recover.
+type ExitSummaryResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// exits is one row per in-progress exit.
+	Exits []*ExitSummaryItem `protobuf:"bytes,1,rep,name=exits,proto3" json:"exits,omitempty"`
+	// total_exits is the number of in-progress exits.
+	TotalExits uint32 `protobuf:"varint,2,opt,name=total_exits,json=totalExits,proto3" json:"total_exits,omitempty"`
+	// total_vtxo_amount_sat is the summed value of every VTXO still being
+	// exited: the total amount currently locked in in-progress exits.
+	TotalVtxoAmountSat int64 `protobuf:"varint,3,opt,name=total_vtxo_amount_sat,json=totalVtxoAmountSat,proto3" json:"total_vtxo_amount_sat,omitempty"`
+	// total_est_fee_sat is the summed projected on-chain fee across every
+	// in-progress exit.
+	TotalEstFeeSat int64 `protobuf:"varint,4,opt,name=total_est_fee_sat,json=totalEstFeeSat,proto3" json:"total_est_fee_sat,omitempty"`
+	// total_est_net_recovered_sat is the summed estimated value that will land
+	// back in the wallet once every in-progress exit completes.
+	TotalEstNetRecoveredSat int64 `protobuf:"varint,5,opt,name=total_est_net_recovered_sat,json=totalEstNetRecoveredSat,proto3" json:"total_est_net_recovered_sat,omitempty"`
+	unknownFields           protoimpl.UnknownFields
+	sizeCache               protoimpl.SizeCache
+}
+
+func (x *ExitSummaryResponse) Reset() {
+	*x = ExitSummaryResponse{}
+	mi := &file_wallet_proto_msgTypes[45]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExitSummaryResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExitSummaryResponse) ProtoMessage() {}
+
+func (x *ExitSummaryResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_wallet_proto_msgTypes[45]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExitSummaryResponse.ProtoReflect.Descriptor instead.
+func (*ExitSummaryResponse) Descriptor() ([]byte, []int) {
+	return file_wallet_proto_rawDescGZIP(), []int{45}
+}
+
+func (x *ExitSummaryResponse) GetExits() []*ExitSummaryItem {
+	if x != nil {
+		return x.Exits
+	}
+	return nil
+}
+
+func (x *ExitSummaryResponse) GetTotalExits() uint32 {
+	if x != nil {
+		return x.TotalExits
+	}
+	return 0
+}
+
+func (x *ExitSummaryResponse) GetTotalVtxoAmountSat() int64 {
+	if x != nil {
+		return x.TotalVtxoAmountSat
+	}
+	return 0
+}
+
+func (x *ExitSummaryResponse) GetTotalEstFeeSat() int64 {
+	if x != nil {
+		return x.TotalEstFeeSat
+	}
+	return 0
+}
+
+func (x *ExitSummaryResponse) GetTotalEstNetRecoveredSat() int64 {
+	if x != nil {
+		return x.TotalEstNetRecoveredSat
+	}
+	return 0
+}
+
 // SubscribeWalletRequest configures the WalletService.SubscribeWallet stream.
 type SubscribeWalletRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -4249,7 +4848,7 @@ type SubscribeWalletRequest struct {
 
 func (x *SubscribeWalletRequest) Reset() {
 	*x = SubscribeWalletRequest{}
-	mi := &file_wallet_proto_msgTypes[40]
+	mi := &file_wallet_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4261,7 +4860,7 @@ func (x *SubscribeWalletRequest) String() string {
 func (*SubscribeWalletRequest) ProtoMessage() {}
 
 func (x *SubscribeWalletRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wallet_proto_msgTypes[40]
+	mi := &file_wallet_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4274,7 +4873,7 @@ func (x *SubscribeWalletRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubscribeWalletRequest.ProtoReflect.Descriptor instead.
 func (*SubscribeWalletRequest) Descriptor() ([]byte, []int) {
-	return file_wallet_proto_rawDescGZIP(), []int{40}
+	return file_wallet_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *SubscribeWalletRequest) GetIncludeExisting() bool {
@@ -4321,7 +4920,7 @@ type SubscribeWalletResponse struct {
 
 func (x *SubscribeWalletResponse) Reset() {
 	*x = SubscribeWalletResponse{}
-	mi := &file_wallet_proto_msgTypes[41]
+	mi := &file_wallet_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4333,7 +4932,7 @@ func (x *SubscribeWalletResponse) String() string {
 func (*SubscribeWalletResponse) ProtoMessage() {}
 
 func (x *SubscribeWalletResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_wallet_proto_msgTypes[41]
+	mi := &file_wallet_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4346,7 +4945,7 @@ func (x *SubscribeWalletResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubscribeWalletResponse.ProtoReflect.Descriptor instead.
 func (*SubscribeWalletResponse) Descriptor() ([]byte, []int) {
-	return file_wallet_proto_rawDescGZIP(), []int{41}
+	return file_wallet_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *SubscribeWalletResponse) GetCursor() int64 {
@@ -4415,7 +5014,7 @@ type SubscribeGap struct {
 
 func (x *SubscribeGap) Reset() {
 	*x = SubscribeGap{}
-	mi := &file_wallet_proto_msgTypes[42]
+	mi := &file_wallet_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4427,7 +5026,7 @@ func (x *SubscribeGap) String() string {
 func (*SubscribeGap) ProtoMessage() {}
 
 func (x *SubscribeGap) ProtoReflect() protoreflect.Message {
-	mi := &file_wallet_proto_msgTypes[42]
+	mi := &file_wallet_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4440,7 +5039,7 @@ func (x *SubscribeGap) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubscribeGap.ProtoReflect.Descriptor instead.
 func (*SubscribeGap) Descriptor() ([]byte, []int) {
-	return file_wallet_proto_rawDescGZIP(), []int{42}
+	return file_wallet_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *SubscribeGap) GetReason() string {
@@ -4514,7 +5113,7 @@ type WalletEntry struct {
 
 func (x *WalletEntry) Reset() {
 	*x = WalletEntry{}
-	mi := &file_wallet_proto_msgTypes[43]
+	mi := &file_wallet_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4526,7 +5125,7 @@ func (x *WalletEntry) String() string {
 func (*WalletEntry) ProtoMessage() {}
 
 func (x *WalletEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_wallet_proto_msgTypes[43]
+	mi := &file_wallet_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4539,7 +5138,7 @@ func (x *WalletEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WalletEntry.ProtoReflect.Descriptor instead.
 func (*WalletEntry) Descriptor() ([]byte, []int) {
-	return file_wallet_proto_rawDescGZIP(), []int{43}
+	return file_wallet_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *WalletEntry) GetId() string {
@@ -4650,7 +5249,7 @@ type WalletEntryRequest struct {
 
 func (x *WalletEntryRequest) Reset() {
 	*x = WalletEntryRequest{}
-	mi := &file_wallet_proto_msgTypes[44]
+	mi := &file_wallet_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4662,7 +5261,7 @@ func (x *WalletEntryRequest) String() string {
 func (*WalletEntryRequest) ProtoMessage() {}
 
 func (x *WalletEntryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wallet_proto_msgTypes[44]
+	mi := &file_wallet_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4675,7 +5274,7 @@ func (x *WalletEntryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WalletEntryRequest.ProtoReflect.Descriptor instead.
 func (*WalletEntryRequest) Descriptor() ([]byte, []int) {
-	return file_wallet_proto_rawDescGZIP(), []int{44}
+	return file_wallet_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *WalletEntryRequest) GetRequest() isWalletEntryRequest_Request {
@@ -4753,7 +5352,7 @@ type LightningInvoiceRequest struct {
 
 func (x *LightningInvoiceRequest) Reset() {
 	*x = LightningInvoiceRequest{}
-	mi := &file_wallet_proto_msgTypes[45]
+	mi := &file_wallet_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4765,7 +5364,7 @@ func (x *LightningInvoiceRequest) String() string {
 func (*LightningInvoiceRequest) ProtoMessage() {}
 
 func (x *LightningInvoiceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wallet_proto_msgTypes[45]
+	mi := &file_wallet_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4778,7 +5377,7 @@ func (x *LightningInvoiceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LightningInvoiceRequest.ProtoReflect.Descriptor instead.
 func (*LightningInvoiceRequest) Descriptor() ([]byte, []int) {
-	return file_wallet_proto_rawDescGZIP(), []int{45}
+	return file_wallet_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *LightningInvoiceRequest) GetInvoice() string {
@@ -4807,7 +5406,7 @@ type OnchainAddressRequest struct {
 
 func (x *OnchainAddressRequest) Reset() {
 	*x = OnchainAddressRequest{}
-	mi := &file_wallet_proto_msgTypes[46]
+	mi := &file_wallet_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4819,7 +5418,7 @@ func (x *OnchainAddressRequest) String() string {
 func (*OnchainAddressRequest) ProtoMessage() {}
 
 func (x *OnchainAddressRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wallet_proto_msgTypes[46]
+	mi := &file_wallet_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4832,7 +5431,7 @@ func (x *OnchainAddressRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OnchainAddressRequest.ProtoReflect.Descriptor instead.
 func (*OnchainAddressRequest) Descriptor() ([]byte, []int) {
-	return file_wallet_proto_rawDescGZIP(), []int{46}
+	return file_wallet_proto_rawDescGZIP(), []int{52}
 }
 
 func (x *OnchainAddressRequest) GetAddress() string {
@@ -4853,7 +5452,7 @@ type ArkAddressRequest struct {
 
 func (x *ArkAddressRequest) Reset() {
 	*x = ArkAddressRequest{}
-	mi := &file_wallet_proto_msgTypes[47]
+	mi := &file_wallet_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4865,7 +5464,7 @@ func (x *ArkAddressRequest) String() string {
 func (*ArkAddressRequest) ProtoMessage() {}
 
 func (x *ArkAddressRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wallet_proto_msgTypes[47]
+	mi := &file_wallet_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4878,7 +5477,7 @@ func (x *ArkAddressRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ArkAddressRequest.ProtoReflect.Descriptor instead.
 func (*ArkAddressRequest) Descriptor() ([]byte, []int) {
-	return file_wallet_proto_rawDescGZIP(), []int{47}
+	return file_wallet_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *ArkAddressRequest) GetAddress() string {
@@ -4916,7 +5515,7 @@ type WalletEntryProgress struct {
 
 func (x *WalletEntryProgress) Reset() {
 	*x = WalletEntryProgress{}
-	mi := &file_wallet_proto_msgTypes[48]
+	mi := &file_wallet_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4928,7 +5527,7 @@ func (x *WalletEntryProgress) String() string {
 func (*WalletEntryProgress) ProtoMessage() {}
 
 func (x *WalletEntryProgress) ProtoReflect() protoreflect.Message {
-	mi := &file_wallet_proto_msgTypes[48]
+	mi := &file_wallet_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4941,7 +5540,7 @@ func (x *WalletEntryProgress) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WalletEntryProgress.ProtoReflect.Descriptor instead.
 func (*WalletEntryProgress) Descriptor() ([]byte, []int) {
-	return file_wallet_proto_rawDescGZIP(), []int{48}
+	return file_wallet_proto_rawDescGZIP(), []int{54}
 }
 
 func (x *WalletEntryProgress) GetPhase() WalletEntryPhase {
@@ -5252,16 +5851,64 @@ const file_wallet_proto_rawDesc = "" +
 	"\bactor_id\x18\x02 \x01(\tR\aactorId\x12)\n" +
 	"\x04mode\x18\x03 \x01(\x0e2\x15.walletdkrpc.ExitModeR\x04mode\x12)\n" +
 	"\x10queued_outpoints\x18\x04 \x03(\tR\x0fqueuedOutpoints\x12'\n" +
-	"\x0fonchain_address\x18\x05 \x01(\tR\x0eonchainAddress\"/\n" +
+	"\x0fonchain_address\x18\x05 \x01(\tR\x0eonchainAddress\"K\n" +
 	"\x11ExitStatusRequest\x12\x1a\n" +
-	"\boutpoint\x18\x01 \x01(\tR\boutpoint\"\x9c\x01\n" +
+	"\boutpoint\x18\x01 \x01(\tR\boutpoint\x12\x1a\n" +
+	"\bdetailed\x18\x02 \x01(\bR\bdetailed\"\xd5\x02\n" +
+	"\fExitProgress\x12#\n" +
+	"\rconfirmed_txs\x18\x01 \x01(\rR\fconfirmedTxs\x12\"\n" +
+	"\rin_flight_txs\x18\x02 \x01(\rR\vinFlightTxs\x12\x1b\n" +
+	"\tready_txs\x18\x03 \x01(\rR\breadyTxs\x12\x1f\n" +
+	"\vblocked_txs\x18\x04 \x01(\rR\n" +
+	"blockedTxs\x12\x1b\n" +
+	"\ttotal_txs\x18\x05 \x01(\rR\btotalTxs\x12#\n" +
+	"\rcurrent_layer\x18\x06 \x01(\rR\fcurrentLayer\x12!\n" +
+	"\ftotal_layers\x18\a \x01(\rR\vtotalLayers\x12)\n" +
+	"\x10target_confirmed\x18\b \x01(\bR\x0ftargetConfirmed\x12.\n" +
+	"\x13all_proof_confirmed\x18\t \x01(\bR\x11allProofConfirmed\"\xa9\x01\n" +
+	"\aExitCSV\x122\n" +
+	"\x15target_confirm_height\x18\x01 \x01(\x05R\x13targetConfirmHeight\x12'\n" +
+	"\x0fmaturity_height\x18\x02 \x01(\x05R\x0ematurityHeight\x12)\n" +
+	"\x10blocks_remaining\x18\x03 \x01(\x05R\x0fblocksRemaining\x12\x16\n" +
+	"\x06mature\x18\x04 \x01(\bR\x06mature\"\xca\x02\n" +
+	"\bExitFees\x12 \n" +
+	"\fcpfp_fee_sat\x18\x01 \x01(\x03R\n" +
+	"cpfpFeeSat\x12\"\n" +
+	"\rsweep_fee_sat\x18\x02 \x01(\x03R\vsweepFeeSat\x12$\n" +
+	"\x0etotal_cost_sat\x18\x03 \x01(\x03R\ftotalCostSat\x12&\n" +
+	"\x0fvtxo_amount_sat\x18\x04 \x01(\x03R\rvtxoAmountSat\x12*\n" +
+	"\x11net_recovered_sat\x18\x05 \x01(\x03R\x0fnetRecoveredSat\x12+\n" +
+	"\x12fee_rate_sat_vbyte\x18\x06 \x01(\x03R\x0ffeeRateSatVbyte\x12(\n" +
+	"\x10sweep_fee_actual\x18\a \x01(\bR\x0esweepFeeActual\x12'\n" +
+	"\x10spent_so_far_sat\x18\b \x01(\x03R\rspentSoFarSat\"\xad\x03\n" +
 	"\x12ExitStatusResponse\x12\x14\n" +
 	"\x05found\x18\x01 \x01(\bR\x05found\x122\n" +
 	"\x06status\x18\x02 \x01(\x0e2\x1a.walletdkrpc.ExitJobStatusR\x06status\x12\x1d\n" +
 	"\n" +
 	"sweep_txid\x18\x03 \x01(\tR\tsweepTxid\x12\x1d\n" +
 	"\n" +
-	"last_error\x18\x04 \x01(\tR\tlastError\"\x89\x01\n" +
+	"last_error\x18\x04 \x01(\tR\tlastError\x12!\n" +
+	"\fphase_detail\x18\x05 \x01(\tR\vphaseDetail\x125\n" +
+	"\bprogress\x18\x06 \x01(\v2\x19.walletdkrpc.ExitProgressR\bprogress\x12&\n" +
+	"\x03csv\x18\a \x01(\v2\x14.walletdkrpc.ExitCSVR\x03csv\x12)\n" +
+	"\x04fees\x18\b \x01(\v2\x15.walletdkrpc.ExitFeesR\x04fees\x12;\n" +
+	"\x1abest_case_blocks_remaining\x18\t \x01(\x05R\x17bestCaseBlocksRemaining\x12%\n" +
+	"\x0ecurrent_height\x18\n" +
+	" \x01(\x05R\rcurrentHeight\"\x14\n" +
+	"\x12ExitSummaryRequest\"\xe7\x01\n" +
+	"\x0fExitSummaryItem\x12\x1a\n" +
+	"\boutpoint\x18\x01 \x01(\tR\boutpoint\x122\n" +
+	"\x06status\x18\x02 \x01(\x0e2\x1a.walletdkrpc.ExitJobStatusR\x06status\x12&\n" +
+	"\x0fvtxo_amount_sat\x18\x03 \x01(\x03R\rvtxoAmountSat\x12)\n" +
+	"\x11est_total_fee_sat\x18\x04 \x01(\x03R\x0eestTotalFeeSat\x121\n" +
+	"\x15est_net_recovered_sat\x18\x05 \x01(\x03R\x12estNetRecoveredSat\"\x86\x02\n" +
+	"\x13ExitSummaryResponse\x122\n" +
+	"\x05exits\x18\x01 \x03(\v2\x1c.walletdkrpc.ExitSummaryItemR\x05exits\x12\x1f\n" +
+	"\vtotal_exits\x18\x02 \x01(\rR\n" +
+	"totalExits\x121\n" +
+	"\x15total_vtxo_amount_sat\x18\x03 \x01(\x03R\x12totalVtxoAmountSat\x12)\n" +
+	"\x11total_est_fee_sat\x18\x04 \x01(\x03R\x0etotalEstFeeSat\x12<\n" +
+	"\x1btotal_est_net_recovered_sat\x18\x05 \x01(\x03R\x17totalEstNetRecoveredSat\"\x89\x01\n" +
 	"\x16SubscribeWalletRequest\x12)\n" +
 	"\x10include_existing\x18\x01 \x01(\bR\x0fincludeExisting\x12,\n" +
 	"\x05kinds\x18\x02 \x03(\x0e2\x16.walletdkrpc.EntryKindR\x05kinds\x12\x16\n" +
@@ -5369,7 +6016,7 @@ const file_wallet_proto_rawDesc = "" +
 	"\x1aENTRY_FAILURE_CODE_EXPIRED\x10\x02\x12\x1f\n" +
 	"\x1bENTRY_FAILURE_CODE_REFUNDED\x10\x03\x12)\n" +
 	"%ENTRY_FAILURE_CODE_NEEDS_INTERVENTION\x10\x04\x12\x1d\n" +
-	"\x19ENTRY_FAILURE_CODE_FAILED\x10\x052\xfd\a\n" +
+	"\x19ENTRY_FAILURE_CODE_FAILED\x10\x052\xcf\b\n" +
 	"\rWalletService\x12A\n" +
 	"\x06Create\x12\x1a.walletdkrpc.CreateRequest\x1a\x1b.walletdkrpc.CreateResponse\x12A\n" +
 	"\x06Unlock\x12\x1a.walletdkrpc.UnlockRequest\x1a\x1b.walletdkrpc.UnlockResponse\x12P\n" +
@@ -5384,7 +6031,8 @@ const file_wallet_proto_rawDesc = "" +
 	"\vSweepWallet\x12\x1f.walletdkrpc.SweepWalletRequest\x1a .walletdkrpc.SweepWalletResponse\x12;\n" +
 	"\x04Exit\x12\x18.walletdkrpc.ExitRequest\x1a\x19.walletdkrpc.ExitResponse\x12M\n" +
 	"\n" +
-	"ExitStatus\x12\x1e.walletdkrpc.ExitStatusRequest\x1a\x1f.walletdkrpc.ExitStatusResponse\x12^\n" +
+	"ExitStatus\x12\x1e.walletdkrpc.ExitStatusRequest\x1a\x1f.walletdkrpc.ExitStatusResponse\x12P\n" +
+	"\vExitSummary\x12\x1f.walletdkrpc.ExitSummaryRequest\x1a .walletdkrpc.ExitSummaryResponse\x12^\n" +
 	"\x0fSubscribeWallet\x12#.walletdkrpc.SubscribeWalletRequest\x1a$.walletdkrpc.SubscribeWalletResponse0\x012w\n" +
 	"\x17WalletInspectionService\x12\\\n" +
 	"\x0fInspectActivity\x12#.walletdkrpc.InspectActivityRequest\x1a$.walletdkrpc.InspectActivityResponseB8Z6github.com/lightninglabs/darepo-client/rpc/walletdkrpcb\x06proto3"
@@ -5402,7 +6050,7 @@ func file_wallet_proto_rawDescGZIP() []byte {
 }
 
 var file_wallet_proto_enumTypes = make([]protoimpl.EnumInfo, 9)
-var file_wallet_proto_msgTypes = make([]protoimpl.MessageInfo, 49)
+var file_wallet_proto_msgTypes = make([]protoimpl.MessageInfo, 55)
 var file_wallet_proto_goTypes = []any{
 	(EntryKind)(0),                  // 0: walletdkrpc.EntryKind
 	(EntryStatus)(0),                // 1: walletdkrpc.EntryStatus
@@ -5452,90 +6100,103 @@ var file_wallet_proto_goTypes = []any{
 	(*ExitRequest)(nil),             // 45: walletdkrpc.ExitRequest
 	(*ExitResponse)(nil),            // 46: walletdkrpc.ExitResponse
 	(*ExitStatusRequest)(nil),       // 47: walletdkrpc.ExitStatusRequest
-	(*ExitStatusResponse)(nil),      // 48: walletdkrpc.ExitStatusResponse
-	(*SubscribeWalletRequest)(nil),  // 49: walletdkrpc.SubscribeWalletRequest
-	(*SubscribeWalletResponse)(nil), // 50: walletdkrpc.SubscribeWalletResponse
-	(*SubscribeGap)(nil),            // 51: walletdkrpc.SubscribeGap
-	(*WalletEntry)(nil),             // 52: walletdkrpc.WalletEntry
-	(*WalletEntryRequest)(nil),      // 53: walletdkrpc.WalletEntryRequest
-	(*LightningInvoiceRequest)(nil), // 54: walletdkrpc.LightningInvoiceRequest
-	(*OnchainAddressRequest)(nil),   // 55: walletdkrpc.OnchainAddressRequest
-	(*ArkAddressRequest)(nil),       // 56: walletdkrpc.ArkAddressRequest
-	(*WalletEntryProgress)(nil),     // 57: walletdkrpc.WalletEntryProgress
+	(*ExitProgress)(nil),            // 48: walletdkrpc.ExitProgress
+	(*ExitCSV)(nil),                 // 49: walletdkrpc.ExitCSV
+	(*ExitFees)(nil),                // 50: walletdkrpc.ExitFees
+	(*ExitStatusResponse)(nil),      // 51: walletdkrpc.ExitStatusResponse
+	(*ExitSummaryRequest)(nil),      // 52: walletdkrpc.ExitSummaryRequest
+	(*ExitSummaryItem)(nil),         // 53: walletdkrpc.ExitSummaryItem
+	(*ExitSummaryResponse)(nil),     // 54: walletdkrpc.ExitSummaryResponse
+	(*SubscribeWalletRequest)(nil),  // 55: walletdkrpc.SubscribeWalletRequest
+	(*SubscribeWalletResponse)(nil), // 56: walletdkrpc.SubscribeWalletResponse
+	(*SubscribeGap)(nil),            // 57: walletdkrpc.SubscribeGap
+	(*WalletEntry)(nil),             // 58: walletdkrpc.WalletEntry
+	(*WalletEntryRequest)(nil),      // 59: walletdkrpc.WalletEntryRequest
+	(*LightningInvoiceRequest)(nil), // 60: walletdkrpc.LightningInvoiceRequest
+	(*OnchainAddressRequest)(nil),   // 61: walletdkrpc.OnchainAddressRequest
+	(*ArkAddressRequest)(nil),       // 62: walletdkrpc.ArkAddressRequest
+	(*WalletEntryProgress)(nil),     // 63: walletdkrpc.WalletEntryProgress
 }
 var file_wallet_proto_depIdxs = []int32{
 	3,  // 0: walletdkrpc.PrepareSendResponse.rail:type_name -> walletdkrpc.SendRail
 	4,  // 1: walletdkrpc.PrepareSendResponse.quote_status:type_name -> walletdkrpc.SendQuoteStatus
 	19, // 2: walletdkrpc.PrepareSendResponse.credit_preview:type_name -> walletdkrpc.CreditPreview
-	52, // 3: walletdkrpc.SendResponse.entry:type_name -> walletdkrpc.WalletEntry
-	52, // 4: walletdkrpc.RecvResponse.entry:type_name -> walletdkrpc.WalletEntry
+	58, // 3: walletdkrpc.SendResponse.entry:type_name -> walletdkrpc.WalletEntry
+	58, // 4: walletdkrpc.RecvResponse.entry:type_name -> walletdkrpc.WalletEntry
 	20, // 5: walletdkrpc.RecvResponse.credit_receive:type_name -> walletdkrpc.CreditReceive
 	2,  // 6: walletdkrpc.ListRequest.view:type_name -> walletdkrpc.ListView
 	0,  // 7: walletdkrpc.ListRequest.kinds:type_name -> walletdkrpc.EntryKind
 	23, // 8: walletdkrpc.ListResponse.activity:type_name -> walletdkrpc.ActivityList
 	24, // 9: walletdkrpc.ListResponse.vtxos:type_name -> walletdkrpc.VTXOInventory
 	26, // 10: walletdkrpc.ListResponse.onchain:type_name -> walletdkrpc.OnchainHistory
-	52, // 11: walletdkrpc.ActivityList.entries:type_name -> walletdkrpc.WalletEntry
+	58, // 11: walletdkrpc.ActivityList.entries:type_name -> walletdkrpc.WalletEntry
 	25, // 12: walletdkrpc.VTXOInventory.vtxos:type_name -> walletdkrpc.WalletVTXO
 	27, // 13: walletdkrpc.OnchainHistory.txs:type_name -> walletdkrpc.OnchainTx
-	52, // 14: walletdkrpc.InspectActivityResponse.entry:type_name -> walletdkrpc.WalletEntry
+	58, // 14: walletdkrpc.InspectActivityResponse.entry:type_name -> walletdkrpc.WalletEntry
 	30, // 15: walletdkrpc.InspectActivityResponse.swap:type_name -> walletdkrpc.ActivitySwapTrace
 	31, // 16: walletdkrpc.InspectActivityResponse.vtxos:type_name -> walletdkrpc.ActivityVTXOTrace
 	32, // 17: walletdkrpc.InspectActivityResponse.ledger_rows:type_name -> walletdkrpc.ActivityLedgerTrace
-	52, // 18: walletdkrpc.DepositResponse.entry:type_name -> walletdkrpc.WalletEntry
+	58, // 18: walletdkrpc.DepositResponse.entry:type_name -> walletdkrpc.WalletEntry
 	36, // 19: walletdkrpc.StatusResponse.balance:type_name -> walletdkrpc.BalanceResponse
 	6,  // 20: walletdkrpc.ExitPlanEntry.exit_status:type_name -> walletdkrpc.ExitJobStatus
 	40, // 21: walletdkrpc.GetExitPlanResponse.plans:type_name -> walletdkrpc.ExitPlanEntry
 	43, // 22: walletdkrpc.SweepWalletResponse.inputs:type_name -> walletdkrpc.WalletSweepInput
 	5,  // 23: walletdkrpc.ExitResponse.mode:type_name -> walletdkrpc.ExitMode
 	6,  // 24: walletdkrpc.ExitStatusResponse.status:type_name -> walletdkrpc.ExitJobStatus
-	0,  // 25: walletdkrpc.SubscribeWalletRequest.kinds:type_name -> walletdkrpc.EntryKind
-	52, // 26: walletdkrpc.SubscribeWalletResponse.entry:type_name -> walletdkrpc.WalletEntry
-	51, // 27: walletdkrpc.SubscribeWalletResponse.gap:type_name -> walletdkrpc.SubscribeGap
-	0,  // 28: walletdkrpc.WalletEntry.kind:type_name -> walletdkrpc.EntryKind
-	1,  // 29: walletdkrpc.WalletEntry.status:type_name -> walletdkrpc.EntryStatus
-	53, // 30: walletdkrpc.WalletEntry.request:type_name -> walletdkrpc.WalletEntryRequest
-	57, // 31: walletdkrpc.WalletEntry.progress:type_name -> walletdkrpc.WalletEntryProgress
-	8,  // 32: walletdkrpc.WalletEntry.failure_code:type_name -> walletdkrpc.EntryFailureCode
-	54, // 33: walletdkrpc.WalletEntryRequest.lightning_invoice:type_name -> walletdkrpc.LightningInvoiceRequest
-	55, // 34: walletdkrpc.WalletEntryRequest.onchain_address:type_name -> walletdkrpc.OnchainAddressRequest
-	56, // 35: walletdkrpc.WalletEntryRequest.ark_address:type_name -> walletdkrpc.ArkAddressRequest
-	7,  // 36: walletdkrpc.WalletEntryProgress.phase:type_name -> walletdkrpc.WalletEntryPhase
-	9,  // 37: walletdkrpc.WalletService.Create:input_type -> walletdkrpc.CreateRequest
-	11, // 38: walletdkrpc.WalletService.Unlock:input_type -> walletdkrpc.UnlockRequest
-	13, // 39: walletdkrpc.WalletService.PrepareSend:input_type -> walletdkrpc.PrepareSendRequest
-	15, // 40: walletdkrpc.WalletService.Send:input_type -> walletdkrpc.SendRequest
-	17, // 41: walletdkrpc.WalletService.Recv:input_type -> walletdkrpc.RecvRequest
-	21, // 42: walletdkrpc.WalletService.List:input_type -> walletdkrpc.ListRequest
-	33, // 43: walletdkrpc.WalletService.Deposit:input_type -> walletdkrpc.DepositRequest
-	35, // 44: walletdkrpc.WalletService.Balance:input_type -> walletdkrpc.BalanceRequest
-	37, // 45: walletdkrpc.WalletService.Status:input_type -> walletdkrpc.StatusRequest
-	39, // 46: walletdkrpc.WalletService.GetExitPlan:input_type -> walletdkrpc.GetExitPlanRequest
-	42, // 47: walletdkrpc.WalletService.SweepWallet:input_type -> walletdkrpc.SweepWalletRequest
-	45, // 48: walletdkrpc.WalletService.Exit:input_type -> walletdkrpc.ExitRequest
-	47, // 49: walletdkrpc.WalletService.ExitStatus:input_type -> walletdkrpc.ExitStatusRequest
-	49, // 50: walletdkrpc.WalletService.SubscribeWallet:input_type -> walletdkrpc.SubscribeWalletRequest
-	28, // 51: walletdkrpc.WalletInspectionService.InspectActivity:input_type -> walletdkrpc.InspectActivityRequest
-	10, // 52: walletdkrpc.WalletService.Create:output_type -> walletdkrpc.CreateResponse
-	12, // 53: walletdkrpc.WalletService.Unlock:output_type -> walletdkrpc.UnlockResponse
-	14, // 54: walletdkrpc.WalletService.PrepareSend:output_type -> walletdkrpc.PrepareSendResponse
-	16, // 55: walletdkrpc.WalletService.Send:output_type -> walletdkrpc.SendResponse
-	18, // 56: walletdkrpc.WalletService.Recv:output_type -> walletdkrpc.RecvResponse
-	22, // 57: walletdkrpc.WalletService.List:output_type -> walletdkrpc.ListResponse
-	34, // 58: walletdkrpc.WalletService.Deposit:output_type -> walletdkrpc.DepositResponse
-	36, // 59: walletdkrpc.WalletService.Balance:output_type -> walletdkrpc.BalanceResponse
-	38, // 60: walletdkrpc.WalletService.Status:output_type -> walletdkrpc.StatusResponse
-	41, // 61: walletdkrpc.WalletService.GetExitPlan:output_type -> walletdkrpc.GetExitPlanResponse
-	44, // 62: walletdkrpc.WalletService.SweepWallet:output_type -> walletdkrpc.SweepWalletResponse
-	46, // 63: walletdkrpc.WalletService.Exit:output_type -> walletdkrpc.ExitResponse
-	48, // 64: walletdkrpc.WalletService.ExitStatus:output_type -> walletdkrpc.ExitStatusResponse
-	50, // 65: walletdkrpc.WalletService.SubscribeWallet:output_type -> walletdkrpc.SubscribeWalletResponse
-	29, // 66: walletdkrpc.WalletInspectionService.InspectActivity:output_type -> walletdkrpc.InspectActivityResponse
-	52, // [52:67] is the sub-list for method output_type
-	37, // [37:52] is the sub-list for method input_type
-	37, // [37:37] is the sub-list for extension type_name
-	37, // [37:37] is the sub-list for extension extendee
-	0,  // [0:37] is the sub-list for field type_name
+	48, // 25: walletdkrpc.ExitStatusResponse.progress:type_name -> walletdkrpc.ExitProgress
+	49, // 26: walletdkrpc.ExitStatusResponse.csv:type_name -> walletdkrpc.ExitCSV
+	50, // 27: walletdkrpc.ExitStatusResponse.fees:type_name -> walletdkrpc.ExitFees
+	6,  // 28: walletdkrpc.ExitSummaryItem.status:type_name -> walletdkrpc.ExitJobStatus
+	53, // 29: walletdkrpc.ExitSummaryResponse.exits:type_name -> walletdkrpc.ExitSummaryItem
+	0,  // 30: walletdkrpc.SubscribeWalletRequest.kinds:type_name -> walletdkrpc.EntryKind
+	58, // 31: walletdkrpc.SubscribeWalletResponse.entry:type_name -> walletdkrpc.WalletEntry
+	57, // 32: walletdkrpc.SubscribeWalletResponse.gap:type_name -> walletdkrpc.SubscribeGap
+	0,  // 33: walletdkrpc.WalletEntry.kind:type_name -> walletdkrpc.EntryKind
+	1,  // 34: walletdkrpc.WalletEntry.status:type_name -> walletdkrpc.EntryStatus
+	59, // 35: walletdkrpc.WalletEntry.request:type_name -> walletdkrpc.WalletEntryRequest
+	63, // 36: walletdkrpc.WalletEntry.progress:type_name -> walletdkrpc.WalletEntryProgress
+	8,  // 37: walletdkrpc.WalletEntry.failure_code:type_name -> walletdkrpc.EntryFailureCode
+	60, // 38: walletdkrpc.WalletEntryRequest.lightning_invoice:type_name -> walletdkrpc.LightningInvoiceRequest
+	61, // 39: walletdkrpc.WalletEntryRequest.onchain_address:type_name -> walletdkrpc.OnchainAddressRequest
+	62, // 40: walletdkrpc.WalletEntryRequest.ark_address:type_name -> walletdkrpc.ArkAddressRequest
+	7,  // 41: walletdkrpc.WalletEntryProgress.phase:type_name -> walletdkrpc.WalletEntryPhase
+	9,  // 42: walletdkrpc.WalletService.Create:input_type -> walletdkrpc.CreateRequest
+	11, // 43: walletdkrpc.WalletService.Unlock:input_type -> walletdkrpc.UnlockRequest
+	13, // 44: walletdkrpc.WalletService.PrepareSend:input_type -> walletdkrpc.PrepareSendRequest
+	15, // 45: walletdkrpc.WalletService.Send:input_type -> walletdkrpc.SendRequest
+	17, // 46: walletdkrpc.WalletService.Recv:input_type -> walletdkrpc.RecvRequest
+	21, // 47: walletdkrpc.WalletService.List:input_type -> walletdkrpc.ListRequest
+	33, // 48: walletdkrpc.WalletService.Deposit:input_type -> walletdkrpc.DepositRequest
+	35, // 49: walletdkrpc.WalletService.Balance:input_type -> walletdkrpc.BalanceRequest
+	37, // 50: walletdkrpc.WalletService.Status:input_type -> walletdkrpc.StatusRequest
+	39, // 51: walletdkrpc.WalletService.GetExitPlan:input_type -> walletdkrpc.GetExitPlanRequest
+	42, // 52: walletdkrpc.WalletService.SweepWallet:input_type -> walletdkrpc.SweepWalletRequest
+	45, // 53: walletdkrpc.WalletService.Exit:input_type -> walletdkrpc.ExitRequest
+	47, // 54: walletdkrpc.WalletService.ExitStatus:input_type -> walletdkrpc.ExitStatusRequest
+	52, // 55: walletdkrpc.WalletService.ExitSummary:input_type -> walletdkrpc.ExitSummaryRequest
+	55, // 56: walletdkrpc.WalletService.SubscribeWallet:input_type -> walletdkrpc.SubscribeWalletRequest
+	28, // 57: walletdkrpc.WalletInspectionService.InspectActivity:input_type -> walletdkrpc.InspectActivityRequest
+	10, // 58: walletdkrpc.WalletService.Create:output_type -> walletdkrpc.CreateResponse
+	12, // 59: walletdkrpc.WalletService.Unlock:output_type -> walletdkrpc.UnlockResponse
+	14, // 60: walletdkrpc.WalletService.PrepareSend:output_type -> walletdkrpc.PrepareSendResponse
+	16, // 61: walletdkrpc.WalletService.Send:output_type -> walletdkrpc.SendResponse
+	18, // 62: walletdkrpc.WalletService.Recv:output_type -> walletdkrpc.RecvResponse
+	22, // 63: walletdkrpc.WalletService.List:output_type -> walletdkrpc.ListResponse
+	34, // 64: walletdkrpc.WalletService.Deposit:output_type -> walletdkrpc.DepositResponse
+	36, // 65: walletdkrpc.WalletService.Balance:output_type -> walletdkrpc.BalanceResponse
+	38, // 66: walletdkrpc.WalletService.Status:output_type -> walletdkrpc.StatusResponse
+	41, // 67: walletdkrpc.WalletService.GetExitPlan:output_type -> walletdkrpc.GetExitPlanResponse
+	44, // 68: walletdkrpc.WalletService.SweepWallet:output_type -> walletdkrpc.SweepWalletResponse
+	46, // 69: walletdkrpc.WalletService.Exit:output_type -> walletdkrpc.ExitResponse
+	51, // 70: walletdkrpc.WalletService.ExitStatus:output_type -> walletdkrpc.ExitStatusResponse
+	54, // 71: walletdkrpc.WalletService.ExitSummary:output_type -> walletdkrpc.ExitSummaryResponse
+	56, // 72: walletdkrpc.WalletService.SubscribeWallet:output_type -> walletdkrpc.SubscribeWalletResponse
+	29, // 73: walletdkrpc.WalletInspectionService.InspectActivity:output_type -> walletdkrpc.InspectActivityResponse
+	58, // [58:74] is the sub-list for method output_type
+	42, // [42:58] is the sub-list for method input_type
+	42, // [42:42] is the sub-list for extension type_name
+	42, // [42:42] is the sub-list for extension extendee
+	0,  // [0:42] is the sub-list for field type_name
 }
 
 func init() { file_wallet_proto_init() }
@@ -5552,12 +6213,12 @@ func file_wallet_proto_init() {
 		(*ListResponse_Vtxos)(nil),
 		(*ListResponse_Onchain)(nil),
 	}
-	file_wallet_proto_msgTypes[41].OneofWrappers = []any{
+	file_wallet_proto_msgTypes[47].OneofWrappers = []any{
 		(*SubscribeWalletResponse_Entry)(nil),
 		(*SubscribeWalletResponse_Gap)(nil),
 	}
-	file_wallet_proto_msgTypes[43].OneofWrappers = []any{}
-	file_wallet_proto_msgTypes[44].OneofWrappers = []any{
+	file_wallet_proto_msgTypes[49].OneofWrappers = []any{}
+	file_wallet_proto_msgTypes[50].OneofWrappers = []any{
 		(*WalletEntryRequest_LightningInvoice)(nil),
 		(*WalletEntryRequest_OnchainAddress)(nil),
 		(*WalletEntryRequest_ArkAddress)(nil),
@@ -5568,7 +6229,7 @@ func file_wallet_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_wallet_proto_rawDesc), len(file_wallet_proto_rawDesc)),
 			NumEnums:      9,
-			NumMessages:   49,
+			NumMessages:   55,
 			NumExtensions: 0,
 			NumServices:   2,
 		},

@@ -41,6 +41,7 @@ import (
 	"github.com/lightninglabs/darepo-client/round"
 	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightninglabs/darepo-client/unroll"
+	"github.com/lightninglabs/darepo-client/unrollplan"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/lightninglabs/lndclient"
@@ -4765,7 +4766,7 @@ func (r *RPCServer) GetUnrollStatus(ctx context.Context,
 
 	if r.server.unrollRegistryRef.IsSome() {
 		resp, found, err := r.queryUnrollRegistry(
-			ctx, outpoint,
+			ctx, outpoint, req.Detailed,
 		)
 		if err != nil {
 			return nil, err
@@ -4805,20 +4806,32 @@ func (r *RPCServer) GetUnrollStatus(ctx context.Context,
 		sweepTxid = hash.String()
 	}
 
-	return &daemonrpc.GetUnrollStatusResponse{
+	resp := &daemonrpc.GetUnrollStatusResponse{
 		Found:     true,
 		Status:    unrollJobStatusToProto(job.Status),
 		SweepTxid: sweepTxid,
 		LastError: job.LastError,
-	}, nil
+	}
+
+	// The registry no longer has a live actor for this target (it was
+	// evicted after reaching a terminal phase), so tree/CSV progress is
+	// gone. A detailed probe can still project the fee breakdown from the
+	// persisted descriptor and a human phase line, which keeps a completed
+	// or failed exit inspectable via this same endpoint.
+	if req.Detailed {
+		resp.PhaseDetail = unrollPhaseDetail(resp.Status, nil)
+		r.enrichExitFees(ctx, resp, outpoint, fn.None[int64](), nil)
+	}
+
+	return resp, nil
 }
 
 // queryUnrollRegistry asks the live unroll registry actor for the
 // status of a target outpoint. It returns the proto response, whether
 // the job was found, and any RPC error.
 func (r *RPCServer) queryUnrollRegistry(ctx context.Context,
-	outpoint wire.OutPoint) (*daemonrpc.GetUnrollStatusResponse, bool,
-	error) {
+	outpoint wire.OutPoint, detailed bool) (
+	*daemonrpc.GetUnrollStatusResponse, bool, error) {
 
 	var registryRef actor.ActorRef[
 		unroll.RegistryMsg, unroll.RegistryResp,
@@ -4835,6 +4848,7 @@ func (r *RPCServer) queryUnrollRegistry(ctx context.Context,
 	resp, askErr := registryRef.Ask(
 		ctx, &unroll.GetStatusRequest{
 			Outpoint: outpoint,
+			Detailed: detailed,
 		},
 	).Await(ctx).Unpack()
 	if askErr != nil {
@@ -4873,12 +4887,262 @@ func (r *RPCServer) queryUnrollRegistry(ctx context.Context,
 		phase = statusResp.State.Phase
 	}
 
-	return &daemonrpc.GetUnrollStatusResponse{
+	out := &daemonrpc.GetUnrollStatusResponse{
 		Found:     true,
 		Status:    unrollPhaseToProto(phase),
 		SweepTxid: sweepTxid,
 		LastError: lastError,
-	}, true, nil
+	}
+	if detailed {
+		r.enrichUnrollDetail(ctx, out, outpoint, statusResp)
+	}
+
+	return out, true, nil
+}
+
+// enrichUnrollDetail fills the detailed status fields (phase line, tree/CSV
+// progress, best-case block countdown, current height, and fee breakdown) from
+// the live child's planner-derived state. It is best-effort: any missing piece
+// (no live actor, planner not yet loaded, descriptor lookup failure) is left
+// unset rather than failing the probe.
+func (r *RPCServer) enrichUnrollDetail(ctx context.Context,
+	out *daemonrpc.GetUnrollStatusResponse, outpoint wire.OutPoint,
+	statusResp *unroll.GetStatusResp) {
+
+	// progress is the live planner projection, present only when the target
+	// has an active child that has loaded its proof and planner.
+	var progress *unroll.ExitProgress
+	var actualSweepFee fn.Option[int64]
+	if statusResp.Active && statusResp.State != nil {
+		out.CurrentHeight = statusResp.State.Height
+		progress = statusResp.State.Progress
+	}
+
+	if progress != nil {
+		out.Progress = unrollProgressToProto(progress)
+		out.Csv = unrollCSVToProto(progress)
+		out.BestCaseBlocksRemaining = progress.BestCaseBlocksRemaining
+		actualSweepFee = progress.ActualSweepFeeSat
+	}
+
+	out.PhaseDetail = unrollPhaseDetail(out.Status, progress)
+
+	r.enrichExitFees(ctx, out, outpoint, actualSweepFee, progress)
+}
+
+// unrollProgressToProto maps the actor's derived progress summary onto the
+// proto progress message.
+func unrollProgressToProto(p *unroll.ExitProgress) *daemonrpc.UnrollProgress {
+	if p == nil {
+		return nil
+	}
+
+	return &daemonrpc.UnrollProgress{
+		ConfirmedTxs:      uint32(p.ConfirmedTxs),
+		InFlightTxs:       uint32(p.InFlightTxs),
+		ReadyTxs:          uint32(p.ReadyTxs),
+		BlockedTxs:        uint32(p.BlockedTxs),
+		TotalTxs:          uint32(p.TotalTxs),
+		CurrentLayer:      uint32(p.CurrentLayer),
+		TotalLayers:       uint32(p.TotalLayers),
+		TargetConfirmed:   p.TargetConfirmed,
+		AllProofConfirmed: p.AllProofConfirmed,
+	}
+}
+
+// unrollCSVToProto maps the planner CSV maturity view onto the proto CSV
+// message. It returns nil until the target confirms (CSV is None), so a caller
+// can distinguish "not yet in the CSV wait" from a zeroed countdown.
+func unrollCSVToProto(p *unroll.ExitProgress) *daemonrpc.UnrollCSV {
+	if p == nil {
+		return nil
+	}
+
+	var out *daemonrpc.UnrollCSV
+	p.CSV.WhenSome(func(csv unrollplan.CSVInfo) {
+		out = &daemonrpc.UnrollCSV{
+			TargetConfirmHeight: csv.TargetConfirmHeight,
+			MaturityHeight:      csv.MaturityHeight,
+			BlocksRemaining:     csv.BlocksRemaining,
+			Mature:              csv.Ready,
+		}
+	})
+
+	return out
+}
+
+// unrollPhaseDetail renders a one-line human description of the current phase.
+// When live progress is available it is folded into the materializing and
+// CSV-pending lines; otherwise a coarse phase description is returned.
+func unrollPhaseDetail(st daemonrpc.UnrollJobStatus,
+	p *unroll.ExitProgress) string {
+
+	switch st {
+	case daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_PENDING:
+		return "queued; recovery transactions not yet broadcast"
+
+	case daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_MATERIALIZING:
+		if p == nil {
+			return "materializing recovery transactions on-chain"
+		}
+
+		// The frontier layer collapses to TotalLayers once every proof
+		// node confirms, so clamp the 1-based display so a job that
+		// reads MATERIALIZING after the frontier collapsed cannot
+		// render "layer N+1 of N".
+		layer := p.CurrentLayer + 1
+		if layer > p.TotalLayers {
+			layer = p.TotalLayers
+		}
+
+		return fmt.Sprintf("materializing recovery tree: layer %d of "+
+			"%d, %d/%d txs confirmed (%d in flight, %d ready, %d "+
+			"blocked)", layer, p.TotalLayers, p.ConfirmedTxs,
+			p.TotalTxs, p.InFlightTxs, p.ReadyTxs, p.BlockedTxs)
+
+	case daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_CSV_PENDING:
+		detail := "recovery transactions confirmed; waiting for CSV " +
+			"maturity"
+		if p != nil {
+			p.CSV.WhenSome(func(csv unrollplan.CSVInfo) {
+				detail = fmt.Sprintf("all recovery txs "+
+					"confirmed; waiting for CSV maturity "+
+					"(%d blocks remaining, matures at "+
+					"height %d)", csv.BlocksRemaining,
+					csv.MaturityHeight)
+			})
+		}
+
+		return detail
+
+	case daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_SWEEPING:
+		return "CSV matured; sweep in flight, awaiting confirmation"
+
+	case daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_COMPLETED:
+		return "exit complete; funds swept to the backing wallet"
+
+	case daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_FAILED:
+		return "exit failed; see last_error"
+
+	default:
+		return ""
+	}
+}
+
+// enrichExitFees projects the exit's on-chain cost breakdown onto the response
+// from the persisted VTXO descriptor and the current fee estimate, reusing the
+// same cost model as unroll admission and GetExitPlan. The CPFP total and the
+// default sweep fee are estimates; when the caller supplies the real
+// built-sweep fee it overrides the sweep leg and marks it actual. When live
+// progress is available, spent_so_far is estimated from the CPFP children
+// already broadcast (confirmed + in-flight proof txs) plus the sweep fee once
+// the sweep is built. It is best-effort: a descriptor or fee-estimate failure
+// leaves fees unset rather than failing the probe.
+func (r *RPCServer) enrichExitFees(ctx context.Context,
+	out *daemonrpc.GetUnrollStatusResponse, outpoint wire.OutPoint,
+	actualSweepFee fn.Option[int64], progress *unroll.ExitProgress) {
+
+	if r.server.vtxoStore == nil {
+		return
+	}
+
+	desc, err := r.server.vtxoStore.GetVTXO(ctx, outpoint)
+	if err != nil {
+		r.server.log.DebugS(ctx, "exit fee estimate skipped",
+			slog.String("outpoint", outpoint.String()),
+			slog.String("err", err.Error()),
+		)
+
+		return
+	}
+
+	feeRate, err := r.estimateWalletFeeRate(ctx, 0)
+	if err != nil {
+		return
+	}
+
+	// Resolve the lineage material so the CPFP estimate sizes the OOR
+	// checkpoint/ark transactions exactly, keeping the detailed status fee
+	// in agreement with `exit plan`. It is best-effort: a resolve failure
+	// returns nil, which PlanExitFunding approximates from the descriptor's
+	// ChainDepth.
+	mat := r.resolveExitLineage(ctx, outpoint, desc)
+
+	// A zero wallet snapshot is intentional: the cost fields
+	// (CPFP/sweep/total/net) depend only on the fee rate, recovery-tx
+	// count, and VTXO value, not on wallet funding, so the feasibility
+	// verdict is ignored here.
+	plan := unroll.PlanExitFunding(
+		desc, mat, btcutil.Amount(feeRate),
+		unroll.ExitFundingSnapshot{},
+	)
+	f := plan.Feasibility
+
+	fees := &daemonrpc.UnrollFees{
+		CpfpFeeSat:      int64(f.CPFPFeeTotalSat),
+		SweepFeeSat:     int64(f.SweepFeeSat),
+		VtxoAmountSat:   int64(f.VTXOAmountSat),
+		FeeRateSatVbyte: int64(f.FeeRateSatPerVByte),
+	}
+	sweepBuilt := false
+	actualSweepFee.WhenSome(func(sweepFee int64) {
+		fees.SweepFeeSat = sweepFee
+		fees.SweepFeeActual = true
+		sweepBuilt = true
+	})
+	fees.TotalCostSat = fees.CpfpFeeSat + fees.SweepFeeSat
+	fees.NetRecoveredSat = fees.VtxoAmountSat - fees.SweepFeeSat
+	fees.SpentSoFarSat = spentSoFarSat(
+		fees, progress, sweepBuilt, out.Status,
+	)
+
+	out.Fees = fees
+}
+
+// spentSoFarSat estimates the on-chain fee already committed at this point in
+// the exit. During materialization it prorates the CPFP total over the proof
+// transactions already broadcast (confirmed plus in-flight) and adds the sweep
+// fee once the sweep is built. With no live progress a completed exit has spent
+// the whole projected total; any other terminal or coarse state reports zero
+// (nothing known to be committed).
+//
+// The proration divides by progress.TotalTxs (the deduped proof-graph node
+// count) so numerator and denominator count the same universe: the confirmed
+// and in-flight counts are drawn from that same graph. This is an estimate, not
+// accounting — a confirmed proof tx may be a shared ancestor that another party
+// (or admission) paid the CPFP for, which would make spent_so_far run high.
+func spentSoFarSat(fees *daemonrpc.UnrollFees, progress *unroll.ExitProgress,
+	sweepBuilt bool, st daemonrpc.UnrollJobStatus) int64 {
+
+	if progress == nil {
+		if st == daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_COMPLETED {
+			return fees.TotalCostSat
+		}
+
+		return 0
+	}
+
+	var spent int64
+	if progress.TotalTxs > 0 {
+		broadcast := progress.ConfirmedTxs + progress.InFlightTxs
+		if broadcast > progress.TotalTxs {
+			broadcast = progress.TotalTxs
+		}
+
+		// Multiply before dividing so the proration keeps precision: a
+		// per-child divide first would truncate to zero whenever the
+		// CPFP total is smaller than the transaction count.
+		spent = fees.CpfpFeeSat * int64(broadcast) /
+			int64(progress.TotalTxs)
+	}
+
+	// The sweep fee is committed only once the sweep transaction has been
+	// built and broadcast.
+	if sweepBuilt {
+		spent += fees.SweepFeeSat
+	}
+
+	return spent
 }
 
 // unrollPhaseToProto maps the new unroll phase enum to the proto enum.

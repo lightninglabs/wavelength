@@ -1131,6 +1131,17 @@ func (c *WalletServiceClient) ExitStatus(ctx context.Context,
 	return out, err
 }
 
+// ExitSummary returns the wallet-wide portfolio of in-progress exits.
+func (c *WalletServiceClient) ExitSummary(ctx context.Context,
+	in *walletdkrpc.ExitSummaryRequest, _ ...grpc.CallOption) (
+	*walletdkrpc.ExitSummaryResponse, error) {
+
+	out := new(walletdkrpc.ExitSummaryResponse)
+	err := c.client.Post(ctx, "/v1/wallet/exit-summary", in, out)
+
+	return out, err
+}
+
 // SubscribeWallet streams wallet updates.
 func (c *WalletServiceClient) SubscribeWallet(ctx context.Context,
 	in *walletdkrpc.SubscribeWalletRequest, _ ...grpc.CallOption) (

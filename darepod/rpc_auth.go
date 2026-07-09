@@ -178,8 +178,9 @@ func newDarepodRPCPermissions() map[string][]bakery.Op {
 	grant(walletdk, entityAddress, "write",
 		"Recv",
 	)
-	grant(walletdk, entityOnChain, "read",
-		"GetExitPlan", "ExitStatus",
+	grant(
+		walletdk, entityOnChain, "read", "GetExitPlan", "ExitStatus",
+		"ExitSummary",
 	)
 	grant(
 		walletdk, entityOnChain, "write", "PrepareSend", "Send",

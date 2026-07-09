@@ -529,17 +529,33 @@ func (c *Client) ExitStatus(ctx context.Context, req ExitStatusRequest) (
 
 	resp, err := c.wallet.ExitStatus(ctx, &walletdkrpc.ExitStatusRequest{
 		Outpoint: req.Outpoint,
+		Detailed: req.Detailed,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("exit status: %w", err)
 	}
 
-	return &ExitStatusResult{
-		Found:     resp.GetFound(),
-		Status:    exitJobStatusFromProto(resp.GetStatus()),
-		SweepTxid: resp.GetSweepTxid(),
-		LastError: resp.GetLastError(),
-	}, nil
+	return exitStatusResultFromProto(resp), nil
+}
+
+// ExitSummary returns the wallet-wide portfolio of in-progress exits plus
+// aggregate totals: the amount still being recovered, the estimated fees, and
+// the estimated net recoverable. Completed and failed exits are omitted.
+func (c *Client) ExitSummary(ctx context.Context, _ ExitSummaryRequest) (
+	*ExitSummaryResult, error) {
+
+	if err := c.requireWalletRPC(); err != nil {
+		return nil, err
+	}
+
+	resp, err := c.wallet.ExitSummary(
+		ctx, &walletdkrpc.ExitSummaryRequest{},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("exit summary: %w", err)
+	}
+
+	return exitSummaryFromProto(resp), nil
 }
 
 // GetExitPlan previews whether the backing wallet is ready to start a

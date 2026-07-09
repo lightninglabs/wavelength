@@ -73,6 +73,13 @@ type GetStatusRequest struct {
 
 	// Outpoint identifies the target VTXO.
 	Outpoint wire.OutPoint
+
+	// Detailed asks the registry to enrich the response with the live
+	// child's planner-derived progress (GetStatusResp.State) when the
+	// target has an active actor. It defaults to false so the common
+	// polling path stays coarse and never Asks the durable child, avoiding
+	// stale read-only mailbox rows.
+	Detailed bool
 }
 
 // MessageType returns the stable message type identifier.

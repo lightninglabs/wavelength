@@ -265,6 +265,7 @@ func TestWalletCommandsRejectUnexpectedArgs(t *testing.T) {
 		newActivityCmd(),
 		newExitCmd(),
 		newExitStatusCmd(),
+		newExitSummaryCmd(),
 	}
 
 	for _, cmd := range commands {

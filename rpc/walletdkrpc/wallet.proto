@@ -87,6 +87,11 @@ service WalletService {
     // sweep state. Proxies daemonrpc.GetUnrollStatus.
     rpc ExitStatus (ExitStatusRequest) returns (ExitStatusResponse);
 
+    // ExitSummary reports the wallet-wide portfolio of in-progress exits:
+    // one row per active exit plus aggregate totals for the amount still
+    // being recovered, the estimated fees, and the estimated net recoverable.
+    rpc ExitSummary (ExitSummaryRequest) returns (ExitSummaryResponse);
+
     // SubscribeWallet streams activity updates as they happen. The stream
     // is resumable: each response carries a monotonic cursor the client can
     // reconnect from to replay everything after it without gaps.
@@ -1190,6 +1195,99 @@ message ExitStatusRequest {
     // outpoint is the VTXO outpoint to query, formatted as
     // "txid:index".
     string outpoint = 1;
+
+    // detailed enriches the response with tree/CSV progress and a fee
+    // breakdown. It costs one extra child actor round-trip plus a fee
+    // estimate, so it should be set only for interactive status commands, not
+    // automated polling.
+    bool detailed = 2;
+}
+
+// ExitProgress describes materialization progress through the exit proof tree.
+// It is populated only for a detailed query against a live exit job.
+message ExitProgress {
+    // confirmed_txs is the number of proof transactions confirmed on-chain.
+    uint32 confirmed_txs = 1;
+
+    // in_flight_txs is the number of proof transactions broadcast but not yet
+    // observed confirmed.
+    uint32 in_flight_txs = 2;
+
+    // ready_txs is the number of proof transactions ready to broadcast now.
+    uint32 ready_txs = 3;
+
+    // blocked_txs is the number of proof transactions still waiting on an
+    // unconfirmed in-proof parent.
+    uint32 blocked_txs = 4;
+
+    // total_txs is the total number of transactions in the exit proof tree.
+    uint32 total_txs = 5;
+
+    // current_layer is the frontier layer index: the shallowest topological
+    // layer (roots first) that still holds an unconfirmed transaction.
+    uint32 current_layer = 6;
+
+    // total_layers is the depth of the exit proof tree.
+    uint32 total_layers = 7;
+
+    // target_confirmed is true once the target VTXO transaction has confirmed.
+    bool target_confirmed = 8;
+
+    // all_proof_confirmed is true once every proof-tree transaction has
+    // confirmed, so only the CSV wait and final sweep remain.
+    bool all_proof_confirmed = 9;
+}
+
+// ExitCSV describes the target's CSV maturity countdown. It is populated only
+// once the target transaction has confirmed.
+message ExitCSV {
+    // target_confirm_height is the block height at which the target confirmed.
+    int32 target_confirm_height = 1;
+
+    // maturity_height is the block height at which the target becomes
+    // timeout-spendable.
+    int32 maturity_height = 2;
+
+    // blocks_remaining is how many blocks remain until CSV maturity.
+    int32 blocks_remaining = 3;
+
+    // mature is true once the current height is at or past maturity.
+    bool mature = 4;
+}
+
+// ExitFees breaks down the on-chain cost of the exit. The CPFP total is
+// estimated from the current fee rate; the sweep fee is the actual built-sweep
+// fee once known, otherwise estimated.
+message ExitFees {
+    // cpfp_fee_sat is the wallet-funded CPFP fee across every recovery
+    // transaction (estimated).
+    int64 cpfp_fee_sat = 1;
+
+    // sweep_fee_sat is the fee the final sweep pays out of the VTXO value.
+    int64 sweep_fee_sat = 2;
+
+    // total_cost_sat is cpfp_fee_sat + sweep_fee_sat.
+    int64 total_cost_sat = 3;
+
+    // vtxo_amount_sat is the value of the VTXO being exited.
+    int64 vtxo_amount_sat = 4;
+
+    // net_recovered_sat is vtxo_amount_sat - sweep_fee_sat.
+    int64 net_recovered_sat = 5;
+
+    // fee_rate_sat_vbyte is the fee rate used for the estimate.
+    int64 fee_rate_sat_vbyte = 6;
+
+    // sweep_fee_actual is true when sweep_fee_sat is the real built-sweep fee
+    // rather than an estimate.
+    bool sweep_fee_actual = 7;
+
+    // spent_so_far_sat is the estimated on-chain fee already committed at this
+    // point in the exit: CPFP for the confirmed and in-flight recovery
+    // transactions, plus the sweep fee once the sweep is broadcast. It is an
+    // estimate, not a realized total; total_cost_sat remains the projected cost
+    // of the whole exit.
+    int64 spent_so_far_sat = 8;
 }
 
 // ExitJobStatus collapses the underlying unroll job phases to a short
@@ -1240,6 +1338,81 @@ message ExitStatusResponse {
     // last_error contains the failure reason if the job is in FAILED
     // status.
     string last_error = 4;
+
+    // phase_detail is a human-readable one-line description of the current
+    // phase, e.g. "materializing layer 2 of 4 (3/7 txs confirmed)". Set only
+    // on a detailed query.
+    string phase_detail = 5;
+
+    // progress is the tree materialization progress. Set only on a detailed
+    // query against a live job.
+    ExitProgress progress = 6;
+
+    // csv is the CSV maturity countdown. Set only on a detailed query, once
+    // the target has confirmed.
+    ExitCSV csv = 7;
+
+    // fees is the on-chain cost breakdown for the exit. Set only on a detailed
+    // query.
+    ExitFees fees = 8;
+
+    // best_case_blocks_remaining is the optimistic block count until a
+    // confirmed sweep. Set only on a detailed query.
+    int32 best_case_blocks_remaining = 9;
+
+    // current_height is the best block height the exit job has observed. Set
+    // only on a detailed query against a live job.
+    int32 current_height = 10;
+}
+
+// ExitSummaryRequest asks for the wallet-wide portfolio of in-progress exits.
+message ExitSummaryRequest {
+}
+
+// ExitSummaryItem is one in-progress exit's coarse contribution to the
+// portfolio. It is intentionally cheap (phase plus amounts and estimated fees
+// from the persisted descriptor), so the summary does not query each live
+// actor; use ExitStatus --detailed for one exit's tree/CSV progress.
+message ExitSummaryItem {
+    // outpoint is the exiting VTXO outpoint, formatted as "txid:index".
+    string outpoint = 1;
+
+    // status is the current high-level phase of the exit job.
+    ExitJobStatus status = 2;
+
+    // vtxo_amount_sat is the value of the VTXO being exited.
+    int64 vtxo_amount_sat = 3;
+
+    // est_total_fee_sat is the projected total on-chain fee for this exit
+    // (estimated CPFP total plus sweep fee).
+    int64 est_total_fee_sat = 4;
+
+    // est_net_recovered_sat is the estimated value that lands back in the
+    // wallet after the sweep fee.
+    int64 est_net_recovered_sat = 5;
+}
+
+// ExitSummaryResponse is the wallet-wide portfolio of in-progress exits plus
+// aggregate totals. Only non-terminal exits are included: a completed or failed
+// exit has no amount "left" to recover.
+message ExitSummaryResponse {
+    // exits is one row per in-progress exit.
+    repeated ExitSummaryItem exits = 1;
+
+    // total_exits is the number of in-progress exits.
+    uint32 total_exits = 2;
+
+    // total_vtxo_amount_sat is the summed value of every VTXO still being
+    // exited: the total amount currently locked in in-progress exits.
+    int64 total_vtxo_amount_sat = 3;
+
+    // total_est_fee_sat is the summed projected on-chain fee across every
+    // in-progress exit.
+    int64 total_est_fee_sat = 4;
+
+    // total_est_net_recovered_sat is the summed estimated value that will land
+    // back in the wallet once every in-progress exit completes.
+    int64 total_est_net_recovered_sat = 5;
 }
 
 // SubscribeWalletRequest configures the WalletService.SubscribeWallet stream.

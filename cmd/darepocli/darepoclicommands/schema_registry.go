@@ -374,6 +374,16 @@ func walletQueryMethodRegistry() []schemaMethod {
 			MCPTool:      true,
 		},
 		{
+			Method: "exit.summary",
+			Description: "Summarize all in-progress exits and " +
+				"their totals",
+			Params:       nil,
+			RequestType:  "ExitSummaryRequest",
+			ResponseType: "ExitSummaryResponse",
+			JSONInput:    false,
+			MCPTool:      true,
+		},
+		{
 			Method: "exit.plan",
 			Description: "Preview backing-wallet funding " +
 				"readiness for an exit",
