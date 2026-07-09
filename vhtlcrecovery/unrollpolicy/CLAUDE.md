@@ -36,8 +36,6 @@ parent package.
 - **Depended on by**: `darepod` (constructs `ExitSpendPolicyResolver`,
   registers into `unroll.RegistryConfig`, installs `PreimageResolver` via
   `PreimageResolverRegistry.SetResolver` at swap-runtime startup).
-- **Sends**: nothing (policy builder, no actors)
-- **Receives**: nothing (policy builder, no actors)
 
 ## Invariants
 

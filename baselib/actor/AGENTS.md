@@ -75,8 +75,8 @@ crash-safe at-least-once delivery with exactly-once deduplication.
 
 ## Relationships
 
-- **Depends on**: `lnd/tlv` (message serialization).
-- **Depended on by**: All domain actors (`round`, `vtxo`, `oor`, `wallet`, `serverconn`, `timeout`, `indexer`), `baselib/protofsm` (FSM-to-actor bridge), `db/actordelivery` (persistence implementation).
+- **Depends on**: `lnd/tlv` (message serialization), `lnd/fn/v2` (Result/Option/Either types), `lnd/clock` (testable time), `build` (logger-from-context helper).
+- **Depended on by**: All domain actors (`round`, `vtxo`, `oor`, `wallet`, `serverconn`, `timeout`), `baselib/protofsm` (FSM-to-actor bridge), `db/actordelivery` (persistence implementation).
 
 ## Invariants
 

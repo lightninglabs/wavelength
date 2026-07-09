@@ -33,12 +33,11 @@ This package exists as a child of `vhtlcrecovery` to avoid an import cycle:
   `ActorUnrollRegistry`).
 - **Depended on by**: `darepod` (instantiates and wires the service; implements
   `TargetMaterializer` via `vhtlcRecoveryTargetMaterializer`).
-- **Sends**:
-  - → `unroll` registry: `EnsureUnrollRequest`, `GetStatusRequest`
-- **Receives**:
-  - ← API: `ArmRecovery`, `EscalateRecovery`, `CancelRecovery`,
-    `CompleteRecovery`, `FailRecovery`, `GetStatus`, `ListRecoveries`
-    (from `darepod.RPCServer` via `Service`)
+- **Messages to/from**: Sends `EnsureUnrollRequest` / `GetStatusRequest` ->
+  `unroll` registry (via `UnrollRegistry`). `Service` methods (`ArmRecovery`,
+  `EscalateRecovery`, `CancelRecovery`, `GetRecoveryStatus`,
+  `ListRecoveryStatuses`, `RestoreNonTerminal`) are called directly by
+  `darepod.RPCServer`, not actor messages.
 
 ## Invariants
 
@@ -49,8 +48,10 @@ This package exists as a child of `vhtlcrecovery` to avoid an import cycle:
   already escalated before shutdown.
 - Any existing unroll job for the same target must carry the same
   `exit_policy_kind` and `exit_policy_ref`; mismatches fail closed.
-- The raw preimage is not present in this package. Claim policies resolve it
-  later through the policy adapter.
+- `EscalateRecovery` accepts an optional raw claim preimage, validates it
+  against the job's `preimage_hash`, then hands it to `Store.EscalateRecovery`
+  for persistence, but never logs it (`recoveryLogAttrs` omits `ClaimPreimage`
+  deliberately).
 
 ## Deep Docs
 

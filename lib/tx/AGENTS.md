@@ -27,8 +27,9 @@ handle specific transaction types (Ark batch, checkpoint, OOR, PSBT utilities).
 
 ## Relationships
 
-- **Depends on**: `lib/arkscript` (taproot script construction, policy types), `lib/tree` (tree types).
-- **Depended on by**: `round` (forfeit construction/validation), `oor` (checkpoint/Ark signing), `vtxo` (forfeit signing).
+- **Depends on**: `lib/arkscript` (taproot script construction, policy types).
+- **Depended on by**: `round` (forfeit construction/validation), `oor` (checkpoint/Ark signing),
+  `vtxo` (forfeit signing), `darepod` (forfeit signature broker, RPC server).
 
 ## Invariants
 

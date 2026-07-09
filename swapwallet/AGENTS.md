@@ -5,9 +5,12 @@
 Daemon-side implementation of the `walletdkrpc.WalletService` gRPC
 subserver. It composes the swap subsystem (`swapclientserver`), the
 cooperative-leave RPC, the daemon's wallet/admin surface, the boarding
-ledger, and the unilateral-exit registry into one flat user-facing API:
-the seven wallet verbs (Create, Unlock, Send, Recv, List, Balance,
-Exit) plus the supporting Deposit / Status / SubscribeWallet methods.
+ledger, the `credit` durable-actor subsystem, and the unilateral-exit
+registry into one flat user-facing API: the seven wallet verbs (Create,
+Unlock, Send, Recv, List, Balance, Exit) plus the supporting Deposit /
+Status / SubscribeWallet methods. Sends/receives that are sub-dust or
+otherwise credit-eligible are routed through the credit registry
+transparently — the caller only sees wallet vocabulary.
 
 The whole package lives behind `//go:build walletdkrpc && swapruntime` so
 default builds avoid the swap executor's dependency graph.
@@ -24,17 +27,21 @@ default builds avoid the swap executor's dependency graph.
   never cancel in-flight work.
 - `Deps` — Composition struct: `SwapBackend` (in-Go swap runtime),
   `SwapService` (gRPC-shaped swap subserver handle), `RPCServer`
-  (narrow daemonrpc contract), `ChainParams` (Bitcoin network — used to
+  (narrow daemonrpc contract), `CreditRegistry` (lazy `actor.ActorRef` into
+  the `credit` durable-actor subsystem; nil disables credit-backed routing),
+  `ChainParams` (Bitcoin network — used to
   validate BOLT-11 invoice decoding in `PrepareSend` so a cross-network
-  invoice is rejected before a send intent is issued), plus wallet-level
+  invoice is rejected before a send intent is issued), `ActivityStore`
+  (canonical activity-log projector), plus wallet-level
   deadline, list-limit, and subscribe-buffer knobs.
 - `RPCServer` interface — Narrow contract over `*darepod.RPCServer`
-  covering every daemonrpc method swapwallet composes against:
-  LeaveVTXOs, SendOnChain, ListVTXOs, ListTransactions, NewAddress, GetInfo,
-  GetBalance, GenSeed, InitWallet, UnlockWallet, Unroll,
-  GetUnrollStatus, JoinNextRound. The admin-shape methods (GenSeed/InitWallet/
-  UnlockWallet/Unroll/GetUnrollStatus) are reachable BEFORE the swap
-  runtime is live.
+  covering every daemonrpc/darepod method swapwallet composes against:
+  LeaveVTXOs, SendOnChain, SendOOR, ListVTXOs, ListTransactions, GetInfo,
+  EstimateFee, GetBalance, NewAddress, NewWalletAddress, ListWalletUnspent,
+  GenSeed, InitWallet, UnlockWallet, Unroll, GetUnrollStatus, ExitSummary,
+  GetExitPlan, SweepWallet, JoinNextRound. The admin-shape methods
+  (GenSeed/InitWallet/UnlockWallet/Unroll/GetUnrollStatus) are reachable
+  BEFORE the swap runtime is live.
 - `WalletEntry` (re-exported from walletdkrpc) — Flat row type the entire
   history/streaming surface returns. Every internal correlator
   (session_id, round_id, settlement_type, mailbox subtype) is dropped
@@ -48,12 +55,15 @@ default builds avoid the swap executor's dependency graph.
 - **Depends on**:
   - `rpc/walletdkrpc` (generated gRPC stubs and request/response shapes)
   - `daemonrpc` (admin RPCs proxied by Create/Unlock/Exit and the
-    backends consumed for LeaveVTXOs, ListVTXOs, ListTransactions,
+    backends consumed for LeaveVTXOs, SendOOR, ListVTXOs, ListTransactions,
     GetBalance, NewAddress)
   - `rpc/swapclientrpc` (swap-subsystem gRPC shape; ListSwaps,
     StartPay, StartReceive)
   - `swapclientserver` (typed `Backend` handle and runtime resume)
-  - `darepod` (`SwapBackend` interface)
+  - `credit` (`CreditMsg`/`CreditResp`, `StartCreditPayRequest`,
+    `ListCreditOpsRequest` — durable credit-backed pay/recv routing and the
+    credit projector poll)
+  - `darepod` (`SwapBackend`, `ActivityStore` interfaces)
   - `ledger` (account name constants for OOR ledger projection)
   - `btclog/v2` (subsystem logger)
 - **Depended on by**:
@@ -64,14 +74,20 @@ default builds avoid the swap executor's dependency graph.
   - → daemonrpc (in-process via RPCServer):
     `InitWalletRequest`, `UnlockWalletRequest`, `GenSeedRequest`,
     `UnrollRequest`, `GetUnrollStatusRequest`, `LeaveVTXOsRequest`,
-    `SendOnChainRequest`, `JoinNextRoundRequest`, `ListVTXOsRequest`,
-    `ListTransactionsRequest`, `NewAddressRequest`, `GetBalanceRequest`,
-    `GetInfoRequest`
+    `SendOnChainRequest`, `SendOORRequest`, `JoinNextRoundRequest`,
+    `ListVTXOsRequest`, `ListTransactionsRequest`, `NewAddressRequest`,
+    `GetBalanceRequest`, `GetInfoRequest`
   - → swapclientrpc (in-process via SwapService): `StartPayRequest`,
     `StartReceiveRequest`, `ListSwapsRequest`, `SubscribeSwapsRequest`
 - **Receives**:
-  - ← API: `walletdkrpc.{Create,Unlock,Send,Recv,List,Balance,Deposit,
-    Status,Exit,ExitStatus,SubscribeWallet}Request`
+  - ← API: `walletdkrpc.{Create,Unlock,PrepareSend,Send,Recv,List,Balance,
+    Deposit,Status,GetExitPlan,SweepWallet,Exit,ExitStatus,ExitSummary,
+    SubscribeWallet,InspectActivity}Request`
+- **Messages to/from**: Sends `credit.StartCreditPayRequest` /
+  `credit.ListCreditOpsRequest` -> `credit` registry actor (via
+  `Deps.CreditRegistry.Ask`); the credit projector loop polls
+  `ListCreditOpsResponse` <- `credit` to fan terminal credit-op state onto
+  `WalletEntry` rows.
 
 ## Invariants
 
@@ -79,13 +95,32 @@ default builds avoid the swap executor's dependency graph.
   admin-shape: they reach daemonrpc via the injected `RPCServer` and
   DO NOT depend on `Runtime`, router, recv, or history. Create and
   Unlock must work before the swap subsystem is live.
+- Credit-backed routing is nil-safe: `Deps.CreditRegistry == nil` disables
+  credit-only sends (falls back with `ErrSwapBackendUnavailable`) and the
+  credit projector loop is a no-op, so builds without the credit subsystem
+  wired pay nothing extra.
+- A pay is **credit-only** (owned solely by the credit projector) when the
+  server pins it to credit or `creditCoversSat` (overflow-safe) shows applied
+  credit + planned top-up covers the full principal; otherwise it is
+  **mixed** and the swap monitor loop stays the single terminal authority for
+  the shared payment-hash row — the credit projector must never emit for a
+  mixed pay.
+- The credit projector polls on a coarse 5s tick
+  (`creditProjectInterval`) and only re-emits an operation when its
+  `credit.State` changed since the last poll, keyed by `OpID` in an
+  in-process (non-durable) map that starts empty on restart.
 - Background goroutines (monitor loop, deadline watcher, resume
   sweep) are anchored to the daemon root context, NEVER to RPC-call
   contexts. An RPC client disconnect cannot cancel in-flight work.
-- `WalletEntry.id` is the stable canonical id for SEND-invoice and
-  RECV (Lightning payment_hash) across the entire pending → terminal
-  lifecycle. EXIT and DEPOSIT rows do not yet share an id between
-  pending and confirmed in v1; see `doc.go`.
+- `WalletEntry.id` is the stable canonical id across the entire pending
+  → terminal lifecycle for SEND-invoice and RECV (Lightning
+  payment_hash), on-chain-send / cooperative-leave EXIT (the daemon's
+  leave-job id / `send_job_id`), and DEPOSIT (`deposit-<address>`, keyed
+  on the allocated boarding address surfaced on the confirmed history
+  row). A unilateral EXIT still keys by the consumed VTXO outpoint. The
+  pending → COMPLETE transition for EXIT/DEPOSIT lands via the
+  derive/backfill pass; live cross-restart reconciliation is C2. See
+  `doc.go`.
 - Onchain SEND is routed through `RPCServer.SendOnChain` which delegates to
   `wallet.SendOnChainRequest`. Two modes: **sweep-all** (non-empty
   `SweepOutpoints` — drains those VTXOs exactly, no change, leave output
@@ -109,10 +144,17 @@ default builds avoid the swap executor's dependency graph.
   stuck row appears as FAILED even when the caller asks for
   `pending_only=false`.
 - **DEPOSIT rows backed by the `wallet_utxo_created` ledger event**
-  mirror the ledger confirmation status. Confirmed on-chain boarding
-  deposits surface as `ENTRY_STATUS_COMPLETE`, while unconfirmed
-  boarding funds are represented by the synthetic
-  `boarding-unconfirmed` pending row from `GetBalance`.
+  mirror the ledger confirmation status and are keyed
+  `deposit-<address>` from the confirmed row's
+  `TransactionHistoryEntry.boarding_address`; every UTXO paid to that
+  address is SUMMED into one row (`sumDepositsByAddress`) so a reused
+  address shows its total. `Deposit` does NOT project a row — allocating
+  an address is not a pending deposit — it only returns that id so a
+  caller can correlate the eventual confirmed row. Per-address is the
+  CONFIRMED phase only: unconfirmed boarding funds have no per-address
+  source (the daemon exposes only aggregate `boarding_unconfirmed_sat`),
+  so they surface via `Balance` and the single derive-path-only
+  `boarding-unconfirmed` row, never projected into the store.
 - **`Balance` projection** maps daemonrpc fields onto the walletdkrpc
   shape: `confirmed_sat` is VTXO-only (`vtxo_balance_sat`),
   `pending_in_sat` sums `boarding_confirmed_sat +

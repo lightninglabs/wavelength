@@ -4,8 +4,9 @@
 
 Pure, immutable proof graph plus per-session planning state for unilateral
 exit / recovery of a VTXO target outpoint. The package exposes the data model
-(proof, session, durable state) and a TLV codec for crash-safe persistence;
-actual broadcast orchestration lives downstream in later PRs.
+(proof, session, durable state) and a TLV codec for crash-safe persistence.
+It is deliberately I/O-free: broadcast orchestration, chain queries, and retry
+scheduling live downstream in `unrollplan` and `unroll`.
 
 ## Key Types
 
@@ -29,9 +30,9 @@ actual broadcast orchestration lives downstream in later PRs.
   `lib/tree` (generic BFS `Queue[T]` for iterative ancestor traversal),
   `github.com/lightningnetwork/lnd/fn/v2` (Option type),
   `github.com/lightningnetwork/lnd/tlv` (state / proof codec).
-- **Depended on by**: `unrollplan` (pure planning layer; re-uses
-  `Proof`, `Node`, `ComputeMaturityHeight`). Later recovery PRs (3/5, 4/5,
-  5/5) will consume the codec for checkpoint persistence.
+- **Depended on by**: `unrollplan` (pure planning layer; re-uses `Proof`,
+  `Node`, `ComputeMaturityHeight`), `unroll` (actor/FSM that drives broadcast
+  and persists `SessionState` via the TLV codec), `darepod` (RPC wiring).
 
 ## Invariants
 

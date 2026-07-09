@@ -41,10 +41,21 @@ message interfaces, and core Ark types.
 - `TriggerBoardMsg`, `RegisterIntentMsg` — Cross-package messages from wallet→round.
 - `SelectAndReserveSpendRequest`, `ReserveForfeitRequest`, etc. — VTXO manager admission types.
 
+### lib/recovery
+- `Proof` — Immutable unilateral-exit recovery graph for one target outpoint.
+- `Session` / `SessionState` — Mutable planning state and its durable TLV
+  projection, driven by broadcast/confirm/fail observations.
+
+### lib/scripts
+- Removed; superseded by `lib/arkscript`.
+
 ## Relationships
 
 - **Depends on**: `baselib/actor` (actormsg only, for ServiceKey).
-- **Depended on by**: `round`, `vtxo`, `oor`, `wallet`, `darepod`, `rpc/*`.
+- **Depended on by**: nearly every client subsystem (`round`, `vtxo`, `oor`,
+  `wallet`, `unroll`, `unrollplan`, `txconfirm`, `fraud`, `db`, `sdk`,
+  `vhtlcrecovery`, `swapclientserver`, `darepod`, `rpc`/`arkrpc`) — `lib`
+  holds the shared domain types the rest of the client builds on.
 
 ## Deep Docs
 

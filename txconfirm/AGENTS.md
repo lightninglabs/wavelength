@@ -43,8 +43,14 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/txcon
   and a subscriber.
 - `CancelInterestReq` / `CancelInterestResp` — drop a subscriber; the
   last subscriber's cancel tears down tracking.
+- `BumpNowReq` / `BumpNowResp` — operator "bump this stuck tx now" Ask:
+  forces an immediate CPFP bump at a supplied fee rate (clamped to the
+  broadcaster's max) instead of waiting for the next interval.
 - `TxConfirmed` / `TxFailed` — terminal `Notification` types delivered
   to each subscriber.
+- `NewServiceKey` / `LookupRef` — actor-system service-key helpers
+  (`ServiceKeyName = "txconfirm"`) so callers resolve the shared actor
+  ref via the receptionist instead of holding a direct reference.
 - `TxState` — `New`, `Broadcasting`, `AwaitingConfirmation`,
   `FeeBumping`, `Confirmed`, `Failed`. `Broadcasting` covers BOTH the
   initial attempt and the "reached no mempool, retrying" case;
@@ -55,6 +61,11 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/txcon
 - `Config.BroadcastFailureAlertThreshold` — consecutive no-mempool
   failures before the operator escalation fires (default 3). Time to
   first alert ≈ threshold × `FeeBumpIntervalBlocks` blocks.
+- Internal fee-input fanout FSM (`fee_bump_fsm_*.go`, driven from
+  `fee_input_actor.go`) — when a CPFP broadcast fails with
+  `ErrCPFPFeeInputUnavailable`, the actor fans a wallet self-payment
+  out to fresh confirmed UTXOs, watches it via chainsource, and
+  retries every stuck `Broadcasting` parent once it confirms.
 
 ## Relationships
 
@@ -62,8 +73,10 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/txcon
   (confirmation watches, block epochs, broadcast, package submission,
   fee estimation, preflight), `wallet` (`Utxo`, `OutputLeaser`,
   `LockID`), `lib/tx/arktx` (`TxVersion` constant, `IsAnchorOutput`).
-- **Depended on by**: `unroll`, `btcwbackend` (fee-input selection
-  helper), `darepod`, `db`.
+- **Depended on by**: `unroll` (exit-tx confirmation), `wallet`
+  (`wallet_sweep_actor.go` / `boarding_sweep_actor.go` confirm their
+  sweep txs through `EnsureConfirmedReq` + `MapNotification`),
+  `darepod` (wiring/registration).
 - **Sends → `chainsource`** (Ask): `BestHeightRequest`,
   `SubscribeBlocksRequest`, `RegisterConfRequest`,
   `UnregisterConfRequest`, `BroadcastTxRequest`,
@@ -147,5 +160,3 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/txcon
   lifecycle, CPFP correctness invariants, PSBT finalization,
   service-key round trip, and eviction.
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map.
-</content>
-</invoke>

@@ -22,8 +22,8 @@ metadata encoding.
 ## Relationships
 
 - **Depends on**: (no internal repo imports; pure cryptographic library).
-- **Depended on by**: `round` (intent signing), `darepod` (auth validation),
-  `wallet` (signing support).
+- **Depended on by**: `round` (join-round intent signing and BIP-322 auth
+  validation, via `join_auth.go`).
 
 ## Invariants
 

@@ -209,5 +209,3 @@ or balance reconciliation. Required emission pairs:
 - [db/CLAUDE.md](../db/CLAUDE.md) — `LedgerStoreDB` and
   `UTXOAuditStoreDB` adapters.
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map.
-</content>
-</invoke>

@@ -33,8 +33,6 @@ state.
   `vhtlcrecovery/unrollpolicy` (builds concrete exit spend policies from job
   rows), `darepod` (RPC handlers: `ArmVHTLCRecovery`, `EscalateVHTLCRecovery`,
   etc.)
-- **Sends**: nothing (pure data types, no actors)
-- **Receives**: nothing (pure data types, no actors)
 
 ## Invariants
 

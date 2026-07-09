@@ -27,7 +27,8 @@ transfers.
 
 - **Depends on**: `lib/arkscript` (CheckpointPolicy, CheckpointTapScript),
   `lib/tx/arktx` (TxVersion, validation).
-- **Depended on by**: `lib/tx/oor`, `oor`.
+- **Depended on by**: `lib/tx/oor` (checkpoint PSBT construction for OOR
+  transfers).
 
 ## Invariants
 

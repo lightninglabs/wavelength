@@ -14,17 +14,23 @@ bitcoind node instead of through LND's `WalletKit`. Sibling to `lnd.go` in
   POSTs a `submitpackage` JSON-RPC call to bitcoind. Uses a dedicated
   `*http.Client` with a 30s backstop timeout so a wedged node can't stall
   the caller for the full parent context.
-- `New(host, user, password)` — Constructs a `PackageSubmitter`. `host` is
-  the `host:port` form; the submitter prefixes `http://` because bitcoind's
-  JSON-RPC server speaks plain HTTP by default. TLS termination (when
-  present) is expected to be handled by an external reverse proxy.
+- `New(host, user, password)` — Legacy no-error constructor for the bare
+  `host:port` form; always defaults to `http://`.
+- `NewWithOptions(host, user, password, opts...)` — Preferred constructor;
+  surfaces URL-parse and TLS-config errors, and defaults to `https://` when
+  `WithTLSCertPath` is set.
+- `WithTLSCertPath(path)` — Option to trust a custom CA when bitcoind's RPC
+  is fronted by a local TLS reverse proxy; augments (not replaces) the
+  system trust store.
 
 ## Relationships
 
-- **Depends on**: `btcd/btcjson` (SubmitPackageResult), `btcd/wire` (MsgTx),
-  standard library `net/http`.
-- **Depended on by**: `cmd/darepod` (wires via `bitcoind.{host,user,pass}`
-  flags), `harness` (itest injection into `darepod.Config.PackageSubmitter`).
+- **Depends on**: `btcd/btcjson` (SubmitPackageResult), `btcd/wire`
+  (MsgTx), standard library `net/http`, `crypto/tls`.
+- **Depended on by**: `cmd/darepod` (wires via `bitcoindrpc.NewWithOptions`
+  with the `bitcoind.{host,user,pass,rpccookie,tlscertpath}` config keys
+  into `darepod.Config.PackageSubmitter`, implementing
+  `chainbackends.PackageSubmitter`).
 
 ## Invariants
 

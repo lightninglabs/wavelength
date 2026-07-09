@@ -10,6 +10,7 @@ background ingress polling with event routing.
 
 - `Runtime` — Main entry point wrapping DurableActor, ServerConnectionActor, and UnaryFacade. The egress DurableActor runs on the Read/Commit (`TxBehavior`) path: each handler builds its envelope and calls `Edge.Send` with NO SQLite writer held, then a short lease-fenced Commit folds the ack + dedup. It runs as a competing-consumer pool of `ConnectorConfig.EgressWorkers` worker loops, so the round and out-of-round actors' sends proceed concurrently; the single ingress puller is separate and unaffected.
 - `ServerConnectionActor` — Core behavior handling egress messages and the ingress loop. Dispatches `DurableUnaryQuery` values generically via `buildDurableUnary`.
+- `ArkVersionNegotiator` — Single home for Ark protocol version selection (`ark_version.go`). `Bootstrap` performs the one bootstrap `GetInfo` over the operator's **direct** ArkService connection (`ArkVersionGetInfoClient`, never the mailbox edge) and returns the response + selected version; the daemon parses domain terms from the same response. The free function `ValidateRefreshSelection(resp, boundVersion)` enforces that a refresh-only `GetInfo` keeps the runtime bound (returns a permanent `*StatusError` on drift/disable). Enabled versions are derived from the response's ACTIVE `ArkVersionPolicy` entries.
 - `UnaryFacade` — Implements `mailboxrpc.RPCClient` for generated RPC stubs (low-latency path). Also provides `AwaitRPCTimeout` for bounded waits.
 - `ConnectorConfig` — Wiring configuration (edge address, mailbox IDs, dispatchers, store, durable unary builder, `EgressWorkers`). `EgressWorkers` sizes the egress worker pool (default `DefaultEgressWorkers` = 4); `<= 1` keeps the legacy single sender. The `DurableUnaryBuilder` field must be set to handle `DurableUnaryQuery` message types; otherwise those messages are rejected. The `AuthSignature` field holds the Schnorr auth sig injected into every outbound envelope via `mergeAuthHeaders` (auth header always wins over caller-provided headers).
 - `PubKeyMailboxID` — Derives canonical mailbox ID from a public key (hex-encoded compressed SEC). Panics on nil.
@@ -17,6 +18,19 @@ background ingress polling with event routing.
 - `SignMailboxAuth` / `VerifyMailboxAuth` / `ParseMailboxPubKey` — Schnorr sign/verify helpers for pubkey-derived mailbox identity.
 - `AuthHeaderKey` — Envelope header key (`x-mailbox-auth-sig`) for the Schnorr auth signature.
 - `GenerateClientTLSCert` — Creates an ephemeral P-256 mTLS client cert with the secp256k1 identity pubkey hex as Subject CN. Returns error on nil key.
+- `EventRouter` — Registry mapping inbound `ServiceMethod`s to typed actor
+  dispatch. `AddRoute`/`NewEventRoute` register durable actor-message routes;
+  `AddEnvelopeRoute` registers raw-envelope handlers (e.g. shared RPC methods
+  where a stale response is dropped via `ErrEnvelopeHandled` instead of
+  delivered).
+- `MailboxTLSBindDigest`/`Message`, `SignMailboxTLSBind`/`VerifyMailboxTLSBind`,
+  `TLSBindHeaderKey` — Binds the ephemeral mTLS leaf cert's SPKI to the
+  secp256k1 identity via a BIP-340 Schnorr signature, complementing
+  `GenerateClientTLSCert` (the cert alone proves nothing; this signature
+  proves the TLS key and the identity key are held by the same party).
+- `NewAuthenticatedMailboxClient` — `mailboxpb.MailboxServiceClient` decorator
+  that signs and attaches the `x-mailbox-auth-sig` header to every `Send`
+  before forwarding to the wrapped edge transport.
 - `AckState` — Four-cursor watermark state machine (PullCursor, DispatchCommittedTo, AckTarget, AckCommittedTo).
 - `SendUnaryRequest` — Durable typed unary request that becomes a real unary RPC after commit. The response arrives via KIND_RESPONSE and, if no in-memory waiter exists, falls back to durable route dispatch via the EventRouter.
 - `DurableUnaryRequestBuilder` — Interface for proof-gated request-body construction. Implementations build the actual proto request (e.g., with signed proofs) at send time, not at persist time. The interface is provided via `ConnectorConfig.DurableUnaryBuilder`.
@@ -34,8 +48,10 @@ background ingress polling with event routing.
 
 ## Relationships
 
-- **Depends on**: `baselib/actor` (DurableActor infrastructure), `mailbox/*` (Envelope, RpcMeta, MailboxServiceClient).
-- **Depended on by**: `round` (outbound RPCs), `oor` (durable transport), `darepod` (wiring).
+- **Depends on**: `baselib/actor` (DurableActor infrastructure), `mailbox/*` (Envelope, RpcMeta, MailboxServiceClient), `arkrpc` (`GetInfo` request/response + `ArkVersionPolicy` for version negotiation).
+- **Depended on by**: `round` (outbound RPCs), `oor` (durable transport),
+  `darepod` (wiring), `sdk/swaps` (`CompoundMailboxID`, `PubKeyMailboxID`),
+  `swapclientserver`.
 - **Sends (egress → remote mailbox)**:
   - `SendClientEventRequest` (durable): wraps `JoinRoundRequest`, `JoinRoundAccept`, `JoinRoundReject`, `SubmitNoncesRequest`, `SubmitPartialSigRequest`, `SubmitForfeitSigRequest`. `JoinRoundAccept` / `JoinRoundReject` are the explicit responses to a server-issued seal-time `JoinRoundQuote` (#270); both echo the `quote_id` so the server can drop stale responses after a reseal.
   - `SendRPCRequest` (unary, non-durable): low-latency request-response RPCs
@@ -63,10 +79,18 @@ background ingress polling with event routing.
   per-key FIFO lane key regardless of whether the message was constructed
   fresh or decoded from TLV. The `cachedCorrelationKey` field is populated
   during `Decode` via `tlv.TlvType8` so restarts do not lose FIFO routing.
+- Every outbound envelope is stamped with the runtime-bound mailbox
+  transport and Ark protocol version pair (`stampEnvelopeVersions`/
+  `versionStampingMailboxClient`), overwriting any caller-provided value.
+  Every inbound envelope is checked against the same bound pair
+  (`validateInboundEnvelope`); a mismatch is always a permanent
+  `*mailboxconn.StatusError` — there is no legacy zero-version fallback,
+  since client and operator are always deployed with a negotiated version.
 
 ## Deep Docs
 
 - [serverconn/README.md](README.md) — Architecture, usage guide, crash recovery paths.
 - [docs/mailbox_architecture.md](../docs/mailbox_architecture.md) — Three-layer mailbox system.
+- [docs/mailbox_transport_serverconn_clientconn.md](../docs/mailbox_transport_serverconn_clientconn.md) — Transport split between serverconn (client-side) and clientconn (server-side).
 - [docs/durable_actor_architecture.md](../docs/durable_actor_architecture.md) — Durable actor internals.
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map.

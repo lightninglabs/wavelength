@@ -18,9 +18,9 @@ reference and learning aid; not used by production code.
   `StateApproved`, `StateRejected`.
 - `DocEnvironment` — Immutable FSM context holding an actor reference;
   implements `protofsm.TellRefEnv[DocEvent]`.
-- `ReviewService` / `ReviewServiceBehavior` — Actor that performs async review
-  and sends the result event back to the FSM.
-- `NotificationService` / `NotificationServiceBehavior` — Actor that delivers
+- `ReviewServiceBehavior` — `ActorBehavior` that performs async document
+  review and sends the result event back to the FSM.
+- `NotificationServiceBehavior` — `ActorBehavior` that delivers
   approval/rejection notifications.
 
 ## Relationships
