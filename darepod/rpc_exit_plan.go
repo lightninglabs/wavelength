@@ -541,11 +541,16 @@ func (r *RPCServer) ExitSummary(ctx context.Context) (*ExitSummaryResult,
 	}
 
 	// The fee estimate is wallet-wide, so compute it once and reuse it for
-	// every previewed exit.
+	// every previewed exit. A fee-estimate failure must not sink the whole
+	// summary: the amounts and phases come from the store and are useful on
+	// their own, so degrade to a zero rate (which zeroes only the fee
+	// columns) rather than failing the call.
 	feeRate, err := r.estimateWalletFeeRate(ctx, 0)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "estimate fee: %v",
-			err)
+		r.server.log.DebugS(ctx, "exit summary fee estimate failed; "+
+			"reporting zero fees", slog.String("err", err.Error()))
+
+		feeRate = 0
 	}
 
 	result.Entries = make([]ExitSummaryEntry, 0, len(jobs))

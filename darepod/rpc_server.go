@@ -4986,11 +4986,19 @@ func unrollPhaseDetail(st daemonrpc.UnrollJobStatus,
 			return "materializing recovery transactions on-chain"
 		}
 
+		// The frontier layer collapses to TotalLayers once every proof
+		// node confirms, so clamp the 1-based display so a job that
+		// reads MATERIALIZING after the frontier collapsed cannot
+		// render "layer N+1 of N".
+		layer := p.CurrentLayer + 1
+		if layer > p.TotalLayers {
+			layer = p.TotalLayers
+		}
+
 		return fmt.Sprintf("materializing recovery tree: layer %d of "+
 			"%d, %d/%d txs confirmed (%d in flight, %d ready, %d "+
-			"blocked)", p.CurrentLayer+1, p.TotalLayers,
-			p.ConfirmedTxs, p.TotalTxs, p.InFlightTxs, p.ReadyTxs,
-			p.BlockedTxs)
+			"blocked)", layer, p.TotalLayers, p.ConfirmedTxs,
+			p.TotalTxs, p.InFlightTxs, p.ReadyTxs, p.BlockedTxs)
 
 	case daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_CSV_PENDING:
 		detail := "recovery transactions confirmed; waiting for CSV " +
@@ -5121,8 +5129,11 @@ func spentSoFarSat(fees *daemonrpc.UnrollFees, progress *unroll.ExitProgress,
 			broadcast = progress.TotalTxs
 		}
 
-		perChild := fees.CpfpFeeSat / int64(progress.TotalTxs)
-		spent = perChild * int64(broadcast)
+		// Multiply before dividing so the proration keeps precision: a
+		// per-child divide first would truncate to zero whenever the
+		// CPFP total is smaller than the transaction count.
+		spent = fees.CpfpFeeSat * int64(broadcast) /
+			int64(progress.TotalTxs)
 	}
 
 	// The sweep fee is committed only once the sweep transaction has been
