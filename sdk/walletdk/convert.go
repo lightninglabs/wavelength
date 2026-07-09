@@ -217,6 +217,119 @@ func exitJobStatusFromProto(s walletdkrpc.ExitJobStatus) ExitJobStatus {
 	}
 }
 
+// exitStatusResultFromProto projects the walletdkrpc ExitStatus response onto
+// its SDK DTO, mapping the optional progress, CSV, and fee sub-messages to nil
+// pointers when the daemon did not populate them (a coarse query).
+func exitStatusResultFromProto(
+	resp *walletdkrpc.ExitStatusResponse) *ExitStatusResult {
+
+	if resp == nil {
+		return &ExitStatusResult{}
+	}
+
+	return &ExitStatusResult{
+		Found: resp.GetFound(),
+		Status: exitJobStatusFromProto(
+			resp.GetStatus(),
+		),
+		SweepTxid:   resp.GetSweepTxid(),
+		LastError:   resp.GetLastError(),
+		PhaseDetail: resp.GetPhaseDetail(),
+		Progress: exitProgressFromProto(
+			resp.GetProgress(),
+		),
+		CSV:                     exitCSVFromProto(resp.GetCsv()),
+		Fees:                    exitFeesFromProto(resp.GetFees()),
+		BestCaseBlocksRemaining: resp.GetBestCaseBlocksRemaining(),
+		CurrentHeight:           resp.GetCurrentHeight(),
+	}
+}
+
+// exitProgressFromProto projects the proto progress message, returning nil when
+// absent so callers nil-check rather than reading a zeroed struct.
+func exitProgressFromProto(p *walletdkrpc.ExitProgress) *ExitProgress {
+	if p == nil {
+		return nil
+	}
+
+	return &ExitProgress{
+		ConfirmedTxs:      p.GetConfirmedTxs(),
+		InFlightTxs:       p.GetInFlightTxs(),
+		ReadyTxs:          p.GetReadyTxs(),
+		BlockedTxs:        p.GetBlockedTxs(),
+		TotalTxs:          p.GetTotalTxs(),
+		CurrentLayer:      p.GetCurrentLayer(),
+		TotalLayers:       p.GetTotalLayers(),
+		TargetConfirmed:   p.GetTargetConfirmed(),
+		AllProofConfirmed: p.GetAllProofConfirmed(),
+	}
+}
+
+// exitCSVFromProto projects the proto CSV countdown, returning nil until the
+// target confirms.
+func exitCSVFromProto(c *walletdkrpc.ExitCSV) *ExitCSV {
+	if c == nil {
+		return nil
+	}
+
+	return &ExitCSV{
+		TargetConfirmHeight: c.GetTargetConfirmHeight(),
+		MaturityHeight:      c.GetMaturityHeight(),
+		BlocksRemaining:     c.GetBlocksRemaining(),
+		Mature:              c.GetMature(),
+	}
+}
+
+// exitFeesFromProto projects the proto fee breakdown, returning nil when the
+// daemon did not populate it.
+func exitFeesFromProto(f *walletdkrpc.ExitFees) *ExitFees {
+	if f == nil {
+		return nil
+	}
+
+	return &ExitFees{
+		CPFPFeeSat:      f.GetCpfpFeeSat(),
+		SweepFeeSat:     f.GetSweepFeeSat(),
+		TotalCostSat:    f.GetTotalCostSat(),
+		SpentSoFarSat:   f.GetSpentSoFarSat(),
+		VTXOAmountSat:   f.GetVtxoAmountSat(),
+		NetRecoveredSat: f.GetNetRecoveredSat(),
+		FeeRateSatVByte: f.GetFeeRateSatVbyte(),
+		SweepFeeActual:  f.GetSweepFeeActual(),
+	}
+}
+
+// exitSummaryFromProto projects the walletdkrpc ExitSummary response onto its
+// SDK DTO.
+func exitSummaryFromProto(
+	resp *walletdkrpc.ExitSummaryResponse) *ExitSummaryResult {
+
+	if resp == nil {
+		return &ExitSummaryResult{}
+	}
+
+	exits := make([]ExitSummaryEntry, 0, len(resp.GetExits()))
+	for _, e := range resp.GetExits() {
+		exits = append(exits, ExitSummaryEntry{
+			Outpoint: e.GetOutpoint(),
+			Status: exitJobStatusFromProto(
+				e.GetStatus(),
+			),
+			VTXOAmountSat:      e.GetVtxoAmountSat(),
+			EstTotalFeeSat:     e.GetEstTotalFeeSat(),
+			EstNetRecoveredSat: e.GetEstNetRecoveredSat(),
+		})
+	}
+
+	return &ExitSummaryResult{
+		Exits:                   exits,
+		TotalExits:              resp.GetTotalExits(),
+		TotalVTXOAmountSat:      resp.GetTotalVtxoAmountSat(),
+		TotalEstFeeSat:          resp.GetTotalEstFeeSat(),
+		TotalEstNetRecoveredSat: resp.GetTotalEstNetRecoveredSat(),
+	}
+}
+
 func exitPlanFromProto(r *walletdkrpc.GetExitPlanResponse) *GetExitPlanResult {
 	if r == nil {
 		return &GetExitPlanResult{}

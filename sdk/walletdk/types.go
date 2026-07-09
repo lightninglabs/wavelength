@@ -465,6 +465,12 @@ type ExitResult struct {
 // ExitStatusRequest queries the current phase of an exit job.
 type ExitStatusRequest struct {
 	Outpoint string
+
+	// Detailed requests recovery-tree progress, a CSV maturity countdown,
+	// a fee breakdown, and a best-case block countdown. It costs one live
+	// actor round-trip plus a fee estimate, so leave it false for a coarse,
+	// cheaper phase-only status.
+	Detailed bool
 }
 
 // ExitJobStatus collapses the underlying unroll job phases to a short
@@ -488,6 +494,90 @@ type ExitStatusResult struct {
 	Status    ExitJobStatus
 	SweepTxid string
 	LastError string
+
+	// PhaseDetail is a one-line human description of the current phase.
+	// Empty on a coarse (non-detailed) query.
+	PhaseDetail string
+
+	// Progress is the recovery-tree materialization progress. Nil on a
+	// coarse query, or when no live actor backs the job.
+	Progress *ExitProgress
+
+	// CSV is the target's CSV maturity countdown. Nil until the target
+	// confirms.
+	CSV *ExitCSV
+
+	// Fees is the on-chain cost breakdown for the exit. Nil on a coarse
+	// query.
+	Fees *ExitFees
+
+	// BestCaseBlocksRemaining is the optimistic block count until a
+	// confirmed sweep. Zero on a coarse query.
+	BestCaseBlocksRemaining int32
+
+	// CurrentHeight is the best block height the exit job has observed.
+	// Zero on a coarse query, or when no live actor backs the job.
+	CurrentHeight int32
+}
+
+// ExitProgress describes materialization progress through the recovery tree.
+type ExitProgress struct {
+	ConfirmedTxs      uint32
+	InFlightTxs       uint32
+	ReadyTxs          uint32
+	BlockedTxs        uint32
+	TotalTxs          uint32
+	CurrentLayer      uint32
+	TotalLayers       uint32
+	TargetConfirmed   bool
+	AllProofConfirmed bool
+}
+
+// ExitCSV describes the target's CSV maturity countdown, populated once the
+// target transaction confirms.
+type ExitCSV struct {
+	TargetConfirmHeight int32
+	MaturityHeight      int32
+	BlocksRemaining     int32
+	Mature              bool
+}
+
+// ExitFees breaks down the on-chain cost of the exit. The CPFP total is
+// estimated; SweepFeeActual reports whether SweepFeeSat is the real built-sweep
+// fee rather than an estimate. SpentSoFarSat is the estimated fee committed so
+// far, while TotalCostSat is the projected cost of the whole exit.
+type ExitFees struct {
+	CPFPFeeSat      int64
+	SweepFeeSat     int64
+	TotalCostSat    int64
+	SpentSoFarSat   int64
+	VTXOAmountSat   int64
+	NetRecoveredSat int64
+	FeeRateSatVByte int64
+	SweepFeeActual  bool
+}
+
+// ExitSummaryRequest asks for the wallet-wide portfolio of in-progress exits.
+type ExitSummaryRequest struct{}
+
+// ExitSummaryResult is the wallet-wide portfolio of in-progress exits plus
+// aggregate totals. Only non-terminal exits are included.
+type ExitSummaryResult struct {
+	Exits                   []ExitSummaryEntry
+	TotalExits              uint32
+	TotalVTXOAmountSat      int64
+	TotalEstFeeSat          int64
+	TotalEstNetRecoveredSat int64
+}
+
+// ExitSummaryEntry is one in-progress exit's coarse contribution to the
+// portfolio.
+type ExitSummaryEntry struct {
+	Outpoint           string
+	Status             ExitJobStatus
+	VTXOAmountSat      int64
+	EstTotalFeeSat     int64
+	EstNetRecoveredSat int64
 }
 
 // GetExitPlanRequest previews unilateral-exit readiness for a slice of VTXOs.
