@@ -251,5 +251,3 @@ state transitions and validation rules live under [Invariants](#invariants).
 - [round/README.md](README.md) — Full state machine walkthrough with
   diagrams.
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map.
-</content>
-</invoke>

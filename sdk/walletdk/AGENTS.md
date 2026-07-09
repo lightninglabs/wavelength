@@ -49,8 +49,12 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
   bounded send and the swept total for sweep-all), `DepositRequest`/`Result` (boarding
   address + initial `Entry`), `ListRequest`, `ListResult` (tagged union
   on `View`, populates one of `Activity`/`VTXOs`/`Onchain`),
-  `ActivityList`, `VTXOInventory`, `OnchainHistory`, `Entry`,
-  `WalletVTXO`, `OnchainTx`.
+  `ActivityList`, `VTXOInventory`, `OnchainHistory`, `Entry`
+  (optional `Progress *EntryProgress` and `Request *EntryRequest`
+  sub-objects, both nil when absent; `Request` is a `Type`-tagged
+  union over lightning/onchain/ark; `Cursor` is the event-log position
+  of a streamed update, zero outside the subscription path), `WalletVTXO`,
+  `OnchainTx`.
 - `ExitRequest` / `ExitResult` / `ExitStatusRequest` /
   `ExitStatusResult` / `ExitJobStatus` — exit DTOs. `ExitRequest`
   carries the target outpoint plus an optional on-chain `Destination`
@@ -67,6 +71,20 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
   populated by current behavior. Status strings are the wrapper-owned
   lowercase set
   (`pending`/`materializing`/`csv_pending`/`sweeping`/`completed`/`failed`/`unspecified`).
+  `ExitStatusRequest.Detailed` opts into the pricier query: when set,
+  `ExitStatusResult` also populates `PhaseDetail`, `Progress
+  *ExitProgress` (recovery-tree materialization counts/layers), `CSV
+  *ExitCSV` (maturity countdown, nil until the target confirms), `Fees
+  *ExitFees` (on-chain cost breakdown), `BestCaseBlocksRemaining`, and
+  `CurrentHeight`; a coarse (non-detailed) query leaves those nil/zero.
+- `ExitSummaryRequest` / `ExitSummaryResult` / `ExitSummaryEntry` —
+  wallet-wide portfolio of in-progress exits (completed/failed exits
+  omitted) plus aggregate totals (`TotalExits`,
+  `TotalVTXOAmountSat`, `TotalEstFeeSat`, `TotalEstNetRecoveredSat`).
+- `SubscribeGapError` — typed terminal error delivered on `Subscribe`'s
+  errs channel when the server-side send buffer overflows; carries the
+  resume `Cursor` and a human-readable `Reason`. No activity is lost:
+  reopen `Subscribe` with `SubscribeRequest.Cursor` set to it.
 - `ErrWalletRPCUnavailable` — sentinel returned by every wallet method
   on builds without the `walletdkrpc` tag.
 - `ErrSwapRuntimeUnavailable` — back-compat alias for
@@ -86,9 +104,10 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
 | `SendPrepared` | Dispatch a prepared send (consumes `SendIntentID`). Returns `{Entry, ActualAmountSat}`. |
 | `List` | Unified history view (Activity / VTXOs / Onchain) as a tagged-union `ListResult`. |
 | `Exit` | Trigger cooperative leave or unilateral unroll for a VTXO. |
-| `ExitStatus` | Query the phase of an exit job. |
+| `ExitStatus` | Query the phase of an exit job; `Detailed` adds progress/CSV/fee sub-objects. |
+| `ExitSummary` | Wallet-wide portfolio of in-progress exits plus aggregate totals. |
 | `Status` | Wallet readiness, balance, pending-entry count. |
-| `Subscribe` | Stream wallet activity (`Entry`) updates. |
+| `Subscribe` | Stream wallet activity (`Entry`) updates; resumable from a `Cursor` for lossless replay. |
 | `Stop` / `Close` | Shut down the embedded daemon, release the private transport. |
 | `Wait` | Single shared channel yielding the daemon's terminal run error. |
 | `GRPCConn` / `ArkRPC` / `SwapRPC` / `WalletRPC` | Escape hatches to the underlying private gRPC conn and raw clients. |
@@ -142,21 +161,36 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
   the wrapper boundary on builds without the `walletdkrpc` tag, before
   any RPC is attempted. `ErrSwapRuntimeUnavailable` is an alias for
   source-level compatibility with older swap-only callers.
-- `Entry.Kind`/`Entry.Status` / `ListResult.View` /
-  `WalletVTXO.Status` / `OnchainTx.Kind` / `ExitJobStatus` are
-  wrapper-owned lowercase strings (not proto enums). Projection lives
-  in `convert.go`, intentionally decoupled from proto enum
-  renumbering.
+- `Entry.Kind`/`Entry.Status` / `Entry.Progress.Phase` /
+  `Entry.Request.Type` / `ListResult.View` / `WalletVTXO.Status` /
+  `OnchainTx.Kind` / `ExitJobStatus` are wrapper-owned lowercase
+  strings (not proto enums). Projection lives in `convert.go`,
+  intentionally decoupled from proto enum renumbering.
 - `ListResult` is a discriminated union: read the variant named by
   `View` and treat the others as `nil`. Exhaustiveness is not
   enforced at compile time — switch on `View` rather than chaining
   nil checks.
+- `Entry.Progress` and `Entry.Request` are optional pointers: both are
+  `nil` when the daemon supplied no progress hint / persisted no
+  request, so nil-check before dereferencing. `Entry.Request` is a
+  discriminated union — read the variant named by `Type`
+  (`lightning`/`onchain`/`ark`) and treat the other fields as zero,
+  the same idiom as `ListResult.View`.
 - `Wait()` is single-reader: same shared channel on every call. The
   channel delivers the daemon's terminal run error then closes; a
   closed channel reads as the zero error indefinitely.
 - `Subscribe` returns an unbuffered updates channel so a slow consumer
   applies backpressure end-to-end; the errs channel is cap-1 for a
   single terminal error.
+- `SubscribeWallet` is backed by the daemon's canonical activity event
+  log: each streamed `Entry.Cursor` is that update's `event_seq`. The
+  host must persist the latest `Cursor` it has processed and pass it
+  back as `SubscribeRequest.Cursor` to resume without gaps — the daemon
+  replays every event after that cursor before switching to live. On
+  overflow the daemon ends the stream with a `SubscribeGapError`
+  (never drops updates silently); reopen `Subscribe` with that error's
+  `Cursor` rather than falling back to `List` plus a fresh live-only
+  subscription.
 - New options should follow the "apply after merge" placement so
   override semantics stay consistent.
 
@@ -177,5 +211,3 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
 - [swapclientserver/CLAUDE.md](../../swapclientserver/CLAUDE.md) —
   Daemon-side swap subserver (`-tags swapruntime`).
 - [ARCHITECTURE.md](../../ARCHITECTURE.md) — System-wide package map.
-</content>
-</invoke>

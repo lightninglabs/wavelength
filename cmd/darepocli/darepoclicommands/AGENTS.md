@@ -27,8 +27,10 @@ The CLI surface is split into three tiers:
 | `recv` | `walletdkrpc.Recv` / `walletdkrpc.Deposit` | Inbound. `--offchain` (default) returns a Lightning invoice; `--onchain` returns a boarding address |
 | `activity` | `walletdkrpc.List` | Unified wallet activity view. Defaults to table output; `--format json` returns structured JSON. `--pending` and `--kind` narrow rows |
 | `balance` | `walletdkrpc.Balance` | Flat balance (confirmed_sat, pending_in_sat, pending_out_sat) |
-| `exit --outpoint TXID:VOUT` | `walletdkrpc.Exit` | Trigger a unilateral exit (proxies Unroll) |
+| `exit --outpoint TXID:VOUT` | `walletdkrpc.Exit` | Queue a cooperative leave by default; starts unilateral unroll only with `--force-unroll-ack` |
 | `exit status --outpoint TXID:VOUT` | `walletdkrpc.ExitStatus` | Query an exit job's status (proxies GetUnrollStatus) |
+| `exit summary` | `walletdkrpc.ExitSummary` | Wallet-wide portfolio of in-progress exits: amount recovering, estimated fees, and estimated net recoverable |
+| `exit plan --outpoint TXID:VOUT` | `walletdkrpc.GetExitPlan` | Preview backing-wallet funding readiness for one or more exits (repeatable `--outpoint`) |
 
 ### Daemon introspection
 

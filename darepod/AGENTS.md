@@ -76,7 +76,29 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
   daemon-local handoff. `GetUnrollStatus` is read-through: prefers
   live registry via `queryUnrollRegistry`, falls back to
   `db.UnilateralExitPersistenceStore.GetJob`. Returns `Found=false`
-  (not error) when neither layer has a record.
+  (not error) when neither layer has a record. With `Detailed=true`
+  it additionally calls `enrichUnrollDetail` (live path) or
+  `enrichExitFees` directly (persisted-only path) to fill a
+  human `PhaseDetail` line (`unrollPhaseDetail`) and an
+  `UnrollFees` breakdown (CPFP/sweep/total/net plus `SpentSoFarSat`,
+  computed by `spentSoFarSat`) projected from the persisted
+  descriptor via `unroll.PlanExitFunding` — the same cost model
+  `GetExitPlan` and `ExitSummary` use. Both enrichment helpers are
+  best-effort: a missing live actor, unloaded planner, or
+  descriptor/fee-estimate failure just leaves the field unset
+  rather than failing the probe.
+- `ExitSummary` — wallet-wide portfolio of every non-terminal
+  unilateral-exit job (`ueStore.ListNonTerminalJobs`), returning
+  `ExitSummaryResult{Entries []ExitSummaryEntry, TotalExits,
+  TotalVTXOAmountSat, TotalEstFeeSat, TotalEstNetRecoveredSat}`.
+  Deliberately cheap: it does not query live actors, projecting each
+  entry's amount/fee/net-recovered fields from the persisted VTXO
+  descriptor with a nil lineage (approximated from `ChainDepth`) and
+  a zero wallet snapshot via the shared `unroll.PlanExitFunding`
+  model (`exitSummaryEntry`). A fee-estimate failure degrades to a
+  zero rate (zeroing only the fee columns) instead of failing the
+  call; a per-outpoint descriptor lookup failure yields a phase-only
+  entry with zeroed amounts instead of failing the whole summary.
 - `unrollPhaseToProto` / `unrollJobStatusToProto` — dual mappers from
   live `unroll.Phase` and persisted `db.UnilateralExitJobStatus` to
   the same proto. `PhaseSweepBroadcast` and `PhaseSweepConfirmation`
@@ -351,6 +373,19 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
 - `OORConfig.OOR.Limits.MaxMailboxScriptBytes` must be at least
   `minOORMailboxScriptBytes = 34` (P2TR script length); validated
   during `Config.Validate()`.
+- `spentSoFarSat` prorates the CPFP total over broadcast (confirmed +
+  in-flight) proof txs by multiplying by the broadcast count **before**
+  dividing by `progress.TotalTxs` — dividing per-child first truncates
+  to zero whenever the CPFP total is smaller than the tx count.
+  Numerator and denominator must count the same proof-graph universe
+  (deduped node count), since it's an estimate, not accounting: a
+  confirmed proof tx may be a shared ancestor another party paid the
+  CPFP for. The sweep leg is added only once `sweepBuilt` is true.
+- `unrollPhaseDetail`'s materializing line clamps its 1-based
+  `CurrentLayer+1` display to `TotalLayers`: the frontier layer
+  collapses to `TotalLayers` once every proof node confirms, so
+  without the clamp a job read as `MATERIALIZING` right after the
+  frontier collapses would render "layer N+1 of N".
 - `Config.EagerRoundJoin` is seeded by build-tag-aware
   `defaultEagerRoundJoin()`: `false` on the standalone non-walletdkrpc
   build, `true` under the `walletdkrpc` tag (both `cmd/darepod` and
@@ -364,5 +399,3 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
 - [docs/daemon_cli_guide.md](../docs/daemon_cli_guide.md) —
   Installation, configuration, CLI reference.
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map.
-</content>
-</invoke>

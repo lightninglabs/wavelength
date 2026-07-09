@@ -147,5 +147,3 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/txcon
   lifecycle, CPFP correctness invariants, PSBT finalization,
   service-key round trip, and eviction.
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map.
-</content>
-</invoke>

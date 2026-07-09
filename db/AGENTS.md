@@ -41,6 +41,15 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   `CountLedgerEntries`/`ListAccounts`.
 - `UTXOAuditStoreDB` — implements `ledger.UTXOAuditStore` via
   `sqlc.InsertWalletUTXOLog` (ON CONFLICT DO NOTHING).
+- `ActivityPersistenceStore` — canonical activity-log projector
+  consumed by `swapwallet` via `darepod.ActivityStore`. `ProjectEntry`
+  atomically upserts the current-state `activity_entries` row and, only
+  when the projection actually changes it, appends an immutable
+  `activity_events` transition in the same transaction. It returns the
+  `event_seq` the database assigned to that transition (0 when the
+  write was change-suppressed, i.e. no genuine transition). `PullEvents`
+  pages the event log strictly after a cursor for resumable-subscribe
+  replay.
 - `UnilateralExitStore` / `UnilateralExitPersistenceStore` —
   control-plane store: `Upsert` / `Get` / `ListNonTerminal` /
   `MarkTerminal`.
@@ -105,7 +114,8 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   persistence), `ledger` (interfaces + domain types), `wallet`
   (`BoardingStore` interface + domain types).
 - **Depended on by**: `round`, `vtxo`, `oor`, `wallet` (storage
-  interfaces), `darepod` (wires DB backends).
+  interfaces), `darepod` (wires DB backends), `swapwallet`
+  (`ActivityProjection` DTO for the canonical activity-log projector).
 
 ## Invariants
 
@@ -130,6 +140,13 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
 - `ledger_entries.entry_id` and `wallet_utxo_log.entry_id` use
   `INTEGER PRIMARY KEY AUTOINCREMENT` to prevent rowid reuse after
   deletion, preserving append-only ordering.
+- `activity_events.event_seq` is database-assigned and monotonic
+  (not necessarily contiguous — a change-suppressed projection never
+  appends a row, so a value can be legitimately absent). `sqlc`'s
+  `AppendActivityEvent` query is `RETURNING event_seq`, so
+  `ActivityPersistenceStore.ProjectEntry` gets the assigned cursor back
+  synchronously, in the same round trip and the same transaction as the
+  insert, instead of a separate read-back query.
 - Per-subsystem logging via the instance logger, not the global
   package logger.
 - `unilateral_exit_jobs.exit_policy_kind` and `exit_policy_ref`
@@ -188,5 +205,3 @@ when adding one.
 ## Deep Docs
 
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map.
-</content>
-</invoke>

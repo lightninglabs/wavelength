@@ -129,5 +129,3 @@ result into an `IncomingVHTLCNotification`.
 ## Deep Docs
 
 - [ARCHITECTURE.md](../../ARCHITECTURE.md) — System-wide package map.
-</content>
-</invoke>

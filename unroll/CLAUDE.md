@@ -25,10 +25,12 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
   across a cross-actor Ask.
 - `Config` — per-actor wiring. Notable: `TargetOutpoint`, `ActorID`,
   `DeliveryStore`, `ProofAssembler`, `VTXOStore`, `TxConfirmRef`,
-  `ChainSource`, `Wallet` (`SweepWallet`),
+  `ChainSource`, `ExitSpendPolicyResolver` (nil falls back to the
+  built-in standard VTXO timeout resolver), `Wallet` (`SweepWallet`),
   `MaxSweepFeeRateSatPerVByte`, `FraudCheckpointSafetyMargin int32`
   (overrides the fraud-triggered unroll backstop margin in blocks;
-  zero falls back to the default), `RegistryRef`.
+  zero falls back to the default), `RegistryRef`, `LedgerSink`
+  (receives the confirmed exit fee after the final sweep confirms).
 - `behavior` — actor behavior implementing `actor.TxBehavior[Msg, Resp,
   unrollTx]`. Holds `b.sweepTx` (restored from checkpoint on boot) so
   retries and replays converge on a single sweep txid / pkScript under
@@ -42,6 +44,24 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
   `SpendObservedMsg`, `GetStateRequest`. Each ships a per-message TLV
   codec (no JSON) with a pinned record-type layout; round-trips in
   `messages_test.go`.
+- `GetStateResp` — `GetStateRequest`'s Ask reply. Carries the durable
+  `PlannerState`/`Phase`/`FailReason`/`SweepTxid` plus `Progress
+  *ExitProgress`, a derived view populated by `behavior.exitProgress`
+  from a fresh `planner.Plan` at the actor's current best height. The
+  reply is an in-memory Ask response rather than a durable mailbox
+  message, so adding `Progress` needed no codec change.
+- `ExitProgress` — human-facing progress summary: confirmed / in-flight
+  / ready / blocked proof-tx counts, the frontier `CurrentLayer` (see
+  `frontierLayer`), `BestCaseBlocksRemaining` (`bestCaseBlocksRemaining`;
+  folds in both the CSV wait and the exit policy's cached
+  `requiredLockTime`, whichever is longer, so a vHTLC
+  refund-without-receiver policy is not reported as imminent right at
+  CSV maturity), and `ActualSweepFeeSat` once a sweep tx exists. The fee
+  (`actualSweepFeeSat`) is the proof's `TargetOutput().Value` — what the
+  exit-spend policy actually spends — minus the swept output value, not
+  the descriptor's nominal `Amount`, which can diverge (tree-level fee
+  deduction, dust). `nil` when the planner/proof are not yet loaded or
+  the actor is Idle.
 - `StartTrigger` — `TriggerManual`, `TriggerCriticalExpiry`,
   `TriggerRestart`, `TriggerFraudSpend`.
 - `Phase` — control-plane phase: `PhasePending`,
@@ -97,6 +117,15 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
 - `ExitSpendPolicyResolver` — interface for looking up the final spend
   policy by `(ExitPolicyKind, ExitPolicyRef)`. Implemented by
   `vhtlcrecovery/unrollpolicy.ExitSpendPolicyResolver`.
+- `GetStatusRequest` / `GetStatusResp` — read-only status probe. The
+  default coarse probe (`Detailed: false`) only reads `r.active` /
+  `Store.GetRecord` and never touches a live child, so routine polling
+  can't write a read-only mailbox row. `Detailed: true` additionally
+  Asks the live child (`detailedChildState` → `childState`) under a
+  short local timeout (`detailedStatusAskTimeout`) for a `GetStateResp`
+  (including `ExitProgress`); a timeout or Ask error degrades to the
+  coarse view rather than failing the probe or stalling the
+  single-goroutine registry.
 
 ### Support
 
@@ -137,6 +166,36 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
   spend/confirmation watches (proof roots and intermediate ancestors
   can confirm before the target VTXO's creation height).
 
+### Exit funding & feasibility (`feasibility.go`, `exit_plan.go`)
+
+- `AssessExitFeasibility` / `ExitFeasibility` — pure, IO-free economic
+  model deciding whether a unilateral exit is worth admitting: sweep
+  fee vs. dust, total recovery cost vs. VTXO value, wallet balance and
+  distinct-input count vs. the CPFP budget. The CPFP budget is
+  `CPFPChildVBytes*NumRecoveryTxs + RecoveryTxVBytes` — every recovery
+  (branch/checkpoint) tx on the exit path is zero-fee, so its CPFP
+  child actually pays the ancestor-package fee over parent+child
+  weight; omitting `RecoveryTxVBytes` under-counts the cost and
+  under-recommends funding for anything past the smallest VTXOs.
+- `RecoveryTxCount` / `RecoveryTxVBytes` — descriptor-only estimate of
+  the recovery-tx count, ancestry-path count, and summed parent
+  vBytes. Both derive from the shared `recoveryEstimate`, which sizes
+  commitment-tree fragments exactly from the extracted `TreePath`
+  (`Tree.NumTx`, `treePathVBytes`) and falls back to
+  `defaultRecoveryTxVBytes` per tx for pruned fragments or an OOR
+  chain with no resolved lineage material — so the count and the
+  parent weight can never drift apart. When `LineageMaterial` is
+  supplied (`PlanExitFunding`), each finalized OOR checkpoint/ark tx is
+  measured directly (`extraNodeVBytes`) instead of approximated from
+  `ChainDepth`.
+- `ExitFundingPlan` / `PlanExitFunding` — user-facing funding
+  projection layered on `AssessExitFeasibility`.
+  `RecommendedExitFeeInputAmount` derives the per-UTXO funding
+  suggestion from the feasibility verdict, floored at
+  `DefaultFeeInputMinAmountSat`.
+- `ExitFundingAddressBook` — caches one funding address per target
+  outpoint so repeated plan polling does not burn wallet addresses.
+
 ## Relationships
 
 - **Depends on**: `baselib/actor` (`DurableActor`, `TLVMessage`,
@@ -165,9 +224,14 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
   - → `vtxo` manager (Tell, via `RegistryConfig.VTXOExitObserver`):
     `ExitOutcomeNotification` on each child's terminal outcome — the
     reverse feedback edge for darepo-client#602.
+  - → per-target child (Ask, bounded local timeout): `GetStateRequest`
+    from the registry when `GetStatusRequest.Detailed` is set, to
+    enrich `GetStatusResp` with the child's live `ExitProgress`; a
+    timeout or Ask error falls back to the coarse registry record.
 - **Receives**:
   - ← API (registry): `EnsureUnrollRequest`, `GetStatusRequest`
-    (from `darepod` RPC via chain resolver).
+    (from `darepod` RPC via chain resolver; `Detailed` opts into the
+    child Ask above).
   - ← registry (internal): `persistActiveRecordMsg`,
     `persistRecordResultMsg`, `UnrollTerminatedMsg`.
   - ← per-target mailbox: all messages listed under Per-target actor.
@@ -260,6 +324,26 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
   operator-sourced OOR artifacts flow into proof assembly, so a
   zero- or short-output node maps to a retryable error rather than
   a goroutine panic.
+- **Derived fee/cost figures read the proof's target output, not the
+  descriptor amount.** `actualSweepFeeSat` (feeding
+  `ExitProgress.ActualSweepFeeSat`) and `exitCostMsg` (feeding the
+  ledger `ExitCostMsg`) both take the swept input value from
+  `proof.TargetOutput()` — the exact output the exit-spend policy
+  spends — because tree-level fee deduction or dust handling can make
+  it diverge from the descriptor's nominal `Amount`.
+- **CPFP funding must charge for recovery-tx weight, not just the CPFP
+  children.** Every recovery (branch/checkpoint) tx on the exit path is
+  zero-fee; `txconfirm`'s broadcaster pays the ancestor-package fee
+  over parent+child weight, so `AssessExitFeasibility`'s CPFP budget
+  includes `RecoveryTxVBytes` alongside
+  `CPFPChildVBytes*NumRecoveryTxs`; dropping the parent term
+  under-recommends funding for anything past the smallest VTXOs.
+- **`ExitProgress` is a pure read-only projection, never persisted.**
+  `behavior.exitProgress` recomputes it on every detailed status Ask
+  from the durable planner snapshot; it is not part of `JobState` or
+  the TLV checkpoint, and a status probe that races actor startup
+  degrades to `nil` (coarse phase only) instead of a misleading zero
+  snapshot.
 
 ## Deep Docs
 
@@ -272,5 +356,3 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
 - [lib/recovery/CLAUDE.md](../lib/recovery/CLAUDE.md) — immutable
   proof graph.
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — system-wide package map.
-</content>
-</invoke>

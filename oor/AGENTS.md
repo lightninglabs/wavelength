@@ -407,5 +407,3 @@ per-session durable actor's turn.
 
 - [oor/doc.go](doc.go) — Package overview.
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map.
-</content>
-</invoke>

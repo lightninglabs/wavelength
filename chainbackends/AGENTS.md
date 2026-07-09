@@ -14,9 +14,11 @@ estimation, and optional v3 package relay via a pluggable `PackageSubmitter`.
 - `TxBroadcaster` — Interface over transaction broadcasting (wraps
   lndclient.WalletKitClient or in-process lnd).
 - `PackageSubmitter` — Optional interface for v3 package relay:
-  `SubmitPackage(ctx, parents, child, maxFeeRate)`. Used by backends that need
-  a direct bitcoind path for atomic parent+child submission; absent in
-  environments that do not support package relay.
+  `SubmitPackage(ctx, parents, child, maxFeeRate)`. Pluggable: implementations
+  exist for a direct bitcoind path (`chainbackends/bitcoindrpc`) and for
+  relaying through lnd's own `WalletKit.SubmitPackage` RPC
+  (`chainbackends/lndsubmitter`); absent in environments that do not support
+  package relay.
 - `LndClientTxBroadcaster` — Implements `TxBroadcaster` using
   `lndclient.WalletKitClient`.
 - `LndClientFeeEstimator` — Type alias for
@@ -48,20 +50,32 @@ estimation, and optional v3 package relay via a pluggable `PackageSubmitter`.
 
 - **Depends on**: `chainsource` (implements `ChainBackend` interface).
 - **Depended on by**: `darepod` (instantiates backend and wires a
-  `PackageSubmitter` from operator config: production uses
-  `chainbackends/bitcoindrpc.PackageSubmitter` directly, itests inject the
-  same submitter from the harness).
+  `PackageSubmitter`: an explicitly configured submitter — production's
+  `chainbackends/bitcoindrpc.PackageSubmitter` when bitcoind flags are set, or
+  the itest harness's injected submitter via `darepod.Config.PackageSubmitter`
+  — takes precedence; otherwise `darepod` falls back to
+  `chainbackends/lndsubmitter.New(lndSvc.WalletKit)` so an lnd-wallet-backed
+  daemon can relay packages through lnd's own chain connection with no
+  separate bitcoind RPC or Esplora endpoint); `chainbackends/lndsubmitter`
+  (sibling sub-package that implements `PackageSubmitter` against lnd's
+  `WalletKit.SubmitPackage` RPC).
 
 ## Invariants
 
 - `LNDBackend` requires an lnd instance (local or remote via lndclient).
 - Provides real-time notifications via lnd's chainntnfs package.
-- `PackageSubmitter` is optional; package-capable backends return an error
-  from `SubmitPackage` when no submitter is set. In production `cmd/darepod`
-  injects
-  `chainbackends/bitcoindrpc.PackageSubmitter` when bitcoind flags are
-  configured; the itest harness injects the same type via
-  `darepod.Config.PackageSubmitter`.
+- `PackageSubmitter` is optional at the `LNDBackend` level;
+  `SubmitPackage` returns an error when no submitter is set. In practice
+  `cmd/darepod` always wires one for the lnd wallet backend: an explicit
+  submitter (bitcoind flags / itest harness) takes precedence, otherwise it
+  defaults to `chainbackends/lndsubmitter` backed by lnd's own WalletKit.
+- When the configured submitter reports lnd's neutrino
+  `"broadcast-unverified"` sentinel (`lndNeutrinoBroadcastMsg`) with no
+  per-tx errors, `LNDBackend.SubmitPackage` treats it as a successful
+  best-effort broadcast rather than a rejection — a light client has no
+  mempool and cannot return a real package-accept verdict, so it broadcasts
+  each tx individually over P2P and relies on peer relay/confirmation to
+  decide the outcome.
 - `LndClientChainNotifier` enforces a 15-second timeout on registration to
   prevent hanging under LND block load.
 - Log messages use canonical txid strings (not reversed byte slices).

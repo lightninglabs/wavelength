@@ -8,6 +8,9 @@ containers with network isolation for end-to-end testing.
 ## Key Types
 
 - `Harness` — Top-level test harness owning bitcoind, lnd, and arkd lifecycle.
+  The primary `lnd` node always runs the bitcoind chain backend; additional
+  LND nodes started via `StartAdditionalLNDWithBackend` may instead run
+  neutrino.
 - `LndInstance` — Manages an LND container's lifecycle and connection.
 - `TapdHarness` — Optional Tapd instance for asset-related tests.
 - `Options` — Configuration struct passed to `NewHarness`. Controls image
@@ -31,12 +34,24 @@ containers with network isolation for end-to-end testing.
   depth+1)` to produce a strictly longer replacement branch.
 - `ReconsiderBlock(hash string)` — Asks bitcoind to reconsider a previously
   invalidated block.
+- `StartAdditionalLND(name string) *LndInstance` — Starts an extra LND node
+  backed by bitcoind (the default chain backend).
+- `StartAdditionalLNDWithBackend(name, chainBackend string) *LndInstance` —
+  Starts an extra LND node with an explicit chain backend
+  (`LNDChainBackendBitcoind` or `LNDChainBackendNeutrino`). Neutrino syncs
+  and broadcasts over the regtest bitcoind's P2P interface (compact block
+  filters) instead of RPC/ZMQ, exercising lnd's native SPV / 1p1c broadcast
+  path — used to test the lnd-backed `chainbackends`/`lndsubmitter`
+  best-effort package broadcast when a light client cannot return a real
+  package-accept verdict.
 
 ## Relationships
 
-- **Depends on**: `chain` (bitcoind RPC), `lndbackend` (LND integration),
-  `chainbackends` (PackageSubmitter interface).
-- **Depended on by**: `systest` (system-level tests).
+- **Depends on**: `chain` (bitcoind RPC client helpers), `lndclient` (drives
+  and queries the LND containers it starts).
+- **Depended on by**: `systest` (system-level tests, which separately wire
+  `chainbackends`/`lndbackend` types around the LND instances this harness
+  starts).
 
 ## Key Constants
 
@@ -45,4 +60,7 @@ containers with network isolation for end-to-end testing.
   tests.
 - `electrsReadyTimeout` = 2 minutes — separate extended timeout for the
   electrs container HTTP readiness check.
+- `LNDChainBackendBitcoind` / `LNDChainBackendNeutrino` — Chain-backend
+  selectors for `StartAdditionalLNDWithBackend`; the primary `lnd` node is
+  always started with `LNDChainBackendBitcoind`.
 - Coinbase maturity: 100 blocks + 6-block buffer.

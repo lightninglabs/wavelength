@@ -28,6 +28,8 @@ package may import from a higher layer.
 | [`lib/recovery`](lib/recovery/) | Immutable recovery proof graph, session state machine, TLV codec for unilateral exit |
 | [`unrollplan`](unrollplan/) | Pure dependency-resolution planner driving unilateral-exit broadcast/sweep ordering |
 | [`vhtlcrecovery`](vhtlcrecovery/) | Durable control-plane types for vHTLC on-chain recovery jobs (action, state, script parameters, swap linkage) |
+| [`coinselect`](coinselect/) | Shared coin-type-agnostic largest-first coin-selection algorithm used by `vtxo` (reservations) and `swapwallet` (send preview) |
+| [`credit`](credit/) | Durable protofsm-actor subsystem driving server-side credit account pay/receive/redeem operations, reconciling Ark top-ups and wallet-owned auto-redeem |
 
 ### Layer 2: Infrastructure (Chain, Storage, Messaging)
 
@@ -36,6 +38,8 @@ package may import from a higher layer.
 | [`baselib`](baselib/) | Actor framework (`baselib/actor`) and protofsm state machine engine (`baselib/protofsm`) |
 | [`chainsource`](chainsource/) | `ChainBackend` interface: fee estimation, block/conf/spend notifications |
 | [`chainbackends`](chainbackends/) | LND-backed `ChainBackend` implementation plus lndclient adapters (`TxBroadcaster`, `PackageSubmitter`) |
+| [`chainbackends/lndsubmitter`](chainbackends/lndsubmitter/) | `PackageSubmitter` implementation relaying v3/TRUC CPFP packages via lnd's `WalletKit.SubmitPackage` RPC (lnd-wallet alternative to `chainbackends/bitcoindrpc`) |
+| [`chainfees`](chainfees/) | `chainfee.Estimator` implementations (WalletKit-backed, mempool.space) and a min-selecting combinator |
 | [`chain`](chain/) | Bitcoind RPC utilities (package relay, `SubmitPackage`) |
 | [`txconfirm`](txconfirm/) | Generic "broadcast + CPFP fee-bump + notify on confirm" actor with per-parent fee-input reservations and BIP-125 Rule 3/4 enforcement |
 | [`unroll`](unroll/) | Durable per-target unilateral-exit actor + thin registry: owns proof assembly, materialization, CSV maturity, final sweep build, persist-before-broadcast, and control-plane record persistence |
@@ -48,6 +52,7 @@ package may import from a higher layer.
 | [`vhtlcrecovery/coordinator`](vhtlcrecovery/coordinator/) | Runtime coordinator for durable vHTLC recovery jobs: arms, escalates into unroll, cancels, and reconciles after restart |
 | [`vhtlcrecovery/unrollpolicy`](vhtlcrecovery/unrollpolicy/) | Adapter that resolves `(exit_policy_kind, recovery_id)` into a concrete `unroll.ExitSpendPolicy` for vHTLC claim and refund exits |
 | [`db`](db/) | SQLite/PostgreSQL persistence: boarding, rounds, VTXOs, OOR artifacts, fee ledger |
+| [`internal/sqlbase`](internal/sqlbase/) | `walletdb.DB` implementation emulating bbolt's nested bucket/key-value model over `database/sql`, gated to `js && wasm` builds; backs `lwwallet`'s browser OPFS SQLite store |
 | [`mailbox`](mailbox/) | Mailbox protocol primitives across three sub-packages (pb, rpc, conn) |
 | [`serverconn`](serverconn/) | Unified server connector: durable egress, ingress polling, unary RPC facade |
 | [`serverconn/mailboxpull`](serverconn/mailboxpull/) | Shared exponential-backoff retry primitives for mailbox pull loops (used by serverconn ingress and SDK swap consumers) |
@@ -61,10 +66,13 @@ package may import from a higher layer.
 | [`sdk/ark`](sdk/ark/) | Consumer-facing Go SDK facade: remote or embedded daemon access with typed models |
 | [`sdk/swaps`](sdk/swaps/) | Lightning-to-Ark / Ark-to-Lightning atomic swap SDK with durable FSM flows |
 | [`sdk/walletdk`](sdk/walletdk/) | Wallet-shaped SDK facade for host apps: embeds the daemon in-process, dials it over a private bufconn transport, exposes typed methods for the seven core wallet verbs (create, unlock, send, recv, list, balance, exit). The highest-level layer in the stack; wraps `walletdkrpc.WalletService`. Wallet RPC methods gated behind `walletdkrpc` (which transitively requires `swapruntime`) |
+| [`sdk/walletdk/mobile`](sdk/walletdk/mobile/) | Gomobile-safe JSON facade over `sdk/walletdk` for iOS/Android host bindings, built via `gen_bindings.sh` |
 | [`swapwallet`](swapwallet/) | Optional daemon-side `walletdkrpc.WalletService` implementation (build tags `walletdkrpc swapruntime`): composes the swap subsystem, cooperative leave, boarding, ledger, and unilateral-exit registry behind one flat, swap-vocabulary-free wallet API |
 | [`swapclientserver`](swapclientserver/) | Optional daemon-side swap subserver (build tag `swapruntime`): translates `swapclientrpc` RPCs into `sdk/swaps` operations and manages the daemon-local worker registry |
 | [`cmd/darepod`](cmd/darepod/) | Daemon entry point |
 | [`cmd/darepocli`](cmd/darepocli/) | CLI client |
+| [`cmd/walletdk-wasm`](cmd/walletdk-wasm/) | Browser js/wasm bridge exposing `sdk/walletdk/mobile`'s JSON facade to JavaScript via a single `walletdkCall` Promise dispatcher |
+| [`rpcauth`](rpcauth/) | Shared TLS-cert and macaroon-credential helpers used by `darepod`'s server and clients (`darepocli`, wallet SDK) to secure and dial the gRPC/REST surface |
 | [`timeout`](timeout/) | Generic timeout scheduling actor |
 | [`indexer`](indexer/) | Server indexing client for receive script registration |
 | [`arkrpc`](arkrpc/) | Server-side gRPC service definitions (ArkService, IndexerService) |
