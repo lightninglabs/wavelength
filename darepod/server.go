@@ -5410,14 +5410,24 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 	// against r.active / r.pending / store.GetRecord, so a target that
 	// already has a record (e.g. a vHTLC recovery whose refund-policy
 	// admission was just replayed by the Set above) is a benign no-op that
-	// preserves the existing policy. It runs AFTER the chain resolver is
-	// wired so those replayed policy-bearing admissions win the
-	// first-writer-wins registry record before this no-policy scan can
-	// claim it. Per-target failures are collected and returned after the
-	// scan so startup fails closed instead of serving traffic with a
-	// known-stranded VTXO.
+	// preserves the existing policy.
+	//
+	// The registry is first-writer-wins on exit policy, so a naive
+	// no-policy scan could permanently claim a vHTLC target under the
+	// standard timeout policy if RestoreNonTerminal failed for it (a
+	// transient error leaves it UnilateralExit on disk with no record).
+	// To close that, we hand the scan the durable exit policy of every
+	// non-terminal recovery target so it re-admits under the RIGHT policy
+	// even when it does create the record. The ordering above stays as
+	// belt-and-suspenders. Per-target failures are collected and returned
+	// after the scan so startup fails closed instead of serving traffic
+	// with a known-stranded VTXO.
+	recoveryPolicies, err := recoveryExitPolicies(ctx, recoveryStore)
+	if err != nil {
+		return fmt.Errorf("load recovery exit policies: %w", err)
+	}
 	if err := s.recoverOrphanedUnrollJobs(
-		ctx, vtxoStore, registry,
+		ctx, vtxoStore, registry, recoveryPolicies,
 	); err != nil {
 		return fmt.Errorf("recover orphaned unroll jobs: %w", err)
 	}
@@ -5472,6 +5482,37 @@ func unrollStartTrigger(t actormsg.UnrollTrigger) unroll.StartTrigger {
 	}
 }
 
+// recoveryExitPolicy is the durable exit-policy identity of one vHTLC recovery
+// target, keyed by its VTXO outpoint in recoveryExitPolicies.
+type recoveryExitPolicy struct {
+	kind unroll.ExitPolicyKind
+	ref  string
+}
+
+// recoveryExitPolicies indexes the exit policy of every non-terminal vHTLC
+// recovery target by outpoint, so the orphan-recovery scan can re-admit a
+// recovery target under its own policy instead of the standard timeout. The
+// registry is first-writer-wins on exit policy, so a no-policy re-admission
+// would otherwise permanently mislabel a refund target as a standard exit.
+func recoveryExitPolicies(ctx context.Context,
+	store coordinator.Store) (map[wire.OutPoint]recoveryExitPolicy, error) {
+
+	jobs, err := store.ListNonTerminalRecoveries(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	policies := make(map[wire.OutPoint]recoveryExitPolicy, len(jobs))
+	for _, job := range jobs {
+		policies[job.VTXOOutpoint] = recoveryExitPolicy{
+			kind: unroll.ExitPolicyKind(job.ExitPolicyKind),
+			ref:  job.ID,
+		}
+	}
+
+	return policies, nil
+}
+
 // recoverOrphanedUnrollJobs closes the atomicity gap between the VTXO
 // store's status flip to VTXOStatusUnilateralExit and the unroll
 // registry's UpsertRecord (#400). It lists every VTXO that the store
@@ -5487,7 +5528,8 @@ func unrollStartTrigger(t actormsg.UnrollTrigger) unroll.StartTrigger {
 // fails closed instead of serving traffic while known unilateral-exit VTXOs
 // remain stranded.
 func (s *Server) recoverOrphanedUnrollJobs(ctx context.Context,
-	vtxoStore vtxo.VTXOStore, registry *unroll.UnrollRegistryActor) error {
+	vtxoStore vtxo.VTXOStore, registry *unroll.UnrollRegistryActor,
+	recoveryPolicies map[wire.OutPoint]recoveryExitPolicy) error {
 
 	descs, err := vtxoStore.ListVTXOsByStatus(
 		ctx, vtxo.VTXOStatusUnilateralExit,
@@ -5506,10 +5548,20 @@ func (s *Server) recoverOrphanedUnrollJobs(ctx context.Context,
 	for _, desc := range descs {
 		op := desc.Outpoint
 
-		resp, askErr := ref.Ask(ctx, &unroll.EnsureUnrollRequest{
+		// A vHTLC recovery target carries a non-standard exit policy.
+		// Re-admit it under that policy so the first-writer-wins
+		// registry never locks it to the standard timeout: a standard
+		// witness against a vHTLC taproot tree would never sweep.
+		ensureReq := &unroll.EnsureUnrollRequest{
 			Outpoint: op,
 			Trigger:  unroll.TriggerRestart,
-		}).Await(ctx).Unpack()
+		}
+		if policy, ok := recoveryPolicies[op]; ok {
+			ensureReq.ExitPolicyKind = policy.kind
+			ensureReq.ExitPolicyRef = policy.ref
+		}
+
+		resp, askErr := ref.Ask(ctx, ensureReq).Await(ctx).Unpack()
 		if askErr != nil {
 			s.log.WarnS(ctx, "Failed to recover orphaned "+
 				"unroll job; VTXO remains stranded until "+

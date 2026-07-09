@@ -7,10 +7,28 @@ import (
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/unroll"
+	"github.com/lightninglabs/darepo-client/vhtlcrecovery"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
 )
+
+// TestExitPolicyKindMirrorsRecoveryConstants pins the string-typed actormsg
+// exit-policy enum to the canonical vhtlcrecovery constants. The two are kept
+// in sync by hand (actormsg cannot import vhtlcrecovery without a cycle), so a
+// drift would silently break the round-trip through the ForceUnroll path.
+func TestExitPolicyKindMirrorsRecoveryConstants(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(
+		t, vhtlcrecovery.ExitPolicyKindClaim,
+		string(actormsg.ExitPolicyVHTLCClaim),
+	)
+	require.Equal(
+		t, vhtlcrecovery.ExitPolicyKindRefundWithoutReceiver,
+		string(actormsg.ExitPolicyVHTLCRefundWithoutReceiver),
+	)
+}
 
 // TestUnrollStartTrigger verifies the string-typed UnrollTrigger that rides the
 // ForceUnroll path maps back onto the right unroll.StartTrigger, and that an
