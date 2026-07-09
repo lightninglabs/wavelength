@@ -774,6 +774,26 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 		}
 	}
 
+	// A conflict-finalized batch's restore may have failed partway through
+	// (RestoreConsumedVTXO errored, so the edges were deliberately kept for
+	// a retry). Because conflict_finalized is terminal, its watches are not
+	// re-armed above and handleConsumerLifecycle will never fire again --
+	// so without this sweep the retained edges would never be re-driven
+	// and the consumed VTXOs would stay forfeited forever. The restore is
+	// idempotent (it no-ops when no edges remain), so re-driving every
+	// conflict-finalized batch here is safe and completes any interrupted
+	// restore.
+	finalizedConflicts, err := m.cfg.Store.ListBatchesByState(
+		ctx, StateConflictFinalized,
+	)
+	if err != nil {
+		return fmt.Errorf("list %s batches: %w", StateConflictFinalized,
+			err)
+	}
+	for _, record := range finalizedConflicts {
+		m.restoreProvisionalConsumers(ctx, record.BatchTxID)
+	}
+
 	return nil
 }
 
