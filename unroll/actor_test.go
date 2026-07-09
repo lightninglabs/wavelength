@@ -3120,6 +3120,14 @@ func TestExitCostTellFailureDefersTerminalHandoff(t *testing.T) {
 	// the sink has no ledger actor behind it.
 	txconfirmRef.emitFinalized(t, 2, sweepTxid)
 
+	// Synchronize with the actor before mutating its config below. The
+	// finalize above is delivered on the actor mailbox ahead of this Ask
+	// (FIFO), so by the time the Ask returns the deferred-handoff attempt
+	// it triggered -- including its read of cfg.LedgerSink -- has completed
+	// and happens-before the sink swap. Without this edge the race detector
+	// flags the concurrent field access against that read.
+	mustAsk(t, unrollActor.Ref(), &GetStateRequest{})
+
 	// The failing ledger sink must have deferred the terminal handoff:
 	// the registry sees no UnrollTerminatedMsg.
 	_, ok := registryRef.AwaitMessage(50 * time.Millisecond)
