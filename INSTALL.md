@@ -170,6 +170,10 @@ darepod \
   --wallet.feeurl=https://mempool.space/signet/api/v1/fees/recommended
 ```
 
+The Ark and swap connections resolve to the public staging signet endpoints
+unless explicitly overridden. See [`docs/signet.md`](docs/signet.md) for the
+gRPC and REST addresses.
+
 ### `lnd`
 
 Uses an existing lnd node for signing and chain access. The node must be

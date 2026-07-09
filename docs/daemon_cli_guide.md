@@ -112,7 +112,8 @@ darepod \
 | `--lnd.tlspath` | | Path to lnd TLS certificate |
 | `--lnd.macaroonpath` | | Path to lnd admin macaroon |
 | `--lnd.rpctimeout` | `30s` | Timeout for lnd RPC calls |
-| `--server.host` | `localhost:10010` | Ark operator mailbox address |
+| `--server.host` | `localhost:10010`; signet: `arkd-signet.staging.lightningcluster.com:443` | Ark operator address for the selected transport |
+| `--server.transport` | `grpc` | Ark operator transport: `grpc` or `rest` |
 | `--server.insecure` | `false` | Disable TLS for server connection |
 | `--server.tlscertpath` | | Operator TLS certificate path |
 | `--server.localmailboxid` | | This client's mailbox ID |
@@ -120,6 +121,12 @@ darepod \
 | `--rpc.listenaddr` | `localhost:10029` | Daemon gRPC listen address |
 | `--rpc.tlscertpath` | | Custom TLS cert for daemon RPC |
 | `--rpc.tlskeypath` | | Custom TLS key for daemon RPC |
+| `--swap.serveraddress` | `localhost:10030`; signet: `swapd-signet.staging.lightningcluster.com:443` | Swap server address for swapruntime builds |
+| `--swap.servertransport` | `grpc` | Swap server transport: `grpc` or `rest` |
+
+When either transport is `rest`, signet resolves the matching HTTPS gateway
+instead of the gRPC endpoint. See [signet.md](signet.md) for the four public
+endpoints and override examples.
 
 ### Environment Variables
 

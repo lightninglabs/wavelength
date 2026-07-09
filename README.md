@@ -143,7 +143,9 @@ Common knobs:
 | `--wallet.type`            | `lwwallet`         | `lwwallet`, `btcwallet`, or `lnd`.       |
 | `--wallet.esploraurl`      |                    | Esplora REST URL (`lwwallet`).           |
 | `--lnd.host`               | `localhost:10009`  | lnd gRPC (`lnd` backend).                |
-| `--server.host`            | `localhost:10010`  | Ark operator mailbox address.            |
+| `--server.host`            | `localhost:10010`  | Ark operator address. Signet defaults to `arkd-signet.staging.lightningcluster.com:443`. |
+| `--server.transport`       | `grpc`             | Ark operator transport: `grpc` or `rest`. |
+| `--swap.serveraddress`     | `localhost:10030`  | Swap server address. Signet defaults to `swapd-signet.staging.lightningcluster.com:443`. |
 | `--rpc.listenaddr`         | `localhost:10029`  | Daemon gRPC listen address.              |
 
 ---
@@ -176,6 +178,7 @@ own `CLAUDE.md` / `AGENTS.md` with package-local context.
 |----------------------------------|-----------------------------------------------------------------------|
 | System architecture              | [`ARCHITECTURE.md`](ARCHITECTURE.md)                                  |
 | Install, configure, operate      | [`docs/daemon_cli_guide.md`](docs/daemon_cli_guide.md)                |
+| Public signet endpoints          | [`docs/signet.md`](docs/signet.md)                                    |
 | Build-tag matrix                 | [`docs/walletdkrpc_build.md`](docs/walletdkrpc_build.md)                  |
 | Durable actor pattern            | [`docs/durable_actor_architecture.md`](docs/durable_actor_architecture.md) |
 | Mailbox transport                | [`docs/mailbox_architecture.md`](docs/mailbox_architecture.md)        |
