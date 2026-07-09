@@ -1088,14 +1088,30 @@ func (m *Manager) handleRestoreForfeitedVTXO(ctx context.Context,
 	}
 
 	// The forfeit transition reaps the actor, so none should be resident.
-	// If one somehow is, do not spawn a duplicate; treat it as already
-	// restored.
+	// If one somehow is, do not spawn a duplicate. A resident actor whose
+	// descriptor is still marked Forfeited means a prior restore spawned
+	// the actor but its status write did not land (the spawn happens
+	// before the status flip below, precisely so a failed write is
+	// re-driven on the next attempt). Complete that missed flip here so
+	// the coin is not left Forfeited in the DB, which would drop it on the
+	// next restart -- a permanent loss of funds.
 	if _, ok := m.actors[req.Outpoint]; ok {
 		m.logger(ctx).DebugS(ctx, "Forfeited VTXO already has a live "+
-			"actor; skipping restore",
+			"actor; reconciling DB status to live",
 			slog.String("outpoint", req.Outpoint.String()))
 
-		return fn.Ok[ManagerResp](&RestoreForfeitedVTXOResponse{})
+		if err := m.cfg.Store.UpdateVTXOStatus(
+			ctx, req.Outpoint, VTXOStatusLive,
+		); err != nil {
+			return fn.Err[ManagerResp](
+				fmt.Errorf("unable to reconcile restored "+
+					"vtxo status: %w", err),
+			)
+		}
+
+		return fn.Ok[ManagerResp](&RestoreForfeitedVTXOResponse{
+			Restored: true,
+		})
 	}
 
 	// Spawn the live actor BEFORE persisting the status flip (same ordering
