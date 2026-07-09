@@ -7,7 +7,8 @@ the daemon-managed signer, the
 cooperative-leave RPC (`LeaveVTXOs`), and the unified ledger surface into one
 small RPC service. `WalletService` exposes the seven core user verbs (`Create`,
 `Unlock`, `Send`, `Recv`, `List`, `Balance`, and `Exit`) plus supporting
-methods (`Deposit`, `Status`, `ExitStatus`, and `SubscribeWallet`).
+methods (`PrepareSend`, `Deposit`, `Status`, `GetExitPlan`, `SweepWallet`,
+`ExitStatus`, `ExitSummary`, `SubscribeWallet`, and `InspectActivity`).
 
 This document covers how to build and install the daemon and CLI with the
 wallet RPC subserver enabled, and what surfaces become available once the
@@ -18,8 +19,10 @@ binaries are tagged.
 The wallet RPC subserver lives behind paired build tags:
 
 - `walletdkrpc` — registers the wallet RPC gRPC service in the daemon and
-  enables the top-level `darepocli` wallet verbs (`balance`, `recv`,
-  `send`, `activity`, `create`, `unlock`, `mcp`).
+  gives the top-level `darepocli` wallet verbs (`balance`, `recv`,
+  `send`, `activity`, `create`, `unlock`, `exit`, `wallet-sweep`) and the
+  `mcp` server's wallet tools live backing instead of an `Unimplemented`
+  stub.
 - `swapruntime` — the underlying swap subsystem the wallet RPC layer
   composes against. Required transitively: building with `walletdkrpc` but
   without `swapruntime` is a deliberate compile error.
@@ -68,7 +71,8 @@ When the daemon is started from a `walletdkrpc`-tagged build:
   entries to FAILED, and runs a monitor loop that fans normalized updates
   to `SubscribeWallet` subscribers.
 - The CLI exposes top-level wallet verbs: `send`, `recv`, `activity`,
-  `balance`, `create`, `unlock`, and `mcp serve`. Raw transaction / onchain
+  `balance`, `create`, `unlock`, `exit`, `wallet-sweep`, and `mcp serve`.
+  Raw transaction / onchain
   history is available via `ark listtransactions`, the live VTXO set via
   `ark vtxos list`, and boarding-timeout sweep records via `ark sweep list`.
   Subscriptions are available from the

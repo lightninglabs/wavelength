@@ -215,8 +215,9 @@ codec.MustRegister(actor.AskResponseMsgType, func() actor.TLVMessage {
 
 ### 4. Create and Start the Actor
 
-**What**: Create a `DurableActorConfig` struct with your actor's ID, behavior,
-store, and codec, then instantiate and start the actor.
+**What**: Build a `DurableActorConfig` with your actor's ID, behavior, store,
+and codec via `DefaultDurableActorConfig`, then instantiate and start the
+actor.
 
 **Why**: The config wires together all the pieces: YOUR behavior logic, the
 persistence layer (store), and the serialization layer (codec). The actor ID
@@ -224,12 +225,13 @@ is used as the mailbox identifier in the database, so it must be unique and
 stable across restarts.
 
 **How**:
-1. Create a `DurableActorConfig` with:
-   - `ID`: Unique identifier for this actor (used as `mailbox_id` in the database)
-   - `Behavior`: Your `ActorBehavior` implementation
-   - `Store`: An `ActorDeliveryStore` instance (usually from the `db` package)
-   - `Codec`: Your `MessageCodec` with all message types registered
-2. Call `NewDurableActor(cfg)` to create the actor
+1. Call `DefaultDurableActorConfig(id, behavior, store, codec)` with:
+   - `id`: Unique identifier for this actor (used as `mailbox_id` in the database)
+   - `behavior`: Your `ActorBehavior` implementation
+   - `store`: A `DeliveryStore` instance (e.g. from the `db/actordelivery` package)
+   - `codec`: Your `MessageCodec` with all message types registered
+2. Call `NewDurableActor(cfg)` to create the actor - it returns a
+   `fn.Result[*DurableActor[M, R]]`, so unwrap it with `.Unpack()`
 3. Call `Start()` to begin processing messages
 
 The actor ID is particularly important: it's how the system knows where to
@@ -237,14 +239,14 @@ deliver messages and where to find your checkpoints after a restart. Use a
 descriptive, stable ID like `"round-actor"` or `"wallet-actor-{wallet_id}"`.
 
 ```go
-cfg := actor.DurableActorConfig[MyMessage, MyResult]{
-    ID:       "my-actor-1",
-    Behavior: &MyBehavior{},
-    Store:    store,  // ActorDeliveryStore from db package
-    Codec:    codec,
-}
+cfg := actor.DefaultDurableActorConfig(
+    "my-actor-1", &MyBehavior{}, store, codec,
+)
 
-myActor := actor.NewDurableActor(cfg)
+myActor, err := actor.NewDurableActor(cfg).Unpack()
+if err != nil {
+    return err
+}
 myActor.Start()
 ```
 
@@ -433,12 +435,9 @@ flowchart TD
 
 4. **Wire up Store and Codec** in config:
    ```go
-   cfg := actor.DurableActorConfig[M, R]{
-       ID:       "actor-id",
-       Behavior: behavior,
-       Store:    store,  // ActorDeliveryStore
-       Codec:    codec,
-   }
+   cfg := actor.DefaultDurableActorConfig(
+       "actor-id", behavior, store, codec, // store is a DeliveryStore
+   )
    ```
 
 5. **Test** crash recovery and redelivery scenarios
@@ -717,14 +716,14 @@ func (a *MyActor) handleAskResponse(
 codec := actor.NewMessageCodec()
 codec.MustRegister(typeID, func() actor.TLVMessage { return &MyMsg{} })
 
-cfg := actor.DurableActorConfig[MyMsg, MyResult]{
-    ID:       "actor-id",
-    Behavior: &MyBehavior{},
-    Store:    store,
-    Codec:    codec,
-}
+cfg := actor.DefaultDurableActorConfig(
+    "actor-id", &MyBehavior{}, store, codec,
+)
 
-myActor := actor.NewDurableActor(cfg)
+myActor, err := actor.NewDurableActor(cfg).Unpack()
+if err != nil {
+    return err
+}
 myActor.Start()
 ```
 

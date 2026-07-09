@@ -67,7 +67,11 @@ As a result:
 
 The contract assumes each request envelope contains an idempotency key (a
 stable identifier suitable for receiver-side deduplication). In the current
-envelope model, the request's correlation id serves as this idempotency key:
+envelope model this is the envelope's dedicated `idempotency_key` field,
+distinct from the `rpc.correlation_id` field used for response demuxing; the
+default client implementation derives the correlation id from the
+idempotency key when the caller does not override it, so the two typically
+match but MUST NOT be assumed to be the same field:
 
 - The sender MUST set an idempotency key for any request that it may retry.
 - The receiver SHOULD use the idempotency key to deduplicate request handling.
@@ -75,9 +79,8 @@ envelope model, the request's correlation id serves as this idempotency key:
 
 ## Correlation
 
-The request/response pairing is performed using a correlation identifier.
-For request envelopes, this correlation id also acts as the idempotency key
-used for request deduplication:
+The request/response pairing is performed using a correlation identifier
+carried in `rpc.correlation_id`:
 
 - Each request has a correlation id.
 - The response MUST carry the correlation id of the request it answers.

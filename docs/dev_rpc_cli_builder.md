@@ -15,8 +15,13 @@ go run ./cmd/darepocli/internal/gen-devrpc
 
 The generator reads the linked Go descriptors for:
 
-- `daemonrpc.File_daemon_proto`
-- `swapclientrpc.File_swap_client_proto`
+- `daemonrpc.File_daemon_proto` (`daemonrpc.DaemonService`, alias `daemon`)
+- `swapclientrpc.File_swap_client_proto` (`swapclientrpc.SwapClientService`,
+  alias `swapclient`)
+- `walletdkrpc.File_wallet_proto` (`walletdkrpc.WalletService` and
+  `WalletInspectionService`, aliases `wallet` and `wallet-inspection`)
+- `btcwalletrpc.File_api_proto` (`walletrpc.VersionService` and
+  `walletrpc.WalletService`, aliases `btcwallet-version` and `btcwallet`)
 
 It writes `cmd/darepocli/darepoclicommands/devrpc/registry_generated.go`.
 That generated file contains only service and method metadata. The runtime
@@ -65,14 +70,14 @@ Field handling rules:
 Flattening is deliberately bounded to singular messages. For example:
 
 ```shell
-darepocli dev daemon send-oor \
+darepocli dev daemon prepare-oor \
   --recipient.address bcrt1... \
-  --recipient.amount_sat 1000 \
-  --dry_run
+  --recipient.amount_sat 1000
 
 darepocli dev daemon refresh-vtxos \
   --outpoints.outpoints txid:0 \
-  --outpoints.outpoints txid:1
+  --outpoints.outpoints txid:1 \
+  --dry_run
 ```
 
 Repeated message fields are not flattened because indexed flags would need a

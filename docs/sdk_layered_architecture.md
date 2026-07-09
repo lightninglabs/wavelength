@@ -199,13 +199,13 @@ walks through several checkpoints — listener open, gRPC accepting
 RPCs, wallet unlocked or initialized, round actor initialized,
 mailbox transport connected, operator terms cached — and callers
 need a way to observe them. Today `GetInfo` is the caller-facing
-readiness surface: `WalletReady == true` means wallet-dependent
-RPCs are expected to work, `ServerConnected == true` is the current
-best-effort signal that mailbox ingress is running, and
-`ServerInfo != nil` means operator terms have been fetched and
-cached. Round-oriented
-callers should wait for all three before issuing round-sensitive
-operations. `ServerInfo` is intentionally nullable because operator
+readiness surface: `Info.WalletReady()` returning `true` means
+wallet-dependent RPCs are expected to work, `ServerConnected ==
+true` is the current best-effort signal that mailbox ingress is
+running, and `ServerInfo != nil` means operator terms have been
+fetched and cached. Round-oriented callers should wait for all
+three before issuing round-sensitive operations. `ServerInfo` is
+intentionally nullable because operator
 bootstrap happens after the daemon process starts accepting RPCs, and
 the current daemon refreshes that snapshot only during bootstrap, so
 it remains the latest known terms for the current session until

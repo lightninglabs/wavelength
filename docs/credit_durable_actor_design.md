@@ -51,7 +51,7 @@ Everything reduces to three durable operations with one stable key each.
 | Op | Stable key | Authoritative completion signal |
 |---|---|---|
 | `pay` (with optional top-up) | `pay:<paymentHash>` | server ledger shows credits available, then `StartPay` idempotent by payment hash |
-| `recv` (credit receive) | `recv:<paymentHash>` | server ledger shows the receive op `CREDITED` |
+| `recv` (credit receive) | `recv:<random>` | server ledger shows the receive op `CREDITED` |
 | `redeem` (credits to vTXO) | `redeem:<random>` | redeemed vTXO lands locally (`FindLiveVTXOByPkScript`) |
 
 The **same key** goes to the server `CreateCredit` or `RedeemCredit` *and* to the
@@ -148,7 +148,7 @@ row.
 walletdk Send/Recv
       │  Ask StartCredit{Pay,Receive}Request          (plain actor Ask; returns pending entry)
       ▼
-CreditRegistry              plain in-memory mailbox "credit-client"  (RestoreNonTerminal on boot)
+Registry                    plain in-memory mailbox "credit-client"  (RestoreNonTerminal on boot)
    ├─ dedup by opKey (durable table + partial UNIQUE index)
    ├─ write credit_operations row (ordinary txn)      ◄── the one durable table
    ├─ lazy-spawn + route Resume to child
@@ -157,7 +157,7 @@ CreditRegistry              plain in-memory mailbox "credit-client"  (RestoreNon
    └─ run the auto-redeem boot reconcile (one-shot)
       │  Tell Resume   (the only durable message into the child)
       ▼
-CreditOpActor (per op)      durable mailbox "credit-op-<opID>"  (Read/Stage/Commit; protofsm FSM)
+OpActor (per op)            durable mailbox "credit-op-<opID>"  (Read/Stage/Commit; protofsm FSM)
    ├─ gRPC → swap server         CreateCredit / ListCredits / RedeemCredit   (key = opKey)
    ├─ DurableTell → OOR registry StartTransfer{IdempotencyKey: opKey, ...}
    ├─ gRPC → swapclientserver    StartPay(invoice, maxCreditSat)             (terminal pay)
@@ -180,7 +180,7 @@ re-enters the durable child mailbox needs a codec entry.
 | Message | Kind | Path |
 |---|---|---|
 | `StartCreditPayRequest{invoice, maxFeeSat, quote, paymentHash}` | plain `CreditMsg` | walletdk to registry (Ask) |
-| `StartCreditReceiveRequest{amountSat, memo, paymentHash}` | plain `CreditMsg` | walletdk to registry (Ask) |
+| `StartCreditReceiveRequest{opKey, amountSat, memo}` | plain `CreditMsg` | walletdk to registry (Ask) |
 | `RedeemRequest{opKey, amountSat}` | plain `CreditMsg` | registry-internal (admitted by `considerRedeem`) |
 | `ConsiderRedeemRequest{availableSat}` | plain `CreditMsg` | child or boot reconcile to registry (Tell) |
 | `CreditTerminalNotification{opKey, terminal}` | plain `CreditMsg` | child to registry (reap) |
@@ -413,9 +413,11 @@ bridge disappears entirely.
 
 ```
 credit_operations(
+  op_id             TEXT NOT NULL PRIMARY KEY, -- durable mailbox id source
   op_key            TEXT NOT NULL,         -- stable idempotency key
-  kind              TEXT NOT NULL,         -- pay | recv | redeem
+  kind              INTEGER NOT NULL,      -- 1=pay | 2=recv | 3=redeem
   state             TEXT NOT NULL,
+  status            INTEGER NOT NULL,      -- 0=pending | 1=completed | 2=failed
   server_op_id      TEXT,
   destination_pubkey BLOB,
   oor_session_id    TEXT,
@@ -424,27 +426,32 @@ credit_operations(
   amount_sat        BIGINT NOT NULL DEFAULT 0,
   topup_sat         BIGINT NOT NULL DEFAULT 0,
   max_credit_sat    BIGINT NOT NULL DEFAULT 0,
-  snapshot          BLOB,                  -- opaque resume blob (TLV)
+  max_fee_sat       BIGINT NOT NULL DEFAULT 0,
+  last_error        TEXT,
+  snapshot_data     BLOB,                  -- opaque resume blob (TLV)
+  snapshot_version  INTEGER NOT NULL DEFAULT 0,
   created_at, updated_at
 )
--- partial UNIQUE index on op_key for live-or-completed rows
+-- partial UNIQUE index on op_key WHERE status != 2 (live-or-completed rows)
 ```
 
-It lives in the daemon-owned swap DB, via `db/queries` and sqlc. Terminal rows
-are retained for status and diagnostics. The `state` column holds the persisted
-state string; on resume, `decodeCreditState` maps it back to the typed protofsm
-state, and an unrecognized string drives the row to a terminal failure rather than
-wedging it.
+It lives in the daemon-owned swap DB, via `db/sqlc/queries` and sqlc. Terminal
+rows are retained for status and diagnostics. The `state` column holds the
+persisted state string; on resume, `decodeCreditState` maps it back to the
+typed protofsm state, and an unrecognized string drives the row to a terminal
+failure rather than wedging it.
 
 ### 7.2 Boot and resume
 
-`credit.Register(...)` (called by `swapruntime`-tagged `darepod`, next to
-`swapclientserver.Register` and the OOR registry) opens the store, wires the
-registry actor, and calls `RestoreNonTerminal` **synchronously** before serving.
-Each non-terminal row respawns its child and is told `ResumeCreditOpRequest`, so
+`darepod`'s `initCreditRegistry` (called right after the OOR actor registers,
+guarded by a nil-check on the swap-runtime-populated `cfg.Swap.Credit*`
+bridges) builds the store, constructs the registry via `credit.NewRegistry`,
+and calls `RestoreNonTerminal` **synchronously** before serving. Each
+non-terminal row respawns its child and is told `ResumeCreditOpRequest`, so
 it re-drives from persisted state. Retry timers are in-memory and do not survive
 restart; they are re-armed on resume. After the restore, the daemon starts the
-one-shot auto-redeem boot reconcile on the root context.
+one-shot auto-redeem boot reconcile (`registry.StartAutoRedeem`) on the root
+context.
 
 ### 7.3 Crash-recovery walkthrough
 

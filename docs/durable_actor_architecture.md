@@ -99,7 +99,7 @@ sequenceDiagram
     A->>TX: Commit
     Note over A,TX: Transaction Complete
 
-    loop Poll Interval (100ms)
+    loop Poll Interval (1s)
         P->>OB: ClaimOutboxBatch()
         OB-->>P: Pending messages
     end
@@ -132,12 +132,13 @@ If the transaction commits, the message is guaranteed to be delivered
 
 ```go
 type OutboxPublisherConfig struct {
-    Store               DeliveryStore      // Persistence layer
-    Codec               *MessageCodec      // Message serialization
-    System              SystemContext      // Actor discovery via ServiceKey
-    PollInterval        time.Duration      // Default: 100ms
-    BatchSize           int                // Default: 100
-    MaxDeliveryAttempts int                // Default: 10
+    Store               DeliveryStore // Persistence layer
+    Codec               *MessageCodec // Message serialization
+    System              SystemContext // Actor discovery via ServiceKey
+    PollInterval        time.Duration // Default: 1s (fallback; commits wake immediately)
+    BatchSize           int           // Default: 100
+    MaxDeliveryAttempts int           // Default: 10
+    ClaimDuration       time.Duration // Default: 30s
 }
 ```
 
@@ -284,9 +285,10 @@ delegates message handling to your `ActorBehavior` implementation.
 handles serialization via `MessageCodec` and yields `Delivery` objects that wrap
 messages with lease operations.
 
-**Persistence Layer**: `DeliveryStore` is the interface; `ActorDeliveryStore` is
-the SQLite implementation. For transactional FSM updates, use `TxAwareActorDeliveryStore`
-which wraps message processing in a database transaction.
+**Persistence Layer**: `DeliveryStore` is the interface; `actordelivery.Store`
+is the SQLite implementation. For transactional FSM updates, use
+`TxAwareActorDeliveryStore` which wraps message processing in a database
+transaction.
 
 **CDC Layer**: `OutboxPublisher` runs as a background service, polling the outbox
 table and delivering messages to target actors via the Discovery Layer.
@@ -318,7 +320,7 @@ flowchart TB
 
     subgraph "Persistence Layer"
         DS[DeliveryStore]
-        ADS[ActorDeliveryStore]
+        ADS[actordelivery.Store]
         TADS[TxAwareActorDeliveryStore]
 
         DS -.->|interface| ADS
@@ -371,7 +373,7 @@ flowchart TB
 | `DurableMailbox` | Message queue interface, lease-based iteration, priority ordering |
 | `Delivery` | Message wrapper with lease operations (Ack/Nack/Extend) |
 | `DeliveryStore` | Persistence interface for all mailbox operations |
-| `ActorDeliveryStore` | SQLite implementation of DeliveryStore |
+| `actordelivery.Store` | SQLite implementation of DeliveryStore |
 | `TxAwareActorDeliveryStore` | Adds transaction support for atomic FSM updates |
 | `OutboxPublisher` | Background service draining outbox, delivering to targets |
 | `MessageCodec` | TLV serialization/deserialization with type dispatch |
@@ -596,25 +598,23 @@ flowchart TD
 Messages that were leased but not acknowledged before crash are automatically
 redelivered. The timing depends on when the lease expires:
 
-1. **Lease Expiry**: A background job (or the actor itself on startup) runs
-   `ExpireLeases()` to clear stale leases. This sets `lease_token = NULL` and
-   `lease_until = NULL` for all messages where `lease_until < now`.
+1. **Lease Expiry**: `LeaseNextMessage()` treats a row as eligible once
+   `lease_until < now`, so an expired lease is reclaimed atomically by the
+   same query that claims the next message - no separate clearing step is
+   required for redelivery to proceed. `ExpireLeases()` is available as a
+   standalone maintenance operation (used in tests/tooling) that explicitly
+   clears `lease_token`/`lease_until` for stale rows.
 
-2. **Message Available**: Once the lease is cleared, the message's `available_at`
-   determines when it can be picked up. Messages typically become immediately
-   available since `available_at` was set at original enqueue time.
+2. **Redelivery**: The restarted actor's `LeaseNextMessage()` poll picks up the
+   message once its `lease_until` has passed. The `attempts` counter is
+   preserved, so the message won't be retried forever if it keeps failing.
 
-3. **Redelivery**: The restarted actor's `LeaseNextMessage()` poll picks up the
-   message. The `attempts` counter is preserved, so the message won't be retried
-   forever if it keeps failing.
-
-4. **Deduplication**: Before executing `Receive()`, the actor checks
+3. **Deduplication**: Before executing `Receive()`, the actor checks
    `IsProcessed(message_id)`. If the message was processed before crash (but ack
    was lost), it's skipped and immediately acked.
 
 **Default Lease Duration**: 30 seconds. If an actor crashes, its leased messages
-become available for redelivery after at most 30 seconds (plus `ExpireLeases()`
-poll interval).
+become available for redelivery after at most 30 seconds.
 
 ```mermaid
 flowchart LR
@@ -624,7 +624,7 @@ flowchart LR
     end
 
     subgraph "Recovery"
-        D[ExpireLeases runs] --> E[Message available again]
+        D[lease_until passes] --> E[Message available again]
         E --> F[Actor restarts]
         F --> G[Lease same message]
         G --> H{IsProcessed?}

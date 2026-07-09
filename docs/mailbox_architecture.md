@@ -516,13 +516,17 @@ flowchart TB
     UF2 -.->|"RegisterWaiter / AwaitRPC"| RR
 ```
 
-The actor implements `ActorBehavior[ServerConnMsg, ServerConnResp]`. The
+The actor implements `TxBehavior[ServerConnMsg, ServerConnResp, egressTx]`,
+the Read/Commit path described in
+[`mailbox_durable_actor_layer.md`](mailbox_durable_actor_layer.md). The
 `Receive` method dispatches by message type:
 
 - `SendClientEventRequest` → `handleSendClientEvent` (converts to proto,
   builds envelope, calls `Edge.Send`).
 - `SendRPCRequest` → `handleSendRPCRequest` (sends pre-built envelope via
   `Edge.Send`).
+- `SendUnaryRequest` / `DurableUnaryQuery` → `handleSendUnaryRequest` (durable,
+  correlated unary requests such as proof-gated indexer queries).
 
 Source: `serverconn/actor.go`
 
@@ -614,8 +618,11 @@ Each cycle:
    envelopes with `next_cursor`.
 
 3. **Dispatch phase**: Iterate envelopes. Route each by `RpcMeta.Kind`:
-   - `KIND_RESPONSE`: Deliver to `ResponseRegistry` for unary RPC waiters.
-     Not durable — the response is consumed immediately.
+   - `KIND_RESPONSE`: Deliver to `ResponseRegistry` when a live unary waiter is
+     registered for the correlation ID — consumed immediately, no durability
+     needed. When no waiter is registered (e.g. the caller's context expired),
+     fall back to the `EnvelopeDispatcher` dispatch table like an ordinary
+     event, so actor-driven unary flows still observe the response durably.
    - `KIND_REQUEST` / `KIND_EVENT`: Look up the `EnvelopeDispatcher` by
      `(Service, Method)` in the dispatch table. The dispatcher unmarshals the
      body, adapts it to an actor message, and calls `Tell` on the target
@@ -623,6 +630,13 @@ Each cycle:
 
 4. **Advance and checkpoint**: `AdvanceDispatch(nextCursor)` updates the
    watermark. `saveCheckpoint` persists the state. The loop restarts.
+
+When the delivery store implements `TxAwareDeliveryStore`, `runFoldedDispatch`
+folds the dispatch phase and the checkpoint save into one database
+transaction, and a pending ack advance rides along with the next dispatch
+checkpoint (or an idle-loop flush) rather than committing on its own. This is
+the path a production store takes; a non-transactional store falls back to
+the phase-by-phase sequence above.
 
 **Partial failure**: If dispatch fails mid-batch (e.g., the target actor's store
 is down), the loop advances state only past the last successfully dispatched
@@ -733,8 +747,8 @@ type Runtime struct {
 
 **`NewRuntime(cfg)`**: Validates required fields (Edge, Store, mailbox IDs).
 Creates `ServerConnectionActor`, wraps it in a `DurableActor` using
-`DefaultDurableActorConfig`, and creates `UnaryFacade`. The durable actor ID
-is `"serverconn-" + localMailboxID`.
+`DefaultDurableTxActorConfig` (the Read/Commit path), and creates
+`UnaryFacade`. The durable actor ID is `"serverconn-" + localMailboxID`.
 
 **`Start(ctx)`**: Starts the `DurableActor` (begins processing egress). Starts
 ingress via `connector.StartIngress(ctx)` (loads ack checkpoint, launches
