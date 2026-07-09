@@ -153,18 +153,17 @@ the only backup.
 
 ```bash
 # Via environment variable (recommended for automation)
-DAREPOD_WALLET_PASSWORD=your_password darepocli create --no-tls
+DAREPOD_WALLET_PASSWORD=your_password darepocli create
 
 # Via stdin pipe
-echo -n 'your_password' | darepocli create --no-tls
+echo -n 'your_password' | darepocli create
 
 # Via password file
 darepocli create \
-  --wallet_password_file=/path/to/password_file \
-  --no-tls
+  --wallet_password_file=/path/to/password_file
 
 # Interactive (prompts for password on TTY)
-darepocli create --no-tls
+darepocli create
 ```
 
 **Important:** The mnemonic is displayed on stderr during creation.
@@ -175,7 +174,7 @@ Write it down and store it securely -- it is your only backup.
 Each time the daemon restarts, the wallet must be unlocked:
 
 ```bash
-DAREPOD_WALLET_PASSWORD=your_password darepocli unlock --no-tls
+DAREPOD_WALLET_PASSWORD=your_password darepocli unlock
 ```
 
 ### Auto-Unlock
@@ -196,6 +195,44 @@ automatically.
 ## CLI Reference
 
 `darepocli` connects to the daemon's gRPC server. All output is JSON.
+
+### Authentication
+
+`darepocli` authenticates to the daemon over TLS with the daemon's admin
+macaroon. By default it derives both from the daemon data directory:
+
+- TLS cert: `<datadir>/data/<network>/tls.cert`
+- Macaroon: `<datadir>/data/<network>/admin.macaroon`
+
+where `--datadir` defaults to `~/.darepod` and `--network` to `mainnet`. A
+daemon run on a **non-default datadir or network must be matched on the CLI**,
+otherwise `darepocli` looks under `~/.darepod/data/mainnet/` and fails with
+`read macaroon: ... no such file`. For a signet instance under
+`~/.darepod-signet`:
+
+```bash
+darepocli --network=signet --datadir=~/.darepod-signet getinfo
+```
+
+A macaroon cannot ride an unencrypted connection, so `--no-tls` and the
+macaroon are mutually exclusive. There are two working modes:
+
+- **TLS + macaroon (default).** Point `--datadir` / `--network` at the daemon,
+  or override `--tlscertpath` / `--macaroonpath` directly.
+- **Plaintext (regtest / dev).** Pass **both** `--no-tls` and `--no-macaroons`.
+  Passing only `--no-tls` fails with `credentials require transport level
+  security`, because the CLI still tries to attach the macaroon.
+
+The command examples below omit these connection flags. Set them once via an
+alias:
+
+```bash
+# signet instance over TLS
+alias da='darepocli --network=signet --datadir=~/.darepod-signet'
+
+# local regtest over plaintext
+alias da='darepocli --no-tls --no-macaroons'
+```
 
 ### Command tree
 
@@ -228,8 +265,12 @@ darepocli
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--rpcserver` | `localhost:10029` | Daemon gRPC address |
-| `--tlscertpath` | | Daemon TLS cert path |
-| `--no-tls` | `false` | Disable TLS (use for regtest) |
+| `--datadir` | `~/.darepod` | Daemon data dir; TLS cert + macaroon are derived from `<datadir>/data/<network>/` |
+| `--network` | `mainnet` | Network segment of the derived cert / macaroon paths |
+| `--tlscertpath` | | Explicit daemon TLS cert path (overrides `--datadir`) |
+| `--macaroonpath` | | Explicit admin macaroon path (overrides `--datadir`) |
+| `--no-tls` | `false` | Disable TLS (regtest / dev); requires `--no-macaroons` |
+| `--no-macaroons` | `false` | Disable macaroon auth (required alongside `--no-tls`) |
 | `--json` | | Raw JSON request payload (overrides bespoke flags) |
 
 ### `getinfo`
@@ -237,7 +278,7 @@ darepocli
 Display daemon status information.
 
 ```bash
-darepocli getinfo --no-tls
+darepocli getinfo
 ```
 
 ### `balance` (walletdkrpc) / `dev daemon GetBalance` (no walletdkrpc)
@@ -245,8 +286,8 @@ darepocli getinfo --no-tls
 Display wallet balance (boarding, VTXO, total, onchain) in satoshis.
 
 ```bash
-darepocli balance --no-tls                   # requires walletdkrpc
-darepocli dev daemon GetBalance --no-tls     # always available
+darepocli balance                   # requires walletdkrpc
+darepocli dev daemon GetBalance     # always available
 ```
 
 ### `recv` (walletdkrpc) / `dev daemon NewAddress` (no walletdkrpc)
@@ -262,11 +303,11 @@ Allocate an inbound payment surface.
 | `--memo` | string | Optional memo embedded in the offchain invoice |
 
 ```bash
-darepocli recv --onchain --no-tls                  # boarding address
-darepocli recv --offchain --amt 5000 --memo coffee --no-tls
+darepocli recv --onchain                  # boarding address
+darepocli recv --offchain --amt 5000 --memo coffee
 
 # No-walletdkrpc equivalent for the boarding-address case:
-darepocli dev daemon NewAddress --no-tls
+darepocli dev daemon NewAddress
 ```
 
 ### `ark board` / `dev daemon Board`
@@ -280,8 +321,8 @@ UTXOs.
 | `--no-persist` | bool | Skip restart-safe replay (testing only) |
 
 ```bash
-darepocli ark board --no-tls
-darepocli ark board --target-vtxo-count 4 --no-tls
+darepocli ark board
+darepocli ark board --target-vtxo-count 4
 ```
 
 ### `ark oor receive` — incoming OOR pubkey
@@ -295,7 +336,7 @@ key locator.
 | `--label` | string | Optional indexer registration label |
 
 ```bash
-darepocli ark oor receive --no-tls
+darepocli ark oor receive
 ```
 
 ### `ark vtxos list`
@@ -311,14 +352,14 @@ List VTXOs known to the wallet with optional filters.
 
 ```bash
 # All VTXOs
-darepocli ark vtxos list --no-tls
+darepocli ark vtxos list
 
 # Live VTXOs above 10k sats, only outpoint and amount
 darepocli ark vtxos list --status live --min_amount 10000 \
-  --fields outpoint,amount_sat --no-tls
+  --fields outpoint,amount_sat
 
 # Streaming NDJSON for piping to jq
-darepocli ark vtxos list --ndjson --no-tls | jq '.amount_sat'
+darepocli ark vtxos list --ndjson | jq '.amount_sat'
 ```
 
 ### `ark vtxos refresh`
@@ -337,13 +378,13 @@ RPCs; commit the batch later with `ark rounds join`.
 
 ```bash
 # Explicit outpoints (auto-joins the next round)
-darepocli ark vtxos refresh --outpoint <txid:idx> --no-tls
+darepocli ark vtxos refresh --outpoint <txid:idx>
 
 # Batch with other intents — explicitly join later
-darepocli ark vtxos refresh --outpoint <txid:idx> --no_join --no-tls
+darepocli ark vtxos refresh --outpoint <txid:idx> --no_join
 darepocli ark vtxos leave   --outpoint <txid:idx> --no_join \
-  --address bcrt1p... --no-tls
-darepocli ark rounds join --no-tls
+  --address bcrt1p...
+darepocli ark rounds join
 ```
 
 ### `ark send inround`
@@ -357,16 +398,16 @@ Send via in-round refresh (waits for next round to commit).
 | `--dry_run` | bool | Validate without submitting |
 
 ```bash
-darepocli ark send inround --to bcrt1p... --amount 50000 --no-tls
+darepocli ark send inround --to bcrt1p... --amount 50000
 
 # Multiple recipients
 darepocli ark send inround \
   --to bcrt1p...addr1 --amount 50000 \
   --to bcrt1p...addr2 --amount 30000 \
-  --no-tls
+ 
 
 # Via JSON input
-darepocli ark send inround --no-tls --json '{
+darepocli ark send inround --json '{
   "recipients": [
     {"address":"bcrt1p...","amount_sat":50000},
     {"address":"bcrt1p...","amount_sat":30000}
@@ -387,9 +428,9 @@ Send via out-of-round transfer (immediate, through operator).
 | `--dry_run` | bool | Validate without initiating |
 
 ```bash
-darepocli ark send oor --pubkey <pubkey_xonly_hex> --amount 25000 --no-tls
+darepocli ark send oor --pubkey <pubkey_xonly_hex> --amount 25000
 darepocli ark send oor --pubkey <hex> --amount 25000 \
-  --idempotency_key my-attempt-1 --no-tls
+  --idempotency_key my-attempt-1
 ```
 
 ### `send <invoice-or-address>` (walletdkrpc)
@@ -409,9 +450,9 @@ selected VTXOs are swept in full, so the actual outflow (echoed in
 | `--sweep-all` | bool | Onchain only: drain wallet; `--amt` must be 0 |
 
 ```bash
-darepocli send lnbcrt... --offchain --no-tls
-darepocli send bcrt1... --onchain --amt 1000 --no-tls
-darepocli send bcrt1... --onchain --sweep-all --no-tls
+darepocli send lnbcrt... --offchain
+darepocli send bcrt1... --onchain --amt 1000
+darepocli send bcrt1... --onchain --sweep-all
 ```
 
 ### `exit` (unilateral exit, formerly `unroll`)
@@ -423,8 +464,8 @@ Start the on-chain recovery process for a VTXO.
 | `--outpoint` | string | VTXO outpoint to exit (txid:vout) |
 
 ```bash
-darepocli exit --outpoint <txid:vout> --no-tls
-darepocli exit status --outpoint <txid:vout> --no-tls
+darepocli exit --outpoint <txid:vout>
+darepocli exit status --outpoint <txid:vout>
 ```
 
 The job survives daemon restarts; the command only submits the request.
@@ -444,13 +485,13 @@ and boarding-sweep records.
 | `--type` | string | Optional filter: boarding, round, oor, or sweep |
 
 ```bash
-darepocli ark listtransactions --limit 25 --no-tls
+darepocli ark listtransactions --limit 25
 
 darepocli ark listtransactions \
   --type oor \
   --from 2026-05-01T00:00:00Z \
   --to 2026-05-08T23:59:59Z \
-  --no-tls
+ 
 ```
 
 ### `activity` (walletdkrpc)
@@ -466,19 +507,19 @@ The merged wallet activity feed: send / recv / deposit / exit history.
 | `--format` | `table` | Output format (`table`, `expanded`/`x`, `json`) |
 
 ```bash
-darepocli activity --no-tls
-darepocli activity --pending --kind send,recv --no-tls
-darepocli activity --format json --no-tls
-darepocli activity inspect <id> --no-tls
+darepocli activity
+darepocli activity --pending --kind send,recv
+darepocli activity --format json
+darepocli activity inspect <id>
 ```
 
 The VTXO inventory and onchain history are not part of the activity feed.
 Use the `ark` subtree for those:
 
 ```bash
-darepocli ark vtxos list --no-tls          # live VTXO inventory
-darepocli ark listtransactions --no-tls    # raw transaction / onchain history
-darepocli ark sweep list --no-tls          # boarding-timeout sweep records
+darepocli ark vtxos list          # live VTXO inventory
+darepocli ark listtransactions    # raw transaction / onchain history
+darepocli ark sweep list          # boarding-timeout sweep records
 ```
 
 ### `schema`
@@ -486,8 +527,8 @@ darepocli ark sweep list --no-tls          # boarding-timeout sweep records
 Introspect available CLI commands and their parameters.
 
 ```bash
-darepocli schema --no-tls
-darepocli schema --method ark.vtxos.list --no-tls
+darepocli schema
+darepocli schema --method ark.vtxos.list
 ```
 
 ### `mcp serve` (walletdkrpc)
@@ -496,7 +537,7 @@ Start an MCP (Model Context Protocol) server on stdio for AI agent
 integration. Exposes daemon RPCs as typed tool calls.
 
 ```bash
-darepocli mcp serve --no-tls
+darepocli mcp serve
 ```
 
 **Note:** Wallet management tools (`create`, `unlock`, genseed) are
@@ -528,24 +569,29 @@ darepod \
   --server.remotemailboxid=server \
   --rpc.listenaddr=localhost:10029
 
+# 2b. Alias the CLI for this regtest daemon: plaintext transport (no TLS,
+#     no macaroon) on the regtest network. See the Authentication section
+#     above for why both --no-tls and --no-macaroons are needed.
+alias da='darepocli --no-tls --no-macaroons --network=regtest'
+
 # 3. Get a boarding address.
-ADDR=$(darepocli dev daemon NewAddress --no-tls | jq -r .address)
+ADDR=$(da dev daemon NewAddress | jq -r .address)
 
 # 4. Fund it on-chain and confirm.
 bitcoin-cli -regtest sendtoaddress "$ADDR" 0.01
 bitcoin-cli -regtest -generate 6
 
 # 5. Verify balance.
-darepocli dev daemon GetBalance --no-tls
+da dev daemon GetBalance
 
 # 6. Board into the next round.
-darepocli ark board --no-tls
+da ark board
 
 # 7. After the round confirms, list the new VTXO.
-darepocli ark vtxos list --no-tls
+da ark vtxos list
 
 # 8. Send funds (in-round to a peer's bech32m address).
-darepocli ark send inround --to bcrt1p... --amount 5000 --no-tls
+da ark send inround --to bcrt1p... --amount 5000
 ```
 
 For per-client manual testing under the `arktest` harness, see
@@ -573,6 +619,8 @@ restrictive file permissions (`chmod 600`).
 | `wallet not ready` | Run `darepocli unlock` (requires walletdkrpc) or restart the daemon with `--wallet.password_file` |
 | `wallet already exists` | Wallet was already created; use `unlock` instead |
 | `GenSeed: lwwallet mode only` | Switch daemon to `--wallet.type=lwwallet` |
-| TLS certificate errors | Use `--no-tls` for regtest, or set `--tlscertpath` |
+| `read macaroon: ... no such file` | The CLI is looking under the wrong data dir/network. Pass `--datadir` / `--network` to match the daemon (see [Authentication](#authentication)), or `--macaroonpath` directly |
+| `credentials require transport level security` | A macaroon can't ride a plaintext connection. Use TLS (drop `--no-tls`), or add `--no-macaroons` alongside `--no-tls` |
+| TLS certificate errors | Point `--datadir` / `--network` at the daemon's cert, set `--tlscertpath`, or use `--no-tls --no-macaroons` for regtest |
 | `password must be at least 8 bytes` | Wallet password minimum is 8 characters |
 | `decryption failed: wrong password` | Incorrect password or corrupted seed file |
