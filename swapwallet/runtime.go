@@ -88,6 +88,15 @@ type Runtime struct {
 	// or leave state. Cleared when an entry transitions to a terminal
 	// status through the monitor loop.
 	overlay map[string]overlayStatus
+
+	// tipPollInterval is how often the one-shot startup reconcile-at-tip
+	// loop polls the daemon's best-block height while waiting for the chain
+	// backend to settle. tipReconcileTimeout bounds that wait before the
+	// loop reconciles once anyway and hands off to the periodic reconciler.
+	// They are fields, not consts, so tests can drive the loop without
+	// real-time waits.
+	tipPollInterval     time.Duration
+	tipReconcileTimeout time.Duration
 }
 
 // overlayStatus is the runtime's wallet-level overlay applied on top of an
@@ -116,8 +125,10 @@ func newRuntime(parent context.Context, deps *Deps) *Runtime {
 		subscribers: make(
 			map[*subscriber]struct{},
 		),
-		pending: make(map[string]pendingEntry),
-		overlay: make(map[string]overlayStatus),
+		pending:             make(map[string]pendingEntry),
+		overlay:             make(map[string]overlayStatus),
+		tipPollInterval:     defaultTipPollInterval,
+		tipReconcileTimeout: defaultTipReconcileTimeout,
 	}
 }
 
@@ -134,6 +145,7 @@ func (r *Runtime) start() {
 		r.startMonitorLoop()
 		r.startCreditProjectorLoop()
 		r.startReconcilerLoop()
+		r.startTipReconcileLoop()
 	})
 }
 

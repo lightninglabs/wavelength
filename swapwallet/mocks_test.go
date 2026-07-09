@@ -34,6 +34,8 @@ type fakeRPCServer struct {
 	listTxLastReq    *daemonrpc.ListTransactionsRequest
 	getInfoResp      *daemonrpc.GetInfoResponse
 	getInfoErr       error
+	getInfoHook      func(call int) (*daemonrpc.GetInfoResponse, error)
+	getInfoCalls     int
 	getBalanceResp   *daemonrpc.GetBalanceResponse
 	getBalanceErr    error
 	newAddressResp   *daemonrpc.NewAddressResponse
@@ -151,6 +153,11 @@ func (f *fakeRPCServer) ListTransactions(_ context.Context,
 
 func (f *fakeRPCServer) GetInfo(_ context.Context,
 	_ *daemonrpc.GetInfoRequest) (*daemonrpc.GetInfoResponse, error) {
+
+	f.getInfoCalls++
+	if f.getInfoHook != nil {
+		return f.getInfoHook(f.getInfoCalls)
+	}
 
 	if f.getInfoResp == nil && f.getInfoErr == nil {
 		return &daemonrpc.GetInfoResponse{
