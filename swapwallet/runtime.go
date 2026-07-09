@@ -4,6 +4,7 @@ package swapwallet
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -88,6 +89,12 @@ type Runtime struct {
 	// or leave state. Cleared when an entry transitions to a terminal
 	// status through the monitor loop.
 	overlay map[string]overlayStatus
+
+	// rehydratePageSize is the keyset page size for the startup
+	// pending-EXIT rehydration scan. A field (not a const) so tests can
+	// drive multi-page paths without seeding hundreds of rows; newRuntime
+	// defaults it to defaultRehydratePageSize.
+	rehydratePageSize int32
 }
 
 // overlayStatus is the runtime's wallet-level overlay applied on top of an
@@ -116,8 +123,9 @@ func newRuntime(parent context.Context, deps *Deps) *Runtime {
 		subscribers: make(
 			map[*subscriber]struct{},
 		),
-		pending: make(map[string]pendingEntry),
-		overlay: make(map[string]overlayStatus),
+		pending:           make(map[string]pendingEntry),
+		overlay:           make(map[string]overlayStatus),
+		rehydratePageSize: defaultRehydratePageSize,
 	}
 }
 
@@ -146,6 +154,15 @@ func (r *Runtime) start() {
 func (r *Runtime) resumeAll(ctx context.Context) {
 	log := r.deps.resolveLog()
 
+	// Restore wallet-local PENDING EXIT rows from the store into the
+	// in-memory pending map before anything else. This keeps the
+	// cooperative-leave forfeit->COMPLETE correlation restart-survivable
+	// (see rehydrateWalletLocalPending), and runs before backfillActivity
+	// so a leave that sealed while the daemon was down completes in the
+	// single startup pass. It depends only on the store, so it must run
+	// even when no swap backend is configured (below).
+	r.rehydrateWalletLocalPending(ctx)
+
 	if r.deps.SwapBackend == nil {
 		log.WarnS(ctx, "Skipping unified resume sweep",
 			ErrSwapBackendUnavailable,
@@ -166,6 +183,94 @@ func (r *Runtime) resumeAll(ctx context.Context) {
 	// live transition is projected. Idempotent on canonical_id; a no-op
 	// when no activity store is wired.
 	r.backfillActivity(ctx)
+}
+
+// defaultRehydratePageSize is the keyset page size for the pending-EXIT
+// rehydration scan. Pending leaves are few, so a modest page keeps the
+// one-shot startup scan cheap.
+const defaultRehydratePageSize = 256
+
+// rehydrateWalletLocalPending re-tracks wallet-local PENDING EXIT rows from the
+// canonical store into the in-memory pending map at startup.
+//
+// A cooperative-leave EXIT is projected durably at submit, keyed by its stable
+// send_job_id and carrying the retained consumed outpoint. But its
+// pending->COMPLETE flip is driven by matching that outpoint against the
+// forfeited-VTXO set, and the only source the completion pass reads is the
+// in-memory pending map — which a restart empties, since the map is populated
+// only by the (RPC-driven) submit path. Without re-tracking, a leave that
+// sealed while the daemon was down, or was interrupted by any mid-flight
+// restart, is stranded PENDING in the store forever.
+//
+// Re-tracking restores the correlation from the durable store row so the
+// existing derive/reconcile pass flips it COMPLETE under its stable id. Only
+// EXIT rows are scanned: SEND/RECV are owned by the live monitor and DEPOSIT
+// re-derives from the ledger. A unilateral EXIT (outpoint-keyed) is re-tracked
+// too — redundant but harmless (it re-derives to the same id and dedupes).
+//
+// The scan is filtered to PENDING EXIT in SQL and paged by the unique
+// canonical_id, so it reads only the matching rows (not the whole feed) and its
+// cursor is strictly monotonic — a full page always advances it.
+func (r *Runtime) rehydrateWalletLocalPending(ctx context.Context) {
+	if r.deps == nil || r.deps.ActivityStore == nil {
+		return
+	}
+
+	log := r.deps.resolveLog()
+
+	pageSize := r.rehydratePageSize
+	if pageSize <= 0 {
+		pageSize = defaultRehydratePageSize
+	}
+
+	var (
+		cursorID string
+		restored int
+	)
+	for {
+		batch, err := r.deps.ActivityStore.ListEntriesByKindStatus(
+			ctx, int64(walletdkrpc.EntryKind_ENTRY_KIND_EXIT),
+			int64(walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING),
+			cursorID, pageSize,
+		)
+		if err != nil {
+			log.WarnS(ctx, "Pending-EXIT rehydration scan failed",
+				err,
+			)
+
+			return
+		}
+		if len(batch) == 0 {
+			break
+		}
+
+		for _, row := range batch {
+			cursorID = row.CanonicalID
+
+			entry, err := rowToWalletEntry(row)
+			if err != nil {
+				log.WarnS(ctx, "Skipping undecodable activity "+
+					"row during rehydration", err,
+					slog.String("id", row.CanonicalID),
+				)
+
+				continue
+			}
+
+			r.trackPendingEntryWithoutTimeout(entry)
+			restored++
+		}
+
+		if len(batch) < int(pageSize) {
+			break
+		}
+	}
+
+	if restored > 0 {
+		log.InfoS(ctx, "Rehydrated wallet-local pending EXIT rows",
+			slog.Int("count", restored),
+		)
+	}
 }
 
 // trackPending records a new or refreshed wallet-local pending entry so the

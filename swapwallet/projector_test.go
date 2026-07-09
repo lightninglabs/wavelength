@@ -66,6 +66,14 @@ func (f *fakeActivityProjector) ListEntries(_ context.Context, _ int64,
 	return nil, nil
 }
 
+// ListEntriesByKindStatus satisfies darepod.ActivityStore. The rehydration
+// read path is tested against a real DB store, so this returns no rows.
+func (f *fakeActivityProjector) ListEntriesByKindStatus(_ context.Context, _,
+	_ int64, _ string, _ int32) ([]sqlc.ActivityEntry, error) {
+
+	return nil, nil
+}
+
 // CountByStatus satisfies darepod.ActivityStore. The count path is tested
 // against a real DB store, so this fake reports nothing.
 func (f *fakeActivityProjector) CountByStatus(_ context.Context, _ int64) (

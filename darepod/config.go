@@ -664,6 +664,13 @@ type ActivityStore interface {
 	ListEntries(ctx context.Context, cursorCreated int64, cursorID string,
 		limit int32) ([]sqlc.ActivityEntry, error)
 
+	// ListEntriesByKindStatus returns up to limit rows of the given kind
+	// and status, paged by canonical_id ascending after cursorID. It backs
+	// the startup rehydration of the wallet-local pending map, scanning
+	// only the matching rows rather than decoding the whole feed.
+	ListEntriesByKindStatus(ctx context.Context, kind, status int64,
+		cursorID string, limit int32) ([]sqlc.ActivityEntry, error)
+
 	// PullEvents returns up to limit append-only transition rows with
 	// event_seq strictly greater than cursor, oldest-first. It is the
 	// resumable-subscribe replay primitive: a reconnecting client passes

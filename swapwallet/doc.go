@@ -121,10 +121,12 @@
 // inputs — and the periodic reconciler lands its terminal transition into the
 // store live: each pass matches the retained consumed outpoint (kept in
 // vtxo_outpoint) against a forfeited VTXO and upserts the row to COMPLETE.
-// This stays best-effort — the row is wallet-local (in-memory) with no durable
-// leave-job → forfeit link, so a restarted daemon cannot rebuild the original
-// counterparty/note from durable state alone. A durable leave record (making
-// leave completion restart-survivable rather than best-effort), a
-// per-block/confirmation reconcile trigger, and startup-at-tip reconciliation
-// (C5) are deferred.
+// Its COMPLETE transition is restart-survivable: the PENDING row is persisted
+// at submit (canonical_id = send_job_id, the retained consumed outpoint in
+// vtxo_outpoint, plus counterparty/note/amount), and on startup the runtime
+// re-tracks the store's PENDING EXIT rows (rehydrateWalletLocalPending) so the
+// same forfeit correlation lands COMPLETE under the stable id after a restart.
+// Deferred: a per-block/confirmation reconcile trigger would lower latency, but
+// a block epoch fires before the wallet processes that block into the derive
+// sources, so the coarse, ordering-independent periodic reconciler is kept.
 package swapwallet

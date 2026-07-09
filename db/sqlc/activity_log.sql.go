@@ -160,6 +160,77 @@ func (q *Queries) ListActivityEntries(ctx context.Context, arg ListActivityEntri
 	return items, nil
 }
 
+const ListEntriesByKindStatus = `-- name: ListEntriesByKindStatus :many
+SELECT canonical_id, kind, status, amount_sat, fee_sat, counterparty, note, phase, phase_label, failure_code, failure_reason, payment_hash, txid, confirmation_height, vtxo_outpoint, swap_session_id, ledger_txid, boarding_addr, request_json, created_at_unix, updated_at_unix FROM activity_entries
+WHERE kind = $1
+    AND status = $2
+    AND canonical_id > $3
+ORDER BY canonical_id ASC
+LIMIT $4
+`
+
+type ListEntriesByKindStatusParams struct {
+	Kind       int64
+	Status     int64
+	CursorID   string
+	LimitCount int32
+}
+
+// ListEntriesByKindStatus returns entries of the given kind and status, paged
+// by the unique canonical_id ascending. It backs the startup rehydration of
+// the wallet-local pending map: filtering in SQL keeps that scan O(matching
+// rows) instead of decoding the whole activity feed, and the canonical_id
+// cursor is strictly monotonic (a full page always advances it).
+func (q *Queries) ListEntriesByKindStatus(ctx context.Context, arg ListEntriesByKindStatusParams) ([]ActivityEntry, error) {
+	rows, err := q.db.QueryContext(ctx, ListEntriesByKindStatus,
+		arg.Kind,
+		arg.Status,
+		arg.CursorID,
+		arg.LimitCount,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ActivityEntry
+	for rows.Next() {
+		var i ActivityEntry
+		if err := rows.Scan(
+			&i.CanonicalID,
+			&i.Kind,
+			&i.Status,
+			&i.AmountSat,
+			&i.FeeSat,
+			&i.Counterparty,
+			&i.Note,
+			&i.Phase,
+			&i.PhaseLabel,
+			&i.FailureCode,
+			&i.FailureReason,
+			&i.PaymentHash,
+			&i.Txid,
+			&i.ConfirmationHeight,
+			&i.VtxoOutpoint,
+			&i.SwapSessionID,
+			&i.LedgerTxid,
+			&i.BoardingAddr,
+			&i.RequestJson,
+			&i.CreatedAtUnix,
+			&i.UpdatedAtUnix,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const PullActivityEvents = `-- name: PullActivityEvents :many
 SELECT event_seq, canonical_id, status, phase, entry_json, created_at_unix FROM activity_events
 WHERE event_seq > $1
