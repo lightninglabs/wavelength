@@ -218,8 +218,9 @@ func (r *RPCServer) exitPlanEntry(ctx context.Context, raw string,
 		return entry, verdict
 	}
 
+	mat := r.resolveExitLineage(ctx, outpoint, desc)
 	plan := unroll.PlanExitFunding(
-		desc, btcutil.Amount(feeRate), walletSnapshot,
+		desc, mat, btcutil.Amount(feeRate), walletSnapshot,
 	)
 	verdict = plan.Feasibility
 	if verdict.RequiredWalletInputs == 0 {

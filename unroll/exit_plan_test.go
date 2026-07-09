@@ -39,7 +39,7 @@ func TestPlanExitFundingShortfallCoversMissingInputs(t *testing.T) {
 	t.Parallel()
 
 	plan := PlanExitFunding(
-		testExitPlanDescriptor(1_000_000, 2), 1,
+		testExitPlanDescriptor(1_000_000, 2), nil, 1,
 		ExitFundingSnapshot{
 			WalletConfirmedSat: 100_000,
 			WalletUsableInputs: 1,
@@ -57,7 +57,7 @@ func TestPlanExitFundingShortfallCoversBalance(t *testing.T) {
 	t.Parallel()
 
 	plan := PlanExitFunding(
-		testExitPlanDescriptor(1_000_000, 2), 1,
+		testExitPlanDescriptor(1_000_000, 2), nil, 1,
 		ExitFundingSnapshot{
 			WalletConfirmedSat: 100,
 			WalletUsableInputs: 2,
@@ -66,7 +66,13 @@ func TestPlanExitFundingShortfallCoversBalance(t *testing.T) {
 
 	require.False(t, plan.Feasibility.Feasible)
 	require.Equal(t, ExitWalletUnderfunded, plan.Feasibility.Reason)
-	require.EqualValues(t, 210, plan.FundingShortfallSat)
+
+	// Two recovery txs at 1 sat/vB. The CPFP budget covers both the
+	// children (2 * 155) and the zero-fee recovery txs themselves, which
+	// have no extracted path here so they fall back to
+	// defaultRecoveryTxVBytes (2 * 200): total 710 sat. Minus the 100 sat
+	// confirmed balance, the shortfall is 610.
+	require.EqualValues(t, 610, plan.FundingShortfallSat)
 }
 
 // TestExitFundingAddressBookReusesCachedAddress verifies polling a plan for
