@@ -157,6 +157,14 @@ type behavior struct {
 	proofSpendWatches map[wire.OutPoint]struct{}
 	terminalNotified  bool
 	exitCostNotified  bool
+
+	// requiredLockTime caches the exit policy's absolute nLockTime once the
+	// policy has been resolved (in startSweep). The standard timeout policy
+	// reports zero; a vHTLC refund-without-receiver policy reports the
+	// height the sweep must wait for. It feeds the best-case block estimate
+	// so a policy-gated sweep is not reported as imminent. None until the
+	// sweep phase resolves the policy.
+	requiredLockTime fn.Option[uint32]
 }
 
 // unrollTx is the transaction-scoped store handed to the unroll behavior inside
@@ -470,6 +478,11 @@ func (b *behavior) startSweep(ctx context.Context,
 				Reason: err.Error(),
 			})
 		}
+
+		// Cache the policy's absolute locktime so the read-only status
+		// probe can fold it into the best-case block estimate without
+		// re-resolving the policy. The value is immutable per job.
+		b.requiredLockTime = fn.Some(policy.RequiredLockTime())
 
 		b.log.InfoS(ctx, "Building unroll exit spend",
 			slog.String(
@@ -875,6 +888,18 @@ func (b *behavior) exitProgress(ctx context.Context, state State,
 	totalLayers := len(layers)
 	currentLayer := frontierLayer(snapshot, totalLayers)
 
+	// The sweep also cannot broadcast before the exit policy's absolute
+	// locktime (a vHTLC refund-without-receiver gates on one; the standard
+	// timeout policy reports zero). Fold the remaining locktime window into
+	// the best-case estimate so a policy-gated sweep is not reported as
+	// imminent. It stays zero until the sweep phase resolves the policy.
+	var lockTimeBlocks int32
+	b.requiredLockTime.WhenSome(func(lockTime uint32) {
+		if remaining := int32(lockTime) - job.Height; remaining > 0 {
+			lockTimeBlocks = remaining
+		}
+	})
+
 	progress := &ExitProgress{
 		ConfirmedTxs:      totalTxs - unconfirmed,
 		InFlightTxs:       inFlightTxs,
@@ -888,11 +913,22 @@ func (b *behavior) exitProgress(ctx context.Context, state State,
 		CSV:               snapshot.CSV,
 		BestCaseBlocksRemaining: bestCaseBlocksRemaining(
 			snapshot, b.proof.CSVDelay(), currentLayer, totalLayers,
+			lockTimeBlocks,
 		),
 	}
 
-	if fee, ok := actualSweepFeeSat(b.sweepTx, b.desc); ok {
-		progress.ActualSweepFeeSat = fn.Some(fee)
+	// The exact sweep fee is the value of the target output the sweep
+	// actually spends, minus the swept output value. Read the input value
+	// from the proof (what the exit spend policy spends) rather than the
+	// descriptor amount, which may differ from the materialized target
+	// output.
+	if b.sweepTx != nil {
+		if targetOut, err := b.proof.TargetOutput(); err == nil {
+			fee, ok := actualSweepFeeSat(b.sweepTx, targetOut.Value)
+			if ok {
+				progress.ActualSweepFeeSat = fn.Some(fee)
+			}
+		}
 	}
 
 	return progress
@@ -924,12 +960,14 @@ func frontierLayer(snapshot *unrollplan.Snapshot, totalLayers int) int {
 }
 
 // bestCaseBlocksRemaining is the optimistic block count until a confirmed
-// sweep. It assumes one confirmation per remaining proof layer, then the CSV
-// wait, then one sweep confirmation. Before the target confirms the CSV wait is
-// the full descriptor delay; afterwards the planner's live BlocksRemaining is
-// used, which shrinks each block.
+// sweep. It assumes one confirmation per remaining proof layer, then the wait
+// for the sweep to become broadcastable, then one sweep confirmation. Before
+// the target confirms the CSV wait is the full descriptor delay; afterwards the
+// planner's live BlocksRemaining is used, which shrinks each block. The sweep
+// can only broadcast once BOTH the CSV timeout and the exit policy's absolute
+// locktime have passed, so the post-target wait is the longer of the two.
 func bestCaseBlocksRemaining(snapshot *unrollplan.Snapshot, csvDelay uint32,
-	currentLayer, totalLayers int) int32 {
+	currentLayer, totalLayers int, lockTimeBlocks int32) int32 {
 
 	// A confirmed sweep is done; a broadcast sweep is one confirmation
 	// away.
@@ -964,18 +1002,25 @@ func bestCaseBlocksRemaining(snapshot *unrollplan.Snapshot, csvDelay uint32,
 		csvBlocks = csv.BlocksRemaining
 	})
 
+	// The policy's absolute locktime is an independent gate on the sweep,
+	// so the effective wait is the longer of the CSV and locktime windows.
+	sweepGate := csvBlocks
+	if lockTimeBlocks > sweepGate {
+		sweepGate = lockTimeBlocks
+	}
+
 	// Add one confirmation for the final sweep itself.
-	return matBlocks + csvBlocks + 1
+	return matBlocks + sweepGate + 1
 }
 
 // actualSweepFeeSat derives the real fee the built sweep pays: the value of the
-// single target input (the VTXO amount) minus the swept output value. It
-// returns false until a sweep transaction has been built, or if the numbers do
-// not yield a sane positive fee (a defensive guard against a malformed tx).
-func actualSweepFeeSat(sweepTx *wire.MsgTx,
-	desc *vtxo.Descriptor) (int64, bool) {
-
-	if sweepTx == nil || desc == nil {
+// single target input the sweep spends (inputValueSat) minus the swept output
+// value. The input value must be the proof's target output value, which is what
+// the exit spend policy actually spends. It returns false until a sweep
+// transaction has been built, or if the numbers do not yield a sane positive
+// fee (a defensive guard against a malformed tx).
+func actualSweepFeeSat(sweepTx *wire.MsgTx, inputValueSat int64) (int64, bool) {
+	if sweepTx == nil {
 		return 0, false
 	}
 
@@ -984,7 +1029,7 @@ func actualSweepFeeSat(sweepTx *wire.MsgTx,
 		outputSat += out.Value
 	}
 
-	fee := int64(desc.Amount) - outputSat
+	fee := inputValueSat - outputSat
 	if fee <= 0 {
 		return 0, false
 	}
