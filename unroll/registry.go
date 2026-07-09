@@ -996,13 +996,25 @@ func (r *registryBehavior) handleTerminated(ctx context.Context,
 	//nolint:contextcheck
 	r.requestPersist(req.Outpoint, 0)
 
+	// The child's terminal message carries its durable exit policy, which
+	// outlives r.pending: a completed async persist can evict the cached
+	// record before this terminal handoff. Prefer the message's kind so a
+	// recovery-only target is still held in exit rather than relived as a
+	// live coin (darepo-client#602). We only feed it to the manager, not
+	// the persisted record: the message has no policy ref, so stamping its
+	// kind onto the record would drop the store's (kind, ref) identity.
+	policyKind := req.ExitPolicyKind
+	if policyKind == "" {
+		policyKind = record.ExitPolicyKind
+	}
+
 	// Forward the terminal outcome to the VTXO manager so the VTXO's
 	// lifecycle tracks the unroll job's terminal on-chain result rather
 	// than the user's intent to exit (darepo-client#602). The handoff must
-	// survive caller-context cancellation, so detach the context. The
-	// record's exit policy rides along so the manager can hold a
-	// recovery-only target in exit rather than relive it as a live coin.
-	r.notifyVTXOExit(context.WithoutCancel(ctx), req, record.ExitPolicyKind)
+	// survive caller-context cancellation, so detach the context. The exit
+	// policy rides along so the manager can hold a recovery-only target in
+	// exit rather than relive it as a live coin.
+	r.notifyVTXOExit(context.WithoutCancel(ctx), req, policyKind)
 
 	return fn.Ok[RegistryResp](&RegistryAckResp{})
 }

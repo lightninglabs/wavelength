@@ -11,6 +11,7 @@ import (
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
@@ -100,6 +101,63 @@ func TestRegistryForwardsCleanFailureAsRecoverable(t *testing.T) {
 	require.Equal(t, target, notes[0].Outpoint)
 	require.Equal(t, vtxo.ExitOutcomeRecoverable, notes[0].Outcome)
 	require.Equal(t, "min relay fee not met", notes[0].Reason)
+}
+
+// TestRegistryForwardsExitPolicyFromTerminalMsg verifies the exit policy the
+// VTXO manager sees on a recoverable failure comes from the child's terminal
+// message, not the registry's in-memory pending cache. The pending record is
+// legitimately evicted once its async terminal persist completes
+// (handlePersistRecordResult), so a recovery-only vHTLC target can reach
+// handleTerminated with no cached record at all. If the policy were sourced
+// from r.pending it would arrive empty, the manager's Valid() guard would miss,
+// and the target would be relived to live: the exact darepo-client#602 relive
+// bug. Here the pending map starts empty and the terminal message carries the
+// vHTLC refund policy, so the forwarded notification must still name it.
+func TestRegistryForwardsExitPolicyFromTerminalMsg(t *testing.T) {
+	target := wire.OutPoint{Hash: chainhash.Hash{4}, Index: 0}
+	behavior, observer := newExitObserverRegistry(target)
+
+	// Model the post-persist eviction window: the child is long gone from
+	// both maps by the time its terminal handoff lands.
+	delete(behavior.pending, target)
+
+	const vhtlcRefund ExitPolicyKind = "vhtlc_refund_without_receiver"
+	_, err := behavior.handleTerminated(t.Context(), &UnrollTerminatedMsg{
+		Outpoint:            target,
+		ActorID:             actorIDForTarget(target),
+		Phase:               PhaseFailed,
+		FailReason:          "min relay fee not met",
+		HadOnChainFootprint: false,
+		ExitPolicyKind:      vhtlcRefund,
+	}).Unpack()
+	require.NoError(t, err)
+
+	notes := observer.notifications()
+	require.Len(t, notes, 1)
+	require.Equal(t, vtxo.ExitOutcomeRecoverable, notes[0].Outcome)
+	require.Equal(
+		t, actormsg.ExitPolicyVHTLCRefundWithoutReceiver,
+		notes[0].ExitPolicyKind, "the recovery-only exit policy "+
+			"must survive an evicted pending cache",
+	)
+	require.True(
+		t, notes[0].ExitPolicyKind.Valid(),
+		"a vHTLC policy must pass the manager's hold-in-exit guard",
+	)
+
+	// The message's kind reaches the manager but must NOT be stamped onto
+	// the persisted terminal record: the message has no policy ref, so a
+	// stamped kind would overwrite the store's (kind, ref) identity with
+	// (kind, ""). The no-cache record therefore leaves the policy empty,
+	// letting registryExitPolicy preserve the durable admission identity.
+	persisted, ok := behavior.pending[target]
+	require.True(t, ok)
+	require.Empty(
+		t, persisted.ExitPolicyKind, "the terminal record must not "+
+			"carry a ref-less kind that clobbers the store "+
+			"identity",
+	)
+	require.Empty(t, persisted.ExitPolicyRef)
 }
 
 // TestRegistryDoesNotRecoverFailureWithFootprint verifies a terminal failure
