@@ -54,12 +54,28 @@ func (a *Ark) buildSendOnChainIntentPackage(ctx context.Context,
 	)
 
 	if p.SweepAll {
-		// One leave output, IsChange=true: server stamps the
-		// residual (Σinputs − fee) onto it at seal time.
+		// One leave output, IsChange=true: the server stamps the
+		// residual (Σinputs − fee) onto it at seal time. We still ship
+		// the pre-fee Σ(inputs) as the placeholder value rather than a
+		// bare zero. The round FSM's IntentRequested validation sums
+		// the leave output values and rejects a zero total ("no VTXO
+		// output amount"), and the operator's join-request validation
+		// rejects a sub-dust output before the seal-time builder runs —
+		// the same admission-time floor the bounded-mode change VTXO
+		// below relies on. Σ(inputs) is above dust by construction (the
+		// forfeited VTXOs each cleared it), so both checks pass and the
+		// server rewrites the slot at seal time regardless of the
+		// placeholder.
+		var totalInput btcutil.Amount
+		for _, amt := range selectedAmounts {
+			totalInput += amt
+		}
+
 		leaves = []*types.LeaveRequest{
 			{
 				Output: &wire.TxOut{
 					PkScript: p.DestinationPkScript,
+					Value:    int64(totalInput),
 				},
 				IsChange: true,
 			},
