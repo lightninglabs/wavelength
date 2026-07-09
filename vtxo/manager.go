@@ -741,15 +741,19 @@ func (m *Manager) handleForceUnroll(ctx context.Context,
 
 	actorRef, ok := m.actors[req.Outpoint]
 	if !ok {
+		// No live actor. This is the common shape for the vHTLC
+		// recovery target and any exiting VTXO that a restart left out
+		// of the live-recovery set (UnilateralExit is excluded from
+		// ListLiveVTXOs). Re-materialize an actor from the persisted
+		// descriptor so the manager owns the exit for these triggers
+		// too, rather than letting the caller admit the unroll behind
+		// the manager's back.
+		spawned, res := m.spawnForceUnrollActor(ctx, req.Outpoint)
+		if res != nil {
+			return *res
+		}
 
-		// The VTXO actor is already gone (likely already terminal
-		// and cleaned up via handleVTXOTerminated). Report a
-		// specific reason so the caller can tell this apart from
-		// "event accepted but actor self-looped".
-		return fn.Ok[ManagerResp](&ForceUnrollResponse{
-			Accepted: false,
-			Reason:   "no such vtxo",
-		})
+		actorRef = spawned
 	}
 
 	reason := req.Reason
@@ -758,7 +762,9 @@ func (m *Manager) handleForceUnroll(ctx context.Context,
 	}
 
 	resp, err := actorRef.Ask(ctx, &ForceUnrollEvent{
-		Reason: reason,
+		Reason:     reason,
+		Trigger:    req.Trigger,
+		ExitPolicy: req.ExitPolicy,
 	}).Await(ctx).Unpack()
 	if err != nil {
 		return fn.Err[ManagerResp](
@@ -806,6 +812,72 @@ func (m *Manager) handleForceUnroll(ctx context.Context,
 	return fn.Ok[ManagerResp](&ForceUnrollResponse{
 		Accepted: true,
 	})
+}
+
+// spawnForceUnrollActor re-materializes a VTXO actor from its persisted
+// descriptor so handleForceUnroll can drive a force-unroll for a VTXO that has
+// no live actor. This covers the vHTLC recovery target (materialized directly
+// in the store, never admitted through the manager) and any exiting VTXO that
+// a restart left out of the live-recovery set. It returns the spawned actor
+// ref on success; on a miss (no descriptor) or a terminal descriptor it
+// returns a non-nil *fn.Result carrying the ForceUnrollResponse the caller
+// should return verbatim, so the transition is never attempted on a coin the
+// manager cannot own.
+func (m *Manager) spawnForceUnrollActor(ctx context.Context,
+	outpoint wire.OutPoint) (VTXOActorRef, *fn.Result[ManagerResp]) {
+
+	descriptor, err := m.cfg.Store.GetVTXO(ctx, outpoint)
+	if err != nil {
+		res := fn.Err[ManagerResp](
+			fmt.Errorf("load vtxo for force-unroll: %w", err),
+		)
+
+		return nil, &res
+	}
+	if descriptor == nil {
+		// No descriptor at all: the caller referenced an outpoint the
+		// wallet does not track. Report a specific reason so it reads
+		// apart from "accepted but self-looped".
+		res := fn.Ok[ManagerResp](&ForceUnrollResponse{
+			Accepted: false,
+			Reason:   "no such vtxo",
+		})
+
+		return nil, &res
+	}
+
+	// A terminal descriptor (already Spent/Forfeited/Failed) has nothing
+	// left to unroll. Do not spawn an actor that would immediately reap
+	// itself; report the no-op so the caller sees it explicitly.
+	if statusToState(
+		ctx, descriptor, m.cfg.Store, m.logger(ctx),
+	).IsTerminal() {
+
+		res := fn.Ok[ManagerResp](&ForceUnrollResponse{
+			Accepted: false,
+			Reason:   "already terminal",
+		})
+
+		return nil, &res
+	}
+
+	ref, err := m.spawnVTXOActor(ctx, descriptor)
+	if err != nil {
+		res := fn.Err[ManagerResp](
+			fmt.Errorf("respawn vtxo actor for force-unroll: %w",
+				err),
+		)
+
+		return nil, &res
+	}
+	m.actors[outpoint] = ref
+
+	m.logger(ctx).InfoS(ctx, "Re-materialized VTXO actor for force-unroll",
+		slog.String("outpoint", outpoint.String()),
+		slog.String("status", descriptor.Status.String()),
+	)
+
+	return ref, nil
 }
 
 // handleExitOutcome applies the terminal outcome of a unilateral-exit job
