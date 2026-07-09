@@ -97,6 +97,10 @@ same enable-only / non-empty overlay semantics (the zero value defers to the
 `walletdkrpc` build defaults). An empty string boots from
 `walletdk.DefaultConfig`.
 
+Empty `server_address` and `swap_server_address` values select the endpoint
+for the configured network and transport. They don't disable either service.
+Set the fields explicitly when a mobile host needs a custom or local endpoint.
+
 ```json
 {
   "data_dir": "/data/user/0/<app>/files/walletdk",

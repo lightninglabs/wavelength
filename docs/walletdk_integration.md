@@ -20,6 +20,13 @@ Without those tags, `Start` fails with `walletdk.ErrWalletRPCUnavailable`.
 
 ## Runtime Flow
 
+`walletdk.DefaultConfig()` leaves `ServerAddress` and `SwapServerAddress`
+empty. `Start` treats an empty value as "no explicit override", then resolves
+the effective endpoint from `Network` and the matching transport through the
+embedded `darepod` config. Host apps that need to display or forward a concrete
+address should set it explicitly. See [signet.md](signet.md) for the built-in
+testnet3, testnet4, and signet endpoints.
+
 1. Build a `walletdk.Config`.
 2. Start the embedded daemon with `walletdk.Start`, or connect to an external
    daemon with `walletdk.Connect`.
