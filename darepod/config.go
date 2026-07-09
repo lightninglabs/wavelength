@@ -49,6 +49,31 @@ const (
 	// mailbox edge server.
 	DefaultServerHost = "localhost:10010"
 
+	// defaultSwapServerHost is the default address for the swap server.
+	defaultSwapServerHost = "localhost:10030"
+
+	// defaultSignetServerGRPCHost is the public signet Ark operator gRPC
+	// endpoint.
+	defaultSignetServerGRPCHost = "arkd-signet.staging." +
+		"lightningcluster.com:443"
+
+	// defaultSignetServerRESTHost is the public signet Ark operator REST
+	// endpoint. The REST client adds the HTTPS scheme when the configured
+	// host is bare.
+	defaultSignetServerRESTHost = "arkd-signet-rest.staging." +
+		"lightningcluster.com"
+
+	// defaultSignetSwapServerGRPCHost is the public signet swap server gRPC
+	// endpoint.
+	defaultSignetSwapServerGRPCHost = "swapd-signet.staging." +
+		"lightningcluster.com:443"
+
+	// defaultSignetSwapServerRESTHost is the public signet swap server REST
+	// endpoint. The REST client adds the HTTPS scheme when the configured
+	// host is bare.
+	defaultSignetSwapServerRESTHost = "swapd-signet-rest.staging." +
+		"lightningcluster.com"
+
 	// DefaultIndexerServerID is the canonical operator identifier used
 	// in signed indexer proofs.
 	DefaultIndexerServerID = "arkd"
@@ -978,7 +1003,7 @@ func DefaultConfig() *Config {
 			RecoveryWindow: DefaultRecoveryWindow,
 		},
 		Swap: &SwapConfig{
-			ServerAddress:   "localhost:10030",
+			ServerAddress:   defaultSwapServerHost,
 			ServerTransport: RPCTransportGRPC,
 			VHTLCRecovery:   swapRecovery,
 		},
@@ -1003,6 +1028,8 @@ func (c *Config) Validate() error {
 	default:
 		return fmt.Errorf("unknown network %q", c.Network)
 	}
+
+	c.applyNetworkEndpointDefaults()
 
 	// Require explicit opt-in for mainnet to prevent accidental
 	// use during development.
@@ -1142,6 +1169,41 @@ func (c *Config) Validate() error {
 	}
 
 	return nil
+}
+
+// applyNetworkEndpointDefaults replaces the local development endpoints with
+// the public signet deployment when the caller selects signet without
+// configuring an operator or swap server. An insecure connection or a pinned
+// certificate keeps the local value intact, since either setting indicates an
+// intentional development override.
+func (c *Config) applyNetworkEndpointDefaults() {
+	if c.Network != "signet" {
+		return
+	}
+
+	if c.Server != nil && c.Server.Host == DefaultServerHost &&
+		!c.Server.Insecure && c.Server.TLSCertPath == "" {
+
+		switch c.Server.Transport {
+		case "", RPCTransportGRPC:
+			c.Server.Host = defaultSignetServerGRPCHost
+
+		case RPCTransportREST:
+			c.Server.Host = defaultSignetServerRESTHost
+		}
+	}
+
+	if c.Swap != nil && c.Swap.ServerAddress == defaultSwapServerHost &&
+		!c.Swap.ServerInsecure && c.Swap.ServerTLSCertPath == "" {
+
+		switch c.Swap.ServerTransport {
+		case "", RPCTransportGRPC:
+			c.Swap.ServerAddress = defaultSignetSwapServerGRPCHost
+
+		case RPCTransportREST:
+			c.Swap.ServerAddress = defaultSignetSwapServerRESTHost
+		}
+	}
 }
 
 // validateBtcwalletHeadersImportConfig checks that header import sources are
