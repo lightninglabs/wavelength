@@ -97,7 +97,27 @@ func registerMCPWalletQueryTools(s *mcp.Server,
 		resp, err := client.ExitStatus(
 			ctx, &walletdkrpc.ExitStatusRequest{
 				Outpoint: args.Outpoint,
+				Detailed: true,
 			},
+		)
+		if err != nil {
+			return nil, nil, mapWalletRPCError(err)
+		}
+
+		r, err := mcpResult(resp)
+
+		return r, nil, err
+	})
+
+	type exitSummaryArgs struct{}
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "exit.summary",
+		Description: "Summarize all in-progress exits and their totals",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest,
+		_ exitSummaryArgs) (*mcp.CallToolResult, any, error) {
+
+		resp, err := client.ExitSummary(
+			ctx, &walletdkrpc.ExitSummaryRequest{},
 		)
 		if err != nil {
 			return nil, nil, mapWalletRPCError(err)
