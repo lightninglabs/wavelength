@@ -826,6 +826,62 @@ func TestPendingRoundAssemblyState(t *testing.T) {
 		require.Contains(t, failedState.Reason, "no VTXO output amount")
 	})
 
+	t.Run("sweep_all_leave_only_intent_passes", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+
+		// A sweep-all onchain send has no VTXO requests: the input
+		// comes entirely from a forfeited VTXO and the sole output is
+		// one IsChange leave. buildSendOnChainIntentPackage stamps the
+		// pre-fee Σ(inputs) onto that leave so this intent clears the
+		// IntentRequested output validation instead of tripping the
+		// "no VTXO output amount" guard on a bare-zero leave — the
+		// exact failure that killed every sweep-all send before the
+		// fix.
+		forfeitOutpoint := wire.OutPoint{
+			Hash: chainhash.Hash{
+				0xaa,
+			},
+			Index: 0,
+		}
+		const sweepAmount = btcutil.Amount(50000)
+		h.vtxoStore.On(
+			"GetVTXO", mock.Anything, forfeitOutpoint,
+		).Return(&ClientVTXO{
+			Outpoint: forfeitOutpoint,
+			Amount:   sweepAmount,
+		}, nil)
+
+		leavePkScript := append(
+			[]byte{0x51, 0x20}, bytes.Repeat([]byte{0xcd}, 32)...,
+		)
+		h.withState(&PendingRoundAssembly{
+			Forfeits: []types.ForfeitRequest{{
+				VTXOOutpoint: &forfeitOutpoint,
+				Amount:       sweepAmount,
+			}},
+			Leaves: []*types.LeaveRequest{{
+				Output: &wire.TxOut{
+					Value:    int64(sweepAmount),
+					PkScript: leavePkScript,
+				},
+				IsChange: true,
+			}},
+		})
+
+		transition, err := h.sendEvent(&IntentRequested{})
+		require.NoError(t, err)
+		require.NotNil(t, transition)
+
+		nextState := assertStateType[*IntentSentState](h)
+		require.Len(t, nextState.Intents.Leaves, 1)
+		require.Empty(
+			t, nextState.Intents.VTXOs,
+			"sweep-all intent carries no VTXO requests",
+		)
+	})
+
 	t.Run("output_exceeds_input_fails", func(t *testing.T) {
 		t.Parallel()
 
