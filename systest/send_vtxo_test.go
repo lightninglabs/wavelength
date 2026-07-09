@@ -414,6 +414,25 @@ func (s *fakeMailboxServer) oorSubmitPackages() []*oorpb.SubmitPackageRequest {
 	return reqs
 }
 
+// joinRoundRequests returns a defensive copy of the JoinRound requests the
+// daemon has published to the fake operator mailbox so far.
+func (s *fakeMailboxServer) joinRoundRequests() []*roundpb.JoinRoundRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	reqs := make([]*roundpb.JoinRoundRequest, 0, len(s.joinRoundReqs))
+	for _, req := range s.joinRoundReqs {
+		cloned, ok := proto.Clone(req).(*roundpb.JoinRoundRequest)
+		if !ok {
+			continue
+		}
+
+		reqs = append(reqs, cloned)
+	}
+
+	return reqs
+}
+
 // directedSendFixture owns the daemon under test, its fake operator edge, and
 // the gRPC client used by the systest.
 type directedSendFixture struct {
@@ -1043,4 +1062,92 @@ func TestSendOORMultipleRecipientsEndToEnd(t *testing.T) {
 		amountA: 1,
 		amountB: 1,
 	}, recipientAmounts)
+}
+
+// TestSendOnChainSweepAllEndToEnd exercises the atomic onchain sweep-all send
+// through the full daemon stack and pins the regression where the round FSM
+// rejected the sweep-all intent before it ever reached the operator. The
+// sweep-all leave ships IsChange=true with the pre-fee Σ(inputs) as its
+// placeholder value; a bare-zero placeholder tripped the IntentRequested
+// "total VTXO output is zero" guard, failing the round at PendingRoundAssembly
+// and dropping every sweep-all send. The assertion is made at the fake
+// operator mailbox boundary: a JoinRound request must egress, which only
+// happens once the FSM clears IntentRequested and publishes the registration.
+func TestSendOnChainSweepAllEndToEnd(t *testing.T) {
+	ParallelN(t)
+
+	fixture := newDirectedSendFixture(t)
+
+	initialVTXOs := listAllVTXOs(t, fixture.client)
+	require.Len(t, initialVTXOs, 1)
+	require.Equal(
+		t, daemonrpc.VTXOStatus_VTXO_STATUS_LIVE,
+		initialVTXOs[0].Status,
+	)
+
+	// A standard P2TR destination script: OP_1 followed by a 32-byte
+	// witness program. The content is irrelevant to the round FSM; only
+	// its recognised script class matters to the RPC's leave-script guard.
+	destPkScript := append(
+		[]byte{0x51, 0x20}, make([]byte, 32)...,
+	)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+
+	sendResp, err := fixture.client.SendOnChain(
+		ctx, &daemonrpc.SendOnChainRequest{
+			Destination: &daemonrpc.LeaveDestination{
+				Target: &daemonrpc.LeaveDestination_PkScript{
+					PkScript: destPkScript,
+				},
+			},
+			Amount: &daemonrpc.SendOnChainRequest_SweepAll{
+				SweepAll: true,
+			},
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, "submitted", sendResp.Status)
+
+	// Sweep-all reports the pre-fee Σ(inputs) as the actual amount; the
+	// operator reduces it by the seal-time fee.
+	require.Equal(t, testSeededAmountSat, sendResp.ActualAmountSat)
+
+	// The seeded VTXO must move to pending-forfeit as the round adopts it.
+	require.Eventually(
+		t,
+		func() bool {
+			vtxos := listAllVTXOs(t, fixture.client)
+			vtxoInfo := findVTXOByOutpoint(
+				vtxos, fixture.seededOutpoint,
+			)
+			if vtxoInfo == nil {
+				return false
+			}
+
+			return vtxoInfo.Status ==
+				daemonrpc.VTXOStatus_VTXO_STATUS_PENDING_FORFEIT
+		},
+		20*time.Second,
+		200*time.Millisecond,
+		"seeded VTXO did not transition to pending forfeit",
+	)
+
+	// The core regression assertion: the sweep-all intent must clear the
+	// round FSM's IntentRequested validation and publish a JoinRound
+	// request to the operator. Before the fix the FSM failed the round at
+	// PendingRoundAssembly ("total VTXO output is zero") and nothing
+	// egressed, so this Eventually would time out.
+	require.Eventually(
+		t,
+		func() bool {
+			reqs := fixture.mailboxServer.joinRoundRequests()
+
+			return len(reqs) >= 1
+		},
+		20*time.Second,
+		200*time.Millisecond,
+		"sweep-all send did not publish a JoinRound request",
+	)
 }
