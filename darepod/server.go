@@ -5590,9 +5590,9 @@ func (s *Server) initFraudWatcher(ctx context.Context,
 
 	//nolint:contextcheck // watcher owns its own root context lifecycle
 	watcher := fraud.NewWatcherActor(fraud.WatcherConfig{
-		ChainSource: chainSourceRef,
-		UnrollRef:   s.unrollRegistryRef.UnsafeFromSome(),
-		Log:         fn.Some(s.subLogger(fraud.Subsystem)),
+		ChainSource:    chainSourceRef,
+		VTXOManagerRef: s.vtxoMgrRef.UnsafeFromSome(),
+		Log:            fn.Some(s.subLogger(fraud.Subsystem)),
 	})
 	s.fraudWatcher = watcher
 	s.fraudWatcherRef = fn.Some(watcher.Ref())

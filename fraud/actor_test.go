@@ -11,7 +11,7 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/chainsource"
-	"github.com/lightninglabs/darepo-client/unroll"
+	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
@@ -123,32 +123,36 @@ func (f *fakeChainSourceRef) emitSpend(t *testing.T, outpoint wire.OutPoint) {
 	)
 }
 
-type fakeUnrollRef struct {
+// fakeManagerRef stands in for the VTXO manager: it records the
+// ForceUnrollRequests the fraud watcher sends and replies with a
+// ForceUnrollResponse. A non-nil err makes the Ask fail so the fanout
+// best-effort behavior can be exercised.
+type fakeManagerRef struct {
 	mu       sync.Mutex
-	requests []*unroll.EnsureUnrollRequest
+	requests []*actormsg.ForceUnrollRequest
 	err      error
 }
 
 // ID returns the fake actor ID.
-func (f *fakeUnrollRef) ID() string {
-	return "fake-unroll"
+func (f *fakeManagerRef) ID() string {
+	return "fake-vtxo-manager"
 }
 
 // Tell is unused by these tests.
-func (f *fakeUnrollRef) Tell(context.Context, unroll.RegistryMsg) error {
+func (f *fakeManagerRef) Tell(context.Context, vtxo.ManagerMsg) error {
 	return nil
 }
 
-// Ask records ensure-unroll requests.
-func (f *fakeUnrollRef) Ask(_ context.Context,
-	msg unroll.RegistryMsg) actor.Future[unroll.RegistryResp] {
+// Ask records force-unroll requests.
+func (f *fakeManagerRef) Ask(_ context.Context,
+	msg vtxo.ManagerMsg) actor.Future[vtxo.ManagerResp] {
 
-	promise := actor.NewPromise[unroll.RegistryResp]()
-	req, ok := msg.(*unroll.EnsureUnrollRequest)
+	promise := actor.NewPromise[vtxo.ManagerResp]()
+	req, ok := msg.(*actormsg.ForceUnrollRequest)
 	if !ok {
 		promise.Complete(
-			fn.Err[unroll.RegistryResp](
-				fmt.Errorf("unexpected unroll msg %T", msg),
+			fn.Err[vtxo.ManagerResp](
+				fmt.Errorf("unexpected manager msg %T", msg),
 			),
 		)
 
@@ -159,16 +163,15 @@ func (f *fakeUnrollRef) Ask(_ context.Context,
 	f.requests = append(f.requests, req)
 	f.mu.Unlock()
 	if f.err != nil {
-		promise.Complete(fn.Err[unroll.RegistryResp](f.err))
+		promise.Complete(fn.Err[vtxo.ManagerResp](f.err))
 
 		return promise.Future()
 	}
 
 	promise.Complete(
-		fn.Ok[unroll.RegistryResp](
-			&unroll.EnsureUnrollResp{
-				ActorID: "child",
-				Created: true,
+		fn.Ok[vtxo.ManagerResp](
+			&actormsg.ForceUnrollResponse{
+				Accepted: true,
 			},
 		),
 	)
@@ -176,7 +179,9 @@ func (f *fakeUnrollRef) Ask(_ context.Context,
 	return promise.Future()
 }
 
-func (f *fakeUnrollRef) lastRequest(t *testing.T) *unroll.EnsureUnrollRequest {
+func (f *fakeManagerRef) lastRequest(
+	t *testing.T) *actormsg.ForceUnrollRequest {
+
 	t.Helper()
 
 	f.mu.Lock()
@@ -187,8 +192,8 @@ func (f *fakeUnrollRef) lastRequest(t *testing.T) *unroll.EnsureUnrollRequest {
 	return f.requests[len(f.requests)-1]
 }
 
-// requestCount returns the number of recorded ensure-unroll requests.
-func (f *fakeUnrollRef) requestCount() int {
+// requestCount returns the number of recorded force-unroll requests.
+func (f *fakeManagerRef) requestCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -203,11 +208,11 @@ func TestWatcherTriggersUnrollOnAncestorSpend(t *testing.T) {
 	desc := testDescriptor(target, treePath)
 
 	chainRef := &fakeChainSourceRef{}
-	unrollRef := &fakeUnrollRef{}
+	managerRef := &fakeManagerRef{}
 	watcher := NewWatcherActor(WatcherConfig{
-		ChainSource: chainRef,
-		UnrollRef:   unrollRef,
-		Log:         fn.None[btclog.Logger](),
+		ChainSource:    chainRef,
+		VTXOManagerRef: managerRef,
+		Log:            fn.None[btclog.Logger](),
 	})
 	t.Cleanup(watcher.Stop)
 
@@ -223,12 +228,12 @@ func TestWatcherTriggersUnrollOnAncestorSpend(t *testing.T) {
 	chainRef.emitSpend(t, source)
 
 	require.Eventually(t, func() bool {
-		return unrollRef.requestCount() == 1
+		return managerRef.requestCount() == 1
 	}, testTimeout, 10*time.Millisecond)
 
-	req := unrollRef.lastRequest(t)
+	req := managerRef.lastRequest(t)
 	require.Equal(t, target, req.Outpoint)
-	require.Equal(t, unroll.TriggerFraudSpend, req.Trigger)
+	require.Equal(t, actormsg.UnrollTriggerFraudSpend, req.Trigger)
 
 	untrackResp, err := watcher.Ref().Ask(
 		t.Context(), &UntrackRequest{TargetOutpoint: target},
@@ -257,9 +262,9 @@ func TestWatcherTracksOnlyLiveOORVTXOs(t *testing.T) {
 
 	chainRef := &fakeChainSourceRef{}
 	watcher := NewWatcherActor(WatcherConfig{
-		ChainSource: chainRef,
-		UnrollRef:   &fakeUnrollRef{},
-		Log:         fn.None[btclog.Logger](),
+		ChainSource:    chainRef,
+		VTXOManagerRef: &fakeManagerRef{},
+		Log:            fn.None[btclog.Logger](),
 	})
 	t.Cleanup(watcher.Stop)
 
@@ -289,9 +294,9 @@ func TestWatcherRefcountsSharedWatchOutpoints(t *testing.T) {
 
 	chainRef := &fakeChainSourceRef{}
 	watcher := NewWatcherActor(WatcherConfig{
-		ChainSource: chainRef,
-		UnrollRef:   &fakeUnrollRef{},
-		Log:         fn.None[btclog.Logger](),
+		ChainSource:    chainRef,
+		VTXOManagerRef: &fakeManagerRef{},
+		Log:            fn.None[btclog.Logger](),
 	})
 	t.Cleanup(watcher.Stop)
 
@@ -335,9 +340,9 @@ func TestWatcherBestEffortTrackKeepsValidDescriptors(t *testing.T) {
 
 	chainRef := &fakeChainSourceRef{}
 	watcher := NewWatcherActor(WatcherConfig{
-		ChainSource: chainRef,
-		UnrollRef:   &fakeUnrollRef{},
-		Log:         fn.None[btclog.Logger](),
+		ChainSource:    chainRef,
+		VTXOManagerRef: &fakeManagerRef{},
+		Log:            fn.None[btclog.Logger](),
 	})
 	t.Cleanup(watcher.Stop)
 
@@ -353,12 +358,12 @@ func TestWatcherBestEffortTrackKeepsValidDescriptors(t *testing.T) {
 // attempted.
 func TestWatcherSpendFanoutBestEffort(t *testing.T) {
 	treePath, source := testLeafTree(t, 50)
-	unrollRef := &fakeUnrollRef{err: fmt.Errorf("admission failed")}
+	managerRef := &fakeManagerRef{err: fmt.Errorf("admission failed")}
 	chainRef := &fakeChainSourceRef{}
 	watcher := NewWatcherActor(WatcherConfig{
-		ChainSource: chainRef,
-		UnrollRef:   unrollRef,
-		Log:         fn.None[btclog.Logger](),
+		ChainSource:    chainRef,
+		VTXOManagerRef: managerRef,
+		Log:            fn.None[btclog.Logger](),
 	})
 	t.Cleanup(watcher.Stop)
 
@@ -376,5 +381,5 @@ func TestWatcherSpendFanoutBestEffort(t *testing.T) {
 		Height:       33,
 	}).Await(t.Context()).Unpack()
 	require.Error(t, err)
-	require.Equal(t, 2, unrollRef.requestCount())
+	require.Equal(t, 2, managerRef.requestCount())
 }

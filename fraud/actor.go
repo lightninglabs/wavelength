@@ -9,7 +9,7 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/chainsource"
-	"github.com/lightninglabs/darepo-client/unroll"
+	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
@@ -38,8 +38,14 @@ type WatcherConfig struct {
 		chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
 	]
 
-	// UnrollRef starts durable unroll jobs for affected targets.
-	UnrollRef actor.ActorRef[unroll.RegistryMsg, unroll.RegistryResp]
+	// VTXOManagerRef drives affected targets into unilateral exit through
+	// the VTXO manager's single admission gate. The manager transitions
+	// the VTXO to UnilateralExitState (persisting it out of the live set)
+	// and emits the chain-resolver notification that starts the durable
+	// unroll job under TriggerFraudSpend, so fraud escalation converges on
+	// the same path as manual and critical-expiry exits rather than
+	// admitting the registry job behind the manager's back.
+	VTXOManagerRef actor.ActorRef[vtxo.ManagerMsg, vtxo.ManagerResp]
 
 	// Log is an optional logger.
 	Log fn.Option[btclog.Logger]
@@ -65,9 +71,10 @@ type trackedTarget struct {
 }
 
 // WatcherActor is the recipient fraud watcher: a passive ancestor-spend
-// monitor that calls unroll.EnsureUnroll(..., TriggerFraudSpend) when
-// any watched ancestor of a tracked OOR VTXO is observed spent on
-// chain. It is both the public handle (Ref / Stop) and the
+// monitor that forces the affected target into unilateral exit through the
+// VTXO manager (ForceUnrollRequest under TriggerFraudSpend) when any watched
+// ancestor of a tracked OOR VTXO is observed spent on chain. It is both the
+// public handle (Ref / Stop) and the
 // actor.ActorBehavior implementation; the runtime is driven through
 // the embedded actor.
 type WatcherActor struct {
@@ -445,17 +452,38 @@ func (w *WatcherActor) unregisterSpendWatchPoint(ctx context.Context,
 	return nil
 }
 
-// ensureUnroll asks the unroll registry to start (or reuse) a durable
-// unroll job for one target VTXO under TriggerFraudSpend.
+// ensureUnroll asks the VTXO manager to force one target VTXO into unilateral
+// exit under TriggerFraudSpend. The manager owns the state transition and, via
+// its chain-resolver seam, starts (or reuses) the durable unroll job. A
+// declined transition (the coin is already terminal, or the wallet no longer
+// tracks it) is logged rather than surfaced as a hard error: the fraud watch
+// has done all it can, and neither case is one the watcher can drive forward,
+// so failing would only wedge escalation for the other targets sharing the
+// ancestor.
 func (w *WatcherActor) ensureUnroll(ctx context.Context,
 	target wire.OutPoint) error {
 
-	_, err := w.cfg.UnrollRef.Ask(ctx, &unroll.EnsureUnrollRequest{
+	resp, err := w.cfg.VTXOManagerRef.Ask(ctx, &actormsg.ForceUnrollRequest{
 		Outpoint: target,
-		Trigger:  unroll.TriggerFraudSpend,
+		Reason:   "recipient fraud spend",
+		Trigger:  actormsg.UnrollTriggerFraudSpend,
 	}).Await(ctx).Unpack()
 	if err != nil {
 		return fmt.Errorf("ensure fraud unroll for %s: %w", target, err)
+	}
+
+	forceResp, ok := resp.(*actormsg.ForceUnrollResponse)
+	if !ok {
+		return fmt.Errorf("unexpected force-unroll response %T for %s",
+			resp, target)
+	}
+
+	if !forceResp.Accepted {
+		w.log.WarnS(ctx, "VTXO manager declined fraud unroll",
+			nil,
+			slog.String("outpoint", target.String()),
+			slog.String("reason", forceResp.Reason),
+		)
 	}
 
 	return nil
