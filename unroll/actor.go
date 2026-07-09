@@ -354,9 +354,12 @@ func (b *behavior) dispatch(ctx context.Context, ax actor.Exec[unrollTx],
 	case *SpendFinalizedMsg:
 		return b.handleEvent(ctx, ax, &SpendFinalizedEvent{})
 
-	case *GetStateRequest:
-		return fn.Ok[Resp](b.stateResponse())
-
+	// GetStateRequest is intentionally NOT handled here: Receive
+	// short-circuits it before it ever reaches dispatch (it is a read-only
+	// probe that drives no FSM transition and writes nothing). A
+	// GetStateRequest can only arrive at this switch via a future refactor
+	// that breaks that invariant, in which case the default arm's loud
+	// error is the signal we want -- not a silently duplicated read path.
 	default:
 		return fn.Err[Resp](
 			fmt.Errorf("unknown unroll message: %T", msg),
@@ -2308,10 +2311,13 @@ func (b *behavior) maybeLatchSweepFinalized(txid chainhash.Hash) {
 // latched by a matching TxFinalizedMsg for the recorded sweep txid.
 // While provisional, the registry keeps the child in its active map so
 // a reorg of the sweep confirmation has a live actor to deliver the
-// rollback to. The chainsource transport (lndclient over gRPC) does
-// not surface a finality signal today, so production deployments may
-// retain the child indefinitely after a sweep confirms; height-based
-// finality gating is a Phase 7 follow-up.
+// rollback to. The sweep's finality signal arrives via txconfirm's
+// TxFinalized, which txconfirm emits off chainsource's height-based Done
+// synthesis -- enabled for every backend (including lndclient over gRPC,
+// whose native Done channel is allocated-but-never-written) by wiring
+// FinalityDepth = ResolveReorgSafetyDepth() at waved/server.go. So the
+// child IS evicted once the sweep confirmation buries past the
+// reorg-safety depth, not retained indefinitely.
 //
 // PhaseExternalSpendObserved is reversible by design and never reaches
 // this function as terminal; SpendFinalizedMsg promotes the

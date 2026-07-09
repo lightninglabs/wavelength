@@ -5229,6 +5229,19 @@ func unrollPhaseToProto(phase unroll.Phase) waverpc.UnrollJobStatus {
 	case unroll.PhaseFailed:
 		return waverpc.UnrollJobStatus_UNROLL_JOB_STATUS_FAILED
 
+	case unroll.PhaseMaterializing:
+		return waverpc.UnrollJobStatus_UNROLL_JOB_STATUS_MATERIALIZING
+
+	// PhaseExternalSpendObserved is deliberately reported as
+	// MATERIALIZING: it is a transient, reorg-reversible parked phase (an
+	// external spend was seen but has not finalized) with no dedicated
+	// proto status, and the true phase is always reconstructed from the
+	// durable checkpoint on restore. The collapse only coarsens the
+	// operator-facing status during the parked window; add a dedicated
+	// proto value if that window needs to be independently observable.
+	case unroll.PhaseExternalSpendObserved:
+		return waverpc.UnrollJobStatus_UNROLL_JOB_STATUS_MATERIALIZING
+
 	default:
 		return waverpc.UnrollJobStatus_UNROLL_JOB_STATUS_MATERIALIZING
 	}

@@ -230,6 +230,20 @@ func statusForPhase(phase Phase) db.UnilateralExitJobStatus {
 	case PhaseFailed:
 		return db.UnilateralExitJobStatusFailed
 
+	case PhaseMaterializing:
+		return db.UnilateralExitJobStatusMaterializing
+
+	// PhaseExternalSpendObserved is deliberately collapsed onto
+	// Materializing: it is a transient, reorg-reversible parked phase (an
+	// external spend was seen but has not finalized), the DB status enum
+	// has no dedicated value for it, and the true phase is always
+	// reconstructed from the durable checkpoint on restore -- so no state
+	// is lost. The collapse only affects the coarse operator-facing status
+	// during the parked window; add a dedicated enum value if that window
+	// needs to be independently observable.
+	case PhaseExternalSpendObserved:
+		return db.UnilateralExitJobStatusMaterializing
+
 	default:
 		return db.UnilateralExitJobStatusMaterializing
 	}
