@@ -391,6 +391,7 @@ func (s *Service) exitStatus(ctx context.Context,
 	resp, err := s.deps.RPCServer.GetUnrollStatus(
 		ctx, &daemonrpc.GetUnrollStatusRequest{
 			Outpoint: req.GetOutpoint(),
+			Detailed: req.GetDetailed(),
 		},
 	)
 	if err != nil {
@@ -399,11 +400,115 @@ func (s *Service) exitStatus(ctx context.Context,
 	}
 
 	return &walletdkrpc.ExitStatusResponse{
-		Found:     resp.GetFound(),
-		Status:    exitStatusFromDaemon(resp.GetStatus()),
-		SweepTxid: resp.GetSweepTxid(),
-		LastError: resp.GetLastError(),
+		Found:       resp.GetFound(),
+		Status:      exitStatusFromDaemon(resp.GetStatus()),
+		SweepTxid:   resp.GetSweepTxid(),
+		LastError:   resp.GetLastError(),
+		PhaseDetail: resp.GetPhaseDetail(),
+		Progress: exitProgressFromDaemon(
+			resp.GetProgress(),
+		),
+		Csv:                     exitCSVFromDaemon(resp.GetCsv()),
+		Fees:                    exitFeesFromDaemon(resp.GetFees()),
+		BestCaseBlocksRemaining: resp.GetBestCaseBlocksRemaining(),
+		CurrentHeight:           resp.GetCurrentHeight(),
 	}, nil
+}
+
+// exitProgressFromDaemon projects the daemon's UnrollProgress onto the
+// wallet-facing ExitProgress. It returns nil when the daemon supplied no
+// progress (a coarse query, or a terminal job with no live actor).
+func exitProgressFromDaemon(
+	p *daemonrpc.UnrollProgress) *walletdkrpc.ExitProgress {
+
+	if p == nil {
+		return nil
+	}
+
+	return &walletdkrpc.ExitProgress{
+		ConfirmedTxs:      p.GetConfirmedTxs(),
+		InFlightTxs:       p.GetInFlightTxs(),
+		ReadyTxs:          p.GetReadyTxs(),
+		BlockedTxs:        p.GetBlockedTxs(),
+		TotalTxs:          p.GetTotalTxs(),
+		CurrentLayer:      p.GetCurrentLayer(),
+		TotalLayers:       p.GetTotalLayers(),
+		TargetConfirmed:   p.GetTargetConfirmed(),
+		AllProofConfirmed: p.GetAllProofConfirmed(),
+	}
+}
+
+// exitCSVFromDaemon projects the daemon's UnrollCSV onto the wallet-facing
+// ExitCSV. It returns nil until the target confirms (no CSV countdown yet).
+func exitCSVFromDaemon(c *daemonrpc.UnrollCSV) *walletdkrpc.ExitCSV {
+	if c == nil {
+		return nil
+	}
+
+	return &walletdkrpc.ExitCSV{
+		TargetConfirmHeight: c.GetTargetConfirmHeight(),
+		MaturityHeight:      c.GetMaturityHeight(),
+		BlocksRemaining:     c.GetBlocksRemaining(),
+		Mature:              c.GetMature(),
+	}
+}
+
+// exitFeesFromDaemon projects the daemon's UnrollFees onto the wallet-facing
+// ExitFees. It returns nil when the daemon supplied no fee breakdown.
+func exitFeesFromDaemon(f *daemonrpc.UnrollFees) *walletdkrpc.ExitFees {
+	if f == nil {
+		return nil
+	}
+
+	return &walletdkrpc.ExitFees{
+		CpfpFeeSat:      f.GetCpfpFeeSat(),
+		SweepFeeSat:     f.GetSweepFeeSat(),
+		TotalCostSat:    f.GetTotalCostSat(),
+		VtxoAmountSat:   f.GetVtxoAmountSat(),
+		NetRecoveredSat: f.GetNetRecoveredSat(),
+		FeeRateSatVbyte: f.GetFeeRateSatVbyte(),
+		SweepFeeActual:  f.GetSweepFeeActual(),
+		SpentSoFarSat:   f.GetSpentSoFarSat(),
+	}
+}
+
+// exitSummary proxies the daemon's aggregate exit portfolio and projects it
+// onto the wallet-facing ExitSummaryResponse.
+func (s *Service) exitSummary(ctx context.Context,
+	_ *walletdkrpc.ExitSummaryRequest) (*walletdkrpc.ExitSummaryResponse,
+	error) {
+
+	if s.deps == nil || s.deps.RPCServer == nil {
+		return nil, statusSwapBackendUnavailable()
+	}
+
+	result, err := s.deps.RPCServer.ExitSummary(ctx)
+	if err != nil {
+		return nil, status.Errorf(status.Code(err), "exit summary: %v",
+			err)
+	}
+
+	resp := &walletdkrpc.ExitSummaryResponse{
+		Exits: make(
+			[]*walletdkrpc.ExitSummaryItem, 0, len(result.Entries),
+		),
+		TotalExits:              result.TotalExits,
+		TotalVtxoAmountSat:      result.TotalVTXOAmountSat,
+		TotalEstFeeSat:          result.TotalEstFeeSat,
+		TotalEstNetRecoveredSat: result.TotalEstNetRecoveredSat,
+	}
+	for i := range result.Entries {
+		entry := result.Entries[i]
+		resp.Exits = append(resp.Exits, &walletdkrpc.ExitSummaryItem{
+			Outpoint:           entry.Outpoint,
+			Status:             exitStatusFromDaemon(entry.Status),
+			VtxoAmountSat:      entry.VTXOAmountSat,
+			EstTotalFeeSat:     entry.EstTotalFeeSat,
+			EstNetRecoveredSat: entry.EstNetRecoveredSat,
+		})
+	}
+
+	return resp, nil
 }
 
 // exitStatusFromDaemon maps daemonrpc.UnrollJobStatus onto the

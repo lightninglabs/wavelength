@@ -127,6 +127,15 @@ func (s *Service) ExitStatus(ctx context.Context,
 	return s.exitStatus(ctx, req)
 }
 
+// ExitSummary reports the wallet-wide portfolio of in-progress exits by
+// proxying the daemon's aggregate exit view.
+func (s *Service) ExitSummary(ctx context.Context,
+	req *walletdkrpc.ExitSummaryRequest) (*walletdkrpc.ExitSummaryResponse,
+	error) {
+
+	return s.exitSummary(ctx, req)
+}
+
 // Recv opens an out-swap via the daemon-owned swap subserver and returns the
 // daemon-signed BOLT-11 invoice plus the initial WalletEntry. The invoice
 // is signed with a payment-scoped daemon-managed auth key (PR #337);
