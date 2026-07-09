@@ -39,6 +39,11 @@ type ExitOutcomeResolution struct {
 	// Reason carries the terminal failure reason when Outcome is
 	// ExitOutcomeRecoverable.
 	Reason string
+
+	// ExitPolicyKind is the exit-spend policy the unroll job ran under, so
+	// boot reconciliation can tell a recovery-only target apart from a
+	// normal coin and avoid reliving the former (see recoverExitedVTXO).
+	ExitPolicyKind actormsg.ExitPolicyKind
 }
 
 // ExitOutcomeResolver resolves the terminal unilateral-exit outcome, if any,
@@ -516,9 +521,10 @@ func (m *Manager) reconcileUnilateralExits(ctx context.Context) {
 
 		outcome := resolution.UnsafeFromSome()
 		req := &ExitOutcomeNotification{
-			Outpoint: desc.Outpoint,
-			Outcome:  outcome.Outcome,
-			Reason:   outcome.Reason,
+			Outpoint:       desc.Outpoint,
+			Outcome:        outcome.Outcome,
+			Reason:         outcome.Reason,
+			ExitPolicyKind: outcome.ExitPolicyKind,
 		}
 
 		_, err = m.handleExitOutcome(ctx, req).Unpack()
@@ -917,6 +923,27 @@ func (m *Manager) handleExitOutcome(ctx context.Context,
 // recovers the coin.
 func (m *Manager) recoverExitedVTXO(ctx context.Context,
 	req *ExitOutcomeNotification) fn.Result[ManagerResp] {
+
+	// A recovery-only target (a non-standard exit policy, e.g. a vHTLC
+	// refund) must never be relived into the live coin set: it is a
+	// swap-contract output, not spendable wallet liquidity, so reliving it
+	// would inflate balance, feed coin selection and sweep-all, and
+	// re-poison cooperative consumption. A clean (no-footprint) failure of
+	// such a job means the refund attempt failed; the owning recovery
+	// subsystem is responsible for retrying or terminal-failing it. We hold
+	// the coin in UnilateralExit rather than resurrect it as spendable.
+	if req.ExitPolicyKind.Valid() {
+		m.logger(ctx).InfoS(ctx, "Holding recovery-only VTXO in exit "+
+			"after recoverable unroll failure",
+			slog.String("outpoint", req.Outpoint.String()),
+			slog.String(
+				"exit_policy_kind", string(req.ExitPolicyKind),
+			),
+			slog.String("reason", req.Reason),
+		)
+
+		return fn.Ok[ManagerResp](&ExitOutcomeResp{})
+	}
 
 	if actorRef, ok := m.actors[req.Outpoint]; ok {
 		_, err := m.askVTXOActor(ctx, actorRef, &ExitFailedEvent{

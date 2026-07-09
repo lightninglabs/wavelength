@@ -4194,12 +4194,18 @@ func resolveExitOutcome(ctx context.Context,
 		return fn.Some(vtxo.ExitOutcomeResolution{
 			Outcome: vtxo.ExitOutcomeConfirmed,
 			Reason:  job.LastError,
+			ExitPolicyKind: actormsg.ExitPolicyKind(
+				job.ExitPolicyKind,
+			),
 		}), nil
 
 	case db.UnilateralExitJobStatusFailedRecoverable:
 		return fn.Some(vtxo.ExitOutcomeResolution{
 			Outcome: vtxo.ExitOutcomeRecoverable,
 			Reason:  job.LastError,
+			ExitPolicyKind: actormsg.ExitPolicyKind(
+				job.ExitPolicyKind,
+			),
 		}), nil
 
 	default:

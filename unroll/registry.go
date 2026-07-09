@@ -13,6 +13,7 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo-client/ledger"
+	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/txconfirm"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -785,14 +786,16 @@ func (r *registryBehavior) failAdmittedChild(ctx context.Context,
 	r.pending[target] = cloneRegistryRecord(record)
 
 	// Roll the VTXO back to live. The terminal record below is the durable
-	// backstop if this best-effort notification is lost.
+	// backstop if this best-effort notification is lost. A recovery-only
+	// target is held in exit instead (see notifyVTXOExit / the manager),
+	// so its policy rides along.
 	r.notifyVTXOExit(context.WithoutCancel(ctx), &UnrollTerminatedMsg{
 		Outpoint:            target,
 		ActorID:             record.ActorID,
 		Phase:               PhaseFailed,
 		FailReason:          err.Error(),
 		HadOnChainFootprint: false,
-	})
+	}, record.ExitPolicyKind)
 
 	markErr := r.cfg.Store.MarkTerminal(
 		context.WithoutCancel(ctx), target, PhaseFailed, true,
@@ -996,8 +999,10 @@ func (r *registryBehavior) handleTerminated(ctx context.Context,
 	// Forward the terminal outcome to the VTXO manager so the VTXO's
 	// lifecycle tracks the unroll job's terminal on-chain result rather
 	// than the user's intent to exit (darepo-client#602). The handoff must
-	// survive caller-context cancellation, so detach the context.
-	r.notifyVTXOExit(context.WithoutCancel(ctx), req)
+	// survive caller-context cancellation, so detach the context. The
+	// record's exit policy rides along so the manager can hold a
+	// recovery-only target in exit rather than relive it as a live coin.
+	r.notifyVTXOExit(context.WithoutCancel(ctx), req, record.ExitPolicyKind)
 
 	return fn.Ok[RegistryResp](&RegistryAckResp{})
 }
@@ -1019,7 +1024,7 @@ func (r *registryBehavior) handleTerminated(ctx context.Context,
 // terminal, so a dropped notification only delays re-convergence until the next
 // restart's reconciliation rather than losing funds.
 func (r *registryBehavior) notifyVTXOExit(ctx context.Context,
-	req *UnrollTerminatedMsg) {
+	req *UnrollTerminatedMsg, policyKind ExitPolicyKind) {
 
 	if r.cfg.VTXOExitObserver.IsNone() {
 		return
@@ -1038,10 +1043,14 @@ func (r *registryBehavior) notifyVTXOExit(ctx context.Context,
 		return
 	}
 
+	// Carry the exit policy so the manager can tell a recovery-only target
+	// (a non-standard policy such as a vHTLC refund) apart from a normal
+	// coin and refuse to relive the former on a recoverable failure.
 	err := observer.Tell(ctx, &vtxo.ExitOutcomeNotification{
-		Outpoint: req.Outpoint,
-		Outcome:  outcome,
-		Reason:   req.FailReason,
+		Outpoint:       req.Outpoint,
+		Outcome:        outcome,
+		Reason:         req.FailReason,
+		ExitPolicyKind: actormsg.ExitPolicyKind(policyKind),
 	})
 	if err != nil {
 		r.log.WarnS(ctx, "Failed to notify VTXO manager of exit "+
