@@ -1,30 +1,39 @@
 package build
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
 
-// TestVersion verifies that Version() returns the correct semantic version.
+// TestVersion verifies that Version() renders the version constants in the
+// documented semantic-versioning format. It derives the expectation from the
+// constants so a version bump never breaks this test.
 func TestVersion(t *testing.T) {
 	version := Version()
 
-	// Expected format: "0.0.2-alpha"
-	if !strings.HasPrefix(version, "0.0.2") {
-		t.Fatalf("expected version to start with 0.0.2, got: %s",
+	// The numeric major.minor.patch prefix must come straight from the
+	// constants.
+	prefix := fmt.Sprintf("%d.%d.%d", AppMajor, AppMinor, AppPatch)
+	if !strings.HasPrefix(version, prefix) {
+		t.Fatalf("expected version to start with %s, got: %s", prefix,
 			version)
 	}
 
-	if !strings.Contains(version, "alpha") {
-		t.Fatalf("expected version to contain 'alpha', got: %s",
-			version)
-	}
+	// A pre-release suffix, when set, is appended after a dash; when
+	// empty, the version is exactly the numeric prefix.
+	switch {
+	case AppPreRelease != "":
+		if version != prefix+"-"+AppPreRelease {
+			t.Fatalf("expected version %s-%s, got: %s", prefix,
+				AppPreRelease, version)
+		}
 
-	// Verify exact match.
-	expectedVersion := "0.0.2-alpha"
-	if version != expectedVersion {
-		t.Fatalf("expected version %s, got: %s", expectedVersion,
-			version)
+	default:
+		if version != prefix {
+			t.Fatalf("expected version %s, got: %s", prefix,
+				version)
+		}
 	}
 }
 
