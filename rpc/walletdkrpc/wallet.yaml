@@ -42,6 +42,9 @@ http:
     - selector: walletdkrpc.WalletService.ExitStatus
       post: /v1/wallet/exit-status
       body: "*"
+    - selector: walletdkrpc.WalletService.ExitSummary
+      post: /v1/wallet/exit-summary
+      body: "*"
     - selector: walletdkrpc.WalletService.SubscribeWallet
       post: /v1/wallet/subscribe
       body: "*"
