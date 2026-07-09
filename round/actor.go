@@ -390,7 +390,7 @@ type RoundClientConfig struct {
 	// MetricsSink is an optional reference to the client-side metrics
 	// actor. When set, the round actor emits a RoundCompletedMsg as
 	// each round reaches a terminal outcome so the
-	// darepod_rounds_completed_total counter reflects reality. When
+	// waved_rounds_completed_total counter reflects reality. When
 	// None (metrics disabled, or tests), metric emission is silently
 	// skipped. Mirrors LedgerSink: the round actor is the natural seam
 	// because terminal round outcomes are observed here, not at any
@@ -595,7 +595,7 @@ func (a *RoundClientActor) emitVTXOsReceived(ctx context.Context,
 }
 
 // emitRoundCompleted reports a terminal round outcome to the metrics
-// actor so the darepod_rounds_completed_total counter advances. The
+// actor so the waved_rounds_completed_total counter advances. The
 // round actor is the natural seam: terminal outcomes surface here as
 // RoundCompletedNotification / RoundFailedNotification, with no RPC
 // boundary that could observe them. Like ledger emission, this is
@@ -667,7 +667,7 @@ func (a *RoundClientActor) handleTerminalJobFailure(ctx context.Context,
 }
 
 // emitRoundJoined reports a round-join attempt to the metrics actor so
-// darepod_rounds_joined_total advances. It is emitted from createNewRound
+// waved_rounds_joined_total advances. It is emitted from createNewRound
 // so it counts every round the client assembles — manual and eager alike
 // — keeping it symmetric with emitRoundCompleted. Best-effort and
 // fire-and-forget: a Tell failure is logged at debug level and never
@@ -985,7 +985,7 @@ func (a *RoundClientActor) createNewRound(ctx context.Context) (*RoundFSM,
 	)
 
 	// Count the join attempt here, at the one seam every round passes
-	// through exactly once. This keeps darepod_rounds_joined_total
+	// through exactly once. This keeps waved_rounds_joined_total
 	// symmetric with rounds_completed_total (also actor-emitted): both
 	// manual JoinNextRound and eager/automatic joins assemble their
 	// round through createNewRound, so counting at the RPC boundary
@@ -2274,6 +2274,13 @@ func (a *RoundClientActor) handleCancelRound(ctx context.Context,
 	if _, exists := a.rounds[keyStr]; exists {
 		targetFSM.FSM.Stop()
 		delete(a.rounds, keyStr)
+		delete(a.commitmentTxIndex, targetFSM.TxID)
+
+		// Drop any cached provisional confirmation so a cancelled round
+		// does not leave an entry behind (the zero txid of a round
+		// cancelled before its commitment was seen is a harmless
+		// no-op).
+		delete(a.pendingCommitmentConfs, targetFSM.TxID)
 	}
 
 	a.log.InfoS(ctx, "Round participation cancelled successfully")
@@ -2300,6 +2307,10 @@ func (a *RoundClientActor) onRoundComplete(ctx context.Context, roundID RoundID,
 		delete(a.rounds, keyStr)
 	}
 	delete(a.commitmentTxIndex, txid)
+
+	// Drop any cached provisional confirmation for this commitment so the
+	// map does not retain an entry for a round that is no longer tracked.
+	delete(a.pendingCommitmentConfs, txid)
 
 	return a.cfg.RoundStore.FinalizeRound(ctx, roundID, txid, confInfo)
 }
@@ -2348,6 +2359,13 @@ func (a *RoundClientActor) reapFailedRounds(ctx context.Context) {
 		roundFSM.FSM.Stop()
 		delete(a.rounds, keyStr)
 		delete(a.commitmentTxIndex, roundFSM.TxID)
+
+		// A round that confirmed provisionally but then failed (e.g. a
+		// reorg dropped the commitment past the point of no return, or
+		// forfeit collection timed out after confirmation) leaves a
+		// cached conf behind. Drop it so the map does not grow without
+		// bound across the daemon's lifetime.
+		delete(a.pendingCommitmentConfs, roundFSM.TxID)
 	}
 }
 
