@@ -53,6 +53,7 @@ into specific topics below.
 | Document | Description |
 |----------|-------------|
 | [daemon_cli_guide.md](daemon_cli_guide.md) | darepod/darepocli installation, configuration, CLI reference |
+| [signet.md](signet.md) | Public testnet3, testnet4, and signet Ark/swap endpoints, transport selection, and local overrides |
 | [accounting_report.md](accounting_report.md) | Accounting report command: reading the fee ledger from SQLite or Postgres, text/JSON/CSV output, fiat conversion, read-only behavior |
 
 ## Plans

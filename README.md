@@ -139,11 +139,13 @@ Common knobs:
 | Flag                       | Default            | Purpose                                  |
 |----------------------------|--------------------|------------------------------------------|
 | `--datadir`                | `~/.darepod`       | Root data directory.                     |
-| `--network`                | `mainnet`          | `mainnet`, `testnet`, `signet`, `regtest`, `simnet`. |
+| `--network`                | `mainnet`          | `mainnet`, `testnet`, `testnet4`, `signet`, `regtest`, `simnet`. |
 | `--wallet.type`            | `lwwallet`         | `lwwallet`, `btcwallet`, or `lnd`.       |
 | `--wallet.esploraurl`      |                    | Esplora REST URL (`lwwallet`).           |
 | `--lnd.host`               | `localhost:10009`  | lnd gRPC (`lnd` backend).                |
-| `--server.host`            | `localhost:10010`  | Ark operator mailbox address.            |
+| `--server.host`            | network default    | Ark operator address override.           |
+| `--server.transport`       | `grpc`             | Ark operator transport: `grpc` or `rest`. |
+| `--swap.serveraddress`     | network default    | Swap server address override.            |
 | `--rpc.listenaddr`         | `localhost:10029`  | Daemon gRPC listen address.              |
 
 ---
@@ -176,6 +178,7 @@ own `CLAUDE.md` / `AGENTS.md` with package-local context.
 |----------------------------------|-----------------------------------------------------------------------|
 | System architecture              | [`ARCHITECTURE.md`](ARCHITECTURE.md)                                  |
 | Install, configure, operate      | [`docs/daemon_cli_guide.md`](docs/daemon_cli_guide.md)                |
+| Public test-network endpoints    | [`docs/signet.md`](docs/signet.md)                                    |
 | Build-tag matrix                 | [`docs/walletdkrpc_build.md`](docs/walletdkrpc_build.md)                  |
 | Durable actor pattern            | [`docs/durable_actor_architecture.md`](docs/durable_actor_architecture.md) |
 | Mailbox transport                | [`docs/mailbox_architecture.md`](docs/mailbox_architecture.md)        |

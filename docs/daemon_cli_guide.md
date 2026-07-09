@@ -112,7 +112,8 @@ darepod \
 | `--lnd.tlspath` | | Path to lnd TLS certificate |
 | `--lnd.macaroonpath` | | Path to lnd admin macaroon |
 | `--lnd.rpctimeout` | `30s` | Timeout for lnd RPC calls |
-| `--server.host` | `localhost:10010` | Ark operator mailbox address |
+| `--server.host` | network default | Ark operator address override for the selected transport |
+| `--server.transport` | `grpc` | Ark operator transport: `grpc` or `rest` |
 | `--server.insecure` | `false` | Disable TLS for server connection |
 | `--server.tlscertpath` | | Operator TLS certificate path |
 | `--server.localmailboxid` | | This client's mailbox ID |
@@ -120,6 +121,12 @@ darepod \
 | `--rpc.listenaddr` | `localhost:10029` | Daemon gRPC listen address |
 | `--rpc.tlscertpath` | | Custom TLS cert for daemon RPC |
 | `--rpc.tlskeypath` | | Custom TLS key for daemon RPC |
+| `--swap.serveraddress` | network default | Swap server address override for swapruntime builds |
+| `--swap.servertransport` | `grpc` | Swap server transport: `grpc` or `rest` |
+
+Empty Ark and swap addresses resolve from the selected network and transport.
+See [signet.md](signet.md) for the testnet3, testnet4, and signet endpoints and
+override examples.
 
 ### Environment Variables
 

@@ -393,10 +393,12 @@ func newSwapClientService(ctx context.Context, rpcServer *darepod.RPCServer,
 			"resolver: %w", err)
 	}
 
-	swapAddr := cfg.ServerAddress
-	if swapAddr == "" {
-		swapAddr = "localhost:10030"
-	}
+	// Resolve through a shallow config copy so the nil-Swap fallback above
+	// participates in the same network+transport lookup without mutating
+	// the caller-owned daemon config.
+	resolvedCfg := *daemonCfg
+	resolvedCfg.Swap = cfg
+	swapAddr := resolvedCfg.SwapServerAddress()
 
 	var clientCerts clientTLSCertProvider
 	if !cfg.ServerInsecure {

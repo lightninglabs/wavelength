@@ -2653,7 +2653,7 @@ func (s *Server) dialServer() (*grpc.ClientConn, error) {
 		dialOpts = append(dialOpts, macaroonOpt)
 	}
 
-	return grpc.NewClient(s.cfg.Server.Host, dialOpts...)
+	return grpc.NewClient(s.cfg.ArkServerAddress(), dialOpts...)
 }
 
 // newMailboxEdge creates a MailboxServiceClient from the established server
@@ -3647,7 +3647,8 @@ func (s *Server) connectAndBootstrapMailbox(ctx context.Context) error {
 
 	// Connect to the ark operator's mailbox edge server.
 	s.log.InfoS(ctx, "Connecting to ark server",
-		"host", s.cfg.Server.Host)
+		"host", s.cfg.ArkServerAddress(),
+	)
 
 	operatorClients, err := s.connectOperatorClients()
 	if err != nil {

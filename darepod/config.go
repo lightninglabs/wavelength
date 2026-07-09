@@ -49,6 +49,71 @@ const (
 	// mailbox edge server.
 	DefaultServerHost = "localhost:10010"
 
+	// defaultSwapServerHost is the default address for the swap server.
+	defaultSwapServerHost = "localhost:10030"
+
+	// defaultTestnet3ServerGRPCHost is the public testnet3 Ark operator
+	// gRPC endpoint.
+	defaultTestnet3ServerGRPCHost = "arkd.testnet." +
+		"lightningcluster.com:443"
+
+	// defaultTestnet3ServerRESTHost is the public testnet3 Ark operator
+	// REST endpoint.
+	defaultTestnet3ServerRESTHost = "arkd-rest.testnet." +
+		"lightningcluster.com"
+
+	// defaultTestnet3SwapServerGRPCHost is the public testnet3 swap server
+	// gRPC endpoint.
+	defaultTestnet3SwapServerGRPCHost = "swapd.testnet." +
+		"lightningcluster.com:443"
+
+	// defaultTestnet3SwapServerRESTHost is the public testnet3 swap server
+	// REST endpoint.
+	defaultTestnet3SwapServerRESTHost = "swapd-rest.testnet." +
+		"lightningcluster.com"
+
+	// defaultTestnet4ServerGRPCHost is the public testnet4 Ark operator
+	// gRPC endpoint.
+	defaultTestnet4ServerGRPCHost = "arkd-testnet4.testnet." +
+		"lightningcluster.com:443"
+
+	// defaultTestnet4ServerRESTHost is the public testnet4 Ark operator
+	// REST endpoint.
+	defaultTestnet4ServerRESTHost = "arkd-testnet4-rest.testnet." +
+		"lightningcluster.com"
+
+	// defaultTestnet4SwapServerGRPCHost is the public testnet4 swap server
+	// gRPC endpoint.
+	defaultTestnet4SwapServerGRPCHost = "swapd-testnet4.testnet." +
+		"lightningcluster.com:443"
+
+	// defaultTestnet4SwapServerRESTHost is the public testnet4 swap server
+	// REST endpoint.
+	defaultTestnet4SwapServerRESTHost = "swapd-testnet4-rest.testnet." +
+		"lightningcluster.com"
+
+	// defaultSignetServerGRPCHost is the public signet Ark operator gRPC
+	// endpoint.
+	defaultSignetServerGRPCHost = "arkd-signet.staging." +
+		"lightningcluster.com:443"
+
+	// defaultSignetServerRESTHost is the public signet Ark operator REST
+	// endpoint. The REST client adds the HTTPS scheme when the configured
+	// host is bare.
+	defaultSignetServerRESTHost = "arkd-signet-rest.staging." +
+		"lightningcluster.com"
+
+	// defaultSignetSwapServerGRPCHost is the public signet swap server gRPC
+	// endpoint.
+	defaultSignetSwapServerGRPCHost = "swapd-signet.staging." +
+		"lightningcluster.com:443"
+
+	// defaultSignetSwapServerRESTHost is the public signet swap server REST
+	// endpoint. The REST client adds the HTTPS scheme when the configured
+	// host is bare.
+	defaultSignetSwapServerRESTHost = "swapd-signet-rest.staging." +
+		"lightningcluster.com"
+
 	// DefaultIndexerServerID is the canonical operator identifier used
 	// in signed indexer proofs.
 	DefaultIndexerServerID = "arkd"
@@ -500,8 +565,8 @@ func (c *Config) OORReceiveLimits() oor.ReceiveLimits {
 type SwapConfig struct {
 	// ServerAddress is the swapdk-server endpoint used by the daemon
 	// executor. Its meaning follows ServerTransport: host:port for gRPC,
-	// or an HTTP gateway base URL for REST. Empty values fall back to the
-	// local development default.
+	// or an HTTP gateway base URL for REST. Empty selects the configured
+	// network+transport default.
 	ServerAddress string `mapstructure:"serveraddress"`
 
 	// ServerTransport selects the daemon-owned swapdk-server transport.
@@ -748,7 +813,8 @@ type LndConfig struct {
 // edge server.
 type ServerConfig struct {
 	// Host is the ark operator endpoint. Its meaning follows Transport:
-	// host:port for gRPC, or an HTTP gateway base URL for REST.
+	// host:port for gRPC, or an HTTP gateway base URL for REST. Empty
+	// selects the configured network+transport default.
 	Host string `mapstructure:"host"`
 
 	// Transport selects the daemon-owned outbound transport for ArkService
@@ -964,7 +1030,6 @@ func DefaultConfig() *Config {
 			RPCTimeout: DefaultRPCTimeout,
 		},
 		Server: &ServerConfig{
-			Host:         DefaultServerHost,
 			Transport:    RPCTransportGRPC,
 			MaxTreeNodes: roundpb.DefaultMaxTreeNodes,
 		},
@@ -978,7 +1043,6 @@ func DefaultConfig() *Config {
 			RecoveryWindow: DefaultRecoveryWindow,
 		},
 		Swap: &SwapConfig{
-			ServerAddress:   "localhost:10030",
 			ServerTransport: RPCTransportGRPC,
 			VHTLCRecovery:   swapRecovery,
 		},
@@ -1084,13 +1148,13 @@ func (c *Config) Validate() error {
 	if c.Server == nil {
 		return fmt.Errorf("server config is required")
 	}
-	if c.Server.Host == "" {
-		return fmt.Errorf("server host is required")
-	}
 	if err := validateRPCTransport(
 		"server.transport", c.Server.Transport,
 	); err != nil {
 		return err
+	}
+	if c.ArkServerAddress() == "" {
+		return fmt.Errorf("server host is required")
 	}
 	if c.Swap != nil {
 		if err := validateRPCTransport(
@@ -1142,6 +1206,127 @@ func (c *Config) Validate() error {
 	}
 
 	return nil
+}
+
+// transportEndpoints holds the gRPC and REST addresses for one service.
+type transportEndpoints struct {
+	grpc string
+	rest string
+}
+
+// forTransport returns the endpoint matching transport. An empty transport
+// selects gRPC, matching the daemon transport default.
+func (e transportEndpoints) forTransport(transport string) string {
+	switch transport {
+	case "", RPCTransportGRPC:
+		return e.grpc
+
+	case RPCTransportREST:
+		return e.rest
+
+	default:
+		return ""
+	}
+}
+
+// networkEndpoints holds the Ark and swap service defaults for one network.
+type networkEndpoints struct {
+	ark  transportEndpoints
+	swap transportEndpoints
+}
+
+// defaultNetworkEndpoints returns the outbound service defaults for network.
+// Public test networks use the Lightning Labs deployments; networks without a
+// public service deployment keep the historical local development endpoints.
+func defaultNetworkEndpoints(network string) (networkEndpoints, bool) {
+	switch network {
+	case "mainnet", "regtest", "simnet":
+		return networkEndpoints{
+			ark: transportEndpoints{
+				grpc: DefaultServerHost,
+				rest: DefaultServerHost,
+			},
+			swap: transportEndpoints{
+				grpc: defaultSwapServerHost,
+				rest: defaultSwapServerHost,
+			},
+		}, true
+
+	case "testnet":
+		return networkEndpoints{
+			ark: transportEndpoints{
+				grpc: defaultTestnet3ServerGRPCHost,
+				rest: defaultTestnet3ServerRESTHost,
+			},
+			swap: transportEndpoints{
+				grpc: defaultTestnet3SwapServerGRPCHost,
+				rest: defaultTestnet3SwapServerRESTHost,
+			},
+		}, true
+
+	case "testnet4":
+		return networkEndpoints{
+			ark: transportEndpoints{
+				grpc: defaultTestnet4ServerGRPCHost,
+				rest: defaultTestnet4ServerRESTHost,
+			},
+			swap: transportEndpoints{
+				grpc: defaultTestnet4SwapServerGRPCHost,
+				rest: defaultTestnet4SwapServerRESTHost,
+			},
+		}, true
+
+	case "signet":
+		return networkEndpoints{
+			ark: transportEndpoints{
+				grpc: defaultSignetServerGRPCHost,
+				rest: defaultSignetServerRESTHost,
+			},
+			swap: transportEndpoints{
+				grpc: defaultSignetSwapServerGRPCHost,
+				rest: defaultSignetSwapServerRESTHost,
+			},
+		}, true
+
+	default:
+		return networkEndpoints{}, false
+	}
+}
+
+// ArkServerAddress returns the configured Ark operator address, or the
+// network+transport default when server.host is empty.
+func (c *Config) ArkServerAddress() string {
+	if c == nil || c.Server == nil {
+		return ""
+	}
+	if c.Server.Host != "" {
+		return c.Server.Host
+	}
+
+	defaults, ok := defaultNetworkEndpoints(c.Network)
+	if !ok {
+		return ""
+	}
+
+	return defaults.ark.forTransport(c.Server.Transport)
+}
+
+// SwapServerAddress returns the configured swap server address, or the
+// network+transport default when swap.serveraddress is empty.
+func (c *Config) SwapServerAddress() string {
+	if c == nil || c.Swap == nil {
+		return ""
+	}
+	if c.Swap.ServerAddress != "" {
+		return c.Swap.ServerAddress
+	}
+
+	defaults, ok := defaultNetworkEndpoints(c.Network)
+	if !ok {
+		return ""
+	}
+
+	return defaults.swap.forTransport(c.Swap.ServerTransport)
 }
 
 // validateBtcwalletHeadersImportConfig checks that header import sources are
