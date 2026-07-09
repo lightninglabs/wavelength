@@ -41,6 +41,13 @@ into specific topics below.
 | [policy_arkscript_review_guide.md](policy_arkscript_review_guide.md) | Policy-first arkscript reviewer guide |
 | [dev_rpc_cli_builder.md](dev_rpc_cli_builder.md) | Generated `darepocli dev` command builder and request flag rules |
 
+## Release Engineering
+
+| Document | Description |
+|----------|-------------|
+| [release_branch_management.md](release_branch_management.md) | Trunk-based release model: `v0.1.x-branch` release branches, the `main` `.99` version convention, tagging with `scripts/tag-release.sh` |
+| [backport-workflow.md](backport-workflow.md) | Automated backport of merged `main` PRs to release branches via `backport-v*` labels |
+
 ## Operations
 
 | Document | Description |
