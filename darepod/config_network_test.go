@@ -49,17 +49,10 @@ func TestConfigValidateAcceptsSupportedNetworks(t *testing.T) {
 			cfg.Wallet.EsploraURL = "http://127.0.0.1:3000"
 
 			require.NoError(t, cfg.Validate())
-
-			if tc.name == "signet" {
-				require.Equal(
-					t, defaultSignetServerGRPCHost,
-					cfg.Server.Host,
-				)
-				require.Equal(
-					t, defaultSignetSwapServerGRPCHost,
-					cfg.Swap.ServerAddress,
-				)
-			}
+			require.NotEmpty(t, cfg.ArkServerAddress())
+			require.NotEmpty(t, cfg.SwapServerAddress())
+			require.Empty(t, cfg.Server.Host)
+			require.Empty(t, cfg.Swap.ServerAddress)
 		})
 	}
 }
@@ -78,10 +71,9 @@ func TestConfigValidateAllowsTestnet4InsecureRPC(t *testing.T) {
 	require.NoError(t, cfg.Validate())
 }
 
-// TestApplyNetworkEndpointDefaults verifies signet selects the public staging
-// deployment for both outbound transports while every other network keeps the
-// local development endpoints.
-func TestApplyNetworkEndpointDefaults(t *testing.T) {
+// TestConfigEndpointDefaults verifies the config resolves each empty endpoint
+// from one network+transport table without mutating the explicit config fields.
+func TestConfigEndpointDefaults(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -91,6 +83,41 @@ func TestApplyNetworkEndpointDefaults(t *testing.T) {
 		wantArkHost  string
 		wantSwapHost string
 	}{
+		{
+			name:         "mainnet grpc",
+			network:      "mainnet",
+			transport:    RPCTransportGRPC,
+			wantArkHost:  DefaultServerHost,
+			wantSwapHost: defaultSwapServerHost,
+		},
+		{
+			name:         "testnet3 grpc",
+			network:      "testnet",
+			transport:    RPCTransportGRPC,
+			wantArkHost:  defaultTestnet3ServerGRPCHost,
+			wantSwapHost: defaultTestnet3SwapServerGRPCHost,
+		},
+		{
+			name:         "testnet3 rest",
+			network:      "testnet",
+			transport:    RPCTransportREST,
+			wantArkHost:  defaultTestnet3ServerRESTHost,
+			wantSwapHost: defaultTestnet3SwapServerRESTHost,
+		},
+		{
+			name:         "testnet4 grpc",
+			network:      "testnet4",
+			transport:    RPCTransportGRPC,
+			wantArkHost:  defaultTestnet4ServerGRPCHost,
+			wantSwapHost: defaultTestnet4SwapServerGRPCHost,
+		},
+		{
+			name:         "testnet4 rest",
+			network:      "testnet4",
+			transport:    RPCTransportREST,
+			wantArkHost:  defaultTestnet4ServerRESTHost,
+			wantSwapHost: defaultTestnet4SwapServerRESTHost,
+		},
 		{
 			name:         "signet grpc",
 			network:      "signet",
@@ -106,9 +133,9 @@ func TestApplyNetworkEndpointDefaults(t *testing.T) {
 			wantSwapHost: defaultSignetSwapServerRESTHost,
 		},
 		{
-			name:         "regtest",
+			name:         "regtest rest",
 			network:      "regtest",
-			transport:    RPCTransportGRPC,
+			transport:    RPCTransportREST,
 			wantArkHost:  DefaultServerHost,
 			wantSwapHost: defaultSwapServerHost,
 		},
@@ -124,50 +151,28 @@ func TestApplyNetworkEndpointDefaults(t *testing.T) {
 			cfg.Server.Transport = tc.transport
 			cfg.Swap.ServerTransport = tc.transport
 
-			cfg.applyNetworkEndpointDefaults()
-
-			require.Equal(t, tc.wantArkHost, cfg.Server.Host)
+			require.Empty(t, cfg.Server.Host)
+			require.Empty(t, cfg.Swap.ServerAddress)
+			require.Equal(t, tc.wantArkHost, cfg.ArkServerAddress())
 			require.Equal(
-				t, tc.wantSwapHost, cfg.Swap.ServerAddress,
+				t, tc.wantSwapHost, cfg.SwapServerAddress(),
 			)
 		})
 	}
 }
 
-// TestApplyNetworkEndpointDefaultsPreservesOverrides verifies signet does not
-// replace custom endpoints or an explicitly insecure local development setup.
-func TestApplyNetworkEndpointDefaultsPreservesOverrides(t *testing.T) {
+// TestConfigEndpointDefaultsPreserveOverrides verifies an explicit address
+// always wins, including a caller that deliberately points signet at localhost.
+func TestConfigEndpointDefaultsPreserveOverrides(t *testing.T) {
 	t.Parallel()
 
-	t.Run("custom endpoints", func(t *testing.T) {
-		t.Parallel()
+	cfg := DefaultConfig()
+	cfg.Network = "signet"
+	cfg.Server.Host = "localhost:11010"
+	cfg.Swap.ServerAddress = "localhost:11030"
 
-		cfg := DefaultConfig()
-		cfg.Network = "signet"
-		cfg.Server.Host = "ark.example.com:443"
-		cfg.Swap.ServerAddress = "swap.example.com:443"
-
-		cfg.applyNetworkEndpointDefaults()
-
-		require.Equal(t, "ark.example.com:443", cfg.Server.Host)
-		require.Equal(
-			t, "swap.example.com:443", cfg.Swap.ServerAddress,
-		)
-	})
-
-	t.Run("insecure local endpoints", func(t *testing.T) {
-		t.Parallel()
-
-		cfg := DefaultConfig()
-		cfg.Network = "signet"
-		cfg.Server.Insecure = true
-		cfg.Swap.ServerInsecure = true
-
-		cfg.applyNetworkEndpointDefaults()
-
-		require.Equal(t, DefaultServerHost, cfg.Server.Host)
-		require.Equal(t, defaultSwapServerHost, cfg.Swap.ServerAddress)
-	})
+	require.Equal(t, "localhost:11010", cfg.ArkServerAddress())
+	require.Equal(t, "localhost:11030", cfg.SwapServerAddress())
 }
 
 // TestNetworkToChainParams verifies network strings map to their exact btcd

@@ -52,6 +52,46 @@ const (
 	// defaultSwapServerHost is the default address for the swap server.
 	defaultSwapServerHost = "localhost:10030"
 
+	// defaultTestnet3ServerGRPCHost is the public testnet3 Ark operator
+	// gRPC endpoint.
+	defaultTestnet3ServerGRPCHost = "arkd.testnet." +
+		"lightningcluster.com:443"
+
+	// defaultTestnet3ServerRESTHost is the public testnet3 Ark operator
+	// REST endpoint.
+	defaultTestnet3ServerRESTHost = "arkd-rest.testnet." +
+		"lightningcluster.com"
+
+	// defaultTestnet3SwapServerGRPCHost is the public testnet3 swap server
+	// gRPC endpoint.
+	defaultTestnet3SwapServerGRPCHost = "swapd.testnet." +
+		"lightningcluster.com:443"
+
+	// defaultTestnet3SwapServerRESTHost is the public testnet3 swap server
+	// REST endpoint.
+	defaultTestnet3SwapServerRESTHost = "swapd-rest.testnet." +
+		"lightningcluster.com"
+
+	// defaultTestnet4ServerGRPCHost is the public testnet4 Ark operator
+	// gRPC endpoint.
+	defaultTestnet4ServerGRPCHost = "arkd-testnet4.testnet." +
+		"lightningcluster.com:443"
+
+	// defaultTestnet4ServerRESTHost is the public testnet4 Ark operator
+	// REST endpoint.
+	defaultTestnet4ServerRESTHost = "arkd-testnet4-rest.testnet." +
+		"lightningcluster.com"
+
+	// defaultTestnet4SwapServerGRPCHost is the public testnet4 swap server
+	// gRPC endpoint.
+	defaultTestnet4SwapServerGRPCHost = "swapd-testnet4.testnet." +
+		"lightningcluster.com:443"
+
+	// defaultTestnet4SwapServerRESTHost is the public testnet4 swap server
+	// REST endpoint.
+	defaultTestnet4SwapServerRESTHost = "swapd-testnet4-rest.testnet." +
+		"lightningcluster.com"
+
 	// defaultSignetServerGRPCHost is the public signet Ark operator gRPC
 	// endpoint.
 	defaultSignetServerGRPCHost = "arkd-signet.staging." +
@@ -525,8 +565,8 @@ func (c *Config) OORReceiveLimits() oor.ReceiveLimits {
 type SwapConfig struct {
 	// ServerAddress is the swapdk-server endpoint used by the daemon
 	// executor. Its meaning follows ServerTransport: host:port for gRPC,
-	// or an HTTP gateway base URL for REST. Empty values fall back to the
-	// local development default.
+	// or an HTTP gateway base URL for REST. Empty selects the configured
+	// network+transport default.
 	ServerAddress string `mapstructure:"serveraddress"`
 
 	// ServerTransport selects the daemon-owned swapdk-server transport.
@@ -773,7 +813,8 @@ type LndConfig struct {
 // edge server.
 type ServerConfig struct {
 	// Host is the ark operator endpoint. Its meaning follows Transport:
-	// host:port for gRPC, or an HTTP gateway base URL for REST.
+	// host:port for gRPC, or an HTTP gateway base URL for REST. Empty
+	// selects the configured network+transport default.
 	Host string `mapstructure:"host"`
 
 	// Transport selects the daemon-owned outbound transport for ArkService
@@ -989,7 +1030,6 @@ func DefaultConfig() *Config {
 			RPCTimeout: DefaultRPCTimeout,
 		},
 		Server: &ServerConfig{
-			Host:         DefaultServerHost,
 			Transport:    RPCTransportGRPC,
 			MaxTreeNodes: roundpb.DefaultMaxTreeNodes,
 		},
@@ -1003,7 +1043,6 @@ func DefaultConfig() *Config {
 			RecoveryWindow: DefaultRecoveryWindow,
 		},
 		Swap: &SwapConfig{
-			ServerAddress:   defaultSwapServerHost,
 			ServerTransport: RPCTransportGRPC,
 			VHTLCRecovery:   swapRecovery,
 		},
@@ -1028,8 +1067,6 @@ func (c *Config) Validate() error {
 	default:
 		return fmt.Errorf("unknown network %q", c.Network)
 	}
-
-	c.applyNetworkEndpointDefaults()
 
 	// Require explicit opt-in for mainnet to prevent accidental
 	// use during development.
@@ -1111,13 +1148,13 @@ func (c *Config) Validate() error {
 	if c.Server == nil {
 		return fmt.Errorf("server config is required")
 	}
-	if c.Server.Host == "" {
-		return fmt.Errorf("server host is required")
-	}
 	if err := validateRPCTransport(
 		"server.transport", c.Server.Transport,
 	); err != nil {
 		return err
+	}
+	if c.ArkServerAddress() == "" {
+		return fmt.Errorf("server host is required")
 	}
 	if c.Swap != nil {
 		if err := validateRPCTransport(
@@ -1171,39 +1208,125 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// applyNetworkEndpointDefaults replaces the local development endpoints with
-// the public signet deployment when the caller selects signet without
-// configuring an operator or swap server. An insecure connection or a pinned
-// certificate keeps the local value intact, since either setting indicates an
-// intentional development override.
-func (c *Config) applyNetworkEndpointDefaults() {
-	if c.Network != "signet" {
-		return
+// transportEndpoints holds the gRPC and REST addresses for one service.
+type transportEndpoints struct {
+	grpc string
+	rest string
+}
+
+// forTransport returns the endpoint matching transport. An empty transport
+// selects gRPC, matching the daemon transport default.
+func (e transportEndpoints) forTransport(transport string) string {
+	switch transport {
+	case "", RPCTransportGRPC:
+		return e.grpc
+
+	case RPCTransportREST:
+		return e.rest
+
+	default:
+		return ""
+	}
+}
+
+// networkEndpoints holds the Ark and swap service defaults for one network.
+type networkEndpoints struct {
+	ark  transportEndpoints
+	swap transportEndpoints
+}
+
+// defaultNetworkEndpoints returns the outbound service defaults for network.
+// Public test networks use the Lightning Labs deployments; networks without a
+// public service deployment keep the historical local development endpoints.
+func defaultNetworkEndpoints(network string) (networkEndpoints, bool) {
+	switch network {
+	case "mainnet", "regtest", "simnet":
+		return networkEndpoints{
+			ark: transportEndpoints{
+				grpc: DefaultServerHost,
+				rest: DefaultServerHost,
+			},
+			swap: transportEndpoints{
+				grpc: defaultSwapServerHost,
+				rest: defaultSwapServerHost,
+			},
+		}, true
+
+	case "testnet":
+		return networkEndpoints{
+			ark: transportEndpoints{
+				grpc: defaultTestnet3ServerGRPCHost,
+				rest: defaultTestnet3ServerRESTHost,
+			},
+			swap: transportEndpoints{
+				grpc: defaultTestnet3SwapServerGRPCHost,
+				rest: defaultTestnet3SwapServerRESTHost,
+			},
+		}, true
+
+	case "testnet4":
+		return networkEndpoints{
+			ark: transportEndpoints{
+				grpc: defaultTestnet4ServerGRPCHost,
+				rest: defaultTestnet4ServerRESTHost,
+			},
+			swap: transportEndpoints{
+				grpc: defaultTestnet4SwapServerGRPCHost,
+				rest: defaultTestnet4SwapServerRESTHost,
+			},
+		}, true
+
+	case "signet":
+		return networkEndpoints{
+			ark: transportEndpoints{
+				grpc: defaultSignetServerGRPCHost,
+				rest: defaultSignetServerRESTHost,
+			},
+			swap: transportEndpoints{
+				grpc: defaultSignetSwapServerGRPCHost,
+				rest: defaultSignetSwapServerRESTHost,
+			},
+		}, true
+
+	default:
+		return networkEndpoints{}, false
+	}
+}
+
+// ArkServerAddress returns the configured Ark operator address, or the
+// network+transport default when server.host is empty.
+func (c *Config) ArkServerAddress() string {
+	if c == nil || c.Server == nil {
+		return ""
+	}
+	if c.Server.Host != "" {
+		return c.Server.Host
 	}
 
-	if c.Server != nil && c.Server.Host == DefaultServerHost &&
-		!c.Server.Insecure && c.Server.TLSCertPath == "" {
-
-		switch c.Server.Transport {
-		case "", RPCTransportGRPC:
-			c.Server.Host = defaultSignetServerGRPCHost
-
-		case RPCTransportREST:
-			c.Server.Host = defaultSignetServerRESTHost
-		}
+	defaults, ok := defaultNetworkEndpoints(c.Network)
+	if !ok {
+		return ""
 	}
 
-	if c.Swap != nil && c.Swap.ServerAddress == defaultSwapServerHost &&
-		!c.Swap.ServerInsecure && c.Swap.ServerTLSCertPath == "" {
+	return defaults.ark.forTransport(c.Server.Transport)
+}
 
-		switch c.Swap.ServerTransport {
-		case "", RPCTransportGRPC:
-			c.Swap.ServerAddress = defaultSignetSwapServerGRPCHost
-
-		case RPCTransportREST:
-			c.Swap.ServerAddress = defaultSignetSwapServerRESTHost
-		}
+// SwapServerAddress returns the configured swap server address, or the
+// network+transport default when swap.serveraddress is empty.
+func (c *Config) SwapServerAddress() string {
+	if c == nil || c.Swap == nil {
+		return ""
 	}
+	if c.Swap.ServerAddress != "" {
+		return c.Swap.ServerAddress
+	}
+
+	defaults, ok := defaultNetworkEndpoints(c.Network)
+	if !ok {
+		return ""
+	}
+
+	return defaults.swap.forTransport(c.Swap.ServerTransport)
 }
 
 // validateBtcwalletHeadersImportConfig checks that header import sources are

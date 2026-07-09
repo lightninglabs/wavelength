@@ -49,7 +49,10 @@ func (s *Server) connectOperatorClients() (*operatorClients, error) {
 		}
 
 		transport := restclient.New(
-			operatorRESTBaseURL(s.cfg.Server), opts...,
+			operatorRESTBaseURL(
+				s.cfg.Server, s.cfg.ArkServerAddress(),
+			),
+			opts...,
 		)
 
 		return &operatorClients{
@@ -159,17 +162,17 @@ func cloneDefaultHTTPTransport() *http.Transport {
 }
 
 // operatorRESTBaseURL returns the base URL used for grpc-gateway calls.
-func operatorRESTBaseURL(cfg *ServerConfig) string {
-	if strings.HasPrefix(cfg.Host, "http://") ||
-		strings.HasPrefix(cfg.Host, "https://") {
-		return cfg.Host
+func operatorRESTBaseURL(cfg *ServerConfig, addr string) string {
+	if strings.HasPrefix(addr, "http://") ||
+		strings.HasPrefix(addr, "https://") {
+		return addr
 	}
 
 	if cfg.Insecure {
-		return "http://" + cfg.Host
+		return "http://" + addr
 	}
 
-	return "https://" + cfg.Host
+	return "https://" + addr
 }
 
 // operatorArkClient returns the configured ArkService client, preserving the
