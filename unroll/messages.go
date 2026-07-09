@@ -8,6 +8,7 @@ import (
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/unrollplan"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/tlv"
 )
 
@@ -693,6 +694,69 @@ type GetStateResp struct {
 
 	// SweepTxid records the sweep txid when the actor has built one.
 	SweepTxid *chainhash.Hash
+
+	// Progress carries the derived, human-facing progress summary for the
+	// job, computed from the planner snapshot at the current best height.
+	// It is populated only for a detailed status probe against a live
+	// actor; a coarse probe (or a terminal job served from the store)
+	// leaves it nil.
+	Progress *ExitProgress
+}
+
+// ExitProgress is the derived, human-facing progress summary for one unroll
+// job. Every field is computed from the planner snapshot at the current best
+// height, so it is a read-only projection of durable state rather than any
+// additional persisted record.
+type ExitProgress struct {
+	// ConfirmedTxs is the number of proof transactions confirmed on-chain.
+	ConfirmedTxs int
+
+	// InFlightTxs is the number of proof transactions broadcast to
+	// txconfirm but not yet observed confirmed.
+	InFlightTxs int
+
+	// ReadyTxs is the number of proof transactions whose in-proof parents
+	// are all confirmed, so they are ready to broadcast now.
+	ReadyTxs int
+
+	// BlockedTxs is the number of proof transactions still waiting on an
+	// unconfirmed in-proof parent.
+	BlockedTxs int
+
+	// TotalTxs is the total number of transactions in the exit proof tree.
+	TotalTxs int
+
+	// CurrentLayer is the frontier layer index: the shallowest topological
+	// layer (roots first) that still holds an unconfirmed transaction. It
+	// equals TotalLayers once every proof node has confirmed.
+	CurrentLayer int
+
+	// TotalLayers is the depth of the exit proof tree, from the root layer
+	// through the target layer.
+	TotalLayers int
+
+	// TargetConfirmed is true once the target VTXO transaction itself has
+	// confirmed on-chain.
+	TargetConfirmed bool
+
+	// AllProofConfirmed is true once every proof-tree transaction has
+	// confirmed, so only the CSV wait and final sweep remain.
+	AllProofConfirmed bool
+
+	// CSV carries the target's CSV maturity view. It is populated only once
+	// the target has confirmed.
+	CSV fn.Option[unrollplan.CSVInfo]
+
+	// BestCaseBlocksRemaining is the optimistic number of blocks until a
+	// confirmed sweep, assuming one confirmation per remaining proof layer,
+	// the full CSV wait, and one sweep confirmation. It is a lower bound;
+	// real timing depends on fee market and inclusion latency.
+	BestCaseBlocksRemaining int32
+
+	// ActualSweepFeeSat is the real fee the final sweep pays, derived from
+	// the built sweep transaction as target value minus swept output value.
+	// It is populated only once the sweep transaction has been built.
+	ActualSweepFeeSat fn.Option[int64]
 }
 
 // MessageType returns the stable message type identifier.

@@ -221,7 +221,7 @@ func (b *behavior) Receive(ctx context.Context, msg Msg,
 	// or a Commit. The framework's non-transactional tail acks the Ask once
 	// the behavior returns.
 	if _, ok := msg.(*GetStateRequest); ok {
-		return fn.Ok[Resp](b.stateResponse())
+		return fn.Ok[Resp](b.stateResponse(ctx))
 	}
 
 	// Run the FSM pipeline. Every checkpoint write inside is a short,
@@ -801,8 +801,10 @@ func (b *behavior) deferredCheckpointCallerID() string {
 	return b.cfg.ActorID + "-deferred-checkpoint"
 }
 
-// stateResponse builds the current state response for callers and tests.
-func (b *behavior) stateResponse() *GetStateResp {
+// stateResponse builds the current state response for callers and tests. The
+// context is threaded through to the progress derivation so any diagnostic
+// logging on that read-only path stays tied to the caller's request scope.
+func (b *behavior) stateResponse(ctx context.Context) *GetStateResp {
 	state, err := b.currentState()
 	if err != nil {
 		return &GetStateResp{
@@ -829,7 +831,165 @@ func (b *behavior) stateResponse() *GetStateResp {
 		resp.SweepTxid = &txid
 	}
 
+	resp.Progress = b.exitProgress(ctx, state, job)
+
 	return resp
+}
+
+// exitProgress derives the human-facing progress summary from the planner
+// snapshot at the actor's current best height. It returns nil when the planner
+// or proof is not yet loaded (e.g. a status probe that races actor startup) so
+// callers fall back to the coarse phase view rather than a misleading zero
+// snapshot.
+func (b *behavior) exitProgress(ctx context.Context, state State,
+	job *JobState) *ExitProgress {
+
+	if b.planner == nil || b.proof == nil || isIdleState(state) {
+		return nil
+	}
+
+	plannerState := copyPlannerState(job.PlannerState)
+	snapshot, err := b.planner.Plan(job.Height, &plannerState)
+	if err != nil {
+		// A snapshot failure is not fatal to a read-only status probe;
+		// the coarse phase still describes the job. Trace it and
+		// degrade to nil.
+		b.log.DebugS(ctx, "exit progress plan failed",
+			slog.String("err", err.Error()),
+		)
+
+		return nil
+	}
+
+	layers := b.proof.Layers()
+	totalTxs := 0
+	for _, layer := range layers {
+		totalTxs += len(layer)
+	}
+
+	readyTxs := len(snapshot.Ready)
+	inFlightTxs := len(snapshot.InFlight)
+	blockedTxs := len(snapshot.Blocked)
+	unconfirmed := readyTxs + inFlightTxs + blockedTxs
+
+	totalLayers := len(layers)
+	currentLayer := frontierLayer(snapshot, totalLayers)
+
+	progress := &ExitProgress{
+		ConfirmedTxs:      totalTxs - unconfirmed,
+		InFlightTxs:       inFlightTxs,
+		ReadyTxs:          readyTxs,
+		BlockedTxs:        blockedTxs,
+		TotalTxs:          totalTxs,
+		CurrentLayer:      currentLayer,
+		TotalLayers:       totalLayers,
+		TargetConfirmed:   snapshot.TargetConfirmed,
+		AllProofConfirmed: snapshot.AllProofConfirmed,
+		CSV:               snapshot.CSV,
+		BestCaseBlocksRemaining: bestCaseBlocksRemaining(
+			snapshot, b.proof.CSVDelay(), currentLayer, totalLayers,
+		),
+	}
+
+	if fee, ok := actualSweepFeeSat(b.sweepTx, b.desc); ok {
+		progress.ActualSweepFeeSat = fn.Some(fee)
+	}
+
+	return progress
+}
+
+// frontierLayer returns the shallowest topological layer that still holds an
+// unconfirmed transaction (ready, in-flight, or blocked). When every proof node
+// has confirmed there is no frontier, so it returns totalLayers to signal that
+// materialization is complete.
+func frontierLayer(snapshot *unrollplan.Snapshot, totalLayers int) int {
+	frontier := totalLayers
+	consider := func(layer int) {
+		if layer < frontier {
+			frontier = layer
+		}
+	}
+
+	for _, tx := range snapshot.Ready {
+		consider(tx.Layer)
+	}
+	for _, tx := range snapshot.InFlight {
+		consider(tx.Layer)
+	}
+	for _, tx := range snapshot.Blocked {
+		consider(tx.Layer)
+	}
+
+	return frontier
+}
+
+// bestCaseBlocksRemaining is the optimistic block count until a confirmed
+// sweep. It assumes one confirmation per remaining proof layer, then the CSV
+// wait, then one sweep confirmation. Before the target confirms the CSV wait is
+// the full descriptor delay; afterwards the planner's live BlocksRemaining is
+// used, which shrinks each block.
+func bestCaseBlocksRemaining(snapshot *unrollplan.Snapshot, csvDelay uint32,
+	currentLayer, totalLayers int) int32 {
+
+	// A confirmed sweep is done; a broadcast sweep is one confirmation
+	// away.
+	if snapshot.Done {
+		return 0
+	}
+	if snapshot.Sweep.Status == unrollplan.SweepStatusBroadcasted {
+		return 1
+	}
+
+	// Each proof layer from the frontier through the target layer needs at
+	// least one confirmation. Once the target confirms this term is zero.
+	matBlocks := int32(totalLayers - currentLayer)
+	if matBlocks < 0 {
+		matBlocks = 0
+	}
+
+	// The sweep is gated only on the target's CSV maturity, not on any
+	// straggler proof transaction, so once the target has confirmed the
+	// materialization term must not be added on top of the live CSV
+	// countdown. A multi-transaction layer can still hold an unconfirmed
+	// sibling after the target confirms, which would otherwise inflate the
+	// estimate.
+	if snapshot.TargetConfirmed {
+		matBlocks = 0
+	}
+
+	// The CSV wait is the full descriptor delay until the target confirms,
+	// after which the planner reports the exact remaining window.
+	csvBlocks := int32(csvDelay)
+	snapshot.CSV.WhenSome(func(csv unrollplan.CSVInfo) {
+		csvBlocks = csv.BlocksRemaining
+	})
+
+	// Add one confirmation for the final sweep itself.
+	return matBlocks + csvBlocks + 1
+}
+
+// actualSweepFeeSat derives the real fee the built sweep pays: the value of the
+// single target input (the VTXO amount) minus the swept output value. It
+// returns false until a sweep transaction has been built, or if the numbers do
+// not yield a sane positive fee (a defensive guard against a malformed tx).
+func actualSweepFeeSat(sweepTx *wire.MsgTx,
+	desc *vtxo.Descriptor) (int64, bool) {
+
+	if sweepTx == nil || desc == nil {
+		return 0, false
+	}
+
+	var outputSat int64
+	for _, out := range sweepTx.TxOut {
+		outputSat += out.Value
+	}
+
+	fee := int64(desc.Amount) - outputSat
+	if fee <= 0 {
+		return 0, false
+	}
+
+	return fee, true
 }
 
 // ensureLoaded lazily constructs every piece of actor-lifetime state the
