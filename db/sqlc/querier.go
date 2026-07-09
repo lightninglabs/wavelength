@@ -175,6 +175,12 @@ type Querier interface {
 	ListClientLedgerEntries(ctx context.Context, arg ListClientLedgerEntriesParams) ([]LedgerEntry, error)
 	ListClientLedgerEntriesByType(ctx context.Context, arg ListClientLedgerEntriesByTypeParams) ([]LedgerEntry, error)
 	ListClientLedgerEventTotals(ctx context.Context) ([]ListClientLedgerEventTotalsRow, error)
+	// ListEntriesByKindStatus returns entries of the given kind and status, paged
+	// by the unique canonical_id ascending. It backs the startup rehydration of
+	// the wallet-local pending map: filtering in SQL keeps that scan O(matching
+	// rows) instead of decoding the whole activity feed, and the canonical_id
+	// cursor is strictly monotonic (a full page always advances it).
+	ListEntriesByKindStatus(ctx context.Context, arg ListEntriesByKindStatusParams) ([]ActivityEntry, error)
 	// ListLiveVTXOAncestryPaths returns every ancestry row whose parent VTXO
 	// is non-terminal, mirroring the filter on ListLiveVTXOs. Used as a
 	// single batched companion query so descriptor materialization across

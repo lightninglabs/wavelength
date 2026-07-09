@@ -81,6 +81,19 @@ WHERE (
 ORDER BY created_at_unix DESC, canonical_id ASC
 LIMIT sqlc.arg(limit_count);
 
+-- name: ListEntriesByKindStatus :many
+-- ListEntriesByKindStatus returns entries of the given kind and status, paged
+-- by the unique canonical_id ascending. It backs the startup rehydration of
+-- the wallet-local pending map: filtering in SQL keeps that scan O(matching
+-- rows) instead of decoding the whole activity feed, and the canonical_id
+-- cursor is strictly monotonic (a full page always advances it).
+SELECT * FROM activity_entries
+WHERE kind = sqlc.arg(kind)
+    AND status = sqlc.arg(status)
+    AND canonical_id > sqlc.arg(cursor_id)
+ORDER BY canonical_id ASC
+LIMIT sqlc.arg(limit_count);
+
 -- name: PullActivityEvents :many
 -- PullActivityEvents returns transition rows strictly after the cursor in
 -- event_seq order, the resumable-subscribe replay primitive.
