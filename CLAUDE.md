@@ -16,7 +16,7 @@ This file is a **map**, not a manual. Follow links for details.
 | `make fmt-changed-check` | Verify changed Go source files are formatted |
 | `make unit pkg=<pkg> case=<test>` | Run unit tests |
 | `make unit log="stdlog trace" pkg=<pkg> case=<test>` | Unit tests with debug logs |
-| `make itest icase=<test>` | Integration test |
+| `make systest` | System integration tests (use `db=postgres` for PostgreSQL) |
 | `make tidy-module-check` | Verify module files are tidy |
 | `make rpc` | Regenerate protobuf stubs |
 | `make sqlc` | Regenerate type-safe DB queries |
@@ -27,7 +27,7 @@ This file is a **map**, not a manual. Follow links for details.
 
 ## Code Style (Summary)
 
-- **8-space tabs** (see `.editorconfig`), 80-char line limit (best effort).
+- **8-space tabs**, 80-char line limit (best effort).
 - Every function/method gets a comment starting with its name.
 - Exported identifiers need GoDoc comments wrapped to 80 columns.
 - Organize code into logical stanzas with explanatory comments between them.
@@ -54,7 +54,7 @@ Body wrapped at 72 characters. Explain WHY, not just WHAT.
 ## Critical Rules
 
 1. **Never edit generated code** — regenerate via `make rpc` or `make sqlc`.
-2. **Never write raw SQL in Go** — add queries to `db/queries/`, use sqlc.
+2. **Never write raw SQL in Go** — add queries to `db/sqlc/queries/`, use sqlc.
 3. **Run `make fmt-changed` before every commit.**
    This applies `goimports` and `llformat` to changed handwritten Go files.
    Use `make fmt` instead when you intentionally need a full-tree format pass.
@@ -130,7 +130,7 @@ and navigate into the package relevant to your task.
 ## Code Generation Workflow
 
 1. **Protobuf**: edit `.proto` → `make rpc` → commit generated code separately.
-2. **Database**: edit `db/schema/` or `db/queries/` → `make sqlc` → commit separately.
+2. **Database**: edit `db/sqlc/migrations/` or `db/sqlc/queries/` → `make sqlc` → commit separately.
 3. **Never edit generated code manually.**
 
 ## Dependencies
