@@ -404,6 +404,82 @@ func (ExitMode) EnumDescriptor() ([]byte, []int) {
 	return file_wallet_proto_rawDescGZIP(), []int{5}
 }
 
+// ExitInfeasibilityReason enumerates why a unilateral exit was judged
+// infeasible. It mirrors the daemon's unroll feasibility verdict so a
+// caller can distinguish a dust/uneconomical block (no amount of wallet
+// funding fixes it) from a plain funding shortfall.
+type ExitInfeasibilityReason int32
+
+const (
+	// EXIT_INFEASIBILITY_REASON_UNSPECIFIED — the proto zero value; the
+	// exit is feasible, or the block is a plain funding shortfall reported
+	// via funding_shortfall_sat instead.
+	ExitInfeasibilityReason_EXIT_INFEASIBILITY_REASON_UNSPECIFIED ExitInfeasibilityReason = 0
+	// EXIT_INFEASIBILITY_REASON_SWEEP_BELOW_DUST — the swept output, after
+	// deducting the sweep fee from the VTXO value, would fall at or below
+	// the dust limit, so the sweep could never relay. The exit is
+	// impossible regardless of wallet funding.
+	ExitInfeasibilityReason_EXIT_INFEASIBILITY_REASON_SWEEP_BELOW_DUST ExitInfeasibilityReason = 1
+	// EXIT_INFEASIBILITY_REASON_UNECONOMICAL — the total on-chain cost to
+	// recover the VTXO exceeds the configured fraction of its value. The
+	// exit could technically complete but burns more than it returns.
+	ExitInfeasibilityReason_EXIT_INFEASIBILITY_REASON_UNECONOMICAL ExitInfeasibilityReason = 2
+	// EXIT_INFEASIBILITY_REASON_WALLET_UNDERFUNDED — the confirmed on-chain
+	// wallet balance is too small to cover the CPFP fees. Funding the
+	// wallet and retrying resolves it (also reported via
+	// funding_shortfall_sat).
+	ExitInfeasibilityReason_EXIT_INFEASIBILITY_REASON_WALLET_UNDERFUNDED ExitInfeasibilityReason = 3
+	// EXIT_INFEASIBILITY_REASON_WALLET_TOO_FEW_INPUTS — the wallet has
+	// fewer usable confirmed UTXOs than the VTXO has independent ancestry
+	// paths, so it lacks distinct CPFP fee inputs.
+	ExitInfeasibilityReason_EXIT_INFEASIBILITY_REASON_WALLET_TOO_FEW_INPUTS ExitInfeasibilityReason = 4
+)
+
+// Enum value maps for ExitInfeasibilityReason.
+var (
+	ExitInfeasibilityReason_name = map[int32]string{
+		0: "EXIT_INFEASIBILITY_REASON_UNSPECIFIED",
+		1: "EXIT_INFEASIBILITY_REASON_SWEEP_BELOW_DUST",
+		2: "EXIT_INFEASIBILITY_REASON_UNECONOMICAL",
+		3: "EXIT_INFEASIBILITY_REASON_WALLET_UNDERFUNDED",
+		4: "EXIT_INFEASIBILITY_REASON_WALLET_TOO_FEW_INPUTS",
+	}
+	ExitInfeasibilityReason_value = map[string]int32{
+		"EXIT_INFEASIBILITY_REASON_UNSPECIFIED":           0,
+		"EXIT_INFEASIBILITY_REASON_SWEEP_BELOW_DUST":      1,
+		"EXIT_INFEASIBILITY_REASON_UNECONOMICAL":          2,
+		"EXIT_INFEASIBILITY_REASON_WALLET_UNDERFUNDED":    3,
+		"EXIT_INFEASIBILITY_REASON_WALLET_TOO_FEW_INPUTS": 4,
+	}
+)
+
+func (x ExitInfeasibilityReason) Enum() *ExitInfeasibilityReason {
+	p := new(ExitInfeasibilityReason)
+	*p = x
+	return p
+}
+
+func (x ExitInfeasibilityReason) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ExitInfeasibilityReason) Descriptor() protoreflect.EnumDescriptor {
+	return file_wallet_proto_enumTypes[6].Descriptor()
+}
+
+func (ExitInfeasibilityReason) Type() protoreflect.EnumType {
+	return &file_wallet_proto_enumTypes[6]
+}
+
+func (x ExitInfeasibilityReason) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ExitInfeasibilityReason.Descriptor instead.
+func (ExitInfeasibilityReason) EnumDescriptor() ([]byte, []int) {
+	return file_wallet_proto_rawDescGZIP(), []int{6}
+}
+
 // ExitJobStatus collapses the underlying unroll job phases to a short
 // wallet-facing string set.
 type ExitJobStatus int32
@@ -465,11 +541,11 @@ func (x ExitJobStatus) String() string {
 }
 
 func (ExitJobStatus) Descriptor() protoreflect.EnumDescriptor {
-	return file_wallet_proto_enumTypes[6].Descriptor()
+	return file_wallet_proto_enumTypes[7].Descriptor()
 }
 
 func (ExitJobStatus) Type() protoreflect.EnumType {
-	return &file_wallet_proto_enumTypes[6]
+	return &file_wallet_proto_enumTypes[7]
 }
 
 func (x ExitJobStatus) Number() protoreflect.EnumNumber {
@@ -478,7 +554,7 @@ func (x ExitJobStatus) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use ExitJobStatus.Descriptor instead.
 func (ExitJobStatus) EnumDescriptor() ([]byte, []int) {
-	return file_wallet_proto_rawDescGZIP(), []int{6}
+	return file_wallet_proto_rawDescGZIP(), []int{7}
 }
 
 // WalletEntryPhase is a coarse, wallet-facing lifecycle phase. It is not a
@@ -556,11 +632,11 @@ func (x WalletEntryPhase) String() string {
 }
 
 func (WalletEntryPhase) Descriptor() protoreflect.EnumDescriptor {
-	return file_wallet_proto_enumTypes[7].Descriptor()
+	return file_wallet_proto_enumTypes[8].Descriptor()
 }
 
 func (WalletEntryPhase) Type() protoreflect.EnumType {
-	return &file_wallet_proto_enumTypes[7]
+	return &file_wallet_proto_enumTypes[8]
 }
 
 func (x WalletEntryPhase) Number() protoreflect.EnumNumber {
@@ -569,7 +645,7 @@ func (x WalletEntryPhase) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use WalletEntryPhase.Descriptor instead.
 func (WalletEntryPhase) EnumDescriptor() ([]byte, []int) {
-	return file_wallet_proto_rawDescGZIP(), []int{7}
+	return file_wallet_proto_rawDescGZIP(), []int{8}
 }
 
 // EntryFailureCode is a stable, machine-readable classification of why a FAILED
@@ -628,11 +704,11 @@ func (x EntryFailureCode) String() string {
 }
 
 func (EntryFailureCode) Descriptor() protoreflect.EnumDescriptor {
-	return file_wallet_proto_enumTypes[8].Descriptor()
+	return file_wallet_proto_enumTypes[9].Descriptor()
 }
 
 func (EntryFailureCode) Type() protoreflect.EnumType {
-	return &file_wallet_proto_enumTypes[8]
+	return &file_wallet_proto_enumTypes[9]
 }
 
 func (x EntryFailureCode) Number() protoreflect.EnumNumber {
@@ -641,7 +717,7 @@ func (x EntryFailureCode) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use EntryFailureCode.Descriptor instead.
 func (EntryFailureCode) EnumDescriptor() ([]byte, []int) {
-	return file_wallet_proto_rawDescGZIP(), []int{8}
+	return file_wallet_proto_rawDescGZIP(), []int{9}
 }
 
 // CreateRequest carries the parameters for WalletService.Create: the
@@ -3469,9 +3545,16 @@ type ExitPlanEntry struct {
 	LastError string `protobuf:"bytes,13,opt,name=last_error,json=lastError,proto3" json:"last_error,omitempty"`
 	// error is a per-outpoint failure (e.g. VTXO not found) so one bad
 	// outpoint does not fail the whole batch. Empty on success.
-	Error         string `protobuf:"bytes,14,opt,name=error,proto3" json:"error,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Error string `protobuf:"bytes,14,opt,name=error,proto3" json:"error,omitempty"`
+	// infeasibility_reason explains why can_start is false. It may be a
+	// structural block — a dust or uneconomical VTXO the wallet can never
+	// make exitable (funding_shortfall_sat is zero) — or a funding
+	// shortfall the wallet could cover (wallet underfunded or too few fee
+	// inputs, also reflected in funding_shortfall_sat). It is
+	// EXIT_INFEASIBILITY_REASON_UNSPECIFIED when can_start is true.
+	InfeasibilityReason ExitInfeasibilityReason `protobuf:"varint,15,opt,name=infeasibility_reason,json=infeasibilityReason,proto3,enum=walletdkrpc.ExitInfeasibilityReason" json:"infeasibility_reason,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *ExitPlanEntry) Reset() {
@@ -3600,6 +3683,13 @@ func (x *ExitPlanEntry) GetError() string {
 		return x.Error
 	}
 	return ""
+}
+
+func (x *ExitPlanEntry) GetInfeasibilityReason() ExitInfeasibilityReason {
+	if x != nil {
+		return x.InfeasibilityReason
+	}
+	return ExitInfeasibilityReason_EXIT_INFEASIBILITY_REASON_UNSPECIFIED
 }
 
 // GetExitPlanResponse returns one ExitPlanEntry per requested outpoint, plus
@@ -5797,7 +5887,7 @@ const file_wallet_proto_rawDesc = "" +
 	"\x12GetExitPlanRequest\x12\x1c\n" +
 	"\toutpoints\x18\x01 \x03(\tR\toutpoints\x12\x1f\n" +
 	"\vconf_target\x18\x02 \x01(\rR\n" +
-	"confTarget\"\xff\x04\n" +
+	"confTarget\"\xd8\x05\n" +
 	"\rExitPlanEntry\x12\x1a\n" +
 	"\boutpoint\x18\x01 \x01(\tR\boutpoint\x12'\n" +
 	"\x0ffunding_address\x18\x02 \x01(\tR\x0efundingAddress\x125\n" +
@@ -5816,7 +5906,8 @@ const file_wallet_proto_rawDesc = "" +
 	"sweep_txid\x18\f \x01(\tR\tsweepTxid\x12\x1d\n" +
 	"\n" +
 	"last_error\x18\r \x01(\tR\tlastError\x12\x14\n" +
-	"\x05error\x18\x0e \x01(\tR\x05error\"\x9a\x02\n" +
+	"\x05error\x18\x0e \x01(\tR\x05error\x12W\n" +
+	"\x14infeasibility_reason\x18\x0f \x01(\x0e2$.walletdkrpc.ExitInfeasibilityReasonR\x13infeasibilityReason\"\x9a\x02\n" +
 	"\x13GetExitPlanResponse\x120\n" +
 	"\x05plans\x18\x01 \x03(\v2\x1a.walletdkrpc.ExitPlanEntryR\x05plans\x122\n" +
 	"\x16fee_rate_sat_per_vbyte\x18\x02 \x01(\x03R\x12feeRateSatPerVbyte\x12\x1b\n" +
@@ -5990,7 +6081,13 @@ const file_wallet_proto_rawDesc = "" +
 	"\bExitMode\x12\x19\n" +
 	"\x15EXIT_MODE_UNSPECIFIED\x10\x00\x12\x19\n" +
 	"\x15EXIT_MODE_COOPERATIVE\x10\x01\x12\x18\n" +
-	"\x14EXIT_MODE_UNILATERAL\x10\x02*\xea\x01\n" +
+	"\x14EXIT_MODE_UNILATERAL\x10\x02*\x87\x02\n" +
+	"\x17ExitInfeasibilityReason\x12)\n" +
+	"%EXIT_INFEASIBILITY_REASON_UNSPECIFIED\x10\x00\x12.\n" +
+	"*EXIT_INFEASIBILITY_REASON_SWEEP_BELOW_DUST\x10\x01\x12*\n" +
+	"&EXIT_INFEASIBILITY_REASON_UNECONOMICAL\x10\x02\x120\n" +
+	",EXIT_INFEASIBILITY_REASON_WALLET_UNDERFUNDED\x10\x03\x123\n" +
+	"/EXIT_INFEASIBILITY_REASON_WALLET_TOO_FEW_INPUTS\x10\x04*\xea\x01\n" +
 	"\rExitJobStatus\x12\x1f\n" +
 	"\x1bEXIT_JOB_STATUS_UNSPECIFIED\x10\x00\x12\x1b\n" +
 	"\x17EXIT_JOB_STATUS_PENDING\x10\x01\x12!\n" +
@@ -6049,7 +6146,7 @@ func file_wallet_proto_rawDescGZIP() []byte {
 	return file_wallet_proto_rawDescData
 }
 
-var file_wallet_proto_enumTypes = make([]protoimpl.EnumInfo, 9)
+var file_wallet_proto_enumTypes = make([]protoimpl.EnumInfo, 10)
 var file_wallet_proto_msgTypes = make([]protoimpl.MessageInfo, 55)
 var file_wallet_proto_goTypes = []any{
 	(EntryKind)(0),                  // 0: walletdkrpc.EntryKind
@@ -6058,145 +6155,147 @@ var file_wallet_proto_goTypes = []any{
 	(SendRail)(0),                   // 3: walletdkrpc.SendRail
 	(SendQuoteStatus)(0),            // 4: walletdkrpc.SendQuoteStatus
 	(ExitMode)(0),                   // 5: walletdkrpc.ExitMode
-	(ExitJobStatus)(0),              // 6: walletdkrpc.ExitJobStatus
-	(WalletEntryPhase)(0),           // 7: walletdkrpc.WalletEntryPhase
-	(EntryFailureCode)(0),           // 8: walletdkrpc.EntryFailureCode
-	(*CreateRequest)(nil),           // 9: walletdkrpc.CreateRequest
-	(*CreateResponse)(nil),          // 10: walletdkrpc.CreateResponse
-	(*UnlockRequest)(nil),           // 11: walletdkrpc.UnlockRequest
-	(*UnlockResponse)(nil),          // 12: walletdkrpc.UnlockResponse
-	(*PrepareSendRequest)(nil),      // 13: walletdkrpc.PrepareSendRequest
-	(*PrepareSendResponse)(nil),     // 14: walletdkrpc.PrepareSendResponse
-	(*SendRequest)(nil),             // 15: walletdkrpc.SendRequest
-	(*SendResponse)(nil),            // 16: walletdkrpc.SendResponse
-	(*RecvRequest)(nil),             // 17: walletdkrpc.RecvRequest
-	(*RecvResponse)(nil),            // 18: walletdkrpc.RecvResponse
-	(*CreditPreview)(nil),           // 19: walletdkrpc.CreditPreview
-	(*CreditReceive)(nil),           // 20: walletdkrpc.CreditReceive
-	(*ListRequest)(nil),             // 21: walletdkrpc.ListRequest
-	(*ListResponse)(nil),            // 22: walletdkrpc.ListResponse
-	(*ActivityList)(nil),            // 23: walletdkrpc.ActivityList
-	(*VTXOInventory)(nil),           // 24: walletdkrpc.VTXOInventory
-	(*WalletVTXO)(nil),              // 25: walletdkrpc.WalletVTXO
-	(*OnchainHistory)(nil),          // 26: walletdkrpc.OnchainHistory
-	(*OnchainTx)(nil),               // 27: walletdkrpc.OnchainTx
-	(*InspectActivityRequest)(nil),  // 28: walletdkrpc.InspectActivityRequest
-	(*InspectActivityResponse)(nil), // 29: walletdkrpc.InspectActivityResponse
-	(*ActivitySwapTrace)(nil),       // 30: walletdkrpc.ActivitySwapTrace
-	(*ActivityVTXOTrace)(nil),       // 31: walletdkrpc.ActivityVTXOTrace
-	(*ActivityLedgerTrace)(nil),     // 32: walletdkrpc.ActivityLedgerTrace
-	(*DepositRequest)(nil),          // 33: walletdkrpc.DepositRequest
-	(*DepositResponse)(nil),         // 34: walletdkrpc.DepositResponse
-	(*BalanceRequest)(nil),          // 35: walletdkrpc.BalanceRequest
-	(*BalanceResponse)(nil),         // 36: walletdkrpc.BalanceResponse
-	(*StatusRequest)(nil),           // 37: walletdkrpc.StatusRequest
-	(*StatusResponse)(nil),          // 38: walletdkrpc.StatusResponse
-	(*GetExitPlanRequest)(nil),      // 39: walletdkrpc.GetExitPlanRequest
-	(*ExitPlanEntry)(nil),           // 40: walletdkrpc.ExitPlanEntry
-	(*GetExitPlanResponse)(nil),     // 41: walletdkrpc.GetExitPlanResponse
-	(*SweepWalletRequest)(nil),      // 42: walletdkrpc.SweepWalletRequest
-	(*WalletSweepInput)(nil),        // 43: walletdkrpc.WalletSweepInput
-	(*SweepWalletResponse)(nil),     // 44: walletdkrpc.SweepWalletResponse
-	(*ExitRequest)(nil),             // 45: walletdkrpc.ExitRequest
-	(*ExitResponse)(nil),            // 46: walletdkrpc.ExitResponse
-	(*ExitStatusRequest)(nil),       // 47: walletdkrpc.ExitStatusRequest
-	(*ExitProgress)(nil),            // 48: walletdkrpc.ExitProgress
-	(*ExitCSV)(nil),                 // 49: walletdkrpc.ExitCSV
-	(*ExitFees)(nil),                // 50: walletdkrpc.ExitFees
-	(*ExitStatusResponse)(nil),      // 51: walletdkrpc.ExitStatusResponse
-	(*ExitSummaryRequest)(nil),      // 52: walletdkrpc.ExitSummaryRequest
-	(*ExitSummaryItem)(nil),         // 53: walletdkrpc.ExitSummaryItem
-	(*ExitSummaryResponse)(nil),     // 54: walletdkrpc.ExitSummaryResponse
-	(*SubscribeWalletRequest)(nil),  // 55: walletdkrpc.SubscribeWalletRequest
-	(*SubscribeWalletResponse)(nil), // 56: walletdkrpc.SubscribeWalletResponse
-	(*SubscribeGap)(nil),            // 57: walletdkrpc.SubscribeGap
-	(*WalletEntry)(nil),             // 58: walletdkrpc.WalletEntry
-	(*WalletEntryRequest)(nil),      // 59: walletdkrpc.WalletEntryRequest
-	(*LightningInvoiceRequest)(nil), // 60: walletdkrpc.LightningInvoiceRequest
-	(*OnchainAddressRequest)(nil),   // 61: walletdkrpc.OnchainAddressRequest
-	(*ArkAddressRequest)(nil),       // 62: walletdkrpc.ArkAddressRequest
-	(*WalletEntryProgress)(nil),     // 63: walletdkrpc.WalletEntryProgress
+	(ExitInfeasibilityReason)(0),    // 6: walletdkrpc.ExitInfeasibilityReason
+	(ExitJobStatus)(0),              // 7: walletdkrpc.ExitJobStatus
+	(WalletEntryPhase)(0),           // 8: walletdkrpc.WalletEntryPhase
+	(EntryFailureCode)(0),           // 9: walletdkrpc.EntryFailureCode
+	(*CreateRequest)(nil),           // 10: walletdkrpc.CreateRequest
+	(*CreateResponse)(nil),          // 11: walletdkrpc.CreateResponse
+	(*UnlockRequest)(nil),           // 12: walletdkrpc.UnlockRequest
+	(*UnlockResponse)(nil),          // 13: walletdkrpc.UnlockResponse
+	(*PrepareSendRequest)(nil),      // 14: walletdkrpc.PrepareSendRequest
+	(*PrepareSendResponse)(nil),     // 15: walletdkrpc.PrepareSendResponse
+	(*SendRequest)(nil),             // 16: walletdkrpc.SendRequest
+	(*SendResponse)(nil),            // 17: walletdkrpc.SendResponse
+	(*RecvRequest)(nil),             // 18: walletdkrpc.RecvRequest
+	(*RecvResponse)(nil),            // 19: walletdkrpc.RecvResponse
+	(*CreditPreview)(nil),           // 20: walletdkrpc.CreditPreview
+	(*CreditReceive)(nil),           // 21: walletdkrpc.CreditReceive
+	(*ListRequest)(nil),             // 22: walletdkrpc.ListRequest
+	(*ListResponse)(nil),            // 23: walletdkrpc.ListResponse
+	(*ActivityList)(nil),            // 24: walletdkrpc.ActivityList
+	(*VTXOInventory)(nil),           // 25: walletdkrpc.VTXOInventory
+	(*WalletVTXO)(nil),              // 26: walletdkrpc.WalletVTXO
+	(*OnchainHistory)(nil),          // 27: walletdkrpc.OnchainHistory
+	(*OnchainTx)(nil),               // 28: walletdkrpc.OnchainTx
+	(*InspectActivityRequest)(nil),  // 29: walletdkrpc.InspectActivityRequest
+	(*InspectActivityResponse)(nil), // 30: walletdkrpc.InspectActivityResponse
+	(*ActivitySwapTrace)(nil),       // 31: walletdkrpc.ActivitySwapTrace
+	(*ActivityVTXOTrace)(nil),       // 32: walletdkrpc.ActivityVTXOTrace
+	(*ActivityLedgerTrace)(nil),     // 33: walletdkrpc.ActivityLedgerTrace
+	(*DepositRequest)(nil),          // 34: walletdkrpc.DepositRequest
+	(*DepositResponse)(nil),         // 35: walletdkrpc.DepositResponse
+	(*BalanceRequest)(nil),          // 36: walletdkrpc.BalanceRequest
+	(*BalanceResponse)(nil),         // 37: walletdkrpc.BalanceResponse
+	(*StatusRequest)(nil),           // 38: walletdkrpc.StatusRequest
+	(*StatusResponse)(nil),          // 39: walletdkrpc.StatusResponse
+	(*GetExitPlanRequest)(nil),      // 40: walletdkrpc.GetExitPlanRequest
+	(*ExitPlanEntry)(nil),           // 41: walletdkrpc.ExitPlanEntry
+	(*GetExitPlanResponse)(nil),     // 42: walletdkrpc.GetExitPlanResponse
+	(*SweepWalletRequest)(nil),      // 43: walletdkrpc.SweepWalletRequest
+	(*WalletSweepInput)(nil),        // 44: walletdkrpc.WalletSweepInput
+	(*SweepWalletResponse)(nil),     // 45: walletdkrpc.SweepWalletResponse
+	(*ExitRequest)(nil),             // 46: walletdkrpc.ExitRequest
+	(*ExitResponse)(nil),            // 47: walletdkrpc.ExitResponse
+	(*ExitStatusRequest)(nil),       // 48: walletdkrpc.ExitStatusRequest
+	(*ExitProgress)(nil),            // 49: walletdkrpc.ExitProgress
+	(*ExitCSV)(nil),                 // 50: walletdkrpc.ExitCSV
+	(*ExitFees)(nil),                // 51: walletdkrpc.ExitFees
+	(*ExitStatusResponse)(nil),      // 52: walletdkrpc.ExitStatusResponse
+	(*ExitSummaryRequest)(nil),      // 53: walletdkrpc.ExitSummaryRequest
+	(*ExitSummaryItem)(nil),         // 54: walletdkrpc.ExitSummaryItem
+	(*ExitSummaryResponse)(nil),     // 55: walletdkrpc.ExitSummaryResponse
+	(*SubscribeWalletRequest)(nil),  // 56: walletdkrpc.SubscribeWalletRequest
+	(*SubscribeWalletResponse)(nil), // 57: walletdkrpc.SubscribeWalletResponse
+	(*SubscribeGap)(nil),            // 58: walletdkrpc.SubscribeGap
+	(*WalletEntry)(nil),             // 59: walletdkrpc.WalletEntry
+	(*WalletEntryRequest)(nil),      // 60: walletdkrpc.WalletEntryRequest
+	(*LightningInvoiceRequest)(nil), // 61: walletdkrpc.LightningInvoiceRequest
+	(*OnchainAddressRequest)(nil),   // 62: walletdkrpc.OnchainAddressRequest
+	(*ArkAddressRequest)(nil),       // 63: walletdkrpc.ArkAddressRequest
+	(*WalletEntryProgress)(nil),     // 64: walletdkrpc.WalletEntryProgress
 }
 var file_wallet_proto_depIdxs = []int32{
 	3,  // 0: walletdkrpc.PrepareSendResponse.rail:type_name -> walletdkrpc.SendRail
 	4,  // 1: walletdkrpc.PrepareSendResponse.quote_status:type_name -> walletdkrpc.SendQuoteStatus
-	19, // 2: walletdkrpc.PrepareSendResponse.credit_preview:type_name -> walletdkrpc.CreditPreview
-	58, // 3: walletdkrpc.SendResponse.entry:type_name -> walletdkrpc.WalletEntry
-	58, // 4: walletdkrpc.RecvResponse.entry:type_name -> walletdkrpc.WalletEntry
-	20, // 5: walletdkrpc.RecvResponse.credit_receive:type_name -> walletdkrpc.CreditReceive
+	20, // 2: walletdkrpc.PrepareSendResponse.credit_preview:type_name -> walletdkrpc.CreditPreview
+	59, // 3: walletdkrpc.SendResponse.entry:type_name -> walletdkrpc.WalletEntry
+	59, // 4: walletdkrpc.RecvResponse.entry:type_name -> walletdkrpc.WalletEntry
+	21, // 5: walletdkrpc.RecvResponse.credit_receive:type_name -> walletdkrpc.CreditReceive
 	2,  // 6: walletdkrpc.ListRequest.view:type_name -> walletdkrpc.ListView
 	0,  // 7: walletdkrpc.ListRequest.kinds:type_name -> walletdkrpc.EntryKind
-	23, // 8: walletdkrpc.ListResponse.activity:type_name -> walletdkrpc.ActivityList
-	24, // 9: walletdkrpc.ListResponse.vtxos:type_name -> walletdkrpc.VTXOInventory
-	26, // 10: walletdkrpc.ListResponse.onchain:type_name -> walletdkrpc.OnchainHistory
-	58, // 11: walletdkrpc.ActivityList.entries:type_name -> walletdkrpc.WalletEntry
-	25, // 12: walletdkrpc.VTXOInventory.vtxos:type_name -> walletdkrpc.WalletVTXO
-	27, // 13: walletdkrpc.OnchainHistory.txs:type_name -> walletdkrpc.OnchainTx
-	58, // 14: walletdkrpc.InspectActivityResponse.entry:type_name -> walletdkrpc.WalletEntry
-	30, // 15: walletdkrpc.InspectActivityResponse.swap:type_name -> walletdkrpc.ActivitySwapTrace
-	31, // 16: walletdkrpc.InspectActivityResponse.vtxos:type_name -> walletdkrpc.ActivityVTXOTrace
-	32, // 17: walletdkrpc.InspectActivityResponse.ledger_rows:type_name -> walletdkrpc.ActivityLedgerTrace
-	58, // 18: walletdkrpc.DepositResponse.entry:type_name -> walletdkrpc.WalletEntry
-	36, // 19: walletdkrpc.StatusResponse.balance:type_name -> walletdkrpc.BalanceResponse
-	6,  // 20: walletdkrpc.ExitPlanEntry.exit_status:type_name -> walletdkrpc.ExitJobStatus
-	40, // 21: walletdkrpc.GetExitPlanResponse.plans:type_name -> walletdkrpc.ExitPlanEntry
-	43, // 22: walletdkrpc.SweepWalletResponse.inputs:type_name -> walletdkrpc.WalletSweepInput
-	5,  // 23: walletdkrpc.ExitResponse.mode:type_name -> walletdkrpc.ExitMode
-	6,  // 24: walletdkrpc.ExitStatusResponse.status:type_name -> walletdkrpc.ExitJobStatus
-	48, // 25: walletdkrpc.ExitStatusResponse.progress:type_name -> walletdkrpc.ExitProgress
-	49, // 26: walletdkrpc.ExitStatusResponse.csv:type_name -> walletdkrpc.ExitCSV
-	50, // 27: walletdkrpc.ExitStatusResponse.fees:type_name -> walletdkrpc.ExitFees
-	6,  // 28: walletdkrpc.ExitSummaryItem.status:type_name -> walletdkrpc.ExitJobStatus
-	53, // 29: walletdkrpc.ExitSummaryResponse.exits:type_name -> walletdkrpc.ExitSummaryItem
-	0,  // 30: walletdkrpc.SubscribeWalletRequest.kinds:type_name -> walletdkrpc.EntryKind
-	58, // 31: walletdkrpc.SubscribeWalletResponse.entry:type_name -> walletdkrpc.WalletEntry
-	57, // 32: walletdkrpc.SubscribeWalletResponse.gap:type_name -> walletdkrpc.SubscribeGap
-	0,  // 33: walletdkrpc.WalletEntry.kind:type_name -> walletdkrpc.EntryKind
-	1,  // 34: walletdkrpc.WalletEntry.status:type_name -> walletdkrpc.EntryStatus
-	59, // 35: walletdkrpc.WalletEntry.request:type_name -> walletdkrpc.WalletEntryRequest
-	63, // 36: walletdkrpc.WalletEntry.progress:type_name -> walletdkrpc.WalletEntryProgress
-	8,  // 37: walletdkrpc.WalletEntry.failure_code:type_name -> walletdkrpc.EntryFailureCode
-	60, // 38: walletdkrpc.WalletEntryRequest.lightning_invoice:type_name -> walletdkrpc.LightningInvoiceRequest
-	61, // 39: walletdkrpc.WalletEntryRequest.onchain_address:type_name -> walletdkrpc.OnchainAddressRequest
-	62, // 40: walletdkrpc.WalletEntryRequest.ark_address:type_name -> walletdkrpc.ArkAddressRequest
-	7,  // 41: walletdkrpc.WalletEntryProgress.phase:type_name -> walletdkrpc.WalletEntryPhase
-	9,  // 42: walletdkrpc.WalletService.Create:input_type -> walletdkrpc.CreateRequest
-	11, // 43: walletdkrpc.WalletService.Unlock:input_type -> walletdkrpc.UnlockRequest
-	13, // 44: walletdkrpc.WalletService.PrepareSend:input_type -> walletdkrpc.PrepareSendRequest
-	15, // 45: walletdkrpc.WalletService.Send:input_type -> walletdkrpc.SendRequest
-	17, // 46: walletdkrpc.WalletService.Recv:input_type -> walletdkrpc.RecvRequest
-	21, // 47: walletdkrpc.WalletService.List:input_type -> walletdkrpc.ListRequest
-	33, // 48: walletdkrpc.WalletService.Deposit:input_type -> walletdkrpc.DepositRequest
-	35, // 49: walletdkrpc.WalletService.Balance:input_type -> walletdkrpc.BalanceRequest
-	37, // 50: walletdkrpc.WalletService.Status:input_type -> walletdkrpc.StatusRequest
-	39, // 51: walletdkrpc.WalletService.GetExitPlan:input_type -> walletdkrpc.GetExitPlanRequest
-	42, // 52: walletdkrpc.WalletService.SweepWallet:input_type -> walletdkrpc.SweepWalletRequest
-	45, // 53: walletdkrpc.WalletService.Exit:input_type -> walletdkrpc.ExitRequest
-	47, // 54: walletdkrpc.WalletService.ExitStatus:input_type -> walletdkrpc.ExitStatusRequest
-	52, // 55: walletdkrpc.WalletService.ExitSummary:input_type -> walletdkrpc.ExitSummaryRequest
-	55, // 56: walletdkrpc.WalletService.SubscribeWallet:input_type -> walletdkrpc.SubscribeWalletRequest
-	28, // 57: walletdkrpc.WalletInspectionService.InspectActivity:input_type -> walletdkrpc.InspectActivityRequest
-	10, // 58: walletdkrpc.WalletService.Create:output_type -> walletdkrpc.CreateResponse
-	12, // 59: walletdkrpc.WalletService.Unlock:output_type -> walletdkrpc.UnlockResponse
-	14, // 60: walletdkrpc.WalletService.PrepareSend:output_type -> walletdkrpc.PrepareSendResponse
-	16, // 61: walletdkrpc.WalletService.Send:output_type -> walletdkrpc.SendResponse
-	18, // 62: walletdkrpc.WalletService.Recv:output_type -> walletdkrpc.RecvResponse
-	22, // 63: walletdkrpc.WalletService.List:output_type -> walletdkrpc.ListResponse
-	34, // 64: walletdkrpc.WalletService.Deposit:output_type -> walletdkrpc.DepositResponse
-	36, // 65: walletdkrpc.WalletService.Balance:output_type -> walletdkrpc.BalanceResponse
-	38, // 66: walletdkrpc.WalletService.Status:output_type -> walletdkrpc.StatusResponse
-	41, // 67: walletdkrpc.WalletService.GetExitPlan:output_type -> walletdkrpc.GetExitPlanResponse
-	44, // 68: walletdkrpc.WalletService.SweepWallet:output_type -> walletdkrpc.SweepWalletResponse
-	46, // 69: walletdkrpc.WalletService.Exit:output_type -> walletdkrpc.ExitResponse
-	51, // 70: walletdkrpc.WalletService.ExitStatus:output_type -> walletdkrpc.ExitStatusResponse
-	54, // 71: walletdkrpc.WalletService.ExitSummary:output_type -> walletdkrpc.ExitSummaryResponse
-	56, // 72: walletdkrpc.WalletService.SubscribeWallet:output_type -> walletdkrpc.SubscribeWalletResponse
-	29, // 73: walletdkrpc.WalletInspectionService.InspectActivity:output_type -> walletdkrpc.InspectActivityResponse
-	58, // [58:74] is the sub-list for method output_type
-	42, // [42:58] is the sub-list for method input_type
-	42, // [42:42] is the sub-list for extension type_name
-	42, // [42:42] is the sub-list for extension extendee
-	0,  // [0:42] is the sub-list for field type_name
+	24, // 8: walletdkrpc.ListResponse.activity:type_name -> walletdkrpc.ActivityList
+	25, // 9: walletdkrpc.ListResponse.vtxos:type_name -> walletdkrpc.VTXOInventory
+	27, // 10: walletdkrpc.ListResponse.onchain:type_name -> walletdkrpc.OnchainHistory
+	59, // 11: walletdkrpc.ActivityList.entries:type_name -> walletdkrpc.WalletEntry
+	26, // 12: walletdkrpc.VTXOInventory.vtxos:type_name -> walletdkrpc.WalletVTXO
+	28, // 13: walletdkrpc.OnchainHistory.txs:type_name -> walletdkrpc.OnchainTx
+	59, // 14: walletdkrpc.InspectActivityResponse.entry:type_name -> walletdkrpc.WalletEntry
+	31, // 15: walletdkrpc.InspectActivityResponse.swap:type_name -> walletdkrpc.ActivitySwapTrace
+	32, // 16: walletdkrpc.InspectActivityResponse.vtxos:type_name -> walletdkrpc.ActivityVTXOTrace
+	33, // 17: walletdkrpc.InspectActivityResponse.ledger_rows:type_name -> walletdkrpc.ActivityLedgerTrace
+	59, // 18: walletdkrpc.DepositResponse.entry:type_name -> walletdkrpc.WalletEntry
+	37, // 19: walletdkrpc.StatusResponse.balance:type_name -> walletdkrpc.BalanceResponse
+	7,  // 20: walletdkrpc.ExitPlanEntry.exit_status:type_name -> walletdkrpc.ExitJobStatus
+	6,  // 21: walletdkrpc.ExitPlanEntry.infeasibility_reason:type_name -> walletdkrpc.ExitInfeasibilityReason
+	41, // 22: walletdkrpc.GetExitPlanResponse.plans:type_name -> walletdkrpc.ExitPlanEntry
+	44, // 23: walletdkrpc.SweepWalletResponse.inputs:type_name -> walletdkrpc.WalletSweepInput
+	5,  // 24: walletdkrpc.ExitResponse.mode:type_name -> walletdkrpc.ExitMode
+	7,  // 25: walletdkrpc.ExitStatusResponse.status:type_name -> walletdkrpc.ExitJobStatus
+	49, // 26: walletdkrpc.ExitStatusResponse.progress:type_name -> walletdkrpc.ExitProgress
+	50, // 27: walletdkrpc.ExitStatusResponse.csv:type_name -> walletdkrpc.ExitCSV
+	51, // 28: walletdkrpc.ExitStatusResponse.fees:type_name -> walletdkrpc.ExitFees
+	7,  // 29: walletdkrpc.ExitSummaryItem.status:type_name -> walletdkrpc.ExitJobStatus
+	54, // 30: walletdkrpc.ExitSummaryResponse.exits:type_name -> walletdkrpc.ExitSummaryItem
+	0,  // 31: walletdkrpc.SubscribeWalletRequest.kinds:type_name -> walletdkrpc.EntryKind
+	59, // 32: walletdkrpc.SubscribeWalletResponse.entry:type_name -> walletdkrpc.WalletEntry
+	58, // 33: walletdkrpc.SubscribeWalletResponse.gap:type_name -> walletdkrpc.SubscribeGap
+	0,  // 34: walletdkrpc.WalletEntry.kind:type_name -> walletdkrpc.EntryKind
+	1,  // 35: walletdkrpc.WalletEntry.status:type_name -> walletdkrpc.EntryStatus
+	60, // 36: walletdkrpc.WalletEntry.request:type_name -> walletdkrpc.WalletEntryRequest
+	64, // 37: walletdkrpc.WalletEntry.progress:type_name -> walletdkrpc.WalletEntryProgress
+	9,  // 38: walletdkrpc.WalletEntry.failure_code:type_name -> walletdkrpc.EntryFailureCode
+	61, // 39: walletdkrpc.WalletEntryRequest.lightning_invoice:type_name -> walletdkrpc.LightningInvoiceRequest
+	62, // 40: walletdkrpc.WalletEntryRequest.onchain_address:type_name -> walletdkrpc.OnchainAddressRequest
+	63, // 41: walletdkrpc.WalletEntryRequest.ark_address:type_name -> walletdkrpc.ArkAddressRequest
+	8,  // 42: walletdkrpc.WalletEntryProgress.phase:type_name -> walletdkrpc.WalletEntryPhase
+	10, // 43: walletdkrpc.WalletService.Create:input_type -> walletdkrpc.CreateRequest
+	12, // 44: walletdkrpc.WalletService.Unlock:input_type -> walletdkrpc.UnlockRequest
+	14, // 45: walletdkrpc.WalletService.PrepareSend:input_type -> walletdkrpc.PrepareSendRequest
+	16, // 46: walletdkrpc.WalletService.Send:input_type -> walletdkrpc.SendRequest
+	18, // 47: walletdkrpc.WalletService.Recv:input_type -> walletdkrpc.RecvRequest
+	22, // 48: walletdkrpc.WalletService.List:input_type -> walletdkrpc.ListRequest
+	34, // 49: walletdkrpc.WalletService.Deposit:input_type -> walletdkrpc.DepositRequest
+	36, // 50: walletdkrpc.WalletService.Balance:input_type -> walletdkrpc.BalanceRequest
+	38, // 51: walletdkrpc.WalletService.Status:input_type -> walletdkrpc.StatusRequest
+	40, // 52: walletdkrpc.WalletService.GetExitPlan:input_type -> walletdkrpc.GetExitPlanRequest
+	43, // 53: walletdkrpc.WalletService.SweepWallet:input_type -> walletdkrpc.SweepWalletRequest
+	46, // 54: walletdkrpc.WalletService.Exit:input_type -> walletdkrpc.ExitRequest
+	48, // 55: walletdkrpc.WalletService.ExitStatus:input_type -> walletdkrpc.ExitStatusRequest
+	53, // 56: walletdkrpc.WalletService.ExitSummary:input_type -> walletdkrpc.ExitSummaryRequest
+	56, // 57: walletdkrpc.WalletService.SubscribeWallet:input_type -> walletdkrpc.SubscribeWalletRequest
+	29, // 58: walletdkrpc.WalletInspectionService.InspectActivity:input_type -> walletdkrpc.InspectActivityRequest
+	11, // 59: walletdkrpc.WalletService.Create:output_type -> walletdkrpc.CreateResponse
+	13, // 60: walletdkrpc.WalletService.Unlock:output_type -> walletdkrpc.UnlockResponse
+	15, // 61: walletdkrpc.WalletService.PrepareSend:output_type -> walletdkrpc.PrepareSendResponse
+	17, // 62: walletdkrpc.WalletService.Send:output_type -> walletdkrpc.SendResponse
+	19, // 63: walletdkrpc.WalletService.Recv:output_type -> walletdkrpc.RecvResponse
+	23, // 64: walletdkrpc.WalletService.List:output_type -> walletdkrpc.ListResponse
+	35, // 65: walletdkrpc.WalletService.Deposit:output_type -> walletdkrpc.DepositResponse
+	37, // 66: walletdkrpc.WalletService.Balance:output_type -> walletdkrpc.BalanceResponse
+	39, // 67: walletdkrpc.WalletService.Status:output_type -> walletdkrpc.StatusResponse
+	42, // 68: walletdkrpc.WalletService.GetExitPlan:output_type -> walletdkrpc.GetExitPlanResponse
+	45, // 69: walletdkrpc.WalletService.SweepWallet:output_type -> walletdkrpc.SweepWalletResponse
+	47, // 70: walletdkrpc.WalletService.Exit:output_type -> walletdkrpc.ExitResponse
+	52, // 71: walletdkrpc.WalletService.ExitStatus:output_type -> walletdkrpc.ExitStatusResponse
+	55, // 72: walletdkrpc.WalletService.ExitSummary:output_type -> walletdkrpc.ExitSummaryResponse
+	57, // 73: walletdkrpc.WalletService.SubscribeWallet:output_type -> walletdkrpc.SubscribeWalletResponse
+	30, // 74: walletdkrpc.WalletInspectionService.InspectActivity:output_type -> walletdkrpc.InspectActivityResponse
+	59, // [59:75] is the sub-list for method output_type
+	43, // [43:59] is the sub-list for method input_type
+	43, // [43:43] is the sub-list for extension type_name
+	43, // [43:43] is the sub-list for extension extendee
+	0,  // [0:43] is the sub-list for field type_name
 }
 
 func init() { file_wallet_proto_init() }
@@ -6228,7 +6327,7 @@ func file_wallet_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_wallet_proto_rawDesc), len(file_wallet_proto_rawDesc)),
-			NumEnums:      9,
+			NumEnums:      10,
 			NumMessages:   55,
 			NumExtensions: 0,
 			NumServices:   2,

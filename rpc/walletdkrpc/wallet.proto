@@ -1051,6 +1051,47 @@ message ExitPlanEntry {
     // error is a per-outpoint failure (e.g. VTXO not found) so one bad
     // outpoint does not fail the whole batch. Empty on success.
     string error = 14;
+
+    // infeasibility_reason explains why can_start is false. It may be a
+    // structural block — a dust or uneconomical VTXO the wallet can never
+    // make exitable (funding_shortfall_sat is zero) — or a funding
+    // shortfall the wallet could cover (wallet underfunded or too few fee
+    // inputs, also reflected in funding_shortfall_sat). It is
+    // EXIT_INFEASIBILITY_REASON_UNSPECIFIED when can_start is true.
+    ExitInfeasibilityReason infeasibility_reason = 15;
+}
+
+// ExitInfeasibilityReason enumerates why a unilateral exit was judged
+// infeasible. It mirrors the daemon's unroll feasibility verdict so a
+// caller can distinguish a dust/uneconomical block (no amount of wallet
+// funding fixes it) from a plain funding shortfall.
+enum ExitInfeasibilityReason {
+    // EXIT_INFEASIBILITY_REASON_UNSPECIFIED — the proto zero value; the
+    // exit is feasible, or the block is a plain funding shortfall reported
+    // via funding_shortfall_sat instead.
+    EXIT_INFEASIBILITY_REASON_UNSPECIFIED = 0;
+
+    // EXIT_INFEASIBILITY_REASON_SWEEP_BELOW_DUST — the swept output, after
+    // deducting the sweep fee from the VTXO value, would fall at or below
+    // the dust limit, so the sweep could never relay. The exit is
+    // impossible regardless of wallet funding.
+    EXIT_INFEASIBILITY_REASON_SWEEP_BELOW_DUST = 1;
+
+    // EXIT_INFEASIBILITY_REASON_UNECONOMICAL — the total on-chain cost to
+    // recover the VTXO exceeds the configured fraction of its value. The
+    // exit could technically complete but burns more than it returns.
+    EXIT_INFEASIBILITY_REASON_UNECONOMICAL = 2;
+
+    // EXIT_INFEASIBILITY_REASON_WALLET_UNDERFUNDED — the confirmed on-chain
+    // wallet balance is too small to cover the CPFP fees. Funding the
+    // wallet and retrying resolves it (also reported via
+    // funding_shortfall_sat).
+    EXIT_INFEASIBILITY_REASON_WALLET_UNDERFUNDED = 3;
+
+    // EXIT_INFEASIBILITY_REASON_WALLET_TOO_FEW_INPUTS — the wallet has
+    // fewer usable confirmed UTXOs than the VTXO has independent ancestry
+    // paths, so it lacks distinct CPFP fee inputs.
+    EXIT_INFEASIBILITY_REASON_WALLET_TOO_FEW_INPUTS = 4;
 }
 
 // GetExitPlanResponse returns one ExitPlanEntry per requested outpoint, plus

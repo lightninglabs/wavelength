@@ -12,6 +12,30 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+// exitFundingShortfallForTest recomputes the funding shortfall from the
+// exported feasibility verdict fields, mirroring the unexported
+// unroll.exitFundingShortfall so the darepod entry mapping can be asserted
+// without a live wallet/DB. For a wallet that covers both the required
+// distinct fee inputs and the CPFP balance the result is zero.
+func exitFundingShortfallForTest(v unroll.ExitFeasibility) int64 {
+	recommended := unroll.RecommendedExitFeeInputAmount(v)
+
+	missingInputs := 0
+	if v.WalletUsableInputs < v.RequiredWalletInputs {
+		missingInputs = v.RequiredWalletInputs - v.WalletUsableInputs
+	}
+	inputShortfall := int64(recommended) * int64(missingInputs)
+
+	var balanceShortfall int64
+	if v.WalletConfirmedSat < v.CPFPFeeTotalSat {
+		balanceShortfall = int64(
+			v.CPFPFeeTotalSat - v.WalletConfirmedSat,
+		)
+	}
+
+	return max(inputShortfall, balanceShortfall)
+}
+
 func newReadyExitPlanRPCServer() *RPCServer {
 	walletReady := make(chan struct{})
 	close(walletReady)
@@ -162,4 +186,94 @@ func TestExitPlanBatchSharedSupplyDecrements(t *testing.T) {
 	second := unroll.AssessExitFeasibility(feasInput(remaining))
 	require.False(t, second.Feasible)
 	require.Equal(t, unroll.ExitWalletTooFewInputs, second.Reason)
+}
+
+// TestExitPlanEntrySurfacesStructuralInfeasibility locks the #894 fix: when a
+// VTXO fails the dust or uneconomical gate against a well-funded wallet, the
+// entry must report can_start=false with a ZERO funding shortfall (no amount
+// of wallet funding fixes it) AND carry the structural reason on
+// InfeasibilityReason, rather than leaving the caller with a silent
+// can_start=false and an empty error. It mirrors the exact verdict->entry
+// mapping exitPlanEntry performs.
+func TestExitPlanEntrySurfacesStructuralInfeasibility(t *testing.T) {
+	t.Parallel()
+
+	// A well-funded wallet so the block can never be a funding gap: any
+	// infeasibility must be structural (dust or uneconomical).
+	const (
+		feeRate         = btcutil.Amount(50)
+		walletConfirmed = btcutil.Amount(10_000_000)
+		walletInputs    = 10
+	)
+
+	tests := []struct {
+		name       string
+		in         unroll.ExitFeasibilityInput
+		wantReason unroll.ExitInfeasibilityReason
+	}{
+		{
+			// A 1-sat VTXO: after any sweep fee the swept output is
+			// far below dust, so the sweep can never relay.
+			name: "sub-dust vtxo",
+			in: unroll.ExitFeasibilityInput{
+				NumRecoveryTxs:     1,
+				NumAncestryPaths:   1,
+				VTXOAmountSat:      1,
+				FeeRateSatPerVByte: feeRate,
+				WalletConfirmedSat: walletConfirmed,
+				WalletUsableInputs: walletInputs,
+			},
+			wantReason: unroll.ExitSweepBelowDust,
+		},
+		{
+			// A deep lineage on a small (but above-dust-net) VTXO
+			// at a high fee rate: CPFP fees dwarf the coin's value.
+			name: "uneconomical vtxo",
+			in: unroll.ExitFeasibilityInput{
+				NumRecoveryTxs:     50,
+				NumAncestryPaths:   1,
+				VTXOAmountSat:      20_000,
+				FeeRateSatPerVByte: feeRate,
+				WalletConfirmedSat: walletConfirmed,
+				WalletUsableInputs: walletInputs,
+			},
+			wantReason: unroll.ExitUneconomical,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			verdict := unroll.AssessExitFeasibility(tc.in)
+
+			// The well-funded wallet covers both the required
+			// distinct fee inputs and the CPFP balance, so the
+			// funding shortfall is zero: the block is purely
+			// structural (dust/uneconomical), not a funding gap.
+			require.GreaterOrEqual(
+				t, verdict.WalletUsableInputs,
+				verdict.RequiredWalletInputs,
+			)
+			require.GreaterOrEqual(
+				t, int64(verdict.WalletConfirmedSat),
+				int64(verdict.CPFPFeeTotalSat),
+			)
+			shortfall := exitFundingShortfallForTest(verdict)
+
+			// Mirror the exact verdict->entry mapping exitPlanEntry
+			// performs.
+			entry := ExitPlanEntry{
+				CanStart:            verdict.Feasible,
+				InfeasibilityReason: verdict.Reason,
+				FundingShortfallSat: shortfall,
+			}
+
+			require.False(t, entry.CanStart)
+			require.Zero(t, entry.FundingShortfallSat)
+			require.Equal(
+				t, tc.wantReason, entry.InfeasibilityReason,
+			)
+		})
+	}
 }

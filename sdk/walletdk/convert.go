@@ -361,13 +361,40 @@ func exitPlanEntryFromProto(e *walletdkrpc.ExitPlanEntry) ExitPlanEntry {
 		RecommendedTotalFundingSat: e.GetRecommendedTotalFundingSat(),
 		FundingShortfallSat:        e.GetFundingShortfallSat(),
 		CanStart:                   e.GetCanStart(),
-		ExitJobFound:               e.GetExitJobFound(),
+		InfeasibilityReason: exitInfeasibilityReasonFromProto(
+			e.GetInfeasibilityReason(),
+		),
+		ExitJobFound: e.GetExitJobFound(),
 		ExitStatus: exitJobStatusFromProto(
 			e.GetExitStatus(),
 		),
 		SweepTxid: e.GetSweepTxid(),
 		LastError: e.GetLastError(),
 		Err:       e.GetError(),
+	}
+}
+
+// exitInfeasibilityReasonFromProto maps the proto ExitInfeasibilityReason onto
+// the wrapper-owned lowercase string set, so proto enum renumbering stays
+// isolated from the SDK surface.
+func exitInfeasibilityReasonFromProto(
+	r walletdkrpc.ExitInfeasibilityReason) ExitInfeasibilityReason {
+
+	switch r {
+	case walletdkrpc.ExitInfeasibilityReason_EXIT_INFEASIBILITY_REASON_SWEEP_BELOW_DUST: //nolint:ll
+		return ExitInfeasibilityReasonSweepBelowDust
+
+	case walletdkrpc.ExitInfeasibilityReason_EXIT_INFEASIBILITY_REASON_UNECONOMICAL: //nolint:ll
+		return ExitInfeasibilityReasonUneconomical
+
+	case walletdkrpc.ExitInfeasibilityReason_EXIT_INFEASIBILITY_REASON_WALLET_UNDERFUNDED: //nolint:ll
+		return ExitInfeasibilityReasonWalletUnderfunded
+
+	case walletdkrpc.ExitInfeasibilityReason_EXIT_INFEASIBILITY_REASON_WALLET_TOO_FEW_INPUTS: //nolint:ll
+		return ExitInfeasibilityReasonWalletTooFewInputs
+
+	default:
+		return ExitInfeasibilityReasonUnspecified
 	}
 }
 
