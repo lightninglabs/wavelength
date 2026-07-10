@@ -197,48 +197,65 @@ func (q *Queries) ListVTXOSelectionCandidatesByStatus(ctx context.Context, statu
 
 const ListVTXOsByStatus = `-- name: ListVTXOsByStatus :many
 
-SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, policy_template, client_key_id, operator_pubkey, batch_expiry, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time, chain_depth, construction_version FROM vtxos
-WHERE status = $1
-ORDER BY creation_time DESC
+SELECT vtxos.outpoint_hash, vtxos.outpoint_index, vtxos.round_id, vtxos.amount, vtxos.pk_script, vtxos.expiry, vtxos.policy_template, vtxos.client_key_id, vtxos.operator_pubkey, vtxos.batch_expiry, vtxos.created_height, vtxos.commitment_txid, vtxos.spent, vtxos.status, vtxos.forfeit_round_id, vtxos.forfeit_tx, vtxos.forfeit_txid, vtxos.replaced_by_hash, vtxos.replaced_by_index, vtxos.creation_time, vtxos.last_update_time, vtxos.chain_depth, vtxos.construction_version,
+    rounds.commitment_txid AS settlement_txid,
+    rounds.confirmation_height AS settlement_height
+FROM vtxos
+LEFT JOIN rounds ON vtxos.forfeit_round_id = rounds.round_id
+WHERE vtxos.status = $1
+ORDER BY vtxos.creation_time DESC
 `
+
+type ListVTXOsByStatusRow struct {
+	Vtxo             Vtxo
+	SettlementTxid   []byte
+	SettlementHeight sql.NullInt32
+}
 
 // VTXO status and lifecycle queries.
 // These queries support the vtxo.VTXOStore interface for VTXO lifecycle
 // management, including status transitions and forfeit transaction tracking.
-// ListVTXOsByStatus returns all VTXOs with the specified status.
-func (q *Queries) ListVTXOsByStatus(ctx context.Context, status int32) ([]Vtxo, error) {
+// ListVTXOsByStatus returns all VTXOs with the specified status. It also
+// LEFT JOINs the round that forfeited each VTXO (via forfeit_round_id) so a
+// FORFEITED VTXO can surface the settling commitment txid and its confirmation
+// height. The join columns are NULL for every VTXO whose forfeit round is
+// unknown (all non-forfeited VTXOs, and forfeited ones whose round row is
+// absent), so consumers must treat them as optional.
+func (q *Queries) ListVTXOsByStatus(ctx context.Context, status int32) ([]ListVTXOsByStatusRow, error) {
 	rows, err := q.db.QueryContext(ctx, ListVTXOsByStatus, status)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []Vtxo
+	var items []ListVTXOsByStatusRow
 	for rows.Next() {
-		var i Vtxo
+		var i ListVTXOsByStatusRow
 		if err := rows.Scan(
-			&i.OutpointHash,
-			&i.OutpointIndex,
-			&i.RoundID,
-			&i.Amount,
-			&i.PkScript,
-			&i.Expiry,
-			&i.PolicyTemplate,
-			&i.ClientKeyID,
-			&i.OperatorPubkey,
-			&i.BatchExpiry,
-			&i.CreatedHeight,
-			&i.CommitmentTxid,
-			&i.Spent,
-			&i.Status,
-			&i.ForfeitRoundID,
-			&i.ForfeitTx,
-			&i.ForfeitTxid,
-			&i.ReplacedByHash,
-			&i.ReplacedByIndex,
-			&i.CreationTime,
-			&i.LastUpdateTime,
-			&i.ChainDepth,
-			&i.ConstructionVersion,
+			&i.Vtxo.OutpointHash,
+			&i.Vtxo.OutpointIndex,
+			&i.Vtxo.RoundID,
+			&i.Vtxo.Amount,
+			&i.Vtxo.PkScript,
+			&i.Vtxo.Expiry,
+			&i.Vtxo.PolicyTemplate,
+			&i.Vtxo.ClientKeyID,
+			&i.Vtxo.OperatorPubkey,
+			&i.Vtxo.BatchExpiry,
+			&i.Vtxo.CreatedHeight,
+			&i.Vtxo.CommitmentTxid,
+			&i.Vtxo.Spent,
+			&i.Vtxo.Status,
+			&i.Vtxo.ForfeitRoundID,
+			&i.Vtxo.ForfeitTx,
+			&i.Vtxo.ForfeitTxid,
+			&i.Vtxo.ReplacedByHash,
+			&i.Vtxo.ReplacedByIndex,
+			&i.Vtxo.CreationTime,
+			&i.Vtxo.LastUpdateTime,
+			&i.Vtxo.ChainDepth,
+			&i.Vtxo.ConstructionVersion,
+			&i.SettlementTxid,
+			&i.SettlementHeight,
 		); err != nil {
 			return nil, err
 		}

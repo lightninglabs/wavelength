@@ -1062,6 +1062,104 @@ func TestVTXOPersistenceStoreListVTXOsByStatusBatchedAncestry(t *testing.T) {
 	}
 }
 
+// TestVTXOPersistenceStoreListVTXOsByStatusSettlement proves the by-status
+// read joins each forfeited VTXO to its forfeit round (via forfeit_round_id)
+// and surfaces the round's commitment txid + confirmation height as the VTXO's
+// settlement coordinates. A live VTXO, which has no forfeit round, must leave
+// the settlement fields zero (issue #924).
+func TestVTXOPersistenceStoreListVTXOsByStatusSettlement(t *testing.T) {
+	t.Parallel()
+
+	vtxoStore, roundStore, _ := newVTXOStoreForTest(t)
+	ctx := t.Context()
+
+	// The round that CREATED the VTXOs. Its own commitment txid must not be
+	// confused with the settling (forfeit) round below.
+	commitRound := func(id round.RoundID) *round.Round {
+		r := createTestRound(t, id)
+		state := &round.InputSigSentState{
+			RoundID:     r.RoundID,
+			ClientTrees: make(map[round.SignerKey]*tree.Tree),
+		}
+		require.NoError(t, roundStore.CommitState(ctx, r, state))
+
+		return r
+	}
+
+	createRoundID := testRoundIDDB("settlement-create-round")
+	commitRound(createRoundID)
+
+	// The leave round that FORFEITS the VTXO. It confirms at a known txid
+	// and height that the join must surface as the settlement.
+	settleRoundID := testRoundIDDB("settlement-leave-round")
+	commitRound(settleRoundID)
+
+	settlementTxid := chainhash.HashH([]byte("settlement-commitment-tx"))
+	const settlementHeight = int32(812345)
+	require.NoError(
+		t,
+		roundStore.FinalizeRound(
+			ctx, settleRoundID, settlementTxid, round.ConfInfo{
+				Height: settlementHeight,
+				BlockHash: chainhash.HashH(
+					[]byte("settlement-block"),
+				),
+			},
+		),
+	)
+
+	// A live VTXO (no forfeit round) and a forfeited VTXO whose forfeit
+	// round is the confirmed leave round above.
+	liveDesc := createTestVTXODescriptor(t, createRoundID, 1)
+	forfeitedDesc := createTestVTXODescriptor(t, createRoundID, 2)
+	require.NoError(t, vtxoStore.SaveVTXO(ctx, liveDesc))
+	require.NoError(t, vtxoStore.SaveVTXO(ctx, forfeitedDesc))
+
+	require.NoError(
+		t,
+		vtxoStore.MarkForfeiting(
+			ctx, forfeitedDesc.Outpoint, settleRoundID.String(),
+			nil,
+		),
+	)
+	require.NoError(
+		t,
+		vtxoStore.MarkForfeited(
+			ctx, forfeitedDesc.Outpoint,
+			chainhash.HashH(
+				[]byte("forfeit-tx"),
+			),
+		),
+	)
+
+	// The forfeited VTXO carries the settling round's coordinates.
+	forfeited, err := vtxoStore.ListVTXOsByStatus(
+		ctx, vtxo.VTXOStatusForfeited,
+	)
+	require.NoError(t, err)
+	require.Len(t, forfeited, 1)
+	require.Equal(t, forfeitedDesc.Outpoint, forfeited[0].Outpoint)
+	settle := forfeited[0].Settlement.UnwrapOrFail(t)
+	require.Equal(t, settlementTxid, settle.TxID)
+	require.Equal(t, settlementHeight, settle.Height)
+
+	// The live VTXO has no forfeit round, so its settlement is None.
+	live, err := vtxoStore.ListVTXOsByStatus(ctx, vtxo.VTXOStatusLive)
+	require.NoError(t, err)
+	require.Len(t, live, 1)
+	require.True(t, live[0].Settlement.IsNone())
+
+	// The light (no-ancestry) path surfaces the same settlement.
+	forfeitedLight, err := vtxoStore.ListVTXOsByStatusLight(
+		ctx, vtxo.VTXOStatusForfeited,
+	)
+	require.NoError(t, err)
+	require.Len(t, forfeitedLight, 1)
+	settleLight := forfeitedLight[0].Settlement.UnwrapOrFail(t)
+	require.Equal(t, settlementTxid, settleLight.TxID)
+	require.Equal(t, settlementHeight, settleLight.Height)
+}
+
 // TestGroupAncestryRowsPreservesOrder is a unit test on the grouping
 // helper — distinct outpoints in the same row stream must produce
 // distinct map entries, and per-outpoint fragments must be appended

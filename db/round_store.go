@@ -128,7 +128,8 @@ type RoundStore interface {
 	// VTXO lifecycle status queries.
 	ListLiveVTXOs(ctx context.Context) ([]VTXORow, error)
 
-	ListVTXOsByStatus(ctx context.Context, status int32) ([]VTXORow, error)
+	ListVTXOsByStatus(ctx context.Context,
+		status int32) ([]sqlc.ListVTXOsByStatusRow, error)
 
 	// ListVTXOSelectionCandidatesByStatus returns the lightweight
 	// (outpoint, amount, pkScript) projection coin selection runs on,

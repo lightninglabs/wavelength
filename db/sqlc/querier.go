@@ -275,8 +275,13 @@ type Querier interface {
 	// VTXO status and lifecycle queries.
 	// These queries support the vtxo.VTXOStore interface for VTXO lifecycle
 	// management, including status transitions and forfeit transaction tracking.
-	// ListVTXOsByStatus returns all VTXOs with the specified status.
-	ListVTXOsByStatus(ctx context.Context, status int32) ([]Vtxo, error)
+	// ListVTXOsByStatus returns all VTXOs with the specified status. It also
+	// LEFT JOINs the round that forfeited each VTXO (via forfeit_round_id) so a
+	// FORFEITED VTXO can surface the settling commitment txid and its confirmation
+	// height. The join columns are NULL for every VTXO whose forfeit round is
+	// unknown (all non-forfeited VTXOs, and forfeited ones whose round row is
+	// absent), so consumers must treat them as optional.
+	ListVTXOsByStatus(ctx context.Context, status int32) ([]ListVTXOsByStatusRow, error)
 	ListWalletUTXOLog(ctx context.Context, arg ListWalletUTXOLogParams) ([]WalletUtxoLog, error)
 	ListWalletUTXOLogByBlock(ctx context.Context, blockHeight int32) ([]WalletUtxoLog, error)
 	ListWalletUTXOLogByClassification(ctx context.Context, arg ListWalletUTXOLogByClassificationParams) ([]WalletUtxoLog, error)
