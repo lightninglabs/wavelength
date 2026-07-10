@@ -10,10 +10,12 @@ import (
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
+	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tx"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/round"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
 )
@@ -268,13 +270,30 @@ func TestLiveStateForceUnroll(t *testing.T) {
 	).Return(nil)
 
 	_, err := h.sendEvent(&ForceUnrollEvent{
-		Reason: "manual unroll",
+		Reason:  "recipient fraud spend",
+		Trigger: actormsg.UnrollTriggerFraudSpend,
+		ExitPolicy: fn.Some(actormsg.ExitPolicy{
+			Kind: actormsg.ExitPolicyVHTLCRefundWithoutReceiver,
+			Ref:  actormsg.ExitPolicyRef("recovery-7"),
+		}),
 	})
 	require.NoError(t, err)
 
 	exit := assertState[*UnilateralExitState](h)
 	require.Equal(t, int32(100), exit.LastCheckedHeight)
-	assertOutboxContains[*ExpiringNotification](h)
+
+	// The trigger and exit policy must ride the outgoing notification so
+	// the chain-resolver bridge admits the registry job under the right
+	// StartTrigger and policy rather than the critical-expiry default.
+	notif := assertOutboxContains[*ExpiringNotification](h)
+	require.Equal(t, actormsg.UnrollTriggerFraudSpend, notif.Trigger)
+
+	policy := notif.ExitPolicy.UnwrapOrFail(t)
+	require.Equal(
+		t, actormsg.ExitPolicyVHTLCRefundWithoutReceiver, policy.Kind,
+	)
+	require.Equal(t, actormsg.ExitPolicyRef("recovery-7"), policy.Ref)
+
 	assertOutboxContains[*VTXOStatusUpdate](h)
 	assertOutboxLacks[*VTXOTerminatedNotification](h)
 }
@@ -409,9 +428,10 @@ func TestUnilateralExitConfirms(t *testing.T) {
 	require.Equal(t, "Spent", term.FinalState)
 }
 
-// TestUnilateralExitSelfLoopsWhileExiting verifies that stray events received
-// while the exit is in flight (block epochs, a duplicate force-unroll, resume)
-// leave the VTXO in UnilateralExitState rather than erroring or transitioning.
+// TestUnilateralExitSelfLoopsWhileExiting verifies that truly inert events
+// received while the exit is in flight (block epochs, resume) leave the VTXO
+// in UnilateralExitState and emit nothing: the exit is already at the chain
+// resolver.
 func TestUnilateralExitSelfLoopsWhileExiting(t *testing.T) {
 	t.Parallel()
 
@@ -426,9 +446,6 @@ func TestUnilateralExitSelfLoopsWhileExiting(t *testing.T) {
 
 	for _, evt := range []VTXOEvent{
 		h.newBlockEpochEvent(200),
-		&ForceUnrollEvent{
-			Reason: "duplicate",
-		},
 		&ResumeVTXOEvent{},
 	} {
 		_, err := h.sendEvent(evt)
@@ -438,8 +455,51 @@ func TestUnilateralExitSelfLoopsWhileExiting(t *testing.T) {
 
 	require.Empty(
 		t, h.outboxMessages,
-		"self-loop while exiting should emit nothing",
+		"inert self-loop while exiting should emit nothing",
 	)
+}
+
+// TestUnilateralExitReadmitsOnDuplicateForceUnroll verifies that a duplicate
+// ForceUnrollEvent on an already-exiting VTXO is an idempotent re-admission:
+// the VTXO stays in UnilateralExitState but re-emits the chain-resolver
+// notification carrying the same trigger and exit policy, so a first admission
+// lost before the registry recorded it (e.g. a crash between the status flip
+// and the registry UpsertRecord) is re-driven. The registry dedups against a
+// live record, so the redundant re-admit is harmless.
+func TestUnilateralExitReadmitsOnDuplicateForceUnroll(t *testing.T) {
+	t.Parallel()
+
+	h := newVTXOTestHarness(t)
+	vtxo := h.newTestDescriptor()
+
+	h.withState(&UnilateralExitState{
+		VTXO:              vtxo,
+		Reason:            "vhtlc recovery",
+		LastCheckedHeight: 100,
+	})
+
+	_, err := h.sendEvent(&ForceUnrollEvent{
+		Reason:  "duplicate",
+		Trigger: actormsg.UnrollTriggerFraudSpend,
+		ExitPolicy: fn.Some(actormsg.ExitPolicy{
+			Kind: actormsg.ExitPolicyVHTLCRefundWithoutReceiver,
+			Ref:  actormsg.ExitPolicyRef("recovery-1"),
+		}),
+	})
+	require.NoError(t, err)
+	assertState[*UnilateralExitState](h)
+
+	// The re-admission emits the chain-resolver notification (and nothing
+	// else, in particular no status update: the VTXO is already exiting).
+	notif := assertOutboxContains[*ExpiringNotification](h)
+	require.Equal(t, actormsg.UnrollTriggerFraudSpend, notif.Trigger)
+
+	policy := notif.ExitPolicy.UnwrapOrFail(t)
+	require.Equal(
+		t, actormsg.ExitPolicyVHTLCRefundWithoutReceiver, policy.Kind,
+	)
+	require.Equal(t, actormsg.ExitPolicyRef("recovery-1"), policy.Ref)
+	require.Len(t, h.outboxMessages, 1)
 }
 
 // TestForfeitRequestFromLiveState verifies that LiveState transitions to

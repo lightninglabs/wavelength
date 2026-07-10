@@ -4,6 +4,7 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/round"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
 // VTXOEvent embeds actormsg.VTXOActorMsg for all events that can be processed
@@ -59,15 +60,26 @@ type (
 	ForfeitReleasedEvent = round.ForfeitReleasedEvent
 )
 
-// ForceUnrollEvent is sent to a VTXO actor when a manual unilateral
-// exit is requested via the Unroll RPC. The VTXO actor transitions to
-// UnilateralExitState and emits ExpiringNotification through the chain
-// resolver seam, converging with the automatic critical-expiry path.
+// ForceUnrollEvent is sent to a VTXO actor when a unilateral exit is
+// requested (manual RPC, fraud spend, or vHTLC recovery). The VTXO actor
+// transitions to UnilateralExitState and emits ExpiringNotification through
+// the chain resolver seam, converging with the automatic critical-expiry
+// path. The trigger and exit-policy identity ride along so the chain
+// resolver bridge can admit the registry job under the right policy.
 type ForceUnrollEvent struct {
 	actor.BaseMessage
 
-	// Reason explains why the manual unroll was requested.
+	// Reason explains why the unroll was requested.
 	Reason string
+
+	// Trigger identifies why the unroll was requested. The zero value
+	// admits as critical expiry.
+	Trigger actormsg.UnrollTrigger
+
+	// ExitPolicy carries a non-standard exit-spend policy identity to
+	// persist for this target. None selects the standard VTXO timeout
+	// policy.
+	ExitPolicy fn.Option[actormsg.ExitPolicy]
 }
 
 // VTXOActorMsg implements actormsg.VTXOActorMsg marker interface.

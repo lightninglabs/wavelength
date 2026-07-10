@@ -3,7 +3,6 @@ package vtxo
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -39,6 +38,11 @@ type ExitOutcomeResolution struct {
 	// Reason carries the terminal failure reason when Outcome is
 	// ExitOutcomeRecoverable.
 	Reason string
+
+	// ExitPolicyKind is the exit-spend policy the unroll job ran under, so
+	// boot reconciliation can tell a recovery-only target apart from a
+	// normal coin and avoid reliving the former (see recoverExitedVTXO).
+	ExitPolicyKind actormsg.ExitPolicyKind
 }
 
 // ExitOutcomeResolver resolves the terminal unilateral-exit outcome, if any,
@@ -516,9 +520,10 @@ func (m *Manager) reconcileUnilateralExits(ctx context.Context) {
 
 		outcome := resolution.UnsafeFromSome()
 		req := &ExitOutcomeNotification{
-			Outpoint: desc.Outpoint,
-			Outcome:  outcome.Outcome,
-			Reason:   outcome.Reason,
+			Outpoint:       desc.Outpoint,
+			Outcome:        outcome.Outcome,
+			Reason:         outcome.Reason,
+			ExitPolicyKind: outcome.ExitPolicyKind,
 		}
 
 		_, err = m.handleExitOutcome(ctx, req).Unpack()
@@ -741,15 +746,19 @@ func (m *Manager) handleForceUnroll(ctx context.Context,
 
 	actorRef, ok := m.actors[req.Outpoint]
 	if !ok {
+		// No live actor. This is the common shape for the vHTLC
+		// recovery target and any exiting VTXO that a restart left out
+		// of the live-recovery set (UnilateralExit is excluded from
+		// ListLiveVTXOs). Re-materialize an actor from the persisted
+		// descriptor so the manager owns the exit for these triggers
+		// too, rather than letting the caller admit the unroll behind
+		// the manager's back.
+		spawned, res := m.spawnForceUnrollActor(ctx, req.Outpoint)
+		if res != nil {
+			return *res
+		}
 
-		// The VTXO actor is already gone (likely already terminal
-		// and cleaned up via handleVTXOTerminated). Report a
-		// specific reason so the caller can tell this apart from
-		// "event accepted but actor self-looped".
-		return fn.Ok[ManagerResp](&ForceUnrollResponse{
-			Accepted: false,
-			Reason:   "no such vtxo",
-		})
+		actorRef = spawned
 	}
 
 	reason := req.Reason
@@ -758,7 +767,9 @@ func (m *Manager) handleForceUnroll(ctx context.Context,
 	}
 
 	resp, err := actorRef.Ask(ctx, &ForceUnrollEvent{
-		Reason: reason,
+		Reason:     reason,
+		Trigger:    req.Trigger,
+		ExitPolicy: req.ExitPolicy,
 	}).Await(ctx).Unpack()
 	if err != nil {
 		return fn.Err[ManagerResp](
@@ -808,6 +819,86 @@ func (m *Manager) handleForceUnroll(ctx context.Context,
 	})
 }
 
+// spawnForceUnrollActor re-materializes a VTXO actor from its persisted
+// descriptor so handleForceUnroll can drive a force-unroll for a VTXO that has
+// no live actor. This covers the vHTLC recovery target (materialized directly
+// in the store, never admitted through the manager) and any exiting VTXO that
+// a restart left out of the live-recovery set. It returns the spawned actor
+// ref on success; on a miss (no descriptor) or a terminal descriptor it
+// returns a non-nil *fn.Result carrying the ForceUnrollResponse the caller
+// should return verbatim, so the transition is never attempted on a coin the
+// manager cannot own.
+func (m *Manager) spawnForceUnrollActor(ctx context.Context,
+	outpoint wire.OutPoint) (VTXOActorRef, *fn.Result[ManagerResp]) {
+
+	descriptor, err := m.cfg.Store.GetVTXO(ctx, outpoint)
+	if err != nil {
+		// The store returns ErrVTXONotFound when the wallet no longer
+		// tracks the outpoint. That is a declined force-unroll, not an
+		// internal failure: report it the same as a nil descriptor so
+		// the caller reads "no such vtxo" rather than a hard error for
+		// an outpoint that simply is not ours to unroll.
+		if errors.Is(err, ErrVTXONotFound) {
+			res := fn.Ok[ManagerResp](&ForceUnrollResponse{
+				Accepted: false,
+				Reason:   "no such vtxo",
+			})
+
+			return nil, &res
+		}
+
+		res := fn.Err[ManagerResp](
+			fmt.Errorf("load vtxo for force-unroll: %w", err),
+		)
+
+		return nil, &res
+	}
+	if descriptor == nil {
+		// A store that signals a miss with a nil descriptor rather than
+		// ErrVTXONotFound lands here: the same declined force-unroll,
+		// reported so it reads apart from "accepted but self-looped".
+		res := fn.Ok[ManagerResp](&ForceUnrollResponse{
+			Accepted: false,
+			Reason:   "no such vtxo",
+		})
+
+		return nil, &res
+	}
+
+	// A terminal descriptor (already Spent/Forfeited/Failed) has nothing
+	// left to unroll. Do not spawn an actor that would immediately reap
+	// itself; report the no-op so the caller sees it explicitly.
+	if statusToState(
+		ctx, descriptor, m.cfg.Store, m.logger(ctx),
+	).IsTerminal() {
+
+		res := fn.Ok[ManagerResp](&ForceUnrollResponse{
+			Accepted: false,
+			Reason:   "already terminal",
+		})
+
+		return nil, &res
+	}
+
+	ref, err := m.spawnVTXOActor(ctx, descriptor)
+	if err != nil {
+		res := fn.Err[ManagerResp](
+			fmt.Errorf("respawn vtxo actor for force-unroll: %w",
+				err),
+		)
+
+		return nil, &res
+	}
+	m.actors[outpoint] = ref
+
+	m.logger(ctx).InfoS(ctx, "Re-materialized VTXO actor for force-unroll",
+		slog.String("outpoint", outpoint.String()),
+		slog.String("status", descriptor.Status.String()),
+	)
+
+	return ref, nil
+}
+
 // handleExitOutcome applies the terminal outcome of a unilateral-exit job
 // reported by the unroll subsystem. A recoverable failure (no on-chain
 // footprint) rolls the VTXO back to LiveState; a confirmed exit retires it
@@ -845,6 +936,27 @@ func (m *Manager) handleExitOutcome(ctx context.Context,
 // recovers the coin.
 func (m *Manager) recoverExitedVTXO(ctx context.Context,
 	req *ExitOutcomeNotification) fn.Result[ManagerResp] {
+
+	// A recovery-only target (a non-standard exit policy, e.g. a vHTLC
+	// refund) must never be relived into the live coin set: it is a
+	// swap-contract output, not spendable wallet liquidity, so reliving it
+	// would inflate balance, feed coin selection and sweep-all, and
+	// re-poison cooperative consumption. A clean (no-footprint) failure of
+	// such a job means the refund attempt failed; the owning recovery
+	// subsystem is responsible for retrying or terminal-failing it. We hold
+	// the coin in UnilateralExit rather than resurrect it as spendable.
+	if req.ExitPolicyKind.Valid() {
+		m.logger(ctx).InfoS(ctx, "Holding recovery-only VTXO in exit "+
+			"after recoverable unroll failure",
+			slog.String("outpoint", req.Outpoint.String()),
+			slog.String(
+				"exit_policy_kind", string(req.ExitPolicyKind),
+			),
+			slog.String("reason", req.Reason),
+		)
+
+		return fn.Ok[ManagerResp](&ExitOutcomeResp{})
+	}
 
 	if actorRef, ok := m.actors[req.Outpoint]; ok {
 		_, err := m.askVTXOActor(ctx, actorRef, &ExitFailedEvent{
@@ -1767,7 +1879,7 @@ func (m *Manager) isPersistedSpent(ctx context.Context, op wire.OutPoint) (bool,
 
 	desc, err := m.cfg.Store.GetVTXO(ctx, op)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, ErrVTXONotFound) {
 			return false, nil
 		}
 
@@ -2139,7 +2251,7 @@ func (m *Manager) customForfeitInputIsSynthetic(ctx context.Context,
 
 		return false, nil
 
-	case errors.Is(err, sql.ErrNoRows):
+	case errors.Is(err, ErrVTXONotFound):
 		return true, nil
 
 	default:

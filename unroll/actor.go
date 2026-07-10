@@ -1980,6 +1980,7 @@ func (b *behavior) notifyRegistryIfTerminal(ctx context.Context) {
 		Phase:               phase,
 		FailReason:          job.FailReason,
 		HadOnChainFootprint: jobHadOnChainFootprint(job),
+		ExitPolicyKind:      b.exitPolicyKind(),
 	}
 
 	if sweepTxid := effectiveSweepTxid(

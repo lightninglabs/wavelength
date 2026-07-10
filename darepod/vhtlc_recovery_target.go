@@ -13,13 +13,52 @@ import (
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/db"
+	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/vhtlcrecovery"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lntypes"
 )
+
+// managerExitAdmitter drives a vHTLC recovery target into unilateral exit
+// through the VTXO manager, satisfying coordinator.ExitAdmitter. The manager
+// owns the state transition (persisting the target into UnilateralExit, out of
+// the live set) and starts the durable unroll job through its chain-resolver
+// seam, so a vHTLC exit converges on the same admission path as manual,
+// critical-expiry, and fraud exits.
+type managerExitAdmitter struct {
+	mgr actor.ActorRef[vtxo.ManagerMsg, vtxo.ManagerResp]
+}
+
+// ForceExit asks the VTXO manager to force the target into unilateral exit,
+// returning an error unless the manager accepted the transition. A declined
+// transition is an error here (unlike the fraud path): recovery just
+// materialized the descriptor, so the manager should always be able to own it,
+// and a decline is a real inconsistency the escalation/restore retry should
+// surface rather than swallow.
+func (a managerExitAdmitter) ForceExit(ctx context.Context,
+	req actormsg.ForceUnrollRequest) error {
+
+	resp, err := a.mgr.Ask(ctx, &req).Await(ctx).Unpack()
+	if err != nil {
+		return fmt.Errorf("force exit ask: %w", err)
+	}
+
+	forceResp, ok := resp.(*actormsg.ForceUnrollResponse)
+	if !ok {
+		return fmt.Errorf("unexpected force-unroll response %T", resp)
+	}
+
+	if !forceResp.Accepted {
+		return fmt.Errorf("vtxo manager declined vhtlc exit: %s",
+			forceResp.Reason)
+	}
+
+	return nil
+}
 
 var errRecoveryTargetPackageMissing = errors.New("recovery target package " +
 	"not found")
@@ -82,10 +121,23 @@ func (m *vhtlcRecoveryTargetMaterializer) EnsureRecoveryTarget(
 		return fmt.Errorf("save recovery target descriptor: %w", err)
 	}
 
+	// Persist the recovery target directly into VTXOStatusUnilateralExit
+	// rather than Spending. Spending is returned by ListLiveVTXOs (the
+	// live-recovery and coin-selection query is status < 3 OR status = 7),
+	// so a Spending recovery target leaks back into the live set on the
+	// next daemon restart and poisons cooperative consumption: sweep-all
+	// offers the already-exiting coin as a forfeit and the operator
+	// rejects the whole round with "forfeit VTXO is not live: status is
+	// unrolled_by_client". UnilateralExit is excluded from that query and
+	// is covered by the #400 restart orphan scan, which is exactly where an
+	// exiting coin belongs. The VTXO manager's force-exit (driven right
+	// after this materialization) spawns the actor straight into
+	// UnilateralExitState from this status and re-emits the chain-resolver
+	// admission.
 	if err := m.vtxos.UpdateVTXOStatus(
-		ctx, desc.Outpoint, vtxo.VTXOStatusSpending,
+		ctx, desc.Outpoint, vtxo.VTXOStatusUnilateralExit,
 	); err != nil {
-		return fmt.Errorf("reserve recovery target descriptor: %w", err)
+		return fmt.Errorf("mark recovery target exiting: %w", err)
 	}
 
 	if err := m.bindRecoveryTarget(ctx, desc); err != nil {

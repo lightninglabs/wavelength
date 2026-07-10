@@ -4194,12 +4194,18 @@ func resolveExitOutcome(ctx context.Context,
 		return fn.Some(vtxo.ExitOutcomeResolution{
 			Outcome: vtxo.ExitOutcomeConfirmed,
 			Reason:  job.LastError,
+			ExitPolicyKind: actormsg.ExitPolicyKind(
+				job.ExitPolicyKind,
+			),
 		}), nil
 
 	case db.UnilateralExitJobStatusFailedRecoverable:
 		return fn.Some(vtxo.ExitOutcomeResolution{
 			Outcome: vtxo.ExitOutcomeRecoverable,
 			Reason:  job.LastError,
+			ExitPolicyKind: actormsg.ExitPolicyKind(
+				job.ExitPolicyKind,
+			),
 		}), nil
 
 	default:
@@ -5317,10 +5323,17 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 	s.unrollRegistry = registry
 	s.unrollRegistryRef = fn.Some(registry.Ref())
 
+	if !s.vtxoMgrRef.IsSome() {
+		return fmt.Errorf("VTXO manager not initialized for vhtlc " +
+			"recovery")
+	}
 	recoverySvc, err := coordinator.NewService(coordinator.ServiceConfig{
 		Store:  recoveryStore,
 		Unroll: coordinator.NewActorUnrollRegistry(registry.Ref()),
-		Log:    fn.Some(s.subLogger(VHTLCRecoverySubsystem)),
+		Exiter: managerExitAdmitter{
+			mgr: s.vtxoMgrRef.UnsafeFromSome(),
+		},
+		Log: fn.Some(s.subLogger(VHTLCRecoverySubsystem)),
 		TargetMaterializer: newVHTLCRecoveryTargetMaterializer(
 			vtxoStore, oorStore,
 			s.subLogger(VHTLCRecoverySubsystem),
@@ -5349,27 +5362,19 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 		return fmt.Errorf("restore non-terminal unroll jobs: %w", err)
 	}
 
-	// 3a. Convergent boot-time recovery for VTXOs that are already in
-	// VTXOStatusUnilateralExit in the VTXO store but have no matching
-	// unroll registry record. The two writes are not atomic: the VTXO
-	// actor flips status in its own DB tx and then Tells the chain
-	// resolver, which eventually triggers a separate registry
-	// UpsertRecord. A crash, full mailbox, or context cancel between
-	// those steps leaves the VTXO terminal-from-the-manager's
-	// perspective (it will not respawn a child actor) while the
-	// registry has nothing to drive forward. Without this scan such a
-	// VTXO stays stranded until the next manual EnsureUnroll. The
-	// scan is convergent: EnsureUnrollRequest dedups against
-	// r.active / r.pending / store.GetRecord, so a target that
-	// already has a record (e.g. just restored above) is a benign
-	// no-op. Per-target failures are collected and returned after the
-	// scan so startup fails closed instead of serving traffic with a
-	// known-stranded VTXO.
-	if err := s.recoverOrphanedUnrollJobs(
-		ctx, vtxoStore, registry,
-	); err != nil {
-		return fmt.Errorf("recover orphaned unroll jobs: %w", err)
-	}
+	// 3a. Restore in-flight vHTLC recovery jobs BEFORE the generic orphan
+	// scan below, and before the chain resolver is wired. Restore drives
+	// each job through the VTXO manager's force-exit, which emits the
+	// admission notification carrying the job's exit policy (e.g. a vHTLC
+	// refund). While the chain resolver target is still unset, those
+	// notifications are buffered by the LazyChainResolver and replayed to
+	// the registry the instant it is wired (step 4). That replay is what
+	// makes the policy-bearing admission reach the registry first: the
+	// registry is first-writer-wins on exit policy, so the generic orphan
+	// scan (step 5, no policy) must not create the record before the
+	// refund-policy admission lands, or the target would silently exit
+	// under the standard timeout policy. Restore failures are non-fatal;
+	// the job is retried on the next escalation or restart.
 	if err := recoverySvc.RestoreNonTerminal(ctx); err != nil {
 		s.log.WarnS(ctx, "Failed to restore vhtlc recovery jobs",
 			err)
@@ -5380,10 +5385,7 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 	chainResolverRef := actor.NewMapInputRef(
 		registry.Ref(),
 		func(msg vtxo.ExpiringNotification) unroll.RegistryMsg {
-			return &unroll.EnsureUnrollRequest{
-				Outpoint: msg.VTXO.Outpoint,
-				Trigger:  unroll.TriggerCriticalExpiry,
-			}
+			return ensureUnrollFromExpiring(msg)
 		},
 	)
 
@@ -5395,9 +5397,120 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 		s.lazyChainResolver.Set(chainResolverRef)
 	}
 
+	// 5. Convergent boot-time recovery for VTXOs that are already in
+	// VTXOStatusUnilateralExit in the VTXO store but have no matching
+	// unroll registry record. The two writes are not atomic: the VTXO
+	// actor flips status in its own DB tx and then Tells the chain
+	// resolver, which eventually triggers a separate registry UpsertRecord.
+	// A crash, full mailbox, or context cancel between those steps leaves
+	// the VTXO terminal-from-the-manager's perspective (it will not respawn
+	// a child actor) while the registry has nothing to drive forward.
+	// Without this scan such a VTXO stays stranded until the next manual
+	// EnsureUnroll. The scan is convergent: EnsureUnrollRequest dedups
+	// against r.active / r.pending / store.GetRecord, so a target that
+	// already has a record (e.g. a vHTLC recovery whose refund-policy
+	// admission was just replayed by the Set above) is a benign no-op that
+	// preserves the existing policy.
+	//
+	// The registry is first-writer-wins on exit policy, so a naive
+	// no-policy scan could permanently claim a vHTLC target under the
+	// standard timeout policy if RestoreNonTerminal failed for it (a
+	// transient error leaves it UnilateralExit on disk with no record).
+	// To close that, we hand the scan the durable exit policy of every
+	// non-terminal recovery target so it re-admits under the RIGHT policy
+	// even when it does create the record. The ordering above stays as
+	// belt-and-suspenders. Per-target failures are collected and returned
+	// after the scan so startup fails closed instead of serving traffic
+	// with a known-stranded VTXO.
+	recoveryPolicies, err := recoveryExitPolicies(ctx, recoveryStore)
+	if err != nil {
+		return fmt.Errorf("load recovery exit policies: %w", err)
+	}
+	if err := s.recoverOrphanedUnrollJobs(
+		ctx, vtxoStore, registry, recoveryPolicies,
+	); err != nil {
+		return fmt.Errorf("recover orphaned unroll jobs: %w", err)
+	}
+
 	s.log.InfoS(ctx, "Unroll subsystem initialized")
 
 	return nil
+}
+
+// ensureUnrollFromExpiring maps a VTXO manager ExpiringNotification into the
+// unroll registry's EnsureUnrollRequest. It is the seam that converts the
+// string-typed trigger and optional exit policy carried on the notification
+// (kept string-typed to avoid a vtxo->unroll import cycle) back into the
+// unroll package's own types. A None ExitPolicy leaves the registry on its
+// standard VTXO timeout policy.
+func ensureUnrollFromExpiring(
+	msg vtxo.ExpiringNotification) *unroll.EnsureUnrollRequest {
+
+	req := &unroll.EnsureUnrollRequest{
+		Outpoint: msg.VTXO.Outpoint,
+		Trigger:  unrollStartTrigger(msg.Trigger),
+	}
+
+	msg.ExitPolicy.WhenSome(func(p actormsg.ExitPolicy) {
+		req.ExitPolicyKind = unroll.ExitPolicyKind(p.Kind)
+		req.ExitPolicyRef = string(p.Ref)
+	})
+
+	return req
+}
+
+// unrollStartTrigger converts the string-typed UnrollTrigger that rides the
+// ForceUnroll path back into the unroll package's StartTrigger. The trigger is
+// carried as a string on the vtxo/actormsg side to avoid an import cycle
+// (unroll already imports vtxo); this bridge is the seam where both packages
+// are in scope. An empty/unknown trigger admits as critical expiry, preserving
+// the auto-expiry default and the historical behavior of manual exits, which
+// carried no explicit trigger.
+func unrollStartTrigger(t actormsg.UnrollTrigger) unroll.StartTrigger {
+	switch t {
+	case actormsg.UnrollTriggerManual:
+		return unroll.TriggerManual
+
+	case actormsg.UnrollTriggerFraudSpend:
+		return unroll.TriggerFraudSpend
+
+	case actormsg.UnrollTriggerCriticalExpiry:
+		return unroll.TriggerCriticalExpiry
+
+	default:
+		return unroll.TriggerCriticalExpiry
+	}
+}
+
+// recoveryExitPolicy is the durable exit-policy identity of one vHTLC recovery
+// target, keyed by its VTXO outpoint in recoveryExitPolicies.
+type recoveryExitPolicy struct {
+	kind unroll.ExitPolicyKind
+	ref  string
+}
+
+// recoveryExitPolicies indexes the exit policy of every non-terminal vHTLC
+// recovery target by outpoint, so the orphan-recovery scan can re-admit a
+// recovery target under its own policy instead of the standard timeout. The
+// registry is first-writer-wins on exit policy, so a no-policy re-admission
+// would otherwise permanently mislabel a refund target as a standard exit.
+func recoveryExitPolicies(ctx context.Context,
+	store coordinator.Store) (map[wire.OutPoint]recoveryExitPolicy, error) {
+
+	jobs, err := store.ListNonTerminalRecoveries(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	policies := make(map[wire.OutPoint]recoveryExitPolicy, len(jobs))
+	for _, job := range jobs {
+		policies[job.VTXOOutpoint] = recoveryExitPolicy{
+			kind: unroll.ExitPolicyKind(job.ExitPolicyKind),
+			ref:  job.ID,
+		}
+	}
+
+	return policies, nil
 }
 
 // recoverOrphanedUnrollJobs closes the atomicity gap between the VTXO
@@ -5415,7 +5528,8 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 // fails closed instead of serving traffic while known unilateral-exit VTXOs
 // remain stranded.
 func (s *Server) recoverOrphanedUnrollJobs(ctx context.Context,
-	vtxoStore vtxo.VTXOStore, registry *unroll.UnrollRegistryActor) error {
+	vtxoStore vtxo.VTXOStore, registry *unroll.UnrollRegistryActor,
+	recoveryPolicies map[wire.OutPoint]recoveryExitPolicy) error {
 
 	descs, err := vtxoStore.ListVTXOsByStatus(
 		ctx, vtxo.VTXOStatusUnilateralExit,
@@ -5434,10 +5548,36 @@ func (s *Server) recoverOrphanedUnrollJobs(ctx context.Context,
 	for _, desc := range descs {
 		op := desc.Outpoint
 
-		resp, askErr := ref.Ask(ctx, &unroll.EnsureUnrollRequest{
+		// A vHTLC recovery target carries a non-standard exit policy.
+		// Re-admit it under that policy so the first-writer-wins
+		// registry never locks it to the standard timeout: a standard
+		// witness against a vHTLC taproot tree would never sweep.
+		//
+		// The trigger is not recovered the way the exit policy is. A
+		// target that was force-exited under TriggerFraudSpend but
+		// crashed in the gap between the VTXO status flip and the
+		// registry admission has no registry record, so it re-admits
+		// here as TriggerRestart. The only effect is that its ready
+		// checkpoints are broadcast immediately instead of deferred to
+		// the recipient's fraud backstop window (see
+		// unroll.shouldSubmitReadyFrontier): earlier fees, same funds
+		// outcome, no missed deadline. The exit policy is recoverable
+		// because it lives in the recovery store; the fraud trigger has
+		// no such durable home. A faithful fix would stamp the trigger
+		// onto the VTXO row in the same transaction that flips it to
+		// UnilateralExit and read it back off the listed descriptors
+		// here, which is a schema change left as separable follow-up
+		// tracked in darepo-client#914.
+		ensureReq := &unroll.EnsureUnrollRequest{
 			Outpoint: op,
 			Trigger:  unroll.TriggerRestart,
-		}).Await(ctx).Unpack()
+		}
+		if policy, ok := recoveryPolicies[op]; ok {
+			ensureReq.ExitPolicyKind = policy.kind
+			ensureReq.ExitPolicyRef = policy.ref
+		}
+
+		resp, askErr := ref.Ask(ctx, ensureReq).Await(ctx).Unpack()
 		if askErr != nil {
 			s.log.WarnS(ctx, "Failed to recover orphaned "+
 				"unroll job; VTXO remains stranded until "+
@@ -5581,18 +5721,15 @@ func (s *Server) initFraudWatcher(ctx context.Context,
 	],
 ) error {
 
-	if !s.unrollRegistryRef.IsSome() {
-		return fmt.Errorf("unroll registry not initialized")
-	}
 	if !s.vtxoMgrRef.IsSome() {
 		return fmt.Errorf("VTXO manager not initialized")
 	}
 
 	//nolint:contextcheck // watcher owns its own root context lifecycle
 	watcher := fraud.NewWatcherActor(fraud.WatcherConfig{
-		ChainSource: chainSourceRef,
-		UnrollRef:   s.unrollRegistryRef.UnsafeFromSome(),
-		Log:         fn.Some(s.subLogger(fraud.Subsystem)),
+		ChainSource:    chainSourceRef,
+		VTXOManagerRef: s.vtxoMgrRef.UnsafeFromSome(),
+		Log:            fn.Some(s.subLogger(fraud.Subsystem)),
 	})
 	s.fraudWatcher = watcher
 	s.fraudWatcherRef = fn.Some(watcher.Ref())

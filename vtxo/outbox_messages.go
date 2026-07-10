@@ -4,8 +4,10 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/types"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
 // VTXOOutMsg is a sealed interface for messages emitted via the FSM outbox.
@@ -81,6 +83,17 @@ type ExpiringNotification struct {
 
 	// Reason explains why the VTXO is being sent to chain resolver.
 	Reason string
+
+	// Trigger identifies why the unilateral exit was started so the chain
+	// resolver bridge admits the registry job under the right
+	// StartTrigger. The zero value admits as critical expiry, preserving
+	// the auto-expiry default.
+	Trigger actormsg.UnrollTrigger
+
+	// ExitPolicy carries a non-standard exit-spend policy identity (e.g. a
+	// vHTLC refund policy) to persist for this target. None selects the
+	// standard VTXO timeout policy.
+	ExitPolicy fn.Option[actormsg.ExitPolicy]
 }
 
 func (m ExpiringNotification) vtxoOutMsgSealed() {}

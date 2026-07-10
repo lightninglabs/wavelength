@@ -7,6 +7,7 @@ import (
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/lib/types"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 )
 
@@ -335,9 +336,93 @@ type SelectAndReserveForfeitResponse struct {
 // VTXOManagerResp implements the VTXOManagerResp marker interface.
 func (r *SelectAndReserveForfeitResponse) VTXOManagerResp() {}
 
+// UnrollTrigger names why a unilateral exit was started. It is a
+// string-typed mirror of the unroll package's StartTrigger so the vtxo and
+// actormsg packages can carry the trigger through the ForceUnroll path
+// without importing unroll (which would form a cycle). The darepod chain
+// resolver bridge converts these back into unroll.StartTrigger values at the
+// seam where both packages are already in scope. The empty string is the
+// default and preserves the historical critical-expiry admission.
+type UnrollTrigger string
+
+const (
+	// UnrollTriggerCriticalExpiry marks an exit driven by a VTXO
+	// approaching its batch expiry. It is the zero-value default so an
+	// unset trigger keeps admitting as critical expiry, matching the
+	// behavior before triggers were threaded end-to-end.
+	UnrollTriggerCriticalExpiry UnrollTrigger = ""
+
+	// UnrollTriggerManual marks an operator- or subsystem-requested exit
+	// that follows the standard VTXO timeout sweep policy (manual RPC exit,
+	// vHTLC refund recovery).
+	UnrollTriggerManual UnrollTrigger = "manual"
+
+	// UnrollTriggerFraudSpend marks an exit forced because a watched
+	// ancestor of an OOR VTXO was seen spent on-chain. It changes the
+	// unroll FSM's CSV handling, so it must survive the whole ForceUnroll
+	// path rather than being flattened to the default.
+	UnrollTriggerFraudSpend UnrollTrigger = "fraud_spend"
+)
+
+// ExitPolicyKind names a durable exit-spend policy for a forced unilateral
+// exit. It is a string-typed enum mirroring the unroll / vhtlcrecovery policy
+// vocabulary so the vtxo and actormsg packages can carry a policy through the
+// ForceUnroll path without importing unroll (a cycle: unroll already imports
+// vtxo). The darepod chain resolver bridge converts it back into an
+// unroll.ExitPolicyKind at the seam where both packages are in scope.
+//
+// The standard timeout policy is represented by a None fn.Option[ExitPolicy]
+// rather than a distinct kind, so the constants below enumerate only the
+// non-standard policies that actually ride the ForceUnroll path.
+type ExitPolicyKind string
+
+const (
+	// ExitPolicyVHTLCClaim identifies the vHTLC unilateral claim leaf
+	// spend, mirroring vhtlcrecovery.ExitPolicyKindClaim.
+	ExitPolicyVHTLCClaim ExitPolicyKind = "vhtlc_claim"
+
+	// ExitPolicyVHTLCRefundWithoutReceiver identifies the vHTLC unilateral
+	// refund-without-receiver leaf spend, mirroring
+	// vhtlcrecovery.ExitPolicyKindRefundWithoutReceiver.
+	ExitPolicyVHTLCRefundWithoutReceiver ExitPolicyKind = "vhtlc_" +
+		"refund_without_receiver"
+)
+
+// Valid reports whether the exit policy kind is one of the known non-standard
+// policies that can ride the ForceUnroll path.
+func (k ExitPolicyKind) Valid() bool {
+	switch k {
+	case ExitPolicyVHTLCClaim, ExitPolicyVHTLCRefundWithoutReceiver:
+		return true
+
+	default:
+		return false
+	}
+}
+
+// ExitPolicyRef is the policy-specific durable reference paired with an
+// ExitPolicyKind (e.g. the vHTLC recovery job id). It is a distinct type so
+// the Kind and Ref of a policy identity can't be transposed by accident.
+type ExitPolicyRef string
+
+// ExitPolicy bundles a non-standard exit-spend policy kind with its durable
+// reference. The registry admission boundary validates the pair as a single
+// identity, so they travel together. A None fn.Option[ExitPolicy] selects the
+// standard VTXO timeout policy.
+type ExitPolicy struct {
+	// Kind names the durable spend policy.
+	Kind ExitPolicyKind
+
+	// Ref is the policy-specific durable reference.
+	Ref ExitPolicyRef
+}
+
 // ForceUnrollRequest asks the VTXO manager to transition a specific VTXO
 // into UnilateralExitState and trigger unroll through the chain resolver
-// seam. This converges manual and automatic unroll on the same code path.
+// seam. This converges manual, critical-expiry, fraud, and vHTLC-recovery
+// unroll on the same admission path: the manager owns the state transition
+// for every trigger, so the coin is persisted UnilateralExit (out of the
+// live set) before the unroll registry admits the job.
 type ForceUnrollRequest struct {
 	actor.BaseMessage
 
@@ -346,6 +431,16 @@ type ForceUnrollRequest struct {
 
 	// Reason explains why the unroll was requested.
 	Reason string
+
+	// Trigger identifies why the unroll was requested so the chain
+	// resolver bridge can admit the registry job under the right
+	// StartTrigger. The zero value admits as critical expiry.
+	Trigger UnrollTrigger
+
+	// ExitPolicy carries a non-standard exit-spend policy identity (e.g. a
+	// vHTLC refund policy) to persist for this target. None selects the
+	// standard VTXO timeout policy.
+	ExitPolicy fn.Option[ExitPolicy]
 }
 
 // VTXOManagerMsg implements VTXOManagerMsg marker interface.

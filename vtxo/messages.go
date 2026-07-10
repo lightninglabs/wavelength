@@ -193,6 +193,13 @@ type ExitOutcomeNotification struct {
 	// Reason carries the unroll failure reason for ExitOutcomeRecoverable,
 	// used for logging and the restored VTXO's audit trail.
 	Reason string
+
+	// ExitPolicyKind is the exit-spend policy the unroll job ran under. It
+	// distinguishes a recovery-only target (a non-standard policy such as a
+	// vHTLC refund) from a normal wallet coin (standard timeout or empty).
+	// A recoverable failure must NOT relive a recovery-only target into the
+	// live coin set: it is a swap-contract output, not spendable liquidity.
+	ExitPolicyKind actormsg.ExitPolicyKind
 }
 
 // MessageType returns the message type identifier.

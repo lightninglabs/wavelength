@@ -57,6 +57,36 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
   OOR actor (`initOORActor`). The VTXO manager is constructed with a
   `vtxo.LazyChainResolver` placeholder that `initUnrollSubsystem` fills in
   later; anything needing that seam must run after `initUnrollSubsystem`.
+- `initUnrollSubsystem` boot ordering is policy-preserving.
+  `recoverySvc.RestoreNonTerminal` (in-flight vHTLC recovery jobs, each
+  carrying its durable exit policy) runs **before** the chain resolver is
+  `Set()`; the force-exit admissions it drives through the VTXO manager are
+  buffered by the `LazyChainResolver` and replayed to the unroll registry the
+  instant the resolver is wired. The registry is first-writer-wins on exit
+  policy, so the generic orphan-job scan (`recoverOrphanedUnrollJobs`) runs
+  **after** `Set()` and is itself policy-carrying: it is handed a per-outpoint
+  exit-policy map (`recoveryExitPolicies`, built from the recovery store) and
+  re-admits each orphaned recovery target under its own vHTLC exit policy
+  rather than mislabeling it as a standard timeout.
+- The chain-resolver→unroll bridge (`ensureUnrollFromExpiring`) maps a VTXO
+  `ExpiringNotification`'s trigger and optional exit policy into the registry's
+  `EnsureUnrollRequest`. `unrollStartTrigger` converts the string-typed
+  `actormsg.UnrollTrigger` (kept string-typed to avoid a `vtxo → unroll` import
+  cycle) into `unroll.StartTrigger`; an empty or unknown trigger admits as
+  critical expiry. A `None` exit policy leaves the registry on its standard
+  VTXO timeout policy.
+- The fraud watcher (`initFraudWatcher`) is wired with `VTXOManagerRef`, so
+  fraud spends drive exits through the VTXO manager — the same admission path
+  as manual, critical-expiry, and vHTLC recovery exits — rather than talking to
+  the unroll registry directly.
+- The vHTLC recovery service is wired with an `Exiter: managerExitAdmitter`, a
+  `ForceExit` seam that `Ask`s the VTXO manager to force a materialized
+  recovery target into unilateral exit. The target materializer
+  (`EnsureRecoveryTarget`) persists the descriptor directly into
+  `VTXOStatusUnilateralExit` (not `VTXOStatusSpending`) so the exiting coin is
+  excluded from the live/coin-selection query and cannot leak back into a
+  cooperative round as a forfeit; the boot-time orphan scan re-admits it on
+  restart.
 - Boarding-sweep transaction construction, fee estimation, spend watching,
   and startup resumption live inside the **wallet actor**
   (`wallet.Ark.handleSweepBoardingUTXOs` / `handleResumeBoardingSweeps` in

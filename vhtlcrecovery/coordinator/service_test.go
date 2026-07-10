@@ -8,6 +8,7 @@ import (
 
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
+	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/unroll"
 	"github.com/lightninglabs/darepo-client/vhtlcrecovery"
 	"github.com/stretchr/testify/require"
@@ -38,15 +39,17 @@ func TestServiceEscalatePersistsBeforeUnroll(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Equal(t, vhtlcrecovery.StateUnrollStarted, status.Job.State)
-	require.Len(t, registry.ensureRequests, 1)
+	require.Len(t, registry.exitRequests, 1)
 
-	req := registry.ensureRequests[0]
+	req := registry.exitRequests[0]
 	require.Equal(t, job.VTXOOutpoint, req.Outpoint)
+	require.Equal(t, actormsg.UnrollTriggerManual, req.Trigger)
+
+	policy := req.ExitPolicy.UnwrapOrFail(t)
 	require.Equal(
-		t, unroll.ExitPolicyKind(job.ExitPolicyKind),
-		req.ExitPolicyKind,
+		t, actormsg.ExitPolicyKind(job.ExitPolicyKind), policy.Kind,
 	)
-	require.Equal(t, job.ID, req.ExitPolicyRef)
+	require.Equal(t, actormsg.ExitPolicyRef(job.ID), policy.Ref)
 	require.Equal(t, []string{"escalate"}, store.events)
 }
 
@@ -94,7 +97,7 @@ func TestServiceEscalateKeepsRecoveryActiveAfterStatusProbeError(t *testing.T) {
 		t.Context(), job.ID, "cooperative path unsafe", nil,
 	)
 	require.ErrorContains(t, err, "status probe timed out")
-	require.Len(t, registry.ensureRequests, 1)
+	require.Len(t, registry.exitRequests, 1)
 
 	stored, err := store.GetRecovery(t.Context(), job.ID)
 	require.NoError(t, err)
@@ -126,11 +129,14 @@ func TestServiceRestoreOnlyReissuesEscalatedJobs(t *testing.T) {
 	service := newTestService(t, store, registry)
 
 	require.NoError(t, service.RestoreNonTerminal(t.Context()))
-	require.Len(t, registry.ensureRequests, 1)
+	require.Len(t, registry.exitRequests, 1)
 	require.Equal(
-		t, active.VTXOOutpoint, registry.ensureRequests[0].Outpoint,
+		t, active.VTXOOutpoint, registry.exitRequests[0].Outpoint,
 	)
-	require.Equal(t, active.ID, registry.ensureRequests[0].ExitPolicyRef)
+	require.Equal(
+		t, actormsg.ExitPolicyRef(active.ID),
+		registry.exitRequests[0].ExitPolicy.UnwrapOrFail(t).Ref,
+	)
 }
 
 // TestServiceRestoreContinuesAfterPolicyMismatch verifies unrecoverable
@@ -156,7 +162,7 @@ func TestServiceRestoreContinuesAfterPolicyMismatch(t *testing.T) {
 	service := newTestService(t, store, registry)
 
 	require.NoError(t, service.RestoreNonTerminal(t.Context()))
-	require.Len(t, registry.ensureRequests, 2)
+	require.Len(t, registry.exitRequests, 2)
 
 	storedFirst, err := store.GetRecovery(t.Context(), first.ID)
 	require.NoError(t, err)
@@ -178,17 +184,62 @@ func TestServiceRestoreKeepsRecoveryActiveAfterTransientError(t *testing.T) {
 	)
 	store := newFakeStore(job)
 	registry := &fakeUnrollRegistry{
-		ensureErr: fmt.Errorf("actor transport unavailable"),
+		exitErr: fmt.Errorf("actor transport unavailable"),
 	}
 	service := newTestService(t, store, registry)
 
 	require.NoError(t, service.RestoreNonTerminal(t.Context()))
-	require.Len(t, registry.ensureRequests, 1)
+	require.Len(t, registry.exitRequests, 1)
 
 	stored, err := store.GetRecovery(t.Context(), job.ID)
 	require.NoError(t, err)
 	require.Equal(t, vhtlcrecovery.StateUnrollStarted, stored.State)
 	require.Empty(t, stored.LastError)
+}
+
+// TestServiceEscalateToleratesNilUnrollStatus verifies the post-force
+// policy-conflict guard does not panic when the unroll status source returns a
+// nil status with no error. That shape reads as "no record yet", which is the
+// normal case now that admission is asynchronous through the manager, so the
+// recovery stays active and is left to the registry's own validation plus the
+// restart re-drive rather than being failed or crashing the service.
+func TestServiceEscalateToleratesNilUnrollStatus(t *testing.T) {
+	t.Parallel()
+
+	job := testRecoveryJob(
+		"recovery-nil-status", vhtlcrecovery.StateUnrollStarted,
+	)
+	store := newFakeStore(job)
+	registry := &fakeUnrollRegistry{nilStatus: true}
+	service := newTestService(t, store, registry)
+
+	require.NoError(t, service.RestoreNonTerminal(t.Context()))
+	require.Len(t, registry.exitRequests, 1)
+
+	stored, err := store.GetRecovery(t.Context(), job.ID)
+	require.NoError(t, err)
+	require.Equal(t, vhtlcrecovery.StateUnrollStarted, stored.State)
+}
+
+// TestServiceStatusToleratesNilUnrollStatus pins the nil-status guard on the
+// status-reconcile path specifically. GetRecoveryStatus joins the durable row
+// with the current unroll status via reconcileLoaded without going through
+// escalation, so a nil status here must read as "no observation yet" and return
+// the row unchanged rather than panic.
+func TestServiceStatusToleratesNilUnrollStatus(t *testing.T) {
+	t.Parallel()
+
+	job := testRecoveryJob(
+		"recovery-status-nil", vhtlcrecovery.StateUnrollStarted,
+	)
+	store := newFakeStore(job)
+	registry := &fakeUnrollRegistry{nilStatus: true}
+	service := newTestService(t, store, registry)
+
+	status, err := service.GetRecoveryStatus(t.Context(), job.ID)
+	require.NoError(t, err)
+	require.NotNil(t, status)
+	require.Equal(t, vhtlcrecovery.StateUnrollStarted, status.Job.State)
 }
 
 // TestServiceStatusReconcilesTerminalUnroll verifies status polling folds a
@@ -257,13 +308,14 @@ func TestServiceCompletedStatusKeepsUnrollSweep(t *testing.T) {
 // newTestService builds a service from fake dependencies and fails the test if
 // the constructor rejects the dependency set.
 func newTestService(t *testing.T, store Store,
-	registry UnrollRegistry) *Service {
+	registry *fakeUnrollRegistry) *Service {
 
 	t.Helper()
 
 	service, err := NewService(ServiceConfig{
 		Store:  store,
 		Unroll: registry,
+		Exiter: registry,
 	})
 	require.NoError(t, err)
 
@@ -447,27 +499,28 @@ func (s *fakeStore) FailRecovery(_ context.Context, id string,
 	return nil
 }
 
-// fakeUnrollRegistry records ensure requests and returns one configured status.
+// fakeUnrollRegistry records force-exit requests and returns one configured
+// status. It satisfies both ExitAdmitter (admission via the VTXO manager) and
+// UnrollRegistry (status reads).
 type fakeUnrollRegistry struct {
-	ensureRequests []unroll.EnsureUnrollRequest
-	ensureErr      error
-	status         *unroll.GetStatusResp
-	statusErr      error
+	exitRequests []actormsg.ForceUnrollRequest
+	exitErr      error
+	status       *unroll.GetStatusResp
+	statusErr    error
+
+	// nilStatus makes GetStatus return (nil, nil), the shape a status
+	// source may produce for a not-yet-visible record. Used to pin the
+	// coordinator's nil-status guard.
+	nilStatus bool
 }
 
-// EnsureUnroll implements UnrollRegistry by recording the request.
-func (r *fakeUnrollRegistry) EnsureUnroll(_ context.Context,
-	req unroll.EnsureUnrollRequest) (*unroll.EnsureUnrollResp, error) {
+// ForceExit implements ExitAdmitter by recording the request.
+func (r *fakeUnrollRegistry) ForceExit(_ context.Context,
+	req actormsg.ForceUnrollRequest) error {
 
-	r.ensureRequests = append(r.ensureRequests, req)
-	if r.ensureErr != nil {
-		return nil, r.ensureErr
-	}
+	r.exitRequests = append(r.exitRequests, req)
 
-	return &unroll.EnsureUnrollResp{
-		ActorID: "actor-" + req.Outpoint.String(),
-		Created: true,
-	}, nil
+	return r.exitErr
 }
 
 // GetStatus implements UnrollRegistry by returning the configured status.
@@ -476,6 +529,10 @@ func (r *fakeUnrollRegistry) GetStatus(_ context.Context, _ wire.OutPoint) (
 
 	if r.statusErr != nil {
 		return nil, r.statusErr
+	}
+
+	if r.nilStatus {
+		return nil, nil
 	}
 
 	if r.status == nil {

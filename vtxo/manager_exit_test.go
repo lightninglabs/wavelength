@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btcd/wire/v2"
+	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
 )
@@ -81,6 +82,69 @@ func TestHandleExitOutcomeConfirmedDrivesActorToSpent(t *testing.T) {
 		t, &SpentState{}, ref.state,
 		"confirmed outcome should retire the actor to spent",
 	)
+}
+
+// TestHandleExitOutcomeRecoverableHoldsRecoveryOnlyTarget verifies that a
+// recoverable exit failure does NOT relive a recovery-only target (a
+// non-standard exit policy, e.g. a vHTLC refund) into the live coin set: the
+// live actor stays in UnilateralExitState. Reliving it would turn a
+// swap-contract output into spendable wallet balance and re-poison sweep-all.
+func TestHandleExitOutcomeRecoverableHoldsRecoveryOnlyTarget(t *testing.T) {
+	t.Parallel()
+
+	vtxo := makeDescriptor(t, 1_799, 6)
+	mgr, _, ref := newExitTestManager(t, vtxo, &UnilateralExitState{
+		VTXO:   vtxo,
+		Reason: "vhtlc recovery",
+	})
+
+	resp := mgr.Receive(t.Context(), &ExitOutcomeNotification{
+		Outpoint:       vtxo.Outpoint,
+		Outcome:        ExitOutcomeRecoverable,
+		Reason:         "min relay fee not met",
+		ExitPolicyKind: actormsg.ExitPolicyVHTLCRefundWithoutReceiver,
+	})
+	_, err := resp.Unpack()
+	require.NoError(t, err)
+
+	require.IsType(
+		t, &UnilateralExitState{}, ref.state,
+		"recovery-only target must not be relived to live",
+	)
+}
+
+// TestHandleExitOutcomeRecoverableNoActorHoldsRecoveryOnlyTarget verifies the
+// store-fallback path also holds a recovery-only target in exit: with no live
+// actor, the recoverable outcome must not load the descriptor or write a Live
+// status. The guard short-circuits before any store access.
+func TestHandleExitOutcomeRecoverableNoActorHoldsRecoveryOnlyTarget(
+	t *testing.T) {
+
+	t.Parallel()
+
+	vtxo := makeDescriptor(t, 1_799, 7)
+	vtxo.Status = VTXOStatusUnilateralExit
+	store := &MockVTXOStore{}
+	mgr := &Manager{
+		cfg: &ManagerConfig{
+			Store: store,
+		},
+		actors: make(map[wire.OutPoint]VTXOActorRef),
+	}
+
+	// No GetVTXO / UpdateVTXOStatus expectations: the recovery-only guard
+	// returns before touching the store.
+	resp := mgr.Receive(t.Context(), &ExitOutcomeNotification{
+		Outpoint:       vtxo.Outpoint,
+		Outcome:        ExitOutcomeRecoverable,
+		ExitPolicyKind: actormsg.ExitPolicyVHTLCRefundWithoutReceiver,
+	})
+	_, err := resp.Unpack()
+	require.NoError(t, err)
+
+	store.AssertExpectations(t)
+	store.AssertNotCalled(t, "GetVTXO")
+	store.AssertNotCalled(t, "UpdateVTXOStatus")
 }
 
 // TestHandleExitOutcomeConfirmedNoActorPersistsSpent verifies that, with no

@@ -175,7 +175,7 @@ func (s *VTXOPersistenceStore) ensureRoundExists(ctx context.Context,
 }
 
 // GetVTXO retrieves a VTXO by its outpoint. Used for actor recovery on startup.
-// Returns error if not found.
+// Returns vtxo.ErrVTXONotFound if the outpoint is not stored.
 func (s *VTXOPersistenceStore) GetVTXO(ctx context.Context,
 	outpoint wire.OutPoint) (*vtxo.Descriptor, error) {
 
@@ -191,6 +191,16 @@ func (s *VTXOPersistenceStore) GetVTXO(ctx context.Context,
 
 		row, err := q.GetVTXO(ctx, params)
 		if err != nil {
+			// Translate the persistence-layer miss into the domain
+			// sentinel so callers match vtxo.ErrVTXONotFound rather
+			// than sql.ErrNoRows. We keep sql.ErrNoRows in the
+			// chain so existing call sites that still test for it
+			// keep working while they migrate.
+			if errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("get VTXO: %w: %w",
+					vtxo.ErrVTXONotFound, err)
+			}
+
 			return fmt.Errorf("get VTXO: %w", err)
 		}
 

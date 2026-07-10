@@ -161,6 +161,14 @@ type UnrollTerminatedMsg struct {
 	// to live (the operator still considers it live). See
 	// darepo-client#602.
 	HadOnChainFootprint bool
+
+	// ExitPolicyKind is the child's durable exit policy for this target.
+	// The child sources it from its own persisted state, so it stays
+	// authoritative even after the registry has evicted its in-memory
+	// pending record. The registry threads it to the VTXO manager so a
+	// recovery-only target is held in exit rather than relived as a live
+	// coin on a recoverable failure (darepo-client#602).
+	ExitPolicyKind ExitPolicyKind
 }
 
 // MessageType returns the stable message type identifier.
