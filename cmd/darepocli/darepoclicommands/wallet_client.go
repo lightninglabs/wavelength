@@ -110,9 +110,9 @@ func printWalletProto(v proto.Message) error {
 // INVALID_ARGS envelope so the structured stderr shape and the exit-
 // code-2 mapping both kick in. Returns nil if err is nil so callers
 // can use it directly in `return invalidArgs(validator(...))` style.
-// All seven top-level wallet verbs route their input-hardening
-// rejections through this helper so the envelope an agent sees
-// matches what swap.* / ark.* verbs emit for the same failure class.
+// The top-level wallet verbs route their input-hardening rejections
+// through this helper so the envelope an agent sees matches what the
+// ark.* verbs emit for the same failure class.
 func invalidArgs(err error) error {
 	if err == nil {
 		return nil

@@ -16,12 +16,35 @@ import (
 const (
 	// defaultRPCServer is the default gRPC endpoint for the daemon.
 	defaultRPCServer = "localhost:10029"
+
+	// groupWallet, groupIntrospection, and groupAdvanced are the cobra
+	// command-group IDs that shape the default --help face.
+	groupWallet        = "wallet"
+	groupIntrospection = "introspection"
+	groupAdvanced      = "advanced"
+
+	// devModeEnvVar, when set to "1", reveals the advanced subtrees
+	// (ark / dev / recovery) under an Advanced group in --help. It only
+	// changes visibility; it never gates execution.
+	devModeEnvVar = "DAREPO_DEV"
 )
 
 // NewRootCmd creates the top-level cobra command for darepocli. Global
 // flags (--rpcserver, --format, --tlscertpath, --macaroonpath, --no-tls) are
 // registered here and made available to all subcommands via PersistentFlags.
+//
+// The advanced subtrees (ark / dev / recovery) are hidden from the default
+// --help unless DAREPO_DEV=1 is set; execution is never gated on the env
+// var.
 func NewRootCmd() *cobra.Command {
+	return newRootCmd(os.Getenv(devModeEnvVar) == "1")
+}
+
+// newRootCmd builds the root command with an explicit dev-mode toggle so the
+// command surface can be exercised in tests without mutating the process
+// environment. When devMode is true the advanced subtrees are revealed under
+// an Advanced group; otherwise they are hidden but remain fully runnable.
+func newRootCmd(devMode bool) *cobra.Command {
 	defaultCfg := darepod.DefaultConfig()
 	cmd := &cobra.Command{
 		Use:   "darepocli",
@@ -78,30 +101,47 @@ func NewRootCmd() *cobra.Command {
 			"are ignored",
 	)
 
-	// Register subcommands. The implicit top-level wallet verbs
-	// (create / unlock / send / recv / activity / balance / exit /
-	// wallet-sweep) are the face of the CLI; everything else groups under
-	// the named `ark` parent or stays at root for daemon introspection.
-	cmd.AddCommand(
-		// Wallet verbs (top-level / implicit).
-		newCreateCmd(),
-		newUnlockCmd(),
-		newSendCmd(),
-		newRecvCmd(),
-		newActivityCmd(),
-		newBalanceCmd(),
-		newExitCmd(),
+	// The visible face is two groups: the everyday Wallet verbs and
+	// daemon Introspection. Register both unconditionally — the built-in
+	// help command is assigned to Introspection below, so that group must
+	// always exist.
+	cmd.AddGroup(
+		&cobra.Group{
+			ID:    groupWallet,
+			Title: "Wallet:",
+		}, &cobra.Group{
+			ID:    groupIntrospection,
+			Title: "Introspection:",
+		},
+	)
+
+	// Wallet verbs: the day-to-day surface.
+	walletCmds := []*cobra.Command{
+		newCreateCmd(), newUnlockCmd(), newSendCmd(), newRecvCmd(),
+		newActivityCmd(), newBalanceCmd(), newExitCmd(),
 		newWalletSweepCmd(),
+	}
+	for _, c := range walletCmds {
+		c.GroupID = groupWallet
+	}
 
-		// Daemon introspection at root.
-		newGetInfoCmd(),
-		newSchemaCmd(),
-		newMCPCmd(),
+	// Daemon introspection at root.
+	introspectionCmds := []*cobra.Command{
+		newGetInfoCmd(), newSchemaCmd(), newMCPCmd(),
+	}
+	for _, c := range introspectionCmds {
+		c.GroupID = groupIntrospection
+	}
 
-		// Advanced subtrees.
+	// The advanced subtrees stay compiled and fully runnable in every
+	// build; devMode only decides whether they appear in --help. When
+	// revealed they sit under an Advanced group; when hidden they carry
+	// no GroupID, because cobra prints a group's heading even when all
+	// its members are hidden (an empty "Advanced:" would leak) and panics
+	// on a GroupID naming a group that was never registered.
+	advancedCmds := []*cobra.Command{
 		newArkCmd(),
 		newRecoveryCmd(),
-
 		devrpc.NewDevCmd(
 			devrpc.Config{
 				GetConn:     getDaemonConn,
@@ -109,7 +149,30 @@ func NewRootCmd() *cobra.Command {
 				MapRPCError: mapSwapRuntimeRPCError,
 			},
 		),
-	)
+	}
+	if devMode {
+		cmd.AddGroup(&cobra.Group{
+			ID:    groupAdvanced,
+			Title: "Advanced:",
+		})
+	}
+	for _, c := range advancedCmds {
+		if devMode {
+			c.GroupID = groupAdvanced
+		} else {
+			c.Hidden = true
+		}
+	}
+
+	// Keep the built-in help and completion commands out of an
+	// "Additional Commands" straggler section: group help under
+	// Introspection and hide the completion command (it stays runnable).
+	cmd.SetHelpCommandGroupID(groupIntrospection)
+	cmd.CompletionOptions.HiddenDefaultCmd = true
+
+	cmd.AddCommand(walletCmds...)
+	cmd.AddCommand(introspectionCmds...)
+	cmd.AddCommand(advancedCmds...)
 
 	return cmd
 }
