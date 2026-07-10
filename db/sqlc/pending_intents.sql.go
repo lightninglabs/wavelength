@@ -25,6 +25,33 @@ func (q *Queries) ClearPendingIntentAnchorByOutpoint(ctx context.Context, arg Cl
 	return err
 }
 
+const CountPendingIntentAnchorsByIntentID = `-- name: CountPendingIntentAnchorsByIntentID :one
+SELECT COUNT(*) FROM pending_intent_anchors
+WHERE intent_id = $1
+`
+
+// Count the anchors retained for one intent (a failed intent keeps its
+// anchors so it stays correlatable by its consumed outpoints).
+func (q *Queries) CountPendingIntentAnchorsByIntentID(ctx context.Context, intentID []byte) (int64, error) {
+	row := q.db.QueryRowContext(ctx, CountPendingIntentAnchorsByIntentID, intentID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const CountPendingSendIntentsByIntentID = `-- name: CountPendingSendIntentsByIntentID :one
+SELECT COUNT(*) FROM pending_send_intents
+WHERE intent_id = $1
+`
+
+// Count the send-detail rows retained for one intent.
+func (q *Queries) CountPendingSendIntentsByIntentID(ctx context.Context, intentID []byte) (int64, error) {
+	row := q.db.QueryRowContext(ctx, CountPendingSendIntentsByIntentID, intentID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const DeleteOrphanedPendingBoardIntents = `-- name: DeleteOrphanedPendingBoardIntents :exec
 DELETE FROM pending_board_intents
 WHERE NOT EXISTS (
@@ -155,6 +182,27 @@ DELETE FROM pending_send_intents
 func (q *Queries) DeletePendingSendIntentsAll(ctx context.Context) error {
 	_, err := q.db.ExecContext(ctx, DeletePendingSendIntentsAll)
 	return err
+}
+
+const GetPendingIntentByID = `-- name: GetPendingIntentByID :one
+SELECT status, failure_reason, failure_code
+FROM pending_intents
+WHERE intent_id = $1
+`
+
+type GetPendingIntentByIDRow struct {
+	Status        string
+	FailureReason sql.NullString
+	FailureCode   int32
+}
+
+// Fetch one intent header by id, exposing the terminal-failure columns so
+// callers (and tests) can assert send-failure state without raw SQL.
+func (q *Queries) GetPendingIntentByID(ctx context.Context, intentID []byte) (GetPendingIntentByIDRow, error) {
+	row := q.db.QueryRowContext(ctx, GetPendingIntentByID, intentID)
+	var i GetPendingIntentByIDRow
+	err := row.Scan(&i.Status, &i.FailureReason, &i.FailureCode)
+	return i, err
 }
 
 const ListPendingBoardIntents = `-- name: ListPendingBoardIntents :many

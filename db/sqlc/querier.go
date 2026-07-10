@@ -23,6 +23,11 @@ type Querier interface {
 	CountActivityEntriesByStatus(ctx context.Context, status int64) (int64, error)
 	CountBoardingIntentsByStatus(ctx context.Context, status string) (int64, error)
 	CountClientLedgerEntries(ctx context.Context) (int64, error)
+	// Count the anchors retained for one intent (a failed intent keeps its
+	// anchors so it stays correlatable by its consumed outpoints).
+	CountPendingIntentAnchorsByIntentID(ctx context.Context, intentID []byte) (int64, error)
+	// Count the send-detail rows retained for one intent.
+	CountPendingSendIntentsByIntentID(ctx context.Context, intentID []byte) (int64, error)
 	CountUnresolvedBoardingSweepInputs(ctx context.Context, txid []byte) (int64, error)
 	CountUnspentVTXOs(ctx context.Context) (int64, error)
 	// CountVTXOsByStatus returns the count of VTXOs with the specified status.
@@ -87,6 +92,9 @@ type Querier interface {
 	GetOORVTXOBindingByOutpoint(ctx context.Context, arg GetOORVTXOBindingByOutpointParams) (OorVtxoBinding, error)
 	GetOORVTXOBindingByOutpointAndKind(ctx context.Context, arg GetOORVTXOBindingByOutpointAndKindParams) (OorVtxoBinding, error)
 	GetOwnedReceiveScript(ctx context.Context, pkScript []byte) (OwnedReceiveScript, error)
+	// Fetch one intent header by id, exposing the terminal-failure columns so
+	// callers (and tests) can assert send-failure state without raw SQL.
+	GetPendingIntentByID(ctx context.Context, intentID []byte) (GetPendingIntentByIDRow, error)
 	GetRound(ctx context.Context, roundID string) (Round, error)
 	GetRoundBoardingIntents(ctx context.Context, roundID string) ([]RoundBoardingIntent, error)
 	GetRoundByCommitmentTxid(ctx context.Context, commitmentTxid []byte) (Round, error)

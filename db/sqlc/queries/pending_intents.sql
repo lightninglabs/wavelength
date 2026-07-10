@@ -167,3 +167,21 @@ DELETE FROM pending_send_intents;
 -- name: DeletePendingIntentsByKind :exec
 DELETE FROM pending_intents
 WHERE kind = $1;
+
+-- name: GetPendingIntentByID :one
+-- Fetch one intent header by id, exposing the terminal-failure columns so
+-- callers (and tests) can assert send-failure state without raw SQL.
+SELECT status, failure_reason, failure_code
+FROM pending_intents
+WHERE intent_id = $1;
+
+-- name: CountPendingIntentAnchorsByIntentID :one
+-- Count the anchors retained for one intent (a failed intent keeps its
+-- anchors so it stays correlatable by its consumed outpoints).
+SELECT COUNT(*) FROM pending_intent_anchors
+WHERE intent_id = $1;
+
+-- name: CountPendingSendIntentsByIntentID :one
+-- Count the send-detail rows retained for one intent.
+SELECT COUNT(*) FROM pending_send_intents
+WHERE intent_id = $1;
