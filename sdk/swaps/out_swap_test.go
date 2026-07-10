@@ -1604,6 +1604,7 @@ type testDaemonConn struct {
 	spentLookupErr    error
 	spentLookupBlock  time.Duration
 	spendOnCustom     bool
+	skipLiveOnCustom  bool
 	sendPolicyCalls   int
 	sendCustomCalls   int
 	oorSessionCalls   int
@@ -1674,8 +1675,12 @@ func (d *testDaemonConn) SendOORWithCustomInputs(_ context.Context,
 		}
 		d.vhtlc = nil
 
+		// skipLiveOnCustom models indexer lag: the vHTLC spend is
+		// observable but the created refund output is not yet indexed
+		// as a live VTXO, forcing the refund to complete via the spent
+		// vHTLC observation path.
 		pubKey, err := schnorr.ParsePubKey(recipientPubKey)
-		if err == nil {
+		if err == nil && !d.skipLiveOnCustom {
 			pkScript, scriptErr := txscript.PayToTaprootScript(
 				pubKey,
 			)
@@ -2075,7 +2080,7 @@ func (d *testDaemonConn) AllocateReceiveScript(context.Context, string) (
 
 		return &ReceiveInfo{
 			PkScript:    pkScript,
-			PubKeyXOnly: d.identityKey.X().Bytes(),
+			PubKeyXOnly: schnorr.SerializePubKey(d.identityKey),
 		}, nil
 	}
 
@@ -2138,7 +2143,9 @@ func TestReceiveSessionWaitClaimsVHTLC(t *testing.T) {
 			PkScript: []byte{
 				0x51,
 			},
-			PubKeyXOnly: clientPriv.PubKey().X().Bytes(),
+			PubKeyXOnly: schnorr.SerializePubKey(
+				clientPriv.PubKey(),
+			),
 		},
 		sendSessionID: "claim-session",
 	}
@@ -2368,7 +2375,9 @@ func TestReceiveSessionResumeFromStore(t *testing.T) {
 			PkScript: []byte{
 				0x51,
 			},
-			PubKeyXOnly: clientPriv.PubKey().X().Bytes(),
+			PubKeyXOnly: schnorr.SerializePubKey(
+				clientPriv.PubKey(),
+			),
 		},
 		sendSessionID: "claim-session",
 	}
@@ -3360,7 +3369,9 @@ func TestReceiveSessionWaitReconcilesBeforeExpiry(t *testing.T) {
 			PkScript: []byte{
 				0x51,
 			},
-			PubKeyXOnly: clientPriv.PubKey().X().Bytes(),
+			PubKeyXOnly: schnorr.SerializePubKey(
+				clientPriv.PubKey(),
+			),
 		},
 		sendSessionID: "claim-session",
 	}
@@ -3425,7 +3436,9 @@ func TestReceiveSessionClaimBeforeHTLCEventFailsClearly(t *testing.T) {
 			PkScript: []byte{
 				0x51,
 			},
-			PubKeyXOnly: clientPriv.PubKey().X().Bytes(),
+			PubKeyXOnly: schnorr.SerializePubKey(
+				clientPriv.PubKey(),
+			),
 		},
 		sendSessionID: "claim-session",
 	}
@@ -3495,7 +3508,9 @@ func TestReceiveSessionClaimFailsOnAmountMismatch(t *testing.T) {
 			PkScript: []byte{
 				0x51,
 			},
-			PubKeyXOnly: clientPriv.PubKey().X().Bytes(),
+			PubKeyXOnly: schnorr.SerializePubKey(
+				clientPriv.PubKey(),
+			),
 		},
 		sendSessionID: "claim-session",
 	}
@@ -3565,7 +3580,9 @@ func TestReceiveSessionFreshClaimBoundsSpentLookup(t *testing.T) {
 			PkScript: []byte{
 				0x51,
 			},
-			PubKeyXOnly: receiverPriv.PubKey().X().Bytes(),
+			PubKeyXOnly: schnorr.SerializePubKey(
+				receiverPriv.PubKey(),
+			),
 		},
 		sendSessionID:  "claim-session",
 		spentLookupErr: context.DeadlineExceeded,
@@ -3666,7 +3683,9 @@ func TestReceiveSessionClaimFollowsRefreshedLiveVHTLC(t *testing.T) {
 			PkScript: []byte{
 				0x51,
 			},
-			PubKeyXOnly: receiverPriv.PubKey().X().Bytes(),
+			PubKeyXOnly: schnorr.SerializePubKey(
+				receiverPriv.PubKey(),
+			),
 		},
 		sendSessionID: "claim-session",
 		liveByPkScript: map[string]*VTXOInfo{
@@ -3758,7 +3777,9 @@ func TestReceiveSessionFreshClaimBoundsSpentLookupGRPCDeadline(t *testing.T) {
 			PkScript: []byte{
 				0x51,
 			},
-			PubKeyXOnly: receiverPriv.PubKey().X().Bytes(),
+			PubKeyXOnly: schnorr.SerializePubKey(
+				receiverPriv.PubKey(),
+			),
 		},
 		sendSessionID: "claim-session",
 		spentLookupErr: fmt.Errorf(
@@ -3840,7 +3861,9 @@ func TestReceiveSessionClaimRejectsAfterRefundLocktime(t *testing.T) {
 			PkScript: []byte{
 				0x51,
 			},
-			PubKeyXOnly: receiverPriv.PubKey().X().Bytes(),
+			PubKeyXOnly: schnorr.SerializePubKey(
+				receiverPriv.PubKey(),
+			),
 		},
 		sendSessionID: "claim-session",
 	}
@@ -3917,7 +3940,9 @@ func TestReceiveSessionClaimRecoveryCompletionWinsAfterRefundLocktime(
 			PkScript: []byte{
 				0x51,
 			},
-			PubKeyXOnly: receiverPriv.PubKey().X().Bytes(),
+			PubKeyXOnly: schnorr.SerializePubKey(
+				receiverPriv.PubKey(),
+			),
 		},
 		statusResp: &daemonrpc.GetVHTLCRecoveryStatusResponse{
 			Found: true,
@@ -4144,7 +4169,9 @@ func TestReceiveSessionClaimReturnsLastSendError(t *testing.T) {
 			PkScript: []byte{
 				0x51,
 			},
-			PubKeyXOnly: receiverPriv.PubKey().X().Bytes(),
+			PubKeyXOnly: schnorr.SerializePubKey(
+				receiverPriv.PubKey(),
+			),
 		},
 		sendCustomErr: sendErr,
 	}
@@ -4156,7 +4183,9 @@ func TestReceiveSessionClaimReturnsLastSendError(t *testing.T) {
 	_, err = client.claimReceiveVHTLC(
 		t.Context(), preimage.Hash(), preimage, policy, policyTemplate,
 		pkScript, "funding:0", 42_000,
-		receiverPriv.PubKey().X().Bytes(),
+		schnorr.SerializePubKey(
+			receiverPriv.PubKey(),
+		),
 	)
 	require.ErrorIs(t, err, sendErr)
 	require.ErrorContains(t, err, "claim vHTLC")

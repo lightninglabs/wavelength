@@ -11,6 +11,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chaincfg/v2"
 	"github.com/btcsuite/btcd/psbt/v2"
@@ -762,8 +763,10 @@ func TestPaySessionRefundsFundedVHTLCOnTimeout(t *testing.T) {
 			AmountSat: testInSwapAmountSat,
 		},
 		receiveInfo: &ReceiveInfo{
-			PubKeyXOnly: clientPriv.PubKey().X().Bytes(),
-			PkScript:    refundScript,
+			PubKeyXOnly: schnorr.SerializePubKey(
+				clientPriv.PubKey(),
+			),
+			PkScript: refundScript,
 		},
 		spendOnCustom: true,
 	}
@@ -858,8 +861,10 @@ func TestPaySessionCooperativeRefundsBeforeTimeout(t *testing.T) {
 			AmountSat: testInSwapAmountSat,
 		},
 		receiveInfo: &ReceiveInfo{
-			PubKeyXOnly: clientPriv.PubKey().X().Bytes(),
-			PkScript:    refundScript,
+			PubKeyXOnly: schnorr.SerializePubKey(
+				clientPriv.PubKey(),
+			),
+			PkScript: refundScript,
 		},
 		spendOnCustom: true,
 	}
@@ -963,8 +968,10 @@ func TestPaySessionCooperativeRefundUsesLocalFundingMetadata(t *testing.T) {
 		sendSessionID: "refund-session",
 		sendOutpoint:  "funding:0",
 		receiveInfo: &ReceiveInfo{
-			PubKeyXOnly: clientPriv.PubKey().X().Bytes(),
-			PkScript:    refundScript,
+			PubKeyXOnly: schnorr.SerializePubKey(
+				clientPriv.PubKey(),
+			),
+			PkScript: refundScript,
 		},
 		spendOnCustom: true,
 	}
@@ -1068,8 +1075,10 @@ func TestPaySessionCooperativeRefundWaitsForOutputBeforeTerminal(t *testing.T) {
 		sendSessionID: "refund-session",
 		sendOutpoint:  "funding:0",
 		receiveInfo: &ReceiveInfo{
-			PubKeyXOnly: clientPriv.PubKey().X().Bytes(),
-			PkScript:    refundScript,
+			PubKeyXOnly: schnorr.SerializePubKey(
+				clientPriv.PubKey(),
+			),
+			PkScript: refundScript,
 		},
 	}
 	daemonConn.liveLookupHook = func(call int) (*VTXOInfo, error) {
@@ -1180,8 +1189,10 @@ func TestPaySessionCooperativeRefundIgnoresServerUnavailable(t *testing.T) {
 			AmountSat: testInSwapAmountSat,
 		},
 		receiveInfo: &ReceiveInfo{
-			PubKeyXOnly: clientPriv.PubKey().X().Bytes(),
-			PkScript:    refundScript,
+			PubKeyXOnly: schnorr.SerializePubKey(
+				clientPriv.PubKey(),
+			),
+			PkScript: refundScript,
 		},
 	}
 
@@ -1279,8 +1290,10 @@ func TestPaySessionCooperativeRefundKeepsAcceptedSessionOnPersistFailure(
 			AmountSat: testInSwapAmountSat,
 		},
 		receiveInfo: &ReceiveInfo{
-			PubKeyXOnly: clientPriv.PubKey().X().Bytes(),
-			PkScript:    refundScript,
+			PubKeyXOnly: schnorr.SerializePubKey(
+				clientPriv.PubKey(),
+			),
+			PkScript: refundScript,
 		},
 	}
 
@@ -1396,8 +1409,10 @@ func TestPaySessionResumeAfterAcceptedRefundFindsOutput(t *testing.T) {
 			AmountSat: testInSwapAmountSat,
 		},
 		receiveInfo: &ReceiveInfo{
-			PubKeyXOnly: clientPriv.PubKey().X().Bytes(),
-			PkScript:    refundScript,
+			PubKeyXOnly: schnorr.SerializePubKey(
+				clientPriv.PubKey(),
+			),
+			PkScript: refundScript,
 		},
 		spendOnCustom: true,
 	}
@@ -1547,8 +1562,10 @@ func TestPaySessionResumeAfterAcceptedRefundUsesSpentVHTLCFallback(
 			AmountSat: testInSwapAmountSat,
 		},
 		receiveInfo: &ReceiveInfo{
-			PubKeyXOnly: clientPriv.PubKey().X().Bytes(),
-			PkScript:    refundScript,
+			PubKeyXOnly: schnorr.SerializePubKey(
+				clientPriv.PubKey(),
+			),
+			PkScript: refundScript,
 		},
 		spendOnCustom: true,
 	}
@@ -1751,8 +1768,10 @@ func TestPaySessionRefundsWhenRefundLocktimePassesBeforeClaim(t *testing.T) {
 			AmountSat: testInSwapAmountSat,
 		},
 		receiveInfo: &ReceiveInfo{
-			PubKeyXOnly: clientPriv.PubKey().X().Bytes(),
-			PkScript:    refundScript,
+			PubKeyXOnly: schnorr.SerializePubKey(
+				clientPriv.PubKey(),
+			),
+			PkScript: refundScript,
 		},
 		spendOnCustom: true,
 	}
@@ -1808,6 +1827,110 @@ func TestPaySessionRefundsWhenRefundLocktimePassesBeforeClaim(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, PayStateRefunded, resumed.State())
 	require.Equal(t, "refund-session", resumed.refundSessionID)
+}
+
+// TestPaySessionRefundCancelsRecoveryWhenSpendObservedBeforeIndex asserts that
+// when a timeout refund completes via the spent vHTLC observation (the refund
+// output has not yet been indexed as a live VTXO), the pay session still
+// cancels the recovery that was armed at funding time. Otherwise the
+// daemon-owned recovery row would be left dangling after the swap is refunded.
+func TestPaySessionRefundCancelsRecoveryWhenSpendObservedBeforeIndex(
+	t *testing.T) {
+
+	t.Parallel()
+
+	store := newTestSwapStore(t)
+
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	refundScript, err := txscript.PayToTaprootScript(clientPriv.PubKey())
+	require.NoError(t, err)
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	serverPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	preimage, err := NewPreimage()
+	require.NoError(t, err)
+	invoice := testValidPayInvoice(t, preimage)
+
+	serverConn := &testInSwapServerConn{
+		cfg: &InSwapConfig{
+			PaymentHash:  preimage.Hash(),
+			AmountSat:    testInSwapAmountSat,
+			FeeSat:       testInSwapFeeSat,
+			ServerPubkey: serverPriv.PubKey(),
+			VHTLCConfig: VHTLCConfig{
+				RefundLocktime:                       100,
+				UnilateralClaimDelay:                 12,
+				UnilateralRefundDelay:                24,
+				UnilateralRefundWithoutReceiverDelay: 36,
+			},
+			Expiry: time.Now().Add(time.Minute),
+		},
+	}
+
+	daemonConn := &testDaemonConn{
+		identityKey:   clientPriv.PubKey(),
+		operatorKey:   operatorPriv.PubKey(),
+		blockHeight:   99,
+		sendSessionID: "refund-session",
+		vhtlc: &VTXOInfo{
+			Outpoint:  "funding:0",
+			AmountSat: testInSwapAmountSat,
+		},
+		receiveInfo: &ReceiveInfo{
+			PubKeyXOnly: schnorr.SerializePubKey(
+				clientPriv.PubKey(),
+			),
+			PkScript: refundScript,
+		},
+		spendOnCustom: true,
+
+		// Observe the vHTLC spend but never index the refund output, so
+		// the refund completes through markRefunded rather than
+		// markRefundOutputIndexed.
+		skipLiveOnCustom: true,
+	}
+
+	client := configureTestPayClient(
+		NewSwapClientWithStore(
+			serverConn, daemonConn, nil, nil, store,
+		),
+	)
+	client.waitPollInterval = time.Millisecond
+	client.refundLocktimeBuffer = 0
+
+	session, err := client.StartPayViaLightning(
+		t.Context(), invoice, testInSwapFeeSat,
+	)
+	require.NoError(t, err)
+
+	err = session.runUntil(t.Context(), PayStateWaitingForClaim)
+	require.NoError(t, err)
+	require.Equal(t, PayStateWaitingForClaim, session.State())
+
+	daemonConn.blockHeight = 100
+
+	_, err = session.Wait(t.Context())
+	require.ErrorIs(t, err, ErrSwapRefunded)
+	require.Equal(t, 1, daemonConn.sendCustomCalls)
+	require.Equal(t, 1, daemonConn.armRecoveryCalls)
+
+	// The armed recovery must be cancelled even though the terminal state
+	// was reached via the spent vHTLC observation.
+	require.Equal(t, 1, daemonConn.cancelCalls)
+	require.Equal(
+		t, recoveryReasonRefundSpendObserved,
+		daemonConn.lastCancel.GetReason(),
+	)
+
+	// The unilateral timeout refund is not a cooperative settlement, so no
+	// cooperative txid is reported (a non-txid value would be rejected by
+	// the daemon).
+	require.Empty(t, daemonConn.lastCancel.GetCooperativeTxid())
 }
 
 // TestPaySessionResumeFromStore asserts the SDK can reload a persisted pay
@@ -2294,8 +2417,10 @@ func TestPaySessionRefundsAmountMismatch(t *testing.T) {
 			AmountSat: 41_999,
 		},
 		receiveInfo: &ReceiveInfo{
-			PubKeyXOnly: clientPriv.PubKey().X().Bytes(),
-			PkScript:    refundScript,
+			PubKeyXOnly: schnorr.SerializePubKey(
+				clientPriv.PubKey(),
+			),
+			PkScript: refundScript,
 		},
 		sendSessionID: "refund-session",
 		spendOnCustom: true,

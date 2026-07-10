@@ -1616,6 +1616,25 @@ func (s *paySession) markRefunded(ctx context.Context,
 		slog.String("spender", spentVHTLC.SpentByTxID),
 	)
 
+	// The refund spend is on-chain, so the daemon-owned recovery armed at
+	// funding time is no longer needed. Cancel it before recording the
+	// terminal state, mirroring markRefundOutputIndexed and
+	// markRefundSessionCompleted so a refund that completes via the spent
+	// vHTLC observation (e.g. when the refund output has not been indexed
+	// yet) does not leave a dangling armed recovery row behind.
+	//
+	// This is the unilateral refund-without-receiver (timeout) path, so the
+	// spend is not a cooperative settlement: pass an empty cooperative txid
+	// like every other cancel call site. A non-empty value would have to be
+	// a canonical txid or the daemon rejects the cancel, which our
+	// retryable wrapping would then retry forever.
+	if err := cancelVHTLCRecovery(
+		ctx, s.client.daemon, s.refundRecoveryID,
+		recoveryReasonRefundSpendObserved, "",
+	); err != nil {
+		return newRetryableActionError(err)
+	}
+
 	return s.mutateAndPersist(ctx, func() error {
 		if spentVHTLC.Outpoint != "" {
 			s.vhtlcOutpoint = spentVHTLC.Outpoint
