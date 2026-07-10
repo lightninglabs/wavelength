@@ -13,6 +13,32 @@ import (
 	"google.golang.org/grpc"
 )
 
+// TestSigningWorkersOverride verifies embedded hosts can force serial signing
+// while a zero convenience value preserves a caller-owned daemon setting.
+func TestSigningWorkersOverride(t *testing.T) {
+	t.Parallel()
+
+	t.Run("convenience override", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := DefaultConfig()
+		cfg.SigningWorkers = 1
+		daemonCfg, err := daemonConfig(cfg)
+		require.NoError(t, err)
+		require.Equal(t, 1, daemonCfg.SigningWorkers)
+	})
+
+	t.Run("zero preserves daemon config", func(t *testing.T) {
+		t.Parallel()
+
+		base := darepod.DefaultConfig()
+		base.SigningWorkers = 8
+		daemonCfg, err := daemonConfig(Config{DaemonConfig: base})
+		require.NoError(t, err)
+		require.Equal(t, 8, daemonCfg.SigningWorkers)
+	})
+}
+
 // TestCloneDaemonConfigIsolation verifies that cloneDaemonConfig produces a
 // graph whose reference-typed fields can be mutated independently of the
 // original. This is the actual contract Start relies on when it injects its

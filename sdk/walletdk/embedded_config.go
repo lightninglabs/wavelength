@@ -7,6 +7,10 @@ import (
 	"github.com/lightninglabs/darepo-client/darepod"
 )
 
+// MaxSigningWorkers is the largest bounded MuSig2 worker count accepted by
+// the embedded daemon and mobile configuration surfaces.
+const MaxSigningWorkers = darepod.MaxSigningWorkers
+
 // Config controls the embedded daemon and wallet facade.
 type Config struct {
 	// DaemonConfig supplies the full daemon config. When nil, walletdk
@@ -94,6 +98,10 @@ type Config struct {
 
 	// MaxOperatorFeeSat caps the per-round operator fee the daemon accepts.
 	MaxOperatorFeeSat int64
+
+	// SigningWorkers bounds concurrent VTXO MuSig2 signer sessions. Zero
+	// selects the wallet-backend default and one forces serial signing.
+	SigningWorkers int
 
 	// EagerRoundJoin makes the embedded daemon's wallet drive
 	// round-joining without waiting for a follow-up Board /

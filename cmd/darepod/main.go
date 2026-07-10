@@ -184,6 +184,14 @@ func newRootCmd() *cobra.Command {
 			"seal-time quote; must be positive",
 	)
 
+	// Bound concurrent MuSig2 work. Zero lets the daemon choose a safe
+	// backend-aware default; one restores serial signing.
+	f.Int(
+		"signingworkers", cfg.SigningWorkers, "maximum VTXO "+
+			"signing sessions processed in parallel; zero "+
+			"selects a wallet-backend default",
+	)
+
 	// EagerRoundJoin makes the wallet actor drive round-joining
 	// without a follow-up Board / LeaveVTXOs RPC. The default is
 	// inherited from darepod.DefaultConfig, which is build-tag

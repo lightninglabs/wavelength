@@ -3932,6 +3932,23 @@ func (s *Server) initWalletActor(ctx context.Context,
 	return walletRef, nil
 }
 
+// signingWorkerCount resolves automatic signing concurrency by wallet
+// backend. Only the profiled lwwallet path enables automatic parallelism;
+// remote lnd and btcwallet signing remain serial until benchmarked separately.
+func signingWorkerCount(walletType string, configured int) int {
+	if configured > 0 {
+		return configured
+	}
+
+	switch walletType {
+	case WalletTypeLwwallet:
+		return DefaultLwwalletSigningWorkers
+
+	default:
+		return 1
+	}
+}
+
 // initRoundActor creates, registers, and starts the round client
 // actor. The round actor manages client-side participation in Ark
 // rounds: boarding intent submission, MuSig2 nonce exchange, partial
@@ -3971,6 +3988,10 @@ func (s *Server) initRoundActor(ctx context.Context,
 	case WalletTypeBtcwallet:
 		clientWallet = s.btcwWallet.UnsafeFromSome()
 	}
+
+	signingWorkers := signingWorkerCount(
+		s.cfg.Wallet.Type, s.cfg.SigningWorkers,
+	)
 
 	dbStore := db.NewStore(
 		s.db.DB, s.db.Queries, s.db.Backend(),
@@ -4021,9 +4042,12 @@ func (s *Server) initRoundActor(ctx context.Context,
 	}
 
 	roundCfg := &round.RoundClientConfig{
-		Name:           "round-client",
-		Logger:         s.subLogger(round.Subsystem),
-		Wallet:         clientWallet,
+		Name:   "round-client",
+		Logger: s.subLogger(round.Subsystem),
+		Wallet: clientWallet,
+		SigningExecutor: round.NewSigningExecutor(
+			signingWorkers,
+		),
 		RoundStore:     roundStore,
 		VTXOStore:      roundStore,
 		OperatorTerms:  operatorTerms,
