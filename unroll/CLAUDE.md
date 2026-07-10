@@ -70,7 +70,19 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
   `ExitOutcomeRecoverable` (roll back to live), a completed exit →
   `ExitOutcomeConfirmed` (retire to spent). `UnrollTerminatedMsg` carries
   `HadOnChainFootprint`, computed by `jobHadOnChainFootprint` (any
-  confirmed/in-flight proof node or a non-pending sweep).
+  confirmed/in-flight proof node or a non-pending sweep). It also carries
+  the child's `ExitPolicyKind`, which the child stamps from its own durable
+  exit policy (`exitPolicyKind`), so the terminal message is self-contained:
+  it stays authoritative after the registry has evicted its in-memory
+  `pending` record, which a completed async terminal persist can drop before
+  the terminal handoff lands. `handleTerminated` prefers the message's
+  `ExitPolicyKind` over the cached record and threads it to the manager via
+  `notifyVTXOExit`, so a recovery-only target (a non-standard policy such as
+  a vHTLC refund) is held in unilateral-exit rather than relived as a live
+  coin on a recoverable failure. The kind is forwarded only to the manager,
+  never stamped onto the persisted registry record — the message has no
+  policy ref, so stamping its kind would drop the store's durable
+  `(ExitPolicyKind, ExitPolicyRef)` identity.
 - `RegistryRecord` — control-plane row (`TargetOutpoint`, `ActorID`,
   `Phase`, `Trigger`, `FailReason`, `SweepTxid`, `ExitPolicyKind`,
   `ExitPolicyRef`).
