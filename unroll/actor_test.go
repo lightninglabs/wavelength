@@ -1571,6 +1571,55 @@ func TestStartUnrollSubmitsInitialFrontier(t *testing.T) {
 	require.NotNil(t, checkpoint)
 }
 
+// TestProofNodeHeightHintBoundedBelowTip verifies that at a realistic mainnet
+// height the proof-node confirmation watch is floored a bounded lookback below
+// the current tip, not at genesis (block 1). A genesis floor makes neutrino
+// rescan every block to block 1 for a tx that never confirms
+// (darepo-client#884); the bounded floor caps the rescan window while staying
+// low enough that a proof ancestor confirming before the target's creation
+// height is still covered.
+func TestProofNodeHeightHintBoundedBelowTip(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	unrollActor, _, txconfirmRef, _ := newActorHarness(t, proof, desc)
+
+	// A mainnet-scale height comfortably above the lookback so the floor
+	// is (height - lookback), not the genesis clamp.
+	const startHeight uint32 = 850_000
+
+	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
+		Height:  int32(startHeight),
+		Trigger: TriggerManual,
+	})
+
+	require.Equal(t, 1, txconfirmRef.requestCount())
+	hint := txconfirmRef.lastRequest(t).HeightHint
+
+	// The hint must not be the genesis floor, and must be exactly the
+	// bounded lookback below the observed height.
+	require.Greater(t, hint, uint32(1))
+	require.Equal(t, startHeight-proofNodeHeightHintLookback, hint)
+}
+
+// TestProofNodeHeightHintClampsToGenesis verifies the helper never returns a
+// height below block 1, even when the current height is at or below the
+// configured lookback window.
+func TestProofNodeHeightHintClampsToGenesis(t *testing.T) {
+	require.Equal(t, uint32(1), proofNodeHeightHint(0))
+	require.Equal(t, uint32(1), proofNodeHeightHint(1))
+	require.Equal(
+		t, uint32(1), proofNodeHeightHint(proofNodeHeightHintLookback),
+	)
+	require.Equal(
+		t, uint32(1),
+		proofNodeHeightHint(proofNodeHeightHintLookback-1),
+	)
+	require.Equal(
+		t, uint32(2),
+		proofNodeHeightHint(proofNodeHeightHintLookback+2),
+	)
+}
+
 // TestFraudTriggerDefersReadyCheckpoint verifies fraud-triggered recovery
 // watches a ready checkpoint before asking txconfirm to broadcast it.
 func TestFraudTriggerDefersReadyCheckpoint(t *testing.T) {

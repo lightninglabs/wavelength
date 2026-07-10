@@ -657,6 +657,18 @@ func (b *behavior) currentHeight() int32 {
 	return b.pending.Height
 }
 
+// currentHeightHint returns the actor's last observed best height as an
+// unsigned value suitable for a confirmation-watch height hint, clamping any
+// non-positive height (e.g. an uninitialized job) to zero.
+func (b *behavior) currentHeightHint() uint32 {
+	h := b.currentHeight()
+	if h <= 0 {
+		return 0
+	}
+
+	return uint32(h)
+}
+
 // resolveExitSpendPolicy reconstructs the exit policy for this job.
 func (b *behavior) resolveExitSpendPolicy(ctx context.Context) (ExitSpendPolicy,
 	error) {
@@ -701,11 +713,93 @@ func safeTxOutPkScript(tx *wire.MsgTx, index uint32) ([]byte, error) {
 	return append([]byte(nil), tx.TxOut[index].PkScript...), nil
 }
 
-// proofNodeHeightHint is the earliest safe confirmation height hint for
-// proof-graph transactions. Roots and intermediate OOR checkpoint ancestors
-// can confirm before the target descriptor's CreatedHeight, so proof watches
-// must not use the target creation height as a lower bound.
-const proofNodeHeightHint uint32 = 1
+// proofNodeHeightHintLookback is the number of blocks below the actor's
+// current best height used as the confirmation-watch floor for proof-graph
+// transactions. A genesis floor (height 1) forces neutrino's notifier to
+// rescan every block from tip to block 1 (one GetCFilter per block) when the
+// watched tx never confirms, which floods logs and never terminates
+// (darepo-client#884). We therefore bound the rescan window to a fixed
+// lookback below the current height.
+//
+// The lookback MUST comfortably exceed the maximum batch lifetime plus the
+// worst-case tree-depth + CSV exit window, because proof roots and
+// intermediate OOR checkpoint ancestors can confirm well before the target
+// descriptor's CreatedHeight — using the creation height as the floor would
+// miss an ancestor that already confirmed. A generous operator-configured max
+// batch lifetime is on the order of one month (~4320 blocks at 144
+// blocks/day); 10000 blocks (~10 weeks) is a safe multiple that keeps the
+// floor below any ancestor's real confirmation height while still capping the
+// neutrino rescan at a bounded window instead of scanning to genesis.
+//
+// This is a stopgap. The long-term correct bound is the commitment-tx height
+// (from Descriptor.Ancestry.CommitmentTxID), which is a tight, provable floor
+// for every proof ancestor; this fixed lookback just bounds the rescan safely
+// in the meantime.
+const proofNodeHeightHintLookback uint32 = 10000
+
+// proofNodeHeightHint returns the earliest safe confirmation height hint for
+// proof-graph transactions given the actor's current best height. Roots and
+// intermediate OOR checkpoint ancestors can confirm before the target
+// descriptor's CreatedHeight, so proof watches must not use the target
+// creation height as a lower bound; instead we floor at a bounded lookback
+// below the current height (never below block 1). See
+// proofNodeHeightHintLookback for the sizing rationale. Callers that hold a
+// Descriptor should route through behavior.proofNodeConfHeightHint instead, so
+// the age-exceeds-lookback breadcrumb fires.
+func proofNodeHeightHint(currentHeight uint32) uint32 {
+	if currentHeight <= proofNodeHeightHintLookback {
+		return 1
+	}
+
+	return currentHeight - proofNodeHeightHintLookback
+}
+
+// proofNodeConfHeightHint returns the confirmation-watch height floor for one
+// proof-graph node and leaves a breadcrumb when the target VTXO is old enough
+// that the bounded floor may have risen above a proof ancestor's real
+// confirmation height. The lookback keeps the floor below every ancestor only
+// while the VTXO's age (in blocks) stays within proofNodeHeightHintLookback;
+// past that the neutrino historical rescan can start too late, miss the
+// ancestor's confirmation, and silently stall the exit. The fixed lookback is
+// a stopgap, so we warn rather than fail — the commitment-tx-height follow-up
+// removes the age assumption entirely.
+func (b *behavior) proofNodeConfHeightHint(ctx context.Context,
+	txid chainhash.Hash) uint32 {
+
+	currentHeight := b.currentHeightHint()
+	hint := proofNodeHeightHint(currentHeight)
+
+	// CreatedHeight is our proxy for the earliest proof-ancestor
+	// confirmation height. Once the VTXO's age reaches the lookback the
+	// floor sits at or above it, so an ancestor that confirmed earlier can
+	// escape the rescan window.
+	if b.desc != nil && b.desc.CreatedHeight > 0 {
+		age := int64(currentHeight) - int64(b.desc.CreatedHeight)
+		if age >= int64(proofNodeHeightHintLookback) {
+			b.log.WarnS(ctx, "Proof-node confirmation floor may "+
+				"exceed ancestor height; exit could stall",
+				nil,
+				slog.String(
+					"target_outpoint",
+					b.cfg.TargetOutpoint.String(),
+				),
+				slog.String("proof_txid", txid.String()),
+				slog.Int64("vtxo_age_blocks", age),
+				slog.Uint64(
+					"lookback",
+					uint64(proofNodeHeightHintLookback),
+				),
+				slog.Uint64("height_hint", uint64(hint)),
+				slog.Int64(
+					"created_height",
+					int64(b.desc.CreatedHeight),
+				),
+			)
+		}
+	}
+
+	return hint
+}
 
 // ensureNodeConfirmed hands one ready proof-graph node to txconfirm and
 // threads any immediate rejection back through the FSM.
@@ -739,11 +833,12 @@ func (b *behavior) ensureNodeConfirmed(ctx context.Context,
 		return err
 	}
 
+	heightHint := b.proofNodeConfHeightHint(ctx, txid)
 	resp, err := b.cfg.TxConfirmRef.Ask(ctx, &txconfirm.EnsureConfirmedReq{
 		Tx:                   node.Tx,
 		ConfirmationPkScript: pkScript,
 		Label:                "unroll-node-" + txid.String(),
-		HeightHint:           proofNodeHeightHint,
+		HeightHint:           heightHint,
 		Subscriber:           b.notificationRef(),
 	}).Await(ctx).Unpack()
 	if err != nil {
@@ -798,7 +893,7 @@ func (b *behavior) watchDeferredCheckpoint(ctx context.Context,
 		Txid:        &txidCopy,
 		PkScript:    append([]byte(nil), pkScript...),
 		TargetConfs: 1,
-		HeightHint:  proofNodeHeightHint,
+		HeightHint:  b.proofNodeConfHeightHint(ctx, txid),
 		NotifyActor: fn.Some(notifyRef),
 	}).Await(ctx).Unpack()
 	if err != nil {

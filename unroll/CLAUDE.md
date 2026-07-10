@@ -149,9 +149,15 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
 - `watchDeferredCheckpoint(ctx, txid, node)` — registers confirmation
   watch for fraud-triggered checkpoints while the actor waits for
   operator confirmation of the proof node.
-- `proofNodeHeightHint = 1` — height hint for proof-node
-  spend/confirmation watches (proof roots and intermediate ancestors
-  can confirm before the target VTXO's creation height).
+- `proofNodeHeightHint(currentHeight)` — confirmation-watch height floor
+  for proof-graph nodes: `max(1, currentHeight - proofNodeHeightHintLookback)`
+  (10000 blocks). Proof roots and intermediate ancestors can confirm before
+  the target VTXO's creation height, so the floor is anchored to the current
+  tip minus a lookback (never `CreatedHeight`). This bounds the neutrino
+  historical rescan instead of scanning to genesis (darepo-client#884). The
+  `behavior.proofNodeConfHeightHint` wrapper warns when the VTXO's age exceeds
+  the lookback (the floor may then miss an already-confirmed ancestor).
+  Stopgap for the tighter commitment-tx-height bound.
 
 ## Relationships
 
