@@ -127,7 +127,7 @@ locks, absolute locktimes, payment-hash preimages). Helper builders live in
   that also enforces the 32-byte preimage-size rule.
 
 The predicate bytes are opaque to the AST walker for the purposes of
-`ContainsKey` and key extraction (`lib/arkscript/validate.go:90-129`). This
+`ContainsKey` and key extraction (`lib/arkscript/validate.go:208-218`). This
 is intentional: the AST reasons about *who can sign*, not about *what
 hashlock values are in play*.
 
@@ -156,7 +156,7 @@ type PolicyTemplate struct {
 }
 ```
 
-Defined in: `lib/arkscript/policy_template.go:116-200`.
+Defined in: `lib/arkscript/policy_template.go:127-222`.
 
 `PolicyTemplate` preserves the author's leaf order. The canonical taproot
 tree ordering (by leaf version, then lexicographic script bytes) is applied
@@ -181,7 +181,7 @@ Where:
 - each leaf blob is a length-prefixed `LeafTemplate` encoding (below).
 
 Implemented by `PolicyTemplate.Encode` / `DecodePolicyTemplate`
-(`lib/arkscript/policy_template.go:174-287`).
+(`lib/arkscript/policy_template.go:276-411`).
 
 ### 3.3 Binary encoding — LeafTemplate
 
@@ -205,7 +205,7 @@ Each node is `kind(1) || payload`. Payload layout by kind:
 | `Condition`     | `3`  | `varbytes(predicate) || varbytes(child-node-encoding)`                 |
 
 Implemented by `EncodeNode` / `decodeNodePayload` / `decodeLockedNode`
-(`lib/arkscript/policy_template.go:289-595`).
+(`lib/arkscript/policy_template.go:412-645`).
 
 > **Note on key encoding:** Multisig currently encodes keys as 32-byte
 > x-only (via `schnorr.SerializePubKey`). This round-trips lossy for
@@ -269,7 +269,7 @@ Extensions that REQUIRE a version bump:
 
 ### 4.1 Compilation
 
-`PolicyTemplate.Compile` (`lib/arkscript/policy_template.go:125-149`) walks
+`PolicyTemplate.Compile` (`lib/arkscript/policy_template.go:225-249`) walks
 each leaf's AST, calls `Node.Script()`, wraps the bytes in a
 `txscript.NewBaseTapLeaf`, and hands the result to `BuildTree`.
 
@@ -287,11 +287,11 @@ Defined in `lib/arkscript/tree.go:33-53`.
 
 ### 4.2 Canonical leaf ordering
 
-`sortLeaves` (`lib/arkscript/tree.go:187-198`) sorts by
+`sortLeaves` (`lib/arkscript/tree.go:176-198`) sorts by
 `(LeafVersion, Script)` — leaf version first, then lexicographic by script
 bytes. This gives a deterministic tap-tree shape independent of how the
 caller constructed the `PolicyTemplate`. BIP-341 further sorts child hashes
-at each merkle branch via `tapBranchHash` (`lib/arkscript/tree.go:310-320`),
+at each merkle branch via `tapBranchHash` (`lib/arkscript/tree.go:296-305`),
 so the tree root is stable under reordering at both layers.
 
 ### 4.3 Internal key: ARK NUMS point
@@ -305,7 +305,7 @@ if !internalKey.IsEqual(&ARKNUMSKey) {
 }
 ```
 
-(`lib/arkscript/tree.go:224-229`)
+(`lib/arkscript/tree.go:210-215`)
 
 Because the NUMS key is provably unspendable via key-path, every Ark output
 is script-path-only. This is the foundational invariant that the "no
@@ -313,7 +313,7 @@ operator-unilateral spend" admission check (§7) can build on.
 
 ### 4.4 Control block derivation
 
-`CompiledPolicy.SpendInfo(leafIndex)` (`lib/arkscript/tree.go:60-79`)
+`CompiledPolicy.SpendInfo(leafIndex)` (`lib/arkscript/tree.go:61-86`)
 returns a `*SpendInfo` with the witness script and a freshly built BIP-341
 control block:
 
@@ -341,11 +341,11 @@ Leaves: [
 ]
 ```
 
-Defined in `lib/arkscript/standard_vtxo.go:36-67`.
+Defined in `lib/arkscript/standard_vtxo.go:36-83`.
 
-Compiled output key computed by `VTXOTapKey` (same file); canonical P2TR
-pkScript by `EncodeStandardVTXOArtifacts`
-(`lib/arkscript/standard_vtxo.go:81-116`) — the helper used by the wallet
+Compiled output key computed by `VTXOTapKey` (`lib/arkscript/spend_helpers.go`);
+canonical P2TR pkScript by `EncodeStandardVTXOArtifacts`
+(`lib/arkscript/standard_vtxo.go:96-122`) — the helper used by the wallet
 when constructing recipient descriptors without touching the tree-layer
 signing key.
 
@@ -416,7 +416,7 @@ Defined in `lib/arkscript/spend_path.go:22-38`.
 
 ### 6.2 Witness stack order
 
-`SpendPath.Witness(sigItems...)` (`lib/arkscript/spend_path.go:208-224`)
+`SpendPath.Witness(sigItems...)` (`lib/arkscript/spend_path.go:258-274`)
 assembles:
 
 ```
@@ -433,7 +433,7 @@ land in reverse key order.
 ### 6.3 Tx-context requirements
 
 - `RequiredSequence` comes from `DeriveSequence(node)`
-  (`lib/arkscript/tree.go:160` via `SpendPathForNode`). For CSV-gated paths
+  (`lib/arkscript/tree.go:146` via `SpendPathForNode`). For CSV-gated paths
   it returns the `CSV.Lock` value; for non-CSV paths it returns
   `0xffffffff` (opt-out of BIP-68).
 - `RequiredLockTime` comes from `ExtractAbsoluteLockTime(node)`. Set only
@@ -458,7 +458,7 @@ CSV/CLTV op-code.
 
 Where `ver = spendPathVersion = 1` (`lib/arkscript/spend_path.go:17`). The
 decoder (`DecodeSpendPath`) caps `conditionCount` at 64 (`maxConditions`
-at `lib/arkscript/spend_path.go:131`).
+at `lib/arkscript/spend_path.go:190`).
 
 ### 6.5 Condition witness (durable persistence)
 
@@ -470,7 +470,7 @@ The OOR actor durably persists a `TransferInputSnapshot` that includes a
 varint(count) || N × varbytes(item)
 ```
 
-Caps (`oor/actor_durable_message.go:815-832`):
+Caps (`oor/actor_durable_message.go:1365-1381`):
 
 | Constant                      | Value | Bounded thing                             |
 |-------------------------------|-------|-------------------------------------------|
@@ -486,7 +486,7 @@ from what the persisted form can represent.
 
 ### 7.1 `ValidatePolicy` — structural
 
-Signature and invariants (`lib/arkscript/validate.go:30-120`):
+Signature and invariants (`lib/arkscript/validate.go:25-107`):
 
 ```go
 func ValidatePolicy(nodes []Node, opts PolicyValidationOpts) error
@@ -515,10 +515,14 @@ func ValidateStandardVTXOPolicy(nodes []Node,
 ```
 
 Requires `minExitDelay > 0` fail-closed, then delegates to
-`ValidatePolicy`. Use this on any admission surface that consumes a
-**standard Ark VTXO recipient** (e.g. `darepod/rpc_server.go` output
-resolver). Custom shapes (vHTLC claims from daemon RPC) continue to use
-the structural `ValidatePolicy`.
+`ValidatePolicy`. Intended as the admission check for any surface that
+consumes a **standard Ark VTXO recipient**. As of this writing,
+`darepod/rpc_server.go`'s recipient-output path (`resolveRecipientOutput`,
+`validateOutputPolicyTemplate`) does not call this helper directly —
+it pre-filters the shape via `DecodeStandardVTXOParams` and falls back to
+structural `ValidatePolicy` for both standard and custom shapes. Custom
+shapes (vHTLC claims from daemon RPC) also use the structural
+`ValidatePolicy`.
 
 ### 7.3 Invariants that are NOT enforced here
 
@@ -569,7 +573,7 @@ meaningful allocation.
 Signers that accept a caller-supplied witness script + control block MUST
 verify the control block commits to a tap tree whose output key is the
 declared pkScript. `SpendPath.VerifyBindsToPkScript`
-(`lib/arkscript/spend_path.go:60-107`) does this:
+(`lib/arkscript/spend_path.go:60-116`) does this:
 
 1. Parse the control block.
 2. Assert internal key is `ARKNUMSKey`.
@@ -614,8 +618,10 @@ switch to lossless 33-byte compressed in the policy template itself.
 invariants. The admission surfaces in `darepod/rpc_server.go` and
 `darepod/wallet_ops.go` layer additional policy-specific checks on top:
 
-- Recipient outputs use `ValidateStandardVTXOPolicy` (with operator-derived
-  `MinExitDelay`).
+- Recipient outputs are pre-filtered to the standard VTXO shape via
+  `DecodeStandardVTXOParams` (`resolveRecipientOutput`), then checked with
+  structural `ValidatePolicy` plus a fail-closed non-zero
+  operator-exit-delay gate (`validateOutputPolicyTemplate`).
 - Custom OOR inputs use structural `ValidatePolicy` but also
   `MatchesPkScript` and `SpendPath.VerifyBindsToPkScript`.
 

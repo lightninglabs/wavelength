@@ -17,9 +17,11 @@ Client-side RPC message definitions and HTTP transport in sub-packages:
 - **Depends on**: nothing for generated sub-packages (proto definitions).
   `rpc/restclient` depends on `arkrpc`, `daemonrpc`, `mailbox/pb`,
   `rpc/swapclientrpc`, `rpc/walletdkrpc`, and `swaprpc`.
-- **Depended on by**: `round`, `oor`, `serverconn` (generated types);
-  `sdk/walletdk`, `sdk/swaps`, `swapclientserver`, `darepod`
-  (`rpc/restclient` REST transport).
+- **Depended on by**: `round`, `oor`, `db` (roundpb/oorpb message types);
+  `sdk/walletdk`, `swapwallet`, `swapclientserver`, `darepod`,
+  `cmd/darepocli` (swapclientrpc/walletdkrpc service stubs); `sdk/walletdk`,
+  `sdk/swaps`, `swapclientserver`, `darepod` (`rpc/restclient` REST
+  transport).
 
 ## Invariants
 

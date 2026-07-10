@@ -16,24 +16,27 @@ have a consistent configuration across all daemon sub-services.
   CORS middleware. Requests without an `Origin` header pass through
   unconditionally (non-browser clients are not restricted); requests
   carrying an `Origin` are validated against the allowlist and rejected
-  with 403 when not present. Injects CORS headers and allows GET, POST,
-  and OPTIONS methods.
+  with 403 when not present, unless `allowedOrigins` contains the
+  wildcard `"*"`. Injects CORS headers and allows GET, POST, and OPTIONS
+  methods.
 - `NormalizeEndpoint(endpoint) string` — Converts listener addresses for
   loopback dialing: `0.0.0.0` → `127.0.0.1`, `[::]` → `[::1]`, others
   pass through unchanged.
 
 ## Relationships
 
-- **Depends on**: `google.golang.org/grpc`, `github.com/grpc-ecosystem/grpc-gateway/v2`
-  (no repo packages).
+- **Depends on**: `github.com/grpc-ecosystem/grpc-gateway/v2/runtime`,
+  `google.golang.org/protobuf/encoding/protojson` (no repo packages).
 - **Depended on by**: `darepod` (HTTP gateway setup for all sub-services).
 
 ## Invariants
 
 - Browser callers (those sending an `Origin` header) need an entry in
-  `allowedOrigins` or the request is rejected with 403. An empty
-  allowlist means no browser caller can reach the gateway; non-browser
-  clients without an `Origin` header are unaffected.
+  `allowedOrigins` or the request is rejected with 403, unless the
+  allowlist contains `"*"` (allow-all, only fit for APIs with explicit
+  per-request auth). An empty allowlist means no browser caller can
+  reach the gateway; non-browser clients without an `Origin` header are
+  unaffected.
 - JSON marshaling always uses `UseProtoNames` (snake_case field names) and
   `EmitUnpopulated` (include zero/default values) for API consistency with
   grpc-gateway clients.

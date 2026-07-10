@@ -18,6 +18,10 @@ other services can reuse durable actor storage without pulling unrelated tables.
   same-process callback fired after each `EnqueueOutbox` commit, allowing
   outbox publishers to wake immediately rather than waiting for the next poll
   tick. Multiple wakes can be registered; each is called after every enqueue.
+  `RegisterMailboxWake(mailboxID, wake func())` registers a targeted,
+  per-mailbox wake: `ExecTx` tracks which mailbox IDs actually received an
+  enqueue inside the transaction and, on commit, fires only those consumers'
+  callbacks instead of broadcasting to every registered mailbox.
 - `TxActorDeliveryStore` — Transaction-scoped delivery store wrapping a live
   `*sql.Tx`. Implements `actor.DeliveryStore` directly against the transaction
   without additional `ExecTx` wrapping. `EnqueueOutbox` sets a shared

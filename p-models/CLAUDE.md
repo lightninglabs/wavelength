@@ -1,29 +1,48 @@
 # p-models
 
-This tree contains executable P models and bridge checks. Keep model-specific
-files under a named subdirectory such as `durableactor/`; keep shared runner
-scripts under `scripts/`.
+## Purpose
 
-## Commands
+Executable P-language state-machine models plus Go bridge tests, used to
+check concurrency and crash-recovery invariants that plain unit tests
+struggle to cover across independent actors. Currently models the durable
+actor mailbox (correlation-key FIFO claim, lease/ack/nack, Stage/Commit
+exactly-once).
 
-| Command | Purpose |
-|---------|---------|
-| `./p-models/scripts/check.sh` | Compile the durable actor model, run P checks, then run the Go bridge |
-| `p compile -pp p-models/durableactor/infra.pproj` | Compile only the durable actor P project |
-| `p check PGenerated/PChecker/net8.0/MailboxInfraModels.dll --testcase tcMailboxCorrelationKeyFIFO` | Run the default durable mailbox P test case |
-| `go test ./p-models/durableactor/bridge` | Replay checked-in traces against the real Go store |
+## Key Types
 
-## Layout
+- `durableactor/` — the P model project (`infra.pproj`) and its traces for
+  the durable mailbox: enqueue idempotence, per-mailbox/priority/order lease
+  selection, per-correlation-key FIFO blocking, ack/nack/lease-expiry/
+  dead-letter, and Stage/Commit replay-safety.
+- `durableactor/bridge` — Go package (`mailbox_trace.go` +
+  `crash_restart_test.go`, `outbox_fold_test.go`) that replays checked-in
+  traces against the real `db/actordelivery` store, keeping the model
+  connected to the shipped implementation.
+- `scripts/check.sh` — compiles the P project, runs the green test cases
+  (must find zero bugs) and the counterexample cases (must find exactly the
+  expected bug), then runs the Go bridge tests.
 
-- `durableactor/` — durable actor mailbox model, tests, traces, and bridge.
-- `scripts/` — top-level orchestration scripts.
-- `PGenerated/` and `PCheckerOutput/` are generated at repo root and ignored.
+## Relationships
 
-## Rules
+- **Depends on**: `db/actordelivery` (bridge tests replay traces against the
+  real delivery store), the external P checker toolchain (`dotnet tool
+  install --global P`).
+- **Depended on by**: none — this is verification tooling, not imported by
+  production code.
 
-- Models should encode ideal contracts first, then implementation profiles.
-- Keep known-bad or counterexample tests as separate test cases so the default
-  suite stays green.
-- Bridge tests should exercise real Go code where possible instead of
-  reimplementing production semantics.
-- Add traces for every model scenario that should be replayed against Go.
+## Invariants
+
+- Models state the ideal contract first (e.g. `PerCorrelationKeyFIFO`); a
+  known-bad profile (e.g. `LegacyAvailableAtOrder`) is kept only as a
+  separate counterexample test case, never mixed into the default green
+  suite.
+- Every model scenario with a real implementation path gets a bridge or
+  trace-replay test, so the P spec cannot silently drift from the Go code.
+- `check.sh`'s negative test cases must find the bug they exist to catch; a
+  clean run there is itself a regression, not a pass.
+
+## Deep Docs
+
+- [README.md](README.md) — Full P-model background, layout, and running
+  instructions.
+- [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map.

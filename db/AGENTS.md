@@ -71,7 +71,7 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   safety bounds enforced during `DeserializeTree`.
 - `resolveInputPackage` / `loadPackageBundleBySessionID` — two-stage
   OOR ancestry resolver (`oor_unroll_resolver.go`).
-- `LatestMigrationVersion = 21` — current schema version.
+- `LatestMigrationVersion = 10` — current schema version.
 - `PendingIntentPersistenceStore` — implements `wallet.PendingIntentStore`,
   the persistence half of the generic restart-safe intent outbox (header
   `pending_intents` + per-kind detail tables + `pending_intent_anchors`).
@@ -102,8 +102,10 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
 
 - **Depends on**: `baselib/actor` (DeliveryStore interface), `db/sqlc`
   (generated query layer), `db/actordelivery` (actor delivery
-  persistence), `ledger` (interfaces + domain types), `wallet`
-  (`BoardingStore` interface + domain types).
+  persistence), `ledger` (interfaces + domain types), `wallet` (domain
+  types for boarding sweeps and the pending-intent outbox), `vtxo`
+  (VTXO/ancestry domain types), `round` (round-state domain types),
+  `vhtlcrecovery` (recovery-job domain types).
 - **Depended on by**: `round`, `vtxo`, `oor`, `wallet` (storage
   interfaces), `darepod` (wires DB backends).
 
@@ -188,5 +190,3 @@ when adding one.
 ## Deep Docs
 
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map.
-</content>
-</invoke>

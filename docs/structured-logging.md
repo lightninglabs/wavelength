@@ -8,10 +8,12 @@ messages.
 **Method signature:**
 1. First parameter: `context.Context`
 2. Second parameter: static string (no `fmt.Sprintf`)
-3. Remaining parameters: key-value pairs
+3. For `WarnS`/`ErrorS`/`CriticalS`: third parameter is the `error` being
+   logged (may be `nil`); `InfoS`/`DebugS`/`TraceS` have no `error` param.
+4. Remaining parameters: key-value pairs
 
 **Key-value helpers:** `slog.Int()`, `slog.String()`, `btclog.Fmt()`,
-`btclog.Hex()`, `btclog.Err()`, etc.
+`btclog.Hex()`, etc.
 
 ## Example
 

@@ -47,6 +47,7 @@ sg scan --interactive            # Review fixes one by one
 | `log-error-expanded-form` | Log/error calls should use compact form, not expanded |
 | `switch-case-needs-spacing` | Switch cases should be separated by blank lines |
 | `select-case-needs-spacing` | Select cases should be separated by blank lines |
+| `no-inline-comments` | Comments should be on their own line, not trailing code |
 
 ### Function Definitions (`rules/go-func-def.yml`)
 

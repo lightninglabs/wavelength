@@ -112,7 +112,7 @@ single mutable-row table would not fix consequence (3). The mailbox avoids the
 trap by appending one immutable row per event; C1 does the same.
 
 Both tables ship as one additive sqlc migration
-(`db/sqlc/migrations/0000NN_activity_log.{up,down}.sql`, regenerated via
+(`db/sqlc/migrations/000010_activity_log.{up,down}.sql`, regenerated via
 `make sqlc`), following the existing enum-lookup-table convention.
 
 The `kind` and `status` enums mirror the wire enums one-to-one —
@@ -222,7 +222,7 @@ kinds have a stable one; the other three are the work.
 | Kind | canonical_id source | Status today |
 |------|---------------------|--------------|
 | SEND (invoice) / RECV | Lightning `payment_hash` | **Stable already.** `normalize.go` keys the swap row by `payment_hash`; the projection is a no-op. |
-| OOR send / receive | OOR `session_id` | **Stable already.** Durably persisted (`oor_session_registry`, migration 000019) and RPC-exposed; adopting it is essentially a rename of the txid the row already uses. |
+| OOR send / receive | OOR `session_id` | **Stable already.** Durably persisted (`oor_session_registry`, migration 000005) and RPC-exposed; adopting it is essentially a rename of the txid the row already uses. |
 | SEND (on-chain) / EXIT | a durable leave-job id | **Does not exist yet — must be built.** |
 | DEPOSIT | a durable deposit-address record id | **Does not exist yet — must be built.** |
 

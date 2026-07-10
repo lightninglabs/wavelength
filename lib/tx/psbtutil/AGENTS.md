@@ -18,8 +18,9 @@ transaction semantics — callers run appropriate protocol validators.
 ## Relationships
 
 - **Depends on**: `lib/arkscript` (`SpendInfo` for taproot helpers).
-- **Depended on by**: `lib/tx/oor` (package marshaling), `oor` (signing flow),
-  `db` (persistence layers).
+- **Depended on by**: `lib/tx/oor` (package marshaling), `oor` (signing flow,
+  snapshot/artifact codecs), `db` (artifact store persistence), `unroll`
+  (proof assembly), `rpc/oorpb` / `darepod` (wire payload conversion).
 
 ## Invariants
 

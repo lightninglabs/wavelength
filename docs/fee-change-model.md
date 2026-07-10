@@ -8,7 +8,7 @@ It is the source-of-truth narrative for the implementation in:
 
 - [`client/round/transitions.go`](../round/transitions.go) —
   `designateChangeMarker`, `validateQuoteEchoes`, `evaluateQuote`.
-- [`rounds/seal_time_fee_builder.go`](../../rounds/seal_time_fee_builder.go) —
+- `rounds/seal_time_fee_builder.go` (server/darepo repo) —
   `resolveChangeDesignation`, `computeSealTimeQuotes`,
   `quoteForClient`.
 - [`client/rpc/roundpb/round.proto`](../rpc/roundpb/round.proto) —
@@ -35,7 +35,7 @@ is wrong.
      intent's `target_amount_sat` for every other output.
 4. If the client forgets to designate a change output, the FSM
    normalizes the intent at the
-   `PendingRoundAssembly → IntentSent` boundary via
+   `PendingRoundAssembly → IntentSentState` boundary via
    `designateChangeMarker`. The wire intent is therefore *always*
    well-formed by the time it leaves the client.
 
@@ -63,6 +63,7 @@ overwrites it at seal time with the real residual.
 message VTXORequest {
     int64  target_amount_sat = 1;  // hint for non-change outputs
     bool   is_change         = 4;  // designates this as the residual slot
+    bool   fixed_amount      = 5;  // disables the single-output implicit-change exception
     // ... policy template + signing key omitted ...
 }
 
@@ -91,8 +92,8 @@ message LeaveQuote {
 
 message JoinRoundQuote {
     string             round_id        = 1;
-    bytes              quote_id        = 2;  // hash(round_id || seal_pass || client_id)
-    uint32             seal_pass       = 3;
+    bytes              quote_id        = 2;  // hash(round_id || seal_pass_number || client_id)
+    uint32             seal_pass_number = 3;
     repeated VTXOQuote vtxo_quotes     = 4;
     repeated LeaveQuote leave_quotes   = 5;
     int64              operator_fee_sat = 6;
@@ -171,7 +172,10 @@ quote:
   server fills it.
 - The implicit-change case (`totalOutputs == 1`) skips the
   amount-equality check entirely; the lone output is server-stamped
-  by definition.
+  by definition — unless that lone `VTXORequest` sets
+  `fixed_amount=true`, which disables the exception and re-enables
+  the amount check (a fixed-amount single output must carry its own
+  change leg to pay fees).
 
 A mismatch fails the FSM with a `QuoteRejected` event and emits a
 `JoinRoundReject` outbox echoing the `quote_id`.
@@ -402,7 +406,7 @@ and only describe how the mapping is intended to land.
   VTXOs are submitted; auto-stamped first VTXO absorbs the fee.
 - `darepocli ark vtxos refresh --outpoint <op>` — **scenario 5**.
   Implicit change on the single-output intent.
-- `darepocli ark vtxos leave --address <addr> --amount <sat>` —
+- `darepocli ark vtxos leave --outpoint <op> --address <addr>` —
   **scenario 8** when a single VTXO covers the leave; **scenario 9**
   with a `--keep <sat>` flag *(future)* that adds a self-VTXO leg.
 - `darepocli ark board` — **scenario 1** for a single receive script;

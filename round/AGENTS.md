@@ -121,9 +121,12 @@ state transitions and validation rules live under [Invariants](#invariants).
 
 ## Relationships
 
-- **Depends on**: `baselib/protofsm` (FSM engine), `lib/tree`,
-  `lib/types`, `lib/arkscript`, `wallet`, `ledger` (`Sink` +
-  `VTXOReceivedMsg` / `Source*` constants), `timeout`, `google/uuid`.
+- **Depends on**: `baselib/protofsm` (FSM engine), `baselib/actor` (actor
+  primitives: `ActorRef`, `ActorSystem`, `BaseMessage`), `lib/actormsg`
+  (mailbox marker interfaces), `lib/tree`, `lib/types`, `lib/arkscript`,
+  `lib/bip322` (join-round BIP-322 auth signing), `rpc/roundpb` (wire proto
+  types via `FromProto`), `wallet`, `ledger` (`Sink` + `VTXOReceivedMsg` /
+  `Source*` constants), `timeout`, `google/uuid`.
 - **Depended on by**: `vtxo`, `db`, `darepod`.
 - **Sends → `serverconn`**: `JoinRoundRequest`,
   `JoinRoundAcceptOutbox`, `JoinRoundRejectOutbox`,
@@ -251,5 +254,3 @@ state transitions and validation rules live under [Invariants](#invariants).
 - [round/README.md](README.md) — Full state machine walkthrough with
   diagrams.
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map.
-</content>
-</invoke>

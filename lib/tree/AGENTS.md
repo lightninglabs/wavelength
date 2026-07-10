@@ -17,12 +17,13 @@ descriptors through branch nodes to the batch output.
 - `StructureConfig` — Configuration for tree building (radix, partition weight function).
 - `SignerSession` — MuSig2 signing session for tree transactions, wrapping `input.MuSig2Signer`.
 - `Materializer` / `BTCMaterializer` — Interface and implementation for materializing tree nodes into actual Bitcoin transactions.
+- `TreeAssembler` — Two-pass builder (`BuildStructure` then `Materialize`) driven by `TreeConfig`.
 - `Queue[T]` — Generic queue used internally for BFS tree traversal.
 
 ## Relationships
 
 - **Depends on**: `lib/arkscript` (taproot script construction, policy templates, `SpendInfo`).
-- **Depended on by**: `round` (tree construction/validation), `vtxo` (tree paths in `Descriptor`), `oor` (tree references), `db` (tree serialization), `lib/tx` (forfeit construction).
+- **Depended on by**: `round` (tree construction/validation), `oor` (tree references), `db` (tree serialization).
 
 ## Invariants
 
@@ -31,7 +32,11 @@ descriptors through branch nodes to the batch output.
 - Cosigner keys must be deduplicated (`UniqueCosigners`) before computing the final MuSig2 key.
 - Tree materialization is deterministic given the same leaf descriptors and operator key.
 - `ValidateVTXODescriptors` / `ValidateConnectorDescriptor` must pass before tree construction.
-- **Cache-aliasing invariant**: a `*Tree` is effectively immutable once published from a builder or resolver. Multiple consumers may share the same `*Tree` pointer through caches and ancestry-fragment slices (see `indexer.lineageResolver.treeByKey`). Silently mutating a shared tree's nodes or root would corrupt every aliasing reader. Callers that need to transform a tree must clone it first.
+- **Cache-aliasing invariant**: a `*Tree` is effectively immutable once published from
+  a builder or resolver. Multiple downstream consumers may share the same `*Tree`
+  pointer through caches and ancestry-fragment slices. Silently mutating a shared
+  tree's nodes or root would corrupt every aliasing reader. Callers that need to
+  transform a tree must clone it first.
 
 ## Deep Docs
 

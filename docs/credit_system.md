@@ -49,7 +49,7 @@ with different parameters is rejected.
 
 ## Client Layers
 
-Wallet-facing callers use `walletdk`. Credit details are folded into `Receive`,
+Wallet-facing callers use `walletdk`. Credit details are folded into `Recv`,
 `PrepareSend`, `Send`, and `Balance`.
 
 Raw callers can use `sdk/swaps` and `swapclientrpc` directly:
@@ -58,8 +58,9 @@ Raw callers can use `sdk/swaps` and `swapclientrpc` directly:
   intent.
 - `ListCredits`: read balances, operations, and ledger entries.
 - `RedeemCredit`: low-level escape hatch for materializing credits into an Ark
-  output. `walletdk` does not expose or automate redemption for normal wallet
-  flows.
+  output. `walletdk` does not expose it directly; the daemon auto-redeems
+  credits into a vTXO once the balance clears a watermark, without exposing
+  that decision to the caller.
 
 ```mermaid
 flowchart TB
@@ -100,7 +101,7 @@ returns the full plan:
 
 ```mermaid
 flowchart TD
-    A["Receive(requested_amount_sat)"] --> B{"requested >= dust?"}
+    A["Recv(requested_amount_sat)"] --> B{"requested >= dust?"}
     B -->|"yes"| N["normal receive"]
     B -->|"no"| C{"requested + available_credit >= dust?"}
     C -->|"no"| R["credit receive invoice"]

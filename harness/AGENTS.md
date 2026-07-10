@@ -2,47 +2,55 @@
 
 ## Purpose
 
-Docker-based Bitcoin/LND integration test environment. Manages bitcoind and LND
-containers with network isolation for end-to-end testing.
+Docker-based regtest integration-test harness. Spins up bitcoind, electrs
+(Esplora HTTP), optional postgres, and one or more LND containers with
+per-run network isolation, artifact/log capture, and mining/funding/reorg
+helpers for end-to-end tests.
 
 ## Key Types
 
-- `Harness` — Top-level test harness owning bitcoind, lnd, and arkd lifecycle.
-- `LndInstance` — Manages an LND container's lifecycle and connection.
-- `TapdHarness` — Optional Tapd instance for asset-related tests.
-- `Options` — Configuration struct passed to `NewHarness`. Controls image
-  tags, artifact directory, log routing, tapd toggle, `GroupName`, and
-  `AlwaysKeepArtifacts`.
-- `DefaultOptions()` — Returns a populated `Options` with safe defaults.
-- `Block` — Mined block header plus txid list; used by mining helpers.
-- `BlockHeader` — Verbose bitcoind `getblockheader` RPC representation.
-- `ReorgResult` — Describes the branches produced by a reorg: `OldTip`,
-  `ForkPoint`, `Disconnected` (old-chain blocks in height order), and
-  `Connected` (new replacement blocks in height order).
-- `SetPostgresEnabled(enabled bool) bool` — Toggles postgres mode
-  programmatically; returns old value for restore-on-cleanup patterns.
-
-## Key Methods (on `*Harness`)
-
-- `Reorg(depth, newBlocks int) ReorgResult` — Invalidates the last `depth`
-  blocks via `invalidateblock`, mines `newBlocks` on the fork point (must be
-  > `depth`), and waits for the primary LND node to resync.
-- `ReorgDepth(depth int) ReorgResult` — Convenience wrapper: `Reorg(depth,
-  depth+1)` to produce a strictly longer replacement branch.
-- `ReconsiderBlock(hash string)` — Asks bitcoind to reconsider a previously
-  invalidated block.
+- `Harness` — Top-level test harness owning the bitcoind, electrs, postgres,
+  and LND container lifecycle. `NewHarness` builds it; `Start` launches
+  containers and `Stop` tears them down. Exposes host ports
+  (`BitcoindRPC`, `LNDGRPCPort`, ...), mining (`Generate`,
+  `GenerateAndWait`), funding (`Faucet`, `FundOperatorLND`), reorg
+  (`Reorg`, `ReorgDepth`, `ReconsiderBlock`), and multi-node helpers
+  (`StartAdditionalLND`, `StartAdditionalLNDWithBackend`,
+  `SetupChannelBetween`).
+- `Options` — `NewHarness` configuration: image tags, `LNDRequireInterceptor`,
+  `LNDBuildPath`, `ArtifactsBaseDir`, `GroupName`, log-to-stdout toggles,
+  `StartTapd`, `AlwaysKeepArtifacts`. `DefaultOptions()` gives safe defaults.
+- `LndInstance` — Handle to one LND container (ports, TLS cert/macaroon
+  paths, `*lndclient.LndServices`).
+- `TapdHarness` — Paired LND + tapd instance for asset-related tests,
+  created via `Harness.NewTapdHarness`.
+- `ReorgResult` — Branches produced by a harness reorg: `OldTip`,
+  `ForkPoint`, `Disconnected` (old-chain blocks, height order), `Connected`
+  (new replacement blocks, height order).
+- `LNDChainBackendBitcoind` / `LNDChainBackendNeutrino` — Chain-backend
+  selectors for `StartAdditionalLNDWithBackend`, letting a test run one LND
+  node over bitcoind RPC+ZMQ and another over neutrino/P2P (BIP157/158) to
+  exercise both broadcast paths.
 
 ## Relationships
 
-- **Depends on**: `chain` (bitcoind RPC), `lndbackend` (LND integration),
-  `chainbackends` (PackageSubmitter interface).
+- **Depends on**: `chain` (wraps bitcoind RPC client for
+  `SubmitPackage`/package-relay tests via `BitcoindClient()`).
 - **Depended on by**: `systest` (system-level tests).
 
-## Key Constants
+## Invariants
 
-- `numInitialBlocks` = 106, `defaultTimeout` = 30s, `pollInterval` = 200ms.
-- `BitcoindRPCUser` / `BitcoindRPCPass` — RPC credentials shared across
-  tests.
-- `electrsReadyTimeout` = 2 minutes — separate extended timeout for the
-  electrs container HTTP readiness check.
-- Coinbase maturity: 100 blocks + 6-block buffer.
+- `NewHarness` only builds the struct; nothing starts until `Start` is
+  called. `Start` pre-mines `numInitialBlocks` (106 = 100-block coinbase
+  maturity + 6-block buffer) before tests run.
+- `Reorg(depth, newBlocks)` requires `newBlocks > depth` so the replacement
+  branch is strictly longer than the disconnected one; it blocks until the
+  primary LND node resyncs to the new tip.
+- `LNDRequireInterceptor` only applies to the primary LND node; additional
+  nodes started via `StartAdditionalLND*` never set it.
+- Container teardown (`Stop`) is guarded by `sync.Once`; a signal handler
+  also calls `Stop` as a safety net against orphaned containers.
+
+## Deep Docs
+
+- [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map.

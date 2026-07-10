@@ -21,8 +21,8 @@ make unit pkg=<package> case=<test> timeout=5m
 # Debug with logs
 make unit log="stdlog trace" pkg=<package> case=<test>
 
-# Integration test
-make itest icase=<test>
+# System-level end-to-end test
+make systest
 ```
 
 ## Pre-Commit Checklist
@@ -36,7 +36,7 @@ Before every commit, run:
    - Verify structured logging format is correct.
    - Ensure no log spam.
    - **No `[ERR]` lines should appear** unless testing error paths.
-4. `make itest icase=$icase` — run affected integration tests.
+4. `make systest` — run affected system-level end-to-end tests.
 
 ## Test Naming
 

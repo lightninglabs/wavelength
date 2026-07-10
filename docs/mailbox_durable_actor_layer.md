@@ -348,6 +348,12 @@ type Exec[S any] interface {
     // Read runs fn inside a short read-only snapshot. No writer lock.
     Read(ctx context.Context, fn func(ctx context.Context, store S) error) error
 
+    // Stage runs fn inside one short, lease-fenced writer transaction with
+    // no dedup mark and no ack. Use it to durably advance state BEFORE the
+    // IO when a persist-before-effect invariant matters; a Stage write is
+    // its own atomic unit, not atomic with the eventual Commit.
+    Stage(ctx context.Context, fn func(ctx context.Context, store S) error) error
+
     // Commit runs fn inside one short writer transaction, then folds in
     // the lease-fenced ack and the dedup mark.
     Commit(ctx context.Context, fn func(ctx context.Context, store S) error) error
@@ -355,7 +361,9 @@ type Exec[S any] interface {
 ```
 
 A handler reads its inputs, drops the transaction, does the IO, and then commits
-the result.
+the result. A behavior that must durably record state before the IO can insert
+a lease-fenced `Stage` write in between; see `credit/op_actor.go` for a worked
+example.
 
 ```mermaid
 sequenceDiagram

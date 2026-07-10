@@ -22,9 +22,16 @@ build on.
 - `StateTransition[InternalEvent, OutboxEvent, Env]` — Next state + emitted events from a transition.
 - `EmittedEvent[InternalEvent, OutboxEvent]` — Internal events (recursive) + outbox events (external).
 
+### baselib/example
+- Runnable reference wiring a `protofsm` state machine to `actor` services;
+  not used by production code. See `baselib/example/CLAUDE.md`.
+
 ## Relationships
 
-- **Depends on**: nothing (pure abstraction layer).
+- **Depends on**: `lnd/tlv`, `lnd/fn/v2`, `lnd/clock` (external, no
+  darepo-client-specific logic); `darepo-client/build` (context-scoped logger
+  helper only) is the one root-module import, otherwise this is a pure
+  abstraction layer.
 - **Depended on by**: every domain package (`round`, `vtxo`, `oor`, `wallet`), `chainsource`, `serverconn`, `db`, `darepod`.
 
 ## Invariants

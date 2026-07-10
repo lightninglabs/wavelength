@@ -10,46 +10,35 @@ communication alongside the raw registration API.
 ## Key Types
 
 - `ChainBackend` — Interface: `EstimateFee`, `BestBlock`, `BroadcastTx`,
-  `TestMempoolAccept`, `RegisterConf/Spend/Blocks`, `SubmitPackage`, `Start/Stop`.
-- `ChainSourceActor` — Factory actor spawning sub-actors for each monitoring
-  request. Registered under `ChainSourceKey`.
-- `ChainSourceConfig` — Config struct: `Backend ChainBackend`, `System
-  *actor.ActorSystem`, `Log fn.Option[btclog.Logger]`.
-- `ChainSourceMsg` / `ChainSourceResp` — Sealed actor message interfaces for
-  requests and responses sent to the `ChainSourceActor`.
-- `FeeEstimateRequest/Response`, `BestHeightRequest/Response`,
-  `BroadcastTxRequest/Response`, `TestMempoolAcceptRequest/Response`,
-  `SubmitPackageRequest/Response` — Request/response pairs implementing
-  `ChainSourceMsg`/`ChainSourceResp`.
-- `ConfMsg` / `ConfResp` — Sealed interfaces for confirmation sub-actor messages.
-- `RegisterConfRequest/Response`, `UnregisterConfRequest/Response` — Request
-  types for conf-actor lifecycle. `RegisterConfRequest` carries an optional
-  `NotifyActor fn.Option[actor.TellOnlyRef[ConfirmationEvent]]` for async-mode
-  notification without blocking on a Future.
-- `SpendMsg` / `SpendResp` — Sealed interfaces for spend sub-actor messages.
-- `RegisterSpendRequest/Response`, `UnregisterSpendRequest/Response` — Spend
-  monitoring lifecycle.
-- `EpochMsg` / `EpochResp` — Sealed interfaces for block-epoch sub-actor.
-- `SubscribeBlocksRequest/Response`, `UnsubscribeBlocksRequest/Response` —
-  Block subscription lifecycle.
-- `ConfRegistration` / `SpendRegistration` / `BlockRegistration` — Structs with
-  buffered notification channels and a `Cancel()` function.
-- `ConfirmationEvent`, `SpendEvent`, `BlockEpoch` — Notification payload types.
-- `MapBlockEpoch`, `MapConfirmationEvent`, `MapSpendEvent` — Generic helpers
-  that wrap a target `TellOnlyRef[Out]` and a mapping function, producing a
-  `TellOnlyRef` of the source event type for actor-to-actor notification wiring.
+  `TestMempoolAccept`, `RegisterConf/Spend/Blocks`, `SubmitPackage`,
+  `Start/Stop`. Implemented by `chainbackends`, `btcwbackend`, `lwwallet`.
+- `ChainSourceActor` — Actor registered under `ChainSourceKey`; dispatches
+  each RegisterConf/RegisterSpend/SubscribeBlocks request to a dedicated
+  sub-actor (`ConfActor`, `SpendActor`, `BlockEpochActor`).
+- `ChainSourceMsg`/`ChainSourceResp`, `ConfMsg`/`ConfResp`,
+  `SpendMsg`/`SpendResp`, `EpochMsg`/`EpochResp` — Sealed request/response
+  interfaces for the top-level actor and its three sub-actor kinds
+  (e.g. `RegisterConfRequest`, `SubscribeBlocksRequest`,
+  `SubmitPackageRequest`, each with a matching `...Response`).
+- `ConfirmationEvent`, `SpendEvent`, `BlockEpoch` — Notification payloads,
+  delivered via a buffered channel on the returned `*Registration` or, when
+  `NotifyActor` is set on the request, an actor `Tell`.
+- `MapConfirmationEvent`/`MapSpendEvent`/`MapBlockEpoch` — Generic adapters
+  wrapping a target `TellOnlyRef[Out]` so callers can subscribe with their
+  own event type instead of the chainsource one.
+- `IsIgnorableBroadcastError`, `IsIgnorableMempoolRejectReason` — Classify
+  "already known/confirmed" rebroadcast errors/reject reasons as non-fatal.
 
 ## Relationships
 
-- **Depends on**: `baselib/actor` (ActorSystem, ActorBehavior, ServiceKey).
-- **Depended on by**: `round`, `vtxo`, `wallet` (monitoring), `chainbackends`
-  (implements `ChainBackend`), `btcwbackend`, `lwwallet` (also implement
-  `ChainBackend`), `darepod` (wiring).
+- **Depends on**: `baselib/actor` (ActorSystem, ActorBehavior, ServiceKey),
+  `build` (logger-from-context helper).
+- **Depended on by**: `round`, `vtxo`, `wallet`, `fraud`, `txconfirm`,
+  `unroll` (monitoring), `chainbackends`, `btcwbackend`, `lwwallet` (each
+  implements `ChainBackend`), `darepod` (wiring).
 
 ## Invariants
 
-- `ChainBackend` is an interface; implementations live in `chainbackends`,
-  `btcwbackend`, and `lwwallet`.
 - Each monitoring request spawns a dedicated sub-actor (no shared state between
   monitors).
 - Registration channels are buffered.
