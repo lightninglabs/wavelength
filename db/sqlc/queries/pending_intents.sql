@@ -5,7 +5,16 @@ INSERT INTO pending_intents (
     requested_at_unix
 ) VALUES ($1, $2, $3)
 ON CONFLICT (intent_id) DO UPDATE
-SET requested_at_unix = excluded.requested_at_unix;
+-- Re-arm a re-persisted intent as pending. NewPendingIntentID is
+-- deterministic, so retrying a terminally failed send (same inputs and
+-- payload) reuses the same intent_id and lands here on the retained 'failed'
+-- row. Resetting the status and failure fields makes the retry replayable
+-- again; without it the replay query (which now skips non-pending rows) would
+-- silently drop a retry that crashes before the round adopts it.
+SET requested_at_unix = excluded.requested_at_unix,
+    status = 'pending',
+    failure_reason = NULL,
+    failure_code = 0;
 
 -- name: UpsertPendingBoardIntent :exec
 INSERT INTO pending_board_intents (
@@ -43,23 +52,44 @@ ON CONFLICT (outpoint_hash, outpoint_index) DO UPDATE
 SET intent_id = excluded.intent_id;
 
 -- name: ListPendingBoardIntents :many
+-- Only status = 'pending' rows replay; a 'failed' intent is terminally
+-- retired and must not be re-submitted on restart.
 SELECT
     i.intent_id, i.requested_at_unix,
     b.target_vtxo_count
 FROM pending_intents i
 JOIN pending_board_intents b ON b.intent_id = i.intent_id
-WHERE i.kind = 'board'
+WHERE i.kind = 'board' AND i.status = 'pending'
 ORDER BY i.requested_at_unix ASC, i.intent_id ASC;
 
 -- name: ListPendingSendIntents :many
+-- Only status = 'pending' rows replay; a 'failed' intent is terminally
+-- retired and must not be re-submitted on restart.
 SELECT
     i.intent_id, i.requested_at_unix,
     s.dest_pkscript, s.target_amount_sat, s.sweep_all,
     s.operator_key, s.vtxo_exit_delay, s.dust_limit_sat
 FROM pending_intents i
 JOIN pending_send_intents s ON s.intent_id = i.intent_id
-WHERE i.kind = 'send_onchain'
+WHERE i.kind = 'send_onchain' AND i.status = 'pending'
 ORDER BY i.requested_at_unix ASC, i.intent_id ASC;
+
+-- name: MarkPendingSendIntentFailedByOutpoint :exec
+-- Terminally fail the pending send intent anchored to the given outpoint,
+-- recording the reason and typed failure code. Idempotent: the status guard
+-- makes a repeat call (e.g. a second forfeit outpoint of the same intent) a
+-- no-op. Anchors are intentionally retained so the activity projection can
+-- still correlate the failed job by its consumed outpoint.
+UPDATE pending_intents
+SET status = 'failed',
+    failure_reason = $3,
+    failure_code = $4
+WHERE kind = 'send_onchain'
+  AND status = 'pending'
+  AND intent_id IN (
+      SELECT a.intent_id FROM pending_intent_anchors a
+      WHERE a.outpoint_hash = $1 AND a.outpoint_index = $2
+  );
 
 -- name: ListPendingIntentAnchorsByKind :many
 SELECT a.outpoint_hash, a.outpoint_index, a.intent_id
