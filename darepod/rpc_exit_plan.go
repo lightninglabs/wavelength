@@ -487,9 +487,29 @@ func (s *Server) exitPlanFundingAddress(ctx context.Context, outpoint string,
 		return "", nil
 	}
 
-	return s.exitFundingAddresses.Address(
-		ctx, outpoint, s.NewWalletAddress,
-	)
+	target, err := parseOutpointString(outpoint)
+	if err != nil {
+		return "", fmt.Errorf("parse funding outpoint: %w", err)
+	}
+
+	// The funding address is persisted per target outpoint so it is stable
+	// across daemon restarts: a restart must not derive a fresh address and
+	// demand a second deposit for the same VTXO (darepo-client#893).
+	//
+	// Reuse the daemon's already-initialized unilateral-exit store; only
+	// build one in the rare window before startup wires s.ueStore. This
+	// avoids recreating the store and its logger on every call, e.g. across
+	// a batch exit-plan request that funds several outpoints.
+	store := s.ueStore
+	if store == nil {
+		dbStore := db.NewStore(
+			s.db.DB, s.db.Queries, s.db.Backend(),
+			s.subLogger(db.Subsystem),
+		)
+		store = dbStore.NewUnilateralExitStore(s.clk)
+	}
+
+	return store.FundingAddress(ctx, target, s.NewWalletAddress)
 }
 
 // ExitSummaryEntry is one in-progress exit's coarse contribution to the

@@ -2,6 +2,7 @@ package db
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"testing"
 	"time"
@@ -33,6 +34,99 @@ func newUnilateralExitStoreForTest(
 	return NewUnilateralExitPersistenceStore(
 		exitDB, clock.NewDefaultClock(),
 	)
+}
+
+// exitStoreFromTestDB builds a unilateral-exit store over an already-open test
+// database handle. It lets a test instantiate two independent stores over the
+// same underlying DB to simulate a daemon restart (the second store holds no
+// in-memory state carried over from the first).
+func exitStoreFromTestDB(base *BaseDB) *UnilateralExitPersistenceStore {
+	exitDB := NewTransactionExecutor(
+		base,
+		func(tx *sql.Tx) UnilateralExitStore {
+			return base.WithTx(tx)
+		},
+		btclog.Disabled,
+	)
+
+	return NewUnilateralExitPersistenceStore(
+		exitDB, clock.NewDefaultClock(),
+	)
+}
+
+// TestExitFundingAddressStableAcrossRestart verifies that a persisted exit
+// funding address is stable for the same target VTXO outpoint across a
+// simulated daemon restart: the second store must return the already-derived
+// address without deriving a new one, and a different outpoint must still get
+// its own address (darepo-client#893).
+func TestExitFundingAddressStableAcrossRestart(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	testDB := NewTestDB(t)
+	store := exitStoreFromTestDB(testDB.BaseDB)
+
+	target := wire.OutPoint{
+		Hash: chainhash.Hash{
+			0xaa,
+			0x01,
+		},
+		Index: 3,
+	}
+
+	// First derivation persists a fresh address.
+	derived := 0
+	newAddress := func(context.Context) (string, error) {
+		derived++
+
+		return "bcrt1qfunding", nil
+	}
+
+	addr, err := store.FundingAddress(ctx, target, newAddress)
+	require.NoError(t, err)
+	require.Equal(t, "bcrt1qfunding", addr)
+	require.Equal(t, 1, derived)
+
+	// A second poll on the same store returns the cached address without
+	// re-deriving.
+	addr, err = store.FundingAddress(ctx, target, newAddress)
+	require.NoError(t, err)
+	require.Equal(t, "bcrt1qfunding", addr)
+	require.Equal(t, 1, derived)
+
+	// Simulate a restart: a brand-new store over the same DB must return
+	// the persisted address, NOT a freshly derived one. If it derived a
+	// new address the user would be asked to fund a second deposit for the
+	// same VTXO, which is the bug being fixed.
+	restarted := exitStoreFromTestDB(testDB.BaseDB)
+	failIfDerived := func(context.Context) (string, error) {
+		t.Fatal(
+			"restart derived a new funding address instead of " +
+				"reusing the persisted one",
+		)
+
+		return "", nil
+	}
+
+	addr, err = restarted.FundingAddress(ctx, target, failIfDerived)
+	require.NoError(t, err)
+	require.Equal(t, "bcrt1qfunding", addr)
+
+	// A different outpoint still gets its own distinct address.
+	other := wire.OutPoint{
+		Hash: chainhash.Hash{
+			0xbb,
+			0x02,
+		},
+		Index: 7,
+	}
+	otherAddress := func(context.Context) (string, error) {
+		return "bcrt1qother", nil
+	}
+
+	addr, err = restarted.FundingAddress(ctx, other, otherAddress)
+	require.NoError(t, err)
+	require.Equal(t, "bcrt1qother", addr)
 }
 
 // TestUnilateralExitStoreListNonTerminalJobs verifies that restore queries only

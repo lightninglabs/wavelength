@@ -42,3 +42,20 @@ SET status = $3,
 WHERE target_outpoint_hash = $1
   AND target_outpoint_index = $2
 ;
+
+-- Exit funding address persistence queries (darepo-client#893).
+
+-- name: GetExitFundingAddress :one
+SELECT * FROM exit_funding_addresses
+WHERE target_outpoint_hash = $1
+  AND target_outpoint_index = $2
+;
+
+-- name: InsertExitFundingAddress :exec
+INSERT INTO exit_funding_addresses (
+    target_outpoint_hash, target_outpoint_index, funding_address, created_at
+) VALUES (
+    $1, $2, $3, $4
+)
+ON CONFLICT (target_outpoint_hash, target_outpoint_index) DO NOTHING
+;

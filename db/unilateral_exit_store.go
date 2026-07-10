@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/btcsuite/btcd/wire/v2"
@@ -118,6 +119,15 @@ type UnilateralExitStore interface {
 
 	MarkUnilateralExitJobTerminal(ctx context.Context,
 		arg sqlc.MarkUnilateralExitJobTerminalParams) error
+
+	GetExitFundingAddress(ctx context.Context,
+		arg sqlc.GetExitFundingAddressParams) (
+		sqlc.ExitFundingAddress,
+		error,
+	)
+
+	InsertExitFundingAddress(ctx context.Context,
+		arg sqlc.InsertExitFundingAddressParams) error
 }
 
 // BatchedUnilateralExitStore combines the query surface with transactions.
@@ -131,6 +141,13 @@ type BatchedUnilateralExitStore interface {
 type UnilateralExitPersistenceStore struct {
 	db    BatchedUnilateralExitStore
 	clock clock.Clock
+
+	// fundingMu serializes FundingAddress derivation so that concurrent
+	// misses on the same target do not each derive (and discard all but
+	// one) a fresh backing-wallet address, needlessly advancing the HD
+	// index. This restores the "polling a plan does not burn a wallet
+	// address" property the in-memory ExitFundingAddressBook used to hold.
+	fundingMu sync.Mutex
 }
 
 // NewUnilateralExitPersistenceStore creates a unilateral-exit store.
@@ -290,6 +307,102 @@ func (s *UnilateralExitPersistenceStore) MarkJobTerminal(ctx context.Context,
 	}
 
 	return s.db.ExecTx(ctx, WriteTxOption(), writeFn)
+}
+
+// FundingAddress returns the persisted exit funding address for target,
+// deriving and persisting a new one via newAddress on a miss. The derived
+// address is stable across daemon restarts because it is keyed by the target
+// VTXO outpoint, so polling an exit plan (or restarting the daemon) always
+// hands the user back the same address rather than demanding a fresh deposit
+// for the same VTXO (darepo-client#893).
+//
+// Derivation happens outside the DB transaction on purpose: newAddress reaches
+// into the backing wallet, which must not run under an open SQL write tx. The
+// INSERT uses ON CONFLICT DO NOTHING so a concurrent poller that wins the race
+// keeps its address; this reload-after-insert step returns whichever address
+// actually landed in the row.
+func (s *UnilateralExitPersistenceStore) FundingAddress(ctx context.Context,
+	target wire.OutPoint,
+	newAddress func(context.Context) (string, error)) (string, error) {
+
+	// Serialize check-derive-insert so a second concurrent miss observes
+	// the first caller's persisted row on re-read instead of deriving its
+	// own address. The derive still runs outside any SQL write tx.
+	s.fundingMu.Lock()
+	defer s.fundingMu.Unlock()
+
+	existing, err := s.lookupFundingAddress(ctx, target)
+	if err != nil {
+		return "", err
+	}
+	if existing != "" {
+		return existing, nil
+	}
+
+	address, err := newAddress(ctx)
+	if err != nil {
+		return "", fmt.Errorf("derive funding address: %w", err)
+	}
+
+	writeFn := func(q UnilateralExitStore) error {
+		return q.InsertExitFundingAddress(
+			ctx, sqlc.InsertExitFundingAddressParams{
+				TargetOutpointHash:  target.Hash[:],
+				TargetOutpointIndex: int32(target.Index),
+				FundingAddress:      address,
+				CreatedAt:           s.clock.Now().Unix(),
+			},
+		)
+	}
+	if err := s.db.ExecTx(ctx, WriteTxOption(), writeFn); err != nil {
+		return "", fmt.Errorf("insert funding address: %w", err)
+	}
+
+	// Re-read so a concurrent insert that won the ON CONFLICT race wins
+	// the address too, rather than us returning a freshly derived address
+	// that never got persisted.
+	persisted, err := s.lookupFundingAddress(ctx, target)
+	if err != nil {
+		return "", err
+	}
+	if persisted == "" {
+		return address, nil
+	}
+
+	return persisted, nil
+}
+
+// lookupFundingAddress returns the persisted funding address for target, or
+// the empty string when no row exists yet.
+func (s *UnilateralExitPersistenceStore) lookupFundingAddress(
+	ctx context.Context, target wire.OutPoint) (string, error) {
+
+	var address string
+	readFn := func(q UnilateralExitStore) error {
+		row, err := q.GetExitFundingAddress(
+			ctx, sqlc.GetExitFundingAddressParams{
+				TargetOutpointHash:  target.Hash[:],
+				TargetOutpointIndex: int32(target.Index),
+			},
+		)
+		if err != nil {
+			return err
+		}
+
+		address = row.FundingAddress
+
+		return nil
+	}
+
+	err := s.db.ExecTx(ctx, ReadTxOption(), readFn)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("get funding address: %w", err)
+	}
+
+	return address, nil
 }
 
 func jobRecordFromRow(row sqlc.UnilateralExitJob) (UnilateralExitJobRecord,

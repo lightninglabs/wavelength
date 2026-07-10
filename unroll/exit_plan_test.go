@@ -1,7 +1,6 @@
 package unroll
 
 import (
-	"context"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcutil/v2"
@@ -73,29 +72,6 @@ func TestPlanExitFundingShortfallCoversBalance(t *testing.T) {
 	// defaultRecoveryTxVBytes (2 * 200): total 710 sat. Minus the 100 sat
 	// confirmed balance, the shortfall is 610.
 	require.EqualValues(t, 610, plan.FundingShortfallSat)
-}
-
-// TestExitFundingAddressBookReusesCachedAddress verifies polling a plan for
-// the same target does not advance the underlying wallet address index.
-func TestExitFundingAddressBookReusesCachedAddress(t *testing.T) {
-	t.Parallel()
-
-	var book ExitFundingAddressBook
-	calls := 0
-	newAddress := func(context.Context) (string, error) {
-		calls++
-
-		return "bcrt1preallocated", nil
-	}
-
-	address, err := book.Address(t.Context(), "txid:0", newAddress)
-	require.NoError(t, err)
-	require.Equal(t, "bcrt1preallocated", address)
-
-	address, err = book.Address(t.Context(), "txid:0", newAddress)
-	require.NoError(t, err)
-	require.Equal(t, "bcrt1preallocated", address)
-	require.Equal(t, 1, calls)
 }
 
 func testExitPlanDescriptor(amount btcutil.Amount, paths int) *vtxo.Descriptor {

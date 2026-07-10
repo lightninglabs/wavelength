@@ -380,6 +380,25 @@ CREATE TABLE dead_letters (
     created_at BIGINT NOT NULL
 );
 
+CREATE TABLE exit_funding_addresses (
+    -- target_outpoint_hash identifies the target VTXO transaction.
+    target_outpoint_hash BLOB NOT NULL,
+
+    -- target_outpoint_index identifies the target VTXO output index.
+    target_outpoint_index INTEGER NOT NULL CHECK (
+        target_outpoint_index >= 0
+    ),
+
+    -- funding_address is the backing-wallet receive address a user funds to
+    -- clear the exit shortfall for this outpoint.
+    funding_address TEXT NOT NULL,
+
+    -- created_at is the unix timestamp when the address was first derived.
+    created_at BIGINT NOT NULL,
+
+    PRIMARY KEY (target_outpoint_hash, target_outpoint_index)
+);
+
 CREATE TABLE fsm_checkpoints (
     -- actor_id identifies the actor whose FSM state is checkpointed.
     actor_id TEXT PRIMARY KEY,
