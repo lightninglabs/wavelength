@@ -154,6 +154,13 @@ type CreditOperation struct {
 	UpdatedAt         int64
 }
 
+type ExitFundingAddress struct {
+	TargetOutpointHash  []byte
+	TargetOutpointIndex int32
+	FundingAddress      string
+	CreatedAt           int64
+}
+
 type InternalKey struct {
 	ID        int64
 	Pubkey    []byte

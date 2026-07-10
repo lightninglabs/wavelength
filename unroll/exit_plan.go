@@ -1,9 +1,6 @@
 package unroll
 
 import (
-	"context"
-	"sync"
-
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/lightninglabs/darepo-client/txconfirm"
 	"github.com/lightninglabs/darepo-client/vtxo"
@@ -136,37 +133,4 @@ func ceilDivAmount(a, b btcutil.Amount) btcutil.Amount {
 	}
 
 	return (a + b - 1) / b
-}
-
-// ExitFundingAddressBook reuses a funding address for each target outpoint so
-// polling a plan does not advance the backing wallet address index.
-type ExitFundingAddressBook struct {
-	mu        sync.Mutex
-	addresses map[string]string
-}
-
-// Address returns the cached funding address for key or derives and stores a
-// new one with newAddress.
-func (b *ExitFundingAddressBook) Address(ctx context.Context, key string,
-	newAddress func(context.Context) (string, error)) (string, error) {
-
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	if b.addresses == nil {
-		b.addresses = make(map[string]string)
-	}
-
-	if address := b.addresses[key]; address != "" {
-		return address, nil
-	}
-
-	address, err := newAddress(ctx)
-	if err != nil {
-		return "", err
-	}
-
-	b.addresses[key] = address
-
-	return address, nil
 }

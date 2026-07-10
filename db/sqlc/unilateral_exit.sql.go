@@ -10,6 +10,31 @@ import (
 	"database/sql"
 )
 
+const GetExitFundingAddress = `-- name: GetExitFundingAddress :one
+
+SELECT target_outpoint_hash, target_outpoint_index, funding_address, created_at FROM exit_funding_addresses
+WHERE target_outpoint_hash = $1
+  AND target_outpoint_index = $2
+`
+
+type GetExitFundingAddressParams struct {
+	TargetOutpointHash  []byte
+	TargetOutpointIndex int32
+}
+
+// Exit funding address persistence queries (darepo-client#893).
+func (q *Queries) GetExitFundingAddress(ctx context.Context, arg GetExitFundingAddressParams) (ExitFundingAddress, error) {
+	row := q.db.QueryRowContext(ctx, GetExitFundingAddress, arg.TargetOutpointHash, arg.TargetOutpointIndex)
+	var i ExitFundingAddress
+	err := row.Scan(
+		&i.TargetOutpointHash,
+		&i.TargetOutpointIndex,
+		&i.FundingAddress,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const GetUnilateralExitJob = `-- name: GetUnilateralExitJob :one
 SELECT target_outpoint_hash, target_outpoint_index, actor_id, status, trigger, last_error, sweep_txid, created_at, updated_at, exit_policy_kind, exit_policy_ref FROM unilateral_exit_jobs
 WHERE target_outpoint_hash = $1
@@ -38,6 +63,32 @@ func (q *Queries) GetUnilateralExitJob(ctx context.Context, arg GetUnilateralExi
 		&i.ExitPolicyRef,
 	)
 	return i, err
+}
+
+const InsertExitFundingAddress = `-- name: InsertExitFundingAddress :exec
+INSERT INTO exit_funding_addresses (
+    target_outpoint_hash, target_outpoint_index, funding_address, created_at
+) VALUES (
+    $1, $2, $3, $4
+)
+ON CONFLICT (target_outpoint_hash, target_outpoint_index) DO NOTHING
+`
+
+type InsertExitFundingAddressParams struct {
+	TargetOutpointHash  []byte
+	TargetOutpointIndex int32
+	FundingAddress      string
+	CreatedAt           int64
+}
+
+func (q *Queries) InsertExitFundingAddress(ctx context.Context, arg InsertExitFundingAddressParams) error {
+	_, err := q.db.ExecContext(ctx, InsertExitFundingAddress,
+		arg.TargetOutpointHash,
+		arg.TargetOutpointIndex,
+		arg.FundingAddress,
+		arg.CreatedAt,
+	)
+	return err
 }
 
 const ListNonTerminalUnilateralExitJobs = `-- name: ListNonTerminalUnilateralExitJobs :many

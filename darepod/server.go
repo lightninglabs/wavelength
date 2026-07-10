@@ -254,11 +254,6 @@ type Server struct {
 	// handlers that require wallet access select on this channel.
 	walletReady chan struct{}
 
-	// exitFundingAddresses caches backing-wallet funding addresses returned
-	// by GetExitPlan. The unroll package owns the address-book policy so
-	// RPC handlers only request an address for a target.
-	exitFundingAddresses unroll.ExitFundingAddressBook
-
 	// daemonReady is closed when all startup steps have
 	// completed: wallet initialized, mailbox transport
 	// connected, and wallet-dependent actors started. Test
