@@ -442,7 +442,16 @@ func (e *BoardingFailed) FromProto(p proto.Message) error {
 	switch pb := p.(type) {
 	case *roundpb.ClientRoundFailedResp:
 		e.Reason = pb.Reason
+
+		// Recoverable and FailureCode are orthogonal axes.
+		// Recoverable is round-level: this round is over, so its inputs
+		// return to the live set. FailureCode is job-level: a terminal
+		// code (e.g. insufficient operator funds) tells the actor the
+		// originating job is dead and must not replay, even though the
+		// round is recoverable. So a terminal failure is still
+		// Recoverable = true here; do not conflate the two.
 		e.Recoverable = true
+		e.FailureCode = failureCodeFromProto(pb.FailureCode)
 
 		// Carry the server-assigned round id when present so the actor
 		// can route this failure deterministically to the matching FSM.
@@ -470,6 +479,20 @@ func (e *BoardingFailed) FromProto(p proto.Message) error {
 		return fmt.Errorf("unexpected proto type: %T, want "+
 			"*roundpb.ClientRoundFailedResp or "+
 			"*roundpb.ClientErrorResp", p)
+	}
+}
+
+// failureCodeFromProto maps the wire roundpb.RoundFailureCode onto the native
+// RoundFailureCode. This is the RPC boundary; an unrecognized wire code (a
+// newer server than this client) degrades to RoundFailureUnknown so the client
+// falls back to recoverable handling and the reason string.
+func failureCodeFromProto(code roundpb.RoundFailureCode) RoundFailureCode {
+	switch code {
+	case roundpb.RoundFailureCode_ROUND_FAILURE_INSUFFICIENT_OPERATOR_FUNDS:
+		return RoundFailureInsufficientOperatorFunds
+
+	default:
+		return RoundFailureUnknown
 	}
 }
 

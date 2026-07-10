@@ -961,3 +961,33 @@ type RoundFailedNotification struct {
 }
 
 func (m *RoundFailedNotification) clientOutMsgSealed() {}
+
+// TerminalJobFailedNotification is emitted when a round fails, before any
+// forfeit signatures were sent, with a terminal-for-job failure code (e.g. the
+// operator cannot fund the commitment tx). It carries the forfeited VTXO
+// outpoints — which are exactly the originating job's pending-intent anchors —
+// so the round actor can drop the persisted pending intent, halting the
+// recoverable-replay loop, and surface the originating job as failed. The
+// forfeit reservations themselves are released by the ReleaseForfeitReservation
+// message that accompanies this one, returning the VTXOs to the live set.
+type TerminalJobFailedNotification struct {
+	actor.BaseMessage
+
+	// RoundID identifies the failed round. None if the failure occurred
+	// before a round was assigned.
+	RoundID fn.Option[RoundID]
+
+	// ForfeitOutpoints are the forfeited VTXO outpoints reserved by the
+	// originating job; they double as the job's pending-intent anchors.
+	ForfeitOutpoints []wire.OutPoint
+
+	// FailureCode is the terminal-for-job classification that triggered
+	// this notification.
+	FailureCode RoundFailureCode
+
+	// Reason is a human-readable description of the failure, surfaced on
+	// the originating job's activity entry.
+	Reason string
+}
+
+func (m *TerminalJobFailedNotification) clientOutMsgSealed() {}

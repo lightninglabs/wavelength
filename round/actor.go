@@ -528,6 +528,52 @@ func (a *RoundClientActor) emitRoundCompleted(ctx context.Context, roundID,
 	})
 }
 
+// handleTerminalJobFailure reacts to a round that failed with a
+// terminal-for-job code (e.g. the operator could not fund the commitment tx).
+// The accompanying ReleaseForfeitReservation has already returned the reserved
+// VTXOs to the live set, so here we drop the originating job's persisted
+// pending intent, keyed by its forfeited outpoints. That halts the recoverable
+// replay loop: without it, the send-onchain intent replayer would re-submit
+// the same inputs into the same operator on every restart. Dropping is
+// best-effort — a store error degrades to the pre-existing replay behavior
+// rather than wedging the round actor, so it is logged, not returned.
+func (a *RoundClientActor) handleTerminalJobFailure(ctx context.Context,
+	m *TerminalJobFailedNotification) {
+
+	roundIDStr := "none"
+	m.RoundID.WhenSome(func(id RoundID) {
+		roundIDStr = id.String()
+	})
+
+	a.log.WarnS(ctx, "Round failed terminally; dropping originating "+
+		"job intent",
+		nil,
+		slog.String("round_id", roundIDStr),
+		slog.String("reason", m.Reason),
+		slog.Int("failure_code", int(m.FailureCode)),
+		slog.Int("forfeit_outpoint_count", len(m.ForfeitOutpoints)),
+	)
+
+	// This mark runs in the same processOutbox turn that just enqueued the
+	// ReleaseForfeitReservation Tell to the VTXO manager, before that
+	// manager has moved the coins back to LiveState. A programmatic retry
+	// of the same send therefore cannot observe the released coin and
+	// re-persist a fresh intent between the release and this mark, so we
+	// can key the mark on the forfeited outpoints without racing a live
+	// retry. A future refactor that defers this mark to a later turn must
+	// revisit that assumption.
+	if err := a.cfg.RoundStore.FailForfeitIntents(
+		ctx, m.ForfeitOutpoints, m.Reason, m.FailureCode,
+	); err != nil {
+
+		a.log.WarnS(ctx, "Failed to mark pending intent failed after "+
+			"terminal round failure; it may replay on restart",
+			err,
+			slog.String("round_id", roundIDStr),
+		)
+	}
+}
+
 // emitRoundJoined reports a round-join attempt to the metrics actor so
 // darepod_rounds_joined_total advances. It is emitted from createNewRound
 // so it counts every round the client assembles — manual and eager alike
@@ -2521,6 +2567,16 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 			// counter pairs with the confirmed branch above so an
 			// operator can track the join-to-completion ratio.
 			a.emitRoundCompleted(ctx, roundIDStr, "failed")
+
+		case *TerminalJobFailedNotification:
+			// A terminal-for-job round failure (e.g. the operator
+			// could not fund the commitment tx). The accompanying
+			// ReleaseForfeitReservation has already returned the
+			// VTXOs to the live set; here we drop the originating
+			// job's persisted pending intent so restart replay does
+			// not re-submit the same inputs into the same wall, and
+			// surface the job's activity entry as failed.
+			a.handleTerminalJobFailure(ctx, m)
 
 		case *ForfeitRequestToVTXO:
 			// Route forfeit request to VTXO actor via service key.
