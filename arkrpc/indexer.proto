@@ -312,6 +312,11 @@ message AncestryPath {
     // tree. Worst-case unilateral-exit timing for the produced VTXO is
     // max(tree_depth) across all AncestryPaths.
     uint32 tree_depth = 4;
+
+    // commitment_height is the on-chain confirmation height of the commitment
+    // tx anchoring this fragment. Zero means unknown (legacy/unconfirmed),
+    // in which case the client falls back to a bounded lookback floor.
+    int32 commitment_height = 5;
 }
 
 // ScriptScope selects a pkScript and carries a proof-of-control for that

@@ -1493,9 +1493,13 @@ type AncestryPath struct {
 	// tree_depth is the depth of the served leaf within this fragment's
 	// tree. Worst-case unilateral-exit timing for the produced VTXO is
 	// max(tree_depth) across all AncestryPaths.
-	TreeDepth     uint32 `protobuf:"varint,4,opt,name=tree_depth,json=treeDepth,proto3" json:"tree_depth,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	TreeDepth uint32 `protobuf:"varint,4,opt,name=tree_depth,json=treeDepth,proto3" json:"tree_depth,omitempty"`
+	// commitment_height is the on-chain confirmation height of the commitment
+	// tx anchoring this fragment. Zero means unknown (legacy/unconfirmed),
+	// in which case the client falls back to a bounded lookback floor.
+	CommitmentHeight int32 `protobuf:"varint,5,opt,name=commitment_height,json=commitmentHeight,proto3" json:"commitment_height,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *AncestryPath) Reset() {
@@ -1552,6 +1556,13 @@ func (x *AncestryPath) GetInputIndices() []uint32 {
 func (x *AncestryPath) GetTreeDepth() uint32 {
 	if x != nil {
 		return x.TreeDepth
+	}
+	return 0
+}
+
+func (x *AncestryPath) GetCommitmentHeight() int32 {
+	if x != nil {
+		return x.CommitmentHeight
 	}
 	return 0
 }
@@ -2792,13 +2803,14 @@ const file_indexer_proto_rawDesc = "" +
 	"\x05nodes\x18\x01 \x03(\v2\x14.arkrpc.TreePathNodeR\x05nodes\x127\n" +
 	"\x0ebatch_outpoint\x18\x02 \x01(\v2\x10.arkrpc.OutPointR\rbatchOutpoint\x120\n" +
 	"\fbatch_output\x18\x03 \x01(\v2\r.arkrpc.TxOutR\vbatchOutput\x120\n" +
-	"\x14sweep_tapscript_root\x18\x04 \x01(\fR\x12sweepTapscriptRoot\"\xaa\x01\n" +
+	"\x14sweep_tapscript_root\x18\x04 \x01(\fR\x12sweepTapscriptRoot\"\xd7\x01\n" +
 	"\fAncestryPath\x12-\n" +
 	"\ttree_path\x18\x01 \x01(\v2\x10.arkrpc.TreePathR\btreePath\x12'\n" +
 	"\x0fcommitment_txid\x18\x02 \x01(\fR\x0ecommitmentTxid\x12#\n" +
 	"\rinput_indices\x18\x03 \x03(\rR\finputIndices\x12\x1d\n" +
 	"\n" +
-	"tree_depth\x18\x04 \x01(\rR\ttreeDepth\"\xaa\x01\n" +
+	"tree_depth\x18\x04 \x01(\rR\ttreeDepth\x12+\n" +
+	"\x11commitment_height\x18\x05 \x01(\x05R\x10commitmentHeight\"\xaa\x01\n" +
 	"\vScriptScope\x12\x1b\n" +
 	"\tpk_script\x18\x01 \x01(\fR\bpkScript\x12F\n" +
 	"\x0ftaproot_schnorr\x18\n" +
