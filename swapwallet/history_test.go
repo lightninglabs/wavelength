@@ -1273,11 +1273,84 @@ func TestHistoryCompletesWalletLocalExitWhenVTXOForfeited(t *testing.T) {
 	require.Equal(t, int64(-50_000), entries[0].GetAmountSat())
 	require.Equal(t, "user note", entries[0].GetNote())
 
+	// Old-daemon parity: a forfeited VTXO without settlement fields still
+	// flips the row to COMPLETE, just with no on-chain coordinates.
+	require.Empty(t, entries[0].GetProgress().GetTxid())
+	require.Zero(t, entries[0].GetProgress().GetConfirmationHeight())
+
 	pendingResp, err := h.List(t.Context(), &walletdkrpc.ListRequest{
 		PendingOnly: true,
 	})
 	require.NoError(t, err)
 	require.Empty(t, pendingResp.GetActivity().GetEntries())
+}
+
+// TestHistoryStampsSettlementOnForfeitedLeave confirms a completed
+// cooperative-leave row carries the settling round's txid and confirmation
+// height when the daemon reports them on the forfeited source VTXO. This is the
+// issue #924 reconciliation gap: a settled leave must be joinable to the chain.
+func TestHistoryStampsSettlementOnForfeitedLeave(t *testing.T) {
+	t.Parallel()
+
+	const (
+		settlementTxid = "aa000000000000000000000000000000" +
+			"00000000000000000000000000000000"
+		settlementHeight = int32(812345)
+	)
+
+	h, swap, rpc := newHistoryFixture(t)
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
+	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{}
+	rpc.unrollStatusResp = &daemonrpc.GetUnrollStatusResponse{
+		Found: false,
+	}
+	rpc.listVTXOsByStatus = map[daemonrpc.VTXOStatus]*daemonrpc.
+		ListVTXOsResponse{
+
+		daemonrpc.VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT: {},
+		daemonrpc.VTXOStatus_VTXO_STATUS_FORFEITED: {
+			Vtxos: []*daemonrpc.VTXO{
+				{
+					Outpoint: "leave-outpoint:1",
+					Status: daemonrpc.
+						VTXOStatus_VTXO_STATUS_FORFEITED,
+					Settlement: &daemonrpc.VTXOSettlement{
+						Txid:   settlementTxid,
+						Height: settlementHeight,
+					},
+				},
+			},
+		},
+	}
+
+	pending := leaveEntryStub(
+		"", []string{
+			"leave-outpoint:1",
+		}, "bcrt1qdest",
+		50_000, "user note",
+	)
+	h.runtime.trackPendingEntryWithoutTimeout(pending)
+
+	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{})
+	require.NoError(t, err)
+
+	entries := resp.GetActivity().GetEntries()
+	require.Len(t, entries, 1)
+	require.Equal(
+		t, walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		entries[0].GetStatus(),
+	)
+	require.Equal(
+		t, walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_CONFIRMED,
+		entries[0].GetProgress().GetPhase(),
+	)
+	require.Equal(
+		t, settlementTxid, entries[0].GetProgress().GetTxid(),
+	)
+	require.Equal(
+		t, settlementHeight,
+		entries[0].GetProgress().GetConfirmationHeight(),
+	)
 }
 
 // TestHistoryKeepsWalletLocalExitPendingForUnmatchedForfeitedVTXO confirms the
@@ -2107,7 +2180,9 @@ func TestDecorateExitEntryDoesNotClearPending(t *testing.T) {
 	require.NoError(
 		t,
 		h.decorateExitEntry(
-			t.Context(), entry, map[string]struct{}{outpoint: {}},
+			t.Context(), entry, map[string]settlement{
+				outpoint: {},
+			},
 		),
 	)
 	require.Equal(
@@ -2153,7 +2228,9 @@ func TestDecorateCooperativeLeaveMatchesRetainedOutpoint(t *testing.T) {
 	// outpoint) must NOT complete the row.
 	idOnly := newEntry()
 	decorateCooperativeLeaveEntry(
-		idOnly, map[string]struct{}{"sendjob-abc": {}},
+		idOnly, map[string]settlement{
+			"sendjob-abc": {},
+		},
 	)
 	require.Equal(
 		t, walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
@@ -2163,7 +2240,9 @@ func TestDecorateCooperativeLeaveMatchesRetainedOutpoint(t *testing.T) {
 	// Forfeiting the retained outpoint flips it to COMPLETE.
 	byOutpoint := newEntry()
 	decorateCooperativeLeaveEntry(
-		byOutpoint, map[string]struct{}{"abc:0": {}},
+		byOutpoint, map[string]settlement{
+			"abc:0": {},
+		},
 	)
 	require.Equal(
 		t, walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
@@ -2208,7 +2287,9 @@ func TestDecorateExitEntryCompletesHashKeyedLeave(t *testing.T) {
 	require.NoError(
 		t,
 		h.decorateExitEntry(
-			t.Context(), entry, map[string]struct{}{outpoint: {}},
+			t.Context(), entry, map[string]settlement{
+				outpoint: {},
+			},
 		),
 	)
 	require.Equal(
@@ -2230,8 +2311,9 @@ func TestDecorateExitEntryCompletesHashKeyedLeave(t *testing.T) {
 	require.NoError(
 		t,
 		h2.decorateExitEntry(
-			t.Context(), pending,
-			map[string]struct{}{"other:1": {}},
+			t.Context(), pending, map[string]settlement{
+				"other:1": {},
+			},
 		),
 	)
 	require.Equal(
