@@ -195,6 +195,7 @@ func upsertAncestryPaths(ctx context.Context, q ancestryStore,
 				InputIndices: encodeUint32SliceBE(
 					a.InputIndices,
 				),
+				CommitmentHeight: a.CommitmentHeight,
 			},
 		)
 		if err != nil {
@@ -315,6 +316,7 @@ func ancestryRowToDomain(row sqlc.VtxoAncestryPath,
 	copy(entry.CommitmentTxID[:], row.CommitmentTxid)
 
 	entry.TreeDepth = uint32(row.TreeDepth)
+	entry.CommitmentHeight = row.CommitmentHeight
 
 	indices, err := decodeUint32SliceBE(row.InputIndices)
 	if err != nil {

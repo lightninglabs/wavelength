@@ -1571,6 +1571,223 @@ func TestStartUnrollSubmitsInitialFrontier(t *testing.T) {
 	require.NotNil(t, checkpoint)
 }
 
+// TestProofNodeHeightHintBoundedBelowTip verifies that at a realistic mainnet
+// height the proof-node confirmation watch is floored a bounded lookback below
+// the current tip, not at genesis (block 1). A genesis floor makes neutrino
+// rescan every block to block 1 for a tx that never confirms
+// (darepo-client#884); the bounded floor caps the rescan window while staying
+// low enough that a proof ancestor confirming before the target's creation
+// height is still covered.
+func TestProofNodeHeightHintBoundedBelowTip(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	unrollActor, _, txconfirmRef, _ := newActorHarness(t, proof, desc)
+
+	// A mainnet-scale height comfortably above the lookback so the floor
+	// is (height - lookback), not the genesis clamp.
+	const startHeight uint32 = 850_000
+
+	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
+		Height:  int32(startHeight),
+		Trigger: TriggerManual,
+	})
+
+	require.Equal(t, 1, txconfirmRef.requestCount())
+	hint := txconfirmRef.lastRequest(t).HeightHint
+
+	// The hint must not be the genesis floor, and must be exactly the
+	// bounded lookback below the observed height.
+	require.Greater(t, hint, uint32(1))
+	require.Equal(t, startHeight-proofNodeHeightHintLookback, hint)
+}
+
+// TestProofNodeHeightHintClampsToGenesis verifies the helper never returns a
+// height below block 1, even when the current height is at or below the
+// configured lookback window.
+func TestProofNodeHeightHintClampsToGenesis(t *testing.T) {
+	require.Equal(t, uint32(1), proofNodeHeightHint(0))
+	require.Equal(t, uint32(1), proofNodeHeightHint(1))
+	require.Equal(
+		t, uint32(1), proofNodeHeightHint(proofNodeHeightHintLookback),
+	)
+	require.Equal(
+		t, uint32(1),
+		proofNodeHeightHint(proofNodeHeightHintLookback-1),
+	)
+	require.Equal(
+		t, uint32(2),
+		proofNodeHeightHint(proofNodeHeightHintLookback+2),
+	)
+}
+
+// TestCommitmentHeightFloor verifies the commitment-height floor helper: it
+// returns the smallest height only when every fragment carries a known
+// positive height, and returns 0 (defer to the fallback floor) when any
+// fragment is unknown or there is no ancestry.
+func TestCommitmentHeightFloor(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		desc   *vtxo.Descriptor
+		expect int32
+	}{
+		{
+			name:   "nil descriptor",
+			desc:   nil,
+			expect: 0,
+		},
+		{
+			name:   "no ancestry",
+			desc:   &vtxo.Descriptor{},
+			expect: 0,
+		},
+		{
+			name: "single fragment",
+			desc: &vtxo.Descriptor{
+				Ancestry: []vtxo.Ancestry{
+					{
+						CommitmentHeight: 500,
+					},
+				},
+			},
+			expect: 500,
+		},
+		{
+			name: "multi fragment picks min",
+			desc: &vtxo.Descriptor{
+				Ancestry: []vtxo.Ancestry{
+					{
+						CommitmentHeight: 900,
+					},
+					{
+						CommitmentHeight: 400,
+					},
+					{
+						CommitmentHeight: 700,
+					},
+				},
+			},
+			expect: 400,
+		},
+		{
+			name: "any unknown fragment falls through",
+			desc: &vtxo.Descriptor{
+				Ancestry: []vtxo.Ancestry{
+					{
+						CommitmentHeight: 0,
+					},
+					{
+						CommitmentHeight: 600,
+					},
+					{
+						CommitmentHeight: 0,
+					},
+				},
+			},
+			expect: 0,
+		},
+		{
+			name: "all zero falls through",
+			desc: &vtxo.Descriptor{
+				Ancestry: []vtxo.Ancestry{
+					{
+						CommitmentHeight: 0,
+					},
+					{
+						CommitmentHeight: 0,
+					},
+				},
+			},
+			expect: 0,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			b := &behavior{desc: tc.desc, log: btclog.Disabled}
+			require.Equal(t, tc.expect, b.commitmentHeightFloor())
+		})
+	}
+}
+
+// TestProofNodeHeightHintUsesCommitmentHeight verifies that when the target
+// descriptor carries known commitment heights the proof-node confirmation
+// watch is floored at min(commitment height) across fragments — a tight,
+// provable floor — rather than the bounded lookback.
+func TestProofNodeHeightHintUsesCommitmentHeight(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+
+	// Two fragments with distinct known commitment heights; the lower one
+	// (min) must win. Both sit well below the current tip so the value is
+	// clearly the commitment floor, not the lookback.
+	const (
+		startHeight uint32 = 850_000
+		lowHeight   int32  = 700_000
+		highHeight  int32  = 800_000
+	)
+	desc.Ancestry = []vtxo.Ancestry{
+		{
+			CommitmentHeight: highHeight,
+		},
+		{
+			CommitmentHeight: lowHeight,
+		},
+	}
+
+	unrollActor, _, txconfirmRef, _ := newActorHarness(t, proof, desc)
+
+	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
+		Height:  int32(startHeight),
+		Trigger: TriggerManual,
+	})
+
+	require.Equal(t, 1, txconfirmRef.requestCount())
+	hint := txconfirmRef.lastRequest(t).HeightHint
+
+	// The tight commitment floor is used, not the lookback floor.
+	require.Equal(t, uint32(lowHeight), hint)
+	require.NotEqual(t, startHeight-proofNodeHeightHintLookback, hint)
+}
+
+// TestProofNodeHeightHintFallsBackWithoutCommitmentHeight verifies that when
+// no fragment carries a commitment height (legacy/absent server field) the
+// hint falls back to exactly the bounded lookback floor — identical to the
+// pre-commitment-height behaviour.
+func TestProofNodeHeightHintFallsBackWithoutCommitmentHeight(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+
+	// Ancestry present but all commitment heights unknown (zero): the floor
+	// must fall back to the lookback, just like today.
+	desc.Ancestry = []vtxo.Ancestry{
+		{
+			CommitmentHeight: 0,
+		},
+		{
+			CommitmentHeight: 0,
+		},
+	}
+
+	const startHeight uint32 = 850_000
+
+	unrollActor, _, txconfirmRef, _ := newActorHarness(t, proof, desc)
+
+	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
+		Height:  int32(startHeight),
+		Trigger: TriggerManual,
+	})
+
+	require.Equal(t, 1, txconfirmRef.requestCount())
+	hint := txconfirmRef.lastRequest(t).HeightHint
+
+	require.Equal(t, startHeight-proofNodeHeightHintLookback, hint)
+}
+
 // TestFraudTriggerDefersReadyCheckpoint verifies fraud-triggered recovery
 // watches a ready checkpoint before asking txconfirm to broadcast it.
 func TestFraudTriggerDefersReadyCheckpoint(t *testing.T) {

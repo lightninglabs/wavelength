@@ -158,9 +158,10 @@ ON CONFLICT (outpoint_hash, outpoint_index) DO UPDATE SET
 -- DeleteVTXOAncestryPaths first.
 INSERT INTO vtxo_ancestry_paths (
     vtxo_outpoint_hash, vtxo_outpoint_index, path_order,
-    commitment_txid, tree_path, tree_depth, input_indices
+    commitment_txid, tree_path, tree_depth, input_indices,
+    commitment_height
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7
+    $1, $2, $3, $4, $5, $6, $7, $8
 );
 
 -- name: DeleteVTXOAncestryPaths :exec

@@ -456,6 +456,7 @@ type VtxoAncestryPath struct {
 	TreePath          []byte
 	TreeDepth         int32
 	InputIndices      []byte
+	CommitmentHeight  int32
 }
 
 type WalletUtxoLog struct {

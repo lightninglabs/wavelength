@@ -615,9 +615,10 @@ func (q *Queries) InsertVTXO(ctx context.Context, arg InsertVTXOParams) error {
 const InsertVTXOAncestryPath = `-- name: InsertVTXOAncestryPath :exec
 INSERT INTO vtxo_ancestry_paths (
     vtxo_outpoint_hash, vtxo_outpoint_index, path_order,
-    commitment_txid, tree_path, tree_depth, input_indices
+    commitment_txid, tree_path, tree_depth, input_indices,
+    commitment_height
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7
+    $1, $2, $3, $4, $5, $6, $7, $8
 )
 `
 
@@ -629,6 +630,7 @@ type InsertVTXOAncestryPathParams struct {
 	TreePath          []byte
 	TreeDepth         int32
 	InputIndices      []byte
+	CommitmentHeight  int32
 }
 
 // InsertVTXOAncestryPath inserts one ancestry tree fragment for a VTXO.
@@ -643,6 +645,7 @@ func (q *Queries) InsertVTXOAncestryPath(ctx context.Context, arg InsertVTXOAnce
 		arg.TreePath,
 		arg.TreeDepth,
 		arg.InputIndices,
+		arg.CommitmentHeight,
 	)
 	return err
 }
@@ -738,7 +741,7 @@ func (q *Queries) ListAllVTXOs(ctx context.Context) ([]Vtxo, error) {
 }
 
 const ListLiveVTXOAncestryPaths = `-- name: ListLiveVTXOAncestryPaths :many
-SELECT vap.vtxo_outpoint_hash, vap.vtxo_outpoint_index, vap.path_order, vap.commitment_txid, vap.tree_path, vap.tree_depth, vap.input_indices FROM vtxo_ancestry_paths vap
+SELECT vap.vtxo_outpoint_hash, vap.vtxo_outpoint_index, vap.path_order, vap.commitment_txid, vap.tree_path, vap.tree_depth, vap.input_indices, vap.commitment_height FROM vtxo_ancestry_paths vap
 JOIN vtxos v
   ON v.outpoint_hash = vap.vtxo_outpoint_hash
   AND v.outpoint_index = vap.vtxo_outpoint_index
@@ -769,6 +772,7 @@ func (q *Queries) ListLiveVTXOAncestryPaths(ctx context.Context) ([]VtxoAncestry
 			&i.TreePath,
 			&i.TreeDepth,
 			&i.InputIndices,
+			&i.CommitmentHeight,
 		); err != nil {
 			return nil, err
 		}
@@ -884,7 +888,7 @@ func (q *Queries) ListRoundsPaginated(ctx context.Context, arg ListRoundsPaginat
 }
 
 const ListUnspentVTXOAncestryPaths = `-- name: ListUnspentVTXOAncestryPaths :many
-SELECT vap.vtxo_outpoint_hash, vap.vtxo_outpoint_index, vap.path_order, vap.commitment_txid, vap.tree_path, vap.tree_depth, vap.input_indices FROM vtxo_ancestry_paths vap
+SELECT vap.vtxo_outpoint_hash, vap.vtxo_outpoint_index, vap.path_order, vap.commitment_txid, vap.tree_path, vap.tree_depth, vap.input_indices, vap.commitment_height FROM vtxo_ancestry_paths vap
 JOIN vtxos v
   ON v.outpoint_hash = vap.vtxo_outpoint_hash
   AND v.outpoint_index = vap.vtxo_outpoint_index
@@ -914,6 +918,7 @@ func (q *Queries) ListUnspentVTXOAncestryPaths(ctx context.Context) ([]VtxoAnces
 			&i.TreePath,
 			&i.TreeDepth,
 			&i.InputIndices,
+			&i.CommitmentHeight,
 		); err != nil {
 			return nil, err
 		}
@@ -984,7 +989,7 @@ func (q *Queries) ListUnspentVTXOs(ctx context.Context) ([]Vtxo, error) {
 }
 
 const ListVTXOAncestryPaths = `-- name: ListVTXOAncestryPaths :many
-SELECT vtxo_outpoint_hash, vtxo_outpoint_index, path_order, commitment_txid, tree_path, tree_depth, input_indices FROM vtxo_ancestry_paths
+SELECT vtxo_outpoint_hash, vtxo_outpoint_index, path_order, commitment_txid, tree_path, tree_depth, input_indices, commitment_height FROM vtxo_ancestry_paths
 WHERE vtxo_outpoint_hash = $1 AND vtxo_outpoint_index = $2
 ORDER BY path_order ASC
 `
@@ -1014,6 +1019,7 @@ func (q *Queries) ListVTXOAncestryPaths(ctx context.Context, arg ListVTXOAncestr
 			&i.TreePath,
 			&i.TreeDepth,
 			&i.InputIndices,
+			&i.CommitmentHeight,
 		); err != nil {
 			return nil, err
 		}
@@ -1029,7 +1035,7 @@ func (q *Queries) ListVTXOAncestryPaths(ctx context.Context, arg ListVTXOAncestr
 }
 
 const ListVTXOAncestryPathsByStatus = `-- name: ListVTXOAncestryPathsByStatus :many
-SELECT vap.vtxo_outpoint_hash, vap.vtxo_outpoint_index, vap.path_order, vap.commitment_txid, vap.tree_path, vap.tree_depth, vap.input_indices FROM vtxo_ancestry_paths vap
+SELECT vap.vtxo_outpoint_hash, vap.vtxo_outpoint_index, vap.path_order, vap.commitment_txid, vap.tree_path, vap.tree_depth, vap.input_indices, vap.commitment_height FROM vtxo_ancestry_paths vap
 JOIN vtxos v
   ON v.outpoint_hash = vap.vtxo_outpoint_hash
   AND v.outpoint_index = vap.vtxo_outpoint_index
@@ -1058,6 +1064,7 @@ func (q *Queries) ListVTXOAncestryPathsByStatus(ctx context.Context, status int3
 			&i.TreePath,
 			&i.TreeDepth,
 			&i.InputIndices,
+			&i.CommitmentHeight,
 		); err != nil {
 			return nil, err
 		}

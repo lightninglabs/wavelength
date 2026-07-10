@@ -37,6 +37,13 @@ type Ancestry struct {
 	// tree. Worst-case unilateral-exit timing for the produced VTXO is
 	// max(TreeDepth) across all entries.
 	TreeDepth uint32
+
+	// CommitmentHeight is the on-chain confirmation height of the
+	// commitment tx anchoring this fragment. Zero means unknown (legacy
+	// persisted VTXOs, or an unconfirmed/not-yet-resolved commitment), in
+	// which case callers fall back to a bounded lookback floor rather than
+	// trusting this value.
+	CommitmentHeight int32
 }
 
 // MaxAncestryTreeDepth returns the largest TreeDepth across the given
