@@ -653,6 +653,30 @@ type CreditConfig struct {
 	// settled receive triggers a redeem. Zero defaults to the operator dust
 	// limit, the smallest amount that can legally become a vTXO.
 	AutoRedeemMinSat uint64 `mapstructure:"autoredeemminsat"`
+
+	// MaxAwaitingPolls caps how many reconciliation polls a single
+	// credit-operation awaiting state (top-up funding or credit-pay
+	// settlement) may take before the operation terminal-fails. It is the
+	// backstop that stops a credit-backed send from parking forever when
+	// the server never reports a terminal state (darepo-client#880). Zero
+	// applies credit.DefaultMaxAwaitingPolls: the fail-fast bound cannot be
+	// disabled from config because an unbounded wait is the hang this
+	// guards against; operators who need a longer ceiling set an explicit
+	// larger value.
+	MaxAwaitingPolls uint32 `mapstructure:"maxawaitingpolls"`
+}
+
+// MaxAwaitingPollsOrDefault resolves the awaiting-state poll cap the credit
+// registry runs with. A zero value (the default) is coerced to
+// credit.DefaultMaxAwaitingPolls so the production daemon never runs with the
+// unbounded wait that lets a credit-backed send hang forever
+// (darepo-client#880); a non-zero value is an explicit operator override.
+func (c CreditConfig) MaxAwaitingPollsOrDefault() uint32 {
+	if c.MaxAwaitingPolls == 0 {
+		return credit.DefaultMaxAwaitingPolls
+	}
+
+	return c.MaxAwaitingPolls
 }
 
 // SwapVHTLCRecoveryConfig controls automatic escalation from cooperative vHTLC
