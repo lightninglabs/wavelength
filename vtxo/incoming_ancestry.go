@@ -71,10 +71,11 @@ func AncestryFromRPC(paths []*arkrpc.AncestryPath) ([]Ancestry, error) {
 		}
 
 		out = append(out, Ancestry{
-			TreePath:       treePath,
-			CommitmentTxID: commitmentTxID,
-			InputIndices:   slices.Clone(p.GetInputIndices()),
-			TreeDepth:      p.GetTreeDepth(),
+			TreePath:         treePath,
+			CommitmentTxID:   commitmentTxID,
+			InputIndices:     slices.Clone(p.GetInputIndices()),
+			TreeDepth:        p.GetTreeDepth(),
+			CommitmentHeight: p.GetCommitmentHeight(),
 		})
 	}
 

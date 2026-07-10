@@ -161,9 +161,24 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
 - `watchDeferredCheckpoint(ctx, txid, node)` — registers confirmation
   watch for fraud-triggered checkpoints while the actor waits for
   operator confirmation of the proof node.
-- `proofNodeHeightHint = 1` — height hint for proof-node
-  spend/confirmation watches (proof roots and intermediate ancestors
-  can confirm before the target VTXO's creation height).
+- `behavior.proofNodeConfHeightHint(ctx, txid)` — confirmation-watch height
+  floor for proof-graph nodes. Primary floor is `commitmentHeightFloor()`:
+  `min(Descriptor.Ancestry[i].CommitmentHeight)`, but only when EVERY fragment
+  has a known (>0) height — a single unknown fragment returns 0 and defers to
+  the fallback (a min over only the known fragments would not bound an unknown
+  fragment's ancestor). Nothing in a VTXO's proof graph confirms before its
+  commitment tx, so once all fragments are known this is a tight, provable
+  floor (min, never max — a lower floor only widens the safe rescan window).
+  When no commitment height is known (legacy persisted VTXOs, empty-ancestry
+  round VTXOs, or a server not yet populating `commitment_height`), it falls
+  back to `proofNodeHeightHint(currentHeight)` =
+  `max(1, currentHeight - proofNodeHeightHintLookback)` (10000 blocks) —
+  identical to the pre-commitment-height behaviour. Roots/intermediate
+  ancestors can confirm before the target VTXO's creation height, so the
+  fallback anchors to tip minus a lookback (never `CreatedHeight`), bounding
+  the neutrino historical rescan instead of scanning to genesis
+  (darepo-client#884). The fallback path warns when the VTXO's age exceeds the
+  lookback (the floor may then miss an already-confirmed ancestor).
 
 ## Relationships
 

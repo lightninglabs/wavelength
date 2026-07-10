@@ -657,6 +657,18 @@ func (b *behavior) currentHeight() int32 {
 	return b.pending.Height
 }
 
+// currentHeightHint returns the actor's last observed best height as an
+// unsigned value suitable for a confirmation-watch height hint, clamping any
+// non-positive height (e.g. an uninitialized job) to zero.
+func (b *behavior) currentHeightHint() uint32 {
+	h := b.currentHeight()
+	if h <= 0 {
+		return 0
+	}
+
+	return uint32(h)
+}
+
 // resolveExitSpendPolicy reconstructs the exit policy for this job.
 func (b *behavior) resolveExitSpendPolicy(ctx context.Context) (ExitSpendPolicy,
 	error) {
@@ -701,11 +713,156 @@ func safeTxOutPkScript(tx *wire.MsgTx, index uint32) ([]byte, error) {
 	return append([]byte(nil), tx.TxOut[index].PkScript...), nil
 }
 
-// proofNodeHeightHint is the earliest safe confirmation height hint for
-// proof-graph transactions. Roots and intermediate OOR checkpoint ancestors
-// can confirm before the target descriptor's CreatedHeight, so proof watches
-// must not use the target creation height as a lower bound.
-const proofNodeHeightHint uint32 = 1
+// proofNodeHeightHintLookback is the number of blocks below the actor's
+// current best height used as the confirmation-watch FALLBACK floor for
+// proof-graph transactions when no commitment height is known. A genesis
+// floor (height 1) forces neutrino's notifier to rescan every block from tip
+// to block 1 (one GetCFilter per block) when the watched tx never confirms,
+// which floods logs and never terminates (darepo-client#884). We therefore
+// bound the rescan window to a fixed lookback below the current height.
+//
+// The lookback MUST comfortably exceed the maximum batch lifetime plus the
+// worst-case tree-depth + CSV exit window, because proof roots and
+// intermediate OOR checkpoint ancestors can confirm well before the target
+// descriptor's CreatedHeight — using the creation height as the floor would
+// miss an ancestor that already confirmed. A generous operator-configured max
+// batch lifetime is on the order of one month (~4320 blocks at 144
+// blocks/day); 10000 blocks (~10 weeks) is a safe multiple that keeps the
+// floor below any ancestor's real confirmation height while still capping the
+// neutrino rescan at a bounded window instead of scanning to genesis.
+//
+// The primary, tight floor is the commitment-tx confirmation height carried
+// per fragment on Descriptor.Ancestry[i].CommitmentHeight: nothing in a
+// VTXO's proof graph can confirm before its commitment tx, so min() across
+// fragments is a provable lower bound for every proof ancestor. When that
+// height is unknown (zero) — legacy persisted VTXOs, empty-ancestry incoming
+// round VTXOs, or a server that does not yet populate the field — we fall
+// back to this bounded lookback, preserving the pre-commitment-height
+// behaviour exactly.
+const proofNodeHeightHintLookback uint32 = 10000
+
+// proofNodeHeightHint returns the earliest safe confirmation height hint for
+// proof-graph transactions given the actor's current best height. Roots and
+// intermediate OOR checkpoint ancestors can confirm before the target
+// descriptor's CreatedHeight, so proof watches must not use the target
+// creation height as a lower bound; instead we floor at a bounded lookback
+// below the current height (never below block 1). See
+// proofNodeHeightHintLookback for the sizing rationale. Callers that hold a
+// Descriptor should route through behavior.proofNodeConfHeightHint instead, so
+// the age-exceeds-lookback breadcrumb fires.
+func proofNodeHeightHint(currentHeight uint32) uint32 {
+	if currentHeight <= proofNodeHeightHintLookback {
+		return 1
+	}
+
+	return currentHeight - proofNodeHeightHintLookback
+}
+
+// commitmentHeightFloor returns the tight, provable confirmation-watch floor
+// derived from the target descriptor's ancestry: the minimum commitment
+// confirmation height across ALL fragments. It returns 0 (meaning "unknown,
+// use the fallback floor") unless every fragment carries a known positive
+// height.
+//
+// The all-or-nothing requirement is a soundness one. Nothing in a VTXO's proof
+// graph confirms before its commitment tx, so once every fragment's commitment
+// height is known their minimum is a provable lower bound for every proof
+// ancestor. But a min taken over only the known fragments would not bound an
+// unknown fragment, whose ancestor could have confirmed below that min and be
+// missed by the rescan. So a single unknown fragment defers the whole target
+// to the fallback. We take the min, never the max: a lower floor only widens
+// the (safe) rescan window; too high a floor can miss an ancestor.
+func (b *behavior) commitmentHeightFloor() int32 {
+	if b.desc == nil || len(b.desc.Ancestry) == 0 {
+		return 0
+	}
+
+	var lowest int32
+	for i := range b.desc.Ancestry {
+		h := b.desc.Ancestry[i].CommitmentHeight
+		if h <= 0 {
+			return 0
+		}
+
+		if lowest == 0 || h < lowest {
+			lowest = h
+		}
+	}
+
+	return lowest
+}
+
+// proofNodeConfHeightHint returns the confirmation-watch height floor for one
+// proof-graph node. When the target descriptor carries a known commitment
+// height it uses min(commitment height) across fragments as a tight, provable
+// floor (clamped to at least block 1). Otherwise it falls back to the bounded
+// lookback below the current height and leaves a breadcrumb when the target
+// VTXO is old enough that the fallback floor may have risen above a proof
+// ancestor's real confirmation height. On the fallback path the lookback keeps
+// the floor below every ancestor only while the VTXO's age (in blocks) stays
+// within proofNodeHeightHintLookback; past that the neutrino historical rescan
+// can start too late, miss the ancestor's confirmation, and silently stall the
+// exit — so we warn rather than fail.
+func (b *behavior) proofNodeConfHeightHint(ctx context.Context,
+	txid chainhash.Hash) uint32 {
+
+	// The floor is a per-target property (min over the whole ancestry), not
+	// per-node, so it is the same for every proof node. txid is used only
+	// for the fallback-path breadcrumb below, not to select a floor.
+
+	// Primary path: a known commitment height is the tightest sound floor.
+	// commitmentHeightFloor only returns positive values, so it is already
+	// clamped to at least block 1 (we never hand the notifier a zero
+	// height).
+	if floor := b.commitmentHeightFloor(); floor > 0 {
+		return uint32(floor)
+	}
+
+	// Fallback path: no commitment height known, so bound the rescan with
+	// the fixed lookback and warn if the VTXO is old enough that the floor
+	// may have risen above an ancestor's real confirmation height.
+	//
+	// currentHeightHint returns 0 only for an uninitialized job (no height
+	// observed yet), and proofNodeHeightHint(0) is the genesis floor (1) —
+	// the very rescan-to-genesis behaviour #884 fixes. That is not
+	// reachable on the real path: a proof watch is registered only while
+	// handling a Start/Resume/HeightUpdated event, all of which set
+	// b.pending.Height first, so currentHeightHint is non-zero here in
+	// practice.
+	currentHeight := b.currentHeightHint()
+	hint := proofNodeHeightHint(currentHeight)
+
+	// CreatedHeight is our proxy for the earliest proof-ancestor
+	// confirmation height. Once the VTXO's age reaches the lookback the
+	// floor sits at or above it, so an ancestor that confirmed earlier can
+	// escape the rescan window.
+	if b.desc != nil && b.desc.CreatedHeight > 0 {
+		age := int64(currentHeight) - int64(b.desc.CreatedHeight)
+		if age >= int64(proofNodeHeightHintLookback) {
+			b.log.WarnS(ctx, "Proof-node confirmation floor may "+
+				"exceed ancestor height; exit could stall",
+				nil,
+				slog.String(
+					"target_outpoint",
+					b.cfg.TargetOutpoint.String(),
+				),
+				slog.String("proof_txid", txid.String()),
+				slog.Int64("vtxo_age_blocks", age),
+				slog.Uint64(
+					"lookback",
+					uint64(proofNodeHeightHintLookback),
+				),
+				slog.Uint64("height_hint", uint64(hint)),
+				slog.Int64(
+					"created_height",
+					int64(b.desc.CreatedHeight),
+				),
+			)
+		}
+	}
+
+	return hint
+}
 
 // ensureNodeConfirmed hands one ready proof-graph node to txconfirm and
 // threads any immediate rejection back through the FSM.
@@ -739,11 +896,12 @@ func (b *behavior) ensureNodeConfirmed(ctx context.Context,
 		return err
 	}
 
+	heightHint := b.proofNodeConfHeightHint(ctx, txid)
 	resp, err := b.cfg.TxConfirmRef.Ask(ctx, &txconfirm.EnsureConfirmedReq{
 		Tx:                   node.Tx,
 		ConfirmationPkScript: pkScript,
 		Label:                "unroll-node-" + txid.String(),
-		HeightHint:           proofNodeHeightHint,
+		HeightHint:           heightHint,
 		Subscriber:           b.notificationRef(),
 	}).Await(ctx).Unpack()
 	if err != nil {
@@ -798,7 +956,7 @@ func (b *behavior) watchDeferredCheckpoint(ctx context.Context,
 		Txid:        &txidCopy,
 		PkScript:    append([]byte(nil), pkScript...),
 		TargetConfs: 1,
-		HeightHint:  proofNodeHeightHint,
+		HeightHint:  b.proofNodeConfHeightHint(ctx, txid),
 		NotifyActor: fn.Some(notifyRef),
 	}).Await(ctx).Unpack()
 	if err != nil {

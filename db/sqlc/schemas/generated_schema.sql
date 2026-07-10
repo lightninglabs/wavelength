@@ -1571,7 +1571,7 @@ CREATE TABLE vtxo_ancestry_paths (
     -- explicit value (empty length-prefixed slice for round-direct
     -- rows). A `DEFAULT X''` literal works on SQLite but is parsed by
     -- Postgres as a bit-string and rejected against the BYTEA column.
-    input_indices BLOB NOT NULL,
+    input_indices BLOB NOT NULL, commitment_height INTEGER NOT NULL DEFAULT 0,
 
     PRIMARY KEY (vtxo_outpoint_hash, vtxo_outpoint_index, path_order),
     FOREIGN KEY (vtxo_outpoint_hash, vtxo_outpoint_index)
