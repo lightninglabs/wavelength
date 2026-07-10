@@ -1,0 +1,162 @@
+name: Doc Gardening (PR advisory)
+
+# Per-PR companion to the nightly doc-gardening cron. When a PR touches Go
+# package code, this runs the /doc-gardening skill scoped to ONLY the changed
+# packages and posts the proposed CLAUDE.md/AGENTS.md diff back as a single
+# sticky PR comment. It never pushes, never opens a PR, and never fails the
+# build — the comment is the entire signal, so a stale doc is surfaced in
+# lockstep with the change that caused it instead of waiting up to 24h for the
+# nightly. Flipping it from advisory to a (non-required) soft-fail is a
+# one-line change; see the ADVISORY toggle near the end of the prompt.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      # Only Go source changes can drift a package's docs. Docs-only PRs
+      # (including the nightly's own) never trigger this.
+      - "**/*.go"
+
+concurrency:
+  # One run per PR; a new push supersedes the in-flight advisory.
+  group: doc-gardening-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  # Needed so the bot can post/update its advisory comment.
+  pull-requests: write
+
+jobs:
+  advise:
+    name: Scoped doc drift advisory
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Skip fork PRs (no access to the OAuth/bot secrets) and the nightly's
+    # own automation PRs (already a full sweep). Same-repo branches only.
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      !contains(github.event.pull_request.labels.*.name, 'automation')
+    steps:
+      - name: Checkout (bot token)
+        uses: actions/checkout@v5
+        with:
+          token: ${{ secrets.BOT_GITHUB_TOKEN }}
+          # Full history + the PR head so the skill can diff base..head to
+          # find changed packages. A shallow clone breaks that diff.
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Prime module cache
+        run: go mod download
+
+      - name: Run scoped /doc-gardening and post advisory
+        uses: anthropics/claude-code-action@v1
+        env:
+          GH_TOKEN: ${{ secrets.BOT_GITHUB_TOKEN }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO_NAME: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          SERVER_URL: ${{ github.server_url }}
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.BOT_GITHUB_TOKEN }}
+          show_full_output: "true"
+          prompt: |
+            You are running as a per-PR documentation advisor in GitHub
+            Actions. Your job is to check whether this PR's code changes have
+            left any per-package `CLAUDE.md` doc stale, and if so, post a
+            single advisory comment with the proposed fix. You do NOT commit,
+            push, or open a PR. The `gh` CLI is authenticated as the bot.
+
+            Do not ask for confirmation. Execute in order:
+
+            1. **Find the changed packages.** Run:
+
+                   git diff --name-only "$BASE_SHA".."$HEAD_SHA" -- '*.go' \
+                     | xargs -r -n1 dirname | sort -u
+
+               For each directory in that list, keep only the ones that
+               already contain a `CLAUDE.md` (packages without one are the
+               nightly full-sweep's job, not this advisory's — do not create
+               new docs here). Call this the SCOPE set. Print it as
+               `SCOPE: <space-separated dirs>`. If the SCOPE set is empty,
+               print `DOC-PR NO-OP: no documented packages changed` and stop
+               without commenting.
+
+            2. **Audit each scoped package.** Read
+               `.claude/skills/doc-gardening/SKILL.md` and apply its
+               update logic (Phases 2-6) to ONLY the packages in SCOPE.
+               For each, diff `"$BASE_SHA".."$HEAD_SHA"` over that package's
+               `.go` files and reconcile its `CLAUDE.md` against the current
+               code: new/removed/renamed exported types, changed CLI flags or
+               config, new invariants, changed dependency relationships. Edit
+               the `CLAUDE.md` in place. After editing each one, `cp` it to
+               the sibling `AGENTS.md` so the pair stays byte-identical.
+
+            3. **Self-check.** Run `make doc-check`. If it fails, fix the
+               errors before proposing anything. Also grep the changed docs
+               for leaked artifacts
+               (`grep -rn -e '</content>' -e '</invoke>' -e '<parameter' .`)
+               and remove any. Never propose a diff that would not pass
+               `make doc-check`.
+
+            4. **Compute the proposal.** Run `git diff -- '**/CLAUDE.md'
+               '**/AGENTS.md' '**/*.md'`. If the diff is empty, print
+               `DOC-PR NO-OP: scoped docs already current` and stop without
+               commenting.
+
+            5. **Post ONE sticky advisory comment.** Write the comment body
+               to `.git/DOC_ADVISORY.md`. It must start with the exact hidden
+               marker line `<!-- doc-gardening-pr -->` so the comment is
+               idempotent, then contain:
+               - A one-sentence summary naming the packages in SCOPE.
+               - The proposed changes inside a single ```diff fenced block
+                 (the output of the `git diff` above).
+               - A short "How to apply" note:
+                 `git apply` the diff, or run the nightly skill locally.
+               - A footer line linking the run:
+                 `${SERVER_URL}/${REPO_NAME}/actions/runs/${RUN_ID}`.
+
+               Post it, replacing any prior advisory on this PR so the thread
+               never accumulates duplicates:
+
+                   if gh pr comment "$PR_NUMBER" --edit-last \
+                        --body-file .git/DOC_ADVISORY.md 2>/dev/null; then
+                     echo "DOC-PR UPDATED existing advisory"
+                   else
+                     gh pr comment "$PR_NUMBER" \
+                       --body-file .git/DOC_ADVISORY.md
+                     echo "DOC-PR POSTED new advisory"
+                   fi
+
+            6. **Finish (ADVISORY).** Print `DOC-PR ADVISORY POSTED` and exit
+               0 regardless of whether drift was found. This check is
+               advisory: the comment is the signal, and CI does not fail on
+               drift. To make drift a soft failure later (a red X that is NOT
+               a required check), change this step to exit non-zero when a
+               comment was posted — but leave the branch-protection required
+               set untouched so it never blocks merge.
+
+            Constraints:
+            - Never commit, push, `git add`, open a PR, or modify main.
+            - Never run `git push`. Never run `go build`/`go test` (they drop
+              stray binaries into package dirs). Use `go doc` for lookups.
+            - Never create new `CLAUDE.md`/`AGENTS.md` files; only update ones
+              that already exist for packages in SCOPE.
+            - Never modify files outside this repo.
+          claude_args: >-
+            --max-turns 120
+            --model claude-opus-4-8
+            --allowed-tools
+            "Edit,Write,MultiEdit,Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git rev-parse:*),Bash(make doc-check:*),Bash(go doc:*),Bash(find:*),Bash(ls:*),Bash(cp:*),Bash(cat:*),Bash(head:*),Bash(tail:*),Bash(sort:*),Bash(uniq:*),Bash(sed:*),Bash(awk:*),Bash(grep:*),Bash(xargs:*),Bash(dirname:*),Bash(echo:*),Bash(gh pr comment:*),Bash(gh pr view:*),Bash(gh pr diff:*)"
+            --disallowed-tools
+            "Bash(rm:*),Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(git checkout:*),Bash(git reset:*),Bash(go build:*),Bash(go test:*),Bash(gh pr create:*),Bash(gh pr merge:*),Bash(gh api:*),Bash(gh secret:*),Bash(gh workflow:*),Bash(curl:*),Bash(wget:*)"
