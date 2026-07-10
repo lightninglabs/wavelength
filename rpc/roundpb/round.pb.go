@@ -21,6 +21,67 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// RoundFailureCode classifies why a round the client had already joined
+// failed, so the client can react programmatically instead of parsing the
+// human-readable reason string. New codes may be added over time; a client
+// MUST treat an unrecognized code as ROUND_FAILURE_UNKNOWN and fall back to
+// the reason string.
+type RoundFailureCode int32
+
+const (
+	// ROUND_FAILURE_UNKNOWN is the default, unclassified failure. Older
+	// servers that predate this field also leave it here. The client
+	// treats it as a generic recoverable failure and relies on the
+	// reason string.
+	RoundFailureCode_ROUND_FAILURE_UNKNOWN RoundFailureCode = 0
+	// ROUND_FAILURE_INSUFFICIENT_OPERATOR_FUNDS indicates the operator
+	// could not fund the round's commitment transaction from its own
+	// on-chain wallet. The client's inputs were never committed, so any
+	// forfeit-reserved inputs are released back to the live set. The
+	// client should terminally fail the originating job rather than
+	// auto-retry it into the same wall.
+	RoundFailureCode_ROUND_FAILURE_INSUFFICIENT_OPERATOR_FUNDS RoundFailureCode = 1
+)
+
+// Enum value maps for RoundFailureCode.
+var (
+	RoundFailureCode_name = map[int32]string{
+		0: "ROUND_FAILURE_UNKNOWN",
+		1: "ROUND_FAILURE_INSUFFICIENT_OPERATOR_FUNDS",
+	}
+	RoundFailureCode_value = map[string]int32{
+		"ROUND_FAILURE_UNKNOWN":                     0,
+		"ROUND_FAILURE_INSUFFICIENT_OPERATOR_FUNDS": 1,
+	}
+)
+
+func (x RoundFailureCode) Enum() *RoundFailureCode {
+	p := new(RoundFailureCode)
+	*p = x
+	return p
+}
+
+func (x RoundFailureCode) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (RoundFailureCode) Descriptor() protoreflect.EnumDescriptor {
+	return file_round_proto_enumTypes[0].Descriptor()
+}
+
+func (RoundFailureCode) Type() protoreflect.EnumType {
+	return &file_round_proto_enumTypes[0]
+}
+
+func (x RoundFailureCode) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use RoundFailureCode.Descriptor instead.
+func (RoundFailureCode) EnumDescriptor() ([]byte, []int) {
+	return file_round_proto_rawDescGZIP(), []int{0}
+}
+
 // QuoteReason classifies why a JoinRoundQuote failed to admit the
 // client's intent. When reject_reason != QUOTE_OK the quote's
 // vtxo_quotes / leave_quotes lists are empty and the client is
@@ -67,11 +128,11 @@ func (x QuoteReason) String() string {
 }
 
 func (QuoteReason) Descriptor() protoreflect.EnumDescriptor {
-	return file_round_proto_enumTypes[0].Descriptor()
+	return file_round_proto_enumTypes[1].Descriptor()
 }
 
 func (QuoteReason) Type() protoreflect.EnumType {
-	return &file_round_proto_enumTypes[0]
+	return &file_round_proto_enumTypes[1]
 }
 
 func (x QuoteReason) Number() protoreflect.EnumNumber {
@@ -80,7 +141,7 @@ func (x QuoteReason) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use QuoteReason.Descriptor instead.
 func (QuoteReason) EnumDescriptor() ([]byte, []int) {
-	return file_round_proto_rawDescGZIP(), []int{0}
+	return file_round_proto_rawDescGZIP(), []int{1}
 }
 
 // Outpoint identifies a transaction output by its transaction hash and output
@@ -944,7 +1005,11 @@ type ClientRoundFailedResp struct {
 	// round_id is the UUID of the round (16 bytes).
 	RoundId []byte `protobuf:"bytes,1,opt,name=round_id,json=roundId,proto3" json:"round_id,omitempty"`
 	// reason describes why the round failed.
-	Reason        string `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
+	Reason string `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
+	// failure_code classifies the failure so the client can react
+	// programmatically. Servers that predate this field, and failures
+	// that are not specifically classified, leave it ROUND_FAILURE_UNKNOWN.
+	FailureCode   RoundFailureCode `protobuf:"varint,3,opt,name=failure_code,json=failureCode,proto3,enum=round.v1.RoundFailureCode" json:"failure_code,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -991,6 +1056,13 @@ func (x *ClientRoundFailedResp) GetReason() string {
 		return x.Reason
 	}
 	return ""
+}
+
+func (x *ClientRoundFailedResp) GetFailureCode() RoundFailureCode {
+	if x != nil {
+		return x.FailureCode
+	}
+	return RoundFailureCode_ROUND_FAILURE_UNKNOWN
 }
 
 // ClientErrorResp sends an error message to a client.
@@ -2643,10 +2715,11 @@ const file_round_proto_rawDesc = "" +
 	"\bagg_sigs\x18\x02 \x03(\v2(.round.v1.ClientVTXOAggSigs.AggSigsEntryR\aaggSigs\x1a:\n" +
 	"\fAggSigsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\fR\x05value:\x028\x01\"J\n" +
+	"\x05value\x18\x02 \x01(\fR\x05value:\x028\x01\"\x89\x01\n" +
 	"\x15ClientRoundFailedResp\x12\x19\n" +
 	"\bround_id\x18\x01 \x01(\fR\aroundId\x12\x16\n" +
-	"\x06reason\x18\x02 \x01(\tR\x06reason\".\n" +
+	"\x06reason\x18\x02 \x01(\tR\x06reason\x12=\n" +
+	"\ffailure_code\x18\x03 \x01(\x0e2\x1a.round.v1.RoundFailureCodeR\vfailureCode\".\n" +
 	"\x0fClientErrorResp\x12\x1b\n" +
 	"\terror_msg\x18\x01 \x01(\tR\berrorMsg\"\x85\x01\n" +
 	"\x0fBoardingRequest\x12.\n" +
@@ -2768,7 +2841,10 @@ const file_round_proto_rawDesc = "" +
 	"\x1cSubmitVTXOForfeitSigsRequest\x12\x19\n" +
 	"\bround_id\x18\x01 \x01(\fR\aroundId\x127\n" +
 	"\vforfeit_txs\x18\x02 \x03(\v2\x16.round.v1.ForfeitTxSigR\n" +
-	"forfeitTxs*V\n" +
+	"forfeitTxs*\\\n" +
+	"\x10RoundFailureCode\x12\x19\n" +
+	"\x15ROUND_FAILURE_UNKNOWN\x10\x00\x12-\n" +
+	")ROUND_FAILURE_INSUFFICIENT_OPERATOR_FUNDS\x10\x01*V\n" +
 	"\vQuoteReason\x12\f\n" +
 	"\bQUOTE_OK\x10\x00\x12\x19\n" +
 	"\x15INSUFFICIENT_RESIDUAL\x10\x01\x12\x1e\n" +
@@ -2794,113 +2870,115 @@ func file_round_proto_rawDescGZIP() []byte {
 	return file_round_proto_rawDescData
 }
 
-var file_round_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_round_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
 var file_round_proto_msgTypes = make([]protoimpl.MessageInfo, 43)
 var file_round_proto_goTypes = []any{
-	(QuoteReason)(0),                     // 0: round.v1.QuoteReason
-	(*Outpoint)(nil),                     // 1: round.v1.Outpoint
-	(*TxOut)(nil),                        // 2: round.v1.TxOut
-	(*TreeNode)(nil),                     // 3: round.v1.TreeNode
-	(*VTXOTree)(nil),                     // 4: round.v1.VTXOTree
-	(*ConnectorLeafInfo)(nil),            // 5: round.v1.ConnectorLeafInfo
-	(*ClientConnectorLeafInfo)(nil),      // 6: round.v1.ClientConnectorLeafInfo
-	(*ClientSuccessResp)(nil),            // 7: round.v1.ClientSuccessResp
-	(*ClientBatchInfo)(nil),              // 8: round.v1.ClientBatchInfo
-	(*ClientAwaitingInputSigsResp)(nil),  // 9: round.v1.ClientAwaitingInputSigsResp
-	(*ClientVTXOAggNonces)(nil),          // 10: round.v1.ClientVTXOAggNonces
-	(*ClientVTXOAggSigs)(nil),            // 11: round.v1.ClientVTXOAggSigs
-	(*ClientRoundFailedResp)(nil),        // 12: round.v1.ClientRoundFailedResp
-	(*ClientErrorResp)(nil),              // 13: round.v1.ClientErrorResp
-	(*BoardingRequest)(nil),              // 14: round.v1.BoardingRequest
-	(*VTXORequest)(nil),                  // 15: round.v1.VTXORequest
-	(*ForfeitRequest)(nil),               // 16: round.v1.ForfeitRequest
-	(*LeaveRequest)(nil),                 // 17: round.v1.LeaveRequest
-	(*JoinRoundAuth)(nil),                // 18: round.v1.JoinRoundAuth
-	(*JoinRoundRequest)(nil),             // 19: round.v1.JoinRoundRequest
-	(*FeeBreakdown)(nil),                 // 20: round.v1.FeeBreakdown
-	(*VTXOQuote)(nil),                    // 21: round.v1.VTXOQuote
-	(*LeaveQuote)(nil),                   // 22: round.v1.LeaveQuote
-	(*JoinRoundQuote)(nil),               // 23: round.v1.JoinRoundQuote
-	(*JoinRoundAccept)(nil),              // 24: round.v1.JoinRoundAccept
-	(*JoinRoundReject)(nil),              // 25: round.v1.JoinRoundReject
-	(*SubmitNoncesRequest)(nil),          // 26: round.v1.SubmitNoncesRequest
-	(*SignerNonces)(nil),                 // 27: round.v1.SignerNonces
-	(*SubmitPartialSigRequest)(nil),      // 28: round.v1.SubmitPartialSigRequest
-	(*SignerPartialSigs)(nil),            // 29: round.v1.SignerPartialSigs
-	(*BoardingInputSignature)(nil),       // 30: round.v1.BoardingInputSignature
-	(*SubmitForfeitSigRequest)(nil),      // 31: round.v1.SubmitForfeitSigRequest
-	(*ForfeitParticipantSig)(nil),        // 32: round.v1.ForfeitParticipantSig
-	(*ForfeitTxSig)(nil),                 // 33: round.v1.ForfeitTxSig
-	(*SubmitVTXOForfeitSigsRequest)(nil), // 34: round.v1.SubmitVTXOForfeitSigsRequest
-	nil,                                  // 35: round.v1.TreeNode.ChildrenEntry
-	nil,                                  // 36: round.v1.ClientBatchInfo.VtxoTreePathsEntry
-	nil,                                  // 37: round.v1.ClientBatchInfo.ConnectorLeafMapEntry
-	nil,                                  // 38: round.v1.ClientVTXOAggNonces.AggNoncesEntry
-	nil,                                  // 39: round.v1.ClientVTXOAggSigs.AggSigsEntry
-	nil,                                  // 40: round.v1.SubmitNoncesRequest.NoncesEntry
-	nil,                                  // 41: round.v1.SignerNonces.TxNoncesEntry
-	nil,                                  // 42: round.v1.SubmitPartialSigRequest.SignaturesEntry
-	nil,                                  // 43: round.v1.SignerPartialSigs.TxSigsEntry
+	(RoundFailureCode)(0),                // 0: round.v1.RoundFailureCode
+	(QuoteReason)(0),                     // 1: round.v1.QuoteReason
+	(*Outpoint)(nil),                     // 2: round.v1.Outpoint
+	(*TxOut)(nil),                        // 3: round.v1.TxOut
+	(*TreeNode)(nil),                     // 4: round.v1.TreeNode
+	(*VTXOTree)(nil),                     // 5: round.v1.VTXOTree
+	(*ConnectorLeafInfo)(nil),            // 6: round.v1.ConnectorLeafInfo
+	(*ClientConnectorLeafInfo)(nil),      // 7: round.v1.ClientConnectorLeafInfo
+	(*ClientSuccessResp)(nil),            // 8: round.v1.ClientSuccessResp
+	(*ClientBatchInfo)(nil),              // 9: round.v1.ClientBatchInfo
+	(*ClientAwaitingInputSigsResp)(nil),  // 10: round.v1.ClientAwaitingInputSigsResp
+	(*ClientVTXOAggNonces)(nil),          // 11: round.v1.ClientVTXOAggNonces
+	(*ClientVTXOAggSigs)(nil),            // 12: round.v1.ClientVTXOAggSigs
+	(*ClientRoundFailedResp)(nil),        // 13: round.v1.ClientRoundFailedResp
+	(*ClientErrorResp)(nil),              // 14: round.v1.ClientErrorResp
+	(*BoardingRequest)(nil),              // 15: round.v1.BoardingRequest
+	(*VTXORequest)(nil),                  // 16: round.v1.VTXORequest
+	(*ForfeitRequest)(nil),               // 17: round.v1.ForfeitRequest
+	(*LeaveRequest)(nil),                 // 18: round.v1.LeaveRequest
+	(*JoinRoundAuth)(nil),                // 19: round.v1.JoinRoundAuth
+	(*JoinRoundRequest)(nil),             // 20: round.v1.JoinRoundRequest
+	(*FeeBreakdown)(nil),                 // 21: round.v1.FeeBreakdown
+	(*VTXOQuote)(nil),                    // 22: round.v1.VTXOQuote
+	(*LeaveQuote)(nil),                   // 23: round.v1.LeaveQuote
+	(*JoinRoundQuote)(nil),               // 24: round.v1.JoinRoundQuote
+	(*JoinRoundAccept)(nil),              // 25: round.v1.JoinRoundAccept
+	(*JoinRoundReject)(nil),              // 26: round.v1.JoinRoundReject
+	(*SubmitNoncesRequest)(nil),          // 27: round.v1.SubmitNoncesRequest
+	(*SignerNonces)(nil),                 // 28: round.v1.SignerNonces
+	(*SubmitPartialSigRequest)(nil),      // 29: round.v1.SubmitPartialSigRequest
+	(*SignerPartialSigs)(nil),            // 30: round.v1.SignerPartialSigs
+	(*BoardingInputSignature)(nil),       // 31: round.v1.BoardingInputSignature
+	(*SubmitForfeitSigRequest)(nil),      // 32: round.v1.SubmitForfeitSigRequest
+	(*ForfeitParticipantSig)(nil),        // 33: round.v1.ForfeitParticipantSig
+	(*ForfeitTxSig)(nil),                 // 34: round.v1.ForfeitTxSig
+	(*SubmitVTXOForfeitSigsRequest)(nil), // 35: round.v1.SubmitVTXOForfeitSigsRequest
+	nil,                                  // 36: round.v1.TreeNode.ChildrenEntry
+	nil,                                  // 37: round.v1.ClientBatchInfo.VtxoTreePathsEntry
+	nil,                                  // 38: round.v1.ClientBatchInfo.ConnectorLeafMapEntry
+	nil,                                  // 39: round.v1.ClientVTXOAggNonces.AggNoncesEntry
+	nil,                                  // 40: round.v1.ClientVTXOAggSigs.AggSigsEntry
+	nil,                                  // 41: round.v1.SubmitNoncesRequest.NoncesEntry
+	nil,                                  // 42: round.v1.SignerNonces.TxNoncesEntry
+	nil,                                  // 43: round.v1.SubmitPartialSigRequest.SignaturesEntry
+	nil,                                  // 44: round.v1.SignerPartialSigs.TxSigsEntry
 }
 var file_round_proto_depIdxs = []int32{
-	1,  // 0: round.v1.TreeNode.input:type_name -> round.v1.Outpoint
-	2,  // 1: round.v1.TreeNode.outputs:type_name -> round.v1.TxOut
-	35, // 2: round.v1.TreeNode.children:type_name -> round.v1.TreeNode.ChildrenEntry
-	3,  // 3: round.v1.VTXOTree.nodes:type_name -> round.v1.TreeNode
-	1,  // 4: round.v1.VTXOTree.batch_outpoint:type_name -> round.v1.Outpoint
-	2,  // 5: round.v1.VTXOTree.batch_output:type_name -> round.v1.TxOut
-	1,  // 6: round.v1.ConnectorLeafInfo.leaf_outpoint:type_name -> round.v1.Outpoint
-	2,  // 7: round.v1.ConnectorLeafInfo.leaf_output:type_name -> round.v1.TxOut
-	1,  // 8: round.v1.ClientConnectorLeafInfo.connector_outpoint:type_name -> round.v1.Outpoint
-	1,  // 9: round.v1.ClientSuccessResp.accepted_boarding_outpoints:type_name -> round.v1.Outpoint
-	1,  // 10: round.v1.ClientSuccessResp.accepted_vtxo_outpoints:type_name -> round.v1.Outpoint
-	36, // 11: round.v1.ClientBatchInfo.vtxo_tree_paths:type_name -> round.v1.ClientBatchInfo.VtxoTreePathsEntry
-	37, // 12: round.v1.ClientBatchInfo.connector_leaf_map:type_name -> round.v1.ClientBatchInfo.ConnectorLeafMapEntry
-	38, // 13: round.v1.ClientVTXOAggNonces.agg_nonces:type_name -> round.v1.ClientVTXOAggNonces.AggNoncesEntry
-	39, // 14: round.v1.ClientVTXOAggSigs.agg_sigs:type_name -> round.v1.ClientVTXOAggSigs.AggSigsEntry
-	1,  // 15: round.v1.BoardingRequest.outpoint:type_name -> round.v1.Outpoint
-	1,  // 16: round.v1.ForfeitRequest.vtxo_outpoint:type_name -> round.v1.Outpoint
-	14, // 17: round.v1.JoinRoundRequest.boarding_requests:type_name -> round.v1.BoardingRequest
-	15, // 18: round.v1.JoinRoundRequest.vtxo_requests:type_name -> round.v1.VTXORequest
-	16, // 19: round.v1.JoinRoundRequest.forfeit_requests:type_name -> round.v1.ForfeitRequest
-	17, // 20: round.v1.JoinRoundRequest.leave_requests:type_name -> round.v1.LeaveRequest
-	18, // 21: round.v1.JoinRoundRequest.auth:type_name -> round.v1.JoinRoundAuth
-	21, // 22: round.v1.JoinRoundQuote.vtxo_quotes:type_name -> round.v1.VTXOQuote
-	22, // 23: round.v1.JoinRoundQuote.leave_quotes:type_name -> round.v1.LeaveQuote
-	20, // 24: round.v1.JoinRoundQuote.breakdown:type_name -> round.v1.FeeBreakdown
-	0,  // 25: round.v1.JoinRoundQuote.reject_reason:type_name -> round.v1.QuoteReason
-	40, // 26: round.v1.SubmitNoncesRequest.nonces:type_name -> round.v1.SubmitNoncesRequest.NoncesEntry
-	41, // 27: round.v1.SignerNonces.tx_nonces:type_name -> round.v1.SignerNonces.TxNoncesEntry
-	42, // 28: round.v1.SubmitPartialSigRequest.signatures:type_name -> round.v1.SubmitPartialSigRequest.SignaturesEntry
-	43, // 29: round.v1.SignerPartialSigs.tx_sigs:type_name -> round.v1.SignerPartialSigs.TxSigsEntry
-	1,  // 30: round.v1.BoardingInputSignature.outpoint:type_name -> round.v1.Outpoint
-	30, // 31: round.v1.SubmitForfeitSigRequest.signatures:type_name -> round.v1.BoardingInputSignature
-	1,  // 32: round.v1.ForfeitTxSig.vtxo_outpoint:type_name -> round.v1.Outpoint
-	32, // 33: round.v1.ForfeitTxSig.participant_sigs:type_name -> round.v1.ForfeitParticipantSig
-	33, // 34: round.v1.SubmitVTXOForfeitSigsRequest.forfeit_txs:type_name -> round.v1.ForfeitTxSig
-	4,  // 35: round.v1.ClientBatchInfo.VtxoTreePathsEntry.value:type_name -> round.v1.VTXOTree
-	5,  // 36: round.v1.ClientBatchInfo.ConnectorLeafMapEntry.value:type_name -> round.v1.ConnectorLeafInfo
-	27, // 37: round.v1.SubmitNoncesRequest.NoncesEntry.value:type_name -> round.v1.SignerNonces
-	29, // 38: round.v1.SubmitPartialSigRequest.SignaturesEntry.value:type_name -> round.v1.SignerPartialSigs
-	19, // 39: round.v1.RoundService.JoinRound:input_type -> round.v1.JoinRoundRequest
-	24, // 40: round.v1.RoundService.AcceptQuote:input_type -> round.v1.JoinRoundAccept
-	25, // 41: round.v1.RoundService.RejectQuote:input_type -> round.v1.JoinRoundReject
-	26, // 42: round.v1.RoundService.SubmitNonces:input_type -> round.v1.SubmitNoncesRequest
-	28, // 43: round.v1.RoundService.SubmitPartialSigs:input_type -> round.v1.SubmitPartialSigRequest
-	31, // 44: round.v1.RoundService.SubmitForfeitSigs:input_type -> round.v1.SubmitForfeitSigRequest
-	34, // 45: round.v1.RoundService.SubmitVTXOForfeitSigs:input_type -> round.v1.SubmitVTXOForfeitSigsRequest
-	7,  // 46: round.v1.RoundService.JoinRound:output_type -> round.v1.ClientSuccessResp
-	7,  // 47: round.v1.RoundService.AcceptQuote:output_type -> round.v1.ClientSuccessResp
-	7,  // 48: round.v1.RoundService.RejectQuote:output_type -> round.v1.ClientSuccessResp
-	10, // 49: round.v1.RoundService.SubmitNonces:output_type -> round.v1.ClientVTXOAggNonces
-	11, // 50: round.v1.RoundService.SubmitPartialSigs:output_type -> round.v1.ClientVTXOAggSigs
-	9,  // 51: round.v1.RoundService.SubmitForfeitSigs:output_type -> round.v1.ClientAwaitingInputSigsResp
-	7,  // 52: round.v1.RoundService.SubmitVTXOForfeitSigs:output_type -> round.v1.ClientSuccessResp
-	46, // [46:53] is the sub-list for method output_type
-	39, // [39:46] is the sub-list for method input_type
-	39, // [39:39] is the sub-list for extension type_name
-	39, // [39:39] is the sub-list for extension extendee
-	0,  // [0:39] is the sub-list for field type_name
+	2,  // 0: round.v1.TreeNode.input:type_name -> round.v1.Outpoint
+	3,  // 1: round.v1.TreeNode.outputs:type_name -> round.v1.TxOut
+	36, // 2: round.v1.TreeNode.children:type_name -> round.v1.TreeNode.ChildrenEntry
+	4,  // 3: round.v1.VTXOTree.nodes:type_name -> round.v1.TreeNode
+	2,  // 4: round.v1.VTXOTree.batch_outpoint:type_name -> round.v1.Outpoint
+	3,  // 5: round.v1.VTXOTree.batch_output:type_name -> round.v1.TxOut
+	2,  // 6: round.v1.ConnectorLeafInfo.leaf_outpoint:type_name -> round.v1.Outpoint
+	3,  // 7: round.v1.ConnectorLeafInfo.leaf_output:type_name -> round.v1.TxOut
+	2,  // 8: round.v1.ClientConnectorLeafInfo.connector_outpoint:type_name -> round.v1.Outpoint
+	2,  // 9: round.v1.ClientSuccessResp.accepted_boarding_outpoints:type_name -> round.v1.Outpoint
+	2,  // 10: round.v1.ClientSuccessResp.accepted_vtxo_outpoints:type_name -> round.v1.Outpoint
+	37, // 11: round.v1.ClientBatchInfo.vtxo_tree_paths:type_name -> round.v1.ClientBatchInfo.VtxoTreePathsEntry
+	38, // 12: round.v1.ClientBatchInfo.connector_leaf_map:type_name -> round.v1.ClientBatchInfo.ConnectorLeafMapEntry
+	39, // 13: round.v1.ClientVTXOAggNonces.agg_nonces:type_name -> round.v1.ClientVTXOAggNonces.AggNoncesEntry
+	40, // 14: round.v1.ClientVTXOAggSigs.agg_sigs:type_name -> round.v1.ClientVTXOAggSigs.AggSigsEntry
+	0,  // 15: round.v1.ClientRoundFailedResp.failure_code:type_name -> round.v1.RoundFailureCode
+	2,  // 16: round.v1.BoardingRequest.outpoint:type_name -> round.v1.Outpoint
+	2,  // 17: round.v1.ForfeitRequest.vtxo_outpoint:type_name -> round.v1.Outpoint
+	15, // 18: round.v1.JoinRoundRequest.boarding_requests:type_name -> round.v1.BoardingRequest
+	16, // 19: round.v1.JoinRoundRequest.vtxo_requests:type_name -> round.v1.VTXORequest
+	17, // 20: round.v1.JoinRoundRequest.forfeit_requests:type_name -> round.v1.ForfeitRequest
+	18, // 21: round.v1.JoinRoundRequest.leave_requests:type_name -> round.v1.LeaveRequest
+	19, // 22: round.v1.JoinRoundRequest.auth:type_name -> round.v1.JoinRoundAuth
+	22, // 23: round.v1.JoinRoundQuote.vtxo_quotes:type_name -> round.v1.VTXOQuote
+	23, // 24: round.v1.JoinRoundQuote.leave_quotes:type_name -> round.v1.LeaveQuote
+	21, // 25: round.v1.JoinRoundQuote.breakdown:type_name -> round.v1.FeeBreakdown
+	1,  // 26: round.v1.JoinRoundQuote.reject_reason:type_name -> round.v1.QuoteReason
+	41, // 27: round.v1.SubmitNoncesRequest.nonces:type_name -> round.v1.SubmitNoncesRequest.NoncesEntry
+	42, // 28: round.v1.SignerNonces.tx_nonces:type_name -> round.v1.SignerNonces.TxNoncesEntry
+	43, // 29: round.v1.SubmitPartialSigRequest.signatures:type_name -> round.v1.SubmitPartialSigRequest.SignaturesEntry
+	44, // 30: round.v1.SignerPartialSigs.tx_sigs:type_name -> round.v1.SignerPartialSigs.TxSigsEntry
+	2,  // 31: round.v1.BoardingInputSignature.outpoint:type_name -> round.v1.Outpoint
+	31, // 32: round.v1.SubmitForfeitSigRequest.signatures:type_name -> round.v1.BoardingInputSignature
+	2,  // 33: round.v1.ForfeitTxSig.vtxo_outpoint:type_name -> round.v1.Outpoint
+	33, // 34: round.v1.ForfeitTxSig.participant_sigs:type_name -> round.v1.ForfeitParticipantSig
+	34, // 35: round.v1.SubmitVTXOForfeitSigsRequest.forfeit_txs:type_name -> round.v1.ForfeitTxSig
+	5,  // 36: round.v1.ClientBatchInfo.VtxoTreePathsEntry.value:type_name -> round.v1.VTXOTree
+	6,  // 37: round.v1.ClientBatchInfo.ConnectorLeafMapEntry.value:type_name -> round.v1.ConnectorLeafInfo
+	28, // 38: round.v1.SubmitNoncesRequest.NoncesEntry.value:type_name -> round.v1.SignerNonces
+	30, // 39: round.v1.SubmitPartialSigRequest.SignaturesEntry.value:type_name -> round.v1.SignerPartialSigs
+	20, // 40: round.v1.RoundService.JoinRound:input_type -> round.v1.JoinRoundRequest
+	25, // 41: round.v1.RoundService.AcceptQuote:input_type -> round.v1.JoinRoundAccept
+	26, // 42: round.v1.RoundService.RejectQuote:input_type -> round.v1.JoinRoundReject
+	27, // 43: round.v1.RoundService.SubmitNonces:input_type -> round.v1.SubmitNoncesRequest
+	29, // 44: round.v1.RoundService.SubmitPartialSigs:input_type -> round.v1.SubmitPartialSigRequest
+	32, // 45: round.v1.RoundService.SubmitForfeitSigs:input_type -> round.v1.SubmitForfeitSigRequest
+	35, // 46: round.v1.RoundService.SubmitVTXOForfeitSigs:input_type -> round.v1.SubmitVTXOForfeitSigsRequest
+	8,  // 47: round.v1.RoundService.JoinRound:output_type -> round.v1.ClientSuccessResp
+	8,  // 48: round.v1.RoundService.AcceptQuote:output_type -> round.v1.ClientSuccessResp
+	8,  // 49: round.v1.RoundService.RejectQuote:output_type -> round.v1.ClientSuccessResp
+	11, // 50: round.v1.RoundService.SubmitNonces:output_type -> round.v1.ClientVTXOAggNonces
+	12, // 51: round.v1.RoundService.SubmitPartialSigs:output_type -> round.v1.ClientVTXOAggSigs
+	10, // 52: round.v1.RoundService.SubmitForfeitSigs:output_type -> round.v1.ClientAwaitingInputSigsResp
+	8,  // 53: round.v1.RoundService.SubmitVTXOForfeitSigs:output_type -> round.v1.ClientSuccessResp
+	47, // [47:54] is the sub-list for method output_type
+	40, // [40:47] is the sub-list for method input_type
+	40, // [40:40] is the sub-list for extension type_name
+	40, // [40:40] is the sub-list for extension extendee
+	0,  // [0:40] is the sub-list for field type_name
 }
 
 func init() { file_round_proto_init() }
@@ -2913,7 +2991,7 @@ func file_round_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_round_proto_rawDesc), len(file_round_proto_rawDesc)),
-			NumEnums:      1,
+			NumEnums:      2,
 			NumMessages:   43,
 			NumExtensions: 0,
 			NumServices:   1,
