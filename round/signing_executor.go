@@ -242,6 +242,8 @@ func (e *boundedSigningExecutor) run(ctx context.Context, numJobs int,
 
 				jobErrors[index] = err
 				cancel()
+
+				return
 			}
 		}()
 	}
@@ -257,12 +259,17 @@ sendJobs:
 	close(jobs)
 	workers.Wait()
 
-	// Prefer a concrete job error over the cancellation it caused. Scan
-	// by index so concurrent completion does not make errors unstable.
+	// Prefer concrete job errors over the cancellation they caused. Join
+	// them by index so concurrent completion does not make diagnostics
+	// unstable.
+	var errs []error
 	for _, err := range jobErrors {
 		if err != nil {
-			return err
+			errs = append(errs, err)
 		}
+	}
+	if len(errs) > 0 {
+		return errors.Join(errs...)
 	}
 
 	return ctx.Err()

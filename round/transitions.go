@@ -2384,10 +2384,22 @@ func (s *CommitmentTxValidatedState) processEvent(ctx context.Context,
 		sessionJobs := make(
 			[]CreateSignerSessionJob, 0, len(s.Intents.VTXOs),
 		)
+		seenSignerKeys := make(
+			map[SignerKey]struct{}, len(s.Intents.VTXOs),
+		)
 		for _, vtxoReq := range s.Intents.VTXOs {
 			signerKey := NewSignerKey(
 				vtxoReq.SigningKey.PubKey,
 			)
+
+			// Protocol session and nonce maps are keyed solely by
+			// signer key. Reject duplicates before creating signer
+			// resources so map assembly cannot orphan a session.
+			if _, ok := seenSignerKeys[signerKey]; ok {
+				return nil, fmt.Errorf("duplicate "+
+					"signer key %x", signerKey[:])
+			}
+			seenSignerKeys[signerKey] = struct{}{}
 
 			// Get the client tree for this signer key.
 			// The sweep tweak and batch output are

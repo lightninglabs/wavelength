@@ -230,6 +230,30 @@ func TestSigningExecutorCreateFailure(t *testing.T) {
 	require.Same(t, sessions[0], <-cleanedSessions)
 }
 
+// TestSigningExecutorConcurrentFailures verifies that failures from jobs
+// already running at cancellation remain available in deterministic order.
+func TestSigningExecutorConcurrentFailures(t *testing.T) {
+	t.Parallel()
+
+	executor := newTestSigningExecutor(t, 2)
+	errZero := errors.New("zero failed")
+	errOne := errors.New("one failed")
+	jobErrors := []error{errZero, errOne}
+
+	var started sync.WaitGroup
+	started.Add(len(jobErrors))
+	err := executor.run(t.Context(), len(jobErrors), func(index int) error {
+		started.Done()
+		started.Wait()
+
+		return jobErrors[index]
+	})
+
+	require.ErrorIs(t, err, errZero)
+	require.ErrorIs(t, err, errOne)
+	require.EqualError(t, err, "zero failed\none failed")
+}
+
 // TestSigningExecutorCancellation verifies cancellation stops new jobs and
 // cleans a session returned by an already-running signer call.
 func TestSigningExecutorCancellation(t *testing.T) {
