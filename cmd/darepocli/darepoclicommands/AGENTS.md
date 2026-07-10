@@ -21,9 +21,10 @@ default `--help` face:
    Hidden from the default `--help` via cobra `Hidden` (not a build tag),
    so they stay compiled and fully runnable in the shipped binary;
    `DAREPO_DEV=1` reveals them under an "Advanced" group. The env var only
-   changes visibility — it never gates execution. `ark.*` and `dev` stay
-   on the `schema`/MCP surfaces; `recovery` is not exposed via
-   `schema`/MCP.
+   changes visibility — it never gates execution. `ark.*` stays on the
+   `schema`/MCP surfaces; `dev` is reachable only as the generated (hidden)
+   CLI subtree — it is not registered in `schema`/MCP — and `recovery` is
+   exposed on neither.
 
 The `swap.*` verbs were retired: `send`/`recv --offchain` and `activity`
 cover them (the swapruntime daemon runtime that powers those verbs is
