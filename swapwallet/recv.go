@@ -112,6 +112,11 @@ func (r *receiver) Recv(ctx context.Context, req *walletdkrpc.RecvRequest) (
 		walletdkrpc.EntryKind_ENTRY_KIND_RECV,
 	)
 
+	// Project the pending row on dispatch so it is visible immediately,
+	// not only once the monitor's async projection lands. project (not
+	// projectAndEmit): the monitor owns the swap-backed row's live emit.
+	r.runtime.project(context.WithoutCancel(ctx), entry)
+
 	return &walletdkrpc.RecvResponse{
 		Invoice: startResp.GetInvoice(),
 		Entry:   entry,
