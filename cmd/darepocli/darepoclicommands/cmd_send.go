@@ -59,6 +59,11 @@ func newSendCmd() *cobra.Command {
 			"  darepocli send bcrt1... --onchain --amt 1000\n" +
 			"  darepocli send bcrt1... --onchain --sweep-all",
 		Args: cobra.ExactArgs(1),
+		// The retired `swap pay` verb is covered by `send
+		// --offchain`; steer stale invocations here.
+		SuggestFor: []string{
+			"swap",
+		},
 		RunE: walletSend,
 	}
 
