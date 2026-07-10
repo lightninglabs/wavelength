@@ -27,6 +27,11 @@ func newRecvCmd() *cobra.Command {
 			"--memo \"coffee\"\n" +
 			"  darepocli recv --onchain",
 		Args: cobra.NoArgs,
+		// The retired `swap receive` verb is covered by `recv
+		// --offchain`; steer stale invocations here.
+		SuggestFor: []string{
+			"swap",
+		},
 		RunE: walletRecv,
 	}
 

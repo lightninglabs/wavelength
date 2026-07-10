@@ -61,13 +61,7 @@ type schemaMethod struct {
 // The body is split across helper functions to stay under the funlen
 // linter cap. The top-level wallet verbs (create, unlock, send, recv,
 // activity, balance, exit) are the day-to-day surface; advanced commands
-// live under the `ark.*` and `swap.*` namespaces.
-//
-// The swap.* entries are listed unconditionally regardless of the
-// swapruntime build tag: an agent inspecting the schema in a stub
-// build still gets to discover what swap.* offers (the CLI itself
-// emits a clear build-tag error when the verb is invoked), and the
-// MCP registration is what actually gets tag-gated.
+// live under the `ark.*` namespace.
 func methodRegistry() []schemaMethod {
 	out := walletAdminMethodRegistry()
 	out = append(out, walletPaymentMethodRegistry()...)
@@ -76,7 +70,6 @@ func methodRegistry() []schemaMethod {
 	out = append(out, arkVTXOMethodRegistry()...)
 	out = append(out, arkSendMethodRegistry()...)
 	out = append(out, arkObservableMethodRegistry()...)
-	out = append(out, swapMethodRegistry()...)
 
 	return out
 }

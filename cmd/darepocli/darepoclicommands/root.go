@@ -78,10 +78,10 @@ func NewRootCmd() *cobra.Command {
 			"are ignored",
 	)
 
-	// Register subcommands. The seven implicit top-level wallet verbs
-	// (create / unlock / send / recv / activity / balance / exit) are the
-	// face of the CLI; everything else groups under named parents
-	// (ark / swap) or stays at root for daemon introspection.
+	// Register subcommands. The implicit top-level wallet verbs
+	// (create / unlock / send / recv / activity / balance / exit /
+	// wallet-sweep) are the face of the CLI; everything else groups under
+	// the named `ark` parent or stays at root for daemon introspection.
 	cmd.AddCommand(
 		// Wallet verbs (top-level / implicit).
 		newCreateCmd(),
@@ -101,7 +101,6 @@ func NewRootCmd() *cobra.Command {
 		// Advanced subtrees.
 		newArkCmd(),
 		newRecoveryCmd(),
-		newSwapCmd(),
 
 		devrpc.NewDevCmd(
 			devrpc.Config{

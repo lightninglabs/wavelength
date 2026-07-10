@@ -1,5 +1,3 @@
-//go:build swapruntime
-
 package darepoclicommands
 
 import (
@@ -11,6 +9,8 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+// TestMapSwapRuntimeRPCError verifies that a gRPC unknown-service response
+// for the swap runtime is turned into an actionable rebuild hint.
 func TestMapSwapRuntimeRPCError(t *testing.T) {
 	t.Parallel()
 
@@ -26,6 +26,9 @@ func TestMapSwapRuntimeRPCError(t *testing.T) {
 	require.ErrorContains(t, mapped, `tags="swapruntime"`)
 }
 
+// TestMapSwapRuntimeRPCErrorLeavesOtherErrors verifies that errors unrelated
+// to a missing swap runtime pass through unchanged so daemon-side validation
+// remains visible.
 func TestMapSwapRuntimeRPCErrorLeavesOtherErrors(t *testing.T) {
 	t.Parallel()
 

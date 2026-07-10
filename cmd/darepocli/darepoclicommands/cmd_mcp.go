@@ -6,7 +6,6 @@ import (
 
 	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
-	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
 	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/spf13/cobra"
@@ -58,6 +57,21 @@ func mcpServe(cmd *cobra.Command, _ []string) error {
 	// --tlscertpath honored across both surfaces.
 	walletClient := walletdkrpc.NewWalletServiceClient(conn)
 
+	server := buildMCPServer(client, walletClient)
+
+	// Run on stdio transport until the client disconnects.
+	return server.Run(
+		context.Background(), &mcp.StdioTransport{},
+	)
+}
+
+// buildMCPServer constructs the MCP server and registers every exposed RPC
+// as a typed tool. It is separated from mcpServe (which owns the daemon dial
+// and the stdio transport) so the advertised tool surface can be
+// introspected in tests without a live daemon.
+func buildMCPServer(client daemonrpc.DaemonServiceClient,
+	walletClient walletdkrpc.WalletServiceClient) *mcp.Server {
+
 	server := mcp.NewServer(
 		&mcp.Implementation{
 			Name:    "darepocli",
@@ -68,19 +82,11 @@ func mcpServe(cmd *cobra.Command, _ []string) error {
 
 	// Register all RPC tools. The wallet-verb registrations sit
 	// above the legacy daemonrpc tools so an agent listing tools
-	// sees the everyday surface first. registerMCPSwapTools is a
-	// no-op in non-swapruntime builds (see mcp_swap_stub.go) so the
-	// MCP server only advertises swap.* tools when the daemon was
-	// built with the matching tag.
-	swapClient := swapclientrpc.NewSwapClientServiceClient(conn)
+	// sees the everyday surface first.
 	registerMCPWalletTools(server, walletClient)
-	registerMCPSwapTools(server, swapClient)
 	registerMCPTools(server, client)
 
-	// Run on stdio transport until the client disconnects.
-	return server.Run(
-		context.Background(), &mcp.StdioTransport{},
-	)
+	return server
 }
 
 // mcpResult builds a CallToolResult from a proto message response.
