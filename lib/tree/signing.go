@@ -1,7 +1,9 @@
 package tree
 
 import (
+	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
@@ -30,6 +32,11 @@ type TxSignerSession struct {
 	signer      input.MuSig2Signer
 	signSession *input.MuSig2SessionInfo
 	sigHash     [32]byte
+
+	// cleanupMu serializes signing and cleanup so that a session cannot be
+	// removed while it is being used. It also makes Cleanup idempotent.
+	cleanupMu   sync.Mutex
+	cleanupDone bool
 }
 
 // NewTxSignerSession creates a new signing session for a single transaction
@@ -89,6 +96,13 @@ func (s *TxSignerSession) GetNonce() Musig2PubNonce {
 func (s *TxSignerSession) RegisterAggNonce(
 	aggNonce [musig2.PubNonceSize]byte) error {
 
+	s.cleanupMu.Lock()
+	defer s.cleanupMu.Unlock()
+
+	if s.cleanupDone {
+		return fmt.Errorf("signing session has been cleaned up")
+	}
+
 	return s.signer.MuSig2RegisterCombinedNonce(
 		s.signSession.SessionID, aggNonce,
 	)
@@ -97,9 +111,49 @@ func (s *TxSignerSession) RegisterAggNonce(
 // Sign generates the partial signature for this transaction.
 // If cleanup is true, the signing session is cleaned up after signing.
 func (s *TxSignerSession) Sign(cleanup bool) (*musig2.PartialSignature, error) {
-	return s.signer.MuSig2Sign(
+	s.cleanupMu.Lock()
+	defer s.cleanupMu.Unlock()
+
+	if s.cleanupDone {
+		return nil, fmt.Errorf("signing session has been cleaned up")
+	}
+
+	sig, err := s.signer.MuSig2Sign(
 		s.signSession.SessionID, s.sigHash, cleanup,
 	)
+	if err != nil {
+		return nil, err
+	}
+
+	// MuSig2Sign removes the underlying session after a successful call
+	// when cleanup is requested. Remember that here so a later Cleanup
+	// call does not try to remove it a second time.
+	if cleanup {
+		s.cleanupDone = true
+	}
+
+	return sig, nil
+}
+
+// Cleanup removes the underlying MuSig2 session. It is safe to call Cleanup
+// more than once after it succeeds. A failed cleanup remains retryable because
+// a remote signer may recover from a transient transport error.
+func (s *TxSignerSession) Cleanup() error {
+	s.cleanupMu.Lock()
+	defer s.cleanupMu.Unlock()
+
+	if s.cleanupDone {
+		return nil
+	}
+
+	err := s.signer.MuSig2Cleanup(s.signSession.SessionID)
+	if err != nil {
+		return err
+	}
+
+	s.cleanupDone = true
+
+	return nil
 }
 
 // SignerSession manages signing for all transactions in a client's path in a
@@ -166,6 +220,14 @@ func NewSignerSession(signer input.MuSig2Signer,
 		return nil
 	})
 	if err != nil {
+		cleanupErr := cleanupSignerSessions(txs)
+		if cleanupErr != nil {
+			return nil, errors.Join(
+				err, fmt.Errorf("failed to clean up signer "+
+					"session: %w", cleanupErr),
+			)
+		}
+
 		return nil, err
 	}
 
@@ -173,6 +235,29 @@ func NewSignerSession(signer input.MuSig2Signer,
 		signerKey: signerKey,
 		txs:       txs,
 	}, nil
+}
+
+// Cleanup removes every underlying MuSig2 session. It is safe to call Cleanup
+// more than once, including after a partially successful signing attempt.
+func (s *SignerSession) Cleanup() error {
+	return cleanupSignerSessions(s.txs)
+}
+
+// cleanupSignerSessions removes all transaction sessions and combines any
+// cleanup errors so one failure does not prevent the remaining cleanup work.
+func cleanupSignerSessions(txs map[TxID]*TxSignerSession) error {
+	errs := make([]error, 0)
+	for txid, txSession := range txs {
+		err := txSession.Cleanup()
+		if err != nil {
+			errs = append(
+				errs, fmt.Errorf("failed to clean up tx "+
+					"%s: %w", txid, err),
+			)
+		}
+	}
+
+	return errors.Join(errs...)
 }
 
 // PubKey returns the signer's public key.

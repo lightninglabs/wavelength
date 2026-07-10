@@ -1,6 +1,7 @@
 package tree
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 
@@ -223,6 +224,47 @@ func (m *mockMuSig2Signer) MuSig2Cleanup(
 	delete(m.sessions, sessionID)
 
 	return nil
+}
+
+// cleanupTrackingSigner tracks session creation and cleanup and can inject
+// failures into either operation.
+type cleanupTrackingSigner struct {
+	*mockMuSig2Signer
+
+	createCalls  int
+	failCreateAt int
+	cleanupCalls int
+	cleanupErr   error
+}
+
+// MuSig2CreateSession creates a session unless the configured call should
+// fail.
+func (s *cleanupTrackingSigner) MuSig2CreateSession(version input.MuSig2Version,
+	keyLoc keychain.KeyLocator, signers []*btcec.PublicKey,
+	tweaks *input.MuSig2Tweaks, otherNonces [][musig2.PubNonceSize]byte,
+	localNonces *musig2.Nonces) (*input.MuSig2SessionInfo, error) {
+
+	s.createCalls++
+	if s.createCalls == s.failCreateAt {
+		return nil, fmt.Errorf("injected session creation failure")
+	}
+
+	return s.mockMuSig2Signer.MuSig2CreateSession(
+		version, keyLoc, signers, tweaks, otherNonces, localNonces,
+	)
+}
+
+// MuSig2Cleanup records cleanup attempts and delegates successful attempts to
+// the underlying signer.
+func (s *cleanupTrackingSigner) MuSig2Cleanup(
+	sessionID input.MuSig2SessionID) error {
+
+	s.cleanupCalls++
+	if s.cleanupErr != nil {
+		return s.cleanupErr
+	}
+
+	return s.mockMuSig2Signer.MuSig2Cleanup(sessionID)
 }
 
 // TestTxSignerSession tests the TxSignerSession functionality.
@@ -697,6 +739,139 @@ func TestSignerSession(t *testing.T) {
 		require.Contains(t, err.Error(), "aggregated nonce for tx")
 		require.Contains(t, err.Error(), "not found")
 	})
+}
+
+// TestSignerSessionCleanup verifies that cleanup is idempotent and that a
+// partially constructed signer session rolls back every created transaction
+// session.
+func TestSignerSessionCleanup(t *testing.T) {
+	t.Parallel()
+
+	t.Run("tx cleanup is idempotent", func(t *testing.T) {
+		t.Parallel()
+
+		privKey, pubKey := createTestKey(t)
+		signer := &cleanupTrackingSigner{
+			mockMuSig2Signer: newMockMuSig2Signer(privKey),
+		}
+		tree, fetcher := createTwoNodeSignerTree(t, pubKey)
+		keyDesc := &keychain.KeyDescriptor{PubKey: pubKey}
+
+		session, err := tree.NewTxSignerSession(
+			signer, make([]byte, 32), keyDesc, fetcher,
+		)
+		require.NoError(t, err)
+
+		require.NoError(t, session.Cleanup())
+		require.NoError(t, session.Cleanup())
+		require.Equal(t, 1, signer.cleanupCalls)
+		require.Empty(t, signer.sessions)
+	})
+
+	t.Run("cleanup error can be retried", func(t *testing.T) {
+		t.Parallel()
+
+		privKey, pubKey := createTestKey(t)
+		cleanupErr := errors.New("cleanup failed")
+		signer := &cleanupTrackingSigner{
+			mockMuSig2Signer: newMockMuSig2Signer(privKey),
+			cleanupErr:       cleanupErr,
+		}
+		tree, fetcher := createTwoNodeSignerTree(t, pubKey)
+		keyDesc := &keychain.KeyDescriptor{PubKey: pubKey}
+
+		session, err := tree.NewTxSignerSession(
+			signer, make([]byte, 32), keyDesc, fetcher,
+		)
+		require.NoError(t, err)
+
+		require.ErrorIs(t, session.Cleanup(), cleanupErr)
+		signer.cleanupErr = nil
+		require.NoError(t, session.Cleanup())
+		require.NoError(t, session.Cleanup())
+		require.Equal(t, 2, signer.cleanupCalls)
+		require.Empty(t, signer.sessions)
+	})
+
+	t.Run("signer cleanup covers every tx", func(t *testing.T) {
+		t.Parallel()
+
+		privKey, pubKey := createTestKey(t)
+		signer := &cleanupTrackingSigner{
+			mockMuSig2Signer: newMockMuSig2Signer(privKey),
+		}
+		tree, fetcher := createTwoNodeSignerTree(t, pubKey)
+		keyDesc := &keychain.KeyDescriptor{PubKey: pubKey}
+
+		session, err := NewSignerSession(
+			signer, keyDesc, make([]byte, 32), fetcher, tree,
+		)
+		require.NoError(t, err)
+		require.Len(t, session.txs, 2)
+
+		require.NoError(t, session.Cleanup())
+		require.NoError(t, session.Cleanup())
+		require.Equal(t, 2, signer.cleanupCalls)
+		require.Empty(t, signer.sessions)
+	})
+
+	t.Run("construction failure rolls back sessions", func(t *testing.T) {
+		t.Parallel()
+
+		privKey, pubKey := createTestKey(t)
+		signer := &cleanupTrackingSigner{
+			mockMuSig2Signer: newMockMuSig2Signer(privKey),
+			failCreateAt:     2,
+		}
+		tree, fetcher := createTwoNodeSignerTree(t, pubKey)
+		keyDesc := &keychain.KeyDescriptor{PubKey: pubKey}
+
+		session, err := NewSignerSession(
+			signer, keyDesc, make([]byte, 32), fetcher, tree,
+		)
+		require.ErrorContains(
+			t, err, "injected session creation failure",
+		)
+		require.Nil(t, session)
+		require.Equal(t, 2, signer.createCalls)
+		require.Equal(t, 1, signer.cleanupCalls)
+		require.Empty(t, signer.sessions)
+	})
+}
+
+// createTwoNodeSignerTree creates a root and leaf that both belong to the same
+// signer, plus the previous-output fetcher needed to construct sessions.
+func createTwoNodeSignerTree(t *testing.T,
+	signer *btcec.PublicKey) (*Node, txscript.PrevOutputFetcher) {
+
+	t.Helper()
+
+	leaf := createSimpleLeaf("leaf", 1000, []*btcec.PublicKey{signer})
+	root := &Node{
+		Input: wire.OutPoint{
+			Hash: chainhash.HashH([]byte("cleanup-root")),
+		},
+		Outputs: []*wire.TxOut{
+			{
+				Value: 1000,
+			},
+		},
+		CoSigners: []*btcec.PublicKey{
+			signer,
+		},
+		Children: map[uint32]*Node{
+			0: leaf,
+		},
+	}
+
+	rootTXID, err := root.TXID()
+	require.NoError(t, err)
+	leaf.Input = wire.OutPoint{Hash: rootTXID}
+
+	fetcher, err := root.PrevOutputFetcher(&wire.TxOut{Value: 5000})
+	require.NoError(t, err)
+
+	return root, fetcher
 }
 
 // TestSignerSessionMultiTx tests SignerSession with multiple transactions.
