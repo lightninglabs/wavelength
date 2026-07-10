@@ -82,6 +82,11 @@ const (
 	recoveryReasonRefundSessionCompleted = "cooperative refund session " +
 		"completed"
 
+	// recoveryReasonRefundSpendObserved explains cancellation when the pay
+	// side observes the vHTLC spent by the refund before the refund output
+	// itself is indexed.
+	recoveryReasonRefundSpendObserved = "cooperative refund spend observed"
+
 	// recoveryReasonClaimAccepted explains cancellation when the daemon
 	// accepted the cooperative claim OOR.
 	recoveryReasonClaimAccepted = "cooperative claim accepted"
