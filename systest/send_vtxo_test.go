@@ -79,6 +79,12 @@ type fakeMailboxServer struct {
 	oorSubmitReqs   []*oorpb.SubmitPackageRequest
 	oorSubmitEnvs   []*mailboxpb.Envelope
 	inboxSignalChan chan struct{}
+
+	// failRoundOnJoin, when set, makes the operator push this
+	// ClientRoundFailedResp back to the client immediately on every
+	// JoinRound, simulating an operator that admits the registration but
+	// cannot seal the round (e.g. it cannot fund the commitment tx).
+	failRoundOnJoin *roundpb.ClientRoundFailedResp
 }
 
 // newFakeMailboxServer constructs a fake mailbox edge with the given operator
@@ -249,7 +255,12 @@ func (s *fakeMailboxServer) handleOperatorEnvelope(ctx context.Context,
 
 	case env.Rpc.Service == roundpb.ServiceName &&
 		env.Rpc.Method == roundpb.MethodJoinRound:
-		return s.recordJoinRound(env)
+
+		if err := s.recordJoinRound(env); err != nil {
+			return err
+		}
+
+		return s.maybePushRoundFailed(env)
 
 	case env.Rpc.Service == oorpb.ServiceName &&
 		env.Rpc.Method == oorpb.MethodSubmitPackage:
@@ -335,6 +346,61 @@ func (s *fakeMailboxServer) recordJoinRound(env *mailboxpb.Envelope) error {
 
 	s.joinRoundReqs = append(s.joinRoundReqs, &req)
 	s.joinRoundEnvs = append(s.joinRoundEnvs, env)
+
+	return nil
+}
+
+// setFailRoundOnJoin arms the operator to push the given ClientRoundFailedResp
+// back to the client on every subsequent JoinRound. Pass nil to disarm.
+func (s *fakeMailboxServer) setFailRoundOnJoin(
+	resp *roundpb.ClientRoundFailedResp) {
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.failRoundOnJoin = resp
+}
+
+// maybePushRoundFailed pushes the armed ClientRoundFailedResp back to the
+// client that just sent a JoinRound, as a KIND_EVENT round-failed push routed
+// to the daemon's round mailbox (the JoinRound envelope's sender). It is a
+// no-op when the operator is not armed to fail the round.
+func (s *fakeMailboxServer) maybePushRoundFailed(
+	joinEnv *mailboxpb.Envelope) error {
+
+	s.mu.Lock()
+	resp := s.failRoundOnJoin
+	s.mu.Unlock()
+
+	if resp == nil {
+		return nil
+	}
+
+	body, err := anypb.New(resp)
+	if err != nil {
+		return fmt.Errorf("wrap round failed: %w", err)
+	}
+
+	s.enqueueEnvelope(&mailboxpb.Envelope{
+		// Echo the JoinRound's protocol versions rather than hardcoding
+		// them: the daemon's inbound validation drops any envelope
+		// whose versions don't match its runtime binding, so copying
+		// the versions off the daemon's own outbound envelope
+		// guarantees the push survives that check. Hardcoding here
+		// would silently drop the push and hang the test.
+		ProtocolVersion:    joinEnv.ProtocolVersion,
+		ArkProtocolVersion: joinEnv.ArkProtocolVersion,
+		Sender:             s.operatorMailbox,
+		Recipient:          joinEnv.Sender,
+		CreatedAtUnixMs:    time.Now().UnixMilli(),
+		Body:               body,
+		Rpc: &mailboxpb.RpcMeta{
+			Kind:    mailboxpb.RpcMeta_KIND_EVENT,
+			Service: roundpb.ServiceName,
+			Method:  roundpb.MethodRoundFailed,
+			ReplyTo: s.operatorMailbox,
+		},
+	})
 
 	return nil
 }
