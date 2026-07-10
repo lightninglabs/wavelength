@@ -221,6 +221,27 @@ func TestServiceEscalateToleratesNilUnrollStatus(t *testing.T) {
 	require.Equal(t, vhtlcrecovery.StateUnrollStarted, stored.State)
 }
 
+// TestServiceStatusToleratesNilUnrollStatus pins the nil-status guard on the
+// status-reconcile path specifically. GetRecoveryStatus joins the durable row
+// with the current unroll status via reconcileLoaded without going through
+// escalation, so a nil status here must read as "no observation yet" and return
+// the row unchanged rather than panic.
+func TestServiceStatusToleratesNilUnrollStatus(t *testing.T) {
+	t.Parallel()
+
+	job := testRecoveryJob(
+		"recovery-status-nil", vhtlcrecovery.StateUnrollStarted,
+	)
+	store := newFakeStore(job)
+	registry := &fakeUnrollRegistry{nilStatus: true}
+	service := newTestService(t, store, registry)
+
+	status, err := service.GetRecoveryStatus(t.Context(), job.ID)
+	require.NoError(t, err)
+	require.NotNil(t, status)
+	require.Equal(t, vhtlcrecovery.StateUnrollStarted, status.Job.State)
+}
+
 // TestServiceStatusReconcilesTerminalUnroll verifies status polling folds a
 // terminal unroll result back into the durable recovery row.
 func TestServiceStatusReconcilesTerminalUnroll(t *testing.T) {

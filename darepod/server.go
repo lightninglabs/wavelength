@@ -5552,6 +5552,22 @@ func (s *Server) recoverOrphanedUnrollJobs(ctx context.Context,
 		// Re-admit it under that policy so the first-writer-wins
 		// registry never locks it to the standard timeout: a standard
 		// witness against a vHTLC taproot tree would never sweep.
+		//
+		// The trigger is not recovered the way the exit policy is. A
+		// target that was force-exited under TriggerFraudSpend but
+		// crashed in the gap between the VTXO status flip and the
+		// registry admission has no registry record, so it re-admits
+		// here as TriggerRestart. The only effect is that its ready
+		// checkpoints are broadcast immediately instead of deferred to
+		// the recipient's fraud backstop window (see
+		// unroll.shouldSubmitReadyFrontier): earlier fees, same funds
+		// outcome, no missed deadline. The exit policy is recoverable
+		// because it lives in the recovery store; the fraud trigger has
+		// no such durable home. A faithful fix would stamp the trigger
+		// onto the VTXO row in the same transaction that flips it to
+		// UnilateralExit and read it back off the listed descriptors
+		// here, which is a schema change left as separable follow-up
+		// tracked in darepo-client#914.
 		ensureReq := &unroll.EnsureUnrollRequest{
 			Outpoint: op,
 			Trigger:  unroll.TriggerRestart,
