@@ -74,6 +74,47 @@ func TestRecvDispatchesStartReceive(t *testing.T) {
 	)
 }
 
+// TestRecvProjectsPendingEntry confirms a swap-backed RECV projects its
+// pending row on dispatch, keyed by payment hash, before Recv returns.
+func TestRecvProjectsPendingEntry(t *testing.T) {
+	t.Parallel()
+
+	r, swap := newRecvFixture(t)
+	store := &fakeActivityProjector{}
+	r.deps.ActivityStore = store
+	swap.startReceiveResp = &swapclientrpc.StartReceiveResponse{
+		PaymentHash: "abc123",
+		Invoice:     "lnbc1invoice",
+		Swap: &swapclientrpc.SwapSummary{
+			PaymentHash: "abc123",
+			Direction: swapclientrpc.
+				SwapDirection_SWAP_DIRECTION_RECEIVE,
+			Pending: true,
+		},
+	}
+
+	resp, err := r.Recv(t.Context(), &walletdkrpc.RecvRequest{
+		AmtSat: 50_000,
+		Memo:   "coffee",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "abc123", resp.GetEntry().GetId())
+	require.Equal(
+		t, walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		resp.GetEntry().GetStatus(),
+	)
+
+	require.Equal(t, 1, store.count())
+	require.True(
+		t, store.ids()["abc123"],
+		"pending recv must be projected by payment hash on dispatch",
+	)
+	require.Equal(
+		t, int64(walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING),
+		store.lastProjection().Status, "projected row must be PENDING",
+	)
+}
+
 // TestRecvBelowDustHandsToCreditRegistry asserts a sub-dust receive is handed
 // to the durable credit registry, which returns the server-owned invoice
 // synchronously, instead of the wallet calling CreateCredit inline.

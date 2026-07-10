@@ -61,6 +61,10 @@ func swapEntryFromSummary(s *swapclientrpc.SwapSummary, note string,
 		kind = kindFromSwapDirection(s.GetDirection())
 	}
 
+	// Derive reason and code from one classification so a terminal failure
+	// never carries a code without a human-readable reason.
+	failureCode := failureCodeFromSwapState(s.GetState(), s.GetPending())
+
 	entry := &walletdkrpc.WalletEntry{
 		Id:            s.GetPaymentHash(),
 		Kind:          kind,
@@ -70,14 +74,10 @@ func swapEntryFromSummary(s *swapclientrpc.SwapSummary, note string,
 		CreatedAtUnix: s.GetCreatedAtUnix(),
 		UpdatedAtUnix: s.GetUpdatedAtUnix(),
 		Note:          entryNote(note, s.GetInvoice()),
-		FailureReason: failureReasonFromTerminal(s.GetTerminalReason()),
+		FailureReason: failureReason(s.GetTerminalReason(), failureCode),
 		Request:       requestFromSwapSummary(s, counterparty, kind),
 		Progress:      progressFromSwapSummary(s),
-		FailureCode: failureCodePtr(
-			failureCodeFromSwapState(
-				s.GetState(), s.GetPending(),
-			),
-		),
+		FailureCode:   failureCodePtr(failureCode),
 	}
 
 	// Render amount with the wallet's signed-amount convention: positive
@@ -306,6 +306,41 @@ func failureCodePtr(
 // check.
 func failureReasonFromTerminal(reason string) string {
 	return strings.TrimSpace(reason)
+}
+
+// failureReason prefers the SDK terminal reason and falls back to a stable
+// default for the classified code, so a failed row never renders empty. A
+// non-failure row (unspecified code, empty terminal) stays blank.
+func failureReason(terminal string, code walletdkrpc.EntryFailureCode) string {
+	if r := failureReasonFromTerminal(terminal); r != "" {
+		return r
+	}
+
+	return defaultFailureReason(code)
+}
+
+// defaultFailureReason maps a failure code to a short reason for when the swap
+// FSM supplied no terminal string. The unspecified code stays blank.
+func defaultFailureReason(code walletdkrpc.EntryFailureCode) string {
+	switch code {
+	case walletdkrpc.EntryFailureCode_ENTRY_FAILURE_CODE_TIMED_OUT:
+		return "timed_out"
+
+	case walletdkrpc.EntryFailureCode_ENTRY_FAILURE_CODE_EXPIRED:
+		return "invoice expired"
+
+	case walletdkrpc.EntryFailureCode_ENTRY_FAILURE_CODE_REFUNDED:
+		return "refunded"
+
+	case walletdkrpc.EntryFailureCode_ENTRY_FAILURE_CODE_NEEDS_INTERVENTION:
+		return "needs intervention"
+
+	case walletdkrpc.EntryFailureCode_ENTRY_FAILURE_CODE_FAILED:
+		return "failed"
+
+	default:
+		return ""
+	}
 }
 
 // entryNote prefers the explicit caller note when the submit path still has
