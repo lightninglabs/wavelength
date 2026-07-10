@@ -83,7 +83,7 @@ nothing in binary size or surface area.
 | Target                     | Build tags                  | What it adds                                              |
 |----------------------------|-----------------------------|-----------------------------------------------------------|
 | `make build`               | _(none)_                    | Core Ark client. Power-user `ark *` and `dev *` CLI only. |
-| `make build-swapruntime`   | `swapruntime`               | + Lightning swap subsystem (`sdk/swaps`, swap CLI).       |
+| `make build-swapruntime`   | `swapruntime`               | + Lightning swap subsystem (`sdk/swaps`) powering `send`/`recv --offchain`. |
 | `make build-walletdkrpc`   | `walletdkrpc swapruntime`   | + Wallet RPC subserver and top-level wallet verbs.        |
 | `make install`             | _(none)_                    | Installs the core build to `$GOPATH/bin`.                 |
 | `make install-swapruntime` | `swapruntime`               | Installs the swap-enabled build.                          |
@@ -100,16 +100,21 @@ mode.
 
 ## CLI at a Glance
 
+The everyday **Wallet** verbs and daemon **Introspection** are the default
+`--help` face. The advanced `ark` / `dev` / `recovery` subtrees are hidden
+from `--help` (set `DAREPO_DEV=1` to reveal them) but stay fully runnable —
+`darepocli ark …` works with or without the env var.
+
 ```
 darepocli
 ├── getinfo                   daemon status                          (all builds)
 ├── balance / recv / send     unified wallet verbs                   (walletdkrpc)
 ├── create / unlock           wallet bring-up                        (walletdkrpc)
-├── activity                  unified wallet activity history        (walletdkrpc)
-├── exit [status]             unilateral exit a VTXO                 (all builds)
+├── activity [inspect]        unified wallet activity history        (walletdkrpc)
+├── exit [status]             cooperatively exit a VTXO              (all builds)
 ├── mcp serve                 MCP server for AI agents               (walletdkrpc)
 ├── schema                    JSON dump of all CLI methods           (all builds)
-├── ark ...                   power-user Ark RPCs                    (all builds)
+├── ark ...                   power-user Ark RPCs         (hidden; all builds)
 │   ├── board                 board confirmed boarding UTXOs
 │   ├── vtxos {list|refresh|leave}
 │   ├── oor   {receive|get|list}
@@ -118,10 +123,14 @@ darepocli
 │   ├── sweep [list]
 │   ├── fees   {estimate|history}
 │   └── listtransactions
-├── swap {list|show|receive|pay|resume|watch}                        (swapruntime)
-├── recovery {list|status|escalate|cancel}                           (swapruntime)
-└── dev <service> <Method>    raw gRPC, e.g. dev daemon GetBalance   (all builds)
+├── recovery {list|status|escalate|cancel}          (hidden; all builds)
+└── dev <service> <Method>    raw gRPC, e.g. dev daemon GetBalance (hidden; all builds)
 ```
+
+`swap` is no longer a CLI verb: `send`/`recv --offchain` and `activity`
+cover it, and a stale `darepocli swap …` fails with a hint toward
+`send`/`recv`. The `swapruntime` daemon runtime that powers the offchain
+verbs is unchanged.
 
 Full CLI reference: [`docs/daemon_cli_guide.md`](docs/daemon_cli_guide.md).
 

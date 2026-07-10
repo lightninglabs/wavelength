@@ -320,6 +320,15 @@ callers control or observe it.
 
 ## CLI Behavior
 
+> **Superseded (#907).** Every reference to a user-facing `darepocli swap`
+> verb in this document — here and in the Testing Plan, Rollout, and Planned
+> Commit Stack sections below — was retired: `send`/`recv --offchain` and
+> `activity` (plus `activity inspect <id>`) cover them. The `swapruntime`
+> daemon runtime this document describes is unchanged and still powers those
+> verbs; only the curated CLI/MCP `swap` surface was removed. The generated
+> `dev swapclient` surface remains for low-level access. These sections are
+> retained as design background.
+
 With `swapruntime`, `darepocli swap` should become a daemon-control surface.
 The CLI should not open the swap DB, construct `sdk/swaps.SwapClient`, dial
 `swapdk-server`, or drive the FSM directly. All CLI operations go through
@@ -402,6 +411,10 @@ Unit tests under `swapruntime`:
 
 Integration tests under `swapruntime`:
 
+> _Superseded (#907): the `darepocli swap` CLI verbs below were removed; the
+> daemon runtime they exercised is unchanged. See the note under "CLI
+> Behavior"._
+
 - `swap pay` returns, CLI exits, daemon completes the swap;
 - `swap receive` returns invoice, CLI exits, daemon claims after payment;
 - daemon restart with pending pay resumes without duplicate OOR funding;
@@ -423,6 +436,7 @@ go test -tags=swapruntime ./cmd/darepocli/darepoclicommands ./cmd/darepod ./dare
 3. Add daemon config and executor startup behind `swapruntime`.
 4. Wire tagged subserver handlers to the executor.
 5. Convert CLI swap commands to daemon-control mode behind `swapruntime`.
+   _(Superseded — #907 removed the `darepocli swap` CLI surface entirely.)_
 6. Add restart and timeout integration coverage through the CLI/RPC surface.
 7. Document the WalletDK handoff surface once the daemon API stops moving.
 
@@ -483,6 +497,7 @@ compiles on its own or is a generated-code companion to the previous commit.
    control plane.
 
 7. `darepocli: move swap commands to daemon subserver`
+   _(Superseded — #907 removed the `darepocli swap` CLI surface instead.)_
 
    Under `swapruntime`, convert `swap pay`, `swap receive`, `swap list`,
    `swap show`, and `swap watch` to call `SwapClientServiceClient`. Remove

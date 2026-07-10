@@ -8,16 +8,26 @@ embed the same command tree.
 
 ## CLI Surface
 
-The CLI surface is split into four tiers:
+The CLI surface is organized into cobra command groups that shape the
+default `--help` face:
 
-1. **Top-level wallet verbs (implicit, no parent)** — the everyday
+1. **Wallet verbs (group "Wallet", implicit, no parent)** — the everyday
    commands that map 1:1 to what a user does day-to-day. All are
    walletdkrpc-backed.
-2. **Daemon introspection at root** — getinfo, schema, mcp, dev.
-3. **Advanced subtrees (`ark`, `swap`)** — raw daemonrpc/swapclientrpc
-   commands for power users and operator runbooks.
-4. **`recovery` subtree** — manual operator control of daemon-owned
-   vHTLC recovery rows; not exposed via `schema`/MCP.
+2. **Daemon introspection (group "Introspection")** — getinfo, schema, mcp
+   (the built-in `help` command is grouped here too).
+3. **Advanced subtrees (`ark`, `dev`, `recovery`)** — raw
+   daemonrpc/devrpc commands for power users and operator runbooks.
+   Hidden from the default `--help` via cobra `Hidden` (not a build tag),
+   so they stay compiled and fully runnable in the shipped binary;
+   `DAREPO_DEV=1` reveals them under an "Advanced" group. The env var only
+   changes visibility — it never gates execution. `ark.*` and `dev` stay
+   on the `schema`/MCP surfaces; `recovery` is not exposed via
+   `schema`/MCP.
+
+The `swap.*` verbs were retired: `send`/`recv --offchain` and `activity`
+cover them (the swapruntime daemon runtime that powers those verbs is
+unchanged).
 
 ### Top-level wallet verbs
 
@@ -43,7 +53,6 @@ The CLI surface is split into four tiers:
 | `getinfo` | `daemonrpc.GetInfo` | Daemon readiness, version, network, wallet state |
 | `schema` | (local) | JSON method registry — single source of truth for CLI commands and MCP tools |
 | `mcp` | (local) | MCP server exposing the schema as tools |
-| `dev *` | dev RPC | Generated dev RPC CLI (see `devrpc/`) |
 
 ### `ark.*` advanced commands
 
@@ -74,16 +83,10 @@ let the swap FSM arm and cancel recovery automatically.
 | `recovery escalate [id]` | `EscalateVHTLCRecovery` | Start on-chain unroll for an armed row; requires `--yes` on non-TTY stdin |
 | `recovery cancel [id]` | `CancelVHTLCRecovery` | Record that cooperative settlement won; drop the armed row |
 
-### `swap.*` advanced commands (swapruntime build tag)
+### `dev.*` advanced commands
 
-| Command | RPC | Description |
-|---------|-----|-------------|
-| `swap list` | `swapclientrpc.ListSwaps` | List persisted swap summaries |
-| `swap show <hash>` | `GetSwap` | Fetch one swap by payment hash |
-| `swap receive` | `StartReceive` | Create a receive swap |
-| `swap pay` | `StartPay` | Pay a Lightning invoice from Ark funds |
-| `swap resume` | `ResumeSwap` | Wake a persisted swap worker |
-| `swap watch` | `SubscribeSwaps` | Stream swap summary updates |
+Generated low-level daemon RPC CLI; see [`devrpc/`](devrpc/). Hidden from
+the default `--help` (revealed with `DAREPO_DEV=1`) but always runnable.
 
 ## Key Helpers
 
@@ -96,15 +99,16 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/cmd/d
 - `withWalletClient()` — maps `codes.Unimplemented` to
   `errWalletRPCDisabled` (with a pointer to `docs/walletdkrpc_build.md`)
   for daemons built without the walletdkrpc tag.
-- `getSwapClient()` — daemon `swapclientrpc` dial (`swapruntime`
-  tag only).
 - `parseRequest()` — generic JSON-or-flags proto request parser
   (consumed by `ark.*` commands).
 - `methodRegistry()` / `schemaMethod` / `schemaParam` —
   machine-readable schema for all CLI commands; shared source of
   truth for `schema` and MCP tool definitions. Built from the
   `walletAdmin`/`walletPayment`/`walletQuery`/`arkBase`/`arkVTXO`/
-  `arkSend` sub-registries.
+  `arkSend`/`arkObservable` sub-registries.
+- `buildMCPServer()` — constructs the MCP server and registers every
+  exposed RPC as a typed tool; split from `mcpServe` (which owns the
+  daemon dial and stdio transport) so the tool surface is testable.
 - `readPassword()` — reads wallet password from
   `DAREPOD_WALLET_PASSWORD` → `--wallet_password_file` → stdin → TTY.
   **Never from CLI args.**
@@ -119,8 +123,9 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/cmd/d
   - `rpc/walletdkrpc` (generated stubs for the top-level wallet verbs;
     `WalletService` / `WalletInspectionService` clients).
   - `daemonrpc` (generated stubs for `ark.*`, `recovery.*`, getinfo).
-  - `rpc/swapclientrpc` (generated stubs for `swap.*` commands,
-    `swapruntime` tag only).
+  - `cmd/darepocli/darepoclicommands/devrpc` (the generated `dev`
+    subtree; its registry references `swapclientrpc` service
+    descriptors).
 - **Depended on by**: `cmd/darepocli` (main entry point).
 
 ## Invariants

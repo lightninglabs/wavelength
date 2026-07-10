@@ -240,6 +240,18 @@ alias da='darepocli --no-tls --no-macaroons'
 
 ### Command tree
 
+The everyday wallet verbs and daemon introspection make up the default
+`--help` face. The advanced `ark`, `recovery`, and `dev` subtrees are
+hidden from `--help` (set `DAREPO_DEV=1` to reveal them under an "Advanced"
+group) but stay fully runnable in every build — `darepocli ark …` works
+with or without the env var. `DAREPO_DEV` only changes visibility; it never
+gates execution.
+
+The `swap` subtree was retired — `send`/`recv --offchain` and `activity`
+cover it, and a stale `darepocli swap …` fails with a hint toward
+`send`/`recv`. The `swapruntime` daemon runtime that powers the offchain
+verbs is unchanged.
+
 ```
 darepocli
 ├── getinfo                   — daemon status (no walletdkrpc)
@@ -247,12 +259,12 @@ darepocli
 ├── create / unlock           — wallet bring-up (walletdkrpc)
 ├── recv                      — boarding address / Lightning invoice (walletdkrpc)
 ├── send                      — Lightning invoice / onchain leave (walletdkrpc)
-├── activity                  — unified wallet activity feed (walletdkrpc)
+├── activity [inspect]        — unified wallet activity feed (walletdkrpc)
 ├── exit {status|summary|plan} — cooperative leave by default, forced unroll (walletdkrpc)
 ├── wallet-sweep              — sweep backing wallet to a destination (walletdkrpc)
 ├── mcp serve                 — MCP server for AI agents (walletdkrpc)
 ├── schema                    — JSON dump of CLI methods
-├── ark                       — power-user parent (no walletdkrpc)
+├── ark                       — power-user parent (hidden; no walletdkrpc)
 │   ├── board                 — board confirmed boarding UTXOs
 │   ├── vtxos {list|refresh|leave}
 │   ├── oor {receive|get|list}
@@ -261,9 +273,8 @@ darepocli
 │   ├── sweep [list]
 │   ├── fees {estimate|history}
 │   └── listtransactions
-├── recovery {list|status|escalate|cancel} — daemon-owned vHTLC recovery rows
-├── swap {list|show|receive|pay|resume|watch} — Lightning swap ops (swapruntime build)
-└── dev                       — generated low-level RPC (no walletdkrpc)
+├── recovery {list|status|escalate|cancel} — daemon-owned vHTLC recovery rows (hidden)
+└── dev                       — generated low-level RPC (hidden; no walletdkrpc)
     └── daemon <Method>       — call any daemonrpc.DaemonService method
 ```
 
