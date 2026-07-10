@@ -1393,7 +1393,7 @@ func vtxoStatusToProto(s vtxo.VTXOStatus) daemonrpc.VTXOStatus {
 
 // descriptorToProto converts a vtxo.Descriptor to the proto VTXO message.
 func descriptorToProto(v *vtxo.Descriptor) *daemonrpc.VTXO {
-	return &daemonrpc.VTXO{
+	proto := &daemonrpc.VTXO{
 		Outpoint: fmt.Sprintf(
 			"%s:%d", v.Outpoint.Hash, v.Outpoint.Index,
 		),
@@ -1407,6 +1407,19 @@ func descriptorToProto(v *vtxo.Descriptor) *daemonrpc.VTXO {
 		CommitmentTxid: v.CommitmentTxID.String(),
 		ChainDepth:     uint32(v.ChainDepth),
 	}
+
+	// Settlement is Some only for FORFEITED VTXOs whose forfeit round row
+	// was found by the by-status join; for every other VTXO it is None and
+	// the proto settlement message stays nil, so absence is explicit on the
+	// wire.
+	v.Settlement.WhenSome(func(s vtxo.Settlement) {
+		proto.Settlement = &daemonrpc.VTXOSettlement{
+			Txid:   s.TxID.String(),
+			Height: s.Height,
+		}
+	})
+
+	return proto
 }
 
 // newLocalOORArtifactStore returns the local artifact store used to resolve
