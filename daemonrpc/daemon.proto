@@ -708,6 +708,21 @@ message VTXO {
     // expiry_info reports the wallet/VTXO layer's current expiry posture for
     // this VTXO when the daemon has enough timing context to classify it.
     VTXOExpiryInfo expiry_info = 13;
+
+    // settlement reports where this VTXO was forfeited on-chain (the round
+    // commitment tx of the leave/cooperative-forfeit round). It is present
+    // only for FORFEITED VTXOs whose forfeit round is known, and unset
+    // otherwise, so absence is explicit rather than a zero-value sentinel.
+    VTXOSettlement settlement = 14;
+}
+
+message VTXOSettlement {
+    // txid is the hex-encoded txid of the round commitment tx that forfeited
+    // the VTXO (the leave/cooperative-forfeit round).
+    string txid = 1;
+
+    // height is the block height at which txid confirmed.
+    int32 height = 2;
 }
 
 message ListVTXOsRequest {
