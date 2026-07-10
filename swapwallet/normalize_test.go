@@ -236,6 +236,90 @@ func TestFailureReasonFromTerminal(t *testing.T) {
 	)
 }
 
+// TestDefaultFailureReason maps each classified failure code to its fallback
+// reason and leaves the unspecified (non-failure) code blank.
+func TestDefaultFailureReason(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		code walletdkrpc.EntryFailureCode
+		want string
+	}{
+		{
+			fcEnum("TIMED_OUT"),
+			"timed_out",
+		},
+		{
+			fcEnum("EXPIRED"),
+			"invoice expired",
+		},
+		{
+			fcEnum("REFUNDED"),
+			"refunded",
+		},
+		{
+			fcEnum("NEEDS_INTERVENTION"),
+			"needs intervention",
+		},
+		{
+			fcEnum("FAILED"),
+			"failed",
+		},
+		{
+			unspecCode,
+			"",
+		},
+	}
+	for _, tc := range cases {
+		require.Equal(
+			t, tc.want, defaultFailureReason(tc.code),
+			"code=%v", tc.code,
+		)
+	}
+}
+
+// TestSwapEntryFromSummaryFailureReason confirms a terminal-failure row always
+// carries a reason: the SDK terminal reason wins, else a code-keyed default
+// fills the gap; a happy-path row stays blank.
+func TestSwapEntryFromSummaryFailureReason(t *testing.T) {
+	t.Parallel()
+
+	expired := swapEntryFromSummary(
+		&swapclientrpc.SwapSummary{
+			PaymentHash: "hash-expired",
+			Direction: swapclientrpc.
+				SwapDirection_SWAP_DIRECTION_RECEIVE,
+			State: swapclientrpc.SwapState_SWAP_STATE_EXPIRED,
+		}, "", "", walletdkrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
+	)
+	require.Equal(
+		t, walletdkrpc.EntryStatus_ENTRY_STATUS_FAILED,
+		expired.GetStatus(),
+	)
+	require.Equal(t, "invoice expired", expired.GetFailureReason())
+	require.Equal(
+		t, walletdkrpc.EntryFailureCode_ENTRY_FAILURE_CODE_EXPIRED,
+		expired.GetFailureCode(),
+	)
+
+	failed := swapEntryFromSummary(
+		&swapclientrpc.SwapSummary{
+			PaymentHash:    "hash-failed",
+			State:          swapclientrpc.SwapState_SWAP_STATE_FAILED,
+			TerminalReason: "server rejected swap",
+		}, "", "", walletdkrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
+	)
+	require.Equal(t, "server rejected swap", failed.GetFailureReason())
+
+	done := swapEntryFromSummary(
+		&swapclientrpc.SwapSummary{
+			PaymentHash: "hash-done",
+			State:       swapclientrpc.SwapState_SWAP_STATE_COMPLETED,
+		}, "", "", walletdkrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
+	)
+	require.Empty(t, done.GetFailureReason())
+}
+
 // TestEntryNotePrefersExplicitNote confirms the immediate submit path keeps
 // the user's memo even before the persisted invoice summary is read back.
 func TestEntryNotePrefersExplicitNote(t *testing.T) {
