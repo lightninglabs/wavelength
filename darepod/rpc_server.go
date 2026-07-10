@@ -738,19 +738,39 @@ func (r *RPCServer) GetBalance(ctx context.Context,
 	// trusts the response, which is the same rationale that makes
 	// fetchBoardingBalance error-strict above.
 	if r.server.vtxoStore != nil {
-		// ListLiveVTXOs returns every non-terminal VTXO (Live,
-		// PendingForfeit, Forfeiting, Spending) because it backs
-		// actor recovery, not spendability. Sum only the spendable
-		// (Live) subset: counting PendingForfeit/Spending here would
-		// overstate vtxo_balance_sat, which consumers such as the
-		// auto-boarder read as spendable liquidity and would then
-		// stop replenishing.
+		// Only the Live subset is spendable; the other non-terminal
+		// states would overstate vtxo_balance_sat.
 		liveVTXOs, err := r.server.vtxoStore.ListLiveVTXOs(ctx)
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "fetch vtxo "+
 				"balance: %v", err)
 		}
 		resp.VtxoBalanceSat = int64(vtxo.SumSpendableBalance(liveVTXOs))
+		resp.VtxoPendingSat = int64(vtxo.SumPendingBalance(liveVTXOs))
+
+		// Exiting VTXOs aren't in ListLiveVTXOs; query them directly.
+		// Light skips the ancestry side table a balance never walks.
+		exiting, err := r.server.vtxoStore.ListVTXOsByStatusLight(
+			ctx, vtxo.VTXOStatusUnilateralExit,
+		)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "fetch "+
+				"exiting vtxo balance: %v", err)
+		}
+
+		// Exclude recovery-only exit targets (not wallet liquidity).
+		// Absent the exit-job store, no such targets exist.
+		exitSat := vtxo.SumBalance(exiting)
+		if r.server.ueStore != nil {
+			exitSat, err = sumWalletUnilateralExits(
+				ctx, exiting, r.server.ueStore,
+			)
+			if err != nil {
+				return nil, status.Errorf(codes.Internal,
+					"sum exiting vtxo balance: %v", err)
+			}
+		}
+		resp.VtxoUnilateralExitSat = int64(exitSat)
 	}
 
 	// Fetch the confirmed balance of the backing on-chain wallet so
@@ -832,6 +852,43 @@ func (r *RPCServer) fetchBoardingBalance(ctx context.Context,
 	resp.BoardingSweptSat = int64(sumAmounts(swept))
 
 	return nil
+}
+
+// exitJobLookup reads one exit job's policy identity; kept narrow so the
+// balance sum can be faked in tests.
+type exitJobLookup interface {
+	GetJob(ctx context.Context,
+		target wire.OutPoint) (*db.UnilateralExitJobRecord, error)
+}
+
+// sumWalletUnilateralExits sums unilateral-exit VTXOs that are wallet
+// inventory, excluding recovery-only targets (a non-standard exit policy,
+// e.g. a vHTLC refund) whose value is not spendable wallet liquidity.
+func sumWalletUnilateralExits(ctx context.Context, exiting []*vtxo.Descriptor,
+	jobs exitJobLookup) (btcutil.Amount, error) {
+
+	var total btcutil.Amount
+	for _, desc := range exiting {
+		job, err := jobs.GetJob(ctx, desc.Outpoint)
+
+		// No job: standard wallet exit.
+		if errors.Is(err, db.ErrUnilateralExitJobNotFound) {
+			total += desc.Amount
+			continue
+		}
+		if err != nil {
+			return 0, err
+		}
+
+		// Non-standard policy: recovery-only, not wallet value.
+		if actormsg.ExitPolicyKind(job.ExitPolicyKind).Valid() {
+			continue
+		}
+
+		total += desc.Amount
+	}
+
+	return total, nil
 }
 
 // fetchUnconfirmedBoardingBalance sums zero-conf wallet UTXOs that pay to known

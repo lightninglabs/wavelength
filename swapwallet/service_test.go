@@ -237,6 +237,8 @@ func TestServiceBalanceProjectsDaemonGetBalance(t *testing.T) {
 		BoardingAdoptedSat:      15_000,
 		TotalConfirmedSat:       175_000, // ignored by the mapping
 		BoardingPendingSweepSat: 5_000,
+		VtxoPendingSat:          8_000,
+		VtxoUnilateralExitSat:   3_000,
 	}
 
 	resp, err := svc.Balance(
@@ -245,7 +247,77 @@ func TestServiceBalanceProjectsDaemonGetBalance(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(75_000), resp.GetConfirmedSat())
 	require.Equal(t, int64(135_000), resp.GetPendingInSat())
-	require.Equal(t, int64(5_000), resp.GetPendingOutSat())
+
+	// 5_000 + 8_000 + 3_000.
+	require.Equal(t, int64(16_000), resp.GetPendingOutSat())
+}
+
+// TestServiceBalanceSurfacesInFlightVTXOs checks that in-flight VTXO value
+// surfaces under pending_out rather than reading zero.
+func TestServiceBalanceSurfacesInFlightVTXOs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		balance        *daemonrpc.GetBalanceResponse
+		wantConfirmed  int64
+		wantPendingIn  int64
+		wantPendingOut int64
+	}{
+		{
+			name: "refresh in flight",
+			balance: &daemonrpc.GetBalanceResponse{
+				VtxoPendingSat: 50_000,
+			},
+			wantConfirmed:  0,
+			wantPendingIn:  0,
+			wantPendingOut: 50_000,
+		},
+		{
+			name: "near-expiry pending-forfeit and exit",
+			balance: &daemonrpc.GetBalanceResponse{
+				VtxoPendingSat:        30_000,
+				VtxoUnilateralExitSat: 70_000,
+			},
+			wantConfirmed:  0,
+			wantPendingIn:  0,
+			wantPendingOut: 100_000,
+		},
+		{
+			name: "outgoing send inputs forfeiting",
+			balance: &daemonrpc.GetBalanceResponse{
+				VtxoBalanceSat: 40_000,
+				VtxoPendingSat: 60_000,
+			},
+			wantConfirmed:  40_000,
+			wantPendingIn:  0,
+			wantPendingOut: 60_000,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			svc, _, rpc := newServiceFixture(t)
+			rpc.getBalanceResp = tc.balance
+
+			resp, err := svc.Balance(
+				t.Context(), &walletdkrpc.BalanceRequest{},
+			)
+			require.NoError(t, err)
+			require.Equal(
+				t, tc.wantConfirmed, resp.GetConfirmedSat(),
+			)
+			require.Equal(
+				t, tc.wantPendingIn, resp.GetPendingInSat(),
+			)
+			require.Equal(
+				t, tc.wantPendingOut, resp.GetPendingOutSat(),
+			)
+		})
+	}
 }
 
 func TestServiceBalanceIncludesCredits(t *testing.T) {

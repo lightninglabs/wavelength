@@ -1644,8 +1644,18 @@ type GetBalanceResponse struct {
 	// as boarding address UTXOs, but remain pending inbound balance until
 	// the round's commitment transaction confirms.
 	BoardingAdoptedSat int64 `protobuf:"varint,8,opt,name=boarding_adopted_sat,json=boardingAdoptedSat,proto3" json:"boarding_adopted_sat,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// vtxo_pending_sat is the value of VTXOs being consumed by an
+	// in-flight round or out-of-round spend (pending-forfeit,
+	// forfeiting, spending). Excluded from vtxo_balance_sat and
+	// total_confirmed_sat.
+	VtxoPendingSat int64 `protobuf:"varint,9,opt,name=vtxo_pending_sat,json=vtxoPendingSat,proto3" json:"vtxo_pending_sat,omitempty"`
+	// vtxo_unilateral_exit_sat is the value of VTXOs mid unilateral
+	// exit, not yet swept. Excluded from vtxo_balance_sat and
+	// total_confirmed_sat; reappears under onchain_wallet_confirmed_sat
+	// once the sweep confirms.
+	VtxoUnilateralExitSat int64 `protobuf:"varint,10,opt,name=vtxo_unilateral_exit_sat,json=vtxoUnilateralExitSat,proto3" json:"vtxo_unilateral_exit_sat,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *GetBalanceResponse) Reset() {
@@ -1730,6 +1740,20 @@ func (x *GetBalanceResponse) GetBoardingSweptSat() int64 {
 func (x *GetBalanceResponse) GetBoardingAdoptedSat() int64 {
 	if x != nil {
 		return x.BoardingAdoptedSat
+	}
+	return 0
+}
+
+func (x *GetBalanceResponse) GetVtxoPendingSat() int64 {
+	if x != nil {
+		return x.VtxoPendingSat
+	}
+	return 0
+}
+
+func (x *GetBalanceResponse) GetVtxoUnilateralExitSat() int64 {
+	if x != nil {
+		return x.VtxoUnilateralExitSat
 	}
 	return 0
 }
@@ -9848,7 +9872,7 @@ const file_daemon_proto_rawDesc = "" +
 	"\x0fwallet_password\x18\x01 \x01(\fR\x0ewalletPassword\"?\n" +
 	"\x14UnlockWalletResponse\x12'\n" +
 	"\x0fidentity_pubkey\x18\x01 \x01(\tR\x0eidentityPubkey\"\x13\n" +
-	"\x11GetBalanceRequest\"\xbc\x03\n" +
+	"\x11GetBalanceRequest\"\x9f\x04\n" +
 	"\x12GetBalanceResponse\x124\n" +
 	"\x16boarding_confirmed_sat\x18\x01 \x01(\x03R\x14boardingConfirmedSat\x128\n" +
 	"\x18boarding_unconfirmed_sat\x18\x02 \x01(\x03R\x16boardingUnconfirmedSat\x12(\n" +
@@ -9857,7 +9881,10 @@ const file_daemon_proto_rawDesc = "" +
 	"\x1conchain_wallet_confirmed_sat\x18\x05 \x01(\x03R\x19onchainWalletConfirmedSat\x12;\n" +
 	"\x1aboarding_pending_sweep_sat\x18\x06 \x01(\x03R\x17boardingPendingSweepSat\x12,\n" +
 	"\x12boarding_swept_sat\x18\a \x01(\x03R\x10boardingSweptSat\x120\n" +
-	"\x14boarding_adopted_sat\x18\b \x01(\x03R\x12boardingAdoptedSat\"\xa0\x03\n" +
+	"\x14boarding_adopted_sat\x18\b \x01(\x03R\x12boardingAdoptedSat\x12(\n" +
+	"\x10vtxo_pending_sat\x18\t \x01(\x03R\x0evtxoPendingSat\x127\n" +
+	"\x18vtxo_unilateral_exit_sat\x18\n" +
+	" \x01(\x03R\x15vtxoUnilateralExitSat\"\xa0\x03\n" +
 	"\x0eVTXOExpiryInfo\x123\n" +
 	"\x06status\x18\x01 \x01(\x0e2\x1b.daemonrpc.VTXOExpiryStatusR\x06status\x12%\n" +
 	"\x0ecurrent_height\x18\x02 \x01(\x05R\rcurrentHeight\x12!\n" +

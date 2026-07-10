@@ -584,12 +584,17 @@ func (s *Service) fetchBalance(ctx context.Context) (
 	// immediately after a faucet deposit, before any round commit, which
 	// the proto contract (and the `send` verb's runtime check)
 	// explicitly disallow.
+	// pending_out_sat sums outbound and in-flight value: the boarding
+	// sweep plus both in-flight VTXO buckets. confirmed_sat is VTXO-live
+	// only.
 	resp := &walletdkrpc.BalanceResponse{
 		ConfirmedSat: bal.GetVtxoBalanceSat(),
 		PendingInSat: bal.GetBoardingConfirmedSat() +
 			bal.GetBoardingUnconfirmedSat() +
 			bal.GetBoardingAdoptedSat(),
-		PendingOutSat: bal.GetBoardingPendingSweepSat(),
+		PendingOutSat: bal.GetBoardingPendingSweepSat() +
+			bal.GetVtxoPendingSat() +
+			bal.GetVtxoUnilateralExitSat(),
 	}
 
 	if s.deps.SwapService == nil {

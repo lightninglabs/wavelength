@@ -79,3 +79,85 @@ func TestSumSpendableBalanceEmpty(t *testing.T) {
 	require.Zero(t, SumSpendableBalance(nil))
 	require.Zero(t, SumSpendableBalance([]*Descriptor{}))
 }
+
+// TestSumPendingBalance checks that only PendingForfeit, Forfeiting, and
+// Spending are summed, excluding Live and the terminal states.
+func TestSumPendingBalance(t *testing.T) {
+	t.Parallel()
+
+	descs := []*Descriptor{
+		{
+			Amount: 1_000,
+			Status: VTXOStatusLive,
+		},
+		{
+			Amount: 5_000,
+			Status: VTXOStatusPendingForfeit,
+		},
+		{
+			Amount: 7_000,
+			Status: VTXOStatusForfeiting,
+		},
+		{
+			Amount: 9_000,
+			Status: VTXOStatusSpending,
+		},
+		{
+			Amount: 11_000,
+			Status: VTXOStatusUnilateralExit,
+		},
+		{
+			Amount: 13_000,
+			Status: VTXOStatusForfeited,
+		},
+		{
+			Amount: 17_000,
+			Status: VTXOStatusSpent,
+		},
+		{
+			Amount: 19_000,
+			Status: VTXOStatusFailed,
+		},
+	}
+
+	require.Equal(
+		t, btcutil.Amount(21_000), SumPendingBalance(descs),
+	)
+
+	// Spendable and pending partition the live set with nothing dropped.
+	liveSet := []*Descriptor{
+		{
+			Amount: 1_000,
+			Status: VTXOStatusLive,
+		},
+		{
+			Amount: 2_000,
+			Status: VTXOStatusLive,
+		},
+		{
+			Amount: 5_000,
+			Status: VTXOStatusPendingForfeit,
+		},
+		{
+			Amount: 7_000,
+			Status: VTXOStatusForfeiting,
+		},
+		{
+			Amount: 9_000,
+			Status: VTXOStatusSpending,
+		},
+	}
+	spendable := SumSpendableBalance(liveSet)
+	pending := SumPendingBalance(liveSet)
+	require.Equal(t, btcutil.Amount(3_000), spendable)
+	require.Equal(t, btcutil.Amount(21_000), pending)
+	require.Equal(t, SumBalance(liveSet), spendable+pending)
+}
+
+// TestSumPendingBalanceEmpty guards the empty-input case.
+func TestSumPendingBalanceEmpty(t *testing.T) {
+	t.Parallel()
+
+	require.Zero(t, SumPendingBalance(nil))
+	require.Zero(t, SumPendingBalance([]*Descriptor{}))
+}

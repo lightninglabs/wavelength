@@ -540,6 +540,18 @@ message GetBalanceResponse {
     // as boarding address UTXOs, but remain pending inbound balance until
     // the round's commitment transaction confirms.
     int64 boarding_adopted_sat = 8;
+
+    // vtxo_pending_sat is the value of VTXOs being consumed by an
+    // in-flight round or out-of-round spend (pending-forfeit,
+    // forfeiting, spending). Excluded from vtxo_balance_sat and
+    // total_confirmed_sat.
+    int64 vtxo_pending_sat = 9;
+
+    // vtxo_unilateral_exit_sat is the value of VTXOs mid unilateral
+    // exit, not yet swept. Excluded from vtxo_balance_sat and
+    // total_confirmed_sat; reappears under onchain_wallet_confirmed_sat
+    // once the sweep confirms.
+    int64 vtxo_unilateral_exit_sat = 10;
 }
 
 // VTXOStatus represents the lifecycle state of a virtual transaction

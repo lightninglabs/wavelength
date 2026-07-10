@@ -159,8 +159,12 @@ default builds avoid the swap executor's dependency graph.
   shape: `confirmed_sat` is VTXO-only (`vtxo_balance_sat`),
   `pending_in_sat` sums `boarding_confirmed_sat +
   boarding_unconfirmed_sat + boarding_adopted_sat`, and
-  `pending_out_sat` mirrors `boarding_pending_sweep_sat`.
-  Confirmed-but-not-yet-boarded UTXOs must NOT inflate
+  `pending_out_sat` sums `boarding_pending_sweep_sat +
+  vtxo_pending_sat + vtxo_unilateral_exit_sat`. The two VTXO buckets
+  carry value locked in an in-flight round / OOR spend and in a
+  unilateral on-chain exit; folding them into `pending_out_sat` keeps
+  the balance from momentarily reading zero mid-refresh, mid-spend, or
+  mid-leave. Confirmed-but-not-yet-boarded UTXOs must NOT inflate
   `confirmed_sat` (issue #502), and adopted-but-not-yet-live VTXOs
   must stay pending inbound until commitment confirmation (issue #542).
 
