@@ -1774,33 +1774,23 @@ func TestFailForfeitIntentsMarksSendFailed(t *testing.T) {
 
 	// The failed intent's header is retained (not deleted) with the reason
 	// and typed code, so the failure is a durable, correlatable record.
-	var (
-		status     string
-		failReason sql.NullString
-		failCode   int64
-	)
-	row := baseDB.QueryRowContext(ctx,
-		`SELECT status, failure_reason, failure_code
-		 FROM pending_intents WHERE intent_id = ?`,
-		failing.ID[:],
-	)
-	require.NoError(t, row.Scan(&status, &failReason, &failCode))
-	require.Equal(t, "failed", status)
-	require.True(t, failReason.Valid)
-	require.Equal(t, reason, failReason.String)
+	failed, err := baseDB.Queries.GetPendingIntentByID(ctx, failing.ID[:])
+	require.NoError(t, err)
+	require.Equal(t, "failed", failed.Status)
+	require.True(t, failed.FailureReason.Valid)
+	require.Equal(t, reason, failed.FailureReason.String)
 	require.Equal(
-		t, int64(round.RoundFailureInsufficientOperatorFunds), failCode,
+		t, int32(round.RoundFailureInsufficientOperatorFunds),
+		failed.FailureCode,
 	)
 
 	// The failed intent's anchors are retained so the record stays
 	// correlatable by its consumed outpoints.
-	var anchorCount int
-	require.NoError(t, baseDB.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM pending_intent_anchors `+
-			`WHERE intent_id = ?`,
-		failing.ID[:],
-	).Scan(&anchorCount))
-	require.Equal(t, 2, anchorCount)
+	anchorCount, err := baseDB.Queries.CountPendingIntentAnchorsByIntentID(
+		ctx, failing.ID[:],
+	)
+	require.NoError(t, err)
+	require.EqualValues(t, 2, anchorCount)
 
 	// Idempotent: re-failing the same outpoints is a no-op (status guard).
 	require.NoError(
@@ -1810,15 +1800,10 @@ func TestFailForfeitIntentsMarksSendFailed(t *testing.T) {
 			round.RoundFailureUnknown,
 		),
 	)
-	row = baseDB.QueryRowContext(
-		ctx,
-		`SELECT failure_reason FROM pending_intents `+
-			`WHERE intent_id = ?`,
-		failing.ID[:],
-	)
-	require.NoError(t, row.Scan(&failReason))
+	failed, err = baseDB.Queries.GetPendingIntentByID(ctx, failing.ID[:])
+	require.NoError(t, err)
 	require.Equal(
-		t, reason, failReason.String,
+		t, reason, failed.FailureReason.String,
 		"a repeat fail must not overwrite the original reason",
 	)
 }
@@ -1895,20 +1880,15 @@ func TestRepersistFailedSendIntentRearmsReplay(t *testing.T) {
 
 	// The status and failure fields must be cleared so no stale failure
 	// leaks onto the re-armed record.
-	var (
-		status     string
-		failReason sql.NullString
-		failCode   int64
+	armed, err := baseDB.Queries.GetPendingIntentByID(ctx, intent.ID[:])
+	require.NoError(t, err)
+	require.Equal(t, "pending", armed.Status)
+	require.False(
+		t, armed.FailureReason.Valid, "failure reason must be cleared",
 	)
-	row := baseDB.QueryRowContext(ctx,
-		`SELECT status, failure_reason, failure_code
-		 FROM pending_intents WHERE intent_id = ?`,
-		intent.ID[:],
+	require.Equal(
+		t, int32(0), armed.FailureCode, "failure code must be cleared",
 	)
-	require.NoError(t, row.Scan(&status, &failReason, &failCode))
-	require.Equal(t, "pending", status)
-	require.False(t, failReason.Valid, "failure reason must be cleared")
-	require.Equal(t, int64(0), failCode, "failure code must be cleared")
 }
 
 // TestOrphanSweepKeepsFailedSendRecord verifies that the durable failed record
@@ -1987,27 +1967,19 @@ func TestOrphanSweepKeepsFailedSendRecord(t *testing.T) {
 
 	// The failed record must survive the sweep: both its header (status and
 	// reason) and its send detail are retained.
-	var (
-		status     string
-		failReason sql.NullString
-	)
-	row := baseDB.QueryRowContext(ctx,
-		`SELECT status, failure_reason
-		 FROM pending_intents WHERE intent_id = ?`,
-		failing.ID[:],
-	)
-	require.NoError(t, row.Scan(&status, &failReason))
+	failed, err := baseDB.Queries.GetPendingIntentByID(ctx, failing.ID[:])
+	require.NoError(t, err)
 	require.Equal(
-		t, "failed", status, "failed header must survive the sweep",
+		t, "failed", failed.Status,
+		"failed header must survive the sweep",
 	)
-	require.Equal(t, reason, failReason.String)
+	require.Equal(t, reason, failed.FailureReason.String)
 
-	var detailCount int
-	require.NoError(t, baseDB.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM pending_send_intents WHERE intent_id = ?`,
-		failing.ID[:],
-	).Scan(&detailCount))
-	require.Equal(
+	detailCount, err := baseDB.Queries.CountPendingSendIntentsByIntentID(
+		ctx, failing.ID[:],
+	)
+	require.NoError(t, err)
+	require.EqualValues(
 		t, 1, detailCount, "failed send detail must survive the sweep",
 	)
 
