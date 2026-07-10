@@ -11,6 +11,7 @@ import (
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/darepod"
 	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
+	"github.com/lightninglabs/darepo-client/unroll"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -315,6 +316,9 @@ func (s *Service) getExitPlan(ctx context.Context,
 			SweepTxid: hashString(entry.SweepTxid),
 			LastError: errorString(entry.LastError),
 			Error:     errorString(entry.Err),
+			InfeasibilityReason: infeasibilityReasonFromUnroll(
+				entry.InfeasibilityReason,
+			),
 		})
 	}
 
@@ -539,6 +543,31 @@ func exitStatusFromDaemon(
 
 	default:
 		return walletdkrpc.ExitJobStatus_EXIT_JOB_STATUS_UNSPECIFIED
+	}
+}
+
+// infeasibilityReasonFromUnroll maps the daemon's unroll feasibility reason
+// onto the wallet-facing ExitInfeasibilityReason enum. The projection sits at
+// the wallet boundary so daemon-side renumbering or new internal reasons don't
+// leak into the user surface.
+func infeasibilityReasonFromUnroll(
+	r unroll.ExitInfeasibilityReason) walletdkrpc.ExitInfeasibilityReason {
+
+	switch r {
+	case unroll.ExitSweepBelowDust:
+		return walletdkrpc.ExitInfeasibilityReason_EXIT_INFEASIBILITY_REASON_SWEEP_BELOW_DUST //nolint:ll
+
+	case unroll.ExitUneconomical:
+		return walletdkrpc.ExitInfeasibilityReason_EXIT_INFEASIBILITY_REASON_UNECONOMICAL //nolint:ll
+
+	case unroll.ExitWalletUnderfunded:
+		return walletdkrpc.ExitInfeasibilityReason_EXIT_INFEASIBILITY_REASON_WALLET_UNDERFUNDED //nolint:ll
+
+	case unroll.ExitWalletTooFewInputs:
+		return walletdkrpc.ExitInfeasibilityReason_EXIT_INFEASIBILITY_REASON_WALLET_TOO_FEW_INPUTS //nolint:ll
+
+	default:
+		return walletdkrpc.ExitInfeasibilityReason_EXIT_INFEASIBILITY_REASON_UNSPECIFIED //nolint:ll
 	}
 }
 

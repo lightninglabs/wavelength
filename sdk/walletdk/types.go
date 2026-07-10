@@ -598,14 +598,38 @@ type ExitPlanEntry struct {
 	RecommendedTotalFundingSat int64
 	FundingShortfallSat        int64
 	CanStart                   bool
-	ExitJobFound               bool
-	ExitStatus                 ExitJobStatus
-	SweepTxid                  string
-	LastError                  string
+
+	// InfeasibilityReason explains why CanStart is false. It may be a
+	// structural block — a dust or uneconomical VTXO the wallet can never
+	// make exitable (FundingShortfallSat is zero) — or a funding shortfall
+	// the wallet could cover (wallet underfunded or too few fee inputs,
+	// also reflected in FundingShortfallSat). It is
+	// ExitInfeasibilityReasonUnspecified when CanStart is true.
+	InfeasibilityReason ExitInfeasibilityReason
+
+	ExitJobFound bool
+	ExitStatus   ExitJobStatus
+	SweepTxid    string
+	LastError    string
 
 	// Err is a per-outpoint failure (empty on success).
 	Err string
 }
+
+// ExitInfeasibilityReason explains why a previewed exit cannot start. The
+// block may be structural (a dust or uneconomical VTXO) or a funding
+// shortfall the wallet could cover (wallet underfunded or too few fee
+// inputs). It is a wrapper-owned lowercase string set, decoupled from the
+// proto enum numbering.
+type ExitInfeasibilityReason string
+
+const (
+	ExitInfeasibilityReasonUnspecified        ExitInfeasibilityReason = "unspecified"           //nolint:ll
+	ExitInfeasibilityReasonSweepBelowDust     ExitInfeasibilityReason = "sweep_below_dust"      //nolint:ll
+	ExitInfeasibilityReasonUneconomical       ExitInfeasibilityReason = "uneconomical"          //nolint:ll
+	ExitInfeasibilityReasonWalletUnderfunded  ExitInfeasibilityReason = "wallet_underfunded"    //nolint:ll
+	ExitInfeasibilityReasonWalletTooFewInputs ExitInfeasibilityReason = "wallet_too_few_inputs" //nolint:ll
+)
 
 // GetExitPlanResult describes the combined backing-wallet funding plan for
 // every previewed outpoint plus aggregate totals.

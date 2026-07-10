@@ -40,10 +40,19 @@ type ExitPlanEntry struct {
 	RecommendedTotalFundingSat int64
 	FundingShortfallSat        int64
 	CanStart                   bool
-	ExitJobFound               bool
-	ExitStatus                 daemonrpc.UnrollJobStatus
-	SweepTxid                  *chainhash.Hash
-	LastError                  error
+
+	// InfeasibilityReason explains why CanStart is false. It may be a
+	// structural block — a dust or uneconomical VTXO the wallet can never
+	// make exitable (FundingShortfallSat is zero) — or a funding shortfall
+	// the wallet could cover (wallet underfunded or too few fee inputs,
+	// also reflected in FundingShortfallSat). It is unroll.ExitFeasible
+	// (the zero value) when CanStart is true.
+	InfeasibilityReason unroll.ExitInfeasibilityReason
+
+	ExitJobFound bool
+	ExitStatus   daemonrpc.UnrollJobStatus
+	SweepTxid    *chainhash.Hash
+	LastError    error
 
 	// Err is a per-outpoint failure (e.g. VTXO not found) so one bad
 	// outpoint does not fail the whole batch. Nil on success.
@@ -240,6 +249,20 @@ func (r *RPCServer) exitPlanEntry(ctx context.Context, raw string,
 	)
 	entry.FundingShortfallSat = int64(plan.FundingShortfallSat)
 	entry.CanStart = verdict.Feasible
+	entry.InfeasibilityReason = verdict.Reason
+
+	// A dust or uneconomical VTXO is infeasible with a zero funding
+	// shortfall: no amount of wallet funding makes it exitable, so the
+	// caller sees can_start=false with no shortfall and no error. Surface
+	// the structural reason in the logs so that state is explicable rather
+	// than silent.
+	if !verdict.Feasible && plan.FundingShortfallSat == 0 {
+		r.server.log.InfoS(ctx, "Exit plan entry infeasible "+
+			"without a funding shortfall",
+			slog.String("outpoint", entry.Outpoint),
+			slog.String("reason", verdict.Reason.String()),
+		)
+	}
 
 	// Only allocate a funding address when the outpoint is NOT feasible
 	// (there is a shortfall). When feasible, no address is needed so the
