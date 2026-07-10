@@ -31,7 +31,14 @@ type Querier interface {
 	DeleteClientTreeTxids(ctx context.Context, arg DeleteClientTreeTxidsParams) error
 	DeleteOORPackageCheckpoints(ctx context.Context, sessionID []byte) error
 	DeleteOrphanedPendingBoardIntents(ctx context.Context) error
+	// A terminally failed intent is a durable record, not a sweepable orphan:
+	// keep its header even once its anchors are reused. Replay already skips it on
+	// the status filter, and the activity projection still surfaces it as failed.
 	DeleteOrphanedPendingIntents(ctx context.Context) error
+	// Keep the detail row of a terminally failed send even after its anchors are
+	// gone (a released coin got reused by a later send, stealing the anchor). The
+	// failed record is durable and correlated by intent_id, so its detail must
+	// survive alongside its header for the activity projection to surface it.
 	DeleteOrphanedPendingSendIntents(ctx context.Context) error
 	DeletePendingBoardIntentByID(ctx context.Context, intentID []byte) error
 	DeletePendingBoardIntentsAll(ctx context.Context) error
@@ -211,10 +218,14 @@ type Querier interface {
 	ListOORRecipientCursors(ctx context.Context) ([]OorRecipientCursor, error)
 	ListOORVTXOBindingsBySession(ctx context.Context, sessionID []byte) ([]ListOORVTXOBindingsBySessionRow, error)
 	ListOwnedReceiveScripts(ctx context.Context) ([]OwnedReceiveScript, error)
+	// Only status = 'pending' rows replay; a 'failed' intent is terminally
+	// retired and must not be re-submitted on restart.
 	ListPendingBoardIntents(ctx context.Context) ([]ListPendingBoardIntentsRow, error)
 	ListPendingBoardingSweepInputs(ctx context.Context) ([]BoardingSweepInput, error)
 	ListPendingBoardingSweeps(ctx context.Context) ([]BoardingSweep, error)
 	ListPendingIntentAnchorsByKind(ctx context.Context, kind string) ([]PendingIntentAnchor, error)
+	// Only status = 'pending' rows replay; a 'failed' intent is terminally
+	// retired and must not be re-submitted on restart.
 	ListPendingSendIntents(ctx context.Context) ([]ListPendingSendIntentsRow, error)
 	ListRoundsByStatus(ctx context.Context, status string) ([]Round, error)
 	// ListRoundsPaginated returns rounds ordered by round_id with cursor-
@@ -271,6 +282,12 @@ type Querier interface {
 	MarkBoardingSweepInputStatus(ctx context.Context, arg MarkBoardingSweepInputStatusParams) error
 	MarkBoardingSweepInputsStatus(ctx context.Context, arg MarkBoardingSweepInputsStatusParams) error
 	MarkBoardingSweepStatus(ctx context.Context, arg MarkBoardingSweepStatusParams) error
+	// Terminally fail the pending send intent anchored to the given outpoint,
+	// recording the reason and typed failure code. Idempotent: the status guard
+	// makes a repeat call (e.g. a second forfeit outpoint of the same intent) a
+	// no-op. Anchors are intentionally retained so the activity projection can
+	// still correlate the failed job by its consumed outpoint.
+	MarkPendingSendIntentFailedByOutpoint(ctx context.Context, arg MarkPendingSendIntentFailedByOutpointParams) error
 	MarkUnilateralExitJobTerminal(ctx context.Context, arg MarkUnilateralExitJobTerminalParams) error
 	MarkVHTLCRecoveryExitTxBroadcast(ctx context.Context, arg MarkVHTLCRecoveryExitTxBroadcastParams) error
 	MarkVHTLCRecoveryExitTxBuilt(ctx context.Context, arg MarkVHTLCRecoveryExitTxBuiltParams) error
@@ -331,6 +348,12 @@ type Querier interface {
 	UpsertOwnedReceiveScript(ctx context.Context, arg UpsertOwnedReceiveScriptParams) error
 	UpsertPendingBoardIntent(ctx context.Context, arg UpsertPendingBoardIntentParams) error
 	UpsertPendingIntentAnchor(ctx context.Context, arg UpsertPendingIntentAnchorParams) error
+	// Re-arm a re-persisted intent as pending. NewPendingIntentID is
+	// deterministic, so retrying a terminally failed send (same inputs and
+	// payload) reuses the same intent_id and lands here on the retained 'failed'
+	// row. Resetting the status and failure fields makes the retry replayable
+	// again; without it the replay query (which now skips non-pending rows) would
+	// silently drop a retry that crashes before the round adopts it.
 	UpsertPendingIntentHeader(ctx context.Context, arg UpsertPendingIntentHeaderParams) error
 	UpsertPendingSendIntent(ctx context.Context, arg UpsertPendingSendIntentParams) error
 	// Spending reservation queries.
