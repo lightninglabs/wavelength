@@ -114,6 +114,15 @@ DELETE FROM pending_send_intents
 WHERE NOT EXISTS (
     SELECT 1 FROM pending_intent_anchors a
     WHERE a.intent_id = pending_send_intents.intent_id
+)
+-- Keep the detail row of a terminally failed send even after its anchors are
+-- gone (a released coin got reused by a later send, stealing the anchor). The
+-- failed record is durable and correlated by intent_id, so its detail must
+-- survive alongside its header for the activity projection to surface it.
+AND NOT EXISTS (
+    SELECT 1 FROM pending_intents i
+    WHERE i.intent_id = pending_send_intents.intent_id
+      AND i.status = 'failed'
 );
 
 -- name: DeleteOrphanedPendingIntents :exec
@@ -121,7 +130,11 @@ DELETE FROM pending_intents
 WHERE NOT EXISTS (
     SELECT 1 FROM pending_intent_anchors a
     WHERE a.intent_id = pending_intents.intent_id
-);
+)
+-- A terminally failed intent is a durable record, not a sweepable orphan:
+-- keep its header even once its anchors are reused. Replay already skips it on
+-- the status filter, and the activity projection still surfaces it as failed.
+AND status <> 'failed';
 
 -- name: DeletePendingIntentAnchorsByIntentID :exec
 DELETE FROM pending_intent_anchors
