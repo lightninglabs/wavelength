@@ -3,7 +3,6 @@ package vtxo
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -834,6 +833,20 @@ func (m *Manager) spawnForceUnrollActor(ctx context.Context,
 
 	descriptor, err := m.cfg.Store.GetVTXO(ctx, outpoint)
 	if err != nil {
+		// The store returns ErrVTXONotFound when the wallet no longer
+		// tracks the outpoint. That is a declined force-unroll, not an
+		// internal failure: report it the same as a nil descriptor so
+		// the caller reads "no such vtxo" rather than a hard error for
+		// an outpoint that simply is not ours to unroll.
+		if errors.Is(err, ErrVTXONotFound) {
+			res := fn.Ok[ManagerResp](&ForceUnrollResponse{
+				Accepted: false,
+				Reason:   "no such vtxo",
+			})
+
+			return nil, &res
+		}
+
 		res := fn.Err[ManagerResp](
 			fmt.Errorf("load vtxo for force-unroll: %w", err),
 		)
@@ -841,9 +854,9 @@ func (m *Manager) spawnForceUnrollActor(ctx context.Context,
 		return nil, &res
 	}
 	if descriptor == nil {
-		// No descriptor at all: the caller referenced an outpoint the
-		// wallet does not track. Report a specific reason so it reads
-		// apart from "accepted but self-looped".
+		// A store that signals a miss with a nil descriptor rather than
+		// ErrVTXONotFound lands here: the same declined force-unroll,
+		// reported so it reads apart from "accepted but self-looped".
 		res := fn.Ok[ManagerResp](&ForceUnrollResponse{
 			Accepted: false,
 			Reason:   "no such vtxo",
@@ -1866,7 +1879,7 @@ func (m *Manager) isPersistedSpent(ctx context.Context, op wire.OutPoint) (bool,
 
 	desc, err := m.cfg.Store.GetVTXO(ctx, op)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, ErrVTXONotFound) {
 			return false, nil
 		}
 
@@ -2238,7 +2251,7 @@ func (m *Manager) customForfeitInputIsSynthetic(ctx context.Context,
 
 		return false, nil
 
-	case errors.Is(err, sql.ErrNoRows):
+	case errors.Is(err, ErrVTXONotFound):
 		return true, nil
 
 	default:

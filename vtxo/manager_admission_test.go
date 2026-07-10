@@ -2,7 +2,6 @@ package vtxo
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"reflect"
@@ -273,7 +272,7 @@ func TestActivateCustomForfeitInputsPersistsPendingSigner(t *testing.T) {
 		TreeDepth:      2,
 	}}
 	store.On("GetVTXO", mock.Anything, op).Return(
-		nil, sql.ErrNoRows,
+		nil, ErrVTXONotFound,
 	).Once()
 	store.On(
 		"SaveVTXO", mock.Anything,
@@ -726,7 +725,7 @@ func TestActivateCustomForfeitInputsRollsBackPartialActivation(t *testing.T) {
 
 	store := &MockVTXOStore{}
 	store.On("GetVTXO", mock.Anything, first.Outpoint).Return(
-		nil, sql.ErrNoRows,
+		nil, ErrVTXONotFound,
 	).Once()
 	store.On(
 		"SaveVTXO", mock.Anything,
@@ -1249,7 +1248,7 @@ func TestCompleteSpendMissingPersistedVTXOReturnsNoActor(t *testing.T) {
 	mgr, store := newTestManager(t, nil)
 	store.On(
 		"GetVTXO", t.Context(), unknownOP,
-	).Return(nil, sql.ErrNoRows).Once()
+	).Return(nil, ErrVTXONotFound).Once()
 
 	result := mgr.Receive(t.Context(), &CompleteSpendRequest{
 		Outpoints: []wire.OutPoint{unknownOP},

@@ -2,6 +2,7 @@ package vtxo
 
 import (
 	"context"
+	"errors"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
@@ -447,6 +448,13 @@ func (d *Descriptor) PrimaryAncestry() *Ancestry {
 	return &d.Ancestry[0]
 }
 
+// ErrVTXONotFound is returned by VTXOStore.GetVTXO when the store has no
+// record of the requested outpoint. It is the domain-level miss signal, so
+// callers match on it rather than a persistence-layer error like
+// sql.ErrNoRows: the manager decides how a missing VTXO reads (e.g. a declined
+// force-unroll) without depending on how the store is backed.
+var ErrVTXONotFound = errors.New("vtxo not found")
+
 // VTXOStore defines the persistence interface for VTXO lifecycle management.
 // The store provides per-VTXO operations since each VTXO has its own actor.
 // The VTXO manager (parent actor) tracks active VTXOs and routes block epochs.
@@ -459,7 +467,7 @@ type VTXOStore interface {
 	SaveVTXO(ctx context.Context, vtxo *Descriptor) error
 
 	// GetVTXO retrieves a VTXO by its outpoint. Used for actor recovery on
-	// startup. Returns error if not found.
+	// startup. Returns ErrVTXONotFound if the outpoint is not stored.
 	GetVTXO(ctx context.Context,
 		outpoint wire.OutPoint) (*Descriptor, error)
 

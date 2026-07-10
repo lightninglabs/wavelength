@@ -1692,3 +1692,28 @@ func TestVTXOPersistenceStoreMetadataUpdate(t *testing.T) {
 		"CommitmentTxid should be updated",
 	)
 }
+
+// TestVTXOPersistenceStoreGetVTXONotFound verifies that a miss surfaces as the
+// domain sentinel vtxo.ErrVTXONotFound so callers match on it rather than the
+// persistence-layer sql.ErrNoRows. The raw driver error stays in the chain so
+// existing call sites that still test for it keep working during migration.
+func TestVTXOPersistenceStoreGetVTXONotFound(t *testing.T) {
+	t.Parallel()
+
+	vtxoStore, _, _ := newVTXOStoreForTest(t)
+	ctx := t.Context()
+
+	unknown := wire.OutPoint{Hash: chainhash.Hash{0xde, 0xad}, Index: 7}
+
+	fetched, err := vtxoStore.GetVTXO(ctx, unknown)
+	require.Nil(t, fetched)
+	require.Error(t, err)
+	require.ErrorIs(
+		t, err, vtxo.ErrVTXONotFound,
+		"a miss must surface the domain not-found sentinel",
+	)
+	require.ErrorIs(
+		t, err, sql.ErrNoRows,
+		"the driver error stays in the chain for back-compat",
+	)
+}
