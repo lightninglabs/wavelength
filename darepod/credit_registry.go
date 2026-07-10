@@ -64,6 +64,11 @@ func (s *Server) initCreditRegistry(ctx context.Context) error {
 		TimeoutActor:  creditTimeoutRef,
 		CallbackRef:   callbackRef,
 		ActorSystem:   s.actorSystem,
+
+		// Bound the awaiting states so a stuck credit-backed send fails
+		// fast rather than parking forever (darepo-client#880); see
+		// MaxAwaitingPollsOrDefault for the zero-coercion rationale.
+		MaxAwaitingPolls: s.cfg.Swap.Credit.MaxAwaitingPollsOrDefault(),
 		AutoRedeem: credit.AutoRedeemConfig{
 			Enabled:      !s.cfg.Swap.Credit.AutoRedeemDisabled,
 			MinRedeemSat: s.cfg.Swap.Credit.AutoRedeemMinSat,

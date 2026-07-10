@@ -377,4 +377,24 @@ const (
 	// DefaultAdmitTimeout bounds the synchronous server work an admission
 	// performs on the supervisor goroutine.
 	DefaultAdmitTimeout = 30 * time.Second
+
+	// DefaultMaxAwaitingPolls bounds how many reconciliation polls a single
+	// awaiting state (top-up funding or credit-pay settlement) may take
+	// before the operation terminal-fails. It is the production backstop
+	// against a credit-backed send parking forever when the server never
+	// reports a terminal state for the top-up or the pay — the hang behind
+	// darepo-client#880, where a confirmed credit-shortfall send never
+	// completes and never fails.
+	//
+	// At DefaultPollInterval (2s) this is ~4 minutes of awaiting per state:
+	// generous enough to absorb a slow OOR top-up credit or real-Lightning
+	// settlement, yet deliberately under the CLI's 5-minute default send
+	// wait (cmd/darepocli defaultSendWaitTimeout) so a stuck operation's
+	// clear terminal failure reason usually surfaces before the CLI falls
+	// back to a generic wait timeout. Zero (the OpActorConfig /
+	// RegistryConfig field default) still means "unlimited" for tests and
+	// embedders that rely on server-reported terminal states; production
+	// wiring coerces zero to this cap so the fail-fast bound is never
+	// silently disabled.
+	DefaultMaxAwaitingPolls uint32 = 120
 )
