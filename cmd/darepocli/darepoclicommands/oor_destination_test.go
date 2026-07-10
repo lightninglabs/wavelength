@@ -126,6 +126,30 @@ func TestMethodRegistryOORReceiveSchema(t *testing.T) {
 	require.Equal(t, "NewReceiveScriptResponse", method.ResponseType)
 }
 
+// TestOORGetAcceptsSnakeCaseSessionID verifies the oor get command resolves
+// both the registered kebab flag (--session-id) and the snake_case spelling
+// (--session_id) used by the JSON output and daemon logs to the same value
+// (issue #900).
+func TestOORGetAcceptsSnakeCaseSessionID(t *testing.T) {
+	t.Parallel()
+
+	for _, spelling := range []string{"--session-id", "--session_id"} {
+		spelling := spelling
+
+		t.Run(spelling, func(t *testing.T) {
+			t.Parallel()
+
+			cmd := newOORGetCmd()
+			err := cmd.Flags().Parse([]string{spelling, "sess-1"})
+			require.NoError(t, err)
+
+			got, err := cmd.Flags().GetString("session-id")
+			require.NoError(t, err)
+			require.Equal(t, "sess-1", got)
+		})
+	}
+}
+
 // findSchemaMethod locates a method entry in the CLI schema registry.
 func findSchemaMethod(t *testing.T, methodName string) schemaMethod {
 	t.Helper()
