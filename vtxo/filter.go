@@ -70,3 +70,25 @@ func SumSpendableBalance(descs []*Descriptor) btcutil.Amount {
 
 	return SumBalance(spendable)
 }
+
+// SumPendingBalance sums VTXOs in a non-terminal, non-spendable state
+// (PendingForfeit, Forfeiting, Spending): the complement of
+// SumSpendableBalance over the set ListLiveVTXOs returns. UnilateralExit
+// is not in that set and is accounted for separately.
+func SumPendingBalance(descs []*Descriptor) btcutil.Amount {
+	var total btcutil.Amount
+	for _, d := range descs {
+		switch d.Status {
+		case VTXOStatusPendingForfeit, VTXOStatusForfeiting,
+			VTXOStatusSpending:
+
+			total += d.Amount
+
+		// Spendable, terminal, or separately accounted.
+		case VTXOStatusLive, VTXOStatusForfeited, VTXOStatusSpent,
+			VTXOStatusUnilateralExit, VTXOStatusFailed:
+		}
+	}
+
+	return total
+}
