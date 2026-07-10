@@ -3,6 +3,7 @@ package round
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -31,6 +32,27 @@ import (
 // BoardingIntent.
 func buildBoardingRequest(intent BoardingIntent) types.BoardingRequest {
 	return intent.Request
+}
+
+// cleanupSignerSessions releases all transaction-level MuSig2 sessions. It
+// attempts every signer path so one cleanup failure cannot strand the rest.
+func cleanupSignerSessions(sessions map[SignerKey]*tree.SignerSession) error {
+	cleanupErrors := make([]error, 0)
+	for signerKey, session := range sessions {
+		if session == nil {
+			continue
+		}
+
+		err := session.Cleanup()
+		if err != nil {
+			cleanupErrors = append(
+				cleanupErrors, fmt.Errorf("clean up signer "+
+					"%x: %w", signerKey[:], err),
+			)
+		}
+	}
+
+	return errors.Join(cleanupErrors...)
 }
 
 // failWithNotification creates a state transition to ClientFailedState and
@@ -2356,10 +2378,12 @@ func (s *CommitmentTxValidatedState) processEvent(ctx context.Context,
 		}
 
 		// At this point, all the basic validation checks have passed.
-		// So now we'll generate a musig2 session to create nonces to
-		// sign the VTXO tree. Each VTXO that we created will
-		// effectively be a new musig session.
-		musig2Sessions := make(map[SignerKey]*tree.SignerSession)
+		// Build one independent signing job for each VTXO. The executor
+		// bounds concurrency across signer paths while each path keeps
+		// its transaction sessions ordered locally.
+		sessionJobs := make(
+			[]CreateSignerSessionJob, 0, len(s.Intents.VTXOs),
+		)
 		for _, vtxoReq := range s.Intents.VTXOs {
 			signerKey := NewSignerKey(
 				vtxoReq.SigningKey.PubKey,
@@ -2385,30 +2409,35 @@ func (s *CommitmentTxValidatedState) processEvent(ctx context.Context,
 					signerKey[:], err)
 			}
 
-			// TODO(roasbeef): actually use the interface
-			// in front of this?
-			session, err := tree.NewSignerSession(
-				env.Wallet, &vtxoReq.SigningKey, sweepTweak,
-				prevOutFetcher, clientTree.Root,
+			sessionJobs = append(
+				sessionJobs, CreateSignerSessionJob{
+					SignerKey:          signerKey,
+					Signer:             env.Wallet,
+					SigningKey:         vtxoReq.SigningKey,
+					SweepTapscriptRoot: sweepTweak,
+					PrevOuts:           prevOutFetcher,
+					Root:               root,
+				},
 			)
-			if err != nil {
-				return nil, fmt.Errorf("failed to create "+
-					"signing session for client %x: %w",
-					signerKey[:], err)
-			}
-
-			musig2Sessions[signerKey] = session
 		}
 
-		// Now that we have all our sessions created, we'll have each
-		// of them generate nonces to use in tree signing. The server
-		// expects nonces grouped by signer key first, then by txid.
+		sessionResults, err := env.signingExecutor().CreateSessions(
+			ctx, sessionJobs,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create signing "+
+				"sessions: %w", err)
+		}
+
+		// Build protocol maps only after every worker completes. This
+		// keeps ordinary Go maps owned by the FSM goroutine.
+		musig2Sessions := make(map[SignerKey]*tree.SignerSession)
 		allNonces := make(
 			map[SignerKey]map[tree.TxID]tree.Musig2PubNonce,
 		)
-		for signerKey, session := range musig2Sessions {
-			nonces := session.GetNonces()
-			allNonces[signerKey] = nonces
+		for _, result := range sessionResults {
+			musig2Sessions[result.SignerKey] = result.Session
+			allNonces[result.SignerKey] = result.Nonces
 		}
 
 		env.Log.InfoS(ctx, "Generated MuSig2 nonces, sending to server",
@@ -2843,8 +2872,13 @@ func (s *NoncesSentState) processEvent(ctx context.Context, event ClientEvent,
 			// session.
 			err := musig2Session.RegisterAggNonces(aggNoncesMap)
 			if err != nil {
-				return nil, fmt.Errorf("failed to register "+
+				registerErr := fmt.Errorf("failed to register "+
 					"combined nonces: %w", err)
+				cleanupErr := cleanupSignerSessions(
+					s.Musig2Sessions,
+				)
+
+				return nil, errors.Join(registerErr, cleanupErr)
 			}
 		}
 
@@ -2877,6 +2911,13 @@ func (s *NoncesSentState) processEvent(ctx context.Context, event ClientEvent,
 		}, nil
 
 	case *BoardingFailed:
+		cleanupErr := cleanupSignerSessions(s.Musig2Sessions)
+		if cleanupErr != nil {
+			env.Log.WarnS(ctx, "Unable to clean up MuSig2 sessions",
+				cleanupErr,
+			)
+		}
+
 		return &ClientStateTransition{
 			NextState: &ClientFailedState{
 				Reason:      evt.Reason,
@@ -2925,20 +2966,50 @@ func (s *NoncesAggregatedState) processEvent(ctx context.Context,
 		// client, so now we'll generate and send our partial
 		// signatures. The server expects signatures grouped by signer
 		// key first, then by transaction ID.
-		allSignatures := make(
-			map[SignerKey]map[tree.TxID]*musig2.PartialSignature,
+		sessionResults := make(
+			[]SignerSessionResult, 0, len(s.Musig2Sessions),
 		)
+		signerKeys := slices.Collect(maps.Keys(s.Musig2Sessions))
+		slices.SortFunc(signerKeys, func(a, b SignerKey) int {
+			return bytes.Compare(a[:], b[:])
+		})
+		for _, signerKey := range signerKeys {
+			session := s.Musig2Sessions[signerKey]
+			if session == nil {
+				cleanupErr := cleanupSignerSessions(
+					s.Musig2Sessions,
+				)
 
-		for signerKey, musig2Session := range s.Musig2Sessions {
-			// Generate partial signatures for all transactions in
-			// our path. The map is keyed by transaction ID.
-			partialSigs, err := musig2Session.Signatures(true)
-			if err != nil {
-				return nil, fmt.Errorf("failed to generate "+
-					"partial signatures: %w", err)
+				return nil, errors.Join(
+					fmt.Errorf("signing session for "+
+						"client %x not found",
+						signerKey[:]),
+					cleanupErr,
+				)
 			}
 
-			allSignatures[signerKey] = partialSigs
+			sessionResults = append(
+				sessionResults, SignerSessionResult{
+					SignerKey: signerKey,
+					Session:   session,
+				},
+			)
+		}
+
+		signatureResults, err := env.signingExecutor().Sign(
+			ctx, sessionResults,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to generate partial "+
+				"signatures: %w", err)
+		}
+
+		allSignatures := make(
+			map[SignerKey]map[tree.TxID]*musig2.PartialSignature,
+			len(signatureResults),
+		)
+		for _, result := range signatureResults {
+			allSignatures[result.SignerKey] = result.Signatures
 		}
 
 		// Create a single message with all signatures grouped by signer

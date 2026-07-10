@@ -27,6 +27,10 @@ type ClientEnvironment struct {
 	// Wallet provides signing capabilities for round participation.
 	Wallet ClientWallet
 
+	// SigningExecutor bounds independent VTXO MuSig2 work. A nil executor
+	// falls back to serial execution for focused FSM tests.
+	SigningExecutor SigningExecutor
+
 	// OperatorTerms contains the operator's parameters including sweep
 	// keys, fee targets, confirmation thresholds, and amount limits.
 	OperatorTerms *types.OperatorTerms
@@ -116,6 +120,16 @@ func (e *ClientEnvironment) now() time.Time {
 	return time.Now()
 }
 
+// signingExecutor returns the configured shared executor or a serial fallback
+// for construction sites that only exercise focused FSM behavior.
+func (e *ClientEnvironment) signingExecutor() SigningExecutor {
+	if e.SigningExecutor != nil {
+		return e.SigningExecutor
+	}
+
+	return NewSigningExecutor(1)
+}
+
 // Name returns the unique identifier for this FSM instance.
 func (e *ClientEnvironment) Name() string {
 	return "round_fsm"
@@ -137,6 +151,7 @@ func NewClientEnvironment(roundStore RoundStore, vtxoStore VTXOStore,
 		RoundStore:               roundStore,
 		VTXOStore:                vtxoStore,
 		Wallet:                   wallet,
+		SigningExecutor:          NewSigningExecutor(1),
 		OperatorTerms:            terms,
 		ChainParams:              chainParams,
 		MaxOperatorFee:           maxOperatorFee,

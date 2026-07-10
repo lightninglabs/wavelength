@@ -1223,6 +1223,10 @@ func (h *boardingTestHarness) setupMockWalletForMuSig2() {
 	h.wallet.On(
 		"MuSig2Sign", mock.Anything, mock.Anything, mock.Anything,
 	).Return(partialSig, nil)
+
+	// Batch signing performs explicit cleanup after every worker returns so
+	// partial failures cannot leave a subset of sessions live.
+	h.wallet.On("MuSig2Cleanup", mock.Anything).Return(nil)
 }
 
 func (h *boardingTestHarness) setupMockWalletForBoardingSigning() {
