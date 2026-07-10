@@ -4,6 +4,7 @@ package mobile
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -41,6 +42,7 @@ func TestParseConfigOverlaysSetFields(t *testing.T) {
 		"wallet_poll_interval_seconds": 5,
 		"wallet_recovery_window": 250,
 		"max_operator_fee_sat": 1000,
+		"signing_workers": 1,
 		"buffer_size": 4096
 	}`
 
@@ -70,6 +72,9 @@ func TestParseConfigOverlaysSetFields(t *testing.T) {
 	if got.MaxOperatorFeeSat != 1000 {
 		t.Fatalf("max operator fee = %d", got.MaxOperatorFeeSat)
 	}
+	if got.SigningWorkers != 1 {
+		t.Fatalf("signing workers = %d", got.SigningWorkers)
+	}
 	if got.BufferSize != 4096 {
 		t.Fatalf("buffer size = %d", got.BufferSize)
 	}
@@ -91,6 +96,7 @@ func TestParseConfigRejectsNegativeScalars(t *testing.T) {
 		"poll interval":    `{"wallet_poll_interval_seconds": -1}`,
 		"recovery window":  `{"wallet_recovery_window": -5}`,
 		"max operator fee": `{"max_operator_fee_sat": -1000}`,
+		"signing workers":  `{"signing_workers": -1}`,
 		"buffer size":      `{"buffer_size": -1}`,
 	}
 	for name, cfgJSON := range cases {
@@ -109,6 +115,16 @@ func TestParseConfigRejectsOverflowRecoveryWindow(t *testing.T) {
 	); err == nil {
 
 		t.Fatal("expected error for recovery window above uint32 max")
+	}
+}
+
+// TestParseConfigRejectsExcessiveSigningWorkers verifies the mobile boundary
+// applies the same bounded concurrency cap as darepod.
+func TestParseConfigRejectsExcessiveSigningWorkers(t *testing.T) {
+	cfgJSON := fmt.Sprintf(`{"signing_workers": %d}`,
+		walletdk.MaxSigningWorkers+1)
+	if _, err := parseConfig(cfgJSON); err == nil {
+		t.Fatal("expected error for excessive signing worker count")
 	}
 }
 

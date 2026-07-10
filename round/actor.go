@@ -258,6 +258,10 @@ type RoundClientConfig struct {
 	// actor.
 	Wallet ClientWallet
 
+	// SigningExecutor runs independent VTXO MuSig2 sessions with bounded
+	// concurrency. If nil, the actor preserves serial behavior.
+	SigningExecutor SigningExecutor
+
 	// RoundStore persists round coordination and checkpointing.
 	RoundStore RoundStore
 
@@ -382,12 +386,16 @@ func NewRoundClientActor(cfg *RoundClientConfig) fn.Result[*RoundClientActor] {
 		RoundStore:             cfg.RoundStore,
 		VTXOStore:              cfg.VTXOStore,
 		Wallet:                 cfg.Wallet,
+		SigningExecutor:        cfg.SigningExecutor,
 		OperatorTerms:          cfg.OperatorTerms,
 		ChainParams:            cfg.ChainParams,
 		MaxOperatorFee:         cfg.MaxOperatorFee,
 		Log:                    actorLog,
 		DisableJoinRequestAuth: cfg.DisableJoinRequestAuth,
 		OwnedScriptChecker:     cfg.OwnedScriptChecker,
+	}
+	if env.SigningExecutor == nil {
+		env.SigningExecutor = NewSigningExecutor(1)
 	}
 
 	// The sweep delay is no longer a global operator term: it is delivered
@@ -735,6 +743,7 @@ func (a *RoundClientActor) createRoundFSMFromDB(ctx context.Context,
 		RoundStore:             a.cfg.RoundStore,
 		VTXOStore:              a.cfg.VTXOStore,
 		Wallet:                 a.cfg.Wallet,
+		SigningExecutor:        a.env.SigningExecutor,
 		OperatorTerms:          a.cfg.OperatorTerms,
 		ChainParams:            a.cfg.ChainParams,
 		MaxOperatorFee:         a.cfg.MaxOperatorFee,
@@ -749,13 +758,15 @@ func (a *RoundClientActor) createRoundFSMFromDB(ctx context.Context,
 		OwnedScriptChecker:  a.cfg.OwnedScriptChecker,
 	}
 	fsmCfg := ClientStateMachineCfg{
-		Logger:        fsmLogger,
-		ErrorReporter: newContextErrorReporter(ctx, fsmPrefix),
-		InitialState:  state,
-		Env:           env,
+		Logger: fsmLogger,
+		ErrorReporter: newContextErrorReporter(
+			a.lifecycleCtx(ctx), fsmPrefix,
+		),
+		InitialState: state,
+		Env:          env,
 	}
 	fsm := protofsm.NewStateMachine(fsmCfg)
-	fsm.Start(ctx)
+	a.startRoundFSM(ctx, &fsm)
 
 	a.log.InfoS(ctx, "Created round FSM from checkpoint",
 		slog.String("round_id", round.RoundID.String()),
@@ -805,6 +816,7 @@ func (a *RoundClientActor) createNewRound(ctx context.Context) (*RoundFSM,
 		RoundStore:             a.cfg.RoundStore,
 		VTXOStore:              a.cfg.VTXOStore,
 		Wallet:                 a.cfg.Wallet,
+		SigningExecutor:        a.env.SigningExecutor,
 		OperatorTerms:          a.cfg.OperatorTerms,
 		ChainParams:            a.cfg.ChainParams,
 		MaxOperatorFee:         a.cfg.MaxOperatorFee,
@@ -819,13 +831,15 @@ func (a *RoundClientActor) createNewRound(ctx context.Context) (*RoundFSM,
 		OwnedScriptChecker:  a.cfg.OwnedScriptChecker,
 	}
 	fsmCfg := ClientStateMachineCfg{
-		Logger:        fsmLogger,
-		ErrorReporter: newContextErrorReporter(ctx, fsmPrefix),
-		InitialState:  &Idle{},
-		Env:           env,
+		Logger: fsmLogger,
+		ErrorReporter: newContextErrorReporter(
+			a.lifecycleCtx(ctx), fsmPrefix,
+		),
+		InitialState: &Idle{},
+		Env:          env,
 	}
 	fsm := protofsm.NewStateMachine(fsmCfg)
-	fsm.Start(ctx)
+	a.startRoundFSM(ctx, &fsm)
 
 	roundFSM := &RoundFSM{
 		FSM: &fsm,
@@ -1051,7 +1065,7 @@ func (a *RoundClientActor) registerCommitmentConfirmation(ctx context.Context,
 	}
 
 	if err := a.cfg.ChainSource.Tell(
-		a.registrationCtx(ctx), confReq,
+		a.lifecycleCtx(ctx), confReq,
 	); err != nil {
 
 		a.log.WarnS(ctx, "Failed to register confirmation", err)
@@ -1132,8 +1146,26 @@ func (a *RoundClientActor) replayCheckpointedServerMessages(
 	})
 }
 
-// OnStop implements actor.Stoppable to gracefully shut down all FSMs when the
-// actor is stopping. This prevents goroutine leaks by stopping all round FSMs.
+// signingSessionsFromState returns ephemeral MuSig2 sessions that still need
+// cleanup when a round is stopped before partial signing completes.
+func signingSessionsFromState(
+	state ClientState) map[SignerKey]*tree.SignerSession {
+
+	switch state := state.(type) {
+	case *NoncesSentState:
+		return state.Musig2Sessions
+
+	case *NoncesAggregatedState:
+		return state.Musig2Sessions
+
+	default:
+		return nil
+	}
+}
+
+// OnStop implements actor.Stoppable to gracefully clean live MuSig2 sessions
+// and stop all FSMs. This prevents external signer state and goroutines from
+// leaking across a daemon restart.
 func (a *RoundClientActor) OnStop(ctx context.Context) error {
 	a.log.InfoS(ctx, "Stopping round client actor",
 		slog.Int("rounds", len(a.rounds)),
@@ -1145,6 +1177,26 @@ func (a *RoundClientActor) OnStop(ctx context.Context) error {
 			slog.String("key", string(keyStr)),
 		)
 
+		state, err := roundFSM.FSM.CurrentState()
+		if err == nil {
+			clientState, ok := state.(ClientState)
+			if !ok {
+				roundFSM.FSM.Stop()
+
+				continue
+			}
+
+			cleanupErr := cleanupSignerSessions(
+				signingSessionsFromState(clientState),
+			)
+			if cleanupErr != nil {
+				a.log.WarnS(ctx, "Unable to clean up round "+
+					"MuSig2 sessions", cleanupErr,
+					slog.String("key", string(keyStr)),
+				)
+			}
+		}
+
 		roundFSM.FSM.Stop()
 	}
 
@@ -1153,18 +1205,24 @@ func (a *RoundClientActor) OnStop(ctx context.Context) error {
 	return nil
 }
 
-// registrationCtx returns the actor-owned context used for registrations that
-// must outlive the current Receive call. Some tests construct actor shells
-// without calling Start, so the fallback detaches cancellation from the current
-// call while preserving context values for logs and tracing.
-func (a *RoundClientActor) registrationCtx(
-	ctx context.Context) context.Context {
-
+// lifecycleCtx returns the actor-owned context for work that must outlive the
+// current Receive call. Some tests construct actor shells without calling
+// Start, so the fallback detaches cancellation from the current call while
+// preserving context values for logs and tracing.
+func (a *RoundClientActor) lifecycleCtx(ctx context.Context) context.Context {
 	if a.runCtx != nil {
 		return a.runCtx
 	}
 
 	return context.WithoutCancel(ctx)
+}
+
+// startRoundFSM starts a round state machine with the actor lifecycle rather
+// than the context of the request that happened to create it.
+func (a *RoundClientActor) startRoundFSM(ctx context.Context,
+	fsm *ClientStateMachine) {
+
+	fsm.Start(a.lifecycleCtx(ctx))
 }
 
 // Start initializes the actor by registering with the wallet actor to receive
@@ -2728,7 +2786,7 @@ func (a *RoundClientActor) processConfirmationRequest(
 	)
 
 	if err := a.cfg.ChainSource.Tell(
-		a.registrationCtx(ctx), confReq,
+		a.lifecycleCtx(ctx), confReq,
 	); err != nil {
 
 		a.log.WarnS(ctx,

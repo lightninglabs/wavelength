@@ -49,6 +49,7 @@ type mobileConfig struct {
 	SwapDatabaseFileName  string `json:"swap_database_file_name"`
 
 	MaxOperatorFeeSat int64 `json:"max_operator_fee_sat"`
+	SigningWorkers    int64 `json:"signing_workers"`
 	EagerRoundJoin    bool  `json:"eager_round_join"`
 	BufferSize        int   `json:"buffer_size"`
 }
@@ -101,6 +102,10 @@ func (mc mobileConfig) validate() error {
 			"max_operator_fee_sat",
 			mc.MaxOperatorFeeSat,
 		},
+		{
+			"signing_workers",
+			mc.SigningWorkers,
+		},
 	}
 	for _, f := range nonNegative {
 		if f.v < 0 {
@@ -119,6 +124,10 @@ func (mc mobileConfig) validate() error {
 	if mc.WalletRecoveryWindow > math.MaxUint32 {
 		return fmt.Errorf("wallet_recovery_window exceeds "+
 			"uint32 max: %d", mc.WalletRecoveryWindow)
+	}
+	if mc.SigningWorkers > int64(walletdk.MaxSigningWorkers) {
+		return fmt.Errorf("signing_workers exceeds maximum %d: %d",
+			walletdk.MaxSigningWorkers, mc.SigningWorkers)
 	}
 
 	return nil
@@ -202,6 +211,9 @@ func applyMobileConfig(cfg *walletdk.Config, mc mobileConfig) {
 
 	if mc.MaxOperatorFeeSat != 0 {
 		cfg.MaxOperatorFeeSat = mc.MaxOperatorFeeSat
+	}
+	if mc.SigningWorkers != 0 {
+		cfg.SigningWorkers = int(mc.SigningWorkers)
 	}
 	if mc.EagerRoundJoin {
 		cfg.EagerRoundJoin = true

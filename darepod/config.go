@@ -133,6 +133,19 @@ const (
 	// during a round.
 	DefaultForfeitCollectionTimeout = 2 * time.Minute
 
+	// DefaultSigningWorkers selects backend-aware MuSig2 concurrency. The
+	// profiled lwwallet backend uses a small bounded pool, while other
+	// signer backends remain serial unless explicitly configured otherwise.
+	DefaultSigningWorkers = 0
+
+	// DefaultLwwalletSigningWorkers is the bounded MuSig2 concurrency used
+	// by the profiled in-process lwwallet signer in automatic mode.
+	DefaultLwwalletSigningWorkers = 4
+
+	// MaxSigningWorkers prevents a local configuration mistake from
+	// creating an excessive number of simultaneous cryptographic jobs.
+	MaxSigningWorkers = 64
+
 	// DefaultWalletType is the default wallet backend. The "lwwallet"
 	// backend uses an in-process lightweight wallet backed by
 	// btcwallet and Esplora, requiring no external lnd node.
@@ -289,6 +302,11 @@ type Config struct {
 	// If zero, the default of 2 minutes is used.
 	//nolint:ll
 	ForfeitCollectionTimeout time.Duration `mapstructure:"forfeitcollectiontimeout"`
+
+	// SigningWorkers bounds the number of VTXO signer sessions processed in
+	// parallel. Zero selects a backend-aware default and one preserves the
+	// original serial behavior.
+	SigningWorkers int `mapstructure:"signingworkers"`
 
 	// RegistrationTimeout is the maximum wall-clock duration to
 	// wait for the server's RoundJoined admission watermark after
@@ -1047,6 +1065,7 @@ func DefaultConfig() *Config {
 			VHTLCRecovery:   swapRecovery,
 		},
 		MaxOperatorFeeSat: DefaultMaxOperatorFeeSat,
+		SigningWorkers:    DefaultSigningWorkers,
 		OOR:               defaultOORConfig(),
 		FeeEstimation: &FeeEstimationConfig{
 			MempoolSpace: &MempoolSpaceFeeConfig{},
@@ -1083,6 +1102,15 @@ func (c *Config) Validate() error {
 	if c.MaxOperatorFeeSat <= 0 {
 		return fmt.Errorf("maxoperatorfeesat must be positive: got %d",
 			c.MaxOperatorFeeSat)
+	}
+
+	if c.SigningWorkers < 0 {
+		return fmt.Errorf("signingworkers must be non-negative: got %d",
+			c.SigningWorkers)
+	}
+	if c.SigningWorkers > MaxSigningWorkers {
+		return fmt.Errorf("signingworkers exceeds maximum %d: got %d",
+			MaxSigningWorkers, c.SigningWorkers)
 	}
 
 	if c.OOR == nil {

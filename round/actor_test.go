@@ -11,7 +11,9 @@ import (
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
+	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 	"github.com/lightninglabs/darepo-client/internal/testutils"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
@@ -25,6 +27,30 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type lifecycleProbeState struct {
+	ctxErr chan error
+}
+
+// ProcessEvent records whether the state machine lifecycle context was
+// cancelled when a later event was processed.
+func (s *lifecycleProbeState) ProcessEvent(ctx context.Context, _ ClientEvent,
+	_ *ClientEnvironment) (*ClientStateTransition, error) {
+
+	s.ctxErr <- ctx.Err()
+
+	return &ClientStateTransition{NextState: s}, nil
+}
+
+// IsTerminal reports that the lifecycle probe remains active.
+func (s *lifecycleProbeState) IsTerminal() bool {
+	return false
+}
+
+// String returns the lifecycle probe state name.
+func (s *lifecycleProbeState) String() string {
+	return "LifecycleProbe"
+}
+
 func stdTpl(t *testing.T, clientKey, operatorKey *btcec.PublicKey,
 	exitDelay uint32) []byte {
 
@@ -36,6 +62,36 @@ func stdTpl(t *testing.T, clientKey, operatorKey *btcec.PublicKey,
 	require.NoError(t, err)
 
 	return policy
+}
+
+// TestRoundFSMOutlivesCreationRequest verifies that a round FSM retains the
+// actor lifecycle after the Ask request that created it has completed.
+func TestRoundFSMOutlivesCreationRequest(t *testing.T) {
+	t.Parallel()
+
+	state := &lifecycleProbeState{ctxErr: make(chan error, 1)}
+	fsm := protofsm.NewStateMachine(ClientStateMachineCfg{
+		Logger:        btclog.Disabled,
+		ErrorReporter: newContextErrorReporter(t.Context(), "probe"),
+		InitialState:  state,
+		Env:           &ClientEnvironment{},
+	})
+
+	actor := &RoundClientActor{runCtx: t.Context()}
+	requestCtx, cancelRequest := context.WithCancel(context.Background())
+	actor.startRoundFSM(requestCtx, &fsm)
+	t.Cleanup(fsm.Stop)
+
+	// Actor Ask processing cancels its merged request context immediately
+	// after Receive returns. A later protocol event must still run using
+	// the actor-owned context.
+	cancelRequest()
+	result := fsm.AskEvent(t.Context(), &GenerateNonces{}).Await(
+		t.Context(),
+	)
+	_, err := result.Unpack()
+	require.NoError(t, err)
+	require.NoError(t, <-state.ctxErr)
 }
 
 // TestActorStart verifies the actor initialization sequence, ensuring proper

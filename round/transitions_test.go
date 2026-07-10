@@ -1693,6 +1693,26 @@ func TestCommitmentTxValidatedState(t *testing.T) {
 		h.assertOutboxContainsType("*round.SubmitNoncesRequest")
 	})
 
+	t.Run("duplicate_signer_key_rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+		intent := h.newTestBoardingIntent()
+		state := h.newCommitmentTxValidatedState(
+			testRoundIDTr("duplicate-signer"),
+			[]BoardingIntent{intent},
+		)
+		state.Intents.VTXOs = append(
+			state.Intents.VTXOs, state.Intents.VTXOs[0],
+		)
+		h.withState(state)
+
+		transition, err := h.sendEvent(&GenerateNonces{})
+		require.ErrorContains(t, err, "duplicate signer key")
+		require.Nil(t, transition)
+		h.wallet.AssertNotCalled(t, "MuSig2CreateSession")
+	})
+
 	t.Run("leave_only_round_starts_forfeit_timeout", func(t *testing.T) {
 		t.Parallel()
 
