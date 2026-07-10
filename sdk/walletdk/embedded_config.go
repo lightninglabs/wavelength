@@ -31,7 +31,8 @@ type Config struct {
 	// a caller-owned config needs an explicit false value.
 	AllowMainnet bool
 
-	// ServerAddress is the Ark operator mailbox edge server address.
+	// ServerAddress is the Ark operator mailbox edge server address. Empty
+	// selects the daemon network+transport default.
 	ServerAddress string
 
 	// ServerTransport selects how the embedded daemon talks to the Ark
@@ -74,7 +75,7 @@ type Config struct {
 	WalletBtcwalletFilterHeadersSource string
 
 	// SwapServerAddress is the swapdk-server address for the selected
-	// transport.
+	// transport. Empty selects the daemon network+transport default.
 	SwapServerAddress string
 
 	// SwapServerTransport selects how the embedded daemon talks to

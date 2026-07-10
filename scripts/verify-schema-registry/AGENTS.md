@@ -9,19 +9,21 @@ success, 1 on drift. Run via `make schema-check`.
 
 ## Key Functions
 
-- `main()` — Entry point: parses the CLI package, extracts all three sets, runs
+- `main()` — Parses the CLI package, extracts all three sets, filters
+  schema-introspection/MCP-server commands out of the cobra set, runs both
   subset checks, and prints a summary or error list.
 - `extractSchemaMethods(pkg)` — Walks `methodRegistry()` body looking for
   `Method` key-value fields in composite literals; returns sorted method names.
 - `extractMCPToolNames(pkg)` — Walks all `mcp.AddTool[T](...)` calls and
   extracts the `Name` field from the `&mcp.Tool{}` argument; returns sorted
   tool names.
-- `extractCobraLeafCommands(pkg)` — Walks all `new*Cmd()` functions to build a
-  dotted command-path tree (e.g. `fees.estimate`); returns leaf commands that
-  have a `RunE` handler; excludes schema-introspection and MCP server commands.
-- `checkSubset(setA, setB, transform)` — Verifies every element of setA (after
-  optional name transform) appears in setB. One-directional: setB may have extra
-  entries (some schema methods are CLI-only).
+- `extractCobraLeafCommands(pkg)` — Walks all `new*Cmd()` functions, builds a
+  parent/child tree from `AddCommand` calls starting at `newRootCmd`, and
+  returns dotted `Use`-field paths (e.g. `fees.estimate`) for commands that
+  set `RunE`.
+- `checkSubset(nameA, setA, nameB, setB, transform)` — Verifies every element
+  of setA (after `transform`) appears in setB; one-directional, setB may have
+  extra entries.
 
 ## Relationships
 
@@ -33,10 +35,12 @@ success, 1 on drift. Run via `make schema-check`.
 
 - MCP tool names use `namespace_method` format; schema registry uses
   `namespace.method`. `mcpToSchema` converts by replacing the first underscore.
-- Cobra command paths use dotted notation matching the schema registry key.
-- The check is one-directional for MCP vs schema: every MCP tool must have a
-  schema entry, but schema entries for sensitive CLI-only operations (wallet key
-  material, etc.) need not have an MCP tool.
+- `schemaToCobra` is the identity function: cobra `Use` paths must already
+  match the schema registry key verbatim.
+- Both checks are one-directional: every MCP tool must map to a schema entry,
+  and every RPC cobra command (after excluding `schema`/`mcp`-prefixed meta
+  commands) must map to a schema entry. Schema entries may have no MCP/cobra
+  counterpart (e.g. sensitive CLI-only wallet operations).
 
 ## Deep Docs
 

@@ -24,17 +24,22 @@ finalize packages.
 - `BuildArkPSBT` — Constructs deterministic Ark PSBT spending checkpoint
   outputs, enforcing fee-less transfers and canonical ordering.
 - `BuildCheckpointPSBT` — Wraps checkpoint.BuildPSBT with tap tree metadata.
-- `ValidateSubmitPackage` / `ValidateFinalizePackage` — Structural validators
-  ensuring canonical Ark PSBT, checkpoint set matches inputs, witness UTXOs
-  present.
-- `ApplyFinalizeData` — Applies finalize data to a validated submit package.
+- `ValidateSubmitPackage` / `ValidateSubmitPackageSigned` — Structural (resp.
+  signature+VM) validators for a submit package.
+- `ValidateFinalizePackage` / `ValidateFinalizePackageSigned` — Structural
+  (resp. signature+VM) validators for a finalize package.
+- `(*SubmitPackage).Validate` / `(*FinalizePackage).Validate` — Convenience
+  wrappers around the structural validators above.
+- `MarshalSubmitPackage` / `UnmarshalSubmitPackage` — Versioned TLV
+  encode/decode for a submit package.
 
 ## Relationships
 
 - **Depends on**: `lib/arkscript` (policy types, spend helpers), `lib/tx/arktx` (validation, TxVersion),
-  `lib/tx/checkpoint` (BuildPSBT), `lib/tx/psbtutil` (Serialize/Parse).
-- **Depended on by**: `oor` (session state machine), `db` (artifact store),
-  `rpc/oorpb`, `darepod` (RPC server).
+  `lib/tx/checkpoint` (BuildPSBT, Input/SpentVTXORef aliases),
+  `lib/tx/psbtutil` (Serialize/Parse).
+- **Depended on by**: `oor` (session state machine), `rpc/oorpb` (wire
+  payloads), `darepod` (RPC server), `unroll` (proof assembly).
 
 ## Invariants
 
@@ -43,8 +48,8 @@ finalize packages.
 - Checkpoint set must exactly match Ark input references (no missing, no extra).
 - Each Ark input spends checkpoint output index 0 (canonical v0 mapping).
 - Witness UTXOs must be present in Ark PSBT inputs (package is self-contained).
-- Tap tree metadata (`TapTreePSBTKey`) required on all Ark inputs for
-  finalization.
+- Each checkpoint PSBT output must carry standard PSBT tap tree metadata
+  (`TaprootTapTree`); required for finalization and script-VM validation.
 - Fee-less constraint: sum(checkpoint inputs) == sum(recipient outputs excluding
   anchor).
 - Anchor output always last with value 0.

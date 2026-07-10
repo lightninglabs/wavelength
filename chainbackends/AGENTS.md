@@ -46,22 +46,24 @@ estimation, and optional v3 package relay via a pluggable `PackageSubmitter`.
 
 ## Relationships
 
-- **Depends on**: `chainsource` (implements `ChainBackend` interface).
-- **Depended on by**: `darepod` (instantiates backend and wires a
-  `PackageSubmitter` from operator config: production uses
-  `chainbackends/bitcoindrpc.PackageSubmitter` directly, itests inject the
-  same submitter from the harness).
+- **Depends on**: `chainsource` (implements `ChainBackend` interface),
+  `chainfees` (fee estimator types).
+- **Depended on by**: `darepod` (instantiates `LNDBackend` and wires a
+  `PackageSubmitter` from operator config), `systest` (constructs
+  `LNDBackend` via lndclient for system tests), `btcwbackend` / `lwwallet` /
+  `txconfirm` (reuse `PackageSubmitter`, `PackageTxError`, and
+  `WalkPackageTxErrors` to classify per-tx package-relay results).
 
 ## Invariants
 
 - `LNDBackend` requires an lnd instance (local or remote via lndclient).
 - Provides real-time notifications via lnd's chainntnfs package.
 - `PackageSubmitter` is optional; package-capable backends return an error
-  from `SubmitPackage` when no submitter is set. In production `cmd/darepod`
-  injects
-  `chainbackends/bitcoindrpc.PackageSubmitter` when bitcoind flags are
-  configured; the itest harness injects the same type via
-  `darepod.Config.PackageSubmitter`.
+  from `SubmitPackage` when no submitter is set. `darepod` selects one at
+  startup: an explicit `darepod.Config.PackageSubmitter` wins (bitcoind flags
+  inject `chainbackends/bitcoindrpc.PackageSubmitter`, and the itest harness
+  sets the same field); otherwise, for an LND wallet it falls back to
+  `chainbackends/lndsubmitter.New(lndSvc.WalletKit)` as the default.
 - `LndClientChainNotifier` enforces a 15-second timeout on registration to
   prevent hanging under LND block load.
 - Log messages use canonical txid strings (not reversed byte slices).

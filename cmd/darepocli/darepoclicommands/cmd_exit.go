@@ -53,6 +53,7 @@ func newExitCmd() *cobra.Command {
 			"preview, non-zero on validation failure")
 
 	cmd.AddCommand(newExitStatusCmd())
+	cmd.AddCommand(newExitSummaryCmd())
 	cmd.AddCommand(newExitPlanCmd())
 
 	return cmd
@@ -120,10 +121,17 @@ func newExitStatusCmd() *cobra.Command {
 		Use:   "status",
 		Short: "Query the status of an exit (unroll) job",
 		Long: "Returns the current status of a unilateral exit job " +
-			"for the specified VTXO outpoint, including the " +
-			"job phase, sweep txid, and any errors.\n\n" +
+			"for the specified VTXO outpoint. By default the " +
+			"response includes recovery-tree progress (layer and " +
+			"transaction counts), the CSV maturity countdown, a " +
+			"best-case block estimate to full exit, and the " +
+			"on-chain fee breakdown, alongside the job phase, " +
+			"sweep txid, and any errors. The endpoint stays " +
+			"queryable after the exit completes.\n\n" +
 			"Example:\n" +
-			"  darepocli exit status --outpoint TXID:VOUT",
+			"  darepocli exit status --outpoint TXID:VOUT\n" +
+			"  darepocli exit status --outpoint TXID:VOUT " +
+			"--detailed=false",
 		Args: cobra.NoArgs,
 		RunE: walletExitStatus,
 	}
@@ -131,6 +139,10 @@ func newExitStatusCmd() *cobra.Command {
 	cmd.Flags().String("outpoint", "",
 		"VTXO outpoint to query (txid:vout)")
 	_ = cmd.MarkFlagRequired("outpoint")
+	cmd.Flags().Bool("detailed", true,
+		"include tree/CSV progress, best-case block countdown, and "+
+			"the fee breakdown; pass --detailed=false for a "+
+			"coarse, cheaper phase-only status")
 
 	return cmd
 }
@@ -142,16 +154,58 @@ func walletExitStatus(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
+	detailed, _ := cmd.Flags().GetBool("detailed")
+
 	return withWalletClient(
 		cmd, func(c walletdkrpc.WalletServiceClient) error {
 			resp, err := c.ExitStatus(
 				cmd.Context(),
 				&walletdkrpc.ExitStatusRequest{
 					Outpoint: outpoint,
+					Detailed: detailed,
 				},
 			)
 			if err != nil {
 				return fmt.Errorf("exit status: %w", err)
+			}
+
+			return printWalletProto(resp)
+		},
+	)
+}
+
+// newExitSummaryCmd builds the `exit summary` subcommand. It dials
+// walletdkrpc.WalletService.ExitSummary to report the wallet-wide portfolio of
+// in-progress exits plus aggregate totals.
+func newExitSummaryCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "summary",
+		Short: "Summarize all in-progress exits and their totals",
+		Long: "Lists every in-progress unilateral exit and the " +
+			"aggregate totals across them: the amount still " +
+			"being recovered, the estimated on-chain fees, and " +
+			"the estimated net recoverable. Completed and " +
+			"failed exits are omitted; they have no amount " +
+			"left to recover.\n\n" +
+			"Example:\n" +
+			"  darepocli exit summary",
+		Args: cobra.NoArgs,
+		RunE: walletExitSummary,
+	}
+
+	return cmd
+}
+
+// walletExitSummary implements the `exit summary` subcommand.
+func walletExitSummary(cmd *cobra.Command, _ []string) error {
+	return withWalletClient(
+		cmd, func(c walletdkrpc.WalletServiceClient) error {
+			resp, err := c.ExitSummary(
+				cmd.Context(),
+				&walletdkrpc.ExitSummaryRequest{},
+			)
+			if err != nil {
+				return fmt.Errorf("exit summary: %w", err)
 			}
 
 			return printWalletProto(resp)

@@ -407,6 +407,51 @@ func TestRouterSendInvoiceDispatchesStartPay(t *testing.T) {
 	)
 }
 
+// TestRouterSendInvoiceProjectsPendingEntry asserts that dispatching a
+// pure-Lightning invoice eagerly projects the pending entry into the activity
+// store, keyed by its payment hash, before Send returns. Without this the swap
+// monitor's asynchronous SubscribeSwaps projection is the only writer, so a
+// caller that polls InspectActivity to block on settlement (the default `da
+// send` behavior) races the monitor and sees NOT_FOUND on the first poll,
+// aborting the wait and reporting a still-in-flight pay as merely pending.
+func TestRouterSendInvoiceProjectsPendingEntry(t *testing.T) {
+	t.Parallel()
+
+	r, swap, _ := newRouterFixture(t)
+	store := &fakeActivityProjector{}
+	r.deps.ActivityStore = store
+	swap.startPayResp = &swapclientrpc.StartPayResponse{
+		PaymentHash: "deadbeef",
+		Swap: &swapclientrpc.SwapSummary{
+			PaymentHash: "deadbeef",
+			Direction: swapclientrpc.
+				SwapDirection_SWAP_DIRECTION_PAY,
+			Pending: true,
+		},
+	}
+
+	resp, err := sendPreparedInvoice(t, r, "lnbc1example", 0)
+	require.NoError(t, err)
+	require.Equal(t, "deadbeef", resp.GetEntry().GetId())
+	require.Equal(
+		t, walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		resp.GetEntry().GetStatus(),
+	)
+
+	// The dispatched pay must be durable and inspectable the instant Send
+	// returns, so the wait loop can poll it through to a terminal state.
+	require.Equal(t, 1, store.count())
+	require.True(
+		t, store.ids()["deadbeef"],
+		"pending pay must be projected by payment hash on dispatch",
+	)
+	require.Equal(
+		t, int64(walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING),
+		store.lastProjection().Status,
+		"eagerly projected row must be PENDING",
+	)
+}
+
 // TestRouterSendInvoiceHandsCreditPayToRegistry asserts that a credit-backed
 // pay is handed off to the durable credit registry under a payment-hash-derived
 // idempotency key, rather than driving the top-up and pay inline. The router no

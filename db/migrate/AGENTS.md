@@ -5,18 +5,22 @@
 Generic database migration orchestration for SQLite and PostgreSQL backends.
 Wraps `golang-migrate` with downgrade protection, per-step callbacks, an
 on-the-fly SQLite→Postgres token replacer, and structured logging. Used by
-both the main schema (`db/`) and the actor-delivery sub-schema
-(`db/actordelivery/migrations/`).
+the main schema (`db/`), the actor-delivery sub-schema
+(`db/actordelivery/migrations/`), and `sdk/swaps`. The migration driver is
+build-tagged: native builds (`driver_native.go`) use golang-migrate's
+sqlite/postgres drivers, js/wasm builds (`driver_wasm.go`,
+`sqlite_wasm_driver.go`) use a hand-rolled `wasmSQLiteDriver` to avoid
+pulling the modernc sqlite driver into the browser bundle.
 
 ## Key Types
 
-- `Target` — Function signature for migration strategies, e.g.
-  `TargetLatest` or `TargetVersion(n)`.
-- `TargetLatest` — Predefined strategy calling `mig.Up()` (apply all pending
+- `Target` — Function signature for migration strategies; `TargetLatest` is
+  the only predefined strategy, calling `mig.Up()` (apply all pending
   migrations).
 - `Config` — Migration control: `MigrationsTable`, `DatabaseName`,
-  `LatestVersion` (downgrade guard), `PostStepCallbacks map[uint]func()`
-  (called after each step number), `PostgresReplacements map[string]string`
+  `LatestVersion` (downgrade guard), `PostStepCallbacks
+  map[uint]golangmigrate.PostStepCallback` (Go callback run after the
+  matching SQL step applies), `PostgresReplacements map[string]string`
   (SQLite→Postgres token map), optional `Log btclog.Logger`.
 - `RunMigrations(db, backend, sourceFS, sourcePath, target, cfg)` — Top-level
   entry point. Builds the driver, wraps the `fs.FS` with `replacerFS` if
@@ -39,7 +43,7 @@ both the main schema (`db/`) and the actor-delivery sub-schema
 - **Depends on**: `db/sqlc` (BackendType enum for driver selection),
   `github.com/golang-migrate/migrate/v4`.
 - **Depended on by**: `db` (main schema runner), `db/actordelivery/migrations`
-  (actor-delivery schema runner).
+  (actor-delivery schema runner), `sdk/swaps` (store migrations).
 
 ## Invariants
 

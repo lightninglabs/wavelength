@@ -50,6 +50,8 @@ type WalletServiceMailboxServer interface {
 	Exit(ctx context.Context, req *ExitRequest) (*ExitResponse, error)
 	// ExitStatus handles ExitStatus.
 	ExitStatus(ctx context.Context, req *ExitStatusRequest) (*ExitStatusResponse, error)
+	// ExitSummary handles ExitSummary.
+	ExitSummary(ctx context.Context, req *ExitSummaryRequest) (*ExitSummaryResponse, error)
 	// SubscribeWallet handles SubscribeWallet.
 	SubscribeWallet(ctx context.Context, req *SubscribeWalletRequest) (*SubscribeWalletResponse, error)
 }
@@ -185,6 +187,16 @@ func RegisterWalletServiceMailboxServer(r rpc.Router, impl WalletServiceMailboxS
 		}
 
 		return impl.ExitStatus(ctx, req)
+	})
+	r.Handle("walletdkrpc.WalletService", "ExitSummary", func() proto.Message {
+		return &ExitSummaryRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*ExitSummaryRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.ExitSummary(ctx, req)
 	})
 	r.Handle("walletdkrpc.WalletService", "SubscribeWallet", func() proto.Message {
 		return &SubscribeWalletRequest{}
@@ -490,6 +502,29 @@ func (c *WalletServiceMailboxClient) ExitStatus(ctx context.Context, req *ExitSt
 	}
 
 	resp := new(ExitStatusResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// ExitSummary calls the ExitSummary RPC.
+func (c *WalletServiceMailboxClient) ExitSummary(ctx context.Context, req *ExitSummaryRequest, opts ...rpc.RPCOptions) (*ExitSummaryResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "walletdkrpc.WalletService",
+		Method:  "ExitSummary",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(ExitSummaryResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

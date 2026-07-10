@@ -514,6 +514,163 @@ func TestReplaySendOnChainReRegistersExactAnchors(t *testing.T) {
 	require.True(t, captured.VTXOs[0].IsChange)
 }
 
+// TestHandleSendOnChainSweepAllLeaveValue pins the sweep-all regression: the
+// intent builder must stamp the pre-fee Σ(inputs) onto the single IsChange
+// leave rather than shipping a bare zero. A zero-valued leave passed the
+// wallet's coin selection but then died in the round FSM's IntentRequested
+// validation ("total VTXO output is zero"), so every sweep-all onchain send
+// failed before it ever reached the operator. The server rewrites the slot
+// with the residual at seal time, but the placeholder must already be
+// non-zero and above dust to clear both the client FSM check and the
+// operator's ValidateLeaveRequest floor.
+func TestHandleSendOnChainSweepAllLeaveValue(t *testing.T) {
+	t.Parallel()
+
+	opA := testOutpoint(20)
+	opB := testOutpoint(21)
+
+	mgr := &mockVTXOManagerBehavior{
+		forfeitReserveResp: &actormsg.ReserveForfeitResponse{},
+	}
+	roundActor := &mockRoundActorBehavior{}
+
+	// The sweep-all path materializes amounts through the VTXO reader for
+	// the enumerated outpoints; totalSelected is their sum.
+	descs := map[wire.OutPoint]*VTXODescriptor{
+		opA: {
+			Outpoint: opA,
+			Amount:   40_000,
+		},
+		opB: {
+			Outpoint: opB,
+			Amount:   25_000,
+		},
+	}
+
+	store := &MockBoardingStore{}
+	store.On(
+		"UpsertPendingIntent", mock.Anything, mock.Anything,
+	).Return(nil)
+
+	w := newSendReplayTestWallet(t, mgr, roundActor, store, descs)
+
+	priv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	result := w.Receive(t.Context(), &SendOnChainRequest{
+		DestinationPkScript: sendReplayDestScript,
+		SweepOutpoints:      []wire.OutPoint{opA, opB},
+		OperatorFee:         1_000,
+		DustLimit:           330,
+		OperatorKey:         priv.PubKey(),
+		VTXOExitDelay:       144,
+	})
+	require.True(
+		t, result.IsOk(),
+		"sweep-all send must succeed; got %v", result.Err(),
+	)
+
+	require.Equal(t, 1, roundActor.registerCalls)
+	captured := roundActor.capturedIntent
+	require.NotNil(t, captured)
+
+	// Exactly one leave, marked IsChange so the server absorbs the fee, and
+	// carrying the pre-fee Σ(inputs) placeholder — not zero.
+	require.Len(t, captured.Leaves, 1)
+	require.True(
+		t, captured.Leaves[0].IsChange, "sweep-all leave must be "+
+			"IsChange so the server stamps the seal-time residual",
+	)
+	require.EqualValues(
+		t, 65_000, captured.Leaves[0].Output.Value,
+		"sweep-all leave must carry the pre-fee Σ(inputs), not zero",
+	)
+	require.Equal(
+		t, sendReplayDestScript, captured.Leaves[0].Output.PkScript,
+	)
+
+	// Sweep-all drains everything to the destination: no change VTXO.
+	require.Empty(
+		t, captured.VTXOs, "sweep-all must not create a change VTXO",
+	)
+
+	// Forfeits are exactly the enumerated sweep outpoints.
+	gotForfeits := make([]wire.OutPoint, 0, len(captured.Forfeits))
+	for _, f := range captured.Forfeits {
+		gotForfeits = append(gotForfeits, *f.VTXOOutpoint)
+	}
+	require.ElementsMatch(t, []wire.OutPoint{opA, opB}, gotForfeits)
+}
+
+// TestReplaySendOnChainSweepAllLeaveValue mirrors the sweep-all leave-value
+// guard on the restart replay path, which shares buildSendOnChainIntentPackage
+// with the live path: a replayed sweep-all intent must rebuild the same
+// non-zero IsChange leave.
+func TestReplaySendOnChainSweepAllLeaveValue(t *testing.T) {
+	t.Parallel()
+
+	opA := testOutpoint(22)
+	opB := testOutpoint(23)
+
+	mgr := &mockVTXOManagerBehavior{
+		forfeitReserveResp: &actormsg.ReserveForfeitResponse{},
+	}
+	roundActor := &mockRoundActorBehavior{}
+
+	priv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	payload := &SendOnChainIntentPayload{
+		DestinationPkScript: sendReplayDestScript,
+		SweepAll:            true,
+		OperatorKey:         priv.PubKey(),
+		VTXOExitDelay:       144,
+		DustLimit:           330,
+	}
+	anchors := []wire.OutPoint{opA, opB}
+	intent := PendingIntent{
+		ID:          NewPendingIntentID(payload, anchors),
+		Payload:     payload,
+		RequestedAt: 1_700_000_000,
+		Anchors:     anchors,
+	}
+
+	descs := map[wire.OutPoint]*VTXODescriptor{
+		opA: {
+			Outpoint: opA,
+			Amount:   40_000,
+		},
+		opB: {
+			Outpoint: opB,
+			Amount:   25_000,
+		},
+	}
+
+	store := &MockBoardingStore{}
+
+	w := newSendReplayTestWallet(t, mgr, roundActor, store, descs)
+
+	result := w.Receive(t.Context(), &ReplaySendOnChainIntent{
+		Intent: intent,
+	})
+	require.True(
+		t, result.IsOk(),
+		"sweep-all replay must succeed; got %v", result.Err(),
+	)
+
+	require.Equal(t, 1, roundActor.registerCalls)
+	captured := roundActor.capturedIntent
+	require.NotNil(t, captured)
+
+	require.Len(t, captured.Leaves, 1)
+	require.True(t, captured.Leaves[0].IsChange)
+	require.EqualValues(
+		t, 65_000, captured.Leaves[0].Output.Value,
+		"replayed sweep-all leave must carry the pre-fee Σ(inputs)",
+	)
+	require.Empty(t, captured.VTXOs)
+}
+
 // TestReplayPendingIntentsDispatchesSendKind verifies the registry wiring:
 // a persisted send_onchain intent surfaces from the generic replay Ask as
 // a ReplaySendOnChainIntent self-Tell into the wallet's own mailbox.

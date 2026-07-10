@@ -40,6 +40,14 @@ delivery.
   buffered response cleanup.
 - `ErrWaiterExpired` / `ErrWaiterCancelled` — Sentinel errors signaled to
   blocked `AwaitRPC` callers when a waiter is pruned or explicitly removed.
+- `StatusError` — Wraps a non-OK `mailboxpb.Status` from a Send/Pull/AckUpTo
+  call, preserving the op, message, code, and advertised supported versions.
+  `IsPermanentVersion()` / package-level `IsPermanentVersionError(err)`
+  classify one of four permanent version-compatibility codes
+  (`StatusMailboxVersionUnsupported`, `StatusArkVersionUnsupported`,
+  `StatusArkVersionMismatch`, `StatusUpgradeRequired`) so durable senders know
+  to stop retrying and dead-letter the message instead of treating it as a
+  transient failure.
 
 ## Relationships
 

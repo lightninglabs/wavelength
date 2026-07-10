@@ -20,8 +20,8 @@ metadata.
   references for `mailbox/rpc`, `context`, `proto`, `fmt`).
 - `serviceData` / `methodData` — Template input structs.
 - `serviceTmpl` — `text/template` expanding `serviceRawTemplate` into Go
-  source that compiles against `mailbox/rpc.RPCClient`,
-  `rpc.SendRPC`/`AwaitRPC`, and `rpc.Router`.
+  source that calls the generated `RPCClient`'s `SendRPC`/`AwaitRPC` methods
+  and registers handlers with `rpc.Router`.
 
 ## Relationships
 

@@ -101,6 +101,9 @@ func walletCall(_ js.Value, args []js.Value) any {
 	case "exitStatus":
 		return promise(jsonVerb(req, mobile.ExitStatus))
 
+	case "exitSummary":
+		return promise(jsonVerb(req, mobile.ExitSummary))
+
 	case "getExitPlan":
 		return promise(jsonVerb(req, mobile.GetExitPlan))
 

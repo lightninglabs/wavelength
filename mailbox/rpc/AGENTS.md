@@ -26,6 +26,10 @@ and server-side routing need without including any transport implementation.
   successful `SendRPC` call. Callers pass `CorrelationID` to `AwaitRPC`.
 - `RPCOptions` — Per-call overrides: `IdempotencyKey`, `CorrelationID`,
   `Headers`. All fields are optional; zero values use implementation defaults.
+- `EncodeErrorHeaders` / `DecodeErrorHeaders` — Round-trip a gRPC `error` as a
+  base64-encoded `google.rpc.Status` under the `HeaderGRPCStatusB64` envelope
+  header, so a failed handler call can surface a typed error across the
+  mailbox instead of a response body.
 
 ## Relationships
 
@@ -44,6 +48,9 @@ and server-side routing need without including any transport implementation.
   redeliver the same `idempotency_key` after a crash.
 - `ServiceMethod.Service` uses the fully-qualified protobuf package + service
   name, not the Go package path.
+- A `KIND_RESPONSE` envelope carrying `HeaderGRPCStatusB64` signals a failed
+  RPC; receivers must decode it via `DecodeErrorHeaders` before attempting to
+  unmarshal the body.
 
 ## Deep Docs
 

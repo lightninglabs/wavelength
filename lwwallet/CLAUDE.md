@@ -2,10 +2,12 @@
 
 ## Purpose
 
-Lightweight in-process Bitcoin wallet backed by LND's btcwallet for HD key
-management and a shared Esplora/mempool.space chain backend. Self-contained
-without an external LND node. Implements `wallet.BoardingBackend`,
-`input.Signer` + MuSig2, and `chainsource.ChainBackend`.
+Lightweight in-process Bitcoin wallet backed by LND's btcwallet and an
+Esplora/mempool.space chain backend. Self-contained without an external LND
+node. Implements `wallet.BoardingBackend`, `input.Signer` + MuSig2, and
+`chainsource.ChainBackend`. Shares HD key management, signing, and boarding
+base logic with the neutrino-backed `btcwbackend` sibling via the extracted
+`walletcore` package.
 
 ## Key Types
 
@@ -43,23 +45,28 @@ without an external LND node. Implements `wallet.BoardingBackend`,
 - `EsploraChainService` — `chain.Interface` adapter over `EsploraClient`,
   driven by a shared `TipPoller`. Feeds btcwallet's internal address-credit
   pipeline. Constructor: `NewEsploraChainService(esplora, tipPoller, logger)`.
-- `BoardingBackendAdapter` — Implements `wallet.BoardingBackend` and
-  `wallet.OutputLeaser`. Queries Esplora directly for UTXOs (bypasses
+- `BoardingBackendAdapter` — Embeds `walletcore.BoardingBackendBase` for
+  shared key derivation/script import; implements `wallet.BoardingBackend`
+  and `wallet.OutputLeaser`. Queries Esplora directly for UTXOs (bypasses
   btcwallet's UTXO tracking because btcwallet skips credit marking for
   non-default key scopes like m/1017'). `LeaseOutput`/`ReleaseOutput` forward
   to btcwallet's native lock table.
-- `Wallet.WaitForSync(ctx)` — Blocks until btcwallet's internal height catches
-  the Esplora tip, closing the race between the chain backend actor and
-  btcwallet's asynchronous block processing pipeline. Polls at 50ms.
-- `Wallet.FinalizePsbtDirect(packet)` — Signs and finalizes a PSBT via
-  `BtcWallet.FinalizePsbt` under `DefaultAccountName`. Used by the darepod
+- `Wallet` — Embeds `walletcore.Wallet` for shared btcwallet operations, adding
+  the Esplora chain source. `WaitForSync(ctx)` blocks until btcwallet's
+  internal height catches the Esplora tip, closing the race between the chain
+  backend actor and btcwallet's asynchronous block processing pipeline (polls
+  at 50ms). `FinalizePsbtDirect(packet)` signs and finalizes a PSBT via
+  `BtcWallet.FinalizePsbt` under `DefaultAccountName`; used by the darepod
   unroll sweep adapter since lwwallet has no gRPC surface.
 
 ## Relationships
 
-- **Depends on**: `chainsource` (implements `ChainBackend`), `wallet`
-  (implements `BoardingBackend`).
-- **Depended on by**: `darepod` (alternative to LND-backed wallet).
+- **Depends on**: `walletcore` (shared HD key mgmt, signing, boarding base —
+  also used by `btcwbackend`), `chainsource` (implements `ChainBackend`),
+  `wallet` (implements `BoardingBackend`), `chainbackends` (typed
+  `PackageTxError` for package-relay results).
+- **Depended on by**: `darepod` (alternative to LND-backed wallet), `sdk`
+  (embedded-wallet config references).
 
 ## Invariants
 

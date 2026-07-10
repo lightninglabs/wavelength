@@ -79,7 +79,7 @@ A stub command keeps swap support discoverable in non-swapruntime builds
 without linking a second CLI-side swap runtime into ordinary binaries.
 
 The tagged CLI command should depend on the generated swap subserver client,
-not `sdk/swaps`. It should be structurally similar to `cmd_unroll.go`: parse
+not `sdk/swaps`. It should be structurally similar to `cmd_getinfo.go`: parse
 flags, build a protobuf request, call the daemon-hosted service, and render the
 protobuf response. Any richer Go models can live in `sdk/ark` or a future
 WalletDK-facing package, but the CLI should not become a second swap runtime.
@@ -239,8 +239,9 @@ make install-swapruntime
 make unit-swapruntime
 ```
 
-These targets are thin wrappers around `tags="swapruntime"` so local developer
-and integration-test environments do not need to remember the exact build tag.
+These targets are thin wrappers around `tags="swapruntime"` (`unit-swapruntime`
+also adds `walletdkrpc`) so local developer and integration-test environments
+do not need to remember the exact build tag.
 
 Implementation registration should look like the existing `DaemonService`
 registration path in `darepod/server.go`, but through a programmatic registrar
@@ -326,19 +327,17 @@ The CLI should not open the swap DB, construct `sdk/swaps.SwapClient`, dial
 
 Recommended commands:
 
-- `swap pay --invoice ... [--max-fee ...] [--wait]`
-- `swap receive --amount ... [--wait]`
-- `swap list [--pending] [--verbose]`
-- `swap show <payment_hash>`
-- `swap watch [payment_hash]`
+- `swap pay --invoice ... [--maxfee ...]`
+- `swap receive --amount ...`
+- `swap list [--pending]`
+- `swap show [payment_hash]`
+- `swap watch [--pending] [--include-existing]`
 
-`--wait` should subscribe or poll until terminal state, but it is optional.
-Exiting the CLI must not stop the swap.
+Exiting the CLI must not stop the swap; `pay` and `receive` return as soon as
+the daemon has durably persisted the session.
 
-If `SubscribeSwaps` lands in the first slice, `--wait` and `swap watch` should
-use the stream. If it is deferred, they should poll `GetSwap` with a small
-interval and stop once a terminal state appears. The polling fallback should
-live in the CLI, not in the daemon executor.
+`SubscribeSwaps` landed in the first slice, so `swap watch` streams live
+updates directly instead of falling back to polling `GetSwap`.
 
 Swap storage and swap-server settings belong in `darepod` config. That keeps
 daemon startup as the single place where background worker dependencies are
@@ -348,11 +347,12 @@ configured, and keeps the CLI focused on the daemon RPC contract.
 
 The tagged daemon config should include:
 
-- `swap.enable` or implicit enable when the tag is built and config is set;
-- `swap.server_addr`;
-- `swap.server_tls_cert`;
-- `swap.server_insecure` for regtest/dev;
-- `swap.db_path`;
+- implicit enable when the tag is built and config is set, rather than a
+  separate `swap.enable` field;
+- `swap.serveraddress`;
+- `swap.servertlscertpath`;
+- `swap.serverinsecure` for regtest/dev;
+- `swap.databasefilename`;
 - receive auth key policy.
 
 Receive auth material is the one real design question. The current CLI invoice

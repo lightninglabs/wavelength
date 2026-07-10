@@ -130,9 +130,9 @@ Event 1 (wallet_utxo_created):
   so crediting increases it).
 
 The accompanying `wallet_utxo_log` audit row lives in a
-separate table (migration `000007_utxo_audit_log`); it tracks
-the per-UTXO on-chain state machine and is out of scope for
-double-entry accounting.
+separate table (also seeded by migration `000006_accounting`);
+it tracks the per-UTXO on-chain state machine and is out of
+scope for double-entry accounting.
 
 ### Boarding round
 
@@ -237,10 +237,10 @@ Structurally parallel to the in-round case, but keyed by
 `SessionID` instead of `RoundID`.
 
 ```
-emitter (sender side):   oor.oorDurableBehavior.emitVTXOSent
-                         (oor/actor.go, on FinalizeAcceptedEvent)
-emitter (recipient side): oor.oorDurableBehavior.emitVTXOsReceived
-                          (in notifyMaterializedVTXOs)
+emitter (sender side):   oor.sessionBehavior.queueVTXOSent
+                         (oor/session_actor_handlers.go, on FinalizeAcceptedEvent)
+emitter (recipient side): oor.sessionBehavior.queueVTXOsReceived
+                          (in notifyMaterialized)
 
 Sender event (vtxo_sent):
   debit  transfers_out     += amount
@@ -295,7 +295,7 @@ item.
 | wallet | `wallet/boarding_sweep_actor.go` | `emitSweepConfirmedLedger` | one `BoardingSweepConfirmedMsg` per confirmed boarding sweep |
 | round | `round/actor.go` | `emitVTXOsReceived` → `emitOwnedVTXOLedgerEntry` | `VTXOReceivedMsg` (all sources), `VTXOSentMsg` (refresh pair) |
 | round | `round/actor.go` | `emitRoundFee` | `FeePaidMsg` (`boarding` or `refresh`) |
-| oor | `oor/actor.go` | `emitVTXOSent` / `emitVTXOsReceived` | `VTXOSentMsg` (session-keyed) / `VTXOReceivedMsg{Source=SourceOOR}` |
+| oor | `oor/session_actor_handlers.go` | `queueVTXOSent` / `queueVTXOsReceived` | `VTXOSentMsg` (session-keyed) / `VTXOReceivedMsg{Source=SourceOOR}` |
 | unroll | `unroll/actor.go` | `emitExitCostIfCompleted` | `ExitCostMsg` after final sweep confirmation |
 
 The round actor's emission path carries the most complexity

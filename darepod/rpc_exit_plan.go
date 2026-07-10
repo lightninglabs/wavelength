@@ -10,6 +10,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
+	"github.com/lightninglabs/darepo-client/db"
 	"github.com/lightninglabs/darepo-client/unroll"
 	"github.com/lightninglabs/darepo-client/wallet"
 	"google.golang.org/grpc/codes"
@@ -218,8 +219,9 @@ func (r *RPCServer) exitPlanEntry(ctx context.Context, raw string,
 		return entry, verdict
 	}
 
+	mat := r.resolveExitLineage(ctx, outpoint, desc)
 	plan := unroll.PlanExitFunding(
-		desc, btcutil.Amount(feeRate), walletSnapshot,
+		desc, mat, btcutil.Amount(feeRate), walletSnapshot,
 	)
 	verdict = plan.Feasibility
 	if verdict.RequiredWalletInputs == 0 {
@@ -488,4 +490,126 @@ func (s *Server) exitPlanFundingAddress(ctx context.Context, outpoint string,
 	return s.exitFundingAddresses.Address(
 		ctx, outpoint, s.NewWalletAddress,
 	)
+}
+
+// ExitSummaryEntry is one in-progress exit's coarse contribution to the
+// wallet-wide exit portfolio: its phase plus the amount and estimated fees
+// derived from the persisted descriptor. It deliberately avoids querying each
+// live actor, so the summary stays cheap regardless of how many exits are in
+// flight.
+type ExitSummaryEntry struct {
+	Outpoint           string
+	Status             daemonrpc.UnrollJobStatus
+	VTXOAmountSat      int64
+	EstTotalFeeSat     int64
+	EstNetRecoveredSat int64
+}
+
+// ExitSummaryResult is the wallet-wide portfolio of in-progress exits plus
+// aggregate totals. Only non-terminal exits are included: a completed or failed
+// exit has no amount still being recovered.
+type ExitSummaryResult struct {
+	Entries                 []ExitSummaryEntry
+	TotalExits              uint32
+	TotalVTXOAmountSat      int64
+	TotalEstFeeSat          int64
+	TotalEstNetRecoveredSat int64
+}
+
+// ExitSummary returns the wallet-wide portfolio of in-progress unilateral
+// exits. It lists every non-terminal exit job and, for each, projects the VTXO
+// value and the estimated on-chain cost from the persisted descriptor using the
+// same cost model as GetExitPlan, then sums them so a caller can see the total
+// amount still being recovered across all exits at once. A per-outpoint
+// descriptor lookup failure records a zero-cost entry rather than failing the
+// whole summary.
+func (r *RPCServer) ExitSummary(ctx context.Context) (*ExitSummaryResult,
+	error) {
+
+	result := &ExitSummaryResult{Entries: []ExitSummaryEntry{}}
+	if r.server.ueStore == nil {
+		return result, nil
+	}
+
+	jobs, err := r.server.ueStore.ListNonTerminalJobs(ctx)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "list exit jobs: %v",
+			err)
+	}
+	if len(jobs) == 0 {
+		return result, nil
+	}
+
+	// The fee estimate is wallet-wide, so compute it once and reuse it for
+	// every previewed exit. A fee-estimate failure must not sink the whole
+	// summary: the amounts and phases come from the store and are useful on
+	// their own, so degrade to a zero rate (which zeroes only the fee
+	// columns) rather than failing the call.
+	feeRate, err := r.estimateWalletFeeRate(ctx, 0)
+	if err != nil {
+		r.server.log.DebugS(ctx, "exit summary fee estimate failed; "+
+			"reporting zero fees", slog.String("err", err.Error()))
+
+		feeRate = 0
+	}
+
+	result.Entries = make([]ExitSummaryEntry, 0, len(jobs))
+	for i := range jobs {
+		entry := r.exitSummaryEntry(ctx, jobs[i], feeRate)
+		result.Entries = append(result.Entries, entry)
+
+		result.TotalVTXOAmountSat += entry.VTXOAmountSat
+		result.TotalEstFeeSat += entry.EstTotalFeeSat
+		result.TotalEstNetRecoveredSat += entry.EstNetRecoveredSat
+	}
+	result.TotalExits = uint32(len(result.Entries))
+
+	r.server.log.DebugS(ctx, "ExitSummary computed",
+		slog.Int("num_exits", len(result.Entries)),
+		slog.Int64("total_amount_sat", result.TotalVTXOAmountSat),
+	)
+
+	return result, nil
+}
+
+// exitSummaryEntry projects one non-terminal exit job into a coarse portfolio
+// entry. A descriptor lookup failure yields a phase-only entry with zeroed
+// amounts so one missing descriptor cannot fail the whole summary.
+func (r *RPCServer) exitSummaryEntry(ctx context.Context,
+	job db.UnilateralExitJobRecord, feeRate int64) ExitSummaryEntry {
+
+	entry := ExitSummaryEntry{
+		Outpoint: job.TargetOutpoint.String(),
+		Status:   unrollJobStatusToProto(job.Status),
+	}
+
+	if r.server.vtxoStore == nil {
+		return entry
+	}
+
+	desc, err := r.server.vtxoStore.GetVTXO(ctx, job.TargetOutpoint)
+	if err != nil {
+		r.server.log.DebugS(ctx, "exit summary entry cost skipped",
+			slog.String("outpoint", job.TargetOutpoint.String()),
+			slog.String("err", err.Error()),
+		)
+
+		return entry
+	}
+
+	// A zero wallet snapshot is intentional: the cost fields depend only on
+	// the fee rate, recovery-tx count, and VTXO value. A nil lineage keeps
+	// the aggregate cheap: the summary approximates the OOR chain from the
+	// descriptor's ChainDepth rather than resolving artifacts per exit, and
+	// the single-exit `exit status`/`exit plan` views are the exact source.
+	plan := unroll.PlanExitFunding(
+		desc, nil, btcutil.Amount(feeRate),
+		unroll.ExitFundingSnapshot{},
+	)
+	f := plan.Feasibility
+	entry.VTXOAmountSat = int64(f.VTXOAmountSat)
+	entry.EstTotalFeeSat = int64(f.TotalRecoveryCostSat)
+	entry.EstNetRecoveredSat = int64(f.NetRecoveredSat)
+
+	return entry
 }

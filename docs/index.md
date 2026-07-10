@@ -27,6 +27,8 @@ into specific topics below.
 | [mailbox_durable_actor_layer.md](mailbox_durable_actor_layer.md) | The durable mailbox and durable actor: leases, dedup, transactional outbox, DurableAsk, and the classic vs. Read/Commit (`TxBehavior`/`Exec[S]`) execution paths |
 | [mailbox_transport_serverconn_clientconn.md](mailbox_transport_serverconn_clientconn.md) | The RPC-over-mailbox transport relating this client's `serverconn` to the operator's `clientconn`: envelope, edge API, shared `mailbox/conn` primitives, ack watermark, identity/auth/liveness, and the wire contract |
 | [RPC_MAILBOX_CONTRACT.md](RPC_MAILBOX_CONTRACT.md) | Envelope semantics, at-least-once delivery, ack watermarks |
+| [credit_durable_actor_design.md](credit_durable_actor_design.md) | Credit subsystem durable-actor design: supervisor + per-operation actors driving fault-tolerant sub-dust pay, credit-receive, and redeem flows against the authoritative server ledger |
+| [walletdk_mobile.md](walletdk_mobile.md) | gomobile-safe `sdk/walletdk/mobile` facade: drives an embedded in-process `darepod` wallet from Android/iOS over the private bufconn transport (bytes-out API, no daemon binary) |
 
 ## Development
 
@@ -53,6 +55,7 @@ into specific topics below.
 | Document | Description |
 |----------|-------------|
 | [daemon_cli_guide.md](daemon_cli_guide.md) | darepod/darepocli installation, configuration, CLI reference |
+| [signet.md](signet.md) | Public testnet3, testnet4, and signet Ark/swap endpoints, transport selection, and local overrides |
 | [accounting_report.md](accounting_report.md) | Accounting report command: reading the fee ledger from SQLite or Postgres, text/JSON/CSV output, fiat conversion, read-only behavior |
 
 ## Plans

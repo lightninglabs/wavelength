@@ -98,6 +98,22 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
   policy by `(ExitPolicyKind, ExitPolicyRef)`. Implemented by
   `vhtlcrecovery/unrollpolicy.ExitSpendPolicyResolver`.
 
+### Feasibility & Funding
+
+- `AssessExitFeasibility(ExitFeasibilityInput) ExitFeasibility` —
+  up-front verdict folding wallet-funded CPFP cost (recovery-tx
+  ancestry) and VTXO-funded sweep cost into one check, so admission can
+  refuse an exit that would leave a dust sweep or burn more in fees
+  than the VTXO is worth (darepo-client#608) instead of stranding it
+  in an exit state after a min-relay-fee broadcast failure.
+- `PlanExitFunding(desc, mat, feeRate, ...) ExitFundingPlan` —
+  derives the wallet fee-input amount an operator/caller should fund
+  before starting the exit; `RecommendedExitFeeInputAmount` reads the
+  verdict for the same number.
+- `ExitProgress` (in `GetStatusResp`) — `ConfirmedTxs`/`InFlightTxs`/
+  `ReadyTxs`/`BlockedTxs` counts over the proof graph, for status
+  probes.
+
 ### Support
 
 - `LocalProofAssembler` — assembles a `recovery.Proof` from the VTXO
@@ -148,7 +164,9 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
 - **Depended on by**: `darepod` (wires the registry via the lazy
   chain-resolver seam, PR #264), `vhtlcrecovery/coordinator` (admission via
   `EnsureUnrollRequest`), `vhtlcrecovery/unrollpolicy` (implements
-  `ExitSpendPolicyResolver` and `ExitSpendPolicy`).
+  `ExitSpendPolicyResolver` and `ExitSpendPolicy`), `fraud` (admits a
+  `TriggerFraudSpend` unroll via `EnsureUnrollRequest` when it detects a
+  counterparty spend racing our forfeit).
 - **Sends**:
   - → `txconfirm` (Ask): `EnsureConfirmedReq` per proof node and for
     the final sweep; txid dedup makes retries idempotent.
@@ -272,5 +290,3 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
 - [lib/recovery/CLAUDE.md](../lib/recovery/CLAUDE.md) — immutable
   proof graph.
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — system-wide package map.
-</content>
-</invoke>

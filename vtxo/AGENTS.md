@@ -14,20 +14,46 @@ when the local wallet owns the receive script.
 ## Key Types
 
 - `VTXOState` — Sealed interface for all states (Live, Spending, Spent, PendingForfeit, Forfeiting, Forfeited, UnilateralExit, Failed).
-- `Descriptor` — Complete VTXO metadata: `Outpoint`, `Amount`, `PkScript`, `OwnerKey` (keychain.KeyDescriptor), `OperatorKey`, `TapScript`, `TreePath`, `RoundID`, `CommitmentTxID`, `BatchExpiry`, `RelativeExpiry`, `TreeDepth`, `ChainDepth` (OOR hop count), `CreatedHeight`, `Status`.
+- `Descriptor` — Complete VTXO metadata: `Outpoint`, `Amount`, `PolicyTemplate`
+  (the authoritative semantic policy for ownership/spend semantics),
+  `PkScript`, `ClientKey` (keychain.KeyDescriptor), `OperatorKey`,
+  `TapScript`, `Ancestry []Ancestry`, `RoundID`, `CommitmentTxID`,
+  `BatchExpiry`, `RelativeExpiry`, `ChainDepth` (OOR hop count),
+  `CreatedHeight`, `Status`, `ConstructionVersion` (zero-indexed build-rule
+  version stamped at creation; validated only at the ingress edge, trusted
+  verbatim once persisted). Use `EffectivePkScript`/`EffectivePolicyTemplate`
+  to derive the current script/policy rather than reading `PkScript`
+  directly, since custom policies decode through `PolicyTemplate`.
 - `Manager` — Actor managing per-VTXO FSM instances, lifecycle, and admission gating. Configured via `ManagerConfig`.
 - `ManagerConfig` — Configuration holding Store, Wallet, ChainSource,
   ActorSystem, ChainParams, ExpiryConfig, RoundActor ref, ChainResolver ref,
   optional `Log`, optional `LedgerSink fn.Option[ledger.Sink]`,
-  `ForfeitVTXOActorAskTimeout`, `RefreshFeeQuoter`, `ExitOutcomeResolver`, and
-  `ReservationStore`. Confirmed exit-cost accounting is emitted by unroll
+  `ForfeitVTXOActorAskTimeout`, `RefreshFeeQuoter`, `FetchOperatorKey`,
+  `ForfeitParticipantSigner`, `TerminalVTXOObserver`, `ExitOutcomeResolver`,
+  and `ReservationStore`. Confirmed exit-cost accounting is emitted by unroll
   after final sweep confirmation. `ForfeitVTXOActorAskTimeout`
   (default 5 s) bounds forfeit and refresh child asks so a blocked child actor
   cannot monopolize the manager until the outer RPC deadline. Zero uses the
   default; negative disables the timeout. Spend-path asks keep the caller's
-  context. `ExitOutcomeResolver` is called at startup to reconcile VTXOs still
-  persisted in `VTXOStatusUnilateralExit` with their terminal job outcome.
-  `ReservationStore` is used at startup to sweep orphaned Spending VTXOs.
+  context. `FetchOperatorKey` fetches the operator's current long-term key at
+  refresh-join time so the new VTXO output's policy binds it (the old VTXO's
+  stored key is never reused). `ForfeitParticipantSigner` collects non-local
+  participant signatures for custom VTXO policies after connector assignment.
+  `TerminalVTXOObserver` fires with the outpoint whenever a VTXO leaves the
+  active set. `ExitOutcomeResolver` is called at startup to reconcile VTXOs
+  still persisted in `VTXOStatusUnilateralExit` with their terminal job
+  outcome. `ReservationStore` is used at startup to sweep orphaned Spending
+  VTXOs.
+- `CustomForfeitInput` (`lib/actormsg`) — Describes a caller-supplied VTXO
+  outside the wallet's live coin set that still needs a local actor to sign
+  the exact round forfeit tx. `ActivateCustomForfeitInputsRequest` (sent by
+  `wallet` before round-intent registration) spins up temporary
+  `PendingForfeit` actors for these inputs; `DropCustomForfeitInputsRequest`
+  (sent by `wallet` and `round` on rejection/rollback) tears them down.
+- `ForfeitParticipantSignRequest` / `ForfeitParticipantSigner` — Request
+  describing the exact forfeit tx (connector prevout already assigned) that a
+  non-local participant must sign, and the hook that supplies those
+  signatures for custom VTXO policies.
 - `ExitOutcomeResolution` — Terminal result for an exiting VTXO: `Outcome`
   (`ExitOutcomeRecoverable` or `ExitOutcomeConfirmed`) and `Reason`.
 - `ExitOutcomeResolver` — Function type
@@ -56,7 +82,7 @@ when the local wallet owns the receive script.
 
 ## Relationships
 
-- **Depends on**: `baselib/protofsm` (FSM engine), `baselib/actor` (actor system), `lib/tree` (tree paths), `lib/arkscript` (taproot construction and policy helpers in `IncomingVTXOHandler`), `lib/actormsg` (admission message types), `arkrpc` (`IncomingVTXOEvent`), `chainsource` (block epochs), `ledger` (`Sink` type for compatibility with manager wiring), `unroll` (via `ExitOutcomeResolver` callback wired by `darepod`).
+- **Depends on**: `baselib/protofsm` (FSM engine), `baselib/actor` (actor system), `lib/types` (`Ancestry`), `lib/arkscript` (taproot construction and policy helpers in `IncomingVTXOHandler`), `lib/actormsg` (admission and custom-forfeit message types), `arkrpc` (`IncomingVTXOEvent`), `chainsource` (block epochs), `coinselect` (largest-first VTXO selection), `metrics` (optional `OORTransferReceivedMsg` sink), `ledger` (`Sink` type for compatibility with manager wiring), `unroll` (via `ExitOutcomeResolver` callback wired by `darepod`).
 - **Depended on by**: `round` (triggers forfeit requests), `oor` (incoming VTXOs), `wallet` (admission gating), `db` (persistence), `darepod` (wiring, owned-script adapters, incoming event route).
 - **Sends**:
   - → `round` (via manager relay): `RelayToRoundMsg` wrapping `ForfeitSignatureSubmission`
@@ -66,7 +92,8 @@ when the local wallet owns the receive script.
     `ExitCostMsg` after sweep confirmation
 - **Receives**:
   - ← `round`: `ForfeitRequestEvent`, `ForfeitConfirmedEvent`, `ForfeitSignedEvent`, `ForfeitReleasedEvent`, `BlockEpochEvent`, `PendingForfeitEvent`, `SpendReserveEvent`, `SpendReleasedEvent`, `SpendCompletedEvent`, `ResumeVTXOEvent`
-  - ← `wallet` (via `lib/actormsg`): `SelectAndReserveSpendRequest`, `ReleaseSpendRequest`, `CompleteSpendRequest`, `ReserveForfeitRequest`, `ReleaseForfeitRequest`, `SelectAndReserveForfeitRequest`
+  - ← `wallet` (via `lib/actormsg`): `SelectAndReserveSpendRequest`, `ReleaseSpendRequest`, `CompleteSpendRequest`, `ReserveForfeitRequest`, `ReleaseForfeitRequest`, `SelectAndReserveForfeitRequest`, `ActivateCustomForfeitInputsRequest`, `DropCustomForfeitInputsRequest`
+  - ← `round` (via `lib/actormsg`): `DropCustomForfeitInputsRequest` (rollback on rejected round intent)
   - ← `chainsource` (via Manager): `BlockEpochEvent`
   - ← `serverconn` (via `EventRouter` route `MethodIncomingVTXO`): `IncomingVTXOMsg` (wrapping `arkrpc.IncomingVTXOEvent`), routed to `IncomingVTXOHandler`
   - ← `unroll` (via `RegistryConfig.VTXOExitObserver`, forwarded by `darepod`): `ExitOutcomeNotification` — terminal exit job result forwarded to reconcile VTXO lifecycle after an unroll completes or fails cleanly
@@ -83,7 +110,7 @@ when the local wallet owns the receive script.
   ancestry slice for callers that need worst-case unilateral-exit
   timing (e.g. `expiry.go`).
 - The DB persistence layer stores ancestry rows in the
-  `vtxo_ancestry_paths` side table (migration 000009) keyed by VTXO
+  `vtxo_ancestry_paths` side table (migration 000004) keyed by VTXO
   outpoint; routine queries (`ListUnspentVTXOs`, `GetVTXO`) skip the
   ancestry join and only load it when the unroller resolves an exit.
 
@@ -103,6 +130,7 @@ when the local wallet owns the receive script.
   past the FSM transition without affecting the transition outcome.
 - **Startup reconcile of unilateral-exit VTXOs.** When `ManagerConfig.ExitOutcomeResolver` is set, `Start` calls `reconcileUnilateralExits` after recovering actors. For each VTXO in `VTXOStatusUnilateralExit`, it resolves the terminal outcome: `ExitOutcomeRecoverable` (no on-chain footprint) rolls the VTXO back to `LiveState` and spawns a fresh actor; `ExitOutcomeConfirmed` retires it to `SpentState`. `None` (job still running) is left untouched.
 - **Startup sweep of orphaned Spending VTXOs.** When `ManagerConfig.ReservationStore` is set, `Start` calls `sweepOrphanedReservations` after all actors are recovered. A Spending VTXO with no reservation row in the durable index is provably orphaned (its spend session died before checkpointing) and is released back to `LiveState` via `SpendReleasedEvent`. The sweep aborts entirely if `ListReservedOutpoints` fails to avoid releasing VTXOs an in-flight spend still owns.
+- **Startup sweep of orphaned PendingForfeit VTXOs.** `Start` unconditionally calls `releaseOrphanedForfeits` after actor recovery. Any VTXO still in `VTXOStatusPendingForfeit` at startup is provably orphaned — forfeit signatures are submitted only on the PendingForfeit -> Forfeiting transition, so it has leaked no signature and is safe to release to `LiveState`. VTXOs already in `Forfeiting`/`Forfeited` are past the point of no return and are left untouched for chain-confirmation reconciliation.
 - **Atomic reservation cleanup.** `VTXOStore.UpdateVTXOStatusReleasingReservation` deletes the spending-reservation row in the same transaction as the VTXO status change when a VTXO leaves `SpendingState` (via `SpendReleasedEvent`, `SpendCompletedEvent`, or escalation to `UnilateralExitState`). This prevents the durable index from retaining stale rows that would mask a future orphan on the same outpoint.
 - `ForceUnrollEvent` is accepted in `LiveState`, `PendingForfeitState`, `SpendingState`, and `ForfeitingState`: each transitions to `UnilateralExitState` and emits `ExpiringNotification` + `VTXOStatusUpdate{UnilateralExit}`. It does **not** emit `VTXOTerminatedNotification` on intent — `UnilateralExitState` is **non-terminal** (darepo-client#602), so the actor stays alive to observe the exit. Truly terminal states (`Spent`, `Forfeited`, `Failed`) self-loop; the manager maps that self-loop back to `ForceUnrollResponse{Accepted: false, Reason: "already terminal"}`. A re-unroll of a VTXO already in `UnilateralExitState` self-loops with no outbox; the `Unroll` RPC short-circuits it earlier via the persisted `VTXOStatusUnilateralExit` status.
 - `UnilateralExitState` is **non-terminal** and observed, not fire-and-forget. The actor survives until the unroll job reports a terminal outcome via the manager's `ExitOutcomeNotification`: `ExitOutcomeRecoverable` (the unroll failed with no on-chain footprint) drives `ExitFailedEvent` → `LiveState` + `VTXOStatusUpdate{Live}`, while `ExitOutcomeConfirmed` (the exit confirmed on-chain) drives `ExitConfirmedEvent` → terminal `SpentState` + `VTXOTerminatedNotification` (the actor is reaped here, gated on a terminal on-chain event rather than the user's intent). When the actor is absent (e.g. a daemon restart, since exiting VTXOs are excluded from `ListLiveVTXOs` recovery) the manager re-materializes a live actor from the persisted descriptor (recover) or persists `VTXOStatusSpent` directly (confirm).

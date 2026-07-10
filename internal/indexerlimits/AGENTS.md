@@ -16,8 +16,8 @@ passing them to server queries.
 ## Relationships
 
 - **Depends on**: nothing (stdlib only).
-- **Depended on by**: `serverconn`, `darepod`, `indexer` (validate inbound
-  `ListVTXOsByScripts` cursors before query execution).
+- **Depended on by**: `serverconn`, `darepod`, `indexer`, `vtxo` (validate
+  inbound `ListVTXOsByScripts` cursors before query execution).
 
 ## Invariants
 

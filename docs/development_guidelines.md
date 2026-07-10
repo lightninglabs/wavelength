@@ -14,7 +14,7 @@ eliminate many discussions, the resulting code can still look and feel very
 differently among different developers.
 
 We aim to enforce a few additional rules to unify the look and feel of all code
-in `lnd` to help improve the overall readability.
+in this codebase to help improve the overall readability.
 
 ## Code Documentation and Commenting
 
@@ -86,17 +86,7 @@ comment can make.
 
 ## Code Spacing and formatting
 
-Code in general (and Open Source code specifically) is _read_ by developers many
-more times during its lifecycle than it is modified. With this fact in mind, the
-Golang language was designed for readability (among other goals).
-While the enforced formatting of `go fmt` and some best practices already
-eliminate many discussions, the resulting code can still look and feel very
-differently among different developers.
-
-We aim to enforce a few additional rules to unify the look and feel of all code
-in `lnd` to help improve the overall readability.
-
-Blocks of code within `lnd` should be segmented into logical stanzas of
+Blocks of code within this codebase should be segmented into logical stanzas of
 operation. Such spacing makes the code easier to follow at a skim, and reduces
 unnecessary line noise. Coupled with the commenting scheme specified in the
 [contribution guide](#code-documentation-and-commenting),
@@ -519,12 +509,11 @@ your editor with at least the following two settings:
 1. Set your tabulator width (also called "tab size") to **8 spaces**.
 2. Set a ruler or visual guide at 80 character.
 
-Note that the two above settings are automatically applied in editors that
-support the `EditorConfig` scheme (for example GoLand, GitHub, GitLab,
-VisualStudio). In addition, specific settings for Visual Studio Code are checked
-into the code base as well.
+Editors that support the `EditorConfig` scheme (for example GoLand, GitHub,
+GitLab, VisualStudio) can pick up these settings automatically from an
+`.editorconfig` file if one is added to the project.
 
 Other editors (for example Atom, Notepad++, Vim, Emacs and so on) might install
-a plugin to understand the rules in the `.editorconfig` file.
+a plugin to understand the rules in an `.editorconfig` file.
 
 In Vim, you might want to use `set colorcolumn=80`.

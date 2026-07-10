@@ -28,7 +28,7 @@ The package is gated behind three build tags — `mobile`, `walletdkrpc`, and
 
 | Shape | Convention | Verbs |
 |-------|-----------|-------|
-| RPC verbs | **JSON `[]byte` in / out** (throwing) | `GetInfo`, `CreateWallet`, `UnlockWallet`, `Balance`, `Deposit`, `Receive`, `PrepareSend`, `SendPrepared`, `List`, `Exit`, `ExitStatus`, `GetExitPlan`, `SweepWallet`, `Status` |
+| RPC verbs | **JSON `[]byte` in / out** (throwing) | `GetInfo`, `CreateWallet`, `UnlockWallet`, `OpenWalletFromPasskey`, `Balance`, `Deposit`, `Receive`, `PrepareSend`, `SendPrepared`, `List`, `Exit`, `ExitStatus`, `ExitSummary`, `GetExitPlan`, `SweepWallet`, `Status` |
 | Streaming | **pull handle** `Subscription{ next() []byte; close() }` | `Subscribe` |
 | Hot-path scalars | **plain `int64`/`bool`** | `ConfirmedBalanceSat`, `PendingInboundSat`, `WalletReady`, `IsRunning` |
 
@@ -43,10 +43,12 @@ Mind the field names. The verb DTOs in `sdk/walletdk/types.go` carry **no**
 `json:"…"` tags, so `encoding/json` uses the Go field names verbatim: the wire
 keys are PascalCase (`Version`, `ConfirmedSat`, `AmountSat`, `IdentityPubKey`),
 not snake_case. Host models must map those exact names (e.g. `@SerialName`
-/ `CodingKeys`), or fields silently decode as zero. The one exception is the
-`Start` config, which is a dedicated tagged struct (`config.go`) and is
-snake_case (`data_dir`, `wallet_esplora_url`, …). Requests decode into the
-matching `walletdk.*Request` DTO, so they follow the same PascalCase rule.
+/ `CodingKeys`), or fields silently decode as zero. Two exceptions: the
+`Start` config, a dedicated tagged struct (`config.go`) that is snake_case
+(`data_dir`, `wallet_esplora_url`, …), and `OpenWalletFromPasskey`, whose
+request is a small camelCase-tagged struct (`prfOutput`). Every other request
+decodes into the matching `walletdk.*Request` DTO, so it follows the
+PascalCase rule.
 
 ## Lifecycle
 
@@ -96,6 +98,10 @@ The host loops `next()` on a background thread; this maps directly to a Kotlin
 same enable-only / non-empty overlay semantics (the zero value defers to the
 `walletdkrpc` build defaults). An empty string boots from
 `walletdk.DefaultConfig`.
+
+Empty `server_address` and `swap_server_address` values select the endpoint
+for the configured network and transport. They don't disable either service.
+Set the fields explicitly when a mobile host needs a custom or local endpoint.
 
 ```json
 {

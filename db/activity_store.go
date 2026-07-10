@@ -32,6 +32,12 @@ type ActivityStore interface {
 		error,
 	)
 
+	ListEntriesByKindStatus(ctx context.Context,
+		arg sqlc.ListEntriesByKindStatusParams) (
+		[]sqlc.ActivityEntry,
+		error,
+	)
+
 	PullActivityEvents(ctx context.Context,
 		arg sqlc.PullActivityEventsParams) ([]sqlc.ActivityEvent, error)
 }
@@ -248,6 +254,34 @@ func (s *ActivityPersistenceStore) ListEntries(ctx context.Context,
 				CursorCreated: cursorCreated,
 				CursorID:      cursorID,
 				LimitCount:    limit,
+			},
+		)
+
+		return err
+	})
+
+	return rows, err
+}
+
+// ListEntriesByKindStatus returns up to limit entries of the given kind and
+// status, paged by canonical_id ascending after cursorID. Filtering in SQL
+// keeps a scan for a specific kind/status (e.g. the startup rehydration of
+// PENDING EXIT rows) proportional to the matching rows, and the unique
+// canonical_id cursor is strictly monotonic.
+func (s *ActivityPersistenceStore) ListEntriesByKindStatus(ctx context.Context,
+	kind, status int64, cursorID string, limit int32) ([]sqlc.ActivityEntry,
+	error) {
+
+	var rows []sqlc.ActivityEntry
+
+	err := s.db.ExecTx(ctx, ReadTxOption(), func(q ActivityStore) error {
+		var err error
+		rows, err = q.ListEntriesByKindStatus(
+			ctx, sqlc.ListEntriesByKindStatusParams{
+				Kind:       kind,
+				Status:     status,
+				CursorID:   cursorID,
+				LimitCount: limit,
 			},
 		)
 

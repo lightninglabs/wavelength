@@ -97,6 +97,8 @@ type RPCServer interface {
 		req *daemonrpc.GetUnrollStatusRequest) (
 		*daemonrpc.GetUnrollStatusResponse, error)
 
+	ExitSummary(ctx context.Context) (*darepod.ExitSummaryResult, error)
+
 	GetExitPlan(ctx context.Context,
 		req *darepod.ExitPlanRequest) (*darepod.ExitPlanResponse, error)
 

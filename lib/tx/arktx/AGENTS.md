@@ -18,12 +18,17 @@ construction).
   rules including exactly one anchor output placed last.
 - `CanonicalizeOrdering` — Sorts transaction inputs/outputs in-place according
   to v0 canonical rules (BIP69 ordering).
-- `IsAnchorOutput` — Identifies v0 Ark anchor outputs (P2A, value 0).
+- `IsAnchorOutput` — Identifies the zero-value ephemeral P2A anchor output.
+- `IsFundedAnchorOutput` / `IsP2AAnchorScript` — Identify a P2A anchor carrying
+  a non-zero "funded" value (spare CPFP handle on an otherwise fee-paying
+  parent), as distinct from the zero-value ephemeral form.
 
 ## Relationships
 
 - **Depends on**: `lib/arkscript` (for `AnchorPkScript`).
-- **Depended on by**: `lib/tx/checkpoint`, `lib/tx/oor`, `oor`.
+- **Depended on by**: `oor`, `lib/tx/oor`, `lib/tx/checkpoint` (canonical
+  construction/validation); `unroll`, `wallet`, `vhtlcrecovery/unrollpolicy`,
+  `db` (via `TxVersion`); `txconfirm` (funded-anchor detection for CPFP).
 
 ## Invariants
 
@@ -31,6 +36,10 @@ construction).
 - Input ordering follows BIP69: sorted by outpoint hash then index.
 - Recipient output ordering follows BIP69: sorted by amount then pkScript.
 - Validation is deterministic and byte-identical across client and server.
+- `IsAnchorOutput` matches only the zero-value ephemeral anchor; use
+  `IsFundedAnchorOutput`/`IsP2AAnchorScript` when the anchor may carry a
+  non-zero fee-bump value. Conflating the two misclassifies a funded anchor
+  as absent (or vice versa).
 
 ## Deep Docs
 
