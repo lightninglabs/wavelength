@@ -325,6 +325,44 @@ func TestPreSigningFailureReleasesForfeits(t *testing.T) {
 				Reason: "fee exceeds cap",
 			},
 		},
+		{
+			// A recoverable server round failure arriving while the
+			// client holds the quote or is mid VTXO-tree signing
+			// must still release the forfeits. These states had no
+			// BoardingFailed case, so the release was silently
+			// dropped and the inputs stranded in pending-forfeit.
+			name: "QuoteReceivedState/BoardingFailed",
+			state: func(ff []types.ForfeitRequest) ClientState {
+				return &QuoteReceivedState{
+					Intents: Intents{
+						Forfeits: ff,
+					},
+				}
+			},
+			event: boardingFailed,
+		},
+		{
+			name: "CommitmentTxValidatedState/BoardingFailed",
+			state: func(ff []types.ForfeitRequest) ClientState {
+				return &CommitmentTxValidatedState{
+					Intents: Intents{
+						Forfeits: ff,
+					},
+				}
+			},
+			event: boardingFailed,
+		},
+		{
+			name: "NoncesAggregatedState/BoardingFailed",
+			state: func(ff []types.ForfeitRequest) ClientState {
+				return &NoncesAggregatedState{
+					Intents: Intents{
+						Forfeits: ff,
+					},
+				}
+			},
+			event: boardingFailed,
+		},
 	}
 
 	for _, tc := range cases {
@@ -458,6 +496,42 @@ func TestPreSigningTerminalFailureRetiresJob(t *testing.T) {
 			name: "ForfeitSignaturesCollectingState",
 			state: func(ff []types.ForfeitRequest) ClientState {
 				return &ForfeitSignaturesCollectingState{
+					Intents: Intents{
+						Forfeits: ff,
+					},
+				}
+			},
+			event: terminal,
+		},
+		{
+			// These three states used to have no BoardingFailed
+			// case, so a server round failure there was self-looped
+			// and both the release and the drop were swallowed.
+			name: "QuoteReceivedState",
+			state: func(ff []types.ForfeitRequest) ClientState {
+				return &QuoteReceivedState{
+					Intents: Intents{
+						Forfeits: ff,
+					},
+				}
+			},
+			event: terminal,
+		},
+		{
+			name: "CommitmentTxValidatedState",
+			state: func(ff []types.ForfeitRequest) ClientState {
+				return &CommitmentTxValidatedState{
+					Intents: Intents{
+						Forfeits: ff,
+					},
+				}
+			},
+			event: terminal,
+		},
+		{
+			name: "NoncesAggregatedState",
+			state: func(ff []types.ForfeitRequest) ClientState {
+				return &NoncesAggregatedState{
 					Intents: Intents{
 						Forfeits: ff,
 					},

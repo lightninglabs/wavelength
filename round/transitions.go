@@ -1649,6 +1649,21 @@ func (s *QuoteReceivedState) processEvent(ctx context.Context,
 			}),
 		}, nil
 
+	case *BoardingFailed:
+		// A server-pushed round failure while we hold the quote is
+		// still pre-signing: fail into ClientFailedState carrying the
+		// typed code, and let ProcessEvent's releaseForfeitsOnFailure
+		// wrapper return the forfeits to LiveState and retire the job
+		// on a terminal-for-job code.
+		return &ClientStateTransition{
+			NextState: &ClientFailedState{
+				Reason:      evt.Reason,
+				Error:       evt.Error,
+				Recoverable: evt.Recoverable,
+				FailureCode: evt.FailureCode,
+			},
+		}, nil
+
 	default:
 		return selfLoop(s), nil
 	}
@@ -2327,7 +2342,7 @@ func (s *CommitmentTxValidatedState) processEvent(ctx context.Context,
 	event ClientEvent, env *ClientEnvironment) (*ClientStateTransition,
 	error) {
 
-	switch event.(type) {
+	switch evt := event.(type) {
 	case *GenerateNonces:
 		env.Log.InfoS(
 			ctx,
@@ -2520,6 +2535,22 @@ func (s *CommitmentTxValidatedState) processEvent(ctx context.Context,
 			NewEvents: fn.Some(ClientEmittedEvent{
 				Outbox: []ClientOutMsg{nonceMsg},
 			}),
+		}, nil
+
+	case *BoardingFailed:
+		// Still pre-signing (VTXO forfeit sigs only cross to the server
+		// on the ForfeitSignaturesCollecting -> InputSigSent
+		// transition): fail into ClientFailedState with the typed code
+		// and let ProcessEvent's releaseForfeitsOnFailure wrapper
+		// release the forfeits and retire the job on a terminal-for-job
+		// code.
+		return &ClientStateTransition{
+			NextState: &ClientFailedState{
+				Reason:      evt.Reason,
+				Error:       evt.Error,
+				Recoverable: evt.Recoverable,
+				FailureCode: evt.FailureCode,
+			},
 		}, nil
 
 	default:
@@ -2993,7 +3024,7 @@ func (s *NoncesAggregatedState) processEvent(ctx context.Context,
 	event ClientEvent, env *ClientEnvironment) (*ClientStateTransition,
 	error) {
 
-	switch event.(type) {
+	switch evt := event.(type) {
 	case *GeneratePartialSigs:
 		env.Log.InfoS(
 			ctx,
@@ -3054,6 +3085,22 @@ func (s *NoncesAggregatedState) processEvent(ctx context.Context,
 			NewEvents: fn.Some(ClientEmittedEvent{
 				Outbox: []ClientOutMsg{submitPartialSigsMsg},
 			}),
+		}, nil
+
+	case *BoardingFailed:
+		// Still pre-signing (VTXO forfeit sigs only cross to the server
+		// on the ForfeitSignaturesCollecting -> InputSigSent
+		// transition): fail into ClientFailedState with the typed code
+		// and let ProcessEvent's releaseForfeitsOnFailure wrapper
+		// release the forfeits and retire the job on a terminal-for-job
+		// code.
+		return &ClientStateTransition{
+			NextState: &ClientFailedState{
+				Reason:      evt.Reason,
+				Error:       evt.Error,
+				Recoverable: evt.Recoverable,
+				FailureCode: evt.FailureCode,
+			},
 		}, nil
 
 	default:
