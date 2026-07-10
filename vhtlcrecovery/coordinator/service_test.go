@@ -197,6 +197,30 @@ func TestServiceRestoreKeepsRecoveryActiveAfterTransientError(t *testing.T) {
 	require.Empty(t, stored.LastError)
 }
 
+// TestServiceEscalateToleratesNilUnrollStatus verifies the post-force
+// policy-conflict guard does not panic when the unroll status source returns a
+// nil status with no error. That shape reads as "no record yet", which is the
+// normal case now that admission is asynchronous through the manager, so the
+// recovery stays active and is left to the registry's own validation plus the
+// restart re-drive rather than being failed or crashing the service.
+func TestServiceEscalateToleratesNilUnrollStatus(t *testing.T) {
+	t.Parallel()
+
+	job := testRecoveryJob(
+		"recovery-nil-status", vhtlcrecovery.StateUnrollStarted,
+	)
+	store := newFakeStore(job)
+	registry := &fakeUnrollRegistry{nilStatus: true}
+	service := newTestService(t, store, registry)
+
+	require.NoError(t, service.RestoreNonTerminal(t.Context()))
+	require.Len(t, registry.exitRequests, 1)
+
+	stored, err := store.GetRecovery(t.Context(), job.ID)
+	require.NoError(t, err)
+	require.Equal(t, vhtlcrecovery.StateUnrollStarted, stored.State)
+}
+
 // TestServiceStatusReconcilesTerminalUnroll verifies status polling folds a
 // terminal unroll result back into the durable recovery row.
 func TestServiceStatusReconcilesTerminalUnroll(t *testing.T) {
@@ -462,6 +486,11 @@ type fakeUnrollRegistry struct {
 	exitErr      error
 	status       *unroll.GetStatusResp
 	statusErr    error
+
+	// nilStatus makes GetStatus return (nil, nil), the shape a status
+	// source may produce for a not-yet-visible record. Used to pin the
+	// coordinator's nil-status guard.
+	nilStatus bool
 }
 
 // ForceExit implements ExitAdmitter by recording the request.
@@ -479,6 +508,10 @@ func (r *fakeUnrollRegistry) GetStatus(_ context.Context, _ wire.OutPoint) (
 
 	if r.statusErr != nil {
 		return nil, r.statusErr
+	}
+
+	if r.nilStatus {
+		return nil, nil
 	}
 
 	if r.status == nil {

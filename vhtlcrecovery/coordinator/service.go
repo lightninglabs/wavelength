@@ -509,7 +509,7 @@ func (s *Service) ensureUnroll(ctx context.Context,
 
 		return nil
 	}
-	if !status.Found {
+	if status == nil || !status.Found {
 		return nil
 	}
 	if status.ExitPolicyKind != "" &&
@@ -553,7 +553,7 @@ func (s *Service) reconcileLoaded(ctx context.Context,
 
 		return nil, err
 	}
-	if !unrollStatus.Found {
+	if unrollStatus == nil || !unrollStatus.Found {
 		return status, nil
 	}
 
