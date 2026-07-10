@@ -114,6 +114,128 @@ func TestReconcileActivityFlipsDepositLive(t *testing.T) {
 	)
 }
 
+// TestReconcileProjectsRawOORLive verifies the reconciler lands a raw
+// out-of-round SEND/RECV row into the store live. A raw `ark send oor` / `ark
+// oor receive` is neither swap-backed nor credit-backed, so it has no live
+// projector; before SEND/RECV were added to reconcilerKinds its row reached the
+// store only at the next startup backfill (issue #903). The rows carry no swap
+// session correlation (SessionId unset), matching a raw OOR that the
+// swap/credit projectors never own — the derivation of correlated OOR rows is
+// covered by the history tests.
+func TestReconcileProjectsRawOORLive(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	runtime, store, rpc := newReconcileFixture(t)
+
+	// A recorded raw-OOR send (debit transfers_out) and receive (credit
+	// transfers_in) as ListTransactions surfaces them. statusForLedgerRow
+	// folds an "oor"/"recorded" row to COMPLETE.
+	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
+		Transactions: []*daemonrpc.TransactionHistoryEntry{
+			{
+				Type:               "oor",
+				ConfirmationStatus: "recorded",
+				DebitAccount:       ledger.AccountTransfersOut,
+				AmountSat:          5_000,
+				Txid:               "oor-send-txid",
+				CreatedAtUnixS:     200,
+			},
+			{
+				Type:               "oor",
+				ConfirmationStatus: "recorded",
+				CreditAccount:      ledger.AccountTransfersIn,
+				AmountSat:          3_000,
+				Txid:               "oor-recv-txid",
+				CreatedAtUnixS:     201,
+			},
+		},
+	}
+
+	// One reconcile pass projects both rows into the store live.
+	runtime.reconcileActivity(ctx)
+
+	send, err := store.GetEntry(ctx, "oor-send-txid")
+	require.NoError(t, err)
+	require.EqualValues(
+		t, walletdkrpc.EntryKind_ENTRY_KIND_SEND, send.Kind,
+	)
+	require.EqualValues(
+		t, walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE, send.Status,
+		"reconciler must land the raw-OOR send live",
+	)
+
+	recv, err := store.GetEntry(ctx, "oor-recv-txid")
+	require.NoError(t, err)
+	require.EqualValues(
+		t, walletdkrpc.EntryKind_ENTRY_KIND_RECV, recv.Kind,
+	)
+	require.EqualValues(
+		t, walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE, recv.Status,
+		"reconciler must land the raw-OOR receive live",
+	)
+}
+
+// TestReprojectRecentActivityBoundsWindow verifies the raw-OOR reconcile pass
+// projects only the most recent `limit` rows and skips older ones, so the
+// per-pass ProjectEntry work stays bounded at O(limit) rather than scanning the
+// unbounded SEND/RECV history (the review concern behind
+// rawOORReconcileWindow).
+func TestReprojectRecentActivityBoundsWindow(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	runtime, store, rpc := newReconcileFixture(t)
+
+	// Three recorded raw-OOR sends with increasing updated_at (ledger rows
+	// take updated_at from created_at). deriveActivity sorts updated_at
+	// descending, so with limit 2 only the two newest are projected.
+	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
+		Transactions: []*daemonrpc.TransactionHistoryEntry{
+			{
+				Type:               "oor",
+				ConfirmationStatus: "recorded",
+				DebitAccount:       ledger.AccountTransfersOut,
+				AmountSat:          1_000,
+				Txid:               "oor-old",
+				CreatedAtUnixS:     100,
+			},
+			{
+				Type:               "oor",
+				ConfirmationStatus: "recorded",
+				DebitAccount:       ledger.AccountTransfersOut,
+				AmountSat:          2_000,
+				Txid:               "oor-mid",
+				CreatedAtUnixS:     200,
+			},
+			{
+				Type:               "oor",
+				ConfirmationStatus: "recorded",
+				DebitAccount:       ledger.AccountTransfersOut,
+				AmountSat:          3_000,
+				Txid:               "oor-new",
+				CreatedAtUnixS:     300,
+			},
+		},
+	}
+
+	const window = 2
+	n, err := runtime.reprojectRecentActivity(
+		ctx, rawOORReconcileKinds, window,
+	)
+	require.NoError(t, err)
+	require.Equal(t, window, n, "only the window's worth of rows projected")
+
+	// The two newest landed; the oldest was outside the window.
+	_, err = store.GetEntry(ctx, "oor-new")
+	require.NoError(t, err)
+	_, err = store.GetEntry(ctx, "oor-mid")
+	require.NoError(t, err)
+
+	_, err = store.GetEntry(ctx, "oor-old")
+	require.Error(t, err, "row beyond the window must not be projected")
+}
+
 // TestReconcileActivityNoStoreIsNoOp verifies the reconciler is a safe no-op
 // without a canonical store: the loop is never started and a direct pass does
 // not panic.
