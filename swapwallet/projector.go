@@ -102,6 +102,26 @@ func (r *Runtime) projectEmitLocked(ctx context.Context,
 	return seq, err
 }
 
+// projectDerivedPage re-projects one page of derived entries into the canonical
+// store, shared by the full-history (reprojectActivity) and bounded-window
+// (reprojectRecentActivity) reconcile passes. projectEmitLocked serializes the
+// project+emit so a reconciled transition (a confirmed deposit, a forfeited
+// leave) reaches live subscribers in seq order; a change-suppressed no-op fans
+// out nothing. A per-entry failure is best-effort — skipped and retried on the
+// next pass — and the pending record is cleared only after a durable project,
+// so a partial page never strands or corrupts a row.
+func (r *Runtime) projectDerivedPage(ctx context.Context,
+	entries []*walletdkrpc.WalletEntry) {
+
+	for _, entry := range entries {
+		if _, err := r.projectEmitLocked(ctx, entry); err != nil {
+			continue
+		}
+
+		r.clearProjectedTerminalExit(entry)
+	}
+}
+
 // reprojectActivity pages the derive-on-read feed and projects every row into
 // the canonical activity store, returning the number of rows projected. Because
 // ProjectEntry is idempotent on canonical_id and suppresses no-op changes,
@@ -111,14 +131,15 @@ func (r *Runtime) projectEmitLocked(ctx context.Context,
 // reconciler. Returns (0, nil) when no store is wired.
 //
 // kinds optionally restricts the derived feed: the startup backfill passes nil
-// to seed every kind, while the reconciler passes only the backfill-only
-// producers (DEPOSIT, EXIT) so it neither re-projects nor contends with the
-// monitor-owned SEND/RECV rows.
+// to seed every kind, while the reconciler passes only the low-volume
+// DEPOSIT/EXIT producers here and reconciles the high-volume SEND/RECV kinds
+// separately over a bounded window (reprojectRecentActivity).
 //
-// A wallet-local EXIT's pending record is cleared only here, and only after its
-// terminal row is durably projected — never from the read/derive path — so a
-// failed projection or a row that paged out is retried on a later pass instead
-// of being stranded PENDING in the store.
+// A wallet-local EXIT's pending record is cleared only from here and
+// reprojectRecentActivity (via projectDerivedPage), and only after its terminal
+// row is durably projected — never from the read/derive path — so a failed
+// projection or a row that paged out is retried on a later pass instead of
+// being stranded PENDING in the store.
 func (r *Runtime) reprojectActivity(ctx context.Context,
 	kinds []walletdkrpc.EntryKind) (int, error) {
 
@@ -152,23 +173,7 @@ func (r *Runtime) reprojectActivity(ctx context.Context,
 			break
 		}
 
-		for _, entry := range entries {
-			// projectEmitLocked serializes the project+emit so a
-			// reconciled transition (a confirmed deposit, a
-			// forfeited leave) reaches live subscribers in seq
-			// order; a change-suppressed no-op fans out nothing.
-			if _, err := r.projectEmitLocked(
-				ctx, entry,
-			); err != nil {
-
-				// Best-effort: the next pass retries. Do not
-				// clear any pending record when the write did
-				// not land.
-				continue
-			}
-
-			r.clearProjectedTerminalExit(entry)
-		}
+		r.projectDerivedPage(ctx, entries)
 		projected += len(entries)
 
 		offset += uint32(len(entries))
@@ -178,6 +183,43 @@ func (r *Runtime) reprojectActivity(ctx context.Context,
 	}
 
 	return projected, nil
+}
+
+// reprojectRecentActivity re-derives and re-projects only the most recent
+// `limit` rows of the given kinds — the single-page counterpart to
+// reprojectActivity's full-history paging loop. It exists for the high-volume
+// SEND/RECV kinds, where a raw out-of-round send/receive has no live projector
+// and must be reconciled into the store (issue #903), but the full history
+// grows without bound. Deriving still reads the history sources, but only the
+// top `limit` rows are projected, so the per-pass ProjectEntry (DB read) work
+// is bounded at O(limit) instead of O(N). A raw OOR settles immediately and
+// sorts to the top by updated_at, so the recent window catches it; older
+// SEND/RECV rows are terminal and immutable, and change suppression makes an
+// already-stored row a no-op regardless. It returns the number of rows
+// processed and a nil error on success. A per-row projection failure is
+// best-effort: it is skipped and retried on the next pass, so a partial pass
+// never strands a row.
+func (r *Runtime) reprojectRecentActivity(ctx context.Context,
+	kinds []walletdkrpc.EntryKind, limit uint32) (int, error) {
+
+	if r.deps == nil || r.deps.ActivityStore == nil {
+		return 0, nil
+	}
+
+	h := newHistory(r.deps, r)
+	list, err := h.deriveActivity(ctx, &walletdkrpc.ListRequest{
+		Limit:  limit,
+		Offset: 0,
+		Kinds:  kinds,
+	})
+	if err != nil {
+		return 0, err
+	}
+
+	entries := list.GetEntries()
+	r.projectDerivedPage(ctx, entries)
+
+	return len(entries), nil
 }
 
 // clearProjectedTerminalExit drops a wallet-local EXIT's in-memory pending

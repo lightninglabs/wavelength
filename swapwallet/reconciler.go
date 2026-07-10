@@ -9,15 +9,53 @@ import (
 	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
 )
 
-// reconcilerKinds are the activity kinds the reconciler re-projects: the
-// backfill-only producers whose pending -> terminal transition would otherwise
-// land in the store only at the next startup backfill. SEND/RECV are owned by
-// the swap monitor / credit poll, which project them live, so re-deriving them
-// here only wastes work and contends with those loops.
+// reconcilerKinds are the low-volume, backfill-only kinds the reconciler
+// re-projects over their FULL history each pass: a confirmed boarding deposit
+// or a completed exit whose pending -> terminal transition has no live
+// projector. Their counts stay small (deposits and exits are rare), so a
+// full-history scan is cheap. The high-volume SEND/RECV kinds are reconciled
+// separately over a bounded window — see rawOORReconcileKinds.
 var reconcilerKinds = []walletdkrpc.EntryKind{
 	walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT,
 	walletdkrpc.EntryKind_ENTRY_KIND_EXIT,
 }
+
+// rawOORReconcileKinds are the kinds reconciled over a bounded recent window
+// rather than the full history. A RAW out-of-round send/receive (`ark send oor`
+// / `ark oor receive`) is neither swap-backed nor credit-backed, so it has no
+// live projector and its ledger-derived row would otherwise reach the store
+// only at the next startup backfill (issue #903). But SEND/RECV are the
+// highest-volume wallet operations and grow without bound, so paging their
+// ENTIRE history every tick would be O(N) work — a ProjectEntry read per row —
+// as flagged in review. We therefore reproject only the most recent
+// rawOORReconcileWindow rows (see reprojectRecentActivity).
+//
+// Re-deriving the swap/credit-backed SEND/RECV rows that fall in that window
+// alongside the raw ones is safe, not contended: ProjectEntry change
+// suppression makes an unchanged row a no-op (no duplicate event, nothing
+// fanned to subscribers), so the reconciler never double-emits a row the
+// monitor already advanced. And unlike the credit poll — which sees only the
+// credit leg and so must never emit for a mixed pay — the reconciler projects
+// the fully-merged derived row (the same one List and the startup backfill
+// produce), so any transition it lands is authoritative.
+//
+// SEND must stay paired with RECV here: deriveActivity gates ledger collection
+// on DEPOSIT || EXIT || SEND (not RECV), so reconciling RECV without SEND would
+// silently derive no ledger rows and the raw-OOR receives would never land.
+var rawOORReconcileKinds = []walletdkrpc.EntryKind{
+	walletdkrpc.EntryKind_ENTRY_KIND_SEND,
+	walletdkrpc.EntryKind_ENTRY_KIND_RECV,
+}
+
+// rawOORReconcileWindow bounds the raw-OOR reconcile to the most recent N
+// activity rows. A raw OOR settles almost immediately and sorts to the top by
+// updated_at, so a modest window reliably catches it before newer sends/
+// receives push it out; older SEND/RECV rows are already terminal and
+// immutable, so skipping them loses nothing (a restart's full backfill is the
+// backstop). 100 balances catch-reliability against the per-tick ProjectEntry
+// cost — a deployment sustaining more than 100 sends+receives within one
+// reconcileInterval (60s) should raise it.
+const rawOORReconcileWindow = 100
 
 // reconcileInterval is how often the reconciler re-derives the activity feed
 // and re-projects it into the canonical store. It lands pending -> terminal
@@ -64,17 +102,34 @@ func (r *Runtime) reconcilerLoop() {
 	}
 }
 
-// reconcileActivity runs one re-derive-and-project pass over the backfill-only
-// kinds, factored out so it can be unit-tested directly. A pass failure is a
-// transient history-source RPC error: the next tick retries, ProjectEntry
-// change-suppression keeps a partial pass from appending spurious events, and a
-// pending record is cleared only after its terminal row is durably projected,
-// so a partial pass never strands or corrupts a row. It is the only live path
-// landing these flips, so a failure is logged at warn (not debug) — matching
-// the sibling credit poll and backfill.
+// reconcileActivity runs the re-derive-and-project passes, factored out so it
+// can be unit-tested directly: a full-history pass over the low-volume
+// DEPOSIT/EXIT kinds, then a bounded recent-window pass over the high-volume
+// SEND/RECV kinds (raw OOR). A pass failure is a transient history-source RPC
+// error: the next tick retries, ProjectEntry change-suppression keeps a partial
+// pass from appending spurious events, and a pending record is cleared only
+// after its terminal row is durably projected, so a partial pass never strands
+// or corrupts a row. It is the only live path landing these flips, so a failure
+// is logged at warn (not debug) — matching the sibling credit poll and
+// backfill.
 func (r *Runtime) reconcileActivity(ctx context.Context) {
+	// Full-history pass over the low-volume DEPOSIT/EXIT kinds.
 	if _, err := r.reprojectActivity(ctx, reconcilerKinds); err != nil {
 		r.deps.resolveLog().WarnS(ctx, "Activity reconcile pass failed",
+			err,
+		)
+	}
+
+	// Bounded recent-window pass over the high-volume SEND/RECV kinds so a
+	// raw OOR (which has no live projector) lands live without paging the
+	// unbounded send/receive history every tick. See rawOORReconcileWindow.
+	if _, err := r.reprojectRecentActivity(
+		ctx, rawOORReconcileKinds, rawOORReconcileWindow,
+	); err != nil {
+
+		r.deps.resolveLog().WarnS(
+			ctx,
+			"Raw-OOR activity reconcile pass failed",
 			err,
 		)
 	}
