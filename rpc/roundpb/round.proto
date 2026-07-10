@@ -242,6 +242,27 @@ message ClientVTXOAggSigs {
     map<string, bytes> agg_sigs = 2;
 }
 
+// RoundFailureCode classifies why a round the client had already joined
+// failed, so the client can react programmatically instead of parsing the
+// human-readable reason string. New codes may be added over time; a client
+// MUST treat an unrecognized code as ROUND_FAILURE_UNKNOWN and fall back to
+// the reason string.
+enum RoundFailureCode {
+    // ROUND_FAILURE_UNKNOWN is the default, unclassified failure. Older
+    // servers that predate this field also leave it here. The client
+    // treats it as a generic recoverable failure and relies on the
+    // reason string.
+    ROUND_FAILURE_UNKNOWN = 0;
+
+    // ROUND_FAILURE_INSUFFICIENT_OPERATOR_FUNDS indicates the operator
+    // could not fund the round's commitment transaction from its own
+    // on-chain wallet. The client's inputs were never committed, so any
+    // forfeit-reserved inputs are released back to the live set. The
+    // client should terminally fail the originating job rather than
+    // auto-retry it into the same wall.
+    ROUND_FAILURE_INSUFFICIENT_OPERATOR_FUNDS = 1;
+}
+
 // ClientRoundFailedResp notifies a client that the round they joined has
 // failed.
 message ClientRoundFailedResp {
@@ -250,6 +271,11 @@ message ClientRoundFailedResp {
 
     // reason describes why the round failed.
     string reason = 2;
+
+    // failure_code classifies the failure so the client can react
+    // programmatically. Servers that predate this field, and failures
+    // that are not specifically classified, leave it ROUND_FAILURE_UNKNOWN.
+    RoundFailureCode failure_code = 3;
 }
 
 // ClientErrorResp sends an error message to a client.
