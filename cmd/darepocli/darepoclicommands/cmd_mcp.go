@@ -59,9 +59,11 @@ func mcpServe(cmd *cobra.Command, _ []string) error {
 
 	server := buildMCPServer(client, walletClient)
 
-	// Run on stdio transport until the client disconnects.
+	// Run on stdio transport until the client disconnects, honoring the
+	// command context so a cancelled invocation (Ctrl+C) shuts the
+	// server down.
 	return server.Run(
-		context.Background(), &mcp.StdioTransport{},
+		cmd.Context(), &mcp.StdioTransport{},
 	)
 }
 
