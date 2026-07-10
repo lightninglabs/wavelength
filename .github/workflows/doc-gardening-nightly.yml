@@ -165,9 +165,28 @@ jobs:
                makes the sweep actually look at everything that changed
                since the last merged nightly (not just "new packages").
 
-            2. **Validate.** Phase 7 runs `make doc-check`. If it fails,
-               iterate to fix the errors — never commit broken docs. If you
-               cannot make it pass after reasonable effort, print
+            2. **Mirror and scrub, then validate.** Before running
+               `make doc-check`, do two things that the check itself will
+               NOT catch on its own:
+
+               - **Mirror every CLAUDE.md to its AGENTS.md.** For each
+                 `CLAUDE.md` you created or edited, `cp` it to the sibling
+                 `AGENTS.md` so the pair is byte-identical. The root
+                 `CLAUDE.md`/`AGENTS.md` pair is the one most often missed —
+                 mirror it too. `make doc-check` verifies byte-identity, so
+                 a missed mirror fails the build; do the copy proactively.
+               - **Scrub tool/formatting artifacts.** Fan-out doc edits can
+                 leak stray tags into `.md` files (e.g. a literal
+                 `</content>` or `</invoke>`, or a trailing
+                 ` ``` ` fence with no opener). Run
+                 `grep -rn -e '</content>' -e '</invoke>' -e '<parameter' .` over
+                 the changed docs and delete any such artifact before
+                 committing. A doc with a leaked tag is a failed sweep even
+                 if `make doc-check` is green.
+
+               Then run `make doc-check`. If it fails, iterate to fix the
+               errors — never commit broken docs. If you cannot make it
+               pass after reasonable effort, print
                `DOC-GARDENING ABORTED: make doc-check still failing` and
                exit without committing, pushing, or opening a PR.
 
@@ -220,6 +239,10 @@ jobs:
             - Never push to `main` directly.
             - Never modify files outside this repo.
             - Never add reviewers or assignees to the PR.
+            - This sweep is docs-only. Never run `go build`, `go test`, or
+              anything that compiles the tree — those drop stray binaries
+              (`accounting`, etc.) into package dirs that then get swept
+              into `git add -A`. Use `go doc` for symbol lookups only.
             - If any `gh` command fails, print the error and exit non-zero
               so the workflow's failure handler opens an issue.
           # Tool capability boundary for Claude.
@@ -243,6 +266,7 @@ jobs:
           # gh operations even with the native edit tools granted.
           claude_args: >-
             --max-turns 200
+            --model claude-opus-4-8
             --allowed-tools
             "Edit,Write,MultiEdit,Bash(git status:*),Bash(git diff:*),Bash(git add:*),Bash(git commit:*),Bash(git checkout:*),Bash(git log:*),Bash(git rev-parse:*),Bash(git branch:*),Bash(git fetch:*),Bash(git push:*),Bash(make doc-check:*),Bash(go doc:*),Bash(find:*),Bash(ls:*),Bash(cp:*),Bash(cat:*),Bash(head:*),Bash(tail:*),Bash(date:*),Bash(sort:*),Bash(sed:*),Bash(awk:*),Bash(gh pr create:*),Bash(gh pr list:*),Bash(gh pr view:*),Bash(gh auth status:*)"
             --disallowed-tools
