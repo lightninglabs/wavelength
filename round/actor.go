@@ -758,13 +758,15 @@ func (a *RoundClientActor) createRoundFSMFromDB(ctx context.Context,
 		OwnedScriptChecker:  a.cfg.OwnedScriptChecker,
 	}
 	fsmCfg := ClientStateMachineCfg{
-		Logger:        fsmLogger,
-		ErrorReporter: newContextErrorReporter(ctx, fsmPrefix),
-		InitialState:  state,
-		Env:           env,
+		Logger: fsmLogger,
+		ErrorReporter: newContextErrorReporter(
+			a.lifecycleCtx(ctx), fsmPrefix,
+		),
+		InitialState: state,
+		Env:          env,
 	}
 	fsm := protofsm.NewStateMachine(fsmCfg)
-	fsm.Start(ctx)
+	a.startRoundFSM(ctx, &fsm)
 
 	a.log.InfoS(ctx, "Created round FSM from checkpoint",
 		slog.String("round_id", round.RoundID.String()),
@@ -829,13 +831,15 @@ func (a *RoundClientActor) createNewRound(ctx context.Context) (*RoundFSM,
 		OwnedScriptChecker:  a.cfg.OwnedScriptChecker,
 	}
 	fsmCfg := ClientStateMachineCfg{
-		Logger:        fsmLogger,
-		ErrorReporter: newContextErrorReporter(ctx, fsmPrefix),
-		InitialState:  &Idle{},
-		Env:           env,
+		Logger: fsmLogger,
+		ErrorReporter: newContextErrorReporter(
+			a.lifecycleCtx(ctx), fsmPrefix,
+		),
+		InitialState: &Idle{},
+		Env:          env,
 	}
 	fsm := protofsm.NewStateMachine(fsmCfg)
-	fsm.Start(ctx)
+	a.startRoundFSM(ctx, &fsm)
 
 	roundFSM := &RoundFSM{
 		FSM: &fsm,
@@ -1061,7 +1065,7 @@ func (a *RoundClientActor) registerCommitmentConfirmation(ctx context.Context,
 	}
 
 	if err := a.cfg.ChainSource.Tell(
-		a.registrationCtx(ctx), confReq,
+		a.lifecycleCtx(ctx), confReq,
 	); err != nil {
 
 		a.log.WarnS(ctx, "Failed to register confirmation", err)
@@ -1201,18 +1205,24 @@ func (a *RoundClientActor) OnStop(ctx context.Context) error {
 	return nil
 }
 
-// registrationCtx returns the actor-owned context used for registrations that
-// must outlive the current Receive call. Some tests construct actor shells
-// without calling Start, so the fallback detaches cancellation from the current
-// call while preserving context values for logs and tracing.
-func (a *RoundClientActor) registrationCtx(
-	ctx context.Context) context.Context {
-
+// lifecycleCtx returns the actor-owned context for work that must outlive the
+// current Receive call. Some tests construct actor shells without calling
+// Start, so the fallback detaches cancellation from the current call while
+// preserving context values for logs and tracing.
+func (a *RoundClientActor) lifecycleCtx(ctx context.Context) context.Context {
 	if a.runCtx != nil {
 		return a.runCtx
 	}
 
 	return context.WithoutCancel(ctx)
+}
+
+// startRoundFSM starts a round state machine with the actor lifecycle rather
+// than the context of the request that happened to create it.
+func (a *RoundClientActor) startRoundFSM(ctx context.Context,
+	fsm *ClientStateMachine) {
+
+	fsm.Start(a.lifecycleCtx(ctx))
 }
 
 // Start initializes the actor by registering with the wallet actor to receive
@@ -2776,7 +2786,7 @@ func (a *RoundClientActor) processConfirmationRequest(
 	)
 
 	if err := a.cfg.ChainSource.Tell(
-		a.registrationCtx(ctx), confReq,
+		a.lifecycleCtx(ctx), confReq,
 	); err != nil {
 
 		a.log.WarnS(ctx,
