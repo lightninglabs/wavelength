@@ -325,6 +325,44 @@ func TestPreSigningFailureReleasesForfeits(t *testing.T) {
 				Reason: "fee exceeds cap",
 			},
 		},
+		{
+			// A recoverable server round failure arriving while the
+			// client holds the quote or is mid VTXO-tree signing
+			// must still release the forfeits. These states had no
+			// BoardingFailed case, so the release was silently
+			// dropped and the inputs stranded in pending-forfeit.
+			name: "QuoteReceivedState/BoardingFailed",
+			state: func(ff []types.ForfeitRequest) ClientState {
+				return &QuoteReceivedState{
+					Intents: Intents{
+						Forfeits: ff,
+					},
+				}
+			},
+			event: boardingFailed,
+		},
+		{
+			name: "CommitmentTxValidatedState/BoardingFailed",
+			state: func(ff []types.ForfeitRequest) ClientState {
+				return &CommitmentTxValidatedState{
+					Intents: Intents{
+						Forfeits: ff,
+					},
+				}
+			},
+			event: boardingFailed,
+		},
+		{
+			name: "NoncesAggregatedState/BoardingFailed",
+			state: func(ff []types.ForfeitRequest) ClientState {
+				return &NoncesAggregatedState{
+					Intents: Intents{
+						Forfeits: ff,
+					},
+				}
+			},
+			event: boardingFailed,
+		},
 	}
 
 	for _, tc := range cases {
@@ -356,6 +394,207 @@ func TestPreSigningFailureReleasesForfeits(t *testing.T) {
 				"pre-signing failure must release forfeits",
 			)
 			require.ElementsMatch(t, outpoints, release.Outpoints)
+		})
+	}
+}
+
+// TestPreSigningTerminalFailureRetiresJob is the regression for the
+// terminal-notification-swallowed bug. A pre-signing state that fails on a
+// BoardingFailed carrying a terminal-for-job code must emit BOTH the forfeit
+// release (VTXOs back to LiveState) AND a TerminalJobFailedNotification (retire
+// the originating pending intent), for every wrapped pre-signing state,
+// including the ones that build their own failure outbox (IntentSentState,
+// CommitmentTxReceivedState). Before the fix, releaseForfeitsOnFailure's
+// release-idempotency guard early-returned before the notification block for
+// exactly those states, so the operator-fund-failure send replayed forever, the
+// #889 bug surviving on its own fix path. The failed round in the production
+// incident lands in IntentSentState (the client stays there after RoundJoined
+// admission until the commitment tx arrives), which is one of the two
+// failure-outbox states, so this is the reachable case, not a latent one.
+func TestPreSigningTerminalFailureRetiresJob(t *testing.T) {
+	t.Parallel()
+
+	terminal := &BoardingFailed{
+		Reason:      "operator cannot fund the commitment tx",
+		Error:       errors.New("fund psbt: insufficient funds"),
+		Recoverable: true,
+		FailureCode: RoundFailureInsufficientOperatorFunds,
+	}
+
+	cases := []preSigningFailure{
+		{
+			name: "PendingRoundAssembly",
+			state: func(ff []types.ForfeitRequest) ClientState {
+				return &PendingRoundAssembly{
+					Forfeits: ff,
+				}
+			},
+			event: terminal,
+		},
+		{
+			// The reachable #889 path: still in IntentSentState at
+			// seal time, and this handler builds its own failure
+			// outbox, so the old guard swallowed the drop here.
+			name: "IntentSentState",
+			state: func(ff []types.ForfeitRequest) ClientState {
+				return &IntentSentState{
+					Intents: Intents{
+						Forfeits: ff,
+					},
+				}
+			},
+			event: terminal,
+		},
+		{
+			name: "RoundJoinedState",
+			state: func(ff []types.ForfeitRequest) ClientState {
+				return &RoundJoinedState{
+					Intents: Intents{
+						Forfeits: ff,
+					},
+				}
+			},
+			event: terminal,
+		},
+		{
+			// Second failure-outbox state, latent for the current
+			// code (commitment tx is already funded here) but wired
+			// so future terminal codes stay correct.
+			name: "CommitmentTxReceivedState",
+			state: func(ff []types.ForfeitRequest) ClientState {
+				return &CommitmentTxReceivedState{
+					Intents: Intents{
+						Forfeits: ff,
+					},
+				}
+			},
+			event: terminal,
+		},
+		{
+			name: "NoncesSentState",
+			state: func(ff []types.ForfeitRequest) ClientState {
+				return &NoncesSentState{
+					Intents: Intents{
+						Forfeits: ff,
+					},
+				}
+			},
+			event: terminal,
+		},
+		{
+			name: "PartialSigsSentState",
+			state: func(ff []types.ForfeitRequest) ClientState {
+				return &PartialSigsSentState{
+					Intents: Intents{
+						Forfeits: ff,
+					},
+				}
+			},
+			event: terminal,
+		},
+		{
+			name: "ForfeitSignaturesCollectingState",
+			state: func(ff []types.ForfeitRequest) ClientState {
+				return &ForfeitSignaturesCollectingState{
+					Intents: Intents{
+						Forfeits: ff,
+					},
+				}
+			},
+			event: terminal,
+		},
+		{
+			// These three states used to have no BoardingFailed
+			// case, so a server round failure there was self-looped
+			// and both the release and the drop were swallowed.
+			name: "QuoteReceivedState",
+			state: func(ff []types.ForfeitRequest) ClientState {
+				return &QuoteReceivedState{
+					Intents: Intents{
+						Forfeits: ff,
+					},
+				}
+			},
+			event: terminal,
+		},
+		{
+			name: "CommitmentTxValidatedState",
+			state: func(ff []types.ForfeitRequest) ClientState {
+				return &CommitmentTxValidatedState{
+					Intents: Intents{
+						Forfeits: ff,
+					},
+				}
+			},
+			event: terminal,
+		},
+		{
+			name: "NoncesAggregatedState",
+			state: func(ff []types.ForfeitRequest) ClientState {
+				return &NoncesAggregatedState{
+					Intents: Intents{
+						Forfeits: ff,
+					},
+				}
+			},
+			event: terminal,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			forfeits, outpoints := frcForfeits()
+			env := &ClientEnvironment{Log: btclog.Disabled}
+
+			tr, err := tc.state(forfeits).ProcessEvent(
+				context.Background(), tc.event, env,
+			)
+			require.NoError(t, err)
+
+			failed, ok := tr.NextState.(*ClientFailedState)
+			require.True(
+				t, ok, "expected ClientFailedState, got %T",
+				tr.NextState,
+			)
+			require.Equal(
+				t, RoundFailureInsufficientOperatorFunds,
+				failed.FailureCode,
+			)
+
+			outbox := tr.NewEvents.UnwrapOr(
+				ClientEmittedEvent{},
+			).Outbox
+
+			// The inputs still return to the live set, exactly
+			// once.
+			release, ok := findOutbox[*ReleaseForfeitReservation](
+				outbox,
+			)
+			require.True(
+				t, ok, "terminal failure must release forfeits",
+			)
+			require.ElementsMatch(t, outpoints, release.Outpoints)
+
+			// And, in the same breath, the originating job is
+			// retired: the drop carries the forfeited outpoints so
+			// the actor marks the pending intent failed instead of
+			// replaying it into the broke operator.
+			drop, ok := findOutbox[*TerminalJobFailedNotification](
+				outbox,
+			)
+			require.True(
+				t, ok, "terminal failure must retire the "+
+					"originating job",
+			)
+			require.Equal(
+				t, RoundFailureInsufficientOperatorFunds,
+				drop.FailureCode,
+			)
+			require.ElementsMatch(
+				t, outpoints, drop.ForfeitOutpoints,
+			)
 		})
 	}
 }

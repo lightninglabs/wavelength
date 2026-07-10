@@ -98,6 +98,14 @@ func (m *MockRoundStore) FinalizeRound(ctx context.Context, roundID RoundID,
 	return args.Error(0)
 }
 
+func (m *MockRoundStore) FailForfeitIntents(ctx context.Context,
+	outpoints []wire.OutPoint, reason string, code RoundFailureCode) error {
+
+	args := m.Called(ctx, outpoints, reason, code)
+
+	return args.Error(0)
+}
+
 // Compile-time check that MockRoundStore implements RoundStore.
 var _ RoundStore = (*MockRoundStore)(nil)
 

@@ -7,6 +7,7 @@ package sqlc
 
 import (
 	"context"
+	"database/sql"
 )
 
 const ClearPendingIntentAnchorByOutpoint = `-- name: ClearPendingIntentAnchorByOutpoint :exec
@@ -43,8 +44,12 @@ WHERE NOT EXISTS (
     SELECT 1 FROM pending_intent_anchors a
     WHERE a.intent_id = pending_intents.intent_id
 )
+AND status <> 'failed'
 `
 
+// A terminally failed intent is a durable record, not a sweepable orphan:
+// keep its header even once its anchors are reused. Replay already skips it on
+// the status filter, and the activity projection still surfaces it as failed.
 func (q *Queries) DeleteOrphanedPendingIntents(ctx context.Context) error {
 	_, err := q.db.ExecContext(ctx, DeleteOrphanedPendingIntents)
 	return err
@@ -56,8 +61,17 @@ WHERE NOT EXISTS (
     SELECT 1 FROM pending_intent_anchors a
     WHERE a.intent_id = pending_send_intents.intent_id
 )
+AND NOT EXISTS (
+    SELECT 1 FROM pending_intents i
+    WHERE i.intent_id = pending_send_intents.intent_id
+      AND i.status = 'failed'
+)
 `
 
+// Keep the detail row of a terminally failed send even after its anchors are
+// gone (a released coin got reused by a later send, stealing the anchor). The
+// failed record is durable and correlated by intent_id, so its detail must
+// survive alongside its header for the activity projection to surface it.
 func (q *Queries) DeleteOrphanedPendingSendIntents(ctx context.Context) error {
 	_, err := q.db.ExecContext(ctx, DeleteOrphanedPendingSendIntents)
 	return err
@@ -149,7 +163,7 @@ SELECT
     b.target_vtxo_count
 FROM pending_intents i
 JOIN pending_board_intents b ON b.intent_id = i.intent_id
-WHERE i.kind = 'board'
+WHERE i.kind = 'board' AND i.status = 'pending'
 ORDER BY i.requested_at_unix ASC, i.intent_id ASC
 `
 
@@ -159,6 +173,8 @@ type ListPendingBoardIntentsRow struct {
 	TargetVtxoCount int32
 }
 
+// Only status = 'pending' rows replay; a 'failed' intent is terminally
+// retired and must not be re-submitted on restart.
 func (q *Queries) ListPendingBoardIntents(ctx context.Context) ([]ListPendingBoardIntentsRow, error) {
 	rows, err := q.db.QueryContext(ctx, ListPendingBoardIntents)
 	if err != nil {
@@ -220,7 +236,7 @@ SELECT
     s.operator_key, s.vtxo_exit_delay, s.dust_limit_sat
 FROM pending_intents i
 JOIN pending_send_intents s ON s.intent_id = i.intent_id
-WHERE i.kind = 'send_onchain'
+WHERE i.kind = 'send_onchain' AND i.status = 'pending'
 ORDER BY i.requested_at_unix ASC, i.intent_id ASC
 `
 
@@ -235,6 +251,8 @@ type ListPendingSendIntentsRow struct {
 	DustLimitSat    int64
 }
 
+// Only status = 'pending' rows replay; a 'failed' intent is terminally
+// retired and must not be re-submitted on restart.
 func (q *Queries) ListPendingSendIntents(ctx context.Context) ([]ListPendingSendIntentsRow, error) {
 	rows, err := q.db.QueryContext(ctx, ListPendingSendIntents)
 	if err != nil {
@@ -265,6 +283,41 @@ func (q *Queries) ListPendingSendIntents(ctx context.Context) ([]ListPendingSend
 		return nil, err
 	}
 	return items, nil
+}
+
+const MarkPendingSendIntentFailedByOutpoint = `-- name: MarkPendingSendIntentFailedByOutpoint :exec
+UPDATE pending_intents
+SET status = 'failed',
+    failure_reason = $3,
+    failure_code = $4
+WHERE kind = 'send_onchain'
+  AND status = 'pending'
+  AND intent_id IN (
+      SELECT a.intent_id FROM pending_intent_anchors a
+      WHERE a.outpoint_hash = $1 AND a.outpoint_index = $2
+  )
+`
+
+type MarkPendingSendIntentFailedByOutpointParams struct {
+	OutpointHash  []byte
+	OutpointIndex int32
+	FailureReason sql.NullString
+	FailureCode   int32
+}
+
+// Terminally fail the pending send intent anchored to the given outpoint,
+// recording the reason and typed failure code. Idempotent: the status guard
+// makes a repeat call (e.g. a second forfeit outpoint of the same intent) a
+// no-op. Anchors are intentionally retained so the activity projection can
+// still correlate the failed job by its consumed outpoint.
+func (q *Queries) MarkPendingSendIntentFailedByOutpoint(ctx context.Context, arg MarkPendingSendIntentFailedByOutpointParams) error {
+	_, err := q.db.ExecContext(ctx, MarkPendingSendIntentFailedByOutpoint,
+		arg.OutpointHash,
+		arg.OutpointIndex,
+		arg.FailureReason,
+		arg.FailureCode,
+	)
+	return err
 }
 
 const UpsertPendingBoardIntent = `-- name: UpsertPendingBoardIntent :exec
@@ -314,7 +367,10 @@ INSERT INTO pending_intents (
     requested_at_unix
 ) VALUES ($1, $2, $3)
 ON CONFLICT (intent_id) DO UPDATE
-SET requested_at_unix = excluded.requested_at_unix
+SET requested_at_unix = excluded.requested_at_unix,
+    status = 'pending',
+    failure_reason = NULL,
+    failure_code = 0
 `
 
 type UpsertPendingIntentHeaderParams struct {
@@ -323,6 +379,12 @@ type UpsertPendingIntentHeaderParams struct {
 	RequestedAtUnix int64
 }
 
+// Re-arm a re-persisted intent as pending. NewPendingIntentID is
+// deterministic, so retrying a terminally failed send (same inputs and
+// payload) reuses the same intent_id and lands here on the retained 'failed'
+// row. Resetting the status and failure fields makes the retry replayable
+// again; without it the replay query (which now skips non-pending rows) would
+// silently drop a retry that crashes before the round adopts it.
 func (q *Queries) UpsertPendingIntentHeader(ctx context.Context, arg UpsertPendingIntentHeaderParams) error {
 	_, err := q.db.ExecContext(ctx, UpsertPendingIntentHeader, arg.IntentID, arg.Kind, arg.RequestedAtUnix)
 	return err

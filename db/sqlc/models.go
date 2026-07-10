@@ -275,6 +275,9 @@ type PendingIntent struct {
 	IntentID        []byte
 	Kind            string
 	RequestedAtUnix int64
+	Status          string
+	FailureReason   sql.NullString
+	FailureCode     int32
 }
 
 type PendingIntentAnchor struct {

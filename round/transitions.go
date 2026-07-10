@@ -139,7 +139,8 @@ func releaseForfeitsOnFailure(transition *ClientStateTransition, err error,
 
 	// Only a transition into the terminal failure state can strand forfeit
 	// reservations; leave every other transition untouched.
-	if _, failed := transition.NextState.(*ClientFailedState); !failed {
+	failedState, failed := transition.NextState.(*ClientFailedState)
+	if !failed {
 		return transition, err
 	}
 
@@ -149,20 +150,72 @@ func releaseForfeitsOnFailure(transition *ClientStateTransition, err error,
 
 	emitted := transition.NewEvents.UnwrapOr(ClientEmittedEvent{})
 
-	// Stay idempotent: a handler that already rolled back (the admission
-	// timeout in IntentSentState) must not release/drop the same inputs
-	// twice.
+	// Some handlers (the admission timeout in IntentSentState, or any state
+	// that fails through failureOutbox) already queued the rollback
+	// themselves, and a few could in principle already carry the terminal
+	// notification. Scan once for both so we neither release the same
+	// inputs twice nor duplicate the drop, while keeping the two concerns
+	// independent: the release returns the VTXOs to LiveState, the
+	// notification retires the originating job, and a handler doing the
+	// former must not suppress the latter.
+	var alreadyReleased, alreadyNotified bool
 	for _, msg := range emitted.Outbox {
 		switch msg.(type) {
 		case *ReleaseForfeitReservation, *DropCustomForfeitReservation:
-			return transition, err
+			alreadyReleased = true
+
+		case *TerminalJobFailedNotification:
+			alreadyNotified = true
 		}
 	}
 
-	emitted.Outbox = append(rollback, emitted.Outbox...)
+	if !alreadyReleased {
+		emitted.Outbox = append(rollback, emitted.Outbox...)
+	}
+
+	// A terminal-for-job failure (e.g. the operator cannot fund the
+	// commitment tx) must not sit in recoverable replay: the round is dead
+	// and re-submitting these same inputs next start just hits the same
+	// wall. Alongside the forfeit release (which returns the VTXOs to the
+	// live set), emit a notification carrying the forfeited outpoints,
+	// which are exactly the originating job's pending-intent anchors, so
+	// the actor drops the persisted pending intent and surfaces the job as
+	// failed. This is orthogonal to the release above: a handler that
+	// already rolled back still needs the job retired, so we key only on
+	// whether the drop is already present, not on whether we performed the
+	// release. This runs only in the pre-signing states this wrapper
+	// guards, where returning the inputs to LiveState cannot double-spend.
+	if failedState.FailureCode.IsTerminalForJob() && !alreadyNotified {
+		emitted.Outbox = append(emitted.Outbox,
+			&TerminalJobFailedNotification{
+				RoundID:          roundID,
+				ForfeitOutpoints: forfeitOutpoints(forfeits),
+				FailureCode:      failedState.FailureCode,
+				Reason:           failedState.Reason,
+			},
+		)
+	}
+
 	transition.NewEvents = fn.Some(emitted)
 
 	return transition, err
+}
+
+// forfeitOutpoints extracts the VTXO outpoints from a set of forfeit requests,
+// skipping any with a nil outpoint. These outpoints are the pending-intent
+// anchors of the job that reserved them, so the actor uses them to drop the
+// job's persisted intent on a terminal failure.
+func forfeitOutpoints(forfeits []types.ForfeitRequest) []wire.OutPoint {
+	outpoints := make([]wire.OutPoint, 0, len(forfeits))
+	for _, forfeit := range forfeits {
+		if forfeit.VTXOOutpoint == nil {
+			continue
+		}
+
+		outpoints = append(outpoints, *forfeit.VTXOOutpoint)
+	}
+
+	return outpoints
 }
 
 // rollbackOutbox builds local rollback messages for a round that failed before
@@ -183,6 +236,26 @@ func rollbackOutbox(forfeits []types.ForfeitRequest) []ClientOutMsg {
 	}
 
 	return outbox
+}
+
+// withFailureCode stamps a typed RoundFailureCode onto a transition's
+// ClientFailedState when that is where it lands. BoardingFailed handlers that
+// build their failed state through a helper (which defaults the code to
+// RoundFailureUnknown) use this to carry evt.FailureCode onto the state
+// without threading the code through every failure helper's signature. It is a
+// no-op for a nil transition, an Unknown code, or a non-failure transition.
+func withFailureCode(t *ClientStateTransition,
+	code RoundFailureCode) *ClientStateTransition {
+
+	if t == nil || code == RoundFailureUnknown {
+		return t
+	}
+
+	if fs, ok := t.NextState.(*ClientFailedState); ok {
+		fs.FailureCode = code
+	}
+
+	return t
 }
 
 // failureOutbox builds the common failure notification and rollback messages
@@ -703,6 +776,7 @@ func (s *PendingRoundAssembly) processEvent(ctx context.Context,
 				Reason:      evt.Reason,
 				Error:       evt.Error,
 				Recoverable: evt.Recoverable,
+				FailureCode: evt.FailureCode,
 			},
 		}, nil
 
@@ -916,6 +990,7 @@ func (s *IntentSentState) processEvent(ctx context.Context, event ClientEvent,
 				Reason:      evt.Reason,
 				Error:       evt.Error,
 				Recoverable: evt.Recoverable,
+				FailureCode: evt.FailureCode,
 			},
 			NewEvents: fn.Some(ClientEmittedEvent{
 				Outbox: failureOutbox(
@@ -1596,6 +1671,21 @@ func (s *QuoteReceivedState) processEvent(ctx context.Context,
 			}),
 		}, nil
 
+	case *BoardingFailed:
+		// A server-pushed round failure while we hold the quote is
+		// still pre-signing: fail into ClientFailedState carrying the
+		// typed code, and let ProcessEvent's releaseForfeitsOnFailure
+		// wrapper return the forfeits to LiveState and retire the job
+		// on a terminal-for-job code.
+		return &ClientStateTransition{
+			NextState: &ClientFailedState{
+				Reason:      evt.Reason,
+				Error:       evt.Error,
+				Recoverable: evt.Recoverable,
+				FailureCode: evt.FailureCode,
+			},
+		}, nil
+
 	default:
 		return selfLoop(s), nil
 	}
@@ -1760,6 +1850,7 @@ func (s *RoundJoinedState) processEvent(ctx context.Context, event ClientEvent,
 				Reason:      evt.Reason,
 				Error:       evt.Error,
 				Recoverable: evt.Recoverable,
+				FailureCode: evt.FailureCode,
 			},
 		}, nil
 
@@ -2238,9 +2329,12 @@ func (s *CommitmentTxReceivedState) processEvent(ctx context.Context,
 		}, nil
 
 	case *BoardingFailed:
-		return failBeforeForfeitSigning(
-			evt.Reason, evt.Error, evt.Recoverable, s.RoundID,
-			s.Intents.Forfeits,
+		return withFailureCode(
+			failBeforeForfeitSigning(
+				evt.Reason, evt.Error, evt.Recoverable,
+				s.RoundID, s.Intents.Forfeits,
+			),
+			evt.FailureCode,
 		), nil
 
 	default:
@@ -2270,7 +2364,7 @@ func (s *CommitmentTxValidatedState) processEvent(ctx context.Context,
 	event ClientEvent, env *ClientEnvironment) (*ClientStateTransition,
 	error) {
 
-	switch event.(type) {
+	switch evt := event.(type) {
 	case *GenerateNonces:
 		env.Log.InfoS(
 			ctx,
@@ -2484,6 +2578,22 @@ func (s *CommitmentTxValidatedState) processEvent(ctx context.Context,
 			}),
 		}, nil
 
+	case *BoardingFailed:
+		// Still pre-signing (VTXO forfeit sigs only cross to the server
+		// on the ForfeitSignaturesCollecting -> InputSigSent
+		// transition): fail into ClientFailedState with the typed code
+		// and let ProcessEvent's releaseForfeitsOnFailure wrapper
+		// release the forfeits and retire the job on a terminal-for-job
+		// code.
+		return &ClientStateTransition{
+			NextState: &ClientFailedState{
+				Reason:      evt.Reason,
+				Error:       evt.Error,
+				Recoverable: evt.Recoverable,
+				FailureCode: evt.FailureCode,
+			},
+		}, nil
+
 	default:
 		// Self-loop on unknown events - do not halt the FSM.
 		return selfLoop(s), nil
@@ -2589,6 +2699,7 @@ func (s *ForfeitSignaturesCollectingState) processEvent(ctx context.Context,
 				Reason:      evt.Reason,
 				Error:       evt.Error,
 				Recoverable: evt.Recoverable,
+				FailureCode: evt.FailureCode,
 			},
 			NewEvents: fn.Some(ClientEmittedEvent{
 				Outbox: cancelForfeitTimeout(
@@ -2935,6 +3046,7 @@ func (s *NoncesSentState) processEvent(ctx context.Context, event ClientEvent,
 				Reason:      evt.Reason,
 				Error:       evt.Error,
 				Recoverable: evt.Recoverable,
+				FailureCode: evt.FailureCode,
 			},
 		}, nil
 
@@ -2965,7 +3077,7 @@ func (s *NoncesAggregatedState) processEvent(ctx context.Context,
 	event ClientEvent, env *ClientEnvironment) (*ClientStateTransition,
 	error) {
 
-	switch event.(type) {
+	switch evt := event.(type) {
 	case *GeneratePartialSigs:
 		env.Log.InfoS(
 			ctx,
@@ -3056,6 +3168,22 @@ func (s *NoncesAggregatedState) processEvent(ctx context.Context,
 			NewEvents: fn.Some(ClientEmittedEvent{
 				Outbox: []ClientOutMsg{submitPartialSigsMsg},
 			}),
+		}, nil
+
+	case *BoardingFailed:
+		// Still pre-signing (VTXO forfeit sigs only cross to the server
+		// on the ForfeitSignaturesCollecting -> InputSigSent
+		// transition): fail into ClientFailedState with the typed code
+		// and let ProcessEvent's releaseForfeitsOnFailure wrapper
+		// release the forfeits and retire the job on a terminal-for-job
+		// code.
+		return &ClientStateTransition{
+			NextState: &ClientFailedState{
+				Reason:      evt.Reason,
+				Error:       evt.Error,
+				Recoverable: evt.Recoverable,
+				FailureCode: evt.FailureCode,
+			},
 		}, nil
 
 	default:
@@ -3304,6 +3432,7 @@ func (s *PartialSigsSentState) processEvent(ctx context.Context,
 				Reason:      evt.Reason,
 				Error:       evt.Error,
 				Recoverable: evt.Recoverable,
+				FailureCode: evt.FailureCode,
 			},
 		}, nil
 
@@ -4197,6 +4326,7 @@ func (s *InputSigSentState) ProcessEvent(ctx context.Context, event ClientEvent,
 				Reason:      evt.Reason,
 				Error:       evt.Error,
 				Recoverable: evt.Recoverable,
+				FailureCode: evt.FailureCode,
 			},
 		}, nil
 

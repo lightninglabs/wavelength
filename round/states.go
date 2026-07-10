@@ -745,6 +745,14 @@ type ClientFailedState struct {
 	// Recoverable indicates if the client can retry or if CSV recovery is
 	// needed.
 	Recoverable bool
+
+	// FailureCode is the server's typed classification of the failure,
+	// carried through from BoardingFailed. It defaults to
+	// RoundFailureUnknown. A terminal-for-job code (e.g.
+	// RoundFailureInsufficientOperatorFunds) tells the pre-signing
+	// forfeit-release chokepoint to also fail the originating job instead
+	// of leaving it to recoverable replay.
+	FailureCode RoundFailureCode
 }
 
 func (s *ClientFailedState) String() string {

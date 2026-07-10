@@ -1691,3 +1691,332 @@ func TestCommitStateClearsSendIntentAnchors(t *testing.T) {
 		t, []wire.OutPoint{opOther}, remaining[0].Anchors,
 	)
 }
+
+// TestFailForfeitIntentsMarksSendFailed verifies the terminal-failure half of
+// the send-intent lifecycle: FailForfeitIntents marks the send intent anchored
+// to the failed round's forfeit set as failed (recording reason and code) so it
+// is excluded from replay, retains its anchors and header so the record is
+// durable and still correlatable, and leaves an unrelated intent untouched.
+func TestFailForfeitIntentsMarksSendFailed(t *testing.T) {
+	t.Parallel()
+
+	store, baseDB := newRoundStoreForTest(t)
+	ctx := t.Context()
+
+	intentDB := NewTransactionExecutor(
+		baseDB,
+		func(tx *sql.Tx) PendingIntentStore {
+			return baseDB.WithTx(tx)
+		},
+		btclog.Disabled,
+	)
+	intentStore := NewPendingIntentPersistenceStore(intentDB)
+
+	opA := wire.OutPoint{Hash: chainhash.Hash{0xb1}, Index: 0}
+	opB := wire.OutPoint{Hash: chainhash.Hash{0xb2}, Index: 1}
+	opOther := wire.OutPoint{Hash: chainhash.Hash{0xb3}, Index: 0}
+
+	failingPayload := &wallet.SendOnChainIntentPayload{
+		DestinationPkScript: append(
+			[]byte{0x51, 0x20}, make([]byte, 32)...,
+		),
+		TargetAmountSat: 30_000,
+	}
+	failing := wallet.PendingIntent{
+		ID: wallet.NewPendingIntentID(
+			failingPayload, []wire.OutPoint{opA, opB},
+		),
+		Payload:     failingPayload,
+		RequestedAt: 1_700_000_000,
+		Anchors: []wire.OutPoint{
+			opA,
+			opB,
+		},
+	}
+	survivorPayload := &wallet.SendOnChainIntentPayload{
+		DestinationPkScript: append(
+			[]byte{0x51, 0x20}, make([]byte, 32)...,
+		),
+		TargetAmountSat: 45_000,
+	}
+	survivor := wallet.PendingIntent{
+		ID: wallet.NewPendingIntentID(
+			survivorPayload, []wire.OutPoint{opOther},
+		),
+		Payload:     survivorPayload,
+		RequestedAt: 1_700_000_001,
+		Anchors: []wire.OutPoint{
+			opOther,
+		},
+	}
+	require.NoError(t, intentStore.UpsertPendingIntent(ctx, failing))
+	require.NoError(t, intentStore.UpsertPendingIntent(ctx, survivor))
+
+	const reason = "build commitment tx: fund psbt: insufficient funds"
+
+	// Fail the send intent anchored to the round's forfeit set.
+	require.NoError(
+		t,
+		store.FailForfeitIntents(
+			ctx, []wire.OutPoint{opA, opB}, reason,
+			round.RoundFailureInsufficientOperatorFunds,
+		),
+	)
+
+	// The failed intent must be excluded from the replay list (it must not
+	// re-submit into the same wall); the survivor still replays.
+	remaining, err := intentStore.ListPendingIntents(
+		ctx, wallet.PendingIntentKindSendOnChain,
+	)
+	require.NoError(t, err)
+	require.Len(t, remaining, 1)
+	require.Equal(t, survivor.ID, remaining[0].ID)
+
+	// The failed intent's header is retained (not deleted) with the reason
+	// and typed code, so the failure is a durable, correlatable record.
+	var (
+		status     string
+		failReason sql.NullString
+		failCode   int64
+	)
+	row := baseDB.QueryRowContext(ctx,
+		`SELECT status, failure_reason, failure_code
+		 FROM pending_intents WHERE intent_id = ?`,
+		failing.ID[:],
+	)
+	require.NoError(t, row.Scan(&status, &failReason, &failCode))
+	require.Equal(t, "failed", status)
+	require.True(t, failReason.Valid)
+	require.Equal(t, reason, failReason.String)
+	require.Equal(
+		t, int64(round.RoundFailureInsufficientOperatorFunds), failCode,
+	)
+
+	// The failed intent's anchors are retained so the record stays
+	// correlatable by its consumed outpoints.
+	var anchorCount int
+	require.NoError(t, baseDB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pending_intent_anchors `+
+			`WHERE intent_id = ?`,
+		failing.ID[:],
+	).Scan(&anchorCount))
+	require.Equal(t, 2, anchorCount)
+
+	// Idempotent: re-failing the same outpoints is a no-op (status guard).
+	require.NoError(
+		t,
+		store.FailForfeitIntents(
+			ctx, []wire.OutPoint{opA}, "second call",
+			round.RoundFailureUnknown,
+		),
+	)
+	row = baseDB.QueryRowContext(
+		ctx,
+		`SELECT failure_reason FROM pending_intents `+
+			`WHERE intent_id = ?`,
+		failing.ID[:],
+	)
+	require.NoError(t, row.Scan(&failReason))
+	require.Equal(
+		t, reason, failReason.String,
+		"a repeat fail must not overwrite the original reason",
+	)
+}
+
+// TestRepersistFailedSendIntentRearmsReplay verifies that re-persisting a
+// terminally failed send intent re-arms it as pending. NewPendingIntentID is
+// deterministic, so a user retrying the same send (same inputs, same payload)
+// reuses the same intent_id and upserts onto the retained 'failed' row; the
+// upsert must reset the status back to pending so the retry is replayable
+// again. Without the reset, a retry that crashes before the round adopts it
+// would be silently dropped by the pending-only replay filter.
+func TestRepersistFailedSendIntentRearmsReplay(t *testing.T) {
+	t.Parallel()
+
+	store, baseDB := newRoundStoreForTest(t)
+	ctx := t.Context()
+
+	intentDB := NewTransactionExecutor(
+		baseDB,
+		func(tx *sql.Tx) PendingIntentStore {
+			return baseDB.WithTx(tx)
+		},
+		btclog.Disabled,
+	)
+	intentStore := NewPendingIntentPersistenceStore(intentDB)
+
+	opA := wire.OutPoint{Hash: chainhash.Hash{0xc1}, Index: 0}
+
+	payload := &wallet.SendOnChainIntentPayload{
+		DestinationPkScript: append(
+			[]byte{0x51, 0x20}, make([]byte, 32)...,
+		),
+		TargetAmountSat: 30_000,
+	}
+	intent := wallet.PendingIntent{
+		ID: wallet.NewPendingIntentID(
+			payload, []wire.OutPoint{opA},
+		),
+		Payload:     payload,
+		RequestedAt: 1_700_000_000,
+		Anchors: []wire.OutPoint{
+			opA,
+		},
+	}
+	require.NoError(t, intentStore.UpsertPendingIntent(ctx, intent))
+
+	// Terminally fail the intent, then confirm it drops out of the replay
+	// list.
+	require.NoError(
+		t,
+		store.FailForfeitIntents(
+			ctx, []wire.OutPoint{opA}, "build commitment tx: "+
+				"insufficient funds",
+			round.RoundFailureInsufficientOperatorFunds,
+		),
+	)
+	remaining, err := intentStore.ListPendingIntents(
+		ctx, wallet.PendingIntentKindSendOnChain,
+	)
+	require.NoError(t, err)
+	require.Empty(t, remaining, "failed intent must not replay")
+
+	// Re-persist the identical intent, as a retry of the same send would.
+	// The deterministic ID collides with the retained failed row, so the
+	// upsert must re-arm it as pending.
+	require.NoError(t, intentStore.UpsertPendingIntent(ctx, intent))
+
+	remaining, err = intentStore.ListPendingIntents(
+		ctx, wallet.PendingIntentKindSendOnChain,
+	)
+	require.NoError(t, err)
+	require.Len(t, remaining, 1, "re-persisted intent must replay again")
+	require.Equal(t, intent.ID, remaining[0].ID)
+
+	// The status and failure fields must be cleared so no stale failure
+	// leaks onto the re-armed record.
+	var (
+		status     string
+		failReason sql.NullString
+		failCode   int64
+	)
+	row := baseDB.QueryRowContext(ctx,
+		`SELECT status, failure_reason, failure_code
+		 FROM pending_intents WHERE intent_id = ?`,
+		intent.ID[:],
+	)
+	require.NoError(t, row.Scan(&status, &failReason, &failCode))
+	require.Equal(t, "pending", status)
+	require.False(t, failReason.Valid, "failure reason must be cleared")
+	require.Equal(t, int64(0), failCode, "failure code must be cleared")
+}
+
+// TestOrphanSweepKeepsFailedSendRecord verifies that the durable failed record
+// survives the orphan sweep even after its consumed coin is reused by a later
+// send. When the released VTXO is respent, persisting the new intent rebinds
+// the shared anchor away from the failed intent, orphaning it, and the sweep
+// that runs on every upsert would delete the header and detail of a plain
+// pending orphan. A 'failed' intent must be spared so its reason and typed code
+// stay a durable, intent_id-correlated record for the activity projection.
+func TestOrphanSweepKeepsFailedSendRecord(t *testing.T) {
+	t.Parallel()
+
+	store, baseDB := newRoundStoreForTest(t)
+	ctx := t.Context()
+
+	intentDB := NewTransactionExecutor(
+		baseDB,
+		func(tx *sql.Tx) PendingIntentStore {
+			return baseDB.WithTx(tx)
+		},
+		btclog.Disabled,
+	)
+	intentStore := NewPendingIntentPersistenceStore(intentDB)
+
+	opShared := wire.OutPoint{Hash: chainhash.Hash{0xd1}, Index: 0}
+
+	// A single-anchor send intent, terminally failed. Its lone anchor is
+	// the coin that returns to LIVE and can be respent.
+	failingPayload := &wallet.SendOnChainIntentPayload{
+		DestinationPkScript: append(
+			[]byte{0x51, 0x20}, make([]byte, 32)...,
+		),
+		TargetAmountSat: 30_000,
+	}
+	failing := wallet.PendingIntent{
+		ID: wallet.NewPendingIntentID(
+			failingPayload, []wire.OutPoint{opShared},
+		),
+		Payload:     failingPayload,
+		RequestedAt: 1_700_000_000,
+		Anchors: []wire.OutPoint{
+			opShared,
+		},
+	}
+	require.NoError(t, intentStore.UpsertPendingIntent(ctx, failing))
+
+	const reason = "build commitment tx: insufficient funds"
+	require.NoError(
+		t,
+		store.FailForfeitIntents(
+			ctx, []wire.OutPoint{opShared}, reason,
+			round.RoundFailureInsufficientOperatorFunds,
+		),
+	)
+
+	// A later send reuses the released coin. Its distinct payload yields a
+	// distinct intent_id, so persisting it rebinds the shared anchor away
+	// from the failed intent, orphaning it, then runs the sweep.
+	retryPayload := &wallet.SendOnChainIntentPayload{
+		DestinationPkScript: append(
+			[]byte{0x51, 0x20}, make([]byte, 32)...,
+		),
+		TargetAmountSat: 55_000,
+	}
+	retry := wallet.PendingIntent{
+		ID: wallet.NewPendingIntentID(
+			retryPayload, []wire.OutPoint{opShared},
+		),
+		Payload:     retryPayload,
+		RequestedAt: 1_700_000_100,
+		Anchors: []wire.OutPoint{
+			opShared,
+		},
+	}
+	require.NoError(t, intentStore.UpsertPendingIntent(ctx, retry))
+
+	// The failed record must survive the sweep: both its header (status and
+	// reason) and its send detail are retained.
+	var (
+		status     string
+		failReason sql.NullString
+	)
+	row := baseDB.QueryRowContext(ctx,
+		`SELECT status, failure_reason
+		 FROM pending_intents WHERE intent_id = ?`,
+		failing.ID[:],
+	)
+	require.NoError(t, row.Scan(&status, &failReason))
+	require.Equal(
+		t, "failed", status, "failed header must survive the sweep",
+	)
+	require.Equal(t, reason, failReason.String)
+
+	var detailCount int
+	require.NoError(t, baseDB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pending_send_intents WHERE intent_id = ?`,
+		failing.ID[:],
+	).Scan(&detailCount))
+	require.Equal(
+		t, 1, detailCount, "failed send detail must survive the sweep",
+	)
+
+	// The retry is the sole live pending intent; the failed one does not
+	// replay.
+	remaining, err := intentStore.ListPendingIntents(
+		ctx, wallet.PendingIntentKindSendOnChain,
+	)
+	require.NoError(t, err)
+	require.Len(t, remaining, 1)
+	require.Equal(t, retry.ID, remaining[0].ID)
+}

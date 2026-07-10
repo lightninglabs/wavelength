@@ -446,6 +446,18 @@ type RoundStore interface {
 	// confirmed.
 	FinalizeRound(ctx context.Context, roundID RoundID, txid chainhash.Hash,
 		confInfo ConfInfo) error
+
+	// FailForfeitIntents terminally fails the pending send intents anchored
+	// to the given forfeited VTXO outpoints, recording the reason and typed
+	// failure code. It is the terminal-failure counterpart to the anchor
+	// clear CommitState performs on the success path: when a round fails
+	// terminally (e.g. the operator cannot fund the commitment tx), the
+	// originating job is marked failed so restart replay does not re-submit
+	// the same forfeit inputs into the same wall, and the activity entry
+	// surfaces as failed rather than stuck pending. It is a no-op for an
+	// empty outpoint set.
+	FailForfeitIntents(ctx context.Context, outpoints []wire.OutPoint,
+		reason string, code RoundFailureCode) error
 }
 
 // ClientVTXO represents a Virtual UTXO owned by the client, including all

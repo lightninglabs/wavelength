@@ -350,6 +350,40 @@ type BoardingConfirmed struct {
 
 func (e *BoardingConfirmed) clientEventSealed() {}
 
+// RoundFailureCode classifies, in client-domain terms, why a round the client
+// had joined failed. It is mapped from the wire roundpb.RoundFailureCode only
+// at the RPC boundary (BoardingFailed.FromProto), so the FSM and its consumers
+// never traffic in proto types.
+type RoundFailureCode uint8
+
+const (
+	// RoundFailureUnknown is the default, unclassified failure. The client
+	// treats it as a generic recoverable failure and relies on Reason. An
+	// unrecognized wire code also maps here.
+	RoundFailureUnknown RoundFailureCode = iota
+
+	// RoundFailureInsufficientOperatorFunds indicates the operator could
+	// not fund the round's commitment transaction from its own on-chain
+	// wallet. The client's inputs were never committed and its
+	// forfeit-reserved inputs are released back to the live set, so the
+	// originating job (e.g. a cooperative on-chain send) must be failed
+	// terminally rather than auto-retried into the same wall.
+	RoundFailureInsufficientOperatorFunds
+)
+
+// IsTerminalForJob reports whether a failure code should terminally fail the
+// job that triggered the round (dropping its persisted intent and marking its
+// activity entry failed) rather than leaving it to recoverable replay.
+func (c RoundFailureCode) IsTerminalForJob() bool {
+	switch c {
+	case RoundFailureInsufficientOperatorFunds:
+		return true
+
+	default:
+		return false
+	}
+}
+
 // BoardingFailed is emitted when an error occurs during the boarding
 // process.
 type BoardingFailed struct {
@@ -369,6 +403,12 @@ type BoardingFailed struct {
 	// Recoverable indicates if the client can retry or if CSV recovery
 	// is needed.
 	Recoverable bool
+
+	// FailureCode is the server's typed classification of the failure. It
+	// defaults to RoundFailureUnknown for older servers and unclassified
+	// failures. Terminal-for-job codes drive the originating job to a
+	// terminal failure instead of recoverable replay.
+	FailureCode RoundFailureCode
 }
 
 func (e *BoardingFailed) clientEventSealed() {}

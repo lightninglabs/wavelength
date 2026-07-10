@@ -224,6 +224,15 @@ type RoundStore interface {
 	// intents vanish in the same transaction.
 	DeleteOrphanedPendingIntents(ctx context.Context) error
 
+	// MarkPendingSendIntentFailedByOutpoint terminally fails the pending
+	// send intent anchored to one outpoint, recording the reason and typed
+	// code. Called from FailForfeitIntents when a round fails terminally so
+	// the intent stops replaying and its activity entry can surface as
+	// failed. Anchors are retained so the failed job stays correlatable by
+	// its consumed outpoint.
+	MarkPendingSendIntentFailedByOutpoint(ctx context.Context,
+		arg sqlc.MarkPendingSendIntentFailedByOutpointParams) error
+
 	ListRoundsPaginated(ctx context.Context,
 		arg ListRoundsPaginatedParams) ([]RoundRow, error)
 
@@ -475,17 +484,35 @@ func (s *RoundPersistenceStore) CommitState(ctx context.Context, r *round.Round,
 func clearForfeitIntentAnchors(ctx context.Context, q RoundStore,
 	r *round.Round) error {
 
+	outpoints := make([]wire.OutPoint, 0, len(r.Intents.Forfeits))
 	for _, forfeit := range r.Intents.Forfeits {
 		if forfeit.VTXOOutpoint == nil {
 			continue
 		}
 
+		outpoints = append(outpoints, *forfeit.VTXOOutpoint)
+	}
+
+	return clearForfeitIntentAnchorsByOutpoints(ctx, q, outpoints)
+}
+
+// clearForfeitIntentAnchorsByOutpoints clears the pending-intent anchors bound
+// to the given forfeited VTXO outpoints, then sweeps any pending intent left
+// without anchors. It backs the success path (clearForfeitIntentAnchors, from
+// CommitState): once a round adopts the reserved forfeit set, the originating
+// job's outbox row must go, or a restart would replay an already-adopted send.
+// The terminal-failure path deliberately does not use this helper; it marks the
+// intent 'failed' and keeps the anchors (see FailForfeitIntents) so the record
+// stays a durable, correlatable entry rather than being deleted. Per-kind
+// detail rows foreign-key the header, so they are swept before the headers.
+func clearForfeitIntentAnchorsByOutpoints(ctx context.Context, q RoundStore,
+	outpoints []wire.OutPoint) error {
+
+	for _, op := range outpoints {
 		err := q.ClearPendingIntentAnchorByOutpoint(
 			ctx, ClearAnchorParams{
-				OutpointHash: forfeit.VTXOOutpoint.Hash[:],
-				OutpointIndex: int32(
-					forfeit.VTXOOutpoint.Index,
-				),
+				OutpointHash:  op.Hash[:],
+				OutpointIndex: int32(op.Index),
 			},
 		)
 		if err != nil {
@@ -504,6 +531,60 @@ func clearForfeitIntentAnchors(ctx context.Context, q RoundStore,
 
 	if err := q.DeleteOrphanedPendingIntents(ctx); err != nil {
 		return fmt.Errorf("sweep orphaned pending intents: %w", err)
+	}
+
+	return nil
+}
+
+// FailForfeitIntents terminally fails the pending send intents anchored to the
+// given forfeited VTXO outpoints, recording the reason and typed failure code,
+// all in one write transaction. It is the terminal-failure counterpart to the
+// anchor clear CommitState performs on the success path: when a round fails
+// terminally (e.g. the operator cannot fund the commitment tx) the originating
+// job must not keep replaying into the same wall. Marking (rather than
+// deleting) the intent both stops the replay — ListPendingSendIntents skips
+// non-pending rows — and leaves a durable, anchor-correlatable record the
+// activity projection surfaces as failed with the reason. It is a no-op for an
+// empty outpoint set.
+func (s *RoundPersistenceStore) FailForfeitIntents(ctx context.Context,
+	outpoints []wire.OutPoint, reason string,
+	code round.RoundFailureCode) error {
+
+	if len(outpoints) == 0 {
+		return nil
+	}
+
+	failureReason := sql.NullString{String: reason, Valid: reason != ""}
+
+	writeTxOpts := WriteTxOption()
+
+	return s.db.ExecTx(ctx, writeTxOpts, func(q RoundStore) error {
+		return markSendIntentsFailedByOutpoint(
+			ctx, q, outpoints, failureReason, int32(code),
+		)
+	})
+}
+
+// markSendIntentsFailedByOutpoint marks the pending send intent anchored to
+// each outpoint as failed, recording the shared reason and code. Extracted from
+// FailForfeitIntents' write-tx closure so the generated method call sits at a
+// shallow enough indentation to read.
+func markSendIntentsFailedByOutpoint(ctx context.Context, q RoundStore,
+	outpoints []wire.OutPoint, reason sql.NullString, code int32) error {
+
+	for _, op := range outpoints {
+		params := sqlc.MarkPendingSendIntentFailedByOutpointParams{
+			OutpointHash:  op.Hash[:],
+			OutpointIndex: int32(op.Index),
+			FailureReason: reason,
+			FailureCode:   code,
+		}
+
+		err := q.MarkPendingSendIntentFailedByOutpoint(ctx, params)
+		if err != nil {
+			return fmt.Errorf("mark pending send intent failed "+
+				"for forfeited vtxo: %w", err)
+		}
 	}
 
 	return nil

@@ -558,6 +558,9 @@ ON pending_intent_anchors (intent_id);
 CREATE INDEX idx_pending_intents_kind
 ON pending_intents (kind);
 
+CREATE INDEX idx_pending_intents_kind_status
+    ON pending_intents (kind, status);
+
 CREATE INDEX idx_processed_messages_expires
     ON processed_messages(expires_at);
 
@@ -1089,7 +1092,7 @@ CREATE TABLE pending_intents (
     -- requested_at_unix is when the user issued the intent. Replay
     -- diagnostics surface it; newer intents win when reconciling.
     requested_at_unix BIGINT NOT NULL CHECK (requested_at_unix > 0)
-);
+, status TEXT NOT NULL DEFAULT 'pending', failure_reason TEXT, failure_code INTEGER NOT NULL DEFAULT 0);
 
 CREATE TABLE pending_send_intents (
     intent_id BLOB PRIMARY KEY
