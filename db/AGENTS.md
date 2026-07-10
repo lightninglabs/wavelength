@@ -29,8 +29,11 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   client-tree queries).
 - `RoundSummary` / `VTXOSummary` — lightweight projections for
   paginated listing (avoids deserializing full trees).
-- `VTXOPersistenceStore` — VTXO descriptor store
-  (`InsertClientVTXO`, `FetchByOutpoint`). Persists `ChainDepth`.
+- `VTXOPersistenceStore` — VTXO descriptor store (`SaveVTXO`, `GetVTXO`).
+  Persists `ChainDepth`. `GetVTXO` translates a row miss into
+  `vtxo.ErrVTXONotFound` (keeping `sql.ErrNoRows` in the error chain for
+  call sites still migrating) so callers match the domain sentinel instead
+  of a persistence-layer error.
 - `OORArtifactStore`, `OwnedReceiveScriptStore` — OOR session state
   and locally owned receive-script metadata.
 - `LedgerStoreDB` — implements `ledger.LedgerStore`. Wraps

@@ -66,6 +66,11 @@ exit through the VTXO manager (`actormsg`) and reads status back from `unroll`.
   if an existing unroll job already claimed the target under a different
   `exit_policy_kind`, the recovery fails closed rather than exit under the
   wrong policy.
+- `UnrollRegistry.GetStatus` may return a nil status with a nil error — a
+  legitimate "no record yet" shape now that admission is asynchronous through
+  the VTXO manager, not an error. Both the post-force policy-conflict guard
+  and `GetRecoveryStatus`'s reconcile path treat a nil status the same as
+  `Found == false` and never dereference it directly.
 - `EscalateRecovery` accepts an optional raw claim preimage, validates it
   against the job's `preimage_hash`, then hands it to `Store.EscalateRecovery`
   for persistence, but never logs it (`recoveryLogAttrs` omits `ClaimPreimage`

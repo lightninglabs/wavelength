@@ -68,6 +68,16 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
   exit-policy map (`recoveryExitPolicies`, built from the recovery store) and
   re-admits each orphaned recovery target under its own vHTLC exit policy
   rather than mislabeling it as a standard timeout.
+- `recoverOrphanedUnrollJobs` recovers the exit *policy* but not the exit
+  *trigger*. A target force-exited under `TriggerFraudSpend` that crashed in
+  the gap between the VTXO status flip and the registry admission has no
+  registry record, so it re-admits as `TriggerRestart`. The only effect is
+  that its ready checkpoints broadcast immediately instead of deferring to
+  the recipient's fraud backstop window (`unroll.shouldSubmitReadyFrontier`):
+  earlier fees, same funds outcome, no missed deadline. A faithful fix would
+  stamp the trigger onto the VTXO row in the same transaction that flips it
+  to `UnilateralExit`; tracked as a separable follow-up in
+  darepo-client#914.
 - The chain-resolver→unroll bridge (`ensureUnrollFromExpiring`) maps a VTXO
   `ExpiringNotification`'s trigger and optional exit policy into the registry's
   `EnsureUnrollRequest`. `unrollStartTrigger` converts the string-typed
