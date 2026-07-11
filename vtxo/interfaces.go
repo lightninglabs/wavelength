@@ -13,6 +13,7 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/round"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 )
@@ -376,6 +377,14 @@ type Descriptor struct {
 	// CommitmentTxID is the txid of the commitment transaction.
 	CommitmentTxID chainhash.Hash
 
+	// Settlement, when present, carries the on-chain coordinates of the
+	// round commitment transaction that forfeited this VTXO (the leave /
+	// cooperative-forfeit round). Unlike CommitmentTxID, which anchors the
+	// round that CREATED this VTXO, this is the round that CONSUMED it. It
+	// is Some only for FORFEITED VTXOs whose forfeit round row is known,
+	// and None otherwise.
+	Settlement fn.Option[Settlement]
+
 	// BatchExpiry is the absolute block height at which the batch expires
 	// (operator can sweep via the batch-level timelock).
 	BatchExpiry int32
@@ -415,6 +424,18 @@ type Descriptor struct {
 	// construction exists, add the field to IncomingVTXOEvent and thread it
 	// here so the receive path mirrors the operator's value.
 	ConstructionVersion arkrpc.ConstructionVersion
+}
+
+// Settlement identifies the round commitment transaction that forfeited a
+// VTXO and the height at which it confirmed. It is carried as an optional on
+// the Descriptor (Some only for FORFEITED VTXOs whose forfeit round is known)
+// so absence is modelled explicitly rather than via a zero-hash sentinel.
+type Settlement struct {
+	// TxID is the txid of the forfeit round's commitment transaction.
+	TxID chainhash.Hash
+
+	// Height is the block height at which TxID confirmed.
+	Height int32
 }
 
 // MaxTreeDepth returns the largest TreeDepth across the Descriptor's

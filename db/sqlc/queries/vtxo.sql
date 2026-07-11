@@ -3,10 +3,19 @@
 -- management, including status transitions and forfeit transaction tracking.
 
 -- name: ListVTXOsByStatus :many
--- ListVTXOsByStatus returns all VTXOs with the specified status.
-SELECT * FROM vtxos
-WHERE status = $1
-ORDER BY creation_time DESC;
+-- ListVTXOsByStatus returns all VTXOs with the specified status. It also
+-- LEFT JOINs the round that forfeited each VTXO (via forfeit_round_id) so a
+-- FORFEITED VTXO can surface the settling commitment txid and its confirmation
+-- height. The join columns are NULL for every VTXO whose forfeit round is
+-- unknown (all non-forfeited VTXOs, and forfeited ones whose round row is
+-- absent), so consumers must treat them as optional.
+SELECT sqlc.embed(vtxos),
+    rounds.commitment_txid AS settlement_txid,
+    rounds.confirmation_height AS settlement_height
+FROM vtxos
+LEFT JOIN rounds ON vtxos.forfeit_round_id = rounds.round_id
+WHERE vtxos.status = $1
+ORDER BY vtxos.creation_time DESC;
 
 -- name: ListVTXOSelectionCandidatesByStatus :many
 -- ListVTXOSelectionCandidatesByStatus returns the lightweight projection coin

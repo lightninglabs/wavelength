@@ -401,16 +401,14 @@ func (h *history) deriveActivity(ctx context.Context,
 		}
 		entries = append(entries, exitEntries...)
 
-		var forfeitedOutpoints map[string]struct{}
+		var forfeited map[string]settlement
 		if h.hasWalletLocalExitEntries() {
-			forfeitedOutpoints, _ = h.collectForfeitedVTXOOutpoints(
-				ctx,
-			)
+			forfeited, _ = h.collectForfeitedVTXOSettlements(ctx)
 		}
 
 		entries = append(
 			entries, h.collectWalletLocalPendingEntries(
-				ctx, forfeitedOutpoints,
+				ctx, forfeited,
 			)...,
 		)
 	}
@@ -669,7 +667,7 @@ func (h *history) collectUnilateralExitEntries(ctx context.Context) (
 // uses this path immediately after Send returns; unilateral exit uses it until
 // the unroll status/VTXO projection catches up.
 func (h *history) collectWalletLocalPendingEntries(ctx context.Context,
-	forfeitedOutpoints map[string]struct{}) []*walletdkrpc.WalletEntry {
+	forfeited map[string]settlement) []*walletdkrpc.WalletEntry {
 
 	if h.runtime == nil {
 		return nil
@@ -684,7 +682,7 @@ func (h *history) collectWalletLocalPendingEntries(ctx context.Context,
 		// Status lookup is best-effort for wallet-local entries. A
 		// missing unroll job usually means this is a cooperative
 		// leave pending row, not a unilateral exit.
-		_ = h.decorateExitEntry(ctx, entry, forfeitedOutpoints)
+		_ = h.decorateExitEntry(ctx, entry, forfeited)
 	}
 
 	return entries
@@ -707,11 +705,24 @@ func (h *history) hasWalletLocalExitEntries() bool {
 	return false
 }
 
-// collectForfeitedVTXOOutpoints returns the terminal VTXO outpoints used to
-// complete cooperative-leave rows. This remains a v1 best-effort scan until the
-// daemon exposes a direct VTXO-by-outpoint lookup.
-func (h *history) collectForfeitedVTXOOutpoints(
-	ctx context.Context) (map[string]struct{}, error) {
+// settlement carries the on-chain coordinates of the round commitment tx that
+// forfeited a VTXO. It is correlated to a cooperative-leave EXIT row by the
+// consumed VTXO outpoint so a completed leave can be reconciled against the
+// chain. The values come from the daemon's per-VTXO settlement fields
+// (settlement_txid / settlement_height), which an old daemon leaves empty; a
+// zero-value settlement still marks its outpoint as forfeited.
+type settlement struct {
+	txid   string
+	height int32
+}
+
+// collectForfeitedVTXOSettlements returns the terminal VTXO outpoints used to
+// complete cooperative-leave rows, each mapped to the settling round's txid and
+// confirmation height when the daemon reports them. A present key means the
+// VTXO is forfeited (the leave round confirmed); the mapped settlement may be
+// zero-valued against an old daemon that does not populate the fields.
+func (h *history) collectForfeitedVTXOSettlements(ctx context.Context) (
+	map[string]settlement, error) {
 
 	if h.deps.RPCServer == nil {
 		return nil, nil
@@ -727,16 +738,24 @@ func (h *history) collectForfeitedVTXOOutpoints(
 		return nil, fmt.Errorf("list forfeited vtxos: %w", err)
 	}
 
-	outpoints := make(map[string]struct{}, len(resp.GetVtxos()))
+	settlements := make(map[string]settlement, len(resp.GetVtxos()))
 	for _, vtxo := range resp.GetVtxos() {
 		if vtxo.GetOutpoint() == "" {
 			continue
 		}
 
-		outpoints[vtxo.GetOutpoint()] = struct{}{}
+		// GetSettlement() is nil unless the daemon reported the forfeit
+		// round's coordinates; the getters degrade to ""/0, so an old
+		// daemon still yields a present key with a zero-value
+		// settlement (which marks the outpoint forfeited without
+		// stamping a txid).
+		settlements[vtxo.GetOutpoint()] = settlement{
+			txid:   vtxo.GetSettlement().GetTxid(),
+			height: vtxo.GetSettlement().GetHeight(),
+		}
 	}
 
-	return outpoints, nil
+	return settlements, nil
 }
 
 // unilateralExitEntryFromVTXO projects a VTXO in UNILATERAL_EXIT into a
@@ -772,8 +791,7 @@ func unilateralExitEntryFromVTXO(v *daemonrpc.VTXO) *walletdkrpc.WalletEntry {
 // state for the entry id: a forfeited source VTXO means the leave round
 // confirmed and the wallet-local pending row can be shown as complete.
 func (h *history) decorateExitEntry(ctx context.Context,
-	entry *walletdkrpc.WalletEntry,
-	forfeitedOutpoints map[string]struct{}) error {
+	entry *walletdkrpc.WalletEntry, forfeited map[string]settlement) error {
 
 	if h.deps.RPCServer == nil || entry == nil || entry.GetId() == "" {
 		return nil
@@ -799,7 +817,7 @@ func (h *history) decorateExitEntry(ctx context.Context,
 		lookup = entry.GetProgress().GetVtxoOutpoint()
 	}
 	if !looksLikeOutpoint(lookup) {
-		decorateCooperativeLeaveEntry(entry, forfeitedOutpoints)
+		decorateCooperativeLeaveEntry(entry, forfeited)
 
 		return nil
 	}
@@ -813,7 +831,7 @@ func (h *history) decorateExitEntry(ctx context.Context,
 		return fmt.Errorf("get unroll status %s: %w", lookup, err)
 	}
 	if !resp.GetFound() {
-		decorateCooperativeLeaveEntry(entry, forfeitedOutpoints)
+		decorateCooperativeLeaveEntry(entry, forfeited)
 
 		return nil
 	}
@@ -844,13 +862,13 @@ func looksLikeOutpoint(s string) bool {
 // outpoints to the commitment tx, a restarted daemon cannot recreate the
 // original counterparty/note from the runtime-local row.
 func decorateCooperativeLeaveEntry(entry *walletdkrpc.WalletEntry,
-	forfeitedOutpoints map[string]struct{}) {
+	forfeited map[string]settlement) {
 
 	if entry.GetStatus() != walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING {
 		return
 	}
 
-	if forfeitedOutpoints == nil {
+	if forfeited == nil {
 		return
 	}
 
@@ -867,16 +885,22 @@ func decorateCooperativeLeaveEntry(entry *walletdkrpc.WalletEntry,
 	if outpoint == "" {
 		return
 	}
-	if _, ok := forfeitedOutpoints[outpoint]; !ok {
+	settle, ok := forfeited[outpoint]
+	if !ok {
 		return
 	}
 
-	applyCooperativeLeaveForfeited(entry)
+	applyCooperativeLeaveForfeited(entry, settle)
 }
 
 // applyCooperativeLeaveForfeited projects a forfeited cooperative-leave source
-// VTXO onto the original wallet-local EXIT row.
-func applyCooperativeLeaveForfeited(entry *walletdkrpc.WalletEntry) {
+// VTXO onto the original wallet-local EXIT row. When the settlement carries the
+// settling round's txid, it is stamped onto the row's progress so the completed
+// leave can be reconciled against the chain; an empty txid (old daemon) leaves
+// the row complete but without on-chain coordinates, preserving prior behavior.
+func applyCooperativeLeaveForfeited(entry *walletdkrpc.WalletEntry,
+	settle settlement) {
+
 	if entry == nil {
 		return
 	}
@@ -895,6 +919,15 @@ func applyCooperativeLeaveForfeited(entry *walletdkrpc.WalletEntry) {
 	progress.Phase = walletdkrpc.
 		WalletEntryPhase_WALLET_ENTRY_PHASE_CONFIRMED
 	progress.PhaseLabel = "confirmed"
+
+	// Stamp the settling round's on-chain coordinates when the daemon
+	// reported them. Guard on a non-empty txid so an old daemon that does
+	// not populate the settlement fields does not overwrite any coordinates
+	// the row already carries with zero values.
+	if settle.txid != "" {
+		progress.Txid = settle.txid
+		progress.ConfirmationHeight = settle.height
+	}
 }
 
 // collectLedgerEntries reads the daemon's unified ledger+sweep page and

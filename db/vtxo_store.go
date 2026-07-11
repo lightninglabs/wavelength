@@ -299,16 +299,11 @@ func (s *VTXOPersistenceStore) ListVTXOsByStatus(ctx context.Context,
 			return fmt.Errorf("group ancestry rows: %w", err)
 		}
 
-		descs := make([]*vtxo.Descriptor, 0, len(rows))
-		for _, row := range rows {
-			desc, err := s.rowToDescriptor(
-				ctx, q, row, ancestryByOutpoint,
-			)
-			if err != nil {
-				return fmt.Errorf("convert VTXO: %w", err)
-			}
-
-			descs = append(descs, desc)
+		descs, err := s.byStatusRowsToDescriptors(
+			ctx, q, rows, ancestryByOutpoint,
+		)
+		if err != nil {
+			return err
 		}
 
 		result = descs
@@ -367,7 +362,12 @@ func (s *VTXOPersistenceStore) ListVTXOsByStatusLight(ctx context.Context,
 			return fmt.Errorf("list VTXOs by status: %w", err)
 		}
 
-		descs, err := s.rowsToDescriptorsNoAncestry(ctx, q, rows)
+		// A non-nil empty index keeps rowToDescriptor on the preloaded
+		// (zero ancestry) path, matching rowsToDescriptorsNoAncestry.
+		noAncestry := map[wire.OutPoint][]vtxo.Ancestry{}
+		descs, err := s.byStatusRowsToDescriptors(
+			ctx, q, rows, noAncestry,
+		)
 		if err != nil {
 			return err
 		}
@@ -378,6 +378,44 @@ func (s *VTXOPersistenceStore) ListVTXOsByStatusLight(ctx context.Context,
 	})
 
 	return result, err
+}
+
+// byStatusRowsToDescriptors converts the joined by-status rows to descriptors
+// using the supplied (possibly empty) preloaded ancestry index, then stamps
+// the settlement txid/height carried by the LEFT JOIN onto rounds. The join
+// columns are NULL for every VTXO whose forfeit round is unknown, so a VTXO
+// that is not a confirmed forfeit keeps the zero settlement values and the RPC
+// surface degrades to today's behavior.
+func (s *VTXOPersistenceStore) byStatusRowsToDescriptors(ctx context.Context,
+	q RoundStore, rows []sqlc.ListVTXOsByStatusRow,
+	preloaded map[wire.OutPoint][]vtxo.Ancestry) ([]*vtxo.Descriptor,
+	error) {
+
+	descs := make([]*vtxo.Descriptor, 0, len(rows))
+	for _, row := range rows {
+		desc, err := s.rowToDescriptor(ctx, q, row.Vtxo, preloaded)
+		if err != nil {
+			return nil, fmt.Errorf("convert VTXO: %w", err)
+		}
+
+		// settlement_txid is a 32-byte BLOB when the forfeit round row
+		// exists; treat any other length (NULL join, short/legacy) as
+		// unset so the descriptor's Settlement stays None. The txid and
+		// height come from one round row, so they are attached
+		// together.
+		if len(row.SettlementTxid) == chainhash.HashSize {
+			var settle vtxo.Settlement
+			copy(settle.TxID[:], row.SettlementTxid)
+			if row.SettlementHeight.Valid {
+				settle.Height = row.SettlementHeight.Int32
+			}
+			desc.Settlement = fn.Some(settle)
+		}
+
+		descs = append(descs, desc)
+	}
+
+	return descs, nil
 }
 
 // rowsToDescriptorsNoAncestry converts VTXO rows to descriptors without
