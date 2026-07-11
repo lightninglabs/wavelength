@@ -109,6 +109,19 @@ default builds avoid the swap executor's dependency graph.
   (`creditProjectInterval`) and only re-emits an operation when its
   `credit.State` changed since the last poll, keyed by `OpID` in an
   in-process (non-durable) map that starts empty on restart.
+- The periodic reconciler (`reconcileActivity`, `reconcileInterval`) runs
+  two passes: a full-history re-derive/re-project over the low-volume
+  DEPOSIT/EXIT kinds (`reconcilerKinds`), and a bounded recent-window pass
+  (`rawOORReconcileWindow` = 100 rows) over the high-volume SEND/RECV
+  kinds (`rawOORReconcileKinds`). The bounded pass exists because a raw
+  out-of-round send/receive (`ark send oor` / `ark oor receive`) is
+  neither swap-backed nor credit-backed, so it has no live projector and
+  would otherwise land only at the next startup backfill (issue #903);
+  paging the full SEND/RECV history every tick would be unbounded work,
+  so only the most recent window is re-projected. Re-deriving swap/
+  credit-backed SEND/RECV rows caught in that window is safe — change
+  suppression makes an already-current row a no-op, so the reconciler
+  never double-emits a row the monitor or credit poll already advanced.
 - Background goroutines (monitor loop, deadline watcher, resume
   sweep) are anchored to the daemon root context, NEVER to RPC-call
   contexts. An RPC client disconnect cannot cancel in-flight work.
@@ -121,6 +134,12 @@ default builds avoid the swap executor's dependency graph.
   pending → COMPLETE transition for EXIT/DEPOSIT lands via the
   derive/backfill pass; live cross-restart reconciliation is C2. See
   `doc.go`.
+- A completed cooperative-leave EXIT row is stamped with the settling
+  round's on-chain coordinates (`progress.txid` /
+  `progress.confirmation_height`) when the daemon's forfeited-VTXO lookup
+  reports them (`collectForfeitedVTXOSettlements`). An old daemon that
+  does not populate the VTXO settlement fields still marks the row
+  COMPLETE, just without the txid/height.
 - Onchain SEND is routed through `RPCServer.SendOnChain` which delegates to
   `wallet.SendOnChainRequest`. Two modes: **sweep-all** (non-empty
   `SweepOutpoints` — drains those VTXOs exactly, no change, leave output

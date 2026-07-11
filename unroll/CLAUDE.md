@@ -28,7 +28,10 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
   `ChainSource`, `Wallet` (`SweepWallet`),
   `MaxSweepFeeRateSatPerVByte`, `FraudCheckpointSafetyMargin int32`
   (overrides the fraud-triggered unroll backstop margin in blocks;
-  zero falls back to the default), `RegistryRef`.
+  zero falls back to the default), `RegistryRef`, optional
+  `LedgerSink fn.Option[ledger.Sink]` (propagated from
+  `RegistryConfig.LedgerSink` via `childConfig`; receives the confirmed
+  on-chain exit fee once the final sweep confirms).
 - `behavior` — actor behavior implementing `actor.TxBehavior[Msg, Resp,
   unrollTx]`. Holds `b.sweepTx` (restored from checkpoint on boot) so
   retries and replays converge on a single sweep txid / pkScript under
@@ -56,6 +59,14 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
   `VTXOUnrollActor`s. Handles `EnsureUnrollRequest` /
   `GetStatusRequest` admission, receives `UnrollTerminatedMsg` from
   children, persists records, and runs `RestoreNonTerminal` on boot.
+- `GetStatusRequest.Detailed` / `GetStatusResp.State` — a detailed status
+  probe (`Detailed: true`) Asks the live child (`detailedChildState`,
+  bounded by `detailedStatusAskTimeout` = 3s) for its `*GetStateResp`
+  (including `Progress`) and attaches it as `GetStatusResp.State`; the
+  common coarse polling path (`Detailed: false`, the default) never Asks
+  the child and leaves `State` nil. The child Ask is best-effort — a
+  timeout or error falls back to the coarse cached/stored record rather
+  than failing the probe.
 - `RegistryConfig` — `Store`, `DeliveryStore`, `ProofAssembler`,
   `VTXOStore`, `TxConfirmRef`, `ChainSource`, `Wallet`,
   optional `LedgerSink`, `MaxSweepFeeRateSatPerVByte`,
@@ -122,9 +133,19 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
   derives the wallet fee-input amount an operator/caller should fund
   before starting the exit; `RecommendedExitFeeInputAmount` reads the
   verdict for the same number.
-- `ExitProgress` (in `GetStatusResp`) — `ConfirmedTxs`/`InFlightTxs`/
-  `ReadyTxs`/`BlockedTxs` counts over the proof graph, for status
-  probes.
+- `ExitProgress` (`GetStateResp.Progress`, surfaced on a detailed status
+  probe via `GetStatusResp.State`) — the planner-derived, human-facing
+  progress summary computed by `behavior.exitProgress` at the actor's
+  current best height: `ConfirmedTxs`/`InFlightTxs`/`ReadyTxs`/
+  `BlockedTxs`/`TotalTxs` counts over the proof graph, `CurrentLayer`/
+  `TotalLayers` frontier position, `TargetConfirmed`/`AllProofConfirmed`
+  flags, `CSV fn.Option[unrollplan.CSVInfo]` (populated once the target
+  confirms), `BestCaseBlocksRemaining` (optimistic lower-bound block
+  count via `bestCaseBlocksRemaining`, gated on the longer of the CSV
+  wait and the exit policy's cached `requiredLockTime`), and
+  `ActualSweepFeeSat fn.Option[int64]` (populated once the sweep tx is
+  built, via `actualSweepFeeSat`). `stateResponse` returns nil `Progress`
+  when the planner/proof is not yet loaded.
 
 ### Support
 
@@ -238,6 +259,20 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
 
 ## Invariants
 
+- **Terminal handoff waits for the ledger exit-cost Tell to land.**
+  `notifyRegistryIfTerminal` calls `emitExitCostIfCompleted` before
+  notifying the registry. On `PhaseCompleted` with a set `LedgerSink` and
+  no prior emission (`!b.exitCostNotified`), it derives a
+  `ledger.ExitCostMsg` via `exitCostMsg` (target output value from the
+  proof minus the persisted sweep tx's output total; a non-positive
+  result or missing proof/sweep tx is an unbuildable-but-terminal
+  condition, logged at error and allowed through) and Tells the sink on a
+  detached context. A Tell error defers the ENTIRE terminal handoff (the
+  registry stops the child right after it, and terminal records are not
+  restored on boot, so there is no later retry point) so the next height
+  tick retries; a successful Tell sets `b.exitCostNotified` and is a safe
+  at-least-once replay target since the ledger handler dedups by target
+  outpoint.
 - **Persist-before-broadcast.** `startSweep` calls
   `persistCheckpoint` (writing `b.sweepTx` into the TLV checkpoint)
   BEFORE `txconfirm.Ask`. Any handler retry or restart restores the

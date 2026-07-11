@@ -57,6 +57,7 @@ package may import from a higher layer.
 | [`serverconn/mailboxpull`](serverconn/mailboxpull/) | Shared exponential-backoff retry primitives for mailbox pull loops (used by serverconn ingress and SDK swap consumers) |
 | [`rpcauth`](rpcauth/) | Shared macaroon and TLS helpers securing gRPC/REST connections |
 | [`internal/sqlbase`](internal/sqlbase/) | `walletdb`-compatible key/value backend over `database/sql` (js/wasm walletdb storage for `lwwallet` browser builds) |
+| [`metrics`](metrics/) | Opt-in Prometheus metrics actor and HTTP server; sink consumed by round, wallet, vtxo, and darepod |
 
 ### Layer 3: Application & Orchestration
 

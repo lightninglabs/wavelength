@@ -5,9 +5,10 @@
 System-level end-to-end tests, gated by the `systest` build tag, that
 exercise real components against Docker-backed Bitcoin/LND infrastructure.
 Some tests drive only the boarding-wallet actor via `SysTestHarness`; others
-(`send_vtxo_test.go`, `leave_strand_test.go`, `refresh_strand_test.go`) stand
-up a full in-process `darepod` daemon plus round/serverconn/mailbox pieces
-for round and OOR-send scenarios.
+(`send_vtxo_test.go`, `leave_strand_test.go`, `refresh_strand_test.go`,
+`send_onchain_strand_test.go`, `vhtlc_recovery_test.go`) stand up a full
+in-process `darepod` daemon plus round/serverconn/mailbox pieces for round
+and OOR-send scenarios.
 
 ## Key Types
 

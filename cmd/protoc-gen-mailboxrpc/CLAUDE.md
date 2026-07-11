@@ -12,7 +12,9 @@ methods into a `mailbox/rpc` router.
 ## Key Types
 
 - `main` (entry point) — Parses the `exclude_service` flag (fully-qualified
-  proto service name to skip) and delegates to `gen.Generate()` via
+  proto service name to skip), declares
+  `pluginpb.CodeGeneratorResponse_FEATURE_PROTO3_OPTIONAL` support on the
+  `protogen.Plugin`, and delegates to `gen.Generate()` via
   `protogen.Plugin.Run()`.
 
 ## Relationships
@@ -29,6 +31,9 @@ methods into a `mailbox/rpc` router.
 - The `exclude_service` flag must be the fully-qualified name (e.g.
   `"mailbox.v1.MailboxService"`) to suppress generation for a service whose
   stubs are hand-written.
+- The plugin advertises `FEATURE_PROTO3_OPTIONAL` support so `protoc` will
+  invoke it for `.proto` files that use `optional` on proto3 fields;
+  removing that flag would make protoc reject such inputs for this plugin.
 
 ## Deep Docs
 

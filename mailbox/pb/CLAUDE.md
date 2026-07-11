@@ -10,9 +10,19 @@ Send/Pull/AckUpTo RPCs. Generated via `make rpc`
 ## Key Types
 
 - `Envelope` — wire message: `msg_id`, `idempotency_key`, `sender`,
-  `recipient`, `body`, `RpcMeta`, `event_seq`, headers.
+  `recipient`, `body`, `RpcMeta`, `event_seq`, headers, `protocol_version`
+  (mailbox transport version), and `ark_protocol_version` (the Ark protocol
+  version negotiated via the direct GetInfo bootstrap RPC — distinct from
+  `protocol_version`; every envelope sent after negotiation carries it).
 - `RpcMeta` / `RpcMeta_Kind` — RPC overlay (`REQUEST`/`RESPONSE`/`EVENT`) and
   correlation metadata.
+- `Status` — result of a mailbox edge operation: `ok`, `code`, `message`,
+  `min_supported_protocol_version` / `server_protocol_version` (populated for
+  upgrade-required errors), and `supported_mailbox_versions` /
+  `supported_ark_versions` (populated for permanent version errors so the
+  sender can surface actionable guidance without parsing gRPC status
+  details). Field 6 (`upgrade_url`) was removed and is `reserved`, not
+  reused. `mailbox/conn.StatusError` wraps this type for classification.
 - `MailboxServiceClient` / `MailboxServiceServer` — generated client/server
   interfaces for `Send`, `Pull`, `AckUpTo`.
 - `MailboxProtocolVersionV1` (`version.go`, hand-maintained, not generated) —
@@ -32,6 +42,10 @@ Send/Pull/AckUpTo RPCs. Generated via `make rpc`
 - New fields must be additive (proto field-number append-only) so older
   envelopes decode cleanly under newer generated code; see
   `version_compat_test.go` for the compatibility contract this protects.
+- A removed field's tag and name must be marked `reserved` (see `Status`
+  field 6, formerly `upgrade_url`), never dropped silently and never
+  reused by a later field — a future field reusing the tag would collide
+  on the wire with a peer still emitting the old value.
 
 ## Deep Docs
 

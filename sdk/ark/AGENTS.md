@@ -16,7 +16,9 @@ transport, without duplicating Ark runtime behavior.
 - `RemoteConfig` / `EmbeddedConfig` / `InProcessConfig` — Dial, in-process
   hosting, and bufconn-wrapping configs for the three constructors above.
   `RemoteConfig` is secure by default: callers must supply transport
-  credentials or explicitly set `AllowInsecure`.
+  credentials or explicitly set `AllowInsecure`. `EmbeddedConfig` has a
+  native build (`embedded.go`) and a browser stub build (`embedded_wasm.go`,
+  `js && wasm`); shared transport helpers live in `transport.go`.
 - `Info` / `ServerInfo` / `Seed` / `WalletInitResult` / `WalletState` —
   SDK-owned models for daemon status, cached operator terms, and wallet
   bootstrap flows. `Info.WalletReady()` checks `WalletState ==
@@ -67,6 +69,11 @@ transport, without duplicating Ark runtime behavior.
 - `WrapDaemonServer` owns only the private bufconn transport and gRPC
   server; it does not own the caller's `DaemonServer` runtime. `Close()`
   tears down only the private transport.
+- `StartEmbedded` is unavailable in browser builds (`js && wasm`):
+  `embedded_wasm.go` supplies a stub `EmbeddedConfig` (untyped
+  `DaemonConfig any` so browser callers avoid importing `darepod`) and
+  `StartEmbedded` always returns an error there. Native builds keep the
+  real `darepod`-backed implementation in `embedded.go`.
 - `ServerInfo` is a bootstrap-time operator-terms snapshot; refresh after
   reconnect is not wired through yet.
 - Pre-1.0, some methods intentionally return `daemonrpc` protobuf types

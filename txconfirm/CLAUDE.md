@@ -4,11 +4,16 @@
 
 Generic "broadcast this signed tx, tell me when it confirms, and fee-bump
 it via CPFP until it does" actor. Subsystem-neutral: no unroll/, vtxo/,
-oor/, or round/ semantics leak in. Callers submit a signed v3/TRUC parent
-via `EnsureConfirmedReq` and receive a terminal `TxConfirmed` or `TxFailed`
-notification. Dedup is by txid: two callers asking to confirm the same
-txid share a single confirmation watch, broadcast attempt, and CPFP child,
-but each still receives its own terminal notification.
+oor/, or round/ semantics leak in. Callers submit a signed parent via
+`EnsureConfirmedReq` and receive a terminal `TxConfirmed` or `TxFailed`
+notification. Three parent shapes are supported: anchorless (broadcasts
+directly, no fee-bump handle), a zero-value ephemeral anchor (BIP-431,
+must be v3/TRUC, always rides a CPFP package), and a funded (non-zero)
+anchor (independently valid, pays its own fee via `ParentFee`, broadcasts
+directly and only spends the anchor when a bump is actually needed).
+Dedup is by txid: two callers asking to confirm the same txid share a
+single confirmation watch, broadcast attempt, and CPFP child, but each
+still receives its own terminal notification.
 
 ## Key Types
 
@@ -35,12 +40,14 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/txcon
 - Exported helpers usable standalone: `BuildCPFPChild`,
   `EstimatePackageFee`, `EstimateWeight`, `SelectFeeInput`.
 - `Wallet` — interface required by the broadcaster: `ListUnspent`,
-  `NewWalletPkScript`, `FinalizePsbt`, plus `wallet.OutputLeaser`
+  `NewWalletPkScript`, `FinalizePsbt`, `FundPsbt` (funds/signs/finalizes
+  a template, used by the fee-input fanout), plus `wallet.OutputLeaser`
   (`LeaseOutput` / `ReleaseOutput`) for cross-subsystem UTXO lock
   coordination.
 - `EnsureConfirmedReq` / `EnsureConfirmedResp` — public Ask API:
   register interest in a txid with `TargetConfs`, `ConfirmationPkScript`,
-  and a subscriber.
+  and a subscriber. `ParentFee` carries a funded-anchor parent's own
+  miner fee so a later CPFP bump subtracts it instead of double-paying.
 - `CancelInterestReq` / `CancelInterestResp` — drop a subscriber; the
   last subscriber's cancel tears down tracking.
 - `BumpNowReq` / `BumpNowResp` — operator "bump this stuck tx now" Ask:
@@ -57,7 +64,10 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/txcon
   `AwaitingConfirmation` is reported only once the tx (or a redundant
   parent) is actually in a mempool.
 - Sentinels: `ErrNonTRUCParent`, `ErrCPFPFeeInputUnavailable`,
-  `ErrEnsureParamsMismatch`, `ErrFeeInputProducesDust`.
+  `ErrEnsureParamsMismatch`, `ErrFeeInputProducesDust`,
+  `ErrParentFeeSufficient` (a funded parent already pays the whole
+  target package fee, so the CPFP child's residual share would fall
+  below min-relay-fee; the bump is refused as a no-op).
 - `Config.BroadcastFailureAlertThreshold` — consecutive no-mempool
   failures before the operator escalation fires (default 3). Time to
   first alert ≈ threshold × `FeeBumpIntervalBlocks` blocks.
@@ -83,12 +93,14 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/txcon
   `SubmitPackageRequest`, `TestMempoolAcceptRequest`,
   `FeeEstimateRequest`.
 - **Sends → `Wallet`** (direct): `ListUnspent`, `NewWalletPkScript`,
-  `FinalizePsbt`, `LeaseOutput`, `ReleaseOutput`.
+  `FinalizePsbt`, `FundPsbt`, `LeaseOutput`, `ReleaseOutput`.
 - **Sends → caller subscriber** (Tell): `TxConfirmed`, `TxFailed`.
 - **Receives ← `chainsource`** (mapped Tell refs): `BlockEpoch` →
   `blockEpochObservedMsg`; `ConfirmationEvent` →
-  `confirmationObservedMsg`.
-- **Receives ← API**: `EnsureConfirmedReq`, `CancelInterestReq`.
+  `confirmationObservedMsg` (also used for the fee-input fanout's own
+  confirmation watch).
+- **Receives ← API**: `EnsureConfirmedReq`, `CancelInterestReq`,
+  `BumpNowReq`.
 
 ## Invariants
 
@@ -109,9 +121,14 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/txcon
   must agree on `TargetConfs` and `ConfirmationPkScript`; mismatches
   return `ErrEnsureParamsMismatch` rather than silently reusing the
   existing watch.
-- **TRUC version gate**: `CPFPBroadcaster.Submit` rejects parents whose
-  `Tx.Version != arktx.TxVersion` (v3). Pattern-based anchor detection
-  on non-v3 parents is structurally unsafe.
+- **TRUC version gate applies only to the zero-fee ephemeral anchor**:
+  `CPFPBroadcaster.Submit` rejects a parent with a zero-value anchor
+  whose `Tx.Version != arktx.TxVersion` (v3) — package RBF and the
+  zero-fee anchor are not policy-legal without TRUC semantics. A
+  **funded** (non-zero) anchor is exempt: it pays its own fee, broadcasts
+  directly as an ordinary transaction on the initial pass regardless of
+  version, and only rides a CPFP package once a bump is requested
+  (`anchorIsFunded`).
 - **Replacement floor**: every fee bump runs through
   `applyReplacementFloor` before selecting a fee input, enforcing
   BIP-125 Rule 4 (strictly higher feerate) and Rule 3 (strictly higher

@@ -34,15 +34,15 @@ unchanged).
 
 | Command | RPC | Description |
 |---------|-----|-------------|
-| `create` | `walletdkrpc.Create` | Initialize a new wallet (proxies GenSeed + InitWallet). Password from stdin / DAREPOD_WALLET_PASSWORD / --wallet_password_file |
+| `create` | `walletdkrpc.Create` | Initialize a new wallet (proxies GenSeed + InitWallet). Password from stdin / DAREPOD_WALLET_PASSWORD / --wallet_password_file. `--recover --mnemonic-file PATH` imports an existing aezeed mnemonic and recovers Ark wallet state instead of generating a fresh one |
 | `unlock` | `walletdkrpc.Unlock` | Unlock an existing wallet (proxies UnlockWallet) |
-| `send <dest>` | `walletdkrpc.Send` | Outbound payment. `--offchain` (default) for a BOLT-11 invoice via the swap subsystem; `--onchain` for an atomic on-chain send (`--sweep-all` drains). No prefix sniff |
+| `send <dest>` | `walletdkrpc.Send` | Outbound payment. `--offchain` (default) for a BOLT-11 invoice via the swap subsystem; `--onchain` for an atomic on-chain send (`--sweep-all` drains). No prefix sniff. Blocks until the send reaches a terminal state by default (printing phase transitions and, for Lightning, the payment preimage); `--no-wait` returns immediately after dispatch |
 | `recv` | `walletdkrpc.Recv` / `walletdkrpc.Deposit` | Inbound. `--offchain` (default) returns a Lightning invoice; `--onchain` returns a boarding address |
 | `activity` | `walletdkrpc.List` | Unified wallet activity view. Defaults to table output; `--format json` returns structured JSON. `--pending` and `--kind` narrow rows |
 | `activity inspect <id>` | `walletdkrpc.InspectActivity` | Correlated swap/VTXO/ledger detail for one activity entry |
 | `balance` | `walletdkrpc.Balance` | Flat balance (confirmed_sat, pending_in_sat, pending_out_sat) |
 | `exit --outpoint TXID:VOUT` | `walletdkrpc.Exit` | Queue a cooperative leave by default; unilateral unroll only fires with `--force-unroll-ack I_KNOW_WHAT_I_AM_DOING` |
-| `exit status --outpoint TXID:VOUT` | `walletdkrpc.ExitStatus` | Query an exit/unroll job's status (proxies GetUnrollStatus) |
+| `exit status --outpoint TXID:VOUT` | `walletdkrpc.ExitStatus` | Query an exit/unroll job's status (proxies GetUnrollStatus). `--detailed` (default true) includes tree/CSV progress, block countdown, and fee breakdown; `--detailed=false` returns a coarse phase-only status |
 | `exit summary` | `walletdkrpc.ExitSummary` | Aggregate totals across all in-progress exits |
 | `exit plan --outpoint ...` | `walletdkrpc.GetExitPlan` | Preview backing-wallet funding readiness for one or more exits |
 | `wallet-sweep --destination ADDR` | `walletdkrpc.SweepWallet` | Preview, or with `--broadcast` publish, a sweep of confirmed backing-wallet UTXOs (boarding outputs excluded; see `ark sweep`) |
@@ -95,8 +95,11 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/cmd/d
 
 - `NewRootCmd()` — top-level cobra command with all subcommands
   registered.
-- `getDaemonConn()` / `getDaemonClient()` — TLS-by-default daemon
-  gRPC dial; `--no-tls` opts out for local dev.
+- `getDaemonConn()` / `getDaemonClient()` — TLS- and macaroon-by-default
+  daemon gRPC dial; `--no-tls` / `--no-macaroons` opt out for local dev.
+  `--tlscertpath` / `--macaroonpath` default to
+  `<datadir>/data/<network>/{tls.cert,admin.macaroon}` (via
+  `daemonTLSCertPath()` / `daemonMacaroonPath()`), expanding a leading `~`.
 - `withWalletClient()` — maps `codes.Unimplemented` to
   `errWalletRPCDisabled` (with a pointer to `docs/walletdkrpc_build.md`)
   for daemons built without the walletdkrpc tag.
@@ -124,6 +127,7 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/cmd/d
   - `rpc/walletdkrpc` (generated stubs for the top-level wallet verbs;
     `WalletService` / `WalletInspectionService` clients).
   - `daemonrpc` (generated stubs for `ark.*`, `recovery.*`, getinfo).
+  - `rpcauth` (macaroon dial option for `getDaemonConn`).
   - `cmd/darepocli/darepoclicommands/devrpc` (the generated `dev`
     subtree; its registry references `swapclientrpc` service
     descriptors).

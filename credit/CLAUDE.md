@@ -32,11 +32,25 @@ credit redemptions against the swap-server credit ledger, as a crash-safe
 - **Depends on**: `baselib/actor` (durable/plain actor framework, TLV
   mailbox), `baselib/protofsm` (state/transition/emitted-event generics),
   `db` (`CreditOperationRecord`/`CreditOpKind` control-plane schema),
-  `db/actordelivery`, `timeout` (poll-timer scheduling).
+  `db/actordelivery` (the `Store`'s durable-mailbox backing store in
+  production), `timeout` (poll-timer scheduling), `build`
+  (`LoggerFromContext` fallback when no explicit logger is configured).
 - **Depended on by**: `swapwallet` (credit-aware pay/receive routing, the
-  credit projector reading terminal ops), `swapclientserver` (bridges the
-  swap-server credit RPCs into `CreditServer`), `darepod` (registry wiring,
-  config, service startup).
+  credit projector reading terminal ops), `swapclientserver` (implements
+  `CreditServer`/`CreditDaemon`, bridging the swap-server credit RPCs and
+  wallet/daemon operations), `darepod` (registry wiring, config, service
+  startup).
+- **Sends**:
+  - → `timeout`: `ScheduleTimeoutRequest` (arm the reconciliation/retry poll
+    timer after an awaiting state parks; see `armPollTimer`).
+- **Receives**:
+  - ← `swapwallet`: `StartCreditPayRequest`, `StartCreditReceiveRequest`
+    (pay/receive admission via `CreditRegistry.Ask`), `ListCreditOpsRequest`
+    (credit-op projector polling terminal ops).
+  - ← `timeout`: `*timeout.ExpiredMsg` (poll/retry timer expiry, mapped into
+    `ResumeCreditOpRequest` via `NewRetryCallbackRef`).
+  - ← `darepod`: `RestoreNonTerminalRequest` (boot-time restore of every
+    non-terminal operation, via `Registry.RestoreNonTerminal`).
 
 ## Invariants
 
@@ -59,4 +73,8 @@ credit redemptions against the swap-server credit ledger, as a crash-safe
 
 ## Deep Docs
 
+- [docs/credit_system.md](../docs/credit_system.md) — What a credit is, how
+  the server ledger accounts for it, and the client/server contract.
+- [docs/credit_durable_actor_design.md](../docs/credit_durable_actor_design.md)
+  — Full crash-safety design for the pay/receive/redeem flows.
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map

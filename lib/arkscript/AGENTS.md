@@ -48,6 +48,11 @@ validated invariants.
   shape (custom vHTLC, etc.). Enforces: collab leaf with operator key, exit
   leaf without operator key, no operator-unilateral leaf, CSV gating on exit
   paths. `opts.MinExitDelay = 0` skips the CSV minimum check.
+- `SigningKeys(node)` / `SigningKeysForSpendPath(template, spendPath)` —
+  Return the tapscript CHECKSIG public keys committed to by a node (or by the
+  template leaf a `SpendPath` selects) in witness-stack order. Round forfeit
+  validation uses this to assemble multi-participant custom-policy witnesses
+  without parsing compiled script bytes.
 - Decode budget constants: `MaxPolicyTemplateBytes` (64 KiB),
   `MaxLeafTemplateBytes` (16 KiB), `MaxPolicyLeaves` (32),
   `MaxPolicyDepth` (16), `MaxPolicyNodes` (256), `MaxMultisigKeys` (64) —

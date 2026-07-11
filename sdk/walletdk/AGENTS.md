@@ -28,6 +28,9 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
   `EagerRoundJoin`) are plain enable-only `bool`s — `true` forces the
   value, zero defers to `DaemonConfig` (no tri-state). To force a
   `false`, set `DaemonConfig` directly or use the matching `Option`.
+  `SigningWorkers` bounds concurrent VTXO MuSig2 signer sessions (zero
+  defers to the wallet-backend default, one forces serial signing; capped
+  by `MaxSigningWorkers`).
 - `DefaultConfig` — `Config` populated from `darepod.DefaultConfig()`.
 - `Start(ctx, cfg, opts...)` — boots the embedded daemon, dials it,
   waits for gRPC readiness, and returns a ready `*Client`. The daemon
@@ -88,14 +91,37 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
   on builds without the `walletdkrpc` tag.
 - `ErrSwapRuntimeUnavailable` — back-compat alias for
   `ErrWalletRPCUnavailable`.
+- `ErrInvalidDestination`, `ErrInvalidSendIntent`, `ErrAmountRequired`,
+  `ErrAmountInvalid`, `ErrUnsupportedKind`, `ErrSwapBackendUnavailable`,
+  `ErrAmountExceedsVTXOLimit`, `ErrBalanceLimitExceeded` — sentinels
+  mirroring the daemon's walletdkrpc rejection taxonomy. `errmap.go`
+  reconstructs them client-side (via a chained unary interceptor
+  installed on every walletdk connection, embedded and `Connect`-based
+  alike) from a `google.rpc.ErrorInfo` detail the daemon attaches to
+  the gRPC status, matched by machine-readable reason string, so
+  callers can `errors.Is` on failure cause instead of parsing status
+  text. Unrecognized reasons pass the original status error through
+  unchanged.
+- `OpenWalletResult` — returned by `Client.OpenWalletFromPasskey`,
+  which derives a reproducible wallet seed and local DB password via
+  HKDF over a WebAuthn passkey PRF output, then imports (fresh device)
+  or unlocks (existing local wallet) accordingly. The PRF ceremony
+  itself lives in the platform layer; the caller must use a fixed,
+  app-controlled PRF salt on every call for a given wallet or the
+  derived seed changes and funds become unrecoverable.
+- `SubscribeGapError` — typed terminal error from `Subscribe` carrying
+  a resume `Cursor` when the server-side send buffer overflows; the
+  host opens a new subscription with `SubscribeRequest.Cursor` set to
+  it for a gap-free replay.
 
 ## RPC Methods (host-facing API)
 
 | Method | Description |
 |--------|-------------|
 | `GetInfo` | Daemon readiness snapshot (version, network, identity, wallet/server readiness). |
-| `CreateWallet` | Create or import the embedded wallet (auto-generates seed when mnemonic empty); proxies daemonrpc. |
+| `CreateWallet` | Create or import the embedded wallet (auto-generates seed when mnemonic empty); proxies daemonrpc. `RecoverState`/`RecoveryWindow` request an on-chain/VTXO rescan; `CreateWalletResult`'s `Recovered*` counters report what it found. |
 | `UnlockWallet` | Unlock an existing wallet; proxies daemonrpc. |
+| `OpenWalletFromPasskey` | Derive a wallet from a WebAuthn passkey PRF output and import or unlock it accordingly; returns `OpenWalletResult`. |
 | `Balance` | Flat balance (`confirmed_sat`, `pending_in_sat`, `pending_out_sat`). |
 | `Deposit` | Allocate a fresh boarding address (`recv --onchain` from CLI). |
 | `Receive` | Open a Lightning invoice receive (`recv --offchain`). Returns `{Invoice, Entry}`. |
@@ -186,6 +212,12 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
 - `Subscribe` returns an unbuffered updates channel so a slow consumer
   applies backpressure end-to-end; the errs channel is cap-1 for a
   single terminal error.
+- `ListRequest.Cursor` / `ActivityList.NextCursor`/`HasMore` paginate
+  the Activity view by opaque cursor (VTXOs/Onchain views still use
+  `Offset`). `SubscribeRequest.Cursor` resumes a stream after a prior
+  `Entry.Cursor` or `SubscribeGapError.Cursor`; zero replays full
+  history when `IncludeExisting` is set, or streams live-only
+  otherwise.
 - New options should follow the "apply after merge" placement so
   override semantics stay consistent.
 

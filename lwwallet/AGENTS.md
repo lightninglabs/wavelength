@@ -57,14 +57,24 @@ base logic with the neutrino-backed `btcwbackend` sibling via the extracted
   backend actor and btcwallet's asynchronous block processing pipeline (polls
   at 50ms). `FinalizePsbtDirect(packet)` signs and finalizes a PSBT via
   `BtcWallet.FinalizePsbt` under `DefaultAccountName`; used by the darepod
-  unroll sweep adapter since lwwallet has no gRPC surface.
+  unroll sweep adapter since lwwallet has no gRPC surface. `New(cfg)` requires
+  `Config.WalletPassword` always and `Config.Seed` only to create a new
+  wallet database (nil opens an existing one); `checkWalletInvariants`
+  rejects a seed/database mismatch (`ErrWalletExists`/`ErrWalletNotFound`),
+  and `WalletExists(cfg)` lets callers pick the create-vs-open path first.
+- `newWalletLoaderOptions`/`walletExists` — Platform-specific btcwallet
+  database loader, split by build tag: `walletdb_native.go` (native, bbolt
+  via btcwallet's own loader) vs `walletdb_wasm.go` (`js`/`wasm`, OPFS-backed
+  SQLite via `go-wasmsqlite`/`internal/sqlbase`, single-connection EXCLUSIVE
+  locking).
 
 ## Relationships
 
 - **Depends on**: `walletcore` (shared HD key mgmt, signing, boarding base —
   also used by `btcwbackend`), `chainsource` (implements `ChainBackend`),
   `wallet` (implements `BoardingBackend`), `chainbackends` (typed
-  `PackageTxError` for package-relay results).
+  `PackageTxError` for package-relay results), `internal/sqlbase` (browser
+  SQLite/OPFS walletdb driver, wasm builds only).
 - **Depended on by**: `darepod` (alternative to LND-backed wallet), `sdk`
   (embedded-wallet config references).
 
@@ -83,6 +93,14 @@ base logic with the neutrino-backed `btcwbackend` sibling via the extracted
   UTXO set, because btcwallet does not credit-mark non-default scope outputs.
 - `Stop()` explicitly closes btcwallet's internal database to prevent resource
   leaks.
+- `Start()` arms a reverse-order rollback stack as each subsystem comes up;
+  on any failure (bad passphrase, locked DB, unreachable Esplora) the
+  already-started subsystems are torn down and the freshly opened wallet DB
+  is closed, instead of leaking the tip-poller goroutine or holding the DB's
+  exclusive lock across a retry.
+- `SubmitPackage` is unimplemented on the Esplora backend: Esplora has no
+  package-relay REST endpoint, so v3/TRUC CPFP package relay requires a
+  bitcoind- or lnd-backed chain source instead.
 
 ## Deep Docs
 

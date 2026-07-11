@@ -18,12 +18,22 @@ when the local wallet owns the receive script.
   (the authoritative semantic policy for ownership/spend semantics),
   `PkScript`, `ClientKey` (keychain.KeyDescriptor), `OperatorKey`,
   `TapScript`, `Ancestry []Ancestry`, `RoundID`, `CommitmentTxID`,
-  `BatchExpiry`, `RelativeExpiry`, `ChainDepth` (OOR hop count),
-  `CreatedHeight`, `Status`, `ConstructionVersion` (zero-indexed build-rule
-  version stamped at creation; validated only at the ingress edge, trusted
-  verbatim once persisted). Use `EffectivePkScript`/`EffectivePolicyTemplate`
-  to derive the current script/policy rather than reading `PkScript`
-  directly, since custom policies decode through `PolicyTemplate`.
+  `Settlement fn.Option[Settlement]`, `BatchExpiry`, `RelativeExpiry`,
+  `ChainDepth` (OOR hop count), `CreatedHeight`, `Status`,
+  `ConstructionVersion` (zero-indexed build-rule version stamped at
+  creation; validated only at the ingress edge, trusted verbatim once
+  persisted). Use `EffectivePkScript`/`EffectivePolicyTemplate` to derive
+  the current script/policy rather than reading `PkScript` directly,
+  since custom policies decode through `PolicyTemplate`.
+- `Settlement` — `{TxID chainhash.Hash, Height int32}`, the round
+  commitment tx that FORFEITED this VTXO (the leave / cooperative-forfeit
+  round) and its confirmation height — distinct from `CommitmentTxID`,
+  which anchors the round that CREATED the VTXO. `Descriptor.Settlement`
+  is `Some` only for `VTXOStatusForfeited` VTXOs whose forfeit round row
+  is known (populated by `db`'s by-status VTXO read via a `LEFT JOIN` on
+  `rounds`); every other status carries `None` rather than a zero-hash
+  sentinel. `darepod` maps it onto the VTXO proto via `WhenSome`, so the
+  wire message stays unset for a VTXO with no known settlement.
 - `Manager` — Actor managing per-VTXO FSM instances, lifecycle, and admission gating. Configured via `ManagerConfig`.
 - `ManagerConfig` — Configuration holding Store, Wallet, ChainSource,
   ActorSystem, ChainParams, ExpiryConfig, RoundActor ref, ChainResolver ref,

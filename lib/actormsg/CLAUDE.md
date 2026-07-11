@@ -24,13 +24,16 @@ package boundaries. Lives in `lib/` to break import cycles between `vtxo`,
   round FSM immediately fires `IntentRequested` after accepting the intent
   (`true` for directed sends) or parks in `PendingRoundAssembly` for
   batching (`false` for refresh/leave flows).
-- `TriggerBoardMsg` — Carries VTXO amounts for boarding registration to round actor.
+- `TriggerBoardMsg` — Carries VTXO amounts for boarding registration to round actor. `Outpoints` names the confirmed boarding inputs the `Amounts` were sized over (empty means "all confirmed boarding inputs"), so a later trigger doesn't re-register an already-in-flight outpoint. `Change` optionally carries a `*types.LeaveRequest` on-chain leave output for the portion of the boarding balance clipped by operator limits.
+- `CustomForfeitInput` — Describes a caller-supplied VTXO (not in the wallet's live coin set) that still needs a temporary local VTXO actor to sign the exact round forfeit transaction once connector details are known.
+- `ActivateCustomForfeitInputsRequest` / `ActivateCustomForfeitInputsResponse` — Starts temporary `PendingForfeit` VTXO actors for custom inputs before registering a round intent.
+- `DropCustomForfeitInputsRequest` / `DropCustomForfeitInputsResponse` — Removes custom `PendingForfeit` signer overlays activated for a round intent that was rejected before signing started.
 - `SelectedVTXO` — Describes a VTXO selected for spend (outpoint, amount, pkscript).
 - `RoundActorServiceKey()` / `VTXOManagerServiceKey()` / `VTXOActorServiceKey(outpoint wire.OutPoint)` — Service key constructors for actor discovery. `VTXOActorServiceKey` encodes the target outpoint into the key so each per-VTXO actor gets a unique, deterministic key.
 
 ## Relationships
 
-- **Depends on**: `baselib/actor` (ServiceKey, Message interfaces).
+- **Depends on**: `baselib/actor` (ServiceKey, Message interfaces), `lib/types` (`LeaveRequest` for `TriggerBoardMsg.Change`, `Ancestry` for `CustomForfeitInput`).
 - **Depended on by**: `vtxo` (re-exports admission types as aliases), `wallet` (sends admission requests), `round` (receives `RoundReceivable` messages), `darepod` (wiring service keys).
 
 ## Invariants

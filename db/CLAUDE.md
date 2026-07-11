@@ -26,11 +26,21 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   concrete `BatchedTx[RoundStore]`-backed store
   (`InsertRound`/`Get`/`GetByCommitmentTxid`/`ListActive`/`ListByStatus`/
   `UpdateStatus`/`Finalize` plus boarding-intent / VTXO-request /
-  client-tree queries).
+  client-tree queries). `FailForfeitIntents(ctx, outpoints, reason, code)`
+  terminally fails the pending send intents anchored to a round's forfeit
+  outpoints (via `MarkPendingSendIntentFailedByOutpoint`) when the round
+  dies terminally, so the intent stops replaying and its activity entry
+  surfaces as failed instead of stuck pending.
 - `RoundSummary` / `VTXOSummary` — lightweight projections for
   paginated listing (avoids deserializing full trees).
 - `VTXOPersistenceStore` — VTXO descriptor store
-  (`InsertClientVTXO`, `FetchByOutpoint`). Persists `ChainDepth`.
+  (`InsertClientVTXO`, `FetchByOutpoint`). Persists `ChainDepth` and
+  ancestry `CommitmentHeight`. `GetVTXO` wraps a miss as
+  `vtxo.ErrVTXONotFound` (keeping `sql.ErrNoRows` in the chain for
+  back-compat). `ListVTXOsByStatus`/`ListVTXOsByStatusLight` LEFT JOIN the
+  forfeit round to stamp `vtxo.Descriptor.Settlement` (commitment txid +
+  confirmation height) on FORFEITED VTXOs; the field is `fn.Option`-empty
+  when the forfeit round is unknown.
 - `OORArtifactStore`, `OwnedReceiveScriptStore` — OOR session state
   and locally owned receive-script metadata.
 - `LedgerStoreDB` — implements `ledger.LedgerStore`. Wraps
@@ -43,7 +53,12 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   `sqlc.InsertWalletUTXOLog` (ON CONFLICT DO NOTHING).
 - `UnilateralExitStore` / `UnilateralExitPersistenceStore` —
   control-plane store: `Upsert` / `Get` / `ListNonTerminal` /
-  `MarkTerminal`.
+  `MarkTerminal`. `FundingAddress(ctx, target, newAddress)` returns the
+  persisted exit funding address for a target VTXO outpoint, deriving and
+  persisting one via `newAddress` on a miss; the address is stable across
+  restarts (darepo-client#893). An internal `fundingMu sync.Mutex`
+  serializes check-derive-insert so concurrent misses on the same target
+  don't each burn a fresh backing-wallet address.
 - `UnilateralExitJobRecord` — row: `TargetOutpoint`, `ActorID`,
   `Status`, `Trigger`, `LastError`, `SweepTxid`, `Created/UpdatedAt`.
 - `UnilateralExitJobStatus` — `Pending(0)`, `Materializing(1)`,
@@ -71,7 +86,7 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   safety bounds enforced during `DeserializeTree`.
 - `resolveInputPackage` / `loadPackageBundleBySessionID` — two-stage
   OOR ancestry resolver (`oor_unroll_resolver.go`).
-- `LatestMigrationVersion = 10` — current schema version.
+- `LatestMigrationVersion = 13` — current schema version.
 - `PendingIntentPersistenceStore` — implements `wallet.PendingIntentStore`,
   the persistence half of the generic restart-safe intent outbox (header
   `pending_intents` + per-kind detail tables + `pending_intent_anchors`).
@@ -84,7 +99,14 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/db.<S
   impossible. Methods: `UpsertPendingIntent` (header + detail + anchors
   atomically; anchor rebind sweeps anchor-less older intents),
   `ListPendingIntents` (per kind, with anchors), `DeletePendingIntent`,
-  `ClearPendingIntentsByKind`.
+  `ClearPendingIntentsByKind`. The header carries a `status` ('pending' /
+  'failed') plus `failure_reason` / `failure_code`: a terminally failed
+  intent (see `RoundStore.FailForfeitIntents`) is retained rather than
+  swept, so it stays a durable, anchor-correlatable record; replaying
+  (`ListPendingBoardIntents`/`ListPendingSendIntents`) and the orphan
+  sweep both skip non-pending rows. `UpsertPendingIntentHeader` re-arms a
+  retried intent (same deterministic ID) back to 'pending', clearing the
+  failure fields.
 - `PendingIntentStore` / `BatchedPendingIntentStore` — internal sqlc-backed
   query interfaces for the pending-intent tables.
 - `SpendingReservationPersistenceStore` — Persists the durable index of VTXO
@@ -186,6 +208,20 @@ when adding one.
 - `000010_activity_log` — canonical activity feed: `activity_entries`
   current-state projection plus the `activity_events` append-only
   transition log.
+- `000011_pending_intent_status` — adds `status` / `failure_reason` /
+  `failure_code` to `pending_intents`, giving the outbox a terminal
+  'failed' fate alongside adoption-and-clear, so a round that fails
+  terminally can retire the originating intent instead of replaying it
+  forever.
+- `000012_exit_funding_addresses` — `exit_funding_addresses`, a standalone
+  additive table keyed by target VTXO outpoint that persists the
+  backing-wallet funding address handed out for an exit shortfall so it
+  is stable across restarts (darepo-client#893).
+- `000013_ancestry_commitment_height` — adds `commitment_height` to
+  `vtxo_ancestry_paths`: the confirmation height of the commitment tx
+  anchoring each ancestry fragment, used as a sound floor for the
+  unroller's proof-node confirmation-watch height hint. `DEFAULT 0` means
+  unknown (pre-migration rows and unpopulated producers).
 
 ## Deep Docs
 

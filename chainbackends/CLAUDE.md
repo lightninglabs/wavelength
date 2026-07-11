@@ -64,6 +64,12 @@ estimation, and optional v3 package relay via a pluggable `PackageSubmitter`.
   inject `chainbackends/bitcoindrpc.PackageSubmitter`, and the itest harness
   sets the same field); otherwise, for an LND wallet it falls back to
   `chainbackends/lndsubmitter.New(lndSvc.WalletKit)` as the default.
+- A neutrino-backed lnd has no mempool and cannot return an atomic
+  package-accept verdict; it broadcasts each tx individually over P2P and
+  reports the sentinel `PackageMsg` `"broadcast-unverified"` instead of
+  success. `LNDBackend.SubmitPackage` treats that sentinel plus zero per-tx
+  errors as a successful submit (deferring to confirmation tracking) rather
+  than failing as if the package were rejected.
 - `LndClientChainNotifier` enforces a 15-second timeout on registration to
   prevent hanging under LND block load.
 - Log messages use canonical txid strings (not reversed byte slices).

@@ -40,13 +40,21 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
 - `Register(ctx, grpcServer, rpcServer, cfg)` — Top-level entry point called
   by a `swapruntime`-tagged `darepod` binary. Opens the daemon-owned SQLite
   swap store, dials `swapdk-server`, creates an in-process Ark SDK facade over
-  `darepod.RPCServer`, wires `swaps.NewSwapClientWithStore`, installs a
+  `darepod.RPCServer`, wraps it with `daemonWithLiveOperatorKey` (see
+  Invariants) before wiring `swaps.NewSwapClientWithStore`, installs a
   `MailboxOutSwapEventReceiver` (empty mailbox ID — receiver derives the
   per-swap mailbox from client identity + payment hash) on the
-  `SwapClient` so out-swap HTLC events flow over the mailbox transport,
-  publishes `cfg.Swap.Backend`/`CreditServer`/`CreditDaemon` bridges,
-  registers the gRPC subserver, calls `resumePending` (unless
-  `cfg.Swap.SuppressResume`), and returns a cleanup function.
+  `SwapClient` so out-swap HTLC events flow over the mailbox transport, calls
+  `installVTXOForfeitParticipantSigner` to register the daemon's in-swap
+  forfeit signer with `darepod.RPCServer`, publishes
+  `cfg.Swap.Backend`/`CreditServer`/`CreditDaemon` bridges, registers the gRPC
+  subserver, calls `resumePending` (unless `cfg.Swap.SuppressResume`), and
+  returns a cleanup function.
+- `liveOperatorDaemonConn` — Wraps `swaps.DaemonConn` so `OperatorPubKey`
+  always reads live from the daemon's direct Ark transport
+  (`rpcServer.OperatorPubKey`) instead of the cached `GetInfo` snapshot,
+  ensuring newly-created swap vHTLC policies see operator-key rotations
+  before OOR funding is submitted.
 
 ## RPC Methods
 
@@ -67,9 +75,12 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
 
 - **Depends on**: `sdk/swaps` (swap FSM, `SwapClient`, `Store`, session,
   credit types), `sdk/ark` (`WrapDaemonServer`, in-process Ark facade),
-  `darepod` (`RPCServer`, `Config`, `SwapConfig`, `SwapSubsystem`), `credit`
+  `darepod` (`RPCServer`, `Config`, `SwapConfig`, `SwapSubsystem`,
+  `SetVTXOForfeitParticipantSigner`, `OperatorPubKey`), `credit`
   (`CreditServer`/`CreditDaemon` interfaces bridged for the credit actor
-  subsystem), `rpc/swapclientrpc` (generated gRPC stubs + proto types).
+  subsystem), `vtxo`/`lib/types` (forfeit-participant-signature request and
+  result types for the installed VTXO forfeit signer), `rpc/swapclientrpc`
+  (generated gRPC stubs + proto types).
 - **Depended on by**: `cmd/darepod` (calls `swapclientserver.Register` when
   built with the `swapruntime` tag), `cmd/darepocli/darepoclicommands`
   (swap RPC CLI commands under `swapruntime`).
@@ -106,6 +117,27 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
 - `CreateCredit`/`RedeemCredit`/`ListCredits` type-assert `s.client` for the
   optional credit methods and return `Unimplemented` if the underlying
   `swapRuntimeClient` does not support credits.
+- `Register` calls `installVTXOForfeitParticipantSigner`, which registers a
+  closure with `darepod.RPCServer.SetVTXOForfeitParticipantSigner` that
+  routes forfeit-round participant-signature requests through
+  `swapServer.SignInSwapForfeit` (via
+  `swaps.ForfeitSignaturePayloadFromVTXORequest`). This lets the daemon's
+  VTXO forfeit path collect the swap counterparty's signature without the
+  daemon core depending on `sdk/swaps` directly. `newSwapClientService`
+  fails registration (and unwinds partially-opened resources) if this wiring
+  errors.
+- `QuotePay`/`StartPay` only enforce the operator VTXO-minimum preflight
+  (`validatePayInvoiceAmount`, via `vtxoMinAmountSat`) when the request is
+  not credit-eligible (`max_credit_sat == 0`); a nonzero `max_credit_sat`
+  defers the amount check to the server-side credit quote so a sub-dust,
+  credit-assisted pay is not rejected locally.
+- When a caller omits `max_fee_sat` (leaves it 0) on `QuotePay`/`StartPay`,
+  `effectiveMaxFeeSat` derives a default cap of ~1% of the decoded invoice
+  amount (`defaultInSwapMaxFeePPM`), floored at
+  `defaultInSwapMaxFeeFloorSat` (10 sat), so a normal payment is not
+  rejected by an implicit 0 sat cap. A caller-supplied nonzero value is
+  always honored verbatim. `wrapInSwapFeeError` rewrites the resulting
+  fee-cap rejection to name the effective cap and how to raise it.
 - `SetOutSwapEventReceiver` must run before any receive worker is started:
   `SwapClient` captures the receiver into the per-swap worker at start time,
   so a late install would leave already-running workers using whatever

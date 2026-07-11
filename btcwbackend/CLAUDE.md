@@ -22,6 +22,18 @@ or LND node.
 
 ## Invariants
 
+- Native implementation files carry `//go:build !js || !wasm`. `wasm_stub.go`
+  (`//go:build js && wasm`) provides a browser-build stand-in whose
+  constructors and methods all return an "unavailable in wasm" error, so the
+  package still compiles for `js/wasm` targets without pulling in btcwallet.
+- `New`/`NewWithNeutrino` call `checkWalletInvariants` before constructing any
+  subsystem: a non-empty `Config.WalletPassword` is required, and
+  `Config.Seed` presence must agree with whether a wallet database already
+  exists in `DBDir` — creating (`Seed != nil`) fails with `ErrWalletExists` if
+  one is found, opening (`Seed == nil`) fails with `ErrWalletNotFound` if none
+  is found. This avoids btcwallet silently generating a random seed or
+  silently ignoring a supplied one. `WalletExists` exposes the same
+  file-existence probe for callers.
 - `NewWithNeutrino` does not own the neutrino service lifecycle; the caller is responsible for stopping it. `New` owns the service and stops it on error or via `Wallet.Stop()`.
 - Chain notifier cancel functions are wrapped in `sync.Once` to prevent double-cancel panics from lnd's notificationDispatcher.
 - `SubmitPackage` requires a configured direct package submitter. Individual

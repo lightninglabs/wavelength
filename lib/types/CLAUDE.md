@@ -15,12 +15,19 @@ server during round participation. These types are used across `round`, `vtxo`,
 - `VTXORequest` — Describes a new VTXO to create in a round (amount, policy
   template, owner key, signing key). `IsChange bool` (TLV record 4) marks the
   output that absorbs the server-computed fee residual under the #270
-  seal-time handshake; serialized into `JoinRoundAuth`.
+  seal-time handshake; serialized into `JoinRoundAuth`. `FixedAmount bool`
+  (TLV record 5) requires the operator quote to preserve `Amount` exactly
+  (contract outputs); a fixed output is not eligible for the implicit-change
+  exception.
 - `ForfeitRequest` — Describes a VTXO being forfeited: `VTXOOutpoint`,
   local-only `Amount`, plus optional `AuthSpend *arkscript.SpendPath`
   (proof-of-control path for custom-script join-auth construction) and
   `ForfeitSpend *arkscript.SpendPath` (spend path for forfeit tx building
-  when the VTXO uses a non-standard policy).
+  when the VTXO uses a non-standard policy). Standard wallet VTXOs leave
+  both nil so the operator loads/derives the canonical paths from its VTXO
+  registry; custom VTXOs serialize both onto the join-round wire (TLV
+  records 3/4) so the operator can validate and later build the exact
+  connector-bound forfeit request.
 - `LeaveRequest` — Describes a cooperative exit (VTXO outpoint, destination
   address). `IsChange bool` (TLV record 3) marks the leave output that
   absorbs the server fee residual; serialized into `JoinRoundAuth`.
@@ -29,8 +36,8 @@ server during round participation. These types are used across `round`, `vtxo`,
   `OperatorKey`, and `ExitDelay`. `TxProof fn.Option[proof.TxProof]` carries
   an optional SPV merkle inclusion proof for server-side verification of
   boarding UTXOs without requiring the server's own chain source.
-- `OperatorTerms` — Server-published round parameters (fee rates, expiry config, connector dust amount). `MaxOORLineageVBytes uint32` carries the operator-published cap on the cumulative on-chain vbytes a recipient must publish to claim a VTXO produced by an OOR submit unilaterally. Zero means no cap enforced server-side (clients fall back to a conservative local default).
-- `Ancestry` — One rooted commitment-tree fragment contributing ancestry to a VTXO (defined in `lib/types/ancestry.go`). Fields: `TreePath *tree.Tree` (extracted root-to-leaf path), `CommitmentTxID chainhash.Hash`, `InputIndices []uint32` (Ark tx input indices this fragment serves; empty for round-direct VTXOs), `TreeDepth uint32`. Round-direct VTXOs carry a single-element slice; cross-round multi-input OOR VTXOs carry one entry per distinct commitment tx.
+- `OperatorTerms` — Server-published round parameters (fee rates, expiry config, connector dust amount). `MinVTXOAmount` / `MaxVTXOAmount` set the operator-advertised per-VTXO floor/cap (the same `MaxVTXOAmount` cap also applies to boarding requests and OOR recipient outputs); `MaxUserBalance` optionally caps a single user's total system balance, enforced client-side on receive/boarding before funds enter the system (zero means no cap). `MinVTXOAmountFloor()` returns the effective per-VTXO minimum, flooring `MinVTXOAmount` at `DustLimit` for older/misconfigured operator snapshots. `MaxOORLineageVBytes uint32` carries the operator-published cap on the cumulative on-chain vbytes a recipient must publish to claim a VTXO produced by an OOR submit unilaterally. Zero means no cap enforced server-side (clients fall back to a conservative local default).
+- `Ancestry` — One rooted commitment-tree fragment contributing ancestry to a VTXO (defined in `lib/types/ancestry.go`). Fields: `TreePath *tree.Tree` (extracted root-to-leaf path), `CommitmentTxID chainhash.Hash`, `InputIndices []uint32` (Ark tx input indices this fragment serves; empty for round-direct VTXOs), `TreeDepth uint32`, `CommitmentHeight int32` (on-chain confirmation height of the anchoring commitment tx; zero means unknown — legacy persisted VTXOs or an unresolved commitment — so callers fall back to a bounded lookback floor instead of trusting it). Round-direct VTXOs carry a single-element slice; cross-round multi-input OOR VTXOs carry one entry per distinct commitment tx.
 - `MaxAncestryTreeDepth([]Ancestry) int` — Returns the largest `TreeDepth` across a slice; drives worst-case unilateral-exit timing calculations.
 - `ClientBatchInfo` — Client's view of batch output info after tree construction.
 - `BatchOutputInfo` — Batch output metadata (outpoint, value, tree root).
@@ -50,7 +57,9 @@ server during round participation. These types are used across `round`, `vtxo`,
 - **Depends on**: `lib/arkscript` (policy template decoding, `StandardVTXOParams`), `lib/tree` (tree types, used by `Ancestry.TreePath`).
 - **Depended on by**: `round` (round protocol messages), `wallet` (boarding
   types), `db` (persistence), `vtxo` (descriptor ancestry), `oor` (OOR
-  package/session types), `rpc/roundpb` (proto conversion).
+  package/session types), `rpc/roundpb` (proto conversion), `lib/actormsg`
+  (`LeaveRequest` for `TriggerBoardMsg.Change`, `Ancestry` for
+  `CustomForfeitInput`).
 
 ## Invariants
 

@@ -31,7 +31,8 @@ state transitions and validation rules live under [Invariants](#invariants).
   `SubmitForfeitSigRequest`, `StartTimeoutReq`, `CancelTimeoutReq`,
   `RoundCheckpointedNotification`, `RoundCompletedNotification`,
   `RoundFailedNotification`, `ForfeitRequestToVTXO`,
-  `ForfeitConfirmedToVTXO`.
+  `ForfeitConfirmedToVTXO`, `ReleaseForfeitReservation`,
+  `DropCustomForfeitReservation`, `TerminalJobFailedNotification`.
 
 ### Quote & Intent (`interfaces.go`, `events.go`)
 
@@ -65,6 +66,20 @@ state transitions and validation rules live under [Invariants](#invariants).
   Called at intent-build time for change/refresh outputs and inside
   `handleRegisterIntent` for entries with a non-zero `KeyLocator`.
 - `VTXOStore`, `RoundStore` — VTXO and round FSM persistence.
+  `RoundStore.FailForfeitIntents(ctx, outpoints, reason, code)` is the
+  terminal-failure counterpart to the success-path anchor clear: it
+  terminally fails the pending send intent(s) anchored to forfeited
+  outpoints so restart replay does not resubmit into the same wall.
+
+### Signing (`signing_executor.go`)
+
+- `SigningExecutor` — runs independent VTXO MuSig2 `CreateSessions`/`Sign`
+  batches with bounded concurrency, returning results in input order.
+  `NewSigningExecutor(maxWorkers)` backs it with a shared worker-slot
+  channel; `maxWorkers < 1` degrades to serial execution. Wired through
+  `RoundClientConfig.SigningExecutor` → `ClientEnvironment.SigningExecutor`;
+  a nil config value falls back to a serial (`maxWorkers=1`) executor so
+  focused FSM tests keep working unmodified.
 
 ### Actor Layer (`actor.go`, `actor_messages.go`, `vtxo_messages.go`)
 
@@ -109,15 +124,38 @@ state transitions and validation rules live under [Invariants](#invariants).
 - `RoundClientConfig.LedgerSink` — optional `fn.Option[ledger.Sink]`
   plumbed onto the round actor; `emitVTXOsReceived` and `emitRoundFee`
   fire-and-forget messages when `fn.Some`.
+- `RoundClientConfig.MetricsSink` — optional `fn.Option[metrics.Sink]`.
+  When `fn.Some`, `emitRoundJoined` (from `createNewRound`) Tells
+  `metrics.RoundJoinedMsg`, and `emitRoundCompleted` (from
+  `RoundCompletedNotification`/`RoundFailedNotification` handling in
+  `processOutbox`) Tells `metrics.RoundCompletedMsg{Status: "confirmed"|
+  "failed"}`. Both are best-effort fire-and-forget, mirroring `LedgerSink`.
+- `RoundClientConfig.DropCustomForfeitSigningContexts` — optional
+  `func(ctx, []wire.OutPoint) error` called from `processOutbox` alongside
+  the VTXO manager's `DropCustomForfeitInputsRequest` when a
+  `DropCustomForfeitReservation` outbox message is handled, to clear
+  daemon-local signing metadata for custom refresh inputs. Nil is a no-op
+  (only the VTXO manager's custom forfeit actors are dropped).
+- `handleTerminalJobFailure` (actor.go) — handles
+  `TerminalJobFailedNotification`: calls `RoundStore.FailForfeitIntents`
+  with the notification's forfeited outpoints to drop the originating
+  job's persisted pending intent, halting recoverable replay after a
+  terminal-for-job round failure (e.g. the operator cannot fund the
+  commitment tx). Best-effort — a store error only logs.
 - `RoundClientConfig.RegistrationTimeout` — max wall-clock duration to wait in
   `IntentSentState` for the server's `RoundJoined` admission watermark. Zero
   selects `defaultRegistrationTimeout` (60 s); negative disables the timeout
   (round waits indefinitely). Bounds how long forfeit-reserved inputs sit
   stranded when the server never responds (darepo-client#653).
 - `computeClientOperatorFee(intents, ownedVTXOs) int64` —
-  Σ(boarding inputs) + Σ(forfeited VTXOs) − Σ(owned output VTXOs) −
+  Σ(boarding inputs) + Σ(forfeited VTXOs) − Σ(all requested VTXO
+  outputs — owned or foreign directed-send recipients, from
+  `intents.VTXOs` when non-empty, else falling back to `ownedVTXOs`) −
   Σ(cooperative leave outputs), clamped to zero. Carried on
-  `VTXOCreatedNotification.OperatorFeeSat`.
+  `VTXOCreatedNotification.OperatorFeeSat`; the non-owned outputs it
+  nets out are booked separately via `roundLedgerOutflows` as
+  `VTXOCreatedNotification.Outflows` so they land as `VTXOSentMsg`
+  rows, not folded into the operator fee.
 
 ## Relationships
 
@@ -126,7 +164,8 @@ state transitions and validation rules live under [Invariants](#invariants).
   (mailbox marker interfaces), `lib/tree`, `lib/types`, `lib/arkscript`,
   `lib/bip322` (join-round BIP-322 auth signing), `rpc/roundpb` (wire proto
   types via `FromProto`), `wallet`, `ledger` (`Sink` + `VTXOReceivedMsg` /
-  `Source*` constants), `timeout`, `google/uuid`.
+  `Source*` constants + `FeeType*` constants), `metrics` (`Sink` +
+  `RoundJoinedMsg`/`RoundCompletedMsg`), `timeout`, `google/uuid`.
 - **Depended on by**: `vtxo`, `db`, `darepod`.
 - **Sends → `serverconn`**: `JoinRoundRequest`,
   `JoinRoundAcceptOutbox`, `JoinRoundRejectOutbox`,
@@ -141,9 +180,19 @@ state transitions and validation rules live under [Invariants](#invariants).
   per owned `ClientVTXO`: `VTXOReceivedMsg{Source=SourceRoundBoarding}`;
   paired `VTXOSentMsg{Outpoint}` +
   `VTXOReceivedMsg{Source=SourceRoundRefresh}`;
-  `VTXOReceivedMsg{Source=SourceRoundTransfer}`. One
-  `FeePaidMsg{FeeType=FeeTypeRefresh}` per round when
-  `OperatorFeeSat > 0` and any refresh-origin VTXO was emitted.
+  `VTXOReceivedMsg{Source=SourceRoundTransfer}`; plus one
+  `VTXOSentMsg` per `VTXOCreatedNotification.Outflows` entry (foreign
+  directed-send recipients and cooperative leave outputs, keyed by a
+  round-scoped idempotency key so they don't collide with the round-level
+  index). One `FeePaidMsg` per round when `OperatorFeeSat > 0`;
+  `FeeType` is `OperatorFeeType` from the notification
+  (`roundOperatorFeeType`: `FeeTypeBoarding` if the round had any boarding
+  intent/VTXO, else `FeeTypeRefresh`), defaulting to `FeeTypeRefresh` when
+  empty (pre-typing notifications).
+- **Sends → `metrics`** (when `MetricsSink` is `fn.Some`):
+  `RoundJoinedMsg` once per assembled round (from `createNewRound`);
+  `RoundCompletedMsg{Status: "confirmed"|"failed"}` on
+  `RoundCompletedNotification`/`RoundFailedNotification`.
 - **Receives ← `serverconn`** (via `ServerMessageNotification`):
   `CommitmentTxBuilt`, `NoncesAggregated`, `OperatorSigned`,
   `RoundJoined`, `BoardingFailed`, `JoinRoundQuoteReceived`.
@@ -161,6 +210,24 @@ state transitions and validation rules live under [Invariants](#invariants).
 - Forfeit signatures are collected **after** VTXO tree signing
   completes — clients only forfeit old VTXOs after verifying the new
   VTXOs are properly signed.
+- **Forfeit rollback on pre-signing failure** (`releaseForfeitsOnFailure`):
+  every pre-signing state (`PendingRoundAssembly`
+  through `ForfeitSignaturesCollectingState`) wraps its `processEvent` so a
+  transition into `ClientFailedState` prepends `ReleaseForfeitReservation`
+  (standard wallet VTXOs) / `DropCustomForfeitReservation` (custom refresh
+  inputs) to the outbox, returning reserved inputs before they can be
+  stranded. It is idempotent against a handler that already released, is a
+  no-op with no reserved forfeits, and also synthesizes a failure
+  transition for a raw `(nil, err)` return so the release still fires even
+  when there is no natural `ClientFailedState` to land on. Post-signing
+  states (`InputSigSentState` onward) never release — the server may
+  already hold a forfeit signature there, so returning the input to
+  `LiveState` could double-spend. A `ClientFailedState.FailureCode` that is
+  `IsTerminalForJob()` (currently only
+  `RoundFailureInsufficientOperatorFunds`) additionally emits
+  `TerminalJobFailedNotification`, which `handleTerminalJobFailure` uses to
+  drop the originating job's pending intent instead of leaving it to
+  recoverable replay.
 - Aggregated signatures validated on `VTXOTreePaths` are propagated to
   extracted `ClientTrees` via `SubmitTreeSigs` + `VerifySigned`, so
   persisted client trees carry valid signatures for unilateral exit.
@@ -239,11 +306,39 @@ state transitions and validation rules live under [Invariants](#invariants).
   rebuilt on top of a real commitment output, the connector is only
   spendable once the commitment tx confirms, preserving round atomicity.
   No connector transactions cross the wire — only the four scalars.
+- **VTXO tree binding is validated before signing**
+  (`validateVTXOTreeBinding`/`verifyVTXOTreeRoot`, darepo-client#680,
+  companion to #681). For each commitment-tx output index → `tree.Tree` in
+  `VTXOTreePaths`, asserts the tree's `BatchOutpoint` names this
+  commitment tx at the same index, the committed output byte-matches the
+  tree's `BatchOutput`, and the committed script equals the taproot script
+  recomputed from the tree root's declared `CoSigners` and
+  `SweepTapscriptRoot` — so a self-consistent but substituted script is
+  still rejected, not just a byte-mismatched one.
+- **Per-round key delivery**: `CommitmentTxBuilt` (and the states it
+  threads through) carries `TreeCosignKey`, `ConnectorOperatorKey`,
+  `SweepKey`, `SweepDelay`, `ForfeitKey`, and `FlowVersion` fresh per
+  round, decoupling tree validation/signing, connector reconstruction, and
+  the forfeit-tx penalty script (`forfeitPenaltyScript`, a BIP-86
+  key-spend to `ForfeitKey`) from the operator's global `GetInfo`
+  key/sweep-delay/forfeit-script, so a mid-round operator key rotation
+  cannot desync client and server. All are nil/zero for a server that
+  predates the field; callers fall back to the global operator term. The
+  sweep-vs-exit-delay security check (`ValidateDelayParameters`)
+  accordingly runs per round in `CommitmentTxReceivedState`, not once at
+  actor construction.
 - `MaxQuoteEntriesPerClient = 1024` is enforced in `FromProto` before
   allocating quote slices to prevent resource exhaustion.
 - `SubmitForfeitSigRequest` (boarding input signatures) is distinct
   from `SubmitVTXOForfeitSigsToServer` (VTXO forfeit signatures) —
   separate mailbox methods, separate proto types.
+- `ForfeitSignatureResponse.ParticipantVTXOSigs`
+  (`[]*types.ForfeitParticipantSig`) carries keyed non-operator
+  signatures for custom spend paths needing multiple client-side
+  participants; `SubmitVTXOForfeitSigsToServer.ToProto` accepts a forfeit
+  tx with either a legacy `ClientVTXOSig` or a non-empty
+  `ParticipantVTXOSigs` set (not both required), encoding the latter as
+  `roundpb.ForfeitParticipantSig{Pubkey, Signature}` entries.
 - `ForfeitRequestToVTXO.ForfeitSpend` overrides the default
   collaborative leaf when the live output uses a custom script policy;
   without it the VTXO actor would build a forfeit against the wrong

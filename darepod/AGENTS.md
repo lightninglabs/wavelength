@@ -28,6 +28,24 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
 - `WalletState` — `None` / `Locked` / `Ready` wallet lifecycle.
 - `UnrollConfig` / `OORConfig` — subsystem tunables; see `Config.Validate()`
   for the invariants each enforces.
+- `CreditConfig` / `FeeEstimationConfig` / `DBConfig` / `Metrics` (server
+  config fields) — daemon-owned credit auto-redeem policy, optional
+  mempool.space fee provider for the lnd backend, SQLite durability knobs,
+  and the opt-in Prometheus `/metrics` server.
+- `ActivityStore` — interface the walletdkrpc subserver projects wallet
+  activity through (`*db.ActivityPersistenceStore` satisfies it); nil
+  disables projection in builds without the swap runtime.
+- `ExitPlanRequest`/`ExitPlanResponse`/`ExitPlanEntry`,
+  `SweepWalletRequest`/`SweepWalletResponse` — preview and drive types for
+  unilateral-exit CPFP fee-input readiness and wallet sweep (`rpc_exit_plan.go`).
+- `forfeitSignatureBroker` (internal, `forfeit_signature_broker.go`) —
+  exposes connector-bound VTXO forfeit-signer callbacks to external swap
+  coordination over daemon RPC; request state is daemon-local and does not
+  survive a restart.
+- `arkVersionNegotiation` (internal, `operator_negotiation.go`) — bootstrap
+  GetInfo outcome (operator pubkey, negotiated Ark protocol version,
+  initial `OperatorTerms`), cached once by `connectAndBootstrapMailbox` so
+  later calls never renegotiate.
 
 ## Relationships
 
@@ -35,7 +53,11 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
   `chainsource`, `lib/actormsg`, `db`, `ledger`, `round`, `txconfirm`,
   `unroll`, `vtxo`, `wallet`, `walletcore`, `oor`, `serverconn`, `indexer`,
   `arkrpc`, `lndbackend`, `fraud`, `gateway`, `rpc/restclient`,
-  `vhtlcrecovery`, `vhtlcrecovery/coordinator`, `vhtlcrecovery/unrollpolicy`.
+  `vhtlcrecovery`, `vhtlcrecovery/coordinator`, `vhtlcrecovery/unrollpolicy`,
+  `credit` (durable-actor credit registry, wired only when the swap
+  runtime publishes `Swap.CreditServer`/`Swap.CreditDaemon`), `metrics`
+  (opt-in Prometheus `/metrics` server), `rpcauth` (RPC TLS cert +
+  macaroon bakery), `timeout` (credit poll timers).
 - **Depended on by**: `cmd/darepod`.
 
 ## Invariants
@@ -115,6 +137,26 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/darep
   non-retryable `OutboxErrorEvent` instead of an `Adapt` error that would
   stall the serverconn ingress cursor on the offending envelope
   (`server.go`).
+- The local daemon RPC listener defaults to TLS **and** macaroon auth on;
+  `Config.RPC.NoTLS` / `NoMacaroons` must be explicitly set to disable
+  either (`rpc_security.go`, `Config.Validate()`). Macaroon permissions are
+  sliced into per-domain entities (`entityInfo`, `entityVTXO`,
+  `entityAddress`, `entityOnChain`, `entityOOR`, `entityRound`,
+  `entitySwap`, `entityRecovery`, ...) in `rpc_auth.go`, modeled on lnd's
+  per-entity permission map, so operators can mint least-privilege tokens.
+- `initCreditRegistry` is a no-op unless the swap runtime has populated
+  `cfg.Swap.CreditServer` and `cfg.Swap.CreditDaemon`; the registry is
+  anchored to the daemon root context (not an RPC-scoped context) so a CLI
+  disconnect never cancels an in-flight credit operation.
+- `startMetricsServer` is a no-op when `Config.Metrics.ListenAddr` is
+  empty (no collectors registered) and otherwise uses a per-daemon-instance
+  `prometheus.NewRegistry()` rather than the global `DefaultRegisterer`, so
+  multiple daemons in one process (tests, restart) never collide on
+  `AlreadyRegisteredError`.
+- Seed-restore recovery (`wallet_recovery.go`) re-derives boarding
+  addresses/UTXOs, VTXOs, and OOR receive scripts/events from the indexer;
+  indexer calls in this path retry up to `recoveryIndexerRetryAttempts`
+  times, independent of the general indexer client's own retry policy.
 
 ## Deep Docs
 

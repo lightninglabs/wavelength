@@ -10,18 +10,31 @@ hands off to `darepod.Main` to run the daemon.
 
 - `newRootCmd()` — builds the `darepod` cobra command: registers all
   flags (datadir, network, lnd.*, wallet.*, bitcoind.*, oor.limits.*,
-  db.sqlite.*, etc.), binds them through viper (flag > env > config
-  file > default), then runs `configureBitcoindSubmitter`,
-  `configureSwapRuntime`, and `configureWalletRPC` in `PreRunE` before
-  `run(cfg)`.
+  rpc.* (gRPC TLS/macaroon + gateway), metrics.listen,
+  feeestimation.mempoolspace.*, signingworkers, db.sqlite.*, etc.), binds
+  them through viper (flag > env > config file > default, with both `.`
+  and `-` mapped to `_` for env keys), then runs
+  `configureBitcoindSubmitter`, `configureSwapRuntime`, and
+  `configureWalletRPC` in `PreRunE` before `run(cfg)`.
 - `run(cfg)` — validates the config, wires the daemon log writer, installs
   an OS signal interceptor, and calls `darepod.Main`.
 - `configureSwapRuntime(cfg)` / `configureWalletRPC(cfg)` — build-tag-gated
   (see Invariants) hooks that append optional RPC subserver registrars
-  (`swapclientserver.Register`, `swapwallet.Register`) onto `cfg`.
+  (`swapclientserver.Register`, `swapwallet.Register`) onto `cfg`;
+  `configureWalletRPC` also appends `swapwallet.ErrorMappingInterceptor`
+  to `cfg.UnaryServerInterceptors` so walletdkrpc sentinel errors surface
+  as machine-readable gRPC status codes.
 - `configureBitcoindSubmitter(v, cfg)` — opt-in direct bitcoind
   `submitpackage` wiring for V3 ephemeral-anchor package relay; a no-op
   when `bitcoind.host` is unset.
+- `registerDaemonRPCFlags(f, cfg)` — registers the `rpc.*` flag group
+  (listen addr, TLS cert/key, `rpc.notls`, macaroon path,
+  `rpc.no-macaroons`, gateway enable/listen/allowed-origins).
+- `registerMetricsFlags(f, cfg)` — registers `metrics.listen`; empty
+  (the default) disables the Prometheus `/metrics` HTTP server.
+- `registerFeeEstimationFlags(f, cfg)` — registers the optional
+  `feeestimation.mempoolspace.*` flags that let the lnd wallet backend's
+  fee estimator take the lower of the local and mempool.space rates.
 
 ## Relationships
 

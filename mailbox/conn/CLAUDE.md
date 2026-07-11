@@ -23,6 +23,13 @@ delivery.
   Maps `CorrelationID` to `actor.Promise[*mailboxpb.Envelope]`. Supports
   three scenarios: waiter registered before response, response arrives
   before waiter (buffered), and stale cleanup via configurable TTL.
+  `HasWaiter(id)` (pruning stale entries first) lets an ingress loop
+  classify a `KIND_RESPONSE` at split time: a live waiter takes the fast
+  pre-transaction delivery path, while a waiterless response must fold into
+  the durable dispatch transaction so its enqueue commits atomically with
+  the cursor. `FailAll(err)` completes every registered waiter's promise
+  with `err` and clears the set, used to fail all in-flight unary callers at
+  once when the connector transitions to a terminal incompatible state.
 - `DeliveryResult` — Tri-state enum returned by `ResponseRegistry.DeliverResponse`:
   - `DeliveryWaiter` — Response completed an active in-memory waiter.
   - `DeliveryBuffered` — Response buffered; no waiter registered yet.
