@@ -20,8 +20,8 @@ const (
 	// accepted for broadcast and is waiting for confirmed input spends.
 	BoardingSweepStatusPublished = "published"
 
-	// BoardingSweepStatusConfirmed means every tracked input has been
-	// confirmed spent by the sweep transaction we published.
+	// BoardingSweepStatusConfirmed means every tracked input has been spent
+	// by the sweep transaction past the configured reorg-safety depth.
 	BoardingSweepStatusConfirmed = "confirmed"
 
 	// BoardingSweepStatusExternalResolved means every tracked input has
@@ -40,8 +40,8 @@ const (
 	// broadcast sweep and is waiting for a confirmed spend.
 	BoardingSweepInputStatusPublished = "published"
 
-	// BoardingSweepInputStatusSpent means the input was confirmed spent
-	// by the sweep transaction we published.
+	// BoardingSweepInputStatusSpent means the input was spent by the sweep
+	// transaction past the configured reorg-safety depth.
 	BoardingSweepInputStatusSpent = "spent"
 
 	// BoardingSweepInputStatusExternalSpent means the input was confirmed
