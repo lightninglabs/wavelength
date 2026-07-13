@@ -771,6 +771,13 @@ func (s *paySession) waitForFundedVHTLC(ctx context.Context) error {
 			return err
 		}
 
+		// A funding OOR the operator rejected means no vHTLC was
+		// created; fail fast with the reason rather than waiting for
+		// funding that can never land.
+		if err := s.checkFundingRejected(ctx); err != nil {
+			return err
+		}
+
 		preimage, spentVHTLC, err :=
 			s.client.waitForInSwapClaimObservation(
 				ctx, s.cfg.PaymentHash, s.vhtlcPkScript,
@@ -965,11 +972,105 @@ func (s *paySession) markVHTLCFundedFromLocalMetadata(
 	})
 }
 
+// fundingOORFailed reports whether the daemon's durable record for the funding
+// OOR has reached a terminal failed state, meaning the operator rejected the
+// funding transfer and the vHTLC was never created. The pay flow proceeds on
+// local funding metadata even when the authoritative indexer rejects the
+// vHTLC lookup (expected for same-Ark receivers whose script is not registered
+// under this principal), so the indexer cannot distinguish "funded but not
+// queryable" from "funding rejected". The daemon's OOR session status does
+// make that distinction, and this is the signal we use to fail fast instead of
+// polling for a claim that can never arrive. A missing session, a still-pending
+// session, or a transient query error are all treated as "not known failed" so
+// a hiccup never fails an otherwise-healthy swap. The operator's failure reason
+// is returned for surfacing when known.
+func (s *paySession) fundingOORFailed(ctx context.Context) (bool, string) {
+	if s.fundingSessionID == "" {
+		return false, ""
+	}
+
+	session, err := s.client.daemon.GetOORSession(ctx, s.fundingSessionID)
+	if err != nil {
+		s.client.log.DebugS(
+			ctx,
+			"Unable to query in-swap funding OOR session",
+			slog.String("err", err.Error()),
+			btclog.Hex("hash", s.cfg.PaymentHash[:]),
+			slog.String("funding_session_id", s.fundingSessionID),
+		)
+
+		return false, ""
+	}
+	if session == nil || session.GetStatus() !=
+		waverpc.OORSessionStatus_OOR_SESSION_STATUS_FAILED {
+		return false, ""
+	}
+
+	return true, session.GetFailureReason()
+}
+
+// checkFundingRejected returns a terminal failure error when the funding OOR
+// was rejected by the operator, and nil otherwise. It is the shared guard used
+// at the top of every pay-side wait loop so a rejected funding OOR fails the
+// swap fast (with the operator's reason) instead of polling for a claim or
+// refund of a vHTLC that was never created.
+func (s *paySession) checkFundingRejected(ctx context.Context) error {
+	if failed, reason := s.fundingOORFailed(ctx); failed {
+		return s.failFundingRejected(ctx, reason)
+	}
+
+	return nil
+}
+
+// failFundingRejected terminally fails a pay session whose funding OOR the
+// operator rejected. Because the funding transfer rolled back, the funding
+// input has been released to the wallet and no vHTLC exists: there is nothing
+// to claim or refund. We cancel any armed refund recovery (armed optimistically
+// from local funding metadata) and fail the swap with the operator's reason,
+// rather than polling until the invoice deadline and then attempting to refund
+// a non-existent vHTLC.
+func (s *paySession) failFundingRejected(ctx context.Context,
+	reason string) error {
+
+	s.client.log.WarnS(ctx, "In-swap funding OOR rejected by operator",
+		nil,
+		btclog.Hex("hash", s.cfg.PaymentHash[:]),
+		slog.String("funding_session_id", s.fundingSessionID),
+		slog.String("reason", reason),
+	)
+
+	if err := cancelVHTLCRecovery(
+		ctx, s.client.daemon, s.refundRecoveryID,
+		recoveryReasonFundingRejected, "",
+	); err != nil {
+		return newRetryableActionError(err)
+	}
+
+	// Unlike the markExpired/needsIntervention/failTerminal helpers, the
+	// PayStateFailed transition is intentionally left to the caller: this
+	// returns from a wait-loop action, so the FSM fail handler classifies
+	// the failureError and drives the terminal transition (mirroring how
+	// the other wait-loop returns work).
+	msg := "in-swap funding OOR rejected by operator"
+	if reason != "" {
+		msg = fmt.Sprintf("%s: %s", msg, reason)
+	}
+
+	return newFailureError(msg, nil)
+}
+
 // waitForClaimPreimage waits until the server claim spend is indexed and the
 // finalized checkpoint exposes the expected hashlock preimage.
 func (s *paySession) waitForClaimPreimage(ctx context.Context) error {
 	for {
 		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		// If the funding OOR was rejected by the operator the vHTLC was
+		// never created, so fail fast with the reason instead of
+		// polling for a claim that can never arrive.
+		if err := s.checkFundingRejected(ctx); err != nil {
 			return err
 		}
 
