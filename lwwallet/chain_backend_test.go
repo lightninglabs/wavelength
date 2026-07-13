@@ -2,6 +2,7 @@ package lwwallet
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -80,15 +81,20 @@ func TestChainBackendBlockNotification(t *testing.T) {
 		mu          sync.Mutex
 		tipHeight   int32 = 100
 		blockHashes       = make(map[int32]chainhash.Hash)
+		blockHdrs         = make(map[int32]*wire.BlockHeader)
 	)
 
-	// Pre-generate block hashes.
+	// Pre-generate real chained block headers so the tip poller's
+	// PrevBlock continuity check during advance can resolve the raw
+	// header endpoint with a header that actually links back to the
+	// previous height.
+	var prevHash chainhash.Hash
 	for h := int32(100); h <= 103; h++ {
-		blockHashes[h] = chainhash.HashH(
-			[]byte(
-				fmt.Sprintf("block-%d", h),
-			),
-		)
+		hdr := mintStubHeader(h, prevHash)
+		blockHdrs[h] = hdr
+		hash := hdr.BlockHash()
+		blockHashes[h] = hash
+		prevHash = hash
 	}
 
 	srv := mockEsploraServer(
@@ -109,7 +115,7 @@ func TestChainBackendBlockNotification(t *testing.T) {
 
 			default:
 				handleBlockReqs(
-					t, w, r, &mu, blockHashes,
+					t, w, r, &mu, blockHashes, blockHdrs,
 				)
 			}
 		},
@@ -147,10 +153,13 @@ func TestChainBackendBlockNotification(t *testing.T) {
 	}
 }
 
-// handleBlockReqs handles /block-height/:height and /block/:hash
-// requests in the mock Esplora server.
+// handleBlockReqs handles /block-height/:height, /block/:hash, and
+// /block/:hash/header requests in the mock Esplora server. The
+// blockHdrs map supplies real wire.BlockHeaders so the raw-header
+// continuity check the tip poller runs on advance can succeed.
 func handleBlockReqs(t *testing.T, w http.ResponseWriter, r *http.Request,
-	mu *sync.Mutex, blockHashes map[int32]chainhash.Hash) {
+	mu *sync.Mutex, blockHashes map[int32]chainhash.Hash,
+	blockHdrs map[int32]*wire.BlockHeader) {
 
 	t.Helper()
 
@@ -176,19 +185,39 @@ func handleBlockReqs(t *testing.T, w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	// Handle /block/:hash (block header).
-	for _, h := range blockHashes {
+	// Handle /block/:hash and /block/:hash/header.
+	mu.Lock()
+	defer mu.Unlock()
+	for height, h := range blockHashes {
 		hashStr := h.String()
 		path := "/block/" + hashStr
-		if r.URL.Path == path {
+		headerPath := path + "/header"
+
+		switch r.URL.Path {
+		case path:
 			resp := esploraBlock{
 				ID:        hashStr,
-				Height:    100,
+				Height:    height,
 				Timestamp: 1700000000,
 			}
-
 			err := json.NewEncoder(w).Encode(resp)
 			require.NoError(t, err)
+
+			return
+
+		case headerPath:
+			hdr := blockHdrs[height]
+			if hdr == nil {
+				http.Error(w, "no header",
+					http.StatusNotFound)
+
+				return
+			}
+			var buf bytes.Buffer
+			require.NoError(t, hdr.Serialize(&buf))
+			_, _ = fmt.Fprint(
+				w, hex.EncodeToString(buf.Bytes()),
+			)
 
 			return
 		}

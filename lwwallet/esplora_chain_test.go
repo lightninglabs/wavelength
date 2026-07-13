@@ -2,6 +2,7 @@ package lwwallet
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -298,6 +299,16 @@ func (c *rawBlockStubChain) serveBlockRoute(t *testing.T, w http.ResponseWriter,
 		var buf bytes.Buffer
 		require.NoError(t, block.Serialize(&buf))
 		_, _ = w.Write(buf.Bytes())
+
+	case "/header":
+		// Hex-encoded 80-byte block header. The TipPoller fetches
+		// this per new tip to verify PrevBlock continuity against
+		// the cached tip hash; without it the poller cannot
+		// distinguish a clean tip advance from a reorg crossing the
+		// boundary and aborts the cycle.
+		var buf bytes.Buffer
+		require.NoError(t, block.Header.Serialize(&buf))
+		_, _ = fmt.Fprint(w, hex.EncodeToString(buf.Bytes()))
 
 	default:
 		http.Error(w, "not implemented",
