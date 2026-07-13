@@ -249,7 +249,10 @@ func (s *trackedTxStateFeeBumping) ProcessEvent(_ context.Context,
 	}
 }
 
-// trackedTxStateConfirmed is the terminal confirmed state.
+// trackedTxStateConfirmed is the reorg-reversible confirmed state. A
+// transaction in this state has reached its target confirmation count on
+// the canonical chain; a subsequent reorg moves it back to
+// AwaitingConfirmation, and finality moves it to Finalized.
 type trackedTxStateConfirmed struct {
 	trackedTxData
 	trackedTxProgress
@@ -263,16 +266,71 @@ func (s *trackedTxStateConfirmed) String() string {
 	return "Confirmed"
 }
 
-// IsTerminal returns true because confirmed is terminal.
+// IsTerminal returns false because the confirmation is reversible until
+// the backend reports finality via trackedTxFinalized.
 func (s *trackedTxStateConfirmed) IsTerminal() bool {
-	return true
+	return false
 }
 
 // trackedTxStateSealed marks trackedTxStateConfirmed as a tracked-tx state.
 func (s *trackedTxStateConfirmed) trackedTxStateSealed() {}
 
-// ProcessEvent rejects unexpected events in the terminal confirmed state.
+// ProcessEvent applies one event to the confirmed state. A reorg moves
+// the FSM back to AwaitingConfirmation; finality moves it to the terminal
+// Finalized state.
 func (s *trackedTxStateConfirmed) ProcessEvent(_ context.Context,
+	event trackedTxEvent, _ *trackedTxEnvironment) (
+	*trackedTxStateTransition, error) {
+
+	switch event.(type) {
+	case *trackedTxReorged:
+		return &trackedTxStateTransition{
+			NextState: &trackedTxStateAwaitingConfirmation{
+				trackedTxData:     s.trackedTxData,
+				trackedTxProgress: s.trackedTxProgress,
+			},
+		}, nil
+
+	case *trackedTxFinalized:
+		return &trackedTxStateTransition{
+			NextState: &trackedTxStateFinalized{
+				trackedTxData:     s.trackedTxData,
+				trackedTxProgress: s.trackedTxProgress,
+				ConfirmHeight:     s.ConfirmHeight,
+			},
+		}, nil
+
+	default:
+		return nil, fmt.Errorf("unexpected event %T in %s", event, s)
+	}
+}
+
+// trackedTxStateFinalized is the terminal "confirmed past reorg safety
+// depth" state. No further events are accepted.
+type trackedTxStateFinalized struct {
+	trackedTxData
+	trackedTxProgress
+
+	// ConfirmHeight is the block height where the tx confirmed before
+	// being finalized.
+	ConfirmHeight int32
+}
+
+// String returns a human-readable representation of the finalized state.
+func (s *trackedTxStateFinalized) String() string {
+	return "Finalized"
+}
+
+// IsTerminal returns true because finalized is terminal.
+func (s *trackedTxStateFinalized) IsTerminal() bool {
+	return true
+}
+
+// trackedTxStateSealed marks trackedTxStateFinalized as a tracked-tx state.
+func (s *trackedTxStateFinalized) trackedTxStateSealed() {}
+
+// ProcessEvent rejects unexpected events in the terminal finalized state.
+func (s *trackedTxStateFinalized) ProcessEvent(_ context.Context,
 	event trackedTxEvent, _ *trackedTxEnvironment) (
 	*trackedTxStateTransition, error) {
 

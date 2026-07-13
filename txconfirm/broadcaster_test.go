@@ -337,6 +337,9 @@ func newTrackedTxForState(t *testing.T, state trackedTxState) *trackedTx {
 	case *trackedTxStateConfirmed:
 		data = s.trackedTxData
 
+	case *trackedTxStateFinalized:
+		data = s.trackedTxData
+
 	case *trackedTxStateFailed:
 		data = s.trackedTxData
 
@@ -361,7 +364,7 @@ func newTrackedTxForState(t *testing.T, state trackedTxState) *trackedTx {
 	return &trackedTx{
 		data:        data,
 		fsm:         &fsm,
-		subscribers: make(map[string]actor.TellOnlyRef[Notification]),
+		subscribers: make(map[string]trackedSubscriber),
 	}
 }
 
@@ -1619,11 +1622,13 @@ func TestActorValidationAndCleanup(t *testing.T) {
 			},
 		}
 		entry := newTrackedTxForState(t, awaitConf)
-		entry.subscribers["fail"] = &failingNotifyRef{}
+		entry.subscribers["fail"] = trackedSubscriber{
+			Ref: &failingNotifyRef{},
+		}
 		behavior.tracked[entry.data.Txid] = entry
 
-		behavior.notifyOneConfirmed(
-			t.Context(), &failingNotifyRef{}, entry.data.Txid, 1, 1,
+		behavior.notifyOneFinalized(
+			t.Context(), &failingNotifyRef{}, entry.data.Txid, 0, 0,
 		)
 		behavior.notifyOneFailed(
 			t.Context(), &failingNotifyRef{}, entry.data.Txid,
