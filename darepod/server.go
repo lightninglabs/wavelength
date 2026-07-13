@@ -1962,22 +1962,24 @@ func (s *Server) startBtcwallet(ctx context.Context, seed []byte,
 		return fmt.Errorf("create btcwallet: %w", err)
 	}
 
+	// Register the wallet and its chain backend before the blocking
+	// Start() below. Start() now waits for neutrino to become current
+	// before starting the block notifier, which can take tens of
+	// seconds on a fresh daemon. If the daemon shuts down during that
+	// wait, the deferred cleanup must be able to reach
+	// ChainBackend.Stop() — the only thing that unblocks the wait — so
+	// s.chainBackend has to be set first. w.ChainBackend() is valid
+	// before Start(), and w.Start() starts this same backend internally.
+	s.btcwWallet = fn.Some(w)
+	if s.chainBackend == nil {
+		s.chainBackend = w.ChainBackend()
+	}
+
 	if err := w.Start(); err != nil {
 		return fmt.Errorf("start btcwallet: %w", err)
 	}
 
-	s.btcwWallet = fn.Some(w)
 	s.refreshProofKeyBackend()
-
-	// Initialize the chain backend if it was deferred at startup
-	// because the wallet was not yet available.
-	if s.chainBackend == nil {
-		s.chainBackend = w.ChainBackend()
-
-		if err := s.chainBackend.Start(); err != nil {
-			return fmt.Errorf("start chain backend: %w", err)
-		}
-	}
 
 	// Refresh the RPC clients once the wallet is available so the
 	// indexer client picks up the wallet-backed identity key and

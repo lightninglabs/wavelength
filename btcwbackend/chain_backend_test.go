@@ -3,6 +3,7 @@ package btcwbackend
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/btcsuite/btcd/btcjson"
 	"github.com/btcsuite/btcd/wire/v2"
@@ -89,3 +90,72 @@ func TestSubmitPackageRejectsPackageErrors(t *testing.T) {
 }
 
 var _ chainbackends.PackageSubmitter = (*stubPackageSubmitter)(nil)
+
+// TestWaitUntilCurrentAlreadyCurrent verifies that when the backend is
+// already current, the wait returns immediately without consuming a
+// tick — the steady-state (restart against an already-synced neutrino)
+// must not be delayed.
+func TestWaitUntilCurrentAlreadyCurrent(t *testing.T) {
+	t.Parallel()
+
+	var onWaitCalls int
+
+	// A huge poll interval guarantees the return came from the
+	// fast-path check, not from a ticker firing.
+	got := waitUntilCurrent(
+		func() bool { return true }, make(chan struct{}), time.Hour,
+		func(int) { onWaitCalls++ },
+	)
+
+	require.True(t, got)
+	require.Zero(t, onWaitCalls)
+}
+
+// TestWaitUntilCurrentBecomesCurrent verifies that the wait keeps
+// polling until the backend reports current, then returns true. This is
+// the fix's core behavior: the notifier is held back until neutrino has
+// synced. It also asserts onWait fires once per not-current poll so
+// progress logging is driven correctly.
+func TestWaitUntilCurrentBecomesCurrent(t *testing.T) {
+	t.Parallel()
+
+	// Report not-current on the first two checks (the pre-loop check
+	// and the first tick), then current on the third.
+	var calls int
+	isCurrent := func() bool {
+		calls++
+
+		return calls >= 3
+	}
+
+	var onWaitCalls int
+	got := waitUntilCurrent(
+		isCurrent, make(chan struct{}), time.Millisecond,
+		func(int) { onWaitCalls++ },
+	)
+
+	require.True(t, got)
+	require.Equal(t, 3, calls)
+
+	// onWait fires only after the single not-current tick (the
+	// pre-loop check and the final current tick don't invoke it).
+	require.Equal(t, 1, onWaitCalls)
+}
+
+// TestWaitUntilCurrentStopsOnQuit verifies that closing quit unblocks a
+// wait for a backend that never becomes current, so daemon shutdown
+// during the initial sync wait cannot hang.
+func TestWaitUntilCurrentStopsOnQuit(t *testing.T) {
+	t.Parallel()
+
+	quit := make(chan struct{})
+	close(quit)
+
+	// Never current + a huge poll interval: the only way this returns
+	// is via the closed quit channel.
+	got := waitUntilCurrent(
+		func() bool { return false }, quit, time.Hour, nil,
+	)
+
+	require.False(t, got)
+}
