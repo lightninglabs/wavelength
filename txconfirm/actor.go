@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/btcsuite/btcd/chainhash/v2"
@@ -52,6 +53,14 @@ var (
 	// waiting longer only risks blocking unrelated confirmation work behind
 	// a durable subscriber's DB writer.
 	terminalNotifyTimeout = time.Second
+
+	// reversibleNotifyTimeout bounds how long a fire-and-forget reversible
+	// notification goroutine (TxConfirmed, TxReorged) is willing to wait
+	// on a slow subscriber's mailbox before logging the drop and returning.
+	// Reversible deliveries are best-effort: the next state transition on
+	// the same tracked tx supersedes the missed event, so we trade a stale
+	// notification for keeping txconfirm's actor loop unblocked.
+	reversibleNotifyTimeout = time.Second
 )
 
 // ErrEnsureParamsMismatch is returned by EnsureConfirmedReq when a second
@@ -185,6 +194,24 @@ type TxBroadcasterActor struct {
 	blockSubscriptionActive bool
 }
 
+// trackedSubscriber is one attached subscriber to a tracked tx. Every
+// subscriber receives the full reorg-aware lifecycle (TxConfirmed,
+// TxReorged, re-TxConfirmed, TxFinalized, TxFailed) and remains
+// attached until TxFinalized or TxFailed is acknowledged.
+//
+// pendingConfirmed reports whether the INITIAL TxConfirmed delivery
+// is still owed to this subscriber. It is true at admission, flipped
+// false the first time notifyOneConfirmed lands successfully, and
+// drives retryConfirmedRedelivery's per-tick retry loop so the
+// at-least-once initial-TxConfirmed contract holds even when the
+// subscriber's mailbox is briefly slow. Re-confirmations after a
+// reorg are delivered best-effort because the eventual TxFinalized
+// reliably carries the final height/numConfs.
+type trackedSubscriber struct {
+	Ref              actor.TellOnlyRef[Notification]
+	pendingConfirmed bool
+}
+
 // trackedTx stores the actor-owned handle for one tracked txid.
 //
 // The struct is the actor's single source of truth about a tracked
@@ -195,7 +222,7 @@ type trackedTx struct {
 	data trackedTxData
 	fsm  *trackedTxStateMachine
 
-	subscribers map[string]actor.TellOnlyRef[Notification]
+	subscribers map[string]trackedSubscriber
 
 	// escalateLog rate-limits the operator-facing escalation that fires
 	// once a tx has failed to reach any mempool repeatedly. It
@@ -219,6 +246,17 @@ type trackedTx struct {
 	// subsequent interval-paced bumps fall back to the estimator. Zero
 	// means "no override pending".
 	pendingTargetFeeRate int64
+
+	// sealed is set true the moment terminal delivery (TxFinalized /
+	// TxFailed) begins for this entry. Reversible deliveries
+	// (TxReorged / re-TxConfirmed) run on detached fire-and-forget
+	// goroutines, so a reversible spawned just before finality could
+	// otherwise Tell its subscriber after the terminal notification and
+	// resurrect reorg-recovery bookkeeping the consumer already dropped.
+	// Each reversible goroutine checks this flag immediately before its
+	// Tell and skips if the entry has sealed. It is atomic because it is
+	// read off the actor goroutine; only the actor goroutine writes it.
+	sealed atomic.Bool
 }
 
 // confirmationObservedMsg routes a chainsource confirmation callback back into
@@ -239,14 +277,53 @@ func (m *confirmationObservedMsg) MessageType() string {
 // set.
 func (m *confirmationObservedMsg) txConfirmMsgSealed() {}
 
-// terminalNotifyResultMsg returns the result of a terminal notification that
-// outlived the actor-path wait budget.
+// confirmationReorgedMsg routes a chainsource ConfReorgedEvent back into
+// the actor mailbox.
+type confirmationReorgedMsg struct {
+	actor.BaseMessage
+	txid chainhash.Hash
+}
+
+// MessageType returns the stable message type identifier.
+func (m *confirmationReorgedMsg) MessageType() string {
+	return "confirmationReorgedMsg"
+}
+
+// txConfirmMsgSealed seals confirmationReorgedMsg into the package message
+// set.
+func (m *confirmationReorgedMsg) txConfirmMsgSealed() {}
+
+// confirmationDoneMsg routes a chainsource ConfDoneEvent back into the
+// actor mailbox.
+type confirmationDoneMsg struct {
+	actor.BaseMessage
+	txid chainhash.Hash
+}
+
+// MessageType returns the stable message type identifier.
+func (m *confirmationDoneMsg) MessageType() string {
+	return "confirmationDoneMsg"
+}
+
+// txConfirmMsgSealed seals confirmationDoneMsg into the package message
+// set.
+func (m *confirmationDoneMsg) txConfirmMsgSealed() {}
+
+// terminalNotifyResultMsg returns the result of a terminal-shape
+// notification that outlived the actor-path wait budget. kind carries the
+// original delivery kind ("confirmed" / "finalized" / "failed") so
+// handleTerminalNotifyResult can distinguish a mid-lifecycle
+// initial-TxConfirmed redelivery (where the subscriber must stay attached
+// to receive later TxReorged / TxFinalized) from a truly terminal
+// notification (where the subscriber should be removed and the entry can
+// evict once empty).
 type terminalNotifyResultMsg struct {
 	actor.BaseMessage
 
 	txid         chainhash.Hash
 	subscriberID string
 	inflightKey  string
+	kind         string
 	err          error
 }
 
@@ -354,6 +431,22 @@ func (a *TxBroadcasterActor) Receive(ctx context.Context,
 			State: TxStateConfirmed,
 		})
 
+	case *confirmationReorgedMsg:
+		a.handleConfirmationReorged(ctx, req)
+
+		return fn.Ok[Resp](&EnsureConfirmedResp{
+			Txid:  req.txid,
+			State: TxStateAwaitingConfirmation,
+		})
+
+	case *confirmationDoneMsg:
+		a.handleConfirmationDone(ctx, req)
+
+		return fn.Ok[Resp](&EnsureConfirmedResp{
+			Txid:  req.txid,
+			State: TxStateFinalized,
+		})
+
 	case *blockEpochObservedMsg:
 		a.handleBlockObserved(ctx, req)
 
@@ -401,7 +494,23 @@ func (a *TxBroadcasterActor) OnStop(ctx context.Context) error {
 			continue
 		}
 
-		if state == TxStateConfirmed || state == TxStateFailed {
+		if isTerminalTxState(state) {
+			// A terminal entry can still hold a registered conf
+			// watch: a Failed entry never received Done, and a
+			// Finalized entry whose Done-driven release raced
+			// OnStop may not have torn it down yet. Release it so
+			// the chainsource sub-actor does not leak for the
+			// daemon's lifetime. confWatchRegistered guards the
+			// common case where Done already released the watch.
+			if entry.confWatchRegistered {
+				if err := a.unregisterConfWatch(
+					ctx, entry,
+				); err != nil && firstErr == nil {
+
+					firstErr = err
+				}
+			}
+
 			if entry.fsm != nil {
 				entry.fsm.Stop()
 			}
@@ -476,7 +585,10 @@ func (a *TxBroadcasterActor) handleEnsure(ctx context.Context,
 		}
 
 		return a.attachExistingSubscriber(
-			ctx, existing, req.Subscriber,
+			ctx, existing, trackedSubscriber{
+				Ref:              req.Subscriber,
+				pendingConfirmed: true,
+			},
 		), nil
 	}
 
@@ -700,7 +812,7 @@ func (a *TxBroadcasterActor) handleCancel(ctx context.Context,
 		return nil, err
 	}
 
-	if state == TxStateConfirmed || state == TxStateFailed {
+	if isTerminalTxState(state) {
 		a.evictTerminal(ctx, entry)
 
 		return resp, nil
@@ -920,8 +1032,13 @@ func (a *TxBroadcasterActor) handleBumpNow(ctx context.Context,
 	}, nil
 }
 
-// handleConfirmationObserved marks a tracked txid as confirmed and fans the
-// result out to all subscribers.
+// handleConfirmationObserved advances a tracked txid into the reversible
+// Confirmed state and fans TxConfirmed out to all subscribers. The
+// confirmation watch is intentionally kept alive: a subsequent reorg
+// would arrive on the same registration, and the entry must stay
+// observable so the chainsource sub-actor's reorg/done channels reach
+// this layer. The terminal Finalized state is reached separately when
+// the backend emits a Done signal.
 func (a *TxBroadcasterActor) handleConfirmationObserved(ctx context.Context,
 	msg *confirmationObservedMsg) {
 
@@ -942,10 +1059,23 @@ func (a *TxBroadcasterActor) handleConfirmationObserved(ctx context.Context,
 		return
 	}
 
-	if state == TxStateConfirmed || state == TxStateFailed {
+	// Terminal entries (Failed / Finalized) are sticky; if delivery to
+	// any subscriber was deferred, retry it and evict on success.
+	if isTerminalTxState(state) {
 		if a.retryTerminalNotifications(ctx, entry) {
 			a.evictTerminal(ctx, entry)
 		}
+
+		return
+	}
+
+	// An already-Confirmed entry receiving another Confirmed event
+	// without an intervening Reorged is unexpected on a well-behaved
+	// backend (the chainsource sub-actor only re-fires Confirmed after
+	// a reorg), but we tolerate it by re-delivering TxConfirmed rather
+	// than failing the FSM.
+	if state == TxStateConfirmed {
+		a.notifyConfirmed(ctx, entry, msg.blockHeight, msg.numConfs)
 
 		return
 	}
@@ -960,13 +1090,153 @@ func (a *TxBroadcasterActor) handleConfirmationObserved(ctx context.Context,
 		return
 	}
 
+	a.notifyConfirmed(ctx, entry, msg.blockHeight, msg.numConfs)
+}
+
+// handleConfirmationReorged moves a Confirmed tracked txid back into
+// AwaitingConfirmation and fans TxReorged out to all subscribers. The
+// confirmation watch stays alive on the chainsource side, so a
+// subsequent re-confirmation arrives on the same registration and drives
+// another handleConfirmationObserved.
+func (a *TxBroadcasterActor) handleConfirmationReorged(ctx context.Context,
+	msg *confirmationReorgedMsg) {
+
+	entry, ok := a.tracked[msg.txid]
+	if !ok {
+		return
+	}
+
+	state, err := entry.currentTxState()
+	if err != nil {
+		a.log.WarnS(ctx, "Failed to read tracked tx state",
+			err, "txid", entry.data.Txid)
+
+		return
+	}
+
+	// Only Confirmed entries can be reorged. A reorg ping in any other
+	// state is benign and dropped: it may be a late notification for an
+	// entry the actor has already evicted or terminally failed.
+	if state != TxStateConfirmed {
+		return
+	}
+
+	if err := a.advanceTrackedTxFSM(
+		ctx, entry, &trackedTxReorged{},
+	); err != nil {
+
+		a.log.WarnS(ctx, "Failed to apply reorg to tracked tx",
+			err, "txid", entry.data.Txid)
+
+		return
+	}
+
+	a.notifyReorged(ctx, entry)
+}
+
+// handleConfirmationDone moves a Confirmed tracked txid into the terminal
+// Finalized state, fans TxFinalized out to all subscribers, releases the
+// confirmation watch, and evicts the entry.
+func (a *TxBroadcasterActor) handleConfirmationDone(ctx context.Context,
+	msg *confirmationDoneMsg) {
+
+	entry, ok := a.tracked[msg.txid]
+	if !ok {
+		return
+	}
+
+	state, err := entry.currentTxState()
+	if err != nil {
+		a.log.WarnS(ctx, "Failed to read tracked tx state",
+			err, "txid", entry.data.Txid)
+
+		return
+	}
+
+	// Only Confirmed entries can be finalized. A Done ping for an entry
+	// that is not Confirmed has three possible origins:
+	//
+	//  - Idempotent re-delivery for a tx that is already Finalized: a
+	//    benign no-op.
+	//
+	//  - Late arrival while the entry is in AwaitingConfirmation
+	//    after a reorg: structurally anomalous for the current
+	//    backends — chainntnfs (in-process lnd) only writes Done
+	//    after the tx has matured past the safety depth, and the
+	//    lndclient adapter never writes the channel at all and
+	//    relies on height-based synthesis (which is gated on
+	//    confirmHeight, reset to 0 on reorg). A future backend that
+	//    DID fire Done during the reorg gap would land here, the
+	//    chainsource sub-actor would already have exited (Done is
+	//    one-shot), and this txid would stop receiving new events.
+	//    The watch is unrecoverable without a fresh RegisterConf
+	//    from this layer.
+	//
+	// We log + drop rather than failing the entry: the realistic
+	// backends do not produce this state, and failing on a hypothetical
+	// edge case would break callers that rely on the FSM staying live
+	// for re-confirmation after a reorg. If the log starts firing in
+	// the wild, the right follow-up is to re-register the conf watch
+	// from here (see registerConfWatch) rather than relax the guard.
+	if state != TxStateConfirmed {
+		a.log.WarnS(ctx, "Dropping confirmation Done for non-Confirmed "+
+			"entry; chainsource watch is gone, entry will not "+
+			"receive further reorg/finality events",
+			fmt.Errorf("state %s", state),
+			"txid", entry.data.Txid)
+
+		return
+	}
+
+	// Snapshot the confirmation height BEFORE advancing the FSM so we
+	// can attach it to the outgoing TxFinalized event; the new state
+	// preserves it but reading from the FSM state directly avoids a
+	// second state-lookup roundtrip.
+	fsmState, err := entry.currentFSMState()
+	if err != nil {
+		a.log.WarnS(ctx, "Failed to read tracked tx FSM state",
+			err, "txid", entry.data.Txid)
+
+		return
+	}
+	confirmHeight, _ := trackedTxConfirmHeight(fsmState)
+
+	if err := a.advanceTrackedTxFSM(
+		ctx, entry, &trackedTxFinalized{},
+	); err != nil {
+
+		a.log.WarnS(ctx, "Failed to finalize tracked tx",
+			err, "txid", entry.data.Txid)
+
+		return
+	}
+
+	// Only release the conf watch and evict once every subscriber has
+	// acknowledged the terminal TxFinalized notification. Failed
+	// deliveries leave the entry in place so retryTerminalNotifications
+	// can resend on a later actor tick.
+	if !a.notifyFinalized(ctx, entry, confirmHeight) {
+		return
+	}
+
 	if err := a.unregisterConfWatch(ctx, entry); err != nil {
 		a.log.WarnS(ctx, "Failed to unregister confirmation watch",
 			err, "txid", entry.data.Txid)
 	}
 
-	if a.notifyConfirmed(ctx, entry, msg.blockHeight, msg.numConfs) {
-		a.evictTerminal(ctx, entry)
+	a.evictTerminal(ctx, entry)
+}
+
+// isTerminalTxState reports whether a public TxState value represents a
+// terminal lifecycle stage that the actor will not advance further on
+// its own.
+func isTerminalTxState(state TxState) bool {
+	switch state {
+	case TxStateFinalized, TxStateFailed:
+		return true
+
+	default:
+		return false
 	}
 }
 
@@ -1003,7 +1273,7 @@ func (a *TxBroadcasterActor) handleBlockObserved(ctx context.Context,
 			continue
 		}
 
-		if state == TxStateConfirmed || state == TxStateFailed {
+		if isTerminalTxState(state) {
 			if a.retryTerminalNotifications(ctx, entry) {
 				a.evictTerminal(ctx, entry)
 			}
@@ -1057,13 +1327,13 @@ func (a *TxBroadcasterActor) handleBlockObserved(ctx context.Context,
 // txid or immediately replays a terminal result.
 func (a *TxBroadcasterActor) attachExistingSubscriber(
 	ctx context.Context, entry *trackedTx,
-	subscriber actor.TellOnlyRef[Notification],
+	subscriber trackedSubscriber,
 ) *EnsureConfirmedResp {
 
 	state, err := entry.currentFSMState()
 	if err != nil {
 		a.notifyOneFailed(
-			ctx, subscriber, entry.data.Txid,
+			ctx, subscriber.Ref, entry.data.Txid,
 			fmt.Sprintf("tracked tx state: %v", err),
 		)
 
@@ -1073,27 +1343,57 @@ func (a *TxBroadcasterActor) attachExistingSubscriber(
 		}
 	}
 
+	subID := subscriber.Ref.ID()
 	switch state := state.(type) {
 	case *trackedTxStateConfirmed:
 		confirmHeight, _ := trackedTxConfirmHeight(state)
-		if !a.notifyOneConfirmed(
-			ctx, subscriber, entry.data.Txid, confirmHeight,
-			entry.data.TargetConfs,
+		txConfirmed := &TxConfirmed{
+			Txid:        entry.data.Txid,
+			BlockHeight: confirmHeight,
+			NumConfs:    entry.data.TargetConfs,
+		}
+
+		// Reliable replay of the at-least-once TxConfirmed contract.
+		// The subscriber is retained in the map regardless of
+		// delivery outcome so it also receives any later TxReorged
+		// or TxFinalized on this entry, and on timeout the per-tick
+		// retryTerminalNotifications path re-attempts delivery via
+		// the still-true pendingConfirmed flag until it lands.
+		if a.notifyOneConfirmed(
+			ctx, subscriber.Ref, entry.data.Txid, txConfirmed,
 		) {
 
-			entry.subscribers[subscriber.ID()] = subscriber
+			subscriber.pendingConfirmed = false
+		}
+		entry.subscribers[subID] = subscriber
+
+	case *trackedTxStateFinalized:
+		// Finalized is terminal. Deliver TxFinalized reliably and
+		// retain on timeout so the per-tick retry path can finish
+		// the handoff. Note that a late-attaching subscriber has
+		// not yet received TxConfirmed; TxFinalized carries the
+		// authoritative confirmation height so consumers that need
+		// it (sweep-finality gates etc.) can recover without an
+		// out-of-band lookup.
+		if !a.notifyOneFinalized(
+			ctx, subscriber.Ref, entry.data.Txid,
+			state.ConfirmHeight, entry.data.TargetConfs,
+		) {
+
+			entry.subscribers[subID] = subscriber
 		}
 
 	case *trackedTxStateFailed:
 		reason, _ := trackedTxFailureReason(state)
-		if !a.notifyOneFailed(ctx, subscriber, entry.data.Txid,
-			reason) {
+		if !a.notifyOneFailed(
+			ctx, subscriber.Ref, entry.data.Txid, reason,
+		) {
 
-			entry.subscribers[subscriber.ID()] = subscriber
+			entry.subscribers[subID] = subscriber
 		}
 
 	default:
-		entry.subscribers[subscriber.ID()] = subscriber
+		entry.subscribers[subID] = subscriber
 	}
 
 	return a.ensureResp(entry, false)
@@ -1150,8 +1450,11 @@ func (a *TxBroadcasterActor) newTrackedTx(ctx context.Context,
 	return &trackedTx{
 		data: data,
 		fsm:  fsm,
-		subscribers: map[string]actor.TellOnlyRef[Notification]{
-			req.Subscriber.ID(): req.Subscriber,
+		subscribers: map[string]trackedSubscriber{
+			req.Subscriber.ID(): {
+				Ref:              req.Subscriber,
+				pendingConfirmed: true,
+			},
 		},
 		escalateLog: rate.Sometimes{
 			First:    1,
@@ -1289,6 +1592,9 @@ func (a *TxBroadcasterActor) ensureBlockSubscription(
 }
 
 // registerConfWatch registers a confirmation watch for one tracked txid.
+// The watch is registered in reorg-aware mode so the tracked entry can
+// observe a confirmation being reorged out and a confirmation maturing
+// past the backend's reorg-safety depth.
 func (a *TxBroadcasterActor) registerConfWatch(ctx context.Context,
 	entry *trackedTx) error {
 
@@ -1303,6 +1609,18 @@ func (a *TxBroadcasterActor) registerConfWatch(ctx context.Context,
 			}
 		},
 	)
+	reorgRef := chainsource.MapConfReorgedEvent(
+		a.selfRef,
+		func(event chainsource.ConfReorgedEvent) Msg {
+			return &confirmationReorgedMsg{txid: event.Txid}
+		},
+	)
+	doneRef := chainsource.MapConfDoneEvent(
+		a.selfRef,
+		func(event chainsource.ConfDoneEvent) Msg {
+			return &confirmationDoneMsg{txid: event.Txid}
+		},
+	)
 
 	_, err := a.cfg.ChainSource.Ask(
 		ctx, &chainsource.RegisterConfRequest{
@@ -1311,9 +1629,11 @@ func (a *TxBroadcasterActor) registerConfWatch(ctx context.Context,
 			PkScript: append(
 				[]byte(nil), entry.data.ConfirmationPkScript...,
 			),
-			TargetConfs: entry.data.TargetConfs,
-			HeightHint:  entry.data.HeightHint,
-			NotifyActor: fn.Some(notifyRef),
+			TargetConfs:   entry.data.TargetConfs,
+			HeightHint:    entry.data.HeightHint,
+			NotifyActor:   fn.Some(notifyRef),
+			NotifyReorged: fn.Some(reorgRef),
+			NotifyDone:    fn.Some(doneRef),
 		},
 	).Await(ctx).Unpack()
 	if err != nil {
@@ -1570,11 +1890,18 @@ func (a *TxBroadcasterActor) retryTerminalNotifications(ctx context.Context,
 
 	switch state := state.(type) {
 	case *trackedTxStateConfirmed:
-		confirmHeight, _ := trackedTxConfirmHeight(state)
+		// Retry deferred TxConfirmed deliveries to legacy
+		// subscribers whose first attempt timed out. Reorg-aware
+		// subscribers receive TxConfirmed fire-and-forget and have
+		// no retry tracking; they are skipped here. Returning false
+		// keeps the entry alive — the caller never evicts on
+		// Confirmed, only on terminal states.
+		a.retryConfirmedRedelivery(ctx, entry, state.ConfirmHeight)
 
-		return a.notifyConfirmed(
-			ctx, entry, confirmHeight, entry.data.TargetConfs,
-		)
+		return false
+
+	case *trackedTxStateFinalized:
+		return a.notifyFinalized(ctx, entry, state.ConfirmHeight)
 
 	case *trackedTxStateFailed:
 		reason, _ := trackedTxFailureReason(state)
@@ -1586,8 +1913,57 @@ func (a *TxBroadcasterActor) retryTerminalNotifications(ctx context.Context,
 	}
 }
 
-// handleTerminalNotifyResult applies the result of a terminal subscriber
-// notification that continued after txconfirm returned to its actor mailbox.
+// retryConfirmedRedelivery retries TxConfirmed delivery to every
+// subscriber whose initial delivery timed out. The at-least-once
+// initial-TxConfirmed contract means a missed delivery must be
+// landed before the lifecycle moves on, so this helper runs every
+// actor tick from retryTerminalNotifications until every
+// pendingConfirmed subscriber has been notified. On successful
+// delivery the subscriber's pendingConfirmed flag is cleared and
+// the subscriber stays in the map so it continues to receive any
+// later TxReorged / TxFinalized on this entry — eviction is
+// reserved for the truly terminal Finalized / Failed states.
+func (a *TxBroadcasterActor) retryConfirmedRedelivery(ctx context.Context,
+	entry *trackedTx, confirmHeight int32) {
+
+	for id, subscriber := range entry.subscribers {
+		if !subscriber.pendingConfirmed {
+			continue
+		}
+
+		txConfirmed := &TxConfirmed{
+			Txid:        entry.data.Txid,
+			BlockHeight: confirmHeight,
+			NumConfs:    entry.data.TargetConfs,
+		}
+		if a.notifyOneConfirmed(
+			ctx, subscriber.Ref, entry.data.Txid, txConfirmed,
+		) {
+
+			subscriber.pendingConfirmed = false
+			entry.subscribers[id] = subscriber
+		}
+	}
+}
+
+// handleTerminalNotifyResult applies the result of a terminal-shape
+// subscriber notification that continued after txconfirm returned to its
+// actor mailbox.
+//
+// The kind field distinguishes mid-lifecycle from truly terminal
+// deliveries:
+//
+//   - kind == "confirmed": the late-landing delivery is the INITIAL
+//     TxConfirmed for this subscriber. Clear pendingConfirmed and KEEP
+//     the subscriber attached to the entry so later TxReorged /
+//     TxFinalized still reach it. Removing the subscriber here would
+//     silently drop the entire reorg-aware tail of its lifecycle —
+//     exactly the kind of failure the unified reliable-delivery path is
+//     supposed to prevent.
+//
+//   - kind == "finalized" or "failed": the lifecycle is genuinely over
+//     for this subscriber. Remove it, and evict the entry once every
+//     subscriber has been notified.
 func (a *TxBroadcasterActor) handleTerminalNotifyResult(ctx context.Context,
 	msg *terminalNotifyResultMsg) {
 
@@ -1596,13 +1972,48 @@ func (a *TxBroadcasterActor) handleTerminalNotifyResult(ctx context.Context,
 	if msg.err != nil {
 		a.log.WarnS(ctx, "Terminal notification failed after "+
 			"actor-path timeout", msg.err, "txid", msg.txid,
-			"subscriber_id", msg.subscriberID)
+			"subscriber_id", msg.subscriberID,
+			"notification_kind", msg.kind)
 
 		return
 	}
 
 	entry, ok := a.tracked[msg.txid]
 	if !ok {
+		return
+	}
+
+	if msg.kind == "confirmed" {
+		subscriber, ok := entry.subscribers[msg.subscriberID]
+		if !ok {
+			return
+		}
+		subscriber.pendingConfirmed = false
+		entry.subscribers[msg.subscriberID] = subscriber
+
+		// If the tx reorged out of its confirmation while this
+		// subscriber's initial TxConfirmed was still parked on the
+		// async notify path, notifyReorged skipped it: a TxReorged must
+		// never precede the TxConfirmed it reverses. Now that the
+		// initial delivery has completed and pendingConfirmed is
+		// cleared, deliver the catch-up TxReorged so the subscriber is
+		// not left believing a reorged-out tx is confirmed. A tx that
+		// reorged and then re-confirmed during the window is back in
+		// Confirmed, so the delivered TxConfirmed is already accurate
+		// and no catch-up is owed; terminal states own their own
+		// notifications.
+		state, err := entry.currentTxState()
+		if err == nil && state != TxStateConfirmed &&
+			!isTerminalTxState(state) {
+
+			a.notifyReversibleAsync(
+				ctx, &entry.sealed, subscriber.Ref,
+				entry.data.Txid, "TxReorged", &TxReorged{
+					Txid: entry.data.Txid,
+				},
+			)
+		}
+
 		return
 	}
 
@@ -1619,21 +2030,205 @@ func (a *TxBroadcasterActor) handleTerminalNotifyResult(ctx context.Context,
 		return
 	}
 
-	if state == TxStateConfirmed || state == TxStateFailed {
+	if isTerminalTxState(state) {
 		a.evictTerminal(ctx, entry)
 	}
 }
 
-// notifyConfirmed fans a confirmation result out to all current subscribers.
-// It returns true only after every subscriber accepted the terminal
-// notification. Failed deliveries are left in the subscriber map so a later
-// actor tick can retry instead of permanently losing the confirmation.
+// notifyConfirmed fans a TxConfirmed notification out to every current
+// subscriber. The initial TxConfirmed (subscriber.pendingConfirmed ==
+// true) goes through the reliable terminal-delivery path: on success
+// pendingConfirmed flips false and the subscriber is retained so it
+// keeps receiving the reorg-aware lifecycle (TxReorged / TxFinalized);
+// on timeout pendingConfirmed stays true and retryConfirmedRedelivery
+// re-attempts on the next actor tick, so the at-least-once initial-
+// TxConfirmed guarantee holds even for slow durable subscribers.
+//
+// Re-confirmations (pendingConfirmed == false, i.e. this subscriber
+// has already received the initial TxConfirmed and the chain reorged
+// then re-confirmed) are best-effort. The subscriber already knows
+// the tx confirmed at least once; the eventual TxFinalized carries
+// the authoritative height / numConfs so a missed re-confirmation is
+// not load-bearing.
+//
+// Subscribers are never deleted from the map by this function — that
+// happens only on TxFinalized / TxFailed acknowledgment, which is
+// when the reorg-aware lifecycle reaches a truly terminal state.
 func (a *TxBroadcasterActor) notifyConfirmed(ctx context.Context,
-	entry *trackedTx, blockHeight int32, numConfs uint32) bool {
+	entry *trackedTx, blockHeight int32, numConfs uint32) {
 
 	for id, subscriber := range entry.subscribers {
-		ok := a.notifyOneConfirmed(
-			ctx, subscriber, entry.data.Txid, blockHeight, numConfs,
+		txConfirmed := &TxConfirmed{
+			Txid:        entry.data.Txid,
+			BlockHeight: blockHeight,
+			NumConfs:    numConfs,
+		}
+
+		if !subscriber.pendingConfirmed {
+			a.notifyReversibleAsync(
+				ctx, &entry.sealed, subscriber.Ref,
+				entry.data.Txid, "TxConfirmed", txConfirmed,
+			)
+
+			continue
+		}
+
+		if a.notifyOneConfirmed(
+			ctx, subscriber.Ref, entry.data.Txid, txConfirmed,
+		) {
+
+			subscriber.pendingConfirmed = false
+			entry.subscribers[id] = subscriber
+		}
+	}
+}
+
+// notifyOneConfirmed delivers one TxConfirmed notification to a legacy
+// (non-opt-in) subscriber via the reliable terminal-delivery path so a
+// slow durable subscriber cannot block the actor while still
+// preserving the pre-reorg-aware contract of guaranteed-at-least-once
+// TxConfirmed delivery.
+func (a *TxBroadcasterActor) notifyOneConfirmed(ctx context.Context,
+	subscriber actor.TellOnlyRef[Notification], txid chainhash.Hash,
+	notification *TxConfirmed) bool {
+
+	return a.notifyOneTerminal(
+		ctx, subscriber, txid, "confirmed",
+		func(notifyCtx context.Context) error {
+			return subscriber.Tell(notifyCtx, notification)
+		},
+	)
+}
+
+// notifyReorged fans a TxReorged notification out to every retained
+// subscriber whose initial TxConfirmed has already landed. Delivery is
+// fire-and-forget: a slow subscriber that misses the reorg is recovered
+// by the next lifecycle event (re-TxConfirmed, TxFinalized, or TxFailed)
+// since the actor stays attached until one of those terminal events lands.
+//
+// Subscribers still owed their initial TxConfirmed (pendingConfirmed) are
+// skipped: that delivery is deferred to the reliable retry path while a
+// reorg's TxReorged goes out fire-and-forget, so notifying them here would
+// race the two and could surface TxReorged before — or without — the
+// initial TxConfirmed, violating the at-least-once contract and leaving a
+// consumer believing a reorged-out tx is confirmed. They observe the live
+// state on their eventual initial delivery instead.
+func (a *TxBroadcasterActor) notifyReorged(ctx context.Context,
+	entry *trackedTx) {
+
+	for _, subscriber := range entry.subscribers {
+		if subscriber.pendingConfirmed {
+			continue
+		}
+
+		a.notifyReversibleAsync(
+			ctx, &entry.sealed, subscriber.Ref, entry.data.Txid,
+			"TxReorged",
+			&TxReorged{
+				Txid: entry.data.Txid,
+			},
+		)
+	}
+}
+
+// notifyReversibleAsync delivers one reversible (non-terminal)
+// Notification to a subscriber on a fresh goroutine so txconfirm's
+// actor loop does not block on a slow durable subscriber's mailbox.
+// Failures are logged but not retried: the next event in the tracked
+// tx's lifecycle (re-TxConfirmed after a TxReorged, TxFinalized, or
+// eventual TxFailed) carries the live state and supersedes any
+// dropped reversible delivery.
+//
+// The delivery context is detached from the actor transaction (so the
+// txconfirm goroutine's DB tx is not held open behind a subscriber
+// roundtrip) and from ctx cancellation (so a per-message context
+// expiring mid-flight does not race the actor releasing its mailbox).
+// Each goroutine is bounded by reversibleNotifyTimeout so a stuck
+// subscriber does not leak unbounded goroutines on every block.
+func (a *TxBroadcasterActor) notifyReversibleAsync(ctx context.Context,
+	sealed *atomic.Bool, subscriber actor.TellOnlyRef[Notification],
+	txid chainhash.Hash, kind string, notification Notification) {
+
+	notifyCtx := actor.WithoutTx(context.WithoutCancel(ctx))
+	notifyCtx, cancel := context.WithTimeout(
+		notifyCtx, reversibleNotifyTimeout,
+	)
+
+	subscriberID := subscriber.ID()
+	go func() {
+		defer cancel()
+
+		// Drop the reversible delivery if the entry has sealed (a
+		// terminal TxFinalized/TxFailed has begun). Checked here, just
+		// before the Tell, so a reversible spawned before finality
+		// cannot trail the terminal notification into the subscriber's
+		// mailbox and resurrect bookkeeping it already released.
+		if sealed != nil && sealed.Load() {
+			return
+		}
+
+		if err := subscriber.Tell(notifyCtx, notification); err != nil {
+			a.log.WarnS(notifyCtx,
+				"Failed to deliver reversible notification",
+				err, "txid", txid,
+				"subscriber_id", subscriberID,
+				"notification_kind", kind)
+		}
+	}()
+}
+
+// notifyFinalized fans a TxFinalized notification out to every
+// retained subscriber. The map may still contain subscribers whose
+// initial reliable TxConfirmed delivery timed out
+// (pendingConfirmed=true) — those still need TxConfirmed before they
+// see TxFinalized, otherwise the at-least-once TxConfirmed contract
+// is violated. For each pending subscriber we make one TxConfirmed
+// attempt, flip pendingConfirmed on success, and either way leave
+// them attached for the next finalize retry (the per-tick retry path
+// will keep cycling through this function until both deliveries
+// land).
+//
+// On successful TxFinalized delivery the subscriber is removed and
+// the caller may evict the tracked entry once every subscriber has
+// acknowledged. Failed deliveries are left in the subscriber map for
+// retry from the next actor tick.
+//
+// confirmHeight is the height observed at finalization time, replayed
+// onto TxFinalized so consumers that dropped the fire-and-forget
+// re-TxConfirmed can recover the authoritative confirmation height
+// without an out-of-band lookup.
+func (a *TxBroadcasterActor) notifyFinalized(ctx context.Context,
+	entry *trackedTx, confirmHeight int32) bool {
+
+	// Seal the entry so any in-flight reversible delivery skips its Tell
+	// rather than trailing this terminal notification into a subscriber's
+	// mailbox. Idempotent across the per-tick finalize retries.
+	entry.sealed.Store(true)
+
+	for id, subscriber := range entry.subscribers {
+		if subscriber.pendingConfirmed {
+			if a.notifyOneConfirmed(
+				ctx, subscriber.Ref, entry.data.Txid,
+				&TxConfirmed{
+					Txid:        entry.data.Txid,
+					BlockHeight: confirmHeight,
+					NumConfs:    entry.data.TargetConfs,
+				},
+			) {
+
+				subscriber.pendingConfirmed = false
+				entry.subscribers[id] = subscriber
+			} else {
+				// Hold until the next tick — we must not
+				// deliver TxFinalized before the documented
+				// initial TxConfirmed has landed.
+				continue
+			}
+		}
+
+		ok := a.notifyOneFinalized(
+			ctx, subscriber.Ref, entry.data.Txid, confirmHeight,
+			entry.data.TargetConfs,
 		)
 		if !ok {
 			continue
@@ -1652,9 +2247,14 @@ func (a *TxBroadcasterActor) notifyConfirmed(ctx context.Context,
 func (a *TxBroadcasterActor) notifyFailed(ctx context.Context, entry *trackedTx,
 	reason string) bool {
 
+	// Seal the entry so any in-flight reversible delivery skips its Tell
+	// rather than trailing this terminal failure into a subscriber's
+	// mailbox. Idempotent across the per-tick retries.
+	entry.sealed.Store(true)
+
 	for id, subscriber := range entry.subscribers {
 		ok := a.notifyOneFailed(
-			ctx, subscriber, entry.data.Txid, reason,
+			ctx, subscriber.Ref, entry.data.Txid, reason,
 		)
 		if !ok {
 			continue
@@ -1666,15 +2266,20 @@ func (a *TxBroadcasterActor) notifyFailed(ctx context.Context, entry *trackedTx,
 	return len(entry.subscribers) == 0
 }
 
-// notifyOneConfirmed delivers one confirmation notification.
-func (a *TxBroadcasterActor) notifyOneConfirmed(ctx context.Context,
+// notifyOneFinalized delivers one TxFinalized notification through the
+// terminal-delivery path so a slow subscriber cannot block the actor
+// loop. blockHeight and numConfs are replayed onto the notification
+// from the last observed confirmation so opt-in subscribers that
+// dropped the (fire-and-forget) TxConfirmed event can still recover
+// the authoritative confirmation height.
+func (a *TxBroadcasterActor) notifyOneFinalized(ctx context.Context,
 	subscriber actor.TellOnlyRef[Notification], txid chainhash.Hash,
 	blockHeight int32, numConfs uint32) bool {
 
 	return a.notifyOneTerminal(
-		ctx, subscriber, txid, "confirmed",
+		ctx, subscriber, txid, "finalized",
 		func(notifyCtx context.Context) error {
-			return subscriber.Tell(notifyCtx, &TxConfirmed{
+			return subscriber.Tell(notifyCtx, &TxFinalized{
 				Txid:        txid,
 				BlockHeight: blockHeight,
 				NumConfs:    numConfs,
@@ -1735,7 +2340,7 @@ func (a *TxBroadcasterActor) notifyOneTerminal(ctx context.Context,
 		a.terminalNotifyInflight[inflightKey] = struct{}{}
 		//nolint:contextcheck // async result outlives ctx
 		a.completeTerminalNotifyAsync(
-			inflightKey, txid, subscriberID, errChan, cancel,
+			inflightKey, txid, subscriberID, kind, errChan, cancel,
 		)
 
 		a.log.DebugS(ctx, "Terminal tx notification deferred",
@@ -1748,10 +2353,13 @@ func (a *TxBroadcasterActor) notifyOneTerminal(ctx context.Context,
 	}
 }
 
-// completeTerminalNotifyAsync reports a timed-out terminal delivery back to the
-// txconfirm actor once the underlying Tell returns.
+// completeTerminalNotifyAsync reports a timed-out terminal-shape delivery
+// back to the txconfirm actor once the underlying Tell returns. kind
+// records the notification variant ("confirmed" / "finalized" / "failed")
+// so the actor-side handler can apply the correct post-delivery state
+// transition.
 func (a *TxBroadcasterActor) completeTerminalNotifyAsync(inflightKey string,
-	txid chainhash.Hash, subscriberID string, errChan <-chan error,
+	txid chainhash.Hash, subscriberID, kind string, errChan <-chan error,
 	cancel context.CancelFunc) {
 
 	if a.selfRef == nil {
@@ -1768,6 +2376,7 @@ func (a *TxBroadcasterActor) completeTerminalNotifyAsync(inflightKey string,
 			txid:         txid,
 			subscriberID: subscriberID,
 			inflightKey:  inflightKey,
+			kind:         kind,
 			err:          err,
 		}
 		bgCtx := context.Background()

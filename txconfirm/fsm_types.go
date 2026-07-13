@@ -168,6 +168,21 @@ type trackedTxFailed struct {
 // trackedTxEventSealed marks trackedTxFailed as a tracked-tx event.
 func (e *trackedTxFailed) trackedTxEventSealed() {}
 
+// trackedTxReorged records that a previously delivered confirmation was
+// reorged out of the canonical chain. Only valid from
+// trackedTxStateConfirmed.
+type trackedTxReorged struct{}
+
+// trackedTxEventSealed marks trackedTxReorged as a tracked-tx event.
+func (e *trackedTxReorged) trackedTxEventSealed() {}
+
+// trackedTxFinalized records that a confirmation is past the backend's
+// reorg-safety depth. Only valid from trackedTxStateConfirmed.
+type trackedTxFinalized struct{}
+
+// trackedTxEventSealed marks trackedTxFinalized as a tracked-tx event.
+func (e *trackedTxFinalized) trackedTxEventSealed() {}
+
 // trackedTxErrorReporter reports tracked-tx FSM errors through the package
 // logger.
 type trackedTxErrorReporter struct {
@@ -225,6 +240,9 @@ func txStateFromTrackedState(state trackedTxState) TxState {
 	case *trackedTxStateConfirmed:
 		return TxStateConfirmed
 
+	case *trackedTxStateFinalized:
+		return TxStateFinalized
+
 	case *trackedTxStateFailed:
 		return TxStateFailed
 
@@ -279,6 +297,9 @@ func trackedTxLastBroadcastHeight(state trackedTxState) fn.Option[int32] {
 	case *trackedTxStateConfirmed:
 		return s.LastBroadcastHeight
 
+	case *trackedTxStateFinalized:
+		return s.LastBroadcastHeight
+
 	case *trackedTxStateFailed:
 		return s.LastBroadcastHeight
 
@@ -302,12 +323,16 @@ func trackedTxBroadcastFailures(state trackedTxState) int {
 // trackedTxConfirmHeight returns the state's confirmation height if the
 // transaction has already confirmed.
 func trackedTxConfirmHeight(state trackedTxState) (int32, bool) {
-	confirmed, ok := state.(*trackedTxStateConfirmed)
-	if !ok {
+	switch s := state.(type) {
+	case *trackedTxStateConfirmed:
+		return s.ConfirmHeight, true
+
+	case *trackedTxStateFinalized:
+		return s.ConfirmHeight, true
+
+	default:
 		return 0, false
 	}
-
-	return confirmed.ConfirmHeight, true
 }
 
 // trackedTxFailureReason returns the state's terminal failure reason when
