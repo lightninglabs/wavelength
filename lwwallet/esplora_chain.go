@@ -110,12 +110,15 @@ func NewEsploraChainService(esplora *EsploraClient, tipPoller *TipPoller,
 
 // Start seeds the initial chain tip from the configured TipPoller
 // (which the caller must have started already) and spawns the
-// goroutine that translates each TipBlock event into btcwallet
-// chain notifications.
+// goroutine that translates each chain event into btcwallet chain
+// notifications. The service subscribes to the unified chain stream
+// so reorg and tip updates arrive on a single producer-ordered
+// channel; this is what lets chain.BlockDisconnected reliably precede
+// the replacement chain.BlockConnected events for the new tip.
 func (s *EsploraChainService) Start(ctx context.Context) error {
 	//nolint:contextcheck // tip subscription lifecycle is owned by Stop
-	tipHeight, tipHash, tipTime, sub, err :=
-		s.tipPoller.BestBlockAndSubscribe()
+	tipHeight, tipHash, tipTime, chainSub, err :=
+		s.tipPoller.BestBlockAndSubscribeChain()
 	if err != nil {
 		return fmt.Errorf("subscribe to tip poller: %w", err)
 	}
@@ -134,7 +137,7 @@ func (s *EsploraChainService) Start(ctx context.Context) error {
 	s.notifications <- chain.ClientConnected{}
 
 	s.wg.Add(1)
-	go s.handleTipEvents(ctx, sub)
+	go s.handleChainEvents(ctx, chainSub)
 
 	s.log.InfoS(ctx, "Esplora chain service started",
 		slog.Int("tip_height", int(tipHeight)),
@@ -685,26 +688,35 @@ func (s *EsploraChainService) MapRPCErr(err error) error {
 	return err
 }
 
-// handleTipEvents drains TipBlock events from the shared poller and
-// translates each event into the FilteredBlockConnected +
-// BlockConnected notification pair that btcwallet's wallet syncer
-// expects. The loop exits when the chain service is stopped, when
-// the poller signals shutdown via Quit, or when the subscription's
-// Updates channel is closed by Cancel.
-func (s *EsploraChainService) handleTipEvents(ctx context.Context,
-	sub *TipSubscription) {
+// handleChainEvents drains the unified chain stream and translates
+// each event into btcwallet chain notifications. Using a single
+// subscription delivers ReorgEvent and TipBlock updates in producer
+// order through one channel, which is what guarantees
+// BlockDisconnected lands on btcwallet's notification queue before
+// the BlockConnected events for the replacement chain (btcwallet's
+// disconnectBlock would otherwise refuse the rollback if the cached
+// hash at that height had already been overwritten by a stale
+// BlockConnected).
+func (s *EsploraChainService) handleChainEvents(ctx context.Context,
+	sub *ChainSubscription) {
 
 	defer s.wg.Done()
 	defer sub.Cancel()
 
 	for {
 		select {
-		case event, ok := <-sub.Updates():
+		case ev, ok := <-sub.Updates():
 			if !ok {
 				return
 			}
 
-			s.processTipEvent(ctx, event)
+			switch {
+			case ev.Reorg != nil:
+				s.processReorgEvent(ctx, ev.Reorg)
+
+			case ev.Tip != nil:
+				s.processTipEvent(ctx, ev.Tip)
+			}
 
 		case <-sub.Quit():
 			return
@@ -728,6 +740,63 @@ func (s *EsploraChainService) handleTipEvents(ctx context.Context,
 // WithMaxGapFillPerTipEvent for tests that need to exercise the
 // per-event cap branch without producing 256+ heights of traffic.
 const defaultMaxGapFillPerTipEvent int32 = 256
+
+// processReorgEvent translates a ReorgEvent into chain.BlockDisconnected
+// notifications. The replacement Connected blocks arrive separately on
+// the tip stream and are processed by processTipEvent in the usual way;
+// emitting Disconnected here is what lets btcwallet roll back the
+// reorged-out heights via its disconnectBlock path before it re-sees
+// the canonical chain. Newest height is disconnected first so btcwallet
+// walks back from its own cached tip.
+//
+// After emitting the disconnects, s.bestBlock is rolled back to
+// event.ForkHeight so the subsequent replacement-chain TipBlock events
+// (which arrive at heights forkHeight+1..newTipHeight) pass
+// processTipEvent's "event.Height <= lastDelivered" duplicate guard.
+// Without this rollback, the replacement BlockConnected events would
+// silently be dropped because s.bestBlock still points at the old tip.
+// The Hash is intentionally cleared because the reorg event does not
+// carry the fork-point hash; the next BlockConnected fully repopulates
+// s.bestBlock and only the Height is load-bearing for the duplicate
+// guard.
+func (s *EsploraChainService) processReorgEvent(ctx context.Context,
+	event *ReorgEvent) {
+
+	if event == nil {
+		return
+	}
+
+	for i := len(event.Disconnected) - 1; i >= 0; i-- {
+		hash := event.Disconnected[i]
+		height := event.ForkHeight + int32(i) + 1
+
+		meta := wtxmgr.BlockMeta{
+			Block: wtxmgr.Block{
+				Hash:   hash,
+				Height: height,
+			},
+		}
+
+		select {
+		case s.notifications <- chain.BlockDisconnected(meta):
+		case <-s.quit:
+			return
+		}
+	}
+
+	s.mu.Lock()
+	if s.bestBlock.Height > event.ForkHeight {
+		s.bestBlock = waddrmgr.BlockStamp{
+			Height: event.ForkHeight,
+		}
+	}
+	s.mu.Unlock()
+
+	s.log.InfoS(ctx, "Chain service emitted BlockDisconnected",
+		slog.Int("fork_height", int(event.ForkHeight)),
+		slog.Int("disconnected", len(event.Disconnected)),
+	)
+}
 
 // processTipEvent applies one TipBlock to btcwallet's notification
 // channel. The chain service owns its own delivery cursor
