@@ -261,6 +261,15 @@ type RegisterConfRequest struct {
 	// events will be sent to this actor asynchronously. If None, a Future
 	// is returned in the response for blocking await.
 	NotifyActor fn.Option[actor.TellOnlyRef[ConfirmationEvent]]
+
+	// NotifyReorged is an optional actor reference for negative
+	// confirmation events. It is only used in async actor mode.
+	NotifyReorged fn.Option[actor.TellOnlyRef[ConfReorgedEvent]]
+
+	// NotifyDone is an optional actor reference notified when the
+	// confirmation watch is beyond the backend's reorg tracking horizon.
+	// It is only used in async actor mode.
+	NotifyDone fn.Option[actor.TellOnlyRef[ConfDoneEvent]]
 }
 
 // MessageType returns the message type identifier for logging and debugging.
@@ -330,6 +339,48 @@ type ConfirmationEvent struct {
 // MessageType returns the message type identifier for logging and debugging.
 func (m ConfirmationEvent) MessageType() string {
 	return "ConfirmationEvent"
+}
+
+// ConfReorgedEvent is sent when a previously reported confirmation is
+// reorged out of the canonical chain. After receiving this event a consumer
+// should consider the prior confirmation no longer valid; if the transaction
+// re-confirms on the new canonical chain a fresh ConfirmationEvent will
+// follow on the same registration.
+//
+// No block hash, height, or reorg depth is carried because the lndclient
+// gRPC transport does not preserve that information and we do not want to
+// expose fields that are always zero in production. Consumers that need to
+// invalidate cached block metadata should match on Txid and use the data
+// from the most recent ConfirmationEvent they observed on this watch.
+type ConfReorgedEvent struct {
+	actor.BaseMessage
+
+	// Txid is the transaction ID whose confirmation was reorged. This
+	// matches the Txid carried on the originating ConfirmationEvent.
+	Txid chainhash.Hash
+}
+
+// MessageType returns the message type identifier for logging and debugging.
+func (m ConfReorgedEvent) MessageType() string {
+	return "ConfReorgedEvent"
+}
+
+// ConfDoneEvent is sent when a confirmation watch has matured past the
+// backend's reorg-safety depth and will receive no further events.
+// Consumers may use this signal to drop any reorg-recovery bookkeeping they
+// were holding for the registration. Not all backends synthesize this
+// event; consumers must treat its absence as a normal operating condition
+// rather than an error.
+type ConfDoneEvent struct {
+	actor.BaseMessage
+
+	// Txid is the transaction ID whose registration matured.
+	Txid chainhash.Hash
+}
+
+// MessageType returns the message type identifier for logging and debugging.
+func (m ConfDoneEvent) MessageType() string {
+	return "ConfDoneEvent"
 }
 
 // UnregisterConfRequest requests cancellation of a confirmation subscription.
@@ -417,6 +468,15 @@ type RegisterSpendRequest struct {
 	// will be sent to this actor asynchronously. If None, a Future is
 	// returned for blocking await.
 	NotifyActor fn.Option[actor.TellOnlyRef[SpendEvent]]
+
+	// NotifyReorged is an optional actor reference for spend reorg events.
+	// It is only used in async actor mode.
+	NotifyReorged fn.Option[actor.TellOnlyRef[SpendReorgedEvent]]
+
+	// NotifyDone is an optional actor reference notified when the spend
+	// watch is beyond the backend's reorg tracking horizon. It is only used
+	// in async actor mode.
+	NotifyDone fn.Option[actor.TellOnlyRef[SpendDoneEvent]]
 }
 
 // MessageType returns the message type identifier for logging and debugging.
@@ -479,6 +539,45 @@ type SpendEvent struct {
 // MessageType returns the message type identifier for logging and debugging.
 func (m SpendEvent) MessageType() string {
 	return "SpendEvent"
+}
+
+// SpendReorgedEvent is sent when a previously reported spend is reorged out
+// of the canonical chain. After receiving this event a consumer should
+// consider the prior spend no longer valid; if the outpoint is re-spent on
+// the new canonical chain a fresh SpendEvent will follow on the same
+// registration.
+//
+// No spending txid, height, or block hash is carried because the lndclient
+// gRPC transport does not preserve that information and we do not want to
+// expose fields that are always zero in production. Consumers that need to
+// invalidate cached spending metadata should match on Outpoint and use the
+// data from the most recent SpendEvent they observed on this watch.
+type SpendReorgedEvent struct {
+	actor.BaseMessage
+
+	// Outpoint is the output whose spend was reorged.
+	Outpoint wire.OutPoint
+}
+
+// MessageType returns the message type identifier for logging and debugging.
+func (m SpendReorgedEvent) MessageType() string {
+	return "SpendReorgedEvent"
+}
+
+// SpendDoneEvent is sent when a spend watch has matured past the backend's
+// reorg-safety depth and will receive no further events. Not all backends
+// synthesize this event; consumers must treat its absence as a normal
+// operating condition rather than an error.
+type SpendDoneEvent struct {
+	actor.BaseMessage
+
+	// Outpoint is the output whose spend registration matured.
+	Outpoint wire.OutPoint
+}
+
+// MessageType returns the message type identifier for logging and debugging.
+func (m SpendDoneEvent) MessageType() string {
+	return "SpendDoneEvent"
 }
 
 // UnregisterSpendRequest requests cancellation of a spend subscription.
