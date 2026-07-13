@@ -27,6 +27,18 @@ import (
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 )
 
+// forwardValue sends one lifecycle value unless the registration was
+// cancelled first.
+func forwardValue[T any](ctx context.Context, out chan<- T, value T) bool {
+	select {
+	case out <- value:
+		return true
+
+	case <-ctx.Done():
+		return false
+	}
+}
+
 // ChainBackend implements chainsource.ChainBackend using neutrino's
 // native chain notification system and a WebAPI-based fee estimator.
 // This provides event-driven confirmation, spend, and block
@@ -38,8 +50,13 @@ type ChainBackend struct {
 	neutrinoCS *neutrino.ChainService
 
 	// notifier provides chain notification services backed by
-	// neutrino's compact block filter scanning.
-	notifier *neutrinonotify.NeutrinoNotifier
+	// neutrino's compact block filter scanning. Stored under the
+	// chainntnfs interface (concrete type is
+	// *neutrinonotify.NeutrinoNotifier in production) so reorg-aware
+	// forwarder tests can substitute a stub that drives the full
+	// Confirmed / NegativeConf / Done lifecycle without spinning up a
+	// neutrino chain service.
+	notifier chainntnfs.ChainNotifier
 
 	// feeEstimator provides fee estimation from a web API since
 	// neutrino has no mempool visibility.
@@ -571,40 +588,100 @@ func (b *ChainBackend) RegisterConf(ctx context.Context, txid *chainhash.Hash,
 		cancelOnce.Do(event.Cancel)
 	}
 
+	// Create channels to convert neutrino's confirmation lifecycle
+	// (which already drives chainntnfs's NegativeConf/Done channels
+	// directly — neutrino emits these natively from its compact-
+	// block-filter scanner) into our backend-agnostic types.
+	// NegativeConf carries a reorg depth that the cross-backend
+	// chainsource layer intentionally drops, so we forward a bare
+	// struct{} signal on reorgChan instead.
 	confChan := make(chan *chainsource.TxConfirmation, 1)
+	reorgChan := make(chan uint64, 1)
+	doneChan := make(chan struct{}, 1)
 
 	go func() {
+		var doneOrder chainsource.PositiveDoneOrder
+
+		// Defers run in LIFO order. event.Cancel() must run first
+		// so the upstream notifier stops writing to its internal
+		// channels before we cancel notifyCtx (which any in-flight
+		// downstream sends are still using) and finally close the
+		// outgoing chans. Reversing this order would race the
+		// upstream notifier against closed channels.
 		defer close(confChan)
+		defer close(reorgChan)
+		defer close(doneChan)
 		defer cancel()
 		defer safeCancel()
 
-		select {
-		case lndConf, ok := <-event.Confirmed:
-			if !ok {
-				return
-			}
-
-			conf := &chainsource.TxConfirmation{
-				BlockHash:   lndConf.BlockHash,
-				BlockHeight: lndConf.BlockHeight,
-				TxIndex:     lndConf.TxIndex,
-				Tx:          lndConf.Tx,
-				Block:       lndConf.Block,
-			}
-
+		for {
 			select {
-			case confChan <- conf:
+			case lndConf, ok := <-event.Confirmed:
+				if !ok {
+					return
+				}
+
+				conf := &chainsource.TxConfirmation{
+					BlockHash:   lndConf.BlockHash,
+					BlockHeight: lndConf.BlockHeight,
+					TxIndex:     lndConf.TxIndex,
+					Tx:          lndConf.Tx,
+					Block:       lndConf.Block,
+				}
+
+				if !forwardValue(notifyCtx, confChan, conf) {
+					return
+				}
+				if doneOrder.ObservePositive() {
+					forwardValue(
+						notifyCtx, doneChan, struct{}{},
+					)
+
+					return
+				}
+
+			case _, ok := <-event.NegativeConf:
+				if !ok {
+					event.NegativeConf = nil
+
+					continue
+				}
+
+				if !forwardValue(
+					notifyCtx, reorgChan, uint64(0),
+				) {
+					return
+				}
+				doneOrder.ObserveReorg()
+
+			case _, ok := <-event.Done:
+				if !ok {
+					event.Done = nil
+
+					continue
+				}
+				if !doneOrder.ObserveDone() {
+					event.Done = nil
+
+					continue
+				}
+
+				forwardValue(
+					notifyCtx, doneChan, struct{}{},
+				)
+
+				return
+
 			case <-notifyCtx.Done():
 				return
 			}
-
-		case <-notifyCtx.Done():
-			return
 		}
 	}()
 
 	return &chainsource.ConfRegistration{
 		Confirmed: confChan,
+		Reorged:   reorgChan,
+		Done:      doneChan,
 		Cancel: func() {
 			cancel()
 			safeCancel()
@@ -641,40 +718,94 @@ func (b *ChainBackend) RegisterSpend(ctx context.Context,
 		cancelOnce.Do(event.Cancel)
 	}
 
+	// Create channels to convert neutrino's spend lifecycle into our
+	// backend-agnostic types. neutrino's Reorg carries no payload, so
+	// we forward a bare struct{} signal.
 	spendChan := make(chan *chainsource.SpendDetail, 1)
+	reorgChan := make(chan uint64, 1)
+	doneChan := make(chan struct{}, 1)
 
 	go func() {
+		var doneOrder chainsource.PositiveDoneOrder
+
+		// LIFO defer: event.Cancel() first so the upstream notifier
+		// stops writing, then cancel notifyCtx so in-flight downstream
+		// sends unblock, and finally close the outgoing chans.
 		defer close(spendChan)
+		defer close(reorgChan)
+		defer close(doneChan)
 		defer cancel()
 		defer safeCancel()
 
-		select {
-		case lndSpend, ok := <-event.Spend:
-			if !ok {
-				return
-			}
-
-			spend := &chainsource.SpendDetail{
-				SpentOutPoint:     lndSpend.SpentOutPoint,
-				SpenderTxHash:     lndSpend.SpenderTxHash,
-				SpendingTx:        lndSpend.SpendingTx,
-				SpenderInputIndex: lndSpend.SpenderInputIndex,
-				SpendingHeight:    lndSpend.SpendingHeight,
-			}
-
+		for {
 			select {
-			case spendChan <- spend:
+			case lndSpend, ok := <-event.Spend:
+				if !ok {
+					return
+				}
+
+				spend := &chainsource.SpendDetail{
+					SpentOutPoint: lndSpend.SpentOutPoint,
+					SpenderTxHash: lndSpend.SpenderTxHash,
+					SpendingTx:    lndSpend.SpendingTx,
+					SpenderInputIndex: lndSpend.
+						SpenderInputIndex,
+					SpendingHeight: lndSpend.SpendingHeight,
+				}
+
+				if !forwardValue(notifyCtx, spendChan, spend) {
+					return
+				}
+				if doneOrder.ObservePositive() {
+					forwardValue(
+						notifyCtx, doneChan, struct{}{},
+					)
+
+					return
+				}
+
+			case _, ok := <-event.Reorg:
+				if !ok {
+					event.Reorg = nil
+
+					continue
+				}
+
+				if !forwardValue(
+					notifyCtx, reorgChan, uint64(0),
+				) {
+					return
+				}
+				doneOrder.ObserveReorg()
+
+			case _, ok := <-event.Done:
+				if !ok {
+					event.Done = nil
+
+					continue
+				}
+				if !doneOrder.ObserveDone() {
+					event.Done = nil
+
+					continue
+				}
+
+				forwardValue(
+					notifyCtx, doneChan, struct{}{},
+				)
+
+				return
+
 			case <-notifyCtx.Done():
 				return
 			}
-
-		case <-notifyCtx.Done():
-			return
 		}
 	}()
 
 	return &chainsource.SpendRegistration{
-		Spend: spendChan,
+		Spend:   spendChan,
+		Reorged: reorgChan,
+		Done:    doneChan,
 		Cancel: func() {
 			cancel()
 			safeCancel()
