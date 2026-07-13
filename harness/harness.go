@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	crand "crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -26,8 +27,13 @@ import (
 	"testing"
 	"time"
 
+	btcaddr "github.com/btcsuite/btcd/address/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/btcsuite/btcd/chaincfg/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/rpcclient"
+	"github.com/btcsuite/btcd/txscript/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/darepo-client/chain"
 	"github.com/lightninglabs/lndclient"
 	"github.com/lightninglabs/taproot-assets/taprpc"
@@ -1771,6 +1777,169 @@ func (h *Harness) BlockHeader(hash string) BlockHeader {
 	require.NoError(h.T, err, "getblockheader unmarshal failed")
 
 	return hdr
+}
+
+// GetRawTransaction fetches the raw transaction body for txid from
+// bitcoind and deserializes it into a wire.MsgTx. The transaction must
+// exist either in the current chain or in bitcoind's mempool;
+// `getrawtransaction` returns it via the wallet's lookup path in either
+// case for a faucet-sent tx, so callers do not need to mine first.
+func (h *Harness) GetRawTransaction(txid string) *wire.MsgTx {
+	h.T.Helper()
+
+	res, err := h.bitcoinRPCCall("getrawtransaction", txid)
+	require.NoError(h.T, err, "getrawtransaction rpc failed")
+
+	var hexStr string
+	err = json.Unmarshal(res, &hexStr)
+	require.NoError(h.T, err, "getrawtransaction unmarshal failed")
+
+	rawBytes, err := hex.DecodeString(hexStr)
+	require.NoError(h.T, err, "decode raw tx hex failed")
+
+	tx := wire.NewMsgTx(2)
+	err = tx.Deserialize(bytes.NewReader(rawBytes))
+	require.NoError(h.T, err, "deserialize raw tx failed")
+
+	return tx
+}
+
+// SignedV3Tx builds a TRUC (v3) transaction that sends `amount` to
+// `destPkScript`, uses one of bitcoind's wallet UTXOs as input, and
+// returns it fully signed but NOT broadcast. The change output goes
+// back to a fresh address from bitcoind's wallet.
+//
+// This helper exists for reorg systests that need to feed a v3 tx into
+// txconfirm: bitcoind's `sendtoaddress` faucet path produces v2 txs,
+// and txconfirm's CPFP broadcaster enforces v3/TRUC at the version
+// gate. Building the v3 tx ourselves and letting txconfirm broadcast
+// it is the cleanest way to exercise the full tracked-tx lifecycle on
+// a freshly-mined chain entry.
+//
+// Fee rate is fixed at 5 sat/vB — well above any regtest min-relay-fee
+// floor and small enough that the leftover change is reusable.
+func (h *Harness) SignedV3Tx(destPkScript []byte,
+	amount btcutil.Amount) *wire.MsgTx {
+
+	h.T.Helper()
+
+	h.bitcoindEnsureWallet()
+
+	// Find a confirmed wallet UTXO with enough value to cover the
+	// destination + change + a generous fee.
+	utxoTxid, utxoVout, utxoValueBTC := h.bitcoindFirstSpendableUTXO()
+	utxoValue := btcutil.Amount(utxoValueBTC * btcutil.SatoshiPerBitcoin)
+
+	feeSat := btcutil.Amount(2_000) // ~5 sat/vB on a ~400 vB tx.
+	require.Greater(
+		h.T, utxoValue, amount+feeSat,
+		"selected UTXO not large enough for destination + fee",
+	)
+	changeSat := utxoValue - amount - feeSat
+
+	// Fresh change address.
+	changeAddrRes, err := h.bitcoinRPCCall("getnewaddress")
+	require.NoError(h.T, err, "getnewaddress for change failed")
+	var changeAddrStr string
+	require.NoError(
+		h.T, json.Unmarshal(changeAddrRes, &changeAddrStr),
+		"getnewaddress unmarshal failed",
+	)
+	changeAddr, err := btcaddr.DecodeAddress(
+		changeAddrStr, &chaincfg.RegressionNetParams,
+	)
+	require.NoError(h.T, err, "decode change address failed")
+	changePkScript, err := txscript.PayToAddrScript(changeAddr)
+	require.NoError(h.T, err, "derive change pkScript failed")
+
+	// Build the unsigned v3 tx.
+	tx := wire.NewMsgTx(3)
+	prevHash, err := chainhash.NewHashFromStr(utxoTxid)
+	require.NoError(h.T, err, "parse selected UTXO txid")
+	tx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: wire.OutPoint{
+			Hash: *prevHash, Index: utxoVout,
+		},
+		Sequence: wire.MaxTxInSequenceNum - 1,
+	})
+	tx.AddTxOut(&wire.TxOut{
+		Value:    int64(amount),
+		PkScript: destPkScript,
+	})
+	tx.AddTxOut(&wire.TxOut{
+		Value:    int64(changeSat),
+		PkScript: changePkScript,
+	})
+
+	// Hex-encode and ask bitcoind to sign.
+	var unsignedBuf bytes.Buffer
+	require.NoError(
+		h.T, tx.Serialize(&unsignedBuf),
+		"serialize unsigned v3 tx",
+	)
+	unsignedHex := hex.EncodeToString(unsignedBuf.Bytes())
+
+	signRes, err := h.bitcoinRPCCall(
+		"signrawtransactionwithwallet", unsignedHex,
+	)
+	require.NoError(h.T, err, "signrawtransactionwithwallet failed")
+
+	var signResult struct {
+		Hex      string `json:"hex"`
+		Complete bool   `json:"complete"`
+	}
+	require.NoError(
+		h.T, json.Unmarshal(signRes, &signResult),
+		"signrawtransactionwithwallet unmarshal failed",
+	)
+	require.True(
+		h.T, signResult.Complete, "tx signing incomplete: %s",
+		signResult.Hex,
+	)
+
+	signedBytes, err := hex.DecodeString(signResult.Hex)
+	require.NoError(h.T, err, "decode signed v3 tx hex failed")
+
+	signed := wire.NewMsgTx(3)
+	require.NoError(
+		h.T,
+		signed.Deserialize(
+			bytes.NewReader(signedBytes),
+		),
+		"deserialize signed v3 tx failed",
+	)
+	require.Equal(
+		h.T, int32(3), signed.Version,
+		"signing must preserve v3 version",
+	)
+
+	return signed
+}
+
+// bitcoindFirstSpendableUTXO picks the first confirmed wallet UTXO via
+// `listunspent` and returns its txid, vout, and amount in BTC.
+func (h *Harness) bitcoindFirstSpendableUTXO() (string, uint32, float64) {
+	h.T.Helper()
+
+	// Restrict to confirmed and spendable; bitcoind defaults are
+	// already minconf=1, maxconf=9999999.
+	res, err := h.bitcoinRPCCall("listunspent")
+	require.NoError(h.T, err, "listunspent rpc failed")
+
+	var utxos []struct {
+		Txid   string  `json:"txid"`
+		Vout   uint32  `json:"vout"`
+		Amount float64 `json:"amount"`
+	}
+	require.NoError(
+		h.T, json.Unmarshal(res, &utxos),
+		"listunspent unmarshal failed",
+	)
+	require.NotEmpty(h.T, utxos, "no spendable wallet UTXOs")
+
+	first := utxos[0]
+
+	return first.Txid, first.Vout, first.Amount
 }
 
 // Faucet funds a test address by sending the specified amount from bitcoind's

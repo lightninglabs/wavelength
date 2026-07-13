@@ -212,6 +212,13 @@ func (h *SysTestHarness) NewChainSourceActor() actor.ActorRef[
 		chainsource.ChainSourceConfig{
 			Backend: backend,
 			System:  h.actorSystem,
+			// Mirror the production wiring so systests that
+			// register reorg-aware conf/spend watches do not
+			// leak per-watch sub-actors past test teardown:
+			// the lndclient backend never writes the upstream
+			// Done channel, so without height-based synthesis
+			// reorg-aware watches would stay open forever.
+			FinalityDepth: chainsource.DefaultFinalityDepth,
 		}.WithLogger(
 			h.SubLogger(chainsource.Subsystem),
 		),
