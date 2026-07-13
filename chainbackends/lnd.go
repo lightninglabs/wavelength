@@ -27,6 +27,20 @@ import (
 // unexported there and so must be matched by value.
 const lndNeutrinoBroadcastMsg = "broadcast-unverified"
 
+// reorgSignalBufferSize bounds the buffered reorg notifications forwarded
+// from lnd's notifier to a chainsource registration. The forwarder sends
+// to this channel with a blocking send, so a full buffer head-of-line
+// blocks delivery of unrelated Confirmed / Done events on the same
+// forwarder goroutine. A reorg burst (e.g. a multi-block reorg emitting
+// one NegativeConf per disconnected block) can produce several signals
+// back-to-back; sizing the buffer to absorb a typical reorg depth keeps
+// the forwarder moving. The signal is coalescing — the consumer
+// re-queries chain state on any reorg — so exact depth need not be
+// preserved; the buffer only needs to be deep enough to avoid stalling,
+// not to record every event. Eight comfortably covers realistic reorg
+// depths while staying negligible in memory.
+const reorgSignalBufferSize = 8
+
 // TxBroadcaster is a minimal interface for broadcasting transactions. This
 // allows LNDBackend to work with both lnwallet.WalletController (in-process
 // lnd) and lndclient wrappers (remote lnd via gRPC).
@@ -330,37 +344,98 @@ func (b *LNDBackend) RegisterConf(ctx context.Context, txid *chainhash.Hash,
 	// context is released.
 	notifyCtx, cancel := context.WithCancel(context.Background())
 
-	// Create a channel to convert lnd's TxConfirmation to our type.
+	// Create channels to convert lnd's confirmation lifecycle to our
+	// backend-agnostic types. NegativeConf carries a reorg depth that
+	// the lndclient gRPC transport cannot preserve, so we forward the
+	// forwarder's sequence number instead (see below).
 	confChan := make(chan *chainsource.TxConfirmation, 1)
+	reorgChan := make(chan uint64, reorgSignalBufferSize)
+	doneChan := make(chan struct{}, 1)
 
 	go func() {
+		// seq is a per-registration monotonic counter stamped onto
+		// every Confirmed and Reorged signal in the order this single
+		// forwarder goroutine observes them. Confirmed and Reorged
+		// leave on separate channels, so a select over both at any
+		// downstream hop (here, and again in the chainsource conf
+		// actor) cannot recover their order; the shared sequence lets
+		// the final consumer apply highest-seq-wins and discard a
+		// stale signal that lost a cross-channel race. This goroutine
+		// is the single authoritative ordering point — whatever order
+		// it reads lnd's channels in is the order the consumer honors.
+		var seq uint64
+		// Defers run in LIFO order. event.Cancel() must run first so
+		// the upstream notifier stops writing to its internal
+		// channels before we cancel notifyCtx (which any in-flight
+		// downstream sends are still using) and finally close the
+		// outgoing chans. Reversing this order would race the
+		// upstream notifier against closed channels.
 		defer close(confChan)
+		defer close(reorgChan)
+		defer close(doneChan)
 		defer cancel()
 		defer event.Cancel()
 
-		select {
-		case lndConf, ok := <-event.Confirmed:
-			if !ok {
+		for {
+			select {
+			case lndConf, ok := <-event.Confirmed:
+				if !ok {
+					return
+				}
+
+				seq++
+				conf := &chainsource.TxConfirmation{
+					BlockHash:   lndConf.BlockHash,
+					BlockHeight: lndConf.BlockHeight,
+					TxIndex:     lndConf.TxIndex,
+					Tx:          lndConf.Tx,
+					Block:       lndConf.Block,
+					Seq:         seq,
+				}
+
+				select {
+				case confChan <- conf:
+				case <-notifyCtx.Done():
+					return
+				}
+
+			case _, ok := <-event.NegativeConf:
+				if !ok {
+					event.NegativeConf = nil
+					continue
+				}
+
+				seq++
+				select {
+				case reorgChan <- seq:
+				case <-notifyCtx.Done():
+					return
+				}
+
+			case _, ok := <-event.Done:
+				if !ok {
+					event.Done = nil
+					continue
+				}
+
+				select {
+				case doneChan <- struct{}{}:
+				case <-notifyCtx.Done():
+					return
+				}
+
+				return
+
+			case <-notifyCtx.Done():
 				return
 			}
-
-			conf := &chainsource.TxConfirmation{
-				BlockHash:   lndConf.BlockHash,
-				BlockHeight: lndConf.BlockHeight,
-				TxIndex:     lndConf.TxIndex,
-				Tx:          lndConf.Tx,
-				Block:       lndConf.Block,
-			}
-
-			confChan <- conf
-
-		case <-notifyCtx.Done():
-			return
 		}
 	}()
 
 	return &chainsource.ConfRegistration{
 		Confirmed: confChan,
+		Reorged:   reorgChan,
+		Done:      doneChan,
 		Cancel: func() {
 			cancel()
 			event.Cancel()
@@ -393,39 +468,97 @@ func (b *LNDBackend) RegisterSpend(ctx context.Context, outpoint *wire.OutPoint,
 	// Keep spend delivery alive independently of the actor request context.
 	notifyCtx, cancel := context.WithCancel(context.Background())
 
-	// Create a channel to convert lnd's SpendDetail to our type.
+	// Create channels to convert lnd's spend lifecycle to our
+	// backend-agnostic types. lnd's spend Reorg carries no payload, so
+	// we forward the forwarder's sequence number instead (see below).
 	spendChan := make(chan *chainsource.SpendDetail, 1)
+	reorgChan := make(chan uint64, reorgSignalBufferSize)
+	doneChan := make(chan struct{}, 1)
 
-	// Start a goroutine to convert and forward the spend.
+	// Start a goroutine to convert and forward spend lifecycle events.
 	go func() {
+		// seq is a per-registration monotonic counter stamped onto
+		// every Spend and Reorged signal in the order this single
+		// forwarder observes them. Spend and Reorged leave on separate
+		// channels, so a downstream select cannot recover their order;
+		// the shared sequence lets the final consumer apply
+		// highest-seq-wins and discard a stale signal that lost a
+		// cross-channel race. This goroutine is the single
+		// authoritative ordering point.
+		var seq uint64
+		// Defer order is LIFO: event.Cancel() stops the upstream
+		// notifier first, then cancel() ends notifyCtx, and only
+		// then are the outgoing channels closed. This avoids a race
+		// where the upstream notifier writes to a freshly-closed
+		// downstream channel.
 		defer close(spendChan)
+		defer close(reorgChan)
+		defer close(doneChan)
 		defer cancel()
 		defer event.Cancel()
 
-		select {
-		case lndSpend, ok := <-event.Spend:
-			if !ok {
+		for {
+			select {
+			case lndSpend, ok := <-event.Spend:
+				if !ok {
+					return
+				}
+
+				// Convert to our type.
+				seq++
+				spend := &chainsource.SpendDetail{
+					SpentOutPoint: lndSpend.SpentOutPoint,
+					SpenderTxHash: lndSpend.SpenderTxHash,
+					SpendingTx:    lndSpend.SpendingTx,
+					SpenderInputIndex: lndSpend.
+						SpenderInputIndex,
+					SpendingHeight: lndSpend.SpendingHeight,
+					Seq:            seq,
+				}
+
+				select {
+				case spendChan <- spend:
+				case <-notifyCtx.Done():
+					return
+				}
+
+			case _, ok := <-event.Reorg:
+				if !ok {
+					event.Reorg = nil
+					continue
+				}
+
+				seq++
+				select {
+				case reorgChan <- seq:
+				case <-notifyCtx.Done():
+					return
+				}
+
+			case _, ok := <-event.Done:
+				if !ok {
+					event.Done = nil
+					continue
+				}
+
+				select {
+				case doneChan <- struct{}{}:
+				case <-notifyCtx.Done():
+					return
+				}
+
+				return
+
+			case <-notifyCtx.Done():
 				return
 			}
-
-			// Convert to our type.
-			spend := &chainsource.SpendDetail{
-				SpentOutPoint:     lndSpend.SpentOutPoint,
-				SpenderTxHash:     lndSpend.SpenderTxHash,
-				SpendingTx:        lndSpend.SpendingTx,
-				SpenderInputIndex: lndSpend.SpenderInputIndex,
-				SpendingHeight:    lndSpend.SpendingHeight,
-			}
-
-			spendChan <- spend
-
-		case <-notifyCtx.Done():
-			return
 		}
 	}()
 
 	return &chainsource.SpendRegistration{
-		Spend: spendChan,
+		Spend:   spendChan,
+		Reorged: reorgChan,
+		Done:    doneChan,
 		Cancel: func() {
 			cancel()
 			event.Cancel()
