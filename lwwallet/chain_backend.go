@@ -16,6 +16,7 @@ import (
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/chainsource"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -42,6 +43,29 @@ const (
 // raise Esplora load over the default poll cadence.
 const recheckHeartbeatInterval = 60 * time.Second
 
+// regState is the lifecycle state of a conf/spend registration.
+//
+// stateWatching: no positive event has been delivered yet (or the
+// last positive event was reorged out). The next checkSingle... that
+// finds the tx confirmed / outpoint spent will emit Confirmed /
+// Spend and transition to statePositive.
+//
+// statePositive: a Confirmed / Spend event has been delivered and the
+// associated block-hash is cached on the registration. The next
+// checkSingle... that does NOT find the tx confirmed / outpoint
+// spent in the same block leaves the registration alone (the
+// chainsource actor handles Done synthesis at FinalityDepth via
+// block epochs). A reorg event that names the cached block-hash in
+// its Disconnected set fires Reorged, resets cached state, and
+// transitions back to stateWatching so the next re-check can fire
+// Confirmed / Spend again on the new chain.
+type regState uint8
+
+const (
+	stateWatching regState = iota
+	statePositive
+)
+
 // confRegistration tracks a pending confirmation registration within the
 // polling loop.
 type confRegistration struct {
@@ -63,8 +87,37 @@ type confRegistration struct {
 	// confChan is the channel to send the confirmation on.
 	confChan chan *chainsource.TxConfirmation
 
+	// reorgChan is the channel that fires when a previously delivered
+	// confirmation is reorged out of the canonical chain. Buffered to
+	// 1; never written by the backend before stateWatching has been
+	// re-entered. The value is the chainsource ordering sequence; this
+	// backend does not stamp sequences (it emits conf/reorg from a
+	// single ordered handler goroutine), so it always sends 0, which
+	// the chainsource actor treats as always-apply.
+	reorgChan chan uint64
+
+	// doneChan is allocated for API symmetry with the chainsource
+	// contract. The Esplora-backed backend does not write to it: the
+	// chainsource ConfActor synthesizes Done at FinalityDepth from
+	// block epochs once the backend stops re-firing events.
+	doneChan chan struct{}
+
 	// cancelCh signals that this registration has been cancelled.
 	cancelCh chan struct{}
+
+	// regMu guards the fields below that mutate over the
+	// registration's lifetime. It is held only briefly during state
+	// transitions; channel sends are performed without it.
+	regMu sync.Mutex
+
+	// state is the current lifecycle state.
+	state regState
+
+	// lastBlockHash is the BlockHash of the last delivered
+	// confirmation when state == statePositive. Used to detect when
+	// a reorg's Disconnected hash list invalidates this
+	// registration's last event.
+	lastBlockHash chainhash.Hash
 }
 
 // spendRegistration tracks a pending spend registration within the
@@ -82,8 +135,34 @@ type spendRegistration struct {
 	// spendChan is the channel to send the spend detail on.
 	spendChan chan *chainsource.SpendDetail
 
+	// reorgChan is the channel that fires when a previously delivered
+	// spend is reorged out of the canonical chain. Buffered to 1.
+	reorgChan chan uint64
+
+	// doneChan is allocated for API symmetry with the chainsource
+	// contract. The Esplora-backed backend does not write to it: the
+	// chainsource SpendActor synthesizes Done at FinalityDepth.
+	doneChan chan struct{}
+
 	// cancelCh signals that this registration has been cancelled.
 	cancelCh chan struct{}
+
+	// regMu guards the fields below.
+	regMu sync.Mutex
+
+	// state is the current lifecycle state.
+	state regState
+
+	// lastSpenderHash is the SpenderTxHash of the last delivered
+	// spend when state == statePositive.
+	lastSpenderHash chainhash.Hash
+
+	// lastSpendingBlockHash is the block hash that the last
+	// delivered spend confirmed in, parsed from the same
+	// outspend response that confirmed the spend. Reorg
+	// comparison against ReorgEvent.Disconnected uses this so
+	// the spend-watch path does not need an extra HTTP round-trip.
+	lastSpendingBlockHash chainhash.Hash
 }
 
 // blockRegistration tracks a block epoch subscription.
@@ -205,7 +284,8 @@ func (b *ChainBackend) Start() error {
 		}
 	}
 
-	height, hash, _, sub, err := b.tipPoller.BestBlockAndSubscribe()
+	height, hash, _, chainSub, err :=
+		b.tipPoller.BestBlockAndSubscribeChain()
 	if err != nil {
 		return fmt.Errorf("subscribe to tip poller: %w", err)
 	}
@@ -216,7 +296,7 @@ func (b *ChainBackend) Start() error {
 	b.mu.Unlock()
 
 	b.wg.Add(1)
-	go b.handleTipEvents(sub)
+	go b.handleChainEvents(chainSub)
 
 	b.log.InfoS(context.Background(), "Chain backend started",
 		slog.Int("tip_height", int(height)),
@@ -388,11 +468,20 @@ func (b *ChainBackend) SubmitPackage(ctx context.Context, parents []*wire.MsgTx,
 }
 
 // RegisterConf registers for confirmation notifications of a transaction.
+// The registration is reorg-aware: the returned ConfRegistration's
+// Reorged channel fires when a previously delivered confirmation is
+// reorged out of the canonical chain, and the Confirmed channel may
+// fire again when the tx re-confirms on the new chain. The Done
+// channel is allocated but never written by this backend; the
+// chainsource ConfActor synthesizes Done at its configured
+// FinalityDepth using block epochs.
 func (b *ChainBackend) RegisterConf(ctx context.Context, txid *chainhash.Hash,
 	pkScript []byte, numConfs uint32, heightHint uint32,
 	includeBlock bool) (*chainsource.ConfRegistration, error) {
 
 	confChan := make(chan *chainsource.TxConfirmation, 1)
+	reorgChan := make(chan uint64, 1)
+	doneChan := make(chan struct{}, 1)
 	cancelCh := make(chan struct{})
 
 	reg := &confRegistration{
@@ -402,6 +491,8 @@ func (b *ChainBackend) RegisterConf(ctx context.Context, txid *chainhash.Hash,
 		heightHint:   heightHint,
 		includeBlock: includeBlock,
 		confChan:     confChan,
+		reorgChan:    reorgChan,
+		doneChan:     doneChan,
 		cancelCh:     cancelCh,
 	}
 
@@ -424,11 +515,7 @@ func (b *ChainBackend) RegisterConf(ctx context.Context, txid *chainhash.Hash,
 	)
 
 	cancelFn := func() {
-		close(cancelCh)
-
-		b.mu.Lock()
-		delete(b.confRegs, id)
-		b.mu.Unlock()
+		b.cancelConfReg(id, reg)
 	}
 
 	// Run an immediate single-shot check scoped to JUST this
@@ -450,16 +537,41 @@ func (b *ChainBackend) RegisterConf(ctx context.Context, txid *chainhash.Hash,
 
 	return &chainsource.ConfRegistration{
 		Confirmed: confChan,
+		Reorged:   reorgChan,
+		Done:      doneChan,
 		Cancel:    cancelFn,
 	}, nil
+}
+
+// cancelConfReg tears down a confirmation registration. It is safe
+// to invoke from any state; the close(cancelCh) is guarded by a
+// once-style check to make double-Cancel a no-op.
+func (b *ChainBackend) cancelConfReg(id uint64, reg *confRegistration) {
+	reg.regMu.Lock()
+	select {
+	case <-reg.cancelCh:
+		// Already cancelled.
+		reg.regMu.Unlock()
+
+		return
+
+	default:
+	}
+	close(reg.cancelCh)
+	reg.regMu.Unlock()
+
+	b.mu.Lock()
+	delete(b.confRegs, id)
+	b.mu.Unlock()
 }
 
 // runConfOneShot performs the per-registration confirmation check
 // triggered at RegisterConf time. It snapshots the current best
 // height under the chain backend's lock, asks Esplora for this one
 // registration's status, and delivers the result if confirmed. The
-// goroutine exits on any of: cancellation, stopCh closure, a
-// successful delivery, or a non-confirmed status.
+// registration is NOT deleted after delivery: a reorg may later
+// reset it to stateWatching and the next re-check must fire
+// Confirmed again on the new chain.
 func (b *ChainBackend) runConfOneShot(id uint64, reg *confRegistration) {
 	defer b.wg.Done()
 
@@ -477,10 +589,48 @@ func (b *ChainBackend) runConfOneShot(id uint64, reg *confRegistration) {
 	currentHeight := b.bestHeight
 	b.mu.Unlock()
 
+	b.deliverConfIfNew(id, reg, currentHeight)
+}
+
+// deliverConfIfNew runs a confirmation re-check and fires the
+// Confirmed channel iff the registration is in stateWatching and a
+// confirmation is now available. It is the single delivery path
+// shared by the one-shot at registration time and the broad
+// re-check driven by tip / reorg events. The registration's regMu
+// is held only across the state read and the state transition; the
+// channel send happens outside the lock so a slow consumer never
+// blocks the broad re-check goroutine.
+func (b *ChainBackend) deliverConfIfNew(id uint64, reg *confRegistration,
+	currentHeight int32) {
+
+	reg.regMu.Lock()
+	if reg.state == statePositive {
+		reg.regMu.Unlock()
+
+		return
+	}
+	reg.regMu.Unlock()
+
 	conf := b.checkSingleConf(reg, currentHeight)
 	if conf == nil {
 		return
 	}
+
+	// Re-check state under the lock: a concurrent reorg handler
+	// could have flipped us back to stateWatching after the check
+	// started, but it could not have flipped us forward to
+	// statePositive (that's exclusively this function's job).
+	reg.regMu.Lock()
+	if reg.state == statePositive {
+		reg.regMu.Unlock()
+
+		return
+	}
+	reg.state = statePositive
+	if conf.BlockHash != nil {
+		reg.lastBlockHash = *conf.BlockHash
+	}
+	reg.regMu.Unlock()
 
 	select {
 	case reg.confChan <- conf:
@@ -493,22 +643,26 @@ func (b *ChainBackend) runConfOneShot(id uint64, reg *confRegistration) {
 
 	b.log.DebugS(
 		context.Background(),
-		"Confirmation registration fulfilled (one-shot)",
+		"Confirmation registration fulfilled",
 		slog.Uint64("reg_id", id),
 		slog.Int("block_height", int(conf.BlockHeight)),
 	)
-
-	b.mu.Lock()
-	delete(b.confRegs, id)
-	b.mu.Unlock()
 }
 
 // RegisterSpend registers for spend notifications of a transaction output.
+// The registration is reorg-aware: the returned SpendRegistration's
+// Reorged channel fires when a previously delivered spend is reorged
+// out of the canonical chain, and the Spend channel may fire again
+// when the outpoint is re-spent on the new chain. The Done channel
+// is allocated but never written by this backend; the chainsource
+// SpendActor synthesizes Done at its configured FinalityDepth.
 func (b *ChainBackend) RegisterSpend(ctx context.Context,
 	outpoint *wire.OutPoint, pkScript []byte, heightHint uint32) (
 	*chainsource.SpendRegistration, error) {
 
 	spendChan := make(chan *chainsource.SpendDetail, 1)
+	reorgChan := make(chan uint64, 1)
+	doneChan := make(chan struct{}, 1)
 	cancelCh := make(chan struct{})
 
 	reg := &spendRegistration{
@@ -516,6 +670,8 @@ func (b *ChainBackend) RegisterSpend(ctx context.Context,
 		pkScript:   pkScript,
 		heightHint: heightHint,
 		spendChan:  spendChan,
+		reorgChan:  reorgChan,
+		doneChan:   doneChan,
 		cancelCh:   cancelCh,
 	}
 
@@ -537,11 +693,7 @@ func (b *ChainBackend) RegisterSpend(ctx context.Context,
 	)
 
 	cancelFn := func() {
-		close(cancelCh)
-
-		b.mu.Lock()
-		delete(b.spendRegs, id)
-		b.mu.Unlock()
+		b.cancelSpendReg(id, reg)
 	}
 
 	// Per-registration one-shot to handle outpoints that are
@@ -552,16 +704,37 @@ func (b *ChainBackend) RegisterSpend(ctx context.Context,
 	go b.runSpendOneShot(id, reg)
 
 	return &chainsource.SpendRegistration{
-		Spend:  spendChan,
-		Cancel: cancelFn,
+		Spend:   spendChan,
+		Reorged: reorgChan,
+		Done:    doneChan,
+		Cancel:  cancelFn,
 	}, nil
 }
 
+// cancelSpendReg tears down a spend registration. Idempotent: a
+// double-Cancel is treated as a no-op.
+func (b *ChainBackend) cancelSpendReg(id uint64, reg *spendRegistration) {
+	reg.regMu.Lock()
+	select {
+	case <-reg.cancelCh:
+		reg.regMu.Unlock()
+
+		return
+
+	default:
+	}
+	close(reg.cancelCh)
+	reg.regMu.Unlock()
+
+	b.mu.Lock()
+	delete(b.spendRegs, id)
+	b.mu.Unlock()
+}
+
 // runSpendOneShot performs the per-registration spend check
-// triggered at RegisterSpend time. It exits on cancellation, stopCh
-// closure, a successful delivery, or any non-spent / unconfirmed
-// status; the broad checkSpends called from processTipEvent re-runs
-// it on every tip advance.
+// triggered at RegisterSpend time. The registration is NOT deleted
+// after delivery: a reorg may later reset it to stateWatching and
+// the next re-check must fire Spend again on the new chain.
 func (b *ChainBackend) runSpendOneShot(id uint64, reg *spendRegistration) {
 	defer b.wg.Done()
 
@@ -579,10 +752,45 @@ func (b *ChainBackend) runSpendOneShot(id uint64, reg *spendRegistration) {
 		return
 	}
 
-	detail := b.checkSingleSpend(reg)
+	b.deliverSpendIfNew(id, reg)
+}
+
+// deliverSpendIfNew runs a spend re-check and fires the Spend
+// channel iff the registration is in stateWatching and a spend is
+// now available. Mirror of deliverConfIfNew; see that function's
+// comment for the regMu / channel-send ordering rationale.
+func (b *ChainBackend) deliverSpendIfNew(id uint64, reg *spendRegistration) {
+	reg.regMu.Lock()
+	if reg.state == statePositive {
+		reg.regMu.Unlock()
+
+		return
+	}
+	reg.regMu.Unlock()
+
+	// checkSingleSpend returns the spending block hash alongside
+	// the detail (parsed from the same /outspend response that
+	// confirmed the spend). A zero hash here means the response
+	// did not parse and reorgSpendReg will fall back to a
+	// conservative re-check rather than try to match against
+	// ReorgEvent.Disconnected.
+	detail, spendingBlockHash := b.checkSingleSpend(reg)
 	if detail == nil {
 		return
 	}
+
+	reg.regMu.Lock()
+	if reg.state == statePositive {
+		reg.regMu.Unlock()
+
+		return
+	}
+	reg.state = statePositive
+	if detail.SpenderTxHash != nil {
+		reg.lastSpenderHash = *detail.SpenderTxHash
+	}
+	reg.lastSpendingBlockHash = spendingBlockHash
+	reg.regMu.Unlock()
 
 	select {
 	case reg.spendChan <- detail:
@@ -594,15 +802,11 @@ func (b *ChainBackend) runSpendOneShot(id uint64, reg *spendRegistration) {
 	}
 
 	b.log.DebugS(context.Background(),
-		"Spend registration fulfilled (one-shot)",
+		"Spend registration fulfilled",
 		slog.Uint64("reg_id", id),
 		slog.String("outpoint", reg.outpoint.String()),
 		slog.String("spender_txid",
 			detail.SpenderTxHash.String()))
-
-	b.mu.Lock()
-	delete(b.spendRegs, id)
-	b.mu.Unlock()
 }
 
 // RegisterBlocks registers for new block notifications.
@@ -637,17 +841,258 @@ func (b *ChainBackend) RegisterBlocks(_ context.Context) (
 	}, nil
 }
 
-// handleTipEvents drains TipBlock events from the shared poller and
-// translates them into chain backend work: emit a BlockEpoch to each
-// block-registration subscriber, advance the cached tip, and re-check
-// pending confirmation/spend registrations.
-//
-// On stopCh the loop exits and cancels its subscription so the
-// poller does not waste effort fanning to a dead consumer. The
-// subscription's Quit channel covers the inverse direction: if the
-// poller is shut down externally, we exit promptly without waiting
-// for stopCh.
-func (b *ChainBackend) handleTipEvents(sub *TipSubscription) {
+// processReorgEvent reconciles all active registrations with one
+// ReorgEvent. It is invoked from the unified handleChainEvents
+// goroutine in producer order: a ReorgEvent is fully processed
+// (registration state reset, Reorged channels fired) before any
+// subsequent TipBlock dispatches block epochs or runs broad
+// re-check on the replacement chain. Registrations whose last
+// positive event names a disconnected hash are reset and
+// re-checked; all others are left alone (the broad tip-driven
+// re-check still runs separately).
+func (b *ChainBackend) processReorgEvent(event *ReorgEvent) {
+	if event == nil {
+		return
+	}
+
+	b.log.InfoS(context.Background(), "Processing reorg",
+		slog.Int("fork_height", int(event.ForkHeight)),
+		slog.Int("disconnected", len(event.Disconnected)),
+		slog.Int("connected", len(event.Connected)),
+	)
+
+	disconnectedSet := make(
+		map[chainhash.Hash]struct{}, len(event.Disconnected),
+	)
+	for _, hash := range event.Disconnected {
+		disconnectedSet[hash] = struct{}{}
+	}
+
+	// Snapshot the registration sets under the chain backend
+	// lock so we don't hold it across the per-registration
+	// channel sends below.
+	b.mu.Lock()
+	confRegs := make(map[uint64]*confRegistration, len(b.confRegs))
+	for id, reg := range b.confRegs {
+		confRegs[id] = reg
+	}
+	spendRegs := make(map[uint64]*spendRegistration, len(b.spendRegs))
+	for id, reg := range b.spendRegs {
+		spendRegs[id] = reg
+	}
+	currentHeight := b.bestHeight
+	b.mu.Unlock()
+
+	for id, reg := range confRegs {
+		b.reorgConfReg(id, reg, disconnectedSet, currentHeight)
+	}
+	for id, reg := range spendRegs {
+		b.reorgSpendReg(id, reg, disconnectedSet)
+	}
+}
+
+// reorgConfReg processes one confirmation registration against a
+// reorg event. If the registration is in statePositive and its
+// last-known block hash is in disconnectedSet, fire Reorged, reset
+// to stateWatching, and run a fresh check that may immediately
+// fire Confirmed against the new chain.
+func (b *ChainBackend) reorgConfReg(id uint64, reg *confRegistration,
+	disconnectedSet map[chainhash.Hash]struct{}, currentHeight int32) {
+
+	select {
+	case <-reg.cancelCh:
+		return
+
+	default:
+	}
+
+	reg.regMu.Lock()
+	if reg.state != statePositive {
+		reg.regMu.Unlock()
+
+		return
+	}
+	cachedHash := reg.lastBlockHash
+	reg.regMu.Unlock()
+
+	// Fast path: the registration's cached block hash appears in
+	// the reorg event's disconnected set. This covers every
+	// reorg of a block we previously broadcast.
+	_, fastHit := disconnectedSet[cachedHash]
+
+	if !fastHit {
+		// Fallback: the registration may have delivered against
+		// a block older than the poller's seeded hash history
+		// (e.g. on a fresh daemon where RegisterConf landed an
+		// immediate historical positive). The reorg's
+		// disconnected set is bounded by recentHashes, so a
+		// reorg deep enough to invalidate that historical block
+		// would not appear here. Re-query canonical status and
+		// compare against the cached block hash.
+		//
+		// confirmedBlockHash returns a tri-state so we never
+		// fire a spurious reorg: Some(h) means the tx is still
+		// confirmed in block h (independent of the numConfs
+		// threshold), None means it is definitively unconfirmed,
+		// and a non-nil error means canonical status could not
+		// be determined right now.
+		gotHash, err := b.confirmedBlockHash(reg)
+		switch {
+		// Transient backend failure: we cannot tell whether this
+		// is a reorg. Leave the registration in statePositive and
+		// bail; a later tip or reorg event re-evaluates once the
+		// backend recovers. Firing Reorged here would strand the
+		// consumer on a false alarm.
+		case err != nil:
+			b.log.DebugS(
+				context.Background(),
+				"Skipping conf reorg eval; canonical "+
+					"status undeterminable",
+				slog.Uint64("reg_id", id),
+				btclog.Fmt("err", "%v", err),
+			)
+
+			return
+
+		// Still confirmed in the same block: definitively not a
+		// reorg of this registration.
+		case gotHash.IsSome() &&
+			gotHash.UnsafeFromSome() == cachedHash:
+			return
+		}
+
+		// Otherwise the tx is confirmed elsewhere or definitively
+		// unconfirmed: fall through and fire Reorged.
+	}
+
+	reg.regMu.Lock()
+	if reg.state != statePositive {
+		reg.regMu.Unlock()
+
+		return
+	}
+	reg.state = stateWatching
+	reg.lastBlockHash = chainhash.Hash{}
+	reg.regMu.Unlock()
+
+	// Fire Reorged non-blocking: the channel is buffered to 1
+	// and the consumer (chainsource conf actor) is single-
+	// threaded so a missed coalesced reorg is correct — the
+	// consumer will re-query state anyway.
+	select {
+	case reg.reorgChan <- uint64(0):
+	case <-reg.cancelCh:
+		return
+
+	default:
+		b.log.DebugS(
+			context.Background(),
+			"Conf reorged signal coalesced",
+			slog.Uint64("reg_id", id),
+		)
+	}
+
+	b.log.InfoS(
+		context.Background(),
+		"Conf registration reorged; re-checking",
+		slog.Uint64("reg_id", id),
+	)
+
+	// Re-check now so a re-confirmation on the new chain fires
+	// Confirmed in the same reorg-handler turn.
+	b.deliverConfIfNew(id, reg, currentHeight)
+}
+
+// reorgSpendReg is the spend-side equivalent of reorgConfReg.
+func (b *ChainBackend) reorgSpendReg(id uint64, reg *spendRegistration,
+	disconnectedSet map[chainhash.Hash]struct{}) {
+
+	select {
+	case <-reg.cancelCh:
+		return
+
+	default:
+	}
+
+	reg.regMu.Lock()
+	if reg.state != statePositive {
+		reg.regMu.Unlock()
+
+		return
+	}
+	cachedBlockHash := reg.lastSpendingBlockHash
+	cachedSpenderHash := reg.lastSpenderHash
+	reg.regMu.Unlock()
+
+	// Fast path: the cached spending-block hash appears in the
+	// reorg event's disconnected set. Empty cachedBlockHash
+	// (e.g. delivered before the outspend response was parseable)
+	// falls through to the fallback re-query rather than being
+	// treated as an automatic hit.
+	fastHit := false
+	if cachedBlockHash != (chainhash.Hash{}) {
+		_, fastHit = disconnectedSet[cachedBlockHash]
+	}
+
+	if !fastHit {
+		// Fallback: re-query canonical chain. Covers (a) regs
+		// delivered against a block older than the poller's
+		// seeded hash history, and (b) regs whose
+		// cachedBlockHash is zero because the outspend response
+		// was unparseable at delivery time. If the outpoint is
+		// still spent by the same spender in the same block,
+		// no reorg for this registration.
+		current, currentBlock := b.checkSingleSpend(reg)
+		if current != nil &&
+			current.SpenderTxHash != nil &&
+			*current.SpenderTxHash == cachedSpenderHash &&
+			cachedBlockHash != (chainhash.Hash{}) &&
+			currentBlock == cachedBlockHash {
+			return
+		}
+	}
+
+	reg.regMu.Lock()
+	if reg.state != statePositive {
+		reg.regMu.Unlock()
+
+		return
+	}
+	reg.state = stateWatching
+	reg.lastSpenderHash = chainhash.Hash{}
+	reg.lastSpendingBlockHash = chainhash.Hash{}
+	reg.regMu.Unlock()
+
+	select {
+	case reg.reorgChan <- uint64(0):
+	case <-reg.cancelCh:
+		return
+
+	default:
+		b.log.DebugS(
+			context.Background(),
+			"Spend reorged signal coalesced",
+			slog.Uint64("reg_id", id),
+		)
+	}
+
+	b.log.InfoS(
+		context.Background(),
+		"Spend registration reorged; re-checking",
+		slog.Uint64("reg_id", id),
+	)
+
+	b.deliverSpendIfNew(id, reg)
+}
+
+// handleChainEvents drains the unified chain stream and dispatches
+// each event in producer order. Using a single subscription + single
+// goroutine guarantees that a ReorgEvent is fully processed
+// (registration state reset, Reorged channels fired) before any
+// post-reorg TipBlock drives block-epoch dispatch or broad re-check
+// — otherwise a block-epoch driven Confirmed could land on a stale
+// registration before reorgConfReg has a chance to reset it.
+func (b *ChainBackend) handleChainEvents(sub *ChainSubscription) {
 	defer b.wg.Done()
 	defer sub.Cancel()
 
@@ -661,18 +1106,15 @@ func (b *ChainBackend) handleTipEvents(sub *TipSubscription) {
 				return
 			}
 
-			b.processTipEvent(event)
+			switch {
+			case event.Reorg != nil:
+				b.processReorgEvent(event.Reorg)
+
+			case event.Tip != nil:
+				b.processTipEvent(event.Tip)
+			}
 
 		case <-heartbeat.C:
-			// Re-run the broad checks even when the tip
-			// hasn't moved. Esplora's status indexer lags
-			// the block-found event by 1-3 seconds, so a
-			// processTipEvent that ran before the indexer
-			// caught up would otherwise not retry until
-			// the next block lands. Coalesced via the same
-			// singleflight keys used by processTipEvent so
-			// a tip event arriving on the same tick does
-			// not produce two parallel scans.
 			b.runRecheckHeartbeat()
 
 		case <-sub.Quit():
@@ -774,8 +1216,13 @@ func (b *ChainBackend) processTipEvent(event *TipBlock) {
 		})
 }
 
-// checkConfirmations iterates over all pending confirmation registrations
-// and checks their status via the Esplora API.
+// checkConfirmations iterates over all pending confirmation
+// registrations and re-checks their status via the Esplora API.
+// Registrations already in statePositive are skipped: the reorg
+// handler is responsible for transitioning them back to
+// stateWatching, and an unconditional re-check would just burn
+// Esplora calls for no behavior change (the chainsource actor's
+// FinalityDepth synthesis handles Done from block epochs).
 func (b *ChainBackend) checkConfirmations() {
 	b.mu.Lock()
 	regs := make(map[uint64]*confRegistration, len(b.confRegs))
@@ -794,28 +1241,7 @@ func (b *ChainBackend) checkConfirmations() {
 		default:
 		}
 
-		conf := b.checkSingleConf(reg, currentHeight)
-		if conf == nil {
-			continue
-		}
-
-		// Send the confirmation.
-		select {
-		case reg.confChan <- conf:
-		case <-reg.cancelCh:
-			continue
-		}
-
-		b.log.DebugS(context.Background(),
-			"Confirmation registration fulfilled",
-			slog.Uint64("reg_id", id),
-			slog.Int("block_height",
-				int(conf.BlockHeight)))
-
-		// Remove the fulfilled registration.
-		b.mu.Lock()
-		delete(b.confRegs, id)
-		b.mu.Unlock()
+		b.deliverConfIfNew(id, reg, currentHeight)
 	}
 }
 
@@ -948,8 +1374,73 @@ func (b *ChainBackend) checkConfByScript(reg *confRegistration,
 	return nil
 }
 
-// checkSpends iterates over all pending spend registrations and checks
-// their status via the Esplora API.
+// confirmedBlockHash reports the block hash a registration's transaction is
+// currently confirmed in, independent of the registration's numConfs
+// threshold. It exists for the reorg-detection fallback, which must
+// distinguish three states that checkSingleConf collapses into a single nil:
+//
+//   - Some(hash), nil: the tx is confirmed in block hash (any depth);
+//   - None, nil:        the tx is definitively unconfirmed (genuine reorg);
+//   - None, err:        canonical status could not be determined right now
+//     (transient backend error) — callers MUST NOT treat this as a reorg.
+//
+// Unlike checkSingleConf it never gates on numConfs, because a reorg that
+// merely reduces a tx's confirmation depth without moving it out of its block
+// is not a reorg of that registration.
+func (b *ChainBackend) confirmedBlockHash(reg *confRegistration) (
+	fn.Option[chainhash.Hash], error) {
+
+	none := fn.None[chainhash.Hash]()
+
+	// Explicit-txid registrations resolve via a direct status lookup.
+	if reg.txid != nil {
+		status, err := b.esplora.GetTxStatus(
+			context.Background(), *reg.txid,
+		)
+		if err != nil {
+			return none, err
+		}
+		if !status.Confirmed {
+			return none, nil
+		}
+
+		hash, err := chainhash.NewHashFromStr(status.BlockHash)
+		if err != nil {
+			return none, err
+		}
+
+		return fn.Some(*hash), nil
+	}
+
+	// Script registrations resolve via the first confirmed UTXO paying
+	// the watched script.
+	utxos, err := b.esplora.GetScriptUtxos(
+		context.Background(), reg.pkScript,
+	)
+	if err != nil {
+		return none, err
+	}
+
+	for _, utxo := range utxos {
+		if !utxo.Status.Confirmed {
+			continue
+		}
+
+		hash, err := chainhash.NewHashFromStr(utxo.Status.BlockHash)
+		if err != nil {
+			return none, err
+		}
+
+		return fn.Some(*hash), nil
+	}
+
+	return none, nil
+}
+
+// checkSpends iterates over all pending spend registrations and
+// re-checks their status via the Esplora API. Registrations in
+// statePositive are skipped — see checkConfirmations for the
+// rationale.
 func (b *ChainBackend) checkSpends() {
 	b.mu.Lock()
 	regs := make(map[uint64]*spendRegistration, len(b.spendRegs))
@@ -971,68 +1462,59 @@ func (b *ChainBackend) checkSpends() {
 			continue
 		}
 
-		detail := b.checkSingleSpend(reg)
-		if detail == nil {
-			continue
-		}
-
-		// Send the spend detail.
-		select {
-		case reg.spendChan <- detail:
-		case <-reg.cancelCh:
-			continue
-		}
-
-		b.log.DebugS(context.Background(),
-			"Spend registration fulfilled",
-			slog.Uint64("reg_id", id),
-			slog.String("outpoint",
-				reg.outpoint.String()),
-			slog.String(
-				"spender_txid", detail.SpenderTxHash.String(),
-			))
-
-		// Remove the fulfilled registration.
-		b.mu.Lock()
-		delete(b.spendRegs, id)
-		b.mu.Unlock()
+		b.deliverSpendIfNew(id, reg)
 	}
 }
 
 // checkSingleSpend resolves the spend status of a single spend
 // registration via Esplora. Returns nil when the outpoint is not yet
 // confirmed-spent, when any HTTP / parse error occurs, or when the
-// registration has no outpoint. The caller is responsible for
+// registration has no outpoint. The second return value is the block
+// hash containing the spending tx (parsed from outspend.Status); the
+// zero hash indicates the spending block hash was unparseable but the
+// spend itself is still valid. The caller is responsible for
 // delivery, logging, and removing the fulfilled registration; this
 // helper only resolves the on-chain question.
-func (b *ChainBackend) checkSingleSpend(
-	reg *spendRegistration) *chainsource.SpendDetail {
+func (b *ChainBackend) checkSingleSpend(reg *spendRegistration) (
+	*chainsource.SpendDetail, chainhash.Hash) {
 
 	if reg.outpoint == nil {
-		return nil
+		return nil, chainhash.Hash{}
 	}
 
 	outspend, err := b.esplora.GetOutspend(
 		context.Background(), reg.outpoint.Hash, reg.outpoint.Index,
 	)
 	if err != nil {
-		return nil
+		return nil, chainhash.Hash{}
 	}
 
 	if !outspend.Spent || !outspend.Status.Confirmed {
-		return nil
+		return nil, chainhash.Hash{}
 	}
 
 	spenderHash, err := chainhash.NewHashFromStr(outspend.Txid)
 	if err != nil {
-		return nil
+		return nil, chainhash.Hash{}
 	}
 
 	spendingTx, err := b.esplora.GetRawTx(
 		context.Background(), *spenderHash,
 	)
 	if err != nil {
-		return nil
+		return nil, chainhash.Hash{}
+	}
+
+	// outspend.Status.BlockHash is hex from the same /outspend
+	// response that confirmed the spend; an unparseable value is
+	// not fatal — the spend itself is valid and the reorg path can
+	// fall back to a conservative re-check (see reorgSpendReg).
+	var spendingBlockHash chainhash.Hash
+	if outspend.Status.BlockHash != "" {
+		h, err := chainhash.NewHashFromStr(outspend.Status.BlockHash)
+		if err == nil {
+			spendingBlockHash = *h
+		}
 	}
 
 	return &chainsource.SpendDetail{
@@ -1041,7 +1523,7 @@ func (b *ChainBackend) checkSingleSpend(
 		SpendingTx:        spendingTx,
 		SpenderInputIndex: outspend.Vin,
 		SpendingHeight:    int32(outspend.Status.BlockHeight),
-	}
+	}, spendingBlockHash
 }
 
 // Compile-time check that ChainBackend implements

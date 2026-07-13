@@ -1,6 +1,8 @@
 package lwwallet
 
 import (
+	"bytes"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"sync"
@@ -9,6 +11,7 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/stretchr/testify/require"
 )
@@ -16,28 +19,59 @@ import (
 // stubChain is a tiny test fixture that simulates an Esplora chain
 // where the tip height can be advanced under test control. It is
 // independent of the larger mockEsploraServer helper so tip-poller
-// tests can drive the chain forward synchronously.
+// tests can drive the chain forward synchronously. Each height holds
+// a real wire.BlockHeader whose PrevBlock chains back to the previous
+// height; the poller's PrevBlock continuity check on advance therefore
+// passes naturally rather than aborting.
 type stubChain struct {
 	mu        sync.Mutex
 	tipHeight int32
 
-	// hashAt[h] is the hash for height h. We pre-populate as the
-	// tip advances so GetBlockHashByHeight resolves consistently.
+	// blocks[h] holds the wire.BlockHeader for height h. Pre-
+	// populated through 0..tipHeight at construction and grown
+	// monotonically by advance.
+	blocks map[int32]*wire.BlockHeader
+
+	// hashAt[h] is the chainhash.Hash for height h.
 	hashAt map[int32]chainhash.Hash
+}
+
+// mintStubHeader builds a deterministic wire.BlockHeader for a given
+// height, chaining off the supplied previous hash. The salted nonce
+// makes the resulting BlockHash stable per (height, prev) and unique
+// across heights.
+func mintStubHeader(height int32, prev chainhash.Hash) *wire.BlockHeader {
+	salt := chainhash.HashH([]byte(fmt.Sprintf("stub-block-%d", height)))
+
+	return &wire.BlockHeader{
+		Version:   1,
+		PrevBlock: prev,
+		MerkleRoot: chainhash.HashH(
+			[]byte(
+				fmt.Sprintf("merkle-%d", height),
+			),
+		),
+		Timestamp: time.Unix(int64(height)*600, 0),
+		Bits:      0x207fffff,
+		Nonce: uint32(salt[0])<<24 | uint32(salt[1])<<16 |
+			uint32(salt[2])<<8 | uint32(salt[3]),
+	}
 }
 
 func newStubChain(tipHeight int32) *stubChain {
 	c := &stubChain{
 		tipHeight: tipHeight,
+		blocks:    make(map[int32]*wire.BlockHeader),
 		hashAt:    make(map[int32]chainhash.Hash),
 	}
 
+	var prev chainhash.Hash
 	for h := int32(0); h <= tipHeight; h++ {
-		c.hashAt[h] = chainhash.HashH(
-			[]byte(
-				fmt.Sprintf("block-%d", h),
-			),
-		)
+		hdr := mintStubHeader(h, prev)
+		c.blocks[h] = hdr
+		hash := hdr.BlockHash()
+		c.hashAt[h] = hash
+		prev = hash
 	}
 
 	return c
@@ -49,13 +83,14 @@ func (c *stubChain) advance(t *testing.T, n int32) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	prev := c.hashAt[c.tipHeight]
 	for i := int32(1); i <= n; i++ {
 		h := c.tipHeight + i
-		c.hashAt[h] = chainhash.HashH(
-			[]byte(
-				fmt.Sprintf("block-%d", h),
-			),
-		)
+		hdr := mintStubHeader(h, prev)
+		c.blocks[h] = hdr
+		hash := hdr.BlockHash()
+		c.hashAt[h] = hash
+		prev = hash
 	}
 
 	c.tipHeight += n
@@ -147,19 +182,29 @@ func stubEsploraHandler(t *testing.T, chain *stubChain) http.HandlerFunc {
 					h.String(), height,
 					int64(height)*600)
 
+			case "/header":
+				// Raw 80-byte header, hex-encoded.
+				chain.mu.Lock()
+				hdr := chain.blocks[height]
+				chain.mu.Unlock()
+				if hdr == nil {
+					http.Error(
+						w, "not found",
+						http.StatusNotFound,
+					)
+
+					return
+				}
+				var buf bytes.Buffer
+				require.NoError(t, hdr.Serialize(&buf))
+				_, _ = fmt.Fprint(
+					w,
+					hex.EncodeToString(
+						buf.Bytes(),
+					),
+				)
+
 			default:
-				// Raw header / raw block — synthesize a
-				// header whose serialized bytes hash to
-				// h. We take the simple route of using
-				// h's bytes themselves: the header
-				// hash-verifier compares header.BlockHash()
-				// to the requested h, so any header that
-				// happens to round-trip works. Synthesizing
-				// such a header from a target hash is
-				// effectively impossible, so for these
-				// suffix variants we return 501 — tests
-				// that need them must use the cache
-				// pre-fill path.
 				http.Error(
 					w, "not implemented",
 					http.StatusNotImplemented,
