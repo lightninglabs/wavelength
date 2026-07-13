@@ -58,8 +58,14 @@ const (
 	TxStateFeeBumping
 
 	// TxStateConfirmed indicates the tracked transaction reached its target
-	// confirmation count.
+	// confirmation count on the canonical chain. This state is reversible:
+	// a reorg moves the tracked entry back to TxStateAwaitingConfirmation,
+	// and finality moves it to TxStateFinalized.
 	TxStateConfirmed
+
+	// TxStateFinalized indicates the tracked transaction confirmed and is
+	// past the backend's reorg-safety depth. Terminal.
+	TxStateFinalized
 
 	// TxStateFailed indicates the actor encountered a terminal
 	// failure while
@@ -84,6 +90,9 @@ func (s TxState) String() string {
 
 	case TxStateConfirmed:
 		return "confirmed"
+
+	case TxStateFinalized:
+		return "finalized"
 
 	case TxStateFailed:
 		return "failed"
@@ -126,8 +135,17 @@ type EnsureConfirmedReq struct {
 	// parents and for callers that do not fee-bump.
 	ParentFee btcutil.Amount
 
-	// Subscriber receives TxConfirmed or TxFailed notifications for this
-	// request.
+	// Subscriber receives the full reorg-aware notification lifecycle
+	// for this request: TxConfirmed when the tx reaches the
+	// confirmation target, TxReorged if a previously delivered
+	// TxConfirmed is reorged out, re-TxConfirmed on the new canonical
+	// chain, TxFinalized once the confirmation is past the backend's
+	// reorg-safety depth, and TxFailed on terminal failure.
+	// TxConfirmed and TxFailed deliveries are reliable (retry on
+	// timeout from the per-tick retry path); TxReorged is best-effort
+	// because the next lifecycle event (re-TxConfirmed / TxFinalized /
+	// TxFailed) re-establishes state. TxFinalized is reliable so the
+	// caller can free reorg-recovery bookkeeping deterministically.
 	Subscriber actor.TellOnlyRef[Notification]
 }
 
@@ -305,6 +323,65 @@ func (m *TxConfirmed) MessageType() string {
 // txConfirmNotificationSealed seals TxConfirmed into the package notification
 // set.
 func (m *TxConfirmed) txConfirmNotificationSealed() {}
+
+// TxReorged notifies a subscriber that a previously delivered TxConfirmed
+// has been reorged out of the canonical chain. After receiving this event
+// a consumer should consider the prior confirmation no longer valid; if
+// the transaction re-confirms on the new canonical chain a fresh
+// TxConfirmed will follow on the same subscription.
+type TxReorged struct {
+	actor.BaseMessage
+
+	// Txid identifies the reorged transaction.
+	Txid chainhash.Hash
+}
+
+// MessageType returns the stable message type identifier.
+func (m *TxReorged) MessageType() string {
+	return "TxReorged"
+}
+
+// txConfirmNotificationSealed seals TxReorged into the package notification
+// set.
+func (m *TxReorged) txConfirmNotificationSealed() {}
+
+// TxFinalized notifies a subscriber that the tracked transaction is past
+// the backend's reorg-safety depth and will receive no further events.
+// Subscribers may use this signal to drop any reorg-recovery bookkeeping
+// they were holding for the registration. Not all backends synthesize
+// this event (the lndclient transport does not), so consumers must treat
+// its absence as a normal operating condition rather than an error.
+//
+// BlockHeight and NumConfs replay the authoritative confirmation
+// numbers carried by the last TxConfirmed before finalization. Because
+// reversible TxConfirmed deliveries are fire-and-forget for opt-in
+// subscribers and may be dropped on a momentarily-full mailbox, the
+// finalization event must carry enough information for height-dependent
+// consumers to recover without out-of-band lookups.
+type TxFinalized struct {
+	actor.BaseMessage
+
+	// Txid identifies the finalized transaction.
+	Txid chainhash.Hash
+
+	// BlockHeight is the height of the block carrying the latest
+	// observed confirmation (post-any-reorg) at finalization time.
+	BlockHeight int32
+
+	// NumConfs is the confirmation count that triggered the
+	// finalization event — typically the EnsureConfirmedReq's
+	// TargetConfs.
+	NumConfs uint32
+}
+
+// MessageType returns the stable message type identifier.
+func (m *TxFinalized) MessageType() string {
+	return "TxFinalized"
+}
+
+// txConfirmNotificationSealed seals TxFinalized into the package
+// notification set.
+func (m *TxFinalized) txConfirmNotificationSealed() {}
 
 // TxFailed notifies a subscriber that the actor encountered a terminal
 // failure while trying to confirm the tracked transaction.
