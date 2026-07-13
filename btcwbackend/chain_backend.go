@@ -67,6 +67,25 @@ type ChainBackend struct {
 	// stopOnce ensures Stop() logic runs exactly once, preventing
 	// double-close panics on the hint DB and notifier.
 	stopOnce sync.Once
+
+	// quit is closed by Stop() to unblock a Start() that is still
+	// waiting for the neutrino backend to become current, so shutdown
+	// during the initial sync wait does not hang.
+	quit chan struct{}
+
+	// startStopMu serializes the notifier/fee-estimator start-vs-stop
+	// transition. Start() only starts them, and Stop() only reads
+	// notifierStarted to decide whether to tear them down, while
+	// holding this lock. Without it, a Stop() racing the moment the
+	// backend becomes current could observe notifierStarted=false,
+	// skip teardown, and then let Start() start (and leak) the
+	// subsystems after Stop() has already returned.
+	startStopMu sync.Mutex
+
+	// notifierStarted records whether Start() started the notifier and
+	// fee estimator, so Stop() knows whether to tear them down. Guarded
+	// by startStopMu.
+	notifierStarted bool
 }
 
 // NewChainBackend creates a new neutrino-backed chain backend. The
@@ -126,6 +145,7 @@ func NewChainBackend(svc *NeutrinoService, feeURL string,
 		feeEstimator: feeEstimator,
 		hintDB:       hintDB,
 		Log:          fn.Some(logger),
+		quit:         make(chan struct{}),
 	}, nil
 }
 
@@ -142,8 +162,38 @@ func (b *ChainBackend) logger(ctx context.Context) btclog.Logger {
 	return b.Log.UnwrapOr(build.LoggerFromContext(ctx))
 }
 
-// Start initializes the chain backend by starting the notifier and
-// fee estimator.
+// Chain-sync wait tuning. The neutrino notifier snapshots its
+// block-epoch rescan start height from the chain service's best block
+// exactly once, at notifier.Start(). Starting it before the backend
+// has synced its block/filter headers anchors that snapshot far behind
+// the tip, condemning the notifier to a slow, fragile historical
+// rescan; so Start() blocks until IsCurrent first. These are named
+// consts (not literals) so the cadence can be tuned in one place.
+const (
+	// chainSyncPollInterval is how often Start() re-checks whether the
+	// neutrino backend has become current while waiting to start the
+	// notifier. Header/filter-header sync (what IsCurrent gates on)
+	// typically completes within tens of seconds, so a 1s cadence is
+	// responsive without busy-looping.
+	chainSyncPollInterval = time.Second
+
+	// chainSyncLogInterval bounds how often Start() emits a progress
+	// log line while waiting for sync. Matches the daemon's neutrino
+	// sync-wait heartbeat so operators see roughly one line every 30s
+	// rather than per-poll spam.
+	chainSyncLogInterval = 30 * time.Second
+)
+
+// errChainBackendStopped is returned by Start() when the backend is
+// stopped (via Stop closing quit) before the neutrino service becomes
+// current, so a caller racing shutdown gets a clear signal instead of
+// a nil error paired with a half-started backend.
+var errChainBackendStopped = errors.New("chain backend stopped before " +
+	"neutrino became current")
+
+// Start initializes the chain backend. It first waits for the neutrino
+// backend to become current (see the chain-sync tuning consts for why)
+// and then starts the notifier and fee estimator.
 func (b *ChainBackend) Start() error {
 	b.startOnce.Do(func() {
 		b.logger(context.TODO()).InfoS(
@@ -151,7 +201,34 @@ func (b *ChainBackend) Start() error {
 			"Starting neutrino chain backend",
 		)
 
+		// Gate notifier start on the backend being current so the
+		// notifier's one-shot rescan start height is the real chain
+		// tip, not a stale mid-sync height.
+		if !b.awaitChainCurrent(context.TODO()) {
+			b.startErr = errChainBackendStopped
+
+			return
+		}
+
+		// Take startStopMu to make "not stopped -> start subsystems ->
+		// mark started" atomic against a concurrent Stop(). Re-check
+		// quit under the lock: if Stop() already fired while we were
+		// waiting above, bail without starting anything, so we never
+		// leak a notifier/fee estimator past a completed Stop().
+		b.startStopMu.Lock()
+
+		select {
+		case <-b.quit:
+			b.startStopMu.Unlock()
+			b.startErr = errChainBackendStopped
+
+			return
+
+		default:
+		}
+
 		if err := b.notifier.Start(); err != nil {
+			b.startStopMu.Unlock()
 			b.startErr = fmt.Errorf("start notifier: %w", err)
 
 			return
@@ -159,10 +236,17 @@ func (b *ChainBackend) Start() error {
 
 		if err := b.feeEstimator.Start(); err != nil {
 			_ = b.notifier.Stop()
+			b.startStopMu.Unlock()
 			b.startErr = fmt.Errorf("start fee estimator: %w", err)
 
 			return
 		}
+
+		// Record that the notifier and fee estimator are up so Stop()
+		// knows to tear them down (and, conversely, skips them when a
+		// shutdown interrupts the sync wait above).
+		b.notifierStarted = true
+		b.startStopMu.Unlock()
 
 		b.logger(context.TODO()).InfoS(
 			context.TODO(),
@@ -171,6 +255,69 @@ func (b *ChainBackend) Start() error {
 	})
 
 	return b.startErr
+}
+
+// awaitChainCurrent blocks until the neutrino backend has synced its
+// block and filter headers (IsCurrent) or Stop() closes b.quit. It
+// emits a progress log line at roughly chainSyncLogInterval cadence
+// while waiting. It returns false only if the backend was stopped
+// before it became current. ctx is used only for logging: the wait is
+// intentionally cancellable solely via Stop() (b.quit), matching the
+// backend's shutdown model, not via ctx cancellation.
+func (b *ChainBackend) awaitChainCurrent(ctx context.Context) bool {
+	if b.neutrinoCS.IsCurrent() {
+		return true
+	}
+
+	b.logger(ctx).InfoS(ctx, "Waiting for neutrino backend to sync "+
+		"before starting block notifier")
+
+	logEvery := int(chainSyncLogInterval / chainSyncPollInterval)
+
+	return waitUntilCurrent(
+		b.neutrinoCS.IsCurrent, b.quit, chainSyncPollInterval,
+		func(attempt int) {
+			if logEvery > 0 && attempt%logEvery == 0 {
+				b.logger(ctx).InfoS(ctx, "Still waiting for "+
+					"neutrino backend to sync before "+
+					"starting block notifier")
+			}
+		},
+	)
+}
+
+// waitUntilCurrent blocks until isCurrent reports true or quit is
+// closed, polling at pollInterval. onWait, if non-nil, is invoked after
+// each poll that still reports not-current with a 1-based attempt
+// counter, letting callers throttle progress logging without this
+// helper needing a clock. Returns true if the backend became current,
+// false if quit fired first. Split out from Start so the wait logic is
+// unit-testable without a live neutrino service.
+func waitUntilCurrent(isCurrent func() bool, quit <-chan struct{},
+	pollInterval time.Duration, onWait func(attempt int)) bool {
+
+	if isCurrent() {
+		return true
+	}
+
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+
+	for attempt := 1; ; attempt++ {
+		select {
+		case <-quit:
+			return false
+
+		case <-ticker.C:
+			if isCurrent() {
+				return true
+			}
+
+			if onWait != nil {
+				onWait(attempt)
+			}
+		}
+	}
 }
 
 // Stop shuts down the chain backend by stopping the notifier, fee
@@ -184,18 +331,42 @@ func (b *ChainBackend) Stop() error {
 			"Stopping neutrino chain backend",
 		)
 
+		// Unblock a Start() still waiting for the backend to become
+		// current so shutdown doesn't hang on the sync wait. Close
+		// before taking startStopMu so any Start() that has not yet
+		// entered its critical section observes the closed quit once
+		// it acquires the lock and skips starting the subsystems.
+		close(b.quit)
+
+		// Read notifierStarted under startStopMu so we serialize
+		// against a Start() that is mid-transition: either it has
+		// already finished (we observe true and tear down) or it has
+		// not yet started the subsystems (it will observe the closed
+		// quit above and bail). startOnce/stopOnce guarantee each body
+		// runs once, so no further Start() can start them after this.
+		b.startStopMu.Lock()
+		notifierStarted := b.notifierStarted
+		b.startStopMu.Unlock()
+
 		var errs []error
 
-		if err := b.notifier.Stop(); err != nil {
-			errs = append(
-				errs, fmt.Errorf("stop notifier: %w", err),
-			)
-		}
+		// Only tear down the notifier and fee estimator if Start()
+		// actually started them; a shutdown during the pre-notifier
+		// sync wait leaves them unstarted.
+		if notifierStarted {
+			if err := b.notifier.Stop(); err != nil {
+				errs = append(
+					errs, fmt.Errorf("stop notifier: %w",
+						err),
+				)
+			}
 
-		if err := b.feeEstimator.Stop(); err != nil {
-			errs = append(
-				errs, fmt.Errorf("stop fee estimator: %w", err),
-			)
+			if err := b.feeEstimator.Stop(); err != nil {
+				errs = append(
+					errs, fmt.Errorf("stop fee "+
+						"estimator: %w", err),
+				)
+			}
 		}
 
 		if err := b.hintDB.Close(); err != nil {
