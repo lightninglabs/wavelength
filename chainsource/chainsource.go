@@ -18,6 +18,16 @@ const (
 	// allows for buffering up to 10 blocks in transit, which should cover
 	// normal block arrival patterns without blocking the backend.
 	epochChannelSize = 10
+
+	// DefaultFinalityDepth is the conventional Bitcoin reorg-safety
+	// depth. After this many inclusive confirmations the ConfActor
+	// and SpendActor synthesize their Done events when the backend
+	// transport (notably lndclient over gRPC) does not surface one
+	// of its own. Six is the value the wider Lightning stack treats
+	// as final for the purposes of channel funding / settlement, so
+	// using it here keeps the unroll subsystem's finality threshold
+	// aligned with the rest of the daemon's chain assumptions.
+	DefaultFinalityDepth uint32 = 6
 )
 
 // ChainSourceConfig holds configuration for ChainSourceActor.
@@ -32,6 +42,14 @@ type ChainSourceConfig struct {
 	// falls back to extracting a logger from context via LoggerFromContext,
 	// or uses btclog.Disabled if no logger is found.
 	Log fn.Option[btclog.Logger]
+
+	// FinalityDepth is forwarded to each spawned sub-actor as the
+	// number of confirmations past the first observed positive event
+	// that the actor uses to synthesize a Done signal when the backend
+	// transport (notably lndclient over gRPC) cannot deliver one. Zero
+	// disables height-based finality synthesis. See
+	// ConfActorConfig.FinalityDepth / SpendActorConfig.FinalityDepth.
+	FinalityDepth uint32
 }
 
 // WithLogger returns a new config with the given logger set.
@@ -318,8 +336,9 @@ func (a *ChainSourceActor) handleRegisterConf(ctx context.Context,
 	)
 
 	confCfg := ConfActorConfig{
-		Backend: a.cfg.Backend,
-		Log:     fn.Some(a.logger(ctx)),
+		Backend:       a.cfg.Backend,
+		Log:           fn.Some(a.logger(ctx)),
+		FinalityDepth: a.cfg.FinalityDepth,
 	}
 	confActor := NewConfActor(confCfg)
 	actorRef := serviceKey.Spawn(a.cfg.System, actorID, confActor)
@@ -353,8 +372,9 @@ func (a *ChainSourceActor) handleRegisterSpend(ctx context.Context,
 	)
 
 	spendCfg := SpendActorConfig{
-		Backend: a.cfg.Backend,
-		Log:     fn.Some(a.logger(ctx)),
+		Backend:       a.cfg.Backend,
+		Log:           fn.Some(a.logger(ctx)),
+		FinalityDepth: a.cfg.FinalityDepth,
 	}
 	spendActor := NewSpendActor(spendCfg)
 	actorRef := serviceKey.Spawn(a.cfg.System, actorID, spendActor)

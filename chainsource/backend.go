@@ -137,11 +137,40 @@ type ChainBackend interface {
 // ConfRegistration encapsulates the channels and control functions for a
 // confirmation registration. This mirrors lnd's chainntnfs.ConfirmationEvent
 // structure but provides a backend-agnostic interface.
+//
+// The registration is reorg-aware: after a confirmation has been delivered
+// on Confirmed, a subsequent reorg that buries the original block can cause
+// a fresh send on Reorged. Once the transaction re-confirms on the new
+// canonical chain another event arrives on Confirmed. The lifecycle is
+// therefore Confirmed -> Reorged -> Confirmed -> ... terminated by either a
+// send on Done (the confirmation is past the backend's reorg-safety depth)
+// or a caller-driven Cancel. Backends that cannot observe reorgs leave
+// Reorged and Done as never-firing channels; callers must not assume either
+// will ever fire.
 type ConfRegistration struct {
-	// Confirmed is a channel that fires once when the transaction reaches
-	// the target number of confirmations. The channel is buffered and will
-	// only send a single event.
+	// Confirmed fires every time the transaction reaches the target
+	// number of confirmations on the canonical chain. After a Reorged
+	// event it may fire again when the transaction re-confirms. The
+	// channel is buffered.
 	Confirmed <-chan *TxConfirmation
+
+	// Reorged fires when a previously delivered confirmation is reorged
+	// out of the canonical chain. The payload is the backend forwarder's
+	// monotonic sequence number (see TxConfirmation.Seq) rather than
+	// reorg depth or block identity, which the lndclient gRPC transport
+	// cannot preserve; the sequence lets the consumer order this signal
+	// against confirmations sharing the same sequence space even though
+	// they arrive on a different channel. Backends that cannot observe
+	// reorgs leave this channel nil-equivalent (allocated but never
+	// written to); reading from it is always safe.
+	Reorged <-chan uint64
+
+	// Done fires once when the confirmation watch is past the backend's
+	// reorg-safety depth and will receive no further events. Callers
+	// must still invoke Cancel to release client-side resources.
+	// Backends that cannot synthesize a safety-depth signal leave this
+	// channel nil-equivalent (allocated but never written to).
+	Done <-chan struct{}
 
 	// Cancel is a function that can be called to cancel this registration
 	// and clean up resources. After calling Cancel, no more events will be
@@ -168,16 +197,53 @@ type TxConfirmation struct {
 	// when the confirmation was registered with IncludeBlock=true. This
 	// matches lnd's chainntnfs behavior.
 	Block *wire.MsgBlock
+
+	// Seq is a per-registration monotonic sequence number stamped by the
+	// backend forwarder in the order it observed lifecycle events.
+	// Confirmed and Reorged share one sequence space so the consumer can
+	// order them even though they arrive on separate channels (a select
+	// over two ready channels picks at random and cannot recover order).
+	// The consumer applies an event only when its Seq exceeds the highest
+	// Seq seen so far, discarding a stale event that lost a cross-channel
+	// race. Zero means the backend does not stamp sequences (it never
+	// reorgs, so ordering is moot); such events are always applied.
+	Seq uint64
 }
 
 // SpendRegistration encapsulates the channels and control functions for a
 // spend registration. This mirrors lnd's chainntnfs.SpendEvent structure.
+//
+// The registration is reorg-aware: after a spend has been delivered on
+// Spend, a subsequent reorg that buries the spending block can cause a
+// fresh send on Reorged. If the outpoint is then re-spent on the new
+// canonical chain (by the same or a different transaction) another event
+// arrives on Spend. The lifecycle is therefore Spend -> Reorged -> Spend
+// -> ... terminated by either a send on Done (the spend is past the
+// backend's reorg-safety depth) or a caller-driven Cancel. Backends that
+// cannot observe reorgs leave Reorged and Done as never-firing channels.
 type SpendRegistration struct {
-	// Spend is a channel that fires when the monitored outpoint is spent.
-	// The spending transaction must have at least one confirmation. The
-	// channel is buffered and will send an event for each spend (though
-	// typically only one unless reorgs occur).
+	// Spend fires every time the monitored outpoint is spent on the
+	// canonical chain. After a Reorged event it may fire again when a
+	// new spender confirms. The channel is buffered.
 	Spend <-chan *SpendDetail
+
+	// Reorged fires when a previously delivered spend is reorged out of
+	// the canonical chain. The payload is the backend forwarder's
+	// monotonic sequence number (see SpendDetail.Seq) rather than reorg
+	// depth or block identity, which the lndclient gRPC transport cannot
+	// preserve; the sequence lets the consumer order this signal against
+	// spends sharing the same sequence space even though they arrive on a
+	// different channel. Backends that cannot observe spend reorgs leave
+	// this channel nil-equivalent (allocated but never written to);
+	// reading from it is always safe.
+	Reorged <-chan uint64
+
+	// Done fires once when the spend watch is past the backend's
+	// reorg-safety depth and will receive no further events. Callers
+	// must still invoke Cancel to release client-side resources.
+	// Backends that cannot synthesize a safety-depth signal leave this
+	// channel nil-equivalent (allocated but never written to).
+	Done <-chan struct{}
 
 	// Cancel is a function that can be called to cancel this registration
 	// and clean up resources.
@@ -203,6 +269,17 @@ type SpendDetail struct {
 	// SpendingHeight is the block height where the spending transaction
 	// was confirmed.
 	SpendingHeight int32
+
+	// Seq is a per-registration monotonic sequence number stamped by the
+	// backend forwarder in the order it observed lifecycle events. Spend
+	// and Reorged share one sequence space so the consumer can order them
+	// even though they arrive on separate channels (a select over two
+	// ready channels picks at random and cannot recover order). The
+	// consumer applies an event only when its Seq exceeds the highest Seq
+	// seen so far, discarding a stale event that lost a cross-channel
+	// race. Zero means the backend does not stamp sequences (it never
+	// reorgs, so ordering is moot); such events are always applied.
+	Seq uint64
 }
 
 // BlockRegistration encapsulates the channels and control functions for a

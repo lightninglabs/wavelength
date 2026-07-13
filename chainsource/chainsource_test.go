@@ -3,6 +3,7 @@ package chainsource
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,11 +18,22 @@ import (
 
 // mockBackend implements ChainBackend for testing.
 type mockBackend struct {
-	confChan  chan *TxConfirmation
-	spendChan chan *SpendDetail
-	epochChan chan *BlockEpoch
+	confChan         chan *TxConfirmation
+	confReorgedChan  chan uint64
+	confDoneChan     chan struct{}
+	spendChan        chan *SpendDetail
+	spendReorgedChan chan uint64
+	spendDoneChan    chan struct{}
+	epochChan        chan *BlockEpoch
 
 	epochCancel chan struct{}
+
+	// confCancelled / spendCancelled count Cancel invocations on the
+	// most recently issued registration. The reorg-aware lifecycle
+	// tests rely on these to assert that the actor released the
+	// registration after a Done event.
+	confCancelled  atomic.Int32
+	spendCancelled atomic.Int32
 
 	feeRate    btcutil.Amount
 	bestHeight int32
@@ -42,12 +54,16 @@ type reconnectBlockBackend struct {
 // newMockBackend creates a new mock backend for testing.
 func newMockBackend() *mockBackend {
 	return &mockBackend{
-		confChan:    make(chan *TxConfirmation, 1),
-		spendChan:   make(chan *SpendDetail, 1),
-		epochChan:   make(chan *BlockEpoch, 10),
-		epochCancel: make(chan struct{}, 10),
-		feeRate:     1000,
-		bestHeight:  100,
+		confChan:         make(chan *TxConfirmation, 1),
+		confReorgedChan:  make(chan uint64, 1),
+		confDoneChan:     make(chan struct{}, 1),
+		spendChan:        make(chan *SpendDetail, 1),
+		spendReorgedChan: make(chan uint64, 1),
+		spendDoneChan:    make(chan struct{}, 1),
+		epochChan:        make(chan *BlockEpoch, 10),
+		epochCancel:      make(chan struct{}, 10),
+		feeRate:          1000,
+		bestHeight:       100,
 	}
 }
 
@@ -208,7 +224,11 @@ func (m *mockBackend) RegisterConf(ctx context.Context, txid *chainhash.Hash,
 
 	return &ConfRegistration{
 		Confirmed: m.confChan,
-		Cancel:    func() {},
+		Reorged:   m.confReorgedChan,
+		Done:      m.confDoneChan,
+		Cancel: func() {
+			m.confCancelled.Add(1)
+		},
 	}, nil
 }
 
@@ -217,8 +237,12 @@ func (m *mockBackend) RegisterSpend(ctx context.Context,
 	*SpendRegistration, error) {
 
 	return &SpendRegistration{
-		Spend:  m.spendChan,
-		Cancel: func() {},
+		Spend:   m.spendChan,
+		Reorged: m.spendReorgedChan,
+		Done:    m.spendDoneChan,
+		Cancel: func() {
+			m.spendCancelled.Add(1)
+		},
 	}, nil
 }
 
