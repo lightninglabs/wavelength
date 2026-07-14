@@ -11,10 +11,8 @@ import (
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
-	"github.com/lightninglabs/wavelength/lib/tx"
 	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
 	"github.com/lightningnetwork/lnd/input"
-	"github.com/lightningnetwork/lnd/keychain"
 )
 
 // ErrCustomCheckpointInputSigning means the prepared checkpoint input passed
@@ -149,54 +147,14 @@ func validateSingleOperatorCheckpointSignature(in *TransferInput,
 		prevOut.PkScript, prevOut.Value,
 	)
 
-	// For custom spend paths, use the SpendInfo directly instead of
-	// deriving the collaborative leaf from the VTXO TapScript.
-	if in.IsCustomSpend() {
-		witnessScript := in.CustomSpend.SpendInfo.WitnessScript
-		controlBlock := in.CustomSpend.SpendInfo.ControlBlock
-
-		err := requireTapLeafScript(
-			&checkpoint.Inputs[0], witnessScript, controlBlock,
-		)
-		if err != nil {
-			return err
-		}
-
-		sigRec, err := findTaprootScriptSpendSig(
-			&checkpoint.Inputs[0], vtxo.OperatorKey, witnessScript,
-		)
-		if err != nil {
-			return err
-		}
-
-		return verifyTaprootScriptSpendSig(
-			checkpoint.UnsignedTx, 0, prevFetcher, witnessScript,
-			sigRec,
-		)
-	}
-
-	sigHashes := txscript.NewTxSigHashes(
-		checkpoint.UnsignedTx, prevFetcher,
-	)
-
-	signDesc, spendInfo, err := tx.NewVTXOCollabSignDescriptor(
-		&tx.VTXOSpendContext{
-			Outpoint:  vtxo.Outpoint,
-			Output:    prevOut,
-			TapScript: vtxo.TapScript,
-		},
-		keychain.KeyDescriptor{PubKey: vtxo.OperatorKey},
-		0,
-		sigHashes,
-		prevFetcher,
-	)
+	spendPath, err := in.EffectiveSpendPath()
 	if err != nil {
 		return err
 	}
 
 	err = requireTapLeafScript(
-		&checkpoint.Inputs[0], spendInfo.WitnessScript,
-		spendInfo.ControlBlock,
+		&checkpoint.Inputs[0], spendPath.WitnessScript,
+		spendPath.ControlBlock,
 	)
 	if err != nil {
 		return err
@@ -204,15 +162,15 @@ func validateSingleOperatorCheckpointSignature(in *TransferInput,
 
 	sigRec, err := findTaprootScriptSpendSig(
 		&checkpoint.Inputs[0], vtxo.OperatorKey,
-		spendInfo.WitnessScript,
+		spendPath.WitnessScript,
 	)
 	if err != nil {
 		return err
 	}
 
 	return verifyTaprootScriptSpendSig(
-		checkpoint.UnsignedTx, signDesc.InputIndex, prevFetcher,
-		spendInfo.WitnessScript, sigRec,
+		checkpoint.UnsignedTx, 0, prevFetcher, spendPath.WitnessScript,
+		sigRec,
 	)
 }
 
@@ -384,24 +342,17 @@ func signCheckpointPSBT(signer input.Signer, in *TransferInput,
 		prevOut.PkScript, prevOut.Value,
 	)
 
-	sigHashes := txscript.NewTxSigHashes(
-		checkpoint.UnsignedTx, prevFetcher,
-	)
-
-	signDesc, spendInfo, err := tx.NewVTXOCollabSignDescriptor(
-		&tx.VTXOSpendContext{
-			Outpoint:  in.VTXO.Outpoint,
-			Output:    prevOut,
-			TapScript: in.VTXO.TapScript,
-		},
-		in.VTXO.ClientKey,
-		0,
-		sigHashes,
-		prevFetcher,
-	)
+	spendPath, err := in.EffectiveSpendPath()
 	if err != nil {
 		return err
 	}
+
+	sigHashes := txscript.NewTxSigHashes(
+		checkpoint.UnsignedTx, prevFetcher,
+	)
+	signDesc := spendPath.SpendInfo.BuildSignDescriptor(
+		in.VTXO.ClientKey, prevOut, sigHashes, prevFetcher, 0,
+	)
 
 	sig, err := signer.SignOutputRaw(checkpoint.UnsignedTx, signDesc)
 	if err != nil {
@@ -413,14 +364,16 @@ func signCheckpointPSBT(signer input.Signer, in *TransferInput,
 		return fmt.Errorf("signer returned empty signature")
 	}
 
-	err = psbtutil.AddTapLeafScript(&checkpoint.Inputs[0], spendInfo)
+	err = psbtutil.AddTapLeafScript(
+		&checkpoint.Inputs[0], spendPath.SpendInfo,
+	)
 	if err != nil {
 		return err
 	}
 
 	err = psbtutil.AddTaprootScriptSpendSig(
 		&checkpoint.Inputs[0], in.VTXO.ClientKey.PubKey,
-		spendInfo.WitnessScript, sigBytes, signDesc.HashType,
+		spendPath.WitnessScript, sigBytes, signDesc.HashType,
 	)
 	if err != nil {
 		return err
@@ -428,7 +381,7 @@ func signCheckpointPSBT(signer input.Signer, in *TransferInput,
 
 	sigRec, err := findTaprootScriptSpendSig(
 		&checkpoint.Inputs[0], in.VTXO.ClientKey.PubKey,
-		spendInfo.WitnessScript,
+		spendPath.WitnessScript,
 	)
 	if err != nil {
 		return err
@@ -436,7 +389,7 @@ func signCheckpointPSBT(signer input.Signer, in *TransferInput,
 
 	err = verifyTaprootScriptSpendSig(
 		checkpoint.UnsignedTx, signDesc.InputIndex, prevFetcher,
-		spendInfo.WitnessScript, sigRec,
+		spendPath.WitnessScript, sigRec,
 	)
 	if err != nil {
 		return err

@@ -197,6 +197,9 @@ when adding one.
   constraint on `vtxo_ancestry_paths`: fragment identity is
   (commitment_txid, tree_path), so an OOR spend of inputs at different
   leaves of one commitment tree persists one row per leaf.
+- `000015_ledger_round_uuid` — canonical UUID text for ledger round joins.
+- `000016_taproot_asset_vtxos` — optional Taproot Asset commitment root on
+  VTXO descriptors; generic Bitcoin coin selection excludes these rows.
 
 ## Deep Docs
 

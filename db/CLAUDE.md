@@ -71,7 +71,7 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   safety bounds enforced during `DeserializeTree`.
 - `resolveInputPackage` / `loadPackageBundleBySessionID` — two-stage
   OOR ancestry resolver (`oor_unroll_resolver.go`).
-- `LatestMigrationVersion = 15` — current schema version.
+- `LatestMigrationVersion = 16` — current schema version.
 - `PendingIntentPersistenceStore` — implements `wallet.PendingIntentStore`,
   the persistence half of the generic restart-safe intent outbox (header
   `pending_intents` + per-kind detail tables + `pending_intent_anchors`).
@@ -212,6 +212,8 @@ when adding one.
   SetVersion leaves the migration dirty and the next boot fails with
   ErrDirty; forcing the version and re-running is safe because the
   backfill guards on `round_uuid IS NULL` and re-executes as a no-op.
+- `000016_taproot_asset_vtxos` — optional Taproot Asset commitment root on
+  VTXO descriptors; generic Bitcoin coin selection excludes these rows.
 
 ## Deep Docs
 

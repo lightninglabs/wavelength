@@ -133,12 +133,12 @@ DELETE FROM client_tree_txids WHERE round_id = $1 AND client_key = $2;
 INSERT INTO vtxos (
     outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry,
     policy_template, client_key_id,
-    operator_pubkey, batch_expiry, chain_depth,
-    created_height, commitment_txid, spent, creation_time, last_update_time,
-    construction_version
+	operator_pubkey, batch_expiry, chain_depth,
+	created_height, commitment_txid, spent, creation_time, last_update_time,
+	construction_version, taproot_asset_root
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-    $17
+	$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
+	$17, $18
 )
 ON CONFLICT (outpoint_hash, outpoint_index) DO UPDATE SET
     pk_script = CASE WHEN excluded.pk_script IS NOT NULL AND length(excluded.pk_script) > 0 THEN excluded.pk_script ELSE vtxos.pk_script END,
@@ -149,8 +149,9 @@ ON CONFLICT (outpoint_hash, outpoint_index) DO UPDATE SET
     batch_expiry = CASE WHEN excluded.batch_expiry != 0 THEN excluded.batch_expiry ELSE vtxos.batch_expiry END,
     chain_depth = CASE WHEN excluded.chain_depth != 0 THEN excluded.chain_depth ELSE vtxos.chain_depth END,
     created_height = CASE WHEN excluded.created_height != 0 THEN excluded.created_height ELSE vtxos.created_height END,
-    commitment_txid = CASE WHEN excluded.commitment_txid IS NOT NULL AND length(excluded.commitment_txid) > 0 THEN excluded.commitment_txid ELSE vtxos.commitment_txid END,
-    last_update_time = excluded.last_update_time;
+	commitment_txid = CASE WHEN excluded.commitment_txid IS NOT NULL AND length(excluded.commitment_txid) > 0 THEN excluded.commitment_txid ELSE vtxos.commitment_txid END,
+	taproot_asset_root = CASE WHEN excluded.taproot_asset_root IS NOT NULL AND length(excluded.taproot_asset_root) > 0 THEN excluded.taproot_asset_root ELSE vtxos.taproot_asset_root END,
+	last_update_time = excluded.last_update_time;
 
 -- name: InsertVTXOAncestryPath :exec
 -- InsertVTXOAncestryPath inserts one ancestry tree fragment for a VTXO.

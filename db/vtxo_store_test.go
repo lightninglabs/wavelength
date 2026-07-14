@@ -367,15 +367,23 @@ func TestListSelectionCandidatesByStatus(t *testing.T) {
 	descB := createTestVTXODescriptor(t, roundID, 12)
 	require.NoError(t, vtxoStore.SaveVTXO(ctx, descB))
 
+	descAsset := createTestVTXODescriptor(t, roundID, 13)
+	assetRoot := chainhash.Hash{0xa1, 0xb2, 0xc3}
+	descAsset.TaprootAssetRoot = &assetRoot
+	assetPkScript, err := descAsset.EffectivePkScript()
+	require.NoError(t, err)
+	descAsset.PkScript = assetPkScript
+	require.NoError(t, vtxoStore.SaveVTXO(ctx, descAsset))
+
 	full, err := vtxoStore.ListVTXOsByStatus(ctx, vtxo.VTXOStatusLive)
 	require.NoError(t, err)
-	require.Len(t, full, 2)
+	require.Len(t, full, 3)
 
 	candidates, err := vtxoStore.ListSelectionCandidatesByStatus(
 		ctx, vtxo.VTXOStatusLive,
 	)
 	require.NoError(t, err)
-	require.Len(t, candidates, len(full))
+	require.Len(t, candidates, 2)
 
 	byOutpoint := make(map[wire.OutPoint]*vtxo.Descriptor)
 	for _, desc := range full {
@@ -388,6 +396,11 @@ func TestListSelectionCandidatesByStatus(t *testing.T) {
 		require.Equal(t, desc.Amount, candidate.Amount)
 		require.Equal(t, desc.PkScript, candidate.PkScript)
 	}
+
+	storedAsset, err := vtxoStore.GetVTXO(ctx, descAsset.Outpoint)
+	require.NoError(t, err)
+	require.Equal(t, &assetRoot, storedAsset.TaprootAssetRoot)
+	require.Equal(t, descAsset.PkScript, storedAsset.PkScript)
 
 	// A status the projection was not asked for stays invisible.
 	require.NoError(

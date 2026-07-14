@@ -9,7 +9,6 @@ import (
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/psbt/v2"
-	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/lightninglabs/wavelength/arkrpc"
@@ -92,6 +91,10 @@ type IncomingVTXOConfig struct {
 	// derives the standard VTXO policy from ClientKey, OperatorKey, and
 	// ExitDelay for compatibility with older servers.
 	PolicyTemplate []byte
+
+	// TaprootAssetRoot is the optional asset commitment root composed next
+	// to PolicyTemplate in the recipient output.
+	TaprootAssetRoot *chainhash.Hash
 }
 
 // BuildIncomingVTXODescriptor constructs a VTXO descriptor for a recipient
@@ -170,20 +173,21 @@ func BuildIncomingVTXODescriptor(ark *psbt.Packet,
 			Hash:  arkTxid,
 			Index: cfg.OutputIndex,
 		},
-		Amount:         btcutil.Amount(out.Value),
-		PolicyTemplate: policyTemplate,
-		PkScript:       out.PkScript,
-		ClientKey:      cfg.ClientKey,
-		OperatorKey:    cfg.OperatorKey,
-		TapScript:      tapscript,
-		Ancestry:       ancestry,
-		RoundID:        cfg.Metadata.RoundID,
-		CommitmentTxID: cfg.Metadata.CommitmentTxID,
-		BatchExpiry:    cfg.Metadata.BatchExpiry,
-		RelativeExpiry: cfg.ExitDelay,
-		ChainDepth:     cfg.Metadata.ChainDepth,
-		CreatedHeight:  cfg.Metadata.CreatedHeight,
-		Status:         vtxo.VTXOStatusLive,
+		Amount:           btcutil.Amount(out.Value),
+		PolicyTemplate:   policyTemplate,
+		PkScript:         out.PkScript,
+		TaprootAssetRoot: cfg.TaprootAssetRoot,
+		ClientKey:        cfg.ClientKey,
+		OperatorKey:      cfg.OperatorKey,
+		TapScript:        tapscript,
+		Ancestry:         ancestry,
+		RoundID:          cfg.Metadata.RoundID,
+		CommitmentTxID:   cfg.Metadata.CommitmentTxID,
+		BatchExpiry:      cfg.Metadata.BatchExpiry,
+		RelativeExpiry:   cfg.ExitDelay,
+		ChainDepth:       cfg.Metadata.ChainDepth,
+		CreatedHeight:    cfg.Metadata.CreatedHeight,
+		Status:           vtxo.VTXOStatusLive,
 	}, nil
 }
 
@@ -199,7 +203,16 @@ func incomingOutputPolicy(pkScript []byte, cfg IncomingVTXOConfig) ([]byte,
 				"policy: %w", err)
 		}
 
-		if !template.MatchesPkScript(pkScript) {
+		desc := &vtxo.Descriptor{
+			PolicyTemplate:   cfg.PolicyTemplate,
+			TaprootAssetRoot: cfg.TaprootAssetRoot,
+		}
+		expectedPkScript, err := desc.EffectivePkScript()
+		if err != nil {
+			return nil, nil, fmt.Errorf("derive incoming VTXO "+
+				"policy: %w", err)
+		}
+		if !bytes.Equal(expectedPkScript, pkScript) {
 			return nil, nil, fmt.Errorf("incoming VTXO policy " +
 				"does not match ark output pkscript")
 		}
@@ -221,29 +234,27 @@ func incomingOutputPolicy(pkScript []byte, cfg IncomingVTXOConfig) ([]byte,
 		return nil, nil, fmt.Errorf("derive vtxo tapscript: %w", err)
 	}
 
-	tapKey, err := arkscript.VTXOTapKey(
-		cfg.ClientKey.PubKey, cfg.OperatorKey, cfg.ExitDelay,
-	)
-	if err != nil {
-		return nil, nil, fmt.Errorf("derive vtxo tapkey: %w", err)
-	}
-
-	expectedPkScript, err := txscript.PayToTaprootScript(tapKey)
-	if err != nil {
-		return nil, nil, fmt.Errorf("derive vtxo pkscript: %w", err)
-	}
-
-	if !bytes.Equal(expectedPkScript, pkScript) {
-		return nil, nil, fmt.Errorf("ark output pkscript does not " +
-			"match derived vtxo pkscript")
-	}
-
 	policyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
 		cfg.ClientKey.PubKey, cfg.OperatorKey, cfg.ExitDelay,
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("encode incoming VTXO policy: %w",
 			err)
+	}
+
+	desc := &vtxo.Descriptor{
+		PolicyTemplate:   policyTemplate,
+		TaprootAssetRoot: cfg.TaprootAssetRoot,
+	}
+	expectedPkScript, err := desc.EffectivePkScript()
+	if err != nil {
+		return nil, nil, fmt.Errorf("derive incoming VTXO pkscript: %w",
+			err)
+	}
+
+	if !bytes.Equal(expectedPkScript, pkScript) {
+		return nil, nil, fmt.Errorf("ark output pkscript does not " +
+			"match derived vtxo pkscript")
 	}
 
 	return policyTemplate, tapscript, nil
