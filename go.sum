@@ -757,6 +757,10 @@ github.com/docopt/docopt-go v0.0.0-20180111231733-ee0de3bc6815/go.mod h1:WwZ+bS3
 github.com/dustin/go-humanize v1.0.0/go.mod h1:HtrtbFcZ19U5GC7JDqmcUSB87Iq5E25KnS6fMYU6eOk=
 github.com/dustin/go-humanize v1.0.1 h1:GzkhY7T5VNhEkwH0PVJgjz+fX1rhBrR7pRT3mDkpeCY=
 github.com/dustin/go-humanize v1.0.1/go.mod h1:Mu1zIs6XwVuF/gI1OepvI0qD18qycQx+mFykh5fBlto=
+github.com/ellemouton/lnd v0.8.0-beta-rc3.0.20260701213016-8b4da077a431 h1:KOLxRQYXb++mDgkqXhudfh5M2rZ/GG1USFsyb44LBSU=
+github.com/ellemouton/lnd v0.8.0-beta-rc3.0.20260701213016-8b4da077a431/go.mod h1:LWfQaNNXlZghUJqIIh+JsgfxiVtC+ecZkrIe5bm9o4U=
+github.com/ellemouton/lndclient v1.0.1-0.20260701213152-a3baa8dfda6c h1:v1aM7KEH0l4cR8FzYK9WwNQsFyj10Qm904aTbffGJZc=
+github.com/ellemouton/lndclient v1.0.1-0.20260701213152-a3baa8dfda6c/go.mod h1:QlUlKGfYeQ+6lR8BpWDe4qBM91OGdiOl09esQMTEq8k=
 github.com/envoyproxy/go-control-plane v0.9.0/go.mod h1:YTl/9mNaCwkRvm6d1a2C3ymFceY/DCBVvsKhRF0iEA4=
 github.com/envoyproxy/go-control-plane v0.9.1-0.20191026205805-5f8ba28d4473/go.mod h1:YTl/9mNaCwkRvm6d1a2C3ymFceY/DCBVvsKhRF0iEA4=
 github.com/envoyproxy/go-control-plane v0.9.4/go.mod h1:6rpuAdCZL397s3pYoYcLgu1mIlRU8Am5FuJP05cCM98=
@@ -1046,8 +1050,6 @@ github.com/lightninglabs/gozmq v0.0.0-20191113021534-d20a764486bf h1:HZKvJUHlcXI
 github.com/lightninglabs/gozmq v0.0.0-20191113021534-d20a764486bf/go.mod h1:vxmQPeIQxPf6Jf9rM8R+B4rKBqLA2AjttNxkFBL2Plk=
 github.com/lightninglabs/lightning-node-connect/hashmailrpc v1.0.4-0.20250610182311-2f1d46ef18b7 h1:373o5lNr1udAdhcf5+zq/0dYpRtkvYLl8Lk6wG7I0DY=
 github.com/lightninglabs/lightning-node-connect/hashmailrpc v1.0.4-0.20250610182311-2f1d46ef18b7/go.mod h1:bDnEKRN1u13NFBuy/C+bFLhxA5bfd3clT25y76QY0AM=
-github.com/lightninglabs/lndclient v1.0.1-0.20260701212139-09c54915cfba h1:PbtOHmA9P41mjWt7HDZDDzYshv8fmyhIBPkdOf8wKws=
-github.com/lightninglabs/lndclient v1.0.1-0.20260701212139-09c54915cfba/go.mod h1:DtZg/wz7YFXVCwOwYOJyWKQBnUp1NFg4RQdax3MSYbc=
 github.com/lightninglabs/loop v0.33.0-beta h1:cfs+JrnmKw+ANa09XFS/2Jjm9wxHq3CfAzh9B1ym3e0=
 github.com/lightninglabs/loop v0.33.0-beta/go.mod h1:uTcjRmEC4ni4lWrOdnIvI5pyY8XJ2wXSXSE12vwFgzk=
 github.com/lightninglabs/migrate/v4 v4.18.2-9023d66a-fork-pr-2 h1:eFjp1dIB2BhhQp/THKrjLdlYuPugO9UU4kDqu91OX/Q=
@@ -1064,8 +1066,6 @@ github.com/lightninglabs/taproot-assets/taprpc v1.1.1-0.20260706193822-2adfadc58
 github.com/lightninglabs/taproot-assets/taprpc v1.1.1-0.20260706193822-2adfadc58e3c/go.mod h1:nOjUfSstCfHYY0QNnxlhN+N915Vcl5ziyHiOD8hVoJI=
 github.com/lightningnetwork/lightning-onion v1.4.0 h1:qWE1icOH4AKXRcq1KCzt6P/TesqptgBTP++V7wowTc0=
 github.com/lightningnetwork/lightning-onion v1.4.0/go.mod h1:YDPkvVTVQ6FBBE6Yj93tDd7zA3iTSrryi9xq46i7bKE=
-github.com/lightningnetwork/lnd v0.21.0-beta.rc2.0.20260630214209-40c64f9db30d h1:mDcB9mwuwJXRbDmxps6mBgGs318Iz5ZbOrt0ieEx0os=
-github.com/lightningnetwork/lnd v0.21.0-beta.rc2.0.20260630214209-40c64f9db30d/go.mod h1:LWfQaNNXlZghUJqIIh+JsgfxiVtC+ecZkrIe5bm9o4U=
 github.com/lightningnetwork/lnd/actor v0.0.6 h1:Ge8N2wivARG+27qJBwTlB0vwsypStZYZy8vk4Zl38sU=
 github.com/lightningnetwork/lnd/actor v0.0.6/go.mod h1:YAsoniSbY/cAM9HTVNfZLvt7RI6swDxy6wzPspTcMZg=
 github.com/lightningnetwork/lnd/cert v1.2.2 h1:71YK6hogeJtxSxw2teq3eGeuy4rHGKcFf0d0Uy4qBjI=

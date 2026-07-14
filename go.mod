@@ -236,3 +236,7 @@ replace google.golang.org/protobuf => github.com/lightninglabs/protobuf-go-hex-d
 
 // Use local baselib for development and CI.
 replace github.com/lightninglabs/wavelength/baselib => ./baselib
+
+replace github.com/lightningnetwork/lnd => github.com/ellemouton/lnd v0.8.0-beta-rc3.0.20260701213016-8b4da077a431
+
+replace github.com/lightninglabs/lndclient => github.com/ellemouton/lndclient v1.0.1-0.20260701213152-a3baa8dfda6c
