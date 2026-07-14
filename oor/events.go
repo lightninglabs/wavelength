@@ -40,6 +40,11 @@ type StartTransferEvent struct {
 	// retries. Empty preserves the historical deterministic-session
 	// behavior.
 	IdempotencyKey string
+
+	// PreparedSubmit is an optional asset-committed Bitcoin graph produced
+	// before entering the deterministic FSM. Nil preserves the ordinary
+	// Bitcoin-only builder path.
+	PreparedSubmit *PreparedSubmitPackage
 }
 
 // eventSealed marks this as implementing the sealed Event interface.

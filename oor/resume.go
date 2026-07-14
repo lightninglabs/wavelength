@@ -186,6 +186,8 @@ func submitOutbox(state *AwaitingSubmitAccepted) []OutboxEvent {
 			CheckpointPSBTs: state.CheckpointPSBTs,
 			TransferInputs:  state.TransferInputs,
 			Recipients:      state.RecipientOutputs,
+			TaprootAssetTransfer: state.
+				TaprootAssetTransfer,
 		},
 		&ScheduleRetryRequest{
 			After:  outgoingTransportRedriveInterval,

@@ -6,19 +6,22 @@ import (
 	"math"
 	"time"
 
+	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/wire/v2"
+	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
 	"github.com/lightningnetwork/lnd/tlv"
 )
 
 const (
-	snapshotVersionRecordType         tlv.Type = 1
-	snapshotSessionIDRecordType       tlv.Type = 3
-	snapshotPhaseRecordType           tlv.Type = 5
-	snapshotArkPSBTRecordType         tlv.Type = 7
-	snapshotCheckpointPSBTsRecordType tlv.Type = 9
-	snapshotTransferInputsRecordType  tlv.Type = 11
-	snapshotRetryAfterNanosRecordType tlv.Type = 15
-	snapshotFailReasonRecordType      tlv.Type = 19
+	snapshotVersionRecordType          tlv.Type = 1
+	snapshotSessionIDRecordType        tlv.Type = 3
+	snapshotPhaseRecordType            tlv.Type = 5
+	snapshotArkPSBTRecordType          tlv.Type = 7
+	snapshotCheckpointPSBTsRecordType  tlv.Type = 9
+	snapshotTransferInputsRecordType   tlv.Type = 11
+	snapshotRecipientOutputsRecordType tlv.Type = 13
+	snapshotRetryAfterNanosRecordType  tlv.Type = 15
+	snapshotFailReasonRecordType       tlv.Type = 19
 
 	// snapshotIdempotencyKeyRecordType stores the optional caller-provided
 	// OOR send idempotency key.
@@ -29,6 +32,10 @@ const (
 	// 5+). A pre-v5 snapshot omits this record, so it decodes to 0 (a fresh
 	// window) rather than failing.
 	snapshotFirstRejectNanosRecordType tlv.Type = 23
+
+	// snapshotTaprootAssetTransferRecordType stores the optional encoded
+	// sealed-package container.
+	snapshotTaprootAssetTransferRecordType tlv.Type = 25
 )
 
 func encodeOutgoingSnapshot(snapshot *OutgoingSnapshot) ([]byte, error) {
@@ -52,11 +59,29 @@ func encodeOutgoingSnapshot(snapshot *OutgoingSnapshot) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	recipientPayloads := make(
+		[]recipientPayload, 0, len(snapshot.RecipientOutputs),
+	)
+	for i := range snapshot.RecipientOutputs {
+		recipientPayloads = append(recipientPayloads, recipientPayload{
+			PkScript: snapshot.RecipientOutputs[i].PkScript,
+			ValueSat: int64(snapshot.RecipientOutputs[i].Value),
+			VTXOPolicyTemplate: snapshot.RecipientOutputs[i].
+				VTXOPolicyTemplate,
+			TaprootAssetRoot: snapshot.RecipientOutputs[i].
+				TaprootAssetRoot,
+		})
+	}
+	recipientOutputs, err := encodeRecipientPayloads(recipientPayloads)
+	if err != nil {
+		return nil, err
+	}
 
 	retryAfterNanos := uint64(snapshot.RetryAfter)
 	failReason := []byte(snapshot.FailReason)
 	idempotencyKey := []byte(snapshot.IdempotencyKey)
 	firstRejectNanos := uint64(snapshot.FirstRejectUnixNanos)
+	assetTransfer := snapshot.TaprootAssetTransfer
 
 	version := uint64(snapshot.Version)
 	records := []tlv.Record{
@@ -73,6 +98,9 @@ func encodeOutgoingSnapshot(snapshot *OutgoingSnapshot) ([]byte, error) {
 			snapshotTransferInputsRecordType, &inputSnapshots,
 		),
 		tlv.MakePrimitiveRecord(
+			snapshotRecipientOutputsRecordType, &recipientOutputs,
+		),
+		tlv.MakePrimitiveRecord(
 			snapshotRetryAfterNanosRecordType, &retryAfterNanos,
 		),
 		tlv.MakePrimitiveRecord(
@@ -83,6 +111,9 @@ func encodeOutgoingSnapshot(snapshot *OutgoingSnapshot) ([]byte, error) {
 		),
 		tlv.MakePrimitiveRecord(
 			snapshotFirstRejectNanosRecordType, &firstRejectNanos,
+		),
+		tlv.MakePrimitiveRecord(
+			snapshotTaprootAssetTransferRecordType, &assetTransfer,
 		),
 	}
 
@@ -109,16 +140,18 @@ func decodeOutgoingSnapshotWithLimits(raw []byte,
 	limits ReceiveLimits) (*OutgoingSnapshot, error) {
 
 	var (
-		version            uint64
-		sessionBytes       []byte
-		phaseBytes         []byte
-		arkPSBT            []byte
-		checkpointPSBTsRaw []byte
-		inputSnapshotsRaw  []byte
-		retryAfterNanos    uint64
-		failReasonRaw      []byte
-		idempotencyKeyRaw  []byte
-		firstRejectNanos   uint64
+		version             uint64
+		sessionBytes        []byte
+		phaseBytes          []byte
+		arkPSBT             []byte
+		checkpointPSBTsRaw  []byte
+		inputSnapshotsRaw   []byte
+		recipientOutputsRaw []byte
+		retryAfterNanos     uint64
+		failReasonRaw       []byte
+		idempotencyKeyRaw   []byte
+		firstRejectNanos    uint64
+		assetTransferRaw    []byte
 	)
 
 	records := []tlv.Record{
@@ -135,6 +168,10 @@ func decodeOutgoingSnapshotWithLimits(raw []byte,
 			snapshotTransferInputsRecordType, &inputSnapshotsRaw,
 		),
 		tlv.MakePrimitiveRecord(
+			snapshotRecipientOutputsRecordType,
+			&recipientOutputsRaw,
+		),
+		tlv.MakePrimitiveRecord(
 			snapshotRetryAfterNanosRecordType, &retryAfterNanos,
 		),
 		tlv.MakePrimitiveRecord(
@@ -145,6 +182,10 @@ func decodeOutgoingSnapshotWithLimits(raw []byte,
 		),
 		tlv.MakePrimitiveRecord(
 			snapshotFirstRejectNanosRecordType, &firstRejectNanos,
+		),
+		tlv.MakePrimitiveRecord(
+			snapshotTaprootAssetTransferRecordType,
+			&assetTransferRaw,
 		),
 	}
 
@@ -183,6 +224,40 @@ func decodeOutgoingSnapshotWithLimits(raw []byte,
 		inputSnapshots = nil
 	}
 
+	var recipientOutputs []oortx.RecipientOutput
+	if len(recipientOutputsRaw) > 0 {
+		recipientPayloads, err := decodeRecipientPayloadsWithLimits(
+			recipientOutputsRaw, limits,
+		)
+		if err != nil {
+			return nil, err
+		}
+		recipientOutputs = make(
+			[]oortx.RecipientOutput, 0, len(recipientPayloads),
+		)
+		for i := range recipientPayloads {
+			recipient := recipientPayloads[i]
+			recipientOutputs = append(recipientOutputs,
+				oortx.RecipientOutput{
+					PkScript: recipient.PkScript,
+					Value: btcutil.Amount(
+						recipient.ValueSat,
+					),
+					VTXOPolicyTemplate: recipient.
+						VTXOPolicyTemplate,
+					TaprootAssetRoot: recipient.
+						TaprootAssetRoot,
+				},
+			)
+		}
+		if len(recipientOutputs) == 0 {
+			recipientOutputs = nil
+		}
+	}
+	if len(assetTransferRaw) == 0 {
+		assetTransferRaw = nil
+	}
+
 	if len(arkPSBT) == 0 {
 		arkPSBT = nil
 	}
@@ -213,6 +288,8 @@ func decodeOutgoingSnapshotWithLimits(raw []byte,
 		ArkPSBT:                arkPSBT,
 		CheckpointPSBTs:        checkpointPSBTs,
 		TransferInputSnapshots: inputSnapshots,
+		RecipientOutputs:       recipientOutputs,
+		TaprootAssetTransfer:   assetTransferRaw,
 		RetryAfter:             decodedRetryAfter,
 		FailReason:             string(failReasonRaw),
 		IdempotencyKey:         string(idempotencyKeyRaw),
