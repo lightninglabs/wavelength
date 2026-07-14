@@ -34,6 +34,14 @@ func IsIncomingRecipientNotOwned(err error) bool {
 	return errors.Is(err, ErrIncomingRecipientNotOwned)
 }
 
+func equalOptionalHash(a, b *chainhash.Hash) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+
+	return *a == *b
+}
+
 // IncomingClientKeyResolver resolves the local client key for a recipient
 // output being materialized from an incoming transfer.
 type IncomingClientKeyResolver func(ctx context.Context,
@@ -196,6 +204,7 @@ func (h *LocalPersistenceOutboxHandler) validateMaterializeIncoming(
 		root := packageArtifactForValidation(
 			msg.SessionID, msg.ArkPSBT, msg.FinalCheckpointPSBTs,
 		)
+		root.TaprootAssetTransfer = msg.TaprootAssetTransfer
 		err := validateIncomingPackageGraph(
 			root, msg.AncestorPackages,
 		)
@@ -330,9 +339,10 @@ func (h *LocalPersistenceOutboxHandler) materializeIncoming(ctx context.Context,
 			return nil, err
 		}
 
-		err = h.PackageStore.UpsertPackage(
-			ctx, PackageDirectionIncoming, sessionIDHash,
-			msg.ArkPSBT, msg.FinalCheckpointPSBTs,
+		err = upsertPackage(
+			ctx, h.PackageStore, PackageDirectionIncoming,
+			sessionIDHash, msg.ArkPSBT, msg.FinalCheckpointPSBTs,
+			msg.TaprootAssetTransfer,
 		)
 		if err != nil {
 			isDirectionConflict := errors.Is(
@@ -420,7 +430,8 @@ func (h *LocalPersistenceOutboxHandler) materializeIncoming(ctx context.Context,
 				ExitDelay:   h.ExitDelay,
 				PolicyTemplate: recipient.
 					VTXOPolicyTemplate,
-				Metadata: metadata,
+				TaprootAssetRoot: recipient.TaprootAssetRoot,
+				Metadata:         metadata,
 			},
 		)
 		if err != nil {
@@ -443,6 +454,12 @@ func (h *LocalPersistenceOutboxHandler) materializeIncoming(ctx context.Context,
 			}
 
 			if !bytes.Equal(existing.PkScript, desc.PkScript) {
+				return nil, err
+			}
+			if !equalOptionalHash(
+				existing.TaprootAssetRoot,
+				desc.TaprootAssetRoot,
+			) {
 				return nil, err
 			}
 
@@ -512,9 +529,11 @@ func (h *LocalPersistenceOutboxHandler) persistIncomingAncestorPackages(
 		ancestor := ancestors[i]
 		sessionHash := chainhash.Hash(ancestor.SessionID)
 
-		err := h.PackageStore.UpsertPackage(
-			ctx, PackageDirectionIncoming, sessionHash,
-			ancestor.ArkPSBT, ancestor.FinalCheckpointPSBTs,
+		err := upsertPackage(
+			ctx, h.PackageStore, PackageDirectionIncoming,
+			sessionHash, ancestor.ArkPSBT,
+			ancestor.FinalCheckpointPSBTs,
+			ancestor.TaprootAssetTransfer,
 		)
 		if err == nil {
 			continue

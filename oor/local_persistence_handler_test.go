@@ -32,7 +32,21 @@ type testPackageStore struct {
 	lastSessionID chainhash.Hash
 	sessions      []chainhash.Hash
 
-	packageErr error
+	packageErr        error
+	lastAssetTransfer *oortx.TaprootAssetTransfer
+}
+
+// UpsertPackageWithAssets records one asset-aware package upsert call.
+func (s *testPackageStore) UpsertPackageWithAssets(ctx context.Context,
+	direction PackageDirection, sessionID chainhash.Hash, ark *psbt.Packet,
+	checkpoints []*psbt.Packet,
+	assetTransfer *oortx.TaprootAssetTransfer) error {
+
+	s.lastAssetTransfer = assetTransfer.Clone()
+
+	return s.UpsertPackage(
+		ctx, direction, sessionID, ark, checkpoints,
+	)
 }
 
 // UpsertPackage records one package upsert call.
@@ -218,6 +232,34 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncoming(t *testing.T) {
 		operatorKey :=
 		buildTestIncomingMaterialization(t)
 
+	policyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
+		recipientKey.PubKey(), operatorKey, 10,
+	)
+	require.NoError(t, err)
+	assetRoot := chainhash.Hash{0x81, 0x82, 0x83}
+	assetDesc := &vtxo.Descriptor{
+		PolicyTemplate:   policyTemplate,
+		TaprootAssetRoot: &assetRoot,
+	}
+	assetPkScript, err := assetDesc.EffectivePkScript()
+	require.NoError(t, err)
+	arkPSBT.UnsignedTx.TxOut[recipients[0].OutputIndex].PkScript =
+		assetPkScript
+	recipients[0].PkScript = assetPkScript
+	recipients[0].VTXOPolicyTemplate = policyTemplate
+	recipients[0].TaprootAssetRoot = &assetRoot
+	assetTransfer := &oortx.TaprootAssetTransfer{
+		Version: oortx.TaprootAssetTransferVersion,
+		CheckpointPackages: [][]byte{
+			{
+				0x84,
+			},
+		},
+		ArkPackage: []byte{
+			0x85,
+		},
+	}
+
 	sessionID := SessionID(arkPSBT.UnsignedTx.TxHash())
 	store := newTestVTXOStore()
 	packageStore := &testPackageStore{}
@@ -274,6 +316,7 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncoming(t *testing.T) {
 		ArkPSBT:              arkPSBT,
 		FinalCheckpointPSBTs: finalCheckpoints,
 		Recipients:           recipients,
+		TaprootAssetTransfer: assetTransfer,
 	}
 
 	events, err := handler.Handle(ctx, sessionID, req)
@@ -296,6 +339,8 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncoming(t *testing.T) {
 	require.EqualValues(t, 1000, desc.BatchExpiry)
 	require.EqualValues(t, 1, desc.MaxTreeDepth())
 	require.EqualValues(t, 700, desc.CreatedHeight)
+	require.Equal(t, &assetRoot, desc.TaprootAssetRoot)
+	require.Equal(t, assetTransfer, packageStore.lastAssetTransfer)
 
 	// Re-materialization should be idempotent.
 	events, err = handler.Handle(ctx, sessionID, req)

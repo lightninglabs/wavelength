@@ -459,6 +459,10 @@ type MaterializeIncomingVTXOsRequest struct {
 	// AncestorPackages are finalized OOR packages needed to unroll the
 	// incoming VTXO's OOR parent chain.
 	AncestorPackages []PackageArtifact
+
+	// TaprootAssetTransfer is the optional sealed package container for the
+	// incoming session.
+	TaprootAssetTransfer *oortx.TaprootAssetTransfer
 }
 
 // outboxType returns a stable identifier for this outbox message.
