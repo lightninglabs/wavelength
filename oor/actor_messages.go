@@ -166,6 +166,8 @@ func (m *StartTransferRequest) Encode(w io.Writer) error {
 				ValueSat: int64(m.Recipients[i].Value),
 				VTXOPolicyTemplate: m.Recipients[i].
 					VTXOPolicyTemplate,
+				TaprootAssetRoot: m.Recipients[i].
+					TaprootAssetRoot,
 			},
 		)
 	}
@@ -226,6 +228,7 @@ func (m *StartTransferRequest) Decode(r io.Reader) error {
 			Value:    btcutil.Amount(recipient.ValueSat),
 			VTXOPolicyTemplate: recipient.
 				VTXOPolicyTemplate,
+			TaprootAssetRoot: recipient.TaprootAssetRoot,
 		})
 	}
 

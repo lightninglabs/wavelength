@@ -29,7 +29,8 @@ transition, persist both layers, and only then request Ark signatures.
   historical `darepo-client#12` builder, and Wavelength's durable OOR FSM.
 - [x] (2026-07-15 10:30Z) Created an isolated feature worktree based on the
   Wavelength rename branch.
-- [ ] Add shared, versioned OOR asset package and recipient-root domain types.
+- [x] (2026-07-14 23:00Z) Added the shared, versioned OOR asset package,
+  recipient/input root binding, and durable input/start-message root codecs.
 - [ ] Add tap-sdk-backed two-transition preparation with exact PSBT/root
   binding and deterministic graph verification.
 - [ ] Add a prepared-package entry point to the durable outgoing OOR FSM and
@@ -59,6 +60,12 @@ transition, persist both layers, and only then request Ark signatures.
 - Observation: current tapd can commit an unconfirmed compact path but cannot
   publish/log that path through chain porter. The OOR slice must persist the
   path and leave confirmation materialization/publish to a later boundary.
+- Observation: the merged tap-sdk cannot currently be imported by Wavelength.
+  Wavelength selects btcd v0.26 and its `/v2` modules, while tap-sdk still
+  imports classic root-module `wire`, `txscript`, and `chaincfg` packages that
+  are absent at v0.26. Evidence: adding tap-sdk commit `932b4aa` and compiling
+  the adapter failed during package loading; the exact reproduction is filed
+  as `lightninglabs/tap-sdk#163`.
 
 ## Decision Log
 
@@ -79,12 +86,20 @@ transition, persist both layers, and only then request Ark signatures.
   Rationale: this is the smallest path supported by the merged SDK without
   depending on unresolved wallet funding or passive-inventory APIs.
   Date/Author: 2026-07-15 / Codex.
+- Decision: do not downgrade Wavelength's btcd dependency graph or hide the
+  mismatch with local replaces. Continue the protocol, persistence, and
+  operator validation work against opaque sealed packages; add the concrete
+  tap-sdk adapter once `tap-sdk#163` provides a compatible module graph.
+  Rationale: Wavelength, lnd, btcwallet, and taproot-assets already consume the
+  v0.26 generation, so a downgrade would turn a visible integration blocker
+  into broad dependency risk. Date/Author: 2026-07-15 / Codex.
 
 ## Outcomes & Retrospective
 
-Implementation is in progress. This section will record the exact API exposed,
-test evidence, remaining tapd/tap-sdk gaps, and whether the v0.8.0 dependency
-alignment proved compatible.
+Implementation is in progress. The SDK-neutral package/root milestone passes
+`go test ./lib/tx/oor ./oor`. The first confirmed upstream gap is
+`lightninglabs/tap-sdk#163`; this section will record the remaining test
+evidence and any further tapd/tap-sdk gaps.
 
 ## Context and Orientation
 
@@ -206,6 +221,7 @@ original checkout or its user-owned submodule state.
 
 - tap-sdk design: `tap-sdk/docs/design/advanced-custom-anchor-transactions.md`
 - tap-sdk epic: `lightninglabs/tap-sdk#139`
+- tap-sdk btcd compatibility blocker: `lightninglabs/tap-sdk#163`
 - historical reference: `lightninglabs/darepo-client#12`
 - Wavelength OOR overview: `docs/oor_subsystem.md`
 
@@ -226,5 +242,5 @@ mutable tap-sdk builder or tapd client inside the deterministic FSM. That keeps
 network I/O at the orchestration boundary and makes durable actor replay
 independent of tapd availability.
 
-Revision note (2026-07-15): initial plan recorded after the architecture and
-merged-SDK audit; no protocol code had been changed yet.
+Revision note (2026-07-15): updated after the first SDK-neutral root/container
+milestone and the tap-sdk dependency compatibility reproduction.
