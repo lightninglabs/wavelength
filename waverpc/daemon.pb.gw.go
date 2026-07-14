@@ -2,11 +2,11 @@
 // source: daemon.proto
 
 /*
-Package daemonrpc is a reverse proxy.
+Package waverpc is a reverse proxy.
 
 It translates gRPC into RESTful JSON APIs.
 */
-package daemonrpc
+package waverpc
 
 import (
 	"context"
@@ -1258,7 +1258,7 @@ func RegisterDaemonServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/daemonrpc.DaemonService/GetInfo", runtime.WithHTTPPathPattern("/v1/daemon/get-info"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/waverpc.DaemonService/GetInfo", runtime.WithHTTPPathPattern("/v1/daemon/get-info"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -1278,7 +1278,7 @@ func RegisterDaemonServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/daemonrpc.DaemonService/GenSeed", runtime.WithHTTPPathPattern("/v1/daemon/gen-seed"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/waverpc.DaemonService/GenSeed", runtime.WithHTTPPathPattern("/v1/daemon/gen-seed"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -1298,7 +1298,7 @@ func RegisterDaemonServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/daemonrpc.DaemonService/InitWallet", runtime.WithHTTPPathPattern("/v1/daemon/init-wallet"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/waverpc.DaemonService/InitWallet", runtime.WithHTTPPathPattern("/v1/daemon/init-wallet"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -1318,7 +1318,7 @@ func RegisterDaemonServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/daemonrpc.DaemonService/UnlockWallet", runtime.WithHTTPPathPattern("/v1/daemon/unlock-wallet"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/waverpc.DaemonService/UnlockWallet", runtime.WithHTTPPathPattern("/v1/daemon/unlock-wallet"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -1338,7 +1338,7 @@ func RegisterDaemonServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/daemonrpc.DaemonService/GetBalance", runtime.WithHTTPPathPattern("/v1/daemon/get-balance"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/waverpc.DaemonService/GetBalance", runtime.WithHTTPPathPattern("/v1/daemon/get-balance"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -1358,7 +1358,7 @@ func RegisterDaemonServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/daemonrpc.DaemonService/ListVTXOs", runtime.WithHTTPPathPattern("/v1/daemon/list-vtxos"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/waverpc.DaemonService/ListVTXOs", runtime.WithHTTPPathPattern("/v1/daemon/list-vtxos"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -1378,7 +1378,7 @@ func RegisterDaemonServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/daemonrpc.DaemonService/NewAddress", runtime.WithHTTPPathPattern("/v1/daemon/new-address"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/waverpc.DaemonService/NewAddress", runtime.WithHTTPPathPattern("/v1/daemon/new-address"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -1398,7 +1398,7 @@ func RegisterDaemonServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/daemonrpc.DaemonService/NewReceiveScript", runtime.WithHTTPPathPattern("/v1/daemon/new-receive-script"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/waverpc.DaemonService/NewReceiveScript", runtime.WithHTTPPathPattern("/v1/daemon/new-receive-script"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -1418,7 +1418,7 @@ func RegisterDaemonServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/daemonrpc.DaemonService/ReceiveAuthKey", runtime.WithHTTPPathPattern("/v1/daemon/receive-auth-key"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/waverpc.DaemonService/ReceiveAuthKey", runtime.WithHTTPPathPattern("/v1/daemon/receive-auth-key"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -1438,7 +1438,7 @@ func RegisterDaemonServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/daemonrpc.DaemonService/SignReceiveAuthMessage", runtime.WithHTTPPathPattern("/v1/daemon/sign-receive-auth-message"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/waverpc.DaemonService/SignReceiveAuthMessage", runtime.WithHTTPPathPattern("/v1/daemon/sign-receive-auth-message"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -1458,7 +1458,7 @@ func RegisterDaemonServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/daemonrpc.DaemonService/SignReceiveAuthMessageCompact", runtime.WithHTTPPathPattern("/v1/daemon/sign-receive-auth-message-compact"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/waverpc.DaemonService/SignReceiveAuthMessageCompact", runtime.WithHTTPPathPattern("/v1/daemon/sign-receive-auth-message-compact"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -1478,7 +1478,7 @@ func RegisterDaemonServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/daemonrpc.DaemonService/ReceiveAuthECDH", runtime.WithHTTPPathPattern("/v1/daemon/receive-auth-ecdh"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/waverpc.DaemonService/ReceiveAuthECDH", runtime.WithHTTPPathPattern("/v1/daemon/receive-auth-ecdh"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -1498,7 +1498,7 @@ func RegisterDaemonServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/daemonrpc.DaemonService/GetIndexedVTXOByPkScript", runtime.WithHTTPPathPattern("/v1/daemon/get-indexed-vtxo-by-pk-script"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/waverpc.DaemonService/GetIndexedVTXOByPkScript", runtime.WithHTTPPathPattern("/v1/daemon/get-indexed-vtxo-by-pk-script"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -1518,7 +1518,7 @@ func RegisterDaemonServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/daemonrpc.DaemonService/GetVTXOExpiryInfo", runtime.WithHTTPPathPattern("/v1/daemon/get-vtxo-expiry-info"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/waverpc.DaemonService/GetVTXOExpiryInfo", runtime.WithHTTPPathPattern("/v1/daemon/get-vtxo-expiry-info"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -1538,7 +1538,7 @@ func RegisterDaemonServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/daemonrpc.DaemonService/GetIndexedOORSessionByTxid", runtime.WithHTTPPathPattern("/v1/daemon/get-indexed-oor-session-by-txid"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/waverpc.DaemonService/GetIndexedOORSessionByTxid", runtime.WithHTTPPathPattern("/v1/daemon/get-indexed-oor-session-by-txid"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -1558,7 +1558,7 @@ func RegisterDaemonServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/daemonrpc.DaemonService/SendVTXO", runtime.WithHTTPPathPattern("/v1/daemon/send-vtxo"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/waverpc.DaemonService/SendVTXO", runtime.WithHTTPPathPattern("/v1/daemon/send-vtxo"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -1578,7 +1578,7 @@ func RegisterDaemonServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/daemonrpc.DaemonService/SendOOR", runtime.WithHTTPPathPattern("/v1/daemon/send-oor"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/waverpc.DaemonService/SendOOR", runtime.WithHTTPPathPattern("/v1/daemon/send-oor"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -1598,7 +1598,7 @@ func RegisterDaemonServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/daemonrpc.DaemonService/PrepareOOR", runtime.WithHTTPPathPattern("/v1/daemon/prepare-oor"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/waverpc.DaemonService/PrepareOOR", runtime.WithHTTPPathPattern("/v1/daemon/prepare-oor"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -1618,7 +1618,7 @@ func RegisterDaemonServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/daemonrpc.DaemonService/SignOORCustomInput", runtime.WithHTTPPathPattern("/v1/daemon/sign-oor-custom-input"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/waverpc.DaemonService/SignOORCustomInput", runtime.WithHTTPPathPattern("/v1/daemon/sign-oor-custom-input"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -1638,7 +1638,7 @@ func RegisterDaemonServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/daemonrpc.DaemonService/SignVTXOForfeit", runtime.WithHTTPPathPattern("/v1/daemon/sign-vtxo-forfeit"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/waverpc.DaemonService/SignVTXOForfeit", runtime.WithHTTPPathPattern("/v1/daemon/sign-vtxo-forfeit"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -1658,7 +1658,7 @@ func RegisterDaemonServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/daemonrpc.DaemonService/RefreshVTXOs", runtime.WithHTTPPathPattern("/v1/daemon/refresh-vtxos"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/waverpc.DaemonService/RefreshVTXOs", runtime.WithHTTPPathPattern("/v1/daemon/refresh-vtxos"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -1678,7 +1678,7 @@ func RegisterDaemonServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/daemonrpc.DaemonService/RefreshCustomVTXOs", runtime.WithHTTPPathPattern("/v1/daemon/refresh-custom-vtxos"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/waverpc.DaemonService/RefreshCustomVTXOs", runtime.WithHTTPPathPattern("/v1/daemon/refresh-custom-vtxos"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -1698,7 +1698,7 @@ func RegisterDaemonServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/daemonrpc.DaemonService/ListPendingForfeitParticipantSignatureRequests", runtime.WithHTTPPathPattern("/v1/daemon/list-pending-forfeit-participant-signature-requests"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/waverpc.DaemonService/ListPendingForfeitParticipantSignatureRequests", runtime.WithHTTPPathPattern("/v1/daemon/list-pending-forfeit-participant-signature-requests"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -1718,7 +1718,7 @@ func RegisterDaemonServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/daemonrpc.DaemonService/SubmitForfeitParticipantSignatures", runtime.WithHTTPPathPattern("/v1/daemon/submit-forfeit-participant-signatures"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/waverpc.DaemonService/SubmitForfeitParticipantSignatures", runtime.WithHTTPPathPattern("/v1/daemon/submit-forfeit-participant-signatures"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -1738,7 +1738,7 @@ func RegisterDaemonServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/daemonrpc.DaemonService/LeaveVTXOs", runtime.WithHTTPPathPattern("/v1/daemon/leave-vtxos"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/waverpc.DaemonService/LeaveVTXOs", runtime.WithHTTPPathPattern("/v1/daemon/leave-vtxos"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -1758,7 +1758,7 @@ func RegisterDaemonServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/daemonrpc.DaemonService/SendOnChain", runtime.WithHTTPPathPattern("/v1/daemon/send-onchain"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/waverpc.DaemonService/SendOnChain", runtime.WithHTTPPathPattern("/v1/daemon/send-onchain"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -1778,7 +1778,7 @@ func RegisterDaemonServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/daemonrpc.DaemonService/Board", runtime.WithHTTPPathPattern("/v1/daemon/board"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/waverpc.DaemonService/Board", runtime.WithHTTPPathPattern("/v1/daemon/board"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -1798,7 +1798,7 @@ func RegisterDaemonServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/daemonrpc.DaemonService/JoinNextRound", runtime.WithHTTPPathPattern("/v1/daemon/join-next-round"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/waverpc.DaemonService/JoinNextRound", runtime.WithHTTPPathPattern("/v1/daemon/join-next-round"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -1818,7 +1818,7 @@ func RegisterDaemonServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/daemonrpc.DaemonService/SweepBoardingUTXOs", runtime.WithHTTPPathPattern("/v1/daemon/sweep-boarding-utxos"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/waverpc.DaemonService/SweepBoardingUTXOs", runtime.WithHTTPPathPattern("/v1/daemon/sweep-boarding-utxos"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -1838,7 +1838,7 @@ func RegisterDaemonServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/daemonrpc.DaemonService/ListBoardingSweeps", runtime.WithHTTPPathPattern("/v1/daemon/list-boarding-sweeps"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/waverpc.DaemonService/ListBoardingSweeps", runtime.WithHTTPPathPattern("/v1/daemon/list-boarding-sweeps"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -1858,7 +1858,7 @@ func RegisterDaemonServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/daemonrpc.DaemonService/ListRounds", runtime.WithHTTPPathPattern("/v1/daemon/list-rounds"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/waverpc.DaemonService/ListRounds", runtime.WithHTTPPathPattern("/v1/daemon/list-rounds"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -1878,7 +1878,7 @@ func RegisterDaemonServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/daemonrpc.DaemonService/GetRound", runtime.WithHTTPPathPattern("/v1/daemon/get-round"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/waverpc.DaemonService/GetRound", runtime.WithHTTPPathPattern("/v1/daemon/get-round"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -1905,7 +1905,7 @@ func RegisterDaemonServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/daemonrpc.DaemonService/ListOORSessions", runtime.WithHTTPPathPattern("/v1/daemon/list-oor-sessions"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/waverpc.DaemonService/ListOORSessions", runtime.WithHTTPPathPattern("/v1/daemon/list-oor-sessions"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -1925,7 +1925,7 @@ func RegisterDaemonServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/daemonrpc.DaemonService/GetOORSession", runtime.WithHTTPPathPattern("/v1/daemon/get-oor-session"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/waverpc.DaemonService/GetOORSession", runtime.WithHTTPPathPattern("/v1/daemon/get-oor-session"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -1945,7 +1945,7 @@ func RegisterDaemonServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/daemonrpc.DaemonService/EstimateFee", runtime.WithHTTPPathPattern("/v1/daemon/estimate-fee"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/waverpc.DaemonService/EstimateFee", runtime.WithHTTPPathPattern("/v1/daemon/estimate-fee"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -1965,7 +1965,7 @@ func RegisterDaemonServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/daemonrpc.DaemonService/GetFeeHistory", runtime.WithHTTPPathPattern("/v1/daemon/get-fee-history"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/waverpc.DaemonService/GetFeeHistory", runtime.WithHTTPPathPattern("/v1/daemon/get-fee-history"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -1985,7 +1985,7 @@ func RegisterDaemonServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/daemonrpc.DaemonService/ListTransactions", runtime.WithHTTPPathPattern("/v1/daemon/list-transactions"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/waverpc.DaemonService/ListTransactions", runtime.WithHTTPPathPattern("/v1/daemon/list-transactions"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -2005,7 +2005,7 @@ func RegisterDaemonServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/daemonrpc.DaemonService/Unroll", runtime.WithHTTPPathPattern("/v1/daemon/unroll"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/waverpc.DaemonService/Unroll", runtime.WithHTTPPathPattern("/v1/daemon/unroll"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -2025,7 +2025,7 @@ func RegisterDaemonServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/daemonrpc.DaemonService/GetUnrollStatus", runtime.WithHTTPPathPattern("/v1/daemon/get-unroll-status"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/waverpc.DaemonService/GetUnrollStatus", runtime.WithHTTPPathPattern("/v1/daemon/get-unroll-status"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -2045,7 +2045,7 @@ func RegisterDaemonServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/daemonrpc.DaemonService/ArmVHTLCRecovery", runtime.WithHTTPPathPattern("/v1/daemon/arm-vhtlc-recovery"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/waverpc.DaemonService/ArmVHTLCRecovery", runtime.WithHTTPPathPattern("/v1/daemon/arm-vhtlc-recovery"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -2065,7 +2065,7 @@ func RegisterDaemonServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/daemonrpc.DaemonService/EscalateVHTLCRecovery", runtime.WithHTTPPathPattern("/v1/daemon/escalate-vhtlc-recovery"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/waverpc.DaemonService/EscalateVHTLCRecovery", runtime.WithHTTPPathPattern("/v1/daemon/escalate-vhtlc-recovery"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -2085,7 +2085,7 @@ func RegisterDaemonServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/daemonrpc.DaemonService/CancelVHTLCRecovery", runtime.WithHTTPPathPattern("/v1/daemon/cancel-vhtlc-recovery"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/waverpc.DaemonService/CancelVHTLCRecovery", runtime.WithHTTPPathPattern("/v1/daemon/cancel-vhtlc-recovery"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -2105,7 +2105,7 @@ func RegisterDaemonServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/daemonrpc.DaemonService/GetVHTLCRecoveryStatus", runtime.WithHTTPPathPattern("/v1/daemon/get-vhtlc-recovery-status"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/waverpc.DaemonService/GetVHTLCRecoveryStatus", runtime.WithHTTPPathPattern("/v1/daemon/get-vhtlc-recovery-status"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -2125,7 +2125,7 @@ func RegisterDaemonServiceHandlerServer(ctx context.Context, mux *runtime.ServeM
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/daemonrpc.DaemonService/ListVHTLCRecoveries", runtime.WithHTTPPathPattern("/v1/daemon/list-vhtlc-recoveries"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/waverpc.DaemonService/ListVHTLCRecoveries", runtime.WithHTTPPathPattern("/v1/daemon/list-vhtlc-recoveries"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -2183,7 +2183,7 @@ func RegisterDaemonServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/daemonrpc.DaemonService/GetInfo", runtime.WithHTTPPathPattern("/v1/daemon/get-info"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/waverpc.DaemonService/GetInfo", runtime.WithHTTPPathPattern("/v1/daemon/get-info"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -2200,7 +2200,7 @@ func RegisterDaemonServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/daemonrpc.DaemonService/GenSeed", runtime.WithHTTPPathPattern("/v1/daemon/gen-seed"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/waverpc.DaemonService/GenSeed", runtime.WithHTTPPathPattern("/v1/daemon/gen-seed"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -2217,7 +2217,7 @@ func RegisterDaemonServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/daemonrpc.DaemonService/InitWallet", runtime.WithHTTPPathPattern("/v1/daemon/init-wallet"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/waverpc.DaemonService/InitWallet", runtime.WithHTTPPathPattern("/v1/daemon/init-wallet"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -2234,7 +2234,7 @@ func RegisterDaemonServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/daemonrpc.DaemonService/UnlockWallet", runtime.WithHTTPPathPattern("/v1/daemon/unlock-wallet"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/waverpc.DaemonService/UnlockWallet", runtime.WithHTTPPathPattern("/v1/daemon/unlock-wallet"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -2251,7 +2251,7 @@ func RegisterDaemonServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/daemonrpc.DaemonService/GetBalance", runtime.WithHTTPPathPattern("/v1/daemon/get-balance"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/waverpc.DaemonService/GetBalance", runtime.WithHTTPPathPattern("/v1/daemon/get-balance"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -2268,7 +2268,7 @@ func RegisterDaemonServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/daemonrpc.DaemonService/ListVTXOs", runtime.WithHTTPPathPattern("/v1/daemon/list-vtxos"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/waverpc.DaemonService/ListVTXOs", runtime.WithHTTPPathPattern("/v1/daemon/list-vtxos"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -2285,7 +2285,7 @@ func RegisterDaemonServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/daemonrpc.DaemonService/NewAddress", runtime.WithHTTPPathPattern("/v1/daemon/new-address"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/waverpc.DaemonService/NewAddress", runtime.WithHTTPPathPattern("/v1/daemon/new-address"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -2302,7 +2302,7 @@ func RegisterDaemonServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/daemonrpc.DaemonService/NewReceiveScript", runtime.WithHTTPPathPattern("/v1/daemon/new-receive-script"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/waverpc.DaemonService/NewReceiveScript", runtime.WithHTTPPathPattern("/v1/daemon/new-receive-script"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -2319,7 +2319,7 @@ func RegisterDaemonServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/daemonrpc.DaemonService/ReceiveAuthKey", runtime.WithHTTPPathPattern("/v1/daemon/receive-auth-key"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/waverpc.DaemonService/ReceiveAuthKey", runtime.WithHTTPPathPattern("/v1/daemon/receive-auth-key"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -2336,7 +2336,7 @@ func RegisterDaemonServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/daemonrpc.DaemonService/SignReceiveAuthMessage", runtime.WithHTTPPathPattern("/v1/daemon/sign-receive-auth-message"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/waverpc.DaemonService/SignReceiveAuthMessage", runtime.WithHTTPPathPattern("/v1/daemon/sign-receive-auth-message"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -2353,7 +2353,7 @@ func RegisterDaemonServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/daemonrpc.DaemonService/SignReceiveAuthMessageCompact", runtime.WithHTTPPathPattern("/v1/daemon/sign-receive-auth-message-compact"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/waverpc.DaemonService/SignReceiveAuthMessageCompact", runtime.WithHTTPPathPattern("/v1/daemon/sign-receive-auth-message-compact"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -2370,7 +2370,7 @@ func RegisterDaemonServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/daemonrpc.DaemonService/ReceiveAuthECDH", runtime.WithHTTPPathPattern("/v1/daemon/receive-auth-ecdh"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/waverpc.DaemonService/ReceiveAuthECDH", runtime.WithHTTPPathPattern("/v1/daemon/receive-auth-ecdh"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -2387,7 +2387,7 @@ func RegisterDaemonServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/daemonrpc.DaemonService/GetIndexedVTXOByPkScript", runtime.WithHTTPPathPattern("/v1/daemon/get-indexed-vtxo-by-pk-script"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/waverpc.DaemonService/GetIndexedVTXOByPkScript", runtime.WithHTTPPathPattern("/v1/daemon/get-indexed-vtxo-by-pk-script"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -2404,7 +2404,7 @@ func RegisterDaemonServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/daemonrpc.DaemonService/GetVTXOExpiryInfo", runtime.WithHTTPPathPattern("/v1/daemon/get-vtxo-expiry-info"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/waverpc.DaemonService/GetVTXOExpiryInfo", runtime.WithHTTPPathPattern("/v1/daemon/get-vtxo-expiry-info"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -2421,7 +2421,7 @@ func RegisterDaemonServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/daemonrpc.DaemonService/GetIndexedOORSessionByTxid", runtime.WithHTTPPathPattern("/v1/daemon/get-indexed-oor-session-by-txid"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/waverpc.DaemonService/GetIndexedOORSessionByTxid", runtime.WithHTTPPathPattern("/v1/daemon/get-indexed-oor-session-by-txid"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -2438,7 +2438,7 @@ func RegisterDaemonServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/daemonrpc.DaemonService/SendVTXO", runtime.WithHTTPPathPattern("/v1/daemon/send-vtxo"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/waverpc.DaemonService/SendVTXO", runtime.WithHTTPPathPattern("/v1/daemon/send-vtxo"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -2455,7 +2455,7 @@ func RegisterDaemonServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/daemonrpc.DaemonService/SendOOR", runtime.WithHTTPPathPattern("/v1/daemon/send-oor"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/waverpc.DaemonService/SendOOR", runtime.WithHTTPPathPattern("/v1/daemon/send-oor"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -2472,7 +2472,7 @@ func RegisterDaemonServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/daemonrpc.DaemonService/PrepareOOR", runtime.WithHTTPPathPattern("/v1/daemon/prepare-oor"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/waverpc.DaemonService/PrepareOOR", runtime.WithHTTPPathPattern("/v1/daemon/prepare-oor"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -2489,7 +2489,7 @@ func RegisterDaemonServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/daemonrpc.DaemonService/SignOORCustomInput", runtime.WithHTTPPathPattern("/v1/daemon/sign-oor-custom-input"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/waverpc.DaemonService/SignOORCustomInput", runtime.WithHTTPPathPattern("/v1/daemon/sign-oor-custom-input"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -2506,7 +2506,7 @@ func RegisterDaemonServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/daemonrpc.DaemonService/SignVTXOForfeit", runtime.WithHTTPPathPattern("/v1/daemon/sign-vtxo-forfeit"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/waverpc.DaemonService/SignVTXOForfeit", runtime.WithHTTPPathPattern("/v1/daemon/sign-vtxo-forfeit"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -2523,7 +2523,7 @@ func RegisterDaemonServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/daemonrpc.DaemonService/RefreshVTXOs", runtime.WithHTTPPathPattern("/v1/daemon/refresh-vtxos"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/waverpc.DaemonService/RefreshVTXOs", runtime.WithHTTPPathPattern("/v1/daemon/refresh-vtxos"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -2540,7 +2540,7 @@ func RegisterDaemonServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/daemonrpc.DaemonService/RefreshCustomVTXOs", runtime.WithHTTPPathPattern("/v1/daemon/refresh-custom-vtxos"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/waverpc.DaemonService/RefreshCustomVTXOs", runtime.WithHTTPPathPattern("/v1/daemon/refresh-custom-vtxos"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -2557,7 +2557,7 @@ func RegisterDaemonServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/daemonrpc.DaemonService/ListPendingForfeitParticipantSignatureRequests", runtime.WithHTTPPathPattern("/v1/daemon/list-pending-forfeit-participant-signature-requests"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/waverpc.DaemonService/ListPendingForfeitParticipantSignatureRequests", runtime.WithHTTPPathPattern("/v1/daemon/list-pending-forfeit-participant-signature-requests"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -2574,7 +2574,7 @@ func RegisterDaemonServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/daemonrpc.DaemonService/SubmitForfeitParticipantSignatures", runtime.WithHTTPPathPattern("/v1/daemon/submit-forfeit-participant-signatures"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/waverpc.DaemonService/SubmitForfeitParticipantSignatures", runtime.WithHTTPPathPattern("/v1/daemon/submit-forfeit-participant-signatures"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -2591,7 +2591,7 @@ func RegisterDaemonServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/daemonrpc.DaemonService/LeaveVTXOs", runtime.WithHTTPPathPattern("/v1/daemon/leave-vtxos"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/waverpc.DaemonService/LeaveVTXOs", runtime.WithHTTPPathPattern("/v1/daemon/leave-vtxos"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -2608,7 +2608,7 @@ func RegisterDaemonServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/daemonrpc.DaemonService/SendOnChain", runtime.WithHTTPPathPattern("/v1/daemon/send-onchain"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/waverpc.DaemonService/SendOnChain", runtime.WithHTTPPathPattern("/v1/daemon/send-onchain"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -2625,7 +2625,7 @@ func RegisterDaemonServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/daemonrpc.DaemonService/Board", runtime.WithHTTPPathPattern("/v1/daemon/board"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/waverpc.DaemonService/Board", runtime.WithHTTPPathPattern("/v1/daemon/board"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -2642,7 +2642,7 @@ func RegisterDaemonServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/daemonrpc.DaemonService/JoinNextRound", runtime.WithHTTPPathPattern("/v1/daemon/join-next-round"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/waverpc.DaemonService/JoinNextRound", runtime.WithHTTPPathPattern("/v1/daemon/join-next-round"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -2659,7 +2659,7 @@ func RegisterDaemonServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/daemonrpc.DaemonService/SweepBoardingUTXOs", runtime.WithHTTPPathPattern("/v1/daemon/sweep-boarding-utxos"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/waverpc.DaemonService/SweepBoardingUTXOs", runtime.WithHTTPPathPattern("/v1/daemon/sweep-boarding-utxos"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -2676,7 +2676,7 @@ func RegisterDaemonServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/daemonrpc.DaemonService/ListBoardingSweeps", runtime.WithHTTPPathPattern("/v1/daemon/list-boarding-sweeps"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/waverpc.DaemonService/ListBoardingSweeps", runtime.WithHTTPPathPattern("/v1/daemon/list-boarding-sweeps"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -2693,7 +2693,7 @@ func RegisterDaemonServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/daemonrpc.DaemonService/ListRounds", runtime.WithHTTPPathPattern("/v1/daemon/list-rounds"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/waverpc.DaemonService/ListRounds", runtime.WithHTTPPathPattern("/v1/daemon/list-rounds"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -2710,7 +2710,7 @@ func RegisterDaemonServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/daemonrpc.DaemonService/GetRound", runtime.WithHTTPPathPattern("/v1/daemon/get-round"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/waverpc.DaemonService/GetRound", runtime.WithHTTPPathPattern("/v1/daemon/get-round"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -2727,7 +2727,7 @@ func RegisterDaemonServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/daemonrpc.DaemonService/WatchRounds", runtime.WithHTTPPathPattern("/v1/daemon/watch-rounds"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/waverpc.DaemonService/WatchRounds", runtime.WithHTTPPathPattern("/v1/daemon/watch-rounds"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -2744,7 +2744,7 @@ func RegisterDaemonServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/daemonrpc.DaemonService/ListOORSessions", runtime.WithHTTPPathPattern("/v1/daemon/list-oor-sessions"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/waverpc.DaemonService/ListOORSessions", runtime.WithHTTPPathPattern("/v1/daemon/list-oor-sessions"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -2761,7 +2761,7 @@ func RegisterDaemonServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/daemonrpc.DaemonService/GetOORSession", runtime.WithHTTPPathPattern("/v1/daemon/get-oor-session"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/waverpc.DaemonService/GetOORSession", runtime.WithHTTPPathPattern("/v1/daemon/get-oor-session"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -2778,7 +2778,7 @@ func RegisterDaemonServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/daemonrpc.DaemonService/EstimateFee", runtime.WithHTTPPathPattern("/v1/daemon/estimate-fee"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/waverpc.DaemonService/EstimateFee", runtime.WithHTTPPathPattern("/v1/daemon/estimate-fee"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -2795,7 +2795,7 @@ func RegisterDaemonServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/daemonrpc.DaemonService/GetFeeHistory", runtime.WithHTTPPathPattern("/v1/daemon/get-fee-history"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/waverpc.DaemonService/GetFeeHistory", runtime.WithHTTPPathPattern("/v1/daemon/get-fee-history"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -2812,7 +2812,7 @@ func RegisterDaemonServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/daemonrpc.DaemonService/ListTransactions", runtime.WithHTTPPathPattern("/v1/daemon/list-transactions"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/waverpc.DaemonService/ListTransactions", runtime.WithHTTPPathPattern("/v1/daemon/list-transactions"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -2829,7 +2829,7 @@ func RegisterDaemonServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/daemonrpc.DaemonService/Unroll", runtime.WithHTTPPathPattern("/v1/daemon/unroll"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/waverpc.DaemonService/Unroll", runtime.WithHTTPPathPattern("/v1/daemon/unroll"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -2846,7 +2846,7 @@ func RegisterDaemonServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/daemonrpc.DaemonService/GetUnrollStatus", runtime.WithHTTPPathPattern("/v1/daemon/get-unroll-status"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/waverpc.DaemonService/GetUnrollStatus", runtime.WithHTTPPathPattern("/v1/daemon/get-unroll-status"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -2863,7 +2863,7 @@ func RegisterDaemonServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/daemonrpc.DaemonService/ArmVHTLCRecovery", runtime.WithHTTPPathPattern("/v1/daemon/arm-vhtlc-recovery"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/waverpc.DaemonService/ArmVHTLCRecovery", runtime.WithHTTPPathPattern("/v1/daemon/arm-vhtlc-recovery"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -2880,7 +2880,7 @@ func RegisterDaemonServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/daemonrpc.DaemonService/EscalateVHTLCRecovery", runtime.WithHTTPPathPattern("/v1/daemon/escalate-vhtlc-recovery"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/waverpc.DaemonService/EscalateVHTLCRecovery", runtime.WithHTTPPathPattern("/v1/daemon/escalate-vhtlc-recovery"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -2897,7 +2897,7 @@ func RegisterDaemonServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/daemonrpc.DaemonService/CancelVHTLCRecovery", runtime.WithHTTPPathPattern("/v1/daemon/cancel-vhtlc-recovery"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/waverpc.DaemonService/CancelVHTLCRecovery", runtime.WithHTTPPathPattern("/v1/daemon/cancel-vhtlc-recovery"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -2914,7 +2914,7 @@ func RegisterDaemonServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/daemonrpc.DaemonService/GetVHTLCRecoveryStatus", runtime.WithHTTPPathPattern("/v1/daemon/get-vhtlc-recovery-status"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/waverpc.DaemonService/GetVHTLCRecoveryStatus", runtime.WithHTTPPathPattern("/v1/daemon/get-vhtlc-recovery-status"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -2931,7 +2931,7 @@ func RegisterDaemonServiceHandlerClient(ctx context.Context, mux *runtime.ServeM
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/daemonrpc.DaemonService/ListVHTLCRecoveries", runtime.WithHTTPPathPattern("/v1/daemon/list-vhtlc-recoveries"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/waverpc.DaemonService/ListVHTLCRecoveries", runtime.WithHTTPPathPattern("/v1/daemon/list-vhtlc-recoveries"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return

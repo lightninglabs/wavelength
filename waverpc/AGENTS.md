@@ -1,9 +1,9 @@
-# daemonrpc
+# waverpc
 
 ## Purpose
 
 Daemon gRPC API definitions for wallet, boarding, round, OOR, unroll, and
-VHTLC-recovery operations. Proto source: `daemonrpc/daemon.proto`. Generated
+VHTLC-recovery operations. Proto source: `waverpc/daemon.proto`. Generated
 gRPC, REST-gateway, and mailbox-RPC stubs plus one hand-written helper file
 (`errors.go`) for structured wallet-lifecycle errors.
 
@@ -26,8 +26,8 @@ gRPC, REST-gateway, and mailbox-RPC stubs plus one hand-written helper file
   generated mailbox stubs), `google.golang.org/genproto/googleapis/rpc/errdetails`
   and `google.golang.org/grpc` (structured errors in `errors.go`),
   `grpc-gateway/runtime` (REST gateway in `daemon.pb.gw.go`).
-- **Depended on by**: `darepod` (implements `DaemonServiceServer`),
-  `cmd/darepocli` and `rpc/restclient` (CLI/REST clients), `sdk/ark`,
+- **Depended on by**: `waved` (implements `DaemonServiceServer`),
+  `cmd/wavecli` and `rpc/restclient` (CLI/REST clients), `sdk/ark`,
   `sdk/swaps`, `sdk/walletdk`, `swapclientserver`, `swapwallet` (typed clients
   for daemon RPCs).
 

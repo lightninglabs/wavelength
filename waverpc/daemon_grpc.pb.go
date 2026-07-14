@@ -4,7 +4,7 @@
 // - protoc             v3.21.12
 // source: daemon.proto
 
-package daemonrpc
+package waverpc
 
 import (
 	context "context"
@@ -19,51 +19,51 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	DaemonService_GetInfo_FullMethodName                                        = "/daemonrpc.DaemonService/GetInfo"
-	DaemonService_GenSeed_FullMethodName                                        = "/daemonrpc.DaemonService/GenSeed"
-	DaemonService_InitWallet_FullMethodName                                     = "/daemonrpc.DaemonService/InitWallet"
-	DaemonService_UnlockWallet_FullMethodName                                   = "/daemonrpc.DaemonService/UnlockWallet"
-	DaemonService_GetBalance_FullMethodName                                     = "/daemonrpc.DaemonService/GetBalance"
-	DaemonService_ListVTXOs_FullMethodName                                      = "/daemonrpc.DaemonService/ListVTXOs"
-	DaemonService_NewAddress_FullMethodName                                     = "/daemonrpc.DaemonService/NewAddress"
-	DaemonService_NewReceiveScript_FullMethodName                               = "/daemonrpc.DaemonService/NewReceiveScript"
-	DaemonService_ReceiveAuthKey_FullMethodName                                 = "/daemonrpc.DaemonService/ReceiveAuthKey"
-	DaemonService_SignReceiveAuthMessage_FullMethodName                         = "/daemonrpc.DaemonService/SignReceiveAuthMessage"
-	DaemonService_SignReceiveAuthMessageCompact_FullMethodName                  = "/daemonrpc.DaemonService/SignReceiveAuthMessageCompact"
-	DaemonService_ReceiveAuthECDH_FullMethodName                                = "/daemonrpc.DaemonService/ReceiveAuthECDH"
-	DaemonService_GetIndexedVTXOByPkScript_FullMethodName                       = "/daemonrpc.DaemonService/GetIndexedVTXOByPkScript"
-	DaemonService_GetVTXOExpiryInfo_FullMethodName                              = "/daemonrpc.DaemonService/GetVTXOExpiryInfo"
-	DaemonService_GetIndexedOORSessionByTxid_FullMethodName                     = "/daemonrpc.DaemonService/GetIndexedOORSessionByTxid"
-	DaemonService_SendVTXO_FullMethodName                                       = "/daemonrpc.DaemonService/SendVTXO"
-	DaemonService_SendOOR_FullMethodName                                        = "/daemonrpc.DaemonService/SendOOR"
-	DaemonService_PrepareOOR_FullMethodName                                     = "/daemonrpc.DaemonService/PrepareOOR"
-	DaemonService_SignOORCustomInput_FullMethodName                             = "/daemonrpc.DaemonService/SignOORCustomInput"
-	DaemonService_SignVTXOForfeit_FullMethodName                                = "/daemonrpc.DaemonService/SignVTXOForfeit"
-	DaemonService_RefreshVTXOs_FullMethodName                                   = "/daemonrpc.DaemonService/RefreshVTXOs"
-	DaemonService_RefreshCustomVTXOs_FullMethodName                             = "/daemonrpc.DaemonService/RefreshCustomVTXOs"
-	DaemonService_ListPendingForfeitParticipantSignatureRequests_FullMethodName = "/daemonrpc.DaemonService/ListPendingForfeitParticipantSignatureRequests"
-	DaemonService_SubmitForfeitParticipantSignatures_FullMethodName             = "/daemonrpc.DaemonService/SubmitForfeitParticipantSignatures"
-	DaemonService_LeaveVTXOs_FullMethodName                                     = "/daemonrpc.DaemonService/LeaveVTXOs"
-	DaemonService_SendOnChain_FullMethodName                                    = "/daemonrpc.DaemonService/SendOnChain"
-	DaemonService_Board_FullMethodName                                          = "/daemonrpc.DaemonService/Board"
-	DaemonService_JoinNextRound_FullMethodName                                  = "/daemonrpc.DaemonService/JoinNextRound"
-	DaemonService_SweepBoardingUTXOs_FullMethodName                             = "/daemonrpc.DaemonService/SweepBoardingUTXOs"
-	DaemonService_ListBoardingSweeps_FullMethodName                             = "/daemonrpc.DaemonService/ListBoardingSweeps"
-	DaemonService_ListRounds_FullMethodName                                     = "/daemonrpc.DaemonService/ListRounds"
-	DaemonService_GetRound_FullMethodName                                       = "/daemonrpc.DaemonService/GetRound"
-	DaemonService_WatchRounds_FullMethodName                                    = "/daemonrpc.DaemonService/WatchRounds"
-	DaemonService_ListOORSessions_FullMethodName                                = "/daemonrpc.DaemonService/ListOORSessions"
-	DaemonService_GetOORSession_FullMethodName                                  = "/daemonrpc.DaemonService/GetOORSession"
-	DaemonService_EstimateFee_FullMethodName                                    = "/daemonrpc.DaemonService/EstimateFee"
-	DaemonService_GetFeeHistory_FullMethodName                                  = "/daemonrpc.DaemonService/GetFeeHistory"
-	DaemonService_ListTransactions_FullMethodName                               = "/daemonrpc.DaemonService/ListTransactions"
-	DaemonService_Unroll_FullMethodName                                         = "/daemonrpc.DaemonService/Unroll"
-	DaemonService_GetUnrollStatus_FullMethodName                                = "/daemonrpc.DaemonService/GetUnrollStatus"
-	DaemonService_ArmVHTLCRecovery_FullMethodName                               = "/daemonrpc.DaemonService/ArmVHTLCRecovery"
-	DaemonService_EscalateVHTLCRecovery_FullMethodName                          = "/daemonrpc.DaemonService/EscalateVHTLCRecovery"
-	DaemonService_CancelVHTLCRecovery_FullMethodName                            = "/daemonrpc.DaemonService/CancelVHTLCRecovery"
-	DaemonService_GetVHTLCRecoveryStatus_FullMethodName                         = "/daemonrpc.DaemonService/GetVHTLCRecoveryStatus"
-	DaemonService_ListVHTLCRecoveries_FullMethodName                            = "/daemonrpc.DaemonService/ListVHTLCRecoveries"
+	DaemonService_GetInfo_FullMethodName                                        = "/waverpc.DaemonService/GetInfo"
+	DaemonService_GenSeed_FullMethodName                                        = "/waverpc.DaemonService/GenSeed"
+	DaemonService_InitWallet_FullMethodName                                     = "/waverpc.DaemonService/InitWallet"
+	DaemonService_UnlockWallet_FullMethodName                                   = "/waverpc.DaemonService/UnlockWallet"
+	DaemonService_GetBalance_FullMethodName                                     = "/waverpc.DaemonService/GetBalance"
+	DaemonService_ListVTXOs_FullMethodName                                      = "/waverpc.DaemonService/ListVTXOs"
+	DaemonService_NewAddress_FullMethodName                                     = "/waverpc.DaemonService/NewAddress"
+	DaemonService_NewReceiveScript_FullMethodName                               = "/waverpc.DaemonService/NewReceiveScript"
+	DaemonService_ReceiveAuthKey_FullMethodName                                 = "/waverpc.DaemonService/ReceiveAuthKey"
+	DaemonService_SignReceiveAuthMessage_FullMethodName                         = "/waverpc.DaemonService/SignReceiveAuthMessage"
+	DaemonService_SignReceiveAuthMessageCompact_FullMethodName                  = "/waverpc.DaemonService/SignReceiveAuthMessageCompact"
+	DaemonService_ReceiveAuthECDH_FullMethodName                                = "/waverpc.DaemonService/ReceiveAuthECDH"
+	DaemonService_GetIndexedVTXOByPkScript_FullMethodName                       = "/waverpc.DaemonService/GetIndexedVTXOByPkScript"
+	DaemonService_GetVTXOExpiryInfo_FullMethodName                              = "/waverpc.DaemonService/GetVTXOExpiryInfo"
+	DaemonService_GetIndexedOORSessionByTxid_FullMethodName                     = "/waverpc.DaemonService/GetIndexedOORSessionByTxid"
+	DaemonService_SendVTXO_FullMethodName                                       = "/waverpc.DaemonService/SendVTXO"
+	DaemonService_SendOOR_FullMethodName                                        = "/waverpc.DaemonService/SendOOR"
+	DaemonService_PrepareOOR_FullMethodName                                     = "/waverpc.DaemonService/PrepareOOR"
+	DaemonService_SignOORCustomInput_FullMethodName                             = "/waverpc.DaemonService/SignOORCustomInput"
+	DaemonService_SignVTXOForfeit_FullMethodName                                = "/waverpc.DaemonService/SignVTXOForfeit"
+	DaemonService_RefreshVTXOs_FullMethodName                                   = "/waverpc.DaemonService/RefreshVTXOs"
+	DaemonService_RefreshCustomVTXOs_FullMethodName                             = "/waverpc.DaemonService/RefreshCustomVTXOs"
+	DaemonService_ListPendingForfeitParticipantSignatureRequests_FullMethodName = "/waverpc.DaemonService/ListPendingForfeitParticipantSignatureRequests"
+	DaemonService_SubmitForfeitParticipantSignatures_FullMethodName             = "/waverpc.DaemonService/SubmitForfeitParticipantSignatures"
+	DaemonService_LeaveVTXOs_FullMethodName                                     = "/waverpc.DaemonService/LeaveVTXOs"
+	DaemonService_SendOnChain_FullMethodName                                    = "/waverpc.DaemonService/SendOnChain"
+	DaemonService_Board_FullMethodName                                          = "/waverpc.DaemonService/Board"
+	DaemonService_JoinNextRound_FullMethodName                                  = "/waverpc.DaemonService/JoinNextRound"
+	DaemonService_SweepBoardingUTXOs_FullMethodName                             = "/waverpc.DaemonService/SweepBoardingUTXOs"
+	DaemonService_ListBoardingSweeps_FullMethodName                             = "/waverpc.DaemonService/ListBoardingSweeps"
+	DaemonService_ListRounds_FullMethodName                                     = "/waverpc.DaemonService/ListRounds"
+	DaemonService_GetRound_FullMethodName                                       = "/waverpc.DaemonService/GetRound"
+	DaemonService_WatchRounds_FullMethodName                                    = "/waverpc.DaemonService/WatchRounds"
+	DaemonService_ListOORSessions_FullMethodName                                = "/waverpc.DaemonService/ListOORSessions"
+	DaemonService_GetOORSession_FullMethodName                                  = "/waverpc.DaemonService/GetOORSession"
+	DaemonService_EstimateFee_FullMethodName                                    = "/waverpc.DaemonService/EstimateFee"
+	DaemonService_GetFeeHistory_FullMethodName                                  = "/waverpc.DaemonService/GetFeeHistory"
+	DaemonService_ListTransactions_FullMethodName                               = "/waverpc.DaemonService/ListTransactions"
+	DaemonService_Unroll_FullMethodName                                         = "/waverpc.DaemonService/Unroll"
+	DaemonService_GetUnrollStatus_FullMethodName                                = "/waverpc.DaemonService/GetUnrollStatus"
+	DaemonService_ArmVHTLCRecovery_FullMethodName                               = "/waverpc.DaemonService/ArmVHTLCRecovery"
+	DaemonService_EscalateVHTLCRecovery_FullMethodName                          = "/waverpc.DaemonService/EscalateVHTLCRecovery"
+	DaemonService_CancelVHTLCRecovery_FullMethodName                            = "/waverpc.DaemonService/CancelVHTLCRecovery"
+	DaemonService_GetVHTLCRecoveryStatus_FullMethodName                         = "/waverpc.DaemonService/GetVHTLCRecoveryStatus"
+	DaemonService_ListVHTLCRecoveries_FullMethodName                            = "/waverpc.DaemonService/ListVHTLCRecoveries"
 )
 
 // DaemonServiceClient is the client API for DaemonService service.
@@ -1894,7 +1894,7 @@ func _DaemonService_ListVHTLCRecoveries_Handler(srv interface{}, ctx context.Con
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var DaemonService_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "daemonrpc.DaemonService",
+	ServiceName: "waverpc.DaemonService",
 	HandlerType: (*DaemonServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{

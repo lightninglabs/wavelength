@@ -4,7 +4,7 @@
 // 	protoc        v3.21.12
 // source: daemon.proto
 
-package daemonrpc
+package waverpc
 
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
@@ -899,7 +899,7 @@ type GetInfoResponse struct {
 	// numeric ordering: READY is fully usable, SYNCING is unlocked but
 	// waiting for the chain backend, LOCKED still needs the wallet
 	// password, and NONE has no wallet seed on disk.
-	WalletState WalletState `protobuf:"varint,9,opt,name=wallet_state,json=walletState,proto3,enum=daemonrpc.WalletState" json:"wallet_state,omitempty"`
+	WalletState WalletState `protobuf:"varint,9,opt,name=wallet_state,json=walletState,proto3,enum=waverpc.WalletState" json:"wallet_state,omitempty"`
 	// identity_pubkey is the hex-encoded daemon wallet identity public key
 	// derived from the active wallet backend's daemon identity key locator
 	// (family 6, index 0). This key is the signing identity for Ark round
@@ -1763,7 +1763,7 @@ func (x *GetBalanceResponse) GetVtxoUnilateralExitSat() int64 {
 type VTXOExpiryInfo struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// status is the VTXO's current expiry posture.
-	Status VTXOExpiryStatus `protobuf:"varint,1,opt,name=status,proto3,enum=daemonrpc.VTXOExpiryStatus" json:"status,omitempty"`
+	Status VTXOExpiryStatus `protobuf:"varint,1,opt,name=status,proto3,enum=waverpc.VTXOExpiryStatus" json:"status,omitempty"`
 	// current_height is the chain height used for this classification.
 	CurrentHeight int32 `protobuf:"varint,2,opt,name=current_height,json=currentHeight,proto3" json:"current_height,omitempty"`
 	// batch_expiry is the VTXO batch expiry height.
@@ -1889,7 +1889,7 @@ type VTXO struct {
 	// amount_sat is the value of this VTXO in satoshis.
 	AmountSat int64 `protobuf:"varint,2,opt,name=amount_sat,json=amountSat,proto3" json:"amount_sat,omitempty"`
 	// status is the current lifecycle state of this VTXO.
-	Status VTXOStatus `protobuf:"varint,3,opt,name=status,proto3,enum=daemonrpc.VTXOStatus" json:"status,omitempty"`
+	Status VTXOStatus `protobuf:"varint,3,opt,name=status,proto3,enum=waverpc.VTXOStatus" json:"status,omitempty"`
 	// batch_expiry is the absolute block height at which the batch-level
 	// timelock expires.
 	BatchExpiry int32 `protobuf:"varint,4,opt,name=batch_expiry,json=batchExpiry,proto3" json:"batch_expiry,omitempty"`
@@ -2115,7 +2115,7 @@ type ListVTXOsRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// status_filter restricts the response to VTXOs matching this status.
 	// If VTXO_STATUS_UNSPECIFIED (default), all statuses are returned.
-	StatusFilter VTXOStatus `protobuf:"varint,1,opt,name=status_filter,json=statusFilter,proto3,enum=daemonrpc.VTXOStatus" json:"status_filter,omitempty"`
+	StatusFilter VTXOStatus `protobuf:"varint,1,opt,name=status_filter,json=statusFilter,proto3,enum=waverpc.VTXOStatus" json:"status_filter,omitempty"`
 	// min_amount_sat excludes VTXOs below this value.
 	MinAmountSat int64 `protobuf:"varint,2,opt,name=min_amount_sat,json=minAmountSat,proto3" json:"min_amount_sat,omitempty"`
 	// exclude_checkpoint_psbts skips attaching the finalized OOR checkpoint
@@ -2850,7 +2850,7 @@ type GetIndexedVTXOByPkScriptRequest struct {
 	PkScript []byte `protobuf:"bytes,1,opt,name=pk_script,json=pkScript,proto3" json:"pk_script,omitempty"`
 	// status_filter restricts the indexer query to matching lifecycle
 	// states. If empty, all statuses are considered.
-	StatusFilter  []VTXOStatus `protobuf:"varint,2,rep,packed,name=status_filter,json=statusFilter,proto3,enum=daemonrpc.VTXOStatus" json:"status_filter,omitempty"`
+	StatusFilter  []VTXOStatus `protobuf:"varint,2,rep,packed,name=status_filter,json=statusFilter,proto3,enum=waverpc.VTXOStatus" json:"status_filter,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2960,7 +2960,7 @@ type GetVTXOExpiryInfoRequest struct {
 	// Empty pk_script filters default to VTXO_STATUS_LIVE so refreshed VTXOs
 	// are resolved from the active replacement instead of older spent or
 	// forfeited generations. The field is ignored for outpoint lookups.
-	StatusFilter []VTXOStatus `protobuf:"varint,3,rep,packed,name=status_filter,json=statusFilter,proto3,enum=daemonrpc.VTXOStatus" json:"status_filter,omitempty"`
+	StatusFilter []VTXOStatus `protobuf:"varint,3,rep,packed,name=status_filter,json=statusFilter,proto3,enum=waverpc.VTXOStatus" json:"status_filter,omitempty"`
 	// current_height overrides the chain height used for classification. If
 	// zero, the daemon uses its current best chain height.
 	CurrentHeight int32 `protobuf:"varint,4,opt,name=current_height,json=currentHeight,proto3" json:"current_height,omitempty"`
@@ -4321,7 +4321,7 @@ type ForfeitSigningContext struct {
 	// signing_route tells the daemon whether the later connector-bound
 	// signature request should be answered by the daemon's local signer or by
 	// publishing a pending request for an external participant.
-	SigningRoute  ForfeitSigningRoute `protobuf:"varint,2,opt,name=signing_route,json=signingRoute,proto3,enum=daemonrpc.ForfeitSigningRoute" json:"signing_route,omitempty"`
+	SigningRoute  ForfeitSigningRoute `protobuf:"varint,2,opt,name=signing_route,json=signingRoute,proto3,enum=waverpc.ForfeitSigningRoute" json:"signing_route,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4898,7 +4898,7 @@ type PendingForfeitParticipantSignatureRequest struct {
 	// requests returned by ListPendingForfeitParticipantSignatureRequests. It
 	// is included in the transcript and request id so external coordinators
 	// can reject requests that were routed through an unexpected path.
-	SigningRoute ForfeitSigningRoute `protobuf:"varint,4,opt,name=signing_route,json=signingRoute,proto3,enum=daemonrpc.ForfeitSigningRoute" json:"signing_route,omitempty"`
+	SigningRoute ForfeitSigningRoute `protobuf:"varint,4,opt,name=signing_route,json=signingRoute,proto3,enum=waverpc.ForfeitSigningRoute" json:"signing_route,omitempty"`
 	// vtxo_outpoint and the vtxo_* fields describe the old custom VTXO being
 	// forfeited.
 	VtxoOutpoint       string `protobuf:"bytes,5,opt,name=vtxo_outpoint,json=vtxoOutpoint,proto3" json:"vtxo_outpoint,omitempty"`
@@ -6720,7 +6720,7 @@ type RoundInfo struct {
 	// temp-keyed rounds that haven't received a server response yet.
 	RoundId string `protobuf:"bytes,1,opt,name=round_id,json=roundId,proto3" json:"round_id,omitempty"`
 	// state is the current FSM state.
-	State RoundState `protobuf:"varint,2,opt,name=state,proto3,enum=daemonrpc.RoundState" json:"state,omitempty"`
+	State RoundState `protobuf:"varint,2,opt,name=state,proto3,enum=waverpc.RoundState" json:"state,omitempty"`
 	// is_temp indicates this round has a temporary key and hasn't
 	// been assigned a server round ID yet.
 	IsTemp bool `protobuf:"varint,3,opt,name=is_temp,json=isTemp,proto3" json:"is_temp,omitempty"`
@@ -6885,7 +6885,7 @@ type ListRoundsRequest struct {
 	PersistedOnly bool `protobuf:"varint,3,opt,name=persisted_only,json=persistedOnly,proto3" json:"persisted_only,omitempty"`
 	// state_filter restricts results to a single state when set to a value
 	// other than ROUND_STATE_UNKNOWN.
-	StateFilter RoundState `protobuf:"varint,4,opt,name=state_filter,json=stateFilter,proto3,enum=daemonrpc.RoundState" json:"state_filter,omitempty"`
+	StateFilter RoundState `protobuf:"varint,4,opt,name=state_filter,json=stateFilter,proto3,enum=waverpc.RoundState" json:"state_filter,omitempty"`
 	// created_after restricts persisted rows to rounds created at or after
 	// the given Unix timestamp. Pending in-memory rounds are not filtered by
 	// creation time because they do not expose a stable creation timestamp.
@@ -7202,9 +7202,9 @@ type OORSessionInfo struct {
 	// session_id is the stable OOR session identifier.
 	SessionId string `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
 	// direction is from the local client's perspective.
-	Direction OORSessionDirection `protobuf:"varint,2,opt,name=direction,proto3,enum=daemonrpc.OORSessionDirection" json:"direction,omitempty"`
+	Direction OORSessionDirection `protobuf:"varint,2,opt,name=direction,proto3,enum=waverpc.OORSessionDirection" json:"direction,omitempty"`
 	// status is the coarse operation state.
-	Status OORSessionStatus `protobuf:"varint,3,opt,name=status,proto3,enum=daemonrpc.OORSessionStatus" json:"status,omitempty"`
+	Status OORSessionStatus `protobuf:"varint,3,opt,name=status,proto3,enum=waverpc.OORSessionStatus" json:"status,omitempty"`
 	// phase is the detailed OOR FSM phase string.
 	Phase string `protobuf:"bytes,4,opt,name=phase,proto3" json:"phase,omitempty"`
 	// created_at is the Unix timestamp when the persisted package was first
@@ -7325,9 +7325,9 @@ type ListOORSessionsRequest struct {
 	// ListOORSessionsResponse.
 	PageToken string `protobuf:"bytes,2,opt,name=page_token,json=pageToken,proto3" json:"page_token,omitempty"`
 	// direction_filter restricts results by local direction when set.
-	DirectionFilter OORSessionDirection `protobuf:"varint,3,opt,name=direction_filter,json=directionFilter,proto3,enum=daemonrpc.OORSessionDirection" json:"direction_filter,omitempty"`
+	DirectionFilter OORSessionDirection `protobuf:"varint,3,opt,name=direction_filter,json=directionFilter,proto3,enum=waverpc.OORSessionDirection" json:"direction_filter,omitempty"`
 	// status_filter restricts results by operation status when set.
-	StatusFilter  OORSessionStatus `protobuf:"varint,4,opt,name=status_filter,json=statusFilter,proto3,enum=daemonrpc.OORSessionStatus" json:"status_filter,omitempty"`
+	StatusFilter  OORSessionStatus `protobuf:"varint,4,opt,name=status_filter,json=statusFilter,proto3,enum=waverpc.OORSessionStatus" json:"status_filter,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -8807,7 +8807,7 @@ type GetUnrollStatusResponse struct {
 	// found is true if an unroll job exists for the requested outpoint.
 	Found bool `protobuf:"varint,1,opt,name=found,proto3" json:"found,omitempty"`
 	// status is the current high-level phase of the unroll job.
-	Status UnrollJobStatus `protobuf:"varint,2,opt,name=status,proto3,enum=daemonrpc.UnrollJobStatus" json:"status,omitempty"`
+	Status UnrollJobStatus `protobuf:"varint,2,opt,name=status,proto3,enum=waverpc.UnrollJobStatus" json:"status,omitempty"`
 	// sweep_txid is the txid of the sweep transaction, set once the
 	// sweep has been broadcast.
 	SweepTxid string `protobuf:"bytes,3,opt,name=sweep_txid,json=sweepTxid,proto3" json:"sweep_txid,omitempty"`
@@ -8945,10 +8945,10 @@ type ArmVHTLCRecoveryRequest struct {
 	// swap_id links this recovery job to the caller's durable swap row.
 	SwapId []byte `protobuf:"bytes,2,opt,name=swap_id,json=swapId,proto3" json:"swap_id,omitempty"`
 	// direction records which side owns the recovery action.
-	Direction VHTLCRecoveryDirection `protobuf:"varint,3,opt,name=direction,proto3,enum=daemonrpc.VHTLCRecoveryDirection" json:"direction,omitempty"`
+	Direction VHTLCRecoveryDirection `protobuf:"varint,3,opt,name=direction,proto3,enum=waverpc.VHTLCRecoveryDirection" json:"direction,omitempty"`
 	// action selects the unilateral vHTLC leaf to execute if recovery
 	// escalates.
-	Action VHTLCRecoveryAction `protobuf:"varint,4,opt,name=action,proto3,enum=daemonrpc.VHTLCRecoveryAction" json:"action,omitempty"`
+	Action VHTLCRecoveryAction `protobuf:"varint,4,opt,name=action,proto3,enum=waverpc.VHTLCRecoveryAction" json:"action,omitempty"`
 	// vtxo_outpoint is the vHTLC VTXO to materialize, formatted as
 	// "txid:index".
 	VtxoOutpoint string `protobuf:"bytes,5,opt,name=vtxo_outpoint,json=vtxoOutpoint,proto3" json:"vtxo_outpoint,omitempty"`
@@ -9621,11 +9621,11 @@ type VHTLCRecoveryStatus struct {
 	// swap_id links this recovery back to the caller's swap row.
 	SwapId []byte `protobuf:"bytes,3,opt,name=swap_id,json=swapId,proto3" json:"swap_id,omitempty"`
 	// direction records which side owns this recovery action.
-	Direction VHTLCRecoveryDirection `protobuf:"varint,4,opt,name=direction,proto3,enum=daemonrpc.VHTLCRecoveryDirection" json:"direction,omitempty"`
+	Direction VHTLCRecoveryDirection `protobuf:"varint,4,opt,name=direction,proto3,enum=waverpc.VHTLCRecoveryDirection" json:"direction,omitempty"`
 	// action selects the unilateral vHTLC leaf.
-	Action VHTLCRecoveryAction `protobuf:"varint,5,opt,name=action,proto3,enum=daemonrpc.VHTLCRecoveryAction" json:"action,omitempty"`
+	Action VHTLCRecoveryAction `protobuf:"varint,5,opt,name=action,proto3,enum=waverpc.VHTLCRecoveryAction" json:"action,omitempty"`
 	// state is the durable recovery FSM state.
-	State VHTLCRecoveryState `protobuf:"varint,6,opt,name=state,proto3,enum=daemonrpc.VHTLCRecoveryState" json:"state,omitempty"`
+	State VHTLCRecoveryState `protobuf:"varint,6,opt,name=state,proto3,enum=waverpc.VHTLCRecoveryState" json:"state,omitempty"`
 	// vtxo_outpoint is the vHTLC VTXO being recovered.
 	VtxoOutpoint string `protobuf:"bytes,7,opt,name=vtxo_outpoint,json=vtxoOutpoint,proto3" json:"vtxo_outpoint,omitempty"`
 	// vtxo_amount_sat is the amount locked in the vHTLC VTXO.
@@ -9636,7 +9636,7 @@ type VHTLCRecoveryStatus struct {
 	// target.
 	UnrollFound bool `protobuf:"varint,10,opt,name=unroll_found,json=unrollFound,proto3" json:"unroll_found,omitempty"`
 	// unroll_status is the current high-level unroll phase, when known.
-	UnrollStatus UnrollJobStatus `protobuf:"varint,11,opt,name=unroll_status,json=unrollStatus,proto3,enum=daemonrpc.UnrollJobStatus" json:"unroll_status,omitempty"`
+	UnrollStatus UnrollJobStatus `protobuf:"varint,11,opt,name=unroll_status,json=unrollStatus,proto3,enum=waverpc.UnrollJobStatus" json:"unroll_status,omitempty"`
 	// sweep_txid is the final exit spend txid once unroll has built or
 	// broadcast it.
 	SweepTxid string `protobuf:"bytes,12,opt,name=sweep_txid,json=sweepTxid,proto3" json:"sweep_txid,omitempty"`
@@ -9884,8 +9884,8 @@ var File_daemon_proto protoreflect.FileDescriptor
 
 const file_daemon_proto_rawDesc = "" +
 	"\n" +
-	"\fdaemon.proto\x12\tdaemonrpc\"\x10\n" +
-	"\x0eGetInfoRequest\"\xb5\x03\n" +
+	"\fdaemon.proto\x12\awaverpc\"\x10\n" +
+	"\x0eGetInfoRequest\"\xb1\x03\n" +
 	"\x0fGetInfoResponse\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\x12\x16\n" +
 	"\x06commit\x18\x02 \x01(\tR\x06commit\x12\x18\n" +
@@ -9895,11 +9895,11 @@ const file_daemon_proto_rawDesc = "" +
 	"\x10server_connected\x18\x06 \x01(\bR\x0fserverConnected\x12\x1b\n" +
 	"\tlnd_alias\x18\a \x01(\tR\blndAlias\x12\x1f\n" +
 	"\vwallet_type\x18\b \x01(\tR\n" +
-	"walletType\x129\n" +
-	"\fwallet_state\x18\t \x01(\x0e2\x16.daemonrpc.WalletStateR\vwalletState\x12'\n" +
+	"walletType\x127\n" +
+	"\fwallet_state\x18\t \x01(\x0e2\x14.waverpc.WalletStateR\vwalletState\x12'\n" +
 	"\x0fidentity_pubkey\x18\n" +
-	" \x01(\tR\x0eidentityPubkey\x126\n" +
-	"\vserver_info\x18\v \x01(\v2\x15.daemonrpc.ServerInfoR\n" +
+	" \x01(\tR\x0eidentityPubkey\x124\n" +
+	"\vserver_info\x18\v \x01(\v2\x13.waverpc.ServerInfoR\n" +
 	"serverInfo\"\xcf\x03\n" +
 	"\n" +
 	"ServerInfo\x12'\n" +
@@ -9951,9 +9951,9 @@ const file_daemon_proto_rawDesc = "" +
 	"\x14boarding_adopted_sat\x18\b \x01(\x03R\x12boardingAdoptedSat\x12(\n" +
 	"\x10vtxo_pending_sat\x18\t \x01(\x03R\x0evtxoPendingSat\x127\n" +
 	"\x18vtxo_unilateral_exit_sat\x18\n" +
-	" \x01(\x03R\x15vtxoUnilateralExitSat\"\xa0\x03\n" +
-	"\x0eVTXOExpiryInfo\x123\n" +
-	"\x06status\x18\x01 \x01(\x0e2\x1b.daemonrpc.VTXOExpiryStatusR\x06status\x12%\n" +
+	" \x01(\x03R\x15vtxoUnilateralExitSat\"\x9e\x03\n" +
+	"\x0eVTXOExpiryInfo\x121\n" +
+	"\x06status\x18\x01 \x01(\x0e2\x19.waverpc.VTXOExpiryStatusR\x06status\x12%\n" +
 	"\x0ecurrent_height\x18\x02 \x01(\x05R\rcurrentHeight\x12!\n" +
 	"\fbatch_expiry\x18\x03 \x01(\x05R\vbatchExpiry\x12)\n" +
 	"\x10blocks_remaining\x18\x04 \x01(\x05R\x0fblocksRemaining\x128\n" +
@@ -9962,12 +9962,12 @@ const file_daemon_proto_rawDesc = "" +
 	"\x0frelative_expiry\x18\a \x01(\rR\x0erelativeExpiry\x12$\n" +
 	"\x0emax_tree_depth\x18\b \x01(\rR\fmaxTreeDepth\x12\x1f\n" +
 	"\vchain_depth\x18\t \x01(\rR\n" +
-	"chainDepth\"\xbd\x04\n" +
+	"chainDepth\"\xb7\x04\n" +
 	"\x04VTXO\x12\x1a\n" +
 	"\boutpoint\x18\x01 \x01(\tR\boutpoint\x12\x1d\n" +
 	"\n" +
-	"amount_sat\x18\x02 \x01(\x03R\tamountSat\x12-\n" +
-	"\x06status\x18\x03 \x01(\x0e2\x15.daemonrpc.VTXOStatusR\x06status\x12!\n" +
+	"amount_sat\x18\x02 \x01(\x03R\tamountSat\x12+\n" +
+	"\x06status\x18\x03 \x01(\x0e2\x13.waverpc.VTXOStatusR\x06status\x12!\n" +
 	"\fbatch_expiry\x18\x04 \x01(\x05R\vbatchExpiry\x12\x19\n" +
 	"\bround_id\x18\x05 \x01(\tR\aroundId\x12%\n" +
 	"\x0ecreated_height\x18\x06 \x01(\x05R\rcreatedHeight\x12'\n" +
@@ -9978,21 +9978,21 @@ const file_daemon_proto_rawDesc = "" +
 	" \x01(\rR\n" +
 	"chainDepth\x12;\n" +
 	"\x1aoor_final_checkpoint_psbts\x18\v \x03(\fR\x17oorFinalCheckpointPsbts\x12\"\n" +
-	"\rspent_by_txid\x18\f \x01(\tR\vspentByTxid\x12:\n" +
-	"\vexpiry_info\x18\r \x01(\v2\x19.daemonrpc.VTXOExpiryInfoR\n" +
-	"expiryInfo\x129\n" +
+	"\rspent_by_txid\x18\f \x01(\tR\vspentByTxid\x128\n" +
+	"\vexpiry_info\x18\r \x01(\v2\x17.waverpc.VTXOExpiryInfoR\n" +
+	"expiryInfo\x127\n" +
 	"\n" +
-	"settlement\x18\x0e \x01(\v2\x19.daemonrpc.VTXOSettlementR\n" +
+	"settlement\x18\x0e \x01(\v2\x17.waverpc.VTXOSettlementR\n" +
 	"settlement\"<\n" +
 	"\x0eVTXOSettlement\x12\x12\n" +
 	"\x04txid\x18\x01 \x01(\tR\x04txid\x12\x16\n" +
-	"\x06height\x18\x02 \x01(\x05R\x06height\"\xae\x01\n" +
-	"\x10ListVTXOsRequest\x12:\n" +
-	"\rstatus_filter\x18\x01 \x01(\x0e2\x15.daemonrpc.VTXOStatusR\fstatusFilter\x12$\n" +
+	"\x06height\x18\x02 \x01(\x05R\x06height\"\xac\x01\n" +
+	"\x10ListVTXOsRequest\x128\n" +
+	"\rstatus_filter\x18\x01 \x01(\x0e2\x13.waverpc.VTXOStatusR\fstatusFilter\x12$\n" +
 	"\x0emin_amount_sat\x18\x02 \x01(\x03R\fminAmountSat\x128\n" +
-	"\x18exclude_checkpoint_psbts\x18\x03 \x01(\bR\x16excludeCheckpointPsbts\":\n" +
-	"\x11ListVTXOsResponse\x12%\n" +
-	"\x05vtxos\x18\x01 \x03(\v2\x0f.daemonrpc.VTXOR\x05vtxos\"\x13\n" +
+	"\x18exclude_checkpoint_psbts\x18\x03 \x01(\bR\x16excludeCheckpointPsbts\"8\n" +
+	"\x11ListVTXOsResponse\x12#\n" +
+	"\x05vtxos\x18\x01 \x03(\v2\r.waverpc.VTXOR\x05vtxos\"\x13\n" +
 	"\x11NewAddressRequest\".\n" +
 	"\x12NewAddressResponse\x12\x18\n" +
 	"\aaddress\x18\x01 \x01(\tR\aaddress\"/\n" +
@@ -10027,23 +10027,23 @@ const file_daemon_proto_rawDesc = "" +
 	"\fpayment_hash\x18\x01 \x01(\fR\vpaymentHash\x12\x16\n" +
 	"\x06pubkey\x18\x02 \x01(\fR\x06pubkey\">\n" +
 	"\x17ReceiveAuthECDHResponse\x12#\n" +
-	"\rshared_secret\x18\x01 \x01(\fR\fsharedSecret\"z\n" +
+	"\rshared_secret\x18\x01 \x01(\fR\fsharedSecret\"x\n" +
 	"\x1fGetIndexedVTXOByPkScriptRequest\x12\x1b\n" +
-	"\tpk_script\x18\x01 \x01(\fR\bpkScript\x12:\n" +
-	"\rstatus_filter\x18\x02 \x03(\x0e2\x15.daemonrpc.VTXOStatusR\fstatusFilter\"G\n" +
-	" GetIndexedVTXOByPkScriptResponse\x12#\n" +
-	"\x04vtxo\x18\x01 \x01(\v2\x0f.daemonrpc.VTXOR\x04vtxo\"\xc4\x01\n" +
+	"\tpk_script\x18\x01 \x01(\fR\bpkScript\x128\n" +
+	"\rstatus_filter\x18\x02 \x03(\x0e2\x13.waverpc.VTXOStatusR\fstatusFilter\"E\n" +
+	" GetIndexedVTXOByPkScriptResponse\x12!\n" +
+	"\x04vtxo\x18\x01 \x01(\v2\r.waverpc.VTXOR\x04vtxo\"\xc2\x01\n" +
 	"\x18GetVTXOExpiryInfoRequest\x12\x1c\n" +
 	"\boutpoint\x18\x01 \x01(\tH\x00R\boutpoint\x12\x1d\n" +
-	"\tpk_script\x18\x02 \x01(\fH\x00R\bpkScript\x12:\n" +
-	"\rstatus_filter\x18\x03 \x03(\x0e2\x15.daemonrpc.VTXOStatusR\fstatusFilter\x12%\n" +
+	"\tpk_script\x18\x02 \x01(\fH\x00R\bpkScript\x128\n" +
+	"\rstatus_filter\x18\x03 \x03(\x0e2\x13.waverpc.VTXOStatusR\fstatusFilter\x12%\n" +
 	"\x0ecurrent_height\x18\x04 \x01(\x05R\rcurrentHeightB\b\n" +
-	"\x06target\"\x92\x01\n" +
+	"\x06target\"\x8e\x01\n" +
 	"\x19GetVTXOExpiryInfoResponse\x12\x14\n" +
-	"\x05found\x18\x01 \x01(\bR\x05found\x12:\n" +
-	"\vexpiry_info\x18\x02 \x01(\v2\x19.daemonrpc.VTXOExpiryInfoR\n" +
-	"expiryInfo\x12#\n" +
-	"\x04vtxo\x18\x03 \x01(\v2\x0f.daemonrpc.VTXOR\x04vtxo\"c\n" +
+	"\x05found\x18\x01 \x01(\bR\x05found\x128\n" +
+	"\vexpiry_info\x18\x02 \x01(\v2\x17.waverpc.VTXOExpiryInfoR\n" +
+	"expiryInfo\x12!\n" +
+	"\x04vtxo\x18\x03 \x01(\v2\r.waverpc.VTXOR\x04vtxo\"c\n" +
 	"!GetIndexedOORSessionByTxidRequest\x12\x1b\n" +
 	"\tpk_script\x18\x01 \x01(\fR\bpkScript\x12!\n" +
 	"\fsession_txid\x18\x02 \x01(\fR\vsessionTxid\"j\n" +
@@ -10057,10 +10057,10 @@ const file_daemon_proto_rawDesc = "" +
 	"\n" +
 	"amount_sat\x18\x02 \x01(\x03R\tamountSat\x120\n" +
 	"\x14vtxo_policy_template\x18\x05 \x01(\fR\x12vtxoPolicyTemplateB\r\n" +
-	"\vdestination\"]\n" +
-	"\x0fSendVTXORequest\x121\n" +
+	"\vdestination\"[\n" +
+	"\x0fSendVTXORequest\x12/\n" +
 	"\n" +
-	"recipients\x18\x01 \x03(\v2\x11.daemonrpc.OutputR\n" +
+	"recipients\x18\x01 \x03(\v2\x0f.waverpc.OutputR\n" +
 	"recipients\x12\x17\n" +
 	"\adry_run\x18\x02 \x01(\bR\x06dryRun\"\xc2\x01\n" +
 	"\x10SendVTXOResponse\x12\x16\n" +
@@ -10068,14 +10068,14 @@ const file_daemon_proto_rawDesc = "" +
 	"\bround_id\x18\x02 \x01(\tR\aroundId\x12(\n" +
 	"\x10total_amount_sat\x18\x03 \x01(\x03R\x0etotalAmountSat\x12*\n" +
 	"\x11change_amount_sat\x18\x04 \x01(\x03R\x0fchangeAmountSat\x12%\n" +
-	"\x0eselected_count\x18\x05 \x01(\x05R\rselectedCount\"\xc5\x01\n" +
-	"\x0eSendOORRequest\x121\n" +
+	"\x0eselected_count\x18\x05 \x01(\x05R\rselectedCount\"\xc1\x01\n" +
+	"\x0eSendOORRequest\x12/\n" +
 	"\n" +
-	"recipients\x18\x01 \x03(\v2\x11.daemonrpc.OutputR\n" +
+	"recipients\x18\x01 \x03(\v2\x0f.waverpc.OutputR\n" +
 	"recipients\x12\x17\n" +
-	"\adry_run\x18\x02 \x01(\bR\x06dryRun\x12>\n" +
-	"\rcustom_inputs\x18\x03 \x03(\v2\x19.daemonrpc.CustomOORInputR\fcustomInputs\x12'\n" +
-	"\x0fidempotency_key\x18\x04 \x01(\tR\x0eidempotencyKey\"\x8d\x02\n" +
+	"\adry_run\x18\x02 \x01(\bR\x06dryRun\x12<\n" +
+	"\rcustom_inputs\x18\x03 \x03(\v2\x17.waverpc.CustomOORInputR\fcustomInputs\x12'\n" +
+	"\x0fidempotency_key\x18\x04 \x01(\tR\x0eidempotencyKey\"\x8b\x02\n" +
 	"\x0eCustomOORInput\x12\x1a\n" +
 	"\boutpoint\x18\x01 \x01(\tR\boutpoint\x120\n" +
 	"\x14vtxo_policy_template\x18\x02 \x01(\fR\x12vtxoPolicyTemplate\x12\x1d\n" +
@@ -10083,8 +10083,8 @@ const file_daemon_proto_rawDesc = "" +
 	"spend_path\x18\x03 \x01(\fR\tspendPath\x12\x1d\n" +
 	"\n" +
 	"amount_sat\x18\x04 \x01(\x03R\tamountSat\x12\x1b\n" +
-	"\tpk_script\x18\x05 \x01(\fR\bpkScript\x12R\n" +
-	"\x13external_signatures\x18\x06 \x03(\v2!.daemonrpc.TaprootScriptSignatureR\x12externalSignatures\"\x8f\x01\n" +
+	"\tpk_script\x18\x05 \x01(\fR\bpkScript\x12P\n" +
+	"\x13external_signatures\x18\x06 \x03(\v2\x1f.waverpc.TaprootScriptSignatureR\x12externalSignatures\"\x8f\x01\n" +
 	"\x16TaprootScriptSignature\x12\x16\n" +
 	"\x06pubkey\x18\x01 \x01(\fR\x06pubkey\x12%\n" +
 	"\x0ewitness_script\x18\x02 \x01(\fR\rwitnessScript\x12\x1c\n" +
@@ -10094,26 +10094,26 @@ const file_daemon_proto_rawDesc = "" +
 	"\x06status\x18\x01 \x01(\tR\x06status\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x02 \x01(\tR\tsessionId\x12/\n" +
-	"\x13recipient_outpoints\x18\x03 \x03(\tR\x12recipientOutpoints\"\x84\x01\n" +
-	"\x11PrepareOORRequest\x12/\n" +
-	"\trecipient\x18\x01 \x01(\v2\x11.daemonrpc.OutputR\trecipient\x12>\n" +
-	"\rcustom_inputs\x18\x02 \x03(\v2\x19.daemonrpc.CustomOORInputR\fcustomInputs\"\xad\x01\n" +
+	"\x13recipient_outpoints\x18\x03 \x03(\tR\x12recipientOutpoints\"\x80\x01\n" +
+	"\x11PrepareOORRequest\x12-\n" +
+	"\trecipient\x18\x01 \x01(\v2\x0f.waverpc.OutputR\trecipient\x12<\n" +
+	"\rcustom_inputs\x18\x02 \x03(\v2\x17.waverpc.CustomOORInputR\fcustomInputs\"\xad\x01\n" +
 	"\x16PreparedOORCustomInput\x12\x1a\n" +
 	"\boutpoint\x18\x01 \x01(\tR\boutpoint\x12'\n" +
 	"\x0fcheckpoint_psbt\x18\x02 \x01(\fR\x0echeckpointPsbt\x12%\n" +
 	"\x0ewitness_script\x18\x03 \x01(\fR\rwitnessScript\x12'\n" +
-	"\x0fsigning_pubkeys\x18\x04 \x03(\fR\x0esigningPubkeys\"\xc1\x01\n" +
+	"\x0fsigning_pubkeys\x18\x04 \x03(\fR\x0esigningPubkeys\"\xbf\x01\n" +
 	"\x12PrepareOORResponse\x12\x19\n" +
 	"\bark_psbt\x18\x01 \x01(\fR\aarkPsbt\x12)\n" +
-	"\x10checkpoint_psbts\x18\x02 \x03(\fR\x0fcheckpointPsbts\x12F\n" +
-	"\rcustom_inputs\x18\x03 \x03(\v2!.daemonrpc.PreparedOORCustomInputR\fcustomInputs\x12\x1d\n" +
+	"\x10checkpoint_psbts\x18\x02 \x03(\fR\x0fcheckpointPsbts\x12D\n" +
+	"\rcustom_inputs\x18\x03 \x03(\v2\x1f.waverpc.PreparedOORCustomInputR\fcustomInputs\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x04 \x01(\tR\tsessionId\"\x82\x01\n" +
-	"\x19SignOORCustomInputRequest\x12<\n" +
-	"\fcustom_input\x18\x01 \x01(\v2\x19.daemonrpc.CustomOORInputR\vcustomInput\x12'\n" +
-	"\x0fcheckpoint_psbt\x18\x02 \x01(\fR\x0echeckpointPsbt\"]\n" +
-	"\x1aSignOORCustomInputResponse\x12?\n" +
-	"\tsignature\x18\x01 \x01(\v2!.daemonrpc.TaprootScriptSignatureR\tsignature\"\xd6\x03\n" +
+	"session_id\x18\x04 \x01(\tR\tsessionId\"\x80\x01\n" +
+	"\x19SignOORCustomInputRequest\x12:\n" +
+	"\fcustom_input\x18\x01 \x01(\v2\x17.waverpc.CustomOORInputR\vcustomInput\x12'\n" +
+	"\x0fcheckpoint_psbt\x18\x02 \x01(\fR\x0echeckpointPsbt\"[\n" +
+	"\x1aSignOORCustomInputResponse\x12=\n" +
+	"\tsignature\x18\x01 \x01(\v2\x1f.waverpc.TaprootScriptSignatureR\tsignature\"\xd6\x03\n" +
 	"\x16SignVTXOForfeitRequest\x12#\n" +
 	"\rvtxo_outpoint\x18\x01 \x01(\tR\fvtxoOutpoint\x12&\n" +
 	"\x0fvtxo_amount_sat\x18\x02 \x01(\x03R\rvtxoAmountSat\x12$\n" +
@@ -10129,20 +10129,20 @@ const file_daemon_proto_rawDesc = "" +
 	" \x01(\fR\x15serverForfeitPkScript\"O\n" +
 	"\x17SignVTXOForfeitResponse\x12\x16\n" +
 	"\x06pubkey\x18\x01 \x01(\fR\x06pubkey\x12\x1c\n" +
-	"\tsignature\x18\x02 \x01(\fR\tsignature\"\x7f\n" +
+	"\tsignature\x18\x02 \x01(\fR\tsignature\"}\n" +
 	"\x15ForfeitSigningContext\x12!\n" +
-	"\fpayment_hash\x18\x01 \x01(\fR\vpaymentHash\x12C\n" +
-	"\rsigning_route\x18\x02 \x01(\x0e2\x1e.daemonrpc.ForfeitSigningRouteR\fsigningRoute\"1\n" +
+	"\fpayment_hash\x18\x01 \x01(\fR\vpaymentHash\x12A\n" +
+	"\rsigning_route\x18\x02 \x01(\x0e2\x1c.waverpc.ForfeitSigningRouteR\fsigningRoute\"1\n" +
 	"\x11OutpointSelection\x12\x1c\n" +
-	"\toutpoints\x18\x01 \x03(\tR\toutpoints\"\x8d\x01\n" +
-	"\x13RefreshVTXOsRequest\x12<\n" +
-	"\toutpoints\x18\x01 \x01(\v2\x1c.daemonrpc.OutpointSelectionH\x00R\toutpoints\x12\x12\n" +
+	"\toutpoints\x18\x01 \x03(\tR\toutpoints\"\x8b\x01\n" +
+	"\x13RefreshVTXOsRequest\x12:\n" +
+	"\toutpoints\x18\x01 \x01(\v2\x1a.waverpc.OutpointSelectionH\x00R\toutpoints\x12\x12\n" +
 	"\x03all\x18\x02 \x01(\bH\x00R\x03all\x12\x17\n" +
 	"\adry_run\x18\x03 \x01(\bR\x06dryRunB\v\n" +
 	"\tselection\"Y\n" +
 	"\x14RefreshVTXOsResponse\x12)\n" +
 	"\x10queued_outpoints\x18\x01 \x03(\tR\x0fqueuedOutpoints\x12\x16\n" +
-	"\x06status\x18\x02 \x01(\tR\x06status\"\xd2\x02\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\"\xd0\x02\n" +
 	"\x16CustomRefreshVTXOInput\x12\x1a\n" +
 	"\boutpoint\x18\x01 \x01(\tR\boutpoint\x12\x1d\n" +
 	"\n" +
@@ -10150,27 +10150,27 @@ const file_daemon_proto_rawDesc = "" +
 	"\tpk_script\x18\x03 \x01(\fR\bpkScript\x120\n" +
 	"\x14vtxo_policy_template\x18\x04 \x01(\fR\x12vtxoPolicyTemplate\x12&\n" +
 	"\x0fauth_spend_path\x18\x05 \x01(\fR\rauthSpendPath\x12,\n" +
-	"\x12forfeit_spend_path\x18\x06 \x01(\fR\x10forfeitSpendPath\x12X\n" +
-	"\x17forfeit_signing_context\x18\a \x01(\v2 .daemonrpc.ForfeitSigningContextR\x15forfeitSigningContext\"\xaa\x01\n" +
+	"\x12forfeit_spend_path\x18\x06 \x01(\fR\x10forfeitSpendPath\x12V\n" +
+	"\x17forfeit_signing_context\x18\a \x01(\v2\x1e.waverpc.ForfeitSigningContextR\x15forfeitSigningContext\"\xaa\x01\n" +
 	"\x17CustomRefreshVTXOOutput\x12\x1d\n" +
 	"\n" +
 	"amount_sat\x18\x01 \x01(\x03R\tamountSat\x120\n" +
 	"\x14vtxo_policy_template\x18\x02 \x01(\fR\x12vtxoPolicyTemplate\x12\x1b\n" +
 	"\tpk_script\x18\x03 \x01(\fR\bpkScript\x12!\n" +
-	"\ffixed_amount\x18\x04 \x01(\bR\vfixedAmount\"\xad\x01\n" +
-	"\x19RefreshCustomVTXOsRequest\x129\n" +
-	"\x06inputs\x18\x01 \x03(\v2!.daemonrpc.CustomRefreshVTXOInputR\x06inputs\x12<\n" +
-	"\aoutputs\x18\x02 \x03(\v2\".daemonrpc.CustomRefreshVTXOOutputR\aoutputs\x12\x17\n" +
+	"\ffixed_amount\x18\x04 \x01(\bR\vfixedAmount\"\xa9\x01\n" +
+	"\x19RefreshCustomVTXOsRequest\x127\n" +
+	"\x06inputs\x18\x01 \x03(\v2\x1f.waverpc.CustomRefreshVTXOInputR\x06inputs\x12:\n" +
+	"\aoutputs\x18\x02 \x03(\v2 .waverpc.CustomRefreshVTXOOutputR\aoutputs\x12\x17\n" +
 	"\adry_run\x18\x03 \x01(\bR\x06dryRun\"_\n" +
 	"\x1aRefreshCustomVTXOsResponse\x12)\n" +
 	"\x10queued_outpoints\x18\x01 \x03(\tR\x0fqueuedOutpoints\x12\x16\n" +
-	"\x06status\x18\x02 \x01(\tR\x06status\"\x9b\x05\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\"\x99\x05\n" +
 	")PendingForfeitParticipantSignatureRequest\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\fR\trequestId\x12\x1a\n" +
 	"\bsequence\x18\x02 \x01(\x04R\bsequence\x12!\n" +
-	"\fpayment_hash\x18\x03 \x01(\fR\vpaymentHash\x12C\n" +
-	"\rsigning_route\x18\x04 \x01(\x0e2\x1e.daemonrpc.ForfeitSigningRouteR\fsigningRoute\x12#\n" +
+	"\fpayment_hash\x18\x03 \x01(\fR\vpaymentHash\x12A\n" +
+	"\rsigning_route\x18\x04 \x01(\x0e2\x1c.waverpc.ForfeitSigningRouteR\fsigningRoute\x12#\n" +
 	"\rvtxo_outpoint\x18\x05 \x01(\tR\fvtxoOutpoint\x12&\n" +
 	"\x0fvtxo_amount_sat\x18\x06 \x01(\x04R\rvtxoAmountSat\x12$\n" +
 	"\x0evtxo_pk_script\x18\a \x01(\fR\fvtxoPkScript\x120\n" +
@@ -10184,39 +10184,39 @@ const file_daemon_proto_rawDesc = "" +
 	"\x18server_forfeit_pk_script\x18\x0e \x01(\fR\x15serverForfeitPkScript\"t\n" +
 	"5ListPendingForfeitParticipantSignatureRequestsRequest\x12%\n" +
 	"\x0eafter_sequence\x18\x01 \x01(\x04R\rafterSequence\x12\x14\n" +
-	"\x05limit\x18\x02 \x01(\rR\x05limit\"\xaf\x01\n" +
-	"6ListPendingForfeitParticipantSignatureRequestsResponse\x12P\n" +
-	"\brequests\x18\x01 \x03(\v24.daemonrpc.PendingForfeitParticipantSignatureRequestR\brequests\x12#\n" +
+	"\x05limit\x18\x02 \x01(\rR\x05limit\"\xad\x01\n" +
+	"6ListPendingForfeitParticipantSignatureRequestsResponse\x12N\n" +
+	"\brequests\x18\x01 \x03(\v22.waverpc.PendingForfeitParticipantSignatureRequestR\brequests\x12#\n" +
 	"\rnext_sequence\x18\x02 \x01(\x04R\fnextSequence\"S\n" +
 	"\x1bForfeitParticipantSignature\x12\x16\n" +
 	"\x06pubkey\x18\x01 \x01(\fR\x06pubkey\x12\x1c\n" +
-	"\tsignature\x18\x02 \x01(\fR\tsignature\"\x92\x01\n" +
+	"\tsignature\x18\x02 \x01(\fR\tsignature\"\x90\x01\n" +
 	")SubmitForfeitParticipantSignaturesRequest\x12\x1d\n" +
 	"\n" +
-	"request_id\x18\x01 \x01(\fR\trequestId\x12F\n" +
+	"request_id\x18\x01 \x01(\fR\trequestId\x12D\n" +
 	"\n" +
-	"signatures\x18\x02 \x03(\v2&.daemonrpc.ForfeitParticipantSignatureR\n" +
+	"signatures\x18\x02 \x03(\v2$.waverpc.ForfeitParticipantSignatureR\n" +
 	"signatures\",\n" +
 	"*SubmitForfeitParticipantSignaturesResponse\"W\n" +
 	"\x10LeaveDestination\x12\x1a\n" +
 	"\aaddress\x18\x01 \x01(\tH\x00R\aaddress\x12\x1d\n" +
 	"\tpk_script\x18\x02 \x01(\fH\x00R\bpkScriptB\b\n" +
-	"\x06target\"\x8b\x03\n" +
-	"\x11LeaveVTXOsRequest\x12<\n" +
-	"\toutpoints\x18\x01 \x01(\v2\x1c.daemonrpc.OutpointSelectionH\x00R\toutpoints\x12\x12\n" +
-	"\x03all\x18\x02 \x01(\bH\x00R\x03all\x12L\n" +
-	"\x13default_destination\x18\x03 \x01(\v2\x1b.daemonrpc.LeaveDestinationR\x12defaultDestination\x12R\n" +
-	"\fdestinations\x18\x04 \x03(\v2..daemonrpc.LeaveVTXOsRequest.DestinationsEntryR\fdestinations\x12\x17\n" +
-	"\adry_run\x18\x05 \x01(\bR\x06dryRun\x1a\\\n" +
+	"\x06target\"\x83\x03\n" +
+	"\x11LeaveVTXOsRequest\x12:\n" +
+	"\toutpoints\x18\x01 \x01(\v2\x1a.waverpc.OutpointSelectionH\x00R\toutpoints\x12\x12\n" +
+	"\x03all\x18\x02 \x01(\bH\x00R\x03all\x12J\n" +
+	"\x13default_destination\x18\x03 \x01(\v2\x19.waverpc.LeaveDestinationR\x12defaultDestination\x12P\n" +
+	"\fdestinations\x18\x04 \x03(\v2,.waverpc.LeaveVTXOsRequest.DestinationsEntryR\fdestinations\x12\x17\n" +
+	"\adry_run\x18\x05 \x01(\bR\x06dryRun\x1aZ\n" +
 	"\x11DestinationsEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x121\n" +
-	"\x05value\x18\x02 \x01(\v2\x1b.daemonrpc.LeaveDestinationR\x05value:\x028\x01B\v\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12/\n" +
+	"\x05value\x18\x02 \x01(\v2\x19.waverpc.LeaveDestinationR\x05value:\x028\x01B\v\n" +
 	"\tselection\"W\n" +
 	"\x12LeaveVTXOsResponse\x12)\n" +
 	"\x10queued_outpoints\x18\x01 \x03(\tR\x0fqueuedOutpoints\x12\x16\n" +
-	"\x06status\x18\x02 \x01(\tR\x06status\"\xb6\x01\n" +
-	"\x12SendOnChainRequest\x12=\n" +
-	"\vdestination\x18\x01 \x01(\v2\x1b.daemonrpc.LeaveDestinationR\vdestination\x12\x1f\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\"\xb4\x01\n" +
+	"\x12SendOnChainRequest\x12;\n" +
+	"\vdestination\x18\x01 \x01(\v2\x19.waverpc.LeaveDestinationR\vdestination\x12\x1f\n" +
 	"\n" +
 	"amount_sat\x18\x02 \x01(\x03H\x00R\tamountSat\x12\x1d\n" +
 	"\tsweep_all\x18\x03 \x01(\bH\x00R\bsweepAll\x12\x17\n" +
@@ -10251,11 +10251,11 @@ const file_daemon_proto_rawDesc = "" +
 	"\boutpoint\x18\x01 \x01(\tR\boutpoint\x12\x1d\n" +
 	"\n" +
 	"amount_sat\x18\x02 \x01(\x03R\tamountSat\x12'\n" +
-	"\x0fmaturity_height\x18\x03 \x01(\x05R\x0ematurityHeight\"\xf3\x03\n" +
+	"\x0fmaturity_height\x18\x03 \x01(\x05R\x0ematurityHeight\"\xf1\x03\n" +
 	"\x1aSweepBoardingUTXOsResponse\x12\x16\n" +
 	"\x06status\x18\x01 \x01(\tR\x06status\x12%\n" +
-	"\x0ecurrent_height\x18\x02 \x01(\x05R\rcurrentHeight\x12K\n" +
-	"\x11sweepable_outputs\x18\x03 \x03(\v2\x1e.daemonrpc.BoardingSweepOutputR\x10sweepableOutputs\x12(\n" +
+	"\x0ecurrent_height\x18\x02 \x01(\x05R\rcurrentHeight\x12I\n" +
+	"\x11sweepable_outputs\x18\x03 \x03(\v2\x1c.waverpc.BoardingSweepOutputR\x10sweepableOutputs\x12(\n" +
 	"\x10total_amount_sat\x18\x04 \x01(\x03R\x0etotalAmountSat\x12*\n" +
 	"\x11estimated_fee_sat\x18\x05 \x01(\x03R\x0festimatedFeeSat\x12$\n" +
 	"\x0enet_amount_sat\x18\x06 \x01(\x03R\fnetAmountSat\x122\n" +
@@ -10279,7 +10279,7 @@ const file_daemon_proto_rawDesc = "" +
 	"amount_sat\x18\x02 \x01(\x03R\tamountSat\x12\x16\n" +
 	"\x06status\x18\x03 \x01(\tR\x06status\x12\"\n" +
 	"\rspent_by_txid\x18\x04 \x01(\tR\vspentByTxid\x12!\n" +
-	"\fspent_height\x18\x05 \x01(\x05R\vspentHeight\"\xb9\x03\n" +
+	"\fspent_height\x18\x05 \x01(\x05R\vspentHeight\"\xb7\x03\n" +
 	"\rBoardingSweep\x12\x12\n" +
 	"\x04txid\x18\x01 \x01(\tR\x04txid\x12\x16\n" +
 	"\x06status\x18\x02 \x01(\tR\x06status\x12/\n" +
@@ -10290,22 +10290,22 @@ const file_daemon_proto_rawDesc = "" +
 	"\x16fee_rate_sat_per_vbyte\x18\x06 \x01(\x03R\x12feeRateSatPerVbyte\x12\x1b\n" +
 	"\ttx_vbytes\x18\a \x01(\x03R\btxVbytes\x12%\n" +
 	"\x0ecreated_height\x18\b \x01(\x05R\rcreatedHeight\x12)\n" +
-	"\x10confirmed_height\x18\t \x01(\x05R\x0fconfirmedHeight\x125\n" +
+	"\x10confirmed_height\x18\t \x01(\x05R\x0fconfirmedHeight\x123\n" +
 	"\x06inputs\x18\n" +
-	" \x03(\v2\x1d.daemonrpc.BoardingSweepInputR\x06inputs\x12%\n" +
-	"\x0efailure_reason\x18\v \x01(\tR\rfailureReason\"v\n" +
-	"\x1aListBoardingSweepsResponse\x120\n" +
-	"\x06sweeps\x18\x01 \x03(\v2\x18.daemonrpc.BoardingSweepR\x06sweeps\x12&\n" +
+	" \x03(\v2\x1b.waverpc.BoardingSweepInputR\x06inputs\x12%\n" +
+	"\x0efailure_reason\x18\v \x01(\tR\rfailureReason\"t\n" +
+	"\x1aListBoardingSweepsResponse\x12.\n" +
+	"\x06sweeps\x18\x01 \x03(\v2\x16.waverpc.BoardingSweepR\x06sweeps\x12&\n" +
 	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"J\n" +
 	"\rRoundVTXOInfo\x12\x1a\n" +
 	"\boutpoint\x18\x01 \x01(\tR\boutpoint\x12\x1d\n" +
 	"\n" +
-	"amount_sat\x18\x02 \x01(\x03R\tamountSat\"\xbc\x03\n" +
+	"amount_sat\x18\x02 \x01(\x03R\tamountSat\"\xb8\x03\n" +
 	"\tRoundInfo\x12\x19\n" +
-	"\bround_id\x18\x01 \x01(\tR\aroundId\x12+\n" +
-	"\x05state\x18\x02 \x01(\x0e2\x15.daemonrpc.RoundStateR\x05state\x12\x17\n" +
-	"\ais_temp\x18\x03 \x01(\bR\x06isTemp\x12.\n" +
-	"\x05vtxos\x18\x04 \x03(\v2\x18.daemonrpc.RoundVTXOInfoR\x05vtxos\x12'\n" +
+	"\bround_id\x18\x01 \x01(\tR\aroundId\x12)\n" +
+	"\x05state\x18\x02 \x01(\x0e2\x13.waverpc.RoundStateR\x05state\x12\x17\n" +
+	"\ais_temp\x18\x03 \x01(\bR\x06isTemp\x12,\n" +
+	"\x05vtxos\x18\x04 \x03(\v2\x16.waverpc.RoundVTXOInfoR\x05vtxos\x12'\n" +
 	"\x0fcommitment_txid\x18\x05 \x01(\tR\x0ecommitmentTxid\x12+\n" +
 	"\x11commitment_height\x18\x06 \x01(\x05R\x10commitmentHeight\x12#\n" +
 	"\rcreation_time\x18\a \x01(\x03R\fcreationTime\x12(\n" +
@@ -10313,30 +10313,30 @@ const file_daemon_proto_rawDesc = "" +
 	"\x0finput_outpoints\x18\t \x03(\tR\x0einputOutpoints\x12)\n" +
 	"\x10output_outpoints\x18\n" +
 	" \x03(\tR\x0foutputOutpoints\x12%\n" +
-	"\x0efailure_reason\x18\v \x01(\tR\rfailureReason\"\xfc\x01\n" +
+	"\x0efailure_reason\x18\v \x01(\tR\rfailureReason\"\xfa\x01\n" +
 	"\x11ListRoundsRequest\x12\x1b\n" +
 	"\tpage_size\x18\x01 \x01(\x05R\bpageSize\x12\x1d\n" +
 	"\n" +
 	"page_token\x18\x02 \x01(\tR\tpageToken\x12%\n" +
-	"\x0epersisted_only\x18\x03 \x01(\bR\rpersistedOnly\x128\n" +
-	"\fstate_filter\x18\x04 \x01(\x0e2\x15.daemonrpc.RoundStateR\vstateFilter\x12#\n" +
+	"\x0epersisted_only\x18\x03 \x01(\bR\rpersistedOnly\x126\n" +
+	"\fstate_filter\x18\x04 \x01(\x0e2\x13.waverpc.RoundStateR\vstateFilter\x12#\n" +
 	"\rcreated_after\x18\x05 \x01(\x03R\fcreatedAfter\x12%\n" +
 	"\x0ecreated_before\x18\x06 \x01(\x03R\rcreatedBefore\",\n" +
 	"\x0fGetRoundRequest\x12\x19\n" +
-	"\bround_id\x18\x01 \x01(\tR\aroundId\">\n" +
-	"\x10GetRoundResponse\x12*\n" +
-	"\x05round\x18\x01 \x01(\v2\x14.daemonrpc.RoundInfoR\x05round\"j\n" +
-	"\x12ListRoundsResponse\x12,\n" +
-	"\x06rounds\x18\x01 \x03(\v2\x14.daemonrpc.RoundInfoR\x06rounds\x12&\n" +
+	"\bround_id\x18\x01 \x01(\tR\aroundId\"<\n" +
+	"\x10GetRoundResponse\x12(\n" +
+	"\x05round\x18\x01 \x01(\v2\x12.waverpc.RoundInfoR\x05round\"h\n" +
+	"\x12ListRoundsResponse\x12*\n" +
+	"\x06rounds\x18\x01 \x03(\v2\x12.waverpc.RoundInfoR\x06rounds\x12&\n" +
 	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"\x14\n" +
-	"\x12WatchRoundsRequest\"A\n" +
-	"\x13WatchRoundsResponse\x12*\n" +
-	"\x05round\x18\x01 \x01(\v2\x14.daemonrpc.RoundInfoR\x05round\"\xf9\x02\n" +
+	"\x12WatchRoundsRequest\"?\n" +
+	"\x13WatchRoundsResponse\x12(\n" +
+	"\x05round\x18\x01 \x01(\v2\x12.waverpc.RoundInfoR\x05round\"\xf5\x02\n" +
 	"\x0eOORSessionInfo\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x01 \x01(\tR\tsessionId\x12<\n" +
-	"\tdirection\x18\x02 \x01(\x0e2\x1e.daemonrpc.OORSessionDirectionR\tdirection\x123\n" +
-	"\x06status\x18\x03 \x01(\x0e2\x1b.daemonrpc.OORSessionStatusR\x06status\x12\x14\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\x12:\n" +
+	"\tdirection\x18\x02 \x01(\x0e2\x1c.waverpc.OORSessionDirectionR\tdirection\x121\n" +
+	"\x06status\x18\x03 \x01(\x0e2\x19.waverpc.OORSessionStatusR\x06status\x12\x14\n" +
 	"\x05phase\x18\x04 \x01(\tR\x05phase\x12\x1d\n" +
 	"\n" +
 	"created_at\x18\x05 \x01(\x03R\tcreatedAt\x12\x1d\n" +
@@ -10344,21 +10344,21 @@ const file_daemon_proto_rawDesc = "" +
 	"updated_at\x18\x06 \x01(\x03R\tupdatedAt\x12-\n" +
 	"\x12consumed_outpoints\x18\a \x03(\tR\x11consumedOutpoints\x12+\n" +
 	"\x11created_outpoints\x18\b \x03(\tR\x10createdOutpoints\x12%\n" +
-	"\x0efailure_reason\x18\t \x01(\tR\rfailureReason\"\xe1\x01\n" +
+	"\x0efailure_reason\x18\t \x01(\tR\rfailureReason\"\xdd\x01\n" +
 	"\x16ListOORSessionsRequest\x12\x1b\n" +
 	"\tpage_size\x18\x01 \x01(\x05R\bpageSize\x12\x1d\n" +
 	"\n" +
-	"page_token\x18\x02 \x01(\tR\tpageToken\x12I\n" +
-	"\x10direction_filter\x18\x03 \x01(\x0e2\x1e.daemonrpc.OORSessionDirectionR\x0fdirectionFilter\x12@\n" +
-	"\rstatus_filter\x18\x04 \x01(\x0e2\x1b.daemonrpc.OORSessionStatusR\fstatusFilter\"x\n" +
-	"\x17ListOORSessionsResponse\x125\n" +
-	"\bsessions\x18\x01 \x03(\v2\x19.daemonrpc.OORSessionInfoR\bsessions\x12&\n" +
+	"page_token\x18\x02 \x01(\tR\tpageToken\x12G\n" +
+	"\x10direction_filter\x18\x03 \x01(\x0e2\x1c.waverpc.OORSessionDirectionR\x0fdirectionFilter\x12>\n" +
+	"\rstatus_filter\x18\x04 \x01(\x0e2\x19.waverpc.OORSessionStatusR\fstatusFilter\"v\n" +
+	"\x17ListOORSessionsResponse\x123\n" +
+	"\bsessions\x18\x01 \x03(\v2\x17.waverpc.OORSessionInfoR\bsessions\x12&\n" +
 	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"5\n" +
 	"\x14GetOORSessionRequest\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x01 \x01(\tR\tsessionId\"L\n" +
-	"\x15GetOORSessionResponse\x123\n" +
-	"\asession\x18\x01 \x01(\v2\x19.daemonrpc.OORSessionInfoR\asession\"\x7f\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\"J\n" +
+	"\x15GetOORSessionResponse\x121\n" +
+	"\asession\x18\x01 \x01(\v2\x17.waverpc.OORSessionInfoR\asession\"\x7f\n" +
 	"\x12EstimateFeeRequest\x12\x1d\n" +
 	"\n" +
 	"amount_sat\x18\x01 \x01(\x03R\tamountSat\x12\x1f\n" +
@@ -10389,9 +10389,9 @@ const file_daemon_proto_rawDesc = "" +
 	"\x0ecredit_account\x18\a \x01(\tR\rcreditAccount\x12\x19\n" +
 	"\bround_id\x18\b \x01(\fR\aroundId\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\t \x01(\fR\tsessionId\"|\n" +
-	"\x15GetFeeHistoryResponse\x124\n" +
-	"\aentries\x18\x01 \x03(\v2\x1a.daemonrpc.FeeHistoryEntryR\aentries\x12-\n" +
+	"session_id\x18\t \x01(\fR\tsessionId\"z\n" +
+	"\x15GetFeeHistoryResponse\x122\n" +
+	"\aentries\x18\x01 \x03(\v2\x18.waverpc.FeeHistoryEntryR\aentries\x12-\n" +
 	"\x13total_fees_paid_sat\x18\x02 \x01(\x03R\x10totalFeesPaidSat\"\x97\x01\n" +
 	"\x17ListTransactionsRequest\x12\x1e\n" +
 	"\vfrom_unix_s\x18\x01 \x01(\x03R\tfromUnixS\x12\x1a\n" +
@@ -10419,9 +10419,9 @@ const file_daemon_proto_rawDesc = "" +
 	"session_id\x18\x0e \x01(\fR\tsessionId\x12/\n" +
 	"\x13confirmation_height\x18\x0f \x01(\x05R\x12confirmationHeight\x12!\n" +
 	"\foutput_index\x18\x10 \x01(\x05R\voutputIndex\x12)\n" +
-	"\x10boarding_address\x18\x11 \x01(\tR\x0fboardingAddress\"\x9e\x01\n" +
-	"\x18ListTransactionsResponse\x12F\n" +
-	"\ftransactions\x18\x01 \x03(\v2\".daemonrpc.TransactionHistoryEntryR\ftransactions\x12\x1f\n" +
+	"\x10boarding_address\x18\x11 \x01(\tR\x0fboardingAddress\"\x9c\x01\n" +
+	"\x18ListTransactionsResponse\x12D\n" +
+	"\ftransactions\x18\x01 \x03(\v2 .waverpc.TransactionHistoryEntryR\ftransactions\x12\x1f\n" +
 	"\vnext_offset\x18\x02 \x01(\rR\n" +
 	"nextOffset\x12\x19\n" +
 	"\bhas_more\x18\x03 \x01(\bR\ahasMore\"+\n" +
@@ -10459,27 +10459,27 @@ const file_daemon_proto_rawDesc = "" +
 	"\x11net_recovered_sat\x18\x05 \x01(\x03R\x0fnetRecoveredSat\x12+\n" +
 	"\x12fee_rate_sat_vbyte\x18\x06 \x01(\x03R\x0ffeeRateSatVbyte\x12(\n" +
 	"\x10sweep_fee_actual\x18\a \x01(\bR\x0esweepFeeActual\x12'\n" +
-	"\x10spent_so_far_sat\x18\b \x01(\x03R\rspentSoFarSat\"\xb2\x03\n" +
+	"\x10spent_so_far_sat\x18\b \x01(\x03R\rspentSoFarSat\"\xaa\x03\n" +
 	"\x17GetUnrollStatusResponse\x12\x14\n" +
-	"\x05found\x18\x01 \x01(\bR\x05found\x122\n" +
-	"\x06status\x18\x02 \x01(\x0e2\x1a.daemonrpc.UnrollJobStatusR\x06status\x12\x1d\n" +
+	"\x05found\x18\x01 \x01(\bR\x05found\x120\n" +
+	"\x06status\x18\x02 \x01(\x0e2\x18.waverpc.UnrollJobStatusR\x06status\x12\x1d\n" +
 	"\n" +
 	"sweep_txid\x18\x03 \x01(\tR\tsweepTxid\x12\x1d\n" +
 	"\n" +
 	"last_error\x18\x04 \x01(\tR\tlastError\x12!\n" +
-	"\fphase_detail\x18\x05 \x01(\tR\vphaseDetail\x125\n" +
-	"\bprogress\x18\x06 \x01(\v2\x19.daemonrpc.UnrollProgressR\bprogress\x12&\n" +
-	"\x03csv\x18\a \x01(\v2\x14.daemonrpc.UnrollCSVR\x03csv\x12)\n" +
-	"\x04fees\x18\b \x01(\v2\x15.daemonrpc.UnrollFeesR\x04fees\x12;\n" +
+	"\fphase_detail\x18\x05 \x01(\tR\vphaseDetail\x123\n" +
+	"\bprogress\x18\x06 \x01(\v2\x17.waverpc.UnrollProgressR\bprogress\x12$\n" +
+	"\x03csv\x18\a \x01(\v2\x12.waverpc.UnrollCSVR\x03csv\x12'\n" +
+	"\x04fees\x18\b \x01(\v2\x13.waverpc.UnrollFeesR\x04fees\x12;\n" +
 	"\x1abest_case_blocks_remaining\x18\t \x01(\x05R\x17bestCaseBlocksRemaining\x12%\n" +
 	"\x0ecurrent_height\x18\n" +
-	" \x01(\x05R\rcurrentHeight\"\xd8\x06\n" +
+	" \x01(\x05R\rcurrentHeight\"\xd4\x06\n" +
 	"\x17ArmVHTLCRecoveryRequest\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x17\n" +
-	"\aswap_id\x18\x02 \x01(\fR\x06swapId\x12?\n" +
-	"\tdirection\x18\x03 \x01(\x0e2!.daemonrpc.VHTLCRecoveryDirectionR\tdirection\x126\n" +
-	"\x06action\x18\x04 \x01(\x0e2\x1e.daemonrpc.VHTLCRecoveryActionR\x06action\x12#\n" +
+	"\aswap_id\x18\x02 \x01(\fR\x06swapId\x12=\n" +
+	"\tdirection\x18\x03 \x01(\x0e2\x1f.waverpc.VHTLCRecoveryDirectionR\tdirection\x124\n" +
+	"\x06action\x18\x04 \x01(\x0e2\x1c.waverpc.VHTLCRecoveryActionR\x06action\x12#\n" +
 	"\rvtxo_outpoint\x18\x05 \x01(\tR\fvtxoOutpoint\x12&\n" +
 	"\x0fvtxo_amount_sat\x18\x06 \x01(\x03R\rvtxoAmountSat\x12#\n" +
 	"\rsender_pubkey\x18\a \x01(\fR\fsenderPubkey\x12'\n" +
@@ -10494,51 +10494,51 @@ const file_daemon_proto_rawDesc = "" +
 	"\x11signer_key_family\x18\x0f \x01(\x05R\x0fsignerKeyFamily\x12(\n" +
 	"\x10signer_key_index\x18\x10 \x01(\x05R\x0esignerKeyIndex\x12-\n" +
 	"\x12destination_script\x18\x11 \x01(\fR\x11destinationScript\x123\n" +
-	"\x17max_fee_rate_sat_per_kw\x18\x12 \x01(\x05R\x12maxFeeRateSatPerKw\"\x8d\x01\n" +
+	"\x17max_fee_rate_sat_per_kw\x18\x12 \x01(\x05R\x12maxFeeRateSatPerKw\"\x8b\x01\n" +
 	"\x18ArmVHTLCRecoveryResponse\x12\x1f\n" +
 	"\vrecovery_id\x18\x01 \x01(\tR\n" +
 	"recoveryId\x12\x18\n" +
-	"\acreated\x18\x02 \x01(\bR\acreated\x126\n" +
-	"\x06status\x18\x03 \x01(\v2\x1e.daemonrpc.VHTLCRecoveryStatusR\x06status\"~\n" +
+	"\acreated\x18\x02 \x01(\bR\acreated\x124\n" +
+	"\x06status\x18\x03 \x01(\v2\x1c.waverpc.VHTLCRecoveryStatusR\x06status\"~\n" +
 	"\x1cEscalateVHTLCRecoveryRequest\x12\x1f\n" +
 	"\vrecovery_id\x18\x01 \x01(\tR\n" +
 	"recoveryId\x12\x16\n" +
 	"\x06reason\x18\x02 \x01(\tR\x06reason\x12%\n" +
-	"\x0eclaim_preimage\x18\x03 \x01(\fR\rclaimPreimage\"W\n" +
-	"\x1dEscalateVHTLCRecoveryResponse\x126\n" +
-	"\x06status\x18\x01 \x01(\v2\x1e.daemonrpc.VHTLCRecoveryStatusR\x06status\"\x80\x01\n" +
+	"\x0eclaim_preimage\x18\x03 \x01(\fR\rclaimPreimage\"U\n" +
+	"\x1dEscalateVHTLCRecoveryResponse\x124\n" +
+	"\x06status\x18\x01 \x01(\v2\x1c.waverpc.VHTLCRecoveryStatusR\x06status\"\x80\x01\n" +
 	"\x1aCancelVHTLCRecoveryRequest\x12\x1f\n" +
 	"\vrecovery_id\x18\x01 \x01(\tR\n" +
 	"recoveryId\x12\x16\n" +
 	"\x06reason\x18\x02 \x01(\tR\x06reason\x12)\n" +
-	"\x10cooperative_txid\x18\x03 \x01(\tR\x0fcooperativeTxid\"U\n" +
-	"\x1bCancelVHTLCRecoveryResponse\x126\n" +
-	"\x06status\x18\x01 \x01(\v2\x1e.daemonrpc.VHTLCRecoveryStatusR\x06status\"@\n" +
+	"\x10cooperative_txid\x18\x03 \x01(\tR\x0fcooperativeTxid\"S\n" +
+	"\x1bCancelVHTLCRecoveryResponse\x124\n" +
+	"\x06status\x18\x01 \x01(\v2\x1c.waverpc.VHTLCRecoveryStatusR\x06status\"@\n" +
 	"\x1dGetVHTLCRecoveryStatusRequest\x12\x1f\n" +
 	"\vrecovery_id\x18\x01 \x01(\tR\n" +
-	"recoveryId\"n\n" +
+	"recoveryId\"l\n" +
 	"\x1eGetVHTLCRecoveryStatusResponse\x12\x14\n" +
-	"\x05found\x18\x01 \x01(\bR\x05found\x126\n" +
-	"\x06status\x18\x02 \x01(\v2\x1e.daemonrpc.VHTLCRecoveryStatusR\x06status\"G\n" +
+	"\x05found\x18\x01 \x01(\bR\x05found\x124\n" +
+	"\x06status\x18\x02 \x01(\v2\x1c.waverpc.VHTLCRecoveryStatusR\x06status\"G\n" +
 	"\x1aListVHTLCRecoveriesRequest\x12)\n" +
-	"\x10include_terminal\x18\x01 \x01(\bR\x0fincludeTerminal\"Y\n" +
-	"\x1bListVHTLCRecoveriesResponse\x12:\n" +
-	"\bstatuses\x18\x01 \x03(\v2\x1e.daemonrpc.VHTLCRecoveryStatusR\bstatuses\"\xdb\b\n" +
+	"\x10include_terminal\x18\x01 \x01(\bR\x0fincludeTerminal\"W\n" +
+	"\x1bListVHTLCRecoveriesResponse\x128\n" +
+	"\bstatuses\x18\x01 \x03(\v2\x1c.waverpc.VHTLCRecoveryStatusR\bstatuses\"\xd3\b\n" +
 	"\x13VHTLCRecoveryStatus\x12\x1f\n" +
 	"\vrecovery_id\x18\x01 \x01(\tR\n" +
 	"recoveryId\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x02 \x01(\tR\trequestId\x12\x17\n" +
-	"\aswap_id\x18\x03 \x01(\fR\x06swapId\x12?\n" +
-	"\tdirection\x18\x04 \x01(\x0e2!.daemonrpc.VHTLCRecoveryDirectionR\tdirection\x126\n" +
-	"\x06action\x18\x05 \x01(\x0e2\x1e.daemonrpc.VHTLCRecoveryActionR\x06action\x123\n" +
-	"\x05state\x18\x06 \x01(\x0e2\x1d.daemonrpc.VHTLCRecoveryStateR\x05state\x12#\n" +
+	"\aswap_id\x18\x03 \x01(\fR\x06swapId\x12=\n" +
+	"\tdirection\x18\x04 \x01(\x0e2\x1f.waverpc.VHTLCRecoveryDirectionR\tdirection\x124\n" +
+	"\x06action\x18\x05 \x01(\x0e2\x1c.waverpc.VHTLCRecoveryActionR\x06action\x121\n" +
+	"\x05state\x18\x06 \x01(\x0e2\x1b.waverpc.VHTLCRecoveryStateR\x05state\x12#\n" +
 	"\rvtxo_outpoint\x18\a \x01(\tR\fvtxoOutpoint\x12&\n" +
 	"\x0fvtxo_amount_sat\x18\b \x01(\x03R\rvtxoAmountSat\x12(\n" +
 	"\x10exit_policy_kind\x18\t \x01(\tR\x0eexitPolicyKind\x12!\n" +
 	"\funroll_found\x18\n" +
-	" \x01(\bR\vunrollFound\x12?\n" +
-	"\runroll_status\x18\v \x01(\x0e2\x1a.daemonrpc.UnrollJobStatusR\funrollStatus\x12\x1d\n" +
+	" \x01(\bR\vunrollFound\x12=\n" +
+	"\runroll_status\x18\v \x01(\x0e2\x18.waverpc.UnrollJobStatusR\funrollStatus\x12\x1d\n" +
 	"\n" +
 	"sweep_txid\x18\f \x01(\tR\tsweepTxid\x12\x1b\n" +
 	"\texit_txid\x18\r \x01(\tR\bexitTxid\x12)\n" +
@@ -10642,59 +10642,59 @@ const file_daemon_proto_rawDesc = "" +
 	"\x1eVHTLC_RECOVERY_STATE_COMPLETED\x10\t\x12\"\n" +
 	"\x1eVHTLC_RECOVERY_STATE_CANCELLED\x10\n" +
 	"\x12\x1f\n" +
-	"\x1bVHTLC_RECOVERY_STATE_FAILED\x10\v2\x87 \n" +
-	"\rDaemonService\x12@\n" +
-	"\aGetInfo\x12\x19.daemonrpc.GetInfoRequest\x1a\x1a.daemonrpc.GetInfoResponse\x12@\n" +
-	"\aGenSeed\x12\x19.daemonrpc.GenSeedRequest\x1a\x1a.daemonrpc.GenSeedResponse\x12I\n" +
+	"\x1bVHTLC_RECOVERY_STATE_FAILED\x10\v2\xd2\x1e\n" +
+	"\rDaemonService\x12<\n" +
+	"\aGetInfo\x12\x17.waverpc.GetInfoRequest\x1a\x18.waverpc.GetInfoResponse\x12<\n" +
+	"\aGenSeed\x12\x17.waverpc.GenSeedRequest\x1a\x18.waverpc.GenSeedResponse\x12E\n" +
 	"\n" +
-	"InitWallet\x12\x1c.daemonrpc.InitWalletRequest\x1a\x1d.daemonrpc.InitWalletResponse\x12O\n" +
-	"\fUnlockWallet\x12\x1e.daemonrpc.UnlockWalletRequest\x1a\x1f.daemonrpc.UnlockWalletResponse\x12I\n" +
+	"InitWallet\x12\x1a.waverpc.InitWalletRequest\x1a\x1b.waverpc.InitWalletResponse\x12K\n" +
+	"\fUnlockWallet\x12\x1c.waverpc.UnlockWalletRequest\x1a\x1d.waverpc.UnlockWalletResponse\x12E\n" +
 	"\n" +
-	"GetBalance\x12\x1c.daemonrpc.GetBalanceRequest\x1a\x1d.daemonrpc.GetBalanceResponse\x12F\n" +
-	"\tListVTXOs\x12\x1b.daemonrpc.ListVTXOsRequest\x1a\x1c.daemonrpc.ListVTXOsResponse\x12I\n" +
+	"GetBalance\x12\x1a.waverpc.GetBalanceRequest\x1a\x1b.waverpc.GetBalanceResponse\x12B\n" +
+	"\tListVTXOs\x12\x19.waverpc.ListVTXOsRequest\x1a\x1a.waverpc.ListVTXOsResponse\x12E\n" +
 	"\n" +
-	"NewAddress\x12\x1c.daemonrpc.NewAddressRequest\x1a\x1d.daemonrpc.NewAddressResponse\x12[\n" +
-	"\x10NewReceiveScript\x12\".daemonrpc.NewReceiveScriptRequest\x1a#.daemonrpc.NewReceiveScriptResponse\x12U\n" +
-	"\x0eReceiveAuthKey\x12 .daemonrpc.ReceiveAuthKeyRequest\x1a!.daemonrpc.ReceiveAuthKeyResponse\x12m\n" +
-	"\x16SignReceiveAuthMessage\x12(.daemonrpc.SignReceiveAuthMessageRequest\x1a).daemonrpc.SignReceiveAuthMessageResponse\x12\x82\x01\n" +
-	"\x1dSignReceiveAuthMessageCompact\x12/.daemonrpc.SignReceiveAuthMessageCompactRequest\x1a0.daemonrpc.SignReceiveAuthMessageCompactResponse\x12X\n" +
-	"\x0fReceiveAuthECDH\x12!.daemonrpc.ReceiveAuthECDHRequest\x1a\".daemonrpc.ReceiveAuthECDHResponse\x12s\n" +
-	"\x18GetIndexedVTXOByPkScript\x12*.daemonrpc.GetIndexedVTXOByPkScriptRequest\x1a+.daemonrpc.GetIndexedVTXOByPkScriptResponse\x12^\n" +
-	"\x11GetVTXOExpiryInfo\x12#.daemonrpc.GetVTXOExpiryInfoRequest\x1a$.daemonrpc.GetVTXOExpiryInfoResponse\x12y\n" +
-	"\x1aGetIndexedOORSessionByTxid\x12,.daemonrpc.GetIndexedOORSessionByTxidRequest\x1a-.daemonrpc.GetIndexedOORSessionByTxidResponse\x12C\n" +
-	"\bSendVTXO\x12\x1a.daemonrpc.SendVTXORequest\x1a\x1b.daemonrpc.SendVTXOResponse\x12@\n" +
-	"\aSendOOR\x12\x19.daemonrpc.SendOORRequest\x1a\x1a.daemonrpc.SendOORResponse\x12I\n" +
+	"NewAddress\x12\x1a.waverpc.NewAddressRequest\x1a\x1b.waverpc.NewAddressResponse\x12W\n" +
+	"\x10NewReceiveScript\x12 .waverpc.NewReceiveScriptRequest\x1a!.waverpc.NewReceiveScriptResponse\x12Q\n" +
+	"\x0eReceiveAuthKey\x12\x1e.waverpc.ReceiveAuthKeyRequest\x1a\x1f.waverpc.ReceiveAuthKeyResponse\x12i\n" +
+	"\x16SignReceiveAuthMessage\x12&.waverpc.SignReceiveAuthMessageRequest\x1a'.waverpc.SignReceiveAuthMessageResponse\x12~\n" +
+	"\x1dSignReceiveAuthMessageCompact\x12-.waverpc.SignReceiveAuthMessageCompactRequest\x1a..waverpc.SignReceiveAuthMessageCompactResponse\x12T\n" +
+	"\x0fReceiveAuthECDH\x12\x1f.waverpc.ReceiveAuthECDHRequest\x1a .waverpc.ReceiveAuthECDHResponse\x12o\n" +
+	"\x18GetIndexedVTXOByPkScript\x12(.waverpc.GetIndexedVTXOByPkScriptRequest\x1a).waverpc.GetIndexedVTXOByPkScriptResponse\x12Z\n" +
+	"\x11GetVTXOExpiryInfo\x12!.waverpc.GetVTXOExpiryInfoRequest\x1a\".waverpc.GetVTXOExpiryInfoResponse\x12u\n" +
+	"\x1aGetIndexedOORSessionByTxid\x12*.waverpc.GetIndexedOORSessionByTxidRequest\x1a+.waverpc.GetIndexedOORSessionByTxidResponse\x12?\n" +
+	"\bSendVTXO\x12\x18.waverpc.SendVTXORequest\x1a\x19.waverpc.SendVTXOResponse\x12<\n" +
+	"\aSendOOR\x12\x17.waverpc.SendOORRequest\x1a\x18.waverpc.SendOORResponse\x12E\n" +
 	"\n" +
-	"PrepareOOR\x12\x1c.daemonrpc.PrepareOORRequest\x1a\x1d.daemonrpc.PrepareOORResponse\x12a\n" +
-	"\x12SignOORCustomInput\x12$.daemonrpc.SignOORCustomInputRequest\x1a%.daemonrpc.SignOORCustomInputResponse\x12X\n" +
-	"\x0fSignVTXOForfeit\x12!.daemonrpc.SignVTXOForfeitRequest\x1a\".daemonrpc.SignVTXOForfeitResponse\x12O\n" +
-	"\fRefreshVTXOs\x12\x1e.daemonrpc.RefreshVTXOsRequest\x1a\x1f.daemonrpc.RefreshVTXOsResponse\x12a\n" +
-	"\x12RefreshCustomVTXOs\x12$.daemonrpc.RefreshCustomVTXOsRequest\x1a%.daemonrpc.RefreshCustomVTXOsResponse\x12\xb5\x01\n" +
-	".ListPendingForfeitParticipantSignatureRequests\x12@.daemonrpc.ListPendingForfeitParticipantSignatureRequestsRequest\x1aA.daemonrpc.ListPendingForfeitParticipantSignatureRequestsResponse\x12\x91\x01\n" +
-	"\"SubmitForfeitParticipantSignatures\x124.daemonrpc.SubmitForfeitParticipantSignaturesRequest\x1a5.daemonrpc.SubmitForfeitParticipantSignaturesResponse\x12I\n" +
+	"PrepareOOR\x12\x1a.waverpc.PrepareOORRequest\x1a\x1b.waverpc.PrepareOORResponse\x12]\n" +
+	"\x12SignOORCustomInput\x12\".waverpc.SignOORCustomInputRequest\x1a#.waverpc.SignOORCustomInputResponse\x12T\n" +
+	"\x0fSignVTXOForfeit\x12\x1f.waverpc.SignVTXOForfeitRequest\x1a .waverpc.SignVTXOForfeitResponse\x12K\n" +
+	"\fRefreshVTXOs\x12\x1c.waverpc.RefreshVTXOsRequest\x1a\x1d.waverpc.RefreshVTXOsResponse\x12]\n" +
+	"\x12RefreshCustomVTXOs\x12\".waverpc.RefreshCustomVTXOsRequest\x1a#.waverpc.RefreshCustomVTXOsResponse\x12\xb1\x01\n" +
+	".ListPendingForfeitParticipantSignatureRequests\x12>.waverpc.ListPendingForfeitParticipantSignatureRequestsRequest\x1a?.waverpc.ListPendingForfeitParticipantSignatureRequestsResponse\x12\x8d\x01\n" +
+	"\"SubmitForfeitParticipantSignatures\x122.waverpc.SubmitForfeitParticipantSignaturesRequest\x1a3.waverpc.SubmitForfeitParticipantSignaturesResponse\x12E\n" +
 	"\n" +
-	"LeaveVTXOs\x12\x1c.daemonrpc.LeaveVTXOsRequest\x1a\x1d.daemonrpc.LeaveVTXOsResponse\x12L\n" +
-	"\vSendOnChain\x12\x1d.daemonrpc.SendOnChainRequest\x1a\x1e.daemonrpc.SendOnChainResponse\x12:\n" +
-	"\x05Board\x12\x17.daemonrpc.BoardRequest\x1a\x18.daemonrpc.BoardResponse\x12R\n" +
-	"\rJoinNextRound\x12\x1f.daemonrpc.JoinNextRoundRequest\x1a .daemonrpc.JoinNextRoundResponse\x12a\n" +
-	"\x12SweepBoardingUTXOs\x12$.daemonrpc.SweepBoardingUTXOsRequest\x1a%.daemonrpc.SweepBoardingUTXOsResponse\x12a\n" +
-	"\x12ListBoardingSweeps\x12$.daemonrpc.ListBoardingSweepsRequest\x1a%.daemonrpc.ListBoardingSweepsResponse\x12I\n" +
+	"LeaveVTXOs\x12\x1a.waverpc.LeaveVTXOsRequest\x1a\x1b.waverpc.LeaveVTXOsResponse\x12H\n" +
+	"\vSendOnChain\x12\x1b.waverpc.SendOnChainRequest\x1a\x1c.waverpc.SendOnChainResponse\x126\n" +
+	"\x05Board\x12\x15.waverpc.BoardRequest\x1a\x16.waverpc.BoardResponse\x12N\n" +
+	"\rJoinNextRound\x12\x1d.waverpc.JoinNextRoundRequest\x1a\x1e.waverpc.JoinNextRoundResponse\x12]\n" +
+	"\x12SweepBoardingUTXOs\x12\".waverpc.SweepBoardingUTXOsRequest\x1a#.waverpc.SweepBoardingUTXOsResponse\x12]\n" +
+	"\x12ListBoardingSweeps\x12\".waverpc.ListBoardingSweepsRequest\x1a#.waverpc.ListBoardingSweepsResponse\x12E\n" +
 	"\n" +
-	"ListRounds\x12\x1c.daemonrpc.ListRoundsRequest\x1a\x1d.daemonrpc.ListRoundsResponse\x12C\n" +
-	"\bGetRound\x12\x1a.daemonrpc.GetRoundRequest\x1a\x1b.daemonrpc.GetRoundResponse\x12N\n" +
-	"\vWatchRounds\x12\x1d.daemonrpc.WatchRoundsRequest\x1a\x1e.daemonrpc.WatchRoundsResponse0\x01\x12X\n" +
-	"\x0fListOORSessions\x12!.daemonrpc.ListOORSessionsRequest\x1a\".daemonrpc.ListOORSessionsResponse\x12R\n" +
-	"\rGetOORSession\x12\x1f.daemonrpc.GetOORSessionRequest\x1a .daemonrpc.GetOORSessionResponse\x12L\n" +
-	"\vEstimateFee\x12\x1d.daemonrpc.EstimateFeeRequest\x1a\x1e.daemonrpc.EstimateFeeResponse\x12R\n" +
-	"\rGetFeeHistory\x12\x1f.daemonrpc.GetFeeHistoryRequest\x1a .daemonrpc.GetFeeHistoryResponse\x12[\n" +
-	"\x10ListTransactions\x12\".daemonrpc.ListTransactionsRequest\x1a#.daemonrpc.ListTransactionsResponse\x12=\n" +
-	"\x06Unroll\x12\x18.daemonrpc.UnrollRequest\x1a\x19.daemonrpc.UnrollResponse\x12X\n" +
-	"\x0fGetUnrollStatus\x12!.daemonrpc.GetUnrollStatusRequest\x1a\".daemonrpc.GetUnrollStatusResponse\x12[\n" +
-	"\x10ArmVHTLCRecovery\x12\".daemonrpc.ArmVHTLCRecoveryRequest\x1a#.daemonrpc.ArmVHTLCRecoveryResponse\x12j\n" +
-	"\x15EscalateVHTLCRecovery\x12'.daemonrpc.EscalateVHTLCRecoveryRequest\x1a(.daemonrpc.EscalateVHTLCRecoveryResponse\x12d\n" +
-	"\x13CancelVHTLCRecovery\x12%.daemonrpc.CancelVHTLCRecoveryRequest\x1a&.daemonrpc.CancelVHTLCRecoveryResponse\x12m\n" +
-	"\x16GetVHTLCRecoveryStatus\x12(.daemonrpc.GetVHTLCRecoveryStatusRequest\x1a).daemonrpc.GetVHTLCRecoveryStatusResponse\x12d\n" +
-	"\x13ListVHTLCRecoveries\x12%.daemonrpc.ListVHTLCRecoveriesRequest\x1a&.daemonrpc.ListVHTLCRecoveriesResponseB2Z0github.com/lightninglabs/darepo-client/daemonrpcb\x06proto3"
+	"ListRounds\x12\x1a.waverpc.ListRoundsRequest\x1a\x1b.waverpc.ListRoundsResponse\x12?\n" +
+	"\bGetRound\x12\x18.waverpc.GetRoundRequest\x1a\x19.waverpc.GetRoundResponse\x12J\n" +
+	"\vWatchRounds\x12\x1b.waverpc.WatchRoundsRequest\x1a\x1c.waverpc.WatchRoundsResponse0\x01\x12T\n" +
+	"\x0fListOORSessions\x12\x1f.waverpc.ListOORSessionsRequest\x1a .waverpc.ListOORSessionsResponse\x12N\n" +
+	"\rGetOORSession\x12\x1d.waverpc.GetOORSessionRequest\x1a\x1e.waverpc.GetOORSessionResponse\x12H\n" +
+	"\vEstimateFee\x12\x1b.waverpc.EstimateFeeRequest\x1a\x1c.waverpc.EstimateFeeResponse\x12N\n" +
+	"\rGetFeeHistory\x12\x1d.waverpc.GetFeeHistoryRequest\x1a\x1e.waverpc.GetFeeHistoryResponse\x12W\n" +
+	"\x10ListTransactions\x12 .waverpc.ListTransactionsRequest\x1a!.waverpc.ListTransactionsResponse\x129\n" +
+	"\x06Unroll\x12\x16.waverpc.UnrollRequest\x1a\x17.waverpc.UnrollResponse\x12T\n" +
+	"\x0fGetUnrollStatus\x12\x1f.waverpc.GetUnrollStatusRequest\x1a .waverpc.GetUnrollStatusResponse\x12W\n" +
+	"\x10ArmVHTLCRecovery\x12 .waverpc.ArmVHTLCRecoveryRequest\x1a!.waverpc.ArmVHTLCRecoveryResponse\x12f\n" +
+	"\x15EscalateVHTLCRecovery\x12%.waverpc.EscalateVHTLCRecoveryRequest\x1a&.waverpc.EscalateVHTLCRecoveryResponse\x12`\n" +
+	"\x13CancelVHTLCRecovery\x12#.waverpc.CancelVHTLCRecoveryRequest\x1a$.waverpc.CancelVHTLCRecoveryResponse\x12i\n" +
+	"\x16GetVHTLCRecoveryStatus\x12&.waverpc.GetVHTLCRecoveryStatusRequest\x1a'.waverpc.GetVHTLCRecoveryStatusResponse\x12`\n" +
+	"\x13ListVHTLCRecoveries\x12#.waverpc.ListVHTLCRecoveriesRequest\x1a$.waverpc.ListVHTLCRecoveriesResponseB-Z+github.com/lightninglabs/wavelength/waverpcb\x06proto3"
 
 var (
 	file_daemon_proto_rawDescOnce sync.Once
@@ -10711,294 +10711,294 @@ func file_daemon_proto_rawDescGZIP() []byte {
 var file_daemon_proto_enumTypes = make([]protoimpl.EnumInfo, 11)
 var file_daemon_proto_msgTypes = make([]protoimpl.MessageInfo, 118)
 var file_daemon_proto_goTypes = []any{
-	(WalletState)(0),                                               // 0: daemonrpc.WalletState
-	(VTXOStatus)(0),                                                // 1: daemonrpc.VTXOStatus
-	(VTXOExpiryStatus)(0),                                          // 2: daemonrpc.VTXOExpiryStatus
-	(ForfeitSigningRoute)(0),                                       // 3: daemonrpc.ForfeitSigningRoute
-	(RoundState)(0),                                                // 4: daemonrpc.RoundState
-	(OORSessionDirection)(0),                                       // 5: daemonrpc.OORSessionDirection
-	(OORSessionStatus)(0),                                          // 6: daemonrpc.OORSessionStatus
-	(UnrollJobStatus)(0),                                           // 7: daemonrpc.UnrollJobStatus
-	(VHTLCRecoveryDirection)(0),                                    // 8: daemonrpc.VHTLCRecoveryDirection
-	(VHTLCRecoveryAction)(0),                                       // 9: daemonrpc.VHTLCRecoveryAction
-	(VHTLCRecoveryState)(0),                                        // 10: daemonrpc.VHTLCRecoveryState
-	(*GetInfoRequest)(nil),                                         // 11: daemonrpc.GetInfoRequest
-	(*GetInfoResponse)(nil),                                        // 12: daemonrpc.GetInfoResponse
-	(*ServerInfo)(nil),                                             // 13: daemonrpc.ServerInfo
-	(*GenSeedRequest)(nil),                                         // 14: daemonrpc.GenSeedRequest
-	(*GenSeedResponse)(nil),                                        // 15: daemonrpc.GenSeedResponse
-	(*InitWalletRequest)(nil),                                      // 16: daemonrpc.InitWalletRequest
-	(*InitWalletResponse)(nil),                                     // 17: daemonrpc.InitWalletResponse
-	(*UnlockWalletRequest)(nil),                                    // 18: daemonrpc.UnlockWalletRequest
-	(*UnlockWalletResponse)(nil),                                   // 19: daemonrpc.UnlockWalletResponse
-	(*GetBalanceRequest)(nil),                                      // 20: daemonrpc.GetBalanceRequest
-	(*GetBalanceResponse)(nil),                                     // 21: daemonrpc.GetBalanceResponse
-	(*VTXOExpiryInfo)(nil),                                         // 22: daemonrpc.VTXOExpiryInfo
-	(*VTXO)(nil),                                                   // 23: daemonrpc.VTXO
-	(*VTXOSettlement)(nil),                                         // 24: daemonrpc.VTXOSettlement
-	(*ListVTXOsRequest)(nil),                                       // 25: daemonrpc.ListVTXOsRequest
-	(*ListVTXOsResponse)(nil),                                      // 26: daemonrpc.ListVTXOsResponse
-	(*NewAddressRequest)(nil),                                      // 27: daemonrpc.NewAddressRequest
-	(*NewAddressResponse)(nil),                                     // 28: daemonrpc.NewAddressResponse
-	(*NewReceiveScriptRequest)(nil),                                // 29: daemonrpc.NewReceiveScriptRequest
-	(*NewReceiveScriptResponse)(nil),                               // 30: daemonrpc.NewReceiveScriptResponse
-	(*ReceiveAuthKeyRequest)(nil),                                  // 31: daemonrpc.ReceiveAuthKeyRequest
-	(*ReceiveAuthKeyResponse)(nil),                                 // 32: daemonrpc.ReceiveAuthKeyResponse
-	(*SignReceiveAuthMessageRequest)(nil),                          // 33: daemonrpc.SignReceiveAuthMessageRequest
-	(*SignReceiveAuthMessageResponse)(nil),                         // 34: daemonrpc.SignReceiveAuthMessageResponse
-	(*SignReceiveAuthMessageCompactRequest)(nil),                   // 35: daemonrpc.SignReceiveAuthMessageCompactRequest
-	(*SignReceiveAuthMessageCompactResponse)(nil),                  // 36: daemonrpc.SignReceiveAuthMessageCompactResponse
-	(*ReceiveAuthECDHRequest)(nil),                                 // 37: daemonrpc.ReceiveAuthECDHRequest
-	(*ReceiveAuthECDHResponse)(nil),                                // 38: daemonrpc.ReceiveAuthECDHResponse
-	(*GetIndexedVTXOByPkScriptRequest)(nil),                        // 39: daemonrpc.GetIndexedVTXOByPkScriptRequest
-	(*GetIndexedVTXOByPkScriptResponse)(nil),                       // 40: daemonrpc.GetIndexedVTXOByPkScriptResponse
-	(*GetVTXOExpiryInfoRequest)(nil),                               // 41: daemonrpc.GetVTXOExpiryInfoRequest
-	(*GetVTXOExpiryInfoResponse)(nil),                              // 42: daemonrpc.GetVTXOExpiryInfoResponse
-	(*GetIndexedOORSessionByTxidRequest)(nil),                      // 43: daemonrpc.GetIndexedOORSessionByTxidRequest
-	(*GetIndexedOORSessionByTxidResponse)(nil),                     // 44: daemonrpc.GetIndexedOORSessionByTxidResponse
-	(*Output)(nil),                                                 // 45: daemonrpc.Output
-	(*SendVTXORequest)(nil),                                        // 46: daemonrpc.SendVTXORequest
-	(*SendVTXOResponse)(nil),                                       // 47: daemonrpc.SendVTXOResponse
-	(*SendOORRequest)(nil),                                         // 48: daemonrpc.SendOORRequest
-	(*CustomOORInput)(nil),                                         // 49: daemonrpc.CustomOORInput
-	(*TaprootScriptSignature)(nil),                                 // 50: daemonrpc.TaprootScriptSignature
-	(*SendOORResponse)(nil),                                        // 51: daemonrpc.SendOORResponse
-	(*PrepareOORRequest)(nil),                                      // 52: daemonrpc.PrepareOORRequest
-	(*PreparedOORCustomInput)(nil),                                 // 53: daemonrpc.PreparedOORCustomInput
-	(*PrepareOORResponse)(nil),                                     // 54: daemonrpc.PrepareOORResponse
-	(*SignOORCustomInputRequest)(nil),                              // 55: daemonrpc.SignOORCustomInputRequest
-	(*SignOORCustomInputResponse)(nil),                             // 56: daemonrpc.SignOORCustomInputResponse
-	(*SignVTXOForfeitRequest)(nil),                                 // 57: daemonrpc.SignVTXOForfeitRequest
-	(*SignVTXOForfeitResponse)(nil),                                // 58: daemonrpc.SignVTXOForfeitResponse
-	(*ForfeitSigningContext)(nil),                                  // 59: daemonrpc.ForfeitSigningContext
-	(*OutpointSelection)(nil),                                      // 60: daemonrpc.OutpointSelection
-	(*RefreshVTXOsRequest)(nil),                                    // 61: daemonrpc.RefreshVTXOsRequest
-	(*RefreshVTXOsResponse)(nil),                                   // 62: daemonrpc.RefreshVTXOsResponse
-	(*CustomRefreshVTXOInput)(nil),                                 // 63: daemonrpc.CustomRefreshVTXOInput
-	(*CustomRefreshVTXOOutput)(nil),                                // 64: daemonrpc.CustomRefreshVTXOOutput
-	(*RefreshCustomVTXOsRequest)(nil),                              // 65: daemonrpc.RefreshCustomVTXOsRequest
-	(*RefreshCustomVTXOsResponse)(nil),                             // 66: daemonrpc.RefreshCustomVTXOsResponse
-	(*PendingForfeitParticipantSignatureRequest)(nil),              // 67: daemonrpc.PendingForfeitParticipantSignatureRequest
-	(*ListPendingForfeitParticipantSignatureRequestsRequest)(nil),  // 68: daemonrpc.ListPendingForfeitParticipantSignatureRequestsRequest
-	(*ListPendingForfeitParticipantSignatureRequestsResponse)(nil), // 69: daemonrpc.ListPendingForfeitParticipantSignatureRequestsResponse
-	(*ForfeitParticipantSignature)(nil),                            // 70: daemonrpc.ForfeitParticipantSignature
-	(*SubmitForfeitParticipantSignaturesRequest)(nil),              // 71: daemonrpc.SubmitForfeitParticipantSignaturesRequest
-	(*SubmitForfeitParticipantSignaturesResponse)(nil),             // 72: daemonrpc.SubmitForfeitParticipantSignaturesResponse
-	(*LeaveDestination)(nil),                                       // 73: daemonrpc.LeaveDestination
-	(*LeaveVTXOsRequest)(nil),                                      // 74: daemonrpc.LeaveVTXOsRequest
-	(*LeaveVTXOsResponse)(nil),                                     // 75: daemonrpc.LeaveVTXOsResponse
-	(*SendOnChainRequest)(nil),                                     // 76: daemonrpc.SendOnChainRequest
-	(*SendOnChainResponse)(nil),                                    // 77: daemonrpc.SendOnChainResponse
-	(*BoardRequest)(nil),                                           // 78: daemonrpc.BoardRequest
-	(*BoardResponse)(nil),                                          // 79: daemonrpc.BoardResponse
-	(*JoinNextRoundRequest)(nil),                                   // 80: daemonrpc.JoinNextRoundRequest
-	(*JoinNextRoundResponse)(nil),                                  // 81: daemonrpc.JoinNextRoundResponse
-	(*SweepBoardingUTXOsRequest)(nil),                              // 82: daemonrpc.SweepBoardingUTXOsRequest
-	(*BoardingSweepOutput)(nil),                                    // 83: daemonrpc.BoardingSweepOutput
-	(*SweepBoardingUTXOsResponse)(nil),                             // 84: daemonrpc.SweepBoardingUTXOsResponse
-	(*ListBoardingSweepsRequest)(nil),                              // 85: daemonrpc.ListBoardingSweepsRequest
-	(*BoardingSweepInput)(nil),                                     // 86: daemonrpc.BoardingSweepInput
-	(*BoardingSweep)(nil),                                          // 87: daemonrpc.BoardingSweep
-	(*ListBoardingSweepsResponse)(nil),                             // 88: daemonrpc.ListBoardingSweepsResponse
-	(*RoundVTXOInfo)(nil),                                          // 89: daemonrpc.RoundVTXOInfo
-	(*RoundInfo)(nil),                                              // 90: daemonrpc.RoundInfo
-	(*ListRoundsRequest)(nil),                                      // 91: daemonrpc.ListRoundsRequest
-	(*GetRoundRequest)(nil),                                        // 92: daemonrpc.GetRoundRequest
-	(*GetRoundResponse)(nil),                                       // 93: daemonrpc.GetRoundResponse
-	(*ListRoundsResponse)(nil),                                     // 94: daemonrpc.ListRoundsResponse
-	(*WatchRoundsRequest)(nil),                                     // 95: daemonrpc.WatchRoundsRequest
-	(*WatchRoundsResponse)(nil),                                    // 96: daemonrpc.WatchRoundsResponse
-	(*OORSessionInfo)(nil),                                         // 97: daemonrpc.OORSessionInfo
-	(*ListOORSessionsRequest)(nil),                                 // 98: daemonrpc.ListOORSessionsRequest
-	(*ListOORSessionsResponse)(nil),                                // 99: daemonrpc.ListOORSessionsResponse
-	(*GetOORSessionRequest)(nil),                                   // 100: daemonrpc.GetOORSessionRequest
-	(*GetOORSessionResponse)(nil),                                  // 101: daemonrpc.GetOORSessionResponse
-	(*EstimateFeeRequest)(nil),                                     // 102: daemonrpc.EstimateFeeRequest
-	(*EstimateFeeResponse)(nil),                                    // 103: daemonrpc.EstimateFeeResponse
-	(*GetFeeHistoryRequest)(nil),                                   // 104: daemonrpc.GetFeeHistoryRequest
-	(*FeeHistoryEntry)(nil),                                        // 105: daemonrpc.FeeHistoryEntry
-	(*GetFeeHistoryResponse)(nil),                                  // 106: daemonrpc.GetFeeHistoryResponse
-	(*ListTransactionsRequest)(nil),                                // 107: daemonrpc.ListTransactionsRequest
-	(*TransactionHistoryEntry)(nil),                                // 108: daemonrpc.TransactionHistoryEntry
-	(*ListTransactionsResponse)(nil),                               // 109: daemonrpc.ListTransactionsResponse
-	(*UnrollRequest)(nil),                                          // 110: daemonrpc.UnrollRequest
-	(*UnrollResponse)(nil),                                         // 111: daemonrpc.UnrollResponse
-	(*GetUnrollStatusRequest)(nil),                                 // 112: daemonrpc.GetUnrollStatusRequest
-	(*UnrollProgress)(nil),                                         // 113: daemonrpc.UnrollProgress
-	(*UnrollCSV)(nil),                                              // 114: daemonrpc.UnrollCSV
-	(*UnrollFees)(nil),                                             // 115: daemonrpc.UnrollFees
-	(*GetUnrollStatusResponse)(nil),                                // 116: daemonrpc.GetUnrollStatusResponse
-	(*ArmVHTLCRecoveryRequest)(nil),                                // 117: daemonrpc.ArmVHTLCRecoveryRequest
-	(*ArmVHTLCRecoveryResponse)(nil),                               // 118: daemonrpc.ArmVHTLCRecoveryResponse
-	(*EscalateVHTLCRecoveryRequest)(nil),                           // 119: daemonrpc.EscalateVHTLCRecoveryRequest
-	(*EscalateVHTLCRecoveryResponse)(nil),                          // 120: daemonrpc.EscalateVHTLCRecoveryResponse
-	(*CancelVHTLCRecoveryRequest)(nil),                             // 121: daemonrpc.CancelVHTLCRecoveryRequest
-	(*CancelVHTLCRecoveryResponse)(nil),                            // 122: daemonrpc.CancelVHTLCRecoveryResponse
-	(*GetVHTLCRecoveryStatusRequest)(nil),                          // 123: daemonrpc.GetVHTLCRecoveryStatusRequest
-	(*GetVHTLCRecoveryStatusResponse)(nil),                         // 124: daemonrpc.GetVHTLCRecoveryStatusResponse
-	(*ListVHTLCRecoveriesRequest)(nil),                             // 125: daemonrpc.ListVHTLCRecoveriesRequest
-	(*ListVHTLCRecoveriesResponse)(nil),                            // 126: daemonrpc.ListVHTLCRecoveriesResponse
-	(*VHTLCRecoveryStatus)(nil),                                    // 127: daemonrpc.VHTLCRecoveryStatus
-	nil,                                                            // 128: daemonrpc.LeaveVTXOsRequest.DestinationsEntry
+	(WalletState)(0),                                               // 0: waverpc.WalletState
+	(VTXOStatus)(0),                                                // 1: waverpc.VTXOStatus
+	(VTXOExpiryStatus)(0),                                          // 2: waverpc.VTXOExpiryStatus
+	(ForfeitSigningRoute)(0),                                       // 3: waverpc.ForfeitSigningRoute
+	(RoundState)(0),                                                // 4: waverpc.RoundState
+	(OORSessionDirection)(0),                                       // 5: waverpc.OORSessionDirection
+	(OORSessionStatus)(0),                                          // 6: waverpc.OORSessionStatus
+	(UnrollJobStatus)(0),                                           // 7: waverpc.UnrollJobStatus
+	(VHTLCRecoveryDirection)(0),                                    // 8: waverpc.VHTLCRecoveryDirection
+	(VHTLCRecoveryAction)(0),                                       // 9: waverpc.VHTLCRecoveryAction
+	(VHTLCRecoveryState)(0),                                        // 10: waverpc.VHTLCRecoveryState
+	(*GetInfoRequest)(nil),                                         // 11: waverpc.GetInfoRequest
+	(*GetInfoResponse)(nil),                                        // 12: waverpc.GetInfoResponse
+	(*ServerInfo)(nil),                                             // 13: waverpc.ServerInfo
+	(*GenSeedRequest)(nil),                                         // 14: waverpc.GenSeedRequest
+	(*GenSeedResponse)(nil),                                        // 15: waverpc.GenSeedResponse
+	(*InitWalletRequest)(nil),                                      // 16: waverpc.InitWalletRequest
+	(*InitWalletResponse)(nil),                                     // 17: waverpc.InitWalletResponse
+	(*UnlockWalletRequest)(nil),                                    // 18: waverpc.UnlockWalletRequest
+	(*UnlockWalletResponse)(nil),                                   // 19: waverpc.UnlockWalletResponse
+	(*GetBalanceRequest)(nil),                                      // 20: waverpc.GetBalanceRequest
+	(*GetBalanceResponse)(nil),                                     // 21: waverpc.GetBalanceResponse
+	(*VTXOExpiryInfo)(nil),                                         // 22: waverpc.VTXOExpiryInfo
+	(*VTXO)(nil),                                                   // 23: waverpc.VTXO
+	(*VTXOSettlement)(nil),                                         // 24: waverpc.VTXOSettlement
+	(*ListVTXOsRequest)(nil),                                       // 25: waverpc.ListVTXOsRequest
+	(*ListVTXOsResponse)(nil),                                      // 26: waverpc.ListVTXOsResponse
+	(*NewAddressRequest)(nil),                                      // 27: waverpc.NewAddressRequest
+	(*NewAddressResponse)(nil),                                     // 28: waverpc.NewAddressResponse
+	(*NewReceiveScriptRequest)(nil),                                // 29: waverpc.NewReceiveScriptRequest
+	(*NewReceiveScriptResponse)(nil),                               // 30: waverpc.NewReceiveScriptResponse
+	(*ReceiveAuthKeyRequest)(nil),                                  // 31: waverpc.ReceiveAuthKeyRequest
+	(*ReceiveAuthKeyResponse)(nil),                                 // 32: waverpc.ReceiveAuthKeyResponse
+	(*SignReceiveAuthMessageRequest)(nil),                          // 33: waverpc.SignReceiveAuthMessageRequest
+	(*SignReceiveAuthMessageResponse)(nil),                         // 34: waverpc.SignReceiveAuthMessageResponse
+	(*SignReceiveAuthMessageCompactRequest)(nil),                   // 35: waverpc.SignReceiveAuthMessageCompactRequest
+	(*SignReceiveAuthMessageCompactResponse)(nil),                  // 36: waverpc.SignReceiveAuthMessageCompactResponse
+	(*ReceiveAuthECDHRequest)(nil),                                 // 37: waverpc.ReceiveAuthECDHRequest
+	(*ReceiveAuthECDHResponse)(nil),                                // 38: waverpc.ReceiveAuthECDHResponse
+	(*GetIndexedVTXOByPkScriptRequest)(nil),                        // 39: waverpc.GetIndexedVTXOByPkScriptRequest
+	(*GetIndexedVTXOByPkScriptResponse)(nil),                       // 40: waverpc.GetIndexedVTXOByPkScriptResponse
+	(*GetVTXOExpiryInfoRequest)(nil),                               // 41: waverpc.GetVTXOExpiryInfoRequest
+	(*GetVTXOExpiryInfoResponse)(nil),                              // 42: waverpc.GetVTXOExpiryInfoResponse
+	(*GetIndexedOORSessionByTxidRequest)(nil),                      // 43: waverpc.GetIndexedOORSessionByTxidRequest
+	(*GetIndexedOORSessionByTxidResponse)(nil),                     // 44: waverpc.GetIndexedOORSessionByTxidResponse
+	(*Output)(nil),                                                 // 45: waverpc.Output
+	(*SendVTXORequest)(nil),                                        // 46: waverpc.SendVTXORequest
+	(*SendVTXOResponse)(nil),                                       // 47: waverpc.SendVTXOResponse
+	(*SendOORRequest)(nil),                                         // 48: waverpc.SendOORRequest
+	(*CustomOORInput)(nil),                                         // 49: waverpc.CustomOORInput
+	(*TaprootScriptSignature)(nil),                                 // 50: waverpc.TaprootScriptSignature
+	(*SendOORResponse)(nil),                                        // 51: waverpc.SendOORResponse
+	(*PrepareOORRequest)(nil),                                      // 52: waverpc.PrepareOORRequest
+	(*PreparedOORCustomInput)(nil),                                 // 53: waverpc.PreparedOORCustomInput
+	(*PrepareOORResponse)(nil),                                     // 54: waverpc.PrepareOORResponse
+	(*SignOORCustomInputRequest)(nil),                              // 55: waverpc.SignOORCustomInputRequest
+	(*SignOORCustomInputResponse)(nil),                             // 56: waverpc.SignOORCustomInputResponse
+	(*SignVTXOForfeitRequest)(nil),                                 // 57: waverpc.SignVTXOForfeitRequest
+	(*SignVTXOForfeitResponse)(nil),                                // 58: waverpc.SignVTXOForfeitResponse
+	(*ForfeitSigningContext)(nil),                                  // 59: waverpc.ForfeitSigningContext
+	(*OutpointSelection)(nil),                                      // 60: waverpc.OutpointSelection
+	(*RefreshVTXOsRequest)(nil),                                    // 61: waverpc.RefreshVTXOsRequest
+	(*RefreshVTXOsResponse)(nil),                                   // 62: waverpc.RefreshVTXOsResponse
+	(*CustomRefreshVTXOInput)(nil),                                 // 63: waverpc.CustomRefreshVTXOInput
+	(*CustomRefreshVTXOOutput)(nil),                                // 64: waverpc.CustomRefreshVTXOOutput
+	(*RefreshCustomVTXOsRequest)(nil),                              // 65: waverpc.RefreshCustomVTXOsRequest
+	(*RefreshCustomVTXOsResponse)(nil),                             // 66: waverpc.RefreshCustomVTXOsResponse
+	(*PendingForfeitParticipantSignatureRequest)(nil),              // 67: waverpc.PendingForfeitParticipantSignatureRequest
+	(*ListPendingForfeitParticipantSignatureRequestsRequest)(nil),  // 68: waverpc.ListPendingForfeitParticipantSignatureRequestsRequest
+	(*ListPendingForfeitParticipantSignatureRequestsResponse)(nil), // 69: waverpc.ListPendingForfeitParticipantSignatureRequestsResponse
+	(*ForfeitParticipantSignature)(nil),                            // 70: waverpc.ForfeitParticipantSignature
+	(*SubmitForfeitParticipantSignaturesRequest)(nil),              // 71: waverpc.SubmitForfeitParticipantSignaturesRequest
+	(*SubmitForfeitParticipantSignaturesResponse)(nil),             // 72: waverpc.SubmitForfeitParticipantSignaturesResponse
+	(*LeaveDestination)(nil),                                       // 73: waverpc.LeaveDestination
+	(*LeaveVTXOsRequest)(nil),                                      // 74: waverpc.LeaveVTXOsRequest
+	(*LeaveVTXOsResponse)(nil),                                     // 75: waverpc.LeaveVTXOsResponse
+	(*SendOnChainRequest)(nil),                                     // 76: waverpc.SendOnChainRequest
+	(*SendOnChainResponse)(nil),                                    // 77: waverpc.SendOnChainResponse
+	(*BoardRequest)(nil),                                           // 78: waverpc.BoardRequest
+	(*BoardResponse)(nil),                                          // 79: waverpc.BoardResponse
+	(*JoinNextRoundRequest)(nil),                                   // 80: waverpc.JoinNextRoundRequest
+	(*JoinNextRoundResponse)(nil),                                  // 81: waverpc.JoinNextRoundResponse
+	(*SweepBoardingUTXOsRequest)(nil),                              // 82: waverpc.SweepBoardingUTXOsRequest
+	(*BoardingSweepOutput)(nil),                                    // 83: waverpc.BoardingSweepOutput
+	(*SweepBoardingUTXOsResponse)(nil),                             // 84: waverpc.SweepBoardingUTXOsResponse
+	(*ListBoardingSweepsRequest)(nil),                              // 85: waverpc.ListBoardingSweepsRequest
+	(*BoardingSweepInput)(nil),                                     // 86: waverpc.BoardingSweepInput
+	(*BoardingSweep)(nil),                                          // 87: waverpc.BoardingSweep
+	(*ListBoardingSweepsResponse)(nil),                             // 88: waverpc.ListBoardingSweepsResponse
+	(*RoundVTXOInfo)(nil),                                          // 89: waverpc.RoundVTXOInfo
+	(*RoundInfo)(nil),                                              // 90: waverpc.RoundInfo
+	(*ListRoundsRequest)(nil),                                      // 91: waverpc.ListRoundsRequest
+	(*GetRoundRequest)(nil),                                        // 92: waverpc.GetRoundRequest
+	(*GetRoundResponse)(nil),                                       // 93: waverpc.GetRoundResponse
+	(*ListRoundsResponse)(nil),                                     // 94: waverpc.ListRoundsResponse
+	(*WatchRoundsRequest)(nil),                                     // 95: waverpc.WatchRoundsRequest
+	(*WatchRoundsResponse)(nil),                                    // 96: waverpc.WatchRoundsResponse
+	(*OORSessionInfo)(nil),                                         // 97: waverpc.OORSessionInfo
+	(*ListOORSessionsRequest)(nil),                                 // 98: waverpc.ListOORSessionsRequest
+	(*ListOORSessionsResponse)(nil),                                // 99: waverpc.ListOORSessionsResponse
+	(*GetOORSessionRequest)(nil),                                   // 100: waverpc.GetOORSessionRequest
+	(*GetOORSessionResponse)(nil),                                  // 101: waverpc.GetOORSessionResponse
+	(*EstimateFeeRequest)(nil),                                     // 102: waverpc.EstimateFeeRequest
+	(*EstimateFeeResponse)(nil),                                    // 103: waverpc.EstimateFeeResponse
+	(*GetFeeHistoryRequest)(nil),                                   // 104: waverpc.GetFeeHistoryRequest
+	(*FeeHistoryEntry)(nil),                                        // 105: waverpc.FeeHistoryEntry
+	(*GetFeeHistoryResponse)(nil),                                  // 106: waverpc.GetFeeHistoryResponse
+	(*ListTransactionsRequest)(nil),                                // 107: waverpc.ListTransactionsRequest
+	(*TransactionHistoryEntry)(nil),                                // 108: waverpc.TransactionHistoryEntry
+	(*ListTransactionsResponse)(nil),                               // 109: waverpc.ListTransactionsResponse
+	(*UnrollRequest)(nil),                                          // 110: waverpc.UnrollRequest
+	(*UnrollResponse)(nil),                                         // 111: waverpc.UnrollResponse
+	(*GetUnrollStatusRequest)(nil),                                 // 112: waverpc.GetUnrollStatusRequest
+	(*UnrollProgress)(nil),                                         // 113: waverpc.UnrollProgress
+	(*UnrollCSV)(nil),                                              // 114: waverpc.UnrollCSV
+	(*UnrollFees)(nil),                                             // 115: waverpc.UnrollFees
+	(*GetUnrollStatusResponse)(nil),                                // 116: waverpc.GetUnrollStatusResponse
+	(*ArmVHTLCRecoveryRequest)(nil),                                // 117: waverpc.ArmVHTLCRecoveryRequest
+	(*ArmVHTLCRecoveryResponse)(nil),                               // 118: waverpc.ArmVHTLCRecoveryResponse
+	(*EscalateVHTLCRecoveryRequest)(nil),                           // 119: waverpc.EscalateVHTLCRecoveryRequest
+	(*EscalateVHTLCRecoveryResponse)(nil),                          // 120: waverpc.EscalateVHTLCRecoveryResponse
+	(*CancelVHTLCRecoveryRequest)(nil),                             // 121: waverpc.CancelVHTLCRecoveryRequest
+	(*CancelVHTLCRecoveryResponse)(nil),                            // 122: waverpc.CancelVHTLCRecoveryResponse
+	(*GetVHTLCRecoveryStatusRequest)(nil),                          // 123: waverpc.GetVHTLCRecoveryStatusRequest
+	(*GetVHTLCRecoveryStatusResponse)(nil),                         // 124: waverpc.GetVHTLCRecoveryStatusResponse
+	(*ListVHTLCRecoveriesRequest)(nil),                             // 125: waverpc.ListVHTLCRecoveriesRequest
+	(*ListVHTLCRecoveriesResponse)(nil),                            // 126: waverpc.ListVHTLCRecoveriesResponse
+	(*VHTLCRecoveryStatus)(nil),                                    // 127: waverpc.VHTLCRecoveryStatus
+	nil,                                                            // 128: waverpc.LeaveVTXOsRequest.DestinationsEntry
 }
 var file_daemon_proto_depIdxs = []int32{
-	0,   // 0: daemonrpc.GetInfoResponse.wallet_state:type_name -> daemonrpc.WalletState
-	13,  // 1: daemonrpc.GetInfoResponse.server_info:type_name -> daemonrpc.ServerInfo
-	2,   // 2: daemonrpc.VTXOExpiryInfo.status:type_name -> daemonrpc.VTXOExpiryStatus
-	1,   // 3: daemonrpc.VTXO.status:type_name -> daemonrpc.VTXOStatus
-	22,  // 4: daemonrpc.VTXO.expiry_info:type_name -> daemonrpc.VTXOExpiryInfo
-	24,  // 5: daemonrpc.VTXO.settlement:type_name -> daemonrpc.VTXOSettlement
-	1,   // 6: daemonrpc.ListVTXOsRequest.status_filter:type_name -> daemonrpc.VTXOStatus
-	23,  // 7: daemonrpc.ListVTXOsResponse.vtxos:type_name -> daemonrpc.VTXO
-	1,   // 8: daemonrpc.GetIndexedVTXOByPkScriptRequest.status_filter:type_name -> daemonrpc.VTXOStatus
-	23,  // 9: daemonrpc.GetIndexedVTXOByPkScriptResponse.vtxo:type_name -> daemonrpc.VTXO
-	1,   // 10: daemonrpc.GetVTXOExpiryInfoRequest.status_filter:type_name -> daemonrpc.VTXOStatus
-	22,  // 11: daemonrpc.GetVTXOExpiryInfoResponse.expiry_info:type_name -> daemonrpc.VTXOExpiryInfo
-	23,  // 12: daemonrpc.GetVTXOExpiryInfoResponse.vtxo:type_name -> daemonrpc.VTXO
-	45,  // 13: daemonrpc.SendVTXORequest.recipients:type_name -> daemonrpc.Output
-	45,  // 14: daemonrpc.SendOORRequest.recipients:type_name -> daemonrpc.Output
-	49,  // 15: daemonrpc.SendOORRequest.custom_inputs:type_name -> daemonrpc.CustomOORInput
-	50,  // 16: daemonrpc.CustomOORInput.external_signatures:type_name -> daemonrpc.TaprootScriptSignature
-	45,  // 17: daemonrpc.PrepareOORRequest.recipient:type_name -> daemonrpc.Output
-	49,  // 18: daemonrpc.PrepareOORRequest.custom_inputs:type_name -> daemonrpc.CustomOORInput
-	53,  // 19: daemonrpc.PrepareOORResponse.custom_inputs:type_name -> daemonrpc.PreparedOORCustomInput
-	49,  // 20: daemonrpc.SignOORCustomInputRequest.custom_input:type_name -> daemonrpc.CustomOORInput
-	50,  // 21: daemonrpc.SignOORCustomInputResponse.signature:type_name -> daemonrpc.TaprootScriptSignature
-	3,   // 22: daemonrpc.ForfeitSigningContext.signing_route:type_name -> daemonrpc.ForfeitSigningRoute
-	60,  // 23: daemonrpc.RefreshVTXOsRequest.outpoints:type_name -> daemonrpc.OutpointSelection
-	59,  // 24: daemonrpc.CustomRefreshVTXOInput.forfeit_signing_context:type_name -> daemonrpc.ForfeitSigningContext
-	63,  // 25: daemonrpc.RefreshCustomVTXOsRequest.inputs:type_name -> daemonrpc.CustomRefreshVTXOInput
-	64,  // 26: daemonrpc.RefreshCustomVTXOsRequest.outputs:type_name -> daemonrpc.CustomRefreshVTXOOutput
-	3,   // 27: daemonrpc.PendingForfeitParticipantSignatureRequest.signing_route:type_name -> daemonrpc.ForfeitSigningRoute
-	67,  // 28: daemonrpc.ListPendingForfeitParticipantSignatureRequestsResponse.requests:type_name -> daemonrpc.PendingForfeitParticipantSignatureRequest
-	70,  // 29: daemonrpc.SubmitForfeitParticipantSignaturesRequest.signatures:type_name -> daemonrpc.ForfeitParticipantSignature
-	60,  // 30: daemonrpc.LeaveVTXOsRequest.outpoints:type_name -> daemonrpc.OutpointSelection
-	73,  // 31: daemonrpc.LeaveVTXOsRequest.default_destination:type_name -> daemonrpc.LeaveDestination
-	128, // 32: daemonrpc.LeaveVTXOsRequest.destinations:type_name -> daemonrpc.LeaveVTXOsRequest.DestinationsEntry
-	73,  // 33: daemonrpc.SendOnChainRequest.destination:type_name -> daemonrpc.LeaveDestination
-	83,  // 34: daemonrpc.SweepBoardingUTXOsResponse.sweepable_outputs:type_name -> daemonrpc.BoardingSweepOutput
-	86,  // 35: daemonrpc.BoardingSweep.inputs:type_name -> daemonrpc.BoardingSweepInput
-	87,  // 36: daemonrpc.ListBoardingSweepsResponse.sweeps:type_name -> daemonrpc.BoardingSweep
-	4,   // 37: daemonrpc.RoundInfo.state:type_name -> daemonrpc.RoundState
-	89,  // 38: daemonrpc.RoundInfo.vtxos:type_name -> daemonrpc.RoundVTXOInfo
-	4,   // 39: daemonrpc.ListRoundsRequest.state_filter:type_name -> daemonrpc.RoundState
-	90,  // 40: daemonrpc.GetRoundResponse.round:type_name -> daemonrpc.RoundInfo
-	90,  // 41: daemonrpc.ListRoundsResponse.rounds:type_name -> daemonrpc.RoundInfo
-	90,  // 42: daemonrpc.WatchRoundsResponse.round:type_name -> daemonrpc.RoundInfo
-	5,   // 43: daemonrpc.OORSessionInfo.direction:type_name -> daemonrpc.OORSessionDirection
-	6,   // 44: daemonrpc.OORSessionInfo.status:type_name -> daemonrpc.OORSessionStatus
-	5,   // 45: daemonrpc.ListOORSessionsRequest.direction_filter:type_name -> daemonrpc.OORSessionDirection
-	6,   // 46: daemonrpc.ListOORSessionsRequest.status_filter:type_name -> daemonrpc.OORSessionStatus
-	97,  // 47: daemonrpc.ListOORSessionsResponse.sessions:type_name -> daemonrpc.OORSessionInfo
-	97,  // 48: daemonrpc.GetOORSessionResponse.session:type_name -> daemonrpc.OORSessionInfo
-	105, // 49: daemonrpc.GetFeeHistoryResponse.entries:type_name -> daemonrpc.FeeHistoryEntry
-	108, // 50: daemonrpc.ListTransactionsResponse.transactions:type_name -> daemonrpc.TransactionHistoryEntry
-	7,   // 51: daemonrpc.GetUnrollStatusResponse.status:type_name -> daemonrpc.UnrollJobStatus
-	113, // 52: daemonrpc.GetUnrollStatusResponse.progress:type_name -> daemonrpc.UnrollProgress
-	114, // 53: daemonrpc.GetUnrollStatusResponse.csv:type_name -> daemonrpc.UnrollCSV
-	115, // 54: daemonrpc.GetUnrollStatusResponse.fees:type_name -> daemonrpc.UnrollFees
-	8,   // 55: daemonrpc.ArmVHTLCRecoveryRequest.direction:type_name -> daemonrpc.VHTLCRecoveryDirection
-	9,   // 56: daemonrpc.ArmVHTLCRecoveryRequest.action:type_name -> daemonrpc.VHTLCRecoveryAction
-	127, // 57: daemonrpc.ArmVHTLCRecoveryResponse.status:type_name -> daemonrpc.VHTLCRecoveryStatus
-	127, // 58: daemonrpc.EscalateVHTLCRecoveryResponse.status:type_name -> daemonrpc.VHTLCRecoveryStatus
-	127, // 59: daemonrpc.CancelVHTLCRecoveryResponse.status:type_name -> daemonrpc.VHTLCRecoveryStatus
-	127, // 60: daemonrpc.GetVHTLCRecoveryStatusResponse.status:type_name -> daemonrpc.VHTLCRecoveryStatus
-	127, // 61: daemonrpc.ListVHTLCRecoveriesResponse.statuses:type_name -> daemonrpc.VHTLCRecoveryStatus
-	8,   // 62: daemonrpc.VHTLCRecoveryStatus.direction:type_name -> daemonrpc.VHTLCRecoveryDirection
-	9,   // 63: daemonrpc.VHTLCRecoveryStatus.action:type_name -> daemonrpc.VHTLCRecoveryAction
-	10,  // 64: daemonrpc.VHTLCRecoveryStatus.state:type_name -> daemonrpc.VHTLCRecoveryState
-	7,   // 65: daemonrpc.VHTLCRecoveryStatus.unroll_status:type_name -> daemonrpc.UnrollJobStatus
-	73,  // 66: daemonrpc.LeaveVTXOsRequest.DestinationsEntry.value:type_name -> daemonrpc.LeaveDestination
-	11,  // 67: daemonrpc.DaemonService.GetInfo:input_type -> daemonrpc.GetInfoRequest
-	14,  // 68: daemonrpc.DaemonService.GenSeed:input_type -> daemonrpc.GenSeedRequest
-	16,  // 69: daemonrpc.DaemonService.InitWallet:input_type -> daemonrpc.InitWalletRequest
-	18,  // 70: daemonrpc.DaemonService.UnlockWallet:input_type -> daemonrpc.UnlockWalletRequest
-	20,  // 71: daemonrpc.DaemonService.GetBalance:input_type -> daemonrpc.GetBalanceRequest
-	25,  // 72: daemonrpc.DaemonService.ListVTXOs:input_type -> daemonrpc.ListVTXOsRequest
-	27,  // 73: daemonrpc.DaemonService.NewAddress:input_type -> daemonrpc.NewAddressRequest
-	29,  // 74: daemonrpc.DaemonService.NewReceiveScript:input_type -> daemonrpc.NewReceiveScriptRequest
-	31,  // 75: daemonrpc.DaemonService.ReceiveAuthKey:input_type -> daemonrpc.ReceiveAuthKeyRequest
-	33,  // 76: daemonrpc.DaemonService.SignReceiveAuthMessage:input_type -> daemonrpc.SignReceiveAuthMessageRequest
-	35,  // 77: daemonrpc.DaemonService.SignReceiveAuthMessageCompact:input_type -> daemonrpc.SignReceiveAuthMessageCompactRequest
-	37,  // 78: daemonrpc.DaemonService.ReceiveAuthECDH:input_type -> daemonrpc.ReceiveAuthECDHRequest
-	39,  // 79: daemonrpc.DaemonService.GetIndexedVTXOByPkScript:input_type -> daemonrpc.GetIndexedVTXOByPkScriptRequest
-	41,  // 80: daemonrpc.DaemonService.GetVTXOExpiryInfo:input_type -> daemonrpc.GetVTXOExpiryInfoRequest
-	43,  // 81: daemonrpc.DaemonService.GetIndexedOORSessionByTxid:input_type -> daemonrpc.GetIndexedOORSessionByTxidRequest
-	46,  // 82: daemonrpc.DaemonService.SendVTXO:input_type -> daemonrpc.SendVTXORequest
-	48,  // 83: daemonrpc.DaemonService.SendOOR:input_type -> daemonrpc.SendOORRequest
-	52,  // 84: daemonrpc.DaemonService.PrepareOOR:input_type -> daemonrpc.PrepareOORRequest
-	55,  // 85: daemonrpc.DaemonService.SignOORCustomInput:input_type -> daemonrpc.SignOORCustomInputRequest
-	57,  // 86: daemonrpc.DaemonService.SignVTXOForfeit:input_type -> daemonrpc.SignVTXOForfeitRequest
-	61,  // 87: daemonrpc.DaemonService.RefreshVTXOs:input_type -> daemonrpc.RefreshVTXOsRequest
-	65,  // 88: daemonrpc.DaemonService.RefreshCustomVTXOs:input_type -> daemonrpc.RefreshCustomVTXOsRequest
-	68,  // 89: daemonrpc.DaemonService.ListPendingForfeitParticipantSignatureRequests:input_type -> daemonrpc.ListPendingForfeitParticipantSignatureRequestsRequest
-	71,  // 90: daemonrpc.DaemonService.SubmitForfeitParticipantSignatures:input_type -> daemonrpc.SubmitForfeitParticipantSignaturesRequest
-	74,  // 91: daemonrpc.DaemonService.LeaveVTXOs:input_type -> daemonrpc.LeaveVTXOsRequest
-	76,  // 92: daemonrpc.DaemonService.SendOnChain:input_type -> daemonrpc.SendOnChainRequest
-	78,  // 93: daemonrpc.DaemonService.Board:input_type -> daemonrpc.BoardRequest
-	80,  // 94: daemonrpc.DaemonService.JoinNextRound:input_type -> daemonrpc.JoinNextRoundRequest
-	82,  // 95: daemonrpc.DaemonService.SweepBoardingUTXOs:input_type -> daemonrpc.SweepBoardingUTXOsRequest
-	85,  // 96: daemonrpc.DaemonService.ListBoardingSweeps:input_type -> daemonrpc.ListBoardingSweepsRequest
-	91,  // 97: daemonrpc.DaemonService.ListRounds:input_type -> daemonrpc.ListRoundsRequest
-	92,  // 98: daemonrpc.DaemonService.GetRound:input_type -> daemonrpc.GetRoundRequest
-	95,  // 99: daemonrpc.DaemonService.WatchRounds:input_type -> daemonrpc.WatchRoundsRequest
-	98,  // 100: daemonrpc.DaemonService.ListOORSessions:input_type -> daemonrpc.ListOORSessionsRequest
-	100, // 101: daemonrpc.DaemonService.GetOORSession:input_type -> daemonrpc.GetOORSessionRequest
-	102, // 102: daemonrpc.DaemonService.EstimateFee:input_type -> daemonrpc.EstimateFeeRequest
-	104, // 103: daemonrpc.DaemonService.GetFeeHistory:input_type -> daemonrpc.GetFeeHistoryRequest
-	107, // 104: daemonrpc.DaemonService.ListTransactions:input_type -> daemonrpc.ListTransactionsRequest
-	110, // 105: daemonrpc.DaemonService.Unroll:input_type -> daemonrpc.UnrollRequest
-	112, // 106: daemonrpc.DaemonService.GetUnrollStatus:input_type -> daemonrpc.GetUnrollStatusRequest
-	117, // 107: daemonrpc.DaemonService.ArmVHTLCRecovery:input_type -> daemonrpc.ArmVHTLCRecoveryRequest
-	119, // 108: daemonrpc.DaemonService.EscalateVHTLCRecovery:input_type -> daemonrpc.EscalateVHTLCRecoveryRequest
-	121, // 109: daemonrpc.DaemonService.CancelVHTLCRecovery:input_type -> daemonrpc.CancelVHTLCRecoveryRequest
-	123, // 110: daemonrpc.DaemonService.GetVHTLCRecoveryStatus:input_type -> daemonrpc.GetVHTLCRecoveryStatusRequest
-	125, // 111: daemonrpc.DaemonService.ListVHTLCRecoveries:input_type -> daemonrpc.ListVHTLCRecoveriesRequest
-	12,  // 112: daemonrpc.DaemonService.GetInfo:output_type -> daemonrpc.GetInfoResponse
-	15,  // 113: daemonrpc.DaemonService.GenSeed:output_type -> daemonrpc.GenSeedResponse
-	17,  // 114: daemonrpc.DaemonService.InitWallet:output_type -> daemonrpc.InitWalletResponse
-	19,  // 115: daemonrpc.DaemonService.UnlockWallet:output_type -> daemonrpc.UnlockWalletResponse
-	21,  // 116: daemonrpc.DaemonService.GetBalance:output_type -> daemonrpc.GetBalanceResponse
-	26,  // 117: daemonrpc.DaemonService.ListVTXOs:output_type -> daemonrpc.ListVTXOsResponse
-	28,  // 118: daemonrpc.DaemonService.NewAddress:output_type -> daemonrpc.NewAddressResponse
-	30,  // 119: daemonrpc.DaemonService.NewReceiveScript:output_type -> daemonrpc.NewReceiveScriptResponse
-	32,  // 120: daemonrpc.DaemonService.ReceiveAuthKey:output_type -> daemonrpc.ReceiveAuthKeyResponse
-	34,  // 121: daemonrpc.DaemonService.SignReceiveAuthMessage:output_type -> daemonrpc.SignReceiveAuthMessageResponse
-	36,  // 122: daemonrpc.DaemonService.SignReceiveAuthMessageCompact:output_type -> daemonrpc.SignReceiveAuthMessageCompactResponse
-	38,  // 123: daemonrpc.DaemonService.ReceiveAuthECDH:output_type -> daemonrpc.ReceiveAuthECDHResponse
-	40,  // 124: daemonrpc.DaemonService.GetIndexedVTXOByPkScript:output_type -> daemonrpc.GetIndexedVTXOByPkScriptResponse
-	42,  // 125: daemonrpc.DaemonService.GetVTXOExpiryInfo:output_type -> daemonrpc.GetVTXOExpiryInfoResponse
-	44,  // 126: daemonrpc.DaemonService.GetIndexedOORSessionByTxid:output_type -> daemonrpc.GetIndexedOORSessionByTxidResponse
-	47,  // 127: daemonrpc.DaemonService.SendVTXO:output_type -> daemonrpc.SendVTXOResponse
-	51,  // 128: daemonrpc.DaemonService.SendOOR:output_type -> daemonrpc.SendOORResponse
-	54,  // 129: daemonrpc.DaemonService.PrepareOOR:output_type -> daemonrpc.PrepareOORResponse
-	56,  // 130: daemonrpc.DaemonService.SignOORCustomInput:output_type -> daemonrpc.SignOORCustomInputResponse
-	58,  // 131: daemonrpc.DaemonService.SignVTXOForfeit:output_type -> daemonrpc.SignVTXOForfeitResponse
-	62,  // 132: daemonrpc.DaemonService.RefreshVTXOs:output_type -> daemonrpc.RefreshVTXOsResponse
-	66,  // 133: daemonrpc.DaemonService.RefreshCustomVTXOs:output_type -> daemonrpc.RefreshCustomVTXOsResponse
-	69,  // 134: daemonrpc.DaemonService.ListPendingForfeitParticipantSignatureRequests:output_type -> daemonrpc.ListPendingForfeitParticipantSignatureRequestsResponse
-	72,  // 135: daemonrpc.DaemonService.SubmitForfeitParticipantSignatures:output_type -> daemonrpc.SubmitForfeitParticipantSignaturesResponse
-	75,  // 136: daemonrpc.DaemonService.LeaveVTXOs:output_type -> daemonrpc.LeaveVTXOsResponse
-	77,  // 137: daemonrpc.DaemonService.SendOnChain:output_type -> daemonrpc.SendOnChainResponse
-	79,  // 138: daemonrpc.DaemonService.Board:output_type -> daemonrpc.BoardResponse
-	81,  // 139: daemonrpc.DaemonService.JoinNextRound:output_type -> daemonrpc.JoinNextRoundResponse
-	84,  // 140: daemonrpc.DaemonService.SweepBoardingUTXOs:output_type -> daemonrpc.SweepBoardingUTXOsResponse
-	88,  // 141: daemonrpc.DaemonService.ListBoardingSweeps:output_type -> daemonrpc.ListBoardingSweepsResponse
-	94,  // 142: daemonrpc.DaemonService.ListRounds:output_type -> daemonrpc.ListRoundsResponse
-	93,  // 143: daemonrpc.DaemonService.GetRound:output_type -> daemonrpc.GetRoundResponse
-	96,  // 144: daemonrpc.DaemonService.WatchRounds:output_type -> daemonrpc.WatchRoundsResponse
-	99,  // 145: daemonrpc.DaemonService.ListOORSessions:output_type -> daemonrpc.ListOORSessionsResponse
-	101, // 146: daemonrpc.DaemonService.GetOORSession:output_type -> daemonrpc.GetOORSessionResponse
-	103, // 147: daemonrpc.DaemonService.EstimateFee:output_type -> daemonrpc.EstimateFeeResponse
-	106, // 148: daemonrpc.DaemonService.GetFeeHistory:output_type -> daemonrpc.GetFeeHistoryResponse
-	109, // 149: daemonrpc.DaemonService.ListTransactions:output_type -> daemonrpc.ListTransactionsResponse
-	111, // 150: daemonrpc.DaemonService.Unroll:output_type -> daemonrpc.UnrollResponse
-	116, // 151: daemonrpc.DaemonService.GetUnrollStatus:output_type -> daemonrpc.GetUnrollStatusResponse
-	118, // 152: daemonrpc.DaemonService.ArmVHTLCRecovery:output_type -> daemonrpc.ArmVHTLCRecoveryResponse
-	120, // 153: daemonrpc.DaemonService.EscalateVHTLCRecovery:output_type -> daemonrpc.EscalateVHTLCRecoveryResponse
-	122, // 154: daemonrpc.DaemonService.CancelVHTLCRecovery:output_type -> daemonrpc.CancelVHTLCRecoveryResponse
-	124, // 155: daemonrpc.DaemonService.GetVHTLCRecoveryStatus:output_type -> daemonrpc.GetVHTLCRecoveryStatusResponse
-	126, // 156: daemonrpc.DaemonService.ListVHTLCRecoveries:output_type -> daemonrpc.ListVHTLCRecoveriesResponse
+	0,   // 0: waverpc.GetInfoResponse.wallet_state:type_name -> waverpc.WalletState
+	13,  // 1: waverpc.GetInfoResponse.server_info:type_name -> waverpc.ServerInfo
+	2,   // 2: waverpc.VTXOExpiryInfo.status:type_name -> waverpc.VTXOExpiryStatus
+	1,   // 3: waverpc.VTXO.status:type_name -> waverpc.VTXOStatus
+	22,  // 4: waverpc.VTXO.expiry_info:type_name -> waverpc.VTXOExpiryInfo
+	24,  // 5: waverpc.VTXO.settlement:type_name -> waverpc.VTXOSettlement
+	1,   // 6: waverpc.ListVTXOsRequest.status_filter:type_name -> waverpc.VTXOStatus
+	23,  // 7: waverpc.ListVTXOsResponse.vtxos:type_name -> waverpc.VTXO
+	1,   // 8: waverpc.GetIndexedVTXOByPkScriptRequest.status_filter:type_name -> waverpc.VTXOStatus
+	23,  // 9: waverpc.GetIndexedVTXOByPkScriptResponse.vtxo:type_name -> waverpc.VTXO
+	1,   // 10: waverpc.GetVTXOExpiryInfoRequest.status_filter:type_name -> waverpc.VTXOStatus
+	22,  // 11: waverpc.GetVTXOExpiryInfoResponse.expiry_info:type_name -> waverpc.VTXOExpiryInfo
+	23,  // 12: waverpc.GetVTXOExpiryInfoResponse.vtxo:type_name -> waverpc.VTXO
+	45,  // 13: waverpc.SendVTXORequest.recipients:type_name -> waverpc.Output
+	45,  // 14: waverpc.SendOORRequest.recipients:type_name -> waverpc.Output
+	49,  // 15: waverpc.SendOORRequest.custom_inputs:type_name -> waverpc.CustomOORInput
+	50,  // 16: waverpc.CustomOORInput.external_signatures:type_name -> waverpc.TaprootScriptSignature
+	45,  // 17: waverpc.PrepareOORRequest.recipient:type_name -> waverpc.Output
+	49,  // 18: waverpc.PrepareOORRequest.custom_inputs:type_name -> waverpc.CustomOORInput
+	53,  // 19: waverpc.PrepareOORResponse.custom_inputs:type_name -> waverpc.PreparedOORCustomInput
+	49,  // 20: waverpc.SignOORCustomInputRequest.custom_input:type_name -> waverpc.CustomOORInput
+	50,  // 21: waverpc.SignOORCustomInputResponse.signature:type_name -> waverpc.TaprootScriptSignature
+	3,   // 22: waverpc.ForfeitSigningContext.signing_route:type_name -> waverpc.ForfeitSigningRoute
+	60,  // 23: waverpc.RefreshVTXOsRequest.outpoints:type_name -> waverpc.OutpointSelection
+	59,  // 24: waverpc.CustomRefreshVTXOInput.forfeit_signing_context:type_name -> waverpc.ForfeitSigningContext
+	63,  // 25: waverpc.RefreshCustomVTXOsRequest.inputs:type_name -> waverpc.CustomRefreshVTXOInput
+	64,  // 26: waverpc.RefreshCustomVTXOsRequest.outputs:type_name -> waverpc.CustomRefreshVTXOOutput
+	3,   // 27: waverpc.PendingForfeitParticipantSignatureRequest.signing_route:type_name -> waverpc.ForfeitSigningRoute
+	67,  // 28: waverpc.ListPendingForfeitParticipantSignatureRequestsResponse.requests:type_name -> waverpc.PendingForfeitParticipantSignatureRequest
+	70,  // 29: waverpc.SubmitForfeitParticipantSignaturesRequest.signatures:type_name -> waverpc.ForfeitParticipantSignature
+	60,  // 30: waverpc.LeaveVTXOsRequest.outpoints:type_name -> waverpc.OutpointSelection
+	73,  // 31: waverpc.LeaveVTXOsRequest.default_destination:type_name -> waverpc.LeaveDestination
+	128, // 32: waverpc.LeaveVTXOsRequest.destinations:type_name -> waverpc.LeaveVTXOsRequest.DestinationsEntry
+	73,  // 33: waverpc.SendOnChainRequest.destination:type_name -> waverpc.LeaveDestination
+	83,  // 34: waverpc.SweepBoardingUTXOsResponse.sweepable_outputs:type_name -> waverpc.BoardingSweepOutput
+	86,  // 35: waverpc.BoardingSweep.inputs:type_name -> waverpc.BoardingSweepInput
+	87,  // 36: waverpc.ListBoardingSweepsResponse.sweeps:type_name -> waverpc.BoardingSweep
+	4,   // 37: waverpc.RoundInfo.state:type_name -> waverpc.RoundState
+	89,  // 38: waverpc.RoundInfo.vtxos:type_name -> waverpc.RoundVTXOInfo
+	4,   // 39: waverpc.ListRoundsRequest.state_filter:type_name -> waverpc.RoundState
+	90,  // 40: waverpc.GetRoundResponse.round:type_name -> waverpc.RoundInfo
+	90,  // 41: waverpc.ListRoundsResponse.rounds:type_name -> waverpc.RoundInfo
+	90,  // 42: waverpc.WatchRoundsResponse.round:type_name -> waverpc.RoundInfo
+	5,   // 43: waverpc.OORSessionInfo.direction:type_name -> waverpc.OORSessionDirection
+	6,   // 44: waverpc.OORSessionInfo.status:type_name -> waverpc.OORSessionStatus
+	5,   // 45: waverpc.ListOORSessionsRequest.direction_filter:type_name -> waverpc.OORSessionDirection
+	6,   // 46: waverpc.ListOORSessionsRequest.status_filter:type_name -> waverpc.OORSessionStatus
+	97,  // 47: waverpc.ListOORSessionsResponse.sessions:type_name -> waverpc.OORSessionInfo
+	97,  // 48: waverpc.GetOORSessionResponse.session:type_name -> waverpc.OORSessionInfo
+	105, // 49: waverpc.GetFeeHistoryResponse.entries:type_name -> waverpc.FeeHistoryEntry
+	108, // 50: waverpc.ListTransactionsResponse.transactions:type_name -> waverpc.TransactionHistoryEntry
+	7,   // 51: waverpc.GetUnrollStatusResponse.status:type_name -> waverpc.UnrollJobStatus
+	113, // 52: waverpc.GetUnrollStatusResponse.progress:type_name -> waverpc.UnrollProgress
+	114, // 53: waverpc.GetUnrollStatusResponse.csv:type_name -> waverpc.UnrollCSV
+	115, // 54: waverpc.GetUnrollStatusResponse.fees:type_name -> waverpc.UnrollFees
+	8,   // 55: waverpc.ArmVHTLCRecoveryRequest.direction:type_name -> waverpc.VHTLCRecoveryDirection
+	9,   // 56: waverpc.ArmVHTLCRecoveryRequest.action:type_name -> waverpc.VHTLCRecoveryAction
+	127, // 57: waverpc.ArmVHTLCRecoveryResponse.status:type_name -> waverpc.VHTLCRecoveryStatus
+	127, // 58: waverpc.EscalateVHTLCRecoveryResponse.status:type_name -> waverpc.VHTLCRecoveryStatus
+	127, // 59: waverpc.CancelVHTLCRecoveryResponse.status:type_name -> waverpc.VHTLCRecoveryStatus
+	127, // 60: waverpc.GetVHTLCRecoveryStatusResponse.status:type_name -> waverpc.VHTLCRecoveryStatus
+	127, // 61: waverpc.ListVHTLCRecoveriesResponse.statuses:type_name -> waverpc.VHTLCRecoveryStatus
+	8,   // 62: waverpc.VHTLCRecoveryStatus.direction:type_name -> waverpc.VHTLCRecoveryDirection
+	9,   // 63: waverpc.VHTLCRecoveryStatus.action:type_name -> waverpc.VHTLCRecoveryAction
+	10,  // 64: waverpc.VHTLCRecoveryStatus.state:type_name -> waverpc.VHTLCRecoveryState
+	7,   // 65: waverpc.VHTLCRecoveryStatus.unroll_status:type_name -> waverpc.UnrollJobStatus
+	73,  // 66: waverpc.LeaveVTXOsRequest.DestinationsEntry.value:type_name -> waverpc.LeaveDestination
+	11,  // 67: waverpc.DaemonService.GetInfo:input_type -> waverpc.GetInfoRequest
+	14,  // 68: waverpc.DaemonService.GenSeed:input_type -> waverpc.GenSeedRequest
+	16,  // 69: waverpc.DaemonService.InitWallet:input_type -> waverpc.InitWalletRequest
+	18,  // 70: waverpc.DaemonService.UnlockWallet:input_type -> waverpc.UnlockWalletRequest
+	20,  // 71: waverpc.DaemonService.GetBalance:input_type -> waverpc.GetBalanceRequest
+	25,  // 72: waverpc.DaemonService.ListVTXOs:input_type -> waverpc.ListVTXOsRequest
+	27,  // 73: waverpc.DaemonService.NewAddress:input_type -> waverpc.NewAddressRequest
+	29,  // 74: waverpc.DaemonService.NewReceiveScript:input_type -> waverpc.NewReceiveScriptRequest
+	31,  // 75: waverpc.DaemonService.ReceiveAuthKey:input_type -> waverpc.ReceiveAuthKeyRequest
+	33,  // 76: waverpc.DaemonService.SignReceiveAuthMessage:input_type -> waverpc.SignReceiveAuthMessageRequest
+	35,  // 77: waverpc.DaemonService.SignReceiveAuthMessageCompact:input_type -> waverpc.SignReceiveAuthMessageCompactRequest
+	37,  // 78: waverpc.DaemonService.ReceiveAuthECDH:input_type -> waverpc.ReceiveAuthECDHRequest
+	39,  // 79: waverpc.DaemonService.GetIndexedVTXOByPkScript:input_type -> waverpc.GetIndexedVTXOByPkScriptRequest
+	41,  // 80: waverpc.DaemonService.GetVTXOExpiryInfo:input_type -> waverpc.GetVTXOExpiryInfoRequest
+	43,  // 81: waverpc.DaemonService.GetIndexedOORSessionByTxid:input_type -> waverpc.GetIndexedOORSessionByTxidRequest
+	46,  // 82: waverpc.DaemonService.SendVTXO:input_type -> waverpc.SendVTXORequest
+	48,  // 83: waverpc.DaemonService.SendOOR:input_type -> waverpc.SendOORRequest
+	52,  // 84: waverpc.DaemonService.PrepareOOR:input_type -> waverpc.PrepareOORRequest
+	55,  // 85: waverpc.DaemonService.SignOORCustomInput:input_type -> waverpc.SignOORCustomInputRequest
+	57,  // 86: waverpc.DaemonService.SignVTXOForfeit:input_type -> waverpc.SignVTXOForfeitRequest
+	61,  // 87: waverpc.DaemonService.RefreshVTXOs:input_type -> waverpc.RefreshVTXOsRequest
+	65,  // 88: waverpc.DaemonService.RefreshCustomVTXOs:input_type -> waverpc.RefreshCustomVTXOsRequest
+	68,  // 89: waverpc.DaemonService.ListPendingForfeitParticipantSignatureRequests:input_type -> waverpc.ListPendingForfeitParticipantSignatureRequestsRequest
+	71,  // 90: waverpc.DaemonService.SubmitForfeitParticipantSignatures:input_type -> waverpc.SubmitForfeitParticipantSignaturesRequest
+	74,  // 91: waverpc.DaemonService.LeaveVTXOs:input_type -> waverpc.LeaveVTXOsRequest
+	76,  // 92: waverpc.DaemonService.SendOnChain:input_type -> waverpc.SendOnChainRequest
+	78,  // 93: waverpc.DaemonService.Board:input_type -> waverpc.BoardRequest
+	80,  // 94: waverpc.DaemonService.JoinNextRound:input_type -> waverpc.JoinNextRoundRequest
+	82,  // 95: waverpc.DaemonService.SweepBoardingUTXOs:input_type -> waverpc.SweepBoardingUTXOsRequest
+	85,  // 96: waverpc.DaemonService.ListBoardingSweeps:input_type -> waverpc.ListBoardingSweepsRequest
+	91,  // 97: waverpc.DaemonService.ListRounds:input_type -> waverpc.ListRoundsRequest
+	92,  // 98: waverpc.DaemonService.GetRound:input_type -> waverpc.GetRoundRequest
+	95,  // 99: waverpc.DaemonService.WatchRounds:input_type -> waverpc.WatchRoundsRequest
+	98,  // 100: waverpc.DaemonService.ListOORSessions:input_type -> waverpc.ListOORSessionsRequest
+	100, // 101: waverpc.DaemonService.GetOORSession:input_type -> waverpc.GetOORSessionRequest
+	102, // 102: waverpc.DaemonService.EstimateFee:input_type -> waverpc.EstimateFeeRequest
+	104, // 103: waverpc.DaemonService.GetFeeHistory:input_type -> waverpc.GetFeeHistoryRequest
+	107, // 104: waverpc.DaemonService.ListTransactions:input_type -> waverpc.ListTransactionsRequest
+	110, // 105: waverpc.DaemonService.Unroll:input_type -> waverpc.UnrollRequest
+	112, // 106: waverpc.DaemonService.GetUnrollStatus:input_type -> waverpc.GetUnrollStatusRequest
+	117, // 107: waverpc.DaemonService.ArmVHTLCRecovery:input_type -> waverpc.ArmVHTLCRecoveryRequest
+	119, // 108: waverpc.DaemonService.EscalateVHTLCRecovery:input_type -> waverpc.EscalateVHTLCRecoveryRequest
+	121, // 109: waverpc.DaemonService.CancelVHTLCRecovery:input_type -> waverpc.CancelVHTLCRecoveryRequest
+	123, // 110: waverpc.DaemonService.GetVHTLCRecoveryStatus:input_type -> waverpc.GetVHTLCRecoveryStatusRequest
+	125, // 111: waverpc.DaemonService.ListVHTLCRecoveries:input_type -> waverpc.ListVHTLCRecoveriesRequest
+	12,  // 112: waverpc.DaemonService.GetInfo:output_type -> waverpc.GetInfoResponse
+	15,  // 113: waverpc.DaemonService.GenSeed:output_type -> waverpc.GenSeedResponse
+	17,  // 114: waverpc.DaemonService.InitWallet:output_type -> waverpc.InitWalletResponse
+	19,  // 115: waverpc.DaemonService.UnlockWallet:output_type -> waverpc.UnlockWalletResponse
+	21,  // 116: waverpc.DaemonService.GetBalance:output_type -> waverpc.GetBalanceResponse
+	26,  // 117: waverpc.DaemonService.ListVTXOs:output_type -> waverpc.ListVTXOsResponse
+	28,  // 118: waverpc.DaemonService.NewAddress:output_type -> waverpc.NewAddressResponse
+	30,  // 119: waverpc.DaemonService.NewReceiveScript:output_type -> waverpc.NewReceiveScriptResponse
+	32,  // 120: waverpc.DaemonService.ReceiveAuthKey:output_type -> waverpc.ReceiveAuthKeyResponse
+	34,  // 121: waverpc.DaemonService.SignReceiveAuthMessage:output_type -> waverpc.SignReceiveAuthMessageResponse
+	36,  // 122: waverpc.DaemonService.SignReceiveAuthMessageCompact:output_type -> waverpc.SignReceiveAuthMessageCompactResponse
+	38,  // 123: waverpc.DaemonService.ReceiveAuthECDH:output_type -> waverpc.ReceiveAuthECDHResponse
+	40,  // 124: waverpc.DaemonService.GetIndexedVTXOByPkScript:output_type -> waverpc.GetIndexedVTXOByPkScriptResponse
+	42,  // 125: waverpc.DaemonService.GetVTXOExpiryInfo:output_type -> waverpc.GetVTXOExpiryInfoResponse
+	44,  // 126: waverpc.DaemonService.GetIndexedOORSessionByTxid:output_type -> waverpc.GetIndexedOORSessionByTxidResponse
+	47,  // 127: waverpc.DaemonService.SendVTXO:output_type -> waverpc.SendVTXOResponse
+	51,  // 128: waverpc.DaemonService.SendOOR:output_type -> waverpc.SendOORResponse
+	54,  // 129: waverpc.DaemonService.PrepareOOR:output_type -> waverpc.PrepareOORResponse
+	56,  // 130: waverpc.DaemonService.SignOORCustomInput:output_type -> waverpc.SignOORCustomInputResponse
+	58,  // 131: waverpc.DaemonService.SignVTXOForfeit:output_type -> waverpc.SignVTXOForfeitResponse
+	62,  // 132: waverpc.DaemonService.RefreshVTXOs:output_type -> waverpc.RefreshVTXOsResponse
+	66,  // 133: waverpc.DaemonService.RefreshCustomVTXOs:output_type -> waverpc.RefreshCustomVTXOsResponse
+	69,  // 134: waverpc.DaemonService.ListPendingForfeitParticipantSignatureRequests:output_type -> waverpc.ListPendingForfeitParticipantSignatureRequestsResponse
+	72,  // 135: waverpc.DaemonService.SubmitForfeitParticipantSignatures:output_type -> waverpc.SubmitForfeitParticipantSignaturesResponse
+	75,  // 136: waverpc.DaemonService.LeaveVTXOs:output_type -> waverpc.LeaveVTXOsResponse
+	77,  // 137: waverpc.DaemonService.SendOnChain:output_type -> waverpc.SendOnChainResponse
+	79,  // 138: waverpc.DaemonService.Board:output_type -> waverpc.BoardResponse
+	81,  // 139: waverpc.DaemonService.JoinNextRound:output_type -> waverpc.JoinNextRoundResponse
+	84,  // 140: waverpc.DaemonService.SweepBoardingUTXOs:output_type -> waverpc.SweepBoardingUTXOsResponse
+	88,  // 141: waverpc.DaemonService.ListBoardingSweeps:output_type -> waverpc.ListBoardingSweepsResponse
+	94,  // 142: waverpc.DaemonService.ListRounds:output_type -> waverpc.ListRoundsResponse
+	93,  // 143: waverpc.DaemonService.GetRound:output_type -> waverpc.GetRoundResponse
+	96,  // 144: waverpc.DaemonService.WatchRounds:output_type -> waverpc.WatchRoundsResponse
+	99,  // 145: waverpc.DaemonService.ListOORSessions:output_type -> waverpc.ListOORSessionsResponse
+	101, // 146: waverpc.DaemonService.GetOORSession:output_type -> waverpc.GetOORSessionResponse
+	103, // 147: waverpc.DaemonService.EstimateFee:output_type -> waverpc.EstimateFeeResponse
+	106, // 148: waverpc.DaemonService.GetFeeHistory:output_type -> waverpc.GetFeeHistoryResponse
+	109, // 149: waverpc.DaemonService.ListTransactions:output_type -> waverpc.ListTransactionsResponse
+	111, // 150: waverpc.DaemonService.Unroll:output_type -> waverpc.UnrollResponse
+	116, // 151: waverpc.DaemonService.GetUnrollStatus:output_type -> waverpc.GetUnrollStatusResponse
+	118, // 152: waverpc.DaemonService.ArmVHTLCRecovery:output_type -> waverpc.ArmVHTLCRecoveryResponse
+	120, // 153: waverpc.DaemonService.EscalateVHTLCRecovery:output_type -> waverpc.EscalateVHTLCRecoveryResponse
+	122, // 154: waverpc.DaemonService.CancelVHTLCRecovery:output_type -> waverpc.CancelVHTLCRecoveryResponse
+	124, // 155: waverpc.DaemonService.GetVHTLCRecoveryStatus:output_type -> waverpc.GetVHTLCRecoveryStatusResponse
+	126, // 156: waverpc.DaemonService.ListVHTLCRecoveries:output_type -> waverpc.ListVHTLCRecoveriesResponse
 	112, // [112:157] is the sub-list for method output_type
 	67,  // [67:112] is the sub-list for method input_type
 	67,  // [67:67] is the sub-list for extension type_name

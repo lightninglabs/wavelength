@@ -1,4 +1,4 @@
-package daemonrpc
+package waverpc
 
 import (
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	walletNotReadyDomain = "darepo-client/wallet"
+	walletNotReadyDomain = "wavelength/wallet"
 
 	// WalletNotReadyReason identifies gRPC FailedPrecondition errors
 	// caused by a daemon wallet lifecycle state that is not yet usable.
