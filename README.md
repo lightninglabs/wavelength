@@ -1,10 +1,12 @@
 # wavelength
 
-`wavelength` is the reference [Ark protocol](https://arkdev.info/) client
-implementation in Go. It ships a long-running daemon (`waved`) and a
-companion CLI (`wavecli`) that together let a Bitcoin user board into Ark
-rounds, hold and transfer VTXOs, swap into and out of the Lightning Network,
-and unilaterally exit to the chain at any time.
+`wavelength` is a self-custodial Bitcoin wallet system written in Go. It
+unifies three layers that usually live in separate tools: an Ark client, a
+Lightning swap engine, and an on-chain wallet. All of it runs behind one
+long-running daemon (`waved`) and a companion CLI (`wavecli`), so a user can
+board into Ark, hold and transfer VTXOs, swap into and out of the Lightning
+Network, send and receive on-chain, and unilaterally exit to the chain at
+any time, all while keeping sole custody of their coins.
 
 The daemon is a self-contained, restart-safe process that talks to an Ark
 operator over a durable mailbox transport, manages its own on-chain wallet,
@@ -59,11 +61,11 @@ waved \
 # In another shell. wavecli needs TLS + the daemon's admin macaroon; for
 # this local regtest daemon use plaintext instead (no TLS, no macaroon) on
 # the regtest network. See INSTALL.md for the TLS setup a real instance uses.
-alias da='wavecli --no-tls --no-macaroons --network=regtest'
-da create
-da recv   --onchain
-da balance
-da ark board
+alias wave='wavecli --no-tls --no-macaroons --network=regtest'
+wave create
+wave recv   --onchain
+wave balance
+wave ark board
 ```
 
 For a full end-to-end regtest walkthrough (with `nigiri` and a funded

@@ -232,10 +232,10 @@ alias:
 
 ```bash
 # signet instance over TLS
-alias da='wavecli --network=signet --datadir=~/.waved-signet'
+alias wave='wavecli --network=signet --datadir=~/.waved-signet'
 
 # local regtest over plaintext
-alias da='wavecli --no-tls --no-macaroons'
+alias wave='wavecli --no-tls --no-macaroons'
 ```
 
 ### Command tree
@@ -611,26 +611,26 @@ waved \
 # 2b. Alias the CLI for this regtest daemon: plaintext transport (no TLS,
 #     no macaroon) on the regtest network. See the Authentication section
 #     above for why both --no-tls and --no-macaroons are needed.
-alias da='wavecli --no-tls --no-macaroons --network=regtest'
+alias wave='wavecli --no-tls --no-macaroons --network=regtest'
 
 # 3. Get a boarding address.
-ADDR=$(da dev daemon NewAddress | jq -r .address)
+ADDR=$(wave dev daemon NewAddress | jq -r .address)
 
 # 4. Fund it on-chain and confirm.
 bitcoin-cli -regtest sendtoaddress "$ADDR" 0.01
 bitcoin-cli -regtest -generate 6
 
 # 5. Verify balance.
-da dev daemon GetBalance
+wave dev daemon GetBalance
 
 # 6. Board into the next round.
-da ark board
+wave ark board
 
 # 7. After the round confirms, list the new VTXO.
-da ark vtxos list
+wave ark vtxos list
 
 # 8. Send funds (in-round to a peer's bech32m address).
-da ark send inround --to bcrt1p... --amount 5000
+wave ark send inround --to bcrt1p... --amount 5000
 ```
 
 For per-client manual testing under the `arktest` harness, see

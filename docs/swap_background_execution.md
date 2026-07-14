@@ -13,7 +13,7 @@ progress should continue in the daemon instead of waiting for another
 manual command.
 
 That is fine for manual regtest work, but it is not the model we want for
-WalletDK or application integrations. A user should submit a swap intent,
+WaveWalletDK or application integrations. A user should submit a swap intent,
 receive a stable payment hash or invoice, and then let the long-lived
 client runtime complete, refund, expire, or mark the swap as requiring
 intervention.
@@ -82,7 +82,7 @@ The tagged CLI command should depend on the generated swap subserver client,
 not `sdk/swaps`. It should be structurally similar to `cmd_getinfo.go`: parse
 flags, build a protobuf request, call the daemon-hosted service, and render the
 protobuf response. Any richer Go models can live in `sdk/ark` or a future
-WalletDK-facing package, but the CLI should not become a second swap runtime.
+WaveWalletDK-facing package, but the CLI should not become a second swap runtime.
 
 The daemon core should also avoid importing `sdk/swaps` directly. Today
 `sdk/swaps -> sdk/ark -> waved`, so a direct import from `waved` creates an
@@ -136,12 +136,12 @@ swap FSM transitions. Those remain in `sdk/ark`, `oor`, policy packages, and
 The swap RPC interface is the control-plane contract for swaps. It should be a
 daemon-hosted subserver registered on the same gRPC listener as
 `waverpc.DaemonService`, not new methods bolted onto `DaemonService` itself.
-The CLI, WalletDK, and any other external process should all use this subserver.
+The CLI, WaveWalletDK, and any other external process should all use this subserver.
 The executor is an internal implementation detail behind it.
 
 The split keeps `DaemonService` focused on the core Ark wallet/runtime API and
 lets swap support remain optional without making the main daemon RPC interface
-look like every build supports swaps. It also gives WalletDK a clean service
+look like every build supports swaps. It also gives WaveWalletDK a clean service
 name and package to bind to later.
 
 The first API can stay small:
@@ -286,7 +286,7 @@ PR should remain a control-plane/background-execution layer:
 - no changes to `swaprpc/swap.proto`;
 - no custom mailbox or onion validation implementation;
 - no server-side route binding changes;
-- no WalletDK API work.
+- no WaveWalletDK API work.
 
 With `wavelength#337` merged, `swapclientserver` should treat receive auth
 as a lower-layer daemon capability instead of owning a separate key file. The
@@ -392,7 +392,7 @@ Internally:
 This keeps retries and daemon restarts from creating duplicate OOR sends even
 when coin selection would otherwise choose different inputs.
 
-Empty caller keys can be allowed for CLI parity, but WalletDK should pass
+Empty caller keys can be allowed for CLI parity, but WaveWalletDK should pass
 stable keys once its surface exists.
 
 ## Testing Plan
@@ -438,7 +438,7 @@ go test -tags=swapruntime ./cmd/wavecli/waveclicommands ./cmd/waved ./waved ./sd
 5. Convert CLI swap commands to daemon-control mode behind `swapruntime`.
    _(Superseded — #907 removed the `wavecli swap` CLI surface entirely.)_
 6. Add restart and timeout integration coverage through the CLI/RPC surface.
-7. Document the WalletDK handoff surface once the daemon API stops moving.
+7. Document the WaveWalletDK handoff surface once the daemon API stops moving.
 
 This lets us keep the default binaries conservative while giving swap-enabled
 builds the runtime model we actually want.
@@ -511,8 +511,8 @@ compiles on its own or is a generated-code companion to the previous commit.
    daemon restart resumes pending pay/receive, and timeout/refund paths finish
    without manual `swap resume`.
 
-9. `docs: capture WalletDK swap handoff`
+9. `docs: capture WaveWalletDK swap handoff`
 
    Once the RPC shape has survived the first implementation pass, document the
-   stable WalletDK handoff: service name, start/list/get/subscribe semantics,
+   stable WaveWalletDK handoff: service name, start/list/get/subscribe semantics,
    state meanings, idempotency expectations, and terminal failure fields.

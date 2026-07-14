@@ -199,24 +199,24 @@ macaroon, both derived from `--datadir` / `--network` (defaults `~/.waved`
 and `mainnet`). Match those to your daemon, or use `--no-tls --no-macaroons`
 for a local plaintext daemon (a macaroon can't ride an unencrypted connection,
 so `--no-tls` alone fails). Set it once via an alias — the commands below use
-`da`:
+`wave`:
 
 ```bash
 # Pick the one that matches your daemon:
 #   regtest, plaintext:
-#     alias da='wavecli --no-tls --no-macaroons --network=regtest'
+#     alias wave='wavecli --no-tls --no-macaroons --network=regtest'
 #   signet under ~/.waved-signet, TLS:
-alias da='wavecli --network=signet --datadir=~/.waved-signet'
+alias wave='wavecli --network=signet --datadir=~/.waved-signet'
 ```
 
 With a `wavewalletrpc`-enabled build (`make install-wavewalletrpc`):
 
 ```bash
 # Create a wallet (prints the seed mnemonic on stderr; write it down!).
-WAVED_WALLET_PASSWORD=your_password da create
+WAVED_WALLET_PASSWORD=your_password wave create
 
 # Unlock the wallet after every restart.
-WAVED_WALLET_PASSWORD=your_password da unlock
+WAVED_WALLET_PASSWORD=your_password wave unlock
 ```
 
 To skip manual unlock entirely, pass `--wallet.password_file=/path/to/file`
@@ -231,21 +231,21 @@ build. Full password-handling rules:
 
 ## Verifying the Install
 
-Using the `da` alias from the previous section:
+Using the `wave` alias from the previous section:
 
 ```bash
 # 1. Daemon answers basic status.
-da getinfo
+wave getinfo
 
 # 2. (wavewalletrpc only) wallet verbs work.
-da balance
-da activity
+wave balance
+wave activity
 
 # VTXO inventory lives under the ark subtree (available in every build).
-da ark vtxos list
+wave ark vtxos list
 
 # 3. Schema dump (useful for tooling and AI agents).
-da schema
+wave schema
 ```
 
 If you see `daemon was not built with -tags wavewalletrpc` for the wallet

@@ -113,13 +113,13 @@ directions of a swap.
 
 ```mermaid
 flowchart LR
-    subgraph Receive["da recv --offchain  (out-swap)"]
+    subgraph Receive["wave recv --offchain  (out-swap)"]
         direction LR
         LN1["Lightning payer"] -->|pays invoice| SWAPD1["swapd"]
         SWAPD1 -->|funds vHTLC| ARK1["Ark / vHTLC"]
         ARK1 -->|client claims w/ preimage| ME1["client wallet"]
     end
-    subgraph Pay["da send invoice --offchain  (in-swap)"]
+    subgraph Pay["wave send invoice --offchain  (in-swap)"]
         direction LR
         ME2["client wallet"] -->|funds vHTLC| ARK2["Ark / vHTLC"]
         SWAPD2["swapd"] -->|claims vHTLC w/ preimage| ARK2
@@ -131,9 +131,9 @@ The defining asymmetry is right there: **on receive, the swap server funds the
 vHTLC; on pay, the client funds it.** That single difference shapes how each
 side observes the output, as §3 and §4 make concrete.
 
-Note also what does *not* go through this machinery. `da recv --onchain`
+Note also what does *not* go through this machinery. `wave recv --onchain`
 allocates a plain wallet receive address through `NewReceiveScript` and never
-creates a vHTLC at all; `da send <address> --onchain` is a cooperative leave.
+creates a vHTLC at all; `wave send <address> --onchain` is a cooperative leave.
 Neither is a swap. When this document says "receive" or "pay" without
 qualification, it means the `--offchain` swap path.
 
@@ -141,7 +141,7 @@ qualification, it means the `--offchain` swap path.
 
 ## 3. Receiving over Lightning (the out-swap)
 
-This is the flow the user invokes with `da recv --offchain --amt N`. The client
+This is the flow the user invokes with `wave recv --offchain --amt N`. The client
 wants to be paid over Lightning and end up with the value as an Ark output.
 
 ### 3.1 What the client sets up
@@ -246,7 +246,7 @@ sequenceDiagram
     participant A as arkd + indexer
     participant L as Lightning payer
 
-    U->>C: da recv --offchain --amt N
+    U->>C: wave recv --offchain --amt N
     C->>C: AllocateReceiveScript (claim dest)
     C->>A: RegisterReceiveScript(claim dest)   %% the OOR claim address
     C->>S: RequestChannelId(clientKey, hash, amt)
@@ -275,7 +275,7 @@ sequenceDiagram
 
 ## 4. Paying over Lightning (the in-swap)
 
-This is `da send <invoice> --offchain`. The client holds Ark value and wants a
+This is `wave send <invoice> --offchain`. The client holds Ark value and wants a
 Lightning invoice paid.
 
 ### 4.1 The negotiation
@@ -320,7 +320,7 @@ sequenceDiagram
     participant A as arkd + indexer
     participant P as Lightning payee
 
-    U->>C: da send <invoice> --offchain
+    U->>C: wave send <invoice> --offchain
     C->>S: CreateInSwap(invoice, maxFee, clientKey)
     S-->>C: hash, amount, fee, serverKey, VHTLCConfig, settlement_type
     C->>C: derive vHTLC pkScript
