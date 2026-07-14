@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
@@ -28,6 +29,12 @@ type TransferInput struct {
 	// Ark ownership is derived from the descriptor's
 	// owner/operator/expiry tuple.
 	VTXOPolicyTemplate []byte
+
+	// TaprootAssetRoot is the optional root of the Taproot Asset
+	// commitment anchored in the spent VTXO. The semantic VTXO policy is
+	// the sibling branch. When present, EffectiveSpendPath extends the
+	// policy control block with this root before any signer sees it.
+	TaprootAssetRoot *chainhash.Hash
 
 	// OwnerLeafScript is the leaf script committed to the checkpoint
 	// tap tree. When empty and VTXO.ClientKey + VTXO.OperatorKey are
@@ -119,6 +126,16 @@ func (i *TransferInput) Validate() error {
 		}
 	}
 
+	if i.TaprootAssetRoot != nil {
+		err := validateTaprootAssetPkScript(
+			i.VTXOPolicyTemplate, *i.TaprootAssetRoot,
+			i.VTXO.PkScript,
+		)
+		if err != nil {
+			return err
+		}
+	}
+
 	if len(i.OwnerLeafPolicy) == 0 && len(defaultPolicy) > 0 {
 		switch {
 		case len(i.OwnerLeafScript) == 0:
@@ -176,6 +193,40 @@ func (i *TransferInput) Validate() error {
 	return nil
 }
 
+// validateTaprootAssetPkScript proves that the semantic Ark policy and asset
+// commitment root derive the actual VTXO output script. This check prevents a
+// caller from supplying a valid asset root that belongs to a different
+// anchor output.
+func validateTaprootAssetPkScript(policyTemplate []byte,
+	assetRoot chainhash.Hash, pkScript []byte) error {
+
+	template, err := arkscript.DecodePolicyTemplate(policyTemplate)
+	if err != nil {
+		return fmt.Errorf("decode asset-bearing vtxo policy: %w", err)
+	}
+
+	compiled, err := template.Compile()
+	if err != nil {
+		return fmt.Errorf("compile asset-bearing vtxo policy: %w", err)
+	}
+
+	composed, err := arkscript.ComposeWithSiblingRoot(compiled, assetRoot)
+	if err != nil {
+		return fmt.Errorf("compose asset-bearing vtxo policy: %w", err)
+	}
+
+	wantPkScript, err := txscript.PayToTaprootScript(composed.OutputKey())
+	if err != nil {
+		return fmt.Errorf("derive asset-bearing vtxo pkscript: %w", err)
+	}
+	if !bytes.Equal(wantPkScript, pkScript) {
+		return fmt.Errorf("taproot asset root and vtxo pkscript " +
+			"mismatch")
+	}
+
+	return nil
+}
+
 // EffectiveVTXOPolicyTemplate returns the semantic policy encoding for the
 // spent input VTXO.
 func (i *TransferInput) EffectiveVTXOPolicyTemplate() ([]byte, error) {
@@ -221,6 +272,25 @@ func (i *TransferInput) EffectiveSpendPath() (*arkscript.SpendPath, error) {
 	info, err := policy.CollabSpendInfo()
 	if err != nil {
 		return nil, fmt.Errorf("derive collab spend info: %w", err)
+	}
+	if i.TaprootAssetRoot != nil {
+		leafIndex := policy.ScriptIndex(info.WitnessScript)
+		if leafIndex < 0 {
+			return nil, fmt.Errorf("derive collab spend leaf index")
+		}
+
+		composed, err := arkscript.ComposeWithSiblingRoot(
+			policy.CompiledPolicy, *i.TaprootAssetRoot,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("compose vtxo asset root: %w",
+				err)
+		}
+		info, err = composed.SpendInfo(leafIndex)
+		if err != nil {
+			return nil, fmt.Errorf("derive composed collab spend "+
+				"info: %w", err)
+		}
 	}
 
 	return &arkscript.SpendPath{
@@ -318,7 +388,30 @@ func (i *TransferInput) defaultVTXOPolicyTemplate() ([]byte, error) {
 			err)
 	}
 
-	if !template.MatchesPkScript(i.VTXO.PkScript) {
+	if i.TaprootAssetRoot == nil {
+		if !template.MatchesPkScript(i.VTXO.PkScript) {
+			return nil, nil
+		}
+
+		return policy, nil
+	}
+
+	compiled, err := template.Compile()
+	if err != nil {
+		return nil, fmt.Errorf("compile standard vtxo policy: %w", err)
+	}
+	composed, err := arkscript.ComposeWithSiblingRoot(
+		compiled, *i.TaprootAssetRoot,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("compose standard vtxo asset root: %w",
+			err)
+	}
+	pkScript, err := txscript.PayToTaprootScript(composed.OutputKey())
+	if err != nil {
+		return nil, fmt.Errorf("derive composed vtxo pkscript: %w", err)
+	}
+	if !bytes.Equal(pkScript, i.VTXO.PkScript) {
 		return nil, nil
 	}
 

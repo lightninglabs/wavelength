@@ -6,6 +6,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
@@ -51,6 +52,10 @@ type TransferInputSnapshot struct {
 	// VTXOPolicyTemplate is the semantic arkscript policy encoding for the
 	// spent input VTXO.
 	VTXOPolicyTemplate []byte
+
+	// TaprootAssetRoot is the optional root of the Taproot Asset
+	// commitment anchored in the spent VTXO.
+	TaprootAssetRoot *chainhash.Hash
 
 	// PkScript is the VTXO pkscript. Stored for custom spend paths
 	// where the pkscript cannot be derived from keys + exit delay.
@@ -109,6 +114,10 @@ func (i *TransferInput) ToSnapshot() (*TransferInputSnapshot, error) {
 		OwnerLeafPolicy:    i.OwnerLeafPolicy,
 		VTXOPolicyTemplate: i.VTXOPolicyTemplate,
 		PkScript:           i.VTXO.PkScript,
+	}
+	if i.TaprootAssetRoot != nil {
+		root := *i.TaprootAssetRoot
+		snap.TaprootAssetRoot = &root
 	}
 
 	if i.VTXO.ClientKey.PubKey != nil {
@@ -219,6 +228,7 @@ func TransferInputFromSnapshot(snap *TransferInputSnapshot) (TransferInput,
 		OwnerLeafScript:    snap.OwnerLeafScript,
 		OwnerLeafPolicy:    snap.OwnerLeafPolicy,
 		VTXOPolicyTemplate: snap.VTXOPolicyTemplate,
+		TaprootAssetRoot:   snap.TaprootAssetRoot,
 	}
 
 	if len(snap.SpendWitnessScript) > 0 {
