@@ -30,11 +30,19 @@ func NewTestPostgresDB(t testing.TB) *PostgresStore {
 	log := btclog.Disabled
 
 	sqlFixture := NewTestPgFixture(t, DefaultPostgresFixtureLifetime, true)
+
+	// Cleanups run in reverse order. Register the fixture first so the
+	// store pool registered below is closed before its container is
+	// removed.
+	t.Cleanup(func() {
+		sqlFixture.TearDown(t)
+	})
+
 	store, err := NewPostgresStore(sqlFixture.GetConfig(), log)
 	require.NoError(t, err)
 
 	t.Cleanup(func() {
-		sqlFixture.TearDown(t)
+		require.NoError(t, store.DB.Close())
 	})
 
 	return store
@@ -54,6 +62,14 @@ func NewTestPostgresDBWithVersion(t testing.TB, version uint) *PostgresStore {
 	log := btclog.Disabled
 
 	sqlFixture := NewTestPgFixture(t, DefaultPostgresFixtureLifetime, true)
+
+	// Cleanups run in reverse order. Register the fixture first so the
+	// store pool registered below is closed before its container is
+	// removed.
+	t.Cleanup(func() {
+		sqlFixture.TearDown(t)
+	})
+
 	storeCfg := sqlFixture.GetConfig()
 	storeCfg.SkipMigrations = true
 
@@ -64,7 +80,7 @@ func NewTestPostgresDBWithVersion(t testing.TB, version uint) *PostgresStore {
 	require.NoError(t, err)
 
 	t.Cleanup(func() {
-		sqlFixture.TearDown(t)
+		require.NoError(t, store.DB.Close())
 	})
 
 	return store
