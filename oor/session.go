@@ -41,6 +41,17 @@ func NewSession(ctx context.Context, policy arkscript.CheckpointPolicy,
 	)
 }
 
+// NewPreparedSession creates an outgoing OOR session from an already
+// asset-committed submit graph.
+func NewPreparedSession(ctx context.Context, policy arkscript.CheckpointPolicy,
+	inputs []TransferInput, outputs []oortx.RecipientOutput,
+	prepared *PreparedSubmitPackage) (*Session, []OutboxEvent, error) {
+
+	return NewPreparedSessionWithIdempotencyKey(
+		ctx, policy, inputs, outputs, "", prepared,
+	)
+}
+
 // NewSessionWithIdempotencyKey creates a new outgoing OOR transfer session
 // tagged with a caller-provided idempotency key. envCfg injects the
 // deterministic clock and the bounded transient submit-reject retry budget into
@@ -49,6 +60,35 @@ func NewSessionWithIdempotencyKey(ctx context.Context,
 	policy arkscript.CheckpointPolicy, inputs []TransferInput,
 	outputs []oortx.RecipientOutput, idempotencyKey string,
 	envCfg EnvConfig) (*Session, []OutboxEvent, error) {
+
+	return newSessionWithPrepared(
+		ctx, policy, inputs, outputs, idempotencyKey, envCfg, nil,
+	)
+}
+
+// NewPreparedSessionWithIdempotencyKey creates an outgoing OOR session from
+// an asset-committed graph produced by the tap-sdk orchestration boundary.
+func NewPreparedSessionWithIdempotencyKey(ctx context.Context,
+	policy arkscript.CheckpointPolicy, inputs []TransferInput,
+	outputs []oortx.RecipientOutput, idempotencyKey string,
+	prepared *PreparedSubmitPackage) (*Session, []OutboxEvent, error) {
+
+	if prepared == nil {
+		return nil, nil, fmt.Errorf("prepared submit package must be " +
+			"provided")
+	}
+
+	return newSessionWithPrepared(
+		ctx, policy, inputs, outputs, idempotencyKey, EnvConfig{},
+		prepared,
+	)
+}
+
+func newSessionWithPrepared(ctx context.Context,
+	policy arkscript.CheckpointPolicy, inputs []TransferInput,
+	outputs []oortx.RecipientOutput, idempotencyKey string,
+	envCfg EnvConfig, prepared *PreparedSubmitPackage) (*Session,
+	[]OutboxEvent, error) {
 
 	logger(ctx).DebugS(ctx, "Creating new OOR session",
 		slog.Int("num_inputs", len(inputs)),
@@ -77,6 +117,7 @@ func NewSessionWithIdempotencyKey(ctx context.Context,
 		RecipientOutputs: outputs,
 		Policy:           policy,
 		IdempotencyKey:   idempotencyKey,
+		PreparedSubmit:   prepared,
 	})
 	result := fut.Await(ctx)
 	if result.IsErr() {

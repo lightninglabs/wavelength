@@ -36,10 +36,11 @@ transition, persist both layers, and only then request Ark signatures.
   request codecs and transport round-trip tests.
 - [ ] Add tap-sdk-backed two-transition preparation with exact PSBT/root
   binding and deterministic graph verification.
-- [ ] Add a prepared-package entry point to the durable outgoing OOR FSM and
-  persist the asset extension in snapshots before signing.
-- [ ] Thread asset metadata through outgoing snapshots/retries and incoming
-  recipient materialization without breaking Bitcoin-only V1 sessions.
+- [x] (2026-07-14 23:45Z) Added a prepared-package entry point to the durable
+  outgoing OOR FSM; committed PSBTs, canonical recipients, roots, and sealed
+  packages survive start-message and snapshot restore before signing.
+- [ ] Thread asset metadata through incoming recipient materialization without
+  breaking Bitcoin-only V1 sessions.
 - [ ] Expose the smallest daemon/SDK surface needed by swapd to submit the
   prepared transfer.
 - [ ] Add unit, codec, FSM, transport, tamper, and restart tests; run changed
@@ -99,10 +100,13 @@ transition, persist both layers, and only then request Ark signatures.
 
 ## Outcomes & Retrospective
 
-Implementation is in progress. The SDK-neutral package/root milestone passes
-`go test ./lib/tx/oor ./oor`. The first confirmed upstream gap is
-`lightninglabs/tap-sdk#163`; this section will record the remaining test
-evidence and any further tapd/tap-sdk gaps.
+Implementation is in progress. The SDK-neutral package/root, typed transport,
+and prepared-FSM milestones pass `go test ./lib/tx/oor ./rpc/oorpb ./oor` and
+changed-code lint. Prepared sessions prove that Ark signing is the first FSM
+effect and that submit retries restore the same sealed packages and canonical
+recipients. The first confirmed upstream gap is `lightninglabs/tap-sdk#163`;
+this section will record the remaining test evidence and any further
+tapd/tap-sdk gaps.
 
 ## Context and Orientation
 
