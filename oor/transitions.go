@@ -112,7 +112,7 @@ func (s *Idle) ProcessEvent(ctx context.Context, event Event,
 		// pre-rotation operator key would otherwise produce a
 		// checkpoint output the rotated operator cannot co-sign and the
 		// server rejects at submit. See normalizeCheckpointOwnerLeaves.
-		err := normalizeCheckpointOwnerLeaves(
+		err := NormalizeCheckpointOwnerLeaves(
 			evt.Policy, evt.VTXOInputs,
 		)
 		if err != nil {
@@ -689,7 +689,7 @@ func buildSubmitPackage(policy arkscript.CheckpointPolicy,
 	return BuildSubmitPackage(policy, inputs, outputs)
 }
 
-// normalizeCheckpointOwnerLeaves rebuilds each standard input's checkpoint
+// NormalizeCheckpointOwnerLeaves rebuilds each standard input's checkpoint
 // OUTPUT owner collaborative leaf so it commits to the session operator key
 // rather than the spent input VTXO's operator key.
 //
@@ -707,7 +707,7 @@ func buildSubmitPackage(policy arkscript.CheckpointPolicy,
 // per input). Custom spends (e.g. vHTLC) carry their own owner leaf and are
 // left untouched. Before any rotation the input and session keys are equal, so
 // this is a no-op then.
-func normalizeCheckpointOwnerLeaves(policy arkscript.CheckpointPolicy,
+func NormalizeCheckpointOwnerLeaves(policy arkscript.CheckpointPolicy,
 	inputs []TransferInput) error {
 
 	if policy.OperatorKey == nil {
@@ -744,6 +744,15 @@ func normalizeCheckpointOwnerLeaves(policy arkscript.CheckpointPolicy,
 	}
 
 	return nil
+}
+
+// normalizeCheckpointOwnerLeaves preserves the package-local helper name used
+// by older tests while the exported form is consumed by asset preparation at
+// the orchestration boundary.
+func normalizeCheckpointOwnerLeaves(policy arkscript.CheckpointPolicy,
+	inputs []TransferInput) error {
+
+	return NormalizeCheckpointOwnerLeaves(policy, inputs)
 }
 
 // BuildSubmitPackage constructs a v0 OOR submit package using the shared

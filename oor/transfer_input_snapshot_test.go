@@ -5,6 +5,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
@@ -37,12 +38,23 @@ func TestTransferInputSnapshotRoundTrip(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	tapKey, err := arkscript.VTXOTapKey(
+	policy, err := arkscript.NewVTXOPolicy(
 		clientKey.PubKey(), operatorKey.PubKey(), exitDelay,
 	)
 	require.NoError(t, err)
+	assetRoot := chainhash.Hash{1, 2, 3, 4}
+	composed, err := arkscript.ComposeWithSiblingRoot(
+		policy.CompiledPolicy, assetRoot,
+	)
+	require.NoError(t, err)
+	collabSpend, err := policy.CollabSpendInfo()
+	require.NoError(t, err)
+	collabIndex := policy.ScriptIndex(collabSpend.WitnessScript)
+	require.GreaterOrEqual(t, collabIndex, 0)
+	composedCollabSpend, err := composed.SpendInfo(collabIndex)
+	require.NoError(t, err)
 
-	pkScript, err := txscript.PayToTaprootScript(tapKey)
+	pkScript, err := txscript.PayToTaprootScript(composed.OutputKey())
 	require.NoError(t, err)
 
 	ownerLeaf, err := arkscript.MultiSigCollabTapLeaf(
@@ -88,17 +100,14 @@ func TestTransferInputSnapshotRoundTrip(t *testing.T) {
 			Status:         vtxo.VTXOStatusLive,
 		},
 		VTXOPolicyTemplate: vtxoPolicyTemplate,
+		TaprootAssetRoot:   &assetRoot,
 		OwnerLeafScript:    ownerLeaf.Script,
 		OwnerLeafPolicy:    ownerLeafPolicy,
 	}
 	in.CustomSpend = &arkscript.SpendPath{
 		SpendInfo: &arkscript.SpendInfo{
-			WitnessScript: ownerLeaf.Script,
-			ControlBlock: []byte{
-				0xc0,
-				0x01,
-				0x02,
-			},
+			WitnessScript: composedCollabSpend.WitnessScript,
+			ControlBlock:  composedCollabSpend.ControlBlock,
 		},
 		RequiredSequence: wire.MaxTxInSequenceNum - 1,
 		RequiredLockTime: 113,
@@ -145,6 +154,7 @@ func TestTransferInputSnapshotRoundTrip(t *testing.T) {
 	require.Equal(t, in.OwnerLeafScript, snap.OwnerLeafScript)
 	require.Equal(t, in.OwnerLeafPolicy, snap.OwnerLeafPolicy)
 	require.Equal(t, in.VTXOPolicyTemplate, snap.VTXOPolicyTemplate)
+	require.Equal(t, in.TaprootAssetRoot, snap.TaprootAssetRoot)
 	require.Equal(t, in.CustomSpend.RequiredSequence,
 		snap.RequiredSequence)
 	require.Equal(t, in.CustomSpend.RequiredLockTime,
@@ -152,6 +162,11 @@ func TestTransferInputSnapshotRoundTrip(t *testing.T) {
 	requireExternalSignatureEqual(
 		t, in.ExternalSignatures[0], snap.ExternalSignatures[0],
 	)
+	rawSnapshot, err := encodeTransferInputSnapshot(snap)
+	require.NoError(t, err)
+	snap, err = decodeTransferInputSnapshot(rawSnapshot)
+	require.NoError(t, err)
+	require.Equal(t, in.TaprootAssetRoot, snap.TaprootAssetRoot)
 
 	rebuilt, err := TransferInputFromSnapshot(snap)
 	require.NoError(t, err)
@@ -176,6 +191,14 @@ func TestTransferInputSnapshotRoundTrip(t *testing.T) {
 	require.Equal(t, in.OwnerLeafScript, rebuilt.OwnerLeafScript)
 	require.Equal(t, in.OwnerLeafPolicy, rebuilt.OwnerLeafPolicy)
 	require.Equal(t, in.VTXOPolicyTemplate, rebuilt.VTXOPolicyTemplate)
+	require.Equal(t, in.TaprootAssetRoot, rebuilt.TaprootAssetRoot)
+	spendPath, err := rebuilt.EffectiveSpendPath()
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, len(spendPath.ControlBlock), 32)
+	require.Equal(
+		t, assetRoot[:],
+		spendPath.ControlBlock[len(spendPath.ControlBlock)-32:],
+	)
 	require.NotNil(t, rebuilt.CustomSpend)
 	require.Equal(
 		t, in.CustomSpend.RequiredSequence,
@@ -191,6 +214,12 @@ func TestTransferInputSnapshotRoundTrip(t *testing.T) {
 	requireExternalSignatureEqual(
 		t, in.ExternalSignatures[0], rebuilt.ExternalSignatures[0],
 	)
+
+	wrongRoot := assetRoot
+	wrongRoot[0] ^= 1
+	rebuilt.TaprootAssetRoot = &wrongRoot
+	err = rebuilt.Validate()
+	require.ErrorContains(t, err, "asset root and vtxo pkscript mismatch")
 }
 
 // TestCloneExternalSignaturesDeepCopiesMutableBytes verifies persisted custom
