@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	btcaddr "github.com/btcsuite/btcd/address/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/ledger"
@@ -100,11 +101,10 @@ func (h *history) List(ctx context.Context, req *walletdkrpc.ListRequest) (
 // decoded into a keyset position.
 var errInvalidActivityCursor = errors.New("invalid activity cursor")
 
-// syntheticBoardingUnconfirmedID is the id of the derive-path-only row that
-// represents an unconfirmed boarding deposit. It is recomputed live from
-// GetBalance and has no durable identity, so it is deliberately kept out of the
-// canonical store (see the projector's id guard): a delete-free upsert store
-// could never clear it once the deposit confirms under its real txid:vout id.
+// syntheticBoardingUnconfirmedID is the fallback id of the derive-path-only
+// aggregate row used when the daemon cannot correlate the balance with one
+// boarding address. The normal in-process path uses deposit-<address>, matching
+// both Deposit's response and the later confirmed ledger row.
 const syntheticBoardingUnconfirmedID = "boarding-unconfirmed"
 
 // activityScanBudgetFactor bounds how many store rows a single filtered
@@ -139,6 +139,14 @@ func (h *history) listActivity(ctx context.Context,
 		return nil, err
 	}
 
+	// A page containing only the ephemeral unconfirmed-boarding row uses
+	// that row as its cursor. It is not present in the canonical store, so
+	// resume the store scan from its beginning while suppressing the
+	// ephemeral row on this and every subsequent page.
+	if cursorID == syntheticBoardingUnconfirmedID {
+		cursorCreated, cursorID = 0, ""
+	}
+
 	pendingOnly := req.GetPendingOnly()
 
 	// Scan the keyset, applying filters in Go, until limit+1 rows match so
@@ -147,6 +155,36 @@ func (h *history) listActivity(ctx context.Context,
 	// next_cursor points at the last RETURNED row so the next page resumes
 	// exactly after it.
 	matched := make([]*walletdkrpc.WalletEntry, 0, limit+1)
+
+	// The canonical activity store deliberately excludes the aggregate
+	// unconfirmed-boarding row because it has no durable identity to
+	// transition after confirmation. Merge that live row into the first
+	// page so activity and balance expose the same pending deposit without
+	// leaving a stale PENDING row in the store. Subsequent pages omit it so
+	// cursor pagination never duplicates the synthetic entry.
+	liveOverlayIDs := make(map[string]struct{})
+	if req.GetCursor() == "" {
+		boarding, err := h.collectPendingBoardingEntries(ctx)
+		if err != nil {
+			h.deps.resolveLog().DebugS(
+				ctx,
+				"Pending boarding activity overlay skipped",
+				err,
+			)
+			boarding = nil
+		}
+
+		for _, entry := range boarding {
+			liveOverlayIDs[entry.GetId()] = struct{}{}
+			if matchesActivityFilter(
+				entry, pendingOnly, kindFilter,
+			) {
+
+				matched = append(matched, entry)
+			}
+		}
+	}
+
 	lastCreated, lastID := cursorCreated, cursorID
 	scanBudget := int(limit) * activityScanBudgetFactor
 	scanned := 0
@@ -209,8 +247,16 @@ func (h *history) listActivity(ctx context.Context,
 	switch {
 	case hasMore:
 		last := matched[len(matched)-1]
+		cursorID := last.GetId()
+		if _, ok := liveOverlayIDs[cursorID]; ok {
+			// The overlay is absent from the canonical store, so
+			// its displayed id is not a valid keyset position.
+			// Encode the reserved marker that the decode path
+			// resets to the store start sentinel.
+			cursorID = syntheticBoardingUnconfirmedID
+		}
 		nextCursor = encodeActivityCursor(
-			last.GetCreatedAtUnix(), last.GetId(),
+			last.GetCreatedAtUnix(), cursorID,
 		)
 
 	case budgetExhausted:
@@ -257,6 +303,21 @@ func (h *history) countPending(ctx context.Context) (uint32, error) {
 	if count < 0 {
 		count = 0
 	}
+
+	// The aggregate unconfirmed-boarding row is intentionally ephemeral
+	// and therefore absent from CountByStatus. Include it in the wallet
+	// summary whenever the backing wallet currently reports pending
+	// boarding value.
+	boarding, err := h.collectPendingBoardingEntries(ctx)
+	if err != nil {
+		h.deps.resolveLog().DebugS(
+			ctx,
+			"Pending boarding activity count overlay skipped",
+			err,
+		)
+		boarding = nil
+	}
+	count += int64(len(boarding))
 
 	return uint32(count), nil
 }
@@ -558,10 +619,12 @@ func (h *history) collectSwapEntries(ctx context.Context) (
 	return out, swapOORCorrelationsFromSwaps(resp.GetSwaps()), nil
 }
 
-// collectPendingBoardingEntries adds an aggregate row for funds seen by the
-// on-chain wallet but not yet confirmed into a ledger-backed boarding deposit.
-// Once confirmed, ListTransactions owns the durable row and this synthetic
-// pending entry naturally disappears.
+// collectPendingBoardingEntries adds a live row for funds seen by the on-chain
+// wallet but not yet confirmed into a ledger-backed boarding deposit. When one
+// active boarding address accounts for the aggregate zero-conf balance, the
+// row immediately uses deposit-<address> so its identity survives confirmation.
+// Older embeddings and ambiguous multi-address balances retain the aggregate
+// fallback row.
 func (h *history) collectPendingBoardingEntries(ctx context.Context) (
 	[]*walletdkrpc.WalletEntry, error) {
 
@@ -580,16 +643,74 @@ func (h *history) collectPendingBoardingEntries(ctx context.Context) (
 	}
 
 	now := nowUnix()
+	id := syntheticBoardingUnconfirmedID
+	var request *walletdkrpc.WalletEntryRequest
+
+	provider, ok := h.deps.RPCServer.(activeBoardingAddressProvider)
+	if ok && h.deps.ChainParams != nil {
+		addresses, err := provider.ListActiveBoardingAddresses(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("list active boarding "+
+				"addresses: %w", err)
+		}
+
+		utxos, err := provider.ListUnconfirmedBoardingUTXOs(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("list unconfirmed boarding "+
+				"utxos: %w", err)
+		}
+
+		active := make(map[string]struct{}, len(addresses))
+		for _, address := range addresses {
+			active[address] = struct{}{}
+		}
+
+		var address string
+		var amount int64
+		for _, utxo := range utxos {
+			if utxo == nil || utxo.Confirmations != 0 ||
+				len(utxo.PkScript) != 34 ||
+				utxo.PkScript[0] != 0x51 ||
+				utxo.PkScript[1] != 0x20 {
+
+				continue
+			}
+
+			derived, err := btcaddr.NewAddressTaproot(
+				utxo.PkScript[2:], h.deps.ChainParams,
+			)
+			if err != nil {
+				continue
+			}
+			derivedString := derived.String()
+			if _, ok := active[derivedString]; !ok {
+				continue
+			}
+			if address != "" && address != derivedString {
+				address = ""
+				break
+			}
+
+			address = derivedString
+			amount += int64(utxo.Amount)
+		}
+
+		if address != "" && amount == resp.GetBoardingUnconfirmedSat() {
+			id = fmt.Sprintf("deposit-%s", address)
+			request = requestFromOnchainAddress(address)
+		}
+	}
 
 	return []*walletdkrpc.WalletEntry{
 		{
-			Id:            syntheticBoardingUnconfirmedID,
+			Id:            id,
 			Kind:          walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT,
 			Status:        walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
 			AmountSat:     resp.GetBoardingUnconfirmedSat(),
 			Counterparty:  "boarding",
 			CreatedAtUnix: now,
 			UpdatedAtUnix: now,
+			Request:       request,
 			Progress: &walletdkrpc.WalletEntryProgress{
 				Phase: walletdkrpc.
 					WalletEntryPhase_WALLET_ENTRY_PHASE_WAITING_FOR_CONFIRMATION,

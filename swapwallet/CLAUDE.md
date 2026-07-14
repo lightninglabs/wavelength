@@ -150,11 +150,12 @@ default builds avoid the swap executor's dependency graph.
   address is SUMMED into one row (`sumDepositsByAddress`) so a reused
   address shows its total. `Deposit` does NOT project a row — allocating
   an address is not a pending deposit — it only returns that id so a
-  caller can correlate the eventual confirmed row. Per-address is the
-  CONFIRMED phase only: unconfirmed boarding funds have no per-address
-  source (the daemon exposes only aggregate `boarding_unconfirmed_sat`),
-  so they surface via `Balance` and the single derive-path-only
-  `boarding-unconfirmed` row, never projected into the store.
+  caller can correlate the eventual confirmed row. Before confirmation,
+  the in-process daemon address registry is correlated with zero-conf wallet
+  UTXOs so the live overlay normally uses the same `deposit-<address>` id.
+  Older embeddings and ambiguous multi-address balances retain the ephemeral
+  aggregate `boarding-unconfirmed` fallback. Neither live overlay is projected
+  into the store or resumable event log.
 - **`Balance` projection** maps daemonrpc fields onto the walletdkrpc
   shape: `confirmed_sat` is VTXO-only (`vtxo_balance_sat`),
   `pending_in_sat` sums `boarding_confirmed_sat +

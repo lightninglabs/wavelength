@@ -113,6 +113,18 @@ type RPCServer interface {
 		*daemonrpc.JoinNextRoundResponse, error)
 }
 
+// activeBoardingAddressProvider is implemented by the in-process daemon RPC
+// server. It remains optional so older embeddings can retain the aggregate
+// unconfirmed-deposit fallback.
+type activeBoardingAddressProvider interface {
+	ListActiveBoardingAddresses(ctx context.Context) ([]string, error)
+
+	ListUnconfirmedBoardingUTXOs(ctx context.Context) (
+		[]*wallet.Utxo,
+		error,
+	)
+}
+
 // defaultWalletDeadline caps how long wallet-local entries can remain PENDING
 // before the runtime projects them as FAILED with a timeout reason. Swap rows
 // use the swap FSM's own terminal state instead.

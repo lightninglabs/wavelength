@@ -31,14 +31,14 @@ func (r *Runtime) project(ctx context.Context, entry *walletdkrpc.WalletEntry) (
 	}
 
 	// A row with no canonical id cannot be keyed; skip it, matching the
-	// id-guard the pending tracker already applies. The synthetic
-	// boarding-unconfirmed row is skipped for the same reason: it is
-	// ephemeral live state recomputed from GetBalance with no durable
-	// identity, so persisting it into a delete-free store would strand a
-	// PENDING row that never clears once the deposit confirms under its
-	// real txid:vout id.
+	// id-guard the pending tracker already applies. Zero-conf boarding rows
+	// are also ephemeral live state recomputed from wallet UTXOs. Even when
+	// one has the stable deposit-<address> id, persisting it could strand a
+	// PENDING row if the transaction never confirms. The later ledger row
+	// has a txid/height and is therefore projected under that same id.
 	if entry.GetId() == "" ||
-		entry.GetId() == syntheticBoardingUnconfirmedID {
+		entry.GetId() == syntheticBoardingUnconfirmedID ||
+		isUnconfirmedBoardingOverlay(entry) {
 		return 0, nil
 	}
 
@@ -60,6 +60,19 @@ func (r *Runtime) project(ctx context.Context, entry *walletdkrpc.WalletEntry) (
 	}
 
 	return seq, nil
+}
+
+// isUnconfirmedBoardingOverlay identifies the address-scoped live row without
+// relying on its id. Confirmed-but-still-boarding deposits share the same id
+// and PENDING status, but carry a txid and confirmation height and must land in
+// the canonical store.
+func isUnconfirmedBoardingOverlay(entry *walletdkrpc.WalletEntry) bool {
+	return entry.GetKind() == walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT &&
+		entry.GetStatus() == walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING &&
+		entry.GetProgress().GetPhase() == walletdkrpc.
+			WalletEntryPhase_WALLET_ENTRY_PHASE_WAITING_FOR_CONFIRMATION &&
+		entry.GetProgress().GetTxid() == "" &&
+		entry.GetProgress().GetConfirmationHeight() == 0
 }
 
 // projectAndEmit projects the entry into the canonical activity log and then
