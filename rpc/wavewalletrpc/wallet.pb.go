@@ -4,7 +4,7 @@
 // 	protoc        v3.21.12
 // source: wallet.proto
 
-package walletdkrpc
+package wavewalletrpc
 
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
@@ -1194,14 +1194,14 @@ type PrepareSendResponse struct {
 	// no quote is available (LOCAL_ONLY) or the quote does not
 	// distinguish same-Ark from Lightning, the value is
 	// SEND_RAIL_OFFCHAIN_UNKNOWN until Send starts.
-	Rail SendRail `protobuf:"varint,7,opt,name=rail,proto3,enum=walletdkrpc.SendRail" json:"rail,omitempty"`
+	Rail SendRail `protobuf:"varint,7,opt,name=rail,proto3,enum=wavewalletrpc.SendRail" json:"rail,omitempty"`
 	// quote_status describes how complete the prepare-time quote is.
 	// Invoice sends: COMPLETE when every amount and fee is backed by a
 	// swap remote quote; LOCAL_ONLY when the invoice parsed locally but
 	// the swap quote API was unavailable. Onchain sends: COMPLETE when
 	// waverpc.EstimateFee returned a binding operator quote;
 	// LOCAL_ONLY when only a local fee floor could be computed.
-	QuoteStatus SendQuoteStatus `protobuf:"varint,8,opt,name=quote_status,json=quoteStatus,proto3,enum=walletdkrpc.SendQuoteStatus" json:"quote_status,omitempty"`
+	QuoteStatus SendQuoteStatus `protobuf:"varint,8,opt,name=quote_status,json=quoteStatus,proto3,enum=wavewalletrpc.SendQuoteStatus" json:"quote_status,omitempty"`
 	// destination_summary is a short display string suitable for CLI and
 	// UI confirmation prompts.
 	DestinationSummary string `protobuf:"bytes,9,opt,name=destination_summary,json=destinationSummary,proto3" json:"destination_summary,omitempty"`
@@ -1762,12 +1762,12 @@ type ListRequest struct {
 	// (LIST_VIEW_UNSPECIFIED) is treated as LIST_VIEW_ACTIVITY.
 	//
 	// WIRE-BREAKING CHANGE: this message intentionally renumbers the
-	// PR #440 fields (pending_only/kinds/limit/offset). walletdkrpc has
+	// PR #440 fields (pending_only/kinds/limit/offset). wavewalletrpc has
 	// no deployed external consumers yet, so the cleaner shape with
 	// `view` at field 1 is preferred over a backwards-compatible
 	// append. Any binary built against PR #440's ListRequest must be
 	// recompiled.
-	View ListView `protobuf:"varint,1,opt,name=view,proto3,enum=walletdkrpc.ListView" json:"view,omitempty"`
+	View ListView `protobuf:"varint,1,opt,name=view,proto3,enum=wavewalletrpc.ListView" json:"view,omitempty"`
 	// pending_only filters the returned entries to those still in
 	// flight. Applies to the ACTIVITY view; ignored for VTXOS and
 	// ONCHAIN.
@@ -1775,7 +1775,7 @@ type ListRequest struct {
 	// kinds optionally narrows the response to specific entry
 	// categories. Applies to the ACTIVITY view; ignored for VTXOS and
 	// ONCHAIN. When empty, all kinds are returned.
-	Kinds []EntryKind `protobuf:"varint,3,rep,packed,name=kinds,proto3,enum=walletdkrpc.EntryKind" json:"kinds,omitempty"`
+	Kinds []EntryKind `protobuf:"varint,3,rep,packed,name=kinds,proto3,enum=wavewalletrpc.EntryKind" json:"kinds,omitempty"`
 	// limit caps the response size. Zero means use the daemon default.
 	Limit uint32 `protobuf:"varint,4,opt,name=limit,proto3" json:"limit,omitempty"`
 	// offset is the pagination offset within the chosen view. It applies
@@ -1871,7 +1871,7 @@ type ListResponse struct {
 	// WIRE-BREAKING CHANGE: PR #440 had
 	// `repeated WalletEntry entries = 1; uint32 total = 2;` at the top
 	// level. Those fields are now reachable as `body.activity.entries`
-	// and `body.activity.total`. walletdkrpc has no deployed external
+	// and `body.activity.total`. wavewalletrpc has no deployed external
 	// consumers, so the cleaner oneof shape is preferred over
 	// reserving the old numbers.
 	//
@@ -3536,7 +3536,7 @@ type ExitPlanEntry struct {
 	ExitJobFound bool `protobuf:"varint,10,opt,name=exit_job_found,json=exitJobFound,proto3" json:"exit_job_found,omitempty"`
 	// exit_status is the current phase of the existing unroll job, when
 	// exit_job_found is true.
-	ExitStatus ExitJobStatus `protobuf:"varint,11,opt,name=exit_status,json=exitStatus,proto3,enum=walletdkrpc.ExitJobStatus" json:"exit_status,omitempty"`
+	ExitStatus ExitJobStatus `protobuf:"varint,11,opt,name=exit_status,json=exitStatus,proto3,enum=wavewalletrpc.ExitJobStatus" json:"exit_status,omitempty"`
 	// sweep_txid is the hex-encoded txid of the existing job's sweep
 	// transaction, set once it has been broadcast.
 	SweepTxid string `protobuf:"bytes,12,opt,name=sweep_txid,json=sweepTxid,proto3" json:"sweep_txid,omitempty"`
@@ -3552,7 +3552,7 @@ type ExitPlanEntry struct {
 	// shortfall the wallet could cover (wallet underfunded or too few fee
 	// inputs, also reflected in funding_shortfall_sat). It is
 	// EXIT_INFEASIBILITY_REASON_UNSPECIFIED when can_start is true.
-	InfeasibilityReason ExitInfeasibilityReason `protobuf:"varint,15,opt,name=infeasibility_reason,json=infeasibilityReason,proto3,enum=walletdkrpc.ExitInfeasibilityReason" json:"infeasibility_reason,omitempty"`
+	InfeasibilityReason ExitInfeasibilityReason `protobuf:"varint,15,opt,name=infeasibility_reason,json=infeasibilityReason,proto3,enum=wavewalletrpc.ExitInfeasibilityReason" json:"infeasibility_reason,omitempty"`
 	unknownFields       protoimpl.UnknownFields
 	sizeCache           protoimpl.SizeCache
 }
@@ -4119,7 +4119,7 @@ type ExitResponse struct {
 	// actor_id is the identifier of the durable unilateral exit job actor.
 	ActorId string `protobuf:"bytes,2,opt,name=actor_id,json=actorId,proto3" json:"actor_id,omitempty"`
 	// mode identifies the branch the daemon took.
-	Mode ExitMode `protobuf:"varint,3,opt,name=mode,proto3,enum=walletdkrpc.ExitMode" json:"mode,omitempty"`
+	Mode ExitMode `protobuf:"varint,3,opt,name=mode,proto3,enum=wavewalletrpc.ExitMode" json:"mode,omitempty"`
 	// queued_outpoints lists the outpoints accepted into cooperative leave.
 	QueuedOutpoints []string `protobuf:"bytes,4,rep,name=queued_outpoints,json=queuedOutpoints,proto3" json:"queued_outpoints,omitempty"`
 	// onchain_address is the cooperative leave destination used by the
@@ -4576,7 +4576,7 @@ type ExitStatusResponse struct {
 	// found is true if an exit job exists for the requested outpoint.
 	Found bool `protobuf:"varint,1,opt,name=found,proto3" json:"found,omitempty"`
 	// status is the current high-level phase of the exit job.
-	Status ExitJobStatus `protobuf:"varint,2,opt,name=status,proto3,enum=walletdkrpc.ExitJobStatus" json:"status,omitempty"`
+	Status ExitJobStatus `protobuf:"varint,2,opt,name=status,proto3,enum=wavewalletrpc.ExitJobStatus" json:"status,omitempty"`
 	// sweep_txid is the txid of the sweep transaction, set once the
 	// sweep has been broadcast.
 	SweepTxid string `protobuf:"bytes,3,opt,name=sweep_txid,json=sweepTxid,proto3" json:"sweep_txid,omitempty"`
@@ -4752,7 +4752,7 @@ type ExitSummaryItem struct {
 	// outpoint is the exiting VTXO outpoint, formatted as "txid:index".
 	Outpoint string `protobuf:"bytes,1,opt,name=outpoint,proto3" json:"outpoint,omitempty"`
 	// status is the current high-level phase of the exit job.
-	Status ExitJobStatus `protobuf:"varint,2,opt,name=status,proto3,enum=walletdkrpc.ExitJobStatus" json:"status,omitempty"`
+	Status ExitJobStatus `protobuf:"varint,2,opt,name=status,proto3,enum=wavewalletrpc.ExitJobStatus" json:"status,omitempty"`
 	// vtxo_amount_sat is the value of the VTXO being exited.
 	VtxoAmountSat int64 `protobuf:"varint,3,opt,name=vtxo_amount_sat,json=vtxoAmountSat,proto3" json:"vtxo_amount_sat,omitempty"`
 	// est_total_fee_sat is the projected total on-chain fee for this exit
@@ -4926,7 +4926,7 @@ type SubscribeWalletRequest struct {
 	IncludeExisting bool `protobuf:"varint,1,opt,name=include_existing,json=includeExisting,proto3" json:"include_existing,omitempty"`
 	// kinds optionally narrows the stream to specific entry categories.
 	// When empty, all kinds are streamed.
-	Kinds []EntryKind `protobuf:"varint,2,rep,packed,name=kinds,proto3,enum=walletdkrpc.EntryKind" json:"kinds,omitempty"`
+	Kinds []EntryKind `protobuf:"varint,2,rep,packed,name=kinds,proto3,enum=wavewalletrpc.EntryKind" json:"kinds,omitempty"`
 	// cursor resumes the stream from a prior SubscribeWalletResponse.cursor:
 	// the daemon replays every event after it, then continues live. Zero
 	// (unset) starts from the full history when include_existing is set, or
@@ -5154,11 +5154,11 @@ type WalletEntry struct {
 	// outpoint or txid.
 	Id string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	// kind is the user-visible category.
-	Kind EntryKind `protobuf:"varint,2,opt,name=kind,proto3,enum=walletdkrpc.EntryKind" json:"kind,omitempty"`
+	Kind EntryKind `protobuf:"varint,2,opt,name=kind,proto3,enum=wavewalletrpc.EntryKind" json:"kind,omitempty"`
 	// status is the coarse user-facing outcome: PENDING, COMPLETE, or
 	// FAILED. It mirrors the backing source's durable state and should
 	// not be reinterpreted by display clients.
-	Status EntryStatus `protobuf:"varint,3,opt,name=status,proto3,enum=walletdkrpc.EntryStatus" json:"status,omitempty"`
+	Status EntryStatus `protobuf:"varint,3,opt,name=status,proto3,enum=wavewalletrpc.EntryStatus" json:"status,omitempty"`
 	// amount_sat is signed: positive values are incoming to the wallet,
 	// negative values are outgoing.
 	AmountSat int64 `protobuf:"varint,4,opt,name=amount_sat,json=amountSat,proto3" json:"amount_sat,omitempty"`
@@ -5196,7 +5196,7 @@ type WalletEntry struct {
 	// entry omits the field entirely (presence-tracked), so its absence is the
 	// canonical "no failure" signal and ENTRY_FAILURE_CODE_UNSPECIFIED is never
 	// sent on the wire. failure_reason remains the human-readable supplement.
-	FailureCode   *EntryFailureCode `protobuf:"varint,13,opt,name=failure_code,json=failureCode,proto3,enum=walletdkrpc.EntryFailureCode,oneof" json:"failure_code,omitempty"`
+	FailureCode   *EntryFailureCode `protobuf:"varint,13,opt,name=failure_code,json=failureCode,proto3,enum=wavewalletrpc.EntryFailureCode,oneof" json:"failure_code,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -5582,7 +5582,7 @@ func (x *ArkAddressRequest) GetAddress() string {
 type WalletEntryProgress struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// phase is the coarse lifecycle phase for this entry.
-	Phase WalletEntryPhase `protobuf:"varint,1,opt,name=phase,proto3,enum=walletdkrpc.WalletEntryPhase" json:"phase,omitempty"`
+	Phase WalletEntryPhase `protobuf:"varint,1,opt,name=phase,proto3,enum=wavewalletrpc.WalletEntryPhase" json:"phase,omitempty"`
 	// phase_label is a short lowercase label that clients can render as-is
 	// while they migrate to enum-based presentation.
 	PhaseLabel string `protobuf:"bytes,2,opt,name=phase_label,json=phaseLabel,proto3" json:"phase_label,omitempty"`
@@ -5686,7 +5686,7 @@ var File_wallet_proto protoreflect.FileDescriptor
 
 const file_wallet_proto_rawDesc = "" +
 	"\n" +
-	"\fwallet.proto\x12\vwalletdkrpc\"\xcb\x01\n" +
+	"\fwallet.proto\x12\rwavewalletrpc\"\xcb\x01\n" +
 	"\rCreateRequest\x12'\n" +
 	"\x0fwallet_password\x18\x01 \x01(\fR\x0ewalletPassword\x12'\n" +
 	"\x0fseed_passphrase\x18\x02 \x01(\fR\x0eseedPassphrase\x12\x1a\n" +
@@ -5713,7 +5713,7 @@ const file_wallet_proto_rawDesc = "" +
 	"\x04note\x18\x04 \x01(\tR\x04note\x12\x1e\n" +
 	"\vmax_fee_sat\x18\x05 \x01(\x04R\tmaxFeeSat\x12\x1b\n" +
 	"\tsweep_all\x18\x06 \x01(\bR\bsweepAllB\r\n" +
-	"\vdestination\"\xb3\x05\n" +
+	"\vdestination\"\xb9\x05\n" +
 	"\x13PrepareSendResponse\x12$\n" +
 	"\x0esend_intent_id\x18\x01 \x01(\tR\fsendIntentId\x12\x1d\n" +
 	"\n" +
@@ -5721,29 +5721,29 @@ const file_wallet_proto_rawDesc = "" +
 	"\x10expected_fee_sat\x18\x03 \x01(\x03R\x0eexpectedFeeSat\x12\x1b\n" +
 	"\tfee_known\x18\x04 \x01(\bR\bfeeKnown\x12;\n" +
 	"\x1aexpected_total_outflow_sat\x18\x05 \x01(\x03R\x17expectedTotalOutflowSat\x12.\n" +
-	"\x13total_outflow_known\x18\x06 \x01(\bR\x11totalOutflowKnown\x12)\n" +
-	"\x04rail\x18\a \x01(\x0e2\x15.walletdkrpc.SendRailR\x04rail\x12?\n" +
-	"\fquote_status\x18\b \x01(\x0e2\x1c.walletdkrpc.SendQuoteStatusR\vquoteStatus\x12/\n" +
+	"\x13total_outflow_known\x18\x06 \x01(\bR\x11totalOutflowKnown\x12+\n" +
+	"\x04rail\x18\a \x01(\x0e2\x17.wavewalletrpc.SendRailR\x04rail\x12A\n" +
+	"\fquote_status\x18\b \x01(\x0e2\x1e.wavewalletrpc.SendQuoteStatusR\vquoteStatus\x12/\n" +
 	"\x13destination_summary\x18\t \x01(\tR\x12destinationSummary\x12/\n" +
 	"\x13invoice_description\x18\n" +
 	" \x01(\tR\x12invoiceDescription\x12!\n" +
 	"\fpayment_hash\x18\v \x01(\tR\vpaymentHash\x12&\n" +
 	"\x0fexpires_at_unix\x18\f \x01(\x03R\rexpiresAtUnix\x12-\n" +
 	"\x12selected_outpoints\x18\r \x03(\tR\x11selectedOutpoints\x12\x18\n" +
-	"\awarning\x18\x0e \x01(\tR\awarning\x12A\n" +
-	"\x0ecredit_preview\x18\x0f \x01(\v2\x1a.walletdkrpc.CreditPreviewR\rcreditPreview\"3\n" +
+	"\awarning\x18\x0e \x01(\tR\awarning\x12C\n" +
+	"\x0ecredit_preview\x18\x0f \x01(\v2\x1c.wavewalletrpc.CreditPreviewR\rcreditPreview\"3\n" +
 	"\vSendRequest\x12$\n" +
-	"\x0esend_intent_id\x18\x01 \x01(\tR\fsendIntentId\"j\n" +
-	"\fSendResponse\x12.\n" +
-	"\x05entry\x18\x01 \x01(\v2\x18.walletdkrpc.WalletEntryR\x05entry\x12*\n" +
+	"\x0esend_intent_id\x18\x01 \x01(\tR\fsendIntentId\"l\n" +
+	"\fSendResponse\x120\n" +
+	"\x05entry\x18\x01 \x01(\v2\x1a.wavewalletrpc.WalletEntryR\x05entry\x12*\n" +
 	"\x11actual_amount_sat\x18\x02 \x01(\x03R\x0factualAmountSat\":\n" +
 	"\vRecvRequest\x12\x17\n" +
 	"\aamt_sat\x18\x01 \x01(\x04R\x06amtSat\x12\x12\n" +
-	"\x04memo\x18\x02 \x01(\tR\x04memo\"\x9b\x01\n" +
+	"\x04memo\x18\x02 \x01(\tR\x04memo\"\x9f\x01\n" +
 	"\fRecvResponse\x12\x18\n" +
-	"\ainvoice\x18\x01 \x01(\tR\ainvoice\x12.\n" +
-	"\x05entry\x18\x02 \x01(\v2\x18.walletdkrpc.WalletEntryR\x05entry\x12A\n" +
-	"\x0ecredit_receive\x18\x03 \x01(\v2\x1a.walletdkrpc.CreditReceiveR\rcreditReceive\"\xe9\x01\n" +
+	"\ainvoice\x18\x01 \x01(\tR\ainvoice\x120\n" +
+	"\x05entry\x18\x02 \x01(\v2\x1a.wavewalletrpc.WalletEntryR\x05entry\x12C\n" +
+	"\x0ecredit_receive\x18\x03 \x01(\v2\x1c.wavewalletrpc.CreditReceiveR\rcreditReceive\"\xe9\x01\n" +
 	"\rCreditPreview\x12&\n" +
 	"\x0fmust_use_credit\x18\x01 \x01(\bR\rmustUseCredit\x12,\n" +
 	"\x12credit_applied_sat\x18\x02 \x01(\x04R\x10creditAppliedSat\x120\n" +
@@ -5754,27 +5754,27 @@ const file_wallet_proto_rawDesc = "" +
 	"\foperation_id\x18\x01 \x01(\tR\voperationId\x12\x1d\n" +
 	"\n" +
 	"amount_sat\x18\x02 \x01(\x04R\tamountSat\x12!\n" +
-	"\fpayment_hash\x18\x03 \x01(\tR\vpaymentHash\"\xcf\x01\n" +
-	"\vListRequest\x12)\n" +
-	"\x04view\x18\x01 \x01(\x0e2\x15.walletdkrpc.ListViewR\x04view\x12!\n" +
-	"\fpending_only\x18\x02 \x01(\bR\vpendingOnly\x12,\n" +
-	"\x05kinds\x18\x03 \x03(\x0e2\x16.walletdkrpc.EntryKindR\x05kinds\x12\x14\n" +
+	"\fpayment_hash\x18\x03 \x01(\tR\vpaymentHash\"\xd3\x01\n" +
+	"\vListRequest\x12+\n" +
+	"\x04view\x18\x01 \x01(\x0e2\x17.wavewalletrpc.ListViewR\x04view\x12!\n" +
+	"\fpending_only\x18\x02 \x01(\bR\vpendingOnly\x12.\n" +
+	"\x05kinds\x18\x03 \x03(\x0e2\x18.wavewalletrpc.EntryKindR\x05kinds\x12\x14\n" +
 	"\x05limit\x18\x04 \x01(\rR\x05limit\x12\x16\n" +
 	"\x06offset\x18\x05 \x01(\rR\x06offset\x12\x16\n" +
-	"\x06cursor\x18\x06 \x01(\tR\x06cursor\"\xbc\x01\n" +
-	"\fListResponse\x127\n" +
-	"\bactivity\x18\x01 \x01(\v2\x19.walletdkrpc.ActivityListH\x00R\bactivity\x122\n" +
-	"\x05vtxos\x18\x02 \x01(\v2\x1a.walletdkrpc.VTXOInventoryH\x00R\x05vtxos\x127\n" +
-	"\aonchain\x18\x03 \x01(\v2\x1b.walletdkrpc.OnchainHistoryH\x00R\aonchainB\x06\n" +
-	"\x04body\"\x94\x01\n" +
-	"\fActivityList\x122\n" +
-	"\aentries\x18\x01 \x03(\v2\x18.walletdkrpc.WalletEntryR\aentries\x12\x14\n" +
+	"\x06cursor\x18\x06 \x01(\tR\x06cursor\"\xc2\x01\n" +
+	"\fListResponse\x129\n" +
+	"\bactivity\x18\x01 \x01(\v2\x1b.wavewalletrpc.ActivityListH\x00R\bactivity\x124\n" +
+	"\x05vtxos\x18\x02 \x01(\v2\x1c.wavewalletrpc.VTXOInventoryH\x00R\x05vtxos\x129\n" +
+	"\aonchain\x18\x03 \x01(\v2\x1d.wavewalletrpc.OnchainHistoryH\x00R\aonchainB\x06\n" +
+	"\x04body\"\x96\x01\n" +
+	"\fActivityList\x124\n" +
+	"\aentries\x18\x01 \x03(\v2\x1a.wavewalletrpc.WalletEntryR\aentries\x12\x14\n" +
 	"\x05total\x18\x02 \x01(\rR\x05total\x12\x19\n" +
 	"\bhas_more\x18\x03 \x01(\bR\ahasMore\x12\x1f\n" +
 	"\vnext_cursor\x18\x04 \x01(\tR\n" +
-	"nextCursor\"T\n" +
-	"\rVTXOInventory\x12-\n" +
-	"\x05vtxos\x18\x01 \x03(\v2\x17.walletdkrpc.WalletVTXOR\x05vtxos\x12\x14\n" +
+	"nextCursor\"V\n" +
+	"\rVTXOInventory\x12/\n" +
+	"\x05vtxos\x18\x01 \x03(\v2\x19.wavewalletrpc.WalletVTXOR\x05vtxos\x12\x14\n" +
 	"\x05total\x18\x02 \x01(\rR\x05total\"\xd4\x01\n" +
 	"\n" +
 	"WalletVTXO\x12\x1a\n" +
@@ -5784,9 +5784,9 @@ const file_wallet_proto_rawDesc = "" +
 	"\x06status\x18\x03 \x01(\tR\x06status\x12!\n" +
 	"\fbatch_expiry\x18\x04 \x01(\x05R\vbatchExpiry\x12'\n" +
 	"\x0frelative_expiry\x18\x05 \x01(\rR\x0erelativeExpiry\x12'\n" +
-	"\x0fcommitment_txid\x18\x06 \x01(\tR\x0ecommitmentTxid\"k\n" +
-	"\x0eOnchainHistory\x12(\n" +
-	"\x03txs\x18\x01 \x03(\v2\x16.walletdkrpc.OnchainTxR\x03txs\x12\x14\n" +
+	"\x0fcommitment_txid\x18\x06 \x01(\tR\x0ecommitmentTxid\"m\n" +
+	"\x0eOnchainHistory\x12*\n" +
+	"\x03txs\x18\x01 \x03(\v2\x18.wavewalletrpc.OnchainTxR\x03txs\x12\x14\n" +
 	"\x05total\x18\x02 \x01(\rR\x05total\x12\x19\n" +
 	"\bhas_more\x18\x03 \x01(\bR\ahasMore\"\xfe\x01\n" +
 	"\tOnchainTx\x12\x12\n" +
@@ -5801,12 +5801,12 @@ const file_wallet_proto_rawDesc = "" +
 	"\vdescription\x18\b \x01(\tR\vdescription\"K\n" +
 	"\x16InspectActivityRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12!\n" +
-	"\fledger_limit\x18\x02 \x01(\rR\vledgerLimit\"\x8c\x02\n" +
-	"\x17InspectActivityResponse\x12.\n" +
-	"\x05entry\x18\x01 \x01(\v2\x18.walletdkrpc.WalletEntryR\x05entry\x122\n" +
-	"\x04swap\x18\x02 \x01(\v2\x1e.walletdkrpc.ActivitySwapTraceR\x04swap\x124\n" +
-	"\x05vtxos\x18\x03 \x03(\v2\x1e.walletdkrpc.ActivityVTXOTraceR\x05vtxos\x12A\n" +
-	"\vledger_rows\x18\x04 \x03(\v2 .walletdkrpc.ActivityLedgerTraceR\n" +
+	"\fledger_limit\x18\x02 \x01(\rR\vledgerLimit\"\x94\x02\n" +
+	"\x17InspectActivityResponse\x120\n" +
+	"\x05entry\x18\x01 \x01(\v2\x1a.wavewalletrpc.WalletEntryR\x05entry\x124\n" +
+	"\x04swap\x18\x02 \x01(\v2 .wavewalletrpc.ActivitySwapTraceR\x04swap\x126\n" +
+	"\x05vtxos\x18\x03 \x03(\v2 .wavewalletrpc.ActivityVTXOTraceR\x05vtxos\x12C\n" +
+	"\vledger_rows\x18\x04 \x03(\v2\".wavewalletrpc.ActivityLedgerTraceR\n" +
 	"ledgerRows\x12\x14\n" +
 	"\x05notes\x18\x05 \x03(\tR\x05notes\"\xdc\x05\n" +
 	"\x11ActivitySwapTrace\x12!\n" +
@@ -5866,10 +5866,10 @@ const file_wallet_proto_rawDesc = "" +
 	"\foutput_index\x18\x12 \x01(\x05R\voutputIndex\"2\n" +
 	"\x0eDepositRequest\x12 \n" +
 	"\famt_sat_hint\x18\x01 \x01(\x04R\n" +
-	"amtSatHint\"j\n" +
+	"amtSatHint\"l\n" +
 	"\x0fDepositResponse\x12'\n" +
-	"\x0fonchain_address\x18\x01 \x01(\tR\x0eonchainAddress\x12.\n" +
-	"\x05entry\x18\x02 \x01(\v2\x18.walletdkrpc.WalletEntryR\x05entry\"\x10\n" +
+	"\x0fonchain_address\x18\x01 \x01(\tR\x0eonchainAddress\x120\n" +
+	"\x05entry\x18\x02 \x01(\v2\x1a.wavewalletrpc.WalletEntryR\x05entry\"\x10\n" +
 	"\x0eBalanceRequest\"\xe6\x01\n" +
 	"\x0fBalanceResponse\x12#\n" +
 	"\rconfirmed_sat\x18\x01 \x01(\x03R\fconfirmedSat\x12$\n" +
@@ -5877,17 +5877,17 @@ const file_wallet_proto_rawDesc = "" +
 	"\x0fpending_out_sat\x18\x03 \x01(\x03R\rpendingOutSat\x120\n" +
 	"\x14credit_available_sat\x18\x04 \x01(\x04R\x12creditAvailableSat\x12.\n" +
 	"\x13credit_reserved_sat\x18\x05 \x01(\x04R\x11creditReservedSat\"\x0f\n" +
-	"\rStatusRequest\"\xb9\x01\n" +
+	"\rStatusRequest\"\xbb\x01\n" +
 	"\x0eStatusResponse\x12\x14\n" +
 	"\x05ready\x18\x01 \x01(\bR\x05ready\x12\x1a\n" +
 	"\bunlocked\x18\x02 \x01(\bR\bunlocked\x12\x18\n" +
-	"\anetwork\x18\x03 \x01(\tR\anetwork\x126\n" +
-	"\abalance\x18\x04 \x01(\v2\x1c.walletdkrpc.BalanceResponseR\abalance\x12#\n" +
+	"\anetwork\x18\x03 \x01(\tR\anetwork\x128\n" +
+	"\abalance\x18\x04 \x01(\v2\x1e.wavewalletrpc.BalanceResponseR\abalance\x12#\n" +
 	"\rpending_count\x18\x05 \x01(\rR\fpendingCount\"S\n" +
 	"\x12GetExitPlanRequest\x12\x1c\n" +
 	"\toutpoints\x18\x01 \x03(\tR\toutpoints\x12\x1f\n" +
 	"\vconf_target\x18\x02 \x01(\rR\n" +
-	"confTarget\"\xd8\x05\n" +
+	"confTarget\"\xdc\x05\n" +
 	"\rExitPlanEntry\x12\x1a\n" +
 	"\boutpoint\x18\x01 \x01(\tR\boutpoint\x12'\n" +
 	"\x0ffunding_address\x18\x02 \x01(\tR\x0efundingAddress\x125\n" +
@@ -5899,17 +5899,17 @@ const file_wallet_proto_rawDesc = "" +
 	"\x15funding_shortfall_sat\x18\b \x01(\x03R\x13fundingShortfallSat\x12\x1b\n" +
 	"\tcan_start\x18\t \x01(\bR\bcanStart\x12$\n" +
 	"\x0eexit_job_found\x18\n" +
-	" \x01(\bR\fexitJobFound\x12;\n" +
-	"\vexit_status\x18\v \x01(\x0e2\x1a.walletdkrpc.ExitJobStatusR\n" +
+	" \x01(\bR\fexitJobFound\x12=\n" +
+	"\vexit_status\x18\v \x01(\x0e2\x1c.wavewalletrpc.ExitJobStatusR\n" +
 	"exitStatus\x12\x1d\n" +
 	"\n" +
 	"sweep_txid\x18\f \x01(\tR\tsweepTxid\x12\x1d\n" +
 	"\n" +
 	"last_error\x18\r \x01(\tR\tlastError\x12\x14\n" +
-	"\x05error\x18\x0e \x01(\tR\x05error\x12W\n" +
-	"\x14infeasibility_reason\x18\x0f \x01(\x0e2$.walletdkrpc.ExitInfeasibilityReasonR\x13infeasibilityReason\"\x9a\x02\n" +
-	"\x13GetExitPlanResponse\x120\n" +
-	"\x05plans\x18\x01 \x03(\v2\x1a.walletdkrpc.ExitPlanEntryR\x05plans\x122\n" +
+	"\x05error\x18\x0e \x01(\tR\x05error\x12Y\n" +
+	"\x14infeasibility_reason\x18\x0f \x01(\x0e2&.wavewalletrpc.ExitInfeasibilityReasonR\x13infeasibilityReason\"\x9c\x02\n" +
+	"\x13GetExitPlanResponse\x122\n" +
+	"\x05plans\x18\x01 \x03(\v2\x1c.wavewalletrpc.ExitPlanEntryR\x05plans\x122\n" +
 	"\x16fee_rate_sat_per_vbyte\x18\x02 \x01(\x03R\x12feeRateSatPerVbyte\x12\x1b\n" +
 	"\tcan_start\x18\x03 \x01(\bR\bcanStart\x12=\n" +
 	"\x1btotal_funding_shortfall_sat\x18\x04 \x01(\x03R\x18totalFundingShortfallSat\x12A\n" +
@@ -5923,9 +5923,9 @@ const file_wallet_proto_rawDesc = "" +
 	"\x10WalletSweepInput\x12\x1a\n" +
 	"\boutpoint\x18\x01 \x01(\tR\boutpoint\x12\x1d\n" +
 	"\n" +
-	"amount_sat\x18\x02 \x01(\x03R\tamountSat\"\xda\x02\n" +
-	"\x13SweepWalletResponse\x125\n" +
-	"\x06inputs\x18\x01 \x03(\v2\x1d.walletdkrpc.WalletSweepInputR\x06inputs\x12&\n" +
+	"amount_sat\x18\x02 \x01(\x03R\tamountSat\"\xdc\x02\n" +
+	"\x13SweepWalletResponse\x127\n" +
+	"\x06inputs\x18\x01 \x03(\v2\x1f.wavewalletrpc.WalletSweepInputR\x06inputs\x12&\n" +
 	"\x0ftotal_input_sat\x18\x02 \x01(\x03R\rtotalInputSat\x12*\n" +
 	"\x11estimated_fee_sat\x18\x03 \x01(\x03R\x0festimatedFeeSat\x12$\n" +
 	"\x0enet_amount_sat\x18\x04 \x01(\x03R\fnetAmountSat\x122\n" +
@@ -5936,11 +5936,11 @@ const file_wallet_proto_rawDesc = "" +
 	"\vExitRequest\x12\x1a\n" +
 	"\boutpoint\x18\x01 \x01(\tR\boutpoint\x12'\n" +
 	"\x0fonchain_address\x18\x02 \x01(\tR\x0eonchainAddress\x12(\n" +
-	"\x10force_unroll_ack\x18\x03 \x01(\tR\x0eforceUnrollAck\"\xc2\x01\n" +
+	"\x10force_unroll_ack\x18\x03 \x01(\tR\x0eforceUnrollAck\"\xc4\x01\n" +
 	"\fExitResponse\x12\x18\n" +
 	"\acreated\x18\x01 \x01(\bR\acreated\x12\x19\n" +
-	"\bactor_id\x18\x02 \x01(\tR\aactorId\x12)\n" +
-	"\x04mode\x18\x03 \x01(\x0e2\x15.walletdkrpc.ExitModeR\x04mode\x12)\n" +
+	"\bactor_id\x18\x02 \x01(\tR\aactorId\x12+\n" +
+	"\x04mode\x18\x03 \x01(\x0e2\x17.wavewalletrpc.ExitModeR\x04mode\x12)\n" +
 	"\x10queued_outpoints\x18\x04 \x03(\tR\x0fqueuedOutpoints\x12'\n" +
 	"\x0fonchain_address\x18\x05 \x01(\tR\x0eonchainAddress\"K\n" +
 	"\x11ExitStatusRequest\x12\x1a\n" +
@@ -5971,50 +5971,50 @@ const file_wallet_proto_rawDesc = "" +
 	"\x11net_recovered_sat\x18\x05 \x01(\x03R\x0fnetRecoveredSat\x12+\n" +
 	"\x12fee_rate_sat_vbyte\x18\x06 \x01(\x03R\x0ffeeRateSatVbyte\x12(\n" +
 	"\x10sweep_fee_actual\x18\a \x01(\bR\x0esweepFeeActual\x12'\n" +
-	"\x10spent_so_far_sat\x18\b \x01(\x03R\rspentSoFarSat\"\xad\x03\n" +
+	"\x10spent_so_far_sat\x18\b \x01(\x03R\rspentSoFarSat\"\xb5\x03\n" +
 	"\x12ExitStatusResponse\x12\x14\n" +
-	"\x05found\x18\x01 \x01(\bR\x05found\x122\n" +
-	"\x06status\x18\x02 \x01(\x0e2\x1a.walletdkrpc.ExitJobStatusR\x06status\x12\x1d\n" +
+	"\x05found\x18\x01 \x01(\bR\x05found\x124\n" +
+	"\x06status\x18\x02 \x01(\x0e2\x1c.wavewalletrpc.ExitJobStatusR\x06status\x12\x1d\n" +
 	"\n" +
 	"sweep_txid\x18\x03 \x01(\tR\tsweepTxid\x12\x1d\n" +
 	"\n" +
 	"last_error\x18\x04 \x01(\tR\tlastError\x12!\n" +
-	"\fphase_detail\x18\x05 \x01(\tR\vphaseDetail\x125\n" +
-	"\bprogress\x18\x06 \x01(\v2\x19.walletdkrpc.ExitProgressR\bprogress\x12&\n" +
-	"\x03csv\x18\a \x01(\v2\x14.walletdkrpc.ExitCSVR\x03csv\x12)\n" +
-	"\x04fees\x18\b \x01(\v2\x15.walletdkrpc.ExitFeesR\x04fees\x12;\n" +
+	"\fphase_detail\x18\x05 \x01(\tR\vphaseDetail\x127\n" +
+	"\bprogress\x18\x06 \x01(\v2\x1b.wavewalletrpc.ExitProgressR\bprogress\x12(\n" +
+	"\x03csv\x18\a \x01(\v2\x16.wavewalletrpc.ExitCSVR\x03csv\x12+\n" +
+	"\x04fees\x18\b \x01(\v2\x17.wavewalletrpc.ExitFeesR\x04fees\x12;\n" +
 	"\x1abest_case_blocks_remaining\x18\t \x01(\x05R\x17bestCaseBlocksRemaining\x12%\n" +
 	"\x0ecurrent_height\x18\n" +
 	" \x01(\x05R\rcurrentHeight\"\x14\n" +
-	"\x12ExitSummaryRequest\"\xe7\x01\n" +
+	"\x12ExitSummaryRequest\"\xe9\x01\n" +
 	"\x0fExitSummaryItem\x12\x1a\n" +
-	"\boutpoint\x18\x01 \x01(\tR\boutpoint\x122\n" +
-	"\x06status\x18\x02 \x01(\x0e2\x1a.walletdkrpc.ExitJobStatusR\x06status\x12&\n" +
+	"\boutpoint\x18\x01 \x01(\tR\boutpoint\x124\n" +
+	"\x06status\x18\x02 \x01(\x0e2\x1c.wavewalletrpc.ExitJobStatusR\x06status\x12&\n" +
 	"\x0fvtxo_amount_sat\x18\x03 \x01(\x03R\rvtxoAmountSat\x12)\n" +
 	"\x11est_total_fee_sat\x18\x04 \x01(\x03R\x0eestTotalFeeSat\x121\n" +
-	"\x15est_net_recovered_sat\x18\x05 \x01(\x03R\x12estNetRecoveredSat\"\x86\x02\n" +
-	"\x13ExitSummaryResponse\x122\n" +
-	"\x05exits\x18\x01 \x03(\v2\x1c.walletdkrpc.ExitSummaryItemR\x05exits\x12\x1f\n" +
+	"\x15est_net_recovered_sat\x18\x05 \x01(\x03R\x12estNetRecoveredSat\"\x88\x02\n" +
+	"\x13ExitSummaryResponse\x124\n" +
+	"\x05exits\x18\x01 \x03(\v2\x1e.wavewalletrpc.ExitSummaryItemR\x05exits\x12\x1f\n" +
 	"\vtotal_exits\x18\x02 \x01(\rR\n" +
 	"totalExits\x121\n" +
 	"\x15total_vtxo_amount_sat\x18\x03 \x01(\x03R\x12totalVtxoAmountSat\x12)\n" +
 	"\x11total_est_fee_sat\x18\x04 \x01(\x03R\x0etotalEstFeeSat\x12<\n" +
-	"\x1btotal_est_net_recovered_sat\x18\x05 \x01(\x03R\x17totalEstNetRecoveredSat\"\x89\x01\n" +
+	"\x1btotal_est_net_recovered_sat\x18\x05 \x01(\x03R\x17totalEstNetRecoveredSat\"\x8b\x01\n" +
 	"\x16SubscribeWalletRequest\x12)\n" +
-	"\x10include_existing\x18\x01 \x01(\bR\x0fincludeExisting\x12,\n" +
-	"\x05kinds\x18\x02 \x03(\x0e2\x16.walletdkrpc.EntryKindR\x05kinds\x12\x16\n" +
-	"\x06cursor\x18\x03 \x01(\x03R\x06cursor\"\x9c\x01\n" +
+	"\x10include_existing\x18\x01 \x01(\bR\x0fincludeExisting\x12.\n" +
+	"\x05kinds\x18\x02 \x03(\x0e2\x18.wavewalletrpc.EntryKindR\x05kinds\x12\x16\n" +
+	"\x06cursor\x18\x03 \x01(\x03R\x06cursor\"\xa0\x01\n" +
 	"\x17SubscribeWalletResponse\x12\x16\n" +
-	"\x06cursor\x18\x01 \x01(\x03R\x06cursor\x120\n" +
-	"\x05entry\x18\x02 \x01(\v2\x18.walletdkrpc.WalletEntryH\x00R\x05entry\x12-\n" +
-	"\x03gap\x18\x03 \x01(\v2\x19.walletdkrpc.SubscribeGapH\x00R\x03gapB\b\n" +
+	"\x06cursor\x18\x01 \x01(\x03R\x06cursor\x122\n" +
+	"\x05entry\x18\x02 \x01(\v2\x1a.wavewalletrpc.WalletEntryH\x00R\x05entry\x12/\n" +
+	"\x03gap\x18\x03 \x01(\v2\x1b.wavewalletrpc.SubscribeGapH\x00R\x03gapB\b\n" +
 	"\x06update\"&\n" +
 	"\fSubscribeGap\x12\x16\n" +
-	"\x06reason\x18\x01 \x01(\tR\x06reason\"\xb3\x04\n" +
+	"\x06reason\x18\x01 \x01(\tR\x06reason\"\xbd\x04\n" +
 	"\vWalletEntry\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\tR\x02id\x12*\n" +
-	"\x04kind\x18\x02 \x01(\x0e2\x16.walletdkrpc.EntryKindR\x04kind\x120\n" +
-	"\x06status\x18\x03 \x01(\x0e2\x18.walletdkrpc.EntryStatusR\x06status\x12\x1d\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12,\n" +
+	"\x04kind\x18\x02 \x01(\x0e2\x18.wavewalletrpc.EntryKindR\x04kind\x122\n" +
+	"\x06status\x18\x03 \x01(\x0e2\x1a.wavewalletrpc.EntryStatusR\x06status\x12\x1d\n" +
 	"\n" +
 	"amount_sat\x18\x04 \x01(\x03R\tamountSat\x12\x17\n" +
 	"\afee_sat\x18\x05 \x01(\x03R\x06feeSat\x12\"\n" +
@@ -6023,15 +6023,15 @@ const file_wallet_proto_rawDesc = "" +
 	"\x0fupdated_at_unix\x18\b \x01(\x03R\rupdatedAtUnix\x12\x12\n" +
 	"\x04note\x18\t \x01(\tR\x04note\x12%\n" +
 	"\x0efailure_reason\x18\n" +
-	" \x01(\tR\rfailureReason\x129\n" +
-	"\arequest\x18\v \x01(\v2\x1f.walletdkrpc.WalletEntryRequestR\arequest\x12<\n" +
-	"\bprogress\x18\f \x01(\v2 .walletdkrpc.WalletEntryProgressR\bprogress\x12E\n" +
-	"\ffailure_code\x18\r \x01(\x0e2\x1d.walletdkrpc.EntryFailureCodeH\x00R\vfailureCode\x88\x01\x01B\x0f\n" +
-	"\r_failure_code\"\x86\x02\n" +
-	"\x12WalletEntryRequest\x12S\n" +
-	"\x11lightning_invoice\x18\x01 \x01(\v2$.walletdkrpc.LightningInvoiceRequestH\x00R\x10lightningInvoice\x12M\n" +
-	"\x0fonchain_address\x18\x02 \x01(\v2\".walletdkrpc.OnchainAddressRequestH\x00R\x0eonchainAddress\x12A\n" +
-	"\vark_address\x18\x03 \x01(\v2\x1e.walletdkrpc.ArkAddressRequestH\x00R\n" +
+	" \x01(\tR\rfailureReason\x12;\n" +
+	"\arequest\x18\v \x01(\v2!.wavewalletrpc.WalletEntryRequestR\arequest\x12>\n" +
+	"\bprogress\x18\f \x01(\v2\".wavewalletrpc.WalletEntryProgressR\bprogress\x12G\n" +
+	"\ffailure_code\x18\r \x01(\x0e2\x1f.wavewalletrpc.EntryFailureCodeH\x00R\vfailureCode\x88\x01\x01B\x0f\n" +
+	"\r_failure_code\"\x8c\x02\n" +
+	"\x12WalletEntryRequest\x12U\n" +
+	"\x11lightning_invoice\x18\x01 \x01(\v2&.wavewalletrpc.LightningInvoiceRequestH\x00R\x10lightningInvoice\x12O\n" +
+	"\x0fonchain_address\x18\x02 \x01(\v2$.wavewalletrpc.OnchainAddressRequestH\x00R\x0eonchainAddress\x12C\n" +
+	"\vark_address\x18\x03 \x01(\v2 .wavewalletrpc.ArkAddressRequestH\x00R\n" +
 	"arkAddressB\t\n" +
 	"\arequest\"V\n" +
 	"\x17LightningInvoiceRequest\x12\x18\n" +
@@ -6040,9 +6040,9 @@ const file_wallet_proto_rawDesc = "" +
 	"\x15OnchainAddressRequest\x12\x18\n" +
 	"\aaddress\x18\x01 \x01(\tR\aaddress\"-\n" +
 	"\x11ArkAddressRequest\x12\x18\n" +
-	"\aaddress\x18\x01 \x01(\tR\aaddress\"\x94\x02\n" +
-	"\x13WalletEntryProgress\x123\n" +
-	"\x05phase\x18\x01 \x01(\x0e2\x1d.walletdkrpc.WalletEntryPhaseR\x05phase\x12\x1f\n" +
+	"\aaddress\x18\x01 \x01(\tR\aaddress\"\x96\x02\n" +
+	"\x13WalletEntryProgress\x125\n" +
+	"\x05phase\x18\x01 \x01(\x0e2\x1f.wavewalletrpc.WalletEntryPhaseR\x05phase\x12\x1f\n" +
 	"\vphase_label\x18\x02 \x01(\tR\n" +
 	"phaseLabel\x12!\n" +
 	"\fpayment_hash\x18\x03 \x01(\tR\vpaymentHash\x12\x12\n" +
@@ -6113,26 +6113,26 @@ const file_wallet_proto_rawDesc = "" +
 	"\x1aENTRY_FAILURE_CODE_EXPIRED\x10\x02\x12\x1f\n" +
 	"\x1bENTRY_FAILURE_CODE_REFUNDED\x10\x03\x12)\n" +
 	"%ENTRY_FAILURE_CODE_NEEDS_INTERVENTION\x10\x04\x12\x1d\n" +
-	"\x19ENTRY_FAILURE_CODE_FAILED\x10\x052\xcf\b\n" +
-	"\rWalletService\x12A\n" +
-	"\x06Create\x12\x1a.walletdkrpc.CreateRequest\x1a\x1b.walletdkrpc.CreateResponse\x12A\n" +
-	"\x06Unlock\x12\x1a.walletdkrpc.UnlockRequest\x1a\x1b.walletdkrpc.UnlockResponse\x12P\n" +
-	"\vPrepareSend\x12\x1f.walletdkrpc.PrepareSendRequest\x1a .walletdkrpc.PrepareSendResponse\x12;\n" +
-	"\x04Send\x12\x18.walletdkrpc.SendRequest\x1a\x19.walletdkrpc.SendResponse\x12;\n" +
-	"\x04Recv\x12\x18.walletdkrpc.RecvRequest\x1a\x19.walletdkrpc.RecvResponse\x12;\n" +
-	"\x04List\x12\x18.walletdkrpc.ListRequest\x1a\x19.walletdkrpc.ListResponse\x12D\n" +
-	"\aDeposit\x12\x1b.walletdkrpc.DepositRequest\x1a\x1c.walletdkrpc.DepositResponse\x12D\n" +
-	"\aBalance\x12\x1b.walletdkrpc.BalanceRequest\x1a\x1c.walletdkrpc.BalanceResponse\x12A\n" +
-	"\x06Status\x12\x1a.walletdkrpc.StatusRequest\x1a\x1b.walletdkrpc.StatusResponse\x12P\n" +
-	"\vGetExitPlan\x12\x1f.walletdkrpc.GetExitPlanRequest\x1a .walletdkrpc.GetExitPlanResponse\x12P\n" +
-	"\vSweepWallet\x12\x1f.walletdkrpc.SweepWalletRequest\x1a .walletdkrpc.SweepWalletResponse\x12;\n" +
-	"\x04Exit\x12\x18.walletdkrpc.ExitRequest\x1a\x19.walletdkrpc.ExitResponse\x12M\n" +
+	"\x19ENTRY_FAILURE_CODE_FAILED\x10\x052\x8b\t\n" +
+	"\rWalletService\x12E\n" +
+	"\x06Create\x12\x1c.wavewalletrpc.CreateRequest\x1a\x1d.wavewalletrpc.CreateResponse\x12E\n" +
+	"\x06Unlock\x12\x1c.wavewalletrpc.UnlockRequest\x1a\x1d.wavewalletrpc.UnlockResponse\x12T\n" +
+	"\vPrepareSend\x12!.wavewalletrpc.PrepareSendRequest\x1a\".wavewalletrpc.PrepareSendResponse\x12?\n" +
+	"\x04Send\x12\x1a.wavewalletrpc.SendRequest\x1a\x1b.wavewalletrpc.SendResponse\x12?\n" +
+	"\x04Recv\x12\x1a.wavewalletrpc.RecvRequest\x1a\x1b.wavewalletrpc.RecvResponse\x12?\n" +
+	"\x04List\x12\x1a.wavewalletrpc.ListRequest\x1a\x1b.wavewalletrpc.ListResponse\x12H\n" +
+	"\aDeposit\x12\x1d.wavewalletrpc.DepositRequest\x1a\x1e.wavewalletrpc.DepositResponse\x12H\n" +
+	"\aBalance\x12\x1d.wavewalletrpc.BalanceRequest\x1a\x1e.wavewalletrpc.BalanceResponse\x12E\n" +
+	"\x06Status\x12\x1c.wavewalletrpc.StatusRequest\x1a\x1d.wavewalletrpc.StatusResponse\x12T\n" +
+	"\vGetExitPlan\x12!.wavewalletrpc.GetExitPlanRequest\x1a\".wavewalletrpc.GetExitPlanResponse\x12T\n" +
+	"\vSweepWallet\x12!.wavewalletrpc.SweepWalletRequest\x1a\".wavewalletrpc.SweepWalletResponse\x12?\n" +
+	"\x04Exit\x12\x1a.wavewalletrpc.ExitRequest\x1a\x1b.wavewalletrpc.ExitResponse\x12Q\n" +
 	"\n" +
-	"ExitStatus\x12\x1e.walletdkrpc.ExitStatusRequest\x1a\x1f.walletdkrpc.ExitStatusResponse\x12P\n" +
-	"\vExitSummary\x12\x1f.walletdkrpc.ExitSummaryRequest\x1a .walletdkrpc.ExitSummaryResponse\x12^\n" +
-	"\x0fSubscribeWallet\x12#.walletdkrpc.SubscribeWalletRequest\x1a$.walletdkrpc.SubscribeWalletResponse0\x012w\n" +
-	"\x17WalletInspectionService\x12\\\n" +
-	"\x0fInspectActivity\x12#.walletdkrpc.InspectActivityRequest\x1a$.walletdkrpc.InspectActivityResponseB5Z3github.com/lightninglabs/wavelength/rpc/walletdkrpcb\x06proto3"
+	"ExitStatus\x12 .wavewalletrpc.ExitStatusRequest\x1a!.wavewalletrpc.ExitStatusResponse\x12T\n" +
+	"\vExitSummary\x12!.wavewalletrpc.ExitSummaryRequest\x1a\".wavewalletrpc.ExitSummaryResponse\x12b\n" +
+	"\x0fSubscribeWallet\x12%.wavewalletrpc.SubscribeWalletRequest\x1a&.wavewalletrpc.SubscribeWalletResponse0\x012{\n" +
+	"\x17WalletInspectionService\x12`\n" +
+	"\x0fInspectActivity\x12%.wavewalletrpc.InspectActivityRequest\x1a&.wavewalletrpc.InspectActivityResponseB7Z5github.com/lightninglabs/wavelength/rpc/wavewalletrpcb\x06proto3"
 
 var (
 	file_wallet_proto_rawDescOnce sync.Once
@@ -6149,148 +6149,148 @@ func file_wallet_proto_rawDescGZIP() []byte {
 var file_wallet_proto_enumTypes = make([]protoimpl.EnumInfo, 10)
 var file_wallet_proto_msgTypes = make([]protoimpl.MessageInfo, 55)
 var file_wallet_proto_goTypes = []any{
-	(EntryKind)(0),                  // 0: walletdkrpc.EntryKind
-	(EntryStatus)(0),                // 1: walletdkrpc.EntryStatus
-	(ListView)(0),                   // 2: walletdkrpc.ListView
-	(SendRail)(0),                   // 3: walletdkrpc.SendRail
-	(SendQuoteStatus)(0),            // 4: walletdkrpc.SendQuoteStatus
-	(ExitMode)(0),                   // 5: walletdkrpc.ExitMode
-	(ExitInfeasibilityReason)(0),    // 6: walletdkrpc.ExitInfeasibilityReason
-	(ExitJobStatus)(0),              // 7: walletdkrpc.ExitJobStatus
-	(WalletEntryPhase)(0),           // 8: walletdkrpc.WalletEntryPhase
-	(EntryFailureCode)(0),           // 9: walletdkrpc.EntryFailureCode
-	(*CreateRequest)(nil),           // 10: walletdkrpc.CreateRequest
-	(*CreateResponse)(nil),          // 11: walletdkrpc.CreateResponse
-	(*UnlockRequest)(nil),           // 12: walletdkrpc.UnlockRequest
-	(*UnlockResponse)(nil),          // 13: walletdkrpc.UnlockResponse
-	(*PrepareSendRequest)(nil),      // 14: walletdkrpc.PrepareSendRequest
-	(*PrepareSendResponse)(nil),     // 15: walletdkrpc.PrepareSendResponse
-	(*SendRequest)(nil),             // 16: walletdkrpc.SendRequest
-	(*SendResponse)(nil),            // 17: walletdkrpc.SendResponse
-	(*RecvRequest)(nil),             // 18: walletdkrpc.RecvRequest
-	(*RecvResponse)(nil),            // 19: walletdkrpc.RecvResponse
-	(*CreditPreview)(nil),           // 20: walletdkrpc.CreditPreview
-	(*CreditReceive)(nil),           // 21: walletdkrpc.CreditReceive
-	(*ListRequest)(nil),             // 22: walletdkrpc.ListRequest
-	(*ListResponse)(nil),            // 23: walletdkrpc.ListResponse
-	(*ActivityList)(nil),            // 24: walletdkrpc.ActivityList
-	(*VTXOInventory)(nil),           // 25: walletdkrpc.VTXOInventory
-	(*WalletVTXO)(nil),              // 26: walletdkrpc.WalletVTXO
-	(*OnchainHistory)(nil),          // 27: walletdkrpc.OnchainHistory
-	(*OnchainTx)(nil),               // 28: walletdkrpc.OnchainTx
-	(*InspectActivityRequest)(nil),  // 29: walletdkrpc.InspectActivityRequest
-	(*InspectActivityResponse)(nil), // 30: walletdkrpc.InspectActivityResponse
-	(*ActivitySwapTrace)(nil),       // 31: walletdkrpc.ActivitySwapTrace
-	(*ActivityVTXOTrace)(nil),       // 32: walletdkrpc.ActivityVTXOTrace
-	(*ActivityLedgerTrace)(nil),     // 33: walletdkrpc.ActivityLedgerTrace
-	(*DepositRequest)(nil),          // 34: walletdkrpc.DepositRequest
-	(*DepositResponse)(nil),         // 35: walletdkrpc.DepositResponse
-	(*BalanceRequest)(nil),          // 36: walletdkrpc.BalanceRequest
-	(*BalanceResponse)(nil),         // 37: walletdkrpc.BalanceResponse
-	(*StatusRequest)(nil),           // 38: walletdkrpc.StatusRequest
-	(*StatusResponse)(nil),          // 39: walletdkrpc.StatusResponse
-	(*GetExitPlanRequest)(nil),      // 40: walletdkrpc.GetExitPlanRequest
-	(*ExitPlanEntry)(nil),           // 41: walletdkrpc.ExitPlanEntry
-	(*GetExitPlanResponse)(nil),     // 42: walletdkrpc.GetExitPlanResponse
-	(*SweepWalletRequest)(nil),      // 43: walletdkrpc.SweepWalletRequest
-	(*WalletSweepInput)(nil),        // 44: walletdkrpc.WalletSweepInput
-	(*SweepWalletResponse)(nil),     // 45: walletdkrpc.SweepWalletResponse
-	(*ExitRequest)(nil),             // 46: walletdkrpc.ExitRequest
-	(*ExitResponse)(nil),            // 47: walletdkrpc.ExitResponse
-	(*ExitStatusRequest)(nil),       // 48: walletdkrpc.ExitStatusRequest
-	(*ExitProgress)(nil),            // 49: walletdkrpc.ExitProgress
-	(*ExitCSV)(nil),                 // 50: walletdkrpc.ExitCSV
-	(*ExitFees)(nil),                // 51: walletdkrpc.ExitFees
-	(*ExitStatusResponse)(nil),      // 52: walletdkrpc.ExitStatusResponse
-	(*ExitSummaryRequest)(nil),      // 53: walletdkrpc.ExitSummaryRequest
-	(*ExitSummaryItem)(nil),         // 54: walletdkrpc.ExitSummaryItem
-	(*ExitSummaryResponse)(nil),     // 55: walletdkrpc.ExitSummaryResponse
-	(*SubscribeWalletRequest)(nil),  // 56: walletdkrpc.SubscribeWalletRequest
-	(*SubscribeWalletResponse)(nil), // 57: walletdkrpc.SubscribeWalletResponse
-	(*SubscribeGap)(nil),            // 58: walletdkrpc.SubscribeGap
-	(*WalletEntry)(nil),             // 59: walletdkrpc.WalletEntry
-	(*WalletEntryRequest)(nil),      // 60: walletdkrpc.WalletEntryRequest
-	(*LightningInvoiceRequest)(nil), // 61: walletdkrpc.LightningInvoiceRequest
-	(*OnchainAddressRequest)(nil),   // 62: walletdkrpc.OnchainAddressRequest
-	(*ArkAddressRequest)(nil),       // 63: walletdkrpc.ArkAddressRequest
-	(*WalletEntryProgress)(nil),     // 64: walletdkrpc.WalletEntryProgress
+	(EntryKind)(0),                  // 0: wavewalletrpc.EntryKind
+	(EntryStatus)(0),                // 1: wavewalletrpc.EntryStatus
+	(ListView)(0),                   // 2: wavewalletrpc.ListView
+	(SendRail)(0),                   // 3: wavewalletrpc.SendRail
+	(SendQuoteStatus)(0),            // 4: wavewalletrpc.SendQuoteStatus
+	(ExitMode)(0),                   // 5: wavewalletrpc.ExitMode
+	(ExitInfeasibilityReason)(0),    // 6: wavewalletrpc.ExitInfeasibilityReason
+	(ExitJobStatus)(0),              // 7: wavewalletrpc.ExitJobStatus
+	(WalletEntryPhase)(0),           // 8: wavewalletrpc.WalletEntryPhase
+	(EntryFailureCode)(0),           // 9: wavewalletrpc.EntryFailureCode
+	(*CreateRequest)(nil),           // 10: wavewalletrpc.CreateRequest
+	(*CreateResponse)(nil),          // 11: wavewalletrpc.CreateResponse
+	(*UnlockRequest)(nil),           // 12: wavewalletrpc.UnlockRequest
+	(*UnlockResponse)(nil),          // 13: wavewalletrpc.UnlockResponse
+	(*PrepareSendRequest)(nil),      // 14: wavewalletrpc.PrepareSendRequest
+	(*PrepareSendResponse)(nil),     // 15: wavewalletrpc.PrepareSendResponse
+	(*SendRequest)(nil),             // 16: wavewalletrpc.SendRequest
+	(*SendResponse)(nil),            // 17: wavewalletrpc.SendResponse
+	(*RecvRequest)(nil),             // 18: wavewalletrpc.RecvRequest
+	(*RecvResponse)(nil),            // 19: wavewalletrpc.RecvResponse
+	(*CreditPreview)(nil),           // 20: wavewalletrpc.CreditPreview
+	(*CreditReceive)(nil),           // 21: wavewalletrpc.CreditReceive
+	(*ListRequest)(nil),             // 22: wavewalletrpc.ListRequest
+	(*ListResponse)(nil),            // 23: wavewalletrpc.ListResponse
+	(*ActivityList)(nil),            // 24: wavewalletrpc.ActivityList
+	(*VTXOInventory)(nil),           // 25: wavewalletrpc.VTXOInventory
+	(*WalletVTXO)(nil),              // 26: wavewalletrpc.WalletVTXO
+	(*OnchainHistory)(nil),          // 27: wavewalletrpc.OnchainHistory
+	(*OnchainTx)(nil),               // 28: wavewalletrpc.OnchainTx
+	(*InspectActivityRequest)(nil),  // 29: wavewalletrpc.InspectActivityRequest
+	(*InspectActivityResponse)(nil), // 30: wavewalletrpc.InspectActivityResponse
+	(*ActivitySwapTrace)(nil),       // 31: wavewalletrpc.ActivitySwapTrace
+	(*ActivityVTXOTrace)(nil),       // 32: wavewalletrpc.ActivityVTXOTrace
+	(*ActivityLedgerTrace)(nil),     // 33: wavewalletrpc.ActivityLedgerTrace
+	(*DepositRequest)(nil),          // 34: wavewalletrpc.DepositRequest
+	(*DepositResponse)(nil),         // 35: wavewalletrpc.DepositResponse
+	(*BalanceRequest)(nil),          // 36: wavewalletrpc.BalanceRequest
+	(*BalanceResponse)(nil),         // 37: wavewalletrpc.BalanceResponse
+	(*StatusRequest)(nil),           // 38: wavewalletrpc.StatusRequest
+	(*StatusResponse)(nil),          // 39: wavewalletrpc.StatusResponse
+	(*GetExitPlanRequest)(nil),      // 40: wavewalletrpc.GetExitPlanRequest
+	(*ExitPlanEntry)(nil),           // 41: wavewalletrpc.ExitPlanEntry
+	(*GetExitPlanResponse)(nil),     // 42: wavewalletrpc.GetExitPlanResponse
+	(*SweepWalletRequest)(nil),      // 43: wavewalletrpc.SweepWalletRequest
+	(*WalletSweepInput)(nil),        // 44: wavewalletrpc.WalletSweepInput
+	(*SweepWalletResponse)(nil),     // 45: wavewalletrpc.SweepWalletResponse
+	(*ExitRequest)(nil),             // 46: wavewalletrpc.ExitRequest
+	(*ExitResponse)(nil),            // 47: wavewalletrpc.ExitResponse
+	(*ExitStatusRequest)(nil),       // 48: wavewalletrpc.ExitStatusRequest
+	(*ExitProgress)(nil),            // 49: wavewalletrpc.ExitProgress
+	(*ExitCSV)(nil),                 // 50: wavewalletrpc.ExitCSV
+	(*ExitFees)(nil),                // 51: wavewalletrpc.ExitFees
+	(*ExitStatusResponse)(nil),      // 52: wavewalletrpc.ExitStatusResponse
+	(*ExitSummaryRequest)(nil),      // 53: wavewalletrpc.ExitSummaryRequest
+	(*ExitSummaryItem)(nil),         // 54: wavewalletrpc.ExitSummaryItem
+	(*ExitSummaryResponse)(nil),     // 55: wavewalletrpc.ExitSummaryResponse
+	(*SubscribeWalletRequest)(nil),  // 56: wavewalletrpc.SubscribeWalletRequest
+	(*SubscribeWalletResponse)(nil), // 57: wavewalletrpc.SubscribeWalletResponse
+	(*SubscribeGap)(nil),            // 58: wavewalletrpc.SubscribeGap
+	(*WalletEntry)(nil),             // 59: wavewalletrpc.WalletEntry
+	(*WalletEntryRequest)(nil),      // 60: wavewalletrpc.WalletEntryRequest
+	(*LightningInvoiceRequest)(nil), // 61: wavewalletrpc.LightningInvoiceRequest
+	(*OnchainAddressRequest)(nil),   // 62: wavewalletrpc.OnchainAddressRequest
+	(*ArkAddressRequest)(nil),       // 63: wavewalletrpc.ArkAddressRequest
+	(*WalletEntryProgress)(nil),     // 64: wavewalletrpc.WalletEntryProgress
 }
 var file_wallet_proto_depIdxs = []int32{
-	3,  // 0: walletdkrpc.PrepareSendResponse.rail:type_name -> walletdkrpc.SendRail
-	4,  // 1: walletdkrpc.PrepareSendResponse.quote_status:type_name -> walletdkrpc.SendQuoteStatus
-	20, // 2: walletdkrpc.PrepareSendResponse.credit_preview:type_name -> walletdkrpc.CreditPreview
-	59, // 3: walletdkrpc.SendResponse.entry:type_name -> walletdkrpc.WalletEntry
-	59, // 4: walletdkrpc.RecvResponse.entry:type_name -> walletdkrpc.WalletEntry
-	21, // 5: walletdkrpc.RecvResponse.credit_receive:type_name -> walletdkrpc.CreditReceive
-	2,  // 6: walletdkrpc.ListRequest.view:type_name -> walletdkrpc.ListView
-	0,  // 7: walletdkrpc.ListRequest.kinds:type_name -> walletdkrpc.EntryKind
-	24, // 8: walletdkrpc.ListResponse.activity:type_name -> walletdkrpc.ActivityList
-	25, // 9: walletdkrpc.ListResponse.vtxos:type_name -> walletdkrpc.VTXOInventory
-	27, // 10: walletdkrpc.ListResponse.onchain:type_name -> walletdkrpc.OnchainHistory
-	59, // 11: walletdkrpc.ActivityList.entries:type_name -> walletdkrpc.WalletEntry
-	26, // 12: walletdkrpc.VTXOInventory.vtxos:type_name -> walletdkrpc.WalletVTXO
-	28, // 13: walletdkrpc.OnchainHistory.txs:type_name -> walletdkrpc.OnchainTx
-	59, // 14: walletdkrpc.InspectActivityResponse.entry:type_name -> walletdkrpc.WalletEntry
-	31, // 15: walletdkrpc.InspectActivityResponse.swap:type_name -> walletdkrpc.ActivitySwapTrace
-	32, // 16: walletdkrpc.InspectActivityResponse.vtxos:type_name -> walletdkrpc.ActivityVTXOTrace
-	33, // 17: walletdkrpc.InspectActivityResponse.ledger_rows:type_name -> walletdkrpc.ActivityLedgerTrace
-	59, // 18: walletdkrpc.DepositResponse.entry:type_name -> walletdkrpc.WalletEntry
-	37, // 19: walletdkrpc.StatusResponse.balance:type_name -> walletdkrpc.BalanceResponse
-	7,  // 20: walletdkrpc.ExitPlanEntry.exit_status:type_name -> walletdkrpc.ExitJobStatus
-	6,  // 21: walletdkrpc.ExitPlanEntry.infeasibility_reason:type_name -> walletdkrpc.ExitInfeasibilityReason
-	41, // 22: walletdkrpc.GetExitPlanResponse.plans:type_name -> walletdkrpc.ExitPlanEntry
-	44, // 23: walletdkrpc.SweepWalletResponse.inputs:type_name -> walletdkrpc.WalletSweepInput
-	5,  // 24: walletdkrpc.ExitResponse.mode:type_name -> walletdkrpc.ExitMode
-	7,  // 25: walletdkrpc.ExitStatusResponse.status:type_name -> walletdkrpc.ExitJobStatus
-	49, // 26: walletdkrpc.ExitStatusResponse.progress:type_name -> walletdkrpc.ExitProgress
-	50, // 27: walletdkrpc.ExitStatusResponse.csv:type_name -> walletdkrpc.ExitCSV
-	51, // 28: walletdkrpc.ExitStatusResponse.fees:type_name -> walletdkrpc.ExitFees
-	7,  // 29: walletdkrpc.ExitSummaryItem.status:type_name -> walletdkrpc.ExitJobStatus
-	54, // 30: walletdkrpc.ExitSummaryResponse.exits:type_name -> walletdkrpc.ExitSummaryItem
-	0,  // 31: walletdkrpc.SubscribeWalletRequest.kinds:type_name -> walletdkrpc.EntryKind
-	59, // 32: walletdkrpc.SubscribeWalletResponse.entry:type_name -> walletdkrpc.WalletEntry
-	58, // 33: walletdkrpc.SubscribeWalletResponse.gap:type_name -> walletdkrpc.SubscribeGap
-	0,  // 34: walletdkrpc.WalletEntry.kind:type_name -> walletdkrpc.EntryKind
-	1,  // 35: walletdkrpc.WalletEntry.status:type_name -> walletdkrpc.EntryStatus
-	60, // 36: walletdkrpc.WalletEntry.request:type_name -> walletdkrpc.WalletEntryRequest
-	64, // 37: walletdkrpc.WalletEntry.progress:type_name -> walletdkrpc.WalletEntryProgress
-	9,  // 38: walletdkrpc.WalletEntry.failure_code:type_name -> walletdkrpc.EntryFailureCode
-	61, // 39: walletdkrpc.WalletEntryRequest.lightning_invoice:type_name -> walletdkrpc.LightningInvoiceRequest
-	62, // 40: walletdkrpc.WalletEntryRequest.onchain_address:type_name -> walletdkrpc.OnchainAddressRequest
-	63, // 41: walletdkrpc.WalletEntryRequest.ark_address:type_name -> walletdkrpc.ArkAddressRequest
-	8,  // 42: walletdkrpc.WalletEntryProgress.phase:type_name -> walletdkrpc.WalletEntryPhase
-	10, // 43: walletdkrpc.WalletService.Create:input_type -> walletdkrpc.CreateRequest
-	12, // 44: walletdkrpc.WalletService.Unlock:input_type -> walletdkrpc.UnlockRequest
-	14, // 45: walletdkrpc.WalletService.PrepareSend:input_type -> walletdkrpc.PrepareSendRequest
-	16, // 46: walletdkrpc.WalletService.Send:input_type -> walletdkrpc.SendRequest
-	18, // 47: walletdkrpc.WalletService.Recv:input_type -> walletdkrpc.RecvRequest
-	22, // 48: walletdkrpc.WalletService.List:input_type -> walletdkrpc.ListRequest
-	34, // 49: walletdkrpc.WalletService.Deposit:input_type -> walletdkrpc.DepositRequest
-	36, // 50: walletdkrpc.WalletService.Balance:input_type -> walletdkrpc.BalanceRequest
-	38, // 51: walletdkrpc.WalletService.Status:input_type -> walletdkrpc.StatusRequest
-	40, // 52: walletdkrpc.WalletService.GetExitPlan:input_type -> walletdkrpc.GetExitPlanRequest
-	43, // 53: walletdkrpc.WalletService.SweepWallet:input_type -> walletdkrpc.SweepWalletRequest
-	46, // 54: walletdkrpc.WalletService.Exit:input_type -> walletdkrpc.ExitRequest
-	48, // 55: walletdkrpc.WalletService.ExitStatus:input_type -> walletdkrpc.ExitStatusRequest
-	53, // 56: walletdkrpc.WalletService.ExitSummary:input_type -> walletdkrpc.ExitSummaryRequest
-	56, // 57: walletdkrpc.WalletService.SubscribeWallet:input_type -> walletdkrpc.SubscribeWalletRequest
-	29, // 58: walletdkrpc.WalletInspectionService.InspectActivity:input_type -> walletdkrpc.InspectActivityRequest
-	11, // 59: walletdkrpc.WalletService.Create:output_type -> walletdkrpc.CreateResponse
-	13, // 60: walletdkrpc.WalletService.Unlock:output_type -> walletdkrpc.UnlockResponse
-	15, // 61: walletdkrpc.WalletService.PrepareSend:output_type -> walletdkrpc.PrepareSendResponse
-	17, // 62: walletdkrpc.WalletService.Send:output_type -> walletdkrpc.SendResponse
-	19, // 63: walletdkrpc.WalletService.Recv:output_type -> walletdkrpc.RecvResponse
-	23, // 64: walletdkrpc.WalletService.List:output_type -> walletdkrpc.ListResponse
-	35, // 65: walletdkrpc.WalletService.Deposit:output_type -> walletdkrpc.DepositResponse
-	37, // 66: walletdkrpc.WalletService.Balance:output_type -> walletdkrpc.BalanceResponse
-	39, // 67: walletdkrpc.WalletService.Status:output_type -> walletdkrpc.StatusResponse
-	42, // 68: walletdkrpc.WalletService.GetExitPlan:output_type -> walletdkrpc.GetExitPlanResponse
-	45, // 69: walletdkrpc.WalletService.SweepWallet:output_type -> walletdkrpc.SweepWalletResponse
-	47, // 70: walletdkrpc.WalletService.Exit:output_type -> walletdkrpc.ExitResponse
-	52, // 71: walletdkrpc.WalletService.ExitStatus:output_type -> walletdkrpc.ExitStatusResponse
-	55, // 72: walletdkrpc.WalletService.ExitSummary:output_type -> walletdkrpc.ExitSummaryResponse
-	57, // 73: walletdkrpc.WalletService.SubscribeWallet:output_type -> walletdkrpc.SubscribeWalletResponse
-	30, // 74: walletdkrpc.WalletInspectionService.InspectActivity:output_type -> walletdkrpc.InspectActivityResponse
+	3,  // 0: wavewalletrpc.PrepareSendResponse.rail:type_name -> wavewalletrpc.SendRail
+	4,  // 1: wavewalletrpc.PrepareSendResponse.quote_status:type_name -> wavewalletrpc.SendQuoteStatus
+	20, // 2: wavewalletrpc.PrepareSendResponse.credit_preview:type_name -> wavewalletrpc.CreditPreview
+	59, // 3: wavewalletrpc.SendResponse.entry:type_name -> wavewalletrpc.WalletEntry
+	59, // 4: wavewalletrpc.RecvResponse.entry:type_name -> wavewalletrpc.WalletEntry
+	21, // 5: wavewalletrpc.RecvResponse.credit_receive:type_name -> wavewalletrpc.CreditReceive
+	2,  // 6: wavewalletrpc.ListRequest.view:type_name -> wavewalletrpc.ListView
+	0,  // 7: wavewalletrpc.ListRequest.kinds:type_name -> wavewalletrpc.EntryKind
+	24, // 8: wavewalletrpc.ListResponse.activity:type_name -> wavewalletrpc.ActivityList
+	25, // 9: wavewalletrpc.ListResponse.vtxos:type_name -> wavewalletrpc.VTXOInventory
+	27, // 10: wavewalletrpc.ListResponse.onchain:type_name -> wavewalletrpc.OnchainHistory
+	59, // 11: wavewalletrpc.ActivityList.entries:type_name -> wavewalletrpc.WalletEntry
+	26, // 12: wavewalletrpc.VTXOInventory.vtxos:type_name -> wavewalletrpc.WalletVTXO
+	28, // 13: wavewalletrpc.OnchainHistory.txs:type_name -> wavewalletrpc.OnchainTx
+	59, // 14: wavewalletrpc.InspectActivityResponse.entry:type_name -> wavewalletrpc.WalletEntry
+	31, // 15: wavewalletrpc.InspectActivityResponse.swap:type_name -> wavewalletrpc.ActivitySwapTrace
+	32, // 16: wavewalletrpc.InspectActivityResponse.vtxos:type_name -> wavewalletrpc.ActivityVTXOTrace
+	33, // 17: wavewalletrpc.InspectActivityResponse.ledger_rows:type_name -> wavewalletrpc.ActivityLedgerTrace
+	59, // 18: wavewalletrpc.DepositResponse.entry:type_name -> wavewalletrpc.WalletEntry
+	37, // 19: wavewalletrpc.StatusResponse.balance:type_name -> wavewalletrpc.BalanceResponse
+	7,  // 20: wavewalletrpc.ExitPlanEntry.exit_status:type_name -> wavewalletrpc.ExitJobStatus
+	6,  // 21: wavewalletrpc.ExitPlanEntry.infeasibility_reason:type_name -> wavewalletrpc.ExitInfeasibilityReason
+	41, // 22: wavewalletrpc.GetExitPlanResponse.plans:type_name -> wavewalletrpc.ExitPlanEntry
+	44, // 23: wavewalletrpc.SweepWalletResponse.inputs:type_name -> wavewalletrpc.WalletSweepInput
+	5,  // 24: wavewalletrpc.ExitResponse.mode:type_name -> wavewalletrpc.ExitMode
+	7,  // 25: wavewalletrpc.ExitStatusResponse.status:type_name -> wavewalletrpc.ExitJobStatus
+	49, // 26: wavewalletrpc.ExitStatusResponse.progress:type_name -> wavewalletrpc.ExitProgress
+	50, // 27: wavewalletrpc.ExitStatusResponse.csv:type_name -> wavewalletrpc.ExitCSV
+	51, // 28: wavewalletrpc.ExitStatusResponse.fees:type_name -> wavewalletrpc.ExitFees
+	7,  // 29: wavewalletrpc.ExitSummaryItem.status:type_name -> wavewalletrpc.ExitJobStatus
+	54, // 30: wavewalletrpc.ExitSummaryResponse.exits:type_name -> wavewalletrpc.ExitSummaryItem
+	0,  // 31: wavewalletrpc.SubscribeWalletRequest.kinds:type_name -> wavewalletrpc.EntryKind
+	59, // 32: wavewalletrpc.SubscribeWalletResponse.entry:type_name -> wavewalletrpc.WalletEntry
+	58, // 33: wavewalletrpc.SubscribeWalletResponse.gap:type_name -> wavewalletrpc.SubscribeGap
+	0,  // 34: wavewalletrpc.WalletEntry.kind:type_name -> wavewalletrpc.EntryKind
+	1,  // 35: wavewalletrpc.WalletEntry.status:type_name -> wavewalletrpc.EntryStatus
+	60, // 36: wavewalletrpc.WalletEntry.request:type_name -> wavewalletrpc.WalletEntryRequest
+	64, // 37: wavewalletrpc.WalletEntry.progress:type_name -> wavewalletrpc.WalletEntryProgress
+	9,  // 38: wavewalletrpc.WalletEntry.failure_code:type_name -> wavewalletrpc.EntryFailureCode
+	61, // 39: wavewalletrpc.WalletEntryRequest.lightning_invoice:type_name -> wavewalletrpc.LightningInvoiceRequest
+	62, // 40: wavewalletrpc.WalletEntryRequest.onchain_address:type_name -> wavewalletrpc.OnchainAddressRequest
+	63, // 41: wavewalletrpc.WalletEntryRequest.ark_address:type_name -> wavewalletrpc.ArkAddressRequest
+	8,  // 42: wavewalletrpc.WalletEntryProgress.phase:type_name -> wavewalletrpc.WalletEntryPhase
+	10, // 43: wavewalletrpc.WalletService.Create:input_type -> wavewalletrpc.CreateRequest
+	12, // 44: wavewalletrpc.WalletService.Unlock:input_type -> wavewalletrpc.UnlockRequest
+	14, // 45: wavewalletrpc.WalletService.PrepareSend:input_type -> wavewalletrpc.PrepareSendRequest
+	16, // 46: wavewalletrpc.WalletService.Send:input_type -> wavewalletrpc.SendRequest
+	18, // 47: wavewalletrpc.WalletService.Recv:input_type -> wavewalletrpc.RecvRequest
+	22, // 48: wavewalletrpc.WalletService.List:input_type -> wavewalletrpc.ListRequest
+	34, // 49: wavewalletrpc.WalletService.Deposit:input_type -> wavewalletrpc.DepositRequest
+	36, // 50: wavewalletrpc.WalletService.Balance:input_type -> wavewalletrpc.BalanceRequest
+	38, // 51: wavewalletrpc.WalletService.Status:input_type -> wavewalletrpc.StatusRequest
+	40, // 52: wavewalletrpc.WalletService.GetExitPlan:input_type -> wavewalletrpc.GetExitPlanRequest
+	43, // 53: wavewalletrpc.WalletService.SweepWallet:input_type -> wavewalletrpc.SweepWalletRequest
+	46, // 54: wavewalletrpc.WalletService.Exit:input_type -> wavewalletrpc.ExitRequest
+	48, // 55: wavewalletrpc.WalletService.ExitStatus:input_type -> wavewalletrpc.ExitStatusRequest
+	53, // 56: wavewalletrpc.WalletService.ExitSummary:input_type -> wavewalletrpc.ExitSummaryRequest
+	56, // 57: wavewalletrpc.WalletService.SubscribeWallet:input_type -> wavewalletrpc.SubscribeWalletRequest
+	29, // 58: wavewalletrpc.WalletInspectionService.InspectActivity:input_type -> wavewalletrpc.InspectActivityRequest
+	11, // 59: wavewalletrpc.WalletService.Create:output_type -> wavewalletrpc.CreateResponse
+	13, // 60: wavewalletrpc.WalletService.Unlock:output_type -> wavewalletrpc.UnlockResponse
+	15, // 61: wavewalletrpc.WalletService.PrepareSend:output_type -> wavewalletrpc.PrepareSendResponse
+	17, // 62: wavewalletrpc.WalletService.Send:output_type -> wavewalletrpc.SendResponse
+	19, // 63: wavewalletrpc.WalletService.Recv:output_type -> wavewalletrpc.RecvResponse
+	23, // 64: wavewalletrpc.WalletService.List:output_type -> wavewalletrpc.ListResponse
+	35, // 65: wavewalletrpc.WalletService.Deposit:output_type -> wavewalletrpc.DepositResponse
+	37, // 66: wavewalletrpc.WalletService.Balance:output_type -> wavewalletrpc.BalanceResponse
+	39, // 67: wavewalletrpc.WalletService.Status:output_type -> wavewalletrpc.StatusResponse
+	42, // 68: wavewalletrpc.WalletService.GetExitPlan:output_type -> wavewalletrpc.GetExitPlanResponse
+	45, // 69: wavewalletrpc.WalletService.SweepWallet:output_type -> wavewalletrpc.SweepWalletResponse
+	47, // 70: wavewalletrpc.WalletService.Exit:output_type -> wavewalletrpc.ExitResponse
+	52, // 71: wavewalletrpc.WalletService.ExitStatus:output_type -> wavewalletrpc.ExitStatusResponse
+	55, // 72: wavewalletrpc.WalletService.ExitSummary:output_type -> wavewalletrpc.ExitSummaryResponse
+	57, // 73: wavewalletrpc.WalletService.SubscribeWallet:output_type -> wavewalletrpc.SubscribeWalletResponse
+	30, // 74: wavewalletrpc.WalletInspectionService.InspectActivity:output_type -> wavewalletrpc.InspectActivityResponse
 	59, // [59:75] is the sub-list for method output_type
 	43, // [43:59] is the sub-list for method input_type
 	43, // [43:43] is the sub-list for extension type_name

@@ -1,8 +1,8 @@
-# rpc/walletdkrpc
+# rpc/wavewalletrpc
 
 ## Purpose
 
-Generated gRPC stubs for `walletdkrpc.WalletService` (plus the technical
+Generated gRPC stubs for `wavewalletrpc.WalletService` (plus the technical
 drill-down `WalletInspectionService`) — the highest-level RPC surface in
 the daemon's API stack. The service is a small, flat, swap-vocabulary-free
 wallet API that lives ABOVE `waverpc` and `swapclientrpc` and composes
@@ -10,7 +10,7 @@ them; seven verbs map 1:1 to what a user does day-to-day, plus supporting
 methods. `failure_reasons.go` is hand-written: it defines the wallet
 rejection taxonomy shared by the daemon-side error mapper and SDK clients.
 
-Proto source: `rpc/walletdkrpc/wallet.proto`.
+Proto source: `rpc/wavewalletrpc/wallet.proto`.
 
 ## Service Methods (the 7 wallet verbs + supporting)
 
@@ -70,16 +70,16 @@ id; unlike `List` it may leak internal correlators, so it is kept out of
   - `cmd/wavecli/waveclicommands` (the seven top-level CLI verbs
     plus `sweep-wallet`, `exit plan`/`exit summary`, and `activity
     inspect` dial `WalletService`/`WalletInspectionService`).
-  - `sdk/walletdk` (gomobile-friendly SDK wraps the same stubs).
+  - `sdk/wavewalletdk` (gomobile-friendly SDK wraps the same stubs).
   - `waved` (RPC auth wiring), `rpc/restclient` (REST transport
     adapter over the same service stubs).
 
 ## Invariants
 
 - **Never edit generated code** — regenerate via `make rpc`.
-- The walletdkrpc layer is the highest-level RPC surface; new wallet
+- The wavewalletrpc layer is the highest-level RPC surface; new wallet
   verbs land HERE first and admin proxies pull from `waverpc`.
-  Internal correlators MUST NOT leak from `waverpc` into walletdkrpc
+  Internal correlators MUST NOT leak from `waverpc` into wavewalletrpc
   responses (that is what `WalletInspectionService` is for instead).
 - `Create`, `Unlock`, `Exit`, and `ExitStatus` are admin-shape proxies
   that work BEFORE the swap subsystem is live; the server-side
@@ -95,10 +95,10 @@ id; unlike `List` it may leak internal correlators, so it is kept out of
 
 ## Deep Docs
 
-- [docs/walletdkrpc_build.md](../../docs/walletdkrpc_build.md) — Build
-  modes, make targets, what the walletdkrpc tag enables.
+- [docs/wavewalletrpc_build.md](../../docs/wavewalletrpc_build.md) — Build
+  modes, make targets, what the wavewalletrpc tag enables.
 - [swapwallet/CLAUDE.md](../../swapwallet/CLAUDE.md) — Daemon-side
   implementation.
-- [sdk/walletdk/CLAUDE.md](../../sdk/walletdk/CLAUDE.md) — Embedded SDK
+- [sdk/wavewalletdk/CLAUDE.md](../../sdk/wavewalletdk/CLAUDE.md) — Embedded SDK
   facade.
 - [ARCHITECTURE.md](../../ARCHITECTURE.md) — System-wide package map.

@@ -4,7 +4,7 @@
 // - protoc             v3.21.12
 // source: wallet.proto
 
-package walletdkrpc
+package wavewalletrpc
 
 import (
 	context "context"
@@ -19,21 +19,21 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	WalletService_Create_FullMethodName          = "/walletdkrpc.WalletService/Create"
-	WalletService_Unlock_FullMethodName          = "/walletdkrpc.WalletService/Unlock"
-	WalletService_PrepareSend_FullMethodName     = "/walletdkrpc.WalletService/PrepareSend"
-	WalletService_Send_FullMethodName            = "/walletdkrpc.WalletService/Send"
-	WalletService_Recv_FullMethodName            = "/walletdkrpc.WalletService/Recv"
-	WalletService_List_FullMethodName            = "/walletdkrpc.WalletService/List"
-	WalletService_Deposit_FullMethodName         = "/walletdkrpc.WalletService/Deposit"
-	WalletService_Balance_FullMethodName         = "/walletdkrpc.WalletService/Balance"
-	WalletService_Status_FullMethodName          = "/walletdkrpc.WalletService/Status"
-	WalletService_GetExitPlan_FullMethodName     = "/walletdkrpc.WalletService/GetExitPlan"
-	WalletService_SweepWallet_FullMethodName     = "/walletdkrpc.WalletService/SweepWallet"
-	WalletService_Exit_FullMethodName            = "/walletdkrpc.WalletService/Exit"
-	WalletService_ExitStatus_FullMethodName      = "/walletdkrpc.WalletService/ExitStatus"
-	WalletService_ExitSummary_FullMethodName     = "/walletdkrpc.WalletService/ExitSummary"
-	WalletService_SubscribeWallet_FullMethodName = "/walletdkrpc.WalletService/SubscribeWallet"
+	WalletService_Create_FullMethodName          = "/wavewalletrpc.WalletService/Create"
+	WalletService_Unlock_FullMethodName          = "/wavewalletrpc.WalletService/Unlock"
+	WalletService_PrepareSend_FullMethodName     = "/wavewalletrpc.WalletService/PrepareSend"
+	WalletService_Send_FullMethodName            = "/wavewalletrpc.WalletService/Send"
+	WalletService_Recv_FullMethodName            = "/wavewalletrpc.WalletService/Recv"
+	WalletService_List_FullMethodName            = "/wavewalletrpc.WalletService/List"
+	WalletService_Deposit_FullMethodName         = "/wavewalletrpc.WalletService/Deposit"
+	WalletService_Balance_FullMethodName         = "/wavewalletrpc.WalletService/Balance"
+	WalletService_Status_FullMethodName          = "/wavewalletrpc.WalletService/Status"
+	WalletService_GetExitPlan_FullMethodName     = "/wavewalletrpc.WalletService/GetExitPlan"
+	WalletService_SweepWallet_FullMethodName     = "/wavewalletrpc.WalletService/SweepWallet"
+	WalletService_Exit_FullMethodName            = "/wavewalletrpc.WalletService/Exit"
+	WalletService_ExitStatus_FullMethodName      = "/wavewalletrpc.WalletService/ExitStatus"
+	WalletService_ExitSummary_FullMethodName     = "/wavewalletrpc.WalletService/ExitSummary"
+	WalletService_SubscribeWallet_FullMethodName = "/wavewalletrpc.WalletService/SubscribeWallet"
 )
 
 // WalletServiceClient is the client API for WalletService service.
@@ -47,7 +47,7 @@ const (
 // 1:1 to what a user actually does day-to-day — create, unlock, send, recv,
 // list, balance, exit — plus a few additional methods (Deposit, Status,
 // SubscribeWallet) used internally and by recv --onchain. The service is
-// registered only when the daemon is built with the walletdkrpc build tag
+// registered only when the daemon is built with the wavewalletrpc build tag
 // (which also requires swapruntime).
 type WalletServiceClient interface {
 	// Create initializes a new wallet from a freshly generated aezeed
@@ -298,7 +298,7 @@ type WalletService_SubscribeWalletClient = grpc.ServerStreamingClient[SubscribeW
 // 1:1 to what a user actually does day-to-day — create, unlock, send, recv,
 // list, balance, exit — plus a few additional methods (Deposit, Status,
 // SubscribeWallet) used internally and by recv --onchain. The service is
-// registered only when the daemon is built with the walletdkrpc build tag
+// registered only when the daemon is built with the wavewalletrpc build tag
 // (which also requires swapruntime).
 type WalletServiceServer interface {
 	// Create initializes a new wallet from a freshly generated aezeed
@@ -712,7 +712,7 @@ type WalletService_SubscribeWalletServer = grpc.ServerStreamingServer[SubscribeW
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var WalletService_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "walletdkrpc.WalletService",
+	ServiceName: "wavewalletrpc.WalletService",
 	HandlerType: (*WalletServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
@@ -783,7 +783,7 @@ var WalletService_ServiceDesc = grpc.ServiceDesc{
 }
 
 const (
-	WalletInspectionService_InspectActivity_FullMethodName = "/walletdkrpc.WalletInspectionService/InspectActivity"
+	WalletInspectionService_InspectActivity_FullMethodName = "/wavewalletrpc.WalletInspectionService/InspectActivity"
 )
 
 // WalletInspectionServiceClient is the client API for WalletInspectionService service.
@@ -883,7 +883,7 @@ func _WalletInspectionService_InspectActivity_Handler(srv interface{}, ctx conte
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var WalletInspectionService_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "walletdkrpc.WalletInspectionService",
+	ServiceName: "wavewalletrpc.WalletInspectionService",
 	HandlerType: (*WalletInspectionServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{

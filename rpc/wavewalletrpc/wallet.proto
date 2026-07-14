@@ -1,8 +1,8 @@
 syntax = "proto3";
 
-package walletdkrpc;
+package wavewalletrpc;
 
-option go_package = "github.com/lightninglabs/wavelength/rpc/walletdkrpc";
+option go_package = "github.com/lightninglabs/wavelength/rpc/wavewalletrpc";
 
 // WalletService exposes a simplified, swap-vocabulary-free wallet API on top
 // of the running daemon. It composes the underlying swap subsystem, ark VTXO
@@ -11,7 +11,7 @@ option go_package = "github.com/lightninglabs/wavelength/rpc/walletdkrpc";
 // 1:1 to what a user actually does day-to-day — create, unlock, send, recv,
 // list, balance, exit — plus a few additional methods (Deposit, Status,
 // SubscribeWallet) used internally and by recv --onchain. The service is
-// registered only when the daemon is built with the walletdkrpc build tag
+// registered only when the daemon is built with the wavewalletrpc build tag
 // (which also requires swapruntime).
 service WalletService {
     // Create initializes a new wallet from a freshly generated aezeed
@@ -529,7 +529,7 @@ message ListRequest {
     // (LIST_VIEW_UNSPECIFIED) is treated as LIST_VIEW_ACTIVITY.
     //
     // WIRE-BREAKING CHANGE: this message intentionally renumbers the
-    // PR #440 fields (pending_only/kinds/limit/offset). walletdkrpc has
+    // PR #440 fields (pending_only/kinds/limit/offset). wavewalletrpc has
     // no deployed external consumers yet, so the cleaner shape with
     // `view` at field 1 is preferred over a backwards-compatible
     // append. Any binary built against PR #440's ListRequest must be
@@ -568,7 +568,7 @@ message ListResponse {
     // WIRE-BREAKING CHANGE: PR #440 had
     // `repeated WalletEntry entries = 1; uint32 total = 2;` at the top
     // level. Those fields are now reachable as `body.activity.entries`
-    // and `body.activity.total`. walletdkrpc has no deployed external
+    // and `body.activity.total`. wavewalletrpc has no deployed external
     // consumers, so the cleaner oneof shape is preferred over
     // reserving the old numbers.
     //
