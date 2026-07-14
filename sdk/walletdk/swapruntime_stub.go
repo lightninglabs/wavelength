@@ -2,10 +2,10 @@
 
 package walletdk
 
-import "github.com/lightninglabs/darepo-client/darepod"
+import "github.com/lightninglabs/wavelength/waved"
 
 // configureSwapRuntime keeps default builds compiling.
-func configureSwapRuntime(_ *darepod.Config, enabled bool) error {
+func configureSwapRuntime(_ *waved.Config, enabled bool) error {
 	return nil
 }
 

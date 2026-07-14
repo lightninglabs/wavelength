@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
+	mailboxpb "github.com/lightninglabs/wavelength/mailbox/pb"
 )
 
 // Permanent mailbox status codes. These classify a non-OK mailbox edge

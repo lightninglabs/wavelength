@@ -107,7 +107,7 @@ func resolveIdent(g *protogen.GeneratedFile, path, name string) string {
 func buildServiceData(g *protogen.GeneratedFile, svc *protogen.Service,
 	serviceFQN string) serviceData {
 
-	const mailboxrpcPath = "github.com/lightninglabs/darepo-client/" +
+	const mailboxrpcPath = "github.com/lightninglabs/wavelength/" +
 		"mailbox/rpc"
 	const protoPath = "google.golang.org/protobuf/proto"
 

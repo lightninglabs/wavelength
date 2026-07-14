@@ -4,7 +4,7 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/lightninglabs/darepo-client/lib/tx/arktx"
+	"github.com/lightninglabs/wavelength/lib/tx/arktx"
 )
 
 // validateCheckpointTx enforces the shared v0 checkpoint tx shape:

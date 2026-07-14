@@ -2865,7 +2865,7 @@ func (*SubmitOutSwapForfeitSignatureResponse) Descriptor() ([]byte, []int) {
 }
 
 // TaprootScriptSignature carries one externally produced tapscript signature.
-// Keep this in sync with daemonrpc.TaprootScriptSignature.
+// Keep this in sync with waverpc.TaprootScriptSignature.
 type TaprootScriptSignature struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// pubkey is the compressed public key that produced the signature.
@@ -3197,7 +3197,7 @@ const file_swap_proto_rawDesc = "" +
 	"\x15AuthorizeInSwapRefund\x12%.swaprpc.AuthorizeInSwapRefundRequest\x1a&.swaprpc.AuthorizeInSwapRefundResponse\x12i\n" +
 	"\x16AcknowledgeOutSwapHtlc\x12&.swaprpc.AcknowledgeOutSwapHtlcRequest\x1a'.swaprpc.AcknowledgeOutSwapHtlcResponse\x12Z\n" +
 	"\x11SignInSwapForfeit\x12!.swaprpc.SignInSwapForfeitRequest\x1a\".swaprpc.SignInSwapForfeitResponse\x12~\n" +
-	"\x1dSubmitOutSwapForfeitSignature\x12-.swaprpc.SubmitOutSwapForfeitSignatureRequest\x1a..swaprpc.SubmitOutSwapForfeitSignatureResponseB0Z.github.com/lightninglabs/darepo-client/swaprpcb\x06proto3"
+	"\x1dSubmitOutSwapForfeitSignature\x12-.swaprpc.SubmitOutSwapForfeitSignatureRequest\x1a..swaprpc.SubmitOutSwapForfeitSignatureResponseB-Z+github.com/lightninglabs/wavelength/swaprpcb\x06proto3"
 
 var (
 	file_swap_proto_rawDescOnce sync.Once

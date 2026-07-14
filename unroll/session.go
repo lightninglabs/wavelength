@@ -5,9 +5,9 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/baselib/protofsm"
-	"github.com/lightninglabs/darepo-client/lib/recovery"
-	"github.com/lightninglabs/darepo-client/unrollplan"
+	"github.com/lightninglabs/wavelength/baselib/protofsm"
+	"github.com/lightninglabs/wavelength/lib/recovery"
+	"github.com/lightninglabs/wavelength/unrollplan"
 )
 
 // Session groups a running unroll FSM with the immutable proof it executes.

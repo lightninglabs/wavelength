@@ -11,9 +11,9 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chaincfg/v2"
-	"github.com/lightninglabs/darepo-client/daemonrpc"
-	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
-	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
+	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/zpay32"
@@ -532,8 +532,8 @@ func TestRouterSendOnchainSelectsVTXOsAndCallsLeave(t *testing.T) {
 	t.Parallel()
 
 	r, swap, rpc := newRouterFixture(t)
-	rpc.listVTXOsResp = &daemonrpc.ListVTXOsResponse{
-		Vtxos: []*daemonrpc.VTXO{
+	rpc.listVTXOsResp = &waverpc.ListVTXOsResponse{
+		Vtxos: []*waverpc.VTXO{
 			{
 				Outpoint:  "tx1:0",
 				AmountSat: 5000,
@@ -548,7 +548,7 @@ func TestRouterSendOnchainSelectsVTXOsAndCallsLeave(t *testing.T) {
 			},
 		},
 	}
-	rpc.sendOnChainResp = &daemonrpc.SendOnChainResponse{
+	rpc.sendOnChainResp = &waverpc.SendOnChainResponse{
 		ActualAmountSat: 10_000,
 		SelectedOutpoints: []string{
 			"tx1:0",
@@ -560,7 +560,7 @@ func TestRouterSendOnchainSelectsVTXOsAndCallsLeave(t *testing.T) {
 	// The operator returns a dynamic fee quote, so the preview is a
 	// COMPLETE quote: net outflow is the amount delivered plus the fee,
 	// not the gross VTXO bundle selected to cover it.
-	rpc.estimateFeeResp = &daemonrpc.EstimateFeeResponse{
+	rpc.estimateFeeResp = &waverpc.EstimateFeeResponse{
 		TotalFeeSat: 500,
 	}
 
@@ -645,14 +645,14 @@ func TestRouterSendOnchainSelectsVTXOsAndCallsLeave(t *testing.T) {
 			"change-VTXO semantics (issue #634)",
 	)
 
-	// Regression: darepo-client#577. The prepare-time preview must
+	// Regression: wavelength#577. The prepare-time preview must
 	// still filter to live VTXOs only so a stuck Forfeiting VTXO
 	// from a prior leave doesn't inflate the preview's reported
 	// outflow.
 	require.Equal(
-		t, daemonrpc.VTXOStatus_VTXO_STATUS_LIVE,
+		t, waverpc.VTXOStatus_VTXO_STATUS_LIVE,
 		rpc.listVTXOsLastReq.GetStatusFilter(),
-		"prepare must filter to live VTXOs only (darepo-client#577)",
+		"prepare must filter to live VTXOs only (wavelength#577)",
 	)
 
 	_, err = sendPrepared(t, r, prepareResp)
@@ -671,8 +671,8 @@ func TestRouterSendOnchainFeeFallsBackToLocalFloor(t *testing.T) {
 	t.Parallel()
 
 	r, _, rpc := newRouterFixture(t)
-	rpc.listVTXOsResp = &daemonrpc.ListVTXOsResponse{
-		Vtxos: []*daemonrpc.VTXO{
+	rpc.listVTXOsResp = &waverpc.ListVTXOsResponse{
+		Vtxos: []*waverpc.VTXO{
 			{
 				Outpoint:  "tx1:0",
 				AmountSat: 10000,
@@ -687,9 +687,9 @@ func TestRouterSendOnchainFeeFallsBackToLocalFloor(t *testing.T) {
 	// leave with one input and two outputs is
 	// 60 + 58 + 2*43 = 204 vBytes, i.e. 2040 sats on-chain, which
 	// exceeds the 300 sat minimum operator fee.
-	rpc.getInfoResp = &daemonrpc.GetInfoResponse{
-		WalletState: daemonrpc.WalletState_WALLET_STATE_READY,
-		ServerInfo: &daemonrpc.ServerInfo{
+	rpc.getInfoResp = &waverpc.GetInfoResponse{
+		WalletState: waverpc.WalletState_WALLET_STATE_READY,
+		ServerInfo: &waverpc.ServerInfo{
 			FeeRate:        10,
 			MinOperatorFee: 300,
 		},
@@ -730,8 +730,8 @@ func TestRouterSendOnchainRejectsWhenFundsCannotCoverFee(t *testing.T) {
 	// 300 sat selection headroom) but not the 5000 + 2040 sat amount +
 	// fee, so the preview must reject rather than report a 7040 sat
 	// outflow it cannot fund.
-	rpc.listVTXOsResp = &daemonrpc.ListVTXOsResponse{
-		Vtxos: []*daemonrpc.VTXO{
+	rpc.listVTXOsResp = &waverpc.ListVTXOsResponse{
+		Vtxos: []*waverpc.VTXO{
 			{
 				Outpoint:  "tx1:0",
 				AmountSat: 6000,
@@ -739,9 +739,9 @@ func TestRouterSendOnchainRejectsWhenFundsCannotCoverFee(t *testing.T) {
 		},
 	}
 	rpc.estimateFeeErr = errors.New("operator unreachable")
-	rpc.getInfoResp = &daemonrpc.GetInfoResponse{
-		WalletState: daemonrpc.WalletState_WALLET_STATE_READY,
-		ServerInfo: &daemonrpc.ServerInfo{
+	rpc.getInfoResp = &waverpc.GetInfoResponse{
+		WalletState: waverpc.WalletState_WALLET_STATE_READY,
+		ServerInfo: &waverpc.ServerInfo{
 			FeeRate:        10,
 			MinOperatorFee: 300,
 		},
@@ -769,8 +769,8 @@ func TestRouterSendOnchainSweepAllRoutesToSendOnChain(t *testing.T) {
 	t.Parallel()
 
 	r, _, rpc := newRouterFixture(t)
-	rpc.listVTXOsResp = &daemonrpc.ListVTXOsResponse{
-		Vtxos: []*daemonrpc.VTXO{
+	rpc.listVTXOsResp = &waverpc.ListVTXOsResponse{
+		Vtxos: []*waverpc.VTXO{
 			{
 				Outpoint:  "tx1:0",
 				AmountSat: 5_000,
@@ -781,7 +781,7 @@ func TestRouterSendOnchainSweepAllRoutesToSendOnChain(t *testing.T) {
 			},
 		},
 	}
-	rpc.sendOnChainResp = &daemonrpc.SendOnChainResponse{
+	rpc.sendOnChainResp = &waverpc.SendOnChainResponse{
 		ActualAmountSat: 12_000,
 		SelectedOutpoints: []string{
 			"tx1:0",
@@ -817,14 +817,14 @@ func TestRouterSendOnchainSweepAllRoutesToSendOnChain(t *testing.T) {
 		"actual_amount_sat on sweep must echo the daemon response",
 	)
 
-	// Regression: darepo-client#577. Sweep-all prepare must also
+	// Regression: wavelength#577. Sweep-all prepare must also
 	// filter to VTXO_STATUS_LIVE so a stuck Forfeiting VTXO from a
 	// prior leave doesn't inflate the reported sweep total.
 	require.Equal(
-		t, daemonrpc.VTXOStatus_VTXO_STATUS_LIVE,
+		t, waverpc.VTXOStatus_VTXO_STATUS_LIVE,
 		rpc.listVTXOsLastReq.GetStatusFilter(),
 		"sweep-all prepare must filter to live VTXOs only "+
-			"(darepo-client#577)",
+			"(wavelength#577)",
 	)
 }
 
@@ -836,8 +836,8 @@ func TestRouterSendOnchainDaemonErrorBubblesUp(t *testing.T) {
 	t.Parallel()
 
 	r, _, rpc := newRouterFixture(t)
-	rpc.listVTXOsResp = &daemonrpc.ListVTXOsResponse{
-		Vtxos: []*daemonrpc.VTXO{
+	rpc.listVTXOsResp = &waverpc.ListVTXOsResponse{
+		Vtxos: []*waverpc.VTXO{
 			{
 				Outpoint:  "tx1:0",
 				AmountSat: 10_000,
@@ -912,8 +912,8 @@ func TestRouterSendOnchainInsufficientFunds(t *testing.T) {
 	t.Parallel()
 
 	r, _, rpc := newRouterFixture(t)
-	rpc.listVTXOsResp = &daemonrpc.ListVTXOsResponse{
-		Vtxos: []*daemonrpc.VTXO{
+	rpc.listVTXOsResp = &waverpc.ListVTXOsResponse{
+		Vtxos: []*waverpc.VTXO{
 			{
 				Outpoint:  "tx1:0",
 				AmountSat: 100,

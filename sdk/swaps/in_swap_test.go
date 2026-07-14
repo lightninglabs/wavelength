@@ -17,8 +17,8 @@ import (
 	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/lightninglabs/darepo-client/daemonrpc"
-	swapsqlc "github.com/lightninglabs/darepo-client/sdk/swaps/sqlc"
+	swapsqlc "github.com/lightninglabs/wavelength/sdk/swaps/sqlc"
+	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/zpay32"
 	"github.com/stretchr/testify/require"
@@ -1123,9 +1123,9 @@ func TestPaySessionCooperativeRefundWaitsForOutputBeforeTerminal(t *testing.T) {
 	require.Equal(t, 1, daemonConn.oorSessionCalls)
 	require.Equal(t, "refund-session", daemonConn.lastOORSessionID)
 
-	daemonConn.oorSession = &daemonrpc.OORSessionInfo{
+	daemonConn.oorSession = &waverpc.OORSessionInfo{
 		SessionId: "refund-session",
-		Status: daemonrpc.
+		Status: waverpc.
 			OORSessionStatus_OOR_SESSION_STATUS_COMPLETED,
 		Phase: "completed",
 	}

@@ -5,8 +5,8 @@ package swapwallet
 import (
 	"testing"
 
-	"github.com/lightninglabs/darepo-client/credit"
-	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/credit"
+	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
 	"github.com/stretchr/testify/require"
 )
 

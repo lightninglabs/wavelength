@@ -6,7 +6,7 @@ import (
 	"log/slog"
 
 	"github.com/btcsuite/btcd/psbt/v2"
-	"github.com/lightninglabs/darepo-client/baselib/protofsm"
+	"github.com/lightninglabs/wavelength/baselib/protofsm"
 )
 
 // ReceiveSession groups a running incoming-transfer FSM with its stable

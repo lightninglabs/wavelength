@@ -1,7 +1,7 @@
 package credit
 
 import (
-	"github.com/lightninglabs/darepo-client/baselib/protofsm"
+	"github.com/lightninglabs/wavelength/baselib/protofsm"
 )
 
 // CreditTransitionTable is the static transition table for the credit operation

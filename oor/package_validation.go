@@ -4,8 +4,8 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/psbt/v2"
-	"github.com/lightninglabs/darepo-client/lib/tx/arktx"
-	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
+	"github.com/lightninglabs/wavelength/lib/tx/arktx"
+	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
 )
 
 // validateIncomingPackage validates the finalized OOR package shape before

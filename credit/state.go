@@ -1,7 +1,7 @@
 package credit
 
 import (
-	"github.com/lightninglabs/darepo-client/db"
+	"github.com/lightninglabs/wavelength/db"
 )
 
 // OpKind identifies the credit operation family driven by one per-operation

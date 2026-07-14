@@ -6,7 +6,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
 )
 
 // reconcilerKinds are the low-volume, backfill-only kinds the reconciler

@@ -10,8 +10,8 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
-	"github.com/lightninglabs/darepo-client/daemonrpc"
-	"github.com/lightninglabs/darepo-client/vhtlcrecovery"
+	"github.com/lightninglabs/wavelength/vhtlcrecovery"
+	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
@@ -20,10 +20,10 @@ import (
 
 //nolint:ll // Generated daemon RPC enum names are intentionally long.
 const (
-	systestRecoveryDirectionReceive = daemonrpc.VHTLCRecoveryDirection_VHTLC_RECOVERY_DIRECTION_RECEIVE
-	systestRecoveryActionClaim      = daemonrpc.VHTLCRecoveryAction_VHTLC_RECOVERY_ACTION_CLAIM
-	systestRecoveryStateArmed       = daemonrpc.VHTLCRecoveryState_VHTLC_RECOVERY_STATE_ARMED
-	systestRecoveryStateCancelled   = daemonrpc.VHTLCRecoveryState_VHTLC_RECOVERY_STATE_CANCELLED
+	systestRecoveryDirectionReceive = waverpc.VHTLCRecoveryDirection_VHTLC_RECOVERY_DIRECTION_RECEIVE
+	systestRecoveryActionClaim      = waverpc.VHTLCRecoveryAction_VHTLC_RECOVERY_ACTION_CLAIM
+	systestRecoveryStateArmed       = waverpc.VHTLCRecoveryState_VHTLC_RECOVERY_STATE_ARMED
+	systestRecoveryStateCancelled   = waverpc.VHTLCRecoveryState_VHTLC_RECOVERY_STATE_CANCELLED
 )
 
 // TestVHTLCRecoveryRPCEndToEnd verifies that a full daemon can arm, read, and
@@ -62,7 +62,7 @@ func TestVHTLCRecoveryRPCEndToEnd(t *testing.T) {
 	require.Equal(t, codes.AlreadyExists, status.Code(err))
 
 	statusResp, err := fixture.client.GetVHTLCRecoveryStatus(
-		ctx, &daemonrpc.GetVHTLCRecoveryStatusRequest{
+		ctx, &waverpc.GetVHTLCRecoveryStatusRequest{
 			RecoveryId: armResp.GetRecoveryId(),
 		},
 	)
@@ -76,7 +76,7 @@ func TestVHTLCRecoveryRPCEndToEnd(t *testing.T) {
 		[]byte(t.Name() + "-cooperative-settlement"),
 	).String()
 	cancelResp, err := fixture.client.CancelVHTLCRecovery(
-		ctx, &daemonrpc.CancelVHTLCRecoveryRequest{
+		ctx, &waverpc.CancelVHTLCRecoveryRequest{
 			RecoveryId:      armResp.GetRecoveryId(),
 			Reason:          "systest cooperative settlement won",
 			CooperativeTxid: cooperativeTxid,
@@ -98,7 +98,7 @@ func TestVHTLCRecoveryRPCEndToEnd(t *testing.T) {
 // testVHTLCRecoveryArmRequest returns a complete, deterministic recovery arm
 // request with fake but structurally valid keys and outpoints.
 func testVHTLCRecoveryArmRequest(t *testing.T,
-	requestID string) *daemonrpc.ArmVHTLCRecoveryRequest {
+	requestID string) *waverpc.ArmVHTLCRecoveryRequest {
 
 	t.Helper()
 
@@ -112,7 +112,7 @@ func testVHTLCRecoveryArmRequest(t *testing.T,
 	outpointHash := chainhash.HashH([]byte(t.Name() + "-vhtlc"))
 	preimageHash := chainhash.HashH([]byte(t.Name() + "-preimage"))
 
-	return &daemonrpc.ArmVHTLCRecoveryRequest{
+	return &waverpc.ArmVHTLCRecoveryRequest{
 		RequestId: requestID,
 		SwapId:    []byte(t.Name() + "-swap"),
 		Direction: systestRecoveryDirectionReceive,
@@ -149,8 +149,8 @@ func testVHTLCRecoveryArmRequest(t *testing.T,
 // requireVHTLCRecoveryStatusMatchesArm checks that the daemon persisted and
 // returned the public recovery fields that the swap SDK/server retry around.
 func requireVHTLCRecoveryStatusMatchesArm(t *testing.T,
-	req *daemonrpc.ArmVHTLCRecoveryRequest, recoveryID string,
-	status *daemonrpc.VHTLCRecoveryStatus) {
+	req *waverpc.ArmVHTLCRecoveryRequest, recoveryID string,
+	status *waverpc.VHTLCRecoveryStatus) {
 
 	t.Helper()
 
@@ -177,12 +177,12 @@ func requireVHTLCRecoveryStatusMatchesArm(t *testing.T,
 // protoCloneArmRequest copies the request fields that participate in the
 // recovery idempotency contract.
 func protoCloneArmRequest(
-	req *daemonrpc.ArmVHTLCRecoveryRequest,
-) *daemonrpc.ArmVHTLCRecoveryRequest {
+	req *waverpc.ArmVHTLCRecoveryRequest,
+) *waverpc.ArmVHTLCRecoveryRequest {
 
 	refundNoReceiverDelay := req.UnilateralRefundWithoutReceiverDelay
 
-	return &daemonrpc.ArmVHTLCRecoveryRequest{
+	return &waverpc.ArmVHTLCRecoveryRequest{
 		RequestId: req.RequestId,
 		SwapId: append(
 			[]byte(nil), req.SwapId...,

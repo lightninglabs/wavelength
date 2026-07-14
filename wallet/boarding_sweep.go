@@ -11,13 +11,13 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/lightninglabs/darepo-client/lib/arkscript"
-	"github.com/lightninglabs/darepo-client/lib/tx/arktx"
+	"github.com/lightninglabs/wavelength/lib/arkscript"
+	"github.com/lightninglabs/wavelength/lib/tx/arktx"
 	"github.com/lightningnetwork/lnd/input"
 )
 
 // Boarding-sweep tunables. These mirror the values that previously lived in
-// darepod/boarding_sweep.go; the values are unchanged so operator experience
+// waved/boarding_sweep.go; the values are unchanged so operator experience
 // stays identical across the move.
 const (
 	// defaultBoardingSweepFallbackFeeRateSatPerVByte is used when no

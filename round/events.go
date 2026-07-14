@@ -9,11 +9,11 @@ import (
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/lightninglabs/darepo-client/baselib/actor"
-	"github.com/lightninglabs/darepo-client/lib/arkscript"
-	"github.com/lightninglabs/darepo-client/lib/tree"
-	"github.com/lightninglabs/darepo-client/lib/types"
-	"github.com/lightninglabs/darepo-client/rpc/roundpb"
+	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/lib/arkscript"
+	"github.com/lightninglabs/wavelength/lib/tree"
+	"github.com/lightninglabs/wavelength/lib/types"
+	"github.com/lightninglabs/wavelength/rpc/roundpb"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
@@ -247,7 +247,7 @@ type ConnectorLeafInfo struct {
 	// NumLeaves is the total number of connector leaves in the tree this
 	// leaf belongs to. Together with Radix and the operator key it lets the
 	// client deterministically reconstruct the connector tree and prove the
-	// assigned leaf descends from the commitment tx (darepo-client#681).
+	// assigned leaf descends from the commitment tx (wavelength#681).
 	NumLeaves uint32
 
 	// Radix is the branching factor used to build the connector tree. It is
@@ -526,7 +526,7 @@ func (e *ForfeitCollectionTimedOut) clientEventSealed() {}
 // i.e. the server never returned a RoundJoined admission watermark for the
 // JoinRoundRequest. The FSM consumes this in IntentSentState to fail the round
 // (recoverable) and release any forfeit-reserved inputs back to LiveState so
-// they are not stranded in pending-forfeit (darepo-client#653). The timeout is
+// they are not stranded in pending-forfeit (wavelength#653). The timeout is
 // armed when the FSM is still temp-keyed, so the event carries no RoundID.
 type RegistrationTimedOut struct{}
 

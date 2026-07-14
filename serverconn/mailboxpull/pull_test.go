@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
+	mailboxpb "github.com/lightninglabs/wavelength/mailbox/pb"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"

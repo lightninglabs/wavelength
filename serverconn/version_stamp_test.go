@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	mailboxconn "github.com/lightninglabs/darepo-client/mailbox/conn"
-	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
-	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
+	mailboxconn "github.com/lightninglabs/wavelength/mailbox/conn"
+	mailboxpb "github.com/lightninglabs/wavelength/mailbox/pb"
+	mailboxrpc "github.com/lightninglabs/wavelength/mailbox/rpc"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/anypb"
@@ -213,7 +213,7 @@ func TestOutboundEnvelopesCarryBothVersions(t *testing.T) {
 }
 
 // TestRuntimeStampEnvelopeResponse proves the exported Runtime.StampEnvelope
-// entry point (used by the darepod mailbox response path) stamps a response
+// entry point (used by the waved mailbox response path) stamps a response
 // envelope with the runtime-bound pair rather than any caller value.
 func TestRuntimeStampEnvelopeResponse(t *testing.T) {
 	t.Parallel()

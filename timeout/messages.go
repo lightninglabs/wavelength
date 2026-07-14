@@ -3,7 +3,7 @@ package timeout
 import (
 	"time"
 
-	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/wavelength/baselib/actor"
 )
 
 // ID is a unique identifier for a scheduled timeout. This is intentionally

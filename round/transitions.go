@@ -19,12 +19,12 @@ import (
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/ledger"
-	"github.com/lightninglabs/darepo-client/lib/arkscript"
-	"github.com/lightninglabs/darepo-client/lib/tree"
-	"github.com/lightninglabs/darepo-client/lib/tx"
-	"github.com/lightninglabs/darepo-client/lib/types"
-	"github.com/lightninglabs/darepo-client/rpc/roundpb"
+	"github.com/lightninglabs/wavelength/ledger"
+	"github.com/lightninglabs/wavelength/lib/arkscript"
+	"github.com/lightninglabs/wavelength/lib/tree"
+	"github.com/lightninglabs/wavelength/lib/tx"
+	"github.com/lightninglabs/wavelength/lib/types"
+	"github.com/lightninglabs/wavelength/rpc/roundpb"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
@@ -751,7 +751,7 @@ func (s *PendingRoundAssembly) processEvent(ctx context.Context,
 		// Arm the registration (admission) timeout so a server that
 		// never returns a RoundJoined watermark cannot park us in
 		// IntentSentState forever. On expiry the FSM fails the round
-		// and releases any forfeit-reserved inputs (darepo-client#653).
+		// and releases any forfeit-reserved inputs (wavelength#653).
 		// A non-positive timeout disables the safety net.
 		if env.RegistrationTimeout > 0 {
 			outbox = append(outbox, &StartTimeoutReq{
@@ -877,7 +877,7 @@ func (s *IntentSentState) processEvent(ctx context.Context, event ClientEvent,
 		// admission window. Fail the round as recoverable (the client
 		// may retry) and release any forfeit-reserved inputs back to
 		// LiveState so they are not stranded in pending-forfeit
-		// (darepo-client#653). Releasing is safe here: at this phase no
+		// (wavelength#653). Releasing is safe here: at this phase no
 		// forfeit signatures have been produced or sent to the server,
 		// so there is nothing to double-spend.
 		const reason = "round admission timed out"
@@ -2147,7 +2147,7 @@ func (s *CommitmentTxReceivedState) processEvent(ctx context.Context,
 		// proves internal self-consistency; without this binding a
 		// self-consistent tree rooted at the wrong commitment output
 		// would be co-signed, after which the client's new VTXOs are
-		// unrecoverable (darepo-client#680).
+		// unrecoverable (wavelength#680).
 		if err := validateVTXOTreeBinding(
 			s.CommitmentTx.UnsignedTx, s.VTXOTreePaths,
 		); err != nil {
@@ -2281,7 +2281,7 @@ func (s *CommitmentTxReceivedState) processEvent(ctx context.Context,
 		// exists independently of the commitment tx; signing the
 		// forfeit over it would make the old VTXO claimable even if
 		// the replacement round never commits, breaking round
-		// atomicity (darepo-client#681).
+		// atomicity (wavelength#681).
 		//
 		//nolint:contextcheck // Connector-tree reconstruction is pure,
 		// deterministic CPU work (the lib/tree materializer ignores its
@@ -3652,7 +3652,7 @@ const (
 // Binding the connector to the commitment tx is what preserves round
 // atomicity: a connector leaf is only ever spendable once the commitment tx
 // confirms, so the old VTXO cannot be forfeited unless the replacement round
-// also commits (darepo-client#681).
+// also commits (wavelength#681).
 func validateConnectorAncestry(commitmentTx *wire.MsgTx,
 	operatorKey *btcec.PublicKey,
 	mappings map[wire.OutPoint]*ConnectorLeafInfo) error {
@@ -3858,7 +3858,7 @@ func connectorLeafOutput(leaf *tree.Node) (*wire.TxOut, error) {
 // real batch output, so the client's new VTXOs (whose outpoints are derived
 // from the tree root) are unrecoverable. This is the VTXO-tree counterpart to
 // validateConnectorAncestry; together they restore round atomicity
-// (darepo-client#680, companion to #681).
+// (wavelength#680, companion to #681).
 //
 // For each (outputIdx, tree) pair it asserts that the tree's BatchOutpoint
 // names this commitment tx, that outputIdx agrees with BatchOutpoint.Index,

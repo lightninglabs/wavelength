@@ -8,7 +8,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/daemonrpc"
+	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"google.golang.org/grpc/codes"
@@ -18,49 +18,49 @@ import (
 //nolint:ll
 const (
 	// recoveryDirectionPay is the SDK pay-side daemon recovery direction.
-	recoveryDirectionPay = daemonrpc.
+	recoveryDirectionPay = waverpc.
 				VHTLCRecoveryDirection_VHTLC_RECOVERY_DIRECTION_PAY
 
 	// recoveryDirectionReceive is the SDK receive-side daemon recovery
 	// direction.
-	recoveryDirectionReceive = daemonrpc.
+	recoveryDirectionReceive = waverpc.
 					VHTLCRecoveryDirection_VHTLC_RECOVERY_DIRECTION_RECEIVE
 
 	// recoveryActionClaim is the receive-side unilateral claim action.
-	recoveryActionClaim = daemonrpc.
+	recoveryActionClaim = waverpc.
 				VHTLCRecoveryAction_VHTLC_RECOVERY_ACTION_CLAIM
 
 	// recoveryActionRefundWithoutReceiver is the pay-side sender-only
 	// unilateral refund action.
-	recoveryActionRefundWithoutReceiver = daemonrpc.
+	recoveryActionRefundWithoutReceiver = waverpc.
 						VHTLCRecoveryAction_VHTLC_RECOVERY_ACTION_REFUND_WITHOUT_RECEIVER
 
 	// recoveryStateUnspecified represents a missing or unknown recovery
 	// row.
-	recoveryStateUnspecified = daemonrpc.
+	recoveryStateUnspecified = waverpc.
 					VHTLCRecoveryState_VHTLC_RECOVERY_STATE_UNSPECIFIED
 
 	// recoveryStateArmed means the row is dormant and cooperative
 	// settlement can still win without on-chain escalation.
-	recoveryStateArmed = daemonrpc.
+	recoveryStateArmed = waverpc.
 				VHTLCRecoveryState_VHTLC_RECOVERY_STATE_ARMED
 
 	// recoveryStateUnrollStarted means daemon-owned unroll execution has
 	// started.
-	recoveryStateUnrollStarted = daemonrpc.
+	recoveryStateUnrollStarted = waverpc.
 					VHTLCRecoveryState_VHTLC_RECOVERY_STATE_UNROLL_STARTED
 
 	// recoveryStateCompleted means the daemon completed on-chain recovery.
-	recoveryStateCompleted = daemonrpc.
+	recoveryStateCompleted = waverpc.
 				VHTLCRecoveryState_VHTLC_RECOVERY_STATE_COMPLETED
 
 	// recoveryStateCancelled means cooperative settlement cancelled
 	// recovery.
-	recoveryStateCancelled = daemonrpc.
+	recoveryStateCancelled = waverpc.
 				VHTLCRecoveryState_VHTLC_RECOVERY_STATE_CANCELLED
 
 	// recoveryStateFailed means recovery hit a terminal daemon-side error.
-	recoveryStateFailed = daemonrpc.
+	recoveryStateFailed = waverpc.
 				VHTLCRecoveryState_VHTLC_RECOVERY_STATE_FAILED
 
 	// recoveryReasonServerClaimObserved explains cancellation when the pay
@@ -258,7 +258,7 @@ func decideRecoveryEscalation(policy RecoveryPolicy, firstFailureAt time.Time,
 // vHTLC recovery. It is deterministic from the SDK swap identity and action so
 // retries after crash or RPC timeout return the original daemon recovery row.
 func recoveryRequestID(direction string, paymentHash lntypes.Hash,
-	action daemonrpc.VHTLCRecoveryAction) string {
+	action waverpc.VHTLCRecoveryAction) string {
 
 	return fmt.Sprintf("sdk-swaps:%s:%x:%s", direction, paymentHash[:],
 		action.String())
@@ -316,7 +316,7 @@ func (s *paySession) ensurePayRefundRecoveryArmed(ctx context.Context) error {
 	}
 
 	resp, err := s.client.daemon.ArmVHTLCRecovery(
-		ctx, &daemonrpc.ArmVHTLCRecoveryRequest{
+		ctx, &waverpc.ArmVHTLCRecoveryRequest{
 			RequestId: recoveryRequestID(
 				string(SwapDirectionPay), s.cfg.PaymentHash,
 				recoveryActionRefundWithoutReceiver,
@@ -423,7 +423,7 @@ func (s *ReceiveSession) ensureReceiveClaimRecoveryArmed(
 	}
 
 	resp, err := s.client.daemon.ArmVHTLCRecovery(
-		ctx, &daemonrpc.ArmVHTLCRecoveryRequest{
+		ctx, &waverpc.ArmVHTLCRecoveryRequest{
 			RequestId: recoveryRequestID(
 				string(SwapDirectionReceive), s.PaymentHash,
 				recoveryActionClaim,
@@ -507,7 +507,7 @@ func cancelVHTLCRecovery(ctx context.Context, daemon DaemonConn, recoveryID,
 	}
 
 	_, err := daemon.CancelVHTLCRecovery(
-		ctx, &daemonrpc.CancelVHTLCRecoveryRequest{
+		ctx, &waverpc.CancelVHTLCRecoveryRequest{
 			RecoveryId:      recoveryID,
 			Reason:          reason,
 			CooperativeTxid: cooperativeTxid,
@@ -527,8 +527,8 @@ func cancelVHTLCRecovery(ctx context.Context, daemon DaemonConn, recoveryID,
 
 // recoveryStatusState returns the current recovery state or UNSPECIFIED when
 // the daemon has no row for recoveryID.
-func recoveryStatusState(resp *daemonrpc.GetVHTLCRecoveryStatusResponse) (
-	daemonrpc.VHTLCRecoveryState, string) {
+func recoveryStatusState(resp *waverpc.GetVHTLCRecoveryStatusResponse) (
+	waverpc.VHTLCRecoveryState, string) {
 
 	if resp == nil || !resp.GetFound() || resp.GetStatus() == nil {
 		return recoveryStateUnspecified, ""
@@ -550,7 +550,7 @@ func escalateVHTLCRecovery(ctx context.Context, daemon DaemonConn, recoveryID,
 	}
 
 	_, err := daemon.EscalateVHTLCRecovery(
-		ctx, &daemonrpc.EscalateVHTLCRecoveryRequest{
+		ctx, &waverpc.EscalateVHTLCRecoveryRequest{
 			RecoveryId: recoveryID,
 			Reason:     reason,
 		},
@@ -745,7 +745,7 @@ func (s *ReceiveSession) maybeEscalateReceiveClaimRecovery(ctx context.Context,
 // recoveryIsActive returns true once an armed row has moved into daemon-owned
 // unroll execution and the SDK should stop attempting cooperative custom-input
 // spends for the same vHTLC.
-func recoveryIsActive(state daemonrpc.VHTLCRecoveryState) bool {
+func recoveryIsActive(state waverpc.VHTLCRecoveryState) bool {
 	switch state {
 	case recoveryStateUnspecified, recoveryStateArmed,
 		recoveryStateCancelled:
@@ -760,14 +760,14 @@ func recoveryIsActive(state daemonrpc.VHTLCRecoveryState) bool {
 // treated as unspecified so legacy or partially constructed sessions can
 // continue through their cooperative path.
 func getVHTLCRecoveryState(ctx context.Context, daemon DaemonConn,
-	recoveryID string) (daemonrpc.VHTLCRecoveryState, string, error) {
+	recoveryID string) (waverpc.VHTLCRecoveryState, string, error) {
 
 	if recoveryID == "" {
 		return recoveryStateUnspecified, "", nil
 	}
 
 	resp, err := daemon.GetVHTLCRecoveryStatus(
-		ctx, &daemonrpc.GetVHTLCRecoveryStatusRequest{
+		ctx, &waverpc.GetVHTLCRecoveryStatusRequest{
 			RecoveryId: recoveryID,
 		},
 	)

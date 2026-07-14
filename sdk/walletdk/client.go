@@ -11,11 +11,11 @@ import (
 	"time"
 
 	btcwalletrpc "github.com/btcsuite/btcwallet/rpc/walletrpc"
-	"github.com/lightninglabs/darepo-client/daemonrpc"
-	"github.com/lightninglabs/darepo-client/rpc/restclient"
-	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
-	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
-	"github.com/lightninglabs/darepo-client/rpcauth"
+	"github.com/lightninglabs/wavelength/rpc/restclient"
+	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
+	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpcauth"
+	"github.com/lightninglabs/wavelength/waverpc"
 	"google.golang.org/grpc"
 )
 
@@ -24,7 +24,7 @@ const defaultCloseTimeout = 5 * time.Second
 // Client is the wallet-facing SDK handle. It is safe for concurrent use.
 type Client struct {
 	conn   grpc.ClientConnInterface
-	daemon daemonrpc.DaemonServiceClient
+	daemon waverpc.DaemonServiceClient
 	swaps  swapclientrpc.SwapClientServiceClient
 	wallet walletdkrpc.WalletServiceClient
 	btcw   btcwalletrpc.WalletServiceClient
@@ -69,7 +69,7 @@ func connectREST(ctx context.Context, cfg ConnectConfig) (*Client, error) {
 	wallet := restclient.NewWalletServiceClientFromClient(transport)
 
 	if _, err := daemon.GetInfo(
-		ctx, &daemonrpc.GetInfoRequest{},
+		ctx, &waverpc.GetInfoRequest{},
 	); err != nil {
 		return nil, fmt.Errorf("wait for wallet daemon readiness: %w",
 			err)
@@ -171,7 +171,7 @@ func (c *Client) BtcwalletVersionRPC() btcwalletrpc.VersionServiceClient {
 }
 
 // ArkRPC returns the raw daemon RPC client for advanced callers.
-func (c *Client) ArkRPC() daemonrpc.DaemonServiceClient {
+func (c *Client) ArkRPC() waverpc.DaemonServiceClient {
 	if c == nil {
 		return nil
 	}
@@ -190,7 +190,7 @@ func (c *Client) SwapRPC() swapclientrpc.SwapClientServiceClient {
 
 // GetInfo returns the current daemon readiness snapshot.
 func (c *Client) GetInfo(ctx context.Context) (*Info, error) {
-	resp, err := c.daemon.GetInfo(ctx, &daemonrpc.GetInfoRequest{})
+	resp, err := c.daemon.GetInfo(ctx, &waverpc.GetInfoRequest{})
 	if err != nil {
 		return nil, fmt.Errorf("get daemon info: %w", err)
 	}
@@ -215,7 +215,7 @@ func (c *Client) CreateWallet(ctx context.Context, req CreateWalletRequest) (
 	var encipheredSeed []byte
 
 	if len(mnemonic) == 0 {
-		seed, err := c.daemon.GenSeed(ctx, &daemonrpc.GenSeedRequest{
+		seed, err := c.daemon.GenSeed(ctx, &waverpc.GenSeedRequest{
 			SeedPassphrase: bytes.Clone(req.SeedPassphrase),
 		})
 		if err != nil {
@@ -227,7 +227,7 @@ func (c *Client) CreateWallet(ctx context.Context, req CreateWalletRequest) (
 	}
 
 	initResp, err := c.daemon.InitWallet(ctx,
-		&daemonrpc.InitWalletRequest{
+		&waverpc.InitWalletRequest{
 			Mnemonic:       mnemonic,
 			SeedPassphrase: bytes.Clone(req.SeedPassphrase),
 			WalletPassword: bytes.Clone(req.WalletPassword),
@@ -262,7 +262,7 @@ func (c *Client) initFromMnemonic(ctx context.Context, mnemonic []string,
 	seedPassphrase, walletPassword []byte) (string, error) {
 
 	initResp, err := c.daemon.InitWallet(ctx,
-		&daemonrpc.InitWalletRequest{
+		&waverpc.InitWalletRequest{
 			Mnemonic:       mnemonic,
 			SeedPassphrase: bytes.Clone(seedPassphrase),
 			WalletPassword: bytes.Clone(walletPassword),
@@ -280,7 +280,7 @@ func (c *Client) UnlockWallet(ctx context.Context, req UnlockWalletRequest) (
 	*UnlockWalletResult, error) {
 
 	resp, err := c.daemon.UnlockWallet(ctx,
-		&daemonrpc.UnlockWalletRequest{
+		&waverpc.UnlockWalletRequest{
 			WalletPassword: bytes.Clone(req.WalletPassword),
 		},
 	)
@@ -729,7 +729,7 @@ func newClient(conn grpc.ClientConnInterface, canWallet bool,
 	waitCh <-chan error, closeFn func(context.Context) error) *Client {
 
 	return newClientWithRPC(
-		conn, daemonrpc.NewDaemonServiceClient(conn),
+		conn, waverpc.NewDaemonServiceClient(conn),
 		swapclientrpc.NewSwapClientServiceClient(conn),
 		walletdkrpc.NewWalletServiceClient(conn), canWallet, waitCh,
 		closeFn,
@@ -737,7 +737,7 @@ func newClient(conn grpc.ClientConnInterface, canWallet bool,
 }
 
 func newClientWithRPC(conn grpc.ClientConnInterface,
-	daemon daemonrpc.DaemonServiceClient,
+	daemon waverpc.DaemonServiceClient,
 	swaps swapclientrpc.SwapClientServiceClient,
 	wallet walletdkrpc.WalletServiceClient, canWallet bool,
 	waitCh <-chan error, closeFn func(context.Context) error) *Client {

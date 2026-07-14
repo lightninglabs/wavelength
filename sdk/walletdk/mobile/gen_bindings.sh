@@ -17,7 +17,7 @@ set -euo pipefail
 # The gomobile-safe package and the build tags it requires. The mobile tag is
 # what gates the facade; walletdkrpc + swapruntime pull in the embedded wallet
 # RPC runtime (both are required by walletdk.requireEmbeddedWalletRuntime).
-MOBILE_PKG="github.com/lightninglabs/darepo-client/sdk/walletdk/mobile"
+MOBILE_PKG="github.com/lightninglabs/wavelength/sdk/walletdk/mobile"
 MOBILE_TAGS="mobile walletdkrpc swapruntime"
 
 # Minimum Android API level. 21 (Lollipop) matches lnd-mobile.

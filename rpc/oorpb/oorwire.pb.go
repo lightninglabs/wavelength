@@ -756,7 +756,7 @@ const file_oorwire_proto_rawDesc = "" +
 	"\x17OOR_REJECT_USER_BALANCE\x10\x032\xb1\x01\n" +
 	"\x11OORMailboxService\x12J\n" +
 	"\rSubmitPackage\x12\x1b.oorpb.SubmitPackageRequest\x1a\x1c.oorpb.SubmitPackageResponse\x12P\n" +
-	"\x0fFinalizePackage\x12\x1d.oorpb.FinalizePackageRequest\x1a\x1e.oorpb.FinalizePackageResponseB2Z0github.com/lightninglabs/darepo-client/rpc/oorpbb\x06proto3"
+	"\x0fFinalizePackage\x12\x1d.oorpb.FinalizePackageRequest\x1a\x1e.oorpb.FinalizePackageResponseB/Z-github.com/lightninglabs/wavelength/rpc/oorpbb\x06proto3"
 
 var (
 	file_oorwire_proto_rawDescOnce sync.Once

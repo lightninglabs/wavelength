@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package round.v1;
 
-option go_package = "github.com/lightninglabs/darepo-client/rpc/roundpb;roundpb";
+option go_package = "github.com/lightninglabs/wavelength/rpc/roundpb;roundpb";
 
 // --------------------------------------------------------------------------
 // Primitive sub-messages

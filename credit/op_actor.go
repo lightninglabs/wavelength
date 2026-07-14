@@ -8,10 +8,10 @@ import (
 	"time"
 
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/baselib/actor"
-	"github.com/lightninglabs/darepo-client/build"
-	"github.com/lightninglabs/darepo-client/db"
-	"github.com/lightninglabs/darepo-client/timeout"
+	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/build"
+	"github.com/lightninglabs/wavelength/db"
+	"github.com/lightninglabs/wavelength/timeout"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 

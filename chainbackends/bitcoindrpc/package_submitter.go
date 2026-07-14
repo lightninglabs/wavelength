@@ -5,7 +5,7 @@
 //
 // The shape of the helper is deliberately narrow: it knows how to call
 // bitcoind's submitpackage method and nothing else, so it can be wired
-// into darepod.Config without pulling in harness-only code or opening
+// into waved.Config without pulling in harness-only code or opening
 // the rest of a bitcoind RPC surface.
 package bitcoindrpc
 
@@ -235,7 +235,7 @@ func (s *PackageSubmitter) SubmitPackage(ctx context.Context,
 	// maxfeerate (0.10 BTC/kvB) would reject it.
 	rpcReq := map[string]any{
 		"jsonrpc": "1.0",
-		"id":      "darepo-client",
+		"id":      "wavelength",
 		"method":  "submitpackage",
 		"params": []any{
 			txHexes,

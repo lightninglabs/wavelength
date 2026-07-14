@@ -6,8 +6,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
-	"github.com/lightninglabs/darepo-client/swapwallet"
+	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/swapwallet"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"

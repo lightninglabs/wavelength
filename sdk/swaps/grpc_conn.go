@@ -8,8 +8,8 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
-	"github.com/lightninglabs/darepo-client/rpc/restclient"
-	"github.com/lightninglabs/darepo-client/swaprpc"
+	"github.com/lightninglabs/wavelength/rpc/restclient"
+	"github.com/lightninglabs/wavelength/swaprpc"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"google.golang.org/grpc"

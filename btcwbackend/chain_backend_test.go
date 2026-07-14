@@ -7,7 +7,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcjson"
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/lightninglabs/darepo-client/chainbackends"
+	"github.com/lightninglabs/wavelength/chainbackends"
 	"github.com/stretchr/testify/require"
 )
 

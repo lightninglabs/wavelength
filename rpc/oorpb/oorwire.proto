@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package oorpb;
 
-option go_package = "github.com/lightninglabs/darepo-client/rpc/oorpb";
+option go_package = "github.com/lightninglabs/wavelength/rpc/oorpb";
 
 // OORMailboxService defines unary OOR mailbox methods used in the toy E2E
 // connector path.

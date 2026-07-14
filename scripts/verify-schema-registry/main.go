@@ -1,4 +1,4 @@
-// verify-schema-registry parses the darepocli source using Go AST and
+// verify-schema-registry parses the wavecli source using Go AST and
 // checks that the schema registry, MCP tool definitions, and cobra
 // command tree are all in sync. Run as a CI check:
 //
@@ -18,7 +18,7 @@ import (
 	"strings"
 )
 
-const cliPkg = "cmd/darepocli"
+const cliPkg = "cmd/wavecli"
 
 func main() {
 	if len(os.Args) > 1 {

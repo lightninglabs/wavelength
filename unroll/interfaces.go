@@ -5,10 +5,10 @@ import (
 	"errors"
 
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/lightninglabs/darepo-client/chainsource"
-	"github.com/lightninglabs/darepo-client/lib/recovery"
-	"github.com/lightninglabs/darepo-client/txconfirm"
-	"github.com/lightninglabs/darepo-client/vtxo"
+	"github.com/lightninglabs/wavelength/chainsource"
+	"github.com/lightninglabs/wavelength/lib/recovery"
+	"github.com/lightninglabs/wavelength/txconfirm"
+	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightningnetwork/lnd/input"
 )
 

@@ -2856,7 +2856,7 @@ const file_round_proto_rawDesc = "" +
 	"\fSubmitNonces\x12\x1d.round.v1.SubmitNoncesRequest\x1a\x1d.round.v1.ClientVTXOAggNonces\x12S\n" +
 	"\x11SubmitPartialSigs\x12!.round.v1.SubmitPartialSigRequest\x1a\x1b.round.v1.ClientVTXOAggSigs\x12]\n" +
 	"\x11SubmitForfeitSigs\x12!.round.v1.SubmitForfeitSigRequest\x1a%.round.v1.ClientAwaitingInputSigsResp\x12\\\n" +
-	"\x15SubmitVTXOForfeitSigs\x12&.round.v1.SubmitVTXOForfeitSigsRequest\x1a\x1b.round.v1.ClientSuccessRespB<Z:github.com/lightninglabs/darepo-client/rpc/roundpb;roundpbb\x06proto3"
+	"\x15SubmitVTXOForfeitSigs\x12&.round.v1.SubmitVTXOForfeitSigsRequest\x1a\x1b.round.v1.ClientSuccessRespB9Z7github.com/lightninglabs/wavelength/rpc/roundpb;roundpbb\x06proto3"
 
 var (
 	file_round_proto_rawDescOnce sync.Once

@@ -4,7 +4,7 @@ package mailbox.v1;
 
 import "google/protobuf/any.proto";
 
-option go_package = "github.com/lightninglabs/darepo-client/mailbox/pb;mailboxpb";
+option go_package = "github.com/lightninglabs/wavelength/mailbox/pb;mailboxpb";
 
 // RpcMeta carries metadata for the RPC-over-mailbox overlay.
 message RpcMeta {

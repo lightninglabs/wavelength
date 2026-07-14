@@ -9,7 +9,7 @@ import (
 )
 
 // ServeMuxOptions returns the standard grpc-gateway mux options used by
-// darepo HTTP gateways.
+// wavelength HTTP gateways.
 func ServeMuxOptions(
 	headerMatcher runtime.HeaderMatcherFunc) []runtime.ServeMuxOption {
 

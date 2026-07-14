@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/stretchr/testify/require"
 )
 

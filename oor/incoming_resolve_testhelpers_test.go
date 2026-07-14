@@ -3,8 +3,8 @@ package oor
 import (
 	"testing"
 
-	"github.com/lightninglabs/darepo-client/arkrpc"
-	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
+	"github.com/lightninglabs/wavelength/arkrpc"
+	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
 	"github.com/stretchr/testify/require"
 )
 

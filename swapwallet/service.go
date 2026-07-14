@@ -6,9 +6,9 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/lightninglabs/darepo-client/daemonrpc"
-	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
-	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
+	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/waverpc"
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
@@ -119,7 +119,7 @@ func (s *Service) SweepWallet(ctx context.Context,
 }
 
 // ExitStatus reports the current phase of an exit (unroll) job for the
-// specified VTXO outpoint by proxying daemonrpc.GetUnrollStatus.
+// specified VTXO outpoint by proxying waverpc.GetUnrollStatus.
 func (s *Service) ExitStatus(ctx context.Context,
 	req *walletdkrpc.ExitStatusRequest) (*walletdkrpc.ExitStatusResponse,
 	error) {
@@ -169,7 +169,7 @@ func (s *Service) Deposit(ctx context.Context,
 	}
 
 	addrResp, err := s.deps.RPCServer.NewAddress(
-		ctx, &daemonrpc.NewAddressRequest{},
+		ctx, &waverpc.NewAddressRequest{},
 	)
 	if err != nil {
 		return nil, fmt.Errorf("new boarding address: %w", err)
@@ -214,38 +214,37 @@ func (s *Service) requireWalletReady(ctx context.Context) error {
 	}
 
 	info, err := s.deps.RPCServer.GetInfo(
-		ctx, &daemonrpc.GetInfoRequest{},
+		ctx, &waverpc.GetInfoRequest{},
 	)
 	if err != nil {
 		return fmt.Errorf("get info: %w", err)
 	}
 
 	switch info.GetWalletState() {
-	case daemonrpc.WalletState_WALLET_STATE_READY:
+	case waverpc.WalletState_WALLET_STATE_READY:
 		return nil
 
-	case daemonrpc.WalletState_WALLET_STATE_NONE:
-		return daemonrpc.WalletNotReadyStateError(
-			"wallet is not ready",
-			daemonrpc.WalletNotReadyStateNone,
+	case waverpc.WalletState_WALLET_STATE_NONE:
+		return waverpc.WalletNotReadyStateError(
+			"wallet is not ready", waverpc.WalletNotReadyStateNone,
 		)
 
-	case daemonrpc.WalletState_WALLET_STATE_LOCKED:
-		return daemonrpc.WalletNotReadyStateError(
+	case waverpc.WalletState_WALLET_STATE_LOCKED:
+		return waverpc.WalletNotReadyStateError(
 			"wallet is not ready",
-			daemonrpc.WalletNotReadyStateLocked,
+			waverpc.WalletNotReadyStateLocked,
 		)
 
-	case daemonrpc.WalletState_WALLET_STATE_SYNCING:
-		return daemonrpc.WalletNotReadyStateError(
+	case waverpc.WalletState_WALLET_STATE_SYNCING:
+		return waverpc.WalletNotReadyStateError(
 			"wallet is not ready",
-			daemonrpc.WalletNotReadyStateSyncing,
+			waverpc.WalletNotReadyStateSyncing,
 		)
 
 	default:
-		return daemonrpc.WalletNotReadyStateError(
+		return waverpc.WalletNotReadyStateError(
 			"wallet is not ready",
-			daemonrpc.WalletNotReadyStateUnknown,
+			waverpc.WalletNotReadyStateUnknown,
 		)
 	}
 }
@@ -270,7 +269,7 @@ func (s *Service) Status(ctx context.Context, req *walletdkrpc.StatusRequest) (
 	}
 
 	info, err := s.deps.RPCServer.GetInfo(
-		ctx, &daemonrpc.GetInfoRequest{},
+		ctx, &waverpc.GetInfoRequest{},
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get info: %w", err)
@@ -290,15 +289,15 @@ func (s *Service) Status(ctx context.Context, req *walletdkrpc.StatusRequest) (
 
 	return &walletdkrpc.StatusResponse{
 		// Ready collapses to "wallet fully usable for signing".
-		Ready: state == daemonrpc.WalletState_WALLET_STATE_READY,
+		Ready: state == waverpc.WalletState_WALLET_STATE_READY,
 
 		// Unlocked retains the legacy wallet-exists signal exposed
 		// by this field. Use Ready to determine whether wallet RPCs
 		// are currently usable.
 		Unlocked: state ==
-			daemonrpc.WalletState_WALLET_STATE_LOCKED ||
-			state == daemonrpc.WalletState_WALLET_STATE_SYNCING ||
-			state == daemonrpc.WalletState_WALLET_STATE_READY,
+			waverpc.WalletState_WALLET_STATE_LOCKED ||
+			state == waverpc.WalletState_WALLET_STATE_SYNCING ||
+			state == waverpc.WalletState_WALLET_STATE_READY,
 
 		Network:      info.GetNetwork(),
 		Balance:      bal,
@@ -563,7 +562,7 @@ func (s *Service) fetchBalance(ctx context.Context) (
 	}
 
 	bal, err := s.deps.RPCServer.GetBalance(
-		ctx, &daemonrpc.GetBalanceRequest{},
+		ctx, &waverpc.GetBalanceRequest{},
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get balance: %w", err)

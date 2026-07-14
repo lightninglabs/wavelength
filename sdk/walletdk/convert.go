@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
 )
 
 // listViewToProto maps the SDK ListView string onto the generated

@@ -2,8 +2,8 @@ package oor
 
 import (
 	"github.com/btcsuite/btcd/psbt/v2"
-	"github.com/lightninglabs/darepo-client/baselib/protofsm"
-	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
+	"github.com/lightninglabs/wavelength/baselib/protofsm"
+	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
 )
 
 // State is a sealed interface for all states in the OOR client transfer FSM.

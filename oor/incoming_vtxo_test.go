@@ -6,9 +6,9 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/lightninglabs/darepo-client/lib/arkscript"
-	lib_tree "github.com/lightninglabs/darepo-client/lib/tree"
-	"github.com/lightninglabs/darepo-client/vtxo"
+	"github.com/lightninglabs/wavelength/lib/arkscript"
+	lib_tree "github.com/lightninglabs/wavelength/lib/tree"
+	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
 )
@@ -355,7 +355,7 @@ func TestBuildIncomingVTXODescriptorRejectsInvalidAncestry(t *testing.T) {
 			wantReason: "nil tree path",
 		},
 		{
-			// Regression for darepo-client#370: a zero TreeDepth
+			// Regression for wavelength#370: a zero TreeDepth
 			// would otherwise persist and either silently strand
 			// the VTXO at unroll time or under-report the expiry
 			// window.
@@ -366,7 +366,7 @@ func TestBuildIncomingVTXODescriptorRejectsInvalidAncestry(t *testing.T) {
 			wantReason: "must be non-zero",
 		},
 		{
-			// Regression for darepo-client#370: a non-zero claim
+			// Regression for wavelength#370: a non-zero claim
 			// that disagrees with the actual tree path is the
 			// more dangerous variant because it survives the
 			// obvious zero check downstream.

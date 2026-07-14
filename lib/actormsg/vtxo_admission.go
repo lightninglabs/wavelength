@@ -5,8 +5,8 @@ import (
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/lightninglabs/darepo-client/baselib/actor"
-	"github.com/lightninglabs/darepo-client/lib/types"
+	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/lib/types"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 )
@@ -339,7 +339,7 @@ func (r *SelectAndReserveForfeitResponse) VTXOManagerResp() {}
 // UnrollTrigger names why a unilateral exit was started. It is a
 // string-typed mirror of the unroll package's StartTrigger so the vtxo and
 // actormsg packages can carry the trigger through the ForceUnroll path
-// without importing unroll (which would form a cycle). The darepod chain
+// without importing unroll (which would form a cycle). The waved chain
 // resolver bridge converts these back into unroll.StartTrigger values at the
 // seam where both packages are already in scope. The empty string is the
 // default and preserves the historical critical-expiry admission.
@@ -368,7 +368,7 @@ const (
 // exit. It is a string-typed enum mirroring the unroll / vhtlcrecovery policy
 // vocabulary so the vtxo and actormsg packages can carry a policy through the
 // ForceUnroll path without importing unroll (a cycle: unroll already imports
-// vtxo). The darepod chain resolver bridge converts it back into an
+// vtxo). The waved chain resolver bridge converts it back into an
 // unroll.ExitPolicyKind at the seam where both packages are in scope.
 //
 // The standard timeout policy is represented by a None fn.Option[ExitPolicy]

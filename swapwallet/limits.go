@@ -8,7 +8,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/daemonrpc"
+	"github.com/lightninglabs/wavelength/waverpc"
 )
 
 // checkReceiveLimits enforces the operator-advertised limits against an
@@ -38,7 +38,7 @@ import (
 func checkReceiveLimits(ctx context.Context, rpc RPCServer, log btclog.Logger,
 	amt btcutil.Amount) error {
 
-	info, err := rpc.GetInfo(ctx, &daemonrpc.GetInfoRequest{})
+	info, err := rpc.GetInfo(ctx, &waverpc.GetInfoRequest{})
 	if err != nil {
 		log.WarnS(ctx, "Skipping receive limit pre-flight: operator "+
 			"terms unavailable", err)
@@ -63,7 +63,7 @@ func checkReceiveLimits(ctx context.Context, rpc RPCServer, log btclog.Logger,
 		return nil
 	}
 
-	balance, err := rpc.GetBalance(ctx, &daemonrpc.GetBalanceRequest{})
+	balance, err := rpc.GetBalance(ctx, &waverpc.GetBalanceRequest{})
 	if err != nil {
 		log.WarnS(ctx, "Skipping receive balance-cap pre-flight: "+
 			"wallet balance unavailable", err)

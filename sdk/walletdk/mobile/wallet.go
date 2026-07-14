@@ -9,7 +9,7 @@ import (
 	"io"
 	"runtime/debug"
 
-	"github.com/lightninglabs/darepo-client/sdk/walletdk"
+	"github.com/lightninglabs/wavelength/sdk/walletdk"
 )
 
 // GetInfo returns the daemon readiness snapshot as JSON (walletdk.Info).

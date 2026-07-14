@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/lightninglabs/darepo-client/sdk/walletdk"
+	"github.com/lightninglabs/wavelength/sdk/walletdk"
 )
 
 // startTimeout bounds how long Start will wait for the embedded daemon's gRPC
@@ -61,7 +61,7 @@ var state = struct {
 	startCancel context.CancelFunc
 }{}
 
-// Start boots the embedded darepod wallet daemon from a JSON config and blocks
+// Start boots the embedded waved wallet daemon from a JSON config and blocks
 // until the private gRPC transport is serving, or returns an error if the boot
 // fails. It is the gomobile-safe equivalent of walletdk.Start.
 //

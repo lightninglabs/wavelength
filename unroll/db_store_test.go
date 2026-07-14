@@ -3,7 +3,7 @@ package unroll
 import (
 	"testing"
 
-	"github.com/lightninglabs/darepo-client/db"
+	"github.com/lightninglabs/wavelength/db"
 	"github.com/stretchr/testify/require"
 )
 
@@ -75,7 +75,7 @@ func TestPhaseDBRoundTrip(t *testing.T) {
 // recoverable failure persists as the dedicated FailedRecoverable status and
 // decodes back to RecoverableFailure=true, while a plain failure stays at the
 // Failed status. Boot-time reconciliation relies on this distinction to
-// decide whether to roll a VTXO back to live (darepo-client#602).
+// decide whether to roll a VTXO back to live (wavelength#602).
 func TestRecoverableFailureDBRoundTrip(t *testing.T) {
 	t.Parallel()
 

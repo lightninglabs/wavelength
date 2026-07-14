@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lightninglabs/darepo-client/db/sqlc"
+	"github.com/lightninglabs/wavelength/db/sqlc"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/exp/constraints"
 )

@@ -15,7 +15,7 @@ import (
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/chainsource"
+	"github.com/lightninglabs/wavelength/chainsource"
 	"golang.org/x/sync/singleflight"
 )
 

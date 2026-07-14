@@ -7,10 +7,10 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btcd/chainhash/v2"
-	"github.com/lightninglabs/darepo-client/daemonrpc"
-	"github.com/lightninglabs/darepo-client/darepod"
-	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
-	"github.com/lightninglabs/darepo-client/wallet"
+	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/wallet"
+	"github.com/lightninglabs/wavelength/waved"
+	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -41,14 +41,14 @@ func TestCreateGeneratesSeedWhenMnemonicEmpty(t *testing.T) {
 	t.Parallel()
 
 	svc, rpc := newAdminFixture(t)
-	rpc.genSeedResp = &daemonrpc.GenSeedResponse{
+	rpc.genSeedResp = &waverpc.GenSeedResponse{
 		Mnemonic: []string{
 			"word1",
 			"word2",
 			"word3",
 		},
 	}
-	rpc.initWalletResp = &daemonrpc.InitWalletResponse{
+	rpc.initWalletResp = &waverpc.InitWalletResponse{
 		IdentityPubkey: "deadbeef",
 	}
 
@@ -74,7 +74,7 @@ func TestCreateRecoveryEchoesProvidedMnemonic(t *testing.T) {
 	t.Parallel()
 
 	svc, rpc := newAdminFixture(t)
-	rpc.initWalletResp = &daemonrpc.InitWalletResponse{
+	rpc.initWalletResp = &waverpc.InitWalletResponse{
 		IdentityPubkey: "cafe",
 	}
 
@@ -135,7 +135,7 @@ func TestUnlockProxiesDaemon(t *testing.T) {
 	t.Parallel()
 
 	svc, rpc := newAdminFixture(t)
-	rpc.unlockWalletResp = &daemonrpc.UnlockWalletResponse{
+	rpc.unlockWalletResp = &waverpc.UnlockWalletResponse{
 		IdentityPubkey: "ffff",
 	}
 
@@ -169,7 +169,7 @@ func TestExitDefaultsToCooperativeLeave(t *testing.T) {
 
 	svc, rpc := newAdminFixture(t)
 	rpc.newWalletAddressResp = "bcrt1qwallet"
-	rpc.leaveResp = &daemonrpc.LeaveVTXOsResponse{
+	rpc.leaveResp = &waverpc.LeaveVTXOsResponse{
 		QueuedOutpoints: []string{
 			"abc:0",
 		},
@@ -200,7 +200,7 @@ func TestExitUsesProvidedCooperativeDestination(t *testing.T) {
 	t.Parallel()
 
 	svc, rpc := newAdminFixture(t)
-	rpc.leaveResp = &daemonrpc.LeaveVTXOsResponse{
+	rpc.leaveResp = &waverpc.LeaveVTXOsResponse{
 		QueuedOutpoints: []string{
 			"abc:0",
 		},
@@ -227,7 +227,7 @@ func TestExitCooperativeRequiresQueuedOutpoint(t *testing.T) {
 	t.Parallel()
 
 	svc, rpc := newAdminFixture(t)
-	rpc.leaveResp = &daemonrpc.LeaveVTXOsResponse{
+	rpc.leaveResp = &waverpc.LeaveVTXOsResponse{
 		QueuedOutpoints: []string{
 			"other:0",
 		},
@@ -248,7 +248,7 @@ func TestExitForcedUnrollProxiesUnroll(t *testing.T) {
 
 	svc, rpc := newAdminFixture(t)
 	rpc.listWalletUnspent = []*wallet.Utxo{{}}
-	rpc.unrollResp = &daemonrpc.UnrollResponse{
+	rpc.unrollResp = &waverpc.UnrollResponse{
 		Created: true,
 		ActorId: "exit-job-42",
 	}
@@ -344,12 +344,12 @@ func TestGetExitPlanProxiesDaemonPlan(t *testing.T) {
 
 	svc, rpc := newAdminFixture(t)
 	sweepTxid := testHash(1)
-	rpc.exitPlanResp = &darepod.ExitPlanResponse{
+	rpc.exitPlanResp = &waved.ExitPlanResponse{
 		FeeRateSatPerVByte:         3,
 		CanStart:                   false,
 		TotalFundingShortfallSat:   10_000,
 		TotalRecommendedFundingSat: 20_000,
-		Plans: []darepod.ExitPlanEntry{{
+		Plans: []waved.ExitPlanEntry{{
 			Outpoint:                   "abc:0",
 			FundingAddress:             "bcrt1plan",
 			RequiredConfirmations:      1,
@@ -360,7 +360,7 @@ func TestGetExitPlanProxiesDaemonPlan(t *testing.T) {
 			FundingShortfallSat:        10_000,
 			CanStart:                   false,
 			ExitJobFound:               true,
-			ExitStatus: daemonrpc.
+			ExitStatus: waverpc.
 				UnrollJobStatus_UNROLL_JOB_STATUS_PENDING,
 			SweepTxid: &sweepTxid,
 			LastError: errors.New("last"),
@@ -404,9 +404,9 @@ func TestGetExitPlanAllowsMissingSweepTxid(t *testing.T) {
 	t.Parallel()
 
 	svc, rpc := newAdminFixture(t)
-	rpc.exitPlanResp = &darepod.ExitPlanResponse{
+	rpc.exitPlanResp = &waved.ExitPlanResponse{
 		FeeRateSatPerVByte: 3,
-		Plans: []darepod.ExitPlanEntry{{
+		Plans: []waved.ExitPlanEntry{{
 			Outpoint:                 "abc:0",
 			FundingAddress:           "bcrt1plan",
 			RequiredFeeUTXOCount:     1,
@@ -445,8 +445,8 @@ func TestSweepWalletProxiesDaemonSweep(t *testing.T) {
 
 	svc, rpc := newAdminFixture(t)
 	txid := testHash(2)
-	rpc.sweepWalletResp = &darepod.SweepWalletResponse{
-		Inputs: []darepod.WalletSweepInput{{
+	rpc.sweepWalletResp = &waved.SweepWalletResponse{
+		Inputs: []waved.WalletSweepInput{{
 			Outpoint:  "abc:0",
 			AmountSat: 50_000,
 		}},
@@ -491,36 +491,36 @@ func TestExitStatusMapsAllPhases(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		in   daemonrpc.UnrollJobStatus
+		in   waverpc.UnrollJobStatus
 		want walletdkrpc.ExitJobStatus
 	}{
 		{
-			daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_PENDING,
+			waverpc.UnrollJobStatus_UNROLL_JOB_STATUS_PENDING,
 			walletdkrpc.ExitJobStatus_EXIT_JOB_STATUS_PENDING,
 		},
 		{
-			daemonrpc.
+			waverpc.
 				UnrollJobStatus_UNROLL_JOB_STATUS_MATERIALIZING,
 			walletdkrpc.ExitJobStatus_EXIT_JOB_STATUS_MATERIALIZING,
 		},
 		{
-			daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_CSV_PENDING,
+			waverpc.UnrollJobStatus_UNROLL_JOB_STATUS_CSV_PENDING,
 			walletdkrpc.ExitJobStatus_EXIT_JOB_STATUS_CSV_PENDING,
 		},
 		{
-			daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_SWEEPING,
+			waverpc.UnrollJobStatus_UNROLL_JOB_STATUS_SWEEPING,
 			walletdkrpc.ExitJobStatus_EXIT_JOB_STATUS_SWEEPING,
 		},
 		{
-			daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_COMPLETED,
+			waverpc.UnrollJobStatus_UNROLL_JOB_STATUS_COMPLETED,
 			walletdkrpc.ExitJobStatus_EXIT_JOB_STATUS_COMPLETED,
 		},
 		{
-			daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_FAILED,
+			waverpc.UnrollJobStatus_UNROLL_JOB_STATUS_FAILED,
 			walletdkrpc.ExitJobStatus_EXIT_JOB_STATUS_FAILED,
 		},
 		{
-			daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_UNSPECIFIED,
+			waverpc.UnrollJobStatus_UNROLL_JOB_STATUS_UNSPECIFIED,
 			walletdkrpc.ExitJobStatus_EXIT_JOB_STATUS_UNSPECIFIED,
 		},
 	}
@@ -535,9 +535,9 @@ func TestExitStatusProxiesAndProjects(t *testing.T) {
 	t.Parallel()
 
 	svc, rpc := newAdminFixture(t)
-	rpc.unrollStatusResp = &daemonrpc.GetUnrollStatusResponse{
+	rpc.unrollStatusResp = &waverpc.GetUnrollStatusResponse{
 		Found:     true,
-		Status:    daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_SWEEPING,
+		Status:    waverpc.UnrollJobStatus_UNROLL_JOB_STATUS_SWEEPING,
 		SweepTxid: "sweep-txid",
 	}
 

@@ -8,7 +8,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
 	"github.com/btcsuite/btcd/txscript/v2"
-	"github.com/lightninglabs/darepo-client/lib/tree"
+	"github.com/lightninglabs/wavelength/lib/tree"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 )

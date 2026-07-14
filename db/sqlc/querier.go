@@ -79,7 +79,7 @@ type Querier interface {
 	GetClientTreeTxidInfo(ctx context.Context, txid []byte) (ClientTreeTxid, error)
 	GetClientTreeTxids(ctx context.Context, arg GetClientTreeTxidsParams) ([]GetClientTreeTxidsRow, error)
 	GetCreditOperation(ctx context.Context, opID string) (CreditOperation, error)
-	// Exit funding address persistence queries (darepo-client#893).
+	// Exit funding address persistence queries (wavelength#893).
 	GetExitFundingAddress(ctx context.Context, arg GetExitFundingAddressParams) (ExitFundingAddress, error)
 	GetInternalKeyByID(ctx context.Context, id int64) (InternalKey, error)
 	// Macaroon root key store queries.

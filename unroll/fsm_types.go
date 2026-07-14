@@ -6,9 +6,9 @@ import (
 
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/baselib/protofsm"
-	"github.com/lightninglabs/darepo-client/lib/recovery"
-	"github.com/lightninglabs/darepo-client/unrollplan"
+	"github.com/lightninglabs/wavelength/baselib/protofsm"
+	"github.com/lightninglabs/wavelength/lib/recovery"
+	"github.com/lightninglabs/wavelength/unrollplan"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 

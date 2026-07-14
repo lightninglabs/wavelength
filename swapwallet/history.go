@@ -14,10 +14,10 @@ import (
 
 	btcaddr "github.com/btcsuite/btcd/address/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
-	"github.com/lightninglabs/darepo-client/daemonrpc"
-	"github.com/lightninglabs/darepo-client/ledger"
-	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
-	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/ledger"
+	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
+	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/lightningnetwork/lnd/fn/v2"
 )
 
@@ -519,8 +519,8 @@ func (h *history) listVTXOs(ctx context.Context, req *walletdkrpc.ListRequest) (
 	limit := h.deps.resolveListLimit(req.GetLimit())
 
 	resp, err := h.deps.RPCServer.ListVTXOs(
-		ctx, &daemonrpc.ListVTXOsRequest{
-			StatusFilter: daemonrpc.VTXOStatus_VTXO_STATUS_LIVE,
+		ctx, &waverpc.ListVTXOsRequest{
+			StatusFilter: waverpc.VTXOStatus_VTXO_STATUS_LIVE,
 		},
 	)
 	if err != nil {
@@ -546,7 +546,7 @@ func (h *history) listVTXOs(ctx context.Context, req *walletdkrpc.ListRequest) (
 }
 
 // listOnchain returns the on-chain transaction history page. It composes
-// the same daemonrpc.ListTransactions surface the legacy `listtransactions`
+// the same waverpc.ListTransactions surface the legacy `listtransactions`
 // CLI verb used, but flattens the ledger row shape onto the
 // wallet-facing OnchainTx type so internal correlators don't leak into
 // the user surface.
@@ -560,7 +560,7 @@ func (h *history) listOnchain(ctx context.Context,
 	limit := h.deps.resolveListLimit(req.GetLimit())
 
 	resp, err := h.deps.RPCServer.ListTransactions(
-		ctx, &daemonrpc.ListTransactionsRequest{
+		ctx, &waverpc.ListTransactionsRequest{
 			Limit:  limit,
 			Offset: req.GetOffset(),
 		},
@@ -633,7 +633,7 @@ func (h *history) collectPendingBoardingEntries(ctx context.Context) (
 	}
 
 	resp, err := h.deps.RPCServer.GetBalance(
-		ctx, &daemonrpc.GetBalanceRequest{},
+		ctx, &waverpc.GetBalanceRequest{},
 	)
 	if err != nil {
 		return nil, err
@@ -732,8 +732,8 @@ func (h *history) collectUnilateralExitEntries(ctx context.Context) (
 	}
 
 	resp, err := h.deps.RPCServer.ListVTXOs(
-		ctx, &daemonrpc.ListVTXOsRequest{
-			StatusFilter: daemonrpc.
+		ctx, &waverpc.ListVTXOsRequest{
+			StatusFilter: waverpc.
 				VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT,
 		},
 	)
@@ -850,8 +850,8 @@ func (h *history) collectForfeitedVTXOSettlements(ctx context.Context) (
 	}
 
 	resp, err := h.deps.RPCServer.ListVTXOs(
-		ctx, &daemonrpc.ListVTXOsRequest{
-			StatusFilter: daemonrpc.
+		ctx, &waverpc.ListVTXOsRequest{
+			StatusFilter: waverpc.
 				VTXOStatus_VTXO_STATUS_FORFEITED,
 		},
 	)
@@ -882,7 +882,7 @@ func (h *history) collectForfeitedVTXOSettlements(ctx context.Context) (
 // unilateralExitEntryFromVTXO projects a VTXO in UNILATERAL_EXIT into a
 // wallet-facing EXIT activity row. The amount is negative because value is
 // leaving Ark custody.
-func unilateralExitEntryFromVTXO(v *daemonrpc.VTXO) *walletdkrpc.WalletEntry {
+func unilateralExitEntryFromVTXO(v *waverpc.VTXO) *walletdkrpc.WalletEntry {
 	if v == nil {
 		return nil
 	}
@@ -944,7 +944,7 @@ func (h *history) decorateExitEntry(ctx context.Context,
 	}
 
 	resp, err := h.deps.RPCServer.GetUnrollStatus(
-		ctx, &daemonrpc.GetUnrollStatusRequest{
+		ctx, &waverpc.GetUnrollStatusRequest{
 			Outpoint: lookup,
 		},
 	)
@@ -1081,7 +1081,7 @@ func (h *history) collectLedgerEntries(ctx context.Context, offset,
 	}
 
 	resp, err := h.deps.RPCServer.ListTransactions(
-		ctx, &daemonrpc.ListTransactionsRequest{
+		ctx, &waverpc.ListTransactionsRequest{
 			Limit: pullLimit,
 		},
 	)
@@ -1220,7 +1220,7 @@ type oorLedgerActivityProjection struct {
 // internalOORLedgerEntries returns ledger entry IDs for OOR legs that are
 // internal to swap execution or represent wallet-local OOR change. Inspection
 // uses this compact view because it only needs to mark hidden rows.
-func internalOORLedgerEntries(rows []*daemonrpc.TransactionHistoryEntry,
+func internalOORLedgerEntries(rows []*waverpc.TransactionHistoryEntry,
 	correlations swapOORCorrelations) map[int64]struct{} {
 
 	return projectOORLedgerActivity(rows, correlations).hidden
@@ -1229,12 +1229,12 @@ func internalOORLedgerEntries(rows []*daemonrpc.TransactionHistoryEntry,
 // projectOORLedgerActivity returns the wallet-facing projection for OOR ledger
 // rows. Accounting rows stay gross; this helper only hides internal rows and
 // computes display amounts for activity.
-func projectOORLedgerActivity(rows []*daemonrpc.TransactionHistoryEntry,
+func projectOORLedgerActivity(rows []*waverpc.TransactionHistoryEntry,
 	correlations swapOORCorrelations) oorLedgerActivityProjection {
 
 	receivedBySession := make(map[string]int64)
 	receiveRowsBySession := make(
-		map[string][]*daemonrpc.TransactionHistoryEntry,
+		map[string][]*waverpc.TransactionHistoryEntry,
 	)
 	var claimOutputSessions map[string]struct{}
 	for _, row := range rows {
@@ -1330,7 +1330,7 @@ func internalZeroDeltaSession(correlations swapOORCorrelations,
 // session id separately from the materialized output txid, while the swap
 // summary stores the claim id as the output txid. Matching both keeps the
 // internal send leg hidden in either shape.
-func receiveMatchesClaimOutput(row *daemonrpc.TransactionHistoryEntry,
+func receiveMatchesClaimOutput(row *waverpc.TransactionHistoryEntry,
 	claimSessions map[string]struct{}) bool {
 
 	if len(claimSessions) == 0 {
@@ -1358,7 +1358,7 @@ func sessionInSet(set map[string]struct{}, session string) bool {
 
 // oorSendSessionID extracts the session id from a ledger row that spends a VTXO
 // through OOR.
-func oorSendSessionID(row *daemonrpc.TransactionHistoryEntry) (string, bool) {
+func oorSendSessionID(row *waverpc.TransactionHistoryEntry) (string, bool) {
 	if row == nil || row.GetType() != "oor" ||
 		row.GetSubtype() != ledger.EventVTXOSent ||
 		row.GetDebitAccount() != ledger.AccountTransfersOut ||
@@ -1378,9 +1378,7 @@ func oorSendSessionID(row *daemonrpc.TransactionHistoryEntry) (string, bool) {
 
 // oorReceiveSessionID extracts the session id from a ledger row that receives a
 // VTXO through OOR.
-func oorReceiveSessionID(row *daemonrpc.TransactionHistoryEntry) (string,
-	bool) {
-
+func oorReceiveSessionID(row *waverpc.TransactionHistoryEntry) (string, bool) {
 	session, _, ok := oorReceiveRef(row)
 
 	return session, ok
@@ -1388,7 +1386,7 @@ func oorReceiveSessionID(row *daemonrpc.TransactionHistoryEntry) (string,
 
 // oorReceiveRef extracts the OOR output reference from structured ledger
 // fields.
-func oorReceiveRef(row *daemonrpc.TransactionHistoryEntry) (string, uint32,
+func oorReceiveRef(row *waverpc.TransactionHistoryEntry) (string, uint32,
 	bool) {
 
 	if row == nil || row.GetType() != "oor" ||
@@ -1577,7 +1575,7 @@ func paginate(entries []*walletdkrpc.WalletEntry, offset,
 // Returns (entry, true) when the row maps onto a user-facing wallet
 // operation; (nil, false) when the row should be hidden from the wallet
 // view (e.g. internal fee accounting rows we don't yet model).
-func walletEntryFromLedgerRow(t *daemonrpc.TransactionHistoryEntry) (
+func walletEntryFromLedgerRow(t *waverpc.TransactionHistoryEntry) (
 	*walletdkrpc.WalletEntry, bool) {
 
 	if t == nil {
@@ -1626,7 +1624,7 @@ func walletEntryFromLedgerRow(t *daemonrpc.TransactionHistoryEntry) (
 // then to the bare txid. Because the key is the address, multiple UTXOs paid to
 // the same (single-use-by-design) boarding address collapse into one row; the
 // ledger and the ONCHAIN view retain the per-UTXO truth.
-func ledgerActivityID(t *daemonrpc.TransactionHistoryEntry,
+func ledgerActivityID(t *waverpc.TransactionHistoryEntry,
 	kind walletdkrpc.EntryKind) string {
 
 	if t == nil || t.GetTxid() == "" {
@@ -1658,7 +1656,7 @@ func ledgerActivityID(t *daemonrpc.TransactionHistoryEntry,
 // WalletEntry.progress and InspectActivity; confirmed on-chain deposits stay
 // pending while they are still waiting to board into a confirmed round.
 func statusForLedgerRow(
-	t *daemonrpc.TransactionHistoryEntry) walletdkrpc.EntryStatus {
+	t *waverpc.TransactionHistoryEntry) walletdkrpc.EntryStatus {
 
 	if t.GetType() == "oor" && t.GetConfirmationStatus() == "recorded" {
 		return walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE
@@ -1670,7 +1668,7 @@ func statusForLedgerRow(
 // progressFromLedgerRow projects ledger confirmation metadata onto
 // WalletEntryProgress.
 func progressFromLedgerRow(
-	t *daemonrpc.TransactionHistoryEntry) *walletdkrpc.WalletEntryProgress {
+	t *waverpc.TransactionHistoryEntry) *walletdkrpc.WalletEntryProgress {
 
 	if t == nil {
 		return nil
@@ -1694,7 +1692,7 @@ func progressFromLedgerRow(
 // a WalletEntry kind and an amount-sign direction (+1 incoming, -1
 // outgoing). Returns ok=false for rows that don't map onto a user-facing
 // wallet operation (internal fee bookkeeping, intermediate states).
-func classifyLedgerRow(t *daemonrpc.TransactionHistoryEntry) (
+func classifyLedgerRow(t *waverpc.TransactionHistoryEntry) (
 	walletdkrpc.EntryKind, int64, bool) {
 
 	switch t.GetType() {
@@ -1774,7 +1772,7 @@ func phaseFromLedgerConfirmation(s string) (walletdkrpc.WalletEntryPhase,
 // "boarding"; for EXIT rows it returns the txid (truncated); for SEND/RECV
 // OOR rows it returns the txid or an empty string when the row carries
 // none.
-func ledgerCounterparty(t *daemonrpc.TransactionHistoryEntry,
+func ledgerCounterparty(t *waverpc.TransactionHistoryEntry,
 	kind walletdkrpc.EntryKind) string {
 
 	switch kind {

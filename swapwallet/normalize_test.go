@@ -9,9 +9,9 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chaincfg/v2"
-	"github.com/lightninglabs/darepo-client/daemonrpc"
-	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
-	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
+	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/encoding/protojson"
 )
@@ -356,10 +356,10 @@ func TestWalletVTXOFromDaemon(t *testing.T) {
 	require.Nil(t, out)
 
 	// Live VTXO is kept and projected verbatim.
-	in := &daemonrpc.VTXO{
+	in := &waverpc.VTXO{
 		Outpoint:       "abc:0",
 		AmountSat:      10_000,
-		Status:         daemonrpc.VTXOStatus_VTXO_STATUS_LIVE,
+		Status:         waverpc.VTXOStatus_VTXO_STATUS_LIVE,
 		BatchExpiry:    1_000_000,
 		RelativeExpiry: 144,
 		CommitmentTxid: "dead",
@@ -376,13 +376,13 @@ func TestWalletVTXOFromDaemon(t *testing.T) {
 	}, out)
 
 	// Terminal states drop out.
-	for _, s := range []daemonrpc.VTXOStatus{
-		daemonrpc.VTXOStatus_VTXO_STATUS_FORFEITED,
-		daemonrpc.VTXOStatus_VTXO_STATUS_SPENT,
-		daemonrpc.VTXOStatus_VTXO_STATUS_FAILED,
-		daemonrpc.VTXOStatus_VTXO_STATUS_UNSPECIFIED,
+	for _, s := range []waverpc.VTXOStatus{
+		waverpc.VTXOStatus_VTXO_STATUS_FORFEITED,
+		waverpc.VTXOStatus_VTXO_STATUS_SPENT,
+		waverpc.VTXOStatus_VTXO_STATUS_FAILED,
+		waverpc.VTXOStatus_VTXO_STATUS_UNSPECIFIED,
 	} {
-		_, keep := walletVTXOFromDaemon(&daemonrpc.VTXO{
+		_, keep := walletVTXOFromDaemon(&waverpc.VTXO{
 			Status: s,
 		})
 		require.False(t, keep, "status %v should be hidden", s)
@@ -395,48 +395,48 @@ func TestWalletVTXOStatusFromDaemon(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		in   daemonrpc.VTXOStatus
+		in   waverpc.VTXOStatus
 		out  string
 		keep bool
 	}{
 		{
-			daemonrpc.VTXOStatus_VTXO_STATUS_LIVE,
+			waverpc.VTXOStatus_VTXO_STATUS_LIVE,
 			"live",
 			true,
 		},
 		{
-			daemonrpc.VTXOStatus_VTXO_STATUS_PENDING_FORFEIT,
+			waverpc.VTXOStatus_VTXO_STATUS_PENDING_FORFEIT,
 			"pending_forfeit", true,
 		},
 		{
-			daemonrpc.VTXOStatus_VTXO_STATUS_FORFEITING,
+			waverpc.VTXOStatus_VTXO_STATUS_FORFEITING,
 			"forfeiting", true,
 		},
 		{
-			daemonrpc.VTXOStatus_VTXO_STATUS_SPENDING,
+			waverpc.VTXOStatus_VTXO_STATUS_SPENDING,
 			"spending", true,
 		},
 		{
-			daemonrpc.VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT,
+			waverpc.VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT,
 			"unilateral_exit", true,
 		},
 		{
-			daemonrpc.VTXOStatus_VTXO_STATUS_FORFEITED,
+			waverpc.VTXOStatus_VTXO_STATUS_FORFEITED,
 			"",
 			false,
 		},
 		{
-			daemonrpc.VTXOStatus_VTXO_STATUS_SPENT,
+			waverpc.VTXOStatus_VTXO_STATUS_SPENT,
 			"",
 			false,
 		},
 		{
-			daemonrpc.VTXOStatus_VTXO_STATUS_FAILED,
+			waverpc.VTXOStatus_VTXO_STATUS_FAILED,
 			"",
 			false,
 		},
 		{
-			daemonrpc.VTXOStatus_VTXO_STATUS_UNSPECIFIED,
+			waverpc.VTXOStatus_VTXO_STATUS_UNSPECIFIED,
 			"",
 			false,
 		},
@@ -449,7 +449,7 @@ func TestWalletVTXOStatusFromDaemon(t *testing.T) {
 }
 
 // TestOnchainTxFromLedgerRow confirms the projection flattens the
-// daemonrpc TransactionHistoryEntry onto the wallet-facing OnchainTx
+// waverpc TransactionHistoryEntry onto the wallet-facing OnchainTx
 // shape and drops internal correlators (round_id, session_id,
 // debit/credit accounts) entirely.
 func TestOnchainTxFromLedgerRow(t *testing.T) {
@@ -460,7 +460,7 @@ func TestOnchainTxFromLedgerRow(t *testing.T) {
 		t, &walletdkrpc.OnchainTx{}, onchainTxFromLedgerRow(nil),
 	)
 
-	in := &daemonrpc.TransactionHistoryEntry{
+	in := &waverpc.TransactionHistoryEntry{
 		Txid:               "deadbeef",
 		Type:               "boarding",
 		AmountSat:          25_000,

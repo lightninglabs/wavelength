@@ -28,9 +28,9 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/rpcclient"
-	"github.com/lightninglabs/darepo-client/chain"
 	"github.com/lightninglabs/lndclient"
 	"github.com/lightninglabs/taproot-assets/taprpc"
+	"github.com/lightninglabs/wavelength/chain"
 	lnrpc "github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/macaroons"
 	"github.com/ory/dockertest/v3"

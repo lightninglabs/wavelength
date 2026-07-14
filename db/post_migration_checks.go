@@ -9,7 +9,7 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database"
-	"github.com/lightninglabs/darepo-client/db/sqlc"
+	"github.com/lightninglabs/wavelength/db/sqlc"
 )
 
 // postMigrationCheck is a function type for a function that performs a

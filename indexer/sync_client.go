@@ -8,9 +8,9 @@ import (
 	"sync"
 
 	btclog "github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/arkrpc"
-	"github.com/lightninglabs/darepo-client/build"
-	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
+	"github.com/lightninglabs/wavelength/arkrpc"
+	"github.com/lightninglabs/wavelength/build"
+	mailboxrpc "github.com/lightninglabs/wavelength/mailbox/rpc"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 

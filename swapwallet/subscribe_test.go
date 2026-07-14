@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/db"
-	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/db"
+	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
 	"github.com/lightningnetwork/lnd/clock"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"

@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package arkrpc;
 
-option go_package = "github.com/lightninglabs/darepo-client/arkrpc";
+option go_package = "github.com/lightninglabs/wavelength/arkrpc";
 
 // IndexerService is a wallet-facing query + notification facade over operator
 // state. It is intended to be transported over MailboxRPC (RPC-over-mailbox),

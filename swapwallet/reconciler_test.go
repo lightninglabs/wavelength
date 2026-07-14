@@ -8,13 +8,13 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/daemonrpc"
-	"github.com/lightninglabs/darepo-client/darepod"
-	"github.com/lightninglabs/darepo-client/db"
-	"github.com/lightninglabs/darepo-client/db/sqlc"
-	"github.com/lightninglabs/darepo-client/ledger"
-	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
-	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/db"
+	"github.com/lightninglabs/wavelength/db/sqlc"
+	"github.com/lightninglabs/wavelength/ledger"
+	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
+	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/waved"
+	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/lightningnetwork/lnd/clock"
 	"github.com/stretchr/testify/require"
 )
@@ -76,8 +76,8 @@ func TestReconcileActivityFlipsDepositLive(t *testing.T) {
 	// The deposit confirms: ListTransactions now returns the confirmed
 	// wallet_utxo_created row carrying the same boarding address, so it
 	// keys to the same deposit-<address> id as the pending row.
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Type:               "boarding",
 				Subtype:            ledger.EventWalletUTXOCreated,
@@ -131,8 +131,8 @@ func TestReconcileProjectsRawOORLive(t *testing.T) {
 	// A recorded raw-OOR send (debit transfers_out) and receive (credit
 	// transfers_in) as ListTransactions surfaces them. statusForLedgerRow
 	// folds an "oor"/"recorded" row to COMPLETE.
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Type:               "oor",
 				ConfirmationStatus: "recorded",
@@ -190,8 +190,8 @@ func TestReprojectRecentActivityBoundsWindow(t *testing.T) {
 	// Three recorded raw-OOR sends with increasing updated_at (ledger rows
 	// take updated_at from created_at). deriveActivity sorts updated_at
 	// descending, so with limit 2 only the two newest are projected.
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Type:               "oor",
 				ConfirmationStatus: "recorded",
@@ -265,10 +265,10 @@ func trackForfeitedCooperativeExit(runtime *Runtime,
 
 	// A cooperative leave has no unroll job, and its retained outpoint is
 	// in the forfeited set — so decorateExitEntry flips it to COMPLETE.
-	rpc.unrollStatusResp = &daemonrpc.GetUnrollStatusResponse{Found: false}
-	rpc.listVTXOsByStatus = map[daemonrpc.VTXOStatus]*daemonrpc.ListVTXOsResponse{
-		daemonrpc.VTXOStatus_VTXO_STATUS_FORFEITED: {
-			Vtxos: []*daemonrpc.VTXO{
+	rpc.unrollStatusResp = &waverpc.GetUnrollStatusResponse{Found: false}
+	rpc.listVTXOsByStatus = map[waverpc.VTXOStatus]*waverpc.ListVTXOsResponse{
+		waverpc.VTXOStatus_VTXO_STATUS_FORFEITED: {
+			Vtxos: []*waverpc.VTXO{
 				{
 					Outpoint: outpoint,
 				},
@@ -342,7 +342,7 @@ func TestReconcileRetainsPendingExitOnProjectFailure(t *testing.T) {
 // failingProjectStore wraps a real activity store but fails every ProjectEntry,
 // to exercise the reconciler's must-not-clear-on-write-failure path.
 type failingProjectStore struct {
-	darepod.ActivityStore
+	waved.ActivityStore
 }
 
 func (failingProjectStore) ProjectEntry(context.Context,
@@ -372,10 +372,10 @@ func TestReconcileCompletesLeaveAfterRestart(t *testing.T) {
 
 	// The retained outpoint is reported forfeited (the round sealed) and
 	// the leave has no unroll job, so the correlation flips it COMPLETE.
-	rpc.unrollStatusResp = &daemonrpc.GetUnrollStatusResponse{Found: false}
-	rpc.listVTXOsByStatus = map[daemonrpc.VTXOStatus]*daemonrpc.ListVTXOsResponse{
-		daemonrpc.VTXOStatus_VTXO_STATUS_FORFEITED: {
-			Vtxos: []*daemonrpc.VTXO{
+	rpc.unrollStatusResp = &waverpc.GetUnrollStatusResponse{Found: false}
+	rpc.listVTXOsByStatus = map[waverpc.VTXOStatus]*waverpc.ListVTXOsResponse{
+		waverpc.VTXOStatus_VTXO_STATUS_FORFEITED: {
+			Vtxos: []*waverpc.VTXO{
 				{
 					Outpoint: outpoint,
 				},
@@ -535,7 +535,7 @@ func TestRehydrateReturnsOnScanError(t *testing.T) {
 // erringRehydrateStore fails only the rehydration scan, delegating every other
 // method to a real store.
 type erringRehydrateStore struct {
-	darepod.ActivityStore
+	waved.ActivityStore
 }
 
 func (erringRehydrateStore) ListEntriesByKindStatus(context.Context, int64,

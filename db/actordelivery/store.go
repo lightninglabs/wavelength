@@ -5,10 +5,10 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/baselib/actor"
-	"github.com/lightninglabs/darepo-client/db"
-	adsqlc "github.com/lightninglabs/darepo-client/db/actordelivery/sqlc"
-	"github.com/lightninglabs/darepo-client/db/sqlc"
+	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/db"
+	adsqlc "github.com/lightninglabs/wavelength/db/actordelivery/sqlc"
+	"github.com/lightninglabs/wavelength/db/sqlc"
 	"github.com/lightningnetwork/lnd/clock"
 )
 

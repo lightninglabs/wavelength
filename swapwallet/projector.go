@@ -8,9 +8,9 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/lightninglabs/darepo-client/db"
-	"github.com/lightninglabs/darepo-client/db/sqlc"
-	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/db"
+	"github.com/lightninglabs/wavelength/db/sqlc"
+	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
 	"google.golang.org/protobuf/encoding/protojson"
 )
 

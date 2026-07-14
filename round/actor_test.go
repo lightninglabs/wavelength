@@ -12,15 +12,15 @@ import (
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/baselib/actor"
-	"github.com/lightninglabs/darepo-client/baselib/protofsm"
-	"github.com/lightninglabs/darepo-client/internal/testutils"
-	"github.com/lightninglabs/darepo-client/lib/actormsg"
-	"github.com/lightninglabs/darepo-client/lib/arkscript"
-	"github.com/lightninglabs/darepo-client/lib/types"
-	"github.com/lightninglabs/darepo-client/serverconn"
-	"github.com/lightninglabs/darepo-client/timeout"
-	"github.com/lightninglabs/darepo-client/wallet"
+	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/baselib/protofsm"
+	"github.com/lightninglabs/wavelength/internal/testutils"
+	"github.com/lightninglabs/wavelength/lib/actormsg"
+	"github.com/lightninglabs/wavelength/lib/arkscript"
+	"github.com/lightninglabs/wavelength/lib/types"
+	"github.com/lightninglabs/wavelength/serverconn"
+	"github.com/lightninglabs/wavelength/timeout"
+	"github.com/lightninglabs/wavelength/wallet"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/mock"
@@ -1158,7 +1158,7 @@ func TestActorLifecycle(t *testing.T) {
 
 		// The failed round stays observable in ClientFailedState — it
 		// is reaped lazily at the next assembly, not on entry, so a
-		// consumer can still see the failure (darepo-client#602).
+		// consumer can still see the failure (wavelength#602).
 		state := h.queryState()
 		require.Len(
 			t, state, 1, "failed round should remain observable",
@@ -1552,7 +1552,7 @@ func TestActorServerMessageRouting(t *testing.T) {
 				// Failed rounds are reaped lazily at the next
 				// assembly, not on entry, so the round remains
 				// observable in ClientFailedState here
-				// (darepo-client#602).
+				// (wavelength#602).
 				state := h.queryState()
 				require.Len(
 					h.t, state, 1,
@@ -1575,7 +1575,7 @@ func TestActorServerMessageRouting(t *testing.T) {
 }
 
 // TestBoardingFailedRoutesByRoundIDWithLingeringRound reproduces the
-// darepo-client#571 dropped-event bug and proves the RoundID-keyed routing
+// wavelength#571 dropped-event bug and proves the RoundID-keyed routing
 // fix. Two rounds are tracked: a lingering terminal round (ClientFailedState,
 // which is never evicted from a.rounds) and a live round re-keyed to a
 // server-assigned RoundID sitting in RoundJoinedState. A server
@@ -2355,7 +2355,7 @@ func TestHandleTriggerBoardMultipleVTXOs(t *testing.T) {
 // trigger names the boarding outpoints it sized its amounts over, the round
 // actor registers exactly those inputs and ignores other confirmed boarding
 // intents. This keeps the proven inputs coherent with the wallet's amounts
-// and is the round-side half of the darepo-client#772 boarding idempotency
+// and is the round-side half of the wavelength#772 boarding idempotency
 // fix: the wallet excludes an already-in-flight outpoint, and the round actor
 // must not silently re-add it from its own confirmed-boarding fetch.
 func TestHandleTriggerBoardFiltersToNamedOutpoints(t *testing.T) {
@@ -2478,7 +2478,7 @@ func TestHandleForfeitCollectionTimeout(t *testing.T) {
 
 		// The failed round stays observable in ClientFailedState; it is
 		// reaped lazily at the next assembly, not on entry
-		// (darepo-client#602). The failure reason/recoverability is
+		// (wavelength#602). The failure reason/recoverability is
 		// covered by the FSM-level forfeit-collection-timeout test.
 		states := h.queryState()
 		info, exists := states[string(keyStr)]
@@ -2580,7 +2580,7 @@ func TestHandleForfeitCollectionTimeout(t *testing.T) {
 
 		// The first round failed on timeout but stays observable in
 		// ClientFailedState — reaping is deferred to the next assembly
-		// (darepo-client#602).
+		// (wavelength#602).
 		keyStr1 := RoundKeyStr(roundID1.KeyString())
 		states := h.queryState()
 		info, exists := states[string(keyStr1)]
@@ -2647,7 +2647,7 @@ func TestActorReapsFailedRound(t *testing.T) {
 
 	// The round settled in ClientFailedState but is NOT reaped on entry: it
 	// stays observable so a consumer can see the failure. Reaping is
-	// deferred to the next assembly (darepo-client#602).
+	// deferred to the next assembly (wavelength#602).
 	failed := h.queryState()
 	failedFSM, exists := failed[keyStr]
 	require.True(t, exists, "failed round should remain observable")
@@ -2731,7 +2731,7 @@ func TestRealTimeoutActorForfeitExpiry(t *testing.T) {
 
 	// The failed round stays observable after the timeout fires — reaping
 	// is deferred to the next assembly, not done on entry
-	// (darepo-client#602).
+	// (wavelength#602).
 	keyStr := RoundKeyStr(roundID.KeyString())
 	states := h.queryState()
 	failedInfo, exists := states[string(keyStr)]

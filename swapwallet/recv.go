@@ -8,10 +8,10 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcutil/v2"
-	"github.com/lightninglabs/darepo-client/credit"
-	"github.com/lightninglabs/darepo-client/daemonrpc"
-	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
-	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/credit"
+	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
+	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/waverpc"
 )
 
 // receiver drives wallet-layer Recv flows. It is a thin composition over
@@ -128,7 +128,7 @@ func (r *receiver) receiveDustLimit(ctx context.Context) (uint64, error) {
 		return 0, nil
 	}
 
-	info, err := r.deps.RPCServer.GetInfo(ctx, &daemonrpc.GetInfoRequest{})
+	info, err := r.deps.RPCServer.GetInfo(ctx, &waverpc.GetInfoRequest{})
 	if err != nil {
 		return 0, fmt.Errorf("get server info: %w", err)
 	}

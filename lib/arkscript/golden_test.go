@@ -6,7 +6,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
-	"github.com/lightninglabs/darepo-client/internal/testutils"
+	"github.com/lightninglabs/wavelength/internal/testutils"
 	"github.com/stretchr/testify/require"
 )
 

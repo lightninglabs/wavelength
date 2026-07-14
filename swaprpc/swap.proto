@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package swaprpc;
 
-option go_package = "github.com/lightninglabs/darepo-client/swaprpc";
+option go_package = "github.com/lightninglabs/wavelength/swaprpc";
 
 import "google/protobuf/timestamp.proto";
 
@@ -653,7 +653,7 @@ message SubmitOutSwapForfeitSignatureResponse {
 }
 
 // TaprootScriptSignature carries one externally produced tapscript signature.
-// Keep this in sync with daemonrpc.TaprootScriptSignature.
+// Keep this in sync with waverpc.TaprootScriptSignature.
 message TaprootScriptSignature {
     // pubkey is the compressed public key that produced the signature.
     bytes pubkey = 1;

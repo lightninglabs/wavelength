@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/lightninglabs/darepo-client/arkrpc"
-	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
+	"github.com/lightninglabs/wavelength/arkrpc"
+	mailboxrpc "github.com/lightninglabs/wavelength/mailbox/rpc"
 	"google.golang.org/protobuf/proto"
 )
 

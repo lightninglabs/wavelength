@@ -8,7 +8,7 @@ import (
 	"net"
 	"testing"
 
-	"github.com/lightninglabs/darepo-client/daemonrpc"
+	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/lightningnetwork/lnd/aezeed"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
@@ -19,24 +19,24 @@ import (
 // stubDaemonServer is a minimal DaemonServiceServer that records which
 // wallet-bootstrap RPCs OpenWalletFromPasskey drives for a given wallet state.
 type stubDaemonServer struct {
-	daemonrpc.UnimplementedDaemonServiceServer
+	waverpc.UnimplementedDaemonServiceServer
 
-	state         daemonrpc.WalletState
+	state         waverpc.WalletState
 	identity      string
 	initErr       error
 	unlockErr     error
 	initCalled    bool
 	unlockCalled  bool
-	lastInitReq   *daemonrpc.InitWalletRequest
-	lastUnlockReq *daemonrpc.UnlockWalletRequest
+	lastInitReq   *waverpc.InitWalletRequest
+	lastUnlockReq *waverpc.UnlockWalletRequest
 }
 
 // GetInfo reports the configured wallet state so the SDK can branch between
 // import and unlock.
-func (s *stubDaemonServer) GetInfo(context.Context, *daemonrpc.GetInfoRequest) (
-	*daemonrpc.GetInfoResponse, error) {
+func (s *stubDaemonServer) GetInfo(context.Context, *waverpc.GetInfoRequest) (
+	*waverpc.GetInfoResponse, error) {
 
-	return &daemonrpc.GetInfoResponse{
+	return &waverpc.GetInfoResponse{
 		WalletState:    s.state,
 		IdentityPubkey: s.identity,
 	}, nil
@@ -45,8 +45,7 @@ func (s *stubDaemonServer) GetInfo(context.Context, *daemonrpc.GetInfoRequest) (
 // InitWallet records the import call and its request, then returns the
 // configured error (if any) so error propagation can be exercised.
 func (s *stubDaemonServer) InitWallet(_ context.Context,
-	req *daemonrpc.InitWalletRequest) (*daemonrpc.InitWalletResponse,
-	error) {
+	req *waverpc.InitWalletRequest) (*waverpc.InitWalletResponse, error) {
 
 	s.initCalled = true
 	s.lastInitReq = req
@@ -54,13 +53,13 @@ func (s *stubDaemonServer) InitWallet(_ context.Context,
 		return nil, s.initErr
 	}
 
-	return &daemonrpc.InitWalletResponse{IdentityPubkey: "init-id"}, nil
+	return &waverpc.InitWalletResponse{IdentityPubkey: "init-id"}, nil
 }
 
 // UnlockWallet records the unlock call, then returns the configured error (if
 // any) so unlock-failure propagation can be exercised.
 func (s *stubDaemonServer) UnlockWallet(_ context.Context,
-	req *daemonrpc.UnlockWalletRequest) (*daemonrpc.UnlockWalletResponse,
+	req *waverpc.UnlockWalletRequest) (*waverpc.UnlockWalletResponse,
 	error) {
 
 	s.unlockCalled = true
@@ -69,7 +68,7 @@ func (s *stubDaemonServer) UnlockWallet(_ context.Context,
 		return nil, s.unlockErr
 	}
 
-	return &daemonrpc.UnlockWalletResponse{IdentityPubkey: "unlock-id"}, nil
+	return &waverpc.UnlockWalletResponse{IdentityPubkey: "unlock-id"}, nil
 }
 
 // newStubClient wires a walletdk Client to an in-process stub daemon over a
@@ -79,7 +78,7 @@ func newStubClient(t *testing.T, stub *stubDaemonServer) *Client {
 
 	listener := bufconn.Listen(1024 * 1024)
 	server := grpc.NewServer()
-	daemonrpc.RegisterDaemonServiceServer(server, stub)
+	waverpc.RegisterDaemonServiceServer(server, stub)
 	go func() {
 		_ = server.Serve(listener)
 	}()
@@ -212,7 +211,7 @@ func TestOpenWalletFromPasskeyImportsWhenNone(t *testing.T) {
 	t.Parallel()
 
 	stub := &stubDaemonServer{
-		state:    daemonrpc.WalletState_WALLET_STATE_NONE,
+		state:    waverpc.WalletState_WALLET_STATE_NONE,
 		identity: "init-id",
 	}
 	client := newStubClient(t, stub)
@@ -238,7 +237,7 @@ func TestOpenWalletFromPasskeyUnlocksWhenLocked(t *testing.T) {
 	t.Parallel()
 
 	stub := &stubDaemonServer{
-		state:    daemonrpc.WalletState_WALLET_STATE_LOCKED,
+		state:    waverpc.WalletState_WALLET_STATE_LOCKED,
 		identity: "unlock-id",
 	}
 	client := newStubClient(t, stub)
@@ -263,9 +262,9 @@ func TestOpenWalletFromPasskeyUnlocksWhenLocked(t *testing.T) {
 func TestOpenWalletFromPasskeyErrorsWhenAlreadyUnlocked(t *testing.T) {
 	t.Parallel()
 
-	states := []daemonrpc.WalletState{
-		daemonrpc.WalletState_WALLET_STATE_READY,
-		daemonrpc.WalletState_WALLET_STATE_SYNCING,
+	states := []waverpc.WalletState{
+		waverpc.WalletState_WALLET_STATE_READY,
+		waverpc.WalletState_WALLET_STATE_SYNCING,
 	}
 	for _, state := range states {
 		t.Run(state.String(), func(t *testing.T) {
@@ -294,7 +293,7 @@ func TestOpenWalletFromPasskeyErrorsOnUnexpectedState(t *testing.T) {
 	t.Parallel()
 
 	stub := &stubDaemonServer{
-		state: daemonrpc.WalletState_WALLET_STATE_UNSPECIFIED,
+		state: waverpc.WalletState_WALLET_STATE_UNSPECIFIED,
 	}
 	client := newStubClient(t, stub)
 
@@ -319,7 +318,7 @@ func TestOpenWalletFromPasskeyRejectsShortPRF(t *testing.T) {
 			t.Parallel()
 
 			stub := &stubDaemonServer{
-				state: daemonrpc.WalletState_WALLET_STATE_NONE,
+				state: waverpc.WalletState_WALLET_STATE_NONE,
 			}
 			client := newStubClient(t, stub)
 
@@ -339,7 +338,7 @@ func TestOpenWalletFromPasskeyAcceptsMinimumLength(t *testing.T) {
 	t.Parallel()
 
 	stub := &stubDaemonServer{
-		state:    daemonrpc.WalletState_WALLET_STATE_NONE,
+		state:    waverpc.WalletState_WALLET_STATE_NONE,
 		identity: "init-id",
 	}
 	client := newStubClient(t, stub)
@@ -359,7 +358,7 @@ func TestOpenWalletFromPasskeyImportUsesEmptySeedPassphrase(t *testing.T) {
 	t.Parallel()
 
 	stub := &stubDaemonServer{
-		state:    daemonrpc.WalletState_WALLET_STATE_NONE,
+		state:    waverpc.WalletState_WALLET_STATE_NONE,
 		identity: "init-id",
 	}
 	client := newStubClient(t, stub)
@@ -379,7 +378,7 @@ func TestOpenWalletFromPasskeyPropagatesInitError(t *testing.T) {
 	t.Parallel()
 
 	stub := &stubDaemonServer{
-		state:   daemonrpc.WalletState_WALLET_STATE_NONE,
+		state:   waverpc.WalletState_WALLET_STATE_NONE,
 		initErr: errors.New("init boom"),
 	}
 	client := newStubClient(t, stub)
@@ -398,7 +397,7 @@ func TestOpenWalletFromPasskeyPropagatesUnlockError(t *testing.T) {
 	t.Parallel()
 
 	stub := &stubDaemonServer{
-		state:     daemonrpc.WalletState_WALLET_STATE_LOCKED,
+		state:     waverpc.WalletState_WALLET_STATE_LOCKED,
 		unlockErr: errors.New("unlock boom"),
 	}
 	client := newStubClient(t, stub)

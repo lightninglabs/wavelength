@@ -5,10 +5,10 @@ package swapwallet
 import (
 	"testing"
 
-	"github.com/lightninglabs/darepo-client/daemonrpc"
-	"github.com/lightninglabs/darepo-client/ledger"
-	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
-	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/ledger"
+	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
+	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -62,8 +62,8 @@ func TestInspectActivityShowsPayFundingTrace(t *testing.T) {
 			},
 		},
 	}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Type:           "oor",
 				Subtype:        ledger.EventVTXOSent,
@@ -146,8 +146,8 @@ func TestInspectActivityOmitsIrrelevantNotes(t *testing.T) {
 
 	inspection, swap, rpc := newInspectionFixture(t)
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Type:               "boarding",
 				Subtype:            ledger.EventWalletUTXOCreated,
@@ -177,7 +177,7 @@ func TestInspectActivityNotFound(t *testing.T) {
 
 	inspection, swap, rpc := newInspectionFixture(t)
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{}
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{}
 
 	_, err := inspection.InspectActivity(
 		t.Context(), &walletdkrpc.InspectActivityRequest{

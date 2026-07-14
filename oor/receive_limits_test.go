@@ -5,9 +5,9 @@ import (
 
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/lightninglabs/darepo-client/arkrpc"
-	lib_tree "github.com/lightninglabs/darepo-client/lib/tree"
-	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
+	"github.com/lightninglabs/wavelength/arkrpc"
+	lib_tree "github.com/lightninglabs/wavelength/lib/tree"
+	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
 	"github.com/stretchr/testify/require"
 )
 
@@ -171,7 +171,7 @@ func testIncomingMetadataVTXO(sessionID SessionID,
 
 // testValidAncestryPath returns an AncestryPath whose reconstructed
 // tree_depth matches the proto scalar. Receive-time validation
-// (arkrpc.ValidateAncestryPathDepth, the darepo-client#370 guard)
+// (arkrpc.ValidateAncestryPathDepth, the wavelength#370 guard)
 // rejects zero or mismatched depths, so test fixtures must keep these
 // in sync.
 func testValidAncestryPath(commitmentTxID chainhash.Hash) *arkrpc.AncestryPath {

@@ -8,8 +8,8 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btcd/chaincfg/v2"
-	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
-	"github.com/lightninglabs/darepo-client/sdk/swaps"
+	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
+	"github.com/lightninglabs/wavelength/sdk/swaps"
 	"github.com/stretchr/testify/require"
 )
 

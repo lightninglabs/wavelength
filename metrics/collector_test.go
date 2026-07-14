@@ -62,9 +62,9 @@ func TestSystemCollectorCollect(t *testing.T) {
 	t.Parallel()
 
 	const spendableHeader = `
-# HELP darepod_spendable_balance_satoshis Total value in satoshis ` +
+# HELP waved_spendable_balance_satoshis Total value in satoshis ` +
 		`of spendable (live) VTXOs.
-# TYPE darepod_spendable_balance_satoshis gauge
+# TYPE waved_spendable_balance_satoshis gauge
 `
 
 	tests := []struct {
@@ -99,25 +99,25 @@ func TestSystemCollectorCollect(t *testing.T) {
 					TotalValue: 5000,
 				},
 			},
-			wantSpendable: "darepod_spendable_balance_satoshis " +
+			wantSpendable: "waved_spendable_balance_satoshis " +
 				"30000\n",
 			wantExpfmt: `
-# HELP darepod_vtxos Number of VTXOs by status.
-# TYPE darepod_vtxos gauge
-darepod_vtxos{status="live"} 3
-darepod_vtxos{status="spent"} 2
-darepod_vtxos{status="unilateral_exit"} 1
-# HELP darepod_vtxos_value_satoshis Total VTXO value by status in satoshis.
-# TYPE darepod_vtxos_value_satoshis gauge
-darepod_vtxos_value_satoshis{status="live"} 30000
-darepod_vtxos_value_satoshis{status="spent"} 20000
-darepod_vtxos_value_satoshis{status="unilateral_exit"} 5000
+# HELP waved_vtxos Number of VTXOs by status.
+# TYPE waved_vtxos gauge
+waved_vtxos{status="live"} 3
+waved_vtxos{status="spent"} 2
+waved_vtxos{status="unilateral_exit"} 1
+# HELP waved_vtxos_value_satoshis Total VTXO value by status in satoshis.
+# TYPE waved_vtxos_value_satoshis gauge
+waved_vtxos_value_satoshis{status="live"} 30000
+waved_vtxos_value_satoshis{status="spent"} 20000
+waved_vtxos_value_satoshis{status="unilateral_exit"} 5000
 `,
 		},
 		{
 			name:          "empty inventory",
 			rows:          []VTXOStatRow{},
-			wantSpendable: "darepod_spendable_balance_satoshis 0\n",
+			wantSpendable: "waved_spendable_balance_satoshis 0\n",
 		},
 		{
 			name: "only non-live statuses have zero spendable",
@@ -133,16 +133,16 @@ darepod_vtxos_value_satoshis{status="unilateral_exit"} 5000
 					TotalValue: 1000,
 				},
 			},
-			wantSpendable: "darepod_spendable_balance_satoshis 0\n",
+			wantSpendable: "waved_spendable_balance_satoshis 0\n",
 			wantExpfmt: `
-# HELP darepod_vtxos Number of VTXOs by status.
-# TYPE darepod_vtxos gauge
-darepod_vtxos{status="forfeited"} 2
-darepod_vtxos{status="spent"} 4
-# HELP darepod_vtxos_value_satoshis Total VTXO value by status in satoshis.
-# TYPE darepod_vtxos_value_satoshis gauge
-darepod_vtxos_value_satoshis{status="forfeited"} 1000
-darepod_vtxos_value_satoshis{status="spent"} 9000
+# HELP waved_vtxos Number of VTXOs by status.
+# TYPE waved_vtxos gauge
+waved_vtxos{status="forfeited"} 2
+waved_vtxos{status="spent"} 4
+# HELP waved_vtxos_value_satoshis Total VTXO value by status in satoshis.
+# TYPE waved_vtxos_value_satoshis gauge
+waved_vtxos_value_satoshis{status="forfeited"} 1000
+waved_vtxos_value_satoshis{status="spent"} 9000
 `,
 		},
 		{
@@ -175,8 +175,8 @@ darepod_vtxos_value_satoshis{status="spent"} 9000
 				tc.wantSpendable
 			err := testutil.CollectAndCompare(
 				c, strings.NewReader(expfmt),
-				"darepod_vtxos", "darepod_vtxos_value_satoshis",
-				"darepod_spendable_balance_satoshis",
+				"waved_vtxos", "waved_vtxos_value_satoshis",
+				"waved_spendable_balance_satoshis",
 			)
 			require.NoError(t, err)
 		})
@@ -249,33 +249,33 @@ func TestSystemCollectorExtendedGauges(t *testing.T) {
 		c := NewSystemCollector(q, fn.None[btclog.Logger]())
 
 		const want = `
-# HELP darepod_wallet_confirmed_satoshis Confirmed on-chain wallet ` +
+# HELP waved_wallet_confirmed_satoshis Confirmed on-chain wallet ` +
 			`balance in satoshis.
-# TYPE darepod_wallet_confirmed_satoshis gauge
-darepod_wallet_confirmed_satoshis 120000
-# HELP darepod_wallet_unconfirmed_satoshis Unconfirmed on-chain wallet ` +
+# TYPE waved_wallet_confirmed_satoshis gauge
+waved_wallet_confirmed_satoshis 120000
+# HELP waved_wallet_unconfirmed_satoshis Unconfirmed on-chain wallet ` +
 			`balance in satoshis.
-# TYPE darepod_wallet_unconfirmed_satoshis gauge
-darepod_wallet_unconfirmed_satoshis 3000
-# HELP darepod_block_height Best block height seen by the client's ` +
+# TYPE waved_wallet_unconfirmed_satoshis gauge
+waved_wallet_unconfirmed_satoshis 3000
+# HELP waved_block_height Best block height seen by the client's ` +
 			`chain backend.
-# TYPE darepod_block_height gauge
-darepod_block_height 850000
-# HELP darepod_oor_sessions_by_state Number of currently-tracked OOR ` +
+# TYPE waved_block_height gauge
+waved_block_height 850000
+# HELP waved_oor_sessions_by_state Number of currently-tracked OOR ` +
 			`sessions by state.
-# TYPE darepod_oor_sessions_by_state gauge
-darepod_oor_sessions_by_state{state="pending"} 2
-# HELP darepod_rounds_by_status Number of currently-live rounds by ` +
+# TYPE waved_oor_sessions_by_state gauge
+waved_oor_sessions_by_state{state="pending"} 2
+# HELP waved_rounds_by_status Number of currently-live rounds by ` +
 			`status.
-# TYPE darepod_rounds_by_status gauge
-darepod_rounds_by_status{status="joined"} 1
+# TYPE waved_rounds_by_status gauge
+waved_rounds_by_status{status="joined"} 1
 `
 		err := testutil.CollectAndCompare(
 			c, strings.NewReader(want),
-			"darepod_wallet_confirmed_satoshis",
-			"darepod_wallet_unconfirmed_satoshis",
-			"darepod_block_height", "darepod_oor_sessions_by_state",
-			"darepod_rounds_by_status",
+			"waved_wallet_confirmed_satoshis",
+			"waved_wallet_unconfirmed_satoshis",
+			"waved_block_height", "waved_oor_sessions_by_state",
+			"waved_rounds_by_status",
 		)
 		require.NoError(t, err)
 	})
@@ -301,14 +301,14 @@ darepod_rounds_by_status{status="joined"} 1
 		// round gauges must still be present.
 		require.Zero(
 			t, testutil.CollectAndCount(
-				c, "darepod_wallet_confirmed_satoshis",
-				"darepod_block_height",
+				c, "waved_wallet_confirmed_satoshis",
+				"waved_block_height",
 			),
 		)
 		require.Equal(
 			t, 2, testutil.CollectAndCount(
-				c, "darepod_oor_sessions_by_state",
-				"darepod_rounds_by_status",
+				c, "waved_oor_sessions_by_state",
+				"waved_rounds_by_status",
 			),
 		)
 	})

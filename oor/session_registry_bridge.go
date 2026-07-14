@@ -4,8 +4,8 @@ import (
 	"context"
 
 	"github.com/btcsuite/btcd/chainhash/v2"
-	clientdb "github.com/lightninglabs/darepo-client/db"
-	"github.com/lightninglabs/darepo-client/rpc/oorpb"
+	clientdb "github.com/lightninglabs/wavelength/db"
+	"github.com/lightninglabs/wavelength/rpc/oorpb"
 )
 
 // SessionRegistryStore is the durable control-plane store used by the

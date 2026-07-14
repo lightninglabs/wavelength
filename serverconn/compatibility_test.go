@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	mailboxconn "github.com/lightninglabs/darepo-client/mailbox/conn"
-	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
+	mailboxconn "github.com/lightninglabs/wavelength/mailbox/conn"
+	mailboxpb "github.com/lightninglabs/wavelength/mailbox/pb"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 )

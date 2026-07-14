@@ -2,7 +2,7 @@
 
 // Package swapwallet implements the daemon-side walletdkrpc subserver that
 // exposes a simplified, swap-vocabulary-free wallet API on top of the
-// running darepod daemon.
+// running waved daemon.
 //
 // The package composes the existing swap subsystem (swapclientserver, gated
 // by the swapruntime build tag), the in-process Ark SDK facade, the

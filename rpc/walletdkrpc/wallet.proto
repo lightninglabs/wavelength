@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package walletdkrpc;
 
-option go_package = "github.com/lightninglabs/darepo-client/rpc/walletdkrpc";
+option go_package = "github.com/lightninglabs/wavelength/rpc/walletdkrpc";
 
 // WalletService exposes a simplified, swap-vocabulary-free wallet API on top
 // of the running daemon. It composes the underlying swap subsystem, ark VTXO
@@ -19,11 +19,11 @@ service WalletService {
     // supplied password, and returns the mnemonic so the caller can record
     // it. For recovery flows the caller MAY supply an existing mnemonic in
     // the request; in that case the same mnemonic is echoed back. Proxies
-    // daemonrpc.GenSeed + daemonrpc.InitWallet server-side.
+    // waverpc.GenSeed + waverpc.InitWallet server-side.
     rpc Create (CreateRequest) returns (CreateResponse);
 
     // Unlock decrypts the on-disk wallet seed using the supplied password
-    // and starts the wallet subsystem. Proxies daemonrpc.UnlockWallet.
+    // and starts the wallet subsystem. Proxies waverpc.UnlockWallet.
     rpc Unlock (UnlockRequest) returns (UnlockResponse);
 
     // PrepareSend validates and previews an outbound payment without
@@ -84,7 +84,7 @@ service WalletService {
 
     // ExitStatus reports the current phase of an unroll job for the
     // specified VTXO outpoint, including recovery chain progress and
-    // sweep state. Proxies daemonrpc.GetUnrollStatus.
+    // sweep state. Proxies waverpc.GetUnrollStatus.
     rpc ExitStatus (ExitStatusRequest) returns (ExitStatusResponse);
 
     // ExitSummary reports the wallet-wide portfolio of in-progress exits:
@@ -397,7 +397,7 @@ message PrepareSendResponse {
     // Invoice sends: COMPLETE when every amount and fee is backed by a
     // swap remote quote; LOCAL_ONLY when the invoice parsed locally but
     // the swap quote API was unavailable. Onchain sends: COMPLETE when
-    // daemonrpc.EstimateFee returned a binding operator quote;
+    // waverpc.EstimateFee returned a binding operator quote;
     // LOCAL_ONLY when only a local fee floor could be computed.
     SendQuoteStatus quote_status = 8;
 

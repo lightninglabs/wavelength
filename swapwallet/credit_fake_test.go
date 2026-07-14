@@ -5,8 +5,8 @@ package swapwallet
 import (
 	"context"
 
-	"github.com/lightninglabs/darepo-client/baselib/actor"
-	"github.com/lightninglabs/darepo-client/credit"
+	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/credit"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 

@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/lightninglabs/darepo-client/baselib/actor"
-	mailboxconn "github.com/lightninglabs/darepo-client/mailbox/conn"
-	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
+	"github.com/lightninglabs/wavelength/baselib/actor"
+	mailboxconn "github.com/lightninglabs/wavelength/mailbox/conn"
+	mailboxpb "github.com/lightninglabs/wavelength/mailbox/pb"
 )
 
 // DurableActorID returns the durable actor mailbox ID used for serverconn
@@ -176,7 +176,7 @@ func (r *Runtime) MarkIncompatible(ctx context.Context,
 // StampEnvelope stamps the runtime's immutable mailbox transport and Ark
 // protocol versions onto a locally constructed envelope immediately before it
 // is sent. It is the shared stamping entry point for callers outside the
-// connector (such as the darepod mailbox response path) so every client send
+// connector (such as the waved mailbox response path) so every client send
 // path carries the runtime-bound version pair rather than copying a
 // caller-controlled value.
 func (r *Runtime) StampEnvelope(env *mailboxpb.Envelope) {

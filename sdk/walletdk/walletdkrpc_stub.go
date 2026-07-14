@@ -2,10 +2,10 @@
 
 package walletdk
 
-import "github.com/lightninglabs/darepo-client/darepod"
+import "github.com/lightninglabs/wavelength/waved"
 
 // configureWalletRPC keeps non-wallet builds compiling.
-func configureWalletRPC(_ *darepod.Config, _ bool) {
+func configureWalletRPC(_ *waved.Config, _ bool) {
 }
 
 // walletRPCAvailable reports that this build omits the wallet RPC subserver.

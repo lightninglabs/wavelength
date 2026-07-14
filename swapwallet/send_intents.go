@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
 )
 
 const sendIntentTTL = 5 * time.Minute

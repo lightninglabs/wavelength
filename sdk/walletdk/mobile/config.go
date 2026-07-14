@@ -8,12 +8,12 @@ import (
 	"math"
 	"time"
 
-	"github.com/lightninglabs/darepo-client/sdk/walletdk"
+	"github.com/lightninglabs/wavelength/sdk/walletdk"
 )
 
 // mobileConfig is the flat, JSON-serializable subset of walletdk.Config that a
 // mobile host can express. It deliberately omits the reference-typed fields of
-// walletdk.Config (DaemonConfig *darepod.Config and LogWriter io.Writer) that
+// walletdk.Config (DaemonConfig *waved.Config and LogWriter io.Writer) that
 // cannot cross a JSON / gomobile boundary; hosts that need fine-grained daemon
 // knobs should use the Go SDK directly. Durations are seconds and amounts are
 // int64 to stay JSON-host friendly (no uint, no time.Duration).

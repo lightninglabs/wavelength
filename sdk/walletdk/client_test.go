@@ -25,7 +25,7 @@ func (s stubBtcwalletServer) Ping(context.Context, *btcwalletrpc.PingRequest) (
 
 // TestBtcwalletRPCUsesClientBufconn verifies walletdk's native btcwallet
 // escape hatch is built from the same private gRPC connection as the rest of
-// the SDK. Embedded clients use this path to reach darepod's registered
+// the SDK. Embedded clients use this path to reach waved's registered
 // btcsuite walletrpc service without opening another listener.
 func TestBtcwalletRPCUsesClientBufconn(t *testing.T) {
 	t.Parallel()

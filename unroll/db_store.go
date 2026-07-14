@@ -7,7 +7,7 @@ import (
 
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/lightninglabs/darepo-client/db"
+	"github.com/lightninglabs/wavelength/db"
 )
 
 // db_store.go adapts the db package's UnilateralExitJob table into the
@@ -108,7 +108,7 @@ func (s *DBRegistryStore) ListNonTerminalRecords(ctx context.Context) (
 // MarkTerminal marks one target terminal in the unilateral-exit job table.
 // recoverable selects UnilateralExitJobStatusFailedRecoverable over the
 // plain Failed status for a no-footprint failure so boot-time reconciliation
-// can roll the VTXO back to live (darepo-client#602).
+// can roll the VTXO back to live (wavelength#602).
 func (s *DBRegistryStore) MarkTerminal(ctx context.Context,
 	target wire.OutPoint, phase Phase, recoverable bool, failReason string,
 	sweepTxid *chainhash.Hash) error {

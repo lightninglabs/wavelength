@@ -1,9 +1,9 @@
 package vtxo
 
 import (
-	"github.com/lightninglabs/darepo-client/baselib/actor"
-	"github.com/lightninglabs/darepo-client/lib/actormsg"
-	"github.com/lightninglabs/darepo-client/round"
+	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/lib/actormsg"
+	"github.com/lightninglabs/wavelength/round"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
@@ -95,7 +95,7 @@ func (e *ForceUnrollEvent) MessageType() string {
 // on-chain footprint (no proof or sweep transaction was broadcast). The
 // VTXO is rolled back to LiveState so the wallet's view re-converges with
 // the operator's, which still considers the VTXO live. This is the
-// recovery half of the darepo-client#602 fix.
+// recovery half of the wavelength#602 fix.
 type ExitFailedEvent struct {
 	actor.BaseMessage
 

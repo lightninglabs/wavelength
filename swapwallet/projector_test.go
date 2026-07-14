@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lightninglabs/darepo-client/db"
-	"github.com/lightninglabs/darepo-client/db/sqlc"
-	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/db"
+	"github.com/lightninglabs/wavelength/db/sqlc"
+	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
@@ -57,7 +57,7 @@ func (f *fakeActivityProjector) count() int {
 	return len(f.projected)
 }
 
-// ListEntries satisfies darepod.ActivityStore. This fake exercises only the
+// ListEntries satisfies waved.ActivityStore. This fake exercises only the
 // write path; the store-backed read path is tested against a real DB store, so
 // this returns no rows.
 func (f *fakeActivityProjector) ListEntries(_ context.Context, _ int64,
@@ -66,7 +66,7 @@ func (f *fakeActivityProjector) ListEntries(_ context.Context, _ int64,
 	return nil, nil
 }
 
-// ListEntriesByKindStatus satisfies darepod.ActivityStore. The rehydration
+// ListEntriesByKindStatus satisfies waved.ActivityStore. The rehydration
 // read path is tested against a real DB store, so this returns no rows.
 func (f *fakeActivityProjector) ListEntriesByKindStatus(_ context.Context, _,
 	_ int64, _ string, _ int32) ([]sqlc.ActivityEntry, error) {
@@ -74,7 +74,7 @@ func (f *fakeActivityProjector) ListEntriesByKindStatus(_ context.Context, _,
 	return nil, nil
 }
 
-// CountByStatus satisfies darepod.ActivityStore. The count path is tested
+// CountByStatus satisfies waved.ActivityStore. The count path is tested
 // against a real DB store, so this fake reports nothing.
 func (f *fakeActivityProjector) CountByStatus(_ context.Context, _ int64) (
 	int64, error) {
@@ -82,7 +82,7 @@ func (f *fakeActivityProjector) CountByStatus(_ context.Context, _ int64) (
 	return 0, nil
 }
 
-// PullEvents satisfies darepod.ActivityStore. This fake exercises only the
+// PullEvents satisfies waved.ActivityStore. This fake exercises only the
 // write path; the resumable-subscribe replay is tested against a real DB
 // store, so this returns no events.
 func (f *fakeActivityProjector) PullEvents(_ context.Context, _ int64,

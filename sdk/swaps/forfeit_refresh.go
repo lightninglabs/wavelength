@@ -9,9 +9,9 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/lightninglabs/darepo-client/daemonrpc"
-	"github.com/lightninglabs/darepo-client/lib/arkscript"
-	"github.com/lightninglabs/darepo-client/vtxo"
+	"github.com/lightninglabs/wavelength/lib/arkscript"
+	"github.com/lightninglabs/wavelength/vtxo"
+	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"google.golang.org/protobuf/proto"
 )
@@ -75,13 +75,13 @@ func ForfeitSignaturePayloadFromVTXORequest(
 // SignVTXOForfeitRequestFromPayload maps a swap-server transcript into the
 // daemon's exact local signing oracle request.
 func SignVTXOForfeitRequestFromPayload(payload *ForfeitSignaturePayload) (
-	*daemonrpc.SignVTXOForfeitRequest, error) {
+	*waverpc.SignVTXOForfeitRequest, error) {
 
 	if _, err := forfeitSignaturePayloadToProto(payload); err != nil {
 		return nil, err
 	}
 
-	return &daemonrpc.SignVTXOForfeitRequest{
+	return &waverpc.SignVTXOForfeitRequest{
 		VtxoOutpoint:       payload.VHTLCOutpoint,
 		VtxoAmountSat:      payload.VHTLCAmountSat,
 		VtxoPkScript:       bytes.Clone(payload.VHTLCPkScript),

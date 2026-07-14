@@ -8,9 +8,9 @@ import (
 
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/lightninglabs/darepo-client/lib/actormsg"
-	"github.com/lightninglabs/darepo-client/unroll"
-	"github.com/lightninglabs/darepo-client/vhtlcrecovery"
+	"github.com/lightninglabs/wavelength/lib/actormsg"
+	"github.com/lightninglabs/wavelength/unroll"
+	"github.com/lightninglabs/wavelength/vhtlcrecovery"
 	"github.com/stretchr/testify/require"
 )
 

@@ -9,8 +9,8 @@ import (
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/lightninglabs/darepo-client/lib/arkscript"
-	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
+	"github.com/lightninglabs/wavelength/lib/arkscript"
+	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
@@ -590,7 +590,7 @@ func handleOutboxError(env *Environment, current State,
 }
 
 // buildSubmitPackage constructs a v0 OOR submit package using the shared
-// darepo-client lib/tx/oor primitives.
+// wavelength lib/tx/oor primitives.
 func buildSubmitPackage(policy arkscript.CheckpointPolicy,
 	inputs []TransferInput, outputs []oortx.RecipientOutput) (*psbt.Packet,
 	[]*psbt.Packet, error) {
@@ -656,7 +656,7 @@ func normalizeCheckpointOwnerLeaves(policy arkscript.CheckpointPolicy,
 }
 
 // BuildSubmitPackage constructs a v0 OOR submit package using the shared
-// darepo-client lib/tx/oor primitives. It only builds deterministic PSBTs from
+// wavelength lib/tx/oor primitives. It only builds deterministic PSBTs from
 // caller-provided inputs and outputs; it does not acquire wallet locks, select
 // wallet inputs, or persist OOR session state.
 func BuildSubmitPackage(policy arkscript.CheckpointPolicy,

@@ -4,7 +4,7 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/chainhash/v2"
-	"github.com/lightninglabs/darepo-client/lib/tree"
+	"github.com/lightninglabs/wavelength/lib/tree"
 )
 
 // MaxAncestryTreeWalkDepth bounds depth-walk recursion across an

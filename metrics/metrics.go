@@ -8,11 +8,11 @@ import (
 )
 
 const (
-	// namespace is the Prometheus namespace prefixing every darepod
+	// namespace is the Prometheus namespace prefixing every waved
 	// client metric. It mirrors the daemon's own product name (the
-	// "darepod" binary and the DAREPOD env prefix) so dashboards group
+	// "waved" binary and the WAVED env prefix) so dashboards group
 	// client metrics under the same identifier operators already use.
-	namespace = "darepod"
+	namespace = "waved"
 )
 
 var (
@@ -150,7 +150,7 @@ var (
 	)
 )
 
-// allCollectors returns every event-driven darepod client metric
+// allCollectors returns every event-driven waved client metric
 // collector for registration. The scrape-driven SystemCollector is
 // registered separately by the caller because it needs a querier.
 func allCollectors() []prometheus.Collector {
@@ -168,7 +168,7 @@ func allCollectors() []prometheus.Collector {
 	}
 }
 
-// RegisterAll registers all event-driven darepod client metrics with
+// RegisterAll registers all event-driven waved client metrics with
 // the given registerer. Typically called with
 // prometheus.DefaultRegisterer during daemon startup. Duplicate
 // registrations are tolerated so multiple daemons sharing a test

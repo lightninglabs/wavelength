@@ -3,12 +3,12 @@ package restclient
 import (
 	"context"
 
-	"github.com/lightninglabs/darepo-client/arkrpc"
-	"github.com/lightninglabs/darepo-client/daemonrpc"
-	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
-	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
-	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
-	"github.com/lightninglabs/darepo-client/swaprpc"
+	"github.com/lightninglabs/wavelength/arkrpc"
+	mailboxpb "github.com/lightninglabs/wavelength/mailbox/pb"
+	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
+	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/swaprpc"
+	"github.com/lightninglabs/wavelength/waverpc"
 	"google.golang.org/grpc"
 )
 
@@ -16,9 +16,9 @@ type (
 	swapClientService = swapclientrpc.SwapClientServiceClient
 
 	watchRoundsStream interface {
-		grpc.ServerStreamingClient[daemonrpc.WatchRoundsResponse]
+		grpc.ServerStreamingClient[waverpc.WatchRoundsResponse]
 	}
-	watchRoundsREST = StreamClient[daemonrpc.WatchRoundsResponse]
+	watchRoundsREST = StreamClient[waverpc.WatchRoundsResponse]
 
 	subscribeSwapsStream interface {
 		grpc.ServerStreamingClient[swapclientrpc.SubscribeSwapsResponse]
@@ -33,7 +33,7 @@ type (
 
 var (
 	_ arkrpc.ArkServiceClient         = (*ArkServiceClient)(nil)
-	_ daemonrpc.DaemonServiceClient   = (*DaemonServiceClient)(nil)
+	_ waverpc.DaemonServiceClient     = (*DaemonServiceClient)(nil)
 	_ mailboxpb.MailboxServiceClient  = (*MailboxServiceClient)(nil)
 	_ swapClientService               = (*SwapClientServiceClient)(nil)
 	_ swaprpc.SwapServiceClient       = (*SwapServiceClient)(nil)
@@ -274,18 +274,18 @@ func (c *SwapServiceClient) SubmitOutSwapForfeitSignature(ctx context.Context,
 
 // NewDaemonServiceClient creates a DaemonService REST client.
 func NewDaemonServiceClient(addr string,
-	opts ...Option) daemonrpc.DaemonServiceClient {
+	opts ...Option) waverpc.DaemonServiceClient {
 
 	return NewDaemonServiceClientFromClient(New(addr, opts...))
 }
 
 // NewDaemonServiceClientFromClient creates a DaemonService REST client from an
 // existing shared REST transport.
-func NewDaemonServiceClientFromClient(c *Client) daemonrpc.DaemonServiceClient {
+func NewDaemonServiceClientFromClient(c *Client) waverpc.DaemonServiceClient {
 	return &DaemonServiceClient{client: c}
 }
 
-// DaemonServiceClient implements daemonrpc.DaemonServiceClient over
+// DaemonServiceClient implements waverpc.DaemonServiceClient over
 // grpc-gateway.
 type DaemonServiceClient struct {
 	client *Client
@@ -293,10 +293,10 @@ type DaemonServiceClient struct {
 
 // GetInfo returns basic daemon status.
 func (c *DaemonServiceClient) GetInfo(ctx context.Context,
-	in *daemonrpc.GetInfoRequest, _ ...grpc.CallOption) (
-	*daemonrpc.GetInfoResponse, error) {
+	in *waverpc.GetInfoRequest, _ ...grpc.CallOption) (
+	*waverpc.GetInfoResponse, error) {
 
-	out := new(daemonrpc.GetInfoResponse)
+	out := new(waverpc.GetInfoResponse)
 	err := c.client.Post(ctx, "/v1/daemon/get-info", in, out)
 
 	return out, err
@@ -304,10 +304,10 @@ func (c *DaemonServiceClient) GetInfo(ctx context.Context,
 
 // GenSeed generates a new wallet seed.
 func (c *DaemonServiceClient) GenSeed(ctx context.Context,
-	in *daemonrpc.GenSeedRequest, _ ...grpc.CallOption) (
-	*daemonrpc.GenSeedResponse, error) {
+	in *waverpc.GenSeedRequest, _ ...grpc.CallOption) (
+	*waverpc.GenSeedResponse, error) {
 
-	out := new(daemonrpc.GenSeedResponse)
+	out := new(waverpc.GenSeedResponse)
 	err := c.client.Post(ctx, "/v1/daemon/gen-seed", in, out)
 
 	return out, err
@@ -315,10 +315,10 @@ func (c *DaemonServiceClient) GenSeed(ctx context.Context,
 
 // InitWallet initializes the daemon wallet.
 func (c *DaemonServiceClient) InitWallet(ctx context.Context,
-	in *daemonrpc.InitWalletRequest, _ ...grpc.CallOption) (
-	*daemonrpc.InitWalletResponse, error) {
+	in *waverpc.InitWalletRequest, _ ...grpc.CallOption) (
+	*waverpc.InitWalletResponse, error) {
 
-	out := new(daemonrpc.InitWalletResponse)
+	out := new(waverpc.InitWalletResponse)
 	err := c.client.Post(ctx, "/v1/daemon/init-wallet", in, out)
 
 	return out, err
@@ -326,10 +326,10 @@ func (c *DaemonServiceClient) InitWallet(ctx context.Context,
 
 // UnlockWallet unlocks the daemon wallet.
 func (c *DaemonServiceClient) UnlockWallet(ctx context.Context,
-	in *daemonrpc.UnlockWalletRequest, _ ...grpc.CallOption) (
-	*daemonrpc.UnlockWalletResponse, error) {
+	in *waverpc.UnlockWalletRequest, _ ...grpc.CallOption) (
+	*waverpc.UnlockWalletResponse, error) {
 
-	out := new(daemonrpc.UnlockWalletResponse)
+	out := new(waverpc.UnlockWalletResponse)
 	err := c.client.Post(ctx, "/v1/daemon/unlock-wallet", in, out)
 
 	return out, err
@@ -337,10 +337,10 @@ func (c *DaemonServiceClient) UnlockWallet(ctx context.Context,
 
 // GetBalance returns the daemon wallet balance.
 func (c *DaemonServiceClient) GetBalance(ctx context.Context,
-	in *daemonrpc.GetBalanceRequest, _ ...grpc.CallOption) (
-	*daemonrpc.GetBalanceResponse, error) {
+	in *waverpc.GetBalanceRequest, _ ...grpc.CallOption) (
+	*waverpc.GetBalanceResponse, error) {
 
-	out := new(daemonrpc.GetBalanceResponse)
+	out := new(waverpc.GetBalanceResponse)
 	err := c.client.Post(ctx, "/v1/daemon/get-balance", in, out)
 
 	return out, err
@@ -348,10 +348,10 @@ func (c *DaemonServiceClient) GetBalance(ctx context.Context,
 
 // ListVTXOs lists daemon wallet VTXOs.
 func (c *DaemonServiceClient) ListVTXOs(ctx context.Context,
-	in *daemonrpc.ListVTXOsRequest, _ ...grpc.CallOption) (
-	*daemonrpc.ListVTXOsResponse, error) {
+	in *waverpc.ListVTXOsRequest, _ ...grpc.CallOption) (
+	*waverpc.ListVTXOsResponse, error) {
 
-	out := new(daemonrpc.ListVTXOsResponse)
+	out := new(waverpc.ListVTXOsResponse)
 	err := c.client.Post(ctx, "/v1/daemon/list-vtxos", in, out)
 
 	return out, err
@@ -359,10 +359,10 @@ func (c *DaemonServiceClient) ListVTXOs(ctx context.Context,
 
 // NewAddress returns a new boarding address.
 func (c *DaemonServiceClient) NewAddress(ctx context.Context,
-	in *daemonrpc.NewAddressRequest, _ ...grpc.CallOption) (
-	*daemonrpc.NewAddressResponse, error) {
+	in *waverpc.NewAddressRequest, _ ...grpc.CallOption) (
+	*waverpc.NewAddressResponse, error) {
 
-	out := new(daemonrpc.NewAddressResponse)
+	out := new(waverpc.NewAddressResponse)
 	err := c.client.Post(ctx, "/v1/daemon/new-address", in, out)
 
 	return out, err
@@ -370,10 +370,10 @@ func (c *DaemonServiceClient) NewAddress(ctx context.Context,
 
 // NewReceiveScript returns a new Ark receive script.
 func (c *DaemonServiceClient) NewReceiveScript(ctx context.Context,
-	in *daemonrpc.NewReceiveScriptRequest, _ ...grpc.CallOption) (
-	*daemonrpc.NewReceiveScriptResponse, error) {
+	in *waverpc.NewReceiveScriptRequest, _ ...grpc.CallOption) (
+	*waverpc.NewReceiveScriptResponse, error) {
 
-	out := new(daemonrpc.NewReceiveScriptResponse)
+	out := new(waverpc.NewReceiveScriptResponse)
 	err := c.client.Post(ctx, "/v1/daemon/new-receive-script", in, out)
 
 	return out, err
@@ -381,10 +381,10 @@ func (c *DaemonServiceClient) NewReceiveScript(ctx context.Context,
 
 // ReceiveAuthKey returns the receive auth public key for one payment hash.
 func (c *DaemonServiceClient) ReceiveAuthKey(ctx context.Context,
-	in *daemonrpc.ReceiveAuthKeyRequest, _ ...grpc.CallOption) (
-	*daemonrpc.ReceiveAuthKeyResponse, error) {
+	in *waverpc.ReceiveAuthKeyRequest, _ ...grpc.CallOption) (
+	*waverpc.ReceiveAuthKeyResponse, error) {
 
-	out := new(daemonrpc.ReceiveAuthKeyResponse)
+	out := new(waverpc.ReceiveAuthKeyResponse)
 	err := c.client.Post(ctx, "/v1/daemon/receive-auth-key", in, out)
 
 	return out, err
@@ -392,10 +392,10 @@ func (c *DaemonServiceClient) ReceiveAuthKey(ctx context.Context,
 
 // SignReceiveAuthMessage signs a receive auth message.
 func (c *DaemonServiceClient) SignReceiveAuthMessage(ctx context.Context,
-	in *daemonrpc.SignReceiveAuthMessageRequest, _ ...grpc.CallOption) (
-	*daemonrpc.SignReceiveAuthMessageResponse, error) {
+	in *waverpc.SignReceiveAuthMessageRequest, _ ...grpc.CallOption) (
+	*waverpc.SignReceiveAuthMessageResponse, error) {
 
-	out := new(daemonrpc.SignReceiveAuthMessageResponse)
+	out := new(waverpc.SignReceiveAuthMessageResponse)
 	err := c.client.Post(
 		ctx, "/v1/daemon/sign-receive-auth-message", in, out,
 	)
@@ -405,11 +405,11 @@ func (c *DaemonServiceClient) SignReceiveAuthMessage(ctx context.Context,
 
 // SignReceiveAuthMessageCompact signs a compact receive auth message.
 func (c *DaemonServiceClient) SignReceiveAuthMessageCompact(ctx context.Context,
-	in *daemonrpc.SignReceiveAuthMessageCompactRequest,
-	_ ...grpc.CallOption) (*daemonrpc.SignReceiveAuthMessageCompactResponse,
+	in *waverpc.SignReceiveAuthMessageCompactRequest,
+	_ ...grpc.CallOption) (*waverpc.SignReceiveAuthMessageCompactResponse,
 	error) {
 
-	out := new(daemonrpc.SignReceiveAuthMessageCompactResponse)
+	out := new(waverpc.SignReceiveAuthMessageCompactResponse)
 	err := c.client.Post(
 		ctx, "/v1/daemon/sign-receive-auth-message-compact", in, out,
 	)
@@ -419,10 +419,10 @@ func (c *DaemonServiceClient) SignReceiveAuthMessageCompact(ctx context.Context,
 
 // ReceiveAuthECDH derives a receive auth ECDH secret.
 func (c *DaemonServiceClient) ReceiveAuthECDH(ctx context.Context,
-	in *daemonrpc.ReceiveAuthECDHRequest, _ ...grpc.CallOption) (
-	*daemonrpc.ReceiveAuthECDHResponse, error) {
+	in *waverpc.ReceiveAuthECDHRequest, _ ...grpc.CallOption) (
+	*waverpc.ReceiveAuthECDHResponse, error) {
 
-	out := new(daemonrpc.ReceiveAuthECDHResponse)
+	out := new(waverpc.ReceiveAuthECDHResponse)
 	err := c.client.Post(ctx, "/v1/daemon/receive-auth-ecdh", in, out)
 
 	return out, err
@@ -430,10 +430,10 @@ func (c *DaemonServiceClient) ReceiveAuthECDH(ctx context.Context,
 
 // GetIndexedVTXOByPkScript looks up one indexed VTXO by pkScript.
 func (c *DaemonServiceClient) GetIndexedVTXOByPkScript(ctx context.Context,
-	in *daemonrpc.GetIndexedVTXOByPkScriptRequest, _ ...grpc.CallOption) (
-	*daemonrpc.GetIndexedVTXOByPkScriptResponse, error) {
+	in *waverpc.GetIndexedVTXOByPkScriptRequest, _ ...grpc.CallOption) (
+	*waverpc.GetIndexedVTXOByPkScriptResponse, error) {
 
-	out := new(daemonrpc.GetIndexedVTXOByPkScriptResponse)
+	out := new(waverpc.GetIndexedVTXOByPkScriptResponse)
 	err := c.client.Post(
 		ctx, "/v1/daemon/get-indexed-vtxo-by-pk-script", in, out,
 	)
@@ -443,10 +443,10 @@ func (c *DaemonServiceClient) GetIndexedVTXOByPkScript(ctx context.Context,
 
 // GetVTXOExpiryInfo classifies one VTXO's expiry posture.
 func (c *DaemonServiceClient) GetVTXOExpiryInfo(ctx context.Context,
-	in *daemonrpc.GetVTXOExpiryInfoRequest, _ ...grpc.CallOption) (
-	*daemonrpc.GetVTXOExpiryInfoResponse, error) {
+	in *waverpc.GetVTXOExpiryInfoRequest, _ ...grpc.CallOption) (
+	*waverpc.GetVTXOExpiryInfoResponse, error) {
 
-	out := new(daemonrpc.GetVTXOExpiryInfoResponse)
+	out := new(waverpc.GetVTXOExpiryInfoResponse)
 	err := c.client.Post(
 		ctx, "/v1/daemon/get-vtxo-expiry-info", in, out,
 	)
@@ -456,10 +456,10 @@ func (c *DaemonServiceClient) GetVTXOExpiryInfo(ctx context.Context,
 
 // GetIndexedOORSessionByTxid looks up one indexed OOR session by txid.
 func (c *DaemonServiceClient) GetIndexedOORSessionByTxid(ctx context.Context,
-	in *daemonrpc.GetIndexedOORSessionByTxidRequest, _ ...grpc.CallOption) (
-	*daemonrpc.GetIndexedOORSessionByTxidResponse, error) {
+	in *waverpc.GetIndexedOORSessionByTxidRequest, _ ...grpc.CallOption) (
+	*waverpc.GetIndexedOORSessionByTxidResponse, error) {
 
-	out := new(daemonrpc.GetIndexedOORSessionByTxidResponse)
+	out := new(waverpc.GetIndexedOORSessionByTxidResponse)
 	err := c.client.Post(
 		ctx, "/v1/daemon/get-indexed-oor-session-by-txid", in, out,
 	)
@@ -469,10 +469,10 @@ func (c *DaemonServiceClient) GetIndexedOORSessionByTxid(ctx context.Context,
 
 // SendVTXO initiates an in-round VTXO transfer.
 func (c *DaemonServiceClient) SendVTXO(ctx context.Context,
-	in *daemonrpc.SendVTXORequest, _ ...grpc.CallOption) (
-	*daemonrpc.SendVTXOResponse, error) {
+	in *waverpc.SendVTXORequest, _ ...grpc.CallOption) (
+	*waverpc.SendVTXOResponse, error) {
 
-	out := new(daemonrpc.SendVTXOResponse)
+	out := new(waverpc.SendVTXOResponse)
 	err := c.client.Post(ctx, "/v1/daemon/send-vtxo", in, out)
 
 	return out, err
@@ -480,10 +480,10 @@ func (c *DaemonServiceClient) SendVTXO(ctx context.Context,
 
 // SendOOR initiates an out-of-round VTXO transfer.
 func (c *DaemonServiceClient) SendOOR(ctx context.Context,
-	in *daemonrpc.SendOORRequest, _ ...grpc.CallOption) (
-	*daemonrpc.SendOORResponse, error) {
+	in *waverpc.SendOORRequest, _ ...grpc.CallOption) (
+	*waverpc.SendOORResponse, error) {
 
-	out := new(daemonrpc.SendOORResponse)
+	out := new(waverpc.SendOORResponse)
 	err := c.client.Post(ctx, "/v1/daemon/send-oor", in, out)
 
 	return out, err
@@ -491,10 +491,10 @@ func (c *DaemonServiceClient) SendOOR(ctx context.Context,
 
 // PrepareOOR builds an out-of-round transfer package without submitting it.
 func (c *DaemonServiceClient) PrepareOOR(ctx context.Context,
-	in *daemonrpc.PrepareOORRequest, _ ...grpc.CallOption) (
-	*daemonrpc.PrepareOORResponse, error) {
+	in *waverpc.PrepareOORRequest, _ ...grpc.CallOption) (
+	*waverpc.PrepareOORResponse, error) {
 
-	out := new(daemonrpc.PrepareOORResponse)
+	out := new(waverpc.PrepareOORResponse)
 	err := c.client.Post(ctx, "/v1/daemon/prepare-oor", in, out)
 
 	return out, err
@@ -502,10 +502,10 @@ func (c *DaemonServiceClient) PrepareOOR(ctx context.Context,
 
 // SignOORCustomInput signs one prepared custom OOR input.
 func (c *DaemonServiceClient) SignOORCustomInput(ctx context.Context,
-	in *daemonrpc.SignOORCustomInputRequest, _ ...grpc.CallOption) (
-	*daemonrpc.SignOORCustomInputResponse, error) {
+	in *waverpc.SignOORCustomInputRequest, _ ...grpc.CallOption) (
+	*waverpc.SignOORCustomInputResponse, error) {
 
-	out := new(daemonrpc.SignOORCustomInputResponse)
+	out := new(waverpc.SignOORCustomInputResponse)
 	err := c.client.Post(ctx, "/v1/daemon/sign-oor-custom-input", in, out)
 
 	return out, err
@@ -513,10 +513,10 @@ func (c *DaemonServiceClient) SignOORCustomInput(ctx context.Context,
 
 // SignVTXOForfeit signs one exact round forfeit transaction input.
 func (c *DaemonServiceClient) SignVTXOForfeit(ctx context.Context,
-	in *daemonrpc.SignVTXOForfeitRequest, _ ...grpc.CallOption) (
-	*daemonrpc.SignVTXOForfeitResponse, error) {
+	in *waverpc.SignVTXOForfeitRequest, _ ...grpc.CallOption) (
+	*waverpc.SignVTXOForfeitResponse, error) {
 
-	out := new(daemonrpc.SignVTXOForfeitResponse)
+	out := new(waverpc.SignVTXOForfeitResponse)
 	err := c.client.Post(ctx, "/v1/daemon/sign-vtxo-forfeit", in, out)
 
 	return out, err
@@ -524,10 +524,10 @@ func (c *DaemonServiceClient) SignVTXOForfeit(ctx context.Context,
 
 // RefreshVTXOs queues VTXOs for refresh.
 func (c *DaemonServiceClient) RefreshVTXOs(ctx context.Context,
-	in *daemonrpc.RefreshVTXOsRequest, _ ...grpc.CallOption) (
-	*daemonrpc.RefreshVTXOsResponse, error) {
+	in *waverpc.RefreshVTXOsRequest, _ ...grpc.CallOption) (
+	*waverpc.RefreshVTXOsResponse, error) {
 
-	out := new(daemonrpc.RefreshVTXOsResponse)
+	out := new(waverpc.RefreshVTXOsResponse)
 	err := c.client.Post(ctx, "/v1/daemon/refresh-vtxos", in, out)
 
 	return out, err
@@ -535,10 +535,10 @@ func (c *DaemonServiceClient) RefreshVTXOs(ctx context.Context,
 
 // RefreshCustomVTXOs queues caller-supplied custom-policy VTXOs for refresh.
 func (c *DaemonServiceClient) RefreshCustomVTXOs(ctx context.Context,
-	in *daemonrpc.RefreshCustomVTXOsRequest, _ ...grpc.CallOption) (
-	*daemonrpc.RefreshCustomVTXOsResponse, error) {
+	in *waverpc.RefreshCustomVTXOsRequest, _ ...grpc.CallOption) (
+	*waverpc.RefreshCustomVTXOsResponse, error) {
 
-	out := new(daemonrpc.RefreshCustomVTXOsResponse)
+	out := new(waverpc.RefreshCustomVTXOsResponse)
 	err := c.client.Post(ctx, "/v1/daemon/refresh-custom-vtxos", in, out)
 
 	return out, err
@@ -548,13 +548,13 @@ func (c *DaemonServiceClient) RefreshCustomVTXOs(ctx context.Context,
 // participant signature requests.
 func (c *DaemonServiceClient) ListPendingForfeitParticipantSignatureRequests(
 	ctx context.Context,
-	in *daemonrpc.ListPendingForfeitParticipantSignatureRequestsRequest,
+	in *waverpc.ListPendingForfeitParticipantSignatureRequestsRequest,
 	_ ...grpc.CallOption) (
-	*daemonrpc.ListPendingForfeitParticipantSignatureRequestsResponse,
+	*waverpc.ListPendingForfeitParticipantSignatureRequestsResponse,
 	error) {
 
 	out := new(
-		daemonrpc.
+		waverpc.
 			ListPendingForfeitParticipantSignatureRequestsResponse,
 	)
 	path := "/v1/daemon/list-pending-forfeit-participant-" +
@@ -570,11 +570,11 @@ func (c *DaemonServiceClient) ListPendingForfeitParticipantSignatureRequests(
 // pending custom-refresh forfeit signature request.
 func (c *DaemonServiceClient) SubmitForfeitParticipantSignatures(
 	ctx context.Context,
-	in *daemonrpc.SubmitForfeitParticipantSignaturesRequest,
+	in *waverpc.SubmitForfeitParticipantSignaturesRequest,
 	_ ...grpc.CallOption) (
-	*daemonrpc.SubmitForfeitParticipantSignaturesResponse, error) {
+	*waverpc.SubmitForfeitParticipantSignaturesResponse, error) {
 
-	out := new(daemonrpc.SubmitForfeitParticipantSignaturesResponse)
+	out := new(waverpc.SubmitForfeitParticipantSignaturesResponse)
 	err := c.client.Post(
 		ctx, "/v1/daemon/submit-forfeit-participant-signatures", in,
 		out,
@@ -585,10 +585,10 @@ func (c *DaemonServiceClient) SubmitForfeitParticipantSignatures(
 
 // LeaveVTXOs queues VTXOs for cooperative exit.
 func (c *DaemonServiceClient) LeaveVTXOs(ctx context.Context,
-	in *daemonrpc.LeaveVTXOsRequest, _ ...grpc.CallOption) (
-	*daemonrpc.LeaveVTXOsResponse, error) {
+	in *waverpc.LeaveVTXOsRequest, _ ...grpc.CallOption) (
+	*waverpc.LeaveVTXOsResponse, error) {
 
-	out := new(daemonrpc.LeaveVTXOsResponse)
+	out := new(waverpc.LeaveVTXOsResponse)
 	err := c.client.Post(ctx, "/v1/daemon/leave-vtxos", in, out)
 
 	return out, err
@@ -596,10 +596,10 @@ func (c *DaemonServiceClient) LeaveVTXOs(ctx context.Context,
 
 // SendOnChain plans and submits an atomic onchain payment from VTXOs.
 func (c *DaemonServiceClient) SendOnChain(ctx context.Context,
-	in *daemonrpc.SendOnChainRequest, _ ...grpc.CallOption) (
-	*daemonrpc.SendOnChainResponse, error) {
+	in *waverpc.SendOnChainRequest, _ ...grpc.CallOption) (
+	*waverpc.SendOnChainResponse, error) {
 
-	out := new(daemonrpc.SendOnChainResponse)
+	out := new(waverpc.SendOnChainResponse)
 	err := c.client.Post(ctx, "/v1/daemon/send-onchain", in, out)
 
 	return out, err
@@ -607,10 +607,10 @@ func (c *DaemonServiceClient) SendOnChain(ctx context.Context,
 
 // Board queues confirmed boarding UTXOs for the next round.
 func (c *DaemonServiceClient) Board(ctx context.Context,
-	in *daemonrpc.BoardRequest, _ ...grpc.CallOption) (
-	*daemonrpc.BoardResponse, error) {
+	in *waverpc.BoardRequest, _ ...grpc.CallOption) (*waverpc.BoardResponse,
+	error) {
 
-	out := new(daemonrpc.BoardResponse)
+	out := new(waverpc.BoardResponse)
 	err := c.client.Post(ctx, "/v1/daemon/board", in, out)
 
 	return out, err
@@ -618,10 +618,10 @@ func (c *DaemonServiceClient) Board(ctx context.Context,
 
 // JoinNextRound commits queued round intents and joins the next round.
 func (c *DaemonServiceClient) JoinNextRound(ctx context.Context,
-	in *daemonrpc.JoinNextRoundRequest, _ ...grpc.CallOption) (
-	*daemonrpc.JoinNextRoundResponse, error) {
+	in *waverpc.JoinNextRoundRequest, _ ...grpc.CallOption) (
+	*waverpc.JoinNextRoundResponse, error) {
 
-	out := new(daemonrpc.JoinNextRoundResponse)
+	out := new(waverpc.JoinNextRoundResponse)
 	err := c.client.Post(
 		ctx, "/v1/daemon/join-next-round", in, out,
 	)
@@ -631,10 +631,10 @@ func (c *DaemonServiceClient) JoinNextRound(ctx context.Context,
 
 // SweepBoardingUTXOs sweeps mature boarding UTXOs.
 func (c *DaemonServiceClient) SweepBoardingUTXOs(ctx context.Context,
-	in *daemonrpc.SweepBoardingUTXOsRequest, _ ...grpc.CallOption) (
-	*daemonrpc.SweepBoardingUTXOsResponse, error) {
+	in *waverpc.SweepBoardingUTXOsRequest, _ ...grpc.CallOption) (
+	*waverpc.SweepBoardingUTXOsResponse, error) {
 
-	out := new(daemonrpc.SweepBoardingUTXOsResponse)
+	out := new(waverpc.SweepBoardingUTXOsResponse)
 	err := c.client.Post(ctx, "/v1/daemon/sweep-boarding-utxos", in, out)
 
 	return out, err
@@ -642,10 +642,10 @@ func (c *DaemonServiceClient) SweepBoardingUTXOs(ctx context.Context,
 
 // ListBoardingSweeps lists boarding sweep jobs.
 func (c *DaemonServiceClient) ListBoardingSweeps(ctx context.Context,
-	in *daemonrpc.ListBoardingSweepsRequest, _ ...grpc.CallOption) (
-	*daemonrpc.ListBoardingSweepsResponse, error) {
+	in *waverpc.ListBoardingSweepsRequest, _ ...grpc.CallOption) (
+	*waverpc.ListBoardingSweepsResponse, error) {
 
-	out := new(daemonrpc.ListBoardingSweepsResponse)
+	out := new(waverpc.ListBoardingSweepsResponse)
 	err := c.client.Post(ctx, "/v1/daemon/list-boarding-sweeps", in, out)
 
 	return out, err
@@ -653,10 +653,10 @@ func (c *DaemonServiceClient) ListBoardingSweeps(ctx context.Context,
 
 // ListRounds lists client-visible rounds.
 func (c *DaemonServiceClient) ListRounds(ctx context.Context,
-	in *daemonrpc.ListRoundsRequest, _ ...grpc.CallOption) (
-	*daemonrpc.ListRoundsResponse, error) {
+	in *waverpc.ListRoundsRequest, _ ...grpc.CallOption) (
+	*waverpc.ListRoundsResponse, error) {
 
-	out := new(daemonrpc.ListRoundsResponse)
+	out := new(waverpc.ListRoundsResponse)
 	err := c.client.Post(ctx, "/v1/daemon/list-rounds", in, out)
 
 	return out, err
@@ -664,10 +664,10 @@ func (c *DaemonServiceClient) ListRounds(ctx context.Context,
 
 // GetRound returns one client-visible round.
 func (c *DaemonServiceClient) GetRound(ctx context.Context,
-	in *daemonrpc.GetRoundRequest, _ ...grpc.CallOption) (
-	*daemonrpc.GetRoundResponse, error) {
+	in *waverpc.GetRoundRequest, _ ...grpc.CallOption) (
+	*waverpc.GetRoundResponse, error) {
 
-	out := new(daemonrpc.GetRoundResponse)
+	out := new(waverpc.GetRoundResponse)
 	err := c.client.Post(ctx, "/v1/daemon/get-round", in, out)
 
 	return out, err
@@ -675,8 +675,8 @@ func (c *DaemonServiceClient) GetRound(ctx context.Context,
 
 // WatchRounds streams round updates from the daemon.
 func (c *DaemonServiceClient) WatchRounds(ctx context.Context,
-	in *daemonrpc.WatchRoundsRequest, _ ...grpc.CallOption) (
-	grpc.ServerStreamingClient[daemonrpc.WatchRoundsResponse], error) {
+	in *waverpc.WatchRoundsRequest, _ ...grpc.CallOption) (
+	grpc.ServerStreamingClient[waverpc.WatchRoundsResponse], error) {
 
 	resp, err := c.client.Stream( //nolint:bodyclose // Stream owns body.
 		ctx, "/v1/daemon/watch-rounds", in,
@@ -685,19 +685,19 @@ func (c *DaemonServiceClient) WatchRounds(ctx context.Context,
 		return nil, err
 	}
 
-	return NewStreamClient[daemonrpc.WatchRoundsResponse](
-		resp, "WatchRounds", func() *daemonrpc.WatchRoundsResponse {
-			return new(daemonrpc.WatchRoundsResponse)
+	return NewStreamClient[waverpc.WatchRoundsResponse](
+		resp, "WatchRounds", func() *waverpc.WatchRoundsResponse {
+			return new(waverpc.WatchRoundsResponse)
 		},
 	), nil
 }
 
 // ListOORSessions lists known OOR sessions.
 func (c *DaemonServiceClient) ListOORSessions(ctx context.Context,
-	in *daemonrpc.ListOORSessionsRequest, _ ...grpc.CallOption) (
-	*daemonrpc.ListOORSessionsResponse, error) {
+	in *waverpc.ListOORSessionsRequest, _ ...grpc.CallOption) (
+	*waverpc.ListOORSessionsResponse, error) {
 
-	out := new(daemonrpc.ListOORSessionsResponse)
+	out := new(waverpc.ListOORSessionsResponse)
 	err := c.client.Post(ctx, "/v1/daemon/list-oor-sessions", in, out)
 
 	return out, err
@@ -705,10 +705,10 @@ func (c *DaemonServiceClient) ListOORSessions(ctx context.Context,
 
 // GetOORSession returns one OOR session.
 func (c *DaemonServiceClient) GetOORSession(ctx context.Context,
-	in *daemonrpc.GetOORSessionRequest, _ ...grpc.CallOption) (
-	*daemonrpc.GetOORSessionResponse, error) {
+	in *waverpc.GetOORSessionRequest, _ ...grpc.CallOption) (
+	*waverpc.GetOORSessionResponse, error) {
 
-	out := new(daemonrpc.GetOORSessionResponse)
+	out := new(waverpc.GetOORSessionResponse)
 	err := c.client.Post(ctx, "/v1/daemon/get-oor-session", in, out)
 
 	return out, err
@@ -716,10 +716,10 @@ func (c *DaemonServiceClient) GetOORSession(ctx context.Context,
 
 // EstimateFee estimates an on-chain fee.
 func (c *DaemonServiceClient) EstimateFee(ctx context.Context,
-	in *daemonrpc.EstimateFeeRequest, _ ...grpc.CallOption) (
-	*daemonrpc.EstimateFeeResponse, error) {
+	in *waverpc.EstimateFeeRequest, _ ...grpc.CallOption) (
+	*waverpc.EstimateFeeResponse, error) {
 
-	out := new(daemonrpc.EstimateFeeResponse)
+	out := new(waverpc.EstimateFeeResponse)
 	err := c.client.Post(ctx, "/v1/daemon/estimate-fee", in, out)
 
 	return out, err
@@ -727,10 +727,10 @@ func (c *DaemonServiceClient) EstimateFee(ctx context.Context,
 
 // GetFeeHistory returns recent fee estimates.
 func (c *DaemonServiceClient) GetFeeHistory(ctx context.Context,
-	in *daemonrpc.GetFeeHistoryRequest, _ ...grpc.CallOption) (
-	*daemonrpc.GetFeeHistoryResponse, error) {
+	in *waverpc.GetFeeHistoryRequest, _ ...grpc.CallOption) (
+	*waverpc.GetFeeHistoryResponse, error) {
 
-	out := new(daemonrpc.GetFeeHistoryResponse)
+	out := new(waverpc.GetFeeHistoryResponse)
 	err := c.client.Post(ctx, "/v1/daemon/get-fee-history", in, out)
 
 	return out, err
@@ -738,10 +738,10 @@ func (c *DaemonServiceClient) GetFeeHistory(ctx context.Context,
 
 // ListTransactions lists daemon wallet transactions.
 func (c *DaemonServiceClient) ListTransactions(ctx context.Context,
-	in *daemonrpc.ListTransactionsRequest, _ ...grpc.CallOption) (
-	*daemonrpc.ListTransactionsResponse, error) {
+	in *waverpc.ListTransactionsRequest, _ ...grpc.CallOption) (
+	*waverpc.ListTransactionsResponse, error) {
 
-	out := new(daemonrpc.ListTransactionsResponse)
+	out := new(waverpc.ListTransactionsResponse)
 	err := c.client.Post(ctx, "/v1/daemon/list-transactions", in, out)
 
 	return out, err
@@ -749,10 +749,10 @@ func (c *DaemonServiceClient) ListTransactions(ctx context.Context,
 
 // Unroll starts a unilateral exit job.
 func (c *DaemonServiceClient) Unroll(ctx context.Context,
-	in *daemonrpc.UnrollRequest, _ ...grpc.CallOption) (
-	*daemonrpc.UnrollResponse, error) {
+	in *waverpc.UnrollRequest, _ ...grpc.CallOption) (
+	*waverpc.UnrollResponse, error) {
 
-	out := new(daemonrpc.UnrollResponse)
+	out := new(waverpc.UnrollResponse)
 	err := c.client.Post(ctx, "/v1/daemon/unroll", in, out)
 
 	return out, err
@@ -760,10 +760,10 @@ func (c *DaemonServiceClient) Unroll(ctx context.Context,
 
 // GetUnrollStatus returns one unilateral exit job status.
 func (c *DaemonServiceClient) GetUnrollStatus(ctx context.Context,
-	in *daemonrpc.GetUnrollStatusRequest, _ ...grpc.CallOption) (
-	*daemonrpc.GetUnrollStatusResponse, error) {
+	in *waverpc.GetUnrollStatusRequest, _ ...grpc.CallOption) (
+	*waverpc.GetUnrollStatusResponse, error) {
 
-	out := new(daemonrpc.GetUnrollStatusResponse)
+	out := new(waverpc.GetUnrollStatusResponse)
 	err := c.client.Post(ctx, "/v1/daemon/get-unroll-status", in, out)
 
 	return out, err
@@ -771,10 +771,10 @@ func (c *DaemonServiceClient) GetUnrollStatus(ctx context.Context,
 
 // ArmVHTLCRecovery persists a dormant vHTLC recovery job.
 func (c *DaemonServiceClient) ArmVHTLCRecovery(ctx context.Context,
-	in *daemonrpc.ArmVHTLCRecoveryRequest, _ ...grpc.CallOption) (
-	*daemonrpc.ArmVHTLCRecoveryResponse, error) {
+	in *waverpc.ArmVHTLCRecoveryRequest, _ ...grpc.CallOption) (
+	*waverpc.ArmVHTLCRecoveryResponse, error) {
 
-	out := new(daemonrpc.ArmVHTLCRecoveryResponse)
+	out := new(waverpc.ArmVHTLCRecoveryResponse)
 	err := c.client.Post(ctx, "/v1/daemon/arm-vhtlc-recovery", in, out)
 
 	return out, err
@@ -782,10 +782,10 @@ func (c *DaemonServiceClient) ArmVHTLCRecovery(ctx context.Context,
 
 // EscalateVHTLCRecovery starts an armed vHTLC recovery job.
 func (c *DaemonServiceClient) EscalateVHTLCRecovery(ctx context.Context,
-	in *daemonrpc.EscalateVHTLCRecoveryRequest, _ ...grpc.CallOption) (
-	*daemonrpc.EscalateVHTLCRecoveryResponse, error) {
+	in *waverpc.EscalateVHTLCRecoveryRequest, _ ...grpc.CallOption) (
+	*waverpc.EscalateVHTLCRecoveryResponse, error) {
 
-	out := new(daemonrpc.EscalateVHTLCRecoveryResponse)
+	out := new(waverpc.EscalateVHTLCRecoveryResponse)
 	err := c.client.Post(ctx, "/v1/daemon/escalate-vhtlc-recovery", in, out)
 
 	return out, err
@@ -793,10 +793,10 @@ func (c *DaemonServiceClient) EscalateVHTLCRecovery(ctx context.Context,
 
 // CancelVHTLCRecovery records that a vHTLC recovery job is no longer needed.
 func (c *DaemonServiceClient) CancelVHTLCRecovery(ctx context.Context,
-	in *daemonrpc.CancelVHTLCRecoveryRequest, _ ...grpc.CallOption) (
-	*daemonrpc.CancelVHTLCRecoveryResponse, error) {
+	in *waverpc.CancelVHTLCRecoveryRequest, _ ...grpc.CallOption) (
+	*waverpc.CancelVHTLCRecoveryResponse, error) {
 
-	out := new(daemonrpc.CancelVHTLCRecoveryResponse)
+	out := new(waverpc.CancelVHTLCRecoveryResponse)
 	err := c.client.Post(ctx, "/v1/daemon/cancel-vhtlc-recovery", in, out)
 
 	return out, err
@@ -804,10 +804,10 @@ func (c *DaemonServiceClient) CancelVHTLCRecovery(ctx context.Context,
 
 // GetVHTLCRecoveryStatus returns one vHTLC recovery job status.
 func (c *DaemonServiceClient) GetVHTLCRecoveryStatus(ctx context.Context,
-	in *daemonrpc.GetVHTLCRecoveryStatusRequest, _ ...grpc.CallOption) (
-	*daemonrpc.GetVHTLCRecoveryStatusResponse, error) {
+	in *waverpc.GetVHTLCRecoveryStatusRequest, _ ...grpc.CallOption) (
+	*waverpc.GetVHTLCRecoveryStatusResponse, error) {
 
-	out := new(daemonrpc.GetVHTLCRecoveryStatusResponse)
+	out := new(waverpc.GetVHTLCRecoveryStatusResponse)
 	err := c.client.Post(
 		ctx, "/v1/daemon/get-vhtlc-recovery-status", in, out,
 	)
@@ -817,10 +817,10 @@ func (c *DaemonServiceClient) GetVHTLCRecoveryStatus(ctx context.Context,
 
 // ListVHTLCRecoveries returns vHTLC recovery jobs for operator inspection.
 func (c *DaemonServiceClient) ListVHTLCRecoveries(ctx context.Context,
-	in *daemonrpc.ListVHTLCRecoveriesRequest, _ ...grpc.CallOption) (
-	*daemonrpc.ListVHTLCRecoveriesResponse, error) {
+	in *waverpc.ListVHTLCRecoveriesRequest, _ ...grpc.CallOption) (
+	*waverpc.ListVHTLCRecoveriesResponse, error) {
 
-	out := new(daemonrpc.ListVHTLCRecoveriesResponse)
+	out := new(waverpc.ListVHTLCRecoveriesResponse)
 	err := c.client.Post(ctx, "/v1/daemon/list-vhtlc-recoveries", in, out)
 
 	return out, err

@@ -14,9 +14,9 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/btcsuite/btcwallet/wtxmgr"
-	"github.com/lightninglabs/darepo-client/build"
-	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/lightninglabs/lndclient"
+	"github.com/lightninglabs/wavelength/build"
+	"github.com/lightninglabs/wavelength/wallet"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnwallet"
@@ -236,7 +236,7 @@ func (l *BoardingBackend) GetBlock(ctx context.Context,
 
 // LeaseOutput forwards the reservation to LND's WalletKit, which
 // translates into an RPC call that sets the coin-selection lock on
-// the remote LND node. The darepo-local wallet.LockID is passed
+// the remote LND node. The wavelength-local wallet.LockID is passed
 // through as wtxmgr.LockID — both are [32]byte so the translation is
 // a direct cast rather than a mapping table, and the LockID therefore
 // round-trips across restarts for release.

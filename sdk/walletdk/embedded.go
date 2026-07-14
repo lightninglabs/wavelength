@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/lightninglabs/darepo-client/darepod"
+	"github.com/lightninglabs/wavelength/waved"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials/insecure"
@@ -15,10 +15,10 @@ import (
 
 const defaultBufConnSize = 1 << 20
 
-// DefaultConfig returns a walletdk config with darepod defaults. Wallet payment
+// DefaultConfig returns a walletdk config with waved defaults. Wallet payment
 // methods are enabled only when built with walletdkrpc and swapruntime.
 func DefaultConfig() Config {
-	cfg := darepod.DefaultConfig()
+	cfg := waved.DefaultConfig()
 
 	return Config{
 		DataDir:              cfg.DataDir,
@@ -51,7 +51,7 @@ func DefaultConfig() Config {
 
 // startOptions holds the resolved functional-option state for Start. Options
 // are applied AFTER the convenience Config / DaemonConfig merge so they can
-// override values that the merge or the build-tagged darepod.DefaultConfig
+// override values that the merge or the build-tagged waved.DefaultConfig
 // would otherwise leave in place.
 type startOptions struct {
 	disableEagerRoundJoin bool
@@ -64,7 +64,7 @@ type startOptions struct {
 type Option func(*startOptions)
 
 // WithEagerRoundJoinDisabled forces the embedded daemon's
-// darepod.Config.EagerRoundJoin to false, even when DefaultConfig or a
+// waved.Config.EagerRoundJoin to false, even when DefaultConfig or a
 // caller-supplied DaemonConfig would otherwise set it true. This is the
 // walletdk-side knob for hosts that need the batched (operator-driven)
 // round-join semantics under the walletdkrpc build, where DefaultConfig
@@ -76,13 +76,13 @@ func WithEagerRoundJoinDisabled() Option {
 }
 
 // resolveDaemonConfig merges the walletdk convenience Config onto a
-// darepod.Config, runs the swap-runtime + walletdkrpc registrars, and applies
+// waved.Config, runs the swap-runtime + walletdkrpc registrars, and applies
 // functional options. It is the pure (no I/O, no bufconn) slice of Start so
 // option semantics can be unit-tested without booting a daemon. Options apply
 // AFTER the merge and the registrars so they win over the build-tag default
-// seeded by darepod.DefaultConfig and any value carried on a caller-owned
+// seeded by waved.DefaultConfig and any value carried on a caller-owned
 // DaemonConfig.
-func resolveDaemonConfig(cfg Config, opts ...Option) (*darepod.Config, error) {
+func resolveDaemonConfig(cfg Config, opts ...Option) (*waved.Config, error) {
 	var o startOptions
 	for _, opt := range opts {
 		opt(&o)
@@ -105,7 +105,7 @@ func resolveDaemonConfig(cfg Config, opts ...Option) (*darepod.Config, error) {
 	return daemonCfg, nil
 }
 
-// Start starts an embedded darepod runtime and returns the wallet facade.
+// Start starts an embedded waved runtime and returns the wallet facade.
 //
 //nolint:contextcheck // embedded daemon lifetime is detached from dial ctx
 func Start(ctx context.Context, cfg Config, opts ...Option) (*Client, error) {
@@ -125,13 +125,13 @@ func Start(ctx context.Context, cfg Config, opts ...Option) (*Client, error) {
 
 	listener := bufconn.Listen(bufferSize)
 	if daemonCfg.RPC == nil {
-		daemonCfg.RPC = &darepod.RPCConfig{}
+		daemonCfg.RPC = &waved.RPCConfig{}
 	}
 	daemonCfg.RPC.Listener = listener
 	daemonCfg.RPC.NoTLS = true
 	daemonCfg.RPC.NoMacaroons = true
 	if daemonCfg.RPC.Gateway != nil {
-		// Embedded walletdk talks to darepod through the private
+		// Embedded walletdk talks to waved through the private
 		// bufconn listener above. The public HTTP gateway would need a
 		// browser-incompatible TCP listener in WASM and is not needed
 		// by native embedders using this in-process API.
@@ -144,7 +144,7 @@ func Start(ctx context.Context, cfg Config, opts ...Option) (*Client, error) {
 		return nil, fmt.Errorf("invalid daemon config: %w", err)
 	}
 
-	server, err := darepod.NewServer(daemonCfg)
+	server, err := waved.NewServer(daemonCfg)
 	if err != nil {
 		_ = listener.Close()
 
@@ -227,12 +227,12 @@ func requireEmbeddedWalletRuntime() error {
 
 // daemonConfig builds the daemon config from either a full caller-supplied
 // config or the walletdk convenience fields.
-func daemonConfig(cfg Config) (*darepod.Config, error) {
-	var daemonCfg *darepod.Config
+func daemonConfig(cfg Config) (*waved.Config, error) {
+	var daemonCfg *waved.Config
 	if cfg.DaemonConfig != nil {
 		daemonCfg = cloneDaemonConfig(cfg.DaemonConfig)
 	} else {
-		daemonCfg = darepod.DefaultConfig()
+		daemonCfg = waved.DefaultConfig()
 	}
 
 	applyConfigOverrides(daemonCfg, cfg)
@@ -242,7 +242,7 @@ func daemonConfig(cfg Config) (*darepod.Config, error) {
 
 // applyConfigOverrides applies only explicitly set convenience fields so a
 // caller-provided DaemonConfig keeps ownership of detailed daemon knobs.
-func applyConfigOverrides(daemonCfg *darepod.Config, cfg Config) {
+func applyConfigOverrides(daemonCfg *waved.Config, cfg Config) {
 	if cfg.DataDir != "" {
 		daemonCfg.DataDir = cfg.DataDir
 	}
@@ -269,7 +269,7 @@ func applyConfigOverrides(daemonCfg *darepod.Config, cfg Config) {
 	}
 
 	if daemonCfg.Server == nil {
-		daemonCfg.Server = &darepod.ServerConfig{}
+		daemonCfg.Server = &waved.ServerConfig{}
 	}
 	if cfg.ServerAddress != "" {
 		daemonCfg.Server.Host = cfg.ServerAddress
@@ -285,7 +285,7 @@ func applyConfigOverrides(daemonCfg *darepod.Config, cfg Config) {
 	}
 
 	if daemonCfg.Wallet == nil {
-		daemonCfg.Wallet = &darepod.WalletConfig{}
+		daemonCfg.Wallet = &waved.WalletConfig{}
 	}
 	if cfg.WalletType != "" {
 		daemonCfg.Wallet.Type = cfg.WalletType
@@ -315,7 +315,7 @@ func applyConfigOverrides(daemonCfg *darepod.Config, cfg Config) {
 	}
 
 	if daemonCfg.Swap == nil {
-		daemonCfg.Swap = &darepod.SwapConfig{}
+		daemonCfg.Swap = &waved.SwapConfig{}
 	}
 	if cfg.SwapServerAddress != "" {
 		daemonCfg.Swap.ServerAddress = cfg.SwapServerAddress
@@ -336,7 +336,7 @@ func applyConfigOverrides(daemonCfg *darepod.Config, cfg Config) {
 
 // cloneDaemonConfig copies reference-typed daemon config fields before walletdk
 // injects its private listener and optional service registrars.
-func cloneDaemonConfig(cfg *darepod.Config) *darepod.Config {
+func cloneDaemonConfig(cfg *waved.Config) *waved.Config {
 	clone := *cfg
 
 	if cfg.Lnd != nil {
@@ -383,14 +383,14 @@ func cloneDaemonConfig(cfg *darepod.Config) *darepod.Config {
 	}
 
 	clone.RPCServiceRegistrars = append(
-		[]darepod.RPCServiceRegistrar(nil), cfg.RPCServiceRegistrars...,
+		[]waved.RPCServiceRegistrar(nil), cfg.RPCServiceRegistrars...,
 	)
 	clone.UnaryServerInterceptors = append(
 		[]grpc.UnaryServerInterceptor(nil),
 		cfg.UnaryServerInterceptors...,
 	)
 	clone.WalletReadyHooks = append(
-		[]darepod.WalletReadyHook(nil), cfg.WalletReadyHooks...,
+		[]waved.WalletReadyHook(nil), cfg.WalletReadyHooks...,
 	)
 
 	return &clone

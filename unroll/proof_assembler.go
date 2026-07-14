@@ -10,12 +10,12 @@ import (
 	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/lightninglabs/darepo-client/db"
-	"github.com/lightninglabs/darepo-client/lib/recovery"
-	"github.com/lightninglabs/darepo-client/lib/tree"
-	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
-	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
-	"github.com/lightninglabs/darepo-client/vtxo"
+	"github.com/lightninglabs/wavelength/db"
+	"github.com/lightninglabs/wavelength/lib/recovery"
+	"github.com/lightninglabs/wavelength/lib/tree"
+	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
+	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
+	"github.com/lightninglabs/wavelength/vtxo"
 )
 
 var (
@@ -355,7 +355,7 @@ func validateProofDescriptorShape(desc *vtxo.Descriptor) error {
 	// NOT block unilateral exit — that would let the operator strand
 	// otherwise-recoverable funds. Receive-side validation of TreeDepth
 	// against TreePath.Depth() lives at the ingest boundary
-	// (oor.validateIncomingAncestry / darepod.ancestryFromRPC); the
+	// (oor.validateIncomingAncestry / waved.ancestryFromRPC); the
 	// unroll path stays liberal about the scalar so legitimate proofs
 	// always assemble.
 	for i, frag := range desc.Ancestry {

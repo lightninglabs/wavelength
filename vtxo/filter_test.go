@@ -10,7 +10,7 @@ import (
 // TestSumSpendableBalance verifies that SumSpendableBalance counts only
 // Live VTXOs, excluding the other non-terminal states that ListLiveVTXOs
 // returns for actor recovery (PendingForfeit, Forfeiting, Spending). This
-// is the regression behind darepo-client #584, where a stuck Spending
+// is the regression behind wavelength #584, where a stuck Spending
 // VTXO and a PendingForfeit VTXO were summed into vtxo_balance_sat and
 // made the spendable balance look non-zero when it was actually zero.
 func TestSumSpendableBalance(t *testing.T) {

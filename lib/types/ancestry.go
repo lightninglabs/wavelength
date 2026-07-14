@@ -2,7 +2,7 @@ package types
 
 import (
 	"github.com/btcsuite/btcd/chainhash/v2"
-	"github.com/lightninglabs/darepo-client/lib/tree"
+	"github.com/lightninglabs/wavelength/lib/tree"
 )
 
 // Ancestry describes one rooted commitment-tree fragment that contributes

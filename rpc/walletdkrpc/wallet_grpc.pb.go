@@ -55,10 +55,10 @@ type WalletServiceClient interface {
 	// supplied password, and returns the mnemonic so the caller can record
 	// it. For recovery flows the caller MAY supply an existing mnemonic in
 	// the request; in that case the same mnemonic is echoed back. Proxies
-	// daemonrpc.GenSeed + daemonrpc.InitWallet server-side.
+	// waverpc.GenSeed + waverpc.InitWallet server-side.
 	Create(ctx context.Context, in *CreateRequest, opts ...grpc.CallOption) (*CreateResponse, error)
 	// Unlock decrypts the on-disk wallet seed using the supplied password
-	// and starts the wallet subsystem. Proxies daemonrpc.UnlockWallet.
+	// and starts the wallet subsystem. Proxies waverpc.UnlockWallet.
 	Unlock(ctx context.Context, in *UnlockRequest, opts ...grpc.CallOption) (*UnlockResponse, error)
 	// PrepareSend validates and previews an outbound payment without
 	// moving funds. The response carries a short-lived send_intent_id
@@ -108,7 +108,7 @@ type WalletServiceClient interface {
 	Exit(ctx context.Context, in *ExitRequest, opts ...grpc.CallOption) (*ExitResponse, error)
 	// ExitStatus reports the current phase of an unroll job for the
 	// specified VTXO outpoint, including recovery chain progress and
-	// sweep state. Proxies daemonrpc.GetUnrollStatus.
+	// sweep state. Proxies waverpc.GetUnrollStatus.
 	ExitStatus(ctx context.Context, in *ExitStatusRequest, opts ...grpc.CallOption) (*ExitStatusResponse, error)
 	// ExitSummary reports the wallet-wide portfolio of in-progress exits:
 	// one row per active exit plus aggregate totals for the amount still
@@ -306,10 +306,10 @@ type WalletServiceServer interface {
 	// supplied password, and returns the mnemonic so the caller can record
 	// it. For recovery flows the caller MAY supply an existing mnemonic in
 	// the request; in that case the same mnemonic is echoed back. Proxies
-	// daemonrpc.GenSeed + daemonrpc.InitWallet server-side.
+	// waverpc.GenSeed + waverpc.InitWallet server-side.
 	Create(context.Context, *CreateRequest) (*CreateResponse, error)
 	// Unlock decrypts the on-disk wallet seed using the supplied password
-	// and starts the wallet subsystem. Proxies daemonrpc.UnlockWallet.
+	// and starts the wallet subsystem. Proxies waverpc.UnlockWallet.
 	Unlock(context.Context, *UnlockRequest) (*UnlockResponse, error)
 	// PrepareSend validates and previews an outbound payment without
 	// moving funds. The response carries a short-lived send_intent_id
@@ -359,7 +359,7 @@ type WalletServiceServer interface {
 	Exit(context.Context, *ExitRequest) (*ExitResponse, error)
 	// ExitStatus reports the current phase of an unroll job for the
 	// specified VTXO outpoint, including recovery chain progress and
-	// sweep state. Proxies daemonrpc.GetUnrollStatus.
+	// sweep state. Proxies waverpc.GetUnrollStatus.
 	ExitStatus(context.Context, *ExitStatusRequest) (*ExitStatusResponse, error)
 	// ExitSummary reports the wallet-wide portfolio of in-progress exits:
 	// one row per active exit plus aggregate totals for the amount still

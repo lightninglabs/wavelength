@@ -5,7 +5,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/psbt/v2"
-	"github.com/lightninglabs/darepo-client/lib/tx/arktx"
+	"github.com/lightninglabs/wavelength/lib/tx/arktx"
 )
 
 // ArkRecipientOutput is a non-anchor Ark tx output intended for the receiver.

@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lightninglabs/darepo-client/daemonrpc"
-	"github.com/lightninglabs/darepo-client/darepod"
+	"github.com/lightninglabs/wavelength/waved"
+	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/stretchr/testify/require"
 )
 
@@ -23,7 +23,7 @@ const refreshRestartRecoveryWindow = 60 * time.Second
 // sweep. A cooperative refresh reserves the seeded VTXO into pending-forfeit
 // and parks a temp REGISTRATION_SENT round, but the fake operator never returns
 // a RoundJoined admission watermark. The admission timeout is disabled, so the
-// in-flight round's own recovery path (darepo-client#653) can never fire — the
+// in-flight round's own recovery path (wavelength#653) can never fire — the
 // only thing that can rescue the reserved VTXO is the manager's startup sweep.
 //
 // We then restart the daemon. The in-memory round FSM dies, and the VTXO is
@@ -39,7 +39,7 @@ func TestRefreshStrandedVTXORecoversOnRestart(t *testing.T) {
 	// negative RegistrationTimeout disables the admission timeout entirely,
 	// so the round never self-recovers and the startup sweep is isolated as
 	// the sole recovery mechanism under test.
-	fixture := newDirectedSendFixture(t, func(c *darepod.Config) {
+	fixture := newDirectedSendFixture(t, func(c *waved.Config) {
 		c.EagerRoundJoin = true
 		c.RegistrationTimeout = -1 * time.Second
 	})
@@ -48,7 +48,7 @@ func TestRefreshStrandedVTXORecoversOnRestart(t *testing.T) {
 	startVTXOs := listAllVTXOs(t, fixture.client)
 	require.Len(t, startVTXOs, 1)
 	require.Equal(
-		t, daemonrpc.VTXOStatus_VTXO_STATUS_LIVE, startVTXOs[0].Status,
+		t, waverpc.VTXOStatus_VTXO_STATUS_LIVE, startVTXOs[0].Status,
 	)
 	require.Equal(
 		t, testSeededAmountSat, vtxoBalanceSat(t, fixture.client),
@@ -61,9 +61,9 @@ func TestRefreshStrandedVTXORecoversOnRestart(t *testing.T) {
 	defer cancel()
 
 	refreshResp, err := fixture.client.RefreshVTXOs(
-		ctx, &daemonrpc.RefreshVTXOsRequest{
-			Selection: &daemonrpc.RefreshVTXOsRequest_Outpoints{
-				Outpoints: &daemonrpc.OutpointSelection{
+		ctx, &waverpc.RefreshVTXOsRequest{
+			Selection: &waverpc.RefreshVTXOsRequest_Outpoints{
+				Outpoints: &waverpc.OutpointSelection{
 					Outpoints: []string{
 						outpointString(
 							fixture.seededOutpoint,
@@ -87,7 +87,7 @@ func TestRefreshStrandedVTXORecoversOnRestart(t *testing.T) {
 	// restart.
 	requireVTXOStatusEventually(
 		t, fixture.client, fixture.seededOutpoint,
-		daemonrpc.VTXOStatus_VTXO_STATUS_PENDING_FORFEIT,
+		waverpc.VTXOStatus_VTXO_STATUS_PENDING_FORFEIT,
 		parkedObserveWindow,
 	)
 
@@ -99,7 +99,7 @@ func TestRefreshStrandedVTXORecoversOnRestart(t *testing.T) {
 	// The fix: the startup orphan-forfeit sweep returns the VTXO to LIVE.
 	requireVTXOStatusEventually(
 		t, fixture.client, fixture.seededOutpoint,
-		daemonrpc.VTXOStatus_VTXO_STATUS_LIVE,
+		waverpc.VTXOStatus_VTXO_STATUS_LIVE,
 		refreshRestartRecoveryWindow,
 	)
 

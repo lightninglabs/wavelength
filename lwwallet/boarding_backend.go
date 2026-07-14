@@ -14,8 +14,8 @@ import (
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/btcsuite/btcwallet/wtxmgr"
-	"github.com/lightninglabs/darepo-client/wallet"
-	"github.com/lightninglabs/darepo-client/walletcore"
+	"github.com/lightninglabs/wavelength/wallet"
+	"github.com/lightninglabs/wavelength/walletcore"
 	"github.com/lightningnetwork/lnd/lnwallet/btcwallet"
 )
 
@@ -213,7 +213,7 @@ func (b *BoardingBackendAdapter) GetBlock(ctx context.Context,
 // correctly exclude leased outputs from any subsequent signing or
 // broadcast path.
 //
-// The darepo-local wallet.LockID is re-interpreted as wtxmgr.LockID:
+// The wavelength-local wallet.LockID is re-interpreted as wtxmgr.LockID:
 // both are [32]byte, so the translation is a direct cast.
 func (b *BoardingBackendAdapter) LeaseOutput(_ context.Context,
 	id wallet.LockID, op wire.OutPoint, expiry time.Duration) (time.Time,

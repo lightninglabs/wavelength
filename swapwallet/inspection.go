@@ -8,10 +8,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/lightninglabs/darepo-client/daemonrpc"
-	"github.com/lightninglabs/darepo-client/ledger"
-	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
-	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/ledger"
+	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
+	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/waverpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -143,7 +143,7 @@ func (s *InspectionService) listSwaps(ctx context.Context) (
 // listLedgerRows returns ledger rows, fetching one extra row when a non-zero
 // caller limit lets the response report truncation.
 func (s *InspectionService) listLedgerRows(ctx context.Context, limit uint32) (
-	[]*daemonrpc.TransactionHistoryEntry, error) {
+	[]*waverpc.TransactionHistoryEntry, error) {
 
 	if s.deps.RPCServer == nil {
 		return nil, nil
@@ -157,7 +157,7 @@ func (s *InspectionService) listLedgerRows(ctx context.Context, limit uint32) (
 	}
 
 	resp, err := s.deps.RPCServer.ListTransactions(
-		ctx, &daemonrpc.ListTransactionsRequest{
+		ctx, &waverpc.ListTransactionsRequest{
 			Limit: queryLimit,
 		},
 	)
@@ -183,7 +183,7 @@ func findSwapByPaymentHash(swaps []*swapclientrpc.SwapSummary,
 }
 
 type ledgerInspectionRow struct {
-	row  *daemonrpc.TransactionHistoryEntry
+	row  *waverpc.TransactionHistoryEntry
 	role string
 }
 
@@ -191,10 +191,10 @@ type ledgerInspectionRow struct {
 // or one of the swap execution sessions behind it.
 func correlateLedgerRows(entry *walletdkrpc.WalletEntry,
 	swap *swapclientrpc.SwapSummary,
-	rows []*daemonrpc.TransactionHistoryEntry) []ledgerInspectionRow {
+	rows []*waverpc.TransactionHistoryEntry) []ledgerInspectionRow {
 
 	out := make(map[string]ledgerInspectionRow)
-	add := func(row *daemonrpc.TransactionHistoryEntry, role string) {
+	add := func(row *waverpc.TransactionHistoryEntry, role string) {
 		if row == nil {
 			return
 		}
@@ -250,7 +250,7 @@ func inspectionRoleRank(role string) int {
 
 // ledgerTraceKey returns a stable de-duplication key for an inspection ledger
 // row.
-func ledgerTraceKey(row *daemonrpc.TransactionHistoryEntry) string {
+func ledgerTraceKey(row *waverpc.TransactionHistoryEntry) string {
 	if row.GetEntryId() != 0 {
 		return fmt.Sprintf("entry:%d", row.GetEntryId())
 	}
@@ -264,7 +264,7 @@ func ledgerTraceKey(row *daemonrpc.TransactionHistoryEntry) string {
 
 // ledgerRowMatchesEntry reports whether a ledger row is the durable source for
 // the friendly activity entry.
-func ledgerRowMatchesEntry(row *daemonrpc.TransactionHistoryEntry,
+func ledgerRowMatchesEntry(row *waverpc.TransactionHistoryEntry,
 	entry *walletdkrpc.WalletEntry) bool {
 
 	if row == nil || entry == nil {
@@ -288,8 +288,8 @@ func ledgerRowMatchesEntry(row *daemonrpc.TransactionHistoryEntry,
 // correlateSwapLedgerRows adds ledger rows that match known swap sessions or
 // vHTLC transactions.
 func correlateSwapLedgerRows(swap *swapclientrpc.SwapSummary,
-	rows []*daemonrpc.TransactionHistoryEntry,
-	add func(*daemonrpc.TransactionHistoryEntry, string)) {
+	rows []*waverpc.TransactionHistoryEntry,
+	add func(*waverpc.TransactionHistoryEntry, string)) {
 
 	sessionIDs := map[string]struct{}{}
 	for _, id := range []string{
@@ -331,11 +331,11 @@ func correlateSwapLedgerRows(swap *swapclientrpc.SwapSummary,
 // correlateOORPairs links OOR send and receive rows that represent swap
 // funding, claim, refund, or change legs.
 func correlateOORPairs(swap *swapclientrpc.SwapSummary,
-	rows []*daemonrpc.TransactionHistoryEntry,
-	add func(*daemonrpc.TransactionHistoryEntry, string)) {
+	rows []*waverpc.TransactionHistoryEntry,
+	add func(*waverpc.TransactionHistoryEntry, string)) {
 
 	receivedBySession := make(map[string]int64)
-	receiveRows := make(map[string][]*daemonrpc.TransactionHistoryEntry)
+	receiveRows := make(map[string][]*waverpc.TransactionHistoryEntry)
 	for _, row := range rows {
 		session, _, ok := oorReceiveRef(row)
 		if !ok {
@@ -384,7 +384,7 @@ func correlateOORPairs(swap *swapclientrpc.SwapSummary,
 // hiddenOORLedgerRows returns the internal OOR ledger rows hidden from the
 // friendly activity feed.
 func hiddenOORLedgerRows(swaps []*swapclientrpc.SwapSummary,
-	rows []*daemonrpc.TransactionHistoryEntry) map[int64]struct{} {
+	rows []*waverpc.TransactionHistoryEntry) map[int64]struct{} {
 
 	return internalOORLedgerEntries(
 		rows, swapOORCorrelationsFromSwaps(swaps),

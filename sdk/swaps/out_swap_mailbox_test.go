@@ -6,9 +6,9 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
-	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
-	"github.com/lightninglabs/darepo-client/serverconn/mailboxpull"
-	"github.com/lightninglabs/darepo-client/swaprpc"
+	mailboxpb "github.com/lightninglabs/wavelength/mailbox/pb"
+	"github.com/lightninglabs/wavelength/serverconn/mailboxpull"
+	"github.com/lightninglabs/wavelength/swaprpc"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"

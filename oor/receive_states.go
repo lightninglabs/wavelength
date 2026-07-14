@@ -2,7 +2,7 @@ package oor
 
 import (
 	"github.com/btcsuite/btcd/psbt/v2"
-	"github.com/lightninglabs/darepo-client/baselib/protofsm"
+	"github.com/lightninglabs/wavelength/baselib/protofsm"
 )
 
 // ReceiveState is a sealed interface for all states in the incoming transfer

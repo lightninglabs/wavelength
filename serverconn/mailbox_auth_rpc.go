@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
+	mailboxpb "github.com/lightninglabs/wavelength/mailbox/pb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 )

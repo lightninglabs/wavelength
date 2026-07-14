@@ -1199,7 +1199,7 @@ type PrepareSendResponse struct {
 	// Invoice sends: COMPLETE when every amount and fee is backed by a
 	// swap remote quote; LOCAL_ONLY when the invoice parsed locally but
 	// the swap quote API was unavailable. Onchain sends: COMPLETE when
-	// daemonrpc.EstimateFee returned a binding operator quote;
+	// waverpc.EstimateFee returned a binding operator quote;
 	// LOCAL_ONLY when only a local fee floor could be computed.
 	QuoteStatus SendQuoteStatus `protobuf:"varint,8,opt,name=quote_status,json=quoteStatus,proto3,enum=walletdkrpc.SendQuoteStatus" json:"quote_status,omitempty"`
 	// destination_summary is a short display string suitable for CLI and
@@ -6132,7 +6132,7 @@ const file_wallet_proto_rawDesc = "" +
 	"\vExitSummary\x12\x1f.walletdkrpc.ExitSummaryRequest\x1a .walletdkrpc.ExitSummaryResponse\x12^\n" +
 	"\x0fSubscribeWallet\x12#.walletdkrpc.SubscribeWalletRequest\x1a$.walletdkrpc.SubscribeWalletResponse0\x012w\n" +
 	"\x17WalletInspectionService\x12\\\n" +
-	"\x0fInspectActivity\x12#.walletdkrpc.InspectActivityRequest\x1a$.walletdkrpc.InspectActivityResponseB8Z6github.com/lightninglabs/darepo-client/rpc/walletdkrpcb\x06proto3"
+	"\x0fInspectActivity\x12#.walletdkrpc.InspectActivityRequest\x1a$.walletdkrpc.InspectActivityResponseB5Z3github.com/lightninglabs/wavelength/rpc/walletdkrpcb\x06proto3"
 
 var (
 	file_wallet_proto_rawDescOnce sync.Once

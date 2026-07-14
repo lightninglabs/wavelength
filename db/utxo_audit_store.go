@@ -4,8 +4,8 @@ import (
 	"context"
 	"database/sql"
 
-	"github.com/lightninglabs/darepo-client/db/sqlc"
-	"github.com/lightninglabs/darepo-client/ledger"
+	"github.com/lightninglabs/wavelength/db/sqlc"
+	"github.com/lightninglabs/wavelength/ledger"
 )
 
 // Compile-time check that UTXOAuditStoreDB implements

@@ -7,9 +7,9 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/chaincfg/v2"
-	"github.com/lightninglabs/darepo-client/daemonrpc"
-	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
-	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
+	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/lightningnetwork/lnd/zpay32"
 )
 
@@ -422,11 +422,11 @@ func unixToTime(ts int64) time.Time {
 	return time.Unix(ts, 0)
 }
 
-// walletVTXOFromDaemon projects a daemonrpc.VTXO onto the wallet-facing
+// walletVTXOFromDaemon projects a waverpc.VTXO onto the wallet-facing
 // WalletVTXO shape. Returns (vtxo, true) when the underlying VTXO maps to a
 // spendable wallet view; (nil, false) when the row should be hidden (terminal
 // states the user has no agency over).
-func walletVTXOFromDaemon(v *daemonrpc.VTXO) (*walletdkrpc.WalletVTXO, bool) {
+func walletVTXOFromDaemon(v *waverpc.VTXO) (*walletdkrpc.WalletVTXO, bool) {
 	if v == nil {
 		return nil, false
 	}
@@ -450,21 +450,21 @@ func walletVTXOFromDaemon(v *daemonrpc.VTXO) (*walletdkrpc.WalletVTXO, bool) {
 // lowercase wallet string. Terminal internal states (forfeited, spent,
 // failed) return keep=false so the wallet view stays focused on the
 // VTXOs a user can still act on.
-func walletVTXOStatusFromDaemon(s daemonrpc.VTXOStatus) (string, bool) {
+func walletVTXOStatusFromDaemon(s waverpc.VTXOStatus) (string, bool) {
 	switch s {
-	case daemonrpc.VTXOStatus_VTXO_STATUS_LIVE:
+	case waverpc.VTXOStatus_VTXO_STATUS_LIVE:
 		return "live", true
 
-	case daemonrpc.VTXOStatus_VTXO_STATUS_PENDING_FORFEIT:
+	case waverpc.VTXOStatus_VTXO_STATUS_PENDING_FORFEIT:
 		return "pending_forfeit", true
 
-	case daemonrpc.VTXOStatus_VTXO_STATUS_FORFEITING:
+	case waverpc.VTXOStatus_VTXO_STATUS_FORFEITING:
 		return "forfeiting", true
 
-	case daemonrpc.VTXOStatus_VTXO_STATUS_SPENDING:
+	case waverpc.VTXOStatus_VTXO_STATUS_SPENDING:
 		return "spending", true
 
-	case daemonrpc.VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT:
+	case waverpc.VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT:
 		return "unilateral_exit", true
 
 	default:
@@ -472,11 +472,11 @@ func walletVTXOStatusFromDaemon(s daemonrpc.VTXOStatus) (string, bool) {
 	}
 }
 
-// onchainTxFromLedgerRow flattens a daemonrpc.TransactionHistoryEntry onto
+// onchainTxFromLedgerRow flattens a waverpc.TransactionHistoryEntry onto
 // the wallet-facing OnchainTx shape. Internal correlators (round_id,
 // session_id, debit/credit accounts) are not surfaced; the wallet view
 // keeps only what's useful at the top of an everyday wallet history.
-func onchainTxFromLedgerRow(t *daemonrpc.TransactionHistoryEntry,
+func onchainTxFromLedgerRow(t *waverpc.TransactionHistoryEntry,
 ) *walletdkrpc.OnchainTx {
 
 	if t == nil {
@@ -593,7 +593,7 @@ func unilateralExitEntryStub(outpoint string) *walletdkrpc.WalletEntry {
 
 // applyUnrollStatus projects daemon unroll status onto an EXIT activity row.
 func applyUnrollStatus(entry *walletdkrpc.WalletEntry,
-	resp *daemonrpc.GetUnrollStatusResponse) {
+	resp *waverpc.GetUnrollStatusResponse) {
 
 	if entry == nil || resp == nil || !resp.GetFound() {
 		return
@@ -610,13 +610,13 @@ func applyUnrollStatus(entry *walletdkrpc.WalletEntry,
 	progress.Txid = resp.GetSweepTxid()
 
 	switch resp.GetStatus() {
-	case daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_COMPLETED:
+	case waverpc.UnrollJobStatus_UNROLL_JOB_STATUS_COMPLETED:
 		entry.Status = walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE
 		progress.Phase = walletdkrpc.
 			WalletEntryPhase_WALLET_ENTRY_PHASE_CONFIRMED
 		progress.PhaseLabel = "confirmed"
 
-	case daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_FAILED:
+	case waverpc.UnrollJobStatus_UNROLL_JOB_STATUS_FAILED:
 		entry.Status = walletdkrpc.EntryStatus_ENTRY_STATUS_FAILED
 		entry.FailureReason = resp.GetLastError()
 		entry.FailureCode = walletdkrpc.
@@ -625,20 +625,20 @@ func applyUnrollStatus(entry *walletdkrpc.WalletEntry,
 			WalletEntryPhase_WALLET_ENTRY_PHASE_FAILED
 		progress.PhaseLabel = "failed"
 
-	case daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_CSV_PENDING:
+	case waverpc.UnrollJobStatus_UNROLL_JOB_STATUS_CSV_PENDING:
 		entry.Status = walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING
 		progress.Phase = walletdkrpc.
 			WalletEntryPhase_WALLET_ENTRY_PHASE_WAITING_FOR_CONFIRMATION
 		progress.PhaseLabel = "csv_pending"
 
-	case daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_SWEEPING:
+	case waverpc.UnrollJobStatus_UNROLL_JOB_STATUS_SWEEPING:
 		entry.Status = walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING
 		progress.Phase = walletdkrpc.
 			WalletEntryPhase_WALLET_ENTRY_PHASE_SETTLING
 		progress.PhaseLabel = "sweeping"
 
-	case daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_PENDING,
-		daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_MATERIALIZING:
+	case waverpc.UnrollJobStatus_UNROLL_JOB_STATUS_PENDING,
+		waverpc.UnrollJobStatus_UNROLL_JOB_STATUS_MATERIALIZING:
 
 		entry.Status = walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING
 		progress.Phase = walletdkrpc.

@@ -3,7 +3,7 @@ package swaps
 import (
 	"testing"
 
-	swapsqlc "github.com/lightninglabs/darepo-client/sdk/swaps/sqlc"
+	swapsqlc "github.com/lightninglabs/wavelength/sdk/swaps/sqlc"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/stretchr/testify/require"
 )

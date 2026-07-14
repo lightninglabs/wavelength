@@ -1,4 +1,4 @@
-// Package walletdk provides an opinionated wallet SDK over a darepod runtime.
+// Package walletdk provides an opinionated wallet SDK over a waved runtime.
 //
 // The package is intentionally a facade over the daemon and its RPC services.
 // Start embeds the daemon in-process, connects to it over bufconn, and exposes

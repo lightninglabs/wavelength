@@ -1,8 +1,8 @@
 package main
 
 import (
-	"github.com/lightninglabs/darepo-client/lndbackend"
 	"github.com/lightninglabs/lndclient"
+	"github.com/lightninglabs/wavelength/lndbackend"
 )
 
 // LndBoardingBackend is an alias for lndbackend.BoardingBackend for backwards

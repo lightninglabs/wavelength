@@ -18,18 +18,18 @@ import (
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/google/uuid"
-	"github.com/lightninglabs/darepo-client/baselib/actor"
-	"github.com/lightninglabs/darepo-client/baselib/protofsm"
-	"github.com/lightninglabs/darepo-client/chainsource"
-	"github.com/lightninglabs/darepo-client/ledger"
-	"github.com/lightninglabs/darepo-client/lib/actormsg"
-	"github.com/lightninglabs/darepo-client/lib/arkscript"
-	"github.com/lightninglabs/darepo-client/lib/tree"
-	"github.com/lightninglabs/darepo-client/lib/types"
-	"github.com/lightninglabs/darepo-client/metrics"
-	"github.com/lightninglabs/darepo-client/serverconn"
-	"github.com/lightninglabs/darepo-client/timeout"
-	"github.com/lightninglabs/darepo-client/wallet"
+	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/baselib/protofsm"
+	"github.com/lightninglabs/wavelength/chainsource"
+	"github.com/lightninglabs/wavelength/ledger"
+	"github.com/lightninglabs/wavelength/lib/actormsg"
+	"github.com/lightninglabs/wavelength/lib/arkscript"
+	"github.com/lightninglabs/wavelength/lib/tree"
+	"github.com/lightninglabs/wavelength/lib/types"
+	"github.com/lightninglabs/wavelength/metrics"
+	"github.com/lightninglabs/wavelength/serverconn"
+	"github.com/lightninglabs/wavelength/timeout"
+	"github.com/lightninglabs/wavelength/wallet"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 )
@@ -45,7 +45,7 @@ const defaultForfeitCollectionTimeout = 2 * time.Minute
 // seal-time quote), so it should arrive within a network round-trip plus brief
 // server-side queuing; 60s is generous enough to tolerate a slow server or
 // link while still bounding how long forfeit-reserved inputs sit stranded in
-// pending-forfeit when the server never responds (darepo-client#653). It is
+// pending-forfeit when the server never responds (wavelength#653). It is
 // configurable via RoundClientConfig.RegistrationTimeout for operators and
 // tests that need a different bound.
 const defaultRegistrationTimeout = 60 * time.Second
@@ -357,7 +357,7 @@ type RoundClientConfig struct {
 	// MetricsSink is an optional reference to the client-side metrics
 	// actor. When set, the round actor emits a RoundCompletedMsg as
 	// each round reaches a terminal outcome so the
-	// darepod_rounds_completed_total counter reflects reality. When
+	// waved_rounds_completed_total counter reflects reality. When
 	// None (metrics disabled, or tests), metric emission is silently
 	// skipped. Mirrors LedgerSink: the round actor is the natural seam
 	// because terminal round outcomes are observed here, not at any
@@ -511,7 +511,7 @@ func (a *RoundClientActor) emitVTXOsReceived(ctx context.Context,
 }
 
 // emitRoundCompleted reports a terminal round outcome to the metrics
-// actor so the darepod_rounds_completed_total counter advances. The
+// actor so the waved_rounds_completed_total counter advances. The
 // round actor is the natural seam: terminal outcomes surface here as
 // RoundCompletedNotification / RoundFailedNotification, with no RPC
 // boundary that could observe them. Like ledger emission, this is
@@ -583,7 +583,7 @@ func (a *RoundClientActor) handleTerminalJobFailure(ctx context.Context,
 }
 
 // emitRoundJoined reports a round-join attempt to the metrics actor so
-// darepod_rounds_joined_total advances. It is emitted from createNewRound
+// waved_rounds_joined_total advances. It is emitted from createNewRound
 // so it counts every round the client assembles — manual and eager alike
 // — keeping it symmetric with emitRoundCompleted. Best-effort and
 // fire-and-forget: a Tell failure is logged at debug level and never
@@ -901,7 +901,7 @@ func (a *RoundClientActor) createNewRound(ctx context.Context) (*RoundFSM,
 	)
 
 	// Count the join attempt here, at the one seam every round passes
-	// through exactly once. This keeps darepod_rounds_joined_total
+	// through exactly once. This keeps waved_rounds_joined_total
 	// symmetric with rounds_completed_total (also actor-emitted): both
 	// manual JoinNextRound and eager/automatic joins assemble their
 	// round through createNewRound, so counting at the RPC boundary
@@ -2210,7 +2210,7 @@ func (a *RoundClientActor) onRoundComplete(ctx context.Context, roundID RoundID,
 // ListRounds surface it backs) must be able to report a round as FAILED at
 // least until the client moves on to a fresh round. Reaping on entry made the
 // terminal state vanish within the same actor turn, so a poller could never
-// see it (darepo-client#602 systests). Sweeping at the start of the next
+// see it (wavelength#602 systests). Sweeping at the start of the next
 // assembly keeps the window open while still bounding accumulation to the
 // failures since the last new round.
 //

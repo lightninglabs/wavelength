@@ -5,7 +5,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
-	"github.com/lightninglabs/darepo-client/arkrpc"
+	"github.com/lightninglabs/wavelength/arkrpc"
 	"github.com/stretchr/testify/require"
 )
 
@@ -91,7 +91,7 @@ func TestIncomingMetadataFromRPCRejectsInvalidOperatorKey(t *testing.T) {
 }
 
 // TestIncomingMetadataFromRPCRejectsZeroTreeDepth is the unit-level
-// regression for darepo-client#370 on the OOR-package boundary: a
+// regression for wavelength#370 on the OOR-package boundary: a
 // matching VTXO whose AncestryPath claims tree_depth = 0 must be
 // rejected before persistence.
 func TestIncomingMetadataFromRPCRejectsZeroTreeDepth(t *testing.T) {

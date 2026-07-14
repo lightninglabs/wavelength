@@ -5,17 +5,17 @@ package walletdk
 import (
 	"testing"
 
-	"github.com/lightninglabs/darepo-client/darepod"
+	"github.com/lightninglabs/wavelength/waved"
 	"github.com/stretchr/testify/require"
 )
 
 // TestResolveDaemonConfigEagerRoundJoin is a table-driven test that pins the
-// walletdk-side override contract for darepod.Config.EagerRoundJoin under the
+// walletdk-side override contract for waved.Config.EagerRoundJoin under the
 // walletdkrpc build tag. The matrix covers the three production paths a host
 // can take through walletdk.Start:
 //
 //  1. Pure convenience Config (no caller-owned DaemonConfig). The default
-//     comes from darepod.DefaultConfig, which is build-tag-aware.
+//     comes from waved.DefaultConfig, which is build-tag-aware.
 //  2. Convenience Config with WithEagerRoundJoinDisabled() applied. The
 //     functional option must win over the build-tag default.
 //  3. Caller-owned DaemonConfig with the option applied. The option must win
@@ -25,11 +25,11 @@ import (
 func TestResolveDaemonConfigEagerRoundJoin(t *testing.T) {
 	t.Parallel()
 
-	// buildCallerDaemonCfg returns a caller-owned darepod.Config with
+	// buildCallerDaemonCfg returns a caller-owned waved.Config with
 	// EagerRoundJoin pre-set to true, mirroring a host that supplies its
 	// own DaemonConfig and inherits the walletdkrpc build-tag default.
-	buildCallerDaemonCfg := func() *darepod.Config {
-		daemonCfg := darepod.DefaultConfig()
+	buildCallerDaemonCfg := func() *waved.Config {
+		daemonCfg := waved.DefaultConfig()
 		daemonCfg.EagerRoundJoin = true
 
 		return daemonCfg
@@ -49,7 +49,7 @@ func TestResolveDaemonConfigEagerRoundJoin(t *testing.T) {
 			},
 			opts:      nil,
 			wantEager: true,
-			why: "walletdkrpc-tagged darepod.DefaultConfig seeds " +
+			why: "walletdkrpc-tagged waved.DefaultConfig seeds " +
 				"EagerRoundJoin=true; the convenience Config " +
 				"inherits it",
 		},

@@ -9,7 +9,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/lightninglabs/darepo-client/lib/tree"
+	"github.com/lightninglabs/wavelength/lib/tree"
 )
 
 // makeTestTree returns a small two-level tree: one root with one child leaf.
@@ -223,7 +223,7 @@ func TestNodeMaxDepthRejectsOverCap(t *testing.T) {
 }
 
 // TestValidateAncestryPathDepth exercises the indexer→client tree_depth
-// guard introduced for darepo-client#370. Each case represents an attack
+// guard introduced for wavelength#370. Each case represents an attack
 // or edge condition: zero claim, over-cap claim, mismatched claim,
 // at-cap claim, and a valid leaf claim. The validator is the trust
 // boundary that prevents an untrusted indexer from stranding an OOR

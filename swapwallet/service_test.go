@@ -6,9 +6,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/lightninglabs/darepo-client/daemonrpc"
-	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
-	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
+	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -40,7 +40,7 @@ func TestServiceDepositReturnsAddress(t *testing.T) {
 	t.Parallel()
 
 	svc, _, rpc := newServiceFixture(t)
-	rpc.newAddressResp = &daemonrpc.NewAddressResponse{
+	rpc.newAddressResp = &waverpc.NewAddressResponse{
 		Address: "bcrt1qboardingaddr",
 	}
 
@@ -81,7 +81,7 @@ func TestServiceDepositDoesNotProjectAtAllocation(t *testing.T) {
 
 	swap := &fakeSwapService{}
 	rpc := &fakeRPCServer{
-		newAddressResp: &daemonrpc.NewAddressResponse{
+		newAddressResp: &waverpc.NewAddressResponse{
 			Address: "bcrt1qboardingaddr",
 		},
 	}
@@ -166,21 +166,21 @@ func TestServiceWalletVerbsRejectLockedWalletBeforeWork(t *testing.T) {
 			t.Parallel()
 
 			svc, swap, rpc := newServiceFixture(t)
-			rpc.getInfoResp = &daemonrpc.GetInfoResponse{
-				WalletState: daemonrpc.WalletState_WALLET_STATE_LOCKED,
+			rpc.getInfoResp = &waverpc.GetInfoResponse{
+				WalletState: waverpc.WalletState_WALLET_STATE_LOCKED,
 			}
 
 			err := tc.call(t.Context(), svc)
 			require.Error(t, err)
-			require.True(t, daemonrpc.IsWalletNotReadyError(err))
+			require.True(t, waverpc.IsWalletNotReadyError(err))
 			require.Equal(
 				t, codes.FailedPrecondition, status.Code(err),
 			)
 
-			state, ok := daemonrpc.WalletNotReadyState(err)
+			state, ok := waverpc.WalletNotReadyState(err)
 			require.True(t, ok)
 			require.Equal(
-				t, daemonrpc.WalletNotReadyStateLocked, state,
+				t, waverpc.WalletNotReadyStateLocked, state,
 			)
 			require.Equal(t, 0, swap.startReceiveCalls)
 		})
@@ -230,7 +230,7 @@ func TestServiceBalanceProjectsDaemonGetBalance(t *testing.T) {
 	t.Parallel()
 
 	svc, _, rpc := newServiceFixture(t)
-	rpc.getBalanceResp = &daemonrpc.GetBalanceResponse{
+	rpc.getBalanceResp = &waverpc.GetBalanceResponse{
 		VtxoBalanceSat:          75_000,
 		BoardingConfirmedSat:    100_000,
 		BoardingUnconfirmedSat:  20_000,
@@ -259,14 +259,14 @@ func TestServiceBalanceSurfacesInFlightVTXOs(t *testing.T) {
 
 	tests := []struct {
 		name           string
-		balance        *daemonrpc.GetBalanceResponse
+		balance        *waverpc.GetBalanceResponse
 		wantConfirmed  int64
 		wantPendingIn  int64
 		wantPendingOut int64
 	}{
 		{
 			name: "refresh in flight",
-			balance: &daemonrpc.GetBalanceResponse{
+			balance: &waverpc.GetBalanceResponse{
 				VtxoPendingSat: 50_000,
 			},
 			wantConfirmed:  0,
@@ -275,7 +275,7 @@ func TestServiceBalanceSurfacesInFlightVTXOs(t *testing.T) {
 		},
 		{
 			name: "near-expiry pending-forfeit and exit",
-			balance: &daemonrpc.GetBalanceResponse{
+			balance: &waverpc.GetBalanceResponse{
 				VtxoPendingSat:        30_000,
 				VtxoUnilateralExitSat: 70_000,
 			},
@@ -285,7 +285,7 @@ func TestServiceBalanceSurfacesInFlightVTXOs(t *testing.T) {
 		},
 		{
 			name: "outgoing send inputs forfeiting",
-			balance: &daemonrpc.GetBalanceResponse{
+			balance: &waverpc.GetBalanceResponse{
 				VtxoBalanceSat: 40_000,
 				VtxoPendingSat: 60_000,
 			},
@@ -324,7 +324,7 @@ func TestServiceBalanceIncludesCredits(t *testing.T) {
 	t.Parallel()
 
 	svc, swap, rpc := newServiceFixture(t)
-	rpc.getBalanceResp = &daemonrpc.GetBalanceResponse{
+	rpc.getBalanceResp = &waverpc.GetBalanceResponse{
 		VtxoBalanceSat: 75_000,
 	}
 	swap.listCreditsResp = &swapclientrpc.ListCreditsResponse{
@@ -351,7 +351,7 @@ func TestServiceBalanceKeepsAdoptedBoardingPending(t *testing.T) {
 	t.Parallel()
 
 	svc, _, rpc := newServiceFixture(t)
-	rpc.getBalanceResp = &daemonrpc.GetBalanceResponse{
+	rpc.getBalanceResp = &waverpc.GetBalanceResponse{
 		BoardingAdoptedSat: 100_000,
 	}
 
@@ -383,7 +383,7 @@ func TestServiceBalanceConfirmedExcludesBoardingUTXOs(t *testing.T) {
 	)
 
 	svc, _, rpc := newServiceFixture(t)
-	rpc.getBalanceResp = &daemonrpc.GetBalanceResponse{
+	rpc.getBalanceResp = &waverpc.GetBalanceResponse{
 		VtxoBalanceSat:       vtxoSat,
 		BoardingConfirmedSat: boardingConfirmed,
 		TotalConfirmedSat:    vtxoSat + boardingConfirmed,
@@ -404,11 +404,11 @@ func TestServiceStatusComposesInfoBalanceAndPending(t *testing.T) {
 	t.Parallel()
 
 	svc, swap, rpc := newServiceFixture(t)
-	rpc.getInfoResp = &daemonrpc.GetInfoResponse{
-		WalletState: daemonrpc.WalletState_WALLET_STATE_READY,
+	rpc.getInfoResp = &waverpc.GetInfoResponse{
+		WalletState: waverpc.WalletState_WALLET_STATE_READY,
 		Network:     "regtest",
 	}
-	rpc.getBalanceResp = &daemonrpc.GetBalanceResponse{
+	rpc.getBalanceResp = &waverpc.GetBalanceResponse{
 		VtxoBalanceSat:    1_000,
 		TotalConfirmedSat: 1_000,
 	}
@@ -422,7 +422,7 @@ func TestServiceStatusComposesInfoBalanceAndPending(t *testing.T) {
 			},
 		},
 	}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{}
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{}
 
 	resp, err := svc.Status(
 		t.Context(), &walletdkrpc.StatusRequest{},
@@ -442,12 +442,12 @@ func TestServiceStatusReportsSyncingWalletUnlocked(t *testing.T) {
 	t.Parallel()
 
 	svc, swap, rpc := newServiceFixture(t)
-	rpc.getInfoResp = &daemonrpc.GetInfoResponse{
-		WalletState: daemonrpc.WalletState_WALLET_STATE_SYNCING,
+	rpc.getInfoResp = &waverpc.GetInfoResponse{
+		WalletState: waverpc.WalletState_WALLET_STATE_SYNCING,
 		Network:     "regtest",
 	}
-	rpc.getBalanceResp = &daemonrpc.GetBalanceResponse{}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{}
+	rpc.getBalanceResp = &waverpc.GetBalanceResponse{}
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{}
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
 
 	resp, err := svc.Status(

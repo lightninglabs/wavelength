@@ -3,7 +3,7 @@ package metrics
 import (
 	"time"
 
-	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/wavelength/baselib/actor"
 )
 
 // Msg is the sealed interface for all messages sent to the metrics

@@ -12,11 +12,11 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chaincfg/v2"
-	"github.com/lightninglabs/darepo-client/coinselect"
-	"github.com/lightninglabs/darepo-client/credit"
-	"github.com/lightninglabs/darepo-client/daemonrpc"
-	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
-	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/coinselect"
+	"github.com/lightninglabs/wavelength/credit"
+	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
+	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/lightningnetwork/lnd/zpay32"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -453,7 +453,7 @@ func (r *router) prepareOnchain(ctx context.Context, addr string,
 		selectTarget += terms.minOperatorFee + terms.dustLimit
 	}
 
-	vtxoAmount := func(v *daemonrpc.VTXO) btcutil.Amount {
+	vtxoAmount := func(v *waverpc.VTXO) btcutil.Amount {
 		return btcutil.Amount(v.GetAmountSat())
 	}
 	res, err := coinselect.LargestFirst(
@@ -559,7 +559,7 @@ func (r *router) prepareOnchain(ctx context.Context, addr string,
 // composition (forfeits + one fixed leave output + one change VTXO in
 // bounded mode; forfeits + one fee-absorbing leave output in sweep-all
 // mode), and atomic round registration — the wallet layer is a thin
-// translator from the prepared intent to daemonrpc.SendOnChainRequest
+// translator from the prepared intent to waverpc.SendOnChainRequest
 // plus the WalletEntry stub the deadline watcher needs.
 //
 // Exact-amount semantics: a bounded send (--amt N) lands exactly N
@@ -573,19 +573,19 @@ func (r *router) sendOnchainIntent(ctx context.Context,
 		return nil, ErrSwapBackendUnavailable
 	}
 
-	sendReq := &daemonrpc.SendOnChainRequest{
-		Destination: &daemonrpc.LeaveDestination{
-			Target: &daemonrpc.LeaveDestination_Address{
+	sendReq := &waverpc.SendOnChainRequest{
+		Destination: &waverpc.LeaveDestination{
+			Target: &waverpc.LeaveDestination_Address{
 				Address: intent.onchainAddress,
 			},
 		},
 	}
 	if intent.sweepAll {
-		sendReq.Amount = &daemonrpc.SendOnChainRequest_SweepAll{
+		sendReq.Amount = &waverpc.SendOnChainRequest_SweepAll{
 			SweepAll: true,
 		}
 	} else {
-		sendReq.Amount = &daemonrpc.SendOnChainRequest_AmountSat{
+		sendReq.Amount = &waverpc.SendOnChainRequest_AmountSat{
 			AmountSat: int64(intent.amountSat),
 		}
 	}
@@ -637,18 +637,18 @@ func (r *router) sendOnchainIntent(ctx context.Context,
 // response also includes VTXOs in PendingForfeit / Forfeiting /
 // Spending — those are "not yet terminal" but already committed to
 // another in-flight operation, and reselecting them races into the
-// VTXO manager's reservation gate (issue darepo-client#577: a second
+// VTXO manager's reservation gate (issue wavelength#577: a second
 // onchain send while the first leave round is still unconfirmed
 // fails with "forfeiting: bad event: *round.PendingForfeitEvent").
 // Filtering to VTXO_STATUS_LIVE at the source closes that race for
 // every caller — both `--sweep-all` totalling and bounded-amount
 // coin selection.
-func (r *router) listLiveVTXOsForLeave(ctx context.Context) ([]*daemonrpc.VTXO,
+func (r *router) listLiveVTXOsForLeave(ctx context.Context) ([]*waverpc.VTXO,
 	error) {
 
 	listResp, err := r.deps.RPCServer.ListVTXOs(
-		ctx, &daemonrpc.ListVTXOsRequest{
-			StatusFilter: daemonrpc.VTXOStatus_VTXO_STATUS_LIVE,
+		ctx, &waverpc.ListVTXOsRequest{
+			StatusFilter: waverpc.VTXOStatus_VTXO_STATUS_LIVE,
 		},
 	)
 	if err != nil {

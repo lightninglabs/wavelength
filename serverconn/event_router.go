@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/lightninglabs/darepo-client/baselib/actor"
-	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
-	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
+	"github.com/lightninglabs/wavelength/baselib/actor"
+	mailboxpb "github.com/lightninglabs/wavelength/mailbox/pb"
+	mailboxrpc "github.com/lightninglabs/wavelength/mailbox/rpc"
 	"google.golang.org/protobuf/proto"
 )
 

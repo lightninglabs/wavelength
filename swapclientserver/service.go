@@ -23,15 +23,15 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
-	"github.com/lightninglabs/darepo-client/darepod"
-	"github.com/lightninglabs/darepo-client/lib/types"
-	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
-	"github.com/lightninglabs/darepo-client/rpc/restclient"
-	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
-	sdkark "github.com/lightninglabs/darepo-client/sdk/ark"
-	"github.com/lightninglabs/darepo-client/sdk/swaps"
-	"github.com/lightninglabs/darepo-client/serverconn"
-	"github.com/lightninglabs/darepo-client/vtxo"
+	"github.com/lightninglabs/wavelength/lib/types"
+	mailboxpb "github.com/lightninglabs/wavelength/mailbox/pb"
+	"github.com/lightninglabs/wavelength/rpc/restclient"
+	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
+	sdkark "github.com/lightninglabs/wavelength/sdk/ark"
+	"github.com/lightninglabs/wavelength/sdk/swaps"
+	"github.com/lightninglabs/wavelength/serverconn"
+	"github.com/lightninglabs/wavelength/vtxo"
+	"github.com/lightninglabs/wavelength/waved"
 	"github.com/lightningnetwork/lnd/invoices"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lntypes"
@@ -71,7 +71,7 @@ type swapClientService struct {
 	// Kept so Register can build the credit CreditDaemon adapter.
 	daemonConn swaps.DaemonConn
 
-	// log is the swapruntime subsystem logger derived from darepod's logger
+	// log is the swapruntime subsystem logger derived from waved's logger
 	// manager. It is used only for daemon-owned orchestration events; the
 	// SDK continues logging its own lower-layer details.
 	log btclog.Logger
@@ -272,7 +272,7 @@ type receiveSessionAdapter struct {
 
 // Register installs the optional SwapClientService on the daemon gRPC server.
 //
-// The function is called only from a swapruntime-tagged darepod binary. It
+// The function is called only from a swapruntime-tagged waved binary. It
 // opens the daemon-owned swap store, constructs the sdk/swaps client, registers
 // the separate swapclientrpc subserver on the existing daemon listener, and
 // resumes all persisted pending swap sessions before returning. The returned
@@ -285,7 +285,7 @@ type receiveSessionAdapter struct {
 // layer can drive ResumePending itself after performing any cross-subsystem
 // preconditions.
 func Register(ctx context.Context, grpcServer *grpc.Server,
-	rpcServer *darepod.RPCServer, cfg *darepod.Config) (func(), error) {
+	rpcServer *waved.RPCServer, cfg *waved.Config) (func(), error) {
 
 	svc, cleanup, err := newSwapClientService(ctx, rpcServer, cfg)
 	if err != nil {
@@ -322,7 +322,7 @@ func Register(ctx context.Context, grpcServer *grpc.Server,
 
 // ResumePending re-arms background workers for every persisted pending swap
 // session. It is idempotent: payment hashes already owned by an active worker
-// are skipped. The method satisfies darepod.SwapBackend so a higher subserver
+// are skipped. The method satisfies waved.SwapBackend so a higher subserver
 // (such as walletdkrpc) can drive the resume sweep as part of a unified
 // wallet-level lifecycle policy.
 func (s *swapClientService) ResumePending(ctx context.Context) {
@@ -332,19 +332,19 @@ func (s *swapClientService) ResumePending(ctx context.Context) {
 // RegisterGateway installs the optional SwapClientService handlers on the
 // daemon HTTP/JSON gateway.
 func RegisterGateway(ctx context.Context, mux *runtime.ServeMux,
-	endpoint string, opts []grpc.DialOption, _ *darepod.RPCServer,
-	_ *darepod.Config) error {
+	endpoint string, opts []grpc.DialOption, _ *waved.RPCServer,
+	_ *waved.Config) error {
 
 	return swapclientrpc.RegisterSwapClientServiceHandlerFromEndpoint(
 		ctx, mux, endpoint, opts,
 	)
 }
 
-// newSwapClientService builds the daemon-owned swap executor from darepod
+// newSwapClientService builds the daemon-owned swap executor from waved
 // runtime dependencies.
 //
 // The constructor opens the daemon swap store, dials swapdk-server, creates an
-// in-process Ark SDK facade over darepod's existing DaemonService, and wires
+// in-process Ark SDK facade over waved's existing DaemonService, and wires
 // the sdk/swaps client. Receive-auth signing and ECDH are delegated back to the
 // daemon through the Ark SDK facade, so the swapruntime layer does not persist
 // its own receive-auth key material. It also returns a cleanup function that
@@ -352,8 +352,8 @@ func RegisterGateway(ctx context.Context, mux *runtime.ServeMux,
 // before the Ark, swapdk-server, and store resources are closed.
 //
 //nolint:contextcheck
-func newSwapClientService(ctx context.Context, rpcServer *darepod.RPCServer,
-	daemonCfg *darepod.Config) (*swapClientService, func(), error) {
+func newSwapClientService(ctx context.Context, rpcServer *waved.RPCServer,
+	daemonCfg *waved.Config) (*swapClientService, func(), error) {
 
 	if daemonCfg == nil {
 		return nil, nil, fmt.Errorf("daemon config is required")
@@ -361,7 +361,7 @@ func newSwapClientService(ctx context.Context, rpcServer *darepod.RPCServer,
 
 	cfg := daemonCfg.Swap
 	if cfg == nil {
-		cfg = darepod.DefaultConfig().Swap
+		cfg = waved.DefaultConfig().Swap
 	}
 
 	dbPath, err := swapStoreDatabasePath(daemonCfg, cfg)
@@ -374,7 +374,7 @@ func newSwapClientService(ctx context.Context, rpcServer *darepod.RPCServer,
 
 	log := btclog.Disabled
 	if rpcServer != nil {
-		log = rpcServer.SubLogger(darepod.SwapSubsystem)
+		log = rpcServer.SubLogger(waved.SwapSubsystem)
 	}
 
 	store, err := swaps.NewSqliteStore(&swaps.SqliteStoreConfig{
@@ -536,8 +536,8 @@ func newSwapClientService(ctx context.Context, rpcServer *darepod.RPCServer,
 // swapStoreDatabasePath returns the daemon-owned swap store path. By default it
 // follows the network-scoped daemon DB directory so a network DB reset also
 // clears wallet activity derived from persisted swap sessions.
-func swapStoreDatabasePath(daemonCfg *darepod.Config,
-	cfg *darepod.SwapConfig) (string, error) {
+func swapStoreDatabasePath(daemonCfg *waved.Config,
+	cfg *waved.SwapConfig) (string, error) {
 
 	if daemonCfg == nil {
 		return "", fmt.Errorf("daemon config is required")
@@ -551,7 +551,7 @@ func swapStoreDatabasePath(daemonCfg *darepod.Config,
 	), nil
 }
 
-func installVTXOForfeitParticipantSigner(rpcServer *darepod.RPCServer,
+func installVTXOForfeitParticipantSigner(rpcServer *waved.RPCServer,
 	swapServer swaps.SwapServerConn) error {
 
 	if rpcServer == nil {
@@ -599,12 +599,12 @@ func installVTXOForfeitParticipantSigner(rpcServer *darepod.RPCServer,
 
 // newSwapServerClients builds the swapdk-server clients for the configured
 // daemon-owned outbound transport.
-func newSwapServerClients(cfg *darepod.SwapConfig, swapAddr string,
+func newSwapServerClients(cfg *waved.SwapConfig, swapAddr string,
 	sign serverconn.MailboxAuthSigner,
 	clientCerts clientTLSCertProvider) (*swapServerClients, error) {
 
 	switch cfg.ServerTransport {
-	case "", darepod.RPCTransportGRPC:
+	case "", waved.RPCTransportGRPC:
 		dialOpts, err := swapServerDialOptions(
 			cfg, swapAddr, clientCerts,
 		)
@@ -627,7 +627,7 @@ func newSwapServerClients(cfg *darepod.SwapConfig, swapAddr string,
 			cleanup: swapConn.Close,
 		}, nil
 
-	case darepod.RPCTransportREST:
+	case waved.RPCTransportREST:
 		opts, err := swapServerRESTOptions(cfg, clientCerts)
 		if err != nil {
 			return nil, err
@@ -869,7 +869,7 @@ func (d *daemonAuthOnlyInvoiceCreator) CreateInvoiceWithKeyRouteHintPaths(
 
 // swapServerDialOptions maps daemon swap config into gRPC transport options
 // for swapdk-server.
-func swapServerDialOptions(cfg *darepod.SwapConfig, addr string,
+func swapServerDialOptions(cfg *waved.SwapConfig, addr string,
 	clientCerts clientTLSCertProvider) ([]grpc.DialOption, error) {
 
 	switch {
@@ -912,7 +912,7 @@ func swapServerDialOptions(cfg *darepod.SwapConfig, addr string,
 
 // swapServerRESTOptions maps the swapdk-server TLS config into the shared REST
 // transport.
-func swapServerRESTOptions(cfg *darepod.SwapConfig,
+func swapServerRESTOptions(cfg *waved.SwapConfig,
 	clientCerts clientTLSCertProvider) ([]restclient.Option, error) {
 
 	tlsCfg := &tls.Config{
@@ -1003,7 +1003,7 @@ func cloneDefaultHTTPTransport() *http.Transport {
 
 // swapServerRESTBaseURL returns the base URL used for swapdk-server
 // grpc-gateway calls.
-func swapServerRESTBaseURL(cfg *darepod.SwapConfig, addr string) string {
+func swapServerRESTBaseURL(cfg *waved.SwapConfig, addr string) string {
 	if strings.HasPrefix(addr, "http://") ||
 		strings.HasPrefix(addr, "https://") {
 		return addr
@@ -1022,7 +1022,7 @@ func swapServerRESTBaseURL(cfg *darepod.SwapConfig, addr string) string {
 // useInsecureSwapServerTransport reports whether the swapserver connection
 // should use plaintext transport. Explicit TLS certificate pinning always wins;
 // otherwise local loopback endpoints keep the historical regtest default.
-func useInsecureSwapServerTransport(cfg *darepod.SwapConfig, addr string) bool {
+func useInsecureSwapServerTransport(cfg *waved.SwapConfig, addr string) bool {
 	return cfg.ServerTLSCertPath == "" &&
 		(cfg.ServerInsecure || isLocalSwapServerAddr(addr))
 }

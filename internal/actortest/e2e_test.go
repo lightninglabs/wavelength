@@ -12,10 +12,10 @@ import (
 
 	"github.com/btcsuite/btclog/v2"
 	"github.com/google/uuid"
-	"github.com/lightninglabs/darepo-client/baselib/actor"
-	"github.com/lightninglabs/darepo-client/db"
-	"github.com/lightninglabs/darepo-client/db/actordelivery"
-	adsqlc "github.com/lightninglabs/darepo-client/db/actordelivery/sqlc"
+	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/db"
+	"github.com/lightninglabs/wavelength/db/actordelivery"
+	adsqlc "github.com/lightninglabs/wavelength/db/actordelivery/sqlc"
 	"github.com/lightningnetwork/lnd/clock"
 	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
@@ -61,7 +61,7 @@ func newTestHarness(t *testing.T) *testHarness {
 	testClock := clock.NewTestClock(time.Now())
 
 	// Create the actor delivery store. The transaction-aware variant
-	// matches production wiring (darepod hands the OutboxPublisher a
+	// matches production wiring (waved hands the OutboxPublisher a
 	// TxAwareDeliveryStore), so the publisher e2e tests exercise the
 	// folded Tell+CompleteOutbox single-transaction delivery path.
 	store := actordelivery.NewTxAwareActorDeliveryStore(

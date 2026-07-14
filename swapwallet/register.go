@@ -8,27 +8,27 @@ import (
 	"sync"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
-	"github.com/lightninglabs/darepo-client/darepod"
-	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
-	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
+	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/waved"
 	"google.golang.org/grpc"
 )
 
 // Register installs the walletdkrpc subserver on the daemon's gRPC server. It
 // is wired into cfg.RPCServiceRegistrars by the walletdkrpc build tag in
-// cmd/darepod so the daemon only carries the subserver when explicitly
+// cmd/waved so the daemon only carries the subserver when explicitly
 // compiled in.
 //
 // Register MUST run after swapclientserver.Register has populated
 // cfg.Swap.Backend. The walletdkrpc build tag enforces this through the
-// configureWalletRPC wiring in cmd/darepod, which appends the swapwallet
+// configureWalletRPC wiring in cmd/waved, which appends the swapwallet
 // registrar AFTER the swapclientserver registrar.
 //
-// The function signature matches darepod.RPCServiceRegistrar so it can be
+// The function signature matches waved.RPCServiceRegistrar so it can be
 // stored alongside other optional subservers. The returned cleanup function
 // stops the runtime; it must be invoked during daemon shutdown.
 func Register(ctx context.Context, grpcServer *grpc.Server,
-	rpcServer *darepod.RPCServer, cfg *darepod.Config) (func(), error) {
+	rpcServer *waved.RPCServer, cfg *waved.Config) (func(), error) {
 
 	if cfg == nil || cfg.Swap == nil || cfg.Swap.Backend == nil {
 
@@ -54,7 +54,7 @@ func Register(ctx context.Context, grpcServer *grpc.Server,
 	}
 
 	// Pull the gRPC-shaped swap handle from the in-process subserver.
-	// *swapClientService satisfies both darepod.SwapBackend (which we
+	// *swapClientService satisfies both waved.SwapBackend (which we
 	// hold for unified resume) and swapclientrpc.SwapClientServiceServer
 	// (which we hold for in-process gRPC dispatch). The type assertion
 	// is safe because swapclientserver always publishes the same handle
@@ -89,7 +89,7 @@ func Register(ctx context.Context, grpcServer *grpc.Server,
 		ActivityStore:  cfg.ActivityStore,
 	}
 	if rpcServer != nil {
-		deps.Log = rpcServer.SubLogger(darepod.WalletRPCSubsystem)
+		deps.Log = rpcServer.SubLogger(waved.WalletRPCSubsystem)
 	}
 
 	// Apply optional walletdkrpc-config overrides. The struct is present
@@ -150,8 +150,8 @@ func Register(ctx context.Context, grpcServer *grpc.Server,
 // RegisterGateway installs the optional WalletService handlers on the daemon
 // HTTP/JSON gateway.
 func RegisterGateway(ctx context.Context, mux *runtime.ServeMux,
-	endpoint string, opts []grpc.DialOption, _ *darepod.RPCServer,
-	_ *darepod.Config) error {
+	endpoint string, opts []grpc.DialOption, _ *waved.RPCServer,
+	_ *waved.Config) error {
 
 	if err := walletdkrpc.RegisterWalletServiceHandlerFromEndpoint(
 		ctx, mux, endpoint, opts,

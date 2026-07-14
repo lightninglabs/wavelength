@@ -1,7 +1,7 @@
 package round
 
 import (
-	"github.com/lightninglabs/darepo-client/baselib/protofsm"
+	"github.com/lightninglabs/wavelength/baselib/protofsm"
 )
 
 // ClientTransitionEntry is a type alias for the round FSM transition entry.

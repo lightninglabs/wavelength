@@ -2929,7 +2929,7 @@ const file_indexer_proto_rawDesc = "" +
 	"\x12ListVTXOsByScripts\x12!.arkrpc.ListVTXOsByScriptsRequest\x1a\".arkrpc.ListVTXOsByScriptsResponse\x12^\n" +
 	"\x13GetOORSessionByTxid\x12\".arkrpc.GetOORSessionByTxidRequest\x1a#.arkrpc.GetOORSessionByTxidResponse\x12^\n" +
 	"\x13GetSubtreeByScripts\x12\".arkrpc.GetSubtreeByScriptsRequest\x1a#.arkrpc.GetSubtreeByScriptsResponse\x12j\n" +
-	"\x17ListVTXOEventsByScripts\x12&.arkrpc.ListVTXOEventsByScriptsRequest\x1a'.arkrpc.ListVTXOEventsByScriptsResponseB/Z-github.com/lightninglabs/darepo-client/arkrpcb\x06proto3"
+	"\x17ListVTXOEventsByScripts\x12&.arkrpc.ListVTXOEventsByScriptsRequest\x1a'.arkrpc.ListVTXOEventsByScriptsResponseB,Z*github.com/lightninglabs/wavelength/arkrpcb\x06proto3"
 
 var (
 	file_indexer_proto_rawDescOnce sync.Once

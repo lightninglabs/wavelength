@@ -15,10 +15,10 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/daemonrpc"
-	"github.com/lightninglabs/darepo-client/db"
-	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
-	"github.com/lightninglabs/darepo-client/wallet"
+	"github.com/lightninglabs/wavelength/db"
+	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/wallet"
+	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/lightningnetwork/lnd/clock"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -60,7 +60,7 @@ func TestListActivityPendingBoardingUsesStableDepositID(t *testing.T) {
 
 	h.deps.ChainParams = &chaincfg.RegressionNetParams
 	rpc := &fakeRPCServer{
-		getBalanceResp: &daemonrpc.GetBalanceResponse{
+		getBalanceResp: &waverpc.GetBalanceResponse{
 			BoardingUnconfirmedSat: 12_345,
 		},
 		activeBoardingAddrs: []string{
@@ -179,7 +179,7 @@ func TestListActivityIncludesPendingBoardingWithStore(t *testing.T) {
 	ctx := context.Background()
 	h, store := newStoreListFixture(t)
 	h.deps.RPCServer = &fakeRPCServer{
-		getBalanceResp: &daemonrpc.GetBalanceResponse{
+		getBalanceResp: &waverpc.GetBalanceResponse{
 			BoardingUnconfirmedSat: 12_345,
 		},
 	}
@@ -242,7 +242,7 @@ func TestListActivityPendingBoardingCursor(t *testing.T) {
 	ctx := context.Background()
 	h, store := newStoreListFixture(t)
 	h.deps.RPCServer = &fakeRPCServer{
-		getBalanceResp: &daemonrpc.GetBalanceResponse{
+		getBalanceResp: &waverpc.GetBalanceResponse{
 			BoardingUnconfirmedSat: 12_345,
 		},
 	}
@@ -288,7 +288,7 @@ func TestListActivityStableBoardingCursor(t *testing.T) {
 
 	h.deps.ChainParams = &chaincfg.RegressionNetParams
 	h.deps.RPCServer = &fakeRPCServer{
-		getBalanceResp: &daemonrpc.GetBalanceResponse{
+		getBalanceResp: &waverpc.GetBalanceResponse{
 			BoardingUnconfirmedSat: 12_345,
 		},
 		activeBoardingAddrs: []string{
@@ -382,7 +382,7 @@ func TestCountPendingReflectsFullFeed(t *testing.T) {
 	ctx := context.Background()
 	h, store := newStoreListFixture(t)
 	h.deps.RPCServer = &fakeRPCServer{
-		getBalanceResp: &daemonrpc.GetBalanceResponse{
+		getBalanceResp: &waverpc.GetBalanceResponse{
 			BoardingUnconfirmedSat: 12_345,
 		},
 	}

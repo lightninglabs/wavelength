@@ -20,14 +20,14 @@ import (
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/btcsuite/btcwallet/waddrmgr"
-	"github.com/lightninglabs/darepo-client/baselib/actor"
-	"github.com/lightninglabs/darepo-client/chainsource"
-	"github.com/lightninglabs/darepo-client/ledger"
-	"github.com/lightninglabs/darepo-client/lib/arkscript"
-	"github.com/lightninglabs/darepo-client/lib/recovery"
-	"github.com/lightninglabs/darepo-client/txconfirm"
-	"github.com/lightninglabs/darepo-client/unrollplan"
-	"github.com/lightninglabs/darepo-client/vtxo"
+	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/chainsource"
+	"github.com/lightninglabs/wavelength/ledger"
+	"github.com/lightninglabs/wavelength/lib/arkscript"
+	"github.com/lightninglabs/wavelength/lib/recovery"
+	"github.com/lightninglabs/wavelength/txconfirm"
+	"github.com/lightninglabs/wavelength/unrollplan"
+	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -1575,7 +1575,7 @@ func TestStartUnrollSubmitsInitialFrontier(t *testing.T) {
 // height the proof-node confirmation watch is floored a bounded lookback below
 // the current tip, not at genesis (block 1). A genesis floor makes neutrino
 // rescan every block to block 1 for a tx that never confirms
-// (darepo-client#884); the bounded floor caps the rescan window while staying
+// (wavelength#884); the bounded floor caps the rescan window while staying
 // low enough that a proof ancestor confirming before the target's creation
 // height is still covered.
 func TestProofNodeHeightHintBoundedBelowTip(t *testing.T) {

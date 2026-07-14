@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 
-	mailboxconn "github.com/lightninglabs/darepo-client/mailbox/conn"
-	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
+	mailboxconn "github.com/lightninglabs/wavelength/mailbox/conn"
+	mailboxpb "github.com/lightninglabs/wavelength/mailbox/pb"
 )
 
 // edgeStatusCarrier is implemented by every mailbox edge RPC response

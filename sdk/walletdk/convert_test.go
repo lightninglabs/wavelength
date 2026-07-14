@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
 	"github.com/stretchr/testify/require"
 )
 

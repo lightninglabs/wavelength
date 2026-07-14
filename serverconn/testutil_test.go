@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/lightninglabs/darepo-client/baselib/actor"
-	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
+	"github.com/lightninglabs/wavelength/baselib/actor"
+	mailboxpb "github.com/lightninglabs/wavelength/mailbox/pb"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
 )

@@ -1,6 +1,6 @@
 package ledger
 
-import "github.com/lightninglabs/darepo-client/baselib/actor"
+import "github.com/lightninglabs/wavelength/baselib/actor"
 
 // ServiceKeyName is the actor system service key name for the
 // ledger accounting actor.

@@ -4,19 +4,19 @@ import (
 	"io"
 	"time"
 
-	"github.com/lightninglabs/darepo-client/darepod"
+	"github.com/lightninglabs/wavelength/waved"
 )
 
 // MaxSigningWorkers is the largest bounded MuSig2 worker count accepted by
 // the embedded daemon and mobile configuration surfaces.
-const MaxSigningWorkers = darepod.MaxSigningWorkers
+const MaxSigningWorkers = waved.MaxSigningWorkers
 
 // Config controls the embedded daemon and wallet facade.
 type Config struct {
 	// DaemonConfig supplies the full daemon config. When nil, walletdk
-	// starts from darepod.DefaultConfig and applies the convenience fields
+	// starts from waved.DefaultConfig and applies the convenience fields
 	// below.
-	DaemonConfig *darepod.Config
+	DaemonConfig *waved.Config
 
 	// DataDir is the root directory for daemon and wallet state.
 	DataDir string
@@ -27,7 +27,7 @@ type Config struct {
 	// DebugLevel controls daemon logging verbosity.
 	DebugLevel string
 
-	// LogWriter receives daemon logs. Nil uses darepod's default stdout.
+	// LogWriter receives daemon logs. Nil uses waved's default stdout.
 	LogWriter io.Writer
 
 	// AllowMainnet must be true when Network is mainnet. This is an
@@ -111,7 +111,7 @@ type Config struct {
 	// Exit / cooperative-leave path fires registration immediately
 	// rather than batching. The walletdkrpc-tagged embedded build
 	// that walletdk targets already defaults this to true via
-	// darepod.DefaultConfig, so leaving this field at the zero
+	// waved.DefaultConfig, so leaving this field at the zero
 	// value is the right choice for nearly every host. Set true
 	// only to force the override when supplying a caller-owned
 	// DaemonConfig that currently carries false. To force eager

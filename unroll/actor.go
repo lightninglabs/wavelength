@@ -10,14 +10,14 @@ import (
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/baselib/actor"
-	"github.com/lightninglabs/darepo-client/baselib/protofsm"
-	"github.com/lightninglabs/darepo-client/chainsource"
-	"github.com/lightninglabs/darepo-client/ledger"
-	"github.com/lightninglabs/darepo-client/lib/recovery"
-	"github.com/lightninglabs/darepo-client/txconfirm"
-	"github.com/lightninglabs/darepo-client/unrollplan"
-	"github.com/lightninglabs/darepo-client/vtxo"
+	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/baselib/protofsm"
+	"github.com/lightninglabs/wavelength/chainsource"
+	"github.com/lightninglabs/wavelength/ledger"
+	"github.com/lightninglabs/wavelength/lib/recovery"
+	"github.com/lightninglabs/wavelength/txconfirm"
+	"github.com/lightninglabs/wavelength/unrollplan"
+	"github.com/lightninglabs/wavelength/vtxo"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
@@ -718,7 +718,7 @@ func safeTxOutPkScript(tx *wire.MsgTx, index uint32) ([]byte, error) {
 // proof-graph transactions when no commitment height is known. A genesis
 // floor (height 1) forces neutrino's notifier to rescan every block from tip
 // to block 1 (one GetCFilter per block) when the watched tx never confirms,
-// which floods logs and never terminates (darepo-client#884). We therefore
+// which floods logs and never terminates (wavelength#884). We therefore
 // bound the rescan window to a fixed lookback below the current height.
 //
 // The lookback MUST comfortably exceed the maximum batch lifetime plus the

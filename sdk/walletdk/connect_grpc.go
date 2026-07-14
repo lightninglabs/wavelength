@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/lightninglabs/darepo-client/rpcauth"
+	"github.com/lightninglabs/wavelength/rpcauth"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"

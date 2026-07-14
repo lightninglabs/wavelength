@@ -8,8 +8,8 @@ import (
 	"io"
 	"time"
 
-	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
-	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
+	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
 	"google.golang.org/grpc/metadata"
 )
 

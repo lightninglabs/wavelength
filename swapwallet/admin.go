@@ -8,10 +8,10 @@ import (
 	"strings"
 
 	"github.com/btcsuite/btcd/chainhash/v2"
-	"github.com/lightninglabs/darepo-client/daemonrpc"
-	"github.com/lightninglabs/darepo-client/darepod"
-	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
-	"github.com/lightninglabs/darepo-client/unroll"
+	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/unroll"
+	"github.com/lightninglabs/wavelength/waved"
+	"github.com/lightninglabs/wavelength/waverpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -23,7 +23,7 @@ const forceUnrollAck = "I_KNOW_WHAT_I_AM_DOING"
 const walletUnspentMaxConfs int32 = 9999999
 
 // create is the implementation of WalletService.Create. It proxies the
-// daemonrpc admin surface: if the caller supplied a mnemonic, we treat the
+// waverpc admin surface: if the caller supplied a mnemonic, we treat the
 // call as a recovery flow and only call InitWallet; otherwise we run the
 // GenSeed → InitWallet sequence and return the freshly generated mnemonic
 // so the caller can persist it offline.
@@ -51,7 +51,7 @@ func (s *Service) create(ctx context.Context, req *walletdkrpc.CreateRequest) (
 		// caller's responsibility; once Create returns, the wallet is
 		// committed to disk with that seed.
 		genResp, err := s.deps.RPCServer.GenSeed(
-			ctx, &daemonrpc.GenSeedRequest{
+			ctx, &waverpc.GenSeedRequest{
 				SeedPassphrase: req.GetSeedPassphrase(),
 			},
 		)
@@ -63,7 +63,7 @@ func (s *Service) create(ctx context.Context, req *walletdkrpc.CreateRequest) (
 	}
 
 	initResp, err := s.deps.RPCServer.InitWallet(
-		ctx, &daemonrpc.InitWalletRequest{
+		ctx, &waverpc.InitWalletRequest{
 			Mnemonic:       mnemonic,
 			WalletPassword: req.GetWalletPassword(),
 			SeedPassphrase: req.GetSeedPassphrase(),
@@ -88,7 +88,7 @@ func (s *Service) create(ctx context.Context, req *walletdkrpc.CreateRequest) (
 	}, nil
 }
 
-// unlock proxies daemonrpc.UnlockWallet. This is an admin-shape handler
+// unlock proxies waverpc.UnlockWallet. This is an admin-shape handler
 // that runs before the swap runtime is live.
 func (s *Service) unlock(ctx context.Context, req *walletdkrpc.UnlockRequest) (
 	*walletdkrpc.UnlockResponse, error) {
@@ -104,7 +104,7 @@ func (s *Service) unlock(ctx context.Context, req *walletdkrpc.UnlockRequest) (
 	}
 
 	resp, err := s.deps.RPCServer.UnlockWallet(
-		ctx, &daemonrpc.UnlockWalletRequest{
+		ctx, &waverpc.UnlockWalletRequest{
 			WalletPassword: req.GetWalletPassword(),
 		},
 	)
@@ -159,16 +159,16 @@ func (s *Service) cooperativeExit(ctx context.Context,
 	}
 
 	resp, err := s.deps.RPCServer.LeaveVTXOs(
-		ctx, &daemonrpc.LeaveVTXOsRequest{
-			Selection: &daemonrpc.LeaveVTXOsRequest_Outpoints{
-				Outpoints: &daemonrpc.OutpointSelection{
+		ctx, &waverpc.LeaveVTXOsRequest{
+			Selection: &waverpc.LeaveVTXOsRequest_Outpoints{
+				Outpoints: &waverpc.OutpointSelection{
 					Outpoints: []string{
 						req.GetOutpoint(),
 					},
 				},
 			},
-			DefaultDestination: &daemonrpc.LeaveDestination{
-				Target: &daemonrpc.LeaveDestination_Address{
+			DefaultDestination: &waverpc.LeaveDestination{
+				Target: &waverpc.LeaveDestination_Address{
 					Address: destination,
 				},
 			},
@@ -212,7 +212,7 @@ func (s *Service) forceUnroll(ctx context.Context, req *walletdkrpc.ExitRequest,
 	}
 
 	resp, err := s.deps.RPCServer.Unroll(
-		ctx, &daemonrpc.UnrollRequest{
+		ctx, &waverpc.UnrollRequest{
 			Outpoint: req.GetOutpoint(),
 		},
 	)
@@ -287,7 +287,7 @@ func (s *Service) getExitPlan(ctx context.Context,
 	}
 
 	resp, err := s.deps.RPCServer.GetExitPlan(
-		ctx, &darepod.ExitPlanRequest{
+		ctx, &waved.ExitPlanRequest{
 			Outpoints:  req.GetOutpoints(),
 			ConfTarget: req.GetConfTarget(),
 		},
@@ -342,7 +342,7 @@ func (s *Service) sweepWallet(ctx context.Context,
 	}
 
 	resp, err := s.deps.RPCServer.SweepWallet(
-		ctx, &darepod.SweepWalletRequest{
+		ctx, &waved.SweepWalletRequest{
 			DestinationAddress: req.GetDestinationAddress(),
 			Broadcast:          req.GetBroadcast(),
 			FeeRateSatPerVByte: req.GetFeeRateSatPerVbyte(),
@@ -376,7 +376,7 @@ func (s *Service) sweepWallet(ctx context.Context,
 	}, nil
 }
 
-// exitStatus proxies daemonrpc.GetUnrollStatus and projects the daemon's
+// exitStatus proxies waverpc.GetUnrollStatus and projects the daemon's
 // UnrollJobStatus onto the wallet-facing ExitJobStatus.
 func (s *Service) exitStatus(ctx context.Context,
 	req *walletdkrpc.ExitStatusRequest) (*walletdkrpc.ExitStatusResponse,
@@ -393,7 +393,7 @@ func (s *Service) exitStatus(ctx context.Context,
 	}
 
 	resp, err := s.deps.RPCServer.GetUnrollStatus(
-		ctx, &daemonrpc.GetUnrollStatusRequest{
+		ctx, &waverpc.GetUnrollStatusRequest{
 			Outpoint: req.GetOutpoint(),
 			Detailed: req.GetDetailed(),
 		},
@@ -423,7 +423,7 @@ func (s *Service) exitStatus(ctx context.Context,
 // wallet-facing ExitProgress. It returns nil when the daemon supplied no
 // progress (a coarse query, or a terminal job with no live actor).
 func exitProgressFromDaemon(
-	p *daemonrpc.UnrollProgress) *walletdkrpc.ExitProgress {
+	p *waverpc.UnrollProgress) *walletdkrpc.ExitProgress {
 
 	if p == nil {
 		return nil
@@ -444,7 +444,7 @@ func exitProgressFromDaemon(
 
 // exitCSVFromDaemon projects the daemon's UnrollCSV onto the wallet-facing
 // ExitCSV. It returns nil until the target confirms (no CSV countdown yet).
-func exitCSVFromDaemon(c *daemonrpc.UnrollCSV) *walletdkrpc.ExitCSV {
+func exitCSVFromDaemon(c *waverpc.UnrollCSV) *walletdkrpc.ExitCSV {
 	if c == nil {
 		return nil
 	}
@@ -459,7 +459,7 @@ func exitCSVFromDaemon(c *daemonrpc.UnrollCSV) *walletdkrpc.ExitCSV {
 
 // exitFeesFromDaemon projects the daemon's UnrollFees onto the wallet-facing
 // ExitFees. It returns nil when the daemon supplied no fee breakdown.
-func exitFeesFromDaemon(f *daemonrpc.UnrollFees) *walletdkrpc.ExitFees {
+func exitFeesFromDaemon(f *waverpc.UnrollFees) *walletdkrpc.ExitFees {
 	if f == nil {
 		return nil
 	}
@@ -515,30 +515,28 @@ func (s *Service) exitSummary(ctx context.Context,
 	return resp, nil
 }
 
-// exitStatusFromDaemon maps daemonrpc.UnrollJobStatus onto the
+// exitStatusFromDaemon maps waverpc.UnrollJobStatus onto the
 // wallet-facing ExitJobStatus enum. The mapping is 1:1 today; the
 // projection sits at the wallet boundary so daemon-side renumbering or
 // new internal phases don't leak into the user surface.
-func exitStatusFromDaemon(
-	s daemonrpc.UnrollJobStatus) walletdkrpc.ExitJobStatus {
-
+func exitStatusFromDaemon(s waverpc.UnrollJobStatus) walletdkrpc.ExitJobStatus {
 	switch s {
-	case daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_PENDING:
+	case waverpc.UnrollJobStatus_UNROLL_JOB_STATUS_PENDING:
 		return walletdkrpc.ExitJobStatus_EXIT_JOB_STATUS_PENDING
 
-	case daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_MATERIALIZING:
+	case waverpc.UnrollJobStatus_UNROLL_JOB_STATUS_MATERIALIZING:
 		return walletdkrpc.ExitJobStatus_EXIT_JOB_STATUS_MATERIALIZING
 
-	case daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_CSV_PENDING:
+	case waverpc.UnrollJobStatus_UNROLL_JOB_STATUS_CSV_PENDING:
 		return walletdkrpc.ExitJobStatus_EXIT_JOB_STATUS_CSV_PENDING
 
-	case daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_SWEEPING:
+	case waverpc.UnrollJobStatus_UNROLL_JOB_STATUS_SWEEPING:
 		return walletdkrpc.ExitJobStatus_EXIT_JOB_STATUS_SWEEPING
 
-	case daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_COMPLETED:
+	case waverpc.UnrollJobStatus_UNROLL_JOB_STATUS_COMPLETED:
 		return walletdkrpc.ExitJobStatus_EXIT_JOB_STATUS_COMPLETED
 
-	case daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_FAILED:
+	case waverpc.UnrollJobStatus_UNROLL_JOB_STATUS_FAILED:
 		return walletdkrpc.ExitJobStatus_EXIT_JOB_STATUS_FAILED
 
 	default:

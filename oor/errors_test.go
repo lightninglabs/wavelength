@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/lightninglabs/darepo-client/rpc/oorpb"
+	"github.com/lightninglabs/wavelength/rpc/oorpb"
 	"github.com/stretchr/testify/require"
 )
 

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/lightninglabs/darepo-client/daemonrpc"
+	"github.com/lightninglabs/wavelength/waverpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
@@ -17,7 +17,7 @@ import (
 type InProcessConfig struct {
 	// DaemonServer is the in-process daemon RPC implementation that will
 	// be registered on a private bufconn-backed gRPC server.
-	DaemonServer daemonrpc.DaemonServiceServer
+	DaemonServer waverpc.DaemonServiceServer
 
 	// BufferSize overrides the bufconn listener size used for private
 	// in-process gRPC traffic. When zero, the SDK uses a sane default.
@@ -52,7 +52,7 @@ func WrapDaemonServer(ctx context.Context,
 
 	listener := bufconn.Listen(bufferSize)
 	grpcServer := grpc.NewServer(cfg.ServerOptions...)
-	daemonrpc.RegisterDaemonServiceServer(grpcServer, cfg.DaemonServer)
+	waverpc.RegisterDaemonServiceServer(grpcServer, cfg.DaemonServer)
 
 	serveErrChan := make(chan error, 1)
 	readyErrChan := make(chan error, 1)
@@ -109,7 +109,7 @@ func WrapDaemonServer(ctx context.Context,
 	}
 
 	return &Client{
-		daemon: daemonrpc.NewDaemonServiceClient(conn),
+		daemon: waverpc.NewDaemonServiceClient(conn),
 		waitCh: waitErrChan,
 		closeFn: func(closeCtx context.Context) error {
 			closeErr := conn.Close()

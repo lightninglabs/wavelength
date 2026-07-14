@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/lightninglabs/darepo-client/darepod"
+	"github.com/lightninglabs/wavelength/waved"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 )
@@ -31,7 +31,7 @@ func TestSigningWorkersOverride(t *testing.T) {
 	t.Run("zero preserves daemon config", func(t *testing.T) {
 		t.Parallel()
 
-		base := darepod.DefaultConfig()
+		base := waved.DefaultConfig()
 		base.SigningWorkers = 8
 		daemonCfg, err := daemonConfig(Config{DaemonConfig: base})
 		require.NoError(t, err)
@@ -44,50 +44,50 @@ func TestSigningWorkersOverride(t *testing.T) {
 // original. This is the actual contract Start relies on when it injects its
 // bufconn listener and swap registrar into the cloned config.
 //
-// The test reflects over darepod.Config and fails on any pointer/slice/map
+// The test reflects over waved.Config and fails on any pointer/slice/map
 // field whose clone aliases the original. Adding a new reference-typed field
-// to darepod.Config without updating cloneDaemonConfig will surface here as
+// to waved.Config without updating cloneDaemonConfig will surface here as
 // either a "still nil after clone" failure (when the test fixture is also out
 // of date) or, more importantly, an aliasing failure (when the fixture is
 // updated but the clone is not).
 func TestCloneDaemonConfigIsolation(t *testing.T) {
-	original := darepod.DefaultConfig()
+	original := waved.DefaultConfig()
 
 	// Make sure every reference-typed field we currently know about is
 	// non-nil/non-empty so we can detect aliasing. New fields added to
-	// darepod.Config require updating this fixture too — the test below
+	// waved.Config require updating this fixture too — the test below
 	// flags any reference-typed field that remains nil after this setup.
 	if original.Lnd == nil {
-		original.Lnd = &darepod.LndConfig{}
+		original.Lnd = &waved.LndConfig{}
 	}
 	if original.Server == nil {
-		original.Server = &darepod.ServerConfig{}
+		original.Server = &waved.ServerConfig{}
 	}
 	if original.RPC == nil {
-		original.RPC = &darepod.RPCConfig{}
+		original.RPC = &waved.RPCConfig{}
 	}
 	if original.Wallet == nil {
-		original.Wallet = &darepod.WalletConfig{}
+		original.Wallet = &waved.WalletConfig{}
 	}
 	original.Wallet.BtcwalletPeers = []string{"peer-a"}
 	original.Wallet.BtcwalletAddPeers = []string{"add-peer-a"}
 	if original.Unroll == nil {
-		original.Unroll = &darepod.UnrollConfig{}
+		original.Unroll = &waved.UnrollConfig{}
 	}
 	if original.Swap == nil {
-		original.Swap = &darepod.SwapConfig{}
+		original.Swap = &waved.SwapConfig{}
 	}
 	if original.OOR == nil {
-		original.OOR = &darepod.OORConfig{}
+		original.OOR = &waved.OORConfig{}
 	}
-	original.RPCServiceRegistrars = []darepod.RPCServiceRegistrar{
-		func(context.Context, *grpc.Server, *darepod.RPCServer,
-			*darepod.Config) (func(), error) {
+	original.RPCServiceRegistrars = []waved.RPCServiceRegistrar{
+		func(context.Context, *grpc.Server, *waved.RPCServer,
+			*waved.Config) (func(), error) {
 
 			return func() {}, nil
 		},
 	}
-	original.WalletReadyHooks = []darepod.WalletReadyHook{
+	original.WalletReadyHooks = []waved.WalletReadyHook{
 		func(context.Context) error {
 			return nil
 		},
@@ -150,11 +150,11 @@ func TestCloneDaemonConfigIsolation(t *testing.T) {
 
 		case reflect.Map:
 			// We do not currently clone any maps. If a map field
-			// is ever added to darepod.Config, this branch flags
+			// is ever added to waved.Config, this branch flags
 			// the gap loudly so the contributor can decide
 			// whether the map needs cloning.
 			if !origF.IsNil() {
-				t.Fatalf("darepod.Config grew a map field %q "+
+				t.Fatalf("waved.Config grew a map field %q "+
 					"that cloneDaemonConfig does "+
 					"not handle", fieldName)
 			}
@@ -182,10 +182,10 @@ func TestDaemonConfigPropagatesOutboundTransports(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Equal(
-		t, darepod.RPCTransportREST, daemonCfg.Server.Transport,
+		t, waved.RPCTransportREST, daemonCfg.Server.Transport,
 	)
 	require.Equal(
-		t, darepod.RPCTransportREST, daemonCfg.Swap.ServerTransport,
+		t, waved.RPCTransportREST, daemonCfg.Swap.ServerTransport,
 	)
 }
 
@@ -195,9 +195,9 @@ func TestDaemonConfigPropagatesOutboundTransports(t *testing.T) {
 func TestDaemonConfigPreservesCallerOutboundTransports(t *testing.T) {
 	t.Parallel()
 
-	callerCfg := darepod.DefaultConfig()
-	callerCfg.Server.Transport = darepod.RPCTransportREST
-	callerCfg.Swap.ServerTransport = darepod.RPCTransportREST
+	callerCfg := waved.DefaultConfig()
+	callerCfg.Server.Transport = waved.RPCTransportREST
+	callerCfg.Swap.ServerTransport = waved.RPCTransportREST
 
 	daemonCfg, err := daemonConfig(Config{
 		DaemonConfig: callerCfg,
@@ -205,10 +205,10 @@ func TestDaemonConfigPreservesCallerOutboundTransports(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Equal(
-		t, darepod.RPCTransportREST, daemonCfg.Server.Transport,
+		t, waved.RPCTransportREST, daemonCfg.Server.Transport,
 	)
 	require.Equal(
-		t, darepod.RPCTransportREST, daemonCfg.Swap.ServerTransport,
+		t, waved.RPCTransportREST, daemonCfg.Swap.ServerTransport,
 	)
 }
 

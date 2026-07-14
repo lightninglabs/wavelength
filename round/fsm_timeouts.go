@@ -13,7 +13,7 @@ const (
 	// JoinRoundRequest (the RoundJoined admission watermark). Without it a
 	// silent or unresponsive server would leave the round parked in
 	// IntentSentState forever, stranding any forfeit-reserved VTXOs in
-	// pending-forfeit (see darepo-client#653).
+	// pending-forfeit (see wavelength#653).
 	TimeoutPhaseRegistration TimeoutPhase = "registration"
 )
 

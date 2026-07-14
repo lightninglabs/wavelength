@@ -17,7 +17,7 @@ import (
 	"io"
 	"syscall/js"
 
-	"github.com/lightninglabs/darepo-client/sdk/walletdk/mobile"
+	"github.com/lightninglabs/wavelength/sdk/walletdk/mobile"
 )
 
 // main installs the browser entry point and then parks the Go runtime so the
@@ -270,13 +270,13 @@ func jsError(err error) js.Value {
 // browserDataDir is a WASM-safe default data directory. A browser has no $HOME
 // for the daemon's `~` expansion to resolve against, and persistent state lives
 // in OPFS-backed SQLite keyed by hashed file names rather than host directories
-// (see darepod.ensureDataDir, a no-op under js/wasm), so any fixed in-origin
+// (see waved.ensureDataDir, a no-op under js/wasm), so any fixed in-origin
 // path is all the embedded daemon needs.
-const browserDataDir = "/darepo"
+const browserDataDir = "/wavelength"
 
 // startConfig renders the start request as a config JSON string, injecting the
 // browser-safe data dir when the caller didn't set one. Without it the embedded
-// daemon's config validation expands the default `~/.darepod` via
+// daemon's config validation expands the default `~/.waved` via
 // os.UserHomeDir, which fails with "$HOME is not defined" under wasm_exec.js
 // and aborts start before the wallet boots.
 func startConfig(req js.Value) string {

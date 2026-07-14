@@ -6,8 +6,8 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btclog/v2"
-	dbmigrate "github.com/lightninglabs/darepo-client/db/migrate"
-	"github.com/lightninglabs/darepo-client/db/sqlc"
+	dbmigrate "github.com/lightninglabs/wavelength/db/migrate"
+	"github.com/lightninglabs/wavelength/db/sqlc"
 )
 
 const (

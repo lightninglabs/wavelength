@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/lightninglabs/darepo-client/baselib/actor"
-	"github.com/lightninglabs/darepo-client/baselib/protofsm"
+	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/baselib/protofsm"
 	"github.com/lightningnetwork/lnd/fn/v2"
 )
 

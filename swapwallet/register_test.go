@@ -8,13 +8,13 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btcd/chaincfg/v2"
-	"github.com/lightninglabs/darepo-client/darepod"
-	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
+	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
+	"github.com/lightninglabs/wavelength/waved"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 )
 
-// fakeResumeOnlyBackend implements darepod.SwapBackend but deliberately
+// fakeResumeOnlyBackend implements waved.SwapBackend but deliberately
 // does NOT implement swapclientrpc.SwapClientServiceServer so it forces
 // the type-assertion error path inside Register. Used to assert the
 // SuppressResume-failover hook fires.
@@ -55,9 +55,9 @@ func TestRegisterDefersResumeUntilWalletReadyHook(t *testing.T) {
 	t.Parallel()
 
 	backend := &fakeWalletBackend{}
-	cfg := &darepod.Config{
+	cfg := &waved.Config{
 		Network: "regtest",
-		Swap: &darepod.SwapConfig{
+		Swap: &waved.SwapConfig{
 			Backend:        backend,
 			SuppressResume: true,
 		},
@@ -97,8 +97,8 @@ func TestRegisterRecoversResumeOnTypeAssertionFailure(t *testing.T) {
 	t.Parallel()
 
 	backend := &fakeResumeOnlyBackend{}
-	cfg := &darepod.Config{
-		Swap: &darepod.SwapConfig{
+	cfg := &waved.Config{
+		Swap: &waved.SwapConfig{
 			Backend:        backend,
 			SuppressResume: true,
 		},
@@ -129,8 +129,8 @@ func TestRegisterRecoversResumeOnTypeAssertionFailure(t *testing.T) {
 func TestRegisterRejectsNilBackend(t *testing.T) {
 	t.Parallel()
 
-	cfg := &darepod.Config{
-		Swap: &darepod.SwapConfig{
+	cfg := &waved.Config{
+		Swap: &waved.SwapConfig{
 			Backend: nil,
 		},
 	}

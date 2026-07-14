@@ -16,15 +16,15 @@ import (
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/btcsuite/btcwallet/waddrmgr"
-	"github.com/lightninglabs/darepo-client/baselib/actor"
-	"github.com/lightninglabs/darepo-client/build"
-	"github.com/lightninglabs/darepo-client/chainsource"
-	"github.com/lightninglabs/darepo-client/ledger"
-	"github.com/lightninglabs/darepo-client/lib/actormsg"
-	"github.com/lightninglabs/darepo-client/lib/arkscript"
-	"github.com/lightninglabs/darepo-client/lib/types"
-	"github.com/lightninglabs/darepo-client/metrics"
 	"github.com/lightninglabs/taproot-assets/proof"
+	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/build"
+	"github.com/lightninglabs/wavelength/chainsource"
+	"github.com/lightninglabs/wavelength/ledger"
+	"github.com/lightninglabs/wavelength/lib/actormsg"
+	"github.com/lightninglabs/wavelength/lib/arkscript"
+	"github.com/lightninglabs/wavelength/lib/types"
+	"github.com/lightninglabs/wavelength/metrics"
 	"github.com/lightningnetwork/lnd/clock"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
@@ -147,7 +147,7 @@ type Ark struct {
 	// metricsSink is an optional reference to the client-side metrics
 	// actor. When set, the boarding-sweep watcher emits a
 	// BackgroundTaskErrorMsg as managed sweeps fail terminally so the
-	// darepod_background_task_errors_total counter carries signal for
+	// waved_background_task_errors_total counter carries signal for
 	// this daemon-owned background task. When None (metrics disabled,
 	// or tests), emission is silently skipped.
 	metricsSink fn.Option[metrics.Sink]
@@ -417,7 +417,7 @@ func WithClock(clk clock.Clock) ArkOption {
 // so the round FSM advances out of PendingRoundAssembly immediately.
 // Opt in from wallet-shaped SDK hosts that want a single user action to
 // translate into a full round join; leave off for daemons whose hosts
-// drive the second RPC themselves (e.g. darepocli).
+// drive the second RPC themselves (e.g. wavecli).
 func WithEagerRoundJoin(enabled bool) ArkOption {
 	return func(a *Ark) {
 		a.eagerRoundJoin = enabled
@@ -520,7 +520,7 @@ func composeRefreshTemplate(vtxo *VTXODescriptor,
 
 // emitBackgroundTaskError reports a failure in a daemon-owned
 // background task to the metrics actor so the
-// darepod_background_task_errors_total counter advances, labelled by
+// waved_background_task_errors_total counter advances, labelled by
 // task. The boarding-sweep watcher is such a task: it runs
 // independently of any RPC, so a terminal sweep failure has no caller
 // to surface it. Emission is best-effort and fire-and-forget — a Tell
@@ -691,7 +691,7 @@ func (a *Ark) Start(ctx context.Context,
 
 	// Boarding-sweep resume is intentionally NOT dispatched from
 	// Start. The wallet starts before txconfirm registers (step 9 vs
-	// step 12 of darepod.Server.startWalletDependentActors), so a
+	// step 12 of waved.Server.startWalletDependentActors), so a
 	// self-Tell here would race the receptionist registration and a
 	// scheduling-unlucky resume would observe txconfirm.LookupRef as
 	// "not found", silently orphaning every persisted pending sweep.
@@ -987,7 +987,7 @@ func (a *Ark) handleGetActiveBoardingAddresses(ctx context.Context,
 // boarding funds in flight even while a sweep tx awaits confirmation.
 //
 // CONTRACT: this handler must remain a pure read of the boarding
-// store. `darepod.RPCServer.fetchBoardingBalance` deliberately
+// store. `waved.RPCServer.fetchBoardingBalance` deliberately
 // duplicates this logic at the RPC layer to bypass the wallet
 // actor's serial mailbox under block-epoch catch-up bursts (see
 // BUGS_FOUND.md). If you add in-memory caching, admission gating,
@@ -3321,7 +3321,7 @@ func (a *Ark) handleSendOnChain(ctx context.Context,
 	// Register the intent with the round actor. TriggerRegistration is
 	// left false here so the wallet handler stops at the "intent
 	// queued" boundary; the RPC handler fires the IntentRequested
-	// step separately (via darepod.TriggerRoundRegistration), which
+	// step separately (via waved.TriggerRoundRegistration), which
 	// mirrors the OLD LeaveVTXOs+JoinNextRound split that arktest
 	// exercises today. The eager-mode RegisterIntentMsg.TriggerRegistration
 	// path collapses both steps into a single Ask and has a latent ctx

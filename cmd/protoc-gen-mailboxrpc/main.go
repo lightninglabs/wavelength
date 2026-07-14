@@ -3,7 +3,7 @@ package main
 import (
 	"flag"
 
-	"github.com/lightninglabs/darepo-client/cmd/protoc-gen-mailboxrpc/internal/gen"
+	"github.com/lightninglabs/wavelength/cmd/protoc-gen-mailboxrpc/internal/gen"
 	"google.golang.org/protobuf/compiler/protogen"
 	"google.golang.org/protobuf/types/pluginpb"
 )

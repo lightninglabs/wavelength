@@ -8,11 +8,11 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/lightninglabs/darepo-client/credit"
-	"github.com/lightninglabs/darepo-client/daemonrpc"
-	"github.com/lightninglabs/darepo-client/darepod"
-	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
-	"github.com/lightninglabs/darepo-client/sdk/swaps"
+	"github.com/lightninglabs/wavelength/credit"
+	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
+	"github.com/lightninglabs/wavelength/sdk/swaps"
+	"github.com/lightninglabs/wavelength/waved"
+	"github.com/lightninglabs/wavelength/waverpc"
 )
 
 // creditServerBridge adapts the daemon swap subserver to the credit
@@ -128,7 +128,7 @@ func (b *creditServerBridge) StartPay(ctx context.Context, invoice string,
 // subsystem's CreditDaemon interface.
 type creditDaemonBridge struct {
 	daemon swaps.DaemonConn
-	rpc    *darepod.RPCServer
+	rpc    *waved.RPCServer
 }
 
 // Compile-time check that the bridge satisfies the credit daemon surface.
@@ -151,7 +151,7 @@ func (b *creditDaemonBridge) IdentityPubKey(ctx context.Context) ([]byte,
 
 // DustLimit returns the operator dust limit from the daemon GetInfo surface.
 func (b *creditDaemonBridge) DustLimit(ctx context.Context) (uint64, error) {
-	info, err := b.rpc.GetInfo(ctx, &daemonrpc.GetInfoRequest{})
+	info, err := b.rpc.GetInfo(ctx, &waverpc.GetInfoRequest{})
 	if err != nil {
 		return 0, err
 	}
@@ -172,9 +172,9 @@ func (b *creditDaemonBridge) SendOOR(ctx context.Context,
 		return "", fmt.Errorf("oor amount exceeds int64 range")
 	}
 
-	resp, err := b.rpc.SendOOR(ctx, &daemonrpc.SendOORRequest{
-		Recipients: []*daemonrpc.Output{{
-			Destination: &daemonrpc.Output_Pubkey{
+	resp, err := b.rpc.SendOOR(ctx, &waverpc.SendOORRequest{
+		Recipients: []*waverpc.Output{{
+			Destination: &waverpc.Output_Pubkey{
 				Pubkey: append(
 					[]byte(nil), destinationPubKey...,
 				),

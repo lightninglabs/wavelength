@@ -6,8 +6,8 @@ import (
 	"log/slog"
 
 	"github.com/btcsuite/btcd/psbt/v2"
-	"github.com/lightninglabs/darepo-client/baselib/actor"
-	"github.com/lightninglabs/darepo-client/timeout"
+	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/timeout"
 	"github.com/lightningnetwork/lnd/input"
 )
 

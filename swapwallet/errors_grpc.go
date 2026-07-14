@@ -6,7 +6,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -28,7 +28,7 @@ type sentinelMapping struct {
 // duplicated here.
 //
 // ErrWalletNotReady is intentionally absent: the wallet-readiness gate
-// (requireWalletReady) returns daemonrpc's own structured WALLET_NOT_READY
+// (requireWalletReady) returns waverpc's own structured WALLET_NOT_READY
 // status, so the bare sentinel never reaches this interceptor.
 var sentinelMappings = []sentinelMapping{
 	{

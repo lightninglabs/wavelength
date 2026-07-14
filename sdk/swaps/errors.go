@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/lightninglabs/darepo-client/daemonrpc"
 	loopfsm "github.com/lightninglabs/loop/fsm"
+	"github.com/lightninglabs/wavelength/waverpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -282,5 +282,5 @@ func handleFailure(ctx context.Context, err error, runErr *error,
 // transient across startup and unlock. These errors must not durably fail a
 // swap because a later resume can continue once the daemon wallet is ready.
 func isWalletNotReadyErr(err error) bool {
-	return daemonrpc.IsWalletNotReadyError(err)
+	return waverpc.IsWalletNotReadyError(err)
 }

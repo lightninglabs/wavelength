@@ -1,5 +1,5 @@
 // Package lndsubmitter provides a chainbackends.PackageSubmitter backed by
-// lnd's WalletKit.SubmitPackage RPC. It lets a darepod using the lnd wallet
+// lnd's WalletKit.SubmitPackage RPC. It lets a waved using the lnd wallet
 // relay its zero-fee unilateral-exit v3/TRUC packages through lnd's own chain
 // connection, so no separate bitcoind RPC or Esplora endpoint is required.
 package lndsubmitter

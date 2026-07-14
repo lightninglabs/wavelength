@@ -10,9 +10,9 @@ import (
 
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/lightninglabs/darepo-client/baselib/actor"
-	"github.com/lightninglabs/darepo-client/lib/actormsg"
-	"github.com/lightninglabs/darepo-client/vtxo"
+	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/lib/actormsg"
+	"github.com/lightninglabs/wavelength/vtxo"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
 )
@@ -82,7 +82,7 @@ func newExitObserverRegistry(target wire.OutPoint) (*registryBehavior,
 
 // TestRegistryForwardsCleanFailureAsRecoverable verifies a terminal failure
 // with no on-chain footprint is forwarded to the VTXO manager as a
-// recoverable exit so the VTXO is rolled back to live (darepo-client#602).
+// recoverable exit so the VTXO is rolled back to live (wavelength#602).
 func TestRegistryForwardsCleanFailureAsRecoverable(t *testing.T) {
 	target := wire.OutPoint{Hash: chainhash.Hash{1}, Index: 0}
 	behavior, observer := newExitObserverRegistry(target)
@@ -110,7 +110,7 @@ func TestRegistryForwardsCleanFailureAsRecoverable(t *testing.T) {
 // (handlePersistRecordResult), so a recovery-only vHTLC target can reach
 // handleTerminated with no cached record at all. If the policy were sourced
 // from r.pending it would arrive empty, the manager's Valid() guard would miss,
-// and the target would be relived to live: the exact darepo-client#602 relive
+// and the target would be relived to live: the exact wavelength#602 relive
 // bug. Here the pending map starts empty and the terminal message carries the
 // vHTLC refund policy, so the forwarded notification must still name it.
 func TestRegistryForwardsExitPolicyFromTerminalMsg(t *testing.T) {
@@ -202,7 +202,7 @@ func TestRegistryForwardsCompletionAsConfirmed(t *testing.T) {
 }
 
 // TestRegistryRecoversCleanFailureEndToEnd is the in-process integration test
-// for the darepo-client#602 recovery path. Unlike the unit tests above (which
+// for the wavelength#602 recovery path. Unlike the unit tests above (which
 // call handleTerminated directly with a synthetic UnrollTerminatedMsg), this
 // drives a REAL child unroll actor through admission, proof submission, and a
 // txconfirm broadcast rejection to terminal Failed, then asserts the registry
@@ -271,7 +271,7 @@ func TestRegistryRecoversCleanFailureEndToEnd(t *testing.T) {
 // recoverable terminal record and notifies the VTXO manager to roll the VTXO
 // back to live. These pre-broadcast failures move ownership to unilateral
 // exit but leave no on-chain footprint, so they must be recoverable
-// (darepo-client#602).
+// (wavelength#602).
 func TestRegistryFailedAdmissionNotifiesRecoverable(t *testing.T) {
 	proof := buildLinearProof(t)
 	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
@@ -351,7 +351,7 @@ func TestRegistryFailedAdmissionNotifiesRecoverable(t *testing.T) {
 // TestRegistryReadmitsTargetAfterRecoverableFailure verifies that once a VTXO
 // has been rolled back to live by a recoverable (no-footprint) unroll failure,
 // a fresh exit for the same outpoint is admitted rather than deduped against
-// the dead recoverable record. Without this, the darepo-client#602 fix would
+// the dead recoverable record. Without this, the wavelength#602 fix would
 // trade a guaranteed strand for a deferred one: the VTXO would recover to live
 // but could never be unrolled again, because the terminal record blocks every
 // subsequent admission. This exercises the in-memory pending-cache arm of the

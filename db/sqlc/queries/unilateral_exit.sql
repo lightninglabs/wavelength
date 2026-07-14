@@ -43,7 +43,7 @@ WHERE target_outpoint_hash = $1
   AND target_outpoint_index = $2
 ;
 
--- Exit funding address persistence queries (darepo-client#893).
+-- Exit funding address persistence queries (wavelength#893).
 
 -- name: GetExitFundingAddress :one
 SELECT * FROM exit_funding_addresses

@@ -6,8 +6,8 @@ import (
 	"context"
 
 	"github.com/btcsuite/btcd/btcutil/v2"
-	"github.com/lightninglabs/darepo-client/daemonrpc"
-	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/waverpc"
 )
 
 // Local cooperative-leave fee-floor sizing. These virtual sizes drive the
@@ -61,7 +61,7 @@ type onchainTerms struct {
 // yields a zero-valued struct so the preview still renders.
 func (r *router) fetchOnchainTerms(ctx context.Context) onchainTerms {
 	info, err := r.deps.RPCServer.GetInfo(
-		ctx, &daemonrpc.GetInfoRequest{},
+		ctx, &waverpc.GetInfoRequest{},
 	)
 	if err != nil || info == nil {
 		return onchainTerms{}
@@ -97,7 +97,7 @@ func (r *router) estimateOnchainFee(ctx context.Context, amountSat int64,
 	// is belt-and-suspenders: the generated getter is nil-safe, but the
 	// explicit check keeps the intent obvious at the call site.
 	feeResp, err := r.deps.RPCServer.EstimateFee(
-		ctx, &daemonrpc.EstimateFeeRequest{
+		ctx, &waverpc.EstimateFeeRequest{
 			AmountSat:       amountSat,
 			IsBoarding:      false,
 			RemainingBlocks: 0,

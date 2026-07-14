@@ -6,10 +6,10 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/lightninglabs/darepo-client/credit"
-	"github.com/lightninglabs/darepo-client/daemonrpc"
-	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
-	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/credit"
+	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
+	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/stretchr/testify/require"
 )
 
@@ -123,8 +123,8 @@ func TestRecvBelowDustHandsToCreditRegistry(t *testing.T) {
 
 	swap := &fakeSwapService{}
 	rpc := &fakeRPCServer{
-		getInfoResp: &daemonrpc.GetInfoResponse{
-			ServerInfo: &daemonrpc.ServerInfo{
+		getInfoResp: &waverpc.GetInfoResponse{
+			ServerInfo: &waverpc.ServerInfo{
 				DustLimit: 1_000,
 			},
 		},

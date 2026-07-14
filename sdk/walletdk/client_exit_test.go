@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 )

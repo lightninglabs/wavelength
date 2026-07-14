@@ -20,12 +20,12 @@ import (
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chaincfg/v2"
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/darepod"
-	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
-	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
-	"github.com/lightninglabs/darepo-client/sdk/swaps"
-	"github.com/lightninglabs/darepo-client/serverconn"
-	"github.com/lightninglabs/darepo-client/swaprpc"
+	mailboxpb "github.com/lightninglabs/wavelength/mailbox/pb"
+	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
+	"github.com/lightninglabs/wavelength/sdk/swaps"
+	"github.com/lightninglabs/wavelength/serverconn"
+	"github.com/lightninglabs/wavelength/swaprpc"
+	"github.com/lightninglabs/wavelength/waved"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/zpay32"
@@ -149,10 +149,10 @@ func TestSwapStoreDatabasePathDefaultsToNetworkDir(t *testing.T) {
 	t.Parallel()
 
 	dataDir := t.TempDir()
-	path, err := swapStoreDatabasePath(&darepod.Config{
+	path, err := swapStoreDatabasePath(&waved.Config{
 		DataDir: dataDir,
 		Network: "signet",
-	}, &darepod.SwapConfig{})
+	}, &waved.SwapConfig{})
 	require.NoError(t, err)
 	require.Equal(
 		t, filepath.Join(dataDir, "data", "signet", "swaps.db"), path,
@@ -168,16 +168,16 @@ func TestSwapStoreDatabasePathUsesValidatedDataDir(t *testing.T) {
 	home, err := os.UserHomeDir()
 	require.NoError(t, err)
 
-	daemonCfg := darepod.DefaultConfig()
+	daemonCfg := waved.DefaultConfig()
 	daemonCfg.Network = "regtest"
 	daemonCfg.Wallet.EsploraURL = "https://esplora.example/api"
 	require.NoError(t, daemonCfg.Validate())
 
-	path, err := swapStoreDatabasePath(daemonCfg, &darepod.SwapConfig{})
+	path, err := swapStoreDatabasePath(daemonCfg, &waved.SwapConfig{})
 	require.NoError(t, err)
 	require.Equal(
 		t, filepath.Join(
-			home, ".darepod", "data", "regtest", "swaps.db",
+			home, ".waved", "data", "regtest", "swaps.db",
 		),
 		path,
 	)
@@ -191,18 +191,18 @@ func TestSwapStoreDatabasePathExpandsConfiguredHome(t *testing.T) {
 	home, err := os.UserHomeDir()
 	require.NoError(t, err)
 
-	daemonCfg := darepod.DefaultConfig()
+	daemonCfg := waved.DefaultConfig()
 	daemonCfg.DataDir = t.TempDir()
 	daemonCfg.Network = "signet"
 	daemonCfg.AllowMainnet = false
 	daemonCfg.Wallet.EsploraURL = "https://esplora.example/api"
-	daemonCfg.Swap.DatabaseFileName = "~/.darepod/custom-swaps.db"
+	daemonCfg.Swap.DatabaseFileName = "~/.waved/custom-swaps.db"
 	require.NoError(t, daemonCfg.Validate())
 
 	path, err := swapStoreDatabasePath(daemonCfg, daemonCfg.Swap)
 	require.NoError(t, err)
 	require.Equal(
-		t, filepath.Join(home, ".darepod", "custom-swaps.db"), path,
+		t, filepath.Join(home, ".waved", "custom-swaps.db"), path,
 	)
 }
 
@@ -211,7 +211,7 @@ func TestSwapStoreDatabasePathExpandsConfiguredHome(t *testing.T) {
 func TestSwapStoreDatabasePathRequiresDaemonConfig(t *testing.T) {
 	t.Parallel()
 
-	path, err := swapStoreDatabasePath(nil, &darepod.SwapConfig{})
+	path, err := swapStoreDatabasePath(nil, &waved.SwapConfig{})
 	require.ErrorContains(t, err, "daemon config is required")
 	require.Empty(t, path)
 }
@@ -808,11 +808,11 @@ func TestSwapSummaryToProtoCopiesDurableFields(t *testing.T) {
 func TestNewSwapClientServiceRequiresRecoveryPreimageRegistry(t *testing.T) {
 	t.Parallel()
 
-	rpcServer := darepod.NewRPCServer(nil)
-	daemonCfg := &darepod.Config{
+	rpcServer := waved.NewRPCServer(nil)
+	daemonCfg := &waved.Config{
 		DataDir: t.TempDir(),
 		Network: "regtest",
-		Swap: &darepod.SwapConfig{
+		Swap: &waved.SwapConfig{
 			ServerAddress:  "localhost:10030",
 			ServerInsecure: true,
 		},
@@ -943,8 +943,8 @@ func TestNewSwapServerClientsREST(t *testing.T) {
 	)
 	defer server.Close()
 
-	clients, err := newSwapServerClients(&darepod.SwapConfig{
-		ServerTransport: darepod.RPCTransportREST,
+	clients, err := newSwapServerClients(&waved.SwapConfig{
+		ServerTransport: waved.RPCTransportREST,
 		ServerInsecure:  true,
 	}, server.URL, func(_ context.Context, recipient string) (string,
 		error) {
@@ -997,7 +997,7 @@ func TestNewSwapServerClientsREST(t *testing.T) {
 func TestNewSwapServerClientsUnknownTransport(t *testing.T) {
 	t.Parallel()
 
-	_, err := newSwapServerClients(&darepod.SwapConfig{
+	_, err := newSwapServerClients(&waved.SwapConfig{
 		ServerTransport: "webdav",
 	}, "localhost:10030", nil, nil)
 	require.ErrorContains(t, err, "unknown swap server transport")
@@ -1006,7 +1006,7 @@ func TestNewSwapServerClientsUnknownTransport(t *testing.T) {
 func TestDefaultLocalSwapServerUsesInsecureTransport(t *testing.T) {
 	t.Parallel()
 
-	cfg := &darepod.SwapConfig{}
+	cfg := &waved.SwapConfig{}
 
 	require.True(
 		t, useInsecureSwapServerTransport(
@@ -1022,7 +1022,7 @@ func TestDefaultLocalSwapServerUsesInsecureTransport(t *testing.T) {
 func TestRemoteSwapServerUsesTLSByDefault(t *testing.T) {
 	t.Parallel()
 
-	cfg := &darepod.SwapConfig{}
+	cfg := &waved.SwapConfig{}
 
 	require.False(
 		t, useInsecureSwapServerTransport(
@@ -1038,7 +1038,7 @@ func TestRemoteSwapServerUsesTLSByDefault(t *testing.T) {
 func TestSwapServerTLSCertPathOverridesLocalFallback(t *testing.T) {
 	t.Parallel()
 
-	cfg := &darepod.SwapConfig{
+	cfg := &waved.SwapConfig{
 		ServerTLSCertPath: "/tmp/swapd.pem",
 	}
 

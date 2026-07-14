@@ -9,10 +9,10 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/chainhash/v2"
-	"github.com/lightninglabs/darepo-client/daemonrpc"
-	"github.com/lightninglabs/darepo-client/ledger"
-	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
-	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/ledger"
+	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
+	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/stretchr/testify/require"
 )
 
@@ -80,8 +80,8 @@ func setReceiveClaimByOutputTxidFixture(t *testing.T, swap *fakeSwapService,
 			},
 		},
 	}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Type:           "oor",
 				Subtype:        ledger.EventVTXOSent,
@@ -136,8 +136,8 @@ func TestHistoryListMergesSwapAndLedgerSources(t *testing.T) {
 			},
 		},
 	}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Type:               "boarding",
 				ConfirmationStatus: "confirmed",
@@ -218,7 +218,7 @@ func TestHistoryPendingFilterDropsTerminal(t *testing.T) {
 			},
 		},
 	}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{}
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{}
 
 	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{
 		PendingOnly: true,
@@ -235,8 +235,8 @@ func TestHistorySurfacesPendingBoardingBalance(t *testing.T) {
 
 	h, swap, rpc := newHistoryFixture(t)
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{}
-	rpc.getBalanceResp = &daemonrpc.GetBalanceResponse{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{}
+	rpc.getBalanceResp = &waverpc.GetBalanceResponse{
 		BoardingUnconfirmedSat: 12345,
 	}
 
@@ -296,8 +296,8 @@ func TestHistoryHidesReceiveClaimOORSend(t *testing.T) {
 			},
 		},
 	}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Type:           "oor",
 				Subtype:        ledger.EventVTXOSent,
@@ -387,8 +387,8 @@ func TestHistoryKeepsUnpairedOORSend(t *testing.T) {
 
 	h, swap, rpc := newHistoryFixture(t)
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Type:           "oor",
 				Subtype:        ledger.EventVTXOSent,
@@ -418,7 +418,7 @@ func TestHistoryKeepsUnpairedOORSend(t *testing.T) {
 func TestOORSendSessionIDRequiresHashSizedSession(t *testing.T) {
 	t.Parallel()
 
-	row := &daemonrpc.TransactionHistoryEntry{
+	row := &waverpc.TransactionHistoryEntry{
 		Type:          "oor",
 		Subtype:       ledger.EventVTXOSent,
 		AmountSat:     1_000,
@@ -447,7 +447,7 @@ func TestOORSendSessionIDRequiresHashSizedSession(t *testing.T) {
 func TestOORReceiveRefRequiresOORType(t *testing.T) {
 	t.Parallel()
 
-	row := &daemonrpc.TransactionHistoryEntry{
+	row := &waverpc.TransactionHistoryEntry{
 		Type:          "round",
 		Subtype:       ledger.EventVTXOReceived,
 		AmountSat:     1_000,
@@ -490,8 +490,8 @@ func TestHistoryHidesPayFundingOORInput(t *testing.T) {
 			},
 		},
 	}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Type:               "oor",
 				Subtype:            ledger.EventVTXOSent,
@@ -555,8 +555,8 @@ func TestHistoryHidesPayFundingOORInputWithoutChange(t *testing.T) {
 			},
 		},
 	}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Type:           "oor",
 				Subtype:        ledger.EventVTXOSent,
@@ -612,8 +612,8 @@ func TestHistoryHidesPayRefundOORSession(t *testing.T) {
 			},
 		},
 	}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Type:           "oor",
 				Subtype:        ledger.EventVTXOSent,
@@ -694,8 +694,8 @@ func TestHistoryPendingFilterKeepsTerminalSwapCorrelations(t *testing.T) {
 			},
 		},
 	}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Type:           "oor",
 				Subtype:        ledger.EventVTXOSent,
@@ -780,8 +780,8 @@ func TestHistoryKeepsSameAmountUnmatchedFundingInput(t *testing.T) {
 			},
 		},
 	}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Type:           "oor",
 				Subtype:        ledger.EventVTXOSent,
@@ -847,8 +847,8 @@ func TestHistoryKeepsOORSendWithChangeWithoutSwap(t *testing.T) {
 	sessionHex := testSessionString(t, sessionID)
 
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Type:               "oor",
 				Subtype:            ledger.EventVTXOSent,
@@ -906,8 +906,8 @@ func TestHistoryKeepsZeroDeltaOORSendWithoutSwap(t *testing.T) {
 	sessionHex := testSessionString(t, sessionID)
 
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Type:               "oor",
 				Subtype:            ledger.EventVTXOSent,
@@ -959,8 +959,8 @@ func TestHistoryCompletesRecordedOORReceive(t *testing.T) {
 
 	h, swap, rpc := newHistoryFixture(t)
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Type:               "oor",
 				Subtype:            ledger.EventVTXOReceived,
@@ -1000,8 +1000,8 @@ func TestHistoryPendingFilterIncludesPendingBoarding(t *testing.T) {
 
 	h, swap, rpc := newHistoryFixture(t)
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Type:               "boarding",
 				ConfirmationStatus: "confirmed",
@@ -1011,7 +1011,7 @@ func TestHistoryPendingFilterIncludesPendingBoarding(t *testing.T) {
 			},
 		},
 	}
-	rpc.getBalanceResp = &daemonrpc.GetBalanceResponse{
+	rpc.getBalanceResp = &waverpc.GetBalanceResponse{
 		BoardingUnconfirmedSat: 12345,
 	}
 
@@ -1042,8 +1042,8 @@ func TestHistoryKindFilter(t *testing.T) {
 			},
 		},
 	}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Type:               "boarding",
 				ConfirmationStatus: "confirmed",
@@ -1095,7 +1095,7 @@ func TestHistorySwapRowsIgnoreTimedOutOverlay(t *testing.T) {
 			},
 		},
 	}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{}
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{}
 
 	// Inject overlay directly.
 	h.runtime.pendingMu.Lock()
@@ -1132,8 +1132,8 @@ func TestHistoryWalletRowsApplyTimedOutOverlay(t *testing.T) {
 
 	h, swap, rpc := newHistoryFixture(t)
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Txid:               "exit-txid",
 				Type:               "sweep",
@@ -1180,8 +1180,8 @@ func TestHistoryIncludesWalletLocalPendingExit(t *testing.T) {
 
 	h, swap, rpc := newHistoryFixture(t)
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{}
-	rpc.unrollStatusResp = &daemonrpc.GetUnrollStatusResponse{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{}
+	rpc.unrollStatusResp = &waverpc.GetUnrollStatusResponse{
 		Found: false,
 	}
 
@@ -1221,19 +1221,19 @@ func TestHistoryCompletesWalletLocalExitWhenVTXOForfeited(t *testing.T) {
 
 	h, swap, rpc := newHistoryFixture(t)
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{}
-	rpc.unrollStatusResp = &daemonrpc.GetUnrollStatusResponse{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{}
+	rpc.unrollStatusResp = &waverpc.GetUnrollStatusResponse{
 		Found: false,
 	}
-	rpc.listVTXOsByStatus = map[daemonrpc.VTXOStatus]*daemonrpc.
+	rpc.listVTXOsByStatus = map[waverpc.VTXOStatus]*waverpc.
 		ListVTXOsResponse{
 
-		daemonrpc.VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT: {},
-		daemonrpc.VTXOStatus_VTXO_STATUS_FORFEITED: {
-			Vtxos: []*daemonrpc.VTXO{
+		waverpc.VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT: {},
+		waverpc.VTXOStatus_VTXO_STATUS_FORFEITED: {
+			Vtxos: []*waverpc.VTXO{
 				{
 					Outpoint: "leave-outpoint:1",
-					Status: daemonrpc.
+					Status: waverpc.
 						VTXOStatus_VTXO_STATUS_FORFEITED,
 				},
 			},
@@ -1300,21 +1300,21 @@ func TestHistoryStampsSettlementOnForfeitedLeave(t *testing.T) {
 
 	h, swap, rpc := newHistoryFixture(t)
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{}
-	rpc.unrollStatusResp = &daemonrpc.GetUnrollStatusResponse{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{}
+	rpc.unrollStatusResp = &waverpc.GetUnrollStatusResponse{
 		Found: false,
 	}
-	rpc.listVTXOsByStatus = map[daemonrpc.VTXOStatus]*daemonrpc.
+	rpc.listVTXOsByStatus = map[waverpc.VTXOStatus]*waverpc.
 		ListVTXOsResponse{
 
-		daemonrpc.VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT: {},
-		daemonrpc.VTXOStatus_VTXO_STATUS_FORFEITED: {
-			Vtxos: []*daemonrpc.VTXO{
+		waverpc.VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT: {},
+		waverpc.VTXOStatus_VTXO_STATUS_FORFEITED: {
+			Vtxos: []*waverpc.VTXO{
 				{
 					Outpoint: "leave-outpoint:1",
-					Status: daemonrpc.
+					Status: waverpc.
 						VTXOStatus_VTXO_STATUS_FORFEITED,
-					Settlement: &daemonrpc.VTXOSettlement{
+					Settlement: &waverpc.VTXOSettlement{
 						Txid:   settlementTxid,
 						Height: settlementHeight,
 					},
@@ -1365,19 +1365,19 @@ func TestHistoryKeepsWalletLocalExitPendingForUnmatchedForfeitedVTXO(
 
 	h, swap, rpc := newHistoryFixture(t)
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{}
-	rpc.unrollStatusResp = &daemonrpc.GetUnrollStatusResponse{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{}
+	rpc.unrollStatusResp = &waverpc.GetUnrollStatusResponse{
 		Found: false,
 	}
-	rpc.listVTXOsByStatus = map[daemonrpc.VTXOStatus]*daemonrpc.
+	rpc.listVTXOsByStatus = map[waverpc.VTXOStatus]*waverpc.
 		ListVTXOsResponse{
 
-		daemonrpc.VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT: {},
-		daemonrpc.VTXOStatus_VTXO_STATUS_FORFEITED: {
-			Vtxos: []*daemonrpc.VTXO{
+		waverpc.VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT: {},
+		waverpc.VTXOStatus_VTXO_STATUS_FORFEITED: {
+			Vtxos: []*waverpc.VTXO{
 				{
 					Outpoint: "other-leave-outpoint:0",
-					Status: daemonrpc.
+					Status: waverpc.
 						VTXOStatus_VTXO_STATUS_FORFEITED,
 				},
 			},
@@ -1421,19 +1421,19 @@ func TestHistoryScansForfeitedVTXOsOnceForWalletLocalExits(t *testing.T) {
 
 	h, swap, rpc := newHistoryFixture(t)
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{}
-	rpc.unrollStatusResp = &daemonrpc.GetUnrollStatusResponse{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{}
+	rpc.unrollStatusResp = &waverpc.GetUnrollStatusResponse{
 		Found: false,
 	}
-	rpc.listVTXOsByStatus = map[daemonrpc.VTXOStatus]*daemonrpc.
+	rpc.listVTXOsByStatus = map[waverpc.VTXOStatus]*waverpc.
 		ListVTXOsResponse{
 
-		daemonrpc.VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT: {},
-		daemonrpc.VTXOStatus_VTXO_STATUS_FORFEITED: {
-			Vtxos: []*daemonrpc.VTXO{
+		waverpc.VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT: {},
+		waverpc.VTXOStatus_VTXO_STATUS_FORFEITED: {
+			Vtxos: []*waverpc.VTXO{
 				{
 					Outpoint: "leave-outpoint:1",
-					Status: daemonrpc.
+					Status: waverpc.
 						VTXOStatus_VTXO_STATUS_FORFEITED,
 				},
 			},
@@ -1474,7 +1474,7 @@ func TestHistoryScansForfeitedVTXOsOnceForWalletLocalExits(t *testing.T) {
 	)
 	require.Equal(t, 2, rpc.listVTXOsCalls)
 	require.Equal(
-		t, daemonrpc.VTXOStatus_VTXO_STATUS_FORFEITED,
+		t, waverpc.VTXOStatus_VTXO_STATUS_FORFEITED,
 		rpc.listVTXOsLastReq.GetStatusFilter(),
 	)
 }
@@ -1491,20 +1491,20 @@ func TestHistoryKeepsCSVPendingUnilateralExitPendingAfterDeadline(
 
 	h, swap, rpc := newHistoryFixture(t)
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{}
-	rpc.listVTXOsResp = &daemonrpc.ListVTXOsResponse{
-		Vtxos: []*daemonrpc.VTXO{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{}
+	rpc.listVTXOsResp = &waverpc.ListVTXOsResponse{
+		Vtxos: []*waverpc.VTXO{
 			{
 				Outpoint:  "exit-outpoint:0",
 				AmountSat: 7_000,
-				Status: daemonrpc.
+				Status: waverpc.
 					VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT,
 			},
 		},
 	}
-	rpc.unrollStatusResp = &daemonrpc.GetUnrollStatusResponse{
+	rpc.unrollStatusResp = &waverpc.GetUnrollStatusResponse{
 		Found:  true,
-		Status: daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_CSV_PENDING,
+		Status: waverpc.UnrollJobStatus_UNROLL_JOB_STATUS_CSV_PENDING,
 	}
 
 	pending := unilateralExitEntryStub("exit-outpoint:0")
@@ -1540,7 +1540,7 @@ func TestHistoryExitKindFilterGatesWalletLocalPendingRows(t *testing.T) {
 
 	h, swap, rpc := newHistoryFixture(t)
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{}
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{}
 
 	h.runtime.trackPendingEntryWithoutTimeout(
 		leaveEntryStub(
@@ -1572,20 +1572,20 @@ func TestHistoryIncludesUnilateralExitVTXO(t *testing.T) {
 
 	h, swap, rpc := newHistoryFixture(t)
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{}
-	rpc.listVTXOsResp = &daemonrpc.ListVTXOsResponse{
-		Vtxos: []*daemonrpc.VTXO{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{}
+	rpc.listVTXOsResp = &waverpc.ListVTXOsResponse{
+		Vtxos: []*waverpc.VTXO{
 			{
 				Outpoint:  "exit-outpoint:0",
 				AmountSat: 7_000,
-				Status: daemonrpc.
+				Status: waverpc.
 					VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT,
 			},
 		},
 	}
-	rpc.unrollStatusResp = &daemonrpc.GetUnrollStatusResponse{
+	rpc.unrollStatusResp = &waverpc.GetUnrollStatusResponse{
 		Found:     true,
-		Status:    daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_FAILED,
+		Status:    waverpc.UnrollJobStatus_UNROLL_JOB_STATUS_FAILED,
 		LastError: "broadcast failed",
 	}
 
@@ -1609,7 +1609,7 @@ func TestHistoryIncludesUnilateralExitVTXO(t *testing.T) {
 		entries[0].GetFailureCode(),
 	)
 	require.Equal(
-		t, daemonrpc.VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT,
+		t, waverpc.VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT,
 		rpc.listVTXOsLastReq.GetStatusFilter(),
 	)
 	require.Equal(t, "exit-outpoint:0", rpc.unrollStatusLast.GetOutpoint())
@@ -1659,16 +1659,16 @@ func TestHistoryPagination(t *testing.T) {
 
 	h, swap, rpc := newHistoryFixture(t)
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
-	txns := make([]*daemonrpc.TransactionHistoryEntry, 0, 5)
+	txns := make([]*waverpc.TransactionHistoryEntry, 0, 5)
 	for i := 0; i < 5; i++ {
-		txns = append(txns, &daemonrpc.TransactionHistoryEntry{
+		txns = append(txns, &waverpc.TransactionHistoryEntry{
 			Type:               "boarding",
 			ConfirmationStatus: "confirmed",
 			Txid:               "deposit-" + string(rune('a'+i)),
 			CreatedAtUnixS:     int64(100 + i),
 		})
 	}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
 		Transactions: txns,
 	}
 
@@ -1692,8 +1692,8 @@ func TestHistoryClassifiesOORLedgerRows(t *testing.T) {
 
 	h, swap, rpc := newHistoryFixture(t)
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Type:               "oor",
 				ConfirmationStatus: "confirmed",
@@ -1778,8 +1778,8 @@ func TestHistoryDedupesByID(t *testing.T) {
 			},
 		},
 	}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Type:               "oor",
 				ConfirmationStatus: "confirmed",
@@ -1820,8 +1820,8 @@ func TestHistoryKeepsSameTransactionBoardingOutputs(t *testing.T) {
 		sharedTxid = "18983d5d6f9c2dbf5166174777162f97797bed3e59d5f63b80a58833ea5391a0"
 		otherTxid  = "c4411b5d45230b71335dad7f5a20772985facf9634280dc263063b1f9b87f034"
 	)
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Type:               "boarding",
 				Subtype:            ledger.EventWalletUTXOCreated,
@@ -1886,9 +1886,9 @@ func TestHistoryPaginationOffsetPlumbedToLedger(t *testing.T) {
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
 
 	// 20 deposit rows so page 2 must be served from the ledger.
-	txns := make([]*daemonrpc.TransactionHistoryEntry, 0, 20)
+	txns := make([]*waverpc.TransactionHistoryEntry, 0, 20)
 	for i := 0; i < 20; i++ {
-		txns = append(txns, &daemonrpc.TransactionHistoryEntry{
+		txns = append(txns, &waverpc.TransactionHistoryEntry{
 			Type:               "boarding",
 			ConfirmationStatus: "confirmed",
 			Txid:               fmt.Sprintf("deposit-%02d", i),
@@ -1896,7 +1896,7 @@ func TestHistoryPaginationOffsetPlumbedToLedger(t *testing.T) {
 			CreatedAtUnixS:     int64(100 + i),
 		})
 	}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
 		Transactions: txns,
 	}
 
@@ -1933,8 +1933,8 @@ func TestHistoryDepositBoardsBeforeCompletion(t *testing.T) {
 
 	h, swap, rpc := newHistoryFixture(t)
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Type:               "boarding",
 				Subtype:            ledger.EventWalletUTXOCreated,
@@ -1969,8 +1969,8 @@ func TestHistoryDepositCompletesAfterBoarding(t *testing.T) {
 
 	h, swap, rpc := newHistoryFixture(t)
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Type:               "boarding",
 				Subtype:            ledger.EventWalletUTXOCreated,
@@ -2007,12 +2007,12 @@ func TestLedgerActivityIDDeposit(t *testing.T) {
 	dep := walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT
 	tests := []struct {
 		name  string
-		entry *daemonrpc.TransactionHistoryEntry
+		entry *waverpc.TransactionHistoryEntry
 		want  string
 	}{
 		{
 			name: "boarding_address present keys by address",
-			entry: &daemonrpc.TransactionHistoryEntry{
+			entry: &waverpc.TransactionHistoryEntry{
 				Txid:            "boardingtx",
 				Subtype:         ledger.EventWalletUTXOCreated,
 				OutputIndex:     1,
@@ -2022,7 +2022,7 @@ func TestLedgerActivityIDDeposit(t *testing.T) {
 		},
 		{
 			name: "older daemon without address falls back to txid:vout",
-			entry: &daemonrpc.TransactionHistoryEntry{
+			entry: &waverpc.TransactionHistoryEntry{
 				Txid:        "boardingtx",
 				Subtype:     ledger.EventWalletUTXOCreated,
 				OutputIndex: 1,
@@ -2031,7 +2031,7 @@ func TestLedgerActivityIDDeposit(t *testing.T) {
 		},
 		{
 			name: "no address and no output index falls back to txid",
-			entry: &daemonrpc.TransactionHistoryEntry{
+			entry: &waverpc.TransactionHistoryEntry{
 				Txid:        "boardingtx",
 				Subtype:     ledger.EventWalletUTXOCreated,
 				OutputIndex: -1,
@@ -2040,7 +2040,7 @@ func TestLedgerActivityIDDeposit(t *testing.T) {
 		},
 		{
 			name: "non-deposit subtype ignores boarding_address",
-			entry: &daemonrpc.TransactionHistoryEntry{
+			entry: &waverpc.TransactionHistoryEntry{
 				Txid:            "boardingtx",
 				Subtype:         "boarding_fee_paid",
 				BoardingAddress: "bcrt1qaddr",
@@ -2049,7 +2049,7 @@ func TestLedgerActivityIDDeposit(t *testing.T) {
 		},
 		{
 			name:  "empty txid returns empty",
-			entry: &daemonrpc.TransactionHistoryEntry{},
+			entry: &waverpc.TransactionHistoryEntry{},
 			want:  "",
 		},
 	}
@@ -2072,8 +2072,8 @@ func TestHistoryDepositKeyedByBoardingAddress(t *testing.T) {
 
 	h, swap, rpc := newHistoryFixture(t)
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Type:               "boarding",
 				Subtype:            ledger.EventWalletUTXOCreated,
@@ -2108,8 +2108,8 @@ func TestHistoryDepositsSameAddressSummed(t *testing.T) {
 
 	h, swap, rpc := newHistoryFixture(t)
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Type:               "boarding",
 				Subtype:            ledger.EventWalletUTXOCreated,
@@ -2162,7 +2162,7 @@ func TestDecorateExitEntryDoesNotClearPending(t *testing.T) {
 	)
 
 	h, _, rpc := newHistoryFixture(t)
-	rpc.unrollStatusResp = &daemonrpc.GetUnrollStatusResponse{Found: false}
+	rpc.unrollStatusResp = &waverpc.GetUnrollStatusResponse{Found: false}
 
 	entry := &walletdkrpc.WalletEntry{
 		Id:     jobID,
@@ -2281,7 +2281,7 @@ func TestDecorateExitEntryCompletesHashKeyedLeave(t *testing.T) {
 	// GetUnrollStatus by that outpoint (not the hash), find no unroll job,
 	// and complete.
 	h, _, rpc := newHistoryFixture(t)
-	rpc.unrollStatusResp = &daemonrpc.GetUnrollStatusResponse{Found: false}
+	rpc.unrollStatusResp = &waverpc.GetUnrollStatusResponse{Found: false}
 
 	entry := newEntry()
 	require.NoError(
@@ -2305,7 +2305,7 @@ func TestDecorateExitEntryCompletesHashKeyedLeave(t *testing.T) {
 	// When the retained outpoint is not forfeited, the row stays PENDING
 	// and the lookup still succeeds (no spurious error from a hash id).
 	h2, _, rpc2 := newHistoryFixture(t)
-	rpc2.unrollStatusResp = &daemonrpc.GetUnrollStatusResponse{Found: false}
+	rpc2.unrollStatusResp = &waverpc.GetUnrollStatusResponse{Found: false}
 
 	pending := newEntry()
 	require.NoError(

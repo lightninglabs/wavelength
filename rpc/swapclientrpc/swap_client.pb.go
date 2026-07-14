@@ -2466,7 +2466,7 @@ const file_swap_client_proto_rawDesc = "" +
 	"ResumeSwap\x12 .swapclientrpc.ResumeSwapRequest\x1a!.swapclientrpc.ResumeSwapResponse\x12N\n" +
 	"\tListSwaps\x12\x1f.swapclientrpc.ListSwapsRequest\x1a .swapclientrpc.ListSwapsResponse\x12H\n" +
 	"\aGetSwap\x12\x1d.swapclientrpc.GetSwapRequest\x1a\x1e.swapclientrpc.GetSwapResponse\x12_\n" +
-	"\x0eSubscribeSwaps\x12$.swapclientrpc.SubscribeSwapsRequest\x1a%.swapclientrpc.SubscribeSwapsResponse0\x01B:Z8github.com/lightninglabs/darepo-client/rpc/swapclientrpcb\x06proto3"
+	"\x0eSubscribeSwaps\x12$.swapclientrpc.SubscribeSwapsRequest\x1a%.swapclientrpc.SubscribeSwapsResponse0\x01B7Z5github.com/lightninglabs/wavelength/rpc/swapclientrpcb\x06proto3"
 
 var (
 	file_swap_client_proto_rawDescOnce sync.Once

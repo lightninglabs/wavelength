@@ -58,7 +58,7 @@ func exitStoreFromTestDB(base *BaseDB) *UnilateralExitPersistenceStore {
 // funding address is stable for the same target VTXO outpoint across a
 // simulated daemon restart: the second store must return the already-derived
 // address without deriving a new one, and a different outpoint must still get
-// its own address (darepo-client#893).
+// its own address (wavelength#893).
 func TestExitFundingAddressStableAcrossRestart(t *testing.T) {
 	t.Parallel()
 

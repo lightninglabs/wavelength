@@ -10,10 +10,10 @@ import (
 	"time"
 
 	"github.com/btcsuite/btclog/v2"
-	clientdb "github.com/lightninglabs/darepo-client/db"
-	dbmigrate "github.com/lightninglabs/darepo-client/db/migrate"
-	dbsqlc "github.com/lightninglabs/darepo-client/db/sqlc"
-	swapsqlc "github.com/lightninglabs/darepo-client/sdk/swaps/sqlc"
+	clientdb "github.com/lightninglabs/wavelength/db"
+	dbmigrate "github.com/lightninglabs/wavelength/db/migrate"
+	dbsqlc "github.com/lightninglabs/wavelength/db/sqlc"
+	swapsqlc "github.com/lightninglabs/wavelength/sdk/swaps/sqlc"
 )
 
 const (

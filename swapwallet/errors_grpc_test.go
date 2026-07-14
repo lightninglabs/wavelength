@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
@@ -61,7 +61,7 @@ func TestSentinelMappingsCoverage(t *testing.T) {
 	}
 
 	// ErrWalletNotReady is intentionally unmapped: the readiness gate
-	// returns daemonrpc's own structured WALLET_NOT_READY status, so the
+	// returns waverpc's own structured WALLET_NOT_READY status, so the
 	// bare sentinel never reaches the interceptor.
 	exempt := map[error]bool{
 		ErrWalletNotReady: true,

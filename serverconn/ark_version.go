@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/lightninglabs/darepo-client/arkrpc"
-	mailboxconn "github.com/lightninglabs/darepo-client/mailbox/conn"
-	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
+	"github.com/lightninglabs/wavelength/arkrpc"
+	mailboxconn "github.com/lightninglabs/wavelength/mailbox/conn"
+	mailboxpb "github.com/lightninglabs/wavelength/mailbox/pb"
 	"google.golang.org/grpc"
 )
 

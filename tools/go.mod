@@ -1,4 +1,4 @@
-module github.com/lightninglabs/darepo-client/tools
+module github.com/lightninglabs/wavelength/tools
 
 go 1.26.0
 

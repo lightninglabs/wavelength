@@ -14,10 +14,10 @@ import (
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/baselib/actor"
-	"github.com/lightninglabs/darepo-client/lib/tx/arktx"
-	"github.com/lightninglabs/darepo-client/txconfirm"
-	"github.com/lightninglabs/darepo-client/walletcore"
+	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/lib/tx/arktx"
+	"github.com/lightninglabs/wavelength/txconfirm"
+	"github.com/lightninglabs/wavelength/walletcore"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/input"
 )
@@ -58,7 +58,7 @@ const (
 // boarding-sweep flow, so the subsystems never release each other's leases.
 var walletSweepLockID = func() walletcore.LockID {
 	var id walletcore.LockID
-	copy(id[:], "darepo-client:sweepwallet")
+	copy(id[:], "wavelength:sweepwallet")
 
 	return id
 }()

@@ -1,4 +1,4 @@
-module github.com/lightninglabs/darepo-client
+module github.com/lightninglabs/wavelength
 
 go 1.26.0
 
@@ -20,13 +20,13 @@ require (
 	github.com/jackc/pgerrcode v0.0.0-20250907135507-afb5586c32a6
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/lib/pq v1.11.1
-	github.com/lightninglabs/darepo-client/baselib v0.0.0-00010101000000-000000000000
 	github.com/lightninglabs/lndclient v1.0.1-0.20260701212139-09c54915cfba
 	github.com/lightninglabs/loop v0.33.0-beta
 	github.com/lightninglabs/neutrino v0.18.0
 	github.com/lightninglabs/neutrino/cache v1.1.4
 	github.com/lightninglabs/taproot-assets v0.7.1-0.20260706193822-2adfadc58e3c
 	github.com/lightninglabs/taproot-assets/taprpc v1.1.1-0.20260706193822-2adfadc58e3c
+	github.com/lightninglabs/wavelength/baselib v0.0.0-00010101000000-000000000000
 	github.com/lightningnetwork/lightning-onion v1.4.0
 	github.com/lightningnetwork/lnd v0.21.0-beta.rc2.0.20260630214209-40c64f9db30d
 	github.com/lightningnetwork/lnd/clock v1.1.1
@@ -235,4 +235,4 @@ require (
 replace google.golang.org/protobuf => github.com/lightninglabs/protobuf-go-hex-display v1.33.0-hex-display
 
 // Use local baselib for development and CI.
-replace github.com/lightninglabs/darepo-client/baselib => ./baselib
+replace github.com/lightninglabs/wavelength/baselib => ./baselib

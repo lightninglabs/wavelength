@@ -8,8 +8,8 @@ import (
 	"log/slog"
 	"time"
 
-	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
-	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
+	mailboxpb "github.com/lightninglabs/wavelength/mailbox/pb"
+	mailboxrpc "github.com/lightninglabs/wavelength/mailbox/rpc"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 )

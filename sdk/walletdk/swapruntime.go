@@ -3,8 +3,8 @@
 package walletdk
 
 import (
-	"github.com/lightninglabs/darepo-client/darepod"
-	"github.com/lightninglabs/darepo-client/swapclientserver"
+	"github.com/lightninglabs/wavelength/swapclientserver"
+	"github.com/lightninglabs/wavelength/waved"
 )
 
 // configureSwapRuntime registers the daemon-owned swap executor when the
@@ -16,7 +16,7 @@ import (
 // swapruntime; the stub file in swapruntime_stub.go is the negative half of
 // the same contract and keeps the public Client method set identical across
 // both build flavors.
-func configureSwapRuntime(cfg *darepod.Config, enabled bool) error {
+func configureSwapRuntime(cfg *waved.Config, enabled bool) error {
 	if !enabled {
 		return nil
 	}

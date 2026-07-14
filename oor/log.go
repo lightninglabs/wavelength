@@ -4,8 +4,8 @@ import (
 	"context"
 
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/baselib/protofsm"
-	"github.com/lightninglabs/darepo-client/build"
+	"github.com/lightninglabs/wavelength/baselib/protofsm"
+	"github.com/lightninglabs/wavelength/build"
 )
 
 // Subsystem defines the logging code for this subsystem.

@@ -11,7 +11,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
 	"github.com/btcsuite/btcd/chainhash/v2"
-	"github.com/lightninglabs/darepo-client/daemonrpc"
+	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"google.golang.org/grpc"
 )
@@ -26,7 +26,7 @@ const (
 // is talking to a remote daemon or an embedded in-process daemon runtime.
 // Client is safe for concurrent use.
 type Client struct {
-	daemon daemonrpc.DaemonServiceClient
+	daemon waverpc.DaemonServiceClient
 	waitCh <-chan error
 
 	closeFn   func(context.Context) error
@@ -72,7 +72,7 @@ func (i *Info) WalletReady() bool {
 	return i.WalletState == WalletStateReady
 }
 
-// Info describes the current status of a running darepod instance.
+// Info describes the current status of a running waved instance.
 type Info struct {
 	// Version is the daemon's semantic version string.
 	Version string
@@ -185,7 +185,7 @@ type WalletInitResult struct {
 // classification.
 type VTXOExpiryInfo struct {
 	// Status is the daemon's current expiry posture for the VTXO.
-	Status daemonrpc.VTXOExpiryStatus
+	Status waverpc.VTXOExpiryStatus
 
 	// CurrentHeight is the chain height used for classification.
 	CurrentHeight int32
@@ -225,7 +225,7 @@ type VTXOInfo struct {
 	AmountSat int64
 
 	// Status is the daemon's current lifecycle state for the VTXO.
-	Status daemonrpc.VTXOStatus
+	Status waverpc.VTXOStatus
 
 	// BatchExpiry is the absolute block height of the batch-wide expiry.
 	BatchExpiry int32
@@ -373,7 +373,7 @@ type PreparedOOR struct {
 // gRPC client. The optional closeFn lets callers release the underlying
 // transport when the SDK facade owns it; pass nil when another layer manages
 // the daemon client's lifetime.
-func WrapDaemonClient(daemon daemonrpc.DaemonServiceClient,
+func WrapDaemonClient(daemon waverpc.DaemonServiceClient,
 	closeFn func(context.Context) error) *Client {
 
 	return &Client{
@@ -429,7 +429,7 @@ func closedWaitChan() <-chan error {
 // GetInfo returns the daemon's current status, wallet state, and any cached
 // operator terms.
 func (c *Client) GetInfo(ctx context.Context) (*Info, error) {
-	resp, err := c.daemon.GetInfo(ctx, &daemonrpc.GetInfoRequest{})
+	resp, err := c.daemon.GetInfo(ctx, &waverpc.GetInfoRequest{})
 	if err != nil {
 		return nil, fmt.Errorf("get daemon info: %w", err)
 	}
@@ -514,7 +514,7 @@ func (c *Client) OperatorPubKey(ctx context.Context) (*btcec.PublicKey, error) {
 func (c *Client) GenSeed(ctx context.Context, seedPassphrase []byte) (*Seed,
 	error) {
 
-	resp, err := c.daemon.GenSeed(ctx, &daemonrpc.GenSeedRequest{
+	resp, err := c.daemon.GenSeed(ctx, &waverpc.GenSeedRequest{
 		SeedPassphrase: bytes.Clone(seedPassphrase),
 	})
 	if err != nil {
@@ -532,7 +532,7 @@ func (c *Client) GenSeed(ctx context.Context, seedPassphrase []byte) (*Seed,
 func (c *Client) InitWallet(ctx context.Context, mnemonic []string,
 	seedPassphrase, walletPassword []byte) (*WalletInitResult, error) {
 
-	resp, err := c.daemon.InitWallet(ctx, &daemonrpc.InitWalletRequest{
+	resp, err := c.daemon.InitWallet(ctx, &waverpc.InitWalletRequest{
 		Mnemonic:       append([]string(nil), mnemonic...),
 		SeedPassphrase: bytes.Clone(seedPassphrase),
 		WalletPassword: bytes.Clone(walletPassword),
@@ -552,7 +552,7 @@ func (c *Client) UnlockWallet(ctx context.Context, walletPassword []byte) (
 	*WalletInitResult, error) {
 
 	resp, err := c.daemon.UnlockWallet(ctx,
-		&daemonrpc.UnlockWalletRequest{
+		&waverpc.UnlockWalletRequest{
 			WalletPassword: bytes.Clone(walletPassword),
 		},
 	)
@@ -567,11 +567,11 @@ func (c *Client) UnlockWallet(ctx context.Context, walletPassword []byte) (
 
 // GetBalance returns the daemon's current wallet balances split across the
 // boarding and VTXO buckets.
-func (c *Client) GetBalance(ctx context.Context) (*daemonrpc.GetBalanceResponse,
+func (c *Client) GetBalance(ctx context.Context) (*waverpc.GetBalanceResponse,
 	error) {
 
 	resp, err := c.daemon.GetBalance(ctx,
-		&daemonrpc.GetBalanceRequest{})
+		&waverpc.GetBalanceRequest{})
 	if err != nil {
 		return nil, fmt.Errorf("get wallet balance: %w", err)
 	}
@@ -581,11 +581,11 @@ func (c *Client) GetBalance(ctx context.Context) (*daemonrpc.GetBalanceResponse,
 
 // ListVTXOs returns the daemon's known VTXOs using the supplied filter
 // request. Passing nil uses the daemon defaults with no extra filters.
-func (c *Client) ListVTXOs(ctx context.Context,
-	req *daemonrpc.ListVTXOsRequest) (*daemonrpc.ListVTXOsResponse, error) {
+func (c *Client) ListVTXOs(ctx context.Context, req *waverpc.ListVTXOsRequest) (
+	*waverpc.ListVTXOsResponse, error) {
 
 	if req == nil {
-		req = &daemonrpc.ListVTXOsRequest{}
+		req = &waverpc.ListVTXOsRequest{}
 	}
 
 	resp, err := c.daemon.ListVTXOs(ctx, req)
@@ -597,10 +597,10 @@ func (c *Client) ListVTXOs(ctx context.Context,
 }
 
 // NewAddress allocates a fresh boarding address from the daemon wallet.
-func (c *Client) NewAddress(ctx context.Context) (*daemonrpc.NewAddressResponse,
+func (c *Client) NewAddress(ctx context.Context) (*waverpc.NewAddressResponse,
 	error) {
 
-	resp, err := c.daemon.NewAddress(ctx, &daemonrpc.NewAddressRequest{})
+	resp, err := c.daemon.NewAddress(ctx, &waverpc.NewAddressRequest{})
 	if err != nil {
 		return nil, fmt.Errorf("create boarding address: %w", err)
 	}
@@ -611,10 +611,10 @@ func (c *Client) NewAddress(ctx context.Context) (*daemonrpc.NewAddressResponse,
 // NewReceiveScript allocates and registers a fresh receive script with the
 // daemon and indexer.
 func (c *Client) NewReceiveScript(ctx context.Context, label string) (
-	*daemonrpc.NewReceiveScriptResponse, error) {
+	*waverpc.NewReceiveScriptResponse, error) {
 
 	resp, err := c.daemon.NewReceiveScript(ctx,
-		&daemonrpc.NewReceiveScriptRequest{
+		&waverpc.NewReceiveScriptRequest{
 			Label: label,
 		},
 	)
@@ -644,7 +644,7 @@ func (c *Client) ReceiveAuthKey(ctx context.Context, paymentHash lntypes.Hash) (
 	*btcec.PublicKey, error) {
 
 	resp, err := c.daemon.ReceiveAuthKey(
-		ctx, &daemonrpc.ReceiveAuthKeyRequest{
+		ctx, &waverpc.ReceiveAuthKeyRequest{
 			PaymentHash: paymentHash[:],
 		},
 	)
@@ -667,7 +667,7 @@ func (c *Client) SignReceiveAuthMessage(ctx context.Context,
 	*ecdsa.Signature, error) {
 
 	resp, err := c.daemon.SignReceiveAuthMessage(
-		ctx, &daemonrpc.SignReceiveAuthMessageRequest{
+		ctx, &waverpc.SignReceiveAuthMessageRequest{
 			PaymentHash: paymentHash[:],
 			Message:     message,
 			DoubleHash:  doubleHash,
@@ -692,7 +692,7 @@ func (c *Client) SignReceiveAuthMessageCompact(ctx context.Context,
 	error) {
 
 	resp, err := c.daemon.SignReceiveAuthMessageCompact(
-		ctx, &daemonrpc.SignReceiveAuthMessageCompactRequest{
+		ctx, &waverpc.SignReceiveAuthMessageCompactRequest{
 			PaymentHash: paymentHash[:],
 			Message:     message,
 			DoubleHash:  doubleHash,
@@ -717,7 +717,7 @@ func (c *Client) ReceiveAuthECDH(ctx context.Context, paymentHash lntypes.Hash,
 	}
 
 	resp, err := c.daemon.ReceiveAuthECDH(
-		ctx, &daemonrpc.ReceiveAuthECDHRequest{
+		ctx, &waverpc.ReceiveAuthECDHRequest{
 			PaymentHash: paymentHash[:],
 			Pubkey:      pubKey.SerializeCompressed(),
 		},
@@ -740,11 +740,11 @@ func (c *Client) ReceiveAuthECDH(ctx context.Context, paymentHash lntypes.Hash,
 // matching the supplied script and status filters. Passing nil uses the
 // daemon defaults.
 func (c *Client) GetIndexedVTXOByPkScript(ctx context.Context,
-	req *daemonrpc.GetIndexedVTXOByPkScriptRequest) (
-	*daemonrpc.GetIndexedVTXOByPkScriptResponse, error) {
+	req *waverpc.GetIndexedVTXOByPkScriptRequest) (
+	*waverpc.GetIndexedVTXOByPkScriptResponse, error) {
 
 	if req == nil {
-		req = &daemonrpc.GetIndexedVTXOByPkScriptRequest{}
+		req = &waverpc.GetIndexedVTXOByPkScriptRequest{}
 	}
 
 	resp, err := c.daemon.GetIndexedVTXOByPkScript(ctx, req)
@@ -758,11 +758,11 @@ func (c *Client) GetIndexedVTXOByPkScript(ctx context.Context,
 // GetVTXOExpiryInfo asks the daemon to classify a VTXO using the
 // authoritative wallet/VTXO expiry policy. Passing nil uses an empty request.
 func (c *Client) GetVTXOExpiryInfo(ctx context.Context,
-	req *daemonrpc.GetVTXOExpiryInfoRequest) (
-	*daemonrpc.GetVTXOExpiryInfoResponse, error) {
+	req *waverpc.GetVTXOExpiryInfoRequest) (
+	*waverpc.GetVTXOExpiryInfoResponse, error) {
 
 	if req == nil {
-		req = &daemonrpc.GetVTXOExpiryInfoRequest{}
+		req = &waverpc.GetVTXOExpiryInfoRequest{}
 	}
 
 	resp, err := c.daemon.GetVTXOExpiryInfo(ctx, req)
@@ -777,11 +777,11 @@ func (c *Client) GetVTXOExpiryInfo(ctx context.Context,
 // OOR session matching the supplied spent-script proof and session txid.
 // Passing nil uses the daemon defaults.
 func (c *Client) GetIndexedOORSessionByTxid(ctx context.Context,
-	req *daemonrpc.GetIndexedOORSessionByTxidRequest) (
-	*daemonrpc.GetIndexedOORSessionByTxidResponse, error) {
+	req *waverpc.GetIndexedOORSessionByTxidRequest) (
+	*waverpc.GetIndexedOORSessionByTxidResponse, error) {
 
 	if req == nil {
-		req = &daemonrpc.GetIndexedOORSessionByTxidRequest{}
+		req = &waverpc.GetIndexedOORSessionByTxidRequest{}
 	}
 
 	resp, err := c.daemon.GetIndexedOORSessionByTxid(ctx, req)
@@ -798,7 +798,7 @@ func (c *Client) FindLiveVTXOByPkScript(ctx context.Context, pkScript []byte) (
 	*VTXOInfo, error) {
 
 	return c.findIndexedVTXOByPkScript(
-		ctx, pkScript, daemonrpc.VTXOStatus_VTXO_STATUS_LIVE,
+		ctx, pkScript, waverpc.VTXOStatus_VTXO_STATUS_LIVE,
 	)
 }
 
@@ -808,19 +808,19 @@ func (c *Client) FindSpentVTXOByPkScript(ctx context.Context, pkScript []byte) (
 	*VTXOInfo, error) {
 
 	return c.findIndexedVTXOByPkScript(
-		ctx, pkScript, daemonrpc.VTXOStatus_VTXO_STATUS_SPENT,
+		ctx, pkScript, waverpc.VTXOStatus_VTXO_STATUS_SPENT,
 	)
 }
 
 // findIndexedVTXOByPkScript queries the daemon's authoritative indexer view
 // for one VTXO matching the supplied script and status.
 func (c *Client) findIndexedVTXOByPkScript(ctx context.Context, pkScript []byte,
-	status daemonrpc.VTXOStatus) (*VTXOInfo, error) {
+	status waverpc.VTXOStatus) (*VTXOInfo, error) {
 
 	resp, err := c.GetIndexedVTXOByPkScript(ctx,
-		&daemonrpc.GetIndexedVTXOByPkScriptRequest{
+		&waverpc.GetIndexedVTXOByPkScriptRequest{
 			PkScript: append([]byte(nil), pkScript...),
-			StatusFilter: []daemonrpc.VTXOStatus{
+			StatusFilter: []waverpc.VTXOStatus{
 				status,
 			},
 		},
@@ -847,7 +847,7 @@ func (c *Client) GetIndexedOORSession(ctx context.Context, pkScript []byte,
 	}
 
 	resp, err := c.GetIndexedOORSessionByTxid(ctx,
-		&daemonrpc.GetIndexedOORSessionByTxidRequest{
+		&waverpc.GetIndexedOORSessionByTxidRequest{
 			PkScript:    append([]byte(nil), pkScript...),
 			SessionTxid: sessionHash,
 		},
@@ -862,10 +862,10 @@ func (c *Client) GetIndexedOORSession(ctx context.Context, pkScript []byte,
 // GetOORSession returns the daemon's local durable status for one OOR
 // transfer session.
 func (c *Client) GetOORSession(ctx context.Context, sessionID string) (
-	*daemonrpc.OORSessionInfo, error) {
+	*waverpc.OORSessionInfo, error) {
 
 	resp, err := c.daemon.GetOORSession(ctx,
-		&daemonrpc.GetOORSessionRequest{
+		&waverpc.GetOORSessionRequest{
 			SessionId: sessionID,
 		},
 	)
@@ -878,11 +878,11 @@ func (c *Client) GetOORSession(ctx context.Context, sessionID string) (
 
 // SendVTXO submits an in-round send request through the daemon. Passing nil
 // uses an empty request.
-func (c *Client) SendVTXO(ctx context.Context, req *daemonrpc.SendVTXORequest) (
-	*daemonrpc.SendVTXOResponse, error) {
+func (c *Client) SendVTXO(ctx context.Context, req *waverpc.SendVTXORequest) (
+	*waverpc.SendVTXOResponse, error) {
 
 	if req == nil {
-		req = &daemonrpc.SendVTXORequest{}
+		req = &waverpc.SendVTXORequest{}
 	}
 
 	resp, err := c.daemon.SendVTXO(ctx, req)
@@ -895,11 +895,11 @@ func (c *Client) SendVTXO(ctx context.Context, req *daemonrpc.SendVTXORequest) (
 
 // SendOOR submits an out-of-round send request through the daemon. Passing nil
 // uses an empty request.
-func (c *Client) SendOOR(ctx context.Context, req *daemonrpc.SendOORRequest) (
-	*daemonrpc.SendOORResponse, error) {
+func (c *Client) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
+	*waverpc.SendOORResponse, error) {
 
 	if req == nil {
-		req = &daemonrpc.SendOORRequest{}
+		req = &waverpc.SendOORRequest{}
 	}
 
 	resp, err := c.daemon.SendOOR(ctx, req)
@@ -968,10 +968,10 @@ func (c *Client) SendOORWithPolicyAndKeyDetails(ctx context.Context,
 	amountSat int64, recipientPolicyTemplate []byte,
 	idempotencyKey string) (*OORSendResult, error) {
 
-	resp, err := c.SendOOR(ctx, &daemonrpc.SendOORRequest{
-		Recipients: []*daemonrpc.Output{
+	resp, err := c.SendOOR(ctx, &waverpc.SendOORRequest{
+		Recipients: []*waverpc.Output{
 			{
-				Destination: &daemonrpc.Output_PolicyTemplate{
+				Destination: &waverpc.Output_PolicyTemplate{
 					PolicyTemplate: append(
 						[]byte(nil),
 						recipientPolicyTemplate...,
@@ -1004,10 +1004,10 @@ func (c *Client) SendOORWithCustomInputs(ctx context.Context,
 	recipientPubKey []byte, amountSat int64, inputs []CustomOORInput) (
 	string, error) {
 
-	resp, err := c.SendOOR(ctx, &daemonrpc.SendOORRequest{
-		Recipients: []*daemonrpc.Output{
+	resp, err := c.SendOOR(ctx, &waverpc.SendOORRequest{
+		Recipients: []*waverpc.Output{
 			{
-				Destination: &daemonrpc.Output_Pubkey{
+				Destination: &waverpc.Output_Pubkey{
 					Pubkey: append(
 						[]byte(nil), recipientPubKey...,
 					),
@@ -1028,11 +1028,11 @@ func (c *Client) SendOORWithCustomInputs(ctx context.Context,
 // Higher-level swap FSMs call this before the cooperative path becomes risky so
 // restart recovery has a durable handle to the vHTLC context.
 func (c *Client) ArmVHTLCRecovery(ctx context.Context,
-	req *daemonrpc.ArmVHTLCRecoveryRequest) (
-	*daemonrpc.ArmVHTLCRecoveryResponse, error) {
+	req *waverpc.ArmVHTLCRecoveryRequest) (
+	*waverpc.ArmVHTLCRecoveryResponse, error) {
 
 	if req == nil {
-		req = &daemonrpc.ArmVHTLCRecoveryRequest{}
+		req = &waverpc.ArmVHTLCRecoveryRequest{}
 	}
 
 	resp, err := c.daemon.ArmVHTLCRecovery(ctx, req)
@@ -1046,11 +1046,11 @@ func (c *Client) ArmVHTLCRecovery(ctx context.Context,
 // EscalateVHTLCRecovery asks the daemon to start or resume the on-chain unroll
 // path for one previously armed vHTLC recovery job.
 func (c *Client) EscalateVHTLCRecovery(ctx context.Context,
-	req *daemonrpc.EscalateVHTLCRecoveryRequest) (
-	*daemonrpc.EscalateVHTLCRecoveryResponse, error) {
+	req *waverpc.EscalateVHTLCRecoveryRequest) (
+	*waverpc.EscalateVHTLCRecoveryResponse, error) {
 
 	if req == nil {
-		req = &daemonrpc.EscalateVHTLCRecoveryRequest{}
+		req = &waverpc.EscalateVHTLCRecoveryRequest{}
 	}
 
 	resp, err := c.daemon.EscalateVHTLCRecovery(ctx, req)
@@ -1064,11 +1064,11 @@ func (c *Client) EscalateVHTLCRecovery(ctx context.Context,
 // CancelVHTLCRecovery tells the daemon that cooperative settlement made one
 // armed vHTLC recovery job unnecessary.
 func (c *Client) CancelVHTLCRecovery(ctx context.Context,
-	req *daemonrpc.CancelVHTLCRecoveryRequest) (
-	*daemonrpc.CancelVHTLCRecoveryResponse, error) {
+	req *waverpc.CancelVHTLCRecoveryRequest) (
+	*waverpc.CancelVHTLCRecoveryResponse, error) {
 
 	if req == nil {
-		req = &daemonrpc.CancelVHTLCRecoveryRequest{}
+		req = &waverpc.CancelVHTLCRecoveryRequest{}
 	}
 
 	resp, err := c.daemon.CancelVHTLCRecovery(ctx, req)
@@ -1082,11 +1082,11 @@ func (c *Client) CancelVHTLCRecovery(ctx context.Context,
 // GetVHTLCRecoveryStatus returns the daemon's durable recovery status plus the
 // current unroll phase when the recovery has been escalated.
 func (c *Client) GetVHTLCRecoveryStatus(ctx context.Context,
-	req *daemonrpc.GetVHTLCRecoveryStatusRequest) (
-	*daemonrpc.GetVHTLCRecoveryStatusResponse, error) {
+	req *waverpc.GetVHTLCRecoveryStatusRequest) (
+	*waverpc.GetVHTLCRecoveryStatusResponse, error) {
 
 	if req == nil {
-		req = &daemonrpc.GetVHTLCRecoveryStatusRequest{}
+		req = &waverpc.GetVHTLCRecoveryStatusRequest{}
 	}
 
 	resp, err := c.daemon.GetVHTLCRecoveryStatus(ctx, req)
@@ -1105,9 +1105,9 @@ func (c *Client) PrepareOORWithCustomInputs(ctx context.Context,
 
 	rpcInputs := customOORInputsToRPC(inputs)
 	resp, err := c.daemon.PrepareOOR(
-		ctx, &daemonrpc.PrepareOORRequest{
-			Recipient: &daemonrpc.Output{
-				Destination: &daemonrpc.Output_Pubkey{
+		ctx, &waverpc.PrepareOORRequest{
+			Recipient: &waverpc.Output{
+				Destination: &waverpc.Output_Pubkey{
 					Pubkey: append(
 						[]byte(nil), recipientPubKey...,
 					),
@@ -1179,7 +1179,7 @@ func (c *Client) SignOORCustomInput(ctx context.Context, input CustomOORInput,
 	checkpointPSBT []byte) (*TaprootScriptSignature, error) {
 
 	resp, err := c.daemon.SignOORCustomInput(
-		ctx, &daemonrpc.SignOORCustomInputRequest{
+		ctx, &waverpc.SignOORCustomInputRequest{
 			CustomInput:    customOORInputToRPC(input),
 			CheckpointPsbt: append([]byte(nil), checkpointPSBT...),
 		},
@@ -1203,8 +1203,8 @@ func (c *Client) SignOORCustomInput(ctx context.Context, input CustomOORInput,
 }
 
 // customOORInputsToRPC converts SDK custom input structs to RPC messages.
-func customOORInputsToRPC(inputs []CustomOORInput) []*daemonrpc.CustomOORInput {
-	rpcInputs := make([]*daemonrpc.CustomOORInput, len(inputs))
+func customOORInputsToRPC(inputs []CustomOORInput) []*waverpc.CustomOORInput {
+	rpcInputs := make([]*waverpc.CustomOORInput, len(inputs))
 	for i := range inputs {
 		rpcInputs[i] = customOORInputToRPC(inputs[i])
 	}
@@ -1213,15 +1213,15 @@ func customOORInputsToRPC(inputs []CustomOORInput) []*daemonrpc.CustomOORInput {
 }
 
 // customOORInputToRPC converts one SDK custom input struct to an RPC message.
-func customOORInputToRPC(input CustomOORInput) *daemonrpc.CustomOORInput {
+func customOORInputToRPC(input CustomOORInput) *waverpc.CustomOORInput {
 	externalSigs := make(
-		[]*daemonrpc.TaprootScriptSignature, 0,
+		[]*waverpc.TaprootScriptSignature, 0,
 		len(input.ExternalSignatures),
 	)
 	for j := range input.ExternalSignatures {
 		sig := input.ExternalSignatures[j]
 		externalSigs = append(
-			externalSigs, &daemonrpc.TaprootScriptSignature{
+			externalSigs, &waverpc.TaprootScriptSignature{
 				Pubkey: append([]byte(nil), sig.PubKey...),
 				WitnessScript: append(
 					[]byte(nil), sig.WitnessScript...,
@@ -1234,7 +1234,7 @@ func customOORInputToRPC(input CustomOORInput) *daemonrpc.CustomOORInput {
 		)
 	}
 
-	return &daemonrpc.CustomOORInput{
+	return &waverpc.CustomOORInput{
 		Outpoint: input.Outpoint,
 		VtxoPolicyTemplate: append(
 			[]byte(nil), input.VTXOPolicyTemplate...,
@@ -1250,7 +1250,7 @@ func customOORInputToRPC(input CustomOORInput) *daemonrpc.CustomOORInput {
 // models.
 func (c *Client) ListLiveVTXOs(ctx context.Context) ([]VTXOInfo, error) {
 	return c.listVTXOsByStatus(
-		ctx, daemonrpc.VTXOStatus_VTXO_STATUS_LIVE,
+		ctx, waverpc.VTXOStatus_VTXO_STATUS_LIVE,
 	)
 }
 
@@ -1258,16 +1258,16 @@ func (c *Client) ListLiveVTXOs(ctx context.Context) ([]VTXOInfo, error) {
 // SDK-owned models.
 func (c *Client) ListSpentVTXOs(ctx context.Context) ([]VTXOInfo, error) {
 	return c.listVTXOsByStatus(
-		ctx, daemonrpc.VTXOStatus_VTXO_STATUS_SPENT,
+		ctx, waverpc.VTXOStatus_VTXO_STATUS_SPENT,
 	)
 }
 
 // listVTXOsByStatus loads one daemon VTXO status bucket and converts it into
 // typed SDK-owned models.
 func (c *Client) listVTXOsByStatus(ctx context.Context,
-	status daemonrpc.VTXOStatus) ([]VTXOInfo, error) {
+	status waverpc.VTXOStatus) ([]VTXOInfo, error) {
 
-	resp, err := c.ListVTXOs(ctx, &daemonrpc.ListVTXOsRequest{
+	resp, err := c.ListVTXOs(ctx, &waverpc.ListVTXOsRequest{
 		StatusFilter: status,
 	})
 	if err != nil {
@@ -1290,11 +1290,11 @@ func (c *Client) listVTXOsByStatus(ctx context.Context,
 // RefreshVTXOs queues one or more VTXOs for refresh in the next round.
 // Passing nil uses an empty request.
 func (c *Client) RefreshVTXOs(ctx context.Context,
-	req *daemonrpc.RefreshVTXOsRequest) (*daemonrpc.RefreshVTXOsResponse,
+	req *waverpc.RefreshVTXOsRequest) (*waverpc.RefreshVTXOsResponse,
 	error) {
 
 	if req == nil {
-		req = &daemonrpc.RefreshVTXOsRequest{}
+		req = &waverpc.RefreshVTXOsRequest{}
 	}
 
 	resp, err := c.daemon.RefreshVTXOs(ctx, req)
@@ -1309,11 +1309,11 @@ func (c *Client) RefreshVTXOs(ctx context.Context,
 // the next round. Passing nil uses an empty request and lets the daemon return
 // the validation error.
 func (c *Client) RefreshCustomVTXOs(ctx context.Context,
-	req *daemonrpc.RefreshCustomVTXOsRequest) (
-	*daemonrpc.RefreshCustomVTXOsResponse, error) {
+	req *waverpc.RefreshCustomVTXOsRequest) (
+	*waverpc.RefreshCustomVTXOsResponse, error) {
 
 	if req == nil {
-		req = &daemonrpc.RefreshCustomVTXOsRequest{}
+		req = &waverpc.RefreshCustomVTXOsRequest{}
 	}
 
 	resp, err := c.daemon.RefreshCustomVTXOs(ctx, req)
@@ -1327,11 +1327,11 @@ func (c *Client) RefreshCustomVTXOs(ctx context.Context,
 // SignVTXOForfeit asks the daemon wallet to sign one exact connector-bound
 // forfeit transaction input.
 func (c *Client) SignVTXOForfeit(ctx context.Context,
-	req *daemonrpc.SignVTXOForfeitRequest) (
-	*daemonrpc.SignVTXOForfeitResponse, error) {
+	req *waverpc.SignVTXOForfeitRequest) (*waverpc.SignVTXOForfeitResponse,
+	error) {
 
 	if req == nil {
-		req = &daemonrpc.SignVTXOForfeitRequest{}
+		req = &waverpc.SignVTXOForfeitRequest{}
 	}
 
 	resp, err := c.daemon.SignVTXOForfeit(ctx, req)
@@ -1344,10 +1344,10 @@ func (c *Client) SignVTXOForfeit(ctx context.Context,
 
 // Board tells the daemon to register any confirmed boarding UTXOs in the next
 // round. Passing no request preserves the legacy single-VTXO board behavior.
-func (c *Client) Board(ctx context.Context, reqs ...*daemonrpc.BoardRequest) (
-	*daemonrpc.BoardResponse, error) {
+func (c *Client) Board(ctx context.Context, reqs ...*waverpc.BoardRequest) (
+	*waverpc.BoardResponse, error) {
 
-	req := &daemonrpc.BoardRequest{}
+	req := &waverpc.BoardRequest{}
 	if len(reqs) > 0 && reqs[0] != nil {
 		req = reqs[0]
 	}
@@ -1363,11 +1363,10 @@ func (c *Client) Board(ctx context.Context, reqs ...*daemonrpc.BoardRequest) (
 // ListRounds returns the daemon's current round FSM snapshots. Passing nil
 // uses the daemon defaults.
 func (c *Client) ListRounds(ctx context.Context,
-	req *daemonrpc.ListRoundsRequest) (*daemonrpc.ListRoundsResponse,
-	error) {
+	req *waverpc.ListRoundsRequest) (*waverpc.ListRoundsResponse, error) {
 
 	if req == nil {
-		req = &daemonrpc.ListRoundsRequest{}
+		req = &waverpc.ListRoundsRequest{}
 	}
 
 	resp, err := c.daemon.ListRounds(ctx, req)
@@ -1382,10 +1381,10 @@ func (c *Client) ListRounds(ctx context.Context,
 // is a pre-1.0 passthrough stream and currently exposes the generated gRPC
 // stream type directly.
 func (c *Client) WatchRounds(ctx context.Context) (
-	grpc.ServerStreamingClient[daemonrpc.WatchRoundsResponse], error) {
+	grpc.ServerStreamingClient[waverpc.WatchRoundsResponse], error) {
 
 	stream, err := c.daemon.WatchRounds(
-		ctx, &daemonrpc.WatchRoundsRequest{},
+		ctx, &waverpc.WatchRoundsRequest{},
 	)
 	if err != nil {
 		return nil, fmt.Errorf("watch rounds: %w", err)
@@ -1397,11 +1396,10 @@ func (c *Client) WatchRounds(ctx context.Context) (
 // EstimateFee asks the daemon to proxy an operator fee estimate for the
 // supplied operation parameters. Passing nil uses an empty request.
 func (c *Client) EstimateFee(ctx context.Context,
-	req *daemonrpc.EstimateFeeRequest) (*daemonrpc.EstimateFeeResponse,
-	error) {
+	req *waverpc.EstimateFeeRequest) (*waverpc.EstimateFeeResponse, error) {
 
 	if req == nil {
-		req = &daemonrpc.EstimateFeeRequest{}
+		req = &waverpc.EstimateFeeRequest{}
 	}
 
 	resp, err := c.daemon.EstimateFee(ctx, req)
@@ -1415,11 +1413,11 @@ func (c *Client) EstimateFee(ctx context.Context,
 // GetFeeHistory returns paginated fee history from the daemon's local ledger.
 // Passing nil uses the daemon defaults.
 func (c *Client) GetFeeHistory(ctx context.Context,
-	req *daemonrpc.GetFeeHistoryRequest) (*daemonrpc.GetFeeHistoryResponse,
+	req *waverpc.GetFeeHistoryRequest) (*waverpc.GetFeeHistoryResponse,
 	error) {
 
 	if req == nil {
-		req = &daemonrpc.GetFeeHistoryRequest{}
+		req = &waverpc.GetFeeHistoryRequest{}
 	}
 
 	resp, err := c.daemon.GetFeeHistory(ctx, req)
@@ -1448,7 +1446,7 @@ func parseHexPubKey(pubKeyHex, field string) (*btcec.PublicKey, error) {
 
 // newVTXOInfo converts one daemon protobuf VTXO into the SDK-owned typed
 // model, decoding any hex-encoded binary fields along the way.
-func newVTXOInfo(vtxo *daemonrpc.VTXO) (*VTXOInfo, error) {
+func newVTXOInfo(vtxo *waverpc.VTXO) (*VTXOInfo, error) {
 	pkScript, err := hex.DecodeString(vtxo.GetPkScript())
 	if err != nil {
 		return nil, fmt.Errorf("decode vtxo pk_script: %w", err)
@@ -1484,7 +1482,7 @@ func newVTXOInfo(vtxo *daemonrpc.VTXO) (*VTXOInfo, error) {
 
 // newVTXOExpiryInfo converts one daemon protobuf VTXO expiry info message into
 // the SDK-owned typed model.
-func newVTXOExpiryInfo(info *daemonrpc.VTXOExpiryInfo) *VTXOExpiryInfo {
+func newVTXOExpiryInfo(info *waverpc.VTXOExpiryInfo) *VTXOExpiryInfo {
 	if info == nil {
 		return nil
 	}
@@ -1504,7 +1502,7 @@ func newVTXOExpiryInfo(info *daemonrpc.VTXOExpiryInfo) *VTXOExpiryInfo {
 
 // newReceiveInfo converts one daemon protobuf receive-script response
 // into the SDK-owned typed model.
-func newReceiveInfo(resp *daemonrpc.NewReceiveScriptResponse) (*ReceiveInfo,
+func newReceiveInfo(resp *waverpc.NewReceiveScriptResponse) (*ReceiveInfo,
 	error) {
 
 	pkScript, err := hex.DecodeString(resp.GetPkScriptHex())
@@ -1529,7 +1527,7 @@ func newReceiveInfo(resp *daemonrpc.NewReceiveScriptResponse) (*ReceiveInfo,
 // newIndexedOORSessionInfo converts one daemon protobuf indexed OOR session
 // into the SDK-owned typed model.
 func newIndexedOORSessionInfo(
-	resp *daemonrpc.GetIndexedOORSessionByTxidResponse,
+	resp *waverpc.GetIndexedOORSessionByTxidResponse,
 ) *IndexedOORSessionInfo {
 
 	checkpoints := make([][]byte, 0, len(resp.GetCheckpointPsbts()))

@@ -3,7 +3,7 @@ package proofkeys
 import (
 	"context"
 
-	"github.com/lightninglabs/darepo-client/indexer"
+	"github.com/lightninglabs/wavelength/indexer"
 	"github.com/lightningnetwork/lnd/keychain"
 )
 

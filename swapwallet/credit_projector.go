@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lightninglabs/darepo-client/credit"
-	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/credit"
+	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
 )
 
 // creditProjectInterval is how often the projector polls the credit registry

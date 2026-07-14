@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lightninglabs/darepo-client/sdk/walletdk"
+	"github.com/lightninglabs/wavelength/sdk/walletdk"
 )
 
 // TestParseConfigEmptyUsesDefaults verifies that an empty config string yields
@@ -119,7 +119,7 @@ func TestParseConfigRejectsOverflowRecoveryWindow(t *testing.T) {
 }
 
 // TestParseConfigRejectsExcessiveSigningWorkers verifies the mobile boundary
-// applies the same bounded concurrency cap as darepod.
+// applies the same bounded concurrency cap as waved.
 func TestParseConfigRejectsExcessiveSigningWorkers(t *testing.T) {
 	cfgJSON := fmt.Sprintf(`{"signing_workers": %d}`,
 		walletdk.MaxSigningWorkers+1)

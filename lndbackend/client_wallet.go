@@ -13,8 +13,8 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/lndclient"
+	"github.com/lightninglabs/wavelength/build"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -64,7 +64,7 @@ func (c *ClientWallet) logger(ctx context.Context) btclog.Logger {
 //
 // NOTE: Full round.ClientWallet check (which adds DeriveNextKey and
 // MuSig2* methods) is omitted to avoid the import cycle. Any drift
-// will surface as a compile error in darepod/server.go where
+// will surface as a compile error in waved/server.go where
 // ClientWallet is passed to the round config.
 var _ input.Signer = (*ClientWallet)(nil)
 
@@ -139,11 +139,11 @@ func (c *ClientWallet) SignOutputRaw(tx *wire.MsgTx,
 // the key locator when one is available, including family/index zero pairs
 // such as LND's node key at family 6 index 0.
 //
-// TODO(darepo): drop this helper and go back to lndclient.SignOutputRaw once
-// upstream forwards the key locator on SignOutputRaw for descriptors whose
+// TODO(wavelength): drop this helper and go back to lndclient.SignOutputRaw
+// once upstream forwards the key locator on SignOutputRaw for descriptors whose
 // KeyLocator has Family != 0 but Index == 0. The current helper in lndclient
-// omits the locator in that case, which breaks signing for the
-// family-6/index-0 identity path used by the indexer proof signer.
+// omits the locator in that case, which breaks signing for the family-6/index-0
+// identity path used by the indexer proof signer.
 func (c *ClientWallet) signOutputRawWithLocator(ctx context.Context,
 	tx *wire.MsgTx, signDescriptors []*lndclient.SignDescriptor,
 	prevOutputs []*wire.TxOut) ([][]byte, error) {
