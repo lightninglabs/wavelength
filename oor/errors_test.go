@@ -16,6 +16,10 @@ import (
 func TestClassifySubmitError(t *testing.T) {
 	t.Parallel()
 
+	// Short alias for the long enum, so the deeply-nested subtest that uses
+	// it stays within the 80-column limit.
+	notSpendableCode := oorpb.OORRejectCode_OOR_REJECT_INPUT_NOT_SPENDABLE
+
 	t.Run("user balance maps to typed error", func(t *testing.T) {
 		t.Parallel()
 
@@ -55,6 +59,33 @@ func TestClassifySubmitError(t *testing.T) {
 		})
 		require.ErrorIs(t, got, &ErrOutputPolicyViolation{})
 	})
+
+	t.Run("input not spendable maps and carries height",
+		func(t *testing.T) {
+			t.Parallel()
+
+			got := ClassifySubmitError(&oorpb.SubmitRejectedError{
+				Code:             notSpendableCode,
+				Reason:           "vtxo x not spendable",
+				ServerBestHeight: 313034,
+			})
+			require.ErrorIs(t, got, &ErrInputNotSpendable{})
+
+			// It must not collapse into the terminal output-policy
+			// error: input-not-spendable is transient and
+			// retryable.
+			require.NotErrorIs(t, got, &ErrOutputPolicyViolation{})
+
+			// The operator's best height rides through so the
+			// caller can check whether the operator is behind on
+			// chain sync.
+			var notSpendable *ErrInputNotSpendable
+			require.True(t, errors.As(got, &notSpendable))
+			require.Equal(
+				t, uint32(313034),
+				notSpendable.ServerBestHeight,
+			)
+		})
 
 	t.Run("wrapped rejection is unwrapped", func(t *testing.T) {
 		t.Parallel()
