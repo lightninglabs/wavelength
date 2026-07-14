@@ -87,6 +87,7 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
 - `resolveInputPackage` / `loadPackageBundleBySessionID` — two-stage
   OOR ancestry resolver (`oor_unroll_resolver.go`).
 - `LatestMigrationVersion = 17` — current schema version.
+- `LatestMigrationVersion = 18` — current schema version.
 - `PendingIntentPersistenceStore` — implements `wallet.PendingIntentStore`,
   the persistence half of the generic restart-safe intent outbox (header
   `pending_intents` + per-kind detail tables + `pending_intent_anchors`).
@@ -276,6 +277,8 @@ when adding one.
   allocation per non-null idempotency key.
 - `000017_taproot_asset_vtxos` — optional Taproot Asset commitment root on
   VTXO descriptors; generic Bitcoin coin selection excludes these rows.
+- `000017_oor_taproot_asset_packages` — optional sealed Taproot Asset
+  transition container on finalized OOR package rows.
 
 ## Deep Docs
 

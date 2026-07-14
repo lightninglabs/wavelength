@@ -179,6 +179,10 @@ type IncomingTransferEvent struct {
 	// structural extraction from ArkPSBT for compatibility with older
 	// servers.
 	Recipients []ArkRecipientOutput
+
+	// TaprootAssetTransfer is the optional immutable container of sealed
+	// checkpoint and Ark transition packages for this incoming transfer.
+	TaprootAssetTransfer *oortx.TaprootAssetTransfer
 }
 
 // eventSealed marks this as implementing the sealed Event interface.

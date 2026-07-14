@@ -330,11 +330,12 @@ func loadPackageBundleByOutpoint(ctx context.Context, q OORArtifactStore,
 	}
 
 	pkg, err := materializePackageBundle(ctx, q, sqlc.OorPackage{
-		SessionID: row.SessionID,
-		Direction: row.Direction,
-		ArkPsbt:   row.ArkPsbt,
-		CreatedAt: row.PackageCreatedAt,
-		UpdatedAt: row.PackageUpdatedAt,
+		SessionID:            row.SessionID,
+		Direction:            row.Direction,
+		ArkPsbt:              row.ArkPsbt,
+		TaprootAssetTransfer: row.TaprootAssetTransfer,
+		CreatedAt:            row.PackageCreatedAt,
+		UpdatedAt:            row.PackageUpdatedAt,
 	})
 	if err != nil {
 		return nil, err
@@ -380,11 +381,12 @@ func loadPackageBundleByCreatedOutputOutpoint(ctx context.Context,
 	}
 
 	pkg, err := materializePackageBundle(ctx, q, sqlc.OorPackage{
-		SessionID: row.SessionID,
-		Direction: row.Direction,
-		ArkPsbt:   row.ArkPsbt,
-		CreatedAt: row.PackageCreatedAt,
-		UpdatedAt: row.PackageUpdatedAt,
+		SessionID:            row.SessionID,
+		Direction:            row.Direction,
+		ArkPsbt:              row.ArkPsbt,
+		TaprootAssetTransfer: row.TaprootAssetTransfer,
+		CreatedAt:            row.PackageCreatedAt,
+		UpdatedAt:            row.PackageUpdatedAt,
 	})
 	if err != nil {
 		return nil, err

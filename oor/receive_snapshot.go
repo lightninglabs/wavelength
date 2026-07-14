@@ -23,6 +23,7 @@ const (
 	incomingSnapshotMetadataAttemptsType      tlv.Type = 19
 	incomingSnapshotResolveAttemptsType       tlv.Type = 21
 	incomingSnapshotRecipientsType            tlv.Type = 23
+	incomingSnapshotAssetTransferType         tlv.Type = 25
 )
 
 // IncomingPhase identifies the coarse stage of an incoming OOR receive
@@ -81,6 +82,10 @@ type IncomingSnapshot struct {
 	// metadata needed to materialize custom incoming VTXOs.
 	Recipients []ArkRecipientOutput
 
+	// TaprootAssetTransfer is the encoded sealed package container for the
+	// incoming session.
+	TaprootAssetTransfer []byte
+
 	// FailReason is the terminal failure reason, when Phase is Failed.
 	FailReason string
 
@@ -117,7 +122,7 @@ func NewIncomingSnapshot(sessionID SessionID,
 	}
 
 	snap := &IncomingSnapshot{
-		Version:   1,
+		Version:   2,
 		SessionID: sessionID,
 	}
 
@@ -150,6 +155,13 @@ func NewIncomingSnapshot(sessionID SessionID,
 			[]PackageArtifact(nil), s.AncestorPackages...,
 		)
 		snap.Recipients = CloneArkRecipients(s.Recipients)
+		if s.TaprootAssetTransfer != nil {
+			snap.TaprootAssetTransfer, err =
+				s.TaprootAssetTransfer.MarshalBinary()
+			if err != nil {
+				return nil, err
+			}
+		}
 		snap.MetadataAttempts = s.MetadataAttempts
 
 	case *ReceiveAwaitingAck:
@@ -231,6 +243,13 @@ func IncomingStateFromSnapshot(snapshot *IncomingSnapshot) (SessionState,
 			return nil, err
 		}
 
+		assetTransfer, err := decodeTaprootAssetTransfer(
+			snapshot.TaprootAssetTransfer, len(checkpoints),
+		)
+		if err != nil {
+			return nil, err
+		}
+
 		return &ReceiveNotified{
 			SessionID:            snapshot.SessionID,
 			ArkPSBT:              ark,
@@ -242,7 +261,8 @@ func IncomingStateFromSnapshot(snapshot *IncomingSnapshot) (SessionState,
 			Recipients: CloneArkRecipients(
 				snapshot.Recipients,
 			),
-			MetadataAttempts: snapshot.MetadataAttempts,
+			MetadataAttempts:     snapshot.MetadataAttempts,
+			TaprootAssetTransfer: assetTransfer,
 		}, nil
 
 	case IncomingPhaseAckPending:
@@ -292,6 +312,7 @@ func encodeIncomingSnapshot(snapshot *IncomingSnapshot) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	assetTransfer := snapshot.TaprootAssetTransfer
 
 	metadataAttempts := uint64(snapshot.MetadataAttempts)
 	resolveAttempts := uint64(snapshot.ResolveAttempts)
@@ -335,6 +356,9 @@ func encodeIncomingSnapshot(snapshot *IncomingSnapshot) ([]byte, error) {
 		tlv.MakePrimitiveRecord(
 			incomingSnapshotRecipientsType, &recipients,
 		),
+		tlv.MakePrimitiveRecord(
+			incomingSnapshotAssetTransferType, &assetTransfer,
+		),
 	}
 
 	stream, err := tlv.NewStream(records...)
@@ -368,6 +392,7 @@ func decodeIncomingSnapshotWithLimits(raw []byte,
 		metadataAttempts  uint64
 		resolveAttempts   uint64
 		recipientsRaw     []byte
+		assetTransfer     []byte
 	)
 
 	records := []tlv.Record{
@@ -408,6 +433,9 @@ func decodeIncomingSnapshotWithLimits(raw []byte,
 		),
 		tlv.MakePrimitiveRecord(
 			incomingSnapshotRecipientsType, &recipientsRaw,
+		),
+		tlv.MakePrimitiveRecord(
+			incomingSnapshotAssetTransferType, &assetTransfer,
 		),
 	}
 
@@ -471,6 +499,9 @@ func decodeIncomingSnapshotWithLimits(raw []byte,
 			[]PackageArtifact(nil), decodedPackages...,
 		),
 		Recipients: CloneArkRecipients(decodedRecipients),
+		TaprootAssetTransfer: append(
+			[]byte(nil), assetTransfer...,
+		),
 		FailReason: string(failReasonRaw),
 		RecipientPkScript: append(
 			[]byte(nil), recipientPkScript...,

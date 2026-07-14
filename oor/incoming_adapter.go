@@ -11,6 +11,7 @@ import (
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/lightninglabs/wavelength/arkrpc"
+	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
 	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
 )
 
@@ -184,7 +185,15 @@ func IncomingTransferEventFromResponseWithLimits(sessionID SessionID,
 		return nil, err
 	}
 
+	assetTransfer, err := decodeTaprootAssetTransfer(
+		recipientEvt.GetTaprootAssetTransfer(), len(checkpoints),
+	)
+	if err != nil {
+		return nil, err
+	}
+
 	root := packageArtifactForValidation(sessionID, arkPSBT, checkpoints)
+	root.TaprootAssetTransfer = assetTransfer
 	err = validateIncomingPackageGraph(root, ancestors)
 	if err != nil {
 		return nil, err
@@ -196,6 +205,7 @@ func IncomingTransferEventFromResponseWithLimits(sessionID SessionID,
 		FinalCheckpointPSBTs: checkpoints,
 		AncestorPackages:     ancestors,
 		Recipients:           recipients,
+		TaprootAssetTransfer: assetTransfer,
 	}, nil
 }
 
@@ -233,6 +243,29 @@ func incomingRecipientsFromEvent(ark *psbt.Packet,
 		recipients[i].VTXOPolicyTemplate = append(
 			[]byte(nil), evt.GetVtxoPolicyTemplate()...,
 		)
+
+		assetRootRaw := evt.GetTaprootAssetRoot()
+		if len(assetRootRaw) > 0 {
+			assetRoot, err := chainhash.NewHash(assetRootRaw)
+			if err != nil {
+				return nil, fmt.Errorf("parse recipient "+
+					"Taproot Asset root: %w", err)
+			}
+			recipients[i].TaprootAssetRoot = assetRoot
+
+			assetRecipient := oortx.RecipientOutput{
+				Value:    recipients[i].Value,
+				PkScript: recipients[i].PkScript,
+				VTXOPolicyTemplate: recipients[i].
+					VTXOPolicyTemplate,
+				TaprootAssetRoot: assetRoot,
+			}
+			err = assetRecipient.ValidateTaprootAssetCommitment()
+			if err != nil {
+				return nil, fmt.Errorf("validate recipient "+
+					"Taproot Asset root: %w", err)
+			}
+		}
 
 		return recipients, nil
 	}
@@ -298,12 +331,40 @@ func packageArtifactsFromRPC(pkgs []*arkrpc.OORSessionPackage,
 			checkpoints = append(checkpoints, cp)
 		}
 
+		assetTransfer, err := decodeTaprootAssetTransfer(
+			pkg.GetTaprootAssetTransfer(), len(checkpoints),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("parse ancestor package %d "+
+				"Taproot Asset transfer: %w", i, err)
+		}
+
 		artifacts = append(artifacts, PackageArtifact{
 			SessionID:            SessionID(*sessionID),
 			ArkPSBT:              arkPSBT,
 			FinalCheckpointPSBTs: checkpoints,
+			TaprootAssetTransfer: assetTransfer,
 		})
 	}
 
 	return artifacts, nil
+}
+
+func decodeTaprootAssetTransfer(raw []byte,
+	checkpointCount int) (*oortx.TaprootAssetTransfer, error) {
+
+	if len(raw) == 0 {
+		return nil, nil
+	}
+
+	transfer := &oortx.TaprootAssetTransfer{}
+	if err := transfer.UnmarshalBinary(raw); err != nil {
+		return nil, fmt.Errorf("decode Taproot Asset transfer: %w", err)
+	}
+	if err := transfer.Validate(checkpointCount); err != nil {
+		return nil, fmt.Errorf("validate Taproot Asset transfer: %w",
+			err)
+	}
+
+	return transfer, nil
 }
