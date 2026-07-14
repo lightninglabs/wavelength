@@ -54,6 +54,10 @@ type AwaitingArkSignatures struct {
 	// IdempotencyKey identifies the caller intent that created this
 	// outgoing session, when provided.
 	IdempotencyKey string
+
+	// TaprootAssetTransfer is the optional immutable sealed-package
+	// container associated with the prepared submit graph.
+	TaprootAssetTransfer *oortx.TaprootAssetTransfer
 }
 
 // String returns a human-readable representation of AwaitingArkSignatures.
@@ -107,6 +111,9 @@ type AwaitingSubmitAccepted struct {
 	// reject has been seen yet (a fresh retry window). It is carried on the
 	// state (and persisted in the snapshot) so the bound survives restarts.
 	FirstRejectUnixNanos int64
+
+	// TaprootAssetTransfer is sent byte-identically on every submit retry.
+	TaprootAssetTransfer *oortx.TaprootAssetTransfer
 }
 
 // String returns a human-readable representation of AwaitingSubmitAccepted.
@@ -150,6 +157,10 @@ type AwaitingCheckpointSignatures struct {
 	// IdempotencyKey identifies the caller intent that created this
 	// outgoing session, when provided.
 	IdempotencyKey string
+
+	// TaprootAssetTransfer remains durable after operator acceptance for
+	// local recovery and audit.
+	TaprootAssetTransfer *oortx.TaprootAssetTransfer
 }
 
 // String returns a human-readable representation of
@@ -194,6 +205,9 @@ type AwaitingFinalizeAccepted struct {
 	// IdempotencyKey identifies the caller intent that created this
 	// outgoing session, when provided.
 	IdempotencyKey string
+
+	// TaprootAssetTransfer remains durable through finalize acceptance.
+	TaprootAssetTransfer *oortx.TaprootAssetTransfer
 }
 
 // String returns a human-readable representation of AwaitingFinalizeAccepted.
@@ -227,6 +241,9 @@ type AwaitingLocalVTXOUpdate struct {
 	// IdempotencyKey identifies the caller intent that created this
 	// outgoing session, when provided.
 	IdempotencyKey string
+
+	// TaprootAssetTransfer remains available until local completion.
+	TaprootAssetTransfer *oortx.TaprootAssetTransfer
 }
 
 // String returns a human-readable representation of AwaitingLocalVTXOUpdate.

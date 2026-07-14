@@ -30,6 +30,14 @@ const (
 	// startPayloadIdempotencyKeyType stores the optional caller-provided
 	// OOR send idempotency key.
 	startPayloadIdempotencyKeyType tlv.Type = 5
+
+	// startPayloadPreparedSubmitType stores the versioned OOR submit
+	// package after external Taproot Asset commitment insertion.
+	startPayloadPreparedSubmitType tlv.Type = 6
+
+	// startPayloadTaprootAssetTransferType stores the matching versioned
+	// sealed-package container.
+	startPayloadTaprootAssetTransferType tlv.Type = 7
 )
 
 const (
@@ -146,6 +154,8 @@ type startTransferPayload struct {
 	Inputs         []*TransferInputSnapshot
 	Recipients     []recipientPayload
 	IdempotencyKey string
+	PreparedSubmit []byte
+	AssetTransfer  []byte
 }
 
 type recipientPayload struct {
@@ -176,6 +186,8 @@ func encodeStartTransferPayload(payload startTransferPayload) ([]byte, error) {
 	operatorKey := payload.OperatorPubKey
 	csvDelay := payload.CSVDelay
 	idempotencyKey := []byte(payload.IdempotencyKey)
+	preparedSubmit := payload.PreparedSubmit
+	assetTransfer := payload.AssetTransfer
 
 	records := []tlv.Record{
 		tlv.MakePrimitiveRecord(
@@ -192,6 +204,12 @@ func encodeStartTransferPayload(payload startTransferPayload) ([]byte, error) {
 		),
 		tlv.MakePrimitiveRecord(
 			startPayloadIdempotencyKeyType, &idempotencyKey,
+		),
+		tlv.MakePrimitiveRecord(
+			startPayloadPreparedSubmitType, &preparedSubmit,
+		),
+		tlv.MakePrimitiveRecord(
+			startPayloadTaprootAssetTransferType, &assetTransfer,
 		),
 	}
 
@@ -225,6 +243,8 @@ func decodeStartTransferPayloadWithLimits(raw []byte,
 		inputsRaw   []byte
 		recipients  []byte
 		idKey       []byte
+		preparedRaw []byte
+		assetRaw    []byte
 	)
 
 	records := []tlv.Record{
@@ -241,6 +261,12 @@ func decodeStartTransferPayloadWithLimits(raw []byte,
 			startPayloadRecipientsRecordType, &recipients,
 		),
 		tlv.MakePrimitiveRecord(startPayloadIdempotencyKeyType, &idKey),
+		tlv.MakePrimitiveRecord(
+			startPayloadPreparedSubmitType, &preparedRaw,
+		),
+		tlv.MakePrimitiveRecord(
+			startPayloadTaprootAssetTransferType, &assetRaw,
+		),
 	}
 
 	stream, err := tlv.NewStream(records...)
@@ -273,6 +299,8 @@ func decodeStartTransferPayloadWithLimits(raw []byte,
 		Inputs:         inputs,
 		Recipients:     recipientsPayload,
 		IdempotencyKey: string(idKey),
+		PreparedSubmit: preparedRaw,
+		AssetTransfer:  assetRaw,
 	}, nil
 }
 
