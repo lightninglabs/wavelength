@@ -2772,6 +2772,55 @@ func TestBuildSweepTx(t *testing.T) {
 	require.NotEmpty(t, sweepTx.TxIn[0].Witness)
 }
 
+// TestAssetBearingStandardExitUsesComposedControlBlock proves unilateral exit
+// remains available for an asset-bearing VTXO and that its timeout witness is
+// bound to the composed on-chain output.
+func TestAssetBearingStandardExitUsesComposedControlBlock(t *testing.T) {
+	t.Parallel()
+
+	desc := testDescriptor(t, wire.OutPoint{
+		Hash:  chainhash.Hash{0x77},
+		Index: 2,
+	}, 10)
+
+	policyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
+		desc.ClientKey.PubKey, desc.OperatorKey, desc.RelativeExpiry,
+	)
+	require.NoError(t, err)
+	desc.PolicyTemplate = policyTemplate
+	assetRoot := chainhash.Hash{0xde, 0xad, 0xbe, 0xef}
+	desc.TaprootAssetRoot = &assetRoot
+	desc.PkScript, err = desc.EffectivePkScript()
+	require.NoError(t, err)
+
+	target := &wire.TxOut{
+		Value:    int64(desc.Amount),
+		PkScript: desc.PkScript,
+	}
+	sweep, err := NewStandardVTXOExitSpendPolicy(desc).BuildSpendTx(
+		t.Context(), ExitSpendRequest{
+			TargetOutpoint:      desc.Outpoint,
+			TargetOutput:        target,
+			DestinationPkScript: []byte{txscript.OP_TRUE},
+			FeeRateSatPerVByte:  2,
+			Signer:              &fakeSweepWallet{},
+		},
+	)
+	require.NoError(t, err)
+	require.Len(t, sweep.TxIn[0].Witness, 3)
+
+	witnessScript := sweep.TxIn[0].Witness[1]
+	controlBlock := sweep.TxIn[0].Witness[2]
+	require.GreaterOrEqual(t, len(controlBlock), 32)
+	require.Equal(t, assetRoot[:], controlBlock[len(controlBlock)-32:])
+
+	spendPath := &arkscript.SpendPath{SpendInfo: &arkscript.SpendInfo{
+		WitnessScript: witnessScript,
+		ControlBlock:  controlBlock,
+	}}
+	require.NoError(t, spendPath.VerifyBindsToPkScript(desc.PkScript))
+}
+
 // TestStandardVTXOExitSpendPolicyRejectsNilTarget verifies the policy checks
 // that a materialized output is present before building an exit spend.
 func TestStandardVTXOExitSpendPolicyRejectsNilTarget(t *testing.T) {

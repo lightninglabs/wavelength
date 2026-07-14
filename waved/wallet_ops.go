@@ -95,8 +95,9 @@ func BuildTransferInputs(ctx context.Context, store vtxo.VTXOStore,
 		}
 
 		inputs = append(inputs, oor.TransferInput{
-			VTXO:            desc,
-			OwnerLeafScript: collabLeaf.Script,
+			VTXO:             desc,
+			OwnerLeafScript:  collabLeaf.Script,
+			TaprootAssetRoot: desc.TaprootAssetRoot,
 		})
 	}
 

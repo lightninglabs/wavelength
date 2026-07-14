@@ -1701,7 +1701,7 @@ CREATE TABLE vtxos (
     -- zero-indexed, so the only understood value today is 0 (V1); a future,
     -- genuinely different construction is added additively (V2 == 1, and so
     -- on). NOT NULL DEFAULT 0 keeps every row a valid V1 object.
-    construction_version INTEGER NOT NULL DEFAULT 0,
+    construction_version INTEGER NOT NULL DEFAULT 0, taproot_asset_root BLOB,
 
     PRIMARY KEY (outpoint_hash, outpoint_index),
     FOREIGN KEY (round_id) REFERENCES rounds(round_id)

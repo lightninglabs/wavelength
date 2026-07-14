@@ -411,6 +411,61 @@ func TestBuildIncomingVTXODescriptorPreservesMatchingPolicyTemplate(
 	require.Equal(t, template, desc.PolicyTemplate)
 }
 
+// TestBuildIncomingVTXODescriptorPreservesTaprootAssetRoot verifies the
+// receiver binds the policy and asset root to the actual Ark output before
+// persisting the root needed for later spends.
+func TestBuildIncomingVTXODescriptorPreservesTaprootAssetRoot(t *testing.T) {
+	t.Parallel()
+
+	arkPSBT, _, recipients, commitHash, recipientKey,
+		operatorKey := buildTestIncomingMaterialization(t)
+
+	template, err := arkscript.EncodeStandardVTXOTemplate(
+		recipientKey.PubKey(), operatorKey, 10,
+	)
+	require.NoError(t, err)
+	assetRoot := chainhash.Hash{0x91, 0x92, 0x93}
+	assetDesc := &vtxo.Descriptor{
+		PolicyTemplate:   template,
+		TaprootAssetRoot: &assetRoot,
+	}
+	assetPkScript, err := assetDesc.EffectivePkScript()
+	require.NoError(t, err)
+	arkPSBT.UnsignedTx.TxOut[recipients[0].OutputIndex].PkScript =
+		assetPkScript
+
+	cfg := IncomingVTXOConfig{
+		OutputIndex: recipients[0].OutputIndex,
+		ClientKey: keychain.KeyDescriptor{
+			PubKey: recipientKey.PubKey(),
+		},
+		OperatorKey:      operatorKey,
+		ExitDelay:        10,
+		PolicyTemplate:   template,
+		TaprootAssetRoot: &assetRoot,
+		Metadata: IncomingVTXOMetadata{
+			RoundID:        "test-round",
+			CommitmentTxID: commitHash,
+			BatchExpiry:    1000,
+			ChainDepth:     1,
+			CreatedHeight:  500,
+			Ancestry: validTestIncomingAncestry(
+				commitHash,
+			),
+		},
+	}
+	desc, err := BuildIncomingVTXODescriptor(arkPSBT, cfg)
+	require.NoError(t, err)
+	require.Equal(t, &assetRoot, desc.TaprootAssetRoot)
+	require.Equal(t, assetPkScript, desc.PkScript)
+
+	wrongRoot := assetRoot
+	wrongRoot[0] ^= 0xff
+	cfg.TaprootAssetRoot = &wrongRoot
+	_, err = BuildIncomingVTXODescriptor(arkPSBT, cfg)
+	require.ErrorContains(t, err, "does not match ark output pkscript")
+}
+
 // TestBuildIncomingVTXODescriptorRejectsMismatchedPolicyTemplate verifies that
 // a server-supplied policy template that decodes cleanly but does not bind to
 // the recipient output pkScript is rejected, so a mismatched template can never

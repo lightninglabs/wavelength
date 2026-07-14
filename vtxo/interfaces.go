@@ -352,6 +352,12 @@ type Descriptor struct {
 	// collaborative and timeout spend paths).
 	PkScript []byte
 
+	// TaprootAssetRoot is the optional root of the Taproot Asset commitment
+	// composed beside PolicyTemplate. When set, PkScript commits to
+	// TapBranch(policy_root, taproot_asset_root), and all Ark spend paths
+	// must include this root as the final control-block sibling.
+	TaprootAssetRoot *chainhash.Hash
+
 	// ClientKey is the client's key descriptor for this VTXO.
 	ClientKey keychain.KeyDescriptor
 

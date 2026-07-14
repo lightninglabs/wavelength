@@ -672,6 +672,11 @@ func (s *VTXOPersistenceStore) descriptorToInsertParams(ctx context.Context,
 		operatorPubkey = desc.OperatorKey.SerializeCompressed()
 	}
 
+	var taprootAssetRoot []byte
+	if desc.TaprootAssetRoot != nil {
+		taprootAssetRoot = desc.TaprootAssetRoot.CloneBytes()
+	}
+
 	nowUnix := s.clock.Now().Unix()
 
 	// Register the local-ownership (client) key in the shared internal_keys
@@ -715,6 +720,7 @@ func (s *VTXOPersistenceStore) descriptorToInsertParams(ctx context.Context,
 		// immutable, so the InsertVTXO upsert never updates it on
 		// conflict.
 		ConstructionVersion: int32(desc.ConstructionVersion),
+		TaprootAssetRoot:    taprootAssetRoot,
 	}, nil
 }
 
@@ -811,26 +817,39 @@ func (s *VTXOPersistenceStore) rowToDescriptor(ctx context.Context,
 		copy(commitmentTxID[:], row.CommitmentTxid)
 	}
 
+	var taprootAssetRoot *chainhash.Hash
+	if len(row.TaprootAssetRoot) > 0 {
+		if len(row.TaprootAssetRoot) != chainhash.HashSize {
+			return nil, fmt.Errorf("invalid Taproot Asset root "+
+				"length: %d", len(row.TaprootAssetRoot))
+		}
+
+		root := &chainhash.Hash{}
+		copy(root[:], row.TaprootAssetRoot)
+		taprootAssetRoot = root
+	}
+
 	if clientKey.PubKey == nil {
 		clientKey.PubKey = derived.clientPubkey
 	}
 
 	return &vtxo.Descriptor{
-		Outpoint:       outpoint,
-		Amount:         btcutil.Amount(row.Amount),
-		PolicyTemplate: derived.policyTemplate,
-		PkScript:       row.PkScript,
-		ClientKey:      clientKey,
-		OperatorKey:    derived.operatorPubkey,
-		TapScript:      derived.tapscript,
-		Ancestry:       ancestry,
-		RoundID:        row.RoundID,
-		CommitmentTxID: commitmentTxID,
-		BatchExpiry:    row.BatchExpiry,
-		RelativeExpiry: derived.relativeExpiry,
-		ChainDepth:     int(row.ChainDepth),
-		CreatedHeight:  row.CreatedHeight,
-		Status:         vtxo.VTXOStatus(row.Status),
+		Outpoint:         outpoint,
+		Amount:           btcutil.Amount(row.Amount),
+		PolicyTemplate:   derived.policyTemplate,
+		PkScript:         row.PkScript,
+		TaprootAssetRoot: taprootAssetRoot,
+		ClientKey:        clientKey,
+		OperatorKey:      derived.operatorPubkey,
+		TapScript:        derived.tapscript,
+		Ancestry:         ancestry,
+		RoundID:          row.RoundID,
+		CommitmentTxID:   commitmentTxID,
+		BatchExpiry:      row.BatchExpiry,
+		RelativeExpiry:   derived.relativeExpiry,
+		ChainDepth:       int(row.ChainDepth),
+		CreatedHeight:    row.CreatedHeight,
+		Status:           vtxo.VTXOStatus(row.Status),
 		ConstructionVersion: arkrpc.ConstructionVersion(
 			row.ConstructionVersion,
 		),
