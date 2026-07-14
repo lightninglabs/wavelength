@@ -193,6 +193,86 @@ func TestHistoryListMergesSwapAndLedgerSources(t *testing.T) {
 	)
 }
 
+// TestHistoryHidesBoardingSweepFeeLedgerLeg verifies that the internal
+// boarding-sweep chain-cost ledger leg does not surface as a second pending
+// EXIT. The canonical activity row is the boarding_sweeps row; the
+// boarding_sweep_fee_paid row exists only to balance wallet_clearing.
+func TestHistoryHidesBoardingSweepFeeLedgerLeg(t *testing.T) {
+	t.Parallel()
+
+	h, swap, rpc := newHistoryFixture(t)
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
+	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
+		Transactions: []*daemonrpc.TransactionHistoryEntry{
+			{
+				Source:             "boarding_sweep",
+				Type:               "sweep",
+				Subtype:            "confirmed",
+				ConfirmationStatus: "confirmed",
+				AmountSat:          50_000,
+				FeeSat:             139,
+				Txid:               "sweep-txid",
+				CreatedAtUnixS:     200,
+			},
+			{
+				Source:             "ledger",
+				Type:               "sweep",
+				Subtype:            ledger.EventBoardingSweepFeePaid,
+				ConfirmationStatus: "recorded",
+				AmountSat:          469,
+				FeeSat:             0,
+				EntryId:            6,
+				CreatedAtUnixS:     201,
+			},
+		},
+	}
+
+	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{})
+	require.NoError(t, err)
+
+	entries := resp.GetActivity().GetEntries()
+	require.Len(t, entries, 1)
+	require.Equal(t, "sweep-txid", entries[0].GetId())
+	require.Equal(
+		t, walletdkrpc.EntryKind_ENTRY_KIND_EXIT, entries[0].GetKind(),
+	)
+	require.Equal(
+		t, walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		entries[0].GetStatus(),
+	)
+	require.Equal(t, int64(-50_000), entries[0].GetAmountSat())
+	require.Equal(t, int64(139), entries[0].GetFeeSat())
+}
+
+// TestHistoryHidesUnilateralExitFeeLedgerLeg verifies that unilateral-exit
+// fee accounting does not surface as a pending EXIT. The ledger's
+// onchain_fee_paid row is internal bookkeeping and has no chain txid or
+// confirmation lifecycle of its own.
+func TestHistoryHidesUnilateralExitFeeLedgerLeg(t *testing.T) {
+	t.Parallel()
+
+	h, swap, rpc := newHistoryFixture(t)
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
+	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
+		Transactions: []*daemonrpc.TransactionHistoryEntry{
+			{
+				Source:             "ledger",
+				Type:               "sweep",
+				Subtype:            ledger.EventOnchainFeePaid,
+				ConfirmationStatus: "recorded",
+				AmountSat:          812,
+				FeeSat:             0,
+				EntryId:            9,
+				CreatedAtUnixS:     300,
+			},
+		},
+	}
+
+	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{})
+	require.NoError(t, err)
+	require.Empty(t, resp.GetActivity().GetEntries())
+}
+
 // TestHistoryPendingFilterDropsTerminal confirms pending_only=true
 // drops COMPLETE and FAILED rows from both sources.
 func TestHistoryPendingFilterDropsTerminal(t *testing.T) {
