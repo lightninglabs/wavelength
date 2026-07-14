@@ -8,7 +8,7 @@ It is the source-of-truth narrative for the implementation in:
 
 - [`client/round/transitions.go`](../round/transitions.go) —
   `designateChangeMarker`, `validateQuoteEchoes`, `evaluateQuote`.
-- `rounds/seal_time_fee_builder.go` (server/wavelength repo) —
+- `rounds/seal_time_fee_builder.go` (server/lumos repo) —
   `resolveChangeDesignation`, `computeSealTimeQuotes`,
   `quoteForClient`.
 - [`client/rpc/roundpb/round.proto`](../rpc/roundpb/round.proto) —
