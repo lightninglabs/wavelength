@@ -643,7 +643,7 @@ const file_ark_proto_rawDesc = "" +
 	"\n" +
 	"ArkService\x12:\n" +
 	"\aGetInfo\x12\x16.arkrpc.GetInfoRequest\x1a\x17.arkrpc.GetInfoResponse\x12F\n" +
-	"\vEstimateFee\x12\x1a.arkrpc.EstimateFeeRequest\x1a\x1b.arkrpc.EstimateFeeResponseB/Z-github.com/lightninglabs/darepo-client/arkrpcb\x06proto3"
+	"\vEstimateFee\x12\x1a.arkrpc.EstimateFeeRequest\x1a\x1b.arkrpc.EstimateFeeResponseB,Z*github.com/lightninglabs/wavelength/arkrpcb\x06proto3"
 
 var (
 	file_ark_proto_rawDescOnce sync.Once

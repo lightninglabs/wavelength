@@ -15,11 +15,11 @@ import (
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/baselib/actor"
-	"github.com/lightninglabs/darepo-client/chainbackends"
-	"github.com/lightninglabs/darepo-client/chainsource"
-	"github.com/lightninglabs/darepo-client/lib/tx/arktx"
-	"github.com/lightninglabs/darepo-client/walletcore"
+	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/chainbackends"
+	"github.com/lightninglabs/wavelength/chainsource"
+	"github.com/lightninglabs/wavelength/lib/tx/arktx"
+	"github.com/lightninglabs/wavelength/walletcore"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/input"
 )
@@ -114,7 +114,7 @@ var (
 
 // txconfirmLockID is the package-scoped LockID used by CPFPBroadcaster
 // when leasing fee-input UTXOs via the Wallet interface. It is derived
-// from the ASCII string "darepo-client:txconfirm" padded to 32 bytes
+// from the ASCII string "wavelength:txconfirm" padded to 32 bytes
 // so concurrent subsystems using a different LockID prefix cannot
 // release txconfirm's leases by mistake. The value is a compile-time
 // constant: callers do not need to synchronise LockIDs across restarts
@@ -122,7 +122,7 @@ var (
 // state from per-parent FSM progress on recovery.
 var txconfirmLockID = func() walletcore.LockID {
 	var id walletcore.LockID
-	copy(id[:], "darepo-client:txconfirm")
+	copy(id[:], "wavelength:txconfirm")
 
 	return id
 }()

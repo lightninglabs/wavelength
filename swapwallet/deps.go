@@ -1,4 +1,4 @@
-//go:build walletdkrpc && swapruntime
+//go:build wavewalletrpc && swapruntime
 
 package swapwallet
 
@@ -9,67 +9,71 @@ import (
 
 	"github.com/btcsuite/btcd/chaincfg/v2"
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/baselib/actor"
-	"github.com/lightninglabs/darepo-client/credit"
-	"github.com/lightninglabs/darepo-client/daemonrpc"
-	"github.com/lightninglabs/darepo-client/darepod"
-	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
-	"github.com/lightninglabs/darepo-client/wallet"
+	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/credit"
+	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
+	"github.com/lightninglabs/wavelength/wallet"
+	"github.com/lightninglabs/wavelength/waved"
+	"github.com/lightninglabs/wavelength/waverpc"
 )
 
 // RPCServer is the narrow contract swapwallet composes against from the
-// daemon. The concrete *darepod.RPCServer satisfies it; tests can supply a
+// daemon. The concrete *waved.RPCServer satisfies it; tests can supply a
 // fake that exercises router/recv/history/service without bringing up the
 // full daemon. The interface is intentionally minimal: every method is
-// already a stable public method on *darepod.RPCServer, and the surface
+// already a stable public method on *waved.RPCServer, and the surface
 // grows only as new wallet-layer capabilities are added.
 //
 // Create/Unlock/Exit/ExitStatus are admin-shape methods that the wallet
-// service proxies to daemonrpc. They are reachable BEFORE the swap runtime
+// service proxies to waverpc. They are reachable BEFORE the swap runtime
 // is live — Create and Unlock obviously run before the wallet is even
 // usable — so the admin handlers must never depend on Runtime state.
 type RPCServer interface {
 	LeaveVTXOs(ctx context.Context,
-		req *daemonrpc.LeaveVTXOsRequest) (
-		*daemonrpc.LeaveVTXOsResponse, error)
-
-	SendOnChain(ctx context.Context,
-		req *daemonrpc.SendOnChainRequest) (
-		*daemonrpc.SendOnChainResponse, error)
-
-	SendOOR(ctx context.Context,
-		req *daemonrpc.SendOORRequest) (
-		*daemonrpc.SendOORResponse,
+		req *waverpc.LeaveVTXOsRequest) (
+		*waverpc.LeaveVTXOsResponse,
 		error,
 	)
 
+	SendOnChain(ctx context.Context,
+		req *waverpc.SendOnChainRequest) (
+		*waverpc.SendOnChainResponse,
+		error,
+	)
+
+	SendOOR(ctx context.Context,
+		req *waverpc.SendOORRequest) (*waverpc.SendOORResponse, error)
+
 	ListVTXOs(ctx context.Context,
-		req *daemonrpc.ListVTXOsRequest) (
-		*daemonrpc.ListVTXOsResponse,
+		req *waverpc.ListVTXOsRequest) (
+		*waverpc.ListVTXOsResponse,
 		error,
 	)
 
 	ListTransactions(ctx context.Context,
-		req *daemonrpc.ListTransactionsRequest) (
-		*daemonrpc.ListTransactionsResponse, error)
+		req *waverpc.ListTransactionsRequest) (
+		*waverpc.ListTransactionsResponse, error)
 
 	GetInfo(ctx context.Context,
-		req *daemonrpc.GetInfoRequest) (
-		*daemonrpc.GetInfoResponse,
+		req *waverpc.GetInfoRequest) (*waverpc.GetInfoResponse, error)
+
+	EstimateFee(ctx context.Context,
+		req *waverpc.EstimateFeeRequest) (
+		*waverpc.EstimateFeeResponse,
 		error,
 	)
 
-	EstimateFee(ctx context.Context,
-		req *daemonrpc.EstimateFeeRequest) (
-		*daemonrpc.EstimateFeeResponse, error)
-
 	GetBalance(ctx context.Context,
-		req *daemonrpc.GetBalanceRequest) (
-		*daemonrpc.GetBalanceResponse, error)
+		req *waverpc.GetBalanceRequest) (
+		*waverpc.GetBalanceResponse,
+		error,
+	)
 
 	NewAddress(ctx context.Context,
-		req *daemonrpc.NewAddressRequest) (
-		*daemonrpc.NewAddressResponse, error)
+		req *waverpc.NewAddressRequest) (
+		*waverpc.NewAddressResponse,
+		error,
+	)
 
 	NewWalletAddress(ctx context.Context) (string, error)
 
@@ -77,40 +81,39 @@ type RPCServer interface {
 		maxConfs int32) ([]*wallet.Utxo, error)
 
 	GenSeed(ctx context.Context,
-		req *daemonrpc.GenSeedRequest) (
-		*daemonrpc.GenSeedResponse,
+		req *waverpc.GenSeedRequest) (*waverpc.GenSeedResponse, error)
+
+	InitWallet(ctx context.Context,
+		req *waverpc.InitWalletRequest) (
+		*waverpc.InitWalletResponse,
 		error,
 	)
 
-	InitWallet(ctx context.Context,
-		req *daemonrpc.InitWalletRequest) (
-		*daemonrpc.InitWalletResponse, error)
-
 	UnlockWallet(ctx context.Context,
-		req *daemonrpc.UnlockWalletRequest) (
-		*daemonrpc.UnlockWalletResponse, error)
+		req *waverpc.UnlockWalletRequest) (
+		*waverpc.UnlockWalletResponse, error)
 
 	Unroll(ctx context.Context,
-		req *daemonrpc.UnrollRequest) (*daemonrpc.UnrollResponse, error)
+		req *waverpc.UnrollRequest) (*waverpc.UnrollResponse, error)
 
 	GetUnrollStatus(ctx context.Context,
-		req *daemonrpc.GetUnrollStatusRequest) (
-		*daemonrpc.GetUnrollStatusResponse, error)
+		req *waverpc.GetUnrollStatusRequest) (
+		*waverpc.GetUnrollStatusResponse, error)
 
-	ExitSummary(ctx context.Context) (*darepod.ExitSummaryResult, error)
+	ExitSummary(ctx context.Context) (*waved.ExitSummaryResult, error)
 
 	GetExitPlan(ctx context.Context,
-		req *darepod.ExitPlanRequest) (*darepod.ExitPlanResponse, error)
+		req *waved.ExitPlanRequest) (*waved.ExitPlanResponse, error)
 
 	SweepWallet(ctx context.Context,
-		req *darepod.SweepWalletRequest) (
-		*darepod.SweepWalletResponse,
+		req *waved.SweepWalletRequest) (
+		*waved.SweepWalletResponse,
 		error,
 	)
 
 	JoinNextRound(ctx context.Context,
-		req *daemonrpc.JoinNextRoundRequest) (
-		*daemonrpc.JoinNextRoundResponse, error)
+		req *waverpc.JoinNextRoundRequest) (
+		*waverpc.JoinNextRoundResponse, error)
 }
 
 // activeBoardingAddressProvider is implemented by the in-process daemon RPC
@@ -155,7 +158,7 @@ type Deps struct {
 	// handle. swapwallet drives ResumePending through it during the
 	// unified resume sweep; future methods (StartPay/StartReceive in-Go)
 	// will be added as the backend interface grows.
-	SwapBackend darepod.SwapBackend
+	SwapBackend waved.SwapBackend
 
 	// SwapService is the gRPC-shaped handle for the swap subserver. It
 	// implements every swap RPC method so swapwallet can dispatch Send,
@@ -209,7 +212,7 @@ type Deps struct {
 	// writes each emitted WalletEntry through as state advances; the
 	// startup backfill seeds it from the history collectors. Nil disables
 	// projection.
-	ActivityStore darepod.ActivityStore
+	ActivityStore waved.ActivityStore
 }
 
 // resolveDeadline returns the effective wallet deadline, applying the

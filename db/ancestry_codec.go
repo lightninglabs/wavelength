@@ -8,11 +8,11 @@ import (
 
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/lightninglabs/darepo-client/db/sqlc"
-	"github.com/lightninglabs/darepo-client/lib/tree"
-	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightninglabs/neutrino/cache"
 	"github.com/lightninglabs/neutrino/cache/lru"
+	"github.com/lightninglabs/wavelength/db/sqlc"
+	"github.com/lightninglabs/wavelength/lib/tree"
+	"github.com/lightninglabs/wavelength/vtxo"
 )
 
 // ancestry_codec.go converts between vtxo.Ancestry slices and the

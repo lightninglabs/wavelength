@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/btcsuite/btclog/v2"
-	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
+	mailboxpb "github.com/lightninglabs/wavelength/mailbox/pb"
 )
 
 // Default backoff parameters mirror serverconn.DefaultConnectorConfig so the

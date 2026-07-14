@@ -9,9 +9,9 @@ import (
 	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/lib/arkscript"
-	"github.com/lightninglabs/darepo-client/lib/tree"
-	"github.com/lightninglabs/darepo-client/lib/types"
+	"github.com/lightninglabs/wavelength/lib/arkscript"
+	"github.com/lightninglabs/wavelength/lib/tree"
+	"github.com/lightninglabs/wavelength/lib/types"
 	"github.com/stretchr/testify/require"
 )
 
@@ -55,7 +55,7 @@ func findOutbox[T ClientOutMsg](outbox []ClientOutMsg) (T, bool) {
 // a RoundJoined admission watermark), the FSM must fail the round as
 // recoverable AND emit a ReleaseForfeitReservation for every forfeit-reserved
 // input so they return to LiveState instead of being stranded in
-// pending-forfeit (darepo-client#653).
+// pending-forfeit (wavelength#653).
 func TestRegistrationTimeoutFailsAndReleasesForfeits(t *testing.T) {
 	t.Parallel()
 

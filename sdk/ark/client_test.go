@@ -21,8 +21,8 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	btcecdsa "github.com/btcsuite/btcd/btcec/v2/ecdsa"
 	"github.com/btcsuite/btcd/chainhash/v2"
-	"github.com/lightninglabs/darepo-client/daemonrpc"
-	"github.com/lightninglabs/darepo-client/darepod"
+	"github.com/lightninglabs/wavelength/waved"
+	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
@@ -31,33 +31,33 @@ import (
 )
 
 type fakeDaemonService struct {
-	daemonrpc.UnimplementedDaemonServiceServer
+	waverpc.UnimplementedDaemonServiceServer
 
 	mu sync.Mutex
 
-	infoResp              *daemonrpc.GetInfoResponse
-	listVtxosResp         *daemonrpc.ListVTXOsResponse
-	newReceiveResp        *daemonrpc.NewReceiveScriptResponse
-	indexedVTXOResp       *daemonrpc.GetIndexedVTXOByPkScriptResponse
-	expiryInfoResp        *daemonrpc.GetVTXOExpiryInfoResponse
-	indexedOORSessionResp *daemonrpc.GetIndexedOORSessionByTxidResponse
-	sendOORResp           *daemonrpc.SendOORResponse
+	infoResp              *waverpc.GetInfoResponse
+	listVtxosResp         *waverpc.ListVTXOsResponse
+	newReceiveResp        *waverpc.NewReceiveScriptResponse
+	indexedVTXOResp       *waverpc.GetIndexedVTXOByPkScriptResponse
+	expiryInfoResp        *waverpc.GetVTXOExpiryInfoResponse
+	indexedOORSessionResp *waverpc.GetIndexedOORSessionByTxidResponse
+	sendOORResp           *waverpc.SendOORResponse
 
-	lastListVTXOsReq   *daemonrpc.ListVTXOsRequest
-	lastIndexedVTXOReq *daemonrpc.GetIndexedVTXOByPkScriptRequest
-	lastExpiryInfoReq  *daemonrpc.GetVTXOExpiryInfoRequest
-	lastIndexedOORReq  *daemonrpc.GetIndexedOORSessionByTxidRequest
-	lastSendOORReq     *daemonrpc.SendOORRequest
+	lastListVTXOsReq   *waverpc.ListVTXOsRequest
+	lastIndexedVTXOReq *waverpc.GetIndexedVTXOByPkScriptRequest
+	lastExpiryInfoReq  *waverpc.GetVTXOExpiryInfoRequest
+	lastIndexedOORReq  *waverpc.GetIndexedOORSessionByTxidRequest
+	lastSendOORReq     *waverpc.SendOORRequest
 }
 
 const (
 	// testLiveVTXOStatus keeps the fake VTXO response readable while
 	// staying within the repository's line-length limit.
-	testLiveVTXOStatus = daemonrpc.VTXOStatus_VTXO_STATUS_LIVE
+	testLiveVTXOStatus = waverpc.VTXOStatus_VTXO_STATUS_LIVE
 
 	// testSafeExpStatus keeps fake expiry info fixtures readable while
 	// staying within the repository's line-length limit.
-	testSafeExpStatus = daemonrpc.VTXOExpiryStatus_VTXO_EXPIRY_STATUS_SAFE
+	testSafeExpStatus = waverpc.VTXOExpiryStatus_VTXO_EXPIRY_STATUS_SAFE
 )
 
 var (
@@ -73,22 +73,22 @@ var (
 )
 
 // testExpiryStatus returns a generated VTXO expiry status by name.
-func testExpiryStatus(name string) daemonrpc.VTXOExpiryStatus {
-	return daemonrpc.VTXOExpiryStatus(
-		daemonrpc.VTXOExpiryStatus_value[name],
+func testExpiryStatus(name string) waverpc.VTXOExpiryStatus {
+	return waverpc.VTXOExpiryStatus(
+		waverpc.VTXOExpiryStatus_value[name],
 	)
 }
 
 // watchRoundsResponse shortens the generic stream signature used by the fake
 // daemon service.
-type watchRoundsResponse = daemonrpc.WatchRoundsResponse
+type watchRoundsResponse = waverpc.WatchRoundsResponse
 
 // testVTXOExpiryInfo builds compact fake expiry metadata for client tests.
-func testVTXOExpiryInfo(status daemonrpc.VTXOExpiryStatus, currentHeight,
+func testVTXOExpiryInfo(status waverpc.VTXOExpiryStatus, currentHeight,
 	batchExpiry, blocksRemaining int32,
-	chainDepth uint32) *daemonrpc.VTXOExpiryInfo {
+	chainDepth uint32) *waverpc.VTXOExpiryInfo {
 
-	return &daemonrpc.VTXOExpiryInfo{
+	return &waverpc.VTXOExpiryInfo{
 		Status:                  status,
 		CurrentHeight:           currentHeight,
 		BatchExpiry:             batchExpiry,
@@ -115,16 +115,16 @@ var (
 // defaults that the SDK tests can override per case.
 func newFakeDaemonService() *fakeDaemonService {
 	return &fakeDaemonService{
-		infoResp: &daemonrpc.GetInfoResponse{
+		infoResp: &waverpc.GetInfoResponse{
 			Version:         "1.2.3",
 			Commit:          "deadbeef",
 			Network:         "regtest",
 			ServerConnected: true,
 			WalletType:      "btcwallet",
-			WalletState: daemonrpc.
+			WalletState: waverpc.
 				WalletState_WALLET_STATE_READY,
 			IdentityPubkey: testIdentityPubKeyHex,
-			ServerInfo: &daemonrpc.ServerInfo{
+			ServerInfo: &waverpc.ServerInfo{
 				OperatorPubkey: mustDecodeHex(
 					testOperatorPubKeyHex,
 				),
@@ -139,8 +139,8 @@ func newFakeDaemonService() *fakeDaemonService {
 				MinConfirmations:  2,
 			},
 		},
-		listVtxosResp: &daemonrpc.ListVTXOsResponse{
-			Vtxos: []*daemonrpc.VTXO{
+		listVtxosResp: &waverpc.ListVTXOsResponse{
+			Vtxos: []*waverpc.VTXO{
 				{
 					Outpoint:  "txid:0",
 					AmountSat: 1234,
@@ -160,7 +160,7 @@ func newFakeDaemonService() *fakeDaemonService {
 				},
 			},
 		},
-		newReceiveResp: &daemonrpc.NewReceiveScriptResponse{
+		newReceiveResp: &waverpc.NewReceiveScriptResponse{
 			PkScriptHex: "5120c0ffee",
 			PubkeyXonlyHex: "11111111111111111111111111111111" +
 				"11111111111111111111111111111111",
@@ -168,11 +168,11 @@ func newFakeDaemonService() *fakeDaemonService {
 			KeyIndex:  7,
 			Label:     "receive-label",
 		},
-		indexedVTXOResp: &daemonrpc.GetIndexedVTXOByPkScriptResponse{
-			Vtxo: &daemonrpc.VTXO{
+		indexedVTXOResp: &waverpc.GetIndexedVTXOByPkScriptResponse{
+			Vtxo: &waverpc.VTXO{
 				Outpoint:  "indexed:1",
 				AmountSat: 42,
-				Status: daemonrpc.
+				Status: waverpc.
 					VTXOStatus_VTXO_STATUS_SPENT,
 				PkScript: "5120c0ffee",
 				OorFinalCheckpointPsbts: [][]byte{
@@ -186,19 +186,19 @@ func newFakeDaemonService() *fakeDaemonService {
 				),
 			},
 		},
-		expiryInfoResp: &daemonrpc.GetVTXOExpiryInfoResponse{
+		expiryInfoResp: &waverpc.GetVTXOExpiryInfoResponse{
 			Found: true,
 			ExpiryInfo: testVTXOExpiryInfo(
 				testCriticalExpStatus, 900, 1000, 100, 2,
 			),
-			Vtxo: &daemonrpc.VTXO{
+			Vtxo: &waverpc.VTXO{
 				Outpoint:  "expiry:0",
 				AmountSat: 21_000,
 				Status:    testLiveVTXOStatus,
 				PkScript:  "5120c0ffee",
 			},
 		},
-		indexedOORSessionResp: &daemonrpc.
+		indexedOORSessionResp: &waverpc.
 			GetIndexedOORSessionByTxidResponse{
 			ArkPsbt: []byte{
 				0x01,
@@ -214,7 +214,7 @@ func newFakeDaemonService() *fakeDaemonService {
 				},
 			},
 		},
-		sendOORResp: &daemonrpc.SendOORResponse{
+		sendOORResp: &waverpc.SendOORResponse{
 			SessionId: "session-123",
 			RecipientOutpoints: []string{
 				"session-123:0",
@@ -269,7 +269,7 @@ func startFakeDaemonServer(t *testing.T,
 // supplied service implementation and returns the listener address that tests
 // can dial through the SDK facade.
 func startFakeDaemonServerWithService(t *testing.T,
-	service daemonrpc.DaemonServiceServer,
+	service waverpc.DaemonServiceServer,
 	serverOpts ...grpc.ServerOption) string {
 
 	t.Helper()
@@ -278,7 +278,7 @@ func startFakeDaemonServerWithService(t *testing.T,
 	require.NoError(t, err)
 
 	server := grpc.NewServer(serverOpts...)
-	daemonrpc.RegisterDaemonServiceServer(server, service)
+	waverpc.RegisterDaemonServiceServer(server, service)
 
 	errChan := make(chan error, 1)
 	go func() {
@@ -359,8 +359,8 @@ func newLoopbackTLSCreds(t *testing.T) (credentials.TransportCredentials,
 
 // GetInfo returns a fixed response so the remote-client test can assert the
 // SDK's proto-to-typed-model conversion.
-func (f *fakeDaemonService) GetInfo(context.Context,
-	*daemonrpc.GetInfoRequest) (*daemonrpc.GetInfoResponse, error) {
+func (f *fakeDaemonService) GetInfo(context.Context, *waverpc.GetInfoRequest) (
+	*waverpc.GetInfoResponse, error) {
 
 	return f.infoResp, nil
 }
@@ -368,9 +368,9 @@ func (f *fakeDaemonService) GetInfo(context.Context,
 // GetBalance returns a fixed balance response so the SDK wrapper can be
 // exercised against a remote daemon transport.
 func (f *fakeDaemonService) GetBalance(context.Context,
-	*daemonrpc.GetBalanceRequest) (*daemonrpc.GetBalanceResponse, error) {
+	*waverpc.GetBalanceRequest) (*waverpc.GetBalanceResponse, error) {
 
-	return &daemonrpc.GetBalanceResponse{
+	return &waverpc.GetBalanceResponse{
 		BoardingConfirmedSat:   111,
 		BoardingUnconfirmedSat: 222,
 		VtxoBalanceSat:         333,
@@ -381,7 +381,7 @@ func (f *fakeDaemonService) GetBalance(context.Context,
 // ListVTXOs returns one fixed VTXO so the SDK's thin passthrough wrapper can
 // be exercised without needing a real daemon database.
 func (f *fakeDaemonService) ListVTXOs(_ context.Context,
-	req *daemonrpc.ListVTXOsRequest) (*daemonrpc.ListVTXOsResponse, error) {
+	req *waverpc.ListVTXOsRequest) (*waverpc.ListVTXOsResponse, error) {
 
 	f.mu.Lock()
 	f.lastListVTXOsReq = req
@@ -392,9 +392,9 @@ func (f *fakeDaemonService) ListVTXOs(_ context.Context,
 
 // NewAddress returns a fixed boarding address for SDK facade testing.
 func (f *fakeDaemonService) NewAddress(context.Context,
-	*daemonrpc.NewAddressRequest) (*daemonrpc.NewAddressResponse, error) {
+	*waverpc.NewAddressRequest) (*waverpc.NewAddressResponse, error) {
 
-	return &daemonrpc.NewAddressResponse{
+	return &waverpc.NewAddressResponse{
 		Address: "bcrt1ptestaddress",
 	}, nil
 }
@@ -402,18 +402,18 @@ func (f *fakeDaemonService) NewAddress(context.Context,
 // NewReceiveScript returns one deterministic receive script so the SDK
 // can verify its typed receive-script helper.
 func (f *fakeDaemonService) NewReceiveScript(_ context.Context,
-	_ *daemonrpc.NewReceiveScriptRequest) (
-	*daemonrpc.NewReceiveScriptResponse, error) {
+	_ *waverpc.NewReceiveScriptRequest) (*waverpc.NewReceiveScriptResponse,
+	error) {
 
 	return f.newReceiveResp, nil
 }
 
 // ReceiveAuthKey returns one deterministic receive-auth public key.
 func (f *fakeDaemonService) ReceiveAuthKey(context.Context,
-	*daemonrpc.ReceiveAuthKeyRequest) (*daemonrpc.ReceiveAuthKeyResponse,
+	*waverpc.ReceiveAuthKeyRequest) (*waverpc.ReceiveAuthKeyResponse,
 	error) {
 
-	return &daemonrpc.ReceiveAuthKeyResponse{
+	return &waverpc.ReceiveAuthKeyResponse{
 		Pubkey: fakeReceiveAuthPrivKey().PubKey().
 			SerializeCompressed(),
 	}, nil
@@ -421,8 +421,8 @@ func (f *fakeDaemonService) ReceiveAuthKey(context.Context,
 
 // SignReceiveAuthMessage signs with the deterministic receive-auth key.
 func (f *fakeDaemonService) SignReceiveAuthMessage(_ context.Context,
-	req *daemonrpc.SignReceiveAuthMessageRequest) (
-	*daemonrpc.SignReceiveAuthMessageResponse, error) {
+	req *waverpc.SignReceiveAuthMessageRequest) (
+	*waverpc.SignReceiveAuthMessageResponse, error) {
 
 	digest := chainhash.HashB(req.GetMessage())
 	if req.GetDoubleHash() {
@@ -431,7 +431,7 @@ func (f *fakeDaemonService) SignReceiveAuthMessage(_ context.Context,
 
 	sig := btcecdsa.Sign(fakeReceiveAuthPrivKey(), digest)
 
-	return &daemonrpc.SignReceiveAuthMessageResponse{
+	return &waverpc.SignReceiveAuthMessageResponse{
 		Signature: sig.Serialize(),
 	}, nil
 }
@@ -439,8 +439,8 @@ func (f *fakeDaemonService) SignReceiveAuthMessage(_ context.Context,
 // SignReceiveAuthMessageCompact signs with the deterministic receive-auth key
 // and returns the compact signature.
 func (f *fakeDaemonService) SignReceiveAuthMessageCompact(_ context.Context,
-	req *daemonrpc.SignReceiveAuthMessageCompactRequest) (
-	*daemonrpc.SignReceiveAuthMessageCompactResponse, error) {
+	req *waverpc.SignReceiveAuthMessageCompactRequest) (
+	*waverpc.SignReceiveAuthMessageCompactResponse, error) {
 
 	digest := chainhash.HashB(req.GetMessage())
 	if req.GetDoubleHash() {
@@ -451,17 +451,17 @@ func (f *fakeDaemonService) SignReceiveAuthMessageCompact(_ context.Context,
 		fakeReceiveAuthPrivKey(), digest, true,
 	)
 
-	return &daemonrpc.SignReceiveAuthMessageCompactResponse{
+	return &waverpc.SignReceiveAuthMessageCompactResponse{
 		Signature: sig,
 	}, nil
 }
 
 // ReceiveAuthECDH returns one deterministic shared secret for facade tests.
 func (f *fakeDaemonService) ReceiveAuthECDH(context.Context,
-	*daemonrpc.ReceiveAuthECDHRequest) (*daemonrpc.ReceiveAuthECDHResponse,
+	*waverpc.ReceiveAuthECDHRequest) (*waverpc.ReceiveAuthECDHResponse,
 	error) {
 
-	return &daemonrpc.ReceiveAuthECDHResponse{
+	return &waverpc.ReceiveAuthECDHResponse{
 		SharedSecret: bytes.Repeat([]byte{0x55}, 32),
 	}, nil
 }
@@ -469,8 +469,8 @@ func (f *fakeDaemonService) ReceiveAuthECDH(context.Context,
 // GetIndexedVTXOByPkScript returns one deterministic indexed VTXO and records
 // the lookup request for helper assertions.
 func (f *fakeDaemonService) GetIndexedVTXOByPkScript(_ context.Context,
-	req *daemonrpc.GetIndexedVTXOByPkScriptRequest) (
-	*daemonrpc.GetIndexedVTXOByPkScriptResponse, error) {
+	req *waverpc.GetIndexedVTXOByPkScriptRequest) (
+	*waverpc.GetIndexedVTXOByPkScriptResponse, error) {
 
 	f.mu.Lock()
 	f.lastIndexedVTXOReq = req
@@ -482,8 +482,8 @@ func (f *fakeDaemonService) GetIndexedVTXOByPkScript(_ context.Context,
 // GetVTXOExpiryInfo returns one deterministic expiry classification and
 // records the lookup request for helper assertions.
 func (f *fakeDaemonService) GetVTXOExpiryInfo(_ context.Context,
-	req *daemonrpc.GetVTXOExpiryInfoRequest) (
-	*daemonrpc.GetVTXOExpiryInfoResponse, error) {
+	req *waverpc.GetVTXOExpiryInfoRequest) (
+	*waverpc.GetVTXOExpiryInfoResponse, error) {
 
 	f.mu.Lock()
 	f.lastExpiryInfoReq = req
@@ -495,8 +495,8 @@ func (f *fakeDaemonService) GetVTXOExpiryInfo(_ context.Context,
 // GetIndexedOORSessionByTxid returns one deterministic indexed OOR session
 // and records the lookup request for helper assertions.
 func (f *fakeDaemonService) GetIndexedOORSessionByTxid(_ context.Context,
-	req *daemonrpc.GetIndexedOORSessionByTxidRequest) (
-	*daemonrpc.GetIndexedOORSessionByTxidResponse, error) {
+	req *waverpc.GetIndexedOORSessionByTxidRequest) (
+	*waverpc.GetIndexedOORSessionByTxidResponse, error) {
 
 	f.mu.Lock()
 	f.lastIndexedOORReq = req
@@ -508,7 +508,7 @@ func (f *fakeDaemonService) GetIndexedOORSessionByTxid(_ context.Context,
 // SendOOR records the submitted OOR request and returns one deterministic
 // session id so the helper methods can assert their request translation.
 func (f *fakeDaemonService) SendOOR(_ context.Context,
-	req *daemonrpc.SendOORRequest) (*daemonrpc.SendOORResponse, error) {
+	req *waverpc.SendOORRequest) (*waverpc.SendOORResponse, error) {
 
 	f.mu.Lock()
 	f.lastSendOORReq = req
@@ -519,17 +519,17 @@ func (f *fakeDaemonService) SendOOR(_ context.Context,
 
 // Board returns a fixed status so the SDK can verify the board wrapper against
 // a remote daemon.
-func (f *fakeDaemonService) Board(context.Context, *daemonrpc.BoardRequest) (
-	*daemonrpc.BoardResponse, error) {
+func (f *fakeDaemonService) Board(context.Context, *waverpc.BoardRequest) (
+	*waverpc.BoardResponse, error) {
 
-	return &daemonrpc.BoardResponse{Status: "registered"}, nil
+	return &waverpc.BoardResponse{Status: "registered"}, nil
 }
 
 // EstimateFee returns a fixed fee quote for the SDK facade test.
 func (f *fakeDaemonService) EstimateFee(context.Context,
-	*daemonrpc.EstimateFeeRequest) (*daemonrpc.EstimateFeeResponse, error) {
+	*waverpc.EstimateFeeRequest) (*waverpc.EstimateFeeResponse, error) {
 
-	return &daemonrpc.EstimateFeeResponse{
+	return &waverpc.EstimateFeeResponse{
 		TotalFeeSat:         77,
 		BelowDustWarning:    false,
 		MinViableAmountSat:  1000,
@@ -539,11 +539,10 @@ func (f *fakeDaemonService) EstimateFee(context.Context,
 
 // GetFeeHistory returns one fixed ledger entry for the SDK facade test.
 func (f *fakeDaemonService) GetFeeHistory(context.Context,
-	*daemonrpc.GetFeeHistoryRequest) (*daemonrpc.GetFeeHistoryResponse,
-	error) {
+	*waverpc.GetFeeHistoryRequest) (*waverpc.GetFeeHistoryResponse, error) {
 
-	return &daemonrpc.GetFeeHistoryResponse{
-		Entries: []*daemonrpc.FeeHistoryEntry{
+	return &waverpc.GetFeeHistoryResponse{
+		Entries: []*waverpc.FeeHistoryEntry{
 			{
 				EntryId:       1,
 				EventType:     "vtxo_sent",
@@ -558,13 +557,13 @@ func (f *fakeDaemonService) GetFeeHistory(context.Context,
 
 // WatchRounds sends one synthetic round update and then closes the stream so
 // the SDK can verify its streaming wrapper.
-func (f *fakeDaemonService) WatchRounds(_ *daemonrpc.WatchRoundsRequest,
+func (f *fakeDaemonService) WatchRounds(_ *waverpc.WatchRoundsRequest,
 	stream grpc.ServerStreamingServer[watchRoundsResponse]) error {
 
-	if err := stream.Send(&daemonrpc.WatchRoundsResponse{
-		Round: &daemonrpc.RoundInfo{
+	if err := stream.Send(&waverpc.WatchRoundsResponse{
+		Round: &waverpc.RoundInfo{
 			RoundId: "round-1",
-			State:   daemonrpc.RoundState_ROUND_STATE_JOINED,
+			State:   waverpc.RoundState_ROUND_STATE_JOINED,
 		},
 	}); err != nil {
 		return err
@@ -644,7 +643,7 @@ func TestDialRemoteCoversFacadeMethods(t *testing.T) {
 	require.Equal(t, "registered", boardResp.Status)
 
 	feeResp, err := client.EstimateFee(
-		context.Background(), &daemonrpc.EstimateFeeRequest{
+		context.Background(), &waverpc.EstimateFeeRequest{
 			AmountSat: 10_000,
 		},
 	)
@@ -652,7 +651,7 @@ func TestDialRemoteCoversFacadeMethods(t *testing.T) {
 	require.Equal(t, int64(77), feeResp.TotalFeeSat)
 
 	history, err := client.GetFeeHistory(
-		context.Background(), &daemonrpc.GetFeeHistoryRequest{
+		context.Background(), &waverpc.GetFeeHistoryRequest{
 			Limit: 10,
 		},
 	)
@@ -783,7 +782,7 @@ func TestDialRemotePolicyHelpers(t *testing.T) {
 
 	require.NotNil(t, listReq)
 	require.Equal(
-		t, daemonrpc.VTXOStatus_VTXO_STATUS_LIVE,
+		t, waverpc.VTXOStatus_VTXO_STATUS_LIVE,
 		listReq.GetStatusFilter(),
 	)
 
@@ -808,18 +807,18 @@ func TestDialRemotePolicyHelpers(t *testing.T) {
 		t, []byte{0x51, 0x20, 0xc0, 0xff, 0xee},
 		indexedReq.GetPkScript(),
 	)
-	require.Equal(t, []daemonrpc.VTXOStatus{
-		daemonrpc.VTXOStatus_VTXO_STATUS_SPENT,
+	require.Equal(t, []waverpc.VTXOStatus{
+		waverpc.VTXOStatus_VTXO_STATUS_SPENT,
 	}, indexedReq.GetStatusFilter())
 
 	expiryResp, err := client.GetVTXOExpiryInfo(
 		context.Background(),
-		&daemonrpc.GetVTXOExpiryInfoRequest{
-			Target: &daemonrpc.GetVTXOExpiryInfoRequest_PkScript{
+		&waverpc.GetVTXOExpiryInfoRequest{
+			Target: &waverpc.GetVTXOExpiryInfoRequest_PkScript{
 				PkScript: []byte{0x51, 0x20, 0xc0, 0xff, 0xee},
 			},
-			StatusFilter: []daemonrpc.VTXOStatus{
-				daemonrpc.VTXOStatus_VTXO_STATUS_LIVE,
+			StatusFilter: []waverpc.VTXOStatus{
+				waverpc.VTXOStatus_VTXO_STATUS_LIVE,
 			},
 			CurrentHeight: 900,
 		},
@@ -957,11 +956,11 @@ func TestDialRemoteTLSGetInfo(t *testing.T) {
 func TestStartEmbeddedUsesBufconnTransport(t *testing.T) {
 	t.Parallel()
 
-	cfg := darepod.DefaultConfig()
+	cfg := waved.DefaultConfig()
 	cfg.DataDir = t.TempDir()
 	cfg.Network = "regtest"
 	cfg.Server.Host = "127.0.0.1:10010"
-	cfg.Wallet.Type = darepod.WalletTypeBtcwallet
+	cfg.Wallet.Type = waved.WalletTypeBtcwallet
 	cfg.Wallet.FeeURL = "http://127.0.0.1:3001"
 	cfg.Wallet.EsploraURL = ""
 	cfg.RPC.Gateway.ListenAddr = "127.0.0.1:0"
@@ -980,7 +979,7 @@ func TestStartEmbeddedUsesBufconnTransport(t *testing.T) {
 	info, err := client.GetInfo(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, "regtest", info.Network)
-	require.Equal(t, darepod.WalletTypeBtcwallet, info.WalletType)
+	require.Equal(t, waved.WalletTypeBtcwallet, info.WalletType)
 	require.False(t, info.WalletReady())
 
 	seed, err := client.GenSeed(context.Background(), nil)
@@ -1004,7 +1003,7 @@ func TestStartEmbeddedUsesBufconnTransport(t *testing.T) {
 func TestStartEmbeddedFailsFastOnBootError(t *testing.T) {
 	t.Parallel()
 
-	cfg := darepod.DefaultConfig()
+	cfg := waved.DefaultConfig()
 	cfg.DataDir = t.TempDir()
 	cfg.Network = "regtest"
 	cfg.Server.Host = "127.0.0.1:10010"
@@ -1059,7 +1058,7 @@ func TestWrapDaemonClientUsesExistingClient(t *testing.T) {
 		_ = conn.Close()
 	})
 
-	daemonClient := daemonrpc.NewDaemonServiceClient(conn)
+	daemonClient := waverpc.NewDaemonServiceClient(conn)
 
 	var closeCalls atomic.Int32
 	client := WrapDaemonClient(daemonClient, func(context.Context) error {

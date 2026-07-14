@@ -1,4 +1,4 @@
-//go:build walletdkrpc && swapruntime
+//go:build wavewalletrpc && swapruntime
 
 package swapwallet
 
@@ -7,9 +7,9 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/db"
-	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
-	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/db"
+	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"github.com/lightningnetwork/lnd/clock"
 	"github.com/stretchr/testify/require"
 )
@@ -78,7 +78,7 @@ func TestBackfillMirrorsLegacyMerge(t *testing.T) {
 	// The derive-on-read merge is the comparison oracle — it is what the
 	// backfill seeds the store from (listActivity now reads the store).
 	merged, err := h.deriveActivity(
-		ctx, &walletdkrpc.ListRequest{
+		ctx, &wavewalletrpc.ListRequest{
 			Limit: 100,
 		},
 	)

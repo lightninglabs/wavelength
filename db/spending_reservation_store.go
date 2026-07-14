@@ -5,8 +5,8 @@ import (
 
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/lightninglabs/darepo-client/db/sqlc"
-	"github.com/lightninglabs/darepo-client/vtxo"
+	"github.com/lightninglabs/wavelength/db/sqlc"
+	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightningnetwork/lnd/clock"
 )
 
@@ -115,7 +115,7 @@ func (s *SpendingReservationPersistenceStore) ListReservedOutpoints(
 
 // Compile-time check that the persistence store satisfies the VTXO manager's
 // reservation interface. The OOR-side oor.ReservationStore is asserted at the
-// wiring site (darepod) instead, because db cannot import oor without an import
+// wiring site (waved) instead, because db cannot import oor without an import
 // cycle.
 var _ vtxo.SpendingReservationStore = (*SpendingReservationPersistenceStore)(
 	nil,

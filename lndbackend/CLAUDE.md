@@ -31,7 +31,7 @@ MuSig2) for the round actor, and proof-key derivation/signing.
 - **Depends on**: `wallet` (implements `BoardingBackend`/`OutputLeaser`),
   `proofkeys` (implements `Backend`), `indexer` (`SchnorrSigner`), `build`
   (context logger fallback).
-- **Depended on by**: `darepod` (LND-backed wallet mode, all three types),
+- **Depended on by**: `waved` (LND-backed wallet mode, all three types),
   root `main` package (`lnd_boarding_wallet.go` back-compat alias), `systest`.
 
 ## Invariants

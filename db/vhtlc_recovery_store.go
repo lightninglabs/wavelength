@@ -10,8 +10,8 @@ import (
 
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/google/uuid"
-	"github.com/lightninglabs/darepo-client/db/sqlc"
-	"github.com/lightninglabs/darepo-client/vhtlcrecovery"
+	"github.com/lightninglabs/wavelength/db/sqlc"
+	"github.com/lightninglabs/wavelength/vhtlcrecovery"
 	"github.com/lightningnetwork/lnd/clock"
 )
 

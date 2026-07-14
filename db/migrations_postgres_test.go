@@ -5,7 +5,7 @@ package db
 import (
 	"testing"
 
-	admigration "github.com/lightninglabs/darepo-client/db/actordelivery/migrations"
+	admigration "github.com/lightninglabs/wavelength/db/actordelivery/migrations"
 	"github.com/stretchr/testify/require"
 )
 

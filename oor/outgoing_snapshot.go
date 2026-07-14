@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/psbt/v2"
-	"github.com/lightninglabs/darepo-client/baselib/protofsm"
-	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
+	"github.com/lightninglabs/wavelength/baselib/protofsm"
+	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
 )
 
 // OutgoingPhase identifies the coarse stage of an outgoing client transfer.
@@ -54,7 +54,7 @@ const (
 //
 // NOTE: TransferInputs contains rich Go types (tapscript/key descriptors) and
 // is not currently encoded for cross-process durability. The durable actor work
-// in darepo-client will eventually provide a canonical encoding for these.
+// in wavelength will eventually provide a canonical encoding for these.
 //
 // TransferInputSnapshots is the portable encoding used for persistence.
 type OutgoingSnapshot struct {

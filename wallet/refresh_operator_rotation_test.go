@@ -6,7 +6,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
-	"github.com/lightninglabs/darepo-client/lib/arkscript"
+	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/stretchr/testify/require"
 )
 

@@ -7,7 +7,7 @@ import (
 
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/psbt/v2"
-	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
+	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
 	"github.com/lightningnetwork/lnd/tlv"
 )
 

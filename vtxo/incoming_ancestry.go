@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/lightninglabs/darepo-client/arkrpc"
+	"github.com/lightninglabs/wavelength/arkrpc"
 )
 
 // MaxAncestryPaths bounds the per-VTXO ancestry slice the indexer is

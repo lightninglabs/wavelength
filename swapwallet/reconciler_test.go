@@ -1,4 +1,4 @@
-//go:build walletdkrpc && swapruntime
+//go:build wavewalletrpc && swapruntime
 
 package swapwallet
 
@@ -8,13 +8,13 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/daemonrpc"
-	"github.com/lightninglabs/darepo-client/darepod"
-	"github.com/lightninglabs/darepo-client/db"
-	"github.com/lightninglabs/darepo-client/db/sqlc"
-	"github.com/lightninglabs/darepo-client/ledger"
-	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
-	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/db"
+	"github.com/lightninglabs/wavelength/db/sqlc"
+	"github.com/lightninglabs/wavelength/ledger"
+	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
+	"github.com/lightninglabs/wavelength/waved"
+	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/lightningnetwork/lnd/clock"
 	"github.com/stretchr/testify/require"
 )
@@ -56,13 +56,13 @@ func TestReconcileActivityFlipsDepositLive(t *testing.T) {
 	// A pending deposit row already in the store, as Deposit would project
 	// it, keyed by its address-scoped id.
 	const depID = "deposit-bcrt1qaddr"
-	runtime.project(ctx, &walletdkrpc.WalletEntry{
+	runtime.project(ctx, &wavewalletrpc.WalletEntry{
 		Id:            depID,
-		Kind:          walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT,
-		Status:        walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		Kind:          wavewalletrpc.EntryKind_ENTRY_KIND_DEPOSIT,
+		Status:        wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
 		CreatedAtUnix: 100,
 		UpdatedAtUnix: 100,
-		Progress: &walletdkrpc.WalletEntryProgress{
+		Progress: &wavewalletrpc.WalletEntryProgress{
 			PhaseLabel: "address_issued",
 		},
 	})
@@ -70,14 +70,14 @@ func TestReconcileActivityFlipsDepositLive(t *testing.T) {
 	entry, err := store.GetEntry(ctx, depID)
 	require.NoError(t, err)
 	require.EqualValues(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING, entry.Status,
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING, entry.Status,
 	)
 
 	// The deposit confirms: ListTransactions now returns the confirmed
 	// wallet_utxo_created row carrying the same boarding address, so it
 	// keys to the same deposit-<address> id as the pending row.
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Type:               "boarding",
 				Subtype:            ledger.EventWalletUTXOCreated,
@@ -97,8 +97,8 @@ func TestReconcileActivityFlipsDepositLive(t *testing.T) {
 	entry, err = store.GetEntry(ctx, depID)
 	require.NoError(t, err)
 	require.EqualValues(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE, entry.Status,
-		"reconciler must land the confirmed deposit live",
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		entry.Status, "reconciler must land the confirmed deposit live",
 	)
 
 	events, err := store.PullEvents(ctx, 0, 100)
@@ -131,8 +131,8 @@ func TestReconcileProjectsRawOORLive(t *testing.T) {
 	// A recorded raw-OOR send (debit transfers_out) and receive (credit
 	// transfers_in) as ListTransactions surfaces them. statusForLedgerRow
 	// folds an "oor"/"recorded" row to COMPLETE.
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Type:               "oor",
 				ConfirmationStatus: "recorded",
@@ -158,20 +158,20 @@ func TestReconcileProjectsRawOORLive(t *testing.T) {
 	send, err := store.GetEntry(ctx, "oor-send-txid")
 	require.NoError(t, err)
 	require.EqualValues(
-		t, walletdkrpc.EntryKind_ENTRY_KIND_SEND, send.Kind,
+		t, wavewalletrpc.EntryKind_ENTRY_KIND_SEND, send.Kind,
 	)
 	require.EqualValues(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE, send.Status,
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE, send.Status,
 		"reconciler must land the raw-OOR send live",
 	)
 
 	recv, err := store.GetEntry(ctx, "oor-recv-txid")
 	require.NoError(t, err)
 	require.EqualValues(
-		t, walletdkrpc.EntryKind_ENTRY_KIND_RECV, recv.Kind,
+		t, wavewalletrpc.EntryKind_ENTRY_KIND_RECV, recv.Kind,
 	)
 	require.EqualValues(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE, recv.Status,
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE, recv.Status,
 		"reconciler must land the raw-OOR receive live",
 	)
 }
@@ -190,8 +190,8 @@ func TestReprojectRecentActivityBoundsWindow(t *testing.T) {
 	// Three recorded raw-OOR sends with increasing updated_at (ledger rows
 	// take updated_at from created_at). deriveActivity sorts updated_at
 	// descending, so with limit 2 only the two newest are projected.
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Type:               "oor",
 				ConfirmationStatus: "recorded",
@@ -265,10 +265,10 @@ func trackForfeitedCooperativeExit(runtime *Runtime,
 
 	// A cooperative leave has no unroll job, and its retained outpoint is
 	// in the forfeited set — so decorateExitEntry flips it to COMPLETE.
-	rpc.unrollStatusResp = &daemonrpc.GetUnrollStatusResponse{Found: false}
-	rpc.listVTXOsByStatus = map[daemonrpc.VTXOStatus]*daemonrpc.ListVTXOsResponse{
-		daemonrpc.VTXOStatus_VTXO_STATUS_FORFEITED: {
-			Vtxos: []*daemonrpc.VTXO{
+	rpc.unrollStatusResp = &waverpc.GetUnrollStatusResponse{Found: false}
+	rpc.listVTXOsByStatus = map[waverpc.VTXOStatus]*waverpc.ListVTXOsResponse{
+		waverpc.VTXOStatus_VTXO_STATUS_FORFEITED: {
+			Vtxos: []*waverpc.VTXO{
 				{
 					Outpoint: outpoint,
 				},
@@ -276,11 +276,11 @@ func trackForfeitedCooperativeExit(runtime *Runtime,
 		},
 	}
 
-	runtime.trackPendingEntryWithoutTimeout(&walletdkrpc.WalletEntry{
+	runtime.trackPendingEntryWithoutTimeout(&wavewalletrpc.WalletEntry{
 		Id:     jobID,
-		Kind:   walletdkrpc.EntryKind_ENTRY_KIND_EXIT,
-		Status: walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
-		Progress: &walletdkrpc.WalletEntryProgress{
+		Kind:   wavewalletrpc.EntryKind_ENTRY_KIND_EXIT,
+		Status: wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		Progress: &wavewalletrpc.WalletEntryProgress{
 			VtxoOutpoint: outpoint,
 		},
 	})
@@ -306,7 +306,8 @@ func TestReconcileClearsTerminalExitAfterProject(t *testing.T) {
 	entry, err := store.GetEntry(ctx, jobID)
 	require.NoError(t, err)
 	require.EqualValues(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE, entry.Status,
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		entry.Status,
 		"reconciler must land the forfeited leave COMPLETE",
 	)
 	require.NotContains(
@@ -342,7 +343,7 @@ func TestReconcileRetainsPendingExitOnProjectFailure(t *testing.T) {
 // failingProjectStore wraps a real activity store but fails every ProjectEntry,
 // to exercise the reconciler's must-not-clear-on-write-failure path.
 type failingProjectStore struct {
-	darepod.ActivityStore
+	waved.ActivityStore
 }
 
 func (failingProjectStore) ProjectEntry(context.Context,
@@ -372,10 +373,10 @@ func TestReconcileCompletesLeaveAfterRestart(t *testing.T) {
 
 	// The retained outpoint is reported forfeited (the round sealed) and
 	// the leave has no unroll job, so the correlation flips it COMPLETE.
-	rpc.unrollStatusResp = &daemonrpc.GetUnrollStatusResponse{Found: false}
-	rpc.listVTXOsByStatus = map[daemonrpc.VTXOStatus]*daemonrpc.ListVTXOsResponse{
-		daemonrpc.VTXOStatus_VTXO_STATUS_FORFEITED: {
-			Vtxos: []*daemonrpc.VTXO{
+	rpc.unrollStatusResp = &waverpc.GetUnrollStatusResponse{Found: false}
+	rpc.listVTXOsByStatus = map[waverpc.VTXOStatus]*waverpc.ListVTXOsResponse{
+		waverpc.VTXOStatus_VTXO_STATUS_FORFEITED: {
+			Vtxos: []*waverpc.VTXO{
 				{
 					Outpoint: outpoint,
 				},
@@ -386,14 +387,14 @@ func TestReconcileCompletesLeaveAfterRestart(t *testing.T) {
 	// Submit durably projected the PENDING row (keyed by send_job_id, with
 	// the retained outpoint); a restart leaves the in-memory pending map
 	// empty.
-	runtime.project(ctx, &walletdkrpc.WalletEntry{
+	runtime.project(ctx, &wavewalletrpc.WalletEntry{
 		Id:            jobID,
-		Kind:          walletdkrpc.EntryKind_ENTRY_KIND_EXIT,
-		Status:        walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		Kind:          wavewalletrpc.EntryKind_ENTRY_KIND_EXIT,
+		Status:        wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
 		CreatedAtUnix: 100,
 		UpdatedAtUnix: 100,
 		Counterparty:  "cooperative",
-		Progress: &walletdkrpc.WalletEntryProgress{
+		Progress: &wavewalletrpc.WalletEntryProgress{
 			VtxoOutpoint: outpoint,
 		},
 	})
@@ -418,9 +419,9 @@ func TestReconcileCompletesLeaveAfterRestart(t *testing.T) {
 	entry, err := store.GetEntry(ctx, jobID)
 	require.NoError(t, err)
 	require.EqualValues(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE, entry.Status,
-		"rehydrated leave must complete under its stable id after "+
-			"restart",
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		entry.Status, "rehydrated leave must complete under its "+
+			"stable id after restart",
 	)
 	require.Equal(
 		t, outpoint, entry.VtxoOutpoint,
@@ -441,10 +442,10 @@ func TestRehydrateWalletLocalPending(t *testing.T) {
 	ctx := context.Background()
 	runtime, _, _ := newReconcileFixture(t)
 
-	seed := func(id string, kind walletdkrpc.EntryKind,
-		status walletdkrpc.EntryStatus) {
+	seed := func(id string, kind wavewalletrpc.EntryKind,
+		status wavewalletrpc.EntryStatus) {
 
-		runtime.project(ctx, &walletdkrpc.WalletEntry{
+		runtime.project(ctx, &wavewalletrpc.WalletEntry{
 			Id:            id,
 			Kind:          kind,
 			Status:        status,
@@ -453,20 +454,20 @@ func TestRehydrateWalletLocalPending(t *testing.T) {
 		})
 	}
 	seed(
-		"sendjob-abc", walletdkrpc.EntryKind_ENTRY_KIND_EXIT,
-		walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		"sendjob-abc", wavewalletrpc.EntryKind_ENTRY_KIND_EXIT,
+		wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
 	)
 	seed(
-		"ddeeff:0", walletdkrpc.EntryKind_ENTRY_KIND_EXIT,
-		walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		"ddeeff:0", wavewalletrpc.EntryKind_ENTRY_KIND_EXIT,
+		wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
 	)
 	seed(
-		"sendjob-done", walletdkrpc.EntryKind_ENTRY_KIND_EXIT,
-		walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		"sendjob-done", wavewalletrpc.EntryKind_ENTRY_KIND_EXIT,
+		wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
 	)
 	seed(
-		"payhash-send", walletdkrpc.EntryKind_ENTRY_KIND_SEND,
-		walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		"payhash-send", wavewalletrpc.EntryKind_ENTRY_KIND_SEND,
+		wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
 	)
 
 	// project writes only the store; the in-memory map starts empty.
@@ -497,10 +498,10 @@ func TestRehydratePagesMultipleBatches(t *testing.T) {
 
 	ids := []string{"exit-a", "exit-b", "exit-c", "exit-d", "exit-e"}
 	for _, id := range ids {
-		runtime.project(ctx, &walletdkrpc.WalletEntry{
+		runtime.project(ctx, &wavewalletrpc.WalletEntry{
 			Id:            id,
-			Kind:          walletdkrpc.EntryKind_ENTRY_KIND_EXIT,
-			Status:        walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+			Kind:          wavewalletrpc.EntryKind_ENTRY_KIND_EXIT,
+			Status:        wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
 			CreatedAtUnix: 100,
 			UpdatedAtUnix: 100,
 		})
@@ -535,7 +536,7 @@ func TestRehydrateReturnsOnScanError(t *testing.T) {
 // erringRehydrateStore fails only the rehydration scan, delegating every other
 // method to a real store.
 type erringRehydrateStore struct {
-	darepod.ActivityStore
+	waved.ActivityStore
 }
 
 func (erringRehydrateStore) ListEntriesByKindStatus(context.Context, int64,

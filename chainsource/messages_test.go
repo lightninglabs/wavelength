@@ -5,7 +5,7 @@ import (
 
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/stretchr/testify/require"
 )
 

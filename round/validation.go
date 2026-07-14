@@ -5,7 +5,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcwallet/waddrmgr"
-	"github.com/lightninglabs/darepo-client/lib/arkscript"
+	"github.com/lightninglabs/wavelength/lib/arkscript"
 )
 
 // MaxReasonableDelay is the maximum reasonable delay in blocks (~1 year).

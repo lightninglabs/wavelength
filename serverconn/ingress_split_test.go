@@ -3,7 +3,7 @@ package serverconn
 import (
 	"testing"
 
-	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
+	mailboxpb "github.com/lightninglabs/wavelength/mailbox/pb"
 	"github.com/stretchr/testify/require"
 )
 

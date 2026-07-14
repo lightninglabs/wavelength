@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/lightninglabs/darepo-client/baselib/actor"
-	"github.com/lightninglabs/darepo-client/internal/indexerlimits"
-	mailboxconn "github.com/lightninglabs/darepo-client/mailbox/conn"
-	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
+	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/internal/indexerlimits"
+	mailboxconn "github.com/lightninglabs/wavelength/mailbox/conn"
+	mailboxrpc "github.com/lightninglabs/wavelength/mailbox/rpc"
 	"github.com/lightningnetwork/lnd/tlv"
 	"google.golang.org/protobuf/types/known/anypb"
 )

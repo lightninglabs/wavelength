@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/lightninglabs/darepo-client/unrollplan"
+	"github.com/lightninglabs/wavelength/unrollplan"
 	"github.com/lightningnetwork/lnd/tlv"
 )
 

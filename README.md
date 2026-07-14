@@ -1,10 +1,12 @@
-# darepo-client
+# wavelength
 
-`darepo-client` is the reference [Ark protocol](https://arkdev.info/) client
-implementation in Go. It ships a long-running daemon (`darepod`) and a
-companion CLI (`darepocli`) that together let a Bitcoin user board into Ark
-rounds, hold and transfer VTXOs, swap into and out of the Lightning Network,
-and unilaterally exit to the chain at any time.
+`wavelength` is a self-custodial Bitcoin wallet system written in Go. It
+unifies three layers that usually live in separate tools: an Ark client, a
+Lightning swap engine, and an on-chain wallet. All of it runs behind one
+long-running daemon (`waved`) and a companion CLI (`wavecli`), so a user can
+board into Ark, hold and transfer VTXOs, swap into and out of the Lightning
+Network, send and receive on-chain, and unilaterally exit to the chain at
+any time, all while keeping sole custody of their coins.
 
 The daemon is a self-contained, restart-safe process that talks to an Ark
 operator over a durable mailbox transport, manages its own on-chain wallet,
@@ -25,12 +27,12 @@ and exposes a typed gRPC + REST API for host applications.
 - **Lightning swaps.** Optional swap subsystem (`swapruntime`) provides
   Lightning-to-Ark and Ark-to-Lightning atomic swaps with a durable FSM.
 - **Wallet RPC facade.** Optional flat, swap-vocabulary-free wallet API
-  (`walletdkrpc`) exposes seven core verbs: `create`, `unlock`, `send`,
+  (`wavewalletrpc`) exposes seven core verbs: `create`, `unlock`, `send`,
   `recv`, `activity`, `balance`, `exit`.
-- **Host-app SDK.** `sdk/ark`, `sdk/swaps`, and `sdk/walletdk` embed the
+- **Host-app SDK.** `sdk/ark`, `sdk/swaps`, and `sdk/wavewalletdk` embed the
   daemon in-process and expose typed Go APIs over a private transport.
 - **gRPC + REST.** Every RPC is reachable over gRPC or via grpc-gateway HTTP.
-- **MCP integration.** `darepocli mcp serve` exposes the daemon to AI agents
+- **MCP integration.** `wavecli mcp serve` exposes the daemon to AI agents
   as typed tool calls.
 
 ---
@@ -38,16 +40,16 @@ and exposes a typed gRPC + REST API for host applications.
 ## Quick Start
 
 ```bash
-# Clone, build, and install darepod + darepocli with the wallet RPC surface
+# Clone, build, and install waved + wavecli with the wallet RPC surface
 # enabled (recommended; gives you the top-level wallet verbs).
-git clone https://github.com/lightninglabs/darepo-client.git
-cd darepo-client
-make install-walletdkrpc
+git clone https://github.com/lightninglabs/wavelength.git
+cd wavelength
+make install-wavewalletrpc
 
 # Start the daemon against a local regtest Ark operator + Esplora. The local
 # and remote mailbox IDs are derived from the client and operator pubkeys, so
 # there are no mailbox-id flags to set.
-darepod \
+waved \
   --network=regtest \
   --wallet.type=lwwallet \
   --wallet.esploraurl=http://localhost:3000 \
@@ -56,14 +58,14 @@ darepod \
   --server.insecure \
   --rpc.listenaddr=localhost:10029
 
-# In another shell. darepocli needs TLS + the daemon's admin macaroon; for
+# In another shell. wavecli needs TLS + the daemon's admin macaroon; for
 # this local regtest daemon use plaintext instead (no TLS, no macaroon) on
 # the regtest network. See INSTALL.md for the TLS setup a real instance uses.
-alias da='darepocli --no-tls --no-macaroons --network=regtest'
-da create
-da recv   --onchain
-da balance
-da ark board
+alias wave='wavecli --no-tls --no-macaroons --network=regtest'
+wave create
+wave recv   --onchain
+wave balance
+wave ark board
 ```
 
 For a full end-to-end regtest walkthrough (with `nigiri` and a funded
@@ -76,7 +78,7 @@ requirements, troubleshooting) live in [`INSTALL.md`](INSTALL.md).
 
 ## Build Variants
 
-`darepod` is intentionally modular. The default build is minimal; optional
+`waved` is intentionally modular. The default build is minimal; optional
 subsystems are gated behind build tags so hosts that do not need them pay
 nothing in binary size or surface area.
 
@@ -84,15 +86,15 @@ nothing in binary size or surface area.
 |----------------------------|-----------------------------|-----------------------------------------------------------|
 | `make build`               | _(none)_                    | Core Ark client. Power-user `ark *` and `dev *` CLI only. |
 | `make build-swapruntime`   | `swapruntime`               | + Lightning swap subsystem (`sdk/swaps`) powering `send`/`recv --offchain`. |
-| `make build-walletdkrpc`   | `walletdkrpc swapruntime`   | + Wallet RPC subserver and top-level wallet verbs.        |
+| `make build-wavewalletrpc`   | `wavewalletrpc swapruntime`   | + Wallet RPC subserver and top-level wallet verbs.        |
 | `make install`             | _(none)_                    | Installs the core build to `$GOPATH/bin`.                 |
 | `make install-swapruntime` | `swapruntime`               | Installs the swap-enabled build.                          |
-| `make install-walletdkrpc` | `walletdkrpc swapruntime`   | Installs the full walletdkrpc-enabled build (recommended).|
+| `make install-wavewalletrpc` | `wavewalletrpc swapruntime`   | Installs the full wavewalletrpc-enabled build (recommended).|
 
-The `walletdkrpc` build is a strict superset of `swapruntime`. Most users
-want `make install-walletdkrpc`.
+The `wavewalletrpc` build is a strict superset of `swapruntime`. Most users
+want `make install-wavewalletrpc`.
 
-See [`docs/walletdkrpc_build.md`](docs/walletdkrpc_build.md) for the full
+See [`docs/wavewalletrpc_build.md`](docs/wavewalletrpc_build.md) for the full
 matrix, what each tag enables, and what the CLI surface looks like in each
 mode.
 
@@ -102,17 +104,17 @@ mode.
 
 The everyday **Wallet** verbs and daemon **Introspection** are the default
 `--help` face. The advanced `ark` / `dev` / `recovery` subtrees are hidden
-from `--help` (set `DAREPO_DEV=1` to reveal them) but stay fully runnable —
-`darepocli ark …` works with or without the env var.
+from `--help` (set `WAVELENGTH_DEV=1` to reveal them) but stay fully runnable —
+`wavecli ark …` works with or without the env var.
 
 ```
-darepocli
+wavecli
 ├── getinfo                   daemon status                          (all builds)
-├── balance / recv / send     unified wallet verbs                   (walletdkrpc)
-├── create / unlock           wallet bring-up                        (walletdkrpc)
-├── activity [inspect]        unified wallet activity history        (walletdkrpc)
+├── balance / recv / send     unified wallet verbs                   (wavewalletrpc)
+├── create / unlock           wallet bring-up                        (wavewalletrpc)
+├── activity [inspect]        unified wallet activity history        (wavewalletrpc)
 ├── exit [status]             cooperatively exit a VTXO              (all builds)
-├── mcp serve                 MCP server for AI agents               (walletdkrpc)
+├── mcp serve                 MCP server for AI agents               (wavewalletrpc)
 ├── schema                    JSON dump of all CLI methods           (all builds)
 ├── ark ...                   power-user Ark RPCs         (hidden; all builds)
 │   ├── board                 board confirmed boarding UTXOs
@@ -128,7 +130,7 @@ darepocli
 ```
 
 `swap` is no longer a CLI verb: `send`/`recv --offchain` and `activity`
-cover it, and a stale `darepocli swap …` fails with a hint toward
+cover it, and a stale `wavecli swap …` fails with a hint toward
 `send`/`recv`. The `swapruntime` daemon runtime that powers the offchain
 verbs is unchanged.
 
@@ -138,16 +140,16 @@ Full CLI reference: [`docs/daemon_cli_guide.md`](docs/daemon_cli_guide.md).
 
 ## Configuration
 
-All daemon flags can also be set in `~/.darepod/darepod.conf` or via
-environment variables (`DAREPOD_*`). The canonical sample is
-[`sample-darepod.conf`](sample-darepod.conf), and the full flag reference
+All daemon flags can also be set in `~/.waved/waved.conf` or via
+environment variables (`WAVED_*`). The canonical sample is
+[`sample-waved.conf`](sample-waved.conf), and the full flag reference
 is in [`docs/daemon_cli_guide.md`](docs/daemon_cli_guide.md#daemon-flags-reference).
 
 Common knobs:
 
 | Flag                       | Default            | Purpose                                  |
 |----------------------------|--------------------|------------------------------------------|
-| `--datadir`                | `~/.darepod`       | Root data directory.                     |
+| `--datadir`                | `~/.waved`       | Root data directory.                     |
 | `--network`                | `mainnet`          | `mainnet`, `testnet`, `testnet4`, `signet`, `regtest`, `simnet`. |
 | `--wallet.type`            | `lwwallet`         | `lwwallet`, `btcwallet`, or `lnd`.       |
 | `--wallet.esploraurl`      |                    | Esplora REST URL (`lwwallet`).           |
@@ -162,7 +164,7 @@ Common knobs:
 ## Architecture
 
 ```
-darepod (orchestrator)
+waved (orchestrator)
 ├── round       Ark round participation FSM
 ├── vtxo        VTXO lifecycle FSM
 ├── oor         Out-of-round transfer coordination
@@ -188,11 +190,11 @@ own `CLAUDE.md` / `AGENTS.md` with package-local context.
 | System architecture              | [`ARCHITECTURE.md`](ARCHITECTURE.md)                                  |
 | Install, configure, operate      | [`docs/daemon_cli_guide.md`](docs/daemon_cli_guide.md)                |
 | Public test-network endpoints    | [`docs/signet.md`](docs/signet.md)                                    |
-| Build-tag matrix                 | [`docs/walletdkrpc_build.md`](docs/walletdkrpc_build.md)                  |
+| Build-tag matrix                 | [`docs/wavewalletrpc_build.md`](docs/wavewalletrpc_build.md)                  |
 | Durable actor pattern            | [`docs/durable_actor_architecture.md`](docs/durable_actor_architecture.md) |
 | Mailbox transport                | [`docs/mailbox_architecture.md`](docs/mailbox_architecture.md)        |
 | SDK layering                     | [`docs/sdk_layered_architecture.md`](docs/sdk_layered_architecture.md)|
-| Wallet SDK (`sdk/walletdk`)      | [`docs/walletdk_integration.md`](docs/walletdk_integration.md)        |
+| Wallet SDK (`sdk/wavewalletdk`)      | [`docs/wavewalletdk_integration.md`](docs/wavewalletdk_integration.md)        |
 | Fee ledger                       | [`docs/fee_ledger.md`](docs/fee_ledger.md)                            |
 | arkscript spec                   | [`docs/arkscript_spec.md`](docs/arkscript_spec.md)                    |
 | Full doc index                   | [`docs/index.md`](docs/index.md)                                      |
@@ -229,7 +231,7 @@ checklist are documented in:
 
 ## Project Status
 
-`darepo-client` is under active development. Mainnet operation requires the
+`wavelength` is under active development. Mainnet operation requires the
 explicit `--allow-mainnet` flag; the default network is treated as a safety
 guard. RPC surfaces, on-disk schema, and CLI commands may still change
 across minor versions.

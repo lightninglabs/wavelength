@@ -1,14 +1,14 @@
-//go:build walletdkrpc && swapruntime
+//go:build wavewalletrpc && swapruntime
 
 package swapwallet
 
 import (
 	"testing"
 
-	"github.com/lightninglabs/darepo-client/daemonrpc"
-	"github.com/lightninglabs/darepo-client/ledger"
-	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
-	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/ledger"
+	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
+	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -62,8 +62,8 @@ func TestInspectActivityShowsPayFundingTrace(t *testing.T) {
 			},
 		},
 	}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Type:           "oor",
 				Subtype:        ledger.EventVTXOSent,
@@ -89,7 +89,7 @@ func TestInspectActivityShowsPayFundingTrace(t *testing.T) {
 	}
 
 	resp, err := inspection.InspectActivity(
-		t.Context(), &walletdkrpc.InspectActivityRequest{
+		t.Context(), &wavewalletrpc.InspectActivityRequest{
 			Id: "payment-hash",
 		},
 	)
@@ -106,7 +106,7 @@ func TestInspectActivityShowsPayFundingTrace(t *testing.T) {
 	require.Len(t, resp.GetLedgerRows(), 2)
 	require.Len(t, resp.GetVtxos(), 3)
 
-	ledgerByID := map[int64]*walletdkrpc.ActivityLedgerTrace{}
+	ledgerByID := map[int64]*wavewalletrpc.ActivityLedgerTrace{}
 	for _, row := range resp.GetLedgerRows() {
 		ledgerByID[row.GetEntryId()] = row
 	}
@@ -117,7 +117,7 @@ func TestInspectActivityShowsPayFundingTrace(t *testing.T) {
 	require.Equal(t, "change_output", ledgerByID[14].GetRole())
 	require.Equal(t, int32(1), ledgerByID[14].GetOutputIndex())
 
-	vtxoByRole := map[string]*walletdkrpc.ActivityVTXOTrace{}
+	vtxoByRole := map[string]*wavewalletrpc.ActivityVTXOTrace{}
 	for _, row := range resp.GetVtxos() {
 		vtxoByRole[row.GetRole()] = row
 	}
@@ -146,8 +146,8 @@ func TestInspectActivityOmitsIrrelevantNotes(t *testing.T) {
 
 	inspection, swap, rpc := newInspectionFixture(t)
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Type:               "boarding",
 				Subtype:            ledger.EventWalletUTXOCreated,
@@ -162,7 +162,7 @@ func TestInspectActivityOmitsIrrelevantNotes(t *testing.T) {
 	}
 
 	resp, err := inspection.InspectActivity(
-		t.Context(), &walletdkrpc.InspectActivityRequest{
+		t.Context(), &wavewalletrpc.InspectActivityRequest{
 			Id: "deposit-txid:1",
 		},
 	)
@@ -177,10 +177,10 @@ func TestInspectActivityNotFound(t *testing.T) {
 
 	inspection, swap, rpc := newInspectionFixture(t)
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{}
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{}
 
 	_, err := inspection.InspectActivity(
-		t.Context(), &walletdkrpc.InspectActivityRequest{
+		t.Context(), &wavewalletrpc.InspectActivityRequest{
 			Id: "missing",
 		},
 	)

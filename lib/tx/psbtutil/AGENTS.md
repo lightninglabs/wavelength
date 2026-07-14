@@ -20,7 +20,7 @@ transaction semantics — callers run appropriate protocol validators.
 - **Depends on**: `lib/arkscript` (`SpendInfo` for taproot helpers).
 - **Depended on by**: `lib/tx/oor` (package marshaling), `oor` (signing flow,
   snapshot/artifact codecs), `db` (artifact store persistence), `unroll`
-  (proof assembly), `rpc/oorpb` / `darepod` (wire payload conversion).
+  (proof assembly), `rpc/oorpb` / `waved` (wire payload conversion).
 
 ## Invariants
 

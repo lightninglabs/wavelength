@@ -26,7 +26,7 @@ var (
 	// Commit stores the git commit hash of this build. This should be
 	// set using the -X linker flag, e.g.,
 	// -ldflags "-X
-	// github.com/lightninglabs/darepo-client/build.Commit=<hash>".
+	// github.com/lightninglabs/wavelength/build.Commit=<hash>".
 	Commit string
 
 	// CommitHash stores the short git commit hash from the build

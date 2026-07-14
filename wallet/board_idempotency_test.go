@@ -14,9 +14,9 @@ import (
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/btcsuite/btcwallet/waddrmgr"
-	"github.com/lightninglabs/darepo-client/baselib/actor"
-	"github.com/lightninglabs/darepo-client/ledger"
-	"github.com/lightninglabs/darepo-client/lib/actormsg"
+	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/ledger"
+	"github.com/lightninglabs/wavelength/lib/actormsg"
 	"github.com/lightningnetwork/lnd/clock"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -150,7 +150,7 @@ func triggerOutpoints(t *testing.T, fix *boardIdempotencyFixture,
 // outpoint has been shipped into an in-flight round, a later trigger fired
 // when a second deposit confirms boards only the new outpoint, rather than
 // re-registering the in-flight one under a freshly derived owner key (the
-// quote pkScript-echo mismatch on darepo-client#772).
+// quote pkScript-echo mismatch on wavelength#772).
 func TestHandleBoardExcludesInFlightOutpoints(t *testing.T) {
 	fix := newBoardIdempotencyFixture(t)
 	ctx := context.Background()

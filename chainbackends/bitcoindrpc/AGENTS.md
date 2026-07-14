@@ -27,9 +27,9 @@ bitcoind node instead of through LND's `WalletKit`. Sibling to `lnd.go` in
 
 - **Depends on**: `btcd/btcjson` (SubmitPackageResult), `btcd/wire`
   (MsgTx), standard library `net/http`, `crypto/tls`.
-- **Depended on by**: `cmd/darepod` (wires via `bitcoindrpc.NewWithOptions`
+- **Depended on by**: `cmd/waved` (wires via `bitcoindrpc.NewWithOptions`
   with the `bitcoind.{host,user,pass,rpccookie,tlscertpath}` config keys
-  into `darepod.Config.PackageSubmitter`, implementing
+  into `waved.Config.PackageSubmitter`, implementing
   `chainbackends.PackageSubmitter`).
 
 ## Invariants

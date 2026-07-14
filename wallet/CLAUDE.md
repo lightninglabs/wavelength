@@ -66,7 +66,7 @@ refresh, leave, OOR spend, and directed send flows.
   (default) preserves unbounded boarding.
 - `WithMetricsSink` — `ArkOption` wiring an optional `metrics.Sink` so the
   boarding-sweep watcher reports terminal sweep failures via
-  `darepod_background_task_errors_total`; a no-op when omitted.
+  `waved_background_task_errors_total`; a no-op when omitted.
 - `SendOnChainStatus` — Terminal outcome enum: `SendOnChainStatusSubmitted` (intent queued for next round), `SendOnChainStatusPreview` (dry-run preview, no commitment).
 - `GetConfirmedBoardingIntentsRequest` / `GetConfirmedBoardingIntentsResponse` — Ask-request to retrieve currently confirmed boarding intents (used by the RPC/CLI layer to report boarding balance with policy metadata).
 - `VTXODescriptor.EffectivePolicyTemplate` — Decodes the serialized `PolicyTemplate` field on the wallet-level VTXO descriptor using `lib/arkscript`.
@@ -74,7 +74,7 @@ refresh, leave, OOR spend, and directed send flows.
 ## Relationships
 
 - **Depends on**: `baselib/actor` (actor system), `chainsource` (block epoch notifications), `lib/actormsg` (VTXO manager / round admission types, incl. custom-forfeit activation), `lib/arkscript` (custom-refresh spend paths), `lib/types` (`Ancestry`, `LeaveRequest`, `OperatorTerms`), `lib/tx/arktx` (tx version constant), `walletcore` (`LockID`/`OutputLeaser` aliases, `Utxo`), `txconfirm` (boarding-sweep confirmation tracking), `ledger` (`Sink` alias for emission + `UTXOCreatedMsg` / `ClassificationDeposit` constants), `metrics` (optional background-task-error sink).
-- **Depended on by**: `round` (boarding intents, types: `BoardingAddress`, `SelectedVTXO`), `db` (persistence), `darepod` (wiring).
+- **Depended on by**: `round` (boarding intents, types: `BoardingAddress`, `SelectedVTXO`), `db` (persistence), `waved` (wiring).
 - **Sends**:
   - → `round` (via registered notifier): `BoardingUtxoConfirmedEvent`
   - → `round` (via `lib/actormsg`): `TriggerBoardMsg` (VTXO amounts for
@@ -98,7 +98,7 @@ refresh, leave, OOR spend, and directed send flows.
 - `ListUnspent` runs at most once per tip-tick against the latest known chain tip; a backend whose UTXO reporting lags past one tick interval surfaces the missing UTXO on the next chain advance (whichever tick processes the new tip re-runs the scan). The per-block path no longer carries an inline retry budget — the tick loop is the retry seam.
 - Notifier registration captures `minConf` parameter per actor; different actors can require different confirmation depths.
 - Cooperative admission (refresh/leave) must reserve forfeit inputs through the VTXO manager before sending `RegisterIntentMsg` to the round actor.
-- `WithEagerRoundJoin(true)` opts the wallet into "drive round-joining without a second RPC" semantics. Two sites change: `handleBlockEpoch` inline-calls `handleBoard` after at least one new boarding UTXO confirms in the block (one `TriggerBoardMsg` per block, not per UTXO), and `handleLeaveVTXOs` forwards its `RegisterIntentMsg` with `TriggerRegistration=true` so the leave moves the round FSM out of `PendingRoundAssembly` immediately. Default off preserves the operator-driven batched semantics that `darepocli` and server hosts rely on; `sdk/walletdk` flips it on via `darepod.Config.EagerRoundJoin` for wallet-shaped SDK hosts.
+- `WithEagerRoundJoin(true)` opts the wallet into "drive round-joining without a second RPC" semantics. Two sites change: `handleBlockEpoch` inline-calls `handleBoard` after at least one new boarding UTXO confirms in the block (one `TriggerBoardMsg` per block, not per UTXO), and `handleLeaveVTXOs` forwards its `RegisterIntentMsg` with `TriggerRegistration=true` so the leave moves the round FSM out of `PendingRoundAssembly` immediately. Default off preserves the operator-driven batched semantics that `wavecli` and server hosts rely on; `sdk/wavewalletdk` flips it on via `waved.Config.EagerRoundJoin` for wallet-shaped SDK hosts.
 - If round registration fails after successful admission, the wallet releases the forfeit reservation so VTXOs return to LiveState.
 - Directed sends use `SelectAndReserveForfeitRequest` (cooperative forfeit path) rather than the OOR spend path. The wallet builds recipient VTXOs with the recipient's key as `OwnerKey` and derives a separate ephemeral `SigningKey` for MuSig2 tree construction.
 - Local ownership of a round-produced VTXO is no longer tracked with a per-intent `IsOwner` flag. `types.VTXORequest` / `round.VTXOIntent` no longer carry `IsOwner`; at round confirmation time the round FSM asks a `round.OwnedScriptChecker` (backed in production by the OOR owned-receive-scripts store) which pkScripts to persist as local balance. The wallet's only job is to supply the correct `OwnerKey` per intent — local-origin owner keys keep their populated `KeyLocator` so `handleRegisterIntent` registers them via `OwnedScriptRegistrar`, while remote recipients carry a zero `KeyLocator` and are intentionally left unregistered.

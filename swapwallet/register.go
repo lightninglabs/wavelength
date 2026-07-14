@@ -1,4 +1,4 @@
-//go:build walletdkrpc && swapruntime
+//go:build wavewalletrpc && swapruntime
 
 package swapwallet
 
@@ -8,27 +8,27 @@ import (
 	"sync"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
-	"github.com/lightninglabs/darepo-client/darepod"
-	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
-	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
+	"github.com/lightninglabs/wavelength/waved"
 	"google.golang.org/grpc"
 )
 
-// Register installs the walletdkrpc subserver on the daemon's gRPC server. It
-// is wired into cfg.RPCServiceRegistrars by the walletdkrpc build tag in
-// cmd/darepod so the daemon only carries the subserver when explicitly
+// Register installs the wavewalletrpc subserver on the daemon's gRPC server. It
+// is wired into cfg.RPCServiceRegistrars by the wavewalletrpc build tag in
+// cmd/waved so the daemon only carries the subserver when explicitly
 // compiled in.
 //
 // Register MUST run after swapclientserver.Register has populated
-// cfg.Swap.Backend. The walletdkrpc build tag enforces this through the
-// configureWalletRPC wiring in cmd/darepod, which appends the swapwallet
+// cfg.Swap.Backend. The wavewalletrpc build tag enforces this through the
+// configureWalletRPC wiring in cmd/waved, which appends the swapwallet
 // registrar AFTER the swapclientserver registrar.
 //
-// The function signature matches darepod.RPCServiceRegistrar so it can be
+// The function signature matches waved.RPCServiceRegistrar so it can be
 // stored alongside other optional subservers. The returned cleanup function
 // stops the runtime; it must be invoked during daemon shutdown.
 func Register(ctx context.Context, grpcServer *grpc.Server,
-	rpcServer *darepod.RPCServer, cfg *darepod.Config) (func(), error) {
+	rpcServer *waved.RPCServer, cfg *waved.Config) (func(), error) {
 
 	if cfg == nil || cfg.Swap == nil || cfg.Swap.Backend == nil {
 
@@ -54,7 +54,7 @@ func Register(ctx context.Context, grpcServer *grpc.Server,
 	}
 
 	// Pull the gRPC-shaped swap handle from the in-process subserver.
-	// *swapClientService satisfies both darepod.SwapBackend (which we
+	// *swapClientService satisfies both waved.SwapBackend (which we
 	// hold for unified resume) and swapclientrpc.SwapClientServiceServer
 	// (which we hold for in-process gRPC dispatch). The type assertion
 	// is safe because swapclientserver always publishes the same handle
@@ -89,12 +89,12 @@ func Register(ctx context.Context, grpcServer *grpc.Server,
 		ActivityStore:  cfg.ActivityStore,
 	}
 	if rpcServer != nil {
-		deps.Log = rpcServer.SubLogger(darepod.WalletRPCSubsystem)
+		deps.Log = rpcServer.SubLogger(waved.WalletRPCSubsystem)
 	}
 
-	// Apply optional walletdkrpc-config overrides. The struct is present
+	// Apply optional wavewalletrpc-config overrides. The struct is present
 	// in all builds but the wallet-layer subserver only reads it when
-	// walletdkrpc is compiled in (this file), so unknown-field drift
+	// wavewalletrpc is compiled in (this file), so unknown-field drift
 	// across builds is impossible.
 	if cfg.SwapWallet != nil {
 		deps.WalletDeadline = cfg.SwapWallet.Deadline
@@ -114,8 +114,8 @@ func Register(ctx context.Context, grpcServer *grpc.Server,
 		cfg.Swap.CreditEarmarkSetter(service.earmarkedCreditSat)
 	}
 
-	walletdkrpc.RegisterWalletServiceServer(grpcServer, service)
-	walletdkrpc.RegisterWalletInspectionServiceServer(
+	wavewalletrpc.RegisterWalletServiceServer(grpcServer, service)
+	wavewalletrpc.RegisterWalletInspectionServiceServer(
 		grpcServer, inspectionService,
 	)
 
@@ -150,16 +150,16 @@ func Register(ctx context.Context, grpcServer *grpc.Server,
 // RegisterGateway installs the optional WalletService handlers on the daemon
 // HTTP/JSON gateway.
 func RegisterGateway(ctx context.Context, mux *runtime.ServeMux,
-	endpoint string, opts []grpc.DialOption, _ *darepod.RPCServer,
-	_ *darepod.Config) error {
+	endpoint string, opts []grpc.DialOption, _ *waved.RPCServer,
+	_ *waved.Config) error {
 
-	if err := walletdkrpc.RegisterWalletServiceHandlerFromEndpoint(
+	if err := wavewalletrpc.RegisterWalletServiceHandlerFromEndpoint(
 		ctx, mux, endpoint, opts,
 	); err != nil {
 		return err
 	}
 
-	return walletdkrpc.RegisterWalletInspectionServiceHandlerFromEndpoint(
+	return wavewalletrpc.RegisterWalletInspectionServiceHandlerFromEndpoint(
 		ctx, mux, endpoint, opts,
 	)
 }

@@ -1,0 +1,1719 @@
+syntax = "proto3";
+
+package wavewalletrpc;
+
+option go_package = "github.com/lightninglabs/wavelength/rpc/wavewalletrpc";
+
+// WalletService exposes a simplified, swap-vocabulary-free wallet API on top
+// of the running daemon. It composes the underlying swap subsystem, ark VTXO
+// operations, boarding deposits, cooperative leave (VTXO-to-onchain), and
+// unilateral exit behind one small surface: the seven core verbs that map
+// 1:1 to what a user actually does day-to-day — create, unlock, send, recv,
+// list, balance, exit — plus a few additional methods (Deposit, Status,
+// SubscribeWallet) used internally and by recv --onchain. The service is
+// registered only when the daemon is built with the wavewalletrpc build tag
+// (which also requires swapruntime).
+service WalletService {
+    // Create initializes a new wallet from a freshly generated aezeed
+    // mnemonic. The daemon generates the seed, encrypts it with the
+    // supplied password, and returns the mnemonic so the caller can record
+    // it. For recovery flows the caller MAY supply an existing mnemonic in
+    // the request; in that case the same mnemonic is echoed back. Proxies
+    // waverpc.GenSeed + waverpc.InitWallet server-side.
+    rpc Create (CreateRequest) returns (CreateResponse);
+
+    // Unlock decrypts the on-disk wallet seed using the supplied password
+    // and starts the wallet subsystem. Proxies waverpc.UnlockWallet.
+    rpc Unlock (UnlockRequest) returns (UnlockResponse);
+
+    // PrepareSend validates and previews an outbound payment without
+    // moving funds. The response carries a short-lived send_intent_id
+    // that must be consumed by Send.
+    rpc PrepareSend (PrepareSendRequest) returns (PrepareSendResponse);
+
+    // Send dispatches a previously prepared outbound payment. The
+    // request is intentionally intent-only: callers must use
+    // PrepareSend first so they can present amount, rail, fee, and
+    // total-outflow details before funds move.
+    rpc Send (SendRequest) returns (SendResponse);
+
+    // Recv asks the daemon for a Lightning invoice the caller can hand
+    // out. Internally the daemon sets up the inbound receive via its
+    // owned swap subsystem; the invoice is signed with a daemon-managed
+    // key, not an ephemeral process-local key.
+    rpc Recv (RecvRequest) returns (RecvResponse);
+
+    // List returns the unified wallet view selected by ListRequest.view:
+    // ACTIVITY (default) is the merged WalletEntry stream; VTXOS is the
+    // live VTXO inventory; ONCHAIN is the boarding-plus-sweep on-chain
+    // history. The body oneof on ListResponse discriminates the typed
+    // result so agents see a tagged union, not a polymorphic blob.
+    rpc List (ListRequest) returns (ListResponse);
+
+    // Deposit returns a boarding onchain address the caller can fund. The
+    // daemon rolls the boarding output into a VTXO during the next round.
+    // Surfaced internally and via `recv --onchain`; not a top-level CLI
+    // verb.
+    rpc Deposit (DepositRequest) returns (DepositResponse);
+
+    // Balance returns the unified balance across confirmed VTXOs and
+    // in-flight inbound and outbound amounts.
+    rpc Balance (BalanceRequest) returns (BalanceResponse);
+
+    // Status returns a wallet-level readiness summary: daemon readiness,
+    // wallet-unlocked state, balance summary, pending-entry count. Kept in
+    // the proto for programmatic callers; not surfaced as a CLI verb (the
+    // `getinfo` CLI verb covers the human-facing readiness view).
+    rpc Status (StatusRequest) returns (StatusResponse);
+
+    // GetExitPlan previews unilateral-exit readiness for one VTXO. The
+    // response includes CPFP fee input requirements and, when funding is
+    // needed, a backing-wallet address callers can fund before forced unroll.
+    rpc GetExitPlan (GetExitPlanRequest) returns (GetExitPlanResponse);
+
+    // SweepWallet previews or broadcasts a normal backing-wallet sweep to a
+    // caller-supplied Bitcoin address. This sweeps wallet-managed funds left
+    // after CPFP/change/unroll proceeds and does not sweep boarding outputs.
+    rpc SweepWallet (SweepWalletRequest) returns (SweepWalletResponse);
+
+    // Exit queues a cooperative leave for the specified VTXO outpoint by
+    // default. When the caller supplies force_unroll_ack exactly, the daemon
+    // starts a unilateral unroll instead after checking that the outpoint is
+    // present in the local backing wallet's UTXO set.
+    rpc Exit (ExitRequest) returns (ExitResponse);
+
+    // ExitStatus reports the current phase of an unroll job for the
+    // specified VTXO outpoint, including recovery chain progress and
+    // sweep state. Proxies waverpc.GetUnrollStatus.
+    rpc ExitStatus (ExitStatusRequest) returns (ExitStatusResponse);
+
+    // ExitSummary reports the wallet-wide portfolio of in-progress exits:
+    // one row per active exit plus aggregate totals for the amount still
+    // being recovered, the estimated fees, and the estimated net recoverable.
+    rpc ExitSummary (ExitSummaryRequest) returns (ExitSummaryResponse);
+
+    // SubscribeWallet streams activity updates as they happen. The stream
+    // is resumable: each response carries a monotonic cursor the client can
+    // reconnect from to replay everything after it without gaps.
+    rpc SubscribeWallet (SubscribeWalletRequest)
+        returns (stream SubscribeWalletResponse);
+}
+
+// WalletInspectionService exposes technical drill-downs for wallet activity.
+// Unlike WalletService.List, this surface may include internal correlators and
+// ledger rows so operators can explain how a user-facing entry was executed.
+service WalletInspectionService {
+    // InspectActivity returns a technical trace for one WalletEntry id.
+    rpc InspectActivity (InspectActivityRequest)
+        returns (InspectActivityResponse);
+}
+
+// EntryKind tags each WalletEntry with the user-visible category of the
+// underlying operation. Internal subtypes (same-Ark p2p vs real Lightning,
+// OOR session correlators, round IDs) are deliberately not surfaced.
+enum EntryKind {
+    // ENTRY_KIND_UNSPECIFIED is the proto zero value used when the
+    // operation category is unknown.
+    ENTRY_KIND_UNSPECIFIED = 0;
+
+    // ENTRY_KIND_SEND is an outbound payment over any rail (Lightning,
+    // same-Ark, onchain, or credit).
+    ENTRY_KIND_SEND = 1;
+
+    // ENTRY_KIND_RECV is an inbound receive.
+    ENTRY_KIND_RECV = 2;
+
+    // ENTRY_KIND_DEPOSIT is a boarding deposit rolled into a VTXO.
+    ENTRY_KIND_DEPOSIT = 3;
+
+    // ENTRY_KIND_EXIT is a cooperative leave or unilateral exit to
+    // on-chain funds.
+    ENTRY_KIND_EXIT = 4;
+}
+
+// EntryStatus collapses every backing FSM into the three states user-facing
+// surfaces actually need.
+enum EntryStatus {
+    // ENTRY_STATUS_UNSPECIFIED is the proto zero value used when the
+    // backing state has not been mapped yet.
+    ENTRY_STATUS_UNSPECIFIED = 0;
+
+    // ENTRY_STATUS_PENDING means the operation is still in flight.
+    ENTRY_STATUS_PENDING = 1;
+
+    // ENTRY_STATUS_COMPLETE means the operation reached a durable
+    // success state.
+    ENTRY_STATUS_COMPLETE = 2;
+
+    // ENTRY_STATUS_FAILED means the operation reached a terminal
+    // failure state.
+    ENTRY_STATUS_FAILED = 3;
+}
+
+// ListView selects which slice of wallet state List returns. The default
+// (LIST_VIEW_UNSPECIFIED) is treated as LIST_VIEW_ACTIVITY for backwards
+// feel: callers that don't care about the new shape keep getting the
+// activity stream.
+enum ListView {
+    // LIST_VIEW_UNSPECIFIED is the proto zero value; List treats it as
+    // LIST_VIEW_ACTIVITY.
+    LIST_VIEW_UNSPECIFIED = 0;
+
+    // LIST_VIEW_ACTIVITY returns the merged WalletEntry stream (send /
+    // recv / deposit / exit) across the swap subsystem, OOR sessions, the
+    // boarding ledger, and the unroll registry.
+    LIST_VIEW_ACTIVITY = 1;
+
+    // LIST_VIEW_VTXOS returns the live VTXO inventory (one row per
+    // spendable VTXO).
+    LIST_VIEW_VTXOS = 2;
+
+    // LIST_VIEW_ONCHAIN returns the on-chain transaction history
+    // (boarding deposits, boarding sweeps, leave outputs, round
+    // commitment txs that confirmed against this wallet).
+    LIST_VIEW_ONCHAIN = 3;
+}
+
+// SendRail identifies the expected settlement rail for a prepared send.
+enum SendRail {
+    // SEND_RAIL_UNSPECIFIED is the proto zero value used when no rail
+    // has been determined.
+    SEND_RAIL_UNSPECIFIED = 0;
+
+    // SEND_RAIL_OFFCHAIN_UNKNOWN is used when the wallet can parse the
+    // invoice locally but the swapserver has not supplied a quote that
+    // distinguishes same-Ark settlement from Lightning settlement.
+    SEND_RAIL_OFFCHAIN_UNKNOWN = 1;
+
+    // SEND_RAIL_IN_ARK is same-Ark peer-to-peer settlement, where the
+    // payment never touches Lightning.
+    SEND_RAIL_IN_ARK = 2;
+
+    // SEND_RAIL_LIGHTNING is settlement over the real Lightning network.
+    SEND_RAIL_LIGHTNING = 3;
+
+    // SEND_RAIL_ONCHAIN is an on-chain send via a cooperative leave to
+    // the destination address.
+    SEND_RAIL_ONCHAIN = 4;
+
+    // SEND_RAIL_CREDIT is settlement drawn from the wallet's
+    // server-side credit balance.
+    SEND_RAIL_CREDIT = 5;
+
+    // SEND_RAIL_MIXED is settlement that combines credit with the
+    // normal vHTLC path.
+    SEND_RAIL_MIXED = 6;
+}
+
+// SendQuoteStatus describes how complete the prepare-time quote is.
+enum SendQuoteStatus {
+    // SEND_QUOTE_STATUS_UNSPECIFIED is the proto zero value; quote
+    // completeness was not reported.
+    SEND_QUOTE_STATUS_UNSPECIFIED = 0;
+
+    // SEND_QUOTE_STATUS_COMPLETE means every user-visible amount and fee
+    // field is backed by a remote quote.
+    SEND_QUOTE_STATUS_COMPLETE = 1;
+
+    // SEND_QUOTE_STATUS_LOCAL_ONLY means the wallet performed local
+    // validation and selection but one or more remote quote APIs are not
+    // available yet.
+    SEND_QUOTE_STATUS_LOCAL_ONLY = 2;
+}
+
+// ExitMode identifies whether Exit queued a cooperative leave or started a
+// forced unilateral unroll.
+enum ExitMode {
+    // EXIT_MODE_UNSPECIFIED is the proto zero value used when the exit
+    // path was not reported.
+    EXIT_MODE_UNSPECIFIED = 0;
+
+    // EXIT_MODE_COOPERATIVE means Exit queued a cooperative leave
+    // (VTXO-to-onchain).
+    EXIT_MODE_COOPERATIVE = 1;
+
+    // EXIT_MODE_UNILATERAL means Exit started a forced unilateral
+    // unroll.
+    EXIT_MODE_UNILATERAL = 2;
+}
+
+// CreateRequest carries the parameters for WalletService.Create: the
+// encryption password, optional seed material, and recovery options.
+message CreateRequest {
+    // wallet_password is the password used to encrypt the on-disk seed.
+    // Must be at least 8 bytes. The password is consumed and zeroed by
+    // the daemon after wallet initialization.
+    bytes wallet_password = 1;
+
+    // seed_passphrase is the optional aezeed passphrase (BIP39-style
+    // 25th-word) protecting the mnemonic itself. Distinct from
+    // wallet_password.
+    bytes seed_passphrase = 2;
+
+    // mnemonic is the 24-word aezeed mnemonic to import. Empty means
+    // "generate a fresh seed"; non-empty means "recover from this
+    // mnemonic". When non-empty the response echoes the same mnemonic
+    // back unchanged.
+    repeated string mnemonic = 3;
+
+    // recover_state asks the daemon to scan deterministic Ark wallet keys
+    // after importing mnemonic and rebuild local Ark state from chain and
+    // indexer data.
+    bool recover_state = 4;
+
+    // recovery_window is the number of key indexes to scan per recovery key
+    // family. Zero uses the daemon wallet.recoverywindow config value.
+    uint32 recovery_window = 5;
+}
+
+// CreateResponse returns the wallet mnemonic and identity, plus a summary of
+// any Ark-state recovery performed during Create.
+message CreateResponse {
+    // mnemonic is the 24-word aezeed mnemonic for the wallet. For fresh
+    // wallets (request mnemonic empty) this is the newly generated
+    // seed and the caller MUST persist it offline before any unlock
+    // sequence — losing it makes the wallet unrecoverable. For recovery
+    // flows (request mnemonic supplied) this is the same mnemonic echoed
+    // back for confirmation.
+    repeated string mnemonic = 1;
+
+    // identity_pubkey is the hex-encoded daemon wallet identity public
+    // key derived from the newly created wallet.
+    string identity_pubkey = 2;
+
+    // recovery_ran is true when Create attempted Ark-state recovery.
+    bool recovery_ran = 3;
+
+    // recovered_boarding_addresses is the number of boarding addresses
+    // rebuilt and persisted from deterministic keys.
+    uint32 recovered_boarding_addresses = 4;
+
+    // recovered_boarding_utxos is the number of confirmed wallet UTXOs found
+    // at recovered boarding addresses during the recovery scan.
+    uint32 recovered_boarding_utxos = 5;
+
+    // recovered_vtxos is the number of indexed VTXOs restored into local
+    // wallet state.
+    uint32 recovered_vtxos = 6;
+
+    // recovered_oor_receive_scripts is the number of registered OOR receive
+    // scripts matched and restored into local ownership metadata.
+    uint32 recovered_oor_receive_scripts = 7;
+
+    // recovered_oor_events is the number of OOR recipient events processed
+    // during recovery.
+    uint32 recovered_oor_events = 8;
+}
+
+// UnlockRequest carries the password used to decrypt the on-disk seed for
+// WalletService.Unlock.
+message UnlockRequest {
+    // wallet_password is the password used to decrypt the on-disk seed.
+    bytes wallet_password = 1;
+}
+
+// UnlockResponse returns the identity of the wallet unlocked by
+// WalletService.Unlock.
+message UnlockResponse {
+    // identity_pubkey is the hex-encoded daemon wallet identity public
+    // key of the unlocked wallet.
+    string identity_pubkey = 1;
+}
+
+// PrepareSendRequest describes the outbound payment to validate and preview
+// via WalletService.PrepareSend, before any funds move.
+message PrepareSendRequest {
+    // destination selects the outbound payment target. Exactly one
+    // variant must be set.
+    oneof destination {
+        // invoice is a BOLT-11 Lightning invoice. The daemon pays it via
+        // its owned swap subsystem; the swap server picks same-Ark p2p vs
+        // real Lightning transparently.
+        string invoice = 1;
+
+        // onchain_address is a bech32 onchain destination. The daemon
+        // submits a LeaveVTXOs request covering amt_sat plus fees.
+        string onchain_address = 2;
+    }
+
+    // amt_sat is required for onchain sends. For onchain sends amt_sat
+    // must be strictly positive unless sweep_all is set, in which case
+    // it must be zero. For invoice sends amt_sat is ignored: v1 requires
+    // an amount-bearing BOLT-11 invoice; amountless invoices are rejected
+    // at the wallet layer until plumbing for caller-supplied amounts
+    // lands in the swap subserver.
+    uint64 amt_sat = 3;
+
+    // note is an optional caller-supplied label persisted alongside the
+    // entry. It is never interpreted by the daemon.
+    string note = 4;
+
+    // max_fee_sat is the optional caller cap on routing or sweep fees.
+    // Zero means use daemon defaults.
+    uint64 max_fee_sat = 5;
+
+    // sweep_all signals an explicit wallet-emptying onchain send: every
+    // live VTXO is swept to the destination, less fees. The caller must
+    // set amt_sat = 0 when this flag is true and a strictly positive
+    // amt_sat otherwise. This makes "drain the wallet" structurally
+    // distinct from "amt_sat defaulted to zero" so a typo cannot empty
+    // the wallet by accident. Ignored on the invoice path.
+    bool sweep_all = 6;
+}
+
+// PrepareSendResponse is the preview of a prepared send: the single-use
+// intent token plus the amount, fee, rail, and quote detail a caller should
+// confirm before calling Send.
+message PrepareSendResponse {
+    // send_intent_id is a short-lived, single-use token consumed by Send.
+    string send_intent_id = 1;
+
+    // amount_sat is the destination principal amount.
+    int64 amount_sat = 2;
+
+    // expected_fee_sat is meaningful only when fee_known is true.
+    int64 expected_fee_sat = 3;
+
+    // fee_known is false when a required remote quote API is missing.
+    bool fee_known = 4;
+
+    // expected_total_outflow_sat is meaningful only when
+    // total_outflow_known is true.
+    int64 expected_total_outflow_sat = 5;
+
+    // total_outflow_known is false when the final outflow depends on a
+    // remote quote that is not available yet.
+    bool total_outflow_known = 6;
+
+    // rail is the expected settlement rail for this prepared send. Onchain
+    // prepares always return SEND_RAIL_ONCHAIN. Invoice prepares map the
+    // swap quote settlement type when a remote quote is available; when
+    // no quote is available (LOCAL_ONLY) or the quote does not
+    // distinguish same-Ark from Lightning, the value is
+    // SEND_RAIL_OFFCHAIN_UNKNOWN until Send starts.
+    SendRail rail = 7;
+
+    // quote_status describes how complete the prepare-time quote is.
+    // Invoice sends: COMPLETE when every amount and fee is backed by a
+    // swap remote quote; LOCAL_ONLY when the invoice parsed locally but
+    // the swap quote API was unavailable. Onchain sends: COMPLETE when
+    // waverpc.EstimateFee returned a binding operator quote;
+    // LOCAL_ONLY when only a local fee floor could be computed.
+    SendQuoteStatus quote_status = 8;
+
+    // destination_summary is a short display string suitable for CLI and
+    // UI confirmation prompts.
+    string destination_summary = 9;
+
+    // invoice_description is the BOLT-11 description when present.
+    string invoice_description = 10;
+
+    // payment_hash is the invoice payment hash when available.
+    string payment_hash = 11;
+
+    // expires_at_unix is the unix timestamp after which Send rejects the
+    // prepared intent.
+    int64 expires_at_unix = 12;
+
+    // selected_outpoints is populated for onchain sends so Send can spend
+    // exactly the VTXO set previewed to the user.
+    repeated string selected_outpoints = 13;
+
+    // warning carries a concise human-facing caveat for local-only
+    // previews.
+    string warning = 14;
+
+    // credit_preview is populated when the invoice send will or can use
+    // sat-native server credits.
+    CreditPreview credit_preview = 15;
+}
+
+// SendRequest dispatches a previously prepared send by consuming the
+// single-use intent token returned by PrepareSend.
+message SendRequest {
+    // send_intent_id is returned by PrepareSend and may be consumed once.
+    string send_intent_id = 1;
+}
+
+// SendResponse returns the initial WalletEntry for a dispatched send and the
+// actual amount that will leave the wallet.
+message SendResponse {
+    // entry is the initial WalletEntry persisted for this send. The
+    // caller can poll List or SubscribeWallet for subsequent status
+    // transitions.
+    WalletEntry entry = 1;
+
+    // actual_amount_sat is the real amount that will leave the wallet
+    // for this operation. For invoice sends it matches the caller's
+    // amt_sat (or the invoice amount for amount-bearing invoices). For a
+    // bounded onchain send it matches the requested amt_sat: the
+    // seal-time fee handshake returns a change VTXO rather than sweeping
+    // whole VTXOs. For a sweep_all onchain send it reflects the SUM of
+    // the swept VTXOs (the whole-wallet drain). CLI and UI surfaces
+    // SHOULD echo this back to the user before treating the send as
+    // confirmed.
+    int64 actual_amount_sat = 2;
+}
+
+// RecvRequest describes the inbound receive to open via WalletService.Recv.
+message RecvRequest {
+    // amt_sat is the amount the caller wants to receive in satoshis.
+    uint64 amt_sat = 1;
+
+    // memo is the optional human-readable memo to embed in the invoice.
+    string memo = 2;
+}
+
+// RecvResponse returns the BOLT-11 invoice to hand out and the initial
+// WalletEntry tracking the pending receive.
+message RecvResponse {
+    // invoice is the BOLT-11 payment request the caller hands out to
+    // the payer.
+    string invoice = 1;
+
+    // entry is the initial WalletEntry persisted for this receive.
+    WalletEntry entry = 2;
+
+    // credit_receive is populated when the receive is backed by server credits
+    // rather than a client-claimable vHTLC.
+    CreditReceive credit_receive = 3;
+}
+
+// CreditPreview describes how server-side sat-native credits factor into a
+// prepared send. It is populated on PrepareSendResponse when the invoice
+// send will or can draw on credits.
+message CreditPreview {
+    // must_use_credit is true when the invoice amount cannot be
+    // represented by the normal vHTLC path and the send must be settled
+    // from the credit balance.
+    bool must_use_credit = 1;
+
+    // credit_applied_sat is the credit balance in satoshis the quote
+    // expects to reserve for this send.
+    uint64 credit_applied_sat = 2;
+
+    // credit_shortfall_sat is the additional credit in satoshis needed
+    // before this payment can be admitted.
+    uint64 credit_shortfall_sat = 3;
+
+    // credit_topup_sat is the Ark top-up amount in satoshis required to
+    // cover the shortfall. It is rounded up and dust-limited by the server.
+    uint64 credit_topup_sat = 4;
+
+    // ark_funding_sat is the amount in satoshis the client must still fund
+    // through the normal vHTLC path.
+    uint64 ark_funding_sat = 5;
+}
+
+// CreditReceive describes a receive backed by server credits rather than a
+// client-claimable vHTLC. It is populated on RecvResponse for the credit
+// path.
+message CreditReceive {
+    // operation_id is the durable credit-subsystem operation id tracking
+    // this receive. It is the WalletEntry.id for credit RECV rows; the
+    // server-owned payment_hash is in payment_hash below.
+    string operation_id = 1;
+
+    // amount_sat is the amount in satoshis the caller asked to receive,
+    // credited to the wallet account once the server-owned invoice settles.
+    uint64 amount_sat = 2;
+
+    // payment_hash is the hex-encoded payment hash of the server-owned
+    // receive invoice.
+    string payment_hash = 3;
+}
+
+// ListRequest selects the wallet view and filters for WalletService.List.
+message ListRequest {
+    // view selects which slice of wallet state to return. The default
+    // (LIST_VIEW_UNSPECIFIED) is treated as LIST_VIEW_ACTIVITY.
+    //
+    // WIRE-BREAKING CHANGE: this message intentionally renumbers the
+    // PR #440 fields (pending_only/kinds/limit/offset). wavewalletrpc has
+    // no deployed external consumers yet, so the cleaner shape with
+    // `view` at field 1 is preferred over a backwards-compatible
+    // append. Any binary built against PR #440's ListRequest must be
+    // recompiled.
+    ListView view = 1;
+
+    // pending_only filters the returned entries to those still in
+    // flight. Applies to the ACTIVITY view; ignored for VTXOS and
+    // ONCHAIN.
+    bool pending_only = 2;
+
+    // kinds optionally narrows the response to specific entry
+    // categories. Applies to the ACTIVITY view; ignored for VTXOS and
+    // ONCHAIN. When empty, all kinds are returned.
+    repeated EntryKind kinds = 3;
+
+    // limit caps the response size. Zero means use the daemon default.
+    uint32 limit = 4;
+
+    // offset is the pagination offset within the chosen view. It applies
+    // to the VTXOS and ONCHAIN views; the ACTIVITY view paginates by the
+    // opaque cursor below instead and ignores offset.
+    uint32 offset = 5;
+
+    // cursor is the opaque pagination token for the ACTIVITY view. Empty
+    // starts from the newest entry; otherwise it is the next_cursor
+    // returned by the previous ActivityList page. It is stable across
+    // concurrent inserts, so paging never skips or duplicates rows.
+    // Ignored for the VTXOS and ONCHAIN views.
+    string cursor = 6;
+}
+
+// ListResponse carries the typed result of WalletService.List as a oneof
+// discriminated by the requested view.
+message ListResponse {
+    // WIRE-BREAKING CHANGE: PR #440 had
+    // `repeated WalletEntry entries = 1; uint32 total = 2;` at the top
+    // level. Those fields are now reachable as `body.activity.entries`
+    // and `body.activity.total`. wavewalletrpc has no deployed external
+    // consumers, so the cleaner oneof shape is preferred over
+    // reserving the old numbers.
+    //
+    // body discriminates the typed result by view. Callers should
+    // switch on the populated variant; an empty body indicates an
+    // empty result for the requested view.
+    oneof body {
+        // activity is set when the request view is ACTIVITY (the default):
+        // the merged, time-sorted WalletEntry stream.
+        ActivityList activity = 1;
+
+        // vtxos is set when the request view is VTXOS: the live spendable
+        // VTXO inventory.
+        VTXOInventory vtxos = 2;
+
+        // onchain is set when the request view is ONCHAIN: the on-chain
+        // transaction history.
+        OnchainHistory onchain = 3;
+    }
+}
+
+// ActivityList is the ACTIVITY-view body of ListResponse: the merged,
+// time-sorted WalletEntry stream.
+message ActivityList {
+    // entries are the unified, time-sorted wallet operations.
+    repeated WalletEntry entries = 1;
+
+    // total is the number of entries in this page. It is a page count,
+    // not a full-feed count: the feed is paged by an opaque cursor, so
+    // callers use has_more, not total, to decide whether to fetch again.
+    uint32 total = 2;
+
+    // has_more reports whether more entries exist after this page.
+    bool has_more = 3;
+
+    // next_cursor is the opaque token to pass as ListRequest.cursor to
+    // fetch the next page. Empty when has_more is false.
+    string next_cursor = 4;
+}
+
+// VTXOInventory is the VTXOS-view body of ListResponse: the live spendable
+// VTXO inventory.
+message VTXOInventory {
+    // vtxos are the live spendable VTXOs in the wallet. Order is
+    // unspecified.
+    repeated WalletVTXO vtxos = 1;
+
+    // total is the count of all live VTXOs before limit/offset.
+    uint32 total = 2;
+}
+
+// WalletVTXO is the wallet-facing view of one VTXO. Internal lifecycle
+// detail (forfeiting flow, chain depth, etc.) is hidden; power-users can
+// reach the full shape via `ark vtxos list`.
+message WalletVTXO {
+    // outpoint is the VTXO's outpoint in "txid:index" format.
+    string outpoint = 1;
+
+    // amount_sat is the value of the VTXO in satoshis.
+    int64 amount_sat = 2;
+
+    // status is a short lowercase string: "live", "pending_forfeit",
+    // "forfeiting", "spending", "unilateral_exit". Internal terminal
+    // states (forfeited / spent / failed) are filtered out of the
+    // wallet view.
+    string status = 3;
+
+    // batch_expiry is the absolute block height at which the batch-level
+    // timelock expires.
+    int32 batch_expiry = 4;
+
+    // relative_expiry is the CSV delay (in blocks) for the unilateral
+    // exit path.
+    uint32 relative_expiry = 5;
+
+    // commitment_txid is the hex-encoded txid of the on-chain commitment
+    // transaction anchoring this VTXO's tree.
+    string commitment_txid = 6;
+}
+
+// OnchainHistory is the ONCHAIN-view body of ListResponse: the on-chain
+// transaction history.
+message OnchainHistory {
+    // txs are the on-chain transaction history rows: boarding deposits,
+    // boarding sweeps, leave outputs, round commitment txs that touched
+    // this wallet. Sorted newest first.
+    repeated OnchainTx txs = 1;
+
+    // total is the count of matching rows before limit/offset.
+    uint32 total = 2;
+
+    // has_more is true when another page is available.
+    bool has_more = 3;
+}
+
+// OnchainTx is the wallet-facing view of one on-chain transaction. It
+// flattens the daemon's richer TransactionHistoryEntry shape to the fields
+// a wallet user actually needs.
+message OnchainTx {
+    // txid is the hex-encoded transaction id, when known. Some ledger
+    // rows (e.g. fee_paid) do not carry a txid; those entries surface
+    // with txid="" and the row is still informative.
+    string txid = 1;
+
+    // kind is the high-level transaction type: "boarding", "sweep",
+    // "round", "oor", or "fee".
+    string kind = 2;
+
+    // amount_sat is the signed transaction amount in satoshis. Positive
+    // values are credits to this wallet; negative values are debits.
+    int64 amount_sat = 3;
+
+    // fee_sat is the absolute fee paid (or pending) for this
+    // transaction, when known.
+    int64 fee_sat = 4;
+
+    // status is a short lowercase string: "confirmed", "pending",
+    // "recorded", or a backing-specific lifecycle value.
+    string status = 5;
+
+    // confirmation_height is set when the source records a chain
+    // confirmation height.
+    int32 confirmation_height = 6;
+
+    // created_at_unix is the local creation timestamp in unix seconds.
+    int64 created_at_unix = 7;
+
+    // description is a human-readable local note.
+    string description = 8;
+}
+
+// InspectActivityRequest identifies the activity entry to inspect.
+message InspectActivityRequest {
+    // id is the WalletEntry.id to inspect.
+    // InspectActivity searches the daemon's current activity window, which is
+    // capped by the daemon maximum list limit.
+    string id = 1;
+
+    // ledger_limit caps how many ledger rows are scanned for correlation.
+    // Zero means use the daemon's maximum list limit.
+    uint32 ledger_limit = 2;
+}
+
+// InspectActivityResponse contains the friendly activity row plus the
+// lower-level records that explain how the daemon derived it.
+message InspectActivityResponse {
+    // entry is the user-facing activity row being inspected.
+    WalletEntry entry = 1;
+
+    // swap is populated when the entry is backed by a pay or receive swap.
+    ActivitySwapTrace swap = 2;
+
+    // vtxos contains best-effort VTXO movements correlated to this
+    // activity. Rows are derived from local swap summaries and ledger
+    // accounting, so ids may be OOR session/output ids when a full VTXO
+    // outpoint is not persisted by the source row.
+    repeated ActivityVTXOTrace vtxos = 3;
+
+    // ledger_rows are the local accounting rows used to build the trace,
+    // including rows hidden from the friendly activity feed.
+    repeated ActivityLedgerTrace ledger_rows = 4;
+
+    // notes contains plain-English caveats about best-effort correlation.
+    repeated string notes = 5;
+}
+
+// ActivitySwapTrace is the swap-service snapshot correlated to one wallet
+// activity entry.
+message ActivitySwapTrace {
+    // payment_hash is the Lightning payment hash that identifies the
+    // swap-backed activity.
+    string payment_hash = 1;
+
+    // direction is the raw swapclientrpc.SwapDirection enum name, kept as a
+    // string so this debug surface can expose swap state without importing the
+    // swap service proto into the wallet proto.
+    string direction = 2;
+
+    // state is the raw swapclientrpc.SwapState enum name at inspection time.
+    string state = 3;
+
+    // pending is true while the backing swap state machine is still active.
+    bool pending = 4;
+
+    // amount_sat is the swap amount in satoshis using the swap service's
+    // unsigned amount convention.
+    int64 amount_sat = 5;
+
+    // fee_sat is the fee reported by the swap service for this swap.
+    uint64 fee_sat = 6;
+
+    // invoice is the BOLT-11 invoice associated with the swap when known.
+    string invoice = 7;
+
+    // vhtlc_outpoint is the Ark vHTLC output observed for the swap when known.
+    string vhtlc_outpoint = 8;
+
+    // vhtlc_amount_sat is the amount held by vhtlc_outpoint when known.
+    int64 vhtlc_amount_sat = 9;
+
+    // funding_session_id is the OOR session that funded the swap when known.
+    string funding_session_id = 10;
+
+    // claim_session_id is the OOR session that claimed the swap when known.
+    string claim_session_id = 11;
+
+    // refund_session_id is the OOR session that refunded the swap when known.
+    string refund_session_id = 12;
+
+    // terminal_reason is the swap service's terminal reason string when the
+    // swap reached a failed or intervention state.
+    string terminal_reason = 13;
+
+    // created_at_unix is the swap creation timestamp in unix seconds.
+    int64 created_at_unix = 14;
+
+    // updated_at_unix is the last swap update timestamp in unix seconds.
+    int64 updated_at_unix = 15;
+
+    // deadline_unix is the swap deadline in unix seconds when the swap service
+    // exposes one.
+    int64 deadline_unix = 16;
+
+    // refund_locktime is the absolute locktime after which the swap can be
+    // refunded.
+    uint32 refund_locktime = 17;
+
+    // settlement_type is the raw swapclientrpc.SwapSettlementType enum name
+    // when known.
+    string settlement_type = 18;
+
+    // sender_pubkey is the compressed SEC-encoded vHTLC sender key when known.
+    string sender_pubkey = 19;
+
+    // preimage is the hex-encoded Lightning payment preimage once the swap
+    // revealed it. For a completed pay swap this is the proof of payment for
+    // the paid invoice; it is empty until the preimage is durably known.
+    string preimage = 20;
+}
+
+// ActivityVTXOTrace describes one VTXO movement correlated to a wallet activity
+// entry.
+message ActivityVTXOTrace {
+    // id is the best available identifier. It is an outpoint when the
+    // source has one, otherwise an OOR session/output identifier.
+    string id = 1;
+
+    // amount_sat is the VTXO amount in satoshis.
+    int64 amount_sat = 2;
+
+    // role is a short technical label such as "spent_input",
+    // "change_output", "materialized_output", or "vhtlc_output".
+    string role = 3;
+
+    // ours is true when the row represents wallet-owned funds.
+    bool ours = 4;
+
+    // source names the local source used to derive the row, such as
+    // "ledger" or "swap".
+    string source = 5;
+
+    // session_id is the OOR session/correlation id when known.
+    string session_id = 6;
+
+    // output_index is set when the source names a specific OOR output
+    // index.
+    uint32 output_index = 7;
+}
+
+// ActivityLedgerTrace describes one local ledger row correlated to a wallet
+// activity entry.
+message ActivityLedgerTrace {
+    // source names the subsystem that produced the row, such as "ledger" or
+    // "boarding_sweep".
+    string source = 1;
+
+    // type is the broad transaction group used by the wallet history query.
+    string type = 2;
+
+    // subtype is the ledger event type or sweep state.
+    string subtype = 3;
+
+    // amount_sat is the row amount in satoshis using the ledger sign
+    // convention.
+    int64 amount_sat = 4;
+
+    // fee_sat is the row's fee contribution in satoshis when the history query
+    // can derive one.
+    int64 fee_sat = 5;
+
+    // created_at_unix is the row creation timestamp in unix seconds.
+    int64 created_at_unix = 6;
+
+    // confirmation_status is the best-known chain confirmation state for the
+    // row, for example "pending", "confirmed", or "recorded".
+    string confirmation_status = 7;
+
+    // description is the local ledger description persisted with the row.
+    string description = 8;
+
+    // entry_id is the local ledger row id when the source is the ledger.
+    int64 entry_id = 9;
+
+    // txid is the associated chain transaction id when known.
+    string txid = 10;
+
+    // debit_account is the local accounting debit account.
+    string debit_account = 11;
+
+    // credit_account is the local accounting credit account.
+    string credit_account = 12;
+
+    // round_id is the Ark round id associated with the row when known.
+    string round_id = 13;
+
+    // session_id is the OOR session/correlation id associated with the row when
+    // known.
+    string session_id = 14;
+
+    // confirmation_height is the confirmed block height when known.
+    int32 confirmation_height = 15;
+
+    // hidden_from_activity is true when WalletService.List suppresses the
+    // row because it is an internal execution leg.
+    bool hidden_from_activity = 16;
+
+    // role is the inspection role inferred for this row.
+    string role = 17;
+
+    // output_index is the transaction output index associated with txid.
+    // A negative value means the source has no output index.
+    int32 output_index = 18;
+}
+
+// DepositRequest asks WalletService.Deposit for a fresh boarding address.
+message DepositRequest {
+    // amt_sat_hint is an optional caller hint about the expected deposit
+    // amount. The daemon may use it to size internal accounting; the
+    // returned boarding address is not amount-bound.
+    uint64 amt_sat_hint = 1;
+}
+
+// DepositResponse returns a fresh boarding address and the initial
+// DEPOSIT-kind WalletEntry tracking the pending boarding operation.
+message DepositResponse {
+    // onchain_address is a fresh boarding address the caller should
+    // fund. The daemon monitors it and rolls the boarding output into
+    // the next round.
+    string onchain_address = 1;
+
+    // entry is the initial DEPOSIT-kind WalletEntry persisted to track
+    // the pending boarding operation.
+    WalletEntry entry = 2;
+}
+
+// BalanceRequest is the empty request for WalletService.Balance.
+message BalanceRequest {
+}
+
+// BalanceResponse is the unified balance summary returned by
+// WalletService.Balance across confirmed, in-flight, and credit amounts.
+message BalanceResponse {
+    // confirmed_sat is the total spendable VTXO amount in satoshis.
+    int64 confirmed_sat = 1;
+
+    // pending_in_sat is the total in-flight inbound amount (boarding
+    // plus receive operations).
+    int64 pending_in_sat = 2;
+
+    // pending_out_sat is the total in-flight outbound amount (send plus
+    // exit operations).
+    int64 pending_out_sat = 3;
+
+    // credit_available_sat is the server-authoritative available credit
+    // balance for the wallet identity.
+    uint64 credit_available_sat = 4;
+
+    // credit_reserved_sat is the server-authoritative in-flight credit
+    // reservation amount.
+    uint64 credit_reserved_sat = 5;
+}
+
+// StatusRequest is the empty request for WalletService.Status.
+message StatusRequest {
+}
+
+// StatusResponse is the wallet-level readiness summary returned by
+// WalletService.Status.
+message StatusResponse {
+    // ready is true when the daemon and its dependencies are up.
+    bool ready = 1;
+
+    // unlocked is a legacy wallet-exists signal: true once a wallet
+    // seed exists on disk or is loaded in memory. Use ready to check
+    // whether wallet RPCs are currently usable.
+    bool unlocked = 2;
+
+    // network is the bitcoin network the daemon is configured for, for
+    // example "mainnet", "testnet", "testnet4", "signet", or
+    // "regtest".
+    string network = 3;
+
+    // balance is the unified balance summary at the time of the call.
+    BalanceResponse balance = 4;
+
+    // pending_count is the number of WalletEntry rows in PENDING
+    // status.
+    uint32 pending_count = 5;
+}
+
+// GetExitPlanRequest lists the VTXO outpoints to preview for unilateral exit
+// via WalletService.GetExitPlan.
+message GetExitPlanRequest {
+    // outpoints are the VTXO outpoints to preview, each "txid:index".
+    repeated string outpoints = 1;
+
+    // conf_target selects the fee-estimation target in blocks. Zero uses
+    // the daemon's default unroll confirmation target.
+    uint32 conf_target = 2;
+}
+
+// ExitPlanEntry is the per-outpoint unilateral-exit readiness preview: the
+// backing-wallet fee requirements and, when an unroll job already exists,
+// its current state.
+message ExitPlanEntry {
+    // outpoint is the previewed VTXO outpoint, formatted as "txid:index".
+    string outpoint = 1;
+
+    // funding_address is empty when can_start is true (no shortfall, so no
+    // address is allocated).
+    string funding_address = 2;
+
+    // required_confirmations is the number of confirmations a
+    // backing-wallet UTXO must have before it can fund the unroll CPFP.
+    uint32 required_confirmations = 3;
+
+    // required_fee_utxo_count is the number of distinct confirmed wallet
+    // UTXOs the exit needs to fund CPFP fees, one per unroll ancestry path.
+    uint32 required_fee_utxo_count = 4;
+
+    // usable_fee_utxo_count is the number of confirmed wallet UTXOs large
+    // enough to each fund a CPFP child on their own.
+    uint32 usable_fee_utxo_count = 5;
+
+    // recommended_utxo_amount_sat is the suggested value in satoshis for
+    // each fee-funding UTXO the caller provisions.
+    int64 recommended_utxo_amount_sat = 6;
+
+    // recommended_total_funding_sat is the suggested total backing-wallet
+    // funding in satoshis: recommended_utxo_amount_sat times the required
+    // fee UTXO count.
+    int64 recommended_total_funding_sat = 7;
+
+    // funding_shortfall_sat is the additional backing-wallet funding in
+    // satoshis needed before this exit can start. Zero when can_start is
+    // true.
+    int64 funding_shortfall_sat = 8;
+
+    // can_start is true when the backing wallet already has the fee inputs
+    // and balance to fund this exit's forced unroll.
+    bool can_start = 9;
+
+    // exit_job_found is true when an unroll job already exists for this
+    // outpoint, in which case exit_status, sweep_txid, and last_error
+    // describe it.
+    bool exit_job_found = 10;
+
+    // exit_status is the current phase of the existing unroll job, when
+    // exit_job_found is true.
+    ExitJobStatus exit_status = 11;
+
+    // sweep_txid is the hex-encoded txid of the existing job's sweep
+    // transaction, set once it has been broadcast.
+    string sweep_txid = 12;
+
+    // last_error is the failure reason of the existing unroll job, when it
+    // is in a failed state.
+    string last_error = 13;
+
+    // error is a per-outpoint failure (e.g. VTXO not found) so one bad
+    // outpoint does not fail the whole batch. Empty on success.
+    string error = 14;
+
+    // infeasibility_reason explains why can_start is false. It may be a
+    // structural block — a dust or uneconomical VTXO the wallet can never
+    // make exitable (funding_shortfall_sat is zero) — or a funding
+    // shortfall the wallet could cover (wallet underfunded or too few fee
+    // inputs, also reflected in funding_shortfall_sat). It is
+    // EXIT_INFEASIBILITY_REASON_UNSPECIFIED when can_start is true.
+    ExitInfeasibilityReason infeasibility_reason = 15;
+}
+
+// ExitInfeasibilityReason enumerates why a unilateral exit was judged
+// infeasible. It mirrors the daemon's unroll feasibility verdict so a
+// caller can distinguish a dust/uneconomical block (no amount of wallet
+// funding fixes it) from a plain funding shortfall.
+enum ExitInfeasibilityReason {
+    // EXIT_INFEASIBILITY_REASON_UNSPECIFIED — the proto zero value; the
+    // exit is feasible, or the block is a plain funding shortfall reported
+    // via funding_shortfall_sat instead.
+    EXIT_INFEASIBILITY_REASON_UNSPECIFIED = 0;
+
+    // EXIT_INFEASIBILITY_REASON_SWEEP_BELOW_DUST — the swept output, after
+    // deducting the sweep fee from the VTXO value, would fall at or below
+    // the dust limit, so the sweep could never relay. The exit is
+    // impossible regardless of wallet funding.
+    EXIT_INFEASIBILITY_REASON_SWEEP_BELOW_DUST = 1;
+
+    // EXIT_INFEASIBILITY_REASON_UNECONOMICAL — the total on-chain cost to
+    // recover the VTXO exceeds the configured fraction of its value. The
+    // exit could technically complete but burns more than it returns.
+    EXIT_INFEASIBILITY_REASON_UNECONOMICAL = 2;
+
+    // EXIT_INFEASIBILITY_REASON_WALLET_UNDERFUNDED — the confirmed on-chain
+    // wallet balance is too small to cover the CPFP fees. Funding the
+    // wallet and retrying resolves it (also reported via
+    // funding_shortfall_sat).
+    EXIT_INFEASIBILITY_REASON_WALLET_UNDERFUNDED = 3;
+
+    // EXIT_INFEASIBILITY_REASON_WALLET_TOO_FEW_INPUTS — the wallet has
+    // fewer usable confirmed UTXOs than the VTXO has independent ancestry
+    // paths, so it lacks distinct CPFP fee inputs.
+    EXIT_INFEASIBILITY_REASON_WALLET_TOO_FEW_INPUTS = 4;
+}
+
+// GetExitPlanResponse returns one ExitPlanEntry per requested outpoint, plus
+// the batch-level fee estimate and aggregate funding verdict.
+message GetExitPlanResponse {
+    // plans holds one entry per requested outpoint, in request order.
+    // Entries are evaluated against a running wallet allocation: each
+    // feasible exit reserves its fee inputs before the next entry is
+    // planned, so a per-entry verdict reflects the wallet left after the
+    // earlier entries in the batch notionally start.
+    repeated ExitPlanEntry plans = 1;
+
+    // fee_rate_sat_per_vbyte is the shared chain fee estimate used for all
+    // entries.
+    int64 fee_rate_sat_per_vbyte = 2;
+
+    // can_start is the AND over every entry that has no per-outpoint error.
+    // Because entries draw from a shared wallet via the running allocation
+    // above, it is true only when every requested exit can be funded
+    // simultaneously, not merely one at a time.
+    bool can_start = 3;
+
+    // total_funding_shortfall_sat is the summed shortfall across entries
+    // under simultaneous funding, so it already accounts for fee inputs two
+    // outpoints would otherwise both claim.
+    int64 total_funding_shortfall_sat = 4;
+
+    // total_recommended_funding_sat is the summed recommended funding across
+    // entries.
+    int64 total_recommended_funding_sat = 5;
+}
+
+// SweepWalletRequest describes a backing-wallet sweep to preview or broadcast
+// via WalletService.SweepWallet.
+message SweepWalletRequest {
+    // destination_address is the Bitcoin address that receives the backing
+    // wallet funds after fees.
+    string destination_address = 1;
+
+    // broadcast controls whether the sweep is only previewed or also signed
+    // and published.
+    bool broadcast = 2;
+
+    // fee_rate_sat_per_vbyte overrides chain fee estimation when positive.
+    int64 fee_rate_sat_per_vbyte = 3;
+
+    // conf_target selects the fee-estimation target in blocks when
+    // fee_rate_sat_per_vbyte is unset. Zero uses the daemon's default unroll
+    // confirmation target.
+    uint32 conf_target = 4;
+}
+
+// WalletSweepInput is one backing-wallet UTXO selected for a sweep.
+message WalletSweepInput {
+    // outpoint is the selected backing-wallet UTXO, formatted as
+    // "txid:index".
+    string outpoint = 1;
+
+    // amount_sat is the value of the selected UTXO in satoshis.
+    int64 amount_sat = 2;
+}
+
+// SweepWalletResponse is the preview or broadcast result of
+// WalletService.SweepWallet.
+message SweepWalletResponse {
+    // inputs are the confirmed backing-wallet UTXOs selected for the sweep.
+    repeated WalletSweepInput inputs = 1;
+
+    // total_input_sat is the gross value in satoshis of every selected
+    // input.
+    int64 total_input_sat = 2;
+
+    // estimated_fee_sat is the absolute miner fee in satoshis for the
+    // aggregate sweep transaction at the resolved fee rate.
+    int64 estimated_fee_sat = 3;
+
+    // net_amount_sat is total_input_sat minus estimated_fee_sat: the amount
+    // in satoshis paid to the destination address.
+    int64 net_amount_sat = 4;
+
+    // fee_rate_sat_per_vbyte is the (capped) fee rate used to build the
+    // sweep transaction.
+    int64 fee_rate_sat_per_vbyte = 5;
+
+    // can_broadcast is true when the preview cleared the dust floor and the
+    // sweep can be published.
+    bool can_broadcast = 6;
+
+    // txid is the hex-encoded sweep transaction id, set only when the sweep
+    // was broadcast.
+    string txid = 7;
+
+    // failure_reason is populated when the sweep cannot broadcast (no
+    // confirmed inputs, dust after fees) or the broadcast failed after
+    // preview.
+    string failure_reason = 8;
+}
+
+// ExitRequest identifies the VTXO to exit and selects the exit path for
+// WalletService.Exit: cooperative leave by default, or unilateral unroll
+// when force_unroll_ack is supplied.
+message ExitRequest {
+    // outpoint is the VTXO outpoint to exit, formatted as "txid:index".
+    string outpoint = 1;
+
+    // onchain_address is the cooperative leave destination. Empty asks the
+    // daemon to generate a fresh backing-wallet address internally.
+    string onchain_address = 2;
+
+    // force_unroll_ack must be exactly "I_KNOW_WHAT_I_AM_DOING" to bypass
+    // cooperative leave and start unilateral unroll. It cannot be combined
+    // with onchain_address, and the server requires at least one confirmed
+    // local backing-wallet UTXO before admitting forced unroll.
+    string force_unroll_ack = 3;
+}
+
+// ExitResponse reports the exit path the daemon took and its per-path detail
+// for WalletService.Exit.
+message ExitResponse {
+    // created indicates whether a new unilateral exit job was spawned.
+    // False if an existing job already covers this target. Cooperative
+    // exits leave this unset.
+    bool created = 1;
+
+    // actor_id is the identifier of the durable unilateral exit job actor.
+    string actor_id = 2;
+
+    // mode identifies the branch the daemon took.
+    ExitMode mode = 3;
+
+    // queued_outpoints lists the outpoints accepted into cooperative leave.
+    repeated string queued_outpoints = 4;
+
+    // onchain_address is the cooperative leave destination used by the
+    // daemon. It may be caller-supplied or daemon-generated.
+    string onchain_address = 5;
+}
+
+// ExitStatusRequest identifies the VTXO whose exit job to query via
+// WalletService.ExitStatus.
+message ExitStatusRequest {
+    // outpoint is the VTXO outpoint to query, formatted as
+    // "txid:index".
+    string outpoint = 1;
+
+    // detailed enriches the response with tree/CSV progress and a fee
+    // breakdown. It costs one extra child actor round-trip plus a fee
+    // estimate, so it should be set only for interactive status commands, not
+    // automated polling.
+    bool detailed = 2;
+}
+
+// ExitProgress describes materialization progress through the exit proof tree.
+// It is populated only for a detailed query against a live exit job.
+message ExitProgress {
+    // confirmed_txs is the number of proof transactions confirmed on-chain.
+    uint32 confirmed_txs = 1;
+
+    // in_flight_txs is the number of proof transactions broadcast but not yet
+    // observed confirmed.
+    uint32 in_flight_txs = 2;
+
+    // ready_txs is the number of proof transactions ready to broadcast now.
+    uint32 ready_txs = 3;
+
+    // blocked_txs is the number of proof transactions still waiting on an
+    // unconfirmed in-proof parent.
+    uint32 blocked_txs = 4;
+
+    // total_txs is the total number of transactions in the exit proof tree.
+    uint32 total_txs = 5;
+
+    // current_layer is the frontier layer index: the shallowest topological
+    // layer (roots first) that still holds an unconfirmed transaction.
+    uint32 current_layer = 6;
+
+    // total_layers is the depth of the exit proof tree.
+    uint32 total_layers = 7;
+
+    // target_confirmed is true once the target VTXO transaction has confirmed.
+    bool target_confirmed = 8;
+
+    // all_proof_confirmed is true once every proof-tree transaction has
+    // confirmed, so only the CSV wait and final sweep remain.
+    bool all_proof_confirmed = 9;
+}
+
+// ExitCSV describes the target's CSV maturity countdown. It is populated only
+// once the target transaction has confirmed.
+message ExitCSV {
+    // target_confirm_height is the block height at which the target confirmed.
+    int32 target_confirm_height = 1;
+
+    // maturity_height is the block height at which the target becomes
+    // timeout-spendable.
+    int32 maturity_height = 2;
+
+    // blocks_remaining is how many blocks remain until CSV maturity.
+    int32 blocks_remaining = 3;
+
+    // mature is true once the current height is at or past maturity.
+    bool mature = 4;
+}
+
+// ExitFees breaks down the on-chain cost of the exit. The CPFP total is
+// estimated from the current fee rate; the sweep fee is the actual built-sweep
+// fee once known, otherwise estimated.
+message ExitFees {
+    // cpfp_fee_sat is the wallet-funded CPFP fee across every recovery
+    // transaction (estimated).
+    int64 cpfp_fee_sat = 1;
+
+    // sweep_fee_sat is the fee the final sweep pays out of the VTXO value.
+    int64 sweep_fee_sat = 2;
+
+    // total_cost_sat is cpfp_fee_sat + sweep_fee_sat.
+    int64 total_cost_sat = 3;
+
+    // vtxo_amount_sat is the value of the VTXO being exited.
+    int64 vtxo_amount_sat = 4;
+
+    // net_recovered_sat is vtxo_amount_sat - sweep_fee_sat.
+    int64 net_recovered_sat = 5;
+
+    // fee_rate_sat_vbyte is the fee rate used for the estimate.
+    int64 fee_rate_sat_vbyte = 6;
+
+    // sweep_fee_actual is true when sweep_fee_sat is the real built-sweep fee
+    // rather than an estimate.
+    bool sweep_fee_actual = 7;
+
+    // spent_so_far_sat is the estimated on-chain fee already committed at this
+    // point in the exit: CPFP for the confirmed and in-flight recovery
+    // transactions, plus the sweep fee once the sweep is broadcast. It is an
+    // estimate, not a realized total; total_cost_sat remains the projected cost
+    // of the whole exit.
+    int64 spent_so_far_sat = 8;
+}
+
+// ExitJobStatus collapses the underlying unroll job phases to a short
+// wallet-facing string set.
+enum ExitJobStatus {
+    // EXIT_JOB_STATUS_UNSPECIFIED — the proto zero value; no job phase
+    // has been reported.
+    EXIT_JOB_STATUS_UNSPECIFIED = 0;
+
+    // EXIT_JOB_STATUS_PENDING — job created but recovery transactions
+    // not yet materialized.
+    EXIT_JOB_STATUS_PENDING = 1;
+
+    // EXIT_JOB_STATUS_MATERIALIZING — recovery transactions are being
+    // broadcast and confirmed on-chain.
+    EXIT_JOB_STATUS_MATERIALIZING = 2;
+
+    // EXIT_JOB_STATUS_CSV_PENDING — recovery transactions confirmed,
+    // waiting for the CSV delay to expire.
+    EXIT_JOB_STATUS_CSV_PENDING = 3;
+
+    // EXIT_JOB_STATUS_SWEEPING — CSV delay expired, sweep transaction
+    // is being broadcast/confirmed.
+    EXIT_JOB_STATUS_SWEEPING = 4;
+
+    // EXIT_JOB_STATUS_COMPLETED — terminal: the sweep confirmed and the
+    // funds are in the on-chain wallet.
+    EXIT_JOB_STATUS_COMPLETED = 5;
+
+    // EXIT_JOB_STATUS_FAILED — terminal: an unrecoverable error
+    // occurred.
+    EXIT_JOB_STATUS_FAILED = 6;
+}
+
+// ExitStatusResponse reports the current phase of an unroll job for
+// WalletService.ExitStatus.
+message ExitStatusResponse {
+    // found is true if an exit job exists for the requested outpoint.
+    bool found = 1;
+
+    // status is the current high-level phase of the exit job.
+    ExitJobStatus status = 2;
+
+    // sweep_txid is the txid of the sweep transaction, set once the
+    // sweep has been broadcast.
+    string sweep_txid = 3;
+
+    // last_error contains the failure reason if the job is in FAILED
+    // status.
+    string last_error = 4;
+
+    // phase_detail is a human-readable one-line description of the current
+    // phase, e.g. "materializing layer 2 of 4 (3/7 txs confirmed)". Set only
+    // on a detailed query.
+    string phase_detail = 5;
+
+    // progress is the tree materialization progress. Set only on a detailed
+    // query against a live job.
+    ExitProgress progress = 6;
+
+    // csv is the CSV maturity countdown. Set only on a detailed query, once
+    // the target has confirmed.
+    ExitCSV csv = 7;
+
+    // fees is the on-chain cost breakdown for the exit. Set only on a detailed
+    // query.
+    ExitFees fees = 8;
+
+    // best_case_blocks_remaining is the optimistic block count until a
+    // confirmed sweep. Set only on a detailed query.
+    int32 best_case_blocks_remaining = 9;
+
+    // current_height is the best block height the exit job has observed. Set
+    // only on a detailed query against a live job.
+    int32 current_height = 10;
+}
+
+// ExitSummaryRequest asks for the wallet-wide portfolio of in-progress exits.
+message ExitSummaryRequest {
+}
+
+// ExitSummaryItem is one in-progress exit's coarse contribution to the
+// portfolio. It is intentionally cheap (phase plus amounts and estimated fees
+// from the persisted descriptor), so the summary does not query each live
+// actor; use ExitStatus --detailed for one exit's tree/CSV progress.
+message ExitSummaryItem {
+    // outpoint is the exiting VTXO outpoint, formatted as "txid:index".
+    string outpoint = 1;
+
+    // status is the current high-level phase of the exit job.
+    ExitJobStatus status = 2;
+
+    // vtxo_amount_sat is the value of the VTXO being exited.
+    int64 vtxo_amount_sat = 3;
+
+    // est_total_fee_sat is the projected total on-chain fee for this exit
+    // (estimated CPFP total plus sweep fee).
+    int64 est_total_fee_sat = 4;
+
+    // est_net_recovered_sat is the estimated value that lands back in the
+    // wallet after the sweep fee.
+    int64 est_net_recovered_sat = 5;
+}
+
+// ExitSummaryResponse is the wallet-wide portfolio of in-progress exits plus
+// aggregate totals. Only non-terminal exits are included: a completed or failed
+// exit has no amount "left" to recover.
+message ExitSummaryResponse {
+    // exits is one row per in-progress exit.
+    repeated ExitSummaryItem exits = 1;
+
+    // total_exits is the number of in-progress exits.
+    uint32 total_exits = 2;
+
+    // total_vtxo_amount_sat is the summed value of every VTXO still being
+    // exited: the total amount currently locked in in-progress exits.
+    int64 total_vtxo_amount_sat = 3;
+
+    // total_est_fee_sat is the summed projected on-chain fee across every
+    // in-progress exit.
+    int64 total_est_fee_sat = 4;
+
+    // total_est_net_recovered_sat is the summed estimated value that will land
+    // back in the wallet once every in-progress exit completes.
+    int64 total_est_net_recovered_sat = 5;
+}
+
+// SubscribeWalletRequest configures the WalletService.SubscribeWallet stream.
+message SubscribeWalletRequest {
+    // include_existing replays the full activity history before live
+    // updates. It is ignored when cursor is set (cursor already selects the
+    // replay start).
+    bool include_existing = 1;
+
+    // kinds optionally narrows the stream to specific entry categories.
+    // When empty, all kinds are streamed.
+    repeated EntryKind kinds = 2;
+
+    // cursor resumes the stream from a prior SubscribeWalletResponse.cursor:
+    // the daemon replays every event after it, then continues live. Zero
+    // (unset) starts from the full history when include_existing is set, or
+    // from the current tip otherwise.
+    int64 cursor = 3;
+}
+
+// SubscribeWalletResponse is one item in the SubscribeWallet stream: either a
+// projected activity row or a gap signal telling the subscriber it fell behind
+// and must reconcile.
+message SubscribeWalletResponse {
+    // cursor is the monotonic event-log position of this update. A client
+    // persists it and reconnects with SubscribeWalletRequest.cursor set to the
+    // last value it processed to resume without gaps. The sequence is
+    // monotonic but NOT contiguous: a value may be skipped, so a client treats
+    // any cursor past its last as new and never infers a dropped event from a
+    // gap in the numbers.
+    int64 cursor = 1;
+
+    oneof update {
+        // entry is a projected activity row at cursor.
+        WalletEntry entry = 2;
+
+        // gap signals the subscriber fell behind the live buffer and should
+        // reconcile current state via List, then resume from cursor.
+        SubscribeGap gap = 3;
+    }
+}
+
+// SubscribeGap tells a subscriber the daemon could not keep it current on the
+// live stream (a slow consumer overflowed the send buffer). The subscriber
+// should reconcile via List and resume from the enclosing cursor. No activity
+// is lost: the canonical event log retains every event, so the resume replays
+// anything missed.
+message SubscribeGap {
+    // reason is a short human-readable description of why the gap was emitted.
+    string reason = 1;
+}
+
+// WalletEntry is the single flat row type returned by the ACTIVITY view of
+// List and by SubscribeWallet. The shape is deliberately minimal: display
+// clients should be able to render kind/status/amount/fee/phase directly
+// without parsing daemon-specific swap or ledger internals. Power-user detail
+// belongs in WalletInspectionService.InspectActivity.
+message WalletEntry {
+    // id is the stable identifier for this entry. Swap-backed SEND and
+    // RECV rows use the Lightning payment_hash. Credit-backed RECV rows
+    // use the credit operation id (see CreditReceive.operation_id); the
+    // payment_hash lives on recv progress/detail instead. EXIT rows use
+    // leave_job_id (or sweep txid); DEPOSIT rows use the boarding
+    // outpoint or txid.
+    string id = 1;
+
+    // kind is the user-visible category.
+    EntryKind kind = 2;
+
+    // status is the coarse user-facing outcome: PENDING, COMPLETE, or
+    // FAILED. It mirrors the backing source's durable state and should
+    // not be reinterpreted by display clients.
+    EntryStatus status = 3;
+
+    // amount_sat is signed: positive values are incoming to the wallet,
+    // negative values are outgoing.
+    int64 amount_sat = 4;
+
+    // fee_sat is the absolute fee paid (or pending) for this
+    // operation.
+    int64 fee_sat = 5;
+
+    // counterparty is a short, display-friendly identifier of the other
+    // side: a truncated invoice for Lightning, an ark peer address for
+    // OOR, a bech32 onchain address for exits, or "boarding" for
+    // deposits.
+    string counterparty = 6;
+
+    // created_at_unix is the local creation timestamp in unix seconds.
+    int64 created_at_unix = 7;
+
+    // updated_at_unix is the last persisted update timestamp in unix
+    // seconds. List ACTIVITY and SubscribeWallet sort by this field,
+    // descending.
+    int64 updated_at_unix = 8;
+
+    // note is the caller-supplied label captured at submit time, if
+    // any.
+    string note = 9;
+
+    // failure_reason is populated only when status is FAILED. It is a
+    // single human-readable string, never a coded enum tree.
+    string failure_reason = 10;
+
+    // request is the original payment request or destination associated
+    // with the entry, when the backing subsystem persists it. This is
+    // useful for expanded views and inspection; compact clients should
+    // not need to parse it to explain status or lifecycle.
+    WalletEntryRequest request = 11;
+
+    // progress carries lifecycle-specific metadata already normalized by the
+    // wallet service. Clients can render phase_label directly or switch on
+    // phase without inferring meaning from swap/ledger internals.
+    WalletEntryProgress progress = 12;
+
+    // failure_code is a stable, machine-readable classification of why a
+    // FAILED entry failed. It is set ONLY on FAILED entries; a non-failed
+    // entry omits the field entirely (presence-tracked), so its absence is the
+    // canonical "no failure" signal and ENTRY_FAILURE_CODE_UNSPECIFIED is never
+    // sent on the wire. failure_reason remains the human-readable supplement.
+    optional EntryFailureCode failure_code = 13;
+}
+
+// WalletEntryRequest describes the user-recognizable request that created a
+// WalletEntry. It is a oneof because each operation is backed by exactly one
+// request shape.
+message WalletEntryRequest {
+    oneof request {
+        // lightning_invoice is populated for Lightning send and receive
+        // entries.
+        LightningInvoiceRequest lightning_invoice = 1;
+
+        // onchain_address is populated for deposit and exit entries.
+        OnchainAddressRequest onchain_address = 2;
+
+        // ark_address is populated for direct Ark send or receive entries.
+        ArkAddressRequest ark_address = 3;
+    }
+}
+
+// LightningInvoiceRequest captures the Lightning request associated with an
+// activity entry.
+message LightningInvoiceRequest {
+    // invoice is the BOLT-11 payment request.
+    string invoice = 1;
+
+    // payment_hash identifies the invoice and remains stable after the
+    // invoice itself is no longer convenient to display.
+    string payment_hash = 2;
+}
+
+// OnchainAddressRequest captures the onchain address associated with an
+// activity entry.
+message OnchainAddressRequest {
+    // address is the bech32 onchain address originally issued or targeted.
+    string address = 1;
+}
+
+// ArkAddressRequest captures the Ark address associated with an activity entry.
+message ArkAddressRequest {
+    // address is the Ark address originally issued or targeted.
+    string address = 1;
+}
+
+// WalletEntryPhase is a coarse, wallet-facing lifecycle phase. It is not a
+// replacement for status; status answers whether the operation is pending,
+// complete, or failed, while phase explains the current backing-system step.
+enum WalletEntryPhase {
+    // WALLET_ENTRY_PHASE_UNSPECIFIED is the proto zero value used when the
+    // backing subsystem has no lifecycle hint.
+    WALLET_ENTRY_PHASE_UNSPECIFIED = 0;
+
+    // WALLET_ENTRY_PHASE_REQUEST_CREATED means the request was created but no
+    // payment has been observed.
+    WALLET_ENTRY_PHASE_REQUEST_CREATED = 1;
+
+    // WALLET_ENTRY_PHASE_WAITING_FOR_PAYMENT means the wallet is waiting for an
+    // inbound payment or swap funding.
+    WALLET_ENTRY_PHASE_WAITING_FOR_PAYMENT = 2;
+
+    // WALLET_ENTRY_PHASE_PAYMENT_DETECTED means the backing subsystem has
+    // detected a payment but it is not yet settled.
+    WALLET_ENTRY_PHASE_PAYMENT_DETECTED = 3;
+
+    // WALLET_ENTRY_PHASE_SETTLING means the operation is being settled through
+    // Ark, Lightning, or onchain machinery.
+    WALLET_ENTRY_PHASE_SETTLING = 4;
+
+    // WALLET_ENTRY_PHASE_CONFIRMED means the backing operation is confirmed or
+    // otherwise durably complete.
+    WALLET_ENTRY_PHASE_CONFIRMED = 5;
+
+    // WALLET_ENTRY_PHASE_REFUNDING means the operation is currently refunding.
+    WALLET_ENTRY_PHASE_REFUNDING = 6;
+
+    // WALLET_ENTRY_PHASE_REFUNDED means the refund path completed.
+    WALLET_ENTRY_PHASE_REFUNDED = 7;
+
+    // WALLET_ENTRY_PHASE_FAILED means the backing operation reached a terminal
+    // failed state.
+    WALLET_ENTRY_PHASE_FAILED = 8;
+
+    // WALLET_ENTRY_PHASE_WAITING_FOR_CONFIRMATION means an onchain payment has
+    // been detected and is waiting for block confirmation.
+    WALLET_ENTRY_PHASE_WAITING_FOR_CONFIRMATION = 9;
+}
+
+// WalletEntryProgress carries lifecycle metadata normalized by the wallet
+// service.
+message WalletEntryProgress {
+    // phase is the coarse lifecycle phase for this entry.
+    WalletEntryPhase phase = 1;
+
+    // phase_label is a short lowercase label that clients can render as-is
+    // while they migrate to enum-based presentation.
+    string phase_label = 2;
+
+    // payment_hash is populated for Lightning-backed send/recv entries.
+    string payment_hash = 3;
+
+    // txid is populated when the backing ledger row has an onchain txid.
+    string txid = 4;
+
+    // confirmation_height is populated once the source records it.
+    int32 confirmation_height = 5;
+
+    // vtxo_outpoint is populated when a swap observes the Ark vHTLC output.
+    string vtxo_outpoint = 6;
+
+    // preimage is the hex-encoded Lightning payment preimage once the swap
+    // revealed it. For a completed Lightning-backed send this is the proof of
+    // payment for the paid invoice (sha256(preimage) == payment_hash); it is
+    // empty until the preimage is durably known and for non-Lightning entries.
+    string preimage = 7;
+}
+
+// EntryFailureCode is a stable, machine-readable classification of why a FAILED
+// WalletEntry failed. It complements the free-text failure_reason so clients
+// can branch on failure cause without string matching.
+enum EntryFailureCode {
+    // ENTRY_FAILURE_CODE_UNSPECIFIED is the zero value used for non-failed
+    // entries or when the cause is unknown.
+    ENTRY_FAILURE_CODE_UNSPECIFIED = 0;
+
+    // ENTRY_FAILURE_CODE_TIMED_OUT means the operation exceeded the wallet
+    // deadline before reaching a terminal state.
+    ENTRY_FAILURE_CODE_TIMED_OUT = 1;
+
+    // ENTRY_FAILURE_CODE_EXPIRED means the swap expired before it was funded.
+    ENTRY_FAILURE_CODE_EXPIRED = 2;
+
+    // ENTRY_FAILURE_CODE_REFUNDED means an outbound payment was refunded back
+    // to the wallet.
+    ENTRY_FAILURE_CODE_REFUNDED = 3;
+
+    // ENTRY_FAILURE_CODE_NEEDS_INTERVENTION means the swap reached an anomalous
+    // state requiring manual recovery.
+    ENTRY_FAILURE_CODE_NEEDS_INTERVENTION = 4;
+
+    // ENTRY_FAILURE_CODE_FAILED is a generic terminal failure with no more
+    // specific classification.
+    ENTRY_FAILURE_CODE_FAILED = 5;
+}

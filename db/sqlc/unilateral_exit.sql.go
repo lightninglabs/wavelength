@@ -22,7 +22,7 @@ type GetExitFundingAddressParams struct {
 	TargetOutpointIndex int32
 }
 
-// Exit funding address persistence queries (darepo-client#893).
+// Exit funding address persistence queries (wavelength#893).
 func (q *Queries) GetExitFundingAddress(ctx context.Context, arg GetExitFundingAddressParams) (ExitFundingAddress, error) {
 	row := q.db.QueryRowContext(ctx, GetExitFundingAddress, arg.TargetOutpointHash, arg.TargetOutpointIndex)
 	var i ExitFundingAddress

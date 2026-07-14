@@ -7,7 +7,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/lightninglabs/darepo-client/lib/tree"
+	"github.com/lightninglabs/wavelength/lib/tree"
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 )

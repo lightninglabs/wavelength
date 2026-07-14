@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btcd/chainhash/v2"
-	"github.com/lightninglabs/darepo-client/lib/recovery"
+	"github.com/lightninglabs/wavelength/lib/recovery"
 	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
 )

@@ -5,7 +5,7 @@ import (
 
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/lightninglabs/darepo-client/baselib/protofsm"
+	"github.com/lightninglabs/wavelength/baselib/protofsm"
 )
 
 // VTXOState is a sealed interface for all states in the VTXO state machine.
@@ -191,7 +191,7 @@ func (s *ForfeitedState) vtxoStateSealed() {}
 // terminal SpentState once the exit confirms on-chain (ExitConfirmedEvent).
 // Reaping the actor on intent — as the original terminal design did —
 // silently dropped the VTXO from the wallet's live set on a failed exit
-// while the operator still considered it live (darepo-client#602).
+// while the operator still considered it live (wavelength#602).
 type UnilateralExitState struct {
 	// VTXO is the descriptor for this VTXO.
 	VTXO *Descriptor

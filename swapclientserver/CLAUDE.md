@@ -38,9 +38,9 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
   package's account-key resolution, payment-hash dedup, and worker registry
   instead of duplicating them.
 - `Register(ctx, grpcServer, rpcServer, cfg)` — Top-level entry point called
-  by a `swapruntime`-tagged `darepod` binary. Opens the daemon-owned SQLite
+  by a `swapruntime`-tagged `waved` binary. Opens the daemon-owned SQLite
   swap store, dials `swapdk-server`, creates an in-process Ark SDK facade over
-  `darepod.RPCServer`, wires `swaps.NewSwapClientWithStore`, installs a
+  `waved.RPCServer`, wires `swaps.NewSwapClientWithStore`, installs a
   `MailboxOutSwapEventReceiver` (empty mailbox ID — receiver derives the
   per-swap mailbox from client identity + payment hash) on the
   `SwapClient` so out-swap HTLC events flow over the mailbox transport,
@@ -67,11 +67,11 @@ protocol behavior remain entirely inside `sdk/swaps` and `swapdk-server`.
 
 - **Depends on**: `sdk/swaps` (swap FSM, `SwapClient`, `Store`, session,
   credit types), `sdk/ark` (`WrapDaemonServer`, in-process Ark facade),
-  `darepod` (`RPCServer`, `Config`, `SwapConfig`, `SwapSubsystem`), `credit`
+  `waved` (`RPCServer`, `Config`, `SwapConfig`, `SwapSubsystem`), `credit`
   (`CreditServer`/`CreditDaemon` interfaces bridged for the credit actor
   subsystem), `rpc/swapclientrpc` (generated gRPC stubs + proto types).
-- **Depended on by**: `cmd/darepod` (calls `swapclientserver.Register` when
-  built with the `swapruntime` tag), `cmd/darepocli/darepoclicommands`
+- **Depended on by**: `cmd/waved` (calls `swapclientserver.Register` when
+  built with the `swapruntime` tag), `cmd/wavecli/waveclicommands`
   (swap RPC CLI commands under `swapruntime`).
 - **Sends**: daemon-root context to `sdk/swaps` session workers via
   `ResumePayViaLightning` / `ResumeReceiveViaLightning` — CLI disconnect does

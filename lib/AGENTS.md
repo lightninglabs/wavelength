@@ -54,7 +54,7 @@ message interfaces, and core Ark types.
 - **Depends on**: `baselib/actor` (actormsg only, for ServiceKey).
 - **Depended on by**: nearly every client subsystem (`round`, `vtxo`, `oor`,
   `wallet`, `unroll`, `unrollplan`, `txconfirm`, `fraud`, `db`, `sdk`,
-  `vhtlcrecovery`, `swapclientserver`, `darepod`, `rpc`/`arkrpc`) — `lib`
+  `vhtlcrecovery`, `swapclientserver`, `waved`, `rpc`/`arkrpc`) — `lib`
   holds the shared domain types the rest of the client builds on.
 
 ## Deep Docs

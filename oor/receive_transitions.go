@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/lightninglabs/darepo-client/lib/tx/arktx"
+	"github.com/lightninglabs/wavelength/lib/tx/arktx"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 

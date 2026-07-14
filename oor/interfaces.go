@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/chainhash/v2"
-	"github.com/lightninglabs/darepo-client/baselib/protofsm"
+	"github.com/lightninglabs/wavelength/baselib/protofsm"
 )
 
 // StateTransition is a type alias for the verbose protofsm.StateTransition type

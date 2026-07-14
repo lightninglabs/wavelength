@@ -9,8 +9,8 @@ import (
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chaincfg/v2"
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/daemonrpc"
-	sdkark "github.com/lightninglabs/darepo-client/sdk/ark"
+	sdkark "github.com/lightninglabs/wavelength/sdk/ark"
+	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/lightningnetwork/lnd/invoices"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lntypes"
@@ -742,26 +742,26 @@ type DaemonConn interface {
 
 	// ArmVHTLCRecovery stores a dormant daemon-owned on-chain recovery job.
 	ArmVHTLCRecovery(ctx context.Context,
-		req *daemonrpc.ArmVHTLCRecoveryRequest) (
-		*daemonrpc.ArmVHTLCRecoveryResponse, error)
+		req *waverpc.ArmVHTLCRecoveryRequest) (
+		*waverpc.ArmVHTLCRecoveryResponse, error)
 
 	// EscalateVHTLCRecovery starts or resumes the unroll path for an armed
 	// recovery job.
 	EscalateVHTLCRecovery(ctx context.Context,
-		req *daemonrpc.EscalateVHTLCRecoveryRequest) (
-		*daemonrpc.EscalateVHTLCRecoveryResponse, error)
+		req *waverpc.EscalateVHTLCRecoveryRequest) (
+		*waverpc.EscalateVHTLCRecoveryResponse, error)
 
 	// CancelVHTLCRecovery records that cooperative settlement won before
 	// the armed recovery path was needed.
 	CancelVHTLCRecovery(ctx context.Context,
-		req *daemonrpc.CancelVHTLCRecoveryRequest) (
-		*daemonrpc.CancelVHTLCRecoveryResponse, error)
+		req *waverpc.CancelVHTLCRecoveryRequest) (
+		*waverpc.CancelVHTLCRecoveryResponse, error)
 
 	// GetVHTLCRecoveryStatus returns the daemon's durable recovery row and
 	// current unroll status, when present.
 	GetVHTLCRecoveryStatus(ctx context.Context,
-		req *daemonrpc.GetVHTLCRecoveryStatusRequest) (
-		*daemonrpc.GetVHTLCRecoveryStatusResponse, error)
+		req *waverpc.GetVHTLCRecoveryStatusRequest) (
+		*waverpc.GetVHTLCRecoveryStatusResponse, error)
 
 	// PrepareOORWithCustomInputs builds a deterministic custom-input OOR
 	// package without submitting it.
@@ -798,7 +798,7 @@ type DaemonConn interface {
 	// GetOORSession returns the daemon's local durable status for one OOR
 	// session.
 	GetOORSession(ctx context.Context,
-		sessionID string) (*daemonrpc.OORSessionInfo, error)
+		sessionID string) (*waverpc.OORSessionInfo, error)
 
 	// AllocateReceiveScript allocates a fresh wallet-owned receive
 	// destination.
@@ -828,8 +828,8 @@ type DaemonConn interface {
 	// SignVTXOForfeit signs one exact connector-bound forfeit transaction
 	// with the daemon identity key.
 	SignVTXOForfeit(ctx context.Context,
-		req *daemonrpc.SignVTXOForfeitRequest) (
-		*daemonrpc.SignVTXOForfeitResponse, error)
+		req *waverpc.SignVTXOForfeitRequest) (
+		*waverpc.SignVTXOForfeitResponse, error)
 }
 
 // CustomInput aliases the Ark SDK's typed custom OOR input.

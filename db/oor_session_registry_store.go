@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/chainhash/v2"
-	"github.com/lightninglabs/darepo-client/db/sqlc"
-	"github.com/lightninglabs/darepo-client/rpc/oorpb"
+	"github.com/lightninglabs/wavelength/db/sqlc"
+	"github.com/lightninglabs/wavelength/rpc/oorpb"
 	"github.com/lightningnetwork/lnd/clock"
 )
 

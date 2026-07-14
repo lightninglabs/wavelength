@@ -7,7 +7,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
-	"github.com/lightninglabs/darepo-client/chainsource"
+	"github.com/lightninglabs/wavelength/chainsource"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 

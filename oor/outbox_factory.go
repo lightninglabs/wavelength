@@ -2,9 +2,9 @@ package oor
 
 import (
 	"github.com/btcsuite/btcd/btcec/v2"
-	"github.com/lightninglabs/darepo-client/baselib/actor"
-	"github.com/lightninglabs/darepo-client/timeout"
-	"github.com/lightninglabs/darepo-client/vtxo"
+	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/timeout"
+	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightningnetwork/lnd/input"
 )
 
@@ -13,7 +13,7 @@ import (
 //
 //	LocalPersistenceOutboxHandler → SigningOutboxHandler
 //
-// This config is used by both the production darepod server and
+// This config is used by both the production waved server and
 // the systest harness to ensure identical outbox handling.
 type OutboxHandlerConfig struct {
 	// Signer signs checkpoint and Ark PSBTs.
@@ -56,7 +56,7 @@ type OutboxHandlerConfig struct {
 // persistence, and incoming materialization effects. Durable actor transport
 // events are intercepted by OOR before this handler and sent via serverconn.
 //
-// Both the production darepod and systest should call this function
+// Both the production waved and systest should call this function
 // to ensure identical outbox handling.
 func NewOutboxHandler(cfg OutboxHandlerConfig) *LocalPersistenceOutboxHandler {
 	signingHandler := &SigningOutboxHandler{

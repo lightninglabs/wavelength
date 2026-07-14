@@ -2,8 +2,8 @@
 
 ## Purpose
 
-Prometheus instrumentation for the darepo client daemon (`darepod`). All
-metrics are namespaced under `darepod_`. Mirrors the arkd **server** metrics
+Prometheus instrumentation for the wavelength daemon (`waved`). All
+metrics are namespaced under `waved_`. Mirrors the arkd **server** metrics
 package (one directory up) in structure and collection strategy: an
 event-driven actor for lifecycle counters, plus a scrape-time collector for
 gauges that must stay fresh (VTXO inventory, wallet balance, chain tip, live
@@ -11,8 +11,8 @@ OOR/round state).
 
 ## Key Types
 
-- `MetricsActor` / `ActorConfig` — event-driven counters. `darepod` spawns a
-  small pool of these (`metricsActorWorkers = 4`, in `darepod/metrics.go`)
+- `MetricsActor` / `ActorConfig` — event-driven counters. `waved` spawns a
+  small pool of these (`metricsActorWorkers = 4`, in `waved/metrics.go`)
   registered under `ActorKey`; the actor holds no mutable state, so any
   worker can handle any message.
 - `Msg` — sealed interface for actor messages: `BoardingEventMsg`,
@@ -36,7 +36,7 @@ OOR/round state).
 - **Depends on**: `baselib/actor` (actor framework, `Sink`), `btclog`,
   `lnd/fn/v2`, `client_golang/prometheus`,
   `go-grpc-middleware/providers/prometheus`.
-- **Depended on by**: `darepod` (spawns the actor pool, owns `SystemCollector`
+- **Depended on by**: `waved` (spawns the actor pool, owns `SystemCollector`
   adapter and HTTP server, emits `BoardingEventMsg`/`OORTransferSentMsg` etc.
   directly), `round` (`RoundClientConfig.MetricsSink` emits
   `RoundJoinedMsg`/`RoundCompletedMsg`), `wallet` (`WithMetricsSink` emits
@@ -44,7 +44,7 @@ OOR/round state).
   (`IncomingVTXOHandlerConfig.MetricsSink` emits `OORTransferReceivedMsg`).
 - **Messages to/from**: Receives `Msg` (`BoardingEventMsg`, `RoundJoinedMsg`,
   `RoundCompletedMsg`, `OORTransferReceivedMsg`, `OORTransferSentMsg`,
-  `BackgroundTaskErrorMsg`) <- `round`, `wallet`, `vtxo`, `darepod`.
+  `BackgroundTaskErrorMsg`) <- `round`, `wallet`, `vtxo`, `waved`.
 
 ## Invariants
 

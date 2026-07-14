@@ -110,7 +110,7 @@ jobs:
       ########################
       # Sample configuration check
       ########################
-      - name: Check sample darepod config
+      - name: Check sample waved config
         run: make sample-conf-check
         env:
           GOWORK: off

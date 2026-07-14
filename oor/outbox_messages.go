@@ -8,10 +8,10 @@ import (
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/lightninglabs/darepo-client/baselib/actor"
-	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
-	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
-	"github.com/lightninglabs/darepo-client/rpc/oorpb"
+	"github.com/lightninglabs/wavelength/baselib/actor"
+	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
+	mailboxrpc "github.com/lightninglabs/wavelength/mailbox/rpc"
+	"github.com/lightninglabs/wavelength/rpc/oorpb"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/tlv"
 	"google.golang.org/protobuf/proto"
@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	oorOutboxProtoTypeURLPrefix = "type.lightninglabs.dev/darepo-client/" +
+	oorOutboxProtoTypeURLPrefix = "type.lightninglabs.dev/wavelength/" +
 		"oor/"
 )
 

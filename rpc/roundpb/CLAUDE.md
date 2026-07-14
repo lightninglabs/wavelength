@@ -43,7 +43,7 @@ distinction.
 - **Depends on**: `lib/tree`, `lib/types` (conversion targets in
   `convert.go`); otherwise generated proto types only.
 - **Depended on by**: `round` (outbox routing, proto conversions, flow
-  version), `db` (persisting round/VTXO proto blobs), `darepod` (proto
+  version), `db` (persisting round/VTXO proto blobs), `waved` (proto
   conversion, flow version).
 
 ## Invariants

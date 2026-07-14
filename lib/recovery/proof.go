@@ -7,8 +7,8 @@ import (
 
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/lightninglabs/darepo-client/lib/arkscript"
-	"github.com/lightninglabs/darepo-client/lib/tree"
+	"github.com/lightninglabs/wavelength/lib/arkscript"
+	"github.com/lightninglabs/wavelength/lib/tree"
 	"github.com/lightningnetwork/lnd/fn/v2"
 )
 

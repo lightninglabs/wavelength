@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/lightninglabs/darepo-client/rpc/oorpb"
+	"github.com/lightninglabs/wavelength/rpc/oorpb"
 )
 
 // ErrLineageTooLarge is the client-facing typed error returned when the

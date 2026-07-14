@@ -10,7 +10,7 @@ import (
 	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/lightninglabs/darepo-client/lib/arkscript"
+	"github.com/lightninglabs/wavelength/lib/arkscript"
 )
 
 // ValidateSubmitPackageSigned validates a v0 OOR submit package including

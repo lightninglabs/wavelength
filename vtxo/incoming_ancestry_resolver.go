@@ -8,8 +8,8 @@ import (
 
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/lightninglabs/darepo-client/arkrpc"
-	"github.com/lightninglabs/darepo-client/internal/indexerlimits"
+	"github.com/lightninglabs/wavelength/arkrpc"
+	"github.com/lightninglabs/wavelength/internal/indexerlimits"
 )
 
 const (

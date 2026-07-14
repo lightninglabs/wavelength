@@ -6,7 +6,7 @@ import (
 	"log/slog"
 
 	"github.com/btcsuite/btcd/chainhash/v2"
-	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/wavelength/baselib/actor"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 

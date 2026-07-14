@@ -4,8 +4,8 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/lightninglabs/darepo-client/lib/types"
-	"github.com/lightninglabs/darepo-client/rpc/roundpb"
+	"github.com/lightninglabs/wavelength/lib/types"
+	"github.com/lightninglabs/wavelength/rpc/roundpb"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
 )

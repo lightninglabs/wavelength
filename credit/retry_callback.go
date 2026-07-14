@@ -1,8 +1,8 @@
 package credit
 
 import (
-	"github.com/lightninglabs/darepo-client/baselib/actor"
-	"github.com/lightninglabs/darepo-client/timeout"
+	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/timeout"
 )
 
 // expiredMsgRef is the timeout-actor poll-timer callback sink shape, aliased to

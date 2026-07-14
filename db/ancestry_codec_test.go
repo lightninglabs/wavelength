@@ -7,10 +7,10 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btcd/chainhash/v2"
-	"github.com/lightninglabs/darepo-client/db/sqlc"
-	"github.com/lightninglabs/darepo-client/lib/tree"
-	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightninglabs/neutrino/cache"
+	"github.com/lightninglabs/wavelength/db/sqlc"
+	"github.com/lightninglabs/wavelength/lib/tree"
+	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/stretchr/testify/require"
 )
 

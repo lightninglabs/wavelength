@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package arkrpc;
 
-option go_package = "github.com/lightninglabs/darepo-client/arkrpc";
+option go_package = "github.com/lightninglabs/wavelength/arkrpc";
 
 service ArkService {
     // GetInfo returns basic information about the ark server

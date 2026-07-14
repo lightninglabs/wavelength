@@ -1,8 +1,8 @@
 package treeconv
 
 import (
-	"github.com/lightninglabs/darepo-client/arkrpc"
-	"github.com/lightninglabs/darepo-client/lib/tree"
+	"github.com/lightninglabs/wavelength/arkrpc"
+	"github.com/lightninglabs/wavelength/lib/tree"
 )
 
 // TreePathFromTree converts a tree.Tree into its proto TreePath

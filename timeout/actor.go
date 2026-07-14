@@ -6,7 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightningnetwork/lnd/fn/v2"
 )
 

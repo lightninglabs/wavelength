@@ -31,7 +31,7 @@ state.
 - **Depended on by**: `db` (persistence: `VHTLCRecoveryStoreDB`),
   `vhtlcrecovery/coordinator` (control flow and state transitions),
   `vhtlcrecovery/unrollpolicy` (builds concrete exit spend policies from job
-  rows), `darepod` (RPC handlers: `ArmVHTLCRecovery`, `EscalateVHTLCRecovery`,
+  rows), `waved` (RPC handlers: `ArmVHTLCRecovery`, `EscalateVHTLCRecovery`,
   etc.)
 
 ## Invariants

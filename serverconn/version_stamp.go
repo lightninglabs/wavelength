@@ -3,7 +3,7 @@ package serverconn
 import (
 	"context"
 
-	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
+	mailboxpb "github.com/lightninglabs/wavelength/mailbox/pb"
 	"google.golang.org/grpc"
 )
 

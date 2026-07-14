@@ -3,8 +3,8 @@ package serverconn
 import (
 	"testing"
 
-	"github.com/lightninglabs/darepo-client/arkrpc"
-	mailboxconn "github.com/lightninglabs/darepo-client/mailbox/conn"
+	"github.com/lightninglabs/wavelength/arkrpc"
+	mailboxconn "github.com/lightninglabs/wavelength/mailbox/conn"
 	"github.com/stretchr/testify/require"
 )
 

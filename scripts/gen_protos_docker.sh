@@ -21,7 +21,7 @@ GRPC_GATEWAY_VERSION=$(grep -E '^\s+github\.com/grpc-ecosystem/grpc-gateway/v2\s
 GOOGLEAPIS_VERSION="${GOOGLEAPIS_VERSION:-v0.0.0-20260514144325-84009fb6ad89}"
 
 echo "Building protobuf compiler docker image..."
-docker build -t darepo-protobuf-builder \
+docker build -t wavelength-protobuf-builder \
   --build-arg PROTOBUF_VERSION="$PROTOBUF_VERSION" \
   --build-arg GRPC_GATEWAY_VERSION="$GRPC_GATEWAY_VERSION" \
   --build-arg GOOGLEAPIS_VERSION="$GOOGLEAPIS_VERSION" \
@@ -35,6 +35,6 @@ docker run \
   -e COMPILE_MOBILE \
   -e GOPATH=/tmp/build/gopath \
   -v "$REPO_ROOT":/build \
-  darepo-protobuf-builder
+  wavelength-protobuf-builder
 
 echo "Proto compilation complete!"

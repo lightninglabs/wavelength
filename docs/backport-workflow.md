@@ -1,6 +1,6 @@
 # Automated Backport Workflow
 
-This document describes the automated backport workflow for darepo-client. It
+This document describes the automated backport workflow for wavelength. It
 backports merged `main` pull requests to release branches (for example,
 `v0.1.x-branch`) without manual cherry-picking.
 

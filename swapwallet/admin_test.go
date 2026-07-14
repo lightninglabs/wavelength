@@ -1,4 +1,4 @@
-//go:build walletdkrpc && swapruntime
+//go:build wavewalletrpc && swapruntime
 
 package swapwallet
 
@@ -7,10 +7,10 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btcd/chainhash/v2"
-	"github.com/lightninglabs/darepo-client/daemonrpc"
-	"github.com/lightninglabs/darepo-client/darepod"
-	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
-	"github.com/lightninglabs/darepo-client/wallet"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
+	"github.com/lightninglabs/wavelength/wallet"
+	"github.com/lightninglabs/wavelength/waved"
+	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -41,18 +41,18 @@ func TestCreateGeneratesSeedWhenMnemonicEmpty(t *testing.T) {
 	t.Parallel()
 
 	svc, rpc := newAdminFixture(t)
-	rpc.genSeedResp = &daemonrpc.GenSeedResponse{
+	rpc.genSeedResp = &waverpc.GenSeedResponse{
 		Mnemonic: []string{
 			"word1",
 			"word2",
 			"word3",
 		},
 	}
-	rpc.initWalletResp = &daemonrpc.InitWalletResponse{
+	rpc.initWalletResp = &waverpc.InitWalletResponse{
 		IdentityPubkey: "deadbeef",
 	}
 
-	resp, err := svc.Create(t.Context(), &walletdkrpc.CreateRequest{
+	resp, err := svc.Create(t.Context(), &wavewalletrpc.CreateRequest{
 		WalletPassword: []byte("hunter2hunter2"),
 	})
 	require.NoError(t, err)
@@ -74,12 +74,12 @@ func TestCreateRecoveryEchoesProvidedMnemonic(t *testing.T) {
 	t.Parallel()
 
 	svc, rpc := newAdminFixture(t)
-	rpc.initWalletResp = &daemonrpc.InitWalletResponse{
+	rpc.initWalletResp = &waverpc.InitWalletResponse{
 		IdentityPubkey: "cafe",
 	}
 
 	recovery := []string{"alpha", "beta", "gamma"}
-	resp, err := svc.Create(t.Context(), &walletdkrpc.CreateRequest{
+	resp, err := svc.Create(t.Context(), &wavewalletrpc.CreateRequest{
 		WalletPassword: []byte("hunter2hunter2"),
 		Mnemonic:       recovery,
 	})
@@ -96,7 +96,7 @@ func TestCreateRejectsEmptyPassword(t *testing.T) {
 	t.Parallel()
 
 	svc, rpc := newAdminFixture(t)
-	_, err := svc.Create(t.Context(), &walletdkrpc.CreateRequest{})
+	_, err := svc.Create(t.Context(), &wavewalletrpc.CreateRequest{})
 	require.Error(t, err)
 	require.Equal(t, codes.InvalidArgument, status.Code(err))
 	require.Equal(t, 0, rpc.genSeedCalls)
@@ -113,7 +113,7 @@ func TestCreateRequiresRPCServer(t *testing.T) {
 	t.Cleanup(runtime.stop)
 	svc := newService(deps, runtime)
 
-	_, err := svc.Create(t.Context(), &walletdkrpc.CreateRequest{
+	_, err := svc.Create(t.Context(), &wavewalletrpc.CreateRequest{
 		WalletPassword: []byte("password"),
 	})
 	require.Error(t, err)
@@ -124,7 +124,7 @@ func TestCreateRequiresRPCServer(t *testing.T) {
 	// The rejection carries the machine-readable reason so the SDK can
 	// reconstruct it, rather than a bare code-only status.
 	require.Equal(
-		t, walletdkrpc.ReasonSwapBackendUnavailable,
+		t, wavewalletrpc.ReasonSwapBackendUnavailable,
 		errorInfoReason(t, st),
 	)
 }
@@ -135,11 +135,11 @@ func TestUnlockProxiesDaemon(t *testing.T) {
 	t.Parallel()
 
 	svc, rpc := newAdminFixture(t)
-	rpc.unlockWalletResp = &daemonrpc.UnlockWalletResponse{
+	rpc.unlockWalletResp = &waverpc.UnlockWalletResponse{
 		IdentityPubkey: "ffff",
 	}
 
-	resp, err := svc.Unlock(t.Context(), &walletdkrpc.UnlockRequest{
+	resp, err := svc.Unlock(t.Context(), &wavewalletrpc.UnlockRequest{
 		WalletPassword: []byte("hunter2hunter2"),
 	})
 	require.NoError(t, err)
@@ -157,7 +157,7 @@ func TestUnlockRejectsEmptyPassword(t *testing.T) {
 	t.Parallel()
 
 	svc, _ := newAdminFixture(t)
-	_, err := svc.Unlock(t.Context(), &walletdkrpc.UnlockRequest{})
+	_, err := svc.Unlock(t.Context(), &wavewalletrpc.UnlockRequest{})
 	require.Error(t, err)
 	require.Equal(t, codes.InvalidArgument, status.Code(err))
 }
@@ -169,18 +169,18 @@ func TestExitDefaultsToCooperativeLeave(t *testing.T) {
 
 	svc, rpc := newAdminFixture(t)
 	rpc.newWalletAddressResp = "bcrt1qwallet"
-	rpc.leaveResp = &daemonrpc.LeaveVTXOsResponse{
+	rpc.leaveResp = &waverpc.LeaveVTXOsResponse{
 		QueuedOutpoints: []string{
 			"abc:0",
 		},
 	}
 
-	resp, err := svc.Exit(t.Context(), &walletdkrpc.ExitRequest{
+	resp, err := svc.Exit(t.Context(), &wavewalletrpc.ExitRequest{
 		Outpoint: "abc:0",
 	})
 	require.NoError(t, err)
 	require.Equal(
-		t, walletdkrpc.ExitMode_EXIT_MODE_COOPERATIVE, resp.GetMode(),
+		t, wavewalletrpc.ExitMode_EXIT_MODE_COOPERATIVE, resp.GetMode(),
 	)
 	require.Equal(t, []string{"abc:0"}, resp.GetQueuedOutpoints())
 	require.Equal(t, "bcrt1qwallet", resp.GetOnchainAddress())
@@ -200,19 +200,19 @@ func TestExitUsesProvidedCooperativeDestination(t *testing.T) {
 	t.Parallel()
 
 	svc, rpc := newAdminFixture(t)
-	rpc.leaveResp = &daemonrpc.LeaveVTXOsResponse{
+	rpc.leaveResp = &waverpc.LeaveVTXOsResponse{
 		QueuedOutpoints: []string{
 			"abc:0",
 		},
 	}
 
-	resp, err := svc.Exit(t.Context(), &walletdkrpc.ExitRequest{
+	resp, err := svc.Exit(t.Context(), &wavewalletrpc.ExitRequest{
 		Outpoint:       "abc:0",
 		OnchainAddress: "bcrt1qexternal",
 	})
 	require.NoError(t, err)
 	require.Equal(
-		t, walletdkrpc.ExitMode_EXIT_MODE_COOPERATIVE, resp.GetMode(),
+		t, wavewalletrpc.ExitMode_EXIT_MODE_COOPERATIVE, resp.GetMode(),
 	)
 	require.Equal(t, "bcrt1qexternal", resp.GetOnchainAddress())
 	require.Empty(t, rpc.newWalletAddressResp)
@@ -227,13 +227,13 @@ func TestExitCooperativeRequiresQueuedOutpoint(t *testing.T) {
 	t.Parallel()
 
 	svc, rpc := newAdminFixture(t)
-	rpc.leaveResp = &daemonrpc.LeaveVTXOsResponse{
+	rpc.leaveResp = &waverpc.LeaveVTXOsResponse{
 		QueuedOutpoints: []string{
 			"other:0",
 		},
 	}
 
-	_, err := svc.Exit(t.Context(), &walletdkrpc.ExitRequest{
+	_, err := svc.Exit(t.Context(), &wavewalletrpc.ExitRequest{
 		Outpoint:       "abc:0",
 		OnchainAddress: "bcrt1qexternal",
 	})
@@ -248,18 +248,18 @@ func TestExitForcedUnrollProxiesUnroll(t *testing.T) {
 
 	svc, rpc := newAdminFixture(t)
 	rpc.listWalletUnspent = []*wallet.Utxo{{}}
-	rpc.unrollResp = &daemonrpc.UnrollResponse{
+	rpc.unrollResp = &waverpc.UnrollResponse{
 		Created: true,
 		ActorId: "exit-job-42",
 	}
 
-	resp, err := svc.Exit(t.Context(), &walletdkrpc.ExitRequest{
+	resp, err := svc.Exit(t.Context(), &wavewalletrpc.ExitRequest{
 		Outpoint:       "abc:0",
 		ForceUnrollAck: forceUnrollAck,
 	})
 	require.NoError(t, err)
 	require.Equal(
-		t, walletdkrpc.ExitMode_EXIT_MODE_UNILATERAL, resp.GetMode(),
+		t, wavewalletrpc.ExitMode_EXIT_MODE_UNILATERAL, resp.GetMode(),
 	)
 	require.True(t, resp.GetCreated())
 	require.Equal(t, "exit-job-42", resp.GetActorId())
@@ -270,10 +270,11 @@ func TestExitForcedUnrollProxiesUnroll(t *testing.T) {
 	require.Len(t, entries, 1)
 	require.Equal(t, "abc:0", entries[0].GetId())
 	require.Equal(
-		t, walletdkrpc.EntryKind_ENTRY_KIND_EXIT, entries[0].GetKind(),
+		t, wavewalletrpc.EntryKind_ENTRY_KIND_EXIT,
+		entries[0].GetKind(),
 	)
 	require.Equal(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
 		entries[0].GetStatus(),
 	)
 }
@@ -284,7 +285,7 @@ func TestExitForcedUnrollRequiresAck(t *testing.T) {
 	t.Parallel()
 
 	svc, rpc := newAdminFixture(t)
-	_, err := svc.Exit(t.Context(), &walletdkrpc.ExitRequest{
+	_, err := svc.Exit(t.Context(), &wavewalletrpc.ExitRequest{
 		Outpoint:       "abc:0",
 		ForceUnrollAck: "sure",
 	})
@@ -300,7 +301,7 @@ func TestExitForcedUnrollRejectsDestination(t *testing.T) {
 	t.Parallel()
 
 	svc, rpc := newAdminFixture(t)
-	_, err := svc.Exit(t.Context(), &walletdkrpc.ExitRequest{
+	_, err := svc.Exit(t.Context(), &wavewalletrpc.ExitRequest{
 		Outpoint:       "abc:0",
 		OnchainAddress: "bcrt1qexternal",
 		ForceUnrollAck: forceUnrollAck,
@@ -316,7 +317,7 @@ func TestExitForcedUnrollRequiresLocalUTXO(t *testing.T) {
 	t.Parallel()
 
 	svc, rpc := newAdminFixture(t)
-	_, err := svc.Exit(t.Context(), &walletdkrpc.ExitRequest{
+	_, err := svc.Exit(t.Context(), &wavewalletrpc.ExitRequest{
 		Outpoint:       "abc:0",
 		ForceUnrollAck: forceUnrollAck,
 	})
@@ -331,7 +332,7 @@ func TestExitRejectsEmptyOutpoint(t *testing.T) {
 	t.Parallel()
 
 	svc, rpc := newAdminFixture(t)
-	_, err := svc.Exit(t.Context(), &walletdkrpc.ExitRequest{})
+	_, err := svc.Exit(t.Context(), &wavewalletrpc.ExitRequest{})
 	require.Error(t, err)
 	require.Equal(t, codes.InvalidArgument, status.Code(err))
 	require.Equal(t, 0, rpc.unrollCalls)
@@ -344,12 +345,12 @@ func TestGetExitPlanProxiesDaemonPlan(t *testing.T) {
 
 	svc, rpc := newAdminFixture(t)
 	sweepTxid := testHash(1)
-	rpc.exitPlanResp = &darepod.ExitPlanResponse{
+	rpc.exitPlanResp = &waved.ExitPlanResponse{
 		FeeRateSatPerVByte:         3,
 		CanStart:                   false,
 		TotalFundingShortfallSat:   10_000,
 		TotalRecommendedFundingSat: 20_000,
-		Plans: []darepod.ExitPlanEntry{{
+		Plans: []waved.ExitPlanEntry{{
 			Outpoint:                   "abc:0",
 			FundingAddress:             "bcrt1plan",
 			RequiredConfirmations:      1,
@@ -360,7 +361,7 @@ func TestGetExitPlanProxiesDaemonPlan(t *testing.T) {
 			FundingShortfallSat:        10_000,
 			CanStart:                   false,
 			ExitJobFound:               true,
-			ExitStatus: daemonrpc.
+			ExitStatus: waverpc.
 				UnrollJobStatus_UNROLL_JOB_STATUS_PENDING,
 			SweepTxid: &sweepTxid,
 			LastError: errors.New("last"),
@@ -368,7 +369,7 @@ func TestGetExitPlanProxiesDaemonPlan(t *testing.T) {
 	}
 
 	resp, err := svc.GetExitPlan(
-		t.Context(), &walletdkrpc.GetExitPlanRequest{
+		t.Context(), &wavewalletrpc.GetExitPlanRequest{
 			Outpoints:  []string{"abc:0"},
 			ConfTarget: 3,
 		},
@@ -392,7 +393,7 @@ func TestGetExitPlanProxiesDaemonPlan(t *testing.T) {
 	require.False(t, entry.GetCanStart())
 	require.True(t, entry.GetExitJobFound())
 	require.Equal(
-		t, walletdkrpc.ExitJobStatus_EXIT_JOB_STATUS_PENDING,
+		t, wavewalletrpc.ExitJobStatus_EXIT_JOB_STATUS_PENDING,
 		entry.GetExitStatus(),
 	)
 	require.Empty(t, entry.GetError())
@@ -404,9 +405,9 @@ func TestGetExitPlanAllowsMissingSweepTxid(t *testing.T) {
 	t.Parallel()
 
 	svc, rpc := newAdminFixture(t)
-	rpc.exitPlanResp = &darepod.ExitPlanResponse{
+	rpc.exitPlanResp = &waved.ExitPlanResponse{
 		FeeRateSatPerVByte: 3,
-		Plans: []darepod.ExitPlanEntry{{
+		Plans: []waved.ExitPlanEntry{{
 			Outpoint:                 "abc:0",
 			FundingAddress:           "bcrt1plan",
 			RequiredFeeUTXOCount:     1,
@@ -415,7 +416,7 @@ func TestGetExitPlanAllowsMissingSweepTxid(t *testing.T) {
 	}
 
 	resp, err := svc.GetExitPlan(
-		t.Context(), &walletdkrpc.GetExitPlanRequest{
+		t.Context(), &wavewalletrpc.GetExitPlanRequest{
 			Outpoints: []string{"abc:0"},
 		},
 	)
@@ -431,7 +432,7 @@ func TestGetExitPlanRejectsEmptyOutpoint(t *testing.T) {
 
 	svc, rpc := newAdminFixture(t)
 	_, err := svc.GetExitPlan(
-		t.Context(), &walletdkrpc.GetExitPlanRequest{},
+		t.Context(), &wavewalletrpc.GetExitPlanRequest{},
 	)
 	require.Error(t, err)
 	require.Equal(t, codes.InvalidArgument, status.Code(err))
@@ -445,8 +446,8 @@ func TestSweepWalletProxiesDaemonSweep(t *testing.T) {
 
 	svc, rpc := newAdminFixture(t)
 	txid := testHash(2)
-	rpc.sweepWalletResp = &darepod.SweepWalletResponse{
-		Inputs: []darepod.WalletSweepInput{{
+	rpc.sweepWalletResp = &waved.SweepWalletResponse{
+		Inputs: []waved.WalletSweepInput{{
 			Outpoint:  "abc:0",
 			AmountSat: 50_000,
 		}},
@@ -459,7 +460,7 @@ func TestSweepWalletProxiesDaemonSweep(t *testing.T) {
 	}
 
 	resp, err := svc.SweepWallet(
-		t.Context(), &walletdkrpc.SweepWalletRequest{
+		t.Context(), &wavewalletrpc.SweepWalletRequest{
 			DestinationAddress: "bcrt1dest",
 			Broadcast:          true,
 			FeeRateSatPerVbyte: 2,
@@ -491,37 +492,37 @@ func TestExitStatusMapsAllPhases(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		in   daemonrpc.UnrollJobStatus
-		want walletdkrpc.ExitJobStatus
+		in   waverpc.UnrollJobStatus
+		want wavewalletrpc.ExitJobStatus
 	}{
 		{
-			daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_PENDING,
-			walletdkrpc.ExitJobStatus_EXIT_JOB_STATUS_PENDING,
+			waverpc.UnrollJobStatus_UNROLL_JOB_STATUS_PENDING,
+			wavewalletrpc.ExitJobStatus_EXIT_JOB_STATUS_PENDING,
 		},
 		{
-			daemonrpc.
+			waverpc.
 				UnrollJobStatus_UNROLL_JOB_STATUS_MATERIALIZING,
-			walletdkrpc.ExitJobStatus_EXIT_JOB_STATUS_MATERIALIZING,
+			wavewalletrpc.ExitJobStatus_EXIT_JOB_STATUS_MATERIALIZING,
 		},
 		{
-			daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_CSV_PENDING,
-			walletdkrpc.ExitJobStatus_EXIT_JOB_STATUS_CSV_PENDING,
+			waverpc.UnrollJobStatus_UNROLL_JOB_STATUS_CSV_PENDING,
+			wavewalletrpc.ExitJobStatus_EXIT_JOB_STATUS_CSV_PENDING,
 		},
 		{
-			daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_SWEEPING,
-			walletdkrpc.ExitJobStatus_EXIT_JOB_STATUS_SWEEPING,
+			waverpc.UnrollJobStatus_UNROLL_JOB_STATUS_SWEEPING,
+			wavewalletrpc.ExitJobStatus_EXIT_JOB_STATUS_SWEEPING,
 		},
 		{
-			daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_COMPLETED,
-			walletdkrpc.ExitJobStatus_EXIT_JOB_STATUS_COMPLETED,
+			waverpc.UnrollJobStatus_UNROLL_JOB_STATUS_COMPLETED,
+			wavewalletrpc.ExitJobStatus_EXIT_JOB_STATUS_COMPLETED,
 		},
 		{
-			daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_FAILED,
-			walletdkrpc.ExitJobStatus_EXIT_JOB_STATUS_FAILED,
+			waverpc.UnrollJobStatus_UNROLL_JOB_STATUS_FAILED,
+			wavewalletrpc.ExitJobStatus_EXIT_JOB_STATUS_FAILED,
 		},
 		{
-			daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_UNSPECIFIED,
-			walletdkrpc.ExitJobStatus_EXIT_JOB_STATUS_UNSPECIFIED,
+			waverpc.UnrollJobStatus_UNROLL_JOB_STATUS_UNSPECIFIED,
+			wavewalletrpc.ExitJobStatus_EXIT_JOB_STATUS_UNSPECIFIED,
 		},
 	}
 	for _, tc := range cases {
@@ -535,21 +536,21 @@ func TestExitStatusProxiesAndProjects(t *testing.T) {
 	t.Parallel()
 
 	svc, rpc := newAdminFixture(t)
-	rpc.unrollStatusResp = &daemonrpc.GetUnrollStatusResponse{
+	rpc.unrollStatusResp = &waverpc.GetUnrollStatusResponse{
 		Found:     true,
-		Status:    daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_SWEEPING,
+		Status:    waverpc.UnrollJobStatus_UNROLL_JOB_STATUS_SWEEPING,
 		SweepTxid: "sweep-txid",
 	}
 
 	resp, err := svc.ExitStatus(
-		t.Context(), &walletdkrpc.ExitStatusRequest{
+		t.Context(), &wavewalletrpc.ExitStatusRequest{
 			Outpoint: "abc:0",
 		},
 	)
 	require.NoError(t, err)
 	require.True(t, resp.GetFound())
 	require.Equal(
-		t, walletdkrpc.ExitJobStatus_EXIT_JOB_STATUS_SWEEPING,
+		t, wavewalletrpc.ExitJobStatus_EXIT_JOB_STATUS_SWEEPING,
 		resp.GetStatus(),
 	)
 	require.Equal(t, "sweep-txid", resp.GetSweepTxid())
@@ -564,26 +565,26 @@ func TestAdminHandlersSurfaceDaemonErrors(t *testing.T) {
 	sentinel := errors.New("daemon-down")
 	rpc.genSeedErr = sentinel
 
-	_, err := svc.Create(t.Context(), &walletdkrpc.CreateRequest{
+	_, err := svc.Create(t.Context(), &wavewalletrpc.CreateRequest{
 		WalletPassword: []byte("hunter2hunter2"),
 	})
 	require.ErrorContains(t, err, sentinel.Error())
 
 	rpc.unlockWalletErr = sentinel
-	_, err = svc.Unlock(t.Context(), &walletdkrpc.UnlockRequest{
+	_, err = svc.Unlock(t.Context(), &wavewalletrpc.UnlockRequest{
 		WalletPassword: []byte("hunter2hunter2"),
 	})
 	require.ErrorContains(t, err, sentinel.Error())
 
 	rpc.newWalletAddressResp = "bcrt1qwallet"
 	rpc.leaveErr = sentinel
-	_, err = svc.Exit(t.Context(), &walletdkrpc.ExitRequest{
+	_, err = svc.Exit(t.Context(), &wavewalletrpc.ExitRequest{
 		Outpoint: "abc:0",
 	})
 	require.ErrorContains(t, err, sentinel.Error())
 
 	rpc.unrollStatusErr = sentinel
-	_, err = svc.ExitStatus(t.Context(), &walletdkrpc.ExitStatusRequest{
+	_, err = svc.ExitStatus(t.Context(), &wavewalletrpc.ExitStatusRequest{
 		Outpoint: "abc:0",
 	})
 	require.ErrorContains(t, err, sentinel.Error())
@@ -602,7 +603,7 @@ func TestAdminHandlersPreserveGRPCCode(t *testing.T) {
 		codes.AlreadyExists, "wallet exists",
 	)
 
-	_, err := svc.Create(t.Context(), &walletdkrpc.CreateRequest{
+	_, err := svc.Create(t.Context(), &wavewalletrpc.CreateRequest{
 		WalletPassword: []byte("hunter2hunter2"),
 	})
 	require.Equal(t, codes.AlreadyExists, status.Code(err))
@@ -610,7 +611,7 @@ func TestAdminHandlersPreserveGRPCCode(t *testing.T) {
 	rpc.unlockWalletErr = status.Error(
 		codes.PermissionDenied, "bad password",
 	)
-	_, err = svc.Unlock(t.Context(), &walletdkrpc.UnlockRequest{
+	_, err = svc.Unlock(t.Context(), &wavewalletrpc.UnlockRequest{
 		WalletPassword: []byte("hunter2hunter2"),
 	})
 	require.Equal(t, codes.PermissionDenied, status.Code(err))
@@ -619,7 +620,7 @@ func TestAdminHandlersPreserveGRPCCode(t *testing.T) {
 	rpc.leaveErr = status.Error(
 		codes.FailedPrecondition, "not enough funds",
 	)
-	_, err = svc.Exit(t.Context(), &walletdkrpc.ExitRequest{
+	_, err = svc.Exit(t.Context(), &wavewalletrpc.ExitRequest{
 		Outpoint: "abc:0",
 	})
 	require.Equal(t, codes.FailedPrecondition, status.Code(err))

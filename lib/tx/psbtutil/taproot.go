@@ -8,7 +8,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
-	"github.com/lightninglabs/darepo-client/lib/arkscript"
+	"github.com/lightninglabs/wavelength/lib/arkscript"
 )
 
 // AddTapLeafScript ensures the PSBT input includes the leaf script and

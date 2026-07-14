@@ -28,7 +28,7 @@ Ark protocol on this client. It provides:
   `ValidateStandardVTXOPolicy`).
 
 Downstream packages (`lib/tree`, `lib/tx/*`, `oor`, `round`, `vtxo`,
-`darepod`, `db`) consume arkscript's compiled artifacts to build, sign, and
+`waved`, `db`) consume arkscript's compiled artifacts to build, sign, and
 validate Ark transactions. Only arkscript is allowed to produce tapscript
 bytes for protocol outputs; no other package is permitted to hand-roll
 taproot scripts for VTXO / checkpoint / vHTLC outputs.
@@ -213,7 +213,7 @@ Implemented by `EncodeNode` / `decodeNodePayload` / `decodeLockedNode`
 > comes back with synthesised even parity. Upstream layers that need
 > lossless parity (DB columns, wire descriptors) persist the compressed
 > form in a separate column and prefer it over the lifted-from-policy
-> value during rehydration. See lightninglabs/darepo-client#252 for the
+> value during rehydration. See lightninglabs/wavelength#252 for the
 > design discussion about whether to switch to lossless 33-byte
 > compressed encoding in the policy template itself.
 
@@ -238,7 +238,7 @@ per leaf. This was the fix for review finding H-2; tests in
 `lib/arkscript/policy_template_test.go:TestDecode*RejectsDeep* /
 RejectsTooMany* / BudgetSharedAcrossLeaves`.
 
-Issue lightninglabs/darepo-client#253 tracks the workload-driven tuning of
+Issue lightninglabs/wavelength#253 tracks the workload-driven tuning of
 these numbers over time.
 
 ### 3.6 Versioning
@@ -517,7 +517,7 @@ func ValidateStandardVTXOPolicy(nodes []Node,
 Requires `minExitDelay > 0` fail-closed, then delegates to
 `ValidatePolicy`. Intended as the admission check for any surface that
 consumes a **standard Ark VTXO recipient**. As of this writing,
-`darepod/rpc_server.go`'s recipient-output path (`resolveRecipientOutput`,
+`waved/rpc_server.go`'s recipient-output path (`resolveRecipientOutput`,
 `validateOutputPolicyTemplate`) does not call this helper directly —
 it pre-filters the shape via `DecodeStandardVTXOParams` and falls back to
 structural `ValidatePolicy` for both standard and custom shapes. Custom
@@ -558,8 +558,8 @@ call sites (all reachable from unauthenticated network input):
 
 - `round/from_proto.go` — peer-supplied JoinRound messages.
 - `lib/types/codec.go` — durable join-auth TLV.
-- `darepod/rpc_server.go` (multiple) — local RPC.
-- `darepod/wallet_ops.go` — custom OOR inputs.
+- `waved/rpc_server.go` (multiple) — local RPC.
+- `waved/wallet_ops.go` — custom OOR inputs.
 - `oor/transfer_inputs.go` — OOR session state.
 - `db/vtxo_store.go`, `db/round_store.go` — rehydrate from DB.
 
@@ -584,7 +584,7 @@ declared pkScript. `SpendPath.VerifyBindsToPkScript`
 
 Wired into:
 
-- `darepod/wallet_ops.go BuildCustomTransferInputs` — RPC entry.
+- `waved/wallet_ops.go BuildCustomTransferInputs` — RPC entry.
 - `oor/checkpoint_sign.go signCustomCheckpointPSBT` — defense-in-depth at
   the signing site.
 
@@ -605,7 +605,7 @@ constructions are explicitly outside the AST's reasoning surface.
 
 ### 9.4 Pubkey encoding parity
 
-See issue lightninglabs/darepo-client#252. Summary: the current `Multisig`
+See issue lightninglabs/wavelength#252. Summary: the current `Multisig`
 encoder uses 32-byte x-only, so a `PolicyTemplate` round-trip is lossy
 for y-parity. Consumers that need lossless parity (DB operator-key columns)
 persist the 33-byte compressed form separately and prefer it over the
@@ -615,8 +615,8 @@ switch to lossless 33-byte compressed in the policy template itself.
 ### 9.5 Admission gates are additive, not subtractive
 
 `ValidatePolicy` and `ValidateStandardVTXOPolicy` enforce a MINIMUM set of
-invariants. The admission surfaces in `darepod/rpc_server.go` and
-`darepod/wallet_ops.go` layer additional policy-specific checks on top:
+invariants. The admission surfaces in `waved/rpc_server.go` and
+`waved/wallet_ops.go` layer additional policy-specific checks on top:
 
 - Recipient outputs are pre-filtered to the standard VTXO shape via
   `DecodeStandardVTXOParams` (`resolveRecipientOutput`), then checked with
@@ -639,5 +639,5 @@ to close.
 - BIP-68 — Relative lock-time.
 - BIP-112 — `OP_CHECKSEQUENCEVERIFY`.
 - `docs/policy_arkscript_review_guide.md` — reviewer walkthrough.
-- lightninglabs/darepo-client#252 — pubkey encoding design.
-- lightninglabs/darepo-client#253 — DoS cap tuning.
+- lightninglabs/wavelength#252 — pubkey encoding design.
+- lightninglabs/wavelength#253 — DoS cap tuning.

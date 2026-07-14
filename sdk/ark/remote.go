@@ -4,13 +4,13 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/lightninglabs/darepo-client/daemonrpc"
+	"github.com/lightninglabs/wavelength/waverpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-// RemoteConfig configures a connection to a standalone darepod instance.
+// RemoteConfig configures a connection to a standalone waved instance.
 type RemoteConfig struct {
 	// Address is the gRPC address of the standalone daemon.
 	Address string
@@ -31,7 +31,7 @@ type RemoteConfig struct {
 	DialOptions []grpc.DialOption
 }
 
-// DialRemote connects the SDK facade to a remote darepod gRPC endpoint. The
+// DialRemote connects the SDK facade to a remote waved gRPC endpoint. The
 // context is currently used only as an upfront cancellation signal because
 // grpc.NewClient performs dialing asynchronously.
 func DialRemote(ctx context.Context, cfg RemoteConfig) (*Client, error) {
@@ -64,7 +64,7 @@ func DialRemote(ctx context.Context, cfg RemoteConfig) (*Client, error) {
 	}
 
 	return &Client{
-		daemon: daemonrpc.NewDaemonServiceClient(conn),
+		daemon: waverpc.NewDaemonServiceClient(conn),
 		waitCh: closedWaitChan(),
 		closeFn: func(context.Context) error {
 			return conn.Close()

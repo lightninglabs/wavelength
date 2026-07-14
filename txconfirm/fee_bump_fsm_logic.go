@@ -12,8 +12,8 @@ import (
 	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/lightninglabs/darepo-client/chainsource"
-	"github.com/lightninglabs/darepo-client/walletcore"
+	"github.com/lightninglabs/wavelength/chainsource"
+	"github.com/lightninglabs/wavelength/walletcore"
 	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/input"
 )

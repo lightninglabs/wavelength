@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package hellotest.v1;
 
-option go_package = "github.com/lightninglabs/darepo-client/serverconn/hellotestpb;hellotestpb";
+option go_package = "github.com/lightninglabs/wavelength/serverconn/hellotestpb;hellotestpb";
 
 // HelloService is a simple unary echo service used to exercise the mailbox
 // unary facade in e2e tests. SayHello and SayGoodbye are pure request/response

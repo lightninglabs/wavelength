@@ -5,8 +5,8 @@ import (
 
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/lightninglabs/darepo-client/lib/types"
-	"github.com/lightninglabs/darepo-client/wallet"
+	"github.com/lightninglabs/wavelength/lib/types"
+	"github.com/lightninglabs/wavelength/wallet"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
 )

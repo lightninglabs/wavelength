@@ -5,10 +5,10 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
-	"github.com/lightninglabs/darepo-client/lib/recovery"
-	"github.com/lightninglabs/darepo-client/lib/tree"
-	"github.com/lightninglabs/darepo-client/txconfirm"
-	"github.com/lightninglabs/darepo-client/vtxo"
+	"github.com/lightninglabs/wavelength/lib/recovery"
+	"github.com/lightninglabs/wavelength/lib/tree"
+	"github.com/lightninglabs/wavelength/txconfirm"
+	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightningnetwork/lnd/input"
 )
 
@@ -33,7 +33,7 @@ import (
 // economically irrational (it burns more in fees than the coin is worth)
 // before the VTXO is committed to UnilateralExitState. The alternative —
 // admitting blindly — strands the VTXO in an exit state after the
-// broadcast fails "min relay fee not met", per darepo-client #608.
+// broadcast fails "min relay fee not met", per wavelength #608.
 
 const (
 	// defaultCPFPChildVBytes is a conservative virtual-size estimate

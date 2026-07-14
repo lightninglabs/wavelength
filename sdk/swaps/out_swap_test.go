@@ -18,9 +18,9 @@ import (
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/lightninglabs/darepo-client/daemonrpc"
-	"github.com/lightninglabs/darepo-client/lib/arkscript"
-	"github.com/lightninglabs/darepo-client/vtxo"
+	"github.com/lightninglabs/wavelength/lib/arkscript"
+	"github.com/lightninglabs/wavelength/vtxo"
+	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/lightningnetwork/lnd/invoices"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lntypes"
@@ -542,7 +542,7 @@ func TestReceiveSessionHandlesOutSwapForfeitSignatureRequest(t *testing.T) {
 	paymentHash := lntypes.Hash{0x01, 0x02, 0x03}
 	payload := testReceiveForfeitSignaturePayload(paymentHash)
 	daemonConn := &testDaemonConn{
-		signForfeitResp: &daemonrpc.SignVTXOForfeitResponse{
+		signForfeitResp: &waverpc.SignVTXOForfeitResponse{
 			Pubkey:    []byte("participant-pubkey"),
 			Signature: []byte("participant-signature"),
 		},
@@ -613,7 +613,7 @@ func TestReceiveSessionKeepsOutSwapForfeitRequestUnackedOnSubmitFailure(
 	paymentHash := lntypes.Hash{0x04, 0x05, 0x06}
 	payload := testReceiveForfeitSignaturePayload(paymentHash)
 	daemonConn := &testDaemonConn{
-		signForfeitResp: &daemonrpc.SignVTXOForfeitResponse{
+		signForfeitResp: &waverpc.SignVTXOForfeitResponse{
 			Pubkey:    []byte("participant-pubkey"),
 			Signature: []byte("participant-signature"),
 		},
@@ -1596,7 +1596,7 @@ type testDaemonConn struct {
 	prepareOOREErr    error
 	sendPolicyErr     error
 	sendCustomErr     error
-	oorSession        *daemonrpc.OORSessionInfo
+	oorSession        *waverpc.OORSessionInfo
 	oorSessionErr     error
 	listSpentErr      error
 	liveLookupErr     error
@@ -1614,26 +1614,26 @@ type testDaemonConn struct {
 	lastClaimPubKey   []byte
 	lastClaimInput    []CustomInput
 	lastOORSessionID  string
-	armRecoveryResp   *daemonrpc.ArmVHTLCRecoveryResponse
+	armRecoveryResp   *waverpc.ArmVHTLCRecoveryResponse
 	armRecoveryErr    error
-	escalateResp      *daemonrpc.EscalateVHTLCRecoveryResponse
+	escalateResp      *waverpc.EscalateVHTLCRecoveryResponse
 	escalateErr       error
-	cancelResp        *daemonrpc.CancelVHTLCRecoveryResponse
+	cancelResp        *waverpc.CancelVHTLCRecoveryResponse
 	cancelErr         error
-	statusResp        *daemonrpc.GetVHTLCRecoveryStatusResponse
+	statusResp        *waverpc.GetVHTLCRecoveryStatusResponse
 	statusErr         error
 	armRecoveryCalls  int
 	escalateCalls     int
 	cancelCalls       int
 	statusCalls       int
-	lastArmRecovery   *daemonrpc.ArmVHTLCRecoveryRequest
-	lastEscalate      *daemonrpc.EscalateVHTLCRecoveryRequest
-	lastCancel        *daemonrpc.CancelVHTLCRecoveryRequest
-	lastStatus        *daemonrpc.GetVHTLCRecoveryStatusRequest
-	signForfeitResp   *daemonrpc.SignVTXOForfeitResponse
+	lastArmRecovery   *waverpc.ArmVHTLCRecoveryRequest
+	lastEscalate      *waverpc.EscalateVHTLCRecoveryRequest
+	lastCancel        *waverpc.CancelVHTLCRecoveryRequest
+	lastStatus        *waverpc.GetVHTLCRecoveryStatusRequest
+	signForfeitResp   *waverpc.SignVTXOForfeitResponse
 	signForfeitErr    error
 	signForfeitCalls  int
-	lastSignForfeit   *daemonrpc.SignVTXOForfeitRequest
+	lastSignForfeit   *waverpc.SignVTXOForfeitRequest
 }
 
 // BlockHeight returns the configured best block height.
@@ -1701,9 +1701,9 @@ func (d *testDaemonConn) SendOORWithCustomInputs(_ context.Context,
 			}
 		}
 
-		d.oorSession = &daemonrpc.OORSessionInfo{
+		d.oorSession = &waverpc.OORSessionInfo{
 			SessionId: d.sendSessionID,
-			Status: daemonrpc.
+			Status: waverpc.
 				OORSessionStatus_OOR_SESSION_STATUS_COMPLETED,
 			ConsumedOutpoints: []string{
 				inputs[0].Outpoint,
@@ -1719,7 +1719,7 @@ func (d *testDaemonConn) SendOORWithCustomInputs(_ context.Context,
 
 // GetOORSession returns the configured local OOR session status.
 func (d *testDaemonConn) GetOORSession(_ context.Context, sessionID string) (
-	*daemonrpc.OORSessionInfo, error) {
+	*waverpc.OORSessionInfo, error) {
 
 	d.oorSessionCalls++
 	d.lastOORSessionID = sessionID
@@ -1732,8 +1732,8 @@ func (d *testDaemonConn) GetOORSession(_ context.Context, sessionID string) (
 
 // ArmVHTLCRecovery records the daemon recovery arm request.
 func (d *testDaemonConn) ArmVHTLCRecovery(_ context.Context,
-	req *daemonrpc.ArmVHTLCRecoveryRequest) (
-	*daemonrpc.ArmVHTLCRecoveryResponse, error) {
+	req *waverpc.ArmVHTLCRecoveryRequest) (
+	*waverpc.ArmVHTLCRecoveryResponse, error) {
 
 	d.armRecoveryCalls++
 	d.lastArmRecovery = req
@@ -1744,10 +1744,10 @@ func (d *testDaemonConn) ArmVHTLCRecovery(_ context.Context,
 		return d.armRecoveryResp, nil
 	}
 
-	return &daemonrpc.ArmVHTLCRecoveryResponse{
+	return &waverpc.ArmVHTLCRecoveryResponse{
 		RecoveryId: fmt.Sprintf("recovery-%d", d.armRecoveryCalls),
 		Created:    true,
-		Status: &daemonrpc.VHTLCRecoveryStatus{
+		Status: &waverpc.VHTLCRecoveryStatus{
 			RecoveryId: fmt.Sprintf(
 				"recovery-%d", d.armRecoveryCalls,
 			),
@@ -1758,8 +1758,8 @@ func (d *testDaemonConn) ArmVHTLCRecovery(_ context.Context,
 
 // EscalateVHTLCRecovery records the daemon recovery escalation request.
 func (d *testDaemonConn) EscalateVHTLCRecovery(_ context.Context,
-	req *daemonrpc.EscalateVHTLCRecoveryRequest) (
-	*daemonrpc.EscalateVHTLCRecoveryResponse, error) {
+	req *waverpc.EscalateVHTLCRecoveryRequest) (
+	*waverpc.EscalateVHTLCRecoveryResponse, error) {
 
 	d.escalateCalls++
 	d.lastEscalate = req
@@ -1770,8 +1770,8 @@ func (d *testDaemonConn) EscalateVHTLCRecovery(_ context.Context,
 		return d.escalateResp, nil
 	}
 
-	return &daemonrpc.EscalateVHTLCRecoveryResponse{
-		Status: &daemonrpc.VHTLCRecoveryStatus{
+	return &waverpc.EscalateVHTLCRecoveryResponse{
+		Status: &waverpc.VHTLCRecoveryStatus{
 			RecoveryId: req.GetRecoveryId(),
 			State:      recoveryStateUnrollStarted,
 		},
@@ -1780,8 +1780,8 @@ func (d *testDaemonConn) EscalateVHTLCRecovery(_ context.Context,
 
 // CancelVHTLCRecovery records the daemon recovery cancellation request.
 func (d *testDaemonConn) CancelVHTLCRecovery(_ context.Context,
-	req *daemonrpc.CancelVHTLCRecoveryRequest) (
-	*daemonrpc.CancelVHTLCRecoveryResponse, error) {
+	req *waverpc.CancelVHTLCRecoveryRequest) (
+	*waverpc.CancelVHTLCRecoveryResponse, error) {
 
 	d.cancelCalls++
 	d.lastCancel = req
@@ -1792,8 +1792,8 @@ func (d *testDaemonConn) CancelVHTLCRecovery(_ context.Context,
 		return d.cancelResp, nil
 	}
 
-	return &daemonrpc.CancelVHTLCRecoveryResponse{
-		Status: &daemonrpc.VHTLCRecoveryStatus{
+	return &waverpc.CancelVHTLCRecoveryResponse{
+		Status: &waverpc.VHTLCRecoveryStatus{
 			RecoveryId: req.GetRecoveryId(),
 			State:      recoveryStateCancelled,
 		},
@@ -1802,8 +1802,8 @@ func (d *testDaemonConn) CancelVHTLCRecovery(_ context.Context,
 
 // GetVHTLCRecoveryStatus records the daemon recovery status request.
 func (d *testDaemonConn) GetVHTLCRecoveryStatus(_ context.Context,
-	req *daemonrpc.GetVHTLCRecoveryStatusRequest) (
-	*daemonrpc.GetVHTLCRecoveryStatusResponse, error) {
+	req *waverpc.GetVHTLCRecoveryStatusRequest) (
+	*waverpc.GetVHTLCRecoveryStatusResponse, error) {
 
 	d.statusCalls++
 	d.lastStatus = req
@@ -1814,18 +1814,18 @@ func (d *testDaemonConn) GetVHTLCRecoveryStatus(_ context.Context,
 		return d.statusResp, nil
 	}
 
-	return &daemonrpc.GetVHTLCRecoveryStatusResponse{
+	return &waverpc.GetVHTLCRecoveryStatusResponse{
 		Found: false,
 	}, nil
 }
 
 // SignVTXOForfeit records the daemon forfeit-signature request.
 func (d *testDaemonConn) SignVTXOForfeit(_ context.Context,
-	req *daemonrpc.SignVTXOForfeitRequest) (
-	*daemonrpc.SignVTXOForfeitResponse, error) {
+	req *waverpc.SignVTXOForfeitRequest) (*waverpc.SignVTXOForfeitResponse,
+	error) {
 
 	d.signForfeitCalls++
-	d.lastSignForfeit = &daemonrpc.SignVTXOForfeitRequest{
+	d.lastSignForfeit = &waverpc.SignVTXOForfeitRequest{
 		VtxoOutpoint:       req.GetVtxoOutpoint(),
 		VtxoAmountSat:      req.GetVtxoAmountSat(),
 		VtxoPkScript:       bytes.Clone(req.GetVtxoPkScript()),
@@ -1846,7 +1846,7 @@ func (d *testDaemonConn) SignVTXOForfeit(_ context.Context,
 		return d.signForfeitResp, nil
 	}
 
-	return &daemonrpc.SignVTXOForfeitResponse{
+	return &waverpc.SignVTXOForfeitResponse{
 		Pubkey:    []byte("participant-pubkey"),
 		Signature: []byte("participant-signature"),
 	}, nil
@@ -3944,9 +3944,9 @@ func TestReceiveSessionClaimRecoveryCompletionWinsAfterRefundLocktime(
 				receiverPriv.PubKey(),
 			),
 		},
-		statusResp: &daemonrpc.GetVHTLCRecoveryStatusResponse{
+		statusResp: &waverpc.GetVHTLCRecoveryStatusResponse{
 			Found: true,
-			Status: &daemonrpc.VHTLCRecoveryStatus{
+			Status: &waverpc.VHTLCRecoveryStatus{
 				RecoveryId: recoveryID,
 				State:      recoveryStateCompleted,
 			},

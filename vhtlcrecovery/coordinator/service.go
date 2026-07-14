@@ -9,10 +9,10 @@ import (
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/baselib/actor"
-	"github.com/lightninglabs/darepo-client/lib/actormsg"
-	"github.com/lightninglabs/darepo-client/unroll"
-	"github.com/lightninglabs/darepo-client/vhtlcrecovery"
+	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/lib/actormsg"
+	"github.com/lightninglabs/wavelength/unroll"
+	"github.com/lightninglabs/wavelength/vhtlcrecovery"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/lntypes"
 )
@@ -87,7 +87,7 @@ type ExitAdmitter interface {
 // TargetMaterializer ensures the vHTLC target has the local descriptor and
 // package bindings that generic unroll needs before the recovery service admits
 // the target. Implementations are domain adapters: the coordinator owns the
-// recovery state machine, while packages such as darepod know how to stitch
+// recovery state machine, while packages such as waved know how to stitch
 // vHTLC recovery rows back to local OOR artifacts and VTXO descriptors.
 type TargetMaterializer interface {
 	// EnsureRecoveryTarget materializes the recovery target described by

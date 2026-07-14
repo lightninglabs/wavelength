@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/walletcore"
+	"github.com/lightninglabs/wavelength/walletcore"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnwallet/btcwallet"
 )

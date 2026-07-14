@@ -1,8 +1,8 @@
 #!/bin/bash
 #
-# tag-release.sh creates a signed annotated git tag for a darepo-client release
+# tag-release.sh creates a signed annotated git tag for a wavelength release
 # after verifying (a) HEAD is in sync with the upstream
-# lightninglabs/darepo-client branch, and (b) build/version.go at HEAD matches
+# lightninglabs/wavelength branch, and (b) build/version.go at HEAD matches
 # the requested tag. Guards against tagging a commit that has not been merged
 # upstream yet, or one whose embedded version disagrees with the tag.
 
@@ -15,8 +15,8 @@ VERSION_FILE="build/version.go"
 # conventionally the fork in a `gh repo fork` setup. The URL is lower-cased
 # before matching (see below), so this pattern stays lower-case: GitHub treats
 # the org/repo as case-insensitive, and `origin` is often a mixed-case
-# `LightningLabs/darepo-client`.
-UPSTREAM_URL_REGEX='[:/]lightninglabs/darepo-client(\.git)?$'
+# `LightningLabs/wavelength`.
+UPSTREAM_URL_REGEX='[:/]lightninglabs/wavelength(\.git)?$'
 
 usage() {
   cat >&2 <<EOF
@@ -65,12 +65,12 @@ done < <(git remote -v | awk -v re="${UPSTREAM_URL_REGEX}" \
   '$3 == "(fetch)" && tolower($2) ~ re { print $1 }' | sort -u)
 
 case "${#UPSTREAM_REMOTES[@]}" in
-  0) echo "Error: no git remote points at lightninglabs/darepo-client. Add" \
+  0) echo "Error: no git remote points at lightninglabs/wavelength. Add" \
           "one with 'git remote add upstream" \
-          "https://github.com/lightninglabs/darepo-client.git'." >&2
+          "https://github.com/lightninglabs/wavelength.git'." >&2
      exit 1 ;;
   1) UPSTREAM_REMOTE="${UPSTREAM_REMOTES[0]}" ;;
-  *) echo "Error: multiple remotes match lightninglabs/darepo-client:" >&2
+  *) echo "Error: multiple remotes match lightninglabs/wavelength:" >&2
      printf '  %s\n' "${UPSTREAM_REMOTES[@]}" >&2
      exit 1 ;;
 esac

@@ -10,9 +10,9 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btclog/v2"
-	admigration "github.com/lightninglabs/darepo-client/db/actordelivery/migrations"
-	dbmigrate "github.com/lightninglabs/darepo-client/db/migrate"
-	"github.com/lightninglabs/darepo-client/db/sqlc"
+	admigration "github.com/lightninglabs/wavelength/db/actordelivery/migrations"
+	dbmigrate "github.com/lightninglabs/wavelength/db/migrate"
+	"github.com/lightninglabs/wavelength/db/sqlc"
 	"github.com/stretchr/testify/require"
 )
 

@@ -13,7 +13,7 @@ allowed-tools: Bash, Read
 
 # Bug Report
 
-Collect runtime state from the current darepod test session and file a
+Collect runtime state from the current waved test session and file a
 structured GitHub issue against this repository.
 
 ## Body discipline (read before collecting anything)
@@ -57,7 +57,7 @@ chain backend (lwwallet+Esplora / btcwallet+neutrino / lnd). Detect both
 from config first, then cross-check against the most recent daemon log.
 
 ```bash
-CONF=~/.darepod/darepod.conf
+CONF=~/.waved/waved.conf
 
 # Helper: read a key from the conf file (uncommented), strip whitespace and
 # surrounding quotes. Returns empty if missing.
@@ -67,7 +67,7 @@ conf_get() {
     | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//; s/^"(.*)"$/\1/'
 }
 
-# Config-derived values. Defaults match darepod/config.go:
+# Config-derived values. Defaults match waved/config.go:
 #   network defaults to mainnet, wallet.type defaults to lwwallet.
 NETWORK=$(conf_get network)
 NETWORK=${NETWORK:-mainnet}
@@ -78,10 +78,10 @@ WALLET_TYPE=${WALLET_TYPE:-lwwallet}
 # network has no log file but another network's log does, prefer the
 # directory that has a recent log — the operator may have switched
 # networks without updating the conf, or the conf may be elsewhere.
-LOG_ROOT=~/.darepod/logs
-LOG="$LOG_ROOT/$NETWORK/darepod.log"
+LOG_ROOT=~/.waved/logs
+LOG="$LOG_ROOT/$NETWORK/waved.log"
 if [ ! -f "$LOG" ]; then
-  ALT=$(ls -t "$LOG_ROOT"/*/darepod.log 2>/dev/null | head -1)
+  ALT=$(ls -t "$LOG_ROOT"/*/waved.log 2>/dev/null | head -1)
   if [ -n "$ALT" ]; then
     LOG="$ALT"
     # Re-derive network from the directory name so the report is
@@ -97,15 +97,15 @@ fi
 if [ -f "$LOG" ]; then
   # Line where the most recent daemon session started. Fall back to line
   # 1 if no marker is found — a partial log is better than none.
-  START=$(grep -n "Starting darepod" "$LOG" | tail -1 | cut -d: -f1)
+  START=$(grep -n "Starting waved" "$LOG" | tail -1 | cut -d: -f1)
   SESSION=$(tail -n +${START:-1} "$LOG")
 
-  BUILD=$(echo "$SESSION" | grep "Starting darepod" | tail -1)
+  BUILD=$(echo "$SESSION" | grep "Starting waved" | tail -1)
   ERRORS=$(echo "$SESSION" | grep -E '\[WRN\]|\[ERR\]' | tail -40)
   FIRST_TS=$(echo "$SESSION" | head -1 | cut -c1-19)
   LAST_TS=$(echo "$SESSION"  | tail -1 | cut -c1-19)
 
-  # The "Starting darepod" line carries network=X wallet_type=Y. Prefer
+  # The "Starting waved" line carries network=X wallet_type=Y. Prefer
   # those values over the config when present — they reflect what the
   # daemon actually came up with after CLI flags and env overrides.
   if [ -n "$BUILD" ]; then
@@ -132,7 +132,7 @@ GO_VER=$(go version 2>/dev/null)
 # ifconfig works on macOS and most Linux distros.
 IPV6=$(ifconfig 2>/dev/null | awk '/inet6/ && !/fe80|::1/ {print $2; exit}')
 IPV6=${IPV6:-none}
-DAEMON_PID=$(pgrep -x darepod || echo "not running")
+DAEMON_PID=$(pgrep -x waved || echo "not running")
 
 # Backend-specific reachability. Each wallet type has a different chain
 # data source — only probe the one that's actually in use.
@@ -192,7 +192,7 @@ esac
 
 ### 5. Read and redact config
 
-Read `~/.darepod/darepod.conf` and redact secrets before including in the
+Read `~/.waved/waved.conf` and redact secrets before including in the
 report. Replace the value of any line whose key matches one of these
 patterns with `<REDACTED>`:
 
@@ -204,22 +204,22 @@ patterns with `<REDACTED>`:
 CONFIG=$(sed -E '
   s/^([[:space:]]*bitcoind\.(user|pass|rpcuser|rpcpass(word)?))[[:space:]]*=.*/\1=<REDACTED>/;
   s/^([[:space:]]*[^=]*(password|secret|token|apikey))[[:space:]]*=.*/\1=<REDACTED>/I
-' ~/.darepod/darepod.conf 2>/dev/null)
+' ~/.waved/waved.conf 2>/dev/null)
 ```
 
 Use `$CONFIG` (not the raw file) in the report body.
 
 ### 6. Collect live wallet state
 
-Only if `pgrep -x darepod` returns a PID. The RPC host can be overridden in
+Only if `pgrep -x waved` returns a PID. The RPC host can be overridden in
 the config — read it before assuming the default.
 
 ```bash
 RPC_HOST=$(conf_get rpc.listen)
 RPC_HOST=${RPC_HOST:-127.0.0.1:10029}
 
-~/go/bin/darepocli --rpcserver "$RPC_HOST" --no-tls balance 2>&1
-~/go/bin/darepocli --rpcserver "$RPC_HOST" --no-tls list 2>&1 | head -30
+~/go/bin/wavecli --rpcserver "$RPC_HOST" --no-tls balance 2>&1
+~/go/bin/wavecli --rpcserver "$RPC_HOST" --no-tls list 2>&1 | head -30
 ```
 
 If the daemon is not running, record "daemon not running at time of report".
@@ -233,7 +233,7 @@ every one that appears:
 |--------|------------|
 | LWWL   | lwwallet   |
 | ARKW   | wallet     |
-| WRPC   | walletdkrpc |
+| WRPC   | wavewalletrpc |
 | ROND   | round      |
 | OORC   | oor        |
 | SVRC   | serverconn |
@@ -252,7 +252,7 @@ The body links to the gist — do not paste session logs inline.
 GIST_URL=""
 if [ -f "$LOG" ] && [ -s "$LOG" ]; then
   GIST_URL=$(gh gist create "$LOG" \
-    --desc "darepod session log — $NETWORK — for lightninglabs/darepo-client issue" \
+    --desc "waved session log — $NETWORK — for lightninglabs/wavelength issue" \
     2>/dev/null | tail -1)
 fi
 ```
@@ -286,7 +286,7 @@ between layers (e.g. inner FSM Failed but outer entry still Pending).}
 - **Network**: {NETWORK}
 - **Wallet backend**: {WALLET_TYPE} → {BACKEND_URL} ({BACKEND_STATUS})
 
-## Config (`~/.darepod/darepod.conf`, secrets redacted)
+## Config (`~/.waved/waved.conf`, secrets redacted)
 
 ```
 {CONFIG}
@@ -372,7 +372,7 @@ gh issue create \
 Print the resulting issue URL.
 
 If **no**, print the body so the user can copy-paste it manually and note:
-`Open a new issue at: https://github.com/lightninglabs/darepo-client/issues/new`
+`Open a new issue at: https://github.com/lightninglabs/wavelength/issues/new`
 
 ### 10. If `gh` is not available or not authenticated
 

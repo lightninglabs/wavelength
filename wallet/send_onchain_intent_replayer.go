@@ -8,9 +8,9 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/lightninglabs/darepo-client/lib/actormsg"
-	"github.com/lightninglabs/darepo-client/lib/arkscript"
-	"github.com/lightninglabs/darepo-client/lib/types"
+	"github.com/lightninglabs/wavelength/lib/actormsg"
+	"github.com/lightninglabs/wavelength/lib/arkscript"
+	"github.com/lightninglabs/wavelength/lib/types"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
@@ -347,7 +347,7 @@ func (a *Ark) handleReplaySendOnChainIntent(ctx context.Context,
 	}
 
 	// Register with the round actor. Unlike the live RPC path — which
-	// leaves TriggerRegistration false so darepod.TriggerRoundRegistration
+	// leaves TriggerRegistration false so waved.TriggerRoundRegistration
 	// can fire the IntentRequested step separately — replay has no RPC
 	// caller to drive the second step, so the registration and trigger
 	// collapse into one Ask. The latent-ctx interleaving documented at

@@ -15,7 +15,7 @@ Point the command at the database file a SQLite daemon writes:
 
 ```shell
 go run ./internal/cmd/tools/accounting \
-    --backend sqlite --sqlite.dbfile ~/.darepod/data/arkd.db
+    --backend sqlite --sqlite.dbfile ~/.waved/data/arkd.db
 ```
 
 Against a Postgres daemon, pass the connection settings instead:

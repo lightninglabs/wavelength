@@ -21,19 +21,19 @@ import (
 	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/arkrpc"
-	"github.com/lightninglabs/darepo-client/daemonrpc"
-	"github.com/lightninglabs/darepo-client/darepod"
-	"github.com/lightninglabs/darepo-client/db"
-	"github.com/lightninglabs/darepo-client/lib/arkscript"
-	"github.com/lightninglabs/darepo-client/lib/tree"
-	"github.com/lightninglabs/darepo-client/lib/types"
-	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
-	"github.com/lightninglabs/darepo-client/round"
-	"github.com/lightninglabs/darepo-client/rpc/oorpb"
-	"github.com/lightninglabs/darepo-client/rpc/roundpb"
-	"github.com/lightninglabs/darepo-client/serverconn"
-	"github.com/lightninglabs/darepo-client/vtxo"
+	"github.com/lightninglabs/wavelength/arkrpc"
+	"github.com/lightninglabs/wavelength/db"
+	"github.com/lightninglabs/wavelength/lib/arkscript"
+	"github.com/lightninglabs/wavelength/lib/tree"
+	"github.com/lightninglabs/wavelength/lib/types"
+	mailboxpb "github.com/lightninglabs/wavelength/mailbox/pb"
+	"github.com/lightninglabs/wavelength/round"
+	"github.com/lightninglabs/wavelength/rpc/oorpb"
+	"github.com/lightninglabs/wavelength/rpc/roundpb"
+	"github.com/lightninglabs/wavelength/serverconn"
+	"github.com/lightninglabs/wavelength/vtxo"
+	"github.com/lightninglabs/wavelength/waved"
+	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/lightningnetwork/lnd/clock"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -301,7 +301,7 @@ func (s *fakeMailboxServer) replyWithOperatorInfo(ctx context.Context,
 }
 
 // recordOORSubmitPackage decodes and stores an OOR submit-package envelope so
-// systests can assert on the real mailbox payload emitted by darepod.
+// systests can assert on the real mailbox payload emitted by waved.
 func (s *fakeMailboxServer) recordOORSubmitPackage(
 	env *mailboxpb.Envelope) error {
 
@@ -504,7 +504,7 @@ func (s *fakeMailboxServer) joinRoundRequests() []*roundpb.JoinRoundRequest {
 type directedSendFixture struct {
 	t              *testing.T
 	harness        *SysTestHarness
-	client         daemonrpc.DaemonServiceClient
+	client         waverpc.DaemonServiceClient
 	conn           *grpc.ClientConn
 	mailboxServer  *fakeMailboxServer
 	operatorKey    *btcec.PublicKey
@@ -513,7 +513,7 @@ type directedSendFixture struct {
 	// cfg is the daemon configuration. It is retained so the daemon can be
 	// torn down and relaunched against the same data directory by
 	// restart().
-	cfg *darepod.Config
+	cfg *waved.Config
 
 	// rpcAddr is the daemon's gRPC listen address, reused across restarts
 	// so the client reconnects to the same endpoint.
@@ -525,13 +525,13 @@ type directedSendFixture struct {
 	serverErrChan chan error
 }
 
-// newDirectedSendFixture starts a full darepod instance against the systest
+// newDirectedSendFixture starts a full waved instance against the systest
 // LND backend and a fake mailbox edge, then waits for the daemon RPC to become
 // ready. Optional cfgMutators are applied to the daemon Config after the base
 // setup (and before the DB is seeded / the server starts) so callers can tune
 // timeouts and feature flags for their scenario.
 func newDirectedSendFixture(t *testing.T,
-	cfgMutators ...func(*darepod.Config)) *directedSendFixture {
+	cfgMutators ...func(*waved.Config)) *directedSendFixture {
 
 	t.Helper()
 
@@ -572,11 +572,11 @@ func newDirectedSendFixture(t *testing.T,
 	dataDir := t.TempDir()
 	rpcAddr := newLoopbackAddr(t)
 
-	cfg := darepod.DefaultConfig()
+	cfg := waved.DefaultConfig()
 	cfg.DataDir = dataDir
 	cfg.Network = "regtest"
 	cfg.DebugLevel = "info"
-	cfg.Wallet.Type = darepod.WalletTypeLnd
+	cfg.Wallet.Type = waved.WalletTypeLnd
 	cfg.Lnd.Host = net.JoinHostPort("localhost", h.Harness.LNDGRPCPort)
 	lndDataDir := filepath.Join(h.Harness.BaseDir(), "lnd")
 	cfg.Lnd.TLSPath = filepath.Join(lndDataDir, "tls.cert")
@@ -619,7 +619,7 @@ func newDirectedSendFixture(t *testing.T,
 	return fixture
 }
 
-// launch starts a fresh darepod instance from the fixture's retained config and
+// launch starts a fresh waved instance from the fixture's retained config and
 // connects a new client to it, waiting for the daemon RPC to become ready. It
 // is used both for the initial start and for relaunch after restart().
 func (f *directedSendFixture) launch() {
@@ -627,7 +627,7 @@ func (f *directedSendFixture) launch() {
 
 	ctx, cancel := context.WithCancel(f.harness.Context())
 
-	server, err := darepod.NewServer(f.cfg)
+	server, err := waved.NewServer(f.cfg)
 	require.NoError(t, err)
 
 	errChan := make(chan error, 1)
@@ -647,7 +647,7 @@ func (f *directedSendFixture) launch() {
 	require.NoError(t, err)
 
 	f.conn = conn
-	f.client = daemonrpc.NewDaemonServiceClient(conn)
+	f.client = waverpc.NewDaemonServiceClient(conn)
 
 	waitForDaemonReady(t, f.client)
 }
@@ -675,7 +675,7 @@ func (f *directedSendFixture) shutdown() {
 		}
 
 	case <-time.After(10 * time.Second):
-		t.Fatal("timeout waiting for darepod shutdown")
+		t.Fatal("timeout waiting for waved shutdown")
 	}
 
 	f.serverCancel = nil
@@ -691,7 +691,7 @@ func (f *directedSendFixture) restart() {
 
 // waitForDaemonReady polls GetInfo until the daemon reports wallet
 // readiness.
-func waitForDaemonReady(t *testing.T, client daemonrpc.DaemonServiceClient) {
+func waitForDaemonReady(t *testing.T, client waverpc.DaemonServiceClient) {
 	t.Helper()
 
 	require.Eventually(
@@ -703,14 +703,14 @@ func waitForDaemonReady(t *testing.T, client daemonrpc.DaemonServiceClient) {
 			defer cancel()
 
 			info, err := client.GetInfo(
-				ctx, &daemonrpc.GetInfoRequest{},
+				ctx, &waverpc.GetInfoRequest{},
 			)
 			if err != nil {
 				return false
 			}
 
 			return info.GetWalletState() ==
-				daemonrpc.WalletState_WALLET_STATE_READY
+				waverpc.WalletState_WALLET_STATE_READY
 		},
 		30*time.Second,
 		200*time.Millisecond,
@@ -772,8 +772,8 @@ func newLoopbackAddr(t *testing.T) string {
 
 // seedLiveVTXO creates the daemon database ahead of startup and inserts one
 // live VTXO so the manager can recover it during boot.
-func seedLiveVTXO(t *testing.T, cfg *darepod.Config,
-	operatorKey *btcec.PublicKey, amount btcutil.Amount) wire.OutPoint {
+func seedLiveVTXO(t *testing.T, cfg *waved.Config, operatorKey *btcec.PublicKey,
+	amount btcutil.Amount) wire.OutPoint {
 
 	t.Helper()
 
@@ -898,7 +898,7 @@ func seedLiveVTXO(t *testing.T, cfg *darepod.Config,
 
 // listAllVTXOs returns the daemon's current VTXO view via the public RPC.
 func listAllVTXOs(t *testing.T,
-	client daemonrpc.DaemonServiceClient) []*daemonrpc.VTXO {
+	client waverpc.DaemonServiceClient) []*waverpc.VTXO {
 
 	t.Helper()
 
@@ -907,7 +907,7 @@ func listAllVTXOs(t *testing.T,
 	)
 	defer cancel()
 
-	resp, err := client.ListVTXOs(ctx, &daemonrpc.ListVTXOsRequest{})
+	resp, err := client.ListVTXOs(ctx, &waverpc.ListVTXOsRequest{})
 	require.NoError(t, err)
 
 	return resp.Vtxos
@@ -915,7 +915,7 @@ func listAllVTXOs(t *testing.T,
 
 // listRounds returns the daemon's current round state view via the public RPC.
 func listRounds(t *testing.T,
-	client daemonrpc.DaemonServiceClient) []*daemonrpc.RoundInfo {
+	client waverpc.DaemonServiceClient) []*waverpc.RoundInfo {
 
 	t.Helper()
 
@@ -924,15 +924,15 @@ func listRounds(t *testing.T,
 	)
 	defer cancel()
 
-	resp, err := client.ListRounds(ctx, &daemonrpc.ListRoundsRequest{})
+	resp, err := client.ListRounds(ctx, &waverpc.ListRoundsRequest{})
 	require.NoError(t, err)
 
 	return resp.Rounds
 }
 
-// findVTXOByOutpoint looks up a daemonrpc.VTXO by its string outpoint.
-func findVTXOByOutpoint(vtxos []*daemonrpc.VTXO,
-	outpoint wire.OutPoint) *daemonrpc.VTXO {
+// findVTXOByOutpoint looks up a waverpc.VTXO by its string outpoint.
+func findVTXOByOutpoint(vtxos []*waverpc.VTXO,
+	outpoint wire.OutPoint) *waverpc.VTXO {
 
 	target := fmt.Sprintf("%s:%d", outpoint.Hash, outpoint.Index)
 	for _, v := range vtxos {
@@ -947,7 +947,7 @@ func findVTXOByOutpoint(vtxos []*daemonrpc.VTXO,
 // oorPolicyRecipient returns a policy-backed OOR recipient for systests that
 // need a standard Ark output shape without relying on address parsing.
 func oorPolicyRecipient(t *testing.T, ownerKey, operatorKey *btcec.PublicKey,
-	amountSat int64) *daemonrpc.Output {
+	amountSat int64) *waverpc.Output {
 
 	t.Helper()
 
@@ -956,8 +956,8 @@ func oorPolicyRecipient(t *testing.T, ownerKey, operatorKey *btcec.PublicKey,
 	)
 	require.NoError(t, err)
 
-	return &daemonrpc.Output{
-		Destination: &daemonrpc.Output_PolicyTemplate{
+	return &waverpc.Output{
+		Destination: &waverpc.Output_PolicyTemplate{
 			PolicyTemplate: policyTemplate,
 		},
 		AmountSat:          amountSat,
@@ -976,8 +976,7 @@ func TestSendVTXOEndToEnd(t *testing.T) {
 	initialVTXOs := listAllVTXOs(t, fixture.client)
 	require.Len(t, initialVTXOs, 1)
 	require.Equal(
-		t, daemonrpc.VTXOStatus_VTXO_STATUS_LIVE,
-		initialVTXOs[0].Status,
+		t, waverpc.VTXOStatus_VTXO_STATUS_LIVE, initialVTXOs[0].Status,
 	)
 
 	recipientPriv, err := btcec.NewPrivateKey()
@@ -989,10 +988,10 @@ func TestSendVTXOEndToEnd(t *testing.T) {
 	defer cancel()
 
 	sendResp, err := fixture.client.SendVTXO(
-		ctx, &daemonrpc.SendVTXORequest{
-			Recipients: []*daemonrpc.Output{
+		ctx, &waverpc.SendVTXORequest{
+			Recipients: []*waverpc.Output{
 				{
-					Destination: &daemonrpc.Output_Pubkey{
+					Destination: &waverpc.Output_Pubkey{
 						Pubkey: schnorr.SerializePubKey(
 							recipientPriv.PubKey(),
 						),
@@ -1023,15 +1022,15 @@ func TestSendVTXOEndToEnd(t *testing.T) {
 			}
 
 			return vtxoInfo.Status ==
-				daemonrpc.VTXOStatus_VTXO_STATUS_PENDING_FORFEIT
+				waverpc.VTXOStatus_VTXO_STATUS_PENDING_FORFEIT
 		},
 		20*time.Second,
 		200*time.Millisecond,
 		"seeded VTXO did not transition to pending forfeit",
 	)
 
-	statePending := daemonrpc.RoundState_ROUND_STATE_PENDING_ASSEMBLY
-	stateRegSent := daemonrpc.RoundState_ROUND_STATE_REGISTRATION_SENT
+	statePending := waverpc.RoundState_ROUND_STATE_PENDING_ASSEMBLY
+	stateRegSent := waverpc.RoundState_ROUND_STATE_REGISTRATION_SENT
 
 	require.Eventually(
 		t,
@@ -1087,8 +1086,8 @@ func TestSendOORMultipleRecipientsEndToEnd(t *testing.T) {
 	defer cancel()
 
 	resp, err := fixture.client.SendOOR(
-		ctx, &daemonrpc.SendOORRequest{
-			Recipients: []*daemonrpc.Output{
+		ctx, &waverpc.SendOORRequest{
+			Recipients: []*waverpc.Output{
 				oorPolicyRecipient(
 					t, recipientPrivA.PubKey(),
 					fixture.operatorKey, amountA,
@@ -1147,8 +1146,7 @@ func TestSendOnChainSweepAllEndToEnd(t *testing.T) {
 	initialVTXOs := listAllVTXOs(t, fixture.client)
 	require.Len(t, initialVTXOs, 1)
 	require.Equal(
-		t, daemonrpc.VTXOStatus_VTXO_STATUS_LIVE,
-		initialVTXOs[0].Status,
+		t, waverpc.VTXOStatus_VTXO_STATUS_LIVE, initialVTXOs[0].Status,
 	)
 
 	// A standard P2TR destination script: OP_1 followed by a 32-byte
@@ -1162,13 +1160,13 @@ func TestSendOnChainSweepAllEndToEnd(t *testing.T) {
 	defer cancel()
 
 	sendResp, err := fixture.client.SendOnChain(
-		ctx, &daemonrpc.SendOnChainRequest{
-			Destination: &daemonrpc.LeaveDestination{
-				Target: &daemonrpc.LeaveDestination_PkScript{
+		ctx, &waverpc.SendOnChainRequest{
+			Destination: &waverpc.LeaveDestination{
+				Target: &waverpc.LeaveDestination_PkScript{
 					PkScript: destPkScript,
 				},
 			},
-			Amount: &daemonrpc.SendOnChainRequest_SweepAll{
+			Amount: &waverpc.SendOnChainRequest_SweepAll{
 				SweepAll: true,
 			},
 		},
@@ -1193,7 +1191,7 @@ func TestSendOnChainSweepAllEndToEnd(t *testing.T) {
 			}
 
 			return vtxoInfo.Status ==
-				daemonrpc.VTXOStatus_VTXO_STATUS_PENDING_FORFEIT
+				waverpc.VTXOStatus_VTXO_STATUS_PENDING_FORFEIT
 		},
 		20*time.Second,
 		200*time.Millisecond,

@@ -3,7 +3,7 @@
 ## Purpose
 
 Shared macaroon and TLS helpers for securing gRPC/REST connections between
-darepod, its CLI, and SDK clients: loading/serving macaroons and
+waved, its CLI, and SDK clients: loading/serving macaroons and
 generating/loading self-signed TLS cert/key pairs.
 
 ## Key Types
@@ -22,8 +22,8 @@ generating/loading self-signed TLS cert/key pairs.
 - **Depends on**: `github.com/lightningnetwork/lnd/macaroons` (macaroon
   credentials), `github.com/lightningnetwork/lnd/cert` (self-signed cert
   generation).
-- **Depended on by**: `darepod` (server + gateway TLS/macaroon wiring),
-  `cmd/darepocli` (client auth), `sdk/walletdk` (SDK gRPC client connection).
+- **Depended on by**: `waved` (server + gateway TLS/macaroon wiring),
+  `cmd/wavecli` (client auth), `sdk/wavewalletdk` (SDK gRPC client connection).
 
 ## Invariants
 

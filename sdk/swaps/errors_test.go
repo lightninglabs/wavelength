@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/lightninglabs/darepo-client/daemonrpc"
 	loopfsm "github.com/lightninglabs/loop/fsm"
+	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -30,7 +30,7 @@ func TestWalletNotReadyFailureIsNonTerminal(t *testing.T) {
 			markFailedCalls := 0
 			event := handleFailure(
 				t.Context(),
-				daemonrpc.WalletNotReadyError(msg),
+				waverpc.WalletNotReadyError(msg),
 				&runErr,
 				false,
 				false,
@@ -67,7 +67,7 @@ func TestWrappedWalletNotReadyFailureIsNonTerminal(t *testing.T) {
 	event := handleFailure(
 		t.Context(),
 		fmt.Errorf("resume receive swap: %w",
-			daemonrpc.WalletNotReadyError("wallet still syncing")),
+			waverpc.WalletNotReadyError("wallet still syncing")),
 		&runErr,
 		false,
 		false,

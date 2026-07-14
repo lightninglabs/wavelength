@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package swapclientrpc;
 
-option go_package = "github.com/lightninglabs/darepo-client/rpc/swapclientrpc";
+option go_package = "github.com/lightninglabs/wavelength/rpc/swapclientrpc";
 
 // SwapClientService exposes daemon-owned Lightning/Ark swap execution to local
 // clients. The service is registered only in swapruntime builds.

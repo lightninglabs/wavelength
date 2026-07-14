@@ -14,10 +14,10 @@ import (
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/btcsuite/btcwallet/waddrmgr"
-	"github.com/lightninglabs/darepo-client/baselib/actor"
-	"github.com/lightninglabs/darepo-client/chainsource"
-	"github.com/lightninglabs/darepo-client/ledger"
-	"github.com/lightninglabs/darepo-client/lib/actormsg"
+	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/chainsource"
+	"github.com/lightninglabs/wavelength/ledger"
+	"github.com/lightninglabs/wavelength/lib/actormsg"
 	"github.com/lightningnetwork/lnd/clock"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -414,7 +414,7 @@ func TestEagerRoundJoinCoalescesMultiUTXOBlockEpoch(t *testing.T) {
 // TestEagerRoundJoinDisabledSkipsAutoBoard verifies the off-default: the
 // same confirmation that auto-boards under eager mode must NOT touch the
 // pending-board store or the round actor when the flag is off. This is
-// load-bearing for non-SDK hosts (darepocli, server deployments) whose
+// load-bearing for non-SDK hosts (wavecli, server deployments) whose
 // callers expect explicit Board RPCs to be the only path that triggers a
 // TriggerBoardMsg.
 func TestEagerRoundJoinDisabledSkipsAutoBoard(t *testing.T) {

@@ -1,0 +1,53 @@
+type: google.api.Service
+config_version: 3
+
+http:
+  rules:
+    - selector: wavewalletrpc.WalletService.Create
+      post: /v1/wallet/create
+      body: "*"
+    - selector: wavewalletrpc.WalletService.Unlock
+      post: /v1/wallet/unlock
+      body: "*"
+    - selector: wavewalletrpc.WalletService.PrepareSend
+      post: /v1/wallet/prepare-send
+      body: "*"
+    - selector: wavewalletrpc.WalletService.Send
+      post: /v1/wallet/send
+      body: "*"
+    - selector: wavewalletrpc.WalletService.Recv
+      post: /v1/wallet/recv
+      body: "*"
+    - selector: wavewalletrpc.WalletService.List
+      post: /v1/wallet/list
+      body: "*"
+    - selector: wavewalletrpc.WalletService.Deposit
+      post: /v1/wallet/deposit
+      body: "*"
+    - selector: wavewalletrpc.WalletService.Balance
+      post: /v1/wallet/balance
+      body: "*"
+    - selector: wavewalletrpc.WalletService.Status
+      post: /v1/wallet/status
+      body: "*"
+    - selector: wavewalletrpc.WalletService.GetExitPlan
+      post: /v1/wallet/exit-plan
+      body: "*"
+    - selector: wavewalletrpc.WalletService.SweepWallet
+      post: /v1/wallet/sweep-wallet
+      body: "*"
+    - selector: wavewalletrpc.WalletService.Exit
+      post: /v1/wallet/exit
+      body: "*"
+    - selector: wavewalletrpc.WalletService.ExitStatus
+      post: /v1/wallet/exit-status
+      body: "*"
+    - selector: wavewalletrpc.WalletService.ExitSummary
+      post: /v1/wallet/exit-summary
+      body: "*"
+    - selector: wavewalletrpc.WalletService.SubscribeWallet
+      post: /v1/wallet/subscribe
+      body: "*"
+    - selector: wavewalletrpc.WalletInspectionService.InspectActivity
+      post: /v1/wallet/inspect/activity
+      body: "*"

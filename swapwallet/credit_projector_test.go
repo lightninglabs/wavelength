@@ -1,12 +1,12 @@
-//go:build walletdkrpc && swapruntime
+//go:build wavewalletrpc && swapruntime
 
 package swapwallet
 
 import (
 	"testing"
 
-	"github.com/lightninglabs/darepo-client/credit"
-	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/credit"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"github.com/stretchr/testify/require"
 )
 
@@ -17,8 +17,8 @@ const payHashHex = "00112233445566778899aabbccddeeff" +
 
 // drainEntries non-blockingly collects every WalletEntry currently queued on a
 // subscriber.
-func drainEntries(sub *subscriber) []*walletdkrpc.WalletEntry {
-	var out []*walletdkrpc.WalletEntry
+func drainEntries(sub *subscriber) []*wavewalletrpc.WalletEntry {
+	var out []*wavewalletrpc.WalletEntry
 	for {
 		select {
 		case u := <-sub.ch:
@@ -32,9 +32,9 @@ func drainEntries(sub *subscriber) []*walletdkrpc.WalletEntry {
 
 // indexEntriesByID indexes entries by their id for assertion lookups.
 func indexEntriesByID(
-	entries []*walletdkrpc.WalletEntry) map[string]*walletdkrpc.WalletEntry {
+	entries []*wavewalletrpc.WalletEntry) map[string]*wavewalletrpc.WalletEntry {
 
-	out := make(map[string]*walletdkrpc.WalletEntry, len(entries))
+	out := make(map[string]*wavewalletrpc.WalletEntry, len(entries))
 	for _, e := range entries {
 		out[e.GetId()] = e
 	}
@@ -101,15 +101,15 @@ func TestCreditProjectorProjectsOwnedTerminals(t *testing.T) {
 	pay := byID[payHashHex]
 	require.NotNil(t, pay)
 	require.Equal(
-		t, walletdkrpc.EntryKind_ENTRY_KIND_SEND, pay.GetKind(),
+		t, wavewalletrpc.EntryKind_ENTRY_KIND_SEND, pay.GetKind(),
 	)
 	require.Equal(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
 		pay.GetStatus(),
 	)
 	require.Equal(t, int64(-500), pay.GetAmountSat())
 	require.Equal(
-		t, walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_CONFIRMED,
+		t, wavewalletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_CONFIRMED,
 		pay.GetProgress().GetPhase(),
 	)
 
@@ -117,10 +117,10 @@ func TestCreditProjectorProjectsOwnedTerminals(t *testing.T) {
 	recv := byID["op-recv"]
 	require.NotNil(t, recv)
 	require.Equal(
-		t, walletdkrpc.EntryKind_ENTRY_KIND_RECV, recv.GetKind(),
+		t, wavewalletrpc.EntryKind_ENTRY_KIND_RECV, recv.GetKind(),
 	)
 	require.Equal(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
 		recv.GetStatus(),
 	)
 	require.Equal(t, int64(42), recv.GetAmountSat())
@@ -212,14 +212,14 @@ func TestCreditProjectorProjectsFailure(t *testing.T) {
 	entry := got[0]
 	require.Equal(t, "op-recv", entry.GetId())
 	require.Equal(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_FAILED,
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_FAILED,
 		entry.GetStatus(),
 	)
 	require.Equal(
 		t, "receive funding ended in FAILED", entry.GetFailureReason(),
 	)
 	require.Equal(
-		t, walletdkrpc.EntryFailureCode_ENTRY_FAILURE_CODE_FAILED,
+		t, wavewalletrpc.EntryFailureCode_ENTRY_FAILURE_CODE_FAILED,
 		entry.GetFailureCode(),
 	)
 }
@@ -254,7 +254,7 @@ func TestCreditProjectorTracksPendingForRestart(t *testing.T) {
 	require.Len(t, snapshot, 1)
 	require.Equal(t, payHashHex, snapshot[0].GetId())
 	require.Equal(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
 		snapshot[0].GetStatus(),
 	)
 }

@@ -1,6 +1,6 @@
-# Darepo-Client Architecture
+# Wavelength Architecture
 
-This document provides a top-level map of the darepo-client codebase: an Ark
+This document provides a top-level map of the wavelength codebase: an Ark
 protocol client daemon that manages VTXOs, participates in rounds, and
 communicates with the Ark operator via a mailbox-based RPC protocol.
 
@@ -62,25 +62,25 @@ package may import from a higher layer.
 
 | Package | Purpose |
 |---------|---------|
-| [`darepod`](darepod/) | Daemon orchestrator: wires all subsystems, exposes gRPC API |
+| [`waved`](waved/) | Daemon orchestrator: wires all subsystems, exposes gRPC API |
 | [`gateway`](gateway/) | HTTP gateway utilities (mux options, CORS, endpoint normalization) for grpc-gateway integration |
 | [`sdk/ark`](sdk/ark/) | Consumer-facing Go SDK facade: remote or embedded daemon access with typed models |
 | [`sdk/swaps`](sdk/swaps/) | Lightning-to-Ark / Ark-to-Lightning atomic swap SDK with durable FSM flows |
-| [`sdk/walletdk`](sdk/walletdk/) | Wallet-shaped SDK facade for host apps: embeds the daemon in-process, dials it over a private bufconn transport, exposes typed methods for the seven core wallet verbs (create, unlock, send, recv, list, balance, exit). The highest-level layer in the stack; wraps `walletdkrpc.WalletService`. Wallet RPC methods gated behind `walletdkrpc` (which transitively requires `swapruntime`) |
-| [`sdk/walletdk/mobile`](sdk/walletdk/mobile/) | Gomobile-safe facade over `sdk/walletdk` for Android/iOS host apps: drives an embedded in-process wallet over the private bufconn transport |
-| [`swapwallet`](swapwallet/) | Optional daemon-side `walletdkrpc.WalletService` implementation (build tags `walletdkrpc swapruntime`): composes the swap subsystem, cooperative leave, boarding, ledger, and unilateral-exit registry behind one flat, swap-vocabulary-free wallet API |
+| [`sdk/wavewalletdk`](sdk/wavewalletdk/) | Wallet-shaped SDK facade for host apps: embeds the daemon in-process, dials it over a private bufconn transport, exposes typed methods for the seven core wallet verbs (create, unlock, send, recv, list, balance, exit). The highest-level layer in the stack; wraps `wavewalletrpc.WalletService`. Wallet RPC methods gated behind `wavewalletrpc` (which transitively requires `swapruntime`) |
+| [`sdk/wavewalletdk/mobile`](sdk/wavewalletdk/mobile/) | Gomobile-safe facade over `sdk/wavewalletdk` for Android/iOS host apps: drives an embedded in-process wallet over the private bufconn transport |
+| [`swapwallet`](swapwallet/) | Optional daemon-side `wavewalletrpc.WalletService` implementation (build tags `wavewalletrpc swapruntime`): composes the swap subsystem, cooperative leave, boarding, ledger, and unilateral-exit registry behind one flat, swap-vocabulary-free wallet API |
 | [`swapclientserver`](swapclientserver/) | Optional daemon-side swap subserver (build tag `swapruntime`): translates `swapclientrpc` RPCs into `sdk/swaps` operations and manages the daemon-local worker registry |
-| [`cmd/darepod`](cmd/darepod/) | Daemon entry point |
-| [`cmd/darepocli`](cmd/darepocli/) | CLI client |
-| [`cmd/walletdk-wasm`](cmd/walletdk-wasm/) | Command compiling the embedded walletdk runtime to a browser WASM binary |
+| [`cmd/waved`](cmd/waved/) | Daemon entry point |
+| [`cmd/wavecli`](cmd/wavecli/) | CLI client |
+| [`cmd/wavewalletdk-wasm`](cmd/wavewalletdk-wasm/) | Command compiling the embedded wavewalletdk runtime to a browser WASM binary |
 | [`timeout`](timeout/) | Generic timeout scheduling actor |
 | [`indexer`](indexer/) | Server indexing client for receive script registration |
 | [`arkrpc`](arkrpc/) | Server-side gRPC service definitions (ArkService, IndexerService) |
 | [`arkrpc/treeconv`](arkrpc/treeconv/) | Narrow re-export of tree-path conversion helpers without the full gRPC surface |
-| [`rpc`](rpc/) | Client-side RPC message definitions (roundpb, oorpb, swapclientrpc, walletdkrpc) and HTTP transport (`rpc/restclient`) |
-| [`rpc/walletdkrpc`](rpc/walletdkrpc/) | Highest-level gRPC surface: `WalletService` with the seven core wallet verbs. Composes `daemonrpc` and `rpc/swapclientrpc` server-side via `swapwallet` |
+| [`rpc`](rpc/) | Client-side RPC message definitions (roundpb, oorpb, swapclientrpc, wavewalletrpc) and HTTP transport (`rpc/restclient`) |
+| [`rpc/wavewalletrpc`](rpc/wavewalletrpc/) | Highest-level gRPC surface: `WalletService` with the seven core wallet verbs. Composes `waverpc` and `rpc/swapclientrpc` server-side via `swapwallet` |
 | [`rpc/restclient`](rpc/restclient/) | HTTP/protoJSON transport adapter: `Client`, `StreamClient[T]`, and per-service factory functions implementing the same gRPC stub interfaces over REST |
-| [`daemonrpc`](daemonrpc/) | Daemon gRPC API definitions |
+| [`waverpc`](waverpc/) | Daemon gRPC API definitions |
 | [`swaprpc`](swaprpc/) | Generated gRPC/REST/mailbox-RPC stubs for the external `SwapService` |
 
 ### Layer 4: Testing & Tooling
@@ -102,7 +102,7 @@ package may import from a higher layer.
 ## Key Dependency Flows
 
 ```
-darepod (orchestrator)
+waved (orchestrator)
 ├── round ──────────┐
 │   ├── vtxo        │ (bidirectional: forfeit requests/confirmations)
 │   ├── serverconn  │ (outbound RPCs to operator)
@@ -127,7 +127,7 @@ darepod (orchestrator)
 │   ├── lib/recovery│ (recovery proof graph)
 │   ├── unrollplan  │ (pure dependency-resolution planner)
 │   └── db          │ (unilateral_exit_jobs store)
-├── txconfirm       │ (shared tx confirmation + CPFP actor; wired by darepod)
+├── txconfirm       │ (shared tx confirmation + CPFP actor; wired by waved)
 ├── ledger          │
 │   ├── baselib/actor (durable mailbox, TLV codec)
 │   └── db          │ (LedgerStoreDB + UTXOAuditStoreDB adapters)

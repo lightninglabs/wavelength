@@ -9,18 +9,18 @@ Client-side RPC message definitions and HTTP transport in sub-packages:
 | `rpc/roundpb` | generated | Round protocol messages |
 | `rpc/oorpb` | generated | OOR transfer messages |
 | `rpc/swapclientrpc` | generated | Swap client service stubs |
-| `rpc/walletdkrpc` | generated | Highest-level wallet service stubs |
+| `rpc/wavewalletrpc` | generated | Highest-level wallet service stubs |
 | `rpc/restclient` | hand-written | HTTP/protoJSON transport adapter |
 
 ## Relationships
 
 - **Depends on**: nothing for generated sub-packages (proto definitions).
-  `rpc/restclient` depends on `arkrpc`, `daemonrpc`, `mailbox/pb`,
-  `rpc/swapclientrpc`, `rpc/walletdkrpc`, and `swaprpc`.
+  `rpc/restclient` depends on `arkrpc`, `waverpc`, `mailbox/pb`,
+  `rpc/swapclientrpc`, `rpc/wavewalletrpc`, and `swaprpc`.
 - **Depended on by**: `round`, `oor`, `db` (roundpb/oorpb message types);
-  `sdk/walletdk`, `swapwallet`, `swapclientserver`, `darepod`,
-  `cmd/darepocli` (swapclientrpc/walletdkrpc service stubs); `sdk/walletdk`,
-  `sdk/swaps`, `swapclientserver`, `darepod` (`rpc/restclient` REST
+  `sdk/wavewalletdk`, `swapwallet`, `swapclientserver`, `waved`,
+  `cmd/wavecli` (swapclientrpc/wavewalletrpc service stubs); `sdk/wavewalletdk`,
+  `sdk/swaps`, `swapclientserver`, `waved` (`rpc/restclient` REST
   transport).
 
 ## Invariants

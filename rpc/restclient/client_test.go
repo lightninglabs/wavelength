@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lightninglabs/darepo-client/daemonrpc"
-	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
-	"github.com/lightninglabs/darepo-client/swaprpc"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
+	"github.com/lightninglabs/wavelength/swaprpc"
+	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -60,7 +60,7 @@ func TestDaemonClientPost(t *testing.T) {
 		t.Context(),
 		"x-test-metadata", "metadata-value",
 	)
-	resp, err := client.GetInfo(ctx, &daemonrpc.GetInfoRequest{})
+	resp, err := client.GetInfo(ctx, &waverpc.GetInfoRequest{})
 	require.NoError(t, err)
 	require.Equal(t, "regtest", resp.GetNetwork())
 	require.True(t, sawMetadata)
@@ -89,12 +89,12 @@ func TestDaemonClientGetVTXOExpiryInfoPost(t *testing.T) {
 
 	client := NewDaemonServiceClient(server.URL)
 	resp, err := client.GetVTXOExpiryInfo(
-		t.Context(), &daemonrpc.GetVTXOExpiryInfoRequest{},
+		t.Context(), &waverpc.GetVTXOExpiryInfoRequest{},
 	)
 	require.NoError(t, err)
 	require.True(t, resp.GetFound())
 	require.Equal(
-		t, daemonrpc.VTXOExpiryStatus_VTXO_EXPIRY_STATUS_SAFE,
+		t, waverpc.VTXOExpiryStatus_VTXO_EXPIRY_STATUS_SAFE,
 		resp.GetExpiryInfo().GetStatus(),
 	)
 }
@@ -192,7 +192,7 @@ func TestGatewayStatusError(t *testing.T) {
 	defer server.Close()
 
 	client := NewDaemonServiceClient(server.URL)
-	_, err := client.GetInfo(t.Context(), &daemonrpc.GetInfoRequest{})
+	_, err := client.GetInfo(t.Context(), &waverpc.GetInfoRequest{})
 	require.Error(t, err)
 	require.Equal(t, codes.NotFound, status.Code(err))
 	require.ErrorContains(t, err, "missing")
@@ -217,7 +217,7 @@ func TestWalletStream(t *testing.T) {
 
 	client := NewWalletServiceClient(server.URL)
 	stream, err := client.SubscribeWallet(
-		t.Context(), &walletdkrpc.SubscribeWalletRequest{},
+		t.Context(), &wavewalletrpc.SubscribeWalletRequest{},
 	)
 	require.NoError(t, err)
 
@@ -247,7 +247,7 @@ func TestWalletStreamError(t *testing.T) {
 
 	client := NewWalletServiceClient(server.URL)
 	stream, err := client.SubscribeWallet(
-		context.Background(), &walletdkrpc.SubscribeWalletRequest{},
+		context.Background(), &wavewalletrpc.SubscribeWalletRequest{},
 	)
 	require.NoError(t, err)
 

@@ -5,8 +5,8 @@ import (
 	"testing"
 
 	btclog "github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/arkrpc"
-	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
+	"github.com/lightninglabs/wavelength/arkrpc"
+	mailboxrpc "github.com/lightninglabs/wavelength/mailbox/rpc"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
 )

@@ -4,8 +4,8 @@ import (
 	"database/sql"
 	"fmt"
 
-	admigration "github.com/lightninglabs/darepo-client/db/actordelivery/migrations"
-	"github.com/lightninglabs/darepo-client/db/sqlc"
+	admigration "github.com/lightninglabs/wavelength/db/actordelivery/migrations"
+	"github.com/lightninglabs/wavelength/db/sqlc"
 )
 
 const (

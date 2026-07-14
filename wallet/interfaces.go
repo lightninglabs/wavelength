@@ -9,8 +9,8 @@ import (
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btcwallet/waddrmgr"
-	"github.com/lightninglabs/darepo-client/walletcore"
 	"github.com/lightninglabs/taproot-assets/proof"
+	"github.com/lightninglabs/wavelength/walletcore"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 )

@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/db"
+	"github.com/lightninglabs/wavelength/db"
 )
 
 const satsPerBTC = 100_000_000
@@ -221,7 +221,7 @@ func parseFlags(args []string) (*config, error) {
 	)
 	fs.StringVar(
 		&cfg.sqliteDBFile, "sqlite.dbfile", "",
-		"path to the darepod sqlite database file",
+		"path to the waved sqlite database file",
 	)
 	fs.StringVar(
 		&cfg.postgresHost, "postgres.host", cfg.postgresHost,

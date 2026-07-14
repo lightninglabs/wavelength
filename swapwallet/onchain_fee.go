@@ -1,4 +1,4 @@
-//go:build walletdkrpc && swapruntime
+//go:build wavewalletrpc && swapruntime
 
 package swapwallet
 
@@ -6,8 +6,8 @@ import (
 	"context"
 
 	"github.com/btcsuite/btcd/btcutil/v2"
-	"github.com/lightninglabs/darepo-client/daemonrpc"
-	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
+	"github.com/lightninglabs/wavelength/waverpc"
 )
 
 // Local cooperative-leave fee-floor sizing. These virtual sizes drive the
@@ -40,7 +40,7 @@ const (
 type onchainFeeQuote struct {
 	feeSat      int64
 	feeKnown    bool
-	quoteStatus walletdkrpc.SendQuoteStatus
+	quoteStatus wavewalletrpc.SendQuoteStatus
 	warning     string
 }
 
@@ -61,7 +61,7 @@ type onchainTerms struct {
 // yields a zero-valued struct so the preview still renders.
 func (r *router) fetchOnchainTerms(ctx context.Context) onchainTerms {
 	info, err := r.deps.RPCServer.GetInfo(
-		ctx, &daemonrpc.GetInfoRequest{},
+		ctx, &waverpc.GetInfoRequest{},
 	)
 	if err != nil || info == nil {
 		return onchainTerms{}
@@ -97,7 +97,7 @@ func (r *router) estimateOnchainFee(ctx context.Context, amountSat int64,
 	// is belt-and-suspenders: the generated getter is nil-safe, but the
 	// explicit check keeps the intent obvious at the call site.
 	feeResp, err := r.deps.RPCServer.EstimateFee(
-		ctx, &daemonrpc.EstimateFeeRequest{
+		ctx, &waverpc.EstimateFeeRequest{
 			AmountSat:       amountSat,
 			IsBoarding:      false,
 			RemainingBlocks: 0,
@@ -107,7 +107,7 @@ func (r *router) estimateOnchainFee(ctx context.Context, amountSat int64,
 		return onchainFeeQuote{
 			feeSat:   feeResp.GetTotalFeeSat(),
 			feeKnown: true,
-			quoteStatus: walletdkrpc.
+			quoteStatus: wavewalletrpc.
 				SendQuoteStatus_SEND_QUOTE_STATUS_COMPLETE,
 		}
 	}
@@ -122,7 +122,7 @@ func (r *router) estimateOnchainFee(ctx context.Context, amountSat int64,
 	return onchainFeeQuote{
 		feeSat:   floor,
 		feeKnown: false,
-		quoteStatus: walletdkrpc.
+		quoteStatus: wavewalletrpc.
 			SendQuoteStatus_SEND_QUOTE_STATUS_LOCAL_ONLY,
 		warning: "fee is a local estimate assuming a batch size of " +
 			"one; the operator quote was unavailable and the " +

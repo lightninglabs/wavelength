@@ -26,7 +26,7 @@ Proto source: `arkrpc/ark.proto`, `arkrpc/indexer.proto`.
 ## Relationships
 
 - **Depends on**: `lib/tree` (for conversion utilities in `tree_path_convert.go`).
-- **Depended on by**: `indexer`, `darepod`, `serverconn`, `oor` (uses generated
+- **Depended on by**: `indexer`, `waved`, `serverconn`, `oor` (uses generated
   clients and conversion helpers).
 
 ## Invariants

@@ -10,9 +10,9 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	_ "github.com/jackc/pgx/v5/stdlib"
-	admigration "github.com/lightninglabs/darepo-client/db/actordelivery/migrations"
-	dbmigrate "github.com/lightninglabs/darepo-client/db/migrate"
-	"github.com/lightninglabs/darepo-client/db/sqlc"
+	admigration "github.com/lightninglabs/wavelength/db/actordelivery/migrations"
+	dbmigrate "github.com/lightninglabs/wavelength/db/migrate"
+	"github.com/lightninglabs/wavelength/db/sqlc"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 

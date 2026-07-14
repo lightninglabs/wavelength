@@ -1,7 +1,7 @@
 //go:build tools
 // +build tools
 
-package darepo
+package wavelength
 
 // The imports below represent build tools. Instead of defining a commit we want
 // to use for those golang based tools, we use the go mod versioning system to

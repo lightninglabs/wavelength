@@ -1,4 +1,4 @@
-module github.com/lightninglabs/darepo-client/baselib
+module github.com/lightninglabs/wavelength/baselib
 
 go 1.25.11
 

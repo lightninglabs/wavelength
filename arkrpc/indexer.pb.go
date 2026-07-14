@@ -330,7 +330,7 @@ type TaprootSchnorrProof struct {
 	Message []byte `protobuf:"bytes,1,opt,name=message,proto3" json:"message,omitempty"`
 	// sig64 is a 64-byte BIP-340 schnorr signature over the BIP-340
 	// tagged hash of message: sha256(sha256(tag) || sha256(tag) || msg),
-	// where tag = "darepo/indexer/v1".
+	// where tag = "wavelength/indexer/v1".
 	Sig64         []byte `protobuf:"bytes,2,opt,name=sig64,proto3" json:"sig64,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -2929,7 +2929,7 @@ const file_indexer_proto_rawDesc = "" +
 	"\x12ListVTXOsByScripts\x12!.arkrpc.ListVTXOsByScriptsRequest\x1a\".arkrpc.ListVTXOsByScriptsResponse\x12^\n" +
 	"\x13GetOORSessionByTxid\x12\".arkrpc.GetOORSessionByTxidRequest\x1a#.arkrpc.GetOORSessionByTxidResponse\x12^\n" +
 	"\x13GetSubtreeByScripts\x12\".arkrpc.GetSubtreeByScriptsRequest\x1a#.arkrpc.GetSubtreeByScriptsResponse\x12j\n" +
-	"\x17ListVTXOEventsByScripts\x12&.arkrpc.ListVTXOEventsByScriptsRequest\x1a'.arkrpc.ListVTXOEventsByScriptsResponseB/Z-github.com/lightninglabs/darepo-client/arkrpcb\x06proto3"
+	"\x17ListVTXOEventsByScripts\x12&.arkrpc.ListVTXOEventsByScriptsRequest\x1a'.arkrpc.ListVTXOEventsByScriptsResponseB,Z*github.com/lightninglabs/wavelength/arkrpcb\x06proto3"
 
 var (
 	file_indexer_proto_rawDescOnce sync.Once

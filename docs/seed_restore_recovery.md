@@ -1,12 +1,12 @@
 # Seed Restore Recovery
 
-This guide covers restoring a self-managed `darepod` wallet from its mnemonic
+This guide covers restoring a self-managed `waved` wallet from its mnemonic
 and asking the daemon to recover Ark state. It applies to embedded wallet
 backends such as `lwwallet` and `btcwallet`.
 
 ## What Recovery Does
 
-`darepocli create --recover` imports an existing mnemonic into a fresh daemon
+`wavecli create --recover` imports an existing mnemonic into a fresh daemon
 data directory. With Ark-state recovery enabled, the daemon scans deterministic
 keys and reconstructs local wallet state from the chain, the backing wallet,
 and the operator indexer.
@@ -54,9 +54,9 @@ Pick a recovery window large enough to include every key index you care about.
 Create a wallet and record the mnemonic:
 
 ```sh
-export DAREPOD_WALLET_PASSWORD='replace-with-a-local-wallet-password'
+export WAVED_WALLET_PASSWORD='replace-with-a-local-wallet-password'
 
-darepocli create --print-mnemonic-json > create.json
+wavecli create --print-mnemonic-json > create.json
 jq -r '.mnemonic[]' create.json > wallet.mnemonic
 chmod 600 wallet.mnemonic
 ```
@@ -64,17 +64,17 @@ chmod 600 wallet.mnemonic
 Generate receive surfaces as usual:
 
 ```sh
-darepocli recv --onchain
-darepocli recv --offchain --amt 10000 --memo 'restore smoke'
+wavecli recv --onchain
+wavecli recv --offchain --amt 10000 --memo 'restore smoke'
 ```
 
 After stopping the original daemon, start a fresh daemon with an empty data
 directory and restore the seed:
 
 ```sh
-export DAREPOD_WALLET_PASSWORD='replace-with-a-new-local-wallet-password'
+export WAVED_WALLET_PASSWORD='replace-with-a-new-local-wallet-password'
 
-darepocli create --recover \
+wavecli create --recover \
   --mnemonic-file wallet.mnemonic \
   --recovery-window 100
 ```
@@ -82,17 +82,17 @@ darepocli create --recover \
 Inspect the response counters. Then check the public wallet surface:
 
 ```sh
-darepocli balance
-darepocli vtxos list
+wavecli balance
+wavecli vtxos list
 ```
 
-For unboarded boarding funds, top-level `darepocli balance` reports the amount
+For unboarded boarding funds, top-level `wavecli balance` reports the amount
 under `pending_in_sat`. Once funds are boarded into VTXOs, they contribute to
 `confirmed_sat`.
 
 ## Local arktest Smoke
 
-The root `darepo` repository contains the `arktest` manual harness. Use it when
+The root `wavelength` repository contains the `arktest` manual harness. Use it when
 this client repo is checked out as the root repo's `client/` submodule.
 
 Build the manual harness and CLI binaries from the root repo:
@@ -101,7 +101,7 @@ Build the manual harness and CLI binaries from the root repo:
 make arktest
 ```
 
-Start an embedded-wallet topology where `darepocli create` initializes the
+Start an embedded-wallet topology where `wavecli create` initializes the
 wallet:
 
 ```sh
@@ -115,7 +115,7 @@ In another terminal, load the generated aliases and create the source wallet:
 
 ```sh
 eval "$(./arktest --datadir /tmp/arktest-restore aliases)"
-export DAREPOD_WALLET_PASSWORD=itest-wallet-password
+export WAVED_WALLET_PASSWORD=itest-wallet-password
 
 alice-cli create --print-mnemonic-json > alice-create.json
 jq -r '.mnemonic[]' alice-create.json > alice.mnemonic
@@ -138,17 +138,17 @@ and a sufficient recovery window:
 
 ```sh
 ARK_ITEST_CLIENT_WALLET=lwwallet \
-go test -tags='itest walletdkrpc swapruntime dev nolog' -v ./itest \
+go test -tags='itest wavewalletrpc swapruntime dev nolog' -v ./itest \
   -run '^TestBoardingIntegrationRecoveryCLIFromSeedRestoresBoardingFunds$' \
   -count=1 -timeout=60m
 ```
 
-The test must be built with the same daemon-side `walletdkrpc` tag that the
-top-level `darepocli create`, `recv`, and `balance` commands require. Without
+The test must be built with the same daemon-side `wavewalletrpc` tag that the
+top-level `wavecli create`, `recv`, and `balance` commands require. Without
 that tag, the CLI can connect to the daemon but the wallet service returns:
 
 ```sh
-daemon was not built with -tags walletdkrpc
+daemon was not built with -tags wavewalletrpc
 ```
 
 ## Troubleshooting
@@ -163,6 +163,6 @@ For example, a window of `1` only scans index `0`.
 If restore hangs or mailbox/indexer responses look inconsistent, make sure no
 other daemon is running with the same seed.
 
-If `darepocli balance` shows zero after recovering unboarded boarding funds,
+If `wavecli balance` shows zero after recovering unboarded boarding funds,
 check whether the funding transaction has enough confirmations for the
 operator's configured minimum confirmation count.

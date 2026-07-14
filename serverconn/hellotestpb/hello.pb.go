@@ -384,7 +384,7 @@ const file_hello_proto_rawDesc = "" +
 	"\fHelloService\x12C\n" +
 	"\bSayHello\x12\x1a.hellotest.v1.HelloRequest\x1a\x1b.hellotest.v1.HelloResponse\x12I\n" +
 	"\n" +
-	"SayGoodbye\x12\x1c.hellotest.v1.GoodbyeRequest\x1a\x1d.hellotest.v1.GoodbyeResponseBKZIgithub.com/lightninglabs/darepo-client/serverconn/hellotestpb;hellotestpbb\x06proto3"
+	"SayGoodbye\x12\x1c.hellotest.v1.GoodbyeRequest\x1a\x1d.hellotest.v1.GoodbyeResponseBHZFgithub.com/lightninglabs/wavelength/serverconn/hellotestpb;hellotestpbb\x06proto3"
 
 var (
 	file_hello_proto_rawDescOnce sync.Once

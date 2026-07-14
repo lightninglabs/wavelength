@@ -1,7 +1,7 @@
 package oor
 
 import (
-	"github.com/lightninglabs/darepo-client/lib/tx/checkpoint"
+	"github.com/lightninglabs/wavelength/lib/tx/checkpoint"
 )
 
 // EncodeTapTree encodes a set of tapscript leaves into a single byte blob.

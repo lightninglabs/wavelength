@@ -1,4 +1,4 @@
-//go:build walletdkrpc && swapruntime
+//go:build wavewalletrpc && swapruntime
 
 package swapwallet
 
@@ -14,16 +14,16 @@ import (
 
 	btcaddr "github.com/btcsuite/btcd/address/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
-	"github.com/lightninglabs/darepo-client/daemonrpc"
-	"github.com/lightninglabs/darepo-client/ledger"
-	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
-	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/ledger"
+	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
+	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/lightningnetwork/lnd/fn/v2"
 )
 
 // history merges entries from the daemon's existing history surfaces
 // (swap subserver ListSwaps + RPCServer.ListTransactions) into the single
-// flat WalletEntry shape exposed by walletdkrpc.WalletService.List.
+// flat WalletEntry shape exposed by wavewalletrpc.WalletService.List.
 //
 // The merge is deliberately consumer-side: every source already has its
 // own canonical persistence (swap DB, ledger entries, boarding_sweeps),
@@ -46,48 +46,48 @@ func newHistory(deps *Deps, runtime *Runtime) *history {
 // callers that omit the field keep getting the unified activity stream.
 // Each view is implemented by a dedicated helper; the top-level response
 // shape is a oneof so agents see a tagged union, not a polymorphic blob.
-func (h *history) List(ctx context.Context, req *walletdkrpc.ListRequest) (
-	*walletdkrpc.ListResponse, error) {
+func (h *history) List(ctx context.Context, req *wavewalletrpc.ListRequest) (
+	*wavewalletrpc.ListResponse, error) {
 
 	if h == nil || h.deps == nil {
 		return nil, ErrSwapBackendUnavailable
 	}
 
 	switch req.GetView() {
-	case walletdkrpc.ListView_LIST_VIEW_VTXOS:
+	case wavewalletrpc.ListView_LIST_VIEW_VTXOS:
 		body, err := h.listVTXOs(ctx, req)
 		if err != nil {
 			return nil, err
 		}
 
-		return &walletdkrpc.ListResponse{
-			Body: &walletdkrpc.ListResponse_Vtxos{
+		return &wavewalletrpc.ListResponse{
+			Body: &wavewalletrpc.ListResponse_Vtxos{
 				Vtxos: body,
 			},
 		}, nil
 
-	case walletdkrpc.ListView_LIST_VIEW_ONCHAIN:
+	case wavewalletrpc.ListView_LIST_VIEW_ONCHAIN:
 		body, err := h.listOnchain(ctx, req)
 		if err != nil {
 			return nil, err
 		}
 
-		return &walletdkrpc.ListResponse{
-			Body: &walletdkrpc.ListResponse_Onchain{
+		return &wavewalletrpc.ListResponse{
+			Body: &wavewalletrpc.ListResponse_Onchain{
 				Onchain: body,
 			},
 		}, nil
 
-	case walletdkrpc.ListView_LIST_VIEW_ACTIVITY,
-		walletdkrpc.ListView_LIST_VIEW_UNSPECIFIED:
+	case wavewalletrpc.ListView_LIST_VIEW_ACTIVITY,
+		wavewalletrpc.ListView_LIST_VIEW_UNSPECIFIED:
 
 		body, err := h.listActivity(ctx, req)
 		if err != nil {
 			return nil, err
 		}
 
-		return &walletdkrpc.ListResponse{
-			Body: &walletdkrpc.ListResponse_Activity{
+		return &wavewalletrpc.ListResponse{
+			Body: &wavewalletrpc.ListResponse_Activity{
 				Activity: body,
 			},
 		}, nil
@@ -122,7 +122,7 @@ const activityScanBudgetFactor = 8
 // concurrent inserts: it neither skips nor duplicates rows. When no store is
 // wired (tests without a database) it falls back to the derive-on-read merge.
 func (h *history) listActivity(ctx context.Context,
-	req *walletdkrpc.ListRequest) (*walletdkrpc.ActivityList, error) {
+	req *wavewalletrpc.ListRequest) (*wavewalletrpc.ActivityList, error) {
 
 	if h.deps.ActivityStore == nil {
 		return h.deriveActivity(ctx, req)
@@ -154,7 +154,7 @@ func (h *history) listActivity(ctx context.Context,
 	// filters skip store rows. The keyset advances by the last SCANNED row;
 	// next_cursor points at the last RETURNED row so the next page resumes
 	// exactly after it.
-	matched := make([]*walletdkrpc.WalletEntry, 0, limit+1)
+	matched := make([]*wavewalletrpc.WalletEntry, 0, limit+1)
 
 	// The canonical activity store deliberately excludes the aggregate
 	// unconfirmed-boarding row because it has no durable identity to
@@ -266,7 +266,7 @@ func (h *history) listActivity(ctx context.Context,
 		nextCursor = encodeActivityCursor(lastCreated, lastID)
 	}
 
-	return &walletdkrpc.ActivityList{
+	return &wavewalletrpc.ActivityList{
 		Entries:    matched,
 		Total:      uint32(len(matched)),
 		HasMore:    hasMore,
@@ -282,8 +282,8 @@ func (h *history) listActivity(ctx context.Context,
 // derive path.
 func (h *history) countPending(ctx context.Context) (uint32, error) {
 	if h.deps.ActivityStore == nil {
-		list, err := h.deriveActivity(ctx, &walletdkrpc.ListRequest{
-			View:        walletdkrpc.ListView_LIST_VIEW_ACTIVITY,
+		list, err := h.deriveActivity(ctx, &wavewalletrpc.ListRequest{
+			View:        wavewalletrpc.ListView_LIST_VIEW_ACTIVITY,
 			PendingOnly: true,
 			Limit:       h.deps.resolveMaxListLimit(),
 		})
@@ -295,7 +295,7 @@ func (h *history) countPending(ctx context.Context) (uint32, error) {
 	}
 
 	count, err := h.deps.ActivityStore.CountByStatus(
-		ctx, int64(walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING),
+		ctx, int64(wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING),
 	)
 	if err != nil {
 		return 0, err
@@ -325,11 +325,11 @@ func (h *history) countPending(ctx context.Context) (uint32, error) {
 // matchesActivityFilter reports whether an entry passes the pending_only and
 // kind filters. It is the single-entry form of filterEntries, applied per row
 // during the store keyset scan.
-func matchesActivityFilter(e *walletdkrpc.WalletEntry, pendingOnly bool,
-	kindFilter map[walletdkrpc.EntryKind]struct{}) bool {
+func matchesActivityFilter(e *wavewalletrpc.WalletEntry, pendingOnly bool,
+	kindFilter map[wavewalletrpc.EntryKind]struct{}) bool {
 
 	if pendingOnly &&
-		e.GetStatus() != walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING {
+		e.GetStatus() != wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING {
 		return false
 	}
 	if len(kindFilter) > 0 {
@@ -393,7 +393,7 @@ func decodeActivityCursor(cursor string) (int64, string, error) {
 // (listActivity) reads the store instead. The page size is capped at the
 // daemon-level maximum so a malformed request cannot fan out unbounded work.
 func (h *history) deriveActivity(ctx context.Context,
-	req *walletdkrpc.ListRequest) (*walletdkrpc.ActivityList, error) {
+	req *wavewalletrpc.ListRequest) (*wavewalletrpc.ActivityList, error) {
 
 	limit := h.deps.resolveListLimit(req.GetLimit())
 	kindFilter, err := buildKindFilter(req.GetKinds())
@@ -402,15 +402,15 @@ func (h *history) deriveActivity(ctx context.Context,
 	}
 
 	var (
-		entries          []*walletdkrpc.WalletEntry
-		swapEntries      []*walletdkrpc.WalletEntry
+		entries          []*wavewalletrpc.WalletEntry
+		swapEntries      []*wavewalletrpc.WalletEntry
 		swapCorrelations swapOORCorrelations
 	)
 	swapEntryIDs := make(map[string]struct{})
 
-	if h.shouldInclude(kindFilter, walletdkrpc.EntryKind_ENTRY_KIND_SEND) ||
+	if h.shouldInclude(kindFilter, wavewalletrpc.EntryKind_ENTRY_KIND_SEND) ||
 		h.shouldInclude(
-			kindFilter, walletdkrpc.EntryKind_ENTRY_KIND_RECV,
+			kindFilter, wavewalletrpc.EntryKind_ENTRY_KIND_RECV,
 		) {
 
 		var err error
@@ -425,12 +425,14 @@ func (h *history) deriveActivity(ctx context.Context,
 		entries = append(entries, swapEntries...)
 	}
 
-	if h.shouldInclude(kindFilter, walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT) ||
+	if h.shouldInclude(
+		kindFilter, wavewalletrpc.EntryKind_ENTRY_KIND_DEPOSIT,
+	) ||
 		h.shouldInclude(
-			kindFilter, walletdkrpc.EntryKind_ENTRY_KIND_EXIT,
+			kindFilter, wavewalletrpc.EntryKind_ENTRY_KIND_EXIT,
 		) ||
 		h.shouldInclude(
-			kindFilter, walletdkrpc.EntryKind_ENTRY_KIND_SEND,
+			kindFilter, wavewalletrpc.EntryKind_ENTRY_KIND_SEND,
 		) {
 
 		ledgerEntries, err := h.collectLedgerEntries(
@@ -444,7 +446,10 @@ func (h *history) deriveActivity(ctx context.Context,
 		entries = append(entries, ledgerEntries...)
 	}
 
-	if h.shouldInclude(kindFilter, walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT) {
+	if h.shouldInclude(
+		kindFilter, wavewalletrpc.EntryKind_ENTRY_KIND_DEPOSIT,
+	) {
+
 		pendingBoarding, err := h.collectPendingBoardingEntries(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("collect pending boarding "+
@@ -454,7 +459,7 @@ func (h *history) deriveActivity(ctx context.Context,
 		entries = append(entries, pendingBoarding...)
 	}
 
-	if h.shouldInclude(kindFilter, walletdkrpc.EntryKind_ENTRY_KIND_EXIT) {
+	if h.shouldInclude(kindFilter, wavewalletrpc.EntryKind_ENTRY_KIND_EXIT) {
 		exitEntries, err := h.collectUnilateralExitEntries(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("collect unilateral exit "+
@@ -499,7 +504,7 @@ func (h *history) deriveActivity(ctx context.Context,
 	total := uint32(len(filtered))
 	paged := paginate(filtered, req.GetOffset(), limit)
 
-	return &walletdkrpc.ActivityList{
+	return &wavewalletrpc.ActivityList{
 		Entries: paged,
 		Total:   total,
 	}, nil
@@ -509,8 +514,8 @@ func (h *history) deriveActivity(ctx context.Context,
 // is filtered to live + spendable statuses so the wallet view never
 // surfaces internal terminal states (forfeited, spent, failed) the user
 // has no agency over.
-func (h *history) listVTXOs(ctx context.Context, req *walletdkrpc.ListRequest) (
-	*walletdkrpc.VTXOInventory, error) {
+func (h *history) listVTXOs(ctx context.Context,
+	req *wavewalletrpc.ListRequest) (*wavewalletrpc.VTXOInventory, error) {
 
 	if h.deps.RPCServer == nil {
 		return nil, ErrSwapBackendUnavailable
@@ -519,15 +524,15 @@ func (h *history) listVTXOs(ctx context.Context, req *walletdkrpc.ListRequest) (
 	limit := h.deps.resolveListLimit(req.GetLimit())
 
 	resp, err := h.deps.RPCServer.ListVTXOs(
-		ctx, &daemonrpc.ListVTXOsRequest{
-			StatusFilter: daemonrpc.VTXOStatus_VTXO_STATUS_LIVE,
+		ctx, &waverpc.ListVTXOsRequest{
+			StatusFilter: waverpc.VTXOStatus_VTXO_STATUS_LIVE,
 		},
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list vtxos: %w", err)
 	}
 
-	all := make([]*walletdkrpc.WalletVTXO, 0, len(resp.GetVtxos()))
+	all := make([]*wavewalletrpc.WalletVTXO, 0, len(resp.GetVtxos()))
 	for _, v := range resp.GetVtxos() {
 		w, keep := walletVTXOFromDaemon(v)
 		if !keep {
@@ -539,19 +544,19 @@ func (h *history) listVTXOs(ctx context.Context, req *walletdkrpc.ListRequest) (
 	total := uint32(len(all))
 	paged := paginateVTXOs(all, req.GetOffset(), limit)
 
-	return &walletdkrpc.VTXOInventory{
+	return &wavewalletrpc.VTXOInventory{
 		Vtxos: paged,
 		Total: total,
 	}, nil
 }
 
 // listOnchain returns the on-chain transaction history page. It composes
-// the same daemonrpc.ListTransactions surface the legacy `listtransactions`
+// the same waverpc.ListTransactions surface the legacy `listtransactions`
 // CLI verb used, but flattens the ledger row shape onto the
 // wallet-facing OnchainTx type so internal correlators don't leak into
 // the user surface.
 func (h *history) listOnchain(ctx context.Context,
-	req *walletdkrpc.ListRequest) (*walletdkrpc.OnchainHistory, error) {
+	req *wavewalletrpc.ListRequest) (*wavewalletrpc.OnchainHistory, error) {
 
 	if h.deps.RPCServer == nil {
 		return nil, ErrSwapBackendUnavailable
@@ -560,7 +565,7 @@ func (h *history) listOnchain(ctx context.Context,
 	limit := h.deps.resolveListLimit(req.GetLimit())
 
 	resp, err := h.deps.RPCServer.ListTransactions(
-		ctx, &daemonrpc.ListTransactionsRequest{
+		ctx, &waverpc.ListTransactionsRequest{
 			Limit:  limit,
 			Offset: req.GetOffset(),
 		},
@@ -569,12 +574,12 @@ func (h *history) listOnchain(ctx context.Context,
 		return nil, fmt.Errorf("list onchain transactions: %w", err)
 	}
 
-	txs := make([]*walletdkrpc.OnchainTx, 0, len(resp.GetTransactions()))
+	txs := make([]*wavewalletrpc.OnchainTx, 0, len(resp.GetTransactions()))
 	for _, t := range resp.GetTransactions() {
 		txs = append(txs, onchainTxFromLedgerRow(t))
 	}
 
-	return &walletdkrpc.OnchainHistory{
+	return &wavewalletrpc.OnchainHistory{
 		Txs:     txs,
 		Total:   uint32(len(txs)),
 		HasMore: resp.GetHasMore(),
@@ -587,7 +592,7 @@ func (h *history) listOnchain(ctx context.Context,
 // the mapping. The full swap set is always queried so terminal swaps can
 // still hide their internal OOR ledger rows when callers request --pending.
 func (h *history) collectSwapEntries(ctx context.Context) (
-	[]*walletdkrpc.WalletEntry, swapOORCorrelations, error) {
+	[]*wavewalletrpc.WalletEntry, swapOORCorrelations, error) {
 
 	if h.deps.SwapService == nil {
 		return nil, swapOORCorrelations{}, nil
@@ -600,7 +605,7 @@ func (h *history) collectSwapEntries(ctx context.Context) (
 		return nil, swapOORCorrelations{}, err
 	}
 
-	out := make([]*walletdkrpc.WalletEntry, 0, len(resp.GetSwaps()))
+	out := make([]*wavewalletrpc.WalletEntry, 0, len(resp.GetSwaps()))
 	for _, s := range resp.GetSwaps() {
 		// The wallet layer does not surface vHTLC outpoints or
 		// session IDs; counterparty for swaps is the payment hash
@@ -608,7 +613,8 @@ func (h *history) collectSwapEntries(ctx context.Context) (
 		// direction drive the kind here (callers that own the
 		// SEND/RECV intent pass an explicit override on submit).
 		entry := swapEntryFromSummary(
-			s, "", "", walletdkrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
+			s, "", "",
+			wavewalletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
 		)
 		// entry.Id is the swap row's payment_hash — that is the
 		// stable wallet-layer canonical id for SEND-invoice and
@@ -626,14 +632,14 @@ func (h *history) collectSwapEntries(ctx context.Context) (
 // Older embeddings and ambiguous multi-address balances retain the aggregate
 // fallback row.
 func (h *history) collectPendingBoardingEntries(ctx context.Context) (
-	[]*walletdkrpc.WalletEntry, error) {
+	[]*wavewalletrpc.WalletEntry, error) {
 
 	if h.deps.RPCServer == nil {
 		return nil, nil
 	}
 
 	resp, err := h.deps.RPCServer.GetBalance(
-		ctx, &daemonrpc.GetBalanceRequest{},
+		ctx, &waverpc.GetBalanceRequest{},
 	)
 	if err != nil {
 		return nil, err
@@ -644,7 +650,7 @@ func (h *history) collectPendingBoardingEntries(ctx context.Context) (
 
 	now := nowUnix()
 	id := syntheticBoardingUnconfirmedID
-	var request *walletdkrpc.WalletEntryRequest
+	var request *wavewalletrpc.WalletEntryRequest
 
 	provider, ok := h.deps.RPCServer.(activeBoardingAddressProvider)
 	if ok && h.deps.ChainParams != nil {
@@ -701,18 +707,18 @@ func (h *history) collectPendingBoardingEntries(ctx context.Context) (
 		}
 	}
 
-	return []*walletdkrpc.WalletEntry{
+	return []*wavewalletrpc.WalletEntry{
 		{
 			Id:            id,
-			Kind:          walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT,
-			Status:        walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+			Kind:          wavewalletrpc.EntryKind_ENTRY_KIND_DEPOSIT,
+			Status:        wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
 			AmountSat:     resp.GetBoardingUnconfirmedSat(),
 			Counterparty:  "boarding",
 			CreatedAtUnix: now,
 			UpdatedAtUnix: now,
 			Request:       request,
-			Progress: &walletdkrpc.WalletEntryProgress{
-				Phase: walletdkrpc.
+			Progress: &wavewalletrpc.WalletEntryProgress{
+				Phase: wavewalletrpc.
 					WalletEntryPhase_WALLET_ENTRY_PHASE_WAITING_FOR_CONFIRMATION,
 				PhaseLabel: "waiting_for_confirmation",
 			},
@@ -725,15 +731,15 @@ func (h *history) collectPendingBoardingEntries(ctx context.Context) (
 // of truth for unilateral exits; activity consumes it through the existing
 // VTXO inventory plus per-outpoint ExitStatus surface.
 func (h *history) collectUnilateralExitEntries(ctx context.Context) (
-	[]*walletdkrpc.WalletEntry, error) {
+	[]*wavewalletrpc.WalletEntry, error) {
 
 	if h.deps.RPCServer == nil {
 		return nil, nil
 	}
 
 	resp, err := h.deps.RPCServer.ListVTXOs(
-		ctx, &daemonrpc.ListVTXOsRequest{
-			StatusFilter: daemonrpc.
+		ctx, &waverpc.ListVTXOsRequest{
+			StatusFilter: waverpc.
 				VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT,
 		},
 	)
@@ -741,14 +747,14 @@ func (h *history) collectUnilateralExitEntries(ctx context.Context) (
 		return nil, fmt.Errorf("list unilateral-exit vtxos: %w", err)
 	}
 
-	pendingByID := make(map[string]*walletdkrpc.WalletEntry)
+	pendingByID := make(map[string]*wavewalletrpc.WalletEntry)
 	if h.runtime != nil {
 		for _, entry := range h.runtime.pendingSnapshot() {
 			pendingByID[entry.GetId()] = entry
 		}
 	}
 
-	out := make([]*walletdkrpc.WalletEntry, 0, len(resp.GetVtxos()))
+	out := make([]*wavewalletrpc.WalletEntry, 0, len(resp.GetVtxos()))
 	for _, vtxo := range resp.GetVtxos() {
 		entry := unilateralExitEntryFromVTXO(vtxo)
 		if entry.GetId() == "" {
@@ -788,7 +794,7 @@ func (h *history) collectUnilateralExitEntries(ctx context.Context) (
 // uses this path immediately after Send returns; unilateral exit uses it until
 // the unroll status/VTXO projection catches up.
 func (h *history) collectWalletLocalPendingEntries(ctx context.Context,
-	forfeited map[string]settlement) []*walletdkrpc.WalletEntry {
+	forfeited map[string]settlement) []*wavewalletrpc.WalletEntry {
 
 	if h.runtime == nil {
 		return nil
@@ -796,7 +802,7 @@ func (h *history) collectWalletLocalPendingEntries(ctx context.Context,
 
 	entries := h.runtime.pendingSnapshot()
 	for _, entry := range entries {
-		if entry.GetKind() != walletdkrpc.EntryKind_ENTRY_KIND_EXIT {
+		if entry.GetKind() != wavewalletrpc.EntryKind_ENTRY_KIND_EXIT {
 			continue
 		}
 
@@ -818,7 +824,7 @@ func (h *history) hasWalletLocalExitEntries() bool {
 	}
 
 	for _, entry := range h.runtime.pendingSnapshot() {
-		if entry.GetKind() == walletdkrpc.EntryKind_ENTRY_KIND_EXIT {
+		if entry.GetKind() == wavewalletrpc.EntryKind_ENTRY_KIND_EXIT {
 			return true
 		}
 	}
@@ -850,8 +856,8 @@ func (h *history) collectForfeitedVTXOSettlements(ctx context.Context) (
 	}
 
 	resp, err := h.deps.RPCServer.ListVTXOs(
-		ctx, &daemonrpc.ListVTXOsRequest{
-			StatusFilter: daemonrpc.
+		ctx, &waverpc.ListVTXOsRequest{
+			StatusFilter: waverpc.
 				VTXOStatus_VTXO_STATUS_FORFEITED,
 		},
 	)
@@ -882,23 +888,23 @@ func (h *history) collectForfeitedVTXOSettlements(ctx context.Context) (
 // unilateralExitEntryFromVTXO projects a VTXO in UNILATERAL_EXIT into a
 // wallet-facing EXIT activity row. The amount is negative because value is
 // leaving Ark custody.
-func unilateralExitEntryFromVTXO(v *daemonrpc.VTXO) *walletdkrpc.WalletEntry {
+func unilateralExitEntryFromVTXO(v *waverpc.VTXO) *wavewalletrpc.WalletEntry {
 	if v == nil {
 		return nil
 	}
 
 	now := nowUnix()
 
-	return &walletdkrpc.WalletEntry{
+	return &wavewalletrpc.WalletEntry{
 		Id:            v.GetOutpoint(),
-		Kind:          walletdkrpc.EntryKind_ENTRY_KIND_EXIT,
-		Status:        walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		Kind:          wavewalletrpc.EntryKind_ENTRY_KIND_EXIT,
+		Status:        wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
 		AmountSat:     -v.GetAmountSat(),
 		Counterparty:  "unilateral",
 		CreatedAtUnix: now,
 		UpdatedAtUnix: now,
-		Progress: &walletdkrpc.WalletEntryProgress{
-			Phase: walletdkrpc.
+		Progress: &wavewalletrpc.WalletEntryProgress{
+			Phase: wavewalletrpc.
 				WalletEntryPhase_WALLET_ENTRY_PHASE_SETTLING,
 			PhaseLabel:   "unilateral_exit",
 			VtxoOutpoint: v.GetOutpoint(),
@@ -912,7 +918,8 @@ func unilateralExitEntryFromVTXO(v *daemonrpc.VTXO) *walletdkrpc.WalletEntry {
 // state for the entry id: a forfeited source VTXO means the leave round
 // confirmed and the wallet-local pending row can be shown as complete.
 func (h *history) decorateExitEntry(ctx context.Context,
-	entry *walletdkrpc.WalletEntry, forfeited map[string]settlement) error {
+	entry *wavewalletrpc.WalletEntry,
+	forfeited map[string]settlement) error {
 
 	if h.deps.RPCServer == nil || entry == nil || entry.GetId() == "" {
 		return nil
@@ -944,7 +951,7 @@ func (h *history) decorateExitEntry(ctx context.Context,
 	}
 
 	resp, err := h.deps.RPCServer.GetUnrollStatus(
-		ctx, &daemonrpc.GetUnrollStatusRequest{
+		ctx, &waverpc.GetUnrollStatusRequest{
 			Outpoint: lookup,
 		},
 	)
@@ -982,10 +989,10 @@ func looksLikeOutpoint(s string) bool {
 // best-effort: until the daemon persists a leave job that links queued
 // outpoints to the commitment tx, a restarted daemon cannot recreate the
 // original counterparty/note from the runtime-local row.
-func decorateCooperativeLeaveEntry(entry *walletdkrpc.WalletEntry,
+func decorateCooperativeLeaveEntry(entry *wavewalletrpc.WalletEntry,
 	forfeited map[string]settlement) {
 
-	if entry.GetStatus() != walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING {
+	if entry.GetStatus() != wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING {
 		return
 	}
 
@@ -1019,25 +1026,25 @@ func decorateCooperativeLeaveEntry(entry *walletdkrpc.WalletEntry,
 // settling round's txid, it is stamped onto the row's progress so the completed
 // leave can be reconciled against the chain; an empty txid (old daemon) leaves
 // the row complete but without on-chain coordinates, preserving prior behavior.
-func applyCooperativeLeaveForfeited(entry *walletdkrpc.WalletEntry,
+func applyCooperativeLeaveForfeited(entry *wavewalletrpc.WalletEntry,
 	settle settlement) {
 
 	if entry == nil {
 		return
 	}
 
-	entry.Status = walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE
+	entry.Status = wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE
 	entry.FailureReason = ""
 
 	progress := entry.GetProgress()
 	if progress == nil {
-		progress = &walletdkrpc.WalletEntryProgress{}
+		progress = &wavewalletrpc.WalletEntryProgress{}
 		entry.Progress = progress
 	}
 	if progress.GetVtxoOutpoint() == "" {
 		progress.VtxoOutpoint = entry.GetId()
 	}
-	progress.Phase = walletdkrpc.
+	progress.Phase = wavewalletrpc.
 		WalletEntryPhase_WALLET_ENTRY_PHASE_CONFIRMED
 	progress.PhaseLabel = "confirmed"
 
@@ -1066,7 +1073,7 @@ func applyCooperativeLeaveForfeited(entry *walletdkrpc.WalletEntry,
 // and Offset=0 and only the first `limit` rows ever came back.
 func (h *history) collectLedgerEntries(ctx context.Context, offset,
 	limit uint32, correlations swapOORCorrelations) (
-	[]*walletdkrpc.WalletEntry, error) {
+	[]*wavewalletrpc.WalletEntry, error) {
 
 	if h.deps.RPCServer == nil {
 		return nil, nil
@@ -1081,7 +1088,7 @@ func (h *history) collectLedgerEntries(ctx context.Context, offset,
 	}
 
 	resp, err := h.deps.RPCServer.ListTransactions(
-		ctx, &daemonrpc.ListTransactionsRequest{
+		ctx, &waverpc.ListTransactionsRequest{
 			Limit: pullLimit,
 		},
 	)
@@ -1092,7 +1099,12 @@ func (h *history) collectLedgerEntries(ctx context.Context, offset,
 	oorProjection := projectOORLedgerActivity(
 		resp.GetTransactions(), correlations,
 	)
-	out := make([]*walletdkrpc.WalletEntry, 0, len(resp.GetTransactions()))
+	out := make(
+		[]*wavewalletrpc.WalletEntry, 0,
+		len(
+			resp.GetTransactions(),
+		),
+	)
 	for _, t := range resp.GetTransactions() {
 		if _, ok := oorProjection.hidden[t.GetEntryId()]; ok {
 			continue
@@ -1127,15 +1139,15 @@ func (h *history) collectLedgerEntries(ctx context.Context, offset,
 // reflects the latest deposit's state with the correct running total. Order is
 // not preserved; deriveActivity re-sorts by updated_at.
 func sumDepositsByAddress(
-	entries []*walletdkrpc.WalletEntry) []*walletdkrpc.WalletEntry {
+	entries []*wavewalletrpc.WalletEntry) []*wavewalletrpc.WalletEntry {
 
 	sums := make(map[string]int64)
-	rep := make(map[string]*walletdkrpc.WalletEntry)
-	out := make([]*walletdkrpc.WalletEntry, 0, len(entries))
+	rep := make(map[string]*wavewalletrpc.WalletEntry)
+	out := make([]*wavewalletrpc.WalletEntry, 0, len(entries))
 
 	for _, e := range entries {
 		id := e.GetId()
-		if e.GetKind() != walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT ||
+		if e.GetKind() != wavewalletrpc.EntryKind_ENTRY_KIND_DEPOSIT ||
 			id == "" {
 
 			out = append(out, e)
@@ -1220,7 +1232,7 @@ type oorLedgerActivityProjection struct {
 // internalOORLedgerEntries returns ledger entry IDs for OOR legs that are
 // internal to swap execution or represent wallet-local OOR change. Inspection
 // uses this compact view because it only needs to mark hidden rows.
-func internalOORLedgerEntries(rows []*daemonrpc.TransactionHistoryEntry,
+func internalOORLedgerEntries(rows []*waverpc.TransactionHistoryEntry,
 	correlations swapOORCorrelations) map[int64]struct{} {
 
 	return projectOORLedgerActivity(rows, correlations).hidden
@@ -1229,12 +1241,12 @@ func internalOORLedgerEntries(rows []*daemonrpc.TransactionHistoryEntry,
 // projectOORLedgerActivity returns the wallet-facing projection for OOR ledger
 // rows. Accounting rows stay gross; this helper only hides internal rows and
 // computes display amounts for activity.
-func projectOORLedgerActivity(rows []*daemonrpc.TransactionHistoryEntry,
+func projectOORLedgerActivity(rows []*waverpc.TransactionHistoryEntry,
 	correlations swapOORCorrelations) oorLedgerActivityProjection {
 
 	receivedBySession := make(map[string]int64)
 	receiveRowsBySession := make(
-		map[string][]*daemonrpc.TransactionHistoryEntry,
+		map[string][]*waverpc.TransactionHistoryEntry,
 	)
 	var claimOutputSessions map[string]struct{}
 	for _, row := range rows {
@@ -1330,7 +1342,7 @@ func internalZeroDeltaSession(correlations swapOORCorrelations,
 // session id separately from the materialized output txid, while the swap
 // summary stores the claim id as the output txid. Matching both keeps the
 // internal send leg hidden in either shape.
-func receiveMatchesClaimOutput(row *daemonrpc.TransactionHistoryEntry,
+func receiveMatchesClaimOutput(row *waverpc.TransactionHistoryEntry,
 	claimSessions map[string]struct{}) bool {
 
 	if len(claimSessions) == 0 {
@@ -1358,7 +1370,7 @@ func sessionInSet(set map[string]struct{}, session string) bool {
 
 // oorSendSessionID extracts the session id from a ledger row that spends a VTXO
 // through OOR.
-func oorSendSessionID(row *daemonrpc.TransactionHistoryEntry) (string, bool) {
+func oorSendSessionID(row *waverpc.TransactionHistoryEntry) (string, bool) {
 	if row == nil || row.GetType() != "oor" ||
 		row.GetSubtype() != ledger.EventVTXOSent ||
 		row.GetDebitAccount() != ledger.AccountTransfersOut ||
@@ -1378,9 +1390,7 @@ func oorSendSessionID(row *daemonrpc.TransactionHistoryEntry) (string, bool) {
 
 // oorReceiveSessionID extracts the session id from a ledger row that receives a
 // VTXO through OOR.
-func oorReceiveSessionID(row *daemonrpc.TransactionHistoryEntry) (string,
-	bool) {
-
+func oorReceiveSessionID(row *waverpc.TransactionHistoryEntry) (string, bool) {
 	session, _, ok := oorReceiveRef(row)
 
 	return session, ok
@@ -1388,7 +1398,7 @@ func oorReceiveSessionID(row *daemonrpc.TransactionHistoryEntry) (string,
 
 // oorReceiveRef extracts the OOR output reference from structured ledger
 // fields.
-func oorReceiveRef(row *daemonrpc.TransactionHistoryEntry) (string, uint32,
+func oorReceiveRef(row *waverpc.TransactionHistoryEntry) (string, uint32,
 	bool) {
 
 	if row == nil || row.GetType() != "oor" ||
@@ -1431,11 +1441,11 @@ func oorReceiveRef(row *daemonrpc.TransactionHistoryEntry) (string, uint32,
 // applyOverlays elevates entries to FAILED in place when the runtime has
 // flagged them past their wallet-level deadline. The underlying swap or
 // ledger row is left alone; the elevation is a wallet-surface projection.
-func (h *history) applyOverlays(entries []*walletdkrpc.WalletEntry,
+func (h *history) applyOverlays(entries []*wavewalletrpc.WalletEntry,
 	swapEntryIDs map[string]struct{}) {
 
 	for _, e := range entries {
-		if e.GetStatus() != walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING {
+		if e.GetStatus() != wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING {
 			continue
 		}
 		if _, ok := swapEntryIDs[e.GetId()]; ok {
@@ -1455,8 +1465,8 @@ func (h *history) applyOverlays(entries []*walletdkrpc.WalletEntry,
 
 // shouldInclude reports whether a kind should be queried based on the
 // caller's kindFilter. An empty filter means include everything.
-func (h *history) shouldInclude(filter map[walletdkrpc.EntryKind]struct{},
-	kind walletdkrpc.EntryKind) bool {
+func (h *history) shouldInclude(filter map[wavewalletrpc.EntryKind]struct{},
+	kind wavewalletrpc.EntryKind) bool {
 
 	if len(filter) == 0 {
 		return true
@@ -1469,20 +1479,20 @@ func (h *history) shouldInclude(filter map[walletdkrpc.EntryKind]struct{},
 // buildKindFilter materializes a set from the caller's repeated EntryKind
 // filter. An empty input yields a nil set so the merger treats the call as
 // "all kinds."
-func buildKindFilter(kinds []walletdkrpc.EntryKind,
-) (map[walletdkrpc.EntryKind]struct{}, error) {
+func buildKindFilter(kinds []wavewalletrpc.EntryKind,
+) (map[wavewalletrpc.EntryKind]struct{}, error) {
 
 	if len(kinds) == 0 {
 		return nil, nil
 	}
 
-	out := make(map[walletdkrpc.EntryKind]struct{}, len(kinds))
+	out := make(map[wavewalletrpc.EntryKind]struct{}, len(kinds))
 	for _, k := range kinds {
 		switch k {
-		case walletdkrpc.EntryKind_ENTRY_KIND_SEND,
-			walletdkrpc.EntryKind_ENTRY_KIND_RECV,
-			walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT,
-			walletdkrpc.EntryKind_ENTRY_KIND_EXIT:
+		case wavewalletrpc.EntryKind_ENTRY_KIND_SEND,
+			wavewalletrpc.EntryKind_ENTRY_KIND_RECV,
+			wavewalletrpc.EntryKind_ENTRY_KIND_DEPOSIT,
+			wavewalletrpc.EntryKind_ENTRY_KIND_EXIT:
 
 		default:
 			return nil, fmt.Errorf("%w: %v", ErrUnsupportedKind, k)
@@ -1494,13 +1504,13 @@ func buildKindFilter(kinds []walletdkrpc.EntryKind,
 }
 
 // filterEntries applies pending_only and kind filters in one pass.
-func filterEntries(entries []*walletdkrpc.WalletEntry, pendingOnly bool,
-	kindFilter map[walletdkrpc.EntryKind]struct{}) []*walletdkrpc.WalletEntry {
+func filterEntries(entries []*wavewalletrpc.WalletEntry, pendingOnly bool,
+	kindFilter map[wavewalletrpc.EntryKind]struct{}) []*wavewalletrpc.WalletEntry {
 
 	out := entries[:0]
 	for _, e := range entries {
 		if pendingOnly && e.GetStatus() !=
-			walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING {
+			wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING {
 
 			continue
 		}
@@ -1524,7 +1534,9 @@ func filterEntries(entries []*walletdkrpc.WalletEntry, pendingOnly bool,
 // otherwise mutated. The caller (history.List) re-sorts after filtering
 // anyway, so the local sort here is not load-bearing for output order —
 // it only governs which duplicate wins.
-func dedupeByID(entries []*walletdkrpc.WalletEntry) []*walletdkrpc.WalletEntry {
+func dedupeByID(
+	entries []*wavewalletrpc.WalletEntry) []*wavewalletrpc.WalletEntry {
+
 	if len(entries) <= 1 {
 		return entries
 	}
@@ -1537,7 +1549,7 @@ func dedupeByID(entries []*walletdkrpc.WalletEntry) []*walletdkrpc.WalletEntry {
 	})
 
 	seen := fn.NewSet[string]()
-	out := make([]*walletdkrpc.WalletEntry, 0, len(entries))
+	out := make([]*wavewalletrpc.WalletEntry, 0, len(entries))
 	for _, e := range entries {
 		id := e.GetId()
 		if id == "" {
@@ -1557,8 +1569,8 @@ func dedupeByID(entries []*walletdkrpc.WalletEntry) []*walletdkrpc.WalletEntry {
 
 // paginate slices entries by offset and limit, returning a fresh slice so
 // the caller cannot mutate the merger's internal buffer.
-func paginate(entries []*walletdkrpc.WalletEntry, offset,
-	limit uint32) []*walletdkrpc.WalletEntry {
+func paginate(entries []*wavewalletrpc.WalletEntry, offset,
+	limit uint32) []*wavewalletrpc.WalletEntry {
 
 	if offset >= uint32(len(entries)) {
 		return nil
@@ -1567,7 +1579,7 @@ func paginate(entries []*walletdkrpc.WalletEntry, offset,
 	if end > uint32(len(entries)) {
 		end = uint32(len(entries))
 	}
-	page := make([]*walletdkrpc.WalletEntry, 0, end-offset)
+	page := make([]*wavewalletrpc.WalletEntry, 0, end-offset)
 	page = append(page, entries[offset:end]...)
 
 	return page
@@ -1577,8 +1589,8 @@ func paginate(entries []*walletdkrpc.WalletEntry, offset,
 // Returns (entry, true) when the row maps onto a user-facing wallet
 // operation; (nil, false) when the row should be hidden from the wallet
 // view (e.g. internal fee accounting rows we don't yet model).
-func walletEntryFromLedgerRow(t *daemonrpc.TransactionHistoryEntry) (
-	*walletdkrpc.WalletEntry, bool) {
+func walletEntryFromLedgerRow(t *waverpc.TransactionHistoryEntry) (
+	*wavewalletrpc.WalletEntry, bool) {
 
 	if t == nil {
 		return nil, false
@@ -1598,7 +1610,7 @@ func walletEntryFromLedgerRow(t *daemonrpc.TransactionHistoryEntry) (
 
 	amount := t.GetAmountSat() * direction
 
-	return &walletdkrpc.WalletEntry{
+	return &wavewalletrpc.WalletEntry{
 		Id:            id,
 		Kind:          kind,
 		Status:        statusForLedgerRow(t),
@@ -1626,14 +1638,14 @@ func walletEntryFromLedgerRow(t *daemonrpc.TransactionHistoryEntry) (
 // then to the bare txid. Because the key is the address, multiple UTXOs paid to
 // the same (single-use-by-design) boarding address collapse into one row; the
 // ledger and the ONCHAIN view retain the per-UTXO truth.
-func ledgerActivityID(t *daemonrpc.TransactionHistoryEntry,
-	kind walletdkrpc.EntryKind) string {
+func ledgerActivityID(t *waverpc.TransactionHistoryEntry,
+	kind wavewalletrpc.EntryKind) string {
 
 	if t == nil || t.GetTxid() == "" {
 		return ""
 	}
 
-	if kind == walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT &&
+	if kind == wavewalletrpc.EntryKind_ENTRY_KIND_DEPOSIT &&
 		t.GetSubtype() == ledger.EventWalletUTXOCreated {
 
 		// Prefer the address-scoped id so the confirmed deposit row
@@ -1658,10 +1670,10 @@ func ledgerActivityID(t *daemonrpc.TransactionHistoryEntry,
 // WalletEntry.progress and InspectActivity; confirmed on-chain deposits stay
 // pending while they are still waiting to board into a confirmed round.
 func statusForLedgerRow(
-	t *daemonrpc.TransactionHistoryEntry) walletdkrpc.EntryStatus {
+	t *waverpc.TransactionHistoryEntry) wavewalletrpc.EntryStatus {
 
 	if t.GetType() == "oor" && t.GetConfirmationStatus() == "recorded" {
-		return walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE
+		return wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE
 	}
 
 	return statusFromLedgerConfirmation(t.GetConfirmationStatus())
@@ -1670,7 +1682,7 @@ func statusForLedgerRow(
 // progressFromLedgerRow projects ledger confirmation metadata onto
 // WalletEntryProgress.
 func progressFromLedgerRow(
-	t *daemonrpc.TransactionHistoryEntry) *walletdkrpc.WalletEntryProgress {
+	t *waverpc.TransactionHistoryEntry) *wavewalletrpc.WalletEntryProgress {
 
 	if t == nil {
 		return nil
@@ -1678,11 +1690,11 @@ func progressFromLedgerRow(
 
 	phase, label := phaseFromLedgerConfirmation(t.GetConfirmationStatus())
 	if t.GetType() == "oor" && t.GetConfirmationStatus() == "recorded" {
-		phase = walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_CONFIRMED
+		phase = wavewalletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_CONFIRMED
 		label = "confirmed"
 	}
 
-	return &walletdkrpc.WalletEntryProgress{
+	return &wavewalletrpc.WalletEntryProgress{
 		Phase:              phase,
 		PhaseLabel:         label,
 		Txid:               t.GetTxid(),
@@ -1694,15 +1706,15 @@ func progressFromLedgerRow(
 // a WalletEntry kind and an amount-sign direction (+1 incoming, -1
 // outgoing). Returns ok=false for rows that don't map onto a user-facing
 // wallet operation (internal fee bookkeeping, intermediate states).
-func classifyLedgerRow(t *daemonrpc.TransactionHistoryEntry) (
-	walletdkrpc.EntryKind, int64, bool) {
+func classifyLedgerRow(t *waverpc.TransactionHistoryEntry) (
+	wavewalletrpc.EntryKind, int64, bool) {
 
 	switch t.GetType() {
 	case "boarding":
-		return walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT, +1, true
+		return wavewalletrpc.EntryKind_ENTRY_KIND_DEPOSIT, +1, true
 
 	case "sweep":
-		return walletdkrpc.EntryKind_ENTRY_KIND_EXIT, -1, true
+		return wavewalletrpc.EntryKind_ENTRY_KIND_EXIT, -1, true
 
 	case "oor":
 		// The ledger books OOR receives as
@@ -1713,58 +1725,58 @@ func classifyLedgerRow(t *daemonrpc.TransactionHistoryEntry) (
 		// so we don't depend on which leg the daemon row carries.
 		switch {
 		case t.GetCreditAccount() == ledger.AccountTransfersIn:
-			return walletdkrpc.EntryKind_ENTRY_KIND_RECV, +1, true
+			return wavewalletrpc.EntryKind_ENTRY_KIND_RECV, +1, true
 
 		case t.GetDebitAccount() == ledger.AccountTransfersOut:
-			return walletdkrpc.EntryKind_ENTRY_KIND_SEND, -1, true
+			return wavewalletrpc.EntryKind_ENTRY_KIND_SEND, -1, true
 		}
 
 		// OOR rows without a recognisable counterparty account are
 		// internal bookkeeping — hide them from the wallet view.
-		return walletdkrpc.EntryKind_ENTRY_KIND_UNSPECIFIED, 0, false
+		return wavewalletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED, 0, false
 
 	default:
 		// Round-level and other rows are not yet modeled as wallet
 		// operations in v1.
-		return walletdkrpc.EntryKind_ENTRY_KIND_UNSPECIFIED, 0, false
+		return wavewalletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED, 0, false
 	}
 }
 
 // statusFromLedgerConfirmation maps the ledger row's confirmation_status
 // string onto the flat wallet status.
-func statusFromLedgerConfirmation(s string) walletdkrpc.EntryStatus {
+func statusFromLedgerConfirmation(s string) wavewalletrpc.EntryStatus {
 	switch s {
 	case "confirmed", "swept":
-		return walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE
+		return wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE
 
 	case "failed":
-		return walletdkrpc.EntryStatus_ENTRY_STATUS_FAILED
+		return wavewalletrpc.EntryStatus_ENTRY_STATUS_FAILED
 
 	default:
-		return walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING
+		return wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING
 	}
 }
 
 // phaseFromLedgerConfirmation maps the ledger confirmation string to the
 // normalized wallet phase and label.
-func phaseFromLedgerConfirmation(s string) (walletdkrpc.WalletEntryPhase,
+func phaseFromLedgerConfirmation(s string) (wavewalletrpc.WalletEntryPhase,
 	string) {
 
 	switch s {
 	case "boarding":
-		return walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_SETTLING,
+		return wavewalletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_SETTLING,
 			"boarding"
 
 	case "confirmed", "swept":
-		return walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_CONFIRMED,
+		return wavewalletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_CONFIRMED,
 			"confirmed"
 
 	case "failed":
-		return walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_FAILED,
+		return wavewalletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_FAILED,
 			"failed"
 
 	default:
-		return walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_PAYMENT_DETECTED,
+		return wavewalletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_PAYMENT_DETECTED,
 			"payment_detected"
 	}
 }
@@ -1774,14 +1786,14 @@ func phaseFromLedgerConfirmation(s string) (walletdkrpc.WalletEntryPhase,
 // "boarding"; for EXIT rows it returns the txid (truncated); for SEND/RECV
 // OOR rows it returns the txid or an empty string when the row carries
 // none.
-func ledgerCounterparty(t *daemonrpc.TransactionHistoryEntry,
-	kind walletdkrpc.EntryKind) string {
+func ledgerCounterparty(t *waverpc.TransactionHistoryEntry,
+	kind wavewalletrpc.EntryKind) string {
 
 	switch kind {
-	case walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT:
+	case wavewalletrpc.EntryKind_ENTRY_KIND_DEPOSIT:
 		return "boarding"
 
-	case walletdkrpc.EntryKind_ENTRY_KIND_EXIT:
+	case wavewalletrpc.EntryKind_ENTRY_KIND_EXIT:
 		return truncate(t.GetTxid(), truncatedCounterpartyLen)
 
 	default:

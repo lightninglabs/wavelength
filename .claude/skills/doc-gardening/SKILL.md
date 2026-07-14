@@ -102,7 +102,7 @@ Fix any errors before finishing. Report what was created/updated.
 
 ## Notes
 
-- Skip generated code directories (`arkrpc`, `rpc`, `daemonrpc`) unless proto
+- Skip generated code directories (`arkrpc`, `rpc`, `waverpc`) unless proto
   definitions changed.
 - When in doubt about a type's purpose, run `go doc <package>.<Type>`.
 - Prefer reading actual source over guessing from file names.

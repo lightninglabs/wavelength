@@ -21,7 +21,7 @@ on-chain transactions from wallet and daemon chain backends.
 - **Depends on**: `lndclient` (WalletKit RPC client), `lnd/lnwallet/chainfee`
   (the `Estimator` interface and `SatPerKWeight`/`FeePerKwFloor` types).
 - **Depended on by**: `chainbackends` (wires these estimators into chain
-  backend adapters), `darepod` (server wiring and logging subsystem
+  backend adapters), `waved` (server wiring and logging subsystem
   registration).
 
 ## Invariants

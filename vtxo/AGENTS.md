@@ -77,7 +77,7 @@ when the local wallet owns the receive script.
 - `ManagerMsg` / `ManagerResp` — Type aliases for `actormsg.VTXOManagerMsg` / `actormsg.VTXOManagerResp` (admission types live in `lib/actormsg` to avoid import cycles).
 - `IncomingVTXOHandler` — Actor that consumes `arkrpc.IncomingVTXOEvent` push notifications, looks up the receive script in the owned-script store, builds a `Descriptor` (with tapscript derived via `lib/arkscript`), persists it via `VTXOSaver`, and tells the manager via `VTXOsMaterializedNotification`. Only `VTXO_EVENT_TYPE_CREATED` events are acted on; unknown event kinds and unowned scripts are silently ignored. Inputs are validated for outpoint shape, pkScript presence, and `int64`/`MaxSatoshi` value bounds before any DB write.
 - `IncomingVTXOMsg` / `IncomingVTXOResp` — Actor envelope wrapping an `arkrpc.IncomingVTXOEvent` and the `any`-typed response.
-- `IncomingVTXOServiceKey` — Well-known service key (`"incoming-vtxo-handler"`) used by `darepod` to register the actor and by `serverconn.EventRouter` to dispatch routed events.
+- `IncomingVTXOServiceKey` — Well-known service key (`"incoming-vtxo-handler"`) used by `waved` to register the actor and by `serverconn.EventRouter` to dispatch routed events.
 - `OwnedReceiveScript` / `OwnedScriptLookup` — Read-only view of the owned receive scripts store used by the incoming handler. `LookupOwnedReceiveScript` returns `sql.ErrNoRows` for unknown scripts; the handler treats this as "not ours" and exits cleanly.
 - `VTXOSaver` — Narrow persistence interface (`SaveVTXO(ctx, *Descriptor)`) the incoming handler uses; the production implementation is the `db` VTXO store, which serializes a missing tree path as an empty blob.
 - `VTXOsMaterializedNotification` — Manager-facing notification carrying already-persisted descriptors; the manager spawns one actor per descriptor without performing another store write. Used by both the OOR receive path and the new incoming round VTXO handler.
@@ -86,8 +86,8 @@ when the local wallet owns the receive script.
 
 ## Relationships
 
-- **Depends on**: `baselib/protofsm` (FSM engine), `baselib/actor` (actor system), `lib/types` (`Ancestry`), `lib/arkscript` (taproot construction and policy helpers in `IncomingVTXOHandler`), `lib/actormsg` (admission and custom-forfeit message types), `arkrpc` (`IncomingVTXOEvent`), `chainsource` (block epochs), `coinselect` (largest-first VTXO selection), `metrics` (optional `OORTransferReceivedMsg` sink), `ledger` (`Sink` type for compatibility with manager wiring), `unroll` (via `ExitOutcomeResolver` callback wired by `darepod`).
-- **Depended on by**: `round` (triggers forfeit requests), `oor` (incoming VTXOs), `wallet` (admission gating), `db` (persistence), `darepod` (wiring, owned-script adapters, incoming event route).
+- **Depends on**: `baselib/protofsm` (FSM engine), `baselib/actor` (actor system), `lib/types` (`Ancestry`), `lib/arkscript` (taproot construction and policy helpers in `IncomingVTXOHandler`), `lib/actormsg` (admission and custom-forfeit message types), `arkrpc` (`IncomingVTXOEvent`), `chainsource` (block epochs), `coinselect` (largest-first VTXO selection), `metrics` (optional `OORTransferReceivedMsg` sink), `ledger` (`Sink` type for compatibility with manager wiring), `unroll` (via `ExitOutcomeResolver` callback wired by `waved`).
+- **Depended on by**: `round` (triggers forfeit requests), `oor` (incoming VTXOs), `wallet` (admission gating), `db` (persistence), `waved` (wiring, owned-script adapters, incoming event route).
 - **Sends**:
   - → `round` (via manager relay): `RelayToRoundMsg` wrapping `ForfeitSignatureSubmission`
   - → `db` (via outbox): `VTXOStatusUpdate`
@@ -100,7 +100,7 @@ when the local wallet owns the receive script.
   - ← `round` (via `lib/actormsg`): `DropCustomForfeitInputsRequest` (rollback on rejected round intent)
   - ← `chainsource` (via Manager): `BlockEpochEvent`
   - ← `serverconn` (via `EventRouter` route `MethodIncomingVTXO`): `IncomingVTXOMsg` (wrapping `arkrpc.IncomingVTXOEvent`), routed to `IncomingVTXOHandler`
-  - ← `unroll` (via `RegistryConfig.VTXOExitObserver`, forwarded by `darepod`): `ExitOutcomeNotification` — terminal exit job result forwarded to reconcile VTXO lifecycle after an unroll completes or fails cleanly
+  - ← `unroll` (via `RegistryConfig.VTXOExitObserver`, forwarded by `waved`): `ExitOutcomeNotification` — terminal exit job result forwarded to reconcile VTXO lifecycle after an unroll completes or fails cleanly
 
 ## Multi-Tree Ancestry
 

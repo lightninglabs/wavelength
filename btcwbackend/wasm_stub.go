@@ -11,10 +11,10 @@ import (
 
 	"github.com/btcsuite/btcd/chaincfg/v2"
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/chainbackends"
-	"github.com/lightninglabs/darepo-client/chainsource"
-	"github.com/lightninglabs/darepo-client/wallet"
-	"github.com/lightninglabs/darepo-client/walletcore"
+	"github.com/lightninglabs/wavelength/chainbackends"
+	"github.com/lightninglabs/wavelength/chainsource"
+	"github.com/lightninglabs/wavelength/wallet"
+	"github.com/lightninglabs/wavelength/walletcore"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 )

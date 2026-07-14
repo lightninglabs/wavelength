@@ -8,7 +8,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/lightninglabs/darepo-client/lib/types"
+	"github.com/lightninglabs/wavelength/lib/types"
 )
 
 // minChangeFloor is the absolute floor applied to the on-chain change

@@ -6,7 +6,7 @@ Build, lint, codegen, and release helper scripts (bash and Python) invoked
 from Makefile targets. Covers Go/migration version checks, formatting
 (`llformat-files.sh`), protobuf/sqlc codegen wrappers, doc cross-link
 checks, commit-message linting, custom-linter build/install, and release
-tagging. `check-sample-darepod-conf/` and `verify-schema-registry/` are
+tagging. `check-sample-waved-conf/` and `verify-schema-registry/` are
 separate Go tools with their own docs.
 
 ## Relationships

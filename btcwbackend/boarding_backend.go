@@ -17,9 +17,9 @@ import (
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/btcsuite/btcwallet/wtxmgr"
-	"github.com/lightninglabs/darepo-client/wallet"
-	"github.com/lightninglabs/darepo-client/walletcore"
 	"github.com/lightninglabs/neutrino"
+	"github.com/lightninglabs/wavelength/wallet"
+	"github.com/lightninglabs/wavelength/walletcore"
 	"github.com/lightningnetwork/lnd/blockcache"
 	"github.com/lightningnetwork/lnd/lnwallet/btcwallet"
 )
@@ -236,7 +236,7 @@ func (b *BoardingBackendAdapter) GetBlock(ctx context.Context,
 // reserves a UTXO via LeaseOutput it stays excluded from coin
 // selection even if the daemon restarts mid-bump.
 //
-// The darepo-local wallet.LockID is re-interpreted as wtxmgr.LockID:
+// The wavelength-local wallet.LockID is re-interpreted as wtxmgr.LockID:
 // both are [32]byte, so the translation is a direct type cast rather
 // than a mapping table. This keeps the LockID stable across the
 // interface boundary so ReleaseOutput can use the same identifier

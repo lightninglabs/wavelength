@@ -7,7 +7,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/lightninglabs/darepo-client/lib/arkscript"
+	"github.com/lightninglabs/wavelength/lib/arkscript"
 )
 
 // ScriptLookup returns the output script (pkscript) for a leaf node.

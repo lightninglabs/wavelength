@@ -6,7 +6,7 @@ import (
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/wire/v2"
-	libtypes "github.com/lightninglabs/darepo-client/lib/types"
+	libtypes "github.com/lightninglabs/wavelength/lib/types"
 )
 
 // PackageDirection aliases the shared OOR package direction enum.

@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document describes the branch management workflow for darepo-client
+This document describes the branch management workflow for wavelength
 releases. The `main` branch remains open for merges at all times. Release
 stabilization happens on dedicated release branches, with CI automation handling
 backports of labeled changes. This approach keeps development velocity high while

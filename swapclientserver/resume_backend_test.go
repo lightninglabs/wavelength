@@ -6,13 +6,13 @@ import (
 	"encoding/hex"
 	"testing"
 
-	"github.com/lightninglabs/darepo-client/darepod"
-	"github.com/lightninglabs/darepo-client/sdk/swaps"
+	"github.com/lightninglabs/wavelength/sdk/swaps"
+	"github.com/lightninglabs/wavelength/waved"
 	"github.com/stretchr/testify/require"
 )
 
 // TestServiceImplementsSwapBackend confirms that *swapClientService satisfies
-// the darepod.SwapBackend interface so the walletdkrpc registrar can hold a
+// the waved.SwapBackend interface so the wavewalletrpc registrar can hold a
 // handle to it via cfg.Swap.Backend without depending on swapclientserver
 // internals.
 func TestServiceImplementsSwapBackend(t *testing.T) {
@@ -21,7 +21,7 @@ func TestServiceImplementsSwapBackend(t *testing.T) {
 	service := newTestSwapClientService(newFakeSwapRuntime())
 	defer service.cancel()
 
-	var backend darepod.SwapBackend = service
+	var backend waved.SwapBackend = service
 	require.NotNil(t, backend)
 }
 
@@ -50,9 +50,9 @@ func TestExportedResumePendingDrivesSameSweep(t *testing.T) {
 	service := newTestSwapClientService(fakeClient)
 	defer service.cancel()
 
-	// Drive the sweep through the public Backend surface that walletdkrpc
+	// Drive the sweep through the public Backend surface that wavewalletrpc
 	// will call.
-	var backend darepod.SwapBackend = service
+	var backend waved.SwapBackend = service
 	backend.ResumePending(t.Context())
 
 	fakeClient.awaitPayResume(t, payHash)

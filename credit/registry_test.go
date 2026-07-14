@@ -8,9 +8,9 @@ import (
 	"time"
 
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/baselib/actor"
-	"github.com/lightninglabs/darepo-client/db"
-	"github.com/lightninglabs/darepo-client/db/actordelivery"
+	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/db"
+	"github.com/lightninglabs/wavelength/db/actordelivery"
 	"github.com/lightningnetwork/lnd/clock"
 	"github.com/stretchr/testify/require"
 )

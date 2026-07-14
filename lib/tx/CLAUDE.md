@@ -29,7 +29,7 @@ handle specific transaction types (Ark batch, checkpoint, OOR, PSBT utilities).
 
 - **Depends on**: `lib/arkscript` (taproot script construction, policy types).
 - **Depended on by**: `round` (forfeit construction/validation), `oor` (checkpoint/Ark signing),
-  `vtxo` (forfeit signing), `darepod` (forfeit signature broker, RPC server).
+  `vtxo` (forfeit signing), `waved` (forfeit signature broker, RPC server).
 
 ## Invariants
 

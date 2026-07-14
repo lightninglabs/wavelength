@@ -1,0 +1,2698 @@
+syntax = "proto3";
+
+package waverpc;
+
+option go_package = "github.com/lightninglabs/wavelength/waverpc";
+
+// DaemonService is the client daemon's own gRPC API. External tools such as
+// CLI wallets and GUIs connect to this service to interact with the running
+// daemon.
+service DaemonService {
+    // GetInfo returns basic status information about the running daemon
+    // including version, network, lnd connection state, and server
+    // connection state.
+    rpc GetInfo (GetInfoRequest) returns (GetInfoResponse);
+
+    // GenSeed generates a new aezeed cipher seed mnemonic. This is the
+    // first step when creating a new lwwallet-backed wallet. The returned
+    // mnemonic must be passed to InitWallet to finalize wallet creation.
+    // Only available in lwwallet mode.
+    rpc GenSeed (GenSeedRequest) returns (GenSeedResponse);
+
+    // InitWallet creates a new wallet from a previously generated aezeed
+    // mnemonic. The wallet is encrypted at rest with the provided
+    // password. Only available in lwwallet mode when no wallet exists.
+    rpc InitWallet (InitWalletRequest) returns (InitWalletResponse);
+
+    // UnlockWallet decrypts an existing wallet seed using the provided
+    // password and starts the wallet subsystem. Only available in
+    // lwwallet mode when the wallet is locked.
+    rpc UnlockWallet (UnlockWalletRequest) returns (UnlockWalletResponse);
+
+    // GetBalance returns the current balance of the wallet, broken down
+    // by boarding (on-chain) and VTXO (off-chain) balances.
+    rpc GetBalance (GetBalanceRequest) returns (GetBalanceResponse);
+
+    // ListVTXOs returns the set of VTXOs known to the wallet, optionally
+    // filtered by status and minimum amount.
+    rpc ListVTXOs (ListVTXOsRequest) returns (ListVTXOsResponse);
+
+    // NewAddress generates a new boarding address that can receive
+    // on-chain funds for use in the Ark protocol.
+    rpc NewAddress (NewAddressRequest) returns (NewAddressResponse);
+
+    // NewReceiveScript allocates a fresh wallet key, registers the
+    // matching taproot receive script with the indexer, and returns the
+    // script details needed to hand the destination to a sender.
+    rpc NewReceiveScript (NewReceiveScriptRequest)
+        returns (NewReceiveScriptResponse);
+
+    // ReceiveAuthKey returns the per-payment receive-auth public key.
+    rpc ReceiveAuthKey (ReceiveAuthKeyRequest) returns (ReceiveAuthKeyResponse);
+
+    // SignReceiveAuthMessage signs one message with the per-payment
+    // receive-auth key.
+    rpc SignReceiveAuthMessage (SignReceiveAuthMessageRequest)
+        returns (SignReceiveAuthMessageResponse);
+
+    // SignReceiveAuthMessageCompact signs one message with the
+    // per-payment receive-auth key and returns a compact signature.
+    rpc SignReceiveAuthMessageCompact (SignReceiveAuthMessageCompactRequest)
+        returns (SignReceiveAuthMessageCompactResponse);
+
+    // ReceiveAuthECDH derives one Sphinx shared secret with the
+    // per-payment receive-auth key.
+    rpc ReceiveAuthECDH (ReceiveAuthECDHRequest)
+        returns (ReceiveAuthECDHResponse);
+
+    // GetIndexedVTXOByPkScript queries the authoritative indexer for the
+    // first VTXO matching the given script and status filter.
+    rpc GetIndexedVTXOByPkScript (GetIndexedVTXOByPkScriptRequest)
+        returns (GetIndexedVTXOByPkScriptResponse);
+
+    // GetVTXOExpiryInfo returns the wallet/VTXO layer's expiry posture for a
+    // VTXO identified by outpoint or pkScript.
+    rpc GetVTXOExpiryInfo (GetVTXOExpiryInfoRequest)
+        returns (GetVTXOExpiryInfoResponse);
+
+    // GetIndexedOORSessionByTxid queries the authoritative indexer for one
+    // OOR session using a spent script proof and deterministic session txid.
+    rpc GetIndexedOORSessionByTxid (GetIndexedOORSessionByTxidRequest)
+        returns (GetIndexedOORSessionByTxidResponse);
+
+    // SendVTXO initiates an in-round transfer by submitting a refresh
+    // request to the round coordinator. The transfer completes when the
+    // next round commits.
+    rpc SendVTXO (SendVTXORequest) returns (SendVTXOResponse);
+
+    // SendOOR initiates an out-of-round transfer directly between the
+    // client and operator, without waiting for a round.
+    rpc SendOOR (SendOORRequest) returns (SendOORResponse);
+
+    // PrepareOOR builds the deterministic OOR package without submitting it.
+    // This lets callers collect signatures from external custom-input
+    // participants before calling SendOOR with the same parameters.
+    rpc PrepareOOR (PrepareOORRequest) returns (PrepareOORResponse);
+
+    // SignOORCustomInput signs one prepared custom OOR checkpoint input with
+    // the daemon identity key.
+    rpc SignOORCustomInput (SignOORCustomInputRequest)
+        returns (SignOORCustomInputResponse);
+
+    // SignVTXOForfeit signs the VTXO input of an exact forfeit transaction
+    // with the daemon identity key after a round has assigned the connector
+    // input. This is a low-level signing primitive; callers must enforce any
+    // swap-specific authorization before invoking it.
+    rpc SignVTXOForfeit (SignVTXOForfeitRequest)
+        returns (SignVTXOForfeitResponse);
+
+    // RefreshVTXOs queues one or more VTXOs for refresh in the next
+    // round. This extends their expiry without changing ownership.
+    rpc RefreshVTXOs (RefreshVTXOsRequest) returns (RefreshVTXOsResponse);
+
+    // RefreshCustomVTXOs queues caller-supplied custom-policy VTXOs for
+    // refresh in the next round. Unlike RefreshVTXOs, this does not require
+    // the inputs to be wallet-managed live VTXOs; callers provide the policy,
+    // proof/auth spend path, and forfeit spend path explicitly.
+    //
+    // This RPC only queues the old VTXO and the replacement output. It cannot
+    // collect every participant signature yet because the round has not
+    // assigned the connector output, so the final forfeit transaction does not
+    // exist. If a queued input needs a non-daemon participant signature, the
+    // daemon exposes that exact connector-bound transcript later through
+    // ListPendingForfeitParticipantSignatureRequests.
+    rpc RefreshCustomVTXOs (RefreshCustomVTXOsRequest)
+        returns (RefreshCustomVTXOsResponse);
+
+    // ListPendingForfeitParticipantSignatureRequests returns exact
+    // connector-bound forfeit signing requests emitted by custom refresh
+    // inputs whose policies require signatures from external participants.
+    // Callers poll this endpoint, validate the full transcript, sign the VTXO
+    // input with the participant key they control, and submit the result with
+    // SubmitForfeitParticipantSignatures.
+    rpc ListPendingForfeitParticipantSignatureRequests (
+        ListPendingForfeitParticipantSignatureRequestsRequest)
+        returns (ListPendingForfeitParticipantSignatureRequestsResponse);
+
+    // SubmitForfeitParticipantSignatures supplies external participant
+    // signatures for one pending connector-bound forfeit signing request. The
+    // request_id must be copied from the listed pending request; the daemon
+    // uses it to wake the blocked VTXO actor that is waiting for that exact
+    // round-assigned forfeit transaction. If the selected spend path requires
+    // no external participant keys after removing the local VTXO key and the
+    // operator key, callers may submit an empty signature set to acknowledge
+    // and unblock the request.
+    rpc SubmitForfeitParticipantSignatures (
+        SubmitForfeitParticipantSignaturesRequest)
+        returns (SubmitForfeitParticipantSignaturesResponse);
+
+    // LeaveVTXOs queues one or more VTXOs for cooperative leave
+    // (offboard) in the next round. Each VTXO is forfeited and the
+    // forfeited amount (minus the quoted per-input operator fee)
+    // lands as an on-chain output at the specified destination.
+    rpc LeaveVTXOs (LeaveVTXOsRequest) returns (LeaveVTXOsResponse);
+
+    // SendOnChain is the wallet-shaped onchain payment primitive: it
+    // picks live VTXOs to cover the requested amount, forfeits them
+    // in the next round, produces one on-chain output of the exact
+    // requested amount at the supplied destination, and returns any
+    // residual to the caller as a change VTXO. The atomic
+    // forfeit + leave + change-VTXO intent registers immediately
+    // (TriggerRegistration=true) so the caller does not need to also
+    // issue JoinNextRound. sweep_all skips selection and drains every
+    // live VTXO to the destination (no change VTXO produced).
+    rpc SendOnChain (SendOnChainRequest) returns (SendOnChainResponse);
+
+    // Board triggers the client to join the next round with any
+    // confirmed boarding UTXOs. This sends IntentRequested to
+    // the round FSM, which emits a JoinRoundRequest to the server.
+    rpc Board (BoardRequest) returns (BoardResponse);
+
+    // JoinNextRound asks the client round FSM to commit any currently
+    // queued round intents and emit a JoinRoundRequest to the operator.
+    // Useful after queueing refresh or leave intents that intentionally
+    // batch in PendingRoundAssembly. The proto name avoids collision with
+    // roundpb.JoinRoundRequest, which is the underlying wire message the
+    // round FSM emits to the operator once this RPC fires.
+    rpc JoinNextRound (JoinNextRoundRequest) returns (JoinNextRoundResponse);
+
+    // SweepBoardingUTXOs sweeps boarding UTXOs whose CSV timeout path is
+    // mature back to the wallet.
+    rpc SweepBoardingUTXOs (SweepBoardingUTXOsRequest)
+        returns (SweepBoardingUTXOsResponse);
+
+    // ListBoardingSweeps returns persisted aggregate boarding sweep
+    // transactions and their tracked inputs.
+    rpc ListBoardingSweeps (ListBoardingSweepsRequest)
+        returns (ListBoardingSweepsResponse);
+
+    // ListRounds returns the current state of all round FSM instances.
+    // Each round is identified by its round ID (or a temporary key if
+    // the server hasn't assigned one yet).
+    rpc ListRounds (ListRoundsRequest) returns (ListRoundsResponse);
+
+    // GetRound returns one known round by server-assigned round ID. The
+    // response includes the live FSM state when the round is still in
+    // memory, or the persisted SQL status and artifacts for completed
+    // rounds.
+    rpc GetRound (GetRoundRequest) returns (GetRoundResponse);
+
+    // WatchRounds opens a server-streaming connection that pushes
+    // round state updates as they occur. The stream stays open until
+    // the client disconnects.
+    rpc WatchRounds (WatchRoundsRequest) returns (stream WatchRoundsResponse);
+
+    // ListOORSessions returns locally known out-of-round transfer sessions.
+    // Pending and failed sessions come from the durable OOR actor; completed
+    // sessions come from persisted OOR package artifacts.
+    rpc ListOORSessions (ListOORSessionsRequest)
+        returns (ListOORSessionsResponse);
+
+    // GetOORSession returns one locally known out-of-round transfer session.
+    rpc GetOORSession (GetOORSessionRequest) returns (GetOORSessionResponse);
+
+    // EstimateFee returns a fee breakdown for a given VTXO amount at
+    // the operator's current rates and utilization. The daemon proxies
+    // this to the server's EstimateFee RPC.
+    rpc EstimateFee (EstimateFeeRequest) returns (EstimateFeeResponse);
+
+    // GetFeeHistory returns paginated fee ledger entries from the
+    // client's local accounting database.
+    rpc GetFeeHistory (GetFeeHistoryRequest) returns (GetFeeHistoryResponse);
+
+    // ListTransactions returns a paginated transaction history from
+    // the client's local accounting and sweep databases.
+    rpc ListTransactions (ListTransactionsRequest)
+        returns (ListTransactionsResponse);
+
+    // Unroll triggers a unilateral exit for the specified VTXO outpoint.
+    // The daemon will assemble the recovery proof, spawn a durable unroll
+    // job, and drive the on-chain recovery process to completion.
+    rpc Unroll (UnrollRequest) returns (UnrollResponse);
+
+    // GetUnrollStatus returns the current status of an unroll job for the
+    // specified VTXO outpoint, including recovery chain progress and
+    // sweep state.
+    rpc GetUnrollStatus (GetUnrollStatusRequest)
+        returns (GetUnrollStatusResponse);
+
+    // ArmVHTLCRecovery persists a dormant vHTLC on-chain recovery job. The
+    // job does not start unroll until EscalateVHTLCRecovery is called.
+    rpc ArmVHTLCRecovery (ArmVHTLCRecoveryRequest)
+        returns (ArmVHTLCRecoveryResponse);
+
+    // EscalateVHTLCRecovery starts or resumes the unroll job for a previously
+    // armed vHTLC recovery.
+    rpc EscalateVHTLCRecovery (EscalateVHTLCRecoveryRequest)
+        returns (EscalateVHTLCRecoveryResponse);
+
+    // CancelVHTLCRecovery records that cooperative settlement or operator
+    // action made the dormant/on-chain recovery job unnecessary.
+    rpc CancelVHTLCRecovery (CancelVHTLCRecoveryRequest)
+        returns (CancelVHTLCRecoveryResponse);
+
+    // GetVHTLCRecoveryStatus returns the durable recovery row joined with the
+    // current unroll status when the job has escalated.
+    rpc GetVHTLCRecoveryStatus (GetVHTLCRecoveryStatusRequest)
+        returns (GetVHTLCRecoveryStatusResponse);
+
+    // ListVHTLCRecoveries returns all durable recovery rows for operator
+    // inspection. Armed rows are dormant; callers must use
+    // EscalateVHTLCRecovery to start costly on-chain recovery.
+    rpc ListVHTLCRecoveries (ListVHTLCRecoveriesRequest)
+        returns (ListVHTLCRecoveriesResponse);
+}
+
+// WalletState mirrors the daemon's in-process wallet lifecycle enum:
+// callers should test the specific state they need. SYNCING and READY
+// both mean seed material is loaded, while only READY means wallet RPCs
+// are fully usable.
+enum WalletState {
+    // WALLET_STATE_UNSPECIFIED is the proto3 zero value. The daemon
+    // never emits this; reserved so a missing field deserializes to a
+    // safe non-ready state.
+    WALLET_STATE_UNSPECIFIED = 0;
+
+    // WALLET_STATE_NONE indicates no wallet has been created yet (no
+    // wallet database on disk).
+    WALLET_STATE_NONE = 1;
+
+    // WALLET_STATE_LOCKED indicates a wallet database exists but its
+    // password has not been provided; signing is not yet available.
+    WALLET_STATE_LOCKED = 2;
+
+    // WALLET_STATE_READY indicates the wallet is initialized, unlocked,
+    // and ready to sign / participate in rounds.
+    WALLET_STATE_READY = 3;
+
+    // WALLET_STATE_SYNCING indicates the wallet is unlocked and the
+    // backing chain source is catching up before wallet RPCs are safe.
+    WALLET_STATE_SYNCING = 4;
+}
+
+message GetInfoRequest {
+}
+
+message GetInfoResponse {
+    // version is the daemon's semantic version string.
+    string version = 1;
+
+    // commit is the short git commit hash of this build.
+    string commit = 2;
+
+    // network is the active bitcoin network (mainnet, testnet, testnet4,
+    // regtest, etc.).
+    string network = 3;
+
+    // lnd_identity_pubkey is the hex-encoded public identity key of the
+    // connected lnd node, used for Lightning Network peer identity and
+    // connectivity. Empty in lwwallet mode. This key is distinct from
+    // identity_pubkey and must not be substituted for Ark/OOR signing.
+    string lnd_identity_pubkey = 4;
+
+    // block_height is the current best block height known to the daemon.
+    uint32 block_height = 5;
+
+    // server_connected indicates whether the mailbox transport to the ark
+    // operator is active and pulling envelopes. This is currently a
+    // best-effort runtime signal and may lag reconnect handling until
+    // dedicated mailbox connection state is wired through.
+    bool server_connected = 6;
+
+    // lnd_alias is the alias of the connected lnd node. Empty in lwwallet
+    // mode.
+    string lnd_alias = 7;
+
+    // wallet_type is the active wallet backend: "lnd" or "lwwallet".
+    string wallet_type = 8;
+
+    // wallet_state is the lifecycle state of the wallet subsystem.
+    // Callers should test explicit enum values instead of relying on
+    // numeric ordering: READY is fully usable, SYNCING is unlocked but
+    // waiting for the chain backend, LOCKED still needs the wallet
+    // password, and NONE has no wallet seed on disk.
+    WalletState wallet_state = 9;
+
+    // identity_pubkey is the hex-encoded daemon wallet identity public key
+    // derived from the active wallet backend's daemon identity key locator
+    // (family 6, index 0). This key is the signing identity for Ark round
+    // participation, indexer proof submission, and OOR transaction
+    // authorization. In lnd mode it is derived through lnd's WalletKit/Signer
+    // and may match the connected lnd node identity key in standard
+    // local-wallet configurations. API consumers should still treat
+    // identity_pubkey as the Ark/OOR signing key and lnd_identity_pubkey as
+    // Lightning peer identity only.
+    string identity_pubkey = 10;
+
+    // server_info contains cached operator terms fetched from the Ark
+    // server during daemon bootstrap. It is empty until the daemon has
+    // connected to the operator and learned its current policy. The
+    // current daemon implementation does not yet refresh this snapshot
+    // after bootstrap, so callers should treat it as the latest known
+    // terms for the current session.
+    ServerInfo server_info = 11;
+}
+
+// ServerInfo contains operator terms and metadata fetched from the Ark
+// server's GetInfo RPC. These values govern round participation and
+// boarding policy. A max_vtxo_amount value of zero means the
+// operator currently advertises no upper cap.
+message ServerInfo {
+    // operator_pubkey is the compressed SEC-encoded public key of the
+    // Ark operator.
+    bytes operator_pubkey = 1;
+
+    // boarding_exit_delay is the minimum CSV delay for boarding outputs.
+    uint32 boarding_exit_delay = 2;
+
+    // vtxo_exit_delay is the minimum CSV delay for VTXO outputs.
+    uint32 vtxo_exit_delay = 3;
+
+    // Field numbers 4, 5 and 6 are unused: the forfeit penalty key, sweep
+    // key and delay are delivered per-round in round.v1.ClientBatchInfo
+    // instead.
+
+    // dust_limit is the minimum output value accepted by the operator.
+    uint64 dust_limit = 7;
+
+    // min_boarding_amount is the smallest boarding amount the operator
+    // accepts.
+    uint64 min_boarding_amount = 8;
+
+    // max_vtxo_amount is the largest amount the operator accepts
+    // per VTXO, applied to boarding requests, round outputs and OOR
+    // recipient outputs alike. A value of zero means no cap.
+    uint64 max_vtxo_amount = 9;
+
+    // fee_rate is the operator's target package feerate in sat/vbyte.
+    uint64 fee_rate = 10;
+
+    // min_operator_fee is the minimum operator fee in satoshis.
+    uint64 min_operator_fee = 11;
+
+    // min_confirmations is the minimum confirmations required on
+    // boarding inputs.
+    uint32 min_confirmations = 12;
+
+    // min_vtxo_amount_sat is the operator-advertised minimum VTXO
+    // output amount in satoshis. Callers can use this wallet-facing
+    // floor to decide whether an amount can materialize as a VTXO or
+    // must use a different rail.
+    uint64 min_vtxo_amount_sat = 13;
+
+    // max_user_balance is the maximum total balance in satoshis a
+    // single user should hold in the system. The daemon enforces the
+    // cap locally on receive and boarding flows. A value of zero means
+    // no cap.
+    uint64 max_user_balance = 14;
+}
+
+message GenSeedRequest {
+    // seed_passphrase is an optional passphrase that protects the aezeed
+    // mnemonic itself. This is distinct from the wallet password that
+    // encrypts the seed at rest on disk.
+    bytes seed_passphrase = 1;
+}
+
+message GenSeedResponse {
+    // mnemonic is the 24-word aezeed mnemonic encoding the generated
+    // seed.
+    repeated string mnemonic = 1;
+
+    // enciphered_seed is the raw enciphered seed bytes for advanced use
+    // cases. Most callers should use the mnemonic field.
+    bytes enciphered_seed = 2;
+}
+
+message InitWalletRequest {
+    // mnemonic is the 24-word aezeed mnemonic returned by GenSeed (or
+    // provided for wallet recovery).
+    repeated string mnemonic = 1;
+
+    // wallet_password is the password used to encrypt the seed at rest on
+    // disk. Must be at least 8 bytes.
+    bytes wallet_password = 2;
+
+    // seed_passphrase is the optional passphrase that was used when
+    // generating the aezeed mnemonic. Must match the value passed to
+    // GenSeed.
+    bytes seed_passphrase = 3;
+
+    // recover_state asks the daemon to scan deterministic Ark wallet keys
+    // after the seed is restored and rebuild local Ark state from chain and
+    // indexer data.
+    bool recover_state = 4;
+
+    // recovery_window is the number of key indexes to scan per recovery key
+    // family. Zero uses the daemon wallet.recoverywindow config value.
+    uint32 recovery_window = 5;
+}
+
+message InitWalletResponse {
+    // identity_pubkey is the hex-encoded daemon wallet identity public key
+    // derived from the newly created wallet. This is the same key
+    // reported by GetInfoResponse.identity_pubkey and used for Ark/OOR
+    // signing flows.
+    string identity_pubkey = 1;
+
+    // recovery_ran is true when InitWallet attempted Ark-state recovery.
+    bool recovery_ran = 2;
+
+    // recovered_boarding_addresses is the number of boarding addresses
+    // rebuilt and persisted from deterministic keys.
+    uint32 recovered_boarding_addresses = 3;
+
+    // recovered_boarding_utxos is the number of confirmed wallet UTXOs found
+    // at recovered boarding addresses during the recovery scan.
+    uint32 recovered_boarding_utxos = 4;
+
+    // recovered_vtxos is the number of indexed VTXOs restored into local
+    // wallet state.
+    uint32 recovered_vtxos = 5;
+
+    // recovered_oor_receive_scripts is the number of registered OOR receive
+    // scripts matched and restored into local ownership metadata.
+    uint32 recovered_oor_receive_scripts = 6;
+
+    // recovered_oor_events is the number of OOR recipient events processed
+    // during recovery.
+    uint32 recovered_oor_events = 7;
+}
+
+message UnlockWalletRequest {
+    // wallet_password is the password used to decrypt the seed stored on
+    // disk.
+    bytes wallet_password = 1;
+}
+
+message UnlockWalletResponse {
+    // identity_pubkey is the hex-encoded daemon wallet identity public key
+    // of the unlocked wallet. This is the same key reported by
+    // GetInfoResponse.identity_pubkey and used for Ark/OOR signing flows.
+    string identity_pubkey = 1;
+}
+
+message GetBalanceRequest {
+}
+
+message GetBalanceResponse {
+    // boarding_confirmed_sat is the total confirmed balance in boarding
+    // addresses (on-chain, waiting to be swept into VTXOs).
+    int64 boarding_confirmed_sat = 1;
+
+    // boarding_unconfirmed_sat is the total unconfirmed balance in
+    // boarding addresses.
+    int64 boarding_unconfirmed_sat = 2;
+
+    // vtxo_balance_sat is the total balance held in live (spendable)
+    // VTXOs.
+    int64 vtxo_balance_sat = 3;
+
+    // total_confirmed_sat is the sum of boarding_confirmed_sat +
+    // vtxo_balance_sat. boarding_adopted_sat is intentionally excluded
+    // because adopted funds are no longer confirmed boarding UTXOs and
+    // the resulting VTXOs are not yet live.
+    int64 total_confirmed_sat = 4;
+
+    // onchain_wallet_confirmed_sat is the total confirmed on-chain
+    // balance of the backing wallet (all confirmed UTXOs, including
+    // sweep proceeds from unilateral exits).
+    int64 onchain_wallet_confirmed_sat = 5;
+
+    // boarding_pending_sweep_sat is the total amount of boarding UTXOs
+    // included in a published-but-unconfirmed boarding-timeout sweep
+    // transaction. These funds are no longer reported under
+    // boarding_confirmed_sat and have not yet returned to
+    // onchain_wallet_confirmed_sat, so this field surfaces the value
+    // currently in flight to the chain.
+    int64 boarding_pending_sweep_sat = 6;
+
+    // boarding_swept_sat is the cumulative total of boarding UTXOs
+    // recovered via the timeout-path sweep flow (status=swept). This
+    // is historical accounting and does not contribute to
+    // total_confirmed_sat — once swept the funds reappear under
+    // onchain_wallet_confirmed_sat.
+    int64 boarding_swept_sat = 7;
+
+    // boarding_adopted_sat is the total amount of boarding UTXOs that
+    // have been accepted into a persisted round checkpoint but whose
+    // resulting VTXOs are not yet live. These funds are no longer visible
+    // as boarding address UTXOs, but remain pending inbound balance until
+    // the round's commitment transaction confirms.
+    int64 boarding_adopted_sat = 8;
+
+    // vtxo_pending_sat is the value of VTXOs being consumed by an
+    // in-flight round or out-of-round spend (pending-forfeit,
+    // forfeiting, spending). Excluded from vtxo_balance_sat and
+    // total_confirmed_sat.
+    int64 vtxo_pending_sat = 9;
+
+    // vtxo_unilateral_exit_sat is the value of VTXOs mid unilateral
+    // exit, not yet swept. Excluded from vtxo_balance_sat and
+    // total_confirmed_sat; reappears under onchain_wallet_confirmed_sat
+    // once the sweep confirms.
+    int64 vtxo_unilateral_exit_sat = 10;
+}
+
+// VTXOStatus represents the lifecycle state of a virtual transaction
+// output.
+enum VTXOStatus {
+    // VTXO_STATUS_UNSPECIFIED is the default zero value.
+    VTXO_STATUS_UNSPECIFIED = 0;
+
+    // VTXO_STATUS_LIVE indicates the VTXO is active and spendable.
+    VTXO_STATUS_LIVE = 1;
+
+    // VTXO_STATUS_PENDING_FORFEIT indicates the VTXO has been committed
+    // to cooperative consumption and is awaiting forfeit details.
+    VTXO_STATUS_PENDING_FORFEIT = 2;
+
+    // VTXO_STATUS_FORFEITING indicates the forfeit transaction has been
+    // signed and the VTXO is awaiting confirmation of the new round.
+    VTXO_STATUS_FORFEITING = 3;
+
+    // VTXO_STATUS_FORFEITED is terminal: the new round confirmed and
+    // this VTXO has been replaced.
+    VTXO_STATUS_FORFEITED = 4;
+
+    // VTXO_STATUS_SPENT is terminal: the VTXO was spent via an
+    // out-of-round transfer.
+    VTXO_STATUS_SPENT = 5;
+
+    // VTXO_STATUS_UNILATERAL_EXIT is terminal: the VTXO has reached critical
+    // expiry and is being resolved on-chain.
+    VTXO_STATUS_UNILATERAL_EXIT = 6;
+
+    // VTXO_STATUS_FAILED is terminal: an unrecoverable error occurred.
+    VTXO_STATUS_FAILED = 7;
+
+    // VTXO_STATUS_SPENDING indicates the VTXO has been claimed for an
+    // out-of-round spend but the spend has not yet completed.
+    VTXO_STATUS_SPENDING = 8;
+
+    // VTXO_STATUS_PENDING_ROUND indicates a VTXO the wallet is about to
+    // receive from a round that has been signed but whose commitment
+    // transaction has not yet confirmed on-chain. Entries with this
+    // status are synthetic projections from the live round actor; they
+    // are not yet persisted, not yet spendable, and carry only the
+    // amount, originating round_id, and (once known) the commitment
+    // txid that will create them.
+    VTXO_STATUS_PENDING_ROUND = 9;
+}
+
+// VTXOExpiryStatus describes how close a VTXO is to batch expiry using the
+// daemon's wallet/VTXO expiry policy.
+enum VTXOExpiryStatus {
+    // VTXO_EXPIRY_STATUS_UNKNOWN is returned when the daemon cannot
+    // classify the VTXO, for example because timing metadata is missing.
+    VTXO_EXPIRY_STATUS_UNKNOWN = 0;
+
+    // VTXO_EXPIRY_STATUS_SAFE indicates the VTXO is outside the refresh
+    // threshold.
+    VTXO_EXPIRY_STATUS_SAFE = 1;
+
+    // VTXO_EXPIRY_STATUS_NEEDS_REFRESH indicates the VTXO has entered the
+    // cooperative refresh window but is not yet critical.
+    VTXO_EXPIRY_STATUS_NEEDS_REFRESH = 2;
+
+    // VTXO_EXPIRY_STATUS_CRITICAL indicates the VTXO should stop waiting for
+    // cooperative refresh and move to unilateral exit/recovery handling.
+    VTXO_EXPIRY_STATUS_CRITICAL = 3;
+
+    // VTXO_EXPIRY_STATUS_EXPIRED indicates the VTXO's batch expiry has
+    // passed.
+    VTXO_EXPIRY_STATUS_EXPIRED = 4;
+}
+
+// VTXOExpiryInfo reports the thresholds and current classification the
+// wallet/VTXO layer uses for expiry monitoring.
+message VTXOExpiryInfo {
+    // status is the VTXO's current expiry posture.
+    VTXOExpiryStatus status = 1;
+
+    // current_height is the chain height used for this classification.
+    int32 current_height = 2;
+
+    // batch_expiry is the VTXO batch expiry height.
+    int32 batch_expiry = 3;
+
+    // blocks_remaining is batch_expiry - current_height.
+    int32 blocks_remaining = 4;
+
+    // refresh_threshold_blocks is the number of blocks before batch expiry at
+    // which cooperative refresh should begin.
+    int32 refresh_threshold_blocks = 5;
+
+    // critical_threshold_blocks is the number of blocks before batch expiry at
+    // which recovery/unilateral-exit handling should begin.
+    int32 critical_threshold_blocks = 6;
+
+    // relative_expiry is the CSV delay used in the threshold calculation.
+    uint32 relative_expiry = 7;
+
+    // max_tree_depth is the worst-case VTXO tree depth used in the threshold
+    // calculation.
+    uint32 max_tree_depth = 8;
+
+    // chain_depth is the number of OOR checkpoint hops between this VTXO and
+    // the most recent on-chain commitment. It is included for diagnostics but
+    // is distinct from max_tree_depth.
+    uint32 chain_depth = 9;
+}
+
+message VTXO {
+    // outpoint is the VTXO's outpoint in "txid:index" format.
+    string outpoint = 1;
+
+    // amount_sat is the value of this VTXO in satoshis.
+    int64 amount_sat = 2;
+
+    // status is the current lifecycle state of this VTXO.
+    VTXOStatus status = 3;
+
+    // batch_expiry is the absolute block height at which the batch-level
+    // timelock expires.
+    int32 batch_expiry = 4;
+
+    // round_id is the identifier of the round that created this VTXO.
+    string round_id = 5;
+
+    // created_height is the block height at which this VTXO was created.
+    int32 created_height = 6;
+
+    // relative_expiry is the CSV delay (in blocks) for the unilateral
+    // exit path.
+    uint32 relative_expiry = 7;
+
+    // pk_script is the hex-encoded taproot output script.
+    string pk_script = 8;
+
+    // commitment_txid is the hex-encoded txid of the on-chain commitment
+    // transaction anchoring this VTXO's tree.
+    string commitment_txid = 9;
+
+    // chain_depth is the number of OOR checkpoint hops between this VTXO
+    // and the most recent on-chain commitment. Round-created VTXOs have
+    // chain_depth 0.
+    uint32 chain_depth = 10;
+
+    // oor_final_checkpoint_psbts are the serialized finalized checkpoint
+    // PSBTs that spent this VTXO through an out-of-round package, when
+    // available.
+    repeated bytes oor_final_checkpoint_psbts = 11;
+
+    // spent_by_txid is the hex-encoded Ark/OOR transaction txid that spent
+    // this VTXO through an out-of-round package, when known.
+    string spent_by_txid = 12;
+
+    // expiry_info reports the wallet/VTXO layer's current expiry posture for
+    // this VTXO when the daemon has enough timing context to classify it.
+    VTXOExpiryInfo expiry_info = 13;
+
+    // settlement reports where this VTXO was forfeited on-chain (the round
+    // commitment tx of the leave/cooperative-forfeit round). It is present
+    // only for FORFEITED VTXOs whose forfeit round is known, and unset
+    // otherwise, so absence is explicit rather than a zero-value sentinel.
+    VTXOSettlement settlement = 14;
+}
+
+message VTXOSettlement {
+    // txid is the hex-encoded txid of the round commitment tx that forfeited
+    // the VTXO (the leave/cooperative-forfeit round).
+    string txid = 1;
+
+    // height is the block height at which txid confirmed.
+    int32 height = 2;
+}
+
+message ListVTXOsRequest {
+    // status_filter restricts the response to VTXOs matching this status.
+    // If VTXO_STATUS_UNSPECIFIED (default), all statuses are returned.
+    VTXOStatus status_filter = 1;
+
+    // min_amount_sat excludes VTXOs below this value.
+    int64 min_amount_sat = 2;
+
+    // exclude_checkpoint_psbts skips attaching the finalized OOR checkpoint
+    // PSBTs to each returned VTXO. Loading those packages costs one artifact
+    // store read per VTXO, which dominates the call for listing-only
+    // consumers (balance views, coin selection) that never inspect the
+    // PSBTs. The default keeps the full response for compatibility.
+    bool exclude_checkpoint_psbts = 3;
+}
+
+message ListVTXOsResponse {
+    // vtxos is the list of VTXOs matching the request filters.
+    repeated VTXO vtxos = 1;
+}
+
+message NewAddressRequest {
+}
+
+message NewAddressResponse {
+    // address is the bech32m-encoded taproot boarding address.
+    string address = 1;
+}
+
+message NewReceiveScriptRequest {
+    // label is an optional human-readable label stored with the
+    // registration on the indexer.
+    string label = 1;
+}
+
+message NewReceiveScriptResponse {
+    // pk_script_hex is the raw taproot output script encoded as hex.
+    string pk_script_hex = 1;
+
+    // pubkey_xonly_hex is the 32-byte x-only owner pubkey encoded as hex.
+    string pubkey_xonly_hex = 2;
+
+    // key_family is the wallet key family used to derive the receive key.
+    uint32 key_family = 3;
+
+    // key_index is the wallet key index used to derive the receive key.
+    uint32 key_index = 4;
+
+    // label is the registration label stored with the indexer.
+    string label = 5;
+}
+
+message ReceiveAuthKeyRequest {
+    // payment_hash is the 32-byte Lightning payment hash for the receive
+    // swap that will use the derived key.
+    bytes payment_hash = 1;
+}
+
+message ReceiveAuthKeyResponse {
+    // pubkey is the compressed public key for the payment-scoped receive-auth
+    // key. The private scalar never leaves the daemon.
+    bytes pubkey = 1;
+}
+
+message SignReceiveAuthMessageRequest {
+    // payment_hash is the 32-byte Lightning payment hash for the receive
+    // swap whose receive-auth key signs this message.
+    bytes payment_hash = 1;
+
+    // message is the raw message to sign.
+    bytes message = 2;
+
+    // double_hash controls whether the message is double-SHA256 hashed before
+    // signing. If false, the daemon applies a single SHA256.
+    bool double_hash = 3;
+}
+
+message SignReceiveAuthMessageResponse {
+    // signature is the DER-encoded ECDSA signature.
+    bytes signature = 1;
+}
+
+message SignReceiveAuthMessageCompactRequest {
+    // payment_hash is the 32-byte Lightning payment hash for the receive
+    // swap whose receive-auth key signs this message.
+    bytes payment_hash = 1;
+
+    // message is the raw message to sign.
+    bytes message = 2;
+
+    // double_hash controls whether the message is double-SHA256 hashed before
+    // signing. If false, the daemon applies a single SHA256.
+    bool double_hash = 3;
+}
+
+message SignReceiveAuthMessageCompactResponse {
+    // signature is the compact public-key-recoverable ECDSA signature.
+    bytes signature = 1;
+}
+
+message ReceiveAuthECDHRequest {
+    // payment_hash is the 32-byte Lightning payment hash for the receive
+    // swap whose receive-auth key derives this shared secret.
+    bytes payment_hash = 1;
+
+    // pubkey is the remote compressed public key to use for ECDH.
+    bytes pubkey = 2;
+}
+
+message ReceiveAuthECDHResponse {
+    // shared_secret is the 32-byte Sphinx shared secret.
+    bytes shared_secret = 1;
+}
+
+message GetIndexedVTXOByPkScriptRequest {
+    // pk_script is the raw output script to query.
+    bytes pk_script = 1;
+
+    // status_filter restricts the indexer query to matching lifecycle
+    // states. If empty, all statuses are considered.
+    repeated VTXOStatus status_filter = 2;
+}
+
+message GetIndexedVTXOByPkScriptResponse {
+    // vtxo is the first matching VTXO, when found.
+    VTXO vtxo = 1;
+}
+
+// GetVTXOExpiryInfoRequest identifies one VTXO whose expiry posture should be
+// classified by the daemon's wallet/VTXO expiry policy.
+message GetVTXOExpiryInfoRequest {
+    // target selects whether the daemon should resolve the VTXO from the local
+    // wallet store by outpoint or from the authoritative indexer by pkScript.
+    oneof target {
+        // outpoint identifies a locally known VTXO in "txid:index" format.
+        string outpoint = 1;
+
+        // pk_script queries the authoritative indexer for a matching VTXO.
+        bytes pk_script = 2;
+    }
+
+    // status_filter restricts pk_script lookups to matching lifecycle states.
+    // Empty pk_script filters default to VTXO_STATUS_LIVE so refreshed VTXOs
+    // are resolved from the active replacement instead of older spent or
+    // forfeited generations. The field is ignored for outpoint lookups.
+    repeated VTXOStatus status_filter = 3;
+
+    // current_height overrides the chain height used for classification. If
+    // zero, the daemon uses its current best chain height.
+    int32 current_height = 4;
+}
+
+// GetVTXOExpiryInfoResponse returns the VTXO matched by the request together
+// with the expiry posture calculated from the daemon's authoritative metadata.
+message GetVTXOExpiryInfoResponse {
+    // found reports whether the daemon found a VTXO for the request target.
+    bool found = 1;
+
+    // expiry_info is present when found is true and the VTXO had enough timing
+    // metadata to classify.
+    VTXOExpiryInfo expiry_info = 2;
+
+    // vtxo is the VTXO used for classification when found.
+    VTXO vtxo = 3;
+}
+
+message GetIndexedOORSessionByTxidRequest {
+    // pk_script is the spent script used to authorize the indexed lookup.
+    bytes pk_script = 1;
+
+    // session_txid is the deterministic Ark/OOR session txid to fetch.
+    bytes session_txid = 2;
+}
+
+message GetIndexedOORSessionByTxidResponse {
+    // ark_psbt is the serialized Ark PSBT for the indexed OOR session.
+    bytes ark_psbt = 1;
+
+    // checkpoint_psbts are the serialized finalized checkpoint PSBTs for
+    // the indexed OOR session.
+    repeated bytes checkpoint_psbts = 2;
+}
+
+// Output describes a single recipient in a send operation.
+message Output {
+    oneof destination {
+        // address is the recipient's bech32m-encoded taproot address.
+        string address = 1;
+
+        // pubkey is the 32-byte x-only (Schnorr) public key of the
+        // recipient. For OOR sends, this derives a VTXO-compatible
+        // taproot output using the operator's collab key and exit
+        // delay, so the recipient gets a standard Ark VTXO.
+        bytes pubkey = 3;
+
+        // policy_template is the serialized arkscript policy for the
+        // recipient. The daemon derives the concrete pk_script from
+        // this semantic destination, and APIs that need a collaborative
+        // owner key require the template to use the standard Ark VTXO
+        // shape.
+        bytes policy_template = 4;
+    }
+
+    // amount_sat is the value to send in satoshis.
+    int64 amount_sat = 2;
+
+    // vtxo_policy_template is the serialized arkscript policy for the
+    // created output when the caller knows semantic ownership metadata
+    // that is not already carried by the destination itself.
+    bytes vtxo_policy_template = 5;
+}
+
+message SendVTXORequest {
+    // recipients is the list of outputs to create in the next round.
+    repeated Output recipients = 1;
+
+    // dry_run validates the request without submitting it to the round
+    // coordinator. When true, the response contains a preview of the
+    // operation.
+    bool dry_run = 2;
+}
+
+message SendVTXOResponse {
+    // status is the result: "submitted" on success, "preview" on
+    // dry_run.
+    string status = 1;
+
+    // round_id is the identifier of the round this send was submitted
+    // to. Empty on dry_run.
+    string round_id = 2;
+
+    // total_amount_sat is the total amount being sent (sum of
+    // recipients).
+    int64 total_amount_sat = 3;
+
+    // change_amount_sat is the change returned to the sender. Zero if
+    // the selected VTXOs exactly covered the total.
+    int64 change_amount_sat = 4;
+
+    // selected_count is the number of VTXOs selected as inputs for
+    // this send.
+    int32 selected_count = 5;
+}
+
+message SendOORRequest {
+    // recipients are the outputs to create via one out-of-round transfer.
+    repeated Output recipients = 1;
+
+    // dry_run validates the request without initiating the transfer.
+    bool dry_run = 2;
+
+    // custom_inputs overrides wallet VTXO selection. When set, the
+    // daemon uses these pre-specified inputs instead of selecting from
+    // the wallet. This enables non-standard spend paths like vHTLC
+    // claims.
+    repeated CustomOORInput custom_inputs = 3;
+
+    // idempotency_key is an optional caller-provided key that identifies
+    // this send intent across crashes and retries. Reusing the same key
+    // allows the daemon to return the existing local OOR session instead
+    // of creating a duplicate transfer.
+    string idempotency_key = 4;
+}
+
+// CustomOORInput specifies a VTXO to spend with an explicit semantic policy
+// and selected spend path.
+message CustomOORInput {
+    // outpoint identifies the VTXO to spend in "txid:vout" format.
+    string outpoint = 1;
+
+    // vtxo_policy_template is the serialized arkscript policy for the spent
+    // input VTXO. When empty, the daemon derives the standard Ark policy from
+    // the local descriptor.
+    bytes vtxo_policy_template = 2;
+
+    // spend_path is the serialized arkscript spend path selected for the
+    // checkpoint spend of the input VTXO.
+    bytes spend_path = 3;
+
+    // amount_sat is the VTXO value in satoshis.
+    int64 amount_sat = 4;
+
+    // pk_script is the VTXO taproot output script.
+    bytes pk_script = 5;
+
+    // external_signatures are taproot script-spend signatures produced by
+    // other parties required by the selected spend path. The local daemon still
+    // validates the policy/spend-path binding and adds its own signature before
+    // assembling the final witness.
+    repeated TaprootScriptSignature external_signatures = 6;
+}
+
+// TaprootScriptSignature carries one externally produced tapscript signature
+// for a custom OOR input. Keep this in sync with
+// swaprpc.TaprootScriptSignature.
+message TaprootScriptSignature {
+    // pubkey is the compressed public key that produced the signature.
+    bytes pubkey = 1;
+
+    // witness_script is the tapscript leaf this signature commits to.
+    bytes witness_script = 2;
+
+    // signature is the raw Schnorr signature, optionally followed by a one-byte
+    // sighash type when the sighash is not SIGHASH_DEFAULT.
+    bytes signature = 3;
+
+    // sighash is the tapscript sighash type. Zero means SIGHASH_DEFAULT.
+    uint32 sighash = 4;
+}
+
+message SendOORResponse {
+    // status is the result: "submitted" on success, "preview" on
+    // dry_run.
+    string status = 1;
+
+    // session_id is the OOR session identifier. Empty on dry_run.
+    string session_id = 2;
+
+    // recipient_outpoints are the Ark transaction outpoints created for
+    // the requested recipients, in request-recipient order. The whole
+    // list is empty on dry_run or when an older idempotent session is
+    // returned without enough local request context. Individual entries
+    // may be empty when the daemon cannot resolve one recipient's
+    // outpoint from the finalized Ark transaction.
+    repeated string recipient_outpoints = 3;
+}
+
+message PrepareOORRequest {
+    // recipient is the output to create via the out-of-round transfer.
+    Output recipient = 1;
+
+    // custom_inputs are caller-specified inputs. PrepareOOR currently only
+    // supports custom inputs because wallet-selected inputs would need wallet
+    // locks and therefore would not be side-effect free.
+    repeated CustomOORInput custom_inputs = 2;
+}
+
+message PreparedOORCustomInput {
+    // outpoint identifies the custom input this signing data belongs to.
+    string outpoint = 1;
+
+    // checkpoint_psbt is the serialized unsigned checkpoint PSBT whose input
+    // spends the custom VTXO.
+    bytes checkpoint_psbt = 2;
+
+    // witness_script is the tapscript leaf external parties must sign.
+    bytes witness_script = 3;
+
+    // signing_pubkeys are the compressed public keys required by the spend
+    // path in script order.
+    repeated bytes signing_pubkeys = 4;
+}
+
+message PrepareOORResponse {
+    // ark_psbt is the serialized unsigned Ark PSBT that would be submitted.
+    bytes ark_psbt = 1;
+
+    // checkpoint_psbts are the serialized unsigned checkpoint PSBTs that would
+    // be submitted.
+    repeated bytes checkpoint_psbts = 2;
+
+    // custom_inputs contains signing data for each prepared custom input.
+    repeated PreparedOORCustomInput custom_inputs = 3;
+
+    // session_id is the deterministic OOR session id derived from ark_psbt.
+    string session_id = 4;
+}
+
+message SignOORCustomInputRequest {
+    // custom_input describes the vHTLC/custom VTXO and selected spend path.
+    CustomOORInput custom_input = 1;
+
+    // checkpoint_psbt is the prepared checkpoint PSBT to sign.
+    bytes checkpoint_psbt = 2;
+}
+
+message SignOORCustomInputResponse {
+    // signature is the daemon identity key's tapscript signature.
+    TaprootScriptSignature signature = 1;
+}
+
+message SignVTXOForfeitRequest {
+    // vtxo_outpoint identifies the VTXO input at forfeit tx input index 0.
+    string vtxo_outpoint = 1;
+
+    // vtxo_amount_sat is the value of the VTXO output being spent.
+    int64 vtxo_amount_sat = 2;
+
+    // vtxo_pk_script is the taproot output script of the VTXO being spent.
+    bytes vtxo_pk_script = 3;
+
+    // vtxo_policy_template is the semantic policy template that produced the
+    // VTXO taproot output.
+    bytes vtxo_policy_template = 4;
+
+    // spend_path is the encoded tapscript path selected for the VTXO input.
+    bytes spend_path = 5;
+
+    // unsigned_forfeit_tx is the exact serialized forfeit transaction to sign.
+    bytes unsigned_forfeit_tx = 6;
+
+    // connector_outpoint identifies the connector input at forfeit tx input
+    // index 1.
+    string connector_outpoint = 7;
+
+    // connector_amount_sat is the value of the connector output being spent.
+    int64 connector_amount_sat = 8;
+
+    // connector_pk_script is the connector output script being spent.
+    bytes connector_pk_script = 9;
+
+    // server_forfeit_pk_script is the expected penalty output script at output
+    // index 0.
+    bytes server_forfeit_pk_script = 10;
+}
+
+message SignVTXOForfeitResponse {
+    // pubkey is the daemon identity public key that produced signature.
+    bytes pubkey = 1;
+
+    // signature is the raw 64-byte Schnorr signature for the VTXO input.
+    bytes signature = 2;
+}
+
+// ForfeitSigningRoute tells the daemon how to resolve a later
+// connector-bound participant signature request for a custom VTXO refresh.
+//
+// RefreshCustomVTXOs validates and queues caller-supplied VTXOs before the
+// round assigns connector outputs. The exact forfeit transaction is therefore
+// not known at queue time. When the VTXO actor later receives the round's
+// connector-bound ForfeitRequest, it calls back into the daemon with the full
+// transcript. This enum controls where that callback is routed.
+//
+// End-to-end, the flow is:
+//
+//   1. A coordinator calls RefreshCustomVTXOs with a custom input, output, and
+//      ForfeitSigningContext.
+//   2. The wallet creates a temporary PendingForfeit actor for the old custom
+//      VTXO and joins the next round.
+//   3. The round assigns a connector output and sends the actor a concrete
+//      ForfeitRequest.
+//   4. The actor builds the exact forfeit transaction and asks the daemon for
+//      the participant signature selected by signing_route.
+//   5. LOCAL_SIGNER answers inside the daemon. PENDING_REQUEST publishes the
+//      transcript through ListPendingForfeitParticipantSignatureRequests and
+//      waits until SubmitForfeitParticipantSignatures supplies the signature.
+//
+// The values intentionally describe signature routing rather than swap
+// direction. Swap-in and swap-out are current users of this mechanism, but the
+// underlying object is just a custom-policy vHTLC that may have multiple
+// participants.
+enum ForfeitSigningRoute {
+    FORFEIT_SIGNING_ROUTE_UNSPECIFIED = 0;
+
+    // FORFEIT_SIGNING_ROUTE_LOCAL_SIGNER means the daemon must answer the
+    // request synchronously with its configured local participant signer. This
+    // is used when the daemon hosts the participant that can sign the custom
+    // policy path locally. If no local signer is configured, signing fails
+    // instead of silently publishing an external pending request.
+    FORFEIT_SIGNING_ROUTE_LOCAL_SIGNER = 1;
+
+    // FORFEIT_SIGNING_ROUTE_PENDING_REQUEST means the daemon must publish a
+    // PendingForfeitParticipantSignatureRequest and block the VTXO actor until
+    // an external participant submits signatures through
+    // SubmitForfeitParticipantSignatures. This is used when another process or
+    // peer owns one of the custom policy participant keys.
+    FORFEIT_SIGNING_ROUTE_PENDING_REQUEST = 2;
+}
+
+// ForfeitSigningContext links a caller-supplied custom refresh input back to
+// the protocol object that should answer later connector-bound signing
+// requests.
+message ForfeitSigningContext {
+    // payment_hash is an opaque 32-byte correlation id for the higher-level
+    // protocol object that owns the custom VTXO. Swap users set this to the
+    // swap payment hash, but the daemon does not interpret it as a payment.
+    // It is copied into PendingForfeitParticipantSignatureRequest so an
+    // external coordinator can map the request back to its own state machine.
+    bytes payment_hash = 1;
+
+    // signing_route tells the daemon whether the later connector-bound
+    // signature request should be answered by the daemon's local signer or by
+    // publishing a pending request for an external participant.
+    ForfeitSigningRoute signing_route = 2;
+}
+
+// OutpointSelection wraps a list of outpoint strings for use inside a
+// oneof field, since proto3 does not allow repeated fields directly in
+// a oneof.
+message OutpointSelection {
+    // outpoints lists specific VTXOs in "txid:index" format.
+    repeated string outpoints = 1;
+}
+
+message RefreshVTXOsRequest {
+    oneof selection {
+        // outpoints lists specific VTXOs to refresh, in "txid:index"
+        // format.
+        OutpointSelection outpoints = 1;
+
+        // all refreshes every live VTXO when true.
+        bool all = 2;
+    }
+
+    // dry_run validates the request without queuing the refresh.
+    bool dry_run = 3;
+}
+
+message RefreshVTXOsResponse {
+    // queued_outpoints lists the outpoints that were successfully queued
+    // for refresh.
+    repeated string queued_outpoints = 1;
+
+    // status is the result: "queued" on success, "preview" on dry_run.
+    string status = 2;
+}
+
+// CustomRefreshVTXOInput specifies one custom-policy VTXO input to refresh in
+// a round. The input can be outside the wallet-managed live VTXO set.
+message CustomRefreshVTXOInput {
+    // outpoint identifies the VTXO to refresh in "txid:vout" format.
+    string outpoint = 1;
+
+    // amount_sat is the VTXO value in satoshis.
+    int64 amount_sat = 2;
+
+    // pk_script is the taproot output script of the VTXO being refreshed.
+    bytes pk_script = 3;
+
+    // vtxo_policy_template is the semantic policy template that produced the
+    // input VTXO.
+    bytes vtxo_policy_template = 4;
+
+    // auth_spend_path is the encoded spend path used for local join
+    // authorization/proof of control.
+    bytes auth_spend_path = 5;
+
+    // forfeit_spend_path is the encoded operator-backed spend path used for
+    // the actual round forfeit transaction once the connector is assigned.
+    bytes forfeit_spend_path = 6;
+
+    // forfeit_signing_context, when set, tells the daemon how to route the
+    // later connector-bound participant signature request for this custom
+    // input. The route is only evaluated after the round assigns a connector
+    // and the exact forfeit transaction is known. Inputs whose forfeit path is
+    // fully signable by the daemon can use LOCAL_SIGNER. Inputs whose forfeit
+    // path needs another participant use PENDING_REQUEST and require an
+    // external SubmitForfeitParticipantSignatures call before the round can
+    // finish collecting forfeit transactions.
+    ForfeitSigningContext forfeit_signing_context = 7;
+}
+
+// CustomRefreshVTXOOutput specifies the replacement VTXO output created by a
+// custom refresh input.
+message CustomRefreshVTXOOutput {
+    // amount_sat is the requested replacement VTXO value in satoshis.
+    int64 amount_sat = 1;
+
+    // vtxo_policy_template is the semantic policy template for the
+    // replacement VTXO.
+    bytes vtxo_policy_template = 2;
+
+    // pk_script optionally pins the replacement output script. When supplied,
+    // it must match vtxo_policy_template.
+    bytes pk_script = 3;
+
+    // fixed_amount requires the refresh round quote to preserve amount_sat
+    // exactly. Contract outputs such as vHTLC replacements should set this so
+    // refresh fees cannot be paid by shrinking the replacement output.
+    bool fixed_amount = 4;
+}
+
+message RefreshCustomVTXOsRequest {
+    // inputs are the custom VTXOs to forfeit into the next round.
+    repeated CustomRefreshVTXOInput inputs = 1;
+
+    // outputs are the replacement VTXOs. The current API requires one output
+    // per input so swap sessions can map old outpoints to replacement outputs.
+    repeated CustomRefreshVTXOOutput outputs = 2;
+
+    // dry_run validates the request and returns the target outpoints without
+    // touching wallet or round actors.
+    bool dry_run = 3;
+}
+
+message RefreshCustomVTXOsResponse {
+    // queued_outpoints lists the custom input outpoints queued for refresh.
+    repeated string queued_outpoints = 1;
+
+    // status is the result: "queued" on success, "preview" on dry_run.
+    string status = 2;
+}
+
+// PendingForfeitParticipantSignatureRequest is the exact transcript an
+// external coordinator must validate for a custom refresh forfeit. If the
+// selected spend path includes an external participant key, the coordinator
+// must sign this transcript and submit the signature. If it only needs the
+// daemon-local key plus the operator key, the coordinator can submit an empty
+// signature set to authorize the request.
+message PendingForfeitParticipantSignatureRequest {
+    // request_id is a stable digest over this transcript. Submitters must echo
+    // it in SubmitForfeitParticipantSignatures so the daemon can wake the
+    // blocked VTXO actor waiting on this exact forfeit transaction.
+    bytes request_id = 1;
+
+    // sequence is a monotonically increasing in-memory cursor used by
+    // ListPendingForfeitParticipantSignatureRequests.
+    uint64 sequence = 2;
+
+    // payment_hash is copied from ForfeitSigningContext.payment_hash and lets
+    // the external coordinator find the protocol object that owns this custom
+    // VTXO.
+    bytes payment_hash = 3;
+
+    // signing_route is always FORFEIT_SIGNING_ROUTE_PENDING_REQUEST for
+    // requests returned by ListPendingForfeitParticipantSignatureRequests. It
+    // is included in the transcript and request id so external coordinators
+    // can reject requests that were routed through an unexpected path.
+    ForfeitSigningRoute signing_route = 4;
+
+    // vtxo_outpoint and the vtxo_* fields describe the old custom VTXO being
+    // forfeited.
+    string vtxo_outpoint = 5;
+    uint64 vtxo_amount_sat = 6;
+    bytes vtxo_pk_script = 7;
+    bytes vtxo_policy_template = 8;
+
+    // forfeit_spend_path is the encoded custom policy path that must be used
+    // for the VTXO input of unsigned_forfeit_tx.
+    bytes forfeit_spend_path = 9;
+
+    // unsigned_forfeit_tx is the exact transaction the external participant
+    // signs. It spends the custom VTXO and the assigned connector into the
+    // server forfeit output. The participant must sign the VTXO input, not the
+    // connector input; the operator/server signs the connector side.
+    bytes unsigned_forfeit_tx = 10;
+
+    // connector_* fields describe the round-assigned connector input that
+    // makes this forfeit transaction valid.
+    string connector_outpoint = 11;
+    uint64 connector_amount_sat = 12;
+    bytes connector_pk_script = 13;
+
+    // server_forfeit_pk_script is the output script receiving the forfeited
+    // value in unsigned_forfeit_tx.
+    bytes server_forfeit_pk_script = 14;
+}
+
+message ListPendingForfeitParticipantSignatureRequestsRequest {
+    // after_sequence returns requests with a larger sequence. Zero starts at
+    // the beginning of the daemon-local pending request stream.
+    uint64 after_sequence = 1;
+
+    // limit caps the number of returned requests. Zero uses a daemon default.
+    uint32 limit = 2;
+}
+
+message ListPendingForfeitParticipantSignatureRequestsResponse {
+    repeated PendingForfeitParticipantSignatureRequest requests = 1;
+    uint64 next_sequence = 2;
+}
+
+message ForfeitParticipantSignature {
+    // pubkey is the participant public key used in the selected forfeit spend
+    // path. The daemon matches signatures by public key when completing the
+    // VTXO input witness.
+    bytes pubkey = 1;
+
+    // signature is the raw Schnorr signature over unsigned_forfeit_tx's VTXO
+    // input under the request's forfeit spend path.
+    bytes signature = 2;
+}
+
+message SubmitForfeitParticipantSignaturesRequest {
+    // request_id identifies the pending connector-bound transcript being
+    // answered. It must match a request_id previously returned by
+    // ListPendingForfeitParticipantSignatureRequests.
+    bytes request_id = 1;
+
+    // signatures contains the external participant signatures needed by the
+    // custom policy path. It may be empty when the listed request's selected
+    // spend path needs no external keys after excluding the daemon-local VTXO
+    // key and the operator key. Extra or unknown keys are rejected.
+    repeated ForfeitParticipantSignature signatures = 2;
+}
+
+message SubmitForfeitParticipantSignaturesResponse {
+}
+
+// LeaveDestination describes where a single leave output should land.
+// Unlike Output (used for VTXO sends), leave destinations are on-chain
+// and carry no VTXO-shape constraints: any standard address or
+// recognised raw pkScript is acceptable.
+message LeaveDestination {
+    oneof target {
+        // address is the bech32m/base58 on-chain recipient. The daemon
+        // decodes it via btcutil.DecodeAddress using its configured
+        // chain params, so cross-network addresses are rejected.
+        string address = 1;
+
+        // pk_script is the raw output script to pay. Useful when the
+        // caller has already resolved the script (custom policies,
+        // OP_RETURN exits, etc.) and does not want address re-encoding.
+        // The daemon caps the script at txscript.MaxScriptSize, rejects
+        // the BIP 431 P2A anchor pattern, and whitelists standard
+        // classes (P2PKH, P2SH, P2WPKH, P2WSH, P2TR, P2PK, multisig,
+        // OP_RETURN). Network binding is the caller's responsibility on
+        // this branch — pkScripts are network-agnostic, so the daemon
+        // does not (and cannot) re-bind them to its chain params.
+        bytes pk_script = 2;
+    }
+}
+
+message LeaveVTXOsRequest {
+    oneof selection {
+        // outpoints lists specific VTXOs to leave, in "txid:index"
+        // format.
+        OutpointSelection outpoints = 1;
+
+        // all leaves every live VTXO when true. Per-outpoint overrides
+        // are rejected under this selection because the daemon does
+        // not know the outpoint set ahead of time.
+        bool all = 2;
+    }
+
+    // default_destination applies to every selected outpoint that is
+    // not overridden in destinations. Required whenever selection=all,
+    // or whenever any selected outpoint is not present in the
+    // destinations map.
+    LeaveDestination default_destination = 3;
+
+    // destinations overrides the default destination on a per-outpoint
+    // basis. The key is the outpoint in "txid:index" format. Only
+    // honored when selection=outpoints; the RPC rejects non-empty
+    // overrides combined with selection=all.
+    map<string, LeaveDestination> destinations = 4;
+
+    // dry_run validates the request without queuing the leave.
+    bool dry_run = 5;
+}
+
+message LeaveVTXOsResponse {
+    // queued_outpoints lists the outpoints that were successfully
+    // queued for leave.
+    repeated string queued_outpoints = 1;
+
+    // status is the result: "queued" on success, "preview" on dry_run.
+    string status = 2;
+}
+
+message SendOnChainRequest {
+    // destination is the on-chain recipient. Same shape (and standardness
+    // gating) as LeaveVTXOsRequest.default_destination.
+    LeaveDestination destination = 1;
+
+    // amount picks the send mode. Exactly one variant must be set.
+    oneof amount {
+        // amount_sat is the exact number of sats to send on-chain to
+        // destination. The daemon selects live VTXOs whose summed value
+        // covers amount_sat plus an operator-fee headroom plus dust,
+        // forfeits them, produces one on-chain output of exactly
+        // amount_sat, and returns the residual to the caller as a
+        // change VTXO. Must be > 0 and ≤ MaxSatoshi.
+        int64 amount_sat = 2;
+
+        // sweep_all, when true, drains every live VTXO into a single
+        // on-chain output at destination. No change VTXO is produced;
+        // the actual on-chain amount equals Σ(live VTXOs) − operator
+        // fee and is echoed back as actual_amount_sat.
+        bool sweep_all = 3;
+    }
+
+    // dry_run validates inputs and returns the planned selection
+    // without submitting the round intent.
+    bool dry_run = 5;
+}
+
+message SendOnChainResponse {
+    // actual_amount_sat is the exact value of the on-chain output
+    // that will land at destination. For amount_sat mode this echoes
+    // the requested amount. For sweep_all it is Σ(selected VTXOs) −
+    // operator fee.
+    int64 actual_amount_sat = 1;
+
+    // fee_sat is the operator fee deducted from the input set for
+    // this send. Under the #270 seal-time fee handshake this is the
+    // server-stamped figure, not a pre-flight estimate. Zero in
+    // dry_run mode.
+    int64 fee_sat = 2;
+
+    // selected_outpoints lists the VTXOs the daemon picked to
+    // forfeit for this send, in the order they were chosen.
+    repeated string selected_outpoints = 3;
+
+    // change_outpoint is the outpoint of the change VTXO produced
+    // by an amount_sat send. Empty in dry_run, in sweep_all mode,
+    // or when no change is needed (input set exactly covers
+    // amount_sat + fee + dust). The outpoint is populated once the
+    // round seals and the new VTXO is persisted; in fast-path
+    // responses it may be empty pending the round.
+    string change_outpoint = 4;
+
+    // status is "submitted" on a successful intent registration,
+    // "preview" when dry_run is set.
+    string status = 5;
+
+    // send_job_id is the deterministic id of the submitted send intent:
+    // hex of a hash over the consumed outpoints and payload. It identifies
+    // a multi-input sweep as one send and is reproducible from the same
+    // inputs, so it is stable across a restart. It is a correlation id, not
+    // a lookup handle (no RPC resolves it), and it is non-secret and
+    // recomputable, so it must never gate a privileged action. Non-empty on
+    // a submitted response from a current daemon; empty only when status is
+    // "preview" (dry_run) or from an older daemon predating this field.
+    string send_job_id = 6;
+}
+
+message BoardRequest {
+    // target_vtxo_count asks the daemon to fan the confirmed boarding
+    // balance out into this many VTXO outputs in the next round. Zero
+    // preserves the legacy behavior of creating one boarded VTXO.
+    uint32 target_vtxo_count = 1;
+
+    // no_persist opts out of restart-safe Board replay. When set, the
+    // daemon does NOT persist the user's intent to the pending-intents
+    // outbox, so a crash between Board admission and round seal silently
+    // drops the request rather than re-issuing it on the next start.
+    // Default (false) is the safe behavior: the daemon persists one
+    // intent anchored to every admitted confirmed outpoint and replays
+    // the Board through the wallet's self-Tell on startup until the
+    // round adopts or the user fires a fresh Board.
+    bool no_persist = 2;
+}
+
+message BoardResponse {
+    // status is "registered" on success, "no_boarding_utxos" if
+    // nothing to board.
+    string status = 1;
+
+    // vtxo_count is the number of VTXO target outputs accepted for
+    // boarding. It is zero when status is "no_boarding_utxos".
+    uint32 vtxo_count = 2;
+}
+
+message JoinNextRoundRequest {
+}
+
+message JoinNextRoundResponse {
+    // status is "joined" when the round FSM accepted the request and emitted
+    // JoinRoundRequest to the operator. The actual round outcome is observed
+    // asynchronously via ListRounds / WatchRounds and the per-VTXO status.
+    string status = 1;
+}
+
+message SweepBoardingUTXOsRequest {
+    // outpoints optionally restricts sweeping to specific boarding UTXOs,
+    // formatted as "txid:index". Empty means scan all sweepable boarding
+    // intents.
+    repeated string outpoints = 1;
+
+    // broadcast makes the RPC publish one aggregate sweep transaction and
+    // record it as pending confirmation. The daemon marks boarding intents
+    // swept only after the chain backend reports their outpoints as spent.
+    // The default false value only previews candidates, totals, and fees.
+    bool broadcast = 2;
+
+    // fee_rate_sat_per_vbyte optionally overrides fee estimation. A zero value
+    // asks the daemon to estimate a fee rate from conf_target.
+    int64 fee_rate_sat_per_vbyte = 3;
+
+    // conf_target is the target confirmation count used for fee estimation.
+    // A zero value uses the daemon default.
+    uint32 conf_target = 4;
+
+    // sweep_address optionally overrides the destination for the aggregate
+    // sweep. Empty means sweep into a fresh wallet address.
+    string sweep_address = 5;
+}
+
+message BoardingSweepOutput {
+    // outpoint is the boarding UTXO that can be swept.
+    string outpoint = 1;
+
+    // amount_sat is the value of the boarding UTXO.
+    int64 amount_sat = 2;
+
+    // maturity_height is the first block height at which the CSV timeout path
+    // can be spent.
+    int32 maturity_height = 3;
+}
+
+message SweepBoardingUTXOsResponse {
+    // status is "preview", "published", or "failed".
+    string status = 1;
+
+    // current_height is the best chain height used for the maturity scan.
+    int32 current_height = 2;
+
+    // sweepable_outputs contains the mature boarding UTXOs included in the
+    // aggregate sweep preview or broadcast.
+    repeated BoardingSweepOutput sweepable_outputs = 3;
+
+    // total_amount_sat is the total value of all sweepable outputs.
+    int64 total_amount_sat = 4;
+
+    // estimated_fee_sat is the fee required for the aggregate sweep
+    // transaction at fee_rate_sat_per_vbyte.
+    int64 estimated_fee_sat = 5;
+
+    // net_amount_sat is total_amount_sat minus estimated_fee_sat.
+    int64 net_amount_sat = 6;
+
+    // fee_rate_sat_per_vbyte is the fee rate used to build the aggregate
+    // sweep.
+    int64 fee_rate_sat_per_vbyte = 7;
+
+    // conf_target is the confirmation target used when fee estimation was
+    // requested.
+    uint32 conf_target = 8;
+
+    // txid is the aggregate sweep transaction id. Preview responses set the
+    // txid of the signed transaction built for the current request; a later
+    // broadcast can differ if inputs, fees, or destination change.
+    string txid = 9;
+
+    // fee_paid_sat is set when broadcast=true and records the actual fee paid
+    // by the aggregate sweep transaction. The fee is known at publication;
+    // confirmation is tracked asynchronously by the daemon.
+    int64 fee_paid_sat = 10;
+
+    // tx_vbytes is the virtual byte size of the signed aggregate sweep
+    // transaction.
+    int64 tx_vbytes = 11;
+
+    // failure_reason carries aggregate build, broadcast, or persistence
+    // errors.
+    string failure_reason = 12;
+}
+
+message ListBoardingSweepsRequest {
+    // status optionally filters tracked sweeps by persisted status:
+    // "pending", "published", "confirmed", "external_resolved", or
+    // "failed". Empty lists all.
+    string status = 1;
+
+    // page_size limits the number of sweeps returned. Zero uses the daemon
+    // default.
+    uint32 page_size = 2;
+
+    // page_token is the opaque token returned by a previous response.
+    string page_token = 3;
+}
+
+message BoardingSweepInput {
+    // outpoint is the boarding UTXO tracked by this sweep.
+    string outpoint = 1;
+
+    // amount_sat is the value of the boarding UTXO.
+    int64 amount_sat = 2;
+
+    // status is the persisted per-input status: "pending", "published",
+    // "spent", "external_spent", or "failed".
+    string status = 3;
+
+    // spent_by_txid is set after the chain backend reports a confirmed spend.
+    string spent_by_txid = 4;
+
+    // spent_height is the block height of the confirmed spend when known.
+    int32 spent_height = 5;
+}
+
+message BoardingSweep {
+    // txid is the aggregate sweep transaction id.
+    string txid = 1;
+
+    // status is the persisted aggregate status: "pending", "published",
+    // "confirmed", "external_resolved", or "failed".
+    string status = 2;
+
+    // destination_address is the caller-specified sweep address, if any.
+    string destination_address = 3;
+
+    // total_amount_sat is the total value of every sweep input.
+    int64 total_amount_sat = 4;
+
+    // fee_paid_sat is the fee paid by the aggregate sweep transaction.
+    int64 fee_paid_sat = 5;
+
+    // fee_rate_sat_per_vbyte is the fee rate used to build the sweep.
+    int64 fee_rate_sat_per_vbyte = 6;
+
+    // tx_vbytes is the virtual byte size of the sweep transaction.
+    int64 tx_vbytes = 7;
+
+    // created_height is the best chain height when the sweep was created.
+    int32 created_height = 8;
+
+    // confirmed_height is set once every tracked input has confirmed spent.
+    int32 confirmed_height = 9;
+
+    // inputs contains the boarding outpoints tracked by this sweep.
+    repeated BoardingSweepInput inputs = 10;
+
+    // failure_reason carries the terminal local failure reason for failed
+    // sweeps.
+    string failure_reason = 11;
+}
+
+message ListBoardingSweepsResponse {
+    // sweeps are returned newest first by creation time.
+    repeated BoardingSweep sweeps = 1;
+
+    // next_page_token is set when another page is available.
+    string next_page_token = 2;
+}
+
+// RoundState represents the lifecycle state of a client's round FSM.
+enum RoundState {
+    // ROUND_STATE_UNKNOWN is the default zero value.
+    ROUND_STATE_UNKNOWN = 0;
+
+    // ROUND_STATE_IDLE indicates the FSM is waiting for boarding
+    // intents or VTXO requests.
+    ROUND_STATE_IDLE = 1;
+
+    // ROUND_STATE_PENDING_ASSEMBLY indicates boarding intents or VTXO
+    // requests have arrived but registration has not been triggered.
+    ROUND_STATE_PENDING_ASSEMBLY = 2;
+
+    // ROUND_STATE_REGISTRATION_SENT indicates a JoinRoundRequest has
+    // been sent to the server and the client is awaiting acceptance.
+    ROUND_STATE_REGISTRATION_SENT = 3;
+
+    // ROUND_STATE_JOINED indicates the server accepted the join and
+    // the client is waiting for the commitment transaction.
+    ROUND_STATE_JOINED = 4;
+
+    // ROUND_STATE_COMMITMENT_RECEIVED indicates the commitment
+    // transaction has been received and is being validated.
+    ROUND_STATE_COMMITMENT_RECEIVED = 5;
+
+    // ROUND_STATE_COMMITMENT_VALIDATED indicates the commitment
+    // transaction passed validation and is ready for MuSig2 signing.
+    ROUND_STATE_COMMITMENT_VALIDATED = 6;
+
+    // ROUND_STATE_FORFEIT_COLLECTING indicates the client is
+    // collecting forfeit signatures from VTXO actors.
+    ROUND_STATE_FORFEIT_COLLECTING = 7;
+
+    // ROUND_STATE_NONCES_SENT indicates MuSig2 nonces have been sent
+    // to the server.
+    ROUND_STATE_NONCES_SENT = 8;
+
+    // ROUND_STATE_NONCES_AGGREGATED indicates aggregated nonces have
+    // been received from the server.
+    ROUND_STATE_NONCES_AGGREGATED = 9;
+
+    // ROUND_STATE_PARTIAL_SIGS_SENT indicates partial signatures have
+    // been sent to the server.
+    ROUND_STATE_PARTIAL_SIGS_SENT = 10;
+
+    // ROUND_STATE_INPUT_SIG_SENT indicates the boarding input
+    // signature has been sent.
+    ROUND_STATE_INPUT_SIG_SENT = 11;
+
+    // ROUND_STATE_CONFIRMED is terminal: the round completed
+    // successfully.
+    ROUND_STATE_CONFIRMED = 12;
+
+    // ROUND_STATE_FAILED is terminal: the round failed.
+    ROUND_STATE_FAILED = 13;
+
+    // ROUND_STATE_RECOVERY indicates CSV recovery is in progress.
+    ROUND_STATE_RECOVERY = 14;
+
+    // ROUND_STATE_QUOTE_RECEIVED indicates the client has received
+    // the server's seal-time JoinRoundQuote (#270) and is deciding
+    // whether to accept or reject it. Between REGISTRATION_SENT
+    // (intent sent, awaiting admission + quote) and JOINED (quote
+    // accepted, awaiting commitment tx).
+    ROUND_STATE_QUOTE_RECEIVED = 15;
+}
+
+// RoundVTXOInfo describes a VTXO created in a round.
+message RoundVTXOInfo {
+    // outpoint is the VTXO's outpoint in "txid:index" format.
+    string outpoint = 1;
+
+    // amount_sat is the value of this VTXO in satoshis.
+    int64 amount_sat = 2;
+}
+
+// RoundInfo describes the current state of a single round FSM
+// instance.
+message RoundInfo {
+    // round_id is the server-assigned round identifier. Empty for
+    // temp-keyed rounds that haven't received a server response yet.
+    string round_id = 1;
+
+    // state is the current FSM state.
+    RoundState state = 2;
+
+    // is_temp indicates this round has a temporary key and hasn't
+    // been assigned a server round ID yet.
+    bool is_temp = 3;
+
+    // vtxos lists the VTXOs the wallet expects to receive from this
+    // round. For rounds still in flight (any state before confirmed)
+    // only amount_sat is populated; the outpoint is empty because the
+    // precise leaf position in the VTXO tree is not finalised until
+    // the commitment transaction confirms. For confirmed rounds both
+    // outpoint ("txid:index") and amount_sat are populated. The
+    // commitment_txid field below carries the commitment tx hash
+    // independently once the round actor has received it from the
+    // operator, so callers do not need a populated outpoint to know
+    // which commitment they have signed.
+    repeated RoundVTXOInfo vtxos = 4;
+
+    // commitment_txid is the round commitment transaction id once the
+    // round actor has received it from the operator, or once the
+    // round has been persisted.
+    string commitment_txid = 5;
+
+    // commitment_height is the block height that confirmed the commitment
+    // transaction, when known.
+    int32 commitment_height = 6;
+
+    // creation_time is the Unix timestamp when the persisted round row was
+    // first created.
+    int64 creation_time = 7;
+
+    // last_update_time is the Unix timestamp when the persisted round row
+    // was last updated.
+    int64 last_update_time = 8;
+
+    // input_outpoints lists locally known inputs associated with this round.
+    // For boarding rounds this includes locally persisted boarding inputs.
+    repeated string input_outpoints = 9;
+
+    // output_outpoints lists locally known VTXO outpoints created by this
+    // round.
+    repeated string output_outpoints = 10;
+
+    // failure_reason contains the live FSM failure reason when available.
+    // Historical failed rounds loaded only from persistence leave this empty.
+    string failure_reason = 11;
+}
+
+message ListRoundsRequest {
+    // page_size is the maximum number of persisted rounds to return.
+    // If zero, the server uses a default page size. Pending
+    // (in-memory) rounds are always returned and do not count
+    // against this limit.
+    int32 page_size = 1;
+
+    // page_token is an opaque cursor returned by a previous
+    // ListRoundsResponse. Pass it to resume listing from where the
+    // previous page ended.
+    string page_token = 2;
+
+    // persisted_only when true skips in-memory pending rounds and
+    // returns only rounds that have been persisted to disk
+    // (input_sig_sent, confirmed, etc.).
+    bool persisted_only = 3;
+
+    // state_filter restricts results to a single state when set to a value
+    // other than ROUND_STATE_UNKNOWN.
+    RoundState state_filter = 4;
+
+    // created_after restricts persisted rows to rounds created at or after
+    // the given Unix timestamp. Pending in-memory rounds are not filtered by
+    // creation time because they do not expose a stable creation timestamp.
+    int64 created_after = 5;
+
+    // created_before restricts persisted rows to rounds created at or before
+    // the given Unix timestamp. Pending in-memory rounds are not filtered by
+    // creation time because they do not expose a stable creation timestamp.
+    int64 created_before = 6;
+}
+
+message GetRoundRequest {
+    // round_id identifies the server-assigned round to fetch.
+    string round_id = 1;
+}
+
+message GetRoundResponse {
+    // round is the matching round status.
+    RoundInfo round = 1;
+}
+
+message ListRoundsResponse {
+    // rounds lists the current state of all round FSM instances.
+    repeated RoundInfo rounds = 1;
+
+    // next_page_token is an opaque cursor for the next page. Empty
+    // when there are no more results.
+    string next_page_token = 2;
+}
+
+message WatchRoundsRequest {
+}
+
+message WatchRoundsResponse {
+    // round contains the updated round state. Sent whenever a round
+    // FSM transitions to a new state.
+    RoundInfo round = 1;
+}
+
+enum OORSessionDirection {
+    OOR_SESSION_DIRECTION_UNSPECIFIED = 0;
+    OOR_SESSION_DIRECTION_OUTGOING = 1;
+    OOR_SESSION_DIRECTION_INCOMING = 2;
+}
+
+enum OORSessionStatus {
+    OOR_SESSION_STATUS_UNSPECIFIED = 0;
+    OOR_SESSION_STATUS_PENDING = 1;
+    OOR_SESSION_STATUS_COMPLETED = 2;
+    OOR_SESSION_STATUS_FAILED = 3;
+}
+
+message OORSessionInfo {
+    // session_id is the stable OOR session identifier.
+    string session_id = 1;
+
+    // direction is from the local client's perspective.
+    OORSessionDirection direction = 2;
+
+    // status is the coarse operation state.
+    OORSessionStatus status = 3;
+
+    // phase is the detailed OOR FSM phase string.
+    string phase = 4;
+
+    // created_at is the Unix timestamp when the persisted package was first
+    // recorded, when known.
+    int64 created_at = 5;
+
+    // updated_at is the Unix timestamp when the session/package was last
+    // updated, when known.
+    int64 updated_at = 6;
+
+    // consumed_outpoints are locally known VTXOs consumed by this session.
+    repeated string consumed_outpoints = 7;
+
+    // created_outpoints are locally known VTXOs created by this session.
+    repeated string created_outpoints = 8;
+
+    // failure_reason is populated for failed live OOR sessions when known.
+    string failure_reason = 9;
+}
+
+message ListOORSessionsRequest {
+    // page_size is the maximum number of sessions to return. If zero, the
+    // daemon uses a default page size.
+    int32 page_size = 1;
+
+    // page_token is an opaque session cursor returned by a previous
+    // ListOORSessionsResponse.
+    string page_token = 2;
+
+    // direction_filter restricts results by local direction when set.
+    OORSessionDirection direction_filter = 3;
+
+    // status_filter restricts results by operation status when set.
+    OORSessionStatus status_filter = 4;
+}
+
+message ListOORSessionsResponse {
+    // sessions lists locally known OOR operation status entries.
+    repeated OORSessionInfo sessions = 1;
+
+    // next_page_token is an opaque cursor for the next page. Empty when
+    // there are no more results.
+    string next_page_token = 2;
+}
+
+message GetOORSessionRequest {
+    // session_id identifies the OOR session to fetch.
+    string session_id = 1;
+}
+
+message GetOORSessionResponse {
+    // session is the matching OOR operation status.
+    OORSessionInfo session = 1;
+}
+
+// EstimateFeeRequest asks the operator to estimate the fee for a
+// VTXO operation at current rates and utilization.
+message EstimateFeeRequest {
+    // amount_sat is the VTXO amount to estimate fees for.
+    int64 amount_sat = 1;
+
+    // is_boarding indicates whether this is a new boarding (true)
+    // or a refresh/forfeit (false).
+    bool is_boarding = 2;
+
+    // remaining_blocks is the remaining lifetime of the forfeited
+    // VTXO in blocks. Only used when is_boarding is false.
+    uint32 remaining_blocks = 3;
+}
+
+// EstimateFeeResponse contains the itemized fee breakdown from
+// the operator.
+message EstimateFeeResponse {
+    // liquidity_fee_sat is the time-value-of-money component.
+    int64 liquidity_fee_sat = 1;
+
+    // onchain_share_sat is the per-participant on-chain cost.
+    int64 onchain_share_sat = 2;
+
+    // margin_sat is the fixed operator margin.
+    int64 margin_sat = 3;
+
+    // total_fee_sat is the sum of all components.
+    int64 total_fee_sat = 4;
+
+    // effective_annual_rate is the rate after utilization spread.
+    double effective_annual_rate = 5;
+
+    // min_viable_amount_sat is the minimum economically viable
+    // VTXO at current rates.
+    int64 min_viable_amount_sat = 6;
+
+    // below_dust_warning is true when the requested amount is
+    // below the minimum viable threshold. Automated callers
+    // MUST check this field before acting on the fee estimate:
+    // a VTXO below the minimum viable amount is uneconomic to
+    // exit (miner fees exceed the VTXO value) and should be
+    // rejected client-side rather than paid for.
+    bool below_dust_warning = 7;
+}
+
+// GetFeeHistoryRequest requests paginated fee history from the
+// client's local ledger. Entries are returned in newest-first order
+// (created_at descending), so offset 0 always references the most
+// recent ledger entry. Callers paginating through the full history
+// should treat the order as stable across pages but may observe new
+// entries appearing at offset 0 between calls.
+message GetFeeHistoryRequest {
+    // limit bounds the number of results.
+    uint32 limit = 1;
+
+    // offset is the number of entries to skip.
+    uint32 offset = 2;
+}
+
+// FeeHistoryEntry is a single ledger entry from the client's
+// accounting database. Each row is one leg of the double-entry
+// ledger; debit_account and credit_account name the two accounts
+// touched (chart of accounts: wallet_balance, vtxo_balance,
+// fees_paid, onchain_fees, transfers_in, transfers_out).
+//
+// CAVEAT: Round-created VTXOs are currently always booked against
+// transfers_in regardless of whether the VTXO actually represents
+// an incoming transfer from a counterparty or the client's own
+// boarded funds. Boarding rounds are therefore NOT yet paired with
+// a fees_paid leg, and the wallet_balance offset is not yet booked
+// either. Until the round FSM surfaces per-VTXO provenance and the
+// operator-fee amount, callers must treat transfers_in as an upper
+// bound on real counterparty receipts and the fees_paid total as a
+// lower bound on actual operator fees paid by this client.
+//
+// CAVEAT: Unilateral exits emit only the send leg (transfers_out
+// debit, vtxo_balance credit) at FSM transition time. The miner
+// fee and confirmation height aren't observable at that point, so
+// the matching onchain_fees leg is not booked until the chain
+// resolver follows up; that follow-up wiring is not yet in place,
+// so onchain_fees stays at 0 for exits. Callers cannot rely on
+// onchain_fees to attribute L1 exit costs in the current release.
+message FeeHistoryEntry {
+    // entry_id is the unique entry identifier.
+    int64 entry_id = 1;
+
+    // event_type classifies the entry. Mirrors the ledger
+    // package Event* constants ("boarding_fee_paid",
+    // "refresh_fee_paid", "onchain_fee_paid", "vtxo_received",
+    // "vtxo_sent").
+    string event_type = 2;
+
+    // amount_sat is the entry amount in satoshis.
+    int64 amount_sat = 3;
+
+    // description is a human-readable note.
+    string description = 4;
+
+    // created_at_unix_s is the Unix timestamp.
+    int64 created_at_unix_s = 5;
+
+    // debit_account names the account being debited in this leg
+    // (e.g. "fees_paid", "transfers_out").
+    string debit_account = 6;
+
+    // credit_account names the account being credited in this
+    // leg (e.g. "vtxo_balance", "wallet_balance").
+    string credit_account = 7;
+
+    // round_id is the 16-byte round UUID associated with the
+    // entry, when applicable. Empty for non-round events such
+    // as OOR sends or wallet-only audit entries.
+    bytes round_id = 8;
+
+    // session_id is the 32-byte OOR session identifier
+    // associated with the entry, when applicable. Empty for
+    // in-round events.
+    bytes session_id = 9;
+}
+
+// GetFeeHistoryResponse contains paginated fee history entries.
+message GetFeeHistoryResponse {
+    // entries is the list of fee history entries.
+    repeated FeeHistoryEntry entries = 1;
+
+    // total_fees_paid_sat is the cumulative total of all fees
+    // paid by this client.
+    int64 total_fees_paid_sat = 2;
+}
+
+message ListTransactionsRequest {
+    // from_unix_s filters entries created at or after this Unix timestamp.
+    // A zero value leaves the lower bound open.
+    int64 from_unix_s = 1;
+
+    // to_unix_s filters entries created at or before this Unix timestamp. A
+    // zero value leaves the upper bound open.
+    int64 to_unix_s = 2;
+
+    // limit bounds the number of results. Zero uses the daemon default.
+    uint32 limit = 3;
+
+    // offset is the number of filtered entries to skip.
+    uint32 offset = 4;
+
+    // type filters entries by high-level transaction type. Accepted values
+    // are "boarding", "round", "oor", and "sweep". Empty lists all.
+    // "sweep" includes tracked boarding sweep transactions and
+    // chain-sweep-related ledger entries, such as unilateral-exit
+    // onchain_fee_paid rows.
+    string type = 5;
+}
+
+message TransactionHistoryEntry {
+    // source names the local persistence source: "ledger" or
+    // "boarding_sweep".
+    string source = 1;
+
+    // type is the high-level category: "boarding", "round", "oor", or
+    // "sweep".
+    string type = 2;
+
+    // subtype carries the ledger event type or sweep lifecycle status.
+    string subtype = 3;
+
+    // amount_sat is the gross transaction amount in satoshis.
+    int64 amount_sat = 4;
+
+    // fee_sat is set for persisted aggregate sweep transactions.
+    int64 fee_sat = 5;
+
+    // created_at_unix_s is the local Unix timestamp for the row.
+    int64 created_at_unix_s = 6;
+
+    // confirmation_status is "confirmed", "recorded", or the persisted
+    // aggregate sweep status.
+    string confirmation_status = 7;
+
+    // description is a human-readable local note.
+    string description = 8;
+
+    // entry_id is set for ledger-backed rows.
+    int64 entry_id = 9;
+
+    // txid is set for transaction-backed rows such as aggregate boarding
+    // sweeps.
+    string txid = 10;
+
+    // debit_account names the account debited by a ledger-backed row.
+    string debit_account = 11;
+
+    // credit_account names the account credited by a ledger-backed row.
+    string credit_account = 12;
+
+    // round_id is the 16-byte round UUID associated with the row, when
+    // applicable.
+    bytes round_id = 13;
+
+    // session_id is the 32-byte OOR session identifier associated with the
+    // row, when applicable.
+    bytes session_id = 14;
+
+    // confirmation_height is set when the source records a chain
+    // confirmation height.
+    int32 confirmation_height = 15;
+
+    // output_index is the transaction output index associated with txid.
+    // A negative value means the source has no output index.
+    int32 output_index = 16;
+
+    // boarding_address is the allocated boarding address a confirmed
+    // boarding-deposit (wallet_utxo_created) row paid to, letting a client
+    // correlate the confirmed row back to its pending deposit row by a
+    // shared, address-scoped id. Empty for every other row type.
+    string boarding_address = 17;
+}
+
+message ListTransactionsResponse {
+    // transactions are returned newest first by created_at_unix_s.
+    repeated TransactionHistoryEntry transactions = 1;
+
+    // next_offset is the offset to pass to the next request when has_more is
+    // true.
+    uint32 next_offset = 2;
+
+    // has_more is true when another page is available.
+    bool has_more = 3;
+}
+
+message UnrollRequest {
+    // outpoint is the VTXO outpoint to unilaterally exit, formatted as
+    // "txid:index".
+    string outpoint = 1;
+}
+
+message UnrollResponse {
+    // created indicates whether a new unroll job was spawned. False if
+    // an existing job already covers this target.
+    bool created = 1;
+
+    // actor_id is the identifier of the durable unroll job actor.
+    string actor_id = 2;
+}
+
+message GetUnrollStatusRequest {
+    // outpoint is the VTXO outpoint to query, formatted as "txid:index".
+    string outpoint = 1;
+
+    // detailed enriches the response with tree/CSV progress and a fee
+    // breakdown by querying the live unroll actor. It costs one extra child
+    // actor round-trip plus a fee estimate, so automated pollers should leave
+    // it false and only interactive status commands should set it.
+    bool detailed = 2;
+}
+
+// UnrollProgress describes materialization progress through the exit proof
+// tree. It is populated only for a detailed query against a live unroll job.
+message UnrollProgress {
+    // confirmed_txs is the number of proof transactions confirmed on-chain.
+    uint32 confirmed_txs = 1;
+
+    // in_flight_txs is the number of proof transactions broadcast but not yet
+    // observed confirmed.
+    uint32 in_flight_txs = 2;
+
+    // ready_txs is the number of proof transactions ready to broadcast now
+    // (all in-proof parents confirmed).
+    uint32 ready_txs = 3;
+
+    // blocked_txs is the number of proof transactions still waiting on an
+    // unconfirmed in-proof parent.
+    uint32 blocked_txs = 4;
+
+    // total_txs is the total number of transactions in the exit proof tree.
+    uint32 total_txs = 5;
+
+    // current_layer is the frontier layer index: the shallowest topological
+    // layer (roots first) that still holds an unconfirmed transaction. It
+    // equals total_layers once every proof node has confirmed.
+    uint32 current_layer = 6;
+
+    // total_layers is the depth of the exit proof tree.
+    uint32 total_layers = 7;
+
+    // target_confirmed is true once the target VTXO transaction itself has
+    // confirmed on-chain.
+    bool target_confirmed = 8;
+
+    // all_proof_confirmed is true once every proof-tree transaction has
+    // confirmed, so only the CSV wait and final sweep remain.
+    bool all_proof_confirmed = 9;
+}
+
+// UnrollCSV describes the target's CSV maturity countdown. It is populated only
+// once the target transaction has confirmed.
+message UnrollCSV {
+    // target_confirm_height is the block height at which the target confirmed.
+    int32 target_confirm_height = 1;
+
+    // maturity_height is the block height at which the target becomes
+    // timeout-spendable.
+    int32 maturity_height = 2;
+
+    // blocks_remaining is how many blocks remain until CSV maturity.
+    int32 blocks_remaining = 3;
+
+    // mature is true once the current height is at or past maturity.
+    bool mature = 4;
+}
+
+// UnrollFees breaks down the on-chain cost of the exit. The CPFP total is
+// estimated from the current fee rate and the recovery-transaction count; the
+// sweep fee is the actual built-sweep fee once known, otherwise estimated.
+message UnrollFees {
+    // cpfp_fee_sat is the wallet-funded CPFP fee across every recovery
+    // transaction (estimated).
+    int64 cpfp_fee_sat = 1;
+
+    // sweep_fee_sat is the fee the final sweep pays out of the VTXO value.
+    int64 sweep_fee_sat = 2;
+
+    // total_cost_sat is cpfp_fee_sat + sweep_fee_sat.
+    int64 total_cost_sat = 3;
+
+    // vtxo_amount_sat is the value of the VTXO being exited.
+    int64 vtxo_amount_sat = 4;
+
+    // net_recovered_sat is vtxo_amount_sat - sweep_fee_sat: the value that
+    // lands back in the wallet from the sweep.
+    int64 net_recovered_sat = 5;
+
+    // fee_rate_sat_vbyte is the fee rate used for the estimate.
+    int64 fee_rate_sat_vbyte = 6;
+
+    // sweep_fee_actual is true when sweep_fee_sat is the real built-sweep fee
+    // rather than an estimate.
+    bool sweep_fee_actual = 7;
+
+    // spent_so_far_sat is the estimated on-chain fee already committed at this
+    // point in the exit: CPFP for the confirmed and in-flight recovery
+    // transactions, plus the sweep fee once the sweep is broadcast. It is an
+    // estimate derived from the per-transaction cost model, not a realized
+    // total; total_cost_sat remains the projected cost of the whole exit.
+    int64 spent_so_far_sat = 8;
+}
+
+// UnrollJobStatus represents the high-level phase of an unroll job.
+enum UnrollJobStatus {
+    UNROLL_JOB_STATUS_UNSPECIFIED = 0;
+
+    // UNROLL_JOB_STATUS_PENDING indicates the job has been created but
+    // has not yet started materializing recovery transactions.
+    UNROLL_JOB_STATUS_PENDING = 1;
+
+    // UNROLL_JOB_STATUS_MATERIALIZING indicates recovery transactions
+    // are being broadcast and confirmed on-chain.
+    UNROLL_JOB_STATUS_MATERIALIZING = 2;
+
+    // UNROLL_JOB_STATUS_CSV_PENDING indicates all recovery transactions
+    // are confirmed and the job is waiting for the CSV delay to expire.
+    UNROLL_JOB_STATUS_CSV_PENDING = 3;
+
+    // UNROLL_JOB_STATUS_SWEEPING indicates the CSV delay has expired
+    // and the sweep transaction is being broadcast/confirmed.
+    UNROLL_JOB_STATUS_SWEEPING = 4;
+
+    // UNROLL_JOB_STATUS_COMPLETED is terminal: the sweep confirmed and
+    // the funds are in the on-chain wallet.
+    UNROLL_JOB_STATUS_COMPLETED = 5;
+
+    // UNROLL_JOB_STATUS_FAILED is terminal: the unroll encountered an
+    // unrecoverable error.
+    UNROLL_JOB_STATUS_FAILED = 6;
+}
+
+message GetUnrollStatusResponse {
+    // found is true if an unroll job exists for the requested outpoint.
+    bool found = 1;
+
+    // status is the current high-level phase of the unroll job.
+    UnrollJobStatus status = 2;
+
+    // sweep_txid is the txid of the sweep transaction, set once the
+    // sweep has been broadcast.
+    string sweep_txid = 3;
+
+    // last_error contains the failure reason if the job is in FAILED
+    // status.
+    string last_error = 4;
+
+    // phase_detail is a human-readable one-line description of the current
+    // phase, e.g. "materializing layer 2 of 4 (3/7 txs confirmed)". Set only
+    // on a detailed query.
+    string phase_detail = 5;
+
+    // progress is the tree materialization progress. Set only on a detailed
+    // query against a live job.
+    UnrollProgress progress = 6;
+
+    // csv is the CSV maturity countdown. Set only on a detailed query, once
+    // the target has confirmed.
+    UnrollCSV csv = 7;
+
+    // fees is the on-chain cost breakdown for the exit. Set only on a detailed
+    // query.
+    UnrollFees fees = 8;
+
+    // best_case_blocks_remaining is the optimistic block count until a
+    // confirmed sweep. Set only on a detailed query.
+    int32 best_case_blocks_remaining = 9;
+
+    // current_height is the best block height the unroll actor has observed.
+    // Set only on a detailed query against a live job.
+    int32 current_height = 10;
+}
+
+// VHTLCRecoveryDirection records which side owns a recovery job.
+enum VHTLCRecoveryDirection {
+    VHTLC_RECOVERY_DIRECTION_UNSPECIFIED = 0;
+
+    // VHTLC_RECOVERY_DIRECTION_PAY identifies a payer-side recovery job.
+    VHTLC_RECOVERY_DIRECTION_PAY = 1;
+
+    // VHTLC_RECOVERY_DIRECTION_RECEIVE identifies a receiver-side recovery
+    // job.
+    VHTLC_RECOVERY_DIRECTION_RECEIVE = 2;
+
+    // VHTLC_RECOVERY_DIRECTION_SERVER_IN identifies a server-owned incoming
+    // recovery job.
+    VHTLC_RECOVERY_DIRECTION_SERVER_IN = 3;
+
+    // VHTLC_RECOVERY_DIRECTION_SERVER_OUT identifies a server-owned outgoing
+    // recovery job.
+    VHTLC_RECOVERY_DIRECTION_SERVER_OUT = 4;
+}
+
+// VHTLCRecoveryAction selects the unilateral vHTLC leaf to execute.
+enum VHTLCRecoveryAction {
+    VHTLC_RECOVERY_ACTION_UNSPECIFIED = 0;
+
+    // VHTLC_RECOVERY_ACTION_CLAIM spends the unilateral claim leaf using the
+    // swap-owned preimage.
+    VHTLC_RECOVERY_ACTION_CLAIM = 1;
+
+    // VHTLC_RECOVERY_ACTION_REFUND_WITHOUT_RECEIVER spends the sender-only
+    // refund leaf after both Ark CSV and vHTLC refund CLTV are satisfied.
+    VHTLC_RECOVERY_ACTION_REFUND_WITHOUT_RECEIVER = 2;
+}
+
+// VHTLCRecoveryState mirrors the durable vhtlc_recovery_jobs state column. The
+// daemon may expose coarse durable state while the generic unroll worker owns
+// finer-grained execution; callers should inspect
+// VHTLCRecoveryStatus.unroll_status for active unroll phase detail when state
+// is UNROLL_STARTED.
+enum VHTLCRecoveryState {
+    VHTLC_RECOVERY_STATE_UNSPECIFIED = 0;
+    VHTLC_RECOVERY_STATE_ARMED = 1;
+    VHTLC_RECOVERY_STATE_UNROLL_STARTED = 2;
+    VHTLC_RECOVERY_STATE_WAITING_FOR_TARGET = 3;
+    VHTLC_RECOVERY_STATE_WAITING_FOR_CSV = 4;
+    VHTLC_RECOVERY_STATE_BUILDING_EXIT_SPEND = 5;
+    VHTLC_RECOVERY_STATE_EXIT_SPEND_BUILT = 6;
+    VHTLC_RECOVERY_STATE_SUBMITTING_EXIT_SPEND = 7;
+    VHTLC_RECOVERY_STATE_EXIT_SPEND_PENDING_CONFIRMATION = 8;
+    VHTLC_RECOVERY_STATE_COMPLETED = 9;
+    VHTLC_RECOVERY_STATE_CANCELLED = 10;
+    VHTLC_RECOVERY_STATE_FAILED = 11;
+}
+
+message ArmVHTLCRecoveryRequest {
+    // request_id is the caller-owned idempotency key. Retrying the same
+    // request_id returns the existing row when all durable parameters match.
+    string request_id = 1;
+
+    // swap_id links this recovery job to the caller's durable swap row.
+    bytes swap_id = 2;
+
+    // direction records which side owns the recovery action.
+    VHTLCRecoveryDirection direction = 3;
+
+    // action selects the unilateral vHTLC leaf to execute if recovery
+    // escalates.
+    VHTLCRecoveryAction action = 4;
+
+    // vtxo_outpoint is the vHTLC VTXO to materialize, formatted as
+    // "txid:index".
+    string vtxo_outpoint = 5;
+
+    // vtxo_amount_sat is the amount locked in the vHTLC VTXO.
+    int64 vtxo_amount_sat = 6;
+
+    // sender_pubkey is the compressed SEC public key for the sender.
+    bytes sender_pubkey = 7;
+
+    // receiver_pubkey is the compressed SEC public key for the receiver.
+    bytes receiver_pubkey = 8;
+
+    // server_pubkey is the compressed SEC public key for the swap server.
+    bytes server_pubkey = 9;
+
+    // refund_locktime is the absolute vHTLC refund CLTV height/time.
+    int32 refund_locktime = 10;
+
+    // unilateral_claim_delay is the Ark CSV delay for the claim leaf.
+    int32 unilateral_claim_delay = 11;
+
+    // unilateral_refund_delay is the Ark CSV delay for cooperative refund.
+    int32 unilateral_refund_delay = 12;
+
+    // unilateral_refund_without_receiver_delay is the Ark CSV delay for the
+    // sender-only refund leaf.
+    int32 unilateral_refund_without_receiver_delay = 13;
+
+    // preimage_hash is the 32-byte SHA256 hash committed by the vHTLC.
+    bytes preimage_hash = 14;
+
+    // signer_key_family identifies the wallet key family used to sign the
+    // final exit spend.
+    int32 signer_key_family = 15;
+
+    // signer_key_index identifies the wallet key index used to sign the final
+    // exit spend.
+    int32 signer_key_index = 16;
+
+    // destination_script receives recovered funds after the exit spend
+    // confirms.
+    bytes destination_script = 17;
+
+    // max_fee_rate_sat_per_kw caps the final exit spend fee rate.
+    int32 max_fee_rate_sat_per_kw = 18;
+}
+
+message ArmVHTLCRecoveryResponse {
+    // recovery_id is the daemon-owned durable recovery identifier.
+    string recovery_id = 1;
+
+    // created is true when the request inserted a new recovery row.
+    bool created = 2;
+
+    // status is the durable row after the arm attempt.
+    VHTLCRecoveryStatus status = 3;
+}
+
+message EscalateVHTLCRecoveryRequest {
+    // recovery_id identifies the armed recovery job to start.
+    string recovery_id = 1;
+
+    // reason records why the cooperative path is no longer sufficient.
+    string reason = 2;
+
+    // claim_preimage is optional secret witness material for cross-process
+    // claim recovery. It must be supplied only for claim recovery and must
+    // match the armed preimage_hash.
+    bytes claim_preimage = 3;
+}
+
+message EscalateVHTLCRecoveryResponse {
+    // status is the durable row joined with current unroll state.
+    VHTLCRecoveryStatus status = 1;
+}
+
+message CancelVHTLCRecoveryRequest {
+    // recovery_id identifies the recovery job to cancel.
+    string recovery_id = 1;
+
+    // reason records why recovery is no longer needed.
+    string reason = 2;
+
+    // cooperative_txid is the cooperative transaction that won, when known.
+    string cooperative_txid = 3;
+}
+
+message CancelVHTLCRecoveryResponse {
+    // status is the durable row after cancellation or terminal no-op.
+    VHTLCRecoveryStatus status = 1;
+}
+
+message GetVHTLCRecoveryStatusRequest {
+    // recovery_id identifies the recovery job to query.
+    string recovery_id = 1;
+}
+
+message GetVHTLCRecoveryStatusResponse {
+    // found is true when a recovery row exists for recovery_id.
+    bool found = 1;
+
+    // status is populated when found is true.
+    VHTLCRecoveryStatus status = 2;
+}
+
+message ListVHTLCRecoveriesRequest {
+    // include_terminal includes completed, cancelled, and failed rows.
+    bool include_terminal = 1;
+}
+
+message ListVHTLCRecoveriesResponse {
+    // statuses are returned in newest-updated order.
+    repeated VHTLCRecoveryStatus statuses = 1;
+}
+
+message VHTLCRecoveryStatus {
+    // recovery_id is the daemon-owned durable recovery identifier.
+    string recovery_id = 1;
+
+    // request_id is the caller-owned idempotency key.
+    string request_id = 2;
+
+    // swap_id links this recovery back to the caller's swap row.
+    bytes swap_id = 3;
+
+    // direction records which side owns this recovery action.
+    VHTLCRecoveryDirection direction = 4;
+
+    // action selects the unilateral vHTLC leaf.
+    VHTLCRecoveryAction action = 5;
+
+    // state is the durable recovery FSM state.
+    VHTLCRecoveryState state = 6;
+
+    // vtxo_outpoint is the vHTLC VTXO being recovered.
+    string vtxo_outpoint = 7;
+
+    // vtxo_amount_sat is the amount locked in the vHTLC VTXO.
+    int64 vtxo_amount_sat = 8;
+
+    // exit_policy_kind is the unroll final spend policy kind.
+    string exit_policy_kind = 9;
+
+    // unroll_found reports whether the generic unroll registry knows this
+    // target.
+    bool unroll_found = 10;
+
+    // unroll_status is the current high-level unroll phase, when known.
+    UnrollJobStatus unroll_status = 11;
+
+    // sweep_txid is the final exit spend txid once unroll has built or
+    // broadcast it.
+    string sweep_txid = 12;
+
+    // exit_txid is the persisted recovery exit txid, when known.
+    string exit_txid = 13;
+
+    // cooperative_txid records the cooperative settlement that cancelled this
+    // recovery, when known.
+    string cooperative_txid = 14;
+
+    // last_error is populated for failed recovery rows or failed unroll state.
+    string last_error = 15;
+
+    // cancel_reason records why the row entered CANCELLED state.
+    string cancel_reason = 16;
+
+    // created_at_unix is the row creation timestamp.
+    int64 created_at_unix = 17;
+
+    // updated_at_unix is the latest row update timestamp.
+    int64 updated_at_unix = 18;
+
+    // armed_at_unix is set when the recovery job was armed.
+    int64 armed_at_unix = 19;
+
+    // escalated_at_unix is set when the job moved into active unroll.
+    int64 escalated_at_unix = 20;
+
+    // terminal_at_unix is set when the job completed, cancelled, or failed.
+    int64 terminal_at_unix = 21;
+
+    // refund_locktime is the absolute vHTLC refund CLTV height/time recorded
+    // on the recovery row.
+    int32 refund_locktime = 22;
+
+    // unilateral_claim_delay is the Ark CSV delay for the claim leaf recorded
+    // on the recovery row.
+    int32 unilateral_claim_delay = 23;
+
+    // unilateral_refund_delay is the Ark CSV delay for the cooperative refund
+    // leaf recorded on the recovery row.
+    int32 unilateral_refund_delay = 24;
+
+    // unilateral_refund_without_receiver_delay is the Ark CSV delay for the
+    // unilateral refund leaf recorded on the recovery row.
+    int32 unilateral_refund_without_receiver_delay = 25;
+}

@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/chainbackends"
-	"github.com/lightninglabs/darepo-client/walletcore"
+	"github.com/lightninglabs/wavelength/chainbackends"
+	"github.com/lightninglabs/wavelength/walletcore"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 

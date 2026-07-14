@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/wavelength/baselib/actor"
 )
 
 // LazyChainResolver is a forwarding TellOnlyRef for ExpiringNotification

@@ -2,7 +2,7 @@
 .PHONY: lint lint-source lint-local lint-source-local lint-changed-local lint-native build-native-linter local-custom-gcl install-custom-gcl docker-tools fmt fmt-changed fmt-check fmt-changed-check tidy-module tidy-module-check schema-check doc-check sample-conf-check
 .PHONY: ast-lint ast-grep-fix
 .PHONY: unit unit-cover unit-race unit-swapruntime check-go-version build install clean release
-.PHONY: build build-swapruntime build-swapclient build-walletdkrpc rpc install install-swapruntime install-walletdkrpc help clean-networks
+.PHONY: build build-swapruntime build-swapclient build-wavewalletrpc rpc install install-swapruntime install-wavewalletrpc help clean-networks
 .PHONY: mobile mobile-android mobile-ios wasm-wallet
 .PHONY: systest systest-verbose
 .PHONY: commitmsg-lint commitmsg-fmt commitmsg-reword
@@ -14,7 +14,7 @@
 # VARIABLES
 # =========
 
-PKG := github.com/lightninglabs/darepo-client
+PKG := github.com/lightninglabs/wavelength
 TOOLS_DIR := tools
 
 GOCC ?= go
@@ -45,7 +45,7 @@ XARGS := xargs -L 1
 COMMIT := $(shell git describe --tags --dirty 2>/dev/null || echo "unknown")
 
 # DB connection string for migrations (example).
-DB_CONNECTIONSTRING ?= sqlite://./darepo.db
+DB_CONNECTIONSTRING ?= sqlite://./wavelength.db
 
 # Build tags.
 DEV_TAGS := dev
@@ -129,16 +129,16 @@ DOCKER_TOOLS = docker run \
   -v $${HOME}/.cache/golangci-lint:/root/.cache/golangci-lint \
   -v $${HOME}/go/pkg/mod:/go/pkg/mod \
   -e GOPATH=/go \
-  -v $$(pwd):/build darepo-tools
+  -v $$(pwd):/build wavelength-tools
 else
 # Local mode: Docker named volumes for fast macOS/Windows performance.
 DOCKER_TOOLS = docker run \
   --rm \
-  -v darepo-go-build-cache:/root/.cache/go-build \
-  -v darepo-go-lint-cache:/root/.cache/golangci-lint \
-  -v darepo-go-mod-cache:/go/pkg/mod \
+  -v wavelength-go-build-cache:/root/.cache/go-build \
+  -v wavelength-go-lint-cache:/root/.cache/golangci-lint \
+  -v wavelength-go-mod-cache:/go/pkg/mod \
   -e GOPATH=/go \
-  -v $$(pwd):/build darepo-tools
+  -v $$(pwd):/build wavelength-tools
 endif
 
 GREEN := \033[0;32m
@@ -222,7 +222,7 @@ gen: sqlc rpc #? Generate all code (rpc, sqlc, etc.)
 
 docker-tools:
 	@$(call print, "Building tools docker image.")
-	docker build -q -t darepo-tools $(TOOLS_DIR)
+	docker build -q -t wavelength-tools $(TOOLS_DIR)
 
 local-custom-gcl:
 	@./scripts/local-custom-gcl.sh "$(LOCAL_CUSTOM_GCL)"
@@ -321,9 +321,9 @@ doc-check: #? Verify documentation cross-links are valid
 	@$(call print, "Checking documentation cross-links.")
 	@./scripts/doc-check.sh
 
-sample-conf-check: #? Verify sample-darepod.conf matches daemon config options
-	@$(call print, "Checking sample-darepod.conf.")
-	$(GOCC) run ./scripts/check-sample-darepod-conf
+sample-conf-check: #? Verify sample-waved.conf matches daemon config options
+	@$(call print, "Checking sample-waved.conf.")
+	$(GOCC) run ./scripts/check-sample-waved-conf
 
 schema-check: #? Verify schema registry, MCP tools, and cobra commands are in sync
 	@$(call print, "Verifying schema registry consistency.")
@@ -391,7 +391,7 @@ unit-race: #? Run unit tests with race detector
 
 unit-swapruntime: #? Run unit tests with the optional wallet runtime enabled
 	@$(call print, "Running unit tests with wallet runtime.")
-	$(MAKE) unit tags="swapruntime walletdkrpc"
+	$(MAKE) unit tags="swapruntime wavewalletrpc"
 
 # Database backend for systest: sqlite (default) or postgres.
 # Usage: make systest db=postgres
@@ -426,8 +426,8 @@ rpc: #? Generate RPC stubs from proto files (uses Docker)
 build: #? Build debug binaries and place in project directory
 	@$(call print, "Building debug binaries.")
 	$(GOBUILD) -trimpath -tags="$(DEV_TAGS)" $(DEV_GCFLAGS) $(DEV_LDFLAGS) -o . ./cmd/merge-sql-schemas
-	$(GOBUILD) -trimpath -tags="$(DEV_TAGS)" $(DEV_GCFLAGS) $(DEV_LDFLAGS) -o ./bin/darepod ./cmd/darepod
-	$(GOBUILD) -trimpath -tags="$(DEV_TAGS)" $(DEV_GCFLAGS) $(DEV_LDFLAGS) -o ./bin/darepocli ./cmd/darepocli
+	$(GOBUILD) -trimpath -tags="$(DEV_TAGS)" $(DEV_GCFLAGS) $(DEV_LDFLAGS) -o ./bin/waved ./cmd/waved
+	$(GOBUILD) -trimpath -tags="$(DEV_TAGS)" $(DEV_GCFLAGS) $(DEV_LDFLAGS) -o ./bin/wavecli ./cmd/wavecli
 
 build-swapruntime: #? Build debug binaries with SwapClientService enabled
 	@$(call print, "Building debug binaries with swapruntime.")
@@ -435,34 +435,34 @@ build-swapruntime: #? Build debug binaries with SwapClientService enabled
 
 build-swapclient: build-swapruntime #? Alias for build-swapruntime
 
-build-walletdkrpc: #? Build debug binaries with walletdkrpc + swapruntime enabled
-	@$(call print, "Building debug binaries with walletdkrpc and swapruntime.")
-	$(MAKE) build tags="walletdkrpc swapruntime"
+build-wavewalletrpc: #? Build debug binaries with wavewalletrpc + swapruntime enabled
+	@$(call print, "Building debug binaries with wavewalletrpc and swapruntime.")
+	$(MAKE) build tags="wavewalletrpc swapruntime"
 
-mobile: #? Build gomobile bindings for sdk/walletdk (target=android|ios|all)
-	@$(call print, "Building gomobile walletdk bindings.")
-	./sdk/walletdk/mobile/gen_bindings.sh $(or $(target),android)
+mobile: #? Build gomobile bindings for sdk/wavewalletdk (target=android|ios|all)
+	@$(call print, "Building gomobile wavewalletdk bindings.")
+	./sdk/wavewalletdk/mobile/gen_bindings.sh $(or $(target),android)
 
-mobile-android: #? Build the Android .aar for sdk/walletdk
-	@$(call print, "Building Android .aar for walletdk.")
-	./sdk/walletdk/mobile/gen_bindings.sh android
+mobile-android: #? Build the Android .aar for sdk/wavewalletdk
+	@$(call print, "Building Android .aar for wavewalletdk.")
+	./sdk/wavewalletdk/mobile/gen_bindings.sh android
 
-mobile-ios: #? Build the iOS .xcframework for sdk/walletdk
-	@$(call print, "Building iOS .xcframework for walletdk.")
-	./sdk/walletdk/mobile/gen_bindings.sh ios
+mobile-ios: #? Build the iOS .xcframework for sdk/wavewalletdk
+	@$(call print, "Building iOS .xcframework for wavewalletdk.")
+	./sdk/wavewalletdk/mobile/gen_bindings.sh ios
 
 WASM_WALLET_OUT := bin/wasm
 WASMSQLITE_DIR := $(shell $(GOCC) list -m -f '{{.Dir}}' github.com/lightninglabs/go-wasmsqlite 2>/dev/null)
 
-wasm-wallet: #? Build the walletdk browser wasm blob + runtime assets into bin/wasm
-	@$(call print, "Building walletdk browser wasm blob.")
+wasm-wallet: #? Build the wavewalletdk browser wasm blob + runtime assets into bin/wasm
+	@$(call print, "Building wavewalletdk browser wasm blob.")
 	$(RM) -r $(WASM_WALLET_OUT)
 	mkdir -p $(WASM_WALLET_OUT)
 	GOOS=js GOARCH=wasm $(GOBUILD) -trimpath -ldflags="-s -w" \
-		-tags="mobile walletdkrpc swapruntime" \
-		-o $(WASM_WALLET_OUT)/walletdk.wasm ./cmd/walletdk-wasm
-	gzip -9 -c $(WASM_WALLET_OUT)/walletdk.wasm \
-		> $(WASM_WALLET_OUT)/walletdk.wasm.gz
+		-tags="mobile wavewalletrpc swapruntime" \
+		-o $(WASM_WALLET_OUT)/wavewalletdk.wasm ./cmd/wavewalletdk-wasm
+	gzip -9 -c $(WASM_WALLET_OUT)/wavewalletdk.wasm \
+		> $(WASM_WALLET_OUT)/wavewalletdk.wasm.gz
 	cp "$$($(GOCC) env GOROOT)/lib/wasm/wasm_exec.js" $(WASM_WALLET_OUT)/
 	cp $(WASMSQLITE_DIR)/assets/sqlite3.js $(WASM_WALLET_OUT)/
 	cp $(WASMSQLITE_DIR)/assets/sqlite3.wasm $(WASM_WALLET_OUT)/
@@ -477,16 +477,16 @@ wasm-wallet: #? Build the walletdk browser wasm blob + runtime assets into bin/w
 install: #? Build and install binaries to GOPATH/bin
 	@$(call print, "Installing binaries.")
 	$(GOINSTALL) -trimpath -tags="$(DEV_TAGS)" $(DEV_LDFLAGS) ./cmd/merge-sql-schemas
-	$(GOINSTALL) -trimpath -tags="$(DEV_TAGS)" $(DEV_LDFLAGS) ./cmd/darepod
-	$(GOINSTALL) -trimpath -tags="$(DEV_TAGS)" $(DEV_LDFLAGS) ./cmd/darepocli
+	$(GOINSTALL) -trimpath -tags="$(DEV_TAGS)" $(DEV_LDFLAGS) ./cmd/waved
+	$(GOINSTALL) -trimpath -tags="$(DEV_TAGS)" $(DEV_LDFLAGS) ./cmd/wavecli
 
 install-swapruntime: #? Install binaries with SwapClientService enabled
 	@$(call print, "Installing binaries with swapruntime.")
 	$(MAKE) install tags="swapruntime"
 
-install-walletdkrpc: #? Install binaries with walletdkrpc + swapruntime enabled
-	@$(call print, "Installing binaries with walletdkrpc and swapruntime.")
-	$(MAKE) install tags="walletdkrpc swapruntime"
+install-wavewalletrpc: #? Install binaries with wavewalletrpc + swapruntime enabled
+	@$(call print, "Installing binaries with wavewalletrpc and swapruntime.")
+	$(MAKE) install tags="wavewalletrpc swapruntime"
 
 clean: #? Remove build artifacts
 	@$(call print, "Cleaning build artifacts.")

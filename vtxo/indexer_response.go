@@ -1,7 +1,7 @@
 package vtxo
 
 import (
-	"github.com/lightninglabs/darepo-client/arkrpc"
+	"github.com/lightninglabs/wavelength/arkrpc"
 )
 
 // FlattenListVTXOsByScriptsResponse returns every VTXO carried in the

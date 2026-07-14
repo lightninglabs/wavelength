@@ -2,9 +2,9 @@ package vtxo
 
 import (
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/lightninglabs/darepo-client/baselib/actor"
-	"github.com/lightninglabs/darepo-client/lib/actormsg"
-	"github.com/lightninglabs/darepo-client/round"
+	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/lib/actormsg"
+	"github.com/lightninglabs/wavelength/round"
 )
 
 // ManagerMsg is the message type accepted by the VTXO Manager actor. This is
@@ -178,7 +178,7 @@ func (o ExitOutcome) String() string {
 // LiveState (ExitOutcomeRecoverable) or retire it to SpentState
 // (ExitOutcomeConfirmed). It is sent by the unroll subsystem when a child
 // unroll actor reaches a terminal phase. This is the feedback edge that
-// closes the soundness gap in darepo-client#602: VTXO lifecycle is gated on
+// closes the soundness gap in wavelength#602: VTXO lifecycle is gated on
 // the unroll job's terminal on-chain outcome rather than the user's intent
 // to exit.
 type ExitOutcomeNotification struct {

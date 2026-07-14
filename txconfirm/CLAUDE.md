@@ -12,7 +12,7 @@ but each still receives its own terminal notification.
 
 ## Key Types
 
-For field-level detail, use `go doc github.com/lightninglabs/darepo-client/txconfirm.<Symbol>`.
+For field-level detail, use `go doc github.com/lightninglabs/wavelength/txconfirm.<Symbol>`.
 
 - `TxBroadcasterActor` (`actor.go`) — message-driven orchestrator. Holds
   a txid-keyed tracked-tx map, runs a protofsm lifecycle per txid, and
@@ -76,7 +76,7 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/txcon
 - **Depended on by**: `unroll` (exit-tx confirmation), `wallet`
   (`wallet_sweep_actor.go` / `boarding_sweep_actor.go` confirm their
   sweep txs through `EnsureConfirmedReq` + `MapNotification`),
-  `darepod` (wiring/registration).
+  `waved` (wiring/registration).
 - **Sends → `chainsource`** (Ask): `BestHeightRequest`,
   `SubscribeBlocksRequest`, `RegisterConfRequest`,
   `UnregisterConfRequest`, `BroadcastTxRequest`,

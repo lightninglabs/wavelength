@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package arkrpc;
 
-option go_package = "github.com/lightninglabs/darepo-client/arkrpc";
+option go_package = "github.com/lightninglabs/wavelength/arkrpc";
 
 // IndexerService is a wallet-facing query + notification facade over operator
 // state. It is intended to be transported over MailboxRPC (RPC-over-mailbox),
@@ -88,7 +88,7 @@ message TaprootSchnorrProof {
 
     // sig64 is a 64-byte BIP-340 schnorr signature over the BIP-340
     // tagged hash of message: sha256(sha256(tag) || sha256(tag) || msg),
-    // where tag = "darepo/indexer/v1".
+    // where tag = "wavelength/indexer/v1".
     bytes sig64 = 2;
 }
 

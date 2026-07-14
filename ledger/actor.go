@@ -7,7 +7,7 @@ import (
 	"log/slog"
 
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightningnetwork/lnd/clock"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
@@ -280,7 +280,7 @@ type ActorConfig struct {
 	// Clock is the time source used to stamp ledger entries.
 	// When None, the actor uses clock.NewDefaultClock() so
 	// production code keeps its behavior; tests inject a
-	// deterministic clock (shared with the rest of darepod so
+	// deterministic clock (shared with the rest of waved so
 	// every persisted row pins to the same test frame).
 	Clock fn.Option[clock.Clock]
 }

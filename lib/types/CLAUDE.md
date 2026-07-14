@@ -34,7 +34,7 @@ server during round participation. These types are used across `round`, `vtxo`,
 - `MaxAncestryTreeDepth([]Ancestry) int` — Returns the largest `TreeDepth` across a slice; drives worst-case unilateral-exit timing calculations.
 - `ClientBatchInfo` — Client's view of batch output info after tree construction.
 - `BatchOutputInfo` — Batch output metadata (outpoint, value, tree root).
-- `ConnectorLeafInfo` — Assigned connector leaf (outpoint + output) plus the connector-tree ancestry params (`RootOutputIndex`, `NumLeaves`, `Radix`, `LeafIndex`) the client uses to reconstruct the tree and prove the leaf descends from the commitment tx before signing the forfeit (darepo-client#681).
+- `ConnectorLeafInfo` — Assigned connector leaf (outpoint + output) plus the connector-tree ancestry params (`RootOutputIndex`, `NumLeaves`, `Radix`, `LeafIndex`) the client uses to reconstruct the tree and prove the leaf descends from the commitment tx before signing the forfeit (wavelength#681).
 - `BoardingInputSignature` — Signed boarding input for round commitment.
 - `ForfeitTxSig` — Unsigned forfeit tx plus `ClientVTXOSig`,
   `ParticipantVTXOSigs []*ForfeitParticipantSig` (multi-sig custom policies

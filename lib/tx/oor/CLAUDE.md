@@ -39,7 +39,7 @@ finalize packages.
   `lib/tx/checkpoint` (BuildPSBT, Input/SpentVTXORef aliases),
   `lib/tx/psbtutil` (Serialize/Parse).
 - **Depended on by**: `oor` (session state machine), `rpc/oorpb` (wire
-  payloads), `darepod` (RPC server), `unroll` (proof assembly).
+  payloads), `waved` (RPC server), `unroll` (proof assembly).
 
 ## Invariants
 

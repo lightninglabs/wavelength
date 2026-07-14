@@ -14,10 +14,10 @@ import (
 	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
-	clientdb "github.com/lightninglabs/darepo-client/db"
-	"github.com/lightninglabs/darepo-client/lib/tree"
-	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
-	"github.com/lightninglabs/darepo-client/vtxo"
+	clientdb "github.com/lightninglabs/wavelength/db"
+	"github.com/lightninglabs/wavelength/lib/tree"
+	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
+	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightningnetwork/lnd/tlv"
 )
 

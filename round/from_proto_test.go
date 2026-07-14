@@ -7,9 +7,9 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/lightninglabs/darepo-client/lib/arkscript"
-	"github.com/lightninglabs/darepo-client/lib/tree"
-	"github.com/lightninglabs/darepo-client/rpc/roundpb"
+	"github.com/lightninglabs/wavelength/lib/arkscript"
+	"github.com/lightninglabs/wavelength/lib/tree"
+	"github.com/lightninglabs/wavelength/rpc/roundpb"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 )
@@ -292,7 +292,7 @@ func TestOperatorSignedFromProto(t *testing.T) {
 // TestBoardingFailedFromProtoRoundFailed verifies that BoardingFailed
 // handles ClientRoundFailedResp and carries the server-assigned RoundID
 // when the proto includes a well-formed 16-byte round_id
-// (darepo-client#571).
+// (wavelength#571).
 func TestBoardingFailedFromProtoRoundFailed(t *testing.T) {
 	roundID := [16]byte{
 		1, 2, 3, 4, 5, 6, 7, 8,
@@ -318,7 +318,7 @@ func TestBoardingFailedFromProtoRoundFailed(t *testing.T) {
 // TestBoardingFailedFromProtoRoundFailedNoRoundID verifies that a
 // ClientRoundFailedResp without a well-formed 16-byte round_id (a failure
 // that arrives before the round was assigned) leaves RoundID as None
-// rather than erroring (darepo-client#571).
+// rather than erroring (wavelength#571).
 func TestBoardingFailedFromProtoRoundFailedNoRoundID(t *testing.T) {
 	pb := &roundpb.ClientRoundFailedResp{
 		Reason: "pre-assignment failure",

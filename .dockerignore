@@ -11,8 +11,8 @@
 *.out
 bin/
 **/test-artifacts
-# Note: do NOT exclude **/build/ — `cmd/darepod/main.go` imports
-# `github.com/lightninglabs/darepo-client/build` (the version pkg).
+# Note: do NOT exclude **/build/ — `cmd/waved/main.go` imports
+# `github.com/lightninglabs/wavelength/build` (the version pkg).
 # Excluding it makes the in-Docker `go build` fail with
 # "no required module provides package …/build". Build artifacts
 # are already covered by `bin/` above.

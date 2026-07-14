@@ -1,4 +1,4 @@
-//go:build walletdkrpc && swapruntime
+//go:build wavewalletrpc && swapruntime
 
 package swapwallet
 
@@ -9,9 +9,9 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chaincfg/v2"
-	"github.com/lightninglabs/darepo-client/daemonrpc"
-	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
-	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
+	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/encoding/protojson"
 )
@@ -75,19 +75,19 @@ func TestKindFromSwapDirection(t *testing.T) {
 	t.Parallel()
 
 	require.Equal(
-		t, walletdkrpc.EntryKind_ENTRY_KIND_SEND,
+		t, wavewalletrpc.EntryKind_ENTRY_KIND_SEND,
 		kindFromSwapDirection(
 			swapclientrpc.SwapDirection_SWAP_DIRECTION_PAY,
 		),
 	)
 	require.Equal(
-		t, walletdkrpc.EntryKind_ENTRY_KIND_RECV,
+		t, wavewalletrpc.EntryKind_ENTRY_KIND_RECV,
 		kindFromSwapDirection(
 			swapclientrpc.SwapDirection_SWAP_DIRECTION_RECEIVE,
 		),
 	)
 	require.Equal(
-		t, walletdkrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
+		t, wavewalletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
 		kindFromSwapDirection(
 			swapclientrpc.SwapDirection_SWAP_DIRECTION_UNSPECIFIED,
 		),
@@ -116,13 +116,13 @@ func TestStatusFromSwapState(t *testing.T) {
 
 	// Pending always wins regardless of state.
 	require.Equal(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
 		statusFromSwapState(
 			swapclientrpc.SwapState_SWAP_STATE_COMPLETED, true,
 		),
 	)
 	require.Equal(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
 		statusFromSwapState(
 			swapclientrpc.SwapState_SWAP_STATE_REFUNDED, true,
 		),
@@ -130,7 +130,7 @@ func TestStatusFromSwapState(t *testing.T) {
 
 	// Terminal completed -> COMPLETE.
 	require.Equal(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
 		statusFromSwapState(
 			swapclientrpc.SwapState_SWAP_STATE_COMPLETED, false,
 		),
@@ -144,14 +144,14 @@ func TestStatusFromSwapState(t *testing.T) {
 		swapclientrpc.SwapState_SWAP_STATE_REFUNDED,
 	} {
 		require.Equal(
-			t, walletdkrpc.EntryStatus_ENTRY_STATUS_FAILED,
+			t, wavewalletrpc.EntryStatus_ENTRY_STATUS_FAILED,
 			statusFromSwapState(s, false),
 		)
 	}
 
 	// Unknown non-pending falls back to PENDING.
 	require.Equal(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
 		statusFromSwapState(
 			swapclientrpc.SwapState_SWAP_STATE_UNSPECIFIED, false,
 		),
@@ -172,7 +172,7 @@ func TestFailureCodeFromSwapState(t *testing.T) {
 
 	cases := []struct {
 		state swapclientrpc.SwapState
-		want  walletdkrpc.EntryFailureCode
+		want  wavewalletrpc.EntryFailureCode
 	}{{
 		state: swapclientrpc.SwapState_SWAP_STATE_EXPIRED,
 		want:  fcEnum("EXPIRED"),
@@ -203,10 +203,10 @@ func TestFailureCodeFromSwapState(t *testing.T) {
 
 // fcEnum resolves a short failure-code suffix to its generated enum value,
 // keeping the test table within the line limit.
-func fcEnum(suffix string) walletdkrpc.EntryFailureCode {
-	m := walletdkrpc.EntryFailureCode_value
+func fcEnum(suffix string) wavewalletrpc.EntryFailureCode {
+	m := wavewalletrpc.EntryFailureCode_value
 
-	return walletdkrpc.EntryFailureCode(m["ENTRY_FAILURE_CODE_"+suffix])
+	return wavewalletrpc.EntryFailureCode(m["ENTRY_FAILURE_CODE_"+suffix])
 }
 
 // TestFailureCodeMatchesFailedStatus is a drift guard: every SwapState that
@@ -219,7 +219,7 @@ func TestFailureCodeMatchesFailedStatus(t *testing.T) {
 	for s := range swapclientrpc.SwapState_name {
 		state := swapclientrpc.SwapState(s)
 		failed := statusFromSwapState(state, false) ==
-			walletdkrpc.EntryStatus_ENTRY_STATUS_FAILED
+			wavewalletrpc.EntryStatus_ENTRY_STATUS_FAILED
 		coded := failureCodeFromSwapState(state, false) != unspecCode
 		require.Equal(t, failed, coded, "state=%v", state)
 	}
@@ -242,7 +242,7 @@ func TestDefaultFailureReason(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		code walletdkrpc.EntryFailureCode
+		code wavewalletrpc.EntryFailureCode
 		want string
 	}{
 		{
@@ -290,15 +290,15 @@ func TestSwapEntryFromSummaryFailureReason(t *testing.T) {
 			Direction: swapclientrpc.
 				SwapDirection_SWAP_DIRECTION_RECEIVE,
 			State: swapclientrpc.SwapState_SWAP_STATE_EXPIRED,
-		}, "", "", walletdkrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
+		}, "", "", wavewalletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
 	)
 	require.Equal(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_FAILED,
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_FAILED,
 		expired.GetStatus(),
 	)
 	require.Equal(t, "invoice expired", expired.GetFailureReason())
 	require.Equal(
-		t, walletdkrpc.EntryFailureCode_ENTRY_FAILURE_CODE_EXPIRED,
+		t, wavewalletrpc.EntryFailureCode_ENTRY_FAILURE_CODE_EXPIRED,
 		expired.GetFailureCode(),
 	)
 
@@ -307,7 +307,7 @@ func TestSwapEntryFromSummaryFailureReason(t *testing.T) {
 			PaymentHash:    "hash-failed",
 			State:          swapclientrpc.SwapState_SWAP_STATE_FAILED,
 			TerminalReason: "server rejected swap",
-		}, "", "", walletdkrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
+		}, "", "", wavewalletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
 	)
 	require.Equal(t, "server rejected swap", failed.GetFailureReason())
 
@@ -315,7 +315,7 @@ func TestSwapEntryFromSummaryFailureReason(t *testing.T) {
 		&swapclientrpc.SwapSummary{
 			PaymentHash: "hash-done",
 			State:       swapclientrpc.SwapState_SWAP_STATE_COMPLETED,
-		}, "", "", walletdkrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
+		}, "", "", wavewalletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
 	)
 	require.Empty(t, done.GetFailureReason())
 }
@@ -356,17 +356,17 @@ func TestWalletVTXOFromDaemon(t *testing.T) {
 	require.Nil(t, out)
 
 	// Live VTXO is kept and projected verbatim.
-	in := &daemonrpc.VTXO{
+	in := &waverpc.VTXO{
 		Outpoint:       "abc:0",
 		AmountSat:      10_000,
-		Status:         daemonrpc.VTXOStatus_VTXO_STATUS_LIVE,
+		Status:         waverpc.VTXOStatus_VTXO_STATUS_LIVE,
 		BatchExpiry:    1_000_000,
 		RelativeExpiry: 144,
 		CommitmentTxid: "dead",
 	}
 	out, keep = walletVTXOFromDaemon(in)
 	require.True(t, keep)
-	require.Equal(t, &walletdkrpc.WalletVTXO{
+	require.Equal(t, &wavewalletrpc.WalletVTXO{
 		Outpoint:       "abc:0",
 		AmountSat:      10_000,
 		Status:         "live",
@@ -376,13 +376,13 @@ func TestWalletVTXOFromDaemon(t *testing.T) {
 	}, out)
 
 	// Terminal states drop out.
-	for _, s := range []daemonrpc.VTXOStatus{
-		daemonrpc.VTXOStatus_VTXO_STATUS_FORFEITED,
-		daemonrpc.VTXOStatus_VTXO_STATUS_SPENT,
-		daemonrpc.VTXOStatus_VTXO_STATUS_FAILED,
-		daemonrpc.VTXOStatus_VTXO_STATUS_UNSPECIFIED,
+	for _, s := range []waverpc.VTXOStatus{
+		waverpc.VTXOStatus_VTXO_STATUS_FORFEITED,
+		waverpc.VTXOStatus_VTXO_STATUS_SPENT,
+		waverpc.VTXOStatus_VTXO_STATUS_FAILED,
+		waverpc.VTXOStatus_VTXO_STATUS_UNSPECIFIED,
 	} {
-		_, keep := walletVTXOFromDaemon(&daemonrpc.VTXO{
+		_, keep := walletVTXOFromDaemon(&waverpc.VTXO{
 			Status: s,
 		})
 		require.False(t, keep, "status %v should be hidden", s)
@@ -395,48 +395,48 @@ func TestWalletVTXOStatusFromDaemon(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		in   daemonrpc.VTXOStatus
+		in   waverpc.VTXOStatus
 		out  string
 		keep bool
 	}{
 		{
-			daemonrpc.VTXOStatus_VTXO_STATUS_LIVE,
+			waverpc.VTXOStatus_VTXO_STATUS_LIVE,
 			"live",
 			true,
 		},
 		{
-			daemonrpc.VTXOStatus_VTXO_STATUS_PENDING_FORFEIT,
+			waverpc.VTXOStatus_VTXO_STATUS_PENDING_FORFEIT,
 			"pending_forfeit", true,
 		},
 		{
-			daemonrpc.VTXOStatus_VTXO_STATUS_FORFEITING,
+			waverpc.VTXOStatus_VTXO_STATUS_FORFEITING,
 			"forfeiting", true,
 		},
 		{
-			daemonrpc.VTXOStatus_VTXO_STATUS_SPENDING,
+			waverpc.VTXOStatus_VTXO_STATUS_SPENDING,
 			"spending", true,
 		},
 		{
-			daemonrpc.VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT,
+			waverpc.VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT,
 			"unilateral_exit", true,
 		},
 		{
-			daemonrpc.VTXOStatus_VTXO_STATUS_FORFEITED,
+			waverpc.VTXOStatus_VTXO_STATUS_FORFEITED,
 			"",
 			false,
 		},
 		{
-			daemonrpc.VTXOStatus_VTXO_STATUS_SPENT,
+			waverpc.VTXOStatus_VTXO_STATUS_SPENT,
 			"",
 			false,
 		},
 		{
-			daemonrpc.VTXOStatus_VTXO_STATUS_FAILED,
+			waverpc.VTXOStatus_VTXO_STATUS_FAILED,
 			"",
 			false,
 		},
 		{
-			daemonrpc.VTXOStatus_VTXO_STATUS_UNSPECIFIED,
+			waverpc.VTXOStatus_VTXO_STATUS_UNSPECIFIED,
 			"",
 			false,
 		},
@@ -449,7 +449,7 @@ func TestWalletVTXOStatusFromDaemon(t *testing.T) {
 }
 
 // TestOnchainTxFromLedgerRow confirms the projection flattens the
-// daemonrpc TransactionHistoryEntry onto the wallet-facing OnchainTx
+// waverpc TransactionHistoryEntry onto the wallet-facing OnchainTx
 // shape and drops internal correlators (round_id, session_id,
 // debit/credit accounts) entirely.
 func TestOnchainTxFromLedgerRow(t *testing.T) {
@@ -457,10 +457,10 @@ func TestOnchainTxFromLedgerRow(t *testing.T) {
 
 	// Nil → empty (not a panic).
 	require.Equal(
-		t, &walletdkrpc.OnchainTx{}, onchainTxFromLedgerRow(nil),
+		t, &wavewalletrpc.OnchainTx{}, onchainTxFromLedgerRow(nil),
 	)
 
-	in := &daemonrpc.TransactionHistoryEntry{
+	in := &waverpc.TransactionHistoryEntry{
 		Txid:               "deadbeef",
 		Type:               "boarding",
 		AmountSat:          25_000,
@@ -500,7 +500,7 @@ func TestOnchainTxFromLedgerRow(t *testing.T) {
 func TestPaginateVTXOs(t *testing.T) {
 	t.Parallel()
 
-	in := []*walletdkrpc.WalletVTXO{
+	in := []*wavewalletrpc.WalletVTXO{
 		{
 			Outpoint: "a:0",
 		},
@@ -550,9 +550,9 @@ func TestLeaveEntryStub(t *testing.T) {
 		5_000, "rent",
 	)
 	require.Equal(t, "abc:0", out.GetId())
-	require.Equal(t, walletdkrpc.EntryKind_ENTRY_KIND_EXIT, out.GetKind())
+	require.Equal(t, wavewalletrpc.EntryKind_ENTRY_KIND_EXIT, out.GetKind())
 	require.Equal(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
 		out.GetStatus(),
 	)
 	require.Equal(t, int64(-5_000), out.GetAmountSat())
@@ -611,9 +611,11 @@ func TestSwapEntryFromSummaryCallerKindOverride(t *testing.T) {
 	}
 
 	send := swapEntryFromSummary(
-		s, "", "", walletdkrpc.EntryKind_ENTRY_KIND_SEND,
+		s, "", "", wavewalletrpc.EntryKind_ENTRY_KIND_SEND,
 	)
-	require.Equal(t, walletdkrpc.EntryKind_ENTRY_KIND_SEND, send.GetKind())
+	require.Equal(
+		t, wavewalletrpc.EntryKind_ENTRY_KIND_SEND, send.GetKind(),
+	)
 	require.Equal(
 		t, "lnbc1invoice",
 		send.GetRequest().GetLightningInvoice().GetInvoice(),
@@ -624,9 +626,11 @@ func TestSwapEntryFromSummaryCallerKindOverride(t *testing.T) {
 	)
 
 	recv := swapEntryFromSummary(
-		s, "", "", walletdkrpc.EntryKind_ENTRY_KIND_RECV,
+		s, "", "", wavewalletrpc.EntryKind_ENTRY_KIND_RECV,
 	)
-	require.Equal(t, walletdkrpc.EntryKind_ENTRY_KIND_RECV, recv.GetKind())
+	require.Equal(
+		t, wavewalletrpc.EntryKind_ENTRY_KIND_RECV, recv.GetKind(),
+	)
 	require.Equal(
 		t, int64(10_000), recv.GetAmountSat(),
 		"caller-pinned RECV must surface as incoming (positive)",
@@ -647,21 +651,21 @@ func TestSwapEntryFromSummaryRequestMetadata(t *testing.T) {
 	}
 
 	send := swapEntryFromSummary(
-		s, "", "", walletdkrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
+		s, "", "", wavewalletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
 	)
 	req := send.GetRequest().GetLightningInvoice()
 	require.Equal(t, "ph", req.GetPaymentHash())
 	require.Empty(t, req.GetInvoice())
 
 	withInvoice := swapEntryFromSummary(
-		s, "", "lnbc1invoice", walletdkrpc.EntryKind_ENTRY_KIND_SEND,
+		s, "", "lnbc1invoice", wavewalletrpc.EntryKind_ENTRY_KIND_SEND,
 	)
 	req = withInvoice.GetRequest().GetLightningInvoice()
 	require.Equal(t, "ph", req.GetPaymentHash())
 	require.Equal(t, "lnbc1invoice", req.GetInvoice())
 
 	withHashHint := swapEntryFromSummary(
-		s, "", "ph", walletdkrpc.EntryKind_ENTRY_KIND_SEND,
+		s, "", "ph", wavewalletrpc.EntryKind_ENTRY_KIND_SEND,
 	)
 	req = withHashHint.GetRequest().GetLightningInvoice()
 	require.Equal(t, "ph", req.GetPaymentHash())
@@ -682,7 +686,7 @@ func TestSwapEntryFromSummaryPreimage(t *testing.T) {
 		Direction:   swapclientrpc.SwapDirection_SWAP_DIRECTION_PAY,
 		State:       swapclientrpc.SwapState_SWAP_STATE_COMPLETED,
 		Preimage:    "deadbeef",
-	}, "", "", walletdkrpc.EntryKind_ENTRY_KIND_SEND)
+	}, "", "", wavewalletrpc.EntryKind_ENTRY_KIND_SEND)
 	require.Equal(t, "deadbeef", settled.GetProgress().GetPreimage())
 
 	// A still-pending send has no preimage yet, so the field stays empty.
@@ -691,7 +695,7 @@ func TestSwapEntryFromSummaryPreimage(t *testing.T) {
 		Direction:   swapclientrpc.SwapDirection_SWAP_DIRECTION_PAY,
 		State:       swapclientrpc.SwapState_SWAP_STATE_WAITING_FOR_CLAIM,
 		Pending:     true,
-	}, "", "", walletdkrpc.EntryKind_ENTRY_KIND_SEND)
+	}, "", "", wavewalletrpc.EntryKind_ENTRY_KIND_SEND)
 	require.Empty(t, pending.GetProgress().GetPreimage())
 }
 
@@ -701,11 +705,12 @@ func TestSwapEntryFromSummaryNilSafe(t *testing.T) {
 	t.Parallel()
 
 	out := swapEntryFromSummary(
-		nil, "", "", walletdkrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
+		nil, "", "", wavewalletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
 	)
 	require.NotNil(t, out)
 	require.Equal(
-		t, walletdkrpc.EntryKind_ENTRY_KIND_UNSPECIFIED, out.GetKind(),
+		t, wavewalletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
+		out.GetKind(),
 	)
 
 	// A nil summary is not a failure, so failure_code stays unset.
@@ -722,7 +727,7 @@ func TestSwapEntryFromSummaryFailureCodePresence(t *testing.T) {
 	ok := swapEntryFromSummary(&swapclientrpc.SwapSummary{
 		PaymentHash: "ph-ok",
 		State:       swapclientrpc.SwapState_SWAP_STATE_COMPLETED,
-	}, "", "", walletdkrpc.EntryKind_ENTRY_KIND_RECV)
+	}, "", "", wavewalletrpc.EntryKind_ENTRY_KIND_RECV)
 	require.Nil(
 		t, ok.FailureCode, "non-failed entry must omit failure_code",
 	)
@@ -731,7 +736,7 @@ func TestSwapEntryFromSummaryFailureCodePresence(t *testing.T) {
 	failed := swapEntryFromSummary(&swapclientrpc.SwapSummary{
 		PaymentHash: "ph-expired",
 		State:       swapclientrpc.SwapState_SWAP_STATE_EXPIRED,
-	}, "", "", walletdkrpc.EntryKind_ENTRY_KIND_RECV)
+	}, "", "", wavewalletrpc.EntryKind_ENTRY_KIND_RECV)
 	require.NotNil(
 		t, failed.FailureCode, "failed entry must set failure_code",
 	)
@@ -751,7 +756,7 @@ func TestWalletEntryFailureCodeJSONShape(t *testing.T) {
 		UseProtoNames:   true,
 		EmitUnpopulated: true,
 	}
-	decode := func(e *walletdkrpc.WalletEntry) map[string]any {
+	decode := func(e *wavewalletrpc.WalletEntry) map[string]any {
 		raw, err := marshal.Marshal(e)
 		require.NoError(t, err)
 
@@ -764,7 +769,7 @@ func TestWalletEntryFailureCodeJSONShape(t *testing.T) {
 	ok := swapEntryFromSummary(&swapclientrpc.SwapSummary{
 		PaymentHash: "ph-ok",
 		State:       swapclientrpc.SwapState_SWAP_STATE_COMPLETED,
-	}, "", "", walletdkrpc.EntryKind_ENTRY_KIND_RECV)
+	}, "", "", wavewalletrpc.EntryKind_ENTRY_KIND_RECV)
 	_, present := decode(ok)["failure_code"]
 	require.False(
 		t, present, "non-failed entry JSON must not carry failure_code",
@@ -773,7 +778,7 @@ func TestWalletEntryFailureCodeJSONShape(t *testing.T) {
 	failed := swapEntryFromSummary(&swapclientrpc.SwapSummary{
 		PaymentHash: "ph-expired",
 		State:       swapclientrpc.SwapState_SWAP_STATE_EXPIRED,
-	}, "", "", walletdkrpc.EntryKind_ENTRY_KIND_RECV)
+	}, "", "", wavewalletrpc.EntryKind_ENTRY_KIND_RECV)
 	require.Equal(
 		t, "ENTRY_FAILURE_CODE_EXPIRED", decode(failed)["failure_code"],
 		"failed entry JSON must carry the concrete failure_code",

@@ -1,8 +1,8 @@
-//go:build walletdkrpc && swapruntime
+//go:build wavewalletrpc && swapruntime
 
-// Package swapwallet implements the daemon-side walletdkrpc subserver that
+// Package swapwallet implements the daemon-side wavewalletrpc subserver that
 // exposes a simplified, swap-vocabulary-free wallet API on top of the
-// running darepod daemon.
+// running waved daemon.
 //
 // The package composes the existing swap subsystem (swapclientserver, gated
 // by the swapruntime build tag), the in-process Ark SDK facade, the
@@ -30,7 +30,7 @@
 // goroutines are anchored to the daemon root context, never to RPC-call
 // contexts, so a CLI disconnect can never cancel in-flight work.
 //
-// The walletdkrpc build tag depends on swapruntime: building walletdkrpc
+// The wavewalletrpc build tag depends on swapruntime: building wavewalletrpc
 // without swapruntime is a deliberate compile error because the subserver
 // composes the daemon-owned swap subsystem.
 //

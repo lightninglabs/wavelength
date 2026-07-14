@@ -10,8 +10,8 @@ import (
 	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
-	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
-	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
+	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
+	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 )

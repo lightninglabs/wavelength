@@ -14,8 +14,8 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/lightninglabs/darepo-client/daemonrpc"
-	"github.com/lightninglabs/darepo-client/darepod"
+	"github.com/lightninglabs/wavelength/waved"
+	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/stretchr/testify/require"
 )
 
@@ -38,7 +38,7 @@ const parkedObserveWindow = 8 * time.Second
 // systest load (the release path is several async actor hops).
 const leaveRecoveryWindow = leaveAdmissionTimeout + 60*time.Second
 
-// TestLeaveStrandedVTXORecoversOnAdmissionTimeout reproduces darepo-client#653
+// TestLeaveStrandedVTXORecoversOnAdmissionTimeout reproduces wavelength#653
 // and proves the fix: a cooperative leave reserves the VTXO into
 // pending-forfeit and parks the round in a temp REGISTRATION_SENT state, but
 // the fake operator never returns a RoundJoined admission watermark. Without
@@ -56,7 +56,7 @@ func TestLeaveStrandedVTXORecoversOnAdmissionTimeout(t *testing.T) {
 	// EagerRoundJoin makes the leave drive the round FSM into
 	// IntentSentState immediately (matching the wallet/SDK hosts where the
 	// issue was observed); the short admission timeout keeps the test fast.
-	fixture := newDirectedSendFixture(t, func(c *darepod.Config) {
+	fixture := newDirectedSendFixture(t, func(c *waved.Config) {
 		c.EagerRoundJoin = true
 		c.RegistrationTimeout = leaveAdmissionTimeout
 	})
@@ -65,7 +65,7 @@ func TestLeaveStrandedVTXORecoversOnAdmissionTimeout(t *testing.T) {
 	startVTXOs := listAllVTXOs(t, fixture.client)
 	require.Len(t, startVTXOs, 1)
 	require.Equal(
-		t, daemonrpc.VTXOStatus_VTXO_STATUS_LIVE, startVTXOs[0].Status,
+		t, waverpc.VTXOStatus_VTXO_STATUS_LIVE, startVTXOs[0].Status,
 	)
 	require.Equal(
 		t, testSeededAmountSat, vtxoBalanceSat(t, fixture.client),
@@ -80,9 +80,9 @@ func TestLeaveStrandedVTXORecoversOnAdmissionTimeout(t *testing.T) {
 	defer cancel()
 
 	leaveResp, err := fixture.client.LeaveVTXOs(
-		ctx, &daemonrpc.LeaveVTXOsRequest{
-			Selection: &daemonrpc.LeaveVTXOsRequest_Outpoints{
-				Outpoints: &daemonrpc.OutpointSelection{
+		ctx, &waverpc.LeaveVTXOsRequest{
+			Selection: &waverpc.LeaveVTXOsRequest_Outpoints{
+				Outpoints: &waverpc.OutpointSelection{
 					Outpoints: []string{
 						outpointString(
 							fixture.seededOutpoint,
@@ -90,8 +90,8 @@ func TestLeaveStrandedVTXORecoversOnAdmissionTimeout(t *testing.T) {
 					},
 				},
 			},
-			DefaultDestination: &daemonrpc.LeaveDestination{
-				Target: &daemonrpc.LeaveDestination_Address{
+			DefaultDestination: &waverpc.LeaveDestination{
+				Target: &waverpc.LeaveDestination_Address{
 					Address: destAddr,
 				},
 			},
@@ -118,7 +118,7 @@ func TestLeaveStrandedVTXORecoversOnAdmissionTimeout(t *testing.T) {
 				fixture.seededOutpoint,
 			)
 			pendingForfeit := v != nil && v.Status ==
-				daemonrpc.VTXOStatus_VTXO_STATUS_PENDING_FORFEIT
+				waverpc.VTXOStatus_VTXO_STATUS_PENDING_FORFEIT
 
 			return pendingForfeit &&
 				hasTempRegistrationSentRound(t, fixture.client)
@@ -133,7 +133,7 @@ func TestLeaveStrandedVTXORecoversOnAdmissionTimeout(t *testing.T) {
 	// unfixed daemon this never happens and the assertion times out.
 	requireVTXOStatusEventually(
 		t, fixture.client, fixture.seededOutpoint,
-		daemonrpc.VTXOStatus_VTXO_STATUS_LIVE, leaveRecoveryWindow,
+		waverpc.VTXOStatus_VTXO_STATUS_LIVE, leaveRecoveryWindow,
 	)
 
 	// The spendable balance is restored to its starting value.
@@ -149,13 +149,13 @@ func TestLeaveStrandedVTXORecoversOnAdmissionTimeout(t *testing.T) {
 }
 
 // vtxoBalanceSat returns the daemon's current off-chain (VTXO) balance.
-func vtxoBalanceSat(t *testing.T, client daemonrpc.DaemonServiceClient) int64 {
+func vtxoBalanceSat(t *testing.T, client waverpc.DaemonServiceClient) int64 {
 	t.Helper()
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 
-	resp, err := client.GetBalance(ctx, &daemonrpc.GetBalanceRequest{})
+	resp, err := client.GetBalance(ctx, &waverpc.GetBalanceRequest{})
 	require.NoError(t, err)
 
 	return resp.GetVtxoBalanceSat()
@@ -165,8 +165,8 @@ func vtxoBalanceSat(t *testing.T, client daemonrpc.DaemonServiceClient) int64 {
 // reaches the expected status, failing the test if it does not within the
 // timeout.
 func requireVTXOStatusEventually(t *testing.T,
-	client daemonrpc.DaemonServiceClient, outpoint wire.OutPoint,
-	want daemonrpc.VTXOStatus, timeout time.Duration) {
+	client waverpc.DaemonServiceClient, outpoint wire.OutPoint,
+	want waverpc.VTXOStatus, timeout time.Duration) {
 
 	t.Helper()
 
@@ -189,13 +189,13 @@ func requireVTXOStatusEventually(t *testing.T,
 // temp-keyed round in REGISTRATION_SENT — the parked state a leave reaches
 // once its JoinRoundRequest is sent but unacknowledged.
 func hasTempRegistrationSentRound(t *testing.T,
-	client daemonrpc.DaemonServiceClient) bool {
+	client waverpc.DaemonServiceClient) bool {
 
 	t.Helper()
 
 	for _, r := range listRounds(t, client) {
 		if r.IsTemp && r.State ==
-			daemonrpc.RoundState_ROUND_STATE_REGISTRATION_SENT {
+			waverpc.RoundState_ROUND_STATE_REGISTRATION_SENT {
 			return true
 		}
 	}

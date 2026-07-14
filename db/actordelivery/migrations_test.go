@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/lightninglabs/darepo-client/db/sqlc"
+	"github.com/lightninglabs/wavelength/db/sqlc"
 	"github.com/stretchr/testify/require"
 	_ "modernc.org/sqlite"
 )

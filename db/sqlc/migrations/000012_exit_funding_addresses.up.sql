@@ -2,7 +2,7 @@
 -- out by an exit plan for one target VTXO outpoint. It is persisted so the
 -- same outpoint always maps to the same funding address across daemon
 -- restarts: without it a restart derives a brand-new HD receive address and
--- demands a second deposit for the same VTXO (darepo-client#893).
+-- demands a second deposit for the same VTXO (wavelength#893).
 --
 -- Shipped as its own additive migration (rather than folded into
 -- 000007_unilateral_exit) because it only CREATEs a new standalone table, so

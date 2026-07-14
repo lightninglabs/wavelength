@@ -6,9 +6,9 @@ import (
 	"time"
 
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/baselib/actor"
-	"github.com/lightninglabs/darepo-client/db"
-	"github.com/lightninglabs/darepo-client/timeout"
+	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/db"
+	"github.com/lightninglabs/wavelength/timeout"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
@@ -383,13 +383,13 @@ const (
 	// before the operation terminal-fails. It is the production backstop
 	// against a credit-backed send parking forever when the server never
 	// reports a terminal state for the top-up or the pay — the hang behind
-	// darepo-client#880, where a confirmed credit-shortfall send never
+	// wavelength#880, where a confirmed credit-shortfall send never
 	// completes and never fails.
 	//
 	// At DefaultPollInterval (2s) this is ~4 minutes of awaiting per state:
 	// generous enough to absorb a slow OOR top-up credit or real-Lightning
 	// settlement, yet deliberately under the CLI's 5-minute default send
-	// wait (cmd/darepocli defaultSendWaitTimeout) so a stuck operation's
+	// wait (cmd/wavecli defaultSendWaitTimeout) so a stuck operation's
 	// clear terminal failure reason usually surfaces before the CLI falls
 	// back to a generic wait timeout. Zero (the OpActorConfig /
 	// RegistryConfig field default) still means "unlimited" for tests and

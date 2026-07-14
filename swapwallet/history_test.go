@@ -1,4 +1,4 @@
-//go:build walletdkrpc && swapruntime
+//go:build wavewalletrpc && swapruntime
 
 package swapwallet
 
@@ -9,10 +9,10 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/chainhash/v2"
-	"github.com/lightninglabs/darepo-client/daemonrpc"
-	"github.com/lightninglabs/darepo-client/ledger"
-	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
-	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/ledger"
+	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
+	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/stretchr/testify/require"
 )
 
@@ -80,8 +80,8 @@ func setReceiveClaimByOutputTxidFixture(t *testing.T, swap *fakeSwapService,
 			},
 		},
 	}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Type:           "oor",
 				Subtype:        ledger.EventVTXOSent,
@@ -136,8 +136,8 @@ func TestHistoryListMergesSwapAndLedgerSources(t *testing.T) {
 			},
 		},
 	}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Type:               "boarding",
 				ConfirmationStatus: "confirmed",
@@ -155,7 +155,7 @@ func TestHistoryListMergesSwapAndLedgerSources(t *testing.T) {
 		},
 	}
 
-	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{})
+	resp, err := h.List(t.Context(), &wavewalletrpc.ListRequest{})
 	require.NoError(t, err)
 	require.Len(t, resp.GetActivity().GetEntries(), 4)
 
@@ -172,23 +172,23 @@ func TestHistoryListMergesSwapAndLedgerSources(t *testing.T) {
 
 	// Kinds and statuses normalize correctly.
 	require.Equal(
-		t, walletdkrpc.EntryKind_ENTRY_KIND_RECV,
+		t, wavewalletrpc.EntryKind_ENTRY_KIND_RECV,
 		resp.GetActivity().GetEntries()[0].GetKind(),
 	)
 	require.Equal(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
 		resp.GetActivity().GetEntries()[0].GetStatus(),
 	)
 	require.Equal(
-		t, walletdkrpc.EntryKind_ENTRY_KIND_EXIT,
+		t, wavewalletrpc.EntryKind_ENTRY_KIND_EXIT,
 		resp.GetActivity().GetEntries()[1].GetKind(),
 	)
 	require.Equal(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
 		resp.GetActivity().GetEntries()[1].GetStatus(),
 	)
 	require.Equal(
-		t, walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT,
+		t, wavewalletrpc.EntryKind_ENTRY_KIND_DEPOSIT,
 		resp.GetActivity().GetEntries()[3].GetKind(),
 	)
 }
@@ -218,9 +218,9 @@ func TestHistoryPendingFilterDropsTerminal(t *testing.T) {
 			},
 		},
 	}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{}
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{}
 
-	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{
+	resp, err := h.List(t.Context(), &wavewalletrpc.ListRequest{
 		PendingOnly: true,
 	})
 	require.NoError(t, err)
@@ -235,29 +235,29 @@ func TestHistorySurfacesPendingBoardingBalance(t *testing.T) {
 
 	h, swap, rpc := newHistoryFixture(t)
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{}
-	rpc.getBalanceResp = &daemonrpc.GetBalanceResponse{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{}
+	rpc.getBalanceResp = &waverpc.GetBalanceResponse{
 		BoardingUnconfirmedSat: 12345,
 	}
 
-	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{})
+	resp, err := h.List(t.Context(), &wavewalletrpc.ListRequest{})
 	require.NoError(t, err)
 
 	entries := resp.GetActivity().GetEntries()
 	require.Len(t, entries, 1)
 	require.Equal(t, "boarding-unconfirmed", entries[0].GetId())
 	require.Equal(
-		t, walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT,
+		t, wavewalletrpc.EntryKind_ENTRY_KIND_DEPOSIT,
 		entries[0].GetKind(),
 	)
 	require.Equal(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
 		entries[0].GetStatus(),
 	)
 	require.Equal(t, int64(12345), entries[0].GetAmountSat())
 	require.Equal(
 		t,
-		walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_WAITING_FOR_CONFIRMATION,
+		wavewalletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_WAITING_FOR_CONFIRMATION,
 		entries[0].GetProgress().GetPhase(),
 	)
 	require.Equal(
@@ -296,8 +296,8 @@ func TestHistoryHidesReceiveClaimOORSend(t *testing.T) {
 			},
 		},
 	}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Type:           "oor",
 				Subtype:        ledger.EventVTXOSent,
@@ -322,14 +322,15 @@ func TestHistoryHidesReceiveClaimOORSend(t *testing.T) {
 		},
 	}
 
-	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{})
+	resp, err := h.List(t.Context(), &wavewalletrpc.ListRequest{})
 	require.NoError(t, err)
 
 	entries := resp.GetActivity().GetEntries()
 	require.Len(t, entries, 1)
 	require.Equal(t, "payment-hash", entries[0].GetId())
 	require.Equal(
-		t, walletdkrpc.EntryKind_ENTRY_KIND_RECV, entries[0].GetKind(),
+		t, wavewalletrpc.EntryKind_ENTRY_KIND_RECV,
+		entries[0].GetKind(),
 	)
 }
 
@@ -342,7 +343,7 @@ func TestHistoryPendingFilterHidesReceiveClaimByOutputTxid(t *testing.T) {
 	h, swap, rpc := newHistoryFixture(t)
 	setReceiveClaimByOutputTxidFixture(t, swap, rpc)
 
-	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{
+	resp, err := h.List(t.Context(), &wavewalletrpc.ListRequest{
 		PendingOnly: true,
 	})
 	require.NoError(t, err)
@@ -364,17 +365,18 @@ func TestHistoryHidesReceiveClaimByOutputTxid(t *testing.T) {
 	h, swap, rpc := newHistoryFixture(t)
 	setReceiveClaimByOutputTxidFixture(t, swap, rpc)
 
-	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{})
+	resp, err := h.List(t.Context(), &wavewalletrpc.ListRequest{})
 	require.NoError(t, err)
 
 	entries := resp.GetActivity().GetEntries()
 	require.Len(t, entries, 1)
 	require.Equal(t, "receive-payment", entries[0].GetId())
 	require.Equal(
-		t, walletdkrpc.EntryKind_ENTRY_KIND_RECV, entries[0].GetKind(),
+		t, wavewalletrpc.EntryKind_ENTRY_KIND_RECV,
+		entries[0].GetKind(),
 	)
 	require.Equal(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
 		entries[0].GetStatus(),
 	)
 	require.Equal(t, int64(5_000), entries[0].GetAmountSat())
@@ -387,8 +389,8 @@ func TestHistoryKeepsUnpairedOORSend(t *testing.T) {
 
 	h, swap, rpc := newHistoryFixture(t)
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Type:           "oor",
 				Subtype:        ledger.EventVTXOSent,
@@ -402,13 +404,14 @@ func TestHistoryKeepsUnpairedOORSend(t *testing.T) {
 		},
 	}
 
-	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{})
+	resp, err := h.List(t.Context(), &wavewalletrpc.ListRequest{})
 	require.NoError(t, err)
 
 	entries := resp.GetActivity().GetEntries()
 	require.Len(t, entries, 1)
 	require.Equal(
-		t, walletdkrpc.EntryKind_ENTRY_KIND_SEND, entries[0].GetKind(),
+		t, wavewalletrpc.EntryKind_ENTRY_KIND_SEND,
+		entries[0].GetKind(),
 	)
 	require.Equal(t, int64(-1_000), entries[0].GetAmountSat())
 }
@@ -418,7 +421,7 @@ func TestHistoryKeepsUnpairedOORSend(t *testing.T) {
 func TestOORSendSessionIDRequiresHashSizedSession(t *testing.T) {
 	t.Parallel()
 
-	row := &daemonrpc.TransactionHistoryEntry{
+	row := &waverpc.TransactionHistoryEntry{
 		Type:          "oor",
 		Subtype:       ledger.EventVTXOSent,
 		AmountSat:     1_000,
@@ -447,7 +450,7 @@ func TestOORSendSessionIDRequiresHashSizedSession(t *testing.T) {
 func TestOORReceiveRefRequiresOORType(t *testing.T) {
 	t.Parallel()
 
-	row := &daemonrpc.TransactionHistoryEntry{
+	row := &waverpc.TransactionHistoryEntry{
 		Type:          "round",
 		Subtype:       ledger.EventVTXOReceived,
 		AmountSat:     1_000,
@@ -490,8 +493,8 @@ func TestHistoryHidesPayFundingOORInput(t *testing.T) {
 			},
 		},
 	}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Type:               "oor",
 				Subtype:            ledger.EventVTXOSent,
@@ -518,14 +521,15 @@ func TestHistoryHidesPayFundingOORInput(t *testing.T) {
 		},
 	}
 
-	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{})
+	resp, err := h.List(t.Context(), &wavewalletrpc.ListRequest{})
 	require.NoError(t, err)
 
 	entries := resp.GetActivity().GetEntries()
 	require.Len(t, entries, 1)
 	require.Equal(t, "payment-hash", entries[0].GetId())
 	require.Equal(
-		t, walletdkrpc.EntryKind_ENTRY_KIND_SEND, entries[0].GetKind(),
+		t, wavewalletrpc.EntryKind_ENTRY_KIND_SEND,
+		entries[0].GetKind(),
 	)
 	require.Equal(t, int64(-1_234), entries[0].GetAmountSat())
 }
@@ -555,8 +559,8 @@ func TestHistoryHidesPayFundingOORInputWithoutChange(t *testing.T) {
 			},
 		},
 	}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Type:           "oor",
 				Subtype:        ledger.EventVTXOSent,
@@ -570,18 +574,19 @@ func TestHistoryHidesPayFundingOORInputWithoutChange(t *testing.T) {
 		},
 	}
 
-	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{})
+	resp, err := h.List(t.Context(), &wavewalletrpc.ListRequest{})
 	require.NoError(t, err)
 
 	entries := resp.GetActivity().GetEntries()
 	require.Len(t, entries, 1)
 	require.Equal(t, "payment-hash", entries[0].GetId())
 	require.Equal(
-		t, walletdkrpc.EntryKind_ENTRY_KIND_SEND, entries[0].GetKind(),
+		t, wavewalletrpc.EntryKind_ENTRY_KIND_SEND,
+		entries[0].GetKind(),
 	)
 	require.Equal(t, int64(-42_000), entries[0].GetAmountSat())
 	require.Equal(
-		t, walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_REFUNDED,
+		t, wavewalletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_REFUNDED,
 		entries[0].GetProgress().GetPhase(),
 	)
 }
@@ -612,8 +617,8 @@ func TestHistoryHidesPayRefundOORSession(t *testing.T) {
 			},
 		},
 	}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Type:           "oor",
 				Subtype:        ledger.EventVTXOSent,
@@ -638,21 +643,22 @@ func TestHistoryHidesPayRefundOORSession(t *testing.T) {
 		},
 	}
 
-	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{})
+	resp, err := h.List(t.Context(), &wavewalletrpc.ListRequest{})
 	require.NoError(t, err)
 
 	entries := resp.GetActivity().GetEntries()
 	require.Len(t, entries, 1)
 	require.Equal(t, "payment-hash", entries[0].GetId())
 	require.Equal(
-		t, walletdkrpc.EntryKind_ENTRY_KIND_SEND, entries[0].GetKind(),
+		t, wavewalletrpc.EntryKind_ENTRY_KIND_SEND,
+		entries[0].GetKind(),
 	)
 	require.Equal(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_FAILED,
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_FAILED,
 		entries[0].GetStatus(),
 	)
 	require.Equal(
-		t, walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_REFUNDED,
+		t, wavewalletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_REFUNDED,
 		entries[0].GetProgress().GetPhase(),
 	)
 }
@@ -694,8 +700,8 @@ func TestHistoryPendingFilterKeepsTerminalSwapCorrelations(t *testing.T) {
 			},
 		},
 	}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Type:           "oor",
 				Subtype:        ledger.EventVTXOSent,
@@ -741,7 +747,7 @@ func TestHistoryPendingFilterKeepsTerminalSwapCorrelations(t *testing.T) {
 		},
 	}
 
-	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{
+	resp, err := h.List(t.Context(), &wavewalletrpc.ListRequest{
 		PendingOnly: true,
 	})
 	require.NoError(t, err)
@@ -780,8 +786,8 @@ func TestHistoryKeepsSameAmountUnmatchedFundingInput(t *testing.T) {
 			},
 		},
 	}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Type:           "oor",
 				Subtype:        ledger.EventVTXOSent,
@@ -825,7 +831,7 @@ func TestHistoryKeepsSameAmountUnmatchedFundingInput(t *testing.T) {
 		},
 	}
 
-	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{})
+	resp, err := h.List(t.Context(), &wavewalletrpc.ListRequest{})
 	require.NoError(t, err)
 
 	entries := resp.GetActivity().GetEntries()
@@ -847,8 +853,8 @@ func TestHistoryKeepsOORSendWithChangeWithoutSwap(t *testing.T) {
 	sessionHex := testSessionString(t, sessionID)
 
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Type:               "oor",
 				Subtype:            ledger.EventVTXOSent,
@@ -875,16 +881,17 @@ func TestHistoryKeepsOORSendWithChangeWithoutSwap(t *testing.T) {
 		},
 	}
 
-	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{})
+	resp, err := h.List(t.Context(), &wavewalletrpc.ListRequest{})
 	require.NoError(t, err)
 
 	entries := resp.GetActivity().GetEntries()
 	require.Len(t, entries, 1)
 	require.Equal(
-		t, walletdkrpc.EntryKind_ENTRY_KIND_SEND, entries[0].GetKind(),
+		t, wavewalletrpc.EntryKind_ENTRY_KIND_SEND,
+		entries[0].GetKind(),
 	)
 	require.Equal(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
 		entries[0].GetStatus(),
 	)
 	require.Equal(t, int64(-1_234), entries[0].GetAmountSat())
@@ -906,8 +913,8 @@ func TestHistoryKeepsZeroDeltaOORSendWithoutSwap(t *testing.T) {
 	sessionHex := testSessionString(t, sessionID)
 
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Type:               "oor",
 				Subtype:            ledger.EventVTXOSent,
@@ -934,17 +941,18 @@ func TestHistoryKeepsZeroDeltaOORSendWithoutSwap(t *testing.T) {
 		},
 	}
 
-	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{})
+	resp, err := h.List(t.Context(), &wavewalletrpc.ListRequest{})
 	require.NoError(t, err)
 
 	entries := resp.GetActivity().GetEntries()
 	require.Len(t, entries, 1)
 	require.Equal(t, "ledger-31", entries[0].GetId())
 	require.Equal(
-		t, walletdkrpc.EntryKind_ENTRY_KIND_SEND, entries[0].GetKind(),
+		t, wavewalletrpc.EntryKind_ENTRY_KIND_SEND,
+		entries[0].GetKind(),
 	)
 	require.Equal(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
 		entries[0].GetStatus(),
 	)
 	require.Equal(t, int64(-1_000), entries[0].GetAmountSat())
@@ -959,8 +967,8 @@ func TestHistoryCompletesRecordedOORReceive(t *testing.T) {
 
 	h, swap, rpc := newHistoryFixture(t)
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Type:               "oor",
 				Subtype:            ledger.EventVTXOReceived,
@@ -974,21 +982,22 @@ func TestHistoryCompletesRecordedOORReceive(t *testing.T) {
 		},
 	}
 
-	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{})
+	resp, err := h.List(t.Context(), &wavewalletrpc.ListRequest{})
 	require.NoError(t, err)
 
 	entries := resp.GetActivity().GetEntries()
 	require.Len(t, entries, 1)
 	require.Equal(
-		t, walletdkrpc.EntryKind_ENTRY_KIND_RECV, entries[0].GetKind(),
+		t, wavewalletrpc.EntryKind_ENTRY_KIND_RECV,
+		entries[0].GetKind(),
 	)
 	require.Equal(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
 		entries[0].GetStatus(),
 	)
 	require.Equal(t, int64(7_000), entries[0].GetAmountSat())
 	require.Equal(
-		t, walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_CONFIRMED,
+		t, wavewalletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_CONFIRMED,
 		entries[0].GetProgress().GetPhase(),
 	)
 }
@@ -1000,8 +1009,8 @@ func TestHistoryPendingFilterIncludesPendingBoarding(t *testing.T) {
 
 	h, swap, rpc := newHistoryFixture(t)
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Type:               "boarding",
 				ConfirmationStatus: "confirmed",
@@ -1011,11 +1020,11 @@ func TestHistoryPendingFilterIncludesPendingBoarding(t *testing.T) {
 			},
 		},
 	}
-	rpc.getBalanceResp = &daemonrpc.GetBalanceResponse{
+	rpc.getBalanceResp = &waverpc.GetBalanceResponse{
 		BoardingUnconfirmedSat: 12345,
 	}
 
-	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{
+	resp, err := h.List(t.Context(), &wavewalletrpc.ListRequest{
 		PendingOnly: true,
 	})
 	require.NoError(t, err)
@@ -1042,8 +1051,8 @@ func TestHistoryKindFilter(t *testing.T) {
 			},
 		},
 	}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Type:               "boarding",
 				ConfirmationStatus: "confirmed",
@@ -1053,9 +1062,9 @@ func TestHistoryKindFilter(t *testing.T) {
 		},
 	}
 
-	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{
-		Kinds: []walletdkrpc.EntryKind{
-			walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT,
+	resp, err := h.List(t.Context(), &wavewalletrpc.ListRequest{
+		Kinds: []wavewalletrpc.EntryKind{
+			wavewalletrpc.EntryKind_ENTRY_KIND_DEPOSIT,
 		},
 	})
 	require.NoError(t, err)
@@ -1071,9 +1080,9 @@ func TestHistoryKindFilterRejectsUnsupportedKind(t *testing.T) {
 	t.Parallel()
 
 	h, _, _ := newHistoryFixture(t)
-	_, err := h.List(t.Context(), &walletdkrpc.ListRequest{
-		Kinds: []walletdkrpc.EntryKind{
-			walletdkrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
+	_, err := h.List(t.Context(), &wavewalletrpc.ListRequest{
+		Kinds: []wavewalletrpc.EntryKind{
+			wavewalletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
 		},
 	})
 	require.ErrorIs(t, err, ErrUnsupportedKind)
@@ -1095,27 +1104,27 @@ func TestHistorySwapRowsIgnoreTimedOutOverlay(t *testing.T) {
 			},
 		},
 	}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{}
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{}
 
 	// Inject overlay directly.
 	h.runtime.pendingMu.Lock()
 	h.runtime.overlay["stuck"] = overlayStatus{
-		status: walletdkrpc.
+		status: wavewalletrpc.
 			EntryStatus_ENTRY_STATUS_FAILED,
 		failureReason: "timed_out",
 		failureCode:   timedOutCode,
 	}
 	h.runtime.pendingMu.Unlock()
 
-	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{})
+	resp, err := h.List(t.Context(), &wavewalletrpc.ListRequest{})
 	require.NoError(t, err)
 	require.Len(t, resp.GetActivity().GetEntries(), 1)
 	require.Equal(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
 		resp.GetActivity().GetEntries()[0].GetStatus(),
 	)
 	require.Equal(
-		t, walletdkrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
+		t, wavewalletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
 		resp.GetActivity().GetEntries()[0].GetKind(),
 	)
 	require.Empty(t, resp.GetActivity().GetEntries()[0].GetFailureReason())
@@ -1132,8 +1141,8 @@ func TestHistoryWalletRowsApplyTimedOutOverlay(t *testing.T) {
 
 	h, swap, rpc := newHistoryFixture(t)
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Txid:               "exit-txid",
 				Type:               "sweep",
@@ -1146,18 +1155,18 @@ func TestHistoryWalletRowsApplyTimedOutOverlay(t *testing.T) {
 	// Inject overlay directly.
 	h.runtime.pendingMu.Lock()
 	h.runtime.overlay["exit-txid"] = overlayStatus{
-		status: walletdkrpc.
+		status: wavewalletrpc.
 			EntryStatus_ENTRY_STATUS_FAILED,
 		failureReason: "timed_out",
 		failureCode:   timedOutCode,
 	}
 	h.runtime.pendingMu.Unlock()
 
-	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{})
+	resp, err := h.List(t.Context(), &wavewalletrpc.ListRequest{})
 	require.NoError(t, err)
 	require.Len(t, resp.GetActivity().GetEntries(), 1)
 	require.Equal(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_FAILED,
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_FAILED,
 		resp.GetActivity().GetEntries()[0].GetStatus(),
 	)
 	require.Equal(
@@ -1180,8 +1189,8 @@ func TestHistoryIncludesWalletLocalPendingExit(t *testing.T) {
 
 	h, swap, rpc := newHistoryFixture(t)
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{}
-	rpc.unrollStatusResp = &daemonrpc.GetUnrollStatusResponse{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{}
+	rpc.unrollStatusResp = &waverpc.GetUnrollStatusResponse{
 		Found: false,
 	}
 
@@ -1193,17 +1202,18 @@ func TestHistoryIncludesWalletLocalPendingExit(t *testing.T) {
 	)
 	h.runtime.trackPendingEntry(pending)
 
-	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{})
+	resp, err := h.List(t.Context(), &wavewalletrpc.ListRequest{})
 	require.NoError(t, err)
 
 	entries := resp.GetActivity().GetEntries()
 	require.Len(t, entries, 1)
 	require.Equal(t, "leave-outpoint:1", entries[0].GetId())
 	require.Equal(
-		t, walletdkrpc.EntryKind_ENTRY_KIND_EXIT, entries[0].GetKind(),
+		t, wavewalletrpc.EntryKind_ENTRY_KIND_EXIT,
+		entries[0].GetKind(),
 	)
 	require.Equal(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
 		entries[0].GetStatus(),
 	)
 	require.Equal(t, int64(-50_000), entries[0].GetAmountSat())
@@ -1221,19 +1231,19 @@ func TestHistoryCompletesWalletLocalExitWhenVTXOForfeited(t *testing.T) {
 
 	h, swap, rpc := newHistoryFixture(t)
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{}
-	rpc.unrollStatusResp = &daemonrpc.GetUnrollStatusResponse{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{}
+	rpc.unrollStatusResp = &waverpc.GetUnrollStatusResponse{
 		Found: false,
 	}
-	rpc.listVTXOsByStatus = map[daemonrpc.VTXOStatus]*daemonrpc.
+	rpc.listVTXOsByStatus = map[waverpc.VTXOStatus]*waverpc.
 		ListVTXOsResponse{
 
-		daemonrpc.VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT: {},
-		daemonrpc.VTXOStatus_VTXO_STATUS_FORFEITED: {
-			Vtxos: []*daemonrpc.VTXO{
+		waverpc.VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT: {},
+		waverpc.VTXOStatus_VTXO_STATUS_FORFEITED: {
+			Vtxos: []*waverpc.VTXO{
 				{
 					Outpoint: "leave-outpoint:1",
-					Status: daemonrpc.
+					Status: waverpc.
 						VTXOStatus_VTXO_STATUS_FORFEITED,
 				},
 			},
@@ -1248,21 +1258,22 @@ func TestHistoryCompletesWalletLocalExitWhenVTXOForfeited(t *testing.T) {
 	)
 	h.runtime.trackPendingEntryWithoutTimeout(pending)
 
-	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{})
+	resp, err := h.List(t.Context(), &wavewalletrpc.ListRequest{})
 	require.NoError(t, err)
 
 	entries := resp.GetActivity().GetEntries()
 	require.Len(t, entries, 1)
 	require.Equal(t, "leave-outpoint:1", entries[0].GetId())
 	require.Equal(
-		t, walletdkrpc.EntryKind_ENTRY_KIND_EXIT, entries[0].GetKind(),
+		t, wavewalletrpc.EntryKind_ENTRY_KIND_EXIT,
+		entries[0].GetKind(),
 	)
 	require.Equal(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
 		entries[0].GetStatus(),
 	)
 	require.Equal(
-		t, walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_CONFIRMED,
+		t, wavewalletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_CONFIRMED,
 		entries[0].GetProgress().GetPhase(),
 	)
 	require.Equal(t, "confirmed", entries[0].GetProgress().GetPhaseLabel())
@@ -1278,7 +1289,7 @@ func TestHistoryCompletesWalletLocalExitWhenVTXOForfeited(t *testing.T) {
 	require.Empty(t, entries[0].GetProgress().GetTxid())
 	require.Zero(t, entries[0].GetProgress().GetConfirmationHeight())
 
-	pendingResp, err := h.List(t.Context(), &walletdkrpc.ListRequest{
+	pendingResp, err := h.List(t.Context(), &wavewalletrpc.ListRequest{
 		PendingOnly: true,
 	})
 	require.NoError(t, err)
@@ -1300,21 +1311,21 @@ func TestHistoryStampsSettlementOnForfeitedLeave(t *testing.T) {
 
 	h, swap, rpc := newHistoryFixture(t)
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{}
-	rpc.unrollStatusResp = &daemonrpc.GetUnrollStatusResponse{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{}
+	rpc.unrollStatusResp = &waverpc.GetUnrollStatusResponse{
 		Found: false,
 	}
-	rpc.listVTXOsByStatus = map[daemonrpc.VTXOStatus]*daemonrpc.
+	rpc.listVTXOsByStatus = map[waverpc.VTXOStatus]*waverpc.
 		ListVTXOsResponse{
 
-		daemonrpc.VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT: {},
-		daemonrpc.VTXOStatus_VTXO_STATUS_FORFEITED: {
-			Vtxos: []*daemonrpc.VTXO{
+		waverpc.VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT: {},
+		waverpc.VTXOStatus_VTXO_STATUS_FORFEITED: {
+			Vtxos: []*waverpc.VTXO{
 				{
 					Outpoint: "leave-outpoint:1",
-					Status: daemonrpc.
+					Status: waverpc.
 						VTXOStatus_VTXO_STATUS_FORFEITED,
-					Settlement: &daemonrpc.VTXOSettlement{
+					Settlement: &waverpc.VTXOSettlement{
 						Txid:   settlementTxid,
 						Height: settlementHeight,
 					},
@@ -1331,17 +1342,17 @@ func TestHistoryStampsSettlementOnForfeitedLeave(t *testing.T) {
 	)
 	h.runtime.trackPendingEntryWithoutTimeout(pending)
 
-	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{})
+	resp, err := h.List(t.Context(), &wavewalletrpc.ListRequest{})
 	require.NoError(t, err)
 
 	entries := resp.GetActivity().GetEntries()
 	require.Len(t, entries, 1)
 	require.Equal(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
 		entries[0].GetStatus(),
 	)
 	require.Equal(
-		t, walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_CONFIRMED,
+		t, wavewalletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_CONFIRMED,
 		entries[0].GetProgress().GetPhase(),
 	)
 	require.Equal(
@@ -1365,19 +1376,19 @@ func TestHistoryKeepsWalletLocalExitPendingForUnmatchedForfeitedVTXO(
 
 	h, swap, rpc := newHistoryFixture(t)
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{}
-	rpc.unrollStatusResp = &daemonrpc.GetUnrollStatusResponse{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{}
+	rpc.unrollStatusResp = &waverpc.GetUnrollStatusResponse{
 		Found: false,
 	}
-	rpc.listVTXOsByStatus = map[daemonrpc.VTXOStatus]*daemonrpc.
+	rpc.listVTXOsByStatus = map[waverpc.VTXOStatus]*waverpc.
 		ListVTXOsResponse{
 
-		daemonrpc.VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT: {},
-		daemonrpc.VTXOStatus_VTXO_STATUS_FORFEITED: {
-			Vtxos: []*daemonrpc.VTXO{
+		waverpc.VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT: {},
+		waverpc.VTXOStatus_VTXO_STATUS_FORFEITED: {
+			Vtxos: []*waverpc.VTXO{
 				{
 					Outpoint: "other-leave-outpoint:0",
-					Status: daemonrpc.
+					Status: waverpc.
 						VTXOStatus_VTXO_STATUS_FORFEITED,
 				},
 			},
@@ -1392,19 +1403,19 @@ func TestHistoryKeepsWalletLocalExitPendingForUnmatchedForfeitedVTXO(
 	)
 	h.runtime.trackPendingEntryWithoutTimeout(pending)
 
-	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{})
+	resp, err := h.List(t.Context(), &wavewalletrpc.ListRequest{})
 	require.NoError(t, err)
 
 	entries := resp.GetActivity().GetEntries()
 	require.Len(t, entries, 1)
 	require.Equal(t, "leave-outpoint:1", entries[0].GetId())
 	require.Equal(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
 		entries[0].GetStatus(),
 	)
 	require.Equal(
 		t,
-		walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_REQUEST_CREATED,
+		wavewalletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_REQUEST_CREATED,
 		entries[0].GetProgress().GetPhase(),
 	)
 	require.Equal(
@@ -1421,19 +1432,19 @@ func TestHistoryScansForfeitedVTXOsOnceForWalletLocalExits(t *testing.T) {
 
 	h, swap, rpc := newHistoryFixture(t)
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{}
-	rpc.unrollStatusResp = &daemonrpc.GetUnrollStatusResponse{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{}
+	rpc.unrollStatusResp = &waverpc.GetUnrollStatusResponse{
 		Found: false,
 	}
-	rpc.listVTXOsByStatus = map[daemonrpc.VTXOStatus]*daemonrpc.
+	rpc.listVTXOsByStatus = map[waverpc.VTXOStatus]*waverpc.
 		ListVTXOsResponse{
 
-		daemonrpc.VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT: {},
-		daemonrpc.VTXOStatus_VTXO_STATUS_FORFEITED: {
-			Vtxos: []*daemonrpc.VTXO{
+		waverpc.VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT: {},
+		waverpc.VTXOStatus_VTXO_STATUS_FORFEITED: {
+			Vtxos: []*waverpc.VTXO{
 				{
 					Outpoint: "leave-outpoint:1",
-					Status: daemonrpc.
+					Status: waverpc.
 						VTXOStatus_VTXO_STATUS_FORFEITED,
 				},
 			},
@@ -1457,24 +1468,24 @@ func TestHistoryScansForfeitedVTXOsOnceForWalletLocalExits(t *testing.T) {
 		),
 	)
 
-	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{})
+	resp, err := h.List(t.Context(), &wavewalletrpc.ListRequest{})
 	require.NoError(t, err)
 
-	byID := make(map[string]*walletdkrpc.WalletEntry)
+	byID := make(map[string]*wavewalletrpc.WalletEntry)
 	for _, entry := range resp.GetActivity().GetEntries() {
 		byID[entry.GetId()] = entry
 	}
 	require.Equal(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
 		byID["leave-outpoint:1"].GetStatus(),
 	)
 	require.Equal(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
 		byID["other-leave-outpoint:0"].GetStatus(),
 	)
 	require.Equal(t, 2, rpc.listVTXOsCalls)
 	require.Equal(
-		t, daemonrpc.VTXOStatus_VTXO_STATUS_FORFEITED,
+		t, waverpc.VTXOStatus_VTXO_STATUS_FORFEITED,
 		rpc.listVTXOsLastReq.GetStatusFilter(),
 	)
 }
@@ -1491,20 +1502,20 @@ func TestHistoryKeepsCSVPendingUnilateralExitPendingAfterDeadline(
 
 	h, swap, rpc := newHistoryFixture(t)
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{}
-	rpc.listVTXOsResp = &daemonrpc.ListVTXOsResponse{
-		Vtxos: []*daemonrpc.VTXO{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{}
+	rpc.listVTXOsResp = &waverpc.ListVTXOsResponse{
+		Vtxos: []*waverpc.VTXO{
 			{
 				Outpoint:  "exit-outpoint:0",
 				AmountSat: 7_000,
-				Status: daemonrpc.
+				Status: waverpc.
 					VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT,
 			},
 		},
 	}
-	rpc.unrollStatusResp = &daemonrpc.GetUnrollStatusResponse{
+	rpc.unrollStatusResp = &waverpc.GetUnrollStatusResponse{
 		Found:  true,
-		Status: daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_CSV_PENDING,
+		Status: waverpc.UnrollJobStatus_UNROLL_JOB_STATUS_CSV_PENDING,
 	}
 
 	pending := unilateralExitEntryStub("exit-outpoint:0")
@@ -1513,14 +1524,14 @@ func TestHistoryKeepsCSVPendingUnilateralExitPendingAfterDeadline(
 	h.runtime.trackPendingEntryWithoutTimeout(pending)
 	h.runtime.applyDeadlines(time.Now().Add(2 * defaultWalletDeadline))
 
-	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{})
+	resp, err := h.List(t.Context(), &wavewalletrpc.ListRequest{})
 	require.NoError(t, err)
 
 	entries := resp.GetActivity().GetEntries()
 	require.Len(t, entries, 1)
 	require.Equal(t, "exit-outpoint:0", entries[0].GetId())
 	require.Equal(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
 		entries[0].GetStatus(),
 	)
 	require.Equal(
@@ -1540,7 +1551,7 @@ func TestHistoryExitKindFilterGatesWalletLocalPendingRows(t *testing.T) {
 
 	h, swap, rpc := newHistoryFixture(t)
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{}
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{}
 
 	h.runtime.trackPendingEntryWithoutTimeout(
 		leaveEntryStub(
@@ -1551,9 +1562,9 @@ func TestHistoryExitKindFilterGatesWalletLocalPendingRows(t *testing.T) {
 		),
 	)
 
-	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{
-		Kinds: []walletdkrpc.EntryKind{
-			walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT,
+	resp, err := h.List(t.Context(), &wavewalletrpc.ListRequest{
+		Kinds: []wavewalletrpc.EntryKind{
+			wavewalletrpc.EntryKind_ENTRY_KIND_DEPOSIT,
 		},
 	})
 	require.NoError(t, err)
@@ -1572,44 +1583,45 @@ func TestHistoryIncludesUnilateralExitVTXO(t *testing.T) {
 
 	h, swap, rpc := newHistoryFixture(t)
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{}
-	rpc.listVTXOsResp = &daemonrpc.ListVTXOsResponse{
-		Vtxos: []*daemonrpc.VTXO{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{}
+	rpc.listVTXOsResp = &waverpc.ListVTXOsResponse{
+		Vtxos: []*waverpc.VTXO{
 			{
 				Outpoint:  "exit-outpoint:0",
 				AmountSat: 7_000,
-				Status: daemonrpc.
+				Status: waverpc.
 					VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT,
 			},
 		},
 	}
-	rpc.unrollStatusResp = &daemonrpc.GetUnrollStatusResponse{
+	rpc.unrollStatusResp = &waverpc.GetUnrollStatusResponse{
 		Found:     true,
-		Status:    daemonrpc.UnrollJobStatus_UNROLL_JOB_STATUS_FAILED,
+		Status:    waverpc.UnrollJobStatus_UNROLL_JOB_STATUS_FAILED,
 		LastError: "broadcast failed",
 	}
 
-	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{})
+	resp, err := h.List(t.Context(), &wavewalletrpc.ListRequest{})
 	require.NoError(t, err)
 
 	entries := resp.GetActivity().GetEntries()
 	require.Len(t, entries, 1)
 	require.Equal(t, "exit-outpoint:0", entries[0].GetId())
 	require.Equal(
-		t, walletdkrpc.EntryKind_ENTRY_KIND_EXIT, entries[0].GetKind(),
+		t, wavewalletrpc.EntryKind_ENTRY_KIND_EXIT,
+		entries[0].GetKind(),
 	)
 	require.Equal(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_FAILED,
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_FAILED,
 		entries[0].GetStatus(),
 	)
 	require.Equal(t, int64(-7_000), entries[0].GetAmountSat())
 	require.Equal(t, "broadcast failed", entries[0].GetFailureReason())
 	require.Equal(
-		t, walletdkrpc.EntryFailureCode_ENTRY_FAILURE_CODE_FAILED,
+		t, wavewalletrpc.EntryFailureCode_ENTRY_FAILURE_CODE_FAILED,
 		entries[0].GetFailureCode(),
 	)
 	require.Equal(
-		t, daemonrpc.VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT,
+		t, waverpc.VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT,
 		rpc.listVTXOsLastReq.GetStatusFilter(),
 	)
 	require.Equal(t, "exit-outpoint:0", rpc.unrollStatusLast.GetOutpoint())
@@ -1637,7 +1649,7 @@ func TestHistorySwapRowIdIsPaymentHash(t *testing.T) {
 		},
 	}
 
-	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{})
+	resp, err := h.List(t.Context(), &wavewalletrpc.ListRequest{})
 	require.NoError(t, err)
 	require.Len(t, resp.GetActivity().GetEntries(), 1)
 	require.Equal(
@@ -1659,20 +1671,20 @@ func TestHistoryPagination(t *testing.T) {
 
 	h, swap, rpc := newHistoryFixture(t)
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
-	txns := make([]*daemonrpc.TransactionHistoryEntry, 0, 5)
+	txns := make([]*waverpc.TransactionHistoryEntry, 0, 5)
 	for i := 0; i < 5; i++ {
-		txns = append(txns, &daemonrpc.TransactionHistoryEntry{
+		txns = append(txns, &waverpc.TransactionHistoryEntry{
 			Type:               "boarding",
 			ConfirmationStatus: "confirmed",
 			Txid:               "deposit-" + string(rune('a'+i)),
 			CreatedAtUnixS:     int64(100 + i),
 		})
 	}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
 		Transactions: txns,
 	}
 
-	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{
+	resp, err := h.List(t.Context(), &wavewalletrpc.ListRequest{
 		Offset: 1,
 		Limit:  2,
 	})
@@ -1692,8 +1704,8 @@ func TestHistoryClassifiesOORLedgerRows(t *testing.T) {
 
 	h, swap, rpc := newHistoryFixture(t)
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Type:               "oor",
 				ConfirmationStatus: "confirmed",
@@ -1727,7 +1739,7 @@ func TestHistoryClassifiesOORLedgerRows(t *testing.T) {
 		},
 	}
 
-	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{})
+	resp, err := h.List(t.Context(), &wavewalletrpc.ListRequest{})
 	require.NoError(t, err)
 	require.Len(
 		t, resp.GetActivity().GetEntries(), 2, "OOR send + OOR "+
@@ -1738,7 +1750,7 @@ func TestHistoryClassifiesOORLedgerRows(t *testing.T) {
 	send := resp.GetActivity().GetEntries()[0]
 	require.Equal(t, "oor-send-txid", send.GetId())
 	require.Equal(
-		t, walletdkrpc.EntryKind_ENTRY_KIND_SEND, send.GetKind(),
+		t, wavewalletrpc.EntryKind_ENTRY_KIND_SEND, send.GetKind(),
 	)
 	require.Equal(
 		t, int64(-3_000), send.GetAmountSat(),
@@ -1748,7 +1760,7 @@ func TestHistoryClassifiesOORLedgerRows(t *testing.T) {
 	recv := resp.GetActivity().GetEntries()[1]
 	require.Equal(t, "oor-recv-txid", recv.GetId())
 	require.Equal(
-		t, walletdkrpc.EntryKind_ENTRY_KIND_RECV, recv.GetKind(),
+		t, wavewalletrpc.EntryKind_ENTRY_KIND_RECV, recv.GetKind(),
 	)
 	require.Equal(
 		t, int64(7_000), recv.GetAmountSat(),
@@ -1778,8 +1790,8 @@ func TestHistoryDedupesByID(t *testing.T) {
 			},
 		},
 	}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Type:               "oor",
 				ConfirmationStatus: "confirmed",
@@ -1792,7 +1804,7 @@ func TestHistoryDedupesByID(t *testing.T) {
 		},
 	}
 
-	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{})
+	resp, err := h.List(t.Context(), &wavewalletrpc.ListRequest{})
 	require.NoError(t, err)
 	require.Len(
 		t, resp.GetActivity().GetEntries(), 1,
@@ -1820,8 +1832,8 @@ func TestHistoryKeepsSameTransactionBoardingOutputs(t *testing.T) {
 		sharedTxid = "18983d5d6f9c2dbf5166174777162f97797bed3e59d5f63b80a58833ea5391a0"
 		otherTxid  = "c4411b5d45230b71335dad7f5a20772985facf9634280dc263063b1f9b87f034"
 	)
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Type:               "boarding",
 				Subtype:            ledger.EventWalletUTXOCreated,
@@ -1855,7 +1867,7 @@ func TestHistoryKeepsSameTransactionBoardingOutputs(t *testing.T) {
 		},
 	}
 
-	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{})
+	resp, err := h.List(t.Context(), &wavewalletrpc.ListRequest{})
 	require.NoError(t, err)
 
 	entries := resp.GetActivity().GetEntries()
@@ -1886,9 +1898,9 @@ func TestHistoryPaginationOffsetPlumbedToLedger(t *testing.T) {
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
 
 	// 20 deposit rows so page 2 must be served from the ledger.
-	txns := make([]*daemonrpc.TransactionHistoryEntry, 0, 20)
+	txns := make([]*waverpc.TransactionHistoryEntry, 0, 20)
 	for i := 0; i < 20; i++ {
-		txns = append(txns, &daemonrpc.TransactionHistoryEntry{
+		txns = append(txns, &waverpc.TransactionHistoryEntry{
 			Type:               "boarding",
 			ConfirmationStatus: "confirmed",
 			Txid:               fmt.Sprintf("deposit-%02d", i),
@@ -1896,11 +1908,11 @@ func TestHistoryPaginationOffsetPlumbedToLedger(t *testing.T) {
 			CreatedAtUnixS:     int64(100 + i),
 		})
 	}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
 		Transactions: txns,
 	}
 
-	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{
+	resp, err := h.List(t.Context(), &wavewalletrpc.ListRequest{
 		Offset: 10,
 		Limit:  5,
 	})
@@ -1933,8 +1945,8 @@ func TestHistoryDepositBoardsBeforeCompletion(t *testing.T) {
 
 	h, swap, rpc := newHistoryFixture(t)
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Type:               "boarding",
 				Subtype:            ledger.EventWalletUTXOCreated,
@@ -1946,16 +1958,16 @@ func TestHistoryDepositBoardsBeforeCompletion(t *testing.T) {
 		},
 	}
 
-	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{})
+	resp, err := h.List(t.Context(), &wavewalletrpc.ListRequest{})
 	require.NoError(t, err)
 	require.Len(t, resp.GetActivity().GetEntries(), 1)
 
 	entry := resp.GetActivity().GetEntries()[0]
 	require.Equal(
-		t, walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT, entry.GetKind(),
+		t, wavewalletrpc.EntryKind_ENTRY_KIND_DEPOSIT, entry.GetKind(),
 	)
 	require.Equal(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
 		entry.GetStatus(),
 	)
 	require.Equal(t, "boarding", entry.GetProgress().GetPhaseLabel())
@@ -1969,8 +1981,8 @@ func TestHistoryDepositCompletesAfterBoarding(t *testing.T) {
 
 	h, swap, rpc := newHistoryFixture(t)
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Type:               "boarding",
 				Subtype:            ledger.EventWalletUTXOCreated,
@@ -1982,16 +1994,16 @@ func TestHistoryDepositCompletesAfterBoarding(t *testing.T) {
 		},
 	}
 
-	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{})
+	resp, err := h.List(t.Context(), &wavewalletrpc.ListRequest{})
 	require.NoError(t, err)
 	require.Len(t, resp.GetActivity().GetEntries(), 1)
 
 	entry := resp.GetActivity().GetEntries()[0]
 	require.Equal(
-		t, walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT, entry.GetKind(),
+		t, wavewalletrpc.EntryKind_ENTRY_KIND_DEPOSIT, entry.GetKind(),
 	)
 	require.Equal(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
 		entry.GetStatus(),
 	)
 	require.Equal(t, "confirmed", entry.GetProgress().GetPhaseLabel())
@@ -2004,15 +2016,15 @@ func TestHistoryDepositCompletesAfterBoarding(t *testing.T) {
 func TestLedgerActivityIDDeposit(t *testing.T) {
 	t.Parallel()
 
-	dep := walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT
+	dep := wavewalletrpc.EntryKind_ENTRY_KIND_DEPOSIT
 	tests := []struct {
 		name  string
-		entry *daemonrpc.TransactionHistoryEntry
+		entry *waverpc.TransactionHistoryEntry
 		want  string
 	}{
 		{
 			name: "boarding_address present keys by address",
-			entry: &daemonrpc.TransactionHistoryEntry{
+			entry: &waverpc.TransactionHistoryEntry{
 				Txid:            "boardingtx",
 				Subtype:         ledger.EventWalletUTXOCreated,
 				OutputIndex:     1,
@@ -2022,7 +2034,7 @@ func TestLedgerActivityIDDeposit(t *testing.T) {
 		},
 		{
 			name: "older daemon without address falls back to txid:vout",
-			entry: &daemonrpc.TransactionHistoryEntry{
+			entry: &waverpc.TransactionHistoryEntry{
 				Txid:        "boardingtx",
 				Subtype:     ledger.EventWalletUTXOCreated,
 				OutputIndex: 1,
@@ -2031,7 +2043,7 @@ func TestLedgerActivityIDDeposit(t *testing.T) {
 		},
 		{
 			name: "no address and no output index falls back to txid",
-			entry: &daemonrpc.TransactionHistoryEntry{
+			entry: &waverpc.TransactionHistoryEntry{
 				Txid:        "boardingtx",
 				Subtype:     ledger.EventWalletUTXOCreated,
 				OutputIndex: -1,
@@ -2040,7 +2052,7 @@ func TestLedgerActivityIDDeposit(t *testing.T) {
 		},
 		{
 			name: "non-deposit subtype ignores boarding_address",
-			entry: &daemonrpc.TransactionHistoryEntry{
+			entry: &waverpc.TransactionHistoryEntry{
 				Txid:            "boardingtx",
 				Subtype:         "boarding_fee_paid",
 				BoardingAddress: "bcrt1qaddr",
@@ -2049,7 +2061,7 @@ func TestLedgerActivityIDDeposit(t *testing.T) {
 		},
 		{
 			name:  "empty txid returns empty",
-			entry: &daemonrpc.TransactionHistoryEntry{},
+			entry: &waverpc.TransactionHistoryEntry{},
 			want:  "",
 		},
 	}
@@ -2072,8 +2084,8 @@ func TestHistoryDepositKeyedByBoardingAddress(t *testing.T) {
 
 	h, swap, rpc := newHistoryFixture(t)
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Type:               "boarding",
 				Subtype:            ledger.EventWalletUTXOCreated,
@@ -2087,7 +2099,7 @@ func TestHistoryDepositKeyedByBoardingAddress(t *testing.T) {
 		},
 	}
 
-	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{})
+	resp, err := h.List(t.Context(), &wavewalletrpc.ListRequest{})
 	require.NoError(t, err)
 	require.Len(t, resp.GetActivity().GetEntries(), 1)
 	entry := resp.GetActivity().GetEntries()[0]
@@ -2108,8 +2120,8 @@ func TestHistoryDepositsSameAddressSummed(t *testing.T) {
 
 	h, swap, rpc := newHistoryFixture(t)
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
-	rpc.listTxResp = &daemonrpc.ListTransactionsResponse{
-		Transactions: []*daemonrpc.TransactionHistoryEntry{
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{
+		Transactions: []*waverpc.TransactionHistoryEntry{
 			{
 				Type:               "boarding",
 				Subtype:            ledger.EventWalletUTXOCreated,
@@ -2133,7 +2145,7 @@ func TestHistoryDepositsSameAddressSummed(t *testing.T) {
 		},
 	}
 
-	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{})
+	resp, err := h.List(t.Context(), &wavewalletrpc.ListRequest{})
 	require.NoError(t, err)
 	require.Len(
 		t, resp.GetActivity().GetEntries(), 1,
@@ -2162,13 +2174,13 @@ func TestDecorateExitEntryDoesNotClearPending(t *testing.T) {
 	)
 
 	h, _, rpc := newHistoryFixture(t)
-	rpc.unrollStatusResp = &daemonrpc.GetUnrollStatusResponse{Found: false}
+	rpc.unrollStatusResp = &waverpc.GetUnrollStatusResponse{Found: false}
 
-	entry := &walletdkrpc.WalletEntry{
+	entry := &wavewalletrpc.WalletEntry{
 		Id:     jobID,
-		Kind:   walletdkrpc.EntryKind_ENTRY_KIND_EXIT,
-		Status: walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
-		Progress: &walletdkrpc.WalletEntryProgress{
+		Kind:   wavewalletrpc.EntryKind_ENTRY_KIND_EXIT,
+		Status: wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		Progress: &wavewalletrpc.WalletEntryProgress{
 			VtxoOutpoint: outpoint,
 		},
 	}
@@ -2186,7 +2198,7 @@ func TestDecorateExitEntryDoesNotClearPending(t *testing.T) {
 		),
 	)
 	require.Equal(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
 		entry.GetStatus(),
 	)
 	require.Contains(
@@ -2213,12 +2225,12 @@ func pendingSnapshotIDs(r *Runtime) []string {
 func TestDecorateCooperativeLeaveMatchesRetainedOutpoint(t *testing.T) {
 	t.Parallel()
 
-	newEntry := func() *walletdkrpc.WalletEntry {
-		return &walletdkrpc.WalletEntry{
+	newEntry := func() *wavewalletrpc.WalletEntry {
+		return &wavewalletrpc.WalletEntry{
 			Id:     "sendjob-abc",
-			Kind:   walletdkrpc.EntryKind_ENTRY_KIND_EXIT,
-			Status: walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
-			Progress: &walletdkrpc.WalletEntryProgress{
+			Kind:   wavewalletrpc.EntryKind_ENTRY_KIND_EXIT,
+			Status: wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
+			Progress: &wavewalletrpc.WalletEntryProgress{
 				VtxoOutpoint: "abc:0",
 			},
 		}
@@ -2233,7 +2245,7 @@ func TestDecorateCooperativeLeaveMatchesRetainedOutpoint(t *testing.T) {
 		},
 	)
 	require.Equal(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
 		idOnly.GetStatus(),
 	)
 
@@ -2245,7 +2257,7 @@ func TestDecorateCooperativeLeaveMatchesRetainedOutpoint(t *testing.T) {
 		},
 	)
 	require.Equal(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
 		byOutpoint.GetStatus(),
 	)
 }
@@ -2266,12 +2278,12 @@ func TestDecorateExitEntryCompletesHashKeyedLeave(t *testing.T) {
 	jobID := "deadbeefdeadbeefdeadbeefdeadbeef" +
 		"deadbeefdeadbeefdeadbeefdeadbeef"
 
-	newEntry := func() *walletdkrpc.WalletEntry {
-		return &walletdkrpc.WalletEntry{
+	newEntry := func() *wavewalletrpc.WalletEntry {
+		return &wavewalletrpc.WalletEntry{
 			Id:     jobID,
-			Kind:   walletdkrpc.EntryKind_ENTRY_KIND_EXIT,
-			Status: walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
-			Progress: &walletdkrpc.WalletEntryProgress{
+			Kind:   wavewalletrpc.EntryKind_ENTRY_KIND_EXIT,
+			Status: wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
+			Progress: &wavewalletrpc.WalletEntryProgress{
 				VtxoOutpoint: outpoint,
 			},
 		}
@@ -2281,7 +2293,7 @@ func TestDecorateExitEntryCompletesHashKeyedLeave(t *testing.T) {
 	// GetUnrollStatus by that outpoint (not the hash), find no unroll job,
 	// and complete.
 	h, _, rpc := newHistoryFixture(t)
-	rpc.unrollStatusResp = &daemonrpc.GetUnrollStatusResponse{Found: false}
+	rpc.unrollStatusResp = &waverpc.GetUnrollStatusResponse{Found: false}
 
 	entry := newEntry()
 	require.NoError(
@@ -2293,7 +2305,7 @@ func TestDecorateExitEntryCompletesHashKeyedLeave(t *testing.T) {
 		),
 	)
 	require.Equal(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
 		entry.GetStatus(),
 	)
 	require.Equal(
@@ -2305,7 +2317,7 @@ func TestDecorateExitEntryCompletesHashKeyedLeave(t *testing.T) {
 	// When the retained outpoint is not forfeited, the row stays PENDING
 	// and the lookup still succeeds (no spurious error from a hash id).
 	h2, _, rpc2 := newHistoryFixture(t)
-	rpc2.unrollStatusResp = &daemonrpc.GetUnrollStatusResponse{Found: false}
+	rpc2.unrollStatusResp = &waverpc.GetUnrollStatusResponse{Found: false}
 
 	pending := newEntry()
 	require.NoError(
@@ -2317,7 +2329,7 @@ func TestDecorateExitEntryCompletesHashKeyedLeave(t *testing.T) {
 		),
 	)
 	require.Equal(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
 		pending.GetStatus(),
 	)
 }

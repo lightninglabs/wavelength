@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
-	"github.com/lightninglabs/darepo-client/swaprpc"
+	"github.com/lightninglabs/wavelength/swaprpc"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"

@@ -10,6 +10,6 @@ runs:
       run: |
         git remote add upstream https://github.com/${{ github.repository }}
         git fetch upstream ${{ github.base_ref }}:refs/remotes/upstream/${{ github.base_ref }}
-        export GIT_COMMITTER_EMAIL="darepo-ci@example.com"
-        export GIT_COMMITTER_NAME="Darepo CI"
+        export GIT_COMMITTER_EMAIL="wavelength-ci@example.com"
+        export GIT_COMMITTER_NAME="Wavelength CI"
         git rebase upstream/${{ github.base_ref }}

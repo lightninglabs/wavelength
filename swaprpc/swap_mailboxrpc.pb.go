@@ -5,7 +5,7 @@ package swaprpc
 import (
 	context "context"
 	fmt "fmt"
-	rpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
+	rpc "github.com/lightninglabs/wavelength/mailbox/rpc"
 	proto "google.golang.org/protobuf/proto"
 )
 

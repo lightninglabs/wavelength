@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/lightninglabs/darepo-client/baselib/actor"
-	"github.com/lightninglabs/darepo-client/vtxo"
+	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/vtxo"
 )
 
 // TrackVTXOs asks tracker to arm passive fraud watches for live OOR VTXOs.

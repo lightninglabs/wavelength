@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/lightninglabs/darepo-client/baselib/actor"
-	mailboxconn "github.com/lightninglabs/darepo-client/mailbox/conn"
-	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
+	"github.com/lightninglabs/wavelength/baselib/actor"
+	mailboxconn "github.com/lightninglabs/wavelength/mailbox/conn"
+	mailboxpb "github.com/lightninglabs/wavelength/mailbox/pb"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"

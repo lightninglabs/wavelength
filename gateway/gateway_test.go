@@ -37,7 +37,7 @@ func TestBrowserHeadersAllowsTrustedOrigin(t *testing.T) {
 		}),
 		[]string{
 			"https://wallet.example",
-		}, "x-darepod-auth",
+		}, "x-waved-auth",
 	)
 
 	req := httptest.NewRequest(http.MethodOptions, "/", nil)
@@ -52,7 +52,7 @@ func TestBrowserHeadersAllowsTrustedOrigin(t *testing.T) {
 	)
 	require.Contains(
 		t, rec.Header().Get("Access-Control-Allow-Headers"),
-		"x-darepod-auth",
+		"x-waved-auth",
 	)
 }
 
@@ -65,7 +65,7 @@ func TestBrowserHeadersAllowsWildcardOrigin(t *testing.T) {
 		}),
 		[]string{
 			"*",
-		}, "x-darepod-auth",
+		}, "x-waved-auth",
 	)
 
 	req := httptest.NewRequest(http.MethodOptions, "/", nil)
@@ -79,7 +79,7 @@ func TestBrowserHeadersAllowsWildcardOrigin(t *testing.T) {
 	)
 	require.Contains(
 		t, rec.Header().Get("Access-Control-Allow-Headers"),
-		"x-darepod-auth",
+		"x-waved-auth",
 	)
 }
 

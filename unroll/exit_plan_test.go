@@ -5,8 +5,8 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
-	"github.com/lightninglabs/darepo-client/txconfirm"
-	"github.com/lightninglabs/darepo-client/vtxo"
+	"github.com/lightninglabs/wavelength/txconfirm"
+	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/stretchr/testify/require"
 )
 

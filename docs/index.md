@@ -1,6 +1,6 @@
 # Documentation Index
 
-Knowledge base for the darepo-client repository. Start with
+Knowledge base for the wavelength repository. Start with
 [ARCHITECTURE.md](../ARCHITECTURE.md) for the system map, then follow links
 into specific topics below.
 
@@ -15,12 +15,12 @@ into specific topics below.
 | [oor_subsystem.md](oor_subsystem.md) | The OOR (out-of-round) subsystem: per-session actor model, the `oor_session_registry` single source of truth, the Read/Commit turn with its inline outbox switch, outgoing/incoming flows, crash recovery, and the per-session concurrency fix for issue #605 |
 | [fee_ledger.md](fee_ledger.md) | Client-side double-entry fee ledger: chart of accounts, per-flow walkthroughs, emission sites, replay safety |
 | [fee-change-model.md](fee-change-model.md) | Seal-time fee handshake (#270): change-output designation rules, 11-scenario catalogue, proto contract, CLI mapping |
-| [credit_system.md](credit_system.md) | Sat-native credit accounts for below-dust receives, credit-assisted receives, credit-backed sends, top-ups, and walletdk integration, with mermaid diagrams |
+| [credit_system.md](credit_system.md) | Sat-native credit accounts for below-dust receives, credit-assisted receives, credit-backed sends, top-ups, and wavewalletdk integration, with mermaid diagrams |
 | [sdk_layered_architecture.md](sdk_layered_architecture.md) | SDK layering rationale: `sdk/ark` facade, remote vs. embedded modes, `sdk/swaps` future direction |
 | [swap_system.md](swap_system.md) | End-to-end swap walkthrough: vHTLC tree (collaborative vs. unilateral-exit leaves), receive (out-swap) and pay (in-swap) flows, the off-chain-first cancellation/timeout recovery ladder, same-Ark p2p detection, swap-server RPCs, and proof-gated indexer authorization, with mermaid diagrams |
-| [walletdk_integration.md](walletdk_integration.md) | Basic `walletdk` integration flow, startup/config examples, swap accounting, and wrapper guidance |
+| [wavewalletdk_integration.md](wavewalletdk_integration.md) | Basic `wavewalletdk` integration flow, startup/config examples, swap accounting, and wrapper guidance |
 | [canonical_activity_log_design.md](canonical_activity_log_design.md) | Design (#774): a canonical store with stable cross-restart ids replacing the derive-on-read activity feed — a current-state `activity_entries` projection plus an append-only, sequence-numbered `activity_events` log (mailbox-style cursor) for resumable subscribe; foundation of the event-log epic (#776) |
-| [walletdkrpc_build.md](walletdkrpc_build.md) | How to build and install the daemon and CLI with the wallet RPC subserver enabled (`walletdkrpc` + `swapruntime` tags) |
+| [wavewalletrpc_build.md](wavewalletrpc_build.md) | How to build and install the daemon and CLI with the wallet RPC subserver enabled (`wavewalletrpc` + `swapruntime` tags) |
 | [seed_restore_recovery.md](seed_restore_recovery.md) | Restore a self-managed seed and recover Ark state from chain/indexer data |
 | [swap_background_execution.md](swap_background_execution.md) | Optional build-tagged daemon executor for background swap progress and daemon-backed CLI control |
 | [mailbox_architecture.md](mailbox_architecture.md) | Three-layer mailbox system: pb, rpc, conn, serverconn |
@@ -28,7 +28,7 @@ into specific topics below.
 | [mailbox_transport_serverconn_clientconn.md](mailbox_transport_serverconn_clientconn.md) | The RPC-over-mailbox transport relating this client's `serverconn` to the operator's `clientconn`: envelope, edge API, shared `mailbox/conn` primitives, ack watermark, identity/auth/liveness, and the wire contract |
 | [RPC_MAILBOX_CONTRACT.md](RPC_MAILBOX_CONTRACT.md) | Envelope semantics, at-least-once delivery, ack watermarks |
 | [credit_durable_actor_design.md](credit_durable_actor_design.md) | Credit subsystem durable-actor design: supervisor + per-operation actors driving fault-tolerant sub-dust pay, credit-receive, and redeem flows against the authoritative server ledger |
-| [walletdk_mobile.md](walletdk_mobile.md) | gomobile-safe `sdk/walletdk/mobile` facade: drives an embedded in-process `darepod` wallet from Android/iOS over the private bufconn transport (bytes-out API, no daemon binary) |
+| [wavewalletdk_mobile.md](wavewalletdk_mobile.md) | gomobile-safe `sdk/wavewalletdk/mobile` facade: drives an embedded in-process `waved` wallet from Android/iOS over the private bufconn transport (bytes-out API, no daemon binary) |
 
 ## Development
 
@@ -41,7 +41,7 @@ into specific topics below.
 | [testing-guide.md](testing-guide.md) | Coverage targets, test approaches, pre-commit checklist |
 | [go_workspace.md](go_workspace.md) | Multi-module Go workspace setup |
 | [policy_arkscript_review_guide.md](policy_arkscript_review_guide.md) | Policy-first arkscript reviewer guide |
-| [dev_rpc_cli_builder.md](dev_rpc_cli_builder.md) | Generated `darepocli dev` command builder and request flag rules |
+| [dev_rpc_cli_builder.md](dev_rpc_cli_builder.md) | Generated `wavecli dev` command builder and request flag rules |
 
 ## Release Engineering
 
@@ -54,7 +54,7 @@ into specific topics below.
 
 | Document | Description |
 |----------|-------------|
-| [daemon_cli_guide.md](daemon_cli_guide.md) | darepod/darepocli installation, configuration, CLI reference |
+| [daemon_cli_guide.md](daemon_cli_guide.md) | waved/wavecli installation, configuration, CLI reference |
 | [signet.md](signet.md) | Public testnet3, testnet4, and signet Ark/swap endpoints, transport selection, and local overrides |
 | [accounting_report.md](accounting_report.md) | Accounting report command: reading the fee ledger from SQLite or Postgres, text/JSON/CSV output, fiat conversion, read-only behavior |
 

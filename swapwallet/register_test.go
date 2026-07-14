@@ -1,4 +1,4 @@
-//go:build walletdkrpc && swapruntime
+//go:build wavewalletrpc && swapruntime
 
 package swapwallet
 
@@ -8,13 +8,13 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btcd/chaincfg/v2"
-	"github.com/lightninglabs/darepo-client/darepod"
-	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
+	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
+	"github.com/lightninglabs/wavelength/waved"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 )
 
-// fakeResumeOnlyBackend implements darepod.SwapBackend but deliberately
+// fakeResumeOnlyBackend implements waved.SwapBackend but deliberately
 // does NOT implement swapclientrpc.SwapClientServiceServer so it forces
 // the type-assertion error path inside Register. Used to assert the
 // SuppressResume-failover hook fires.
@@ -38,7 +38,7 @@ func (f *fakeWalletBackend) ResumePending(_ context.Context) {
 	f.resumeCalls.Add(1)
 }
 
-// TestChainParamsForWalletNetworkAcceptsTestNet4 verifies the walletdkrpc
+// TestChainParamsForWalletNetworkAcceptsTestNet4 verifies the wavewalletrpc
 // subserver accepts every network string the main daemon config advertises.
 func TestChainParamsForWalletNetworkAcceptsTestNet4(t *testing.T) {
 	t.Parallel()
@@ -55,9 +55,9 @@ func TestRegisterDefersResumeUntilWalletReadyHook(t *testing.T) {
 	t.Parallel()
 
 	backend := &fakeWalletBackend{}
-	cfg := &darepod.Config{
+	cfg := &waved.Config{
 		Network: "regtest",
-		Swap: &darepod.SwapConfig{
+		Swap: &waved.SwapConfig{
 			Backend:        backend,
 			SuppressResume: true,
 		},
@@ -72,7 +72,7 @@ func TestRegisterDefersResumeUntilWalletReadyHook(t *testing.T) {
 
 	require.Equal(
 		t, int32(0), backend.resumeCalls.Load(),
-		"registering walletdkrpc while locked must not resume swaps",
+		"registering wavewalletrpc while locked must not resume swaps",
 	)
 	require.Len(t, cfg.WalletReadyHooks, 1)
 
@@ -90,15 +90,15 @@ func TestRegisterDefersResumeUntilWalletReadyHook(t *testing.T) {
 // Register bails out because the swap backend does not satisfy
 // SwapClientServiceServer, it compensates for the SuppressResume
 // handshake by calling Backend.ResumePending. Without this, the swap
-// subserver would have skipped its own resume sweep (the walletdkrpc
+// subserver would have skipped its own resume sweep (the wavewalletrpc
 // build sets cfg.Swap.SuppressResume = true unconditionally before
 // this registrar runs) and no actor would ever drive pending workers.
 func TestRegisterRecoversResumeOnTypeAssertionFailure(t *testing.T) {
 	t.Parallel()
 
 	backend := &fakeResumeOnlyBackend{}
-	cfg := &darepod.Config{
-		Swap: &darepod.SwapConfig{
+	cfg := &waved.Config{
+		Swap: &waved.SwapConfig{
 			Backend:        backend,
 			SuppressResume: true,
 		},
@@ -129,8 +129,8 @@ func TestRegisterRecoversResumeOnTypeAssertionFailure(t *testing.T) {
 func TestRegisterRejectsNilBackend(t *testing.T) {
 	t.Parallel()
 
-	cfg := &darepod.Config{
-		Swap: &darepod.SwapConfig{
+	cfg := &waved.Config{
+		Swap: &waved.SwapConfig{
 			Backend: nil,
 		},
 	}

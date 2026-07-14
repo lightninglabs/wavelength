@@ -6,9 +6,9 @@ import (
 	"log/slog"
 
 	"github.com/btcsuite/btcd/psbt/v2"
-	"github.com/lightninglabs/darepo-client/baselib/protofsm"
-	"github.com/lightninglabs/darepo-client/lib/arkscript"
-	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
+	"github.com/lightninglabs/wavelength/baselib/protofsm"
+	"github.com/lightninglabs/wavelength/lib/arkscript"
+	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
 )
 
 // Session groups a running OOR transfer FSM with its stable identifier.

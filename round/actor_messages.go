@@ -4,10 +4,10 @@ import (
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/lightninglabs/darepo-client/baselib/actor"
-	"github.com/lightninglabs/darepo-client/lib/actormsg"
-	"github.com/lightninglabs/darepo-client/timeout"
-	"github.com/lightninglabs/darepo-client/wallet"
+	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/lib/actormsg"
+	"github.com/lightninglabs/wavelength/timeout"
+	"github.com/lightninglabs/wavelength/wallet"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightningnetwork/lnd/tlv"
 )
 

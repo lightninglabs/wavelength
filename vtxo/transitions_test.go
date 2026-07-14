@@ -10,11 +10,11 @@ import (
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/lightninglabs/darepo-client/lib/actormsg"
-	"github.com/lightninglabs/darepo-client/lib/arkscript"
-	"github.com/lightninglabs/darepo-client/lib/tx"
-	"github.com/lightninglabs/darepo-client/lib/types"
-	"github.com/lightninglabs/darepo-client/round"
+	"github.com/lightninglabs/wavelength/lib/actormsg"
+	"github.com/lightninglabs/wavelength/lib/arkscript"
+	"github.com/lightninglabs/wavelength/lib/tx"
+	"github.com/lightninglabs/wavelength/lib/types"
+	"github.com/lightninglabs/wavelength/round"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
@@ -85,7 +85,7 @@ func TestStateProperties(t *testing.T) {
 			// UnilateralExitState is non-terminal: the actor stays
 			// alive to observe the exit and recover the VTXO if the
 			// unroll fails without an on-chain footprint
-			// (darepo-client#602).
+			// (wavelength#602).
 			name: "UnilateralExitState",
 			state: &UnilateralExitState{
 				VTXO: vtxo,
@@ -250,7 +250,7 @@ func TestLiveStateBlockEpochCritical(t *testing.T) {
 // TestLiveStateForceUnroll verifies that LiveState transitions to the
 // non-terminal UnilateralExitState on ForceUnrollEvent, handing the VTXO to
 // the chain resolver without reaping the actor: no VTXOTerminatedNotification
-// is emitted on intent (darepo-client#602).
+// is emitted on intent (wavelength#602).
 func TestLiveStateForceUnroll(t *testing.T) {
 	t.Parallel()
 
@@ -299,7 +299,7 @@ func TestLiveStateForceUnroll(t *testing.T) {
 }
 
 // TestForceUnrollStrandsVTXOOnFailedUnroll is the regression lock for
-// darepo-client#602.
+// wavelength#602.
 //
 // Before the fix, a manual unroll (ForceUnrollEvent) moved the VTXO straight
 // to a TERMINAL UnilateralExitState on the strength of the user's intent,
@@ -668,7 +668,7 @@ func TestTerminalStatesSelfLoop(t *testing.T) {
 	vtxo := h.newTestDescriptor()
 
 	// UnilateralExitState is intentionally excluded: it is no longer
-	// terminal (darepo-client#602). Its event handling — self-loop while
+	// terminal (wavelength#602). Its event handling — self-loop while
 	// exiting, recover-to-live, and confirm-to-spent — is covered by
 	// TestUnilateralExitRecoversToLive, TestUnilateralExitConfirms, and
 	// TestForceUnrollStrandsVTXOOnFailedUnroll.
@@ -1074,7 +1074,7 @@ func TestForfeitingStateCriticalExpiry(t *testing.T) {
 
 	// Should emit ExpiringNotification but NOT a
 	// VTXOTerminatedNotification: the exit is observed, not fire-and-forget
-	// (darepo-client#602).
+	// (wavelength#602).
 	assertOutboxContains[*ExpiringNotification](h)
 	assertOutboxLacks[*VTXOTerminatedNotification](h)
 }
@@ -1610,7 +1610,7 @@ func TestSpendingStateFailedEvent(t *testing.T) {
 // TestSpendingStateForceUnroll verifies that SpendingState escalates to the
 // non-terminal UnilateralExitState on ForceUnrollEvent, carrying the last
 // checked height through and NOT reaping the actor on intent
-// (darepo-client#602).
+// (wavelength#602).
 func TestSpendingStateForceUnroll(t *testing.T) {
 	t.Parallel()
 

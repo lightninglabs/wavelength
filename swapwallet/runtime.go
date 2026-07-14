@@ -1,4 +1,4 @@
-//go:build walletdkrpc && swapruntime
+//go:build wavewalletrpc && swapruntime
 
 package swapwallet
 
@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 )
 
 // deadlineTickInterval is how often the deadline watcher scans pending
@@ -25,11 +25,11 @@ const deadlineTickInterval = 30 * time.Second
 // and the original PENDING start time.
 type pendingEntry struct {
 	id        string
-	kind      walletdkrpc.EntryKind
+	kind      wavewalletrpc.EntryKind
 	createdAt time.Time
 	deadline  time.Time
 	noTimeout bool
-	entry     *walletdkrpc.WalletEntry
+	entry     *wavewalletrpc.WalletEntry
 }
 
 // Runtime owns the swapwallet package's background lifecycle: the unified
@@ -101,14 +101,14 @@ type Runtime struct {
 // underlying swap or leave status. It only ever elevates a status to FAILED
 // with a synthetic reason; happy-path transitions come from the source row.
 type overlayStatus struct {
-	status        walletdkrpc.EntryStatus
+	status        wavewalletrpc.EntryStatus
 	failureReason string
-	failureCode   walletdkrpc.EntryFailureCode
+	failureCode   wavewalletrpc.EntryFailureCode
 }
 
 // timedOutCode is the failure code the deadline overlay stamps on entries it
 // elevates to FAILED.
-const timedOutCode = walletdkrpc.EntryFailureCode_ENTRY_FAILURE_CODE_TIMED_OUT
+const timedOutCode = wavewalletrpc.EntryFailureCode_ENTRY_FAILURE_CODE_TIMED_OUT
 
 // newRuntime builds the runtime owner. It does NOT start background
 // goroutines; the caller invokes start so the caller controls ordering
@@ -229,8 +229,8 @@ func (r *Runtime) rehydrateWalletLocalPending(ctx context.Context) {
 	)
 	for {
 		batch, err := r.deps.ActivityStore.ListEntriesByKindStatus(
-			ctx, int64(walletdkrpc.EntryKind_ENTRY_KIND_EXIT),
-			int64(walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING),
+			ctx, int64(wavewalletrpc.EntryKind_ENTRY_KIND_EXIT),
+			int64(wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING),
 			cursorID, pageSize,
 		)
 		if err != nil {
@@ -286,13 +286,13 @@ func (r *Runtime) rehydrateWalletLocalPending(ctx context.Context) {
 // trackPending intentionally does NOT touch the overlay map: a synthetic
 // FAILED overlay set by the deadline watcher must remain visible to
 // subscribers until the underlying wallet-local operation is cleared.
-func (r *Runtime) trackPending(id string, kind walletdkrpc.EntryKind,
+func (r *Runtime) trackPending(id string, kind wavewalletrpc.EntryKind,
 	createdAt time.Time) {
 
-	r.trackPendingEntryAt(&walletdkrpc.WalletEntry{
+	r.trackPendingEntryAt(&wavewalletrpc.WalletEntry{
 		Id:            id,
 		Kind:          kind,
-		Status:        walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		Status:        wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
 		CreatedAtUnix: createdAt.Unix(),
 		UpdatedAtUnix: createdAt.Unix(),
 	}, createdAt, false)
@@ -302,7 +302,7 @@ func (r *Runtime) trackPending(id string, kind walletdkrpc.EntryKind,
 // rows, these entries do not have a durable swap FSM feeding List/Subscribe
 // updates, so the runtime keeps the friendly WalletEntry snapshot that should
 // appear in activity until a backing ledger or status source supersedes it.
-func (r *Runtime) trackPendingEntry(entry *walletdkrpc.WalletEntry) {
+func (r *Runtime) trackPendingEntry(entry *wavewalletrpc.WalletEntry) {
 	if entry == nil || entry.GetId() == "" {
 		return
 	}
@@ -322,7 +322,7 @@ func (r *Runtime) trackPendingEntry(entry *walletdkrpc.WalletEntry) {
 // generic wallet deadline, and the v1 activity layer cannot yet correlate the
 // pending outpoint id to the later confirmed sweep txid.
 func (r *Runtime) trackPendingEntryWithoutTimeout(
-	entry *walletdkrpc.WalletEntry) {
+	entry *wavewalletrpc.WalletEntry) {
 
 	if entry == nil || entry.GetId() == "" {
 		return
@@ -340,7 +340,7 @@ func (r *Runtime) trackPendingEntryWithoutTimeout(
 // trackPendingEntryAt is the shared implementation for callers that already
 // have a precise submit time and callers that only have a WalletEntry unix
 // timestamp.
-func (r *Runtime) trackPendingEntryAt(entry *walletdkrpc.WalletEntry,
+func (r *Runtime) trackPendingEntryAt(entry *wavewalletrpc.WalletEntry,
 	createdAt time.Time, noTimeout bool) {
 
 	if entry == nil || entry.GetId() == "" {
@@ -351,8 +351,8 @@ func (r *Runtime) trackPendingEntryAt(entry *walletdkrpc.WalletEntry,
 	defer r.pendingMu.Unlock()
 
 	entryCopy := cloneWalletEntry(entry)
-	if entryCopy.Status == walletdkrpc.EntryStatus_ENTRY_STATUS_UNSPECIFIED {
-		entryCopy.Status = walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING
+	if entryCopy.Status == wavewalletrpc.EntryStatus_ENTRY_STATUS_UNSPECIFIED {
+		entryCopy.Status = wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING
 	}
 
 	if entryCopy.GetCreatedAtUnix() == 0 {
@@ -401,18 +401,18 @@ func (r *Runtime) trackPendingEntryAt(entry *walletdkrpc.WalletEntry,
 
 // pendingSnapshot returns copies of the wallet-local pending entries that
 // should be included in List/Subscribe snapshots.
-func (r *Runtime) pendingSnapshot() []*walletdkrpc.WalletEntry {
+func (r *Runtime) pendingSnapshot() []*wavewalletrpc.WalletEntry {
 	r.pendingMu.Lock()
 	defer r.pendingMu.Unlock()
 
-	out := make([]*walletdkrpc.WalletEntry, 0, len(r.pending))
+	out := make([]*wavewalletrpc.WalletEntry, 0, len(r.pending))
 	for _, pending := range r.pending {
 		entry := cloneWalletEntry(pending.entry)
 		if entry == nil {
-			entry = &walletdkrpc.WalletEntry{
+			entry = &wavewalletrpc.WalletEntry{
 				Id:            pending.id,
 				Kind:          pending.kind,
-				Status:        walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+				Status:        wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
 				CreatedAtUnix: pending.createdAt.Unix(),
 				UpdatedAtUnix: pending.createdAt.Unix(),
 			}
@@ -482,11 +482,11 @@ func (r *Runtime) applyDeadlines(now time.Time) {
 // whose deadline has passed and returns synthesized WalletEntry rows for each
 // newly elevated entry. Swap rows are dropped from tracking so they cannot
 // diverge from the swap FSM.
-func (r *Runtime) markTimedOut(now time.Time) []*walletdkrpc.WalletEntry {
+func (r *Runtime) markTimedOut(now time.Time) []*wavewalletrpc.WalletEntry {
 	r.pendingMu.Lock()
 	defer r.pendingMu.Unlock()
 
-	var notify []*walletdkrpc.WalletEntry
+	var notify []*wavewalletrpc.WalletEntry
 	for id, entry := range r.pending {
 		if isSwapKind(entry.kind) {
 			delete(r.pending, id)
@@ -505,14 +505,14 @@ func (r *Runtime) markTimedOut(now time.Time) []*walletdkrpc.WalletEntry {
 		}
 
 		ov := overlayStatus{
-			status:        walletdkrpc.EntryStatus_ENTRY_STATUS_FAILED,
+			status:        wavewalletrpc.EntryStatus_ENTRY_STATUS_FAILED,
 			failureReason: "timed_out",
 			failureCode:   timedOutCode,
 		}
 		r.overlay[id] = ov
 		notifyEntry := cloneWalletEntry(entry.entry)
 		if notifyEntry == nil {
-			notifyEntry = &walletdkrpc.WalletEntry{
+			notifyEntry = &wavewalletrpc.WalletEntry{
 				Id:            id,
 				Kind:          entry.kind,
 				CreatedAtUnix: entry.createdAt.Unix(),
@@ -531,7 +531,9 @@ func (r *Runtime) markTimedOut(now time.Time) []*walletdkrpc.WalletEntry {
 // cloneWalletEntry returns a shallow copy with mutable nested fields copied
 // where the runtime updates them. Request oneofs are immutable after entry
 // creation in this package, so a shallow copy is sufficient for those.
-func cloneWalletEntry(entry *walletdkrpc.WalletEntry) *walletdkrpc.WalletEntry {
+func cloneWalletEntry(
+	entry *wavewalletrpc.WalletEntry) *wavewalletrpc.WalletEntry {
+
 	if entry == nil {
 		return nil
 	}
@@ -549,9 +551,9 @@ func cloneWalletEntry(entry *walletdkrpc.WalletEntry) *walletdkrpc.WalletEntry {
 // swap FSM. SubscribeSwaps monitor updates are even stricter: every row from
 // that stream is treated as swap-backed even when its direction is still
 // UNSPECIFIED.
-func isSwapKind(kind walletdkrpc.EntryKind) bool {
-	return kind == walletdkrpc.EntryKind_ENTRY_KIND_SEND ||
-		kind == walletdkrpc.EntryKind_ENTRY_KIND_RECV
+func isSwapKind(kind wavewalletrpc.EntryKind) bool {
+	return kind == wavewalletrpc.EntryKind_ENTRY_KIND_SEND ||
+		kind == wavewalletrpc.EntryKind_ENTRY_KIND_RECV
 }
 
 // subscribeUpdate is one activity update fanned to a subscriber: the projected
@@ -559,7 +561,7 @@ func isSwapKind(kind walletdkrpc.EntryKind) bool {
 // SubscribeWallet stream surfaces as the resumable cursor.
 type subscribeUpdate struct {
 	seq   int64
-	entry *walletdkrpc.WalletEntry
+	entry *wavewalletrpc.WalletEntry
 }
 
 // subscriber is a registered SubscribeWallet consumer. Updates arrive on ch;
@@ -607,7 +609,7 @@ func (r *Runtime) unsubscribe(sub *subscriber) {
 // send. A consumer whose buffer is full has its overflowed flag set rather
 // than losing the update silently: the handler turns that into a gap signal so
 // the consumer reconciles via List and resumes from its cursor.
-func (r *Runtime) emit(seq int64, entry *walletdkrpc.WalletEntry) {
+func (r *Runtime) emit(seq int64, entry *wavewalletrpc.WalletEntry) {
 	r.subsMu.Lock()
 	defer r.subsMu.Unlock()
 

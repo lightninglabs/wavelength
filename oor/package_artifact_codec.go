@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"fmt"
 
-	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
+	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
 	"github.com/lightningnetwork/lnd/tlv"
 )
 

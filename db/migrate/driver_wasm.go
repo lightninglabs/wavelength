@@ -7,7 +7,7 @@ import (
 	"fmt"
 
 	"github.com/golang-migrate/migrate/v4/database"
-	"github.com/lightninglabs/darepo-client/db/sqlc"
+	"github.com/lightninglabs/wavelength/db/sqlc"
 )
 
 // newMigrationDriver creates a browser-compatible migration driver.

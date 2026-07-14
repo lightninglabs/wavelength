@@ -10,8 +10,8 @@ import (
 	"sync/atomic"
 
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/baselib/actor"
-	"github.com/lightninglabs/darepo-client/build"
+	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/build"
 )
 
 // autoRedeemer runs the wallet-owned auto-redeem policy. Redemption is never

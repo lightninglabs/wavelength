@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/lightninglabs/darepo-client/daemonrpc"
-	"github.com/lightninglabs/darepo-client/darepod"
+	"github.com/lightninglabs/wavelength/waved"
+	"github.com/lightninglabs/wavelength/waverpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
@@ -17,11 +17,11 @@ import (
 
 // EmbeddedConfig configures an in-process daemon runtime managed by the SDK.
 type EmbeddedConfig struct {
-	// DaemonConfig is the full darepod configuration snapshot to clone
+	// DaemonConfig is the full waved configuration snapshot to clone
 	// and run in-process. The SDK currently hides transport and
 	// lifecycle management, not the underlying daemon configuration
 	// surface.
-	DaemonConfig *darepod.Config
+	DaemonConfig *waved.Config
 
 	// BufferSize overrides the bufconn listener size used for in-process
 	// gRPC traffic. When zero, the SDK uses a sane default.
@@ -32,7 +32,7 @@ type EmbeddedConfig struct {
 	DialOptions []grpc.DialOption
 }
 
-// StartEmbedded starts a darepod runtime in-process and returns an SDK facade
+// StartEmbedded starts a waved runtime in-process and returns an SDK facade
 // that communicates with it over an injected in-memory listener.
 //
 //nolint:contextcheck // embedded daemon lifetime is detached from dial ctx
@@ -49,7 +49,7 @@ func StartEmbedded(ctx context.Context, cfg EmbeddedConfig) (*Client, error) {
 
 	listener := bufconn.Listen(bufferSize)
 	if daemonCfg.RPC == nil {
-		daemonCfg.RPC = &darepod.RPCConfig{}
+		daemonCfg.RPC = &waved.RPCConfig{}
 	}
 	daemonCfg.RPC.Listener = listener
 	daemonCfg.RPC.NoTLS = true
@@ -68,7 +68,7 @@ func StartEmbedded(ctx context.Context, cfg EmbeddedConfig) (*Client, error) {
 			err)
 	}
 
-	server, err := darepod.NewServer(daemonCfg)
+	server, err := waved.NewServer(daemonCfg)
 	if err != nil {
 		_ = listener.Close()
 
@@ -143,7 +143,7 @@ func StartEmbedded(ctx context.Context, cfg EmbeddedConfig) (*Client, error) {
 	}
 
 	return &Client{
-		daemon: daemonrpc.NewDaemonServiceClient(conn),
+		daemon: waverpc.NewDaemonServiceClient(conn),
 		waitCh: waitErrChan,
 		closeFn: func(closeCtx context.Context) error {
 			closeErr := conn.Close()
@@ -159,18 +159,18 @@ func StartEmbedded(ctx context.Context, cfg EmbeddedConfig) (*Client, error) {
 // cloneDaemonConfig deep-copies the daemon config so embedded startup can
 // inject a listener and run Validate without mutating the caller's config.
 // This must be updated if new reference-typed fields are added to
-// darepod.Config or to any sub-config reachable from it.
-func cloneDaemonConfig(cfg *darepod.Config) *darepod.Config {
+// waved.Config or to any sub-config reachable from it.
+func cloneDaemonConfig(cfg *waved.Config) *waved.Config {
 	clone := *cfg
 
 	clone.RPCServiceRegistrars = append(
-		[]darepod.RPCServiceRegistrar(nil), cfg.RPCServiceRegistrars...,
+		[]waved.RPCServiceRegistrar(nil), cfg.RPCServiceRegistrars...,
 	)
 	clone.RPCGatewayRegistrars = append(
-		[]darepod.RPCGatewayRegistrar(nil), cfg.RPCGatewayRegistrars...,
+		[]waved.RPCGatewayRegistrar(nil), cfg.RPCGatewayRegistrars...,
 	)
 	clone.WalletReadyHooks = append(
-		[]darepod.WalletReadyHook(nil), cfg.WalletReadyHooks...,
+		[]waved.WalletReadyHook(nil), cfg.WalletReadyHooks...,
 	)
 
 	if cfg.Lnd != nil {

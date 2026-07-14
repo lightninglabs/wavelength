@@ -10,7 +10,7 @@ on:
       - "mobile-v*"
   pull_request:
     paths:
-      - "sdk/walletdk/**"
+      - "sdk/wavewalletdk/**"
       - "swapwallet/**"
       - "Makefile"
       - ".github/workflows/mobile-bindings.yml"
@@ -30,7 +30,7 @@ defaults:
 env:
   # If you change this please also update GO_VERSION in Makefile.
   GO_VERSION: 1.26.0
-  MOBILE_TAGS: "mobile walletdkrpc swapruntime"
+  MOBILE_TAGS: "mobile wavewalletrpc swapruntime"
 
 jobs:
   ########################################################################
@@ -51,7 +51,7 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
 
       - name: Test mobile facade
-        run: go test -tags="${MOBILE_TAGS}" ./sdk/walletdk/mobile/...
+        run: go test -tags="${MOBILE_TAGS}" ./sdk/wavewalletdk/mobile/...
 
   ########################################################################
   # Android .aar — tag builds only.
@@ -100,8 +100,8 @@ jobs:
       - name: Upload .aar
         uses: actions/upload-artifact@v4
         with:
-          name: Walletdk-aar
-          path: sdk/walletdk/mobile/build/android/Walletdk.aar
+          name: Wavewalletdk-aar
+          path: sdk/wavewalletdk/mobile/build/android/Wavewalletdk.aar
           if-no-files-found: error
 
   ########################################################################
@@ -133,12 +133,12 @@ jobs:
 
       - name: Package .xcframework
         run: |
-          tar -czf Walletdk.xcframework.tar.gz \
-            -C sdk/walletdk/mobile/build/ios Walletdk.xcframework
+          tar -czf Wavewalletdk.xcframework.tar.gz \
+            -C sdk/wavewalletdk/mobile/build/ios Wavewalletdk.xcframework
 
       - name: Upload .xcframework
         uses: actions/upload-artifact@v4
         with:
-          name: Walletdk-xcframework
-          path: Walletdk.xcframework.tar.gz
+          name: Wavewalletdk-xcframework
+          path: Wavewalletdk.xcframework.tar.gz
           if-no-files-found: error

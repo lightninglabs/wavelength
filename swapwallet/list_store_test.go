@@ -1,4 +1,4 @@
-//go:build walletdkrpc && swapruntime
+//go:build wavewalletrpc && swapruntime
 
 package swapwallet
 
@@ -15,10 +15,10 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/daemonrpc"
-	"github.com/lightninglabs/darepo-client/db"
-	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
-	"github.com/lightninglabs/darepo-client/wallet"
+	"github.com/lightninglabs/wavelength/db"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
+	"github.com/lightninglabs/wavelength/wallet"
+	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/lightningnetwork/lnd/clock"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -60,7 +60,7 @@ func TestListActivityPendingBoardingUsesStableDepositID(t *testing.T) {
 
 	h.deps.ChainParams = &chaincfg.RegressionNetParams
 	rpc := &fakeRPCServer{
-		getBalanceResp: &daemonrpc.GetBalanceResponse{
+		getBalanceResp: &waverpc.GetBalanceResponse{
 			BoardingUnconfirmedSat: 12_345,
 		},
 		activeBoardingAddrs: []string{
@@ -74,7 +74,7 @@ func TestListActivityPendingBoardingUsesStableDepositID(t *testing.T) {
 	}
 	h.deps.RPCServer = rpc
 
-	page, err := h.listActivity(t.Context(), &walletdkrpc.ListRequest{
+	page, err := h.listActivity(t.Context(), &wavewalletrpc.ListRequest{
 		Limit: 10,
 	})
 	require.NoError(t, err)
@@ -91,11 +91,11 @@ func TestListActivityPendingBoardingUsesStableDepositID(t *testing.T) {
 	rpc.getBalanceResp.BoardingUnconfirmedSat = 0
 	stableID := "deposit-" + address.String()
 	seedActivity(
-		t, store, stableID, walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT,
-		walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING, 123,
+		t, store, stableID, wavewalletrpc.EntryKind_ENTRY_KIND_DEPOSIT,
+		wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING, 123,
 	)
 	confirmed, err := h.listActivity(
-		t.Context(), &walletdkrpc.ListRequest{
+		t.Context(), &wavewalletrpc.ListRequest{
 			Limit: 10,
 		},
 	)
@@ -105,12 +105,12 @@ func TestListActivityPendingBoardingUsesStableDepositID(t *testing.T) {
 
 // seedActivity projects one entry into the store via the production mapping.
 func seedActivity(t *testing.T, store *db.ActivityPersistenceStore, id string,
-	kind walletdkrpc.EntryKind, status walletdkrpc.EntryStatus,
+	kind wavewalletrpc.EntryKind, status wavewalletrpc.EntryStatus,
 	created int64) {
 
 	t.Helper()
 
-	proj, err := entryToProjection(&walletdkrpc.WalletEntry{
+	proj, err := entryToProjection(&wavewalletrpc.WalletEntry{
 		Id:            id,
 		Kind:          kind,
 		Status:        status,
@@ -124,7 +124,7 @@ func seedActivity(t *testing.T, store *db.ActivityPersistenceStore, id string,
 	require.NoError(t, err)
 }
 
-func activityIDs(list *walletdkrpc.ActivityList) []string {
+func activityIDs(list *wavewalletrpc.ActivityList) []string {
 	out := make([]string, 0, len(list.GetEntries()))
 	for _, e := range list.GetEntries() {
 		out = append(out, e.GetId())
@@ -142,25 +142,25 @@ func TestListActivityReadsStore(t *testing.T) {
 	h, store := newStoreListFixture(t)
 
 	seedActivity(
-		t, store, "a", walletdkrpc.EntryKind_ENTRY_KIND_SEND,
-		walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE, 100,
+		t, store, "a", wavewalletrpc.EntryKind_ENTRY_KIND_SEND,
+		wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE, 100,
 	)
 	seedActivity(
-		t, store, "b", walletdkrpc.EntryKind_ENTRY_KIND_RECV,
-		walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE, 200,
+		t, store, "b", wavewalletrpc.EntryKind_ENTRY_KIND_RECV,
+		wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE, 200,
 	)
 	seedActivity(
-		t, store, "c", walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT,
-		walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE, 300,
+		t, store, "c", wavewalletrpc.EntryKind_ENTRY_KIND_DEPOSIT,
+		wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE, 300,
 	)
 
-	page1, err := h.listActivity(ctx, &walletdkrpc.ListRequest{Limit: 2})
+	page1, err := h.listActivity(ctx, &wavewalletrpc.ListRequest{Limit: 2})
 	require.NoError(t, err)
 	require.Equal(t, []string{"c", "b"}, activityIDs(page1))
 	require.True(t, page1.GetHasMore())
 	require.NotEmpty(t, page1.GetNextCursor())
 
-	page2, err := h.listActivity(ctx, &walletdkrpc.ListRequest{
+	page2, err := h.listActivity(ctx, &wavewalletrpc.ListRequest{
 		Limit:  2,
 		Cursor: page1.GetNextCursor(),
 	})
@@ -179,17 +179,17 @@ func TestListActivityIncludesPendingBoardingWithStore(t *testing.T) {
 	ctx := context.Background()
 	h, store := newStoreListFixture(t)
 	h.deps.RPCServer = &fakeRPCServer{
-		getBalanceResp: &daemonrpc.GetBalanceResponse{
+		getBalanceResp: &waverpc.GetBalanceResponse{
 			BoardingUnconfirmedSat: 12_345,
 		},
 	}
 
 	seedActivity(
-		t, store, "complete", walletdkrpc.EntryKind_ENTRY_KIND_SEND,
-		walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE, 100,
+		t, store, "complete", wavewalletrpc.EntryKind_ENTRY_KIND_SEND,
+		wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE, 100,
 	)
 
-	all, err := h.listActivity(ctx, &walletdkrpc.ListRequest{Limit: 10})
+	all, err := h.listActivity(ctx, &wavewalletrpc.ListRequest{Limit: 10})
 	require.NoError(t, err)
 	require.Equal(
 		t, []string{syntheticBoardingUnconfirmedID, "complete"},
@@ -197,24 +197,25 @@ func TestListActivityIncludesPendingBoardingWithStore(t *testing.T) {
 	)
 	pending := all.GetEntries()[0]
 	require.Equal(
-		t, walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT, pending.GetKind(),
+		t, wavewalletrpc.EntryKind_ENTRY_KIND_DEPOSIT,
+		pending.GetKind(),
 	)
 	require.Equal(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
 		pending.GetStatus(),
 	)
 	require.Equal(t, int64(12_345), pending.GetAmountSat())
 	require.Equal(
-		t, walletdkrpc.
+		t, wavewalletrpc.
 			WalletEntryPhase_WALLET_ENTRY_PHASE_WAITING_FOR_CONFIRMATION,
 		pending.GetProgress().GetPhase(),
 	)
 
-	depositOnly, err := h.listActivity(ctx, &walletdkrpc.ListRequest{
+	depositOnly, err := h.listActivity(ctx, &wavewalletrpc.ListRequest{
 		Limit:       10,
 		PendingOnly: true,
-		Kinds: []walletdkrpc.EntryKind{
-			walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT,
+		Kinds: []wavewalletrpc.EntryKind{
+			wavewalletrpc.EntryKind_ENTRY_KIND_DEPOSIT,
 		},
 	})
 	require.NoError(t, err)
@@ -223,10 +224,10 @@ func TestListActivityIncludesPendingBoardingWithStore(t *testing.T) {
 		activityIDs(depositOnly),
 	)
 
-	sendOnly, err := h.listActivity(ctx, &walletdkrpc.ListRequest{
+	sendOnly, err := h.listActivity(ctx, &wavewalletrpc.ListRequest{
 		Limit: 10,
-		Kinds: []walletdkrpc.EntryKind{
-			walletdkrpc.EntryKind_ENTRY_KIND_SEND,
+		Kinds: []wavewalletrpc.EntryKind{
+			wavewalletrpc.EntryKind_ENTRY_KIND_SEND,
 		},
 	})
 	require.NoError(t, err)
@@ -242,17 +243,17 @@ func TestListActivityPendingBoardingCursor(t *testing.T) {
 	ctx := context.Background()
 	h, store := newStoreListFixture(t)
 	h.deps.RPCServer = &fakeRPCServer{
-		getBalanceResp: &daemonrpc.GetBalanceResponse{
+		getBalanceResp: &waverpc.GetBalanceResponse{
 			BoardingUnconfirmedSat: 12_345,
 		},
 	}
 
 	seedActivity(
-		t, store, "complete", walletdkrpc.EntryKind_ENTRY_KIND_SEND,
-		walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE, 100,
+		t, store, "complete", wavewalletrpc.EntryKind_ENTRY_KIND_SEND,
+		wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE, 100,
 	)
 
-	page1, err := h.listActivity(ctx, &walletdkrpc.ListRequest{Limit: 1})
+	page1, err := h.listActivity(ctx, &wavewalletrpc.ListRequest{Limit: 1})
 	require.NoError(t, err)
 	require.Equal(
 		t, []string{syntheticBoardingUnconfirmedID}, activityIDs(page1),
@@ -260,7 +261,7 @@ func TestListActivityPendingBoardingCursor(t *testing.T) {
 	require.True(t, page1.GetHasMore())
 	require.NotEmpty(t, page1.GetNextCursor())
 
-	page2, err := h.listActivity(ctx, &walletdkrpc.ListRequest{
+	page2, err := h.listActivity(ctx, &wavewalletrpc.ListRequest{
 		Limit:  1,
 		Cursor: page1.GetNextCursor(),
 	})
@@ -288,7 +289,7 @@ func TestListActivityStableBoardingCursor(t *testing.T) {
 
 	h.deps.ChainParams = &chaincfg.RegressionNetParams
 	h.deps.RPCServer = &fakeRPCServer{
-		getBalanceResp: &daemonrpc.GetBalanceResponse{
+		getBalanceResp: &waverpc.GetBalanceResponse{
 			BoardingUnconfirmedSat: 12_345,
 		},
 		activeBoardingAddrs: []string{
@@ -299,12 +300,12 @@ func TestListActivityStableBoardingCursor(t *testing.T) {
 		}},
 	}
 	seedActivity(
-		t, store, "older", walletdkrpc.EntryKind_ENTRY_KIND_SEND,
-		walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE, 100,
+		t, store, "older", wavewalletrpc.EntryKind_ENTRY_KIND_SEND,
+		wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE, 100,
 	)
 
 	page1, err := h.listActivity(
-		t.Context(), &walletdkrpc.ListRequest{
+		t.Context(), &wavewalletrpc.ListRequest{
 			Limit: 1,
 		},
 	)
@@ -318,11 +319,11 @@ func TestListActivityStableBoardingCursor(t *testing.T) {
 	require.Equal(t, syntheticBoardingUnconfirmedID, cursorID)
 
 	seedActivity(
-		t, store, "aaa", walletdkrpc.EntryKind_ENTRY_KIND_SEND,
-		walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		t, store, "aaa", wavewalletrpc.EntryKind_ENTRY_KIND_SEND,
+		wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
 		page1.GetEntries()[0].GetCreatedAtUnix(),
 	)
-	page2, err := h.listActivity(t.Context(), &walletdkrpc.ListRequest{
+	page2, err := h.listActivity(t.Context(), &wavewalletrpc.ListRequest{
 		Limit:  1,
 		Cursor: page1.GetNextCursor(),
 	})
@@ -340,12 +341,12 @@ func TestListActivityOverlayFailureReturnsStore(t *testing.T) {
 		getBalanceErr: context.DeadlineExceeded,
 	}
 	seedActivity(
-		t, store, "cached", walletdkrpc.EntryKind_ENTRY_KIND_SEND,
-		walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE, 100,
+		t, store, "cached", wavewalletrpc.EntryKind_ENTRY_KIND_SEND,
+		wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE, 100,
 	)
 
 	page, err := h.listActivity(
-		t.Context(), &walletdkrpc.ListRequest{
+		t.Context(), &wavewalletrpc.ListRequest{
 			Limit: 10,
 		},
 	)
@@ -363,8 +364,8 @@ func TestCountPendingOverlayFailureReturnsStoreCount(t *testing.T) {
 		getBalanceErr: context.DeadlineExceeded,
 	}
 	seedActivity(
-		t, store, "pending", walletdkrpc.EntryKind_ENTRY_KIND_SEND,
-		walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING, 100,
+		t, store, "pending", wavewalletrpc.EntryKind_ENTRY_KIND_SEND,
+		wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING, 100,
 	)
 
 	count, err := h.countPending(t.Context())
@@ -382,32 +383,32 @@ func TestCountPendingReflectsFullFeed(t *testing.T) {
 	ctx := context.Background()
 	h, store := newStoreListFixture(t)
 	h.deps.RPCServer = &fakeRPCServer{
-		getBalanceResp: &daemonrpc.GetBalanceResponse{
+		getBalanceResp: &waverpc.GetBalanceResponse{
 			BoardingUnconfirmedSat: 12_345,
 		},
 	}
 
 	// Three pending rows plus one terminal row.
 	seedActivity(
-		t, store, "p1", walletdkrpc.EntryKind_ENTRY_KIND_SEND,
-		walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING, 100,
+		t, store, "p1", wavewalletrpc.EntryKind_ENTRY_KIND_SEND,
+		wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING, 100,
 	)
 	seedActivity(
-		t, store, "p2", walletdkrpc.EntryKind_ENTRY_KIND_SEND,
-		walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING, 200,
+		t, store, "p2", wavewalletrpc.EntryKind_ENTRY_KIND_SEND,
+		wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING, 200,
 	)
 	seedActivity(
-		t, store, "p3", walletdkrpc.EntryKind_ENTRY_KIND_RECV,
-		walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING, 300,
+		t, store, "p3", wavewalletrpc.EntryKind_ENTRY_KIND_RECV,
+		wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING, 300,
 	)
 	seedActivity(
-		t, store, "done", walletdkrpc.EntryKind_ENTRY_KIND_SEND,
-		walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE, 400,
+		t, store, "done", wavewalletrpc.EntryKind_ENTRY_KIND_SEND,
+		wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE, 400,
 	)
 
 	// A single-page pending read caps its total at the page size, so it
 	// cannot stand in for the pending count.
-	page, err := h.listActivity(ctx, &walletdkrpc.ListRequest{
+	page, err := h.listActivity(ctx, &wavewalletrpc.ListRequest{
 		Limit:       1,
 		PendingOnly: true,
 	})
@@ -432,29 +433,29 @@ func TestListActivityStablePaginationUnderInsert(t *testing.T) {
 	h, store := newStoreListFixture(t)
 
 	seedActivity(
-		t, store, "a", walletdkrpc.EntryKind_ENTRY_KIND_SEND,
-		walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE, 100,
+		t, store, "a", wavewalletrpc.EntryKind_ENTRY_KIND_SEND,
+		wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE, 100,
 	)
 	seedActivity(
-		t, store, "b", walletdkrpc.EntryKind_ENTRY_KIND_SEND,
-		walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE, 200,
+		t, store, "b", wavewalletrpc.EntryKind_ENTRY_KIND_SEND,
+		wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE, 200,
 	)
 	seedActivity(
-		t, store, "c", walletdkrpc.EntryKind_ENTRY_KIND_SEND,
-		walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE, 300,
+		t, store, "c", wavewalletrpc.EntryKind_ENTRY_KIND_SEND,
+		wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE, 300,
 	)
 
-	page1, err := h.listActivity(ctx, &walletdkrpc.ListRequest{Limit: 2})
+	page1, err := h.listActivity(ctx, &wavewalletrpc.ListRequest{Limit: 2})
 	require.NoError(t, err)
 	require.Equal(t, []string{"c", "b"}, activityIDs(page1))
 
 	// A new op lands between page fetches, newer than the page-1 cursor.
 	seedActivity(
-		t, store, "d", walletdkrpc.EntryKind_ENTRY_KIND_SEND,
-		walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE, 250,
+		t, store, "d", wavewalletrpc.EntryKind_ENTRY_KIND_SEND,
+		wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE, 250,
 	)
 
-	page2, err := h.listActivity(ctx, &walletdkrpc.ListRequest{
+	page2, err := h.listActivity(ctx, &wavewalletrpc.ListRequest{
 		Limit:  2,
 		Cursor: page1.GetNextCursor(),
 	})
@@ -475,29 +476,29 @@ func TestListActivityFilters(t *testing.T) {
 	h, store := newStoreListFixture(t)
 
 	seedActivity(
-		t, store, "send", walletdkrpc.EntryKind_ENTRY_KIND_SEND,
-		walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING, 100,
+		t, store, "send", wavewalletrpc.EntryKind_ENTRY_KIND_SEND,
+		wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING, 100,
 	)
 	seedActivity(
-		t, store, "recv", walletdkrpc.EntryKind_ENTRY_KIND_RECV,
-		walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE, 200,
+		t, store, "recv", wavewalletrpc.EntryKind_ENTRY_KIND_RECV,
+		wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE, 200,
 	)
 	seedActivity(
-		t, store, "exit", walletdkrpc.EntryKind_ENTRY_KIND_EXIT,
-		walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING, 300,
+		t, store, "exit", wavewalletrpc.EntryKind_ENTRY_KIND_EXIT,
+		wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING, 300,
 	)
 
-	pending, err := h.listActivity(ctx, &walletdkrpc.ListRequest{
+	pending, err := h.listActivity(ctx, &wavewalletrpc.ListRequest{
 		Limit:       10,
 		PendingOnly: true,
 	})
 	require.NoError(t, err)
 	require.Equal(t, []string{"exit", "send"}, activityIDs(pending))
 
-	recvOnly, err := h.listActivity(ctx, &walletdkrpc.ListRequest{
+	recvOnly, err := h.listActivity(ctx, &wavewalletrpc.ListRequest{
 		Limit: 10,
-		Kinds: []walletdkrpc.EntryKind{
-			walletdkrpc.EntryKind_ENTRY_KIND_RECV,
+		Kinds: []wavewalletrpc.EntryKind{
+			wavewalletrpc.EntryKind_ENTRY_KIND_RECV,
 		},
 	})
 	require.NoError(t, err)
@@ -511,9 +512,11 @@ func TestListActivityRejectsBadCursor(t *testing.T) {
 
 	h, _ := newStoreListFixture(t)
 
-	_, err := h.listActivity(context.Background(), &walletdkrpc.ListRequest{
-		Cursor: "!!!not-base64!!!",
-	})
+	_, err := h.listActivity(
+		context.Background(), &wavewalletrpc.ListRequest{
+			Cursor: "!!!not-base64!!!",
+		},
+	)
 	require.ErrorIs(t, err, errInvalidActivityCursor)
 }
 
@@ -528,7 +531,7 @@ func TestListActivityRejectsNonPositiveCursor(t *testing.T) {
 	for _, created := range []int64{0, -1} {
 		cursor := encodeActivityCursor(created, "x")
 		_, err := h.listActivity(
-			context.Background(), &walletdkrpc.ListRequest{
+			context.Background(), &wavewalletrpc.ListRequest{
 				Cursor: cursor,
 			},
 		)
@@ -552,13 +555,13 @@ func TestListActivityBoundsFilteredScan(t *testing.T) {
 	for i := 0; i < rows; i++ {
 		seedActivity(
 			t, store, fmt.Sprintf("c%02d", i),
-			walletdkrpc.EntryKind_ENTRY_KIND_SEND,
-			walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+			wavewalletrpc.EntryKind_ENTRY_KIND_SEND,
+			wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
 			int64(100+i),
 		)
 	}
 
-	page, err := h.listActivity(ctx, &walletdkrpc.ListRequest{
+	page, err := h.listActivity(ctx, &wavewalletrpc.ListRequest{
 		Limit:       2,
 		PendingOnly: true,
 	})

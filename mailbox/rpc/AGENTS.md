@@ -36,7 +36,7 @@ and server-side routing need without including any transport implementation.
 - **Depends on**: `google.golang.org/protobuf/proto` only — intentionally
   dependency-free so generated stubs can import it without pulling in transport.
 - **Depended on by**: `serverconn` (wraps `RPCClient` for the durable transport
-  path), `arkrpc` / `daemonrpc` (generated stubs embed the interfaces),
+  path), `arkrpc` / `waverpc` (generated stubs embed the interfaces),
   `mailbox/conn` (adapts `AckState` and response registry to satisfy
   `RPCClient`).
 

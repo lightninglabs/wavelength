@@ -9,9 +9,9 @@ import (
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/lightninglabs/darepo-client/lib/arkscript"
-	"github.com/lightninglabs/darepo-client/lib/tx"
-	"github.com/lightninglabs/darepo-client/lib/types"
+	"github.com/lightninglabs/wavelength/lib/arkscript"
+	"github.com/lightninglabs/wavelength/lib/tx"
+	"github.com/lightninglabs/wavelength/lib/types"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
@@ -128,7 +128,7 @@ func (s *LiveState) handleForceUnroll(_ context.Context,
 	// emit a VTXOTerminatedNotification: UnilateralExitState is
 	// non-terminal now, so the actor stays alive to observe the exit
 	// outcome and recover the VTXO if the unroll fails without an on-chain
-	// footprint (darepo-client#602).
+	// footprint (wavelength#602).
 	outbox := []VTXOOutMsg{
 		&ExpiringNotification{
 			VTXO:            s.VTXO,
@@ -203,7 +203,7 @@ func (s *LiveState) handleBlockEpoch(_ context.Context, evt *BlockEpochEvent,
 
 		// Keep the actor alive in the non-terminal exit state (no
 		// VTXOTerminatedNotification) so a failed unroll can be rolled
-		// back to live; see darepo-client#602.
+		// back to live; see wavelength#602.
 		outbox := []VTXOOutMsg{
 			&ExpiringNotification{
 				VTXO:            s.VTXO,
@@ -625,7 +625,7 @@ func (s *PendingForfeitState) ProcessEvent(ctx context.Context, event VTXOEvent,
 
 			// Non-terminal exit: no VTXOTerminatedNotification, so
 			// a failed unroll can recover the VTXO
-			// (darepo-client#602).
+			// (wavelength#602).
 			outbox := []VTXOOutMsg{
 				&ExpiringNotification{
 					VTXO:            s.VTXO,
@@ -666,7 +666,7 @@ func (s *PendingForfeitState) ProcessEvent(ctx context.Context, event VTXOEvent,
 		}
 
 		// Non-terminal exit: no VTXOTerminatedNotification, so a failed
-		// unroll can recover the VTXO (darepo-client#602).
+		// unroll can recover the VTXO (wavelength#602).
 		outbox := []VTXOOutMsg{
 			&ExpiringNotification{
 				VTXO:            s.VTXO,
@@ -885,7 +885,7 @@ func (s *ForfeitingState) ProcessEvent(ctx context.Context, event VTXOEvent,
 
 			// Non-terminal exit: no VTXOTerminatedNotification, so
 			// a failed unroll can recover the VTXO
-			// (darepo-client#602).
+			// (wavelength#602).
 			outbox := []VTXOOutMsg{
 				&ExpiringNotification{
 					VTXO:            s.VTXO,
@@ -933,7 +933,7 @@ func (s *ForfeitingState) ProcessEvent(ctx context.Context, event VTXOEvent,
 		}
 
 		// Non-terminal exit: no VTXOTerminatedNotification, so a failed
-		// unroll can recover the VTXO (darepo-client#602).
+		// unroll can recover the VTXO (wavelength#602).
 		// ForfeitingState tracks no block height, so LastCheckedHeight
 		// stays zero and the next block epoch re-seeds it if the VTXO
 		// is rolled back.
@@ -1072,7 +1072,7 @@ func (s *SpendingState) ProcessEvent(_ context.Context, event VTXOEvent,
 
 			// Non-terminal exit: no VTXOTerminatedNotification, so
 			// a failed unroll can recover the VTXO
-			// (darepo-client#602).
+			// (wavelength#602).
 			outbox := []VTXOOutMsg{
 				&ExpiringNotification{
 					VTXO:            s.VTXO,
@@ -1137,7 +1137,7 @@ func (s *SpendingState) ProcessEvent(_ context.Context, event VTXOEvent,
 		}
 
 		// Non-terminal exit: no VTXOTerminatedNotification, so a failed
-		// unroll can recover the VTXO (darepo-client#602). Leaving
+		// unroll can recover the VTXO (wavelength#602). Leaving
 		// SpendingState drops the durable reservation row in the same
 		// transaction as the status change (ReleaseSpendReservation),
 		// matching the critical-expiry branch above; otherwise the

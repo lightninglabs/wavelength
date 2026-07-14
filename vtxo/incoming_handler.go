@@ -13,10 +13,10 @@ import (
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/arkrpc"
-	"github.com/lightninglabs/darepo-client/baselib/actor"
-	"github.com/lightninglabs/darepo-client/lib/arkscript"
-	"github.com/lightninglabs/darepo-client/metrics"
+	"github.com/lightninglabs/wavelength/arkrpc"
+	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/lib/arkscript"
+	"github.com/lightninglabs/wavelength/metrics"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 )
@@ -105,10 +105,10 @@ type IncomingVTXOExtras struct {
 // The handler routes per-script signing via clientKey so the
 // implementation can issue an indexer ListVTXOsByScripts query under
 // the owner's proof-of-control. A nil fetcher (legacy harnesses /
-// non-darepod consumers) causes the handler to persist without
+// non-waved consumers) causes the handler to persist without
 // extras — the cooperative spend paths (refresh, OOR, leave) still
 // work; only unilateral exit is impossible until backfill. Production
-// wiring (see darepod) supplies an indexer-backed implementation.
+// wiring (see waved) supplies an indexer-backed implementation.
 type IncomingAncestryFetcher func(ctx context.Context,
 	outpoint wire.OutPoint, pkScript []byte,
 	clientKey keychain.KeyDescriptor) (IncomingVTXOExtras, error)
@@ -142,7 +142,7 @@ type IncomingVTXOHandlerConfig struct {
 	// it knows the terminal outcome of an owned incoming VTXO:
 	// "materialized" after the descriptor is persisted, or "failed"
 	// when a relevant receive cannot be persisted. Emission lives here
-	// (not at the darepod routing boundary) because only this handler
+	// (not at the waved routing boundary) because only this handler
 	// observes whether the event was relevant and the save succeeded;
 	// counting at adapt time would report success for events that are
 	// later ignored or fail to persist.
@@ -374,7 +374,7 @@ func (h *IncomingVTXOHandler) Receive(ctx context.Context,
 
 	// The owned incoming VTXO is now persisted: count it as a
 	// materialized receive. This is the authoritative success point —
-	// the darepod routing boundary cannot observe it because dispatch
+	// the waved routing boundary cannot observe it because dispatch
 	// to this handler is an async durable Tell.
 	h.emitReceived(ctx, "materialized")
 

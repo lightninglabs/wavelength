@@ -1,7 +1,7 @@
 package credit
 
 import (
-	"github.com/lightninglabs/darepo-client/baselib/protofsm"
+	"github.com/lightninglabs/wavelength/baselib/protofsm"
 )
 
 // CreditState is the per-operation protofsm state interface. Every concrete

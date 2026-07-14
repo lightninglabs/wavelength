@@ -1,4 +1,4 @@
-//go:build walletdkrpc && swapruntime
+//go:build wavewalletrpc && swapruntime
 
 package swapwallet
 
@@ -7,10 +7,10 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/lightninglabs/darepo-client/daemonrpc"
-	"github.com/lightninglabs/darepo-client/darepod"
-	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
-	"github.com/lightninglabs/darepo-client/wallet"
+	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
+	"github.com/lightninglabs/wavelength/wallet"
+	"github.com/lightninglabs/wavelength/waved"
+	"github.com/lightninglabs/wavelength/waverpc"
 )
 
 // fakeRPCServer is a hand-written implementation of swapwallet.RPCServer
@@ -20,26 +20,26 @@ import (
 type fakeRPCServer struct {
 	mu sync.Mutex
 
-	listVTXOsResp    *daemonrpc.ListVTXOsResponse
+	listVTXOsResp    *waverpc.ListVTXOsResponse
 	listVTXOsErr     error
 	listVTXOsCalls   int
-	listVTXOsLastReq *daemonrpc.ListVTXOsRequest
-	leaveResp        *daemonrpc.LeaveVTXOsResponse
+	listVTXOsLastReq *waverpc.ListVTXOsRequest
+	leaveResp        *waverpc.LeaveVTXOsResponse
 	leaveErr         error
 	leaveCalls       int
-	leaveLastReq     *daemonrpc.LeaveVTXOsRequest
-	listTxResp       *daemonrpc.ListTransactionsResponse
+	leaveLastReq     *waverpc.LeaveVTXOsRequest
+	listTxResp       *waverpc.ListTransactionsResponse
 	listTxErr        error
 	listTxCalls      int
-	listTxLastReq    *daemonrpc.ListTransactionsRequest
-	getInfoResp      *daemonrpc.GetInfoResponse
+	listTxLastReq    *waverpc.ListTransactionsRequest
+	getInfoResp      *waverpc.GetInfoResponse
 	getInfoErr       error
-	getBalanceResp   *daemonrpc.GetBalanceResponse
+	getBalanceResp   *waverpc.GetBalanceResponse
 	getBalanceErr    error
-	newAddressResp   *daemonrpc.NewAddressResponse
+	newAddressResp   *waverpc.NewAddressResponse
 	newAddressErr    error
 
-	listVTXOsByStatus map[daemonrpc.VTXOStatus]*daemonrpc.
+	listVTXOsByStatus map[waverpc.VTXOStatus]*waverpc.
 				ListVTXOsResponse
 
 	newWalletAddressResp string
@@ -49,67 +49,66 @@ type fakeRPCServer struct {
 	activeBoardingAddrs  []string
 	activeBoardingErr    error
 
-	genSeedResp     *daemonrpc.GenSeedResponse
+	genSeedResp     *waverpc.GenSeedResponse
 	genSeedErr      error
 	genSeedCalls    int
-	genSeedLastReq  *daemonrpc.GenSeedRequest
-	initWalletResp  *daemonrpc.InitWalletResponse
+	genSeedLastReq  *waverpc.GenSeedRequest
+	initWalletResp  *waverpc.InitWalletResponse
 	initWalletErr   error
 	initWalletCalls int
-	initWalletLast  *daemonrpc.InitWalletRequest
+	initWalletLast  *waverpc.InitWalletRequest
 
-	unlockWalletResp  *daemonrpc.UnlockWalletResponse
+	unlockWalletResp  *waverpc.UnlockWalletResponse
 	unlockWalletErr   error
 	unlockWalletCalls int
-	unlockWalletLast  *daemonrpc.UnlockWalletRequest
+	unlockWalletLast  *waverpc.UnlockWalletRequest
 
-	unrollResp  *daemonrpc.UnrollResponse
+	unrollResp  *waverpc.UnrollResponse
 	unrollErr   error
 	unrollCalls int
-	unrollLast  *daemonrpc.UnrollRequest
+	unrollLast  *waverpc.UnrollRequest
 
-	unrollStatusResp  *daemonrpc.GetUnrollStatusResponse
+	unrollStatusResp  *waverpc.GetUnrollStatusResponse
 	unrollStatusErr   error
 	unrollStatusCalls int
-	unrollStatusLast  *daemonrpc.GetUnrollStatusRequest
+	unrollStatusLast  *waverpc.GetUnrollStatusRequest
 
-	exitSummaryResp  *darepod.ExitSummaryResult
+	exitSummaryResp  *waved.ExitSummaryResult
 	exitSummaryErr   error
 	exitSummaryCalls int
 
-	exitPlanResp  *darepod.ExitPlanResponse
+	exitPlanResp  *waved.ExitPlanResponse
 	exitPlanErr   error
 	exitPlanCalls int
-	exitPlanLast  *darepod.ExitPlanRequest
+	exitPlanLast  *waved.ExitPlanRequest
 
-	sweepWalletResp  *darepod.SweepWalletResponse
+	sweepWalletResp  *waved.SweepWalletResponse
 	sweepWalletErr   error
 	sweepWalletCalls int
-	sweepWalletLast  *darepod.SweepWalletRequest
+	sweepWalletLast  *waved.SweepWalletRequest
 
-	joinNextRoundResp  *daemonrpc.JoinNextRoundResponse
+	joinNextRoundResp  *waverpc.JoinNextRoundResponse
 	joinNextRoundErr   error
 	joinNextRoundCalls int
 
-	sendOnChainResp    *daemonrpc.SendOnChainResponse
+	sendOnChainResp    *waverpc.SendOnChainResponse
 	sendOnChainErr     error
 	sendOnChainCalls   int
-	sendOnChainLastReq *daemonrpc.SendOnChainRequest
+	sendOnChainLastReq *waverpc.SendOnChainRequest
 
-	sendOORResp    *daemonrpc.SendOORResponse
+	sendOORResp    *waverpc.SendOORResponse
 	sendOORErr     error
 	sendOORCalls   int
-	sendOORLastReq *daemonrpc.SendOORRequest
+	sendOORLastReq *waverpc.SendOORRequest
 
-	estimateFeeResp    *daemonrpc.EstimateFeeResponse
+	estimateFeeResp    *waverpc.EstimateFeeResponse
 	estimateFeeErr     error
 	estimateFeeCalls   int
-	estimateFeeLastReq *daemonrpc.EstimateFeeRequest
+	estimateFeeLastReq *waverpc.EstimateFeeRequest
 }
 
 func (f *fakeRPCServer) LeaveVTXOs(_ context.Context,
-	req *daemonrpc.LeaveVTXOsRequest) (*daemonrpc.LeaveVTXOsResponse,
-	error) {
+	req *waverpc.LeaveVTXOsRequest) (*waverpc.LeaveVTXOsResponse, error) {
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -121,7 +120,7 @@ func (f *fakeRPCServer) LeaveVTXOs(_ context.Context,
 }
 
 func (f *fakeRPCServer) ListVTXOs(_ context.Context,
-	req *daemonrpc.ListVTXOsRequest) (*daemonrpc.ListVTXOsResponse, error) {
+	req *waverpc.ListVTXOsRequest) (*waverpc.ListVTXOsResponse, error) {
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -139,8 +138,8 @@ func (f *fakeRPCServer) ListVTXOs(_ context.Context,
 }
 
 func (f *fakeRPCServer) ListTransactions(_ context.Context,
-	req *daemonrpc.ListTransactionsRequest) (
-	*daemonrpc.ListTransactionsResponse, error) {
+	req *waverpc.ListTransactionsRequest) (
+	*waverpc.ListTransactionsResponse, error) {
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -151,12 +150,12 @@ func (f *fakeRPCServer) ListTransactions(_ context.Context,
 	return f.listTxResp, f.listTxErr
 }
 
-func (f *fakeRPCServer) GetInfo(_ context.Context,
-	_ *daemonrpc.GetInfoRequest) (*daemonrpc.GetInfoResponse, error) {
+func (f *fakeRPCServer) GetInfo(_ context.Context, _ *waverpc.GetInfoRequest) (
+	*waverpc.GetInfoResponse, error) {
 
 	if f.getInfoResp == nil && f.getInfoErr == nil {
-		return &daemonrpc.GetInfoResponse{
-			WalletState: daemonrpc.WalletState_WALLET_STATE_READY,
+		return &waverpc.GetInfoResponse{
+			WalletState: waverpc.WalletState_WALLET_STATE_READY,
 		}, nil
 	}
 
@@ -164,8 +163,7 @@ func (f *fakeRPCServer) GetInfo(_ context.Context,
 }
 
 func (f *fakeRPCServer) EstimateFee(_ context.Context,
-	req *daemonrpc.EstimateFeeRequest) (*daemonrpc.EstimateFeeResponse,
-	error) {
+	req *waverpc.EstimateFeeRequest) (*waverpc.EstimateFeeResponse, error) {
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -177,13 +175,13 @@ func (f *fakeRPCServer) EstimateFee(_ context.Context,
 }
 
 func (f *fakeRPCServer) GetBalance(_ context.Context,
-	_ *daemonrpc.GetBalanceRequest) (*daemonrpc.GetBalanceResponse, error) {
+	_ *waverpc.GetBalanceRequest) (*waverpc.GetBalanceResponse, error) {
 
 	return f.getBalanceResp, f.getBalanceErr
 }
 
 func (f *fakeRPCServer) NewAddress(_ context.Context,
-	_ *daemonrpc.NewAddressRequest) (*daemonrpc.NewAddressResponse, error) {
+	_ *waverpc.NewAddressRequest) (*waverpc.NewAddressResponse, error) {
 
 	return f.newAddressResp, f.newAddressErr
 }
@@ -211,7 +209,7 @@ func (f *fakeRPCServer) ListUnconfirmedBoardingUTXOs(_ context.Context) (
 }
 
 func (f *fakeRPCServer) GenSeed(_ context.Context,
-	req *daemonrpc.GenSeedRequest) (*daemonrpc.GenSeedResponse, error) {
+	req *waverpc.GenSeedRequest) (*waverpc.GenSeedResponse, error) {
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -223,8 +221,7 @@ func (f *fakeRPCServer) GenSeed(_ context.Context,
 }
 
 func (f *fakeRPCServer) InitWallet(_ context.Context,
-	req *daemonrpc.InitWalletRequest) (*daemonrpc.InitWalletResponse,
-	error) {
+	req *waverpc.InitWalletRequest) (*waverpc.InitWalletResponse, error) {
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -236,7 +233,7 @@ func (f *fakeRPCServer) InitWallet(_ context.Context,
 }
 
 func (f *fakeRPCServer) UnlockWallet(_ context.Context,
-	req *daemonrpc.UnlockWalletRequest) (*daemonrpc.UnlockWalletResponse,
+	req *waverpc.UnlockWalletRequest) (*waverpc.UnlockWalletResponse,
 	error) {
 
 	f.mu.Lock()
@@ -248,8 +245,8 @@ func (f *fakeRPCServer) UnlockWallet(_ context.Context,
 	return f.unlockWalletResp, f.unlockWalletErr
 }
 
-func (f *fakeRPCServer) Unroll(_ context.Context,
-	req *daemonrpc.UnrollRequest) (*daemonrpc.UnrollResponse, error) {
+func (f *fakeRPCServer) Unroll(_ context.Context, req *waverpc.UnrollRequest) (
+	*waverpc.UnrollResponse, error) {
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -261,8 +258,8 @@ func (f *fakeRPCServer) Unroll(_ context.Context,
 }
 
 func (f *fakeRPCServer) GetUnrollStatus(_ context.Context,
-	req *daemonrpc.GetUnrollStatusRequest) (
-	*daemonrpc.GetUnrollStatusResponse, error) {
+	req *waverpc.GetUnrollStatusRequest) (*waverpc.GetUnrollStatusResponse,
+	error) {
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -282,7 +279,7 @@ func (f *fakeRPCServer) GetUnrollStatus(_ context.Context,
 }
 
 func (f *fakeRPCServer) ExitSummary(_ context.Context) (
-	*darepod.ExitSummaryResult, error) {
+	*waved.ExitSummaryResult, error) {
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -293,7 +290,7 @@ func (f *fakeRPCServer) ExitSummary(_ context.Context) (
 }
 
 func (f *fakeRPCServer) GetExitPlan(_ context.Context,
-	req *darepod.ExitPlanRequest) (*darepod.ExitPlanResponse, error) {
+	req *waved.ExitPlanRequest) (*waved.ExitPlanResponse, error) {
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -305,7 +302,7 @@ func (f *fakeRPCServer) GetExitPlan(_ context.Context,
 }
 
 func (f *fakeRPCServer) SweepWallet(_ context.Context,
-	req *darepod.SweepWalletRequest) (*darepod.SweepWalletResponse, error) {
+	req *waved.SweepWalletRequest) (*waved.SweepWalletResponse, error) {
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -317,7 +314,7 @@ func (f *fakeRPCServer) SweepWallet(_ context.Context,
 }
 
 func (f *fakeRPCServer) JoinNextRound(_ context.Context,
-	_ *daemonrpc.JoinNextRoundRequest) (*daemonrpc.JoinNextRoundResponse,
+	_ *waverpc.JoinNextRoundRequest) (*waverpc.JoinNextRoundResponse,
 	error) {
 
 	f.mu.Lock()
@@ -329,8 +326,7 @@ func (f *fakeRPCServer) JoinNextRound(_ context.Context,
 }
 
 func (f *fakeRPCServer) SendOnChain(_ context.Context,
-	req *daemonrpc.SendOnChainRequest) (*daemonrpc.SendOnChainResponse,
-	error) {
+	req *waverpc.SendOnChainRequest) (*waverpc.SendOnChainResponse, error) {
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -342,7 +338,7 @@ func (f *fakeRPCServer) SendOnChain(_ context.Context,
 }
 
 func (f *fakeRPCServer) SendOOR(_ context.Context,
-	req *daemonrpc.SendOORRequest) (*daemonrpc.SendOORResponse, error) {
+	req *waverpc.SendOORRequest) (*waverpc.SendOORResponse, error) {
 
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -69,10 +69,10 @@ runs:
           ${{ runner.os }}-go-${{ inputs.go-version }}-${{ inputs.key-prefix }}-
 
     # The complete, downloaded source code of all our dependencies (the
-    # libraries darepo project imports). This prevents the go command from having
-    # to re-download every dependency from the internet on every single job
-    # run. It's like having a local library of all the third-party code darepo
-    # needs.
+    # libraries the wavelength project imports). This prevents the go command
+    # from having to re-download every dependency from the internet on every
+    # single job run. It's like having a local library of all the
+    # third-party code wavelength needs.
     - name: go module cache
       if: ${{ inputs.use-build-cache == 'no' }}
       uses: actions/cache@v4

@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lightninglabs/darepo-client/daemonrpc"
-	"github.com/lightninglabs/darepo-client/darepod"
-	"github.com/lightninglabs/darepo-client/rpc/roundpb"
+	"github.com/lightninglabs/wavelength/rpc/roundpb"
+	"github.com/lightninglabs/wavelength/waved"
+	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/stretchr/testify/require"
 )
 
@@ -39,7 +39,7 @@ func TestSendOnChainInsufficientOperatorFundsRetiresJob(t *testing.T) {
 
 	// EagerRoundJoin drives the send straight into IntentSentState,
 	// matching the wallet/SDK hosts where #889 was observed.
-	fixture := newDirectedSendFixture(t, func(c *darepod.Config) {
+	fixture := newDirectedSendFixture(t, func(c *waved.Config) {
 		c.EagerRoundJoin = true
 	})
 
@@ -54,7 +54,7 @@ func TestSendOnChainInsufficientOperatorFundsRetiresJob(t *testing.T) {
 	startVTXOs := listAllVTXOs(t, fixture.client)
 	require.Len(t, startVTXOs, 1)
 	require.Equal(
-		t, daemonrpc.VTXOStatus_VTXO_STATUS_LIVE, startVTXOs[0].Status,
+		t, waverpc.VTXOStatus_VTXO_STATUS_LIVE, startVTXOs[0].Status,
 	)
 
 	// A standard P2TR destination script; only its script class matters to
@@ -67,13 +67,13 @@ func TestSendOnChainInsufficientOperatorFundsRetiresJob(t *testing.T) {
 	// Issue the cooperative sweep-all send. It persists the send intent,
 	// reserves the VTXO, and registers the round.
 	sendResp, err := fixture.client.SendOnChain(
-		ctx, &daemonrpc.SendOnChainRequest{
-			Destination: &daemonrpc.LeaveDestination{
-				Target: &daemonrpc.LeaveDestination_PkScript{
+		ctx, &waverpc.SendOnChainRequest{
+			Destination: &waverpc.LeaveDestination{
+				Target: &waverpc.LeaveDestination_PkScript{
 					PkScript: destPkScript,
 				},
 			},
-			Amount: &daemonrpc.SendOnChainRequest_SweepAll{
+			Amount: &waverpc.SendOnChainRequest_SweepAll{
 				SweepAll: true,
 			},
 		},
@@ -85,7 +85,7 @@ func TestSendOnChainInsufficientOperatorFundsRetiresJob(t *testing.T) {
 	// LIVE rather than strand it in pending-forfeit.
 	requireVTXOStatusEventually(
 		t, fixture.client, fixture.seededOutpoint,
-		daemonrpc.VTXOStatus_VTXO_STATUS_LIVE, 30*time.Second,
+		waverpc.VTXOStatus_VTXO_STATUS_LIVE, 30*time.Second,
 	)
 	require.Equal(
 		t, testSeededAmountSat, vtxoBalanceSat(t, fixture.client),

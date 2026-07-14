@@ -5,7 +5,7 @@ import (
 
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/lightninglabs/darepo-client/unrollplan"
+	"github.com/lightninglabs/wavelength/unrollplan"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
@@ -51,7 +51,7 @@ func checkpointFromState(state State, sweepTx *wire.MsgTx) *actorCheckpoint {
 // that never broadcast, which is the sole case where the target VTXO is
 // safe to roll back to live: any footprint means the unilateral exit has
 // begun on-chain and the operator no longer treats the VTXO as live. See
-// darepo-client#602.
+// wavelength#602.
 //
 // This reflects THIS job's own footprint. An exit driven on-chain by a
 // third party (the operator, or a prior holder of a fraudulently re-spent

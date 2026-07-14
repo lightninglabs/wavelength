@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/build"
+	"github.com/lightninglabs/wavelength/build"
 	"github.com/lightningnetwork/lnd/clock"
 	"github.com/lightningnetwork/lnd/fn/v2"
 )

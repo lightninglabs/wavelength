@@ -32,7 +32,7 @@ convert between the proto wire types and domain types (`psbt.Packet`,
   generated `*Mailbox*` client/server).
 - **Depended on by**: `oor` (session actor, outbox messages, errors — the OOR
   client/server FSM), `db` (`oor_session_registry_store.go` persists
-  `FlowVersion`), `darepod` (server wiring), `systest` (end-to-end OOR tests).
+  `FlowVersion`), `waved` (server wiring), `systest` (end-to-end OOR tests).
 
 ## Invariants
 

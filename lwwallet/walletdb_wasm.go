@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcwallet/walletdb"
-	"github.com/lightninglabs/darepo-client/internal/sqlbase"
 	_ "github.com/lightninglabs/go-wasmsqlite"
+	"github.com/lightninglabs/wavelength/internal/sqlbase"
 	"github.com/lightningnetwork/lnd/lnwallet/btcwallet"
 )
 

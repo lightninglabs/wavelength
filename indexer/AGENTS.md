@@ -34,7 +34,7 @@ proofs for proof-of-control.
 - **Depends on**: `arkrpc` (generated IndexerService stubs), `mailbox/rpc`
   (transport-agnostic `RPCClient`/`RPCOptions` contracts), `internal/indexerlimits`
   (pagination bounds).
-- **Depended on by**: `darepod` (wiring, receive script registration, metadata
+- **Depended on by**: `waved` (wiring, receive script registration, metadata
   queries), `proofkeys`, `walletcore`.
 
 ## Invariants

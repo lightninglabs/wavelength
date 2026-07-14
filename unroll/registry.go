@@ -10,12 +10,12 @@ import (
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/baselib/actor"
-	"github.com/lightninglabs/darepo-client/chainsource"
-	"github.com/lightninglabs/darepo-client/ledger"
-	"github.com/lightninglabs/darepo-client/lib/actormsg"
-	"github.com/lightninglabs/darepo-client/txconfirm"
-	"github.com/lightninglabs/darepo-client/vtxo"
+	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/chainsource"
+	"github.com/lightninglabs/wavelength/ledger"
+	"github.com/lightninglabs/wavelength/lib/actormsg"
+	"github.com/lightninglabs/wavelength/txconfirm"
+	"github.com/lightninglabs/wavelength/vtxo"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
@@ -74,7 +74,7 @@ type RegistryRecord struct {
 	// on-chain footprint, so the target VTXO is safe to roll back to
 	// live. It is persisted (as a distinct DB status) so boot-time
 	// reconciliation can recover a VTXO whose recovery notification was
-	// lost before the manager applied it (darepo-client#602).
+	// lost before the manager applied it (wavelength#602).
 	RecoverableFailure bool
 }
 
@@ -165,7 +165,7 @@ type RegistryConfig struct {
 	// to live, and a completed exit asks it to retire the VTXO to spent.
 	// This is the feedback edge that keeps VTXO lifecycle gated on the
 	// unroll job's terminal on-chain outcome rather than the user's intent
-	// to exit (darepo-client#602). When None, terminal outcomes are not
+	// to exit (wavelength#602). When None, terminal outcomes are not
 	// forwarded (used by tests that don't exercise the manager).
 	VTXOExitObserver fn.Option[actor.TellOnlyRef[vtxo.ManagerMsg]]
 }
@@ -460,7 +460,7 @@ func (r *registryBehavior) handleEnsure(ctx context.Context,
 	//
 	// A recoverable failure is the exception: the prior exit failed
 	// cleanly with no on-chain footprint and the VTXO was rolled back to
-	// live (darepo-client#602), so a fresh exit must be admittable rather
+	// live (wavelength#602), so a fresh exit must be admittable rather
 	// than deduped against the dead attempt. Fall through to the spawn
 	// path, whose UpsertRecord overwrites the stale recoverable row.
 	if record, ok := r.pending[req.Outpoint]; ok &&
@@ -486,7 +486,7 @@ func (r *registryBehavior) handleEnsure(ctx context.Context,
 		//      stable identity and do not clobber the recorded sweep
 		//      txid or failure reason. A *recoverable* terminal
 		//      failure is the exception: the VTXO was rolled back to
-		//      live (darepo-client#602), so it falls through to a
+		//      live (wavelength#602), so it falls through to a
 		//      fresh spawn (handled below).
 		//
 		//   2. Non-terminal record — the actor was admitted in a
@@ -762,7 +762,7 @@ func (r *registryBehavior) handleChildAdmissionResult(ctx context.Context,
 // the child broadcasts anything, so the VTXO has no on-chain footprint and is
 // recoverable to live. The record is persisted as a recoverable failure and
 // the VTXO manager is notified so the VTXO is rolled back rather than
-// stranded in unilateral exit (darepo-client#602).
+// stranded in unilateral exit (wavelength#602).
 func (r *registryBehavior) failAdmittedChild(ctx context.Context,
 	target wire.OutPoint, child *VTXOUnrollActor, err error) {
 
@@ -1000,7 +1000,7 @@ func (r *registryBehavior) handleTerminated(ctx context.Context,
 	// outlives r.pending: a completed async persist can evict the cached
 	// record before this terminal handoff. Prefer the message's kind so a
 	// recovery-only target is still held in exit rather than relived as a
-	// live coin (darepo-client#602). We only feed it to the manager, not
+	// live coin (wavelength#602). We only feed it to the manager, not
 	// the persisted record: the message has no policy ref, so stamping its
 	// kind onto the record would drop the store's (kind, ref) identity.
 	policyKind := req.ExitPolicyKind
@@ -1010,7 +1010,7 @@ func (r *registryBehavior) handleTerminated(ctx context.Context,
 
 	// Forward the terminal outcome to the VTXO manager so the VTXO's
 	// lifecycle tracks the unroll job's terminal on-chain result rather
-	// than the user's intent to exit (darepo-client#602). The handoff must
+	// than the user's intent to exit (wavelength#602). The handoff must
 	// survive caller-context cancellation, so detach the context. The exit
 	// policy rides along so the manager can hold a recovery-only target in
 	// exit rather than relive it as a live coin.

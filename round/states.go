@@ -7,10 +7,10 @@ import (
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/lightninglabs/darepo-client/baselib/protofsm"
-	"github.com/lightninglabs/darepo-client/lib/tree"
-	"github.com/lightninglabs/darepo-client/lib/types"
-	"github.com/lightninglabs/darepo-client/rpc/roundpb"
+	"github.com/lightninglabs/wavelength/baselib/protofsm"
+	"github.com/lightninglabs/wavelength/lib/tree"
+	"github.com/lightninglabs/wavelength/lib/types"
+	"github.com/lightninglabs/wavelength/rpc/roundpb"
 )
 
 // ClientState is a sealed interface for all states in the client round

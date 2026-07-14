@@ -93,10 +93,10 @@ generate "rpc/roundpb"
 generate "rpc/swapclientrpc" 1
 
 # Generate optional daemon-owned simplified wallet RPC protos.
-generate "rpc/walletdkrpc" 1
+generate "rpc/wavewalletrpc" 1
 
-# Generate daemonrpc protos for the client daemon's own gRPC API.
-generate "daemonrpc" 1
+# Generate waverpc protos for the client daemon's own gRPC API.
+generate "waverpc" 1
 
 # Generate shared swap server RPC protos for the SDK and server.
 generate "swaprpc" 1
@@ -104,9 +104,9 @@ generate "swaprpc" 1
 # Generate OOR mailbox wire payload stubs.
 generate "rpc/oorpb"
 
-# Generate the low-level darepocli dev RPC command registry from the daemon
+# Generate the low-level wavecli dev RPC command registry from the daemon
 # and swap-client service descriptors.
-go run ./cmd/darepocli/internal/gen-devrpc
+go run ./cmd/wavecli/internal/gen-devrpc
 
 # Generate adminrpc protos if present.
 if [ -d "adminrpc" ]; then

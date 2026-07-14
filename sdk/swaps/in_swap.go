@@ -10,9 +10,9 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/daemonrpc"
-	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	loopfsm "github.com/lightninglabs/loop/fsm"
+	"github.com/lightninglabs/wavelength/lib/arkscript"
+	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -1521,10 +1521,10 @@ func (s *paySession) reconcilePayRefundSession(ctx context.Context) (bool,
 	}
 
 	switch session.GetStatus() {
-	case daemonrpc.OORSessionStatus_OOR_SESSION_STATUS_COMPLETED:
+	case waverpc.OORSessionStatus_OOR_SESSION_STATUS_COMPLETED:
 		return true, s.markRefundSessionCompleted(ctx, session)
 
-	case daemonrpc.OORSessionStatus_OOR_SESSION_STATUS_FAILED:
+	case waverpc.OORSessionStatus_OOR_SESSION_STATUS_FAILED:
 		reason := session.GetFailureReason()
 		s.client.log.WarnS(ctx, "Pay refund OOR session failed",
 			nil,
@@ -1555,7 +1555,7 @@ func (s *paySession) reconcilePayRefundSession(ctx context.Context) (bool,
 // markRefundSessionCompleted persists terminal recovery after the daemon's
 // durable OOR session state confirms cooperative refund completion.
 func (s *paySession) markRefundSessionCompleted(ctx context.Context,
-	session *daemonrpc.OORSessionInfo) error {
+	session *waverpc.OORSessionInfo) error {
 
 	s.client.log.InfoS(ctx, "Pay swap refund session completed",
 		btclog.Hex("hash", s.cfg.PaymentHash[:]),

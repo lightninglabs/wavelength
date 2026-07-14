@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightningnetwork/lnd/fn/v2"
 )
 

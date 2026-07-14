@@ -1,4 +1,4 @@
-# Darepo Agent Guide
+# Wavelength Agent Guide
 
 This file is a **map**, not a manual. Follow links for details.
 
@@ -118,7 +118,7 @@ equivalents — `documentSymbol`, `hover`, `goToDefinition`,
 - [`docs/structured-logging.md`](docs/structured-logging.md) — Log format, key-value helpers, error levels
 - [`docs/testing-guide.md`](docs/testing-guide.md) — Coverage targets, test approaches, pre-commit checklist
 - [`docs/commit-tooling.md`](docs/commit-tooling.md) — commit_message.py workflows
-- [`docs/daemon_cli_guide.md`](docs/daemon_cli_guide.md) — darepod/darepocli setup and CLI reference
+- [`docs/daemon_cli_guide.md`](docs/daemon_cli_guide.md) — waved/wavecli setup and CLI reference
 - [`docs/go_workspace.md`](docs/go_workspace.md) — Multi-module Go workspace setup
 - [`docs/policy_arkscript_review_guide.md`](docs/policy_arkscript_review_guide.md) — Policy-first arkscript reviewer guide
 

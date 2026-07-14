@@ -1,4 +1,4 @@
-//go:build walletdkrpc && swapruntime
+//go:build wavewalletrpc && swapruntime
 
 package swapwallet
 
@@ -6,7 +6,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -23,37 +23,37 @@ type sentinelMapping struct {
 }
 
 // sentinelMappings is the canonical sentinel → (code, reason) table. The reason
-// strings are the walletdkrpc wire contract (clients reconstruct typed
-// sentinels from them), so they come from walletdkrpc rather than being
+// strings are the wavewalletrpc wire contract (clients reconstruct typed
+// sentinels from them), so they come from wavewalletrpc rather than being
 // duplicated here.
 //
 // ErrWalletNotReady is intentionally absent: the wallet-readiness gate
-// (requireWalletReady) returns daemonrpc's own structured WALLET_NOT_READY
+// (requireWalletReady) returns waverpc's own structured WALLET_NOT_READY
 // status, so the bare sentinel never reaches this interceptor.
 var sentinelMappings = []sentinelMapping{
 	{
 		ErrInvalidDestination, codes.InvalidArgument,
-		walletdkrpc.ReasonInvalidDestination,
+		wavewalletrpc.ReasonInvalidDestination,
 	},
 	{
 		ErrInvalidSendIntent, codes.FailedPrecondition,
-		walletdkrpc.ReasonInvalidSendIntent,
+		wavewalletrpc.ReasonInvalidSendIntent,
 	},
 	{
 		ErrAmountRequired, codes.InvalidArgument,
-		walletdkrpc.ReasonAmountRequired,
+		wavewalletrpc.ReasonAmountRequired,
 	},
 	{
 		ErrAmountInvalid, codes.InvalidArgument,
-		walletdkrpc.ReasonAmountInvalid,
+		wavewalletrpc.ReasonAmountInvalid,
 	},
 	{
 		ErrUnsupportedKind, codes.InvalidArgument,
-		walletdkrpc.ReasonUnsupportedKind,
+		wavewalletrpc.ReasonUnsupportedKind,
 	},
 	{
 		ErrSwapBackendUnavailable, codes.Unavailable,
-		walletdkrpc.ReasonSwapBackendUnavailable,
+		wavewalletrpc.ReasonSwapBackendUnavailable,
 	},
 
 	// The two receive-limit rejections are FailedPrecondition rather than
@@ -64,11 +64,11 @@ var sentinelMappings = []sentinelMapping{
 	// argument.
 	{
 		ErrAmountExceedsVTXOLimit, codes.FailedPrecondition,
-		walletdkrpc.ReasonAmountExceedsVTXOLimit,
+		wavewalletrpc.ReasonAmountExceedsVTXOLimit,
 	},
 	{
 		ErrBalanceLimitExceeded, codes.FailedPrecondition,
-		walletdkrpc.ReasonBalanceLimitExceeded,
+		wavewalletrpc.ReasonBalanceLimitExceeded,
 	},
 }
 
@@ -119,7 +119,7 @@ func mapSentinel(err error) error {
 		st := status.New(m.code, err.Error())
 		detailed, detailErr := st.WithDetails(&errdetails.ErrorInfo{
 			Reason: m.reason,
-			Domain: walletdkrpc.FailureDomain,
+			Domain: wavewalletrpc.FailureDomain,
 		})
 		if detailErr != nil {
 			return st.Err()

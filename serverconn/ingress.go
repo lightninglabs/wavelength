@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/lightninglabs/darepo-client/baselib/actor"
-	mailboxconn "github.com/lightninglabs/darepo-client/mailbox/conn"
-	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
-	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
-	"github.com/lightninglabs/darepo-client/serverconn/mailboxpull"
+	"github.com/lightninglabs/wavelength/baselib/actor"
+	mailboxconn "github.com/lightninglabs/wavelength/mailbox/conn"
+	mailboxpb "github.com/lightninglabs/wavelength/mailbox/pb"
+	mailboxrpc "github.com/lightninglabs/wavelength/mailbox/rpc"
+	"github.com/lightninglabs/wavelength/serverconn/mailboxpull"
 )
 
 // ingressLoop is the main pull-dispatch-ack loop. It runs in its own

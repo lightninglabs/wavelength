@@ -1,6 +1,6 @@
 package chainsource
 
-import "github.com/lightninglabs/darepo-client/baselib/actor"
+import "github.com/lightninglabs/wavelength/baselib/actor"
 
 // MapConfirmationEvent creates a transformed TellOnlyRef that accepts
 // ConfirmationEvent and transforms it to the caller's desired output message

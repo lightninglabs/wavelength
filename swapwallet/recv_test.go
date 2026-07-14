@@ -1,4 +1,4 @@
-//go:build walletdkrpc && swapruntime
+//go:build wavewalletrpc && swapruntime
 
 package swapwallet
 
@@ -6,10 +6,10 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/lightninglabs/darepo-client/credit"
-	"github.com/lightninglabs/darepo-client/daemonrpc"
-	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
-	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/credit"
+	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
+	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/stretchr/testify/require"
 )
 
@@ -45,7 +45,7 @@ func TestRecvDispatchesStartReceive(t *testing.T) {
 		},
 	}
 
-	resp, err := r.Recv(t.Context(), &walletdkrpc.RecvRequest{
+	resp, err := r.Recv(t.Context(), &wavewalletrpc.RecvRequest{
 		AmtSat: 50_000,
 		Memo:   "coffee",
 	})
@@ -56,7 +56,7 @@ func TestRecvDispatchesStartReceive(t *testing.T) {
 	require.Equal(t, "abc123", resp.GetEntry().GetId())
 	require.Equal(t, "coffee", resp.GetEntry().GetNote())
 	require.Equal(
-		t, walletdkrpc.EntryKind_ENTRY_KIND_RECV,
+		t, wavewalletrpc.EntryKind_ENTRY_KIND_RECV,
 		resp.GetEntry().GetKind(),
 	)
 	require.Equal(
@@ -69,7 +69,7 @@ func TestRecvDispatchesStartReceive(t *testing.T) {
 			GetPaymentHash(),
 	)
 	require.Equal(
-		t, walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_SETTLING,
+		t, wavewalletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_SETTLING,
 		resp.GetEntry().GetProgress().GetPhase(),
 	)
 }
@@ -93,14 +93,14 @@ func TestRecvProjectsPendingEntry(t *testing.T) {
 		},
 	}
 
-	resp, err := r.Recv(t.Context(), &walletdkrpc.RecvRequest{
+	resp, err := r.Recv(t.Context(), &wavewalletrpc.RecvRequest{
 		AmtSat: 50_000,
 		Memo:   "coffee",
 	})
 	require.NoError(t, err)
 	require.Equal(t, "abc123", resp.GetEntry().GetId())
 	require.Equal(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
 		resp.GetEntry().GetStatus(),
 	)
 
@@ -110,7 +110,7 @@ func TestRecvProjectsPendingEntry(t *testing.T) {
 		"pending recv must be projected by payment hash on dispatch",
 	)
 	require.Equal(
-		t, int64(walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING),
+		t, int64(wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING),
 		store.lastProjection().Status, "projected row must be PENDING",
 	)
 }
@@ -123,8 +123,8 @@ func TestRecvBelowDustHandsToCreditRegistry(t *testing.T) {
 
 	swap := &fakeSwapService{}
 	rpc := &fakeRPCServer{
-		getInfoResp: &daemonrpc.GetInfoResponse{
-			ServerInfo: &daemonrpc.ServerInfo{
+		getInfoResp: &waverpc.GetInfoResponse{
+			ServerInfo: &waverpc.ServerInfo{
 				DustLimit: 1_000,
 			},
 		},
@@ -149,7 +149,7 @@ func TestRecvBelowDustHandsToCreditRegistry(t *testing.T) {
 	receiver := newReceiver(deps, runtime)
 
 	resp, err := receiver.Recv(
-		t.Context(), &walletdkrpc.RecvRequest{
+		t.Context(), &wavewalletrpc.RecvRequest{
 			AmtSat: 500,
 			Memo:   "tiny",
 		},
@@ -171,11 +171,11 @@ func TestRecvBelowDustHandsToCreditRegistry(t *testing.T) {
 	require.Equal(t, "abcd", resp.GetCreditReceive().GetPaymentHash())
 	require.Equal(t, int64(500), resp.GetEntry().GetAmountSat())
 	require.Equal(
-		t, walletdkrpc.EntryKind_ENTRY_KIND_RECV,
+		t, wavewalletrpc.EntryKind_ENTRY_KIND_RECV,
 		resp.GetEntry().GetKind(),
 	)
 	require.Equal(
-		t, walletdkrpc.
+		t, wavewalletrpc.
 			WalletEntryPhase_WALLET_ENTRY_PHASE_WAITING_FOR_PAYMENT,
 		resp.GetEntry().GetProgress().GetPhase(),
 	)
@@ -217,7 +217,7 @@ func TestRecvDustLimitLookupFailureFallsBackOpen(t *testing.T) {
 	receiver := newReceiver(deps, runtime)
 
 	resp, err := receiver.Recv(
-		t.Context(), &walletdkrpc.RecvRequest{
+		t.Context(), &wavewalletrpc.RecvRequest{
 			AmtSat: 500,
 			Memo:   "tiny",
 		},
@@ -236,7 +236,7 @@ func TestRecvAmtZeroRejected(t *testing.T) {
 
 	r, swap := newRecvFixture(t)
 
-	_, err := r.Recv(t.Context(), &walletdkrpc.RecvRequest{})
+	_, err := r.Recv(t.Context(), &wavewalletrpc.RecvRequest{})
 	require.ErrorIs(t, err, ErrAmountRequired)
 	require.Equal(t, 0, swap.startReceiveCalls)
 }
@@ -249,7 +249,7 @@ func TestRecvErrorBubblesUp(t *testing.T) {
 	r, swap := newRecvFixture(t)
 	swap.startReceiveErr = errors.New("upstream broken")
 
-	_, err := r.Recv(t.Context(), &walletdkrpc.RecvRequest{
+	_, err := r.Recv(t.Context(), &wavewalletrpc.RecvRequest{
 		AmtSat: 10_000,
 	})
 	require.Error(t, err)

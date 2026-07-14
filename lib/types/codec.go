@@ -10,7 +10,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/lightninglabs/darepo-client/lib/arkscript"
+	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/tlv"
 )
@@ -22,7 +22,7 @@ const (
 
 	// joinRoundAuthDomainTag domain-separates join request authentication
 	// payloads from other signed messages.
-	joinRoundAuthDomainTag = "darepo-join-round-auth"
+	joinRoundAuthDomainTag = "wavelength-join-round-auth"
 )
 
 const (
@@ -108,7 +108,7 @@ type JoinRoundAuth struct {
 //	| type  | field                                     |
 //	+-------+-------------------------------------------+
 //	|   1   | version   (uint64, currently 3)           |
-//	|   2   | domain    ("darepo-join-round-auth")      |
+//	|   2   | domain    ("wavelength-join-round-auth")   |
 //	|   3   | identifier (33-byte compressed pubkey)    |
 //	|   4   | boarding  (blob list)                     |
 //	|   5   | vtxos     (blob list)                     |

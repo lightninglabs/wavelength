@@ -29,10 +29,10 @@ build on.
 ## Relationships
 
 - **Depends on**: `lnd/tlv`, `lnd/fn/v2`, `lnd/clock` (external, no
-  darepo-client-specific logic); `darepo-client/build` (context-scoped logger
+  wavelength-specific logic); `wavelength/build` (context-scoped logger
   helper only) is the one root-module import, otherwise this is a pure
   abstraction layer.
-- **Depended on by**: every domain package (`round`, `vtxo`, `oor`, `wallet`), `chainsource`, `serverconn`, `db`, `darepod`.
+- **Depended on by**: every domain package (`round`, `vtxo`, `oor`, `wallet`), `chainsource`, `serverconn`, `db`, `waved`.
 
 ## Invariants
 

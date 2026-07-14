@@ -1,6 +1,6 @@
 # The Swap System: Lightning, Ark, and the vHTLC
 
-This document explains how `darepo-client` moves value between the Lightning
+This document explains how `wavelength` moves value between the Lightning
 Network and an Ark instance, and how the same machinery settles a payment
 between two clients of the *same* Ark without ever touching Lightning. It is
 written for someone who already knows what a payment hash and a taproot output
@@ -10,7 +10,7 @@ and explain how the client and the operator's indexer cooperate to observe an
 Ark output that no single party owns.
 
 The code lives mostly in [`sdk/swaps`](../sdk/swaps), with the daemon-side glue
-in [`darepod`](../darepod) and the cryptography in
+in [`waved`](../waved) and the cryptography in
 [`lib/arkscript`](../lib/arkscript). The wire contract with the swap server is
 [`swaprpc/swap.proto`](../swaprpc/swap.proto).
 
@@ -22,7 +22,7 @@ A swap is a four-party affair, even though the user only ever sees two of them.
 
 | Actor | What it is | Where it lives |
 |-------|-----------|----------------|
-| **The client** (`darepod`) | The user's daemon. Holds the wallet, derives keys, drives the swap FSM. | This repo. |
+| **The client** (`waved`) | The user's daemon. Holds the wallet, derives keys, drives the swap FSM. | This repo. |
 | **The swap server** (`swapd`) | The bridge between Lightning and Ark. Intercepts Lightning HTLCs, funds vHTLCs, pays invoices. | Operator infrastructure (separate repo). |
 | **The Ark operator** (`arkd`) | The Ark service provider. Runs rounds, and — crucially for us — runs **the indexer**, the authoritative record of which virtual outputs exist. | Operator infrastructure (separate repo). |
 | **The counterparty** | A Lightning node paying the invoice, *or* another client of the same Ark. | Anywhere. |
@@ -113,13 +113,13 @@ directions of a swap.
 
 ```mermaid
 flowchart LR
-    subgraph Receive["da recv --offchain  (out-swap)"]
+    subgraph Receive["wave recv --offchain  (out-swap)"]
         direction LR
         LN1["Lightning payer"] -->|pays invoice| SWAPD1["swapd"]
         SWAPD1 -->|funds vHTLC| ARK1["Ark / vHTLC"]
         ARK1 -->|client claims w/ preimage| ME1["client wallet"]
     end
-    subgraph Pay["da send invoice --offchain  (in-swap)"]
+    subgraph Pay["wave send invoice --offchain  (in-swap)"]
         direction LR
         ME2["client wallet"] -->|funds vHTLC| ARK2["Ark / vHTLC"]
         SWAPD2["swapd"] -->|claims vHTLC w/ preimage| ARK2
@@ -131,9 +131,9 @@ The defining asymmetry is right there: **on receive, the swap server funds the
 vHTLC; on pay, the client funds it.** That single difference shapes how each
 side observes the output, as §3 and §4 make concrete.
 
-Note also what does *not* go through this machinery. `da recv --onchain`
+Note also what does *not* go through this machinery. `wave recv --onchain`
 allocates a plain wallet receive address through `NewReceiveScript` and never
-creates a vHTLC at all; `da send <address> --onchain` is a cooperative leave.
+creates a vHTLC at all; `wave send <address> --onchain` is a cooperative leave.
 Neither is a swap. When this document says "receive" or "pay" without
 qualification, it means the `--offchain` swap path.
 
@@ -141,7 +141,7 @@ qualification, it means the `--offchain` swap path.
 
 ## 3. Receiving over Lightning (the out-swap)
 
-This is the flow the user invokes with `da recv --offchain --amt N`. The client
+This is the flow the user invokes with `wave recv --offchain --amt N`. The client
 wants to be paid over Lightning and end up with the value as an Ark output.
 
 ### 3.1 What the client sets up
@@ -222,7 +222,7 @@ funded it. It cannot look in its own wallet, because the output is not there
 ```
 waitForVHTLC
   └─ daemon.FindLiveVTXOByPkScript(pkScript)
-       └─ RPCServer.GetIndexedVTXOByPkScript     (darepod/rpc_swap_lookup.go:18)
+       └─ RPCServer.GetIndexedVTXOByPkScript     (waved/rpc_swap_lookup.go:18)
             └─ indexer.ListVTXOsByScriptsTaproot (proof-gated query)
 ```
 
@@ -241,12 +241,12 @@ worth reading before reasoning about any receive that takes longer than expected
 sequenceDiagram
     autonumber
     participant U as User / CLI
-    participant C as Client (darepod)
+    participant C as Client (waved)
     participant S as swapd (swap server)
     participant A as arkd + indexer
     participant L as Lightning payer
 
-    U->>C: da recv --offchain --amt N
+    U->>C: wave recv --offchain --amt N
     C->>C: AllocateReceiveScript (claim dest)
     C->>A: RegisterReceiveScript(claim dest)   %% the OOR claim address
     C->>S: RequestChannelId(clientKey, hash, amt)
@@ -275,7 +275,7 @@ sequenceDiagram
 
 ## 4. Paying over Lightning (the in-swap)
 
-This is `da send <invoice> --offchain`. The client holds Ark value and wants a
+This is `wave send <invoice> --offchain`. The client holds Ark value and wants a
 Lightning invoice paid.
 
 ### 4.1 The negotiation
@@ -315,12 +315,12 @@ directions behave differently under indexer latency.
 sequenceDiagram
     autonumber
     participant U as User / CLI
-    participant C as Client (darepod)
+    participant C as Client (waved)
     participant S as swapd (swap server)
     participant A as arkd + indexer
     participant P as Lightning payee
 
-    U->>C: da send <invoice> --offchain
+    U->>C: wave send <invoice> --offchain
     C->>S: CreateInSwap(invoice, maxFee, clientKey)
     S-->>C: hash, amount, fee, serverKey, VHTLCConfig, settlement_type
     C->>C: derive vHTLC pkScript
@@ -742,13 +742,13 @@ Everything the client asks of the swap server lives in `swaprpc.SwapService`:
 Everything the client asks of the **operator's indexer** (via the daemon) is a
 proof-gated query — chiefly `ListVTXOsByScripts`, reached through
 `FindLiveVTXOByPkScript` → `GetIndexedVTXOByPkScript`
-(darepod/rpc_swap_lookup.go) → `indexer.ListVTXOsByScriptsTaproot`. The indexer
+(waved/rpc_swap_lookup.go) → `indexer.ListVTXOsByScriptsTaproot`. The indexer
 is not part of `swapd`; it belongs to `arkd`. That separation — the swap server
 funds, but the operator's indexer witnesses — is the defining structure of the
 receive path.
 
 The recovery ladder of §5 rides on a third surface: the local daemon's
-`daemonrpc` recovery calls — `ArmVHTLCRecovery`, `EscalateVHTLCRecovery`,
+`waverpc` recovery calls — `ArmVHTLCRecovery`, `EscalateVHTLCRecovery`,
 `CancelVHTLCRecovery`, and `GetVHTLCRecoveryStatus`. These are daemon-owned, not
 swap-server RPCs: the SDK arms and reconciles the rows
 ([`sdk/swaps/recovery.go`](../sdk/swaps/recovery.go)), while the daemon owns the

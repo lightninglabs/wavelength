@@ -810,7 +810,7 @@ const file_mailbox_proto_rawDesc = "" +
 	"\x0eMailboxService\x129\n" +
 	"\x04Send\x12\x17.mailbox.v1.SendRequest\x1a\x18.mailbox.v1.SendResponse\x129\n" +
 	"\x04Pull\x12\x17.mailbox.v1.PullRequest\x1a\x18.mailbox.v1.PullResponse\x12B\n" +
-	"\aAckUpTo\x12\x1a.mailbox.v1.AckUpToRequest\x1a\x1b.mailbox.v1.AckUpToResponseB=Z;github.com/lightninglabs/darepo-client/mailbox/pb;mailboxpbb\x06proto3"
+	"\aAckUpTo\x12\x1a.mailbox.v1.AckUpToRequest\x1a\x1b.mailbox.v1.AckUpToResponseB:Z8github.com/lightninglabs/wavelength/mailbox/pb;mailboxpbb\x06proto3"
 
 var (
 	file_mailbox_proto_rawDescOnce sync.Once

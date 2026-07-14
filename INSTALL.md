@@ -1,7 +1,7 @@
-# Installing darepo-client
+# Installing wavelength
 
-This document covers everything needed to get `darepod` (the daemon) and
-`darepocli` (the CLI) built, installed, and running. For day-to-day daemon
+This document covers everything needed to get `waved` (the daemon) and
+`wavecli` (the CLI) built, installed, and running. For day-to-day daemon
 operation, configuration flags, and the full CLI reference, see
 [`docs/daemon_cli_guide.md`](docs/daemon_cli_guide.md).
 
@@ -36,48 +36,48 @@ export PATH="$(go env GOPATH)/bin:$PATH"
 ## TL;DR: Install With Wallet RPC (Recommended)
 
 ```bash
-git clone https://github.com/lightninglabs/darepo-client.git
-cd darepo-client
-make install-walletdkrpc
+git clone https://github.com/lightninglabs/wavelength.git
+cd wavelength
+make install-wavewalletrpc
 ```
 
-That single target builds and installs both `darepod` and `darepocli` to
-`$GOPATH/bin` with the optional `walletdkrpc` + `swapruntime` subsystems
+That single target builds and installs both `waved` and `wavecli` to
+`$GOPATH/bin` with the optional `wavewalletrpc` + `swapruntime` subsystems
 enabled. After it completes you have access to:
 
-- The top-level wallet verbs: `darepocli {create, unlock, balance, recv,
+- The top-level wallet verbs: `wavecli {create, unlock, balance, recv,
   send, activity, exit, mcp serve}`.
 - The Lightning swap subsystem (in-process swap FSM).
-- The full power-user surface: `darepocli ark *` and `darepocli dev *`.
+- The full power-user surface: `wavecli ark *` and `wavecli dev *`.
 - The MCP server for AI-agent integration.
 
 Confirm the install:
 
 ```bash
-which darepod darepocli
-darepod   --version
-darepocli --help
+which waved wavecli
+waved   --version
+wavecli --help
 ```
 
-If `darepocli balance` reports `daemon was not built with -tags walletdkrpc`,
+If `wavecli balance` reports `daemon was not built with -tags wavewalletrpc`,
 the binary on `PATH` came from a default build. Re-run
-`make install-walletdkrpc` and ensure `$GOPATH/bin` precedes any older copy.
+`make install-wavewalletrpc` and ensure `$GOPATH/bin` precedes any older copy.
 
 ---
 
 ## Build Variants
 
-`darepod` ships with optional subsystems gated behind Go build tags. Pick
+`waved` ships with optional subsystems gated behind Go build tags. Pick
 the variant that matches your needs.
 
 | Variant                          | Tags                       | Binaries                | When to use                                            |
 |----------------------------------|----------------------------|-------------------------|--------------------------------------------------------|
-| Core (default)                   | _(none)_                   | `darepod`, `darepocli`  | Headless Ark client; no swaps; power-user CLI only.    |
-| With Lightning swaps             | `swapruntime`              | `darepod`, `darepocli`  | Use Lightning-to-Ark / Ark-to-Lightning swaps.         |
-| With wallet RPC (recommended)    | `walletdkrpc swapruntime`  | `darepod`, `darepocli`  | Use the top-level wallet verbs and host-app SDK.       |
+| Core (default)                   | _(none)_                   | `waved`, `wavecli`  | Headless Ark client; no swaps; power-user CLI only.    |
+| With Lightning swaps             | `swapruntime`              | `waved`, `wavecli`  | Use Lightning-to-Ark / Ark-to-Lightning swaps.         |
+| With wallet RPC (recommended)    | `wavewalletrpc swapruntime`  | `waved`, `wavecli`  | Use the top-level wallet verbs and host-app SDK.       |
 
-`walletdkrpc` is a strict superset of `swapruntime`; you cannot enable
-`walletdkrpc` without `swapruntime` (the combination is enforced at compile
+`wavewalletrpc` is a strict superset of `swapruntime`; you cannot enable
+`wavewalletrpc` without `swapruntime` (the combination is enforced at compile
 time).
 
 ### Local debug builds (output to `./bin/`)
@@ -85,24 +85,24 @@ time).
 ```bash
 make build                       # core
 make build-swapruntime           # + swap subsystem
-make build-walletdkrpc             # + walletdkrpc and swap subsystem  (recommended)
+make build-wavewalletrpc             # + wavewalletrpc and swap subsystem  (recommended)
 ```
 
 After any of these, the binaries are at:
 
-- `./bin/darepod`
-- `./bin/darepocli`
+- `./bin/waved`
+- `./bin/wavecli`
 
 ### Install to `$GOPATH/bin`
 
 ```bash
 make install                     # core
 make install-swapruntime         # + swap subsystem
-make install-walletdkrpc           # + walletdkrpc and swap subsystem  (recommended)
+make install-wavewalletrpc           # + wavewalletrpc and swap subsystem  (recommended)
 ```
 
 For more on what each tag turns on, see
-[`docs/walletdkrpc_build.md`](docs/walletdkrpc_build.md).
+[`docs/wavewalletrpc_build.md`](docs/wavewalletrpc_build.md).
 
 ---
 
@@ -112,8 +112,8 @@ If you want the long form (e.g. for CI or reproducible-build setups):
 
 ```bash
 # 1. Clone.
-git clone https://github.com/lightninglabs/darepo-client.git
-cd darepo-client
+git clone https://github.com/lightninglabs/wavelength.git
+cd wavelength
 
 # 2. Verify Go version (1.25.5+).
 go version
@@ -122,22 +122,22 @@ go version
 #    workspace (see docs/go_workspace.md); this is normally automatic.
 go mod download
 
-# 4. Build the recommended (walletdkrpc) variant into ./bin.
-make build-walletdkrpc
+# 4. Build the recommended (wavewalletrpc) variant into ./bin.
+make build-wavewalletrpc
 
 # 5. Or install the same variant to $GOPATH/bin.
-make install-walletdkrpc
+make install-wavewalletrpc
 
 # 6. Confirm the binaries.
-./bin/darepod   --help
-./bin/darepocli --help
+./bin/waved   --help
+./bin/wavecli --help
 ```
 
 ---
 
 ## Backend Prerequisites
 
-`darepod` supports three wallet/chain backends, selected at runtime via
+`waved` supports three wallet/chain backends, selected at runtime via
 `--wallet.type`. Each has its own external dependencies.
 
 ### `lwwallet` (default, standalone)
@@ -146,7 +146,7 @@ Lightweight in-process wallet backed by an Esplora REST endpoint. No
 external Bitcoin node or lnd required.
 
 ```bash
-darepod \
+waved \
   --network=regtest \
   --wallet.type=lwwallet \
   --wallet.esploraurl=http://localhost:3000
@@ -164,7 +164,7 @@ In-process btcwallet using Neutrino compact block filters. No external
 node required, but initial sync downloads block/filter headers.
 
 ```bash
-darepod \
+waved \
   --network=signet \
   --wallet.type=btcwallet \
   --wallet.feeurl=https://mempool.space/signet/api/v1/fees/recommended
@@ -180,7 +180,7 @@ Uses an existing lnd node for signing and chain access. The node must be
 reachable over gRPC with a TLS cert and admin macaroon.
 
 ```bash
-darepod \
+waved \
   --wallet.type=lnd \
   --lnd.host=localhost:10009 \
   --lnd.tlspath=~/.lnd/tls.cert \
@@ -194,35 +194,35 @@ darepod \
 After starting the daemon, the wallet must be created and unlocked before
 any operation can proceed.
 
-`darepocli` authenticates to the daemon over TLS with the daemon's admin
-macaroon, both derived from `--datadir` / `--network` (defaults `~/.darepod`
+`wavecli` authenticates to the daemon over TLS with the daemon's admin
+macaroon, both derived from `--datadir` / `--network` (defaults `~/.waved`
 and `mainnet`). Match those to your daemon, or use `--no-tls --no-macaroons`
 for a local plaintext daemon (a macaroon can't ride an unencrypted connection,
 so `--no-tls` alone fails). Set it once via an alias — the commands below use
-`da`:
+`wave`:
 
 ```bash
 # Pick the one that matches your daemon:
 #   regtest, plaintext:
-#     alias da='darepocli --no-tls --no-macaroons --network=regtest'
-#   signet under ~/.darepod-signet, TLS:
-alias da='darepocli --network=signet --datadir=~/.darepod-signet'
+#     alias wave='wavecli --no-tls --no-macaroons --network=regtest'
+#   signet under ~/.waved-signet, TLS:
+alias wave='wavecli --network=signet --datadir=~/.waved-signet'
 ```
 
-With a `walletdkrpc`-enabled build (`make install-walletdkrpc`):
+With a `wavewalletrpc`-enabled build (`make install-wavewalletrpc`):
 
 ```bash
 # Create a wallet (prints the seed mnemonic on stderr; write it down!).
-DAREPOD_WALLET_PASSWORD=your_password da create
+WAVED_WALLET_PASSWORD=your_password wave create
 
 # Unlock the wallet after every restart.
-DAREPOD_WALLET_PASSWORD=your_password da unlock
+WAVED_WALLET_PASSWORD=your_password wave unlock
 ```
 
 To skip manual unlock entirely, pass `--wallet.password_file=/path/to/file`
-to `darepod` at startup; the daemon will auto-unlock from the file.
+to `waved` at startup; the daemon will auto-unlock from the file.
 
-Without `walletdkrpc`, the only supported path is the password-file auto-unlock
+Without `wavewalletrpc`, the only supported path is the password-file auto-unlock
 above. The `create` / `unlock` CLI commands are not present in the default
 build. Full password-handling rules:
 [`docs/daemon_cli_guide.md`](docs/daemon_cli_guide.md#password-handling).
@@ -231,26 +231,26 @@ build. Full password-handling rules:
 
 ## Verifying the Install
 
-Using the `da` alias from the previous section:
+Using the `wave` alias from the previous section:
 
 ```bash
 # 1. Daemon answers basic status.
-da getinfo
+wave getinfo
 
-# 2. (walletdkrpc only) wallet verbs work.
-da balance
-da activity
+# 2. (wavewalletrpc only) wallet verbs work.
+wave balance
+wave activity
 
 # VTXO inventory lives under the ark subtree (available in every build).
-da ark vtxos list
+wave ark vtxos list
 
 # 3. Schema dump (useful for tooling and AI agents).
-da schema
+wave schema
 ```
 
-If you see `daemon was not built with -tags walletdkrpc` for the wallet
-verbs, your `darepod` binary is the default (untagged) build. Reinstall
-with `make install-walletdkrpc`.
+If you see `daemon was not built with -tags wavewalletrpc` for the wallet
+verbs, your `waved` binary is the default (untagged) build. Reinstall
+with `make install-wavewalletrpc`.
 
 ---
 
@@ -260,7 +260,7 @@ Pull the latest source and reinstall the same variant you previously used:
 
 ```bash
 git pull --rebase
-make install-walletdkrpc       # or whichever variant you run
+make install-wavewalletrpc       # or whichever variant you run
 ```
 
 ---
@@ -268,15 +268,15 @@ make install-walletdkrpc       # or whichever variant you run
 ## Uninstalling
 
 ```bash
-rm "$(go env GOPATH)/bin/darepod"
-rm "$(go env GOPATH)/bin/darepocli"
+rm "$(go env GOPATH)/bin/waved"
+rm "$(go env GOPATH)/bin/wavecli"
 # (Optional) wipe daemon state. This destroys the wallet seed!
-# rm -rf ~/.darepod
+# rm -rf ~/.waved
 ```
 
 The wallet key material lives in the wallet database under
-`~/.darepod/<network>/`, encrypted with your wallet password.
-Deleting `~/.darepod` is irreversible without the recorded mnemonic.
+`~/.waved/<network>/`, encrypted with your wallet password.
+Deleting `~/.waved` is irreversible without the recorded mnemonic.
 
 ---
 
@@ -284,10 +284,10 @@ Deleting `~/.darepod` is irreversible without the recorded mnemonic.
 
 | Symptom                                                | Fix                                                                                  |
 |--------------------------------------------------------|--------------------------------------------------------------------------------------|
-| `daemon was not built with -tags walletdkrpc`            | Reinstall with `make install-walletdkrpc`.                                             |
-| `connection refused` on `darepocli`                    | Daemon not running, or wrong `--rpcserver` address.                                  |
-| `wallet not ready`                                     | Run `darepocli unlock` (walletdkrpc), or restart `darepod` with `--wallet.password_file`. |
-| `wallet already exists`                                | Use `darepocli unlock` instead of `create`.                                          |
+| `daemon was not built with -tags wavewalletrpc`            | Reinstall with `make install-wavewalletrpc`.                                             |
+| `connection refused` on `wavecli`                    | Daemon not running, or wrong `--rpcserver` address.                                  |
+| `wallet not ready`                                     | Run `wavecli unlock` (wavewalletrpc), or restart `waved` with `--wallet.password_file`. |
+| `wallet already exists`                                | Use `wavecli unlock` instead of `create`.                                          |
 | `read macaroon: ... no such file`                      | CLI is looking under the wrong data dir/network; pass `--datadir` / `--network` to match the daemon (or `--macaroonpath`). |
 | `credentials require transport level security`         | A macaroon can't ride a plaintext connection; use TLS, or add `--no-macaroons` alongside `--no-tls`. |
 | TLS / x509 errors against the daemon                   | Point `--datadir` / `--network` at the daemon's cert, pass `--tlscertpath`, or use `--no-tls --no-macaroons` on regtest. |
@@ -302,8 +302,8 @@ Deeper troubleshooting (per-flag and per-backend) is in
 ## Next Steps
 
 - **Run the daemon:** [`docs/daemon_cli_guide.md`](docs/daemon_cli_guide.md)
-- **Build-tag deep dive:** [`docs/walletdkrpc_build.md`](docs/walletdkrpc_build.md)
-- **Embed the daemon in a host app:** [`docs/walletdk_integration.md`](docs/walletdk_integration.md)
+- **Build-tag deep dive:** [`docs/wavewalletrpc_build.md`](docs/wavewalletrpc_build.md)
+- **Embed the daemon in a host app:** [`docs/wavewalletdk_integration.md`](docs/wavewalletdk_integration.md)
 - **Codebase map:** [`ARCHITECTURE.md`](ARCHITECTURE.md)
 - **Contribute:** style guide and pre-commit checklist in
   [`docs/development_guidelines.md`](docs/development_guidelines.md) and

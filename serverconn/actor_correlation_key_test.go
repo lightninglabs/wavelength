@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lightninglabs/darepo-client/baselib/actor"
-	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
+	"github.com/lightninglabs/wavelength/baselib/actor"
+	mailboxrpc "github.com/lightninglabs/wavelength/mailbox/rpc"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"

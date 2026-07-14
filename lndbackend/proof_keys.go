@@ -4,14 +4,14 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/lightninglabs/darepo-client/indexer"
-	"github.com/lightninglabs/darepo-client/proofkeys"
 	"github.com/lightninglabs/lndclient"
+	"github.com/lightninglabs/wavelength/indexer"
+	"github.com/lightninglabs/wavelength/proofkeys"
 	"github.com/lightningnetwork/lnd/keychain"
 )
 
 // ProofKeyBackend adapts lnd's wallet and signer RPCs to the shared proof key
-// capability used by darepod.
+// capability used by waved.
 type ProofKeyBackend struct {
 	walletKit lndclient.WalletKitClient
 	signer    lndclient.SignerClient

@@ -10,9 +10,9 @@ import (
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/lightninglabs/darepo-client/db/sqlc"
-	"github.com/lightninglabs/darepo-client/lib/tx/arktx"
-	"github.com/lightninglabs/darepo-client/wallet"
+	"github.com/lightninglabs/wavelength/db/sqlc"
+	"github.com/lightninglabs/wavelength/lib/tx/arktx"
+	"github.com/lightninglabs/wavelength/wallet"
 )
 
 // Aggregate sweep / sweep-input lifecycle constants and the persisted

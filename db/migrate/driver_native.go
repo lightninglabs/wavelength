@@ -9,7 +9,7 @@ import (
 	"github.com/golang-migrate/migrate/v4/database"
 	postgresmigrate "github.com/golang-migrate/migrate/v4/database/postgres"
 	sqlitemigrate "github.com/golang-migrate/migrate/v4/database/sqlite"
-	"github.com/lightninglabs/darepo-client/db/sqlc"
+	"github.com/lightninglabs/wavelength/db/sqlc"
 )
 
 // newMigrationDriver creates a native migration driver for the given backend.

@@ -1,4 +1,4 @@
-//go:build walletdkrpc && swapruntime
+//go:build wavewalletrpc && swapruntime
 
 package swapwallet
 
@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lightninglabs/darepo-client/rpc/swapclientrpc"
-	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"github.com/stretchr/testify/require"
 )
 
@@ -58,7 +58,7 @@ func (f *streamingFakeSwap) SubscribeSwaps(
 
 // drainOne pulls the next emitted WalletEntry from a subscriber channel
 // within the test deadline.
-func drainOne(t *testing.T, sub *subscriber) *walletdkrpc.WalletEntry {
+func drainOne(t *testing.T, sub *subscriber) *wavewalletrpc.WalletEntry {
 	t.Helper()
 	select {
 	case u, ok := <-sub.ch:
@@ -95,7 +95,7 @@ func TestMonitorLoopFansOutSwapUpdates(t *testing.T) {
 	entry := drainOne(t, sub)
 	require.Equal(t, "abc", entry.GetId())
 	require.Equal(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
 		entry.GetStatus(),
 	)
 }
@@ -125,7 +125,7 @@ func TestMonitorLoopLeavesSwapPendingToFSM(t *testing.T) {
 			"projection",
 	)
 	require.Equal(
-		t, walletdkrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
+		t, wavewalletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
 		entry.GetKind(),
 	)
 
@@ -149,7 +149,7 @@ func TestMonitorLoopClearsPendingOnTerminal(t *testing.T) {
 	defer r.stop()
 
 	r.trackPending(
-		"to-complete", walletdkrpc.EntryKind_ENTRY_KIND_SEND,
+		"to-complete", wavewalletrpc.EntryKind_ENTRY_KIND_SEND,
 		time.Now(),
 	)
 
@@ -320,12 +320,12 @@ func TestMonitorLoopTerminalStatusBeatsStaleOverlay(t *testing.T) {
 	// with a stale "timed_out" overlay written by an earlier deadline
 	// tick.
 	r.trackPending(
-		"hash-late", walletdkrpc.EntryKind_ENTRY_KIND_SEND,
+		"hash-late", wavewalletrpc.EntryKind_ENTRY_KIND_SEND,
 		time.Now().Add(-time.Hour),
 	)
 	r.pendingMu.Lock()
 	r.overlay["hash-late"] = overlayStatus{
-		status:        walletdkrpc.EntryStatus_ENTRY_STATUS_FAILED,
+		status:        wavewalletrpc.EntryStatus_ENTRY_STATUS_FAILED,
 		failureReason: "timed_out",
 	}
 	r.pendingMu.Unlock()
@@ -342,7 +342,7 @@ func TestMonitorLoopTerminalStatusBeatsStaleOverlay(t *testing.T) {
 
 	got := drainOne(t, sub)
 	require.Equal(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
 		got.GetStatus(),
 		"terminal source status must beat the stale FAILED overlay",
 	)
@@ -373,12 +373,12 @@ func TestMonitorLoopPendingSwapBeatsStaleOverlay(t *testing.T) {
 	defer r.stop()
 
 	r.trackPending(
-		"hash-stuck", walletdkrpc.EntryKind_ENTRY_KIND_SEND,
+		"hash-stuck", wavewalletrpc.EntryKind_ENTRY_KIND_SEND,
 		time.Now().Add(-time.Hour),
 	)
 	r.pendingMu.Lock()
 	r.overlay["hash-stuck"] = overlayStatus{
-		status:        walletdkrpc.EntryStatus_ENTRY_STATUS_FAILED,
+		status:        wavewalletrpc.EntryStatus_ENTRY_STATUS_FAILED,
 		failureReason: "timed_out",
 	}
 	r.pendingMu.Unlock()
@@ -394,13 +394,14 @@ func TestMonitorLoopPendingSwapBeatsStaleOverlay(t *testing.T) {
 
 	got := drainOne(t, sub)
 	require.Equal(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
 		got.GetStatus(),
 		"swap source status must beat a stale wallet timeout overlay",
 	)
 	require.Empty(t, got.GetFailureReason())
 	require.Equal(
-		t, walletdkrpc.EntryKind_ENTRY_KIND_UNSPECIFIED, got.GetKind(),
+		t, wavewalletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
+		got.GetKind(),
 	)
 
 	r.pendingMu.Lock()

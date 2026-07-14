@@ -5,8 +5,8 @@ import (
 	"encoding/binary"
 	"time"
 
-	mailboxconn "github.com/lightninglabs/darepo-client/mailbox/conn"
-	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
+	mailboxconn "github.com/lightninglabs/wavelength/mailbox/conn"
+	mailboxpb "github.com/lightninglabs/wavelength/mailbox/pb"
 )
 
 const (

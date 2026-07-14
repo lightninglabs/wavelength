@@ -1,4 +1,4 @@
-//go:build walletdkrpc && swapruntime
+//go:build wavewalletrpc && swapruntime
 
 package swapwallet
 
@@ -9,7 +9,7 @@ import "errors"
 var (
 	// ErrSwapBackendUnavailable is returned when the underlying swap
 	// subserver did not publish its backend handle on cfg.Swap.Backend
-	// during Register. The walletdkrpc subserver cannot function without
+	// during Register. The wavewalletrpc subserver cannot function without
 	// it, so all wallet RPCs fail with this error until the backend is
 	// installed (typically a misconfiguration of registrar ordering).
 	ErrSwapBackendUnavailable = errors.New("swap backend handle is " +

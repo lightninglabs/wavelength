@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/lightninglabs/darepo-client/db/sqlc"
+	"github.com/lightninglabs/wavelength/db/sqlc"
 	"github.com/lightningnetwork/lnd/clock"
 )
 
@@ -58,7 +58,7 @@ const (
 	// operator's perspective and is safe to roll back to live. It is a
 	// separate status from UnilateralExitJobStatusFailed (which implies
 	// the exit has begun on-chain) so boot-time reconciliation can decide
-	// whether to recover the VTXO (darepo-client#602).
+	// whether to recover the VTXO (wavelength#602).
 	UnilateralExitJobStatusFailedRecoverable
 )
 
@@ -314,7 +314,7 @@ func (s *UnilateralExitPersistenceStore) MarkJobTerminal(ctx context.Context,
 // address is stable across daemon restarts because it is keyed by the target
 // VTXO outpoint, so polling an exit plan (or restarting the daemon) always
 // hands the user back the same address rather than demanding a fresh deposit
-// for the same VTXO (darepo-client#893).
+// for the same VTXO (wavelength#893).
 //
 // Derivation happens outside the DB transaction on purpose: newAddress reaches
 // into the backing wallet, which must not run under an open SQL write tx. The

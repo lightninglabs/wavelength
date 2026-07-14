@@ -1,4 +1,4 @@
-//go:build walletdkrpc && swapruntime
+//go:build wavewalletrpc && swapruntime
 
 package swapwallet
 
@@ -9,7 +9,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/daemonrpc"
+	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/stretchr/testify/require"
 )
 
@@ -23,9 +23,9 @@ func TestCheckReceiveLimits(t *testing.T) {
 		maxBal  = uint64(10_000_000)
 	)
 
-	serverInfo := func(maxV, maxB uint64) *daemonrpc.GetInfoResponse {
-		return &daemonrpc.GetInfoResponse{
-			ServerInfo: &daemonrpc.ServerInfo{
+	serverInfo := func(maxV, maxB uint64) *waverpc.GetInfoResponse {
+		return &waverpc.GetInfoResponse{
+			ServerInfo: &waverpc.ServerInfo{
 				MaxVtxoAmount:  maxV,
 				MaxUserBalance: maxB,
 			},
@@ -36,9 +36,9 @@ func TestCheckReceiveLimits(t *testing.T) {
 
 	tests := []struct {
 		name       string
-		info       *daemonrpc.GetInfoResponse
+		info       *waverpc.GetInfoResponse
 		infoErr    error
-		balance    *daemonrpc.GetBalanceResponse
+		balance    *waverpc.GetBalanceResponse
 		balanceErr error
 		amt        btcutil.Amount
 		wantErr    error
@@ -46,18 +46,18 @@ func TestCheckReceiveLimits(t *testing.T) {
 		// A daemon that has not fetched operator terms yet skips
 		// the checks rather than failing closed.
 		name: "no server info",
-		info: &daemonrpc.GetInfoResponse{},
+		info: &waverpc.GetInfoResponse{},
 		amt:  1_000_000_000,
 	}, {
 		// Zero-valued limits mean the operator advertises no caps.
 		name:    "limits disabled",
 		info:    serverInfo(0, 0),
-		balance: &daemonrpc.GetBalanceResponse{},
+		balance: &waverpc.GetBalanceResponse{},
 		amt:     1_000_000_000,
 	}, {
 		name:    "within limits",
 		info:    serverInfo(maxVTXO, maxBal),
-		balance: &daemonrpc.GetBalanceResponse{},
+		balance: &waverpc.GetBalanceResponse{},
 		amt:     5_000_000,
 	}, {
 		// A Lightning receive settles into a single VTXO, so the
@@ -71,7 +71,7 @@ func TestCheckReceiveLimits(t *testing.T) {
 		// balance cap.
 		name: "exceeds balance cap",
 		info: serverInfo(maxVTXO, maxBal),
-		balance: &daemonrpc.GetBalanceResponse{
+		balance: &waverpc.GetBalanceResponse{
 			VtxoBalanceSat:         4_000_000,
 			BoardingConfirmedSat:   2_000_000,
 			BoardingUnconfirmedSat: 1_000_000,
@@ -83,7 +83,7 @@ func TestCheckReceiveLimits(t *testing.T) {
 		// Exactly filling the cap is allowed.
 		name: "exactly at cap",
 		info: serverInfo(maxVTXO, maxBal),
-		balance: &daemonrpc.GetBalanceResponse{
+		balance: &waverpc.GetBalanceResponse{
 			VtxoBalanceSat: 4_000_000,
 		},
 		amt: 6_000_000,

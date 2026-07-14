@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btcd/chainhash/v2"
-	clientdb "github.com/lightninglabs/darepo-client/db"
+	clientdb "github.com/lightninglabs/wavelength/db"
 	"github.com/stretchr/testify/require"
 )
 
