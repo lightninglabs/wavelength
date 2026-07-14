@@ -31,11 +31,11 @@ docker run --rm waved:local \
 
 ## Running with Full Stack
 
-The server repo (`darepo`) includes a `docker-compose.yml` that orchestrates
-the complete environment: bitcoind + 2x lnd + arkd + waved.
+The server repo (`wavelength`) includes a `docker-compose.yml` that
+orchestrates the complete environment: bitcoind + 2x lnd + arkd + waved.
 
 ```bash
-# From the darepo (server) repo root:
+# From the wavelength (server) repo root:
 docker-compose up -d --build
 ./scripts/docker-regtest-setup.sh
 ```
