@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 )
@@ -52,7 +53,99 @@ func (d *Descriptor) EffectivePkScript() ([]byte, error) {
 		return nil, err
 	}
 
-	return template.PkScript()
+	if d.TaprootAssetRoot == nil {
+		return template.PkScript()
+	}
+
+	compiled, err := template.Compile()
+	if err != nil {
+		return nil, fmt.Errorf("compile VTXO policy: %w", err)
+	}
+
+	composed, err := arkscript.ComposeWithSiblingRoot(
+		compiled, *d.TaprootAssetRoot,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("compose Taproot Asset root: %w", err)
+	}
+
+	pkScript, err := txscript.PayToTaprootScript(composed.OutputKey())
+	if err != nil {
+		return nil, fmt.Errorf("derive composed VTXO pkscript: %w", err)
+	}
+
+	return pkScript, nil
+}
+
+// EffectiveStandardSpendInfo derives a standard Ark policy spend path and
+// extends its control block with the Taproot Asset root when this descriptor
+// represents an asset-bearing VTXO.
+func (d *Descriptor) EffectiveStandardSpendInfo(leafIndex int) (
+	*arkscript.SpendInfo, error) {
+
+	if d == nil {
+		return nil, fmt.Errorf("descriptor must be provided")
+	}
+
+	ownerKey := d.ClientKey.PubKey
+	operatorKey := d.OperatorKey
+	exitDelay := d.RelativeExpiry
+	if len(d.PolicyTemplate) > 0 {
+		params, err := d.DecodeStandardPolicyTemplate()
+		if err != nil {
+			return nil, err
+		}
+
+		ownerKey = params.OwnerKey
+		operatorKey = params.OperatorKey
+		exitDelay = params.ExitDelay
+	}
+
+	if ownerKey == nil || operatorKey == nil || exitDelay == 0 {
+		return nil, fmt.Errorf("standard VTXO policy parameters must " +
+			"be provided")
+	}
+
+	policy, err := arkscript.NewVTXOPolicy(
+		ownerKey, operatorKey, exitDelay,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("build standard VTXO policy: %w", err)
+	}
+
+	var spendInfo *arkscript.SpendInfo
+	switch leafIndex {
+	case 0:
+		spendInfo, err = policy.CollabSpendInfo()
+
+	case 1:
+		spendInfo, err = policy.ExitSpendInfo()
+
+	default:
+		return nil, fmt.Errorf("standard VTXO leaf index %d out "+
+			"of range", leafIndex)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	if d.TaprootAssetRoot == nil {
+		return spendInfo, nil
+	}
+
+	composed, err := arkscript.ComposeWithSiblingRoot(
+		policy.CompiledPolicy, *d.TaprootAssetRoot,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("compose Taproot Asset root: %w", err)
+	}
+
+	canonicalIndex := policy.ScriptIndex(spendInfo.WitnessScript)
+	if canonicalIndex < 0 {
+		return nil, fmt.Errorf("standard VTXO spend leaf not found")
+	}
+
+	return composed.SpendInfo(canonicalIndex)
 }
 
 // DecodeStandardPolicyTemplate extracts the standard VTXO parameters when this

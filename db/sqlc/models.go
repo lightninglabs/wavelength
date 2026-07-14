@@ -448,6 +448,7 @@ type Vtxo struct {
 	LastUpdateTime      int64
 	ChainDepth          int32
 	ConstructionVersion int32
+	TaprootAssetRoot    []byte
 }
 
 type VtxoAncestryPath struct {

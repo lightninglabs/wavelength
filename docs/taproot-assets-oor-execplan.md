@@ -41,6 +41,10 @@ transition, persist both layers, and only then request Ark signatures.
   packages survive start-message and snapshot restore before signing.
 - [ ] Thread asset metadata through incoming recipient materialization without
   breaking Bitcoin-only V1 sessions.
+- [x] (2026-07-15 01:35Z) Persisted the optional asset root on VTXO
+  descriptors, excluded asset rows from generic Bitcoin coin selection, and
+  made OOR signing, forfeit signing, and unilateral timeout exits derive the
+  composed control block.
 - [ ] Expose the smallest daemon/SDK surface needed by swapd to submit the
   prepared transfer.
 - [ ] Add unit, codec, FSM, transport, tamper, and restart tests; run changed
@@ -70,6 +74,12 @@ transition, persist both layers, and only then request Ark signatures.
   are absent at v0.26. Evidence: adding tap-sdk commit `932b4aa` and compiling
   the adapter failed during package loading; the exact reproduction is filed
   as `lightninglabs/tap-sdk#163`.
+- Observation: the first SDK-neutral sender slice derived composed spend paths
+  on `TransferInput`, but the production checkpoint signer still rebuilt the
+  historical Bitcoin-only control block from `Descriptor.TapScript`.
+  Evidence: the new asset-signing regression failed until checkpoint signing,
+  forfeit signing, and timeout exit were routed through root-aware spend-info
+  derivation.
 
 ## Decision Log
 
@@ -97,6 +107,11 @@ transition, persist both layers, and only then request Ark signatures.
   Rationale: Wavelength, lnd, btcwallet, and taproot-assets already consume the
   v0.26 generation, so a downgrade would turn a visible integration blocker
   into broad dependency risk. Date/Author: 2026-07-15 / Codex.
+- Decision: persist the 32-byte asset root directly on each VTXO and exclude
+  such VTXOs from generic Bitcoin coin selection. Rationale: the root is
+  required to reconstruct every future control block, while ordinary rounds
+  do not yet carry an asset state transition and must not accidentally consume
+  an asset-bearing output. Date/Author: 2026-07-15 / Codex.
 
 ## Outcomes & Retrospective
 
@@ -104,9 +119,11 @@ Implementation is in progress. The SDK-neutral package/root, typed transport,
 and prepared-FSM milestones pass `go test ./lib/tx/oor ./rpc/oorpb ./oor` and
 changed-code lint. Prepared sessions prove that Ark signing is the first FSM
 effect and that submit retries restore the same sealed packages and canonical
-recipients. The first confirmed upstream gap is `lightninglabs/tap-sdk#163`;
-this section will record the remaining test evidence and any further
-tapd/tap-sdk gaps.
+recipients. VTXO persistence now retains the asset root, generic selection
+skips asset-bearing rows, and regression tests cover composed checkpoint,
+forfeit, and timeout control blocks. The first confirmed upstream gap is
+`lightninglabs/tap-sdk#163`; this section will record the remaining test
+evidence and any further tapd/tap-sdk gaps.
 
 ## Context and Orientation
 
@@ -250,4 +267,5 @@ network I/O at the orchestration boundary and makes durable actor replay
 independent of tapd availability.
 
 Revision note (2026-07-15): updated after the first SDK-neutral root/container
-milestone and the tap-sdk dependency compatibility reproduction.
+milestone, the tap-sdk dependency compatibility reproduction, and the durable
+asset-bearing VTXO/spend-path milestone.

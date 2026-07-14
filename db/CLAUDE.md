@@ -222,6 +222,8 @@ when adding one.
   later checkpoint must not clear what an earlier one recorded. Rows
   predating the column read back zero, which the confirmation path treats
   as "unknown" and leaves the expiry unstamped rather than wrong.
+- `000017_taproot_asset_vtxos` — optional Taproot Asset commitment root on
+  VTXO descriptors; generic Bitcoin coin selection excludes these rows.
 
 ## Deep Docs
 
