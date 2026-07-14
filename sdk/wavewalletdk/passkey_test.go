@@ -154,12 +154,12 @@ func TestDeriveSeedAndPasswordGoldenVector(t *testing.T) {
 	entropy, dbPassword := deriveSeedAndPassword(prf)
 
 	require.Equal(
-		t, "6ad5679bd637393ebe56c19abf44756a",
+		t, "66309e5d3b5083a0f1c32aceb2244468",
 		hex.EncodeToString(entropy[:]),
 	)
 	require.Equal(
-		t, "d9fc4929726454ad8c70c6d38c8d2c96dd93573c6c8822050b0f31bc"+
-			"5954f8ae", string(dbPassword),
+		t, "477c5bd959ac98cc9c9d1cb43c6750dd3c3733bd6085597934d958db"+
+			"f64adbb2", string(dbPassword),
 	)
 }
 

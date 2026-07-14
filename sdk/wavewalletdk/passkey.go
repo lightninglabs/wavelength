@@ -12,14 +12,14 @@ import (
 )
 
 // hkdfSeedInfo and hkdfDBKeyInfo domain-separate the two secrets pulled from
-// one PRF output. These are wire-compatible derivation tags, not a display
-// name: changing them would change the derived seed/password for every
-// passkey-backed wallet already in the field, so they intentionally keep
-// the pre-rename "walletdk" spelling rather than following the
-// wavewalletdk package rename.
+// one PRF output. These are derivation tags baked into the wavewalletdk
+// rename: bumping them intentionally changes the derived seed/password for
+// every passkey-backed wallet, so any wallet created under the old
+// "walletdk" tags must be re-imported from its mnemonic rather than
+// unlocked via passkey after this change.
 const (
-	hkdfSeedInfo  = "walletdk:seed:v1"
-	hkdfDBKeyInfo = "walletdk:dbpw:v1"
+	hkdfSeedInfo  = "wavewalletdk:seed:v1"
+	hkdfDBKeyInfo = "wavewalletdk:dbpw:v1"
 )
 
 // OpenWalletFromPasskey derives a reproducible wallet from a passkey's PRF
