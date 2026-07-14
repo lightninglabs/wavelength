@@ -32,7 +32,6 @@ var testPgFixtureSem = make(chan struct{}, testPgFixtureParallelism)
 // TestPgFixture is a test fixture that starts a Postgres 15 instance in a
 // docker container.
 type TestPgFixture struct {
-	db       *sql.DB
 	pool     *dockertest.Pool
 	resource *dockertest.Resource
 	host     string
@@ -104,19 +103,19 @@ func NewTestPgFixture(t testing.TB, expiry time.Duration,
 	// might not be ready to accept connections yet.
 	pool.MaxWait = 120 * time.Second
 
-	var testDB *sql.DB
-	err = pool.Retry(func() error {
-		testDB, err = sql.Open("postgres", databaseURL)
-		if err != nil {
-			return err
-		}
+	// Keep one readiness pool for the full retry window. Opening a new pool
+	// on every attempt leaves the replaced pools and their connection
+	// opener goroutines alive for the rest of the test process.
+	testDB, err := sql.Open("postgres", databaseURL)
+	require.NoError(t, err)
+	defer func() {
+		_ = testDB.Close()
+	}()
 
-		return testDB.Ping()
-	})
+	err = pool.Retry(testDB.Ping)
 	require.NoError(t, err, "Could not connect to docker")
 
 	// Now fill in the rest of the fixture.
-	fixture.db = testDB
 	fixture.pool = pool
 	fixture.resource = resource
 
