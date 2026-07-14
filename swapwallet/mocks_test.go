@@ -46,6 +46,8 @@ type fakeRPCServer struct {
 	newWalletAddressErr  error
 	listWalletUnspent    []*wallet.Utxo
 	listWalletUnspentErr error
+	activeBoardingAddrs  []string
+	activeBoardingErr    error
 
 	genSeedResp     *daemonrpc.GenSeedResponse
 	genSeedErr      error
@@ -191,6 +193,18 @@ func (f *fakeRPCServer) NewWalletAddress(_ context.Context) (string, error) {
 }
 
 func (f *fakeRPCServer) ListWalletUnspent(_ context.Context, _ int32, _ int32) (
+	[]*wallet.Utxo, error) {
+
+	return f.listWalletUnspent, f.listWalletUnspentErr
+}
+
+func (f *fakeRPCServer) ListActiveBoardingAddresses(_ context.Context) (
+	[]string, error) {
+
+	return f.activeBoardingAddrs, f.activeBoardingErr
+}
+
+func (f *fakeRPCServer) ListUnconfirmedBoardingUTXOs(_ context.Context) (
 	[]*wallet.Utxo, error) {
 
 	return f.listWalletUnspent, f.listWalletUnspentErr

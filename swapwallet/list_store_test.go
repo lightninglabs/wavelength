@@ -3,13 +3,22 @@
 package swapwallet
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"testing"
 
+	btcaddr "github.com/btcsuite/btcd/address/v2"
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
+	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/btcsuite/btcd/chaincfg/v2"
+	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/db"
 	"github.com/lightninglabs/darepo-client/rpc/walletdkrpc"
+	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/lightningnetwork/lnd/clock"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -32,6 +41,66 @@ func newStoreListFixture(t *testing.T) (*history,
 	t.Cleanup(runtime.stop)
 
 	return newHistory(deps, runtime), store
+}
+
+// TestListActivityPendingBoardingUsesStableDepositID verifies the live
+// zero-conf overlay adopts the same address-scoped id that Deposit returns and
+// the confirmed ledger projection later uses.
+func TestListActivityPendingBoardingUsesStableDepositID(t *testing.T) {
+	t.Parallel()
+
+	h, store := newStoreListFixture(t)
+	_, pubKey := btcec.PrivKeyFromBytes(bytes.Repeat([]byte{0x01}, 32))
+	address, err := btcaddr.NewAddressTaproot(
+		schnorr.SerializePubKey(pubKey), &chaincfg.RegressionNetParams,
+	)
+	require.NoError(t, err)
+	pkScript, err := txscript.PayToAddrScript(address)
+	require.NoError(t, err)
+
+	h.deps.ChainParams = &chaincfg.RegressionNetParams
+	rpc := &fakeRPCServer{
+		getBalanceResp: &daemonrpc.GetBalanceResponse{
+			BoardingUnconfirmedSat: 12_345,
+		},
+		activeBoardingAddrs: []string{
+			address.String(),
+		},
+		listWalletUnspent: []*wallet.Utxo{{
+			PkScript:      pkScript,
+			Amount:        btcutil.Amount(12_345),
+			Confirmations: 0,
+		}},
+	}
+	h.deps.RPCServer = rpc
+
+	page, err := h.listActivity(t.Context(), &walletdkrpc.ListRequest{
+		Limit: 10,
+	})
+	require.NoError(t, err)
+	require.Len(t, page.GetEntries(), 1)
+	entry := page.GetEntries()[0]
+	require.Equal(t, "deposit-"+address.String(), entry.GetId())
+	require.Equal(
+		t, address.String(),
+		entry.GetRequest().GetOnchainAddress().GetAddress(),
+	)
+
+	// Once confirmation removes the live zero-conf balance, the durable
+	// ledger projection takes over under exactly the same canonical id.
+	rpc.getBalanceResp.BoardingUnconfirmedSat = 0
+	stableID := "deposit-" + address.String()
+	seedActivity(
+		t, store, stableID, walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT,
+		walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING, 123,
+	)
+	confirmed, err := h.listActivity(
+		t.Context(), &walletdkrpc.ListRequest{
+			Limit: 10,
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, []string{stableID}, activityIDs(confirmed))
 }
 
 // seedActivity projects one entry into the store via the production mapping.
@@ -101,6 +170,208 @@ func TestListActivityReadsStore(t *testing.T) {
 	require.Empty(t, page2.GetNextCursor())
 }
 
+// TestListActivityIncludesPendingBoardingWithStore verifies the canonical
+// store read path overlays the live unconfirmed boarding deposit that is not
+// itself persisted.
+func TestListActivityIncludesPendingBoardingWithStore(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	h, store := newStoreListFixture(t)
+	h.deps.RPCServer = &fakeRPCServer{
+		getBalanceResp: &daemonrpc.GetBalanceResponse{
+			BoardingUnconfirmedSat: 12_345,
+		},
+	}
+
+	seedActivity(
+		t, store, "complete", walletdkrpc.EntryKind_ENTRY_KIND_SEND,
+		walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE, 100,
+	)
+
+	all, err := h.listActivity(ctx, &walletdkrpc.ListRequest{Limit: 10})
+	require.NoError(t, err)
+	require.Equal(
+		t, []string{syntheticBoardingUnconfirmedID, "complete"},
+		activityIDs(all),
+	)
+	pending := all.GetEntries()[0]
+	require.Equal(
+		t, walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT, pending.GetKind(),
+	)
+	require.Equal(
+		t, walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		pending.GetStatus(),
+	)
+	require.Equal(t, int64(12_345), pending.GetAmountSat())
+	require.Equal(
+		t, walletdkrpc.
+			WalletEntryPhase_WALLET_ENTRY_PHASE_WAITING_FOR_CONFIRMATION,
+		pending.GetProgress().GetPhase(),
+	)
+
+	depositOnly, err := h.listActivity(ctx, &walletdkrpc.ListRequest{
+		Limit:       10,
+		PendingOnly: true,
+		Kinds: []walletdkrpc.EntryKind{
+			walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT,
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(
+		t, []string{syntheticBoardingUnconfirmedID},
+		activityIDs(depositOnly),
+	)
+
+	sendOnly, err := h.listActivity(ctx, &walletdkrpc.ListRequest{
+		Limit: 10,
+		Kinds: []walletdkrpc.EntryKind{
+			walletdkrpc.EntryKind_ENTRY_KIND_SEND,
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{"complete"}, activityIDs(sendOnly))
+}
+
+// TestListActivityPendingBoardingCursor verifies a page containing only the
+// ephemeral boarding row resumes at the newest canonical store row without
+// repeating the overlay.
+func TestListActivityPendingBoardingCursor(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	h, store := newStoreListFixture(t)
+	h.deps.RPCServer = &fakeRPCServer{
+		getBalanceResp: &daemonrpc.GetBalanceResponse{
+			BoardingUnconfirmedSat: 12_345,
+		},
+	}
+
+	seedActivity(
+		t, store, "complete", walletdkrpc.EntryKind_ENTRY_KIND_SEND,
+		walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE, 100,
+	)
+
+	page1, err := h.listActivity(ctx, &walletdkrpc.ListRequest{Limit: 1})
+	require.NoError(t, err)
+	require.Equal(
+		t, []string{syntheticBoardingUnconfirmedID}, activityIDs(page1),
+	)
+	require.True(t, page1.GetHasMore())
+	require.NotEmpty(t, page1.GetNextCursor())
+
+	page2, err := h.listActivity(ctx, &walletdkrpc.ListRequest{
+		Limit:  1,
+		Cursor: page1.GetNextCursor(),
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{"complete"}, activityIDs(page2))
+	require.False(t, page2.GetHasMore())
+	require.Empty(t, page2.GetNextCursor())
+}
+
+// TestListActivityStableBoardingCursor verifies the address-scoped live row
+// uses the reserved overlay cursor marker. A durable row inserted in the same
+// second after page one must be returned on page two even when its id sorts
+// before deposit-<address>.
+func TestListActivityStableBoardingCursor(t *testing.T) {
+	t.Parallel()
+
+	h, store := newStoreListFixture(t)
+	_, pubKey := btcec.PrivKeyFromBytes(bytes.Repeat([]byte{0x02}, 32))
+	address, err := btcaddr.NewAddressTaproot(
+		schnorr.SerializePubKey(pubKey), &chaincfg.RegressionNetParams,
+	)
+	require.NoError(t, err)
+	pkScript, err := txscript.PayToAddrScript(address)
+	require.NoError(t, err)
+
+	h.deps.ChainParams = &chaincfg.RegressionNetParams
+	h.deps.RPCServer = &fakeRPCServer{
+		getBalanceResp: &daemonrpc.GetBalanceResponse{
+			BoardingUnconfirmedSat: 12_345,
+		},
+		activeBoardingAddrs: []string{
+			address.String(),
+		},
+		listWalletUnspent: []*wallet.Utxo{{
+			PkScript: pkScript, Amount: 12_345, Confirmations: 0,
+		}},
+	}
+	seedActivity(
+		t, store, "older", walletdkrpc.EntryKind_ENTRY_KIND_SEND,
+		walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE, 100,
+	)
+
+	page1, err := h.listActivity(
+		t.Context(), &walletdkrpc.ListRequest{
+			Limit: 1,
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(
+		t, []string{"deposit-" + address.String()}, activityIDs(page1),
+	)
+	require.True(t, page1.GetHasMore())
+	_, cursorID, err := decodeActivityCursor(page1.GetNextCursor())
+	require.NoError(t, err)
+	require.Equal(t, syntheticBoardingUnconfirmedID, cursorID)
+
+	seedActivity(
+		t, store, "aaa", walletdkrpc.EntryKind_ENTRY_KIND_SEND,
+		walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		page1.GetEntries()[0].GetCreatedAtUnix(),
+	)
+	page2, err := h.listActivity(t.Context(), &walletdkrpc.ListRequest{
+		Limit:  1,
+		Cursor: page1.GetNextCursor(),
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{"aaa"}, activityIDs(page2))
+}
+
+// TestListActivityOverlayFailureReturnsStore verifies a transient live-daemon
+// failure does not make the canonical cached activity feed unavailable.
+func TestListActivityOverlayFailureReturnsStore(t *testing.T) {
+	t.Parallel()
+
+	h, store := newStoreListFixture(t)
+	h.deps.RPCServer = &fakeRPCServer{
+		getBalanceErr: context.DeadlineExceeded,
+	}
+	seedActivity(
+		t, store, "cached", walletdkrpc.EntryKind_ENTRY_KIND_SEND,
+		walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE, 100,
+	)
+
+	page, err := h.listActivity(
+		t.Context(), &walletdkrpc.ListRequest{
+			Limit: 10,
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, []string{"cached"}, activityIDs(page))
+}
+
+// TestCountPendingOverlayFailureReturnsStoreCount verifies wallet status keeps
+// its durable pending count when the optional live overlay cannot be read.
+func TestCountPendingOverlayFailureReturnsStoreCount(t *testing.T) {
+	t.Parallel()
+
+	h, store := newStoreListFixture(t)
+	h.deps.RPCServer = &fakeRPCServer{
+		getBalanceErr: context.DeadlineExceeded,
+	}
+	seedActivity(
+		t, store, "pending", walletdkrpc.EntryKind_ENTRY_KIND_SEND,
+		walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING, 100,
+	)
+
+	count, err := h.countPending(t.Context())
+	require.NoError(t, err)
+	require.EqualValues(t, 1, count)
+}
+
 // TestCountPendingReflectsFullFeed verifies countPending returns the full
 // number of pending rows rather than the single-page total the paginated read
 // path reports. This is the store-backed count behind the wallet status
@@ -110,6 +381,11 @@ func TestCountPendingReflectsFullFeed(t *testing.T) {
 
 	ctx := context.Background()
 	h, store := newStoreListFixture(t)
+	h.deps.RPCServer = &fakeRPCServer{
+		getBalanceResp: &daemonrpc.GetBalanceResponse{
+			BoardingUnconfirmedSat: 12_345,
+		},
+	}
 
 	// Three pending rows plus one terminal row.
 	seedActivity(
@@ -139,10 +415,11 @@ func TestCountPendingReflectsFullFeed(t *testing.T) {
 	require.EqualValues(t, 1, page.GetTotal())
 	require.True(t, page.GetHasMore())
 
-	// countPending reports every pending row regardless of page size.
+	// countPending reports every durable pending row plus the live
+	// unconfirmed boarding deposit, regardless of page size.
 	count, err := h.countPending(ctx)
 	require.NoError(t, err)
-	require.EqualValues(t, 3, count)
+	require.EqualValues(t, 4, count)
 }
 
 // TestListActivityStablePaginationUnderInsert verifies the #781 acceptance

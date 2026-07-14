@@ -302,8 +302,8 @@ func TestProjectAndEmitStoreErrorDoesNotEmit(t *testing.T) {
 
 // TestProjectAndEmitSkipsEphemeralBoardingRow verifies the synthetic
 // boarding-unconfirmed row is neither persisted nor emitted: it is ephemeral
-// live state with no durable id (the store-backed List omits it too), so it
-// carries no event_seq to stream.
+// live state with no durable id, so it carries no event_seq to stream. The
+// store-backed List path overlays it directly instead of persisting it.
 func TestProjectAndEmitSkipsEphemeralBoardingRow(t *testing.T) {
 	t.Parallel()
 
@@ -319,6 +319,37 @@ func TestProjectAndEmitSkipsEphemeralBoardingRow(t *testing.T) {
 		"ephemeral boarding row must not be emitted",
 	)
 	require.Equal(t, 0, store.count(), "ephemeral row must not be stored")
+}
+
+// TestProjectAndEmitSkipsAddressScopedBoardingOverlay verifies a stable id does
+// not make the live zero-conf row durable. The confirmed ledger projection is
+// still allowed through once it carries chain identity.
+func TestProjectAndEmitSkipsAddressScopedBoardingOverlay(t *testing.T) {
+	t.Parallel()
+
+	store := &fakeActivityProjector{}
+	runtime, ch := newProjectorRuntime(t, store)
+	entry := &walletdkrpc.WalletEntry{
+		Id:     "deposit-bcrt1qstable",
+		Kind:   walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT,
+		Status: walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		Progress: &walletdkrpc.WalletEntryProgress{
+			Phase: walletdkrpc.
+				WalletEntryPhase_WALLET_ENTRY_PHASE_WAITING_FOR_CONFIRMATION,
+		},
+	}
+
+	runtime.projectAndEmit(t.Context(), entry)
+	require.Empty(t, drainEntries(ch))
+	require.Equal(t, 0, store.count())
+
+	entry.Progress.Phase = walletdkrpc.
+		WalletEntryPhase_WALLET_ENTRY_PHASE_SETTLING
+	entry.Progress.Txid = "confirmed-txid"
+	entry.Progress.ConfirmationHeight = 123
+	runtime.projectAndEmit(t.Context(), entry)
+	require.Len(t, drainEntries(ch), 1)
+	require.Equal(t, 1, store.count())
 }
 
 // TestRowToWalletEntryDiscardsUnknownRequestFields verifies a stored request

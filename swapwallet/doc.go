@@ -60,13 +60,13 @@
 // tick, so it lands in the store within a tick rather than only at the
 // next startup backfill.
 //
-// This is address-granularity for the CONFIRMED (recorded) phase only. The
-// pre-confirmation phase cannot be per-address: the daemon exposes only an
-// aggregate boarding_unconfirmed_sat, so unconfirmed boarding funds surface
-// via Balance and as the single synthetic boarding-unconfirmed row, not a
-// per-address row. Per-address unconfirmed deposits need a daemon change and
-// are deferred. A unilateral EXIT row likewise still keys by the consumed
-// VTXO outpoint with no durable link to its eventual sweep txid.
+// Before confirmation, the in-process daemon address registry is correlated
+// with zero-conf wallet UTXOs. When one boarding address accounts for the
+// aggregate boarding_unconfirmed_sat, activity can therefore use that same
+// deposit-<address> id immediately. Older embeddings and ambiguous balances
+// spanning multiple addresses keep the synthetic boarding-unconfirmed
+// aggregate fallback. A unilateral EXIT row likewise still keys by the
+// consumed VTXO outpoint with no durable link to its eventual sweep txid.
 //
 // Onchain SEND sweep semantics: a bounded onchain send (amt_sat > 0)
 // lands exactly amt_sat at the destination and returns the remainder as
@@ -107,11 +107,13 @@
 //     rather than only after a restart. The tick is coarse, so there is a
 //     bounded delay; a per-block/confirmation hook (cheaper, lower latency) is
 //     a deferred optimization.
-//   - The synthetic boarding-unconfirmed DEPOSIT row is derive-path-only: it
-//     is ephemeral live state (recomputed from GetBalance, no durable id) and
-//     is deliberately NOT projected, so on a store build an unconfirmed
-//     boarding deposit surfaces via Balance rather than as an activity row
-//     until it confirms.
+//   - The zero-conf DEPOSIT row is ephemeral live state and is deliberately
+//     NOT projected. Its normal id is deposit-<address>; the synthetic
+//     boarding-unconfirmed id remains only as an ambiguous aggregate fallback.
+//     The store-backed List path overlays the row onto the first page so
+//     Balance and activity both expose the pending deposit without stranding a
+//     durable PENDING row after confirmation. Because it has no event_seq, it
+//     is not part of resumable SubscribeWallet replay.
 //
 // An on-chain-send / cooperative-leave EXIT row now carries a stable canonical
 // id: the daemon returns its leave-job id (SendOnChainResponse.send_job_id, a
