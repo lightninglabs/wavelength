@@ -98,9 +98,22 @@ func TestOORArtifactStoreGetPackageForOutpoint(t *testing.T) {
 	sessionID, arkPSBT, checkpoints, recipientOutpoint, recipientPkScript,
 		valueSat, _ := buildTestOORPackage(t, 0x11)
 
-	err := store.UpsertPackage(
+	assetTransfer := &oortx.TaprootAssetTransfer{
+		Version: oortx.TaprootAssetTransferVersion,
+		CheckpointPackages: [][]byte{
+			{
+				0x01,
+				0x02,
+			},
+		},
+		ArkPackage: []byte{
+			0x03,
+			0x04,
+		},
+	}
+	err := store.UpsertPackageWithAssets(
 		ctx, OORPackageDirectionIncoming, sessionID, arkPSBT,
-		checkpoints,
+		checkpoints, assetTransfer,
 	)
 	require.NoError(t, err)
 
@@ -121,6 +134,7 @@ func TestOORArtifactStoreGetPackageForOutpoint(t *testing.T) {
 	require.Equal(t, sessionID, pkg.SessionID)
 	require.Equal(t, OORPackageDirectionIncoming, pkg.Direction)
 	require.Len(t, pkg.FinalCheckpointPSBTs, 1)
+	require.Equal(t, assetTransfer, pkg.TaprootAssetTransfer)
 	require.True(t, pkg.MatchedOutpointBinding.IsSome())
 	matched := pkg.MatchedOutpointBinding.UnsafeFromSome()
 	require.Equal(t, OORPackageLinkKindCreatedOutput,

@@ -2,10 +2,12 @@ package oor
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/wire/v2"
+	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
 	libtypes "github.com/lightninglabs/wavelength/lib/types"
 )
 
@@ -58,6 +60,39 @@ type PackagePersistence interface {
 		linkKind PackageLinkKind) error
 }
 
+// TaprootAssetPackagePersistence is the optional package-store extension that
+// durably retains the sealed asset transition container beside the Bitcoin
+// package. Asset-bearing sessions fail closed when the configured store does
+// not implement this interface.
+type TaprootAssetPackagePersistence interface {
+	UpsertPackageWithAssets(ctx context.Context, direction PackageDirection,
+		sessionID chainhash.Hash, ark *psbt.Packet,
+		checkpoints []*psbt.Packet,
+		assetTransfer *oortx.TaprootAssetTransfer) error
+}
+
+func upsertPackage(ctx context.Context, store PackagePersistence,
+	direction PackageDirection, sessionID chainhash.Hash, ark *psbt.Packet,
+	checkpoints []*psbt.Packet,
+	assetTransfer *oortx.TaprootAssetTransfer) error {
+
+	if assetTransfer == nil {
+		return store.UpsertPackage(
+			ctx, direction, sessionID, ark, checkpoints,
+		)
+	}
+
+	assetStore, ok := store.(TaprootAssetPackagePersistence)
+	if !ok {
+		return fmt.Errorf("package store does not support Taproot " +
+			"Asset transfers")
+	}
+
+	return assetStore.UpsertPackageWithAssets(
+		ctx, direction, sessionID, ark, checkpoints, assetTransfer,
+	)
+}
+
 // ReservationOwnerKindOOROutgoing is the owner_kind value recorded for
 // reservations held by an outgoing OOR session. It is the only kind for now.
 const ReservationOwnerKindOOROutgoing = 0
@@ -89,4 +124,8 @@ type PackageArtifact struct {
 
 	// FinalCheckpointPSBTs are the finalized checkpoints for the package.
 	FinalCheckpointPSBTs []*psbt.Packet
+
+	// TaprootAssetTransfer is the optional immutable sealed asset package
+	// container for this session.
+	TaprootAssetTransfer *oortx.TaprootAssetTransfer
 }
