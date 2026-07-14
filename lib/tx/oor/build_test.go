@@ -189,6 +189,51 @@ func TestRecipientOutputIndexRejectsAmbiguousTarget(t *testing.T) {
 	require.ErrorContains(t, err, "ambiguous")
 }
 
+func TestRecipientOutputValidatesTaprootAssetCommitment(t *testing.T) {
+	t.Parallel()
+
+	ownerKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	policy, err := arkscript.NewVTXOPolicy(
+		ownerKey.PubKey(), operatorKey.PubKey(), 10,
+	)
+	require.NoError(t, err)
+	encodedPolicy, err := policy.Template.Encode()
+	require.NoError(t, err)
+	assetRoot := chainhash.Hash{1, 2, 3, 4}
+	composed, err := arkscript.ComposeWithSiblingRoot(
+		policy.CompiledPolicy, assetRoot,
+	)
+	require.NoError(t, err)
+	pkScript, err := txscript.PayToTaprootScript(composed.OutputKey())
+	require.NoError(t, err)
+
+	output := RecipientOutput{
+		PkScript:           pkScript,
+		Value:              5000,
+		VTXOPolicyTemplate: encodedPolicy,
+		TaprootAssetRoot:   &assetRoot,
+	}
+	require.NoError(t, output.ValidateTaprootAssetCommitment())
+
+	withoutPolicy := output
+	withoutPolicy.VTXOPolicyTemplate = nil
+	require.ErrorContains(
+		t, withoutPolicy.ValidateTaprootAssetCommitment(),
+		"recipient policy is required",
+	)
+
+	wrongRoot := assetRoot
+	wrongRoot[0] ^= 1
+	output.TaprootAssetRoot = &wrongRoot
+	require.ErrorContains(
+		t, output.ValidateTaprootAssetCommitment(),
+		"asset root and pkscript mismatch",
+	)
+}
+
 func hexBytes(t *testing.T, value string) []byte {
 	t.Helper()
 
