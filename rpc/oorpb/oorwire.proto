@@ -113,6 +113,17 @@ enum OORRejectCode {
     // spends or refreshes down), so a custodial sender may hold the value
     // and retry later rather than restructuring the outputs.
     OOR_REJECT_USER_BALANCE = 3;
+
+    // OOR_REJECT_INPUT_NOT_SPENDABLE indicates one of the submit's input
+    // VTXOs was not in a spendable state on the operator (neither live nor
+    // in-flight) at validation time — most commonly because the input's
+    // round commitment transaction has not yet reached the operator's
+    // confirmation target, even though the client already observed the
+    // confirmation. The submit was not locked. Unlike OOR_REJECT_OUTPUT_POLICY
+    // this is transient: retrying the same shape succeeds once the operator's
+    // chain view catches up, so the client should wait (see server_best_height)
+    // and resubmit rather than restructuring the transfer.
+    OOR_REJECT_INPUT_NOT_SPENDABLE = 4;
 }
 
 // SubmitPackageRejection carries a typed rejection of an OOR submit.
@@ -130,6 +141,16 @@ message SubmitPackageRejection {
     // session to fail, and the ingress dispatcher would stall the cursor on
     // the rejected envelope.
     bytes session_id = 3;
+
+    // server_best_height is the operator's current best block height at the
+    // time of the rejection, or 0 when the operator did not populate it. It
+    // is a diagnostic hint for transient rejections (notably
+    // OOR_REJECT_INPUT_NOT_SPENDABLE): a client that observed its input
+    // confirm at height H can compare against this value — if
+    // server_best_height < H the operator simply has not caught up to the
+    // input's confirmation yet, so a retry is guaranteed safe rather than
+    // masking a genuine problem.
+    uint32 server_best_height = 4;
 }
 
 // SubmitPackageResponse carries server submit-phase results. Exactly one of

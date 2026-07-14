@@ -182,15 +182,19 @@ func NewSubmitPackageResponse(sessionID chainhash.Hash,
 // rejected submit's session hash so the client-side EventRouter can
 // route the failure to the correct OOR session FSM rather than
 // stalling the ingress cursor on an undispatchable envelope.
+// serverBestHeight is the operator's best block height at rejection time; it
+// is a diagnostic hint for transient rejections and may be 0 when the operator
+// does not populate it.
 func NewSubmitPackageRejection(sessionID chainhash.Hash, code OORRejectCode,
-	reason string) *SubmitPackageResponse {
+	reason string, serverBestHeight uint32) *SubmitPackageResponse {
 
 	return &SubmitPackageResponse{
 		Result: &SubmitPackageResponse_Rejection{
 			Rejection: &SubmitPackageRejection{
-				Code:      code,
-				Reason:    reason,
-				SessionId: sessionID.CloneBytes(),
+				Code:             code,
+				Reason:           reason,
+				SessionId:        sessionID.CloneBytes(),
+				ServerBestHeight: serverBestHeight,
 			},
 		},
 	}
@@ -270,8 +274,9 @@ func ParseSubmitPackageResponse(resp *SubmitPackageResponse) (chainhash.Hash,
 		}
 
 		return sessionID, nil, nil, &SubmitRejectedError{
-			Code:   r.Rejection.Code,
-			Reason: r.Rejection.Reason,
+			Code:             r.Rejection.Code,
+			Reason:           r.Rejection.Reason,
+			ServerBestHeight: r.Rejection.ServerBestHeight,
 		}
 
 	default:
@@ -287,6 +292,13 @@ func ParseSubmitPackageResponse(resp *SubmitPackageResponse) (chainhash.Hash,
 type SubmitRejectedError struct {
 	Code   OORRejectCode
 	Reason string
+
+	// ServerBestHeight is the operator's best block height at rejection
+	// time, or 0 when the operator did not populate it. For transient
+	// rejections (OOR_REJECT_INPUT_NOT_SPENDABLE) the client compares this
+	// against the height at which it observed its input confirm to decide
+	// whether the operator is merely behind on chain sync.
+	ServerBestHeight uint32
 }
 
 // Error reports the typed rejection in a human-readable form.
