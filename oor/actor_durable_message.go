@@ -37,6 +37,16 @@ const (
 	// startPayloadAdmissionDeadlineType stores the optional absolute
 	// admission deadline as Unix nanoseconds.
 	startPayloadAdmissionDeadlineType tlv.Type = 7
+
+	// startPayloadPreparedSubmitType stores the versioned OOR submit
+	// package after external Taproot Asset commitment insertion. Even
+	// type: a reader without asset support must fail closed rather than
+	// replay the transfer as a plain submit.
+	startPayloadPreparedSubmitType tlv.Type = 8
+
+	// startPayloadTaprootAssetTransferType stores the matching versioned
+	// sealed-package container. Even for the same fail-closed reason.
+	startPayloadTaprootAssetTransferType tlv.Type = 10
 )
 
 const (
@@ -158,6 +168,8 @@ type startTransferPayload struct {
 	Recipients                 []recipientPayload
 	IdempotencyKey             string
 	AdmissionDeadlineUnixNanos int64
+	PreparedSubmit             []byte
+	AssetTransfer              []byte
 }
 
 type recipientPayload struct {
@@ -189,6 +201,8 @@ func encodeStartTransferPayload(payload startTransferPayload) ([]byte, error) {
 	csvDelay := payload.CSVDelay
 	idempotencyKey := []byte(payload.IdempotencyKey)
 	admissionDeadline := uint64(payload.AdmissionDeadlineUnixNanos)
+	preparedSubmit := payload.PreparedSubmit
+	assetTransfer := payload.AssetTransfer
 
 	records := []tlv.Record{
 		tlv.MakePrimitiveRecord(
@@ -208,6 +222,12 @@ func encodeStartTransferPayload(payload startTransferPayload) ([]byte, error) {
 		),
 		tlv.MakePrimitiveRecord(
 			startPayloadAdmissionDeadlineType, &admissionDeadline,
+		),
+		tlv.MakePrimitiveRecord(
+			startPayloadPreparedSubmitType, &preparedSubmit,
+		),
+		tlv.MakePrimitiveRecord(
+			startPayloadTaprootAssetTransferType, &assetTransfer,
 		),
 	}
 
@@ -242,6 +262,8 @@ func decodeStartTransferPayloadWithLimits(raw []byte,
 		recipients  []byte
 		idKey       []byte
 		deadline    uint64
+		preparedRaw []byte
+		assetRaw    []byte
 	)
 
 	records := []tlv.Record{
@@ -260,6 +282,12 @@ func decodeStartTransferPayloadWithLimits(raw []byte,
 		tlv.MakePrimitiveRecord(startPayloadIdempotencyKeyType, &idKey),
 		tlv.MakePrimitiveRecord(
 			startPayloadAdmissionDeadlineType, &deadline,
+		),
+		tlv.MakePrimitiveRecord(
+			startPayloadPreparedSubmitType, &preparedRaw,
+		),
+		tlv.MakePrimitiveRecord(
+			startPayloadTaprootAssetTransferType, &assetRaw,
 		),
 	}
 
@@ -294,6 +322,8 @@ func decodeStartTransferPayloadWithLimits(raw []byte,
 		Recipients:                 recipientsPayload,
 		IdempotencyKey:             string(idKey),
 		AdmissionDeadlineUnixNanos: int64(deadline),
+		PreparedSubmit:             preparedRaw,
+		AssetTransfer:              assetRaw,
 	}, nil
 }
 
