@@ -436,7 +436,7 @@ func (s *PrivKeySchnorrSigner) ProofPubKey(_ []byte) (*btcec.PublicKey, error) {
 // accidental mutation. This must match the server-side ProofTagHash
 // constant in the indexer package.
 func proofTag() []byte {
-	return []byte("darepo/indexer/v1")
+	return []byte("wavelength/indexer/v1")
 }
 
 // proofOwnerPubKey returns the compressed owner pubkey to include in the

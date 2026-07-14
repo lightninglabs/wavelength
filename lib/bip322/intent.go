@@ -14,7 +14,7 @@ const (
 
 	// intentMessageDomainTag domain-separates BIP-322 intent payloads from
 	// other message formats.
-	intentMessageDomainTag = "darepo-bip322-intent"
+	intentMessageDomainTag = "wavelength-bip322-intent"
 )
 
 const (

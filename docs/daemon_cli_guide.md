@@ -634,7 +634,7 @@ da ark send inround --to bcrt1p... --amount 5000
 ```
 
 For per-client manual testing under the `arktest` harness, see
-`MANUAL_TESTING.md` at the server (darepo) repo root.
+`MANUAL_TESTING.md` at the server (wavelength) repo root.
 
 ## Password Handling
 

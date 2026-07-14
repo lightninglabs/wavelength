@@ -330,7 +330,7 @@ type TaprootSchnorrProof struct {
 	Message []byte `protobuf:"bytes,1,opt,name=message,proto3" json:"message,omitempty"`
 	// sig64 is a 64-byte BIP-340 schnorr signature over the BIP-340
 	// tagged hash of message: sha256(sha256(tag) || sha256(tag) || msg),
-	// where tag = "darepo/indexer/v1".
+	// where tag = "wavelength/indexer/v1".
 	Sig64         []byte `protobuf:"bytes,2,opt,name=sig64,proto3" json:"sig64,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

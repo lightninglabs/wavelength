@@ -12,7 +12,7 @@ metadata encoding.
 - `TxSigner` — Interface for producing BIP-322 signatures (signs the to_spend
   and to_sign virtual transactions).
 - `Intent` — Application payload with `ValidFrom`/`ValidUntil` block height
-  range. TLV-encoded with domain tag `darepo-bip322-intent`.
+  range. TLV-encoded with domain tag `wavelength-bip322-intent`.
 - `Sig` — Full-format BIP-322 signature (serialized to_sign transaction).
 - `IntentAuthContext` — Complete intent-bound auth validation context (intent,
   message challenge, signature, proof prev outputs, chain height).

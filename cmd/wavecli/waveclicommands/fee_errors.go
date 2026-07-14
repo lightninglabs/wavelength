@@ -7,7 +7,7 @@ import (
 
 // Error substrings used to recognize server-side fee rejections.
 // These match the sentinel messages in
-// darepo/rounds/validation.go so the client can surface a concise,
+// wavelength/rounds/validation.go so the client can surface a concise,
 // actionable CLI error instead of a raw gRPC status that leaks
 // internal percentages and numeric fields.
 //

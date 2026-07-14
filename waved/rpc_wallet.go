@@ -27,7 +27,7 @@ import (
 // derived key sits at m/1017'/coinType'/6'/0/0.
 const identityKeyFamily = keychain.KeyFamilyNodeKey
 
-const receiveAuthKeyTag = "darepo/swap/receive-auth/v1"
+const receiveAuthKeyTag = "wavelength/swap/receive-auth/v1"
 
 // ReceiveAuthKey returns the public key for the payment-scoped receive-auth
 // key while keeping the private scalar inside the daemon.
