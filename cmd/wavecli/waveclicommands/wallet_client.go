@@ -8,7 +8,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -17,13 +17,13 @@ import (
 )
 
 // errWalletRPCDisabled is the structured error printed when the daemon
-// is not built with the walletdkrpc tag and a top-level wallet verb is
+// is not built with the wavewalletrpc tag and a top-level wallet verb is
 // invoked against it. The CLI registers the verbs unconditionally so
 // agents always see the same surface; the error message points at the
 // build documentation so the operator can rebuild the daemon if needed.
 var errWalletRPCDisabled = errors.New("daemon was not built with -tags " +
-	"walletdkrpc; rebuild with `make build-walletdkrpc` or see " +
-	"docs/walletdkrpc_build.md")
+	"wavewalletrpc; rebuild with `make build-wavewalletrpc` or see " +
+	"docs/wavewalletrpc_build.md")
 
 // errOffchainOnchainConflict is the canned error returned when a caller
 // passes both --offchain and --onchain on the same invocation.
@@ -38,7 +38,7 @@ var errOffchainOnchainConflict = errors.New("--offchain and --onchain are " +
 // gRPC UNIMPLEMENTED is mapped to errWalletRPCDisabled so stub-build
 // daemons surface a clear, actionable error.
 func withWalletClient(cmd *cobra.Command,
-	fn func(walletdkrpc.WalletServiceClient) error) error {
+	fn func(wavewalletrpc.WalletServiceClient) error) error {
 
 	conn, err := getDaemonConn(cmd)
 	if err != nil {
@@ -48,7 +48,7 @@ func withWalletClient(cmd *cobra.Command,
 		_ = conn.Close()
 	}()
 
-	if err := fn(walletdkrpc.NewWalletServiceClient(conn)); err != nil {
+	if err := fn(wavewalletrpc.NewWalletServiceClient(conn)); err != nil {
 		if status.Code(err) == codes.Unimplemented {
 			return errWalletRPCDisabled
 		}
@@ -61,7 +61,7 @@ func withWalletClient(cmd *cobra.Command,
 
 // withWalletInspectionClient dials the daemon's technical inspection service.
 func withWalletInspectionClient(cmd *cobra.Command,
-	fn func(walletdkrpc.WalletInspectionServiceClient) error) error {
+	fn func(wavewalletrpc.WalletInspectionServiceClient) error) error {
 
 	conn, err := getDaemonConn(cmd)
 	if err != nil {
@@ -71,7 +71,7 @@ func withWalletInspectionClient(cmd *cobra.Command,
 		_ = conn.Close()
 	}()
 
-	client := walletdkrpc.NewWalletInspectionServiceClient(conn)
+	client := wavewalletrpc.NewWalletInspectionServiceClient(conn)
 	if err := fn(client); err != nil {
 		if status.Code(err) == codes.Unimplemented {
 			return errWalletRPCDisabled
@@ -148,22 +148,22 @@ func walletDryRunPreview(method string, req proto.Message) error {
 
 // parseEntryKind maps a user-facing kind string to the proto enum used
 // in ListRequest.Kinds.
-func parseEntryKind(s string) (walletdkrpc.EntryKind, error) {
+func parseEntryKind(s string) (wavewalletrpc.EntryKind, error) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "send":
-		return walletdkrpc.EntryKind_ENTRY_KIND_SEND, nil
+		return wavewalletrpc.EntryKind_ENTRY_KIND_SEND, nil
 
 	case "recv", "receive":
-		return walletdkrpc.EntryKind_ENTRY_KIND_RECV, nil
+		return wavewalletrpc.EntryKind_ENTRY_KIND_RECV, nil
 
 	case "deposit":
-		return walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT, nil
+		return wavewalletrpc.EntryKind_ENTRY_KIND_DEPOSIT, nil
 
 	case "exit":
-		return walletdkrpc.EntryKind_ENTRY_KIND_EXIT, nil
+		return wavewalletrpc.EntryKind_ENTRY_KIND_EXIT, nil
 
 	default:
-		return walletdkrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
+		return wavewalletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
 			fmt.Errorf("unknown kind %q (send|recv|deposit|exit)",
 				s)
 	}

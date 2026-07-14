@@ -78,7 +78,7 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/ledger.<
   `handleVTXOReceived` stamps the structured `ChainTxid` (32-byte
   outpoint hash) and `ChainVout` columns on the row in addition to
   the dedup key, so downstream consumers (notably `ListTransactions`
-  → walletdkrpc onchain view) surface the commitment outpoint without
+  → wavewalletrpc onchain view) surface the commitment outpoint without
   text-parsing the description.
 - `VTXOSentMsg` — outgoing VTXO. Carries either `SessionID` (32-byte
   OOR) or `RoundID` (16-byte in-round) — exactly one must be

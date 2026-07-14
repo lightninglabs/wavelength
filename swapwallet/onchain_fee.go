@@ -1,4 +1,4 @@
-//go:build walletdkrpc && swapruntime
+//go:build wavewalletrpc && swapruntime
 
 package swapwallet
 
@@ -6,7 +6,7 @@ import (
 	"context"
 
 	"github.com/btcsuite/btcd/btcutil/v2"
-	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"github.com/lightninglabs/wavelength/waverpc"
 )
 
@@ -40,7 +40,7 @@ const (
 type onchainFeeQuote struct {
 	feeSat      int64
 	feeKnown    bool
-	quoteStatus walletdkrpc.SendQuoteStatus
+	quoteStatus wavewalletrpc.SendQuoteStatus
 	warning     string
 }
 
@@ -107,7 +107,7 @@ func (r *router) estimateOnchainFee(ctx context.Context, amountSat int64,
 		return onchainFeeQuote{
 			feeSat:   feeResp.GetTotalFeeSat(),
 			feeKnown: true,
-			quoteStatus: walletdkrpc.
+			quoteStatus: wavewalletrpc.
 				SendQuoteStatus_SEND_QUOTE_STATUS_COMPLETE,
 		}
 	}
@@ -122,7 +122,7 @@ func (r *router) estimateOnchainFee(ctx context.Context, amountSat int64,
 	return onchainFeeQuote{
 		feeSat:   floor,
 		feeKnown: false,
-		quoteStatus: walletdkrpc.
+		quoteStatus: wavewalletrpc.
 			SendQuoteStatus_SEND_QUOTE_STATUS_LOCAL_ONLY,
 		warning: "fee is a local estimate assuming a batch size of " +
 			"one; the operator quote was unavailable and the " +

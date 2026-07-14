@@ -28,7 +28,7 @@ gRPC, REST-gateway, and mailbox-RPC stubs plus one hand-written helper file
   `grpc-gateway/runtime` (REST gateway in `daemon.pb.gw.go`).
 - **Depended on by**: `waved` (implements `DaemonServiceServer`),
   `cmd/wavecli` and `rpc/restclient` (CLI/REST clients), `sdk/ark`,
-  `sdk/swaps`, `sdk/walletdk`, `swapclientserver`, `swapwallet` (typed clients
+  `sdk/swaps`, `sdk/wavewalletdk`, `swapclientserver`, `swapwallet` (typed clients
   for daemon RPCs).
 
 ## Invariants

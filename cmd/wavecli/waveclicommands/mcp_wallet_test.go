@@ -3,7 +3,7 @@ package waveclicommands
 import (
 	"testing"
 
-	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"github.com/stretchr/testify/require"
 )
 
@@ -129,7 +129,7 @@ func TestBuildWalletActivityRequestHappyPath(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Equal(
-		t, walletdkrpc.ListView_LIST_VIEW_ACTIVITY, req.GetView(),
+		t, wavewalletrpc.ListView_LIST_VIEW_ACTIVITY, req.GetView(),
 	)
 	require.True(t, req.GetPendingOnly())
 	require.Len(t, req.GetKinds(), 2)

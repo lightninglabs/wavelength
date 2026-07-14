@@ -109,7 +109,7 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   `minOORMailboxScriptBytes = 34` (P2TR script length); validated in
   `Config.Validate()`.
 - `Config.EagerRoundJoin` defaults via `defaultEagerRoundJoin()`: `false` on
-  the standalone build, `true` under the `walletdkrpc` build tag.
+  the standalone build, `true` under the `wavewalletrpc` build tag.
 - `registerOOREventRoutes` checks for a typed `*oorpb.SubmitRejectedError`
   before the generic error path, so an OOR rejection drives a
   non-retryable `OutboxErrorEvent` instead of an `Adapt` error that would

@@ -1,4 +1,4 @@
-//go:build walletdkrpc && swapruntime
+//go:build wavewalletrpc && swapruntime
 
 package swapwallet
 
@@ -7,7 +7,7 @@ import (
 	"fmt"
 
 	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
-	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"github.com/lightninglabs/wavelength/waverpc"
 	"google.golang.org/protobuf/encoding/protojson"
 )
@@ -17,7 +17,7 @@ import (
 // calls (router, recv, history, runtime) and returns a normalized response.
 // No business logic lives here.
 type Service struct {
-	walletdkrpc.UnimplementedWalletServiceServer
+	wavewalletrpc.UnimplementedWalletServiceServer
 
 	deps    *Deps
 	runtime *Runtime
@@ -51,16 +51,18 @@ func (s *Service) earmarkedCreditSat(context.Context) (uint64, error) {
 // Create initializes a new wallet from a freshly generated aezeed
 // mnemonic. The handler is admin-shape — it runs BEFORE the swap runtime
 // is live — so it does not depend on Runtime, router, recv, or history.
-func (s *Service) Create(ctx context.Context, req *walletdkrpc.CreateRequest) (
-	*walletdkrpc.CreateResponse, error) {
+func (s *Service) Create(ctx context.Context,
+	req *wavewalletrpc.CreateRequest) (*wavewalletrpc.CreateResponse,
+	error) {
 
 	return s.create(ctx, req)
 }
 
 // Unlock decrypts the on-disk wallet seed and starts the wallet
 // subsystem. Admin-shape handler; does not depend on Runtime.
-func (s *Service) Unlock(ctx context.Context, req *walletdkrpc.UnlockRequest) (
-	*walletdkrpc.UnlockResponse, error) {
+func (s *Service) Unlock(ctx context.Context,
+	req *wavewalletrpc.UnlockRequest) (*wavewalletrpc.UnlockResponse,
+	error) {
 
 	return s.unlock(ctx, req)
 }
@@ -68,8 +70,8 @@ func (s *Service) Unlock(ctx context.Context, req *walletdkrpc.UnlockRequest) (
 // PrepareSend validates and previews an outbound payment, returning a
 // short-lived intent that Send can consume.
 func (s *Service) PrepareSend(ctx context.Context,
-	req *walletdkrpc.PrepareSendRequest) (*walletdkrpc.PrepareSendResponse,
-	error) {
+	req *wavewalletrpc.PrepareSendRequest) (
+	*wavewalletrpc.PrepareSendResponse, error) {
 
 	if err := s.requireWalletReady(ctx); err != nil {
 		return nil, err
@@ -81,8 +83,8 @@ func (s *Service) PrepareSend(ctx context.Context,
 // Send dispatches a previously prepared outbound payment. Invoice intents
 // route through the daemon-owned swap subserver; onchain intents route through
 // the existing LeaveVTXOs cooperative-exit RPC.
-func (s *Service) Send(ctx context.Context, req *walletdkrpc.SendRequest) (
-	*walletdkrpc.SendResponse, error) {
+func (s *Service) Send(ctx context.Context, req *wavewalletrpc.SendRequest) (
+	*wavewalletrpc.SendResponse, error) {
 
 	if err := s.requireWalletReady(ctx); err != nil {
 		return nil, err
@@ -93,8 +95,8 @@ func (s *Service) Send(ctx context.Context, req *walletdkrpc.SendRequest) (
 
 // Exit queues cooperative leave by default, or starts forced unroll when the
 // request carries the exact acknowledgement string.
-func (s *Service) Exit(ctx context.Context, req *walletdkrpc.ExitRequest) (
-	*walletdkrpc.ExitResponse, error) {
+func (s *Service) Exit(ctx context.Context, req *wavewalletrpc.ExitRequest) (
+	*wavewalletrpc.ExitResponse, error) {
 
 	return s.exit(ctx, req)
 }
@@ -103,8 +105,8 @@ func (s *Service) Exit(ctx context.Context, req *walletdkrpc.ExitRequest) (
 // inputs for unilateral exit and returns a backing-wallet funding address when
 // more fee inputs are needed.
 func (s *Service) GetExitPlan(ctx context.Context,
-	req *walletdkrpc.GetExitPlanRequest) (*walletdkrpc.GetExitPlanResponse,
-	error) {
+	req *wavewalletrpc.GetExitPlanRequest) (
+	*wavewalletrpc.GetExitPlanResponse, error) {
 
 	return s.getExitPlan(ctx, req)
 }
@@ -112,8 +114,8 @@ func (s *Service) GetExitPlan(ctx context.Context,
 // SweepWallet previews or broadcasts a normal backing-wallet sweep. Boarding
 // UTXOs remain owned by the dedicated boarding-sweep flow.
 func (s *Service) SweepWallet(ctx context.Context,
-	req *walletdkrpc.SweepWalletRequest) (*walletdkrpc.SweepWalletResponse,
-	error) {
+	req *wavewalletrpc.SweepWalletRequest) (
+	*wavewalletrpc.SweepWalletResponse, error) {
 
 	return s.sweepWallet(ctx, req)
 }
@@ -121,8 +123,8 @@ func (s *Service) SweepWallet(ctx context.Context,
 // ExitStatus reports the current phase of an exit (unroll) job for the
 // specified VTXO outpoint by proxying waverpc.GetUnrollStatus.
 func (s *Service) ExitStatus(ctx context.Context,
-	req *walletdkrpc.ExitStatusRequest) (*walletdkrpc.ExitStatusResponse,
-	error) {
+	req *wavewalletrpc.ExitStatusRequest) (
+	*wavewalletrpc.ExitStatusResponse, error) {
 
 	return s.exitStatus(ctx, req)
 }
@@ -130,8 +132,8 @@ func (s *Service) ExitStatus(ctx context.Context,
 // ExitSummary reports the wallet-wide portfolio of in-progress exits by
 // proxying the daemon's aggregate exit view.
 func (s *Service) ExitSummary(ctx context.Context,
-	req *walletdkrpc.ExitSummaryRequest) (*walletdkrpc.ExitSummaryResponse,
-	error) {
+	req *wavewalletrpc.ExitSummaryRequest) (
+	*wavewalletrpc.ExitSummaryResponse, error) {
 
 	return s.exitSummary(ctx, req)
 }
@@ -140,8 +142,8 @@ func (s *Service) ExitSummary(ctx context.Context,
 // daemon-signed BOLT-11 invoice plus the initial WalletEntry. The invoice
 // is signed with a payment-scoped daemon-managed auth key (PR #337);
 // nothing in the wallet layer generates or holds raw private keys.
-func (s *Service) Recv(ctx context.Context, req *walletdkrpc.RecvRequest) (
-	*walletdkrpc.RecvResponse, error) {
+func (s *Service) Recv(ctx context.Context, req *wavewalletrpc.RecvRequest) (
+	*wavewalletrpc.RecvResponse, error) {
 
 	if err := s.requireWalletReady(ctx); err != nil {
 		return nil, err
@@ -152,8 +154,8 @@ func (s *Service) Recv(ctx context.Context, req *walletdkrpc.RecvRequest) (
 
 // List returns the unified, normalized wallet history merged across the
 // swap subserver and the daemon's ledger/sweep stores.
-func (s *Service) List(ctx context.Context, req *walletdkrpc.ListRequest) (
-	*walletdkrpc.ListResponse, error) {
+func (s *Service) List(ctx context.Context, req *wavewalletrpc.ListRequest) (
+	*wavewalletrpc.ListResponse, error) {
 
 	return s.history.List(ctx, req)
 }
@@ -162,7 +164,8 @@ func (s *Service) List(ctx context.Context, req *walletdkrpc.ListRequest) (
 // daemon's existing NewAddress RPC. The wallet layer never derives keys or
 // constructs scripts itself.
 func (s *Service) Deposit(ctx context.Context,
-	req *walletdkrpc.DepositRequest) (*walletdkrpc.DepositResponse, error) {
+	req *wavewalletrpc.DepositRequest) (*wavewalletrpc.DepositResponse,
+	error) {
 
 	if err := s.requireWalletReady(ctx); err != nil {
 		return nil, err
@@ -185,22 +188,22 @@ func (s *Service) Deposit(ctx context.Context,
 	// daemon records the incoming UTXO (at confirmation); before that,
 	// unconfirmed boarding funds surface via Balance.
 	createdAt := nowUnix()
-	entry := &walletdkrpc.WalletEntry{
+	entry := &wavewalletrpc.WalletEntry{
 		Id:            fmt.Sprintf("deposit-%s", addrResp.GetAddress()),
-		Kind:          walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT,
-		Status:        walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		Kind:          wavewalletrpc.EntryKind_ENTRY_KIND_DEPOSIT,
+		Status:        wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
 		AmountSat:     int64(req.GetAmtSatHint()),
 		Counterparty:  "boarding",
 		CreatedAtUnix: createdAt,
 		UpdatedAtUnix: createdAt,
 		Request:       requestFromOnchainAddress(addrResp.GetAddress()),
-		Progress: &walletdkrpc.WalletEntryProgress{
-			Phase:      walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_REQUEST_CREATED,
+		Progress: &wavewalletrpc.WalletEntryProgress{
+			Phase:      wavewalletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_REQUEST_CREATED,
 			PhaseLabel: "address_issued",
 		},
 	}
 
-	return &walletdkrpc.DepositResponse{
+	return &wavewalletrpc.DepositResponse{
 		OnchainAddress: addrResp.GetAddress(),
 		Entry:          entry,
 	}, nil
@@ -253,7 +256,8 @@ func (s *Service) requireWalletReady(ctx context.Context) error {
 // existing GetBalance RPC and projecting its fields onto the flat
 // confirmed/pending shape exposed by the wallet layer.
 func (s *Service) Balance(ctx context.Context,
-	req *walletdkrpc.BalanceRequest) (*walletdkrpc.BalanceResponse, error) {
+	req *wavewalletrpc.BalanceRequest) (*wavewalletrpc.BalanceResponse,
+	error) {
 
 	return s.fetchBalance(ctx)
 }
@@ -261,8 +265,9 @@ func (s *Service) Balance(ctx context.Context,
 // Status returns wallet readiness, network, balance summary, and pending
 // count in one shot by composing over the daemon's existing GetInfo,
 // GetBalance, and the swap subserver's ListSwaps (pending_only).
-func (s *Service) Status(ctx context.Context, req *walletdkrpc.StatusRequest) (
-	*walletdkrpc.StatusResponse, error) {
+func (s *Service) Status(ctx context.Context,
+	req *wavewalletrpc.StatusRequest) (*wavewalletrpc.StatusResponse,
+	error) {
 
 	if s.deps.RPCServer == nil {
 		return nil, statusSwapBackendUnavailable()
@@ -287,7 +292,7 @@ func (s *Service) Status(ctx context.Context, req *walletdkrpc.StatusRequest) (
 
 	state := info.GetWalletState()
 
-	return &walletdkrpc.StatusResponse{
+	return &wavewalletrpc.StatusResponse{
 		// Ready collapses to "wallet fully usable for signing".
 		Ready: state == waverpc.WalletState_WALLET_STATE_READY,
 
@@ -319,8 +324,8 @@ func (s *Service) Status(ctx context.Context, req *walletdkrpc.StatusRequest) (
 // rather than losing updates silently; it reconciles via List and resumes from
 // the cursor. Without a canonical store the stream degrades to the legacy
 // live-only behaviour (an optional List snapshot, then best-effort updates).
-func (s *Service) SubscribeWallet(req *walletdkrpc.SubscribeWalletRequest,
-	stream walletdkrpc.WalletService_SubscribeWalletServer) error {
+func (s *Service) SubscribeWallet(req *wavewalletrpc.SubscribeWalletRequest,
+	stream wavewalletrpc.WalletService_SubscribeWalletServer) error {
 
 	ctx := stream.Context()
 
@@ -405,7 +410,7 @@ func (s *Service) SubscribeWallet(req *walletdkrpc.SubscribeWalletRequest,
 // cursor resumes strictly after it; a zero cursor with include_existing
 // replays the full history; a zero cursor without it skips replay and streams
 // live only.
-func replayStart(req *walletdkrpc.SubscribeWalletRequest) (int64, bool) {
+func replayStart(req *wavewalletrpc.SubscribeWalletRequest) (int64, bool) {
 	switch {
 	case req.GetCursor() > 0:
 		return req.GetCursor(), true
@@ -424,8 +429,8 @@ func replayStart(req *walletdkrpc.SubscribeWalletRequest) (int64, bool) {
 // but not contiguous, so a burned value is simply absent, never a dropped
 // event.
 func (s *Service) replayEvents(ctx context.Context,
-	stream walletdkrpc.WalletService_SubscribeWalletServer, from int64,
-	kindFilter map[walletdkrpc.EntryKind]struct{}) (int64, error) {
+	stream wavewalletrpc.WalletService_SubscribeWalletServer, from int64,
+	kindFilter map[wavewalletrpc.EntryKind]struct{}) (int64, error) {
 
 	store := s.deps.ActivityStore
 	limit := int32(s.deps.resolveMaxListLimit())
@@ -472,15 +477,15 @@ func (s *Service) replayEvents(ctx context.Context,
 // responses. It is the no-store legacy path: without an event log there is no
 // resumable cursor, so a fresh List stands in for the replay.
 func (s *Service) streamListSnapshot(ctx context.Context,
-	stream walletdkrpc.WalletService_SubscribeWalletServer,
-	req *walletdkrpc.SubscribeWalletRequest) error {
+	stream wavewalletrpc.WalletService_SubscribeWalletServer,
+	req *wavewalletrpc.SubscribeWalletRequest) error {
 
 	// Use the configured hard cap rather than the default page size so a
 	// wallet with more than defaultListLimit entries gets a complete
 	// snapshot; a truncated one would let the subscriber observe live
 	// updates referencing rows it never saw.
-	snapshot, err := s.history.List(ctx, &walletdkrpc.ListRequest{
-		View:  walletdkrpc.ListView_LIST_VIEW_ACTIVITY,
+	snapshot, err := s.history.List(ctx, &wavewalletrpc.ListRequest{
+		View:  wavewalletrpc.ListView_LIST_VIEW_ACTIVITY,
 		Kinds: req.GetKinds(),
 		Limit: s.deps.resolveMaxListLimit(),
 	})
@@ -499,8 +504,8 @@ func (s *Service) streamListSnapshot(ctx context.Context,
 
 // kindAllowed reports whether entry passes the kind filter. A nil/empty filter
 // admits every kind.
-func kindAllowed(filter map[walletdkrpc.EntryKind]struct{},
-	entry *walletdkrpc.WalletEntry) bool {
+func kindAllowed(filter map[wavewalletrpc.EntryKind]struct{},
+	entry *wavewalletrpc.WalletEntry) bool {
 
 	if len(filter) == 0 {
 		return true
@@ -512,10 +517,10 @@ func kindAllowed(filter map[walletdkrpc.EntryKind]struct{},
 
 // walletEntryFromEventJSON reconstructs the emitted WalletEntry from an event
 // row's protojson snapshot.
-func walletEntryFromEventJSON(entryJSON string) (*walletdkrpc.WalletEntry,
+func walletEntryFromEventJSON(entryJSON string) (*wavewalletrpc.WalletEntry,
 	error) {
 
-	var entry walletdkrpc.WalletEntry
+	var entry wavewalletrpc.WalletEntry
 	opts := protojson.UnmarshalOptions{DiscardUnknown: true}
 	if err := opts.Unmarshal([]byte(entryJSON), &entry); err != nil {
 		return nil, err
@@ -526,11 +531,11 @@ func walletEntryFromEventJSON(entryJSON string) (*walletdkrpc.WalletEntry,
 
 // entryResponse wraps a projected activity row and its cursor as a stream item.
 func entryResponse(cursor int64,
-	entry *walletdkrpc.WalletEntry) *walletdkrpc.SubscribeWalletResponse {
+	entry *wavewalletrpc.WalletEntry) *wavewalletrpc.SubscribeWalletResponse {
 
-	return &walletdkrpc.SubscribeWalletResponse{
+	return &wavewalletrpc.SubscribeWalletResponse{
 		Cursor: cursor,
-		Update: &walletdkrpc.SubscribeWalletResponse_Entry{
+		Update: &wavewalletrpc.SubscribeWalletResponse_Entry{
 			Entry: entry,
 		},
 	}
@@ -539,11 +544,11 @@ func entryResponse(cursor int64,
 // gapResponse signals the consumer fell behind the live buffer. It carries the
 // resume cursor: the consumer reconciles current state via List, then resumes
 // the subscription from it.
-func gapResponse(cursor int64) *walletdkrpc.SubscribeWalletResponse {
-	return &walletdkrpc.SubscribeWalletResponse{
+func gapResponse(cursor int64) *wavewalletrpc.SubscribeWalletResponse {
+	return &wavewalletrpc.SubscribeWalletResponse{
 		Cursor: cursor,
-		Update: &walletdkrpc.SubscribeWalletResponse_Gap{
-			Gap: &walletdkrpc.SubscribeGap{
+		Update: &wavewalletrpc.SubscribeWalletResponse_Gap{
+			Gap: &wavewalletrpc.SubscribeGap{
 				Reason: "subscriber fell behind the live " +
 					"buffer; reconcile via List and " +
 					"resume from cursor",
@@ -555,7 +560,7 @@ func gapResponse(cursor int64) *walletdkrpc.SubscribeWalletResponse {
 // fetchBalance is the shared helper that pulls the daemon's GetBalance and
 // projects its richer breakdown onto the flat wallet shape.
 func (s *Service) fetchBalance(ctx context.Context) (
-	*walletdkrpc.BalanceResponse, error) {
+	*wavewalletrpc.BalanceResponse, error) {
 
 	if s.deps.RPCServer == nil {
 		return nil, statusSwapBackendUnavailable()
@@ -586,7 +591,7 @@ func (s *Service) fetchBalance(ctx context.Context) (
 	// pending_out_sat sums outbound and in-flight value: the boarding
 	// sweep plus both in-flight VTXO buckets. confirmed_sat is VTXO-live
 	// only.
-	resp := &walletdkrpc.BalanceResponse{
+	resp := &wavewalletrpc.BalanceResponse{
 		ConfirmedSat: bal.GetVtxoBalanceSat(),
 		PendingInSat: bal.GetBoardingConfirmedSat() +
 			bal.GetBoardingUnconfirmedSat() +

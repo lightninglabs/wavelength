@@ -8,7 +8,7 @@
 The CLI was flattened into "7 top-level verbs" plus parent commands for
 power-user / raw RPC access:
 
-| Top-level | Purpose | Requires walletdkrpc? |
+| Top-level | Purpose | Requires wavewalletrpc? |
 |-----------|---------|---------------------|
 | `getinfo` | Daemon status | no |
 | `create` | Create a new wallet | yes |
@@ -23,13 +23,13 @@ power-user / raw RPC access:
 | `dev *` | Generated low-level method-by-method access | no |
 
 The user-facing verbs (`balance`, `recv`, `send`, `list`, `create`,
-`unlock`) route through the `walletdkrpc` subserver, which is gated by
-the `walletdkrpc` build tag. Default builds (`make build`, `make arktest`)
+`unlock`) route through the `wavewalletrpc` subserver, which is gated by
+the `wavewalletrpc` build tag. Default builds (`make build`, `make arktest`)
 **do not** enable it. Without the tag those verbs error with:
 
 ```
-daemon was not built with -tags walletdkrpc;
-rebuild with `make build-walletdkrpc` or see docs/walletdkrpc_build.md
+daemon was not built with -tags wavewalletrpc;
+rebuild with `make build-wavewalletrpc` or see docs/wavewalletrpc_build.md
 ```
 
 The `ark *` and `dev *` subtrees never need that tag.
@@ -37,9 +37,9 @@ The `ark *` and `dev *` subtrees never need that tag.
 ## Critical Rules
 
 1. **Pick the right surface for the build.** If you can't be sure
-   walletdkrpc is enabled, use `ark *` (named) or `dev daemon <Method>`
+   wavewalletrpc is enabled, use `ark *` (named) or `dev daemon <Method>`
    (raw). The top-level verbs are nicer ergonomics but fail loudly when
-   walletdkrpc isn't built.
+   wavewalletrpc isn't built.
 
 2. **Always use `--json` for structured input.** Pass the full RPC
    request payload directly:
@@ -63,7 +63,7 @@ The `ark *` and `dev *` subtrees never need that tag.
    - JSON: `wavecli unlock --json '{"wallet_password":"cGFzcw=="}'`
      (base64 bytes)
 
-   These require `walletdkrpc`. With the default build there is no
+   These require `wavewalletrpc`. With the default build there is no
    manual wallet-create step — the daemon initializes on startup.
 
 ## Command Reference
@@ -74,7 +74,7 @@ The `ark *` and `dev *` subtrees never need that tag.
 wavecli getinfo
 ```
 
-### Wallet bring-up (walletdkrpc only)
+### Wallet bring-up (wavewalletrpc only)
 
 ```bash
 wavecli create
@@ -84,7 +84,7 @@ wavecli recv --onchain     # boarding address
 wavecli recv --offchain --amt 5000 --memo "coffee"   # Lightning invoice
 ```
 
-### Raw boarding / balance (no walletdkrpc needed)
+### Raw boarding / balance (no wavewalletrpc needed)
 
 ```bash
 wavecli dev daemon NewAddress             # fresh boarding address
@@ -147,7 +147,7 @@ wavecli exit status --outpoint <txid:vout>
 
 ## Common workflows
 
-### Board funds (regtest, no walletdkrpc)
+### Board funds (regtest, no wavewalletrpc)
 
 ```bash
 # 1. Fresh boarding address.
@@ -164,7 +164,7 @@ wavecli dev daemon GetBalance
 wavecli ark board
 ```
 
-### OOR transfer (no walletdkrpc)
+### OOR transfer (no wavewalletrpc)
 
 ```bash
 PUBKEY=$(wavecli-bob ark oor receive | jq -r '.pubkey_xonly_hex')
@@ -191,7 +191,7 @@ Structured errors are written to stderr as JSON:
 
 | Code | Meaning |
 |------|---------|
-| `EXECUTION_FAILED` | Command execution error (incl. missing walletdkrpc) |
+| `EXECUTION_FAILED` | Command execution error (incl. missing wavewalletrpc) |
 | `INVALID_STATUS` | Unknown VTXO status filter value |
 
 ## Global flags

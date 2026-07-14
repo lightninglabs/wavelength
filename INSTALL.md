@@ -38,11 +38,11 @@ export PATH="$(go env GOPATH)/bin:$PATH"
 ```bash
 git clone https://github.com/lightninglabs/wavelength.git
 cd wavelength
-make install-walletdkrpc
+make install-wavewalletrpc
 ```
 
 That single target builds and installs both `waved` and `wavecli` to
-`$GOPATH/bin` with the optional `walletdkrpc` + `swapruntime` subsystems
+`$GOPATH/bin` with the optional `wavewalletrpc` + `swapruntime` subsystems
 enabled. After it completes you have access to:
 
 - The top-level wallet verbs: `wavecli {create, unlock, balance, recv,
@@ -59,9 +59,9 @@ waved   --version
 wavecli --help
 ```
 
-If `wavecli balance` reports `daemon was not built with -tags walletdkrpc`,
+If `wavecli balance` reports `daemon was not built with -tags wavewalletrpc`,
 the binary on `PATH` came from a default build. Re-run
-`make install-walletdkrpc` and ensure `$GOPATH/bin` precedes any older copy.
+`make install-wavewalletrpc` and ensure `$GOPATH/bin` precedes any older copy.
 
 ---
 
@@ -74,10 +74,10 @@ the variant that matches your needs.
 |----------------------------------|----------------------------|-------------------------|--------------------------------------------------------|
 | Core (default)                   | _(none)_                   | `waved`, `wavecli`  | Headless Ark client; no swaps; power-user CLI only.    |
 | With Lightning swaps             | `swapruntime`              | `waved`, `wavecli`  | Use Lightning-to-Ark / Ark-to-Lightning swaps.         |
-| With wallet RPC (recommended)    | `walletdkrpc swapruntime`  | `waved`, `wavecli`  | Use the top-level wallet verbs and host-app SDK.       |
+| With wallet RPC (recommended)    | `wavewalletrpc swapruntime`  | `waved`, `wavecli`  | Use the top-level wallet verbs and host-app SDK.       |
 
-`walletdkrpc` is a strict superset of `swapruntime`; you cannot enable
-`walletdkrpc` without `swapruntime` (the combination is enforced at compile
+`wavewalletrpc` is a strict superset of `swapruntime`; you cannot enable
+`wavewalletrpc` without `swapruntime` (the combination is enforced at compile
 time).
 
 ### Local debug builds (output to `./bin/`)
@@ -85,7 +85,7 @@ time).
 ```bash
 make build                       # core
 make build-swapruntime           # + swap subsystem
-make build-walletdkrpc             # + walletdkrpc and swap subsystem  (recommended)
+make build-wavewalletrpc             # + wavewalletrpc and swap subsystem  (recommended)
 ```
 
 After any of these, the binaries are at:
@@ -98,11 +98,11 @@ After any of these, the binaries are at:
 ```bash
 make install                     # core
 make install-swapruntime         # + swap subsystem
-make install-walletdkrpc           # + walletdkrpc and swap subsystem  (recommended)
+make install-wavewalletrpc           # + wavewalletrpc and swap subsystem  (recommended)
 ```
 
 For more on what each tag turns on, see
-[`docs/walletdkrpc_build.md`](docs/walletdkrpc_build.md).
+[`docs/wavewalletrpc_build.md`](docs/wavewalletrpc_build.md).
 
 ---
 
@@ -122,11 +122,11 @@ go version
 #    workspace (see docs/go_workspace.md); this is normally automatic.
 go mod download
 
-# 4. Build the recommended (walletdkrpc) variant into ./bin.
-make build-walletdkrpc
+# 4. Build the recommended (wavewalletrpc) variant into ./bin.
+make build-wavewalletrpc
 
 # 5. Or install the same variant to $GOPATH/bin.
-make install-walletdkrpc
+make install-wavewalletrpc
 
 # 6. Confirm the binaries.
 ./bin/waved   --help
@@ -209,7 +209,7 @@ so `--no-tls` alone fails). Set it once via an alias — the commands below use
 alias da='wavecli --network=signet --datadir=~/.waved-signet'
 ```
 
-With a `walletdkrpc`-enabled build (`make install-walletdkrpc`):
+With a `wavewalletrpc`-enabled build (`make install-wavewalletrpc`):
 
 ```bash
 # Create a wallet (prints the seed mnemonic on stderr; write it down!).
@@ -222,7 +222,7 @@ WAVED_WALLET_PASSWORD=your_password da unlock
 To skip manual unlock entirely, pass `--wallet.password_file=/path/to/file`
 to `waved` at startup; the daemon will auto-unlock from the file.
 
-Without `walletdkrpc`, the only supported path is the password-file auto-unlock
+Without `wavewalletrpc`, the only supported path is the password-file auto-unlock
 above. The `create` / `unlock` CLI commands are not present in the default
 build. Full password-handling rules:
 [`docs/daemon_cli_guide.md`](docs/daemon_cli_guide.md#password-handling).
@@ -237,7 +237,7 @@ Using the `da` alias from the previous section:
 # 1. Daemon answers basic status.
 da getinfo
 
-# 2. (walletdkrpc only) wallet verbs work.
+# 2. (wavewalletrpc only) wallet verbs work.
 da balance
 da activity
 
@@ -248,9 +248,9 @@ da ark vtxos list
 da schema
 ```
 
-If you see `daemon was not built with -tags walletdkrpc` for the wallet
+If you see `daemon was not built with -tags wavewalletrpc` for the wallet
 verbs, your `waved` binary is the default (untagged) build. Reinstall
-with `make install-walletdkrpc`.
+with `make install-wavewalletrpc`.
 
 ---
 
@@ -260,7 +260,7 @@ Pull the latest source and reinstall the same variant you previously used:
 
 ```bash
 git pull --rebase
-make install-walletdkrpc       # or whichever variant you run
+make install-wavewalletrpc       # or whichever variant you run
 ```
 
 ---
@@ -284,9 +284,9 @@ Deleting `~/.waved` is irreversible without the recorded mnemonic.
 
 | Symptom                                                | Fix                                                                                  |
 |--------------------------------------------------------|--------------------------------------------------------------------------------------|
-| `daemon was not built with -tags walletdkrpc`            | Reinstall with `make install-walletdkrpc`.                                             |
+| `daemon was not built with -tags wavewalletrpc`            | Reinstall with `make install-wavewalletrpc`.                                             |
 | `connection refused` on `wavecli`                    | Daemon not running, or wrong `--rpcserver` address.                                  |
-| `wallet not ready`                                     | Run `wavecli unlock` (walletdkrpc), or restart `waved` with `--wallet.password_file`. |
+| `wallet not ready`                                     | Run `wavecli unlock` (wavewalletrpc), or restart `waved` with `--wallet.password_file`. |
 | `wallet already exists`                                | Use `wavecli unlock` instead of `create`.                                          |
 | `read macaroon: ... no such file`                      | CLI is looking under the wrong data dir/network; pass `--datadir` / `--network` to match the daemon (or `--macaroonpath`). |
 | `credentials require transport level security`         | A macaroon can't ride a plaintext connection; use TLS, or add `--no-macaroons` alongside `--no-tls`. |
@@ -302,8 +302,8 @@ Deeper troubleshooting (per-flag and per-backend) is in
 ## Next Steps
 
 - **Run the daemon:** [`docs/daemon_cli_guide.md`](docs/daemon_cli_guide.md)
-- **Build-tag deep dive:** [`docs/walletdkrpc_build.md`](docs/walletdkrpc_build.md)
-- **Embed the daemon in a host app:** [`docs/walletdk_integration.md`](docs/walletdk_integration.md)
+- **Build-tag deep dive:** [`docs/wavewalletrpc_build.md`](docs/wavewalletrpc_build.md)
+- **Embed the daemon in a host app:** [`docs/wavewalletdk_integration.md`](docs/wavewalletdk_integration.md)
 - **Codebase map:** [`ARCHITECTURE.md`](ARCHITECTURE.md)
 - **Contribute:** style guide and pre-commit checklist in
   [`docs/development_guidelines.md`](docs/development_guidelines.md) and

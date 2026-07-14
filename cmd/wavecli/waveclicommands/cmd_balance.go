@@ -3,12 +3,12 @@ package waveclicommands
 import (
 	"fmt"
 
-	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"github.com/spf13/cobra"
 )
 
 // newBalanceCmd builds the top-level `balance` verb. It dials
-// walletdkrpc.WalletService.Balance which returns the unified shape
+// wavewalletrpc.WalletService.Balance which returns the unified shape
 // (confirmed_sat, pending_in_sat, pending_out_sat) the wallet layer
 // projects onto every backend.
 func newBalanceCmd() *cobra.Command {
@@ -30,9 +30,9 @@ func newBalanceCmd() *cobra.Command {
 // walletBalance implements the top-level `balance` verb.
 func walletBalance(cmd *cobra.Command, _ []string) error {
 	return withWalletClient(
-		cmd, func(c walletdkrpc.WalletServiceClient) error {
+		cmd, func(c wavewalletrpc.WalletServiceClient) error {
 			resp, err := c.Balance(
-				cmd.Context(), &walletdkrpc.BalanceRequest{},
+				cmd.Context(), &wavewalletrpc.BalanceRequest{},
 			)
 			if err != nil {
 				return fmt.Errorf("balance: %w", err)

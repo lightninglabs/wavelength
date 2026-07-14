@@ -1,4 +1,4 @@
-//go:build walletdkrpc && swapruntime
+//go:build wavewalletrpc && swapruntime
 
 package main
 
@@ -7,8 +7,8 @@ import (
 	"github.com/lightninglabs/wavelength/waved"
 )
 
-// configureWalletRPC attaches the optional walletdkrpc subserver registrar
-// when waved is compiled with the walletdkrpc build tag. The tag requires
+// configureWalletRPC attaches the optional wavewalletrpc subserver registrar
+// when waved is compiled with the wavewalletrpc build tag. The tag requires
 // swapruntime because swapwallet composes the daemon-owned swap subsystem;
 // the build constraint above enforces this at compile time.
 //
@@ -31,7 +31,7 @@ func configureWalletRPC(cfg *waved.Config) {
 		cfg.RPCGatewayRegistrars, swapwallet.RegisterGateway,
 	)
 
-	// Map walletdkrpc sentinel errors to machine-readable status codes so
+	// Map wavewalletrpc sentinel errors to machine-readable status codes so
 	// clients can branch on failure cause without string matching.
 	cfg.UnaryServerInterceptors = append(
 		cfg.UnaryServerInterceptors, swapwallet.ErrorMappingInterceptor,

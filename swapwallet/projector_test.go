@@ -1,4 +1,4 @@
-//go:build walletdkrpc && swapruntime
+//go:build wavewalletrpc && swapruntime
 
 package swapwallet
 
@@ -10,7 +10,7 @@ import (
 
 	"github.com/lightninglabs/wavelength/db"
 	"github.com/lightninglabs/wavelength/db/sqlc"
-	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
@@ -114,19 +114,19 @@ func (f *fakeActivityProjector) ids() map[string]bool {
 }
 
 // sampleWalletEntry builds a fully populated SEND WalletEntry fixture.
-func sampleWalletEntry() *walletdkrpc.WalletEntry {
-	return &walletdkrpc.WalletEntry{
+func sampleWalletEntry() *wavewalletrpc.WalletEntry {
+	return &wavewalletrpc.WalletEntry{
 		Id:            "payment-hash",
-		Kind:          walletdkrpc.EntryKind_ENTRY_KIND_SEND,
-		Status:        walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		Kind:          wavewalletrpc.EntryKind_ENTRY_KIND_SEND,
+		Status:        wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
 		AmountSat:     -1000,
 		FeeSat:        10,
 		Counterparty:  "ln:invoice",
 		Note:          "coffee",
 		CreatedAtUnix: 100,
 		UpdatedAtUnix: 150,
-		Progress: &walletdkrpc.WalletEntryProgress{
-			Phase:              walletdkrpc.WalletEntryPhase(3),
+		Progress: &wavewalletrpc.WalletEntryProgress{
+			Phase:              wavewalletrpc.WalletEntryPhase(3),
 			PhaseLabel:         "awaiting_preimage",
 			PaymentHash:        "aabbcc",
 			Txid:               "deadbeef",
@@ -147,9 +147,9 @@ func TestEntryToProjection(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Equal(t, "payment-hash", p.CanonicalID)
-	require.EqualValues(t, walletdkrpc.EntryKind_ENTRY_KIND_SEND, p.Kind)
+	require.EqualValues(t, wavewalletrpc.EntryKind_ENTRY_KIND_SEND, p.Kind)
 	require.EqualValues(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING, p.Status,
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING, p.Status,
 	)
 	require.Equal(t, int64(-1000), p.AmountSat)
 	require.Equal(t, int64(10), p.FeeSat)
@@ -163,7 +163,7 @@ func TestEntryToProjection(t *testing.T) {
 	require.Equal(t, int64(150), p.UpdatedAtUnix)
 
 	// entry_json must round-trip back to an equal WalletEntry.
-	var decoded walletdkrpc.WalletEntry
+	var decoded wavewalletrpc.WalletEntry
 	require.NoError(t, protojson.Unmarshal([]byte(p.EntryJSON), &decoded))
 	require.True(t, proto.Equal(entry, &decoded))
 }
@@ -173,12 +173,12 @@ func TestEntryToProjection(t *testing.T) {
 func TestEntryToProjectionEmptyHandles(t *testing.T) {
 	t.Parallel()
 
-	entry := &walletdkrpc.WalletEntry{
+	entry := &wavewalletrpc.WalletEntry{
 		Id:            "id",
-		Kind:          walletdkrpc.EntryKind_ENTRY_KIND_RECV,
-		Status:        walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		Kind:          wavewalletrpc.EntryKind_ENTRY_KIND_RECV,
+		Status:        wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
 		CreatedAtUnix: 100,
-		Progress: &walletdkrpc.WalletEntryProgress{
+		Progress: &wavewalletrpc.WalletEntryProgress{
 			PaymentHash: "",
 			Txid:        "not-hex",
 		},
@@ -216,7 +216,7 @@ func newProjectorRuntime(t *testing.T,
 }
 
 // recvEntry reads one entry from the subscriber within a short window.
-func recvEntry(t *testing.T, sub *subscriber) *walletdkrpc.WalletEntry {
+func recvEntry(t *testing.T, sub *subscriber) *wavewalletrpc.WalletEntry {
 	t.Helper()
 
 	select {
@@ -329,12 +329,12 @@ func TestProjectAndEmitSkipsAddressScopedBoardingOverlay(t *testing.T) {
 
 	store := &fakeActivityProjector{}
 	runtime, ch := newProjectorRuntime(t, store)
-	entry := &walletdkrpc.WalletEntry{
+	entry := &wavewalletrpc.WalletEntry{
 		Id:     "deposit-bcrt1qstable",
-		Kind:   walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT,
-		Status: walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
-		Progress: &walletdkrpc.WalletEntryProgress{
-			Phase: walletdkrpc.
+		Kind:   wavewalletrpc.EntryKind_ENTRY_KIND_DEPOSIT,
+		Status: wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		Progress: &wavewalletrpc.WalletEntryProgress{
+			Phase: wavewalletrpc.
 				WalletEntryPhase_WALLET_ENTRY_PHASE_WAITING_FOR_CONFIRMATION,
 		},
 	}
@@ -343,7 +343,7 @@ func TestProjectAndEmitSkipsAddressScopedBoardingOverlay(t *testing.T) {
 	require.Empty(t, drainEntries(ch))
 	require.Equal(t, 0, store.count())
 
-	entry.Progress.Phase = walletdkrpc.
+	entry.Progress.Phase = wavewalletrpc.
 		WalletEntryPhase_WALLET_ENTRY_PHASE_SETTLING
 	entry.Progress.Txid = "confirmed-txid"
 	entry.Progress.ConfirmationHeight = 123

@@ -6,7 +6,7 @@ import (
 	btcrpcserver "github.com/btcsuite/btcwallet/rpc/rpcserver"
 	btcwalletrpc "github.com/btcsuite/btcwallet/rpc/walletrpc"
 	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
-	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
@@ -198,7 +198,7 @@ func TestWavedReadOnlyPermissions(t *testing.T) {
 }
 
 // TestWavedRPCPermissionsCoverDaemonServices registers every service the
-// swapruntime/walletdkrpc daemon serves and asserts the permission map covers
+// swapruntime/wavewalletrpc daemon serves and asserts the permission map covers
 // all their methods, via the exact check the startup validator runs. Without
 // this, an RPC added without a grant — as happened with the credit RPCs
 // (CreateCredit/RedeemCredit/ListCredits) — only fails when the daemon refuses
@@ -216,12 +216,12 @@ func TestWavedRPCPermissionsCoverDaemonServices(t *testing.T) {
 		grpcServer,
 		&swapclientrpc.UnimplementedSwapClientServiceServer{},
 	)
-	walletdkrpc.RegisterWalletServiceServer(
-		grpcServer, &walletdkrpc.UnimplementedWalletServiceServer{},
+	wavewalletrpc.RegisterWalletServiceServer(
+		grpcServer, &wavewalletrpc.UnimplementedWalletServiceServer{},
 	)
-	walletdkrpc.RegisterWalletInspectionServiceServer(
+	wavewalletrpc.RegisterWalletInspectionServiceServer(
 		grpcServer,
-		&walletdkrpc.UnimplementedWalletInspectionServiceServer{},
+		&wavewalletrpc.UnimplementedWalletInspectionServiceServer{},
 	)
 
 	_, err := registeredRPCPermissions(grpcServer)

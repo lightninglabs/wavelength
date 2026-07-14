@@ -5,12 +5,12 @@ import (
 	"io"
 	"os"
 
-	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 )
 
 // printWalletInspectionExpanded writes the expanded inspection view to stdout.
 func printWalletInspectionExpanded(
-	resp *walletdkrpc.InspectActivityResponse) error {
+	resp *wavewalletrpc.InspectActivityResponse) error {
 
 	return renderWalletInspectionExpanded(os.Stdout, resp)
 }
@@ -18,7 +18,7 @@ func printWalletInspectionExpanded(
 // renderWalletInspectionExpanded renders one inspection response as a
 // markdown-like diagnostic report.
 func renderWalletInspectionExpanded(out io.Writer,
-	resp *walletdkrpc.InspectActivityResponse) error {
+	resp *wavewalletrpc.InspectActivityResponse) error {
 
 	if resp == nil {
 		return nil
@@ -36,14 +36,14 @@ func renderWalletInspectionExpanded(out io.Writer,
 }
 
 // renderActivitySection renders the inspected wallet activity entry.
-func renderActivitySection(out io.Writer, entry *walletdkrpc.WalletEntry) {
+func renderActivitySection(out io.Writer, entry *wavewalletrpc.WalletEntry) {
 	renderActivitySectionWithTitle(out, "Activity", entry)
 }
 
 // renderActivitySectionWithTitle renders a wallet activity entry under the
 // supplied section title.
 func renderActivitySectionWithTitle(out io.Writer, title string,
-	entry *walletdkrpc.WalletEntry) {
+	entry *wavewalletrpc.WalletEntry) {
 
 	if entry == nil {
 		return
@@ -131,10 +131,10 @@ func renderActivitySectionWithTitle(out io.Writer, title string,
 
 // activityUsesPaymentHash reports whether a payment hash is meaningful for the
 // inspected activity kind.
-func activityUsesPaymentHash(entry *walletdkrpc.WalletEntry) bool {
+func activityUsesPaymentHash(entry *wavewalletrpc.WalletEntry) bool {
 	switch entry.GetKind() {
-	case walletdkrpc.EntryKind_ENTRY_KIND_SEND,
-		walletdkrpc.EntryKind_ENTRY_KIND_RECV:
+	case wavewalletrpc.EntryKind_ENTRY_KIND_SEND,
+		wavewalletrpc.EntryKind_ENTRY_KIND_RECV:
 		return true
 
 	default:
@@ -143,7 +143,7 @@ func activityUsesPaymentHash(entry *walletdkrpc.WalletEntry) bool {
 }
 
 // renderSwapSection renders swap-specific trace details.
-func renderSwapSection(out io.Writer, swap *walletdkrpc.ActivitySwapTrace) {
+func renderSwapSection(out io.Writer, swap *wavewalletrpc.ActivitySwapTrace) {
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Swap")
 	printBullet(out, 0, "payment_hash", emptyDash(swap.GetPaymentHash()))
@@ -174,7 +174,7 @@ func renderSwapSection(out io.Writer, swap *walletdkrpc.ActivitySwapTrace) {
 // renderVTXOTraceSection renders VTXO movement rows correlated to the
 // inspected activity.
 func renderVTXOTraceSection(out io.Writer,
-	rows []*walletdkrpc.ActivityVTXOTrace) {
+	rows []*wavewalletrpc.ActivityVTXOTrace) {
 
 	if len(rows) == 0 {
 		return
@@ -205,7 +205,7 @@ func renderVTXOTraceSection(out io.Writer,
 // renderLedgerTraceSection renders local ledger rows correlated to the
 // inspected activity.
 func renderLedgerTraceSection(out io.Writer,
-	rows []*walletdkrpc.ActivityLedgerTrace) {
+	rows []*wavewalletrpc.ActivityLedgerTrace) {
 
 	if len(rows) == 0 {
 		return

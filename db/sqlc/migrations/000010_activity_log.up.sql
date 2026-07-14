@@ -7,7 +7,7 @@
 -- docs/canonical_activity_log_design.md.
 
 -- activity_kinds / activity_statuses mirror the wire enums EntryKind and
--- EntryStatus (rpc/walletdkrpc/wallet.proto) one-to-one: the id column equals
+-- EntryStatus (rpc/wavewalletrpc/wallet.proto) one-to-one: the id column equals
 -- the proto enum integer, so the projection stores int64(entry.GetKind()) and
 -- int64(entry.GetStatus()) directly and the foreign keys reject any value that
 -- is not a defined wire enum.

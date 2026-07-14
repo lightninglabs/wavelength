@@ -1,11 +1,11 @@
-//go:build walletdkrpc && swapruntime
+//go:build wavewalletrpc && swapruntime
 
 package swapwallet
 
 import (
 	"testing"
 
-	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/stretchr/testify/require"
 )
@@ -17,7 +17,7 @@ func TestListViewActivityDefault(t *testing.T) {
 	t.Parallel()
 
 	h, _, _ := newHistoryFixture(t)
-	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{})
+	resp, err := h.List(t.Context(), &wavewalletrpc.ListRequest{})
 	require.NoError(t, err)
 	require.NotNil(
 		t, resp.GetActivity(),
@@ -61,8 +61,8 @@ func TestListViewVTXOsHidesTerminalStates(t *testing.T) {
 		},
 	}
 
-	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{
-		View: walletdkrpc.ListView_LIST_VIEW_VTXOS,
+	resp, err := h.List(t.Context(), &wavewalletrpc.ListRequest{
+		View: wavewalletrpc.ListView_LIST_VIEW_VTXOS,
 	})
 	require.NoError(t, err)
 
@@ -101,8 +101,8 @@ func TestListViewVTXOsPagination(t *testing.T) {
 		},
 	}
 
-	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{
-		View:   walletdkrpc.ListView_LIST_VIEW_VTXOS,
+	resp, err := h.List(t.Context(), &wavewalletrpc.ListRequest{
+		View:   wavewalletrpc.ListView_LIST_VIEW_VTXOS,
 		Limit:  2,
 		Offset: 1,
 	})
@@ -124,8 +124,8 @@ func TestListViewVTXOsRequiresRPCServer(t *testing.T) {
 	t.Cleanup(runtime.stop)
 
 	h := newHistory(deps, runtime)
-	_, err := h.List(t.Context(), &walletdkrpc.ListRequest{
-		View: walletdkrpc.ListView_LIST_VIEW_VTXOS,
+	_, err := h.List(t.Context(), &wavewalletrpc.ListRequest{
+		View: wavewalletrpc.ListView_LIST_VIEW_VTXOS,
 	})
 	require.ErrorIs(t, err, ErrSwapBackendUnavailable)
 }
@@ -162,8 +162,8 @@ func TestListViewOnchainFlattensLedgerRows(t *testing.T) {
 		HasMore: true,
 	}
 
-	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{
-		View:  walletdkrpc.ListView_LIST_VIEW_ONCHAIN,
+	resp, err := h.List(t.Context(), &wavewalletrpc.ListRequest{
+		View:  wavewalletrpc.ListView_LIST_VIEW_ONCHAIN,
 		Limit: 50,
 	})
 	require.NoError(t, err)
@@ -211,11 +211,11 @@ func TestListViewActivityForwardsLegacyFlags(t *testing.T) {
 		},
 	}
 
-	resp, err := h.List(t.Context(), &walletdkrpc.ListRequest{
-		View:        walletdkrpc.ListView_LIST_VIEW_ACTIVITY,
+	resp, err := h.List(t.Context(), &wavewalletrpc.ListRequest{
+		View:        wavewalletrpc.ListView_LIST_VIEW_ACTIVITY,
 		PendingOnly: true,
-		Kinds: []walletdkrpc.EntryKind{
-			walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT,
+		Kinds: []wavewalletrpc.EntryKind{
+			wavewalletrpc.EntryKind_ENTRY_KIND_DEPOSIT,
 		},
 	})
 	require.NoError(t, err)

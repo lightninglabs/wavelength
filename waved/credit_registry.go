@@ -79,11 +79,12 @@ func (s *Server) initCreditRegistry(ctx context.Context) error {
 	}
 	s.creditRegistry = registry
 
-	// Publish the earmark setter so the walletdkrpc subserver can wire its
-	// prepared-send store into the auto-redeem interlock once that store
-	// exists (the subserver is registered after this runs). Until then the
-	// sweep has no earmark provider and redeems on available credits alone,
-	// which is safe because no credit-backed send has been prepared yet.
+	// Publish the earmark setter so the wavewalletrpc subserver can wire
+	// its prepared-send store into the auto-redeem interlock once that
+	// store exists (the subserver is registered after this runs). Until
+	// then the sweep has no earmark provider and redeems on available
+	// credits alone, which is safe because no credit-backed send has been
+	// prepared yet.
 	s.cfg.Swap.CreditEarmarkSetter = registry.SetEarmarkProvider
 
 	// Restore any in-flight credit operations interrupted by a restart,

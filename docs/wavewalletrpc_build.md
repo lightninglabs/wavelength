@@ -1,7 +1,7 @@
-# walletdkrpc build mode
+# wavewalletrpc build mode
 
-`walletdkrpc` is an optional daemon-side subserver enabled by the
-`walletdkrpc` build tag. It exposes a flat, swap-vocabulary-free wallet API on
+`wavewalletrpc` is an optional daemon-side subserver enabled by the
+`wavewalletrpc` build tag. It exposes a flat, swap-vocabulary-free wallet API on
 top of the running `waved` daemon and composes the existing swap subsystem,
 the daemon-managed signer, the
 cooperative-leave RPC (`LeaveVTXOs`), and the unified ledger surface into one
@@ -18,13 +18,13 @@ binaries are tagged.
 
 The wallet RPC subserver lives behind paired build tags:
 
-- `walletdkrpc` — registers the wallet RPC gRPC service in the daemon and
+- `wavewalletrpc` — registers the wallet RPC gRPC service in the daemon and
   gives the top-level `wavecli` wallet verbs (`balance`, `recv`,
   `send`, `activity`, `create`, `unlock`, `exit`, `wallet-sweep`) and the
   `mcp` server's wallet tools live backing instead of an `Unimplemented`
   stub.
 - `swapruntime` — the underlying swap subsystem the wallet RPC layer
-  composes against. Required transitively: building with `walletdkrpc` but
+  composes against. Required transitively: building with `wavewalletrpc` but
   without `swapruntime` is a deliberate compile error.
 
 Default builds (no tags) include neither the swap nor wallet RPC subsystems,
@@ -36,22 +36,22 @@ so the daemon stays light for hosts that only need plain Ark RPCs.
 |--------|-------------|
 | `make build` | Debug build, neither tag. Default. |
 | `make build-swapruntime` | Debug build with `-tags swapruntime`. Adds the swap subsystem. |
-| `make build-walletdkrpc` | Debug build with `-tags "walletdkrpc swapruntime"`. Adds both swap and wallet RPC. |
+| `make build-wavewalletrpc` | Debug build with `-tags "wavewalletrpc swapruntime"`. Adds both swap and wallet RPC. |
 | `make install` | `go install` with the default tag set. |
 | `make install-swapruntime` | `go install` with `-tags swapruntime`. |
-| `make install-walletdkrpc` | `go install` with `-tags "walletdkrpc swapruntime"`. |
+| `make install-wavewalletrpc` | `go install` with `-tags "wavewalletrpc swapruntime"`. |
 
-The `walletdkrpc` targets are supersets of the `swapruntime` targets: building
-with `walletdkrpc` always pulls `swapruntime` in transitively.
+The `wavewalletrpc` targets are supersets of the `swapruntime` targets: building
+with `wavewalletrpc` always pulls `swapruntime` in transitively.
 
 ### Quick reference
 
 ```bash
 # Local debug build with the wallet RPC surface enabled.
-make build-walletdkrpc
+make build-wavewalletrpc
 
 # Or install to $GOPATH/bin.
-make install-walletdkrpc
+make install-wavewalletrpc
 ```
 
 Both binaries land in the usual locations:
@@ -61,9 +61,9 @@ Both binaries land in the usual locations:
 
 ## What gets enabled
 
-When the daemon is started from a `walletdkrpc`-tagged build:
+When the daemon is started from a `wavewalletrpc`-tagged build:
 
-- The daemon registers the `walletdkrpc.WalletService` gRPC service on its
+- The daemon registers the `wavewalletrpc.WalletService` gRPC service on its
   existing public listener. No separate port.
 - The `swapwallet` package owns the full swap lifecycle in-process: it runs
   a synchronous resume-on-startup sweep before the gRPC server accepts
@@ -76,11 +76,11 @@ When the daemon is started from a `walletdkrpc`-tagged build:
   history is available via `ark listtransactions`, the live VTXO set via
   `ark vtxos list`, and boarding-timeout sweep records via `ark sweep list`.
   Subscriptions are available from the
-  `walletdkrpc.WalletService.SubscribeWallet` RPC.
-- The `sdk/walletdk` facade can route through wallet RPC instead of the
+  `wavewalletrpc.WalletService.SubscribeWallet` RPC.
+- The `sdk/wavewalletdk` facade can route through wallet RPC instead of the
   raw swap RPCs.
 
-When the daemon is built without `walletdkrpc`, the gRPC subserver is replaced
+When the daemon is built without `wavewalletrpc`, the gRPC subserver is replaced
 by a stub that returns `Unimplemented` on every method, and the top-level
 wallet verbs return the same error so scripts depending on them fail fast
 rather than appearing to succeed. Power-user equivalents stay available
@@ -107,8 +107,8 @@ authoritative constants.
 ## Verification
 
 ```bash
-# Build the daemon with walletdkrpc enabled.
-make build-walletdkrpc
+# Build the daemon with wavewalletrpc enabled.
+make build-wavewalletrpc
 
 # Confirm the top-level wallet verbs appear in `wavecli --help`
 # (balance, recv, send, activity, create, unlock, mcp).
@@ -119,16 +119,16 @@ make build-walletdkrpc
 ./bin/wavecli ark vtxos list
 ```
 
-If `wavecli balance` returns `daemon was not built with -tags walletdkrpc`,
-the binary was built without the tag. Re-run `make build-walletdkrpc` or
-`make install-walletdkrpc`.
+If `wavecli balance` returns `daemon was not built with -tags wavewalletrpc`,
+the binary was built without the tag. Re-run `make build-wavewalletrpc` or
+`make install-wavewalletrpc`.
 
 ## Related docs
 
 - [`docs/swap_background_execution.md`](swap_background_execution.md) — the
   underlying `swapruntime` subserver that wallet RPC composes against.
-- [`docs/walletdk_integration.md`](walletdk_integration.md) — the
-  `sdk/walletdk` host-facing facade.
+- [`docs/wavewalletdk_integration.md`](wavewalletdk_integration.md) — the
+  `sdk/wavewalletdk` host-facing facade.
 - [`swapwallet/doc.go`](../swapwallet/doc.go) — package-level overview of
   the daemon-side runtime, including v1 limitations on canonical-id
   stability and onchain sweep semantics.

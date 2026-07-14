@@ -11,7 +11,7 @@ import (
 
 	btcwalletrpc "github.com/btcsuite/btcwallet/rpc/walletrpc"
 	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
-	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"github.com/lightninglabs/wavelength/waverpc"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
@@ -22,8 +22,8 @@ const outputPath = "cmd/wavecli/waveclicommands/devrpc/" +
 var expectedServices = []protoreflect.FullName{
 	"waverpc.DaemonService",
 	"swapclientrpc.SwapClientService",
-	"walletdkrpc.WalletService",
-	"walletdkrpc.WalletInspectionService",
+	"wavewalletrpc.WalletService",
+	"wavewalletrpc.WalletInspectionService",
 	"walletrpc.VersionService",
 	"walletrpc.WalletService",
 }
@@ -63,7 +63,7 @@ func collectServices() ([]serviceData, error) {
 	files := []protoreflect.FileDescriptor{
 		waverpc.File_daemon_proto,
 		swapclientrpc.File_swap_client_proto,
-		walletdkrpc.File_wallet_proto,
+		wavewalletrpc.File_wallet_proto,
 		btcwalletrpc.File_api_proto,
 	}
 
@@ -156,10 +156,10 @@ func serviceAliases(service protoreflect.ServiceDescriptor) []string {
 	case "swapclientrpc.SwapClientService":
 		return []string{"swapclient"}
 
-	case "walletdkrpc.WalletService":
+	case "wavewalletrpc.WalletService":
 		return []string{"wallet"}
 
-	case "walletdkrpc.WalletInspectionService":
+	case "wavewalletrpc.WalletInspectionService":
 		return []string{"wallet-inspection"}
 
 	case "walletrpc.VersionService":
@@ -407,8 +407,8 @@ func render(services []serviceData) ([]byte, error) {
 	)
 	buf.WriteString(
 		"	_ " +
-			"\"github.com/lightninglabs/wavelength/rpc/walletdkrp" +
-			"c\"\n",
+			"\"github.com/lightninglabs/wavelength/rpc/wavewallet" +
+			"rpc\"\n",
 	)
 	buf.WriteString(")\n\n")
 

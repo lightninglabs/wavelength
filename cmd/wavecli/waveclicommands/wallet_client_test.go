@@ -3,7 +3,7 @@ package waveclicommands
 import (
 	"testing"
 
-	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 )
@@ -200,42 +200,42 @@ func TestParseEntryKindAcceptsCanonicalForms(t *testing.T) {
 
 	cases := []struct {
 		in   string
-		want walletdkrpc.EntryKind
+		want wavewalletrpc.EntryKind
 		bad  bool
 	}{
 		{
 			"send",
-			walletdkrpc.EntryKind_ENTRY_KIND_SEND,
+			wavewalletrpc.EntryKind_ENTRY_KIND_SEND,
 			false,
 		},
 		{
 			"recv",
-			walletdkrpc.EntryKind_ENTRY_KIND_RECV,
+			wavewalletrpc.EntryKind_ENTRY_KIND_RECV,
 			false,
 		},
 		{
 			"receive",
-			walletdkrpc.EntryKind_ENTRY_KIND_RECV,
+			wavewalletrpc.EntryKind_ENTRY_KIND_RECV,
 			false,
 		},
 		{
 			"deposit",
-			walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT,
+			wavewalletrpc.EntryKind_ENTRY_KIND_DEPOSIT,
 			false,
 		},
 		{
 			"exit",
-			walletdkrpc.EntryKind_ENTRY_KIND_EXIT,
+			wavewalletrpc.EntryKind_ENTRY_KIND_EXIT,
 			false,
 		},
 		{
 			"",
-			walletdkrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
+			wavewalletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
 			true,
 		},
 		{
 			"junk",
-			walletdkrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
+			wavewalletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
 			true,
 		},
 	}

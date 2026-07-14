@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 )
@@ -18,7 +18,7 @@ func TestConfirmSendIfNeededRefusesNonTTY(t *testing.T) {
 	})
 
 	cmd := newSendCmd()
-	err := confirmSendIfNeeded(cmd, &walletdkrpc.PrepareSendResponse{})
+	err := confirmSendIfNeeded(cmd, &wavewalletrpc.PrepareSendResponse{})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "non-interactive stdin")
 }
@@ -33,7 +33,7 @@ func TestConfirmSendIfNeededForceSkipsPrompt(t *testing.T) {
 	cmd := newSendCmd()
 	require.NoError(t, cmd.Flags().Set("force", "true"))
 
-	err := confirmSendIfNeeded(cmd, &walletdkrpc.PrepareSendResponse{})
+	err := confirmSendIfNeeded(cmd, &wavewalletrpc.PrepareSendResponse{})
 	require.NoError(t, err)
 }
 
@@ -44,13 +44,13 @@ func TestPromptSendConfirmationAcceptsYes(t *testing.T) {
 	var stderr bytes.Buffer
 	cmd.SetErr(&stderr)
 
-	err := promptSendConfirmation(cmd, &walletdkrpc.PrepareSendResponse{
+	err := promptSendConfirmation(cmd, &wavewalletrpc.PrepareSendResponse{
 		AmountSat:               50_000,
 		ExpectedFeeSat:          123,
 		FeeKnown:                true,
 		ExpectedTotalOutflowSat: 50_123,
 		TotalOutflowKnown:       true,
-		Rail: walletdkrpc.
+		Rail: wavewalletrpc.
 			SendRail_SEND_RAIL_LIGHTNING,
 		DestinationSummary: "lnbc...",
 		PaymentHash:        "abcd",
@@ -67,13 +67,13 @@ func TestPromptSendConfirmationDisplaysQuoteDetails(t *testing.T) {
 	var stderr bytes.Buffer
 	cmd.SetErr(&stderr)
 
-	err := promptSendConfirmation(cmd, &walletdkrpc.PrepareSendResponse{
+	err := promptSendConfirmation(cmd, &wavewalletrpc.PrepareSendResponse{
 		AmountSat:               50_000,
 		ExpectedFeeSat:          123,
 		FeeKnown:                true,
 		ExpectedTotalOutflowSat: 50_123,
 		TotalOutflowKnown:       true,
-		Rail: walletdkrpc.
+		Rail: wavewalletrpc.
 			SendRail_SEND_RAIL_LIGHTNING,
 		DestinationSummary: "lnbcrt...",
 		InvoiceDescription: "coffee",
@@ -100,11 +100,11 @@ func TestPromptSendConfirmationUsesSweepOutflow(t *testing.T) {
 	var stderr bytes.Buffer
 	cmd.SetErr(&stderr)
 
-	err := promptSendConfirmation(cmd, &walletdkrpc.PrepareSendResponse{
+	err := promptSendConfirmation(cmd, &wavewalletrpc.PrepareSendResponse{
 		AmountSat:               0,
 		ExpectedTotalOutflowSat: 12_000,
 		TotalOutflowKnown:       true,
-		Rail: walletdkrpc.
+		Rail: wavewalletrpc.
 			SendRail_SEND_RAIL_ONCHAIN,
 	})
 	require.NoError(t, err)
@@ -116,7 +116,7 @@ func TestPromptSendConfirmationDefaultsNo(t *testing.T) {
 	cmd := newSendCmd()
 	cmd.SetIn(strings.NewReader("\n"))
 
-	err := promptSendConfirmation(cmd, &walletdkrpc.PrepareSendResponse{})
+	err := promptSendConfirmation(cmd, &wavewalletrpc.PrepareSendResponse{})
 	require.ErrorContains(t, err, "aborted by user")
 }
 

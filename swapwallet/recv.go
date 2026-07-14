@@ -1,4 +1,4 @@
-//go:build walletdkrpc && swapruntime
+//go:build wavewalletrpc && swapruntime
 
 package swapwallet
 
@@ -10,7 +10,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/lightninglabs/wavelength/credit"
 	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
-	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"github.com/lightninglabs/wavelength/waverpc"
 )
 
@@ -35,8 +35,8 @@ func newReceiver(deps *Deps, runtime *Runtime) *receiver {
 // terminal transitions) is owned by the swap subsystem; the wallet layer
 // observes those transitions through the monitor loop and projects them
 // onto the WalletEntry shape.
-func (r *receiver) Recv(ctx context.Context, req *walletdkrpc.RecvRequest) (
-	*walletdkrpc.RecvResponse, error) {
+func (r *receiver) Recv(ctx context.Context, req *wavewalletrpc.RecvRequest) (
+	*wavewalletrpc.RecvResponse, error) {
 
 	if r == nil || r.deps == nil || r.deps.SwapService == nil {
 		return nil, ErrSwapBackendUnavailable
@@ -109,7 +109,7 @@ func (r *receiver) Recv(ctx context.Context, req *walletdkrpc.RecvRequest) (
 	// the raw (possibly-zero) direction.
 	entry := swapEntryFromSummary(
 		startResp.GetSwap(), req.GetMemo(), "",
-		walletdkrpc.EntryKind_ENTRY_KIND_RECV,
+		wavewalletrpc.EntryKind_ENTRY_KIND_RECV,
 	)
 
 	// Project the pending row on dispatch so it is visible immediately,
@@ -117,7 +117,7 @@ func (r *receiver) Recv(ctx context.Context, req *walletdkrpc.RecvRequest) (
 	// projectAndEmit): the monitor owns the swap-backed row's live emit.
 	r.runtime.project(context.WithoutCancel(ctx), entry)
 
-	return &walletdkrpc.RecvResponse{
+	return &wavewalletrpc.RecvResponse{
 		Invoice: startResp.GetInvoice(),
 		Entry:   entry,
 	}, nil
@@ -158,8 +158,9 @@ func (r *receiver) availableCreditSat(ctx context.Context) (uint64, error) {
 // restart. Each Recv is a distinct receive, so the op key is freshly random
 // (inbound receives carry no double-spend risk that would need cross-call
 // dedup).
-func (r *receiver) recvCredit(ctx context.Context, req *walletdkrpc.RecvRequest,
-	amt uint64) (*walletdkrpc.RecvResponse, error) {
+func (r *receiver) recvCredit(ctx context.Context,
+	req *wavewalletrpc.RecvRequest, amt uint64) (
+	*wavewalletrpc.RecvResponse, error) {
 
 	if r.deps.CreditRegistry == nil {
 		return nil, fmt.Errorf("%w: credit subsystem unavailable",
@@ -196,10 +197,10 @@ func (r *receiver) recvCredit(ctx context.Context, req *walletdkrpc.RecvRequest,
 		req, start.OpID, start.Invoice, paymentHashHex, amt,
 	)
 
-	return &walletdkrpc.RecvResponse{
+	return &wavewalletrpc.RecvResponse{
 		Invoice: start.Invoice,
 		Entry:   entry,
-		CreditReceive: &walletdkrpc.CreditReceive{
+		CreditReceive: &wavewalletrpc.CreditReceive{
 			OperationId: start.OpID,
 			AmountSat:   amt,
 			PaymentHash: paymentHashHex,
@@ -207,31 +208,31 @@ func (r *receiver) recvCredit(ctx context.Context, req *walletdkrpc.RecvRequest,
 	}, nil
 }
 
-func creditReceiveEntry(req *walletdkrpc.RecvRequest, opID, invoice,
-	paymentHashHex string, amt uint64) *walletdkrpc.WalletEntry {
+func creditReceiveEntry(req *wavewalletrpc.RecvRequest, opID, invoice,
+	paymentHashHex string, amt uint64) *wavewalletrpc.WalletEntry {
 
 	now := nowUnix()
 
-	return &walletdkrpc.WalletEntry{
+	return &wavewalletrpc.WalletEntry{
 		Id:            opID,
-		Kind:          walletdkrpc.EntryKind_ENTRY_KIND_RECV,
-		Status:        walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		Kind:          wavewalletrpc.EntryKind_ENTRY_KIND_RECV,
+		Status:        wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
 		AmountSat:     int64(amt),
 		Counterparty:  "credit",
 		CreatedAtUnix: now,
 		UpdatedAtUnix: now,
 		Note:          req.GetMemo(),
-		Request: &walletdkrpc.WalletEntryRequest{
-			Request: &walletdkrpc.WalletEntryRequest_LightningInvoice{
-				LightningInvoice: &walletdkrpc.
+		Request: &wavewalletrpc.WalletEntryRequest{
+			Request: &wavewalletrpc.WalletEntryRequest_LightningInvoice{
+				LightningInvoice: &wavewalletrpc.
 					LightningInvoiceRequest{
 					Invoice:     invoice,
 					PaymentHash: paymentHashHex,
 				},
 			},
 		},
-		Progress: &walletdkrpc.WalletEntryProgress{
-			Phase: walletdkrpc.
+		Progress: &wavewalletrpc.WalletEntryProgress{
+			Phase: wavewalletrpc.
 				WalletEntryPhase_WALLET_ENTRY_PHASE_WAITING_FOR_PAYMENT,
 			PhaseLabel:  "waiting_for_payment",
 			PaymentHash: paymentHashHex,

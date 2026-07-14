@@ -3,14 +3,14 @@ package waveclicommands
 import (
 	"fmt"
 
-	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"github.com/spf13/cobra"
 )
 
 // newRecvCmd builds the top-level `recv` verb. Direction is chosen
 // explicitly: --offchain (default) generates a BOLT-11 Lightning
-// invoice via walletdkrpc.WalletService.Recv; --onchain returns a fresh
-// boarding address via walletdkrpc.WalletService.Deposit.
+// invoice via wavewalletrpc.WalletService.Recv; --onchain returns a fresh
+// boarding address via wavewalletrpc.WalletService.Deposit.
 func newRecvCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "recv",
@@ -75,11 +75,11 @@ func walletRecv(cmd *cobra.Command, _ []string) error {
 	}
 
 	return withWalletClient(
-		cmd, func(c walletdkrpc.WalletServiceClient) error {
+		cmd, func(c wavewalletrpc.WalletServiceClient) error {
 			if offchain {
 				resp, err := c.Recv(
 					cmd.Context(),
-					&walletdkrpc.RecvRequest{
+					&wavewalletrpc.RecvRequest{
 						AmtSat: amt,
 						Memo:   memo,
 					},
@@ -94,7 +94,7 @@ func walletRecv(cmd *cobra.Command, _ []string) error {
 
 			resp, err := c.Deposit(
 				cmd.Context(),
-				&walletdkrpc.DepositRequest{
+				&wavewalletrpc.DepositRequest{
 					AmtSatHint: amtHint,
 				},
 			)

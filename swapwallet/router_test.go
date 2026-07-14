@@ -1,4 +1,4 @@
-//go:build walletdkrpc && swapruntime
+//go:build wavewalletrpc && swapruntime
 
 package swapwallet
 
@@ -12,7 +12,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chaincfg/v2"
 	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
-	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwire"
@@ -44,18 +44,18 @@ func newRouterFixture(t *testing.T) (*router, *fakeSwapService,
 }
 
 func sendPrepared(t *testing.T, r *router,
-	resp *walletdkrpc.PrepareSendResponse) (*walletdkrpc.SendResponse,
+	resp *wavewalletrpc.PrepareSendResponse) (*wavewalletrpc.SendResponse,
 	error) {
 
 	t.Helper()
 
-	return r.Send(t.Context(), &walletdkrpc.SendRequest{
+	return r.Send(t.Context(), &wavewalletrpc.SendRequest{
 		SendIntentId: resp.GetSendIntentId(),
 	})
 }
 
 func sendPreparedInvoice(t *testing.T, r *router, invoice string,
-	maxFeeSat uint64) (*walletdkrpc.SendResponse, error) {
+	maxFeeSat uint64) (*wavewalletrpc.SendResponse, error) {
 
 	t.Helper()
 
@@ -67,7 +67,7 @@ func sendPreparedInvoice(t *testing.T, r *router, invoice string,
 	id, err := r.intents.put(intent)
 	require.NoError(t, err)
 
-	return r.Send(t.Context(), &walletdkrpc.SendRequest{
+	return r.Send(t.Context(), &wavewalletrpc.SendRequest{
 		SendIntentId: id,
 	})
 }
@@ -125,8 +125,8 @@ func TestRouterPrepareSendInvoiceRejectsWrongNetwork(t *testing.T) {
 	)
 
 	_, err := r.PrepareSend(
-		t.Context(), &walletdkrpc.PrepareSendRequest{
-			Destination: &walletdkrpc.PrepareSendRequest_Invoice{
+		t.Context(), &wavewalletrpc.PrepareSendRequest{
+			Destination: &wavewalletrpc.PrepareSendRequest_Invoice{
 				Invoice: invoice,
 			},
 		},
@@ -160,8 +160,8 @@ func TestRouterPrepareSendInvoiceReturnsRemoteQuote(t *testing.T) {
 	}
 
 	resp, err := r.PrepareSend(
-		t.Context(), &walletdkrpc.PrepareSendRequest{
-			Destination: &walletdkrpc.PrepareSendRequest_Invoice{
+		t.Context(), &wavewalletrpc.PrepareSendRequest{
+			Destination: &wavewalletrpc.PrepareSendRequest_Invoice{
 				Invoice: invoice,
 			},
 			AmtSat:    99_999,
@@ -172,10 +172,10 @@ func TestRouterPrepareSendInvoiceReturnsRemoteQuote(t *testing.T) {
 	require.NotEmpty(t, resp.GetSendIntentId())
 	require.Equal(t, int64(12_345), resp.GetAmountSat())
 	require.Equal(
-		t, walletdkrpc.SendRail_SEND_RAIL_LIGHTNING, resp.GetRail(),
+		t, wavewalletrpc.SendRail_SEND_RAIL_LIGHTNING, resp.GetRail(),
 	)
 	require.Equal(
-		t, walletdkrpc.SendQuoteStatus_SEND_QUOTE_STATUS_COMPLETE,
+		t, wavewalletrpc.SendQuoteStatus_SEND_QUOTE_STATUS_COMPLETE,
 		resp.GetQuoteStatus(),
 	)
 	require.True(t, resp.GetFeeKnown())
@@ -223,8 +223,8 @@ func TestRouterPrepareSendInvoiceFallsBackWhenQuoteUnavailable(t *testing.T) {
 			)
 
 			resp, err := r.PrepareSend(
-				t.Context(), &walletdkrpc.PrepareSendRequest{
-					Destination: &walletdkrpc.
+				t.Context(), &wavewalletrpc.PrepareSendRequest{
+					Destination: &wavewalletrpc.
 						PrepareSendRequest_Invoice{
 						Invoice: invoice,
 					},
@@ -235,12 +235,12 @@ func TestRouterPrepareSendInvoiceFallsBackWhenQuoteUnavailable(t *testing.T) {
 			require.NotEmpty(t, resp.GetSendIntentId())
 			require.Equal(t, int64(12_345), resp.GetAmountSat())
 			require.Equal(
-				t, walletdkrpc.
+				t, wavewalletrpc.
 					SendRail_SEND_RAIL_OFFCHAIN_UNKNOWN,
 				resp.GetRail(),
 			)
 			require.Equal(
-				t, walletdkrpc.
+				t, wavewalletrpc.
 					SendQuoteStatus_SEND_QUOTE_STATUS_LOCAL_ONLY,
 				resp.GetQuoteStatus(),
 			)
@@ -292,19 +292,19 @@ func TestRouterPrepareSendInvoiceMapsUnknownQuoteRail(t *testing.T) {
 	}
 
 	resp, err := r.PrepareSend(
-		t.Context(), &walletdkrpc.PrepareSendRequest{
-			Destination: &walletdkrpc.PrepareSendRequest_Invoice{
+		t.Context(), &wavewalletrpc.PrepareSendRequest{
+			Destination: &wavewalletrpc.PrepareSendRequest_Invoice{
 				Invoice: invoice,
 			},
 		},
 	)
 	require.NoError(t, err)
 	require.Equal(
-		t, walletdkrpc.SendRail_SEND_RAIL_OFFCHAIN_UNKNOWN,
+		t, wavewalletrpc.SendRail_SEND_RAIL_OFFCHAIN_UNKNOWN,
 		resp.GetRail(),
 	)
 	require.Equal(
-		t, walletdkrpc.SendQuoteStatus_SEND_QUOTE_STATUS_COMPLETE,
+		t, wavewalletrpc.SendQuoteStatus_SEND_QUOTE_STATUS_COMPLETE,
 		resp.GetQuoteStatus(),
 	)
 	require.True(t, resp.GetFeeKnown())
@@ -330,15 +330,16 @@ func TestRouterPrepareSendInvoiceQuotesInArk(t *testing.T) {
 	}
 
 	resp, err := r.PrepareSend(
-		t.Context(), &walletdkrpc.PrepareSendRequest{
-			Destination: &walletdkrpc.PrepareSendRequest_Invoice{
+		t.Context(), &wavewalletrpc.PrepareSendRequest{
+			Destination: &wavewalletrpc.PrepareSendRequest_Invoice{
 				Invoice: invoice,
 			},
 		},
 	)
 	require.NoError(t, err)
-	require.Equal(t, walletdkrpc.SendRail_SEND_RAIL_IN_ARK,
-		resp.GetRail())
+	require.Equal(
+		t, wavewalletrpc.SendRail_SEND_RAIL_IN_ARK, resp.GetRail(),
+	)
 	require.Equal(t, int64(0), resp.GetExpectedFeeSat())
 	require.Equal(t, int64(12_345),
 		resp.GetExpectedTotalOutflowSat())
@@ -366,8 +367,8 @@ func TestRouterPrepareSendInvoiceWarnsWhenQuoteExceedsMaxFee(t *testing.T) {
 	}
 
 	resp, err := r.PrepareSend(
-		t.Context(), &walletdkrpc.PrepareSendRequest{
-			Destination: &walletdkrpc.PrepareSendRequest_Invoice{
+		t.Context(), &wavewalletrpc.PrepareSendRequest{
+			Destination: &wavewalletrpc.PrepareSendRequest_Invoice{
 				Invoice: invoice,
 			},
 			MaxFeeSat: 1,
@@ -402,7 +403,7 @@ func TestRouterSendInvoiceDispatchesStartPay(t *testing.T) {
 	require.Equal(t, uint64(25), swap.startPayLastReq.GetMaxFeeSat())
 	require.Equal(t, "deadbeef", resp.GetEntry().GetId())
 	require.Equal(
-		t, walletdkrpc.EntryKind_ENTRY_KIND_SEND,
+		t, wavewalletrpc.EntryKind_ENTRY_KIND_SEND,
 		resp.GetEntry().GetKind(),
 	)
 }
@@ -434,7 +435,7 @@ func TestRouterSendInvoiceProjectsPendingEntry(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "deadbeef", resp.GetEntry().GetId())
 	require.Equal(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
 		resp.GetEntry().GetStatus(),
 	)
 
@@ -446,7 +447,7 @@ func TestRouterSendInvoiceProjectsPendingEntry(t *testing.T) {
 		"pending pay must be projected by payment hash on dispatch",
 	)
 	require.Equal(
-		t, int64(walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING),
+		t, int64(wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING),
 		store.lastProjection().Status,
 		"eagerly projected row must be PENDING",
 	)
@@ -479,8 +480,8 @@ func TestRouterSendInvoiceHandsCreditPayToRegistry(t *testing.T) {
 	}
 
 	prepareResp, err := r.PrepareSend(
-		t.Context(), &walletdkrpc.PrepareSendRequest{
-			Destination: &walletdkrpc.PrepareSendRequest_Invoice{
+		t.Context(), &wavewalletrpc.PrepareSendRequest{
+			Destination: &wavewalletrpc.PrepareSendRequest_Invoice{
 				Invoice: invoice,
 			},
 		},
@@ -512,7 +513,7 @@ func TestRouterSendInvoiceHandsCreditPayToRegistry(t *testing.T) {
 	// A pending SEND entry keyed by the payment hash is surfaced.
 	require.Equal(t, paymentHash, resp.GetEntry().GetId())
 	require.Equal(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
 		resp.GetEntry().GetStatus(),
 	)
 
@@ -565,8 +566,8 @@ func TestRouterSendOnchainSelectsVTXOsAndCallsLeave(t *testing.T) {
 	}
 
 	prepareResp, err := r.PrepareSend(
-		t.Context(), &walletdkrpc.PrepareSendRequest{
-			Destination: &walletdkrpc.
+		t.Context(), &wavewalletrpc.PrepareSendRequest{
+			Destination: &wavewalletrpc.
 				PrepareSendRequest_OnchainAddress{
 				OnchainAddress: "bcrt1qaddr",
 			},
@@ -575,11 +576,11 @@ func TestRouterSendOnchainSelectsVTXOsAndCallsLeave(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Equal(
-		t, walletdkrpc.SendRail_SEND_RAIL_ONCHAIN,
+		t, wavewalletrpc.SendRail_SEND_RAIL_ONCHAIN,
 		prepareResp.GetRail(),
 	)
 	require.Equal(
-		t, walletdkrpc.SendQuoteStatus_SEND_QUOTE_STATUS_COMPLETE,
+		t, wavewalletrpc.SendQuoteStatus_SEND_QUOTE_STATUS_COMPLETE,
 		prepareResp.GetQuoteStatus(),
 	)
 	require.True(t, prepareResp.GetFeeKnown())
@@ -632,7 +633,7 @@ func TestRouterSendOnchainSelectsVTXOsAndCallsLeave(t *testing.T) {
 		gotReq.GetDestination().GetAddress(),
 	)
 	require.Equal(
-		t, walletdkrpc.EntryKind_ENTRY_KIND_EXIT,
+		t, wavewalletrpc.EntryKind_ENTRY_KIND_EXIT,
 		resp.GetEntry().GetKind(),
 	)
 	require.Equal(
@@ -696,8 +697,8 @@ func TestRouterSendOnchainFeeFallsBackToLocalFloor(t *testing.T) {
 	}
 
 	prepareResp, err := r.PrepareSend(
-		t.Context(), &walletdkrpc.PrepareSendRequest{
-			Destination: &walletdkrpc.
+		t.Context(), &wavewalletrpc.PrepareSendRequest{
+			Destination: &wavewalletrpc.
 				PrepareSendRequest_OnchainAddress{
 				OnchainAddress: "bcrt1qaddr",
 			},
@@ -706,7 +707,7 @@ func TestRouterSendOnchainFeeFallsBackToLocalFloor(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Equal(
-		t, walletdkrpc.SendQuoteStatus_SEND_QUOTE_STATUS_LOCAL_ONLY,
+		t, wavewalletrpc.SendQuoteStatus_SEND_QUOTE_STATUS_LOCAL_ONLY,
 		prepareResp.GetQuoteStatus(),
 	)
 	require.False(t, prepareResp.GetFeeKnown())
@@ -748,8 +749,8 @@ func TestRouterSendOnchainRejectsWhenFundsCannotCoverFee(t *testing.T) {
 	}
 
 	_, err := r.PrepareSend(
-		t.Context(), &walletdkrpc.PrepareSendRequest{
-			Destination: &walletdkrpc.
+		t.Context(), &wavewalletrpc.PrepareSendRequest{
+			Destination: &wavewalletrpc.
 				PrepareSendRequest_OnchainAddress{
 				OnchainAddress: "bcrt1qaddr",
 			},
@@ -791,8 +792,8 @@ func TestRouterSendOnchainSweepAllRoutesToSendOnChain(t *testing.T) {
 	}
 
 	prepareResp, err := r.PrepareSend(
-		t.Context(), &walletdkrpc.PrepareSendRequest{
-			Destination: &walletdkrpc.
+		t.Context(), &wavewalletrpc.PrepareSendRequest{
+			Destination: &wavewalletrpc.
 				PrepareSendRequest_OnchainAddress{
 				OnchainAddress: "bcrt1qaddr",
 			},
@@ -847,8 +848,8 @@ func TestRouterSendOnchainDaemonErrorBubblesUp(t *testing.T) {
 	rpc.sendOnChainErr = errors.New("insufficient live VTXOs")
 
 	prepareResp, err := r.PrepareSend(
-		t.Context(), &walletdkrpc.PrepareSendRequest{
-			Destination: &walletdkrpc.
+		t.Context(), &wavewalletrpc.PrepareSendRequest{
+			Destination: &wavewalletrpc.
 				PrepareSendRequest_OnchainAddress{
 				OnchainAddress: "bcrt1qaddr",
 			},
@@ -871,8 +872,8 @@ func TestRouterSendOnchainAmtZeroRejectedWithoutSweepAll(t *testing.T) {
 
 	r, _, rpc := newRouterFixture(t)
 
-	_, err := r.PrepareSend(t.Context(), &walletdkrpc.PrepareSendRequest{
-		Destination: &walletdkrpc.PrepareSendRequest_OnchainAddress{
+	_, err := r.PrepareSend(t.Context(), &wavewalletrpc.PrepareSendRequest{
+		Destination: &wavewalletrpc.PrepareSendRequest_OnchainAddress{
 			OnchainAddress: "bcrt1qaddr",
 		},
 		AmtSat: 0,
@@ -892,8 +893,8 @@ func TestRouterSendOnchainSweepAllRequiresZeroAmt(t *testing.T) {
 
 	r, _, rpc := newRouterFixture(t)
 
-	_, err := r.PrepareSend(t.Context(), &walletdkrpc.PrepareSendRequest{
-		Destination: &walletdkrpc.PrepareSendRequest_OnchainAddress{
+	_, err := r.PrepareSend(t.Context(), &wavewalletrpc.PrepareSendRequest{
+		Destination: &wavewalletrpc.PrepareSendRequest_OnchainAddress{
 			OnchainAddress: "bcrt1qaddr",
 		},
 		AmtSat:   1_000,
@@ -921,8 +922,8 @@ func TestRouterSendOnchainInsufficientFunds(t *testing.T) {
 		},
 	}
 
-	_, err := r.PrepareSend(t.Context(), &walletdkrpc.PrepareSendRequest{
-		Destination: &walletdkrpc.PrepareSendRequest_OnchainAddress{
+	_, err := r.PrepareSend(t.Context(), &wavewalletrpc.PrepareSendRequest{
+		Destination: &wavewalletrpc.PrepareSendRequest_OnchainAddress{
 			OnchainAddress: "bcrt1qaddr",
 		},
 		AmtSat: 10_000,
@@ -942,7 +943,7 @@ func TestRouterPrepareSendUnsetDestinationRejected(t *testing.T) {
 	r, _, _ := newRouterFixture(t)
 
 	_, err := r.PrepareSend(
-		t.Context(), &walletdkrpc.PrepareSendRequest{},
+		t.Context(), &wavewalletrpc.PrepareSendRequest{},
 	)
 	require.ErrorIs(t, err, ErrInvalidDestination)
 }
@@ -994,7 +995,7 @@ func TestRouterSendInvoiceAmountSignedFromCallerKind(t *testing.T) {
 	resp, err := sendPreparedInvoice(t, r, "lnbc1example", 0)
 	require.NoError(t, err)
 	require.Equal(
-		t, walletdkrpc.EntryKind_ENTRY_KIND_SEND,
+		t, wavewalletrpc.EntryKind_ENTRY_KIND_SEND,
 		resp.GetEntry().GetKind(),
 	)
 	require.Equal(

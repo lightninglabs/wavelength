@@ -3,7 +3,7 @@ package waveclicommands
 import (
 	"fmt"
 
-	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"github.com/spf13/cobra"
 )
 
@@ -51,13 +51,13 @@ func walletActivity(cmd *cobra.Command, _ []string) error {
 	format, _ := cmd.Flags().GetString("format")
 
 	if err := validateListFormat(
-		format, walletdkrpc.ListView_LIST_VIEW_ACTIVITY,
+		format, wavewalletrpc.ListView_LIST_VIEW_ACTIVITY,
 	); err != nil {
 		return err
 	}
 
-	req := &walletdkrpc.ListRequest{
-		View:        walletdkrpc.ListView_LIST_VIEW_ACTIVITY,
+	req := &wavewalletrpc.ListRequest{
+		View:        wavewalletrpc.ListView_LIST_VIEW_ACTIVITY,
 		PendingOnly: pending,
 		Limit:       limit,
 		Cursor:      cursor,
@@ -71,7 +71,7 @@ func walletActivity(cmd *cobra.Command, _ []string) error {
 	}
 
 	return withWalletClient(
-		cmd, func(c walletdkrpc.WalletServiceClient) error {
+		cmd, func(c wavewalletrpc.WalletServiceClient) error {
 			resp, err := c.List(cmd.Context(), req)
 			if err != nil {
 				return fmt.Errorf("activity: %w", err)

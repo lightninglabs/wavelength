@@ -240,7 +240,7 @@ make unit-swapruntime
 ```
 
 These targets are thin wrappers around `tags="swapruntime"` (`unit-swapruntime`
-also adds `walletdkrpc`) so local developer and integration-test environments
+also adds `wavewalletrpc`) so local developer and integration-test environments
 do not need to remember the exact build tag.
 
 Implementation registration should look like the existing `DaemonService`

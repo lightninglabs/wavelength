@@ -217,7 +217,7 @@ type Ark struct {
 	//     PendingRoundAssembly immediately instead of waiting for a
 	//     batched trigger.
 	//
-	// Wallet-shaped SDK hosts (walletdk) opt in so a "deposit funds"
+	// Wallet-shaped SDK hosts (wavewalletdk) opt in so a "deposit funds"
 	// or "leave" interaction joins a round end-to-end without the host
 	// having to chase the second RPC.
 	eagerRoundJoin bool

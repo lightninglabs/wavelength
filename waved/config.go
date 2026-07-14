@@ -277,7 +277,7 @@ type Config struct {
 
 	// UnaryServerInterceptors wrap every unary RPC handler on the daemon
 	// gRPC server. Like RPCServiceRegistrars they wire compiled-in runtime
-	// capabilities (such as mapping walletdkrpc sentinel errors to
+	// capabilities (such as mapping wavewalletrpc sentinel errors to
 	// machine-readable status codes), not user-provided daemon settings.
 	UnaryServerInterceptors []grpc.UnaryServerInterceptor
 
@@ -327,20 +327,20 @@ type Config struct {
 	// registered unless the daemon is compiled with the swapruntime tag.
 	Swap *SwapConfig `mapstructure:"swap"`
 
-	// SwapWallet configures the optional walletdkrpc subserver (the
+	// SwapWallet configures the optional wavewalletrpc subserver (the
 	// simplified high-level wallet facade composed over the swap
 	// runtime and the cooperative-leave subsystem). The fields are
 	// inert in default builds because the WalletService is not
 	// registered unless the daemon is compiled with both the
-	// walletdkrpc and swapruntime tags.
+	// wavewalletrpc and swapruntime tags.
 	SwapWallet *SwapWalletConfig `mapstructure:"swapwallet"`
 
-	// ActivityStore is the canonical activity-log projector the walletdkrpc
-	// subserver writes to as wallet state advances. It is injected
-	// programmatically by the server, never deserialized, and is a
+	// ActivityStore is the canonical activity-log projector the
+	// wavewalletrpc subserver writes to as wallet state advances. It is
+	// injected programmatically by the server, never deserialized, and is a
 	// top-level field (not under SwapWallet) because the subserver is
-	// registered by build tag regardless of whether the operator supplied
-	// a [swapwallet] config section. A nil value disables projection.
+	// registered by build tag regardless of whether the operator supplied a
+	// [swapwallet] config section. A nil value disables projection.
 	ActivityStore ActivityStore `mapstructure:"-"`
 
 	// MaxOperatorFeeSat caps the per-round operator fee the client
@@ -370,15 +370,15 @@ type Config struct {
 	// leaves PendingRoundAssembly immediately. Off keeps the
 	// batched semantics that operator-driven hosts rely on
 	// (wavecli, server deployments); wallet-shaped SDK hosts
-	// (sdk/walletdk) get the eager behavior by default so
+	// (sdk/wavewalletdk) get the eager behavior by default so
 	// user-visible "deposit" and "exit" actions translate into a
 	// full round join end-to-end.
 	//
 	// DefaultConfig seeds this from defaultEagerRoundJoin(), which
-	// is build-tag-aware: false on the standalone non-walletdkrpc
-	// build and true when waved is compiled with the walletdkrpc
+	// is build-tag-aware: false on the standalone non-wavewalletrpc
+	// build and true when waved is compiled with the wavewalletrpc
 	// build tag (both the standalone cmd/waved binary and the
-	// sdk/walletdk embedded path).
+	// sdk/wavewalletdk embedded path).
 	EagerRoundJoin bool `mapstructure:"eagerroundjoin"`
 
 	// DB groups the per-backend database tuning knobs under the db.sqlite.*
@@ -616,16 +616,16 @@ type SwapConfig struct {
 	Credit CreditConfig `mapstructure:"credit"`
 
 	// SuppressResume disables swapclientserver's own synchronous
-	// resume-on-startup sweep so a higher layer (walletdkrpc subserver) can
-	// own the unified resume policy. Default false preserves identical
-	// behavior for swapruntime-only builds: the swap subserver continues
-	// to resume its pending sessions before Register returns. The flag is
-	// set programmatically by the walletdkrpc registrar; it is not loaded
+	// resume-on-startup sweep so a higher layer (wavewalletrpc subserver)
+	// can own the unified resume policy. Default false preserves identical
+	// behavior for swapruntime-only builds: the swap subserver continues to
+	// resume its pending sessions before Register returns. The flag is set
+	// programmatically by the wavewalletrpc registrar; it is not loaded
 	// from config files.
 	SuppressResume bool `mapstructure:"-"`
 
 	// Backend is populated by swapclientserver.Register after the swap
-	// subserver is fully wired. Higher layers (the walletdkrpc subserver)
+	// subserver is fully wired. Higher layers (the wavewalletrpc subserver)
 	// read this handle to drive in-Go calls into the swap runtime without
 	// going through the gRPC stub. The field is set programmatically by
 	// the registrar; it is never loaded from config files.
@@ -643,7 +643,7 @@ type SwapConfig struct {
 
 	// CreditRegistry is a lazy service-key reference to the credit registry
 	// actor, published by the daemon before the swap registrars run so the
-	// walletdkrpc subserver can route credit-backed Send/Recv through the
+	// wavewalletrpc subserver can route credit-backed Send/Recv through the
 	// credit subsystem. It resolves at Tell/Ask time, after the registry
 	// has registered under the credit service key. Nil until the daemon
 	// publishes it; set programmatically, never loaded from config files.
@@ -652,7 +652,7 @@ type SwapConfig struct {
 
 	// CreditEarmarkSetter wires the wallet's credit-earmark provider into
 	// the auto-redeem policy. The daemon populates it when it builds the
-	// credit registry; the walletdkrpc subserver calls it once its
+	// credit registry; the wavewalletrpc subserver calls it once its
 	// prepared-send store exists, so the sweep never redeems credits a
 	// pending credit-backed send is about to spend. Nil in builds without
 	// the credit subsystem; set programmatically, never from config files.
@@ -738,7 +738,7 @@ func (c SwapVHTLCRecoveryConfig) WithDefaults() SwapVHTLCRecoveryConfig {
 }
 
 // SwapBackend is the in-Go handle exposed by swapclientserver after Register
-// completes. It lets higher-level subservers (such as the walletdkrpc
+// completes. It lets higher-level subservers (such as the wavewalletrpc
 // subserver) drive the swap runtime without dialing the daemon's gRPC server
 // from inside the same process. The interface is intentionally small and grows
 // only as new wallet-layer needs arise.
@@ -751,7 +751,7 @@ type SwapBackend interface {
 	ResumePending(ctx context.Context)
 }
 
-// ActivityStore is the walletdkrpc subserver's handle on the canonical
+// ActivityStore is the wavewalletrpc subserver's handle on the canonical
 // activity log. *db.ActivityPersistenceStore satisfies it; the projector
 // writes through ProjectEntry from the emit sites and the startup backfill,
 // and the List read path pages current-state rows through ListEntries. The
@@ -791,10 +791,10 @@ type ActivityStore interface {
 	CountByStatus(ctx context.Context, status int64) (int64, error)
 }
 
-// SwapWalletConfig configures the optional walletdkrpc subserver. The struct
+// SwapWalletConfig configures the optional wavewalletrpc subserver. The struct
 // is present in all builds so configuration files stay stable, but the
 // fields are only consumed when the daemon is compiled with both the
-// walletdkrpc and swapruntime build tags.
+// wavewalletrpc and swapruntime build tags.
 type SwapWalletConfig struct {
 	// Deadline is the wallet-level timeout applied to every PENDING
 	// entry. When an entry is older than this duration without

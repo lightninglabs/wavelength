@@ -1,4 +1,4 @@
-//go:build walletdkrpc && swapruntime
+//go:build wavewalletrpc && swapruntime
 
 package swapwallet
 
@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
-	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
@@ -45,14 +45,14 @@ func TestServiceDepositReturnsAddress(t *testing.T) {
 	}
 
 	resp, err := svc.Deposit(
-		t.Context(), &walletdkrpc.DepositRequest{
+		t.Context(), &wavewalletrpc.DepositRequest{
 			AmtSatHint: 50_000,
 		},
 	)
 	require.NoError(t, err)
 	require.Equal(t, "bcrt1qboardingaddr", resp.GetOnchainAddress())
 	require.Equal(
-		t, walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT,
+		t, wavewalletrpc.EntryKind_ENTRY_KIND_DEPOSIT,
 		resp.GetEntry().GetKind(),
 	)
 	require.Equal(
@@ -92,7 +92,7 @@ func TestServiceDepositDoesNotProjectAtAllocation(t *testing.T) {
 	svc := newService(deps, runtime)
 
 	resp, err := svc.Deposit(
-		t.Context(), &walletdkrpc.DepositRequest{
+		t.Context(), &wavewalletrpc.DepositRequest{
 			AmtSatHint: 50_000,
 		},
 	)
@@ -120,7 +120,8 @@ func TestServiceWalletVerbsRejectLockedWalletBeforeWork(t *testing.T) {
 			name: "prepare send",
 			call: func(ctx context.Context, svc *Service) error {
 				_, err := svc.PrepareSend(
-					ctx, &walletdkrpc.PrepareSendRequest{},
+					ctx,
+					&wavewalletrpc.PrepareSendRequest{},
 				)
 
 				return err
@@ -130,7 +131,7 @@ func TestServiceWalletVerbsRejectLockedWalletBeforeWork(t *testing.T) {
 			name: "send",
 			call: func(ctx context.Context, svc *Service) error {
 				_, err := svc.Send(
-					ctx, &walletdkrpc.SendRequest{},
+					ctx, &wavewalletrpc.SendRequest{},
 				)
 
 				return err
@@ -140,7 +141,7 @@ func TestServiceWalletVerbsRejectLockedWalletBeforeWork(t *testing.T) {
 			name: "recv",
 			call: func(ctx context.Context, svc *Service) error {
 				_, err := svc.Recv(
-					ctx, &walletdkrpc.RecvRequest{
+					ctx, &wavewalletrpc.RecvRequest{
 						AmtSat: 50_000,
 					},
 				)
@@ -152,7 +153,7 @@ func TestServiceWalletVerbsRejectLockedWalletBeforeWork(t *testing.T) {
 			name: "deposit",
 			call: func(ctx context.Context, svc *Service) error {
 				_, err := svc.Deposit(
-					ctx, &walletdkrpc.DepositRequest{},
+					ctx, &wavewalletrpc.DepositRequest{},
 				)
 
 				return err
@@ -201,7 +202,7 @@ func TestServiceRecvWithoutRPCServerReturnsUnavailable(t *testing.T) {
 
 	svc := newService(deps, runtime)
 	_, err := svc.Recv(
-		t.Context(), &walletdkrpc.RecvRequest{
+		t.Context(), &wavewalletrpc.RecvRequest{
 			AmtSat: 50_000,
 		},
 	)
@@ -214,7 +215,7 @@ func TestServiceRecvWithoutRPCServerReturnsUnavailable(t *testing.T) {
 	// reason so the SDK can reconstruct it like an interceptor-mapped
 	// sentinel.
 	require.Equal(
-		t, walletdkrpc.ReasonSwapBackendUnavailable,
+		t, wavewalletrpc.ReasonSwapBackendUnavailable,
 		errorInfoReason(t, st),
 	)
 	require.Equal(t, 0, swap.startReceiveCalls)
@@ -242,7 +243,7 @@ func TestServiceBalanceProjectsDaemonGetBalance(t *testing.T) {
 	}
 
 	resp, err := svc.Balance(
-		t.Context(), &walletdkrpc.BalanceRequest{},
+		t.Context(), &wavewalletrpc.BalanceRequest{},
 	)
 	require.NoError(t, err)
 	require.Equal(t, int64(75_000), resp.GetConfirmedSat())
@@ -304,7 +305,7 @@ func TestServiceBalanceSurfacesInFlightVTXOs(t *testing.T) {
 			rpc.getBalanceResp = tc.balance
 
 			resp, err := svc.Balance(
-				t.Context(), &walletdkrpc.BalanceRequest{},
+				t.Context(), &wavewalletrpc.BalanceRequest{},
 			)
 			require.NoError(t, err)
 			require.Equal(
@@ -333,7 +334,7 @@ func TestServiceBalanceIncludesCredits(t *testing.T) {
 	}
 
 	resp, err := svc.Balance(
-		t.Context(), &walletdkrpc.BalanceRequest{},
+		t.Context(), &wavewalletrpc.BalanceRequest{},
 	)
 	require.NoError(t, err)
 	require.Equal(t, int64(75_000), resp.GetConfirmedSat())
@@ -356,7 +357,7 @@ func TestServiceBalanceKeepsAdoptedBoardingPending(t *testing.T) {
 	}
 
 	resp, err := svc.Balance(
-		t.Context(), &walletdkrpc.BalanceRequest{},
+		t.Context(), &wavewalletrpc.BalanceRequest{},
 	)
 	require.NoError(t, err)
 	require.Equal(t, int64(0), resp.GetConfirmedSat())
@@ -390,7 +391,7 @@ func TestServiceBalanceConfirmedExcludesBoardingUTXOs(t *testing.T) {
 	}
 
 	resp, err := svc.Balance(
-		t.Context(), &walletdkrpc.BalanceRequest{},
+		t.Context(), &wavewalletrpc.BalanceRequest{},
 	)
 	require.NoError(t, err)
 	require.Equal(t, expectedConfirmed, resp.GetConfirmedSat())
@@ -425,7 +426,7 @@ func TestServiceStatusComposesInfoBalanceAndPending(t *testing.T) {
 	rpc.listTxResp = &waverpc.ListTransactionsResponse{}
 
 	resp, err := svc.Status(
-		t.Context(), &walletdkrpc.StatusRequest{},
+		t.Context(), &wavewalletrpc.StatusRequest{},
 	)
 	require.NoError(t, err)
 	require.True(t, resp.GetReady())
@@ -451,7 +452,7 @@ func TestServiceStatusReportsSyncingWalletUnlocked(t *testing.T) {
 	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
 
 	resp, err := svc.Status(
-		t.Context(), &walletdkrpc.StatusRequest{},
+		t.Context(), &wavewalletrpc.StatusRequest{},
 	)
 	require.NoError(t, err)
 	require.False(t, resp.GetReady())

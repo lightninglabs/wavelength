@@ -60,19 +60,19 @@ Mainnet, regtest, and simnet have no public service deployment in the default
 table, so empty address fields resolve to `localhost:10010` and
 `localhost:10030`.
 
-## walletdk
+## wavewalletdk
 
 The embedded Go SDK uses the same config-level lookup. Set the network and
 wallet chain source, but leave the Ark and swap address fields empty:
 
 ```go
-cfg := walletdk.DefaultConfig()
+cfg := wavewalletdk.DefaultConfig()
 cfg.Network = "signet"
 cfg.WalletType = "lwwallet"
 cfg.WalletEsploraURL = "https://your-signet-esplora.example/api"
 
-client, err := walletdk.Start(ctx, cfg)
+client, err := wavewalletdk.Start(ctx, cfg)
 ```
 
 Set `ServerTransport` and `SwapServerTransport` to
-`walletdk.TransportREST` to select the two HTTPS gateways instead.
+`wavewalletdk.TransportREST` to select the two HTTPS gateways instead.

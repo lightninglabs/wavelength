@@ -5,13 +5,13 @@ import (
 	"os"
 	"strings"
 
-	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"github.com/spf13/cobra"
 )
 
 // newCreateCmd builds the top-level `create` verb. It is one of the
 // seven core wallet verbs (create, unlock, send, recv, activity, balance,
-// exit) and dials walletdkrpc.WalletService.Create which proxies
+// exit) and dials wavewalletrpc.WalletService.Create which proxies
 // waverpc.GenSeed + waverpc.InitWallet under the hood. Both the
 // wallet password and the optional seed passphrase are read from
 // stdin / env var / file (never CLI args) so secrets never enter argv.
@@ -118,9 +118,9 @@ func walletCreate(cmd *cobra.Command, _ []string) error {
 	}
 
 	return withWalletClient(
-		cmd, func(c walletdkrpc.WalletServiceClient) error {
+		cmd, func(c wavewalletrpc.WalletServiceClient) error {
 			resp, err := c.Create(
-				cmd.Context(), &walletdkrpc.CreateRequest{
+				cmd.Context(), &wavewalletrpc.CreateRequest{
 					WalletPassword: password,
 					SeedPassphrase: seedPassphrase,
 					Mnemonic:       mnemonic,

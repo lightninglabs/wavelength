@@ -117,7 +117,7 @@ Both tables ship as one additive sqlc migration
 
 The `kind` and `status` enums mirror the wire enums one-to-one —
 `EntryKind` (`SEND`, `RECV`, `DEPOSIT`, `EXIT`) and `EntryStatus` (`PENDING`,
-`COMPLETE`, `FAILED`) in `rpc/walletdkrpc/wallet.proto` — so a stored row maps to
+`COMPLETE`, `FAILED`) in `rpc/wavewalletrpc/wallet.proto` — so a stored row maps to
 a `WalletEntry` with no internal-to-wire translation and existing `kinds`/status
 filters keep working. An on-chain send is an `EXIT`-kind row, as `normalize.go`
 emits today; the canonical-id scheme (3.2) tells an on-chain send from a

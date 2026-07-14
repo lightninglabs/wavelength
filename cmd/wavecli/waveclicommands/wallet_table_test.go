@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	wrpc "github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	wrpc "github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"github.com/stretchr/testify/require"
 )
 

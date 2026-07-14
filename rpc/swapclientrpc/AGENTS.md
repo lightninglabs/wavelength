@@ -19,7 +19,7 @@ credit funding/redemption/listing). Registered only in swapruntime builds.
 
 - **Depended on by**: `swapclientserver` (implements the server), `swapwallet`
   (constructs/normalizes RPC types), `cmd/wavecli` (CLI + MCP bindings),
-  `rpc/restclient`, `sdk/walletdk`.
+  `rpc/restclient`, `sdk/wavewalletdk`.
 
 ## Invariants
 

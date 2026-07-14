@@ -1,4 +1,4 @@
-//go:build walletdkrpc && swapruntime
+//go:build wavewalletrpc && swapruntime
 
 package swapwallet
 
@@ -11,7 +11,7 @@ import (
 
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/db"
-	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"github.com/lightningnetwork/lnd/clock"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
@@ -27,7 +27,7 @@ type fakeSubscribeStream struct {
 	ctx context.Context
 
 	mu   sync.Mutex
-	sent []*walletdkrpc.SubscribeWalletResponse
+	sent []*wavewalletrpc.SubscribeWalletResponse
 
 	entered chan struct{}
 	release chan struct{}
@@ -42,7 +42,7 @@ func (f *fakeSubscribeStream) Context() context.Context {
 // Send records the response and, on the first call when a release gate is set,
 // signals entry and blocks until released.
 func (f *fakeSubscribeStream) Send(
-	r *walletdkrpc.SubscribeWalletResponse) error {
+	r *wavewalletrpc.SubscribeWalletResponse) error {
 
 	f.mu.Lock()
 	f.sent = append(f.sent, r)
@@ -63,12 +63,12 @@ func (f *fakeSubscribeStream) Send(
 }
 
 // responses returns a copy of everything sent so far.
-func (f *fakeSubscribeStream) responses() []*walletdkrpc.SubscribeWalletResponse {
+func (f *fakeSubscribeStream) responses() []*wavewalletrpc.SubscribeWalletResponse {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
 	return append(
-		[]*walletdkrpc.SubscribeWalletResponse(nil), f.sent...,
+		[]*wavewalletrpc.SubscribeWalletResponse(nil), f.sent...,
 	)
 }
 
@@ -100,12 +100,12 @@ func newSubscribeFixture(t *testing.T, buffer uint32) (*Service,
 // projectTestEntry writes one transition into the store and returns its
 // event_seq, so a test can assert the cursor a replay/live update carries.
 func projectTestEntry(t *testing.T, store *db.ActivityPersistenceStore,
-	id string, kind walletdkrpc.EntryKind,
-	status walletdkrpc.EntryStatus) int64 {
+	id string, kind wavewalletrpc.EntryKind,
+	status wavewalletrpc.EntryStatus) int64 {
 
 	t.Helper()
 
-	proj, err := entryToProjection(&walletdkrpc.WalletEntry{
+	proj, err := entryToProjection(&wavewalletrpc.WalletEntry{
 		Id:            id,
 		Kind:          kind,
 		Status:        status,
@@ -124,19 +124,19 @@ func projectTestEntry(t *testing.T, store *db.ActivityPersistenceStore,
 func TestReplayStart(t *testing.T) {
 	t.Parallel()
 
-	from, replay := replayStart(&walletdkrpc.SubscribeWalletRequest{
+	from, replay := replayStart(&wavewalletrpc.SubscribeWalletRequest{
 		Cursor: 7,
 	})
 	require.True(t, replay, "a non-zero cursor replays")
 	require.Equal(t, int64(7), from)
 
-	from, replay = replayStart(&walletdkrpc.SubscribeWalletRequest{
+	from, replay = replayStart(&wavewalletrpc.SubscribeWalletRequest{
 		IncludeExisting: true,
 	})
 	require.True(t, replay, "include_existing replays the full history")
 	require.Equal(t, int64(0), from)
 
-	from, replay = replayStart(&walletdkrpc.SubscribeWalletRequest{})
+	from, replay = replayStart(&wavewalletrpc.SubscribeWalletRequest{})
 	require.False(
 		t, replay, "no cursor and no include_existing is live-only",
 	)
@@ -153,19 +153,19 @@ func TestSubscribeReplaysFromCursor(t *testing.T) {
 
 	// Three transitions: a new deposit, a new send, then the send settling.
 	s1 := projectTestEntry(
-		t, store, "dep", walletdkrpc.
+		t, store, "dep", wavewalletrpc.
 			EntryKind_ENTRY_KIND_DEPOSIT,
-		walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
 	)
 	s2 := projectTestEntry(
-		t, store, "snd", walletdkrpc.
+		t, store, "snd", wavewalletrpc.
 			EntryKind_ENTRY_KIND_SEND,
-		walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
 	)
 	s3 := projectTestEntry(
-		t, store, "snd", walletdkrpc.
+		t, store, "snd", wavewalletrpc.
 			EntryKind_ENTRY_KIND_SEND,
-		walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
 	)
 
 	// Full replay from 0.
@@ -180,7 +180,7 @@ func TestSubscribeReplaysFromCursor(t *testing.T) {
 	require.Equal(t, "dep", resp[0].GetEntry().GetId())
 	require.Equal(t, s3, resp[2].GetCursor())
 	require.Equal(
-		t, walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
 		resp[2].GetEntry().GetStatus(),
 	)
 
@@ -204,18 +204,18 @@ func TestSubscribeReplayHonorsKindFilter(t *testing.T) {
 	svc, store, _ := newSubscribeFixture(t, 0)
 
 	projectTestEntry(
-		t, store, "dep", walletdkrpc.
+		t, store, "dep", wavewalletrpc.
 			EntryKind_ENTRY_KIND_DEPOSIT,
-		walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
 	)
 	projectTestEntry(
-		t, store, "snd", walletdkrpc.
+		t, store, "snd", wavewalletrpc.
 			EntryKind_ENTRY_KIND_SEND,
-		walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
 	)
 
-	filter, err := buildKindFilter([]walletdkrpc.EntryKind{
-		walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT,
+	filter, err := buildKindFilter([]wavewalletrpc.EntryKind{
+		wavewalletrpc.EntryKind_ENTRY_KIND_DEPOSIT,
 	})
 	require.NoError(t, err)
 
@@ -226,7 +226,7 @@ func TestSubscribeReplayHonorsKindFilter(t *testing.T) {
 	resp := stream.responses()
 	require.Len(t, resp, 1, "only the DEPOSIT event passes the filter")
 	require.Equal(
-		t, walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT,
+		t, wavewalletrpc.EntryKind_ENTRY_KIND_DEPOSIT,
 		resp[0].GetEntry().GetKind(),
 	)
 }
@@ -245,15 +245,15 @@ func TestSubscribeStreamsLiveUpdate(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- svc.SubscribeWallet(
-			&walletdkrpc.SubscribeWalletRequest{}, stream,
+			&wavewalletrpc.SubscribeWalletRequest{}, stream,
 		)
 	}()
 
 	// A live transition after subscribe must reach the stream.
-	runtime.projectAndEmit(context.Background(), &walletdkrpc.WalletEntry{
+	runtime.projectAndEmit(context.Background(), &wavewalletrpc.WalletEntry{
 		Id:            "live",
-		Kind:          walletdkrpc.EntryKind_ENTRY_KIND_EXIT,
-		Status:        walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		Kind:          wavewalletrpc.EntryKind_ENTRY_KIND_EXIT,
+		Status:        wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
 		CreatedAtUnix: 100,
 		UpdatedAtUnix: 100,
 	})
@@ -294,16 +294,16 @@ func TestSubscribeSignalsGapOnOverflow(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- svc.SubscribeWallet(
-			&walletdkrpc.SubscribeWalletRequest{}, stream,
+			&wavewalletrpc.SubscribeWalletRequest{}, stream,
 		)
 	}()
 
 	emit := func(id string) {
 		runtime.projectAndEmit(context.Background(),
-			&walletdkrpc.WalletEntry{
+			&wavewalletrpc.WalletEntry{
 				Id:            id,
-				Kind:          walletdkrpc.EntryKind_ENTRY_KIND_EXIT,
-				Status:        walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+				Kind:          wavewalletrpc.EntryKind_ENTRY_KIND_EXIT,
+				Status:        wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
 				CreatedAtUnix: 100,
 				UpdatedAtUnix: 100,
 			})
@@ -370,11 +370,11 @@ func TestProjectAndEmitConcurrentProducersMonotonic(t *testing.T) {
 			defer wg.Done()
 
 			runtime.projectAndEmit(context.Background(),
-				&walletdkrpc.WalletEntry{
+				&wavewalletrpc.WalletEntry{
 					Id: fmt.Sprintf("op-%d", i),
-					Kind: walletdkrpc.
+					Kind: wavewalletrpc.
 						EntryKind_ENTRY_KIND_EXIT,
-					Status: walletdkrpc.
+					Status: wavewalletrpc.
 						EntryStatus_ENTRY_STATUS_PENDING,
 					CreatedAtUnix: 100,
 					UpdatedAtUnix: 100,

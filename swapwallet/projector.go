@@ -1,4 +1,4 @@
-//go:build walletdkrpc && swapruntime
+//go:build wavewalletrpc && swapruntime
 
 package swapwallet
 
@@ -10,7 +10,7 @@ import (
 
 	"github.com/lightninglabs/wavelength/db"
 	"github.com/lightninglabs/wavelength/db/sqlc"
-	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
@@ -23,8 +23,8 @@ import (
 // follow-up side effect on the row actually landing. When no store is wired
 // (tests, or a build without a database) projection is a no-op and the legacy
 // derive-on-read path continues unchanged.
-func (r *Runtime) project(ctx context.Context, entry *walletdkrpc.WalletEntry) (
-	int64, error) {
+func (r *Runtime) project(ctx context.Context,
+	entry *wavewalletrpc.WalletEntry) (int64, error) {
 
 	if r.deps == nil || r.deps.ActivityStore == nil {
 		return 0, nil
@@ -66,10 +66,10 @@ func (r *Runtime) project(ctx context.Context, entry *walletdkrpc.WalletEntry) (
 // relying on its id. Confirmed-but-still-boarding deposits share the same id
 // and PENDING status, but carry a txid and confirmation height and must land in
 // the canonical store.
-func isUnconfirmedBoardingOverlay(entry *walletdkrpc.WalletEntry) bool {
-	return entry.GetKind() == walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT &&
-		entry.GetStatus() == walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING &&
-		entry.GetProgress().GetPhase() == walletdkrpc.
+func isUnconfirmedBoardingOverlay(entry *wavewalletrpc.WalletEntry) bool {
+	return entry.GetKind() == wavewalletrpc.EntryKind_ENTRY_KIND_DEPOSIT &&
+		entry.GetStatus() == wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING &&
+		entry.GetProgress().GetPhase() == wavewalletrpc.
 			WalletEntryPhase_WALLET_ENTRY_PHASE_WAITING_FOR_CONFIRMATION &&
 		entry.GetProgress().GetTxid() == "" &&
 		entry.GetProgress().GetConfirmationHeight() == 0
@@ -86,7 +86,7 @@ func isUnconfirmedBoardingOverlay(entry *walletdkrpc.WalletEntry) bool {
 // log or a List reconcile. Without a store there is no event log, so it emits
 // best-effort at seq 0 for a live-only stream.
 func (r *Runtime) projectAndEmit(ctx context.Context,
-	entry *walletdkrpc.WalletEntry) {
+	entry *wavewalletrpc.WalletEntry) {
 
 	r.projectEmitLocked(ctx, entry)
 }
@@ -97,7 +97,7 @@ func (r *Runtime) projectAndEmit(ctx context.Context,
 // seq (0 when change-suppressed / no store) and the projection error, so the
 // reconciler can gate its pending-clear on a durable write. See projectMu.
 func (r *Runtime) projectEmitLocked(ctx context.Context,
-	entry *walletdkrpc.WalletEntry) (int64, error) {
+	entry *wavewalletrpc.WalletEntry) (int64, error) {
 
 	r.projectMu.Lock()
 	defer r.projectMu.Unlock()
@@ -124,7 +124,7 @@ func (r *Runtime) projectEmitLocked(ctx context.Context,
 // next pass — and the pending record is cleared only after a durable project,
 // so a partial page never strands or corrupts a row.
 func (r *Runtime) projectDerivedPage(ctx context.Context,
-	entries []*walletdkrpc.WalletEntry) {
+	entries []*wavewalletrpc.WalletEntry) {
 
 	for _, entry := range entries {
 		if _, err := r.projectEmitLocked(ctx, entry); err != nil {
@@ -154,7 +154,7 @@ func (r *Runtime) projectDerivedPage(ctx context.Context,
 // projection or a row that paged out is retried on a later pass instead of
 // being stranded PENDING in the store.
 func (r *Runtime) reprojectActivity(ctx context.Context,
-	kinds []walletdkrpc.EntryKind) (int, error) {
+	kinds []wavewalletrpc.EntryKind) (int, error) {
 
 	if r.deps == nil || r.deps.ActivityStore == nil {
 		return 0, nil
@@ -168,7 +168,7 @@ func (r *Runtime) reprojectActivity(ctx context.Context,
 		projected int
 	)
 	for {
-		list, err := h.deriveActivity(ctx, &walletdkrpc.ListRequest{
+		list, err := h.deriveActivity(ctx, &wavewalletrpc.ListRequest{
 			Limit:  limit,
 			Offset: offset,
 			Kinds:  kinds,
@@ -213,14 +213,14 @@ func (r *Runtime) reprojectActivity(ctx context.Context,
 // best-effort: it is skipped and retried on the next pass, so a partial pass
 // never strands a row.
 func (r *Runtime) reprojectRecentActivity(ctx context.Context,
-	kinds []walletdkrpc.EntryKind, limit uint32) (int, error) {
+	kinds []wavewalletrpc.EntryKind, limit uint32) (int, error) {
 
 	if r.deps == nil || r.deps.ActivityStore == nil {
 		return 0, nil
 	}
 
 	h := newHistory(r.deps, r)
-	list, err := h.deriveActivity(ctx, &walletdkrpc.ListRequest{
+	list, err := h.deriveActivity(ctx, &wavewalletrpc.ListRequest{
 		Limit:  limit,
 		Offset: 0,
 		Kinds:  kinds,
@@ -242,14 +242,14 @@ func (r *Runtime) reprojectRecentActivity(ctx context.Context,
 // row, and dropping the record stops later passes from re-decorating a settled
 // row. It is a no-op for ids not in the map (e.g. unilateral rows synthesized
 // from ListVTXOs) and for non-terminal or non-EXIT rows.
-func (r *Runtime) clearProjectedTerminalExit(entry *walletdkrpc.WalletEntry) {
-	if entry.GetKind() != walletdkrpc.EntryKind_ENTRY_KIND_EXIT {
+func (r *Runtime) clearProjectedTerminalExit(entry *wavewalletrpc.WalletEntry) {
+	if entry.GetKind() != wavewalletrpc.EntryKind_ENTRY_KIND_EXIT {
 		return
 	}
 
 	switch entry.GetStatus() {
-	case walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
-		walletdkrpc.EntryStatus_ENTRY_STATUS_FAILED:
+	case wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		wavewalletrpc.EntryStatus_ENTRY_STATUS_FAILED:
 
 		r.clearPending(entry.GetId())
 	}
@@ -284,7 +284,7 @@ func (r *Runtime) backfillActivity(ctx context.Context) {
 // defined wire enum. The full entry and its request are kept as protojson so
 // the schema stays stable as those shapes evolve. Empty hex handles map to nil
 // (never a zero-length slice) to avoid the Postgres BYTEA x” pitfall.
-func entryToProjection(entry *walletdkrpc.WalletEntry) (db.ActivityProjection,
+func entryToProjection(entry *wavewalletrpc.WalletEntry) (db.ActivityProjection,
 	error) {
 
 	progress := entry.GetProgress()
@@ -372,12 +372,12 @@ func hexBytesOrNil(s string) []byte {
 // decodes instead of failing the whole page. A genuinely malformed request
 // still errors — a corrupt row is inconsistent state that should surface, not
 // be silently skipped.
-func rowToWalletEntry(row sqlc.ActivityEntry) (*walletdkrpc.WalletEntry,
+func rowToWalletEntry(row sqlc.ActivityEntry) (*wavewalletrpc.WalletEntry,
 	error) {
 
-	var request *walletdkrpc.WalletEntryRequest
+	var request *wavewalletrpc.WalletEntryRequest
 	if row.RequestJson != "" {
-		request = &walletdkrpc.WalletEntryRequest{}
+		request = &wavewalletrpc.WalletEntryRequest{}
 		opts := protojson.UnmarshalOptions{DiscardUnknown: true}
 		if err := opts.Unmarshal(
 			[]byte(row.RequestJson), request,
@@ -391,18 +391,18 @@ func rowToWalletEntry(row sqlc.ActivityEntry) (*walletdkrpc.WalletEntry,
 		confHeight = int32(row.ConfirmationHeight.Int64)
 	}
 
-	entry := &walletdkrpc.WalletEntry{
+	entry := &wavewalletrpc.WalletEntry{
 		Id:            row.CanonicalID,
-		Kind:          walletdkrpc.EntryKind(row.Kind),
-		Status:        walletdkrpc.EntryStatus(row.Status),
+		Kind:          wavewalletrpc.EntryKind(row.Kind),
+		Status:        wavewalletrpc.EntryStatus(row.Status),
 		AmountSat:     row.AmountSat,
 		FeeSat:        row.FeeSat,
 		Counterparty:  row.Counterparty,
 		Note:          row.Note,
 		FailureReason: row.FailureReason,
 		Request:       request,
-		Progress: &walletdkrpc.WalletEntryProgress{
-			Phase: walletdkrpc.WalletEntryPhase(
+		Progress: &wavewalletrpc.WalletEntryProgress{
+			Phase: wavewalletrpc.WalletEntryPhase(
 				row.Phase,
 			),
 			PhaseLabel:         row.PhaseLabel,
@@ -418,7 +418,7 @@ func rowToWalletEntry(row sqlc.ActivityEntry) (*walletdkrpc.WalletEntry,
 	// failure_code is presence-tracked on the wire: absent means "no
 	// failure", so only set it for a non-zero stored code.
 	if row.FailureCode != 0 {
-		code := walletdkrpc.EntryFailureCode(row.FailureCode)
+		code := wavewalletrpc.EntryFailureCode(row.FailureCode)
 		entry.FailureCode = &code
 	}
 

@@ -138,17 +138,17 @@ and a sufficient recovery window:
 
 ```sh
 ARK_ITEST_CLIENT_WALLET=lwwallet \
-go test -tags='itest walletdkrpc swapruntime dev nolog' -v ./itest \
+go test -tags='itest wavewalletrpc swapruntime dev nolog' -v ./itest \
   -run '^TestBoardingIntegrationRecoveryCLIFromSeedRestoresBoardingFunds$' \
   -count=1 -timeout=60m
 ```
 
-The test must be built with the same daemon-side `walletdkrpc` tag that the
+The test must be built with the same daemon-side `wavewalletrpc` tag that the
 top-level `wavecli create`, `recv`, and `balance` commands require. Without
 that tag, the CLI can connect to the daemon but the wallet service returns:
 
 ```sh
-daemon was not built with -tags walletdkrpc
+daemon was not built with -tags wavewalletrpc
 ```
 
 ## Troubleshooting

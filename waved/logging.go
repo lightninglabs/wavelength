@@ -55,8 +55,8 @@ const (
 	SwapSubsystem = "SWAP"
 
 	// WalletRPCSubsystem is the subsystem tag used for the optional
-	// walletdkrpc subserver (the simplified wallet facade composed over the
-	// swap runtime and ark/leave subsystems). It is exported so the
+	// wavewalletrpc subserver (the simplified wallet facade composed over
+	// the swap runtime and ark/leave subsystems). It is exported so the
 	// swapwallet package can reuse the daemon log manager.
 	WalletRPCSubsystem = "WRPC"
 

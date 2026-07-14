@@ -3,12 +3,12 @@ package waveclicommands
 import (
 	"fmt"
 
-	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"github.com/spf13/cobra"
 )
 
 // newUnlockCmd builds the top-level `unlock` verb. It dials
-// walletdkrpc.WalletService.Unlock which proxies
+// wavewalletrpc.WalletService.Unlock which proxies
 // waverpc.UnlockWallet. The CLI reads the wallet password from
 // stdin / WAVED_WALLET_PASSWORD / --wallet_password_file (never CLI
 // args) so secrets never enter argv.
@@ -41,9 +41,9 @@ func walletUnlock(cmd *cobra.Command, _ []string) error {
 	defer zeroBytes(password)
 
 	return withWalletClient(
-		cmd, func(c walletdkrpc.WalletServiceClient) error {
+		cmd, func(c wavewalletrpc.WalletServiceClient) error {
 			resp, err := c.Unlock(
-				cmd.Context(), &walletdkrpc.UnlockRequest{
+				cmd.Context(), &wavewalletrpc.UnlockRequest{
 					WalletPassword: password,
 				},
 			)

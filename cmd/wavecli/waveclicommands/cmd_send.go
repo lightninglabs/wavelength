@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"github.com/spf13/cobra"
 )
 
@@ -23,15 +23,15 @@ const (
 	// fast same-Ark p2p settlement is reported with minimal latency.
 	defaultSendWaitPollInterval = 200 * time.Millisecond
 
-	entryStatusUnspecified = walletdkrpc.
+	entryStatusUnspecified = wavewalletrpc.
 				EntryStatus_ENTRY_STATUS_UNSPECIFIED
-	entryStatusPending  = walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING
-	entryStatusComplete = walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE
-	entryStatusFailed   = walletdkrpc.EntryStatus_ENTRY_STATUS_FAILED
+	entryStatusPending  = wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING
+	entryStatusComplete = wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE
+	entryStatusFailed   = wavewalletrpc.EntryStatus_ENTRY_STATUS_FAILED
 )
 
 // newSendCmd builds the top-level `send` verb. It dispatches an
-// outbound payment via walletdkrpc.WalletService.Send. Direction is
+// outbound payment via wavewalletrpc.WalletService.Send. Direction is
 // chosen explicitly with --offchain (default) or --onchain: the CLI
 // does NOT sniff the destination string, so an agent cannot
 // accidentally dispatch an onchain send by passing what it thinks is an
@@ -158,25 +158,25 @@ func walletSend(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	req := &walletdkrpc.PrepareSendRequest{
+	req := &wavewalletrpc.PrepareSendRequest{
 		AmtSat:    amt,
 		MaxFeeSat: maxFee,
 		Note:      note,
 		SweepAll:  sweepAll,
 	}
 	if offchain {
-		req.Destination = &walletdkrpc.PrepareSendRequest_Invoice{
+		req.Destination = &wavewalletrpc.PrepareSendRequest_Invoice{
 			Invoice: dest,
 		}
 	} else {
-		req.Destination = &walletdkrpc.
+		req.Destination = &wavewalletrpc.
 			PrepareSendRequest_OnchainAddress{
 			OnchainAddress: dest,
 		}
 	}
 
 	return withWalletClient(
-		cmd, func(c walletdkrpc.WalletServiceClient) error {
+		cmd, func(c wavewalletrpc.WalletServiceClient) error {
 			prepareResp, err := c.PrepareSend(cmd.Context(), req)
 			if err != nil {
 				return fmt.Errorf("prepare send: %w", err)
@@ -203,7 +203,7 @@ func walletSend(cmd *cobra.Command, args []string) error {
 
 			intentID := prepareResp.GetSendIntentId()
 			resp, err := c.Send(
-				cmd.Context(), &walletdkrpc.SendRequest{
+				cmd.Context(), &wavewalletrpc.SendRequest{
 					SendIntentId: intentID,
 				},
 			)
@@ -242,7 +242,7 @@ func walletSend(cmd *cobra.Command, args []string) error {
 // emits the latest observed entry as a compact pending receipt on stdout, then
 // returns the last observed status without claiming success or failure.
 func waitForSendTerminal(cmd *cobra.Command,
-	entry *walletdkrpc.WalletEntry) error {
+	entry *wavewalletrpc.WalletEntry) error {
 
 	id := entry.GetId()
 	if id == "" {
@@ -296,12 +296,12 @@ func waitForSendTerminal(cmd *cobra.Command,
 	}
 
 	return withWalletInspectionClient(
-		cmd, func(c walletdkrpc.WalletInspectionServiceClient) error {
+		cmd, func(c wavewalletrpc.WalletInspectionServiceClient) error {
 			ticker := time.NewTicker(pollInterval)
 			defer ticker.Stop()
 
 			for {
-				req := &walletdkrpc.InspectActivityRequest{
+				req := &wavewalletrpc.InspectActivityRequest{
 					Id: id,
 				}
 				resp, err := c.InspectActivity(ctx, req)
@@ -387,7 +387,7 @@ func emptyNonEmpty(value, fallback string) string {
 }
 
 func confirmSendIfNeeded(cmd *cobra.Command,
-	resp *walletdkrpc.PrepareSendResponse) error {
+	resp *wavewalletrpc.PrepareSendResponse) error {
 
 	force, _ := cmd.Flags().GetBool("force")
 	yes, _ := cmd.Flags().GetBool("yes")
@@ -407,7 +407,7 @@ func confirmSendIfNeeded(cmd *cobra.Command,
 }
 
 func promptSendConfirmation(cmd *cobra.Command,
-	resp *walletdkrpc.PrepareSendResponse) error {
+	resp *wavewalletrpc.PrepareSendResponse) error {
 
 	out := cmd.ErrOrStderr()
 
@@ -457,7 +457,7 @@ func promptSendConfirmation(cmd *cobra.Command,
 	return nil
 }
 
-func sendPreviewHeadlineAmount(resp *walletdkrpc.PrepareSendResponse) int64 {
+func sendPreviewHeadlineAmount(resp *wavewalletrpc.PrepareSendResponse) int64 {
 	if resp == nil {
 		return 0
 	}
@@ -467,7 +467,7 @@ func sendPreviewHeadlineAmount(resp *walletdkrpc.PrepareSendResponse) int64 {
 		return amountSat
 	}
 
-	if resp.GetRail() != walletdkrpc.SendRail_SEND_RAIL_ONCHAIN {
+	if resp.GetRail() != wavewalletrpc.SendRail_SEND_RAIL_ONCHAIN {
 		return amountSat
 	}
 	if !resp.GetTotalOutflowKnown() {
@@ -477,18 +477,18 @@ func sendPreviewHeadlineAmount(resp *walletdkrpc.PrepareSendResponse) int64 {
 	return resp.GetExpectedTotalOutflowSat()
 }
 
-func sendRailLabel(rail walletdkrpc.SendRail) string {
+func sendRailLabel(rail wavewalletrpc.SendRail) string {
 	switch rail {
-	case walletdkrpc.SendRail_SEND_RAIL_IN_ARK:
+	case wavewalletrpc.SendRail_SEND_RAIL_IN_ARK:
 		return "in-Ark"
 
-	case walletdkrpc.SendRail_SEND_RAIL_LIGHTNING:
+	case wavewalletrpc.SendRail_SEND_RAIL_LIGHTNING:
 		return "Lightning"
 
-	case walletdkrpc.SendRail_SEND_RAIL_ONCHAIN:
+	case wavewalletrpc.SendRail_SEND_RAIL_ONCHAIN:
 		return "onchain"
 
-	case walletdkrpc.SendRail_SEND_RAIL_OFFCHAIN_UNKNOWN:
+	case wavewalletrpc.SendRail_SEND_RAIL_OFFCHAIN_UNKNOWN:
 		return "offchain"
 
 	default:

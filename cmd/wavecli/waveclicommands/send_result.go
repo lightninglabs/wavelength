@@ -6,7 +6,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 )
 
 // sendResult is the compact summary printed after a send settles. It distills
@@ -55,7 +55,7 @@ type sendResult struct {
 // sendResultFromEntry builds the compact summary from a wallet entry alone,
 // used both for the dispatched (still-pending) receipt and as the base for the
 // settled summary.
-func sendResultFromEntry(entry *walletdkrpc.WalletEntry) sendResult {
+func sendResultFromEntry(entry *wavewalletrpc.WalletEntry) sendResult {
 	res := sendResult{
 		Status:      formatEntryStatus(entry.GetStatus()),
 		Kind:        formatEntryKind(entry.GetKind()),
@@ -86,7 +86,7 @@ func sendResultFromEntry(entry *walletdkrpc.WalletEntry) sendResult {
 // inspection response, folding in the swap preimage and settlement type when
 // the send ran over a swap.
 func sendResultFromInspection(
-	resp *walletdkrpc.InspectActivityResponse) sendResult {
+	resp *wavewalletrpc.InspectActivityResponse) sendResult {
 
 	res := sendResultFromEntry(resp.GetEntry())
 

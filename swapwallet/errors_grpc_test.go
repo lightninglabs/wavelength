@@ -1,4 +1,4 @@
-//go:build walletdkrpc && swapruntime
+//go:build wavewalletrpc && swapruntime
 
 package swapwallet
 
@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
@@ -124,11 +124,11 @@ func TestRecvLimitSentinelsMapped(t *testing.T) {
 	}{
 		{
 			ErrAmountExceedsVTXOLimit,
-			walletdkrpc.ReasonAmountExceedsVTXOLimit,
+			wavewalletrpc.ReasonAmountExceedsVTXOLimit,
 		},
 		{
 			ErrBalanceLimitExceeded,
-			walletdkrpc.ReasonBalanceLimitExceeded,
+			wavewalletrpc.ReasonBalanceLimitExceeded,
 		},
 	}
 	for _, tc := range cases {
@@ -154,7 +154,7 @@ func TestStatusSwapBackendUnavailable(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, codes.Unavailable, st.Code())
 	require.Equal(
-		t, walletdkrpc.ReasonSwapBackendUnavailable,
+		t, wavewalletrpc.ReasonSwapBackendUnavailable,
 		errorInfoReason(t, st),
 	)
 }
@@ -183,7 +183,7 @@ func TestErrorMappingInterceptor(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, codes.InvalidArgument, st.Code())
 	require.Equal(
-		t, walletdkrpc.ReasonAmountInvalid, errorInfoReason(t, st),
+		t, wavewalletrpc.ReasonAmountInvalid, errorInfoReason(t, st),
 	)
 
 	// A handler returning a pre-formed status is passed through untouched.
@@ -200,8 +200,8 @@ func TestErrorMappingInterceptor(t *testing.T) {
 	require.Empty(t, st.Details())
 }
 
-// errorInfoReason extracts the walletdk ErrorInfo reason from a status, failing
-// the test if no walletdk detail is present.
+// errorInfoReason extracts the wavewalletdk ErrorInfo reason from a status,
+// failing the test if no wavewalletdk detail is present.
 func errorInfoReason(t *testing.T, st *status.Status) string {
 	t.Helper()
 
@@ -210,11 +210,11 @@ func errorInfoReason(t *testing.T, st *status.Status) string {
 		if !ok {
 			continue
 		}
-		require.Equal(t, walletdkrpc.FailureDomain, info.GetDomain())
+		require.Equal(t, wavewalletrpc.FailureDomain, info.GetDomain())
 
 		return info.GetReason()
 	}
-	t.Fatalf("status carried no walletdk ErrorInfo detail: %v", st)
+	t.Fatalf("status carried no wavewalletdk ErrorInfo detail: %v", st)
 
 	return ""
 }

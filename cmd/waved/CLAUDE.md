@@ -27,21 +27,21 @@ hands off to `waved.Main` to run the daemon.
 
 - **Depends on**: `waved` (`Config`, `Main`, the Server orchestrator),
   `swapclientserver` (swap subserver, `swapruntime` tag),
-  `swapwallet` (wallet subserver, `walletdkrpc`+`swapruntime` tags),
+  `swapwallet` (wallet subserver, `wavewalletrpc`+`swapruntime` tags),
   `chainbackends/bitcoindrpc` (direct package-relay submitter).
 - **Depended on by**: nothing (binary entry point).
 
 ## Invariants
 
-- `configureWalletRPC` requires BOTH the `walletdkrpc` and `swapruntime`
-  build tags (`walletdkrpc.go` has `//go:build walletdkrpc && swapruntime`);
-  a `walletdkrpc`-only build still gets the stub no-op from
-  `walletdkrpc_stub.go`, because the wallet subserver composes the daemon's
+- `configureWalletRPC` requires BOTH the `wavewalletrpc` and `swapruntime`
+  build tags (`wavewalletrpc.go` has `//go:build wavewalletrpc && swapruntime`);
+  a `wavewalletrpc`-only build still gets the stub no-op from
+  `wavewalletrpc_stub.go`, because the wallet subserver composes the daemon's
   swap subsystem and cannot exist without it.
 - `configureWalletRPC` runs AFTER `configureSwapRuntime` in `PreRunE`; the
   wallet registrar reads `cfg.Swap.Backend`, which the swap subserver
   registrar publishes, and sets `cfg.Swap.SuppressResume = true` so the
   wallet layer (not the swap subserver) drives the unified startup resume.
 - `EagerRoundJoin`'s flag default comes from `waved.DefaultConfig()`,
-  which is itself build-tag aware (true under `walletdkrpc`, false
+  which is itself build-tag aware (true under `wavewalletrpc`, false
   otherwise); `--eagerroundjoin` still overrides it either way.

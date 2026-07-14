@@ -1,4 +1,4 @@
-//go:build walletdkrpc && swapruntime
+//go:build wavewalletrpc && swapruntime
 
 package swapwallet
 
@@ -6,7 +6,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 )
 
 // reconcilerKinds are the low-volume, backfill-only kinds the reconciler
@@ -15,9 +15,9 @@ import (
 // projector. Their counts stay small (deposits and exits are rare), so a
 // full-history scan is cheap. The high-volume SEND/RECV kinds are reconciled
 // separately over a bounded window — see rawOORReconcileKinds.
-var reconcilerKinds = []walletdkrpc.EntryKind{
-	walletdkrpc.EntryKind_ENTRY_KIND_DEPOSIT,
-	walletdkrpc.EntryKind_ENTRY_KIND_EXIT,
+var reconcilerKinds = []wavewalletrpc.EntryKind{
+	wavewalletrpc.EntryKind_ENTRY_KIND_DEPOSIT,
+	wavewalletrpc.EntryKind_ENTRY_KIND_EXIT,
 }
 
 // rawOORReconcileKinds are the kinds reconciled over a bounded recent window
@@ -42,9 +42,9 @@ var reconcilerKinds = []walletdkrpc.EntryKind{
 // SEND must stay paired with RECV here: deriveActivity gates ledger collection
 // on DEPOSIT || EXIT || SEND (not RECV), so reconciling RECV without SEND would
 // silently derive no ledger rows and the raw-OOR receives would never land.
-var rawOORReconcileKinds = []walletdkrpc.EntryKind{
-	walletdkrpc.EntryKind_ENTRY_KIND_SEND,
-	walletdkrpc.EntryKind_ENTRY_KIND_RECV,
+var rawOORReconcileKinds = []wavewalletrpc.EntryKind{
+	wavewalletrpc.EntryKind_ENTRY_KIND_SEND,
+	wavewalletrpc.EntryKind_ENTRY_KIND_RECV,
 }
 
 // rawOORReconcileWindow bounds the raw-OOR reconcile to the most recent N

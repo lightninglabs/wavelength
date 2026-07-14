@@ -49,7 +49,7 @@ with different parameters is rejected.
 
 ## Client Layers
 
-Wallet-facing callers use `walletdk`. Credit details are folded into `Recv`,
+Wallet-facing callers use `wavewalletdk`. Credit details are folded into `Recv`,
 `PrepareSend`, `Send`, and `Balance`.
 
 Raw callers can use `sdk/swaps` and `swapclientrpc` directly:
@@ -58,14 +58,14 @@ Raw callers can use `sdk/swaps` and `swapclientrpc` directly:
   intent.
 - `ListCredits`: read balances, operations, and ledger entries.
 - `RedeemCredit`: low-level escape hatch for materializing credits into an Ark
-  output. `walletdk` does not expose it directly; the daemon auto-redeems
+  output. `wavewalletdk` does not expose it directly; the daemon auto-redeems
   credits into a vTXO once the balance clears a watermark, without exposing
   that decision to the caller.
 
 ```mermaid
 flowchart TB
-    APP["app / CLI"] --> WDK["sdk/walletdk"]
-    WDK --> WRPC["walletdkrpc"]
+    APP["app / CLI"] --> WDK["sdk/wavewalletdk"]
+    WDK --> WRPC["wavewalletrpc"]
     WRPC --> WW["swapwallet"]
     WW --> SCRPC["swapclientrpc"]
     SCRPC --> SCS["swapclientserver"]
@@ -149,7 +149,7 @@ preview, and call `Send` with the prepared intent id. There is no public
 ```mermaid
 sequenceDiagram
     participant App
-    participant Wallet as walletdk / swapwallet
+    participant Wallet as wavewalletdk / swapwallet
     participant Swap as swapclientserver
     participant Server as swap server
 
@@ -188,7 +188,7 @@ wallet identity account.
 
 ```mermaid
 sequenceDiagram
-    participant Wallet as walletdk / swapwallet
+    participant Wallet as wavewalletdk / swapwallet
     participant Swap as swapclientserver
     participant Server as swap server
     participant Payer as Lightning payer
@@ -210,7 +210,7 @@ the server marks the operation credited.
 
 ```mermaid
 sequenceDiagram
-    participant Wallet as walletdk / swapwallet
+    participant Wallet as wavewalletdk / swapwallet
     participant Swap as swapclientserver
     participant Daemon as Ark runtime
     participant Server as swap server

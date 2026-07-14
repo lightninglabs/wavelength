@@ -3,7 +3,7 @@ package waveclicommands
 import (
 	"fmt"
 
-	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"github.com/spf13/cobra"
 )
 
@@ -35,13 +35,13 @@ func inspectActivity(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	req := &walletdkrpc.InspectActivityRequest{
+	req := &wavewalletrpc.InspectActivityRequest{
 		Id:          args[0],
 		LedgerLimit: ledgerLimit,
 	}
 
 	return withWalletInspectionClient(
-		cmd, func(c walletdkrpc.WalletInspectionServiceClient) error {
+		cmd, func(c wavewalletrpc.WalletInspectionServiceClient) error {
 			resp, err := c.InspectActivity(cmd.Context(), req)
 			if err != nil {
 				return fmt.Errorf("activity inspect: %w", err)

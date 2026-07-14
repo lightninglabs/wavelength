@@ -1,4 +1,4 @@
-//go:build walletdkrpc && swapruntime
+//go:build wavewalletrpc && swapruntime
 
 package swapwallet
 
@@ -15,7 +15,7 @@ import (
 	"github.com/lightninglabs/wavelength/coinselect"
 	"github.com/lightninglabs/wavelength/credit"
 	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
-	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/lightningnetwork/lnd/zpay32"
 	"google.golang.org/grpc/codes"
@@ -46,8 +46,8 @@ func newRouter(deps *Deps, runtime *Runtime) *router {
 // PrepareSend validates an outbound payment and records the exact intent that
 // a later Send call may consume.
 func (r *router) PrepareSend(ctx context.Context,
-	req *walletdkrpc.PrepareSendRequest) (*walletdkrpc.PrepareSendResponse,
-	error) {
+	req *wavewalletrpc.PrepareSendRequest) (
+	*wavewalletrpc.PrepareSendResponse, error) {
 
 	if r == nil || r.deps == nil {
 		return nil, ErrSwapBackendUnavailable
@@ -57,10 +57,10 @@ func (r *router) PrepareSend(ctx context.Context,
 	}
 
 	switch dest := req.GetDestination().(type) {
-	case *walletdkrpc.PrepareSendRequest_Invoice:
+	case *wavewalletrpc.PrepareSendRequest_Invoice:
 		return r.prepareInvoice(ctx, dest.Invoice, req)
 
-	case *walletdkrpc.PrepareSendRequest_OnchainAddress:
+	case *wavewalletrpc.PrepareSendRequest_OnchainAddress:
 		return r.prepareOnchain(ctx, dest.OnchainAddress, req)
 
 	default:
@@ -69,8 +69,8 @@ func (r *router) PrepareSend(ctx context.Context,
 }
 
 // Send consumes a prepared send intent and dispatches it to the right backend.
-func (r *router) Send(ctx context.Context, req *walletdkrpc.SendRequest) (
-	*walletdkrpc.SendResponse, error) {
+func (r *router) Send(ctx context.Context, req *wavewalletrpc.SendRequest) (
+	*wavewalletrpc.SendResponse, error) {
 
 	if r == nil || r.deps == nil {
 		return nil, ErrSwapBackendUnavailable
@@ -101,8 +101,8 @@ func (r *router) Send(ctx context.Context, req *walletdkrpc.SendRequest) (
 }
 
 func (r *router) prepareInvoice(ctx context.Context, invoice string,
-	req *walletdkrpc.PrepareSendRequest) (*walletdkrpc.PrepareSendResponse,
-	error) {
+	req *wavewalletrpc.PrepareSendRequest) (
+	*wavewalletrpc.PrepareSendResponse, error) {
 
 	invoice = strings.TrimSpace(invoice)
 	if invoice == "" {
@@ -190,7 +190,7 @@ func (r *router) prepareInvoice(ctx context.Context, invoice string,
 // which performs any Ark top-up and the pay crash-safely under a stable
 // idempotency key. A pure-Lightning pay goes straight to the swap subserver.
 func (r *router) sendInvoiceIntent(ctx context.Context,
-	intent *preparedSendIntent) (*walletdkrpc.SendResponse, error) {
+	intent *preparedSendIntent) (*wavewalletrpc.SendResponse, error) {
 
 	if r.deps.SwapService == nil {
 		return nil, ErrSwapBackendUnavailable
@@ -213,7 +213,7 @@ func (r *router) sendInvoiceIntent(ctx context.Context,
 
 	entry := swapEntryFromSummary(
 		startResp.GetSwap(), intent.note, intent.invoice,
-		walletdkrpc.EntryKind_ENTRY_KIND_SEND,
+		wavewalletrpc.EntryKind_ENTRY_KIND_SEND,
 	)
 
 	// Eagerly project the just-dispatched entry into the canonical activity
@@ -244,7 +244,7 @@ func (r *router) sendInvoiceIntent(ctx context.Context,
 		actualAmountSat = int64(intent.amountSat)
 	}
 
-	return &walletdkrpc.SendResponse{
+	return &wavewalletrpc.SendResponse{
 		Entry:           entry,
 		ActualAmountSat: actualAmountSat,
 	}, nil
@@ -256,7 +256,7 @@ func (r *router) sendInvoiceIntent(ctx context.Context,
 // (idempotently) and the pay on the daemon root context, so a client disconnect
 // or restart never strands or double-funds the credits.
 func (r *router) sendCreditInvoiceIntent(ctx context.Context,
-	intent *preparedSendIntent) (*walletdkrpc.SendResponse, error) {
+	intent *preparedSendIntent) (*wavewalletrpc.SendResponse, error) {
 
 	if r.deps.CreditRegistry == nil {
 		return nil, fmt.Errorf("%w: credit subsystem unavailable",
@@ -323,7 +323,7 @@ func (r *router) sendCreditInvoiceIntent(ctx context.Context,
 	r.runtime.trackPendingEntryWithoutTimeout(entry)
 	r.runtime.projectAndEmit(context.WithoutCancel(ctx), entry)
 
-	return &walletdkrpc.SendResponse{
+	return &wavewalletrpc.SendResponse{
 		Entry:           entry,
 		ActualAmountSat: int64(intent.amountSat),
 	}, nil
@@ -346,15 +346,15 @@ func intentUsesCredit(intent *preparedSendIntent) bool {
 // keyed by the payment hash so later swap-session or credit-state updates
 // reconcile the same row.
 func creditPayEntry(intent *preparedSendIntent,
-	paymentHash [32]byte) *walletdkrpc.WalletEntry {
+	paymentHash [32]byte) *wavewalletrpc.WalletEntry {
 
 	now := nowUnix()
 	paymentHashHex := hex.EncodeToString(paymentHash[:])
 
-	return &walletdkrpc.WalletEntry{
+	return &wavewalletrpc.WalletEntry{
 		Id:     paymentHashHex,
-		Kind:   walletdkrpc.EntryKind_ENTRY_KIND_SEND,
-		Status: walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		Kind:   wavewalletrpc.EntryKind_ENTRY_KIND_SEND,
+		Status: wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
 
 		// A SEND is an outflow, so the pending credit-pay row carries a
 		// negative amount to match every other outgoing row; otherwise
@@ -364,17 +364,17 @@ func creditPayEntry(intent *preparedSendIntent,
 		CreatedAtUnix: now,
 		UpdatedAtUnix: now,
 		Note:          intent.note,
-		Request: &walletdkrpc.WalletEntryRequest{
-			Request: &walletdkrpc.WalletEntryRequest_LightningInvoice{
-				LightningInvoice: &walletdkrpc.
+		Request: &wavewalletrpc.WalletEntryRequest{
+			Request: &wavewalletrpc.WalletEntryRequest_LightningInvoice{
+				LightningInvoice: &wavewalletrpc.
 					LightningInvoiceRequest{
 					Invoice:     intent.invoice,
 					PaymentHash: paymentHashHex,
 				},
 			},
 		},
-		Progress: &walletdkrpc.WalletEntryProgress{
-			Phase: walletdkrpc.
+		Progress: &wavewalletrpc.WalletEntryProgress{
+			Phase: wavewalletrpc.
 				WalletEntryPhase_WALLET_ENTRY_PHASE_SETTLING,
 			PhaseLabel:  "settling",
 			PaymentHash: paymentHashHex,
@@ -402,8 +402,8 @@ func creditPayEntry(intent *preparedSendIntent,
 // zero amount. PrepareSend snapshots sweep_all as an explicit outpoint list;
 // VTXOs arriving after prepare are not included in the subsequent Send.
 func (r *router) prepareOnchain(ctx context.Context, addr string,
-	req *walletdkrpc.PrepareSendRequest) (*walletdkrpc.PrepareSendResponse,
-	error) {
+	req *wavewalletrpc.PrepareSendRequest) (
+	*wavewalletrpc.PrepareSendResponse, error) {
 
 	addr = strings.TrimSpace(addr)
 	if addr == "" {
@@ -541,7 +541,7 @@ func (r *router) prepareOnchain(ctx context.Context, addr string,
 
 	return prepareResponseFromIntent(
 		intent, prepareSendPreview{
-			rail:                    walletdkrpc.SendRail_SEND_RAIL_ONCHAIN,
+			rail:                    wavewalletrpc.SendRail_SEND_RAIL_ONCHAIN,
 			quoteStatus:             feeQuote.quoteStatus,
 			amountSat:               previewAmount,
 			expectedFeeSat:          feeQuote.feeSat,
@@ -567,7 +567,7 @@ func (r *router) prepareOnchain(ctx context.Context, addr string,
 // change VTXO under the #270 seal-time fee handshake. The earlier
 // "whole-VTXO sweep semantics" overpay (issue #634) is gone.
 func (r *router) sendOnchainIntent(ctx context.Context,
-	intent *preparedSendIntent) (*walletdkrpc.SendResponse, error) {
+	intent *preparedSendIntent) (*wavewalletrpc.SendResponse, error) {
 
 	if r.deps.RPCServer == nil {
 		return nil, ErrSwapBackendUnavailable
@@ -626,7 +626,7 @@ func (r *router) sendOnchainIntent(ctx context.Context,
 	// write of an already-accepted leave intent; the daemon owns this row.
 	r.runtime.projectAndEmit(context.WithoutCancel(ctx), entry)
 
-	return &walletdkrpc.SendResponse{
+	return &wavewalletrpc.SendResponse{
 		Entry:           entry,
 		ActualAmountSat: actualSat,
 	}, nil
@@ -725,8 +725,8 @@ func prepareInvoiceLocalPreview(invoice, description, paymentHash string,
 	amountSat uint64) prepareSendPreview {
 
 	return prepareSendPreview{
-		rail:                    walletdkrpc.SendRail_SEND_RAIL_OFFCHAIN_UNKNOWN,
-		quoteStatus:             walletdkrpc.SendQuoteStatus_SEND_QUOTE_STATUS_LOCAL_ONLY,
+		rail:                    wavewalletrpc.SendRail_SEND_RAIL_OFFCHAIN_UNKNOWN,
+		quoteStatus:             wavewalletrpc.SendQuoteStatus_SEND_QUOTE_STATUS_LOCAL_ONLY,
 		amountSat:               int64(amountSat),
 		expectedFeeSat:          0,
 		feeKnown:                false,
@@ -778,7 +778,7 @@ func prepareInvoicePreviewFromQuote(invoice, description, paymentHash string,
 
 	return prepareSendPreview{
 		rail: rail,
-		quoteStatus: walletdkrpc.
+		quoteStatus: wavewalletrpc.
 			SendQuoteStatus_SEND_QUOTE_STATUS_COMPLETE,
 		amountSat:               int64(quote.GetInvoiceAmountSat()),
 		expectedFeeSat:          int64(quote.GetFeeSat()),
@@ -794,13 +794,13 @@ func prepareInvoicePreviewFromQuote(invoice, description, paymentHash string,
 }
 
 func creditPreviewFromQuote(
-	quote *swapclientrpc.CreditQuote) *walletdkrpc.CreditPreview {
+	quote *swapclientrpc.CreditQuote) *wavewalletrpc.CreditPreview {
 
 	if quote == nil {
 		return nil
 	}
 
-	return &walletdkrpc.CreditPreview{
+	return &wavewalletrpc.CreditPreview{
 		MustUseCredit:      quote.GetMustUseCredit(),
 		CreditAppliedSat:   quote.GetCreditAppliedSat(),
 		CreditShortfallSat: quote.GetCreditShortfallSat(),
@@ -810,24 +810,24 @@ func creditPreviewFromQuote(
 }
 
 func sendRailFromQuoteSettlement(
-	settlementType swapclientrpc.SwapSettlementType) (walletdkrpc.SendRail,
-	error) {
+	settlementType swapclientrpc.SwapSettlementType) (
+	wavewalletrpc.SendRail, error) {
 
 	switch settlementType {
 	case swapclientrpc.
 		SwapSettlementType_SWAP_SETTLEMENT_TYPE_LIGHTNING:
-		return walletdkrpc.SendRail_SEND_RAIL_LIGHTNING, nil
+		return wavewalletrpc.SendRail_SEND_RAIL_LIGHTNING, nil
 
 	case swapclientrpc.SwapSettlementType_SWAP_SETTLEMENT_TYPE_IN_ARK:
-		return walletdkrpc.SendRail_SEND_RAIL_IN_ARK, nil
+		return wavewalletrpc.SendRail_SEND_RAIL_IN_ARK, nil
 
 	case swapclientrpc.SwapSettlementType_SWAP_SETTLEMENT_TYPE_CREDIT:
-		return walletdkrpc.SendRail_SEND_RAIL_CREDIT, nil
+		return wavewalletrpc.SendRail_SEND_RAIL_CREDIT, nil
 
 	case swapclientrpc.SwapSettlementType_SWAP_SETTLEMENT_TYPE_MIXED:
-		return walletdkrpc.SendRail_SEND_RAIL_MIXED, nil
+		return wavewalletrpc.SendRail_SEND_RAIL_MIXED, nil
 
 	default:
-		return walletdkrpc.SendRail_SEND_RAIL_OFFCHAIN_UNKNOWN, nil
+		return wavewalletrpc.SendRail_SEND_RAIL_OFFCHAIN_UNKNOWN, nil
 	}
 }

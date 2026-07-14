@@ -8,18 +8,18 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 )
 
 // validateListFormat rejects presentation formats that do not apply to the
 // selected list view.
-func validateListFormat(format string, view walletdkrpc.ListView) error {
+func validateListFormat(format string, view wavewalletrpc.ListView) error {
 	switch format {
 	case "", "json":
 		return nil
 
 	case "table", "expanded", "x":
-		if view != walletdkrpc.ListView_LIST_VIEW_ACTIVITY {
+		if view != wavewalletrpc.ListView_LIST_VIEW_ACTIVITY {
 			return fmt.Errorf("--format %s applies only to "+
 				"activity output", format)
 		}
@@ -33,13 +33,13 @@ func validateListFormat(format string, view walletdkrpc.ListView) error {
 }
 
 // printWalletActivityTable writes the compact wallet activity table to stdout.
-func printWalletActivityTable(resp *walletdkrpc.ListResponse) error {
+func printWalletActivityTable(resp *wavewalletrpc.ListResponse) error {
 	return renderWalletActivityTable(os.Stdout, resp)
 }
 
 // printWalletActivityExpanded writes the expanded wallet activity view to
 // stdout.
-func printWalletActivityExpanded(resp *walletdkrpc.ListResponse) error {
+func printWalletActivityExpanded(resp *wavewalletrpc.ListResponse) error {
 	return renderWalletActivityExpanded(os.Stdout, resp)
 }
 
@@ -47,7 +47,7 @@ func printWalletActivityExpanded(resp *walletdkrpc.ListResponse) error {
 // activity feed has more entries. The human-facing table and expanded views
 // omit the raw cursor otherwise, so without this line a caller has no way to
 // discover the token needed to reach page two.
-func printWalletActivityNextPage(resp *walletdkrpc.ListResponse) error {
+func printWalletActivityNextPage(resp *wavewalletrpc.ListResponse) error {
 	activity := resp.GetActivity()
 	if !activity.GetHasMore() {
 		return nil
@@ -63,7 +63,7 @@ func printWalletActivityNextPage(resp *walletdkrpc.ListResponse) error {
 
 // renderWalletActivityTable renders activity entries as a tabwriter table.
 func renderWalletActivityTable(out io.Writer,
-	resp *walletdkrpc.ListResponse) error {
+	resp *wavewalletrpc.ListResponse) error {
 
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 
@@ -122,7 +122,7 @@ func renderWalletActivityTable(out io.Writer,
 // renderWalletActivityExpanded renders activity entries as markdown-like
 // sections.
 func renderWalletActivityExpanded(out io.Writer,
-	resp *walletdkrpc.ListResponse) error {
+	resp *wavewalletrpc.ListResponse) error {
 
 	entries := resp.GetActivity().GetEntries()
 	for i, entry := range entries {
@@ -150,17 +150,17 @@ func formatEntryTime(ts int64) string {
 }
 
 // formatEntryKind returns the short activity kind label.
-func formatEntryKind(kind walletdkrpc.EntryKind) string {
+func formatEntryKind(kind wavewalletrpc.EntryKind) string {
 	return strings.TrimPrefix(kind.String(), "ENTRY_KIND_")
 }
 
 // formatEntryStatus returns the short activity status label.
-func formatEntryStatus(status walletdkrpc.EntryStatus) string {
+func formatEntryStatus(status wavewalletrpc.EntryStatus) string {
 	return strings.TrimPrefix(status.String(), "ENTRY_STATUS_")
 }
 
 // formatEntryPhase returns the most display-friendly lifecycle phase label.
-func formatEntryPhase(progress *walletdkrpc.WalletEntryProgress) string {
+func formatEntryPhase(progress *wavewalletrpc.WalletEntryProgress) string {
 	if progress == nil {
 		return "-"
 	}

@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"github.com/stretchr/testify/require"
 )
 
@@ -13,20 +13,20 @@ import (
 // distills down to its amount, fee, payment hash, and, crucially, the preimage
 // proof of payment, pulled from the correlated swap trace.
 func TestSendResultFromInspectionLightning(t *testing.T) {
-	resp := &walletdkrpc.InspectActivityResponse{
-		Entry: &walletdkrpc.WalletEntry{
+	resp := &wavewalletrpc.InspectActivityResponse{
+		Entry: &wavewalletrpc.WalletEntry{
 			Id:           "hash-id",
-			Kind:         walletdkrpc.EntryKind_ENTRY_KIND_SEND,
+			Kind:         wavewalletrpc.EntryKind_ENTRY_KIND_SEND,
 			Status:       entryStatusComplete,
 			AmountSat:    -1000,
 			FeeSat:       0,
 			Counterparty: "lntbs10u1p4ytrgq",
-			Progress: &walletdkrpc.WalletEntryProgress{
+			Progress: &wavewalletrpc.WalletEntryProgress{
 				PaymentHash:  "hash-id",
 				VtxoOutpoint: "5d2f:0",
 			},
 		},
-		Swap: &walletdkrpc.ActivitySwapTrace{
+		Swap: &wavewalletrpc.ActivitySwapTrace{
 			Preimage:       "a6837e6d",
 			SettlementType: "SWAP_SETTLEMENT_TYPE_IN_ARK",
 			PaymentHash:    "hash-id",
@@ -53,14 +53,14 @@ func TestSendResultFromInspectionLightning(t *testing.T) {
 // pending) receipt recovers the payment hash from the invoice request when the
 // progress snapshot has not surfaced one yet.
 func TestSendResultFromEntryFallsBackToRequestHash(t *testing.T) {
-	entry := &walletdkrpc.WalletEntry{
+	entry := &wavewalletrpc.WalletEntry{
 		Id:     "entry-id",
-		Kind:   walletdkrpc.EntryKind_ENTRY_KIND_SEND,
+		Kind:   wavewalletrpc.EntryKind_ENTRY_KIND_SEND,
 		Status: entryStatusPending,
-		Request: &walletdkrpc.WalletEntryRequest{
-			Request: &walletdkrpc.
+		Request: &wavewalletrpc.WalletEntryRequest{
+			Request: &wavewalletrpc.
 				WalletEntryRequest_LightningInvoice{
-				LightningInvoice: &walletdkrpc.
+				LightningInvoice: &wavewalletrpc.
 					LightningInvoiceRequest{
 					PaymentHash: "req-hash",
 				},

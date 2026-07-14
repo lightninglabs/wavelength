@@ -37,8 +37,8 @@ make unit pkg=waved  # run unit tests for a package
 Then create and unlock the wallet:
 
 ```bash
-# Create (password via env var for automation). Build with walletdkrpc:
-#   make build-walletdkrpc
+# Create (password via env var for automation). Build with wavewalletrpc:
+#   make build-wavewalletrpc
 WAVED_WALLET_PASSWORD=testpass wavecli create --no-tls
 
 # Or auto-unlock at startup:
@@ -72,14 +72,14 @@ All commands connect to the daemon at `--rpcserver` (default
 The CLI surface is three tiers:
 
 1. **Seven top-level wallet verbs (implicit, no parent)** — the everyday
-   surface. Backed by `walletdkrpc.WalletService` (build with
-   `make build-walletdkrpc`).
+   surface. Backed by `wavewalletrpc.WalletService` (build with
+   `make build-wavewalletrpc`).
 2. **Daemon introspection at root** — `getinfo`, `schema`, `mcp`, `dev`.
 3. **Advanced subtrees** — `ark.*` (raw waverpc) and `swap.*`
    (`swapruntime` build only).
 
-If the daemon is built without the `walletdkrpc` tag, the seven top-level
-verbs return a structured error pointing at `docs/walletdkrpc_build.md`.
+If the daemon is built without the `wavewalletrpc` tag, the seven top-level
+verbs return a structured error pointing at `docs/wavewalletrpc_build.md`.
 
 ### Top-level wallet verbs
 
@@ -121,7 +121,7 @@ wavecli exit status --outpoint TXID:VOUT --no-tls
 
 ### Advanced (`ark.*`) commands
 
-The everyday top-level verbs compose `walletdkrpc` end-to-end; `ark.*`
+The everyday top-level verbs compose `wavewalletrpc` end-to-end; `ark.*`
 surfaces the raw waverpc methods underlying them.
 
 ```bash
@@ -176,7 +176,7 @@ echo -n 'pass' | wavecli unlock --no-tls
 
 1. Start a regtest bitcoin node + esplora.
 2. Start waved in lwwallet mode (see above) built with
-   `make build-walletdkrpc`.
+   `make build-wavewalletrpc`.
 3. Create + unlock the wallet via CLI:
    `WAVED_WALLET_PASSWORD=testpass wavecli create --no-tls`
    `WAVED_WALLET_PASSWORD=testpass wavecli unlock --no-tls`
@@ -206,7 +206,7 @@ prefix, dots replaced by underscores (e.g., `WAVED_SERVER_HOST`).
 | `connection refused` | Daemon not running or wrong `--rpcserver` |
 | `wallet not ready` | Run `wavecli unlock` first |
 | `wallet already exists` | Wallet was already created; use `unlock` |
-| `daemon was not built with -tags walletdkrpc` | Rebuild with `make build-walletdkrpc`; the seven top-level verbs require the walletdkrpc tag |
+| `daemon was not built with -tags wavewalletrpc` | Rebuild with `make build-wavewalletrpc`; the seven top-level verbs require the wavewalletrpc tag |
 | `--sweep-all requires --amt=0` | On `send --onchain`: pass `--sweep-all` for "drain wallet", or set `--amt N` |
 | `--offchain and --onchain are mutually exclusive` | Pick one direction on `send` / `recv` |
 | `GenSeed: lwwallet mode only` | Switch daemon to `--wallet.type=lwwallet` |

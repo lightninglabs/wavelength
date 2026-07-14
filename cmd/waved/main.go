@@ -195,16 +195,16 @@ func newRootCmd() *cobra.Command {
 	// EagerRoundJoin makes the wallet actor drive round-joining
 	// without a follow-up Board / LeaveVTXOs RPC. The default is
 	// inherited from waved.DefaultConfig, which is build-tag
-	// aware: false on the standalone non-walletdkrpc build (operator-
-	// driven hosts) and true under the walletdkrpc build tag (wallet-
+	// aware: false on the standalone non-wavewalletrpc build (operator-
+	// driven hosts) and true under the wavewalletrpc build tag (wallet-
 	// shaped hosts). Viper precedence (flag > env > config > default)
 	// applies, so --eagerroundjoin=false still disables it under the
-	// walletdkrpc build.
+	// wavewalletrpc build.
 	f.Bool(
 		"eagerroundjoin", cfg.EagerRoundJoin, "drive round-joining "+
 			"from the wallet without waiting for an explicit "+
 			"Board / LeaveVTXOs RPC; defaults to true when "+
-			"compiled with the walletdkrpc build tag, false "+
+			"compiled with the wavewalletrpc build tag, false "+
 			"otherwise",
 	)
 

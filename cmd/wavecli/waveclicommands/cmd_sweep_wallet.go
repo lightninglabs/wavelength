@@ -3,15 +3,15 @@ package waveclicommands
 import (
 	"fmt"
 
-	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"github.com/spf13/cobra"
 )
 
 // newWalletSweepCmd builds the top-level `wallet-sweep` verb. It dials
-// walletdkrpc.WalletService.SweepWallet, which previews (or, with --broadcast,
-// publishes) a sweep of every confirmed backing-wallet UTXO to a single
-// destination address. Boarding outputs are excluded — those are handled by
-// `ark sweep`.
+// wavewalletrpc.WalletService.SweepWallet, which previews (or, with
+// --broadcast, publishes) a sweep of every confirmed backing-wallet UTXO to a
+// single destination address. Boarding outputs are excluded — those are handled
+// by `ark sweep`.
 //
 // The daemon-side logic lives entirely in the wallet actor; this command is a
 // thin client that validates the destination locally and prints the daemon's
@@ -70,7 +70,7 @@ func walletSweep(cmd *cobra.Command, _ []string) error {
 	broadcast, _ := cmd.Flags().GetBool("broadcast")
 	confTarget, _ := cmd.Flags().GetUint32("conf-target")
 
-	req := &walletdkrpc.SweepWalletRequest{
+	req := &wavewalletrpc.SweepWalletRequest{
 		DestinationAddress: destination,
 		Broadcast:          broadcast,
 		FeeRateSatPerVbyte: feeRate,
@@ -78,7 +78,7 @@ func walletSweep(cmd *cobra.Command, _ []string) error {
 	}
 
 	return withWalletClient(
-		cmd, func(c walletdkrpc.WalletServiceClient) error {
+		cmd, func(c wavewalletrpc.WalletServiceClient) error {
 			resp, err := c.SweepWallet(cmd.Context(), req)
 			if err != nil {
 				return fmt.Errorf("wallet sweep: %w", err)

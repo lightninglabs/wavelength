@@ -93,7 +93,7 @@ generate "rpc/roundpb"
 generate "rpc/swapclientrpc" 1
 
 # Generate optional daemon-owned simplified wallet RPC protos.
-generate "rpc/walletdkrpc" 1
+generate "rpc/wavewalletrpc" 1
 
 # Generate waverpc protos for the client daemon's own gRPC API.
 generate "waverpc" 1

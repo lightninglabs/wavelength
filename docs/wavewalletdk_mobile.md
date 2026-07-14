@@ -1,14 +1,14 @@
-# walletdk on mobile (gomobile)
+# wavewalletdk on mobile (gomobile)
 
-`sdk/walletdk/mobile` is a [gomobile](https://pkg.go.dev/golang.org/x/mobile/cmd/gomobile)-safe
+`sdk/wavewalletdk/mobile` is a [gomobile](https://pkg.go.dev/golang.org/x/mobile/cmd/gomobile)-safe
 facade over the wallet SDK. It lets an Android (Kotlin/Java) or iOS
 (Swift/ObjC) host drive an embedded `waved` wallet **in-process** — no
 separate daemon binary, no open socket — by reusing the private `bufconn` gRPC
-transport that [`walletdk.Start`](../sdk/walletdk/embedded.go) already sets up.
+transport that [`wavewalletdk.Start`](../sdk/wavewalletdk/embedded.go) already sets up.
 
 It borrows the *bytes-out* idea from `lightninglabs/falafel` and `lnd/mobile`
 **without** the protoc generator or their callback interfaces, because the
-`walletdk` facade already owns the wiring and `walletdk.Start` returns once gRPC
+`wavewalletdk` facade already owns the wiring and `wavewalletdk.Start` returns once gRPC
 is serving (`lnd.Main` blocks forever, so lnd needs a callback — we do not).
 
 ## Why a separate package
@@ -17,10 +17,10 @@ is serving (`lnd.Main` blocks forever, so lnd needs a callback — we do not).
 signed ints, floats, `string`, `bool`, `[]byte`, and interfaces/structs whose
 members are all of those. It cannot carry `context.Context`, channels, maps,
 `uint*`, `time.Time`, slices other than `[]byte`, or tagged-union structs — all
-of which appear throughout `walletdk`'s public API. So `mobile` is a flat
-translation layer; it never exposes the rich `walletdk` types directly.
+of which appear throughout `wavewalletdk`'s public API. So `mobile` is a flat
+translation layer; it never exposes the rich `wavewalletdk` types directly.
 
-The package is gated behind three build tags — `mobile`, `walletdkrpc`, and
+The package is gated behind three build tags — `mobile`, `wavewalletrpc`, and
 `swapruntime` — so it only compiles into a `gomobile bind` output. An ordinary
 `go build ./...` sees only the unconstrained `doc.go`.
 
@@ -39,7 +39,7 @@ is where Kotlin coroutines / Swift `async` live anyway.
 JSON (not protobuf) keeps hosts free of a protobuf runtime: decode with
 `kotlinx.serialization` on Android or `Codable` on iOS.
 
-Mind the field names. The verb DTOs in `sdk/walletdk/types.go` carry **no**
+Mind the field names. The verb DTOs in `sdk/wavewalletdk/types.go` carry **no**
 `json:"…"` tags, so `encoding/json` uses the Go field names verbatim: the wire
 keys are PascalCase (`Version`, `ConfirmedSat`, `AmountSat`, `IdentityPubKey`),
 not snake_case. Host models must map those exact names (e.g. `@SerialName`
@@ -47,7 +47,7 @@ not snake_case. Host models must map those exact names (e.g. `@SerialName`
 `Start` config, a dedicated tagged struct (`config.go`) that is snake_case
 (`data_dir`, `wallet_esplora_url`, …), and `OpenWalletFromPasskey`, whose
 request is a small camelCase-tagged struct (`prfOutput`). Every other request
-decodes into the matching `walletdk.*Request` DTO, so it follows the
+decodes into the matching `wavewalletdk.*Request` DTO, so it follows the
 PascalCase rule.
 
 ## Lifecycle
@@ -93,11 +93,11 @@ The host loops `next()` on a background thread; this maps directly to a Kotlin
 
 `Start` takes a JSON string decoded into a flat, scalar-only config
 (`config.go`, `mobileConfig`). It is the JSON-friendly subset of
-`walletdk.Config`: it omits `DaemonConfig *waved.Config` and
+`wavewalletdk.Config`: it omits `DaemonConfig *waved.Config` and
 `LogWriter io.Writer`, expresses durations as integer seconds, and follows the
 same enable-only / non-empty overlay semantics (the zero value defers to the
-`walletdkrpc` build defaults). An empty string boots from
-`walletdk.DefaultConfig`.
+`wavewalletrpc` build defaults). An empty string boots from
+`wavewalletdk.DefaultConfig`.
 
 Empty `server_address` and `swap_server_address` values select the endpoint
 for the configured network and transport. They don't disable either service.
@@ -105,7 +105,7 @@ Set the fields explicitly when a mobile host needs a custom or local endpoint.
 
 ```json
 {
-  "data_dir": "/data/user/0/<app>/files/walletdk",
+  "data_dir": "/data/user/0/<app>/files/wavewalletdk",
   "network": "regtest",
   "server_address": "10.0.2.2:9000",
   "server_insecure": true,
@@ -128,15 +128,15 @@ Prerequisites:
   dislike `GOPATH==GOROOT`).
 
 ```bash
-make mobile-android       # -> sdk/walletdk/mobile/build/android/Walletdk.aar
-make mobile-ios           # -> sdk/walletdk/mobile/build/ios/Walletdk.xcframework
+make mobile-android       # -> sdk/wavewalletdk/mobile/build/android/Wavewalletdk.aar
+make mobile-ios           # -> sdk/wavewalletdk/mobile/build/ios/Wavewalletdk.xcframework
 make mobile target=all
 ```
 
-These call [`gen_bindings.sh`](../sdk/walletdk/mobile/gen_bindings.sh), which
-runs `gomobile bind` with `-tags="mobile walletdkrpc swapruntime"`,
+These call [`gen_bindings.sh`](../sdk/wavewalletdk/mobile/gen_bindings.sh), which
+runs `gomobile bind` with `-tags="mobile wavewalletrpc swapruntime"`,
 `-androidapi 21`, and a 16KB-page-size `-extldflags` (for newer Android
-devices). The generated Java package is `engineering.lightning.walletdk`.
+devices). The generated Java package is `engineering.lightning.wavewalletdk`.
 
 > The embedded build pulls in `btcwallet`/`neutrino`/`lnd`, so the `.aar` is
 > large. Measure binary size before shipping.
@@ -159,15 +159,15 @@ android sdk install platform-tools emulator platforms/android-36 \
 ```
 
 From Kotlin, the generated package exposes the free functions as static methods
-on a `Mobile` class (package `engineering.lightning.walletdk.mobile`):
+on a `Mobile` class (package `engineering.lightning.wavewalletdk.mobile`):
 
 ```kotlin
-import engineering.lightning.walletdk.mobile.Mobile
+import engineering.lightning.wavewalletdk.mobile.Mobile
 
 // Start blocks until gRPC is serving, so run it off the main thread.
 withContext(Dispatchers.IO) { Mobile.start(configJson) }
 
-val balanceJson = Mobile.balance()        // ByteArray of walletdk.Balance JSON
+val balanceJson = Mobile.balance()        // ByteArray of wavewalletdk.Balance JSON
 val confirmed = Mobile.confirmedBalanceSat() // Long, no JSON decode
 
 // Streaming as a Flow:

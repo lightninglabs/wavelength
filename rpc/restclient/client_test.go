@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"github.com/lightninglabs/wavelength/swaprpc"
 	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/stretchr/testify/require"
@@ -217,7 +217,7 @@ func TestWalletStream(t *testing.T) {
 
 	client := NewWalletServiceClient(server.URL)
 	stream, err := client.SubscribeWallet(
-		t.Context(), &walletdkrpc.SubscribeWalletRequest{},
+		t.Context(), &wavewalletrpc.SubscribeWalletRequest{},
 	)
 	require.NoError(t, err)
 
@@ -247,7 +247,7 @@ func TestWalletStreamError(t *testing.T) {
 
 	client := NewWalletServiceClient(server.URL)
 	stream, err := client.SubscribeWallet(
-		context.Background(), &walletdkrpc.SubscribeWalletRequest{},
+		context.Background(), &wavewalletrpc.SubscribeWalletRequest{},
 	)
 	require.NoError(t, err)
 

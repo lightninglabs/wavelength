@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/lightninglabs/wavelength/build"
-	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/spf13/cobra"
@@ -55,7 +55,7 @@ func mcpServe(cmd *cobra.Command, _ []string) error {
 	// The wallet verbs live on the WalletService client; reusing the
 	// existing connection keeps TLS, macaroons, --no-tls, and
 	// --tlscertpath honored across both surfaces.
-	walletClient := walletdkrpc.NewWalletServiceClient(conn)
+	walletClient := wavewalletrpc.NewWalletServiceClient(conn)
 
 	server := buildMCPServer(client, walletClient)
 
@@ -72,7 +72,7 @@ func mcpServe(cmd *cobra.Command, _ []string) error {
 // and the stdio transport) so the advertised tool surface can be
 // introspected in tests without a live daemon.
 func buildMCPServer(client waverpc.DaemonServiceClient,
-	walletClient walletdkrpc.WalletServiceClient) *mcp.Server {
+	walletClient wavewalletrpc.WalletServiceClient) *mcp.Server {
 
 	server := mcp.NewServer(
 		&mcp.Implementation{
@@ -138,7 +138,7 @@ func registerMCPTools(s *mcp.Server, client waverpc.DaemonServiceClient) {
 	// daemon.balance — no parameters. Uses the waverpc.GetBalance
 	// shape (boarding + VTXO + total breakdown) and lives under the
 	// `daemon.*` namespace so the everyday flat `balance` tool that
-	// registerMCPWalletTools registers (walletdkrpc.Balance shape) is
+	// registerMCPWalletTools registers (wavewalletrpc.Balance shape) is
 	// not silently overwritten by this richer-but-legacy registration.
 	// AddTool replaces tools on name collision, so the two names have
 	// to be distinct or the agent surface lies about which shape it

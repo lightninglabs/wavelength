@@ -18,7 +18,7 @@ The generator reads the linked Go descriptors for:
 - `waverpc.File_daemon_proto` (`waverpc.DaemonService`, alias `daemon`)
 - `swapclientrpc.File_swap_client_proto` (`swapclientrpc.SwapClientService`,
   alias `swapclient`)
-- `walletdkrpc.File_wallet_proto` (`walletdkrpc.WalletService` and
+- `wavewalletrpc.File_wallet_proto` (`wavewalletrpc.WalletService` and
   `WalletInspectionService`, aliases `wallet` and `wallet-inspection`)
 - `btcwalletrpc.File_api_proto` (`walletrpc.VersionService` and
   `walletrpc.WalletService`, aliases `btcwallet-version` and `btcwallet`)

@@ -1,35 +1,35 @@
-# walletdk Integration Guide
+# wavewalletdk Integration Guide
 
-`walletdk` is the wallet-facing SDK for applications that want a small API over
+`wavewalletdk` is the wallet-facing SDK for applications that want a small API over
 `waved`. `Start` embeds the daemon in-process and connects to it over private
 `bufconn`; `Connect` attaches the same client API to an external daemon that
-exposes `walletdkrpc`. Advanced callers can also reach btcsuite btcwallet's
+exposes `wavewalletrpc`. Advanced callers can also reach btcsuite btcwallet's
 native `walletrpc.WalletService` through the same gRPC connection when the
 daemon is using the `lwwallet` or `btcwallet` backend.
 
 Build embedded wallet payment support with both wallet runtime tags:
 
 ```sh
-go build -tags walletdkrpc,swapruntime ./cmd/your-wallet
-go test -tags walletdkrpc,swapruntime ./sdk/walletdk
+go build -tags wavewalletrpc,swapruntime ./cmd/your-wallet
+go test -tags wavewalletrpc,swapruntime ./sdk/wavewalletdk
 ```
 
-Without those tags, `Start` fails with `walletdk.ErrWalletRPCUnavailable`.
+Without those tags, `Start` fails with `wavewalletdk.ErrWalletRPCUnavailable`.
 `Connect` can still talk to a remote daemon that was built with
-`walletdkrpc,swapruntime`.
+`wavewalletrpc,swapruntime`.
 
 ## Runtime Flow
 
-`walletdk.DefaultConfig()` leaves `ServerAddress` and `SwapServerAddress`
+`wavewalletdk.DefaultConfig()` leaves `ServerAddress` and `SwapServerAddress`
 empty. `Start` treats an empty value as "no explicit override", then resolves
 the effective endpoint from `Network` and the matching transport through the
 embedded `waved` config. Host apps that need to display or forward a concrete
 address should set it explicitly. See [signet.md](signet.md) for the built-in
 testnet3, testnet4, and signet endpoints.
 
-1. Build a `walletdk.Config`.
-2. Start the embedded daemon with `walletdk.Start`, or connect to an external
-   daemon with `walletdk.Connect`.
+1. Build a `wavewalletdk.Config`.
+2. Start the embedded daemon with `wavewalletdk.Start`, or connect to an external
+   daemon with `wavewalletdk.Connect`.
 3. Create or unlock the wallet.
 4. Use `Status`, `Balance`, `Deposit`, `Receive`, `PrepareSend` /
    `SendPrepared`, `List`, and `Subscribe`.
@@ -39,7 +39,7 @@ testnet3, testnet4, and signet endpoints.
 ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 defer cancel()
 
-cfg := walletdk.DefaultConfig()
+cfg := wavewalletdk.DefaultConfig()
 cfg.DataDir = "/tmp/example-wallet"
 cfg.Network = "regtest"
 cfg.ServerAddress = "127.0.0.1:10010"
@@ -50,7 +50,7 @@ cfg.SwapServerAddress = "127.0.0.1:11010"
 cfg.SwapServerInsecure = true
 cfg.LogWriter = io.Discard
 
-client, err := walletdk.Start(ctx, cfg)
+client, err := wavewalletdk.Start(ctx, cfg)
 if err != nil {
 	panic(err)
 }
@@ -60,7 +60,7 @@ defer client.Stop()
 Remote daemon mode uses the same methods:
 
 ```go
-client, err := walletdk.Connect(ctx, walletdk.ConnectConfig{
+client, err := wavewalletdk.Connect(ctx, wavewalletdk.ConnectConfig{
 	Address: "127.0.0.1:10009",
 })
 if err != nil {
@@ -76,7 +76,7 @@ Use `GetInfo` to decide whether to create or unlock the daemon wallet:
 ```go
 password := []byte("correct horse battery staple")
 
-created, err := client.CreateWallet(ctx, walletdk.CreateWalletRequest{
+created, err := client.CreateWallet(ctx, wavewalletdk.CreateWalletRequest{
 	WalletPassword: password,
 })
 if err != nil {
@@ -90,7 +90,7 @@ fmt.Println("mnemonic:", created.Mnemonic)
 For an existing wallet:
 
 ```go
-unlocked, err := client.UnlockWallet(ctx, walletdk.UnlockWalletRequest{
+unlocked, err := client.UnlockWallet(ctx, wavewalletdk.UnlockWalletRequest{
 	WalletPassword: password,
 })
 if err != nil {
@@ -124,7 +124,7 @@ fmt.Println("pending out:", balance.PendingOutSat)
 Create a boarding deposit address:
 
 ```go
-deposit, err := client.Deposit(ctx, walletdk.DepositRequest{
+deposit, err := client.Deposit(ctx, wavewalletdk.DepositRequest{
 	AmountSatHint: 50_000,
 })
 if err != nil {
@@ -138,7 +138,7 @@ fmt.Println("entry:", deposit.Entry.ID, deposit.Entry.Status)
 Create a Lightning invoice payable into the wallet:
 
 ```go
-receive, err := client.Receive(ctx, walletdk.ReceiveRequest{
+receive, err := client.Receive(ctx, wavewalletdk.ReceiveRequest{
 	AmountSat: 50_000,
 	Memo:      "demo receive",
 })
@@ -156,7 +156,7 @@ Send to a Lightning invoice or on-chain address. Sending is a two-step flow:
 the fee/rail quote before the user commits.
 
 ```go
-prepared, err := client.PrepareSend(ctx, walletdk.PrepareSendRequest{
+prepared, err := client.PrepareSend(ctx, wavewalletdk.PrepareSendRequest{
 	Invoice:   bolt11Invoice,
 	MaxFeeSat: 1_000,
 	Note:      "demo payment",
@@ -168,7 +168,7 @@ if err != nil {
 // Inspect the quote before committing: prepared.AmountSat,
 // prepared.ExpectedFeeSat / prepared.FeeKnown, prepared.Rail,
 // prepared.QuoteStatus, and prepared.ExpiresAtUnix.
-send, err := client.SendPrepared(ctx, walletdk.SendPreparedRequest{
+send, err := client.SendPrepared(ctx, wavewalletdk.SendPreparedRequest{
 	SendIntentID: prepared.SendIntentID,
 })
 if err != nil {
@@ -186,7 +186,7 @@ fmt.Println("actual outflow:", send.ActualAmountSat)
 
 `BtcwalletRPC` exposes btcsuite btcwallet's native `walletrpc.WalletService`
 for lower-level on-chain wallet operations such as fresh external addresses,
-funding PSBTs, signing, and publishing. The service uses walletdk's existing
+funding PSBTs, signing, and publishing. The service uses wavewalletdk's existing
 private `bufconn` when started with `Start`, so host apps do not need a second
 listener.
 
@@ -215,8 +215,8 @@ view is `ListViewActivity`, whose `Activity.Entries` are normalized `Entry` rows
 for sends, receives, deposits, and exits.
 
 ```go
-history, err := client.List(ctx, walletdk.ListRequest{
-	View: walletdk.ListViewActivity,
+history, err := client.List(ctx, wavewalletdk.ListRequest{
+	View: wavewalletdk.ListViewActivity,
 })
 if err != nil {
 	panic(err)
@@ -233,7 +233,7 @@ Use `Subscribe` to drive live UI updates:
 subCtx, stopSub := context.WithCancel(context.Background())
 defer stopSub()
 
-updates, errs, err := client.Subscribe(subCtx, walletdk.SubscribeRequest{
+updates, errs, err := client.Subscribe(subCtx, wavewalletdk.SubscribeRequest{
 	IncludeExisting: true,
 })
 if err != nil {
@@ -265,7 +265,7 @@ go func() {
 
 Keep host-language bindings thin:
 
-- Own one `*walletdk.Client` per wallet runtime.
+- Own one `*wavewalletdk.Client` per wallet runtime.
 - Expose explicit `Start` or `Connect`, `Stop`, `CreateWallet`,
   `UnlockWallet`, `Status`, `Balance`, `Deposit`, `Receive`, `PrepareSend`,
   `SendPrepared`, `List`, and `Subscribe` methods.
@@ -283,15 +283,15 @@ stack is browser-ready.
 
 ## LLM Integration Checklist
 
-When generating wallet code against `walletdk`, follow this checklist:
+When generating wallet code against `wavewalletdk`, follow this checklist:
 
-1. Import `github.com/lightninglabs/wavelength/sdk/walletdk`.
-2. Build embedded wallets with `-tags walletdkrpc,swapruntime`.
-3. Use `walletdk.DefaultConfig()` and override only deployment-specific fields.
+1. Import `github.com/lightninglabs/wavelength/sdk/wavewalletdk`.
+2. Build embedded wallets with `-tags wavewalletrpc,swapruntime`.
+3. Use `wavewalletdk.DefaultConfig()` and override only deployment-specific fields.
 4. Set a durable `DataDir`.
 5. Set `Network`, Ark operator connection fields, wallet backend fields, and
    swap server fields.
-6. Start with `walletdk.Start(ctx, cfg)`.
+6. Start with `wavewalletdk.Start(ctx, cfg)`.
 7. Create or unlock the wallet before balance, address, receive, or send
    operations.
 8. Display `ReceiveResult.Invoice` as the canonical BOLT-11 value.

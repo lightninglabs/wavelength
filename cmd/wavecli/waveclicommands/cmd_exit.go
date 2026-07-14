@@ -3,17 +3,17 @@ package waveclicommands
 import (
 	"fmt"
 
-	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"github.com/spf13/cobra"
 )
 
 const forceUnrollAck = "I_KNOW_WHAT_I_AM_DOING"
 
 // newExitCmd builds the top-level `exit` verb. It dials
-// walletdkrpc.WalletService.Exit, which queues a cooperative leave by default
+// wavewalletrpc.WalletService.Exit, which queues a cooperative leave by default
 // and starts unilateral unroll only when the caller supplies the exact force
 // acknowledgement. The `exit status` subcommand reads the forced-unroll job
-// status via walletdkrpc.WalletService.ExitStatus.
+// status via wavewalletrpc.WalletService.ExitStatus.
 //
 // `exit` replaces the legacy `unroll` verb at the user surface; the
 // underlying daemon actor/registry pathway is only used for acknowledged
@@ -89,7 +89,7 @@ func walletExit(cmd *cobra.Command, _ []string) error {
 		)
 	}
 
-	req := &walletdkrpc.ExitRequest{
+	req := &wavewalletrpc.ExitRequest{
 		Outpoint:       outpoint,
 		OnchainAddress: onchainAddress,
 		ForceUnrollAck: forceAck,
@@ -97,12 +97,12 @@ func walletExit(cmd *cobra.Command, _ []string) error {
 
 	if dryRun, _ := cmd.Flags().GetBool("dry-run"); dryRun {
 		return walletDryRunPreview(
-			"walletdkrpc.WalletService/Exit", req,
+			"wavewalletrpc.WalletService/Exit", req,
 		)
 	}
 
 	return withWalletClient(
-		cmd, func(c walletdkrpc.WalletServiceClient) error {
+		cmd, func(c wavewalletrpc.WalletServiceClient) error {
 			resp, err := c.Exit(cmd.Context(), req)
 			if err != nil {
 				return fmt.Errorf("exit: %w", err)
@@ -114,7 +114,7 @@ func walletExit(cmd *cobra.Command, _ []string) error {
 }
 
 // newExitStatusCmd builds the `exit status` subcommand. It dials
-// walletdkrpc.WalletService.ExitStatus which proxies
+// wavewalletrpc.WalletService.ExitStatus which proxies
 // waverpc.GetUnrollStatus.
 func newExitStatusCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -157,10 +157,10 @@ func walletExitStatus(cmd *cobra.Command, _ []string) error {
 	detailed, _ := cmd.Flags().GetBool("detailed")
 
 	return withWalletClient(
-		cmd, func(c walletdkrpc.WalletServiceClient) error {
+		cmd, func(c wavewalletrpc.WalletServiceClient) error {
 			resp, err := c.ExitStatus(
 				cmd.Context(),
-				&walletdkrpc.ExitStatusRequest{
+				&wavewalletrpc.ExitStatusRequest{
 					Outpoint: outpoint,
 					Detailed: detailed,
 				},
@@ -175,8 +175,8 @@ func walletExitStatus(cmd *cobra.Command, _ []string) error {
 }
 
 // newExitSummaryCmd builds the `exit summary` subcommand. It dials
-// walletdkrpc.WalletService.ExitSummary to report the wallet-wide portfolio of
-// in-progress exits plus aggregate totals.
+// wavewalletrpc.WalletService.ExitSummary to report the wallet-wide portfolio
+// of in-progress exits plus aggregate totals.
 func newExitSummaryCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "summary",
@@ -199,10 +199,10 @@ func newExitSummaryCmd() *cobra.Command {
 // walletExitSummary implements the `exit summary` subcommand.
 func walletExitSummary(cmd *cobra.Command, _ []string) error {
 	return withWalletClient(
-		cmd, func(c walletdkrpc.WalletServiceClient) error {
+		cmd, func(c wavewalletrpc.WalletServiceClient) error {
 			resp, err := c.ExitSummary(
 				cmd.Context(),
-				&walletdkrpc.ExitSummaryRequest{},
+				&wavewalletrpc.ExitSummaryRequest{},
 			)
 			if err != nil {
 				return fmt.Errorf("exit summary: %w", err)
@@ -214,7 +214,7 @@ func walletExitSummary(cmd *cobra.Command, _ []string) error {
 }
 
 // newExitPlanCmd builds the `exit plan` subcommand. It dials
-// walletdkrpc.WalletService.GetExitPlan to preview the backing-wallet funding
+// wavewalletrpc.WalletService.GetExitPlan to preview the backing-wallet funding
 // readiness for one or more VTXO outpoints without dispatching an exit.
 func newExitPlanCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -255,10 +255,10 @@ func walletExitPlan(cmd *cobra.Command, _ []string) error {
 	}
 
 	return withWalletClient(
-		cmd, func(c walletdkrpc.WalletServiceClient) error {
+		cmd, func(c wavewalletrpc.WalletServiceClient) error {
 			resp, err := c.GetExitPlan(
 				cmd.Context(),
-				&walletdkrpc.GetExitPlanRequest{
+				&wavewalletrpc.GetExitPlanRequest{
 					Outpoints: outpoints,
 				},
 			)

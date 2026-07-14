@@ -25,16 +25,16 @@ After building, two binaries are produced:
 - `bin/waved` -- the long-running daemon process
 - `bin/wavecli` -- the CLI for controlling the daemon
 
-### Optional: walletdkrpc
+### Optional: wavewalletrpc
 
 The "user-facing" verbs in the CLI (`balance`, `recv`, `send`, `activity`,
-`create`, `unlock`) route through the `walletdkrpc` subserver. That code
-is gated behind the `walletdkrpc` build tag; the default `make build` does
+`create`, `unlock`) route through the `wavewalletrpc` subserver. That code
+is gated behind the `wavewalletrpc` build tag; the default `make build` does
 **not** enable it. Without the tag, those verbs return:
 
 ```
-daemon was not built with -tags walletdkrpc;
-rebuild with `make build-walletdkrpc` or see docs/walletdkrpc_build.md
+daemon was not built with -tags wavewalletrpc;
+rebuild with `make build-wavewalletrpc` or see docs/wavewalletrpc_build.md
 ```
 
 Two options:
@@ -44,11 +44,11 @@ Two options:
    the default build.
 2. **Build with the tag enabled** when you want the top-level verbs:
    ```bash
-   make build-walletdkrpc       # produces walletdkrpc-enabled waved
-   make install-walletdkrpc
+   make build-wavewalletrpc       # produces wavewalletrpc-enabled waved
+   make install-wavewalletrpc
    ```
 
-See [walletdkrpc_build.md](walletdkrpc_build.md) for more.
+See [wavewalletrpc_build.md](wavewalletrpc_build.md) for more.
 
 ## Daemon Configuration
 
@@ -145,10 +145,10 @@ After starting the daemon, the wallet must be created and unlocked
 before any operations can proceed.
 
 The `create` and `unlock` CLI commands require a daemon built with
-`walletdkrpc` (see Installation above). For the default build, configure
+`wavewalletrpc` (see Installation above). For the default build, configure
 auto-unlock via `--wallet.password_file` and skip the CLI step.
 
-### Step 1: Create the Wallet (walletdkrpc only)
+### Step 1: Create the Wallet (wavewalletrpc only)
 
 In lwwallet mode, wallet creation generates a new aezeed mnemonic
 and creates the wallet database with its key material encrypted under
@@ -173,7 +173,7 @@ wavecli create
 **Important:** The mnemonic is displayed on stderr during creation.
 Write it down and store it securely -- it is your only backup.
 
-### Step 2: Unlock the Wallet (walletdkrpc only)
+### Step 2: Unlock the Wallet (wavewalletrpc only)
 
 Each time the daemon restarts, the wallet must be unlocked:
 
@@ -254,17 +254,17 @@ verbs is unchanged.
 
 ```
 wavecli
-├── getinfo                   — daemon status (no walletdkrpc)
-├── balance                   — wallet balances (walletdkrpc)
-├── create / unlock           — wallet bring-up (walletdkrpc)
-├── recv                      — boarding address / Lightning invoice (walletdkrpc)
-├── send                      — Lightning invoice / onchain leave (walletdkrpc)
-├── activity [inspect]        — unified wallet activity feed (walletdkrpc)
-├── exit {status|summary|plan} — cooperative leave by default, forced unroll (walletdkrpc)
-├── wallet-sweep              — sweep backing wallet to a destination (walletdkrpc)
-├── mcp serve                 — MCP server for AI agents (walletdkrpc)
+├── getinfo                   — daemon status (no wavewalletrpc)
+├── balance                   — wallet balances (wavewalletrpc)
+├── create / unlock           — wallet bring-up (wavewalletrpc)
+├── recv                      — boarding address / Lightning invoice (wavewalletrpc)
+├── send                      — Lightning invoice / onchain leave (wavewalletrpc)
+├── activity [inspect]        — unified wallet activity feed (wavewalletrpc)
+├── exit {status|summary|plan} — cooperative leave by default, forced unroll (wavewalletrpc)
+├── wallet-sweep              — sweep backing wallet to a destination (wavewalletrpc)
+├── mcp serve                 — MCP server for AI agents (wavewalletrpc)
 ├── schema                    — JSON dump of CLI methods
-├── ark                       — power-user parent (hidden; no walletdkrpc)
+├── ark                       — power-user parent (hidden; no wavewalletrpc)
 │   ├── board                 — board confirmed boarding UTXOs
 │   ├── vtxos {list|refresh|leave}
 │   ├── oor {receive|get|list}
@@ -274,7 +274,7 @@ wavecli
 │   ├── fees {estimate|history}
 │   └── listtransactions
 ├── recovery {list|status|escalate|cancel} — daemon-owned vHTLC recovery rows (hidden)
-└── dev                       — generated low-level RPC (hidden; no walletdkrpc)
+└── dev                       — generated low-level RPC (hidden; no wavewalletrpc)
     └── daemon <Method>       — call any waverpc.DaemonService method
 ```
 
@@ -299,16 +299,16 @@ Display daemon status information.
 wavecli getinfo
 ```
 
-### `balance` (walletdkrpc) / `dev daemon GetBalance` (no walletdkrpc)
+### `balance` (wavewalletrpc) / `dev daemon GetBalance` (no wavewalletrpc)
 
 Display wallet balance (boarding, VTXO, total, onchain) in satoshis.
 
 ```bash
-wavecli balance                   # requires walletdkrpc
+wavecli balance                   # requires wavewalletrpc
 wavecli dev daemon GetBalance     # always available
 ```
 
-### `recv` (walletdkrpc) / `dev daemon NewAddress` (no walletdkrpc)
+### `recv` (wavewalletrpc) / `dev daemon NewAddress` (no wavewalletrpc)
 
 Allocate an inbound payment surface.
 
@@ -324,7 +324,7 @@ Allocate an inbound payment surface.
 wavecli recv --onchain                  # boarding address
 wavecli recv --offchain --amt 5000 --memo coffee
 
-# No-walletdkrpc equivalent for the boarding-address case:
+# No-wavewalletrpc equivalent for the boarding-address case:
 wavecli dev daemon NewAddress
 ```
 
@@ -451,7 +451,7 @@ wavecli ark send oor --pubkey <hex> --amount 25000 \
   --idempotency_key my-attempt-1
 ```
 
-### `send <invoice-or-address>` (walletdkrpc)
+### `send <invoice-or-address>` (wavewalletrpc)
 
 Unified send for Lightning invoice (`--offchain`, default) or onchain
 send (`--onchain`). Onchain sends are atomic: the destination receives
@@ -533,7 +533,7 @@ wavecli ark listtransactions \
   --to 2026-05-08T23:59:59Z
 ```
 
-### `activity` (walletdkrpc)
+### `activity` (wavewalletrpc)
 
 The merged wallet activity feed: send / recv / deposit / exit history.
 
@@ -572,7 +572,7 @@ wavecli schema ark.vtxos.list
 wavecli schema --all
 ```
 
-### `mcp serve` (walletdkrpc)
+### `mcp serve` (wavewalletrpc)
 
 Start an MCP (Model Context Protocol) server on stdio for AI agent
 integration. Exposes daemon RPCs as typed tool calls.
@@ -590,14 +590,14 @@ wallet-derived receive target and does not reveal seed material.
 ## Regtest Quickstart
 
 A complete end-to-end workflow on regtest using the default (no
-`walletdkrpc`) build. With a `walletdkrpc`-enabled daemon, swap the
+`wavewalletrpc`) build. With a `wavewalletrpc`-enabled daemon, swap the
 relevant commands per the references above.
 
 ```bash
 # 1. Start a regtest bitcoind + Esplora (e.g., via Nigiri)
 nigiri start
 
-# 2. Start the daemon. Auto-unlock so you don't need walletdkrpc to
+# 2. Start the daemon. Auto-unlock so you don't need wavewalletrpc to
 #    create/unlock from the CLI.
 waved \
   --network=regtest \
@@ -653,9 +653,9 @@ restrictive file permissions (`chmod 600`).
 
 | Problem | Solution |
 |---------|----------|
-| `daemon was not built with -tags walletdkrpc` | Rebuild with `make build-walletdkrpc`, or use the `ark *` / `dev *` subtrees |
+| `daemon was not built with -tags wavewalletrpc` | Rebuild with `make build-wavewalletrpc`, or use the `ark *` / `dev *` subtrees |
 | `connection refused` | Daemon not running or wrong `--rpcserver` address |
-| `wallet not ready` | Run `wavecli unlock` (requires walletdkrpc) or restart the daemon with `--wallet.password_file` |
+| `wallet not ready` | Run `wavecli unlock` (requires wavewalletrpc) or restart the daemon with `--wallet.password_file` |
 | `wallet already exists` | Wallet was already created; use `unlock` instead |
 | `GenSeed is only available in lwwallet/btcwallet mode` | Switch daemon to `--wallet.type=lwwallet` or `btcwallet` |
 | `read macaroon: ... no such file` | The CLI is looking under the wrong data dir/network. Pass `--datadir` / `--network` to match the daemon (see [Authentication](#authentication)), or `--macaroonpath` directly |

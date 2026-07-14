@@ -1,4 +1,4 @@
-//go:build walletdkrpc && swapruntime
+//go:build wavewalletrpc && swapruntime
 
 package swapwallet
 
@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 )
 
 const sendIntentTTL = 5 * time.Minute
@@ -32,7 +32,7 @@ type preparedSendIntent struct {
 	note           string
 	maxFeeSat      uint64
 	maxCreditSat   uint64
-	creditPreview  *walletdkrpc.CreditPreview
+	creditPreview  *wavewalletrpc.CreditPreview
 	sweepAll       bool
 
 	selectedOutpoints []string
@@ -40,8 +40,8 @@ type preparedSendIntent struct {
 }
 
 type prepareSendPreview struct {
-	rail                    walletdkrpc.SendRail
-	quoteStatus             walletdkrpc.SendQuoteStatus
+	rail                    wavewalletrpc.SendRail
+	quoteStatus             wavewalletrpc.SendQuoteStatus
 	amountSat               int64
 	expectedFeeSat          int64
 	feeKnown                bool
@@ -51,7 +51,7 @@ type prepareSendPreview struct {
 	invoiceDescription      string
 	paymentHash             string
 	warning                 string
-	creditPreview           *walletdkrpc.CreditPreview
+	creditPreview           *wavewalletrpc.CreditPreview
 }
 
 type preparedSendStore struct {
@@ -163,9 +163,9 @@ func newSendIntentID() (string, error) {
 }
 
 func prepareResponseFromIntent(intent *preparedSendIntent,
-	preview prepareSendPreview) *walletdkrpc.PrepareSendResponse {
+	preview prepareSendPreview) *wavewalletrpc.PrepareSendResponse {
 
-	return &walletdkrpc.PrepareSendResponse{
+	return &wavewalletrpc.PrepareSendResponse{
 		SendIntentId:            intent.id,
 		AmountSat:               preview.amountSat,
 		ExpectedFeeSat:          preview.expectedFeeSat,

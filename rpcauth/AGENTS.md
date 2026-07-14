@@ -23,7 +23,7 @@ generating/loading self-signed TLS cert/key pairs.
   credentials), `github.com/lightningnetwork/lnd/cert` (self-signed cert
   generation).
 - **Depended on by**: `waved` (server + gateway TLS/macaroon wiring),
-  `cmd/wavecli` (client auth), `sdk/walletdk` (SDK gRPC client connection).
+  `cmd/wavecli` (client auth), `sdk/wavewalletdk` (SDK gRPC client connection).
 
 ## Invariants
 

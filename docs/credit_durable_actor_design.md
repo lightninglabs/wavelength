@@ -112,7 +112,7 @@ classifies server responses:
 - **Transient errors** (network, `Unavailable`) return the error for the
   framework's free retry and backoff.
 
-### 2.5 walletdk handoff
+### 2.5 wavewalletdk handoff
 
 `Send` and `Recv` do not run the multi-step work inline. They hand off and return
 a **pending `WalletEntry`** immediately:
@@ -145,7 +145,7 @@ row.
 ### 3.1 Topology
 
 ```
-walletdk Send/Recv
+wavewalletdk Send/Recv
       │  Ask StartCredit{Pay,Receive}Request          (plain actor Ask; returns pending entry)
       ▼
 Registry                    plain in-memory mailbox "credit-client"  (RestoreNonTerminal on boot)
@@ -179,8 +179,8 @@ re-enters the durable child mailbox needs a codec entry.
 
 | Message | Kind | Path |
 |---|---|---|
-| `StartCreditPayRequest{invoice, maxFeeSat, quote, paymentHash}` | plain `CreditMsg` | walletdk to registry (Ask) |
-| `StartCreditReceiveRequest{opKey, amountSat, memo}` | plain `CreditMsg` | walletdk to registry (Ask) |
+| `StartCreditPayRequest{invoice, maxFeeSat, quote, paymentHash}` | plain `CreditMsg` | wavewalletdk to registry (Ask) |
+| `StartCreditReceiveRequest{opKey, amountSat, memo}` | plain `CreditMsg` | wavewalletdk to registry (Ask) |
 | `RedeemRequest{opKey, amountSat}` | plain `CreditMsg` | registry-internal (admitted by `considerRedeem`) |
 | `ConsiderRedeemRequest{availableSat}` | plain `CreditMsg` | child or boot reconcile to registry (Tell) |
 | `CreditTerminalNotification{opKey, terminal}` | plain `CreditMsg` | child to registry (reap) |

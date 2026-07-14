@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -19,10 +19,10 @@ import (
 // > TTY prompt).
 //
 // Each tool maps gRPC Unimplemented to a clear "daemon was not built
-// with walletdkrpc" error so an MCP consumer talking to a stub-build
+// with wavewalletrpc" error so an MCP consumer talking to a stub-build
 // daemon sees actionable text rather than a generic status code.
 func registerMCPWalletTools(s *mcp.Server,
-	client walletdkrpc.WalletServiceClient) {
+	client wavewalletrpc.WalletServiceClient) {
 
 	registerMCPWalletQueryTools(s, client)
 	registerMCPWalletMutateTools(s, client)
@@ -31,7 +31,7 @@ func registerMCPWalletTools(s *mcp.Server,
 // registerMCPWalletQueryTools registers the read-only wallet verbs
 // (balance, activity). These never move funds and need no dry-run rail.
 func registerMCPWalletQueryTools(s *mcp.Server,
-	client walletdkrpc.WalletServiceClient) {
+	client wavewalletrpc.WalletServiceClient) {
 
 	type balanceArgs struct{}
 	mcp.AddTool(s, &mcp.Tool{
@@ -42,7 +42,7 @@ func registerMCPWalletQueryTools(s *mcp.Server,
 		*mcp.CallToolResult, any, error) {
 
 		resp, err := client.Balance(
-			ctx, &walletdkrpc.BalanceRequest{},
+			ctx, &wavewalletrpc.BalanceRequest{},
 		)
 		if err != nil {
 			return nil, nil, mapWalletRPCError(err)
@@ -95,7 +95,7 @@ func registerMCPWalletQueryTools(s *mcp.Server,
 			return nil, nil, err
 		}
 		resp, err := client.ExitStatus(
-			ctx, &walletdkrpc.ExitStatusRequest{
+			ctx, &wavewalletrpc.ExitStatusRequest{
 				Outpoint: args.Outpoint,
 				Detailed: true,
 			},
@@ -117,7 +117,7 @@ func registerMCPWalletQueryTools(s *mcp.Server,
 		_ exitSummaryArgs) (*mcp.CallToolResult, any, error) {
 
 		resp, err := client.ExitSummary(
-			ctx, &walletdkrpc.ExitSummaryRequest{},
+			ctx, &wavewalletrpc.ExitSummaryRequest{},
 		)
 		if err != nil {
 			return nil, nil, mapWalletRPCError(err)
@@ -134,7 +134,7 @@ func registerMCPWalletQueryTools(s *mcp.Server,
 // as the CLI path so MCP and CLI cannot drift on what shapes the
 // daemon ever sees.
 func registerMCPWalletMutateTools(s *mcp.Server,
-	client walletdkrpc.WalletServiceClient) {
+	client wavewalletrpc.WalletServiceClient) {
 
 	type sendArgs struct {
 		Destination string `json:"destination" jsonschema:"BOLT-11 invoice (offchain) or onchain address; the direction field picks which"` //nolint:ll
@@ -167,7 +167,7 @@ func registerMCPWalletMutateTools(s *mcp.Server,
 		if err != nil {
 			return nil, nil, mapWalletRPCError(err)
 		}
-		resp, err := client.Send(ctx, &walletdkrpc.SendRequest{
+		resp, err := client.Send(ctx, &wavewalletrpc.SendRequest{
 			SendIntentId: prepareResp.GetSendIntentId(),
 		})
 		if err != nil {
@@ -207,7 +207,7 @@ func registerMCPWalletMutateTools(s *mcp.Server,
 					"required for offchain recv")
 			}
 			resp, err := client.Recv(
-				ctx, &walletdkrpc.RecvRequest{
+				ctx, &wavewalletrpc.RecvRequest{
 					AmtSat: args.AmtSat,
 					Memo:   args.Memo,
 				},
@@ -222,7 +222,7 @@ func registerMCPWalletMutateTools(s *mcp.Server,
 		}
 
 		resp, err := client.Deposit(
-			ctx, &walletdkrpc.DepositRequest{
+			ctx, &wavewalletrpc.DepositRequest{
 				AmtSatHint: args.AmtSatHint,
 			},
 		)
@@ -268,7 +268,7 @@ func registerMCPWalletMutateTools(s *mcp.Server,
 		}
 
 		resp, err := client.Exit(
-			ctx, &walletdkrpc.ExitRequest{
+			ctx, &wavewalletrpc.ExitRequest{
 				Outpoint:       args.Outpoint,
 				OnchainAddress: args.OnchainAddress,
 				ForceUnrollAck: args.ForceUnrollAck,
@@ -288,10 +288,10 @@ func registerMCPWalletMutateTools(s *mcp.Server,
 // applying the same activity filter parsing the CLI uses so the two
 // surfaces stay in lockstep.
 func buildWalletActivityRequest(pendingOnly bool, kinds []string, limit uint32,
-	cursor string) (*walletdkrpc.ListRequest, error) {
+	cursor string) (*wavewalletrpc.ListRequest, error) {
 
-	req := &walletdkrpc.ListRequest{
-		View:        walletdkrpc.ListView_LIST_VIEW_ACTIVITY,
+	req := &wavewalletrpc.ListRequest{
+		View:        wavewalletrpc.ListView_LIST_VIEW_ACTIVITY,
 		PendingOnly: pendingOnly,
 		Limit:       limit,
 		Cursor:      cursor,
@@ -315,7 +315,7 @@ func buildWalletActivityRequest(pendingOnly bool, kinds []string, limit uint32,
 // CLI would reject.
 func buildWalletPrepareSendRequest(dest string, offchain bool, amt,
 	maxFee uint64, note string,
-	sweepAll bool) (*walletdkrpc.PrepareSendRequest, error) {
+	sweepAll bool) (*wavewalletrpc.PrepareSendRequest, error) {
 
 	if err := validateDestination(dest); err != nil {
 		return nil, err
@@ -339,18 +339,18 @@ func buildWalletPrepareSendRequest(dest string, offchain bool, amt,
 		}
 	}
 
-	req := &walletdkrpc.PrepareSendRequest{
+	req := &wavewalletrpc.PrepareSendRequest{
 		AmtSat:    amt,
 		MaxFeeSat: maxFee,
 		Note:      note,
 		SweepAll:  sweepAll,
 	}
 	if offchain {
-		req.Destination = &walletdkrpc.PrepareSendRequest_Invoice{
+		req.Destination = &wavewalletrpc.PrepareSendRequest_Invoice{
 			Invoice: dest,
 		}
 	} else {
-		req.Destination = &walletdkrpc.
+		req.Destination = &wavewalletrpc.
 			PrepareSendRequest_OnchainAddress{
 			OnchainAddress: dest,
 		}

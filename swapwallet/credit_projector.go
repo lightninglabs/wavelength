@@ -1,4 +1,4 @@
-//go:build walletdkrpc && swapruntime
+//go:build wavewalletrpc && swapruntime
 
 package swapwallet
 
@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/lightninglabs/wavelength/credit"
-	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 )
 
 // creditProjectInterval is how often the projector polls the credit registry
@@ -145,12 +145,12 @@ func (r *Runtime) pollCreditOps(projected map[string]credit.State) {
 // terminal), redemptions (wallet-internal auto-redeem), and any operation
 // whose correlating id cannot be recovered.
 func creditEntryFromSummary(op credit.CreditOpSummary) (
-	*walletdkrpc.WalletEntry, bool) {
+	*wavewalletrpc.WalletEntry, bool) {
 
 	var (
 		id          string
-		kind        walletdkrpc.EntryKind
-		phase       walletdkrpc.WalletEntryPhase
+		kind        wavewalletrpc.EntryKind
+		phase       wavewalletrpc.WalletEntryPhase
 		phaseLabel  string
 		paymentHash string
 	)
@@ -169,15 +169,15 @@ func creditEntryFromSummary(op credit.CreditOpSummary) (
 		// the op key carries verbatim as "pay:<payment_hash_hex>".
 		id = strings.TrimPrefix(op.OpKey, "pay:")
 		paymentHash = id
-		kind = walletdkrpc.EntryKind_ENTRY_KIND_SEND
-		phase = walletdkrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_SETTLING
+		kind = wavewalletrpc.EntryKind_ENTRY_KIND_SEND
+		phase = wavewalletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_SETTLING
 		phaseLabel = "settling"
 
 	case credit.KindReceive:
 		// The pending receive row is keyed by the op id.
 		id = op.OpID
-		kind = walletdkrpc.EntryKind_ENTRY_KIND_RECV
-		phase = walletdkrpc.
+		kind = wavewalletrpc.EntryKind_ENTRY_KIND_RECV
+		phase = wavewalletrpc.
 			WalletEntryPhase_WALLET_ENTRY_PHASE_WAITING_FOR_PAYMENT
 		phaseLabel = "waiting_for_payment"
 
@@ -198,19 +198,19 @@ func creditEntryFromSummary(op credit.CreditOpSummary) (
 	// sub-dust pay renders as positive and looks like an incoming transfer
 	// (issue #829).
 	amountSat := op.AmountSat
-	if kind == walletdkrpc.EntryKind_ENTRY_KIND_SEND {
+	if kind == wavewalletrpc.EntryKind_ENTRY_KIND_SEND {
 		amountSat = -op.AmountSat
 	}
 
 	now := nowUnix()
-	entry := &walletdkrpc.WalletEntry{
+	entry := &wavewalletrpc.WalletEntry{
 		Id:            id,
 		Kind:          kind,
-		Status:        walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		Status:        wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
 		AmountSat:     amountSat,
 		Counterparty:  creditCounterparty,
 		UpdatedAtUnix: now,
-		Progress: &walletdkrpc.WalletEntryProgress{
+		Progress: &wavewalletrpc.WalletEntryProgress{
 			Phase:       phase,
 			PhaseLabel:  phaseLabel,
 			PaymentHash: paymentHash,
@@ -219,18 +219,18 @@ func creditEntryFromSummary(op credit.CreditOpSummary) (
 
 	switch op.State {
 	case credit.StateCompleted:
-		entry.Status = walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE
-		entry.Progress.Phase = walletdkrpc.
+		entry.Status = wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE
+		entry.Progress.Phase = wavewalletrpc.
 			WalletEntryPhase_WALLET_ENTRY_PHASE_CONFIRMED
 		entry.Progress.PhaseLabel = "confirmed"
 
 	case credit.StateFailed:
-		entry.Status = walletdkrpc.EntryStatus_ENTRY_STATUS_FAILED
-		entry.Progress.Phase = walletdkrpc.
+		entry.Status = wavewalletrpc.EntryStatus_ENTRY_STATUS_FAILED
+		entry.Progress.Phase = wavewalletrpc.
 			WalletEntryPhase_WALLET_ENTRY_PHASE_FAILED
 		entry.Progress.PhaseLabel = "failed"
 		entry.FailureReason = op.LastError
-		entry.FailureCode = walletdkrpc.
+		entry.FailureCode = wavewalletrpc.
 			EntryFailureCode_ENTRY_FAILURE_CODE_FAILED.Enum()
 	}
 

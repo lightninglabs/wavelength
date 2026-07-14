@@ -13,7 +13,7 @@ default `--help` face:
 
 1. **Wallet verbs (group "Wallet", implicit, no parent)** — the everyday
    commands that map 1:1 to what a user does day-to-day. All are
-   walletdkrpc-backed.
+   wavewalletrpc-backed.
 2. **Daemon introspection (group "Introspection")** — getinfo, schema, mcp
    (the built-in `help` command is grouped here too).
 3. **Advanced subtrees (`ark`, `dev`, `recovery`)** — raw
@@ -34,18 +34,18 @@ unchanged).
 
 | Command | RPC | Description |
 |---------|-----|-------------|
-| `create` | `walletdkrpc.Create` | Initialize a new wallet (proxies GenSeed + InitWallet). Password from stdin / WAVED_WALLET_PASSWORD / --wallet_password_file |
-| `unlock` | `walletdkrpc.Unlock` | Unlock an existing wallet (proxies UnlockWallet) |
-| `send <dest>` | `walletdkrpc.Send` | Outbound payment. `--offchain` (default) for a BOLT-11 invoice via the swap subsystem; `--onchain` for an atomic on-chain send (`--sweep-all` drains). No prefix sniff |
-| `recv` | `walletdkrpc.Recv` / `walletdkrpc.Deposit` | Inbound. `--offchain` (default) returns a Lightning invoice; `--onchain` returns a boarding address |
-| `activity` | `walletdkrpc.List` | Unified wallet activity view. Defaults to table output; `--format json` returns structured JSON. `--pending` and `--kind` narrow rows |
-| `activity inspect <id>` | `walletdkrpc.InspectActivity` | Correlated swap/VTXO/ledger detail for one activity entry |
-| `balance` | `walletdkrpc.Balance` | Flat balance (confirmed_sat, pending_in_sat, pending_out_sat) |
-| `exit --outpoint TXID:VOUT` | `walletdkrpc.Exit` | Queue a cooperative leave by default; unilateral unroll only fires with `--force-unroll-ack I_KNOW_WHAT_I_AM_DOING` |
-| `exit status --outpoint TXID:VOUT` | `walletdkrpc.ExitStatus` | Query an exit/unroll job's status (proxies GetUnrollStatus) |
-| `exit summary` | `walletdkrpc.ExitSummary` | Aggregate totals across all in-progress exits |
-| `exit plan --outpoint ...` | `walletdkrpc.GetExitPlan` | Preview backing-wallet funding readiness for one or more exits |
-| `wallet-sweep --destination ADDR` | `walletdkrpc.SweepWallet` | Preview, or with `--broadcast` publish, a sweep of confirmed backing-wallet UTXOs (boarding outputs excluded; see `ark sweep`) |
+| `create` | `wavewalletrpc.Create` | Initialize a new wallet (proxies GenSeed + InitWallet). Password from stdin / WAVED_WALLET_PASSWORD / --wallet_password_file |
+| `unlock` | `wavewalletrpc.Unlock` | Unlock an existing wallet (proxies UnlockWallet) |
+| `send <dest>` | `wavewalletrpc.Send` | Outbound payment. `--offchain` (default) for a BOLT-11 invoice via the swap subsystem; `--onchain` for an atomic on-chain send (`--sweep-all` drains). No prefix sniff |
+| `recv` | `wavewalletrpc.Recv` / `wavewalletrpc.Deposit` | Inbound. `--offchain` (default) returns a Lightning invoice; `--onchain` returns a boarding address |
+| `activity` | `wavewalletrpc.List` | Unified wallet activity view. Defaults to table output; `--format json` returns structured JSON. `--pending` and `--kind` narrow rows |
+| `activity inspect <id>` | `wavewalletrpc.InspectActivity` | Correlated swap/VTXO/ledger detail for one activity entry |
+| `balance` | `wavewalletrpc.Balance` | Flat balance (confirmed_sat, pending_in_sat, pending_out_sat) |
+| `exit --outpoint TXID:VOUT` | `wavewalletrpc.Exit` | Queue a cooperative leave by default; unilateral unroll only fires with `--force-unroll-ack I_KNOW_WHAT_I_AM_DOING` |
+| `exit status --outpoint TXID:VOUT` | `wavewalletrpc.ExitStatus` | Query an exit/unroll job's status (proxies GetUnrollStatus) |
+| `exit summary` | `wavewalletrpc.ExitSummary` | Aggregate totals across all in-progress exits |
+| `exit plan --outpoint ...` | `wavewalletrpc.GetExitPlan` | Preview backing-wallet funding readiness for one or more exits |
+| `wallet-sweep --destination ADDR` | `wavewalletrpc.SweepWallet` | Preview, or with `--broadcast` publish, a sweep of confirmed backing-wallet UTXOs (boarding outputs excluded; see `ark sweep`) |
 
 ### Daemon introspection
 
@@ -57,7 +57,7 @@ unchanged).
 
 ### `ark.*` advanced commands
 
-The everyday wallet verbs compose `walletdkrpc` end-to-end; the `ark`
+The everyday wallet verbs compose `wavewalletrpc` end-to-end; the `ark`
 parent surfaces the raw waverpc methods underlying them for callers
 who want direct access.
 
@@ -98,8 +98,8 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/cmd/wave
 - `getDaemonConn()` / `getDaemonClient()` — TLS-by-default daemon
   gRPC dial; `--no-tls` opts out for local dev.
 - `withWalletClient()` — maps `codes.Unimplemented` to
-  `errWalletRPCDisabled` (with a pointer to `docs/walletdkrpc_build.md`)
-  for daemons built without the walletdkrpc tag.
+  `errWalletRPCDisabled` (with a pointer to `docs/wavewalletrpc_build.md`)
+  for daemons built without the wavewalletrpc tag.
 - `parseRequest()` — generic JSON-or-flags proto request parser
   (consumed by `ark.*` commands).
 - `methodRegistry()` / `schemaMethod` / `schemaParam` —
@@ -121,7 +121,7 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/cmd/wave
 ## Relationships
 
 - **Depends on**:
-  - `rpc/walletdkrpc` (generated stubs for the top-level wallet verbs;
+  - `rpc/wavewalletrpc` (generated stubs for the top-level wallet verbs;
     `WalletService` / `WalletInspectionService` clients).
   - `waverpc` (generated stubs for `ark.*`, `recovery.*`, getinfo).
   - `cmd/wavecli/waveclicommands/devrpc` (the generated `dev`
@@ -132,7 +132,7 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/cmd/wave
 ## Invariants
 
 - The top-level wallet verbs ALWAYS register at the root regardless
-  of build tags; if the daemon lacks the walletdkrpc tag, gRPC
+  of build tags; if the daemon lacks the wavewalletrpc tag, gRPC
   `Unimplemented` is mapped to `errWalletRPCDisabled` with an
   actionable message pointing at the build doc.
 - The `--offchain` / `--onchain` flags on `send` and `recv` are
@@ -157,9 +157,9 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/cmd/wave
 
 - [docs/daemon_cli_guide.md](../../../docs/daemon_cli_guide.md) — Full CLI
   reference.
-- [docs/walletdkrpc_build.md](../../../docs/walletdkrpc_build.md) — Build
-  modes and what the walletdkrpc tag enables.
-- [rpc/walletdkrpc/CLAUDE.md](../../../rpc/walletdkrpc/CLAUDE.md) — Proto
+- [docs/wavewalletrpc_build.md](../../../docs/wavewalletrpc_build.md) — Build
+  modes and what the wavewalletrpc tag enables.
+- [rpc/wavewalletrpc/CLAUDE.md](../../../rpc/wavewalletrpc/CLAUDE.md) — Proto
   schema and per-message invariants.
 - [swapwallet/CLAUDE.md](../../../swapwallet/CLAUDE.md) — Daemon-side
   implementation of the wallet verbs.

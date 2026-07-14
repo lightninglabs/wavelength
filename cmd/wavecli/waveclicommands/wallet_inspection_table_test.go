@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"github.com/stretchr/testify/require"
 )
 
@@ -14,14 +14,15 @@ import (
 func TestRenderWalletInspectionExpanded(t *testing.T) {
 	t.Parallel()
 
-	resp := &walletdkrpc.InspectActivityResponse{
-		Entry: &walletdkrpc.WalletEntry{
-			Id:        "payment-hash",
-			Kind:      walletdkrpc.EntryKind_ENTRY_KIND_SEND,
-			Status:    walletdkrpc.EntryStatus_ENTRY_STATUS_PENDING,
+	resp := &wavewalletrpc.InspectActivityResponse{
+		Entry: &wavewalletrpc.WalletEntry{
+			Id:   "payment-hash",
+			Kind: wavewalletrpc.EntryKind_ENTRY_KIND_SEND,
+			Status: wavewalletrpc.
+				EntryStatus_ENTRY_STATUS_PENDING,
 			AmountSat: -1234,
 		},
-		Swap: &walletdkrpc.ActivitySwapTrace{
+		Swap: &wavewalletrpc.ActivitySwapTrace{
 			PaymentHash:      "payment-hash",
 			Direction:        "SWAP_DIRECTION_PAY",
 			State:            "SWAP_STATE_WAITING_FOR_CLAIM",
@@ -34,7 +35,7 @@ func TestRenderWalletInspectionExpanded(t *testing.T) {
 			VhtlcAmountSat:   1234,
 			FundingSessionId: "funding-session",
 		},
-		Vtxos: []*walletdkrpc.ActivityVTXOTrace{
+		Vtxos: []*wavewalletrpc.ActivityVTXOTrace{
 			{
 				Id:        "input-id",
 				AmountSat: 999745,
@@ -50,7 +51,7 @@ func TestRenderWalletInspectionExpanded(t *testing.T) {
 				Source:    "ledger",
 			},
 		},
-		LedgerRows: []*walletdkrpc.ActivityLedgerTrace{
+		LedgerRows: []*wavewalletrpc.ActivityLedgerTrace{
 			{
 				EntryId:            13,
 				Type:               "oor",
@@ -99,22 +100,24 @@ func TestRenderWalletInspectionExpandedDeduplicatesPaymentHash(t *testing.T) {
 	const vtxoOutpoint = "0b02c92e32692b03e4f8a336c3e21406" +
 		"cf68fa4057f699e6f95b5020d2fc800a:0"
 
-	request := &walletdkrpc.WalletEntryRequest{
-		Request: &walletdkrpc.WalletEntryRequest_LightningInvoice{
-			LightningInvoice: &walletdkrpc.LightningInvoiceRequest{
-				Invoice:     "lntbs50u1example",
-				PaymentHash: paymentHash,
-			},
+	invoiceReq := &wavewalletrpc.LightningInvoiceRequest{
+		Invoice:     "lntbs50u1example",
+		PaymentHash: paymentHash,
+	}
+	request := &wavewalletrpc.WalletEntryRequest{
+		Request: &wavewalletrpc.WalletEntryRequest_LightningInvoice{
+			LightningInvoice: invoiceReq,
 		},
 	}
 
-	resp := &walletdkrpc.InspectActivityResponse{
-		Entry: &walletdkrpc.WalletEntry{
-			Id:      paymentHash,
-			Kind:    walletdkrpc.EntryKind_ENTRY_KIND_RECV,
-			Status:  walletdkrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+	resp := &wavewalletrpc.InspectActivityResponse{
+		Entry: &wavewalletrpc.WalletEntry{
+			Id:   paymentHash,
+			Kind: wavewalletrpc.EntryKind_ENTRY_KIND_RECV,
+			Status: wavewalletrpc.
+				EntryStatus_ENTRY_STATUS_COMPLETE,
 			Request: request,
-			Progress: &walletdkrpc.WalletEntryProgress{
+			Progress: &wavewalletrpc.WalletEntryProgress{
 				PaymentHash:  paymentHash,
 				VtxoOutpoint: vtxoOutpoint,
 			},

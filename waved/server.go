@@ -1184,7 +1184,7 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 	)
 	s.vtxoStore = dbStore.NewVTXOStore(s.clk)
 
-	// Build the activity-log store for the walletdkrpc subserver.
+	// Build the activity-log store for the wavewalletrpc subserver.
 	s.activityStore = dbStore.NewActivityStore(s.clk)
 	s.cfg.ActivityStore = s.activityStore
 
@@ -1249,7 +1249,7 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 	}
 
 	// Publish a lazy credit-registry reference before the swap registrars
-	// run so the walletdkrpc subserver can route credit-backed Send/Recv
+	// run so the wavewalletrpc subserver can route credit-backed Send/Recv
 	// through the credit subsystem. The service-key ref resolves at Ask
 	// time, after initCreditRegistry registers the registry under the key.
 	if s.cfg.Swap != nil {

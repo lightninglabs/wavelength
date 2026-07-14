@@ -4,7 +4,7 @@ import (
 	"fmt"
 
 	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
-	"github.com/lightninglabs/wavelength/rpc/walletdkrpc"
+	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"github.com/lightninglabs/wavelength/waverpc"
 	"google.golang.org/grpc"
 	"gopkg.in/macaroon-bakery.v2/bakery"
@@ -164,30 +164,30 @@ func newWavedRPCPermissions() map[string][]bakery.Op {
 		"ResumeSwap", "CreateCredit", "RedeemCredit",
 	)
 
-	walletdk := walletdkrpc.WalletService_ServiceDesc.ServiceName
+	wavewalletdk := wavewalletrpc.WalletService_ServiceDesc.ServiceName
 	grant(
-		walletdk, entityInfo, "read", "Balance", "Status",
+		wavewalletdk, entityInfo, "read", "Balance", "Status",
 		"SubscribeWallet",
 	)
-	grant(walletdk, entityInfo, "write",
+	grant(wavewalletdk, entityInfo, "write",
 		"Create", "Unlock",
 	)
-	grant(walletdk, entityActivity, "read",
+	grant(wavewalletdk, entityActivity, "read",
 		"List",
 	)
-	grant(walletdk, entityAddress, "write",
+	grant(wavewalletdk, entityAddress, "write",
 		"Recv",
 	)
 	grant(
-		walletdk, entityOnChain, "read", "GetExitPlan", "ExitStatus",
-		"ExitSummary",
+		wavewalletdk, entityOnChain, "read", "GetExitPlan",
+		"ExitStatus", "ExitSummary",
 	)
 	grant(
-		walletdk, entityOnChain, "write", "PrepareSend", "Send",
+		wavewalletdk, entityOnChain, "write", "PrepareSend", "Send",
 		"Deposit", "SweepWallet", "Exit",
 	)
 
-	inspect := walletdkrpc.WalletInspectionService_ServiceDesc.ServiceName
+	inspect := wavewalletrpc.WalletInspectionService_ServiceDesc.ServiceName
 	grant(inspect, entityActivity, "read",
 		"InspectActivity",
 	)
