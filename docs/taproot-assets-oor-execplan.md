@@ -39,8 +39,10 @@ transition, persist both layers, and only then request Ark signatures.
 - [x] (2026-07-14 23:45Z) Added a prepared-package entry point to the durable
   outgoing OOR FSM; committed PSBTs, canonical recipients, roots, and sealed
   packages survive start-message and snapshot restore before signing.
-- [ ] Thread asset metadata through incoming recipient materialization without
-  breaking Bitcoin-only V1 sessions.
+- [x] (2026-07-15 01:45Z) Threaded recipient roots and sealed transfer
+  packages through offline receive, durable event/snapshot codecs, incoming
+  VTXO materialization, and the OOR artifact store without changing the
+  Bitcoin-only path.
 - [x] (2026-07-15 01:35Z) Persisted the optional asset root on VTXO
   descriptors, excluded asset rows from generic Bitcoin coin selection, and
   made OOR signing, forfeit signing, and unilateral timeout exits derive the
@@ -80,6 +82,10 @@ transition, persist both layers, and only then request Ark signatures.
   Evidence: the new asset-signing regression failed until checkpoint signing,
   forfeit signing, and timeout exit were routed through root-aware spend-info
   derivation.
+- Observation: retaining the sealed transfer only in the receive-session
+  snapshot is insufficient because the successful session advances to ack and
+  completion. The package must live beside the finalized OOR artifacts, while
+  the 32-byte root lives beside each owned VTXO.
 
 ## Decision Log
 
@@ -121,7 +127,11 @@ changed-code lint. Prepared sessions prove that Ark signing is the first FSM
 effect and that submit retries restore the same sealed packages and canonical
 recipients. VTXO persistence now retains the asset root, generic selection
 skips asset-bearing rows, and regression tests cover composed checkpoint,
-forfeit, and timeout control blocks. The first confirmed upstream gap is
+forfeit, and timeout control blocks. The receive path now preserves roots and
+sealed packages across transport, actor restart, materialization, artifact
+lookup, and idempotent retry. The client branch passes `make build`,
+`go test ./oor ./vtxo ./unroll ./waved ./db`, and changed-code lint. The first
+confirmed upstream gap is
 `lightninglabs/tap-sdk#163`; this section will record the remaining test
 evidence and any further tapd/tap-sdk gaps.
 

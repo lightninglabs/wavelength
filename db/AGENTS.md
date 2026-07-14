@@ -71,7 +71,7 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   safety bounds enforced during `DeserializeTree`.
 - `resolveInputPackage` / `loadPackageBundleBySessionID` — two-stage
   OOR ancestry resolver (`oor_unroll_resolver.go`).
-- `LatestMigrationVersion = 14` — current schema version.
+- `LatestMigrationVersion = 17` — current schema version.
 - `PendingIntentPersistenceStore` — implements `wallet.PendingIntentStore`,
   the persistence half of the generic restart-safe intent outbox (header
   `pending_intents` + per-kind detail tables + `pending_intent_anchors`).
@@ -200,6 +200,8 @@ when adding one.
 - `000015_ledger_round_uuid` — canonical UUID text for ledger round joins.
 - `000016_taproot_asset_vtxos` — optional Taproot Asset commitment root on
   VTXO descriptors; generic Bitcoin coin selection excludes these rows.
+- `000017_oor_taproot_asset_packages` — optional sealed Taproot Asset
+  transition container on finalized OOR package rows.
 
 ## Deep Docs
 

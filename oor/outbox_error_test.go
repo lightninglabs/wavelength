@@ -7,6 +7,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
@@ -355,8 +356,22 @@ func TestIncomingSnapshotRecipientPolicyTemplateRoundTrip(t *testing.T) {
 	t.Parallel()
 
 	template := []byte{0x01, 0x02, 0x03, 0x04}
+	assetRoot := chainhash.Hash{0x51, 0x52, 0x53}
+	assetTransfer := &oortx.TaprootAssetTransfer{
+		Version: oortx.TaprootAssetTransferVersion,
+		CheckpointPackages: [][]byte{
+			{
+				0x61,
+			},
+		},
+		ArkPackage: []byte{
+			0x62,
+		},
+	}
+	assetTransferRaw, err := assetTransfer.MarshalBinary()
+	require.NoError(t, err)
 	snap := &IncomingSnapshot{
-		Version: 1,
+		Version: 2,
 		SessionID: SessionID{
 			0x09,
 		},
@@ -375,8 +390,10 @@ func TestIncomingSnapshotRecipientPolicyTemplateRoundTrip(t *testing.T) {
 					0xcc,
 				},
 				VTXOPolicyTemplate: template,
+				TaprootAssetRoot:   &assetRoot,
 			},
 		},
+		TaprootAssetTransfer: assetTransferRaw,
 	}
 
 	raw, err := encodeIncomingSnapshot(snap)
@@ -391,6 +408,56 @@ func TestIncomingSnapshotRecipientPolicyTemplateRoundTrip(t *testing.T) {
 		t, template, decoded.Recipients[0].VTXOPolicyTemplate,
 	)
 	require.Equal(t, uint32(2), decoded.Recipients[0].OutputIndex)
+	require.Equal(t, &assetRoot, decoded.Recipients[0].TaprootAssetRoot)
+	require.Equal(t, assetTransferRaw, decoded.TaprootAssetTransfer)
+}
+
+// TestReceiveNotifiedAssetTransferSnapshotRoundTrip proves an incoming sealed
+// package and recipient root survive the crash boundary before local
+// materialization.
+func TestReceiveNotifiedAssetTransferSnapshotRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	arkPSBT, checkpoints, recipients, _, _, _ :=
+		buildTestIncomingMaterialization(t)
+	sessionID := SessionID(arkPSBT.UnsignedTx.TxHash())
+	assetRoot := chainhash.Hash{0x63, 0x64, 0x65}
+	recipients[0].TaprootAssetRoot = &assetRoot
+	assetTransfer := &oortx.TaprootAssetTransfer{
+		Version: oortx.TaprootAssetTransferVersion,
+		CheckpointPackages: [][]byte{
+			{
+				0x66,
+			},
+		},
+		ArkPackage: []byte{
+			0x67,
+		},
+	}
+
+	snapshot, err := NewIncomingSnapshot(sessionID, &ReceiveNotified{
+		SessionID:            sessionID,
+		ArkPSBT:              arkPSBT,
+		FinalCheckpointPSBTs: checkpoints,
+		Recipients:           recipients,
+		TaprootAssetTransfer: assetTransfer,
+	})
+	require.NoError(t, err)
+	require.Equal(t, uint8(2), snapshot.Version)
+
+	raw, err := encodeIncomingSnapshot(snapshot)
+	require.NoError(t, err)
+	decoded, err := decodeIncomingSnapshotWithLimits(
+		raw, DefaultReceiveLimits(),
+	)
+	require.NoError(t, err)
+	restored, err := IncomingStateFromSnapshot(decoded)
+	require.NoError(t, err)
+	notified, ok := restored.(*ReceiveNotified)
+	require.True(t, ok)
+	require.Equal(t, &assetRoot,
+		notified.Recipients[0].TaprootAssetRoot)
+	require.Equal(t, assetTransfer, notified.TaprootAssetTransfer)
 }
 
 // TestAwaitingFinalizeAcceptedOutboxError verifies that retryable outbox

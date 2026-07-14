@@ -3,6 +3,7 @@ package oor
 import (
 	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/lightninglabs/wavelength/baselib/protofsm"
+	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
 )
 
 // ReceiveState is a sealed interface for all states in the incoming transfer
@@ -76,6 +77,10 @@ type ReceiveNotified struct {
 	// Recipients are the structurally validated Ark outputs plus optional
 	// semantic policy metadata needed to materialize custom VTXOs.
 	Recipients []ArkRecipientOutput
+
+	// TaprootAssetTransfer remains durable until the package and received
+	// VTXO roots are materialized locally.
+	TaprootAssetTransfer *oortx.TaprootAssetTransfer
 
 	// MetadataAttempts counts how many times the authoritative metadata
 	// resolution has failed retryably for this session. It drives the

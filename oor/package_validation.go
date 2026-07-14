@@ -11,7 +11,8 @@ import (
 // validateIncomingPackage validates the finalized OOR package shape before
 // any untrusted incoming artifact is persisted for future recovery.
 func validateIncomingPackage(label string, sessionID SessionID,
-	ark *psbt.Packet, checkpoints []*psbt.Packet) error {
+	ark *psbt.Packet, checkpoints []*psbt.Packet,
+	assetTransfer *oortx.TaprootAssetTransfer) error {
 
 	if sessionID == (SessionID{}) {
 		return fmt.Errorf("%s session id must be provided", label)
@@ -32,6 +33,14 @@ func validateIncomingPackage(label string, sessionID SessionID,
 		return fmt.Errorf("%s finalize package invalid: %w", label, err)
 	}
 
+	if assetTransfer != nil {
+		err := assetTransfer.Validate(len(checkpoints))
+		if err != nil {
+			return fmt.Errorf("%s Taproot Asset transfer "+
+				"invalid: %w", label, err)
+		}
+	}
+
 	return nil
 }
 
@@ -44,7 +53,7 @@ func validateIncomingPackageGraph(root PackageArtifact,
 
 	if err := validateIncomingPackage(
 		"incoming package", root.SessionID, root.ArkPSBT,
-		root.FinalCheckpointPSBTs,
+		root.FinalCheckpointPSBTs, root.TaprootAssetTransfer,
 	); err != nil {
 		return err
 	}
@@ -57,6 +66,7 @@ func validateIncomingPackageGraph(root PackageArtifact,
 		if err := validateIncomingPackage(
 			label, ancestor.SessionID, ancestor.ArkPSBT,
 			ancestor.FinalCheckpointPSBTs,
+			ancestor.TaprootAssetTransfer,
 		); err != nil {
 			return err
 		}

@@ -2,12 +2,14 @@
 
 -- name: UpsertOORPackage :execrows
 INSERT INTO oor_packages (
-    session_id, direction, ark_psbt, created_at, updated_at
+    session_id, direction, ark_psbt, created_at, updated_at,
+    taproot_asset_transfer
 ) VALUES (
-    $1, $2, $3, $4, $5
+    $1, $2, $3, $4, $5, $6
 )
 ON CONFLICT (session_id) DO UPDATE SET
     ark_psbt = EXCLUDED.ark_psbt,
+    taproot_asset_transfer = EXCLUDED.taproot_asset_transfer,
     updated_at = EXCLUDED.updated_at
 WHERE oor_packages.direction = EXCLUDED.direction;
 
@@ -88,6 +90,7 @@ SELECT
     p.session_id,
     p.direction,
     p.ark_psbt,
+    p.taproot_asset_transfer,
     p.created_at AS package_created_at,
     p.updated_at AS package_updated_at,
     b.outpoint_hash,
@@ -111,6 +114,7 @@ SELECT
     p.session_id,
     p.direction,
     p.ark_psbt,
+    p.taproot_asset_transfer,
     p.created_at AS package_created_at,
     p.updated_at AS package_updated_at,
     b.outpoint_hash,
