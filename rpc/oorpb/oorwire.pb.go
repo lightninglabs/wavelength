@@ -179,8 +179,11 @@ type OORSigningDescriptor struct {
 	// owner_leaf_policy is the serialized arkscript owner-leaf policy for
 	// the checkpoint output created from this input.
 	OwnerLeafPolicy []byte `protobuf:"bytes,4,opt,name=owner_leaf_policy,json=ownerLeafPolicy,proto3" json:"owner_leaf_policy,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// taproot_asset_root is the optional 32-byte Taproot Asset commitment
+	// root anchored in the spent VTXO.
+	TaprootAssetRoot []byte `protobuf:"bytes,5,opt,name=taproot_asset_root,json=taprootAssetRoot,proto3" json:"taproot_asset_root,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *OORSigningDescriptor) Reset() {
@@ -241,6 +244,13 @@ func (x *OORSigningDescriptor) GetOwnerLeafPolicy() []byte {
 	return nil
 }
 
+func (x *OORSigningDescriptor) GetTaprootAssetRoot() []byte {
+	if x != nil {
+		return x.TaprootAssetRoot
+	}
+	return nil
+}
+
 // OORRecipientOutput carries one Ark recipient output plus optional semantic
 // policy metadata for the created VTXO.
 type OORRecipientOutput struct {
@@ -252,8 +262,11 @@ type OORRecipientOutput struct {
 	// vtxo_policy_template is the serialized arkscript policy for the created
 	// output when known.
 	VtxoPolicyTemplate []byte `protobuf:"bytes,3,opt,name=vtxo_policy_template,json=vtxoPolicyTemplate,proto3" json:"vtxo_policy_template,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// taproot_asset_root is the optional 32-byte Taproot Asset commitment
+	// root anchored in this recipient output.
+	TaprootAssetRoot []byte `protobuf:"bytes,4,opt,name=taproot_asset_root,json=taprootAssetRoot,proto3" json:"taproot_asset_root,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *OORRecipientOutput) Reset() {
@@ -307,6 +320,13 @@ func (x *OORRecipientOutput) GetVtxoPolicyTemplate() []byte {
 	return nil
 }
 
+func (x *OORRecipientOutput) GetTaprootAssetRoot() []byte {
+	if x != nil {
+		return x.TaprootAssetRoot
+	}
+	return nil
+}
+
 // SubmitPackageRequest carries submit-phase OOR data.
 type SubmitPackageRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -324,9 +344,12 @@ type SubmitPackageRequest struct {
 	// checkpoints are used). The operator validates it at admission and
 	// persists it with the session. Every transfer is V1 today; an unset
 	// value is treated as V1.
-	FlowVersion   uint32 `protobuf:"varint,5,opt,name=flow_version,json=flowVersion,proto3" json:"flow_version,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	FlowVersion uint32 `protobuf:"varint,5,opt,name=flow_version,json=flowVersion,proto3" json:"flow_version,omitempty"`
+	// taproot_asset_transfer is the optional versioned Wavelength container
+	// of sealed tap-sdk packages for the checkpoint and Ark transitions.
+	TaprootAssetTransfer []byte `protobuf:"bytes,6,opt,name=taproot_asset_transfer,json=taprootAssetTransfer,proto3" json:"taproot_asset_transfer,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *SubmitPackageRequest) Reset() {
@@ -392,6 +415,13 @@ func (x *SubmitPackageRequest) GetFlowVersion() uint32 {
 		return x.FlowVersion
 	}
 	return 0
+}
+
+func (x *SubmitPackageRequest) GetTaprootAssetTransfer() []byte {
+	if x != nil {
+		return x.TaprootAssetTransfer
+	}
+	return nil
 }
 
 // SubmitPackageRejection carries a typed rejection of an OOR submit.
@@ -738,23 +768,26 @@ const file_oorwire_proto_rawDesc = "" +
 	"\roorwire.proto\x12\x05oorpb\"5\n" +
 	"\vOOROutPoint\x12\x12\n" +
 	"\x04txid\x18\x01 \x01(\fR\x04txid\x12\x12\n" +
-	"\x04vout\x18\x02 \x01(\rR\x04vout\"\xc3\x01\n" +
+	"\x04vout\x18\x02 \x01(\rR\x04vout\"\xf1\x01\n" +
 	"\x14OORSigningDescriptor\x12.\n" +
 	"\boutpoint\x18\x01 \x01(\v2\x12.oorpb.OOROutPointR\boutpoint\x120\n" +
 	"\x14vtxo_policy_template\x18\x02 \x01(\fR\x12vtxoPolicyTemplate\x12\x1d\n" +
 	"\n" +
 	"spend_path\x18\x03 \x01(\fR\tspendPath\x12*\n" +
-	"\x11owner_leaf_policy\x18\x04 \x01(\fR\x0fownerLeafPolicy\"\x80\x01\n" +
+	"\x11owner_leaf_policy\x18\x04 \x01(\fR\x0fownerLeafPolicy\x12,\n" +
+	"\x12taproot_asset_root\x18\x05 \x01(\fR\x10taprootAssetRoot\"\xae\x01\n" +
 	"\x12OORRecipientOutput\x12\x1b\n" +
 	"\tpk_script\x18\x01 \x01(\fR\bpkScript\x12\x1b\n" +
 	"\tvalue_sat\x18\x02 \x01(\x03R\bvalueSat\x120\n" +
-	"\x14vtxo_policy_template\x18\x03 \x01(\fR\x12vtxoPolicyTemplate\"\x95\x02\n" +
+	"\x14vtxo_policy_template\x18\x03 \x01(\fR\x12vtxoPolicyTemplate\x12,\n" +
+	"\x12taproot_asset_root\x18\x04 \x01(\fR\x10taprootAssetRoot\"\xcb\x02\n" +
 	"\x14SubmitPackageRequest\x12\x19\n" +
 	"\bark_psbt\x18\x01 \x01(\fR\aarkPsbt\x12)\n" +
 	"\x10checkpoint_psbts\x18\x02 \x03(\fR\x0fcheckpointPsbts\x12L\n" +
 	"\x13signing_descriptors\x18\x03 \x03(\v2\x1b.oorpb.OORSigningDescriptorR\x12signingDescriptors\x12F\n" +
 	"\x11recipient_outputs\x18\x04 \x03(\v2\x19.oorpb.OORRecipientOutputR\x10recipientOutputs\x12!\n" +
-	"\fflow_version\x18\x05 \x01(\rR\vflowVersion\"\xa7\x01\n" +
+	"\fflow_version\x18\x05 \x01(\rR\vflowVersion\x124\n" +
+	"\x16taproot_asset_transfer\x18\x06 \x01(\fR\x14taprootAssetTransfer\"\xa7\x01\n" +
 	"\x16SubmitPackageRejection\x12(\n" +
 	"\x04code\x18\x01 \x01(\x0e2\x14.oorpb.OORRejectCodeR\x04code\x12\x16\n" +
 	"\x06reason\x18\x02 \x01(\tR\x06reason\x12\x1d\n" +

@@ -31,12 +31,15 @@ transition, persist both layers, and only then request Ark signatures.
   Wavelength rename branch.
 - [x] (2026-07-14 23:00Z) Added the shared, versioned OOR asset package,
   recipient/input root binding, and durable input/start-message root codecs.
+- [x] (2026-07-14 23:20Z) Added additive submit and offline-receive protobuf
+  fields for input/output roots and the opaque asset transfer, plus bounded
+  request codecs and transport round-trip tests.
 - [ ] Add tap-sdk-backed two-transition preparation with exact PSBT/root
   binding and deterministic graph verification.
 - [ ] Add a prepared-package entry point to the durable outgoing OOR FSM and
   persist the asset extension in snapshots before signing.
-- [ ] Extend OOR transport and incoming recipient metadata without breaking
-  Bitcoin-only V1 sessions.
+- [ ] Thread asset metadata through outgoing snapshots/retries and incoming
+  recipient materialization without breaking Bitcoin-only V1 sessions.
 - [ ] Expose the smallest daemon/SDK surface needed by swapd to submit the
   prepared transfer.
 - [ ] Add unit, codec, FSM, transport, tamper, and restart tests; run changed
@@ -151,11 +154,11 @@ Ark txid, snapshot the asset package before emitting `RequestArkSignatures`,
 and thread it through submit retries. The ordinary constructor continues to
 build Bitcoin-only packages exactly as before.
 
-Finally extend protobuf transport additively, regenerate code with `make rpc`,
-and expose a narrow daemon/SDK method for swapd. Incoming notification support
-will carry enough roots/package data for the receiver to materialize an
-asset-aware VTXO; publication remains out of scope until the path-aware tapd
-follow-up lands.
+Protobuf transport is extended additively with generated submit and
+offline-receive fields. Next thread incoming notification data through the
+durable receiver so it can materialize an asset-aware VTXO, and expose a
+narrow daemon/SDK method for swapd. Publication remains out of scope until the
+path-aware tapd follow-up lands.
 
 ## Concrete Steps
 
