@@ -18,7 +18,7 @@ btcwallet.BtcWallet regardless of the underlying chain source.
 - `OutputLeaser` — Interface for UTXO reservation during coin selection:
   `LeaseOutput(ctx, id, outpoint, expiry)` and
   `ReleaseOutput(ctx, id, outpoint)`. Implemented by `lwwallet.BoardingBackendAdapter`
-  and the btcwallet adapters in `darepod`.
+  and the btcwallet adapters in `waved`.
 - `LockID [32]byte` — Caller-scoped identifier for output leases, stable
   across restarts. Each subsystem uses a distinct, hardcoded `LockID` so
   leases from one caller do not collide with another.
@@ -28,7 +28,7 @@ btcwallet.BtcWallet regardless of the underlying chain source.
 ## Relationships
 
 - **Depends on**: `build` (context logger extraction), `proofkeys` (implements Backend), `indexer` (SchnorrSigner interface).
-- **Depended on by**: `lwwallet` (embeds Wallet + BoardingBackendBase), `btcwbackend` (embeds Wallet + BoardingBackendBase), `darepod` (proof key backend), `wallet` (`LockID`/`OutputLeaser` aliases, `Utxo`), `txconfirm` (`Utxo`/`LockID`/`OutputLeaser` for fee-bump input selection and leasing).
+- **Depended on by**: `lwwallet` (embeds Wallet + BoardingBackendBase), `btcwbackend` (embeds Wallet + BoardingBackendBase), `waved` (proof key backend), `wallet` (`LockID`/`OutputLeaser` aliases, `Utxo`), `txconfirm` (`Utxo`/`LockID`/`OutputLeaser` for fee-bump input selection and leasing).
 
 ## Invariants
 

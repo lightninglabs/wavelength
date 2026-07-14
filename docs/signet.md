@@ -1,6 +1,6 @@
 # Public Test Network Endpoints
 
-`darepod` has built-in Ark and swap service endpoints for testnet3, testnet4,
+`waved` has built-in Ark and swap service endpoints for testnet3, testnet4,
 and signet. Leave `server.host` and `swap.serveraddress` empty to select the
 endpoint for the configured Bitcoin network and outbound transport.
 
@@ -14,7 +14,7 @@ The daemon defaults both outbound transports to gRPC. Set the selectors to
 `rest` when the host cannot use native gRPC:
 
 ```bash
-darepod \
+waved \
   --network=signet \
   --server.transport=rest \
   --swap.servertransport=rest \
@@ -35,7 +35,7 @@ lands.
 
 ## Config Resolution
 
-`darepod.DefaultConfig()` leaves the two explicit address fields empty. The
+`waved.DefaultConfig()` leaves the two explicit address fields empty. The
 config accessors resolve the effective values without mutating those fields:
 
 - `Config.ArkServerAddress()` selects from `network`, `server.transport`, and
@@ -46,7 +46,7 @@ config accessors resolve the effective values without mutating those fields:
 An explicit address always wins. This includes local test-network stacks:
 
 ```bash
-darepod \
+waved \
   --network=signet \
   --server.host=localhost:10010 \
   --server.insecure \

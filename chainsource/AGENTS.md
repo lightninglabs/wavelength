@@ -35,7 +35,7 @@ communication alongside the raw registration API.
   `build` (logger-from-context helper).
 - **Depended on by**: `round`, `vtxo`, `wallet`, `fraud`, `txconfirm`,
   `unroll` (monitoring), `chainbackends`, `btcwbackend`, `lwwallet` (each
-  implements `ChainBackend`), `darepod` (wiring).
+  implements `ChainBackend`), `waved` (wiring).
 
 ## Invariants
 

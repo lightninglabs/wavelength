@@ -23,7 +23,7 @@ Send/Pull/AckUpTo RPCs. Generated via `make rpc`
 
 - **Depends on**: none beyond `google.golang.org/protobuf` and
   `grpc-gateway` runtime.
-- **Depended on by**: `mailbox/conn`, `serverconn`, `darepod`.
+- **Depended on by**: `mailbox/conn`, `serverconn`, `waved`.
 
 ## Invariants
 

@@ -48,7 +48,7 @@ estimation, and optional v3 package relay via a pluggable `PackageSubmitter`.
 
 - **Depends on**: `chainsource` (implements `ChainBackend` interface),
   `chainfees` (fee estimator types).
-- **Depended on by**: `darepod` (instantiates `LNDBackend` and wires a
+- **Depended on by**: `waved` (instantiates `LNDBackend` and wires a
   `PackageSubmitter` from operator config), `systest` (constructs
   `LNDBackend` via lndclient for system tests), `btcwbackend` / `lwwallet` /
   `txconfirm` (reuse `PackageSubmitter`, `PackageTxError`, and
@@ -59,8 +59,8 @@ estimation, and optional v3 package relay via a pluggable `PackageSubmitter`.
 - `LNDBackend` requires an lnd instance (local or remote via lndclient).
 - Provides real-time notifications via lnd's chainntnfs package.
 - `PackageSubmitter` is optional; package-capable backends return an error
-  from `SubmitPackage` when no submitter is set. `darepod` selects one at
-  startup: an explicit `darepod.Config.PackageSubmitter` wins (bitcoind flags
+  from `SubmitPackage` when no submitter is set. `waved` selects one at
+  startup: an explicit `waved.Config.PackageSubmitter` wins (bitcoind flags
   inject `chainbackends/bitcoindrpc.PackageSubmitter`, and the itest harness
   sets the same field); otherwise, for an LND wallet it falls back to
   `chainbackends/lndsubmitter.New(lndSvc.WalletKit)` as the default.

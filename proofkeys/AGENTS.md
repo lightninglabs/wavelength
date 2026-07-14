@@ -16,7 +16,7 @@ between wallet backends and proof key derivation.
 
 - **Depends on**: `indexer` (SchnorrSigner interface for proof signing).
 - **Depended on by**: `walletcore` (implements Backend), `lndbackend`
-  (implements Backend via ProofKeyBackend), `darepod` (consumes Backend for
+  (implements Backend via ProofKeyBackend), `waved` (consumes Backend for
   indexer proof operations).
 
 ## Invariants

@@ -32,9 +32,9 @@ VM with no separate gateway.
 - Every verb takes a JS request object and resolves/rejects a JS `Promise`;
   never call back into JS synchronously from a goroutine without going
   through `promise`, or a panic can escape and kill the Go runtime.
-- `data_dir` must default to `browserDataDir` (`/darepo`) when unset, because
+- `data_dir` must default to `browserDataDir` (`/wavelength`) when unset, because
   the embedded daemon's config validation calls `os.UserHomeDir` for the
-  default `~/.darepod`, which fails under `wasm_exec.js` (no `$HOME`).
+  default `~/.waved`, which fails under `wasm_exec.js` (no `$HOME`).
 - The `executor` `js.Func` passed to `Promise.New` must be released right
   after construction (the executor runs synchronously), otherwise every
   wallet call leaks a Go callback handle for the life of the page.

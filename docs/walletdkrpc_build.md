@@ -2,7 +2,7 @@
 
 `walletdkrpc` is an optional daemon-side subserver enabled by the
 `walletdkrpc` build tag. It exposes a flat, swap-vocabulary-free wallet API on
-top of the running `darepod` daemon and composes the existing swap subsystem,
+top of the running `waved` daemon and composes the existing swap subsystem,
 the daemon-managed signer, the
 cooperative-leave RPC (`LeaveVTXOs`), and the unified ledger surface into one
 small RPC service. `WalletService` exposes the seven core user verbs (`Create`,
@@ -19,7 +19,7 @@ binaries are tagged.
 The wallet RPC subserver lives behind paired build tags:
 
 - `walletdkrpc` — registers the wallet RPC gRPC service in the daemon and
-  gives the top-level `darepocli` wallet verbs (`balance`, `recv`,
+  gives the top-level `wavecli` wallet verbs (`balance`, `recv`,
   `send`, `activity`, `create`, `unlock`, `exit`, `wallet-sweep`) and the
   `mcp` server's wallet tools live backing instead of an `Unimplemented`
   stub.
@@ -56,8 +56,8 @@ make install-walletdkrpc
 
 Both binaries land in the usual locations:
 
-- `bin/darepod` (or `$GOPATH/bin/darepod`) — daemon
-- `bin/darepocli` (or `$GOPATH/bin/darepocli`) — CLI
+- `bin/waved` (or `$GOPATH/bin/waved`) — daemon
+- `bin/wavecli` (or `$GOPATH/bin/wavecli`) — CLI
 
 ## What gets enabled
 
@@ -90,8 +90,8 @@ under the `ark *` (e.g. `ark vtxos list`, `ark send oor`) and
 ## Configuration
 
 The wallet RPC subserver reads four optional knobs from the standard
-`darepod` config under the `swapwallet` section (see
-[`sample-darepod.conf`](../sample-darepod.conf) for the canonical list):
+`waved` config under the `swapwallet` section (see
+[`sample-waved.conf`](../sample-waved.conf) for the canonical list):
 
 | Key | Default | Purpose |
 |-----|---------|---------|
@@ -110,16 +110,16 @@ authoritative constants.
 # Build the daemon with walletdkrpc enabled.
 make build-walletdkrpc
 
-# Confirm the top-level wallet verbs appear in `darepocli --help`
+# Confirm the top-level wallet verbs appear in `wavecli --help`
 # (balance, recv, send, activity, create, unlock, mcp).
-./bin/darepocli --help
+./bin/wavecli --help
 
 # After starting the daemon and creating/unlocking a wallet:
-./bin/darepocli balance
-./bin/darepocli ark vtxos list
+./bin/wavecli balance
+./bin/wavecli ark vtxos list
 ```
 
-If `darepocli balance` returns `daemon was not built with -tags walletdkrpc`,
+If `wavecli balance` returns `daemon was not built with -tags walletdkrpc`,
 the binary was built without the tag. Re-run `make build-walletdkrpc` or
 `make install-walletdkrpc`.
 

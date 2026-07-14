@@ -3,7 +3,7 @@
 ## Purpose
 
 Implements `chainbackends.PackageSubmitter` on top of lnd's
-`WalletKit.SubmitPackage` RPC. It lets an lnd-backed darepod relay its
+`WalletKit.SubmitPackage` RPC. It lets an lnd-backed waved relay its
 zero-fee unilateral-exit v3/TRUC packages through lnd's own chain
 connection, so no separate bitcoind RPC or Esplora endpoint is required
 for CPFP fee bumping.
@@ -23,7 +23,7 @@ for CPFP fee bumping.
 - **Depends on**: `chainbackends` (implements its `PackageSubmitter`
   interface and returns its `btcjson.SubmitPackageResult` shape),
   `lndclient` (`WalletKitClient.SubmitPackage`, `SubmitPackageResult`).
-- **Depended on by**: `darepod` (`server.go` wires `lndsubmitter.New` as
+- **Depended on by**: `waved` (`server.go` wires `lndsubmitter.New` as
   the default `PackageSubmitter` for `WalletTypeLnd` whenever
   `cfg.PackageSubmitter` is not explicitly injected, i.e. an explicit
   bitcoind-backed submitter always takes precedence).

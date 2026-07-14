@@ -12,7 +12,7 @@ in-flight jobs.
 
 ## Key Types
 
-For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unroll.<Symbol>`.
+For field-level detail, use `go doc github.com/lightninglabs/wavelength/unroll.<Symbol>`.
 
 ### Per-target actor
 
@@ -66,7 +66,7 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
   terminal outcome is forwarded to the VTXO manager as a
   `vtxo.ExitOutcomeNotification` so VTXO lifecycle tracks the unroll's
   terminal on-chain result rather than the user's intent to exit
-  (darepo-client#602): a clean failure (`!HadOnChainFootprint`) →
+  (wavelength#602): a clean failure (`!HadOnChainFootprint`) →
   `ExitOutcomeRecoverable` (roll back to live), a completed exit →
   `ExitOutcomeConfirmed` (retire to spent). `UnrollTerminatedMsg` carries
   `HadOnChainFootprint`, computed by `jobHadOnChainFootprint` (any
@@ -100,7 +100,7 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
   `ActorID`, never clobbering the sweep txid / failure reason. The one
   exception is a **recoverable** terminal failure
   (`RecoverableFailure`): the prior exit failed cleanly with no on-chain
-  footprint and the VTXO was rolled back to live (darepo-client#602), so
+  footprint and the VTXO was rolled back to live (wavelength#602), so
   a fresh `EnsureUnrollRequest` re-admits (spawns a new child,
   overwriting the stale record) instead of deduping — otherwise a
   recovered VTXO could never be unrolled again. Any existing unroll job
@@ -116,7 +116,7 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
   up-front verdict folding wallet-funded CPFP cost (recovery-tx
   ancestry) and VTXO-funded sweep cost into one check, so admission can
   refuse an exit that would leave a dust sweep or burn more in fees
-  than the VTXO is worth (darepo-client#608) instead of stranding it
+  than the VTXO is worth (wavelength#608) instead of stranding it
   in an exit state after a min-relay-fee broadcast failure.
 - `PlanExitFunding(desc, mat, feeRate, ...) ExitFundingPlan` —
   derives the wallet fee-input amount an operator/caller should fund
@@ -133,7 +133,7 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
   `ProofAssembler`. Also exposes `EnsureProofForHarness`, a
   terminal-tolerant sibling of `EnsureProof` that skips ONLY the
   descriptor's terminal-status arm so test harnesses (currently only
-  `darepod.Server.GetVTXOLineageTx`) can walk the lineage of a
+  `waved.Server.GetVTXOLineageTx`) can walk the lineage of a
   Spent/Forfeited/Failed VTXO. Production code MUST keep using
   `EnsureProof`; the harness surface is gated by an explicit method
   name (not a flag) so a refactor cannot silently disable the guard.
@@ -177,7 +177,7 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
   ancestors can confirm before the target VTXO's creation height, so the
   fallback anchors to tip minus a lookback (never `CreatedHeight`), bounding
   the neutrino historical rescan instead of scanning to genesis
-  (darepo-client#884). The fallback path warns when the VTXO's age exceeds the
+  (wavelength#884). The fallback path warns when the VTXO's age exceeds the
   lookback (the floor may then miss an already-confirmed ancestor).
 
 ## Relationships
@@ -188,7 +188,7 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
   confirmation), `chainsource` (best-height, spend watch, fee
   estimate), `vtxo` (`Descriptor`, `VTXOStore`), `db`
   (`UnilateralExitStore`, `RegistryRecord` shape), `lib/arkscript`.
-- **Depended on by**: `darepod` (wires the registry via the lazy
+- **Depended on by**: `waved` (wires the registry via the lazy
   chain-resolver seam, PR #264), `vhtlcrecovery/coordinator` (admission via
   `EnsureUnrollRequest`), `vhtlcrecovery/unrollpolicy` (implements
   `ExitSpendPolicyResolver` and `ExitSpendPolicy`), `fraud` (admits a
@@ -209,10 +209,10 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
   - → `vtxo` (indirect via chain-resolver seam, #264).
   - → `vtxo` manager (Tell, via `RegistryConfig.VTXOExitObserver`):
     `ExitOutcomeNotification` on each child's terminal outcome — the
-    reverse feedback edge for darepo-client#602.
+    reverse feedback edge for wavelength#602.
 - **Receives**:
   - ← API (registry): `EnsureUnrollRequest`, `GetStatusRequest`
-    (from `darepod` RPC via chain resolver).
+    (from `waved` RPC via chain resolver).
   - ← registry (internal): `persistActiveRecordMsg`,
     `persistRecordResultMsg`, `UnrollTerminatedMsg`.
   - ← per-target mailbox: all messages listed under Per-target actor.
@@ -258,7 +258,7 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/unrol
   a repeat for an already-terminal outpoint returns the historical
   `ActorID` and never overwrites stored sweep txid / failure reason.
   A **recoverable** terminal failure is the deliberate exception: the
-  VTXO was rolled back to live (darepo-client#602), so `handleEnsure`
+  VTXO was rolled back to live (wavelength#602), so `handleEnsure`
   falls through both the `r.pending` and `Store.GetRecord` arms to
   re-admit a fresh exit rather than strand the recovered coin.
 - **Fail-closed on restore gaps.** `handleEnsure` validates restorable

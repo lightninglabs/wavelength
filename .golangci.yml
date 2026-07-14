@@ -248,10 +248,10 @@ linters:
         linters:
           - forbidigo
 
-      # The darepocli CLI uses defer conn.Close() and fmt.Fprintln to
+      # The wavecli CLI uses defer conn.Close() and fmt.Fprintln to
       # stdout throughout. Unchecked errors there are not actionable
       # (the process is about to exit anyway).
-      - path: cmd/darepocli/
+      - path: cmd/wavecli/
         linters:
           - errcheck
 

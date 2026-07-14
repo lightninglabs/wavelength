@@ -1,7 +1,7 @@
 # Optional Background Swap Execution
 
 This note sketches a small, opt-in path for moving client-side swap
-execution into `darepod` without making every default daemon or CLI build
+execution into `waved` without making every default daemon or CLI build
 carry the swap runtime yet.
 
 ## Problem
@@ -41,9 +41,9 @@ make unit-swapruntime
 
 The tag gates both sides that would otherwise embed swap dependencies:
 
-- `darepod` starts the background swap executor only in `swapruntime`
+- `waved` starts the background swap executor only in `swapruntime`
   builds.
-- `darepocli` exposes daemon-backed `swap` commands only in
+- `wavecli` exposes daemon-backed `swap` commands only in
   `swapruntime` builds.
 - the CLI talks to a daemon-hosted swap subserver; it does not import
   `sdk/swaps`, open the swap DB, or dial `swapdk-server` directly.
@@ -61,18 +61,18 @@ Suggested file layout:
 ```text
 rpc/swapclientrpc/swap_client.proto
 swapclientserver/*.go                             //go:build swapruntime
-cmd/darepod/swapruntime.go                        //go:build swapruntime
-cmd/darepod/swapruntime_stub.go                   //go:build !swapruntime
-cmd/darepocli/darepoclicommands/cmd_swap_rpc.go   //go:build swapruntime
-cmd/darepocli/darepoclicommands/cmd_swap_stub.go  //go:build !swapruntime
+cmd/waved/swapruntime.go                        //go:build swapruntime
+cmd/waved/swapruntime_stub.go                   //go:build !swapruntime
+cmd/wavecli/waveclicommands/cmd_swap_rpc.go   //go:build swapruntime
+cmd/wavecli/waveclicommands/cmd_swap_stub.go  //go:build !swapruntime
 ```
 
 The stub path should be boring:
 
-- `darepod` compiles with no swap executor and no swap server dialer.
-- `darepod` does not register the swap subserver in non-`swapruntime`
+- `waved` compiles with no swap executor and no swap server dialer.
+- `waved` does not register the swap subserver in non-`swapruntime`
   builds.
-- `darepocli` exposes a tiny command that returns `swap support requires
+- `wavecli` exposes a tiny command that returns `swap support requires
   building with tags="swapruntime"`.
 
 A stub command keeps swap support discoverable in non-swapruntime builds
@@ -85,9 +85,9 @@ protobuf response. Any richer Go models can live in `sdk/ark` or a future
 WalletDK-facing package, but the CLI should not become a second swap runtime.
 
 The daemon core should also avoid importing `sdk/swaps` directly. Today
-`sdk/swaps -> sdk/ark -> darepod`, so a direct import from `darepod` creates an
+`sdk/swaps -> sdk/ark -> waved`, so a direct import from `waved` creates an
 import cycle. Register the optional subserver through a programmatic daemon RPC
-registrar and place the swap runtime in a package outside `darepod`.
+registrar and place the swap runtime in a package outside `waved`.
 
 Generated protobuf code is harder to build-tag cleanly. Prefer keeping the
 swap subserver protobuf and generated client/server stubs compiled in all
@@ -101,25 +101,25 @@ The executor is a daemon subsystem that wraps `sdk/swaps`; it should not
 reimplement pay or receive state transitions.
 
 ```text
-darepocli / SDK caller
+wavecli / SDK caller
     |
     v
 swapclientrpc.SwapClientService
     |
     v
-darepod swap executor      // build tag: swapruntime
+waved swap executor      // build tag: swapruntime
     |
     v
 sdk/swaps
     |
     v
-sdk/ark -> daemonrpc local client -> darepod Ark runtime
+sdk/ark -> waverpc local client -> waved Ark runtime
 swaprpc -> swapdk-server
 ```
 
 The executor owns:
 
-- swap store lifecycle (`~/.darepod/data/<network>/swaps.db` by default,
+- swap store lifecycle (`~/.waved/data/<network>/swaps.db` by default,
   configurable);
 - swap-server transport config;
 - construction of `sdk/swaps.SwapClient`;
@@ -135,7 +135,7 @@ swap FSM transitions. Those remain in `sdk/ark`, `oor`, policy packages, and
 
 The swap RPC interface is the control-plane contract for swaps. It should be a
 daemon-hosted subserver registered on the same gRPC listener as
-`daemonrpc.DaemonService`, not new methods bolted onto `DaemonService` itself.
+`waverpc.DaemonService`, not new methods bolted onto `DaemonService` itself.
 The CLI, WalletDK, and any other external process should all use this subserver.
 The executor is an internal implementation detail behind it.
 
@@ -181,7 +181,7 @@ rpc/swapclientrpc/swap_client.proto
 ```
 
 Putting the proto under `rpc/swapclientrpc` gives it a real Go package named
-`swapclientrpc` while keeping `daemonrpc.DaemonService` unchanged. The important
+`swapclientrpc` while keeping `waverpc.DaemonService` unchanged. The important
 boundary is separate service, same daemon listener.
 
 Minimal message shape:
@@ -244,18 +244,18 @@ also adds `walletdkrpc`) so local developer and integration-test environments
 do not need to remember the exact build tag.
 
 Implementation registration should look like the existing `DaemonService`
-registration path in `darepod/server.go`, but through a programmatic registrar
-so the tag split stays contained and `darepod` does not import `sdk/swaps`:
+registration path in `waved/server.go`, but through a programmatic registrar
+so the tag split stays contained and `waved` does not import `sdk/swaps`:
 
 ```go
-daemonrpc.RegisterDaemonServiceServer(s.grpcServer, s.rpcServer)
+waverpc.RegisterDaemonServiceServer(s.grpcServer, s.rpcServer)
 for _, registrar := range s.cfg.RPCServiceRegistrars {
     cleanup, err := registrar(ctx, s.grpcServer, s.rpcServer, s.cfg)
     // ...
 }
 ```
 
-Only the tagged `cmd/darepod` file appends the `swapclientserver.Register`
+Only the tagged `cmd/waved` file appends the `swapclientserver.Register`
 registrar. Non-tag builds do not import the swap runtime package from daemon
 startup code and do not advertise swap support on the gRPC server.
 
@@ -273,7 +273,7 @@ the swap FSM happens to call today.
 This work intentionally does not duplicate the receive-event or server
 protocol changes in:
 
-- `lightninglabs/darepo-client#337`, which owns the SDK receive-side mailbox
+- `lightninglabs/wavelength#337`, which owns the SDK receive-side mailbox
   HTLC event flow, onion validation, `RequestChannelID` signature change,
   receive auth key plumbing, and swap-store schema changes.
 - `lightninglabs/swapdk-server#24`, which owns the swapd-hosted mailbox edge,
@@ -288,9 +288,9 @@ PR should remain a control-plane/background-execution layer:
 - no server-side route binding changes;
 - no WalletDK API work.
 
-With `darepo-client#337` merged, `swapclientserver` should treat receive auth
+With `wavelength#337` merged, `swapclientserver` should treat receive auth
 as a lower-layer daemon capability instead of owning a separate key file. The
-daemon-side swap client wraps the existing darepod RPC implementation with
+daemon-side swap client wraps the existing waved RPC implementation with
 `sdk/ark` over bufconn, passes that Ark facade to `sdk/swaps` as its
 `DaemonConn`, and lets `sdk/swaps` request payment-scoped receive-auth signing
 and ECDH through the daemon-backed `ReceiveAuthKey` flow. This keeps the
@@ -320,7 +320,7 @@ callers control or observe it.
 
 ## CLI Behavior
 
-> **Superseded (#907).** Every reference to a user-facing `darepocli swap`
+> **Superseded (#907).** Every reference to a user-facing `wavecli swap`
 > verb in this document — here and in the Testing Plan, Rollout, and Planned
 > Commit Stack sections below — was retired: `send`/`recv --offchain` and
 > `activity` (plus `activity inspect <id>`) cover them. The `swapruntime`
@@ -329,7 +329,7 @@ callers control or observe it.
 > `dev swapclient` surface remains for low-level access. These sections are
 > retained as design background.
 
-With `swapruntime`, `darepocli swap` should become a daemon-control surface.
+With `swapruntime`, `wavecli swap` should become a daemon-control surface.
 The CLI should not open the swap DB, construct `sdk/swaps.SwapClient`, dial
 `swapdk-server`, or drive the FSM directly. All CLI operations go through
 `swapclientrpc.SwapClientServiceClient`.
@@ -348,7 +348,7 @@ the daemon has durably persisted the session.
 `SubscribeSwaps` landed in the first slice, so `swap watch` streams live
 updates directly instead of falling back to polling `GetSwap`.
 
-Swap storage and swap-server settings belong in `darepod` config. That keeps
+Swap storage and swap-server settings belong in `waved` config. That keeps
 daemon startup as the single place where background worker dependencies are
 configured, and keeps the CLI focused on the daemon RPC contract.
 
@@ -407,11 +407,11 @@ Unit tests under `swapruntime`:
 - tagged CLI commands call a fake `SwapClientServiceClient` and never construct
   `sdk/swaps.SwapClient`;
 - non-tag builds compile without registering the swap subserver and without
-  importing `sdk/swaps` from `darepod` or `darepocli`.
+  importing `sdk/swaps` from `waved` or `wavecli`.
 
 Integration tests under `swapruntime`:
 
-> _Superseded (#907): the `darepocli swap` CLI verbs below were removed; the
+> _Superseded (#907): the `wavecli swap` CLI verbs below were removed; the
 > daemon runtime they exercised is unchanged. See the note under "CLI
 > Behavior"._
 
@@ -425,8 +425,8 @@ Integration tests under `swapruntime`:
 Build checks:
 
 ```shell
-go test ./cmd/darepocli/darepoclicommands ./cmd/darepod ./darepod ./sdk/swaps
-go test -tags=swapruntime ./cmd/darepocli/darepoclicommands ./cmd/darepod ./darepod ./sdk/swaps ./swapclientserver
+go test ./cmd/wavecli/waveclicommands ./cmd/waved ./waved ./sdk/swaps
+go test -tags=swapruntime ./cmd/wavecli/waveclicommands ./cmd/waved ./waved ./sdk/swaps ./swapclientserver
 ```
 
 ## Rollout
@@ -436,7 +436,7 @@ go test -tags=swapruntime ./cmd/darepocli/darepoclicommands ./cmd/darepod ./dare
 3. Add daemon config and executor startup behind `swapruntime`.
 4. Wire tagged subserver handlers to the executor.
 5. Convert CLI swap commands to daemon-control mode behind `swapruntime`.
-   _(Superseded — #907 removed the `darepocli swap` CLI surface entirely.)_
+   _(Superseded — #907 removed the `wavecli swap` CLI surface entirely.)_
 6. Add restart and timeout integration coverage through the CLI/RPC surface.
 7. Document the WalletDK handoff surface once the daemon API stops moving.
 
@@ -455,10 +455,10 @@ compiles on its own or is a generated-code companion to the previous commit.
    `SwapClientServiceClient` and `SwapClientServiceServer`. Message types
    include start pay, start receive, list, get, subscribe, `SwapSummary`, and
    a direction enum. State remains a string in this slice so it can mirror the
-   SDK without inventing a second enum too early. No `darepod` registration
+   SDK without inventing a second enum too early. No `waved` registration
    yet.
 
-2. `darepod: add swapruntime registration seam`
+2. `waved: add swapruntime registration seam`
 
    Add the build-tagged registration hook. Default builds register only the
    existing daemon service. `swapruntime` builds register
@@ -466,7 +466,7 @@ compiles on its own or is a generated-code companion to the previous commit.
    optional-subserver mechanics without implementing swap execution. If a
    default-build CLI stub is kept, it also lands here.
 
-3. `darepod: add tagged swap executor skeleton`
+3. `waved: add tagged swap executor skeleton`
 
    Add `swapruntime` config, store opening/closing, swap-server dial config,
    executor lifecycle, and startup/shutdown integration. The executor can
@@ -474,7 +474,7 @@ compiles on its own or is a generated-code companion to the previous commit.
    registry, but it does not need to drive all swap paths yet. Default builds
    must not import `sdk/swaps`.
 
-4. `darepod: resume pending swaps in background`
+4. `waved: resume pending swaps in background`
 
    Wire the executor to `sdk/swaps.ResumePayViaLightning` and
    `ResumeReceiveViaLightning`, register one worker per pending session on
@@ -482,22 +482,22 @@ compiles on its own or is a generated-code companion to the previous commit.
    than a second driver. Add focused unit tests around dedupe and terminal
    skip behavior.
 
-5. `darepod: implement swap subserver start and status RPCs`
+5. `waved: implement swap subserver start and status RPCs`
 
    Implement `StartPay`, `StartReceive`, `ListSwaps`, and `GetSwap` against
    the executor. Add conversion helpers between `sdk/swaps` summaries and
    protobuf summaries. Start calls return after the initial session is durably
    persisted and worker ownership is established.
 
-6. `darepod: stream swap updates`
+6. `waved: stream swap updates`
 
    Implement `SubscribeSwaps` if the update path is simple enough. If it is
    not, leave the RPC unimplemented in tagged builds and document CLI polling
    as the first slice. This commit should not block the start/list/get
    control plane.
 
-7. `darepocli: move swap commands to daemon subserver`
-   _(Superseded — #907 removed the `darepocli swap` CLI surface instead.)_
+7. `wavecli: move swap commands to daemon subserver`
+   _(Superseded — #907 removed the `wavecli swap` CLI surface instead.)_
 
    Under `swapruntime`, convert `swap pay`, `swap receive`, `swap list`,
    `swap show`, and `swap watch` to call `SwapClientServiceClient`. Remove

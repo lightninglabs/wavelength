@@ -35,7 +35,7 @@ automatically triggers unilateral exit for all affected recipient VTXOs.
   `lib/actormsg` (`ForceUnrollRequest` / `ForceUnrollResponse`,
   `UnrollTriggerFraudSpend`), `lib/tree` (ancestry tree walk for watch-point
   assembly).
-- **Depended on by**: `darepod` (wires up on startup).
+- **Depended on by**: `waved` (wires up on startup).
 - **Sends**:
   - → `chainsource`: `RegisterSpendRequest` per ancestor outpoint on
     `TrackVTXOsRequest`; `UnregisterSpendRequest` on `UntrackRequest` /
@@ -49,7 +49,7 @@ automatically triggers unilateral exit for all affected recipient VTXOs.
     is already terminal, or the wallet no longer tracks it) is logged as a
     warning rather than surfaced as an error.
 - **Receives**:
-  - ← `darepod`: `TrackVTXOsRequest`, `UntrackRequest`
+  - ← `waved`: `TrackVTXOsRequest`, `UntrackRequest`
   - ← `chainsource`: spend notifications (re-dispatched internally as
     `SpendObservedMsg` per affected target)
 

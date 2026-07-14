@@ -1,11 +1,11 @@
 # SDK Layered Architecture
 
 This note describes the client-side layering direction in
-`darepo-client`.
+`wavelength`.
 
 The shape is:
 
-- `darepod` remains the canonical Ark client runtime.
+- `waved` remains the canonical Ark client runtime.
 - `sdk/ark` is the consumer-facing Go SDK for that runtime.
 - the same `sdk/ark` API can talk to a remote daemon over gRPC or
   an embedded in-process daemon over `bufconn` or another injected
@@ -51,16 +51,16 @@ sdk/swaps          future high-level swap orchestration
 sdk/ark            consumer-facing Ark Go SDK
     |
     v
-daemonrpc          stable transport contract
+waverpc          stable transport contract
     |
     v
-darepod            canonical Ark client runtime
+waved            canonical Ark client runtime
     |
     v
 wallet, indexer, round, oor, ledger, db, mailbox transport
 ```
 
-The important boundary is between `sdk/ark` and `darepod`. `darepod`
+The important boundary is between `sdk/ark` and `waved`. `waved`
 owns the real runtime: persistence, actor lifecycle, recovery
 rules, wallet wiring, and Ark protocol execution. `sdk/ark` owns
 transport selection, lifecycle management for embedders, and Go
@@ -71,21 +71,21 @@ is not a second Ark engine. It is a facade, and it stays that way.
 
 The same `sdk/ark` client API supports two transports.
 
-**Remote mode** connects to an already-running `darepod` over gRPC:
+**Remote mode** connects to an already-running `waved` over gRPC:
 
 ```text
-app -> sdk/ark -> daemonrpc over TCP/TLS -> darepod
+app -> sdk/ark -> waverpc over TCP/TLS -> waved
 ```
 
 This is the right fit when the daemon is managed separately, when
 process isolation is desirable, when multiple clients need to talk
 to the same daemon, or when non-Go consumers also need access.
 
-**Embedded mode** starts `darepod` in-process and talks to it
+**Embedded mode** starts `waved` in-process and talks to it
 through an injected listener, typically `bufconn`:
 
 ```text
-app -> sdk/ark -> daemonrpc over bufconn -> darepod
+app -> sdk/ark -> waverpc over bufconn -> waved
 ```
 
 This is the right fit when a single binary should contain the whole
@@ -98,11 +98,11 @@ same service boundary. Only the transport changes; the runtime does
 not. That is what lets one SDK surface serve both modes and lets
 the daemon stay the single source of truth for behavior.
 
-Injected-listener support in `darepod` is what makes this honest.
+Injected-listener support in `waved` is what makes this honest.
 Without it, embedded hosts would have to allocate a real TCP port
 and pretend to be a daemon process. With it, we get in-process
 startup for SDK hosts, no fake port management, fast end-to-end
-tests, and a uniform `daemonrpc` contract in both modes. That is
+tests, and a uniform `waverpc` contract in both modes. That is
 why the listener work lands first in the stack — it is the
 substrate that makes embedding a first-class mode rather than an
 afterthought.
@@ -117,14 +117,14 @@ bounded timeout, and is safe to call more than once. This gives
 higher-level callers a way to supervise embedded mode rather than
 discovering failures only when the next RPC breaks.
 
-A daemon subserver that already lives inside `darepod` should use the
+A daemon subserver that already lives inside `waved` should use the
 same boundary without starting a second daemon. In that case, `sdk/ark`
 can wrap the already-running `DaemonService` implementation behind a
 private `bufconn` transport. The caller gets a normal Ark SDK client,
 but the process never dials its public RPC listener and never carries a
 partial hand-written daemon client.
 
-## Where `sdk/ark` ends and `darepod` begins
+## Where `sdk/ark` ends and `waved` begins
 
 `sdk/ark` is the consumer-facing Go API for Ark operations that the
 daemon already supports. In the near term that covers:
@@ -150,7 +150,7 @@ behavior, swap persistence and swap FSM state, secret-material
 storage policy (the SDK passes wallet passwords through to the daemon
 but does not persist them), and
 cross-cutting instrumentation ownership for daemon internals.
-Keeping those in `darepod` is the thing that prevents drift between
+Keeping those in `waved` is the thing that prevents drift between
 the "real daemon" path and the "embedded SDK" path — there is only
 one place where runtime behavior is defined.
 
@@ -158,7 +158,7 @@ Two boundary choices are worth calling out explicitly because they
 surface in the first SDK slice.
 
 **API model policy.** Some `sdk/ark` methods currently return
-`daemonrpc` protobuf request and response types directly rather
+`waverpc` protobuf request and response types directly rather
 than SDK-owned models. This is deliberate for the first slice: the
 immediate goal is to establish one stable consumer entry point and
 one stable transport story, not to invent domain types for every
@@ -170,8 +170,8 @@ long-term domain model guarantee. The long-term direction is to
 move high-traffic APIs toward SDK-owned typed models, but we are
 not pretending all methods are there yet.
 
-Because of that, `daemonrpc` changes carry SDK consequences today.
-The working rule is that `daemonrpc` changes should be additive
+Because of that, `waverpc` changes carry SDK consequences today.
+The working rule is that `waverpc` changes should be additive
 whenever possible, that removed protobuf fields must reserve their
 tags and names, and that generated-proto churn should be treated as
 SDK-surface churn for as long as passthrough methods still exist.
@@ -179,7 +179,7 @@ This is another reason the long-term direction points toward
 SDK-owned typed models.
 
 **Embedded config boundary.** `EmbeddedConfig` currently accepts a
-full `*darepod.Config`. That is an explicit choice for the first
+full `*waved.Config`. That is an explicit choice for the first
 embedding slice: `sdk/ark` hides transport and lifecycle
 management, but it does not yet hide the full daemon configuration
 surface. A narrower SDK-owned embedded config may make sense later,
@@ -239,7 +239,7 @@ The future swap client will sit on top of `sdk/ark`, not beside it:
 app
   -> sdk/swaps
       -> sdk/ark
-          -> darepod
+          -> waved
 ```
 
 That means swap logic can assume one Ark client facade, swap code
@@ -264,7 +264,7 @@ the daemon boundary as the runtime contract.
 
 The stack lands in four incremental slices:
 
-1. make `darepod` embeddable by accepting injected RPC listeners,
+1. make `waved` embeddable by accepting injected RPC listeners,
 2. expose the daemon metadata needed by SDK callers, such as
    operator terms on `GetInfo`,
 3. build the first `sdk/ark` facade on top of that boundary,
@@ -273,7 +273,7 @@ The stack lands in four incremental slices:
 This sequence keeps each step reviewable and avoids a single giant
 "SDK rewrite" PR.
 
-Correspondingly, the architecture does not try to replace `darepod`
+Correspondingly, the architecture does not try to replace `waved`
 with a separate direct-library Ark implementation, bypass the
 daemon boundary for main client flows, or fully redesign the daemon
 RPC surface before an SDK can exist. Those are explicit non-goals.

@@ -33,7 +33,7 @@ string, and log file compressor utilities.
 
 - **Depends on**: (no internal repo imports; only `btclog/v2` and standard
   library).
-- **Depended on by**: `walletcore`, `darepod`, `round`, `ledger`, `oor`,
+- **Depended on by**: `walletcore`, `waved`, `round`, `ledger`, `oor`,
   `vtxo`, `wallet`, `serverconn`, and most other packages that create
   subsystem loggers or propagate loggers via context.
 

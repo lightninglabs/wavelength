@@ -28,11 +28,11 @@ interface, and per-service factory functions so callers are channel-agnostic
 
 ## Relationships
 
-- **Depends on**: `arkrpc`, `daemonrpc`, `mailbox/pb`, `rpc/swapclientrpc`,
+- **Depends on**: `arkrpc`, `waverpc`, `mailbox/pb`, `rpc/swapclientrpc`,
   `rpc/walletdkrpc`, `swaprpc` (for service stub interfaces it implements).
 - **Depended on by**: `sdk/walletdk` (REST fallback transport),
   `sdk/swaps` (REST gRPC conn), `swapclientserver` (outbound REST
-  client), `darepod/outbound_clients` (outbound mailbox/swap-server
+  client), `waved/outbound_clients` (outbound mailbox/swap-server
   REST clients).
 - **Sends**: HTTP POST/GET requests to a grpc-gateway endpoint.
 - **Receives**: chunked JSON responses or HTTP error bodies.

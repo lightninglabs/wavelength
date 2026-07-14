@@ -10,7 +10,7 @@ that a durable actor executes and feeds back as events.
 
 ## Key Types
 
-For field-level detail, use `go doc github.com/lightninglabs/darepo-client/oor.<Symbol>`.
+For field-level detail, use `go doc github.com/lightninglabs/wavelength/oor.<Symbol>`.
 
 - `OORSessionActor` — one durable actor per OOR session (outgoing or
   incoming). Its `driveOutbox` switch handles every outbox event inline
@@ -40,7 +40,7 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/oor.<
   `timeout` (`TimeoutActor` retry scheduling), `lib/arkscript` (checkpoint
   policy, collab tapleaf), `arkrpc` (indexer response types), `lnd/input`
   (signer interface for inline Ark/checkpoint signing).
-- **Depended on by**: `darepod` (spawns the registry, wires config, drives
+- **Depended on by**: `waved` (spawns the registry, wires config, drives
   RPCs and event routing).
 - **Messages to/from**: Sends `SendSubmitPackageRequest` /
   `SendFinalizePackageRequest` / `SendIncomingAckRequest` and durable query
@@ -50,7 +50,7 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/oor.<
   Receives `SubmitAcceptedEvent` / `FinalizeAcceptedEvent` /
   `ResolveIncomingTransferRequest` <- `serverconn` event router;
   `StartTransferRequest` / `DriveEventRequest` / `ListSessionsRequest` <-
-  `darepod` RPC layer.
+  `waved` RPC layer.
 
 ## Invariants
 

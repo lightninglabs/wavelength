@@ -3,7 +3,7 @@
 ## Purpose
 
 Wallet-shaped SDK facade for host apps that want a small, stable Go API over
-an embedded `darepod` client daemon. `Start` boots the daemon in-process,
+an embedded `waved` client daemon. `Start` boots the daemon in-process,
 dials it over a private `bufconn` gRPC transport, and exposes typed methods
 that mirror the seven core CLI verbs (create, unlock, send, recv, list,
 balance, exit) plus supporting subscribe/deposit/status.
@@ -14,11 +14,11 @@ requires `swapruntime`): stub builds compile, but wallet methods return
 
 ## Key Types
 
-For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/walletdk.<Symbol>`.
+For field-level detail, use `go doc github.com/lightninglabs/wavelength/sdk/walletdk.<Symbol>`.
 
 - `Client` — concurrency-safe wallet handle owning the embedded daemon
   lifecycle, the private `bufconn` gRPC connection, and the
-  daemonrpc/walletdkrpc/swapclientrpc clients. `Stop`/`Close` are
+  waverpc/walletdkrpc/swapclientrpc clients. `Stop`/`Close` are
   idempotent aliases.
 - `Config` — embedded daemon + wallet facade config. Two usage modes:
   zero-value plus convenience fields (`DataDir`, `Network`,
@@ -28,7 +28,7 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
   `EagerRoundJoin`) are plain enable-only `bool`s — `true` forces the
   value, zero defers to `DaemonConfig` (no tri-state). To force a
   `false`, set `DaemonConfig` directly or use the matching `Option`.
-- `DefaultConfig` — `Config` populated from `darepod.DefaultConfig()`.
+- `DefaultConfig` — `Config` populated from `waved.DefaultConfig()`.
 - `Start(ctx, cfg, opts...)` — boots the embedded daemon, dials it,
   waits for gRPC readiness, and returns a ready `*Client`. The daemon
   lifetime is owned by walletdk's `runCtx`, not the caller's `ctx`, so
@@ -42,7 +42,7 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
 - `Option` — functional option accepted as variadic trailing args.
   Options apply **after** the `Config`/`DaemonConfig` merge and after
   `configureSwapRuntime` / `configureWalletRPC`, so they can override
-  values seeded by `darepod.DefaultConfig` or carried on a caller-owned
+  values seeded by `waved.DefaultConfig` or carried on a caller-owned
   `DaemonConfig`. First option: `WithEagerRoundJoinDisabled()` forces
   `daemonCfg.EagerRoundJoin = false`.
 - DTOs (wrapper-owned, isolated from proto enums): `Info`, `Balance`,
@@ -94,8 +94,8 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
 | Method | Description |
 |--------|-------------|
 | `GetInfo` | Daemon readiness snapshot (version, network, identity, wallet/server readiness). |
-| `CreateWallet` | Create or import the embedded wallet (auto-generates seed when mnemonic empty); proxies daemonrpc. |
-| `UnlockWallet` | Unlock an existing wallet; proxies daemonrpc. |
+| `CreateWallet` | Create or import the embedded wallet (auto-generates seed when mnemonic empty); proxies waverpc. |
+| `UnlockWallet` | Unlock an existing wallet; proxies waverpc. |
 | `Balance` | Flat balance (`confirmed_sat`, `pending_in_sat`, `pending_out_sat`). |
 | `Deposit` | Allocate a fresh boarding address (`recv --onchain` from CLI). |
 | `Receive` | Open a Lightning invoice receive (`recv --offchain`). Returns `{Invoice, Entry}`. |
@@ -115,7 +115,7 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
 
 ## Relationships
 
-- **Depends on**: `darepod` (embedded daemon runtime), `daemonrpc`
+- **Depends on**: `waved` (embedded daemon runtime), `waverpc`
   (wallet, balance, info, address RPCs + direct paths for
   `CreateWallet`/`UnlockWallet`), `rpc/walletdkrpc` (unified wallet API
   the seven verbs target), `rpc/swapclientrpc` (raw-swap escape hatch),
@@ -127,7 +127,7 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
 - **Depended on by**: host Go apps directly, and `sdk/walletdk/mobile`
   (gomobile bridge consumed by `cmd/walletdk-wasm` and React
   Native/mobile hosts).
-- **Sends** → `darepod` (in-process via bufconn): all daemon RPCs are
+- **Sends** → `waved` (in-process via bufconn): all daemon RPCs are
   routed across the private gRPC connection, not the daemon's public
   listener.
 - **Receives** ← host application calls. walletdk registers no RPC
@@ -145,12 +145,12 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/w
 - A caller-supplied `DaemonConfig` is deep-copied via
   `cloneDaemonConfig` before mutation (`RPC.Listener` is replaced;
   `RPCServiceRegistrars` may be appended). New reference-typed fields
-  added to `darepod.Config` require matching clone logic.
+  added to `waved.Config` require matching clone logic.
 - `Config.EagerRoundJoin` flips the embedded daemon's flag so
   confirmed deposits and cooperative-leave intents auto-trigger a
   round join without the host chasing the FSM forward. The
   walletdkrpc-tagged embedded build already defaults this to `true`
-  via `darepod.DefaultConfig` (see `darepod/config_walletdkrpc.go`), so
+  via `waved.DefaultConfig` (see `waved/config_walletdkrpc.go`), so
   leaving the convenience field zero is correct for nearly every
   host. To force eager round-join OFF, pass
   `walletdk.WithEagerRoundJoinDisabled()` to `Start`; it applies

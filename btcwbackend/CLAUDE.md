@@ -18,7 +18,7 @@ or LND node.
 ## Relationships
 
 - **Depends on**: `walletcore` (shared wallet/boarding base), `chainsource` (ChainBackend interface), `chainbackends` (PackageSubmitter interface), `wallet` (BoardingBackend interface), `build` (logging).
-- **Depended on by**: `darepod` (daemon startup and wallet lifecycle).
+- **Depended on by**: `waved` (daemon startup and wallet lifecycle).
 
 ## Invariants
 

@@ -88,9 +88,9 @@ jobs:
           # Bot identity for commits. Set via env vars instead of
           # `git config` so Claude doesn't need Bash(git config:*) in its
           # allowlist.
-          GIT_AUTHOR_NAME: darepo-doc-bot
+          GIT_AUTHOR_NAME: wavelength-doc-bot
           GIT_AUTHOR_EMAIL: bot@lightning.engineering
-          GIT_COMMITTER_NAME: darepo-doc-bot
+          GIT_COMMITTER_NAME: wavelength-doc-bot
           GIT_COMMITTER_EMAIL: bot@lightning.engineering
           # Surface GitHub Actions context into Claude's env so the prompt
           # can interpolate via shell $VAR expansion instead of templating.

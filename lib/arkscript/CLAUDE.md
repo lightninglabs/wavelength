@@ -56,7 +56,7 @@ validated invariants.
 ## Relationships
 
 - **Depends on**: (no internal repo imports; pure cryptographic library).
-- **Depended on by**: nearly every protocol-logic package — `darepod`, `db`,
+- **Depended on by**: nearly every protocol-logic package — `waved`, `db`,
   `lib/tree`, `lib/types`, `lib/recovery`, `lib/tx` (and `arktx`,
   `checkpoint`, `oor`, `psbtutil` subpackages), `oor`, `round`, `txconfirm`,
   `unroll`, `vhtlcrecovery/unrollpolicy`, `sdk/swaps`, `vtxo`, `wallet`. It is

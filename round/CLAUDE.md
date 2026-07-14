@@ -8,7 +8,7 @@ protocols with MuSig2 signing ceremonies.
 
 ## Key Types
 
-For field-level detail, use `go doc github.com/lightninglabs/darepo-client/round.<Symbol>`.
+For field-level detail, use `go doc github.com/lightninglabs/wavelength/round.<Symbol>`.
 This section lists types with the one-line gist plus any non-obvious wiring;
 state transitions and validation rules live under [Invariants](#invariants).
 
@@ -96,7 +96,7 @@ state transitions and validation rules live under [Invariants](#invariants).
   (forfeit-signature collection window) and `TimeoutPhaseRegistration`
   (IntentSentState admission window; on expiry the FSM fails the round
   recoverably and emits `ReleaseForfeitReservation` so forfeit-reserved
-  inputs are not stranded — darepo-client#653). Timeout outbox messages
+  inputs are not stranded — wavelength#653). Timeout outbox messages
   (`StartTimeoutReq`/`CancelTimeoutReq`) key on `RoundKeyStr` so temp-keyed
   rounds (pre-admission) can be timed.
 - `MaxQuoteEntriesPerClient = 1024` (`from_proto.go`) — bounds quote
@@ -113,7 +113,7 @@ state transitions and validation rules live under [Invariants](#invariants).
   `IntentSentState` for the server's `RoundJoined` admission watermark. Zero
   selects `defaultRegistrationTimeout` (60 s); negative disables the timeout
   (round waits indefinitely). Bounds how long forfeit-reserved inputs sit
-  stranded when the server never responds (darepo-client#653).
+  stranded when the server never responds (wavelength#653).
 - `computeClientOperatorFee(intents, ownedVTXOs) int64` —
   Σ(boarding inputs) + Σ(forfeited VTXOs) − Σ(owned output VTXOs) −
   Σ(cooperative leave outputs), clamped to zero. Carried on
@@ -127,7 +127,7 @@ state transitions and validation rules live under [Invariants](#invariants).
   `lib/bip322` (join-round BIP-322 auth signing), `rpc/roundpb` (wire proto
   types via `FromProto`), `wallet`, `ledger` (`Sink` + `VTXOReceivedMsg` /
   `Source*` constants), `timeout`, `google/uuid`.
-- **Depended on by**: `vtxo`, `db`, `darepod`.
+- **Depended on by**: `vtxo`, `db`, `waved`.
 - **Sends → `serverconn`**: `JoinRoundRequest`,
   `JoinRoundAcceptOutbox`, `JoinRoundRejectOutbox`,
   `SubmitNoncesRequest`, `SubmitPartialSigRequest`,
@@ -135,7 +135,7 @@ state transitions and validation rules live under [Invariants](#invariants).
 - **Sends → `vtxo`**: forfeit/spend/block-epoch events listed above;
   manager-level `VTXOCreatedNotification`, `VTXOTerminatedMsg`.
 - **Sends → `wallet`**: `RegisterConfirmationRequest`.
-- **Sends → `OwnedScriptRegistrar`** (darepod adapter over the OOR
+- **Sends → `OwnedScriptRegistrar`** (waved adapter over the OOR
   artifact store): `RegisterOwnedScript(pkScript, ownerKey)`.
 - **Sends → `ledger`** (when `LedgerSink` is `fn.Some`), origin-routed
   per owned `ClientVTXO`: `VTXOReceivedMsg{Source=SourceRoundBoarding}`;
@@ -179,7 +179,7 @@ state transitions and validation rules live under [Invariants](#invariants).
   (and the `ListRounds` RPC it backs) must be able to report a round as
   FAILED until the client moves on to a fresh round — reaping on entry made
   the terminal state vanish within the same actor turn, so a poller could
-  never see it (darepo-client#602). Sweeping at the next assembly still
+  never see it (wavelength#602). Sweeping at the next assembly still
   bounds accumulation to the failures since the last new round, mirroring
   `onRoundComplete` (success) and `handleCancelRound` (explicit cancel).
   Nothing reuses a failed round — `findAssemblingRound` only returns
@@ -229,7 +229,7 @@ state transitions and validation rules live under [Invariants](#invariants).
   (not from the server's proto), so the forfeit penalty output equals
   the canonical local value rather than a server-supplied one.
 - **Connector ancestry is proven before any forfeit is signed**
-  (`validateConnectorAncestry`, darepo-client#681). In
+  (`validateConnectorAncestry`, wavelength#681). In
   `CommitmentTxReceivedState`, after VTXO-tree validation, each assigned
   connector leaf is checked by deterministically reconstructing its
   connector tree via `tree.BuildConnectorTree` from the commitment-tx

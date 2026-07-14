@@ -14,7 +14,7 @@
 # VARIABLES
 # =========
 
-PKG := github.com/lightninglabs/darepo-client
+PKG := github.com/lightninglabs/wavelength
 TOOLS_DIR := tools
 
 GOCC ?= go
@@ -45,7 +45,7 @@ XARGS := xargs -L 1
 COMMIT := $(shell git describe --tags --dirty 2>/dev/null || echo "unknown")
 
 # DB connection string for migrations (example).
-DB_CONNECTIONSTRING ?= sqlite://./darepo.db
+DB_CONNECTIONSTRING ?= sqlite://./wavelength.db
 
 # Build tags.
 DEV_TAGS := dev
@@ -129,16 +129,16 @@ DOCKER_TOOLS = docker run \
   -v $${HOME}/.cache/golangci-lint:/root/.cache/golangci-lint \
   -v $${HOME}/go/pkg/mod:/go/pkg/mod \
   -e GOPATH=/go \
-  -v $$(pwd):/build darepo-tools
+  -v $$(pwd):/build wavelength-tools
 else
 # Local mode: Docker named volumes for fast macOS/Windows performance.
 DOCKER_TOOLS = docker run \
   --rm \
-  -v darepo-go-build-cache:/root/.cache/go-build \
-  -v darepo-go-lint-cache:/root/.cache/golangci-lint \
-  -v darepo-go-mod-cache:/go/pkg/mod \
+  -v wavelength-go-build-cache:/root/.cache/go-build \
+  -v wavelength-go-lint-cache:/root/.cache/golangci-lint \
+  -v wavelength-go-mod-cache:/go/pkg/mod \
   -e GOPATH=/go \
-  -v $$(pwd):/build darepo-tools
+  -v $$(pwd):/build wavelength-tools
 endif
 
 GREEN := \033[0;32m
@@ -222,7 +222,7 @@ gen: sqlc rpc #? Generate all code (rpc, sqlc, etc.)
 
 docker-tools:
 	@$(call print, "Building tools docker image.")
-	docker build -q -t darepo-tools $(TOOLS_DIR)
+	docker build -q -t wavelength-tools $(TOOLS_DIR)
 
 local-custom-gcl:
 	@./scripts/local-custom-gcl.sh "$(LOCAL_CUSTOM_GCL)"
@@ -321,9 +321,9 @@ doc-check: #? Verify documentation cross-links are valid
 	@$(call print, "Checking documentation cross-links.")
 	@./scripts/doc-check.sh
 
-sample-conf-check: #? Verify sample-darepod.conf matches daemon config options
-	@$(call print, "Checking sample-darepod.conf.")
-	$(GOCC) run ./scripts/check-sample-darepod-conf
+sample-conf-check: #? Verify sample-waved.conf matches daemon config options
+	@$(call print, "Checking sample-waved.conf.")
+	$(GOCC) run ./scripts/check-sample-waved-conf
 
 schema-check: #? Verify schema registry, MCP tools, and cobra commands are in sync
 	@$(call print, "Verifying schema registry consistency.")
@@ -426,8 +426,8 @@ rpc: #? Generate RPC stubs from proto files (uses Docker)
 build: #? Build debug binaries and place in project directory
 	@$(call print, "Building debug binaries.")
 	$(GOBUILD) -trimpath -tags="$(DEV_TAGS)" $(DEV_GCFLAGS) $(DEV_LDFLAGS) -o . ./cmd/merge-sql-schemas
-	$(GOBUILD) -trimpath -tags="$(DEV_TAGS)" $(DEV_GCFLAGS) $(DEV_LDFLAGS) -o ./bin/darepod ./cmd/darepod
-	$(GOBUILD) -trimpath -tags="$(DEV_TAGS)" $(DEV_GCFLAGS) $(DEV_LDFLAGS) -o ./bin/darepocli ./cmd/darepocli
+	$(GOBUILD) -trimpath -tags="$(DEV_TAGS)" $(DEV_GCFLAGS) $(DEV_LDFLAGS) -o ./bin/waved ./cmd/waved
+	$(GOBUILD) -trimpath -tags="$(DEV_TAGS)" $(DEV_GCFLAGS) $(DEV_LDFLAGS) -o ./bin/wavecli ./cmd/wavecli
 
 build-swapruntime: #? Build debug binaries with SwapClientService enabled
 	@$(call print, "Building debug binaries with swapruntime.")
@@ -477,8 +477,8 @@ wasm-wallet: #? Build the walletdk browser wasm blob + runtime assets into bin/w
 install: #? Build and install binaries to GOPATH/bin
 	@$(call print, "Installing binaries.")
 	$(GOINSTALL) -trimpath -tags="$(DEV_TAGS)" $(DEV_LDFLAGS) ./cmd/merge-sql-schemas
-	$(GOINSTALL) -trimpath -tags="$(DEV_TAGS)" $(DEV_LDFLAGS) ./cmd/darepod
-	$(GOINSTALL) -trimpath -tags="$(DEV_TAGS)" $(DEV_LDFLAGS) ./cmd/darepocli
+	$(GOINSTALL) -trimpath -tags="$(DEV_TAGS)" $(DEV_LDFLAGS) ./cmd/waved
+	$(GOINSTALL) -trimpath -tags="$(DEV_TAGS)" $(DEV_LDFLAGS) ./cmd/wavecli
 
 install-swapruntime: #? Install binaries with SwapClientService enabled
 	@$(call print, "Installing binaries with swapruntime.")

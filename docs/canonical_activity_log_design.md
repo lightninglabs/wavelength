@@ -1,9 +1,9 @@
 # Canonical Activity Log
 
 This document is the design-of-record for the canonical activity log
-([#774](https://github.com/lightninglabs/darepo-client/issues/774)), the
+([#774](https://github.com/lightninglabs/wavelength/issues/774)), the
 foundational child of the wallet event-log epic
-[#776](https://github.com/lightninglabs/darepo-client/issues/776). It defines the
+[#776](https://github.com/lightninglabs/wavelength/issues/776). It defines the
 storage schema, the stable-id contract, and the read/write model that the
 sibling children (C2–C5) build on, so the wallet activity surface stops being
 recomputed on every read.
@@ -31,19 +31,19 @@ Three structural consequences fall out of derive-on-read:
    no daemon-side hook links an exit's queued outpoints to its sweep txid, or a
    deposit's boarding address to its boarding txid (`swapwallet/doc.go`, "v1
    LIMITATIONS"). The flagship case is
-   [#610](https://github.com/lightninglabs/darepo-client/issues/610): an on-chain
+   [#610](https://github.com/lightninglabs/wavelength/issues/610): an on-chain
    send's row id *is the consumed VTXO outpoint* (`leaveEntryStub` keeps only
    `queuedOutpoints[0]`), which is destroyed seconds later when the round seals —
    the handle vanishes and cannot represent a multi-input sweep.
 2. **No pending→settled reconciliation.** Append-only ledger rows have no
    reversing/terminal marker, so refunded sends and completed OORs can read
    PENDING indefinitely
-   ([#613](https://github.com/lightninglabs/darepo-client/issues/613),
-   [#569](https://github.com/lightninglabs/darepo-client/issues/569)). A
+   ([#613](https://github.com/lightninglabs/wavelength/issues/613),
+   [#569](https://github.com/lightninglabs/wavelength/issues/569)). A
    cooperative-leave EXIT row reaches COMPLETE today only through a *read-time*
    forfeited-VTXO scan kept in a process-local map, which a restart loses
-   ([#568](https://github.com/lightninglabs/darepo-client/issues/568),
-   [#612](https://github.com/lightninglabs/darepo-client/issues/612)).
+   ([#568](https://github.com/lightninglabs/wavelength/issues/568),
+   [#612](https://github.com/lightninglabs/wavelength/issues/612)).
 3. **A lossy, non-resumable subscription.** `Runtime.emit`
    (`swapwallet/runtime.go`) fans updates with a non-blocking send — slow
    consumers silently drop updates, possibly terminal ones. `SubscribeWallet`
@@ -76,7 +76,7 @@ same discipline up into the wallet-facing activity surface.
   storage so C4 only has to define the wire protocol on top of it.
 - A pagination cursor for `List(ACTIVITY)` that neither skips nor duplicates
   rows while the feed grows (issue
-  [#781](https://github.com/lightninglabs/darepo-client/issues/781), A5).
+  [#781](https://github.com/lightninglabs/wavelength/issues/781), A5).
 
 **Non-goals (handled by sibling children, listed for boundaries)**
 

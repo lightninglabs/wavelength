@@ -35,7 +35,7 @@ credit redemptions against the swap-server credit ledger, as a crash-safe
   `db/actordelivery`, `timeout` (poll-timer scheduling).
 - **Depended on by**: `swapwallet` (credit-aware pay/receive routing, the
   credit projector reading terminal ops), `swapclientserver` (bridges the
-  swap-server credit RPCs into `CreditServer`), `darepod` (registry wiring,
+  swap-server credit RPCs into `CreditServer`), `waved` (registry wiring,
   config, service startup).
 
 ## Invariants

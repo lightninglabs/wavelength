@@ -32,7 +32,7 @@ scheduling live downstream in `unrollplan` and `unroll`.
   `github.com/lightningnetwork/lnd/tlv` (state / proof codec).
 - **Depended on by**: `unrollplan` (pure planning layer; re-uses `Proof`,
   `Node`, `ComputeMaturityHeight`), `unroll` (actor/FSM that drives broadcast
-  and persists `SessionState` via the TLV codec), `darepod` (RPC wiring).
+  and persists `SessionState` via the TLV codec), `waved` (RPC wiring).
 
 ## Invariants
 

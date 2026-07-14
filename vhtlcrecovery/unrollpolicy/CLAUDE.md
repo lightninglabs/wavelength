@@ -33,7 +33,7 @@ parent package.
   `unroll` (ExitSpendPolicy interface, `ErrExitSpendNotMatured`),
   `lib/arkscript` (vHTLC policy template construction), `lib/tx/arktx`
   (transaction version for sweep tx).
-- **Depended on by**: `darepod` (constructs `ExitSpendPolicyResolver`,
+- **Depended on by**: `waved` (constructs `ExitSpendPolicyResolver`,
   registers into `unroll.RegistryConfig`, installs `PreimageResolver` via
   `PreimageResolverRegistry.SetResolver` at swap-runtime startup).
 

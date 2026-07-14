@@ -27,15 +27,15 @@ default builds avoid the swap executor's dependency graph.
   never cancel in-flight work.
 - `Deps` — Composition struct: `SwapBackend` (in-Go swap runtime),
   `SwapService` (gRPC-shaped swap subserver handle), `RPCServer`
-  (narrow daemonrpc contract), `CreditRegistry` (lazy `actor.ActorRef` into
+  (narrow waverpc contract), `CreditRegistry` (lazy `actor.ActorRef` into
   the `credit` durable-actor subsystem; nil disables credit-backed routing),
   `ChainParams` (Bitcoin network — used to
   validate BOLT-11 invoice decoding in `PrepareSend` so a cross-network
   invoice is rejected before a send intent is issued), `ActivityStore`
   (canonical activity-log projector), plus wallet-level
   deadline, list-limit, and subscribe-buffer knobs.
-- `RPCServer` interface — Narrow contract over `*darepod.RPCServer`
-  covering every daemonrpc/darepod method swapwallet composes against:
+- `RPCServer` interface — Narrow contract over `*waved.RPCServer`
+  covering every waverpc/waved method swapwallet composes against:
   LeaveVTXOs, SendOnChain, SendOOR, ListVTXOs, ListTransactions, GetInfo,
   EstimateFee, GetBalance, NewAddress, NewWalletAddress, ListWalletUnspent,
   GenSeed, InitWallet, UnlockWallet, Unroll, GetUnrollStatus, ExitSummary,
@@ -54,7 +54,7 @@ default builds avoid the swap executor's dependency graph.
 
 - **Depends on**:
   - `rpc/walletdkrpc` (generated gRPC stubs and request/response shapes)
-  - `daemonrpc` (admin RPCs proxied by Create/Unlock/Exit and the
+  - `waverpc` (admin RPCs proxied by Create/Unlock/Exit and the
     backends consumed for LeaveVTXOs, SendOOR, ListVTXOs, ListTransactions,
     GetBalance, NewAddress)
   - `rpc/swapclientrpc` (swap-subsystem gRPC shape; ListSwaps,
@@ -63,15 +63,15 @@ default builds avoid the swap executor's dependency graph.
   - `credit` (`CreditMsg`/`CreditResp`, `StartCreditPayRequest`,
     `ListCreditOpsRequest` — durable credit-backed pay/recv routing and the
     credit projector poll)
-  - `darepod` (`SwapBackend`, `ActivityStore` interfaces)
+  - `waved` (`SwapBackend`, `ActivityStore` interfaces)
   - `ledger` (account name constants for OOR ledger projection)
   - `btclog/v2` (subsystem logger)
 - **Depended on by**:
-  - `cmd/darepod` (`walletdkrpc.go` registers the subserver behind the
+  - `cmd/waved` (`walletdkrpc.go` registers the subserver behind the
     walletdkrpc build tag)
   - `sdk/walletdk` (gomobile-friendly SDK wraps the same gRPC service)
 - **Sends**:
-  - → daemonrpc (in-process via RPCServer):
+  - → waverpc (in-process via RPCServer):
     `InitWalletRequest`, `UnlockWalletRequest`, `GenSeedRequest`,
     `UnrollRequest`, `GetUnrollStatusRequest`, `LeaveVTXOsRequest`,
     `SendOnChainRequest`, `SendOORRequest`, `JoinNextRoundRequest`,
@@ -92,7 +92,7 @@ default builds avoid the swap executor's dependency graph.
 ## Invariants
 
 - Admin handlers (`Create`/`Unlock`/`Exit`/`ExitStatus`) are
-  admin-shape: they reach daemonrpc via the injected `RPCServer` and
+  admin-shape: they reach waverpc via the injected `RPCServer` and
   DO NOT depend on `Runtime`, router, recv, or history. Create and
   Unlock must work before the swap subsystem is live.
 - Credit-backed routing is nil-safe: `Deps.CreditRegistry == nil` disables
@@ -156,7 +156,7 @@ default builds avoid the swap executor's dependency graph.
   Older embeddings and ambiguous multi-address balances retain the ephemeral
   aggregate `boarding-unconfirmed` fallback. Neither live overlay is projected
   into the store or resumable event log.
-- **`Balance` projection** maps daemonrpc fields onto the walletdkrpc
+- **`Balance` projection** maps waverpc fields onto the walletdkrpc
   shape: `confirmed_sat` is VTXO-only (`vtxo_balance_sat`),
   `pending_in_sat` sums `boarding_confirmed_sat +
   boarding_unconfirmed_sat + boarding_adopted_sat`, and

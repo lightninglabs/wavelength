@@ -2,14 +2,14 @@
 
 ## Purpose
 
-Consumer-facing Go SDK facade over a `darepod` runtime. Supports remote
+Consumer-facing Go SDK facade over a `waved` runtime. Supports remote
 daemon connections, embedded in-process daemon hosting, and wrapping an
 already-running in-process daemon RPC server behind a private bufconn
 transport, without duplicating Ark runtime behavior.
 
 ## Key Types
 
-- `Client` — Concurrency-safe SDK handle around a `daemonrpc` client. Owns
+- `Client` — Concurrency-safe SDK handle around a `waverpc` client. Owns
   transport shutdown and, in embedded mode, exposes `Wait()` for the daemon
   run result. Constructed via `DialRemote`, `StartEmbedded`,
   `WrapDaemonClient`, or `WrapDaemonServer`.
@@ -32,20 +32,20 @@ transport, without duplicating Ark runtime behavior.
   `SendOORWithPolicyAndKeyDetails`, and `GetIndexedOORSession`.
 - VHTLC recovery passthroughs: `ArmVHTLCRecovery`, `EscalateVHTLCRecovery`,
   `CancelVHTLCRecovery`, `GetVHTLCRecoveryStatus` — durable dormant-recovery
-  lifecycle for higher-level swap FSMs; return `daemonrpc` types directly.
+  lifecycle for higher-level swap FSMs; return `waverpc` types directly.
 - Receive-auth helpers: `ReceiveAuthKey`, `SignReceiveAuthMessage`,
   `SignReceiveAuthMessageCompact`, `ReceiveAuthECDH` — delegate
   payment-scoped signing and Sphinx ECDH to the daemon wallet without
   exposing raw key material. Used by `sdk/swaps` for receive invoice signing
   and onion decoding.
 - `GetOORSession` — Single-session lookup of the daemon's local durable OOR
-  transfer status, returning `*daemonrpc.OORSessionInfo`.
+  transfer status, returning `*waverpc.OORSessionInfo`.
 - `Board`, `ListRounds`, `WatchRounds`, `EstimateFee`, `GetFeeHistory` — Round
-  and fee passthroughs returning `daemonrpc` request/response types directly.
+  and fee passthroughs returning `waverpc` request/response types directly.
 
 ## Relationships
 
-- **Depends on**: `daemonrpc`, `darepod` (embedded mode only), gRPC,
+- **Depends on**: `waverpc`, `waved` (embedded mode only), gRPC,
   `google.golang.org/grpc/test/bufconn` (in-process transport).
 - **Depended on by**: `sdk/swaps` (type aliases, receive-auth RPCs, OOR
   helpers), `swapclientserver`, Go hosts that want remote, embedded, or
@@ -54,11 +54,11 @@ transport, without duplicating Ark runtime behavior.
 ## Invariants
 
 - `Client` is safe for concurrent use.
-- `darepod` remains the canonical Ark runtime; `sdk/ark` must not
+- `waved` remains the canonical Ark runtime; `sdk/ark` must not
   reimplement wallet, round, OOR, or persistence behavior.
 - Embedded startup must not mutate the caller's daemon config
   (`cloneDaemonConfig` deep-copies reference-typed fields; update it when
-  `darepod.Config` gains new reference fields).
+  `waved.Config` gains new reference fields).
 - Embedded startup waits until the in-process daemon is accepting RPCs
   before returning.
 - Embedded `Wait()` returns a blocking channel that surfaces the daemon's
@@ -69,7 +69,7 @@ transport, without duplicating Ark runtime behavior.
   tears down only the private transport.
 - `ServerInfo` is a bootstrap-time operator-terms snapshot; refresh after
   reconnect is not wired through yet.
-- Pre-1.0, some methods intentionally return `daemonrpc` protobuf types
+- Pre-1.0, some methods intentionally return `waverpc` protobuf types
   directly. Those passthrough APIs are not yet treated as stable SDK-owned
   models.
 - Receive-auth signing and ECDH are always delegated to the daemon; the SDK
@@ -78,5 +78,5 @@ transport, without duplicating Ark runtime behavior.
 ## Deep Docs
 
 - [docs/sdk_layered_architecture.md](../../docs/sdk_layered_architecture.md)
-  — Layered SDK architecture, error categorization, daemonrpc versioning
+  — Layered SDK architecture, error categorization, waverpc versioning
 - [ARCHITECTURE.md](../../ARCHITECTURE.md) — System-wide package map

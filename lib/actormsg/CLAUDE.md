@@ -17,7 +17,7 @@ package boundaries. Lives in `lib/` to break import cycles between `vtxo`,
 - `ReserveForfeitRequest` / `ReleaseForfeitRequest` — Forfeit reservation admission messages.
 - `ReleaseSpendRequest` / `CompleteSpendRequest` — Spend lifecycle completion messages.
 - `ForceUnrollRequest` / `ForceUnrollResponse` — Ask-message that routes an operator or chain-resolver unroll trigger through the VTXO manager into the per-VTXO FSM. `ForceUnrollRequest.Trigger` (a `UnrollTrigger`) names *why* the coin is exiting, and `ForceUnrollRequest.ExitPolicy` (an `fn.Option[ExitPolicy]`) names *which* exit-spend policy the target unrolls under, so a single admission path carries manual, critical-expiry, fraud, and vHTLC-recovery intent through to the unroll registry. `ForceUnrollResponse.Accepted` is true when the request caused a state transition; when false, `Reason` distinguishes `"no such vtxo"` from `"already terminal"` so callers don't misread a silent self-loop as success.
-- `UnrollTrigger` — String-typed enum naming why a unilateral exit was started (`UnrollTriggerCriticalExpiry` is the empty-string zero value and preserves the historical critical-expiry admission, `UnrollTriggerManual`, `UnrollTriggerFraudSpend`). It mirrors the unroll package's `StartTrigger` so `vtxo` and `actormsg` can thread the trigger through `ForceUnroll` without importing `unroll` (which would form a cycle); the darepod chain resolver bridge converts it back at the seam.
+- `UnrollTrigger` — String-typed enum naming why a unilateral exit was started (`UnrollTriggerCriticalExpiry` is the empty-string zero value and preserves the historical critical-expiry admission, `UnrollTriggerManual`, `UnrollTriggerFraudSpend`). It mirrors the unroll package's `StartTrigger` so `vtxo` and `actormsg` can thread the trigger through `ForceUnroll` without importing `unroll` (which would form a cycle); the waved chain resolver bridge converts it back at the seam.
 - `ExitPolicyKind` / `ExitPolicyRef` / `ExitPolicy` — Durable exit-spend policy identity for a forced exit. `ExitPolicyKind` is a string-typed enum of the non-standard policies that ride `ForceUnroll` (`ExitPolicyVHTLCClaim`, `ExitPolicyVHTLCRefundWithoutReceiver`), with `Valid()` true only for those two vHTLC kinds; `ExitPolicyRef` is the policy-specific durable reference (e.g. a vHTLC recovery job id), kept a distinct type so `Kind` and `Ref` can't be transposed; `ExitPolicy` bundles the pair as one identity validated at the registry admission boundary. A `None` `ExitPolicy` selects the standard VTXO timeout policy.
 - `RegisterIntentMsg` — Carries pre-composed cooperative intent package to
   round actor. The `TriggerRegistration bool` field controls whether the
@@ -31,7 +31,7 @@ package boundaries. Lives in `lib/` to break import cycles between `vtxo`,
 ## Relationships
 
 - **Depends on**: `baselib/actor` (ServiceKey, Message interfaces).
-- **Depended on by**: `vtxo` (re-exports admission types as aliases), `wallet` (sends admission requests), `round` (receives `RoundReceivable` messages), `darepod` (wiring service keys).
+- **Depended on by**: `vtxo` (re-exports admission types as aliases), `wallet` (sends admission requests), `round` (receives `RoundReceivable` messages), `waved` (wiring service keys).
 
 ## Invariants
 

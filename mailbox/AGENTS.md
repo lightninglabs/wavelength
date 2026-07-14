@@ -28,8 +28,8 @@ primitives for durable transport (conn).
 - **Depends on**: `baselib/actor` (`conn` uses Promise/Future for response
   correlation).
 - **Depended on by**: generated `*_mailboxrpc.pb.go` stubs across the repo
-  (e.g. `arkrpc`, `oor`, `round`, `swaprpc`, `daemonrpc`) depend on
-  `mailbox/rpc`'s runtime interfaces; `serverconn` and `darepod` depend on
+  (e.g. `arkrpc`, `oor`, `round`, `swaprpc`, `waverpc`) depend on
+  `mailbox/rpc`'s runtime interfaces; `serverconn` and `waved` depend on
   all three sub-packages to construct envelopes, route RPCs, and manage ack
   watermarks.
 

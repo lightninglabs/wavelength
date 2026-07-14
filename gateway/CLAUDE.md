@@ -27,7 +27,7 @@ have a consistent configuration across all daemon sub-services.
 
 - **Depends on**: `github.com/grpc-ecosystem/grpc-gateway/v2/runtime`,
   `google.golang.org/protobuf/encoding/protojson` (no repo packages).
-- **Depended on by**: `darepod` (HTTP gateway setup for all sub-services).
+- **Depended on by**: `waved` (HTTP gateway setup for all sub-services).
 
 ## Invariants
 

@@ -65,7 +65,7 @@ other services can reuse durable actor storage without pulling unrelated tables.
 - **Depends on**: `baselib/actor` (implements `TxAwareDeliveryStore` and
   `OutboxWakeRegistrar` interfaces), `db` (uses `BatchedQuerier`, `WriteTxOption`,
   `ReadTxOption`).
-- **Depended on by**: `darepod` (wires delivery store at startup),
+- **Depended on by**: `waved` (wires delivery store at startup),
   `internal/actortest` (integration tests).
 
 ## Invariants

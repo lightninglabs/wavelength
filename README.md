@@ -1,8 +1,8 @@
-# darepo-client
+# wavelength
 
-`darepo-client` is the reference [Ark protocol](https://arkdev.info/) client
-implementation in Go. It ships a long-running daemon (`darepod`) and a
-companion CLI (`darepocli`) that together let a Bitcoin user board into Ark
+`wavelength` is the reference [Ark protocol](https://arkdev.info/) client
+implementation in Go. It ships a long-running daemon (`waved`) and a
+companion CLI (`wavecli`) that together let a Bitcoin user board into Ark
 rounds, hold and transfer VTXOs, swap into and out of the Lightning Network,
 and unilaterally exit to the chain at any time.
 
@@ -30,7 +30,7 @@ and exposes a typed gRPC + REST API for host applications.
 - **Host-app SDK.** `sdk/ark`, `sdk/swaps`, and `sdk/walletdk` embed the
   daemon in-process and expose typed Go APIs over a private transport.
 - **gRPC + REST.** Every RPC is reachable over gRPC or via grpc-gateway HTTP.
-- **MCP integration.** `darepocli mcp serve` exposes the daemon to AI agents
+- **MCP integration.** `wavecli mcp serve` exposes the daemon to AI agents
   as typed tool calls.
 
 ---
@@ -38,16 +38,16 @@ and exposes a typed gRPC + REST API for host applications.
 ## Quick Start
 
 ```bash
-# Clone, build, and install darepod + darepocli with the wallet RPC surface
+# Clone, build, and install waved + wavecli with the wallet RPC surface
 # enabled (recommended; gives you the top-level wallet verbs).
-git clone https://github.com/lightninglabs/darepo-client.git
-cd darepo-client
+git clone https://github.com/lightninglabs/wavelength.git
+cd wavelength
 make install-walletdkrpc
 
 # Start the daemon against a local regtest Ark operator + Esplora. The local
 # and remote mailbox IDs are derived from the client and operator pubkeys, so
 # there are no mailbox-id flags to set.
-darepod \
+waved \
   --network=regtest \
   --wallet.type=lwwallet \
   --wallet.esploraurl=http://localhost:3000 \
@@ -56,10 +56,10 @@ darepod \
   --server.insecure \
   --rpc.listenaddr=localhost:10029
 
-# In another shell. darepocli needs TLS + the daemon's admin macaroon; for
+# In another shell. wavecli needs TLS + the daemon's admin macaroon; for
 # this local regtest daemon use plaintext instead (no TLS, no macaroon) on
 # the regtest network. See INSTALL.md for the TLS setup a real instance uses.
-alias da='darepocli --no-tls --no-macaroons --network=regtest'
+alias da='wavecli --no-tls --no-macaroons --network=regtest'
 da create
 da recv   --onchain
 da balance
@@ -76,7 +76,7 @@ requirements, troubleshooting) live in [`INSTALL.md`](INSTALL.md).
 
 ## Build Variants
 
-`darepod` is intentionally modular. The default build is minimal; optional
+`waved` is intentionally modular. The default build is minimal; optional
 subsystems are gated behind build tags so hosts that do not need them pay
 nothing in binary size or surface area.
 
@@ -102,11 +102,11 @@ mode.
 
 The everyday **Wallet** verbs and daemon **Introspection** are the default
 `--help` face. The advanced `ark` / `dev` / `recovery` subtrees are hidden
-from `--help` (set `DAREPO_DEV=1` to reveal them) but stay fully runnable —
-`darepocli ark …` works with or without the env var.
+from `--help` (set `WAVELENGTH_DEV=1` to reveal them) but stay fully runnable —
+`wavecli ark …` works with or without the env var.
 
 ```
-darepocli
+wavecli
 ├── getinfo                   daemon status                          (all builds)
 ├── balance / recv / send     unified wallet verbs                   (walletdkrpc)
 ├── create / unlock           wallet bring-up                        (walletdkrpc)
@@ -128,7 +128,7 @@ darepocli
 ```
 
 `swap` is no longer a CLI verb: `send`/`recv --offchain` and `activity`
-cover it, and a stale `darepocli swap …` fails with a hint toward
+cover it, and a stale `wavecli swap …` fails with a hint toward
 `send`/`recv`. The `swapruntime` daemon runtime that powers the offchain
 verbs is unchanged.
 
@@ -138,16 +138,16 @@ Full CLI reference: [`docs/daemon_cli_guide.md`](docs/daemon_cli_guide.md).
 
 ## Configuration
 
-All daemon flags can also be set in `~/.darepod/darepod.conf` or via
-environment variables (`DAREPOD_*`). The canonical sample is
-[`sample-darepod.conf`](sample-darepod.conf), and the full flag reference
+All daemon flags can also be set in `~/.waved/waved.conf` or via
+environment variables (`WAVED_*`). The canonical sample is
+[`sample-waved.conf`](sample-waved.conf), and the full flag reference
 is in [`docs/daemon_cli_guide.md`](docs/daemon_cli_guide.md#daemon-flags-reference).
 
 Common knobs:
 
 | Flag                       | Default            | Purpose                                  |
 |----------------------------|--------------------|------------------------------------------|
-| `--datadir`                | `~/.darepod`       | Root data directory.                     |
+| `--datadir`                | `~/.waved`       | Root data directory.                     |
 | `--network`                | `mainnet`          | `mainnet`, `testnet`, `testnet4`, `signet`, `regtest`, `simnet`. |
 | `--wallet.type`            | `lwwallet`         | `lwwallet`, `btcwallet`, or `lnd`.       |
 | `--wallet.esploraurl`      |                    | Esplora REST URL (`lwwallet`).           |
@@ -162,7 +162,7 @@ Common knobs:
 ## Architecture
 
 ```
-darepod (orchestrator)
+waved (orchestrator)
 ├── round       Ark round participation FSM
 ├── vtxo        VTXO lifecycle FSM
 ├── oor         Out-of-round transfer coordination
@@ -229,7 +229,7 @@ checklist are documented in:
 
 ## Project Status
 
-`darepo-client` is under active development. Mainnet operation requires the
+`wavelength` is under active development. Mainnet operation requires the
 explicit `--allow-mainnet` flag; the default network is treated as a safety
 guard. RPC surfaces, on-disk schema, and CLI commands may still change
 across minor versions.

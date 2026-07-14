@@ -87,7 +87,7 @@ do this is by embedding `actor.BaseMessage`:
 ```go
 package mymodule
 
-import "github.com/lightninglabs/darepo-client/baselib/actor"
+import "github.com/lightninglabs/wavelength/baselib/actor"
 
 // MyRequest is a custom message type.
 type MyRequest struct {
@@ -139,7 +139,7 @@ into an `ActorBehavior`:
 import (
     "context"
     "fmt"
-    "github.com/lightninglabs/darepo-client/baselib/actor"
+    "github.com/lightninglabs/wavelength/baselib/actor"
     "github.com/lightningnetwork/lnd/fn/v2"
 )
 

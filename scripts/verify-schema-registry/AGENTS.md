@@ -2,7 +2,7 @@
 
 ## Purpose
 
-CI check that parses the `cmd/darepocli` Go source via `go/ast` and verifies
+CI check that parses the `cmd/wavecli` Go source via `go/ast` and verifies
 that the schema registry (`methodRegistry()`), MCP tool definitions
 (`registerMCPTools()`), and cobra command tree are all in sync. Exits 0 on
 success, 1 on drift. Run via `make schema-check`.

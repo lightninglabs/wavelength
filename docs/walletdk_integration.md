@@ -1,7 +1,7 @@
 # walletdk Integration Guide
 
 `walletdk` is the wallet-facing SDK for applications that want a small API over
-`darepod`. `Start` embeds the daemon in-process and connects to it over private
+`waved`. `Start` embeds the daemon in-process and connects to it over private
 `bufconn`; `Connect` attaches the same client API to an external daemon that
 exposes `walletdkrpc`. Advanced callers can also reach btcsuite btcwallet's
 native `walletrpc.WalletService` through the same gRPC connection when the
@@ -23,7 +23,7 @@ Without those tags, `Start` fails with `walletdk.ErrWalletRPCUnavailable`.
 `walletdk.DefaultConfig()` leaves `ServerAddress` and `SwapServerAddress`
 empty. `Start` treats an empty value as "no explicit override", then resolves
 the effective endpoint from `Network` and the matching transport through the
-embedded `darepod` config. Host apps that need to display or forward a concrete
+embedded `waved` config. Host apps that need to display or forward a concrete
 address should set it explicitly. See [signet.md](signet.md) for the built-in
 testnet3, testnet4, and signet endpoints.
 
@@ -285,7 +285,7 @@ stack is browser-ready.
 
 When generating wallet code against `walletdk`, follow this checklist:
 
-1. Import `github.com/lightninglabs/darepo-client/sdk/walletdk`.
+1. Import `github.com/lightninglabs/wavelength/sdk/walletdk`.
 2. Build embedded wallets with `-tags walletdkrpc,swapruntime`.
 3. Use `walletdk.DefaultConfig()` and override only deployment-specific fields.
 4. Set a durable `DataDir`.

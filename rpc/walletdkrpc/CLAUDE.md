@@ -5,7 +5,7 @@
 Generated gRPC stubs for `walletdkrpc.WalletService` (plus the technical
 drill-down `WalletInspectionService`) — the highest-level RPC surface in
 the daemon's API stack. The service is a small, flat, swap-vocabulary-free
-wallet API that lives ABOVE `daemonrpc` and `swapclientrpc` and composes
+wallet API that lives ABOVE `waverpc` and `swapclientrpc` and composes
 them; seven verbs map 1:1 to what a user does day-to-day, plus supporting
 methods. `failure_reasons.go` is hand-written: it defines the wallet
 rejection taxonomy shared by the daemon-side error mapper and SDK clients.
@@ -67,19 +67,19 @@ id; unlike `List` it may leak internal correlators, so it is kept out of
 - **Depended on by**:
   - `swapwallet` (implements the service server-side; consumes the
     generated stubs).
-  - `cmd/darepocli/darepoclicommands` (the seven top-level CLI verbs
+  - `cmd/wavecli/waveclicommands` (the seven top-level CLI verbs
     plus `sweep-wallet`, `exit plan`/`exit summary`, and `activity
     inspect` dial `WalletService`/`WalletInspectionService`).
   - `sdk/walletdk` (gomobile-friendly SDK wraps the same stubs).
-  - `darepod` (RPC auth wiring), `rpc/restclient` (REST transport
+  - `waved` (RPC auth wiring), `rpc/restclient` (REST transport
     adapter over the same service stubs).
 
 ## Invariants
 
 - **Never edit generated code** — regenerate via `make rpc`.
 - The walletdkrpc layer is the highest-level RPC surface; new wallet
-  verbs land HERE first and admin proxies pull from `daemonrpc`.
-  Internal correlators MUST NOT leak from `daemonrpc` into walletdkrpc
+  verbs land HERE first and admin proxies pull from `waverpc`.
+  Internal correlators MUST NOT leak from `waverpc` into walletdkrpc
   responses (that is what `WalletInspectionService` is for instead).
 - `Create`, `Unlock`, `Exit`, and `ExitStatus` are admin-shape proxies
   that work BEFORE the swap subsystem is live; the server-side

@@ -1,6 +1,6 @@
 # Generated Dev RPC CLI Builder
 
-`darepocli dev` is a generated, low-level RPC escape hatch for daemon
+`wavecli dev` is a generated, low-level RPC escape hatch for daemon
 services. It is intentionally separate from the curated user-facing commands
 so developers can reach every exposed daemon RPC without hand-writing a CLI
 command for each method.
@@ -10,12 +10,12 @@ command for each method.
 `make rpc` regenerates protobuf stubs and then runs:
 
 ```shell
-go run ./cmd/darepocli/internal/gen-devrpc
+go run ./cmd/wavecli/internal/gen-devrpc
 ```
 
 The generator reads the linked Go descriptors for:
 
-- `daemonrpc.File_daemon_proto` (`daemonrpc.DaemonService`, alias `daemon`)
+- `waverpc.File_daemon_proto` (`waverpc.DaemonService`, alias `daemon`)
 - `swapclientrpc.File_swap_client_proto` (`swapclientrpc.SwapClientService`,
   alias `swapclient`)
 - `walletdkrpc.File_wallet_proto` (`walletdkrpc.WalletService` and
@@ -23,9 +23,9 @@ The generator reads the linked Go descriptors for:
 - `btcwalletrpc.File_api_proto` (`walletrpc.VersionService` and
   `walletrpc.WalletService`, aliases `btcwallet-version` and `btcwallet`)
 
-It writes `cmd/darepocli/darepoclicommands/devrpc/registry_generated.go`.
+It writes `cmd/wavecli/waveclicommands/devrpc/registry_generated.go`.
 That generated file contains only service and method metadata. The runtime
-builder in `cmd/darepocli/darepoclicommands/devrpc` owns flag parsing,
+builder in `cmd/wavecli/waveclicommands/devrpc` owns flag parsing,
 dynamic request construction, RPC invocation, streaming response rendering, and
 error mapping.
 
@@ -34,16 +34,16 @@ error mapping.
 The canonical form is:
 
 ```shell
-darepocli dev <grpc_service> <call>
+wavecli dev <grpc_service> <call>
 ```
 
 Examples:
 
 ```shell
-darepocli dev daemonrpc.DaemonService GetInfo
-darepocli dev daemon getinfo
-darepocli dev daemon list-vtxos --status_filter live
-darepocli dev swapclient start-pay --invoice <bolt11>
+wavecli dev waverpc.DaemonService GetInfo
+wavecli dev daemon getinfo
+wavecli dev daemon list-vtxos --status_filter live
+wavecli dev swapclient start-pay --invoice <bolt11>
 ```
 
 The generated registry also provides one stable short alias for each service
@@ -70,11 +70,11 @@ Field handling rules:
 Flattening is deliberately bounded to singular messages. For example:
 
 ```shell
-darepocli dev daemon prepare-oor \
+wavecli dev daemon prepare-oor \
   --recipient.address bcrt1... \
   --recipient.amount_sat 1000
 
-darepocli dev daemon refresh-vtxos \
+wavecli dev daemon refresh-vtxos \
   --outpoints.outpoints txid:0 \
   --outpoints.outpoints txid:1 \
   --dry_run
@@ -85,7 +85,7 @@ larger form language for grouping, ordering, merging, and partial validation.
 Use JSON for those fields:
 
 ```shell
-darepocli dev daemon send-vtxo \
+wavecli dev daemon send-vtxo \
   --recipients-json '[{"address":"bcrt1...","amount_sat":1000}]'
 ```
 

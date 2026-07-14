@@ -2,7 +2,7 @@
 
 `sdk/walletdk/mobile` is a [gomobile](https://pkg.go.dev/golang.org/x/mobile/cmd/gomobile)-safe
 facade over the wallet SDK. It lets an Android (Kotlin/Java) or iOS
-(Swift/ObjC) host drive an embedded `darepod` wallet **in-process** — no
+(Swift/ObjC) host drive an embedded `waved` wallet **in-process** — no
 separate daemon binary, no open socket — by reusing the private `bufconn` gRPC
 transport that [`walletdk.Start`](../sdk/walletdk/embedded.go) already sets up.
 
@@ -93,7 +93,7 @@ The host loops `next()` on a background thread; this maps directly to a Kotlin
 
 `Start` takes a JSON string decoded into a flat, scalar-only config
 (`config.go`, `mobileConfig`). It is the JSON-friendly subset of
-`walletdk.Config`: it omits `DaemonConfig *darepod.Config` and
+`walletdk.Config`: it omits `DaemonConfig *waved.Config` and
 `LogWriter io.Writer`, expresses durations as integer seconds, and follows the
 same enable-only / non-empty overlay semantics (the zero value defers to the
 `walletdkrpc` build defaults). An empty string boots from
@@ -146,7 +146,7 @@ devices). The generated Java package is `engineering.lightning.walletdk`.
 The sample Android app (and, later, iOS app + idiomatic Kotlin/Swift wrappers)
 lives in a separate repo: **[lightninglabs/damobile](https://github.com/lightninglabs/damobile)**.
 It consumes the `.aar` this repo produces via a `scripts/fetch-aar.sh` that
-calls `make mobile-android` against a sibling `darepo-client` checkout. See that
+calls `make mobile-android` against a sibling `wavelength` checkout. See that
 repo's README and `docs/signet.md` for the end-to-end run (emulator, signet
 sync).
 

@@ -443,7 +443,7 @@ failure rather than wedging it.
 
 ### 7.2 Boot and resume
 
-`darepod`'s `initCreditRegistry` (called right after the OOR actor registers,
+`waved`'s `initCreditRegistry` (called right after the OOR actor registers,
 guarded by a nil-check on the swap-runtime-populated `cfg.Swap.Credit*`
 bridges) builds the store, constructs the registry via `credit.NewRegistry`,
 and calls `RestoreNonTerminal` **synchronously** before serving. Each

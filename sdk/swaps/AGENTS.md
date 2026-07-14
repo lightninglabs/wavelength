@@ -13,7 +13,7 @@ Lightning.
 
 ## Key Types
 
-For field-level detail, use `go doc github.com/lightninglabs/darepo-client/sdk/swaps.<Symbol>`.
+For field-level detail, use `go doc github.com/lightninglabs/wavelength/sdk/swaps.<Symbol>`.
 
 - `SwapClient` — top-level entry point. Constructed via `NewSwapClient`
   (no persistence) or `NewSwapClientWithStore` (SQLite-backed). Holds

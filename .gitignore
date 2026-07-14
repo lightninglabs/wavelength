@@ -1,6 +1,6 @@
 /arkcli
 /arkd
-/darepocli
+/wavecli
 bin/*
 **/test-artifacts
 merge-sql-schemas

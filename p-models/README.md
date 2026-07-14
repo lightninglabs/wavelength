@@ -6,7 +6,7 @@ ordinary unit tests have a hard time covering all interesting interleavings.
 P is a state machine modeling language for asynchronous systems. A P model is
 written as a set of machines that exchange events. The P checker then explores
 many possible event schedules, looking for assertion failures, monitor
-violations, deadlocks, or other illegal states. This is useful for darepo-client
+violations, deadlocks, or other illegal states. This is useful for wavelength
 because several important correctness properties are not local to one function:
 they depend on the order in which messages are leased, retried, acknowledged,
 or observed by independent actors.

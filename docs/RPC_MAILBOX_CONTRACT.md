@@ -5,7 +5,7 @@ RPC-over-mailbox transport. It is intended as a "scratchpad" companion to the
 implementation-ready spec tracked in `lightninglabs/darepo`:
 
 - Spec issue: https://github.com/lightninglabs/darepo/issues/71
-- Durability reference (client-side): https://github.com/lightninglabs/darepo-client/pull/48
+- Durability reference (client-side): https://github.com/lightninglabs/wavelength/pull/48
 
 This document intentionally does not reference any private repositories,
 internal prototypes, or local development artifacts.

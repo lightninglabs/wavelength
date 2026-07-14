@@ -56,7 +56,7 @@ base logic with the neutrino-backed `btcwbackend` sibling via the extracted
   internal height catches the Esplora tip, closing the race between the chain
   backend actor and btcwallet's asynchronous block processing pipeline (polls
   at 50ms). `FinalizePsbtDirect(packet)` signs and finalizes a PSBT via
-  `BtcWallet.FinalizePsbt` under `DefaultAccountName`; used by the darepod
+  `BtcWallet.FinalizePsbt` under `DefaultAccountName`; used by the waved
   unroll sweep adapter since lwwallet has no gRPC surface.
 
 ## Relationships
@@ -65,7 +65,7 @@ base logic with the neutrino-backed `btcwbackend` sibling via the extracted
   also used by `btcwbackend`), `chainsource` (implements `ChainBackend`),
   `wallet` (implements `BoardingBackend`), `chainbackends` (typed
   `PackageTxError` for package-relay results).
-- **Depended on by**: `darepod` (alternative to LND-backed wallet), `sdk`
+- **Depended on by**: `waved` (alternative to LND-backed wallet), `sdk`
   (embedded-wallet config references).
 
 ## Invariants

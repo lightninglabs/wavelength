@@ -28,7 +28,7 @@ exit through the VTXO manager (`actormsg`) and reads status back from `unroll`.
   narrow status interface.
 - `TargetMaterializer` — adapter interface for ensuring the vHTLC target has
   local descriptor and package bindings that generic unroll needs. Implemented
-  by `darepod.vhtlcRecoveryTargetMaterializer`.
+  by `waved.vhtlcRecoveryTargetMaterializer`.
 - `RecoveryStatus` — durable recovery row joined with current unroll status.
 - `ServiceConfig` — wiring: `Store`, `UnrollRegistry`, `ExitAdmitter`,
   `TargetMaterializer`.
@@ -39,7 +39,7 @@ exit through the VTXO manager (`actormsg`) and reads status back from `unroll`.
   (exit admission: `ForceUnrollRequest`, `ExitPolicy`), `unroll` (status:
   `GetStatusRequest`, `GetStatusResp`), `baselib/actor` (actor refs for
   `ActorUnrollRegistry`).
-- **Depended on by**: `darepod` (instantiates and wires the service; supplies
+- **Depended on by**: `waved` (instantiates and wires the service; supplies
   the VTXO manager as the `ExitAdmitter` and implements `TargetMaterializer`
   via `vhtlcRecoveryTargetMaterializer`).
 - **Messages to/from**: Sends `ForceUnrollRequest` -> VTXO manager (via
@@ -47,7 +47,7 @@ exit through the VTXO manager (`actormsg`) and reads status back from `unroll`.
   registry (via `UnrollRegistry`) to read status back. `Service` methods
   (`ArmRecovery`, `EscalateRecovery`, `CancelRecovery`, `GetRecoveryStatus`,
   `ListRecoveryStatuses`, `RestoreNonTerminal`) are called directly by
-  `darepod.RPCServer`, not actor messages.
+  `waved.RPCServer`, not actor messages.
 
 ## Invariants
 

@@ -1,4 +1,4 @@
 version: v2.10.1
 plugins:
-  - module: 'github.com/lightninglabs/darepo-client/tools/linters'
+  - module: 'github.com/lightninglabs/wavelength/tools/linters'
     path: ./linters

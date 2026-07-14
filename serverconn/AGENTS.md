@@ -50,7 +50,7 @@ background ingress polling with event routing.
 
 - **Depends on**: `baselib/actor` (DurableActor infrastructure), `mailbox/*` (Envelope, RpcMeta, MailboxServiceClient), `arkrpc` (`GetInfo` request/response + `ArkVersionPolicy` for version negotiation).
 - **Depended on by**: `round` (outbound RPCs), `oor` (durable transport),
-  `darepod` (wiring), `sdk/swaps` (`CompoundMailboxID`, `PubKeyMailboxID`),
+  `waved` (wiring), `sdk/swaps` (`CompoundMailboxID`, `PubKeyMailboxID`),
   `swapclientserver`.
 - **Sends (egress → remote mailbox)**:
   - `SendClientEventRequest` (durable): wraps `JoinRoundRequest`, `JoinRoundAccept`, `JoinRoundReject`, `SubmitNoncesRequest`, `SubmitPartialSigRequest`, `SubmitForfeitSigRequest`. `JoinRoundAccept` / `JoinRoundReject` are the explicit responses to a server-issued seal-time `JoinRoundQuote` (#270); both echo the `quote_id` so the server can drop stale responses after a reseal.

@@ -393,23 +393,23 @@ before any server interaction:
 
 ## CLI mapping
 
-`darepocli` flags map onto the `is_change` semantics. Names below use
+`wavecli` flags map onto the `is_change` semantics. Names below use
 the current command tree; flags marked *(future)* aren't wired up yet
 and only describe how the mapping is intended to land.
 
-- `darepocli ark send oor --to <addr> --amount <sat>` —
+- `wavecli ark send oor --to <addr> --amount <sat>` —
   **scenario 10**. Sender pays the fee from a self-change VTXO.
-- `darepocli ark send oor --to <addr> --amount <sat> --subtract-fee`
+- `wavecli ark send oor --to <addr> --amount <sat> --subtract-fee`
   *(future)* — **scenarios 3 / 11**. Recipient absorbs the fee;
   the recipient's `VTXORequest` is marked `is_change=true`.
-- `darepocli ark vtxos refresh --all` — **scenario 6**. All expiring
+- `wavecli ark vtxos refresh --all` — **scenario 6**. All expiring
   VTXOs are submitted; auto-stamped first VTXO absorbs the fee.
-- `darepocli ark vtxos refresh --outpoint <op>` — **scenario 5**.
+- `wavecli ark vtxos refresh --outpoint <op>` — **scenario 5**.
   Implicit change on the single-output intent.
-- `darepocli ark vtxos leave --outpoint <op> --address <addr>` —
+- `wavecli ark vtxos leave --outpoint <op> --address <addr>` —
   **scenario 8** when a single VTXO covers the leave; **scenario 9**
   with a `--keep <sat>` flag *(future)* that adds a self-VTXO leg.
-- `darepocli ark board` — **scenario 1** for a single receive script;
+- `wavecli ark board` — **scenario 1** for a single receive script;
   **scenario 2** when `--target-vtxo-count N` is used.
 
 The CLI prints "estimated ~X sats; actual fee confirmed when the

@@ -1,6 +1,6 @@
 # Documentation Index
 
-Knowledge base for the darepo-client repository. Start with
+Knowledge base for the wavelength repository. Start with
 [ARCHITECTURE.md](../ARCHITECTURE.md) for the system map, then follow links
 into specific topics below.
 
@@ -28,7 +28,7 @@ into specific topics below.
 | [mailbox_transport_serverconn_clientconn.md](mailbox_transport_serverconn_clientconn.md) | The RPC-over-mailbox transport relating this client's `serverconn` to the operator's `clientconn`: envelope, edge API, shared `mailbox/conn` primitives, ack watermark, identity/auth/liveness, and the wire contract |
 | [RPC_MAILBOX_CONTRACT.md](RPC_MAILBOX_CONTRACT.md) | Envelope semantics, at-least-once delivery, ack watermarks |
 | [credit_durable_actor_design.md](credit_durable_actor_design.md) | Credit subsystem durable-actor design: supervisor + per-operation actors driving fault-tolerant sub-dust pay, credit-receive, and redeem flows against the authoritative server ledger |
-| [walletdk_mobile.md](walletdk_mobile.md) | gomobile-safe `sdk/walletdk/mobile` facade: drives an embedded in-process `darepod` wallet from Android/iOS over the private bufconn transport (bytes-out API, no daemon binary) |
+| [walletdk_mobile.md](walletdk_mobile.md) | gomobile-safe `sdk/walletdk/mobile` facade: drives an embedded in-process `waved` wallet from Android/iOS over the private bufconn transport (bytes-out API, no daemon binary) |
 
 ## Development
 
@@ -41,7 +41,7 @@ into specific topics below.
 | [testing-guide.md](testing-guide.md) | Coverage targets, test approaches, pre-commit checklist |
 | [go_workspace.md](go_workspace.md) | Multi-module Go workspace setup |
 | [policy_arkscript_review_guide.md](policy_arkscript_review_guide.md) | Policy-first arkscript reviewer guide |
-| [dev_rpc_cli_builder.md](dev_rpc_cli_builder.md) | Generated `darepocli dev` command builder and request flag rules |
+| [dev_rpc_cli_builder.md](dev_rpc_cli_builder.md) | Generated `wavecli dev` command builder and request flag rules |
 
 ## Release Engineering
 
@@ -54,7 +54,7 @@ into specific topics below.
 
 | Document | Description |
 |----------|-------------|
-| [daemon_cli_guide.md](daemon_cli_guide.md) | darepod/darepocli installation, configuration, CLI reference |
+| [daemon_cli_guide.md](daemon_cli_guide.md) | waved/wavecli installation, configuration, CLI reference |
 | [signet.md](signet.md) | Public testnet3, testnet4, and signet Ark/swap endpoints, transport selection, and local overrides |
 | [accounting_report.md](accounting_report.md) | Accounting report command: reading the fee ledger from SQLite or Postgres, text/JSON/CSV output, fiat conversion, read-only behavior |
 

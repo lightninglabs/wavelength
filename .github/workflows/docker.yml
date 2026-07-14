@@ -26,7 +26,7 @@ defaults:
 
 env:
   DOCKER_REPO: 923662548032.dkr.ecr.us-west-2.amazonaws.com/lightninglabs
-  DOCKER_IMAGE_DAREPOD: darepod
+  DOCKER_IMAGE_WAVED: waved
 
 jobs:
   docker-build-push:
@@ -68,7 +68,7 @@ jobs:
           set -euo pipefail
           SHORT_SHA="$(git rev-parse --short=7 HEAD)"
           DATE_TAG="$(date -u +%Y-%m-%d)"
-          REPO="${DOCKER_REPO}/${DOCKER_IMAGE_DAREPOD}"
+          REPO="${DOCKER_REPO}/${DOCKER_IMAGE_WAVED}"
           TAGS=""
           case "${GITHUB_EVENT_NAME}" in
             push)
@@ -110,8 +110,8 @@ jobs:
             echo "EOF"
           } >> "${GITHUB_OUTPUT}"
 
-      - name: Build and push darepod
-        id: docker_build_darepod
+      - name: Build and push waved
+        id: docker_build_waved
         uses: lightninglabs/gh-actions/build-push-action@2021.01.25.00
         with:
           context: .
@@ -119,4 +119,4 @@ jobs:
           tags: ${{ steps.tags.outputs.tags }}
 
       - name: Image digest
-        run: "echo darepod: ${{ steps.docker_build_darepod.outputs.digest }}"
+        run: "echo waved: ${{ steps.docker_build_waved.outputs.digest }}"

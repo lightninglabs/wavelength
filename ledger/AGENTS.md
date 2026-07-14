@@ -37,7 +37,7 @@ For per-flow walkthroughs see
 
 ## Key Types
 
-For field-level detail, use `go doc github.com/lightninglabs/darepo-client/ledger.<Symbol>`.
+For field-level detail, use `go doc github.com/lightninglabs/wavelength/ledger.<Symbol>`.
 
 - `LedgerActor` — durable actor processing accounting messages. Runs on the
   durable Read/Commit (`TxBehavior`) path: each handler books its ledger legs
@@ -120,7 +120,7 @@ For field-level detail, use `go doc github.com/lightninglabs/darepo-client/ledge
 - **Depends on**: `baselib/actor` (durable actor framework, TLV codec,
   service keys), `lnd/clock` (injectable time source).
 - **Depended on by**: `db` (provides `LedgerStoreDB`,
-  `UTXOAuditStoreDB`), `darepod` (wires actor; exposes
+  `UTXOAuditStoreDB`), `waved` (wires actor; exposes
   `LedgerStoreDB` to RPC), `round` / `oor` / `vtxo` / `wallet` (hold
   `fn.Option[ledger.Sink]` and Tell on hot-path transitions).
 - **Receives** (via `Sink` Tell):
