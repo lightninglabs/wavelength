@@ -274,6 +274,8 @@ when adding one.
   registration terms, a stable remote RPC key, and completion evidence to
   `owned_receive_scripts`. The partial unique index admits one durable
   allocation per non-null idempotency key.
+- `000017_taproot_asset_vtxos` — optional Taproot Asset commitment root on
+  VTXO descriptors; generic Bitcoin coin selection excludes these rows.
 
 ## Deep Docs
 
