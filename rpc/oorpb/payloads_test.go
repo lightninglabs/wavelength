@@ -26,6 +26,7 @@ func TestSubmitPackageRequestRoundTrip(t *testing.T) {
 
 	hashHex := "0f555f77697777895555121212121212" +
 		"12121212121212121212121212121212"
+	inputAssetRoot := chainhash.Hash{1, 2, 3}
 	descs := []SigningDescriptor{{
 		Outpoint: wire.OutPoint{
 			Hash:  mustHash(t, hashHex),
@@ -45,7 +46,9 @@ func TestSubmitPackageRequestRoundTrip(t *testing.T) {
 			0x02,
 			0x03,
 		},
+		TaprootAssetRoot: &inputAssetRoot,
 	}}
+	recipientAssetRoot := chainhash.Hash{4, 5, 6}
 	recipients := []oortx.RecipientOutput{{
 		PkScript: []byte{
 			0x51,
@@ -57,15 +60,24 @@ func TestSubmitPackageRequestRoundTrip(t *testing.T) {
 			0xaa,
 			0xbb,
 		},
+		TaprootAssetRoot: &recipientAssetRoot,
 	}}
+	assetTransfer := &oortx.TaprootAssetTransfer{
+		Version: oortx.TaprootAssetTransferVersion,
+		CheckpointPackages: [][]byte{
+			[]byte("checkpoint-0"),
+			[]byte("checkpoint-1"),
+		},
+		ArkPackage: []byte("ark"),
+	}
 
-	req, err := NewSubmitPackageRequest(
-		ark, checkpoints, descs, recipients,
+	req, err := NewSubmitPackageRequestWithAssets(
+		ark, checkpoints, descs, recipients, assetTransfer,
 	)
 	require.NoError(t, err)
 
-	decArk, decCheckpoints, decDescs, decRecipients, err :=
-		ParseSubmitPackageRequest(req)
+	decArk, decCheckpoints, decDescs, decRecipients, decAssets, err :=
+		ParseSubmitPackageRequestWithAssets(req)
 	require.NoError(t, err)
 	require.Equal(t, 1, len(decDescs))
 	require.Equal(t, descs[0].Outpoint, decDescs[0].Outpoint)
@@ -76,7 +88,11 @@ func TestSubmitPackageRequestRoundTrip(t *testing.T) {
 	require.Equal(
 		t, descs[0].OwnerLeafPolicy, decDescs[0].OwnerLeafPolicy,
 	)
+	require.Equal(
+		t, descs[0].TaprootAssetRoot, decDescs[0].TaprootAssetRoot,
+	)
 	require.Equal(t, recipients, decRecipients)
+	require.Equal(t, assetTransfer, decAssets)
 
 	require.True(
 		t,
@@ -94,6 +110,40 @@ func TestSubmitPackageRequestRoundTrip(t *testing.T) {
 			),
 		)
 	}
+}
+
+func TestParseSubmitPackageRequestRejectsInvalidAssetMetadata(t *testing.T) {
+	t.Parallel()
+
+	ark := mustTestPSBT(t, 11)
+	checkpoints := []*psbt.Packet{mustTestPSBT(t, 21)}
+	assetTransfer := &oortx.TaprootAssetTransfer{
+		Version: oortx.TaprootAssetTransferVersion,
+		CheckpointPackages: [][]byte{
+			[]byte("checkpoint"),
+		},
+		ArkPackage: []byte("ark"),
+	}
+	req, err := NewSubmitPackageRequestWithAssets(
+		ark, checkpoints, nil, nil, assetTransfer,
+	)
+	require.NoError(t, err)
+
+	req.SigningDescriptors = []*OORSigningDescriptor{{
+		Outpoint: &OOROutPoint{
+			Txid: make([]byte, chainhash.HashSize),
+		},
+		TaprootAssetRoot: []byte{
+			1,
+		},
+	}}
+	_, _, _, _, _, err = ParseSubmitPackageRequestWithAssets(req)
+	require.ErrorContains(t, err, "taproot asset root length")
+
+	req.SigningDescriptors = nil
+	req.TaprootAssetTransfer[len(req.TaprootAssetTransfer)-1] ^= 1
+	_, _, _, _, _, err = ParseSubmitPackageRequestWithAssets(req)
+	require.ErrorContains(t, err, "checksum mismatch")
 }
 
 // TestSubmitPackageResponseRoundTrip verifies submit response conversion
