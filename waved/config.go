@@ -252,6 +252,13 @@ type Config struct {
 	// test harness; not serialized to config files.
 	PackageSubmitter chainbackends.PackageSubmitter
 
+	// TaprootAssetOORPreparer commits proof-selected Taproot Asset
+	// transitions into the caller-owned OOR Bitcoin graph. It is injected
+	// programmatically because the concrete adapter owns authenticated tapd
+	// connectivity and durable request reconciliation. A nil value disables
+	// asset-bearing OOR sends without affecting Bitcoin-only sends.
+	TaprootAssetOORPreparer oor.TaprootAssetOORPreparer `mapstructure:"-"`
+
 	// FailUnrollBroadcastReason is a TEST-ONLY hook. When non-empty, the
 	// unroll subsystem's tx-confirmation requests are rejected with this
 	// reason before any broadcast, simulating a proof tx that cannot enter

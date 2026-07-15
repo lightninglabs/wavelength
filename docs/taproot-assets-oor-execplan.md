@@ -47,10 +47,12 @@ transition, persist both layers, and only then request Ark signatures.
   descriptors, excluded asset rows from generic Bitcoin coin selection, and
   made OOR signing, forfeit signing, and unilateral timeout exits derive the
   composed control block.
-- [ ] Expose the smallest daemon/SDK surface needed by swapd to submit the
-  prepared transfer.
-- [ ] Add unit, codec, FSM, transport, tamper, and restart tests; run changed
-  lint, package tests, and the repository build.
+- [x] (2026-07-15 14:10Z) Exposed an experimental `SendOOR` Taproot Asset
+  intent and a programmatic, idempotency-keyed preparation interface for
+  swapd; requests fail closed when no concrete adapter is installed.
+- [x] (2026-07-15 14:25Z) Added unit, codec, FSM, transport, tamper, restart,
+  client-domain, RPC, and root-propagation tests; passed changed-code lint,
+  `make unit`, and `make build` on the client branch.
 
 ## Surprises & Discoveries
 
@@ -86,6 +88,15 @@ transition, persist both layers, and only then request Ark signatures.
   snapshot is insufficient because the successful session advances to ack and
   completion. The package must live beside the finalized OOR artifacts, while
   the 32-byte root lives beside each owned VTXO.
+- Observation: the prepared-package API was only reachable below the daemon
+  boundary, so swapd could not use it without either importing internal actor
+  types or taking over tapd wallet custody. Evidence: `SendOOR` previously
+  always constructed `StartTransferRequest` without `PreparedSubmit`.
+- Observation: the repository Docker protobuf image could not be rebuilt
+  because Docker Hub metadata lookup timed out. The pinned Go generators and
+  local protobuf compiler successfully regenerated the stubs; only the
+  expected `waverpc` source/stub remained changed after removing unrelated
+  generator-version drift.
 
 ## Decision Log
 
@@ -118,6 +129,18 @@ transition, persist both layers, and only then request Ark signatures.
   required to reconstruct every future control block, while ordinary rounds
   do not yet carry an asset state transition and must not accidentally consume
   an asset-bearing output. Date/Author: 2026-07-15 / Codex.
+- Decision: keep tapd proof selection and custom-anchor preparation in the
+  Wavelength client process, exposed through a programmatic
+  `TaprootAssetOORPreparer`; swapd supplies product intent through `SendOOR`
+  and never receives tapd wallet credentials. Rationale: Wavelength owns the
+  VTXO keys, input descriptor, signing lifecycle, and durable OOR state, while
+  swapd only coordinates the swap. Date/Author: 2026-07-15 / Codex.
+- Decision: require one stored custom input, one recipient, exact BTC value,
+  an acknowledgment of the unconfirmed-proof limitation, and a non-empty
+  idempotency key in the first public asset slice. Rationale: mixed asset/BTC
+  change has no allocation rule yet, and a preparer must reconcile a repeated
+  request ID after an outcome-unknown tapd commit rather than creating a
+  competing transition. Date/Author: 2026-07-15 / Codex.
 
 ## Outcomes & Retrospective
 
@@ -130,8 +153,12 @@ skips asset-bearing rows, and regression tests cover composed checkpoint,
 forfeit, and timeout control blocks. The receive path now preserves roots and
 sealed packages across transport, actor restart, materialization, artifact
 lookup, and idempotent retry. The client branch passes `make build`,
-`go test ./oor ./vtxo ./unroll ./waved ./db`, and changed-code lint. The first
-confirmed upstream gap is
+`make unit`, and changed-code lint. `SendOOR`
+now accepts an optional proof-selected asset intent, requires explicit custom
+input selection and exact satoshi funding, invokes a restart-safe preparer,
+and verifies its immutable result before the actor can persist or sign it.
+Bitcoin-only requests never enter this path. The concrete preparer still
+cannot compile until the first confirmed upstream gap,
 `lightninglabs/tap-sdk#163`; this section will record the remaining test
 evidence and any further tapd/tap-sdk gaps.
 
@@ -185,10 +212,13 @@ Ark txid, snapshot the asset package before emitting `RequestArkSignatures`,
 and thread it through submit retries. The ordinary constructor continues to
 build Bitcoin-only packages exactly as before.
 
-Protobuf transport is extended additively with generated submit and
-offline-receive fields. Next thread incoming notification data through the
-durable receiver so it can materialize an asset-aware VTXO, and expose a
-narrow daemon/SDK method for swapd. Publication remains out of scope until the
+Protobuf transport is extended additively with generated submit,
+offline-receive, and public send-intent fields. Incoming notification data is
+threaded through the durable receiver so it can materialize an asset-aware
+VTXO. The daemon injects a `TaprootAssetOORPreparer` programmatically and maps
+the public intent into a request containing the exact VTXO graph. The
+preparer's concrete tap-sdk implementation remains blocked on
+`lightninglabs/tap-sdk#163`. Publication remains out of scope until the
 path-aware tapd follow-up lands.
 
 ## Concrete Steps
@@ -237,6 +267,14 @@ The cross-repository showcase is accepted when swapd can opt into the asset
 path, the operator rejects malformed packages before input locking, and a
 valid request reaches the existing OOR signing/finalize path.
 
+The public client seam is accepted by
+`TestSendOORTaprootAssetPreparesBeforeActor`: the captured preparer request
+contains the stored input root and independent asset amount, while the actor
+receives the exact prepared package and a recipient whose policy and asset
+root reconstruct its P2TR script. `TestSendOORTaprootAssetFailsClosed` proves
+the actor receives nothing on malformed, disabled, unavailable, BTC-change,
+or adapter-tamper cases.
+
 ## Idempotence and Recovery
 
 Planning and validation are deterministic, but tapd commit is an external
@@ -264,18 +302,25 @@ The feature branch is `feat/wavelength-taproot-assets-oor`, based on
 
 ## Interfaces and Dependencies
 
-The shared OOR layer will gain a stable, versioned asset-extension DTO whose
+The shared OOR layer has a stable, versioned asset-extension DTO whose
 payloads are sealed tap-sdk `CustomAnchorTransferPackage` binary encodings.
-Recipient outputs will gain an optional 32-byte Taproot Asset root. The
+Recipient outputs have an optional 32-byte Taproot Asset root. The
 tap-sdk adapter will depend on `github.com/lightninglabs/tap-sdk` and consume
 only SDK-owned public DTOs plus serialized PSBT bytes.
 
-The prepared-session API will require committed Ark/checkpoint PSBTs, transfer
+The prepared-session API requires committed Ark/checkpoint PSBTs, transfer
 inputs, canonical recipients, and the asset extension. It will not accept a
 mutable tap-sdk builder or tapd client inside the deterministic FSM. That keeps
 network I/O at the orchestration boundary and makes durable actor replay
 independent of tapd availability.
 
-Revision note (2026-07-15): updated after the first SDK-neutral root/container
-milestone, the tap-sdk dependency compatibility reproduction, and the durable
-asset-bearing VTXO/spend-path milestone.
+`waverpc.SendOORRequest.taproot_asset` carries the opaque asset ref, exact
+asset amount, confirmed proof file, receiver asset script key, optional proof
+delivery metadata, and an explicit unconfirmed-path acknowledgment. It is only
+valid with one stored custom input, one recipient, exact BTC value, and an
+idempotency key. `waved.Config.TaprootAssetOORPreparer` is programmatic-only;
+its `PrepareTaprootAssetOOR` implementation must durably reconcile repeated
+request IDs before it calls tapd again.
+
+Revision note (2026-07-15): updated after the public daemon preparation seam,
+fail-closed RPC coverage, and the client/swapd custody-boundary decision.
