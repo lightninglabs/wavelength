@@ -54,6 +54,7 @@ func (b *sessionBehavior) handleStartTransfer(ctx context.Context,
 
 	session, outbox, err := NewSessionWithIdempotencyKey(
 		ctx, req.Policy, req.Inputs, req.Recipients, req.IdempotencyKey,
+		b.envConfig(),
 	)
 	if err != nil {
 		return fn.Err[ActorResp](err)
@@ -563,7 +564,7 @@ func (b *sessionBehavior) handleResolveIncomingTransfer(ctx context.Context,
 				[]byte(nil), req.RecipientPkScript...,
 			),
 			RecipientEventID: req.RecipientEventID,
-		},
+		}, b.envConfig(),
 	)
 	if err != nil {
 		return fn.Err[ActorResp](err)

@@ -783,34 +783,45 @@ func (s *Server) setServerConnected(connected bool) {
 // gRPC connectivity API.
 const operatorConnPollInterval = 15 * time.Second
 
-// oorInputNotSpendableRetryDelay is how long the OOR FSM waits before
-// re-driving a submit that the operator rejected because an input was not yet
-// spendable (its round commitment tx had not reached the operator's
-// confirmation target). The wait only needs to outlast the operator's chain
-// backend catching up to a block this client already saw — typically seconds —
-// so a short delay keeps the swap responsive, while being long enough to avoid
-// hammering the operator with resubmits between blocks. It is deliberately far
-// below any swap invoice deadline so the natural deadline (not this timer)
-// bounds total retrying when the operator never catches up. A plain SendOOR
-// with no such deadline re-drives indefinitely on a persistent reject — the
-// same "re-drive on operator silence, never give up" behavior the
-// AwaitingSubmitAccepted transport timer already has — which is acceptable
-// because the operator only emits this transient code for a pending input.
-const oorInputNotSpendableRetryDelay = 15 * time.Second
+// oorTransientRejectRetryDelay is how long the OOR FSM waits before re-driving
+// a submit that the operator rejected with a transient code. The wait only
+// needs to outlast the transient condition clearing — the operator's chain
+// backend catching up to a block this client already saw, or the recipient's
+// mailbox balance draining — typically seconds to a few minutes, so a short
+// delay keeps the swap responsive while being long enough to avoid hammering
+// the operator with resubmits between blocks. The (idempotent) submit is
+// re-driven on this cadence, but the total retrying is now bounded by the
+// OORConfig.MaxTransientSubmitRetry cumulative-window cap enforced in the FSM
+// (see handleSubmitOutboxError), so a genuinely-stuck input or a never-draining
+// recipient balance gives up instead of retrying forever.
+const oorTransientRejectRetryDelay = 15 * time.Second
 
 // oorRejectRetry decides how a classified OOR submit rejection is driven
-// through the session FSM. An input-not-spendable rejection is transient — the
-// operator has not yet caught up to the input's round-commitment confirmation
-// that this client already observed — so it is retried after a delay and the
-// (idempotent) submit is re-driven until the operator's chain view catches up.
-// Every other typed rejection is terminal for the same submit shape, so it
-// drives the session to failure without a retry.
+// through the session FSM. Two typed rejections are transient and retried on
+// the oorTransientRejectRetryDelay cadence (bounded by the FSM's cumulative
+// retry-window cap):
+//
+//   - ErrInputNotSpendable: the operator has not yet caught up to the input's
+//     round-commitment confirmation that this client already observed, so the
+//     same submit succeeds once its chain view catches up.
+//   - ErrUserBalanceExceeded: the recipient mailbox's aggregate balance is over
+//     the operator's cap, so the same-shape resubmit succeeds once the
+//     recipient's balance drops.
+//
+// Every other typed rejection (lineage-too-large, output-policy, and
+// unspecified) is terminal for the same submit shape, so it drives the session
+// to failure without a retry.
 func oorRejectRetry(classified error) (bool, time.Duration) {
-	if errors.Is(classified, &oor.ErrInputNotSpendable{}) {
-		return true, oorInputNotSpendableRetryDelay
-	}
+	switch {
+	case errors.Is(classified, &oor.ErrInputNotSpendable{}):
+		return true, oorTransientRejectRetryDelay
 
-	return false, 0
+	case errors.Is(classified, &oor.ErrUserBalanceExceeded{}):
+		return true, oorTransientRejectRetryDelay
+
+	default:
+		return false, 0
+	}
 }
 
 // monitorOperatorConnection keeps the ServerConnectionUp gauge and the
@@ -4437,6 +4448,12 @@ func (s *Server) initOORActor(ctx context.Context,
 		TimeoutActor: oorTimeoutRef,
 		CallbackRef:  oorCallbackRef,
 		ActorSystem:  s.actorSystem,
+
+		// Share the daemon's single clock so the FSM's bounded
+		// transient submit-reject retry window is deterministic and
+		// testable, and inject the configured retry-budget cap.
+		Clock:                   s.clk,
+		MaxTransientSubmitRetry: s.cfg.OORMaxTransientSubmitRetry(),
 	})
 	if err != nil {
 		return err

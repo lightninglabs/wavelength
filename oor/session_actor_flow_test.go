@@ -131,6 +131,7 @@ func TestSessionActorIncomingMaterializeFullFlow(t *testing.T) {
 			ArkPSBT:              ark,
 			FinalCheckpointPSBTs: checkpoints,
 		},
+		EnvConfig{},
 	)
 	require.NoError(t, err)
 
@@ -345,7 +346,9 @@ func TestSessionActorIncomingReloadsAfterFailedCommit(t *testing.T) {
 		},
 	}
 
-	session, err := newReceiveSessionWithState(ctx, sid, notified)
+	session, err := newReceiveSessionWithState(
+		ctx, sid, notified, EnvConfig{},
+	)
 	require.NoError(t, err)
 
 	b := &sessionBehavior{
@@ -1121,6 +1124,7 @@ func TestSessionActorMetadataQueryEmptyRecipientsFailsTerminally(t *testing.T) {
 		ctx, sid, &ReceiveNotified{
 			SessionID: sid,
 		},
+		EnvConfig{},
 	)
 	require.NoError(t, err)
 
@@ -1179,6 +1183,7 @@ func TestSessionActorMetadataQueryTransientErrorRetries(t *testing.T) {
 		ctx, sid, &ReceiveNotified{
 			SessionID: sid,
 		},
+		EnvConfig{},
 	)
 	require.NoError(t, err)
 

@@ -42,14 +42,17 @@ func NewReceiveSession(ctx context.Context, ark *psbt.Packet,
 	)
 
 	return newReceiveSessionWithState(
-		ctx, sessionID, &ReceiveIdle{},
+		ctx, sessionID, &ReceiveIdle{}, EnvConfig{},
 	)
 }
 
 // newReceiveSessionWithState creates an incoming-transfer FSM session with
-// the provided initial receive state.
+// the provided initial receive state. envCfg injects the deterministic clock
+// and retry budget into the FSM Environment; the incoming FSM does not read the
+// retry budget today, but the clock is threaded for consistency with the
+// outgoing path and to keep transitions deterministic.
 func newReceiveSessionWithState(ctx context.Context, sessionID SessionID,
-	state SessionState) (*ReceiveSession, error) {
+	state SessionState, envCfg EnvConfig) (*ReceiveSession, error) {
 
 	if sessionID == (SessionID{}) {
 		return nil, fmt.Errorf("session id must be provided")
@@ -59,7 +62,7 @@ func newReceiveSessionWithState(ctx context.Context, sessionID SessionID,
 		return nil, fmt.Errorf("state must be provided")
 	}
 
-	env := &Environment{SessionID: sessionID}
+	env := envCfg.newEnvironment(sessionID)
 
 	baseLogger := logger(ctx)
 

@@ -169,24 +169,27 @@ func incomingRegistryRecord(sessionID SessionID,
 }
 
 // outgoingSessionFromRecord rebuilds a live outgoing session from a registry
-// record's snapshot blob.
+// record's snapshot blob. envCfg injects the deterministic clock and the
+// transient submit-reject retry budget into the restored FSM Environment.
 func outgoingSessionFromRecord(ctx context.Context,
-	record clientdb.OORSessionRegistryRecord) (*Session, error) {
+	record clientdb.OORSessionRegistryRecord,
+	envCfg EnvConfig) (*Session, error) {
 
 	snapshot, err := decodeOutgoingSnapshot(record.SnapshotData)
 	if err != nil {
 		return nil, err
 	}
 
-	return NewSessionFromSnapshot(ctx, snapshot)
+	return NewSessionFromSnapshot(ctx, snapshot, envCfg)
 }
 
 // incomingSessionFromRecord rebuilds a live incoming session from a registry
 // record's snapshot blob, enforcing the configured receive limits during
-// decode.
+// decode. envCfg injects the deterministic clock and retry budget into the
+// restored FSM Environment.
 func incomingSessionFromRecord(ctx context.Context,
-	record clientdb.OORSessionRegistryRecord,
-	limits ReceiveLimits) (*ReceiveSession, error) {
+	record clientdb.OORSessionRegistryRecord, limits ReceiveLimits,
+	envCfg EnvConfig) (*ReceiveSession, error) {
 
 	snapshot, err := decodeIncomingSnapshotWithLimits(
 		record.SnapshotData, limits,
@@ -195,5 +198,5 @@ func incomingSessionFromRecord(ctx context.Context,
 		return nil, err
 	}
 
-	return NewReceiveSessionFromSnapshot(ctx, snapshot)
+	return NewReceiveSessionFromSnapshot(ctx, snapshot, envCfg)
 }

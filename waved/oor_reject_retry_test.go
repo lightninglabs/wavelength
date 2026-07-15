@@ -9,13 +9,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestOORRejectRetry verifies that only the transient input-not-spendable
-// rejection is driven through the OOR FSM as retryable (so the submit is
-// re-driven until the operator's chain view catches up and the transfer
-// recovers), while every other typed rejection stays terminal. This is the
-// server-reject-to-client-retry link behind the darepo-client#938 fix: paired
-// with oor.TestHandleOutboxError (retryable OutboxError re-drives instead of
-// failing), it shows an input-not-spendable rejection recovers rather than
+// TestOORRejectRetry verifies that the two transient rejections
+// (input-not-spendable and user-balance-exceeded) are driven through the OOR
+// FSM as retryable (so the submit is re-driven — bounded by the FSM's
+// cumulative retry-window cap — until the transient condition clears and the
+// transfer recovers), while every other typed rejection stays terminal. This is
+// the server-reject-to-client-retry link behind the darepo-client#938 fix:
+// paired with oor.TestHandleOutboxError (retryable OutboxError re-drives
+// instead of failing), it shows a transient rejection recovers rather than
 // wedging.
 func TestOORRejectRetry(t *testing.T) {
 	t.Parallel()
@@ -33,7 +34,7 @@ func TestOORRejectRetry(t *testing.T) {
 				ServerBestHeight: 100,
 			},
 			wantRetryable: true,
-			wantDelay:     oorInputNotSpendableRetryDelay,
+			wantDelay:     oorTransientRejectRetryDelay,
 		},
 		{
 			name: "output policy is terminal",
@@ -43,11 +44,12 @@ func TestOORRejectRetry(t *testing.T) {
 			wantRetryable: false,
 		},
 		{
-			name: "user balance is terminal",
+			name: "user balance is retried",
 			err: &oor.ErrUserBalanceExceeded{
 				Reason: "x",
 			},
-			wantRetryable: false,
+			wantRetryable: true,
+			wantDelay:     oorTransientRejectRetryDelay,
 		},
 		{
 			name: "lineage too large is terminal",

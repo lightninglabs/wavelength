@@ -92,6 +92,15 @@ type OutgoingSnapshot struct {
 	// IdempotencyKey identifies the caller intent that created this
 	// outgoing session, when one was provided.
 	IdempotencyKey string
+
+	// FirstRejectUnixNanos is the Unix-nanosecond timestamp of the first
+	// transient submit rejection observed in the AwaitingSubmitAccepted
+	// (OutgoingPhaseSubmitSent) phase. It bounds the cumulative transient
+	// submit-reject retry window across restarts. Zero means no transient
+	// reject has been seen yet; it is also the value a pre-v5 snapshot
+	// (which lacks the record) restores to, preserving a fresh retry
+	// window.
+	FirstRejectUnixNanos int64
 }
 
 // NewOutgoingSnapshot exports an outgoing transfer FSM state into a snapshot.
@@ -107,7 +116,11 @@ func NewOutgoingSnapshot(sessionID SessionID,
 	}
 
 	snap := &OutgoingSnapshot{
-		Version:   4,
+		// Version 5 adds the FirstRejectUnixNanos record (bounded
+		// transient submit-reject retry window). Restore stays
+		// backward-compatible: a pre-v5 snapshot lacks the record and
+		// decodes FirstRejectUnixNanos to 0 (a fresh window).
+		Version:   5,
 		SessionID: sessionID,
 	}
 
@@ -146,20 +159,11 @@ func NewOutgoingSnapshot(sessionID SessionID,
 		// resilient to later refactors in the PSBT builder.
 		snap.Phase = OutgoingPhaseSubmitSent
 		snap.IdempotencyKey = s.IdempotencyKey
+		snap.FirstRejectUnixNanos = s.FirstRejectUnixNanos
 
-		ark, err := psbtutil.Serialize(s.ArkPSBT)
-		if err != nil {
-			return nil, err
-		}
-		snap.ArkPSBT = ark
-
-		cps, err := serializePSBTSlice(s.CheckpointPSBTs)
-		if err != nil {
-			return nil, err
-		}
-		snap.CheckpointPSBTs = cps
-		err = assignTransferInputSnapshots(snap, s.TransferInputs)
-		if err != nil {
+		if err := assignPSBTArtifacts(
+			snap, s.ArkPSBT, s.CheckpointPSBTs, s.TransferInputs,
+		); err != nil {
 			return nil, err
 		}
 
@@ -172,19 +176,10 @@ func NewOutgoingSnapshot(sessionID SessionID,
 		snap.Phase = OutgoingPhaseCoSigned
 		snap.IdempotencyKey = s.IdempotencyKey
 
-		ark, err := psbtutil.Serialize(s.ArkPSBT)
-		if err != nil {
-			return nil, err
-		}
-		snap.ArkPSBT = ark
-
-		cps, err := serializePSBTSlice(s.CoSignedCheckpointPSBTs)
-		if err != nil {
-			return nil, err
-		}
-		snap.CheckpointPSBTs = cps
-		err = assignTransferInputSnapshots(snap, s.TransferInputs)
-		if err != nil {
+		if err := assignPSBTArtifacts(
+			snap, s.ArkPSBT, s.CoSignedCheckpointPSBTs,
+			s.TransferInputs,
+		); err != nil {
 			return nil, err
 		}
 
@@ -194,19 +189,10 @@ func NewOutgoingSnapshot(sessionID SessionID,
 		snap.Phase = OutgoingPhaseFinalizeSent
 		snap.IdempotencyKey = s.IdempotencyKey
 
-		ark, err := psbtutil.Serialize(s.ArkPSBT)
-		if err != nil {
-			return nil, err
-		}
-		snap.ArkPSBT = ark
-
-		cps, err := serializePSBTSlice(s.FinalCheckpointPSBTs)
-		if err != nil {
-			return nil, err
-		}
-		snap.CheckpointPSBTs = cps
-		err = assignTransferInputSnapshots(snap, s.TransferInputs)
-		if err != nil {
+		if err := assignPSBTArtifacts(
+			snap, s.ArkPSBT, s.FinalCheckpointPSBTs,
+			s.TransferInputs,
+		); err != nil {
 			return nil, err
 		}
 
@@ -242,8 +228,12 @@ func NewOutgoingSnapshot(sessionID SessionID,
 }
 
 // NewSessionFromSnapshot restores an outgoing transfer session from a snapshot.
-func NewSessionFromSnapshot(ctx context.Context,
-	snapshot *OutgoingSnapshot) (*Session, error) {
+//
+// envCfg injects the deterministic clock and the bounded transient
+// submit-reject retry budget into the restored FSM Environment so a session
+// resumed after a restart keeps the same retry-window semantics as a fresh one.
+func NewSessionFromSnapshot(ctx context.Context, snapshot *OutgoingSnapshot,
+	envCfg EnvConfig) (*Session, error) {
 
 	if snapshot == nil {
 		return nil, fmt.Errorf("snapshot must be provided")
@@ -254,7 +244,7 @@ func NewSessionFromSnapshot(ctx context.Context,
 		return nil, err
 	}
 
-	env := &Environment{SessionID: snapshot.SessionID}
+	env := envCfg.newEnvironment(snapshot.SessionID)
 	baseLogger := logger(ctx)
 
 	fsmCfg := StateMachineCfg{
@@ -331,10 +321,11 @@ func OutgoingStateFromSnapshot(snapshot *OutgoingSnapshot) (State, error) {
 		}
 
 		return &AwaitingSubmitAccepted{
-			ArkPSBT:         ark,
-			CheckpointPSBTs: cps,
-			TransferInputs:  inputs,
-			IdempotencyKey:  snapshot.IdempotencyKey,
+			ArkPSBT:              ark,
+			CheckpointPSBTs:      cps,
+			TransferInputs:       inputs,
+			IdempotencyKey:       snapshot.IdempotencyKey,
+			FirstRejectUnixNanos: snapshot.FirstRejectUnixNanos,
 		}, nil
 
 	case OutgoingPhaseCoSigned:
@@ -437,6 +428,28 @@ func snapshotTransferInputs(inputs []TransferInput) ([]*TransferInputSnapshot,
 	}
 
 	return out, nil
+}
+
+// assignPSBTArtifacts serializes the Ark PSBT and the given checkpoint PSBTs
+// onto the snapshot and records the portable transfer-input encoding. This is
+// the artifact set every submit-through-finalize outgoing phase persists, so it
+// is factored out to keep NewOutgoingSnapshot's per-phase cases short.
+func assignPSBTArtifacts(snap *OutgoingSnapshot, ark *psbt.Packet,
+	checkpoints []*psbt.Packet, inputs []TransferInput) error {
+
+	arkRaw, err := psbtutil.Serialize(ark)
+	if err != nil {
+		return err
+	}
+	snap.ArkPSBT = arkRaw
+
+	cps, err := serializePSBTSlice(checkpoints)
+	if err != nil {
+		return err
+	}
+	snap.CheckpointPSBTs = cps
+
+	return assignTransferInputSnapshots(snap, inputs)
 }
 
 // assignTransferInputSnapshots stores transfer inputs and their portable

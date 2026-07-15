@@ -23,6 +23,12 @@ const (
 	// snapshotIdempotencyKeyRecordType stores the optional caller-provided
 	// OOR send idempotency key.
 	snapshotIdempotencyKeyRecordType tlv.Type = 21
+
+	// snapshotFirstRejectNanosRecordType stores the Unix-nanosecond start
+	// of the bounded transient submit-reject retry window (snapshot version
+	// 5+). A pre-v5 snapshot omits this record, so it decodes to 0 (a fresh
+	// window) rather than failing.
+	snapshotFirstRejectNanosRecordType tlv.Type = 23
 )
 
 func encodeOutgoingSnapshot(snapshot *OutgoingSnapshot) ([]byte, error) {
@@ -50,6 +56,7 @@ func encodeOutgoingSnapshot(snapshot *OutgoingSnapshot) ([]byte, error) {
 	retryAfterNanos := uint64(snapshot.RetryAfter)
 	failReason := []byte(snapshot.FailReason)
 	idempotencyKey := []byte(snapshot.IdempotencyKey)
+	firstRejectNanos := uint64(snapshot.FirstRejectUnixNanos)
 
 	version := uint64(snapshot.Version)
 	records := []tlv.Record{
@@ -73,6 +80,9 @@ func encodeOutgoingSnapshot(snapshot *OutgoingSnapshot) ([]byte, error) {
 		),
 		tlv.MakePrimitiveRecord(
 			snapshotIdempotencyKeyRecordType, &idempotencyKey,
+		),
+		tlv.MakePrimitiveRecord(
+			snapshotFirstRejectNanosRecordType, &firstRejectNanos,
 		),
 	}
 
@@ -108,6 +118,7 @@ func decodeOutgoingSnapshotWithLimits(raw []byte,
 		retryAfterNanos    uint64
 		failReasonRaw      []byte
 		idempotencyKeyRaw  []byte
+		firstRejectNanos   uint64
 	)
 
 	records := []tlv.Record{
@@ -131,6 +142,9 @@ func decodeOutgoingSnapshotWithLimits(raw []byte,
 		),
 		tlv.MakePrimitiveRecord(
 			snapshotIdempotencyKeyRecordType, &idempotencyKeyRaw,
+		),
+		tlv.MakePrimitiveRecord(
+			snapshotFirstRejectNanosRecordType, &firstRejectNanos,
 		),
 	}
 
@@ -185,6 +199,13 @@ func decodeOutgoingSnapshotWithLimits(raw []byte,
 		return nil, err
 	}
 
+	decodedFirstReject, err := uint64ToInt64(
+		firstRejectNanos, "snapshot first_reject nanos",
+	)
+	if err != nil {
+		return nil, err
+	}
+
 	return &OutgoingSnapshot{
 		Version:                decodedVersion,
 		SessionID:              sessionID,
@@ -195,6 +216,7 @@ func decodeOutgoingSnapshotWithLimits(raw []byte,
 		RetryAfter:             decodedRetryAfter,
 		FailReason:             string(failReasonRaw),
 		IdempotencyKey:         string(idempotencyKeyRaw),
+		FirstRejectUnixNanos:   decodedFirstReject,
 	}, nil
 }
 

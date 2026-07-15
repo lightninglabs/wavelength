@@ -161,7 +161,7 @@ func finalizeBehavior(t *testing.T, registry SessionRegistryStore,
 	)
 	require.NoError(t, err)
 
-	session, err := NewSessionFromSnapshot(ctx, snapshot)
+	session, err := NewSessionFromSnapshot(ctx, snapshot, EnvConfig{})
 	require.NoError(t, err)
 
 	b := &sessionBehavior{
@@ -347,7 +347,7 @@ func TestSessionActorDedupRaceRedeliversThenDedups(t *testing.T) {
 	registryRef := &recordingTellRef{id: "oor-registry", rec: rec}
 
 	build := func() *sessionBehavior {
-		s, serr := NewSessionFromSnapshot(ctx, snapshot)
+		s, serr := NewSessionFromSnapshot(ctx, snapshot, EnvConfig{})
 		require.NoError(t, serr)
 
 		return &sessionBehavior{
@@ -481,6 +481,7 @@ func TestSessionActorResolveResumeDrivesGiveUp(t *testing.T) {
 				RecipientPkScript: []byte{0x51, 0x20, 0xaa},
 				ResolveAttempts:   attempts,
 			},
+			EnvConfig{},
 		)
 		require.NoError(t, err)
 
@@ -543,6 +544,7 @@ func TestSessionActorResolveBootResumeNoAmplify(t *testing.T) {
 			RecipientPkScript: []byte{0x51, 0x20, 0xaa},
 			ResolveAttempts:   5,
 		},
+		EnvConfig{},
 	)
 	require.NoError(t, err)
 
@@ -593,6 +595,7 @@ func TestSessionActorNotifiedResumeDrivesGiveUp(t *testing.T) {
 				FinalCheckpointPSBTs: checkpoints,
 				MetadataAttempts:     attempts,
 			},
+			EnvConfig{},
 		)
 		require.NoError(t, err)
 
@@ -663,6 +666,7 @@ func TestSessionActorNotifiedBootResumeNoAmplify(t *testing.T) {
 			FinalCheckpointPSBTs: checkpoints,
 			MetadataAttempts:     4,
 		},
+		EnvConfig{},
 	)
 	require.NoError(t, err)
 
@@ -1087,6 +1091,7 @@ func TestSessionActorStopFSMReapsGoroutine(t *testing.T) {
 		ctx, sid, &ReceiveResolving{
 			SessionID: sid,
 		},
+		EnvConfig{},
 	)
 	require.NoError(t, err)
 	require.True(t, session.FSM.IsRunning())
@@ -1119,12 +1124,14 @@ func TestSessionActorSetFSMStopsPrevious(t *testing.T) {
 		ctx, sid, &ReceiveResolving{
 			SessionID: sid,
 		},
+		EnvConfig{},
 	)
 	require.NoError(t, err)
 	next, err := newReceiveSessionWithState(
 		ctx, sid, &ReceiveResolving{
 			SessionID: sid,
 		},
+		EnvConfig{},
 	)
 	require.NoError(t, err)
 
@@ -1516,6 +1523,7 @@ func TestSessionActorResumeMetadataBackoff(t *testing.T) {
 			FinalCheckpointPSBTs: checkpoints,
 			MetadataAttempts:     3,
 		},
+		EnvConfig{},
 	)
 	require.NoError(t, err)
 
@@ -1587,6 +1595,7 @@ func TestSessionActorRetryArmsOnlyAfterCommit(t *testing.T) {
 				FinalCheckpointPSBTs: checkpoints,
 				MetadataAttempts:     2,
 			},
+			EnvConfig{},
 		)
 		require.NoError(t, err)
 
@@ -1780,7 +1789,7 @@ func TestSessionActorFinalizeReloadsAfterSpendFailure(t *testing.T) {
 	snapshot, err := NewOutgoingSnapshot(sessionID, awaiting)
 	require.NoError(t, err)
 
-	session, err := NewSessionFromSnapshot(ctx, snapshot)
+	session, err := NewSessionFromSnapshot(ctx, snapshot, EnvConfig{})
 	require.NoError(t, err)
 
 	// The completer fails the first spend and succeeds the second, modeling

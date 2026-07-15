@@ -100,6 +100,13 @@ type AwaitingSubmitAccepted struct {
 	// IdempotencyKey identifies the caller intent that created this
 	// outgoing session, when provided.
 	IdempotencyKey string
+
+	// FirstRejectUnixNanos is the Unix-nanosecond timestamp of the first
+	// transient submit rejection observed while awaiting submit acceptance,
+	// used to bound the cumulative retry window. Zero means no transient
+	// reject has been seen yet (a fresh retry window). It is carried on the
+	// state (and persisted in the snapshot) so the bound survives restarts.
+	FirstRejectUnixNanos int64
 }
 
 // String returns a human-readable representation of AwaitingSubmitAccepted.

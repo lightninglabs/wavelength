@@ -16,6 +16,7 @@ import (
 	"github.com/lightninglabs/wavelength/serverconn"
 	"github.com/lightninglabs/wavelength/timeout"
 	"github.com/lightninglabs/wavelength/vtxo"
+	"github.com/lightningnetwork/lnd/clock"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/input"
 )
@@ -85,6 +86,25 @@ type OORRegistryConfig struct {
 	TimeoutActor         actor.TellOnlyRef[timeout.Msg]
 	CallbackRef          actor.TellOnlyRef[*timeout.ExpiredMsg]
 	ActorSystem          actor.SystemContext
+
+	// Clock is the deterministic time source forwarded into every session
+	// FSM Environment. When nil, sessions default to a real clock.
+	Clock clock.Clock
+
+	// MaxTransientSubmitRetry bounds the cumulative retry window an
+	// outgoing session keeps re-driving a transient submit rejection before
+	// failing terminally. Zero disables the bound (unbounded, legacy
+	// behavior).
+	MaxTransientSubmitRetry time.Duration
+}
+
+// envConfig returns the FSM Environment config (clock + transient submit-reject
+// retry budget) the registry forwards into every session it builds.
+func (r *oorRegistryBehavior) envConfig() EnvConfig {
+	return EnvConfig{
+		Clock:                   r.cfg.Clock,
+		MaxTransientSubmitRetry: r.cfg.MaxTransientSubmitRetry,
+	}
 }
 
 // OORRegistryActor is the thin coordinator over per-session OOR actors. It
@@ -576,6 +596,7 @@ func (r *oorRegistryBehavior) handleStartTransfer(ctx context.Context,
 	// daemon's lifetime (one leak per outgoing admission otherwise).
 	session, _, err := NewSessionWithIdempotencyKey(
 		ctx, req.Policy, req.Inputs, req.Recipients, req.IdempotencyKey,
+		r.envConfig(),
 	)
 	if err != nil {
 		return fn.Err[ActorResp](err)
@@ -1460,26 +1481,28 @@ func (r *oorRegistryBehavior) childConfig(sessionID SessionID,
 	direction clientdb.OORSessionDirection) SessionActorConfig {
 
 	return SessionActorConfig{
-		SessionID:            sessionID,
-		Direction:            direction,
-		Log:                  r.cfg.Log,
-		Signer:               r.cfg.Signer,
-		IncomingHandler:      r.cfg.IncomingHandler,
-		RegistryStore:        r.cfg.RegistryStore,
-		DeliveryStore:        r.cfg.DeliveryStore,
-		ServerConn:           r.cfg.ServerConn,
-		VTXOManager:          r.cfg.VTXOManager,
-		SpendCompleter:       r.cfg.SpendCompleter,
-		SpendReleaser:        r.cfg.SpendReleaser,
-		ReservationStore:     r.cfg.ReservationStore,
-		PackageStore:         r.cfg.PackageStore,
-		VTXOStore:            r.cfg.VTXOStore,
-		LedgerSink:           r.cfg.LedgerSink,
-		IncomingVTXOObserver: r.cfg.IncomingVTXOObserver,
-		Limits:               normalizeReceiveLimits(r.cfg.Limits),
-		TimeoutActor:         r.cfg.TimeoutActor,
-		CallbackRef:          r.cfg.CallbackRef,
-		Registry:             r.selfRef,
+		SessionID:               sessionID,
+		Direction:               direction,
+		Log:                     r.cfg.Log,
+		Signer:                  r.cfg.Signer,
+		IncomingHandler:         r.cfg.IncomingHandler,
+		RegistryStore:           r.cfg.RegistryStore,
+		DeliveryStore:           r.cfg.DeliveryStore,
+		ServerConn:              r.cfg.ServerConn,
+		VTXOManager:             r.cfg.VTXOManager,
+		SpendCompleter:          r.cfg.SpendCompleter,
+		SpendReleaser:           r.cfg.SpendReleaser,
+		ReservationStore:        r.cfg.ReservationStore,
+		PackageStore:            r.cfg.PackageStore,
+		VTXOStore:               r.cfg.VTXOStore,
+		LedgerSink:              r.cfg.LedgerSink,
+		IncomingVTXOObserver:    r.cfg.IncomingVTXOObserver,
+		Limits:                  normalizeReceiveLimits(r.cfg.Limits),
+		TimeoutActor:            r.cfg.TimeoutActor,
+		CallbackRef:             r.cfg.CallbackRef,
+		Registry:                r.selfRef,
+		Clock:                   r.cfg.Clock,
+		MaxTransientSubmitRetry: r.cfg.MaxTransientSubmitRetry,
 	}
 }
 

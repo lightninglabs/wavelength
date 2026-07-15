@@ -1653,7 +1653,7 @@ func TestOORRegistryStartTransferNoKeyActiveDedup(t *testing.T) {
 
 	// Learn the deterministic session id the same way admission does.
 	session, _, err := NewSessionWithIdempotencyKey(
-		ctx, req.Policy, req.Inputs, req.Recipients, "",
+		ctx, req.Policy, req.Inputs, req.Recipients, "", EnvConfig{},
 	)
 	require.NoError(t, err)
 
@@ -1715,7 +1715,7 @@ func TestOORRegistryStartTransferDropsPhantomResident(t *testing.T) {
 	}
 
 	session, _, err := NewSessionWithIdempotencyKey(
-		ctx, req.Policy, req.Inputs, req.Recipients, "",
+		ctx, req.Policy, req.Inputs, req.Recipients, "", EnvConfig{},
 	)
 	require.NoError(t, err)
 
