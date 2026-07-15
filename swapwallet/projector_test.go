@@ -4,6 +4,7 @@ package swapwallet
 
 import (
 	"context"
+	"database/sql"
 	"sync"
 	"testing"
 	"time"
@@ -48,6 +49,14 @@ func (f *fakeActivityProjector) ProjectEntry(_ context.Context,
 	// Return a positive, increasing seq so projectAndEmit treats each
 	// successful projection as a real transition worth emitting.
 	return int64(len(f.projected)), nil
+}
+
+// GetEntry reports no existing row. Tests that need durable merge behavior use
+// a real ActivityPersistenceStore.
+func (f *fakeActivityProjector) GetEntry(context.Context, string) (
+	sqlc.ActivityEntry, error) {
+
+	return sqlc.ActivityEntry{}, sql.ErrNoRows
 }
 
 func (f *fakeActivityProjector) count() int {
@@ -298,6 +307,181 @@ func TestProjectAndEmitStoreErrorDoesNotEmit(t *testing.T) {
 		t, drainEntries(ch),
 		"a failed projection must not be emitted",
 	)
+}
+
+// TestProjectAndEmitPreservesImmutableContext verifies a sparse terminal
+// projection emits and records the effective row enriched by the original
+// memo, invoice request, and receive payment hash.
+func TestProjectAndEmitPreservesImmutableContext(t *testing.T) {
+	t.Parallel()
+
+	history, store := newStoreListFixture(t)
+	runtime := history.runtime
+	sub := runtime.subscribe()
+	t.Cleanup(func() { runtime.unsubscribe(sub) })
+
+	pending := &wavewalletrpc.WalletEntry{
+		Id:            "credit-receive",
+		Kind:          wavewalletrpc.EntryKind_ENTRY_KIND_RECV,
+		Status:        wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		AmountSat:     1,
+		Note:          "one sat",
+		CreatedAtUnix: 100,
+		UpdatedAtUnix: 100,
+		Request: &wavewalletrpc.WalletEntryRequest{
+			Request: &wavewalletrpc.WalletEntryRequest_LightningInvoice{
+				LightningInvoice: &wavewalletrpc.
+					LightningInvoiceRequest{
+					Invoice:     "lnbc1receive",
+					PaymentHash: "aabbcc",
+				},
+			},
+		},
+		Progress: &wavewalletrpc.WalletEntryProgress{
+			Phase: wavewalletrpc.
+				WalletEntryPhase_WALLET_ENTRY_PHASE_WAITING_FOR_PAYMENT,
+			PaymentHash: "aabbcc",
+		},
+	}
+	runtime.projectAndEmit(t.Context(), pending)
+	_ = recvEntry(t, sub)
+
+	terminal := &wavewalletrpc.WalletEntry{
+		Id:            pending.GetId(),
+		Kind:          pending.GetKind(),
+		Status:        wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		AmountSat:     pending.GetAmountSat(),
+		UpdatedAtUnix: 200,
+		Progress: &wavewalletrpc.WalletEntryProgress{
+			Phase: wavewalletrpc.
+				WalletEntryPhase_WALLET_ENTRY_PHASE_CONFIRMED,
+		},
+	}
+	runtime.projectAndEmit(t.Context(), terminal)
+
+	live := recvEntry(t, sub)
+	require.Equal(t, "one sat", live.GetNote())
+	require.Equal(
+		t, "lnbc1receive",
+		live.GetRequest().GetLightningInvoice().GetInvoice(),
+	)
+	require.Equal(t, "aabbcc", live.GetProgress().GetPaymentHash())
+
+	events, err := store.PullEvents(t.Context(), 0, 10)
+	require.NoError(t, err)
+	require.Len(t, events, 2)
+
+	var replayed wavewalletrpc.WalletEntry
+	require.NoError(
+		t,
+		protojson.Unmarshal(
+			[]byte(events[1].EntryJson), &replayed,
+		),
+	)
+	require.Equal(t, "one sat", replayed.GetNote())
+	require.Equal(
+		t, "lnbc1receive",
+		replayed.GetRequest().GetLightningInvoice().GetInvoice(),
+	)
+	require.Equal(t, "aabbcc", replayed.GetProgress().GetPaymentHash())
+}
+
+// TestProjectAndEmitTerminalBeatsStalePending models a credit child completing
+// before the router writes its initial pending row. The stale pending
+// projection must neither overwrite the terminal row nor emit a backward live
+// event.
+func TestProjectAndEmitTerminalBeatsStalePending(t *testing.T) {
+	t.Parallel()
+
+	history, store := newStoreListFixture(t)
+	runtime := history.runtime
+	sub := runtime.subscribe()
+	t.Cleanup(func() { runtime.unsubscribe(sub) })
+
+	terminal := &wavewalletrpc.WalletEntry{
+		Id:            "fast-credit-pay",
+		Kind:          wavewalletrpc.EntryKind_ENTRY_KIND_SEND,
+		Status:        wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		AmountSat:     -1,
+		CreatedAtUnix: 100,
+		UpdatedAtUnix: 200,
+		Progress: &wavewalletrpc.WalletEntryProgress{
+			Phase: wavewalletrpc.
+				WalletEntryPhase_WALLET_ENTRY_PHASE_CONFIRMED,
+		},
+	}
+	runtime.projectAndEmit(t.Context(), terminal)
+	require.Equal(
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		recvEntry(t, sub).GetStatus(),
+	)
+
+	stalePending := proto.Clone(terminal).(*wavewalletrpc.WalletEntry)
+	stalePending.Status = wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING
+	stalePending.UpdatedAtUnix = 100
+	stalePending.Progress.Phase = wavewalletrpc.
+		WalletEntryPhase_WALLET_ENTRY_PHASE_SETTLING
+	runtime.projectAndEmit(t.Context(), stalePending)
+	require.Empty(t, drainEntries(sub))
+
+	row, err := store.GetEntry(t.Context(), terminal.GetId())
+	require.NoError(t, err)
+	require.EqualValues(
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE, row.Status,
+	)
+
+	events, err := store.PullEvents(t.Context(), 0, 10)
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+}
+
+// TestProjectAndEmitEnrichesRequestWithoutMemo verifies an invoice request can
+// enrich a sparse row even when memo is empty and no mutable lifecycle field
+// changes.
+func TestProjectAndEmitEnrichesRequestWithoutMemo(t *testing.T) {
+	t.Parallel()
+
+	history, store := newStoreListFixture(t)
+	runtime := history.runtime
+	sub := runtime.subscribe()
+	t.Cleanup(func() { runtime.unsubscribe(sub) })
+
+	sparse := &wavewalletrpc.WalletEntry{
+		Id:            "request-only",
+		Kind:          wavewalletrpc.EntryKind_ENTRY_KIND_RECV,
+		Status:        wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		AmountSat:     1,
+		CreatedAtUnix: 100,
+		UpdatedAtUnix: 100,
+	}
+	runtime.projectAndEmit(t.Context(), sparse)
+	_ = recvEntry(t, sub)
+
+	rich := proto.Clone(sparse).(*wavewalletrpc.WalletEntry)
+	rich.Request = &wavewalletrpc.WalletEntryRequest{
+		Request: &wavewalletrpc.WalletEntryRequest_LightningInvoice{
+			LightningInvoice: &wavewalletrpc.LightningInvoiceRequest{
+				Invoice:     "lnbc1requestonly",
+				PaymentHash: "aabbcc",
+			},
+		},
+	}
+	runtime.projectAndEmit(t.Context(), rich)
+
+	live := recvEntry(t, sub)
+	require.Empty(t, live.GetNote())
+	require.Equal(
+		t, "lnbc1requestonly",
+		live.GetRequest().GetLightningInvoice().GetInvoice(),
+	)
+
+	row, err := store.GetEntry(t.Context(), rich.GetId())
+	require.NoError(t, err)
+	require.NotEmpty(t, row.RequestJson)
+
+	events, err := store.PullEvents(t.Context(), 0, 10)
+	require.NoError(t, err)
+	require.Len(t, events, 2)
 }
 
 // TestProjectAndEmitSkipsEphemeralBoardingRow verifies the synthetic

@@ -275,7 +275,7 @@ func (q *Queries) PullActivityEvents(ctx context.Context, arg PullActivityEvents
 	return items, nil
 }
 
-const UpsertActivityEntry = `-- name: UpsertActivityEntry :exec
+const UpsertActivityEntry = `-- name: UpsertActivityEntry :execrows
 
 INSERT INTO activity_entries (
     canonical_id, kind, status, amount_sat, fee_sat, counterparty, note,
@@ -310,6 +310,8 @@ ON CONFLICT (canonical_id) DO UPDATE SET
     boarding_addr   = COALESCE(EXCLUDED.boarding_addr, activity_entries.boarding_addr),
     request_json    = COALESCE(NULLIF(EXCLUDED.request_json, ''), activity_entries.request_json),
     updated_at_unix = EXCLUDED.updated_at_unix
+WHERE activity_entries.status = $22
+    OR EXCLUDED.status <> $22
 `
 
 type UpsertActivityEntryParams struct {
@@ -334,6 +336,7 @@ type UpsertActivityEntryParams struct {
 	RequestJson        string
 	CreatedAtUnix      int64
 	UpdatedAtUnix      int64
+	PendingStatus      int64
 }
 
 // Canonical activity log queries. activity_entries is the current-state
@@ -345,8 +348,8 @@ type UpsertActivityEntryParams struct {
 // the row keeps its position in the created-ordered feed. The settlement and
 // correlation handles are COALESCEd so an early projection that does not yet
 // know a txid never clobbers one a later projection already recorded.
-func (q *Queries) UpsertActivityEntry(ctx context.Context, arg UpsertActivityEntryParams) error {
-	_, err := q.db.ExecContext(ctx, UpsertActivityEntry,
+func (q *Queries) UpsertActivityEntry(ctx context.Context, arg UpsertActivityEntryParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, UpsertActivityEntry,
 		arg.CanonicalID,
 		arg.Kind,
 		arg.Status,
@@ -368,6 +371,10 @@ func (q *Queries) UpsertActivityEntry(ctx context.Context, arg UpsertActivityEnt
 		arg.RequestJson,
 		arg.CreatedAtUnix,
 		arg.UpdatedAtUnix,
+		arg.PendingStatus,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }

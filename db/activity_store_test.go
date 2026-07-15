@@ -37,15 +37,16 @@ func projected(_ int64, err error) error {
 // sampleProjection returns a populated projection for the given canonical id.
 func sampleProjection(id string) ActivityProjection {
 	return ActivityProjection{
-		CanonicalID:  id,
-		Kind:         1, // send
-		Status:       1, // pending
-		AmountSat:    -1000,
-		FeeSat:       10,
-		Counterparty: "cp",
-		Note:         "note",
-		Phase:        2,
-		PhaseLabel:   "funding",
+		CanonicalID:   id,
+		Kind:          1, // send
+		Status:        1, // pending
+		AmountSat:     -1000,
+		FeeSat:        10,
+		Counterparty:  "cp",
+		Note:          "note",
+		Phase:         2,
+		PhaseLabel:    "funding",
+		PendingStatus: 1,
 		PaymentHash: []byte{
 			0xaa,
 			0xbb,
@@ -88,6 +89,77 @@ func TestActivityStoreProjectInsertsEntryAndEvent(t *testing.T) {
 	require.Len(t, events, 1)
 	require.Equal(t, "a", events[0].CanonicalID)
 	require.EqualValues(t, 1, events[0].Status)
+}
+
+// TestActivityStoreRejectsTerminalRegression verifies a stale pending write
+// cannot overwrite a terminal row or append a backward lifecycle event.
+func TestActivityStoreRejectsTerminalRegression(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newActivityStoreForTest(t)
+
+	pending := sampleProjection("ordered")
+	_, err := store.ProjectEntry(ctx, pending)
+	require.NoError(t, err)
+
+	complete := pending
+	complete.Status = 2
+	complete.Phase = 3
+	complete.EntryJSON = `{"id":"ordered","status":"complete"}`
+	complete.UpdatedAtUnix = 200
+	_, err = store.ProjectEntry(ctx, complete)
+	require.NoError(t, err)
+
+	staleSeq, err := store.ProjectEntry(ctx, pending)
+	require.NoError(t, err)
+	require.Zero(t, staleSeq)
+
+	row, err := store.GetEntry(ctx, "ordered")
+	require.NoError(t, err)
+	require.EqualValues(t, 2, row.Status)
+	require.EqualValues(t, 3, row.Phase)
+
+	events, err := store.PullEvents(ctx, 0, 10)
+	require.NoError(t, err)
+	require.Len(t, events, 2)
+}
+
+// TestActivityStoreRequestOnlyEnrichment verifies immutable request context is
+// allowed to enrich an otherwise unchanged sparse row exactly once.
+func TestActivityStoreRequestOnlyEnrichment(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newActivityStoreForTest(t)
+
+	sparse := sampleProjection("request-context")
+	sparse.RequestJSON = ""
+	_, err := store.ProjectEntry(ctx, sparse)
+	require.NoError(t, err)
+
+	rich := sparse
+	rich.RequestJSON = `{"lightningInvoice":{"invoice":"lnbc1"}}`
+	rich.EntryJSON = `{"id":"request-context","request":` +
+		`{"lightningInvoice":{"invoice":"lnbc1"}}}`
+	richSeq, err := store.ProjectEntry(ctx, rich)
+	require.NoError(t, err)
+	require.Positive(t, richSeq)
+
+	row, err := store.GetEntry(ctx, "request-context")
+	require.NoError(t, err)
+	require.JSONEq(t, rich.RequestJSON, row.RequestJson)
+
+	semanticallyEqual := rich
+	semanticallyEqual.RequestJSON = `{ "lightningInvoice": {` +
+		`"invoice": "lnbc1" } }`
+	equalSeq, err := store.ProjectEntry(ctx, semanticallyEqual)
+	require.NoError(t, err)
+	require.Zero(t, equalSeq)
+
+	events, err := store.PullEvents(ctx, 0, 10)
+	require.NoError(t, err)
+	require.Len(t, events, 2)
 }
 
 // TestActivityStoreCountByStatus verifies CountByStatus returns a full,

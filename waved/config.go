@@ -765,6 +765,12 @@ type ActivityStore interface {
 	ProjectEntry(ctx context.Context,
 		p db.ActivityProjection) (int64, error)
 
+	// GetEntry returns the current durable projection for one canonical id.
+	// The live projector uses it to retain immutable request context in a
+	// later sparse lifecycle event.
+	GetEntry(ctx context.Context,
+		canonicalID string) (sqlc.ActivityEntry, error)
+
 	// ListEntries returns up to limit current-state rows newest-first,
 	// starting after the (cursorCreated, cursorID) keyset. A cursorCreated
 	// of 0 starts from the newest row.

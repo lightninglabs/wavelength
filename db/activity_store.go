@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"reflect"
 
 	"github.com/lightninglabs/wavelength/db/sqlc"
 	"github.com/lightningnetwork/lnd/clock"
@@ -15,7 +17,7 @@ import (
 // append-only activity_events transition log.
 type ActivityStore interface {
 	UpsertActivityEntry(ctx context.Context,
-		arg sqlc.UpsertActivityEntryParams) error
+		arg sqlc.UpsertActivityEntryParams) (int64, error)
 
 	AppendActivityEvent(ctx context.Context,
 		arg sqlc.AppendActivityEventParams) (int64, error)
@@ -57,33 +59,75 @@ type BatchedActivityStore interface {
 // Empty BLOB handles MUST be passed as nil, never a zero-length slice, to avoid
 // the Postgres BYTEA `x”` pitfall. ConfirmationHeight is nil until known.
 type ActivityProjection struct {
-	CanonicalID   string
-	Kind          int64
-	Status        int64
-	AmountSat     int64
-	FeeSat        int64
-	Counterparty  string
-	Note          string
-	Phase         int64
-	PhaseLabel    string
-	FailureCode   int64
+	// CanonicalID is the stable identity used to update one activity row.
+	CanonicalID string
+
+	// Kind identifies the wallet activity category.
+	Kind int64
+
+	// Status is the lifecycle state being projected.
+	Status int64
+
+	// AmountSat is the signed activity amount in satoshis.
+	AmountSat int64
+
+	// FeeSat is the activity fee in satoshis.
+	FeeSat int64
+
+	// Counterparty identifies the activity destination or source.
+	Counterparty string
+
+	// Note is immutable user-facing context attached at admission.
+	Note string
+
+	// Phase identifies the current detailed lifecycle phase.
+	Phase int64
+
+	// PhaseLabel is the display label for Phase.
+	PhaseLabel string
+
+	// FailureCode identifies a terminal activity failure.
+	FailureCode int64
+
+	// FailureReason describes a terminal activity failure.
 	FailureReason string
 
-	PaymentHash        []byte
-	Txid               []byte
-	ConfirmationHeight *int64
-	VtxoOutpoint       string
+	// PendingStatus identifies the pending enum value used to reject stale
+	// terminal-to-pending transitions.
+	PendingStatus int64
 
+	// PaymentHash correlates Lightning and credit payment activity.
+	PaymentHash []byte
+
+	// Txid identifies an on-chain activity transaction.
+	Txid []byte
+
+	// ConfirmationHeight is the on-chain confirmation height when known.
+	ConfirmationHeight *int64
+
+	// VtxoOutpoint identifies the Ark VTXO affected by this activity.
+	VtxoOutpoint string
+
+	// SwapSessionID correlates activity with its swap session.
 	SwapSessionID []byte
-	LedgerTxid    []byte
-	BoardingAddr  []byte
-	RequestJSON   string
+
+	// LedgerTxid correlates activity with its credit ledger transaction.
+	LedgerTxid []byte
+
+	// BoardingAddr is the on-chain address used for a boarding deposit.
+	BoardingAddr []byte
+
+	// RequestJSON preserves the immutable activity request snapshot.
+	RequestJSON string
 
 	// EntryJSON is the protojson snapshot of the WalletEntry emitted at
 	// this transition, stored verbatim on the activity_events row.
 	EntryJSON string
 
+	// CreatedAtUnix is the activity creation timestamp in Unix seconds.
 	CreatedAtUnix int64
+
+	// UpdatedAtUnix is the lifecycle update timestamp in Unix seconds.
 	UpdatedAtUnix int64
 }
 
@@ -153,7 +197,7 @@ func (s *ActivityPersistenceStore) ProjectEntry(ctx context.Context,
 			return err
 		}
 
-		if err := q.UpsertActivityEntry(
+		rows, err := q.UpsertActivityEntry(
 			ctx, sqlc.UpsertActivityEntryParams{
 				CanonicalID:   p.CanonicalID,
 				Kind:          p.Kind,
@@ -178,9 +222,14 @@ func (s *ActivityPersistenceStore) ProjectEntry(ctx context.Context,
 				RequestJson:   p.RequestJSON,
 				CreatedAtUnix: createdAt,
 				UpdatedAtUnix: updatedAt,
+				PendingStatus: p.PendingStatus,
 			},
-		); err != nil {
+		)
+		if err != nil {
 			return err
+		}
+		if rows == 0 {
+			return nil
 		}
 
 		seq, err := q.AppendActivityEvent(
@@ -317,10 +366,16 @@ func (s *ActivityPersistenceStore) PullEvents(ctx context.Context, cursor int64,
 // e, i.e. whether it represents a genuine lifecycle transition. It mirrors the
 // UpsertActivityEntry semantics: scalar lifecycle columns overwrite directly,
 // while an empty note and the settlement/correlation handles preserve their
-// stored values. request_json and entry_json are deliberately NOT compared:
-// protojson output is not byte-stable, so comparing it would report spurious
-// changes; the request is immutable per operation anyway.
+// stored values. RequestJSON is compared semantically because a later rich
+// projection may be the first source of immutable invoice context. EntryJSON
+// is not compared because it is the event representation of the effective row,
+// not an independently mutable current-state field.
 func (p ActivityProjection) changesRow(e sqlc.ActivityEntry) bool {
+	if p.PendingStatus != 0 && p.Status == p.PendingStatus &&
+		e.Status != p.PendingStatus {
+		return false
+	}
+
 	if p.Kind != e.Kind ||
 		p.Status != e.Status ||
 		p.AmountSat != e.AmountSat ||
@@ -334,6 +389,9 @@ func (p ActivityProjection) changesRow(e sqlc.ActivityEntry) bool {
 		return true
 	}
 	if p.Note != "" && p.Note != e.Note {
+		return true
+	}
+	if jsonValueChanges(p.RequestJSON, e.RequestJson) {
 		return true
 	}
 
@@ -353,6 +411,26 @@ func (p ActivityProjection) changesRow(e sqlc.ActivityEntry) bool {
 	}
 
 	return false
+}
+
+// jsonValueChanges reports whether a non-empty JSON projection changes the
+// stored semantic value. Empty input preserves the current value. Malformed
+// input falls back to exact comparison so corruption is never hidden as a
+// change-suppressed no-op.
+func jsonValueChanges(next, stored string) bool {
+	if next == "" || next == stored {
+		return false
+	}
+
+	var nextValue, storedValue any
+	if err := json.Unmarshal([]byte(next), &nextValue); err != nil {
+		return next != stored
+	}
+	if err := json.Unmarshal([]byte(stored), &storedValue); err != nil {
+		return next != stored
+	}
+
+	return !reflect.DeepEqual(nextValue, storedValue)
 }
 
 // blobChanges reports whether a COALESCEd blob handle changes the stored value:

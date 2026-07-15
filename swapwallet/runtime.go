@@ -64,6 +64,17 @@ type Runtime struct {
 	// cursor would advance past it and drop it silently.
 	projectMu sync.Mutex
 
+	// creditOwnerMu guards creditOwnedSwaps.
+	creditOwnerMu sync.RWMutex
+
+	// creditOwnedSwaps contains payment hashes admitted through this
+	// wallet's credit registry. Settlement rail alone cannot establish
+	// activity ownership because callers may invoke the public swap RPC
+	// directly without creating a matching local credit operation. The set
+	// intentionally retains every durable credit-only pay for the process
+	// lifetime so ownership remains monotonic with the durable registry.
+	creditOwnedSwaps map[string]struct{}
+
 	// subsMu guards subscribers.
 	subsMu sync.Mutex
 
@@ -125,6 +136,7 @@ func newRuntime(parent context.Context, deps *Deps) *Runtime {
 		),
 		pending:           make(map[string]pendingEntry),
 		overlay:           make(map[string]overlayStatus),
+		creditOwnedSwaps:  make(map[string]struct{}),
 		rehydratePageSize: defaultRehydratePageSize,
 	}
 }
@@ -153,6 +165,12 @@ func (r *Runtime) start() {
 // additional wallet-managed pending tables.
 func (r *Runtime) resumeAll(ctx context.Context) {
 	log := r.deps.resolveLog()
+
+	// Restore credit activity ownership before backfill or the live monitor
+	// can observe SDK swap summaries. A credit-only SDK row carries zero
+	// Ark funding amount, so deriving it before ownership is known would
+	// append and briefly emit an incorrect zero-value transition.
+	r.restoreCreditProjectorOwnership(ctx)
 
 	// Restore wallet-local PENDING EXIT rows from the store into the
 	// in-memory pending map before anything else. This keeps the

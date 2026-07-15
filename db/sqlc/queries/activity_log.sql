@@ -2,7 +2,7 @@
 -- projection read by List; activity_events is the append-only transition log
 -- read by a resumable SubscribeWallet. See docs/canonical_activity_log_design.md.
 
--- name: UpsertActivityEntry :exec
+-- name: UpsertActivityEntry :execrows
 -- UpsertActivityEntry inserts the activity row or advances it in place. On
 -- conflict the mutable lifecycle columns are overwritten with the new
 -- projection and updated_at_unix is bumped, but created_at_unix is preserved so
@@ -41,7 +41,9 @@ ON CONFLICT (canonical_id) DO UPDATE SET
     ledger_txid     = COALESCE(EXCLUDED.ledger_txid, activity_entries.ledger_txid),
     boarding_addr   = COALESCE(EXCLUDED.boarding_addr, activity_entries.boarding_addr),
     request_json    = COALESCE(NULLIF(EXCLUDED.request_json, ''), activity_entries.request_json),
-    updated_at_unix = EXCLUDED.updated_at_unix;
+    updated_at_unix = EXCLUDED.updated_at_unix
+WHERE activity_entries.status = sqlc.arg(pending_status)
+    OR EXCLUDED.status <> sqlc.arg(pending_status);
 
 -- name: AppendActivityEvent :one
 -- AppendActivityEvent records one immutable lifecycle-transition row and

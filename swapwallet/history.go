@@ -612,7 +612,9 @@ func (h *history) collectSwapEntries(ctx context.Context) (
 		// and retains the invoice principal, so derived history must
 		// not race that projector during startup backfill or periodic
 		// reconcile.
-		if creditProjectorOwnsSwapSummary(s) {
+		if h.runtime != nil &&
+			h.runtime.creditProjectorOwnsSwapSummary(s) {
+
 			continue
 		}
 

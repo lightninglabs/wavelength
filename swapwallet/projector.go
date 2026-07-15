@@ -4,7 +4,9 @@ package swapwallet
 
 import (
 	"context"
+	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -12,22 +14,26 @@ import (
 	"github.com/lightninglabs/wavelength/db/sqlc"
 	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 // project writes one emitted WalletEntry into the canonical activity log: it
 // upserts the current-state row and appends the transition event, atomically.
-// It returns the event_seq assigned to the appended transition with a nil error
-// on success, (0, nil) when the projection was intentionally skipped (no store,
-// no id, or a change-suppressed no-op), and (0, err) when the durable write
-// failed. A caller stamps a live update with the returned seq and can gate a
-// follow-up side effect on the row actually landing. When no store is wired
-// (tests, or a build without a database) projection is a no-op and the legacy
-// derive-on-read path continues unchanged.
+// It returns the event_seq and effective entry assigned to the appended
+// transition with a nil error on success, (0, entry, nil) when projection is
+// intentionally skipped because no store or canonical id exists, (0,
+// effectiveEntry, nil) for a change-suppressed no-op, and (0, nil, err) when
+// the durable write failed. The effective entry carries immutable context
+// merged from the current durable row, so persisted and live snapshots agree.
+// A caller stamps a live update with the returned seq and can gate a follow-up
+// side effect on the row actually landing. When no store is wired, projection
+// is a no-op and the legacy derive-on-read path continues unchanged.
 func (r *Runtime) project(ctx context.Context,
-	entry *wavewalletrpc.WalletEntry) (int64, error) {
+	entry *wavewalletrpc.WalletEntry) (int64, *wavewalletrpc.WalletEntry,
+	error) {
 
 	if r.deps == nil || r.deps.ActivityStore == nil {
-		return 0, nil
+		return 0, entry, nil
 	}
 
 	// A row with no canonical id cannot be keyed; skip it, matching the
@@ -39,15 +45,33 @@ func (r *Runtime) project(ctx context.Context,
 	if entry.GetId() == "" ||
 		entry.GetId() == syntheticBoardingUnconfirmedID ||
 		isUnconfirmedBoardingOverlay(entry) {
-		return 0, nil
+		return 0, entry, nil
 	}
 
-	projection, err := entryToProjection(entry)
+	effectiveEntry := proto.Clone(entry).(*wavewalletrpc.WalletEntry)
+	existingRow, err := r.deps.ActivityStore.GetEntry(ctx, entry.GetId())
+	switch {
+	case err == nil:
+		existingEntry, err := rowToWalletEntry(existingRow)
+		if err != nil {
+			return 0, nil, fmt.Errorf("decode existing "+
+				"activity row: %w", err)
+		}
+		effectiveEntry = mergeActivityContext(
+			existingEntry, effectiveEntry,
+		)
+
+	case errors.Is(err, sql.ErrNoRows):
+	default:
+		return 0, nil, fmt.Errorf("read existing activity row: %w", err)
+	}
+
+	projection, err := entryToProjection(effectiveEntry)
 	if err != nil {
 		r.deps.resolveLog().WarnS(ctx, "Activity projection skipped: "+
 			"encode failed", err)
 
-		return 0, err
+		return 0, nil, err
 	}
 
 	seq, err := r.deps.ActivityStore.ProjectEntry(ctx, projection)
@@ -56,10 +80,52 @@ func (r *Runtime) project(ctx context.Context,
 			err,
 		)
 
-		return 0, err
+		return 0, nil, err
 	}
 
-	return seq, nil
+	return seq, effectiveEntry, nil
+}
+
+// mergeActivityContext carries immutable request and correlation context from
+// the durable current row into a later sparse lifecycle projection. The next
+// projection remains authoritative for mutable status, amount, phase, and
+// failure fields.
+func mergeActivityContext(
+	existing, next *wavewalletrpc.WalletEntry) *wavewalletrpc.WalletEntry {
+
+	if next.GetNote() == "" {
+		next.Note = existing.GetNote()
+	}
+	if next.GetRequest() == nil && existing.GetRequest() != nil {
+		next.Request =
+			proto.Clone(existing.GetRequest()).(*wavewalletrpc.WalletEntryRequest)
+	}
+	if next.GetCreatedAtUnix() == 0 {
+		next.CreatedAtUnix = existing.GetCreatedAtUnix()
+	}
+
+	existingProgress := existing.GetProgress()
+	if existingProgress == nil {
+		return next
+	}
+	if next.Progress == nil {
+		next.Progress = &wavewalletrpc.WalletEntryProgress{}
+	}
+	if next.Progress.GetPaymentHash() == "" {
+		next.Progress.PaymentHash = existingProgress.GetPaymentHash()
+	}
+	if next.Progress.GetTxid() == "" {
+		next.Progress.Txid = existingProgress.GetTxid()
+	}
+	if next.Progress.GetConfirmationHeight() == 0 {
+		next.Progress.ConfirmationHeight =
+			existingProgress.GetConfirmationHeight()
+	}
+	if next.Progress.GetVtxoOutpoint() == "" {
+		next.Progress.VtxoOutpoint = existingProgress.GetVtxoOutpoint()
+	}
+
+	return next
 }
 
 // isUnconfirmedBoardingOverlay identifies the address-scoped live row without
@@ -102,14 +168,14 @@ func (r *Runtime) projectEmitLocked(ctx context.Context,
 	r.projectMu.Lock()
 	defer r.projectMu.Unlock()
 
-	seq, err := r.project(ctx, entry)
+	seq, effectiveEntry, err := r.project(ctx, entry)
 
 	switch {
 	case r.deps == nil || r.deps.ActivityStore == nil:
-		r.emit(0, entry)
+		r.emit(0, effectiveEntry)
 
 	case seq > 0:
-		r.emit(seq, entry)
+		r.emit(seq, effectiveEntry)
 	}
 
 	return seq, err
@@ -320,17 +386,20 @@ func entryToProjection(entry *wavewalletrpc.WalletEntry) (db.ActivityProjection,
 	}
 
 	return db.ActivityProjection{
-		CanonicalID:        entry.GetId(),
-		Kind:               int64(entry.GetKind()),
-		Status:             int64(entry.GetStatus()),
-		AmountSat:          entry.GetAmountSat(),
-		FeeSat:             entry.GetFeeSat(),
-		Counterparty:       entry.GetCounterparty(),
-		Note:               entry.GetNote(),
-		Phase:              int64(progress.GetPhase()),
-		PhaseLabel:         progress.GetPhaseLabel(),
-		FailureCode:        int64(entry.GetFailureCode()),
-		FailureReason:      entry.GetFailureReason(),
+		CanonicalID:   entry.GetId(),
+		Kind:          int64(entry.GetKind()),
+		Status:        int64(entry.GetStatus()),
+		AmountSat:     entry.GetAmountSat(),
+		FeeSat:        entry.GetFeeSat(),
+		Counterparty:  entry.GetCounterparty(),
+		Note:          entry.GetNote(),
+		Phase:         int64(progress.GetPhase()),
+		PhaseLabel:    progress.GetPhaseLabel(),
+		FailureCode:   int64(entry.GetFailureCode()),
+		FailureReason: entry.GetFailureReason(),
+		PendingStatus: int64(
+			wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
+		),
 		PaymentHash:        hexBytesOrNil(progress.GetPaymentHash()),
 		Txid:               hexBytesOrNil(progress.GetTxid()),
 		ConfirmationHeight: confHeight,

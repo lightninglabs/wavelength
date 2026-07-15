@@ -3,9 +3,11 @@
 package swapwallet
 
 import (
+	"context"
 	"testing"
 
 	"github.com/lightninglabs/wavelength/credit"
+	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
 	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"github.com/stretchr/testify/require"
 )
@@ -92,6 +94,16 @@ func TestCreditProjectorProjectsOwnedTerminals(t *testing.T) {
 	ch := runtime.subscribe()
 	projected := make(map[string]credit.State)
 	runtime.pollCreditOps(projected)
+	require.True(
+		t,
+		runtime.creditProjectorOwnsSwapSummary(
+			&swapclientrpc.SwapSummary{
+				PaymentHash: payHashHex,
+				SettlementType: swapclientrpc.
+					SwapSettlementType_SWAP_SETTLEMENT_TYPE_CREDIT,
+			},
+		),
+	)
 
 	got := drainEntries(ch)
 	require.Len(t, got, 2)
@@ -133,6 +145,40 @@ func TestCreditProjectorProjectsOwnedTerminals(t *testing.T) {
 	// A second poll with unchanged state emits nothing.
 	runtime.pollCreditOps(projected)
 	require.Empty(t, drainEntries(ch))
+}
+
+// TestResumeAllRestoresCreditOwnershipBeforeMonitor verifies the wallet-ready
+// resume phase rebuilds durable credit ownership before startup backfill and
+// live monitoring can derive a zero-amount SDK swap row.
+func TestResumeAllRestoresCreditOwnershipBeforeMonitor(t *testing.T) {
+	t.Parallel()
+
+	reg := &fakeCreditRegistry{
+		listResp: &credit.ListCreditOpsResponse{
+			Ops: []credit.CreditOpSummary{{
+				OpID:       "op-restart-pay",
+				OpKey:      "pay:" + payHashHex,
+				Kind:       credit.KindPay,
+				State:      credit.StateCompleted,
+				CreditOnly: true,
+			}},
+		},
+	}
+	runtime := newRuntime(t.Context(), &Deps{CreditRegistry: reg})
+	t.Cleanup(runtime.stop)
+
+	runtime.resumeAll(t.Context())
+
+	require.True(
+		t,
+		runtime.creditProjectorOwnsSwapSummary(
+			&swapclientrpc.SwapSummary{
+				PaymentHash: payHashHex,
+				SettlementType: swapclientrpc.
+					SwapSettlementType_SWAP_SETTLEMENT_TYPE_CREDIT,
+			},
+		),
+	)
 }
 
 // TestCreditProjectorWritesToStore asserts the projector persists the credit
@@ -257,4 +303,47 @@ func TestCreditProjectorTracksPendingForRestart(t *testing.T) {
 		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
 		snapshot[0].GetStatus(),
 	)
+}
+
+// TestCreditProjectorRetriesFailedTerminalProjection verifies a transient
+// activity-store failure does not memoize terminal state or clear pending
+// tracking before the next poll durably records the transition.
+func TestCreditProjectorRetriesFailedTerminalProjection(t *testing.T) {
+	t.Parallel()
+
+	reg := &fakeCreditRegistry{
+		listResp: &credit.ListCreditOpsResponse{
+			Ops: []credit.CreditOpSummary{{
+				OpID:       "op-pay",
+				OpKey:      "pay:" + payHashHex,
+				Kind:       credit.KindPay,
+				State:      credit.StateCompleted,
+				CreditOnly: true,
+				AmountSat:  500,
+			}},
+		},
+	}
+	store := &fakeActivityProjector{err: context.DeadlineExceeded}
+	runtime := newRuntime(t.Context(), &Deps{
+		CreditRegistry: reg,
+		ActivityStore:  store,
+	})
+	t.Cleanup(runtime.stop)
+	runtime.trackPendingEntryWithoutTimeout(&wavewalletrpc.WalletEntry{
+		Id:     payHashHex,
+		Kind:   wavewalletrpc.EntryKind_ENTRY_KIND_SEND,
+		Status: wavewalletrpc.EntryStatus_ENTRY_STATUS_PENDING,
+	})
+
+	projected := make(map[string]credit.State)
+	runtime.pollCreditOps(projected)
+	require.NotContains(t, projected, "op-pay")
+	require.Len(t, runtime.pendingSnapshot(), 1)
+	require.Zero(t, store.count())
+
+	store.err = nil
+	runtime.pollCreditOps(projected)
+	require.Equal(t, credit.StateCompleted, projected["op-pay"])
+	require.Empty(t, runtime.pendingSnapshot())
+	require.Equal(t, 1, store.count())
 }

@@ -296,6 +296,7 @@ func (r *router) sendCreditInvoiceIntent(ctx context.Context,
 	}
 
 	opKey := "pay:" + hex.EncodeToString(paymentHash[:])
+	paymentHashHex := hex.EncodeToString(paymentHash[:])
 	resp, err := r.deps.CreditRegistry.Ask(ctx, &credit.StartCreditPayRequest{
 		OpKey:        opKey,
 		Invoice:      intent.invoice,
@@ -312,6 +313,9 @@ func (r *router) sendCreditInvoiceIntent(ctx context.Context,
 	if _, ok := resp.(*credit.StartCreditResponse); !ok {
 		return nil, fmt.Errorf("unexpected credit pay response %T",
 			resp)
+	}
+	if creditOnly {
+		r.runtime.markCreditProjectorOwned(paymentHashHex)
 	}
 
 	// Emit a pending entry keyed by the payment hash. A mixed pay's swap

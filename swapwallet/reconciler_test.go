@@ -187,6 +187,7 @@ func TestReconcileSkipsCreditOnlySwapRows(t *testing.T) {
 	swap := runtime.deps.SwapService.(*fakeSwapService)
 
 	const paymentHash = "credit-payment-hash"
+	runtime.markCreditProjectorOwned(paymentHash)
 	runtime.project(ctx, &wavewalletrpc.WalletEntry{
 		Id:            paymentHash,
 		Kind:          wavewalletrpc.EntryKind_ENTRY_KIND_SEND,
