@@ -16,6 +16,7 @@ import (
 	"github.com/lightninglabs/wavelength/serverconn"
 	"github.com/lightninglabs/wavelength/timeout"
 	"github.com/lightninglabs/wavelength/vtxo"
+	"github.com/lightningnetwork/lnd/clock"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/input"
 )
@@ -120,6 +121,26 @@ type SessionActorConfig struct {
 	// commits a terminal snapshot, so the coordinator can reap the child.
 	// When nil, terminal sessions stay resident until shutdown.
 	Registry actor.TellOnlyRef[OORDurableMsg]
+
+	// Clock is the deterministic time source injected into every session
+	// FSM Environment this actor builds. When nil, the FSM defaults to a
+	// real clock so the actor still works without explicit wiring.
+	Clock clock.Clock
+
+	// MaxTransientSubmitRetry bounds the cumulative wall-clock time an
+	// outgoing session keeps re-driving a transient submit rejection while
+	// awaiting submit acceptance before failing terminally. Zero disables
+	// the bound (unbounded, legacy behavior).
+	MaxTransientSubmitRetry time.Duration
+}
+
+// envConfig returns the FSM Environment config (clock + transient submit-reject
+// retry budget) this actor injects into every session it builds or restores.
+func (b *sessionBehavior) envConfig() EnvConfig {
+	return EnvConfig{
+		Clock:                   b.cfg.Clock,
+		MaxTransientSubmitRetry: b.cfg.MaxTransientSubmitRetry,
+	}
 }
 
 // OORSessionActor wraps one durable per-session OOR actor.
@@ -1242,7 +1263,9 @@ func (b *sessionBehavior) restore(ctx context.Context) error {
 
 	switch record.Direction {
 	case clientdb.OORSessionDirectionOutgoing:
-		session, err := outgoingSessionFromRecord(ctx, *record)
+		session, err := outgoingSessionFromRecord(
+			ctx, *record, b.envConfig(),
+		)
 		if err != nil {
 			return err
 		}
@@ -1252,7 +1275,7 @@ func (b *sessionBehavior) restore(ctx context.Context) error {
 
 	case clientdb.OORSessionDirectionIncoming:
 		session, err := incomingSessionFromRecord(
-			ctx, *record, b.cfg.Limits,
+			ctx, *record, b.cfg.Limits, b.envConfig(),
 		)
 		if err != nil {
 			return err

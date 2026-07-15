@@ -76,6 +76,53 @@ func TestOutgoingSnapshotTLVRoundTrip(t *testing.T) {
 	require.Equal(t, snapshot, decoded)
 }
 
+// TestOutgoingSnapshotFirstRejectRoundTrip asserts a version-5 submit-sent
+// snapshot carrying a non-zero FirstRejectUnixNanos serializes and restores it
+// so the bounded transient submit-reject retry window survives a restart.
+func TestOutgoingSnapshotFirstRejectRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	snapshot := &OutgoingSnapshot{
+		Version:   5,
+		SessionID: SessionID(chainhash.Hash{1, 2, 3}),
+		Phase:     OutgoingPhaseSubmitSent,
+		ArkPSBT: []byte{
+			1,
+			2,
+			3,
+			4,
+		},
+		FirstRejectUnixNanos: 1_700_000_000_123_456_789,
+	}
+
+	raw, err := encodeOutgoingSnapshot(snapshot)
+	require.NoError(t, err)
+
+	decoded, err := decodeOutgoingSnapshot(raw)
+	require.NoError(t, err)
+	require.Equal(
+		t, int64(1_700_000_000_123_456_789),
+		decoded.FirstRejectUnixNanos,
+	)
+	require.Equal(t, snapshot, decoded)
+}
+
+// TestOutgoingSnapshotV4RestoresZeroFirstReject asserts a legacy version-4
+// snapshot (which lacks the FirstRejectUnixNanos record) decodes without error
+// and restores FirstRejectUnixNanos to 0 (a fresh retry window), preserving
+// backward compatibility.
+func TestOutgoingSnapshotV4RestoresZeroFirstReject(t *testing.T) {
+	t.Parallel()
+
+	raw, err := encodeSnapshotRawForDecodeTest(4, 0)
+	require.NoError(t, err)
+
+	decoded, err := decodeOutgoingSnapshot(raw)
+	require.NoError(t, err)
+	require.Equal(t, uint8(4), decoded.Version)
+	require.Zero(t, decoded.FirstRejectUnixNanos)
+}
+
 func TestRestoreSnapshotPayloadTLVRoundTrip(t *testing.T) {
 	t.Parallel()
 

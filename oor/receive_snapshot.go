@@ -171,9 +171,10 @@ func NewIncomingSnapshot(sessionID SessionID,
 }
 
 // NewReceiveSessionFromSnapshot restores an incoming receive session from a
-// durable snapshot.
+// durable snapshot. envCfg injects the deterministic clock and retry budget
+// into the restored FSM Environment.
 func NewReceiveSessionFromSnapshot(ctx context.Context,
-	snapshot *IncomingSnapshot) (*ReceiveSession, error) {
+	snapshot *IncomingSnapshot, envCfg EnvConfig) (*ReceiveSession, error) {
 
 	if snapshot == nil {
 		return nil, fmt.Errorf("snapshot must be provided")
@@ -185,7 +186,7 @@ func NewReceiveSessionFromSnapshot(ctx context.Context,
 	}
 
 	return newReceiveSessionWithState(
-		ctx, snapshot.SessionID, state,
+		ctx, snapshot.SessionID, state, envCfg,
 	)
 }
 

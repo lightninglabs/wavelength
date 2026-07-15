@@ -522,7 +522,26 @@ func (c *Config) MempoolSpaceFeeURL() string {
 type OORConfig struct {
 	// Limits configures advanced incoming OOR receive safety caps.
 	Limits *OORLimitsConfig `mapstructure:"limits"`
+
+	// MaxTransientSubmitRetry bounds the cumulative wall-clock time the OOR
+	// FSM keeps re-driving a transient submit rejection
+	// (OOR_REJECT_INPUT_NOT_SPENDABLE or OOR_REJECT_USER_BALANCE) while
+	// awaiting submit acceptance before failing the session terminally. A
+	// zero value selects defaultMaxTransientSubmitRetry; a negative value
+	// is rejected by Config.Validate. The config key is shortened to
+	// "maxsubmitretry" so the tagged field line stays within 80 columns.
+	MaxTransientSubmitRetry time.Duration `mapstructure:"maxsubmitretry"`
 }
+
+// defaultMaxTransientSubmitRetry is the default cap on how long waved keeps
+// re-driving a transient OOR submit rejection before giving up. It must outlast
+// a several-block operator confirmation catch-up at the
+// oorTransientRejectRetryDelay (15s) retry cadence: ~6 mainnet blocks at
+// ~10 min/block is ~60 min, so a normal INPUT_NOT_SPENDABLE (the operator's
+// chain view simply lagging a block this client already saw) always clears well
+// within the window, while a genuinely-stuck input or a never-draining
+// USER_BALANCE recipient gives up after the cap instead of retrying forever.
+const defaultMaxTransientSubmitRetry = time.Hour
 
 // OORLimitsConfig configures advanced incoming OOR receive safety caps.
 type OORLimitsConfig struct {
@@ -557,7 +576,19 @@ func defaultOORConfig() *OORConfig {
 			MaxMailboxItems:       limits.MaxMailboxItems,
 			MaxMailboxScriptBytes: limits.MaxMailboxScriptBytes,
 		},
+		MaxTransientSubmitRetry: defaultMaxTransientSubmitRetry,
 	}
+}
+
+// OORMaxTransientSubmitRetry returns the cumulative retry-window cap for
+// transient OOR submit rejections, falling back to the default when the OOR
+// config is absent or left unset.
+func (c *Config) OORMaxTransientSubmitRetry() time.Duration {
+	if c == nil || c.OOR == nil || c.OOR.MaxTransientSubmitRetry <= 0 {
+		return defaultMaxTransientSubmitRetry
+	}
+
+	return c.OOR.MaxTransientSubmitRetry
 }
 
 // OORReceiveLimits returns the incoming OOR receive limits configured for this
@@ -1151,6 +1182,16 @@ func (c *Config) Validate() error {
 	}
 	if err := validateOORLimitsConfig(c.OOR.Limits); err != nil {
 		return err
+	}
+
+	// A negative retry window is a misconfiguration; a zero value selects
+	// the default so operators do not have to spell out the cap.
+	if c.OOR.MaxTransientSubmitRetry < 0 {
+		return fmt.Errorf("oor.maxsubmitretry must not be "+
+			"negative: got %s", c.OOR.MaxTransientSubmitRetry)
+	}
+	if c.OOR.MaxTransientSubmitRetry == 0 {
+		c.OOR.MaxTransientSubmitRetry = defaultMaxTransientSubmitRetry
 	}
 
 	// Validate wallet config.

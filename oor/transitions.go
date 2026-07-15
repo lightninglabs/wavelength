@@ -277,7 +277,6 @@ func (s *AwaitingSubmitAccepted) ProcessEvent(ctx context.Context, event Event,
 	env *Environment) (*StateTransition, error) {
 
 	_ = ctx
-	_ = env
 
 	switch evt := event.(type) {
 	case *SubmitAcceptedEvent:
@@ -334,7 +333,7 @@ func (s *AwaitingSubmitAccepted) ProcessEvent(ctx context.Context, event Event,
 		}, nil
 
 	case *OutboxErrorEvent:
-		return handleOutboxError(env, s, evt)
+		return handleSubmitOutboxError(env, s, evt)
 
 	case *FailEvent:
 		return &StateTransition{
@@ -578,6 +577,98 @@ func handleOutboxError(env *Environment, current State,
 
 	return &StateTransition{
 		NextState: current,
+		NewEvents: fn.Some(EmittedEvent{
+			Outbox: []OutboxEvent{
+				&ScheduleRetryRequest{
+					After:  after,
+					Reason: evt.ErrorReason,
+				},
+			},
+		}),
+	}, nil
+}
+
+// handleSubmitOutboxError derives the retry-or-fail transition for an outbox
+// error while the outgoing session is awaiting submit acceptance.
+//
+// Unlike the generic handleOutboxError, a retryable error here is bounded by a
+// configurable cumulative retry window (env.MaxTransientSubmitRetry). The
+// operator's transient submit rejections (INPUT_NOT_SPENDABLE and USER_BALANCE)
+// are re-driven on the actor's fixed retry cadence, but only until the window
+// since the first reject elapses. Once the budget is exhausted the session
+// fails terminally via the same path handleOutboxError uses for non-retryable
+// errors (which releases the reserved pre-point-of-no-return input VTXOs), so a
+// genuinely-stuck input or a never-draining UserBalance recipient gives up
+// instead of retrying forever. A zero budget keeps the legacy unbounded
+// behavior, so a directly-constructed Environment without a configured cap
+// still retries as before. Non-retryable errors keep handleOutboxError's
+// immediate-terminal behavior.
+//
+// The transition never calls time.Now() directly: the current time comes from
+// env.Now() so the FSM stays deterministic under an injected clock. The
+// retry-window start is carried forward on the returned state (and persisted in
+// the snapshot) so the bound survives restarts.
+func handleSubmitOutboxError(env *Environment, current *AwaitingSubmitAccepted,
+	evt *OutboxErrorEvent) (*StateTransition, error) {
+
+	if evt == nil {
+		return nil, fmt.Errorf("outbox error event must be provided")
+	}
+
+	// Non-retryable errors are terminal immediately. Reuse the shared
+	// handler so the pre-point-of-no-return input release stays identical.
+	if !evt.Retryable {
+		return handleOutboxError(env, current, evt)
+	}
+
+	// env is non-nil on every protofsm ProcessEvent turn, but both reads
+	// stay nil-safe (env.Now defaults to a real clock; the cap defaults to
+	// 0 = unbounded) so directly-constructed test envs still work. Read the
+	// configured cap first, then the clock, so the two agree on nil-safety.
+	var maxRetry time.Duration
+	if env != nil {
+		maxRetry = env.MaxTransientSubmitRetry
+	}
+
+	now := env.Now()
+
+	// If the retry window has already opened and its cumulative elapsed
+	// time exceeds the configured budget, give up: fail terminally through
+	// the same path a non-retryable error takes (releasing pre-PONR
+	// inputs), noting the exhausted budget, the elapsed duration, and the
+	// last reject reason. A zero budget disables this bound entirely.
+	if maxRetry > 0 && current.FirstRejectUnixNanos != 0 {
+		elapsed := now.Sub(time.Unix(0, current.FirstRejectUnixNanos))
+		if elapsed > maxRetry {
+			reason := fmt.Sprintf("submit retry budget of %s "+
+				"exhausted after %s; last reject: %s", maxRetry,
+				elapsed, evt.ErrorReason)
+
+			return handleOutboxError(
+				env, current, &OutboxErrorEvent{
+					OutboxType:  evt.OutboxType,
+					Retryable:   false,
+					ErrorReason: reason,
+				},
+			)
+		}
+	}
+
+	// Still within budget (or unbounded): open the retry window on the
+	// first reject and carry it forward on subsequent rejects, then
+	// schedule the retry exactly as the unbounded path does.
+	next := *current
+	if next.FirstRejectUnixNanos == 0 {
+		next.FirstRejectUnixNanos = now.UnixNano()
+	}
+
+	after := evt.RetryAfter
+	if after == 0 {
+		after = defaultRetryDelay
+	}
+
+	return &StateTransition{
+		NextState: &next,
 		NewEvents: fn.Some(EmittedEvent{
 			Outbox: []OutboxEvent{
 				&ScheduleRetryRequest{

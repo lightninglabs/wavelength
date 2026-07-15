@@ -36,23 +36,27 @@ func NewSession(ctx context.Context, policy arkscript.CheckpointPolicy,
 	inputs []TransferInput, outputs []oortx.RecipientOutput) (*Session,
 	[]OutboxEvent, error) {
 
-	return NewSessionWithIdempotencyKey(ctx, policy, inputs, outputs, "")
+	return NewSessionWithIdempotencyKey(
+		ctx, policy, inputs, outputs, "", EnvConfig{},
+	)
 }
 
 // NewSessionWithIdempotencyKey creates a new outgoing OOR transfer session
-// tagged with a caller-provided idempotency key.
+// tagged with a caller-provided idempotency key. envCfg injects the
+// deterministic clock and the bounded transient submit-reject retry budget into
+// the FSM Environment.
 func NewSessionWithIdempotencyKey(ctx context.Context,
 	policy arkscript.CheckpointPolicy, inputs []TransferInput,
-	outputs []oortx.RecipientOutput, idempotencyKey string) (*Session,
-	[]OutboxEvent, error) {
+	outputs []oortx.RecipientOutput, idempotencyKey string,
+	envCfg EnvConfig) (*Session, []OutboxEvent, error) {
 
 	logger(ctx).DebugS(ctx, "Creating new OOR session",
 		slog.Int("num_inputs", len(inputs)),
 		slog.Int("num_outputs", len(outputs)),
 	)
 
-	env := &Environment{}
 	startupID := SessionID{}
+	env := envCfg.newEnvironment(startupID)
 
 	baseLogger := logger(ctx)
 
