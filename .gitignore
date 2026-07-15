@@ -4,6 +4,10 @@ bin/*
 **/test-artifacts
 merge-sql-schemas
 
+# Reproducible release build output (scripts/release.sh / make release).
+/wavelength-v*
+/vendor
+
 # Binaries for programs and plugins
 *.exe
 *.exe~
