@@ -30,6 +30,7 @@ import (
 	sdkark "github.com/lightninglabs/wavelength/sdk/ark"
 	"github.com/lightninglabs/wavelength/sdk/swaps"
 	"github.com/lightninglabs/wavelength/serverconn"
+	"github.com/lightninglabs/wavelength/swaprpc"
 	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightninglabs/wavelength/waved"
 	"github.com/lightningnetwork/lnd/invoices"
@@ -872,14 +873,11 @@ func (d *daemonAuthOnlyInvoiceCreator) CreateInvoiceWithKeyRouteHintPaths(
 func swapServerDialOptions(cfg *waved.SwapConfig, addr string,
 	clientCerts clientTLSCertProvider) ([]grpc.DialOption, error) {
 
-	// The daemon may start before its configured swap server listener is
-	// accepting connections. WaitForReady prevents that stale startup
-	// refusal from failing the first swap RPC; user RPCs remain bounded by
-	// their request context, and background resume RPCs are bounded by the
-	// daemon root context so they keep waiting until swapd returns or the
-	// daemon shuts down.
-	waitForReadyOpt := grpc.WithDefaultCallOptions(
-		grpc.WaitForReady(true),
+	// Swap operations wait for the configured server to reconnect, while
+	// best-effort reads fail fast so they cannot consume an enclosing
+	// wallet RPC's entire deadline.
+	waitForReadyInterceptorOpt := grpc.WithChainUnaryInterceptor(
+		swapServerWaitForReadyInterceptor,
 	)
 
 	switch {
@@ -895,7 +893,7 @@ func swapServerDialOptions(cfg *waved.SwapConfig, addr string,
 			grpc.WithTransportCredentials(
 				credentials.NewTLS(tlsCfg),
 			),
-			waitForReadyOpt,
+			waitForReadyInterceptorOpt,
 		}, nil
 
 	case useInsecureSwapServerTransport(cfg, addr):
@@ -903,7 +901,7 @@ func swapServerDialOptions(cfg *waved.SwapConfig, addr string,
 			grpc.WithTransportCredentials(
 				insecure.NewCredentials(),
 			),
-			waitForReadyOpt,
+			waitForReadyInterceptorOpt,
 		}, nil
 
 	default:
@@ -918,8 +916,46 @@ func swapServerDialOptions(cfg *waved.SwapConfig, addr string,
 			grpc.WithTransportCredentials(
 				credentials.NewTLS(tlsCfg),
 			),
-			waitForReadyOpt,
+			waitForReadyInterceptorOpt,
 		}, nil
+	}
+}
+
+// swapServerWaitForReadyInterceptor applies reconnect waiting only to swap
+// operations that create or advance protocol state. User operations remain
+// bounded by their request context, while background resume operations remain
+// bounded by the daemon root context. Read-only quotes and credit snapshots
+// retain gRPC's fail-fast behavior.
+func swapServerWaitForReadyInterceptor(ctx context.Context, method string, req,
+	reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker,
+	opts ...grpc.CallOption) error {
+
+	if swapServerOperationWaitsForReady(method) {
+		opts = append(opts, grpc.WaitForReady(true))
+	}
+
+	return invoker(ctx, method, req, reply, cc, opts...)
+}
+
+// swapServerOperationWaitsForReady reports whether an unavailable swap server
+// should delay the RPC until the caller's context expires or the server
+// reconnects.
+func swapServerOperationWaitsForReady(method string) bool {
+	switch method {
+	case swaprpc.SwapService_RequestChannelId_FullMethodName,
+		swaprpc.SwapService_CreateInSwap_FullMethodName,
+		swaprpc.SwapService_CreateCredit_FullMethodName,
+		swaprpc.SwapService_RedeemCredit_FullMethodName,
+		swaprpc.SwapService_AuthorizeInSwapRefund_FullMethodName,
+		swaprpc.SwapService_AcknowledgeOutSwapHtlc_FullMethodName,
+		swaprpc.SwapService_SignInSwapForfeit_FullMethodName,
+		swaprpc.SwapService_SubmitOutSwapForfeitSignature_FullMethodName:
+		return true
+
+	default:
+		// Future RPCs fail fast until their retry and recovery
+		// semantics are explicitly classified above.
+		return false
 	}
 }
 
