@@ -81,6 +81,82 @@ func (d *sdkDriver) Commit(ctx context.Context,
 	return converted, nil
 }
 
+// CommitOnboarding commits a custom anchor that tap-sdk itself will publish
+// after Wavelength supplies the final Bitcoin signature.
+func (d *sdkDriver) CommitOnboarding(ctx context.Context,
+	request *tapsdk.CustomAnchorRequest,
+	verifier tapsdk.ConfirmedProofVerifier) (*commitResult, error) {
+
+	if d == nil || d.wallet == nil {
+		return nil, fmt.Errorf("tap-sdk wallet is required")
+	}
+
+	builder := d.wallet.NewCustomAnchorTxBuilder()
+	if verifier != nil {
+		builder.SetConfirmedProofVerifier(verifier)
+	}
+	plan, err := builder.Build(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+
+	result, err := plan.Commit(ctx, tapsdk.CustomAnchorCommitOptions{
+		Publish: tapsdk.CustomAnchorPublishMetadata{
+			Label: "wavelength-onboarding-poc",
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	converted, err := commitResultFromPackage(result)
+	if err != nil {
+		return nil, &commitResponseError{err: err}
+	}
+
+	return converted, nil
+}
+
+// PublishOnboarding verifies the exact final PSBT and asks tap-sdk to publish
+// and log the already committed asset transition.
+func (d *sdkDriver) PublishOnboarding(ctx context.Context, packageBytes,
+	finalPSBT []byte) error {
+
+	if d == nil || d.wallet == nil {
+		return fmt.Errorf("tap-sdk wallet is required")
+	}
+
+	var transfer tapsdk.CustomAnchorTransferPackage
+	if err := transfer.UnmarshalBinary(packageBytes); err != nil {
+		return fmt.Errorf("decode tap-sdk transfer package: %w", err)
+	}
+	if _, err := d.wallet.PublishCustomAnchorTransfer(
+		ctx, &transfer, finalPSBT,
+	); err != nil {
+		return fmt.Errorf("publish tap-sdk onboarding transfer: %w",
+			err)
+	}
+
+	return nil
+}
+
+// VerifyFinalOnboarding validates Wavelength's exact signed PSBT against the
+// sealed tap-sdk package before either publishing or restoring it.
+func (d *sdkDriver) VerifyFinalOnboarding(packageBytes,
+	finalPSBT []byte) error {
+
+	var transfer tapsdk.CustomAnchorTransferPackage
+	if err := transfer.UnmarshalBinary(packageBytes); err != nil {
+		return fmt.Errorf("decode tap-sdk transfer package: %w", err)
+	}
+	if err := transfer.VerifyFinalAnchorPSBT(finalPSBT); err != nil {
+		return fmt.Errorf("verify final onboarding anchor PSBT: %w",
+			err)
+	}
+
+	return nil
+}
+
 // DecodePackage restores a sealed SDK package from the durable journal.
 func (d *sdkDriver) DecodePackage(encoded []byte) (*commitResult, error) {
 	var transfer tapsdk.CustomAnchorTransferPackage

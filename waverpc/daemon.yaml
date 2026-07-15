@@ -84,6 +84,9 @@ http:
     - selector: waverpc.DaemonService.Board
       post: /v1/daemon/board
       body: "*"
+    - selector: waverpc.DaemonService.OnboardTaprootAsset
+      post: /v1/daemon/onboard-taproot-asset
+      body: "*"
     - selector: waverpc.DaemonService.JoinNextRound
       post: /v1/daemon/join-next-round
       body: "*"

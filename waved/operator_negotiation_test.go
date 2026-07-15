@@ -77,6 +77,14 @@ func (s *stubArkServiceClient) EstimateFee(_ context.Context,
 	return &arkrpc.EstimateFeeResponse{}, nil
 }
 
+// RegisterTaprootAssetVTXO is unused by these negotiation tests.
+func (s *stubArkServiceClient) RegisterTaprootAssetVTXO(_ context.Context,
+	_ *arkrpc.RegisterTaprootAssetVTXORequest, _ ...grpc.CallOption) (
+	*arkrpc.RegisterTaprootAssetVTXOResponse, error) {
+
+	return &arkrpc.RegisterTaprootAssetVTXOResponse{}, nil
+}
+
 // testOperatorPubKeyBytes returns a valid compressed secp256k1 public key for
 // populating a fake GetInfo response.
 func testOperatorPubKeyBytes(t *testing.T) []byte {

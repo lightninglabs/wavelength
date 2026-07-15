@@ -12,6 +12,38 @@ service ArkService {
     // showing liquidity cost, on-chain share, margin, and minimum
     // viable VTXO at current rates and utilization.
     rpc EstimateFee (EstimateFeeRequest) returns (EstimateFeeResponse);
+
+    // RegisterTaprootAssetVTXO admits a confirmed, direct on-chain VTXO
+    // created by a sealed tap-sdk custom-anchor transfer. This experimental
+    // PoC keeps tapd credentials client-side; the operator validates only the
+    // sealed package, final Bitcoin PSBT, policy, and observed UTXO.
+    rpc RegisterTaprootAssetVTXO (RegisterTaprootAssetVTXORequest)
+        returns (RegisterTaprootAssetVTXOResponse);
+}
+
+message RegisterTaprootAssetVTXORequest {
+    // transfer_package is the sealed tap-sdk custom-anchor package.
+    bytes transfer_package = 1;
+
+    // final_anchor_psbt is the fully signed PSBT published for the package.
+    bytes final_anchor_psbt = 2;
+
+    // vtxo_policy_template is the semantic Wavelength owner/operator policy
+    // composed beside the package's Taproot Asset root.
+    bytes vtxo_policy_template = 3;
+
+    // taproot_asset_root is repeated explicitly so cheap request bounds and
+    // script composition checks can run before persistence.
+    bytes taproot_asset_root = 4;
+}
+
+message RegisterTaprootAssetVTXOResponse {
+    // txid and output_index identify the admitted direct on-chain VTXO.
+    bytes txid = 1;
+    uint32 output_index = 2;
+
+    // confirmation_height is the operator's observed confirmation height.
+    int32 confirmation_height = 3;
 }
 
 message GetInfoRequest {

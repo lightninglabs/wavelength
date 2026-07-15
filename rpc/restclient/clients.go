@@ -86,6 +86,19 @@ func (c *ArkServiceClient) EstimateFee(ctx context.Context,
 	return out, err
 }
 
+// RegisterTaprootAssetVTXO admits a confirmed direct-on-chain asset VTXO.
+func (c *ArkServiceClient) RegisterTaprootAssetVTXO(ctx context.Context,
+	in *arkrpc.RegisterTaprootAssetVTXORequest, _ ...grpc.CallOption) (
+	*arkrpc.RegisterTaprootAssetVTXOResponse, error) {
+
+	out := new(arkrpc.RegisterTaprootAssetVTXOResponse)
+	err := c.client.Post(
+		ctx, "/v1/ark/register-taproot-asset-vtxo", in, out,
+	)
+
+	return out, err
+}
+
 // NewMailboxServiceClient creates a MailboxService REST client.
 func NewMailboxServiceClient(addr string,
 	opts ...Option) mailboxpb.MailboxServiceClient {
@@ -490,6 +503,19 @@ func (c *DaemonServiceClient) SendOOR(ctx context.Context,
 
 	out := new(waverpc.SendOORResponse)
 	err := c.client.Post(ctx, "/v1/daemon/send-oor", in, out)
+
+	return out, err
+}
+
+// OnboardTaprootAsset moves one isolated asset into a Wavelength VTXO.
+func (c *DaemonServiceClient) OnboardTaprootAsset(ctx context.Context,
+	in *waverpc.OnboardTaprootAssetRequest, _ ...grpc.CallOption) (
+	*waverpc.OnboardTaprootAssetResponse, error) {
+
+	out := new(waverpc.OnboardTaprootAssetResponse)
+	err := c.client.Post(
+		ctx, "/v1/daemon/onboard-taproot-asset", in, out,
+	)
 
 	return out, err
 }
