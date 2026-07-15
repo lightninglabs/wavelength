@@ -176,6 +176,54 @@ func TestReconcileProjectsRawOORLive(t *testing.T) {
 	)
 }
 
+// TestReconcileSkipsCreditOnlySwapRows asserts the periodic SEND/RECV
+// reconciler cannot overwrite a credit-projector-owned activity row with the
+// credit SDK swap's zero Ark funding amount.
+func TestReconcileSkipsCreditOnlySwapRows(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	runtime, store, _ := newReconcileFixture(t)
+	swap := runtime.deps.SwapService.(*fakeSwapService)
+
+	const paymentHash = "credit-payment-hash"
+	runtime.project(ctx, &wavewalletrpc.WalletEntry{
+		Id:            paymentHash,
+		Kind:          wavewalletrpc.EntryKind_ENTRY_KIND_SEND,
+		Status:        wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		AmountSat:     -1,
+		Counterparty:  creditCounterparty,
+		CreatedAtUnix: 100,
+		UpdatedAtUnix: 100,
+		Progress: &wavewalletrpc.WalletEntryProgress{
+			Phase: wavewalletrpc.
+				WalletEntryPhase_WALLET_ENTRY_PHASE_CONFIRMED,
+		},
+	})
+
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{
+		Swaps: []*swapclientrpc.SwapSummary{
+			{
+				PaymentHash: paymentHash,
+				Direction: swapclientrpc.
+					SwapDirection_SWAP_DIRECTION_PAY,
+				State: swapclientrpc.
+					SwapState_SWAP_STATE_COMPLETED,
+				AmountSat: 0,
+				SettlementType: swapclientrpc.
+					SwapSettlementType_SWAP_SETTLEMENT_TYPE_CREDIT,
+			},
+		},
+	}
+
+	runtime.reconcileActivity(ctx)
+
+	entry, err := store.GetEntry(ctx, paymentHash)
+	require.NoError(t, err)
+	require.Equal(t, int64(-1), entry.AmountSat)
+	require.Equal(t, creditCounterparty, entry.Counterparty)
+}
+
 // TestReprojectRecentActivityBoundsWindow verifies the raw-OOR reconcile pass
 // projects only the most recent `limit` rows and skips older ones, so the
 // per-pass ProjectEntry work stays bounded at O(limit) rather than scanning the

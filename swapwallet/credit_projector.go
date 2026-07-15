@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/lightninglabs/wavelength/credit"
+	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
 	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 )
 
@@ -24,6 +25,17 @@ const creditProjectInterval = 5 * time.Second
 // credit-backed rows, matching the pending entries the router and receiver
 // emit so the projected terminal update lands on the same row.
 const creditCounterparty = "credit"
+
+// creditProjectorOwnsSwapSummary reports whether the durable credit operation,
+// rather than the generic swap monitor or history reconciler, owns a swap's
+// wallet activity row. Credit-only SDK swaps persist a zero Ark funding amount,
+// while the credit operation retains the invoice principal. The server emits
+// CREDIT only for a fully credit-funded invoice; partial credit funding emits
+// MIXED and remains owned by the generic swap lifecycle.
+func creditProjectorOwnsSwapSummary(summary *swapclientrpc.SwapSummary) bool {
+	return summary != nil && summary.GetSettlementType() == swapclientrpc.
+		SwapSettlementType_SWAP_SETTLEMENT_TYPE_CREDIT
+}
 
 // startCreditProjectorLoop spawns the background goroutine that projects
 // durable credit-operation terminal state onto wallet rows. It is a no-op when
