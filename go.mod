@@ -63,10 +63,12 @@ require (
 	github.com/btcsuite/btcd/txscript/v2 v2.0.0
 	github.com/btcsuite/btcd/wire/v2 v2.0.0
 	github.com/lightninglabs/go-wasmsqlite v0.0.0-20260627090804-0dce68fc5287
+	github.com/lightninglabs/tap-sdk v0.1.1-0.20260715152801-0d3c54f20d53
 )
 
 require (
 	github.com/BurntSushi/toml v1.6.0 // indirect
+	github.com/btcsuite/btcd/btcutil v1.1.6 // indirect
 	github.com/google/pprof v0.0.0-20260115054156-294ebfa9ad83 // indirect
 	github.com/kcalvinalvin/anet v0.0.0-20251112173137-d8ddc1f6dbee // indirect
 	github.com/kylelemons/godebug v1.1.0 // indirect
@@ -102,7 +104,7 @@ require (
 	github.com/coreos/go-systemd/v22 v22.5.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/decred/dcrd/crypto/blake256 v1.1.0 // indirect
-	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.0 // indirect
+	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1 // indirect
 	github.com/decred/dcrd/lru v1.1.3 // indirect
 	github.com/distribution/reference v0.6.0 // indirect
 	github.com/docker/cli v29.4.1+incompatible // indirect
