@@ -34,8 +34,9 @@ transition, persist both layers, and only then request Ark signatures.
 - [x] (2026-07-14 23:20Z) Added additive submit and offline-receive protobuf
   fields for input/output roots and the opaque asset transfer, plus bounded
   request codecs and transport round-trip tests.
-- [ ] Add tap-sdk-backed two-transition preparation with exact PSBT/root
-  binding and deterministic graph verification.
+- [x] (2026-07-15 16:00Z) Added tap-sdk-backed two-transition preparation with
+  exact PSBT/root binding, complete tapd inventory verification, durable
+  commit-attempt reconciliation, and byte-identical package restore.
 - [x] (2026-07-14 23:45Z) Added a prepared-package entry point to the durable
   outgoing OOR FSM; committed PSBTs, canonical recipients, roots, and sealed
   packages survive start-message and snapshot restore before signing.
@@ -53,6 +54,12 @@ transition, persist both layers, and only then request Ark signatures.
 - [x] (2026-07-15 14:25Z) Added unit, codec, FSM, transport, tamper, restart,
   client-domain, RPC, and root-propagation tests; passed changed-code lint,
   `make unit`, and `make build` on the client branch.
+- [x] (2026-07-15 16:00Z) Added disabled-by-default `waved` tapd configuration
+  and lifecycle wiring. Only the client process receives tapd TLS and macaroon
+  credentials; swapd and the operator continue to consume SDK-neutral DTOs.
+- [x] (2026-07-15 16:00Z) Passed `go test -race ./tapassets`, focused adapter,
+  config, and embedded-SDK tests, changed-code lint, `make build`, and the full
+  `make unit` suite including baselib.
 
 ## Surprises & Discoveries
 
@@ -78,6 +85,10 @@ transition, persist both layers, and only then request Ark signatures.
   are absent at v0.26. Evidence: adding tap-sdk commit `932b4aa` and compiling
   the adapter failed during package loading; the exact reproduction is filed
   as `lightninglabs/tap-sdk#163`.
+- Observation: merged `tap-sdk#163` removed that module-graph blocker without
+  upgrading Wavelength's pinned taproot-assets module. The concrete adapter
+  compiles against btcd v0.26 and the `/v2` packages while consuming only
+  serialized PSBTs and SDK-owned DTOs.
 - Observation: the first SDK-neutral sender slice derived composed spend paths
   on `TransferInput`, but the production checkpoint signer still rebuilt the
   historical Bitcoin-only control block from `Descriptor.TapScript`.
@@ -141,6 +152,12 @@ transition, persist both layers, and only then request Ark signatures.
   change has no allocation rule yet, and a preparer must reconcile a repeated
   request ID after an outcome-unknown tapd commit rather than creating a
   competing transition. Date/Author: 2026-07-15 / Codex.
+- Decision: keep an adapter-owned, per-request file journal outside the OOR
+  actor. Write an attempt marker before every tapd commit, replace it with the
+  exact sealed response after success, and require manual reconciliation after
+  an outcome-unknown error. Rationale: external RPC cannot occur inside the
+  actor transaction, while a retry must never create a competing asset state
+  transition. Date/Author: 2026-07-15 / Codex.
 
 ## Outcomes & Retrospective
 
@@ -157,10 +174,14 @@ lookup, and idempotent retry. The client branch passes `make build`,
 now accepts an optional proof-selected asset intent, requires explicit custom
 input selection and exact satoshi funding, invokes a restart-safe preparer,
 and verifies its immutable result before the actor can persist or sign it.
-Bitcoin-only requests never enter this path. The concrete preparer still
-cannot compile until the first confirmed upstream gap,
-`lightninglabs/tap-sdk#163`; this section will record the remaining test
-evidence and any further tapd/tap-sdk gaps.
+Bitcoin-only requests never enter this path. The concrete preparer now
+uses the merged `tap-sdk#163` compatibility boundary. It verifies the
+confirmed proof against tapd's complete managed-anchor inventory, commits the
+checkpoint and Ark transitions in order, persists opaque SDK packages with
+outcome-unknown attempt markers, and restores a fully committed request
+without contacting tapd. The adapter is installed only when
+`taprootassets.enabled` is set. A live regtest showcase and any gaps it exposes
+remain to be completed.
 
 ## Context and Orientation
 
@@ -216,10 +237,10 @@ Protobuf transport is extended additively with generated submit,
 offline-receive, and public send-intent fields. Incoming notification data is
 threaded through the durable receiver so it can materialize an asset-aware
 VTXO. The daemon injects a `TaprootAssetOORPreparer` programmatically and maps
-the public intent into a request containing the exact VTXO graph. The
-preparer's concrete tap-sdk implementation remains blocked on
-`lightninglabs/tap-sdk#163`. Publication remains out of scope until the
-path-aware tapd follow-up lands.
+the public intent into a request containing the exact VTXO graph. Standalone
+`waved` constructs the concrete adapter from its own optional tapd connection
+configuration; embedded callers may continue to inject a preparer. Package
+publication remains out of scope until the path-aware tapd follow-up lands.
 
 ## Concrete Steps
 
@@ -319,8 +340,12 @@ asset amount, confirmed proof file, receiver asset script key, optional proof
 delivery metadata, and an explicit unconfirmed-path acknowledgment. It is only
 valid with one stored custom input, one recipient, exact BTC value, and an
 idempotency key. `waved.Config.TaprootAssetOORPreparer` is programmatic-only;
-its `PrepareTaprootAssetOOR` implementation must durably reconcile repeated
-request IDs before it calls tapd again.
+standalone `waved` populates it from the disabled-by-default serialized
+`taprootassets` configuration during RPC lifecycle setup. Its
+`PrepareTaprootAssetOOR` implementation uses a versioned file journal to
+durably reconcile repeated request IDs before it calls tapd again. Neither
+swapd nor the operator imports tap-sdk types or receives tapd credentials.
 
-Revision note (2026-07-15): updated after the public daemon preparation seam,
-fail-closed RPC coverage, and the client/swapd custody-boundary decision.
+Revision note (2026-07-15): updated after merged `tap-sdk#163`, the concrete
+client adapter, durable reconciliation journal, and opt-in standalone daemon
+wiring.
