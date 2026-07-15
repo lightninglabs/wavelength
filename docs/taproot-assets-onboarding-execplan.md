@@ -14,7 +14,7 @@ The observable demonstration is a single idempotent daemon RPC and CLI command. 
 - [x] (2026-07-15 17:27Z) Selected a direct confirmed asset-deposit VTXO as the PoC protocol.
 - [x] (2026-07-15 18:31Z) Added the SDK-neutral onboarding request, result, journal, tap-sdk-backed implementation, protocol RPCs, and restart/idempotency tests.
 - [x] (2026-07-15 19:58Z) Added LND WalletKit anchor signing, operator registration, ready-only local persistence, actor activation, and restart-safe RPC tests in `waved`.
-- [ ] Add the daemon protobuf RPC and a `wavecli taproot-asset onboard` command.
+- [x] (2026-07-15 18:23Z) Added the daemon protobuf RPC and the advanced `wavecli taproot-assets onboard` command with optional confirmation polling.
 - [ ] Add unit, persistence, RPC, retry, and command tests; run repository build, unit, formatting, lint, and race checks.
 
 ## Surprises & Discoveries
@@ -53,6 +53,10 @@ The observable demonstration is a single idempotent daemon RPC and CLI command. 
   Rationale: the sealed package, final PSBT, standard policy template, and asset root bind the exact output and its owner key. Registering that public output cannot grant spending authority, while the subsequent OOR spend still requires the owner signature. This keeps the operator boundary credential-free and avoids inventing a second authentication protocol.
   Date/Author: 2026-07-15 / Codex
 
+- Decision: require an explicit CLI idempotency key instead of generating one.
+  Rationale: a generated key that is not durably recorded outside waved makes a manual retry after interruption unsafe. Requiring the caller to choose and preserve the key makes the command's retry contract visible and testable.
+  Date/Author: 2026-07-15 / Codex
+
 ## Outcomes & Retrospective
 
 Implementation is in progress. Completion must state which wallet modes and asset shapes were demonstrated, the exact validation commands, and any remaining limitation around unilateral exit of a direct on-chain VTXO.
@@ -73,7 +77,7 @@ The builder will ask tapd to verify the proof and list the complete anchor inven
 
 Add an LND WalletKit signer in `waved` that calls `SignPsbt` followed by `FinalizePsbt`. It is enabled only for the LND wallet backend. Wire the onboarding service after the wallet, tap-sdk adapter, operator terms, VTXO store, and VTXO manager are ready. The service sends a direct `arkrpc.RegisterTaprootAssetVTXO` call containing the sealed package, final PSBT, policy, and asset root; output coordinates and the owner key are derived and cross-checked from those artifacts. On success it saves the local descriptor and tells the VTXO manager to materialize it. All programmatic dependencies remain excluded from mapstructure.
 
-Extend `waverpc/daemon.proto` with `OnboardTaprootAsset`. The request carries an idempotency key, asset ref, full amount, proof bytes, and maximum fee. The response reports one of committed/pending-confirmation/ready plus the output and root. Add a CLI command that reads the proof file, uses an explicit or generated request ID, retries pending confirmation when `--wait` is set, and prints stable JSON.
+Extend `waverpc/daemon.proto` with `OnboardTaprootAsset`. The request carries an idempotency key, asset ref, full amount, proof bytes, and maximum fee. The response reports pending-confirmation or ready plus the output and root. Add a CLI command that reads the proof file, requires an explicit request ID, retries pending confirmation when `--wait` is set, and prints stable JSON.
 
 ## Concrete Steps
 
@@ -107,7 +111,7 @@ Unit tests must prove request validation, exact policy/root composition, rejecti
 
 The RPC test must call onboarding twice with the same request. The tap-sdk commit fake must observe one commit, the first response must be pending confirmation, and the second must become ready after the operator fake returns a confirmation height. A changed request with the same ID must fail before an external call.
 
-The CLI must expose `wavecli taproot-asset onboard --asset-ref ... --asset-amount ... --proof-file ... --max-fee-sat ...`. In a regtest deployment with tapd and Wavelength sharing LND, the command should publish one transaction, wait for a block when requested, return a ready VTXO outpoint, and allow that outpoint to be passed to the existing Taproot Asset OOR send command.
+The CLI must expose `wavecli taproot-assets onboard --idempotency-key ... --asset-ref ... --asset-amount ... --proof-file ... --max-fee-sat ...`. In a regtest deployment with tapd and Wavelength sharing LND, the command should publish one transaction, wait for a block when requested, return a ready VTXO outpoint, and allow that outpoint to be passed to the existing Taproot Asset OOR send command.
 
 ## Idempotence and Recovery
 
