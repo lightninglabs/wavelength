@@ -78,15 +78,15 @@ type Config struct {
 	// startup.
 	WalletBtcwalletFilterHeadersSource string
 
-	// SwapServerAddress is the swapdk-server address for the selected
+	// SwapServerAddress is the swap server address for the selected
 	// transport. Empty selects the daemon network+transport default.
 	SwapServerAddress string
 
-	// SwapServerTransport selects how the embedded daemon talks to
-	// swapdk-server. Empty defaults to gRPC.
+	// SwapServerTransport selects how the embedded daemon talks to the
+	// swap server. Empty defaults to gRPC.
 	SwapServerTransport Transport
 
-	// SwapServerTLSCertPath pins the swapdk-server TLS certificate.
+	// SwapServerTLSCertPath pins the swap server TLS certificate.
 	SwapServerTLSCertPath string
 
 	// SwapServerInsecure disables TLS for the swap server connection.
