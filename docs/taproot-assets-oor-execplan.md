@@ -60,6 +60,9 @@ transition, persist both layers, and only then request Ark signatures.
 - [x] (2026-07-15 16:00Z) Passed `go test -race ./tapassets`, focused adapter,
   config, and embedded-SDK tests, changed-code lint, `make build`, and the full
   `make unit` suite including baselib.
+- [x] (2026-07-15 17:15Z) Rebased onto current Wavelength main, reran the full
+  root and baselib unit suite, changed-code lint, and build, and documented the
+  remaining asset-bearing VTXO bootstrap gap for the cross-repository PoC.
 
 ## Surprises & Discoveries
 
@@ -79,12 +82,10 @@ transition, persist both layers, and only then request Ark signatures.
 - Observation: current tapd can commit an unconfirmed compact path but cannot
   publish/log that path through chain porter. The OOR slice must persist the
   path and leave confirmation materialization/publish to a later boundary.
-- Observation: the merged tap-sdk cannot currently be imported by Wavelength.
-  Wavelength selects btcd v0.26 and its `/v2` modules, while tap-sdk still
-  imports classic root-module `wire`, `txscript`, and `chaincfg` packages that
-  are absent at v0.26. Evidence: adding tap-sdk commit `932b4aa` and compiling
-  the adapter failed during package loading; the exact reproduction is filed
-  as `lightninglabs/tap-sdk#163`.
+- Observation: before tap-sdk#163, Wavelength selected btcd v0.26 and its
+  `/v2` modules while tap-sdk imported classic root-module `wire`, `txscript`,
+  and `chaincfg` packages absent at that version. Adding tap-sdk commit
+  `932b4aa` therefore failed during package loading.
 - Observation: merged `tap-sdk#163` removed that module-graph blocker without
   upgrading Wavelength's pinned taproot-assets module. The concrete adapter
   compiles against btcd v0.26 and the `/v2` packages while consuming only
@@ -108,6 +109,12 @@ transition, persist both layers, and only then request Ark signatures.
   local protobuf compiler successfully regenerated the stubs; only the
   expected `waverpc` source/stub remained changed after removing unrelated
   generator-version drift.
+- Observation: ordinary boarding cannot create the first asset-bearing VTXO.
+  The wallet records boarding UTXOs as Bitcoin-only inputs, `TriggerBoardMsg`
+  and `VTXORequest` carry no asset transition, and the round consumes the
+  boarding output without a tap-sdk commit. A fixture-free demo therefore
+  needs an explicit asset-deposit/boarding protocol; inserting only a database
+  root would not prove asset continuity.
 
 ## Decision Log
 
@@ -161,8 +168,9 @@ transition, persist both layers, and only then request Ark signatures.
 
 ## Outcomes & Retrospective
 
-Implementation is in progress. The SDK-neutral package/root, typed transport,
-and prepared-FSM milestones pass `go test ./lib/tx/oor ./rpc/oorpb ./oor` and
+The PoC implementation is complete through the OOR boundary. The SDK-neutral
+package/root, typed transport, and prepared-FSM milestones pass
+`go test ./lib/tx/oor ./rpc/oorpb ./oor` and
 changed-code lint. Prepared sessions prove that Ark signing is the first FSM
 effect and that submit retries restore the same sealed packages and canonical
 recipients. VTXO persistence now retains the asset root, generic selection
@@ -180,8 +188,10 @@ confirmed proof against tapd's complete managed-anchor inventory, commits the
 checkpoint and Ark transitions in order, persists opaque SDK packages with
 outcome-unknown attempt markers, and restores a fully committed request
 without contacting tapd. The adapter is installed only when
-`taprootassets.enabled` is set. A live regtest showcase and any gaps it exposes
-remain to be completed.
+`taprootassets.enabled` is set. The complete root and baselib unit suite,
+changed-code lint, race-enabled adapter tests, and debug build pass on the
+rebased branch. A live fixture-free regtest showcase still needs an
+asset-deposit/boarding path that creates the first valid asset-bearing VTXO.
 
 ## Context and Orientation
 
@@ -314,12 +324,12 @@ original checkout or its user-owned submodule state.
 
 - tap-sdk design: `tap-sdk/docs/design/advanced-custom-anchor-transactions.md`
 - tap-sdk epic: `lightninglabs/tap-sdk#139`
-- tap-sdk btcd compatibility blocker: `lightninglabs/tap-sdk#163`
+- merged tap-sdk compatibility work: `lightninglabs/tap-sdk#163`
 - historical reference: `lightninglabs/darepo-client#12`
 - Wavelength OOR overview: `docs/oor_subsystem.md`
 
 The feature branch is `feat/wavelength-taproot-assets-oor`, based on
-`origin/claude/wavelength-project-rename-f5f721`.
+`origin/main`.
 
 ## Interfaces and Dependencies
 
