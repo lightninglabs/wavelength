@@ -49,6 +49,7 @@ into specific topics below.
 |----------|-------------|
 | [release_branch_management.md](release_branch_management.md) | Trunk-based release model: `v0.1.x-branch` release branches, the `main` `.99` version convention, tagging with `scripts/tag-release.sh` |
 | [backport-workflow.md](backport-workflow.md) | Automated backport of merged `main` PRs to release branches via `backport-v*` labels |
+| [release.md](release.md) | Reproducible binary release builds (`make release`/`docker-release`), manifest generation, and multi-signer verification (`scripts/verify-install.sh`) |
 
 ## Operations
 
