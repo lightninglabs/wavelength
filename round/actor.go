@@ -69,6 +69,11 @@ type RefreshVTXORequest struct {
 	// Amount is the VTXO value in satoshis.
 	Amount int64
 
+	// TriggerRegistration causes the round actor to emit IntentRequested
+	// after adding this refresh to the assembling round. Expiry-driven
+	// refreshes set this so they do not depend on a later host RPC.
+	TriggerRegistration bool
+
 	// OperatorFee is an advisory-only hint under the seal-time fee
 	// handshake (#270). The VTXO actor's RefreshFeeQuoter fills
 	// this field during auto-refresh so downstream emitters (logs,
@@ -2920,6 +2925,18 @@ func (a *RoundClientActor) handleRefreshVTXORequest(ctx context.Context,
 			fmt.Errorf("FSM error processing refresh package: %w",
 				err),
 		)
+	}
+
+	if req.TriggerRegistration {
+		err = a.askEventAndProcessOutbox(
+			ctx, roundFSM, &IntentRequested{},
+		)
+		if err != nil {
+			return fn.Err[actormsg.RoundActorResp](
+				fmt.Errorf("trigger automatic refresh "+
+					"registration: %w", err),
+			)
+		}
 	}
 
 	a.log.InfoS(ctx, "Queued VTXO for refresh",

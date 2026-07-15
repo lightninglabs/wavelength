@@ -333,6 +333,7 @@ func TestProcessOutboxForfeitRequest(t *testing.T) {
 
 	require.Equal(t, vtxo.Outpoint, refreshReq.VTXOOutpoint)
 	require.Equal(t, int64(vtxo.Amount), refreshReq.Amount)
+	require.True(t, refreshReq.TriggerRegistration)
 	require.Equal(t, policyTemplate, refreshReq.PolicyTemplate)
 	require.Equal(t, vtxo.ClientKey, refreshReq.SigningKey)
 

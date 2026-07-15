@@ -1813,6 +1813,54 @@ func TestHandleRefreshVTXORequest(t *testing.T) {
 			t, vtxoOutpoint, *assembly.Forfeits[0].VTXOOutpoint,
 		)
 	})
+
+	t.Run("automatic_refresh_triggers_registration", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.setupMockRoundStoreForStart()
+		require.NoError(t, h.start())
+
+		vtxoOutpoint := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("automatic-refresh")),
+			Index: 0,
+		}
+		amount := btcutil.Amount(50_000)
+		h.vtxoStore.On(
+			"GetVTXO", mock.Anything, vtxoOutpoint,
+		).Return(&ClientVTXO{
+			Outpoint: vtxoOutpoint,
+			Amount:   amount,
+		}, nil)
+
+		policyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
+			h.clientPubKey, h.operatorPubKey, 144,
+		)
+		require.NoError(t, err)
+
+		result := h.receive(&RefreshVTXORequest{
+			VTXOOutpoint:        vtxoOutpoint,
+			Amount:              int64(amount),
+			TriggerRegistration: true,
+			PolicyTemplate:      policyTemplate,
+		})
+		require.True(
+			t, result.IsOk(),
+			"refresh failed: %v", result.Err(),
+		)
+
+		states := h.queryState()
+		tempState, exists := h.findTempState(states)
+		require.True(t, exists, "expected temp-keyed FSM state")
+
+		intentSent, ok := tempState.State.(*IntentSentState)
+		require.True(
+			t, ok, "expected IntentSentState, got %T",
+			tempState.State,
+		)
+		require.Len(t, intentSent.Intents.Forfeits, 1)
+		require.Len(t, intentSent.Intents.VTXOs, 1)
+	})
 }
 
 // markerCount returns the total number of IsChange=true entries

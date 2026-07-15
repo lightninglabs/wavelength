@@ -442,12 +442,13 @@ func (a *VTXOActor) processOutbox(ctx context.Context,
 			)
 
 			refreshReq := &round.RefreshVTXORequest{
-				VTXOOutpoint:   m.VTXOOutpoint,
-				Amount:         int64(vtxo.Amount),
-				OperatorFee:    int64(operatorFee),
-				PolicyTemplate: policyTemplate,
-				OwnerKey:       vtxo.ClientKey,
-				SigningKey:     vtxo.ClientKey,
+				VTXOOutpoint:        m.VTXOOutpoint,
+				Amount:              int64(vtxo.Amount),
+				TriggerRegistration: true,
+				OperatorFee:         int64(operatorFee),
+				PolicyTemplate:      policyTemplate,
+				OwnerKey:            vtxo.ClientKey,
+				SigningKey:          vtxo.ClientKey,
 			}
 			a.tellManager(ctx, &RelayToRoundMsg{
 				Payload: refreshReq,
