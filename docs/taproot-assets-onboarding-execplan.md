@@ -15,7 +15,7 @@ The observable demonstration is a single idempotent daemon RPC and CLI command. 
 - [x] (2026-07-15 18:31Z) Added the SDK-neutral onboarding request, result, journal, tap-sdk-backed implementation, protocol RPCs, and restart/idempotency tests.
 - [x] (2026-07-15 19:58Z) Added LND WalletKit anchor signing, operator registration, ready-only local persistence, actor activation, and restart-safe RPC tests in `waved`.
 - [x] (2026-07-15 18:23Z) Added the daemon protobuf RPC and the advanced `wavecli taproot-assets onboard` command with optional confirmation polling.
-- [ ] Add unit, persistence, RPC, retry, and command tests; run repository build, unit, formatting, lint, and race checks.
+- [x] (2026-07-15 18:50Z) Added unit, persistence, RPC, retry, and command tests; ran repository build, full unit, formatting, changed-code lint, and race checks.
 
 ## Surprises & Discoveries
 
@@ -59,7 +59,34 @@ The observable demonstration is a single idempotent daemon RPC and CLI command. 
 
 ## Outcomes & Retrospective
 
-Implementation is in progress. Completion must state which wallet modes and asset shapes were demonstrated, the exact validation commands, and any remaining limitation around unilateral exit of a direct on-chain VTXO.
+The client now moves one complete isolated asset anchor into a standard
+Wavelength policy through tap-sdk, delegates Bitcoin signing to LND WalletKit,
+publishes and logs the transition through tapd, waits for operator-confirmed
+registration, and only then materializes the output as a selectable local
+VTXO. The durable journal binds the caller's idempotency key to the request,
+owner key, sealed package, and final PSBT; post-commit retries are
+byte-identical and ambiguous commit outcomes fail for reconciliation.
+
+The supported PoC shape is deliberately narrow: tapd and `waved` share one LND
+wallet, the selected proof owns the anchor's only asset, the full asset amount
+moves to one wallet-owned asset script key, and `max_fee_sat` is paid exactly.
+The advanced `wavecli taproot-assets onboard` command requires a stable
+caller-owned request ID and can poll pending confirmation with `--wait`.
+
+Validation completed with `make rpc`, `make build`, `make unit`,
+`make lint-changed-local`, focused package tests, and `go test -race
+./tapassets ./waved`. Coverage includes request conflicts, passive/partial
+rejection, policy/root composition, ambiguous commit handling, restart
+restoration, WalletKit signing, pending-to-ready registration, duplicate local
+persistence, proof-file CLI mapping, and byte-identical wait retries. This
+branch has not run the full cross-repository regtest against live tapd,
+bitcoind, operator, sender, and receiver processes.
+
+No additional tap-sdk or taproot-assets API issue was required. Remaining
+prototype limitations are non-LND anchor signing, partial/passive asset
+transitions, fee estimation/change, proof-courier product UX, and a demonstrated
+unilateral-exit path for the direct root. The supported showcase continues by
+spending the registered output through the existing Taproot Asset OOR path.
 
 ## Context and Orientation
 
