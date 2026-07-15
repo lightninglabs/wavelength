@@ -111,10 +111,14 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
 - `Config.EagerRoundJoin` defaults via `defaultEagerRoundJoin()`: `false` on
   the standalone build, `true` under the `wavewalletrpc` build tag.
 - `registerOOREventRoutes` checks for a typed `*oorpb.SubmitRejectedError`
-  before the generic error path, so an OOR rejection drives a
-  non-retryable `OutboxErrorEvent` instead of an `Adapt` error that would
-  stall the serverconn ingress cursor on the offending envelope
-  (`server.go`).
+  before the generic error path, so an OOR rejection drives an
+  `OutboxErrorEvent` instead of an `Adapt` error that would stall the
+  serverconn ingress cursor on the offending envelope (`server.go`).
+  `oorRejectRetry` classifies the event's `Retryable` flag: it is `false`
+  (terminal) for every typed reject except `OOR_REJECT_INPUT_NOT_SPENDABLE`,
+  which is transient (the operator has not yet caught up to the input's
+  commitment confirmation) and so re-drives the submit after
+  `oorInputNotSpendableRetryDelay`.
 
 ## Deep Docs
 

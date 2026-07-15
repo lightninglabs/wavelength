@@ -409,13 +409,12 @@ type SubmitPackageRejection struct {
 	// the rejected envelope.
 	SessionId []byte `protobuf:"bytes,3,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
 	// server_best_height is the operator's current best block height at the
-	// time of the rejection, or 0 when the operator did not populate it. It
-	// is a diagnostic hint for transient rejections (notably
-	// OOR_REJECT_INPUT_NOT_SPENDABLE): a client that observed its input
-	// confirm at height H can compare against this value — if
-	// server_best_height < H the operator simply has not caught up to the
-	// input's confirmation yet, so a retry is guaranteed safe rather than
-	// masking a genuine problem.
+	// time of the rejection, or 0 when the operator did not populate it. It is
+	// a diagnostic hint for transient rejections (notably
+	// OOR_REJECT_INPUT_NOT_SPENDABLE): a value below the input's confirmation
+	// height confirms the operator is simply behind on chain sync rather than
+	// rejecting for a genuine reason. It is informational only — clients route
+	// their retry on the typed code, not on this value.
 	ServerBestHeight uint32 `protobuf:"varint,4,opt,name=server_best_height,json=serverBestHeight,proto3" json:"server_best_height,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache

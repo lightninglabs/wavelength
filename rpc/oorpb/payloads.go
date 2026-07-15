@@ -294,10 +294,11 @@ type SubmitRejectedError struct {
 	Reason string
 
 	// ServerBestHeight is the operator's best block height at rejection
-	// time, or 0 when the operator did not populate it. For transient
-	// rejections (OOR_REJECT_INPUT_NOT_SPENDABLE) the client compares this
-	// against the height at which it observed its input confirm to decide
-	// whether the operator is merely behind on chain sync.
+	// time, or 0 when the operator did not populate it. It is a diagnostic
+	// hint for transient rejections (OOR_REJECT_INPUT_NOT_SPENDABLE) — a
+	// value below the input's confirmation height confirms the operator is
+	// merely behind on chain sync — but the retry decision routes on the
+	// typed code alone, not on this value.
 	ServerBestHeight uint32
 }
 

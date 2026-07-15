@@ -106,10 +106,12 @@ func (e *ErrUserBalanceExceeded) Is(target error) bool {
 // wait and retry rather than restructuring the transfer.
 //
 // ServerBestHeight carries the operator's best block height at rejection time
-// (0 if the operator did not populate it). A caller that knows the height at
-// which its input confirmed can treat ServerBestHeight below that height as
-// proof the operator is merely behind on chain sync, making the retry provably
-// safe rather than a blind reattempt.
+// (0 if the operator did not populate it). It is a diagnostic hint only —
+// surfaced in the failure reason and logs so an operator being behind on chain
+// sync (its best height below the input's confirmation height) is easy to
+// confirm. The retry decision itself does not consult it: the operator emits
+// this typed code only for the transient pending-input case, so routing on the
+// code alone is already correct.
 type ErrInputNotSpendable struct {
 	Reason           string
 	ServerBestHeight uint32

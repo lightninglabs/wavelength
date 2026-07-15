@@ -791,7 +791,11 @@ const operatorConnPollInterval = 15 * time.Second
 // so a short delay keeps the swap responsive, while being long enough to avoid
 // hammering the operator with resubmits between blocks. It is deliberately far
 // below any swap invoice deadline so the natural deadline (not this timer)
-// bounds total retrying when the operator never catches up.
+// bounds total retrying when the operator never catches up. A plain SendOOR
+// with no such deadline re-drives indefinitely on a persistent reject — the
+// same "re-drive on operator silence, never give up" behavior the
+// AwaitingSubmitAccepted transport timer already has — which is acceptable
+// because the operator only emits this transient code for a pending input.
 const oorInputNotSpendableRetryDelay = 15 * time.Second
 
 // oorRejectRetry decides how a classified OOR submit rejection is driven
