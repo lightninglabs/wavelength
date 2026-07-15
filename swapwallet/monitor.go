@@ -186,7 +186,7 @@ func (r *Runtime) fanOutSwapUpdate(
 	// Letting the generic swap monitor project the SDK row would race the
 	// credit projector and temporarily overwrite a one-satoshi SEND with a
 	// zero-satoshi terminal row.
-	if creditProjectorOwnsSwapSummary(summary) {
+	if r.creditProjectorOwnsSwapSummary(summary) {
 		return nil
 	}
 

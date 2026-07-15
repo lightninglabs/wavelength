@@ -100,18 +100,45 @@ func TestMonitorLoopFansOutSwapUpdates(t *testing.T) {
 	)
 }
 
-// TestMonitorLoopSkipsCreditOnlySwaps asserts that a completed credit-only
-// SDK swap row cannot overwrite the activity row owned by the durable credit
-// projector. The SDK row records Ark funding amount, which is zero for a
-// fully credit-funded payment, while the credit operation retains the invoice
-// principal used by wallet activity.
-func TestMonitorLoopSkipsCreditOnlySwaps(t *testing.T) {
+// TestMonitorLoopDoesNotInferCreditOwnershipFromRail verifies a CREDIT swap
+// created through the public swap RPC remains visible when this wallet has no
+// matching locally admitted credit operation.
+func TestMonitorLoopDoesNotInferCreditOwnershipFromRail(t *testing.T) {
 	t.Parallel()
 
 	store := &fakeActivityProjector{}
 	r := newRuntime(t.Context(), &Deps{ActivityStore: store})
 	defer r.stop()
 
+	sub := r.subscribe()
+	err := r.fanOutSwapUpdate(&swapclientrpc.SubscribeSwapsResponse{
+		Swap: &swapclientrpc.SwapSummary{
+			PaymentHash: "credit-only",
+			Direction: swapclientrpc.
+				SwapDirection_SWAP_DIRECTION_PAY,
+			State: swapclientrpc.
+				SwapState_SWAP_STATE_COMPLETED,
+			AmountSat: 0,
+			SettlementType: swapclientrpc.
+				SwapSettlementType_SWAP_SETTLEMENT_TYPE_CREDIT,
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, drainEntries(sub), 1)
+	require.Equal(t, 1, store.count())
+}
+
+// TestMonitorLoopSkipsLocallyOwnedCreditSwap asserts a completed credit-only
+// SDK swap cannot overwrite the row owned by this wallet's durable credit
+// operation.
+func TestMonitorLoopSkipsLocallyOwnedCreditSwap(t *testing.T) {
+	t.Parallel()
+
+	store := &fakeActivityProjector{}
+	r := newRuntime(t.Context(), &Deps{ActivityStore: store})
+	defer r.stop()
+
+	r.markCreditProjectorOwned("credit-only")
 	sub := r.subscribe()
 	err := r.fanOutSwapUpdate(&swapclientrpc.SubscribeSwapsResponse{
 		Swap: &swapclientrpc.SwapSummary{

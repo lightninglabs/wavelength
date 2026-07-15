@@ -505,6 +505,16 @@ func TestRouterSendInvoiceHandsCreditPayToRegistry(t *testing.T) {
 	require.Equal(t, invoice, reg.lastPay.Invoice)
 	require.Equal(t, uint64(500_000), reg.lastPay.MaxCreditSat)
 	require.True(t, reg.lastPay.CreditOnly)
+	require.True(
+		t,
+		r.runtime.creditProjectorOwnsSwapSummary(
+			&swapclientrpc.SwapSummary{
+				PaymentHash: paymentHash,
+				SettlementType: swapclientrpc.
+					SwapSettlementType_SWAP_SETTLEMENT_TYPE_CREDIT,
+			},
+		),
+	)
 
 	// The router no longer drives the top-up or pay inline.
 	require.Zero(t, swap.createCreditCalls)

@@ -3,6 +3,7 @@
 package swapwallet
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -26,15 +27,95 @@ const creditProjectInterval = 5 * time.Second
 // emit so the projected terminal update lands on the same row.
 const creditCounterparty = "credit"
 
-// creditProjectorOwnsSwapSummary reports whether the durable credit operation,
-// rather than the generic swap monitor or history reconciler, owns a swap's
-// wallet activity row. Credit-only SDK swaps persist a zero Ark funding amount,
-// while the credit operation retains the invoice principal. The server emits
-// CREDIT only for a fully credit-funded invoice; partial credit funding emits
-// MIXED and remains owned by the generic swap lifecycle.
-func creditProjectorOwnsSwapSummary(summary *swapclientrpc.SwapSummary) bool {
-	return summary != nil && summary.GetSettlementType() == swapclientrpc.
-		SwapSettlementType_SWAP_SETTLEMENT_TYPE_CREDIT
+// creditProjectorOwnsSwapSummary reports whether this wallet's durable credit
+// operation, rather than the generic swap monitor or history reconciler, owns
+// a swap activity row. CREDIT settlement identifies the rail, while the local
+// ownership set proves the operation was admitted through this wallet's credit
+// registry.
+func (r *Runtime) creditProjectorOwnsSwapSummary(
+	summary *swapclientrpc.SwapSummary) bool {
+
+	if summary == nil || summary.GetSettlementType() != swapclientrpc.
+		SwapSettlementType_SWAP_SETTLEMENT_TYPE_CREDIT {
+		return false
+	}
+
+	r.creditOwnerMu.RLock()
+	defer r.creditOwnerMu.RUnlock()
+
+	_, ok := r.creditOwnedSwaps[summary.GetPaymentHash()]
+
+	return ok
+}
+
+// markCreditProjectorOwned records a successfully admitted local credit-only
+// pay so subsequent swap summaries cannot claim its activity row.
+func (r *Runtime) markCreditProjectorOwned(paymentHash string) {
+	if paymentHash == "" {
+		return
+	}
+
+	r.creditOwnerMu.Lock()
+	defer r.creditOwnerMu.Unlock()
+
+	r.creditOwnedSwaps[paymentHash] = struct{}{}
+}
+
+// recordCreditProjectorOwnership adds credit-only pay operations from a full
+// durable registry snapshot. Ownership is monotonic because operations remain
+// durable after terminal settlement; merging also preserves an admission
+// marker while that operation is concurrently becoming visible to the poll.
+func (r *Runtime) recordCreditProjectorOwnership(ops []credit.CreditOpSummary) {
+	r.creditOwnerMu.Lock()
+	defer r.creditOwnerMu.Unlock()
+
+	for _, op := range ops {
+		if op.Kind != credit.KindPay || !op.CreditOnly {
+			continue
+		}
+
+		paymentHash := strings.TrimPrefix(op.OpKey, "pay:")
+		if paymentHash != "" && paymentHash != op.OpKey {
+			r.creditOwnedSwaps[paymentHash] = struct{}{}
+		}
+	}
+}
+
+// restoreCreditProjectorOwnership synchronously reconstructs wallet-local
+// credit activity ownership during the wallet-ready resume phase. It runs
+// before activity backfill and the live monitor start, closing the restart
+// window in which a credit-only SDK swap could otherwise project its zero Ark
+// funding amount before the asynchronous credit poll sees the durable op.
+func (r *Runtime) restoreCreditProjectorOwnership(ctx context.Context) {
+	if r.deps.CreditRegistry == nil {
+		return
+	}
+
+	resp, err := r.deps.CreditRegistry.Ask(
+		ctx, &credit.ListCreditOpsRequest{PendingOnly: false},
+	).Await(ctx).Unpack()
+	if err != nil {
+		r.deps.resolveLog().WarnS(
+			ctx,
+			"Credit ownership restore failed",
+			err,
+		)
+
+		return
+	}
+
+	list, ok := resp.(*credit.ListCreditOpsResponse)
+	if !ok {
+		r.deps.resolveLog().WarnS(
+			ctx,
+			"Credit ownership restore got unexpected response",
+			fmt.Errorf("got %T", resp),
+		)
+
+		return
+	}
+
+	r.recordCreditProjectorOwnership(list.Ops)
 }
 
 // startCreditProjectorLoop spawns the background goroutine that projects
@@ -114,6 +195,7 @@ func (r *Runtime) pollCreditOps(projected map[string]credit.State) {
 
 		return
 	}
+	r.recordCreditProjectorOwnership(list.Ops)
 
 	for i := range list.Ops {
 		op := list.Ops[i]
@@ -127,18 +209,6 @@ func (r *Runtime) pollCreditOps(projected map[string]credit.State) {
 			continue
 		}
 
-		projected[op.OpID] = op.State
-
-		// A terminal op clears wallet-local pending tracking so the
-		// deadline watcher stops ageing the row; a still-pending op is
-		// re-tracked so it survives a restart and appears in List
-		// snapshots even though the runtime's pending map is in-memory.
-		if op.State.IsTerminal() {
-			r.clearPending(entry.GetId())
-		} else {
-			r.trackPendingEntryWithoutTimeout(entry)
-		}
-
 		// Project the credit row into the canonical activity log before
 		// fanning it out. Credit-only sends reach the feed only through
 		// this poll (never Runtime.emit from the swap monitor), so
@@ -147,7 +217,20 @@ func (r *Runtime) pollCreditOps(projected map[string]credit.State) {
 		// class of bug). The store suppresses no-op re-projections, so
 		// the coarse re-poll of unchanged terminal rows appends no
 		// duplicate events.
-		r.projectAndEmit(r.rootCtx, entry)
+		if _, err := r.projectEmitLocked(r.rootCtx, entry); err != nil {
+			continue
+		}
+
+		projected[op.OpID] = op.State
+
+		// Advance in-memory tracking only after the durable projection
+		// succeeds. A failed write remains eligible for the next poll
+		// and cannot strand an unchanged terminal operation.
+		if op.State.IsTerminal() {
+			r.clearPending(entry.GetId())
+		} else {
+			r.trackPendingEntryWithoutTimeout(entry)
+		}
 	}
 }
 
