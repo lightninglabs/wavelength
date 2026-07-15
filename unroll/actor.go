@@ -326,7 +326,7 @@ func (b *behavior) OnStop(ctx context.Context) error {
 func (b *behavior) handleEvent(ctx context.Context, ax actor.Exec[unrollTx],
 	event Event) fn.Result[Resp] {
 
-	if err := b.ensureLoaded(ctx); err != nil {
+	if err := b.ensureLoaded(ctx, event); err != nil {
 		return fn.Err[Resp](err)
 	}
 
@@ -673,9 +673,18 @@ func (b *behavior) currentHeightHint() uint32 {
 func (b *behavior) resolveExitSpendPolicy(ctx context.Context) (ExitSpendPolicy,
 	error) {
 
+	return b.resolveExitSpendPolicyFor(
+		ctx, b.exitPolicyKind(), b.exitPolicyRef(),
+	)
+}
+
+// resolveExitSpendPolicyFor reconstructs a specific durable policy identity.
+func (b *behavior) resolveExitSpendPolicyFor(ctx context.Context,
+	kind ExitPolicyKind, ref string) (ExitSpendPolicy, error) {
+
 	req := ExitSpendPolicyRequest{
-		Kind:               b.exitPolicyKind(),
-		Ref:                b.exitPolicyRef(),
+		Kind:               exitPolicyKind(kind),
+		Ref:                ref,
 		StandardDescriptor: b.desc,
 	}
 	if req.Kind == StandardVTXOTimeoutExitPolicyKind {
@@ -693,6 +702,19 @@ func (b *behavior) resolveExitSpendPolicy(ctx context.Context) (ExitSpendPolicy,
 	}
 
 	return b.cfg.ExitSpendPolicyResolver.ResolveExitSpendPolicy(ctx, req)
+}
+
+// exitPolicyIdentityForEvent returns the policy identity before a first
+// StartEvent has been checkpointed. Restored jobs use the persisted identity.
+func (b *behavior) exitPolicyIdentityForEvent(event Event) (ExitPolicyKind,
+	string) {
+
+	if start, ok := event.(*StartEvent); ok &&
+		(start.ExitPolicyKind != "" || start.ExitPolicyRef != "") {
+		return exitPolicyKind(start.ExitPolicyKind), start.ExitPolicyRef
+	}
+
+	return b.exitPolicyKind(), b.exitPolicyRef()
 }
 
 // safeTxOutPkScript returns a defensive copy of tx.TxOut[index].PkScript.
@@ -1217,7 +1239,7 @@ func actualSweepFeeSat(sweepTx *wire.MsgTx, inputValueSat int64) (int64, bool) {
 // PlannerState.Validate call catches checkpoint/proof drift (e.g. an
 // InFlightTxids entry that no longer resolves in the proof) loudly
 // instead of letting the FSM silently desync.
-func (b *behavior) ensureLoaded(ctx context.Context) error {
+func (b *behavior) ensureLoaded(ctx context.Context, event Event) error {
 	if b.proof == nil {
 		proof, err := b.cfg.ProofAssembler.EnsureProof(
 			ctx, b.cfg.TargetOutpoint,
@@ -1239,7 +1261,15 @@ func (b *behavior) ensureLoaded(ctx context.Context) error {
 	}
 
 	if b.planner == nil {
-		planner, err := unrollplan.NewPlanner(b.proof)
+		kind, ref := b.exitPolicyIdentityForEvent(event)
+		policy, err := b.resolveExitSpendPolicyFor(ctx, kind, ref)
+		if err != nil {
+			return err
+		}
+
+		planner, err := unrollplan.NewPlannerWithSweepCSVDelay(
+			b.proof, policy.CSVDelay(),
+		)
 		if err != nil {
 			return err
 		}
@@ -1277,7 +1307,7 @@ func (b *behavior) ensureLoaded(ctx context.Context) error {
 		return err
 	}
 
-	return stateJob(state).PlannerState.Validate(b.proof)
+	return b.planner.ValidateState(&stateJob(state).PlannerState)
 }
 
 // notificationRef builds the subscriber ref the actor hands to txconfirm.
@@ -1658,7 +1688,7 @@ func (b *behavior) proofSpendCallerID(outpoint wire.OutPoint) string {
 func (b *behavior) handleSpendObserved(ctx context.Context,
 	ax actor.Exec[unrollTx], msg *SpendObservedMsg) fn.Result[Resp] {
 
-	if err := b.ensureLoaded(ctx); err != nil {
+	if err := b.ensureLoaded(ctx, nil); err != nil {
 		return fn.Err[Resp](err)
 	}
 

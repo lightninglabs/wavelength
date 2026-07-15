@@ -1240,6 +1240,9 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 		chainSourceRef = s.registerChainSourceActor(ctx)
 	}
 
+	// -------------------------------------------------------
+	// 5. Start database-dependent actors.
+	// -------------------------------------------------------
 	// The database and shared stores were initialized before the wallet so
 	// integrated LND hooks can use durable channel state during startup.
 

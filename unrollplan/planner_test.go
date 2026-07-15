@@ -107,6 +107,29 @@ func TestPlanTargetConfirmedCSVPending(t *testing.T) {
 	require.False(t, snapshot.Done)
 }
 
+// TestPlanCooperativeSpendSkipsProofCSV verifies a custom final spend can use
+// the confirmed VTXO immediately without weakening the proof's timeout path.
+func TestPlanCooperativeSpendSkipsProofCSV(t *testing.T) {
+	proof := linearProofFixture(t)
+	planner, err := NewPlannerWithSweepCSVDelay(proof, 0)
+	require.NoError(t, err)
+
+	confirmHeight := int32(100)
+	state := &State{
+		ConfirmedTxids: []chainhash.Hash{
+			proof.Layers()[0][0],
+			proof.TargetOutpoint().Hash,
+		},
+		TargetConfirmHeight: fn.Some(confirmHeight),
+	}
+
+	snapshot, err := planner.Plan(confirmHeight, state)
+	require.NoError(t, err)
+	require.True(t, snapshot.CSV.UnwrapOrFail(t).Ready)
+	require.Zero(t, snapshot.CSV.UnwrapOrFail(t).BlocksRemaining)
+	require.True(t, snapshot.NeedSweep)
+}
+
 func TestPlanCSVReadyNeedsSweep(t *testing.T) {
 	planner, proof := newPlannerFixture(t,
 		linearProofFixture(t),

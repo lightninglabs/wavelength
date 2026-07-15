@@ -377,12 +377,43 @@ func newRegistryHarness(t *testing.T, proof *recovery.Proof,
 		ChainSource: &fakeRegistryChainSourceRef{
 			height: 200,
 		},
-		Wallet: &fakeSweepWallet{},
+		Wallet:                  &fakeSweepWallet{},
+		ExitSpendPolicyResolver: registryHarnessExitPolicyResolver{},
 	}
 	registry := newRegistryHarnessWithSpawn(t, cfg)
 	t.Cleanup(registry.Stop)
 
 	return registry, store, checkpoints, txconfirmRef
+}
+
+// registryHarnessExitPolicyResolver keeps generic registry tests focused on
+// durable admission while still providing the policy CSV required at actor
+// startup.
+type registryHarnessExitPolicyResolver struct{}
+
+func (registryHarnessExitPolicyResolver) SupportsKind(ExitPolicyKind) bool {
+	return true
+}
+
+func (registryHarnessExitPolicyResolver) ResolveExitSpendPolicy(
+	_ context.Context, req ExitSpendPolicyRequest) (ExitSpendPolicy,
+	error) {
+
+	return &registryHarnessExitPolicy{
+		ExitSpendPolicy: NewStandardVTXOExitSpendPolicy(
+			req.StandardDescriptor,
+		),
+		kind: req.Kind,
+	}, nil
+}
+
+type registryHarnessExitPolicy struct {
+	ExitSpendPolicy
+	kind ExitPolicyKind
+}
+
+func (p *registryHarnessExitPolicy) Kind() ExitPolicyKind {
+	return p.kind
 }
 
 // newRegistryHarnessWithSpawn creates a registry actor whose child-spawn path

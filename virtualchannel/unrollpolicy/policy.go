@@ -107,12 +107,6 @@ func (p *BackingExitSpendPolicy) RequiredLockTime() uint32 {
 	return 0
 }
 
-// DirectBroadcast reports that the LND funding transaction must be relayed
-// exactly as registered instead of going through Ark anchor CPFP handling.
-func (p *BackingExitSpendPolicy) DirectBroadcast() bool {
-	return true
-}
-
 // ValidateTarget verifies the materialized VTXO output is the exact output
 // consumed by the signed virtual-channel backing transaction.
 func (p *BackingExitSpendPolicy) ValidateTarget(target *wire.TxOut) error {
