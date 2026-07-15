@@ -73,7 +73,143 @@ func (x ArkVersionPolicy_State) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use ArkVersionPolicy_State.Descriptor instead.
 func (ArkVersionPolicy_State) EnumDescriptor() ([]byte, []int) {
-	return file_ark_proto_rawDescGZIP(), []int{1, 0}
+	return file_ark_proto_rawDescGZIP(), []int{3, 0}
+}
+
+type RegisterTaprootAssetVTXORequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// transfer_package is the sealed tap-sdk custom-anchor package.
+	TransferPackage []byte `protobuf:"bytes,1,opt,name=transfer_package,json=transferPackage,proto3" json:"transfer_package,omitempty"`
+	// final_anchor_psbt is the fully signed PSBT published for the package.
+	FinalAnchorPsbt []byte `protobuf:"bytes,2,opt,name=final_anchor_psbt,json=finalAnchorPsbt,proto3" json:"final_anchor_psbt,omitempty"`
+	// vtxo_policy_template is the semantic Wavelength owner/operator policy
+	// composed beside the package's Taproot Asset root.
+	VtxoPolicyTemplate []byte `protobuf:"bytes,3,opt,name=vtxo_policy_template,json=vtxoPolicyTemplate,proto3" json:"vtxo_policy_template,omitempty"`
+	// taproot_asset_root is repeated explicitly so cheap request bounds and
+	// script composition checks can run before persistence.
+	TaprootAssetRoot []byte `protobuf:"bytes,4,opt,name=taproot_asset_root,json=taprootAssetRoot,proto3" json:"taproot_asset_root,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *RegisterTaprootAssetVTXORequest) Reset() {
+	*x = RegisterTaprootAssetVTXORequest{}
+	mi := &file_ark_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RegisterTaprootAssetVTXORequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RegisterTaprootAssetVTXORequest) ProtoMessage() {}
+
+func (x *RegisterTaprootAssetVTXORequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ark_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RegisterTaprootAssetVTXORequest.ProtoReflect.Descriptor instead.
+func (*RegisterTaprootAssetVTXORequest) Descriptor() ([]byte, []int) {
+	return file_ark_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *RegisterTaprootAssetVTXORequest) GetTransferPackage() []byte {
+	if x != nil {
+		return x.TransferPackage
+	}
+	return nil
+}
+
+func (x *RegisterTaprootAssetVTXORequest) GetFinalAnchorPsbt() []byte {
+	if x != nil {
+		return x.FinalAnchorPsbt
+	}
+	return nil
+}
+
+func (x *RegisterTaprootAssetVTXORequest) GetVtxoPolicyTemplate() []byte {
+	if x != nil {
+		return x.VtxoPolicyTemplate
+	}
+	return nil
+}
+
+func (x *RegisterTaprootAssetVTXORequest) GetTaprootAssetRoot() []byte {
+	if x != nil {
+		return x.TaprootAssetRoot
+	}
+	return nil
+}
+
+type RegisterTaprootAssetVTXOResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// txid and output_index identify the admitted direct on-chain VTXO.
+	Txid        []byte `protobuf:"bytes,1,opt,name=txid,proto3" json:"txid,omitempty"`
+	OutputIndex uint32 `protobuf:"varint,2,opt,name=output_index,json=outputIndex,proto3" json:"output_index,omitempty"`
+	// confirmation_height is the operator's observed confirmation height.
+	ConfirmationHeight int32 `protobuf:"varint,3,opt,name=confirmation_height,json=confirmationHeight,proto3" json:"confirmation_height,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *RegisterTaprootAssetVTXOResponse) Reset() {
+	*x = RegisterTaprootAssetVTXOResponse{}
+	mi := &file_ark_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RegisterTaprootAssetVTXOResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RegisterTaprootAssetVTXOResponse) ProtoMessage() {}
+
+func (x *RegisterTaprootAssetVTXOResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_ark_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RegisterTaprootAssetVTXOResponse.ProtoReflect.Descriptor instead.
+func (*RegisterTaprootAssetVTXOResponse) Descriptor() ([]byte, []int) {
+	return file_ark_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *RegisterTaprootAssetVTXOResponse) GetTxid() []byte {
+	if x != nil {
+		return x.Txid
+	}
+	return nil
+}
+
+func (x *RegisterTaprootAssetVTXOResponse) GetOutputIndex() uint32 {
+	if x != nil {
+		return x.OutputIndex
+	}
+	return 0
+}
+
+func (x *RegisterTaprootAssetVTXOResponse) GetConfirmationHeight() int32 {
+	if x != nil {
+		return x.ConfirmationHeight
+	}
+	return 0
 }
 
 type GetInfoRequest struct {
@@ -90,7 +226,7 @@ type GetInfoRequest struct {
 
 func (x *GetInfoRequest) Reset() {
 	*x = GetInfoRequest{}
-	mi := &file_ark_proto_msgTypes[0]
+	mi := &file_ark_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -102,7 +238,7 @@ func (x *GetInfoRequest) String() string {
 func (*GetInfoRequest) ProtoMessage() {}
 
 func (x *GetInfoRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_proto_msgTypes[0]
+	mi := &file_ark_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -115,7 +251,7 @@ func (x *GetInfoRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetInfoRequest.ProtoReflect.Descriptor instead.
 func (*GetInfoRequest) Descriptor() ([]byte, []int) {
-	return file_ark_proto_rawDescGZIP(), []int{0}
+	return file_ark_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *GetInfoRequest) GetSupportedArkVersions() []uint32 {
@@ -140,7 +276,7 @@ type ArkVersionPolicy struct {
 
 func (x *ArkVersionPolicy) Reset() {
 	*x = ArkVersionPolicy{}
-	mi := &file_ark_proto_msgTypes[1]
+	mi := &file_ark_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -152,7 +288,7 @@ func (x *ArkVersionPolicy) String() string {
 func (*ArkVersionPolicy) ProtoMessage() {}
 
 func (x *ArkVersionPolicy) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_proto_msgTypes[1]
+	mi := &file_ark_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -165,7 +301,7 @@ func (x *ArkVersionPolicy) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ArkVersionPolicy.ProtoReflect.Descriptor instead.
 func (*ArkVersionPolicy) Descriptor() ([]byte, []int) {
-	return file_ark_proto_rawDescGZIP(), []int{1}
+	return file_ark_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *ArkVersionPolicy) GetVersion() uint32 {
@@ -257,7 +393,7 @@ type GetInfoResponse struct {
 
 func (x *GetInfoResponse) Reset() {
 	*x = GetInfoResponse{}
-	mi := &file_ark_proto_msgTypes[2]
+	mi := &file_ark_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -269,7 +405,7 @@ func (x *GetInfoResponse) String() string {
 func (*GetInfoResponse) ProtoMessage() {}
 
 func (x *GetInfoResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_proto_msgTypes[2]
+	mi := &file_ark_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -282,7 +418,7 @@ func (x *GetInfoResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetInfoResponse.ProtoReflect.Descriptor instead.
 func (*GetInfoResponse) Descriptor() ([]byte, []int) {
-	return file_ark_proto_rawDescGZIP(), []int{2}
+	return file_ark_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *GetInfoResponse) GetVersion() string {
@@ -443,7 +579,7 @@ type EstimateFeeRequest struct {
 
 func (x *EstimateFeeRequest) Reset() {
 	*x = EstimateFeeRequest{}
-	mi := &file_ark_proto_msgTypes[3]
+	mi := &file_ark_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -455,7 +591,7 @@ func (x *EstimateFeeRequest) String() string {
 func (*EstimateFeeRequest) ProtoMessage() {}
 
 func (x *EstimateFeeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_proto_msgTypes[3]
+	mi := &file_ark_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -468,7 +604,7 @@ func (x *EstimateFeeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EstimateFeeRequest.ProtoReflect.Descriptor instead.
 func (*EstimateFeeRequest) Descriptor() ([]byte, []int) {
-	return file_ark_proto_rawDescGZIP(), []int{3}
+	return file_ark_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *EstimateFeeRequest) GetAmountSat() int64 {
@@ -521,7 +657,7 @@ type EstimateFeeResponse struct {
 
 func (x *EstimateFeeResponse) Reset() {
 	*x = EstimateFeeResponse{}
-	mi := &file_ark_proto_msgTypes[4]
+	mi := &file_ark_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -533,7 +669,7 @@ func (x *EstimateFeeResponse) String() string {
 func (*EstimateFeeResponse) ProtoMessage() {}
 
 func (x *EstimateFeeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_proto_msgTypes[4]
+	mi := &file_ark_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -546,7 +682,7 @@ func (x *EstimateFeeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EstimateFeeResponse.ProtoReflect.Descriptor instead.
 func (*EstimateFeeResponse) Descriptor() ([]byte, []int) {
-	return file_ark_proto_rawDescGZIP(), []int{4}
+	return file_ark_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *EstimateFeeResponse) GetLiquidityFeeSat() int64 {
@@ -602,7 +738,16 @@ var File_ark_proto protoreflect.FileDescriptor
 
 const file_ark_proto_rawDesc = "" +
 	"\n" +
-	"\tark.proto\x12\x06arkrpc\"F\n" +
+	"\tark.proto\x12\x06arkrpc\"\xd8\x01\n" +
+	"\x1fRegisterTaprootAssetVTXORequest\x12)\n" +
+	"\x10transfer_package\x18\x01 \x01(\fR\x0ftransferPackage\x12*\n" +
+	"\x11final_anchor_psbt\x18\x02 \x01(\fR\x0ffinalAnchorPsbt\x120\n" +
+	"\x14vtxo_policy_template\x18\x03 \x01(\fR\x12vtxoPolicyTemplate\x12,\n" +
+	"\x12taproot_asset_root\x18\x04 \x01(\fR\x10taprootAssetRoot\"\x8a\x01\n" +
+	" RegisterTaprootAssetVTXOResponse\x12\x12\n" +
+	"\x04txid\x18\x01 \x01(\fR\x04txid\x12!\n" +
+	"\foutput_index\x18\x02 \x01(\rR\voutputIndex\x12/\n" +
+	"\x13confirmation_height\x18\x03 \x01(\x05R\x12confirmationHeight\"F\n" +
 	"\x0eGetInfoRequest\x124\n" +
 	"\x16supported_ark_versions\x18\x01 \x03(\rR\x14supportedArkVersions\"\xa8\x01\n" +
 	"\x10ArkVersionPolicy\x12\x18\n" +
@@ -650,11 +795,12 @@ const file_ark_proto_rawDesc = "" +
 	"\rtotal_fee_sat\x18\x04 \x01(\x03R\vtotalFeeSat\x122\n" +
 	"\x15effective_annual_rate\x18\x05 \x01(\x01R\x13effectiveAnnualRate\x121\n" +
 	"\x15min_viable_amount_sat\x18\x06 \x01(\x03R\x12minViableAmountSat\x12,\n" +
-	"\x12below_dust_warning\x18\a \x01(\bR\x10belowDustWarning2\x90\x01\n" +
+	"\x12below_dust_warning\x18\a \x01(\bR\x10belowDustWarning2\xff\x01\n" +
 	"\n" +
 	"ArkService\x12:\n" +
 	"\aGetInfo\x12\x16.arkrpc.GetInfoRequest\x1a\x17.arkrpc.GetInfoResponse\x12F\n" +
-	"\vEstimateFee\x12\x1a.arkrpc.EstimateFeeRequest\x1a\x1b.arkrpc.EstimateFeeResponseB,Z*github.com/lightninglabs/wavelength/arkrpcb\x06proto3"
+	"\vEstimateFee\x12\x1a.arkrpc.EstimateFeeRequest\x1a\x1b.arkrpc.EstimateFeeResponse\x12m\n" +
+	"\x18RegisterTaprootAssetVTXO\x12'.arkrpc.RegisterTaprootAssetVTXORequest\x1a(.arkrpc.RegisterTaprootAssetVTXOResponseB,Z*github.com/lightninglabs/wavelength/arkrpcb\x06proto3"
 
 var (
 	file_ark_proto_rawDescOnce sync.Once
@@ -669,24 +815,28 @@ func file_ark_proto_rawDescGZIP() []byte {
 }
 
 var file_ark_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_ark_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_ark_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_ark_proto_goTypes = []any{
-	(ArkVersionPolicy_State)(0), // 0: arkrpc.ArkVersionPolicy.State
-	(*GetInfoRequest)(nil),      // 1: arkrpc.GetInfoRequest
-	(*ArkVersionPolicy)(nil),    // 2: arkrpc.ArkVersionPolicy
-	(*GetInfoResponse)(nil),     // 3: arkrpc.GetInfoResponse
-	(*EstimateFeeRequest)(nil),  // 4: arkrpc.EstimateFeeRequest
-	(*EstimateFeeResponse)(nil), // 5: arkrpc.EstimateFeeResponse
+	(ArkVersionPolicy_State)(0),              // 0: arkrpc.ArkVersionPolicy.State
+	(*RegisterTaprootAssetVTXORequest)(nil),  // 1: arkrpc.RegisterTaprootAssetVTXORequest
+	(*RegisterTaprootAssetVTXOResponse)(nil), // 2: arkrpc.RegisterTaprootAssetVTXOResponse
+	(*GetInfoRequest)(nil),                   // 3: arkrpc.GetInfoRequest
+	(*ArkVersionPolicy)(nil),                 // 4: arkrpc.ArkVersionPolicy
+	(*GetInfoResponse)(nil),                  // 5: arkrpc.GetInfoResponse
+	(*EstimateFeeRequest)(nil),               // 6: arkrpc.EstimateFeeRequest
+	(*EstimateFeeResponse)(nil),              // 7: arkrpc.EstimateFeeResponse
 }
 var file_ark_proto_depIdxs = []int32{
 	0, // 0: arkrpc.ArkVersionPolicy.state:type_name -> arkrpc.ArkVersionPolicy.State
-	2, // 1: arkrpc.GetInfoResponse.ark_version_policies:type_name -> arkrpc.ArkVersionPolicy
-	1, // 2: arkrpc.ArkService.GetInfo:input_type -> arkrpc.GetInfoRequest
-	4, // 3: arkrpc.ArkService.EstimateFee:input_type -> arkrpc.EstimateFeeRequest
-	3, // 4: arkrpc.ArkService.GetInfo:output_type -> arkrpc.GetInfoResponse
-	5, // 5: arkrpc.ArkService.EstimateFee:output_type -> arkrpc.EstimateFeeResponse
-	4, // [4:6] is the sub-list for method output_type
-	2, // [2:4] is the sub-list for method input_type
+	4, // 1: arkrpc.GetInfoResponse.ark_version_policies:type_name -> arkrpc.ArkVersionPolicy
+	3, // 2: arkrpc.ArkService.GetInfo:input_type -> arkrpc.GetInfoRequest
+	6, // 3: arkrpc.ArkService.EstimateFee:input_type -> arkrpc.EstimateFeeRequest
+	1, // 4: arkrpc.ArkService.RegisterTaprootAssetVTXO:input_type -> arkrpc.RegisterTaprootAssetVTXORequest
+	5, // 5: arkrpc.ArkService.GetInfo:output_type -> arkrpc.GetInfoResponse
+	7, // 6: arkrpc.ArkService.EstimateFee:output_type -> arkrpc.EstimateFeeResponse
+	2, // 7: arkrpc.ArkService.RegisterTaprootAssetVTXO:output_type -> arkrpc.RegisterTaprootAssetVTXOResponse
+	5, // [5:8] is the sub-list for method output_type
+	2, // [2:5] is the sub-list for method input_type
 	2, // [2:2] is the sub-list for extension type_name
 	2, // [2:2] is the sub-list for extension extendee
 	0, // [0:2] is the sub-list for field type_name
@@ -703,7 +853,7 @@ func file_ark_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_ark_proto_rawDesc), len(file_ark_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   5,
+			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
