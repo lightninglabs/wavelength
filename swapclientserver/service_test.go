@@ -1104,6 +1104,127 @@ func TestSwapServerClientsWaitForLateGRPCServer(t *testing.T) {
 	}
 }
 
+// TestSwapServerClientsBestEffortReadsFailFast verifies optional read-only
+// calls do not consume their parent wallet RPC's deadline while swapd is
+// unavailable.
+func TestSwapServerClientsBestEffortReadsFailFast(t *testing.T) {
+	t.Parallel()
+
+	addr := reserveLoopbackAddr(t)
+	clients, err := newSwapServerClients(
+		&waved.SwapConfig{
+			ServerTransport: waved.RPCTransportGRPC,
+			ServerInsecure:  true,
+		},
+		addr, func(context.Context, string) (string, error) {
+			return "auth", nil
+		}, nil,
+	)
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, clients.cleanup())
+	}()
+
+	creditClient, ok := clients.server.(interface {
+		ListCredits(context.Context, []byte,
+			uint32) (*swaps.CreditSnapshot, error)
+	})
+	require.True(t, ok)
+
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+
+	_, err = creditClient.ListCredits(ctx, []byte{1, 2, 3}, 10)
+	require.Error(t, err)
+	require.Equal(t, codes.Unavailable, status.Code(err))
+	require.NoError(t, ctx.Err())
+}
+
+// TestSwapServerOperationWaitsForReady verifies the reconnect policy includes
+// protocol operations while excluding read-only and unrelated RPCs.
+func TestSwapServerOperationWaitsForReady(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name   string
+		method string
+		wait   bool
+	}{
+		{
+			name: "request channel ID",
+			method: swaprpc.
+				SwapService_RequestChannelId_FullMethodName,
+			wait: true,
+		},
+		{
+			name:   "create in swap",
+			method: swaprpc.SwapService_CreateInSwap_FullMethodName,
+			wait:   true,
+		},
+		{
+			name:   "create credit",
+			method: swaprpc.SwapService_CreateCredit_FullMethodName,
+			wait:   true,
+		},
+		{
+			name:   "redeem credit",
+			method: swaprpc.SwapService_RedeemCredit_FullMethodName,
+			wait:   true,
+		},
+		{
+			name: "authorize refund",
+			method: swaprpc.
+				SwapService_AuthorizeInSwapRefund_FullMethodName,
+			wait: true,
+		},
+		{
+			name: "acknowledge out swap",
+			method: swaprpc.
+				SwapService_AcknowledgeOutSwapHtlc_FullMethodName,
+			wait: true,
+		},
+		{
+			name: "sign in swap forfeit",
+			method: swaprpc.
+				SwapService_SignInSwapForfeit_FullMethodName,
+			wait: true,
+		},
+		{
+			name: "submit out swap forfeit",
+			method: swaprpc.
+				SwapService_SubmitOutSwapForfeitSignature_FullMethodName,
+			wait: true,
+		},
+		{
+			name:   "quote in swap",
+			method: swaprpc.SwapService_QuoteInSwap_FullMethodName,
+		},
+		{
+			name:   "list credits",
+			method: swaprpc.SwapService_ListCredits_FullMethodName,
+		},
+		{
+			name:   "mailbox",
+			method: "/mailboxrpc.MailboxService/Pull",
+		},
+		{
+			name:   "future swap method",
+			method: "/swaprpc.SwapService/FutureOperation",
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			require.Equal(
+				t, testCase.wait,
+				swapServerOperationWaitsForReady(
+					testCase.method,
+				),
+			)
+		})
+	}
+}
+
 // reserveLoopbackAddr returns an unused TCP address and closes its temporary
 // listener so the test client can observe a connection refusal.
 func reserveLoopbackAddr(t *testing.T) string {
