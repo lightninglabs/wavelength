@@ -57,9 +57,11 @@ func activeArkPolicy(version uint32) *arkrpc.ArkVersionPolicy {
 // canned GetInfo response, used to drive the bootstrap negotiation without a
 // real transport.
 type stubArkServiceClient struct {
-	resp  *arkrpc.GetInfoResponse
-	err   error
-	calls int
+	resp         *arkrpc.GetInfoResponse
+	err          error
+	calls        int
+	registerResp *arkrpc.RegisterTaprootAssetVTXOResponse
+	registerErr  error
 }
 
 // GetInfo returns the canned response.
@@ -133,6 +135,13 @@ func (s *stubArkServiceClient) EstimateFee(_ context.Context,
 func (s *stubArkServiceClient) RegisterTaprootAssetVTXO(_ context.Context,
 	_ *arkrpc.RegisterTaprootAssetVTXORequest, _ ...grpc.CallOption) (
 	*arkrpc.RegisterTaprootAssetVTXOResponse, error) {
+
+	if s.registerErr != nil {
+		return nil, s.registerErr
+	}
+	if s.registerResp != nil {
+		return s.registerResp, nil
+	}
 
 	return &arkrpc.RegisterTaprootAssetVTXOResponse{}, nil
 }
