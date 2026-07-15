@@ -78,6 +78,8 @@ type BatchConsumedInput struct {
 	InputHash     []byte
 	InputIndex    int32
 	InputPkScript []byte
+	Conflicting   int32
+	ConflictFinal int32
 }
 
 type BatchDependentVtxo struct {

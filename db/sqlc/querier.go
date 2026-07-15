@@ -209,7 +209,7 @@ type Querier interface {
 	// state.
 	ListBatchCanonicalityByState(ctx context.Context, state int32) ([]BatchCanonicality, error)
 	// ListBatchConsumedInputs returns the inputs a batch consumes, with the
-	// pkScript of each spent output.
+	// pkScript of each spent output and its persisted conflict observation.
 	ListBatchConsumedInputs(ctx context.Context, batchTxid []byte) ([]ListBatchConsumedInputsRow, error)
 	// ListBatchDependentVTXOs returns the VTXO outpoints a batch anchors.
 	ListBatchDependentVTXOs(ctx context.Context, batchTxid []byte) ([]ListBatchDependentVTXOsRow, error)
@@ -376,6 +376,10 @@ type Querier interface {
 	// a reorg) overwrites the observation so effective expiry tracks the new
 	// confirmation.
 	RecordBatchConfirmation(ctx context.Context, arg RecordBatchConfirmationParams) error
+	// RecordBatchInputConflict persists the observed conflict status of one
+	// consumed input, so restart reconciliation can rebuild the per-input
+	// conflict view and not transiently downgrade a persisted conflict.
+	RecordBatchInputConflict(ctx context.Context, arg RecordBatchInputConflictParams) error
 	SumBoardingIntentAmountsByStatus(ctx context.Context, status string) (interface{}, error)
 	SumUnspentVTXOAmounts(ctx context.Context) (interface{}, error)
 	// UpdateBatchCanonicalityState transitions a batch to a new state without

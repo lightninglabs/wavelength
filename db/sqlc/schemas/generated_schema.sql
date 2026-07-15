@@ -163,6 +163,17 @@ CREATE TABLE batch_consumed_inputs (
     -- predate script tracking.
     input_pk_script BLOB,
 
+    -- conflicting / conflict_final persist the last observed conflict
+    -- status of this input (a spend by a tx other than the batch itself),
+    -- 0 = false, 1 = true. They let restart reconciliation rebuild the
+    -- per-input conflict view: without them, a reconciled conflict batch
+    -- whose confirmation is re-observed before its conflicting spend is
+    -- re-observed would transiently derive back to (non-conflict)
+    -- provisional and briefly admit the coin. Default 0: a freshly recorded
+    -- input has seen no conflict yet.
+    conflicting INTEGER NOT NULL DEFAULT 0,
+    conflict_final INTEGER NOT NULL DEFAULT 0,
+
     PRIMARY KEY (batch_txid, input_hash, input_index),
     FOREIGN KEY (batch_txid)
         REFERENCES batch_canonicality(batch_txid) ON DELETE CASCADE

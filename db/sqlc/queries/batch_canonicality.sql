@@ -81,10 +81,18 @@ DELETE FROM batch_consumed_inputs WHERE batch_txid = $1;
 
 -- name: ListBatchConsumedInputs :many
 -- ListBatchConsumedInputs returns the inputs a batch consumes, with the
--- pkScript of each spent output.
-SELECT input_hash, input_index, input_pk_script
+-- pkScript of each spent output and its persisted conflict observation.
+SELECT input_hash, input_index, input_pk_script, conflicting, conflict_final
 FROM batch_consumed_inputs
 WHERE batch_txid = $1;
+
+-- name: RecordBatchInputConflict :exec
+-- RecordBatchInputConflict persists the observed conflict status of one
+-- consumed input, so restart reconciliation can rebuild the per-input
+-- conflict view and not transiently downgrade a persisted conflict.
+UPDATE batch_consumed_inputs
+SET conflicting = $4, conflict_final = $5
+WHERE batch_txid = $1 AND input_hash = $2 AND input_index = $3;
 
 -- name: FindBatchesByConsumedOutpoint :many
 -- FindBatchesByConsumedOutpoint returns the txids of every batch that

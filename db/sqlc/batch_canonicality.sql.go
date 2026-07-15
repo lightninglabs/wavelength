@@ -242,7 +242,7 @@ func (q *Queries) ListBatchCanonicalityByState(ctx context.Context, state int32)
 }
 
 const ListBatchConsumedInputs = `-- name: ListBatchConsumedInputs :many
-SELECT input_hash, input_index, input_pk_script
+SELECT input_hash, input_index, input_pk_script, conflicting, conflict_final
 FROM batch_consumed_inputs
 WHERE batch_txid = $1
 `
@@ -251,10 +251,12 @@ type ListBatchConsumedInputsRow struct {
 	InputHash     []byte
 	InputIndex    int32
 	InputPkScript []byte
+	Conflicting   int32
+	ConflictFinal int32
 }
 
 // ListBatchConsumedInputs returns the inputs a batch consumes, with the
-// pkScript of each spent output.
+// pkScript of each spent output and its persisted conflict observation.
 func (q *Queries) ListBatchConsumedInputs(ctx context.Context, batchTxid []byte) ([]ListBatchConsumedInputsRow, error) {
 	rows, err := q.db.QueryContext(ctx, ListBatchConsumedInputs, batchTxid)
 	if err != nil {
@@ -264,7 +266,13 @@ func (q *Queries) ListBatchConsumedInputs(ctx context.Context, batchTxid []byte)
 	var items []ListBatchConsumedInputsRow
 	for rows.Next() {
 		var i ListBatchConsumedInputsRow
-		if err := rows.Scan(&i.InputHash, &i.InputIndex, &i.InputPkScript); err != nil {
+		if err := rows.Scan(
+			&i.InputHash,
+			&i.InputIndex,
+			&i.InputPkScript,
+			&i.Conflicting,
+			&i.ConflictFinal,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -423,6 +431,34 @@ func (q *Queries) RecordBatchConfirmation(ctx context.Context, arg RecordBatchCo
 		arg.ConfirmationHeight,
 		arg.ConfirmationBlockHash,
 		arg.UpdatedAt,
+	)
+	return err
+}
+
+const RecordBatchInputConflict = `-- name: RecordBatchInputConflict :exec
+UPDATE batch_consumed_inputs
+SET conflicting = $4, conflict_final = $5
+WHERE batch_txid = $1 AND input_hash = $2 AND input_index = $3
+`
+
+type RecordBatchInputConflictParams struct {
+	BatchTxid     []byte
+	InputHash     []byte
+	InputIndex    int32
+	Conflicting   int32
+	ConflictFinal int32
+}
+
+// RecordBatchInputConflict persists the observed conflict status of one
+// consumed input, so restart reconciliation can rebuild the per-input
+// conflict view and not transiently downgrade a persisted conflict.
+func (q *Queries) RecordBatchInputConflict(ctx context.Context, arg RecordBatchInputConflictParams) error {
+	_, err := q.db.ExecContext(ctx, RecordBatchInputConflict,
+		arg.BatchTxid,
+		arg.InputHash,
+		arg.InputIndex,
+		arg.Conflicting,
+		arg.ConflictFinal,
 	)
 	return err
 }
