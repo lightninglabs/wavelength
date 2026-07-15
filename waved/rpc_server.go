@@ -2920,6 +2920,7 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 		inputSelectDuration   time.Duration
 		buildInputsDuration   time.Duration
 		changeOutputDuration  time.Duration
+		assetPrepareDuration  time.Duration
 		oorActorDuration      time.Duration
 	)
 
@@ -2933,6 +2934,11 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 	}
 
 	targetAmt, err := sumSendOORRecipientAmounts(requestRecipients)
+	if err != nil {
+		return nil, err
+	}
+
+	assetIntent, err := taprootAssetOORIntent(req)
 	if err != nil {
 		return nil, err
 	}
@@ -2969,6 +2975,16 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 				Status:    "submitted",
 				SessionId: sessionID.String(),
 			}, nil
+		}
+	}
+
+	var assetPreparer oor.TaprootAssetOORPreparer
+	if assetIntent != nil {
+		assetPreparer, err = requireTaprootAssetOORPreparer(
+			r.server.cfg,
+		)
+		if err != nil {
+			return nil, err
 		}
 	}
 
@@ -3158,6 +3174,14 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 		return nil, status.Errorf(codes.Internal, "sum OOR input "+
 			"amounts: %v", err)
 	}
+	if assetIntent != nil {
+		err := validateTaprootAssetExactBTC(
+			int64(inputTotal), int64(targetAmt),
+		)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	recipients, changeAmt, err := appendOORChangeRecipient(
 		ctx, recipients, inputTotal, terms.MinVTXOAmountFloor(),
@@ -3176,6 +3200,47 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 	}
 	changeOutputDuration = time.Since(phaseStart)
 
+	var preparedSubmit *oor.PreparedSubmitPackage
+	if assetIntent != nil {
+		phaseStart = time.Now()
+
+		err := oor.NormalizeCheckpointOwnerLeaves(
+			policy, selectedInputs,
+		)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "normalize "+
+				"Taproot Asset checkpoint owner leaves: %v",
+				err)
+		}
+
+		prepareRequest := &oor.TaprootAssetOORPrepareRequest{
+			RequestID:  req.GetIdempotencyKey(),
+			Policy:     policy,
+			Inputs:     selectedInputs,
+			Recipients: recipients,
+			Intent:     *assetIntent,
+		}
+		if err := prepareRequest.Validate(); err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "%v",
+				err)
+		}
+
+		preparation, err := assetPreparer.PrepareTaprootAssetOOR(
+			ctx, prepareRequest,
+		)
+		if err != nil {
+			return nil, taprootAssetOORPreparationError(err)
+		}
+		if err := preparation.Validate(prepareRequest); err != nil {
+			return nil, invalidTaprootAssetPreparation(err)
+		}
+
+		preparedSubmit = preparation.PreparedSubmit
+		recipients = preparation.Recipients
+		requestOORRecipients = preparation.Recipients
+		assetPrepareDuration = time.Since(phaseStart)
+	}
+
 	// Resolve the OOR actor via the service key registered in the
 	// actor system's receptionist. This avoids holding a direct
 	// reference and is the canonical way to interact with
@@ -3188,6 +3253,7 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 		Inputs:         selectedInputs,
 		Recipients:     recipients,
 		IdempotencyKey: req.GetIdempotencyKey(),
+		PreparedSubmit: preparedSubmit,
 	}
 
 	phaseStart = time.Now()
@@ -3262,6 +3328,8 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 			buildInputsDuration),
 		slog.Duration("change_output_duration",
 			changeOutputDuration),
+		slog.Duration("asset_prepare_duration",
+			assetPrepareDuration),
 		slog.Duration("oor_actor_duration", oorActorDuration))
 
 	r.server.emitMetric(ctx, &metrics.OORTransferSentMsg{
