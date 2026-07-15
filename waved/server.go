@@ -783,6 +783,36 @@ func (s *Server) setServerConnected(connected bool) {
 // gRPC connectivity API.
 const operatorConnPollInterval = 15 * time.Second
 
+// oorInputNotSpendableRetryDelay is how long the OOR FSM waits before
+// re-driving a submit that the operator rejected because an input was not yet
+// spendable (its round commitment tx had not reached the operator's
+// confirmation target). The wait only needs to outlast the operator's chain
+// backend catching up to a block this client already saw — typically seconds —
+// so a short delay keeps the swap responsive, while being long enough to avoid
+// hammering the operator with resubmits between blocks. It is deliberately far
+// below any swap invoice deadline so the natural deadline (not this timer)
+// bounds total retrying when the operator never catches up. A plain SendOOR
+// with no such deadline re-drives indefinitely on a persistent reject — the
+// same "re-drive on operator silence, never give up" behavior the
+// AwaitingSubmitAccepted transport timer already has — which is acceptable
+// because the operator only emits this transient code for a pending input.
+const oorInputNotSpendableRetryDelay = 15 * time.Second
+
+// oorRejectRetry decides how a classified OOR submit rejection is driven
+// through the session FSM. An input-not-spendable rejection is transient — the
+// operator has not yet caught up to the input's round-commitment confirmation
+// that this client already observed — so it is retried after a delay and the
+// (idempotent) submit is re-driven until the operator's chain view catches up.
+// Every other typed rejection is terminal for the same submit shape, so it
+// drives the session to failure without a retry.
+func oorRejectRetry(classified error) (bool, time.Duration) {
+	if errors.Is(classified, &oor.ErrInputNotSpendable{}) {
+		return true, oorInputNotSpendableRetryDelay
+	}
+
+	return false, 0
+}
+
 // monitorOperatorConnection keeps the ServerConnectionUp gauge and the
 // ServerSyncTimestamp in step with the live health of the direct gRPC
 // connection to the ark operator. The bootstrap stamp in
@@ -2857,11 +2887,30 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) { //noli
 					rejected,
 				)
 
+				// Most typed rejections are terminal for the
+				// same submit shape (lineage cap, output
+				// policy, balance), so they drive the session
+				// to Failed. An input-not-spendable rejection
+				// is the exception: it is transient, almost
+				// always because the input's round commitment
+				// tx has not yet reached the operator's
+				// confirmation target even though this client
+				// already observed the confirmation. Retrying
+				// the identical submit succeeds once the
+				// operator's chain view catches up, so we mark
+				// it retryable and let the OOR FSM re-drive the
+				// submit after a delay rather than failing the
+				// transfer.
+				retryable, retryAfter := oorRejectRetry(
+					classified,
+				)
+
 				return &oor.DriveEventRequest{
 					SessionID: oor.SessionID(sessionID),
 					Event: &oor.OutboxErrorEvent{
 						OutboxType:  submitOutbox,
-						Retryable:   false,
+						Retryable:   retryable,
+						RetryAfter:  retryAfter,
 						ErrorReason: classified.Error(),
 					},
 				}, nil

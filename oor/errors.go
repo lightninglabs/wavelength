@@ -93,6 +93,44 @@ func (e *ErrUserBalanceExceeded) Is(target error) bool {
 	return ok
 }
 
+// ErrInputNotSpendable is the client-facing typed error returned when the
+// operator rejects an OOR submit because one of the input VTXOs was not in a
+// spendable state on the operator (neither live nor in-flight) at validation
+// time.
+//
+// Like ErrUserBalanceExceeded and unlike ErrOutputPolicyViolation, this is NOT
+// terminal for the same input set: the most common cause is that the input's
+// round commitment transaction has not yet reached the operator's confirmation
+// target even though the client already observed the confirmation, so the same
+// submit succeeds once the operator's chain view catches up. Callers should
+// wait and retry rather than restructuring the transfer.
+//
+// ServerBestHeight carries the operator's best block height at rejection time
+// (0 if the operator did not populate it). It is a diagnostic hint only —
+// surfaced in the failure reason and logs so an operator being behind on chain
+// sync (its best height below the input's confirmation height) is easy to
+// confirm. The retry decision itself does not consult it: the operator emits
+// this typed code only for the transient pending-input case, so routing on the
+// code alone is already correct.
+type ErrInputNotSpendable struct {
+	Reason           string
+	ServerBestHeight uint32
+}
+
+// Error returns a human-readable description of the rejection cause.
+func (e *ErrInputNotSpendable) Error() string {
+	return fmt.Sprintf("oor input not spendable on operator "+
+		"(server_best_height=%d): %s", e.ServerBestHeight, e.Reason)
+}
+
+// Is reports whether target is also an *ErrInputNotSpendable, supporting the
+// standard errors.Is comparison without forcing callers to compare reasons.
+func (e *ErrInputNotSpendable) Is(target error) bool {
+	_, ok := target.(*ErrInputNotSpendable)
+
+	return ok
+}
+
 // ErrInvalidAncestry is the typed error returned by the receive-side
 // ancestry cross-check when an operator-supplied IncomingVTXOMetadata
 // fails one of the structural invariants required to bind the produced
@@ -150,6 +188,12 @@ func ClassifySubmitError(err error) error {
 		case oorpb.OORRejectCode_OOR_REJECT_USER_BALANCE:
 			return &ErrUserBalanceExceeded{
 				Reason: rejected.Reason,
+			}
+
+		case oorpb.OORRejectCode_OOR_REJECT_INPUT_NOT_SPENDABLE:
+			return &ErrInputNotSpendable{
+				Reason:           rejected.Reason,
+				ServerBestHeight: rejected.ServerBestHeight,
 			}
 
 		case oorpb.OORRejectCode_OOR_REJECT_UNSPECIFIED:

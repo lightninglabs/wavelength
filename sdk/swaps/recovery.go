@@ -95,6 +95,11 @@ const (
 	// claim spend is already indexed.
 	recoveryReasonClaimIndexed = "cooperative claim indexed"
 
+	// recoveryReasonFundingRejected explains cancellation of a pay-side
+	// refund recovery when the funding OOR was rejected by the operator, so
+	// the vHTLC never existed and there is nothing to recover.
+	recoveryReasonFundingRejected = "funding OOR rejected by operator"
+
 	// DefaultRecoveryMaxFeeRateSatPerKW caps SDK-armed vHTLC exit spends at
 	// 100 sat/vbyte. Operators can still clamp lower through the daemon's
 	// unroll fee cap; this value prevents an armed recovery row from being

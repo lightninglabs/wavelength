@@ -52,6 +52,16 @@ const (
 	// spends or refreshes down), so a custodial sender may hold the value
 	// and retry later rather than restructuring the outputs.
 	OORRejectCode_OOR_REJECT_USER_BALANCE OORRejectCode = 3
+	// OOR_REJECT_INPUT_NOT_SPENDABLE indicates one of the submit's input
+	// VTXOs was not in a spendable state on the operator (neither live nor
+	// in-flight) at validation time — most commonly because the input's
+	// round commitment transaction has not yet reached the operator's
+	// confirmation target, even though the client already observed the
+	// confirmation. The submit was not locked. Unlike OOR_REJECT_OUTPUT_POLICY
+	// this is transient: retrying the same shape succeeds once the operator's
+	// chain view catches up, so the client should wait (see server_best_height)
+	// and resubmit rather than restructuring the transfer.
+	OORRejectCode_OOR_REJECT_INPUT_NOT_SPENDABLE OORRejectCode = 4
 )
 
 // Enum value maps for OORRejectCode.
@@ -61,12 +71,14 @@ var (
 		1: "OOR_REJECT_LINEAGE_TOO_LARGE",
 		2: "OOR_REJECT_OUTPUT_POLICY",
 		3: "OOR_REJECT_USER_BALANCE",
+		4: "OOR_REJECT_INPUT_NOT_SPENDABLE",
 	}
 	OORRejectCode_value = map[string]int32{
-		"OOR_REJECT_UNSPECIFIED":       0,
-		"OOR_REJECT_LINEAGE_TOO_LARGE": 1,
-		"OOR_REJECT_OUTPUT_POLICY":     2,
-		"OOR_REJECT_USER_BALANCE":      3,
+		"OOR_REJECT_UNSPECIFIED":         0,
+		"OOR_REJECT_LINEAGE_TOO_LARGE":   1,
+		"OOR_REJECT_OUTPUT_POLICY":       2,
+		"OOR_REJECT_USER_BALANCE":        3,
+		"OOR_REJECT_INPUT_NOT_SPENDABLE": 4,
 	}
 )
 
@@ -395,9 +407,17 @@ type SubmitPackageRejection struct {
 	// the durable EventRouter dispatch path has no way to identify which
 	// session to fail, and the ingress dispatcher would stall the cursor on
 	// the rejected envelope.
-	SessionId     []byte `protobuf:"bytes,3,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	SessionId []byte `protobuf:"bytes,3,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	// server_best_height is the operator's current best block height at the
+	// time of the rejection, or 0 when the operator did not populate it. It is
+	// a diagnostic hint for transient rejections (notably
+	// OOR_REJECT_INPUT_NOT_SPENDABLE): a value below the input's confirmation
+	// height confirms the operator is simply behind on chain sync rather than
+	// rejecting for a genuine reason. It is informational only — clients route
+	// their retry on the typed code, not on this value.
+	ServerBestHeight uint32 `protobuf:"varint,4,opt,name=server_best_height,json=serverBestHeight,proto3" json:"server_best_height,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *SubmitPackageRejection) Reset() {
@@ -449,6 +469,13 @@ func (x *SubmitPackageRejection) GetSessionId() []byte {
 		return x.SessionId
 	}
 	return nil
+}
+
+func (x *SubmitPackageRejection) GetServerBestHeight() uint32 {
+	if x != nil {
+		return x.ServerBestHeight
+	}
+	return 0
 }
 
 // SubmitPackageResponse carries server submit-phase results. Exactly one of
@@ -727,12 +754,13 @@ const file_oorwire_proto_rawDesc = "" +
 	"\x10checkpoint_psbts\x18\x02 \x03(\fR\x0fcheckpointPsbts\x12L\n" +
 	"\x13signing_descriptors\x18\x03 \x03(\v2\x1b.oorpb.OORSigningDescriptorR\x12signingDescriptors\x12F\n" +
 	"\x11recipient_outputs\x18\x04 \x03(\v2\x19.oorpb.OORRecipientOutputR\x10recipientOutputs\x12!\n" +
-	"\fflow_version\x18\x05 \x01(\rR\vflowVersion\"y\n" +
+	"\fflow_version\x18\x05 \x01(\rR\vflowVersion\"\xa7\x01\n" +
 	"\x16SubmitPackageRejection\x12(\n" +
 	"\x04code\x18\x01 \x01(\x0e2\x14.oorpb.OORRejectCodeR\x04code\x12\x16\n" +
 	"\x06reason\x18\x02 \x01(\tR\x06reason\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x03 \x01(\fR\tsessionId\"\x99\x01\n" +
+	"session_id\x18\x03 \x01(\fR\tsessionId\x12,\n" +
+	"\x12server_best_height\x18\x04 \x01(\rR\x10serverBestHeight\"\x99\x01\n" +
 	"\x15SubmitPackageResponse\x127\n" +
 	"\asuccess\x18\x01 \x01(\v2\x1b.oorpb.SubmitPackageSuccessH\x00R\asuccess\x12=\n" +
 	"\trejection\x18\x02 \x01(\v2\x1d.oorpb.SubmitPackageRejectionH\x00R\trejectionB\b\n" +
@@ -748,12 +776,13 @@ const file_oorwire_proto_rawDesc = "" +
 	"\x16final_checkpoint_psbts\x18\x02 \x03(\fR\x14finalCheckpointPsbts\"8\n" +
 	"\x17FinalizePackageResponse\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x01 \x01(\fR\tsessionId*\x88\x01\n" +
+	"session_id\x18\x01 \x01(\fR\tsessionId*\xac\x01\n" +
 	"\rOORRejectCode\x12\x1a\n" +
 	"\x16OOR_REJECT_UNSPECIFIED\x10\x00\x12 \n" +
 	"\x1cOOR_REJECT_LINEAGE_TOO_LARGE\x10\x01\x12\x1c\n" +
 	"\x18OOR_REJECT_OUTPUT_POLICY\x10\x02\x12\x1b\n" +
-	"\x17OOR_REJECT_USER_BALANCE\x10\x032\xb1\x01\n" +
+	"\x17OOR_REJECT_USER_BALANCE\x10\x03\x12\"\n" +
+	"\x1eOOR_REJECT_INPUT_NOT_SPENDABLE\x10\x042\xb1\x01\n" +
 	"\x11OORMailboxService\x12J\n" +
 	"\rSubmitPackage\x12\x1b.oorpb.SubmitPackageRequest\x1a\x1c.oorpb.SubmitPackageResponse\x12P\n" +
 	"\x0fFinalizePackage\x12\x1d.oorpb.FinalizePackageRequest\x1a\x1e.oorpb.FinalizePackageResponseB/Z-github.com/lightninglabs/wavelength/rpc/oorpbb\x06proto3"

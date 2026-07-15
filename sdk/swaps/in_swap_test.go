@@ -713,6 +713,103 @@ func TestPayViaLightningRequiresClaimPreimage(t *testing.T) {
 	require.Nil(t, result)
 }
 
+// TestPaySessionFailsFastWhenFundingOORRejected asserts that when the operator
+// rejects the vHTLC funding OOR (so no vHTLC is ever created), the pay session
+// fails fast with the operator's reason instead of polling for a claim that can
+// never arrive and then attempting to refund a non-existent vHTLC. This is the
+// in-Ark wedge from darepo-client#938: the funding OOR fails asynchronously
+// after submit, and the indexer's "script not registered for principal"
+// rejection cannot by itself distinguish a rejected funding OOR from a
+// funded-but-not-locally-queryable one — the daemon's OOR session status can.
+func TestPaySessionFailsFastWhenFundingOORRejected(t *testing.T) {
+	t.Parallel()
+
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	serverPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	preimage, err := NewPreimage()
+	require.NoError(t, err)
+	invoice := testValidPayInvoice(t, preimage)
+
+	serverConn := &testInSwapServerConn{
+		cfg: &InSwapConfig{
+			PaymentHash:  preimage.Hash(),
+			AmountSat:    testInSwapAmountSat,
+			FeeSat:       testInSwapFeeSat,
+			ServerPubkey: serverPriv.PubKey(),
+			VHTLCConfig: VHTLCConfig{
+				RefundLocktime:                       144,
+				UnilateralClaimDelay:                 12,
+				UnilateralRefundDelay:                24,
+				UnilateralRefundWithoutReceiverDelay: 36,
+			},
+			// Generous expiry so the swap can only terminate via
+			// the funding-rejection guard, never via a deadline.
+			Expiry: time.Now().Add(time.Hour),
+		},
+	}
+
+	// Model the operator rejecting the funding OOR: the daemon's durable
+	// OOR session reports FAILED with a reason, while the vHTLC stays
+	// unqueryable via the indexer ("script not registered for principal"),
+	// exactly as a same-Ark receiver's vHTLC appears to the payer.
+	const rejectReason = "recipient script not registered for principal"
+	daemonConn := &testDaemonConn{
+		identityKey:   clientPriv.PubKey(),
+		operatorKey:   operatorPriv.PubKey(),
+		blockHeight:   100,
+		sendSessionID: "funding-session",
+		sendOutpoint:  "funding:0",
+		liveLookupErr: errors.New(
+			"indexer query failed: script not registered for " +
+				"principal",
+		),
+		oorSession: &waverpc.OORSessionInfo{
+			Status: waverpc.
+				OORSessionStatus_OOR_SESSION_STATUS_FAILED,
+			FailureReason: rejectReason,
+		},
+	}
+
+	store := newTestSwapStore(t)
+	client := configureTestPayClient(
+		NewSwapClientWithStore(serverConn, daemonConn, nil, nil, store),
+	)
+	client.waitPollInterval = time.Millisecond
+	client.refundLocktimeBuffer = 0
+
+	session, err := client.StartPayViaLightning(
+		t.Context(), invoice, testInSwapFeeSat,
+	)
+	require.NoError(t, err)
+
+	_, err = session.Wait(t.Context())
+
+	// The swap fails fast with the operator's rejection reason surfaced,
+	// rather than expiring or refunding.
+	require.Error(t, err)
+	require.NotErrorIs(t, err, errSwapExpired)
+	require.NotErrorIs(t, err, ErrSwapRefunded)
+	require.Contains(t, err.Error(), "funding OOR rejected")
+	require.Contains(t, err.Error(), rejectReason)
+
+	// The session ends in the terminal failed state.
+	require.Equal(t, PayStateFailed, session.State())
+
+	// Fail-fast: it never attempted to refund a non-existent vHTLC...
+	require.Zero(t, daemonConn.sendCustomCalls)
+
+	// ...and it cancelled the refund recovery that was armed optimistically
+	// from the local funding metadata.
+	require.GreaterOrEqual(t, daemonConn.cancelCalls, 1)
+}
+
 // TestPaySessionRefundsFundedVHTLCOnTimeout asserts a pay session
 // automatically sweeps its funded vHTLC back through the sender refund path
 // once the server claim deadline elapses.
