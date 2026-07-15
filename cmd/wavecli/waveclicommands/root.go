@@ -24,8 +24,8 @@ const (
 	groupAdvanced      = "advanced"
 
 	// devModeEnvVar, when set to "1", reveals the advanced subtrees
-	// (ark / dev / recovery) under an Advanced group in --help. It only
-	// changes visibility; it never gates execution.
+	// (ark / dev / recovery / taproot-assets) under an Advanced group in
+	// --help. It only changes visibility; it never gates execution.
 	devModeEnvVar = "WAVELENGTH_DEV"
 )
 
@@ -141,7 +141,7 @@ func newRootCmd(devMode bool) *cobra.Command {
 	// on a GroupID naming a group that was never registered.
 	advancedCmds := []*cobra.Command{
 		newArkCmd(),
-		newRecoveryCmd(),
+		newRecoveryCmd(), newTaprootAssetsCmd(),
 		devrpc.NewDevCmd(
 			devrpc.Config{
 				GetConn:     getDaemonConn,

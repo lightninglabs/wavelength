@@ -16,7 +16,7 @@ default `--help` face:
    wavewalletrpc-backed.
 2. **Daemon introspection (group "Introspection")** — getinfo, schema, mcp
    (the built-in `help` command is grouped here too).
-3. **Advanced subtrees (`ark`, `dev`, `recovery`)** — raw
+3. **Advanced subtrees (`ark`, `dev`, `recovery`, `taproot-assets`)** — raw
    waverpc/devrpc commands for power users and operator runbooks.
    Hidden from the default `--help` via cobra `Hidden` (not a build tag),
    so they stay compiled and fully runnable in the shipped binary;
@@ -88,6 +88,12 @@ let the swap FSM arm and cancel recovery automatically.
 
 Generated low-level daemon RPC CLI; see [`devrpc/`](devrpc/). Hidden from
 the default `--help` (revealed with `WAVELENGTH_DEV=1`) but always runnable.
+
+### `taproot-assets.*` prototype commands
+
+The `taproot-assets onboard` command reads a complete proof file and invokes
+the durable `waverpc.OnboardTaprootAsset` workflow. It remains in the advanced
+group while the tapd/tap-sdk integration is evaluated.
 
 ## Key Helpers
 
