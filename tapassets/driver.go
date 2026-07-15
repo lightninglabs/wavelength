@@ -1,0 +1,176 @@
+package tapassets
+
+import (
+	"context"
+	"fmt"
+
+	tapsdk "github.com/lightninglabs/tap-sdk"
+)
+
+type commitOutput struct {
+	anchorOutputIndex uint32
+	anchorOutpoint    tapsdk.Outpoint
+	anchorValueSat    int64
+	assetRef          tapsdk.AssetRef
+	amount            uint64
+	taprootAssetRoot  tapsdk.Hash
+	taprootMerkleRoot tapsdk.Hash
+	scriptKey         tapsdk.PubKey
+	opTrueWitness     [][]byte
+	proofBlob         []byte
+}
+
+type commitInput struct {
+	anchorOutpoint tapsdk.Outpoint
+	assetRef       tapsdk.AssetRef
+	amount         uint64
+}
+
+type commitResult struct {
+	packageBytes []byte
+	anchorPSBT   []byte
+	inputs       []commitInput
+	outputs      []commitOutput
+}
+
+type customAnchorDriver interface {
+	Commit(context.Context, *tapsdk.CustomAnchorRequest,
+		tapsdk.ConfirmedProofVerifier) (*commitResult, error)
+
+	DecodePackage([]byte) (*commitResult, error)
+}
+
+type sdkDriver struct {
+	wallet *tapsdk.Wallet
+}
+
+// Commit builds, commits, verifies, and seals one SDK custom-anchor request.
+func (d *sdkDriver) Commit(ctx context.Context,
+	request *tapsdk.CustomAnchorRequest,
+	verifier tapsdk.ConfirmedProofVerifier) (*commitResult, error) {
+
+	if d == nil || d.wallet == nil {
+		return nil, fmt.Errorf("tap-sdk wallet is required")
+	}
+
+	builder := d.wallet.NewCustomAnchorTxBuilder()
+	if verifier != nil {
+		builder.SetConfirmedProofVerifier(verifier)
+	}
+	plan, err := builder.Build(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+
+	result, err := plan.Commit(ctx, tapsdk.CustomAnchorCommitOptions{
+		Publish: tapsdk.CustomAnchorPublishMetadata{
+			SkipAnchorTxBroadcast: true,
+			ExternalBroadcast:     true,
+			Label:                 "wavelength-oor-poc",
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	converted, err := commitResultFromPackage(result)
+	if err != nil {
+		return nil, &commitResponseError{err: err}
+	}
+
+	return converted, nil
+}
+
+// DecodePackage restores a sealed SDK package from the durable journal.
+func (d *sdkDriver) DecodePackage(encoded []byte) (*commitResult, error) {
+	var transfer tapsdk.CustomAnchorTransferPackage
+	if err := transfer.UnmarshalBinary(encoded); err != nil {
+		return nil, fmt.Errorf("decode tap-sdk transfer package: %w",
+			err)
+	}
+
+	return commitResultFromPackage(&transfer)
+}
+
+// commitResultFromPackage projects the SDK package into the narrow fields the
+// Wavelength graph adapter needs while retaining the canonical package bytes.
+func commitResultFromPackage(transfer *tapsdk.CustomAnchorTransferPackage) (
+	*commitResult, error) {
+
+	if transfer == nil {
+		return nil, fmt.Errorf("tap-sdk transfer package is required")
+	}
+	if err := transfer.Validate(); err != nil {
+		return nil, fmt.Errorf("validate tap-sdk transfer package: %w",
+			err)
+	}
+
+	encoded, err := transfer.MarshalBinary()
+	if err != nil {
+		return nil, fmt.Errorf("encode tap-sdk transfer package: %w",
+			err)
+	}
+	result := &commitResult{
+		packageBytes: encoded,
+		anchorPSBT:   append([]byte(nil), transfer.AnchorPsbt...),
+		inputs:       make([]commitInput, len(transfer.Inputs)),
+		outputs:      make([]commitOutput, len(transfer.Outputs)),
+	}
+	for idx := range transfer.Inputs {
+		input := transfer.Inputs[idx]
+		result.inputs[idx] = commitInput{
+			anchorOutpoint: input.AnchorOutpoint,
+			assetRef:       input.AssetRef,
+			amount:         input.Amount,
+		}
+	}
+	for idx := range transfer.Outputs {
+		output := transfer.Outputs[idx]
+		var witness [][]byte
+		if output.OPTrueSpend != nil {
+			witness = output.OPTrueSpend.WitnessStack()
+		}
+		result.outputs[idx] = commitOutput{
+			anchorOutputIndex: output.AnchorOutputIndex,
+			anchorOutpoint:    output.AnchorOutpoint,
+			anchorValueSat:    output.AnchorValueSat,
+			assetRef:          output.AssetRef,
+			amount:            output.Amount,
+			taprootAssetRoot:  output.TaprootAssetRoot,
+			taprootMerkleRoot: output.TaprootMerkleRoot,
+			scriptKey:         output.ScriptKey,
+			opTrueWitness:     witness,
+		}
+	}
+	for idx := range transfer.ProofUpdates {
+		update := transfer.ProofUpdates[idx]
+		for outputIdx := range result.outputs {
+			output := &result.outputs[outputIdx]
+			if output.anchorOutpoint == update.AnchorOutpoint &&
+				output.scriptKey == update.ScriptKey {
+
+				output.proofBlob = append(
+					[]byte(nil), update.ProofBlob...,
+				)
+
+				break
+			}
+		}
+	}
+
+	return result, nil
+}
+
+type commitResponseError struct {
+	err error
+}
+
+// Error describes a local failure after tapd returned a committed response.
+func (e *commitResponseError) Error() string {
+	return fmt.Sprintf("process committed tap-sdk response: %v", e.err)
+}
+
+// Unwrap exposes the underlying package conversion failure.
+func (e *commitResponseError) Unwrap() error {
+	return e.err
+}
