@@ -116,7 +116,7 @@ const (
 
 	// DefaultIndexerServerID is the canonical operator identifier used
 	// in signed indexer proofs.
-	DefaultIndexerServerID = "arkd"
+	DefaultIndexerServerID = "lumosd"
 
 	// DefaultRPCTimeout is the default timeout for RPC calls to lnd.
 	DefaultRPCTimeout = 30 * time.Second

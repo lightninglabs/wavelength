@@ -153,7 +153,7 @@ const (
 	// remote mailbox IDs can be per-client routing endpoints (for
 	// auto-registration), while proof server ID is a logical operator
 	// identity shared by all clients.
-	indexerProofServerID = "arkd"
+	indexerProofServerID = "lumosd"
 
 	// MethodIncomingOOR is the routing method name for incoming
 	// OOR transfer notifications pushed by the server indexer.
