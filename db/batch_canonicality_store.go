@@ -44,6 +44,9 @@ type BatchCanonicalityStore interface {
 	ListBatchConsumedInputs(ctx context.Context,
 		batchTxid []byte) ([]sqlc.ListBatchConsumedInputsRow, error)
 
+	RecordBatchInputConflict(ctx context.Context,
+		arg sqlc.RecordBatchInputConflictParams) error
+
 	FindBatchesByConsumedOutpoint(ctx context.Context,
 		arg sqlc.FindBatchesByConsumedOutpointParams) ([][]byte, error)
 
@@ -298,6 +301,27 @@ func (s *BatchCanonicalityPersistenceStore) ClearConfirmation(
 			ctx, sqlc.ClearBatchConfirmationParams{
 				BatchTxid: txid[:],
 				UpdatedAt: s.clock.Now().Unix(),
+			},
+		)
+	})
+}
+
+// RecordInputConflict persists the observed conflict status of one consumed
+// input, so restart reconciliation can rebuild the per-input conflict view.
+func (s *BatchCanonicalityPersistenceStore) RecordInputConflict(
+	ctx context.Context, batchTxid chainhash.Hash, outpoint wire.OutPoint,
+	conflicting, conflictFinal bool) error {
+
+	return s.db.ExecTx(ctx, WriteTxOption(), func(
+		q BatchCanonicalityStore) error {
+
+		return q.RecordBatchInputConflict(
+			ctx, sqlc.RecordBatchInputConflictParams{
+				BatchTxid:     batchTxid[:],
+				InputHash:     outpoint.Hash[:],
+				InputIndex:    int32(outpoint.Index),
+				Conflicting:   boolToInt32(conflicting),
+				ConflictFinal: boolToInt32(conflictFinal),
 			},
 		)
 	})
@@ -573,7 +597,9 @@ func (s *BatchCanonicalityPersistenceStore) hydrateRecord(ctx context.Context,
 				Hash:  *hash,
 				Index: uint32(in.InputIndex),
 			},
-			PkScript: in.InputPkScript,
+			PkScript:      in.InputPkScript,
+			Conflicting:   in.Conflicting != 0,
+			ConflictFinal: in.ConflictFinal != 0,
 		})
 	}
 
@@ -604,6 +630,16 @@ func (s *BatchCanonicalityPersistenceStore) hydrateRecord(ctx context.Context,
 		ConsumedInputs:       inputs,
 		DependentVTXOs:       deps,
 	}, nil
+}
+
+// boolToInt32 maps a Go bool to the 0/1 INTEGER encoding used for the
+// consumed-input conflict flags.
+func boolToInt32(b bool) int32 {
+	if b {
+		return 1
+	}
+
+	return 0
 }
 
 // optionToNullInt32 maps an optional int32 to a sql.NullInt32.

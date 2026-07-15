@@ -53,6 +53,12 @@ func (f *fakeBatchCanon) RecordConfirmation(context.Context, chainhash.Hash,
 	return nil
 }
 
+func (f *fakeBatchCanon) RecordInputConflict(context.Context, chainhash.Hash,
+	wire.OutPoint, bool, bool) error {
+
+	return nil
+}
+
 func (f *fakeBatchCanon) ClearConfirmation(context.Context,
 	chainhash.Hash) error {
 

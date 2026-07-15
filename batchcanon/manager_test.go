@@ -100,6 +100,25 @@ func (s *fakeStore) UpdateBatchState(_ context.Context, txid chainhash.Hash,
 	return nil
 }
 
+func (s *fakeStore) RecordInputConflict(_ context.Context,
+	batchTxid chainhash.Hash, op wire.OutPoint, conflicting,
+	conflictFinal bool) error {
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if r, ok := s.records[batchTxid]; ok {
+		for i := range r.ConsumedInputs {
+			in := &r.ConsumedInputs[i]
+			if in.Outpoint == op {
+				in.Conflicting = conflicting
+				in.ConflictFinal = conflictFinal
+			}
+		}
+	}
+
+	return nil
+}
+
 func (s *fakeStore) RecordConfirmation(_ context.Context, txid chainhash.Hash,
 	height int32, block chainhash.Hash) error {
 
@@ -818,4 +837,82 @@ func TestManagerReconcileReArmsWatches(t *testing.T) {
 	// A reorg after restart is still handled correctly.
 	h.fireConfReorged(t, txid)
 	require.Equal(t, StateReorgedOut, h.state(t, txid).Record.State)
+}
+
+// TestManagerReconcileConflictNotDowngradedByConfReplay proves that a persisted
+// conflict_provisional batch is NOT transiently downgraded to provisional when,
+// after a restart, the confirmation is re-observed before the conflicting spend
+// is re-observed. Reconciliation seeds the per-input conflict view from the
+// persisted flags, so a bare re-confirmation cannot clear a conflict it did not
+// resolve. Without the fix this asserted state 4 (conflict_provisional) but got
+// state 1 (provisional) — a window in which the coin would be wrongly admitted.
+func TestManagerReconcileConflictNotDowngradedByConfReplay(t *testing.T) {
+	t.Parallel()
+
+	store := newFakeStore()
+	txid := testBatchTxid(0x93)
+	input := testOutpoint(0x94, 0)
+
+	// Seed a persisted conflict_provisional batch whose consumed input was
+	// observed conflicting by a prior run: confirmed, but a foreign tx
+	// double-spent its input.
+	require.NoError(
+		t,
+		store.UpsertBatch(
+			t.Context(), &Record{
+				BatchTxID:          txid,
+				State:              StateConflictProvisional,
+				ConfirmationHeight: fn.Some[int32](90),
+				CSVExpiryDelta:     50,
+				ConsumedInputs: []ConsumedInput{{
+					Outpoint:    input,
+					PkScript:    []byte{0x51},
+					Conflicting: true,
+				}},
+			},
+		),
+	)
+
+	mock := newMockChainSource(100)
+	mockActor := actor.NewActor(actor.ActorConfig[
+		chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
+	]{ID: "mock", Behavior: mock, MailboxSize: 64})
+	mockActor.Start()
+	t.Cleanup(mockActor.Stop)
+
+	mgr := NewManager(
+		ManagerConfig{
+			Store:       store,
+			ChainSource: mockActor.Ref(),
+		},
+	)
+	mgrActor := actor.NewActor(actor.ActorConfig[ManagerMsg, ManagerResp]{
+		ID: "mgr", Behavior: mgr, MailboxSize: 64,
+	})
+	mgr.SetSelfRef(mgrActor.TellRef())
+	mgrActor.Start()
+	t.Cleanup(mgrActor.Stop)
+
+	require.NoError(t, mgr.Reconcile(t.Context()))
+
+	h := &managerHarness{mgrRef: mgrActor.Ref(), mock: mock, store: store}
+
+	// Reconcile alone must preserve the persisted conflict.
+	require.Equal(
+		t, StateConflictProvisional, h.state(t, txid).Record.State,
+	)
+
+	// The confirmation is re-observed first (the batch is still mined).
+	// This must NOT clear the conflict: the conflicting spend has not been
+	// observed to reorg away.
+	h.fireConfirmed(t, txid, 90, testBatchTxid(0x95))
+	require.Equal(
+		t, StateConflictProvisional, h.state(t, txid).Record.State,
+		"re-confirmation wrongly downgraded a persisted conflict",
+	)
+
+	// The conflict clears only when the conflicting spend is observed to
+	// reorg out — then, and only then, the batch returns to provisional.
+	h.fireSpendReorged(t, input)
+	require.Equal(t, StateProvisional, h.state(t, txid).Record.State)
 }

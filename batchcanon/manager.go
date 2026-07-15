@@ -536,8 +536,33 @@ func (m *Manager) handleInputSpent(ctx context.Context, msg *inputSpentMsg) {
 		iw.conflicting = conflict
 		iw.conflictFinal = false
 
+		// Persist the input flags BEFORE the batch state so a crash
+		// between the two writes leaves the flags ahead of the state,
+		// not behind it: reconcile derives conflict from the flags and
+		// self-corrects the state, whereas stale non-conflict flags
+		// would let a re-observed confirmation downgrade a real
+		// conflict.
+		m.persistInputConflict(ctx, w, msg.outpoint, iw)
 		m.deriveAndPersist(ctx, w)
 	})
+}
+
+// persistInputConflict writes the observed conflict flags of one consumed
+// input so a restart can rebuild the per-input conflict view (see
+// reconcileOne). A failure is logged, not fatal: the in-memory view stays
+// correct for this run, and the worst case on the next restart is the
+// reconciliation window this persistence exists to close.
+func (m *Manager) persistInputConflict(ctx context.Context, w *batchWatch,
+	op wire.OutPoint, iw *inputWatch) {
+
+	err := m.cfg.Store.RecordInputConflict(
+		ctx, w.txid, op, iw.conflicting, iw.conflictFinal,
+	)
+	if err != nil {
+		m.logger(ctx).WarnS(ctx, "Failed to persist input conflict "+
+			"flags", err, slog.String("batch", w.txid.String()),
+			slog.String("outpoint", op.String()))
+	}
 }
 
 // handleInputSpendReorged clears a previously observed spend that left the
@@ -549,6 +574,7 @@ func (m *Manager) handleInputSpendReorged(ctx context.Context,
 		iw.conflicting = false
 		iw.conflictFinal = false
 
+		m.persistInputConflict(ctx, w, msg.outpoint, iw)
 		m.deriveAndPersist(ctx, w)
 	})
 }
@@ -565,6 +591,7 @@ func (m *Manager) handleInputSpendDone(ctx context.Context,
 			iw.conflictFinal = true
 		}
 
+		m.persistInputConflict(ctx, w, msg.outpoint, iw)
 		m.deriveAndPersist(ctx, w)
 	})
 }
@@ -824,15 +851,37 @@ func (m *Manager) reconcileOne(ctx context.Context, record *Record) {
 		w.conf = confUnseen
 	}
 
+	// Seed the per-input conflict view from the persisted flags. Without
+	// this, a reconciled conflict batch whose confirmation is re-observed
+	// before its conflicting spend is re-observed would derive back to
+	// (non-conflict) provisional and briefly admit the coin.
 	for _, in := range record.ConsumedInputs {
-		w.inputs[in.Outpoint] = &inputWatch{}
+		w.inputs[in.Outpoint] = &inputWatch{
+			spenderIsConflict: in.Conflicting || in.ConflictFinal,
+			conflicting:       in.Conflicting,
+			conflictFinal:     in.ConflictFinal,
+		}
+	}
+
+	// Arm the chain watches BEFORE recording the watch, mirroring the
+	// initial registration path. If arming fails, leaving m.watches
+	// untouched lets a later Reconcile retry the full arm from scratch
+	// rather than treating this batch as permanently armed; re-registering
+	// the same conf/spend caller IDs is idempotent.
+	if err := m.armWatches(ctx, w, record.ConsumedInputs); err != nil {
+		m.logger(ctx).WarnS(ctx, "Failed to re-arm batch watches on "+
+			"reconcile; will retry on next reconcile", err,
+			slog.String("batch", record.BatchTxID.String()))
+
+		return
 	}
 	m.watches[record.BatchTxID] = w
 
-	if err := m.armWatches(ctx, w, record.ConsumedInputs); err != nil {
-		m.logger(ctx).WarnS(ctx, "Failed to re-arm batch watches on "+
-			"reconcile", err, "batch", record.BatchTxID)
-	}
+	// Reconcile any drift between the persisted state and the persisted
+	// per-input flags toward the most-restrictive derived state (e.g. if a
+	// prior state write failed after the input flags were written). The
+	// write is a no-op when they already agree.
+	m.deriveAndPersist(ctx, w)
 }
 
 // confCallerID is the stable chainsource caller id for a batch's confirmation

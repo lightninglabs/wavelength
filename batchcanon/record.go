@@ -73,6 +73,19 @@ type ConsumedInput struct {
 	// predate script tracking; such inputs cannot be watched on
 	// light-client backends.
 	PkScript []byte
+
+	// Conflicting is true while a conflicting spend of this input (a spend
+	// by a transaction other than the batch itself) is observed and has not
+	// been reorged out. Persisting it lets restart reconciliation rebuild
+	// the per-input conflict view so live re-observation cannot transiently
+	// downgrade a persisted conflict before the conflicting spend
+	// re-arrives.
+	Conflicting bool
+
+	// ConflictFinal is true once a conflicting spend of this input has
+	// matured past the reorg-safety depth. Persisted for the same
+	// restart-reconciliation reason as Conflicting.
+	ConflictFinal bool
 }
 
 // EffectiveExpiry derives the absolute expiry height from the current

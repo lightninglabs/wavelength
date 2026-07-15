@@ -56,6 +56,12 @@ func (s *stubBatchCanon) RecordConfirmation(context.Context, chainhash.Hash,
 	return nil
 }
 
+func (s *stubBatchCanon) RecordInputConflict(context.Context, chainhash.Hash,
+	wire.OutPoint, bool, bool) error {
+
+	return nil
+}
+
 func (s *stubBatchCanon) ClearConfirmation(context.Context,
 	chainhash.Hash) error {
 

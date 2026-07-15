@@ -17,6 +17,8 @@ var ErrBatchNotFound = errors.New("batch canonicality record not found")
 // and reverse-dependency edges, leaving all interpretation — state
 // transitions, chain watching, and admission — to the BatchCanonicalityManager
 // and the later tasks of the reorg-safety epic.
+//
+//nolint:interfacebloat
 type Store interface {
 	// UpsertBatch inserts or replaces the canonicality record for a
 	// batch, including its consumed inputs and dependent VTXOs. It is the
@@ -37,6 +39,14 @@ type Store interface {
 	// without touching its other fields.
 	UpdateBatchState(ctx context.Context, txid chainhash.Hash,
 		state State) error
+
+	// RecordInputConflict persists the observed conflict status of one of a
+	// batch's consumed inputs (a spend by a transaction other than the
+	// batch itself). It exists so restart reconciliation can rebuild the
+	// per-input conflict view and not transiently downgrade a persisted
+	// conflict before the conflicting spend is re-observed.
+	RecordInputConflict(ctx context.Context, batchTxid chainhash.Hash,
+		outpoint wire.OutPoint, conflicting, conflictFinal bool) error
 
 	// RecordConfirmation records that the batch tx is confirmed at the
 	// given best-chain height and block hash. A later RecordConfirmation

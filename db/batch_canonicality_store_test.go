@@ -97,6 +97,82 @@ func TestBatchCanonicalityUpsertRoundTrip(t *testing.T) {
 	require.Equal(t, int32(244), got.EffectiveExpiry().UnwrapOr(0))
 }
 
+// TestBatchCanonicalityRecordInputConflict verifies that per-input conflict
+// flags round-trip through the store, so restart reconciliation can rebuild
+// the per-input conflict view (darepo#454 reconciliation-ordering fix).
+func TestBatchCanonicalityRecordInputConflict(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newBatchCanonicalityStoreForTest(t)
+
+	txid := chainhash.Hash{0xac}
+	inA := outpoint(0x01, 0)
+	inB := outpoint(0x02, 1)
+	rec := &batchcanon.Record{
+		BatchTxID:      txid,
+		State:          batchcanon.StateConflictProvisional,
+		CSVExpiryDelta: 144,
+		ConsumedInputs: []batchcanon.ConsumedInput{
+			consumedInput(inA),
+			consumedInput(inB),
+		},
+	}
+	require.NoError(t, store.UpsertBatch(ctx, rec))
+
+	// Freshly inserted inputs carry no conflict.
+	got, err := store.GetBatch(ctx, txid)
+	require.NoError(t, err)
+	for _, in := range got.ConsumedInputs {
+		require.False(t, in.Conflicting)
+		require.False(t, in.ConflictFinal)
+	}
+
+	// Mark input A conflicting (provisional), leave B untouched.
+	require.NoError(
+		t, store.RecordInputConflict(ctx, txid, inA, true, false),
+	)
+	got, err = store.GetBatch(ctx, txid)
+	require.NoError(t, err)
+	require.True(t, inputFlags(t, got, inA).Conflicting)
+	require.False(t, inputFlags(t, got, inA).ConflictFinal)
+	require.False(t, inputFlags(t, got, inB).Conflicting)
+
+	// Promote input A to a finalized conflict; the flag persists.
+	require.NoError(
+		t, store.RecordInputConflict(ctx, txid, inA, true, true),
+	)
+	got, err = store.GetBatch(ctx, txid)
+	require.NoError(t, err)
+	require.True(t, inputFlags(t, got, inA).Conflicting)
+	require.True(t, inputFlags(t, got, inA).ConflictFinal)
+
+	// Clearing the conflict (spend reorged away) resets both flags.
+	require.NoError(
+		t, store.RecordInputConflict(ctx, txid, inA, false, false),
+	)
+	got, err = store.GetBatch(ctx, txid)
+	require.NoError(t, err)
+	require.False(t, inputFlags(t, got, inA).Conflicting)
+	require.False(t, inputFlags(t, got, inA).ConflictFinal)
+}
+
+// inputFlags returns the consumed input matching op from a record, failing the
+// test if it is absent.
+func inputFlags(t *testing.T, rec *batchcanon.Record,
+	op wire.OutPoint) batchcanon.ConsumedInput {
+
+	t.Helper()
+	for _, in := range rec.ConsumedInputs {
+		if in.Outpoint == op {
+			return in
+		}
+	}
+	t.Fatalf("consumed input %v not found", op)
+
+	return batchcanon.ConsumedInput{}
+}
+
 // TestBatchCanonicalityGetNotFound verifies the not-found sentinel.
 func TestBatchCanonicalityGetNotFound(t *testing.T) {
 	t.Parallel()
