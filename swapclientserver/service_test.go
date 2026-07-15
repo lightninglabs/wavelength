@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -30,9 +31,11 @@ import (
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/zpay32"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func TestResumePendingStartsWorkersAndDedupes(t *testing.T) {
@@ -1001,6 +1004,145 @@ func TestNewSwapServerClientsUnknownTransport(t *testing.T) {
 		ServerTransport: "webdav",
 	}, "localhost:10030", nil, nil)
 	require.ErrorContains(t, err, "unknown swap server transport")
+}
+
+type lateSwapServiceServer struct {
+	swaprpc.UnimplementedSwapServiceServer
+
+	serverPubKey []byte
+}
+
+// CreateInSwap returns one valid response once the fake swap server is
+// reachable.
+func (s *lateSwapServiceServer) CreateInSwap(context.Context,
+	*swaprpc.CreateInSwapRequest) (*swaprpc.CreateInSwapResponse, error) {
+
+	paymentHash := lntypes.Hash{1, 2, 3}
+
+	return &swaprpc.CreateInSwapResponse{
+		PaymentHash:  append([]byte(nil), paymentHash[:]...),
+		AmountSat:    10_000,
+		FeeSat:       100,
+		ServerPubkey: append([]byte(nil), s.serverPubKey...),
+		VhtlcConfig: &swaprpc.VHTLCConfig{
+			RefundLocktime:                       100,
+			UnilateralClaimDelay:                 10,
+			UnilateralRefundDelay:                20,
+			UnilateralRefundWithoutReceiverDelay: 30,
+			SwapserverPubkey: append(
+				[]byte(nil), s.serverPubKey...,
+			),
+		},
+		Expiry: timestamppb.New(time.Now().Add(time.Hour)),
+	}, nil
+}
+
+type createInSwapResult struct {
+	cfg *swaps.InSwapConfig
+	err error
+}
+
+// TestSwapServerClientsWaitForLateGRPCServer verifies the daemon-owned gRPC
+// swap server clients wait through a startup connection refusal.
+func TestSwapServerClientsWaitForLateGRPCServer(t *testing.T) {
+	t.Parallel()
+
+	addr := reserveLoopbackAddr(t)
+	clients, err := newSwapServerClients(
+		&waved.SwapConfig{
+			ServerTransport: waved.RPCTransportGRPC,
+			ServerInsecure:  true,
+		},
+		addr, func(context.Context, string) (string, error) {
+			return "auth", nil
+		}, nil,
+	)
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, clients.cleanup())
+	}()
+
+	clientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+
+	resultChan := make(chan createInSwapResult, 1)
+	go func() {
+		cfg, err := clients.server.CreateInSwap(
+			ctx, "invoice", 1_000, clientKey.PubKey(),
+		)
+		resultChan <- createInSwapResult{
+			cfg: cfg,
+			err: err,
+		}
+	}()
+
+	select {
+	case result := <-resultChan:
+		require.Failf(
+			t, "CreateInSwap returned before swap server start",
+			"err=%v", result.err,
+		)
+
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	stopServer := startLateSwapServer(t, addr)
+	defer stopServer()
+
+	select {
+	case result := <-resultChan:
+		require.NoError(t, result.err)
+		require.Equal(t, int64(10_000), result.cfg.AmountSat)
+
+	case <-ctx.Done():
+		require.FailNow(
+			t, "CreateInSwap did not complete after server start",
+		)
+	}
+}
+
+// reserveLoopbackAddr returns an unused TCP address and closes its temporary
+// listener so the test client can observe a connection refusal.
+func reserveLoopbackAddr(t *testing.T) string {
+	t.Helper()
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+
+	addr := listener.Addr().String()
+	require.NoError(t, listener.Close())
+
+	return addr
+}
+
+// startLateSwapServer starts the fake swap service on the previously refused
+// address.
+func startLateSwapServer(t *testing.T, addr string) func() {
+	t.Helper()
+
+	listener, err := net.Listen("tcp", addr)
+	require.NoError(t, err)
+
+	serverKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	server := grpc.NewServer()
+	swaprpc.RegisterSwapServiceServer(server, &lateSwapServiceServer{
+		serverPubKey: serverKey.PubKey().SerializeCompressed(),
+	})
+
+	serveErr := make(chan error, 1)
+	go func() {
+		serveErr <- server.Serve(listener)
+	}()
+
+	return func() {
+		server.Stop()
+		require.NoError(t, <-serveErr)
+	}
 }
 
 func TestDefaultLocalSwapServerUsesInsecureTransport(t *testing.T) {

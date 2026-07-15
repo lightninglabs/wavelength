@@ -872,6 +872,16 @@ func (d *daemonAuthOnlyInvoiceCreator) CreateInvoiceWithKeyRouteHintPaths(
 func swapServerDialOptions(cfg *waved.SwapConfig, addr string,
 	clientCerts clientTLSCertProvider) ([]grpc.DialOption, error) {
 
+	// The daemon may start before its configured swap server listener is
+	// accepting connections. WaitForReady prevents that stale startup
+	// refusal from failing the first swap RPC; user RPCs remain bounded by
+	// their request context, and background resume RPCs are bounded by the
+	// daemon root context so they keep waiting until swapd returns or the
+	// daemon shuts down.
+	waitForReadyOpt := grpc.WithDefaultCallOptions(
+		grpc.WaitForReady(true),
+	)
+
 	switch {
 	case cfg.ServerTLSCertPath != "":
 		tlsCfg, err := swapServerTLSConfig(
@@ -885,6 +895,7 @@ func swapServerDialOptions(cfg *waved.SwapConfig, addr string,
 			grpc.WithTransportCredentials(
 				credentials.NewTLS(tlsCfg),
 			),
+			waitForReadyOpt,
 		}, nil
 
 	case useInsecureSwapServerTransport(cfg, addr):
@@ -892,6 +903,7 @@ func swapServerDialOptions(cfg *waved.SwapConfig, addr string,
 			grpc.WithTransportCredentials(
 				insecure.NewCredentials(),
 			),
+			waitForReadyOpt,
 		}, nil
 
 	default:
@@ -906,6 +918,7 @@ func swapServerDialOptions(cfg *waved.SwapConfig, addr string,
 			grpc.WithTransportCredentials(
 				credentials.NewTLS(tlsCfg),
 			),
+			waitForReadyOpt,
 		}, nil
 	}
 }
