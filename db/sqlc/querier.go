@@ -343,7 +343,7 @@ type Querier interface {
 	// the row keeps its position in the created-ordered feed. The settlement and
 	// correlation handles are COALESCEd so an early projection that does not yet
 	// know a txid never clobbers one a later projection already recorded.
-	UpsertActivityEntry(ctx context.Context, arg UpsertActivityEntryParams) error
+	UpsertActivityEntry(ctx context.Context, arg UpsertActivityEntryParams) (int64, error)
 	UpsertChainInfo(ctx context.Context, arg UpsertChainInfoParams) error
 	// Credit operations control-plane queries.
 	UpsertCreditOperation(ctx context.Context, arg UpsertCreditOperationParams) error
