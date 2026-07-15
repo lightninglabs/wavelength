@@ -134,7 +134,7 @@ func newWavedRPCPermissions() map[string][]bakery.Op {
 	)
 	grant(
 		daemon, entityOnChain, "write", "SendOnChain", "Board",
-		"SweepBoardingUTXOs", "Unroll",
+		"OnboardTaprootAsset", "SweepBoardingUTXOs", "Unroll",
 	)
 	grant(
 		daemon, entityRound, "read", "ListRounds", "GetRound",

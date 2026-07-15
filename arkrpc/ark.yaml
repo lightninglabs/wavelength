@@ -9,3 +9,6 @@ http:
     - selector: arkrpc.ArkService.EstimateFee
       post: /v1/ark/estimate-fee
       body: "*"
+    - selector: arkrpc.ArkService.RegisterTaprootAssetVTXO
+      post: /v1/ark/register-taproot-asset-vtxo
+      body: "*"
