@@ -143,6 +143,7 @@ func TestRecvBelowDustHandsToCreditRegistry(t *testing.T) {
 		SwapService:    swap,
 		RPCServer:      rpc,
 		CreditRegistry: reg,
+		ActivityStore:  &fakeActivityProjector{},
 	}
 	runtime := newRuntime(t.Context(), deps)
 	t.Cleanup(runtime.stop)
@@ -179,6 +180,14 @@ func TestRecvBelowDustHandsToCreditRegistry(t *testing.T) {
 			WalletEntryPhase_WALLET_ENTRY_PHASE_WAITING_FOR_PAYMENT,
 		resp.GetEntry().GetProgress().GetPhase(),
 	)
+	store := deps.ActivityStore.(*fakeActivityProjector)
+	require.Equal(t, 1, store.count())
+	projection := store.lastProjection()
+	require.Equal(t, "cr_recv", projection.CanonicalID)
+	require.Equal(t, int64(500), projection.AmountSat)
+	require.Equal(t, "tiny", projection.Note)
+	require.NotEmpty(t, projection.RequestJSON)
+	require.Equal(t, []byte{0xab, 0xcd}, projection.PaymentHash)
 }
 
 // TestRecvDustLimitLookupFailureFallsBackOpen asserts that advisory dust

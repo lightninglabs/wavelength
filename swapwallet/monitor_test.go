@@ -100,6 +100,36 @@ func TestMonitorLoopFansOutSwapUpdates(t *testing.T) {
 	)
 }
 
+// TestMonitorLoopSkipsCreditOnlySwaps asserts that a completed credit-only
+// SDK swap row cannot overwrite the activity row owned by the durable credit
+// projector. The SDK row records Ark funding amount, which is zero for a
+// fully credit-funded payment, while the credit operation retains the invoice
+// principal used by wallet activity.
+func TestMonitorLoopSkipsCreditOnlySwaps(t *testing.T) {
+	t.Parallel()
+
+	store := &fakeActivityProjector{}
+	r := newRuntime(t.Context(), &Deps{ActivityStore: store})
+	defer r.stop()
+
+	sub := r.subscribe()
+	err := r.fanOutSwapUpdate(&swapclientrpc.SubscribeSwapsResponse{
+		Swap: &swapclientrpc.SwapSummary{
+			PaymentHash: "credit-only",
+			Direction: swapclientrpc.
+				SwapDirection_SWAP_DIRECTION_PAY,
+			State: swapclientrpc.
+				SwapState_SWAP_STATE_COMPLETED,
+			AmountSat: 0,
+			SettlementType: swapclientrpc.
+				SwapSettlementType_SWAP_SETTLEMENT_TYPE_CREDIT,
+		},
+	})
+	require.NoError(t, err)
+	require.Empty(t, drainEntries(sub))
+	require.Zero(t, store.count())
+}
+
 // TestMonitorLoopLeavesSwapPendingToFSM confirms a swap row fanned out from
 // the monitor reaches subscribers under its payment_hash id, but is not aged by
 // the wallet-level deadline tracker even before its direction is populated.

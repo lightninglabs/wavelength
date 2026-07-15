@@ -607,6 +607,15 @@ func (h *history) collectSwapEntries(ctx context.Context) (
 
 	out := make([]*wavewalletrpc.WalletEntry, 0, len(resp.GetSwaps()))
 	for _, s := range resp.GetSwaps() {
+		// A credit-only pay's SDK swap row records a zero Ark funding
+		// amount. Its durable credit operation owns the activity row
+		// and retains the invoice principal, so derived history must
+		// not race that projector during startup backfill or periodic
+		// reconcile.
+		if creditProjectorOwnsSwapSummary(s) {
+			continue
+		}
+
 		// The wallet layer does not surface vHTLC outpoints or
 		// session IDs; counterparty for swaps is the payment hash
 		// (truncated). History lists swaps in both directions; let

@@ -196,6 +196,8 @@ func (r *receiver) recvCredit(ctx context.Context,
 	entry := creditReceiveEntry(
 		req, start.OpID, start.Invoice, paymentHashHex, amt,
 	)
+	r.runtime.trackPendingEntryWithoutTimeout(entry)
+	r.runtime.projectAndEmit(context.WithoutCancel(ctx), entry)
 
 	return &wavewalletrpc.RecvResponse{
 		Invoice: start.Invoice,

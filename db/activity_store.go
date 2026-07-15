@@ -316,9 +316,8 @@ func (s *ActivityPersistenceStore) PullEvents(ctx context.Context, cursor int64,
 // changesRow reports whether the projection would alter the current-state row
 // e, i.e. whether it represents a genuine lifecycle transition. It mirrors the
 // UpsertActivityEntry semantics: scalar lifecycle columns overwrite directly,
-// while the settlement/correlation handles are COALESCEd (a nil projection
-// value preserves the stored one, so it is a change only when non-nil AND
-// different). request_json and entry_json are deliberately NOT compared:
+// while an empty note and the settlement/correlation handles preserve their
+// stored values. request_json and entry_json are deliberately NOT compared:
 // protojson output is not byte-stable, so comparing it would report spurious
 // changes; the request is immutable per operation anyway.
 func (p ActivityProjection) changesRow(e sqlc.ActivityEntry) bool {
@@ -327,12 +326,14 @@ func (p ActivityProjection) changesRow(e sqlc.ActivityEntry) bool {
 		p.AmountSat != e.AmountSat ||
 		p.FeeSat != e.FeeSat ||
 		p.Counterparty != e.Counterparty ||
-		p.Note != e.Note ||
 		p.Phase != e.Phase ||
 		p.PhaseLabel != e.PhaseLabel ||
 		p.FailureCode != e.FailureCode ||
 		p.FailureReason != e.FailureReason ||
 		p.VtxoOutpoint != e.VtxoOutpoint {
+		return true
+	}
+	if p.Note != "" && p.Note != e.Note {
 		return true
 	}
 

@@ -179,6 +179,17 @@ func (r *Runtime) fanOutSwapUpdate(
 		return nil
 	}
 
+	// Credit-only pays also have a durable SDK swap row, but that row's
+	// amount is the Ark funding amount, which is zero when credits cover
+	// the full invoice. The durable credit operation owns the wallet
+	// activity lifecycle for this rail and retains the invoice principal.
+	// Letting the generic swap monitor project the SDK row would race the
+	// credit projector and temporarily overwrite a one-satoshi SEND with a
+	// zero-satoshi terminal row.
+	if creditProjectorOwnsSwapSummary(summary) {
+		return nil
+	}
+
 	// The monitor consumes summaries for swaps in both directions, so we
 	// let direction-derivation pick the kind here (callers that need a
 	// pinned kind — router.sendInvoice and recv.go — pass it explicitly).

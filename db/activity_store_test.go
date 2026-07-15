@@ -51,6 +51,7 @@ func sampleProjection(id string) ActivityProjection {
 			0xbb,
 			0xcc,
 		},
+		RequestJSON:   `{"lightningInvoice":{"invoice":"lnbc1"}}`,
 		EntryJSON:     `{"id":"` + id + `"}`,
 		CreatedAtUnix: 100,
 		UpdatedAtUnix: 100,
@@ -192,6 +193,8 @@ func TestActivityStoreReProjectUpdatesInPlace(t *testing.T) {
 	next.CreatedAtUnix = 0
 	next.PaymentHash = nil
 	next.Txid = []byte{0x11, 0x22}
+	next.Note = ""
+	next.RequestJSON = ""
 	require.NoError(t, projected(store.ProjectEntry(ctx, next)))
 
 	entry, err := store.GetEntry(ctx, "a")
@@ -207,6 +210,11 @@ func TestActivityStoreReProjectUpdatesInPlace(t *testing.T) {
 		"nil payment hash must not clobber the stored value",
 	)
 	require.Equal(t, []byte{0x11, 0x22}, entry.Txid)
+	require.Equal(t, "note", entry.Note)
+	require.Equal(
+		t, `{"lightningInvoice":{"invoice":"lnbc1"}}`,
+		entry.RequestJson,
+	)
 
 	events, err := store.PullEvents(ctx, 0, 10)
 	require.NoError(t, err)

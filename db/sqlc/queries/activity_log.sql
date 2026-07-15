@@ -28,7 +28,7 @@ ON CONFLICT (canonical_id) DO UPDATE SET
     amount_sat     = EXCLUDED.amount_sat,
     fee_sat        = EXCLUDED.fee_sat,
     counterparty   = EXCLUDED.counterparty,
-    note           = EXCLUDED.note,
+    note           = COALESCE(NULLIF(EXCLUDED.note, ''), activity_entries.note),
     phase          = EXCLUDED.phase,
     phase_label    = EXCLUDED.phase_label,
     failure_code   = EXCLUDED.failure_code,
@@ -40,7 +40,7 @@ ON CONFLICT (canonical_id) DO UPDATE SET
     swap_session_id = COALESCE(EXCLUDED.swap_session_id, activity_entries.swap_session_id),
     ledger_txid     = COALESCE(EXCLUDED.ledger_txid, activity_entries.ledger_txid),
     boarding_addr   = COALESCE(EXCLUDED.boarding_addr, activity_entries.boarding_addr),
-    request_json    = EXCLUDED.request_json,
+    request_json    = COALESCE(NULLIF(EXCLUDED.request_json, ''), activity_entries.request_json),
     updated_at_unix = EXCLUDED.updated_at_unix;
 
 -- name: AppendActivityEvent :one
