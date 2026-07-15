@@ -34,9 +34,10 @@ func TestOnboarderResumesPendingConfirmation(t *testing.T) {
 		if len(registrations) == 1 {
 			return nil, ErrOnboardingPendingConfirmation
 		}
+		outpoint := driver.result.outputs[0].wireOutpoint()
 
 		return &OnboardingRegistrationResult{
-			Outpoint:           driver.result.outputs[0].wireOutpoint(),
+			Outpoint:           outpoint,
 			ConfirmationHeight: 321,
 		}, nil
 	}

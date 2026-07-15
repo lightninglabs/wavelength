@@ -24,8 +24,9 @@ func configureTaprootAssets(cfg *waved.Config) {
 
 	cfg.RPCServiceRegistrars = append(
 		cfg.RPCServiceRegistrars,
-		func(_ context.Context, _ *grpc.Server, _ *waved.RPCServer,
-			daemonCfg *waved.Config) (func(), error) {
+		func(_ context.Context, _ *grpc.Server,
+			rpcServer *waved.RPCServer, daemonCfg *waved.Config) (
+			func(), error) {
 
 			assetCfg := daemonCfg.TaprootAssets
 			clientCfg := &tapgrpc.Config{
@@ -84,6 +85,14 @@ func configureTaprootAssets(cfg *waved.Config) {
 				return nil, err
 			}
 			daemonCfg.TaprootAssetOORPreparer = preparer
+			if err := rpcServer.ConfigureTaprootAssetOnboarding(
+				wallet, store,
+			); err != nil {
+
+				closeWallet()
+
+				return nil, err
+			}
 
 			return closeWallet, nil
 		},

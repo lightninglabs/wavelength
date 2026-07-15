@@ -263,6 +263,13 @@ type Config struct {
 	// asset-bearing OOR sends without affecting Bitcoin-only sends.
 	TaprootAssetOORPreparer oor.TaprootAssetOORPreparer `mapstructure:"-"`
 
+	// TaprootAssetOnboarder moves a confirmed tapd-managed asset into a
+	// standard Wavelength policy and registers it with the operator. The
+	// concrete service is wired programmatically alongside the
+	// authenticated tapd client and is never decoded from a configuration
+	// file.
+	TaprootAssetOnboarder TaprootAssetOnboardingService `mapstructure:"-"`
+
 	// TaprootAssets configures the optional tap-sdk-backed OOR adapter. The
 	// adapter is disabled by default and runs only in the client daemon.
 	TaprootAssets *TaprootAssetsConfig `mapstructure:"taprootassets"`

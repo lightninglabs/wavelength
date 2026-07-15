@@ -13,7 +13,7 @@ The observable demonstration is a single idempotent daemon RPC and CLI command. 
 - [x] (2026-07-15 17:27Z) Audited round boarding, OOR preparation, tap-sdk custom anchors, wallet signing, and VTXO lineage constraints.
 - [x] (2026-07-15 17:27Z) Selected a direct confirmed asset-deposit VTXO as the PoC protocol.
 - [x] (2026-07-15 18:31Z) Added the SDK-neutral onboarding request, result, journal, tap-sdk-backed implementation, protocol RPCs, and restart/idempotency tests.
-- [ ] Add LND WalletKit anchor signing and direct operator registration wiring in `waved`.
+- [x] (2026-07-15 19:58Z) Added LND WalletKit anchor signing, operator registration, ready-only local persistence, actor activation, and restart-safe RPC tests in `waved`.
 - [ ] Add the daemon protobuf RPC and a `wavecli taproot-asset onboard` command.
 - [ ] Add unit, persistence, RPC, retry, and command tests; run repository build, unit, formatting, lint, and race checks.
 
