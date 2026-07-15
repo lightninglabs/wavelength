@@ -63,7 +63,7 @@ func (s *Server) startMetricsServer(ctx context.Context) error {
 
 	// Spawn a small pool of metrics actors that own all event-driven
 	// counters and register them under one service key, mirroring the
-	// arkd server's design. Lifecycle emission sites Tell through the
+	// lumosd server's design. Lifecycle emission sites Tell through the
 	// sink rather than touching Prometheus directly. The actors are
 	// in-memory (no durable mailbox): a dropped metric event is
 	// acceptable, and the actor system shutdown registered during

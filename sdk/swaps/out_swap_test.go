@@ -1488,7 +1488,7 @@ func TestWaitForVHTLCFallsBackToLocalVTXOOnUnregisteredScript(t *testing.T) {
 // unregisteredScriptIndexerErr returns the indexer rejection a receiver sees
 // while the swap server has funded the vHTLC but the operator's indexer has not
 // yet exposed a live VTXO row queryable under the receiver principal. The
-// string mirrors the wording the daemon surfaces from arkd so the classifier
+// string mirrors the wording the daemon surfaces from lumosd so the classifier
 // under test matches what production observes.
 func unregisteredScriptIndexerErr() error {
 	return status.Error(

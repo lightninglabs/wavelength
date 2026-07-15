@@ -118,7 +118,7 @@ var (
 	// outgoing OOR (async) transfers from the SendOOR call entry to its
 	// terminal outcome, labelled by status. The duration is measured at
 	// the call site and carried on the metric message so the metrics
-	// actor stays stateless. Buckets mirror the arkd server's OOR
+	// actor stays stateless. Buckets mirror the lumosd server's OOR
 	// transfer histogram for dashboard consistency.
 	OORTransferDurationSeconds = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{

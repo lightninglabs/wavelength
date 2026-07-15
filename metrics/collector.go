@@ -55,7 +55,7 @@ type WalletBalance struct {
 }
 
 // SystemStatsQuerier is the full scrape-time data source the
-// SystemCollector reads. It mirrors the arkd server's querier so client
+// SystemCollector reads. It mirrors the lumosd server's querier so client
 // and server dashboards share query structure. Each method is queried
 // independently on every scrape; a method returning an error only
 // suppresses its own samples for that scrape, never the whole endpoint.
