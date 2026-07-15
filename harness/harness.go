@@ -1,5 +1,5 @@
 // Package harness provides a small, programmatic integration-test runner that
-// starts a regtest bitcoind and an lnd node in Docker, boots arkd in-process,
+// starts a regtest bitcoind and an lnd node in Docker, boots waved in-process,
 // and offers helpers for mining and funding. It also manages per-run artifacts
 // (data directories and logs), supports parallel test execution through
 // dynamic ports and per-run Docker networks, and guarantees clean teardown.
@@ -145,7 +145,7 @@ var (
 
 	harnessPostgres = flag.Bool(
 		"harness.postgres", false,
-		"if true, use PostgreSQL instead of SQLite for arkd",
+		"if true, use PostgreSQL instead of SQLite for waved",
 	)
 
 	artifactsBaseDirFlag = flag.String(
@@ -173,7 +173,7 @@ var (
 )
 
 // Harness spins up an ARK test environment using bitcoind and LND in Docker
-// and arkd in-process.
+// and waved in-process.
 type Harness struct {
 	T *testing.T
 
@@ -336,9 +336,9 @@ type Options struct {
 	// addition to the harness log file.
 	HarnessLogStdOut bool
 
-	// ArkdLogStdOut if true, also prints arkd logs to stdout in
-	// addition to the arkd log file.
-	ArkdLogStdOut bool
+	// WavedLogStdOut if true, also prints waved logs to stdout in
+	// addition to the waved log file.
+	WavedLogStdOut bool
 
 	// StartTapd if true, starts a tapd instance along with the harness.
 	// Default is false to speed up tests that don't need tapd.
@@ -471,7 +471,7 @@ func (h *Harness) BaseDir() string {
 	return h.artifactsDir
 }
 
-// Start launches bitcoind and lnd containers, initializes lnd, and boots arkd
+// Start launches bitcoind and lnd containers, initializes lnd, and boots waved
 // in-process.
 func (h *Harness) Start() {
 	h.T.Helper()
@@ -1366,7 +1366,7 @@ func (h *Harness) attemptStartBitcoind(containerName string) error {
 }
 
 // startElectrs launches an electrs container that serves an Esplora-compatible
-// HTTP API used by arkd and tests. It shares the bitcoind datadir to access
+// HTTP API used by waved and tests. It shares the bitcoind datadir to access
 // blocks and chainstate and connects to bitcoind over RPC inside the private
 // network.
 func (h *Harness) startElectrs() {
@@ -1474,7 +1474,7 @@ func (h *Harness) startElectrs() {
 	}, electrsReadyTimeout, pollInterval, "electrs HTTP not ready")
 }
 
-// startPostgres launches a postgres container for arkd to use instead of
+// startPostgres launches a postgres container for waved to use instead of
 // SQLite.
 func (h *Harness) startPostgres() {
 	// Remove any existing postgres container with the same name (from

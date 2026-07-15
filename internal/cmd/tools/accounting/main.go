@@ -211,7 +211,7 @@ func parseFlags(args []string) (*config, error) {
 		postgresHost:   "localhost",
 		postgresPort:   5432,
 		postgresUser:   "postgres",
-		postgresDBName: "arkd",
+		postgresDBName: "waved",
 	}
 
 	fs := flag.NewFlagSet("accounting", flag.ContinueOnError)

@@ -47,7 +47,7 @@ func TestOpenStoreValidatesBackend(t *testing.T) {
 // the seeded chart of accounts with no ledger entries. This exercises the
 // shared db opener, the read-only transaction, and the report assembly.
 func TestBuildReportReadsSeededAccounts(t *testing.T) {
-	dbFile := filepath.Join(t.TempDir(), "arkd.db")
+	dbFile := filepath.Join(t.TempDir(), "waved.db")
 
 	// Create and migrate a fresh database so the chart of accounts is
 	// seeded.

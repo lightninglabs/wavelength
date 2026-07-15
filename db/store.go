@@ -110,7 +110,7 @@ func DefaultConfig(dataDir string) *Config {
 // The default database file is placed under the provided data directory.
 func DefaultSqliteConfig(dataDir string) *SqliteConfig {
 	return &SqliteConfig{
-		DatabaseFileName: fmt.Sprintf("%s/arkd.db", dataDir),
+		DatabaseFileName: fmt.Sprintf("%s/waved.db", dataDir),
 		Synchronous:      defaultSqliteSynchronous,
 	}
 }
@@ -125,7 +125,7 @@ func DefaultPostgresConfig() *PostgresConfig {
 		Port:     5432,
 		User:     "postgres",
 		Password: "",
-		DBName:   "arkd",
+		DBName:   "waved",
 		// Use the default value for max open connections.
 		MaxOpenConnections: 0,
 
