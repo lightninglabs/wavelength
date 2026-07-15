@@ -9,7 +9,7 @@ import (
 // Msg is the sealed interface for all messages sent to the metrics
 // actor. Subsystem actors and the daemon send typed metric events here
 // instead of calling Prometheus directly, keeping all event-driven
-// instrumentation in one auditable place. This mirrors the arkd server's
+// instrumentation in one auditable place. This mirrors the lumosd server's
 // metrics actor design.
 type Msg interface {
 	actor.Message

@@ -42,7 +42,7 @@ missing path instead of reporting against an empty database it just made.
   daemon does; `db/sqlc` generated read queries; `net/http` for optional fiat
   pricing.
 - **Depended on by**: operators running e.g.
-  `go run ./internal/cmd/tools/accounting --backend sqlite --sqlite.dbfile <arkd.db>`.
+  `go run ./internal/cmd/tools/accounting --backend sqlite --sqlite.dbfile <waved.db>`.
 
 ## Invariants
 

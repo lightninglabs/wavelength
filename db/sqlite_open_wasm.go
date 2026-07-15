@@ -115,7 +115,7 @@ func browserSQLiteFileName(name string) string {
 	normalized := filepath.ToSlash(filepath.Clean(name))
 	base := filepath.Base(normalized)
 	if base == "." || base == "/" || base == "" {
-		base = "arkd.db"
+		base = "waved.db"
 		normalized = base
 	}
 

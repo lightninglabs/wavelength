@@ -24,18 +24,18 @@ docker run --rm waved:local \
     --lnd.host=<lnd-host>:10009 \
     --lnd.tlspath=/path/to/tls.cert \
     --lnd.macaroonpath=/path/to/admin.macaroon \
-    --server.host=<arkd-host>:7070 \
+    --server.host=<lumosd-host>:7070 \
     --server.insecure=true \
     --rpc.listenaddr=0.0.0.0:10029
 ```
 
 ## Running with Full Stack
 
-The server repo (`wavelength`) includes a `docker-compose.yml` that
-orchestrates the complete environment: bitcoind + 2x lnd + arkd + waved.
+The server repo (`lumos`) includes a `docker-compose.yml` that
+orchestrates the complete environment: bitcoind + 2x lnd + lumosd + waved.
 
 ```bash
-# From the wavelength (server) repo root:
+# From the lumos (server) repo root:
 docker-compose up -d --build
 ./scripts/docker-regtest-setup.sh
 ```

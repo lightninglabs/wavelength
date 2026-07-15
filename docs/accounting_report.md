@@ -15,7 +15,7 @@ Point the command at the database file a SQLite daemon writes:
 
 ```shell
 go run ./internal/cmd/tools/accounting \
-    --backend sqlite --sqlite.dbfile ~/.waved/data/arkd.db
+    --backend sqlite --sqlite.dbfile ~/.waved/data/waved.db
 ```
 
 Against a Postgres daemon, pass the connection settings instead:
@@ -24,8 +24,8 @@ Against a Postgres daemon, pass the connection settings instead:
 go run ./internal/cmd/tools/accounting \
     --backend postgres \
     --postgres.host localhost --postgres.port 5432 \
-    --postgres.user arkd --postgres.password "$PGPASSWORD" \
-    --postgres.dbname arkd
+    --postgres.user waved --postgres.password "$PGPASSWORD" \
+    --postgres.dbname waved
 ```
 
 Stop the daemon before you run the report, or expect a snapshot that is one
@@ -43,7 +43,7 @@ uncommitted in-flight writes.
 | `--postgres.port` | `5432` | Postgres port. |
 | `--postgres.user` | `postgres` | Postgres user. |
 | `--postgres.password` | — | Postgres password. |
-| `--postgres.dbname` | `arkd` | Postgres database name. |
+| `--postgres.dbname` | `waved` | Postgres database name. |
 | `--postgres.ssl` | `false` | Require TLS for the Postgres connection. |
 | `--apply-migrations` | `false` | Run migrations before reporting. Off by default so the report leaves the schema untouched. |
 | `--format` | `text` | Output format: `text`, `json`, or `csv`. |

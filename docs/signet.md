@@ -6,9 +6,9 @@ endpoint for the configured Bitcoin network and outbound transport.
 
 | Network config | Ark gRPC | Ark REST | Swap gRPC | Swap REST |
 |----------------|----------|----------|-----------|-----------|
-| `testnet` | `arkd.testnet.lightningcluster.com:443` | `https://arkd-rest.testnet.lightningcluster.com` | `swapd.testnet.lightningcluster.com:443` | `https://swapd-rest.testnet.lightningcluster.com` |
-| `testnet4` | `arkd-testnet4.testnet.lightningcluster.com:443` | `https://arkd-testnet4-rest.testnet.lightningcluster.com` | `swapd-testnet4.testnet.lightningcluster.com:443` | `https://swapd-testnet4-rest.testnet.lightningcluster.com` |
-| `signet` | `arkd-signet.staging.lightningcluster.com:443` | `https://arkd-signet-rest.staging.lightningcluster.com` | `swapd-signet.staging.lightningcluster.com:443` | `https://swapd-signet-rest.staging.lightningcluster.com` |
+| `testnet` | `lumosd.testnet.lightningcluster.com:443` | `https://lumosd-rest.testnet.lightningcluster.com` | `swapd.testnet.lightningcluster.com:443` | `https://swapd-rest.testnet.lightningcluster.com` |
+| `testnet4` | `lumosd-testnet4.testnet.lightningcluster.com:443` | `https://lumosd-testnet4-rest.testnet.lightningcluster.com` | `swapd-testnet4.testnet.lightningcluster.com:443` | `https://swapd-testnet4-rest.testnet.lightningcluster.com` |
+| `signet` | `lumosd-signet.staging.lightningcluster.com:443` | `https://lumosd-signet-rest.staging.lightningcluster.com` | `swapd-signet.staging.lightningcluster.com:443` | `https://swapd-signet-rest.staging.lightningcluster.com` |
 
 The daemon defaults both outbound transports to gRPC. Set the selectors to
 `rest` when the host cannot use native gRPC:

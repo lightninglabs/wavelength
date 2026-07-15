@@ -54,12 +54,12 @@ const (
 
 	// defaultTestnet3ServerGRPCHost is the public testnet3 Ark operator
 	// gRPC endpoint.
-	defaultTestnet3ServerGRPCHost = "arkd.testnet." +
+	defaultTestnet3ServerGRPCHost = "lumosd.testnet." +
 		"lightningcluster.com:443"
 
 	// defaultTestnet3ServerRESTHost is the public testnet3 Ark operator
 	// REST endpoint.
-	defaultTestnet3ServerRESTHost = "arkd-rest.testnet." +
+	defaultTestnet3ServerRESTHost = "lumosd-rest.testnet." +
 		"lightningcluster.com"
 
 	// defaultTestnet3SwapServerGRPCHost is the public testnet3 swap server
@@ -74,12 +74,12 @@ const (
 
 	// defaultTestnet4ServerGRPCHost is the public testnet4 Ark operator
 	// gRPC endpoint.
-	defaultTestnet4ServerGRPCHost = "arkd-testnet4.testnet." +
+	defaultTestnet4ServerGRPCHost = "lumosd-testnet4.testnet." +
 		"lightningcluster.com:443"
 
 	// defaultTestnet4ServerRESTHost is the public testnet4 Ark operator
 	// REST endpoint.
-	defaultTestnet4ServerRESTHost = "arkd-testnet4-rest.testnet." +
+	defaultTestnet4ServerRESTHost = "lumosd-testnet4-rest.testnet." +
 		"lightningcluster.com"
 
 	// defaultTestnet4SwapServerGRPCHost is the public testnet4 swap server
@@ -94,13 +94,13 @@ const (
 
 	// defaultSignetServerGRPCHost is the public signet Ark operator gRPC
 	// endpoint.
-	defaultSignetServerGRPCHost = "arkd-signet.staging." +
+	defaultSignetServerGRPCHost = "lumosd-signet.staging." +
 		"lightningcluster.com:443"
 
 	// defaultSignetServerRESTHost is the public signet Ark operator REST
 	// endpoint. The REST client adds the HTTPS scheme when the configured
 	// host is bare.
-	defaultSignetServerRESTHost = "arkd-signet-rest.staging." +
+	defaultSignetServerRESTHost = "lumosd-signet-rest.staging." +
 		"lightningcluster.com"
 
 	// defaultSignetSwapServerGRPCHost is the public signet swap server gRPC
@@ -116,7 +116,7 @@ const (
 
 	// DefaultIndexerServerID is the canonical operator identifier used
 	// in signed indexer proofs.
-	DefaultIndexerServerID = "arkd"
+	DefaultIndexerServerID = "lumosd"
 
 	// DefaultRPCTimeout is the default timeout for RPC calls to lnd.
 	DefaultRPCTimeout = 30 * time.Second

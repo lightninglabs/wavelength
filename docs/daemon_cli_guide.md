@@ -634,7 +634,7 @@ wave ark send inround --to bcrt1p... --amount 5000
 ```
 
 For per-client manual testing under the `arktest` harness, see
-`MANUAL_TESTING.md` at the server (wavelength) repo root.
+`MANUAL_TESTING.md` at the server (lumos) repo root.
 
 ## Password Handling
 

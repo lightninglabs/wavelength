@@ -26,10 +26,10 @@ func TestConnectOperatorClientsREST(t *testing.T) {
 	tempDir := t.TempDir()
 	macaroonPath := filepath.Join(tempDir, "operator.macaroon")
 	newTestMacaroonService(
-		t, macaroonPath, "arkd",
+		t, macaroonPath, "lumosd",
 		map[string][]bakery.Op{
 			"/arkrpc.ArkService/GetInfo": {{
-				Entity: "arkd",
+				Entity: "lumosd",
 				Action: "client",
 			}},
 		},

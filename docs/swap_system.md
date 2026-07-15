@@ -24,7 +24,7 @@ A swap is a four-party affair, even though the user only ever sees two of them.
 |-------|-----------|----------------|
 | **The client** (`waved`) | The user's daemon. Holds the wallet, derives keys, drives the swap FSM. | This repo. |
 | **The swap server** (`swapd`) | The bridge between Lightning and Ark. Intercepts Lightning HTLCs, funds vHTLCs, pays invoices. | Operator infrastructure (separate repo). |
-| **The Ark operator** (`arkd`) | The Ark service provider. Runs rounds, and — crucially for us — runs **the indexer**, the authoritative record of which virtual outputs exist. | Operator infrastructure (separate repo). |
+| **The Ark operator** (`lumosd`) | The Ark service provider. Runs rounds, and — crucially for us — runs **the indexer**, the authoritative record of which virtual outputs exist. | Operator infrastructure (separate repo). |
 | **The counterparty** | A Lightning node paying the invoice, *or* another client of the same Ark. | Anywhere. |
 
 The single most important idea in this document is that the swap server and the
@@ -243,7 +243,7 @@ sequenceDiagram
     participant U as User / CLI
     participant C as Client (waved)
     participant S as swapd (swap server)
-    participant A as arkd + indexer
+    participant A as lumosd + indexer
     participant L as Lightning payer
 
     U->>C: wave recv --offchain --amt N
@@ -317,7 +317,7 @@ sequenceDiagram
     participant U as User / CLI
     participant C as Client (waved)
     participant S as swapd (swap server)
-    participant A as arkd + indexer
+    participant A as lumosd + indexer
     participant P as Lightning payee
 
     U->>C: wave send <invoice> --offchain
@@ -743,7 +743,7 @@ Everything the client asks of the **operator's indexer** (via the daemon) is a
 proof-gated query — chiefly `ListVTXOsByScripts`, reached through
 `FindLiveVTXOByPkScript` → `GetIndexedVTXOByPkScript`
 (waved/rpc_swap_lookup.go) → `indexer.ListVTXOsByScriptsTaproot`. The indexer
-is not part of `swapd`; it belongs to `arkd`. That separation — the swap server
+is not part of `swapd`; it belongs to `lumosd`. That separation — the swap server
 funds, but the operator's indexer witnesses — is the defining structure of the
 receive path.
 

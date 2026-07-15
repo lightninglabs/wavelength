@@ -2,9 +2,9 @@
 
 This document captures contract notes and design constraints for an
 RPC-over-mailbox transport. It is intended as a "scratchpad" companion to the
-implementation-ready spec tracked in `lightninglabs/wavelength`:
+implementation-ready spec tracked in `lightninglabs/lumos`:
 
-- Spec issue: https://github.com/lightninglabs/wavelength/issues/71
+- Spec issue: https://github.com/lightninglabs/lumos/issues/71
 - Durability reference (client-side): https://github.com/lightninglabs/wavelength/pull/48
 
 This document intentionally does not reference any private repositories,

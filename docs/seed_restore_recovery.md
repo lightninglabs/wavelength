@@ -92,7 +92,7 @@ under `pending_in_sat`. Once funds are boarded into VTXOs, they contribute to
 
 ## Local arktest Smoke
 
-The root `wavelength` repository contains the `arktest` manual harness. Use it when
+The root `lumos` repository contains the `arktest` manual harness. Use it when
 this client repo is checked out as the root repo's `client/` submodule.
 
 Build the manual harness and CLI binaries from the root repo:

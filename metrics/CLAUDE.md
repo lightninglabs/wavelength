@@ -3,7 +3,7 @@
 ## Purpose
 
 Prometheus instrumentation for the wavelength daemon (`waved`). All
-metrics are namespaced under `waved_`. Mirrors the arkd **server** metrics
+metrics are namespaced under `waved_`. Mirrors the lumosd **server** metrics
 package (one directory up) in structure and collection strategy: an
 event-driven actor for lifecycle counters, plus a scrape-time collector for
 gauges that must stay fresh (VTXO inventory, wallet balance, chain tip, live

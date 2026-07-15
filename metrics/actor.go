@@ -46,7 +46,7 @@ type ActorConfig struct {
 // event-driven Prometheus instrumentation. All lifecycle counters live
 // behind this single actor; subsystems Tell typed messages rather than
 // touching Prometheus directly, so every event-driven update happens in
-// one auditable place (matching the arkd server's MetricsActor).
+// one auditable place (matching the lumosd server's MetricsActor).
 type MetricsActor struct {
 	cfg ActorConfig
 	log btclog.Logger

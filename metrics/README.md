@@ -3,7 +3,7 @@
 All wavelength **client** (`waved`) Prometheus metrics are namespaced under
 `waved_`. The namespace matches the daemon binary name and the `WAVED`
 config/env prefix, so client metrics group under the same identifier operators
-already use. This mirrors the arkd **server** metrics package (`arkd_`), one
+already use. This mirrors the lumosd **server** metrics package (`lumosd_`), one
 directory up, in both structure and collection strategy.
 
 Two collection strategies, same as the server:
