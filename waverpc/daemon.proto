@@ -998,6 +998,45 @@ message SendOORRequest {
     // allows the daemon to return the existing local OOR session instead
     // of creating a duplicate transfer.
     string idempotency_key = 4;
+
+    // taproot_asset requests the experimental proof-selected Taproot Asset
+    // extension. The first release requires exactly one locally stored custom
+    // input, one recipient, equal input/output BTC values, and a non-empty
+    // idempotency_key. Bitcoin-only sends leave this field unset.
+    TaprootAssetOORIntent taproot_asset = 5;
+}
+
+// TaprootAssetOORIntent selects exact asset units for the experimental OOR
+// custom-anchor flow. The BTC amount remains on the enclosing recipient and
+// custom input; asset_amount is measured in independent Taproot Asset units.
+message TaprootAssetOORIntent {
+    // asset_ref is the opaque tap-sdk asset or group identifier.
+    string asset_ref = 1;
+
+    // asset_amount is the exact number of asset units selected by
+    // input_proof_file.
+    uint64 asset_amount = 2;
+
+    // input_proof_file is the complete confirmed proof for the selected
+    // asset. The configured client-side preparer must already have imported
+    // or be able to reconcile this proof with its tapd backend.
+    bytes input_proof_file = 3;
+
+    // recipient_script_key is the 33-byte compressed Taproot Asset output
+    // script key supplied by the receiver.
+    bytes recipient_script_key = 4;
+
+    // proof_courier_address optionally identifies the receiver proof courier.
+    string proof_courier_address = 5;
+
+    // proof_delivery_metadata is opaque receiver-owned delivery metadata
+    // sealed into the tap-sdk package.
+    bytes proof_delivery_metadata = 6;
+
+    // acknowledge_unconfirmed must be true. The first Wavelength slice
+    // persists compact unconfirmed proof paths but cannot yet publish and log
+    // them through tapd's chain porter.
+    bool acknowledge_unconfirmed = 7;
 }
 
 // CustomOORInput specifies a VTXO to spend with an explicit semantic policy

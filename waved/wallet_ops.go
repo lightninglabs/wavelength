@@ -219,6 +219,7 @@ func BuildCustomTransferInputs(ctx context.Context, store vtxo.VTXOStore,
 		input := oor.TransferInput{
 			VTXO:               desc,
 			VTXOPolicyTemplate: ci.VtxoPolicyTemplate,
+			TaprootAssetRoot:   desc.TaprootAssetRoot,
 			OwnerLeafScript:    ownerLeaf,
 			OwnerLeafPolicy:    ownerLeafPolicy,
 		}

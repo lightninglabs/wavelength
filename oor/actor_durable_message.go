@@ -2518,13 +2518,13 @@ func decodeEventPayloadWithLimits(raw []byte,
 	}
 }
 
-func decodeIncomingTransferEventPayload(arkRaw, checkpointRaw,
-	ancestorRaw, recipientRaw, assetTransferRaw []byte,
+func decodeIncomingTransferEventPayload(arkRaw, checkpointRaw, ancestorRaw,
+	recipientRaw, assetTransferRaw []byte,
 	limits ReceiveLimits) (Event, error) {
 
 	if len(arkRaw) == 0 {
-		return nil, fmt.Errorf("incoming transfer event ark " +
-			"psbt must be provided")
+		return nil, fmt.Errorf("incoming transfer event ark psbt " +
+			"must be provided")
 	}
 
 	ark, err := psbtutil.Parse(arkRaw)

@@ -186,6 +186,51 @@ func TestBuildTransferInputsCarriesTaprootAssetRoot(t *testing.T) {
 	require.NoError(t, inputs[0].Validate())
 }
 
+// TestBuildCustomTransferInputsCarriesTaprootAssetRoot proves an explicitly
+// selected local VTXO retains its stored root. Taproot Asset sends use custom
+// inputs because generic Bitcoin coin selection deliberately excludes these
+// VTXOs.
+func TestBuildCustomTransferInputsCarriesTaprootAssetRoot(t *testing.T) {
+	t.Parallel()
+
+	owner, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	operator, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	template, err := arkscript.EncodeStandardVTXOTemplate(
+		owner.PubKey(), operator.PubKey(), 10,
+	)
+	require.NoError(t, err)
+
+	assetRoot := chainhash.Hash{0x77, 0x88, 0x99}
+	desc := &vtxo.Descriptor{
+		Outpoint:         testWalletOpsOutpoint(0x43),
+		Amount:           50_000,
+		PolicyTemplate:   template,
+		TaprootAssetRoot: &assetRoot,
+		ClientKey: keychain.KeyDescriptor{
+			PubKey: owner.PubKey(),
+		},
+		OperatorKey:    operator.PubKey(),
+		RelativeExpiry: 10,
+	}
+	desc.PkScript, err = desc.EffectivePkScript()
+	require.NoError(t, err)
+	desc.TapScript, err = desc.StandardTapScript()
+	require.NoError(t, err)
+
+	inputs, err := BuildCustomTransferInputs(
+		t.Context(), &testCustomInputStore{desc: desc},
+		[]*waverpc.CustomOORInput{{
+			Outpoint: desc.Outpoint.String(),
+		}}, desc.ClientKey, operator.PubKey(), 10,
+	)
+	require.NoError(t, err)
+	require.Len(t, inputs, 1)
+	require.Equal(t, &assetRoot, inputs[0].TaprootAssetRoot)
+	require.NoError(t, inputs[0].Validate())
+}
+
 // TestBuildCustomTransferInputsExternalVHTLCClaim verifies that callers can
 // provide an external vHTLC output plus explicit claim spend path without
 // consulting the local VTXO store.
