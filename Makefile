@@ -2,6 +2,7 @@
 .PHONY: lint lint-source lint-local lint-source-local lint-changed-local lint-native build-native-linter local-custom-gcl install-custom-gcl docker-tools fmt fmt-changed fmt-check fmt-changed-check tidy-module tidy-module-check schema-check doc-check sample-conf-check
 .PHONY: ast-lint ast-grep-fix
 .PHONY: unit unit-cover unit-race unit-swapruntime check-go-version build install clean release
+.PHONY: release-install cross-release-install docker-release
 .PHONY: build build-swapruntime build-swapclient build-wavewalletrpc rpc install install-swapruntime install-wavewalletrpc help clean-networks
 .PHONY: mobile mobile-android mobile-ios wasm-wallet
 .PHONY: systest systest-verbose
@@ -59,6 +60,12 @@ DEV_LDFLAGS := -ldflags "-X $(PKG)/build.Commit=$(COMMIT)"
 
 # Build flags for release builds.
 RELEASE_LDFLAGS := -ldflags "-s -w -buildid= -X $(PKG)/build.Commit=$(COMMIT)"
+
+# Bare (unwrapped) release ldflags, for handoff to scripts/release.sh as a
+# single positional argument. Unlike RELEASE_LDFLAGS above, this must not
+# contain embedded double quotes: those would be mis-tokenized once Make
+# substitutes them inside the quoted argument it passes to the shell.
+RELEASE_LDFLAGS_BARE := -s -w -buildid= -X $(PKG)/build.Commit=$(COMMIT)
 
 ifneq ($(tags),)
 DEV_TAGS += ${tags}
@@ -156,6 +163,25 @@ BUILD_SYSTEM := linux-amd64 linux-arm64 linux-armv7 darwin-amd64 darwin-arm64 wi
 ifneq ($(sys),)
 BUILD_SYSTEM = $(sys)
 endif
+
+# One can either specify a git tag as the version suffix or one is generated
+# from the current date.
+VERSION_TAG = $(shell date +%Y%m%d)-01
+VERSION_CHECK = @$(call print, "Building main with date version tag")
+ifneq ($(tag),)
+VERSION_TAG = $(tag)
+VERSION_CHECK = ./scripts/release.sh check-tag "$(VERSION_TAG)"
+endif
+
+DOCKER_RELEASE_HELPER = docker run \
+  -it \
+  --rm \
+  --user $(shell id -u):$(shell id -g) \
+  -v $(shell pwd):/tmp/build/wavelength \
+  -v $(shell bash -c "$(GOCC) env GOCACHE || (mkdir -p /tmp/go-cache; echo /tmp/go-cache)"):/tmp/build/.cache \
+  -v $(shell bash -c "$(GOCC) env GOMODCACHE || (mkdir -p /tmp/go-modcache; echo /tmp/go-modcache)"):/tmp/build/.modcache \
+  -e SKIP_VERSION_CHECK \
+  wavelength-release-helper
 
 # ============
 # DEPENDENCIES
@@ -497,20 +523,42 @@ clean: #? Remove build artifacts
 # INSTALLATION & RELEASE
 # ============
 
-release: #? Cross compile for all supported platforms
+release-install: #? Build and install waved and wavecli release binaries, place them in $GOPATH/bin
+	@$(call print, "Installing release waved and wavecli.")
+	env CGO_ENABLED=0 GOWORK=off $(GOINSTALL) -v -trimpath $(RELEASE_LDFLAGS) -tags="$(RELEASE_TAGS)" ./cmd/waved
+	env CGO_ENABLED=0 GOWORK=off $(GOINSTALL) -v -trimpath $(RELEASE_LDFLAGS) -tags="$(RELEASE_TAGS)" ./cmd/wavecli
+
+cross-release-install: #? Cross compile waved, wavecli and merge-sql-schemas for single/all supported platforms to ./bin (useful for checking cross compilation or priming the release build cache).
 	@$(call print, "Cross compiling release binaries.")
 	@mkdir -p ./bin
 	@for sys in $(BUILD_SYSTEM); do \
 		echo "Building for $$sys"; \
-		export CGO_ENABLED=0 GOOS=$$(echo $$sys | cut -d- -f1) GOARCH=$$(echo $$sys | cut -d- -f2); \
+		export CGO_ENABLED=0 GOWORK=off GOOS=$$(echo $$sys | cut -d- -f1) GOARCH=$$(echo $$sys | cut -d- -f2); \
 		if [ "$$GOARCH" = "armv6" ]; then \
 			export GOARCH=arm; export GOARM=6; \
 		elif [ "$$GOARCH" = "armv7" ]; then \
 			export GOARCH=arm; export GOARM=7; \
 		fi; \
+		$(GOBUILD) -trimpath $(RELEASE_LDFLAGS) -tags="$(RELEASE_TAGS)" -o ./bin/waved-$$sys ./cmd/waved; \
+		$(GOBUILD) -trimpath $(RELEASE_LDFLAGS) -tags="$(RELEASE_TAGS)" -o ./bin/wavecli-$$sys ./cmd/wavecli; \
 		$(GOBUILD) -trimpath $(RELEASE_LDFLAGS) -tags="$(RELEASE_TAGS)" -o ./bin/merge-sql-schemas-$$sys ./cmd/merge-sql-schemas; \
 		echo; \
 	done
+
+release: #? Build the full set of reproducible release binaries and manifest for all supported platforms
+	@$(call print, "Releasing waved and wavecli binaries.")
+	$(VERSION_CHECK)
+	./scripts/release.sh build-release "$(VERSION_TAG)" "$(BUILD_SYSTEM)" "$(RELEASE_TAGS)" "$(RELEASE_LDFLAGS_BARE)" "$(GO_VERSION)"
+
+docker-release: #? Same as release but within a docker container to support reproducible builds on BSD/MacOS platforms
+	@$(call print, "Building release helper docker image.")
+	if [ "$(tag)" = "" ]; then echo "Must specify tag=<commit_or_tag>!"; exit 1; fi
+
+	docker build -t wavelength-release-helper -f make/builder.Dockerfile make/
+
+	# Run the actual compilation inside the docker image. We pass in all
+	# flags that we might want to overwrite in manual tests.
+	$(DOCKER_RELEASE_HELPER) make release tag="$(tag)" sys="$(sys)" COMMIT="$(COMMIT)"
 
 # ============
 # CLEANUP
