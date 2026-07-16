@@ -6,10 +6,39 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/lightninglabs/wavelength/arkrpc"
+	"github.com/lightninglabs/wavelength/lib/types"
 	mailboxconn "github.com/lightninglabs/wavelength/mailbox/conn"
+	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 )
+
+// TestVTXOExpiryConfigUsesLatestTerms verifies long-lived VTXO actors observe
+// the latest cached free-refresh window instead of a bootstrap-only copy.
+func TestVTXOExpiryConfigUsesLatestTerms(t *testing.T) {
+	t.Parallel()
+
+	server := &Server{}
+	cfg := server.vtxoExpiryConfig()
+	desc := &vtxo.Descriptor{
+		RelativeExpiry: 24,
+		Ancestry: []vtxo.Ancestry{{
+			TreeDepth: 2,
+		}},
+	}
+
+	require.Equal(t, int32(144), cfg.CalculateRefreshThreshold(desc))
+
+	server.storeOperatorTerms(&types.OperatorTerms{
+		FreeRefreshWindowBlocks: 120,
+	})
+	require.Equal(t, int32(120), cfg.CalculateRefreshThreshold(desc))
+
+	server.storeOperatorTerms(&types.OperatorTerms{
+		FreeRefreshWindowBlocks: 100,
+	})
+	require.Equal(t, int32(144), cfg.CalculateRefreshThreshold(desc))
+}
 
 // activeArkPolicy builds an ACTIVE policy for the given version, used to
 // populate the operator's advertised policy list in fake GetInfo responses.
@@ -57,6 +86,19 @@ func testOperatorPubKeyBytes(t *testing.T) []byte {
 	require.NoError(t, err)
 
 	return priv.PubKey().SerializeCompressed()
+}
+
+// TestOperatorTermsFreeRefreshWindow verifies GetInfo policy plumbing keeps
+// the late-refresh hint available to downstream wallet and RPC surfaces.
+func TestOperatorTermsFreeRefreshWindow(t *testing.T) {
+	t.Parallel()
+
+	terms, err := operatorTermsFromResponse(&arkrpc.GetInfoResponse{
+		Pubkey:                  testOperatorPubKeyBytes(t),
+		FreeRefreshWindowBlocks: 72,
+	})
+	require.NoError(t, err)
+	require.Equal(t, uint32(72), terms.FreeRefreshWindowBlocks)
 }
 
 // TestNegotiateArkBootstrapZeroSelection proves the client refuses to bootstrap

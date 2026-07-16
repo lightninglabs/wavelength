@@ -649,6 +649,23 @@ func (s *Server) storeOperatorTerms(terms *types.OperatorTerms) {
 	s.operatorTerms.Store(terms)
 }
 
+// vtxoExpiryConfig returns the wallet expiry policy wired to the latest
+// cached operator terms. The operator hint may change after bootstrap, so the
+// callback resolves the atomic snapshot when each VTXO evaluates a block.
+func (s *Server) vtxoExpiryConfig() *vtxo.ExpiryConfig {
+	cfg := vtxo.DefaultExpiryConfig()
+	cfg.FreeRefreshWindow = func() uint32 {
+		terms := s.loadOperatorTerms()
+		if terms == nil {
+			return 0
+		}
+
+		return terms.FreeRefreshWindowBlocks
+	}
+
+	return cfg
+}
+
 // fetchCurrentOperatorPubKey issues a fresh GetInfo round-trip to the
 // operator and returns the operator's current long-term public key. The
 // daemon-startup OperatorTerms cache is also refreshed as a side effect so
@@ -4212,6 +4229,7 @@ func (s *Server) initVTXOManager(ctx context.Context,
 		ChainSource:              chainSourceRef,
 		ActorSystem:              s.actorSystem,
 		ChainParams:              s.chainParams,
+		ExpiryConfig:             s.vtxoExpiryConfig(),
 		Log:                      fn.Some(s.subLogger(vtxo.Subsystem)),
 		RoundActor:               roundActor,
 		LedgerSink:               fn.Some(ledgerSink),

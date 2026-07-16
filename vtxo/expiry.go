@@ -63,6 +63,13 @@ type ExpiryConfig struct {
 	// additional blocks needed for safe unilateral exit. Each tree level
 	// requires broadcasting and confirming an additional transaction.
 	TreeDepthMultiplier int32
+
+	// FreeRefreshWindow returns the operator-advertised number of blocks
+	// before batch expiry in which refresh fees are waived. A nil callback
+	// or zero window disables subsidy-aware scheduling. The callback lets a
+	// long-lived VTXO actor observe a refreshed operator-terms snapshot
+	// without weakening the local critical-expiry safety policy.
+	FreeRefreshWindow func() uint32
 }
 
 // DefaultExpiryConfig returns sensible defaults for expiry configuration.
@@ -104,30 +111,15 @@ func (c *ExpiryConfig) CheckExpiry(
 		return ExpiryStatusExpired
 	}
 
-	// Calculate dynamic threshold based on tree depth. Deeper trees need
-	// more time for unilateral exit since each level requires broadcasting
-	// a transaction and waiting for confirmation.
-	treeDepthBuffer := int32(vtxo.MaxTreeDepth()) * c.TreeDepthMultiplier
-
-	// Add CSV delay - after the VTXO appears on-chain, we need to wait
-	// for the relative timelock before we can spend via the unilateral
-	// path.
-	csvBuffer := int32(vtxo.RelativeExpiry)
-
-	// Total buffer needed for safe unilateral exit.
-	safeExitBuffer := treeDepthBuffer + csvBuffer
-
 	// Critical threshold: must have enough time for unilateral exit.
-	criticalThreshold := max(c.CriticalThresholdBlocks, safeExitBuffer)
+	criticalThreshold := c.CalculateCriticalThreshold(vtxo)
 
 	if blocksRemaining <= criticalThreshold {
 		return ExpiryStatusCritical
 	}
 
 	// Refresh threshold: should refresh well before critical.
-	refreshThreshold := max(
-		c.RefreshThresholdBlocks, criticalThreshold+c.MinRefreshBuffer,
-	)
+	refreshThreshold := c.CalculateRefreshThreshold(vtxo)
 
 	if blocksRemaining <= refreshThreshold {
 		return ExpiryStatusNeedsRefresh
@@ -180,8 +172,27 @@ func (c *ExpiryConfig) CalculateCriticalThreshold(vtxo *Descriptor) int32 {
 // CalculateRefreshThreshold returns the dynamic refresh threshold for a VTXO.
 func (c *ExpiryConfig) CalculateRefreshThreshold(vtxo *Descriptor) int32 {
 	criticalThreshold := c.CalculateCriticalThreshold(vtxo)
-
-	return max(
+	refreshThreshold := max(
 		c.RefreshThresholdBlocks, criticalThreshold+c.MinRefreshBuffer,
 	)
+
+	if c.FreeRefreshWindow == nil {
+		return refreshThreshold
+	}
+
+	windowBlocks := c.FreeRefreshWindow()
+	if windowBlocks == 0 ||
+		uint64(windowBlocks) >= uint64(refreshThreshold) {
+		return refreshThreshold
+	}
+
+	// Never trade away the configured retry buffer merely to chase a fee
+	// waiver. If the operator opens its free window later than the local
+	// safety floor, the wallet refreshes earlier and pays the normal fee.
+	safetyFloor := criticalThreshold + c.MinRefreshBuffer
+	if uint64(windowBlocks) < uint64(safetyFloor) {
+		return refreshThreshold
+	}
+
+	return int32(windowBlocks)
 }

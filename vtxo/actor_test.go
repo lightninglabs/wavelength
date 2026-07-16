@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chaincfg/v2"
 	"github.com/btcsuite/btcd/wire/v2"
@@ -458,6 +459,58 @@ func TestProcessOutboxForfeitRequestQuotesFee(t *testing.T) {
 		t, int64(vtxo.Amount), refreshReq.Amount,
 		"forfeit input Amount is unchanged by the quote",
 	)
+}
+
+// TestAutoRefreshOperatorLookupFailureRetries verifies a transient operator
+// lookup cannot strand a VTXO in PendingForfeit before any round request was
+// emitted. The actor restores Live durably and retries on the next block.
+func TestAutoRefreshOperatorLookupFailureRetries(t *testing.T) {
+	t.Parallel()
+
+	h := newVTXOTestHarness(t)
+	desc := h.newTestDescriptor()
+	currentHeight := desc.BatchExpiry - 200
+	fetchErr := errors.New("operator unavailable")
+
+	h.store.On(
+		"UpdateVTXOStatus", h.ctx, desc.Outpoint,
+		VTXOStatusPendingForfeit,
+	).Return(nil).Twice()
+	h.store.On(
+		"UpdateVTXOStatus", h.ctx, desc.Outpoint, VTXOStatusLive,
+	).Return(nil).Once()
+
+	var attempts int
+	manager := newMockManagerRef(t)
+	actor := newRefreshTestActor(
+		h, desc, manager,
+		func(_ context.Context) (*btcec.PublicKey, error) {
+			attempts++
+			if attempts == 1 {
+				return nil, fetchErr
+			}
+
+			return desc.OperatorKey, nil
+		},
+	)
+
+	result := actor.Receive(
+		h.ctx, h.newBlockEpochEvent(currentHeight),
+	)
+	_, err := result.Unpack()
+	require.ErrorIs(t, err, fetchErr)
+	require.IsType(t, &LiveState{}, actor.state)
+	require.Empty(t, manager.getMessages())
+
+	result = actor.Receive(
+		h.ctx, h.newBlockEpochEvent(currentHeight+1),
+	)
+	_, err = result.Unpack()
+	require.NoError(t, err)
+	require.IsType(t, &PendingForfeitState{}, actor.state)
+	require.Len(t, manager.getMessages(), 1)
+	require.Equal(t, 2, attempts)
+	h.store.AssertExpectations(t)
 }
 
 // TestProcessOutboxTerminatedNotification verifies that
