@@ -54,65 +54,68 @@ const (
 
 	// defaultTestnet3ServerGRPCHost is the public testnet3 Ark operator
 	// gRPC endpoint.
-	defaultTestnet3ServerGRPCHost = "lumosd.testnet." +
-		"lightningcluster.com:443"
+	defaultTestnet3ServerGRPCHost = "test.wavelength." +
+		"lightning.finance:443"
 
 	// defaultTestnet3ServerRESTHost is the public testnet3 Ark operator
 	// REST endpoint.
-	defaultTestnet3ServerRESTHost = "lumosd-rest.testnet." +
-		"lightningcluster.com"
+	defaultTestnet3ServerRESTHost = "test.wavelength-rest." +
+		"lightning.finance"
 
 	// defaultTestnet3SwapServerGRPCHost is the public testnet3 swap server
 	// gRPC endpoint.
-	defaultTestnet3SwapServerGRPCHost = "swapd.testnet." +
-		"lightningcluster.com:443"
+	defaultTestnet3SwapServerGRPCHost = "swap.test.wavelength." +
+		"lightning.finance:443"
 
 	// defaultTestnet3SwapServerRESTHost is the public testnet3 swap server
 	// REST endpoint.
-	defaultTestnet3SwapServerRESTHost = "swapd-rest.testnet." +
-		"lightningcluster.com"
+	defaultTestnet3SwapServerRESTHost = "test.swapd-rest." +
+		"lightning.finance"
 
 	// defaultTestnet4ServerGRPCHost is the public testnet4 Ark operator
-	// gRPC endpoint.
+	// gRPC endpoint. No friendly-domain CNAME exists yet; the public NLB
+	// stays behind the raw cluster hostname until the certificate work
+	// in lightning-infra#3517 lands.
 	defaultTestnet4ServerGRPCHost = "lumosd-testnet4.testnet." +
 		"lightningcluster.com:443"
 
 	// defaultTestnet4ServerRESTHost is the public testnet4 Ark operator
 	// REST endpoint.
-	defaultTestnet4ServerRESTHost = "lumosd-testnet4-rest.testnet." +
-		"lightningcluster.com"
+	defaultTestnet4ServerRESTHost = "test4.wavelength-rest." +
+		"lightning.finance"
 
 	// defaultTestnet4SwapServerGRPCHost is the public testnet4 swap server
-	// gRPC endpoint.
+	// gRPC endpoint. No friendly-domain CNAME exists yet; see
+	// defaultTestnet4ServerGRPCHost.
 	defaultTestnet4SwapServerGRPCHost = "swapd-testnet4.testnet." +
 		"lightningcluster.com:443"
 
 	// defaultTestnet4SwapServerRESTHost is the public testnet4 swap server
 	// REST endpoint.
-	defaultTestnet4SwapServerRESTHost = "swapd-testnet4-rest.testnet." +
-		"lightningcluster.com"
+	defaultTestnet4SwapServerRESTHost = "test4.swapd-rest." +
+		"lightning.finance"
 
 	// defaultSignetServerGRPCHost is the public signet Ark operator gRPC
 	// endpoint.
-	defaultSignetServerGRPCHost = "lumosd-signet.staging." +
-		"lightningcluster.com:443"
+	defaultSignetServerGRPCHost = "signet.wavelength." +
+		"lightning.finance:443"
 
 	// defaultSignetServerRESTHost is the public signet Ark operator REST
 	// endpoint. The REST client adds the HTTPS scheme when the configured
 	// host is bare.
-	defaultSignetServerRESTHost = "lumosd-signet-rest.staging." +
-		"lightningcluster.com"
+	defaultSignetServerRESTHost = "signet.wavelength-rest." +
+		"lightning.finance"
 
 	// defaultSignetSwapServerGRPCHost is the public signet swap server gRPC
 	// endpoint.
-	defaultSignetSwapServerGRPCHost = "swapd-signet.staging." +
-		"lightningcluster.com:443"
+	defaultSignetSwapServerGRPCHost = "swap.signet.wavelength." +
+		"lightning.finance:443"
 
 	// defaultSignetSwapServerRESTHost is the public signet swap server REST
 	// endpoint. The REST client adds the HTTPS scheme when the configured
 	// host is bare.
-	defaultSignetSwapServerRESTHost = "swapd-signet-rest.staging." +
-		"lightningcluster.com"
+	defaultSignetSwapServerRESTHost = "signet.swapd-rest." +
+		"lightning.finance"
 
 	// DefaultIndexerServerID is the canonical operator identifier used
 	// in signed indexer proofs.
