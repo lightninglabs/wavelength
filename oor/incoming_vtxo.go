@@ -15,6 +15,7 @@ import (
 	"github.com/lightninglabs/wavelength/arkrpc"
 	clientdb "github.com/lightninglabs/wavelength/db"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
+	"github.com/lightninglabs/wavelength/lib/tree"
 	"github.com/lightninglabs/wavelength/lib/tx/arktx"
 	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -342,6 +343,7 @@ func validateIncomingAncestry(meta IncomingVTXOMetadata,
 	// range check has passed, so out-of-range writes are impossible.
 	covered := make([]bool, arkTxInputCount)
 	seen := make(map[[sha256.Size]byte]struct{}, len(meta.Ancestry))
+	seenNodes := make(map[chainhash.Hash][]byte)
 	hasPrimary := false
 	for i, frag := range meta.Ancestry {
 		if frag.CommitmentTxID == meta.CommitmentTxID {
@@ -421,6 +423,25 @@ func validateIncomingAncestry(meta IncomingVTXOMetadata,
 			}
 		}
 
+		// Cross-fragment proof-node consistency. Same-commitment
+		// multi-leaf fragments legitimately overlap on their shared
+		// prefix nodes, and the unroll proof assembler tolerates
+		// that overlap only when duplicate txids carry byte-identical
+		// transactions — addProofNode rejects a conflicting duplicate
+		// and fails assembly of the ENTIRE proof. Without this gate a
+		// malicious operator could pad the ancestry with a
+		// near-duplicate path (e.g. one shared node's signature
+		// stripped) that passes every other check and persists
+		// cleanly, only to poison proof assembly at unilateral-exit
+		// time when the user is racing a CSV. Honest fragments
+		// extract their paths from one signed tree, so shared nodes
+		// are always byte-identical and this rejects nothing
+		// legitimate.
+		err = checkFragmentNodeConsistency(i, frag, seenNodes)
+		if err != nil {
+			return err
+		}
+
 		if len(frag.InputIndices) == 0 {
 			return &ErrInvalidAncestry{
 				Reason: fmt.Sprintf(
@@ -495,6 +516,84 @@ func validateIncomingAncestry(meta IncomingVTXOMetadata,
 	}
 
 	return nil
+}
+
+// checkFragmentNodeConsistency walks one fragment's tree nodes and
+// verifies that any txid already contributed by an earlier fragment
+// carries byte-identical transaction bytes. Node bytes are derived the
+// same way the unroll proof assembler derives them (signed tx preferred,
+// unsigned fallback), so a mismatch here is exactly the "conflicting
+// proof node" that would otherwise fail proof assembly of the ENTIRE
+// descriptor at unilateral-exit time.
+//
+// The gate is deliberately scoped to the operator-supplied ancestry
+// fragments and is best-effort, NOT a pre-assembly dry-run: the
+// assembler's own conflict map additionally spans the OOR-chain
+// (checkpoint/ark) nodes, which are client-resolved artifacts rather
+// than part of the operator's response, and nodes that cannot produce
+// or serialize a transaction are skipped here (they cannot contribute
+// conflicting bytes) where the assembler would fail loudly. Both gaps
+// err toward acceptance at this boundary; the proof assembler remains
+// the authoritative check at exit time.
+func checkFragmentNodeConsistency(fragIdx int, frag vtxo.Ancestry,
+	seenNodes map[chainhash.Hash][]byte) error {
+
+	if frag.TreePath == nil || frag.TreePath.Root == nil {
+		return nil
+	}
+
+	for treeNode := range frag.TreePath.Root.NodesIter() {
+		tx := incomingFragmentNodeTx(treeNode)
+		if tx == nil {
+			continue
+		}
+
+		var buf bytes.Buffer
+		if err := tx.Serialize(&buf); err != nil {
+			continue
+		}
+
+		txid := tx.TxHash()
+		prev, ok := seenNodes[txid]
+		if !ok {
+			seenNodes[txid] = buf.Bytes()
+
+			continue
+		}
+
+		if !bytes.Equal(prev, buf.Bytes()) {
+			return &ErrInvalidAncestry{
+				Reason: fmt.Sprintf(
+					"fragment %d carries a conflicting "+
+						"duplicate of lineage tx %s",
+					fragIdx, txid,
+				),
+			}
+		}
+	}
+
+	return nil
+}
+
+// incomingFragmentNodeTx mirrors the unroll proof assembler's
+// proofTxFromTreeNode: prefer the signed transaction, fall back to the
+// unsigned form, and return nil when neither can be built.
+func incomingFragmentNodeTx(node *tree.Node) *wire.MsgTx {
+	if node == nil {
+		return nil
+	}
+
+	tx, err := node.ToSignedTx()
+	if err == nil {
+		return tx
+	}
+
+	tx, err = node.ToTx()
+	if err != nil {
+		return nil
+	}
+
+	return tx
 }
 
 // normalizeIncomingAncestry copies the incoming ancestry slice and moves the

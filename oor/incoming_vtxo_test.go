@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
@@ -247,6 +248,107 @@ func TestBuildIncomingVTXODescriptorSameCommitmentMultiLeaf(t *testing.T) {
 		t, desc.Ancestry[0].TreePath.BatchOutpoint,
 		desc.Ancestry[1].TreePath.BatchOutpoint,
 	)
+}
+
+// TestBuildIncomingVTXODescriptorRejectsConflictingLineageNode verifies
+// the cross-fragment proof-node consistency gate: two fragments whose
+// trees carry the SAME transaction (same txid) with DIFFERENT bytes —
+// here, one signed and one signature-stripped variant of one node —
+// must be rejected at the receive boundary. Without the gate, the
+// descriptor persists cleanly and the conflicting duplicate only
+// surfaces as an ErrUnrollProofInvalid failure of the ENTIRE proof at
+// unilateral-exit time, when the user is racing a CSV.
+func TestBuildIncomingVTXODescriptorRejectsConflictingLineageNode(
+	t *testing.T) {
+
+	t.Parallel()
+
+	arkPSBT, _, recipients, commits, recipientKey,
+		operatorKey := buildTestIncomingMaterializationMultiInput(t)
+
+	commit := commits[0]
+
+	// One lineage node in two variants: signed, and with the
+	// signature stripped. Both build a transaction with the same
+	// txid (the witness does not enter the txid), but their
+	// broadcastable bytes differ — exactly the conflicting-duplicate
+	// shape addProofNode rejects during proof assembly.
+	nodePriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	digest := chainhash.HashH([]byte("conflicting-lineage-node"))
+	nodeSig, err := schnorr.Sign(nodePriv, digest[:])
+	require.NoError(t, err)
+
+	nodeInput := wire.OutPoint{Hash: chainhash.Hash{0x77}, Index: 0}
+	nodeOutputs := []*wire.TxOut{{
+		Value:    5_000,
+		PkScript: newTestTaprootPkScript(t, operatorKey),
+	}}
+
+	signedNode := &lib_tree.Node{
+		Input:     nodeInput,
+		Outputs:   nodeOutputs,
+		Signature: nodeSig,
+	}
+	strippedNode := &lib_tree.Node{
+		Input:   nodeInput,
+		Outputs: nodeOutputs,
+	}
+
+	ancestry := []vtxo.Ancestry{
+		{
+			TreePath: &lib_tree.Tree{
+				Root: signedNode,
+				BatchOutpoint: wire.OutPoint{
+					Hash:  commit,
+					Index: 0,
+				},
+			},
+			CommitmentTxID: commit,
+			InputIndices: []uint32{
+				0,
+			},
+			TreeDepth: 1,
+		},
+		{
+			TreePath: &lib_tree.Tree{
+				Root: strippedNode,
+				BatchOutpoint: wire.OutPoint{
+					Hash:  commit,
+					Index: 1,
+				},
+			},
+			CommitmentTxID: commit,
+			InputIndices: []uint32{
+				1,
+			},
+			TreeDepth: 1,
+		},
+	}
+
+	_, err = BuildIncomingVTXODescriptor(arkPSBT,
+		IncomingVTXOConfig{
+			OutputIndex: recipients[0].OutputIndex,
+			ClientKey: keychain.KeyDescriptor{
+				PubKey: recipientKey.PubKey(),
+			},
+			OperatorKey: operatorKey,
+			ExitDelay:   10,
+			Metadata: IncomingVTXOMetadata{
+				RoundID:        "test-round",
+				CommitmentTxID: commit,
+				BatchExpiry:    1000,
+				ChainDepth:     1,
+				CreatedHeight:  500,
+				Ancestry:       ancestry,
+			},
+		},
+	)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "conflicting duplicate of lineage tx")
+
+	var ancestryErr *ErrInvalidAncestry
+	require.ErrorAs(t, err, &ancestryErr)
 }
 
 // TestBuildIncomingVTXODescriptorRejectsNilArk verifies that a nil Ark
