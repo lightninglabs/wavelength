@@ -394,7 +394,9 @@ keeps its normal earlier threshold and pays the quoted fee instead of weakening
 unilateral-exit safety. VTXOs that cross a safe boundary in the same block are
 coalesced into one automatic round registration.
 The daemon learns the window from its cached operator terms at bootstrap (and
-on later terms refreshes); an operator fee-schedule hot reload is not pushed to
+on later terms refreshes). When the cached boundary fires, it fetches a fresh
+`GetInfo` snapshot and rechecks the current window before reserving the VTXO.
+An operator fee-schedule hot reload is not pushed proactively to
 already-connected wallets.
 
 | Flag | Type | Description |
