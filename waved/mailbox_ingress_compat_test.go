@@ -116,7 +116,17 @@ func TestStartMailboxIngressConcurrentIncompatible(t *testing.T) {
 	s := newCompatTestServer(t, permanentPullEdge{})
 
 	s.runtime.StartEgress()
-	defer s.runtime.Stop()
+
+	// StopAndWait (not the fire-and-forget Stop) so the durable egress
+	// actor's goroutine has fully exited before the t.Cleanup chain closes
+	// and removes the shared SQLite DB. Stop only cancels the actor context
+	// and returns immediately, leaving the egress loop free to keep issuing
+	// queries against the handle while cleanup runs; an in-flight
+	// connection re-materializes the WAL/-shm sidecar files, so the tempdir
+	// RemoveAll then fails with "directory not empty".
+	defer func() {
+		require.NoError(t, s.runtime.StopAndWait(t.Context()))
+	}()
 
 	// StartIngress itself succeeds; the ingress goroutine then transitions.
 	require.NoError(t, s.startMailboxIngress(t.Context()))
@@ -135,7 +145,12 @@ func TestStartMailboxIngressAlreadyIncompatible(t *testing.T) {
 	s := newCompatTestServer(t, okPullEdge{})
 
 	s.runtime.StartEgress()
-	defer s.runtime.Stop()
+
+	// Drain the durable egress actor before the shared SQLite DB is torn
+	// down by t.Cleanup; see the note in the concurrent-incompatible test.
+	defer func() {
+		require.NoError(t, s.runtime.StopAndWait(t.Context()))
+	}()
 
 	// Mark incompatible up front; the callback clears server_connected.
 	s.runtime.MarkIncompatible(
