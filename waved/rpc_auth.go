@@ -55,7 +55,7 @@ const (
 	// activity inspection.
 	entityActivity = "activity"
 
-	// entityChannel covers virtual channel promotion.
+	// entityChannel covers virtual channel promotion and receive intents.
 	entityChannel = "channel"
 )
 
@@ -143,8 +143,9 @@ func newWavedRPCPermissions() map[string][]bakery.Op {
 	grant(daemon, entityRound, "write",
 		"JoinNextRound",
 	)
-	grant(daemon, entityChannel, "write",
-		"OpenVirtualChannel",
+	grant(
+		daemon, entityChannel, "write", "OpenVirtualChannel",
+		"RegisterReceiveChannelIntent",
 	)
 	grant(daemon, entityFees, "read",
 		"EstimateFee", "GetFeeHistory",

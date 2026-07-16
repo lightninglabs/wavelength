@@ -175,7 +175,7 @@ func generatedRegistry() []serviceSpec {
 					Aliases:  []string{"open-virtual-channel"},
 					Input:    "waverpc.OpenVirtualChannelRequest",
 					Output:   "waverpc.OpenVirtualChannelResponse",
-					Comments: "OpenVirtualChannel promotes existing VTXO liquidity into an LND channel\nwhose funding parent remains unpublished on the happy path.",
+					Comments: "OpenVirtualChannel promotes one existing VTXO into an LND channel whose\nfunding parent remains unpublished on the happy path.",
 				},
 				{
 					Name:     "ListPendingForfeitParticipantSignatureRequests",
@@ -192,11 +192,11 @@ func generatedRegistry() []serviceSpec {
 					Comments: "SubmitForfeitParticipantSignatures supplies external participant\nsignatures for one pending connector-bound forfeit signing request. The\nrequest_id must be copied from the listed pending request; the daemon\nuses it to wake the blocked VTXO actor that is waiting for that exact\nround-assigned forfeit transaction. If the selected spend path requires\nno external participant keys after removing the local VTXO key and the\noperator key, callers may submit an empty signature set to acknowledge\nand unblock the request.",
 				},
 				{
-					Name:     "RequestVirtualChannelIntent",
-					Aliases:  []string{"request-virtual-channel-intent"},
-					Input:    "waverpc.RequestVirtualChannelIntentRequest",
-					Output:   "waverpc.RequestVirtualChannelIntentResponse",
-					Comments: "RequestVirtualChannelIntent negotiates an operator-liquidity virtual\nchannel backed by existing VTXO(s). The operator opens the lnd channel,\nthe client starts with zero spendable channel balance, and the backing\ntransaction stays unpublished on the happy path.",
+					Name:     "RegisterReceiveChannelIntent",
+					Aliases:  []string{"register-receive-channel-intent"},
+					Input:    "waverpc.RegisterReceiveChannelIntentRequest",
+					Output:   "waverpc.RegisterReceiveChannelIntentResponse",
+					Comments: "RegisterReceiveChannelIntent requests an operator-funded virtual channel\nin the next round. The client starts with no spendable channel balance.",
 				},
 				{
 					Name:     "LeaveVTXOs",

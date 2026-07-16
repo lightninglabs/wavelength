@@ -97,17 +97,6 @@ func (c *ArkServiceClient) RegisterVirtualChannel(ctx context.Context,
 	return out, err
 }
 
-// ActivateVirtualChannel marks a virtual channel active with its signed parent.
-func (c *ArkServiceClient) ActivateVirtualChannel(ctx context.Context,
-	in *arkrpc.ActivateVirtualChannelRequest, _ ...grpc.CallOption) (
-	*arkrpc.ActivateVirtualChannelResponse, error) {
-
-	out := new(arkrpc.ActivateVirtualChannelResponse)
-	err := c.client.Post(ctx, "/v1/ark/activate-virtual-channel", in, out)
-
-	return out, err
-}
-
 // CosignVirtualChannelBacking completes the VTXO backing parent witnesses.
 func (c *ArkServiceClient) CosignVirtualChannelBacking(ctx context.Context,
 	in *arkrpc.CosignVirtualChannelBackingRequest, _ ...grpc.CallOption) (
@@ -647,14 +636,14 @@ func (c *DaemonServiceClient) SubmitForfeitParticipantSignatures(
 	return out, err
 }
 
-// RequestVirtualChannelIntent negotiates an operator-liquidity virtual channel.
-func (c *DaemonServiceClient) RequestVirtualChannelIntent(ctx context.Context,
-	in *waverpc.RequestVirtualChannelIntentRequest, _ ...grpc.CallOption) (
-	*waverpc.RequestVirtualChannelIntentResponse, error) {
+// RegisterReceiveChannelIntent requests an operator-funded virtual channel.
+func (c *DaemonServiceClient) RegisterReceiveChannelIntent(ctx context.Context,
+	in *waverpc.RegisterReceiveChannelIntentRequest, _ ...grpc.CallOption) (
+	*waverpc.RegisterReceiveChannelIntentResponse, error) {
 
-	out := new(waverpc.RequestVirtualChannelIntentResponse)
+	out := new(waverpc.RegisterReceiveChannelIntentResponse)
 	err := c.client.Post(
-		ctx, "/v1/daemon/request-virtual-channel-intent", in, out,
+		ctx, "/v1/daemon/register-receive-channel-intent", in, out,
 	)
 
 	return out, err

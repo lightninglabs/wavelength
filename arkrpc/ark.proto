@@ -18,14 +18,9 @@ service ArkService {
     rpc RegisterVirtualChannel (RegisterVirtualChannelRequest)
         returns (RegisterVirtualChannelResponse);
 
-    // ActivateVirtualChannel replaces the negotiating backing parent with the
-    // signed, conflict-publishable parent and marks the channel active.
-    rpc ActivateVirtualChannel (ActivateVirtualChannelRequest)
-        returns (ActivateVirtualChannelResponse);
-
     // CosignVirtualChannelBacking verifies the client's VTXO input signatures,
-    // adds the operator signatures, persists the signed parent as active
-    // material, and returns the fully witnessed backing transaction.
+    // adds the operator signatures, arms the signed parent, and returns the
+    // fully witnessed backing transaction. The channel FSM controls activation.
     rpc CosignVirtualChannelBacking (CosignVirtualChannelBackingRequest)
         returns (CosignVirtualChannelBackingResponse);
 
@@ -228,7 +223,8 @@ message VirtualChannelBackingVTXO {
 }
 
 message RegisterVirtualChannelRequest {
-    // virtual_channel_id is the stable darepo identifier chosen by the client.
+    // virtual_channel_id is the stable virtual channel identifier chosen by the
+    // client.
     bytes virtual_channel_id = 1;
 
     // pending_channel_id is lnd's 32-byte PSBT funding identifier.
@@ -243,11 +239,8 @@ message RegisterVirtualChannelRequest {
     // capacity_sat is the channel capacity.
     int64 capacity_sat = 5;
 
-    // operator_local_balance_sat is the operator's initial channel balance.
-    int64 operator_local_balance_sat = 6;
-
-    // client_local_balance_sat is the client's initial channel balance.
-    int64 client_local_balance_sat = 7;
+    // Promoted VTXOs always start fully owned by the client.
+    reserved 6, 7;
 
     // backing_tx is the serialized VTXO-to-channel-point parent.
     bytes backing_tx = 8;
@@ -264,20 +257,6 @@ message RegisterVirtualChannelResponse {
     string status = 1;
 }
 
-message ActivateVirtualChannelRequest {
-    // virtual_channel_id is the stable darepo identifier.
-    bytes virtual_channel_id = 1;
-
-    // signed_backing_tx is the serialized VTXO-to-channel-point parent with
-    // all witnesses required for conflict publication.
-    bytes signed_backing_tx = 2;
-}
-
-message ActivateVirtualChannelResponse {
-    // status is the persisted operator-side virtual channel status.
-    string status = 1;
-}
-
 message VirtualChannelInputSignature {
     // outpoint identifies the backing VTXO input being signed.
     string outpoint = 1;
@@ -287,7 +266,7 @@ message VirtualChannelInputSignature {
 }
 
 message CosignVirtualChannelBackingRequest {
-    // virtual_channel_id is the stable darepo identifier.
+    // virtual_channel_id is the stable virtual channel identifier.
     bytes virtual_channel_id = 1;
 
     // client_signatures contains one owner signature per backing VTXO input.
@@ -314,24 +293,25 @@ message RequestVirtualChannelIntentRequest {
     // capacity_sat is the lnd channel capacity.
     int64 capacity_sat = 3;
 
-    // private marks the lnd channel private.
-    bool private = 4;
-
-    // zero_conf requests lnd zero-conf/scid-alias activation.
-    bool zero_conf = 5;
+    // Virtual channels are always private and use zero-conf activation.
+    reserved 4, 5;
 
     // backing_vtxos are the existing VTXOs consumed by backing_tx.
     repeated VirtualChannelBackingVTXO backing_vtxos = 6;
 
-    // idempotency_key identifies this negotiation across retries.
-    string idempotency_key = 7;
+    // The pending channel id identifies this negotiation across retries.
+    reserved 7;
+
+    // round_id binds this receive-channel negotiation to the exact round that
+    // creates its backing VTXO.
+    string round_id = 8;
 }
 
 message RequestVirtualChannelIntentResponse {
     // status is the operator-side virtual channel status.
     string status = 1;
 
-    // virtual_channel_id is the stable darepo virtual channel id.
+    // virtual_channel_id is the stable virtual channel identifier.
     bytes virtual_channel_id = 2;
 
     // pending_channel_id is lnd's temporary channel id during funding.

@@ -74,8 +74,8 @@ type DaemonServiceMailboxServer interface {
 	ListPendingForfeitParticipantSignatureRequests(ctx context.Context, req *ListPendingForfeitParticipantSignatureRequestsRequest) (*ListPendingForfeitParticipantSignatureRequestsResponse, error)
 	// SubmitForfeitParticipantSignatures handles SubmitForfeitParticipantSignatures.
 	SubmitForfeitParticipantSignatures(ctx context.Context, req *SubmitForfeitParticipantSignaturesRequest) (*SubmitForfeitParticipantSignaturesResponse, error)
-	// RequestVirtualChannelIntent handles RequestVirtualChannelIntent.
-	RequestVirtualChannelIntent(ctx context.Context, req *RequestVirtualChannelIntentRequest) (*RequestVirtualChannelIntentResponse, error)
+	// RegisterReceiveChannelIntent handles RegisterReceiveChannelIntent.
+	RegisterReceiveChannelIntent(ctx context.Context, req *RegisterReceiveChannelIntentRequest) (*RegisterReceiveChannelIntentResponse, error)
 	// LeaveVTXOs handles LeaveVTXOs.
 	LeaveVTXOs(ctx context.Context, req *LeaveVTXOsRequest) (*LeaveVTXOsResponse, error)
 	// SendOnChain handles SendOnChain.
@@ -372,15 +372,15 @@ func RegisterDaemonServiceMailboxServer(r rpc.Router, impl DaemonServiceMailboxS
 
 		return impl.SubmitForfeitParticipantSignatures(ctx, req)
 	})
-	r.Handle("waverpc.DaemonService", "RequestVirtualChannelIntent", func() proto.Message {
-		return &RequestVirtualChannelIntentRequest{}
+	r.Handle("waverpc.DaemonService", "RegisterReceiveChannelIntent", func() proto.Message {
+		return &RegisterReceiveChannelIntentRequest{}
 	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
-		req, ok := msg.(*RequestVirtualChannelIntentRequest)
+		req, ok := msg.(*RegisterReceiveChannelIntentRequest)
 		if !ok {
 			return nil, fmt.Errorf("unexpected request type: %T", msg)
 		}
 
-		return impl.RequestVirtualChannelIntent(ctx, req)
+		return impl.RegisterReceiveChannelIntent(ctx, req)
 	})
 	r.Handle("waverpc.DaemonService", "LeaveVTXOs", func() proto.Message {
 		return &LeaveVTXOsRequest{}
@@ -1169,8 +1169,8 @@ func (c *DaemonServiceMailboxClient) SubmitForfeitParticipantSignatures(ctx cont
 	return resp, nil
 }
 
-// RequestVirtualChannelIntent calls the RequestVirtualChannelIntent RPC.
-func (c *DaemonServiceMailboxClient) RequestVirtualChannelIntent(ctx context.Context, req *RequestVirtualChannelIntentRequest, opts ...rpc.RPCOptions) (*RequestVirtualChannelIntentResponse, error) {
+// RegisterReceiveChannelIntent calls the RegisterReceiveChannelIntent RPC.
+func (c *DaemonServiceMailboxClient) RegisterReceiveChannelIntent(ctx context.Context, req *RegisterReceiveChannelIntentRequest, opts ...rpc.RPCOptions) (*RegisterReceiveChannelIntentResponse, error) {
 	var opt rpc.RPCOptions
 	if len(opts) > 0 {
 		opt = opts[0]
@@ -1178,13 +1178,13 @@ func (c *DaemonServiceMailboxClient) RequestVirtualChannelIntent(ctx context.Con
 
 	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
 		Service: "waverpc.DaemonService",
-		Method:  "RequestVirtualChannelIntent",
+		Method:  "RegisterReceiveChannelIntent",
 	}, req, opt)
 	if err != nil {
 		return nil, err
 	}
 
-	resp := new(RequestVirtualChannelIntentResponse)
+	resp := new(RegisterReceiveChannelIntentResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

@@ -677,7 +677,8 @@ func (x *VirtualChannelBackingVTXO) GetPolicyTemplate() []byte {
 
 type RegisterVirtualChannelRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// virtual_channel_id is the stable darepo identifier chosen by the client.
+	// virtual_channel_id is the stable virtual channel identifier chosen by the
+	// client.
 	VirtualChannelId []byte `protobuf:"bytes,1,opt,name=virtual_channel_id,json=virtualChannelId,proto3" json:"virtual_channel_id,omitempty"`
 	// pending_channel_id is lnd's 32-byte PSBT funding identifier.
 	PendingChannelId []byte `protobuf:"bytes,2,opt,name=pending_channel_id,json=pendingChannelId,proto3" json:"pending_channel_id,omitempty"`
@@ -687,10 +688,6 @@ type RegisterVirtualChannelRequest struct {
 	ClientNodePubkey []byte `protobuf:"bytes,4,opt,name=client_node_pubkey,json=clientNodePubkey,proto3" json:"client_node_pubkey,omitempty"`
 	// capacity_sat is the channel capacity.
 	CapacitySat int64 `protobuf:"varint,5,opt,name=capacity_sat,json=capacitySat,proto3" json:"capacity_sat,omitempty"`
-	// operator_local_balance_sat is the operator's initial channel balance.
-	OperatorLocalBalanceSat int64 `protobuf:"varint,6,opt,name=operator_local_balance_sat,json=operatorLocalBalanceSat,proto3" json:"operator_local_balance_sat,omitempty"`
-	// client_local_balance_sat is the client's initial channel balance.
-	ClientLocalBalanceSat int64 `protobuf:"varint,7,opt,name=client_local_balance_sat,json=clientLocalBalanceSat,proto3" json:"client_local_balance_sat,omitempty"`
 	// backing_tx is the serialized VTXO-to-channel-point parent.
 	BackingTx []byte `protobuf:"bytes,8,opt,name=backing_tx,json=backingTx,proto3" json:"backing_tx,omitempty"`
 	// funding_psbt is the funded PSBT verified by lnd with skip_finalize.
@@ -766,20 +763,6 @@ func (x *RegisterVirtualChannelRequest) GetCapacitySat() int64 {
 	return 0
 }
 
-func (x *RegisterVirtualChannelRequest) GetOperatorLocalBalanceSat() int64 {
-	if x != nil {
-		return x.OperatorLocalBalanceSat
-	}
-	return 0
-}
-
-func (x *RegisterVirtualChannelRequest) GetClientLocalBalanceSat() int64 {
-	if x != nil {
-		return x.ClientLocalBalanceSat
-	}
-	return 0
-}
-
 func (x *RegisterVirtualChannelRequest) GetBackingTx() []byte {
 	if x != nil {
 		return x.BackingTx
@@ -846,106 +829,6 @@ func (x *RegisterVirtualChannelResponse) GetStatus() string {
 	return ""
 }
 
-type ActivateVirtualChannelRequest struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// virtual_channel_id is the stable darepo identifier.
-	VirtualChannelId []byte `protobuf:"bytes,1,opt,name=virtual_channel_id,json=virtualChannelId,proto3" json:"virtual_channel_id,omitempty"`
-	// signed_backing_tx is the serialized VTXO-to-channel-point parent with
-	// all witnesses required for conflict publication.
-	SignedBackingTx []byte `protobuf:"bytes,2,opt,name=signed_backing_tx,json=signedBackingTx,proto3" json:"signed_backing_tx,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
-}
-
-func (x *ActivateVirtualChannelRequest) Reset() {
-	*x = ActivateVirtualChannelRequest{}
-	mi := &file_ark_proto_msgTypes[8]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *ActivateVirtualChannelRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*ActivateVirtualChannelRequest) ProtoMessage() {}
-
-func (x *ActivateVirtualChannelRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_proto_msgTypes[8]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use ActivateVirtualChannelRequest.ProtoReflect.Descriptor instead.
-func (*ActivateVirtualChannelRequest) Descriptor() ([]byte, []int) {
-	return file_ark_proto_rawDescGZIP(), []int{8}
-}
-
-func (x *ActivateVirtualChannelRequest) GetVirtualChannelId() []byte {
-	if x != nil {
-		return x.VirtualChannelId
-	}
-	return nil
-}
-
-func (x *ActivateVirtualChannelRequest) GetSignedBackingTx() []byte {
-	if x != nil {
-		return x.SignedBackingTx
-	}
-	return nil
-}
-
-type ActivateVirtualChannelResponse struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// status is the persisted operator-side virtual channel status.
-	Status        string `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *ActivateVirtualChannelResponse) Reset() {
-	*x = ActivateVirtualChannelResponse{}
-	mi := &file_ark_proto_msgTypes[9]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *ActivateVirtualChannelResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*ActivateVirtualChannelResponse) ProtoMessage() {}
-
-func (x *ActivateVirtualChannelResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_proto_msgTypes[9]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use ActivateVirtualChannelResponse.ProtoReflect.Descriptor instead.
-func (*ActivateVirtualChannelResponse) Descriptor() ([]byte, []int) {
-	return file_ark_proto_rawDescGZIP(), []int{9}
-}
-
-func (x *ActivateVirtualChannelResponse) GetStatus() string {
-	if x != nil {
-		return x.Status
-	}
-	return ""
-}
-
 type VirtualChannelInputSignature struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// outpoint identifies the backing VTXO input being signed.
@@ -958,7 +841,7 @@ type VirtualChannelInputSignature struct {
 
 func (x *VirtualChannelInputSignature) Reset() {
 	*x = VirtualChannelInputSignature{}
-	mi := &file_ark_proto_msgTypes[10]
+	mi := &file_ark_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -970,7 +853,7 @@ func (x *VirtualChannelInputSignature) String() string {
 func (*VirtualChannelInputSignature) ProtoMessage() {}
 
 func (x *VirtualChannelInputSignature) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_proto_msgTypes[10]
+	mi := &file_ark_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -983,7 +866,7 @@ func (x *VirtualChannelInputSignature) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VirtualChannelInputSignature.ProtoReflect.Descriptor instead.
 func (*VirtualChannelInputSignature) Descriptor() ([]byte, []int) {
-	return file_ark_proto_rawDescGZIP(), []int{10}
+	return file_ark_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *VirtualChannelInputSignature) GetOutpoint() string {
@@ -1002,7 +885,7 @@ func (x *VirtualChannelInputSignature) GetSignature() []byte {
 
 type CosignVirtualChannelBackingRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// virtual_channel_id is the stable darepo identifier.
+	// virtual_channel_id is the stable virtual channel identifier.
 	VirtualChannelId []byte `protobuf:"bytes,1,opt,name=virtual_channel_id,json=virtualChannelId,proto3" json:"virtual_channel_id,omitempty"`
 	// client_signatures contains one owner signature per backing VTXO input.
 	ClientSignatures []*VirtualChannelInputSignature `protobuf:"bytes,2,rep,name=client_signatures,json=clientSignatures,proto3" json:"client_signatures,omitempty"`
@@ -1012,7 +895,7 @@ type CosignVirtualChannelBackingRequest struct {
 
 func (x *CosignVirtualChannelBackingRequest) Reset() {
 	*x = CosignVirtualChannelBackingRequest{}
-	mi := &file_ark_proto_msgTypes[11]
+	mi := &file_ark_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1024,7 +907,7 @@ func (x *CosignVirtualChannelBackingRequest) String() string {
 func (*CosignVirtualChannelBackingRequest) ProtoMessage() {}
 
 func (x *CosignVirtualChannelBackingRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_proto_msgTypes[11]
+	mi := &file_ark_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1037,7 +920,7 @@ func (x *CosignVirtualChannelBackingRequest) ProtoReflect() protoreflect.Message
 
 // Deprecated: Use CosignVirtualChannelBackingRequest.ProtoReflect.Descriptor instead.
 func (*CosignVirtualChannelBackingRequest) Descriptor() ([]byte, []int) {
-	return file_ark_proto_rawDescGZIP(), []int{11}
+	return file_ark_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *CosignVirtualChannelBackingRequest) GetVirtualChannelId() []byte {
@@ -1066,7 +949,7 @@ type CosignVirtualChannelBackingResponse struct {
 
 func (x *CosignVirtualChannelBackingResponse) Reset() {
 	*x = CosignVirtualChannelBackingResponse{}
-	mi := &file_ark_proto_msgTypes[12]
+	mi := &file_ark_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1078,7 +961,7 @@ func (x *CosignVirtualChannelBackingResponse) String() string {
 func (*CosignVirtualChannelBackingResponse) ProtoMessage() {}
 
 func (x *CosignVirtualChannelBackingResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_proto_msgTypes[12]
+	mi := &file_ark_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1091,7 +974,7 @@ func (x *CosignVirtualChannelBackingResponse) ProtoReflect() protoreflect.Messag
 
 // Deprecated: Use CosignVirtualChannelBackingResponse.ProtoReflect.Descriptor instead.
 func (*CosignVirtualChannelBackingResponse) Descriptor() ([]byte, []int) {
-	return file_ark_proto_rawDescGZIP(), []int{12}
+	return file_ark_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *CosignVirtualChannelBackingResponse) GetSignedBackingTx() []byte {
@@ -1118,21 +1001,18 @@ type RequestVirtualChannelIntentRequest struct {
 	ClientNodePubkey []byte `protobuf:"bytes,2,opt,name=client_node_pubkey,json=clientNodePubkey,proto3" json:"client_node_pubkey,omitempty"`
 	// capacity_sat is the lnd channel capacity.
 	CapacitySat int64 `protobuf:"varint,3,opt,name=capacity_sat,json=capacitySat,proto3" json:"capacity_sat,omitempty"`
-	// private marks the lnd channel private.
-	Private bool `protobuf:"varint,4,opt,name=private,proto3" json:"private,omitempty"`
-	// zero_conf requests lnd zero-conf/scid-alias activation.
-	ZeroConf bool `protobuf:"varint,5,opt,name=zero_conf,json=zeroConf,proto3" json:"zero_conf,omitempty"`
 	// backing_vtxos are the existing VTXOs consumed by backing_tx.
 	BackingVtxos []*VirtualChannelBackingVTXO `protobuf:"bytes,6,rep,name=backing_vtxos,json=backingVtxos,proto3" json:"backing_vtxos,omitempty"`
-	// idempotency_key identifies this negotiation across retries.
-	IdempotencyKey string `protobuf:"bytes,7,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// round_id binds this receive-channel negotiation to the exact round that
+	// creates its backing VTXO.
+	RoundId       string `protobuf:"bytes,8,opt,name=round_id,json=roundId,proto3" json:"round_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *RequestVirtualChannelIntentRequest) Reset() {
 	*x = RequestVirtualChannelIntentRequest{}
-	mi := &file_ark_proto_msgTypes[13]
+	mi := &file_ark_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1144,7 +1024,7 @@ func (x *RequestVirtualChannelIntentRequest) String() string {
 func (*RequestVirtualChannelIntentRequest) ProtoMessage() {}
 
 func (x *RequestVirtualChannelIntentRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_proto_msgTypes[13]
+	mi := &file_ark_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1157,7 +1037,7 @@ func (x *RequestVirtualChannelIntentRequest) ProtoReflect() protoreflect.Message
 
 // Deprecated: Use RequestVirtualChannelIntentRequest.ProtoReflect.Descriptor instead.
 func (*RequestVirtualChannelIntentRequest) Descriptor() ([]byte, []int) {
-	return file_ark_proto_rawDescGZIP(), []int{13}
+	return file_ark_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *RequestVirtualChannelIntentRequest) GetPendingChannelId() []byte {
@@ -1181,20 +1061,6 @@ func (x *RequestVirtualChannelIntentRequest) GetCapacitySat() int64 {
 	return 0
 }
 
-func (x *RequestVirtualChannelIntentRequest) GetPrivate() bool {
-	if x != nil {
-		return x.Private
-	}
-	return false
-}
-
-func (x *RequestVirtualChannelIntentRequest) GetZeroConf() bool {
-	if x != nil {
-		return x.ZeroConf
-	}
-	return false
-}
-
 func (x *RequestVirtualChannelIntentRequest) GetBackingVtxos() []*VirtualChannelBackingVTXO {
 	if x != nil {
 		return x.BackingVtxos
@@ -1202,9 +1068,9 @@ func (x *RequestVirtualChannelIntentRequest) GetBackingVtxos() []*VirtualChannel
 	return nil
 }
 
-func (x *RequestVirtualChannelIntentRequest) GetIdempotencyKey() string {
+func (x *RequestVirtualChannelIntentRequest) GetRoundId() string {
 	if x != nil {
-		return x.IdempotencyKey
+		return x.RoundId
 	}
 	return ""
 }
@@ -1213,7 +1079,7 @@ type RequestVirtualChannelIntentResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// status is the operator-side virtual channel status.
 	Status string `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
-	// virtual_channel_id is the stable darepo virtual channel id.
+	// virtual_channel_id is the stable virtual channel identifier.
 	VirtualChannelId []byte `protobuf:"bytes,2,opt,name=virtual_channel_id,json=virtualChannelId,proto3" json:"virtual_channel_id,omitempty"`
 	// pending_channel_id is lnd's temporary channel id during funding.
 	PendingChannelId []byte `protobuf:"bytes,3,opt,name=pending_channel_id,json=pendingChannelId,proto3" json:"pending_channel_id,omitempty"`
@@ -1231,7 +1097,7 @@ type RequestVirtualChannelIntentResponse struct {
 
 func (x *RequestVirtualChannelIntentResponse) Reset() {
 	*x = RequestVirtualChannelIntentResponse{}
-	mi := &file_ark_proto_msgTypes[14]
+	mi := &file_ark_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1243,7 +1109,7 @@ func (x *RequestVirtualChannelIntentResponse) String() string {
 func (*RequestVirtualChannelIntentResponse) ProtoMessage() {}
 
 func (x *RequestVirtualChannelIntentResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ark_proto_msgTypes[14]
+	mi := &file_ark_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1256,7 +1122,7 @@ func (x *RequestVirtualChannelIntentResponse) ProtoReflect() protoreflect.Messag
 
 // Deprecated: Use RequestVirtualChannelIntentResponse.ProtoReflect.Descriptor instead.
 func (*RequestVirtualChannelIntentResponse) Descriptor() ([]byte, []int) {
-	return file_ark_proto_rawDescGZIP(), []int{14}
+	return file_ark_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *RequestVirtualChannelIntentResponse) GetStatus() string {
@@ -1366,26 +1232,19 @@ const file_ark_proto_rawDesc = "" +
 	"\n" +
 	"amount_sat\x18\x02 \x01(\x03R\tamountSat\x12\x1b\n" +
 	"\tpk_script\x18\x03 \x01(\fR\bpkScript\x12'\n" +
-	"\x0fpolicy_template\x18\x04 \x01(\fR\x0epolicyTemplate\"\xf1\x03\n" +
+	"\x0fpolicy_template\x18\x04 \x01(\fR\x0epolicyTemplate\"\x87\x03\n" +
 	"\x1dRegisterVirtualChannelRequest\x12,\n" +
 	"\x12virtual_channel_id\x18\x01 \x01(\fR\x10virtualChannelId\x12,\n" +
 	"\x12pending_channel_id\x18\x02 \x01(\fR\x10pendingChannelId\x12#\n" +
 	"\rchannel_point\x18\x03 \x01(\tR\fchannelPoint\x12,\n" +
 	"\x12client_node_pubkey\x18\x04 \x01(\fR\x10clientNodePubkey\x12!\n" +
-	"\fcapacity_sat\x18\x05 \x01(\x03R\vcapacitySat\x12;\n" +
-	"\x1aoperator_local_balance_sat\x18\x06 \x01(\x03R\x17operatorLocalBalanceSat\x127\n" +
-	"\x18client_local_balance_sat\x18\a \x01(\x03R\x15clientLocalBalanceSat\x12\x1d\n" +
+	"\fcapacity_sat\x18\x05 \x01(\x03R\vcapacitySat\x12\x1d\n" +
 	"\n" +
 	"backing_tx\x18\b \x01(\fR\tbackingTx\x12!\n" +
 	"\ffunding_psbt\x18\t \x01(\fR\vfundingPsbt\x12F\n" +
 	"\rbacking_vtxos\x18\n" +
-	" \x03(\v2!.arkrpc.VirtualChannelBackingVTXOR\fbackingVtxos\"8\n" +
+	" \x03(\v2!.arkrpc.VirtualChannelBackingVTXOR\fbackingVtxosJ\x04\b\x06\x10\aJ\x04\b\a\x10\b\"8\n" +
 	"\x1eRegisterVirtualChannelResponse\x12\x16\n" +
-	"\x06status\x18\x01 \x01(\tR\x06status\"y\n" +
-	"\x1dActivateVirtualChannelRequest\x12,\n" +
-	"\x12virtual_channel_id\x18\x01 \x01(\fR\x10virtualChannelId\x12*\n" +
-	"\x11signed_backing_tx\x18\x02 \x01(\fR\x0fsignedBackingTx\"8\n" +
-	"\x1eActivateVirtualChannelResponse\x12\x16\n" +
 	"\x06status\x18\x01 \x01(\tR\x06status\"X\n" +
 	"\x1cVirtualChannelInputSignature\x12\x1a\n" +
 	"\boutpoint\x18\x01 \x01(\tR\boutpoint\x12\x1c\n" +
@@ -1395,15 +1254,13 @@ const file_ark_proto_rawDesc = "" +
 	"\x11client_signatures\x18\x02 \x03(\v2$.arkrpc.VirtualChannelInputSignatureR\x10clientSignatures\"i\n" +
 	"#CosignVirtualChannelBackingResponse\x12*\n" +
 	"\x11signed_backing_tx\x18\x01 \x01(\fR\x0fsignedBackingTx\x12\x16\n" +
-	"\x06status\x18\x02 \x01(\tR\x06status\"\xcb\x02\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\"\x98\x02\n" +
 	"\"RequestVirtualChannelIntentRequest\x12,\n" +
 	"\x12pending_channel_id\x18\x01 \x01(\fR\x10pendingChannelId\x12,\n" +
 	"\x12client_node_pubkey\x18\x02 \x01(\fR\x10clientNodePubkey\x12!\n" +
-	"\fcapacity_sat\x18\x03 \x01(\x03R\vcapacitySat\x12\x18\n" +
-	"\aprivate\x18\x04 \x01(\bR\aprivate\x12\x1b\n" +
-	"\tzero_conf\x18\x05 \x01(\bR\bzeroConf\x12F\n" +
-	"\rbacking_vtxos\x18\x06 \x03(\v2!.arkrpc.VirtualChannelBackingVTXOR\fbackingVtxos\x12'\n" +
-	"\x0fidempotency_key\x18\a \x01(\tR\x0eidempotencyKey\"\xca\x02\n" +
+	"\fcapacity_sat\x18\x03 \x01(\x03R\vcapacitySat\x12F\n" +
+	"\rbacking_vtxos\x18\x06 \x03(\v2!.arkrpc.VirtualChannelBackingVTXOR\fbackingVtxos\x12\x19\n" +
+	"\bround_id\x18\b \x01(\tR\aroundIdJ\x04\b\x04\x10\x05J\x04\b\x05\x10\x06J\x04\b\a\x10\b\"\xca\x02\n" +
 	"#RequestVirtualChannelIntentResponse\x12\x16\n" +
 	"\x06status\x18\x01 \x01(\tR\x06status\x12,\n" +
 	"\x12virtual_channel_id\x18\x02 \x01(\fR\x10virtualChannelId\x12,\n" +
@@ -1412,13 +1269,12 @@ const file_ark_proto_rawDesc = "" +
 	"\x0eselected_vtxos\x18\x05 \x03(\v2!.arkrpc.VirtualChannelBackingVTXOR\rselectedVtxos\x12\x1d\n" +
 	"\n" +
 	"backing_tx\x18\x06 \x01(\fR\tbackingTx\x12!\n" +
-	"\ffunding_psbt\x18\a \x01(\fR\vfundingPsbt2\xd2\x04\n" +
+	"\ffunding_psbt\x18\a \x01(\fR\vfundingPsbt2\xe9\x03\n" +
 	"\n" +
 	"ArkService\x12:\n" +
 	"\aGetInfo\x12\x16.arkrpc.GetInfoRequest\x1a\x17.arkrpc.GetInfoResponse\x12F\n" +
 	"\vEstimateFee\x12\x1a.arkrpc.EstimateFeeRequest\x1a\x1b.arkrpc.EstimateFeeResponse\x12g\n" +
-	"\x16RegisterVirtualChannel\x12%.arkrpc.RegisterVirtualChannelRequest\x1a&.arkrpc.RegisterVirtualChannelResponse\x12g\n" +
-	"\x16ActivateVirtualChannel\x12%.arkrpc.ActivateVirtualChannelRequest\x1a&.arkrpc.ActivateVirtualChannelResponse\x12v\n" +
+	"\x16RegisterVirtualChannel\x12%.arkrpc.RegisterVirtualChannelRequest\x1a&.arkrpc.RegisterVirtualChannelResponse\x12v\n" +
 	"\x1bCosignVirtualChannelBacking\x12*.arkrpc.CosignVirtualChannelBackingRequest\x1a+.arkrpc.CosignVirtualChannelBackingResponse\x12v\n" +
 	"\x1bRequestVirtualChannelIntent\x12*.arkrpc.RequestVirtualChannelIntentRequest\x1a+.arkrpc.RequestVirtualChannelIntentResponseB,Z*github.com/lightninglabs/wavelength/arkrpcb\x06proto3"
 
@@ -1435,7 +1291,7 @@ func file_ark_proto_rawDescGZIP() []byte {
 }
 
 var file_ark_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_ark_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
+var file_ark_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
 var file_ark_proto_goTypes = []any{
 	(ArkVersionPolicy_State)(0),                 // 0: arkrpc.ArkVersionPolicy.State
 	(*GetInfoRequest)(nil),                      // 1: arkrpc.GetInfoRequest
@@ -1446,35 +1302,31 @@ var file_ark_proto_goTypes = []any{
 	(*VirtualChannelBackingVTXO)(nil),           // 6: arkrpc.VirtualChannelBackingVTXO
 	(*RegisterVirtualChannelRequest)(nil),       // 7: arkrpc.RegisterVirtualChannelRequest
 	(*RegisterVirtualChannelResponse)(nil),      // 8: arkrpc.RegisterVirtualChannelResponse
-	(*ActivateVirtualChannelRequest)(nil),       // 9: arkrpc.ActivateVirtualChannelRequest
-	(*ActivateVirtualChannelResponse)(nil),      // 10: arkrpc.ActivateVirtualChannelResponse
-	(*VirtualChannelInputSignature)(nil),        // 11: arkrpc.VirtualChannelInputSignature
-	(*CosignVirtualChannelBackingRequest)(nil),  // 12: arkrpc.CosignVirtualChannelBackingRequest
-	(*CosignVirtualChannelBackingResponse)(nil), // 13: arkrpc.CosignVirtualChannelBackingResponse
-	(*RequestVirtualChannelIntentRequest)(nil),  // 14: arkrpc.RequestVirtualChannelIntentRequest
-	(*RequestVirtualChannelIntentResponse)(nil), // 15: arkrpc.RequestVirtualChannelIntentResponse
+	(*VirtualChannelInputSignature)(nil),        // 9: arkrpc.VirtualChannelInputSignature
+	(*CosignVirtualChannelBackingRequest)(nil),  // 10: arkrpc.CosignVirtualChannelBackingRequest
+	(*CosignVirtualChannelBackingResponse)(nil), // 11: arkrpc.CosignVirtualChannelBackingResponse
+	(*RequestVirtualChannelIntentRequest)(nil),  // 12: arkrpc.RequestVirtualChannelIntentRequest
+	(*RequestVirtualChannelIntentResponse)(nil), // 13: arkrpc.RequestVirtualChannelIntentResponse
 }
 var file_ark_proto_depIdxs = []int32{
 	0,  // 0: arkrpc.ArkVersionPolicy.state:type_name -> arkrpc.ArkVersionPolicy.State
 	2,  // 1: arkrpc.GetInfoResponse.ark_version_policies:type_name -> arkrpc.ArkVersionPolicy
 	6,  // 2: arkrpc.RegisterVirtualChannelRequest.backing_vtxos:type_name -> arkrpc.VirtualChannelBackingVTXO
-	11, // 3: arkrpc.CosignVirtualChannelBackingRequest.client_signatures:type_name -> arkrpc.VirtualChannelInputSignature
+	9,  // 3: arkrpc.CosignVirtualChannelBackingRequest.client_signatures:type_name -> arkrpc.VirtualChannelInputSignature
 	6,  // 4: arkrpc.RequestVirtualChannelIntentRequest.backing_vtxos:type_name -> arkrpc.VirtualChannelBackingVTXO
 	6,  // 5: arkrpc.RequestVirtualChannelIntentResponse.selected_vtxos:type_name -> arkrpc.VirtualChannelBackingVTXO
 	1,  // 6: arkrpc.ArkService.GetInfo:input_type -> arkrpc.GetInfoRequest
 	4,  // 7: arkrpc.ArkService.EstimateFee:input_type -> arkrpc.EstimateFeeRequest
 	7,  // 8: arkrpc.ArkService.RegisterVirtualChannel:input_type -> arkrpc.RegisterVirtualChannelRequest
-	9,  // 9: arkrpc.ArkService.ActivateVirtualChannel:input_type -> arkrpc.ActivateVirtualChannelRequest
-	12, // 10: arkrpc.ArkService.CosignVirtualChannelBacking:input_type -> arkrpc.CosignVirtualChannelBackingRequest
-	14, // 11: arkrpc.ArkService.RequestVirtualChannelIntent:input_type -> arkrpc.RequestVirtualChannelIntentRequest
-	3,  // 12: arkrpc.ArkService.GetInfo:output_type -> arkrpc.GetInfoResponse
-	5,  // 13: arkrpc.ArkService.EstimateFee:output_type -> arkrpc.EstimateFeeResponse
-	8,  // 14: arkrpc.ArkService.RegisterVirtualChannel:output_type -> arkrpc.RegisterVirtualChannelResponse
-	10, // 15: arkrpc.ArkService.ActivateVirtualChannel:output_type -> arkrpc.ActivateVirtualChannelResponse
-	13, // 16: arkrpc.ArkService.CosignVirtualChannelBacking:output_type -> arkrpc.CosignVirtualChannelBackingResponse
-	15, // 17: arkrpc.ArkService.RequestVirtualChannelIntent:output_type -> arkrpc.RequestVirtualChannelIntentResponse
-	12, // [12:18] is the sub-list for method output_type
-	6,  // [6:12] is the sub-list for method input_type
+	10, // 9: arkrpc.ArkService.CosignVirtualChannelBacking:input_type -> arkrpc.CosignVirtualChannelBackingRequest
+	12, // 10: arkrpc.ArkService.RequestVirtualChannelIntent:input_type -> arkrpc.RequestVirtualChannelIntentRequest
+	3,  // 11: arkrpc.ArkService.GetInfo:output_type -> arkrpc.GetInfoResponse
+	5,  // 12: arkrpc.ArkService.EstimateFee:output_type -> arkrpc.EstimateFeeResponse
+	8,  // 13: arkrpc.ArkService.RegisterVirtualChannel:output_type -> arkrpc.RegisterVirtualChannelResponse
+	11, // 14: arkrpc.ArkService.CosignVirtualChannelBacking:output_type -> arkrpc.CosignVirtualChannelBackingResponse
+	13, // 15: arkrpc.ArkService.RequestVirtualChannelIntent:output_type -> arkrpc.RequestVirtualChannelIntentResponse
+	11, // [11:16] is the sub-list for method output_type
+	6,  // [6:11] is the sub-list for method input_type
 	6,  // [6:6] is the sub-list for extension type_name
 	6,  // [6:6] is the sub-list for extension extendee
 	0,  // [0:6] is the sub-list for field type_name
@@ -1491,7 +1343,7 @@ func file_ark_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_ark_proto_rawDesc), len(file_ark_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   15,
+			NumMessages:   13,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

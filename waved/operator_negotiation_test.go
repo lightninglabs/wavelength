@@ -24,6 +24,8 @@ func activeArkPolicy(version uint32) *arkrpc.ArkVersionPolicy {
 // canned GetInfo response, used to drive the bootstrap negotiation without a
 // real transport.
 type stubArkServiceClient struct {
+	arkrpc.ArkServiceClient
+
 	resp *arkrpc.GetInfoResponse
 	err  error
 }
@@ -46,30 +48,6 @@ func (s *stubArkServiceClient) EstimateFee(_ context.Context,
 	*arkrpc.EstimateFeeResponse, error) {
 
 	return &arkrpc.EstimateFeeResponse{}, nil
-}
-
-// RegisterVirtualChannel is unused by these tests.
-func (s *stubArkServiceClient) RegisterVirtualChannel(_ context.Context,
-	_ *arkrpc.RegisterVirtualChannelRequest, _ ...grpc.CallOption) (
-	*arkrpc.RegisterVirtualChannelResponse, error) {
-
-	return &arkrpc.RegisterVirtualChannelResponse{}, nil
-}
-
-// ActivateVirtualChannel is unused by these tests.
-func (s *stubArkServiceClient) ActivateVirtualChannel(_ context.Context,
-	_ *arkrpc.ActivateVirtualChannelRequest, _ ...grpc.CallOption) (
-	*arkrpc.ActivateVirtualChannelResponse, error) {
-
-	return &arkrpc.ActivateVirtualChannelResponse{}, nil
-}
-
-// CosignVirtualChannelBacking is unused by these tests.
-func (s *stubArkServiceClient) CosignVirtualChannelBacking(_ context.Context,
-	_ *arkrpc.CosignVirtualChannelBackingRequest, _ ...grpc.CallOption) (
-	*arkrpc.CosignVirtualChannelBackingResponse, error) {
-
-	return &arkrpc.CosignVirtualChannelBackingResponse{}, nil
 }
 
 // testOperatorPubKeyBytes returns a valid compressed secp256k1 public key for

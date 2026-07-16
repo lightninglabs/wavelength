@@ -1042,6 +1042,15 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 	)
 	s.vtxoStore = dbStore.NewVTXOStore(s.clk)
 	s.vcStore = dbStore.NewVirtualChannelStore()
+	recovered, err := s.vcStore.RecoverRoundVirtualChannels(ctx)
+	if err != nil {
+		return fmt.Errorf("recover confirmed virtual channels: %w", err)
+	}
+	if recovered > 0 {
+		s.log.InfoS(ctx, "Recovered confirmed virtual channels",
+			"count", recovered,
+		)
+	}
 
 	// -------------------------------------------------------
 	// 2. Initialize wallet backend (lnd or lwwallet).
@@ -1597,22 +1606,17 @@ func (s *Server) startIntegratedLnd(ctx context.Context) error {
 			func() (
 
 				actor.ActorRef[
-					unroll.RegistryMsg,
-					unroll.RegistryResp,
+					vtxo.ManagerMsg,
+					vtxo.ManagerResp,
 				],
 				bool) {
 
-				if s.unrollRegistry == nil {
+				if !s.vtxoMgrRef.IsSome() {
 					return nil, false
 				}
 
-				registry := s.unrollRegistry.Ref()
-
-				return registry, true
+				return s.vtxoMgrRef.UnsafeFromSome(), true
 			},
-		)
-
-		materializer := newVirtualChannelBackingMaterializer(
 			func() (
 
 				actor.ActorRef[
@@ -2477,6 +2481,9 @@ func (s *Server) startWalletDependentActors(ctx context.Context,
 		ctx, chainSourceRef, walletRef, timeoutRef, roundVTXOManager,
 	)
 	if err != nil {
+		return err
+	}
+	if err := s.resumeRequestedReceiveChannels(ctx); err != nil {
 		return err
 	}
 
@@ -4262,7 +4269,7 @@ func (s *Server) initRoundActor(ctx context.Context,
 			dropCustomForfeitSigningContexts,
 		OwnedScriptChecker:   scriptChecker,
 		OwnedScriptRegistrar: scriptRegistrar,
-		VirtualChannelActivator: &roundVirtualChannelActivator{
+		VirtualChannelCoordinator: &roundVirtualChannelCoordinator{
 			server: s,
 		},
 		LedgerSink:  fn.Some(ledger.NewSink(s.actorSystem)),
@@ -4363,6 +4370,7 @@ func (s *Server) initVTXOManager(ctx context.Context,
 		RefreshFeeQuoter:         s.autoRefreshFeeQuoter(),
 		FetchOperatorKey:         s.fetchCurrentOperatorPubKey,
 		ForfeitParticipantSigner: s.forfeitSignatures.sign,
+		ExpiryExitPolicyResolver: s.virtualChannelExpiryExitPolicy,
 		TerminalVTXOObserver: func(ctx context.Context,
 			outpoint wire.OutPoint) error {
 
@@ -4394,6 +4402,35 @@ func (s *Server) initVTXOManager(ctx context.Context,
 	s.log.InfoS(ctx, "VTXO manager registered and started")
 
 	return managerRef, nil
+}
+
+// virtualChannelExpiryExitPolicy preserves the channel funding parent when a
+// reserved backing VTXO reaches critical expiry. Only a fully armed channel has
+// a signed final spend that can safely replace the standard timeout sweep.
+func (s *Server) virtualChannelExpiryExitPolicy(ctx context.Context,
+	outpoint wire.OutPoint) (fn.Option[actormsg.ExitPolicy], error) {
+
+	if s.vcStore == nil {
+		return fn.None[actormsg.ExitPolicy](), nil
+	}
+
+	channel, found, err := s.vcStore.FindVirtualChannelByBackingVTXO(
+		ctx, outpoint,
+	)
+	if err != nil {
+		return fn.None[actormsg.ExitPolicy](), fmt.Errorf("find "+
+			"virtual channel backing VTXO: %w", err)
+	}
+	if !found || !virtualchannel.HasArmedBacking(channel.Status) {
+		return fn.None[actormsg.ExitPolicy](), nil
+	}
+
+	return fn.Some(actormsg.ExitPolicy{
+		Kind: actormsg.ExitPolicyVirtualChannelBacking,
+		Ref: actormsg.ExitPolicyRef(
+			vcunrollpolicy.EncodeVirtualChannelID(channel.ID),
+		),
+	}), nil
 }
 
 // resolveExitOutcome maps the persisted unroll job for an exiting VTXO to the

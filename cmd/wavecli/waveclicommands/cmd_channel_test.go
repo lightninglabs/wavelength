@@ -17,18 +17,44 @@ import (
 type channelTestDaemon struct {
 	waverpc.UnimplementedDaemonServiceServer
 
-	req *waverpc.RequestVirtualChannelIntentRequest
+	receiveReq *waverpc.RegisterReceiveChannelIntentRequest
+	promoteReq *waverpc.OpenVirtualChannelRequest
 }
 
-func (s *channelTestDaemon) RequestVirtualChannelIntent(_ context.Context,
-	req *waverpc.RequestVirtualChannelIntentRequest) (
-	*waverpc.RequestVirtualChannelIntentResponse, error) {
+func (s *channelTestDaemon) RegisterReceiveChannelIntent(_ context.Context,
+	req *waverpc.RegisterReceiveChannelIntentRequest) (
+	*waverpc.RegisterReceiveChannelIntentResponse, error) {
 
-	s.req = req
+	s.receiveReq = req
 
-	return &waverpc.RequestVirtualChannelIntentResponse{
+	return &waverpc.RegisterReceiveChannelIntentResponse{
 		Status: "requested",
 	}, nil
+}
+
+func (s *channelTestDaemon) OpenVirtualChannel(_ context.Context,
+	req *waverpc.OpenVirtualChannelRequest) (
+	*waverpc.OpenVirtualChannelResponse, error) {
+
+	s.promoteReq = req
+
+	return &waverpc.OpenVirtualChannelResponse{Status: "active"}, nil
+}
+
+func TestChannelPromoteUsesSingleAmount(t *testing.T) {
+	server := &channelTestDaemon{}
+	cmd, cleanup := newChannelTestRootCmd(t, server)
+	defer cleanup()
+
+	cmd.SetArgs([]string{
+		"--no-tls", "--no-macaroons", "ark", "channel", "promote",
+		"149000",
+	})
+	require.NoError(t, cmd.Execute())
+
+	require.NotNil(t, server.promoteReq)
+	require.Equal(t, int64(149000), server.promoteReq.AmountSat)
+	require.Len(t, server.promoteReq.IdempotencyKey, 64)
 }
 
 func TestChannelRequestUsesSingleAmount(t *testing.T) {
@@ -37,16 +63,14 @@ func TestChannelRequestUsesSingleAmount(t *testing.T) {
 	defer cleanup()
 
 	cmd.SetArgs([]string{
-		"--no-tls", "ark", "channel", "request", "149000",
+		"--no-tls", "--no-macaroons", "ark", "channel", "request",
+		"149000",
 	})
 	require.NoError(t, cmd.Execute())
 
-	require.NotNil(t, server.req)
-	require.Equal(t, int64(149000), server.req.CapacitySat)
-	require.Equal(t, int64(150000), server.req.BackingAmountSat)
-	require.True(t, server.req.Private)
-	require.True(t, server.req.ZeroConf)
-	require.True(t, server.req.RoundFunded)
+	require.NotNil(t, server.receiveReq)
+	require.Equal(t, int64(149000), server.receiveReq.AmountSat)
+	require.Len(t, server.receiveReq.IdempotencyKey, 64)
 }
 
 func TestChannelRequestRejectsInvalidAmount(t *testing.T) {

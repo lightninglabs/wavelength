@@ -7,20 +7,28 @@ import (
 
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/lib/actormsg"
 	"github.com/lightninglabs/wavelength/unroll"
 	"github.com/lightninglabs/wavelength/virtualchannel"
-	vcpolicy "github.com/lightninglabs/wavelength/virtualchannel/unrollpolicy"
+	vcunrollpolicy "github.com/lightninglabs/wavelength/virtualchannel/unrollpolicy"
+	"github.com/lightninglabs/wavelength/vtxo"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
 const (
 	virtualChannelMaterializationPoll = 500 * time.Millisecond
 	virtualChannelMaterializationWait = 30 * time.Minute
+	virtualChannelDependencyPoll      = 100 * time.Millisecond
 )
 
 // virtualChannelBackingMaterializer starts a VTXO unroll job that uses the
 // signed cooperative backing transaction as its terminal spend, then blocks
-// until that terminal spend has been submitted to txconfirm.
+// until the unroll registry reports that the terminal spend may be built upon.
 type virtualChannelBackingMaterializer struct {
+	manager func() (actor.ActorRef[
+		vtxo.ManagerMsg, vtxo.ManagerResp,
+	], bool)
+
 	registry func() (actor.ActorRef[
 		unroll.RegistryMsg, unroll.RegistryResp,
 	], bool)
@@ -32,11 +40,15 @@ type virtualChannelBackingMaterializer struct {
 // newVirtualChannelBackingMaterializer creates the lnd publish-hook adapter
 // for virtual-channel conflict materialization.
 func newVirtualChannelBackingMaterializer(
+	manager func() (actor.ActorRef[
+		vtxo.ManagerMsg, vtxo.ManagerResp,
+	], bool),
 	registry func() (actor.ActorRef[
 		unroll.RegistryMsg, unroll.RegistryResp,
 	], bool)) *virtualChannelBackingMaterializer {
 
 	return &virtualChannelBackingMaterializer{
+		manager:      manager,
 		registry:     registry,
 		pollInterval: virtualChannelMaterializationPoll,
 		timeout:      virtualChannelMaterializationWait,
@@ -56,22 +68,40 @@ func (m *virtualChannelBackingMaterializer) MaterializeVirtualChannelBacking(
 			"requires exactly one backing VTXO, got %d",
 			len(channel.BackingVTXOs))
 	}
-
-	ref, ok := m.registryRef()
-	if !ok {
-		return fmt.Errorf("unroll registry is not initialized")
+	if m == nil || m.manager == nil {
+		return fmt.Errorf("VTXO manager resolver is not configured")
+	}
+	if m.registry == nil {
+		return fmt.Errorf("unroll registry resolver is not configured")
 	}
 
 	ctx, cancel := m.withTimeout(ctx)
 	defer cancel()
-
-	target := channel.BackingVTXOs[0].OutPoint
-	_, err := m.ensureUnroll(ctx, ref, target, channel.ID)
+	managerRef, registryRef, err := m.waitForDependencies(ctx)
 	if err != nil {
 		return err
 	}
 
-	return m.waitForBackingSpend(ctx, ref, target, channel.ID)
+	target := channel.BackingVTXOs[0].OutPoint
+	if err := m.requestUnroll(
+		ctx, managerRef, target, channel.ID,
+	); err != nil {
+		return err
+	}
+
+	return m.waitForBackingSpend(
+		ctx, registryRef, target, channel.ID,
+	)
+}
+
+func (m *virtualChannelBackingMaterializer) managerRef() (
+	actor.ActorRef[vtxo.ManagerMsg, vtxo.ManagerResp], bool) {
+
+	if m == nil || m.manager == nil {
+		return nil, false
+	}
+
+	return m.manager()
 }
 
 // registryRef resolves the current unroll registry ref.
@@ -98,34 +128,69 @@ func (m *virtualChannelBackingMaterializer) withTimeout(ctx context.Context) (
 	return context.WithTimeout(ctx, timeout)
 }
 
-// ensureUnroll admits or deduplicates the cooperative materialization job.
-func (m *virtualChannelBackingMaterializer) ensureUnroll(ctx context.Context,
-	ref actor.ActorRef[unroll.RegistryMsg, unroll.RegistryResp],
-	target wire.OutPoint, id virtualchannel.ID) (*unroll.EnsureUnrollResp,
-	error) {
+// waitForDependencies bridges integrated lnd's startup ordering. The publish
+// hook can run before Wavelength has started the VTXO and unroll actors, so it
+// waits within the materialization deadline instead of relying on lnd to retry
+// a transient initialization error.
+func (m *virtualChannelBackingMaterializer) waitForDependencies(
+	ctx context.Context) (actor.ActorRef[vtxo.ManagerMsg, vtxo.ManagerResp],
+	actor.ActorRef[unroll.RegistryMsg, unroll.RegistryResp], error) {
 
-	resp, err := ref.Ask(ctx, &unroll.EnsureUnrollRequest{
-		Outpoint:       target,
-		Trigger:        unroll.TriggerManual,
-		ExitPolicyKind: vcpolicy.VirtualChannelBackingExitPolicyKind,
-		ExitPolicyRef:  vcpolicy.EncodeVirtualChannelID(id),
-	}).Await(ctx).Unpack()
-	if err != nil {
-		return nil, fmt.Errorf("ensure virtual channel backing "+
-			"unroll: %w", err)
+	ticker := time.NewTicker(virtualChannelDependencyPoll)
+	defer ticker.Stop()
+
+	for {
+		managerRef, managerReady := m.managerRef()
+		registryRef, registryReady := m.registryRef()
+		if managerReady && registryReady {
+			return managerRef, registryRef, nil
+		}
+
+		select {
+		case <-ticker.C:
+		case <-ctx.Done():
+			return nil, nil, fmt.Errorf("wait for virtual channel "+
+				"materialization dependencies: %w", ctx.Err())
+		}
 	}
-
-	ensureResp, ok := resp.(*unroll.EnsureUnrollResp)
-	if !ok {
-		return nil, fmt.Errorf("unexpected unroll ensure response %T",
-			resp)
-	}
-
-	return ensureResp, nil
 }
 
-// waitForBackingSpend waits until the unroll actor has submitted the
-// cooperative backing spend to txconfirm.
+// requestUnroll moves the backing VTXO through its owning FSM. The actor's
+// outbox then admits the registry job with the channel-specific final spend.
+func (m *virtualChannelBackingMaterializer) requestUnroll(ctx context.Context,
+	ref actor.ActorRef[vtxo.ManagerMsg, vtxo.ManagerResp],
+	target wire.OutPoint, id virtualchannel.ID) error {
+
+	resp, err := ref.Ask(ctx, &actormsg.ForceUnrollRequest{
+		Outpoint: target,
+		Reason:   "materialize virtual channel backing",
+		Trigger:  actormsg.UnrollTriggerManual,
+		ExitPolicy: fn.Some(actormsg.ExitPolicy{
+			Kind: actormsg.ExitPolicyVirtualChannelBacking,
+			Ref: actormsg.ExitPolicyRef(
+				vcunrollpolicy.EncodeVirtualChannelID(id),
+			),
+		}),
+	}).Await(ctx).Unpack()
+	if err != nil {
+		return fmt.Errorf("request virtual channel backing unroll: %w",
+			err)
+	}
+
+	forceResp, ok := resp.(*actormsg.ForceUnrollResponse)
+	if !ok {
+		return fmt.Errorf("unexpected VTXO unroll response %T", resp)
+	}
+	if !forceResp.Accepted {
+		return fmt.Errorf("VTXO unroll was not accepted: %s",
+			forceResp.Reason)
+	}
+
+	return nil
+}
+
+// waitForBackingSpend waits until the coarse durable unroll state proves that
+// lnd may safely publish a child of the cooperative backing spend.
 func (m *virtualChannelBackingMaterializer) waitForBackingSpend(
 	ctx context.Context,
 	ref actor.ActorRef[unroll.RegistryMsg, unroll.RegistryResp],
@@ -140,7 +205,7 @@ func (m *virtualChannelBackingMaterializer) waitForBackingSpend(
 	defer ticker.Stop()
 
 	for {
-		done, err := m.backingSpendSubmitted(ctx, ref, target, id)
+		done, err := m.backingSpendReady(ctx, ref, target, id)
 		if err != nil {
 			return err
 		}
@@ -158,15 +223,16 @@ func (m *virtualChannelBackingMaterializer) waitForBackingSpend(
 	}
 }
 
-// backingSpendSubmitted checks whether the unroll registry has reached the
+// backingSpendReady checks whether the unroll registry has reached the
 // phase where lnd's child spend may be published.
-func (m *virtualChannelBackingMaterializer) backingSpendSubmitted(
+func (m *virtualChannelBackingMaterializer) backingSpendReady(
 	ctx context.Context,
 	ref actor.ActorRef[unroll.RegistryMsg, unroll.RegistryResp],
 	target wire.OutPoint, id virtualchannel.ID) (bool, error) {
 
 	resp, err := ref.Ask(ctx, &unroll.GetStatusRequest{
 		Outpoint: target,
+		Detailed: true,
 	}).Await(ctx).Unpack()
 	if err != nil {
 		return false, fmt.Errorf("query virtual channel backing "+
@@ -179,23 +245,51 @@ func (m *virtualChannelBackingMaterializer) backingSpendSubmitted(
 			resp)
 	}
 	if !status.Found {
-		return false, fmt.Errorf("virtual channel backing unroll not "+
-			"found for %v", target)
+
+		// The manager owns admission and its VTXO actor forwards the
+		// registry message asynchronously. Keep polling through that
+		// short handoff.
+		return false, nil
 	}
-	if status.ExitPolicyKind !=
-		vcpolicy.VirtualChannelBackingExitPolicyKind {
+	expectedPolicy := vcunrollpolicy.VirtualChannelBackingExitPolicyKind
+	expectedRef := vcunrollpolicy.EncodeVirtualChannelID(id)
+	if status.ExitPolicyKind != expectedPolicy {
 		return false, fmt.Errorf("unroll job for %v has policy %s, "+
 			"expected %s", target, status.ExitPolicyKind,
-			vcpolicy.VirtualChannelBackingExitPolicyKind)
+			expectedPolicy)
 	}
-	if status.ExitPolicyRef != vcpolicy.EncodeVirtualChannelID(id) {
+	if status.ExitPolicyRef != expectedRef {
 		return false, fmt.Errorf("unroll job for %v has policy ref "+
 			"%q, expected %q", target, status.ExitPolicyRef,
-			vcpolicy.EncodeVirtualChannelID(id))
+			expectedRef)
 	}
 	if status.Phase == unroll.PhaseFailed {
 		return false, fmt.Errorf("virtual channel backing unroll "+
 			"failed: %s", status.FailReason)
+	}
+
+	// The registry's coarse record is intentionally stable while a child
+	// actor is active. Its detailed state is the authoritative live view of
+	// whether the cooperative terminal spend has reached txconfirm.
+	if status.State != nil {
+		if status.State.ExitPolicyKind != expectedPolicy {
+			return false, fmt.Errorf("active unroll job for %v "+
+				"has policy %s, expected %s", target,
+				status.State.ExitPolicyKind, expectedPolicy)
+		}
+		if status.State.ExitPolicyRef != expectedRef {
+			return false, fmt.Errorf("active unroll job for %v "+
+				"has policy ref %q, expected %q", target,
+				status.State.ExitPolicyRef, expectedRef)
+		}
+		if status.State.Phase == unroll.PhaseFailed {
+			return false, fmt.Errorf("virtual channel backing "+
+				"unroll failed: %s", status.State.FailReason)
+		}
+		if status.State.SweepTxid != nil ||
+			virtualChannelBackingPublished(status.State.Phase) {
+			return true, nil
+		}
 	}
 	if status.SweepTxid != nil ||
 		virtualChannelBackingPublished(status.Phase) {

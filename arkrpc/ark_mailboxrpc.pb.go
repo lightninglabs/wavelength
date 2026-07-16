@@ -30,8 +30,6 @@ type ArkServiceMailboxServer interface {
 	EstimateFee(ctx context.Context, req *EstimateFeeRequest) (*EstimateFeeResponse, error)
 	// RegisterVirtualChannel handles RegisterVirtualChannel.
 	RegisterVirtualChannel(ctx context.Context, req *RegisterVirtualChannelRequest) (*RegisterVirtualChannelResponse, error)
-	// ActivateVirtualChannel handles ActivateVirtualChannel.
-	ActivateVirtualChannel(ctx context.Context, req *ActivateVirtualChannelRequest) (*ActivateVirtualChannelResponse, error)
 	// CosignVirtualChannelBacking handles CosignVirtualChannelBacking.
 	CosignVirtualChannelBacking(ctx context.Context, req *CosignVirtualChannelBackingRequest) (*CosignVirtualChannelBackingResponse, error)
 	// RequestVirtualChannelIntent handles RequestVirtualChannelIntent.
@@ -69,16 +67,6 @@ func RegisterArkServiceMailboxServer(r rpc.Router, impl ArkServiceMailboxServer)
 		}
 
 		return impl.RegisterVirtualChannel(ctx, req)
-	})
-	r.Handle("arkrpc.ArkService", "ActivateVirtualChannel", func() proto.Message {
-		return &ActivateVirtualChannelRequest{}
-	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
-		req, ok := msg.(*ActivateVirtualChannelRequest)
-		if !ok {
-			return nil, fmt.Errorf("unexpected request type: %T", msg)
-		}
-
-		return impl.ActivateVirtualChannel(ctx, req)
 	})
 	r.Handle("arkrpc.ArkService", "CosignVirtualChannelBacking", func() proto.Message {
 		return &CosignVirtualChannelBackingRequest{}
@@ -164,29 +152,6 @@ func (c *ArkServiceMailboxClient) RegisterVirtualChannel(ctx context.Context, re
 	}
 
 	resp := new(RegisterVirtualChannelResponse)
-	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
-		return nil, err
-	}
-
-	return resp, nil
-}
-
-// ActivateVirtualChannel calls the ActivateVirtualChannel RPC.
-func (c *ArkServiceMailboxClient) ActivateVirtualChannel(ctx context.Context, req *ActivateVirtualChannelRequest, opts ...rpc.RPCOptions) (*ActivateVirtualChannelResponse, error) {
-	var opt rpc.RPCOptions
-	if len(opts) > 0 {
-		opt = opts[0]
-	}
-
-	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
-		Service: "arkrpc.ArkService",
-		Method:  "ActivateVirtualChannel",
-	}, req, opt)
-	if err != nil {
-		return nil, err
-	}
-
-	resp := new(ActivateVirtualChannelResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}
