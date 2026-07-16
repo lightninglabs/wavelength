@@ -248,8 +248,11 @@ type GetInfoResponse struct {
 	// entries are the operator's enabled, selectable versions; DISABLED
 	// entries are advertised only so clients learn a version was retired.
 	ArkVersionPolicies []*ArkVersionPolicy `protobuf:"bytes,22,rep,name=ark_version_policies,json=arkVersionPolicies,proto3" json:"ark_version_policies,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// The number of blocks before batch expiry in which a pure refresh
+	// qualifies for a complete fee waiver. Zero disables the waiver.
+	FreeRefreshWindowBlocks uint32 `protobuf:"varint,23,opt,name=free_refresh_window_blocks,json=freeRefreshWindowBlocks,proto3" json:"free_refresh_window_blocks,omitempty"`
+	unknownFields           protoimpl.UnknownFields
+	sizeCache               protoimpl.SizeCache
 }
 
 func (x *GetInfoResponse) Reset() {
@@ -413,6 +416,13 @@ func (x *GetInfoResponse) GetArkVersionPolicies() []*ArkVersionPolicy {
 		return x.ArkVersionPolicies
 	}
 	return nil
+}
+
+func (x *GetInfoResponse) GetFreeRefreshWindowBlocks() uint32 {
+	if x != nil {
+		return x.FreeRefreshWindowBlocks
+	}
+	return 0
 }
 
 // EstimateFeeRequest asks the server to estimate the fee for a
@@ -601,7 +611,7 @@ const file_ark_proto_rawDesc = "" +
 	"\x05State\x12\x15\n" +
 	"\x11STATE_UNSPECIFIED\x10\x00\x12\x10\n" +
 	"\fSTATE_ACTIVE\x10\x01\x12\x12\n" +
-	"\x0eSTATE_DISABLED\x10\x02\"\x96\x06\n" +
+	"\x0eSTATE_DISABLED\x10\x02\"\xd3\x06\n" +
 	"\x0fGetInfoResponse\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\x12\x16\n" +
 	"\x06pubkey\x18\x02 \x01(\fR\x06pubkey\x12\x18\n" +
@@ -624,7 +634,8 @@ const file_ark_proto_rawDesc = "" +
 	"\x13min_vtxo_amount_sat\x18\x13 \x01(\x03R\x10minVtxoAmountSat\x12(\n" +
 	"\x10max_user_balance\x18\x14 \x01(\x03R\x0emaxUserBalance\x120\n" +
 	"\x14selected_ark_version\x18\x15 \x01(\rR\x12selectedArkVersion\x12J\n" +
-	"\x14ark_version_policies\x18\x16 \x03(\v2\x18.arkrpc.ArkVersionPolicyR\x12arkVersionPolicies\"\x7f\n" +
+	"\x14ark_version_policies\x18\x16 \x03(\v2\x18.arkrpc.ArkVersionPolicyR\x12arkVersionPolicies\x12;\n" +
+	"\x1afree_refresh_window_blocks\x18\x17 \x01(\rR\x17freeRefreshWindowBlocks\"\x7f\n" +
 	"\x12EstimateFeeRequest\x12\x1d\n" +
 	"\n" +
 	"amount_sat\x18\x01 \x01(\x03R\tamountSat\x12\x1f\n" +

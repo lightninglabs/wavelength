@@ -1067,8 +1067,11 @@ type ServerInfo struct {
 	// cap locally on receive and boarding flows. A value of zero means
 	// no cap.
 	MaxUserBalance uint64 `protobuf:"varint,14,opt,name=max_user_balance,json=maxUserBalance,proto3" json:"max_user_balance,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// free_refresh_window_blocks is the operator's late-lifetime refresh
+	// waiver window. Zero disables the policy.
+	FreeRefreshWindowBlocks uint32 `protobuf:"varint,15,opt,name=free_refresh_window_blocks,json=freeRefreshWindowBlocks,proto3" json:"free_refresh_window_blocks,omitempty"`
+	unknownFields           protoimpl.UnknownFields
+	sizeCache               protoimpl.SizeCache
 }
 
 func (x *ServerInfo) Reset() {
@@ -1174,6 +1177,13 @@ func (x *ServerInfo) GetMinVtxoAmountSat() uint64 {
 func (x *ServerInfo) GetMaxUserBalance() uint64 {
 	if x != nil {
 		return x.MaxUserBalance
+	}
+	return 0
+}
+
+func (x *ServerInfo) GetFreeRefreshWindowBlocks() uint32 {
+	if x != nil {
+		return x.FreeRefreshWindowBlocks
 	}
 	return 0
 }
@@ -9900,7 +9910,7 @@ const file_daemon_proto_rawDesc = "" +
 	"\x0fidentity_pubkey\x18\n" +
 	" \x01(\tR\x0eidentityPubkey\x124\n" +
 	"\vserver_info\x18\v \x01(\v2\x13.waverpc.ServerInfoR\n" +
-	"serverInfo\"\xcf\x03\n" +
+	"serverInfo\"\x8c\x04\n" +
 	"\n" +
 	"ServerInfo\x12'\n" +
 	"\x0foperator_pubkey\x18\x01 \x01(\fR\x0eoperatorPubkey\x12.\n" +
@@ -9915,7 +9925,8 @@ const file_daemon_proto_rawDesc = "" +
 	"\x10min_operator_fee\x18\v \x01(\x04R\x0eminOperatorFee\x12+\n" +
 	"\x11min_confirmations\x18\f \x01(\rR\x10minConfirmations\x12-\n" +
 	"\x13min_vtxo_amount_sat\x18\r \x01(\x04R\x10minVtxoAmountSat\x12(\n" +
-	"\x10max_user_balance\x18\x0e \x01(\x04R\x0emaxUserBalance\"9\n" +
+	"\x10max_user_balance\x18\x0e \x01(\x04R\x0emaxUserBalance\x12;\n" +
+	"\x1afree_refresh_window_blocks\x18\x0f \x01(\rR\x17freeRefreshWindowBlocks\"9\n" +
 	"\x0eGenSeedRequest\x12'\n" +
 	"\x0fseed_passphrase\x18\x01 \x01(\fR\x0eseedPassphrase\"V\n" +
 	"\x0fGenSeedResponse\x12\x1a\n" +

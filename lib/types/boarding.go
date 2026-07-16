@@ -71,6 +71,11 @@ type OperatorTerms struct {
 	// total input value and total output value.
 	MinOperatorFee btcutil.Amount
 
+	// FreeRefreshWindowBlocks is the number of blocks before batch expiry
+	// in which a pure refresh qualifies for a complete fee waiver. Zero
+	// disables the policy.
+	FreeRefreshWindowBlocks uint32
+
 	// MinConfirmations is the minimum confs required on boarding inputs.
 	MinConfirmations uint32
 
