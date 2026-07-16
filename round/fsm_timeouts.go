@@ -4,6 +4,10 @@ package round
 type TimeoutPhase string
 
 const (
+	// TimeoutPhaseRefreshRegistration coalesces expiry-driven refreshes
+	// before registering their assembling round.
+	TimeoutPhaseRefreshRegistration TimeoutPhase = "refresh-registration"
+
 	// TimeoutPhaseForfeitCollection is the timeout phase for
 	// ForfeitSignaturesCollectingState.
 	TimeoutPhaseForfeitCollection TimeoutPhase = "forfeit-collection"
