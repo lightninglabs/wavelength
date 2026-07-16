@@ -166,9 +166,12 @@ node required, but initial sync downloads block/filter headers.
 ```bash
 waved \
   --network=signet \
-  --wallet.type=btcwallet \
-  --wallet.feeurl=https://mempool.space/signet/api/v1/fees/recommended
+  --wallet.type=btcwallet
 ```
+
+`wallet.feeurl` resolves to the network-default `nodes.lightning.computer`
+fee-estimate endpoint when left empty; set it explicitly only to point at a
+custom `fee_by_block_target` JSON endpoint.
 
 The Ark and swap connections resolve from the configured public test network
 unless explicitly overridden. See [`docs/signet.md`](docs/signet.md) for the
