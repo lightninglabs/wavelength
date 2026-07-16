@@ -50,6 +50,13 @@ const defaultForfeitCollectionTimeout = 2 * time.Minute
 // tests that need a different bound.
 const defaultRegistrationTimeout = 60 * time.Second
 
+// defaultRefreshRegistrationDelay is the quiet period used to coalesce
+// expiry-driven refreshes before registering their round. Block epochs can
+// make several VTXO actors request refreshes back-to-back; registering the
+// first one immediately would move its FSM out of assembly and split the
+// remaining VTXOs into competing same-client registrations.
+const defaultRefreshRegistrationDelay = 500 * time.Millisecond
+
 // RefreshVTXORequest is sent from a VTXO actor when its VTXO is approaching
 // expiry and needs to be refreshed in a new round. The round actor should
 // queue this VTXO for inclusion in the next batch swap.
@@ -2327,6 +2334,37 @@ func (a *RoundClientActor) handleTimeout(ctx context.Context,
 
 	var timeoutEvt ClientEvent
 	switch phase {
+	case TimeoutPhaseRefreshRegistration:
+		state, stateErr := roundFSM.FSM.CurrentState()
+		if stateErr != nil {
+			return fn.Err[actormsg.RoundActorResp](
+				fmt.Errorf("read round state for automatic "+
+					"refresh registration: %w", stateErr),
+			)
+		}
+
+		if _, ok := state.(*PendingRoundAssembly); !ok {
+			a.log.DebugS(ctx, "Ignoring stale refresh registration "+
+				"timeout",
+				slog.String("round_key", string(keyStr)),
+				slog.String("state", fmt.Sprintf("%T", state)),
+			)
+
+			return fn.Ok[actormsg.RoundActorResp](nil)
+		}
+
+		err = a.askEventAndProcessOutbox(
+			ctx, roundFSM, &IntentRequested{},
+		)
+		if err != nil {
+			return fn.Err[actormsg.RoundActorResp](
+				fmt.Errorf("trigger automatic refresh "+
+					"registration: %w", err),
+			)
+		}
+
+		return fn.Ok[actormsg.RoundActorResp](nil)
+
 	case TimeoutPhaseForfeitCollection:
 		// Forfeit collection only runs after the round has been
 		// re-keyed to its server-assigned RoundID, so the map key
@@ -2919,6 +2957,23 @@ func (a *RoundClientActor) handleRefreshVTXORequest(ctx context.Context,
 		return fn.Err[actormsg.RoundActorResp](
 			fmt.Errorf("FSM error processing refresh package: %w",
 				err),
+		)
+	}
+
+	// Reschedule one timeout for the assembling round on every refresh.
+	// This gives other VTXOs from the same block epoch a brief window to
+	// join the same intent before its single registration is emitted.
+	err = a.processOutbox(ctx, []ClientOutMsg{
+		&StartTimeoutReq{
+			RoundKey: RoundKeyStr(roundFSM.Key.KeyString()),
+			Phase:    TimeoutPhaseRefreshRegistration,
+			Duration: defaultRefreshRegistrationDelay,
+		},
+	})
+	if err != nil {
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("schedule automatic refresh "+
+				"registration: %w", err),
 		)
 	}
 
