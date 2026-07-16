@@ -71,7 +71,7 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   safety bounds enforced during `DeserializeTree`.
 - `resolveInputPackage` / `loadPackageBundleBySessionID` — two-stage
   OOR ancestry resolver (`oor_unroll_resolver.go`).
-- `LatestMigrationVersion = 10` — current schema version.
+- `LatestMigrationVersion = 14` — current schema version.
 - `PendingIntentPersistenceStore` — implements `wallet.PendingIntentStore`,
   the persistence half of the generic restart-safe intent outbox (header
   `pending_intents` + per-kind detail tables + `pending_intent_anchors`).
@@ -186,6 +186,17 @@ when adding one.
 - `000010_activity_log` — canonical activity feed: `activity_entries`
   current-state projection plus the `activity_events` append-only
   transition log.
+- `000011_pending_intent_status` — terminal-failure status for the
+  pending-intent outbox.
+- `000012_exit_funding_addresses` — persisted per-outpoint exit-plan
+  funding addresses.
+- `000013_ancestry_commitment_height` — per-fragment commitment
+  confirmation height on `vtxo_ancestry_paths` (unroller watch-height
+  floor).
+- `000014_ancestry_multi_fragment` — drops the per-commitment UNIQUE
+  constraint on `vtxo_ancestry_paths`: fragment identity is
+  (commitment_txid, tree_path), so an OOR spend of inputs at different
+  leaves of one commitment tree persists one row per leaf.
 
 ## Deep Docs
 
