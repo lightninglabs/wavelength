@@ -115,6 +115,12 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   non-retryable `OutboxErrorEvent` instead of an `Adapt` error that would
   stall the serverconn ingress cursor on the offending envelope
   (`server.go`).
+- `operatorTermsFromResponse` and daemon `GetInfo` must preserve
+  `FreeRefreshWindowBlocks` end to end.
+- The VTXO manager reads `FreeRefreshWindowBlocks` from the latest cached
+  operator terms on each expiry check. It delays automatic refresh to the
+  window boundary only when the local dynamic critical threshold plus retry
+  buffer remains intact.
 
 ## Deep Docs
 
