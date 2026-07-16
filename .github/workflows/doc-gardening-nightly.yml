@@ -25,6 +25,12 @@ permissions:
   # only needs read access for the action's own bookkeeping.
   contents: read
   pull-requests: read
+  # The failure canary opens its tracking issue with the workflow's own
+  # GITHUB_TOKEN rather than BOT_GITHUB_TOKEN, so an expired or revoked
+  # bot token can never take the canary down with it (that exact failure
+  # mode went unnoticed for two days when the bot PAT hit its 90-day
+  # expiry: checkout died AND the notify step died with the same 401).
+  issues: write
 
 jobs:
   sweep:
@@ -276,7 +282,11 @@ jobs:
         if: failure()
         id: notify_create
         env:
-          GH_TOKEN: ${{ secrets.BOT_GITHUB_TOKEN }}
+          # Deliberately NOT the bot token: the most likely cause of a
+          # failed run is the bot token itself going bad, and a canary
+          # that authenticates with the thing it is monitoring reports
+          # nothing exactly when it matters most.
+          GH_TOKEN: ${{ github.token }}
         run: |
           # Create the tracking issue WITHOUT labels first so a missing or
           # renamed label can never swallow the canary. The label-attach
@@ -291,7 +301,7 @@ jobs:
         if: failure() && steps.notify_create.outputs.issue_url != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.BOT_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           ISSUE_URL: ${{ steps.notify_create.outputs.issue_url }}
         run: |
           # Best-effort label attach. `continue-on-error: true` plus `|| true`
