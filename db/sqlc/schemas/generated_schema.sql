@@ -1537,62 +1537,22 @@ CREATE TABLE vhtlc_recovery_jobs (
     UNIQUE(swap_id, action, vtxo_txid, vtxo_vout)
 );
 
-CREATE TABLE vtxo_ancestry_paths (
-    -- vtxo_outpoint_hash and vtxo_outpoint_index identify the parent VTXO
-    -- in the vtxos table.
+CREATE TABLE "vtxo_ancestry_paths" (
     vtxo_outpoint_hash BLOB NOT NULL,
     vtxo_outpoint_index INTEGER NOT NULL,
-
-    -- path_order is the deterministic ordinal of this fragment within
-    -- the parent VTXO's ancestry, starting at 0. Persists the order
-    -- chosen by the indexer (typically grouped by commitment_txid) so
-    -- the unroller's broadcast plan is reproducible across restarts.
     path_order INTEGER NOT NULL,
-
-    -- commitment_txid is the 32-byte commitment tx hash anchoring this
-    -- fragment. Distinct rows for one VTXO must have distinct
-    -- commitment_txids.
     commitment_txid BLOB NOT NULL,
-
-    -- tree_path is the TLV-encoded extracted tree.Tree fragment from the
-    -- batch root to the input VTXO leaf served by this fragment.
     tree_path BLOB NOT NULL,
-
-    -- tree_depth is the depth of the served leaf within this fragment's
-    -- tree. Worst-case unilateral-exit timing for the parent VTXO is
-    -- max(tree_depth) across all fragments.
     tree_depth INTEGER NOT NULL,
-
-    -- input_indices is a length-prefixed BE-uint32 list of Ark tx input
-    -- indices (within the OOR Ark tx that produced the parent VTXO)
-    -- that this fragment serves. Empty for round-direct VTXOs.
-    --
-    -- No SQL-level DEFAULT here: INSERT statements always pass an
-    -- explicit value (empty length-prefixed slice for round-direct
-    -- rows). A `DEFAULT X''` literal works on SQLite but is parsed by
-    -- Postgres as a bit-string and rejected against the BYTEA column.
-    input_indices BLOB NOT NULL, commitment_height INTEGER NOT NULL DEFAULT 0,
+    input_indices BLOB NOT NULL,
+    commitment_height INTEGER NOT NULL DEFAULT 0,
 
     PRIMARY KEY (vtxo_outpoint_hash, vtxo_outpoint_index, path_order),
     FOREIGN KEY (vtxo_outpoint_hash, vtxo_outpoint_index)
         REFERENCES vtxos(outpoint_hash, outpoint_index)
         ON DELETE CASCADE,
 
-    -- A VTXO must not carry two ancestry rows for the same commitment
-    -- tx. Distinct fragments must anchor at distinct commitments
-    -- (per the Ancestry contract); enforcing it at the schema level
-    -- means a future caller bypassing BuildIncomingVTXODescriptor
-    -- still cannot persist a malformed VTXO that would later trip a
-    -- "conflicting proof node" deep inside addProofNode at unilateral
-    -- exit time.
-    UNIQUE (vtxo_outpoint_hash, vtxo_outpoint_index, commitment_txid),
-
-    -- path_order must be a small non-negative ordinal. The active
-    -- fragment-count cap (MaxAncestryFragments) is well under 64;
-    -- this CHECK guards against a caller persisting a row at a
-    -- nonsense ordinal (e.g. negative, or a uint32 round-trip from
-    -- malformed wire data) without coupling the schema to the exact
-    -- runtime cap.
+    -- path_order must be a small non-negative ordinal (see 000004).
     CHECK (path_order >= 0 AND path_order < 64)
 );
 

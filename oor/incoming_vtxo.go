@@ -285,10 +285,15 @@ func standardTapscriptIfApplicable(template *arkscript.PolicyTemplate) (
 //     VTXO. BuildIncomingVTXODescriptor normalizes that matching fragment
 //     to Ancestry[0] after validation.
 //
-//   - Each fragment's CommitmentTxID is unique within the slice. Per
-//     the Ancestry contract distinct fragments must anchor to distinct
-//     commitments; a duplicate either indicates a malformed operator
-//     response or a malicious attempt to inflate vbyte cost.
+//   - No two fragments re-cover the same input under the same commitment
+//     txid. A given input's lineage through a given commitment resolves
+//     to exactly one leaf, so a repeated (commitment, input) pair is a
+//     redundant or malformed fragment. Two fragments may still share a
+//     commitment txid when they serve different inputs (an OOR VTXO whose
+//     Ark tx spent two coins from the same commitment tree at different
+//     leaves -- wavelength#969), and one input may appear under several
+//     commitments (a chained receive), so uniqueness is enforced on the
+//     (commitment, input) pair, not the commitment txid alone.
 //
 //   - Each fragment carries a non-nil TreePath. A nil path is unusable
 //     for proof assembly and would be caught by the unroller; we surface
@@ -321,6 +326,16 @@ func standardTapscriptIfApplicable(template *arkscript.PolicyTemplate) (
 //     point the user is racing a CSV with no way to recover. We reject
 //     at the receive boundary so the bad indexer response fails before
 //     any funds are credited.
+//
+// commitInputKey identifies one (commitment tx, ark input index) pair. It is
+// the uniqueness key for ancestry fragments: a given input descends from a
+// given commitment through exactly one leaf, so the same pair may not be
+// covered by more than one fragment. See validateIncomingAncestry.
+type commitInputKey struct {
+	commitment chainhash.Hash
+	input      uint32
+}
+
 func validateIncomingAncestry(meta IncomingVTXOMetadata,
 	arkTxInputCount uint32) error {
 
@@ -335,23 +350,24 @@ func validateIncomingAncestry(meta IncomingVTXOMetadata,
 	// declared input count; we only set entries after the per-fragment
 	// range check has passed, so out-of-range writes are impossible.
 	covered := make([]bool, arkTxInputCount)
-	seen := make(map[chainhash.Hash]struct{}, len(meta.Ancestry))
+
+	// seenCommitInputs tracks the (commitment txid, ark input index) pairs
+	// already claimed by a fragment. A given Ark tx input descends from a
+	// given commitment tx through exactly one leaf, so the same pair
+	// appearing under two fragments is a redundant or malformed fragment.
+	// We deliberately key on the pair, not the commitment txid alone: two
+	// fragments legitimately share a commitment txid when they serve
+	// different inputs -- e.g. an OOR change VTXO whose Ark tx spent two
+	// input VTXOs that both descend from the same commitment tx but sit at
+	// different leaves, so each needs its own root->leaf path
+	// (wavelength#969) -- and a single input may likewise appear under
+	// several commitments for a chained receive.
+	seenCommitInputs := make(map[commitInputKey]struct{})
 	hasPrimary := false
 	for i, frag := range meta.Ancestry {
 		if frag.CommitmentTxID == meta.CommitmentTxID {
 			hasPrimary = true
 		}
-
-		if _, dup := seen[frag.CommitmentTxID]; dup {
-			return &ErrInvalidAncestry{
-				Reason: fmt.Sprintf(
-					"fragment %d carries duplicate "+
-						"commitment txid %s", i,
-					frag.CommitmentTxID,
-				),
-			}
-		}
-		seen[frag.CommitmentTxID] = struct{}{}
 
 		if frag.TreePath == nil {
 			return &ErrInvalidAncestry{
@@ -443,6 +459,30 @@ func validateIncomingAncestry(meta IncomingVTXOMetadata,
 			}
 			seenInFragment[idx] = struct{}{}
 			covered[idx] = true
+
+			// A given input's lineage through a given commitment
+			// resolves to exactly one leaf, so the same
+			// (commitment, input) pair under two fragments is a
+			// redundant or malformed fragment. Fragments sharing
+			// only the commitment (different inputs) or only the
+			// input (different commitments) are both legitimate;
+			// see seenCommitInputs above.
+			pair := commitInputKey{
+				commitment: frag.CommitmentTxID,
+				input:      idx,
+			}
+			if _, ok := seenCommitInputs[pair]; ok {
+				return &ErrInvalidAncestry{
+					Reason: fmt.Sprintf(
+						"fragment %d re-covers "+
+							"input %d already "+
+							"served under "+
+							"commitment %s", i,
+						idx, frag.CommitmentTxID,
+					),
+				}
+			}
+			seenCommitInputs[pair] = struct{}{}
 		}
 	}
 

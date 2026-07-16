@@ -592,26 +592,26 @@ func recoveryUint32(value int32, label string) (uint32, error) {
 	return uint32(value), nil
 }
 
-// recoveryAncestry clones and de-duplicates ancestry fragments from the root
-// descriptors. Distinct roots may share a commitment fragment, so
-// de-duplication keeps the synthesized target descriptor compact and
-// deterministic.
+// recoveryAncestry collects the ancestry fragments from the root descriptors
+// into the synthesized target's ancestry, preserving every fragment.
+//
+// It must NOT de-duplicate by commitment txid: distinct roots that both
+// descend from the same commitment tx contribute different leaves (each a
+// distinct root->leaf path), so collapsing by commitment would silently drop a
+// leaf and leave the recovery target unable to prove that input on-chain at
+// unilateral-exit time (wavelength#969). The roots are already de-duplicated
+// by outpoint in loadRootDescriptors and a VTXO is spent at most once, so no
+// two roots share a leaf and the concatenation carries no true duplicates; the
+// unroller's proof assembler deduplicates shared upstream tree nodes when it
+// builds the exit.
 func recoveryAncestry(roots []*vtxo.Descriptor) []vtxo.Ancestry {
-	seen := make(map[chainhash.Hash]struct{})
 	var ancestry []vtxo.Ancestry
 	for _, root := range roots {
 		if root == nil {
 			continue
 		}
 
-		for _, fragment := range root.Ancestry {
-			if _, ok := seen[fragment.CommitmentTxID]; ok {
-				continue
-			}
-			seen[fragment.CommitmentTxID] = struct{}{}
-
-			ancestry = append(ancestry, fragment)
-		}
+		ancestry = append(ancestry, root.Ancestry...)
 	}
 
 	return ancestry

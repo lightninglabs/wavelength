@@ -340,12 +340,18 @@ func TestBuildIncomingVTXODescriptorRejectsInvalidAncestry(t *testing.T) {
 			wantReason: "tree path batch outpoint hash",
 		},
 		{
-			name: "duplicate commitment txid across fragments",
+			// An exact-duplicate fragment re-covers the same input
+			// under the same commitment, which the (commitment,
+			// input) uniqueness rule rejects as redundant. Two
+			// fragments that share only the commitment (serving
+			// different inputs) are allowed -- see the coverage
+			// test's "two inputs share a commitment" case.
+			name: "redundant duplicate fragment",
 			mutate: func(m *IncomingVTXOMetadata) {
 				dup := m.Ancestry[0]
 				m.Ancestry = append(m.Ancestry, dup)
 			},
-			wantReason: "duplicate commitment txid",
+			wantReason: "re-covers input",
 		},
 		{
 			name: "nil tree path",
@@ -492,6 +498,23 @@ func TestValidateIncomingAncestryInputCoverage(t *testing.T) {
 			ancestry: []vtxo.Ancestry{
 				fragment(primary, 0),
 				fragment(secondary, 0),
+			},
+		},
+		{
+			// Regression for wavelength#969: an OOR tx that spends
+			// two input VTXOs which both descend from the SAME
+			// commitment tx (different leaves) yields a change VTXO
+			// whose ancestry has two fragments carrying the same
+			// commitment txid but distinct input indices. This is
+			// legitimate -- each leaf needs its own root->leaf path
+			// -- and must validate. The old per-commitment dedup
+			// wrongly rejected it, stranding the change and
+			// dropping the sender's balance to zero.
+			name:            "two inputs share a commitment",
+			arkTxInputCount: 2,
+			ancestry: []vtxo.Ancestry{
+				fragment(primary, 0),
+				fragment(primary, 1),
 			},
 		},
 		{
