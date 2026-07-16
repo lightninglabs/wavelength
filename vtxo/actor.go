@@ -94,7 +94,9 @@ type VTXOActorConfig struct {
 	// FetchOperatorKey, when set, returns the operator's current
 	// long-term public key by issuing a fresh GetInfo round-trip to
 	// the operator at the moment of an auto-refresh emission. The
-	// fetched key is used to build the NEW VTXO output's policy
+	// production callback also refreshes the operator-terms cache, so the
+	// actor can recheck the current free-refresh window before reserving.
+	// The fetched key is used to build the NEW VTXO output's policy
 	// template; the input VTXO's stored operator key is intentionally
 	// not reused for the new output because VTXOs commit to their
 	// operator key for their entire lifetime, and the new output is a
@@ -166,17 +168,24 @@ func (a *VTXOActor) logger(ctx context.Context) btclog.Logger {
 func (a *VTXOActor) refreshOutputTemplate(ctx context.Context,
 	vtxo *Descriptor) ([]byte, error) {
 
+	return a.refreshOutputTemplateWithKey(ctx, vtxo, nil)
+}
+
+// refreshOutputTemplateWithKey returns the new output policy using a
+// pre-fetched operator key when one is available.
+func (a *VTXOActor) refreshOutputTemplateWithKey(ctx context.Context,
+	vtxo *Descriptor, currentKey *btcec.PublicKey) ([]byte, error) {
+
 	if a.cfg.FetchOperatorKey == nil {
 		return vtxo.EffectivePolicyTemplate()
 	}
 
-	currentKey, err := a.cfg.FetchOperatorKey(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("fetch current operator key: %w", err)
-	}
 	if currentKey == nil {
-		return nil, fmt.Errorf("fetch current operator key: nil key " +
-			"returned")
+		var err error
+		currentKey, err = a.fetchOperatorKey(ctx)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	rebuilt, err := vtxo.RefreshOutputTemplate(currentKey)
@@ -193,6 +202,77 @@ func (a *VTXOActor) refreshOutputTemplate(ctx context.Context,
 	}
 
 	return rebuilt, nil
+}
+
+// fetchOperatorKey fetches and validates the current operator key.
+func (a *VTXOActor) fetchOperatorKey(ctx context.Context) (*btcec.PublicKey,
+	error) {
+
+	currentKey, err := a.cfg.FetchOperatorKey(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("fetch current operator key: %w", err)
+	}
+	if currentKey == nil {
+		return nil, fmt.Errorf("fetch current operator key: nil key " +
+			"returned")
+	}
+
+	return currentKey, nil
+}
+
+// preflightAutoRefresh refreshes the operator terms when a cached threshold
+// first requests cooperative refresh. It returns deferRefresh when the fresh
+// response moves a still-safe waiver boundary later than the current block.
+func (a *VTXOActor) preflightAutoRefresh(ctx context.Context, event VTXOEvent) (
+	*btcec.PublicKey, bool, error) {
+
+	if a.cfg.FetchOperatorKey == nil {
+		return nil, false, nil
+	}
+
+	blockEvent, ok := event.(*BlockEpochEvent)
+	if !ok {
+		return nil, false, nil
+	}
+
+	liveState, ok := a.state.(*LiveState)
+	if !ok {
+		return nil, false, nil
+	}
+
+	status := a.env.ExpiryConfig.CheckExpiry(
+		liveState.VTXO, blockEvent.Height,
+	)
+	if status != ExpiryStatusNeedsRefresh {
+		return nil, false, nil
+	}
+
+	currentKey, err := a.fetchOperatorKey(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+
+	blocksRemaining := BlocksUntilExpiry(
+		liveState.VTXO, blockEvent.Height,
+	)
+	refreshThreshold := a.env.ExpiryConfig.CalculateRefreshThreshold(
+		liveState.VTXO,
+	)
+	if blocksRemaining <= refreshThreshold {
+		return currentKey, false, nil
+	}
+
+	// The fresh window moved later while retaining the configured safety
+	// margin. Consume this epoch in LiveState and let the newly cached
+	// threshold trigger another preflight at the new boundary.
+	liveState.LastCheckedHeight = blockEvent.Height
+	a.logger(ctx).DebugS(ctx, "Deferring automatic refresh to latest "+
+		"operator window",
+		slog.Int("blocks_remaining", int(blocksRemaining)),
+		slog.Int("refresh_threshold", int(refreshThreshold)),
+	)
+
+	return currentKey, true, nil
 }
 
 // emitExitCost is the VTXO-actor entry point for unilateral-exit accounting.
@@ -309,6 +389,26 @@ func (a *VTXOActor) Receive(ctx context.Context,
 		)
 	}
 
+	refreshKey, deferRefresh, err := a.preflightAutoRefresh(
+		ctx, vtxoEvent,
+	)
+	if err != nil {
+		a.logger(ctx).WarnS(ctx, "Automatic refresh preflight failed",
+			err,
+			slog.String("outpoint", a.cfg.VTXO.Outpoint.String()),
+		)
+
+		return fn.Err[actormsg.VTXOActorResp](
+			fmt.Errorf("preflight automatic refresh: %w", err),
+		)
+	}
+	if deferRefresh {
+		return fn.Ok[actormsg.VTXOActorResp](VTXOActorResponse{
+			PriorState: a.state,
+			NewState:   a.state,
+		})
+	}
+
 	transition, err := a.state.ProcessEvent(ctx, vtxoEvent, a.env)
 	if err != nil {
 		a.logger(ctx).ErrorS(ctx, "VTXO FSM ProcessEvent failed",
@@ -354,7 +454,9 @@ func (a *VTXOActor) Receive(ctx context.Context,
 	// transition. If the durable write fails, callers must see an error
 	// and retries must re-drive the original state rather than observing
 	// a terminal state that never made it to disk.
-	if err := a.processOutbox(ctx, outbox); err != nil {
+	if err := a.processOutboxWithOperatorKey(
+		ctx, outbox, refreshKey,
+	); err != nil {
 		return fn.Err[actormsg.VTXOActorResp](err)
 	}
 
@@ -380,6 +482,14 @@ func (a *VTXOActor) Receive(ctx context.Context,
 func (a *VTXOActor) processOutbox(ctx context.Context,
 	outbox []VTXOOutMsg) error {
 
+	return a.processOutboxWithOperatorKey(ctx, outbox, nil)
+}
+
+// processOutboxWithOperatorKey routes outbox messages while reusing the key
+// fetched immediately before an automatic refresh transition.
+func (a *VTXOActor) processOutboxWithOperatorKey(ctx context.Context,
+	outbox []VTXOOutMsg, refreshKey *btcec.PublicKey) error {
+
 	// Persist status updates first so a DB failure causes Receive to
 	// return an error before applying the in-memory state transition.
 	for _, msg := range outbox {
@@ -404,8 +514,8 @@ func (a *VTXOActor) processOutbox(ctx context.Context,
 			// the round-specific message here since the VTXO
 			// actor has the descriptor data needed.
 			vtxo := a.cfg.VTXO
-			policyTemplate, err := a.refreshOutputTemplate(
-				ctx, vtxo,
+			policyTemplate, err := a.refreshOutputTemplateWithKey(
+				ctx, vtxo, refreshKey,
 			)
 			if err != nil {
 				// WarnS, not ErrorS: this can fail because

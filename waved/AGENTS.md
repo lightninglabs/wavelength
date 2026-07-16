@@ -120,7 +120,8 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
 - The VTXO manager reads `FreeRefreshWindowBlocks` from the latest cached
   operator terms on each expiry check. It delays automatic refresh to the
   window boundary only when the local dynamic critical threshold plus retry
-  buffer remains intact.
+  buffer remains intact. When that cached boundary fires, it fetches a fresh
+  `GetInfo` snapshot and rechecks the window before reserving the input.
 
 ## Deep Docs
 
