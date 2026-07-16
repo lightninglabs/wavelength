@@ -1315,6 +1315,16 @@ func (c *Config) validateWalletConfig() error {
 			return err
 		}
 
+		// The REST transport cannot resolve lnd's per-network default
+		// macaroon path on its own (unlike the gRPC lndclient), so it
+		// must be given explicitly. Fail here at config-validation time
+		// rather than later at connect time.
+		if c.Lnd.Transport == RPCTransportREST &&
+			c.Lnd.MacaroonPath == "" {
+			return fmt.Errorf("lnd.macaroonpath is required when " +
+				"lnd.transport is rest")
+		}
+
 	case WalletTypeLwwallet:
 		// Lightweight wallet requires an Esplora URL for chain
 		// data. An empty value falls back to the network-default

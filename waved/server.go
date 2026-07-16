@@ -2662,6 +2662,7 @@ func (s *Server) connectLndREST(ctx context.Context) (lndServices, error) {
 		MacaroonPath: s.cfg.Lnd.MacaroonPath,
 		RPCTimeout:   rpcTimeout,
 		ChainParams:  s.chainParams,
+		Network:      s.cfg.Network,
 	})
 }
 

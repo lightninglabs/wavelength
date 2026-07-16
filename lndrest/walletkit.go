@@ -222,7 +222,11 @@ func (m *walletKitClient) NextAddr(ctx context.Context, accountName string,
 		return nil, err
 	}
 
-	return btcaddr.DecodeAddress(resp.Addr, nil)
+	// Decode against the configured chain params so a network-mismatched
+	// address is rejected, matching ImportTaprootScript below (bech32/
+	// bech32m HRPs are self-describing, but pinning the network is
+	// defense-in-depth and keeps the two decode sites consistent).
+	return btcaddr.DecodeAddress(resp.Addr, m.conn.params)
 }
 
 // GetTransaction returns wallet details for the given txid.

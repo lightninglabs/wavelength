@@ -195,3 +195,33 @@ func decodeBody(t *testing.T, r *http.Request, out proto.Message) {
 	require.NoError(t, err)
 	require.NoError(t, protojson.Unmarshal(body, out))
 }
+
+// TestNetworkMismatch verifies the lnd-vs-configured network check compares in
+// lnd's naming convention rather than against chaincfg.Params.Name. The
+// regression it guards is testnet3: lnd reports that network as "testnet"
+// while chaincfg names it "testnet3", so a raw comparison against
+// ChainParams.Name would spuriously reject a correctly-configured testnet
+// node.
+func TestNetworkMismatch(t *testing.T) {
+	t.Parallel()
+
+	// The bug guard: waved configures the testnet3 network as "testnet"
+	// (lnd's convention) and lnd also reports "testnet", so the two must
+	// match -- even though chaincfg calls this same network "testnet3".
+	require.Equal(t, "testnet3", chaincfg.TestNet3Params.Name)
+	require.NoError(t, networkMismatch("testnet", "testnet"))
+
+	// The other networks match directly on both sides.
+	require.NoError(t, networkMismatch("mainnet", "mainnet"))
+	require.NoError(t, networkMismatch("regtest", "regtest"))
+	require.NoError(t, networkMismatch("signet", "signet"))
+
+	// An empty value on either side disables the check (lnd omitted the
+	// chain, or no network was configured).
+	require.NoError(t, networkMismatch("", "mainnet"))
+	require.NoError(t, networkMismatch("testnet", ""))
+
+	// A genuine cross-network misconfiguration is still caught.
+	require.Error(t, networkMismatch("testnet", "mainnet"))
+	require.Error(t, networkMismatch("regtest", "testnet"))
+}

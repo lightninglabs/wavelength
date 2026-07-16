@@ -7,35 +7,42 @@ import (
 )
 
 // TestConfigValidateLndTransport asserts the lnd.transport selector: an empty
-// value and "grpc" both mean gRPC and are accepted, "rest" is accepted, and any
-// other value is rejected with an lnd.transport-scoped error.
+// value and "grpc" both mean gRPC and are accepted, "rest" is accepted (but
+// requires lnd.macaroonpath, since REST cannot resolve the per-network default
+// path), and any other value is rejected with an lnd.transport-scoped error.
 func TestConfigValidateLndTransport(t *testing.T) {
 	t.Parallel()
 
+	const macPath = "/tmp/admin.macaroon"
+
 	cases := []struct {
-		name      string
-		transport string
-		wantErr   bool
+		name            string
+		transport       string
+		macaroonPath    string
+		wantErrContains string
 	}{
 		{
 			name:      "empty defaults to grpc",
 			transport: "",
-			wantErr:   false,
 		},
 		{
 			name:      "grpc",
 			transport: RPCTransportGRPC,
-			wantErr:   false,
 		},
 		{
-			name:      "rest",
-			transport: RPCTransportREST,
-			wantErr:   false,
+			name:         "rest with macaroon",
+			transport:    RPCTransportREST,
+			macaroonPath: macPath,
 		},
 		{
-			name:      "unknown",
-			transport: "http2",
-			wantErr:   true,
+			name:            "rest without macaroon",
+			transport:       RPCTransportREST,
+			wantErrContains: "lnd.macaroonpath",
+		},
+		{
+			name:            "unknown",
+			transport:       "http2",
+			wantErrContains: "lnd.transport",
 		},
 	}
 
@@ -48,13 +55,13 @@ func TestConfigValidateLndTransport(t *testing.T) {
 			cfg.Wallet.Type = WalletTypeLnd
 			cfg.Lnd.Host = "127.0.0.1:10009"
 			cfg.Lnd.Transport = tc.transport
+			cfg.Lnd.MacaroonPath = tc.macaroonPath
 
 			err := cfg.Validate()
-			if tc.wantErr {
+			if tc.wantErrContains != "" {
 				require.Error(t, err)
 				require.Contains(
-					t, err.Error(),
-					"lnd.transport",
+					t, err.Error(), tc.wantErrContains,
 				)
 
 				return

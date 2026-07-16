@@ -67,9 +67,18 @@ type Config struct {
 	// defaultRPCTimeout.
 	RPCTimeout time.Duration
 
-	// ChainParams identifies the active network. It is used for address
-	// decoding and is also cross-checked against lnd's reported network.
+	// ChainParams identifies the active network and is used for address
+	// decoding.
 	ChainParams *chaincfg.Params
+
+	// Network is the configured network in lnd's naming convention
+	// ("mainnet", "testnet", "testnet4", "regtest", "simnet", "signet").
+	// It is cross-checked against the network lnd reports from GetInfo.
+	// This is deliberately not derived from ChainParams.Name: btcd's
+	// chaincfg calls the testnet3 network "testnet3" whereas lnd reports it
+	// as "testnet", so comparing against ChainParams.Name would spuriously
+	// reject a correctly-configured testnet node. Empty disables the check.
+	Network string
 }
 
 // conn is the shared REST transport used by every lndrest sub-client. It wraps
@@ -201,12 +210,10 @@ func New(ctx context.Context, cfg Config) (*Backend, error) {
 			err)
 	}
 
-	if info.Network != "" && info.Network != cfg.ChainParams.Name {
+	if err := networkMismatch(info.Network, cfg.Network); err != nil {
 		httpClient.CloseIdleConnections()
 
-		return nil, fmt.Errorf("lndrest: lnd network %q does not "+
-			"match configured network %q", info.Network,
-			cfg.ChainParams.Name)
+		return nil, err
 	}
 
 	services.NodeAlias = info.Alias
@@ -216,6 +223,27 @@ func New(ctx context.Context, cfg Config) (*Backend, error) {
 		services: services,
 		conn:     c,
 	}, nil
+}
+
+// networkMismatch reports a non-nil error when the network lnd reports from
+// GetInfo does not match the configured network. Both values use lnd's naming
+// convention ("mainnet", "testnet", "testnet4", "regtest", "simnet",
+// "signet"). Comparing in this convention (rather than against
+// chaincfg.Params.Name) is what makes testnet work: lnd reports the testnet3
+// network as "testnet", while chaincfg names it "testnet3". An empty value on
+// either side disables the check (lnd omitted the chain, or no network was
+// configured).
+func networkMismatch(lndNetwork, configured string) error {
+	if lndNetwork == "" || configured == "" {
+		return nil
+	}
+
+	if lndNetwork != configured {
+		return fmt.Errorf("lndrest: lnd network %q does not match "+
+			"configured network %q", lndNetwork, configured)
+	}
+
+	return nil
 }
 
 // baseURL returns the REST base URL for the configured lnd host. lnd serves
