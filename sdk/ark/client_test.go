@@ -128,15 +128,16 @@ func newFakeDaemonService() *fakeDaemonService {
 				OperatorPubkey: mustDecodeHex(
 					testOperatorPubKeyHex,
 				),
-				BoardingExitDelay: 144,
-				VtxoExitDelay:     288,
-				DustLimit:         546,
-				MinVtxoAmountSat:  1234,
-				MinBoardingAmount: 10_000,
-				MaxVtxoAmount:     20_000,
-				FeeRate:           15,
-				MinOperatorFee:    20,
-				MinConfirmations:  2,
+				BoardingExitDelay:       144,
+				VtxoExitDelay:           288,
+				DustLimit:               546,
+				MinVtxoAmountSat:        1234,
+				MinBoardingAmount:       10_000,
+				MaxVtxoAmount:           20_000,
+				FeeRate:                 15,
+				MinOperatorFee:          20,
+				FreeRefreshWindowBlocks: 120,
+				MinConfirmations:        2,
 			},
 		},
 		listVtxosResp: &waverpc.ListVTXOsResponse{
@@ -606,6 +607,9 @@ func TestDialRemoteGetInfo(t *testing.T) {
 	)
 	require.Equal(t, uint64(20),
 		info.ServerInfo.MinOperatorFee,
+	)
+	require.Equal(t, uint32(120),
+		info.ServerInfo.FreeRefreshWindowBlocks,
 	)
 }
 
