@@ -13,10 +13,12 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/v2"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/btcwbackend"
 	"github.com/lightninglabs/wavelength/chainbackends"
 	"github.com/lightninglabs/wavelength/credit"
 	"github.com/lightninglabs/wavelength/db"
 	"github.com/lightninglabs/wavelength/db/sqlc"
+	"github.com/lightninglabs/wavelength/lwwallet"
 	mailboxpb "github.com/lightninglabs/wavelength/mailbox/pb"
 	"github.com/lightninglabs/wavelength/metrics"
 	"github.com/lightninglabs/wavelength/oor"
@@ -54,65 +56,68 @@ const (
 
 	// defaultTestnet3ServerGRPCHost is the public testnet3 Ark operator
 	// gRPC endpoint.
-	defaultTestnet3ServerGRPCHost = "lumosd.testnet." +
-		"lightningcluster.com:443"
+	defaultTestnet3ServerGRPCHost = "test.wavelength." +
+		"lightning.finance:443"
 
 	// defaultTestnet3ServerRESTHost is the public testnet3 Ark operator
 	// REST endpoint.
-	defaultTestnet3ServerRESTHost = "lumosd-rest.testnet." +
-		"lightningcluster.com"
+	defaultTestnet3ServerRESTHost = "test.wavelength-rest." +
+		"lightning.finance"
 
 	// defaultTestnet3SwapServerGRPCHost is the public testnet3 swap server
 	// gRPC endpoint.
-	defaultTestnet3SwapServerGRPCHost = "swapd.testnet." +
-		"lightningcluster.com:443"
+	defaultTestnet3SwapServerGRPCHost = "test.swap.wavelength." +
+		"lightning.finance:443"
 
 	// defaultTestnet3SwapServerRESTHost is the public testnet3 swap server
 	// REST endpoint.
-	defaultTestnet3SwapServerRESTHost = "swapd-rest.testnet." +
-		"lightningcluster.com"
+	defaultTestnet3SwapServerRESTHost = "test.swapd-rest." +
+		"lightning.finance"
 
 	// defaultTestnet4ServerGRPCHost is the public testnet4 Ark operator
-	// gRPC endpoint.
+	// gRPC endpoint. No friendly-domain CNAME exists yet; the public NLB
+	// stays behind the raw cluster hostname until the certificate work
+	// in lightning-infra#3517 lands.
 	defaultTestnet4ServerGRPCHost = "lumosd-testnet4.testnet." +
 		"lightningcluster.com:443"
 
 	// defaultTestnet4ServerRESTHost is the public testnet4 Ark operator
 	// REST endpoint.
-	defaultTestnet4ServerRESTHost = "lumosd-testnet4-rest.testnet." +
-		"lightningcluster.com"
+	defaultTestnet4ServerRESTHost = "test4.wavelength-rest." +
+		"lightning.finance"
 
 	// defaultTestnet4SwapServerGRPCHost is the public testnet4 swap server
-	// gRPC endpoint.
+	// gRPC endpoint. No friendly-domain CNAME exists yet; see
+	// defaultTestnet4ServerGRPCHost.
 	defaultTestnet4SwapServerGRPCHost = "swapd-testnet4.testnet." +
 		"lightningcluster.com:443"
 
 	// defaultTestnet4SwapServerRESTHost is the public testnet4 swap server
 	// REST endpoint.
-	defaultTestnet4SwapServerRESTHost = "swapd-testnet4-rest.testnet." +
-		"lightningcluster.com"
+	defaultTestnet4SwapServerRESTHost = "test4.swapd-rest." +
+		"lightning.finance"
 
 	// defaultSignetServerGRPCHost is the public signet Ark operator gRPC
 	// endpoint.
-	defaultSignetServerGRPCHost = "lumosd-signet.staging." +
-		"lightningcluster.com:443"
+	defaultSignetServerGRPCHost = "signet.wavelength." +
+		"lightning.finance:443"
 
 	// defaultSignetServerRESTHost is the public signet Ark operator REST
 	// endpoint. The REST client adds the HTTPS scheme when the configured
 	// host is bare.
-	defaultSignetServerRESTHost = "lumosd-signet-rest.staging." +
-		"lightningcluster.com"
+	defaultSignetServerRESTHost = "signet.wavelength-rest." +
+		"lightning.finance"
 
 	// defaultSignetSwapServerGRPCHost is the public signet swap server gRPC
 	// endpoint.
-	defaultSignetSwapServerGRPCHost = "swapd-signet.staging." +
-		"lightningcluster.com:443"
+	defaultSignetSwapServerGRPCHost = "signet.swap.wavelength." +
+		"lightning.finance:443"
 
 	// defaultSignetSwapServerRESTHost is the public signet swap server REST
 	// endpoint. The REST client adds the HTTPS scheme when the configured
 	// host is bare.
-	defaultSignetSwapServerRESTHost = "swapd-signet-rest.staging." +
-		"lightningcluster.com"
+	defaultSignetSwapServerRESTHost = "signet.swapd-rest." +
+		"lightning.finance"
 
 	// DefaultIndexerServerID is the canonical operator identifier used
 	// in signed indexer proofs.
@@ -1028,8 +1033,10 @@ type WalletConfig struct {
 	Type string `mapstructure:"type"`
 
 	// EsploraURL is the base URL of the Esplora REST API used by the
-	// lwwallet backend for chain data. Required when Type is
-	// "lwwallet".
+	// lwwallet backend for chain data. Only used when Type is
+	// "lwwallet". Empty falls back to the network-default endpoint
+	// (see lwwallet.DefaultEsploraURL); regtest and simnet have no
+	// default and must set this explicitly.
 	EsploraURL string `mapstructure:"esploraurl"`
 
 	// PollInterval controls how often the lwwallet backend polls the
@@ -1074,8 +1081,11 @@ type WalletConfig struct {
 	BtcwalletDataDir string `mapstructure:"btcwallet_datadir"`
 
 	// FeeURL is the URL for the fee estimation API endpoint used by
-	// the btcwallet/neutrino backend. Required on mainnet since
-	// neutrino has no mempool visibility.
+	// the btcwallet/neutrino backend, since neutrino has no mempool
+	// visibility. Empty falls back to the default
+	// nodes.lightning.computer endpoint for the configured network;
+	// regtest and simnet have no default and must set this
+	// explicitly.
 	FeeURL string `mapstructure:"feeurl"`
 
 	// PersistFilters controls whether neutrino writes compact block
@@ -1195,45 +1205,8 @@ func (c *Config) Validate() error {
 	}
 
 	// Validate wallet config.
-	if c.Wallet == nil {
-		return fmt.Errorf("wallet config is required")
-	}
-
-	switch c.Wallet.Type {
-	case WalletTypeLnd:
-		// LND backend requires a valid lnd connection config.
-		if c.Lnd == nil {
-			return fmt.Errorf("lnd config is required when " +
-				"wallet.type is lnd")
-		}
-		if c.Lnd.Host == "" {
-			return fmt.Errorf("lnd host is required when " +
-				"wallet.type is lnd")
-		}
-
-	case WalletTypeLwwallet:
-		// Lightweight wallet requires an Esplora URL for
-		// chain data.
-		if c.Wallet.EsploraURL == "" {
-			return fmt.Errorf("wallet.esploraurl is required " +
-				"when wallet.type is lwwallet")
-		}
-
-	case WalletTypeBtcwallet:
-		// Neutrino has no mempool visibility, so fee estimation
-		// always requires an external API regardless of network.
-		if c.Wallet.FeeURL == "" {
-			return fmt.Errorf("wallet.feeurl is required when " +
-				"wallet.type is btcwallet")
-		}
-		err := c.Wallet.validateBtcwalletHeadersImportConfig()
-		if err != nil {
-			return err
-		}
-
-	default:
-		return fmt.Errorf("unknown wallet type %q, valid values: lnd, "+
-			"lwwallet, btcwallet", c.Wallet.Type)
+	if err := c.validateWalletConfig(); err != nil {
+		return err
 	}
 
 	// The mempool.space fee provider only composes with the lnd backend's
@@ -1302,6 +1275,77 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("swap vhtlc recovery max fee rate " +
 				"must be positive")
 		}
+	}
+
+	return nil
+}
+
+// validateWalletConfig validates the wallet backend selection, filling in
+// network-default Esplora/fee URLs for the lwwallet and btcwallet backends
+// when left empty.
+func (c *Config) validateWalletConfig() error {
+	if c.Wallet == nil {
+		return fmt.Errorf("wallet config is required")
+	}
+
+	switch c.Wallet.Type {
+	case WalletTypeLnd:
+		// LND backend requires a valid lnd connection config.
+		if c.Lnd == nil {
+			return fmt.Errorf("lnd config is required when " +
+				"wallet.type is lnd")
+		}
+		if c.Lnd.Host == "" {
+			return fmt.Errorf("lnd host is required when " +
+				"wallet.type is lnd")
+		}
+
+	case WalletTypeLwwallet:
+		// Lightweight wallet requires an Esplora URL for chain
+		// data. An empty value falls back to the network-default
+		// endpoint for networks that have one; regtest and simnet
+		// still require it explicitly.
+		if c.Wallet.EsploraURL == "" {
+			chainParams, err := networkToChainParams(c.Network)
+			if err != nil {
+				return err
+			}
+			esploraURL, err := lwwallet.DefaultEsploraURL(
+				chainParams,
+			)
+			if err != nil {
+				return fmt.Errorf("wallet.esploraurl is " +
+					"required when wallet.type is lwwallet")
+			}
+			c.Wallet.EsploraURL = esploraURL
+		}
+
+	case WalletTypeBtcwallet:
+		// Neutrino has no mempool visibility, so fee estimation
+		// always requires an external API. An empty value falls
+		// back to the default nodes.lightning.computer endpoint
+		// for networks that have one; regtest and simnet still
+		// require it explicitly.
+		if c.Wallet.FeeURL == "" {
+			chainParams, err := networkToChainParams(c.Network)
+			if err != nil {
+				return err
+			}
+			feeURL, err := btcwbackend.DefaultFeeURL(chainParams)
+			if err != nil {
+				return fmt.Errorf("wallet.feeurl is required " +
+					"when wallet.type is btcwallet")
+			}
+			c.Wallet.FeeURL = feeURL
+		}
+		err := c.Wallet.validateBtcwalletHeadersImportConfig()
+		if err != nil {
+			return err
+		}
+
+	default:
+		return fmt.Errorf("unknown wallet type %q, valid values: lnd, "+
+			"lwwallet, btcwallet", c.Wallet.Type)
 	}
 
 	return nil

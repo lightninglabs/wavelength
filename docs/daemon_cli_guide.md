@@ -97,8 +97,8 @@ waved \
 | `--logdir` | `~/.waved/logs/<network>` | Directory for persistent daemon logs |
 | `--allow-mainnet` | `false` | Required to run on mainnet (safety guard) |
 | `--wallet.type` | `lwwallet` | Wallet backend: `lwwallet`, `lnd`, or `btcwallet` |
-| `--wallet.esploraurl` | | Esplora REST API URL (lwwallet only) |
-| `--wallet.feeurl` | | Fee-estimate JSON endpoint URL (btcwallet only) |
+| `--wallet.esploraurl` | network default | Esplora REST API URL (lwwallet only); required on regtest/simnet, see [docs/signet.md](signet.md) |
+| `--wallet.feeurl` | network default | Fee-estimate JSON endpoint URL (btcwallet only); required on regtest/simnet, see [docs/signet.md](signet.md) |
 | `--wallet.btcwallet_blockheaderssource` | | Block header import source for btcwallet fast sync |
 | `--wallet.btcwallet_filterheaderssource` | | Filter header import source for btcwallet fast sync |
 | `--wallet.pollinterval` | `30s` | Esplora poll interval (lwwallet only) |

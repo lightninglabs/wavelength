@@ -6,9 +6,9 @@ endpoint for the configured Bitcoin network and outbound transport.
 
 | Network config | Ark gRPC | Ark REST | Swap gRPC | Swap REST |
 |----------------|----------|----------|-----------|-----------|
-| `testnet` | `lumosd.testnet.lightningcluster.com:443` | `https://lumosd-rest.testnet.lightningcluster.com` | `swapd.testnet.lightningcluster.com:443` | `https://swapd-rest.testnet.lightningcluster.com` |
-| `testnet4` | `lumosd-testnet4.testnet.lightningcluster.com:443` | `https://lumosd-testnet4-rest.testnet.lightningcluster.com` | `swapd-testnet4.testnet.lightningcluster.com:443` | `https://swapd-testnet4-rest.testnet.lightningcluster.com` |
-| `signet` | `lumosd-signet.staging.lightningcluster.com:443` | `https://lumosd-signet-rest.staging.lightningcluster.com` | `swapd-signet.staging.lightningcluster.com:443` | `https://swapd-signet-rest.staging.lightningcluster.com` |
+| `testnet` | `test.wavelength.lightning.finance:443` | `https://test.wavelength-rest.lightning.finance` | `test.swap.wavelength.lightning.finance:443` | `https://test.swapd-rest.lightning.finance` |
+| `testnet4` | `lumosd-testnet4.testnet.lightningcluster.com:443` | `https://test4.wavelength-rest.lightning.finance` | `swapd-testnet4.testnet.lightningcluster.com:443` | `https://test4.swapd-rest.lightning.finance` |
+| `signet` | `signet.wavelength.lightning.finance:443` | `https://signet.wavelength-rest.lightning.finance` | `signet.swap.wavelength.lightning.finance:443` | `https://signet.swapd-rest.lightning.finance` |
 
 The daemon defaults both outbound transports to gRPC. Set the selectors to
 `rest` when the host cannot use native gRPC:
@@ -18,8 +18,7 @@ waved \
   --network=signet \
   --server.transport=rest \
   --swap.servertransport=rest \
-  --wallet.type=lwwallet \
-  --wallet.esploraurl=https://your-signet-esplora.example/api
+  --wallet.type=lwwallet
 ```
 
 All public endpoints use publicly trusted TLS certificates. Leave
@@ -27,11 +26,29 @@ All public endpoints use publicly trusted TLS certificates. Leave
 certificate paths empty so the clients use the system certificate pool. The
 swap endpoint is consumed only by builds that include `swapruntime`.
 
-The testnet4 REST gateways are live. The testnet4 gRPC hostnames are already
-the deployment names, but their public NLBs remain disabled until the
-certificate work in
+The testnet4 REST gateways are live behind their friendly-domain CNAMEs. The
+testnet4 gRPC endpoint's public NLB remains disabled, so it is still reached
+through its raw cluster hostname; a friendly-domain CNAME will follow once
+the certificate work in
 [lightning-infra#3517](https://github.com/lightninglabs/lightning-infra/pull/3517)
 lands.
+
+## Wallet Chain Data and Fee Estimation
+
+`wallet.esploraurl` (lwwallet) and `wallet.feeurl` (btcwallet) also resolve
+network defaults when left empty:
+
+| Network config | lwwallet Esplora URL | btcwallet fee URL |
+|----------------|-----------------------|--------------------|
+| `mainnet` | `https://mempool.space/api` | `https://nodes.lightning.computer/fees/v1/btc-fee-estimates.json` |
+| `testnet` | `https://mempool-testnet3.testnet.lightningcluster.com/api` | `https://nodes.lightning.computer/fees/v1/btctestnet-fee-estimates.json` |
+| `testnet4` | `https://mempool-testnet4.testnet.lightningcluster.com/api` | `https://nodes.lightning.computer/fees/v1/btctestnet-fee-estimates.json` |
+| `signet` | `https://mempool-signet.testnet.lightningcluster.com/api` | `https://nodes.lightning.computer/fees/v1/btctestnet-fee-estimates.json` |
+
+`regtest` and `simnet` have no public default for either field; a local dev
+stack must set `wallet.esploraurl` or `wallet.feeurl` explicitly, as in the
+local test-network example below. An explicit value always overrides the
+network default on every network, including mainnet.
 
 ## Config Resolution
 
