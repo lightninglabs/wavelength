@@ -67,6 +67,7 @@ func TestGetInfoResponseOldShapeDecodesZero(t *testing.T) {
 	// old shape never set them.
 	require.Zero(t, decoded.SelectedArkVersion)
 	require.Empty(t, decoded.ArkVersionPolicies)
+	require.Zero(t, decoded.FreeRefreshWindowBlocks)
 }
 
 // TestGetInfoVersionFieldsRoundTrip proves that the new versioning fields are
@@ -99,8 +100,9 @@ func TestGetInfoVersionFieldsRoundTrip(t *testing.T) {
 	}
 
 	resp := &GetInfoResponse{
-		Version:            "1.0.0",
-		SelectedArkVersion: 2,
+		Version:                 "1.0.0",
+		SelectedArkVersion:      2,
+		FreeRefreshWindowBlocks: 72,
 		ArkVersionPolicies: []*ArkVersionPolicy{
 			v1Policy,
 			v2Policy,
@@ -114,6 +116,9 @@ func TestGetInfoVersionFieldsRoundTrip(t *testing.T) {
 	require.NoError(t, proto.Unmarshal(respRaw, respDecoded))
 
 	require.Equal(t, uint32(2), respDecoded.SelectedArkVersion)
+	require.Equal(
+		t, uint32(72), respDecoded.FreeRefreshWindowBlocks,
+	)
 	require.Len(t, respDecoded.ArkVersionPolicies, 2)
 
 	first := respDecoded.ArkVersionPolicies[0]

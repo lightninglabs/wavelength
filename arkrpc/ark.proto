@@ -135,6 +135,10 @@ message GetInfoResponse {
     // entries are the operator's enabled, selectable versions; DISABLED
     // entries are advertised only so clients learn a version was retired.
     repeated ArkVersionPolicy ark_version_policies = 22;
+
+    // The number of blocks before batch expiry in which a pure refresh
+    // qualifies for a complete fee waiver. Zero disables the waiver.
+    uint32 free_refresh_window_blocks = 23;
 }
 
 // EstimateFeeRequest asks the server to estimate the fee for a
