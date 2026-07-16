@@ -13,10 +13,12 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/v2"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/btcwbackend"
 	"github.com/lightninglabs/wavelength/chainbackends"
 	"github.com/lightninglabs/wavelength/credit"
 	"github.com/lightninglabs/wavelength/db"
 	"github.com/lightninglabs/wavelength/db/sqlc"
+	"github.com/lightninglabs/wavelength/lwwallet"
 	mailboxpb "github.com/lightninglabs/wavelength/mailbox/pb"
 	"github.com/lightninglabs/wavelength/metrics"
 	"github.com/lightninglabs/wavelength/oor"
@@ -1031,8 +1033,10 @@ type WalletConfig struct {
 	Type string `mapstructure:"type"`
 
 	// EsploraURL is the base URL of the Esplora REST API used by the
-	// lwwallet backend for chain data. Required when Type is
-	// "lwwallet".
+	// lwwallet backend for chain data. Only used when Type is
+	// "lwwallet". Empty falls back to the public mempool.space
+	// endpoint for the configured network; regtest and simnet have
+	// no default and must set this explicitly.
 	EsploraURL string `mapstructure:"esploraurl"`
 
 	// PollInterval controls how often the lwwallet backend polls the
@@ -1077,8 +1081,11 @@ type WalletConfig struct {
 	BtcwalletDataDir string `mapstructure:"btcwallet_datadir"`
 
 	// FeeURL is the URL for the fee estimation API endpoint used by
-	// the btcwallet/neutrino backend. Required on mainnet since
-	// neutrino has no mempool visibility.
+	// the btcwallet/neutrino backend, since neutrino has no mempool
+	// visibility. Empty falls back to the default
+	// nodes.lightning.computer endpoint for the configured network;
+	// regtest and simnet have no default and must set this
+	// explicitly.
 	FeeURL string `mapstructure:"feeurl"`
 
 	// PersistFilters controls whether neutrino writes compact block
@@ -1198,45 +1205,8 @@ func (c *Config) Validate() error {
 	}
 
 	// Validate wallet config.
-	if c.Wallet == nil {
-		return fmt.Errorf("wallet config is required")
-	}
-
-	switch c.Wallet.Type {
-	case WalletTypeLnd:
-		// LND backend requires a valid lnd connection config.
-		if c.Lnd == nil {
-			return fmt.Errorf("lnd config is required when " +
-				"wallet.type is lnd")
-		}
-		if c.Lnd.Host == "" {
-			return fmt.Errorf("lnd host is required when " +
-				"wallet.type is lnd")
-		}
-
-	case WalletTypeLwwallet:
-		// Lightweight wallet requires an Esplora URL for
-		// chain data.
-		if c.Wallet.EsploraURL == "" {
-			return fmt.Errorf("wallet.esploraurl is required " +
-				"when wallet.type is lwwallet")
-		}
-
-	case WalletTypeBtcwallet:
-		// Neutrino has no mempool visibility, so fee estimation
-		// always requires an external API regardless of network.
-		if c.Wallet.FeeURL == "" {
-			return fmt.Errorf("wallet.feeurl is required when " +
-				"wallet.type is btcwallet")
-		}
-		err := c.Wallet.validateBtcwalletHeadersImportConfig()
-		if err != nil {
-			return err
-		}
-
-	default:
-		return fmt.Errorf("unknown wallet type %q, valid values: lnd, "+
-			"lwwallet, btcwallet", c.Wallet.Type)
+	if err := c.validateWalletConfig(); err != nil {
+		return err
 	}
 
 	// The mempool.space fee provider only composes with the lnd backend's
@@ -1305,6 +1275,77 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("swap vhtlc recovery max fee rate " +
 				"must be positive")
 		}
+	}
+
+	return nil
+}
+
+// validateWalletConfig validates the wallet backend selection, filling in
+// network-default Esplora/fee URLs for the lwwallet and btcwallet backends
+// when left empty.
+func (c *Config) validateWalletConfig() error {
+	if c.Wallet == nil {
+		return fmt.Errorf("wallet config is required")
+	}
+
+	switch c.Wallet.Type {
+	case WalletTypeLnd:
+		// LND backend requires a valid lnd connection config.
+		if c.Lnd == nil {
+			return fmt.Errorf("lnd config is required when " +
+				"wallet.type is lnd")
+		}
+		if c.Lnd.Host == "" {
+			return fmt.Errorf("lnd host is required when " +
+				"wallet.type is lnd")
+		}
+
+	case WalletTypeLwwallet:
+		// Lightweight wallet requires an Esplora URL for chain
+		// data. An empty value falls back to the public
+		// mempool.space endpoint for networks that have one;
+		// regtest and simnet still require it explicitly.
+		if c.Wallet.EsploraURL == "" {
+			chainParams, err := networkToChainParams(c.Network)
+			if err != nil {
+				return err
+			}
+			esploraURL, err := lwwallet.DefaultEsploraURL(
+				chainParams,
+			)
+			if err != nil {
+				return fmt.Errorf("wallet.esploraurl is " +
+					"required when wallet.type is lwwallet")
+			}
+			c.Wallet.EsploraURL = esploraURL
+		}
+
+	case WalletTypeBtcwallet:
+		// Neutrino has no mempool visibility, so fee estimation
+		// always requires an external API. An empty value falls
+		// back to the default nodes.lightning.computer endpoint
+		// for networks that have one; regtest and simnet still
+		// require it explicitly.
+		if c.Wallet.FeeURL == "" {
+			chainParams, err := networkToChainParams(c.Network)
+			if err != nil {
+				return err
+			}
+			feeURL, err := btcwbackend.DefaultFeeURL(chainParams)
+			if err != nil {
+				return fmt.Errorf("wallet.feeurl is required " +
+					"when wallet.type is btcwallet")
+			}
+			c.Wallet.FeeURL = feeURL
+		}
+		err := c.Wallet.validateBtcwalletHeadersImportConfig()
+		if err != nil {
+			return err
+		}
+
+	default:
+		return fmt.Errorf("unknown wallet type %q, valid values: lnd, "+
+			"lwwallet, btcwallet", c.Wallet.Type)
 	}
 
 	return nil

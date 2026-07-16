@@ -18,8 +18,7 @@ waved \
   --network=signet \
   --server.transport=rest \
   --swap.servertransport=rest \
-  --wallet.type=lwwallet \
-  --wallet.esploraurl=https://your-signet-esplora.example/api
+  --wallet.type=lwwallet
 ```
 
 All public endpoints use publicly trusted TLS certificates. Leave
@@ -33,6 +32,23 @@ through its raw cluster hostname; a friendly-domain CNAME will follow once
 the certificate work in
 [lightning-infra#3517](https://github.com/lightninglabs/lightning-infra/pull/3517)
 lands.
+
+## Wallet Chain Data and Fee Estimation
+
+`wallet.esploraurl` (lwwallet) and `wallet.feeurl` (btcwallet) also resolve
+network defaults when left empty:
+
+| Network config | lwwallet Esplora URL | btcwallet fee URL |
+|----------------|-----------------------|--------------------|
+| `mainnet` | `https://mempool.space/api` | `https://nodes.lightning.computer/fees/v1/btc-fee-estimates.json` |
+| `testnet` | `https://mempool.space/testnet/api` | `https://nodes.lightning.computer/fees/v1/btctestnet-fee-estimates.json` |
+| `testnet4` | `https://mempool.space/testnet4/api` | `https://nodes.lightning.computer/fees/v1/btctestnet-fee-estimates.json` |
+| `signet` | `https://mempool.space/signet/api` | `https://nodes.lightning.computer/fees/v1/btctestnet-fee-estimates.json` |
+
+`regtest` and `simnet` have no public default for either field; a local dev
+stack must set `wallet.esploraurl` or `wallet.feeurl` explicitly, as in the
+local test-network example below. An explicit value always overrides the
+network default on every network, including mainnet.
 
 ## Config Resolution
 

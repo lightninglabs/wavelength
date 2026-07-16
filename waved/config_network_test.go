@@ -5,6 +5,8 @@ import (
 
 	"github.com/btcsuite/btcd/chaincfg/v2"
 	"github.com/lightninglabs/lndclient"
+	"github.com/lightninglabs/wavelength/btcwbackend"
+	"github.com/lightninglabs/wavelength/lwwallet"
 	"github.com/stretchr/testify/require"
 )
 
@@ -69,6 +71,158 @@ func TestConfigValidateAllowsTestnet4InsecureRPC(t *testing.T) {
 	cfg.RPC.NoMacaroons = true
 
 	require.NoError(t, cfg.Validate())
+}
+
+// TestConfigValidateWalletDefaults verifies Validate fills in the
+// network-default Esplora/fee URL for the lwwallet and btcwallet backends
+// when left empty, and still requires an explicit value on networks with no
+// public default (regtest, simnet).
+func TestConfigValidateWalletDefaults(t *testing.T) {
+	t.Parallel()
+
+	t.Run("lwwallet defaults per network", func(t *testing.T) {
+		t.Parallel()
+
+		tests := []struct {
+			network string
+			want    string
+		}{
+			{
+				network: "testnet",
+				want:    lwwallet.DefaultEsploraURLTestnet3,
+			},
+			{
+				network: "testnet4",
+				want:    lwwallet.DefaultEsploraURLTestnet4,
+			},
+			{
+				network: "signet",
+				want:    lwwallet.DefaultEsploraURLSignet,
+			},
+		}
+
+		for _, tc := range tests {
+			tc := tc
+			t.Run(tc.network, func(t *testing.T) {
+				t.Parallel()
+
+				cfg := DefaultConfig()
+				cfg.Network = tc.network
+
+				require.NoError(t, cfg.Validate())
+				require.Equal(t, tc.want, cfg.Wallet.EsploraURL)
+			})
+		}
+	})
+
+	t.Run("lwwallet mainnet default", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := DefaultConfig()
+		cfg.Network = "mainnet"
+		cfg.AllowMainnet = true
+
+		require.NoError(t, cfg.Validate())
+		require.Equal(
+			t, lwwallet.DefaultEsploraURLMainnet,
+			cfg.Wallet.EsploraURL,
+		)
+	})
+
+	t.Run(
+		"lwwallet regtest and simnet require explicit URL",
+		func(t *testing.T) {
+			t.Parallel()
+
+			for _, network := range []string{"regtest", "simnet"} {
+				network := network
+				t.Run(network, func(t *testing.T) {
+					t.Parallel()
+
+					cfg := DefaultConfig()
+					cfg.Network = network
+
+					require.ErrorContains(
+						t, cfg.Validate(),
+						"wallet.esploraurl",
+					)
+				})
+			}
+		},
+	)
+
+	t.Run("btcwallet defaults per network", func(t *testing.T) {
+		t.Parallel()
+
+		tests := []struct {
+			network string
+			want    string
+		}{
+			{
+				network: "testnet",
+				want:    btcwbackend.DefaultFeeURLTestnet,
+			},
+			{
+				network: "testnet4",
+				want:    btcwbackend.DefaultFeeURLTestnet,
+			},
+			{
+				network: "signet",
+				want:    btcwbackend.DefaultFeeURLTestnet,
+			},
+		}
+
+		for _, tc := range tests {
+			tc := tc
+			t.Run(tc.network, func(t *testing.T) {
+				t.Parallel()
+
+				cfg := DefaultConfig()
+				cfg.Network = tc.network
+				cfg.Wallet.Type = WalletTypeBtcwallet
+
+				require.NoError(t, cfg.Validate())
+				require.Equal(t, tc.want, cfg.Wallet.FeeURL)
+			})
+		}
+	})
+
+	t.Run("btcwallet mainnet default", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := DefaultConfig()
+		cfg.Network = "mainnet"
+		cfg.AllowMainnet = true
+		cfg.Wallet.Type = WalletTypeBtcwallet
+
+		require.NoError(t, cfg.Validate())
+		require.Equal(
+			t, btcwbackend.DefaultFeeURLMainnet, cfg.Wallet.FeeURL,
+		)
+	})
+
+	t.Run(
+		"btcwallet regtest and simnet require explicit URL",
+		func(t *testing.T) {
+			t.Parallel()
+
+			for _, network := range []string{"regtest", "simnet"} {
+				network := network
+				t.Run(network, func(t *testing.T) {
+					t.Parallel()
+
+					cfg := DefaultConfig()
+					cfg.Network = network
+					cfg.Wallet.Type = WalletTypeBtcwallet
+
+					require.ErrorContains(
+						t, cfg.Validate(),
+						"wallet.feeurl",
+					)
+				})
+			}
+		},
+	)
 }
 
 // TestConfigEndpointDefaults verifies the config resolves each empty endpoint
