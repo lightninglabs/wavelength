@@ -20,6 +20,25 @@ func p2trTestOut() *wire.TxOut {
 	return wire.NewTxOut(1000, make([]byte, 34))
 }
 
+// treePathVBytes sums the estimated transaction size of every node on an
+// extracted ancestry tree path. Production sizing dedups nodes across
+// fragments inside recoveryEstimate, so this whole-path summation
+// survives only as a test oracle for single-fragment expectations.
+func treePathVBytes(t *tree.Tree) int64 {
+	if t == nil || t.Root == nil {
+		return 0
+	}
+
+	var total int64
+	_ = t.Root.ForEach(func(n *tree.Node) error {
+		total += nodeTxVBytes(n)
+
+		return nil
+	})
+
+	return total
+}
+
 // anchorTestOut returns a wire output with a P2A-sized (4-byte) pkScript.
 func anchorTestOut() *wire.TxOut {
 	return wire.NewTxOut(0, make([]byte, 4))
@@ -339,6 +358,86 @@ func TestRecoveryTxCount(t *testing.T) {
 		require.Equal(t, 1, numPaths)
 		require.Equal(t, 1, numTxs)
 	})
+}
+
+// TestRecoveryTxCountDedupesSharedFragments verifies the estimate for
+// same-commitment multi-leaf ancestry: fragments that share their root
+// (and any prefix nodes) are counted once, matching the proof
+// assembler's dedup of overlapping byte-identical nodes. Counting per
+// fragment would over-require concurrent wallet inputs (one per
+// fragment instead of one per distinct CPFP parent) and could fail
+// AssessExitFeasibility on an exit that is actually affordable —
+// with a padded 64-fragment ancestry, deterministically so.
+func TestRecoveryTxCountDedupesSharedFragments(t *testing.T) {
+	t.Parallel()
+
+	commit := chainhash.Hash{0xcc}
+
+	// Two extracted paths from one commitment tree: identical root tx
+	// (same input, same outputs), each serving a different leaf.
+	rootInput := wire.OutPoint{Hash: chainhash.Hash{0xaa}, Index: 0}
+	leafA := &tree.Node{
+		Input: wire.OutPoint{
+			Hash: chainhash.Hash{
+				0x01,
+			},
+			Index: 0,
+		},
+	}
+	leafB := &tree.Node{
+		Input: wire.OutPoint{
+			Hash: chainhash.Hash{
+				0x02,
+			},
+			Index: 0,
+		},
+	}
+
+	pathToLeafA := &tree.Tree{
+		Root: &tree.Node{
+			Input: rootInput,
+			Children: map[uint32]*tree.Node{
+				0: leafA,
+			},
+		},
+	}
+	pathToLeafB := &tree.Tree{
+		Root: &tree.Node{
+			Input: rootInput,
+			Children: map[uint32]*tree.Node{
+				1: leafB,
+			},
+		},
+	}
+
+	desc := &vtxo.Descriptor{
+		Ancestry: []types.Ancestry{
+			{
+				CommitmentTxID: commit,
+				TreePath:       pathToLeafA,
+			},
+			{
+				CommitmentTxID: commit,
+				TreePath:       pathToLeafB,
+			},
+			// A fully overlapping duplicate (e.g. an
+			// operator-padded near-copy whose transactions are
+			// byte-identical) must contribute nothing.
+			{
+				CommitmentTxID: commit,
+				TreePath:       pathToLeafA,
+			},
+		},
+	}
+
+	numTxs, numPaths := RecoveryTxCount(desc)
+	require.Equal(
+		t, 1, numPaths,
+		"fragments sharing a root share one CPFP parent",
+	)
+	// Root + leaf A + leaf B; the shared root and the duplicate
+	// fragment are counted once.
+	require.Equal(t, 3, numTxs)
 }
 
 // TestRecoveryTxVBytes verifies the parent-weight estimate that the exit
