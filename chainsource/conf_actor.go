@@ -34,7 +34,7 @@ type ConfActorConfig struct {
 	//
 	// The depth is counted inclusively (a tx confirmed at height H is
 	// at depth 1; height-based finality fires once the actor observes
-	// a block at H + FinalityDepth - 1). The conventional choice is 6.
+	// a block at H + FinalityDepth - 1).
 	FinalityDepth uint32
 }
 
