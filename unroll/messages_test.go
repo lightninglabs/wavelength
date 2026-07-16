@@ -127,6 +127,56 @@ func TestDurableMessageTLVRoundTrip(t *testing.T) {
 		require.Equal(t, orig.SpendingHeight, got.SpendingHeight)
 	})
 
+	t.Run("TxReorgedMsg", func(t *testing.T) {
+		t.Parallel()
+
+		orig := &TxReorgedMsg{Txid: txid}
+
+		var buf bytes.Buffer
+		require.NoError(t, orig.Encode(&buf))
+
+		got := &TxReorgedMsg{}
+		require.NoError(t, got.Decode(bytes.NewReader(buf.Bytes())))
+		require.Equal(t, orig.Txid, got.Txid)
+	})
+
+	t.Run("SpendReorgedMsg", func(t *testing.T) {
+		t.Parallel()
+
+		orig := &SpendReorgedMsg{}
+
+		var buf bytes.Buffer
+		require.NoError(t, orig.Encode(&buf))
+
+		got := &SpendReorgedMsg{}
+		require.NoError(t, got.Decode(bytes.NewReader(buf.Bytes())))
+	})
+
+	t.Run("SpendFinalizedMsg", func(t *testing.T) {
+		t.Parallel()
+
+		orig := &SpendFinalizedMsg{}
+
+		var buf bytes.Buffer
+		require.NoError(t, orig.Encode(&buf))
+
+		got := &SpendFinalizedMsg{}
+		require.NoError(t, got.Decode(bytes.NewReader(buf.Bytes())))
+	})
+
+	t.Run("TxFinalizedMsg", func(t *testing.T) {
+		t.Parallel()
+
+		orig := &TxFinalizedMsg{Txid: txid}
+
+		var buf bytes.Buffer
+		require.NoError(t, orig.Encode(&buf))
+
+		got := &TxFinalizedMsg{}
+		require.NoError(t, got.Decode(bytes.NewReader(buf.Bytes())))
+		require.Equal(t, orig.Txid, got.Txid)
+	})
+
 	t.Run("GetStateRequest", func(t *testing.T) {
 		t.Parallel()
 
