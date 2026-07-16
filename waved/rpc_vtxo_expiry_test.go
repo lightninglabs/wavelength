@@ -32,7 +32,9 @@ func TestExpiryInfoFromDescriptorUsesDefaultThresholds(t *testing.T) {
 		ChainDepth: 2,
 	}
 
-	info := expiryInfoFromDescriptor(desc, 784)
+	info := expiryInfoFromDescriptor(
+		desc, 784, vtxo.DefaultExpiryConfig(),
+	)
 
 	require.Equal(
 		t, waverpc.
@@ -47,6 +49,27 @@ func TestExpiryInfoFromDescriptorUsesDefaultThresholds(t *testing.T) {
 	require.Equal(t, uint32(144), info.GetRelativeExpiry())
 	require.Equal(t, uint32(3), info.GetMaxTreeDepth())
 	require.Equal(t, uint32(2), info.GetChainDepth())
+}
+
+// TestExpiryInfoUsesFreeRefreshWindow verifies RPC expiry posture reports the
+// same safe delayed boundary used by the live VTXO manager.
+func TestExpiryInfoUsesFreeRefreshWindow(t *testing.T) {
+	t.Parallel()
+
+	cfg := vtxo.DefaultExpiryConfig()
+	cfg.FreeRefreshWindow = func() uint32 {
+		return 120
+	}
+
+	info := expiryInfoFromTiming(
+		1_000, 24, 2, 0, 880, cfg,
+	)
+	require.Equal(t, int32(120), info.GetRefreshThresholdBlocks())
+	require.Equal(
+		t, waverpc.
+			VTXOExpiryStatus_VTXO_EXPIRY_STATUS_NEEDS_REFRESH,
+		info.GetStatus(),
+	)
 }
 
 // TestExpiryInfoFromTimingClassifiesPostures verifies the boundary conditions
@@ -91,6 +114,7 @@ func TestExpiryInfoFromTimingClassifiesPostures(t *testing.T) {
 
 			info := expiryInfoFromTiming(
 				1000, 144, 3, 0, test.currentHeight,
+				vtxo.DefaultExpiryConfig(),
 			)
 
 			require.Equal(t, test.wantStatus, info.GetStatus())
@@ -117,7 +141,9 @@ func TestExpiryInfoFromIndexedVTXOUsesMaxAncestryPathDepth(t *testing.T) {
 		},
 	}
 
-	info := expiryInfoFromIndexedVTXO(indexed, 850)
+	info := expiryInfoFromIndexedVTXO(
+		indexed, 850, vtxo.DefaultExpiryConfig(),
+	)
 
 	require.Equal(
 		t, waverpc.

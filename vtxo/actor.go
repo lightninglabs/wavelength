@@ -412,9 +412,8 @@ func (a *VTXOActor) processOutbox(ctx context.Context,
 				// the FetchOperatorKey callback returned an
 				// error (operator unreachable, fresh GetInfo
 				// timed out) — an external trigger, not an
-				// internal bug. The next expiry tick will
-				// retry; skipping this emission is the right
-				// local behavior.
+				// internal bug. Roll the durable reservation
+				// back below so the next expiry tick can retry.
 				a.logger(ctx).WarnS(
 					ctx,
 					"Failed to build refresh output "+
@@ -426,7 +425,24 @@ func (a *VTXOActor) processOutbox(ctx context.Context,
 					),
 				)
 
-				continue
+				rollbackErr := a.processStatusUpdate(
+					ctx, &VTXOStatusUpdate{
+						Outpoint:  vtxo.Outpoint,
+						NewStatus: VTXOStatusLive,
+					},
+				)
+				if rollbackErr != nil {
+					return errors.Join(
+						err, fmt.Errorf(
+							"roll back failed "+
+								"automatic "+
+								"refresh: %w",
+							rollbackErr),
+					)
+				}
+
+				return fmt.Errorf("build refresh output "+
+					"template: %w", err)
 			}
 
 			// Quote the operator fee for this VTXO so the
