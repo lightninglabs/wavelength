@@ -134,6 +134,14 @@ func (c *ancestryTreeCache) getOrDecode(treePath []byte) (*tree.Tree, error) {
 // legitimately carries one fragment per leaf, each anchored at the same
 // commitment. Callers use this key to reject true duplicates while
 // admitting same-commitment multi-leaf ancestry.
+//
+// The key deliberately excludes InputIndices (and CommitmentHeight):
+// the indexer's grouping contract is one fragment per (commitment,
+// tree path), with that fragment carrying EVERY input index it serves.
+// Two fragments sharing a (commitment, path) but splitting the covered
+// indices across rows would be a server-side grouping change; if the
+// indexer contract ever moves that way, this key must widen with it or
+// the second row is silently rejected as a duplicate.
 func AncestryFragmentKey(a vtxo.Ancestry) ([sha256.Size]byte, error) {
 	var treePath []byte
 	if a.TreePath != nil {
