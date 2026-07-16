@@ -6,9 +6,9 @@ endpoint for the configured Bitcoin network and outbound transport.
 
 | Network config | Ark gRPC | Ark REST | Swap gRPC | Swap REST |
 |----------------|----------|----------|-----------|-----------|
-| `testnet` | `test.wavelength.lightning.finance:443` | `https://test.wavelength-rest.lightning.finance` | `swap.test.wavelength.lightning.finance:443` | `https://test.swapd-rest.lightning.finance` |
+| `testnet` | `test.wavelength.lightning.finance:443` | `https://test.wavelength-rest.lightning.finance` | `test.swap.wavelength.lightning.finance:443` | `https://test.swapd-rest.lightning.finance` |
 | `testnet4` | `lumosd-testnet4.testnet.lightningcluster.com:443` | `https://test4.wavelength-rest.lightning.finance` | `swapd-testnet4.testnet.lightningcluster.com:443` | `https://test4.swapd-rest.lightning.finance` |
-| `signet` | `signet.wavelength.lightning.finance:443` | `https://signet.wavelength-rest.lightning.finance` | `swap.signet.wavelength.lightning.finance:443` | `https://signet.swapd-rest.lightning.finance` |
+| `signet` | `signet.wavelength.lightning.finance:443` | `https://signet.wavelength-rest.lightning.finance` | `signet.swap.wavelength.lightning.finance:443` | `https://signet.swapd-rest.lightning.finance` |
 
 The daemon defaults both outbound transports to gRPC. Set the selectors to
 `rest` when the host cannot use native gRPC:
