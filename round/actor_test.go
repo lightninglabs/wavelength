@@ -1814,7 +1814,7 @@ func TestHandleRefreshVTXORequest(t *testing.T) {
 		)
 	})
 
-	t.Run("automatic_refresh_triggers_registration", func(t *testing.T) {
+	t.Run("automatic_refresh_schedules_registration", func(t *testing.T) {
 		t.Parallel()
 
 		h := newActorTestHarness(t)
@@ -1839,10 +1839,9 @@ func TestHandleRefreshVTXORequest(t *testing.T) {
 		require.NoError(t, err)
 
 		result := h.receive(&RefreshVTXORequest{
-			VTXOOutpoint:        vtxoOutpoint,
-			Amount:              int64(amount),
-			TriggerRegistration: true,
-			PolicyTemplate:      policyTemplate,
+			VTXOOutpoint:   vtxoOutpoint,
+			Amount:         int64(amount),
+			PolicyTemplate: policyTemplate,
 		})
 		require.True(
 			t, result.IsOk(),
@@ -1850,6 +1849,34 @@ func TestHandleRefreshVTXORequest(t *testing.T) {
 		)
 
 		states := h.queryState()
+		require.Len(t, states, 1)
+
+		var tempKey RoundKeyStr
+		var tempState FSMStateInfo
+		for key, state := range states {
+			tempKey = RoundKeyStr(key)
+			tempState = state
+		}
+		require.True(
+			t, tempState.IsTemp, "expected temp-keyed FSM state",
+		)
+		require.IsType(t, &PendingRoundAssembly{}, tempState.State)
+
+		timeoutID := makeTimeoutID(
+			tempKey, TimeoutPhaseRefreshRegistration,
+		)
+		h.timeoutActor.assertTimeoutScheduled(
+			t, timeoutID, defaultRefreshRegistrationDelay,
+		)
+		require.Empty(t, h.serverMessages())
+
+		result = h.receive(&TimeoutMsg{TimeoutID: timeoutID})
+		require.True(
+			t, result.IsOk(),
+			"registration timeout failed: %v", result.Err(),
+		)
+
+		states = h.queryState()
 		tempState, exists := h.findTempState(states)
 		require.True(t, exists, "expected temp-keyed FSM state")
 
@@ -1860,6 +1887,17 @@ func TestHandleRefreshVTXORequest(t *testing.T) {
 		)
 		require.Len(t, intentSent.Intents.Forfeits, 1)
 		require.Len(t, intentSent.Intents.VTXOs, 1)
+		require.Len(t, h.serverMessages(), 1)
+
+		// A registration triggered elsewhere can race with an already
+		// queued timeout callback. Once the FSM has left assembly, that
+		// stale callback must not emit a second JoinRoundRequest.
+		result = h.receive(&TimeoutMsg{TimeoutID: timeoutID})
+		require.True(
+			t, result.IsOk(),
+			"stale timeout should be ignored",
+		)
+		require.Len(t, h.serverMessages(), 1)
 	})
 }
 
@@ -1953,14 +1991,49 @@ func TestAutoRefreshBatchedSingleChangeMarker(t *testing.T) {
 		)
 	}
 
-	// Trigger registration: the FSM normalizes the change marker
-	// during the IntentRequested transition.
-	h.sendServerMessage(&IntentRequested{})
+	// Both requests must still be in the same assembling FSM before the
+	// quiet period ends. An immediate per-VTXO registration would leave
+	// two IntentSentState FSMs here and make their server registrations
+	// replace one another.
+	states := h.queryState()
+	require.Len(t, states, 1)
+
+	var tempKey RoundKeyStr
+	var tempState FSMStateInfo
+	for key, state := range states {
+		tempKey = RoundKeyStr(key)
+		tempState = state
+	}
+	require.True(t, tempState.IsTemp, "expected temp-keyed FSM state")
+
+	assembly, ok := tempState.State.(*PendingRoundAssembly)
+	require.True(
+		t, ok, "expected PendingRoundAssembly, got %T", tempState.State,
+	)
+	require.Len(t, assembly.Forfeits, 2)
+	require.Len(t, assembly.VTXOs, 2)
+	require.Empty(t, h.serverMessages())
+
+	timeoutID := makeTimeoutID(
+		tempKey, TimeoutPhaseRefreshRegistration,
+	)
+	h.timeoutActor.assertTimeoutScheduled(
+		t, timeoutID, defaultRefreshRegistrationDelay,
+	)
+	h.timeoutActor.assertTimeoutScheduleCount(t, timeoutID, len(entries))
+
+	// The coalescing timeout emits one cumulative registration and the FSM
+	// normalizes the change marker during the IntentRequested transition.
+	result := h.receive(&TimeoutMsg{TimeoutID: timeoutID})
+	require.True(
+		t, result.IsOk(),
+		"registration timeout failed: %v", result.Err(),
+	)
 
 	// The FSM advances out of PendingRoundAssembly into
 	// IntentSentState carrying the composed Intents — that's
 	// where the centralized designator left exactly one marker.
-	states := h.queryState()
+	states = h.queryState()
 	tempState, exists := h.findTempState(states)
 	require.True(t, exists, "expected temp-keyed FSM state")
 
@@ -1981,6 +2054,19 @@ func TestAutoRefreshBatchedSingleChangeMarker(t *testing.T) {
 		t, intentSent.Intents.VTXOs[0].IsChange,
 		"first VTXO must be the marker carrier",
 	)
+
+	msgs := h.serverMessages()
+	require.Len(t, msgs, 1, "expected one cumulative registration")
+
+	sendReq, ok := msgs[0].(*serverconn.SendClientEventRequest)
+	require.True(t, ok, "expected SendClientEventRequest, got %T", msgs[0])
+
+	joinReq, ok := sendReq.Message.(*JoinRoundRequest)
+	require.True(
+		t, ok, "expected JoinRoundRequest, got %T", sendReq.Message,
+	)
+	require.Len(t, joinReq.ForfeitRequests, 2)
+	require.Len(t, joinReq.VTXORequests, 2)
 }
 
 // TestSequentialRefreshLeaveSingleChangeMarker is the regression

@@ -344,17 +344,19 @@ type mockTimeoutActor struct {
 
 	mu sync.Mutex
 
-	scheduledIDs map[timeout.ID]time.Duration
-	cancelledIDs []timeout.ID
-	callbacks    map[timeout.ID]actor.TellOnlyRef[*timeout.ExpiredMsg]
+	scheduledIDs   map[timeout.ID]time.Duration
+	scheduleCounts map[timeout.ID]int
+	cancelledIDs   []timeout.ID
+	callbacks      map[timeout.ID]actor.TellOnlyRef[*timeout.ExpiredMsg]
 }
 
 // newMockTimeoutActor creates a timeout actor test double.
 func newMockTimeoutActor(t *testing.T) *mockTimeoutActor {
 	return &mockTimeoutActor{
-		t:            t,
-		scheduledIDs: make(map[timeout.ID]time.Duration),
-		cancelledIDs: make([]timeout.ID, 0),
+		t:              t,
+		scheduledIDs:   make(map[timeout.ID]time.Duration),
+		scheduleCounts: make(map[timeout.ID]int),
+		cancelledIDs:   make([]timeout.ID, 0),
 		callbacks: make(
 			map[timeout.ID]actor.TellOnlyRef[*timeout.ExpiredMsg],
 		),
@@ -374,6 +376,7 @@ func (m *mockTimeoutActor) Tell(_ context.Context, msg timeout.Msg) error {
 	switch req := msg.(type) {
 	case *timeout.ScheduleTimeoutRequest:
 		m.scheduledIDs[req.ID] = req.Duration
+		m.scheduleCounts[req.ID]++
 		m.callbacks[req.ID] = req.Callback
 
 	case *timeout.CancelTimeoutRequest:
@@ -397,6 +400,18 @@ func (m *mockTimeoutActor) assertTimeoutScheduled(t *testing.T, id timeout.ID,
 	duration, ok := m.scheduledIDs[id]
 	require.True(t, ok, "expected timeout scheduled for ID %s", id)
 	require.Equal(t, expected, duration)
+}
+
+// assertTimeoutScheduleCount verifies how many times a timeout was scheduled.
+func (m *mockTimeoutActor) assertTimeoutScheduleCount(t *testing.T,
+	id timeout.ID, expected int) {
+
+	t.Helper()
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	require.Equal(t, expected, m.scheduleCounts[id])
 }
 
 // assertTimeoutCancelled verifies a timeout was cancelled.
