@@ -638,6 +638,58 @@ func TestVTXOPersistenceStoreUpsertReplacesAncestry(t *testing.T) {
 	)
 }
 
+// TestVTXOPersistenceStoreSameCommitmentMultiLeafRoundTrip verifies
+// that two ancestry fragments anchored at the SAME commitment txid but
+// carrying distinct tree paths persist and load back intact. This is
+// the shape the indexer produces for an OOR spend whose inputs sit at
+// different leaves of one commitment tree; the schema used to enforce
+// UNIQUE(vtxo, commitment_txid) which made such VTXOs unpersistable
+// (wavelength#969), so this test pins the relaxed schema against
+// regression.
+func TestVTXOPersistenceStoreSameCommitmentMultiLeafRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	vtxoStore, roundStore, _ := newVTXOStoreForTest(t)
+	ctx := t.Context()
+
+	roundID := testRoundIDDB("test-round-same-commitment")
+	testRound := createTestRound(t, roundID)
+	state := &round.InputSigSentState{
+		RoundID:     testRound.RoundID,
+		ClientTrees: make(map[round.SignerKey]*tree.Tree),
+	}
+	err := roundStore.CommitState(ctx, testRound, state)
+	require.NoError(t, err)
+
+	desc := createTestVTXODescriptor(t, roundID, 34)
+	desc.Ancestry[0].InputIndices = []uint32{0}
+	addAncestryFragment(t, desc, "same-commit-leaf", []uint32{1}, 4)
+
+	// Re-anchor the second fragment at the FIRST fragment's
+	// commitment while keeping its distinct tree path, producing the
+	// same-commitment multi-leaf shape.
+	desc.Ancestry[1].CommitmentTxID = desc.Ancestry[0].CommitmentTxID
+
+	err = vtxoStore.SaveVTXO(ctx, desc)
+	require.NoError(
+		t, err, "same-commitment multi-leaf ancestry must persist",
+	)
+
+	fetched, err := vtxoStore.GetVTXO(ctx, desc.Outpoint)
+	require.NoError(t, err)
+	require.Len(t, fetched.Ancestry, 2)
+	require.Equal(
+		t, fetched.Ancestry[0].CommitmentTxID,
+		fetched.Ancestry[1].CommitmentTxID,
+		"both fragments must keep the shared commitment txid",
+	)
+	require.NotEqual(
+		t, fetched.Ancestry[0].TreePath.BatchOutpoint,
+		fetched.Ancestry[1].TreePath.BatchOutpoint,
+		"fragments must keep their distinct tree paths",
+	)
+}
+
 // TestVTXOPersistenceStoreDeleteVTXOCascadesAncestry verifies that
 // removing a VTXO drops every ancestry side-table row keyed by its
 // outpoint. The migration declares FK ON DELETE CASCADE on
