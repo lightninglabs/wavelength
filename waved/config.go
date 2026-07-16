@@ -66,7 +66,7 @@ const (
 
 	// defaultTestnet3SwapServerGRPCHost is the public testnet3 swap server
 	// gRPC endpoint.
-	defaultTestnet3SwapServerGRPCHost = "test.swap.wavelength." +
+	defaultTestnet3SwapServerGRPCHost = "swap.test.wavelength." +
 		"lightning.finance:443"
 
 	// defaultTestnet3SwapServerRESTHost is the public testnet3 swap server
@@ -110,7 +110,7 @@ const (
 
 	// defaultSignetSwapServerGRPCHost is the public signet swap server gRPC
 	// endpoint.
-	defaultSignetSwapServerGRPCHost = "signet.swap.wavelength." +
+	defaultSignetSwapServerGRPCHost = "swap.signet.wavelength." +
 		"lightning.finance:443"
 
 	// defaultSignetSwapServerRESTHost is the public signet swap server REST
