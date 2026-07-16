@@ -429,13 +429,19 @@ SYSTEST_TAGS := systest $(SYSTEST_DB_TAG)
 # typically plenty.
 SYSTEST_TIMEOUT ?= 10m
 
-systest: #? Run system integration tests. Use db=postgres for PostgreSQL.
-	@$(call print, "Running system integration tests (db=$(or $(db),sqlite)).")
-	$(GOTEST) -tags "$(SYSTEST_TAGS)" -v ./systest/... -timeout $(SYSTEST_TIMEOUT)
+# Optional test-name filter for systest, mirroring the `case=` param on the
+# unit target. Empty by default so the whole suite runs; set it to scope a run
+# (e.g. the lnd-REST CI job below runs only the REST-safe send/OOR flows).
+# Usage: make systest case=TestSendVTXOEndToEnd
+SYSTEST_RUN := $(if $(case),-run "$(case)",)
 
-systest-verbose: #? Run system integration tests with verbose logging. Use db=postgres for PostgreSQL.
+systest: #? Run system integration tests. Use db=postgres for PostgreSQL, case=<TestName> to filter.
+	@$(call print, "Running system integration tests (db=$(or $(db),sqlite)).")
+	$(GOTEST) -tags "$(SYSTEST_TAGS)" -v ./systest/... -timeout $(SYSTEST_TIMEOUT) $(SYSTEST_RUN)
+
+systest-verbose: #? Run system integration tests with verbose logging. Use db=postgres for PostgreSQL, case=<TestName> to filter.
 	@$(call print, "Running system integration tests with verbose logging (db=$(or $(db),sqlite)).")
-	$(GOTEST) -tags "$(SYSTEST_TAGS)" -v ./systest/... -timeout $(SYSTEST_TIMEOUT) -harness.logstdout
+	$(GOTEST) -tags "$(SYSTEST_TAGS)" -v ./systest/... -timeout $(SYSTEST_TIMEOUT) $(SYSTEST_RUN) -harness.logstdout
 
 # ============
 # RPC GENERATION
