@@ -10,11 +10,8 @@ import (
 
 // TestMapTxconfirmNotification pins the disposition of every txconfirm
 // lifecycle event at the unroll subscriber boundary. The load-bearing
-// cases are TxFinalized and TxReorged: subscribers receive the FULL
-// reorg-aware lifecycle, and before this mapping existed both fell into
-// the unknown-notification arm and terminally failed the unroll job —
-// finality (synthesized by every non-lnd backend once the confirmation
-// passed the reorg-safety depth) killed otherwise-healthy exits.
+// cases are TxFinalized and TxReorged: this planner has durable transitions
+// for both, so the adapter must preserve rather than drop or collapse them.
 func TestMapTxconfirmNotification(t *testing.T) {
 	t.Parallel()
 
@@ -37,9 +34,7 @@ func TestMapTxconfirmNotification(t *testing.T) {
 		require.EqualValues(t, 3, confirmed.NumConfs)
 	})
 
-	t.Run("finalized maps to confirmation, not failure", func(
-		t *testing.T) {
-
+	t.Run("finalized maps to finality", func(t *testing.T) {
 		t.Parallel()
 
 		msg, ok := mapTxconfirmNotification(&txconfirm.TxFinalized{
@@ -49,28 +44,21 @@ func TestMapTxconfirmNotification(t *testing.T) {
 		})
 		require.True(t, ok)
 
-		confirmed, isConfirmed := msg.(*TxConfirmedMsg)
-		require.True(
-			t, isConfirmed, "finality must replay a "+
-				"confirmation; mapping it to a failure "+
-				"terminally kills the unroll job",
-		)
-		require.Equal(t, txid, confirmed.Txid)
-		require.EqualValues(t, 130, confirmed.Height)
-		require.EqualValues(t, 6, confirmed.NumConfs)
+		finalized, isFinalized := msg.(*TxFinalizedMsg)
+		require.True(t, isFinalized)
+		require.Equal(t, txid, finalized.Txid)
 	})
 
-	t.Run("reorged is dropped", func(t *testing.T) {
+	t.Run("reorged maps to reorg", func(t *testing.T) {
 		t.Parallel()
 
-		_, ok := mapTxconfirmNotification(&txconfirm.TxReorged{
+		msg, ok := mapTxconfirmNotification(&txconfirm.TxReorged{
 			Txid: txid,
 		})
-		require.False(
-			t, ok, "TxReorged is best-effort and superseded by "+
-				"the next reliable event; it must not "+
-				"become a failure",
-		)
+		require.True(t, ok)
+		reorged, isReorged := msg.(*TxReorgedMsg)
+		require.True(t, isReorged)
+		require.Equal(t, txid, reorged.Txid)
 	})
 
 	t.Run("failed maps to failure", func(t *testing.T) {

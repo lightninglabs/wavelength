@@ -179,6 +179,26 @@ func (s *terminalFlakyRegistryStore) UpsertRecord(ctx context.Context,
 	return s.memRegistryStore.UpsertRecord(ctx, record)
 }
 
+// MarkTerminal fails through the same counter as terminal UpsertRecord so the
+// synchronous durability barrier falls back to the retry path under test.
+func (s *terminalFlakyRegistryStore) MarkTerminal(ctx context.Context,
+	target wire.OutPoint, phase Phase, recoverable bool, failReason string,
+	sweepTxid *chainhash.Hash) error {
+
+	s.mu.Lock()
+	if s.upsertErrors > 0 {
+		s.upsertErrors--
+		s.mu.Unlock()
+
+		return errors.New("injected terminal upsert failure")
+	}
+	s.mu.Unlock()
+
+	return s.memRegistryStore.MarkTerminal(
+		ctx, target, phase, recoverable, failReason, sweepTxid,
+	)
+}
+
 // alwaysFailUpsertRegistryStore rejects every terminal-phase upsert while
 // keeping the non-terminal initial write and all read paths backed by the
 // in-memory store. This matches the fail-closed admission contract that the
@@ -208,6 +228,13 @@ func (s *alwaysFailUpsertRegistryStore) UpsertRecord(ctx context.Context,
 	}
 
 	return errors.New("injected upsert failure")
+}
+
+// MarkTerminal rejects the synchronous terminal durability barrier too.
+func (s *alwaysFailUpsertRegistryStore) MarkTerminal(context.Context,
+	wire.OutPoint, Phase, bool, string, *chainhash.Hash) error {
+
+	return errors.New("injected terminal failure")
 }
 
 // blockingRegistryStore holds terminal-phase upserts until released so tests
@@ -253,6 +280,14 @@ func (s *blockingRegistryStore) UpsertRecord(ctx context.Context,
 	}
 
 	return s.memRegistryStore.UpsertRecord(ctx, record)
+}
+
+// MarkTerminal pushes this test store onto the asynchronous fallback so the
+// blocking UpsertRecord can be observed without blocking the registry actor.
+func (s *blockingRegistryStore) MarkTerminal(context.Context, wire.OutPoint,
+	Phase, bool, string, *chainhash.Hash) error {
+
+	return errors.New("use asynchronous terminal persistence")
 }
 
 // cancelOnPendingRegistryStore cancels the caller context after the initial
@@ -1136,9 +1171,10 @@ func TestRegistryEnsureStartsChildAfterCallerCancellation(t *testing.T) {
 	require.NoError(t, <-startCtxErr)
 }
 
-// TestRegistryEnsureMarksRealStartErrorFailed verifies that the pending-row
-// safeguard does not hide non-cancellation child start failures.
-func TestRegistryEnsureMarksRealStartErrorFailed(t *testing.T) {
+// TestRegistryEnsureParksRealStartError verifies that a child start error
+// remains retryable and fail-closed instead of being misclassified as proof
+// that the VTXO is safe to relive.
+func TestRegistryEnsureParksRealStartError(t *testing.T) {
 	proof := buildLinearProof(t)
 	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
 	store := newMemRegistryStore()
@@ -1196,8 +1232,9 @@ func TestRegistryEnsureMarksRealStartErrorFailed(t *testing.T) {
 	record, err := store.GetRecord(t.Context(), proof.TargetOutpoint())
 	require.NoError(t, err)
 	require.NotNil(t, record)
-	require.Equal(t, PhaseFailed, record.Phase)
+	require.Equal(t, PhasePending, record.Phase)
 	require.Contains(t, record.FailReason, "start boom")
+	require.False(t, record.RecoverableFailure)
 }
 
 // TestRegistryTerminalPersistRetriesUntilDurable verifies that a
@@ -1334,15 +1371,18 @@ func TestRegistryTerminalStatusRemainsQueryableWhilePersistBlocked(
 	store := newBlockingRegistryStore()
 	checkpoints := newMemCheckpointStore()
 	txconfirmRef := &fakeTxConfirmRef{}
+	observer := &captureExitObserver{}
+	var observerRef actor.TellOnlyRef[vtxo.ManagerMsg] = observer
 
 	registry := newRegistryHarnessWithSpawn(t, RegistryConfig{
-		Store:          store,
-		DeliveryStore:  checkpoints,
-		ProofAssembler: &mockProofAssembler{proof: proof},
-		VTXOStore:      &mockVTXOStore{desc: desc},
-		TxConfirmRef:   txconfirmRef,
-		ChainSource:    &fakeRegistryChainSourceRef{height: 200},
-		Wallet:         &fakeSweepWallet{},
+		Store:            store,
+		DeliveryStore:    checkpoints,
+		ProofAssembler:   &mockProofAssembler{proof: proof},
+		VTXOStore:        &mockVTXOStore{desc: desc},
+		TxConfirmRef:     txconfirmRef,
+		ChainSource:      &fakeRegistryChainSourceRef{height: 200},
+		Wallet:           &fakeSweepWallet{},
+		VTXOExitObserver: fn.Some(observerRef),
 	})
 	t.Cleanup(registry.Stop)
 
@@ -1365,6 +1405,10 @@ func TestRegistryTerminalStatusRemainsQueryableWhilePersistBlocked(
 	case <-time.After(testTimeout):
 		t.Fatal("timed out waiting for blocked registry persist")
 	}
+	require.Empty(
+		t, observer.notifications(),
+		"terminal outcome must wait for durable invalidation",
+	)
 
 	require.Eventually(t, func() bool {
 		resp, err := registry.Ref().Ask(
@@ -1390,6 +1434,11 @@ func TestRegistryTerminalStatusRemainsQueryableWhilePersistBlocked(
 
 		return record != nil && record.Phase == PhaseFailed
 	}, testTimeout, 10*time.Millisecond)
+	require.Empty(
+		t, observer.notifications(),
+		"a real broadcast failure remains held without objective "+
+			"canonical-absence evidence",
+	)
 }
 
 // TestRegistryRestoreFailureLeavesRecordRetryable verifies that a
@@ -1528,12 +1577,11 @@ func TestRegistryRestoreFailureLeavesRecordRetryable(t *testing.T) {
 	require.Equal(t, PhaseMaterializing, status.Phase)
 }
 
-// TestRegistryLateAdmissionFailureMarksFailed verifies that when the
+// TestRegistryLateAdmissionFailureStaysPending verifies that when the
 // registry's synchronous admission wait times out, the eventual child
-// start result is still observed and a late deterministic start failure
-// becomes a terminal registry record instead of leaving PhasePending
-// forever.
-func TestRegistryLateAdmissionFailureMarksFailed(t *testing.T) {
+// start result is still observed while the durable record remains
+// non-terminal and fail-closed for a later restore.
+func TestRegistryLateAdmissionFailureStaysPending(t *testing.T) {
 	proof := buildLinearProof(t)
 	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
 	store := newMemRegistryStore()
@@ -1579,9 +1627,79 @@ func TestRegistryLateAdmissionFailureMarksFailed(t *testing.T) {
 		require.NoError(t, err)
 
 		return record != nil &&
-			record.Phase == PhaseFailed &&
+			record.Phase == PhasePending &&
+			!record.RecoverableFailure &&
 			strings.Contains(record.FailReason, "late start boom")
 	}, testTimeout, 10*time.Millisecond)
+}
+
+// TestRegistryRestoreWithoutCheckpointReplaysOriginalStart verifies that a
+// parked admission which failed before its first checkpoint does not resume as
+// an invented restart/standard-policy job. The durable registry identity must
+// seed a fresh Start request verbatim.
+func TestRegistryRestoreWithoutCheckpointReplaysOriginalStart(t *testing.T) {
+	target := wire.OutPoint{Hash: chainhash.Hash{0xe1}, Index: 4}
+	startRequests := make(chan *StartUnrollRequest, 1)
+	behavior := &registryBehavior{}
+	behavior.spawnFunc = func(_ context.Context,
+		spawnTarget wire.OutPoint) (*VTXOUnrollActor, error) {
+
+		require.Equal(t, target, spawnTarget)
+		childBehavior := actor.NewFunctionBehavior(
+			func(_ context.Context, msg Msg) fn.Result[Resp] {
+				switch request := msg.(type) {
+				case *GetStateRequest:
+					return fn.Ok[Resp](&GetStateResp{
+						Started: false,
+						Phase:   PhasePending,
+					})
+
+				case *StartUnrollRequest:
+					startRequests <- request
+
+					return fn.Ok[Resp](&AckResp{})
+
+				case *ResumeUnrollRequest:
+					return fn.Err[Resp](
+						errors.New("unexpected resume"),
+					)
+
+				default:
+					return fn.Err[Resp](
+						fmt.Errorf("unexpected msg %T",
+							msg),
+					)
+				}
+			},
+		)
+
+		// Test children are owned by the returned handle below.
+		//nolint:contextcheck
+		return newTestUnrollChild(t, spawnTarget, childBehavior), nil
+	}
+
+	record := RegistryRecord{
+		TargetOutpoint: target,
+		ActorID:        actorIDForTarget(target),
+		Trigger:        TriggerFraudSpend,
+		ExitPolicyKind: ExitPolicyKind("custom-recovery-policy"),
+		ExitPolicyRef:  "recovery-job-42",
+		Phase:          PhasePending,
+	}
+	child, err := behavior.tryRestoreOne(t.Context(), record, 321)
+	require.NoError(t, err)
+	t.Cleanup(child.Stop)
+
+	select {
+	case request := <-startRequests:
+		require.Equal(t, int32(321), request.Height)
+		require.Equal(t, record.Trigger, request.Trigger)
+		require.Equal(t, record.ExitPolicyKind, request.ExitPolicyKind)
+		require.Equal(t, record.ExitPolicyRef, request.ExitPolicyRef)
+
+	case <-time.After(testTimeout):
+		t.Fatal("restore did not replay original start identity")
+	}
 }
 
 // TestRegistryEnsureRestoresFailedNonTerminalRecord verifies that when a

@@ -97,8 +97,8 @@ type RegistryStore interface {
 	ListNonTerminalRecords(ctx context.Context) ([]RegistryRecord, error)
 
 	// MarkTerminal persists one terminal target state. recoverable marks a
-	// no-footprint failure that boot-time reconciliation may roll back to
-	// live.
+	// no-footprint failure with objective canonical-absence evidence that
+	// boot-time reconciliation may roll back to live.
 	MarkTerminal(ctx context.Context, target wire.OutPoint, phase Phase,
 		recoverable bool, failReason string,
 		sweepTxid *chainhash.Hash) error
@@ -160,14 +160,25 @@ type RegistryConfig struct {
 	FraudCheckpointSafetyMargin int32
 
 	// VTXOExitObserver, when set, receives an ExitOutcomeNotification each
-	// time a child unroll job reaches a terminal phase: a clean failure
-	// (no on-chain footprint) asks the VTXO manager to roll the VTXO back
-	// to live, and a completed exit asks it to retire the VTXO to spent.
-	// This is the feedback edge that keeps VTXO lifecycle gated on the
-	// unroll job's terminal on-chain outcome rather than the user's intent
-	// to exit (wavelength#602). When None, terminal outcomes are not
-	// forwarded (used by tests that don't exercise the manager).
+	// time a child unroll job reaches a terminal phase: a failure with no
+	// footprint and objective canonical-absence evidence asks the VTXO
+	// manager to roll the VTXO back to live, and a completed exit asks it
+	// to retire the VTXO to spent. This is the feedback edge that keeps
+	// VTXO lifecycle gated on the unroll job's terminal on-chain outcome
+	// rather than the user's intent to exit (wavelength#602). When None,
+	// terminal outcomes are not forwarded (used by tests that don't
+	// exercise the manager).
 	VTXOExitObserver fn.Option[actor.TellOnlyRef[vtxo.ManagerMsg]]
+
+	// ChainReconcilerFactory, when set, is forwarded to each spawned
+	// per-target actor so it can verify its checkpoint anchors
+	// against the canonical chain on restart. The factory is invoked
+	// once per actor lifetime after the proof loads. When None
+	// children skip reconciliation; production wiring should pass a
+	// factory backed by NewChainSourceReconciler so an offline
+	// reorg window does not silently leave actors driving side
+	// effects off stale planner state.
+	ChainReconcilerFactory fn.Option[ChainReconcilerFactory]
 }
 
 // UnrollRegistryActor wraps the thin unroll registry actor.
@@ -230,6 +241,9 @@ func NewUnrollRegistryActor(cfg RegistryConfig) *UnrollRegistryActor {
 		active:     make(map[wire.OutPoint]*VTXOUnrollActor),
 		pending:    make(map[wire.OutPoint]RegistryRecord),
 		persisting: make(map[wire.OutPoint]RegistryRecord),
+		terminalPolicyKinds: make(
+			map[wire.OutPoint]ExitPolicyKind,
+		),
 	}
 
 	registry := actor.NewActor(actor.ActorConfig[RegistryMsg, RegistryResp]{
@@ -257,6 +271,11 @@ type registryBehavior struct {
 	active     map[wire.OutPoint]*VTXOUnrollActor
 	pending    map[wire.OutPoint]RegistryRecord
 	persisting map[wire.OutPoint]RegistryRecord
+
+	// terminalPolicyKinds retains the message-authoritative policy kind
+	// while a failed terminal store write is being retried. It must not be
+	// stamped onto a record without its matching durable ref.
+	terminalPolicyKinds map[wire.OutPoint]ExitPolicyKind
 
 	spawnFunc func(context.Context, wire.OutPoint) (*VTXOUnrollActor, error)
 }
@@ -458,9 +477,9 @@ func (r *registryBehavior) handleEnsure(ctx context.Context,
 	// the durable store. Re-spawning a fresh actor on top of an existing
 	// record would clobber the recorded sweep txid or fail reason.
 	//
-	// A recoverable failure is the exception: the prior exit failed
-	// cleanly with no on-chain footprint and the VTXO was rolled back to
-	// live (wavelength#602), so a fresh exit must be admittable rather
+	// A recoverable failure is the exception: objective canonical-absence
+	// evidence allowed the VTXO to roll back to live (wavelength#602), so a
+	// fresh exit must be admittable rather
 	// than deduped against the dead attempt. Fall through to the spawn
 	// path, whose UpsertRecord overwrites the stale recoverable row.
 	if record, ok := r.pending[req.Outpoint]; ok &&
@@ -538,14 +557,14 @@ func (r *registryBehavior) handleEnsure(ctx context.Context,
 			})
 		}
 
-		// Terminal record. A recoverable failure (clean, no on-chain
-		// footprint) means the VTXO was rolled back to live, so a new
-		// exit is allowed: fall through to the spawn path below, whose
-		// UpsertRecord overwrites the stale record. Any other terminal
-		// record (Completed, or a footprint-bearing Failed) is a real
-		// end state — dedup against it and return the historical
-		// ActorID so the recorded sweep txid / failure reason are
-		// never clobbered.
+		// Terminal record. A recoverable failure backed by objective
+		// canonical-absence evidence means the VTXO was rolled back to
+		// live, so a new exit is allowed: fall through to the spawn
+		// path below, whose UpsertRecord overwrites the stale record.
+		// Any other terminal record (Completed, or a footprint-bearing
+		// Failed) is a real end state — dedup against it and return the
+		// historical ActorID so the recorded sweep txid / failure
+		// reason are never clobbered.
 		if !existing.RecoverableFailure {
 			return fn.Ok[RegistryResp](&EnsureUnrollResp{
 				ActorID: existing.ActorID,
@@ -619,11 +638,11 @@ func (r *registryBehavior) handleEnsure(ctx context.Context,
 		//      notifyRegistryIfTerminal so the registry record
 		//      cannot stay PhasePending forever.
 		//
-		//   2. Real start error — proof assembly, store, planner.
-		//      Hiding it under a Created=true would silently strand
-		//      the user's funds in unilateral_exit with no
-		//      progress. Mark the durable row PhaseFailed so
-		//      GetUnrollStatus surfaces a terminal status.
+		//   2. Real start error — proof assembly, store, planner, or
+		//      outbox failure after submission. The registry cannot
+		//      distinguish those positions, so it preserves the durable
+		//      hold and surfaces the error. A fresh Ensure or restart
+		//      retries restoration without reliving value.
 		if isCancellationRace(err) {
 			r.watchChildAdmissionResult(
 				context.WithoutCancel(ctx), req.Outpoint, child,
@@ -642,7 +661,7 @@ func (r *registryBehavior) handleEnsure(ctx context.Context,
 			})
 		}
 
-		r.failAdmittedChild(
+		r.parkAdmittedChild(
 			ctx, req.Outpoint, child, fmt.Errorf("start child: %w",
 				err),
 		)
@@ -653,7 +672,7 @@ func (r *registryBehavior) handleEnsure(ctx context.Context,
 	state, err := r.childState(startCtx, child)
 	if err != nil {
 		if !isCancellationRace(err) {
-			r.failAdmittedChild(
+			r.parkAdmittedChild(
 				ctx, req.Outpoint, child,
 				fmt.Errorf("read child state: %w", err),
 			)
@@ -735,9 +754,8 @@ func (r *registryBehavior) watchChildAdmissionResult(ctx context.Context,
 	}()
 }
 
-// handleChildAdmissionResult converts a late child start failure into the
-// same terminal registry state that a synchronous start failure would have
-// produced.
+// handleChildAdmissionResult parks a late child start failure in the same
+// fail-closed non-terminal state as a synchronous start failure.
 func (r *registryBehavior) handleChildAdmissionResult(ctx context.Context,
 	req *childAdmissionResultMsg) fn.Result[RegistryResp] {
 
@@ -746,7 +764,7 @@ func (r *registryBehavior) handleChildAdmissionResult(ctx context.Context,
 		return fn.Ok[RegistryResp](&RegistryAckResp{})
 	}
 
-	r.failAdmittedChild(
+	r.parkAdmittedChild(
 		ctx, req.Outpoint, child, fmt.Errorf("start child: %s",
 			req.Err),
 	)
@@ -754,63 +772,60 @@ func (r *registryBehavior) handleChildAdmissionResult(ctx context.Context,
 	return fn.Ok[RegistryResp](&RegistryAckResp{})
 }
 
-// failAdmittedChild records a terminal failure for a child that already has
-// a durable pending row. This keeps GetUnrollStatus from falling back to
-// "not found" after VTXO ownership has moved to unilateral exit.
-//
-// These failures (start / proof-assembly / restore errors) all occur before
-// the child broadcasts anything, so the VTXO has no on-chain footprint and is
-// recoverable to live. The record is persisted as a recoverable failure and
-// the VTXO manager is notified so the VTXO is rolled back rather than
-// stranded in unilateral exit (wavelength#602).
-func (r *registryBehavior) failAdmittedChild(ctx context.Context,
+// parkAdmittedChild stops a child whose admission result is ambiguous while
+// preserving its durable non-terminal hold. A child stages state before
+// routing outbox work, and an external txconfirm submission can succeed before
+// a later actor/store error reaches the registry. Therefore a start or status
+// error is not proof of a clean no-footprint failure and must never relive the
+// VTXO. A fresh Ensure or restart restores the pending record and retries.
+func (r *registryBehavior) parkAdmittedChild(ctx context.Context,
 	target wire.OutPoint, child *VTXOUnrollActor, err error) {
 
 	child.Stop()
 	delete(r.active, target)
 
 	record := RegistryRecord{
-		TargetOutpoint:     target,
-		ActorID:            child.Ref().ID(),
-		Phase:              PhaseFailed,
-		FailReason:         err.Error(),
-		RecoverableFailure: true,
+		TargetOutpoint: target,
+		ActorID:        child.Ref().ID(),
+		Phase:          PhasePending,
+		FailReason:     err.Error(),
 	}
 	if pending, ok := r.pending[target]; ok {
 		record = cloneRegistryRecord(pending)
-		record.Phase = PhaseFailed
+		if record.IsTerminal() {
+
+			// A terminal child handoff won the mailbox race.
+			// Preserve its objective result; the late admission
+			// error carries no higher priority than that durable
+			// terminal state.
+			return
+		}
 		record.FailReason = err.Error()
-		record.RecoverableFailure = true
+		record.RecoverableFailure = false
 	}
 
 	r.pending[target] = cloneRegistryRecord(record)
 
-	// Roll the VTXO back to live. The terminal record below is the durable
-	// backstop if this best-effort notification is lost. A recovery-only
-	// target is held in exit instead (see notifyVTXOExit / the manager),
-	// so its policy rides along.
-	r.notifyVTXOExit(context.WithoutCancel(ctx), &UnrollTerminatedMsg{
-		Outpoint:            target,
-		ActorID:             record.ActorID,
-		Phase:               PhaseFailed,
-		FailReason:          err.Error(),
-		HadOnChainFootprint: false,
-	}, record.ExitPolicyKind)
-
-	markErr := r.cfg.Store.MarkTerminal(
-		context.WithoutCancel(ctx), target, PhaseFailed, true,
-		err.Error(), nil,
+	markErr := r.cfg.Store.UpsertRecord(
+		context.WithoutCancel(ctx), cloneRegistryRecord(record),
 	)
 	if markErr != nil {
-		r.log.WarnS(ctx, "Failed to mark admitted unroll child "+
-			"terminal", markErr,
+		r.log.WarnS(ctx, "Failed to preserve parked unroll child",
+			markErr,
 			slog.String("outpoint", target.String()),
 			slog.String("actor_id", child.Ref().ID()),
 		)
 		// Registry persistence retries are actor-owned follow-up work.
 		//nolint:contextcheck
 		r.requestPersist(target, 0)
+
+		return
 	}
+
+	// The durable non-terminal row now owns retry. Dropping the cache lets
+	// a fresh Ensure reach the store-backed inline-restore branch instead
+	// of deduping forever against a child that was deliberately stopped.
+	delete(r.pending, target)
 }
 
 // isCancellationRace reports whether admission should preserve the pending
@@ -830,8 +845,8 @@ func (r *registryBehavior) failAdmittedChild(ctx context.Context,
 // baselib/actor's durable Ask short-circuits and returns that error
 // BEFORE calling mailbox.Send when the actor's own ctx is already done,
 // so there is no persisted message to trust. Letting it fall through to
-// failAdmittedChild surfaces a deterministic terminal record instead of
-// pretending the job is in flight.
+// parkAdmittedChild preserves the fail-closed durable hold instead of treating
+// the process error as objective no-footprint evidence.
 func isCancellationRace(err error) bool {
 	return errors.Is(err, context.Canceled) ||
 		errors.Is(err, context.DeadlineExceeded)
@@ -948,17 +963,19 @@ func (r *registryBehavior) handleGetStatus(ctx context.Context,
 // stopped only after a queued state probe has drained through it. That
 // keeps the registry from synchronously cancelling the child while the
 // child is still acking the terminal durable message that notified us.
-// The snapshot is then enqueued for async persistence via requestPersist.
-// Terminal writes intentionally stay on the async retry path — unlike
-// admission, a failed terminal write does not orphan the job (the
-// in-memory pending record keeps answering GetStatus), so there is no
-// reason to block the registry goroutine on a flaky store.
+// The terminal row is written synchronously before any VTXO outcome is
+// forwarded. If that write fails, the in-memory record enters the existing
+// async retry path and the outcome stays withheld until a retry succeeds. This
+// durability barrier is load-bearing for recoverable failures: business state
+// must never become live before its terminal invalidation is durable.
 func (r *registryBehavior) handleTerminated(ctx context.Context,
 	req *UnrollTerminatedMsg) fn.Result[RegistryResp] {
 
-	// A terminal failure with no on-chain footprint is recoverable: the
-	// VTXO never left off-chain custody, so it can be rolled back to live.
-	recoverable := req.Phase == PhaseFailed && !req.HadOnChainFootprint
+	// A terminal failure is recoverable only when this actor recorded no
+	// footprint and objective canonical-absence evidence cleared the
+	// chain-boundary uncertainty guard.
+	recoverable := req.Phase == PhaseFailed &&
+		!req.HadOnChainFootprint && !req.ReliveUnsafe
 
 	record := RegistryRecord{
 		TargetOutpoint:     req.Outpoint,
@@ -992,9 +1009,6 @@ func (r *registryBehavior) handleTerminated(ctx context.Context,
 	}
 
 	r.pending[req.Outpoint] = cloneRegistryRecord(record)
-	// Registry persistence retries are actor-owned follow-up work.
-	//nolint:contextcheck
-	r.requestPersist(req.Outpoint, 0)
 
 	// The child's terminal message carries its durable exit policy, which
 	// outlives r.pending: a completed async persist can evict the cached
@@ -1007,6 +1021,38 @@ func (r *registryBehavior) handleTerminated(ctx context.Context,
 	if policyKind == "" {
 		policyKind = record.ExitPolicyKind
 	}
+	if r.terminalPolicyKinds == nil {
+		r.terminalPolicyKinds = make(
+			map[wire.OutPoint]ExitPolicyKind,
+		)
+	}
+	r.terminalPolicyKinds[req.Outpoint] = policyKind
+
+	// Persist terminal invalidation before forwarding any outcome that can
+	// restore business state. A crash after reliving the VTXO but before
+	// the terminal row landed would let restart restore the old
+	// non-terminal job and reissue on-chain work against a live coin.
+	persistCtx := context.WithoutCancel(ctx)
+	err := r.cfg.Store.MarkTerminal(
+		persistCtx, req.Outpoint, req.Phase, recoverable,
+		req.FailReason, req.SweepTxid,
+	)
+	if err != nil {
+		r.log.WarnS(
+			ctx,
+			"Failed to persist terminal unroll state; holding VTXO",
+			err,
+			slog.String("outpoint", req.Outpoint.String()),
+			slog.String("phase", string(req.Phase)),
+		)
+		// Registry persistence retries are actor-owned follow-up work.
+		// The VTXO outcome stays withheld until
+		// handlePersistRecordResult sees a successful durable write.
+		//nolint:contextcheck
+		r.requestPersist(req.Outpoint, 0)
+
+		return fn.Ok[RegistryResp](&RegistryAckResp{})
+	}
 
 	// Forward the terminal outcome to the VTXO manager so the VTXO's
 	// lifecycle tracks the unroll job's terminal on-chain result rather
@@ -1015,17 +1061,18 @@ func (r *registryBehavior) handleTerminated(ctx context.Context,
 	// policy rides along so the manager can hold a recovery-only target in
 	// exit rather than relive it as a live coin.
 	r.notifyVTXOExit(context.WithoutCancel(ctx), req, policyKind)
+	delete(r.pending, req.Outpoint)
+	delete(r.terminalPolicyKinds, req.Outpoint)
 
 	return fn.Ok[RegistryResp](&RegistryAckResp{})
 }
 
 // notifyVTXOExit forwards a child's terminal outcome to the VTXO manager.
 //
-//   - PhaseFailed with no on-chain footprint: the unroll never broadcast,
-//     so the VTXO is still live from the operator's perspective. Ask the
-//     manager to roll it back to live (ExitOutcomeRecoverable).
-//   - PhaseCompleted: the exit was swept and confirmed on-chain, so ask the
-//     manager to retire the VTXO to spent (ExitOutcomeConfirmed).
+//   - PhaseFailed with no footprint and objective canonical-absence evidence:
+//     roll the VTXO back live (ExitOutcomeRecoverable).
+//   - PhaseCompleted: the target was durably consumed by the final sweep or a
+//     finalized external spend, so retire it (ExitOutcomeConfirmed).
 //   - PhaseFailed with an on-chain footprint: the exit has begun on-chain;
 //     leave the VTXO in unilateral-exit (no notification).
 //
@@ -1048,7 +1095,9 @@ func (r *registryBehavior) notifyVTXOExit(ctx context.Context,
 	case req.Phase == PhaseCompleted:
 		outcome = vtxo.ExitOutcomeConfirmed
 
-	case req.Phase == PhaseFailed && !req.HadOnChainFootprint:
+	case req.Phase == PhaseFailed && !req.HadOnChainFootprint &&
+		!req.ReliveUnsafe:
+
 		outcome = vtxo.ExitOutcomeRecoverable
 
 	default:
@@ -1242,13 +1291,43 @@ func (r *registryBehavior) tryRestoreOne(ctx context.Context,
 		return nil, fmt.Errorf("spawn failed on restore: %w", err)
 	}
 
-	_, err = child.Ref().Ask(ctx, &ResumeUnrollRequest{
-		Height: height,
-	}).Await(ctx).Unpack()
+	stateRaw, err := child.Ref().Ask(
+		ctx, &GetStateRequest{},
+	).Await(ctx).Unpack()
 	if err != nil {
 		child.Stop()
 
-		return nil, fmt.Errorf("resume failed on restore: %w", err)
+		return nil, fmt.Errorf("read checkpoint state on restore: %w",
+			err)
+	}
+	state, ok := stateRaw.(*GetStateResp)
+	if !ok {
+		child.Stop()
+
+		return nil, fmt.Errorf("read checkpoint state on restore: "+
+			"unexpected response %T", stateRaw)
+	}
+
+	var restoreReq Msg = &ResumeUnrollRequest{Height: height}
+	if !state.Started {
+		// Admission may have failed before the first checkpoint Stage.
+		// Recreate the original start identity from the durable
+		// registry row instead of inventing a
+		// TriggerRestart/standard-policy job.
+		restoreReq = &StartUnrollRequest{
+			Height:         height,
+			Trigger:        record.Trigger,
+			ExitPolicyKind: record.ExitPolicyKind,
+			ExitPolicyRef:  record.ExitPolicyRef,
+		}
+	}
+
+	_, err = child.Ref().Ask(ctx, restoreReq).Await(ctx).Unpack()
+	if err != nil {
+		child.Stop()
+
+		return nil, fmt.Errorf("start/resume failed on restore: %w",
+			err)
 	}
 
 	return child, nil
@@ -1335,6 +1414,32 @@ func (r *registryBehavior) handlePersistRecordResult(ctx context.Context,
 	if req.Err == "" {
 		record, ok := r.pending[req.Outpoint]
 		if ok && sameRegistryRecord(record, req.Record) {
+			if record.IsTerminal() {
+				policyKind := record.ExitPolicyKind
+				outpoint := req.Outpoint
+				policyKinds := r.terminalPolicyKinds
+				pendingKind, exists := policyKinds[outpoint]
+				if exists {
+					policyKind = pendingKind
+				}
+				r.notifyVTXOExit(
+					context.WithoutCancel(ctx),
+					&UnrollTerminatedMsg{
+						Outpoint:   req.Outpoint,
+						ActorID:    record.ActorID,
+						Phase:      record.Phase,
+						FailReason: record.FailReason,
+						SweepTxid: copyHash(
+							record.SweepTxid,
+						),
+						HadOnChainFootprint: !record.
+							RecoverableFailure,
+						ExitPolicyKind: policyKind,
+					},
+					policyKind,
+				)
+				delete(r.terminalPolicyKinds, req.Outpoint)
+			}
 			delete(r.pending, req.Outpoint)
 		} else if ok {
 			// Registry persistence retries are actor-owned work.
@@ -1483,6 +1588,7 @@ func (r *registryBehavior) childConfig(target wire.OutPoint) Config {
 		ExitSpendPolicyResolver:     r.cfg.ExitSpendPolicyResolver,
 		FraudCheckpointSafetyMargin: r.cfg.FraudCheckpointSafetyMargin,
 		RegistryRef:                 r.selfRef,
+		ChainReconcilerFactory:      r.cfg.ChainReconcilerFactory,
 	}
 }
 

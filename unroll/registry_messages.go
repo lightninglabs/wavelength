@@ -155,12 +155,17 @@ type UnrollTerminatedMsg struct {
 	SweepTxid *chainhash.Hash
 
 	// HadOnChainFootprint reports whether the job ever published anything
-	// on-chain (a confirmed or in-flight proof node, or a broadcast
-	// sweep). It is false only for a clean failure that never broadcast,
-	// which is the sole case where the target VTXO is safe to roll back
-	// to live (the operator still considers it live). See
-	// wavelength#602.
+	// on-chain (a confirmed or in-flight proof node, or a broadcast sweep).
+	// False means only that the local planner recorded no footprint;
+	// ReliveUnsafe must also be false before the target VTXO may return to
+	// live. See wavelength#602.
 	HadOnChainFootprint bool
+
+	// ReliveUnsafe reports that chain-boundary uncertainty prevents a
+	// terminal failure from proving the VTXO remained live, even if this
+	// process did not record its own on-chain footprint. It remains set
+	// until objective canonical-absence evidence clears it.
+	ReliveUnsafe bool
 
 	// ExitPolicyKind is the child's durable exit policy for this target.
 	// The child sources it from its own persisted state, so it stays
