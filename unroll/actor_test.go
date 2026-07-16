@@ -406,6 +406,42 @@ func (f *fakeTxConfirmRef) emitFailed(t *testing.T, index int,
 	require.NoError(t, err)
 }
 
+// emitReorged delivers a txconfirm reorg notification to the subscriber
+// behind the request at index.
+func (f *fakeTxConfirmRef) emitReorged(t *testing.T, index int,
+	txid chainhash.Hash) {
+
+	t.Helper()
+
+	f.mu.Lock()
+	require.Less(t, index, len(f.requests))
+	subscriber := f.requests[index].Subscriber
+	f.mu.Unlock()
+
+	err := subscriber.Tell(t.Context(), &txconfirm.TxReorged{
+		Txid: txid,
+	})
+	require.NoError(t, err)
+}
+
+// emitFinalized delivers a txconfirm finalized notification to the
+// subscriber behind the request at index.
+func (f *fakeTxConfirmRef) emitFinalized(t *testing.T, index int,
+	txid chainhash.Hash) {
+
+	t.Helper()
+
+	f.mu.Lock()
+	require.Less(t, index, len(f.requests))
+	subscriber := f.requests[index].Subscriber
+	f.mu.Unlock()
+
+	err := subscriber.Tell(t.Context(), &txconfirm.TxFinalized{
+		Txid: txid,
+	})
+	require.NoError(t, err)
+}
+
 // confRef aliases the chainsource confirmation notification target.
 type confRef = actor.TellOnlyRef[chainsource.ConfirmationEvent]
 
@@ -415,16 +451,18 @@ type confReq = chainsource.RegisterConfRequest
 // fakeChainSourceRef is a minimal chainsource actor ref for sweep fee
 // estimation tests.
 type fakeChainSourceRef struct {
-	mu          sync.Mutex
-	bestHeight  int32
-	feeRate     int64
-	feeErr      error
-	blockRef    actor.TellOnlyRef[chainsource.BlockEpoch]
-	spendRefs   map[wire.OutPoint]spendEventRef
-	spendRegs   []wire.OutPoint
-	removedTxes []chainhash.Hash
-	confRefs    map[chainhash.Hash]confRef
-	confReqs    map[chainhash.Hash]*confReq
+	mu                sync.Mutex
+	bestHeight        int32
+	feeRate           int64
+	feeErr            error
+	blockRef          actor.TellOnlyRef[chainsource.BlockEpoch]
+	spendRefs         map[wire.OutPoint]spendEventRef
+	spendRegs         []wire.OutPoint
+	spendReorgedRef   actor.TellOnlyRef[chainsource.SpendReorgedEvent]
+	spendFinalizedRef actor.TellOnlyRef[chainsource.SpendDoneEvent]
+	removedTxes       []chainhash.Hash
+	confRefs          map[chainhash.Hash]confRef
+	confReqs          map[chainhash.Hash]*confReq
 }
 
 // spendEventRef is the fake chain-source spend notification actor reference.
@@ -542,6 +580,18 @@ func (f *fakeChainSourceRef) Ask(_ context.Context,
 		}
 		f.spendRefs[outpoint] = msg.NotifyActor.UnwrapOr(nil)
 		f.spendRegs = append(f.spendRegs, outpoint)
+
+		// Reorg/finalized refs are only wired by ensureSpendWatch
+		// (target outpoint). Proof-node spend watches from
+		// ensureProofSpendWatches leave these unset; capture them
+		// only when the caller actually provided them so a later
+		// proof-node registration cannot wipe the target's refs.
+		if msg.NotifyReorged.IsSome() {
+			f.spendReorgedRef = msg.NotifyReorged.UnwrapOr(nil)
+		}
+		if msg.NotifyDone.IsSome() {
+			f.spendFinalizedRef = msg.NotifyDone.UnwrapOr(nil)
+		}
 		f.mu.Unlock()
 		promise.Complete(
 			fn.Ok[chainsource.ChainSourceResp](
@@ -679,6 +729,40 @@ func (f *fakeChainSourceRef) removedTxSnapshot() []chainhash.Hash {
 	defer f.mu.Unlock()
 
 	return append([]chainhash.Hash(nil), f.removedTxes...)
+}
+
+// emitSpendReorged delivers a SpendReorgedEvent to the subscribed actor.
+func (f *fakeChainSourceRef) emitSpendReorged(t *testing.T) {
+	t.Helper()
+
+	f.mu.Lock()
+	ref := f.spendReorgedRef
+	f.mu.Unlock()
+
+	require.NotNil(t, ref)
+	require.NoError(
+		t,
+		ref.Tell(
+			t.Context(), chainsource.SpendReorgedEvent{},
+		),
+	)
+}
+
+// emitSpendFinalized delivers a SpendDoneEvent to the subscribed actor.
+func (f *fakeChainSourceRef) emitSpendFinalized(t *testing.T) {
+	t.Helper()
+
+	f.mu.Lock()
+	ref := f.spendFinalizedRef
+	f.mu.Unlock()
+
+	require.NotNil(t, ref)
+	require.NoError(
+		t,
+		ref.Tell(
+			t.Context(), chainsource.SpendDoneEvent{},
+		),
+	)
 }
 
 // fakeSweepWallet is a minimal signer plus wallet-destination test double.
@@ -2182,6 +2266,11 @@ func TestResumeReissuesDeferredCheckpointWatch(t *testing.T) {
 	t.Cleanup(resumedActor.Stop)
 
 	mustAsk(t, resumedActor.Ref(), &ResumeUnrollRequest{Height: 111})
+	checkpoint := mustDecodeCheckpoint(t, store, "resume-deferred-test")
+	require.True(
+		t, checkpoint.ReliveUnsafe, "restart must persist the "+
+			"fail-closed relive guard before reissue",
+	)
 	require.Eventually(t, func() bool {
 		return chainRef.confWatchCount() == 1
 	}, testTimeout, 10*time.Millisecond)
@@ -2509,19 +2598,20 @@ func TestTerminalFailureRemovesAbandonedBroadcasts(t *testing.T) {
 	})
 
 	// The root proof tx is submitted (in-flight) on start. Wait for the
-	// target spend watch, then fail the job with an external spend of the
-	// target outpoint (case 4). A target spend, unlike a root-output spend,
-	// does not confirm the still-in-flight root.
+	// reversible spend watches to arm, then spend the target externally
+	// (case 4). Under reorg-safe exits this is a reversible completion —
+	// the VTXO left on chain via someone else's tx — not an immediate
+	// failure, so the job parks in PhaseExternalSpendObserved until the
+	// spend finalizes. A target spend, unlike a root-output spend, does not
+	// confirm the still-in-flight root.
 	target := proof.TargetOutpoint()
 	rootTxid := proof.RootTxids()[0]
 	require.Eventually(t, func() bool {
-		for _, outpoint := range chainSource.spendRegistrations() {
-			if outpoint == target {
-				return true
-			}
-		}
+		chainSource.mu.Lock()
+		defer chainSource.mu.Unlock()
 
-		return false
+		return chainSource.spendReorgedRef != nil &&
+			chainSource.spendFinalizedRef != nil
 	}, testTimeout, 10*time.Millisecond)
 
 	chainSource.emitSpendForOutpoint(t, target, chainhash.Hash{0xee}, 101)
@@ -2532,11 +2622,24 @@ func TestTerminalFailureRemovesAbandonedBroadcasts(t *testing.T) {
 		).(*GetStateResp)
 		require.True(t, ok)
 
-		return stateResp.Phase == PhaseFailed
+		return stateResp.Phase == PhaseExternalSpendObserved
 	}, testTimeout, 10*time.Millisecond)
 
-	// The in-flight root tx must have been removed from the wallet so a
-	// full-node wallet stops rebroadcasting it.
+	// Finalize the external spend past the reorg-safety depth. The job
+	// completes and the abandoned in-flight root — which can never confirm
+	// now that the target is spent — must be removed so a full-node wallet
+	// stops rebroadcasting it (wavelength#609).
+	chainSource.emitSpendFinalized(t)
+
+	require.Eventually(t, func() bool {
+		stateResp, ok := mustAsk(
+			t, unrollActor.Ref(), &GetStateRequest{},
+		).(*GetStateResp)
+		require.True(t, ok)
+
+		return stateResp.Phase == PhaseCompleted
+	}, testTimeout, 10*time.Millisecond)
+
 	require.Eventually(t, func() bool {
 		for _, txid := range chainSource.removedTxSnapshot() {
 			if txid == rootTxid {
@@ -2546,7 +2649,8 @@ func TestTerminalFailureRemovesAbandonedBroadcasts(t *testing.T) {
 
 		return false
 	}, testTimeout, 10*time.Millisecond,
-		"terminal failure must remove the in-flight proof tx (#609)")
+		"terminal external spend must remove the in-flight proof tx "+
+			"(#609)")
 }
 
 // TestRejectedProofTxIsRemovedOnTerminalFailure covers wavelength#609's own
@@ -3127,6 +3231,12 @@ func TestSweepConfirmationCompletesActor(t *testing.T) {
 	)
 	require.True(t, checkpoint.State.Sweep.ConfirmHeight.IsSome())
 
+	// Reorg-safe completion treats PhaseCompleted as provisional on
+	// confirmation and defers the terminal handoff (and the ExitCostMsg
+	// emission) until the sweep finalizes past reorg-safety depth. Drive
+	// the finalize so the exit cost lands.
+	txconfirmRef.emitFinalized(t, 2, sweepTxid)
+
 	ledgerMsg, ok := ledgerSink.AwaitMessage(testTimeout)
 	require.True(t, ok)
 	exitCostMsg, ok := ledgerMsg.(*ledger.ExitCostMsg)
@@ -3227,6 +3337,20 @@ func TestExitCostTellFailureDefersTerminalHandoff(t *testing.T) {
 
 		return stateResp.Phase == PhaseCompleted
 	}, testTimeout, 10*time.Millisecond)
+
+	// Finalize the sweep so PhaseCompleted is no longer provisional and
+	// the actor becomes terminal-eligible. The terminal handoff still
+	// requires a successful exit-cost emission, which fails here because
+	// the sink has no ledger actor behind it.
+	txconfirmRef.emitFinalized(t, 2, sweepTxid)
+
+	// Synchronize with the actor before mutating its config below. The
+	// finalize above is delivered on the actor mailbox ahead of this Ask
+	// (FIFO), so by the time the Ask returns the deferred-handoff attempt
+	// it triggered -- including its read of cfg.LedgerSink -- has completed
+	// and happens-before the sink swap. Without this edge the race detector
+	// flags the concurrent field access against that read.
+	mustAsk(t, unrollActor.Ref(), &GetStateRequest{})
 
 	// The failing ledger sink must have deferred the terminal handoff:
 	// the registry sees no UnrollTerminatedMsg.
@@ -3591,12 +3715,19 @@ func TestSweepFailureRetriesThenFails(t *testing.T) {
 	require.Equal(t, maxSweepAttempts, checkpoint.SweepAttempts)
 }
 
-// TestExternalSpendTerminatesActor verifies that an external spend of the
-// target VTXO (not our proof nodes or sweep) terminates the actor.
+// TestExternalSpendTerminatesActor verifies that an external spend of
+// the target VTXO is treated as a provisional block, and that
+// finalization resolves it as a terminal on-chain completion. Without the
+// finalization signal the actor stays in AwaitingExternalSpendFinality
+// so a reorg of the spending block has a live actor to resume.
 func TestExternalSpendTerminatesActor(t *testing.T) {
 	proof := buildLinearProof(t)
 	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
-	unrollActor, beh, _, _ := newActorHarness(t, proof, desc)
+	unrollActor, beh, _, store := newActorHarness(t, proof, desc)
+	registryRef := actor.NewChannelTellOnlyRef[RegistryMsg](
+		"unroll-registry", 1,
+	)
+	beh.cfg.RegistryRef = registryRef
 
 	chainSource, ok := beh.cfg.ChainSource.(*fakeChainSourceRef)
 	require.True(t, ok)
@@ -3606,15 +3737,26 @@ func TestExternalSpendTerminatesActor(t *testing.T) {
 		Trigger: TriggerManual,
 	})
 
-	// Ensure spend watch is registered.
+	// Ensure spend watch is registered for the target outpoint with
+	// reorg / done callback refs wired so the actor can be driven
+	// through the full reversible lifecycle.
 	require.Eventually(t, func() bool {
+		var targetRegistered bool
 		for _, outpoint := range chainSource.spendRegistrations() {
 			if outpoint == proof.TargetOutpoint() {
-				return true
+				targetRegistered = true
+				break
 			}
 		}
+		if !targetRegistered {
+			return false
+		}
 
-		return false
+		chainSource.mu.Lock()
+		defer chainSource.mu.Unlock()
+
+		return chainSource.spendReorgedRef != nil &&
+			chainSource.spendFinalizedRef != nil
 	}, testTimeout, 10*time.Millisecond)
 
 	// Simulate an external party spending the target VTXO.
@@ -3623,20 +3765,46 @@ func TestExternalSpendTerminatesActor(t *testing.T) {
 		t, proof.TargetOutpoint(), externalTxid, 101,
 	)
 
+	// The actor must enter the reversible
+	// AwaitingExternalSpendFinality phase rather than terminating.
 	require.Eventually(t, func() bool {
 		stateResp, ok := mustAsk(
 			t, unrollActor.Ref(), &GetStateRequest{},
 		).(*GetStateResp)
 		require.True(t, ok)
 
-		return stateResp.Phase == PhaseFailed
+		return stateResp.Phase == PhaseExternalSpendObserved
+	}, testTimeout, 10*time.Millisecond)
+
+	// Finalize the spend. The actor resolves the target on chain and
+	// transitions to PhaseCompleted without fabricating a sweep.
+	chainSource.emitSpendFinalized(t)
+
+	require.Eventually(t, func() bool {
+		stateResp, ok := mustAsk(
+			t, unrollActor.Ref(), &GetStateRequest{},
+		).(*GetStateResp)
+		require.True(t, ok)
+
+		return stateResp.Phase == PhaseCompleted
 	}, testTimeout, 10*time.Millisecond)
 
 	stateResp, ok := mustAsk(
 		t, unrollActor.Ref(), &GetStateRequest{},
 	).(*GetStateResp)
 	require.True(t, ok)
-	require.Contains(t, stateResp.FailReason, "spent externally")
+	require.Empty(t, stateResp.FailReason)
+
+	terminalMsg, ok := registryRef.AwaitMessage(testTimeout)
+	require.True(t, ok, "final external spend must retire the target")
+	terminated, ok := terminalMsg.(*UnrollTerminatedMsg)
+	require.True(t, ok)
+	require.Equal(t, PhaseCompleted, terminated.Phase)
+	require.True(t, terminated.HadOnChainFootprint)
+	require.Nil(t, terminated.SweepTxid)
+
+	checkpoint := mustDecodeCheckpoint(t, store, "unroll-test")
+	require.True(t, checkpoint.ExternalSpendFinalized)
 }
 
 // TestStartUnrollIsIdempotent verifies that reissuing start does not duplicate
