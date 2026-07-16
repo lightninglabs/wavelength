@@ -40,20 +40,21 @@ func checkpointFromState(state State, sweepTx *wire.MsgTx) *actorCheckpoint {
 	}
 	checkpoint.Fail = job.FailReason
 	checkpoint.SweepAttempts = job.SweepAttempts
+	checkpoint.ProvisionalExternalSpend = job.ProvisionalExternalSpend
+	checkpoint.ExternalSpendFinalized = job.ExternalSpendFinalized
+	checkpoint.ReliveUnsafe = job.ReliveUnsafe
 
 	return checkpoint
 }
 
-// jobHadOnChainFootprint reports whether the job ever published anything
-// on-chain. A footprint exists if any proof node confirmed or is still
-// in-flight (submitted to txconfirm, so potentially in the mempool), or if
-// the sweep advanced past pending. It is false only for a clean failure
-// that never broadcast, which is the sole case where the target VTXO is
-// safe to roll back to live: any footprint means the unilateral exit has
-// begun on-chain and the operator no longer treats the VTXO as live. See
-// wavelength#602.
+// jobHadOnChainFootprint reports whether the job published anything on-chain
+// or observed a finalized external spend. A false result means only that the
+// local planner recorded no footprint; the independent ReliveUnsafe guard must
+// also be cleared by objective canonical-absence evidence before the VTXO may
+// return to live. See wavelength#602.
 //
-// This reflects THIS job's own footprint. An exit driven on-chain by a
+// Except for ExternalSpendFinalized, this reflects THIS job's own footprint.
+// An exit driven on-chain by a
 // third party (the operator, or a prior holder of a fraudulently re-spent
 // VTXO) does not reach the recoverable branch: our submission of the same
 // proof node is an ignorable "already known" broadcast rather than a hard
@@ -66,9 +67,13 @@ func jobHadOnChainFootprint(job *JobState) bool {
 		return false
 	}
 
+	sweepPublished := job.PlannerState.Sweep.Status !=
+		unrollplan.SweepStatusPending
+
 	return len(job.PlannerState.ConfirmedTxids) > 0 ||
 		len(job.PlannerState.InFlightTxids) > 0 ||
-		job.PlannerState.Sweep.Status != unrollplan.SweepStatusPending
+		sweepPublished ||
+		job.ExternalSpendFinalized
 }
 
 // effectiveSweepTxid returns the durable sweep txid from planner state when
@@ -102,14 +107,19 @@ func stateFromCheckpoint(checkpoint *actorCheckpoint) State {
 
 	deferred := copyDeferredCheckpoints(checkpoint.DeferredCheckpoints)
 	job := &JobState{
-		Height:              checkpoint.Height,
-		Trigger:             checkpoint.Trigger,
-		ExitPolicyKind:      exitPolicyKind(checkpoint.ExitPolicyKind),
-		ExitPolicyRef:       checkpoint.ExitPolicyRef,
-		PlannerState:        copyPlannerState(checkpoint.State),
-		DeferredCheckpoints: deferred,
-		FailReason:          checkpoint.Fail,
-		SweepAttempts:       checkpoint.SweepAttempts,
+		Height:  checkpoint.Height,
+		Trigger: checkpoint.Trigger,
+		ExitPolicyKind: exitPolicyKind(
+			checkpoint.ExitPolicyKind,
+		),
+		ExitPolicyRef:            checkpoint.ExitPolicyRef,
+		PlannerState:             copyPlannerState(checkpoint.State),
+		DeferredCheckpoints:      deferred,
+		FailReason:               checkpoint.Fail,
+		SweepAttempts:            checkpoint.SweepAttempts,
+		ProvisionalExternalSpend: checkpoint.ProvisionalExternalSpend,
+		ExternalSpendFinalized:   checkpoint.ExternalSpendFinalized,
+		ReliveUnsafe:             checkpoint.ReliveUnsafe,
 	}
 
 	switch phaseFromPlannerState(job) {
@@ -118,6 +128,9 @@ func stateFromCheckpoint(checkpoint *actorCheckpoint) State {
 
 	case PhaseFailed:
 		return &Failed{Job: job}
+
+	case PhaseExternalSpendObserved:
+		return &AwaitingExternalSpendFinality{Job: job}
 
 	case PhaseSweepConfirmation:
 		return &AwaitingSweepConfirmation{Job: job}
@@ -152,6 +165,9 @@ func phaseFromState(state State) Phase {
 	case *AwaitingSweepConfirmation:
 		return PhaseSweepConfirmation
 
+	case *AwaitingExternalSpendFinality:
+		return PhaseExternalSpendObserved
+
 	case *Completed:
 		return PhaseCompleted
 
@@ -172,6 +188,19 @@ func phaseFromPlannerState(job *JobState) Phase {
 
 	if job.FailReason != "" {
 		return PhaseFailed
+	}
+
+	if job.ExternalSpendFinalized {
+		return PhaseCompleted
+	}
+
+	// A persisted provisional external spend takes precedence over the
+	// sweep-based phase derivation: the actor was parked waiting for either
+	// a reorg (which clears the anchor) or finality (which resolves it as
+	// permanently consumed). Surfacing this phase keeps restart
+	// reconciliation and the live reducer aligned on the same state.
+	if job.ProvisionalExternalSpend.IsSome() {
+		return PhaseExternalSpendObserved
 	}
 
 	switch {
@@ -205,6 +234,9 @@ func stateJob(state State) *JobState {
 		return s.Job.Copy()
 
 	case *AwaitingSweepConfirmation:
+		return s.Job.Copy()
+
+	case *AwaitingExternalSpendFinality:
 		return s.Job.Copy()
 
 	case *Completed:

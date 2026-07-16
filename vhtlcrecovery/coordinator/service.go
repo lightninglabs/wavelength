@@ -565,7 +565,13 @@ func (s *Service) reconcileLoaded(ctx context.Context,
 	switch status.UnrollPhase {
 	case unroll.PhasePending, unroll.PhaseMaterializing,
 		unroll.PhaseCSVPending, unroll.PhaseSweepBroadcast,
-		unroll.PhaseSweepConfirmation:
+		unroll.PhaseSweepConfirmation,
+		unroll.PhaseExternalSpendObserved:
+		// PhaseExternalSpendObserved is a parked, non-terminal state:
+		// the unroll actor observed an unfinalized external spend of
+		// the target and is holding (a reorg can resurrect it), so the
+		// recovery job likewise holds its current state until the
+		// unroll resolves one way or the other.
 		return status, nil
 
 	case unroll.PhaseCompleted:

@@ -77,6 +77,10 @@ func processEventWithJob(ctx context.Context, job *JobState, event Event,
 		if e.Height > nextJob.Height {
 			nextJob.Height = e.Height
 		}
+		// A positive-only notifier cannot prove that no external spend
+		// landed while the daemon was offline. Persist the fail-closed
+		// relive guard before any reissued side effect.
+		nextJob.ReliveUnsafe = true
 		reissue = true
 
 	case *HeightUpdatedEvent:
@@ -90,6 +94,41 @@ func processEventWithJob(ctx context.Context, job *JobState, event Event,
 
 	case *TxFailedEvent:
 		applyFailedEvent(nextJob, e)
+
+	case *TxReorgedEvent:
+		applyReorgedEvent(nextJob, e, env)
+
+	case *TxFinalizedEvent:
+		// TxFinalized is informational at the unroll layer: the
+		// underlying chain anchor is no longer reversible, but the
+		// planner has already accounted for the confirmation. Nothing
+		// to mutate; we still run the planner below in case the
+		// finality changes any derived decision.
+
+	case *ExternalSpendObservedEvent:
+		nextJob.ProvisionalExternalSpend = fn.Some(ExternalSpendAnchor{
+			SpendingTxid:   e.SpendingTxid,
+			SpendingHeight: e.SpendingHeight,
+		})
+		if e.SpendingHeight > nextJob.Height {
+			nextJob.Height = e.SpendingHeight
+		}
+
+	case *SpendReorgedEvent:
+		nextJob.ProvisionalExternalSpend =
+			fn.None[ExternalSpendAnchor]()
+
+	case *SpendFinalizedEvent:
+		// Finalizing a provisional external spend resolves the target
+		// on chain. If no provisional anchor was held, SpendFinalized
+		// is informational and ignored.
+		nextJob.ProvisionalExternalSpend.WhenSome(
+			func(ExternalSpendAnchor) {
+				nextJob.ExternalSpendFinalized = true
+				nextJob.ProvisionalExternalSpend =
+					fn.None[ExternalSpendAnchor]()
+			},
+		)
 
 	case *SweepBroadcastedEvent:
 		nextJob.PlannerState.Sweep.Status =
@@ -194,13 +233,38 @@ func deriveStateTransition(ctx context.Context, job *JobState, env *Environment,
 		return nil, err
 	}
 
-	// Terminal short-circuit. applyFailedEvent populates FailReason
-	// for proof-tx terminal failures, and handleSpendObserved emits
-	// explicit FailEvents for external-spend detection; both land
-	// here before any planner work.
+	// Failure short-circuit. applyFailedEvent populates FailReason for
+	// proof-tx terminal failures; finalized external spends use the
+	// distinct consumed-success branch immediately below.
 	if job.FailReason != "" {
 		return &StateTransition{
 			NextState: &Failed{
+				Job: job.Copy(),
+			},
+		}, nil
+	}
+
+	// A finalized external spend is an objective terminal success from the
+	// VTXO lifecycle's perspective: the target is consumed and must retire.
+	if job.ExternalSpendFinalized {
+		return &StateTransition{
+			NextState: &Completed{
+				Job: job.Copy(),
+			},
+		}, nil
+	}
+
+	// Provisional external spend short-circuit. While the spend is
+	// observed but not finalized, the planner must not advance toward
+	// a sweep: on chain the target output no longer exists, and
+	// broadcasting a sweep on top would fail. A SpendReorgedEvent
+	// clears ProvisionalExternalSpend and the next derivation falls
+	// through to the normal planner phase decision; a
+	// SpendFinalizedEvent marks the target durably consumed and the
+	// completed branch above handles the terminal transition.
+	if job.ProvisionalExternalSpend.IsSome() {
+		return &StateTransition{
+			NextState: &AwaitingExternalSpendFinality{
 				Job: job.Copy(),
 			},
 		}, nil
@@ -439,6 +503,151 @@ func applyFailedEvent(job *JobState, event *TxFailedEvent) {
 	)
 
 	job.FailReason = event.Reason
+}
+
+// applyReorgedEvent rolls back the chain anchor for a previously
+// confirmed proof or sweep transaction. The semantics mirror
+// applyConfirmedEvent in reverse:
+//
+//   - If the reorged txid matches the recorded sweep txid, downgrade
+//     SweepStatus from Confirmed back to Broadcasted and clear the
+//     stored ConfirmHeight. The signed sweep bytes are still durable
+//     in the actor checkpoint and the txconfirm subscription is still
+//     live, so the actor naturally re-runs AwaitingSweepConfirmation
+//     until the sweep reconfirms.
+//
+//   - Otherwise the reorged txid is a proof node: drop it from
+//     ConfirmedTxids so the planner stops treating it as ready. If
+//     the reorged tx is the target itself, clear TargetConfirmHeight
+//     so CSV maturity is recomputed when the target reconfirms, and
+//     downgrade any sweep that depended on the now-invalidated target
+//     confirmation. The proof node remains broadcastable; the next
+//     deriveStateTransition will route an EnsureReadyTransactions for
+//     it if the planner's frontier turns up the txid again.
+//
+// Height is never rolled back: chain height is a global property
+// reported by the block subscription, not by the per-tx watch, so a
+// reorged confirmation does not move best-height down even though it
+// invalidates the per-tx anchor.
+func applyReorgedEvent(job *JobState, event *TxReorgedEvent, env *Environment) {
+	if job == nil || event == nil {
+		return
+	}
+
+	// Sweep reorg: downgrade SweepStatus so deriveStateTransition lands
+	// in AwaitingSweepConfirmation (the sweep tx is still on chain,
+	// pending re-confirmation) rather than Completed.
+	if job.PlannerState.Sweep.Txid.IsSome() &&
+		job.PlannerState.Sweep.Txid.UnsafeFromSome() == event.Txid {
+
+		if job.PlannerState.Sweep.Status ==
+			unrollplan.SweepStatusConfirmed {
+
+			job.PlannerState.Sweep.Status =
+				unrollplan.SweepStatusBroadcasted
+		}
+		job.PlannerState.Sweep.ConfirmHeight = fn.None[int32]()
+
+		return
+	}
+
+	// Proof-node reorg: clear the confirmed anchor for this txid AND
+	// every descendant that we had recorded as confirmed or in-flight.
+	// State.Validate enforces a topological invariant (every
+	// confirmed/in-flight node has confirmed parents) that would fail
+	// if we dropped only the immediate ancestor and left descendants
+	// in place. Pruning the entire reorged subtree keeps the planner
+	// state internally consistent; txconfirm's txid-keyed dedup
+	// absorbs the re-submits when the planner re-emits the same nodes
+	// on its ready frontier after the parent reconfirms.
+	reorgedSubtree := collectReorgedSubtree(env, event.Txid)
+	job.PlannerState.ConfirmedTxids = removeHashes(
+		job.PlannerState.ConfirmedTxids, reorgedSubtree,
+	)
+	job.PlannerState.InFlightTxids = removeHashes(
+		job.PlannerState.InFlightTxids, reorgedSubtree,
+	)
+	for txid := range reorgedSubtree {
+		job.DeferredCheckpoints = removeDeferredCheckpoint(
+			job.DeferredCheckpoints, txid,
+		)
+	}
+
+	// If this proof tx was the target, the CSV anchor is also gone.
+	// unrollplan's State.Validate enforces "broadcasted / confirmed
+	// sweep requires confirmed target" so any non-pending sweep must
+	// be reset to Pending when the target loses its anchor. The
+	// signed sweep bytes still live in the actor checkpoint
+	// (b.sweepTx); a re-confirmed target drives NeedSweep again and
+	// startSweep reuses those bytes rather than deriving a new wallet
+	// pkScript or producing a different sweep txid.
+	if env != nil && env.Proof != nil &&
+		event.Txid == env.Proof.TargetOutpoint().Hash {
+
+		job.PlannerState.TargetConfirmHeight = fn.None[int32]()
+
+		if job.PlannerState.Sweep.Status !=
+			unrollplan.SweepStatusPending {
+
+			job.PlannerState.Sweep.Status =
+				unrollplan.SweepStatusPending
+			job.PlannerState.Sweep.Txid = fn.None[chainhash.Hash]()
+			job.PlannerState.Sweep.ConfirmHeight = fn.None[int32]()
+		}
+	}
+}
+
+// collectReorgedSubtree returns the set of every txid transitively
+// descended from root within the proof graph, inclusive of root itself.
+// A nil environment or missing root yields a singleton set so the
+// reducer can still drop the reorged txid from local bookkeeping even
+// when the proof is not loaded.
+func collectReorgedSubtree(env *Environment,
+	root chainhash.Hash) map[chainhash.Hash]struct{} {
+
+	subtree := map[chainhash.Hash]struct{}{root: {}}
+	if env == nil || env.Proof == nil {
+		return subtree
+	}
+
+	queue := []chainhash.Hash{root}
+	for len(queue) > 0 {
+		next := queue[0]
+		queue = queue[1:]
+
+		children, err := env.Proof.ChildTxids(next)
+		if err != nil {
+			continue
+		}
+		for _, child := range children {
+			if _, ok := subtree[child]; ok {
+				continue
+			}
+			subtree[child] = struct{}{}
+			queue = append(queue, child)
+		}
+	}
+
+	return subtree
+}
+
+// removeHashes returns hashes with every entry in drop removed.
+func removeHashes(hashes []chainhash.Hash,
+	drop map[chainhash.Hash]struct{}) []chainhash.Hash {
+
+	if len(hashes) == 0 || len(drop) == 0 {
+		return hashes
+	}
+
+	filtered := hashes[:0:0]
+	for _, h := range hashes {
+		if _, ok := drop[h]; ok {
+			continue
+		}
+		filtered = append(filtered, h)
+	}
+
+	return filtered
 }
 
 // applySweepBuildFailed records a sweep build or broadcast failure and
