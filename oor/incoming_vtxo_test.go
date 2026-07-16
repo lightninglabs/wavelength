@@ -169,6 +169,86 @@ func TestBuildIncomingVTXODescriptorNormalizesPrimaryAncestry(t *testing.T) {
 	require.Equal(t, secondaryCommit, desc.Ancestry[1].CommitmentTxID)
 }
 
+// TestBuildIncomingVTXODescriptorSameCommitmentMultiLeaf verifies that
+// two ancestry fragments anchored at the SAME commitment txid but
+// carrying distinct tree paths are accepted. This is the shape the
+// indexer produces for an OOR spend whose inputs sit at different
+// leaves of one commitment tree (one AncestryPath per leaf), and is a
+// regression test for wavelength#969, where the receive-side duplicate
+// check keyed on commitment txid alone rejected the incoming change
+// VTXO and stranded it unmaterialized.
+func TestBuildIncomingVTXODescriptorSameCommitmentMultiLeaf(t *testing.T) {
+	t.Parallel()
+
+	arkPSBT, _, recipients, commits, recipientKey,
+		operatorKey := buildTestIncomingMaterializationMultiInput(t)
+
+	commit := commits[0]
+
+	// Two fragments anchored at the same commitment. The tree paths
+	// differ (distinct batch outpoint indices stand in for distinct
+	// leaf paths within the commitment tree), so the fragments are
+	// NOT duplicates of one another. Together they cover both Ark tx
+	// inputs.
+	ancestry := []vtxo.Ancestry{
+		{
+			TreePath: &lib_tree.Tree{
+				Root: &lib_tree.Node{},
+				BatchOutpoint: wire.OutPoint{
+					Hash:  commit,
+					Index: 0,
+				},
+			},
+			CommitmentTxID: commit,
+			InputIndices: []uint32{
+				0,
+			},
+			TreeDepth: 1,
+		},
+		{
+			TreePath: &lib_tree.Tree{
+				Root: &lib_tree.Node{},
+				BatchOutpoint: wire.OutPoint{
+					Hash:  commit,
+					Index: 1,
+				},
+			},
+			CommitmentTxID: commit,
+			InputIndices: []uint32{
+				1,
+			},
+			TreeDepth: 1,
+		},
+	}
+
+	desc, err := BuildIncomingVTXODescriptor(arkPSBT,
+		IncomingVTXOConfig{
+			OutputIndex: recipients[0].OutputIndex,
+			ClientKey: keychain.KeyDescriptor{
+				PubKey: recipientKey.PubKey(),
+			},
+			OperatorKey: operatorKey,
+			ExitDelay:   10,
+			Metadata: IncomingVTXOMetadata{
+				RoundID:        "test-round",
+				CommitmentTxID: commit,
+				BatchExpiry:    1000,
+				ChainDepth:     1,
+				CreatedHeight:  500,
+				Ancestry:       ancestry,
+			},
+		},
+	)
+	require.NoError(t, err)
+	require.Len(t, desc.Ancestry, 2)
+	require.Equal(t, commit, desc.Ancestry[0].CommitmentTxID)
+	require.Equal(t, commit, desc.Ancestry[1].CommitmentTxID)
+	require.NotEqual(
+		t, desc.Ancestry[0].TreePath.BatchOutpoint,
+		desc.Ancestry[1].TreePath.BatchOutpoint,
+	)
+}
+
 // TestBuildIncomingVTXODescriptorRejectsNilArk verifies that a nil Ark
 // PSBT is rejected early.
 func TestBuildIncomingVTXODescriptorRejectsNilArk(t *testing.T) {
@@ -340,12 +420,17 @@ func TestBuildIncomingVTXODescriptorRejectsInvalidAncestry(t *testing.T) {
 			wantReason: "tree path batch outpoint hash",
 		},
 		{
-			name: "duplicate commitment txid across fragments",
+			// Same commitment AND same tree path is a true
+			// duplicate. Same commitment with a DIFFERENT tree
+			// path is legal (different leaves of one commitment
+			// tree) and is covered by the multi-leaf success
+			// test below.
+			name: "identical fragment duplicated across slice",
 			mutate: func(m *IncomingVTXOMetadata) {
 				dup := m.Ancestry[0]
 				m.Ancestry = append(m.Ancestry, dup)
 			},
-			wantReason: "duplicate commitment txid",
+			wantReason: "duplicates the tree path",
 		},
 		{
 			name: "nil tree path",

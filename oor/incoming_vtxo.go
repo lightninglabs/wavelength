@@ -2,6 +2,7 @@ package oor
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -12,6 +13,7 @@ import (
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/lightninglabs/wavelength/arkrpc"
+	clientdb "github.com/lightninglabs/wavelength/db"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/lib/tx/arktx"
 	"github.com/lightninglabs/wavelength/vtxo"
@@ -285,14 +287,18 @@ func standardTapscriptIfApplicable(template *arkscript.PolicyTemplate) (
 //     VTXO. BuildIncomingVTXODescriptor normalizes that matching fragment
 //     to Ancestry[0] after validation.
 //
-//   - Each fragment's CommitmentTxID is unique within the slice. Per
-//     the Ancestry contract distinct fragments must anchor to distinct
-//     commitments; a duplicate either indicates a malformed operator
-//     response or a malicious attempt to inflate vbyte cost.
-//
 //   - Each fragment carries a non-nil TreePath. A nil path is unusable
 //     for proof assembly and would be caught by the unroller; we surface
 //     it here so the failure is bound to the receive boundary.
+//
+//   - Each fragment's (CommitmentTxID, TreePath) pair is unique within
+//     the slice. Fragments MAY share a commitment txid: an OOR spend
+//     whose inputs sit at different leaves of the same commitment tree
+//     carries one fragment per leaf, each anchored at the same
+//     commitment (the indexer emits one AncestryPath per batch-tree
+//     path within a commitment). Only an exact duplicate — same
+//     commitment AND same tree path — indicates a malformed operator
+//     response or a malicious attempt to inflate vbyte cost.
 //
 //   - Each fragment's TreePath.BatchOutpoint.Hash matches its claimed
 //     CommitmentTxID. The commitment tx's batch output is the root the
@@ -335,23 +341,12 @@ func validateIncomingAncestry(meta IncomingVTXOMetadata,
 	// declared input count; we only set entries after the per-fragment
 	// range check has passed, so out-of-range writes are impossible.
 	covered := make([]bool, arkTxInputCount)
-	seen := make(map[chainhash.Hash]struct{}, len(meta.Ancestry))
+	seen := make(map[[sha256.Size]byte]struct{}, len(meta.Ancestry))
 	hasPrimary := false
 	for i, frag := range meta.Ancestry {
 		if frag.CommitmentTxID == meta.CommitmentTxID {
 			hasPrimary = true
 		}
-
-		if _, dup := seen[frag.CommitmentTxID]; dup {
-			return &ErrInvalidAncestry{
-				Reason: fmt.Sprintf(
-					"fragment %d carries duplicate "+
-						"commitment txid %s", i,
-					frag.CommitmentTxID,
-				),
-			}
-		}
-		seen[frag.CommitmentTxID] = struct{}{}
 
 		if frag.TreePath == nil {
 			return &ErrInvalidAncestry{
@@ -360,6 +355,32 @@ func validateIncomingAncestry(meta IncomingVTXOMetadata,
 				),
 			}
 		}
+
+		// Dedup on the full (commitment txid, tree path) identity,
+		// not the commitment txid alone: two inputs at different
+		// leaves of the same commitment tree legitimately produce
+		// two fragments anchored at the same commitment, and
+		// rejecting them would strand the received VTXO
+		// unmaterialized (wavelength#969).
+		key, err := clientdb.AncestryFragmentKey(frag)
+		if err != nil {
+			return &ErrInvalidAncestry{
+				Reason: fmt.Sprintf(
+					"fragment %d tree path: %v", i, err,
+				),
+			}
+		}
+		if _, dup := seen[key]; dup {
+			return &ErrInvalidAncestry{
+				Reason: fmt.Sprintf(
+					"fragment %d duplicates the tree "+
+						"path of an earlier fragment "+
+						"for commitment txid %s", i,
+					frag.CommitmentTxID,
+				),
+			}
+		}
+		seen[key] = struct{}{}
 
 		// Validate the per-fragment tree depth here as a
 		// defense-in-depth check. The RPC ingress
