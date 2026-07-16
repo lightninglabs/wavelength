@@ -661,6 +661,8 @@ func (r *RPCServer) GetInfo(ctx context.Context, _ *waverpc.GetInfoRequest) (
 			MinVtxoAmountSat:  uint64(minVTXOAmount),
 			MaxUserBalance:    uint64(terms.MaxUserBalance),
 		}
+		resp.ServerInfo.FreeRefreshWindowBlocks =
+			terms.FreeRefreshWindowBlocks
 	}
 
 	return resp, nil
