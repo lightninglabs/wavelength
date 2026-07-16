@@ -174,12 +174,36 @@ func (b *BoardingWalletStore) MarkBoardingSweepFailed(ctx context.Context,
 	now := b.clock.Now().Unix()
 
 	return b.db.ExecTx(ctx, WriteTxOption(), func(q BoardingStore) error {
+		sweep, err := q.GetBoardingSweep(ctx, txid[:])
+		if err != nil {
+			return fmt.Errorf("get sweep: %w", err)
+		}
+		if sweep.Status != sweepStatusPending &&
+			sweep.Status != sweepStatusPublished {
+
+			// Terminal evidence is monotonic. A duplicate or stale
+			// failure notification must never downgrade a
+			// confirmed/external sweep or release any of the value
+			// it consumed.
+			return nil
+		}
+
 		inputs, err := q.ListBoardingSweepInputs(ctx, txid[:])
 		if err != nil {
 			return fmt.Errorf("list sweep inputs: %w", err)
 		}
 
 		for _, input := range inputs {
+			if input.Status != inputStatusPending &&
+				input.Status != inputStatusPublished {
+
+				// A terminal spend is objective chain evidence.
+				// A later local broadcaster failure may release
+				// the other inputs, but must never restore this
+				// intent to a spendable state.
+				continue
+			}
+
 			err = q.UpdateBoardingIntentStatus(
 				ctx, sqlc.UpdateBoardingIntentStatusParams{
 					OutpointHash:   input.OutpointHash,
@@ -374,6 +398,22 @@ func (b *BoardingWalletStore) MarkBoardingSweepInputSpent(ctx context.Context,
 			return sql.ErrNoRows
 		}
 
+		// Finality for one input is sufficient to make that specific
+		// boarding intent permanently spent, even while sibling inputs
+		// are still unresolved. This prevents a later sweep-level
+		// failure from restoring an objectively consumed intent.
+		err = q.UpdateBoardingIntentStatus(
+			ctx, sqlc.UpdateBoardingIntentStatusParams{
+				OutpointHash:   outpoint.Hash[:],
+				OutpointIndex:  int32(outpoint.Index),
+				Status:         "swept",
+				LastUpdateTime: now,
+			},
+		)
+		if err != nil {
+			return fmt.Errorf("mark intent swept: %w", err)
+		}
+
 		count, err := q.CountUnresolvedBoardingSweepInputs(
 			ctx, sweepTxid[:],
 		)
@@ -389,24 +429,11 @@ func (b *BoardingWalletStore) MarkBoardingSweepInputSpent(ctx context.Context,
 		if err != nil {
 			return fmt.Errorf("list sweep inputs: %w", err)
 		}
-		for _, input := range inputs {
-			err = q.UpdateBoardingIntentStatus(
-				ctx, sqlc.UpdateBoardingIntentStatusParams{
-					OutpointHash:   input.OutpointHash,
-					OutpointIndex:  input.OutpointIndex,
-					Status:         "swept",
-					LastUpdateTime: now,
-				},
-			)
-			if err != nil {
-				return fmt.Errorf("mark intent swept: %w", err)
-			}
-		}
 
-		sweepStatus := sweepStatusExternalResolved
+		sweepStatus := sweepStatusConfirmed
 		for _, input := range inputs {
-			if input.Status == inputStatusSpent {
-				sweepStatus = sweepStatusConfirmed
+			if input.Status != inputStatusSpent {
+				sweepStatus = sweepStatusExternalResolved
 				break
 			}
 		}
