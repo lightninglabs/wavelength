@@ -48,6 +48,30 @@ func (s *stubArkServiceClient) EstimateFee(_ context.Context,
 	return &arkrpc.EstimateFeeResponse{}, nil
 }
 
+// RegisterVirtualChannel is unused by these tests.
+func (s *stubArkServiceClient) RegisterVirtualChannel(_ context.Context,
+	_ *arkrpc.RegisterVirtualChannelRequest, _ ...grpc.CallOption) (
+	*arkrpc.RegisterVirtualChannelResponse, error) {
+
+	return &arkrpc.RegisterVirtualChannelResponse{}, nil
+}
+
+// ActivateVirtualChannel is unused by these tests.
+func (s *stubArkServiceClient) ActivateVirtualChannel(_ context.Context,
+	_ *arkrpc.ActivateVirtualChannelRequest, _ ...grpc.CallOption) (
+	*arkrpc.ActivateVirtualChannelResponse, error) {
+
+	return &arkrpc.ActivateVirtualChannelResponse{}, nil
+}
+
+// CosignVirtualChannelBacking is unused by these tests.
+func (s *stubArkServiceClient) CosignVirtualChannelBacking(_ context.Context,
+	_ *arkrpc.CosignVirtualChannelBackingRequest, _ ...grpc.CallOption) (
+	*arkrpc.CosignVirtualChannelBackingResponse, error) {
+
+	return &arkrpc.CosignVirtualChannelBackingResponse{}, nil
+}
+
 // testOperatorPubKeyBytes returns a valid compressed secp256k1 public key for
 // populating a fake GetInfo response.
 func testOperatorPubKeyBytes(t *testing.T) []byte {

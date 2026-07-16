@@ -1240,19 +1240,8 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 		chainSourceRef = s.registerChainSourceActor(ctx)
 	}
 
-	// -------------------------------------------------------
-	// 5. Start database-dependent actors.
-	// -------------------------------------------------------
-	if err := s.initDatabase(ctx); err != nil {
-		return err
-	}
-
-	// Create the VTXO store for RPC queries (ListVTXOs, GetBalance).
-	dbStore := db.NewStore(
-		s.db.DB, s.db.Queries, s.db.Backend(),
-		s.subLogger(db.Subsystem),
-	)
-	s.vtxoStore = dbStore.NewVTXOStore(s.clk)
+	// The database and shared stores were initialized before the wallet so
+	// integrated LND hooks can use durable channel state during startup.
 
 	// Build the activity-log store for the wavewalletrpc subserver.
 	s.activityStore = dbStore.NewActivityStore(s.clk)
@@ -1602,25 +1591,29 @@ func (s *Server) startIntegratedLnd(ctx context.Context) error {
 				"initialized")
 		}
 
+		materializer := newVirtualChannelBackingMaterializer(
+			func() (
+
+				actor.ActorRef[
+					unroll.RegistryMsg,
+					unroll.RegistryResp,
+				],
+				bool) {
+
+				if s.unrollRegistry == nil {
+					return nil, false
+				}
+
+				registry := s.unrollRegistry.Ref()
+
+				return registry, true
+			},
+		)
+
 		aux, err := virtualchannel.BuildAuxComponents(
 			virtualchannel.MaterializingPublishInterceptorConfig{
-				Store: s.vcStore,
-				Materializer: newVirtualChannelBackingMaterializer(
-					func() (
-
-						actor.ActorRef[
-							unroll.RegistryMsg,
-							unroll.RegistryResp,
-						],
-						bool) {
-
-						if s.unrollRegistry == nil {
-							return nil, false
-						}
-
-						return s.unrollRegistry.Ref(), true
-					},
-				),
+				Store:        s.vcStore,
+				Materializer: materializer,
 				Context: func() context.Context {
 					return ctx
 				},

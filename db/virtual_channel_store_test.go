@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/btcsuite/btcd/btcutil"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/db/sqlc"
 	"github.com/lightninglabs/wavelength/virtualchannel"
 	"github.com/stretchr/testify/require"
@@ -372,7 +372,15 @@ func insertBackingVTXOs(t *testing.T, q *sqlc.Queries,
 	require.NoError(t, err)
 
 	for _, backing := range backingVTXOs {
-		err := q.InsertVTXO(
+		clientKeyID, err := q.UpsertInternalKey(
+			ctx, sqlc.UpsertInternalKeyParams{
+				Pubkey: fixedPubKey(3), KeyFamily: 1,
+				KeyIndex: 2, CreatedAt: now,
+			},
+		)
+		require.NoError(t, err)
+
+		err = q.InsertVTXO(
 			ctx, sqlc.InsertVTXOParams{
 				OutpointHash:  backing.OutPoint.Hash[:],
 				OutpointIndex: int32(backing.OutPoint.Index),
@@ -381,19 +389,19 @@ func insertBackingVTXOs(t *testing.T, q *sqlc.Queries,
 				PkScript: append(
 					[]byte{0x51, 0x20}, make([]byte, 32)...,
 				),
-				Expiry:          144,
-				PolicyTemplate:  []byte{0x01},
-				ClientKeyFamily: 1,
-				ClientKeyIndex:  2,
-				ClientPubkey:    fixedPubKey(3),
-				OperatorPubkey:  fixedPubKey(4),
-				BatchExpiry:     300,
-				ChainDepth:      1,
-				CreatedHeight:   100,
-				CommitmentTxid:  testHashBytes("commitment"),
-				Spent:           false,
-				CreationTime:    now,
-				LastUpdateTime:  now,
+				Expiry:         144,
+				PolicyTemplate: []byte{0x01},
+				ClientKeyID: sql.NullInt64{
+					Int64: clientKeyID, Valid: true,
+				},
+				OperatorPubkey: fixedPubKey(4),
+				BatchExpiry:    300,
+				ChainDepth:     1,
+				CreatedHeight:  100,
+				CommitmentTxid: testHashBytes("commitment"),
+				Spent:          false,
+				CreationTime:   now,
+				LastUpdateTime: now,
 			},
 		)
 		require.NoError(t, err)

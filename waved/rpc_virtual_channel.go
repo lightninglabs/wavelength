@@ -9,8 +9,8 @@ import (
 	"io"
 
 	"github.com/btcsuite/btcd/btcec/v2"
-	"github.com/btcsuite/btcd/btcutil"
-	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/arkrpc"
 	"github.com/lightninglabs/wavelength/lndbackend"
 	"github.com/lightninglabs/wavelength/virtualchannel"
@@ -33,25 +33,8 @@ func (r *RPCServer) OpenVirtualChannel(ctx context.Context,
 	req *daemonrpc.OpenVirtualChannelRequest) (
 	*daemonrpc.OpenVirtualChannelResponse, error) {
 
-	if r.server == nil || r.server.cfg == nil {
-		return nil, status.Errorf(codes.Internal, "server not "+
-			"initialized")
-	}
-	if r.server.cfg.Wallet.Type != WalletTypeLnd {
-		return nil, status.Errorf(codes.FailedPrecondition, "virtual "+
-			"channels require wallet.type=%s", WalletTypeLnd)
-	}
-	if !r.server.lnd.IsSome() {
-		return nil, status.Errorf(codes.FailedPrecondition, "lnd "+
-			"wallet not connected")
-	}
-	if r.server.vtxoStore == nil {
-		return nil, status.Errorf(codes.Internal, "VTXO store not "+
-			"initialized")
-	}
-	if r.server.vcStore == nil {
-		return nil, status.Errorf(codes.Internal, "virtual channel "+
-			"store not initialized")
+	if err := r.validateVirtualChannelOpenState(); err != nil {
+		return nil, err
 	}
 	if err := validateOpenVirtualChannelRequest(req); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
@@ -224,6 +207,30 @@ func (r *RPCServer) OpenVirtualChannel(ctx context.Context,
 	return resp, nil
 }
 
+func (r *RPCServer) validateVirtualChannelOpenState() error {
+	if r.server == nil || r.server.cfg == nil {
+		return status.Errorf(codes.Internal, "server not initialized")
+	}
+	if r.server.cfg.Wallet.Type != WalletTypeLnd {
+		return status.Errorf(codes.FailedPrecondition, "virtual "+
+			"channels require wallet.type=%s", WalletTypeLnd)
+	}
+	if !r.server.lnd.IsSome() {
+		return status.Errorf(codes.FailedPrecondition, "lnd wallet "+
+			"not connected")
+	}
+	if r.server.vtxoStore == nil {
+		return status.Errorf(codes.Internal, "VTXO store not "+
+			"initialized")
+	}
+	if r.server.vcStore == nil {
+		return status.Errorf(codes.Internal, "virtual channel store "+
+			"not initialized")
+	}
+
+	return nil
+}
+
 // validateOpenVirtualChannelRequest checks request fields before any wallet
 // reservation or durable state transition occurs.
 func validateOpenVirtualChannelRequest(
@@ -330,10 +337,13 @@ func (r *RPCServer) resolveVirtualChannelVTXOs(ctx context.Context,
 		}
 		if input.AmountSat > 0 &&
 			input.AmountSat != int64(desc.Amount) {
+
+			hint := input.AmountSat
+			got := desc.Amount
+
 			return nil, status.Errorf(codes.InvalidArgument,
 				"backing VTXO %s amount hint %d does not "+
-					"match stored amount %d", op, input.AmountSat,
-				desc.Amount)
+					"match stored amount %d", op, hint, got)
 		}
 
 		selected = append(selected, virtualChannelSelection{
@@ -426,7 +436,8 @@ func virtualChannelSelectedTotal(
 }
 
 func virtualChannelSelectedRPC(
-	selected []virtualChannelSelection) []*daemonrpc.VirtualChannelSelectedVTXO {
+	selected []virtualChannelSelection,
+) []*daemonrpc.VirtualChannelSelectedVTXO {
 
 	resp := make(
 		[]*daemonrpc.VirtualChannelSelectedVTXO, 0, len(selected),
@@ -556,7 +567,8 @@ func operatorVirtualChannelRegistrationRequest(reg virtualchannel.Registration,
 func operatorVirtualChannelPendingOpenRequest(
 	pendingID virtualchannel.PendingChannelID,
 	req *daemonrpc.OpenVirtualChannelRequest, clientNodePubKey []byte,
-	selected []virtualChannelSelection) *arkrpc.RegisterVirtualChannelRequest {
+	selected []virtualChannelSelection,
+) *arkrpc.RegisterVirtualChannelRequest {
 
 	backing := make(
 		[]*arkrpc.VirtualChannelBackingVTXO, 0, len(selected),
@@ -580,8 +592,10 @@ func operatorVirtualChannelPendingOpenRequest(
 	}
 }
 
-func operatorVirtualChannelCosignRequest(id virtualchannel.ID,
-	sigs []virtualchannel.InputSignature) *arkrpc.CosignVirtualChannelBackingRequest {
+func operatorVirtualChannelCosignRequest(
+	id virtualchannel.ID,
+	sigs []virtualchannel.InputSignature,
+) *arkrpc.CosignVirtualChannelBackingRequest {
 
 	rpcSigs := make(
 		[]*arkrpc.VirtualChannelInputSignature, 0, len(sigs),

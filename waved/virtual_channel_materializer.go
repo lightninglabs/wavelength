@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/unroll"
 	"github.com/lightninglabs/wavelength/virtualchannel"
-	vcunrollpolicy "github.com/lightninglabs/wavelength/virtualchannel/unrollpolicy"
+	vcpolicy "github.com/lightninglabs/wavelength/virtualchannel/unrollpolicy"
 )
 
 const (
@@ -107,8 +107,8 @@ func (m *virtualChannelBackingMaterializer) ensureUnroll(ctx context.Context,
 	resp, err := ref.Ask(ctx, &unroll.EnsureUnrollRequest{
 		Outpoint:       target,
 		Trigger:        unroll.TriggerManual,
-		ExitPolicyKind: vcunrollpolicy.VirtualChannelBackingExitPolicyKind,
-		ExitPolicyRef:  vcunrollpolicy.EncodeVirtualChannelID(id),
+		ExitPolicyKind: vcpolicy.VirtualChannelBackingExitPolicyKind,
+		ExitPolicyRef:  vcpolicy.EncodeVirtualChannelID(id),
 	}).Await(ctx).Unpack()
 	if err != nil {
 		return nil, fmt.Errorf("ensure virtual channel backing "+
@@ -183,15 +183,15 @@ func (m *virtualChannelBackingMaterializer) backingSpendSubmitted(
 			"found for %v", target)
 	}
 	if status.ExitPolicyKind !=
-		vcunrollpolicy.VirtualChannelBackingExitPolicyKind {
+		vcpolicy.VirtualChannelBackingExitPolicyKind {
 		return false, fmt.Errorf("unroll job for %v has policy %s, "+
 			"expected %s", target, status.ExitPolicyKind,
-			vcunrollpolicy.VirtualChannelBackingExitPolicyKind)
+			vcpolicy.VirtualChannelBackingExitPolicyKind)
 	}
-	if status.ExitPolicyRef != vcunrollpolicy.EncodeVirtualChannelID(id) {
+	if status.ExitPolicyRef != vcpolicy.EncodeVirtualChannelID(id) {
 		return false, fmt.Errorf("unroll job for %v has policy ref "+
 			"%q, expected %q", target, status.ExitPolicyRef,
-			vcunrollpolicy.EncodeVirtualChannelID(id))
+			vcpolicy.EncodeVirtualChannelID(id))
 	}
 	if status.Phase == unroll.PhaseFailed {
 		return false, fmt.Errorf("virtual channel backing unroll "+
@@ -218,4 +218,6 @@ func virtualChannelBackingPublished(phase unroll.Phase) bool {
 }
 
 // Compile-time check.
-var _ virtualchannel.BackingMaterializer = (*virtualChannelBackingMaterializer)(nil)
+type vcBackingMaterializer = *virtualChannelBackingMaterializer
+
+var _ virtualchannel.BackingMaterializer = vcBackingMaterializer(nil)

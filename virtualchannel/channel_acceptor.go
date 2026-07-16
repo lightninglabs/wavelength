@@ -50,7 +50,8 @@ func NewRegisteredChannelAcceptor(cfg RegisteredChannelAcceptorConfig) (
 
 // Accept implements chanacceptor.ChannelAcceptor.
 func (a *RegisteredChannelAcceptor) Accept(
-	req *chanacceptor.ChannelAcceptRequest) *chanacceptor.ChannelAcceptResponse {
+	req *chanacceptor.ChannelAcceptRequest,
+) *chanacceptor.ChannelAcceptResponse {
 
 	if !wantsZeroConf(req) {
 		return &chanacceptor.ChannelAcceptResponse{}

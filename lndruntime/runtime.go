@@ -188,7 +188,9 @@ func (r *Runtime) prepareWallet(ctx context.Context, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer func() {
+		_ = conn.Close()
+	}()
 
 	stateClient := lnrpc.NewStateClient(conn)
 	walletClient := lnrpc.NewWalletUnlockerClient(conn)

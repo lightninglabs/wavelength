@@ -54,6 +54,9 @@ const (
 	// entityActivity covers the unified ledger, transaction history, and
 	// activity inspection.
 	entityActivity = "activity"
+
+	// entityChannel covers virtual channel promotion.
+	entityChannel = "channel"
 )
 
 // wavedEntities is the full set of logical macaroon entities. The read-only
@@ -70,6 +73,7 @@ var wavedEntities = []string{
 	entityRecovery,
 	entityFees,
 	entityActivity,
+	entityChannel,
 }
 
 var wavedRPCPermissions = newWavedRPCPermissions()
@@ -138,6 +142,9 @@ func newWavedRPCPermissions() map[string][]bakery.Op {
 	)
 	grant(daemon, entityRound, "write",
 		"JoinNextRound",
+	)
+	grant(daemon, entityChannel, "write",
+		"OpenVirtualChannel",
 	)
 	grant(daemon, entityFees, "read",
 		"EstimateFee", "GetFeeHistory",

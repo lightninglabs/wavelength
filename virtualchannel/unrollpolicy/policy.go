@@ -6,7 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 
-	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/unroll"
 	"github.com/lightninglabs/wavelength/virtualchannel"
 	"github.com/lightninglabs/wavelength/vtxo"
@@ -16,7 +16,9 @@ const (
 	// VirtualChannelBackingExitPolicyKind identifies a virtual-channel
 	// conflict materialization job. The final unroll spend is the
 	// cooperative VTXO 2-of-2 backing transaction, not the timeout sweep.
-	VirtualChannelBackingExitPolicyKind unroll.ExitPolicyKind = "virtual_channel_backing"
+	VirtualChannelBackingExitPolicyKind = unroll.ExitPolicyKind(
+		"virtual_channel_backing",
+	)
 )
 
 // ChannelLoader loads virtual-channel registrations by stable id.
@@ -267,4 +269,3 @@ func cloneTx(tx *wire.MsgTx) (*wire.MsgTx, error) {
 var _ unroll.ExitSpendPolicyResolver = ExitSpendPolicyResolver{}
 var _ unroll.ResolverKindSupport = ExitSpendPolicyResolver{}
 var _ unroll.ExitSpendPolicy = (*BackingExitSpendPolicy)(nil)
-var _ unroll.DirectBroadcastExitSpendPolicy = (*BackingExitSpendPolicy)(nil)
