@@ -23,6 +23,7 @@ type stubDaemonServer struct {
 
 	state         waverpc.WalletState
 	identity      string
+	freeWindow    uint32
 	initErr       error
 	unlockErr     error
 	initCalled    bool
@@ -39,7 +40,28 @@ func (s *stubDaemonServer) GetInfo(context.Context, *waverpc.GetInfoRequest) (
 	return &waverpc.GetInfoResponse{
 		WalletState:    s.state,
 		IdentityPubkey: s.identity,
+		ServerInfo: &waverpc.ServerInfo{
+			FreeRefreshWindowBlocks: s.freeWindow,
+		},
 	}, nil
+}
+
+// TestGetInfoExposesFreeRefreshWindow verifies the wallet-shaped facade does
+// not discard the operator hint used by automatic expiry refresh.
+func TestGetInfoExposesFreeRefreshWindow(t *testing.T) {
+	t.Parallel()
+
+	client := newStubClient(t, &stubDaemonServer{
+		state:      waverpc.WalletState_WALLET_STATE_READY,
+		freeWindow: 120,
+	})
+
+	info, err := client.GetInfo(t.Context())
+	require.NoError(t, err)
+	require.NotNil(t, info.ServerInfo)
+	require.Equal(
+		t, uint32(120), info.ServerInfo.FreeRefreshWindowBlocks,
+	)
 }
 
 // InitWallet records the import call and its request, then returns the

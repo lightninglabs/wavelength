@@ -88,6 +88,14 @@ type Info struct {
 	WalletType      string
 	WalletState     WalletState
 	IdentityPubKey  string
+	ServerInfo      *ServerInfo
+}
+
+// ServerInfo contains the operator policy hints needed by wallet hosts.
+type ServerInfo struct {
+	// FreeRefreshWindowBlocks is the late-lifetime window in which a
+	// pure refresh receives a fee waiver.
+	FreeRefreshWindowBlocks uint32
 }
 
 // WalletReady reports whether the daemon wallet is fully unlocked and
