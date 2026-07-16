@@ -3360,12 +3360,12 @@ func (s *PartialSigsSentState) processEvent(ctx context.Context,
 			),
 		)
 
-		if err := activateRoundVirtualChannels(
+		if err := armRoundVirtualChannels(
 			ctx, env, s.RoundID, s.CommitmentTx, s.Intents,
 			s.ClientTrees,
 		); err != nil {
 			return failWithNotification(
-				"virtual channel activation failed", err, true,
+				"virtual channel backing failed", err, true,
 				fn.Some(s.RoundID),
 			), nil
 		}
@@ -3521,14 +3521,14 @@ func (s *PartialSigsSentState) processEvent(ctx context.Context,
 	}
 }
 
-func activateRoundVirtualChannels(ctx context.Context, env *ClientEnvironment,
+func armRoundVirtualChannels(ctx context.Context, env *ClientEnvironment,
 	roundID RoundID, commitmentTx *psbt.Packet, intents Intents,
 	clientTrees map[SignerKey]*tree.Tree) error {
 
 	if !hasRoundVirtualChannelIntents(intents.VTXOs) {
 		return nil
 	}
-	if env.VirtualChannelActivator == nil {
+	if env.VirtualChannelCoordinator == nil {
 		return fmt.Errorf("virtual channel activator is not configured")
 	}
 	if commitmentTx == nil || commitmentTx.UnsignedTx == nil {
@@ -3581,6 +3581,11 @@ func activateRoundVirtualChannels(ctx context.Context, env *ClientEnvironment,
 		}
 
 		output := leaf.Outputs[outpoint.Index]
+		if !bytes.Equal(output.PkScript, pkScript) {
+			return fmt.Errorf("virtual channel vtxo[%d] output "+
+				"script does not match the registered intent",
+				i)
+		}
 		if output.Value != int64(quoteVTXOAmount(nil, 0, req)) {
 			// The tree was already validated against the quote
 			// before reaching this point; use the concrete leaf
@@ -3591,9 +3596,9 @@ func activateRoundVirtualChannels(ctx context.Context, env *ClientEnvironment,
 				slog.Int64("leaf_value", output.Value))
 		}
 
-		err = env.VirtualChannelActivator.ActivateRoundVirtualChannel(
-			context.WithoutCancel(ctx),
-			RoundVirtualChannelActivationRequest{
+		err = env.VirtualChannelCoordinator.ArmRoundVirtualChannel(
+			ctx,
+			RoundVirtualChannelBindingRequest{
 				RoundID:     roundID,
 				VTXOIndex:   i,
 				VTXORequest: req,
@@ -3610,8 +3615,8 @@ func activateRoundVirtualChannels(ctx context.Context, env *ClientEnvironment,
 			},
 		)
 		if err != nil {
-			return fmt.Errorf("activate virtual channel vtxo[%d] "+
-				"%s: %w", i, outpoint, err)
+			return fmt.Errorf("arm virtual channel vtxo[%d] %s: %w",
+				i, outpoint, err)
 		}
 	}
 
@@ -4589,6 +4594,20 @@ func (s *InputSigSentState) ProcessEvent(ctx context.Context, event ClientEvent,
 				slog.String("round_id", s.RoundID.String()),
 				slog.Int("vtxo_count", len(vtxos)),
 			)
+		}
+
+		if hasRoundVirtualChannelIntents(s.Intents.VTXOs) {
+			if env.VirtualChannelCoordinator == nil {
+				return nil, fmt.Errorf("virtual channel " +
+					"coordinator is not configured")
+			}
+			if err := env.VirtualChannelCoordinator.
+				ConfirmRoundVirtualChannels(
+					context.WithoutCancel(ctx), s.RoundID,
+				); err != nil {
+				return nil, fmt.Errorf("confirm round virtual "+
+					"channels: %w", err)
+			}
 		}
 
 		confInfo := ConfInfo{

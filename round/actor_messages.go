@@ -246,8 +246,6 @@ type RegisterVirtualChannelIntentRequest struct {
 
 	BackingAmount  btcutil.Amount
 	Capacity       btcutil.Amount
-	Private        bool
-	ZeroConf       bool
 	IdempotencyKey string
 }
 

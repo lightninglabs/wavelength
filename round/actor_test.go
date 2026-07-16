@@ -94,6 +94,51 @@ func TestRoundFSMOutlivesCreationRequest(t *testing.T) {
 	require.NoError(t, <-state.ctxErr)
 }
 
+func TestFindVirtualChannelIntentIsIdempotentAcrossRoundStates(t *testing.T) {
+	t.Parallel()
+
+	request := types.VTXORequest{
+		Amount: 51_000,
+		VirtualChannel: &types.VirtualChannelIntent{
+			Capacity:       50_000,
+			IdempotencyKey: "receive-request-1",
+		},
+	}
+	state := &IntentSentState{
+		Intents: Intents{
+			VTXOs: []types.VTXORequest{
+				request,
+			},
+		},
+	}
+	fsm := protofsm.NewStateMachine(ClientStateMachineCfg{
+		Logger:        btclog.Disabled,
+		ErrorReporter: newContextErrorReporter(t.Context(), "dedupe"),
+		InitialState:  state,
+		Env:           &ClientEnvironment{},
+	})
+	actor := &RoundClientActor{
+		runCtx: t.Context(),
+		rounds: map[RoundKeyStr]*RoundFSM{
+			"pending": {
+				FSM: &fsm,
+			},
+		},
+	}
+	actor.startRoundFSM(t.Context(), &fsm)
+	t.Cleanup(fsm.Stop)
+
+	found, ok, err := actor.findVirtualChannelIntent("receive-request-1")
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, request.Amount, found.Amount)
+	require.Equal(t, request.VirtualChannel, found.VirtualChannel)
+
+	_, ok, err = actor.findVirtualChannelIntent("another-request")
+	require.NoError(t, err)
+	require.False(t, ok)
+}
+
 // TestActorStart verifies the actor initialization sequence, ensuring proper
 // registration with dependencies and correct handling of initial messages.
 func TestActorStart(t *testing.T) {

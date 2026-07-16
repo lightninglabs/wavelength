@@ -329,8 +329,6 @@ func (m *JoinRoundRequest) ToProto() fn.Result[proto.Message] {
 		if req.VirtualChannel != nil {
 			vr.VirtualChannel = &roundpb.VirtualChannelIntent{
 				CapacitySat: int64(req.VirtualChannel.Capacity),
-				Private:     req.VirtualChannel.Private,
-				ZeroConf:    req.VirtualChannel.ZeroConf,
 				IdempotencyKey: req.VirtualChannel.
 					IdempotencyKey,
 			}

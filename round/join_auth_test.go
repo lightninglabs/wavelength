@@ -804,8 +804,6 @@ func TestBuildJoinRoundAuthOperatorFundedVirtualChannelNoInputs(t *testing.T) {
 	req := f.newVTXORequest(t, 101000)
 	req.VirtualChannel = &types.VirtualChannelIntent{
 		Capacity: btcutil.Amount(100000),
-		Private:  true,
-		ZeroConf: true,
 	}
 
 	vtxoReqs := []types.VTXORequest{req}

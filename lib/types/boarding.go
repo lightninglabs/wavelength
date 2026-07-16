@@ -314,12 +314,6 @@ type VirtualChannelIntent struct {
 	// the VTXO amount so the VTXO-to-channel transaction has a funding fee.
 	Capacity btcutil.Amount
 
-	// Private requests a private LND channel.
-	Private bool
-
-	// ZeroConf requires zero-conf activation for the virtual channel.
-	ZeroConf bool
-
 	// IdempotencyKey lets callers correlate or safely retry the request.
 	IdempotencyKey string
 }

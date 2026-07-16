@@ -562,8 +562,6 @@ func (m *JoinRoundRequest) FromProto(p proto.Message) error {
 				Capacity: btcutil.Amount(
 					vc.GetCapacitySat(),
 				),
-				Private:        vc.GetPrivate(),
-				ZeroConf:       vc.GetZeroConf(),
 				IdempotencyKey: vc.GetIdempotencyKey(),
 			}
 		}

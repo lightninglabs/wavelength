@@ -602,29 +602,26 @@ func decodeJoinAuthVTXORequest(raw []byte) (*VTXORequest, error) {
 	hasVC := hasVCCapacity || hasVCPrivate || hasVCZeroConf ||
 		hasVCIdemKey
 	if hasVC {
-		if !hasVCCapacity || !hasVCPrivate || !hasVCZeroConf ||
-			!hasVCIdemKey {
+		if !hasVCCapacity || !hasVCIdemKey {
 			return nil, fmt.Errorf("virtual channel intent " +
-				"records must be provided together")
+				"capacity and idempotency records are required")
 		}
 
 		if vcCapacity > math.MaxInt64 {
 			return nil, fmt.Errorf("virtual channel capacity %d "+
 				"exceeds int64", vcCapacity)
 		}
-		if vcPrivate > 1 {
-			return nil, fmt.Errorf("virtual channel private flag " +
-				"must be 0 or 1")
+		if hasVCPrivate && vcPrivate != 1 {
+			return nil, fmt.Errorf("legacy virtual channel " +
+				"private flag must be true")
 		}
-		if vcZeroConf > 1 {
-			return nil, fmt.Errorf("virtual channel zero-conf " +
-				"flag must be 0 or 1")
+		if hasVCZeroConf && vcZeroConf != 1 {
+			return nil, fmt.Errorf("legacy virtual channel " +
+				"zero-conf flag must be true")
 		}
 
 		req.VirtualChannel = &VirtualChannelIntent{
 			Capacity:       btcutil.Amount(vcCapacity),
-			Private:        vcPrivate != 0,
-			ZeroConf:       vcZeroConf != 0,
 			IdempotencyKey: string(vcIdemKey),
 		}
 		if !IsOperatorFundedVirtualChannelRequest(req) {
@@ -1035,28 +1032,12 @@ func encodeJoinAuthVTXORequest(req *VTXORequest) ([]byte, error) {
 				"must be non-negative")
 		}
 		vcCapacity := uint64(req.VirtualChannel.Capacity)
-		vcPrivate := uint8(0)
-		if req.VirtualChannel.Private {
-			vcPrivate = 1
-		}
-		vcZeroConf := uint8(0)
-		if req.VirtualChannel.ZeroConf {
-			vcZeroConf = 1
-		}
 		vcIdemKey := []byte(req.VirtualChannel.IdempotencyKey)
 
 		records = append(
 			records, tlv.MakePrimitiveRecord(
 				joinRoundAuthVTXOVCCapacityRecordType,
 				&vcCapacity,
-			),
-			tlv.MakePrimitiveRecord(
-				joinRoundAuthVTXOVCPrivateRecordType,
-				&vcPrivate,
-			),
-			tlv.MakePrimitiveRecord(
-				joinRoundAuthVTXOVCZeroConfRecordType,
-				&vcZeroConf,
 			),
 			tlv.MakePrimitiveRecord(
 				joinRoundAuthVTXOVCIdemKeyRecordType,

@@ -34,10 +34,10 @@ type ClientEnvironment struct {
 	// falls back to serial execution for focused FSM tests.
 	SigningExecutor SigningExecutor
 
-	// VirtualChannelActivator negotiates channel-backed VTXO requests
+	// VirtualChannelCoordinator negotiates channel-backed VTXO requests
 	// after the VTXO tree is fully signed and before final round input
 	// signatures are released.
-	VirtualChannelActivator RoundVirtualChannelActivator
+	VirtualChannelCoordinator RoundVirtualChannelCoordinator
 
 	// OperatorTerms contains the operator's parameters including sweep
 	// keys, fee targets, confirmation thresholds, and amount limits.
@@ -116,10 +116,10 @@ type ClientEnvironment struct {
 	Now func() time.Time
 }
 
-// RoundVirtualChannelActivationRequest describes the exact round-created VTXO
+// RoundVirtualChannelBindingRequest describes the exact round-created VTXO
 // leaf that must be bound to a virtual LND channel before the client releases
 // final round input signatures.
-type RoundVirtualChannelActivationRequest struct {
+type RoundVirtualChannelBindingRequest struct {
 	RoundID        RoundID
 	VTXOIndex      int
 	VTXORequest    types.VTXORequest
@@ -133,10 +133,14 @@ type RoundVirtualChannelActivationRequest struct {
 	CommitmentTxID string
 }
 
-// RoundVirtualChannelActivator activates channel-backed round outputs.
-type RoundVirtualChannelActivator interface {
-	ActivateRoundVirtualChannel(context.Context,
-		RoundVirtualChannelActivationRequest) error
+// RoundVirtualChannelCoordinator owns the two channel-specific round gates.
+type RoundVirtualChannelCoordinator interface {
+	ArmRoundVirtualChannel(context.Context,
+		RoundVirtualChannelBindingRequest) error
+
+	ConfirmRoundVirtualChannels(context.Context, RoundID) error
+
+	FailRoundVirtualChannels(context.Context, RoundID) error
 }
 
 // now returns the environment's injected clock if set, otherwise

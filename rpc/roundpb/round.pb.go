@@ -1304,10 +1304,6 @@ type VirtualChannelIntent struct {
 	// capacity_sat is the LND channel capacity. It must be strictly less than
 	// the VTXO output amount so the backing transaction can pay fees.
 	CapacitySat int64 `protobuf:"varint,1,opt,name=capacity_sat,json=capacitySat,proto3" json:"capacity_sat,omitempty"`
-	// private requests a private LND channel.
-	Private bool `protobuf:"varint,2,opt,name=private,proto3" json:"private,omitempty"`
-	// zero_conf requires zero-conf channel activation.
-	ZeroConf bool `protobuf:"varint,3,opt,name=zero_conf,json=zeroConf,proto3" json:"zero_conf,omitempty"`
 	// idempotency_key is caller supplied retry/correlation metadata.
 	IdempotencyKey string `protobuf:"bytes,4,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
 	unknownFields  protoimpl.UnknownFields
@@ -1349,20 +1345,6 @@ func (x *VirtualChannelIntent) GetCapacitySat() int64 {
 		return x.CapacitySat
 	}
 	return 0
-}
-
-func (x *VirtualChannelIntent) GetPrivate() bool {
-	if x != nil {
-		return x.Private
-	}
-	return false
-}
-
-func (x *VirtualChannelIntent) GetZeroConf() bool {
-	if x != nil {
-		return x.ZeroConf
-	}
-	return false
 }
 
 func (x *VirtualChannelIntent) GetIdempotencyKey() string {
@@ -2819,12 +2801,10 @@ const file_round_proto_rawDesc = "" +
 	"signingKey\x12\x1b\n" +
 	"\tis_change\x18\x04 \x01(\bR\bisChange\x12!\n" +
 	"\ffixed_amount\x18\x05 \x01(\bR\vfixedAmount\x12G\n" +
-	"\x0fvirtual_channel\x18\x06 \x01(\v2\x1e.round.v1.VirtualChannelIntentR\x0evirtualChannel\"\x99\x01\n" +
+	"\x0fvirtual_channel\x18\x06 \x01(\v2\x1e.round.v1.VirtualChannelIntentR\x0evirtualChannel\"n\n" +
 	"\x14VirtualChannelIntent\x12!\n" +
-	"\fcapacity_sat\x18\x01 \x01(\x03R\vcapacitySat\x12\x18\n" +
-	"\aprivate\x18\x02 \x01(\bR\aprivate\x12\x1b\n" +
-	"\tzero_conf\x18\x03 \x01(\bR\bzeroConf\x12'\n" +
-	"\x0fidempotency_key\x18\x04 \x01(\tR\x0eidempotencyKey\"\x9f\x01\n" +
+	"\fcapacity_sat\x18\x01 \x01(\x03R\vcapacitySat\x12'\n" +
+	"\x0fidempotency_key\x18\x04 \x01(\tR\x0eidempotencyKeyJ\x04\b\x02\x10\x03J\x04\b\x03\x10\x04\"\x9f\x01\n" +
 	"\x0eForfeitRequest\x127\n" +
 	"\rvtxo_outpoint\x18\x01 \x01(\v2\x12.round.v1.OutpointR\fvtxoOutpoint\x12&\n" +
 	"\x0fauth_spend_path\x18\x02 \x01(\fR\rauthSpendPath\x12,\n" +

@@ -359,11 +359,8 @@ message VirtualChannelIntent {
     // the VTXO output amount so the backing transaction can pay fees.
     int64 capacity_sat = 1;
 
-    // private requests a private LND channel.
-    bool private = 2;
-
-    // zero_conf requires zero-conf channel activation.
-    bool zero_conf = 3;
+    // Virtual channels are always private and use zero-conf activation.
+    reserved 2, 3;
 
     // idempotency_key is caller supplied retry/correlation metadata.
     string idempotency_key = 4;
