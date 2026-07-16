@@ -151,6 +151,16 @@ const (
 	// creating an excessive number of simultaneous cryptographic jobs.
 	MaxSigningWorkers = 64
 
+	// DefaultReorgSafetyDepth is the deepest chain replacement the daemon
+	// keeps provisional and promises to recover from once reorg-safe v2 is
+	// enabled. Terminal finality begins one confirmation later.
+	DefaultReorgSafetyDepth uint32 = 30
+
+	// MaxReorgSafetyDepth is the largest policy horizon supported by every
+	// current chain backend. LND's notifier retains reversible watches for
+	// at most 144 disconnected blocks.
+	MaxReorgSafetyDepth uint32 = 144
+
 	// DefaultWalletType is the default wallet backend. The "lwwallet"
 	// backend uses an in-process lightweight wallet backed by
 	// btcwallet and Esplora, requiring no external lnd node.
@@ -312,6 +322,13 @@ type Config struct {
 	// parallel. Zero selects a backend-aware default and one preserves the
 	// original serial behavior.
 	SigningWorkers int `mapstructure:"signingworkers"`
+
+	// ReorgSafetyDepth is the deepest chain replacement for which evidence
+	// remains provisional and recoverable. Terminal finality begins at
+	// ReorgSafetyDepth+1 confirmations. Zero uses
+	// DefaultReorgSafetyDepth. This policy is not advertised until the full
+	// v2 safety capability and depth negotiation are enabled.
+	ReorgSafetyDepth uint32 `mapstructure:"reorgsafetydepth"`
 
 	// RegistrationTimeout is the maximum wall-clock duration to
 	// wait for the server's RoundJoined admission watermark after
@@ -477,6 +494,14 @@ type UnrollConfig struct {
 	// MaxFeeRateSatPerVByte caps fee estimates to prevent runaway
 	// fees. Zero uses the default of 100 sat/vB.
 	MaxFeeRateSatPerVByte int64 `mapstructure:"maxfeeratesatpervbyte"`
+
+	// ReconcileProbeTimeoutSec bounds each per-anchor restart-
+	// reconciliation probe issued by the chainsource-backed
+	// ChainReconciler (in seconds). A probe that times out leaves the
+	// durable checkpoint unchanged and fails closed for a later retry;
+	// operators running against a slow backend can raise this budget.
+	// Zero uses the reconciler's internal default (10s).
+	ReconcileProbeTimeoutSec int64 `mapstructure:"reconcileprobetimeoutsec"`
 }
 
 // FeeEstimationConfig groups optional external chain fee providers used by the
@@ -1137,6 +1162,7 @@ func DefaultConfig() *Config {
 		},
 		MaxOperatorFeeSat: DefaultMaxOperatorFeeSat,
 		SigningWorkers:    DefaultSigningWorkers,
+		ReorgSafetyDepth:  DefaultReorgSafetyDepth,
 		OOR:               defaultOORConfig(),
 		FeeEstimation: &FeeEstimationConfig{
 			MempoolSpace: &MempoolSpaceFeeConfig{},
@@ -1182,6 +1208,10 @@ func (c *Config) Validate() error {
 	if c.SigningWorkers > MaxSigningWorkers {
 		return fmt.Errorf("signingworkers exceeds maximum %d: got %d",
 			MaxSigningWorkers, c.SigningWorkers)
+	}
+	if c.ReorgSafetyDepth > MaxReorgSafetyDepth {
+		return fmt.Errorf("reorgsafetydepth exceeds maximum %d: got %d",
+			MaxReorgSafetyDepth, c.ReorgSafetyDepth)
 	}
 
 	if c.OOR == nil {
@@ -1349,6 +1379,21 @@ func (c *Config) validateWalletConfig() error {
 	}
 
 	return nil
+}
+
+// reorgSafetyDepth resolves the daemon's configured recovery horizon.
+func (c *Config) reorgSafetyDepth() uint32 {
+	if c.ReorgSafetyDepth == 0 {
+		return DefaultReorgSafetyDepth
+	}
+
+	return c.ReorgSafetyDepth
+}
+
+// chainFinalityDepth returns the first inclusive confirmation depth beyond
+// the configured recovery horizon.
+func (c *Config) chainFinalityDepth() uint32 {
+	return c.reorgSafetyDepth() + 1
 }
 
 // transportEndpoints holds the gRPC and REST addresses for one service.

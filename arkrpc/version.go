@@ -7,9 +7,14 @@ package arkrpc
 // expectations.
 //
 // It is negotiated through the direct GetInfo bootstrap RPC and bound to a
-// client runtime for its lifetime. Production currently supports only v1; a
-// synthetic v2 may be configured in tests to exercise selection, binding, and
-// rejection behavior, but no production default advertises a version beyond
-// v1. This constant is deliberately separate from the mailbox transport
-// version and the VTXO construction version, which evolve independently.
+// client runtime for its lifetime. This constant is deliberately separate
+// from the mailbox transport version and the VTXO construction version, which
+// evolve independently.
 const ArkProtocolVersionV1 uint32 = 1
+
+// ArkProtocolVersionV2 identifies the complete one-confirmation reorg-safety
+// contract: durable lineage registration, fail-closed admission, reversible
+// effects through the negotiated policy horizon, and recovery on both peers.
+// Defining the compatibility boundary does not enable it; clients must not
+// advertise v2 until every required gate and end-to-end proof is present.
+const ArkProtocolVersionV2 uint32 = 2
