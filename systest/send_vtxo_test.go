@@ -595,6 +595,17 @@ func newDirectedSendFixture(t *testing.T,
 		mutate(cfg)
 	}
 
+	// When a mutator opts the lnd backend into the REST transport, point
+	// the host at the harness lnd REST gateway port (8080) instead of the
+	// gRPC port set above. The TLS cert and macaroon paths are unchanged;
+	// the lndrest client reads the same files and reaches lnd's
+	// grpc-gateway over HTTPS.
+	if cfg.Lnd.Transport == waved.RPCTransportREST {
+		cfg.Lnd.Host = net.JoinHostPort(
+			"localhost", h.Harness.LNDRestPort,
+		)
+	}
+
 	seededOutpoint := seedLiveVTXO(
 		t, cfg, operatorPriv.PubKey(),
 		btcutil.Amount(testSeededAmountSat),

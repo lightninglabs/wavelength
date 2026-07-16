@@ -19,9 +19,9 @@ func (s *Server) NewWalletAddress(ctx context.Context) (string, error) {
 	}
 
 	if s.lnd.IsSome() {
-		lndSvc := s.lnd.UnsafeFromSome()
+		services := s.lnd.UnsafeFromSome().Services()
 
-		addr, err := lndSvc.WalletKit.NextAddr(
+		addr, err := services.WalletKit.NextAddr(
 			ctx, lnwallet.DefaultAccountName,
 			walletrpc.AddressType_TAPROOT_PUBKEY, false,
 		)
@@ -96,9 +96,9 @@ func (s *Server) listBackingWalletUnspent(ctx context.Context, minConfs,
 	maxConfs int32) ([]*wallet.Utxo, error) {
 
 	if s.lnd.IsSome() {
-		lndSvc := s.lnd.UnsafeFromSome()
+		services := s.lnd.UnsafeFromSome().Services()
 		backend := lndbackend.NewBoardingBackend(
-			lndSvc.WalletKit, lndSvc.ChainKit,
+			services.WalletKit, services.ChainKit,
 		)
 
 		utxos, err := backend.ListUnspent(ctx, minConfs, maxConfs)

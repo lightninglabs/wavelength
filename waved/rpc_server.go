@@ -24,7 +24,6 @@ import (
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/lndclient"
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/btcwbackend"
 	"github.com/lightninglabs/wavelength/build"
@@ -553,16 +552,17 @@ func (r *RPCServer) GetInfo(ctx context.Context, _ *waverpc.GetInfoRequest) (
 
 	// Populate lnd fields if connected.
 	r.server.lnd.WhenSome(
-		func(lndSvc *lndclient.GrpcLndServices) {
+		func(lndSvc lndServices) {
+			services := lndSvc.Services()
 			resp.LndIdentityPubkey =
-				lndSvc.NodePubkey.String()
-			resp.LndAlias = lndSvc.NodeAlias
+				services.NodePubkey.String()
+			resp.LndAlias = services.NodeAlias
 
 			// Fetch the current best block height from
 			// the chain backend via lnd's ChainKit
 			// interface.
 			_, height, err :=
-				lndSvc.ChainKit.GetBestBlock(ctx)
+				services.ChainKit.GetBestBlock(ctx)
 			if err != nil {
 				r.server.log.WarnS(
 					ctx,
@@ -937,11 +937,11 @@ type onchainWalletConfirmedFetcher func(
 func (r *RPCServer) walletBalanceFetchers() []onchainWalletConfirmedFetcher {
 	var fetchers []onchainWalletConfirmedFetcher
 
-	r.server.lnd.WhenSome(func(lndSvc *lndclient.GrpcLndServices) {
+	r.server.lnd.WhenSome(func(lndSvc lndServices) {
 		fetchers = append(fetchers, func(ctx context.Context) (
 			btcutil.Amount, error) {
 
-			wb, err := lndSvc.Client.WalletBalance(ctx)
+			wb, err := lndSvc.Services().Client.WalletBalance(ctx)
 			if err != nil {
 				return 0, fmt.Errorf("lnd wallet balance: %w",
 					err)
@@ -1022,9 +1022,9 @@ func (r *RPCServer) metricsWalletBalance(ctx context.Context) (int64, int64,
 		found                  bool
 		qErr                   error
 	)
-	r.server.lnd.WhenSome(func(lndSvc *lndclient.GrpcLndServices) {
+	r.server.lnd.WhenSome(func(lndSvc lndServices) {
 		found = true
-		wb, balErr := lndSvc.Client.WalletBalance(ctx)
+		wb, balErr := lndSvc.Services().Client.WalletBalance(ctx)
 		if balErr != nil {
 			qErr = fmt.Errorf("lnd wallet balance: %w", balErr)
 
@@ -1075,9 +1075,9 @@ func (r *RPCServer) metricsBlockHeight(ctx context.Context) (int64, error) {
 		found  bool
 		qErr   error
 	)
-	r.server.lnd.WhenSome(func(lndSvc *lndclient.GrpcLndServices) {
+	r.server.lnd.WhenSome(func(lndSvc lndServices) {
 		found = true
-		_, h, hErr := lndSvc.ChainKit.GetBestBlock(ctx)
+		_, h, hErr := lndSvc.Services().ChainKit.GetBestBlock(ctx)
 		if hErr != nil {
 			qErr = fmt.Errorf("lnd best block: %w", hErr)
 

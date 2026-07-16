@@ -45,6 +45,7 @@ import (
 	"github.com/lightninglabs/wavelength/lib/recovery"
 	"github.com/lightninglabs/wavelength/lib/types"
 	"github.com/lightninglabs/wavelength/lndbackend"
+	"github.com/lightninglabs/wavelength/lndrest"
 	"github.com/lightninglabs/wavelength/lwwallet"
 	mailboxpb "github.com/lightninglabs/wavelength/mailbox/pb"
 	mailboxrpc "github.com/lightninglabs/wavelength/mailbox/rpc"
@@ -209,9 +210,11 @@ type Server struct {
 	// off.
 	metricsSink fn.Option[metrics.Sink]
 
-	// lnd holds the lndclient connection when wallet.type is "lnd".
-	// It is None in lwwallet mode.
-	lnd fn.Option[*lndclient.GrpcLndServices]
+	// lnd holds the connected lnd backend when wallet.type is "lnd". The
+	// concrete implementation is either the native gRPC lndclient
+	// (grpcLndServices) or the REST-backed lndrest backend, selected by
+	// lnd.transport. It is None in lwwallet/btcwallet mode.
+	lnd fn.Option[lndServices]
 
 	// lwWallet holds the lightweight wallet instance when
 	// wallet.type is "lwwallet". It is None in lnd mode.
@@ -1541,19 +1544,20 @@ func (s *Server) initLndBackend(ctx context.Context) error {
 	s.log.InfoS(ctx, "Connecting to lnd",
 		"host", s.cfg.Lnd.Host)
 
-	lndServices, err := s.connectLnd(ctx)
+	lndSvc, err := s.connectLnd(ctx)
 	if err != nil {
 		return fmt.Errorf("unable to connect to lnd: %w", err)
 	}
-	s.lnd = fn.Some(lndServices)
+	s.lnd = fn.Some(lndSvc)
 	s.refreshProofKeyBackend()
 
 	// Use lnd's chain params as the authoritative source.
-	s.chainParams = lndServices.ChainParams
+	services := lndSvc.Services()
+	s.chainParams = services.ChainParams
 
 	s.log.InfoS(ctx, "Connected to lnd",
-		"alias", lndServices.NodeAlias,
-		"pubkey", lndServices.NodePubkey,
+		"alias", services.NodeAlias,
+		"pubkey", services.NodePubkey,
 	)
 
 	// In lnd mode the wallet is immediately ready.
@@ -1569,9 +1573,9 @@ func (s *Server) refreshProofKeyBackend() {
 	switch s.cfg.Wallet.Type {
 	case WalletTypeLnd:
 		if s.lnd.IsSome() {
-			lndSvc := s.lnd.UnsafeFromSome()
+			services := s.lnd.UnsafeFromSome().Services()
 			s.proofKeyBackend = lndbackend.NewProofKeyBackend(
-				lndSvc.WalletKit, lndSvc.Signer,
+				services.WalletKit, services.Signer,
 			)
 
 			return
@@ -2224,10 +2228,10 @@ func (s *Server) initChainBackend(ctx context.Context) error {
 
 	switch s.cfg.Wallet.Type {
 	case WalletTypeLnd:
-		lndSvc := s.lnd.UnsafeFromSome()
+		services := s.lnd.UnsafeFromSome().Services()
 		notifier := chainbackends.NewLndClientChainNotifier(
 			chainbackends.LndClientChainNotifierConfig{
-				LND: &lndSvc.LndServices,
+				LND: services,
 				Log: fn.Some(
 					s.subLogger(
 						chainbackends.
@@ -2236,14 +2240,14 @@ func (s *Server) initChainBackend(ctx context.Context) error {
 				),
 			},
 		)
-		feeEstimator, err := s.lndFeeEstimator(ctx, lndSvc.WalletKit)
+		feeEstimator, err := s.lndFeeEstimator(ctx, services.WalletKit)
 		if err != nil {
 			return fmt.Errorf("create lnd fee estimator: %w", err)
 		}
 		backend := chainbackends.NewLNDBackend(
 			notifier, feeEstimator,
 			chainbackends.NewLndClientTxBroadcaster(
-				lndSvc.WalletKit,
+				services.WalletKit,
 			),
 		)
 		backend.Log = fn.Some(s.subLogger(chainbackends.Subsystem))
@@ -2259,7 +2263,7 @@ func (s *Server) initChainBackend(ctx context.Context) error {
 
 		default:
 			backend.SetPackageSubmitter(
-				lndsubmitter.New(lndSvc.WalletKit),
+				lndsubmitter.New(services.WalletKit),
 			)
 		}
 
@@ -2598,11 +2602,23 @@ func (s *Server) applyDebugLevel() error {
 	return nil
 }
 
-// connectLnd establishes a connection to the lnd node using the lndclient
-// SDK. The call blocks until lnd is fully synced and the wallet is unlocked.
-func (s *Server) connectLnd(ctx context.Context) (*lndclient.GrpcLndServices,
-	error) {
+// connectLnd establishes a connection to the lnd node over the configured
+// transport, returning the transport-agnostic lndServices seam. It dispatches
+// to the native gRPC lndclient or the REST-backed lndrest backend based on
+// cfg.Lnd.Transport (empty defaults to gRPC).
+func (s *Server) connectLnd(ctx context.Context) (lndServices, error) {
+	switch s.cfg.Lnd.Transport {
+	case RPCTransportREST:
+		return s.connectLndREST(ctx)
 
+	default:
+		return s.connectLndGRPC(ctx)
+	}
+}
+
+// connectLndGRPC connects to lnd using the native gRPC lndclient SDK. The call
+// blocks until lnd is fully synced and the wallet is unlocked.
+func (s *Server) connectLndGRPC(ctx context.Context) (lndServices, error) {
 	network, err := networkToLndclient(s.cfg.Network)
 	if err != nil {
 		return nil, err
@@ -2613,7 +2629,7 @@ func (s *Server) connectLnd(ctx context.Context) (*lndclient.GrpcLndServices,
 		rpcTimeout = DefaultRPCTimeout
 	}
 
-	return lndclient.NewLndServices(&lndclient.LndServicesConfig{
+	grpcSvc, err := lndclient.NewLndServices(&lndclient.LndServicesConfig{
 		LndAddress:            s.cfg.Lnd.Host,
 		Network:               network,
 		CustomMacaroonPath:    s.cfg.Lnd.MacaroonPath,
@@ -2622,6 +2638,30 @@ func (s *Server) connectLnd(ctx context.Context) (*lndclient.GrpcLndServices,
 		BlockUntilUnlocked:    true,
 		CallerCtx:             ctx,
 		RPCTimeout:            rpcTimeout,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &grpcLndServices{GrpcLndServices: grpcSvc}, nil
+}
+
+// connectLndREST connects to lnd over its grpc-gateway HTTP/JSON interface via
+// the lndrest backend. Unlike the gRPC path it does not block on chain sync or
+// wallet unlock; the initial GetInfo round-trip inside lndrest.New both proves
+// connectivity and seeds the node metadata.
+func (s *Server) connectLndREST(ctx context.Context) (lndServices, error) {
+	rpcTimeout := s.cfg.Lnd.RPCTimeout
+	if rpcTimeout == 0 {
+		rpcTimeout = DefaultRPCTimeout
+	}
+
+	return lndrest.New(ctx, lndrest.Config{
+		Host:         s.cfg.Lnd.Host,
+		TLSPath:      s.cfg.Lnd.TLSPath,
+		MacaroonPath: s.cfg.Lnd.MacaroonPath,
+		RPCTimeout:   rpcTimeout,
+		ChainParams:  s.chainParams,
 	})
 }
 
@@ -3895,9 +3935,9 @@ func (s *Server) initWalletActor(ctx context.Context,
 	var boardingBackend wallet.BoardingBackend
 	switch s.cfg.Wallet.Type {
 	case WalletTypeLnd:
-		lndSvc := s.lnd.UnsafeFromSome()
+		services := s.lnd.UnsafeFromSome().Services()
 		backend := lndbackend.NewBoardingBackend(
-			lndSvc.WalletKit, lndSvc.ChainKit,
+			services.WalletKit, services.ChainKit,
 		)
 		backend.Log = fn.Some(s.subLogger(lndbackend.Subsystem))
 		boardingBackend = backend
@@ -4050,9 +4090,9 @@ func (s *Server) initRoundActor(ctx context.Context,
 	var clientWallet round.ClientWallet
 	switch s.cfg.Wallet.Type {
 	case WalletTypeLnd:
-		lndSvc := s.lnd.UnsafeFromSome()
+		services := s.lnd.UnsafeFromSome().Services()
 		lndWallet := lndbackend.NewClientWallet(
-			lndSvc.Signer, lndSvc.WalletKit,
+			services.Signer, services.WalletKit,
 		)
 		lndWallet.Log = fn.Some(s.subLogger(lndbackend.Subsystem))
 		clientWallet = lndWallet
@@ -4198,9 +4238,9 @@ func (s *Server) initVTXOManager(ctx context.Context,
 	var vtxoWallet vtxo.VTXOWallet
 	switch s.cfg.Wallet.Type {
 	case WalletTypeLnd:
-		lndSvc := s.lnd.UnsafeFromSome()
+		services := s.lnd.UnsafeFromSome().Services()
 		lndWallet := lndbackend.NewClientWallet(
-			lndSvc.Signer, lndSvc.WalletKit,
+			services.Signer, services.WalletKit,
 		)
 		lndWallet.Log = fn.Some(s.subLogger(lndbackend.Subsystem))
 		vtxoWallet = lndWallet
@@ -4547,9 +4587,9 @@ func (s *Server) initOORActor(ctx context.Context,
 func (s *Server) oorSigner() (input.Signer, error) {
 	switch s.cfg.Wallet.Type {
 	case WalletTypeLnd:
-		lndSvc := s.lnd.UnsafeFromSome()
+		services := s.lnd.UnsafeFromSome().Services()
 		lndWallet := lndbackend.NewClientWallet(
-			lndSvc.Signer, lndSvc.WalletKit,
+			services.Signer, services.WalletKit,
 		)
 		lndWallet.Log = fn.Some(s.subLogger(lndbackend.Subsystem))
 
@@ -4654,8 +4694,8 @@ func (s *Server) deriveIdentityKeyEarly(ctx context.Context) error {
 		btcwErr error
 	)
 
-	s.lnd.WhenSome(func(lndSvc *lndclient.GrpcLndServices) {
-		desc, err := lndSvc.WalletKit.DeriveKey(ctx,
+	s.lnd.WhenSome(func(lndSvc lndServices) {
+		desc, err := lndSvc.Services().WalletKit.DeriveKey(ctx,
 			&keychain.KeyLocator{
 				Family: identityKeyFamily,
 				Index:  0,
@@ -4805,11 +4845,14 @@ func (s *Server) signTaggedSchnorr(ctx context.Context, msg, tag []byte,
 	// In LND mode, use lnd's tagged Schnorr signing RPC. We pass the
 	// raw message and tag so LND computes the BIP-340 tagged hash
 	// internally, avoiding double-hashing.
-	s.lnd.WhenSome(func(lndSvc *lndclient.GrpcLndServices) {
+	s.lnd.WhenSome(func(lndSvc lndServices) {
 		var rawSig []byte
-		rawSig, err = lndSvc.Signer.SignMessage(
-			ctx, msg, s.clientKeyDesc.KeyLocator,
-			lndclient.SignSchnorr(nil), withSchnorrTag(tag),
+		rawSig, err = lndSvc.Services().Signer.SignMessage(
+			ctx,
+			msg,
+			s.clientKeyDesc.KeyLocator,
+			lndclient.SignSchnorr(nil),
+			withSchnorrTag(tag),
 		)
 		if err != nil {
 			err = fmt.Errorf("lnd sign %s: %w", opName, err)
@@ -5341,12 +5384,12 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 
 	switch s.cfg.Wallet.Type {
 	case WalletTypeLnd:
-		lndSvc := s.lnd.UnsafeFromSome()
+		services := s.lnd.UnsafeFromSome().Services()
 		clientWallet := lndbackend.NewClientWallet(
-			lndSvc.Signer, lndSvc.WalletKit,
+			services.Signer, services.WalletKit,
 		)
 		boardingBackend := lndbackend.NewBoardingBackend(
-			lndSvc.WalletKit, lndSvc.ChainKit,
+			services.WalletKit, services.ChainKit,
 		)
 		w := &lndUnrollWallet{
 			ClientWallet:    clientWallet,

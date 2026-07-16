@@ -111,7 +111,15 @@ func newRootCmd() *cobra.Command {
 	)
 
 	// LND connection flags.
-	f.String("lnd.host", cfg.Lnd.Host, "lnd gRPC address")
+	f.String(
+		"lnd.host", cfg.Lnd.Host, "lnd endpoint: a host:port gRPC "+
+			"address for lnd.transport=grpc, or an HTTP "+
+			"gateway base URL for lnd.transport=rest",
+	)
+	f.String(
+		"lnd.transport", cfg.Lnd.Transport,
+		"lnd RPC transport: grpc or rest",
+	)
 	f.String(
 		"lnd.tlspath", cfg.Lnd.TLSPath, "path to lnd TLS certificate",
 	)

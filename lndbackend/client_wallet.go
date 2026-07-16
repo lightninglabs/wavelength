@@ -31,7 +31,7 @@ import (
 // background context for all RPC calls. The underlying gRPC deadline
 // from the lndclient dial options still applies.
 type ClientWallet struct {
-	signer    lndclient.SignerClient
+	signer    Signer
 	walletKit lndclient.WalletKitClient
 
 	// Log is an optional logger for this wallet. If None, the wallet falls
@@ -39,116 +39,70 @@ type ClientWallet struct {
 	Log fn.Option[btclog.Logger]
 }
 
+// Signer is the transport-agnostic signing surface the ClientWallet needs. It
+// is the full lndclient.SignerClient plus a locator-forwarding SignOutputRaw
+// so the family-6/index-0 identity signing path works over any lnd transport.
+// The gRPC lndclient signer gains the extra method via grpcLocatorSigner (which
+// forwards through the raw client); the REST signer implements it directly, so
+// the REST transport never has to expose a raw gRPC client.
+type Signer interface {
+	lndclient.SignerClient
+
+	// SignOutputRawWithLocator mirrors SignOutputRaw but always forwards
+	// the key locator when one is available, including family/index pairs
+	// with a zero component such as lnd's node key at family 6 index 0.
+	SignOutputRawWithLocator(ctx context.Context, tx *wire.MsgTx,
+		signDescriptors []*lndclient.SignDescriptor,
+		prevOutputs []*wire.TxOut) ([][]byte, error)
+}
+
 // NewClientWallet creates a new ClientWallet from the lndclient signer
-// and wallet kit clients.
+// and wallet kit clients. A signer that already implements the locator-aware
+// Signer interface (the REST backend) is used directly; a plain gRPC
+// lndclient.SignerClient is wrapped so the locator-forwarding path routes
+// through its raw client.
 func NewClientWallet(
 	signer lndclient.SignerClient,
 	walletKit lndclient.WalletKitClient,
 ) *ClientWallet {
 
 	return &ClientWallet{
-		signer:    signer,
+		signer:    asLocatorSigner(signer),
 		walletKit: walletKit,
 	}
 }
 
-// logger returns the configured logger, falling back to the context logger.
-func (c *ClientWallet) logger(ctx context.Context) btclog.Logger {
-	return c.Log.UnwrapOr(build.LoggerFromContext(ctx))
-}
-
-// Compile-time check that ClientWallet satisfies the interface
-// expected by round.RoundClientConfig.Wallet. We can't import the
-// round package here (that would create a cycle), so we check against
-// input.Signer which is the signing half of round.ClientWallet.
-//
-// NOTE: Full round.ClientWallet check (which adds DeriveNextKey and
-// MuSig2* methods) is omitted to avoid the import cycle. Any drift
-// will surface as a compile error in waved/server.go where
-// ClientWallet is passed to the round config.
-var _ input.Signer = (*ClientWallet)(nil)
-
-// DeriveNextKey derives the next key in the specified key family via
-// lnd's WalletKit RPC. This is used by the round actor to generate
-// fresh VTXO signing keys for each round.
-func (c *ClientWallet) DeriveNextKey(ctx context.Context,
-	family keychain.KeyFamily) (*keychain.KeyDescriptor, error) {
-
-	c.logger(ctx).DebugS(ctx, "Deriving next key via client wallet",
-		slog.Int("key_family", int(family)),
-	)
-
-	keyDesc, err := c.walletKit.DeriveNextKey(ctx, int32(family))
-	if err != nil {
-		return nil, fmt.Errorf("derive next key: %w", err)
+// asLocatorSigner promotes a plain lndclient signer to the locator-aware Signer
+// interface, returning it unchanged when it already satisfies Signer.
+func asLocatorSigner(signer lndclient.SignerClient) Signer {
+	if ls, ok := signer.(Signer); ok {
+		return ls
 	}
 
-	c.logger(ctx).DebugS(ctx, "Derived next key via client wallet",
-		slog.Int("key_family", int(family)),
-		slog.Int("key_index", int(keyDesc.Index)),
-	)
-
-	return keyDesc, nil
+	return &grpcLocatorSigner{SignerClient: signer}
 }
 
-// SignOutputRaw generates a schnorr/ECDSA signature for a single input
-// of the provided transaction according to the sign descriptor. The
-// call is forwarded to lnd's remote signer via gRPC.
-func (c *ClientWallet) SignOutputRaw(tx *wire.MsgTx,
-	signDesc *input.SignDescriptor) (input.Signature, error) {
-
-	c.logger(context.TODO()).DebugS(
-		context.TODO(),
-		"Signing output raw via LND remote signer",
-		slog.Int("input_index", signDesc.InputIndex),
-		slog.String("sign_method", signDesc.SignMethod.String()),
-	)
-
-	lndDesc := inputDescToLndclient(signDesc)
-
-	// Collect prevouts for taproot sighash computation. When the
-	// caller provides a PrevOutputFetcher we extract every input's
-	// previous output; otherwise we fall back to the single output
-	// in the sign descriptor.
-	prevOuts := prevOutputsFromDesc(tx, signDesc)
-
-	sigs, err := c.signOutputRawWithLocator(
-		context.Background(), tx, []*lndclient.SignDescriptor{
-			lndDesc,
-		}, prevOuts,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("sign output raw: %w", err)
-	}
-
-	if len(sigs) == 0 {
-		return nil, fmt.Errorf("no signatures returned")
-	}
-
-	c.logger(context.TODO()).DebugS(
-		context.TODO(),
-		"Signed output raw successfully",
-		slog.Int("input_index", signDesc.InputIndex),
-		slog.Int("sig_len", len(sigs[0])),
-	)
-
-	return parseSigBytes(sigs[0], signDesc.SignMethod)
+// grpcLocatorSigner adapts a raw gRPC lndclient signer to the Signer interface
+// by implementing SignOutputRawWithLocator through the raw signrpc client,
+// preserving the locator-forwarding behavior on the gRPC transport.
+type grpcLocatorSigner struct {
+	lndclient.SignerClient
 }
 
-// signOutputRawWithLocator mirrors lndclient.SignOutputRaw but always includes
-// the key locator when one is available, including family/index zero pairs
-// such as LND's node key at family 6 index 0.
+// SignOutputRawWithLocator mirrors lndclient.SignOutputRaw but always includes
+// the key locator when one is available, including family/index zero pairs such
+// as lnd's node key at family 6 index 0.
 //
 // TODO(wavelength): drop this helper and go back to lndclient.SignOutputRaw
 // once upstream forwards the key locator on SignOutputRaw for descriptors whose
 // KeyLocator has Family != 0 but Index == 0. The current helper in lndclient
 // omits the locator in that case, which breaks signing for the family-6/index-0
 // identity path used by the indexer proof signer.
-func (c *ClientWallet) signOutputRawWithLocator(ctx context.Context,
+func (g *grpcLocatorSigner) SignOutputRawWithLocator(ctx context.Context,
 	tx *wire.MsgTx, signDescriptors []*lndclient.SignDescriptor,
 	prevOutputs []*wire.TxOut) ([][]byte, error) {
 
-	rpcCtx, timeout, rawClient := c.signer.RawClientWithMacAuth(ctx)
+	rpcCtx, timeout, rawClient := g.RawClientWithMacAuth(ctx)
 	rpcCtx, cancel := context.WithTimeout(rpcCtx, timeout)
 	defer cancel()
 
@@ -227,6 +181,89 @@ func (c *ClientWallet) signOutputRawWithLocator(ctx context.Context,
 	}
 
 	return resp.RawSigs, nil
+}
+
+// logger returns the configured logger, falling back to the context logger.
+func (c *ClientWallet) logger(ctx context.Context) btclog.Logger {
+	return c.Log.UnwrapOr(build.LoggerFromContext(ctx))
+}
+
+// Compile-time check that ClientWallet satisfies the interface
+// expected by round.RoundClientConfig.Wallet. We can't import the
+// round package here (that would create a cycle), so we check against
+// input.Signer which is the signing half of round.ClientWallet.
+//
+// NOTE: Full round.ClientWallet check (which adds DeriveNextKey and
+// MuSig2* methods) is omitted to avoid the import cycle. Any drift
+// will surface as a compile error in waved/server.go where
+// ClientWallet is passed to the round config.
+var _ input.Signer = (*ClientWallet)(nil)
+
+// DeriveNextKey derives the next key in the specified key family via
+// lnd's WalletKit RPC. This is used by the round actor to generate
+// fresh VTXO signing keys for each round.
+func (c *ClientWallet) DeriveNextKey(ctx context.Context,
+	family keychain.KeyFamily) (*keychain.KeyDescriptor, error) {
+
+	c.logger(ctx).DebugS(ctx, "Deriving next key via client wallet",
+		slog.Int("key_family", int(family)),
+	)
+
+	keyDesc, err := c.walletKit.DeriveNextKey(ctx, int32(family))
+	if err != nil {
+		return nil, fmt.Errorf("derive next key: %w", err)
+	}
+
+	c.logger(ctx).DebugS(ctx, "Derived next key via client wallet",
+		slog.Int("key_family", int(family)),
+		slog.Int("key_index", int(keyDesc.Index)),
+	)
+
+	return keyDesc, nil
+}
+
+// SignOutputRaw generates a schnorr/ECDSA signature for a single input
+// of the provided transaction according to the sign descriptor. The
+// call is forwarded to lnd's remote signer via gRPC.
+func (c *ClientWallet) SignOutputRaw(tx *wire.MsgTx,
+	signDesc *input.SignDescriptor) (input.Signature, error) {
+
+	c.logger(context.TODO()).DebugS(
+		context.TODO(),
+		"Signing output raw via LND remote signer",
+		slog.Int("input_index", signDesc.InputIndex),
+		slog.String("sign_method", signDesc.SignMethod.String()),
+	)
+
+	lndDesc := inputDescToLndclient(signDesc)
+
+	// Collect prevouts for taproot sighash computation. When the
+	// caller provides a PrevOutputFetcher we extract every input's
+	// previous output; otherwise we fall back to the single output
+	// in the sign descriptor.
+	prevOuts := prevOutputsFromDesc(tx, signDesc)
+
+	sigs, err := c.signer.SignOutputRawWithLocator(
+		context.Background(), tx, []*lndclient.SignDescriptor{
+			lndDesc,
+		}, prevOuts,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("sign output raw: %w", err)
+	}
+
+	if len(sigs) == 0 {
+		return nil, fmt.Errorf("no signatures returned")
+	}
+
+	c.logger(context.TODO()).DebugS(
+		context.TODO(),
+		"Signed output raw successfully",
+		slog.Int("input_index", signDesc.InputIndex),
+		slog.Int("sig_len", len(sigs[0])),
+	)
+
+	return parseSigBytes(sigs[0], signDesc.SignMethod)
 }
 
 // ComputeInputScript generates a complete input script (witness) for
