@@ -10,13 +10,19 @@ import (
 )
 
 type Querier interface {
+	ActivateAllConfirmedVirtualChannels(ctx context.Context, updatedAt int64) (int64, error)
+	ActivateConfirmedRoundVirtualChannels(ctx context.Context, arg ActivateConfirmedRoundVirtualChannelsParams) (int64, error)
 	// AppendActivityEvent records one immutable lifecycle-transition row and
 	// returns the event_seq the database assigned (monotonic, not necessarily
 	// contiguous). Callers use it as the resumable-subscribe cursor for the update.
 	AppendActivityEvent(ctx context.Context, arg AppendActivityEventParams) (int64, error)
+	ArmVirtualChannelBacking(ctx context.Context, arg ArmVirtualChannelBackingParams) (int64, error)
+	BindVirtualChannelIntent(ctx context.Context, arg BindVirtualChannelIntentParams) (int64, error)
 	CancelVHTLCRecoveryJob(ctx context.Context, arg CancelVHTLCRecoveryJobParams) (int64, error)
 	ClearPendingIntentAnchorByOutpoint(ctx context.Context, arg ClearPendingIntentAnchorByOutpointParams) error
+	CloseFailedRoundArmedVirtualChannels(ctx context.Context, arg CloseFailedRoundArmedVirtualChannelsParams) (int64, error)
 	CompleteVHTLCRecoveryJob(ctx context.Context, arg CompleteVHTLCRecoveryJobParams) (int64, error)
+	ConfirmRoundVirtualChannels(ctx context.Context, arg ConfirmRoundVirtualChannelsParams) (int64, error)
 	// CountActivityEntriesByStatus returns the number of current-state rows in the
 	// given status. It backs the wallet status summary's pending count, which must
 	// reflect the whole feed rather than a single paginated page.
@@ -32,6 +38,7 @@ type Querier interface {
 	CountUnspentVTXOs(ctx context.Context) (int64, error)
 	// CountVTXOsByStatus returns the count of VTXOs with the specified status.
 	CountVTXOsByStatus(ctx context.Context, status int32) (int64, error)
+	CountVirtualChannelBackingOwners(ctx context.Context, arg CountVirtualChannelBackingOwnersParams) (int32, error)
 	CountWalletUTXOLog(ctx context.Context) (int64, error)
 	DeleteClientTreeTxids(ctx context.Context, arg DeleteClientTreeTxidsParams) error
 	DeleteOORPackageCheckpoints(ctx context.Context, sessionID []byte) error
@@ -63,8 +70,12 @@ type Querier interface {
 	// Used as the first half of an upsert when the VTXO manager fills in
 	// finalized lineage on top of a partially-written round-create row.
 	DeleteVTXOAncestryPaths(ctx context.Context, arg DeleteVTXOAncestryPathsParams) error
-	DeleteVirtualChannelIntent(ctx context.Context, pendingChannelID []byte) (int64, error)
+	DeleteVirtualChannelIntentCAS(ctx context.Context, arg DeleteVirtualChannelIntentCASParams) (int64, error)
+	DeleteVirtualChannelIntentVTXOs(ctx context.Context, pendingChannelID []byte) error
+	DeleteVirtualChannelVTXOs(ctx context.Context, virtualChannelID []byte) error
 	EscalateVHTLCRecoveryJob(ctx context.Context, arg EscalateVHTLCRecoveryJobParams) (int64, error)
+	FailRoundVirtualChannelIntents(ctx context.Context, arg FailRoundVirtualChannelIntentsParams) (int64, error)
+	FailRoundVirtualChannels(ctx context.Context, arg FailRoundVirtualChannelsParams) (int64, error)
 	FailVHTLCRecoveryJob(ctx context.Context, arg FailVHTLCRecoveryJobParams) (int64, error)
 	FinalizeRound(ctx context.Context, arg FinalizeRoundParams) error
 	// GetActivityEntry returns one entry by its canonical id.
@@ -116,6 +127,7 @@ type Querier interface {
 	// VTXO. Returns NULL if not forfeited or no replacement recorded.
 	GetVTXOReplacement(ctx context.Context, arg GetVTXOReplacementParams) (GetVTXOReplacementRow, error)
 	GetVirtualChannel(ctx context.Context, virtualChannelID []byte) (VirtualChannel, error)
+	GetVirtualChannelByBackingVTXO(ctx context.Context, arg GetVirtualChannelByBackingVTXOParams) (VirtualChannel, error)
 	GetVirtualChannelByChannelPoint(ctx context.Context, arg GetVirtualChannelByChannelPointParams) (VirtualChannel, error)
 	GetVirtualChannelByPendingID(ctx context.Context, pendingChannelID []byte) (VirtualChannel, error)
 	GetVirtualChannelIntentByPendingID(ctx context.Context, pendingChannelID []byte) (VirtualChannelIntent, error)
@@ -251,8 +263,9 @@ type Querier interface {
 	// ListRoundsPaginated returns rounds ordered by round_id with cursor-
 	// based pagination. When cursor is empty, returns from the beginning.
 	ListRoundsPaginated(ctx context.Context, arg ListRoundsPaginatedParams) ([]Round, error)
-	// ListSpendingReservationOutpoints returns every reserved outpoint. Used by
-	// the startup sweep to build the set of live reservations.
+	// ListSpendingReservationOutpoints returns every reserved outpoint, including
+	// VTXOs held by a nonterminal virtual channel. Used by the startup sweep to
+	// build the set of live reservations.
 	ListSpendingReservationOutpoints(ctx context.Context) ([]ListSpendingReservationOutpointsRow, error)
 	// ListTransactionHistory returns a unified newest-first history from the
 	// client-side ledger and tracked boarding sweep transactions. Filters are
@@ -278,7 +291,11 @@ type Querier interface {
 	// selection runs on: outpoint, amount, and pkScript. Selection happens on
 	// every payment and only needs these three fields, so this avoids decoding
 	// full descriptors (pubkey parsing, taproot script reconstruction, policy
-	// template decode) and the batched ancestry-path query on the hot path.
+	// template decode) and the batched ancestry-path query on the hot path. A
+	// VTXO assigned to a live channel lifecycle is unavailable to Ark coin
+	// selection: while virtual it backs the unpublished channel point, and after
+	// materialization that backing transaction has consumed it. A channel that
+	// fails before activation releases its VTXO for a later attempt.
 	ListVTXOSelectionCandidatesByStatus(ctx context.Context, status int32) ([]ListVTXOSelectionCandidatesByStatusRow, error)
 	ListVTXOsByRound(ctx context.Context, roundID string) ([]Vtxo, error)
 	// VTXO status and lifecycle queries.
@@ -292,6 +309,7 @@ type Querier interface {
 	// absent), so consumers must treat them as optional.
 	ListVTXOsByStatus(ctx context.Context, status int32) ([]ListVTXOsByStatusRow, error)
 	ListVirtualChannelIntentVTXOs(ctx context.Context, pendingChannelID []byte) ([]VirtualChannelIntentVtxo, error)
+	ListVirtualChannelIntentsByStatus(ctx context.Context, status string) ([]VirtualChannelIntent, error)
 	ListVirtualChannelVTXOs(ctx context.Context, virtualChannelID []byte) ([]VirtualChannelVtxo, error)
 	ListVirtualChannelsByChannelPointHash(ctx context.Context, channelPointHash []byte) ([]VirtualChannel, error)
 	ListVirtualChannelsByStatus(ctx context.Context, status string) ([]VirtualChannel, error)
@@ -336,24 +354,23 @@ type Querier interface {
 	MarkVTXOForfeiting(ctx context.Context, arg MarkVTXOForfeitingParams) error
 	// Also sets status = 4 (Spent) to keep status in sync with spent flag.
 	MarkVTXOSpent(ctx context.Context, arg MarkVTXOSpentParams) error
-	MarkVirtualChannelActive(ctx context.Context, arg MarkVirtualChannelActiveParams) (int64, error)
 	MarkVirtualChannelClosed(ctx context.Context, arg MarkVirtualChannelClosedParams) (int64, error)
-	MarkVirtualChannelClosing(ctx context.Context, arg MarkVirtualChannelClosingParams) (int64, error)
-	MarkVirtualChannelCoopClosed(ctx context.Context, arg MarkVirtualChannelCoopClosedParams) (int64, error)
-	MarkVirtualChannelFailed(ctx context.Context, arg MarkVirtualChannelFailedParams) (int64, error)
 	MarkVirtualChannelMaterializing(ctx context.Context, arg MarkVirtualChannelMaterializingParams) (int64, error)
 	// PullActivityEvents returns transition rows strictly after the cursor in
 	// event_seq order, the resumable-subscribe replay primitive.
 	PullActivityEvents(ctx context.Context, arg PullActivityEventsParams) ([]ActivityEvent, error)
+	ReleaseFailedRoundVirtualChannelIntentVTXOs(ctx context.Context, roundID sql.NullString) error
+	ReleaseFailedRoundVirtualChannelVTXOs(ctx context.Context, roundID sql.NullString) error
 	SumBoardingIntentAmountsByStatus(ctx context.Context, status string) (interface{}, error)
 	SumUnspentVTXOAmounts(ctx context.Context) (interface{}, error)
+	TransitionVirtualChannel(ctx context.Context, arg TransitionVirtualChannelParams) (int64, error)
+	TransitionVirtualChannelIntent(ctx context.Context, arg TransitionVirtualChannelIntentParams) (int64, error)
 	UpdateBoardingIntentStatus(ctx context.Context, arg UpdateBoardingIntentStatusParams) error
 	UpdateRoundBoardingIntentSignature(ctx context.Context, arg UpdateRoundBoardingIntentSignatureParams) error
 	UpdateRoundStatus(ctx context.Context, arg UpdateRoundStatusParams) error
 	// UpdateVTXOStatus atomically updates a VTXO's status. This is the primary
 	// method for state transitions that don't require additional data.
 	UpdateVTXOStatus(ctx context.Context, arg UpdateVTXOStatusParams) error
-	UpdateVirtualChannelStatus(ctx context.Context, arg UpdateVirtualChannelStatusParams) (int64, error)
 	// Canonical activity log queries. activity_entries is the current-state
 	// projection read by List; activity_events is the append-only transition log
 	// read by a resumable SubscribeWallet. See docs/canonical_activity_log_design.md.

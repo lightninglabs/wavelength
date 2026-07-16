@@ -10,13 +10,267 @@ import (
 	"database/sql"
 )
 
-const DeleteVirtualChannelIntent = `-- name: DeleteVirtualChannelIntent :execrows
+const ActivateAllConfirmedVirtualChannels = `-- name: ActivateAllConfirmedVirtualChannels :execrows
+UPDATE virtual_channels
+SET status = 'active',
+	state_version = state_version + 1,
+	updated_at = $1
+WHERE kind = 'receive_channel'
+	AND status = 'round_confirmed'
+`
+
+func (q *Queries) ActivateAllConfirmedVirtualChannels(ctx context.Context, updatedAt int64) (int64, error) {
+	result, err := q.db.ExecContext(ctx, ActivateAllConfirmedVirtualChannels, updatedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const ActivateConfirmedRoundVirtualChannels = `-- name: ActivateConfirmedRoundVirtualChannels :execrows
+UPDATE virtual_channels
+SET status = 'active',
+	state_version = state_version + 1,
+	updated_at = $2
+WHERE kind = 'receive_channel'
+	AND round_id = $1
+	AND status = 'round_confirmed'
+`
+
+type ActivateConfirmedRoundVirtualChannelsParams struct {
+	RoundID   sql.NullString
+	UpdatedAt int64
+}
+
+func (q *Queries) ActivateConfirmedRoundVirtualChannels(ctx context.Context, arg ActivateConfirmedRoundVirtualChannelsParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, ActivateConfirmedRoundVirtualChannels, arg.RoundID, arg.UpdatedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const ArmVirtualChannelBacking = `-- name: ArmVirtualChannelBacking :execrows
+UPDATE virtual_channels
+SET status = 'backing_armed',
+	backing_tx = $4,
+	state_version = state_version + 1,
+	updated_at = $5,
+	backing_armed_at = $5
+WHERE virtual_channel_id = $1
+	AND status = 'funding_verified'
+	AND state_version = $2
+	AND channel_point_hash = $3
+`
+
+type ArmVirtualChannelBackingParams struct {
+	VirtualChannelID []byte
+	StateVersion     int64
+	ChannelPointHash []byte
+	BackingTx        []byte
+	UpdatedAt        int64
+}
+
+func (q *Queries) ArmVirtualChannelBacking(ctx context.Context, arg ArmVirtualChannelBackingParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, ArmVirtualChannelBacking,
+		arg.VirtualChannelID,
+		arg.StateVersion,
+		arg.ChannelPointHash,
+		arg.BackingTx,
+		arg.UpdatedAt,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const BindVirtualChannelIntent = `-- name: BindVirtualChannelIntent :execrows
+UPDATE virtual_channel_intents
+SET status = 'funding_bound',
+	round_id = $4,
+	state_version = state_version + 1,
+	updated_at = $5
+WHERE pending_channel_id = $1
+	AND status = 'round_requested'
+	AND state_version = $2
+	AND round_id IS NULL
+	AND kind = $3
+`
+
+type BindVirtualChannelIntentParams struct {
+	PendingChannelID []byte
+	StateVersion     int64
+	Kind             string
+	RoundID          sql.NullString
+	UpdatedAt        int64
+}
+
+func (q *Queries) BindVirtualChannelIntent(ctx context.Context, arg BindVirtualChannelIntentParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, BindVirtualChannelIntent,
+		arg.PendingChannelID,
+		arg.StateVersion,
+		arg.Kind,
+		arg.RoundID,
+		arg.UpdatedAt,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const CloseFailedRoundArmedVirtualChannels = `-- name: CloseFailedRoundArmedVirtualChannels :execrows
+UPDATE virtual_channels
+SET status = 'closing',
+	state_version = state_version + 1,
+	updated_at = $2
+WHERE kind = 'receive_channel'
+	AND round_id = $1
+	AND status = 'backing_armed'
+`
+
+type CloseFailedRoundArmedVirtualChannelsParams struct {
+	RoundID   sql.NullString
+	UpdatedAt int64
+}
+
+func (q *Queries) CloseFailedRoundArmedVirtualChannels(ctx context.Context, arg CloseFailedRoundArmedVirtualChannelsParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, CloseFailedRoundArmedVirtualChannels, arg.RoundID, arg.UpdatedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const ConfirmRoundVirtualChannels = `-- name: ConfirmRoundVirtualChannels :execrows
+UPDATE virtual_channels
+SET status = 'round_confirmed',
+	state_version = state_version + 1,
+	updated_at = $2
+WHERE kind = 'receive_channel'
+	AND round_id = $1
+	AND status = 'backing_armed'
+`
+
+type ConfirmRoundVirtualChannelsParams struct {
+	RoundID   sql.NullString
+	UpdatedAt int64
+}
+
+func (q *Queries) ConfirmRoundVirtualChannels(ctx context.Context, arg ConfirmRoundVirtualChannelsParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, ConfirmRoundVirtualChannels, arg.RoundID, arg.UpdatedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const CountVirtualChannelBackingOwners = `-- name: CountVirtualChannelBackingOwners :one
+SELECT (
+	SELECT COUNT(*) FROM virtual_channel_vtxos AS channels
+	WHERE channels.outpoint_hash = $1 AND channels.outpoint_index = $2
+) + (
+	SELECT COUNT(*) FROM virtual_channel_intent_vtxos AS intents
+	WHERE intents.outpoint_hash = $1 AND intents.outpoint_index = $2
+) AS owner_count
+`
+
+type CountVirtualChannelBackingOwnersParams struct {
+	OutpointHash  []byte
+	OutpointIndex int32
+}
+
+func (q *Queries) CountVirtualChannelBackingOwners(ctx context.Context, arg CountVirtualChannelBackingOwnersParams) (int32, error) {
+	row := q.db.QueryRowContext(ctx, CountVirtualChannelBackingOwners, arg.OutpointHash, arg.OutpointIndex)
+	var owner_count int32
+	err := row.Scan(&owner_count)
+	return owner_count, err
+}
+
+const DeleteVirtualChannelIntentCAS = `-- name: DeleteVirtualChannelIntentCAS :execrows
 DELETE FROM virtual_channel_intents
+WHERE pending_channel_id = $1
+	AND status = $2
+	AND state_version = $3
+`
+
+type DeleteVirtualChannelIntentCASParams struct {
+	PendingChannelID []byte
+	Status           string
+	StateVersion     int64
+}
+
+func (q *Queries) DeleteVirtualChannelIntentCAS(ctx context.Context, arg DeleteVirtualChannelIntentCASParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, DeleteVirtualChannelIntentCAS, arg.PendingChannelID, arg.Status, arg.StateVersion)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const DeleteVirtualChannelIntentVTXOs = `-- name: DeleteVirtualChannelIntentVTXOs :exec
+DELETE FROM virtual_channel_intent_vtxos
 WHERE pending_channel_id = $1
 `
 
-func (q *Queries) DeleteVirtualChannelIntent(ctx context.Context, pendingChannelID []byte) (int64, error) {
-	result, err := q.db.ExecContext(ctx, DeleteVirtualChannelIntent, pendingChannelID)
+func (q *Queries) DeleteVirtualChannelIntentVTXOs(ctx context.Context, pendingChannelID []byte) error {
+	_, err := q.db.ExecContext(ctx, DeleteVirtualChannelIntentVTXOs, pendingChannelID)
+	return err
+}
+
+const DeleteVirtualChannelVTXOs = `-- name: DeleteVirtualChannelVTXOs :exec
+DELETE FROM virtual_channel_vtxos
+WHERE virtual_channel_id = $1
+`
+
+func (q *Queries) DeleteVirtualChannelVTXOs(ctx context.Context, virtualChannelID []byte) error {
+	_, err := q.db.ExecContext(ctx, DeleteVirtualChannelVTXOs, virtualChannelID)
+	return err
+}
+
+const FailRoundVirtualChannelIntents = `-- name: FailRoundVirtualChannelIntents :execrows
+UPDATE virtual_channel_intents
+SET status = 'failed',
+	state_version = state_version + 1,
+	updated_at = $2
+WHERE kind = 'receive_channel'
+	AND round_id = $1
+	AND status IN ('funding_bound', 'lnd_negotiating')
+`
+
+type FailRoundVirtualChannelIntentsParams struct {
+	RoundID   sql.NullString
+	UpdatedAt int64
+}
+
+func (q *Queries) FailRoundVirtualChannelIntents(ctx context.Context, arg FailRoundVirtualChannelIntentsParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, FailRoundVirtualChannelIntents, arg.RoundID, arg.UpdatedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const FailRoundVirtualChannels = `-- name: FailRoundVirtualChannels :execrows
+UPDATE virtual_channels
+SET status = 'failed',
+	state_version = state_version + 1,
+	updated_at = $2
+WHERE kind = 'receive_channel'
+	AND round_id = $1
+	AND status IN (
+		'funding_bound', 'lnd_negotiating', 'funding_verified'
+	)
+`
+
+type FailRoundVirtualChannelsParams struct {
+	RoundID   sql.NullString
+	UpdatedAt int64
+}
+
+func (q *Queries) FailRoundVirtualChannels(ctx context.Context, arg FailRoundVirtualChannelsParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, FailRoundVirtualChannels, arg.RoundID, arg.UpdatedAt)
 	if err != nil {
 		return 0, err
 	}
@@ -24,7 +278,7 @@ func (q *Queries) DeleteVirtualChannelIntent(ctx context.Context, pendingChannel
 }
 
 const GetVirtualChannel = `-- name: GetVirtualChannel :one
-SELECT virtual_channel_id, pending_channel_id, channel_point_hash, channel_point_index, remote_node_pubkey, role, status, capacity_sat, local_balance_sat, remote_balance_sat, backing_tx, funding_psbt, close_tx, created_at, updated_at, materialized_at, closed_at FROM virtual_channels
+SELECT virtual_channel_id, pending_channel_id, channel_point_hash, channel_point_index, remote_node_pubkey, role, status, capacity_sat, local_balance_sat, remote_balance_sat, backing_tx, funding_psbt, close_tx, created_at, updated_at, materialized_at, closed_at, kind, round_id, state_version, backing_armed_at FROM virtual_channels
 WHERE virtual_channel_id = $1
 `
 
@@ -49,12 +303,61 @@ func (q *Queries) GetVirtualChannel(ctx context.Context, virtualChannelID []byte
 		&i.UpdatedAt,
 		&i.MaterializedAt,
 		&i.ClosedAt,
+		&i.Kind,
+		&i.RoundID,
+		&i.StateVersion,
+		&i.BackingArmedAt,
+	)
+	return i, err
+}
+
+const GetVirtualChannelByBackingVTXO = `-- name: GetVirtualChannelByBackingVTXO :one
+SELECT virtual_channels.virtual_channel_id, virtual_channels.pending_channel_id, virtual_channels.channel_point_hash, virtual_channels.channel_point_index, virtual_channels.remote_node_pubkey, virtual_channels.role, virtual_channels.status, virtual_channels.capacity_sat, virtual_channels.local_balance_sat, virtual_channels.remote_balance_sat, virtual_channels.backing_tx, virtual_channels.funding_psbt, virtual_channels.close_tx, virtual_channels.created_at, virtual_channels.updated_at, virtual_channels.materialized_at, virtual_channels.closed_at, virtual_channels.kind, virtual_channels.round_id, virtual_channels.state_version, virtual_channels.backing_armed_at
+FROM virtual_channels
+JOIN virtual_channel_vtxos
+	ON virtual_channel_vtxos.virtual_channel_id =
+		virtual_channels.virtual_channel_id
+WHERE virtual_channel_vtxos.outpoint_hash = $1
+	AND virtual_channel_vtxos.outpoint_index = $2
+LIMIT 1
+`
+
+type GetVirtualChannelByBackingVTXOParams struct {
+	OutpointHash  []byte
+	OutpointIndex int32
+}
+
+func (q *Queries) GetVirtualChannelByBackingVTXO(ctx context.Context, arg GetVirtualChannelByBackingVTXOParams) (VirtualChannel, error) {
+	row := q.db.QueryRowContext(ctx, GetVirtualChannelByBackingVTXO, arg.OutpointHash, arg.OutpointIndex)
+	var i VirtualChannel
+	err := row.Scan(
+		&i.VirtualChannelID,
+		&i.PendingChannelID,
+		&i.ChannelPointHash,
+		&i.ChannelPointIndex,
+		&i.RemoteNodePubkey,
+		&i.Role,
+		&i.Status,
+		&i.CapacitySat,
+		&i.LocalBalanceSat,
+		&i.RemoteBalanceSat,
+		&i.BackingTx,
+		&i.FundingPsbt,
+		&i.CloseTx,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.MaterializedAt,
+		&i.ClosedAt,
+		&i.Kind,
+		&i.RoundID,
+		&i.StateVersion,
+		&i.BackingArmedAt,
 	)
 	return i, err
 }
 
 const GetVirtualChannelByChannelPoint = `-- name: GetVirtualChannelByChannelPoint :one
-SELECT virtual_channel_id, pending_channel_id, channel_point_hash, channel_point_index, remote_node_pubkey, role, status, capacity_sat, local_balance_sat, remote_balance_sat, backing_tx, funding_psbt, close_tx, created_at, updated_at, materialized_at, closed_at FROM virtual_channels
+SELECT virtual_channel_id, pending_channel_id, channel_point_hash, channel_point_index, remote_node_pubkey, role, status, capacity_sat, local_balance_sat, remote_balance_sat, backing_tx, funding_psbt, close_tx, created_at, updated_at, materialized_at, closed_at, kind, round_id, state_version, backing_armed_at FROM virtual_channels
 WHERE channel_point_hash = $1 AND channel_point_index = $2
 `
 
@@ -84,12 +387,16 @@ func (q *Queries) GetVirtualChannelByChannelPoint(ctx context.Context, arg GetVi
 		&i.UpdatedAt,
 		&i.MaterializedAt,
 		&i.ClosedAt,
+		&i.Kind,
+		&i.RoundID,
+		&i.StateVersion,
+		&i.BackingArmedAt,
 	)
 	return i, err
 }
 
 const GetVirtualChannelByPendingID = `-- name: GetVirtualChannelByPendingID :one
-SELECT virtual_channel_id, pending_channel_id, channel_point_hash, channel_point_index, remote_node_pubkey, role, status, capacity_sat, local_balance_sat, remote_balance_sat, backing_tx, funding_psbt, close_tx, created_at, updated_at, materialized_at, closed_at FROM virtual_channels
+SELECT virtual_channel_id, pending_channel_id, channel_point_hash, channel_point_index, remote_node_pubkey, role, status, capacity_sat, local_balance_sat, remote_balance_sat, backing_tx, funding_psbt, close_tx, created_at, updated_at, materialized_at, closed_at, kind, round_id, state_version, backing_armed_at FROM virtual_channels
 WHERE pending_channel_id = $1
 `
 
@@ -114,12 +421,16 @@ func (q *Queries) GetVirtualChannelByPendingID(ctx context.Context, pendingChann
 		&i.UpdatedAt,
 		&i.MaterializedAt,
 		&i.ClosedAt,
+		&i.Kind,
+		&i.RoundID,
+		&i.StateVersion,
+		&i.BackingArmedAt,
 	)
 	return i, err
 }
 
 const GetVirtualChannelIntentByPendingID = `-- name: GetVirtualChannelIntentByPendingID :one
-SELECT pending_channel_id, remote_node_pubkey, role, status, capacity_sat, local_balance_sat, remote_balance_sat, created_at, updated_at FROM virtual_channel_intents
+SELECT pending_channel_id, remote_node_pubkey, role, status, capacity_sat, local_balance_sat, remote_balance_sat, created_at, updated_at, kind, round_id, request_key, state_version FROM virtual_channel_intents
 WHERE pending_channel_id = $1
 `
 
@@ -136,6 +447,10 @@ func (q *Queries) GetVirtualChannelIntentByPendingID(ctx context.Context, pendin
 		&i.RemoteBalanceSat,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Kind,
+		&i.RoundID,
+		&i.RequestKey,
+		&i.StateVersion,
 	)
 	return i, err
 }
@@ -145,9 +460,11 @@ INSERT INTO virtual_channels (
 	virtual_channel_id, pending_channel_id,
 	channel_point_hash, channel_point_index, remote_node_pubkey,
 	role, status, capacity_sat, local_balance_sat, remote_balance_sat,
-	backing_tx, funding_psbt, created_at, updated_at
+	backing_tx, funding_psbt, created_at, updated_at,
+	kind, round_id, state_version
 ) VALUES (
-	$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
+	$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+	$15, $16, $17
 )
 `
 
@@ -166,6 +483,9 @@ type InsertVirtualChannelParams struct {
 	FundingPsbt       []byte
 	CreatedAt         int64
 	UpdatedAt         int64
+	Kind              string
+	RoundID           sql.NullString
+	StateVersion      int64
 }
 
 func (q *Queries) InsertVirtualChannel(ctx context.Context, arg InsertVirtualChannelParams) error {
@@ -184,6 +504,9 @@ func (q *Queries) InsertVirtualChannel(ctx context.Context, arg InsertVirtualCha
 		arg.FundingPsbt,
 		arg.CreatedAt,
 		arg.UpdatedAt,
+		arg.Kind,
+		arg.RoundID,
+		arg.StateVersion,
 	)
 	return err
 }
@@ -191,9 +514,10 @@ func (q *Queries) InsertVirtualChannel(ctx context.Context, arg InsertVirtualCha
 const InsertVirtualChannelIntent = `-- name: InsertVirtualChannelIntent :exec
 INSERT INTO virtual_channel_intents (
 	pending_channel_id, remote_node_pubkey, role, status, capacity_sat,
-	local_balance_sat, remote_balance_sat, created_at, updated_at
+	local_balance_sat, remote_balance_sat, created_at, updated_at,
+	kind, round_id, request_key, state_version
 ) VALUES (
-	$1, $2, $3, $4, $5, $6, $7, $8, $9
+	$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
 )
 `
 
@@ -207,6 +531,10 @@ type InsertVirtualChannelIntentParams struct {
 	RemoteBalanceSat int64
 	CreatedAt        int64
 	UpdatedAt        int64
+	Kind             string
+	RoundID          sql.NullString
+	RequestKey       sql.NullString
+	StateVersion     int64
 }
 
 func (q *Queries) InsertVirtualChannelIntent(ctx context.Context, arg InsertVirtualChannelIntentParams) error {
@@ -220,6 +548,10 @@ func (q *Queries) InsertVirtualChannelIntent(ctx context.Context, arg InsertVirt
 		arg.RemoteBalanceSat,
 		arg.CreatedAt,
 		arg.UpdatedAt,
+		arg.Kind,
+		arg.RoundID,
+		arg.RequestKey,
+		arg.StateVersion,
 	)
 	return err
 }
@@ -320,6 +652,49 @@ func (q *Queries) ListVirtualChannelIntentVTXOs(ctx context.Context, pendingChan
 	return items, nil
 }
 
+const ListVirtualChannelIntentsByStatus = `-- name: ListVirtualChannelIntentsByStatus :many
+SELECT pending_channel_id, remote_node_pubkey, role, status, capacity_sat, local_balance_sat, remote_balance_sat, created_at, updated_at, kind, round_id, request_key, state_version FROM virtual_channel_intents
+WHERE status = $1
+ORDER BY updated_at
+`
+
+func (q *Queries) ListVirtualChannelIntentsByStatus(ctx context.Context, status string) ([]VirtualChannelIntent, error) {
+	rows, err := q.db.QueryContext(ctx, ListVirtualChannelIntentsByStatus, status)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []VirtualChannelIntent
+	for rows.Next() {
+		var i VirtualChannelIntent
+		if err := rows.Scan(
+			&i.PendingChannelID,
+			&i.RemoteNodePubkey,
+			&i.Role,
+			&i.Status,
+			&i.CapacitySat,
+			&i.LocalBalanceSat,
+			&i.RemoteBalanceSat,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.Kind,
+			&i.RoundID,
+			&i.RequestKey,
+			&i.StateVersion,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const ListVirtualChannelVTXOs = `-- name: ListVirtualChannelVTXOs :many
 SELECT virtual_channel_id, outpoint_hash, outpoint_index, amount_sat, pk_script, policy_template FROM virtual_channel_vtxos
 WHERE virtual_channel_id = $1
@@ -357,7 +732,7 @@ func (q *Queries) ListVirtualChannelVTXOs(ctx context.Context, virtualChannelID 
 }
 
 const ListVirtualChannelsByChannelPointHash = `-- name: ListVirtualChannelsByChannelPointHash :many
-SELECT virtual_channel_id, pending_channel_id, channel_point_hash, channel_point_index, remote_node_pubkey, role, status, capacity_sat, local_balance_sat, remote_balance_sat, backing_tx, funding_psbt, close_tx, created_at, updated_at, materialized_at, closed_at FROM virtual_channels
+SELECT virtual_channel_id, pending_channel_id, channel_point_hash, channel_point_index, remote_node_pubkey, role, status, capacity_sat, local_balance_sat, remote_balance_sat, backing_tx, funding_psbt, close_tx, created_at, updated_at, materialized_at, closed_at, kind, round_id, state_version, backing_armed_at FROM virtual_channels
 WHERE channel_point_hash = $1
 ORDER BY channel_point_index
 `
@@ -389,6 +764,10 @@ func (q *Queries) ListVirtualChannelsByChannelPointHash(ctx context.Context, cha
 			&i.UpdatedAt,
 			&i.MaterializedAt,
 			&i.ClosedAt,
+			&i.Kind,
+			&i.RoundID,
+			&i.StateVersion,
+			&i.BackingArmedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -404,7 +783,7 @@ func (q *Queries) ListVirtualChannelsByChannelPointHash(ctx context.Context, cha
 }
 
 const ListVirtualChannelsByStatus = `-- name: ListVirtualChannelsByStatus :many
-SELECT virtual_channel_id, pending_channel_id, channel_point_hash, channel_point_index, remote_node_pubkey, role, status, capacity_sat, local_balance_sat, remote_balance_sat, backing_tx, funding_psbt, close_tx, created_at, updated_at, materialized_at, closed_at FROM virtual_channels
+SELECT virtual_channel_id, pending_channel_id, channel_point_hash, channel_point_index, remote_node_pubkey, role, status, capacity_sat, local_balance_sat, remote_balance_sat, backing_tx, funding_psbt, close_tx, created_at, updated_at, materialized_at, closed_at, kind, round_id, state_version, backing_armed_at FROM virtual_channels
 WHERE status = $1
 ORDER BY updated_at DESC
 `
@@ -436,6 +815,10 @@ func (q *Queries) ListVirtualChannelsByStatus(ctx context.Context, status string
 			&i.UpdatedAt,
 			&i.MaterializedAt,
 			&i.ClosedAt,
+			&i.Kind,
+			&i.RoundID,
+			&i.StateVersion,
+			&i.BackingArmedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -450,103 +833,30 @@ func (q *Queries) ListVirtualChannelsByStatus(ctx context.Context, status string
 	return items, nil
 }
 
-const MarkVirtualChannelActive = `-- name: MarkVirtualChannelActive :execrows
-UPDATE virtual_channels
-SET status = 'active', backing_tx = $2, updated_at = $3
-WHERE virtual_channel_id = $1
-	AND channel_point_hash = $4
-	AND status = 'negotiating'
-`
-
-type MarkVirtualChannelActiveParams struct {
-	VirtualChannelID []byte
-	BackingTx        []byte
-	UpdatedAt        int64
-	ChannelPointHash []byte
-}
-
-func (q *Queries) MarkVirtualChannelActive(ctx context.Context, arg MarkVirtualChannelActiveParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, MarkVirtualChannelActive,
-		arg.VirtualChannelID,
-		arg.BackingTx,
-		arg.UpdatedAt,
-		arg.ChannelPointHash,
-	)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
-}
-
 const MarkVirtualChannelClosed = `-- name: MarkVirtualChannelClosed :execrows
 UPDATE virtual_channels
-SET status = 'closed', updated_at = $2, closed_at = $3
+SET status = 'closed',
+	state_version = state_version + 1,
+	updated_at = $4,
+	closed_at = $5
 WHERE virtual_channel_id = $1
-	AND status IN ('active', 'materializing', 'closing')
+	AND status = $2
+	AND state_version = $3
 `
 
 type MarkVirtualChannelClosedParams struct {
 	VirtualChannelID []byte
+	Status           string
+	StateVersion     int64
 	UpdatedAt        int64
 	ClosedAt         sql.NullInt64
 }
 
 func (q *Queries) MarkVirtualChannelClosed(ctx context.Context, arg MarkVirtualChannelClosedParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, MarkVirtualChannelClosed, arg.VirtualChannelID, arg.UpdatedAt, arg.ClosedAt)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
-}
-
-const MarkVirtualChannelClosing = `-- name: MarkVirtualChannelClosing :execrows
-UPDATE virtual_channels
-SET status = 'closing', updated_at = $2
-WHERE virtual_channel_id = $1
-	AND status IN ('active', 'materializing')
-`
-
-type MarkVirtualChannelClosingParams struct {
-	VirtualChannelID []byte
-	UpdatedAt        int64
-}
-
-func (q *Queries) MarkVirtualChannelClosing(ctx context.Context, arg MarkVirtualChannelClosingParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, MarkVirtualChannelClosing, arg.VirtualChannelID, arg.UpdatedAt)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
-}
-
-const MarkVirtualChannelCoopClosed = `-- name: MarkVirtualChannelCoopClosed :execrows
-UPDATE virtual_channels
-SET status = 'closed',
-	local_balance_sat = $2,
-	remote_balance_sat = $3,
-	close_tx = $4,
-	updated_at = $5,
-	closed_at = $6
-WHERE virtual_channel_id = $1
-	AND status IN ('active', 'closing')
-	AND $2 + $3 <= capacity_sat
-`
-
-type MarkVirtualChannelCoopClosedParams struct {
-	VirtualChannelID []byte
-	LocalBalanceSat  int64
-	RemoteBalanceSat int64
-	CloseTx          []byte
-	UpdatedAt        int64
-	ClosedAt         sql.NullInt64
-}
-
-func (q *Queries) MarkVirtualChannelCoopClosed(ctx context.Context, arg MarkVirtualChannelCoopClosedParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, MarkVirtualChannelCoopClosed,
+	result, err := q.db.ExecContext(ctx, MarkVirtualChannelClosed,
 		arg.VirtualChannelID,
-		arg.LocalBalanceSat,
-		arg.RemoteBalanceSat,
-		arg.CloseTx,
+		arg.Status,
+		arg.StateVersion,
 		arg.UpdatedAt,
 		arg.ClosedAt,
 	)
@@ -556,62 +866,130 @@ func (q *Queries) MarkVirtualChannelCoopClosed(ctx context.Context, arg MarkVirt
 	return result.RowsAffected()
 }
 
-const MarkVirtualChannelFailed = `-- name: MarkVirtualChannelFailed :execrows
-UPDATE virtual_channels
-SET status = 'failed', updated_at = $2
-WHERE virtual_channel_id = $1
-	AND status = 'negotiating'
-`
-
-type MarkVirtualChannelFailedParams struct {
-	VirtualChannelID []byte
-	UpdatedAt        int64
-}
-
-func (q *Queries) MarkVirtualChannelFailed(ctx context.Context, arg MarkVirtualChannelFailedParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, MarkVirtualChannelFailed, arg.VirtualChannelID, arg.UpdatedAt)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
-}
-
 const MarkVirtualChannelMaterializing = `-- name: MarkVirtualChannelMaterializing :execrows
 UPDATE virtual_channels
-SET status = 'materializing', updated_at = $2, materialized_at = $3
+SET status = 'materializing',
+	state_version = state_version + 1,
+	updated_at = $4,
+	materialized_at = $5
 WHERE virtual_channel_id = $1
-	AND status IN ('active', 'closing')
+	AND status = $2
+	AND state_version = $3
 `
 
 type MarkVirtualChannelMaterializingParams struct {
 	VirtualChannelID []byte
+	Status           string
+	StateVersion     int64
 	UpdatedAt        int64
 	MaterializedAt   sql.NullInt64
 }
 
 func (q *Queries) MarkVirtualChannelMaterializing(ctx context.Context, arg MarkVirtualChannelMaterializingParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, MarkVirtualChannelMaterializing, arg.VirtualChannelID, arg.UpdatedAt, arg.MaterializedAt)
+	result, err := q.db.ExecContext(ctx, MarkVirtualChannelMaterializing,
+		arg.VirtualChannelID,
+		arg.Status,
+		arg.StateVersion,
+		arg.UpdatedAt,
+		arg.MaterializedAt,
+	)
 	if err != nil {
 		return 0, err
 	}
 	return result.RowsAffected()
 }
 
-const UpdateVirtualChannelStatus = `-- name: UpdateVirtualChannelStatus :execrows
-UPDATE virtual_channels
-SET status = $2, updated_at = $3
-WHERE virtual_channel_id = $1
-	AND status != $2
+const ReleaseFailedRoundVirtualChannelIntentVTXOs = `-- name: ReleaseFailedRoundVirtualChannelIntentVTXOs :exec
+DELETE FROM virtual_channel_intent_vtxos
+WHERE pending_channel_id IN (
+	SELECT pending_channel_id
+	FROM virtual_channel_intents
+	WHERE kind = 'receive_channel'
+		AND round_id = $1
+		AND status = 'failed'
+)
 `
 
-type UpdateVirtualChannelStatusParams struct {
+func (q *Queries) ReleaseFailedRoundVirtualChannelIntentVTXOs(ctx context.Context, roundID sql.NullString) error {
+	_, err := q.db.ExecContext(ctx, ReleaseFailedRoundVirtualChannelIntentVTXOs, roundID)
+	return err
+}
+
+const ReleaseFailedRoundVirtualChannelVTXOs = `-- name: ReleaseFailedRoundVirtualChannelVTXOs :exec
+DELETE FROM virtual_channel_vtxos
+WHERE virtual_channel_id IN (
+	SELECT virtual_channel_id
+	FROM virtual_channels
+	WHERE kind = 'receive_channel'
+		AND round_id = $1
+		AND status = 'failed'
+		AND backing_armed_at IS NULL
+)
+`
+
+func (q *Queries) ReleaseFailedRoundVirtualChannelVTXOs(ctx context.Context, roundID sql.NullString) error {
+	_, err := q.db.ExecContext(ctx, ReleaseFailedRoundVirtualChannelVTXOs, roundID)
+	return err
+}
+
+const TransitionVirtualChannel = `-- name: TransitionVirtualChannel :execrows
+UPDATE virtual_channels
+SET status = $4,
+	state_version = state_version + 1,
+	updated_at = $5
+WHERE virtual_channel_id = $1
+	AND status = $2
+	AND state_version = $3
+`
+
+type TransitionVirtualChannelParams struct {
 	VirtualChannelID []byte
 	Status           string
+	StateVersion     int64
+	Status_2         string
 	UpdatedAt        int64
 }
 
-func (q *Queries) UpdateVirtualChannelStatus(ctx context.Context, arg UpdateVirtualChannelStatusParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, UpdateVirtualChannelStatus, arg.VirtualChannelID, arg.Status, arg.UpdatedAt)
+func (q *Queries) TransitionVirtualChannel(ctx context.Context, arg TransitionVirtualChannelParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, TransitionVirtualChannel,
+		arg.VirtualChannelID,
+		arg.Status,
+		arg.StateVersion,
+		arg.Status_2,
+		arg.UpdatedAt,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const TransitionVirtualChannelIntent = `-- name: TransitionVirtualChannelIntent :execrows
+UPDATE virtual_channel_intents
+SET status = $4,
+	state_version = state_version + 1,
+	updated_at = $5
+WHERE pending_channel_id = $1
+	AND status = $2
+	AND state_version = $3
+`
+
+type TransitionVirtualChannelIntentParams struct {
+	PendingChannelID []byte
+	Status           string
+	StateVersion     int64
+	Status_2         string
+	UpdatedAt        int64
+}
+
+func (q *Queries) TransitionVirtualChannelIntent(ctx context.Context, arg TransitionVirtualChannelIntentParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, TransitionVirtualChannelIntent,
+		arg.PendingChannelID,
+		arg.Status,
+		arg.StateVersion,
+		arg.Status_2,
+		arg.UpdatedAt,
+	)
 	if err != nil {
 		return 0, err
 	}

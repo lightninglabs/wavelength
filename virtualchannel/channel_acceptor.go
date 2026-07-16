@@ -18,8 +18,8 @@ type PendingChannelLookup interface {
 		pendingID PendingChannelID) (*PendingOpen, bool, error)
 }
 
-// RegisteredChannelAcceptor accepts only registered virtual-channel zero-conf
-// opens for integrated lnd runtimes.
+// RegisteredChannelAcceptor enables registered virtual-channel zero-conf opens
+// without changing how the remaining lnd acceptor chain handles other opens.
 type RegisteredChannelAcceptor struct {
 	store PendingChannelLookup
 	ctx   func() context.Context
@@ -62,10 +62,7 @@ func (a *RegisteredChannelAcceptor) Accept(
 		return rejectVirtualChannel(err)
 	}
 	if !ok {
-		return rejectVirtualChannel(
-			fmt.Errorf("virtual channel negotiation not " +
-				"registered"),
-		)
+		return &chanacceptor.ChannelAcceptResponse{}
 	}
 
 	if err := validateRegisteredOpen(req, pending); err != nil {

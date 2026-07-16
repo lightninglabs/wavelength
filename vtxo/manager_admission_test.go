@@ -925,6 +925,44 @@ func TestSelectAndReserveSpendMultipleVTXOs(t *testing.T) {
 	require.Equal(t, btcutil.Amount(55000), spendResp.TotalSelected)
 }
 
+// TestSelectAndReserveSpendExactOutpoint verifies that a caller can reserve a
+// particular live VTXO even when coin selection would prefer a larger one.
+func TestSelectAndReserveSpendExactOutpoint(t *testing.T) {
+	t.Parallel()
+
+	preferred := makeDescriptor(t, 80_000, 0)
+	required := makeDescriptor(t, 51_000, 1)
+
+	mgr, store := newTestManager(t, []*Descriptor{preferred, required})
+	store.On(
+		"ListVTXOsByStatus", t.Context(), VTXOStatusLive,
+	).Return([]*Descriptor{preferred, required}, nil)
+
+	result := mgr.Receive(t.Context(), &SelectAndReserveSpendRequest{
+		TargetAmount:      50_000,
+		RequiredOutpoints: []wire.OutPoint{required.Outpoint},
+	})
+	resp, err := result.Unpack()
+	require.NoError(t, err)
+
+	spendResp, ok := resp.(*SelectAndReserveSpendResponse)
+	require.True(t, ok)
+	require.Len(t, spendResp.SelectedVTXOs, 1)
+	require.Equal(t, required.Outpoint,
+		spendResp.SelectedVTXOs[0].Outpoint)
+	require.Equal(t, required.Amount, spendResp.TotalSelected)
+
+	preferredRef, ok := mgr.actors[preferred.Outpoint].(*mockVTXOActorRef)
+	require.True(t, ok)
+	_, ok = preferredRef.state.(*LiveState)
+	require.True(t, ok)
+
+	requiredRef, ok := mgr.actors[required.Outpoint].(*mockVTXOActorRef)
+	require.True(t, ok)
+	_, ok = requiredRef.state.(*SpendingState)
+	require.True(t, ok)
+}
+
 // TestSelectAndReserveSpendCoalescesDustChange verifies that OOR spend
 // selection keeps adding inputs when the first covering input would require a
 // non-zero change output below the operator dust limit. This avoids opening an

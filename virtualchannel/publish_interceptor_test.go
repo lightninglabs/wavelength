@@ -2,6 +2,8 @@ package virtualchannel
 
 import (
 	"context"
+	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/btcsuite/btcd/chainhash/v2"
@@ -10,16 +12,25 @@ import (
 )
 
 type fakeMaterializationStore struct {
+	mu        sync.Mutex
 	byPoint   map[wire.OutPoint]*Channel
 	byTxID    map[chainhash.Hash][]*Channel
 	byPending map[PendingChannelID]*PendingOpen
 	marked    []ID
+	copyReads bool
 }
 
 func (f *fakeMaterializationStore) FindVirtualChannelByChannelPoint(
 	_ context.Context, channelPoint wire.OutPoint) (*Channel, bool, error) {
 
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
 	channel, ok := f.byPoint[channelPoint]
+	if ok && f.copyReads {
+		cloned := *channel
+		channel = &cloned
+	}
 
 	return channel, ok, nil
 }
@@ -48,23 +59,52 @@ func (f *fakeMaterializationStore) FindVirtualChannelPendingOpen(
 func (f *fakeMaterializationStore) MarkVirtualChannelMaterializing(
 	_ context.Context, id ID) (bool, error) {
 
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
 	f.marked = append(f.marked, id)
 
 	return true, nil
 }
 
-type fakeBroadcaster struct {
-	txs    []*wire.MsgTx
-	labels []string
+func (f *fakeMaterializationStore) MarkVirtualChannelFundingVerified(
+	_ context.Context, id ID) (bool, error) {
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	for _, channel := range f.byPoint {
+		if channel.ID != id || channel.Status != StatusLNDNegotiating {
+			continue
+		}
+
+		channel.Status = StatusFundingVerified
+
+		return true, nil
+	}
+
+	return false, nil
 }
 
-func (f *fakeBroadcaster) PublishTransaction(_ context.Context, tx *wire.MsgTx,
-	label string) error {
+func (f *fakeMaterializationStore) GetVirtualChannel(_ context.Context, id ID) (
+	*Channel, error) {
 
-	f.txs = append(f.txs, tx)
-	f.labels = append(f.labels, label)
+	f.mu.Lock()
+	defer f.mu.Unlock()
 
-	return nil
+	for _, channel := range f.byPoint {
+		if channel.ID == id {
+			if f.copyReads {
+				cloned := *channel
+
+				return &cloned, nil
+			}
+
+			return channel, nil
+		}
+	}
+
+	return nil, fmt.Errorf("channel %x not found", id)
 }
 
 type fakeBackingMaterializer struct {
@@ -77,85 +117,6 @@ func (f *fakeBackingMaterializer) MaterializeVirtualChannelBacking(
 	f.channels = append(f.channels, channel)
 
 	return nil
-}
-
-type fakeCloseSettler struct {
-	handled  bool
-	channels []*Channel
-	txs      []*wire.MsgTx
-	labels   []string
-}
-
-func (f *fakeCloseSettler) SettleCooperativeClose(_ context.Context,
-	channel *Channel, closeTx *wire.MsgTx, label string) (bool, error) {
-
-	f.channels = append(f.channels, channel)
-	f.txs = append(f.txs, closeTx)
-	f.labels = append(f.labels, label)
-
-	return f.handled, nil
-}
-
-// TestMaterializingPublishInterceptorPublishesParentFirst verifies that lnd's
-// child publish callback only runs after the backing parent is published.
-func TestMaterializingPublishInterceptorPublishesParentFirst(t *testing.T) {
-	t.Parallel()
-
-	channelPoint := wire.OutPoint{
-		Hash:  chainhash.HashH([]byte("virtual-funding")),
-		Index: 0,
-	}
-	backingTx := wire.NewMsgTx(2)
-	backingTx.AddTxOut(&wire.TxOut{
-		Value:    1000,
-		PkScript: []byte{0x51},
-	})
-
-	channelID := fixedID(1)
-	store := &fakeMaterializationStore{
-		byPoint: map[wire.OutPoint]*Channel{
-			channelPoint: {
-				Registration: Registration{
-					ID:        channelID,
-					Status:    StatusActive,
-					BackingTx: backingTx,
-				},
-			},
-		},
-		byTxID: make(map[chainhash.Hash][]*Channel),
-	}
-	broadcaster := &fakeBroadcaster{}
-
-	interceptor, err := NewMaterializingPublishInterceptor(
-		MaterializingPublishInterceptorConfig{
-			Store:       store,
-			Broadcaster: broadcaster,
-		},
-	)
-	require.NoError(t, err)
-
-	childTx := wire.NewMsgTx(2)
-	childTx.AddTxIn(&wire.TxIn{
-		PreviousOutPoint: channelPoint,
-	})
-
-	publishedChild := false
-	err = interceptor.PublishTransaction(
-		childTx, "lnd close",
-		func() error {
-			require.Len(t, broadcaster.txs, 1)
-			require.Equal(t, backingTx, broadcaster.txs[0])
-			require.Equal(t, []ID{channelID}, store.marked)
-			publishedChild = true
-
-			return nil
-		},
-	)
-	require.NoError(t, err)
-	require.True(t, publishedChild)
-	require.Equal(
-		t, []string{MaterializedBackingLabel}, broadcaster.labels,
-	)
 }
 
 // TestMaterializingPublishInterceptorCallsMaterializerFirst verifies that the
@@ -219,11 +180,11 @@ func TestMaterializingPublishInterceptorIgnoresPlainTx(t *testing.T) {
 		byPoint: make(map[wire.OutPoint]*Channel),
 		byTxID:  make(map[chainhash.Hash][]*Channel),
 	}
-	broadcaster := &fakeBroadcaster{}
+	materializer := &fakeBackingMaterializer{}
 	interceptor, err := NewMaterializingPublishInterceptor(
 		MaterializingPublishInterceptorConfig{
-			Store:       store,
-			Broadcaster: broadcaster,
+			Store:        store,
+			Materializer: materializer,
 		},
 	)
 	require.NoError(t, err)
@@ -238,7 +199,7 @@ func TestMaterializingPublishInterceptorIgnoresPlainTx(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.True(t, called)
-	require.Empty(t, broadcaster.txs)
+	require.Empty(t, materializer.channels)
 	require.Empty(t, store.marked)
 }
 
@@ -269,11 +230,11 @@ func TestMaterializingPublishInterceptorSuppressesVirtualFundingPublish(
 			},
 		},
 	}
-	broadcaster := &fakeBroadcaster{}
+	materializer := &fakeBackingMaterializer{}
 	interceptor, err := NewMaterializingPublishInterceptor(
 		MaterializingPublishInterceptorConfig{
-			Store:       store,
-			Broadcaster: broadcaster,
+			Store:        store,
+			Materializer: materializer,
 		},
 	)
 	require.NoError(t, err)
@@ -289,72 +250,144 @@ func TestMaterializingPublishInterceptorSuppressesVirtualFundingPublish(
 	)
 	require.NoError(t, err)
 	require.False(t, called)
-	require.Empty(t, broadcaster.txs)
+	require.Empty(t, materializer.channels)
 	require.Empty(t, store.marked)
 }
 
-// TestMaterializingPublishInterceptorSettlesCooperativeClose verifies that a
-// handled virtual cooperative close suppresses lnd's on-chain publish path.
-func TestMaterializingPublishInterceptorSettlesCooperativeClose(t *testing.T) {
+// TestMaterializingPublishInterceptorAllowsClaimedFundingPublish verifies the
+// materializer can relay the parent through the same integrated lnd hook after
+// the channel FSM has durably claimed publication.
+func TestMaterializingPublishInterceptorAllowsClaimedFundingPublish(
+	t *testing.T) {
+
 	t.Parallel()
 
-	channelPoint := wire.OutPoint{
-		Hash:  chainhash.HashH([]byte("virtual-funding-close")),
-		Index: 0,
-	}
 	backingTx := wire.NewMsgTx(2)
 	backingTx.AddTxOut(&wire.TxOut{
 		Value:    1000,
 		PkScript: []byte{0x51},
 	})
 
-	channel := &Channel{
-		Registration: Registration{
-			ID:        fixedID(6),
-			Status:    StatusActive,
-			BackingTx: backingTx,
-		},
-	}
 	store := &fakeMaterializationStore{
-		byPoint: map[wire.OutPoint]*Channel{
-			channelPoint: channel,
+		byPoint: make(map[wire.OutPoint]*Channel),
+		byTxID: map[chainhash.Hash][]*Channel{
+			backingTx.TxHash(): {
+				{
+					Registration: Registration{
+						ID:        fixedID(6),
+						Status:    StatusMaterializing,
+						BackingTx: backingTx,
+					},
+				},
+			},
 		},
-		byTxID: make(map[chainhash.Hash][]*Channel),
-	}
-	broadcaster := &fakeBroadcaster{}
-	settler := &fakeCloseSettler{
-		handled: true,
 	}
 	interceptor, err := NewMaterializingPublishInterceptor(
 		MaterializingPublishInterceptorConfig{
 			Store:        store,
-			Broadcaster:  broadcaster,
-			CloseSettler: settler,
+			Materializer: &fakeBackingMaterializer{},
 		},
 	)
 	require.NoError(t, err)
 
-	closeTx := wire.NewMsgTx(2)
-	closeTx.AddTxIn(&wire.TxIn{
-		PreviousOutPoint: channelPoint,
-	})
-
 	called := false
 	err = interceptor.PublishTransaction(
-		closeTx, "close-channel",
-		func() error {
+		backingTx, "materialized funding", func() error {
 			called = true
 
 			return nil
 		},
 	)
 	require.NoError(t, err)
-	require.False(t, called)
-	require.Empty(t, broadcaster.txs)
-	require.Empty(t, store.marked)
-	require.Equal(t, []*Channel{channel}, settler.channels)
-	require.Equal(t, []*wire.MsgTx{closeTx}, settler.txs)
-	require.Equal(t, []string{"close-channel"}, settler.labels)
+	require.True(t, called)
+}
+
+// TestVirtualChannelPublishStatusGates pins the lifecycle states that may
+// publish a virtual funding transaction or a child that spends it.
+func TestVirtualChannelPublishStatusGates(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		status          Status
+		suppressFunding bool
+		materialize     bool
+	}{
+		{
+			name:   "requested",
+			status: StatusRequested,
+		},
+		{
+			name:   "funding bound",
+			status: StatusFundingBound,
+		},
+		{
+			name:            "lnd negotiating",
+			status:          StatusLNDNegotiating,
+			suppressFunding: true,
+		},
+		{
+			name:            "funding verified",
+			status:          StatusFundingVerified,
+			suppressFunding: true,
+		},
+		{
+			name:            "backing armed",
+			status:          StatusBackingArmed,
+			suppressFunding: true,
+			materialize:     true,
+		},
+		{
+			name:            "round confirmed",
+			status:          StatusRoundConfirmed,
+			suppressFunding: true,
+			materialize:     true,
+		},
+		{
+			name:            "active",
+			status:          StatusActive,
+			suppressFunding: true,
+			materialize:     true,
+		},
+		{
+			name:   "funding published",
+			status: StatusFundingPublished,
+		},
+		{
+			name:        "closing",
+			status:      StatusClosing,
+			materialize: true,
+		},
+		{
+			name:        "materializing",
+			status:      StatusMaterializing,
+			materialize: true,
+		},
+		{
+			name:   "closed",
+			status: StatusClosed,
+		},
+		{
+			name:   "failed",
+			status: StatusFailed,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			require.Equal(
+				t, test.suppressFunding,
+				shouldSuppressFundingPublish(test.status),
+			)
+			require.Equal(
+				t, test.materialize,
+				shouldMaterialize(test.status),
+			)
+		})
+	}
 }
 
 // TestBuildAuxComponentsInstallsPublishInterceptor verifies that integrated
@@ -385,12 +418,13 @@ func TestBuildAuxComponentsInstallsPublishInterceptor(t *testing.T) {
 	}
 	components, err := BuildAuxComponents(
 		MaterializingPublishInterceptorConfig{
-			Store:       store,
-			Broadcaster: &fakeBroadcaster{},
+			Store:        store,
+			Materializer: &fakeBackingMaterializer{},
 		},
 	)
 	require.NoError(t, err)
 	require.True(t, components.PublishInterceptor.IsSome())
+	require.True(t, components.ChannelActivationGate.IsSome())
 
 	called := false
 	interceptor := components.PublishInterceptor.UnsafeFromSome()

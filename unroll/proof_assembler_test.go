@@ -182,7 +182,7 @@ func TestExtractFinalizedTxPreservesOORConditionWitness(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	tx, err := extractFinalizedTx(pkt)
+	tx, err := ExtractFinalizedTx(pkt)
 	require.NoError(t, err)
 	require.Len(t, tx.TxIn[0].Witness, 5)
 	require.Equal(t, serverSig, tx.TxIn[0].Witness[0])

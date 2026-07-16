@@ -462,9 +462,10 @@ func sameNode(a, b *recovery.Node) (bool, error) {
 	return bytes.Equal(aBuf.Bytes(), bBuf.Bytes()), nil
 }
 
-// extractFinalizedTx prefers the fully finalized transaction from a persisted
-// PSBT, but falls back to the unsigned transaction for synthetic test packets.
-func extractFinalizedTx(pkt *psbt.Packet) (*wire.MsgTx, error) {
+// ExtractFinalizedTx returns the exact transaction carried by a finalized Ark
+// PSBT. It understands the custom OOR witness fields that the generic PSBT
+// finalizer cannot assemble on its own.
+func ExtractFinalizedTx(pkt *psbt.Packet) (*wire.MsgTx, error) {
 	if pkt == nil {
 		return nil, fmt.Errorf("%w: psbt must be provided",
 			ErrUnrollProofInvalid)

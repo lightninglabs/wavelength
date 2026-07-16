@@ -34,6 +34,10 @@ type SelectAndReserveSpendRequest struct {
 	// MinChangeAmount, when positive, asks selection to avoid a
 	// non-zero residual below this amount. Exact spends are still valid.
 	MinChangeAmount btcutil.Amount
+
+	// RequiredOutpoints, when non-empty, reserves these exact VTXOs instead
+	// of running coin selection. Their total must cover TargetAmount.
+	RequiredOutpoints []wire.OutPoint
 }
 
 // VTXOManagerMsg implements VTXOManagerMsg marker interface.
@@ -386,13 +390,20 @@ const (
 	// vhtlcrecovery.ExitPolicyKindRefundWithoutReceiver.
 	ExitPolicyVHTLCRefundWithoutReceiver ExitPolicyKind = "vhtlc_" +
 		"refund_without_receiver"
+
+	// ExitPolicyVirtualChannelBacking identifies the cooperative spend from
+	// a VTXO into its already negotiated Lightning channel point.
+	ExitPolicyVirtualChannelBacking = ExitPolicyKind(
+		"virtual_channel_backing",
+	)
 )
 
 // Valid reports whether the exit policy kind is one of the known non-standard
 // policies that can ride the ForceUnroll path.
 func (k ExitPolicyKind) Valid() bool {
 	switch k {
-	case ExitPolicyVHTLCClaim, ExitPolicyVHTLCRefundWithoutReceiver:
+	case ExitPolicyVHTLCClaim, ExitPolicyVHTLCRefundWithoutReceiver,
+		ExitPolicyVirtualChannelBacking:
 		return true
 
 	default:

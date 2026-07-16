@@ -4,6 +4,7 @@ import (
 	lnd "github.com/lightningnetwork/lnd"
 	"github.com/lightningnetwork/lnd/chanacceptor"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/funding"
 	"github.com/lightningnetwork/lnd/lnrpc/invoicesrpc"
 	"github.com/lightningnetwork/lnd/lnwallet"
 )
@@ -32,8 +33,15 @@ func BuildAuxComponents(cfg MaterializingPublishInterceptorConfig) (
 	if err != nil {
 		return nil, err
 	}
+	lifecycleGate, err := NewLifecycleActivationGate(cfg.Store)
+	if err != nil {
+		return nil, err
+	}
 
 	return &lnd.AuxComponents{
+		ChannelActivationGate: fn.Some[funding.ChannelActivationGate](
+			lifecycleGate,
+		),
 		PublishInterceptor: fn.Some[lnwallet.PublishInterceptor](
 			publishInterceptor,
 		),

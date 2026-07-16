@@ -5,8 +5,10 @@ import (
 
 	"github.com/btcsuite/btcd/chaincfg/v2"
 	"github.com/btcsuite/btcd/wire/v2"
+	"github.com/lightninglabs/wavelength/lib/actormsg"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/lib/types"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
 // ForfeitParticipantSignRequest describes the exact forfeit transaction that
@@ -42,6 +44,12 @@ type ForfeitParticipantSignRequest struct {
 type ForfeitParticipantSigner func(context.Context,
 	*ForfeitParticipantSignRequest) ([]*types.ForfeitParticipantSig, error)
 
+// ExpiryExitPolicyResolver identifies a non-standard final spend for a VTXO
+// when its ordinary expiry monitor starts an unroll. None selects the standard
+// timeout sweep.
+type ExpiryExitPolicyResolver func(context.Context, wire.OutPoint) (
+	fn.Option[actormsg.ExitPolicy], error)
+
 // VTXOEnvironment provides the VTXO state machine with access to external
 // systems and storage. This follows the protofsm pattern where the environment
 // contains all dependencies needed for state transitions.
@@ -66,6 +74,11 @@ type VTXOEnvironment struct {
 	// participants when a custom VTXO policy requires more than the local
 	// wallet signature before the operator can finalize the forfeit.
 	ForfeitParticipantSigner ForfeitParticipantSigner
+
+	// ExpiryExitPolicyResolver lets a subsystem that durably owns a
+	// reserved VTXO replace the standard timeout sweep with its signed
+	// final spend.
+	ExpiryExitPolicyResolver ExpiryExitPolicyResolver
 }
 
 // Name returns the unique identifier for this FSM instance.

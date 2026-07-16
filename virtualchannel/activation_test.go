@@ -28,16 +28,9 @@ func TestBuildFundedPSBT(t *testing.T) {
 		{
 			BackingVTXO: BackingVTXO{
 				OutPoint: testOutPoint(0xa1, 0),
-				Amount:   30_000,
+				Amount:   51_000,
 			},
 			PkScript: testScript(0x01),
-		},
-		{
-			BackingVTXO: BackingVTXO{
-				OutPoint: testOutPoint(0xb2, 1),
-				Amount:   21_000,
-			},
-			PkScript: testScript(0x02),
 		},
 	}
 
@@ -52,7 +45,7 @@ func TestBuildFundedPSBT(t *testing.T) {
 		bytes.NewReader(result.FundingPsbt), false,
 	)
 	require.NoError(t, err)
-	require.Len(t, packet.UnsignedTx.TxIn, 2)
+	require.Len(t, packet.UnsignedTx.TxIn, 1)
 	require.Len(t, packet.UnsignedTx.TxOut, 1)
 	require.Equal(t, fundingScript, packet.UnsignedTx.TxOut[0].PkScript)
 	for _, input := range packet.Inputs {
@@ -94,6 +87,7 @@ func TestActivateNoPublishFunding(t *testing.T) {
 		},
 		PendingChanID: pendingID[:],
 	})
+	persisted := false
 
 	result, err := ActivateNoPublishFunding(
 		t.Context(), lnd, ActivationRequest{
@@ -112,9 +106,21 @@ func TestActivateNoPublishFunding(t *testing.T) {
 				},
 			},
 			UpdateTimeout: time.Second,
+			PersistFundingIntent: func(_ context.Context,
+				result *ActivationResult) error {
+
+				require.Nil(t, lnd.fundingReq)
+				require.Equal(
+					t, pendingID, result.PendingChannelID,
+				)
+				persisted = true
+
+				return nil
+			},
 		},
 	)
 	require.NoError(t, err)
+	require.True(t, persisted)
 	require.Equal(t, pendingID, result.PendingChannelID)
 	require.True(t, lnd.openReq.ZeroConf)
 	require.True(t, lnd.openReq.ScidAlias)
@@ -141,12 +147,13 @@ func TestActivateNoPublishFundingPropagatesStreamError(t *testing.T) {
 	lnd := &testActivationLND{
 		err: errors.New("peer disconnected"),
 	}
+	pendingID := testPendingID(3)
 
 	_, err := ActivateNoPublishFunding(
 		t.Context(), lnd, ActivationRequest{
 			Peer:             testVertex(9),
 			Capacity:         50_000,
-			PendingChannelID: testPendingID(3),
+			PendingChannelID: pendingID,
 			BackingInputs: []FundingInput{
 				{
 					BackingVTXO: BackingVTXO{
@@ -160,20 +167,148 @@ func TestActivateNoPublishFundingPropagatesStreamError(t *testing.T) {
 		},
 	)
 	require.ErrorContains(t, err, "peer disconnected")
+	cancel := lnd.fundingReq.GetShimCancel()
+	require.NotNil(t, cancel)
+	require.Equal(t, pendingID[:], cancel.PendingChanId)
+}
+
+func TestActivateNoPublishFundingKeepsPersistedShimForRetry(t *testing.T) {
+	pendingID := testPendingID(4)
+	basePSBT := testFundingPSBT(t, &wire.TxOut{
+		Value:    50_000,
+		PkScript: testScript(0x51),
+	})
+	lnd := newTestActivationLND(&lndclient.OpenStatusUpdate{
+		PsbtFund: &lnrpc.ReadyForPsbtFunding{
+			FundingAmount: 50_000,
+			Psbt:          basePSBT,
+		},
+		PendingChanID: pendingID[:],
+	})
+	lnd.fundingErr = errors.New("rpc response lost")
+	persisted := false
+
+	_, err := ActivateNoPublishFunding(
+		t.Context(), lnd, ActivationRequest{
+			Peer:             testVertex(9),
+			Capacity:         50_000,
+			PendingChannelID: pendingID,
+			BackingInputs: []FundingInput{{
+				BackingVTXO: BackingVTXO{
+					OutPoint: testOutPoint(0xa1, 0),
+					Amount:   51_000,
+				},
+				PkScript: testScript(0x01),
+			}},
+			UpdateTimeout: time.Second,
+			PersistFundingIntent: func(_ context.Context,
+				_ *ActivationResult) error {
+
+				persisted = true
+
+				return nil
+			},
+		},
+	)
+	require.ErrorContains(t, err, "rpc response lost")
+	require.True(t, persisted)
+	require.NotNil(t, lnd.fundingReq.GetPsbtVerify())
+	require.Nil(t, lnd.fundingReq.GetShimCancel())
+}
+
+func TestActivateNoPublishFundingRejectsWrongPendingChannelPoint(t *testing.T) {
+	pendingID := testPendingID(5)
+	basePSBT := testFundingPSBT(t, &wire.TxOut{
+		Value:    50_000,
+		PkScript: testScript(0x51),
+	})
+	lnd := newTestActivationLND(&lndclient.OpenStatusUpdate{
+		PsbtFund: &lnrpc.ReadyForPsbtFunding{
+			FundingAmount: 50_000,
+			Psbt:          basePSBT,
+		},
+		PendingChanID: pendingID[:],
+	})
+	wrongPoint := testOutPoint(0xff, 1)
+	lnd.pendingOverride = &wrongPoint
+
+	_, err := ActivateNoPublishFunding(
+		t.Context(), lnd, ActivationRequest{
+			Peer:             testVertex(9),
+			Capacity:         50_000,
+			PendingChannelID: pendingID,
+			BackingInputs: []FundingInput{{
+				BackingVTXO: BackingVTXO{
+					OutPoint: testOutPoint(0xa1, 0),
+					Amount:   51_000,
+				},
+				PkScript: testScript(0x01),
+			}},
+			UpdateTimeout: time.Second,
+		},
+	)
+	require.ErrorContains(t, err, "unexpected pending channel point")
+}
+
+func TestConfirmNoPublishFunding(t *testing.T) {
+	pendingID := testPendingID(6)
+	result, err := BuildFundedPSBT(
+		testFundingPSBT(t, &wire.TxOut{
+			Value:    50_000,
+			PkScript: testScript(0x51),
+		}), 50_000, pendingID, []FundingInput{{
+			BackingVTXO: BackingVTXO{
+				OutPoint: testOutPoint(0xa1, 0),
+				Amount:   51_000,
+			},
+			PkScript: testScript(0x01),
+		}},
+	)
+	require.NoError(t, err)
+
+	t.Run("replays persisted PSBT", func(t *testing.T) {
+		lnd := newTestActivationLND(nil)
+		err := ConfirmNoPublishFunding(
+			t.Context(), lnd, pendingID, result.FundingPsbt,
+			result.ChannelPoint, time.Second,
+		)
+		require.NoError(t, err)
+		require.NotNil(t, lnd.fundingReq.GetPsbtVerify())
+	})
+
+	t.Run("recognizes durable channel", func(t *testing.T) {
+		point := result.ChannelPoint
+		lnd := newTestActivationLND(nil)
+		lnd.pending = []lndclient.PendingChannel{{
+			ChannelPoint: &point,
+		}}
+		err := ConfirmNoPublishFunding(
+			t.Context(), lnd, pendingID, result.FundingPsbt,
+			result.ChannelPoint, time.Second,
+		)
+		require.NoError(t, err)
+		require.Nil(t, lnd.fundingReq)
+	})
 }
 
 type testActivationLND struct {
-	update     *lndclient.OpenStatusUpdate
-	err        error
-	openReq    lnrpc.OpenChannelRequest
-	fundingReq *lnrpc.FundingTransitionMsg
+	update          *lndclient.OpenStatusUpdate
+	updates         chan *lndclient.OpenStatusUpdate
+	err             error
+	fundingErr      error
+	openReq         lnrpc.OpenChannelRequest
+	fundingReq      *lnrpc.FundingTransitionMsg
+	pendingOverride *wire.OutPoint
+	pending         []lndclient.PendingChannel
+	channels        []lndclient.ChannelInfo
 }
 
 func newTestActivationLND(
 	update *lndclient.OpenStatusUpdate) *testActivationLND {
 
 	return &testActivationLND{
-		update: update,
+		update:  update,
+		updates: make(chan *lndclient.OpenStatusUpdate, 2),
 	}
 }
 
@@ -192,23 +327,69 @@ func (l *testActivationLND) OpenChannelStream(_ context.Context,
 		opt(&l.openReq)
 	}
 
-	updates := make(chan *lndclient.OpenStatusUpdate, 1)
 	errs := make(chan error, 1)
 	if l.err != nil {
 		errs <- l.err
-	} else {
-		updates <- l.update
+	} else if l.update != nil {
+		l.updates <- l.update
 	}
 
-	return updates, errs, nil
+	return l.updates, errs, nil
 }
 
 func (l *testActivationLND) FundingStateStep(_ context.Context,
 	req *lnrpc.FundingTransitionMsg) (*lnrpc.FundingStateStepResp, error) {
 
 	l.fundingReq = req
+	if l.fundingErr != nil {
+		return &lnrpc.FundingStateStepResp{}, l.fundingErr
+	}
+
+	verify := req.GetPsbtVerify()
+	if verify == nil {
+		return &lnrpc.FundingStateStepResp{}, nil
+	}
+	packet, err := psbt.NewFromRawBytes(
+		bytes.NewReader(verify.FundedPsbt), false,
+	)
+	if err != nil {
+		return nil, err
+	}
+	point := wire.OutPoint{
+		Hash:  packet.UnsignedTx.TxHash(),
+		Index: 0,
+	}
+	if l.pendingOverride != nil {
+		point = *l.pendingOverride
+	}
+	l.pending = []lndclient.PendingChannel{{
+		ChannelPoint: &point,
+	}}
+	if l.updates != nil {
+		l.updates <- &lndclient.OpenStatusUpdate{
+			ChanPending: &lnrpc.PendingUpdate{
+				Txid:        point.Hash[:],
+				OutputIndex: point.Index,
+			},
+			PendingChanID: verify.PendingChanId,
+		}
+	}
 
 	return &lnrpc.FundingStateStepResp{}, nil
+}
+
+func (l *testActivationLND) PendingChannels(context.Context) (
+	*lndclient.PendingChannels, error) {
+
+	return &lndclient.PendingChannels{
+		PendingOpen: l.pending,
+	}, nil
+}
+
+func (l *testActivationLND) ListChannels(context.Context, bool, bool,
+	...lndclient.ListChannelsOption) ([]lndclient.ChannelInfo, error) {
+
+	return l.channels, nil
 }
 
 func testFundingPSBT(t *testing.T, output *wire.TxOut) []byte {

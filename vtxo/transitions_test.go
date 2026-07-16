@@ -2,6 +2,7 @@ package vtxo
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -1459,6 +1460,67 @@ func TestSpendingStateCriticalExpiry(t *testing.T) {
 		t, su.ReleaseSpendReservation,
 		"critical-expiry exit must drop the reservation row",
 	)
+}
+
+// TestSpendingStateCriticalExpiryUsesResolvedPolicy verifies that a subsystem
+// which durably owns a reserved VTXO controls the final unroll spend.
+func TestSpendingStateCriticalExpiryUsesResolvedPolicy(t *testing.T) {
+	t.Parallel()
+
+	h := newVTXOTestHarness(t)
+	desc := h.newTestDescriptor()
+	desc.BatchExpiry = 1000
+	expected := actormsg.ExitPolicy{
+		Kind: actormsg.ExitPolicyVirtualChannelBacking,
+		Ref:  actormsg.ExitPolicyRef("channel-1"),
+	}
+	h.env.ExpiryExitPolicyResolver = func(_ context.Context,
+		outpoint wire.OutPoint) (fn.Option[actormsg.ExitPolicy],
+		error) {
+
+		require.Equal(t, desc.Outpoint, outpoint)
+
+		return fn.Some(expected), nil
+	}
+	h.withExpiryConfig(&ExpiryConfig{
+		RefreshThresholdBlocks:  200,
+		CriticalThresholdBlocks: 50,
+		TreeDepthMultiplier:     1,
+	})
+	h.withState(&SpendingState{VTXO: desc})
+
+	_, err := h.sendEvent(h.newBlockEpochEvent(970))
+	require.NoError(t, err)
+
+	notif := assertOutboxContains[*ExpiringNotification](h)
+	require.Equal(t, expected, notif.ExitPolicy.UnwrapOrFail(t))
+}
+
+// TestSpendingStateCriticalExpiryPolicyErrorFailsClosed verifies that an
+// ownership lookup failure does not silently fall back to the timeout sweep.
+func TestSpendingStateCriticalExpiryPolicyErrorFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	h := newVTXOTestHarness(t)
+	desc := h.newTestDescriptor()
+	desc.BatchExpiry = 1000
+	h.env.ExpiryExitPolicyResolver = func(context.Context, wire.OutPoint) (
+		fn.Option[actormsg.ExitPolicy], error) {
+
+		return fn.None[actormsg.ExitPolicy](), errors.New("store " +
+			"offline")
+	}
+	h.withExpiryConfig(&ExpiryConfig{
+		RefreshThresholdBlocks:  200,
+		CriticalThresholdBlocks: 50,
+		TreeDepthMultiplier:     1,
+	})
+	h.withState(&SpendingState{VTXO: desc})
+
+	_, err := h.sendEvent(h.newBlockEpochEvent(970))
+	require.ErrorContains(t, err, "store offline")
+	require.Empty(t, h.outboxMessages)
+	require.IsType(t, &SpendingState{}, h.currentState)
 }
 
 // TestSpendingStateSafeBlockEpoch verifies that SpendingState stays in

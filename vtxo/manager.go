@@ -123,6 +123,9 @@ type ManagerConfig struct {
 	// signatures after the round assigns connector outputs.
 	ForfeitParticipantSigner ForfeitParticipantSigner
 
+	// ExpiryExitPolicyResolver is propagated to each spawned VTXO actor.
+	ExpiryExitPolicyResolver ExpiryExitPolicyResolver
+
 	// TerminalVTXOObserver receives the outpoint of VTXOs that leave the
 	// manager's active set so daemon-local observers can clean up related
 	// actor-owned work.
@@ -1211,6 +1214,7 @@ func (m *Manager) spawnVTXOActor(ctx context.Context, vtxo *Descriptor) (
 		RefreshFeeQuoter:         m.cfg.RefreshFeeQuoter,
 		FetchOperatorKey:         m.cfg.FetchOperatorKey,
 		ForfeitParticipantSigner: m.cfg.ForfeitParticipantSigner,
+		ExpiryExitPolicyResolver: m.cfg.ExpiryExitPolicyResolver,
 	}
 
 	vtxoActor := NewVTXOActor(ctx, actorCfg)
@@ -1237,11 +1241,12 @@ func (m *Manager) spawnVTXOActor(ctx context.Context, vtxo *Descriptor) (
 // selectAndReserveVTXOs so the shared coin-selection + reservation
 // logic does not need to be duplicated.
 type reserveParams struct {
-	targetAmount    btcutil.Amount
-	minChangeAmount btcutil.Amount
-	reserveEvent    actormsg.VTXOActorMsg
-	rollback        func(ctx context.Context, ops []wire.OutPoint)
-	ask             func(context.Context, VTXOActorRef,
+	targetAmount      btcutil.Amount
+	minChangeAmount   btcutil.Amount
+	requiredOutpoints []wire.OutPoint
+	reserveEvent      actormsg.VTXOActorMsg
+	rollback          func(ctx context.Context, ops []wire.OutPoint)
+	ask               func(context.Context, VTXOActorRef,
 		actormsg.VTXOActorMsg) fn.Result[actormsg.VTXOActorResp]
 	label string
 
@@ -1291,9 +1296,21 @@ func (m *Manager) selectAndReserveVTXOs(ctx context.Context, p reserveParams) (
 	// in flight, so a row can read Live here while the outpoint is
 	// already owned by a spend session. Both the spend and the forfeit
 	// selection paths funnel through this filter.
+	if len(p.requiredOutpoints) != len(fn.NewSet(
+		p.requiredOutpoints...,
+	)) {
+		return nil, 0, fmt.Errorf("required outpoints contain " +
+			"duplicates")
+	}
+	required := fn.NewSet(p.requiredOutpoints...)
 	candidates := make([]*Descriptor, 0, len(rows))
 	for _, row := range rows {
 		if m.isReserved(row.Outpoint) {
+			continue
+		}
+		if len(p.requiredOutpoints) > 0 &&
+			!required.Contains(row.Outpoint) {
+
 			continue
 		}
 
@@ -1310,29 +1327,52 @@ func (m *Manager) selectAndReserveVTXOs(ctx context.Context, p reserveParams) (
 	// dust-change rejection is reported verbatim, while any shortfall
 	// (including an empty candidate set) is refined into the
 	// locked-vs-absent distinction.
-	res, err := coinselect.LargestFirst(
-		candidates, func(d *Descriptor) btcutil.Amount {
-			return d.Amount
-		}, coinselect.Request{
-			Target:    p.targetAmount,
-			MinChange: p.minChangeAmount,
-		},
-	)
-	switch {
-	case errors.Is(err, coinselect.ErrChangeBelowMin):
-		change := res.Total - p.targetAmount
+	var selected []*Descriptor
+	if len(p.requiredOutpoints) > 0 {
+		if len(candidates) != len(p.requiredOutpoints) {
+			return nil, 0, fmt.Errorf("%w: one or more required "+
+				"VTXOs are unavailable", ErrVTXOLiquidityLocked)
+		}
+		total := SumBalance(candidates)
+		if total < p.targetAmount {
+			return nil, 0, fmt.Errorf("%w: need %d, selected %d",
+				ErrInsufficientSpendableFunds, p.targetAmount,
+				total)
+		}
+		change := total - p.targetAmount
+		if change > 0 && p.minChangeAmount > 0 &&
+			change < p.minChangeAmount {
+			return nil, 0, fmt.Errorf("change %d is below minimum "+
+				"change amount %d", change, p.minChangeAmount)
+		}
+		selected = candidates
+	} else {
+		res, err := coinselect.LargestFirst(
+			candidates, func(d *Descriptor) btcutil.Amount {
+				return d.Amount
+			}, coinselect.Request{
+				Target:    p.targetAmount,
+				MinChange: p.minChangeAmount,
+			},
+		)
+		switch {
+		case errors.Is(err, coinselect.ErrChangeBelowMin):
+			change := res.Total - p.targetAmount
 
-		return nil, 0, fmt.Errorf("change %d is below minimum change "+
-			"amount %d", change, p.minChangeAmount)
+			return nil, 0, fmt.Errorf("change %d is below minimum "+
+				"change amount %d", change, p.minChangeAmount)
 
-	case errors.Is(err, coinselect.ErrSelectionShortfall),
-		errors.Is(err, coinselect.ErrNoCandidates):
-		return nil, 0, m.insufficientLiquidityError(ctx, candidates, p)
+		case errors.Is(err, coinselect.ErrSelectionShortfall),
+			errors.Is(err, coinselect.ErrNoCandidates):
+			return nil, 0, m.insufficientLiquidityError(
+				ctx, candidates, p,
+			)
 
-	case err != nil:
-		return nil, 0, err
+		case err != nil:
+			return nil, 0, err
+		}
+		selected = res.Selected
 	}
-	selected := res.Selected
 
 	// Reserve each selected VTXO via its actor. Track successfully
 	// reserved outpoints so we can roll back on partial failure.
@@ -1470,13 +1510,14 @@ func (m *Manager) handleSelectAndReserveSpend(ctx context.Context,
 	req *SelectAndReserveSpendRequest) fn.Result[ManagerResp] {
 
 	vtxos, total, err := m.selectAndReserveVTXOs(ctx, reserveParams{
-		targetAmount:    req.TargetAmount,
-		minChangeAmount: req.MinChangeAmount,
-		reserveEvent:    &SpendReserveEvent{},
-		rollback:        m.rollbackSpend,
-		ask:             m.askVTXOActor,
-		label:           "spend",
-		detached:        true,
+		targetAmount:      req.TargetAmount,
+		minChangeAmount:   req.MinChangeAmount,
+		requiredOutpoints: req.RequiredOutpoints,
+		reserveEvent:      &SpendReserveEvent{},
+		rollback:          m.rollbackSpend,
+		ask:               m.askVTXOActor,
+		label:             "spend",
+		detached:          true,
 	})
 	if err != nil {
 		return fn.Err[ManagerResp](err)

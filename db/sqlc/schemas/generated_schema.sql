@@ -604,11 +604,21 @@ CREATE INDEX idx_vhtlc_recovery_jobs_unroll_target
     )
     WHERE unroll_target_outpoint_hash IS NOT NULL;
 
-CREATE INDEX idx_virtual_channel_vtxos_outpoint
+CREATE UNIQUE INDEX idx_virtual_channel_intent_vtxos_outpoint
+	ON virtual_channel_intent_vtxos(outpoint_hash, outpoint_index);
+
+CREATE UNIQUE INDEX idx_virtual_channel_intents_request
+	ON virtual_channel_intents(kind, role, request_key)
+	WHERE request_key IS NOT NULL;
+
+CREATE UNIQUE INDEX idx_virtual_channel_vtxos_outpoint
 	ON virtual_channel_vtxos(outpoint_hash, outpoint_index);
 
 CREATE INDEX idx_virtual_channels_channel_point
 	ON virtual_channels(channel_point_hash, channel_point_index);
+
+CREATE INDEX idx_virtual_channels_round
+	ON virtual_channels(kind, round_id, status);
 
 CREATE INDEX idx_virtual_channels_status
 	ON virtual_channels(status, updated_at);
@@ -1573,7 +1583,8 @@ CREATE TABLE virtual_channel_intents (
 	local_balance_sat BIGINT NOT NULL CHECK (local_balance_sat >= 0),
 	remote_balance_sat BIGINT NOT NULL CHECK (remote_balance_sat >= 0),
 	created_at BIGINT NOT NULL,
-	updated_at BIGINT NOT NULL,
+	updated_at BIGINT NOT NULL, kind TEXT NOT NULL DEFAULT 'promote_vtxo', round_id TEXT, request_key TEXT, state_version BIGINT NOT NULL DEFAULT 1
+		CHECK (state_version > 0),
 
 	FOREIGN KEY (role) REFERENCES virtual_channel_roles(role),
 	FOREIGN KEY (status) REFERENCES virtual_channel_statuses(status),
@@ -1625,7 +1636,8 @@ CREATE TABLE virtual_channels (
 	created_at BIGINT NOT NULL,
 	updated_at BIGINT NOT NULL,
 	materialized_at BIGINT,
-	closed_at BIGINT,
+	closed_at BIGINT, kind TEXT NOT NULL DEFAULT 'promote_vtxo', round_id TEXT, state_version BIGINT NOT NULL DEFAULT 1
+		CHECK (state_version > 0), backing_armed_at BIGINT,
 
 	UNIQUE(channel_point_hash, channel_point_index),
 	FOREIGN KEY (role) REFERENCES virtual_channel_roles(role),

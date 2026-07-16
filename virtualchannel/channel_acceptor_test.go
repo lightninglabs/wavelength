@@ -12,9 +12,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestRegisteredChannelAcceptorRejectsUnknownZeroConf verifies that the
-// integrated lnd acceptor fails closed for unregistered virtual channels.
-func TestRegisteredChannelAcceptorRejectsUnknownZeroConf(t *testing.T) {
+// TestRegisteredChannelAcceptorDefersUnknownZeroConf verifies that unrelated
+// opens remain available to lnd's other acceptors. Without another acceptor,
+// stock lnd still rejects an unapproved zero-conf request.
+func TestRegisteredChannelAcceptorDefersUnknownZeroConf(t *testing.T) {
 	t.Parallel()
 
 	acceptor, err := NewRegisteredChannelAcceptor(
@@ -29,7 +30,8 @@ func TestRegisteredChannelAcceptorRejectsUnknownZeroConf(t *testing.T) {
 	require.NoError(t, err)
 
 	resp := acceptor.Accept(registeredOpenRequest(t, fixedPendingID(1)))
-	require.True(t, resp.RejectChannel())
+	require.False(t, resp.RejectChannel())
+	require.False(t, resp.ZeroConf)
 }
 
 // TestRegisteredChannelAcceptorAcceptsRegisteredZeroConf verifies that

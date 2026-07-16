@@ -54,6 +54,13 @@ func (p *InvoiceHopHintProvider) HopHints(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
+	published, err := p.store.ListVirtualChannelsByStatus(
+		ctx, StatusFundingPublished,
+	)
+	if err != nil {
+		return nil, err
+	}
+	channels = append(channels, published...)
 	if len(channels) == 0 {
 		return nil, nil
 	}

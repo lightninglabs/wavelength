@@ -28,6 +28,19 @@ func (q *Queries) DeleteSpendingReservation(ctx context.Context, arg DeleteSpend
 
 const ListSpendingReservationOutpoints = `-- name: ListSpendingReservationOutpoints :many
 SELECT outpoint_hash, outpoint_index FROM spending_reservations
+UNION
+SELECT v.outpoint_hash, v.outpoint_index
+FROM virtual_channel_vtxos AS v
+JOIN virtual_channels AS c
+  ON c.virtual_channel_id = v.virtual_channel_id
+WHERE c.status != 'closed'
+	AND (c.status != 'failed' OR c.backing_armed_at IS NOT NULL)
+UNION
+SELECT v.outpoint_hash, v.outpoint_index
+FROM virtual_channel_intent_vtxos AS v
+JOIN virtual_channel_intents AS i
+  ON i.pending_channel_id = v.pending_channel_id
+WHERE i.status != 'failed'
 `
 
 type ListSpendingReservationOutpointsRow struct {
@@ -35,8 +48,9 @@ type ListSpendingReservationOutpointsRow struct {
 	OutpointIndex int32
 }
 
-// ListSpendingReservationOutpoints returns every reserved outpoint. Used by
-// the startup sweep to build the set of live reservations.
+// ListSpendingReservationOutpoints returns every reserved outpoint, including
+// VTXOs held by a nonterminal virtual channel. Used by the startup sweep to
+// build the set of live reservations.
 func (q *Queries) ListSpendingReservationOutpoints(ctx context.Context) ([]ListSpendingReservationOutpointsRow, error) {
 	rows, err := q.db.QueryContext(ctx, ListSpendingReservationOutpoints)
 	if err != nil {

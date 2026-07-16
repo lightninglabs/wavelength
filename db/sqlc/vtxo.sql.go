@@ -149,10 +149,28 @@ func (q *Queries) ListLiveVTXOs(ctx context.Context) ([]Vtxo, error) {
 }
 
 const ListVTXOSelectionCandidatesByStatus = `-- name: ListVTXOSelectionCandidatesByStatus :many
-SELECT outpoint_hash, outpoint_index, amount, pk_script
-FROM vtxos
-WHERE status = $1
-ORDER BY creation_time DESC
+SELECT v.outpoint_hash, v.outpoint_index, v.amount, v.pk_script
+FROM vtxos AS v
+WHERE v.status = $1
+		AND NOT EXISTS (
+			SELECT 1
+			FROM virtual_channel_vtxos AS cv
+			JOIN virtual_channels AS c
+				ON c.virtual_channel_id = cv.virtual_channel_id
+			WHERE cv.outpoint_hash = v.outpoint_hash
+				AND cv.outpoint_index = v.outpoint_index
+				AND (c.status != 'failed' OR c.backing_armed_at IS NOT NULL)
+		)
+		AND NOT EXISTS (
+			SELECT 1
+			FROM virtual_channel_intent_vtxos AS iv
+			JOIN virtual_channel_intents AS i
+				ON i.pending_channel_id = iv.pending_channel_id
+			WHERE iv.outpoint_hash = v.outpoint_hash
+				AND iv.outpoint_index = v.outpoint_index
+				AND i.status != 'failed'
+		)
+ORDER BY v.creation_time DESC
 `
 
 type ListVTXOSelectionCandidatesByStatusRow struct {
@@ -166,7 +184,11 @@ type ListVTXOSelectionCandidatesByStatusRow struct {
 // selection runs on: outpoint, amount, and pkScript. Selection happens on
 // every payment and only needs these three fields, so this avoids decoding
 // full descriptors (pubkey parsing, taproot script reconstruction, policy
-// template decode) and the batched ancestry-path query on the hot path.
+// template decode) and the batched ancestry-path query on the hot path. A
+// VTXO assigned to a live channel lifecycle is unavailable to Ark coin
+// selection: while virtual it backs the unpublished channel point, and after
+// materialization that backing transaction has consumed it. A channel that
+// fails before activation releases its VTXO for a later attempt.
 func (q *Queries) ListVTXOSelectionCandidatesByStatus(ctx context.Context, status int32) ([]ListVTXOSelectionCandidatesByStatusRow, error) {
 	rows, err := q.db.QueryContext(ctx, ListVTXOSelectionCandidatesByStatus, status)
 	if err != nil {

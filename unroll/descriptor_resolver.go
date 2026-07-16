@@ -265,7 +265,7 @@ func (r *DescriptorLineageResolver) resolveOORArtifacts(ctx context.Context,
 		// (e.g. one per input branch when the package spends from a
 		// multi-input source).
 		for j := range pkg.FinalCheckpointPSBTs {
-			tx, err := extractFinalizedTx(
+			tx, err := ExtractFinalizedTx(
 				pkg.FinalCheckpointPSBTs[j],
 			)
 			if err != nil {
@@ -286,7 +286,7 @@ func (r *DescriptorLineageResolver) resolveOORArtifacts(ctx context.Context,
 
 		// Every package also carries exactly one ark-tx that
 		// produces the VTXO output at the end of that hop.
-		tx, err := extractFinalizedTx(pkg.ArkPSBT)
+		tx, err := ExtractFinalizedTx(pkg.ArkPSBT)
 		if err != nil {
 			return nil, err
 		}

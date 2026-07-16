@@ -275,6 +275,9 @@ func TestSelectAndLockVTXOs(t *testing.T) {
 	req := &SelectAndLockVTXOsRequest{
 		TargetAmount:    70000,
 		MinChangeAmount: 1000,
+		RequiredOutpoints: []wire.OutPoint{
+			testOutpoint(1),
+		},
 	}
 	result := w.Receive(t.Context(), req)
 	require.True(t, result.IsOk(), "expected ok, got: %v",
@@ -291,6 +294,8 @@ func TestSelectAndLockVTXOs(t *testing.T) {
 		resp.SelectedVTXOs[0].Amount)
 	require.Equal(t, btcutil.Amount(70000), mgr.selectReq.TargetAmount)
 	require.Equal(t, btcutil.Amount(1000), mgr.selectReq.MinChangeAmount)
+	require.Equal(t, req.RequiredOutpoints,
+		mgr.selectReq.RequiredOutpoints)
 }
 
 // TestSelectAndLockVTXOsInsufficientFunds verifies that the wallet surfaces

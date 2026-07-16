@@ -44,8 +44,49 @@ func NewVirtualChannelStoreDB(store *Store) *VirtualChannelStoreDB {
 func (s *VirtualChannelStoreDB) InsertVirtualChannelPendingOpen(
 	ctx context.Context, pending virtualchannel.PendingOpen) error {
 
-	if len(pending.BackingVTXOs) == 0 {
-		return fmt.Errorf("virtual channel intent has no backing VTXOs")
+	kind := normalizedVirtualChannelKind(pending.Kind)
+	preBinding := pending.Status == virtualchannel.StatusRequested ||
+		pending.Status == virtualchannel.StatusRoundRequested
+	if preBinding && len(pending.BackingVTXOs) != 0 {
+		return fmt.Errorf("unbound virtual channel intent cannot " +
+			"have VTXOs")
+	}
+	if !preBinding && len(pending.BackingVTXOs) != 1 {
+		return fmt.Errorf("bound virtual channel intent requires " +
+			"exactly one VTXO")
+	}
+	if kind == virtualchannel.KindReceiveChannel && !preBinding &&
+		pending.RoundID == "" {
+		return fmt.Errorf("receive channel requires round id")
+	}
+	if kind == virtualchannel.KindReceiveChannel && preBinding &&
+		pending.RequestKey == "" {
+		return fmt.Errorf("receive channel request requires " +
+			"idempotency key")
+	}
+	if err := virtualchannel.ValidateInitialBalances(
+		kind, pending.Role, pending.Capacity, pending.LocalBalance,
+		pending.RemoteBalance,
+	); err != nil {
+		return err
+	}
+	pending.Kind = kind
+	if pending.StateVersion == 0 {
+		pending.StateVersion = 1
+	}
+	existing, ok, err := s.FindVirtualChannelPendingOpen(
+		ctx, pending.PendingChannelID,
+	)
+	if err != nil {
+		return err
+	}
+	if ok {
+		if sameVirtualChannelPendingBinding(*existing, pending) {
+			return nil
+		}
+
+		return fmt.Errorf("pending channel id is already bound to a " +
+			"different virtual channel")
 	}
 
 	now := s.clock().UTC().UnixNano()
@@ -62,6 +103,14 @@ func (s *VirtualChannelStoreDB) InsertVirtualChannelPendingOpen(
 				RemoteBalanceSat: int64(pending.RemoteBalance),
 				CreatedAt:        now,
 				UpdatedAt:        now,
+				Kind:             string(kind),
+				RoundID: nullableString(
+					pending.RoundID,
+				),
+				RequestKey: nullableString(
+					pending.RequestKey,
+				),
+				StateVersion: int64(pending.StateVersion),
 			},
 		)
 		if err != nil {
@@ -69,6 +118,12 @@ func (s *VirtualChannelStoreDB) InsertVirtualChannelPendingOpen(
 		}
 
 		for _, backing := range pending.BackingVTXOs {
+			if err := ensureVirtualChannelBackingAvailable(
+				ctx, qtx, backing.OutPoint,
+			); err != nil {
+				return err
+			}
+
 			backingHash := backing.OutPoint.Hash[:]
 			err := qtx.InsertVirtualChannelIntentVTXO(
 				ctx, sqlc.InsertVirtualChannelIntentVTXOParams{
@@ -92,6 +147,204 @@ func (s *VirtualChannelStoreDB) InsertVirtualChannelPendingOpen(
 	})
 }
 
+// MarkVirtualChannelRoundRequested records that a durable receive request is
+// ready for round-FSM handoff. The write happens before dispatch so a crash or
+// dispatch failure remains replayable.
+func (s *VirtualChannelStoreDB) MarkVirtualChannelRoundRequested(
+	ctx context.Context, pendingID virtualchannel.PendingChannelID) (bool,
+	error) {
+
+	return s.transitionVirtualChannelPendingOpen(
+		ctx, pendingID, virtualchannel.StatusRoundRequested,
+	)
+}
+
+// MarkVirtualChannelLNDNegotiating records that both daemons have armed their
+// channel acceptors and lnd may start the funding handshake.
+func (s *VirtualChannelStoreDB) MarkVirtualChannelLNDNegotiating(
+	ctx context.Context, pendingID virtualchannel.PendingChannelID) (bool,
+	error) {
+
+	return s.transitionVirtualChannelPendingOpen(
+		ctx, pendingID, virtualchannel.StatusLNDNegotiating,
+	)
+}
+
+// MarkVirtualChannelPendingFailed terminates a negotiation before its full
+// channel registration has replaced the pending intent.
+func (s *VirtualChannelStoreDB) MarkVirtualChannelPendingFailed(
+	ctx context.Context, pendingID virtualchannel.PendingChannelID) (bool,
+	error) {
+
+	return s.transitionVirtualChannelPendingOpen(
+		ctx, pendingID, virtualchannel.StatusFailed,
+	)
+}
+
+func (s *VirtualChannelStoreDB) transitionVirtualChannelPendingOpen(
+	ctx context.Context, pendingID virtualchannel.PendingChannelID,
+	next virtualchannel.Status) (bool, error) {
+
+	pending, ok, err := s.FindVirtualChannelPendingOpen(ctx, pendingID)
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		return false, sql.ErrNoRows
+	}
+	if pending.Status == next {
+		return false, nil
+	}
+	if err := virtualchannel.ValidateTransition(
+		pending.Kind, pending.Status, next,
+	); err != nil {
+		return false, err
+	}
+
+	now := s.clock().UTC().UnixNano()
+	var rows int64
+	err = s.ExecTx(ctx, WriteTxOption(), func(qtx *sqlc.Queries) error {
+		var err error
+		rows, err = qtx.TransitionVirtualChannelIntent(
+			ctx, sqlc.TransitionVirtualChannelIntentParams{
+				PendingChannelID: pendingID[:],
+				Status:           string(pending.Status),
+				StateVersion:     int64(pending.StateVersion),
+				Status_2:         string(next),
+				UpdatedAt:        now,
+			},
+		)
+
+		if err != nil || rows != 1 ||
+			next != virtualchannel.StatusFailed {
+			return err
+		}
+
+		return qtx.DeleteVirtualChannelIntentVTXOs(ctx, pendingID[:])
+	})
+
+	if err != nil || rows > 0 {
+		return rows > 0, err
+	}
+
+	current, ok, err := s.FindVirtualChannelPendingOpen(ctx, pendingID)
+	if err != nil {
+		return false, err
+	}
+	if ok && current.Status == next {
+		return false, nil
+	}
+	if !ok {
+		return false, fmt.Errorf("virtual channel intent %x "+
+			"disappeared while transitioning to %s", pendingID,
+			next)
+	}
+
+	return false, fmt.Errorf("virtual channel intent %x changed to %s "+
+		"while transitioning to %s", pendingID, current.Status, next)
+}
+
+// BindVirtualChannelPendingOpen attaches the exact round-created VTXO to a
+// previously requested receive channel in one transaction.
+func (s *VirtualChannelStoreDB) BindVirtualChannelPendingOpen(
+	ctx context.Context, bound virtualchannel.PendingOpen) (bool, error) {
+
+	if bound.Kind != virtualchannel.KindReceiveChannel {
+		return false, fmt.Errorf("only receive channel intents bind " +
+			"to rounds")
+	}
+	if bound.Status != virtualchannel.StatusFundingBound {
+		return false, fmt.Errorf("bound receive channel must be " +
+			"funding_bound")
+	}
+	if bound.RoundID == "" {
+		return false, fmt.Errorf("receive channel requires round id")
+	}
+	if len(bound.BackingVTXOs) != 1 {
+		return false, fmt.Errorf("receive channel requires exactly " +
+			"one VTXO")
+	}
+
+	existing, ok, err := s.FindVirtualChannelPendingOpen(
+		ctx, bound.PendingChannelID,
+	)
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		return false, sql.ErrNoRows
+	}
+	if existing.Status == virtualchannel.StatusFundingBound ||
+		existing.Status == virtualchannel.StatusLNDNegotiating {
+
+		if sameVirtualChannelPendingBinding(*existing, bound) {
+			return false, nil
+		}
+
+		return false, fmt.Errorf("receive channel is bound to " +
+			"another round VTXO")
+	}
+	if err := virtualchannel.ValidateTransition(
+		existing.Kind, existing.Status,
+		virtualchannel.StatusFundingBound,
+	); err != nil {
+		return false, err
+	}
+	if existing.Kind != bound.Kind ||
+		existing.RequestKey != bound.RequestKey ||
+		existing.PendingChannelID != bound.PendingChannelID ||
+		existing.RemoteNodePubKey != bound.RemoteNodePubKey ||
+		existing.Role != bound.Role ||
+		existing.Capacity != bound.Capacity ||
+		existing.LocalBalance != bound.LocalBalance ||
+		existing.RemoteBalance != bound.RemoteBalance {
+		return false, fmt.Errorf("round VTXO does not match receive " +
+			"channel request")
+	}
+
+	now := s.clock().UTC().UnixNano()
+	var rows int64
+	err = s.ExecTx(ctx, WriteTxOption(), func(qtx *sqlc.Queries) error {
+		var err error
+		rows, err = qtx.BindVirtualChannelIntent(
+			ctx, sqlc.BindVirtualChannelIntentParams{
+				PendingChannelID: bound.PendingChannelID[:],
+				StateVersion:     int64(existing.StateVersion),
+				Kind:             string(bound.Kind),
+				RoundID:          nullableString(bound.RoundID),
+				UpdatedAt:        now,
+			},
+		)
+		if err != nil {
+			return err
+		}
+		if rows != 1 {
+			return fmt.Errorf("receive channel intent changed " +
+				"while binding")
+		}
+
+		backing := bound.BackingVTXOs[0]
+		if err := ensureVirtualChannelBackingAvailable(
+			ctx, qtx, backing.OutPoint,
+		); err != nil {
+			return err
+		}
+
+		return qtx.InsertVirtualChannelIntentVTXO(
+			ctx, sqlc.InsertVirtualChannelIntentVTXOParams{
+				PendingChannelID: bound.PendingChannelID[:],
+				OutpointHash:     backing.OutPoint.Hash[:],
+				OutpointIndex:    int32(backing.OutPoint.Index),
+				AmountSat:        int64(backing.Amount),
+				PkScript:         backing.PkScript,
+				PolicyTemplate:   backing.PolicyTemplate,
+			},
+		)
+	})
+
+	return rows > 0, err
+}
+
 // InsertVirtualChannel persists a virtual channel and all backing VTXOs in one
 // transaction. Negotiating channels can store the unsigned txid-stable backing
 // parent; active channels must update that artifact with all conflict-safe
@@ -103,8 +356,59 @@ func (s *VirtualChannelStoreDB) InsertVirtualChannel(ctx context.Context,
 		return fmt.Errorf("virtual channel backing tx is nil")
 	}
 
-	if len(reg.BackingVTXOs) == 0 {
-		return fmt.Errorf("virtual channel has no backing VTXOs")
+	if len(reg.BackingVTXOs) != 1 {
+		return fmt.Errorf("virtual channel requires exactly one " +
+			"backing VTXO")
+	}
+	kind := normalizedVirtualChannelKind(reg.Kind)
+	if kind == virtualchannel.KindReceiveChannel && reg.RoundID == "" {
+		return fmt.Errorf("receive channel requires round id")
+	}
+	if err := virtualchannel.ValidateInitialBalances(
+		kind, reg.Role, reg.Capacity, reg.LocalBalance,
+		reg.RemoteBalance,
+	); err != nil {
+		return err
+	}
+	reg.Kind = kind
+	existing, err := s.GetVirtualChannel(ctx, reg.ID)
+	if err == nil {
+		if sameVirtualChannelRegistrationBinding(
+			existing.Registration, reg,
+		) {
+			return nil
+		}
+
+		return fmt.Errorf("virtual channel id is already bound to a " +
+			"different registration")
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	stateVersion := reg.StateVersion
+	pending, pendingFound, err := s.FindVirtualChannelPendingOpen(
+		ctx, reg.PendingChannelID,
+	)
+	if err != nil {
+		return err
+	}
+	if pendingFound {
+		if !registrationMatchesPending(*pending, reg) {
+			return fmt.Errorf("virtual channel registration does " +
+				"not match its durable intent")
+		}
+		if pending.Status == reg.Status {
+			stateVersion = pending.StateVersion
+		} else {
+			if err := virtualchannel.ValidateTransition(
+				pending.Kind, pending.Status, reg.Status,
+			); err != nil {
+				return err
+			}
+			stateVersion = pending.StateVersion + 1
+		}
+	} else if stateVersion == 0 {
+		stateVersion = 1
 	}
 
 	backingTx, err := encodeMsgTx(reg.BackingTx)
@@ -133,20 +437,43 @@ func (s *VirtualChannelStoreDB) InsertVirtualChannel(ctx context.Context,
 				FundingPsbt:      reg.FundingPsbt,
 				CreatedAt:        now,
 				UpdatedAt:        now,
+				Kind:             string(kind),
+				RoundID:          nullableString(reg.RoundID),
+				StateVersion:     int64(stateVersion),
 			},
 		)
 		if err != nil {
 			return err
 		}
 
-		_, err = qtx.DeleteVirtualChannelIntent(
-			ctx, reg.PendingChannelID[:],
-		)
-		if err != nil {
-			return err
+		if pendingFound {
+			pendingChannelID := reg.PendingChannelID[:]
+			pendingStatus := string(pending.Status)
+			rows, err := qtx.DeleteVirtualChannelIntentCAS(
+				ctx, sqlc.DeleteVirtualChannelIntentCASParams{
+					PendingChannelID: pendingChannelID,
+					Status:           pendingStatus,
+					StateVersion: int64(
+						pending.StateVersion,
+					),
+				},
+			)
+			if err != nil {
+				return err
+			}
+			if rows != 1 {
+				return fmt.Errorf("virtual channel intent " +
+					"changed while registering")
+			}
 		}
 
 		for _, backing := range reg.BackingVTXOs {
+			if err := ensureVirtualChannelBackingAvailable(
+				ctx, qtx, backing.OutPoint,
+			); err != nil {
+				return err
+			}
+
 			backingHash := backing.OutPoint.Hash[:]
 			err := qtx.InsertVirtualChannelVTXO(
 				ctx, sqlc.InsertVirtualChannelVTXOParams{
@@ -169,7 +496,7 @@ func (s *VirtualChannelStoreDB) InsertVirtualChannel(ctx context.Context,
 	})
 }
 
-// GetVirtualChannel loads a virtual channel by its stable darepo id.
+// GetVirtualChannel loads a virtual channel by its stable Wavelength id.
 func (s *VirtualChannelStoreDB) GetVirtualChannel(ctx context.Context,
 	id virtualchannel.ID) (*virtualchannel.Channel, error) {
 
@@ -227,6 +554,38 @@ func (s *VirtualChannelStoreDB) FindVirtualChannelByChannelPoint(
 		return channel, true, nil
 	}
 
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	}
+
+	return nil, false, err
+}
+
+// FindVirtualChannelByBackingVTXO loads the channel that owns the given VTXO
+// as its exact funding parent input.
+func (s *VirtualChannelStoreDB) FindVirtualChannelByBackingVTXO(
+	ctx context.Context, outpoint wire.OutPoint) (*virtualchannel.Channel,
+	bool, error) {
+
+	var channel *virtualchannel.Channel
+	err := s.ExecTx(ctx, ReadTxOption(), func(qtx *sqlc.Queries) error {
+		row, err := qtx.GetVirtualChannelByBackingVTXO(
+			ctx, sqlc.GetVirtualChannelByBackingVTXOParams{
+				OutpointHash:  outpoint.Hash[:],
+				OutpointIndex: int32(outpoint.Index),
+			},
+		)
+		if err != nil {
+			return err
+		}
+
+		channel, err = s.loadChannel(ctx, qtx, row)
+
+		return err
+	})
+	if err == nil {
+		return channel, true, nil
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, nil
 	}
@@ -315,6 +674,36 @@ func (s *VirtualChannelStoreDB) FindVirtualChannelPendingOpen(
 	return nil, false, err
 }
 
+// ListVirtualChannelPendingOpensByStatus loads durable pre-channel requests in
+// update order for startup recovery.
+func (s *VirtualChannelStoreDB) ListVirtualChannelPendingOpensByStatus(
+	ctx context.Context, status virtualchannel.Status) (
+	[]*virtualchannel.PendingOpen, error) {
+
+	var pending []*virtualchannel.PendingOpen
+	err := s.ExecTx(ctx, ReadTxOption(), func(qtx *sqlc.Queries) error {
+		rows, err := qtx.ListVirtualChannelIntentsByStatus(
+			ctx, string(status),
+		)
+		if err != nil {
+			return err
+		}
+
+		pending = make([]*virtualchannel.PendingOpen, 0, len(rows))
+		for _, row := range rows {
+			intent, err := s.loadPendingOpen(ctx, qtx, row)
+			if err != nil {
+				return err
+			}
+			pending = append(pending, intent)
+		}
+
+		return nil
+	})
+
+	return pending, err
+}
+
 // ListVirtualChannelsByFundingTxID loads virtual channels whose channel point
 // is an output of the given funding transaction id.
 func (s *VirtualChannelStoreDB) ListVirtualChannelsByFundingTxID(
@@ -376,15 +765,32 @@ func (s *VirtualChannelStoreDB) ListVirtualChannelsByStatus(ctx context.Context,
 	return channels, err
 }
 
-// MarkVirtualChannelActive replaces the unsigned negotiating parent with the
-// publishable backing parent and marks the virtual channel active. The backing
-// transaction must carry witnesses for every input; adding witness data leaves
-// the txid stable, and the SQL update also requires that txid to match the
-// registered lnd channel point hash.
-func (s *VirtualChannelStoreDB) MarkVirtualChannelActive(ctx context.Context,
+// ArmVirtualChannelBacking persists a fully verified VTXO-to-channel parent.
+// Receive rounds gate final signatures on this state, not on channel activity.
+func (s *VirtualChannelStoreDB) ArmVirtualChannelBacking(ctx context.Context,
 	id virtualchannel.ID, backingTx *wire.MsgTx) (bool, error) {
 
-	if err := validateActiveBackingTx(backingTx); err != nil {
+	channel, err := s.GetVirtualChannel(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	if virtualChannelHasArmedBacking(channel.Status) {
+		if err := exactVirtualChannelBacking(
+			channel, backingTx,
+		); err != nil {
+			return false, err
+		}
+
+		return false, nil
+	}
+	if err := virtualchannel.ValidateTransition(
+		channel.Kind, channel.Status, virtualchannel.StatusBackingArmed,
+	); err != nil {
+		return false, err
+	}
+	if err := virtualchannel.ValidateBackingProof(
+		channel.Registration, backingTx,
+	); err != nil {
 		return false, err
 	}
 
@@ -392,25 +798,430 @@ func (s *VirtualChannelStoreDB) MarkVirtualChannelActive(ctx context.Context,
 	if err != nil {
 		return false, err
 	}
-
 	txid := backingTx.TxHash()
 	now := s.clock().UTC().UnixNano()
 	var rows int64
 	err = s.ExecTx(ctx, WriteTxOption(), func(qtx *sqlc.Queries) error {
 		var err error
-		rows, err = qtx.MarkVirtualChannelActive(
-			ctx, sqlc.MarkVirtualChannelActiveParams{
+		rows, err = qtx.ArmVirtualChannelBacking(
+			ctx, sqlc.ArmVirtualChannelBackingParams{
 				VirtualChannelID: id[:],
+				StateVersion:     int64(channel.StateVersion),
+				ChannelPointHash: txid[:],
 				BackingTx:        backingTxBytes,
 				UpdatedAt:        now,
-				ChannelPointHash: txid[:],
 			},
 		)
 
 		return err
 	})
 
-	return rows > 0, err
+	if err != nil || rows > 0 {
+		return rows > 0, err
+	}
+
+	// Another worker may have armed the intent after our read. Accept only
+	// an exact replay of the durable signed transaction.
+	channel, err = s.GetVirtualChannel(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	if !virtualChannelHasArmedBacking(channel.Status) {
+		return false, fmt.Errorf("virtual channel %x changed to %s "+
+			"while arming", id, channel.Status)
+	}
+
+	return false, exactVirtualChannelBacking(channel, backingTx)
+}
+
+// ActivateVirtualChannel advances an armed promoted VTXO, or a confirmed
+// receive channel, to the routable state.
+func (s *VirtualChannelStoreDB) ActivateVirtualChannel(ctx context.Context,
+	id virtualchannel.ID) (bool, error) {
+
+	return s.transitionVirtualChannel(
+		ctx, id, virtualchannel.StatusActive,
+	)
+}
+
+// MarkVirtualChannelFundingVerified records that lnd's activation hook observed
+// the exact channel point in its durable pending-channel state.
+func (s *VirtualChannelStoreDB) MarkVirtualChannelFundingVerified(
+	ctx context.Context, id virtualchannel.ID) (bool, error) {
+
+	return s.transitionVirtualChannel(
+		ctx, id, virtualchannel.StatusFundingVerified,
+	)
+}
+
+// transitionVirtualChannel applies a validated status-only FSM edge with a
+// compare-and-swap on both the current status and state version.
+func (s *VirtualChannelStoreDB) transitionVirtualChannel(ctx context.Context,
+	id virtualchannel.ID, next virtualchannel.Status) (bool, error) {
+
+	channel, err := s.GetVirtualChannel(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	if channel.Status == next {
+		return false, nil
+	}
+	if err := virtualchannel.ValidateTransition(
+		channel.Kind, channel.Status, next,
+	); err != nil {
+		return false, err
+	}
+
+	now := s.clock().UTC().UnixNano()
+	var rows int64
+	err = s.ExecTx(ctx, WriteTxOption(), func(qtx *sqlc.Queries) error {
+		var err error
+		rows, err = qtx.TransitionVirtualChannel(
+			ctx, sqlc.TransitionVirtualChannelParams{
+				VirtualChannelID: id[:],
+				Status:           string(channel.Status),
+				StateVersion:     int64(channel.StateVersion),
+				Status_2:         string(next),
+				UpdatedAt:        now,
+			},
+		)
+
+		if err != nil || rows != 1 ||
+			next != virtualchannel.StatusFailed ||
+			virtualChannelHasArmedBacking(channel.Status) {
+			return err
+		}
+
+		return qtx.DeleteVirtualChannelVTXOs(ctx, id[:])
+	})
+
+	if err != nil || rows > 0 {
+		return rows > 0, err
+	}
+
+	current, err := s.GetVirtualChannel(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	if current.Status == next {
+		return false, nil
+	}
+
+	return false, fmt.Errorf("virtual channel %x changed to %s while "+
+		"transitioning to %s", id, current.Status, next)
+}
+
+// MarkRoundVirtualChannelsConfirmed records the chain-confirmation gate without
+// making the channels routable yet.
+func (s *VirtualChannelStoreDB) MarkRoundVirtualChannelsConfirmed(
+	ctx context.Context, roundID string) (int64, error) {
+
+	if roundID == "" {
+		return 0, fmt.Errorf("round id is required")
+	}
+
+	now := s.clock().UTC().UnixNano()
+	var changed int64
+	err := s.ExecTx(ctx, WriteTxOption(), func(qtx *sqlc.Queries) error {
+		var err error
+		changed, err = qtx.ConfirmRoundVirtualChannels(
+			ctx, sqlc.ConfirmRoundVirtualChannelsParams{
+				RoundID:   nullableString(roundID),
+				UpdatedAt: now,
+			},
+		)
+
+		return err
+	})
+
+	return changed, err
+}
+
+// ActivateConfirmedRoundVirtualChannels exposes the confirmed channels for a
+// single round. It is safe to replay after a crash.
+func (s *VirtualChannelStoreDB) ActivateConfirmedRoundVirtualChannels(
+	ctx context.Context, roundID string) (int64, error) {
+
+	if roundID == "" {
+		return 0, fmt.Errorf("round id is required")
+	}
+
+	now := s.clock().UTC().UnixNano()
+	var changed int64
+	err := s.ExecTx(ctx, WriteTxOption(), func(qtx *sqlc.Queries) error {
+		var err error
+		changed, err = qtx.ActivateConfirmedRoundVirtualChannels(
+			ctx, sqlc.ActivateConfirmedRoundVirtualChannelsParams{
+				RoundID:   nullableString(roundID),
+				UpdatedAt: now,
+			},
+		)
+
+		return err
+	})
+
+	return changed, err
+}
+
+// RecoverConfirmedVirtualChannels completes confirmation transitions that
+// were interrupted between their two durable writes.
+func (s *VirtualChannelStoreDB) RecoverConfirmedVirtualChannels(
+	ctx context.Context) (int64, error) {
+
+	now := s.clock().UTC().UnixNano()
+	var changed int64
+	err := s.ExecTx(ctx, WriteTxOption(), func(qtx *sqlc.Queries) error {
+		var err error
+		changed, err = qtx.ActivateAllConfirmedVirtualChannels(ctx, now)
+
+		return err
+	})
+
+	return changed, err
+}
+
+// FailRoundVirtualChannels terminates every pre-activation receive channel
+// bound to a round that can no longer create its backing VTXO.
+func (s *VirtualChannelStoreDB) FailRoundVirtualChannels(ctx context.Context,
+	roundID string) (int64, error) {
+
+	if roundID == "" {
+		return 0, fmt.Errorf("round id is required")
+	}
+
+	now := s.clock().UTC().UnixNano()
+	var changed int64
+	err := s.ExecTx(ctx, WriteTxOption(), func(qtx *sqlc.Queries) error {
+		channels, err := qtx.FailRoundVirtualChannels(
+			ctx, sqlc.FailRoundVirtualChannelsParams{
+				RoundID:   nullableString(roundID),
+				UpdatedAt: now,
+			},
+		)
+		if err != nil {
+			return err
+		}
+		armed, err := qtx.CloseFailedRoundArmedVirtualChannels(
+			ctx, sqlc.CloseFailedRoundArmedVirtualChannelsParams{
+				RoundID:   nullableString(roundID),
+				UpdatedAt: now,
+			},
+		)
+		if err != nil {
+			return err
+		}
+		intents, err := qtx.FailRoundVirtualChannelIntents(
+			ctx, sqlc.FailRoundVirtualChannelIntentsParams{
+				RoundID:   nullableString(roundID),
+				UpdatedAt: now,
+			},
+		)
+		if err != nil {
+			return err
+		}
+		changed = channels + armed + intents
+		round := nullableString(roundID)
+		if err := qtx.ReleaseFailedRoundVirtualChannelVTXOs(
+			ctx, round,
+		); err != nil {
+			return err
+		}
+
+		return qtx.ReleaseFailedRoundVirtualChannelIntentVTXOs(
+			ctx, round,
+		)
+	})
+
+	return changed, err
+}
+
+// RecoverRoundVirtualChannels reconciles pre-activation receive channels
+// against the durable client round table. A missing round is terminal because
+// the client persists the round before releasing its final signatures.
+func (s *VirtualChannelStoreDB) RecoverRoundVirtualChannels(
+	ctx context.Context) (int64, error) {
+
+	var changed int64
+	seen := make(map[string]struct{})
+	for _, status := range []virtualchannel.Status{
+		virtualchannel.StatusFundingBound,
+		virtualchannel.StatusLNDNegotiating,
+	} {
+		intents, err := s.ListVirtualChannelPendingOpensByStatus(
+			ctx, status,
+		)
+		if err != nil {
+			return changed, err
+		}
+		for _, intent := range intents {
+			if intent.Kind != virtualchannel.KindReceiveChannel ||
+				intent.RoundID == "" {
+
+				continue
+			}
+			if _, ok := seen[intent.RoundID]; ok {
+				continue
+			}
+			seen[intent.RoundID] = struct{}{}
+
+			state, err := s.virtualChannelRoundState(
+				ctx, intent.RoundID,
+			)
+			if err != nil {
+				return changed, err
+			}
+			switch state {
+			case virtualChannelRoundPending:
+				continue
+
+			case virtualChannelRoundConfirmed:
+				return changed, fmt.Errorf("confirmed round "+
+					"%s has pending virtual channel %x in "+
+					"unsafe state %s", intent.RoundID,
+					intent.PendingChannelID, intent.Status)
+
+			case virtualChannelRoundFailed:
+				count, err := s.FailRoundVirtualChannels(
+					ctx, intent.RoundID,
+				)
+				if err != nil {
+					return changed, err
+				}
+				changed += count
+			}
+		}
+	}
+
+	var candidates []*virtualchannel.Channel
+	for _, status := range []virtualchannel.Status{
+		virtualchannel.StatusFundingBound,
+		virtualchannel.StatusLNDNegotiating,
+		virtualchannel.StatusFundingVerified,
+		virtualchannel.StatusBackingArmed,
+		virtualchannel.StatusRoundConfirmed,
+	} {
+		channels, err := s.ListVirtualChannelsByStatus(ctx, status)
+		if err != nil {
+			return 0, err
+		}
+		candidates = append(candidates, channels...)
+	}
+
+	for _, channel := range candidates {
+		if channel.Kind != virtualchannel.KindReceiveChannel ||
+			channel.RoundID == "" {
+
+			continue
+		}
+		if _, ok := seen[channel.RoundID]; ok {
+			continue
+		}
+		seen[channel.RoundID] = struct{}{}
+
+		state, err := s.virtualChannelRoundState(ctx, channel.RoundID)
+		if err != nil {
+			return changed, err
+		}
+		switch state {
+		case virtualChannelRoundPending:
+			if channel.Status ==
+				virtualchannel.StatusRoundConfirmed {
+				return changed, fmt.Errorf("virtual channel "+
+					"%x is round_confirmed while round %s "+
+					"is pending", channel.ID,
+					channel.RoundID)
+			}
+
+			continue
+
+		case virtualChannelRoundConfirmed:
+			backingArmed := channel.Status ==
+				virtualchannel.StatusBackingArmed
+			if !backingArmed &&
+				channel.Status !=
+					virtualchannel.StatusRoundConfirmed {
+				return changed, fmt.Errorf("confirmed round "+
+					"%s has virtual channel %x in unsafe "+
+					"state %s", channel.RoundID, channel.ID,
+					channel.Status)
+			}
+			count, err := s.ConfirmRoundVirtualChannels(
+				ctx, channel.RoundID,
+			)
+			if err != nil {
+				return changed, err
+			}
+			changed += count
+
+		case virtualChannelRoundFailed:
+			count, err := s.FailRoundVirtualChannels(
+				ctx, channel.RoundID,
+			)
+			if err != nil {
+				return changed, err
+			}
+			changed += count
+		}
+	}
+
+	return changed, nil
+}
+
+type virtualChannelRoundState uint8
+
+const (
+	virtualChannelRoundPending virtualChannelRoundState = iota
+	virtualChannelRoundConfirmed
+	virtualChannelRoundFailed
+)
+
+func (s *VirtualChannelStoreDB) virtualChannelRoundState(ctx context.Context,
+	roundID string) (virtualChannelRoundState, error) {
+
+	var state virtualChannelRoundState
+	err := s.ExecTx(ctx, ReadTxOption(), func(qtx *sqlc.Queries) error {
+		row, err := qtx.GetRound(ctx, roundID)
+		if errors.Is(err, sql.ErrNoRows) {
+			state = virtualChannelRoundFailed
+
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		switch row.Status {
+		case "input_sig_sent":
+			state = virtualChannelRoundPending
+
+		case "confirmed":
+			state = virtualChannelRoundConfirmed
+
+		case "failed", "archived":
+			state = virtualChannelRoundFailed
+
+		default:
+			return fmt.Errorf("unknown round %s status %q", roundID,
+				row.Status)
+		}
+
+		return nil
+	})
+
+	return state, err
+}
+
+// ConfirmRoundVirtualChannels advances every armed receive channel for a
+// confirmed round and then exposes it as active using two replayable writes.
+func (s *VirtualChannelStoreDB) ConfirmRoundVirtualChannels(ctx context.Context,
+	roundID string) (int64, error) {
+
+	confirmed, err := s.MarkRoundVirtualChannelsConfirmed(ctx, roundID)
+	if err != nil {
+		return 0, err
+	}
+	active, err := s.ActivateConfirmedRoundVirtualChannels(ctx, roundID)
+
+	return confirmed + active, err
 }
 
 // MarkVirtualChannelMaterializing records that the backing parent is being
@@ -418,13 +1229,29 @@ func (s *VirtualChannelStoreDB) MarkVirtualChannelActive(ctx context.Context,
 func (s *VirtualChannelStoreDB) MarkVirtualChannelMaterializing(
 	ctx context.Context, id virtualchannel.ID) (bool, error) {
 
+	channel, err := s.GetVirtualChannel(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	if channel.Status == virtualchannel.StatusMaterializing {
+		return false, nil
+	}
+	if err := virtualchannel.ValidateTransition(
+		channel.Kind, channel.Status,
+		virtualchannel.StatusMaterializing,
+	); err != nil {
+		return false, err
+	}
+
 	now := s.clock().UTC().UnixNano()
 	var rows int64
-	err := s.ExecTx(ctx, WriteTxOption(), func(qtx *sqlc.Queries) error {
+	err = s.ExecTx(ctx, WriteTxOption(), func(qtx *sqlc.Queries) error {
 		var err error
 		rows, err = qtx.MarkVirtualChannelMaterializing(
 			ctx, sqlc.MarkVirtualChannelMaterializingParams{
 				VirtualChannelID: id[:],
+				Status:           string(channel.Status),
+				StateVersion:     int64(channel.StateVersion),
 				UpdatedAt:        now,
 				MaterializedAt: sql.NullInt64{
 					Int64: now,
@@ -443,21 +1270,9 @@ func (s *VirtualChannelStoreDB) MarkVirtualChannelMaterializing(
 func (s *VirtualChannelStoreDB) MarkVirtualChannelClosing(ctx context.Context,
 	id virtualchannel.ID) (bool, error) {
 
-	now := s.clock().UTC().UnixNano()
-	var rows int64
-	err := s.ExecTx(ctx, WriteTxOption(), func(qtx *sqlc.Queries) error {
-		var err error
-		rows, err = qtx.MarkVirtualChannelClosing(
-			ctx, sqlc.MarkVirtualChannelClosingParams{
-				VirtualChannelID: id[:],
-				UpdatedAt:        now,
-			},
-		)
-
-		return err
-	})
-
-	return rows > 0, err
+	return s.transitionVirtualChannel(
+		ctx, id, virtualchannel.StatusClosing,
+	)
 }
 
 // MarkVirtualChannelClosed records that close resolution reached a terminal
@@ -465,93 +1280,28 @@ func (s *VirtualChannelStoreDB) MarkVirtualChannelClosing(ctx context.Context,
 func (s *VirtualChannelStoreDB) MarkVirtualChannelClosed(ctx context.Context,
 	id virtualchannel.ID) (bool, error) {
 
-	now := s.clock().UTC().UnixNano()
-	var rows int64
-	err := s.ExecTx(ctx, WriteTxOption(), func(qtx *sqlc.Queries) error {
-		var err error
-		rows, err = qtx.MarkVirtualChannelClosed(
-			ctx, sqlc.MarkVirtualChannelClosedParams{
-				VirtualChannelID: id[:],
-				UpdatedAt:        now,
-				ClosedAt: sql.NullInt64{
-					Int64: now,
-					Valid: true,
-				},
-			},
-		)
-
-		return err
-	})
-
-	return rows > 0, err
-}
-
-// MarkVirtualChannelCoopClosed records a cooperative close that was settled
-// virtually instead of publishing the backing parent. The close transaction
-// must spend the registered lnd channel point.
-func (s *VirtualChannelStoreDB) MarkVirtualChannelCoopClosed(
-	ctx context.Context, id virtualchannel.ID, closeTx *wire.MsgTx,
-	localBalance, remoteBalance btcutil.Amount) (bool, error) {
-
-	if localBalance < 0 {
-		return false, fmt.Errorf("local close balance is negative")
-	}
-	if remoteBalance < 0 {
-		return false, fmt.Errorf("remote close balance is negative")
-	}
-	if closeTx == nil {
-		return false, fmt.Errorf("virtual channel close tx is nil")
-	}
-
-	closeTxBytes, err := encodeMsgTx(closeTx)
+	channel, err := s.GetVirtualChannel(ctx, id)
 	if err != nil {
+		return false, err
+	}
+	if channel.Status == virtualchannel.StatusClosed {
+		return false, nil
+	}
+	if err := virtualchannel.ValidateTransition(
+		channel.Kind, channel.Status, virtualchannel.StatusClosed,
+	); err != nil {
 		return false, err
 	}
 
 	now := s.clock().UTC().UnixNano()
 	var rows int64
 	err = s.ExecTx(ctx, WriteTxOption(), func(qtx *sqlc.Queries) error {
-		row, err := qtx.GetVirtualChannel(ctx, id[:])
-		if err != nil {
-			return err
-		}
-
-		channelPoint, err := outPoint(
-			row.ChannelPointHash, row.ChannelPointIndex,
-		)
-		if err != nil {
-			return err
-		}
-		if !txSpendsOutPoint(closeTx, channelPoint) {
-			return fmt.Errorf("virtual channel close tx does not "+
-				"spend channel point %v", channelPoint)
-		}
-		if virtualchannel.Status(row.Status) ==
-			virtualchannel.StatusClosed {
-
-			if !bytes.Equal(row.CloseTx, closeTxBytes) {
-				return fmt.Errorf("virtual channel %x is "+
-					"already closed with a different "+
-					"close tx", id)
-			}
-			if row.LocalBalanceSat != int64(localBalance) ||
-				row.RemoteBalanceSat != int64(remoteBalance) {
-				return fmt.Errorf("virtual channel %x is "+
-					"already closed with different "+
-					"balances", id)
-			}
-
-			rows = 1
-
-			return nil
-		}
-
-		rows, err = qtx.MarkVirtualChannelCoopClosed(
-			ctx, sqlc.MarkVirtualChannelCoopClosedParams{
+		var err error
+		rows, err = qtx.MarkVirtualChannelClosed(
+			ctx, sqlc.MarkVirtualChannelClosedParams{
 				VirtualChannelID: id[:],
-				LocalBalanceSat:  int64(localBalance),
-				RemoteBalanceSat: int64(remoteBalance),
-				CloseTx:          closeTxBytes,
+				Status:           string(channel.Status),
+				StateVersion:     int64(channel.StateVersion),
 				UpdatedAt:        now,
 				ClosedAt: sql.NullInt64{
 					Int64: now,
@@ -571,42 +1321,9 @@ func (s *VirtualChannelStoreDB) MarkVirtualChannelCoopClosed(
 func (s *VirtualChannelStoreDB) MarkVirtualChannelFailed(ctx context.Context,
 	id virtualchannel.ID) (bool, error) {
 
-	now := s.clock().UTC().UnixNano()
-	var rows int64
-	err := s.ExecTx(ctx, WriteTxOption(), func(qtx *sqlc.Queries) error {
-		var err error
-		rows, err = qtx.MarkVirtualChannelFailed(
-			ctx, sqlc.MarkVirtualChannelFailedParams{
-				VirtualChannelID: id[:],
-				UpdatedAt:        now,
-			},
-		)
-
-		return err
-	})
-
-	return rows > 0, err
-}
-
-func validateActiveBackingTx(tx *wire.MsgTx) error {
-	if tx == nil {
-		return fmt.Errorf("virtual channel backing tx is nil")
-	}
-	if len(tx.TxIn) == 0 {
-		return fmt.Errorf("virtual channel backing tx has no inputs")
-	}
-	if len(tx.TxOut) == 0 {
-		return fmt.Errorf("virtual channel backing tx has no outputs")
-	}
-
-	for idx, txIn := range tx.TxIn {
-		if len(txIn.Witness) == 0 {
-			return fmt.Errorf("virtual channel backing tx input "+
-				"%d has no witness", idx)
-		}
-	}
-
-	return nil
+	return s.transitionVirtualChannel(
+		ctx, id, virtualchannel.StatusFailed,
+	)
 }
 
 // loadChannel converts a sqlc virtual channel row and its VTXO children into
@@ -684,7 +1401,12 @@ func (s *VirtualChannelStoreDB) loadChannel(ctx context.Context,
 
 	return &virtualchannel.Channel{
 		Registration: virtualchannel.Registration{
-			ID:               id,
+			ID: id,
+			Kind: normalizedVirtualChannelKind(
+				virtualchannel.IntentKind(row.Kind),
+			),
+			RoundID:          row.RoundID.String,
+			StateVersion:     uint64(row.StateVersion),
 			PendingChannelID: pendingID,
 			ChannelPoint:     channelPoint,
 			RemoteNodePubKey: nodePubKey,
@@ -758,6 +1480,12 @@ func (s *VirtualChannelStoreDB) loadPendingOpen(ctx context.Context,
 	}
 
 	return &virtualchannel.PendingOpen{
+		Kind: normalizedVirtualChannelKind(
+			virtualchannel.IntentKind(row.Kind),
+		),
+		RequestKey:       row.RequestKey.String,
+		RoundID:          row.RoundID.String,
+		StateVersion:     uint64(row.StateVersion),
 		PendingChannelID: pendingID,
 		RemoteNodePubKey: nodePubKey,
 		Role:             virtualchannel.Role(row.Role),
@@ -773,6 +1501,9 @@ func pendingOpenFromRegistration(
 	reg virtualchannel.Registration) *virtualchannel.PendingOpen {
 
 	return &virtualchannel.PendingOpen{
+		Kind:             normalizedVirtualChannelKind(reg.Kind),
+		RoundID:          reg.RoundID,
+		StateVersion:     reg.StateVersion,
 		PendingChannelID: reg.PendingChannelID,
 		RemoteNodePubKey: reg.RemoteNodePubKey,
 		Role:             reg.Role,
@@ -782,6 +1513,99 @@ func pendingOpenFromRegistration(
 		RemoteBalance:    reg.RemoteBalance,
 		BackingVTXOs:     reg.BackingVTXOs,
 	}
+}
+
+func normalizedVirtualChannelKind(
+	kind virtualchannel.IntentKind) virtualchannel.IntentKind {
+
+	if kind == "" {
+		return virtualchannel.KindPromoteVTXO
+	}
+
+	return kind
+}
+
+func nullableString(value string) sql.NullString {
+	return sql.NullString{String: value, Valid: value != ""}
+}
+
+func sameVirtualChannelPendingBinding(a, b virtualchannel.PendingOpen) bool {
+	return normalizedVirtualChannelKind(a.Kind) ==
+		normalizedVirtualChannelKind(b.Kind) &&
+		a.RequestKey == b.RequestKey &&
+		a.RoundID == b.RoundID &&
+		a.PendingChannelID == b.PendingChannelID &&
+		a.RemoteNodePubKey == b.RemoteNodePubKey &&
+		a.Role == b.Role && a.Capacity == b.Capacity &&
+		a.LocalBalance == b.LocalBalance &&
+		a.RemoteBalance == b.RemoteBalance &&
+		sameVirtualChannelBackingVTXOs(a.BackingVTXOs, b.BackingVTXOs)
+}
+
+func sameVirtualChannelRegistrationBinding(
+	a, b virtualchannel.Registration) bool {
+
+	return a.ID == b.ID &&
+		sameVirtualChannelPendingBinding(
+			*pendingOpenFromRegistration(a),
+			*pendingOpenFromRegistration(b),
+		) &&
+		a.ChannelPoint == b.ChannelPoint &&
+		a.BackingTx != nil && b.BackingTx != nil &&
+		a.BackingTx.TxHash() == b.BackingTx.TxHash() &&
+		bytes.Equal(a.FundingPsbt, b.FundingPsbt)
+}
+
+func registrationMatchesPending(pending virtualchannel.PendingOpen,
+	reg virtualchannel.Registration) bool {
+
+	return normalizedVirtualChannelKind(pending.Kind) ==
+		normalizedVirtualChannelKind(reg.Kind) &&
+		pending.RoundID == reg.RoundID &&
+		pending.PendingChannelID == reg.PendingChannelID &&
+		pending.RemoteNodePubKey == reg.RemoteNodePubKey &&
+		pending.Role == reg.Role && pending.Capacity == reg.Capacity &&
+		pending.LocalBalance == reg.LocalBalance &&
+		pending.RemoteBalance == reg.RemoteBalance &&
+		sameVirtualChannelBackingVTXOs(
+			pending.BackingVTXOs, reg.BackingVTXOs,
+		)
+}
+
+func sameVirtualChannelBackingVTXOs(a, b []virtualchannel.BackingVTXO) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].OutPoint != b[i].OutPoint ||
+			a[i].Amount != b[i].Amount ||
+			!bytes.Equal(a[i].PkScript, b[i].PkScript) ||
+			!bytes.Equal(a[i].PolicyTemplate, b[i].PolicyTemplate) {
+			return false
+		}
+	}
+
+	return true
+}
+
+func ensureVirtualChannelBackingAvailable(ctx context.Context,
+	qtx *sqlc.Queries, outpoint wire.OutPoint) error {
+
+	owners, err := qtx.CountVirtualChannelBackingOwners(
+		ctx, sqlc.CountVirtualChannelBackingOwnersParams{
+			OutpointHash:  outpoint.Hash[:],
+			OutpointIndex: int32(outpoint.Index),
+		},
+	)
+	if err != nil {
+		return err
+	}
+	if owners != 0 {
+		return fmt.Errorf("VTXO %v already backs another "+
+			"virtual channel", outpoint)
+	}
+
+	return nil
 }
 
 // encodeMsgTx serializes a Bitcoin transaction using wire encoding.
@@ -794,6 +1618,35 @@ func encodeMsgTx(tx *wire.MsgTx) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+func virtualChannelHasArmedBacking(status virtualchannel.Status) bool {
+	return virtualchannel.HasArmedBacking(status)
+}
+
+func exactVirtualChannelBacking(channel *virtualchannel.Channel,
+	backingTx *wire.MsgTx) error {
+
+	if err := virtualchannel.ValidateBackingProof(
+		channel.Registration, backingTx,
+	); err != nil {
+		return err
+	}
+	stored, err := encodeMsgTx(channel.BackingTx)
+	if err != nil {
+		return fmt.Errorf("encode stored backing transaction: %w", err)
+	}
+	replayed, err := encodeMsgTx(backingTx)
+	if err != nil {
+		return fmt.Errorf("encode replayed backing transaction: %w",
+			err)
+	}
+	if !bytes.Equal(stored, replayed) {
+		return fmt.Errorf("replayed backing transaction differs from " +
+			"durable proof")
+	}
+
+	return nil
+}
+
 // decodeMsgTx deserializes a Bitcoin transaction using wire encoding.
 func decodeMsgTx(raw []byte) (*wire.MsgTx, error) {
 	tx := wire.NewMsgTx(2)
@@ -802,17 +1655,6 @@ func decodeMsgTx(raw []byte) (*wire.MsgTx, error) {
 	}
 
 	return tx, nil
-}
-
-// txSpendsOutPoint reports whether tx has an input spending outpoint.
-func txSpendsOutPoint(tx *wire.MsgTx, outpoint wire.OutPoint) bool {
-	for _, txIn := range tx.TxIn {
-		if txIn.PreviousOutPoint == outpoint {
-			return true
-		}
-	}
-
-	return false
 }
 
 // virtualChannelID copies a sql row value into a fixed-size channel id.

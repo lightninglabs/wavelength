@@ -9,6 +9,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
+	"github.com/lightninglabs/wavelength/lib/actormsg"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/lib/tx"
 	"github.com/lightninglabs/wavelength/lib/types"
@@ -155,7 +156,7 @@ func (s *LiveState) handleForceUnroll(_ context.Context,
 
 // handleBlockEpoch processes a new block notification and checks if the VTXO
 // needs to be forfeited cooperatively or escalated to unilateral exit.
-func (s *LiveState) handleBlockEpoch(_ context.Context, evt *BlockEpochEvent,
+func (s *LiveState) handleBlockEpoch(ctx context.Context, evt *BlockEpochEvent,
 	env *VTXOEnvironment) (*VTXOStateTransition, error) {
 
 	s.LastCheckedHeight = evt.Height
@@ -200,6 +201,12 @@ func (s *LiveState) handleBlockEpoch(_ context.Context, evt *BlockEpochEvent,
 		blocksRemaining := BlocksUntilExpiry(s.VTXO, evt.Height)
 		reason := fmt.Sprintf("critical expiry: %d blocks remaining",
 			blocksRemaining)
+		exitPolicy, err := resolveExpiryExitPolicy(
+			ctx, env, s.VTXO.Outpoint,
+		)
+		if err != nil {
+			return nil, err
+		}
 
 		// Keep the actor alive in the non-terminal exit state (no
 		// VTXOTerminatedNotification) so a failed unroll can be rolled
@@ -209,6 +216,7 @@ func (s *LiveState) handleBlockEpoch(_ context.Context, evt *BlockEpochEvent,
 				VTXO:            s.VTXO,
 				BlocksRemaining: blocksRemaining,
 				Reason:          "batch expiry imminent",
+				ExitPolicy:      exitPolicy,
 			},
 			&VTXOStatusUpdate{
 				Outpoint:  s.VTXO.Outpoint,
@@ -1005,7 +1013,7 @@ func (s *ForfeitingState) ProcessEvent(ctx context.Context, event VTXOEvent,
 // ProcessEvent handles events in SpendingState. The VTXO has been claimed for
 // an OOR spend but must still monitor expiry. A spend can be completed,
 // released, or escalated to unilateral exit on critical expiry.
-func (s *SpendingState) ProcessEvent(_ context.Context, event VTXOEvent,
+func (s *SpendingState) ProcessEvent(ctx context.Context, event VTXOEvent,
 	env *VTXOEnvironment) (*VTXOStateTransition, error) {
 
 	switch evt := event.(type) {
@@ -1069,6 +1077,12 @@ func (s *SpendingState) ProcessEvent(_ context.Context, event VTXOEvent,
 			blocksRemaining := BlocksUntilExpiry(
 				s.VTXO, evt.Height,
 			)
+			exitPolicy, err := resolveExpiryExitPolicy(
+				ctx, env, s.VTXO.Outpoint,
+			)
+			if err != nil {
+				return nil, err
+			}
 
 			// Non-terminal exit: no VTXOTerminatedNotification, so
 			// a failed unroll can recover the VTXO
@@ -1078,6 +1092,7 @@ func (s *SpendingState) ProcessEvent(_ context.Context, event VTXOEvent,
 					VTXO:            s.VTXO,
 					BlocksRemaining: blocksRemaining,
 					Reason:          "spend timeout",
+					ExitPolicy:      exitPolicy,
 				},
 				&VTXOStatusUpdate{
 					Outpoint:  s.VTXO.Outpoint,
@@ -1182,6 +1197,22 @@ func (s *SpendingState) ProcessEvent(_ context.Context, event VTXOEvent,
 	default:
 		return nil, fmt.Errorf("spending: unexpected event: %T", event)
 	}
+}
+
+func resolveExpiryExitPolicy(ctx context.Context, env *VTXOEnvironment,
+	outpoint wire.OutPoint) (fn.Option[actormsg.ExitPolicy], error) {
+
+	if env.ExpiryExitPolicyResolver == nil {
+		return fn.None[actormsg.ExitPolicy](), nil
+	}
+
+	policy, err := env.ExpiryExitPolicyResolver(ctx, outpoint)
+	if err != nil {
+		return fn.None[actormsg.ExitPolicy](), fmt.Errorf("resolve "+
+			"expiry exit policy for %v: %w", outpoint, err)
+	}
+
+	return policy, nil
 }
 
 // ProcessEvent for SpentState. This is a terminal state, so all events result

@@ -124,25 +124,46 @@ func SignBackingInputs(signer input.Signer, backingTx *wire.MsgTx,
 func standardCollabSpendPath(policyTemplate, pkScript []byte,
 	clientKey *btcec.PublicKey) (*arkscript.SpendPath, error) {
 
+	template, params, err := standardVTXOPolicy(
+		policyTemplate, pkScript,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if !sameXOnlyPubKey(params.OwnerKey, clientKey) {
+		return nil, fmt.Errorf("client key does not own VTXO policy")
+	}
+
+	return collabSpendPath(template, params, pkScript)
+}
+
+func standardVTXOPolicy(policyTemplate, pkScript []byte) (
+	*arkscript.PolicyTemplate, *arkscript.StandardVTXOParams, error) {
+
 	if len(policyTemplate) == 0 {
-		return nil, fmt.Errorf("policy template must be provided")
+		return nil, nil, fmt.Errorf("policy template must be provided")
 	}
 	template, err := arkscript.DecodePolicyTemplate(policyTemplate)
 	if err != nil {
-		return nil, fmt.Errorf("decode policy template: %w", err)
+		return nil, nil, fmt.Errorf("decode policy template: %w", err)
 	}
 	if !template.MatchesPkScript(pkScript) {
-		return nil, fmt.Errorf("policy template does not match " +
+		return nil, nil, fmt.Errorf("policy template does not match " +
 			"pkScript")
 	}
 
 	params, err := arkscript.DecodeStandardVTXOParams(template)
 	if err != nil {
-		return nil, fmt.Errorf("decode standard VTXO policy: %w", err)
+		return nil, nil, fmt.Errorf("decode standard VTXO policy: %w",
+			err)
 	}
-	if !sameXOnlyPubKey(params.OwnerKey, clientKey) {
-		return nil, fmt.Errorf("client key does not own VTXO policy")
-	}
+
+	return template, params, nil
+}
+
+func collabSpendPath(template *arkscript.PolicyTemplate,
+	params *arkscript.StandardVTXOParams,
+	pkScript []byte) (*arkscript.SpendPath, error) {
 
 	node, err := standardCollabNode(template, params)
 	if err != nil {

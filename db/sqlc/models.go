@@ -440,6 +440,10 @@ type VirtualChannel struct {
 	UpdatedAt         int64
 	MaterializedAt    sql.NullInt64
 	ClosedAt          sql.NullInt64
+	Kind              string
+	RoundID           sql.NullString
+	StateVersion      int64
+	BackingArmedAt    sql.NullInt64
 }
 
 type VirtualChannelIntent struct {
@@ -452,6 +456,10 @@ type VirtualChannelIntent struct {
 	RemoteBalanceSat int64
 	CreatedAt        int64
 	UpdatedAt        int64
+	Kind             string
+	RoundID          sql.NullString
+	RequestKey       sql.NullString
+	StateVersion     int64
 }
 
 type VirtualChannelIntentVtxo struct {

@@ -112,6 +112,10 @@ type VTXOActorConfig struct {
 	// called after connector assignment, so signatures bind the exact
 	// forfeit transaction that will be submitted to the operator.
 	ForfeitParticipantSigner ForfeitParticipantSigner
+
+	// ExpiryExitPolicyResolver is propagated into the FSM environment so
+	// automatic expiry preserves any durable non-standard final spend.
+	ExpiryExitPolicyResolver ExpiryExitPolicyResolver
 }
 
 // VTXOActor manages the lifecycle of a single VTXO. It processes events using
@@ -134,6 +138,7 @@ func NewVTXOActor(ctx context.Context, cfg *VTXOActorConfig) *VTXOActor {
 		actorID, cfg.Store, cfg.Wallet, cfg.ExpiryConfig,
 		cfg.ChainParams, cfg.ForfeitParticipantSigner,
 	)
+	env.ExpiryExitPolicyResolver = cfg.ExpiryExitPolicyResolver
 
 	logger := cfg.Log.UnwrapOr(build.LoggerFromContext(ctx))
 
