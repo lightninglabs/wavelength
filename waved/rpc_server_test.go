@@ -944,16 +944,17 @@ func TestGetInfoIncludesServerInfo(t *testing.T) {
 	}
 	server.setServerConnected(true)
 	server.storeOperatorTerms(&types.OperatorTerms{
-		PubKey:            operatorPriv.PubKey(),
-		BoardingExitDelay: 144,
-		VTXOExitDelay:     288,
-		DustLimit:         btcutil.Amount(546),
-		MinVTXOAmount:     btcutil.Amount(1234),
-		MinBoardingAmount: btcutil.Amount(10_000),
-		MaxVTXOAmount:     btcutil.Amount(500_000),
-		FeeRate:           btcutil.Amount(12),
-		MinOperatorFee:    btcutil.Amount(34),
-		MinConfirmations:  2,
+		PubKey:                  operatorPriv.PubKey(),
+		BoardingExitDelay:       144,
+		VTXOExitDelay:           288,
+		DustLimit:               btcutil.Amount(546),
+		MinVTXOAmount:           btcutil.Amount(1234),
+		MinBoardingAmount:       btcutil.Amount(10_000),
+		MaxVTXOAmount:           btcutil.Amount(500_000),
+		FeeRate:                 btcutil.Amount(12),
+		MinOperatorFee:          btcutil.Amount(34),
+		FreeRefreshWindowBlocks: 72,
+		MinConfirmations:        2,
 	})
 	r := &RPCServer{server: server}
 
@@ -979,6 +980,9 @@ func TestGetInfoIncludesServerInfo(t *testing.T) {
 	)
 	require.Equal(t, uint64(12), resp.ServerInfo.FeeRate)
 	require.Equal(t, uint64(34), resp.ServerInfo.MinOperatorFee)
+	require.Equal(
+		t, uint32(72), resp.ServerInfo.FreeRefreshWindowBlocks,
+	)
 	require.Equal(t, uint32(2), resp.ServerInfo.MinConfirmations)
 }
 
