@@ -94,7 +94,7 @@ func (r *RPCServer) getLocalVTXOExpiryInfo(ctx context.Context, outpoint string,
 
 	protoVTXO := descriptorToProto(desc)
 	protoVTXO.ExpiryInfo = expiryInfoFromDescriptor(
-		desc, currentHeight,
+		desc, currentHeight, r.server.vtxoExpiryConfig(),
 	)
 
 	return &waverpc.GetVTXOExpiryInfoResponse{
@@ -144,7 +144,9 @@ func (r *RPCServer) getIndexedVTXOExpiryInfo(ctx context.Context,
 		return &waverpc.GetVTXOExpiryInfoResponse{}, nil
 	}
 
-	protoVTXO, err := indexedVTXOToProto(vtxos[0], currentHeight)
+	protoVTXO, err := indexedVTXOToProto(
+		vtxos[0], currentHeight, r.server.vtxoExpiryConfig(),
+	)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "convert indexed "+
 			"vtxo: %v", err)
@@ -228,8 +230,8 @@ func (r *RPCServer) currentBlockHeight(ctx context.Context) (int32, error) {
 
 // expiryInfoFromDescriptor classifies a locally stored VTXO descriptor at the
 // supplied chain height.
-func expiryInfoFromDescriptor(desc *vtxo.Descriptor,
-	currentHeight int32) *waverpc.VTXOExpiryInfo {
+func expiryInfoFromDescriptor(desc *vtxo.Descriptor, currentHeight int32,
+	cfg *vtxo.ExpiryConfig) *waverpc.VTXOExpiryInfo {
 
 	if desc == nil {
 		return nil
@@ -242,13 +244,14 @@ func expiryInfoFromDescriptor(desc *vtxo.Descriptor,
 		),
 		uint32(desc.ChainDepth),
 		currentHeight,
+		cfg,
 	)
 }
 
 // expiryInfoFromIndexedVTXO classifies an indexer VTXO at the supplied chain
 // height using max tree depth across its ancestry paths.
-func expiryInfoFromIndexedVTXO(indexed *arkrpc.VTXO,
-	currentHeight int32) *waverpc.VTXOExpiryInfo {
+func expiryInfoFromIndexedVTXO(indexed *arkrpc.VTXO, currentHeight int32,
+	cfg *vtxo.ExpiryConfig) *waverpc.VTXOExpiryInfo {
 
 	if indexed == nil {
 		return nil
@@ -263,14 +266,15 @@ func expiryInfoFromIndexedVTXO(indexed *arkrpc.VTXO,
 
 	return expiryInfoFromTiming(
 		indexed.GetBatchExpiryHeight(), indexed.GetRelativeExpiry(),
-		maxTreeDepth, indexed.GetChainDepth(), currentHeight,
+		maxTreeDepth, indexed.GetChainDepth(), currentHeight, cfg,
 	)
 }
 
 // expiryInfoFromTiming classifies one VTXO from the timing inputs used by the
 // wallet expiry policy.
 func expiryInfoFromTiming(batchExpiry int32, relativeExpiry, maxTreeDepth,
-	chainDepth uint32, currentHeight int32) *waverpc.VTXOExpiryInfo {
+	chainDepth uint32, currentHeight int32,
+	cfg *vtxo.ExpiryConfig) *waverpc.VTXOExpiryInfo {
 
 	info := &waverpc.VTXOExpiryInfo{
 		CurrentHeight:  currentHeight,
@@ -293,7 +297,9 @@ func expiryInfoFromTiming(batchExpiry int32, relativeExpiry, maxTreeDepth,
 			TreeDepth: maxTreeDepth,
 		}},
 	}
-	cfg := vtxo.DefaultExpiryConfig()
+	if cfg == nil {
+		cfg = vtxo.DefaultExpiryConfig()
+	}
 
 	info.BlocksRemaining = vtxo.BlocksUntilExpiry(desc, currentHeight)
 	info.CriticalThresholdBlocks = cfg.CalculateCriticalThreshold(desc)

@@ -195,7 +195,7 @@ func (c *Client) GetInfo(ctx context.Context) (*Info, error) {
 		return nil, fmt.Errorf("get daemon info: %w", err)
 	}
 
-	return &Info{
+	info := &Info{
 		Version:         resp.GetVersion(),
 		Commit:          resp.GetCommit(),
 		Network:         resp.GetNetwork(),
@@ -204,7 +204,17 @@ func (c *Client) GetInfo(ctx context.Context) (*Info, error) {
 		WalletType:      resp.GetWalletType(),
 		WalletState:     WalletState(resp.GetWalletState()),
 		IdentityPubKey:  resp.GetIdentityPubkey(),
-	}, nil
+	}
+
+	if resp.ServerInfo != nil {
+		serverInfo := resp.ServerInfo
+		freeRefreshWindow := serverInfo.GetFreeRefreshWindowBlocks()
+		info.ServerInfo = &ServerInfo{
+			FreeRefreshWindowBlocks: freeRefreshWindow,
+		}
+	}
+
+	return info, nil
 }
 
 // CreateWallet creates or imports the embedded daemon wallet.

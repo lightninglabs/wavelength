@@ -154,6 +154,10 @@ type ServerInfo struct {
 	// MinOperatorFee is the minimum operator fee in satoshis.
 	MinOperatorFee uint64
 
+	// FreeRefreshWindowBlocks is the operator-advertised late-lifetime
+	// window in which pure refreshes receive a fee waiver.
+	FreeRefreshWindowBlocks uint32
+
 	// MinConfirmations is the minimum confirmations required on boarding
 	// inputs.
 	MinConfirmations uint32
@@ -448,20 +452,23 @@ func (c *Client) GetInfo(ctx context.Context) (*Info, error) {
 	}
 
 	if resp.ServerInfo != nil {
+		serverInfo := resp.ServerInfo
+		freeRefreshWindow := serverInfo.FreeRefreshWindowBlocks
 		info.ServerInfo = &ServerInfo{
 			OperatorPubKey: bytes.Clone(
-				resp.ServerInfo.OperatorPubkey,
+				serverInfo.OperatorPubkey,
 			),
-			BoardingExitDelay: resp.ServerInfo.BoardingExitDelay,
-			VTXOExitDelay:     resp.ServerInfo.VtxoExitDelay,
-			DustLimit:         resp.ServerInfo.DustLimit,
-			MinVTXOAmountSat:  resp.ServerInfo.MinVtxoAmountSat,
-			MinBoardingAmount: resp.ServerInfo.MinBoardingAmount,
-			MaxVTXOAmount:     resp.ServerInfo.MaxVtxoAmount,
-			FeeRate:           resp.ServerInfo.FeeRate,
-			MinOperatorFee:    resp.ServerInfo.MinOperatorFee,
-			MinConfirmations:  resp.ServerInfo.MinConfirmations,
-			MaxUserBalance:    resp.ServerInfo.MaxUserBalance,
+			BoardingExitDelay:       serverInfo.BoardingExitDelay,
+			VTXOExitDelay:           serverInfo.VtxoExitDelay,
+			DustLimit:               serverInfo.DustLimit,
+			MinVTXOAmountSat:        serverInfo.MinVtxoAmountSat,
+			MinBoardingAmount:       serverInfo.MinBoardingAmount,
+			MaxVTXOAmount:           serverInfo.MaxVtxoAmount,
+			FeeRate:                 serverInfo.FeeRate,
+			MinOperatorFee:          serverInfo.MinOperatorFee,
+			FreeRefreshWindowBlocks: freeRefreshWindow,
+			MinConfirmations:        serverInfo.MinConfirmations,
+			MaxUserBalance:          serverInfo.MaxUserBalance,
 		}
 	}
 

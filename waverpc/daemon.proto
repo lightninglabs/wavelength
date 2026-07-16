@@ -405,6 +405,10 @@ message ServerInfo {
     // cap locally on receive and boarding flows. A value of zero means
     // no cap.
     uint64 max_user_balance = 14;
+
+    // free_refresh_window_blocks is the operator's late-lifetime refresh
+    // waiver window. Zero disables the policy.
+    uint32 free_refresh_window_blocks = 15;
 }
 
 message GenSeedRequest {
