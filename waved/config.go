@@ -1034,9 +1034,9 @@ type WalletConfig struct {
 
 	// EsploraURL is the base URL of the Esplora REST API used by the
 	// lwwallet backend for chain data. Only used when Type is
-	// "lwwallet". Empty falls back to the public mempool.space
-	// endpoint for the configured network; regtest and simnet have
-	// no default and must set this explicitly.
+	// "lwwallet". Empty falls back to the network-default endpoint
+	// (see lwwallet.DefaultEsploraURL); regtest and simnet have no
+	// default and must set this explicitly.
 	EsploraURL string `mapstructure:"esploraurl"`
 
 	// PollInterval controls how often the lwwallet backend polls the
@@ -1302,9 +1302,9 @@ func (c *Config) validateWalletConfig() error {
 
 	case WalletTypeLwwallet:
 		// Lightweight wallet requires an Esplora URL for chain
-		// data. An empty value falls back to the public
-		// mempool.space endpoint for networks that have one;
-		// regtest and simnet still require it explicitly.
+		// data. An empty value falls back to the network-default
+		// endpoint for networks that have one; regtest and simnet
+		// still require it explicitly.
 		if c.Wallet.EsploraURL == "" {
 			chainParams, err := networkToChainParams(c.Network)
 			if err != nil {

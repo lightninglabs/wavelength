@@ -41,9 +41,9 @@ network defaults when left empty:
 | Network config | lwwallet Esplora URL | btcwallet fee URL |
 |----------------|-----------------------|--------------------|
 | `mainnet` | `https://mempool.space/api` | `https://nodes.lightning.computer/fees/v1/btc-fee-estimates.json` |
-| `testnet` | `https://mempool.space/testnet/api` | `https://nodes.lightning.computer/fees/v1/btctestnet-fee-estimates.json` |
-| `testnet4` | `https://mempool.space/testnet4/api` | `https://nodes.lightning.computer/fees/v1/btctestnet-fee-estimates.json` |
-| `signet` | `https://mempool.space/signet/api` | `https://nodes.lightning.computer/fees/v1/btctestnet-fee-estimates.json` |
+| `testnet` | `https://mempool-testnet3.testnet.lightningcluster.com/api` | `https://nodes.lightning.computer/fees/v1/btctestnet-fee-estimates.json` |
+| `testnet4` | `https://mempool-testnet4.testnet.lightningcluster.com/api` | `https://nodes.lightning.computer/fees/v1/btctestnet-fee-estimates.json` |
+| `signet` | `https://mempool-signet.testnet.lightningcluster.com/api` | `https://nodes.lightning.computer/fees/v1/btctestnet-fee-estimates.json` |
 
 `regtest` and `simnet` have no public default for either field; a local dev
 stack must set `wallet.esploraurl` or `wallet.feeurl` explicitly, as in the

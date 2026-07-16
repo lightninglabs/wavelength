@@ -12,22 +12,24 @@ const (
 	// Esplora-compatible REST API for mainnet.
 	DefaultEsploraURLMainnet = "https://mempool.space/api"
 
-	// DefaultEsploraURLTestnet3 is the public mempool.space
-	// Esplora-compatible REST API for testnet3.
-	DefaultEsploraURLTestnet3 = "https://mempool.space/testnet/api"
+	// DefaultEsploraURLTestnet3 is the Esplora-compatible REST API for
+	// testnet3, backed by a Lightning Labs-operated mempool instance.
+	DefaultEsploraURLTestnet3 = "https://mempool-testnet3.testnet." +
+		"lightningcluster.com/api"
 
-	// DefaultEsploraURLTestnet4 is the public mempool.space
-	// Esplora-compatible REST API for testnet4.
-	DefaultEsploraURLTestnet4 = "https://mempool.space/testnet4/api"
+	// DefaultEsploraURLTestnet4 is the Esplora-compatible REST API for
+	// testnet4, backed by a Lightning Labs-operated mempool instance.
+	DefaultEsploraURLTestnet4 = "https://mempool-testnet4.testnet." +
+		"lightningcluster.com/api"
 
-	// DefaultEsploraURLSignet is the public mempool.space
-	// Esplora-compatible REST API for signet.
-	DefaultEsploraURLSignet = "https://mempool.space/signet/api"
+	// DefaultEsploraURLSignet is the Esplora-compatible REST API for
+	// signet, backed by a Lightning Labs-operated mempool instance.
+	DefaultEsploraURLSignet = "https://mempool-signet.testnet." +
+		"lightningcluster.com/api"
 )
 
-// DefaultEsploraURL returns the public mempool.space Esplora-compatible REST
-// API endpoint for params, or an error if the network has no public
-// endpoint.
+// DefaultEsploraURL returns the default Esplora-compatible REST API endpoint
+// for params, or an error if the network has no default endpoint.
 func DefaultEsploraURL(params *chaincfg.Params) (string, error) {
 	if params == nil {
 		return "", fmt.Errorf("chain params are required")
