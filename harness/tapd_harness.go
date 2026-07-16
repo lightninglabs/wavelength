@@ -170,6 +170,7 @@ func (h *Harness) startLNDContainer(cfg lndConfig) *dockertest.Resource {
 		"--noseedbackup",
 		"--nobootstrap",
 		"--accept-keysend",
+		"--trickledelay=50",
 		"--protocol.option-scid-alias",
 		"--protocol.zero-conf",
 	}
