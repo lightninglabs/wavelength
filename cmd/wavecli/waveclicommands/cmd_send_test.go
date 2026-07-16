@@ -145,3 +145,28 @@ func TestEmptyNonEmpty(t *testing.T) {
 	require.Equal(t, "fallback", emptyNonEmpty("   ", "fallback"))
 	require.Equal(t, "reason", emptyNonEmpty("reason", "fallback"))
 }
+
+// TestPrintOnchainPendingNotice verifies the onchain dispatch notice explains
+// the PENDING/round-seal semantics and surfaces the inspect handle when an
+// entry id is known.
+func TestPrintOnchainPendingNotice(t *testing.T) {
+	var out bytes.Buffer
+	printOnchainPendingNotice(&out, "entry-123")
+
+	notice := out.String()
+	require.Contains(t, notice, "cooperative-leave round")
+	require.Contains(t, notice, "PENDING")
+	require.Contains(t, notice, "change returns as a new VTXO")
+	require.Contains(t, notice, "wavecli activity inspect entry-123")
+}
+
+// TestPrintOnchainPendingNoticeNoID verifies the inspect line is omitted when
+// the dispatched entry carried no id to poll on.
+func TestPrintOnchainPendingNoticeNoID(t *testing.T) {
+	var out bytes.Buffer
+	printOnchainPendingNotice(&out, "")
+
+	notice := out.String()
+	require.Contains(t, notice, "cooperative-leave round")
+	require.NotContains(t, notice, "activity inspect")
+}

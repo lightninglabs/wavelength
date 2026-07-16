@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -94,7 +95,10 @@ func newSendCmd() *cobra.Command {
 	cmd.Flags().Bool("no-wait", false,
 		"return as soon as the send is dispatched instead of blocking "+
 			"until it reaches a terminal state; by default send "+
-			"waits and Lightning sends print the payment preimage")
+			"waits and Lightning sends print the payment "+
+			"preimage. Onchain sends never block: they settle in "+
+			"a cooperative-leave round and always return a "+
+			"pending receipt")
 	cmd.Flags().Duration("wait-timeout", defaultSendWaitTimeout,
 		"while waiting: give up after this long and return the last "+
 			"observed status (0 waits indefinitely; ignored with "+
@@ -212,7 +216,26 @@ func walletSend(cmd *cobra.Command, args []string) error {
 					err)
 			}
 
-			if noWait, _ := cmd.Flags().GetBool("no-wait"); noWait {
+			// An onchain send settles by forfeiting its source
+			// VTXO into a cooperative-leave round and waiting for
+			// that round to confirm on chain, which can take many
+			// minutes. Blocking the CLI on that terminal state is a
+			// poor fit: there is no preimage to wait for the way a
+			// Lightning send has, and the funds are already
+			// committed the moment Send returns. So the onchain
+			// rail always returns a pending receipt rather than
+			// hanging, regardless of --no-wait.
+			noWait, _ := cmd.Flags().GetBool("no-wait")
+			onchain := prepareResp.GetRail() ==
+				wavewalletrpc.SendRail_SEND_RAIL_ONCHAIN
+
+			if noWait || onchain {
+				if onchain {
+					printOnchainPendingNotice(
+						cmd.ErrOrStderr(),
+						resp.GetEntry().GetId(),
+					)
+				}
 
 				// Without waiting there is no terminal state to
 				// summarize yet, so echo the dispatched entry
@@ -229,6 +252,27 @@ func walletSend(cmd *cobra.Command, args []string) error {
 			return waitForSendTerminal(cmd, resp.GetEntry())
 		},
 	)
+}
+
+// printOnchainPendingNotice writes a short human-readable explanation to stderr
+// after an onchain send is dispatched. The onchain rail never blocks to
+// terminal, so this notice sets expectations the compact JSON receipt on stdout
+// cannot: the send stays PENDING until its cooperative-leave round confirms,
+// and the residual returns as a fresh change VTXO at round seal-time (so a
+// mid-flight balance that looks drained by the whole source VTXO is expected,
+// not a loss).
+func printOnchainPendingNotice(out io.Writer, id string) {
+	fmt.Fprintln(
+		out, "Onchain send dispatched. It settles in the next "+
+			"cooperative-leave round, so it stays PENDING "+
+			"until that round confirms on chain; your change "+
+			"returns as a new VTXO once the round seals.",
+	)
+	if id != "" {
+		fmt.Fprintf(
+			out, "Track it with: wavecli activity inspect %s\n", id,
+		)
+	}
 }
 
 // waitForSendTerminal blocks until the dispatched send entry reaches a terminal
