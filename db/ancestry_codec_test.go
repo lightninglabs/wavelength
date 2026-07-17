@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/neutrino/cache"
 	"github.com/lightninglabs/wavelength/db/sqlc"
 	"github.com/lightninglabs/wavelength/lib/tree"
@@ -62,12 +63,12 @@ func (f *fakeAncestryStore) ListUnspentVTXOAncestryPaths(_ context.Context) (
 	return nil, nil
 }
 
-// TestUpsertAncestryPathsRejectsDuplicateCommitment ensures the Go-
-// side defensive check fires before any DB row is touched when the
-// supplied slice carries two entries with the same commitment txid.
-// The schema-level UNIQUE would also reject this, but the in-Go
-// check produces a clearer error and avoids a half-applied delete.
-func TestUpsertAncestryPathsRejectsDuplicateCommitment(t *testing.T) {
+// TestUpsertAncestryPathsRejectsDuplicateFragment ensures the Go-side
+// defensive check fires before any DB row is touched when the supplied
+// slice carries two entries with the same (commitment txid, tree path)
+// identity. Fragment identity is the full pair — not the commitment
+// txid alone — so this is the only duplicate shape rejected.
+func TestUpsertAncestryPathsRejectsDuplicateFragment(t *testing.T) {
 	t.Parallel()
 
 	commit := chainhash.Hash{0xaa}
@@ -85,9 +86,65 @@ func TestUpsertAncestryPathsRejectsDuplicateCommitment(t *testing.T) {
 		t.Context(), store, make([]byte, 32), 0, ancestry,
 	)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "duplicate commitment_txid")
+	require.Contains(
+		t, err.Error(),
+		"duplicate (commitment_txid, tree_path)",
+	)
 	require.False(t, store.deleted, "delete must not run before validation")
 	require.Empty(t, store.inserts)
+}
+
+// TestUpsertAncestryPathsAllowsSameCommitmentDistinctPaths ensures two
+// fragments anchored at the same commitment txid but carrying distinct
+// tree paths both persist. This is the shape produced for an OOR spend
+// whose inputs sit at different leaves of one commitment tree; the old
+// per-commitment duplicate check made such VTXOs unpersistable
+// (wavelength#969).
+func TestUpsertAncestryPathsAllowsSameCommitmentDistinctPaths(t *testing.T) {
+	t.Parallel()
+
+	commit := chainhash.Hash{0xaa}
+	ancestry := []vtxo.Ancestry{
+		{
+			CommitmentTxID: commit,
+			TreePath: &tree.Tree{
+				Root: &tree.Node{},
+				BatchOutpoint: wire.OutPoint{
+					Hash:  commit,
+					Index: 0,
+				},
+			},
+			InputIndices: []uint32{
+				0,
+			},
+		},
+		{
+			CommitmentTxID: commit,
+			TreePath: &tree.Tree{
+				Root: &tree.Node{},
+				BatchOutpoint: wire.OutPoint{
+					Hash:  commit,
+					Index: 1,
+				},
+			},
+			InputIndices: []uint32{
+				1,
+			},
+		},
+	}
+
+	store := &fakeAncestryStore{}
+	err := upsertAncestryPaths(
+		t.Context(), store, make([]byte, 32), 0, ancestry,
+	)
+	require.NoError(t, err)
+	require.True(t, store.deleted)
+	require.Len(t, store.inserts, 2)
+	require.Equal(t, commit[:], store.inserts[0].CommitmentTxid)
+	require.Equal(t, commit[:], store.inserts[1].CommitmentTxid)
+	require.NotEqual(
+		t, store.inserts[0].TreePath, store.inserts[1].TreePath,
+	)
 }
 
 // TestUpsertAncestryPathsRejectsTooManyRows ensures the Go-side row-

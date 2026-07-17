@@ -126,6 +126,53 @@ func (c *ancestryTreeCache) getOrDecode(treePath []byte) (*tree.Tree, error) {
 	return t, nil
 }
 
+// AncestryFragmentKey returns a stable identity for one ancestry
+// fragment: the sha256 of its commitment txid concatenated with its
+// serialized tree path. Fragments are unique per (commitment txid, tree
+// path) — NOT per commitment txid alone — because an OOR spend whose
+// inputs sit at different leaves of the same commitment tree
+// legitimately carries one fragment per leaf, each anchored at the same
+// commitment. Callers use this key to reject true duplicates while
+// admitting same-commitment multi-leaf ancestry.
+//
+// The key deliberately excludes InputIndices (and CommitmentHeight):
+// the indexer's grouping contract is one fragment per (commitment,
+// tree path), with that fragment carrying EVERY input index it serves.
+// Two fragments sharing a (commitment, path) but splitting the covered
+// indices across rows would be a server-side grouping change; if the
+// indexer contract ever moves that way, this key must widen with it or
+// the second row is silently rejected as a duplicate.
+func AncestryFragmentKey(a vtxo.Ancestry) ([sha256.Size]byte, error) {
+	var treePath []byte
+	if a.TreePath != nil {
+		data, err := SerializeTree(a.TreePath)
+		if err != nil {
+			return [sha256.Size]byte{}, fmt.Errorf("serialize "+
+				"ancestry tree: %w", err)
+		}
+
+		treePath = data
+	}
+
+	return ancestryFragmentKeyFromBytes(a.CommitmentTxID, treePath), nil
+}
+
+// ancestryFragmentKeyFromBytes is the serialization-free core of
+// AncestryFragmentKey for callers that already hold the encoded tree
+// path bytes.
+func ancestryFragmentKeyFromBytes(commitment chainhash.Hash,
+	treePath []byte) [sha256.Size]byte {
+
+	h := sha256.New()
+	h.Write(commitment[:])
+	h.Write(treePath)
+
+	var key [sha256.Size]byte
+	copy(key[:], h.Sum(nil))
+
+	return key
+}
+
 // upsertAncestryPaths replaces the persisted ancestry rows for one VTXO
 // with the supplied slice. Must be called inside the same transaction
 // that wrote (or upserted) the parent vtxos row to preserve referential
@@ -137,13 +184,16 @@ func (c *ancestryTreeCache) getOrDecode(treePath []byte) (*tree.Tree, error) {
 //
 // The function performs three defensive checks before any row is
 // inserted: the slice is at most maxAncestryRowsPerVTXO long, every
-// CommitmentTxID is pairwise distinct, and (implicitly, by deriving
-// path_order from the loop index) path_order is a contiguous run
-// starting at 0. These constraints are also enforced at the schema
-// level (UNIQUE on commitment_txid, CHECK on path_order), but
-// surfacing them in Go means a future caller bypassing
-// BuildIncomingVTXODescriptor sees a clear error rather than a
-// constraint violation hidden behind sqlc plumbing.
+// (CommitmentTxID, tree path) pair is pairwise distinct, and
+// (implicitly, by deriving path_order from the loop index) path_order
+// is a contiguous run starting at 0. Fragments MAY share a commitment
+// txid — an OOR spend of two inputs at different leaves of the same
+// commitment tree carries one fragment per leaf — so only an exact
+// duplicate (same commitment AND same tree path) is rejected. The
+// length and ordinal constraints are also enforced at the schema level
+// (CHECK on path_order), but surfacing them in Go means a future caller
+// bypassing BuildIncomingVTXODescriptor sees a clear error rather than
+// a constraint violation hidden behind sqlc plumbing.
 func upsertAncestryPaths(ctx context.Context, q ancestryStore,
 	outpointHash []byte, outpointIndex int32,
 	ancestry []vtxo.Ancestry) error {
@@ -153,13 +203,30 @@ func upsertAncestryPaths(ctx context.Context, q ancestryStore,
 			maxAncestryRowsPerVTXO)
 	}
 
-	seen := make(map[chainhash.Hash]struct{}, len(ancestry))
+	// Serialize every tree path up front so the duplicate check and the
+	// insert loop below share one encoding pass.
+	treePaths := make([][]byte, len(ancestry))
+	seen := make(map[[sha256.Size]byte]struct{}, len(ancestry))
 	for i, a := range ancestry {
-		if _, dup := seen[a.CommitmentTxID]; dup {
-			return fmt.Errorf("ancestry[%d] duplicate "+
-				"commitment_txid %s", i, a.CommitmentTxID)
+		if a.TreePath != nil {
+			data, err := SerializeTree(a.TreePath)
+			if err != nil {
+				return fmt.Errorf("serialize ancestry[%d] "+
+					"tree: %w", i, err)
+			}
+
+			treePaths[i] = data
 		}
-		seen[a.CommitmentTxID] = struct{}{}
+
+		key := ancestryFragmentKeyFromBytes(
+			a.CommitmentTxID, treePaths[i],
+		)
+		if _, dup := seen[key]; dup {
+			return fmt.Errorf("ancestry[%d] duplicate "+
+				"(commitment_txid, tree_path) pair for "+
+				"commitment %s", i, a.CommitmentTxID)
+		}
+		seen[key] = struct{}{}
 	}
 
 	err := q.DeleteVTXOAncestryPaths(
@@ -173,16 +240,7 @@ func upsertAncestryPaths(ctx context.Context, q ancestryStore,
 	}
 
 	for i, a := range ancestry {
-		var treePath []byte
-		if a.TreePath != nil {
-			data, err := SerializeTree(a.TreePath)
-			if err != nil {
-				return fmt.Errorf("serialize ancestry[%d] "+
-					"tree: %w", i, err)
-			}
-
-			treePath = data
-		}
+		treePath := treePaths[i]
 
 		err := q.InsertVTXOAncestryPath(
 			ctx, sqlc.InsertVTXOAncestryPathParams{

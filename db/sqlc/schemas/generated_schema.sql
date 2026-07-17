@@ -1537,7 +1537,7 @@ CREATE TABLE vhtlc_recovery_jobs (
     UNIQUE(swap_id, action, vtxo_txid, vtxo_vout)
 );
 
-CREATE TABLE vtxo_ancestry_paths (
+CREATE TABLE "vtxo_ancestry_paths" (
     -- vtxo_outpoint_hash and vtxo_outpoint_index identify the parent VTXO
     -- in the vtxos table.
     vtxo_outpoint_hash BLOB NOT NULL,
@@ -1550,8 +1550,11 @@ CREATE TABLE vtxo_ancestry_paths (
     path_order INTEGER NOT NULL,
 
     -- commitment_txid is the 32-byte commitment tx hash anchoring this
-    -- fragment. Distinct rows for one VTXO must have distinct
-    -- commitment_txids.
+    -- fragment. Rows for one VTXO may share a commitment_txid: an OOR
+    -- spend whose inputs sat at different leaves of one commitment tree
+    -- persists one row per leaf. Fragment identity is the
+    -- (commitment_txid, tree_path) pair, enforced in Go
+    -- (upsertAncestryPaths).
     commitment_txid BLOB NOT NULL,
 
     -- tree_path is the TLV-encoded extracted tree.Tree fragment from the
@@ -1571,21 +1574,22 @@ CREATE TABLE vtxo_ancestry_paths (
     -- explicit value (empty length-prefixed slice for round-direct
     -- rows). A `DEFAULT X''` literal works on SQLite but is parsed by
     -- Postgres as a bit-string and rejected against the BYTEA column.
-    input_indices BLOB NOT NULL, commitment_height INTEGER NOT NULL DEFAULT 0,
+    input_indices BLOB NOT NULL,
+
+    -- commitment_height is the on-chain confirmation height of the
+    -- commitment tx anchoring this ancestry fragment. It is the tightest
+    -- sound floor for the unroller's proof-node confirmation-watch
+    -- height hint (nothing in a VTXO's proof graph confirms before its
+    -- commitment tx). DEFAULT 0 means unknown: rows persisted before the
+    -- column existed, and rows whose producer did not populate it, read
+    -- back as 0 and make the unroller fall back to a bounded lookback
+    -- floor.
+    commitment_height INTEGER NOT NULL DEFAULT 0,
 
     PRIMARY KEY (vtxo_outpoint_hash, vtxo_outpoint_index, path_order),
     FOREIGN KEY (vtxo_outpoint_hash, vtxo_outpoint_index)
         REFERENCES vtxos(outpoint_hash, outpoint_index)
         ON DELETE CASCADE,
-
-    -- A VTXO must not carry two ancestry rows for the same commitment
-    -- tx. Distinct fragments must anchor at distinct commitments
-    -- (per the Ancestry contract); enforcing it at the schema level
-    -- means a future caller bypassing BuildIncomingVTXODescriptor
-    -- still cannot persist a malformed VTXO that would later trip a
-    -- "conflicting proof node" deep inside addProofNode at unilateral
-    -- exit time.
-    UNIQUE (vtxo_outpoint_hash, vtxo_outpoint_index, commitment_txid),
 
     -- path_order must be a small non-negative ordinal. The active
     -- fragment-count cap (MaxAncestryFragments) is well under 64;

@@ -209,6 +209,50 @@ func TestResolveIncomingMetadataFromIndexerAllowsMatchAtScanLimit(
 	require.Equal(t, 1, rpcClient.sendCount())
 }
 
+// TestResolveIncomingMetadataSameCommitmentMultiLeaf pins the #969
+// regression at the indexer-response seam: an incoming VTXO whose
+// ancestry carries TWO paths anchored at the same commitment txid
+// (different leaves of one commitment tree) must resolve into metadata
+// preserving both fragments, so descriptor construction downstream sees
+// the full multi-leaf ancestry rather than an error or a collapsed
+// single fragment. This is exactly the response shape the indexer has
+// emitted since multi-tree ancestry landed server-side, and the shape
+// the old client rejected with "carries duplicate commitment txid".
+func TestResolveIncomingMetadataSameCommitmentMultiLeaf(t *testing.T) {
+	t.Parallel()
+
+	sessionID := oor.SessionID(testTxID(1))
+	commitment := testTxID(13)
+
+	candidate := testIncomingVTXO(sessionID, recipientIndex)
+	candidate.AncestryPaths = []*arkrpc.AncestryPath{
+		testAncestryPathAtIndex(commitment, 0, []uint32{0}),
+		testAncestryPathAtIndex(commitment, 1, []uint32{1}),
+	}
+
+	idx, _, recipient, _ := newTestIncomingMetadataIndexer(
+		t, testIncomingMetadataResponse(nil, candidate),
+	)
+
+	metadata, err := ResolveIncomingMetadataFromIndexerWithLimits(
+		t.Context(), idx, sessionID, recipient, oor.ReceiveLimits{
+			MaxVTXOMatches: 2,
+		},
+	)
+	require.NoError(t, err)
+	require.Len(
+		t, metadata.Ancestry, 2,
+		"both same-commitment fragments must survive resolution",
+	)
+	require.Equal(t, commitment, metadata.Ancestry[0].CommitmentTxID)
+	require.Equal(t, commitment, metadata.Ancestry[1].CommitmentTxID)
+	require.NotEqual(
+		t, metadata.Ancestry[0].TreePath.BatchOutpoint,
+		metadata.Ancestry[1].TreePath.BatchOutpoint,
+		"fragments must keep their distinct tree paths",
+	)
+}
+
 // scriptedIndexerRPC returns scripted ListVTXOsByScripts responses.
 type scriptedIndexerRPC struct {
 	mu        sync.Mutex
@@ -375,14 +419,25 @@ func testIncomingVTXO(sessionID oor.SessionID,
 // validation (arkrpc.ValidateAncestryPathDepth) rejects zero or
 // inconsistent depths, so test fixtures must keep these in sync.
 func testAncestryPath(commitmentTxID chainhash.Hash) *arkrpc.AncestryPath {
+	return testAncestryPathAtIndex(commitmentTxID, 0, []uint32{0})
+}
+
+// testAncestryPathAtIndex is testAncestryPath with a caller-chosen batch
+// outpoint index and input indices, so a fixture can carry several
+// distinct tree paths anchored at one commitment txid (the batch
+// outpoint index stands in for distinct leaf paths).
+func testAncestryPathAtIndex(commitmentTxID chainhash.Hash, batchIndex uint32,
+	inputIndices []uint32) *arkrpc.AncestryPath {
+
 	t := &lib_tree.Tree{
 		Root: &lib_tree.Node{},
 		BatchOutpoint: wire.OutPoint{
-			Hash: commitmentTxID,
+			Hash:  commitmentTxID,
+			Index: batchIndex,
 		},
 	}
 
-	p, err := arkrpc.AncestryPathFromTree(t, commitmentTxID, []uint32{0})
+	p, err := arkrpc.AncestryPathFromTree(t, commitmentTxID, inputIndices)
 	if err != nil {
 		panic(fmt.Sprintf("build test ancestry path: %v", err))
 	}

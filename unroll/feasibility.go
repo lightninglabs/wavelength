@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/lightninglabs/wavelength/lib/recovery"
 	"github.com/lightninglabs/wavelength/lib/tree"
@@ -413,10 +414,13 @@ func RecoveryTxVBytes(desc *vtxo.Descriptor) int64 {
 // contributes a parent size, and vice versa.
 //
 // The commitment-tree ancestry is always sized from the descriptor's extracted
-// paths, which is exact for any radix. The OOR chain is sized from the resolved
-// lineage material when it is supplied (each finalized checkpoint/ark tx
-// measured directly), and otherwise falls back to the ChainDepth scalar at the
-// default per-tx size. A nil descriptor yields (0, 0, 0).
+// paths, which is exact for any radix; fragments that overlap (same-commitment
+// multi-leaf ancestry shares prefix nodes and the root CPFP parent) are
+// deduplicated by txid so the estimate matches the post-dedup broadcast set.
+// The OOR chain is sized from the resolved lineage material when it is
+// supplied (each finalized checkpoint/ark tx measured directly), and otherwise
+// falls back to the ChainDepth scalar at the default per-tx size. A nil
+// descriptor yields (0, 0, 0).
 func recoveryEstimate(desc *vtxo.Descriptor, mat *LineageMaterial) (int, int,
 	int64) {
 
@@ -429,11 +433,25 @@ func recoveryEstimate(desc *vtxo.Descriptor, mat *LineageMaterial) (int, int,
 		numPaths int
 		vbytes   int64
 	)
-	for _, a := range desc.Ancestry {
-		numPaths++
 
+	// Same-commitment multi-leaf fragments legitimately overlap: they
+	// share their prefix nodes AND their root CPFP parent (both roots
+	// spend the same batch outpoint). The proof assembler dedupes
+	// overlapping byte-identical nodes, so counting and sizing every
+	// fragment independently would over-require concurrent wallet
+	// inputs and over-reserve fees — with up to MaxAncestryPaths
+	// fragments, enough for AssessExitFeasibility to refuse an exit
+	// that is actually affordable. Dedupe cross-fragment by node txid
+	// (and CPFP parents by root txid) so the estimate matches what the
+	// broadcaster will actually publish. Within one fragment nodes are
+	// distinct by construction, so dedup only applies across
+	// fragments.
+	seenTxids := make(map[chainhash.Hash]struct{})
+	seenRoots := make(map[chainhash.Hash]struct{})
+	for _, a := range desc.Ancestry {
 		pathTxs := 0
 		var pathVBytes int64
+		newPath := true
 		switch {
 		// Require a non-nil Root, not just a non-nil TreePath:
 		// Tree.NumTx dereferences Root without a guard, so a
@@ -442,8 +460,46 @@ func recoveryEstimate(desc *vtxo.Descriptor, mat *LineageMaterial) (int, int,
 		// count and the parent weight in lockstep and preserves the
 		// "degrade, never block the exit" contract.
 		case a.TreePath != nil && a.TreePath.Root != nil:
-			pathTxs = a.TreePath.NumTx()
-			pathVBytes = treePathVBytes(a.TreePath)
+			// Count only nodes not already contributed by an
+			// earlier fragment. Nodes whose txid cannot be
+			// computed are counted unconditionally — a
+			// conservative overcount, matching the pre-dedup
+			// behavior for degenerate trees.
+			fragTxids := make([]chainhash.Hash, 0)
+			_ = a.TreePath.Root.ForEach(func(n *tree.Node) error {
+				if n == nil {
+					return nil
+				}
+
+				txid, err := n.TXID()
+				if err == nil {
+					if _, dup := seenTxids[txid]; dup {
+						return nil
+					}
+					fragTxids = append(fragTxids, txid)
+				}
+
+				pathTxs++
+				pathVBytes += nodeTxVBytes(n)
+
+				return nil
+			})
+			for _, txid := range fragTxids {
+				seenTxids[txid] = struct{}{}
+			}
+
+			// A fragment whose root tx is already funded by an
+			// earlier fragment shares that fragment's CPFP
+			// parent; it must not demand another concurrent
+			// wallet input.
+			rootTxid, err := a.TreePath.Root.TXID()
+			if err == nil {
+				if _, dup := seenRoots[rootTxid]; dup {
+					newPath = false
+				} else {
+					seenRoots[rootTxid] = struct{}{}
+				}
+			}
 
 		case a.TreeDepth > 0:
 			// Tree pruned but depth persisted: use it as a rough
@@ -453,17 +509,24 @@ func recoveryEstimate(desc *vtxo.Descriptor, mat *LineageMaterial) (int, int,
 				defaultRecoveryTxVBytes
 		}
 
-		// An ancestry path that exists always has at least one
-		// commitment transaction. Floor both the count and the parent
-		// weight so a malformed fragment (nil TreePath and zero
-		// TreeDepth) still budgets a CPFP child AND its parent, rather
-		// than silently costing nothing and letting a
-		// wallet-underfunded exit slip through.
-		if pathTxs < 1 {
-			pathTxs = 1
-		}
-		if pathVBytes == 0 {
-			pathVBytes = defaultRecoveryTxVBytes
+		if newPath {
+			numPaths++
+
+			// An ancestry path that exists always has at least
+			// one commitment transaction. Floor both the count
+			// and the parent weight so a malformed fragment (nil
+			// TreePath and zero TreeDepth) still budgets a CPFP
+			// child AND its parent, rather than silently costing
+			// nothing and letting a wallet-underfunded exit slip
+			// through. A deduped fragment (shared root) is
+			// exempt: its transactions are already budgeted by
+			// the fragment that introduced them.
+			if pathTxs < 1 {
+				pathTxs = 1
+			}
+			if pathVBytes == 0 {
+				pathVBytes = defaultRecoveryTxVBytes
+			}
 		}
 
 		numTxs += pathTxs
@@ -509,23 +572,6 @@ func extraNodeVBytes(n *recovery.Node) int64 {
 	}
 
 	return (txconfirm.EstimateWeight(n.Tx) + 3) / 4
-}
-
-// treePathVBytes sums the estimated transaction size of every node on an
-// extracted ancestry tree path.
-func treePathVBytes(t *tree.Tree) int64 {
-	if t == nil || t.Root == nil {
-		return 0
-	}
-
-	var total int64
-	_ = t.Root.ForEach(func(n *tree.Node) error {
-		total += nodeTxVBytes(n)
-
-		return nil
-	})
-
-	return total
 }
 
 // nodeTxVBytes estimates the virtual size of the transaction a tree node

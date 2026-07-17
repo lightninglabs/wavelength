@@ -140,8 +140,8 @@ func (e *ErrInputNotSpendable) Is(target error) bool {
 //
 // The wrapped Reason names the specific invariant that was violated so
 // log lines and UX surfaces can distinguish "operator returned an empty
-// ancestry" from "fragment 2 carried a duplicate commitment txid"
-// without scraping the parent error string.
+// ancestry" from "fragment 2 duplicated an earlier fragment's tree
+// path" without scraping the parent error string.
 type ErrInvalidAncestry struct {
 	Reason string
 }

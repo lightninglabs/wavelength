@@ -2,6 +2,7 @@ package waved
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -203,7 +204,10 @@ func (m *vhtlcRecoveryTargetMaterializer) buildRecoveryDescriptor(
 		return nil, err
 	}
 
-	ancestry := recoveryAncestry(roots)
+	ancestry, err := recoveryAncestry(roots)
+	if err != nil {
+		return nil, err
+	}
 	if len(ancestry) == 0 {
 		return nil, fmt.Errorf("recovery target ancestry is empty")
 	}
@@ -595,9 +599,13 @@ func recoveryUint32(value int32, label string) (uint32, error) {
 // recoveryAncestry clones and de-duplicates ancestry fragments from the root
 // descriptors. Distinct roots may share a commitment fragment, so
 // de-duplication keeps the synthesized target descriptor compact and
-// deterministic.
-func recoveryAncestry(roots []*vtxo.Descriptor) []vtxo.Ancestry {
-	seen := make(map[chainhash.Hash]struct{})
+// deterministic. Fragments are deduplicated by their full (commitment
+// txid, tree path) identity rather than by commitment txid alone: two
+// roots may carry fragments anchored at the same commitment but serving
+// different leaves of its tree, and collapsing those would drop a path
+// the unroller must broadcast for unilateral exit.
+func recoveryAncestry(roots []*vtxo.Descriptor) ([]vtxo.Ancestry, error) {
+	seen := make(map[[sha256.Size]byte]struct{})
 	var ancestry []vtxo.Ancestry
 	for _, root := range roots {
 		if root == nil {
@@ -605,16 +613,22 @@ func recoveryAncestry(roots []*vtxo.Descriptor) []vtxo.Ancestry {
 		}
 
 		for _, fragment := range root.Ancestry {
-			if _, ok := seen[fragment.CommitmentTxID]; ok {
+			key, err := db.AncestryFragmentKey(fragment)
+			if err != nil {
+				return nil, fmt.Errorf("recovery ancestry "+
+					"fragment key: %w", err)
+			}
+
+			if _, ok := seen[key]; ok {
 				continue
 			}
-			seen[fragment.CommitmentTxID] = struct{}{}
+			seen[key] = struct{}{}
 
 			ancestry = append(ancestry, fragment)
 		}
 	}
 
-	return ancestry
+	return ancestry, nil
 }
 
 // recoveryRootMeta derives scalar descriptor metadata from the earliest local

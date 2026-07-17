@@ -1285,41 +1285,71 @@ func (b *behavior) ensureLoaded(ctx context.Context) error {
 // txconfirm delivers notifications in its own type space
 // ([txconfirm.Notification]) but our durable mailbox only accepts [Msg]
 // variants so the delivery store can codec them. This helper threads a
-// [chainsource.MapNotification]-style adapter: every txconfirm
-// notification is synchronously re-wrapped into the matching mailbox
-// message (TxConfirmedMsg / TxFailedMsg) and forwarded to our self-ref
-// for durable enqueue. An unknown notification type is mapped to a
-// generic TxFailedMsg so the actor still terminates loudly instead of
-// silently dropping the callback.
+// filtering adapter: every txconfirm notification is synchronously
+// re-wrapped into the matching mailbox message and forwarded to our
+// self-ref for durable enqueue, or dropped when the lifecycle event has
+// no unroll-side meaning (see mapTxconfirmNotification).
 func (b *behavior) notificationRef() actor.TellOnlyRef[txconfirm.Notification] {
-	return txconfirm.MapNotification(
-		b.selfRef,
-		func(msg txconfirm.Notification) Msg {
-			switch m := msg.(type) {
-			case *txconfirm.TxConfirmed:
-				return &TxConfirmedMsg{
-					Txid:     m.Txid,
-					Height:   m.BlockHeight,
-					NumConfs: m.NumConfs,
-				}
-
-			case *txconfirm.TxFailed:
-				return &TxFailedMsg{
-					Txid:   m.Txid,
-					Reason: m.Reason,
-				}
-
-			default:
-				return &TxFailedMsg{
-					Reason: fmt.Sprintf(
-						"unknown txconfirm "+
-							"notification %T",
-						msg,
-					),
-				}
-			}
-		},
+	return txconfirm.FilterMapNotification(
+		b.selfRef, mapTxconfirmNotification,
 	)
+}
+
+// mapTxconfirmNotification re-wraps one txconfirm lifecycle event into
+// the unroll actor's durable mailbox message space. Subscribers receive
+// the FULL reorg-aware lifecycle, so every variant needs an explicit
+// disposition:
+//
+//   - TxConfirmed marks the proof node (or sweep) confirmed.
+//
+//   - TxFinalized re-plays the authoritative confirmation numbers once
+//     the tx is past the backend's reorg-safety depth. The FSM's
+//     confirmation handling is idempotent (appendUniqueSorted et al),
+//     so mapping it to a second TxConfirmedMsg is a safe no-op when the
+//     original TxConfirmed already landed and a recovery when it was
+//     dropped. Treating it as anything else is a live bug: it used to
+//     fall into the unknown-notification arm below and terminally
+//     failed the whole unroll job the moment a backend synthesized
+//     finality.
+//
+//   - TxReorged is best-effort and superseded by the next reliable
+//     event (re-TxConfirmed / TxFinalized / TxFailed), and the planner
+//     has no un-confirm transition; drop it and let the follow-up event
+//     re-establish state.
+//
+//   - TxFailed, and any unknown future variant, terminate loudly.
+func mapTxconfirmNotification(msg txconfirm.Notification) (Msg, bool) {
+	switch m := msg.(type) {
+	case *txconfirm.TxConfirmed:
+		return &TxConfirmedMsg{
+			Txid:     m.Txid,
+			Height:   m.BlockHeight,
+			NumConfs: m.NumConfs,
+		}, true
+
+	case *txconfirm.TxFinalized:
+		return &TxConfirmedMsg{
+			Txid:     m.Txid,
+			Height:   m.BlockHeight,
+			NumConfs: m.NumConfs,
+		}, true
+
+	case *txconfirm.TxReorged:
+		return nil, false
+
+	case *txconfirm.TxFailed:
+		return &TxFailedMsg{
+			Txid:   m.Txid,
+			Reason: m.Reason,
+		}, true
+
+	default:
+		return &TxFailedMsg{
+			Reason: fmt.Sprintf(
+				"unknown txconfirm notification %T", msg,
+			),
+		}, true
+	}
 }
 
 // restoreCheckpoint restores durable state from the delivery store.

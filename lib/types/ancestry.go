@@ -7,8 +7,13 @@ import (
 
 // Ancestry describes one rooted commitment-tree fragment that contributes
 // ancestry to a VTXO. A round-direct VTXO has exactly one entry; an OOR
-// VTXO whose ancestry spans multiple commitment txs (cross-round
-// multi-input Ark spend) has one entry per distinct commitment tx.
+// VTXO whose inputs descend from multiple commitment-tree paths has one
+// entry per distinct (commitment tx, tree path) pair. Several entries may
+// share a commitment txid: an OOR spend of two inputs that sit at
+// different leaves of the same commitment tree carries one fragment per
+// leaf, because each leaf needs its own root-to-leaf path for unilateral
+// exit. The operator's indexer groups fragments the same way (one
+// AncestryPath per batch-tree path within a commitment).
 //
 // Per-entry tree fragments are minimal extracted paths (root → leaf), not
 // whole batch trees, so size scales with depth, not fan-out. The unroller
@@ -24,8 +29,10 @@ type Ancestry struct {
 	TreePath *tree.Tree
 
 	// CommitmentTxID is the txid of the commitment tx anchoring this
-	// fragment. Distinct ancestry entries within one Descriptor must
-	// have distinct commitment txids.
+	// fragment. Multiple entries within one Descriptor may share a
+	// commitment txid (different leaves of the same commitment tree),
+	// but no two entries may carry the same (CommitmentTxID, TreePath)
+	// pair.
 	CommitmentTxID chainhash.Hash
 
 	// InputIndices lists the Ark tx input indices (within the OOR Ark tx

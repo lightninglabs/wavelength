@@ -412,3 +412,19 @@ func MapNotification[Out actor.Message](
 
 	return actor.NewMapInputRef(targetRef, mapFn)
 }
+
+// FilterMapNotification adapts txconfirm notifications into a
+// caller-specific actor message type, allowing the transform to DROP a
+// notification (mapFn reporting false). Subscribers receive the full
+// reorg-aware lifecycle — TxConfirmed, TxReorged, re-TxConfirmed,
+// TxFinalized, TxFailed — and not every consumer has a meaningful
+// message for every event: TxReorged in particular is best-effort and
+// superseded by the next reliable event, so consumers without
+// reorg-specific bookkeeping should drop it rather than invent an error
+// or a sentinel.
+func FilterMapNotification[Out actor.Message](
+	targetRef actor.TellOnlyRef[Out], mapFn func(Notification) (Out, bool),
+) actor.TellOnlyRef[Notification] {
+
+	return actor.NewFilterMapInputRef(targetRef, mapFn)
+}

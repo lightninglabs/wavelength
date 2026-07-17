@@ -105,9 +105,11 @@ when the local wallet owns the receive script.
 ## Multi-Tree Ancestry
 
 - `Descriptor.Ancestry []Ancestry` replaces the singular
-  `Descriptor.TreePath` field. Round-direct and same-commitment OOR
-  VTXOs carry a length-1 slice; cross-commitment multi-input OOR VTXOs
-  carry one entry per distinct contributing commitment tx.
+  `Descriptor.TreePath` field. Round-direct VTXOs carry a length-1
+  slice; multi-input OOR VTXOs carry one entry per distinct
+  contributing (commitment tx, tree path) pair. Entries may share a
+  commitment txid when the inputs sat at different leaves of one
+  commitment tree — each leaf needs its own root-to-leaf path.
 - Each `Ancestry` carries `TreePath`, `CommitmentTxID`, `InputIndices`
   (Ark tx input indices the fragment serves), and `TreeDepth`.
 - `Descriptor.MaxTreeDepth()` returns `max(TreeDepth)` across the
