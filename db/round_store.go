@@ -1810,6 +1810,9 @@ func (s *RoundPersistenceStore) dbVTXOToDomainVTXO(ctx context.Context,
 		CommitmentTxID: commitmentTxID,
 		BatchExpiry:    dbVTXO.BatchExpiry,
 		CreatedHeight:  dbVTXO.CreatedHeight,
+		BusinessRevision: uint64(
+			dbVTXO.BusinessRevision,
+		),
 	}, nil
 }
 

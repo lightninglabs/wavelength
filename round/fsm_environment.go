@@ -24,6 +24,10 @@ type ClientEnvironment struct {
 	// VTXOStore provides persistence for off-chain balance.
 	VTXOStore VTXOStore
 
+	// BatchRegistrar installs complete commitment evidence before VTXOs are
+	// persisted and exposed. Nil preserves focused test behavior.
+	BatchRegistrar RoundBatchRegistrar
+
 	// Wallet provides signing capabilities for round participation.
 	Wallet ClientWallet
 

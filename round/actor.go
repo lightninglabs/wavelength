@@ -286,6 +286,10 @@ type RoundClientConfig struct {
 	// VTXOStore persists off-chain balance.
 	VTXOStore VTXOStore
 
+	// BatchRegistrar installs authenticated commitment evidence before the
+	// round exposes newly created VTXOs. Nil is allowed in focused tests.
+	BatchRegistrar RoundBatchRegistrar
+
 	// OperatorTerms contains the operator's parameters.
 	OperatorTerms *types.OperatorTerms
 
@@ -412,6 +416,7 @@ func NewRoundClientActor(cfg *RoundClientConfig) fn.Result[*RoundClientActor] {
 	env := &ClientEnvironment{
 		RoundStore:             cfg.RoundStore,
 		VTXOStore:              cfg.VTXOStore,
+		BatchRegistrar:         cfg.BatchRegistrar,
 		Wallet:                 cfg.Wallet,
 		SigningExecutor:        cfg.SigningExecutor,
 		OperatorTerms:          cfg.OperatorTerms,
@@ -823,6 +828,7 @@ func (a *RoundClientActor) createRoundFSMFromDB(ctx context.Context,
 	env := &ClientEnvironment{
 		RoundStore:             a.cfg.RoundStore,
 		VTXOStore:              a.cfg.VTXOStore,
+		BatchRegistrar:         a.cfg.BatchRegistrar,
 		Wallet:                 a.cfg.Wallet,
 		SigningExecutor:        a.env.SigningExecutor,
 		OperatorTerms:          a.cfg.OperatorTerms,
@@ -897,6 +903,7 @@ func (a *RoundClientActor) createNewRound(ctx context.Context) (*RoundFSM,
 	env := &ClientEnvironment{
 		RoundStore:             a.cfg.RoundStore,
 		VTXOStore:              a.cfg.VTXOStore,
+		BatchRegistrar:         a.cfg.BatchRegistrar,
 		Wallet:                 a.cfg.Wallet,
 		SigningExecutor:        a.env.SigningExecutor,
 		OperatorTerms:          a.cfg.OperatorTerms,

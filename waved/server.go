@@ -398,7 +398,9 @@ type Server struct {
 	// are born so each lineage batch gets reorg-aware conf/spend watches
 	// (producer registration lands in a follow-up). None until
 	// initBatchCanonicality registers the manager.
-	batchCanonRef fn.Option[actor.TellOnlyRef[batchcanon.ManagerMsg]]
+	batchCanonRef fn.Option[actor.ActorRef[
+		batchcanon.ManagerMsg, batchcanon.ManagerResp,
+	]]
 
 	serverConn        *grpc.ClientConn
 	arkClient         arkrpc.ArkServiceClient
@@ -4170,8 +4172,22 @@ func (s *Server) initRoundActor(ctx context.Context,
 		SigningExecutor: round.NewSigningExecutor(
 			signingWorkers,
 		),
-		RoundStore:     roundStore,
-		VTXOStore:      roundStore,
+		RoundStore: roundStore,
+		VTXOStore:  roundStore,
+		BatchRegistrar: fn.MapOptionZ(
+			s.batchCanonRef,
+			func(
+				ref actor.ActorRef[
+					batchcanon.ManagerMsg,
+					batchcanon.ManagerResp,
+				],
+			) round.RoundBatchRegistrar {
+
+				return &roundBatchRegistrar{
+					ref: ref,
+				}
+			},
+		),
 		OperatorTerms:  operatorTerms,
 		ServerConn:     s.runtime.TellRef(),
 		ChainSource:    chainSourceRef,
@@ -4300,7 +4316,9 @@ func (s *Server) initBatchCanonicality(ctx context.Context,
 			err)
 	}
 
-	s.batchCanonRef = fn.Some[actor.TellOnlyRef[batchcanon.ManagerMsg]](
+	s.batchCanonRef = fn.Some[actor.ActorRef[
+		batchcanon.ManagerMsg, batchcanon.ManagerResp,
+	]](
 		mgrRef,
 	)
 

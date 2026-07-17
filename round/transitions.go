@@ -19,6 +19,7 @@ import (
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/wavelength/batchcanon"
 	"github.com/lightninglabs/wavelength/ledger"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/lib/tree"
@@ -4341,6 +4342,155 @@ func buildClientVTXOs(ctx context.Context, checker OwnedScriptChecker,
 	return vtxos, nil
 }
 
+// batchOutputIndex returns the commitment output used for the batch
+// confirmation watch. It mirrors confirmationWatchScript so the persisted
+// evidence binds the same output the chain backend observes.
+func batchOutputIndex(commitmentTx *wire.MsgTx,
+	vtxoTrees map[int]*tree.Tree) (uint32, error) {
+
+	if commitmentTx == nil || len(commitmentTx.TxOut) == 0 {
+		return 0, fmt.Errorf("commitment transaction has no outputs")
+	}
+
+	idx := 0
+	if len(vtxoTrees) > 0 {
+		idx = -1
+		for outputIdx := range vtxoTrees {
+			if idx == -1 || outputIdx < idx {
+				idx = outputIdx
+			}
+		}
+	}
+	if idx < 0 || idx >= len(commitmentTx.TxOut) {
+		return 0, fmt.Errorf("batch output index %d is out of range",
+			idx)
+	}
+
+	return uint32(idx), nil
+}
+
+// creatorLineage returns every distinct commitment transaction that must
+// remain canonical for a VTXO to exist.
+func creatorLineage(vtxo *ClientVTXO) ([]chainhash.Hash, error) {
+	lineage := make([]chainhash.Hash, 0, len(vtxo.Ancestry)+1)
+	seen := make(map[chainhash.Hash]struct{}, len(vtxo.Ancestry)+1)
+	add := func(txid chainhash.Hash) {
+		if txid == (chainhash.Hash{}) {
+			return
+		}
+		if _, ok := seen[txid]; ok {
+			return
+		}
+		seen[txid] = struct{}{}
+		lineage = append(lineage, txid)
+	}
+
+	add(vtxo.CommitmentTxID)
+	for _, ancestor := range vtxo.Ancestry {
+		add(ancestor.CommitmentTxID)
+	}
+	if len(lineage) == 0 {
+		return nil, fmt.Errorf("VTXO %s has no creator lineage",
+			vtxo.Outpoint)
+	}
+
+	return lineage, nil
+}
+
+// roundBatchRegistration builds complete authenticated batch evidence from
+// the commitment PSBT retained by the round FSM. Every actual transaction
+// input is paired with its WitnessUtxo, and refresh inputs additionally bind
+// the exact next lifecycle revision plus their complete creator lineage.
+func roundBatchRegistration(ctx context.Context, state *InputSigSentState,
+	vtxos []*ClientVTXO, batchTxID chainhash.Hash,
+	store VTXOStore) (*batchcanon.RegisterBatchRequest, error) {
+
+	if state.CommitmentTx == nil || state.CommitmentTx.UnsignedTx == nil {
+		return nil, fmt.Errorf("commitment PSBT is missing")
+	}
+
+	commitmentTx := state.CommitmentTx.UnsignedTx
+	if commitmentTx.TxHash() != batchTxID {
+		return nil, fmt.Errorf("confirmed txid %s does not match "+
+			"commitment transaction %s", batchTxID,
+			commitmentTx.TxHash())
+	}
+	if len(state.CommitmentTx.Inputs) != len(commitmentTx.TxIn) {
+		return nil, fmt.Errorf("commitment PSBT has %d input records "+
+			"for %d transaction inputs",
+			len(state.CommitmentTx.Inputs), len(commitmentTx.TxIn))
+	}
+
+	consumedInputs := make(
+		[]batchcanon.ConsumedInput, 0, len(commitmentTx.TxIn),
+	)
+	for idx, txIn := range commitmentTx.TxIn {
+		prevOut := state.CommitmentTx.Inputs[idx].WitnessUtxo
+		if prevOut == nil {
+			return nil, fmt.Errorf("commitment input %d (%s) has "+
+				"no WitnessUtxo", idx, txIn.PreviousOutPoint)
+		}
+		consumedInputs = append(
+			consumedInputs, batchcanon.ConsumedInput{
+				Outpoint: txIn.PreviousOutPoint,
+				Value:    prevOut.Value,
+				PkScript: bytes.Clone(prevOut.PkScript),
+			},
+		)
+	}
+
+	dependentVTXOs := make([]wire.OutPoint, 0, len(vtxos))
+	for _, vtxo := range vtxos {
+		dependentVTXOs = append(dependentVTXOs, vtxo.Outpoint)
+	}
+
+	consumerEdges := make(
+		[]batchcanon.ConsumerEdge, 0, len(state.ForfeitedVTXOs),
+	)
+	for _, outpoint := range state.ForfeitedVTXOs {
+		consumedVTXO, err := store.GetVTXO(ctx, outpoint)
+		if err != nil {
+			return nil, fmt.Errorf("load forfeited VTXO %s: %w",
+				outpoint, err)
+		}
+		lineage, err := creatorLineage(consumedVTXO)
+		if err != nil {
+			return nil, err
+		}
+		consumerEdges = append(consumerEdges, batchcanon.ConsumerEdge{
+			ConsumedVTXO:     outpoint,
+			ConsumerBatch:    batchTxID,
+			ExpectedRevision: consumedVTXO.BusinessRevision + 1,
+			CreatorLineage:   lineage,
+		})
+	}
+
+	outputIdx, err := batchOutputIndex(
+		commitmentTx, state.VTXOTreePaths,
+	)
+	if err != nil {
+		return nil, err
+	}
+	var serializedTx bytes.Buffer
+	if err := commitmentTx.Serialize(&serializedTx); err != nil {
+		return nil, fmt.Errorf("serialize commitment transaction: %w",
+			err)
+	}
+
+	return &batchcanon.RegisterBatchRequest{
+		BatchTxID:        batchTxID,
+		BatchTx:          serializedTx.Bytes(),
+		BatchOutputIndex: outputIdx,
+		ConfirmationPkScript: bytes.Clone(
+			commitmentTx.TxOut[outputIdx].PkScript,
+		),
+		CSVExpiryDelta: int32(state.SweepDelay),
+		ConsumedInputs: consumedInputs,
+		DependentVTXOs: dependentVTXOs,
+		ConsumedVTXOs:  consumerEdges,
+	}, nil
+}
+
 // ProcessEvent for InputSigSentState.
 //
 //nolint:funlen
@@ -4568,6 +4718,28 @@ func (s *InputSigSentState) ProcessEvent(ctx context.Context, event ClientEvent,
 			cv.CreatedHeight = evt.BlockHeight
 			for i := range cv.Ancestry {
 				cv.Ancestry[i].CommitmentTxID = evt.TxID
+			}
+		}
+
+		// Register the complete commitment and logical consumer lineage
+		// before persisting any VTXO derived from it. The admission
+		// gate is fail-closed, so a registration failure leaves the
+		// round at its pre-exposure checkpoint and no new liquidity
+		// becomes selectable.
+		if env.BatchRegistrar != nil {
+			opCtx := context.WithoutCancel(ctx)
+			registration, err := roundBatchRegistration(
+				opCtx, s, vtxos, evt.TxID, env.VTXOStore,
+			)
+			if err != nil {
+				return nil, fmt.Errorf("build batch "+
+					"registration: %w", err)
+			}
+			if err := env.BatchRegistrar.RegisterBatch(
+				opCtx, registration,
+			); err != nil {
+				return nil, fmt.Errorf("register batch before "+
+					"VTXO exposure: %w", err)
 			}
 		}
 
