@@ -152,6 +152,16 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/cmd/wave
 - `recovery escalate` refuses to run on non-interactive stdin unless
   `--yes` is passed — it never blocks on a y/N prompt an agent can't
   answer.
+- `ark vtxos refresh` is gated on fee consent: a real refresh fetches
+  the dry-run estimate and prompts with it on a TTY, and refuses on
+  non-interactive stdin without `--yes` (same posture as `leave --all`
+  and `recovery escalate`). The MCP tool enforces the same contract
+  through its `yes` argument — no prompt exists there, so a bare real
+  refresh returns an immediate actionable error. `--dry_run` previews
+  the itemized advisory estimate and never prompts. A failed estimate
+  degrades to a "still charged the seal-time fee" warning and its
+  total is absent on the wire (explicit proto presence) — it never
+  blocks the flow and is never rendered as a zero fee.
 
 ## Deep Docs
 
