@@ -39,7 +39,13 @@ func newFeesEstimateCmd() *cobra.Command {
 			"seal time and may differ from this estimate. " +
 			"Shows liquidity fee, on-chain share, margin, " +
 			"total fee, effective rate, and minimum " +
-			"viable VTXO.",
+			"viable VTXO.\n\n" +
+			"To preview the fee for refreshing specific " +
+			"VTXOs without looking up their amounts and " +
+			"remaining lifetimes by hand, use `ark vtxos " +
+			"refresh --dry_run` instead: it resolves each " +
+			"selected VTXO and returns a per-outpoint " +
+			"estimate.",
 		RunE: feesEstimate,
 	}
 

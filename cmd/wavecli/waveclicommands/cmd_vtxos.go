@@ -161,7 +161,8 @@ func newVTXOsRefreshCmd() *cobra.Command {
 		"refresh all live VTXOs")
 
 	cmd.Flags().Bool("dry_run", false,
-		"validate without queuing")
+		"validate without queuing and preview the estimated "+
+			"operator fee")
 
 	cmd.Flags().Bool("no_join", false,
 		"skip the implicit `ark rounds join` follow-up so this "+
@@ -221,9 +222,110 @@ func vtxosRefresh(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
+	// The itemized estimate is in the JSON body on stdout; the
+	// summary goes to stderr so a human reading the terminal sees
+	// the headline number without stdout consumers having to strip
+	// prose.
+	for _, line := range summarizeRefreshFeeEstimate(
+		resp.GetFeeEstimate(),
+	) {
+		fmt.Fprintln(cmd.ErrOrStderr(), line)
+	}
+
+	// A non-empty dry-run preview without an estimate can only come
+	// from a daemon that predates the fee preview: the daemon omits
+	// the estimate solely for empty selections. Warn rather than
+	// stay silent — the flag help promises a fee preview, and
+	// silence here would read as "free".
+	if req.DryRun && len(resp.GetQueuedOutpoints()) > 0 &&
+		resp.GetFeeEstimate() == nil {
+
+		fmt.Fprintln(
+			cmd.ErrOrStderr(),
+			"warning: the daemon returned no fee estimate "+
+				"(older daemon?); a refresh is still "+
+				"charged the binding seal-time fee",
+		)
+	}
+
 	noJoin, _ := cmd.Flags().GetBool("no_join")
 
 	return maybeJoinNextRound(cmd, client, req.DryRun, noJoin)
+}
+
+// summarizeRefreshFeeEstimate renders the dry-run fee estimate as
+// human-readable stderr lines. Split from the IO wrapper so the
+// wording rules are covered by a focused unit test. A nil estimate
+// (real refresh, empty selection) renders nothing.
+//
+// Every branch repeats that the number is advisory: the binding fee is
+// set by the seal-time quote, and telling the user otherwise here
+// would overpromise exactly the guarantee the refresh flow cannot
+// make.
+func summarizeRefreshFeeEstimate(est *waverpc.RefreshFeeEstimate) []string {
+	if est == nil {
+		return nil
+	}
+
+	var lines []string
+
+	count := len(est.Outpoints)
+
+	switch {
+	case est.EstimateError != "":
+		lines = append(
+			lines, fmt.Sprintf("warning: refresh fee estimate "+
+				"unavailable (%s); a refresh is still "+
+				"charged the binding seal-time fee",
+				est.EstimateError),
+		)
+
+		if est.FreeRefreshEligible {
+			lines = append(
+				lines, fmt.Sprintf("expected free: all %d "+
+					"selected VTXO(s) are inside the "+
+					"operator's free-refresh window "+
+					"(advisory)", count),
+			)
+		}
+
+	case est.FreeRefreshEligible:
+		lines = append(
+			lines, fmt.Sprintf("estimated refresh fee: 0 sat — "+
+				"all %d selected VTXO(s) are inside the "+
+				"operator's free-refresh window (advisory; "+
+				"the binding fee is set at seal time)", count),
+		)
+
+	default:
+		lines = append(
+			lines,
+			fmt.Sprintf(
+				"estimated refresh fee: %d sat across %d "+
+					"VTXO(s) (advisory; the binding fee "+
+					"is set at seal time)",
+				est.GetEstimatedTotalFeeSat(), count,
+			),
+		)
+	}
+
+	var belowDust int
+	for _, row := range est.Outpoints {
+		if row.BelowDustWarning {
+			belowDust++
+		}
+	}
+	if belowDust > 0 {
+		lines = append(
+			lines, fmt.Sprintf("warning: %d selected VTXO(s) are "+
+				"below the operator's minimum viable amount; "+
+				"refreshing them pays fees on coins that "+
+				"already cost more to exit than they hold",
+				belowDust),
+		)
+	}
+
+	return lines
 }
 
 // newVTXOsLeaveCmd creates the vtxos leave subcommand.
