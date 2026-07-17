@@ -237,7 +237,8 @@ SELECT * FROM vtxos WHERE round_id = $1 ORDER BY creation_time DESC;
 
 -- name: MarkVTXOSpent :exec
 -- Also sets status = 4 (Spent) to keep status in sync with spent flag.
-UPDATE vtxos SET spent = TRUE, status = 4, last_update_time = $3
+UPDATE vtxos SET spent = TRUE, status = 4,
+    business_revision = business_revision + 1, last_update_time = $3
 WHERE outpoint_hash = $1 AND outpoint_index = $2;
 
 -- name: CountUnspentVTXOs :one

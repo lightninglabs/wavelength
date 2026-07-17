@@ -14,7 +14,17 @@ type Querier interface {
 	// returns the event_seq the database assigned (monotonic, not necessarily
 	// contiguous). Callers use it as the resumable-subscribe cursor for the update.
 	AppendActivityEvent(ctx context.Context, arg AppendActivityEventParams) (int64, error)
+	// ApplyBatchCanonicalityObservation atomically installs the batch-level part
+	// of one complete observation snapshot. The caller updates every input in the
+	// same SQL transaction before this generation-guarded write.
+	ApplyBatchCanonicalityObservation(ctx context.Context, arg ApplyBatchCanonicalityObservationParams) (int64, error)
+	// BeginBatchCanonicalityReconcile closes admission and starts a fresh
+	// observation generation before any watch is armed.
+	BeginBatchCanonicalityReconcile(ctx context.Context, arg BeginBatchCanonicalityReconcileParams) (BatchCanonicality, error)
 	CancelVHTLCRecoveryJob(ctx context.Context, arg CancelVHTLCRecoveryJobParams) (int64, error)
+	// ClearBatchConfirmation nulls the confirmation observation, reflecting that
+	// the confirming block left the best chain. It sets no terminal flag.
+	ClearBatchConfirmation(ctx context.Context, arg ClearBatchConfirmationParams) error
 	ClearPendingIntentAnchorByOutpoint(ctx context.Context, arg ClearPendingIntentAnchorByOutpointParams) error
 	CompleteVHTLCRecoveryJob(ctx context.Context, arg CompleteVHTLCRecoveryJobParams) (int64, error)
 	// CountActivityEntriesByStatus returns the number of current-state rows in the
@@ -33,6 +43,12 @@ type Querier interface {
 	// CountVTXOsByStatus returns the count of VTXOs with the specified status.
 	CountVTXOsByStatus(ctx context.Context, status int32) (int64, error)
 	CountWalletUTXOLog(ctx context.Context) (int64, error)
+	// DeleteBatchConsumedInputs removes every consumed-input row for a batch,
+	// used by the store's upsert to replace the set atomically.
+	DeleteBatchConsumedInputs(ctx context.Context, batchTxid []byte) error
+	// DeleteBatchDependentVTXOs removes every dependent-VTXO row for a batch,
+	// used by the store's upsert to replace the set atomically.
+	DeleteBatchDependentVTXOs(ctx context.Context, batchTxid []byte) error
 	DeleteClientTreeTxids(ctx context.Context, arg DeleteClientTreeTxidsParams) error
 	DeleteOORPackageCheckpoints(ctx context.Context, sessionID []byte) error
 	DeleteOrphanedPendingBoardIntents(ctx context.Context) error
@@ -53,6 +69,12 @@ type Querier interface {
 	DeletePendingIntentsByKind(ctx context.Context, kind string) error
 	DeletePendingSendIntentByID(ctx context.Context, intentID []byte) error
 	DeletePendingSendIntentsAll(ctx context.Context) error
+	// DeleteProvisionalConsumer completes one exact edge. Its normalized creator
+	// lineage cascades with it.
+	DeleteProvisionalConsumer(ctx context.Context, arg DeleteProvisionalConsumerParams) (int64, error)
+	// DeleteProvisionalConsumersForBatch removes every reverse-dependency edge
+	// for the given consumer batch.
+	DeleteProvisionalConsumersForBatch(ctx context.Context, consumerBatchTxid []byte) error
 	// DeleteSpendingReservation removes the reservation for one outpoint. Called
 	// when the VTXO leaves SpendingState (released or completed).
 	DeleteSpendingReservation(ctx context.Context, arg DeleteSpendingReservationParams) error
@@ -66,8 +88,14 @@ type Querier interface {
 	EscalateVHTLCRecoveryJob(ctx context.Context, arg EscalateVHTLCRecoveryJobParams) (int64, error)
 	FailVHTLCRecoveryJob(ctx context.Context, arg FailVHTLCRecoveryJobParams) (int64, error)
 	FinalizeRound(ctx context.Context, arg FinalizeRoundParams) error
+	// FindBatchesByConsumedOutpoint returns the txids of every batch that
+	// consumes the given outpoint.
+	FindBatchesByConsumedOutpoint(ctx context.Context, arg FindBatchesByConsumedOutpointParams) ([][]byte, error)
 	// GetActivityEntry returns one entry by its canonical id.
 	GetActivityEntry(ctx context.Context, canonicalID string) (ActivityEntry, error)
+	// GetBatchCanonicality returns the canonicality row for a batch txid. The
+	// column order matches the table so sqlc reuses the BatchCanonicality model.
+	GetBatchCanonicality(ctx context.Context, batchTxid []byte) (BatchCanonicality, error)
 	GetBoardingAddress(ctx context.Context, pkScript []byte) (BoardingAddress, error)
 	GetBoardingIntent(ctx context.Context, arg GetBoardingIntentParams) (BoardingIntent, error)
 	GetBoardingSweep(ctx context.Context, txid []byte) (BoardingSweep, error)
@@ -95,6 +123,9 @@ type Querier interface {
 	// Fetch one intent header by id, exposing the terminal-failure columns so
 	// callers (and tests) can assert send-failure state without raw SQL.
 	GetPendingIntentByID(ctx context.Context, intentID []byte) (GetPendingIntentByIDRow, error)
+	// GetProvisionalConsumer returns the immutable expected business revision of
+	// one edge so repeat registration can reject contradictory evidence.
+	GetProvisionalConsumer(ctx context.Context, arg GetProvisionalConsumerParams) (int64, error)
 	GetRound(ctx context.Context, roundID string) (Round, error)
 	GetRoundBoardingIntents(ctx context.Context, roundID string) ([]RoundBoardingIntent, error)
 	GetRoundByCommitmentTxid(ctx context.Context, commitmentTxid []byte) (Round, error)
@@ -114,6 +145,11 @@ type Querier interface {
 	// GetVTXOReplacement retrieves the replacement VTXO outpoint for a forfeited
 	// VTXO. Returns NULL if not forfeited or no replacement recorded.
 	GetVTXOReplacement(ctx context.Context, arg GetVTXOReplacementParams) (GetVTXOReplacementRow, error)
+	// InsertBatchConsumedInput records one input consumed by a batch, together
+	// with the pkScript of the spent output (needed to register the spend watch).
+	InsertBatchConsumedInput(ctx context.Context, arg InsertBatchConsumedInputParams) error
+	// InsertBatchDependentVTXO records one VTXO outpoint anchored by a batch.
+	InsertBatchDependentVTXO(ctx context.Context, arg InsertBatchDependentVTXOParams) error
 	// Boarding address queries.
 	InsertBoardingAddress(ctx context.Context, arg InsertBoardingAddressParams) error
 	// Boarding intent queries.
@@ -141,9 +177,13 @@ type Querier interface {
 	InsertClientLedgerEntry(ctx context.Context, arg InsertClientLedgerEntryParams) error
 	// Client tree txids queries.
 	InsertClientTreeTxid(ctx context.Context, arg InsertClientTreeTxidParams) error
+	InsertConsumerCreatorLineage(ctx context.Context, arg InsertConsumerCreatorLineageParams) error
 	InsertExitFundingAddress(ctx context.Context, arg InsertExitFundingAddressParams) error
 	InsertMacaroonRootKey(ctx context.Context, arg InsertMacaroonRootKeyParams) error
 	InsertOORPackageCheckpoint(ctx context.Context, arg InsertOORPackageCheckpointParams) error
+	// InsertProvisionalConsumer records a reverse-dependency edge: consumed_vtxo
+	// is provisionally consumed by consumer_batch. Idempotent.
+	InsertProvisionalConsumer(ctx context.Context, arg InsertProvisionalConsumerParams) error
 	// Round queries.
 	InsertRound(ctx context.Context, arg InsertRoundParams) error
 	// Round boarding intents queries.
@@ -179,6 +219,14 @@ type Querier interface {
 	ListAllCreditOperations(ctx context.Context) ([]CreditOperation, error)
 	ListAllOORSessionRegistry(ctx context.Context) ([]OorSessionRegistry, error)
 	ListAllVTXOs(ctx context.Context) ([]Vtxo, error)
+	// ListBatchCanonicalityByState returns every batch currently in the given
+	// state.
+	ListBatchCanonicalityByState(ctx context.Context, state int32) ([]BatchCanonicality, error)
+	// ListBatchConsumedInputs returns the inputs a batch consumes, with the
+	// pkScript of each spent output and its persisted conflict observation.
+	ListBatchConsumedInputs(ctx context.Context, batchTxid []byte) ([]ListBatchConsumedInputsRow, error)
+	// ListBatchDependentVTXOs returns the VTXO outpoints a batch anchors.
+	ListBatchDependentVTXOs(ctx context.Context, batchTxid []byte) ([]ListBatchDependentVTXOsRow, error)
 	ListBoardingIntentOutpoints(ctx context.Context) ([]ListBoardingIntentOutpointsRow, error)
 	ListBoardingIntentsByConfHeight(ctx context.Context, confHeight int32) ([]BoardingIntent, error)
 	ListBoardingIntentsByPkScript(ctx context.Context, pkScript []byte) ([]BoardingIntent, error)
@@ -193,6 +241,7 @@ type Querier interface {
 	ListClientLedgerEntries(ctx context.Context, arg ListClientLedgerEntriesParams) ([]LedgerEntry, error)
 	ListClientLedgerEntriesByType(ctx context.Context, arg ListClientLedgerEntriesByTypeParams) ([]LedgerEntry, error)
 	ListClientLedgerEventTotals(ctx context.Context) ([]ListClientLedgerEventTotalsRow, error)
+	ListConsumerCreatorLineage(ctx context.Context, arg ListConsumerCreatorLineageParams) ([][]byte, error)
 	// ListEntriesByKindStatus returns entries of the given kind and status, paged
 	// by the unique canonical_id ascending. It backs the startup rehydration of
 	// the wallet-local pending map: filtering in SQL keeps that scan O(matching
@@ -234,10 +283,16 @@ type Querier interface {
 	ListPendingBoardIntents(ctx context.Context) ([]ListPendingBoardIntentsRow, error)
 	ListPendingBoardingSweepInputs(ctx context.Context) ([]BoardingSweepInput, error)
 	ListPendingBoardingSweeps(ctx context.Context) ([]BoardingSweep, error)
+	// ListPendingConsumerBatchesByCreator targets durable restore checkpoints
+	// whose creator-lineage decision may change when this batch changes state.
+	ListPendingConsumerBatchesByCreator(ctx context.Context, creatorBatchTxid []byte) ([][]byte, error)
 	ListPendingIntentAnchorsByKind(ctx context.Context, kind string) ([]PendingIntentAnchor, error)
 	// Only status = 'pending' rows replay; a 'failed' intent is terminally
 	// retired and must not be re-submitted on restart.
 	ListPendingSendIntents(ctx context.Context) ([]ListPendingSendIntentsRow, error)
+	// ListProvisionalConsumersForBatch returns every pending edge and expected
+	// business revision owned by one consumer batch.
+	ListProvisionalConsumersForBatch(ctx context.Context, consumerBatchTxid []byte) ([]ListProvisionalConsumersForBatchRow, error)
 	ListRoundsByStatus(ctx context.Context, status string) ([]Round, error)
 	// ListRoundsPaginated returns rounds ordered by round_id with cursor-
 	// based pagination. When cursor is empty, returns from the beginning.
@@ -282,6 +337,13 @@ type Querier interface {
 	// unknown (all non-forfeited VTXOs, and forfeited ones whose round row is
 	// absent), so consumers must treat them as optional.
 	ListVTXOsByStatus(ctx context.Context, status int32) ([]ListVTXOsByStatusRow, error)
+	// ListVTXOsForCanonicalityBackfill returns the columns needed to derive
+	// initial batch canonicality records from already-persisted VTXOs: each
+	// VTXO's outpoint, its commitment (batch) txid, the absolute batch expiry
+	// height, and the height at which it was created (confirmed). The backfill
+	// groups these by commitment txid in Go and recomputes the CSV-relative
+	// expiry delta as batch_expiry - created_height.
+	ListVTXOsForCanonicalityBackfill(ctx context.Context) ([]ListVTXOsForCanonicalityBackfillRow, error)
 	ListWalletUTXOLog(ctx context.Context, arg ListWalletUTXOLogParams) ([]WalletUtxoLog, error)
 	ListWalletUTXOLogByBlock(ctx context.Context, blockHeight int32) ([]WalletUtxoLog, error)
 	ListWalletUTXOLogByClassification(ctx context.Context, arg ListWalletUTXOLogByClassificationParams) ([]WalletUtxoLog, error)
@@ -294,6 +356,9 @@ type Querier interface {
 	// dedup a keyed retry, so the lookup skips them: only a pending or completed
 	// session answers for an idempotency key.
 	LookupActiveOORSessionRegistryByIdempotencyKey(ctx context.Context, idempotencyKey sql.NullString) (OorSessionRegistry, error)
+	// MarkBatchCanonicalityReady opens admission only for the generation whose
+	// complete snapshot was installed. A stale generation updates zero rows.
+	MarkBatchCanonicalityReady(ctx context.Context, arg MarkBatchCanonicalityReadyParams) (int64, error)
 	MarkBoardingSweepInputSpentByOutpoint(ctx context.Context, arg MarkBoardingSweepInputSpentByOutpointParams) (int64, error)
 	MarkBoardingSweepInputStatus(ctx context.Context, arg MarkBoardingSweepInputStatusParams) error
 	MarkBoardingSweepInputsStatus(ctx context.Context, arg MarkBoardingSweepInputsStatusParams) error
@@ -326,8 +391,28 @@ type Querier interface {
 	// PullActivityEvents returns transition rows strictly after the cursor in
 	// event_seq order, the resumable-subscribe replay primitive.
 	PullActivityEvents(ctx context.Context, arg PullActivityEventsParams) ([]ActivityEvent, error)
+	// QuarantineBatchCanonicality fails a record closed after contradictory
+	// immutable evidence is presented.
+	QuarantineBatchCanonicality(ctx context.Context, arg QuarantineBatchCanonicalityParams) error
+	// RecordBatchConfirmation records the best-chain height and block hash at
+	// which the batch tx is confirmed. A later call at a different height (after
+	// a reorg) overwrites the observation so effective expiry tracks the new
+	// confirmation.
+	RecordBatchConfirmation(ctx context.Context, arg RecordBatchConfirmationParams) error
+	// RecordBatchInputConflict persists the observed conflict status of one
+	// consumed input, so restart reconciliation can rebuild the per-input
+	// conflict view and not transiently downgrade a persisted conflict.
+	RecordBatchInputConflict(ctx context.Context, arg RecordBatchInputConflictParams) (int64, error)
+	// RestoreForfeitedVTXOForConsumer is the business-state CAS. The caller
+	// deletes the exact edge in the same transaction only when this updates one
+	// row. A competing viable consumer, reservation, completed spend, different
+	// consumer marker, or stale revision makes it update zero rows.
+	RestoreForfeitedVTXOForConsumer(ctx context.Context, arg RestoreForfeitedVTXOForConsumerParams) (int64, error)
 	SumBoardingIntentAmountsByStatus(ctx context.Context, status string) (interface{}, error)
 	SumUnspentVTXOAmounts(ctx context.Context) (interface{}, error)
+	// UpdateBatchCanonicalityState transitions a batch to a new state without
+	// touching its other fields.
+	UpdateBatchCanonicalityState(ctx context.Context, arg UpdateBatchCanonicalityStateParams) error
 	UpdateBoardingIntentStatus(ctx context.Context, arg UpdateBoardingIntentStatusParams) error
 	UpdateRoundBoardingIntentSignature(ctx context.Context, arg UpdateRoundBoardingIntentSignatureParams) error
 	UpdateRoundStatus(ctx context.Context, arg UpdateRoundStatusParams) error
@@ -344,6 +429,15 @@ type Querier interface {
 	// correlation handles are COALESCEd so an early projection that does not yet
 	// know a txid never clobbers one a later projection already recorded.
 	UpsertActivityEntry(ctx context.Context, arg UpsertActivityEntryParams) (int64, error)
+	// Batch canonicality queries.
+	// These maintain the durable, reorg-aware record of how each batch
+	// (commitment) transaction is faring against the best chain, the inputs it
+	// consumes, the VTXOs it anchors, and the reverse-dependency edges needed to
+	// restore a provisionally consumed VTXO. The queries are behavior-free; all
+	// interpretation lives in the batch canonicality manager.
+	// UpsertBatchCanonicality inserts or replaces the canonicality row for a
+	// batch. created_at is preserved on conflict; everything else is overwritten.
+	UpsertBatchCanonicality(ctx context.Context, arg UpsertBatchCanonicalityParams) error
 	UpsertChainInfo(ctx context.Context, arg UpsertChainInfoParams) error
 	// Credit operations control-plane queries.
 	UpsertCreditOperation(ctx context.Context, arg UpsertCreditOperationParams) error

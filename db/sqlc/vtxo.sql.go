@@ -88,7 +88,7 @@ func (q *Queries) GetVTXOReplacement(ctx context.Context, arg GetVTXOReplacement
 }
 
 const ListLiveVTXOs = `-- name: ListLiveVTXOs :many
-SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, policy_template, client_key_id, operator_pubkey, batch_expiry, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time, chain_depth, construction_version FROM vtxos
+SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, policy_template, client_key_id, operator_pubkey, batch_expiry, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time, chain_depth, construction_version, business_revision, forfeit_consumer_txid FROM vtxos
 WHERE (status < 3 OR status = 7) AND spent = FALSE
 ORDER BY creation_time DESC
 `
@@ -134,6 +134,8 @@ func (q *Queries) ListLiveVTXOs(ctx context.Context) ([]Vtxo, error) {
 			&i.LastUpdateTime,
 			&i.ChainDepth,
 			&i.ConstructionVersion,
+			&i.BusinessRevision,
+			&i.ForfeitConsumerTxid,
 		); err != nil {
 			return nil, err
 		}
@@ -197,7 +199,7 @@ func (q *Queries) ListVTXOSelectionCandidatesByStatus(ctx context.Context, statu
 
 const ListVTXOsByStatus = `-- name: ListVTXOsByStatus :many
 
-SELECT vtxos.outpoint_hash, vtxos.outpoint_index, vtxos.round_id, vtxos.amount, vtxos.pk_script, vtxos.expiry, vtxos.policy_template, vtxos.client_key_id, vtxos.operator_pubkey, vtxos.batch_expiry, vtxos.created_height, vtxos.commitment_txid, vtxos.spent, vtxos.status, vtxos.forfeit_round_id, vtxos.forfeit_tx, vtxos.forfeit_txid, vtxos.replaced_by_hash, vtxos.replaced_by_index, vtxos.creation_time, vtxos.last_update_time, vtxos.chain_depth, vtxos.construction_version,
+SELECT vtxos.outpoint_hash, vtxos.outpoint_index, vtxos.round_id, vtxos.amount, vtxos.pk_script, vtxos.expiry, vtxos.policy_template, vtxos.client_key_id, vtxos.operator_pubkey, vtxos.batch_expiry, vtxos.created_height, vtxos.commitment_txid, vtxos.spent, vtxos.status, vtxos.forfeit_round_id, vtxos.forfeit_tx, vtxos.forfeit_txid, vtxos.replaced_by_hash, vtxos.replaced_by_index, vtxos.creation_time, vtxos.last_update_time, vtxos.chain_depth, vtxos.construction_version, vtxos.business_revision, vtxos.forfeit_consumer_txid,
     rounds.commitment_txid AS settlement_txid,
     rounds.confirmation_height AS settlement_height
 FROM vtxos
@@ -254,6 +256,8 @@ func (q *Queries) ListVTXOsByStatus(ctx context.Context, status int32) ([]ListVT
 			&i.Vtxo.LastUpdateTime,
 			&i.Vtxo.ChainDepth,
 			&i.Vtxo.ConstructionVersion,
+			&i.Vtxo.BusinessRevision,
+			&i.Vtxo.ForfeitConsumerTxid,
 			&i.SettlementTxid,
 			&i.SettlementHeight,
 		); err != nil {
@@ -274,19 +278,22 @@ const MarkVTXOForfeited = `-- name: MarkVTXOForfeited :exec
 UPDATE vtxos
 SET status = 3, -- Forfeited
     forfeit_txid = $3,
-    replaced_by_hash = $4,
-    replaced_by_index = $5,
-    last_update_time = $6
+    forfeit_consumer_txid = $4,
+    replaced_by_hash = $5,
+    replaced_by_index = $6,
+    business_revision = business_revision + 1,
+    last_update_time = $7
 WHERE outpoint_hash = $1 AND outpoint_index = $2
 `
 
 type MarkVTXOForfeitedParams struct {
-	OutpointHash    []byte
-	OutpointIndex   int32
-	ForfeitTxid     []byte
-	ReplacedByHash  []byte
-	ReplacedByIndex sql.NullInt32
-	LastUpdateTime  int64
+	OutpointHash        []byte
+	OutpointIndex       int32
+	ForfeitTxid         []byte
+	ForfeitConsumerTxid []byte
+	ReplacedByHash      []byte
+	ReplacedByIndex     sql.NullInt32
+	LastUpdateTime      int64
 }
 
 // MarkVTXOForfeited marks a VTXO as forfeited and records the forfeit
@@ -297,6 +304,7 @@ func (q *Queries) MarkVTXOForfeited(ctx context.Context, arg MarkVTXOForfeitedPa
 		arg.OutpointHash,
 		arg.OutpointIndex,
 		arg.ForfeitTxid,
+		arg.ForfeitConsumerTxid,
 		arg.ReplacedByHash,
 		arg.ReplacedByIndex,
 		arg.LastUpdateTime,
@@ -309,6 +317,7 @@ UPDATE vtxos
 SET status = 2, -- Forfeiting
     forfeit_round_id = $3,
     forfeit_tx = $4,
+    business_revision = business_revision + 1,
     last_update_time = $5
 WHERE outpoint_hash = $1 AND outpoint_index = $2
 `
@@ -341,6 +350,7 @@ SET status = $3,
     -- Keep spent flag in sync when status transitions to Spent (4).
     -- We intentionally do not clear spent once set.
     spent = CASE WHEN $3 = 4 THEN TRUE ELSE spent END,
+    business_revision = business_revision + 1,
     last_update_time = $4
 WHERE outpoint_hash = $1 AND outpoint_index = $2
 `
