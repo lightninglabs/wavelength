@@ -692,6 +692,24 @@ type InputSigSentState struct {
 	// round confirms, ForfeitConfirmedToVTXO messages are emitted for each
 	// so old VTXO actors can transition to the Forfeited terminal state.
 	ForfeitedVTXOs []wire.OutPoint
+
+	// PendingFailure carries a round-failure notification received while
+	// forfeit signatures are already out (wavelength#844). The FSM cannot
+	// fail the round on the notification alone — the operator may hold
+	// fully-signed forfeit txs, so releasing the reservations needs proof
+	// the commitment can never confirm — so the failure is parked here
+	// while a QueryRoundStatus probe reconciles the round's fate. It is
+	// in-memory only: a restart re-enters the reconcile from scratch via
+	// the re-armed status-reconcile timeout.
+	PendingFailure *BoardingFailed
+
+	// ReconcileProbes counts the QueryRoundStatus probes sent for this
+	// round so the re-arm duration can back off exponentially against an
+	// operator that never answers (e.g. one predating the status RPC).
+	// Like PendingFailure it is in-memory only; a restart resets the
+	// backoff, which just means the first post-restart probe fires
+	// promptly again.
+	ReconcileProbes uint32
 }
 
 func (s *InputSigSentState) String() string {

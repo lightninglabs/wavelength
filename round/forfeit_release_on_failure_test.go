@@ -601,10 +601,13 @@ func TestPreSigningTerminalFailureRetiresJob(t *testing.T) {
 
 // TestPostSigningFailureDoesNotReleaseForfeits is the safety control: once the
 // client has submitted its forfeit signatures (InputSigSentState onward), a
-// failed round must NOT auto-release the inputs, since the server could still
-// broadcast the forfeit if the commitment confirms. Releasing here would risk a
-// double-spend, so the post-signing states are deliberately not wired to the
-// release helper.
+// failed round must NOT auto-release the inputs on the notification alone,
+// since the server could still broadcast the forfeit if the commitment
+// confirms. The release instead rides the wavelength#844 status reconcile: the
+// failure parks in the state while a QueryRoundStatus probe confirms the round
+// is dead at the operator, and only that authoritative answer releases (see
+// status_reconcile_test.go). This test pins the notification-alone half: no
+// release may ride the BoardingFailed itself.
 func TestPostSigningFailureDoesNotReleaseForfeits(t *testing.T) {
 	t.Parallel()
 

@@ -991,3 +991,41 @@ type TerminalJobFailedNotification struct {
 }
 
 func (m *TerminalJobFailedNotification) clientOutMsgSealed() {}
+
+// QueryRoundStatusOutbox is emitted by InputSigSentState to probe the
+// operator for a round's authoritative lifecycle status (wavelength#844).
+// It fires when a round failure arrives after forfeit signatures have been
+// sent, and again on every status-reconcile timeout, so a lost failure
+// notification or a silent operator both converge on an answer. Routed via
+// the durable mailbox to the server's MethodQueryRoundStatus handler; the
+// answer comes back asynchronously as a ClientRoundStatusReport push event.
+type QueryRoundStatusOutbox struct {
+	actor.BaseMessage
+
+	// RoundID is the round whose status is being queried.
+	RoundID RoundID
+}
+
+func (m *QueryRoundStatusOutbox) clientOutMsgSealed() {}
+
+// ServiceMethod returns the mailbox routing metadata for
+// QueryRoundStatusOutbox.
+func (m *QueryRoundStatusOutbox) ServiceMethod() mailboxrpc.ServiceMethod {
+	return mailboxrpc.ServiceMethod{
+		Service: roundpb.ServiceName,
+		Method:  roundpb.MethodQueryRoundStatus,
+	}
+}
+
+// CorrelationKey returns the per-round FIFO key so the probe lands in
+// emission order with the rest of the round's outbox events.
+func (m *QueryRoundStatusOutbox) CorrelationKey() string {
+	return roundCorrelationKey(m.RoundID.String())
+}
+
+// ToProto converts QueryRoundStatusOutbox to the roundpb wire format.
+func (m *QueryRoundStatusOutbox) ToProto() fn.Result[proto.Message] {
+	return fn.Ok[proto.Message](&roundpb.QueryRoundStatusRequest{
+		RoundId: append([]byte(nil), m.RoundID[:]...),
+	})
+}
