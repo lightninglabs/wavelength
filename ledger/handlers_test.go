@@ -197,7 +197,12 @@ func TestHandleFeePaidBoarding(t *testing.T) {
 	entries := store.getEntries()
 	require.Len(t, entries, 1)
 	require.Equal(t, AccountFeesPaid, entries[0].DebitAccount)
-	require.Equal(t, AccountVTXOBalance,
+
+	// The boarding fee is paid from the on-chain wallet funds entering the
+	// Ark layer: the boarding vtxo_received leg books the sealed (net of
+	// fee) VTXO value, so the fee leg must credit wallet_balance to
+	// complete the gross wallet outflow.
+	require.Equal(t, AccountWalletBalance,
 		entries[0].CreditAccount)
 	require.Equal(t, int64(1500), entries[0].AmountSat)
 	require.Equal(t, EventBoardingFeePaid,

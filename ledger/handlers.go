@@ -67,8 +67,13 @@ func (a *LedgerActor) handleFeePaid(ctx context.Context, msg *FeePaidMsg,
 
 	roundID := roundIDOrNil(msg.RoundID)
 
-	// Operator-fee types share the same accounts (fees_paid /
-	// vtxo_balance). Onchain-sweep fees book against onchain_fees /
+	// The credit side names the account the fee was actually paid from.
+	// A boarding fee comes out of the on-chain wallet funds entering the
+	// Ark layer: the boarding vtxo_received leg books the SEALED (net of
+	// fee) VTXO value, so crediting wallet_balance here completes the
+	// gross wallet outflow while leaving vtxo_balance equal to the sealed
+	// VTXO sum. A refresh fee is carved out of forfeited VTXO value, so it
+	// credits vtxo_balance. Onchain-sweep fees book against onchain_fees /
 	// wallet_clearing instead — they are L1 chain costs paid by a
 	// wallet-internal sweep, not Ark protocol operator fees, and the
 	// fee is settled through wallet clearing rather than VTXO balance.
@@ -83,7 +88,7 @@ func (a *LedgerActor) handleFeePaid(ctx context.Context, msg *FeePaidMsg,
 	case FeeTypeBoarding:
 		eventType = EventBoardingFeePaid
 		debitAccount = AccountFeesPaid
-		creditAccount = AccountVTXOBalance
+		creditAccount = AccountWalletBalance
 		description = fmt.Sprintf("%s fee paid in round %x",
 			msg.FeeType, msg.RoundID)
 
