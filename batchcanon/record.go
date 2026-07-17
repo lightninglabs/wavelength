@@ -1,10 +1,73 @@
 package batchcanon
 
 import (
+	"bytes"
+	"fmt"
+
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
+
+// BatchEvidence is the authenticated, behavior-free description of one
+// commitment transaction required to register and observe its canonicality.
+// Receive paths carry this separately from the VTXOs that depend on it so one
+// batch can be reused across multi-parent OOR lineage.
+type BatchEvidence struct {
+	// BatchTxID is the hash of BatchTx.
+	BatchTxID chainhash.Hash
+
+	// BatchTx is the serialized commitment transaction.
+	BatchTx []byte
+
+	// BatchOutputIndex selects the commitment output anchoring the tree.
+	BatchOutputIndex uint32
+
+	// ConfirmationPkScript is the selected commitment output script.
+	ConfirmationPkScript []byte
+
+	// CSVExpiryDelta is the batch sweep delay in blocks.
+	CSVExpiryDelta int32
+
+	// ConsumedInputs binds every actual transaction input to its previous
+	// output value and script.
+	ConsumedInputs []ConsumedInput
+}
+
+// RegisterRequest builds an actor request that adds the supplied local VTXOs
+// as dependents of this evidence without mutating the evidence itself.
+func (e BatchEvidence) RegisterRequest(
+	dependentVTXOs []wire.OutPoint) *RegisterBatchRequest {
+
+	inputs := make([]ConsumedInput, len(e.ConsumedInputs))
+	for i := range e.ConsumedInputs {
+		inputs[i] = e.ConsumedInputs[i]
+		inputs[i].PkScript = bytes.Clone(e.ConsumedInputs[i].PkScript)
+	}
+
+	return &RegisterBatchRequest{
+		BatchTxID:            e.BatchTxID,
+		BatchTx:              bytes.Clone(e.BatchTx),
+		BatchOutputIndex:     e.BatchOutputIndex,
+		ConfirmationPkScript: bytes.Clone(e.ConfirmationPkScript),
+		CSVExpiryDelta:       e.CSVExpiryDelta,
+		ConsumedInputs:       inputs,
+		DependentVTXOs: append(
+			[]wire.OutPoint(nil), dependentVTXOs...,
+		),
+	}
+}
+
+// Validate checks the internal transaction, output, and input bindings. The
+// manager repeats these checks at the durable registration boundary.
+func (e BatchEvidence) Validate() error {
+	req := e.RegisterRequest(nil)
+	if err := validateRegistration(req, false); err != nil {
+		return fmt.Errorf("invalid batch evidence: %w", err)
+	}
+
+	return nil
+}
 
 // Record is the durable canonicality view of one batch (commitment)
 // transaction, keyed by its txid. It bundles the interpreted State, the

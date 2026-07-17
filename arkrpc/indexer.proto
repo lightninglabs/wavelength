@@ -317,6 +317,27 @@ message AncestryPath {
     // tx anchoring this fragment. Zero means unknown (legacy/unconfirmed),
     // in which case the client falls back to a bounded lookback floor.
     int32 commitment_height = 5;
+
+    // commitment_tx is the serialized commitment transaction. Its hash must
+    // equal commitment_txid and tree_path.batch_outpoint.txid.
+    bytes commitment_tx = 6;
+
+    // commitment_inputs contains one previous-output record for every actual
+    // commitment transaction input, in transaction input order.
+    repeated CommitmentInputEvidence commitment_inputs = 7;
+
+    // commitment_csv_expiry_delta is the batch sweep delay in blocks.
+    int32 commitment_csv_expiry_delta = 8;
+}
+
+// CommitmentInputEvidence binds one commitment input to the full previous
+// output needed for authenticated conflict observation.
+message CommitmentInputEvidence {
+    // outpoint must equal the corresponding commitment transaction input.
+    OutPoint outpoint = 1;
+
+    // prev_out supplies the value and pkScript of the spent output.
+    TxOut prev_out = 2;
 }
 
 // ScriptScope selects a pkScript and carries a proof-of-control for that
