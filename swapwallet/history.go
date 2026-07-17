@@ -8,12 +8,14 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strconv"
 	"strings"
 
 	btcaddr "github.com/btcsuite/btcd/address/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/lightninglabs/wavelength/credit"
 	"github.com/lightninglabs/wavelength/ledger"
 	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
 	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
@@ -34,6 +36,14 @@ import (
 type history struct {
 	deps    *Deps
 	runtime *Runtime
+
+	// creditTopupLinks memoizes the registry-derived top-up index for the
+	// lifetime of this history instance. A history is built once per
+	// derive call (and once per reproject pass, which pages deriveActivity
+	// in a loop), so the memo bounds the registry Ask to one per pass
+	// instead of one per page. Instances are used single-threaded.
+	creditTopupLinks    map[string]creditTopupLink
+	creditTopupLinksSet bool
 }
 
 // newHistory constructs the history merger.
@@ -437,6 +447,7 @@ func (h *history) deriveActivity(ctx context.Context,
 
 		ledgerEntries, err := h.collectLedgerEntries(
 			ctx, req.GetOffset(), limit, swapCorrelations,
+			h.collectCreditTopupLinks(ctx),
 		)
 		if err != nil {
 			return nil, fmt.Errorf("collect ledger entries: %w",
@@ -1083,8 +1094,9 @@ func applyCooperativeLeaveForfeited(entry *wavewalletrpc.WalletEntry,
 // history returns no ledger rows because the daemon got Limit=limit
 // and Offset=0 and only the first `limit` rows ever came back.
 func (h *history) collectLedgerEntries(ctx context.Context, offset,
-	limit uint32, correlations swapOORCorrelations) (
-	[]*wavewalletrpc.WalletEntry, error) {
+	limit uint32, correlations swapOORCorrelations,
+	creditTopups map[string]creditTopupLink) ([]*wavewalletrpc.WalletEntry,
+	error) {
 
 	if h.deps.RPCServer == nil {
 		return nil, nil
@@ -1128,6 +1140,9 @@ func (h *history) collectLedgerEntries(ctx context.Context, offset,
 		entryID := t.GetEntryId()
 		if amount, ok := oorProjection.displayAmountByEntryID[entryID]; ok {
 			entry.AmountSat = amount
+		}
+		if link, ok := creditTopupLinkForRow(t, creditTopups); ok {
+			decorateCreditTopupEntry(entry, link)
 		}
 
 		out = append(out, entry)
@@ -1377,6 +1392,140 @@ func sessionInSet(set map[string]struct{}, session string) bool {
 	_, ok := set[session]
 
 	return ok
+}
+
+// creditTopupLink correlates one ledger OOR-send row to the credit pay
+// operation whose Ark top-up it funded.
+type creditTopupLink struct {
+	paymentHash string
+
+	// topupSat is the top-up amount recorded on the pay operation. A row
+	// only matches when its outflow equals this amount, so a session-id
+	// collision with an unrelated transfer cannot mislabel the feed.
+	topupSat int64
+}
+
+// collectCreditTopupLinks asks the credit registry for the durable operation
+// snapshot and indexes pay operations by their delegated top-up OOR session
+// id. The raw ledger row of a credit top-up otherwise surfaces as an
+// unexplained outgoing transfer (issue #989): the sats leave the VTXO balance
+// through a plain OOR send whose ledger row carries no hint that it funded
+// the credit account backing a sub-dust payment. Both hex orientations of
+// each session id are indexed so the lookup is independent of the display
+// convention the registry recorded. Transient registry errors degrade to an
+// unlabeled feed rather than failing the listing.
+func (h *history) collectCreditTopupLinks(
+	ctx context.Context) map[string]creditTopupLink {
+
+	if h.creditTopupLinksSet {
+		return h.creditTopupLinks
+	}
+	h.creditTopupLinksSet = true
+
+	if h.deps == nil || h.deps.CreditRegistry == nil {
+		return nil
+	}
+
+	resp, err := h.deps.CreditRegistry.Ask(
+		ctx, &credit.ListCreditOpsRequest{PendingOnly: false},
+	).Await(ctx).Unpack()
+	if err != nil {
+		h.deps.resolveLog().DebugS(
+			ctx,
+			"Credit top-up labeling skipped: registry list failed",
+			slog.String("err", err.Error()),
+		)
+
+		return nil
+	}
+	list, ok := resp.(*credit.ListCreditOpsResponse)
+	if !ok {
+		h.deps.resolveLog().DebugS(ctx,
+			"Credit top-up labeling skipped: unexpected registry "+
+				"response",
+			slog.String("response_type", fmt.Sprintf("%T", resp)),
+		)
+
+		return nil
+	}
+
+	out := make(map[string]creditTopupLink)
+	for i := range list.Ops {
+		op := list.Ops[i]
+		if op.Kind != credit.KindPay || op.OORSessionID == "" {
+			continue
+		}
+
+		link := creditTopupLink{
+			paymentHash: strings.TrimPrefix(op.OpKey, "pay:"),
+			topupSat:    op.TopupSat,
+		}
+
+		key := strings.ToLower(op.OORSessionID)
+		out[key] = link
+
+		raw, err := hex.DecodeString(key)
+		if err != nil || len(raw) != chainhash.HashSize {
+			continue
+		}
+		if hash, err := chainhash.NewHash(raw); err == nil {
+			out[strings.ToLower(hash.String())] = link
+		}
+	}
+
+	h.creditTopupLinks = out
+
+	return out
+}
+
+// creditTopupLinkForRow resolves the credit pay operation funded by one
+// ledger OOR-send row, when one exists.
+func creditTopupLinkForRow(row *waverpc.TransactionHistoryEntry,
+	links map[string]creditTopupLink) (creditTopupLink, bool) {
+
+	if len(links) == 0 {
+		return creditTopupLink{}, false
+	}
+
+	session, ok := oorSendSessionID(row)
+	if !ok {
+		return creditTopupLink{}, false
+	}
+
+	link, ok := links[strings.ToLower(session)]
+	if !ok {
+		return creditTopupLink{}, false
+	}
+
+	// The recorded top-up amount must match the row's outflow exactly; a
+	// mismatch means the session id resolved to an unrelated transfer.
+	if link.topupSat > 0 && row.GetAmountSat() != link.topupSat {
+		return creditTopupLink{}, false
+	}
+
+	return link, true
+}
+
+// decorateCreditTopupEntry relabels the ledger row of a credit top-up
+// transfer so it reads as the credit-funding leg of a payment instead of an
+// unexplained outgoing transfer. The amount is left untouched: the row
+// records the real VTXO outflow, while the surplus above the paid amount
+// remains visible as the wallet's credit balance.
+func decorateCreditTopupEntry(entry *wavewalletrpc.WalletEntry,
+	link creditTopupLink) {
+
+	if entry == nil {
+		return
+	}
+
+	entry.Counterparty = creditCounterparty
+	if entry.Progress == nil {
+		entry.Progress = &wavewalletrpc.WalletEntryProgress{}
+	}
+	entry.Progress.PhaseLabel = "credit_topup"
+	if link.paymentHash != "" {
+		entry.Progress.PaymentHash = link.paymentHash
+	}
 }
 
 // oorSendSessionID extracts the session id from a ledger row that spends a VTXO
