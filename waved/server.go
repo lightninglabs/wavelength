@@ -391,7 +391,7 @@ type Server struct {
 	// VTXO coin-selection reorg-safety gate (lumos#454). It is threaded
 	// into the VTXO manager only when Config.BatchCanonicalityGate is set;
 	// a nil store leaves the gate dormant. Read lazily at admission time.
-	batchCanonStore batchcanon.Store
+	batchCanonStore batchcanon.Reader
 
 	// batchCanonRef is the BatchCanonicalityManager actor ref. The round
 	// and OOR producers will Tell it a RegisterBatchRequest as their VTXOs

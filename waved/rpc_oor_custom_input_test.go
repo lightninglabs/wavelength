@@ -13,12 +13,15 @@ import (
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/arkrpc"
+	"github.com/lightninglabs/wavelength/batchcanon"
 	"github.com/lightninglabs/wavelength/chainsource"
 	"github.com/lightninglabs/wavelength/db"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
 	"github.com/lightninglabs/wavelength/oor"
+	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightninglabs/wavelength/waverpc"
+	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/mock"
@@ -34,6 +37,44 @@ type customOORRPCFixture struct {
 	claimPath  *arkscript.SpendPath
 	clientPriv *btcec.PrivateKey
 	outpoint   wire.OutPoint
+}
+
+type customInputCanonReader struct {
+	records map[chainhash.Hash]*batchcanon.Record
+}
+
+func (r *customInputCanonReader) GetBatch(_ context.Context,
+	txid chainhash.Hash) (*batchcanon.Record, error) {
+
+	record, ok := r.records[txid]
+	if !ok {
+		return nil, batchcanon.ErrBatchNotFound
+	}
+
+	return record, nil
+}
+
+func readyCustomInputBatch(txid chainhash.Hash,
+	state batchcanon.State) *batchcanon.Record {
+
+	return &batchcanon.Record{
+		BatchTxID: txid,
+		BatchTx: []byte{
+			1,
+		},
+		RegistrationStage:     batchcanon.RegistrationComplete,
+		ObservationGeneration: 1,
+		ReadyGeneration:       fn.Some(uint64(1)),
+		State:                 state,
+		ConfirmationPkScript: []byte{
+			1,
+		},
+		ConsumedInputs: []batchcanon.ConsumedInput{{
+			PkScript: []byte{
+				1,
+			},
+		}},
+	}
 }
 
 func newCustomOORRPCFixture(t *testing.T) *customOORRPCFixture {
@@ -200,6 +241,84 @@ func TestRequireCustomSpendsMature(t *testing.T) {
 				t, status.Convert(err).Message(),
 				test.wantContains,
 			)
+		})
+	}
+}
+
+// TestRequireCustomInputLineage proves explicit OOR inputs cannot bypass the
+// fail-closed batch gate used by wallet-selected inputs.
+func TestRequireCustomInputLineage(t *testing.T) {
+	t.Parallel()
+
+	txid := chainhash.Hash{1}
+	desc := &vtxo.Descriptor{
+		Outpoint: wire.OutPoint{
+			Hash: chainhash.Hash{
+				2,
+			},
+		},
+		CommitmentTxID: txid,
+	}
+	input := []oor.TransferInput{{VTXO: desc}}
+
+	tests := []struct {
+		name     string
+		record   *batchcanon.Record
+		wantCode codes.Code
+	}{
+		{
+			name: "provisional",
+			record: readyCustomInputBatch(
+				txid, batchcanon.StateProvisional,
+			),
+			wantCode: codes.OK,
+		},
+		{
+			name: "reorged",
+			record: readyCustomInputBatch(
+				txid, batchcanon.StateReorgedOut,
+			),
+			wantCode: codes.Unavailable,
+		},
+		{
+			name: "invalidated",
+			record: readyCustomInputBatch(
+				txid, batchcanon.StateConflictFinalized,
+			),
+			wantCode: codes.FailedPrecondition,
+		},
+		{
+			name:     "missing",
+			wantCode: codes.Unavailable,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			records := make(map[chainhash.Hash]*batchcanon.Record)
+			if test.record != nil {
+				records[txid] = test.record
+			}
+
+			rpcServer := &RPCServer{server: &Server{
+				batchCanonStore: &customInputCanonReader{
+					records: records,
+				},
+			}}
+			err := rpcServer.requireCustomInputLineage(
+				t.Context(), input,
+			)
+
+			if test.wantCode == codes.OK {
+				require.NoError(t, err)
+
+				return
+			}
+
+			require.Equal(t, test.wantCode, status.Code(err))
 		})
 	}
 }

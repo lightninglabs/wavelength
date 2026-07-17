@@ -26,6 +26,7 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/lndclient"
 	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/batchcanon"
 	"github.com/lightninglabs/wavelength/btcwbackend"
 	"github.com/lightninglabs/wavelength/build"
 	"github.com/lightninglabs/wavelength/db"
@@ -260,6 +261,74 @@ func (r *RPCServer) reserveCustomInputs(outpoints []wire.OutPoint) (func(),
 	}
 
 	return release, nil
+}
+
+// reserveCustomOORInputs parses and reserves the explicit request outpoints so
+// concurrent custom-input sends cannot sign the same VTXO twice.
+func (r *RPCServer) reserveCustomOORInputs(inputs []*waverpc.CustomOORInput) (
+	func(), error) {
+
+	outpoints := make([]wire.OutPoint, 0, len(inputs))
+	for _, input := range inputs {
+		op, err := parseOutpointString(input.Outpoint)
+		if err != nil {
+			return nil, status.Errorf(codes.InvalidArgument,
+				"parse custom input outpoint %q: %v",
+				input.Outpoint, err)
+		}
+
+		outpoints = append(outpoints, op)
+	}
+
+	release, err := r.reserveCustomInputs(outpoints)
+	if err != nil {
+		return nil, status.Errorf(codes.Aborted, "custom input "+
+			"double-use: %v", err)
+	}
+
+	return release, nil
+}
+
+// requireCustomInputLineage applies the same fail-closed lineage gate used by
+// wallet coin selection to caller-supplied OOR inputs. Custom inputs bypass the
+// VTXO manager's selector, so without this check a reorged-out VTXO could still
+// reach checkpoint signing through the explicit-input path.
+func (r *RPCServer) requireCustomInputLineage(ctx context.Context,
+	inputs []oor.TransferInput) error {
+
+	if r.server == nil || r.server.batchCanonStore == nil {
+		return nil
+	}
+
+	for i := range inputs {
+		desc := inputs[i].VTXO
+		if desc == nil {
+			return status.Errorf(codes.Internal, "custom input %d "+
+				"has no VTXO descriptor", i)
+		}
+
+		blocked, availability, err := batchcanon.LineageBlocked(
+			ctx, r.server.batchCanonStore,
+			vtxo.LineageCommitmentTxIDs(desc)...,
+		)
+		if err != nil {
+			return status.Errorf(codes.Internal, "query custom "+
+				"input %s lineage: %v", desc.Outpoint, err)
+		}
+		if !blocked {
+			continue
+		}
+
+		code := codes.Unavailable
+		if availability == batchcanon.Invalidated {
+			code = codes.FailedPrecondition
+		}
+
+		return status.Errorf(code, "custom input %s lineage is %s",
+			desc.Outpoint, availability)
+	}
+
+	return nil
 }
 
 type oorChangeRecipientBuilder func(context.Context,
@@ -3027,29 +3096,14 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 		// already been accepted and the caller only stopped waiting for
 		// its response. In that case the release is deferred until the
 		// actor future actually completes.
-		customOutpoints := make(
-			[]wire.OutPoint, 0, len(req.CustomInputs),
-		)
-		for _, ci := range req.CustomInputs {
-			op, err := parseOutpointString(ci.Outpoint)
-			if err != nil {
-				return nil, status.Errorf(codes.InvalidArgument,
-					"parse custom input outpoint %q: %v",
-					ci.Outpoint, err)
-			}
-
-			customOutpoints = append(customOutpoints, op)
-		}
-
-		release, err := r.reserveCustomInputs(customOutpoints)
+		release, err := r.reserveCustomOORInputs(req.CustomInputs)
 		if err != nil {
-			return nil, status.Errorf(codes.Aborted, "custom "+
-				"input double-use: %v", err)
+			return nil, err
 		}
 		customInputsRelease = release
 		releaseCustomInputs = true
 		defer func() {
-			if releaseCustomInputs && customInputsRelease != nil {
+			if releaseCustomInputs {
 				customInputsRelease()
 			}
 		}()
@@ -3065,6 +3119,11 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "build "+
 				"custom inputs: %v", err)
+		}
+		if err := r.requireCustomInputLineage(
+			ctx, selectedInputs,
+		); err != nil {
+			return nil, err
 		}
 		err = r.requireCustomSpendsMature(ctx, selectedInputs)
 		if err != nil {
