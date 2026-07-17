@@ -67,16 +67,28 @@ func (f *fakeAncestryStore) ListUnspentVTXOAncestryPaths(_ context.Context) (
 // supplied slice carries two entries with the same commitment txid.
 // The schema-level UNIQUE would also reject this, but the in-Go
 // check produces a clearer error and avoids a half-applied delete.
-func TestUpsertAncestryPathsRejectsDuplicateCommitment(t *testing.T) {
+func TestUpsertAncestryPathsAllowsSharedCommitment(t *testing.T) {
 	t.Parallel()
 
+	// wavelength#969: two fragments may share a commitment txid when they
+	// serve different leaves -- an OOR VTXO whose Ark tx spent two coins
+	// from the same commitment tree, or a synthesized recovery target that
+	// aggregates fragments from several roots. The old per-commitment
+	// uniqueness wrongly rejected this and stranded OOR change VTXOs; the
+	// codec now persists both fragments (row identity is path_order).
 	commit := chainhash.Hash{0xaa}
 	ancestry := []vtxo.Ancestry{
 		{
 			CommitmentTxID: commit,
+			InputIndices: []uint32{
+				0,
+			},
 		},
 		{
 			CommitmentTxID: commit,
+			InputIndices: []uint32{
+				1,
+			},
 		},
 	}
 
@@ -84,10 +96,9 @@ func TestUpsertAncestryPathsRejectsDuplicateCommitment(t *testing.T) {
 	err := upsertAncestryPaths(
 		t.Context(), store, make([]byte, 32), 0, ancestry,
 	)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "duplicate commitment_txid")
-	require.False(t, store.deleted, "delete must not run before validation")
-	require.Empty(t, store.inserts)
+	require.NoError(t, err)
+	require.True(t, store.deleted)
+	require.Len(t, store.inserts, 2)
 }
 
 // TestUpsertAncestryPathsRejectsTooManyRows ensures the Go-side row-

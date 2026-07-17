@@ -1550,8 +1550,10 @@ CREATE TABLE vtxo_ancestry_paths (
     path_order INTEGER NOT NULL,
 
     -- commitment_txid is the 32-byte commitment tx hash anchoring this
-    -- fragment. Distinct rows for one VTXO must have distinct
-    -- commitment_txids.
+    -- fragment. Two fragments for one VTXO may share a commitment_txid
+    -- when they prove different leaves of the same commitment tree (an
+    -- OOR VTXO whose Ark tx spent two coins from one round -- see
+    -- wavelength#969); row identity is (..., path_order), not the txid.
     commitment_txid BLOB NOT NULL,
 
     -- tree_path is the TLV-encoded extracted tree.Tree fragment from the
@@ -1577,15 +1579,6 @@ CREATE TABLE vtxo_ancestry_paths (
     FOREIGN KEY (vtxo_outpoint_hash, vtxo_outpoint_index)
         REFERENCES vtxos(outpoint_hash, outpoint_index)
         ON DELETE CASCADE,
-
-    -- A VTXO must not carry two ancestry rows for the same commitment
-    -- tx. Distinct fragments must anchor at distinct commitments
-    -- (per the Ancestry contract); enforcing it at the schema level
-    -- means a future caller bypassing BuildIncomingVTXODescriptor
-    -- still cannot persist a malformed VTXO that would later trip a
-    -- "conflicting proof node" deep inside addProofNode at unilateral
-    -- exit time.
-    UNIQUE (vtxo_outpoint_hash, vtxo_outpoint_index, commitment_txid),
 
     -- path_order must be a small non-negative ordinal. The active
     -- fragment-count cap (MaxAncestryFragments) is well under 64;

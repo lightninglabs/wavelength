@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/neutrino/cache"
 	"github.com/lightninglabs/neutrino/cache/lru"
@@ -135,15 +134,17 @@ func (c *ancestryTreeCache) getOrDecode(treePath []byte) (*tree.Tree, error) {
 // matches the round-create path where the VTXO manager has not yet
 // filled in finalized lineage.
 //
-// The function performs three defensive checks before any row is
-// inserted: the slice is at most maxAncestryRowsPerVTXO long, every
-// CommitmentTxID is pairwise distinct, and (implicitly, by deriving
-// path_order from the loop index) path_order is a contiguous run
-// starting at 0. These constraints are also enforced at the schema
-// level (UNIQUE on commitment_txid, CHECK on path_order), but
-// surfacing them in Go means a future caller bypassing
-// BuildIncomingVTXODescriptor sees a clear error rather than a
-// constraint violation hidden behind sqlc plumbing.
+// The function bounds the slice at maxAncestryRowsPerVTXO and derives
+// path_order from the loop index (a contiguous run starting at 0); row
+// identity is the PRIMARY KEY (..., path_order). It does NOT enforce any
+// cross-fragment commitment/input uniqueness: distinct leaves of one
+// commitment tree share a commitment_txid (wavelength#969), and a
+// synthesized recovery-target descriptor aggregates fragments from several
+// roots whose per-root input indices are not comparable, so both are
+// legitimate here. The structural invariant that each input descends from a
+// commitment through exactly one leaf is enforced upstream at the incoming
+// boundary (validateIncomingAncestry), the only producer for which
+// per-fragment input indices share a single frame of reference.
 func upsertAncestryPaths(ctx context.Context, q ancestryStore,
 	outpointHash []byte, outpointIndex int32,
 	ancestry []vtxo.Ancestry) error {
@@ -151,15 +152,6 @@ func upsertAncestryPaths(ctx context.Context, q ancestryStore,
 	if len(ancestry) > maxAncestryRowsPerVTXO {
 		return fmt.Errorf("ancestry has %d rows, max %d", len(ancestry),
 			maxAncestryRowsPerVTXO)
-	}
-
-	seen := make(map[chainhash.Hash]struct{}, len(ancestry))
-	for i, a := range ancestry {
-		if _, dup := seen[a.CommitmentTxID]; dup {
-			return fmt.Errorf("ancestry[%d] duplicate "+
-				"commitment_txid %s", i, a.CommitmentTxID)
-		}
-		seen[a.CommitmentTxID] = struct{}{}
 	}
 
 	err := q.DeleteVTXOAncestryPaths(
