@@ -18,6 +18,7 @@ import (
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
+	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightninglabs/wavelength/waverpc"
@@ -377,6 +378,95 @@ func TestAcceptInArkHtlcEventBuildsSenderReceiverPolicy(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, expectedScript, session.vhtlcPkScript)
 	require.True(t, session.swapServerPubKey.IsEqual(senderPriv.PubKey()))
+}
+
+// TestAcceptInArkHtlcEventRejectsCreditBoundSession verifies a session whose
+// route quote attached credit (or padded the expected vHTLC above the invoice
+// amount) fails fast on an in-ark event instead of committing to the direct
+// p2p rail. The p2p vHTLC is funded entirely by the sender, so it can never
+// carry the server's custodial credit top-up; accepting the event would leave
+// the session polling a vHTLC that can never be funded while silently
+// skipping the out-swap ACK the server is waiting on.
+func TestAcceptInArkHtlcEventRejectsCreditBoundSession(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name              string
+		attachedCreditSat uint64
+		expectedVHTLCSat  uint64
+		wantReason        string
+	}{
+		{
+			name:              "attached credit",
+			attachedCreditSat: 500,
+			expectedVHTLCSat:  1_000,
+			wantReason:        "credit-attach receive plan",
+		},
+		{
+			name:             "padded vhtlc plan",
+			expectedVHTLCSat: 1_000,
+			wantReason:       "padded vHTLC receive plan",
+		},
+	}
+
+	for _, testCase := range testCases {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			senderPriv, err := btcec.NewPrivateKey()
+			require.NoError(t, err)
+
+			receiverPriv, err := btcec.NewPrivateKey()
+			require.NoError(t, err)
+
+			operatorPriv, err := btcec.NewPrivateKey()
+			require.NoError(t, err)
+
+			preimage := lntypes.Preimage{4, 5, 6}
+			hash := preimage.Hash()
+			cfg := VHTLCConfig{
+				RefundLocktime:                       900,
+				UnilateralClaimDelay:                 5,
+				UnilateralRefundDelay:                6,
+				UnilateralRefundWithoutReceiverDelay: 7,
+				SwapServerPubkey: senderPriv.PubKey().
+					SerializeCompressed(),
+			}
+			session := &ReceiveSession{
+				client: &SwapClient{
+					daemon: &testDaemonConn{},
+					log:    btclog.Disabled,
+				},
+				amountSat:         btcutil.Amount(500),
+				attachedCreditSat: testCase.attachedCreditSat,
+				expectedVHTLCSat:  testCase.expectedVHTLCSat,
+				state:             ReceiveStateInvoiceCreated,
+				PaymentHash:       hash,
+				clientPubKey:      receiverPriv.PubKey(),
+				operatorPubKey:    operatorPriv.PubKey(),
+			}
+
+			err = session.acceptInArkHtlcEvent(
+				t.Context(), &InArkHtlcEvent{
+					PaymentHash:  hash,
+					AmountSat:    500,
+					SenderPubkey: senderPriv.PubKey(),
+					VHTLCConfig:  cfg,
+				}, 0,
+			)
+			require.ErrorContains(t, err, testCase.wantReason)
+			require.Equal(
+				t, ReceiveStateFailed, session.State(),
+			)
+
+			// The session must not have committed to the in-ark
+			// rail on the way down.
+			require.NotEqual(
+				t, SettlementTypeInArk, session.settlementType,
+			)
+		})
+	}
 }
 
 // TestReceiveSessionSkipsServerAckForSameArkHTLCEvent verifies the server ACK
