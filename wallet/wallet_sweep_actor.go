@@ -773,8 +773,10 @@ func (a *Ark) submitWalletSweepConfirmer(ctx context.Context, tx *wire.MsgTx,
 		},
 	)
 
-	subscriber := txconfirm.MapNotification(walletNotif,
-		func(n txconfirm.Notification) WalletSweepTxNotification {
+	subscriber := txconfirm.FilterMapNotification(walletNotif,
+		func(n txconfirm.Notification) (WalletSweepTxNotification,
+			bool) {
+
 			switch ev := n.(type) {
 			case *txconfirm.TxConfirmed:
 				return WalletSweepTxNotification{
@@ -782,17 +784,33 @@ func (a *Ark) submitWalletSweepConfirmer(ctx context.Context, tx *wire.MsgTx,
 					Txid:        ev.Txid,
 					BlockHeight: ev.BlockHeight,
 					NumConfs:    ev.NumConfs,
-				}
+				}, true
+
+			// Finalization replays the confirmation numbers once
+			// the tx is past the reorg-safety depth; this handler
+			// is log-only so it reads as a (repeat) confirmation
+			// rather than the failure the old zero-value fallback
+			// produced.
+			case *txconfirm.TxFinalized:
+				return WalletSweepTxNotification{
+					Confirmed:   true,
+					Txid:        ev.Txid,
+					BlockHeight: ev.BlockHeight,
+					NumConfs:    ev.NumConfs,
+				}, true
 
 			case *txconfirm.TxFailed:
 				return WalletSweepTxNotification{
 					Confirmed: false,
 					Txid:      ev.Txid,
 					Reason:    ev.Reason,
-				}
+				}, true
 			}
 
-			return WalletSweepTxNotification{}
+			// TxReorged (best-effort, superseded by the next
+			// reliable event) and unknown variants carry nothing
+			// this log-only handler can report; drop them.
+			return WalletSweepTxNotification{}, false
 		},
 	)
 
