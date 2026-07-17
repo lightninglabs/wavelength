@@ -399,19 +399,43 @@ on later terms refreshes). When the cached boundary fires, it fetches a fresh
 An operator fee-schedule hot reload is not pushed proactively to
 already-connected wallets.
 
+A refresh is charged an operator fee (on-chain share + liquidity +
+margin), set by the server-issued quote at seal time and auto-accepted
+up to the daemon's `maxoperatorfeesat` cap. `--dry_run` previews an
+itemized advisory estimate for the selected VTXOs — per outpoint:
+amount, remaining lifetime, liquidity / on-chain / margin components —
+resolved entirely from the daemon's own view, with no manual amount or
+remaining-blocks input. Selections fully inside the operator's
+advertised free-refresh window preview with a zero total
+(`free_refresh_eligible`), while the per-outpoint rows keep the
+ordinary paid quote to show what the waiver saves. The estimate is
+best-effort: if the operator or chain tip is unreachable the preview
+still returns with `estimate_error` set. The binding fee remains the
+seal-time quote and may differ from any estimate.
+
+An interactive real refresh shows the estimate and asks for
+confirmation. On non-interactive stdin (agents, pipelines) the command
+refuses to prompt: pass `--yes` (explicit consent) or `--dry_run`
+(preview). This mirrors the `leave --all` consent gate.
+
 | Flag | Type | Description |
 |------|------|-------------|
 | `--outpoint` | string[] | VTXO outpoint(s) to refresh (txid:index) |
 | `--all` | bool | Refresh all live VTXOs |
-| `--dry_run` | bool | Validate without queuing |
+| `--dry_run` | bool | Validate without queuing and preview the estimated fee |
+| `--yes` | bool | Skip the interactive fee confirmation |
 | `--no_join` | bool | Skip the implicit `ark rounds join` follow-up |
 
 ```bash
-# Explicit outpoints (auto-joins the next round)
-wavecli ark vtxos refresh --outpoint <txid:idx>
+# Preview the itemized fee estimate without queuing anything
+wavecli ark vtxos refresh --outpoint <txid:idx> --dry_run
+
+# Explicit outpoints (auto-joins the next round; prompts with the
+# estimate on a TTY, requires --yes when stdin is not interactive)
+wavecli ark vtxos refresh --outpoint <txid:idx> --yes
 
 # Batch with other intents — explicitly join later
-wavecli ark vtxos refresh --outpoint <txid:idx> --no_join
+wavecli ark vtxos refresh --outpoint <txid:idx> --yes --no_join
 wavecli ark vtxos leave   --outpoint <txid:idx> --no_join \
   --address bcrt1p...
 wavecli ark rounds join
