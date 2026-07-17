@@ -14,6 +14,11 @@ type Querier interface {
 	// returns the event_seq the database assigned (monotonic, not necessarily
 	// contiguous). Callers use it as the resumable-subscribe cursor for the update.
 	AppendActivityEvent(ctx context.Context, arg AppendActivityEventParams) (int64, error)
+	// BackfillLedgerRoundUuid stamps the canonical UUID string form onto every
+	// entry carrying the given raw round_id that does not have one yet. The
+	// round_uuid IS NULL guard makes re-running the backfill (e.g. after a crash
+	// mid-migration) a no-op for already-converted rows.
+	BackfillLedgerRoundUuid(ctx context.Context, arg BackfillLedgerRoundUuidParams) error
 	CancelVHTLCRecoveryJob(ctx context.Context, arg CancelVHTLCRecoveryJobParams) (int64, error)
 	ClearPendingIntentAnchorByOutpoint(ctx context.Context, arg ClearPendingIntentAnchorByOutpointParams) error
 	CompleteVHTLCRecoveryJob(ctx context.Context, arg CompleteVHTLCRecoveryJobParams) (int64, error)
@@ -199,6 +204,12 @@ type Querier interface {
 	// rows) instead of decoding the whole activity feed, and the canonical_id
 	// cursor is strictly monotonic (a full page always advances it).
 	ListEntriesByKindStatus(ctx context.Context, arg ListEntriesByKindStatusParams) ([]ActivityEntry, error)
+	// ListLedgerRoundIDsMissingUuid returns the distinct raw round_id BLOBs that
+	// have not yet been mirrored into the round_uuid TEXT column. The BLOB-to-UUID
+	// string conversion is not expressible in the SQL dialect subset shared by
+	// SQLite and Postgres, so the migration-015 post-step performs it in Go and
+	// writes the result back via BackfillLedgerRoundUuid.
+	ListLedgerRoundIDsMissingUuid(ctx context.Context) ([][]byte, error)
 	// ListLiveVTXOAncestryPaths returns every ancestry row whose parent VTXO
 	// is non-terminal, mirroring the filter on ListLiveVTXOs. Used as a
 	// single batched companion query so descriptor materialization across

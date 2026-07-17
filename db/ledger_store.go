@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 
+	"github.com/google/uuid"
 	"github.com/lightninglabs/wavelength/db/sqlc"
 	"github.com/lightninglabs/wavelength/ledger"
 )
@@ -58,10 +59,13 @@ func (s *LedgerStoreDB) InsertLedgerEntry(ctx context.Context,
 		func(qtx *sqlc.Queries) error {
 			return qtx.InsertClientLedgerEntry(
 				ctx, sqlc.InsertClientLedgerEntryParams{
-					DebitAccount:   entry.DebitAccount,
-					CreditAccount:  entry.CreditAccount,
-					AmountSat:      entry.AmountSat,
-					RoundID:        entry.RoundID,
+					DebitAccount:  entry.DebitAccount,
+					CreditAccount: entry.CreditAccount,
+					AmountSat:     entry.AmountSat,
+					RoundID:       entry.RoundID,
+					RoundUuid: roundUUIDText(
+						entry.RoundID,
+					),
 					SessionID:      entry.SessionID,
 					EventType:      entry.EventType,
 					Description:    entry.Description,
@@ -78,6 +82,24 @@ func (s *LedgerStoreDB) InsertLedgerEntry(ctx context.Context,
 			)
 		},
 	)
+}
+
+// roundUUIDText mirrors a raw 16-byte ledger round_id into the canonical
+// lowercase UUID string stored by rounds.round_id and vtxos.forfeit_round_id,
+// so ledger rows are joinable against those tables in portable SQL. A nil or
+// non-16-byte input yields NULL, mirroring the round_id column's nullability.
+func roundUUIDText(roundID []byte) sql.NullString {
+	if len(roundID) != 16 {
+		return sql.NullString{}
+	}
+
+	var id uuid.UUID
+	copy(id[:], roundID)
+
+	return sql.NullString{
+		String: id.String(),
+		Valid:  true,
+	}
 }
 
 // sqlInt32Ptr converts an optional int32 pointer to the nullable sqlc shape
