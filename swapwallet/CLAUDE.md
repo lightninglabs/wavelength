@@ -137,6 +137,11 @@ default builds avoid the swap executor's dependency graph.
   `OnchainAddressRequest.sweep_all`, set by `leaveEntryStub`) also nets
   the fee back out of its gross pending amount, so every completed EXIT
   reads amount = destination-received, fee = cost on top.
+- **Unilateral EXIT fee**: `applyUnrollStatus` applies the same shape on
+  a COMPLETED unroll: `GetUnrollStatusResponse.exit_cost_sat` (the
+  ledger's confirmed onchain_fee_paid exit leg) becomes `fee_sat` and is
+  netted out of the row's gross VTXO amount. Zero cost (old daemon, or
+  an exit predating exit-cost accounting) leaves the row untouched.
 - **Onchain SEND is a one-shot**: after the intent is accepted the router
   immediately calls `JoinNextRound` so the queued leave intent is committed
   to the next round without a separate CLI step. If the implicit join fails,

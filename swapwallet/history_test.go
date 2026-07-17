@@ -1638,6 +1638,100 @@ func TestHistoryScansForfeitedVTXOsOnceForWalletLocalExits(t *testing.T) {
 	)
 }
 
+// TestHistoryStampsExitCostOnCompletedUnilateralExit confirms a completed
+// unilateral exit surfaces the ledger's settled exit cost: the daemon reports
+// it on GetUnrollStatus once the final sweep confirmed, and the row is
+// completed with amount = value delivered on chain and fee = cost on top —
+// the same shape a completed cooperative leave has. The mirror of
+// TestHistoryStampsSettlementOnForfeitedLeave for the unroll path.
+func TestHistoryStampsExitCostOnCompletedUnilateralExit(t *testing.T) {
+	t.Parallel()
+
+	const (
+		sweepTxid = "cc000000000000000000000000000000" +
+			"00000000000000000000000000000000"
+		grossVTXOSat = int64(7_000)
+		exitCostSat  = int64(623)
+	)
+
+	h, swap, rpc := newHistoryFixture(t)
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{}
+	rpc.listVTXOsResp = &waverpc.ListVTXOsResponse{
+		Vtxos: []*waverpc.VTXO{
+			{
+				Outpoint:  "exit-outpoint:0",
+				AmountSat: grossVTXOSat,
+				Status: waverpc.
+					VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT,
+			},
+		},
+	}
+	rpc.unrollStatusResp = &waverpc.GetUnrollStatusResponse{
+		Found:       true,
+		Status:      waverpc.UnrollJobStatus_UNROLL_JOB_STATUS_COMPLETED,
+		SweepTxid:   sweepTxid,
+		ExitCostSat: exitCostSat,
+	}
+
+	resp, err := h.List(t.Context(), &wavewalletrpc.ListRequest{})
+	require.NoError(t, err)
+
+	entries := resp.GetActivity().GetEntries()
+	require.Len(t, entries, 1)
+	require.Equal(t, "exit-outpoint:0", entries[0].GetId())
+	require.Equal(
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		entries[0].GetStatus(),
+	)
+	require.Equal(t, sweepTxid, entries[0].GetProgress().GetTxid())
+
+	// The gross VTXO value is netted down to the value delivered on chain,
+	// with the confirmed exit cost carried separately.
+	require.Equal(t, exitCostSat, entries[0].GetFeeSat())
+	require.Equal(
+		t, -(grossVTXOSat - exitCostSat), entries[0].GetAmountSat(),
+	)
+}
+
+// TestHistoryKeepsUnilateralExitFeeUntouchedWithoutExitCost confirms an old
+// daemon (or an exit predating exit-cost accounting) that reports a zero
+// exit_cost_sat leaves the completed row exactly as before: gross amount,
+// zero fee.
+func TestHistoryKeepsUnilateralExitFeeUntouchedWithoutExitCost(t *testing.T) {
+	t.Parallel()
+
+	h, swap, rpc := newHistoryFixture(t)
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{}
+	rpc.listVTXOsResp = &waverpc.ListVTXOsResponse{
+		Vtxos: []*waverpc.VTXO{
+			{
+				Outpoint:  "exit-outpoint:0",
+				AmountSat: 7_000,
+				Status: waverpc.
+					VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT,
+			},
+		},
+	}
+	rpc.unrollStatusResp = &waverpc.GetUnrollStatusResponse{
+		Found:  true,
+		Status: waverpc.UnrollJobStatus_UNROLL_JOB_STATUS_COMPLETED,
+	}
+
+	resp, err := h.List(t.Context(), &wavewalletrpc.ListRequest{})
+	require.NoError(t, err)
+
+	entries := resp.GetActivity().GetEntries()
+	require.Len(t, entries, 1)
+	require.Equal(
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		entries[0].GetStatus(),
+	)
+	require.Zero(t, entries[0].GetFeeSat())
+	require.Equal(t, int64(-7_000), entries[0].GetAmountSat())
+}
+
 // TestHistoryKeepsCSVPendingUnilateralExitPendingAfterDeadline confirms the
 // wallet-local timeout overlay cannot clobber the unroll subsystem's
 // authoritative non-terminal status. Unilateral exits normally wait through a

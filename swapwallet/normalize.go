@@ -628,6 +628,30 @@ func applyUnrollStatus(entry *wavewalletrpc.WalletEntry,
 			WalletEntryPhase_WALLET_ENTRY_PHASE_CONFIRMED
 		progress.PhaseLabel = "confirmed"
 
+		// A completed exit reports the settled on-chain cost from the
+		// ledger. The row's pending amount is the gross VTXO value, so
+		// the cost is netted back out, leaving amount = value delivered
+		// on chain and fee = cost on top — the same shape a completed
+		// cooperative leave has. Zero cost (old daemon, or an exit
+		// predating exit-cost accounting) leaves the row untouched.
+		// The mutation operates on the per-derive clone from
+		// pendingSnapshot / the per-VTXO derived row, so it applies
+		// exactly once per derived row.
+		if cost := resp.GetExitCostSat(); cost > 0 {
+			entry.FeeSat = cost
+
+			// Clamp at zero so a cost exceeding the gross amount
+			// (impossible for a sane exit, but the figure crosses
+			// an RPC boundary) can never flip the outflow row's
+			// sign positive.
+			if entry.AmountSat < 0 {
+				entry.AmountSat += cost
+				if entry.AmountSat > 0 {
+					entry.AmountSat = 0
+				}
+			}
+		}
+
 	case waverpc.UnrollJobStatus_UNROLL_JOB_STATUS_FAILED:
 		entry.Status = wavewalletrpc.EntryStatus_ENTRY_STATUS_FAILED
 		entry.FailureReason = resp.GetLastError()
