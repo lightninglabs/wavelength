@@ -330,6 +330,24 @@ type Config struct {
 	// v2 safety capability and depth negotiation are enabled.
 	ReorgSafetyDepth uint32 `mapstructure:"reorgsafetydepth"`
 
+	// BatchCanonicalityGate activates the fail-closed batch-lineage
+	// reorg-safety gate on the VTXO coin-selection (and forfeit) admission
+	// path (lumos#454). When true, the durable batch-canonicality store is
+	// threaded into the VTXO manager so a VTXO whose batch reorged out, was
+	// conflict-invalidated, or is not a ready/confirmed member of the
+	// canonical chain is excluded from selection.
+	//
+	// It defaults to false because the gate is fail-closed: until the round
+	// and OOR producers register their batches with the canonicality
+	// manager (a follow-up in the reorg-safety stack), every VTXO's lineage
+	// would be unregistered and therefore excluded, stranding all
+	// liquidity. The batch-canonicality manager itself is always built,
+	// reconciled, and left observing; only the admission gate is gated on
+	// this flag so the daemon stays behaviour-neutral until producer
+	// registration lands. Flip to true (the intended steady state) once
+	// producers register batches.
+	BatchCanonicalityGate bool `mapstructure:"batchcanonicalitygate"`
+
 	// RegistrationTimeout is the maximum wall-clock duration to
 	// wait for the server's RoundJoined admission watermark after
 	// sending a JoinRoundRequest. If zero, the round package
