@@ -8,6 +8,7 @@ import (
 
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/lightninglabs/wavelength/arkrpc"
+	"github.com/lightninglabs/wavelength/batchcanon"
 	"github.com/lightninglabs/wavelength/build"
 	"github.com/lightninglabs/wavelength/indexer"
 	"github.com/lightninglabs/wavelength/internal/indexerlimits"
@@ -257,6 +258,14 @@ func incomingMetadataFromRPC(candidate *arkrpc.VTXO) (oor.IncomingVTXOMetadata,
 			"ancestry paths: %w", err)
 	}
 
+	evidence, err := batchcanon.EvidenceFromAncestryPaths(
+		candidate.GetAncestryPaths(),
+	)
+	if err != nil {
+		return oor.IncomingVTXOMetadata{}, fmt.Errorf("convert batch "+
+			"evidence: %w", err)
+	}
+
 	var commitmentTxID chainhash.Hash
 	copy(commitmentTxID[:], candidate.GetCommitmentTxid())
 
@@ -267,5 +276,6 @@ func incomingMetadataFromRPC(candidate *arkrpc.VTXO) (oor.IncomingVTXOMetadata,
 		ChainDepth:     int(candidate.GetChainDepth()),
 		CreatedHeight:  candidate.GetCreatedHeight(),
 		Ancestry:       ancestry,
+		BatchEvidence:  evidence,
 	}, nil
 }
