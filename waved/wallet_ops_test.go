@@ -88,7 +88,7 @@ func (s *testCustomInputStore) GetForfeitTx(context.Context, wire.OutPoint) (
 }
 
 func (s *testCustomInputStore) MarkForfeited(context.Context, wire.OutPoint,
-	chainhash.Hash) error {
+	chainhash.Hash, chainhash.Hash) error {
 
 	return fmt.Errorf("unexpected MarkForfeited call")
 }

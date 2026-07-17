@@ -193,7 +193,7 @@ func (s *testVTXOStore) GetForfeitTx(_ context.Context, _ wire.OutPoint) (
 
 // MarkForfeited is unused by these tests.
 func (s *testVTXOStore) MarkForfeited(_ context.Context, _ wire.OutPoint,
-	_ chainhash.Hash) error {
+	_, _ chainhash.Hash) error {
 
 	return nil
 }

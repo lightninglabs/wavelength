@@ -670,6 +670,11 @@ func (a *VTXOActor) processStatusUpdate(ctx context.Context,
 	)
 
 	switch {
+	case m.NewStatus == VTXOStatusForfeited:
+		err = a.cfg.Store.MarkForfeited(
+			ctx, m.Outpoint, m.ForfeitTxID, m.ConsumerBatchTxID,
+		)
+
 	case isForfeitingWithTx:
 		err = a.cfg.Store.MarkForfeiting(
 			ctx, m.Outpoint, m.RoundID, m.ForfeitTx,

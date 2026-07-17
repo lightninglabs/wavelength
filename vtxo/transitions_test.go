@@ -646,7 +646,8 @@ func TestForfeitingStateConfirmed(t *testing.T) {
 
 	// Setup mock for marking forfeited.
 	h.store.On(
-		"MarkForfeited", h.ctx, vtxo.Outpoint, commitmentTxID,
+		"MarkForfeited", h.ctx, vtxo.Outpoint, chainhash.Hash{},
+		commitmentTxID,
 	).Return(nil)
 
 	_, err := h.sendEvent(evt)
@@ -1261,7 +1262,8 @@ func TestForfeitConfirmedEventIncludesForfeitTx(t *testing.T) {
 
 	// Setup mock for marking forfeited.
 	h.store.On(
-		"MarkForfeited", h.ctx, vtxo.Outpoint, commitmentTxID,
+		"MarkForfeited", h.ctx, vtxo.Outpoint, forfeitTx.TxHash(),
+		commitmentTxID,
 	).Return(nil)
 
 	_, err := h.sendEvent(evt)

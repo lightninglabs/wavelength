@@ -2,6 +2,7 @@ package vtxo
 
 import (
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/lib/actormsg"
@@ -150,6 +151,14 @@ type VTXOStatusUpdate struct {
 	// transitions. Nil for other status updates. Persisted for crash
 	// recovery.
 	ForfeitTx *wire.MsgTx
+
+	// ForfeitTxID is the exact forfeit transaction hash recorded when the
+	// forfeit becomes terminal.
+	ForfeitTxID chainhash.Hash
+
+	// ConsumerBatchTxID is the commitment transaction whose confirmation
+	// caused the forfeiture. It binds conditional restore to one consumer.
+	ConsumerBatchTxID chainhash.Hash
 
 	// ReleaseSpendReservation, when true, instructs the persistence layer
 	// to delete this outpoint's durable spending-reservation row in the

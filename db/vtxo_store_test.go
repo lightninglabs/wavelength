@@ -1225,6 +1225,7 @@ func TestVTXOPersistenceStoreListVTXOsByStatusSettlement(t *testing.T) {
 			chainhash.HashH(
 				[]byte("forfeit-tx"),
 			),
+			settlementTxid,
 		),
 	)
 
@@ -1432,7 +1433,9 @@ func TestVTXOPersistenceStoreStatusTransitions(t *testing.T) {
 
 	// Transition to Forfeited via MarkForfeited.
 	forfeitTxID := chainhash.Hash{0xab, 0xcd}
-	err = vtxoStore.MarkForfeited(ctx, desc.Outpoint, forfeitTxID)
+	err = vtxoStore.MarkForfeited(
+		ctx, desc.Outpoint, forfeitTxID, chainhash.Hash{0x71},
+	)
 	require.NoError(t, err)
 
 	fetched, err = vtxoStore.GetVTXO(ctx, desc.Outpoint)
@@ -1630,7 +1633,9 @@ func TestVTXOPersistenceStoreMarkForfeitedRecordsTxID(t *testing.T) {
 
 	// Now mark as forfeited with a txid.
 	forfeitTxID := chainhash.Hash{0xde, 0xad, 0xbe, 0xef}
-	err = vtxoStore.MarkForfeited(ctx, desc.Outpoint, forfeitTxID)
+	err = vtxoStore.MarkForfeited(
+		ctx, desc.Outpoint, forfeitTxID, chainhash.Hash{0x72},
+	)
 	require.NoError(t, err)
 
 	// Verify via raw db query that the forfeit_txid was stored.
@@ -1689,6 +1694,7 @@ func TestVTXOPersistenceStoreMultipleVTXOsLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	err = vtxoStore.MarkForfeited(
 		ctx, vtxos[2].Outpoint, chainhash.Hash{0x02},
+		chainhash.Hash{0x73},
 	)
 	require.NoError(t, err)
 

@@ -117,7 +117,7 @@ func (m *mockVTXOStore) GetForfeitTx(context.Context, wire.OutPoint) (
 
 // MarkForfeited is unused in these tests.
 func (m *mockVTXOStore) MarkForfeited(context.Context, wire.OutPoint,
-	chainhash.Hash) error {
+	chainhash.Hash, chainhash.Hash) error {
 
 	return nil
 }
