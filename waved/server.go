@@ -4902,6 +4902,7 @@ func (s *Server) initOORActor(ctx context.Context,
 			VTXOStore:       incomingVTXOStore,
 			VTXOManager:     vtxoManagerRef,
 			AncestryFetcher: ancestryFetcher,
+			BatchRegistrar:  incomingBatchRegistrar,
 			MetricsSink:     s.metricsSink,
 		},
 	)
