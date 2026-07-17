@@ -672,3 +672,26 @@ var (
 type inboundServerMessage interface {
 	FromProto(proto.Message) error
 }
+
+// FromProto populates a RoundStatusReported from a ClientRoundStatusReport
+// proto. The round id is required: a report that cannot be tied to a round
+// is rejected rather than routed by heuristic, because the consumer uses
+// the answer to decide whether releasing forfeit reservations is safe.
+func (e *RoundStatusReported) FromProto(p proto.Message) error {
+	pb, ok := p.(*roundpb.ClientRoundStatusReport)
+	if !ok {
+		return fmt.Errorf("unexpected proto type: %T, want "+
+			"*roundpb.ClientRoundStatusReport", p)
+	}
+
+	if len(pb.RoundId) != roundIDLen {
+		return fmt.Errorf("round status report round_id must be %d "+
+			"bytes, got %d", roundIDLen, len(pb.RoundId))
+	}
+
+	copy(e.RoundID[:], pb.RoundId)
+	e.Status = pb.Status
+	e.Detail = pb.Detail
+
+	return nil
+}

@@ -50,6 +50,17 @@ const defaultForfeitCollectionTimeout = 2 * time.Minute
 // tests that need a different bound.
 const defaultRegistrationTimeout = 60 * time.Second
 
+// defaultStatusReconcileTimeout bounds how long a forfeit-bearing round sits
+// in InputSigSentState with no confirmation, no resolved failure, and no
+// status answer before the client probes the operator with a
+// QueryRoundStatus (wavelength#844). The window must comfortably exceed the
+// operator's input-signature collection phase so a healthy round is not
+// probed mid-ceremony; an early probe is harmless (the operator answers
+// in-flight and the client keeps waiting), so the constant errs toward
+// responsiveness rather than silence. It also serves as the retry interval
+// between unanswered probes.
+const defaultStatusReconcileTimeout = 90 * time.Second
+
 // defaultRefreshRegistrationDelay is the quiet period used to coalesce
 // expiry-driven refreshes before registering their round. Block epochs can
 // make several VTXO actors request refreshes back-to-back; registering the
@@ -342,6 +353,15 @@ type RoundClientConfig struct {
 	// admission), which restores the pre-#653 behavior.
 	RegistrationTimeout time.Duration
 
+	// StatusReconcileTimeout bounds how long a forfeit-bearing round sits
+	// in InputSigSentState — forfeit signatures out, no confirmation, no
+	// resolved failure — before the client probes the operator with a
+	// QueryRoundStatus (wavelength#844). It doubles as the retry interval
+	// between probes. If zero, defaultStatusReconcileTimeout is used. A
+	// negative value disables the reconcile, restoring the pre-#844
+	// behavior (a stranded reservation waits for the #823 startup sweep).
+	StatusReconcileTimeout time.Duration
+
 	// OwnedScriptChecker determines whether a VTXO pkScript belongs
 	// to the local wallet. When nil, all VTXOs pass the ownership
 	// check (backward-compatible default for tests).
@@ -432,6 +452,14 @@ func NewRoundClientActor(cfg *RoundClientConfig) fn.Result[*RoundClientActor] {
 		registrationTimeout = defaultRegistrationTimeout
 	}
 	env.RegistrationTimeout = registrationTimeout
+
+	// Same zero-selects-default, negative-disables convention as the
+	// registration timeout.
+	statusReconcileTimeout := cfg.StatusReconcileTimeout
+	if statusReconcileTimeout == 0 {
+		statusReconcileTimeout = defaultStatusReconcileTimeout
+	}
+	env.StatusReconcileTimeout = statusReconcileTimeout
 
 	actor := &RoundClientActor{
 		cfg:               cfg,
@@ -806,9 +834,10 @@ func (a *RoundClientActor) createRoundFSMFromDB(ctx context.Context,
 		DisableJoinRequestAuth: a.cfg.DisableJoinRequestAuth,
 		ForfeitCollectionTimeout: a.
 			env.ForfeitCollectionTimeout,
-		RegistrationTimeout: a.env.RegistrationTimeout,
-		RoundKey:            RoundKeyStr(roundID.KeyString()),
-		OwnedScriptChecker:  a.cfg.OwnedScriptChecker,
+		RegistrationTimeout:    a.env.RegistrationTimeout,
+		StatusReconcileTimeout: a.env.StatusReconcileTimeout,
+		RoundKey:               RoundKeyStr(roundID.KeyString()),
+		OwnedScriptChecker:     a.cfg.OwnedScriptChecker,
 	}
 	fsmCfg := ClientStateMachineCfg{
 		Logger: fsmLogger,
@@ -879,9 +908,10 @@ func (a *RoundClientActor) createNewRound(ctx context.Context) (*RoundFSM,
 		DisableJoinRequestAuth: a.cfg.DisableJoinRequestAuth,
 		ForfeitCollectionTimeout: a.
 			env.ForfeitCollectionTimeout,
-		RegistrationTimeout: a.env.RegistrationTimeout,
-		RoundKey:            RoundKeyStr(tempKey.KeyString()),
-		OwnedScriptChecker:  a.cfg.OwnedScriptChecker,
+		RegistrationTimeout:    a.env.RegistrationTimeout,
+		StatusReconcileTimeout: a.env.StatusReconcileTimeout,
+		RoundKey:               RoundKeyStr(tempKey.KeyString()),
+		OwnedScriptChecker:     a.cfg.OwnedScriptChecker,
 	}
 	fsmCfg := ClientStateMachineCfg{
 		Logger: fsmLogger,
@@ -1374,6 +1404,30 @@ func (a *RoundClientActor) Start(ctx context.Context) error {
 		); err != nil {
 			return fmt.Errorf("replay checkpointed messages for "+
 				"round %s: %w", round.RoundID, err)
+		}
+
+		// A reloaded round sits back in InputSigSentState with its
+		// forfeit signatures already out, so the wavelength#844
+		// hazard window reopens across the restart. Re-arm the
+		// status-reconcile timeout for forfeit-bearing rounds so a
+		// round whose failure raced the crash still converges on a
+		// QueryRoundStatus probe rather than stranding.
+		if len(round.Intents.Forfeits) > 0 &&
+			a.env.StatusReconcileTimeout > 0 {
+
+			if err := a.processOutbox(ctx, []ClientOutMsg{
+				&StartTimeoutReq{
+					RoundKey: RoundKeyStr(
+						round.RoundID.KeyString(),
+					),
+					Phase:    TimeoutPhaseStatusReconcile,
+					Duration: a.env.StatusReconcileTimeout,
+				},
+			}); err != nil {
+				return fmt.Errorf("arm status reconcile "+
+					"timeout for reloaded round %s: %w",
+					round.RoundID, err)
+			}
 		}
 	}
 
@@ -1884,6 +1938,9 @@ func extractRoundID(event ClientEvent) (RoundID, bool) {
 	case *AwaitingBoardingSigs:
 		return e.RoundID, true
 
+	case *RoundStatusReported:
+		return e.RoundID, true
+
 	default:
 		return RoundID{}, false
 	}
@@ -2384,6 +2441,25 @@ func (a *RoundClientActor) handleTimeout(ctx context.Context,
 
 	case TimeoutPhaseRegistration:
 		timeoutEvt = &RegistrationTimedOut{}
+
+	case TimeoutPhaseStatusReconcile:
+		// The reconcile timeout is only armed after the round has been
+		// re-keyed to its server-assigned RoundID (the forfeit
+		// signatures cannot leave the box before admission), so the
+		// map key parses back to a RoundID.
+		roundID, perr := ParseRoundID(string(keyStr))
+		if perr != nil {
+			a.log.WarnS(ctx, "Status reconcile timeout with "+
+				"non-RoundID key",
+				perr,
+				slog.String("round_key", string(keyStr)),
+			)
+
+			return fn.Ok[actormsg.RoundActorResp](nil)
+		}
+		timeoutEvt = &StatusReconcileTimedOut{
+			RoundID: roundID,
+		}
 
 	default:
 		a.log.WarnS(ctx, "Ignoring timeout with unknown phase",

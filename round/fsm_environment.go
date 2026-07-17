@@ -85,6 +85,13 @@ type ClientEnvironment struct {
 	// timeout for the round.
 	RegistrationTimeout time.Duration
 
+	// StatusReconcileTimeout bounds how long InputSigSentState waits, with
+	// forfeit signatures already out, before probing the operator with a
+	// QueryRoundStatus (wavelength#844). It doubles as the retry interval
+	// between probes. A non-positive value disables the reconcile, leaving
+	// only the #823 startup sweep to rescue a stranded reservation.
+	StatusReconcileTimeout time.Duration
+
 	// RoundKey is the actor's map key for this round FSM (a TempRoundKey
 	// string before admission, a RoundID string after re-keying). The
 	// registration-timeout outbox messages carry it so the actor can
