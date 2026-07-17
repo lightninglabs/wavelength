@@ -436,6 +436,14 @@ type Settlement struct {
 
 	// Height is the block height at which TxID confirmed.
 	Height int32
+
+	// FeeSat is the TOTAL operator fee the client's ledger booked for the
+	// forfeit round. It is a round-level figure: every VTXO forfeited in
+	// the same round carries the same value, so consumers must not sum it
+	// across VTXOs. Zero when the ledger has no fee row for the round
+	// (fee-free rounds, and rows predating the ledger round_uuid
+	// backfill).
+	FeeSat int64
 }
 
 // MaxTreeDepth returns the largest TreeDepth across the Descriptor's

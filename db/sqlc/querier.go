@@ -292,6 +292,19 @@ type Querier interface {
 	// height. The join columns are NULL for every VTXO whose forfeit round is
 	// unknown (all non-forfeited VTXOs, and forfeited ones whose round row is
 	// absent), so consumers must treat them as optional.
+	//
+	// settlement_fee_sat is the TOTAL operator fee the client's ledger booked for
+	// the forfeit round (boarding_fee_paid + refresh_fee_paid, joined via the
+	// round_uuid TEXT mirror of the ledger's BLOB round_id). Every VTXO forfeited
+	// in the same round reports the same round-level figure — consumers must not
+	// sum it across VTXOs. Zero when the forfeit round is unknown or its fee rows
+	// are absent (e.g. rows written before the round_uuid backfill ran).
+	//
+	// The fee lookup is a correlated scalar subquery rather than a grouped join:
+	// the planner then resolves it as a per-row probe of the
+	// idx_client_ledger_round_uuid index for the (few) forfeited rows that carry
+	// a forfeit_round_id, instead of aggregating every fee row in the ledger on
+	// every call.
 	ListVTXOsByStatus(ctx context.Context, status int32) ([]ListVTXOsByStatusRow, error)
 	ListWalletUTXOLog(ctx context.Context, arg ListWalletUTXOLogParams) ([]WalletUtxoLog, error)
 	ListWalletUTXOLogByBlock(ctx context.Context, blockHeight int32) ([]WalletUtxoLog, error)
