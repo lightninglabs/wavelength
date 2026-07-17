@@ -97,8 +97,15 @@ func getDaemonConn(cmd *cobra.Command) (*grpc.ClientConn, error) {
 
 // getDaemonClient establishes a gRPC connection to the daemon and returns a
 // DaemonServiceClient. The caller is responsible for closing the returned
-// connection.
-func getDaemonClient(cmd *cobra.Command) (waverpc.DaemonServiceClient,
+// connection. Package-level indirection over defaultGetDaemonClient so
+// command-wiring tests can substitute an in-process bufconn daemon
+// (mirroring the stdinIsTTY indirection); production code never
+// overrides it.
+var getDaemonClient = defaultGetDaemonClient
+
+// defaultGetDaemonClient dials the daemon from the command's connection
+// flags.
+func defaultGetDaemonClient(cmd *cobra.Command) (waverpc.DaemonServiceClient,
 	*grpc.ClientConn, error) {
 
 	conn, err := getDaemonConn(cmd)

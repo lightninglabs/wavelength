@@ -638,7 +638,11 @@ func arkVTXOMethodRegistry() []schemaMethod {
 		{
 			Method: "ark.vtxos.refresh",
 			Description: "Queue VTXOs for refresh and join the " +
-				"next round (auto-joins unless --no_join)",
+				"next round (auto-joins unless --no_join). " +
+				"Charged an operator fee at seal time; " +
+				"--dry_run previews an itemized estimate, " +
+				"and a real refresh requires --yes on " +
+				"non-interactive stdin",
 			Params: []schemaParam{
 				{
 					Name: "outpoint",
@@ -650,6 +654,12 @@ func arkVTXOMethodRegistry() []schemaMethod {
 					Name:        "all",
 					Type:        "bool",
 					Description: "refresh all live VTXOs",
+				},
+				{
+					Name: "yes",
+					Type: "bool",
+					Description: "skip the interactive " +
+						"fee confirmation",
 				},
 				{
 					Name: "no_join",

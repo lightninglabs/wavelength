@@ -9,6 +9,8 @@ import (
 
 	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/spf13/cobra"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -140,6 +142,13 @@ func newVTXOsRefreshCmd() *cobra.Command {
 		Long: "Queues one or more VTXOs for refresh and then " +
 			"commits the queued intents to the next round, " +
 			"extending the VTXOs' expiry.\n\n" +
+			"A refresh is charged an operator fee, set by the " +
+			"server-issued quote at seal time. Pass " +
+			"`--dry_run` to preview an itemized advisory " +
+			"estimate without queuing anything. An " +
+			"interactive refresh shows the estimate and asks " +
+			"for confirmation; pass `--yes` to skip the " +
+			"prompt (required on non-interactive stdin).\n\n" +
 			"Under the hood the refresh intent first " +
 			"accumulates in the round actor's " +
 			"PendingRoundAssembly state. By default this " +
@@ -163,6 +172,9 @@ func newVTXOsRefreshCmd() *cobra.Command {
 	cmd.Flags().Bool("dry_run", false,
 		"validate without queuing and preview the estimated "+
 			"operator fee")
+
+	cmd.Flags().Bool("yes", false,
+		"skip the interactive fee confirmation")
 
 	cmd.Flags().Bool("no_join", false,
 		"skip the implicit `ark rounds join` follow-up so this "+
@@ -208,6 +220,16 @@ func vtxosRefresh(cmd *cobra.Command, _ []string) error {
 
 		return nil
 	}); err != nil {
+		return err
+	}
+
+	if err := confirmRefreshIfNeeded(
+		cmd, req, func(preview *waverpc.RefreshVTXOsRequest) (
+			*waverpc.RefreshVTXOsResponse, error) {
+
+			return client.RefreshVTXOs(cmd.Context(), preview)
+		},
+	); err != nil {
 		return err
 	}
 
@@ -326,6 +348,134 @@ func summarizeRefreshFeeEstimate(est *waverpc.RefreshFeeEstimate) []string {
 	}
 
 	return lines
+}
+
+// confirmRefreshIfNeeded gates dispatch of a real refresh on explicit
+// consent: every refresh is charged an operator fee at seal time, and
+// before this gate the CLI queued the refresh without ever mentioning
+// it (#986). The check runs after parseRequest returns so it covers
+// both the flag-driven path and the --json path, mirroring
+// confirmLeaveAllIfNeeded. Skip when --yes is set (explicit scripted
+// consent) or when req.DryRun is set (previewing, not spending).
+//
+// When stdin is not a TTY (agents, CI, pipelines), the function
+// refuses to prompt — the caller must pass --yes or --dry_run — so a
+// non-interactive invocation is never blocked on a y/N it cannot
+// answer. Only on a TTY does it fetch the advisory estimate (via the
+// same RPC in dry-run form, through fetchPreview) and prompt, so the
+// operator consents to a number rather than a mystery fee. A preview
+// that fails with InvalidArgument aborts — the real refresh would
+// reject the same request shape — while any other preview failure
+// degrades to prompting with an "estimate unavailable" warning: a
+// broken estimate path must not make refreshes unconfirmable.
+func confirmRefreshIfNeeded(cmd *cobra.Command,
+	req *waverpc.RefreshVTXOsRequest,
+	fetchPreview func(*waverpc.RefreshVTXOsRequest) (
+		*waverpc.RefreshVTXOsResponse, error)) error {
+
+	if req.DryRun {
+		return nil
+	}
+
+	confirmYes, _ := cmd.Flags().GetBool("yes")
+	if confirmYes {
+		return nil
+	}
+
+	if !stdinIsTTY(cmd) {
+		return PrintError(
+			"INVALID_ARGS", "refresh is charged an operator "+
+				"fee at seal time and requires --yes "+
+				"(explicit consent) or --dry_run (fee "+
+				"preview) on non-interactive stdin; "+
+				"refusing to prompt because an agent "+
+				"cannot respond to y/N",
+		)
+	}
+
+	cloned := proto.Clone(req)
+	preview, ok := cloned.(*waverpc.RefreshVTXOsRequest)
+	if !ok {
+
+		// Unreachable: proto.Clone preserves the concrete type.
+		return fmt.Errorf("unexpected preview request type %T", cloned)
+	}
+	preview.DryRun = true
+
+	var lines []string
+	resp, err := fetchPreview(preview)
+	switch {
+	case status.Code(err) == codes.InvalidArgument:
+		// The dry-run validates the same request shape the real
+		// dispatch would; a caller mistake (unknown or malformed
+		// outpoint) should abort here, not after a confirmed
+		// queue.
+		return fmt.Errorf("refresh preview rejected: %w", err)
+
+	case err != nil:
+		lines = []string{
+			"warning: refresh fee estimate unavailable " +
+				"(preview failed); a refresh is still " +
+				"charged the binding seal-time fee",
+		}
+
+	default:
+		// An empty preview means the selection resolves to
+		// nothing (refresh --all with no live VTXOs): the real
+		// dispatch queues nothing and charges nothing, so there
+		// is no fee to consent to and warning about a charge
+		// would be false.
+		if resp.GetStatus() == "preview" &&
+			len(resp.GetQueuedOutpoints()) == 0 {
+
+			fmt.Fprintln(
+				cmd.ErrOrStderr(),
+				"no live VTXOs to refresh; nothing will be "+
+					"queued",
+			)
+
+			return nil
+		}
+
+		lines = summarizeRefreshFeeEstimate(resp.GetFeeEstimate())
+		if len(lines) == 0 {
+			lines = []string{
+				"warning: the daemon returned no fee " +
+					"estimate; a refresh is still " +
+					"charged the binding seal-time fee",
+			}
+		}
+	}
+
+	return promptRefreshConfirmation(cmd, lines)
+}
+
+// promptRefreshConfirmation shows the fee-estimate lines and asks the
+// operator to confirm the refresh on stdin. Any answer other than "y"
+// or "yes" (case-insensitive) aborts the command. Only called when
+// stdin is known to be a TTY (see confirmRefreshIfNeeded). All prompt
+// output goes to stderr: stdout is reserved for the JSON body, and a
+// prompt swallowed by a shell pipe would read as a hung command.
+func promptRefreshConfirmation(cmd *cobra.Command, lines []string) error {
+	out := cmd.ErrOrStderr()
+
+	for _, line := range lines {
+		fmt.Fprintln(out, line)
+	}
+	fmt.Fprint(out, "Proceed with refresh? [y/N]: ")
+
+	reader := bufio.NewReader(cmd.InOrStdin())
+	answer, err := reader.ReadString('\n')
+	if err != nil {
+		return fmt.Errorf("read confirmation: %w", err)
+	}
+
+	answer = strings.TrimSpace(strings.ToLower(answer))
+	if answer != "y" && answer != "yes" {
+		return fmt.Errorf("aborted by user")
+	}
+
+	return nil
 }
 
 // newVTXOsLeaveCmd creates the vtxos leave subcommand.
