@@ -416,6 +416,72 @@ func TestHistoryKeepsUnpairedOORSend(t *testing.T) {
 	require.Equal(t, int64(-1_000), entries[0].GetAmountSat())
 }
 
+// TestClassifyLedgerRowHidesBoardingFeeLeg confirms the boarding_fee_paid
+// accounting leg the round books alongside a boarding deposit does not
+// fabricate a phantom DEPOSIT row: only the wallet_utxo_created subtype maps
+// to a user-facing deposit, and the fee reaches the user via the real deposit
+// row's fee_sat attribution instead.
+func TestClassifyLedgerRowHidesBoardingFeeLeg(t *testing.T) {
+	t.Parallel()
+
+	feeLeg := &waverpc.TransactionHistoryEntry{
+		Type:          "boarding",
+		Subtype:       ledger.EventBoardingFeePaid,
+		AmountSat:     255,
+		DebitAccount:  ledger.AccountFeesPaid,
+		CreditAccount: ledger.AccountWalletBalance,
+	}
+	_, ok := walletEntryFromLedgerRow(feeLeg)
+	require.False(t, ok, "boarding fee leg must stay hidden")
+
+	deposit := &waverpc.TransactionHistoryEntry{
+		Type:      "boarding",
+		Subtype:   ledger.EventWalletUTXOCreated,
+		AmountSat: 150_000,
+		Txid:      strings.Repeat("b", 64),
+	}
+	entry, ok := walletEntryFromLedgerRow(deposit)
+	require.True(t, ok)
+	require.Equal(
+		t, wavewalletrpc.EntryKind_ENTRY_KIND_DEPOSIT, entry.GetKind(),
+	)
+
+	// The sweep-typed pure fee legs (unilateral exit cost, boarding-sweep
+	// chain cost) are hidden the same way: the real EXIT/DEPOSIT rows
+	// already carry those costs in fee_sat, so surfacing the legs would
+	// double-represent the fee as a dangling pending EXIT row.
+	for _, subtype := range []string{
+		ledger.EventOnchainFeePaid, ledger.EventBoardingSweepFeePaid,
+	} {
+		feeLeg := &waverpc.TransactionHistoryEntry{
+			Type:          "sweep",
+			Subtype:       subtype,
+			AmountSat:     623,
+			DebitAccount:  ledger.AccountOnchainFees,
+			CreditAccount: ledger.AccountVTXOBalance,
+		}
+		_, ok := walletEntryFromLedgerRow(feeLeg)
+		require.False(
+			t, ok, "sweep fee leg %s must stay hidden", subtype,
+		)
+	}
+
+	// A tracked boarding-sweep transaction row (subtype = sweep status)
+	// remains a real EXIT row.
+	sweepTx := &waverpc.TransactionHistoryEntry{
+		Type:      "sweep",
+		Subtype:   "confirmed",
+		AmountSat: 50_000,
+		FeeSat:    500,
+		Txid:      strings.Repeat("c", 64),
+	}
+	entry, ok = walletEntryFromLedgerRow(sweepTx)
+	require.True(t, ok)
+	require.Equal(
+		t, wavewalletrpc.EntryKind_ENTRY_KIND_EXIT, entry.GetKind(),
+	)
+}
+
 // TestOORSendSessionIDRequiresHashSizedSession confirms malformed OOR session
 // IDs are ignored instead of being normalized into correlation keys.
 func TestOORSendSessionIDRequiresHashSizedSession(t *testing.T) {

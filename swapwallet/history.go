@@ -1756,9 +1756,33 @@ func classifyLedgerRow(t *waverpc.TransactionHistoryEntry) (
 
 	switch t.GetType() {
 	case "boarding":
+		// The boarding type covers both the confirmed-deposit row
+		// (wallet_utxo_created) and the round's boarding_fee_paid
+		// accounting leg. Only the former is a user-facing deposit —
+		// surfacing the fee leg would fabricate a phantom DEPOSIT row
+		// for the fee amount; the fee itself is already attributed to
+		// the real deposit row's fee_sat by the history SQL.
+		if t.GetSubtype() == ledger.EventBoardingFeePaid {
+			return wavewalletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
+				0, false
+		}
+
 		return wavewalletrpc.EntryKind_ENTRY_KIND_DEPOSIT, +1, true
 
 	case "sweep":
+		// The sweep type covers tracked boarding-sweep transactions AND
+		// two pure fee accounting legs (the unilateral exit cost and
+		// the boarding-sweep chain cost). The fee legs carry no chain
+		// txid, key as ledger-N, and would surface as permanently
+		// PENDING phantom EXIT rows for the fee amount — while the
+		// real EXIT/DEPOSIT rows already carry those costs in fee_sat.
+		switch t.GetSubtype() {
+		case ledger.EventOnchainFeePaid,
+			ledger.EventBoardingSweepFeePaid:
+			return wavewalletrpc.EntryKind_ENTRY_KIND_UNSPECIFIED,
+				0, false
+		}
+
 		return wavewalletrpc.EntryKind_ENTRY_KIND_EXIT, -1, true
 
 	case "oor":
