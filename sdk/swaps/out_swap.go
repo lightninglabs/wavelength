@@ -1208,6 +1208,40 @@ func (s *ReceiveSession) acceptInArkHtlcEvent(ctx context.Context,
 			nil,
 		)
 	}
+
+	// A session whose route quote attached credit (or padded the vHTLC
+	// above the invoice amount) cannot settle through the direct p2p
+	// vHTLC: the sender funds the receiver's script directly, so no
+	// output exists that could carry the server's custodial credit
+	// top-up. Accepting such an event would commit this session to the
+	// in-ark rail (which skips the out-swap ACK) and leave it polling a
+	// vHTLC that can never be funded, so fail fast instead.
+	if s.attachedCreditSat > 0 {
+		return s.failTerminal(
+			ctx, fmt.Sprintf("in-ark HTLC event conflicts with "+
+				"credit-attach receive plan: attached credit "+
+				"%d sat requires server-mediated settlement",
+				s.attachedCreditSat),
+			nil,
+			nil,
+		)
+	}
+	// Note that expectedVHTLCSat is not persisted directly: a restored
+	// session reconstructs it as requested+attachedCredit, so a padded
+	// quote with zero attached credit would lose its padding across a
+	// restart. No server produces that shape today; if one ever does, the
+	// expected amount needs its own column.
+	if s.expectedVHTLCSat != 0 &&
+		s.expectedVHTLCSat != uint64(s.amountSat) {
+		return s.failTerminal(
+			ctx, fmt.Sprintf("in-ark HTLC event conflicts with "+
+				"padded vHTLC receive plan: expected vHTLC "+
+				"%d sat does not match invoice amount %d sat",
+				s.expectedVHTLCSat, s.amountSat),
+			nil,
+			nil,
+		)
+	}
 	if event.AmountSat != int64(s.amountSat) {
 		return s.failTerminal(
 			ctx, fmt.Sprintf("in-ark HTLC amount %d does not "+
