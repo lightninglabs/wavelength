@@ -83,6 +83,12 @@ type Querier interface {
 	GetClientTreeByTxid(ctx context.Context, txid []byte) (RoundClientTree, error)
 	GetClientTreeTxidInfo(ctx context.Context, txid []byte) (ClientTreeTxid, error)
 	GetClientTreeTxids(ctx context.Context, arg GetClientTreeTxidsParams) ([]GetClientTreeTxidsRow, error)
+	// GetConfirmedExitCost returns the confirmed on-chain cost of a unilateral
+	// exit: the onchain_fee_paid leg the ledger booked after the exit's final
+	// sweep confirmed, keyed by the exit's outpoint-derived idempotency key
+	// (ledger.ExitIdempotencyKey). Zero when the exit has not confirmed (or
+	// predates exit-cost accounting).
+	GetConfirmedExitCost(ctx context.Context, idempotencyKey []byte) (int64, error)
 	GetCreditOperation(ctx context.Context, opID string) (CreditOperation, error)
 	// Exit funding address persistence queries (wavelength#893).
 	GetExitFundingAddress(ctx context.Context, arg GetExitFundingAddressParams) (ExitFundingAddress, error)

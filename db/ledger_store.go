@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/google/uuid"
 	"github.com/lightninglabs/wavelength/db/sqlc"
 	"github.com/lightninglabs/wavelength/ledger"
@@ -113,6 +114,29 @@ func sqlInt32Ptr(v *int32) sql.NullInt32 {
 		Int32: *v,
 		Valid: true,
 	}
+}
+
+// GetConfirmedExitCost returns the confirmed on-chain cost the ledger booked
+// for a unilateral exit of the given VTXO outpoint (the onchain_fee_paid leg
+// unroll emits after the final sweep confirms). Zero when no exit-cost leg
+// exists — the exit has not confirmed, or predates exit-cost accounting.
+func (s *LedgerStoreDB) GetConfirmedExitCost(ctx context.Context,
+	outpoint wire.OutPoint) (int64, error) {
+
+	key := ledger.ExitIdempotencyKey(outpoint.Hash, outpoint.Index)
+
+	var cost int64
+	err := s.ExecTx(
+		ctx, ReadTxOption(),
+		func(qtx *sqlc.Queries) error {
+			var txErr error
+			cost, txErr = qtx.GetConfirmedExitCost(ctx, key)
+
+			return txErr
+		},
+	)
+
+	return cost, err
 }
 
 // GetAccountBalance returns the net balance (debits minus credits) for

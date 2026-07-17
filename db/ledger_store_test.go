@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/google/uuid"
 	"github.com/lightninglabs/wavelength/db/sqlc"
@@ -275,6 +276,50 @@ func TestLedgerStoreInsertStampsRoundUUID(t *testing.T) {
 	require.False(t, entries[0].RoundUuid.Valid)
 	require.True(t, entries[1].RoundUuid.Valid)
 	require.Equal(t, roundID.String(), entries[1].RoundUuid.String)
+}
+
+// TestLedgerStoreGetConfirmedExitCost proves the exit-cost lookup returns
+// exactly the onchain_fee_paid leg keyed by the exited VTXO's outpoint: the
+// send leg sharing the same idempotency key and a fee leg for a different
+// outpoint contribute nothing, and an unknown outpoint reads zero.
+func TestLedgerStoreGetConfirmedExitCost(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newLedgerStoreForTest(t)
+
+	var exited, other wire.OutPoint
+	exited.Hash[0] = 0xaa
+	exited.Index = 1
+	other.Hash[0] = 0xbb
+
+	insert := func(debit, credit, eventType string, amount int64,
+		op wire.OutPoint) {
+
+		entry := makeLedgerEntry(
+			debit, credit, amount, eventType, nil, 1_000,
+		)
+		entry.IdempotencyKey = ledger.ExitIdempotencyKey(
+			op.Hash, op.Index,
+		)
+		require.NoError(t, store.InsertLedgerEntry(ctx, entry))
+	}
+
+	// The two legs handleExitCost books for the exited outpoint, plus an
+	// unrelated exit's fee leg.
+	insert("transfers_out", "vtxo_balance", "vtxo_sent", 6_377, exited)
+	insert("onchain_fees", "vtxo_balance", "onchain_fee_paid", 623, exited)
+	insert("onchain_fees", "vtxo_balance", "onchain_fee_paid", 999, other)
+
+	cost, err := store.GetConfirmedExitCost(ctx, exited)
+	require.NoError(t, err)
+	require.Equal(t, int64(623), cost)
+
+	var unknown wire.OutPoint
+	unknown.Hash[0] = 0xcc
+	cost, err = store.GetConfirmedExitCost(ctx, unknown)
+	require.NoError(t, err)
+	require.Zero(t, cost)
 }
 
 // TestBackfillLedgerRoundUUIDs proves the migration-15 post-step converts

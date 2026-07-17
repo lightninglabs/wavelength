@@ -79,6 +79,25 @@ func (q *Queries) GetClientLedgerStats(ctx context.Context) (GetClientLedgerStat
 	return i, err
 }
 
+const GetConfirmedExitCost = `-- name: GetConfirmedExitCost :one
+SELECT CAST(COALESCE(SUM(amount_sat), 0) AS BIGINT) AS exit_cost_sat
+FROM ledger_entries
+WHERE event_type = 'onchain_fee_paid'
+  AND idempotency_key = $1
+`
+
+// GetConfirmedExitCost returns the confirmed on-chain cost of a unilateral
+// exit: the onchain_fee_paid leg the ledger booked after the exit's final
+// sweep confirmed, keyed by the exit's outpoint-derived idempotency key
+// (ledger.ExitIdempotencyKey). Zero when the exit has not confirmed (or
+// predates exit-cost accounting).
+func (q *Queries) GetConfirmedExitCost(ctx context.Context, idempotencyKey []byte) (int64, error) {
+	row := q.db.QueryRowContext(ctx, GetConfirmedExitCost, idempotencyKey)
+	var exit_cost_sat int64
+	err := row.Scan(&exit_cost_sat)
+	return exit_cost_sat, err
+}
+
 const GetTotalOperatorFeesPaid = `-- name: GetTotalOperatorFeesPaid :one
 SELECT CAST(COALESCE(SUM(amount_sat), 0) AS BIGINT) AS total_fees
 FROM ledger_entries

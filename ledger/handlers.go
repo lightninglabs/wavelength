@@ -515,6 +515,14 @@ func exitIdempotencyKey(hash [32]byte, index uint32) []byte {
 	return out
 }
 
+// ExitIdempotencyKey exposes the exit-leg dedup key derivation to read-side
+// consumers: the unilateral exit send and fee legs booked by handleExitCost
+// share this outpoint-derived key, so a store can look up the confirmed exit
+// cost for a given VTXO outpoint without text-parsing descriptions.
+func ExitIdempotencyKey(hash [32]byte, index uint32) []byte {
+	return exitIdempotencyKey(hash, index)
+}
+
 // handleUTXOCreated records a new wallet UTXO in two places:
 //
 //  1. The wallet_utxo_log audit trail via UTXOAuditStore, tagged

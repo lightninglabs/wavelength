@@ -341,6 +341,17 @@ SELECT CAST(COUNT(*) AS BIGINT) AS entry_count,
        CAST(COALESCE(MAX(created_at), 0) AS BIGINT) AS last_created_at
 FROM ledger_entries;
 
+-- name: GetConfirmedExitCost :one
+-- GetConfirmedExitCost returns the confirmed on-chain cost of a unilateral
+-- exit: the onchain_fee_paid leg the ledger booked after the exit's final
+-- sweep confirmed, keyed by the exit's outpoint-derived idempotency key
+-- (ledger.ExitIdempotencyKey). Zero when the exit has not confirmed (or
+-- predates exit-cost accounting).
+SELECT CAST(COALESCE(SUM(amount_sat), 0) AS BIGINT) AS exit_cost_sat
+FROM ledger_entries
+WHERE event_type = 'onchain_fee_paid'
+  AND idempotency_key = $1;
+
 -- name: ListLedgerRoundIDsMissingUuid :many
 -- ListLedgerRoundIDsMissingUuid returns the distinct raw round_id BLOBs that
 -- have not yet been mirrored into the round_uuid TEXT column. The BLOB-to-UUID
