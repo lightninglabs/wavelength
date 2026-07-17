@@ -210,7 +210,7 @@ func LineageBlocked(ctx context.Context, store Reader,
 
 	avail, err := LineageAvailability(ctx, store, batchTxids...)
 	if err != nil {
-		return false, avail, err
+		return true, avail, err
 	}
 
 	return !avail.Usable(), avail, nil

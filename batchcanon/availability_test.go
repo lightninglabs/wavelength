@@ -1,12 +1,24 @@
 package batchcanon
 
 import (
+	"context"
+	"errors"
 	"testing"
 
 	"github.com/btcsuite/btcd/chainhash/v2"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
 )
+
+type failingReader struct {
+	err error
+}
+
+func (r failingReader) GetBatch(context.Context, chainhash.Hash) (*Record,
+	error) {
+
+	return nil, r.err
+}
 
 // TestAvailabilityForState pins the State -> Availability mapping.
 func TestAvailabilityForState(t *testing.T) {
@@ -205,4 +217,17 @@ func TestLineageAvailabilityFromStore(t *testing.T) {
 	blocked, _, err = LineageBlocked(ctx, store)
 	require.NoError(t, err)
 	require.True(t, blocked)
+
+	// Store failures cannot open the gate even when callers also inspect
+	// the returned error.
+	storeErr := errors.New("store unavailable")
+	blocked, avail, err = LineageBlocked(
+		ctx, failingReader{
+			err: storeErr,
+		},
+		finalTx,
+	)
+	require.ErrorIs(t, err, storeErr)
+	require.True(t, blocked)
+	require.Equal(t, AvailabilityUnknown, avail)
 }

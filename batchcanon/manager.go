@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
@@ -131,6 +132,12 @@ type ManagerConfig struct {
 // authenticated prevout pkScript, which lnd's notifier requires. Incomplete
 // evidence fails the whole registration closed.
 type Manager struct {
+	// mu serializes direct startup reconciliation with actor mailbox work.
+	// Reconcile is intentionally called by the daemon after actor
+	// registration so watches are live before startup completes, while
+	// Receive may already be processing queued chain observations.
+	mu sync.Mutex
+
 	cfg     ManagerConfig
 	log     btclog.Logger
 	selfRef actor.TellOnlyRef[ManagerMsg]
@@ -155,10 +162,14 @@ func (m *Manager) SetSelfRef(ref actor.TellOnlyRef[ManagerMsg]) {
 	m.selfRef = ref
 }
 
-// Receive implements actor.ActorBehavior. It serializes all canonicality
-// mutations through the single actor mailbox.
+// Receive implements actor.ActorBehavior. It serializes canonicality
+// mutations with both the single actor mailbox and direct startup
+// reconciliation.
 func (m *Manager) Receive(ctx context.Context,
 	msg ManagerMsg) fn.Result[ManagerResp] {
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
 	switch v := msg.(type) {
 	case *RegisterBatchRequest:
@@ -1344,6 +1355,9 @@ func watchInputs(w *batchWatch) []ConsumedInput {
 // live re-observation does not transiently downgrade a persisted conflict or
 // finalized state. It must run after SetSelfRef.
 func (m *Manager) Reconcile(ctx context.Context) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	// Non-final states whose watches must be re-armed. Finalized and
 	// conflict_finalized batches need no further watching.
 	live := []State{
