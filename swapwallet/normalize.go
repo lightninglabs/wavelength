@@ -542,8 +542,8 @@ func paginateVTXOs(vtxos []*wavewalletrpc.WalletVTXO, offset,
 // (the pre-#610 behavior). The first consumed outpoint is retained in
 // vtxo_outpoint so the forfeit-driven completion can still correlate the row.
 func leaveEntryStub(leaveJobID string, queuedOutpoints []string,
-	destination string, amtSat int64,
-	note string) *wavewalletrpc.WalletEntry {
+	destination string, amtSat int64, note string,
+	sweepAll bool) *wavewalletrpc.WalletEntry {
 
 	var firstOutpoint string
 	if len(queuedOutpoints) > 0 {
@@ -556,6 +556,14 @@ func leaveEntryStub(leaveJobID string, queuedOutpoints []string,
 	}
 	createdAt := nowUnix()
 
+	// The sweep-all marker is persisted on the request so completion can
+	// net the seal-time operator fee back out of the gross sweep amount
+	// once the fee becomes known (see applyCooperativeLeaveForfeited).
+	request := requestFromOnchainAddress(destination)
+	if sweepAll && request.GetOnchainAddress() != nil {
+		request.GetOnchainAddress().SweepAll = true
+	}
+
 	return &wavewalletrpc.WalletEntry{
 		Id:            id,
 		Kind:          wavewalletrpc.EntryKind_ENTRY_KIND_EXIT,
@@ -565,7 +573,7 @@ func leaveEntryStub(leaveJobID string, queuedOutpoints []string,
 		CreatedAtUnix: createdAt,
 		UpdatedAtUnix: createdAt,
 		Note:          note,
-		Request:       requestFromOnchainAddress(destination),
+		Request:       request,
 		Progress: &wavewalletrpc.WalletEntryProgress{
 			Phase:        wavewalletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_REQUEST_CREATED,
 			PhaseLabel:   "request_created",

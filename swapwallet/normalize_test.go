@@ -547,7 +547,7 @@ func TestLeaveEntryStub(t *testing.T) {
 			"abc:0",
 			"def:1",
 		}, "bcrt1q...",
-		5_000, "rent",
+		5_000, "rent", false,
 	)
 	require.Equal(t, "abc:0", out.GetId())
 	require.Equal(t, wavewalletrpc.EntryKind_ENTRY_KIND_EXIT, out.GetKind())
@@ -561,7 +561,7 @@ func TestLeaveEntryStub(t *testing.T) {
 	require.Equal(t, out.GetCreatedAtUnix(), out.GetUpdatedAtUnix())
 
 	// No leave-job id and no queued outpoints → id is empty.
-	out = leaveEntryStub("", nil, "bcrt1q...", 1_000, "")
+	out = leaveEntryStub("", nil, "bcrt1q...", 1_000, "", false)
 	require.Equal(t, "", out.GetId())
 }
 
@@ -576,7 +576,7 @@ func TestLeaveEntryStubUsesLeaveJobID(t *testing.T) {
 			"abc:0",
 			"def:1",
 		}, "bcrt1q...",
-		5_000, "rent",
+		5_000, "rent", false,
 	)
 	require.Equal(
 		t, "sendjob-abc", out.GetId(),
@@ -589,7 +589,7 @@ func TestLeaveEntryStubUsesLeaveJobID(t *testing.T) {
 
 	// Empty leave-job id falls back to the first outpoint (pre-#610).
 	fallback := leaveEntryStub(
-		"", []string{"abc:0"}, "bcrt1q...", 5_000, "",
+		"", []string{"abc:0"}, "bcrt1q...", 5_000, "", false,
 	)
 	require.Equal(t, "abc:0", fallback.GetId())
 	require.Equal(t, "abc:0", fallback.GetProgress().GetVtxoOutpoint())

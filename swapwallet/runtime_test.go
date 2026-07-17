@@ -366,7 +366,7 @@ func TestDeadlineWatcherSkipsNoTimeoutEntries(t *testing.T) {
 	defer r.stop()
 
 	sub := r.subscribe()
-	entry := leaveEntryStub("", []string{"exit:0"}, "bcrt1qdest", 1_000, "")
+	entry := leaveEntryStub("", []string{"exit:0"}, "bcrt1qdest", 1_000, "", false)
 	r.trackPendingEntryWithoutTimeout(entry)
 
 	r.applyDeadlines(time.Now().Add(2 * deadline))

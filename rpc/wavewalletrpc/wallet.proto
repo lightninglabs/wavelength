@@ -1610,6 +1610,15 @@ message LightningInvoiceRequest {
 message OnchainAddressRequest {
     // address is the bech32 onchain address originally issued or targeted.
     string address = 1;
+
+    // sweep_all marks an onchain send that drained the selected VTXOs
+    // entirely (wavecli send --send-all). A sweep's pending amount is the
+    // gross outflow with the operator fee still baked in (the fee is only
+    // known once the leave round seals), so completion uses this marker to
+    // net the settled fee back out of the displayed amount. Bounded sends
+    // leave it false: their amount is the exact destination value and the
+    // fee is paid on top out of change.
+    bool sweep_all = 2;
 }
 
 // ArkAddressRequest captures the Ark address associated with an activity entry.

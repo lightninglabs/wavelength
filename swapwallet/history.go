@@ -852,6 +852,12 @@ func (h *history) hasWalletLocalExitEntries() bool {
 type settlement struct {
 	txid   string
 	height int32
+
+	// feeSat is the round-level operator fee the daemon's ledger booked
+	// for the forfeit round; zero against an old daemon or a fee-free
+	// round. Every VTXO forfeited in the same round reports the same
+	// figure, so it is stamped onto a leave row, never summed.
+	feeSat int64
 }
 
 // collectForfeitedVTXOSettlements returns the terminal VTXO outpoints used to
@@ -890,6 +896,7 @@ func (h *history) collectForfeitedVTXOSettlements(ctx context.Context) (
 		settlements[vtxo.GetOutpoint()] = settlement{
 			txid:   vtxo.GetSettlement().GetTxid(),
 			height: vtxo.GetSettlement().GetHeight(),
+			feeSat: vtxo.GetSettlement().GetFeeSat(),
 		}
 	}
 
@@ -1037,6 +1044,16 @@ func decorateCooperativeLeaveEntry(entry *wavewalletrpc.WalletEntry,
 // settling round's txid, it is stamped onto the row's progress so the completed
 // leave can be reconciled against the chain; an empty txid (old daemon) leaves
 // the row complete but without on-chain coordinates, preserving prior behavior.
+//
+// The settlement also carries the forfeit round's operator fee from the
+// daemon's ledger, which is stamped onto the row's fee_sat. A sweep-all row's
+// pending amount is the gross outflow with that fee still baked in (the fee is
+// unknown until the round seals), so the fee is additionally netted back out
+// of the amount, leaving amount = value delivered to the destination and
+// fee = cost on top — the same shape a bounded send already has. The
+// adjustment operates on the per-derive clone from pendingSnapshot and is
+// guarded by the caller's PENDING check, so it applies exactly once per
+// derived row.
 func applyCooperativeLeaveForfeited(entry *wavewalletrpc.WalletEntry,
 	settle settlement) {
 
@@ -1046,6 +1063,23 @@ func applyCooperativeLeaveForfeited(entry *wavewalletrpc.WalletEntry,
 
 	entry.Status = wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE
 	entry.FailureReason = ""
+
+	// A zero settlement fee (old daemon, fee-free round) leaves any
+	// already-carried fee untouched rather than clobbering it.
+	if settle.feeSat > 0 {
+		entry.FeeSat = settle.feeSat
+
+		// Clamp at zero so a fee exceeding the gross amount (which no
+		// sane round produces, but the figure crosses an RPC boundary)
+		// can never flip an outflow row's sign positive.
+		sweepAll := entry.GetRequest().GetOnchainAddress().GetSweepAll()
+		if sweepAll && entry.AmountSat < 0 {
+			entry.AmountSat += settle.feeSat
+			if entry.AmountSat > 0 {
+				entry.AmountSat = 0
+			}
+		}
+	}
 
 	progress := entry.GetProgress()
 	if progress == nil {
