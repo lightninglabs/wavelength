@@ -2438,6 +2438,13 @@ message GetUnrollStatusResponse {
     // current_height is the best block height the unroll actor has observed.
     // Set only on a detailed query against a live job.
     int32 current_height = 10;
+
+    // exit_cost_sat is the CONFIRMED on-chain cost of the exit: the ledger's
+    // onchain_fee_paid leg booked after the final sweep confirmed. Unlike the
+    // estimates in fees, this is the settled figure, so it is set (on both
+    // plain and detailed queries) only once the job is COMPLETED, and reads
+    // zero for exits predating exit-cost accounting.
+    int64 exit_cost_sat = 11;
 }
 
 // VHTLCRecoveryDirection records which side owns a recovery job.
