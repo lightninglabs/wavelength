@@ -32,6 +32,22 @@ type fakeArkService struct {
 	// fails the fee quote.
 	estimateFeeErr error
 
+	// responseFn, when non-nil, computes the EstimateFee reply from
+	// the request instead of returning the canned response. Used by
+	// tests that quote several distinct (amount, remaining-blocks)
+	// pairs in one RPC and need per-pair replies.
+	responseFn func(*arkrpc.EstimateFeeRequest) *arkrpc.EstimateFeeResponse
+
+	// errFn, when non-nil, lets a test fail EstimateFee selectively
+	// per request (e.g. only the second distinct quote of a
+	// selection). A nil return falls through to responseFn / the
+	// canned response.
+	errFn func(*arkrpc.EstimateFeeRequest) error
+
+	// estimateFeeCalls counts EstimateFee invocations so tests can
+	// assert quote deduplication.
+	estimateFeeCalls int
+
 	// getInfoResponse is the canned GetInfo reply. Optional;
 	// tests that don't exercise the fetchOperatorTerms path can
 	// leave it nil, in which case GetInfo falls through to the
@@ -54,9 +70,20 @@ func (f *fakeArkService) EstimateFee(_ context.Context,
 	req *arkrpc.EstimateFeeRequest) (*arkrpc.EstimateFeeResponse, error) {
 
 	f.lastRequest = req
+	f.estimateFeeCalls++
 
 	if f.estimateFeeErr != nil {
 		return nil, f.estimateFeeErr
+	}
+
+	if f.errFn != nil {
+		if err := f.errFn(req); err != nil {
+			return nil, err
+		}
+	}
+
+	if f.responseFn != nil {
+		return f.responseFn(req), nil
 	}
 
 	return f.response, nil
