@@ -6054,9 +6054,10 @@ func (f *faultyUnrollTxConfirm) Ask(ctx context.Context,
 	promise.Complete(
 		fn.Ok[txconfirm.Resp](
 			&txconfirm.EnsureConfirmedResp{
-				Txid:    req.Tx.TxHash(),
-				State:   txconfirm.TxStateFailed,
-				Created: true,
+				Txid:                   req.Tx.TxHash(),
+				State:                  txconfirm.TxStateFailed,
+				Created:                true,
+				DefinitelyNotBroadcast: true,
 			},
 		),
 	)
