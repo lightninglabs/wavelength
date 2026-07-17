@@ -370,6 +370,10 @@ type RoundClientConfig struct {
 	// VTXOStore persists off-chain balance.
 	VTXOStore VTXOStore
 
+	// BatchRegistrar installs authenticated commitment evidence before the
+	// round exposes newly created VTXOs. Nil is allowed in focused tests.
+	BatchRegistrar RoundBatchRegistrar
+
 	// OperatorTerms contains the operator's parameters.
 	OperatorTerms *types.OperatorTerms
 
@@ -509,17 +513,16 @@ func NewRoundClientActor(cfg *RoundClientConfig) fn.Result[*RoundClientActor] {
 	// (e.g., lib.NewTreeSignerSession, signing helpers). StartHeight is set
 	// to 0 here and will be set per-round when FSMs are created.
 	env := &ClientEnvironment{
-		RoundStore:      cfg.RoundStore,
-		VTXOStore:       cfg.VTXOStore,
-		Wallet:          cfg.Wallet,
-		SigningExecutor: cfg.SigningExecutor,
-		OperatorTerms:   cfg.OperatorTerms,
-		ChainParams:     cfg.ChainParams,
-		MaxOperatorFee:  cfg.MaxOperatorFee,
-		AutoRefreshFeeFloor: cfg.
-			AutoRefreshFeeFloor,
-		AutoRefreshFeeRatePPM: cfg.
-			AutoRefreshFeeRatePPM,
+		RoundStore:             cfg.RoundStore,
+		VTXOStore:              cfg.VTXOStore,
+		BatchRegistrar:         cfg.BatchRegistrar,
+		Wallet:                 cfg.Wallet,
+		SigningExecutor:        cfg.SigningExecutor,
+		OperatorTerms:          cfg.OperatorTerms,
+		ChainParams:            cfg.ChainParams,
+		MaxOperatorFee:         cfg.MaxOperatorFee,
+		AutoRefreshFeeFloor:    cfg.AutoRefreshFeeFloor,
+		AutoRefreshFeeRatePPM:  cfg.AutoRefreshFeeRatePPM,
 		Log:                    actorLog,
 		DisableJoinRequestAuth: cfg.DisableJoinRequestAuth,
 		OwnedScriptChecker:     cfg.OwnedScriptChecker,
@@ -925,17 +928,16 @@ func (a *RoundClientActor) createRoundFSMFromDB(ctx context.Context,
 	fsmLogger := a.log.WithPrefix(fsmPrefix)
 
 	env := &ClientEnvironment{
-		RoundStore:      a.cfg.RoundStore,
-		VTXOStore:       a.cfg.VTXOStore,
-		Wallet:          a.cfg.Wallet,
-		SigningExecutor: a.env.SigningExecutor,
-		OperatorTerms:   a.cfg.OperatorTerms,
-		ChainParams:     a.cfg.ChainParams,
-		MaxOperatorFee:  a.cfg.MaxOperatorFee,
-		AutoRefreshFeeFloor: a.cfg.
-			AutoRefreshFeeFloor,
-		AutoRefreshFeeRatePPM: a.cfg.
-			AutoRefreshFeeRatePPM,
+		RoundStore:             a.cfg.RoundStore,
+		VTXOStore:              a.cfg.VTXOStore,
+		BatchRegistrar:         a.cfg.BatchRegistrar,
+		Wallet:                 a.cfg.Wallet,
+		SigningExecutor:        a.env.SigningExecutor,
+		OperatorTerms:          a.cfg.OperatorTerms,
+		ChainParams:            a.cfg.ChainParams,
+		MaxOperatorFee:         a.cfg.MaxOperatorFee,
+		AutoRefreshFeeFloor:    a.cfg.AutoRefreshFeeFloor,
+		AutoRefreshFeeRatePPM:  a.cfg.AutoRefreshFeeRatePPM,
 		Log:                    fsmLogger,
 		StartHeight:            startHeight,
 		QueryBestHeight:        a.queryBestHeight,
@@ -1001,17 +1003,16 @@ func (a *RoundClientActor) createNewRound(ctx context.Context) (*RoundFSM,
 	fsmLogger := a.log.WithPrefix(fsmPrefix)
 
 	env := &ClientEnvironment{
-		RoundStore:      a.cfg.RoundStore,
-		VTXOStore:       a.cfg.VTXOStore,
-		Wallet:          a.cfg.Wallet,
-		SigningExecutor: a.env.SigningExecutor,
-		OperatorTerms:   a.cfg.OperatorTerms,
-		ChainParams:     a.cfg.ChainParams,
-		MaxOperatorFee:  a.cfg.MaxOperatorFee,
-		AutoRefreshFeeFloor: a.cfg.
-			AutoRefreshFeeFloor,
-		AutoRefreshFeeRatePPM: a.cfg.
-			AutoRefreshFeeRatePPM,
+		RoundStore:             a.cfg.RoundStore,
+		VTXOStore:              a.cfg.VTXOStore,
+		BatchRegistrar:         a.cfg.BatchRegistrar,
+		Wallet:                 a.cfg.Wallet,
+		SigningExecutor:        a.env.SigningExecutor,
+		OperatorTerms:          a.cfg.OperatorTerms,
+		ChainParams:            a.cfg.ChainParams,
+		MaxOperatorFee:         a.cfg.MaxOperatorFee,
+		AutoRefreshFeeFloor:    a.cfg.AutoRefreshFeeFloor,
+		AutoRefreshFeeRatePPM:  a.cfg.AutoRefreshFeeRatePPM,
 		Log:                    fsmLogger,
 		StartHeight:            startHeight,
 		QueryBestHeight:        a.queryBestHeight,
