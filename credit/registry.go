@@ -555,14 +555,16 @@ func (b *registryBehavior) handleList(ctx context.Context,
 		}
 
 		resp.Ops = append(resp.Ops, CreditOpSummary{
-			OpID:       rec.OpID,
-			OpKey:      rec.OpKey,
-			Kind:       rec.Kind,
-			State:      State(rec.State),
-			Pending:    !rec.Status.IsTerminal(),
-			AmountSat:  rec.AmountSat,
-			CreditOnly: creditOnly,
-			LastError:  rec.LastError,
+			OpID:         rec.OpID,
+			OpKey:        rec.OpKey,
+			Kind:         rec.Kind,
+			State:        State(rec.State),
+			Pending:      !rec.Status.IsTerminal(),
+			AmountSat:    rec.AmountSat,
+			CreditOnly:   creditOnly,
+			OORSessionID: rec.OORSessionID,
+			TopupSat:     rec.TopupSat,
+			LastError:    rec.LastError,
 		})
 	}
 
