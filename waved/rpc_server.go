@@ -1418,6 +1418,7 @@ func descriptorToProto(v *vtxo.Descriptor) *waverpc.VTXO {
 		proto.Settlement = &waverpc.VTXOSettlement{
 			Txid:   s.TxID.String(),
 			Height: s.Height,
+			FeeSat: s.FeeSat,
 		}
 	})
 

@@ -2072,7 +2072,13 @@ type VTXOSettlement struct {
 	// the VTXO (the leave/cooperative-forfeit round).
 	Txid string `protobuf:"bytes,1,opt,name=txid,proto3" json:"txid,omitempty"`
 	// height is the block height at which txid confirmed.
-	Height        int32 `protobuf:"varint,2,opt,name=height,proto3" json:"height,omitempty"`
+	Height int32 `protobuf:"varint,2,opt,name=height,proto3" json:"height,omitempty"`
+	// fee_sat is the TOTAL operator fee the client's ledger booked for the
+	// forfeit round. It is a round-level figure: every VTXO forfeited in the
+	// same round reports the same value, so consumers must not sum it across
+	// VTXOs. Zero when the ledger has no fee row for the round (fee-free
+	// rounds, and daemons whose ledger predates fee-by-round attribution).
+	FeeSat        int64 `protobuf:"varint,3,opt,name=fee_sat,json=feeSat,proto3" json:"fee_sat,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2117,6 +2123,13 @@ func (x *VTXOSettlement) GetTxid() string {
 func (x *VTXOSettlement) GetHeight() int32 {
 	if x != nil {
 		return x.Height
+	}
+	return 0
+}
+
+func (x *VTXOSettlement) GetFeeSat() int64 {
+	if x != nil {
+		return x.FeeSat
 	}
 	return 0
 }
@@ -9994,10 +10007,11 @@ const file_daemon_proto_rawDesc = "" +
 	"expiryInfo\x127\n" +
 	"\n" +
 	"settlement\x18\x0e \x01(\v2\x17.waverpc.VTXOSettlementR\n" +
-	"settlement\"<\n" +
+	"settlement\"U\n" +
 	"\x0eVTXOSettlement\x12\x12\n" +
 	"\x04txid\x18\x01 \x01(\tR\x04txid\x12\x16\n" +
-	"\x06height\x18\x02 \x01(\x05R\x06height\"\xac\x01\n" +
+	"\x06height\x18\x02 \x01(\x05R\x06height\x12\x17\n" +
+	"\afee_sat\x18\x03 \x01(\x03R\x06feeSat\"\xac\x01\n" +
 	"\x10ListVTXOsRequest\x128\n" +
 	"\rstatus_filter\x18\x01 \x01(\x0e2\x13.waverpc.VTXOStatusR\fstatusFilter\x12$\n" +
 	"\x0emin_amount_sat\x18\x02 \x01(\x03R\fminAmountSat\x128\n" +

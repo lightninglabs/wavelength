@@ -727,6 +727,13 @@ message VTXOSettlement {
 
     // height is the block height at which txid confirmed.
     int32 height = 2;
+
+    // fee_sat is the TOTAL operator fee the client's ledger booked for the
+    // forfeit round. It is a round-level figure: every VTXO forfeited in the
+    // same round reports the same value, so consumers must not sum it across
+    // VTXOs. Zero when the ledger has no fee row for the round (fee-free
+    // rounds, and daemons whose ledger predates fee-by-round attribution).
+    int64 fee_sat = 3;
 }
 
 message ListVTXOsRequest {
