@@ -59,6 +59,9 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/ledger.<
   round ID, session ID, event type, description, created_at, optional
   `IdempotencyKey []byte` for outpoint-keyed dedup, and structured
   `ChainTxid`/`ChainVout` columns stamped on chain-anchored events).
+  The db adapter additionally mirrors a 16-byte `RoundID` into the
+  `round_uuid` TEXT column (migration 000015) so ledger rows join
+  against `rounds.round_id` / `vtxos.forfeit_round_id` in portable SQL.
 - `exitIdempotencyKey(hash, index)` / `walletUTXOIdempotencyKey` —
   derive 36-byte `outpoint_hash || outpoint_index` dedup keys
   distinct from round-keyed and session-keyed entries (separate
@@ -67,7 +70,12 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/ledger.<
   (outpoint, amount, event, block height, classification). Implemented
   by `db.UTXOAuditStoreDB`.
 - `LedgerMsg` / `LedgerResp` — mailbox constraint types.
-- `FeePaidMsg` — boarding/refresh fee payments.
+- `FeePaidMsg` — boarding/refresh fee payments. Both debit `fees_paid`;
+  the credit side names the account the fee was paid from:
+  `wallet_balance` for boarding (the paired boarding `VTXOReceivedMsg`
+  books the SEALED post-fee VTXO value, so the fee completes the gross
+  wallet outflow) and `vtxo_balance` for refresh (fee carved out of
+  forfeited VTXO value).
 - `VTXOReceivedMsg` — incoming VTXOs. `Source` must be one of
   `SourceRoundBoarding` (own wallet → VTXO; offsets wallet_balance),
   `SourceRoundRefresh` (refresh / directed-send self-change; offsets

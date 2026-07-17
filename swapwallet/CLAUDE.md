@@ -129,6 +129,14 @@ default builds avoid the swap executor's dependency graph.
   calls `listLiveVTXOsForLeave` for sweep-all enumeration.
 - `SendResponse.actual_amount_sat` carries the true outflow for sweep-all
   sends and SHOULD be echoed back before the send is treated as confirmed.
+- **Cooperative-leave EXIT fee**: at completion
+  (`applyCooperativeLeaveForfeited`), the forfeited source VTXO's
+  settlement carries the forfeit round's operator fee (from the daemon
+  ledger via the `ListVTXOsByStatus` fee join), which is stamped onto
+  `WalletEntry.fee_sat`. A sweep-all row (marked via
+  `OnchainAddressRequest.sweep_all`, set by `leaveEntryStub`) also nets
+  the fee back out of its gross pending amount, so every completed EXIT
+  reads amount = destination-received, fee = cost on top.
 - **Onchain SEND is a one-shot**: after the intent is accepted the router
   immediately calls `JoinNextRound` so the queued leave intent is committed
   to the next round without a separate CLI step. If the implicit join fails,
