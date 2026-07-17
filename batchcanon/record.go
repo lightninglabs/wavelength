@@ -69,6 +69,11 @@ func (e BatchEvidence) Validate() error {
 	return nil
 }
 
+// Equal reports whether both values carry identical immutable watch evidence.
+func (e BatchEvidence) Equal(other BatchEvidence) bool {
+	return equalBatchEvidence(e, other)
+}
+
 // Record is the durable canonicality view of one batch (commitment)
 // transaction, keyed by its txid. It bundles the interpreted State, the
 // current confirmation observation, the recompute inputs for effective

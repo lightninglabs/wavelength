@@ -17,7 +17,13 @@ func EvidenceFromAncestryPaths(paths []*arkrpc.AncestryPath) ([]BatchEvidence,
 
 	evidence := make([]BatchEvidence, 0, len(paths))
 	seen := make(map[chainhash.Hash]int, len(paths))
+	missing := false
 	for i, path := range paths {
+		if !ancestryEvidencePresent(path) {
+			missing = true
+			continue
+		}
+
 		item, err := evidenceFromAncestryPath(path)
 		if err != nil {
 			return nil, fmt.Errorf("ancestry path %d: %w", i, err)
@@ -36,8 +42,22 @@ func EvidenceFromAncestryPaths(paths []*arkrpc.AncestryPath) ([]BatchEvidence,
 		seen[item.BatchTxID] = len(evidence)
 		evidence = append(evidence, item)
 	}
+	if missing && len(evidence) != 0 {
+		return nil, fmt.Errorf("batch evidence must be supplied for " +
+			"every ancestry path")
+	}
 
 	return evidence, nil
+}
+
+// ancestryEvidencePresent distinguishes an older indexer that omits the whole
+// additive evidence extension from a malformed partial extension. When no
+// path supplies evidence the receive remains rollout-compatible; the
+// fail-closed admission gate will keep its unregistered lineage unusable.
+func ancestryEvidencePresent(path *arkrpc.AncestryPath) bool {
+	return path != nil && (len(path.GetCommitmentTx()) != 0 ||
+		len(path.GetCommitmentInputs()) != 0 ||
+		path.GetCommitmentCsvExpiryDelta() != 0)
 }
 
 // evidenceFromAncestryPath binds the transport fields to the serialized

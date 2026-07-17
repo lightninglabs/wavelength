@@ -7,6 +7,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/lightninglabs/wavelength/arkrpc"
+	"github.com/lightninglabs/wavelength/batchcanon"
 	"github.com/lightninglabs/wavelength/vtxo"
 )
 
@@ -165,6 +166,14 @@ func incomingMetadataFromRPC(candidate *arkrpc.VTXO) (IncomingVTXOMetadata,
 			"paths: %w", err)
 	}
 
+	evidence, err := batchcanon.EvidenceFromAncestryPaths(
+		candidate.GetAncestryPaths(),
+	)
+	if err != nil {
+		return IncomingVTXOMetadata{}, fmt.Errorf("convert batch "+
+			"evidence: %w", err)
+	}
+
 	operatorKey, err := incomingOperatorKeyFromRPC(
 		candidate.GetOperatorPubkey(),
 	)
@@ -183,6 +192,7 @@ func incomingMetadataFromRPC(candidate *arkrpc.VTXO) (IncomingVTXOMetadata,
 		CreatedHeight:  candidate.GetCreatedHeight(),
 		OperatorKey:    operatorKey,
 		Ancestry:       ancestry,
+		BatchEvidence:  evidence,
 	}, nil
 }
 
