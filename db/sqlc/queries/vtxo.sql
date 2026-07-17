@@ -68,6 +68,7 @@ SET status = $3,
     -- Keep spent flag in sync when status transitions to Spent (4).
     -- We intentionally do not clear spent once set.
     spent = CASE WHEN $3 = 4 THEN TRUE ELSE spent END,
+    business_revision = business_revision + 1,
     last_update_time = $4
 WHERE outpoint_hash = $1 AND outpoint_index = $2;
 
@@ -79,6 +80,7 @@ UPDATE vtxos
 SET status = 2, -- Forfeiting
     forfeit_round_id = $3,
     forfeit_tx = $4,
+    business_revision = business_revision + 1,
     last_update_time = $5
 WHERE outpoint_hash = $1 AND outpoint_index = $2;
 
@@ -106,9 +108,11 @@ WHERE outpoint_hash = $1 AND outpoint_index = $2;
 UPDATE vtxos
 SET status = 3, -- Forfeited
     forfeit_txid = $3,
-    replaced_by_hash = $4,
-    replaced_by_index = $5,
-    last_update_time = $6
+    forfeit_consumer_txid = $4,
+    replaced_by_hash = $5,
+    replaced_by_index = $6,
+    business_revision = business_revision + 1,
+    last_update_time = $7
 WHERE outpoint_hash = $1 AND outpoint_index = $2;
 
 -- name: DeleteVTXO :exec
