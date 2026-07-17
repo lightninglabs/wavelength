@@ -71,8 +71,9 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/unroll.<
   `ExitOutcomeRecoverable` (roll back to live), a completed exit →
   `ExitOutcomeConfirmed` (retire to spent). The live actor sets
   `ReliveUnsafe` before every chain-boundary attempt; only objective
-  canonical-absence evidence may clear it. A mere rejection, absence, or
-  timeout therefore leaves the VTXO held in unilateral exit.
+  canonical-absence evidence or an explicit `DefinitelyNotBroadcast`
+  response may clear it. An ambiguous rejection, absence, or timeout
+  therefore leaves the VTXO held in unilateral exit.
   `UnrollTerminatedMsg` carries `HadOnChainFootprint`, computed by
   `jobHadOnChainFootprint` (any confirmed/in-flight proof node or a
   non-pending sweep), and the durable `ReliveUnsafe` guard. It also carries

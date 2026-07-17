@@ -171,6 +171,12 @@ type EnsureConfirmedResp struct {
 	// Created is true when the request created a new tracking entry and
 	// false when it attached to existing state.
 	Created bool
+
+	// DefinitelyNotBroadcast is true only when the responder can prove
+	// that no broadcast attempt crossed the chain boundary. Callers may
+	// use this to distinguish a locally rejected request from an ambiguous
+	// broadcast failure. The conservative default is false.
+	DefinitelyNotBroadcast bool
 }
 
 // MessageType returns the stable message type identifier.

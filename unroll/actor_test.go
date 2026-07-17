@@ -131,10 +131,11 @@ func (m *mockVTXOStore) DeleteVTXO(context.Context, wire.OutPoint) error {
 type fakeTxConfirmRef struct {
 	mu sync.Mutex
 
-	requests       []*txconfirm.EnsureConfirmedReq
-	responseStates map[chainhash.Hash]txconfirm.TxState
-	confirmHeights map[chainhash.Hash]int32
-	failureReasons map[chainhash.Hash]string
+	requests               []*txconfirm.EnsureConfirmedReq
+	responseStates         map[chainhash.Hash]txconfirm.TxState
+	confirmHeights         map[chainhash.Hash]int32
+	failureReasons         map[chainhash.Hash]string
+	definitelyNotBroadcast map[chainhash.Hash]bool
 
 	// onAsk, when set, is invoked with each EnsureConfirmedReq as it is
 	// recorded (outside the store lock). Tests use it to assert ordering
@@ -174,6 +175,8 @@ func (f *fakeTxConfirmRef) Ask(_ context.Context,
 	f.requests = append(f.requests, req)
 	state := f.responseStates[req.Tx.TxHash()]
 	height := f.confirmHeights[req.Tx.TxHash()]
+	definitelyNotBroadcast :=
+		f.definitelyNotBroadcast[req.Tx.TxHash()]
 	onAsk := f.onAsk
 	f.mu.Unlock()
 
@@ -212,9 +215,10 @@ func (f *fakeTxConfirmRef) Ask(_ context.Context,
 	promise.Complete(
 		fn.Ok[txconfirm.Resp](
 			&txconfirm.EnsureConfirmedResp{
-				Txid:    req.Tx.TxHash(),
-				State:   state,
-				Created: true,
+				Txid:                   req.Tx.TxHash(),
+				State:                  state,
+				Created:                true,
+				DefinitelyNotBroadcast: definitelyNotBroadcast,
 			},
 		),
 	)
@@ -327,6 +331,23 @@ func (f *fakeTxConfirmRef) setImmediateFailed(txid chainhash.Hash,
 
 	f.responseStates[txid] = txconfirm.TxStateFailed
 	f.failureReasons[txid] = reason
+}
+
+// setImmediateDefiniteNoBroadcast configures one txid to fail before any
+// broadcast attempt crosses the chain boundary.
+func (f *fakeTxConfirmRef) setImmediateDefiniteNoBroadcast(txid chainhash.Hash,
+	reason string) {
+
+	f.setImmediateFailed(txid, reason)
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.definitelyNotBroadcast == nil {
+		f.definitelyNotBroadcast = make(map[chainhash.Hash]bool)
+	}
+
+	f.definitelyNotBroadcast[txid] = true
 }
 
 // emitConfirmed delivers a txconfirm success notification to the subscriber.
@@ -2761,6 +2782,35 @@ func TestProofTxFailureTransitionsToFailed(t *testing.T) {
 			" failed: txconfirm returned failed state",
 		checkpoint.Fail,
 	)
+	require.True(t, checkpoint.ReliveUnsafe)
+}
+
+// TestDefiniteNoBroadcastClearsReliveGuard proves that an explicit local
+// rejection may recover the VTXO while an ambiguous TxStateFailed response
+// remains fail-closed.
+func TestDefiniteNoBroadcastClearsReliveGuard(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	rootTxid := proof.RootTxids()[0]
+	unrollActor, _, txconfirmRef, store := newActorHarness(t, proof, desc)
+	txconfirmRef.setImmediateDefiniteNoBroadcast(rootTxid, "rejected")
+
+	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
+		Height:  100,
+		Trigger: TriggerManual,
+	})
+
+	require.Eventually(t, func() bool {
+		stateResp, ok := mustAsk(
+			t, unrollActor.Ref(), &GetStateRequest{},
+		).(*GetStateResp)
+		require.True(t, ok)
+
+		return stateResp.Phase == PhaseFailed
+	}, testTimeout, 10*time.Millisecond)
+
+	checkpoint := mustDecodeCheckpoint(t, store, "unroll-test")
+	require.False(t, checkpoint.ReliveUnsafe)
 }
 
 // TestResumeReissuesSweepConfirmation verifies that resume reattaches

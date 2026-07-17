@@ -978,6 +978,8 @@ func (b *behavior) ensureNodeConfirmed(ctx context.Context,
 	if ensureResp.State == txconfirm.TxStateFailed {
 		return b.driveEvent(ctx, ax, &TxFailedEvent{
 			Txid: txid,
+			DefinitelyNotBroadcast: ensureResp.
+				DefinitelyNotBroadcast,
 			Reason: b.failureReasonForTx(
 				txid, "txconfirm returned failed state",
 			),

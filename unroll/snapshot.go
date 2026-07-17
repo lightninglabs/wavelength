@@ -121,10 +121,11 @@ const (
 	// recoverable failure.
 	checkpointExternalSpendFinalizedRecordType tlv.Type = 27
 
-	// checkpointReliveUnsafeRecordType is optional; present (value 1)
-	// before a job issues or reissues chain-boundary work. Until
-	// authoritative negative evidence clears the guard, a later failure
-	// must hold the VTXO in exit rather than relive it.
+	// checkpointReliveUnsafeRecordType is present for every checkpoint
+	// whose actor has started. A value of 1 means chain-boundary work may
+	// have escaped; 0 records an explicit clear by authoritative negative
+	// evidence. Started checkpoints written before this record existed
+	// omit it and decode fail-closed as unsafe.
 	checkpointReliveUnsafeRecordType tlv.Type = 29
 )
 
@@ -329,8 +330,11 @@ func encodeCheckpoint(value *actorCheckpoint) ([]byte, error) {
 		)
 	}
 
-	if value.ReliveUnsafe {
-		unsafe := uint8(1)
+	if value.Started {
+		unsafe := uint8(0)
+		if value.ReliveUnsafe {
+			unsafe = 1
+		}
 		records = append(
 			records, tlv.MakePrimitiveRecord(
 				checkpointReliveUnsafeRecordType, &unsafe,
@@ -514,6 +518,12 @@ func decodeCheckpoint(raw []byte) (*actorCheckpoint, error) {
 
 	if _, ok := parsed[checkpointReliveUnsafeRecordType]; ok {
 		checkpoint.ReliveUnsafe = reliveUnsafe != 0
+	} else if checkpoint.Started {
+		// Checkpoints written before the guard was added have no
+		// record. A started job may already have crossed a chain
+		// boundary, so absence cannot be treated as evidence that
+		// reliving is safe.
+		checkpoint.ReliveUnsafe = true
 	}
 
 	return checkpoint, nil
