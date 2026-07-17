@@ -861,9 +861,12 @@ func defaultStdinIsTTY(cmd *cobra.Command) bool {
 // promptLeaveAllConfirmation asks the operator to confirm a
 // --all invocation on stdin. Any answer other than "y" or "yes"
 // (case-insensitive) aborts the command. Only called when stdin is
-// known to be a TTY (see confirmLeaveAllIfNeeded).
+// known to be a TTY (see confirmLeaveAllIfNeeded). The prompt goes to
+// stderr, matching promptRefreshConfirmation: stdout is reserved for
+// the JSON body, and a prompt swallowed by a shell pipe would read as
+// a hung command.
 func promptLeaveAllConfirmation(cmd *cobra.Command) error {
-	out := cmd.OutOrStdout()
+	out := cmd.ErrOrStderr()
 
 	fmt.Fprintln(
 		out, "About to queue ALL live VTXOs for cooperative leave. "+
