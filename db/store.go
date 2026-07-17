@@ -347,6 +347,29 @@ func (s *Store) NewActivityStore(clk clock.Clock) *ActivityPersistenceStore {
 	return NewActivityPersistenceStore(activityDB, clk)
 }
 
+// NewBatchCanonicalityStore builds the batch canonicality persistence store
+// with transactional query execution.
+//
+// The store holds the durable, reorg-aware record of how each batch
+// (commitment) tx is faring against the best chain, plus the reverse
+// dependencies needed to restore a provisionally consumed VTXO. It is
+// behavior-free; interpretation lives in the batch canonicality manager.
+func (s *Store) NewBatchCanonicalityStore(
+	clk clock.Clock) *BatchCanonicalityPersistenceStore {
+
+	baseDB := s.BaseDB()
+
+	canonDB := NewTransactionExecutor(
+		baseDB,
+		func(tx *sql.Tx) BatchCanonicalityStore {
+			return s.queries.WithTx(tx)
+		},
+		s.log,
+	)
+
+	return NewBatchCanonicalityPersistenceStore(canonDB, clk)
+}
+
 // NewUnilateralExitStore builds the unilateral-exit persistence store with
 // transactional query execution.
 func (s *Store) NewUnilateralExitStore(

@@ -620,17 +620,23 @@ func (s *VTXOPersistenceStore) GetForfeitTx(ctx context.Context,
 // MarkForfeited marks a VTXO as forfeited and records the forfeit transaction
 // ID. This is called when the new round's commitment transaction confirms.
 func (s *VTXOPersistenceStore) MarkForfeited(
-	ctx context.Context, outpoint wire.OutPoint, forfeitTxID chainhash.Hash,
+	ctx context.Context, outpoint wire.OutPoint,
+	forfeitTxID, consumerBatchTxID chainhash.Hash,
 ) error {
+
+	if consumerBatchTxID == (chainhash.Hash{}) {
+		return fmt.Errorf("forfeit consumer batch txid is required")
+	}
 
 	writeTxOpts := WriteTxOption()
 
 	return s.db.ExecTx(ctx, writeTxOpts, func(q RoundStore) error {
 		params := sqlc.MarkVTXOForfeitedParams{
-			OutpointHash:   outpoint.Hash[:],
-			OutpointIndex:  int32(outpoint.Index),
-			ForfeitTxid:    forfeitTxID[:],
-			ReplacedByHash: nil, // Set separately if needed.
+			OutpointHash:        outpoint.Hash[:],
+			OutpointIndex:       int32(outpoint.Index),
+			ForfeitTxid:         forfeitTxID[:],
+			ForfeitConsumerTxid: consumerBatchTxID[:],
+			ReplacedByHash:      nil, // Set separately if needed.
 			ReplacedByIndex: sql.NullInt32{
 				Valid: false,
 			},
@@ -814,22 +820,29 @@ func (s *VTXOPersistenceStore) rowToDescriptor(ctx context.Context,
 		clientKey.PubKey = derived.clientPubkey
 	}
 
+	forfeitConsumer, err := bytesToOptionHash(row.ForfeitConsumerTxid)
+	if err != nil {
+		return nil, fmt.Errorf("decode forfeit consumer txid: %w", err)
+	}
+
 	return &vtxo.Descriptor{
-		Outpoint:       outpoint,
-		Amount:         btcutil.Amount(row.Amount),
-		PolicyTemplate: derived.policyTemplate,
-		PkScript:       row.PkScript,
-		ClientKey:      clientKey,
-		OperatorKey:    derived.operatorPubkey,
-		TapScript:      derived.tapscript,
-		Ancestry:       ancestry,
-		RoundID:        row.RoundID,
-		CommitmentTxID: commitmentTxID,
-		BatchExpiry:    row.BatchExpiry,
-		RelativeExpiry: derived.relativeExpiry,
-		ChainDepth:     int(row.ChainDepth),
-		CreatedHeight:  row.CreatedHeight,
-		Status:         vtxo.VTXOStatus(row.Status),
+		Outpoint:             outpoint,
+		Amount:               btcutil.Amount(row.Amount),
+		PolicyTemplate:       derived.policyTemplate,
+		PkScript:             row.PkScript,
+		ClientKey:            clientKey,
+		OperatorKey:          derived.operatorPubkey,
+		TapScript:            derived.tapscript,
+		Ancestry:             ancestry,
+		RoundID:              row.RoundID,
+		CommitmentTxID:       commitmentTxID,
+		BatchExpiry:          row.BatchExpiry,
+		RelativeExpiry:       derived.relativeExpiry,
+		ChainDepth:           int(row.ChainDepth),
+		CreatedHeight:        row.CreatedHeight,
+		Status:               vtxo.VTXOStatus(row.Status),
+		BusinessRevision:     uint64(row.BusinessRevision),
+		ForfeitConsumerBatch: forfeitConsumer,
 		ConstructionVersion: arkrpc.ConstructionVersion(
 			row.ConstructionVersion,
 		),

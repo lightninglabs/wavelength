@@ -7,6 +7,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
@@ -848,6 +849,18 @@ func (s *ForfeitingState) ProcessEvent(ctx context.Context, event VTXOEvent,
 		// New commitment tx confirmed, forfeit is complete. Include
 		// the ForfeitTx so the persistence layer can call MarkForfeited
 		// with the txid for audit/recovery purposes.
+		forfeitTxID := s.ForfeitTxID
+		if forfeitTxID == (chainhash.Hash{}) && s.ForfeitTx != nil {
+			forfeitTxID = s.ForfeitTx.TxHash()
+		}
+		statusUpdate := &VTXOStatusUpdate{
+			Outpoint:    s.VTXO.Outpoint,
+			NewStatus:   VTXOStatusForfeited,
+			ForfeitTx:   s.ForfeitTx,
+			ForfeitTxID: forfeitTxID,
+		}
+		statusUpdate.ConsumerBatchTxID = evt.CommitmentTxID
+
 		return &VTXOStateTransition{
 			NextState: &ForfeitedState{
 				VTXO:           s.VTXO,
@@ -856,11 +869,7 @@ func (s *ForfeitingState) ProcessEvent(ctx context.Context, event VTXOEvent,
 			},
 			NewEvents: fn.Some(VTXOEmittedEvent{
 				Outbox: []VTXOOutMsg{
-					&VTXOStatusUpdate{
-						Outpoint:  s.VTXO.Outpoint,
-						NewStatus: VTXOStatusForfeited,
-						ForfeitTx: s.ForfeitTx,
-					},
+					statusUpdate,
 					&VTXOTerminatedNotification{
 						VTXOOutpoint: s.VTXO.Outpoint,
 						FinalState:   "Forfeited",

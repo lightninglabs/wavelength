@@ -406,6 +406,15 @@ type Descriptor struct {
 	// Status is the current lifecycle status of the VTXO.
 	Status VTXOStatus
 
+	// BusinessRevision increments on every durable lifecycle transition. A
+	// consumer edge binds the revision installed by its exact forfeiture so
+	// stale restore work cannot cross an intervening spend or reservation.
+	BusinessRevision uint64
+
+	// ForfeitConsumerBatch identifies the exact commitment transaction that
+	// currently owns a Forfeited marker. It is None in every other state.
+	ForfeitConsumerBatch fn.Option[chainhash.Hash]
+
 	// ConstructionVersion is the per-VTXO construction version: the rules
 	// under which this VTXO was built and must be spent/exited. It is
 	// stamped at creation and never changes. Today the only understood
@@ -540,7 +549,7 @@ type VTXOStore interface {
 	// transaction confirms.
 	MarkForfeited(
 		ctx context.Context, outpoint wire.OutPoint,
-		forfeitTxID chainhash.Hash,
+		forfeitTxID, consumerBatchTxID chainhash.Hash,
 	) error
 
 	// DeleteVTXO removes a VTXO from storage. Used for cleanup after
