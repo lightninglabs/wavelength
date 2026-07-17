@@ -38,6 +38,8 @@ type RoundServiceMailboxServer interface {
 	SubmitForfeitSigs(ctx context.Context, req *SubmitForfeitSigRequest) (*ClientAwaitingInputSigsResp, error)
 	// SubmitVTXOForfeitSigs handles SubmitVTXOForfeitSigs.
 	SubmitVTXOForfeitSigs(ctx context.Context, req *SubmitVTXOForfeitSigsRequest) (*ClientSuccessResp, error)
+	// QueryRoundStatus handles QueryRoundStatus.
+	QueryRoundStatus(ctx context.Context, req *QueryRoundStatusRequest) (*ClientSuccessResp, error)
 }
 
 // RegisterRoundServiceMailboxServer registers handlers for RoundService.
@@ -111,6 +113,16 @@ func RegisterRoundServiceMailboxServer(r rpc.Router, impl RoundServiceMailboxSer
 		}
 
 		return impl.SubmitVTXOForfeitSigs(ctx, req)
+	})
+	r.Handle("round.v1.RoundService", "QueryRoundStatus", func() proto.Message {
+		return &QueryRoundStatusRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*QueryRoundStatusRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.QueryRoundStatus(ctx, req)
 	})
 }
 
@@ -262,6 +274,29 @@ func (c *RoundServiceMailboxClient) SubmitVTXOForfeitSigs(ctx context.Context, r
 	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
 		Service: "round.v1.RoundService",
 		Method:  "SubmitVTXOForfeitSigs",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(ClientSuccessResp)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// QueryRoundStatus calls the QueryRoundStatus RPC.
+func (c *RoundServiceMailboxClient) QueryRoundStatus(ctx context.Context, req *QueryRoundStatusRequest, opts ...rpc.RPCOptions) (*ClientSuccessResp, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "round.v1.RoundService",
+		Method:  "QueryRoundStatus",
 	}, req, opt)
 	if err != nil {
 		return nil, err

@@ -284,6 +284,51 @@ message ClientErrorResp {
     string error_msg = 1;
 }
 
+// RoundLifecycleStatus classifies where a round sits in its lifecycle
+// from the operator's authoritative view: the live FSM first, then the
+// durable round store. Because a finalized round is persisted atomically
+// with its VTXOs before its commitment tx is ever broadcast, a round the
+// operator does not know (ROUND_STATUS_DEAD) can never have produced a
+// broadcastable commitment.
+enum RoundLifecycleStatus {
+    // ROUND_STATUS_UNSPECIFIED is the zero value; treat as unknown.
+    ROUND_STATUS_UNSPECIFIED = 0;
+
+    // ROUND_STATUS_IN_FLIGHT: a live FSM exists and the round has not
+    // reached a terminal state; the commitment tx has not been broadcast.
+    ROUND_STATUS_IN_FLIGHT = 1;
+
+    // ROUND_STATUS_BROADCAST: the round finalized and its commitment tx
+    // has been broadcast, but has not yet confirmed.
+    ROUND_STATUS_BROADCAST = 2;
+
+    // ROUND_STATUS_CONFIRMED: the round's commitment tx confirmed
+    // on chain.
+    ROUND_STATUS_CONFIRMED = 3;
+
+    // ROUND_STATUS_DEAD: the round failed, or the operator has no record
+    // of it at all. Either way it never finalized, so its commitment tx
+    // can never confirm and any forfeit signatures the client produced
+    // for it are unspendable.
+    ROUND_STATUS_DEAD = 4;
+}
+
+// ClientRoundStatusReport answers a QueryRoundStatusRequest with the
+// operator's authoritative view of a round's lifecycle state. The
+// client uses ROUND_STATUS_DEAD as the proof-of-death that makes a
+// post-signing forfeit-reservation release safe.
+message ClientRoundStatusReport {
+    // round_id is the UUID of the round (16 bytes).
+    bytes round_id = 1;
+
+    // status is the round's lifecycle classification.
+    RoundLifecycleStatus status = 2;
+
+    // detail is a free-form diagnostic string (e.g. the failure reason
+    // for a dead round).
+    string detail = 3;
+}
+
 // --------------------------------------------------------------------------
 // Client-to-Server (C2S) request messages
 // --------------------------------------------------------------------------
@@ -701,6 +746,17 @@ message SubmitVTXOForfeitSigsRequest {
     repeated ForfeitTxSig forfeit_txs = 2;
 }
 
+// QueryRoundStatusRequest asks the operator for the authoritative
+// lifecycle status of a round. A client that has sent forfeit
+// signatures uses it to reconcile a round's fate before releasing the
+// forfeit reservations: only a ROUND_STATUS_DEAD answer (the round
+// never finalized, so its commitment tx can never confirm) makes the
+// release double-spend-safe.
+message QueryRoundStatusRequest {
+    // round_id is the UUID of the round (16 bytes).
+    bytes round_id = 1;
+}
+
 // --------------------------------------------------------------------------
 // Service definition for mailbox routing
 // --------------------------------------------------------------------------
@@ -740,4 +796,10 @@ service RoundService {
     // SubmitVTXOForfeitSigs submits VTXO forfeit signatures.
     rpc SubmitVTXOForfeitSigs (SubmitVTXOForfeitSigsRequest)
         returns (ClientSuccessResp);
+
+    // QueryRoundStatus asks for the authoritative lifecycle status of
+    // a round. The answer arrives asynchronously as a
+    // ClientRoundStatusReport push event; the RPC ack itself carries
+    // no round state.
+    rpc QueryRoundStatus (QueryRoundStatusRequest) returns (ClientSuccessResp);
 }

@@ -80,4 +80,16 @@ const (
 	// MethodSubmitVTXOForfeitSigs is the client→server method name
 	// for SubmitVTXOForfeitSigsToServer.
 	MethodSubmitVTXOForfeitSigs = "SubmitVTXOForfeitSigs"
+
+	// MethodQueryRoundStatus is the client→server method name for
+	// QueryRoundStatusRequest. A client that has sent forfeit
+	// signatures uses it to reconcile a round's fate before
+	// releasing forfeit reservations.
+	MethodQueryRoundStatus = "QueryRoundStatus"
+
+	// MethodRoundStatusReport is the push event method name for
+	// ClientRoundStatusReport. The server sends this in answer to
+	// a QueryRoundStatus, carrying the authoritative lifecycle
+	// status of the queried round.
+	MethodRoundStatusReport = "ClientRoundStatusReport"
 )
