@@ -94,6 +94,11 @@ type LocalPersistenceOutboxHandler struct {
 	// Store is the VTXO store to update.
 	Store vtxo.VTXOStore
 
+	// BatchRegistrar registers authenticated lineage before synchronous
+	// callers materialize incoming VTXOs. Durable actors register outside
+	// their commit transaction before invoking this handler.
+	BatchRegistrar BatchRegistrar
+
 	// PackageStore persists finalized OOR package artifacts and local
 	// outpoint bindings.
 	PackageStore PackagePersistence
@@ -161,6 +166,15 @@ func (h *LocalPersistenceOutboxHandler) handleMaterializeIncoming(
 	err := h.validateMaterializeIncoming(ctx, msg)
 	if err != nil {
 		return nil, err
+	}
+	if !hasActorDBTx(ctx) {
+		err := RegisterIncomingBatchEvidence(
+			ctx, h.BatchRegistrar, msg.SessionID,
+			msg.MetadataMatches,
+		)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	return h.materializeIncoming(ctx, msg, !hasActorDBTx(ctx))

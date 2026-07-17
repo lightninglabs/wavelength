@@ -77,6 +77,7 @@ type OORRegistryConfig struct {
 	Log                  fn.Option[btclog.Logger]
 	Signer               input.Signer
 	IncomingHandler      OutboxHandler
+	BatchRegistrar       BatchRegistrar
 	RegistryStore        SessionRegistryStore
 	DeliveryStore        actor.DeliveryStore
 	ServerConn           actor.TellOnlyRef[serverconn.ServerConnMsg]
@@ -1602,6 +1603,7 @@ func (r *oorRegistryBehavior) childConfig(sessionID SessionID,
 		Log:                     r.cfg.Log,
 		Signer:                  r.cfg.Signer,
 		IncomingHandler:         r.cfg.IncomingHandler,
+		BatchRegistrar:          r.cfg.BatchRegistrar,
 		RegistryStore:           r.cfg.RegistryStore,
 		DeliveryStore:           r.cfg.DeliveryStore,
 		ServerConn:              r.cfg.ServerConn,

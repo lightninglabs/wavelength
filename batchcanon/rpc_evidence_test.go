@@ -122,6 +122,28 @@ func TestEvidenceFromDuplicateAncestryPaths(t *testing.T) {
 	require.ErrorContains(t, err, "conflicts with evidence")
 }
 
+// TestEvidenceFromLegacyAncestryPaths keeps the additive RPC extension
+// rollout-compatible while rejecting mixed evidence coverage.
+func TestEvidenceFromLegacyAncestryPaths(t *testing.T) {
+	t.Parallel()
+
+	legacy := validRPCBatchEvidence(t)
+	legacy.CommitmentTx = nil
+	legacy.CommitmentInputs = nil
+	legacy.CommitmentCsvExpiryDelta = 0
+
+	evidence, err := EvidenceFromAncestryPaths(
+		[]*arkrpc.AncestryPath{legacy},
+	)
+	require.NoError(t, err)
+	require.Empty(t, evidence)
+
+	_, err = EvidenceFromAncestryPaths([]*arkrpc.AncestryPath{
+		legacy, validRPCBatchEvidence(t),
+	})
+	require.ErrorContains(t, err, "supplied for every ancestry path")
+}
+
 // cloneRPCBatchEvidence makes independently mutable table-test evidence.
 func cloneRPCBatchEvidence(t *testing.T,
 	path *arkrpc.AncestryPath) *arkrpc.AncestryPath {

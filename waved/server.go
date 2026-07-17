@@ -4311,7 +4311,7 @@ func (s *Server) initRoundActor(ctx context.Context,
 				],
 			) round.RoundBatchRegistrar {
 
-				return &roundBatchRegistrar{
+				return &batchRegistrar{
 					ref: ref,
 				}
 			},
@@ -4692,17 +4692,25 @@ func (s *Server) initOORActor(ctx context.Context,
 		TimeoutActor: oorTimeoutRef,
 	}
 	oorKey := oor.NewServiceKey()
+	var incomingBatchRegistrar oor.BatchRegistrar
+	s.batchCanonRef.WhenSome(func(ref actor.ActorRef[
+		batchcanon.ManagerMsg, batchcanon.ManagerResp,
+	]) {
+
+		incomingBatchRegistrar = &batchRegistrar{ref: ref}
+	})
 
 	// The per-session OOR actors handle wallet signing inline, so there is
 	// no separate signing-effect actor. signingHandler remains the Next
 	// delegate of the local-persistence handler for retry scheduling.
 
 	outboxHandler := &oor.LocalPersistenceOutboxHandler{
-		Next:         signingHandler,
-		Store:        vtxoStore,
-		PackageStore: packageStore,
-		OperatorKey:  operatorTerms.PubKey,
-		ExitDelay:    operatorTerms.VTXOExitDelay,
+		Next:           signingHandler,
+		Store:          vtxoStore,
+		BatchRegistrar: incomingBatchRegistrar,
+		PackageStore:   packageStore,
+		OperatorKey:    operatorTerms.PubKey,
+		ExitDelay:      operatorTerms.VTXOExitDelay,
 		NotifyIncomingVTXOs: func(ctx context.Context,
 			descs []*vtxo.Descriptor) error {
 
@@ -4759,6 +4767,7 @@ func (s *Server) initOORActor(ctx context.Context,
 		Log:              fn.Some(s.subLogger(oor.Subsystem)),
 		Signer:           oorSigner,
 		IncomingHandler:  outboxHandler,
+		BatchRegistrar:   incomingBatchRegistrar,
 		RegistryStore:    registryStore,
 		DeliveryStore:    s.deliveryStore,
 		ServerConn:       s.runtime.TellRef(),
