@@ -60,8 +60,8 @@ github.com/aymanbagabas/go-osc52/v2 v2.0.1 h1:HwpRHbFMcZLEVr42D4p7XBqjyuxQH5SMiE
 github.com/aymanbagabas/go-osc52/v2 v2.0.1/go.mod h1:uYgXzlJ7ZpABp8OJ+exZzJJhRNQ2ASbcXHWsFqH8hp8=
 github.com/beorn7/perks v1.0.1 h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=
 github.com/beorn7/perks v1.0.1/go.mod h1:G2ZrVWU2WbWT9wwq4/hrbKbnv/1ERSJQ0ibhJ6rlkpw=
-github.com/bhandras/llformat v0.1.0-beta h1:Hmrdntk4jJDJ18nxNwxuUItKrb9h+I4sMnpOQz50Ezc=
-github.com/bhandras/llformat v0.1.0-beta/go.mod h1:fudtFasc8GnV1JFw+tB9tb7W0wj7IRUvUdGkOaw+q0s=
+github.com/bhandras/llformat v0.1.1-beta.0.20260716142411-d42cc6cb46d0 h1:5IOG6trGhdEUty/GZhAOG4Rm4K8IvVwtzZAf3h68TFM=
+github.com/bhandras/llformat v0.1.1-beta.0.20260716142411-d42cc6cb46d0/go.mod h1:fudtFasc8GnV1JFw+tB9tb7W0wj7IRUvUdGkOaw+q0s=
 github.com/bkielbasa/cyclop v1.2.3 h1:faIVMIGDIANuGPWH031CZJTi2ymOQBULs9H21HSMa5w=
 github.com/bkielbasa/cyclop v1.2.3/go.mod h1:kHTwA9Q0uZqOADdupvcFJQtp/ksSnytRMe8ztxG8Fuo=
 github.com/blizzy78/varnamelen v0.8.0 h1:oqSblyuQvFsW1hbBHh1zfwrKe3kcSj0rnXkKzsQ089M=
