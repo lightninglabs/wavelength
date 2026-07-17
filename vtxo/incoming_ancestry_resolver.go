@@ -9,6 +9,7 @@ import (
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/arkrpc"
+	"github.com/lightninglabs/wavelength/batchcanon"
 	"github.com/lightninglabs/wavelength/internal/indexerlimits"
 )
 
@@ -87,9 +88,18 @@ func ResolveIncomingAncestry(ctx context.Context, query IncomingAncestryQuery,
 					"convert ancestry paths: %w", err)
 			}
 
+			evidence, err := batchcanon.EvidenceFromAncestryPaths(
+				candidate.GetAncestryPaths(),
+			)
+			if err != nil {
+				return IncomingVTXOExtras{}, fmt.Errorf(
+					"convert batch evidence: %w", err)
+			}
+
 			return IncomingVTXOExtras{
 				Ancestry:      ancestry,
 				CreatedHeight: candidate.GetCreatedHeight(),
+				BatchEvidence: evidence,
 			}, nil
 		}
 
