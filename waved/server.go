@@ -3384,6 +3384,20 @@ func (s *Server) registerRoundEventRoutes(router *serverconn.EventRouter) {
 			return &round.BoardingFailed{}
 		},
 	)
+
+	// RoundStatusReport: server answers a QueryRoundStatus probe with
+	// the authoritative lifecycle status of a round. InputSigSentState
+	// consumes it to decide whether releasing forfeit reservations is
+	// safe after a post-signing round failure (wavelength#844).
+	addRoundRoute(
+		roundpb.MethodRoundStatusReport,
+		func() proto.Message {
+			return &roundpb.ClientRoundStatusReport{}
+		},
+		func() round.ClientEvent {
+			return &round.RoundStatusReported{}
+		},
+	)
 }
 
 // roundEventAdapt returns an Adapt closure for a round push event.
