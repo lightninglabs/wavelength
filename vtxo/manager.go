@@ -12,6 +12,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chaincfg/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/btcsuite/btcwallet/waddrmgr"
@@ -1449,13 +1450,47 @@ func (m *Manager) selectAndReserveVTXOs(ctx context.Context, p reserveParams) (
 // insufficientLiquidityError distinguishes a true spendable-funds shortfall
 // from liquidity that is present but unavailable because another operation has
 // already moved it out of LiveState.
+// lineageCommitmentTxids returns the deduped set of commitment txids in a
+// VTXO's lineage: its direct commitment tx plus every distinct cross-commitment
+// ancestor batch recorded in its ancestry. A round-direct or same-commitment
+// OOR VTXO yields one txid; a cross-commitment multi-input OOR VTXO (born from
+// a merge that draws inputs from several batches) yields one per contributing
+// batch. The direct commitment txid is included even when the ancestry slice is
+// empty (e.g. an incoming VTXO materialized without its commitment tree) so the
+// gate still governs the leaf by its batch. The zero hash is skipped.
+func lineageCommitmentTxids(desc *Descriptor) []chainhash.Hash {
+	seen := make(map[chainhash.Hash]struct{}, len(desc.Ancestry)+1)
+	txids := make([]chainhash.Hash, 0, len(desc.Ancestry)+1)
+
+	add := func(txid chainhash.Hash) {
+		if txid == (chainhash.Hash{}) {
+			return
+		}
+		if _, ok := seen[txid]; ok {
+			return
+		}
+		seen[txid] = struct{}{}
+		txids = append(txids, txid)
+	}
+
+	add(desc.CommitmentTxID)
+	for i := range desc.Ancestry {
+		add(desc.Ancestry[i].CommitmentTxID)
+	}
+
+	return txids
+}
+
 // gateUnavailableLineage drops candidates whose batch lineage is not usable —
 // reorged-out (limbo), conflict-invalidated, or (fail-closed) missing,
-// reconciling, or unregistered — so a VTXO is never selected while its batch
-// is not a ready, confirmed member of the canonical chain. It is a no-op when
-// no canonicality store is configured (the gate stays dormant until the batch
-// producers register their batches). It reads each candidate's direct
-// commitment txid; full multi-parent ancestry gating is a follow-up.
+// reconciling, or unregistered — so a VTXO is never selected while ANY batch in
+// its lineage is not a ready, confirmed member of the canonical chain. It is a
+// no-op when no canonicality store is configured (the gate stays dormant until
+// the batch producers register their batches). It gates on the FULL lineage:
+// each candidate's direct commitment txid plus every cross-commitment ancestor
+// batch, since a multi-input OOR VTXO descends from more than one batch and any
+// single reorged-out or invalidated parent makes the leaf unspendable
+// (worst-of-N via CombineAvailability).
 func (m *Manager) gateUnavailableLineage(ctx context.Context,
 	candidates []*Descriptor) ([]*Descriptor, error) {
 
@@ -1472,7 +1507,8 @@ func (m *Manager) gateUnavailableLineage(ctx context.Context,
 		}
 
 		blocked, avail, err := batchcanon.LineageBlocked(
-			ctx, m.cfg.BatchCanonicality, desc.CommitmentTxID,
+			ctx, m.cfg.BatchCanonicality,
+			lineageCommitmentTxids(desc)...,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("lineage gate %s: %w",
