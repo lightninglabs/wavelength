@@ -3,9 +3,11 @@ package round
 import (
 	"testing"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/lib/types"
+	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
 )
@@ -288,4 +290,68 @@ func sumLeaves(in Intents) int64 {
 	}
 
 	return out
+}
+
+// TestComputeClientOperatorFeeUsesSealedOwnedAmounts pins the seal-time
+// fee-handshake (#270) regression: a local-owner VTXO request carries the
+// PRE-fee target amount, while the built ClientVTXO carries the server's
+// sealed quote residual. The fee must be derived from the sealed amount —
+// summing the intent amount cancels the inputs exactly and silently
+// suppresses the round's fee ledger row (issue #988). Foreign recipient
+// requests never materialize as owned VTXOs, so their intent amount is
+// counted as-is.
+func TestComputeClientOperatorFeeUsesSealedOwnedAmounts(t *testing.T) {
+	t.Parallel()
+
+	localKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	const (
+		forfeitedSat = int64(149_745)
+		leaveSat     = int64(10_000)
+		sealedChange = int64(139_204)
+		operatorFee  = forfeitedSat - leaveSat - sealedChange
+	)
+
+	intents := Intents{
+		Forfeits: []types.ForfeitRequest{{
+			VTXOOutpoint: &wire.OutPoint{},
+			Amount:       btcutil.Amount(forfeitedSat),
+		}},
+		// The change request still carries the pre-fee target: the
+		// server's quote shaves the operator fee off at seal time.
+		VTXOs: []types.VTXORequest{{
+			Amount: btcutil.Amount(forfeitedSat - leaveSat),
+			OwnerKey: keychain.KeyDescriptor{
+				PubKey: localKey.PubKey(),
+			},
+		}},
+		Leaves: []*types.LeaveRequest{{
+			Output: &wire.TxOut{
+				Value: leaveSat,
+			},
+		}},
+	}
+	owned := []*ClientVTXO{{
+		Amount: btcutil.Amount(sealedChange),
+	}}
+
+	require.Equal(
+		t, operatorFee, computeClientOperatorFee(intents, owned),
+		"fee must come from the sealed owned amount, not the "+
+			"pre-fee intent target",
+	)
+
+	// A foreign recipient slot (no local owner) is paid from our inputs
+	// and must count as an output at its intent amount.
+	const foreignSat = int64(20_000)
+	intents.Forfeits[0].Amount += btcutil.Amount(foreignSat)
+	intents.VTXOs = append(intents.VTXOs, types.VTXORequest{
+		Amount: btcutil.Amount(foreignSat),
+	})
+
+	require.Equal(
+		t, operatorFee, computeClientOperatorFee(intents, owned),
+		"a fully-funded foreign recipient slot must not change the fee",
+	)
 }

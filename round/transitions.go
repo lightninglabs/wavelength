@@ -4087,18 +4087,30 @@ func computeClientOperatorFee(intents Intents, ownedVTXOs []*ClientVTXO) int64 {
 
 	var outputsSat int64
 
-	if len(intents.VTXOs) > 0 {
-		for i := range intents.VTXOs {
-			amt := int64(intents.VTXOs[i].Amount)
-			if amt > 0 {
-				outputsSat += amt
-			}
+	// Locally owned outputs are counted from the BUILT VTXOs, not the
+	// intent requests. Under the seal-time fee handshake (#270) an intent's
+	// Amount is the pre-fee target — the server's quote residual is what
+	// actually seals into the leaf — so summing intent amounts cancels the
+	// inputs exactly and computes a zero fee for every fee-charging round.
+	// The built ClientVTXO carries the sealed leaf value
+	// (leafNonAnchorAmount), making input − output the true operator fee.
+	// Foreign outputs (directed-send recipient slots) never materialize as
+	// owned VTXOs, so their intent amount remains the only local record of
+	// their value and is used as-is.
+	for i := range intents.VTXOs {
+		if intents.VTXOs[i].HasLocalOwner() {
+			continue
 		}
-	} else {
-		for _, v := range ownedVTXOs {
-			if v != nil {
-				outputsSat += int64(v.Amount)
-			}
+
+		amt := int64(intents.VTXOs[i].Amount)
+		if amt > 0 {
+			outputsSat += amt
+		}
+	}
+
+	for _, v := range ownedVTXOs {
+		if v != nil {
+			outputsSat += int64(v.Amount)
 		}
 	}
 
