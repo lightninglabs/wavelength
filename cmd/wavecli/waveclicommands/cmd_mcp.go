@@ -91,6 +91,23 @@ func buildMCPServer(client waverpc.DaemonServiceClient,
 	return server
 }
 
+// checkMCPRefreshConsent enforces the refresh fee-consent contract on
+// the MCP surface: a real (non-dry-run) refresh requires the explicit
+// yes acknowledgement, because every refresh is charged an operator
+// fee at seal time and MCP has no interactive prompt to fall back to.
+// The returned error is immediate and actionable — an agent is never
+// blocked, matching the CLI's non-interactive refusal.
+func checkMCPRefreshConsent(dryRun, yes bool) error {
+	if dryRun || yes {
+		return nil
+	}
+
+	return fmt.Errorf("a refresh is charged an operator fee at seal " +
+		"time; call with dry_run:true first to preview the itemized " +
+		"advisory estimate, then pass yes:true to acknowledge the " +
+		"fee and queue the refresh")
+}
+
 // mcpResult builds a CallToolResult from a proto message response.
 func mcpResult(msg proto.Message) (*mcp.CallToolResult, error) {
 	opts := protojson.MarshalOptions{
@@ -256,15 +273,30 @@ func registerMCPTools(s *mcp.Server, client waverpc.DaemonServiceClient) {
 
 	// vtxos_refresh — refresh VTXOs.
 	type vtxosRefreshArgs struct {
-		Outpoints []string `json:"outpoints,omitempty" jsonschema:"VTXO outpoint(s) to refresh (txid:index)"` //nolint:ll
-		All       bool     `json:"all,omitempty" jsonschema:"refresh all live VTXOs"`                         //nolint:ll
-		DryRun    bool     `json:"dry_run,omitempty" jsonschema:"validate without queuing"`                   //nolint:ll
+		Outpoints []string `json:"outpoints,omitempty" jsonschema:"VTXO outpoint(s) to refresh (txid:index)"`                               //nolint:ll
+		All       bool     `json:"all,omitempty" jsonschema:"refresh all live VTXOs"`                                                       //nolint:ll
+		DryRun    bool     `json:"dry_run,omitempty" jsonschema:"validate without queuing and preview the estimated operator fee"`          //nolint:ll
+		Yes       bool     `json:"yes,omitempty" jsonschema:"acknowledge the operator fee and queue the refresh (required unless dry_run)"` //nolint:ll
 	}
 	mcp.AddTool(s, &mcp.Tool{
-		Name:        "ark.vtxos.refresh",
-		Description: "Queue VTXOs for refresh in next round",
+		Name: "ark.vtxos.refresh",
+		Description: "Queue VTXOs for refresh in next round. A " +
+			"refresh is charged an operator fee at seal time: " +
+			"call with dry_run:true first for an itemized " +
+			"advisory estimate, then pass yes:true to " +
+			"acknowledge the fee and queue",
 	}, func(ctx context.Context, req *mcp.CallToolRequest,
 		args vtxosRefreshArgs) (*mcp.CallToolResult, any, error) {
+
+		// Same consent contract as the CLI gate: a real refresh
+		// needs explicit acknowledgement. The error returns
+		// immediately (nothing can block on MCP) and tells the
+		// agent exactly how to proceed.
+		if err := checkMCPRefreshConsent(
+			args.DryRun, args.Yes,
+		); err != nil {
+			return nil, nil, err
+		}
 
 		rpcReq := &waverpc.RefreshVTXOsRequest{
 			DryRun: args.DryRun,
