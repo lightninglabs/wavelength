@@ -501,6 +501,9 @@ func applyFailedEvent(job *JobState, event *TxFailedEvent) {
 	job.DeferredCheckpoints = removeDeferredCheckpoint(
 		job.DeferredCheckpoints, event.Txid,
 	)
+	if event.DefinitelyNotBroadcast {
+		job.ReliveUnsafe = false
+	}
 
 	job.FailReason = event.Reason
 }

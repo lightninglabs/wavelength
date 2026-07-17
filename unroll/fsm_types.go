@@ -235,6 +235,11 @@ type TxFailedEvent struct {
 
 	// Reason is the stable human-readable failure reason.
 	Reason string
+
+	// DefinitelyNotBroadcast proves that the failed transaction never
+	// crossed the chain boundary. Only this explicit evidence may clear
+	// the fail-closed relive guard.
+	DefinitelyNotBroadcast bool
 }
 
 // eventSealed marks TxFailedEvent as an FSM event.

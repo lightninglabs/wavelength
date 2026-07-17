@@ -214,6 +214,12 @@ func (r *recordingRegistryRef) Tell(_ context.Context, msg RegistryMsg) error {
 	return nil
 }
 
+func (r *recordingRegistryRef) TryTell(ctx context.Context,
+	msg RegistryMsg) error {
+
+	return r.Tell(ctx, msg)
+}
+
 // terminatedCount returns how many UnrollTerminatedMsg messages have
 // been delivered so far.
 func (r *recordingRegistryRef) terminatedCount() int {

@@ -222,6 +222,33 @@ func TestCheckpointCodecVersionMismatch(t *testing.T) {
 	require.ErrorContains(t, err, "unsupported checkpoint version")
 }
 
+// TestCheckpointCodecLegacyStartedDefaultsReliveUnsafe proves an in-flight
+// checkpoint written before the relive guard existed cannot decode fail-open
+// at the upgrade boundary.
+func TestCheckpointCodecLegacyStartedDefaultsReliveUnsafe(t *testing.T) {
+	checkpoint := &actorCheckpoint{
+		Version: checkpointVersion,
+		Started: true,
+		Trigger: TriggerManual,
+	}
+	raw, err := encodeCheckpoint(checkpoint)
+	require.NoError(t, err)
+
+	// Record type 29 is the final canonical record and uses one-byte TLV
+	// type/length encodings. Removing it reproduces the pre-field wire
+	// shape while retaining Started=true.
+	reliveRecord := []byte{
+		byte(checkpointReliveUnsafeRecordType), 1, 0,
+	}
+	require.True(t, bytes.HasSuffix(raw, reliveRecord))
+	raw = raw[:len(raw)-len(reliveRecord)]
+
+	decoded, err := decodeCheckpoint(raw)
+	require.NoError(t, err)
+	require.True(t, decoded.Started)
+	require.True(t, decoded.ReliveUnsafe)
+}
+
 // TestCheckpointCodecCorruptDataRejected asserts that malformed input (empty,
 // truncated, random garbage) is rejected with an error rather than panicking
 // or returning a zero-value checkpoint.
