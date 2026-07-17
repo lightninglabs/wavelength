@@ -15,11 +15,11 @@ const (
 	AppMinor uint = 1
 
 	// AppPatch defines the application patch for this binary.
-	AppPatch uint = 99
+	AppPatch uint = 0
 
 	// AppPreRelease defines the pre-release version suffix for this
 	// binary.
-	AppPreRelease = ""
+	AppPreRelease = "rc4"
 )
 
 var (
