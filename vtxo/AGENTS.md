@@ -123,6 +123,13 @@ when the local wallet owns the receive script.
 - VTXO actor state is the single source of truth for availability.
 - Forfeit transaction is not broadcast until the connector output's round confirms (atomic replacement).
 - Refresh is auto-triggered at configurable height before expiry.
+- Auto-refresh delays to an advertised fee-waiver boundary only when the
+  boundary remains at least `MinRefreshBuffer` blocks above the dynamic
+  critical threshold. An overly late window never weakens unilateral-exit or
+  cooperative-retry safety; the wallet refreshes earlier and pays normally.
+- When the cached boundary fires, auto-refresh fetches fresh operator terms
+  before reserving the VTXO. A later still-safe boundary leaves the VTXO live;
+  a disabled or unsafe-late window preserves the ordinary paid refresh path.
 - Once ForfeitedState is reached, the old VTXO is unspendable; the new VTXO is available only after round confirmation.
 - SpendingState is persisted as VTXOStatusSpending and survives restarts.
 - OOR completion transitions VTXOs to SpentState through the VTXO actor FSM, not by direct store writes.

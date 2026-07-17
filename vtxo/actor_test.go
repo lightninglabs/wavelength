@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chaincfg/v2"
 	"github.com/btcsuite/btcd/wire/v2"
@@ -458,6 +459,161 @@ func TestProcessOutboxForfeitRequestQuotesFee(t *testing.T) {
 		t, int64(vtxo.Amount), refreshReq.Amount,
 		"forfeit input Amount is unchanged by the quote",
 	)
+}
+
+// TestAutoRefreshTermsLookupFailureRetries verifies a transient GetInfo
+// failure leaves the VTXO live and retries on the next block without writing a
+// PendingForfeit reservation.
+func TestAutoRefreshTermsLookupFailureRetries(t *testing.T) {
+	t.Parallel()
+
+	h := newVTXOTestHarness(t)
+	desc := h.newTestDescriptor()
+	currentHeight := desc.BatchExpiry - 200
+	fetchErr := errors.New("operator unavailable")
+
+	h.store.On(
+		"UpdateVTXOStatus", h.ctx, desc.Outpoint,
+		VTXOStatusPendingForfeit,
+	).Return(nil).Once()
+
+	var attempts int
+	manager := newMockManagerRef(t)
+	actor := newRefreshTestActor(
+		h, desc, manager,
+		func(_ context.Context) (*btcec.PublicKey, error) {
+			attempts++
+			if attempts == 1 {
+				return nil, fetchErr
+			}
+
+			return desc.OperatorKey, nil
+		},
+	)
+
+	result := actor.Receive(
+		h.ctx, h.newBlockEpochEvent(currentHeight),
+	)
+	_, err := result.Unpack()
+	require.ErrorIs(t, err, fetchErr)
+	require.IsType(t, &LiveState{}, actor.state)
+	require.Empty(t, manager.getMessages())
+
+	result = actor.Receive(
+		h.ctx, h.newBlockEpochEvent(currentHeight+1),
+	)
+	_, err = result.Unpack()
+	require.NoError(t, err)
+	require.IsType(t, &PendingForfeitState{}, actor.state)
+	require.Len(t, manager.getMessages(), 1)
+	require.Equal(t, 2, attempts)
+	h.store.AssertExpectations(t)
+}
+
+// TestAutoRefreshRechecksFreeWindow verifies the actor confirms the current
+// operator window before reserving an automatic refresh input.
+func TestAutoRefreshRechecksFreeWindow(t *testing.T) {
+	t.Parallel()
+
+	t.Run("later safe boundary defers", func(t *testing.T) {
+		t.Parallel()
+
+		h := newVTXOTestHarness(t)
+		desc := h.newTestDescriptor()
+		desc.RelativeExpiry = 24
+
+		cachedWindow := uint32(120)
+		freshWindow := uint32(110)
+		cfg := DefaultExpiryConfig()
+		cfg.FreeRefreshWindow = func() uint32 {
+			return cachedWindow
+		}
+		h.withExpiryConfig(cfg)
+
+		h.store.On(
+			"UpdateVTXOStatus", h.ctx, desc.Outpoint,
+			VTXOStatusPendingForfeit,
+		).Return(nil).Once()
+
+		var fetches int
+		manager := newMockManagerRef(t)
+		actor := newRefreshTestActor(
+			h, desc, manager,
+			func(_ context.Context) (*btcec.PublicKey, error) {
+				fetches++
+				cachedWindow = freshWindow
+
+				return desc.OperatorKey, nil
+			},
+		)
+
+		result := actor.Receive(
+			h.ctx, h.newBlockEpochEvent(
+				desc.BatchExpiry-int32(120),
+			),
+		)
+		_, err := result.Unpack()
+		require.NoError(t, err)
+		require.IsType(t, &LiveState{}, actor.state)
+		require.Empty(t, manager.getMessages())
+		require.Equal(t, 1, fetches)
+
+		result = actor.Receive(
+			h.ctx, h.newBlockEpochEvent(
+				desc.BatchExpiry-int32(freshWindow),
+			),
+		)
+		_, err = result.Unpack()
+		require.NoError(t, err)
+		require.IsType(t, &PendingForfeitState{}, actor.state)
+		require.Len(t, manager.getMessages(), 1)
+		require.Equal(t, 2, fetches)
+		h.store.AssertExpectations(t)
+	})
+
+	t.Run("disabled window preserves paid refresh", func(t *testing.T) {
+		t.Parallel()
+
+		h := newVTXOTestHarness(t)
+		desc := h.newTestDescriptor()
+		desc.RelativeExpiry = 24
+
+		cachedWindow := uint32(120)
+		cfg := DefaultExpiryConfig()
+		cfg.FreeRefreshWindow = func() uint32 {
+			return cachedWindow
+		}
+		h.withExpiryConfig(cfg)
+
+		h.store.On(
+			"UpdateVTXOStatus", h.ctx, desc.Outpoint,
+			VTXOStatusPendingForfeit,
+		).Return(nil).Once()
+
+		var fetches int
+		manager := newMockManagerRef(t)
+		actor := newRefreshTestActor(
+			h, desc, manager,
+			func(_ context.Context) (*btcec.PublicKey, error) {
+				fetches++
+				cachedWindow = 0
+
+				return desc.OperatorKey, nil
+			},
+		)
+
+		result := actor.Receive(
+			h.ctx, h.newBlockEpochEvent(
+				desc.BatchExpiry-int32(120),
+			),
+		)
+		_, err := result.Unpack()
+		require.NoError(t, err)
+		require.IsType(t, &PendingForfeitState{}, actor.state)
+		require.Len(t, manager.getMessages(), 1)
+		require.Equal(t, 1, fetches)
+		h.store.AssertExpectations(t)
+	})
 }
 
 // TestProcessOutboxTerminatedNotification verifies that

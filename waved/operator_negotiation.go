@@ -58,18 +58,19 @@ func operatorTermsFromResponse(resp *arkrpc.GetInfoResponse) (
 	// global operator terms; they are delivered per round in the batch
 	// info, so GetInfo no longer carries them.
 	return &types.OperatorTerms{
-		PubKey:              pubKey,
-		BoardingExitDelay:   resp.BoardingExitDelay,
-		VTXOExitDelay:       resp.VtxoExitDelay,
-		DustLimit:           btcutil.Amount(resp.DustLimit),
-		MinVTXOAmount:       btcutil.Amount(minVTXOAmount),
-		MinBoardingAmount:   btcutil.Amount(resp.MinBoardingAmount),
-		MaxVTXOAmount:       btcutil.Amount(resp.MaxVtxoAmount),
-		FeeRate:             btcutil.Amount(resp.FeeRate),
-		MinOperatorFee:      btcutil.Amount(resp.MinOperatorFee),
-		MinConfirmations:    resp.MinConfirmations,
-		MaxOORLineageVBytes: resp.MaxOorLineageVbytes,
-		MaxUserBalance:      btcutil.Amount(resp.MaxUserBalance),
+		PubKey:                  pubKey,
+		BoardingExitDelay:       resp.BoardingExitDelay,
+		VTXOExitDelay:           resp.VtxoExitDelay,
+		DustLimit:               btcutil.Amount(resp.DustLimit),
+		MinVTXOAmount:           btcutil.Amount(minVTXOAmount),
+		MinBoardingAmount:       btcutil.Amount(resp.MinBoardingAmount),
+		MaxVTXOAmount:           btcutil.Amount(resp.MaxVtxoAmount),
+		FeeRate:                 btcutil.Amount(resp.FeeRate),
+		MinOperatorFee:          btcutil.Amount(resp.MinOperatorFee),
+		FreeRefreshWindowBlocks: resp.FreeRefreshWindowBlocks,
+		MinConfirmations:        resp.MinConfirmations,
+		MaxOORLineageVBytes:     resp.MaxOorLineageVbytes,
+		MaxUserBalance:          btcutil.Amount(resp.MaxUserBalance),
 	}, nil
 }
 

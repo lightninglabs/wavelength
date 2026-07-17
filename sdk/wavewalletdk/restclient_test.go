@@ -18,7 +18,10 @@ func TestConnectREST(t *testing.T) {
 			w.Header().Set("Content-Type", "application/json")
 			_, err := w.Write([]byte(`{
 				"network": "regtest",
-				"wallet_state": "WALLET_STATE_READY"
+				"wallet_state": "WALLET_STATE_READY",
+				"server_info": {
+					"free_refresh_window_blocks": 120
+				}
 			}`))
 			require.NoError(t, err)
 		},
@@ -40,4 +43,8 @@ func TestConnectREST(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "regtest", info.Network)
 	require.Equal(t, WalletStateReady, info.WalletState)
+	require.NotNil(t, info.ServerInfo)
+	require.Equal(
+		t, uint32(120), info.ServerInfo.FreeRefreshWindowBlocks,
+	)
 }

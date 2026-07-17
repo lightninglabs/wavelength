@@ -45,7 +45,8 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/sdk/wave
   values seeded by `waved.DefaultConfig` or carried on a caller-owned
   `DaemonConfig`. First option: `WithEagerRoundJoinDisabled()` forces
   `daemonCfg.EagerRoundJoin = false`.
-- DTOs (wrapper-owned, isolated from proto enums): `Info`, `Balance`,
+- DTOs (wrapper-owned, isolated from proto enums): `Info` / `ServerInfo`
+  (including the advisory free-refresh window), `Balance`,
   `CreateWalletResult`, `UnlockWalletResult`, `ReceiveRequest`/`Result`
   (returns invoice + initial `Entry`), the two-step send DTOs
   `PrepareSendRequest`/`PrepareSendResult` and

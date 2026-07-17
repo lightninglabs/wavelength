@@ -69,7 +69,9 @@ func (r *RPCServer) GetIndexedVTXOByPkScript(ctx context.Context,
 			"indexed VTXO expiry info", heightErr)
 	}
 
-	vtxo, err := indexedVTXOToProto(vtxos[0], currentHeight)
+	vtxo, err := indexedVTXOToProto(
+		vtxos[0], currentHeight, r.server.vtxoExpiryConfig(),
+	)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "convert indexed "+
 			"vtxo: %v", err)
@@ -169,8 +171,8 @@ func daemonStatusToIndexerStatus(status waverpc.VTXOStatus) (arkrpc.VTXOStatus,
 
 // indexedVTXOToProto converts an authoritative indexer VTXO into the daemon's
 // simplified VTXO response shape.
-func indexedVTXOToProto(vtxo *arkrpc.VTXO,
-	currentHeight int32) (*waverpc.VTXO, error) {
+func indexedVTXOToProto(vtxo *arkrpc.VTXO, currentHeight int32,
+	cfg *vtxo.ExpiryConfig) (*waverpc.VTXO, error) {
 
 	if vtxo == nil {
 		return nil, fmt.Errorf("vtxo must be provided")
@@ -228,7 +230,9 @@ func indexedVTXOToProto(vtxo *arkrpc.VTXO,
 			vtxo.GetOorFinalCheckpointPsbts(),
 		),
 		SpentByTxid: spentByTxid,
-		ExpiryInfo:  expiryInfoFromIndexedVTXO(vtxo, currentHeight),
+		ExpiryInfo: expiryInfoFromIndexedVTXO(
+			vtxo, currentHeight, cfg,
+		),
 	}, nil
 }
 
