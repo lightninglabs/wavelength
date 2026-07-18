@@ -82,6 +82,17 @@ SET status = 2, -- Forfeiting
     last_update_time = $5
 WHERE outpoint_hash = $1 AND outpoint_index = $2;
 
+-- name: ListForfeitingVTXOsByRound :many
+-- ListForfeitingVTXOsByRound returns the outpoint and amount of every VTXO
+-- sitting in Forfeiting status whose forfeit reservation is bound to the
+-- given round. Used during restart recovery to rebuild a reloaded round's
+-- forfeit set, so the status-reconcile release path has real outpoints to
+-- return to Live rather than the empty in-memory set the crash discarded.
+SELECT outpoint_hash, outpoint_index, amount
+FROM vtxos
+WHERE status = 2 -- Forfeiting
+  AND forfeit_round_id = $1;
+
 -- name: GetVTXOForfeitTx :one
 -- GetVTXOForfeitTx retrieves the persisted forfeit transaction for a VTXO.
 -- Used during recovery to restore the ForfeitingState with its tx.

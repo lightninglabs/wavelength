@@ -210,6 +210,12 @@ type Querier interface {
 	// rows) instead of decoding the whole activity feed, and the canonical_id
 	// cursor is strictly monotonic (a full page always advances it).
 	ListEntriesByKindStatus(ctx context.Context, arg ListEntriesByKindStatusParams) ([]ActivityEntry, error)
+	// ListForfeitingVTXOsByRound returns the outpoint and amount of every VTXO
+	// sitting in Forfeiting status whose forfeit reservation is bound to the
+	// given round. Used during restart recovery to rebuild a reloaded round's
+	// forfeit set, so the status-reconcile release path has real outpoints to
+	// return to Live rather than the empty in-memory set the crash discarded.
+	ListForfeitingVTXOsByRound(ctx context.Context, forfeitRoundID sql.NullString) ([]ListForfeitingVTXOsByRoundRow, error)
 	// ListLedgerRoundIDsMissingUuid returns the distinct raw round_id BLOBs that
 	// have not yet been mirrored into the round_uuid TEXT column. The BLOB-to-UUID
 	// string conversion is not expressible in the SQL dialect subset shared by
