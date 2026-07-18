@@ -26,6 +26,7 @@ const (
 	RoundService_SubmitPartialSigs_FullMethodName     = "/round.v1.RoundService/SubmitPartialSigs"
 	RoundService_SubmitForfeitSigs_FullMethodName     = "/round.v1.RoundService/SubmitForfeitSigs"
 	RoundService_SubmitVTXOForfeitSigs_FullMethodName = "/round.v1.RoundService/SubmitVTXOForfeitSigs"
+	RoundService_QueryRoundStatus_FullMethodName      = "/round.v1.RoundService/QueryRoundStatus"
 )
 
 // RoundServiceClient is the client API for RoundService service.
@@ -59,6 +60,11 @@ type RoundServiceClient interface {
 	SubmitForfeitSigs(ctx context.Context, in *SubmitForfeitSigRequest, opts ...grpc.CallOption) (*ClientAwaitingInputSigsResp, error)
 	// SubmitVTXOForfeitSigs submits VTXO forfeit signatures.
 	SubmitVTXOForfeitSigs(ctx context.Context, in *SubmitVTXOForfeitSigsRequest, opts ...grpc.CallOption) (*ClientSuccessResp, error)
+	// QueryRoundStatus asks for the authoritative lifecycle status of
+	// a round. The answer arrives asynchronously as a
+	// ClientRoundStatusReport push event; the RPC ack itself carries
+	// no round state.
+	QueryRoundStatus(ctx context.Context, in *QueryRoundStatusRequest, opts ...grpc.CallOption) (*ClientSuccessResp, error)
 }
 
 type roundServiceClient struct {
@@ -139,6 +145,16 @@ func (c *roundServiceClient) SubmitVTXOForfeitSigs(ctx context.Context, in *Subm
 	return out, nil
 }
 
+func (c *roundServiceClient) QueryRoundStatus(ctx context.Context, in *QueryRoundStatusRequest, opts ...grpc.CallOption) (*ClientSuccessResp, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ClientSuccessResp)
+	err := c.cc.Invoke(ctx, RoundService_QueryRoundStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // RoundServiceServer is the server API for RoundService service.
 // All implementations must embed UnimplementedRoundServiceServer
 // for forward compatibility.
@@ -170,6 +186,11 @@ type RoundServiceServer interface {
 	SubmitForfeitSigs(context.Context, *SubmitForfeitSigRequest) (*ClientAwaitingInputSigsResp, error)
 	// SubmitVTXOForfeitSigs submits VTXO forfeit signatures.
 	SubmitVTXOForfeitSigs(context.Context, *SubmitVTXOForfeitSigsRequest) (*ClientSuccessResp, error)
+	// QueryRoundStatus asks for the authoritative lifecycle status of
+	// a round. The answer arrives asynchronously as a
+	// ClientRoundStatusReport push event; the RPC ack itself carries
+	// no round state.
+	QueryRoundStatus(context.Context, *QueryRoundStatusRequest) (*ClientSuccessResp, error)
 	mustEmbedUnimplementedRoundServiceServer()
 }
 
@@ -200,6 +221,9 @@ func (UnimplementedRoundServiceServer) SubmitForfeitSigs(context.Context, *Submi
 }
 func (UnimplementedRoundServiceServer) SubmitVTXOForfeitSigs(context.Context, *SubmitVTXOForfeitSigsRequest) (*ClientSuccessResp, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SubmitVTXOForfeitSigs not implemented")
+}
+func (UnimplementedRoundServiceServer) QueryRoundStatus(context.Context, *QueryRoundStatusRequest) (*ClientSuccessResp, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method QueryRoundStatus not implemented")
 }
 func (UnimplementedRoundServiceServer) mustEmbedUnimplementedRoundServiceServer() {}
 func (UnimplementedRoundServiceServer) testEmbeddedByValue()                      {}
@@ -348,6 +372,24 @@ func _RoundService_SubmitVTXOForfeitSigs_Handler(srv interface{}, ctx context.Co
 	return interceptor(ctx, in, info, handler)
 }
 
+func _RoundService_QueryRoundStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(QueryRoundStatusRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RoundServiceServer).QueryRoundStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RoundService_QueryRoundStatus_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RoundServiceServer).QueryRoundStatus(ctx, req.(*QueryRoundStatusRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // RoundService_ServiceDesc is the grpc.ServiceDesc for RoundService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -382,6 +424,10 @@ var RoundService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SubmitVTXOForfeitSigs",
 			Handler:    _RoundService_SubmitVTXOForfeitSigs_Handler,
+		},
+		{
+			MethodName: "QueryRoundStatus",
+			Handler:    _RoundService_QueryRoundStatus_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

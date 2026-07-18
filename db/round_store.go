@@ -154,6 +154,12 @@ type RoundStore interface {
 		ctx context.Context, arg sqlc.MarkVTXOForfeitingParams,
 	) error
 
+	// ListForfeitingVTXOsByRound returns the Forfeiting VTXOs bound to a
+	// round, used to rebuild a reloaded round's forfeit set on restart.
+	ListForfeitingVTXOsByRound(ctx context.Context,
+		forfeitRoundID sql.NullString) (
+		[]sqlc.ListForfeitingVTXOsByRoundRow, error)
+
 	GetVTXOForfeitTx(ctx context.Context,
 		arg sqlc.GetVTXOForfeitTxParams) (
 		sqlc.GetVTXOForfeitTxRow,
@@ -922,6 +928,43 @@ func (s *RoundPersistenceStore) MarkVTXOSpent(ctx context.Context,
 	})
 }
 
+// roundForfeitRequests rebuilds the forfeit set of a reloaded round from the
+// VTXO table. Standard wallet forfeits are the only entries that can survive
+// a restart: each Forfeiting VTXO row carries the binding forfeit_round_id,
+// while custom (caller-supplied) forfeit inputs never enter the wallet store
+// and their in-memory signing contexts die with the process. The rebuilt
+// requests carry just the outpoint and amount, which is exactly what the
+// status-reconcile release path needs to return the inputs to LiveState.
+func roundForfeitRequests(ctx context.Context, q RoundStore,
+	roundID string) ([]types.ForfeitRequest, error) {
+
+	rows, err := q.ListForfeitingVTXOsByRound(ctx, sql.NullString{
+		String: roundID,
+		Valid:  true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list forfeiting vtxos: %w", err)
+	}
+
+	if len(rows) == 0 {
+		return nil, nil
+	}
+
+	forfeits := make([]types.ForfeitRequest, 0, len(rows))
+	for _, row := range rows {
+		var op wire.OutPoint
+		copy(op.Hash[:], row.OutpointHash)
+		op.Index = uint32(row.OutpointIndex)
+
+		forfeits = append(forfeits, types.ForfeitRequest{
+			VTXOOutpoint: &op,
+			Amount:       btcutil.Amount(row.Amount),
+		})
+	}
+
+	return forfeits, nil
+}
+
 // dbRoundToDomainRound converts a database round row to a domain Round struct.
 func (s *RoundPersistenceStore) dbRoundToDomainRound(ctx context.Context,
 	q RoundStore, dbRound RoundRow, dbIntents []RoundBoardingIntentRow) (
@@ -993,6 +1036,17 @@ func (s *RoundPersistenceStore) dbRoundToDomainRound(ctx context.Context,
 
 		r.Intents.Boarding = intents
 	}
+
+	// Rebuild the forfeit set from the VTXO table. Without this, a
+	// reloaded forfeit-bearing round looks boarding-only: the actor's
+	// restart re-arm guard never arms the status-reconcile timer, and a
+	// DEAD verdict would release an empty set, silently reopening the
+	// wavelength#844 strand across every restart.
+	forfeits, err := roundForfeitRequests(ctx, q, dbRound.RoundID)
+	if err != nil {
+		return nil, err
+	}
+	r.Intents.Forfeits = forfeits
 
 	return r, nil
 }
@@ -1268,9 +1322,19 @@ func (s *RoundPersistenceStore) reconstructInputSigSentState(
 		}
 	}
 
+	// Rebuild the forfeit set alongside the boarding intents. The
+	// reconstructed InputSigSentState gates every status-reconcile
+	// decision on its forfeit count, so leaving Forfeits empty here would
+	// turn the post-restart reconcile into a no-op.
+	forfeits, err := roundForfeitRequests(ctx, q, dbRound.RoundID)
+	if err != nil {
+		return nil, err
+	}
+
 	state.Intents = round.Intents{
 		Boarding: intents,
 		VTXOs:    vtxos,
+		Forfeits: forfeits,
 	}
 	state.InputSigs = inputSigs
 
