@@ -87,6 +87,47 @@ func (q *Queries) GetVTXOReplacement(ctx context.Context, arg GetVTXOReplacement
 	return i, err
 }
 
+const ListForfeitingVTXOsByRound = `-- name: ListForfeitingVTXOsByRound :many
+SELECT outpoint_hash, outpoint_index, amount
+FROM vtxos
+WHERE status = 2 -- Forfeiting
+  AND forfeit_round_id = $1
+`
+
+type ListForfeitingVTXOsByRoundRow struct {
+	OutpointHash  []byte
+	OutpointIndex int32
+	Amount        int64
+}
+
+// ListForfeitingVTXOsByRound returns the outpoint and amount of every VTXO
+// sitting in Forfeiting status whose forfeit reservation is bound to the
+// given round. Used during restart recovery to rebuild a reloaded round's
+// forfeit set, so the status-reconcile release path has real outpoints to
+// return to Live rather than the empty in-memory set the crash discarded.
+func (q *Queries) ListForfeitingVTXOsByRound(ctx context.Context, forfeitRoundID sql.NullString) ([]ListForfeitingVTXOsByRoundRow, error) {
+	rows, err := q.db.QueryContext(ctx, ListForfeitingVTXOsByRound, forfeitRoundID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListForfeitingVTXOsByRoundRow
+	for rows.Next() {
+		var i ListForfeitingVTXOsByRoundRow
+		if err := rows.Scan(&i.OutpointHash, &i.OutpointIndex, &i.Amount); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const ListLiveVTXOs = `-- name: ListLiveVTXOs :many
 SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, policy_template, client_key_id, operator_pubkey, batch_expiry, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time, chain_depth, construction_version FROM vtxos
 WHERE (status < 3 OR status = 7) AND spent = FALSE
