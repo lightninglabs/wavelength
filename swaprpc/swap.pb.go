@@ -285,9 +285,15 @@ type RequestChannelIdRequest struct {
 	// adding a separate auth identity.
 	PaymentHash []byte `protobuf:"bytes,3,opt,name=payment_hash,json=paymentHash,proto3" json:"payment_hash,omitempty"`
 	// amount_sat is the exact invoice amount the payer should send.
-	AmountSat     uint64 `protobuf:"varint,4,opt,name=amount_sat,json=amountSat,proto3" json:"amount_sat,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	AmountSat uint64 `protobuf:"varint,4,opt,name=amount_sat,json=amountSat,proto3" json:"amount_sat,omitempty"`
+	// supports_in_ark_credit signals that this receiver can validate and
+	// acknowledge a credit-shaped in-ark HTLC event (one carrying
+	// requested_amount_sat and attached_credit_sat). The server records the
+	// capability on the receive intent and only routes a credit-attach
+	// receive through the swap-server-funded in-ark leg when it is set.
+	SupportsInArkCredit bool `protobuf:"varint,5,opt,name=supports_in_ark_credit,json=supportsInArkCredit,proto3" json:"supports_in_ark_credit,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *RequestChannelIdRequest) Reset() {
@@ -346,6 +352,13 @@ func (x *RequestChannelIdRequest) GetAmountSat() uint64 {
 		return x.AmountSat
 	}
 	return 0
+}
+
+func (x *RequestChannelIdRequest) GetSupportsInArkCredit() bool {
+	if x != nil {
+		return x.SupportsInArkCredit
+	}
+	return false
 }
 
 // RequestChannelIdResponse returns the route hint paths for one receive
@@ -859,8 +872,17 @@ type InArkHtlcEvent struct {
 	VhtlcOutpoint string `protobuf:"bytes,5,opt,name=vhtlc_outpoint,json=vhtlcOutpoint,proto3" json:"vhtlc_outpoint,omitempty"`
 	// vhtlc_amount_sat is the observed vHTLC amount in satoshis when known.
 	VhtlcAmountSat uint64 `protobuf:"varint,6,opt,name=vhtlc_amount_sat,json=vhtlcAmountSat,proto3" json:"vhtlc_amount_sat,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// requested_amount_sat is the invoice amount requested by the receiver.
+	// When set together with attached_credit_sat, amount_sat is the padded
+	// vHTLC amount of a credit-attach receive plan, mirroring
+	// OutSwapHtlcEvent. When zero, the event is a legacy direct p2p payment
+	// and amount_sat equals the invoice amount.
+	RequestedAmountSat uint64 `protobuf:"varint,7,opt,name=requested_amount_sat,json=requestedAmountSat,proto3" json:"requested_amount_sat,omitempty"`
+	// attached_credit_sat is the reserved credit amount added to the vHTLC
+	// on top of requested_amount_sat.
+	AttachedCreditSat uint64 `protobuf:"varint,8,opt,name=attached_credit_sat,json=attachedCreditSat,proto3" json:"attached_credit_sat,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *InArkHtlcEvent) Reset() {
@@ -931,6 +953,20 @@ func (x *InArkHtlcEvent) GetVhtlcOutpoint() string {
 func (x *InArkHtlcEvent) GetVhtlcAmountSat() uint64 {
 	if x != nil {
 		return x.VhtlcAmountSat
+	}
+	return 0
+}
+
+func (x *InArkHtlcEvent) GetRequestedAmountSat() uint64 {
+	if x != nil {
+		return x.RequestedAmountSat
+	}
+	return 0
+}
+
+func (x *InArkHtlcEvent) GetAttachedCreditSat() uint64 {
+	if x != nil {
+		return x.AttachedCreditSat
 	}
 	return 0
 }
@@ -2944,13 +2980,14 @@ var File_swap_proto protoreflect.FileDescriptor
 const file_swap_proto_rawDesc = "" +
 	"\n" +
 	"\n" +
-	"swap.proto\x12\aswaprpc\x1a\x1fgoogle/protobuf/timestamp.proto\"\xb2\x01\n" +
+	"swap.proto\x12\aswaprpc\x1a\x1fgoogle/protobuf/timestamp.proto\"\xe7\x01\n" +
 	"\x17RequestChannelIdRequest\x12%\n" +
 	"\x0eexpiry_seconds\x18\x01 \x01(\rR\rexpirySeconds\x12.\n" +
 	"\x13client_vhtlc_pubkey\x18\x02 \x01(\fR\x11clientVhtlcPubkey\x12!\n" +
 	"\fpayment_hash\x18\x03 \x01(\fR\vpaymentHash\x12\x1d\n" +
 	"\n" +
-	"amount_sat\x18\x04 \x01(\x04R\tamountSat\"\xbf\x03\n" +
+	"amount_sat\x18\x04 \x01(\x04R\tamountSat\x123\n" +
+	"\x16supports_in_ark_credit\x18\x05 \x01(\bR\x13supportsInArkCredit\"\xbf\x03\n" +
 	"\x18RequestChannelIdResponse\x12$\n" +
 	"\x0epayer_fee_msat\x18\x02 \x01(\x04R\fpayerFeeMsat\x120\n" +
 	"\x14requested_amount_sat\x18\x03 \x01(\x04R\x12requestedAmountSat\x120\n" +
@@ -2983,7 +3020,7 @@ const file_swap_proto_rawDesc = "" +
 	"\rout_swap_htlc\x18\x01 \x01(\v2\x19.swaprpc.OutSwapHtlcEventH\x00R\voutSwapHtlc\x129\n" +
 	"\vin_ark_htlc\x18\x02 \x01(\v2\x17.swaprpc.InArkHtlcEventH\x00R\tinArkHtlc\x12u\n" +
 	"\"out_swap_forfeit_signature_request\x18\x03 \x01(\v2'.swaprpc.OutSwapForfeitSignatureRequestH\x00R\x1eoutSwapForfeitSignatureRequestB\a\n" +
-	"\x05event\"\x81\x02\n" +
+	"\x05event\"\xe3\x02\n" +
 	"\x0eInArkHtlcEvent\x12!\n" +
 	"\fpayment_hash\x18\x01 \x01(\fR\vpaymentHash\x12\x1d\n" +
 	"\n" +
@@ -2991,7 +3028,9 @@ const file_swap_proto_rawDesc = "" +
 	"\rsender_pubkey\x18\x03 \x01(\fR\fsenderPubkey\x127\n" +
 	"\fvhtlc_config\x18\x04 \x01(\v2\x14.swaprpc.VHTLCConfigR\vvhtlcConfig\x12%\n" +
 	"\x0evhtlc_outpoint\x18\x05 \x01(\tR\rvhtlcOutpoint\x12(\n" +
-	"\x10vhtlc_amount_sat\x18\x06 \x01(\x04R\x0evhtlcAmountSat\"\xc5\x01\n" +
+	"\x10vhtlc_amount_sat\x18\x06 \x01(\x04R\x0evhtlcAmountSat\x120\n" +
+	"\x14requested_amount_sat\x18\a \x01(\x04R\x12requestedAmountSat\x12.\n" +
+	"\x13attached_credit_sat\x18\b \x01(\x04R\x11attachedCreditSat\"\xc5\x01\n" +
 	"\tRouteHint\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\fR\x06nodeId\x12\x1d\n" +
 	"\n" +
