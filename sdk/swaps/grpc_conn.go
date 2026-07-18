@@ -46,7 +46,8 @@ func NewRESTSwapServerConn(addr string,
 // Lightning-to-Ark receive flow.
 func (g *GRPCSwapServerConn) RequestChannelID(ctx context.Context,
 	vhtlcPubkey *btcec.PublicKey, paymentHash lntypes.Hash,
-	amountSat btcutil.Amount, expirySeconds uint32) (*OutSwapQuote, error) {
+	amountSat btcutil.Amount, expirySeconds uint32,
+	supportsInArkCredit bool) (*OutSwapQuote, error) {
 
 	if vhtlcPubkey == nil {
 		return nil, fmt.Errorf("vHTLC pubkey must be provided")
@@ -63,7 +64,8 @@ func (g *GRPCSwapServerConn) RequestChannelID(ctx context.Context,
 			PaymentHash: append(
 				[]byte(nil), paymentHash[:]...,
 			),
-			AmountSat: uint64(amountSat),
+			AmountSat:           uint64(amountSat),
+			SupportsInArkCredit: supportsInArkCredit,
 		},
 	)
 	if err != nil {
@@ -594,12 +596,14 @@ func inArkHtlcEventFromProto(event *swaprpc.InArkHtlcEvent) (*InArkHtlcEvent,
 	}
 
 	return &InArkHtlcEvent{
-		PaymentHash:    paymentHash,
-		AmountSat:      int64(event.GetAmountSat()),
-		SenderPubkey:   senderKey,
-		VHTLCConfig:    *cfg,
-		VHTLCOutpoint:  event.GetVhtlcOutpoint(),
-		VHTLCAmountSat: int64(event.GetVhtlcAmountSat()),
+		PaymentHash:        paymentHash,
+		AmountSat:          int64(event.GetAmountSat()),
+		SenderPubkey:       senderKey,
+		VHTLCConfig:        *cfg,
+		VHTLCOutpoint:      event.GetVhtlcOutpoint(),
+		VHTLCAmountSat:     int64(event.GetVhtlcAmountSat()),
+		RequestedAmountSat: event.GetRequestedAmountSat(),
+		AttachedCreditSat:  event.GetAttachedCreditSat(),
 	}, nil
 }
 
