@@ -30,6 +30,16 @@ type pendingEntry struct {
 	deadline  time.Time
 	noTimeout bool
 	entry     *wavewalletrpc.WalletEntry
+
+	// feeZeroClears counts terminal-projection passes that observed this
+	// EXIT row complete with a zero fee. The round's fee ledger row is
+	// booked by a separate durable actor whose commit races the forfeit
+	// status this row completes off, so a zero fee on the first terminal
+	// pass may mean "ledger commit lag" rather than "fee-free round". The
+	// record is retained for a bounded number of passes so a later
+	// decoration re-reads the fee before the row is frozen; see
+	// clearProjectedTerminalExit.
+	feeZeroClears int
 }
 
 // Runtime owns the swapwallet package's background lifecycle: the unified
@@ -449,6 +459,33 @@ func (r *Runtime) clearPending(id string) {
 
 	delete(r.pending, id)
 	delete(r.overlay, id)
+}
+
+// feeZeroClearGracePasses is how many terminal-projection passes a completed
+// EXIT row observed with a zero fee stays in the pending map before its record
+// is cleared. Each retained pass re-derives and re-decorates the row, so a fee
+// ledger row that commits shortly after the forfeit/exit status becomes
+// terminal is still picked up and re-projected. Genuinely fee-free rounds pay
+// only this many redundant decorations before the record is dropped.
+const feeZeroClearGracePasses = 3
+
+// deferFeeZeroClear records one more terminal pass that saw the entry complete
+// with a zero fee and reports whether the bounded grace is exhausted (true
+// means the caller should clear the record now). An id with no live record
+// reports true so the caller's clear degrades to a no-op.
+func (r *Runtime) deferFeeZeroClear(id string) bool {
+	r.pendingMu.Lock()
+	defer r.pendingMu.Unlock()
+
+	record, ok := r.pending[id]
+	if !ok {
+		return true
+	}
+
+	record.feeZeroClears++
+	r.pending[id] = record
+
+	return record.feeZeroClears >= feeZeroClearGracePasses
 }
 
 // overlayFor returns the wallet-layer overlay for an entry id, if any. The

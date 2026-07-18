@@ -561,3 +561,119 @@ func TestRowToWalletEntryDiscardsUnknownRequestFields(t *testing.T) {
 	_, err = rowToWalletEntry(corrupt)
 	require.Error(t, err, "a corrupt request row must fail loudly")
 }
+
+// TestClearProjectedTerminalExitRetainsFeeZeroRows proves a completed EXIT
+// projected with a zero fee keeps its pending record for the bounded grace
+// window, so a fee ledger row that commits just after the forfeit status
+// becomes terminal is still picked up by a later derive pass, while a
+// fee-carrying completion and a failure clear the record immediately.
+func TestClearProjectedTerminalExitRetainsFeeZeroRows(t *testing.T) {
+	t.Parallel()
+
+	r := newRuntime(t.Context(), &Deps{})
+
+	track := func(id string) {
+		r.trackPendingEntryWithoutTimeout(&wavewalletrpc.WalletEntry{
+			Id:   id,
+			Kind: wavewalletrpc.EntryKind_ENTRY_KIND_EXIT,
+			Status: wavewalletrpc.
+				EntryStatus_ENTRY_STATUS_PENDING,
+		})
+	}
+	tracked := func(id string) bool {
+		r.pendingMu.Lock()
+		defer r.pendingMu.Unlock()
+		_, ok := r.pending[id]
+
+		return ok
+	}
+
+	// A zero-fee completion survives the grace window and is cleared only
+	// on the pass that exhausts it.
+	track("exit-a")
+	feeZero := &wavewalletrpc.WalletEntry{
+		Id:     "exit-a",
+		Kind:   wavewalletrpc.EntryKind_ENTRY_KIND_EXIT,
+		Status: wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+	}
+	for i := 0; i < feeZeroClearGracePasses-1; i++ {
+		r.clearProjectedTerminalExit(feeZero)
+		require.True(
+			t, tracked("exit-a"),
+			"record must survive pass %d of the grace window", i+1,
+		)
+	}
+	r.clearProjectedTerminalExit(feeZero)
+	require.False(
+		t, tracked("exit-a"),
+		"record must clear once the grace window is exhausted",
+	)
+
+	// A completion that carries a fee clears immediately.
+	track("exit-b")
+	r.clearProjectedTerminalExit(&wavewalletrpc.WalletEntry{
+		Id:     "exit-b",
+		Kind:   wavewalletrpc.EntryKind_ENTRY_KIND_EXIT,
+		Status: wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		FeeSat: 541,
+	})
+	require.False(t, tracked("exit-b"))
+
+	// A failure clears immediately regardless of fee.
+	track("exit-c")
+	r.clearProjectedTerminalExit(&wavewalletrpc.WalletEntry{
+		Id:     "exit-c",
+		Kind:   wavewalletrpc.EntryKind_ENTRY_KIND_EXIT,
+		Status: wavewalletrpc.EntryStatus_ENTRY_STATUS_FAILED,
+	})
+	require.False(t, tracked("exit-c"))
+
+	// A fee observed mid-grace clears via the normal fee-carrying path.
+	track("exit-d")
+	r.clearProjectedTerminalExit(&wavewalletrpc.WalletEntry{
+		Id:     "exit-d",
+		Kind:   wavewalletrpc.EntryKind_ENTRY_KIND_EXIT,
+		Status: wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+	})
+	require.True(t, tracked("exit-d"))
+	r.clearProjectedTerminalExit(&wavewalletrpc.WalletEntry{
+		Id:     "exit-d",
+		Kind:   wavewalletrpc.EntryKind_ENTRY_KIND_EXIT,
+		Status: wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		FeeSat: 388,
+	})
+	require.False(t, tracked("exit-d"))
+}
+
+// TestMergeActivityContextKeepsSettledFee proves a stored fee is sticky: a
+// later projection carrying fee 0 (a completion pass that raced the fee
+// ledger commit or hit a transient read error) must not regress the stored
+// fee, and the amount is restored together with it since the fee-carrying
+// projection also netted the fee out of the amount.
+func TestMergeActivityContextKeepsSettledFee(t *testing.T) {
+	t.Parallel()
+
+	existing := &wavewalletrpc.WalletEntry{
+		Id:        "exit-a",
+		AmountSat: -138_816,
+		FeeSat:    388,
+	}
+	next := &wavewalletrpc.WalletEntry{
+		Id:        "exit-a",
+		AmountSat: -139_204,
+	}
+
+	merged := mergeActivityContext(existing, next)
+	require.Equal(t, int64(388), merged.GetFeeSat())
+	require.Equal(t, int64(-138_816), merged.GetAmountSat())
+
+	// A projection that carries its own fee stays authoritative.
+	fresh := &wavewalletrpc.WalletEntry{
+		Id:        "exit-a",
+		AmountSat: -138_816,
+		FeeSat:    400,
+	}
+	merged = mergeActivityContext(existing, fresh)
+	require.Equal(t, int64(400), merged.GetFeeSat())
+	require.Equal(t, int64(-138_816), merged.GetAmountSat())
+}
