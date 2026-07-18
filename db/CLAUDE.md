@@ -71,7 +71,7 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   safety bounds enforced during `DeserializeTree`.
 - `resolveInputPackage` / `loadPackageBundleBySessionID` — two-stage
   OOR ancestry resolver (`oor_unroll_resolver.go`).
-- `LatestMigrationVersion = 14` — current schema version.
+- `LatestMigrationVersion = 15` — current schema version.
 - `PendingIntentPersistenceStore` — implements `wallet.PendingIntentStore`,
   the persistence half of the generic restart-safe intent outbox (header
   `pending_intents` + per-kind detail tables + `pending_intent_anchors`).
@@ -197,6 +197,21 @@ when adding one.
   constraint on `vtxo_ancestry_paths`: fragment identity is
   (commitment_txid, tree_path), so an OOR spend of inputs at different
   leaves of one commitment tree persists one row per leaf.
+- `000015_ledger_round_uuid` — adds `ledger_entries.round_uuid`, the
+  canonical TEXT UUID mirror of the raw 16-byte `round_id` BLOB, plus a
+  partial index. The ledger and the round tables historically stored the
+  same identifier in different encodings, and no BLOB↔TEXT conversion
+  exists in the SQL dialect subset shared by SQLite and Postgres; the
+  TEXT mirror makes ledger rows joinable against `rounds.round_id` /
+  `vtxos.forfeit_round_id` (e.g. the `ListVTXOsByStatus` settlement fee
+  join). New inserts stamp it via `roundUUIDText`; existing rows are
+  backfilled by the version-15 Go post-migration step
+  (`backfillLedgerRoundUUIDs` in `post_migration_checks.go`), wired into
+  both store constructors via `makePostStepCallbacks` (its first
+  production user). A crash between the post-step and the clean
+  SetVersion leaves the migration dirty and the next boot fails with
+  ErrDirty; forcing the version and re-running is safe because the
+  backfill guards on `round_uuid IS NULL` and re-executes as a no-op.
 
 ## Deep Docs
 

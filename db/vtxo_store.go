@@ -400,15 +400,16 @@ func (s *VTXOPersistenceStore) byStatusRowsToDescriptors(ctx context.Context,
 
 		// settlement_txid is a 32-byte BLOB when the forfeit round row
 		// exists; treat any other length (NULL join, short/legacy) as
-		// unset so the descriptor's Settlement stays None. The txid and
-		// height come from one round row, so they are attached
-		// together.
+		// unset so the descriptor's Settlement stays None. The txid,
+		// height, and round-level operator fee are attached together,
+		// as they all describe the same forfeit round.
 		if len(row.SettlementTxid) == chainhash.HashSize {
 			var settle vtxo.Settlement
 			copy(settle.TxID[:], row.SettlementTxid)
 			if row.SettlementHeight.Valid {
 				settle.Height = row.SettlementHeight.Int32
 			}
+			settle.FeeSat = row.SettlementFeeSat
 			desc.Settlement = fn.Some(settle)
 		}
 

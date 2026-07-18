@@ -5489,7 +5489,15 @@ func (x *LightningInvoiceRequest) GetPaymentHash() string {
 type OnchainAddressRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// address is the bech32 onchain address originally issued or targeted.
-	Address       string `protobuf:"bytes,1,opt,name=address,proto3" json:"address,omitempty"`
+	Address string `protobuf:"bytes,1,opt,name=address,proto3" json:"address,omitempty"`
+	// sweep_all marks an onchain send that drained the selected VTXOs
+	// entirely (wavecli send --send-all). A sweep's pending amount is the
+	// gross outflow with the operator fee still baked in (the fee is only
+	// known once the leave round seals), so completion uses this marker to
+	// net the settled fee back out of the displayed amount. Bounded sends
+	// leave it false: their amount is the exact destination value and the
+	// fee is paid on top out of change.
+	SweepAll      bool `protobuf:"varint,2,opt,name=sweep_all,json=sweepAll,proto3" json:"sweep_all,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -5529,6 +5537,13 @@ func (x *OnchainAddressRequest) GetAddress() string {
 		return x.Address
 	}
 	return ""
+}
+
+func (x *OnchainAddressRequest) GetSweepAll() bool {
+	if x != nil {
+		return x.SweepAll
+	}
+	return false
 }
 
 // ArkAddressRequest captures the Ark address associated with an activity entry.
@@ -6036,9 +6051,10 @@ const file_wallet_proto_rawDesc = "" +
 	"\arequest\"V\n" +
 	"\x17LightningInvoiceRequest\x12\x18\n" +
 	"\ainvoice\x18\x01 \x01(\tR\ainvoice\x12!\n" +
-	"\fpayment_hash\x18\x02 \x01(\tR\vpaymentHash\"1\n" +
+	"\fpayment_hash\x18\x02 \x01(\tR\vpaymentHash\"N\n" +
 	"\x15OnchainAddressRequest\x12\x18\n" +
-	"\aaddress\x18\x01 \x01(\tR\aaddress\"-\n" +
+	"\aaddress\x18\x01 \x01(\tR\aaddress\x12\x1b\n" +
+	"\tsweep_all\x18\x02 \x01(\bR\bsweepAll\"-\n" +
 	"\x11ArkAddressRequest\x12\x18\n" +
 	"\aaddress\x18\x01 \x01(\tR\aaddress\"\x96\x02\n" +
 	"\x13WalletEntryProgress\x125\n" +

@@ -542,8 +542,8 @@ func paginateVTXOs(vtxos []*wavewalletrpc.WalletVTXO, offset,
 // (the pre-#610 behavior). The first consumed outpoint is retained in
 // vtxo_outpoint so the forfeit-driven completion can still correlate the row.
 func leaveEntryStub(leaveJobID string, queuedOutpoints []string,
-	destination string, amtSat int64,
-	note string) *wavewalletrpc.WalletEntry {
+	destination string, amtSat int64, note string,
+	sweepAll bool) *wavewalletrpc.WalletEntry {
 
 	var firstOutpoint string
 	if len(queuedOutpoints) > 0 {
@@ -556,6 +556,14 @@ func leaveEntryStub(leaveJobID string, queuedOutpoints []string,
 	}
 	createdAt := nowUnix()
 
+	// The sweep-all marker is persisted on the request so completion can
+	// net the seal-time operator fee back out of the gross sweep amount
+	// once the fee becomes known (see applyCooperativeLeaveForfeited).
+	request := requestFromOnchainAddress(destination)
+	if sweepAll && request.GetOnchainAddress() != nil {
+		request.GetOnchainAddress().SweepAll = true
+	}
+
 	return &wavewalletrpc.WalletEntry{
 		Id:            id,
 		Kind:          wavewalletrpc.EntryKind_ENTRY_KIND_EXIT,
@@ -565,7 +573,7 @@ func leaveEntryStub(leaveJobID string, queuedOutpoints []string,
 		CreatedAtUnix: createdAt,
 		UpdatedAtUnix: createdAt,
 		Note:          note,
-		Request:       requestFromOnchainAddress(destination),
+		Request:       request,
 		Progress: &wavewalletrpc.WalletEntryProgress{
 			Phase:        wavewalletrpc.WalletEntryPhase_WALLET_ENTRY_PHASE_REQUEST_CREATED,
 			PhaseLabel:   "request_created",
@@ -619,6 +627,30 @@ func applyUnrollStatus(entry *wavewalletrpc.WalletEntry,
 		progress.Phase = wavewalletrpc.
 			WalletEntryPhase_WALLET_ENTRY_PHASE_CONFIRMED
 		progress.PhaseLabel = "confirmed"
+
+		// A completed exit reports the settled on-chain cost from the
+		// ledger. The row's pending amount is the gross VTXO value, so
+		// the cost is netted back out, leaving amount = value delivered
+		// on chain and fee = cost on top — the same shape a completed
+		// cooperative leave has. Zero cost (old daemon, or an exit
+		// predating exit-cost accounting) leaves the row untouched.
+		// The mutation operates on the per-derive clone from
+		// pendingSnapshot / the per-VTXO derived row, so it applies
+		// exactly once per derived row.
+		if cost := resp.GetExitCostSat(); cost > 0 {
+			entry.FeeSat = cost
+
+			// Clamp at zero so a cost exceeding the gross amount
+			// (impossible for a sane exit, but the figure crosses
+			// an RPC boundary) can never flip the outflow row's
+			// sign positive.
+			if entry.AmountSat < 0 {
+				entry.AmountSat += cost
+				if entry.AmountSat > 0 {
+					entry.AmountSat = 0
+				}
+			}
+		}
 
 	case waverpc.UnrollJobStatus_UNROLL_JOB_STATUS_FAILED:
 		entry.Status = wavewalletrpc.EntryStatus_ENTRY_STATUS_FAILED

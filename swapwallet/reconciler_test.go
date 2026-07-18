@@ -314,12 +314,18 @@ func trackForfeitedCooperativeExit(runtime *Runtime,
 
 	// A cooperative leave has no unroll job, and its retained outpoint is
 	// in the forfeited set — so decorateExitEntry flips it to COMPLETE.
+	// The settlement carries the round's fee: a fee-carrying completion is
+	// the one-pass clear path (a fee-zero completion is retained for the
+	// bounded ledger-lag grace window instead).
 	rpc.unrollStatusResp = &waverpc.GetUnrollStatusResponse{Found: false}
 	rpc.listVTXOsByStatus = map[waverpc.VTXOStatus]*waverpc.ListVTXOsResponse{
 		waverpc.VTXOStatus_VTXO_STATUS_FORFEITED: {
 			Vtxos: []*waverpc.VTXO{
 				{
 					Outpoint: outpoint,
+					Settlement: &waverpc.VTXOSettlement{
+						FeeSat: 541,
+					},
 				},
 			},
 		},
@@ -389,6 +395,58 @@ func TestReconcileRetainsPendingExitOnProjectFailure(t *testing.T) {
 	)
 }
 
+// TestReconcileHealsFeeAfterLedgerLag models the forfeit-vs-fee-ledger race:
+// the forfeit status flips the leave COMPLETE while the round's fee row has
+// not committed yet, so the first reconcile pass projects fee 0. The pending
+// record is retained through the bounded grace window, and once the daemon
+// reports the fee on a later pass, the stored row is re-projected with the
+// fee and the record finally clears.
+func TestReconcileHealsFeeAfterLedgerLag(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	runtime, store, rpc := newReconcileFixture(t)
+
+	jobID := trackForfeitedCooperativeExit(runtime, rpc)
+
+	// Pass 1: the settlement carries no fee yet (ledger commit lag). The
+	// row lands COMPLETE at fee 0 but the record survives.
+	forfeited := rpc.listVTXOsByStatus[waverpc.
+		VTXOStatus_VTXO_STATUS_FORFEITED]
+	forfeited.Vtxos[0].Settlement = nil
+
+	runtime.reconcileActivity(ctx)
+
+	entry, err := store.GetEntry(ctx, jobID)
+	require.NoError(t, err)
+	require.EqualValues(
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		entry.Status,
+	)
+	require.Zero(t, entry.FeeSat)
+	require.Contains(
+		t, pendingSnapshotIDs(runtime), jobID, "a fee-zero "+
+			"completion must be retained through the grace window",
+	)
+
+	// Pass 2: the ledger row committed and the daemon now reports the fee.
+	// The stored row heals and the record clears.
+	forfeited.Vtxos[0].Settlement = &waverpc.VTXOSettlement{FeeSat: 541}
+
+	runtime.reconcileActivity(ctx)
+
+	entry, err = store.GetEntry(ctx, jobID)
+	require.NoError(t, err)
+	require.EqualValues(
+		t, 541, entry.FeeSat,
+		"the late-committed fee must be re-projected onto the row",
+	)
+	require.NotContains(
+		t, pendingSnapshotIDs(runtime), jobID,
+		"the record clears once the completion carries the fee",
+	)
+}
+
 // failingProjectStore wraps a real activity store but fails every ProjectEntry,
 // to exercise the reconciler's must-not-clear-on-write-failure path.
 type failingProjectStore struct {
@@ -422,12 +480,16 @@ func TestReconcileCompletesLeaveAfterRestart(t *testing.T) {
 
 	// The retained outpoint is reported forfeited (the round sealed) and
 	// the leave has no unroll job, so the correlation flips it COMPLETE.
+	// The settlement fee keeps the completion on the one-pass clear path.
 	rpc.unrollStatusResp = &waverpc.GetUnrollStatusResponse{Found: false}
 	rpc.listVTXOsByStatus = map[waverpc.VTXOStatus]*waverpc.ListVTXOsResponse{
 		waverpc.VTXOStatus_VTXO_STATUS_FORFEITED: {
 			Vtxos: []*waverpc.VTXO{
 				{
 					Outpoint: outpoint,
+					Settlement: &waverpc.VTXOSettlement{
+						FeeSat: 541,
+					},
 				},
 			},
 		},

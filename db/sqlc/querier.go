@@ -14,6 +14,11 @@ type Querier interface {
 	// returns the event_seq the database assigned (monotonic, not necessarily
 	// contiguous). Callers use it as the resumable-subscribe cursor for the update.
 	AppendActivityEvent(ctx context.Context, arg AppendActivityEventParams) (int64, error)
+	// BackfillLedgerRoundUuid stamps the canonical UUID string form onto every
+	// entry carrying the given raw round_id that does not have one yet. The
+	// round_uuid IS NULL guard makes re-running the backfill (e.g. after a crash
+	// mid-migration) a no-op for already-converted rows.
+	BackfillLedgerRoundUuid(ctx context.Context, arg BackfillLedgerRoundUuidParams) error
 	CancelVHTLCRecoveryJob(ctx context.Context, arg CancelVHTLCRecoveryJobParams) (int64, error)
 	ClearPendingIntentAnchorByOutpoint(ctx context.Context, arg ClearPendingIntentAnchorByOutpointParams) error
 	CompleteVHTLCRecoveryJob(ctx context.Context, arg CompleteVHTLCRecoveryJobParams) (int64, error)
@@ -78,6 +83,12 @@ type Querier interface {
 	GetClientTreeByTxid(ctx context.Context, txid []byte) (RoundClientTree, error)
 	GetClientTreeTxidInfo(ctx context.Context, txid []byte) (ClientTreeTxid, error)
 	GetClientTreeTxids(ctx context.Context, arg GetClientTreeTxidsParams) ([]GetClientTreeTxidsRow, error)
+	// GetConfirmedExitCost returns the confirmed on-chain cost of a unilateral
+	// exit: the onchain_fee_paid leg the ledger booked after the exit's final
+	// sweep confirmed, keyed by the exit's outpoint-derived idempotency key
+	// (ledger.ExitIdempotencyKey). Zero when the exit has not confirmed (or
+	// predates exit-cost accounting).
+	GetConfirmedExitCost(ctx context.Context, idempotencyKey []byte) (int64, error)
 	GetCreditOperation(ctx context.Context, opID string) (CreditOperation, error)
 	// Exit funding address persistence queries (wavelength#893).
 	GetExitFundingAddress(ctx context.Context, arg GetExitFundingAddressParams) (ExitFundingAddress, error)
@@ -199,6 +210,12 @@ type Querier interface {
 	// rows) instead of decoding the whole activity feed, and the canonical_id
 	// cursor is strictly monotonic (a full page always advances it).
 	ListEntriesByKindStatus(ctx context.Context, arg ListEntriesByKindStatusParams) ([]ActivityEntry, error)
+	// ListLedgerRoundIDsMissingUuid returns the distinct raw round_id BLOBs that
+	// have not yet been mirrored into the round_uuid TEXT column. The BLOB-to-UUID
+	// string conversion is not expressible in the SQL dialect subset shared by
+	// SQLite and Postgres, so the migration-015 post-step performs it in Go and
+	// writes the result back via BackfillLedgerRoundUuid.
+	ListLedgerRoundIDsMissingUuid(ctx context.Context) ([][]byte, error)
 	// ListLiveVTXOAncestryPaths returns every ancestry row whose parent VTXO
 	// is non-terminal, mirroring the filter on ListLiveVTXOs. Used as a
 	// single batched companion query so descriptor materialization across
@@ -281,6 +298,19 @@ type Querier interface {
 	// height. The join columns are NULL for every VTXO whose forfeit round is
 	// unknown (all non-forfeited VTXOs, and forfeited ones whose round row is
 	// absent), so consumers must treat them as optional.
+	//
+	// settlement_fee_sat is the TOTAL operator fee the client's ledger booked for
+	// the forfeit round (boarding_fee_paid + refresh_fee_paid, joined via the
+	// round_uuid TEXT mirror of the ledger's BLOB round_id). Every VTXO forfeited
+	// in the same round reports the same round-level figure — consumers must not
+	// sum it across VTXOs. Zero when the forfeit round is unknown or its fee rows
+	// are absent (e.g. rows written before the round_uuid backfill ran).
+	//
+	// The fee lookup is a correlated scalar subquery rather than a grouped join:
+	// the planner then resolves it as a per-row probe of the
+	// idx_client_ledger_round_uuid index for the (few) forfeited rows that carry
+	// a forfeit_round_id, instead of aggregating every fee row in the ledger on
+	// every call.
 	ListVTXOsByStatus(ctx context.Context, status int32) ([]ListVTXOsByStatusRow, error)
 	ListWalletUTXOLog(ctx context.Context, arg ListWalletUTXOLogParams) ([]WalletUtxoLog, error)
 	ListWalletUTXOLogByBlock(ctx context.Context, blockHeight int32) ([]WalletUtxoLog, error)

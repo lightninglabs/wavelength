@@ -199,7 +199,13 @@ const ListVTXOsByStatus = `-- name: ListVTXOsByStatus :many
 
 SELECT vtxos.outpoint_hash, vtxos.outpoint_index, vtxos.round_id, vtxos.amount, vtxos.pk_script, vtxos.expiry, vtxos.policy_template, vtxos.client_key_id, vtxos.operator_pubkey, vtxos.batch_expiry, vtxos.created_height, vtxos.commitment_txid, vtxos.spent, vtxos.status, vtxos.forfeit_round_id, vtxos.forfeit_tx, vtxos.forfeit_txid, vtxos.replaced_by_hash, vtxos.replaced_by_index, vtxos.creation_time, vtxos.last_update_time, vtxos.chain_depth, vtxos.construction_version,
     rounds.commitment_txid AS settlement_txid,
-    rounds.confirmation_height AS settlement_height
+    rounds.confirmation_height AS settlement_height,
+    CAST(COALESCE((
+        SELECT SUM(le.amount_sat)
+        FROM ledger_entries AS le
+        WHERE le.round_uuid = vtxos.forfeit_round_id
+          AND le.event_type IN ('boarding_fee_paid', 'refresh_fee_paid')
+    ), 0) AS BIGINT) AS settlement_fee_sat
 FROM vtxos
 LEFT JOIN rounds ON vtxos.forfeit_round_id = rounds.round_id
 WHERE vtxos.status = $1
@@ -210,6 +216,7 @@ type ListVTXOsByStatusRow struct {
 	Vtxo             Vtxo
 	SettlementTxid   []byte
 	SettlementHeight sql.NullInt32
+	SettlementFeeSat int64
 }
 
 // VTXO status and lifecycle queries.
@@ -221,6 +228,19 @@ type ListVTXOsByStatusRow struct {
 // height. The join columns are NULL for every VTXO whose forfeit round is
 // unknown (all non-forfeited VTXOs, and forfeited ones whose round row is
 // absent), so consumers must treat them as optional.
+//
+// settlement_fee_sat is the TOTAL operator fee the client's ledger booked for
+// the forfeit round (boarding_fee_paid + refresh_fee_paid, joined via the
+// round_uuid TEXT mirror of the ledger's BLOB round_id). Every VTXO forfeited
+// in the same round reports the same round-level figure — consumers must not
+// sum it across VTXOs. Zero when the forfeit round is unknown or its fee rows
+// are absent (e.g. rows written before the round_uuid backfill ran).
+//
+// The fee lookup is a correlated scalar subquery rather than a grouped join:
+// the planner then resolves it as a per-row probe of the
+// idx_client_ledger_round_uuid index for the (few) forfeited rows that carry
+// a forfeit_round_id, instead of aggregating every fee row in the ledger on
+// every call.
 func (q *Queries) ListVTXOsByStatus(ctx context.Context, status int32) ([]ListVTXOsByStatusRow, error) {
 	rows, err := q.db.QueryContext(ctx, ListVTXOsByStatus, status)
 	if err != nil {
@@ -256,6 +276,7 @@ func (q *Queries) ListVTXOsByStatus(ctx context.Context, status int32) ([]ListVT
 			&i.Vtxo.ConstructionVersion,
 			&i.SettlementTxid,
 			&i.SettlementHeight,
+			&i.SettlementFeeSat,
 		); err != nil {
 			return nil, err
 		}

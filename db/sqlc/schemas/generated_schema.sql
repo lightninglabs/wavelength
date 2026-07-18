@@ -494,6 +494,10 @@ CREATE UNIQUE INDEX idx_client_ledger_idempotent_session
 CREATE INDEX idx_client_ledger_round
     ON ledger_entries(round_id);
 
+CREATE INDEX idx_client_ledger_round_uuid
+    ON ledger_entries(round_uuid, event_type)
+    WHERE round_uuid IS NOT NULL;
+
 CREATE INDEX idx_client_tree_txids_tree
     ON client_tree_txids(round_id, client_key, tree_level);
 
@@ -694,7 +698,7 @@ CREATE TABLE ledger_entries (
     -- UTXO idempotency keys on every query.
     chain_txid BLOB,
     chain_vout INTEGER,
-    confirmation_height INTEGER,
+    confirmation_height INTEGER, round_uuid TEXT,
 
     -- Debit and credit must target different accounts.
     CHECK (debit_account != credit_account)

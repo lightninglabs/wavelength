@@ -183,6 +183,7 @@ type LedgerEntry struct {
 	ChainTxid          []byte
 	ChainVout          sql.NullInt32
 	ConfirmationHeight sql.NullInt32
+	RoundUuid          sql.NullString
 }
 
 type LedgerEventType struct {

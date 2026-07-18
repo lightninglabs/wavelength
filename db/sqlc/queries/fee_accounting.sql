@@ -20,15 +20,16 @@ INSERT INTO ledger_entries (
     debit_account, credit_account, amount_sat,
     round_id, session_id, idempotency_key,
     event_type, description, created_at,
-    chain_txid, chain_vout, confirmation_height
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+    chain_txid, chain_vout, confirmation_height,
+    round_uuid
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 ON CONFLICT DO NOTHING;
 
 -- name: ListClientLedgerEntries :many
 SELECT entry_id, debit_account, credit_account, amount_sat,
        round_id, session_id, idempotency_key,
        event_type, description, created_at,
-       chain_txid, chain_vout, confirmation_height
+       chain_txid, chain_vout, confirmation_height, round_uuid
 FROM ledger_entries
 ORDER BY created_at DESC
 LIMIT $1 OFFSET $2;
@@ -37,7 +38,7 @@ LIMIT $1 OFFSET $2;
 SELECT entry_id, debit_account, credit_account, amount_sat,
        round_id, session_id, idempotency_key,
        event_type, description, created_at,
-       chain_txid, chain_vout, confirmation_height
+       chain_txid, chain_vout, confirmation_height, round_uuid
 FROM ledger_entries
 WHERE event_type = $1
 ORDER BY created_at DESC
@@ -339,3 +340,35 @@ SELECT CAST(COUNT(*) AS BIGINT) AS entry_count,
        CAST(COALESCE(MIN(created_at), 0) AS BIGINT) AS first_created_at,
        CAST(COALESCE(MAX(created_at), 0) AS BIGINT) AS last_created_at
 FROM ledger_entries;
+
+-- name: GetConfirmedExitCost :one
+-- GetConfirmedExitCost returns the confirmed on-chain cost of a unilateral
+-- exit: the onchain_fee_paid leg the ledger booked after the exit's final
+-- sweep confirmed, keyed by the exit's outpoint-derived idempotency key
+-- (ledger.ExitIdempotencyKey). Zero when the exit has not confirmed (or
+-- predates exit-cost accounting).
+SELECT CAST(COALESCE(SUM(amount_sat), 0) AS BIGINT) AS exit_cost_sat
+FROM ledger_entries
+WHERE event_type = 'onchain_fee_paid'
+  AND idempotency_key = $1;
+
+-- name: ListLedgerRoundIDsMissingUuid :many
+-- ListLedgerRoundIDsMissingUuid returns the distinct raw round_id BLOBs that
+-- have not yet been mirrored into the round_uuid TEXT column. The BLOB-to-UUID
+-- string conversion is not expressible in the SQL dialect subset shared by
+-- SQLite and Postgres, so the migration-015 post-step performs it in Go and
+-- writes the result back via BackfillLedgerRoundUuid.
+SELECT DISTINCT round_id
+FROM ledger_entries
+WHERE round_id IS NOT NULL
+  AND round_uuid IS NULL;
+
+-- name: BackfillLedgerRoundUuid :exec
+-- BackfillLedgerRoundUuid stamps the canonical UUID string form onto every
+-- entry carrying the given raw round_id that does not have one yet. The
+-- round_uuid IS NULL guard makes re-running the backfill (e.g. after a crash
+-- mid-migration) a no-op for already-converted rows.
+UPDATE ledger_entries
+SET round_uuid = $1
+WHERE round_id = $2
+  AND round_uuid IS NULL;

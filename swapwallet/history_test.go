@@ -416,6 +416,72 @@ func TestHistoryKeepsUnpairedOORSend(t *testing.T) {
 	require.Equal(t, int64(-1_000), entries[0].GetAmountSat())
 }
 
+// TestClassifyLedgerRowHidesBoardingFeeLeg confirms the boarding_fee_paid
+// accounting leg the round books alongside a boarding deposit does not
+// fabricate a phantom DEPOSIT row: only the wallet_utxo_created subtype maps
+// to a user-facing deposit, and the fee reaches the user via the real deposit
+// row's fee_sat attribution instead.
+func TestClassifyLedgerRowHidesBoardingFeeLeg(t *testing.T) {
+	t.Parallel()
+
+	feeLeg := &waverpc.TransactionHistoryEntry{
+		Type:          "boarding",
+		Subtype:       ledger.EventBoardingFeePaid,
+		AmountSat:     255,
+		DebitAccount:  ledger.AccountFeesPaid,
+		CreditAccount: ledger.AccountWalletBalance,
+	}
+	_, ok := walletEntryFromLedgerRow(feeLeg)
+	require.False(t, ok, "boarding fee leg must stay hidden")
+
+	deposit := &waverpc.TransactionHistoryEntry{
+		Type:      "boarding",
+		Subtype:   ledger.EventWalletUTXOCreated,
+		AmountSat: 150_000,
+		Txid:      strings.Repeat("b", 64),
+	}
+	entry, ok := walletEntryFromLedgerRow(deposit)
+	require.True(t, ok)
+	require.Equal(
+		t, wavewalletrpc.EntryKind_ENTRY_KIND_DEPOSIT, entry.GetKind(),
+	)
+
+	// The sweep-typed pure fee legs (unilateral exit cost, boarding-sweep
+	// chain cost) are hidden the same way: the real EXIT/DEPOSIT rows
+	// already carry those costs in fee_sat, so surfacing the legs would
+	// double-represent the fee as a dangling pending EXIT row.
+	for _, subtype := range []string{
+		ledger.EventOnchainFeePaid, ledger.EventBoardingSweepFeePaid,
+	} {
+		feeLeg := &waverpc.TransactionHistoryEntry{
+			Type:          "sweep",
+			Subtype:       subtype,
+			AmountSat:     623,
+			DebitAccount:  ledger.AccountOnchainFees,
+			CreditAccount: ledger.AccountVTXOBalance,
+		}
+		_, ok := walletEntryFromLedgerRow(feeLeg)
+		require.False(
+			t, ok, "sweep fee leg %s must stay hidden", subtype,
+		)
+	}
+
+	// A tracked boarding-sweep transaction row (subtype = sweep status)
+	// remains a real EXIT row.
+	sweepTx := &waverpc.TransactionHistoryEntry{
+		Type:      "sweep",
+		Subtype:   "confirmed",
+		AmountSat: 50_000,
+		FeeSat:    500,
+		Txid:      strings.Repeat("c", 64),
+	}
+	entry, ok = walletEntryFromLedgerRow(sweepTx)
+	require.True(t, ok)
+	require.Equal(
+		t, wavewalletrpc.EntryKind_ENTRY_KIND_EXIT, entry.GetKind(),
+	)
+}
+
 // TestOORSendSessionIDRequiresHashSizedSession confirms malformed OOR session
 // IDs are ignored instead of being normalized into correlation keys.
 func TestOORSendSessionIDRequiresHashSizedSession(t *testing.T) {
@@ -1198,7 +1264,7 @@ func TestHistoryIncludesWalletLocalPendingExit(t *testing.T) {
 		"", []string{
 			"leave-outpoint:1",
 		}, "bcrt1qdest",
-		50_000, "user note",
+		50_000, "user note", false,
 	)
 	h.runtime.trackPendingEntry(pending)
 
@@ -1254,7 +1320,7 @@ func TestHistoryCompletesWalletLocalExitWhenVTXOForfeited(t *testing.T) {
 		"", []string{
 			"leave-outpoint:1",
 		}, "bcrt1qdest",
-		50_000, "user note",
+		50_000, "user note", false,
 	)
 	h.runtime.trackPendingEntryWithoutTimeout(pending)
 
@@ -1307,6 +1373,7 @@ func TestHistoryStampsSettlementOnForfeitedLeave(t *testing.T) {
 		settlementTxid = "aa000000000000000000000000000000" +
 			"00000000000000000000000000000000"
 		settlementHeight = int32(812345)
+		settlementFeeSat = int64(275)
 	)
 
 	h, swap, rpc := newHistoryFixture(t)
@@ -1328,6 +1395,7 @@ func TestHistoryStampsSettlementOnForfeitedLeave(t *testing.T) {
 					Settlement: &waverpc.VTXOSettlement{
 						Txid:   settlementTxid,
 						Height: settlementHeight,
+						FeeSat: settlementFeeSat,
 					},
 				},
 			},
@@ -1338,7 +1406,7 @@ func TestHistoryStampsSettlementOnForfeitedLeave(t *testing.T) {
 		"", []string{
 			"leave-outpoint:1",
 		}, "bcrt1qdest",
-		50_000, "user note",
+		50_000, "user note", false,
 	)
 	h.runtime.trackPendingEntryWithoutTimeout(pending)
 
@@ -1361,6 +1429,86 @@ func TestHistoryStampsSettlementOnForfeitedLeave(t *testing.T) {
 	require.Equal(
 		t, settlementHeight,
 		entries[0].GetProgress().GetConfirmationHeight(),
+	)
+
+	// The forfeit round's operator fee lands on the row. A bounded send's
+	// amount is the exact destination value with the fee paid on top out
+	// of change, so the amount must NOT be adjusted.
+	require.Equal(t, settlementFeeSat, entries[0].GetFeeSat())
+	require.Equal(t, int64(-50_000), entries[0].GetAmountSat())
+}
+
+// TestHistoryNetsFeeOutOfSweepAllLeaveAmount confirms a completed sweep-all
+// leave nets the settled operator fee back out of its gross pending amount.
+// A sweep's pending row carries the whole drained balance (the fee is only
+// known once the round seals), so without the adjustment the completed row
+// would double-count the fee next to the new fee_sat column: displayed
+// amount+fee would exceed the true outflow (issue #988's --send-all row).
+func TestHistoryNetsFeeOutOfSweepAllLeaveAmount(t *testing.T) {
+	t.Parallel()
+
+	const (
+		settlementTxid = "bb000000000000000000000000000000" +
+			"00000000000000000000000000000000"
+		settlementHeight = int32(812346)
+		settlementFeeSat = int64(423)
+		grossSweepSat    = int64(32_323)
+	)
+
+	h, swap, rpc := newHistoryFixture(t)
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{}
+	rpc.unrollStatusResp = &waverpc.GetUnrollStatusResponse{
+		Found: false,
+	}
+	rpc.listVTXOsByStatus = map[waverpc.VTXOStatus]*waverpc.
+		ListVTXOsResponse{
+
+		waverpc.VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT: {},
+		waverpc.VTXOStatus_VTXO_STATUS_FORFEITED: {
+			Vtxos: []*waverpc.VTXO{
+				{
+					Outpoint: "leave-outpoint:1",
+					Status: waverpc.
+						VTXOStatus_VTXO_STATUS_FORFEITED,
+					Settlement: &waverpc.VTXOSettlement{
+						Txid:   settlementTxid,
+						Height: settlementHeight,
+						FeeSat: settlementFeeSat,
+					},
+				},
+			},
+		},
+	}
+
+	pending := leaveEntryStub(
+		"", []string{
+			"leave-outpoint:1",
+		}, "bcrt1qdest",
+		grossSweepSat, "sweep note", true,
+	)
+	h.runtime.trackPendingEntryWithoutTimeout(pending)
+
+	resp, err := h.List(t.Context(), &wavewalletrpc.ListRequest{})
+	require.NoError(t, err)
+
+	entries := resp.GetActivity().GetEntries()
+	require.Len(t, entries, 1)
+	require.Equal(
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		entries[0].GetStatus(),
+	)
+
+	// amount = destination-received, fee = cost on top: together they
+	// reconstruct the gross outflow exactly once.
+	require.Equal(t, settlementFeeSat, entries[0].GetFeeSat())
+	require.Equal(
+		t, -(grossSweepSat - settlementFeeSat),
+		entries[0].GetAmountSat(),
+	)
+	require.True(
+		t, entries[0].GetRequest().GetOnchainAddress().GetSweepAll(),
+		"sweep marker survives onto the served row",
 	)
 }
 
@@ -1399,7 +1547,7 @@ func TestHistoryKeepsWalletLocalExitPendingForUnmatchedForfeitedVTXO(
 		"", []string{
 			"leave-outpoint:1",
 		}, "bcrt1qdest",
-		50_000, "user note",
+		50_000, "user note", false,
 	)
 	h.runtime.trackPendingEntryWithoutTimeout(pending)
 
@@ -1456,7 +1604,7 @@ func TestHistoryScansForfeitedVTXOsOnceForWalletLocalExits(t *testing.T) {
 			"", []string{
 				"leave-outpoint:1",
 			}, "bcrt1qdest",
-			50_000, "first note",
+			50_000, "first note", false,
 		),
 	)
 	h.runtime.trackPendingEntryWithoutTimeout(
@@ -1464,7 +1612,7 @@ func TestHistoryScansForfeitedVTXOsOnceForWalletLocalExits(t *testing.T) {
 			"", []string{
 				"other-leave-outpoint:0",
 			}, "bcrt1qdest",
-			25_000, "second note",
+			25_000, "second note", false,
 		),
 	)
 
@@ -1488,6 +1636,100 @@ func TestHistoryScansForfeitedVTXOsOnceForWalletLocalExits(t *testing.T) {
 		t, waverpc.VTXOStatus_VTXO_STATUS_FORFEITED,
 		rpc.listVTXOsLastReq.GetStatusFilter(),
 	)
+}
+
+// TestHistoryStampsExitCostOnCompletedUnilateralExit confirms a completed
+// unilateral exit surfaces the ledger's settled exit cost: the daemon reports
+// it on GetUnrollStatus once the final sweep confirmed, and the row is
+// completed with amount = value delivered on chain and fee = cost on top —
+// the same shape a completed cooperative leave has. The mirror of
+// TestHistoryStampsSettlementOnForfeitedLeave for the unroll path.
+func TestHistoryStampsExitCostOnCompletedUnilateralExit(t *testing.T) {
+	t.Parallel()
+
+	const (
+		sweepTxid = "cc000000000000000000000000000000" +
+			"00000000000000000000000000000000"
+		grossVTXOSat = int64(7_000)
+		exitCostSat  = int64(623)
+	)
+
+	h, swap, rpc := newHistoryFixture(t)
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{}
+	rpc.listVTXOsResp = &waverpc.ListVTXOsResponse{
+		Vtxos: []*waverpc.VTXO{
+			{
+				Outpoint:  "exit-outpoint:0",
+				AmountSat: grossVTXOSat,
+				Status: waverpc.
+					VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT,
+			},
+		},
+	}
+	rpc.unrollStatusResp = &waverpc.GetUnrollStatusResponse{
+		Found:       true,
+		Status:      waverpc.UnrollJobStatus_UNROLL_JOB_STATUS_COMPLETED,
+		SweepTxid:   sweepTxid,
+		ExitCostSat: exitCostSat,
+	}
+
+	resp, err := h.List(t.Context(), &wavewalletrpc.ListRequest{})
+	require.NoError(t, err)
+
+	entries := resp.GetActivity().GetEntries()
+	require.Len(t, entries, 1)
+	require.Equal(t, "exit-outpoint:0", entries[0].GetId())
+	require.Equal(
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		entries[0].GetStatus(),
+	)
+	require.Equal(t, sweepTxid, entries[0].GetProgress().GetTxid())
+
+	// The gross VTXO value is netted down to the value delivered on chain,
+	// with the confirmed exit cost carried separately.
+	require.Equal(t, exitCostSat, entries[0].GetFeeSat())
+	require.Equal(
+		t, -(grossVTXOSat - exitCostSat), entries[0].GetAmountSat(),
+	)
+}
+
+// TestHistoryKeepsUnilateralExitFeeUntouchedWithoutExitCost confirms an old
+// daemon (or an exit predating exit-cost accounting) that reports a zero
+// exit_cost_sat leaves the completed row exactly as before: gross amount,
+// zero fee.
+func TestHistoryKeepsUnilateralExitFeeUntouchedWithoutExitCost(t *testing.T) {
+	t.Parallel()
+
+	h, swap, rpc := newHistoryFixture(t)
+	swap.listSwapsResp = &swapclientrpc.ListSwapsResponse{}
+	rpc.listTxResp = &waverpc.ListTransactionsResponse{}
+	rpc.listVTXOsResp = &waverpc.ListVTXOsResponse{
+		Vtxos: []*waverpc.VTXO{
+			{
+				Outpoint:  "exit-outpoint:0",
+				AmountSat: 7_000,
+				Status: waverpc.
+					VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT,
+			},
+		},
+	}
+	rpc.unrollStatusResp = &waverpc.GetUnrollStatusResponse{
+		Found:  true,
+		Status: waverpc.UnrollJobStatus_UNROLL_JOB_STATUS_COMPLETED,
+	}
+
+	resp, err := h.List(t.Context(), &wavewalletrpc.ListRequest{})
+	require.NoError(t, err)
+
+	entries := resp.GetActivity().GetEntries()
+	require.Len(t, entries, 1)
+	require.Equal(
+		t, wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
+		entries[0].GetStatus(),
+	)
+	require.Zero(t, entries[0].GetFeeSat())
+	require.Equal(t, int64(-7_000), entries[0].GetAmountSat())
 }
 
 // TestHistoryKeepsCSVPendingUnilateralExitPendingAfterDeadline confirms the
@@ -1558,7 +1800,7 @@ func TestHistoryExitKindFilterGatesWalletLocalPendingRows(t *testing.T) {
 			"", []string{
 				"leave-outpoint:1",
 			}, "bcrt1qdest",
-			50_000, "",
+			50_000, "", false,
 		),
 	)
 

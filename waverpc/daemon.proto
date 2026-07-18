@@ -727,6 +727,13 @@ message VTXOSettlement {
 
     // height is the block height at which txid confirmed.
     int32 height = 2;
+
+    // fee_sat is the TOTAL operator fee the client's ledger booked for the
+    // forfeit round. It is a round-level figure: every VTXO forfeited in the
+    // same round reports the same value, so consumers must not sum it across
+    // VTXOs. Zero when the ledger has no fee row for the round (fee-free
+    // rounds, and daemons whose ledger predates fee-by-round attribution).
+    int64 fee_sat = 3;
 }
 
 message ListVTXOsRequest {
@@ -2431,6 +2438,13 @@ message GetUnrollStatusResponse {
     // current_height is the best block height the unroll actor has observed.
     // Set only on a detailed query against a live job.
     int32 current_height = 10;
+
+    // exit_cost_sat is the CONFIRMED on-chain cost of the exit: the ledger's
+    // onchain_fee_paid leg booked after the final sweep confirmed. Unlike the
+    // estimates in fees, this is the settled figure, so it is set (on both
+    // plain and detailed queries) only once the job is COMPLETED, and reads
+    // zero for exits predating exit-cost accounting.
+    int64 exit_cost_sat = 11;
 }
 
 // VHTLCRecoveryDirection records which side owns a recovery job.
