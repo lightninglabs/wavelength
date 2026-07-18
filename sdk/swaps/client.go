@@ -495,6 +495,16 @@ type InArkHtlcEvent struct {
 
 	// VHTLCAmountSat is the indexed funded amount when known by the server.
 	VHTLCAmountSat int64
+
+	// RequestedAmountSat is the invoice amount for a credit-shaped event.
+	// When set together with AttachedCreditSat, AmountSat carries the
+	// padded vHTLC amount of a credit-attach receive plan and the funding
+	// sender is the swap server. Zero on legacy direct p2p events.
+	RequestedAmountSat uint64
+
+	// AttachedCreditSat is the reserved credit amount added to the vHTLC
+	// on top of RequestedAmountSat.
+	AttachedCreditSat uint64
 }
 
 // IncomingVHTLCNotification carries either a Lightning-backed out-swap event
@@ -675,9 +685,13 @@ type InSwapQuote struct {
 // without importing the server module.
 type SwapServerConn interface {
 	// RequestChannelID asks the server for a route hint for this swap.
+	// supportsInArkCredit advertises whether the wired event receiver can
+	// consume credit-shaped in-ark HTLC events; the server only routes a
+	// credit-attach receive through the in-ark leg when it is set.
 	RequestChannelID(ctx context.Context, vhtlcPubkey *btcec.PublicKey,
 		paymentHash lntypes.Hash, amountSat btcutil.Amount,
-		expirySeconds uint32) (*OutSwapQuote, error)
+		expirySeconds uint32,
+		supportsInArkCredit bool) (*OutSwapQuote, error)
 
 	// AcknowledgeOutSwapHTLC tells the server this receiver validated and
 	// durably accepted the out-swap HTLC event.
