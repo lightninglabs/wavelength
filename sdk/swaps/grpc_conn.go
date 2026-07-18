@@ -64,6 +64,10 @@ func (g *GRPCSwapServerConn) RequestChannelID(ctx context.Context,
 				[]byte(nil), paymentHash[:]...,
 			),
 			AmountSat: uint64(amountSat),
+			// This client validates credit-shaped in-ark events
+			// (acceptInArkHtlcEvent's triplet check), so advertise
+			// the capability with every route registration.
+			SupportsInArkCredit: true,
 		},
 	)
 	if err != nil {
@@ -594,12 +598,14 @@ func inArkHtlcEventFromProto(event *swaprpc.InArkHtlcEvent) (*InArkHtlcEvent,
 	}
 
 	return &InArkHtlcEvent{
-		PaymentHash:    paymentHash,
-		AmountSat:      int64(event.GetAmountSat()),
-		SenderPubkey:   senderKey,
-		VHTLCConfig:    *cfg,
-		VHTLCOutpoint:  event.GetVhtlcOutpoint(),
-		VHTLCAmountSat: int64(event.GetVhtlcAmountSat()),
+		PaymentHash:        paymentHash,
+		AmountSat:          int64(event.GetAmountSat()),
+		SenderPubkey:       senderKey,
+		VHTLCConfig:        *cfg,
+		VHTLCOutpoint:      event.GetVhtlcOutpoint(),
+		VHTLCAmountSat:     int64(event.GetVhtlcAmountSat()),
+		RequestedAmountSat: event.GetRequestedAmountSat(),
+		AttachedCreditSat:  event.GetAttachedCreditSat(),
 	}, nil
 }
 

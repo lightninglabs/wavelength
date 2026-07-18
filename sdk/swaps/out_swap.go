@@ -1143,7 +1143,14 @@ func (s *ReceiveSession) ackAcceptedHTLCEvent(ctx context.Context,
 // acknowledgeOutSwapHTLC records the receiver's durable event acceptance with
 // the swap server before clearing the local pending ACK marker.
 func (s *ReceiveSession) acknowledgeOutSwapHTLC(ctx context.Context) error {
-	if s.settlementType == SettlementTypeInArk {
+	// The legacy direct p2p rail has no server-side funding gate: the
+	// sender already funded the vHTLC before the event was published, so
+	// there is nothing to acknowledge. The credit-shaped in-ark leg is
+	// different: the swap server funds the padded vHTLC only after this
+	// ACK proves the receiver durably accepted the event, exactly like
+	// the Lightning out-swap rail.
+	if s.settlementType == SettlementTypeInArk &&
+		s.attachedCreditSat == 0 {
 		return nil
 	}
 	if s.client == nil || s.client.server == nil {
@@ -1194,6 +1201,38 @@ func (s *ReceiveSession) clearPendingHTLCAck(ctx context.Context) error {
 	})
 }
 
+// validateCreditShapedInArkEvent checks a swap-server-funded in-ark event
+// against the session's credit-attach route quote. Every field of the
+// (requested amount, attached credit, padded amount) triplet must match: the
+// event commits this session to a claim of the padded vHTLC, and the server
+// finalizes the receiver's attach reservation against that claim.
+func (s *ReceiveSession) validateCreditShapedInArkEvent(
+	event *InArkHtlcEvent) error {
+
+	if s.attachedCreditSat == 0 {
+		return fmt.Errorf("credit-shaped in-ark HTLC event with "+
+			"attached credit %d sat for a session without a "+
+			"credit-attach plan", event.AttachedCreditSat)
+	}
+	if event.RequestedAmountSat != uint64(s.amountSat) {
+		return fmt.Errorf("in-ark HTLC requested amount %d does not "+
+			"match invoice amount %d", event.RequestedAmountSat,
+			s.amountSat)
+	}
+	if event.AttachedCreditSat != s.attachedCreditSat {
+		return fmt.Errorf("in-ark HTLC attached credit %d does not "+
+			"match expected credit %d", event.AttachedCreditSat,
+			s.attachedCreditSat)
+	}
+	if event.AmountSat != int64(s.expectedVHTLCSat) {
+		return fmt.Errorf("in-ark HTLC amount %d does not match "+
+			"expected vHTLC amount %d", event.AmountSat,
+			s.expectedVHTLCSat)
+	}
+
+	return nil
+}
+
 // acceptInArkHtlcEvent validates a direct same-Ark vHTLC notification and
 // builds the policy that the receiver will later claim.
 func (s *ReceiveSession) acceptInArkHtlcEvent(ctx context.Context,
@@ -1209,47 +1248,60 @@ func (s *ReceiveSession) acceptInArkHtlcEvent(ctx context.Context,
 		)
 	}
 
-	// A session whose route quote attached credit (or padded the vHTLC
-	// above the invoice amount) cannot settle through the direct p2p
-	// vHTLC: the sender funds the receiver's script directly, so no
-	// output exists that could carry the server's custodial credit
-	// top-up. Accepting such an event would commit this session to the
-	// in-ark rail (which skips the out-swap ACK) and leave it polling a
-	// vHTLC that can never be funded, so fail fast instead.
-	if s.attachedCreditSat > 0 {
-		return s.failTerminal(
-			ctx, fmt.Sprintf("in-ark HTLC event conflicts with "+
-				"credit-attach receive plan: attached credit "+
-				"%d sat requires server-mediated settlement",
-				s.attachedCreditSat),
-			nil,
-			nil,
-		)
-	}
-	// Note that expectedVHTLCSat is not persisted directly: a restored
-	// session reconstructs it as requested+attachedCredit, so a padded
-	// quote with zero attached credit would lose its padding across a
-	// restart. No server produces that shape today; if one ever does, the
-	// expected amount needs its own column.
-	if s.expectedVHTLCSat != 0 &&
-		s.expectedVHTLCSat != uint64(s.amountSat) {
-		return s.failTerminal(
-			ctx, fmt.Sprintf("in-ark HTLC event conflicts with "+
-				"padded vHTLC receive plan: expected vHTLC "+
-				"%d sat does not match invoice amount %d sat",
-				s.expectedVHTLCSat, s.amountSat),
-			nil,
-			nil,
-		)
-	}
-	if event.AmountSat != int64(s.amountSat) {
-		return s.failTerminal(
-			ctx, fmt.Sprintf("in-ark HTLC amount %d does not "+
-				"match invoice amount %d", event.AmountSat,
-				s.amountSat),
-			nil,
-			nil,
-		)
+	if event.RequestedAmountSat > 0 || event.AttachedCreditSat > 0 {
+		// A credit-shaped event is the swap-server-funded in-ark leg
+		// of a credit-attach receive: amount_sat carries the padded
+		// vHTLC and the event must match the session's route quote
+		// triplet exactly.
+		if err := s.validateCreditShapedInArkEvent(event); err != nil {
+			return s.failTerminal(ctx, err.Error(), nil, nil)
+		}
+	} else {
+		// A legacy direct p2p event cannot settle a session whose
+		// route quote attached credit (or padded the vHTLC above the
+		// invoice amount): the sender funds the receiver's script
+		// directly, so no output exists that could carry the server's
+		// custodial credit top-up. Accepting such an event would
+		// commit this session to the in-ark rail and leave it polling
+		// a vHTLC that can never be funded, so fail fast instead.
+		if s.attachedCreditSat > 0 {
+			return s.failTerminal(
+				ctx, fmt.Sprintf("in-ark HTLC event "+
+					"conflicts with credit-attach "+
+					"receive plan: attached credit %d "+
+					"sat requires a credit-shaped event",
+					s.attachedCreditSat),
+				nil,
+				nil,
+			)
+		}
+		// Note that expectedVHTLCSat is not persisted directly: a
+		// restored session reconstructs it as requested plus
+		// attachedCredit, so a padded quote with zero attached credit
+		// would lose its padding across a restart. No server produces
+		// that shape today; if one ever does, the expected amount
+		// needs its own column.
+		if s.expectedVHTLCSat != 0 &&
+			s.expectedVHTLCSat != uint64(s.amountSat) {
+			return s.failTerminal(
+				ctx, fmt.Sprintf("in-ark HTLC event "+
+					"conflicts with padded vHTLC receive "+
+					"plan: expected vHTLC %d sat does "+
+					"not match invoice amount %d sat",
+					s.expectedVHTLCSat, s.amountSat),
+				nil,
+				nil,
+			)
+		}
+		if event.AmountSat != int64(s.amountSat) {
+			return s.failTerminal(
+				ctx, fmt.Sprintf("in-ark HTLC amount %d does "+
+					"not match invoice amount %d",
+					event.AmountSat, s.amountSat),
+				nil,
+				nil,
+			)
+		}
 	}
 	if event.SenderPubkey == nil {
 		return fmt.Errorf("in-ark HTLC sender pubkey is required")

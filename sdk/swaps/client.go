@@ -495,6 +495,16 @@ type InArkHtlcEvent struct {
 
 	// VHTLCAmountSat is the indexed funded amount when known by the server.
 	VHTLCAmountSat int64
+
+	// RequestedAmountSat is the invoice amount for a credit-shaped event.
+	// When set together with AttachedCreditSat, AmountSat carries the
+	// padded vHTLC amount of a credit-attach receive plan and the funding
+	// sender is the swap server. Zero on legacy direct p2p events.
+	RequestedAmountSat uint64
+
+	// AttachedCreditSat is the reserved credit amount added to the vHTLC
+	// on top of RequestedAmountSat.
+	AttachedCreditSat uint64
 }
 
 // IncomingVHTLCNotification carries either a Lightning-backed out-swap event
