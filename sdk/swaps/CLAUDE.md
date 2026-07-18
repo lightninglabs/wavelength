@@ -45,6 +45,11 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/sdk/swap
   plus `AckCursor` and an `Ack` hook.
 - `InArkHtlcEvent` — same-Ark vHTLC event (payment hash, amount,
   sender pubkey, vHTLC config, optional indexed outpoint/amount).
+  A credit-shaped event additionally carries `RequestedAmountSat` +
+  `AttachedCreditSat`: the swap server funds the padded vHTLC of a
+  credit-attach receive, the session validates the triplet like the
+  out-swap path, and (unlike the legacy direct p2p rail) still sends
+  the out-swap ACK that gates the server's funding.
 - `OutSwapHtlcNotification` — wraps a mailbox `OutSwapHtlcEvent`
   with `AckCursor` and `Ack`.
 - `IncomingVHTLCEventReceiver` — interface for receivers that
