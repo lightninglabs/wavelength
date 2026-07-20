@@ -19,7 +19,7 @@ const (
 
 	// AppPreRelease defines the pre-release version suffix for this
 	// binary.
-	AppPreRelease = "rc4"
+	AppPreRelease = ""
 )
 
 var (
