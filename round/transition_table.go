@@ -250,6 +250,13 @@ var BoardingClientTransitions = ClientTransitionTable{
 		},
 
 		// InputSigSentState: Waiting for commitment tx confirmation.
+		// With forfeit signatures already out, a round failure is not
+		// terminal on arrival: it parks in the state while a
+		// QueryRoundStatus probe reconciles the round's fate against
+		// the operator, and only an authoritative dead answer fails
+		// the round and releases the forfeit reservations
+		// (wavelength#844). Boarding-only rounds (no forfeits) fail
+		// immediately as before.
 		{
 			FromState: &InputSigSentState{},
 			Transitions: []ClientTransitionEntry{
@@ -265,9 +272,34 @@ var BoardingClientTransitions = ClientTransitionTable{
 				},
 				{
 					Event:       &BoardingFailed{},
+					ToState:     &InputSigSentState{},
+					Description: "Failure parked, reconciling round status",
+					EmitsOutbox: []ClientOutMsg{
+						&QueryRoundStatusOutbox{},
+					},
+				},
+				{
+					Event:       &BoardingFailed{},
 					ToState:     &ClientFailedState{},
-					Description: "Commitment tx failed to confirm",
+					Description: "No forfeits at stake (or reconcile disabled), failing immediately",
 					IsTerminal:  true,
+				},
+				{
+					Event:       &StatusReconcileTimedOut{},
+					ToState:     &InputSigSentState{},
+					Description: "Silence deadline, probing round status",
+					EmitsOutbox: []ClientOutMsg{
+						&QueryRoundStatusOutbox{},
+					},
+				},
+				{
+					Event:       &RoundStatusReported{},
+					ToState:     &ClientFailedState{},
+					Description: "Round dead at operator, releasing forfeits",
+					EmitsOutbox: []ClientOutMsg{
+						&ReleaseForfeitReservation{},
+					},
+					IsTerminal: true,
 				},
 				{
 					Event:       &RecoveryInitiated{},

@@ -22,6 +22,7 @@ import (
 	"github.com/lightninglabs/wavelength/lib/tree"
 	"github.com/lightninglabs/wavelength/lib/types"
 	"github.com/lightninglabs/wavelength/round"
+	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightninglabs/wavelength/wallet"
 	"github.com/lightningnetwork/lnd/clock"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -301,6 +302,90 @@ func TestRoundStoreListActiveRounds(t *testing.T) {
 	activeRounds, err := store.ListActiveRounds(ctx)
 	require.NoError(t, err)
 	require.Len(t, activeRounds, 3)
+}
+
+// TestRoundStoreReloadRebuildsForfeitSet pins the restart half of the
+// wavelength#844 fix: a forfeit-bearing round reloaded from the database must
+// carry a forfeit set rebuilt from the Forfeiting VTXO rows bound to it via
+// forfeit_round_id. Without the rebuild, the reloaded round looks
+// boarding-only, so the actor never re-arms the status-reconcile timeout
+// after a restart and a dead verdict would release an empty set, silently
+// reopening the strand across every restart.
+func TestRoundStoreReloadRebuildsForfeitSet(t *testing.T) {
+	t.Parallel()
+
+	vtxoStore, roundStore, _ := newVTXOStoreForTest(t)
+	ctx := t.Context()
+
+	roundID := testRoundIDDB("forfeit-reload-round")
+	testRound := createTestRound(t, roundID)
+	state := &round.InputSigSentState{
+		RoundID:     roundID,
+		ClientTrees: make(map[round.SignerKey]*tree.Tree),
+	}
+	require.NoError(t, roundStore.CommitState(ctx, testRound, state))
+
+	// Bind two wallet VTXOs to the round as in-flight forfeits, exactly
+	// as the forfeit flow does when the signatures leave the box. A third
+	// VTXO stays Live to prove the rebuild only picks up Forfeiting rows
+	// for this round.
+	descA := createTestVTXODescriptor(t, roundID, 1)
+	descB := createTestVTXODescriptor(t, roundID, 2)
+	descLive := createTestVTXODescriptor(t, roundID, 3)
+	for _, desc := range []*vtxo.Descriptor{descA, descB, descLive} {
+		require.NoError(t, vtxoStore.SaveVTXO(ctx, desc))
+	}
+
+	for _, desc := range []*vtxo.Descriptor{descA, descB} {
+		require.NoError(
+			t,
+			vtxoStore.MarkForfeiting(
+				ctx, desc.Outpoint, roundID.String(), nil,
+			),
+		)
+	}
+
+	wantOutpoints := map[wire.OutPoint]btcutil.Amount{
+		descA.Outpoint: descA.Amount,
+		descB.Outpoint: descB.Amount,
+	}
+
+	// assertForfeitSet checks a rebuilt forfeit set covers exactly the
+	// two Forfeiting outpoints with their amounts.
+	assertForfeitSet := func(forfeits []types.ForfeitRequest) {
+		t.Helper()
+
+		require.Len(t, forfeits, 2)
+		for _, req := range forfeits {
+			require.NotNil(t, req.VTXOOutpoint)
+
+			amount, ok := wantOutpoints[*req.VTXOOutpoint]
+			require.True(t, ok)
+			require.Equal(t, amount, req.Amount)
+
+			// The rebuilt requests are standard wallet forfeits:
+			// no custom spend paths survive a restart, so the
+			// release path must classify them as standard.
+			require.Nil(t, req.AuthSpend)
+			require.Nil(t, req.ForfeitSpend)
+		}
+	}
+
+	// The restart reload path (ListActiveRounds) must surface the
+	// forfeit set on the domain round.
+	activeRounds, err := roundStore.ListActiveRounds(ctx)
+	require.NoError(t, err)
+	require.Len(t, activeRounds, 1)
+	assertForfeitSet(activeRounds[0].Intents.Forfeits)
+
+	// The reconstructed FSM state must carry the same set, since every
+	// status-reconcile decision gates on its forfeit count.
+	_, fsmState, err := roundStore.FetchState(ctx, roundID)
+	require.NoError(t, err)
+
+	inputSigState, ok := fsmState.(*round.InputSigSentState)
+	require.True(t, ok)
+	assertForfeitSet(inputSigState.Intents.Forfeits)
 }
 
 // TestRoundStoreFinalizeRound tests finalizing a round.

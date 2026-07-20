@@ -531,3 +531,42 @@ func (e *ForfeitCollectionTimedOut) clientEventSealed() {}
 type RegistrationTimedOut struct{}
 
 func (e *RegistrationTimedOut) clientEventSealed() {}
+
+// StatusReconcileTimedOut is emitted by the round actor when the
+// status-reconcile window expires while the FSM sits in InputSigSentState
+// with forfeit signatures already sent. It does not fail the round by
+// itself: the FSM reacts by emitting a QueryRoundStatusOutbox probe to the
+// operator and re-arming the window, so both a lost failure notification
+// and a silent operator (the lumos#618 crash door) eventually converge on
+// an authoritative round-status answer (wavelength#844).
+type StatusReconcileTimedOut struct {
+	// RoundID identifies the round whose reconcile window expired.
+	RoundID RoundID
+}
+
+func (e *StatusReconcileTimedOut) clientEventSealed() {}
+
+// RoundStatusReported carries the operator's authoritative lifecycle
+// answer for a round, in response to a QueryRoundStatusOutbox probe. A
+// dead answer is the proof the commitment tx can never confirm, which is
+// what makes releasing forfeit reservations after signatures were sent
+// double-spend-safe (wavelength#844): the operator persists a finalized
+// round atomically with its VTXOs before broadcasting, so a round it has
+// no record of never produced a broadcastable commitment.
+type RoundStatusReported struct {
+	// RoundID identifies the round the report is for.
+	RoundID RoundID
+
+	// Status is the operator's lifecycle classification of the round.
+	Status roundpb.RoundLifecycleStatus
+
+	// Detail is a free-form diagnostic string (e.g. the failure reason
+	// for a dead round).
+	Detail string
+}
+
+func (e *RoundStatusReported) clientEventSealed() {}
+
+// roundStatusDead aliases the verbose wire enum value so FSM code and its
+// tests stay within the line-length limit.
+const roundStatusDead = roundpb.RoundLifecycleStatus_ROUND_STATUS_DEAD
