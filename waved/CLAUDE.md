@@ -97,6 +97,17 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   (`newSweepWallet`, one of `lndUnrollWallet` / `lwUnrollWallet` /
   `btcwUnrollWallet`), which is structurally compatible with both
   `unroll.SweepWallet` and the wallet actor's `SweepSigner`.
+- `RefreshVTXOs` dry-run short-circuits before the wallet-ready gate
+  (LeaveVTXOs parity) and attaches a best-effort advisory fee estimate
+  (`rpc_refresh_estimate.go`): explicit outpoints are deduped and
+  resolve via `vtxoStore.GetVTXO` (unknown or non-live outpoint =
+  InvalidArgument, mirroring the --all LiveState filter), operator
+  quotes go through the `EstimateFee` proxy deduped on (amount,
+  remaining blocks) with remaining clamped to >= 1, and the
+  free-refresh waiver is computed locally from the cached operator
+  terms (the operator's EstimateFee does not apply it). Estimate
+  failures set `estimate_error` and never fail the preview. The real
+  refresh path still gates on wallet readiness.
 - `SendVTXO` enforces `maxRecipients = 256`, rejects per-recipient amounts
   outside `(0, MaxSatoshi]`, and uses overflow-safe summation; the wallet
   actor repeats these checks as defense-in-depth.

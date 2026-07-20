@@ -136,3 +136,22 @@ func TestBuildWalletActivityRequestHappyPath(t *testing.T) {
 	require.Equal(t, uint32(50), req.GetLimit())
 	require.Equal(t, "cursor-token", req.GetCursor())
 }
+
+// TestCheckMCPRefreshConsent pins the MCP refresh fee-consent
+// contract: a dry-run preview and an acknowledged refresh pass, a
+// bare real refresh is refused with an actionable error that names
+// both the preview and the acknowledgement path — matching the
+// consent the schema registry promises for this method.
+func TestCheckMCPRefreshConsent(t *testing.T) {
+	t.Parallel()
+
+	require.NoError(t, checkMCPRefreshConsent(true, false))
+	require.NoError(t, checkMCPRefreshConsent(false, true))
+	require.NoError(t, checkMCPRefreshConsent(true, true))
+
+	err := checkMCPRefreshConsent(false, false)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "dry_run:true")
+	require.Contains(t, err.Error(), "yes:true")
+	require.Contains(t, err.Error(), "operator fee")
+}

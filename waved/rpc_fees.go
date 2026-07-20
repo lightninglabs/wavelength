@@ -49,9 +49,28 @@ const (
 func (s *Server) quoteOperatorFee(ctx context.Context, amountSat int64,
 	isBoarding bool, remainingBlocks uint32) (btcutil.Amount, error) {
 
+	resp, err := s.quoteOperatorFeeBreakdown(
+		ctx, amountSat, isBoarding, remainingBlocks,
+	)
+	if err != nil {
+		return 0, err
+	}
+
+	return btcutil.Amount(resp.TotalFeeSat), nil
+}
+
+// quoteOperatorFeeBreakdown fetches the operator's full itemized
+// EstimateFee response for one (amount, boarding, remaining-blocks)
+// tuple. quoteOperatorFee wraps it for callers that only need the
+// total; the refresh dry-run estimate consumes the component
+// breakdown directly.
+func (s *Server) quoteOperatorFeeBreakdown(ctx context.Context, amountSat int64,
+	isBoarding bool, remainingBlocks uint32) (*arkrpc.EstimateFeeResponse,
+	error) {
+
 	client := s.operatorArkClient()
 	if client == nil {
-		return 0, status.Errorf(codes.Unavailable, "operator "+
+		return nil, status.Errorf(codes.Unavailable, "operator "+
 			"connection not initialized")
 	}
 
@@ -63,7 +82,7 @@ func (s *Server) quoteOperatorFee(ctx context.Context, amountSat int64,
 		},
 	)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 
 	// Defensive nil-guard: well-behaved gRPC servers always return
@@ -73,11 +92,11 @@ func (s *Server) quoteOperatorFee(ctx context.Context, amountSat int64,
 	// clean codes.Internal so the caller can fall back instead of
 	// crashing the daemon.
 	if resp == nil {
-		return 0, status.Errorf(codes.Internal, "operator returned "+
+		return nil, status.Errorf(codes.Internal, "operator returned "+
 			"empty fee response")
 	}
 
-	return btcutil.Amount(resp.TotalFeeSat), nil
+	return resp, nil
 }
 
 // autoRefreshFeeQuoter builds the vtxo.RefreshFeeQuoter the VTXO
