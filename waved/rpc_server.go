@@ -2747,6 +2747,22 @@ func (r *RPCServer) JoinNextRound(ctx context.Context,
 	}
 
 	if err := r.server.TriggerRoundRegistration(ctx); err != nil {
+		// An IntentRequested with nothing queued is a benign no-op,
+		// not an internal fault: this is exactly the shape an
+		// auto-join after an empty refresh/leave selection produces.
+		// Report it as a clean "nothing to join" status so the caller
+		// (and the CLI's auto-join step) treats it as the no-op it is
+		// instead of a confusing INTERNAL error.
+		if errors.Is(err, round.ErrNoPendingRound) {
+			r.server.log.InfoS(
+				ctx, "JoinNextRound: nothing queued to join",
+			)
+
+			return &waverpc.JoinNextRoundResponse{
+				Status: "nothing_to_join",
+			}, nil
+		}
+
 		return nil, status.Errorf(codes.Internal, "join next round: %v",
 			err)
 	}
