@@ -175,6 +175,16 @@ func newRootCmd() *cobra.Command {
 			"run on mainnet (required when network=mainnet)",
 	)
 
+	// Escape hatch for deployments that terminate TLS and enforce auth
+	// at an external proxy: permit rpc.notls/rpc.no-macaroons on mainnet
+	// TCP listeners, which Validate() otherwise refuses.
+	f.Bool(
+		"allow-insecure-mainnet", cfg.AllowInsecureMainnet, "permit "+
+			"rpc.notls and rpc.no-macaroons on mainnet TCP "+
+			"listeners (transport security is expected to be "+
+			"provided externally)",
+	)
+
 	// Cap the per-round operator fee the client is willing to pay
 	// under the #270 seal-time fee handshake. Zero is rejected at
 	// config-load time as an explicit misconfiguration.
