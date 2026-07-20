@@ -9,6 +9,7 @@ import (
 
 	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -868,22 +869,23 @@ var stdinIsTTY = defaultStdinIsTTY
 //     the caller's signal that they will drive the prompt
 //     themselves (e.g. by piping a scripted "y\n").
 //
-//  2. cmd.InOrStdin() is os.Stdin and os.Stdin reports a character
-//     device, i.e. an actual terminal where the operator can answer
-//     interactively.
+//  2. cmd.InOrStdin() is os.Stdin and os.Stdin is an actual terminal
+//     (per term.IsTerminal), i.e. a device where the operator can
+//     answer interactively.
 //
-// All other cases (os.Stdin is a pipe / file, Stat fails) return
-// false and the caller refuses to prompt.
+// All other cases return false and the caller refuses to prompt. A
+// character-device check is deliberately NOT used here: /dev/null and
+// a closed descriptor are both character devices yet are not
+// terminals, and those are the most common non-interactive stdin
+// shapes for agents, CI, and systemd units. Treating them as a TTY
+// would print a y/N prompt that immediately reads EOF, which is the
+// exact hang-then-fail the consent gate exists to prevent.
 func defaultStdinIsTTY(cmd *cobra.Command) bool {
 	if cmd.InOrStdin() != os.Stdin {
 		return true
 	}
-	stat, err := os.Stdin.Stat()
-	if err != nil {
-		return false
-	}
 
-	return (stat.Mode() & os.ModeCharDevice) != 0
+	return term.IsTerminal(int(os.Stdin.Fd()))
 }
 
 // promptLeaveAllConfirmation asks the operator to confirm a
