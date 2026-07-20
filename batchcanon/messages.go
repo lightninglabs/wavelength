@@ -47,6 +47,12 @@ type RegisterBatchRequest struct {
 	// persisted for restart re-registration.
 	ConfirmationPkScript []byte
 
+	// WatchHeightHint is the best-chain height from before the batch could
+	// have confirmed. It is persisted so both initial registration and
+	// restart reconciliation scan across confirmations that raced ahead of
+	// watch installation.
+	WatchHeightHint uint32
+
 	// CSVExpiryDelta is the batch's CSV-relative expiry timeout in blocks.
 	CSVExpiryDelta int32
 

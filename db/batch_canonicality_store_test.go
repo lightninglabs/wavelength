@@ -246,6 +246,7 @@ func TestBatchCanonicalityUpsertRoundTrip(t *testing.T) {
 		ConfirmationBlock:  fn.Some(chainhash.Hash{0xbb}),
 		CSVExpiryDelta:     144,
 		PolicyState:        batchcanon.PolicyStateDefault,
+		WatchHeightHint:    77,
 		ConsumedInputs: []batchcanon.ConsumedInput{
 			consumedInput(outpoint(0x01, 0)),
 			consumedInput(outpoint(0x02, 3)),
@@ -266,6 +267,7 @@ func TestBatchCanonicalityUpsertRoundTrip(t *testing.T) {
 	require.True(t, got.ConfirmationBlock.IsSome())
 	require.Equal(t, int32(144), got.CSVExpiryDelta)
 	require.Equal(t, batchcanon.PolicyStateDefault, got.PolicyState)
+	require.Equal(t, uint32(77), got.WatchHeightHint)
 	require.ElementsMatch(t, rec.ConsumedInputs, got.ConsumedInputs)
 	require.ElementsMatch(t, rec.DependentVTXOs, got.DependentVTXOs)
 

@@ -12,10 +12,11 @@ INSERT INTO batch_canonicality (
     batch_txid, batch_tx, batch_output_index, state, registration_stage,
     observation_generation, ready_generation, revision,
     confirmation_height, confirmation_block_hash, csv_expiry_delta,
-    policy_state, created_at, updated_at, confirmation_pk_script
+    policy_state, created_at, updated_at, confirmation_pk_script,
+    watch_height_hint
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-    $15
+    $15, $16
 )
 ON CONFLICT (batch_txid) DO UPDATE SET
     batch_tx = EXCLUDED.batch_tx,
@@ -30,6 +31,7 @@ ON CONFLICT (batch_txid) DO UPDATE SET
     csv_expiry_delta = EXCLUDED.csv_expiry_delta,
     policy_state = EXCLUDED.policy_state,
     confirmation_pk_script = EXCLUDED.confirmation_pk_script,
+    watch_height_hint = EXCLUDED.watch_height_hint,
     updated_at = EXCLUDED.updated_at;
 
 -- name: GetBatchCanonicality :one
@@ -38,7 +40,8 @@ ON CONFLICT (batch_txid) DO UPDATE SET
 SELECT batch_txid, batch_tx, batch_output_index, state, registration_stage,
     observation_generation, ready_generation, revision,
     confirmation_height, confirmation_block_hash, csv_expiry_delta,
-    policy_state, created_at, updated_at, confirmation_pk_script
+    policy_state, created_at, updated_at, confirmation_pk_script,
+    watch_height_hint
 FROM batch_canonicality
 WHERE batch_txid = $1;
 
@@ -48,7 +51,8 @@ WHERE batch_txid = $1;
 SELECT batch_txid, batch_tx, batch_output_index, state, registration_stage,
     observation_generation, ready_generation, revision,
     confirmation_height, confirmation_block_hash, csv_expiry_delta,
-    policy_state, created_at, updated_at, confirmation_pk_script
+    policy_state, created_at, updated_at, confirmation_pk_script,
+    watch_height_hint
 FROM batch_canonicality
 WHERE state = $1;
 
@@ -65,7 +69,8 @@ WHERE batch_txid = $1
 RETURNING batch_txid, batch_tx, batch_output_index, state,
     registration_stage, observation_generation, ready_generation, revision,
     confirmation_height, confirmation_block_hash, csv_expiry_delta,
-    policy_state, created_at, updated_at, confirmation_pk_script;
+    policy_state, created_at, updated_at, confirmation_pk_script,
+    watch_height_hint;
 
 -- name: MarkBatchCanonicalityReady :execrows
 -- MarkBatchCanonicalityReady opens admission only for the generation whose

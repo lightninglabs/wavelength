@@ -533,6 +533,8 @@ type mockChainSource struct {
 	bestHeight  int32
 	confByTxid  map[chainhash.Hash]confRefs
 	spendByOp   map[wire.OutPoint]map[string]spendRefs
+	confHints   map[chainhash.Hash]uint32
+	spendHints  map[wire.OutPoint]uint32
 	confCancels map[chainhash.Hash]int
 	spendCancel map[wire.OutPoint]int
 }
@@ -542,6 +544,8 @@ func newMockChainSource(bestHeight int32) *mockChainSource {
 		bestHeight:  bestHeight,
 		confByTxid:  make(map[chainhash.Hash]confRefs),
 		spendByOp:   make(map[wire.OutPoint]map[string]spendRefs),
+		confHints:   make(map[chainhash.Hash]uint32),
+		spendHints:  make(map[wire.OutPoint]uint32),
 		confCancels: make(map[chainhash.Hash]int),
 		spendCancel: make(map[wire.OutPoint]int),
 	}
@@ -564,6 +568,7 @@ func (c *mockChainSource) Receive(_ context.Context,
 
 	case *chainsource.RegisterConfRequest:
 		c.mu.Lock()
+		c.confHints[*v.Txid] = v.HeightHint
 		c.confByTxid[*v.Txid] = confRefs{
 			confirmed: v.NotifyActor.UnwrapOr(nil),
 			reorged:   v.NotifyReorged.UnwrapOr(nil),
@@ -577,6 +582,7 @@ func (c *mockChainSource) Receive(_ context.Context,
 
 	case *chainsource.RegisterSpendRequest:
 		c.mu.Lock()
+		c.spendHints[*v.Outpoint] = v.HeightHint
 		registrations, ok := c.spendByOp[*v.Outpoint]
 		if !ok {
 			registrations = make(map[string]spendRefs)
@@ -910,6 +916,30 @@ func TestManagerConfirmThenFinalize(t *testing.T) {
 	h.fireConfDone(t, txid)
 	got = h.state(t, txid)
 	require.Equal(t, StateFinalized, got.Record.State)
+}
+
+// TestManagerUsesDurableWatchHeightHint proves registration does not replace
+// the producer's pre-broadcast scan point with the current tip. Doing so can
+// miss a confirmation that raced ahead of watch installation.
+func TestManagerUsesDurableWatchHeightHint(t *testing.T) {
+	t.Parallel()
+
+	h := newManagerHarness(t, 100)
+	txid := testBatchTxid(0xab)
+	input := testOutpoint(0xbc, 1)
+
+	h.registerBatch(t, &RegisterBatchRequest{
+		BatchTxID:       txid,
+		WatchHeightHint: 77,
+		ConsumedInputs:  []ConsumedInput{ci(input)},
+	})
+	record := h.state(t, txid).Record
+
+	h.mock.mu.Lock()
+	defer h.mock.mu.Unlock()
+	require.Equal(t, uint32(77), h.mock.confHints[txid])
+	require.Equal(t, uint32(77), h.mock.spendHints[input])
+	require.Equal(t, uint32(77), record.WatchHeightHint)
 }
 
 // TestManagerReorgRecovers proves the core reorg-safety property: a confirmed
