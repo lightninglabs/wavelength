@@ -1596,6 +1596,40 @@ func (r *RPCServer) RefreshVTXOs(ctx context.Context,
 		return r.refreshDryRunPreview(ctx, explicit, refreshAll)
 	}
 
+	// Resolve and validate the selection against the VTXO store before
+	// the wallet-ready gate, mirroring the dry-run preview and the
+	// LeaveVTXOs H-5 ordering rule: selection validation must not
+	// depend on wallet state, and a real refresh must reject the same
+	// request shape the dry-run probe accepts. Before this, an unknown
+	// or non-live explicit outpoint slipped through to the wallet as a
+	// logged per-outpoint error, RefreshVTXOs returned an empty queued
+	// set, and the follow-on round join failed with an opaque "no
+	// pending round" instead of a clean InvalidArgument. resolveRefresh
+	// PreviewTargets also applies the LiveState filter the --all path
+	// needs, so a re-issued --all cannot re-queue a VTXO already on its
+	// way through a round.
+	if r.server.vtxoStore == nil {
+		return nil, status.Errorf(codes.Internal, "VTXO store not "+
+			"available for refresh")
+	}
+
+	descs, err := r.resolveRefreshPreviewTargets(ctx, explicit, refreshAll)
+	if err != nil {
+		return nil, err
+	}
+
+	// `--all` against a wallet with no live VTXOs is not an error —
+	// return an empty result so callers and scripts don't have to
+	// special-case the "nothing to refresh" path. An explicit
+	// selection always resolves to at least one live target or fails
+	// above, so an empty result here can only be the --all no-op.
+	if len(descs) == 0 {
+		return &waverpc.RefreshVTXOsResponse{
+			QueuedOutpoints: nil,
+			Status:          "queued",
+		}, nil
+	}
+
 	if err := r.requireWalletReady(); err != nil {
 		return nil, err
 	}
@@ -1607,55 +1641,12 @@ func (r *RPCServer) RefreshVTXOs(ctx context.Context,
 
 	wRef := r.server.walletRef.UnsafeFromSome()
 
-	// Build the list of target outpoints. The wallet actor only
-	// refreshes outpoints it receives in TargetOutpoints (despite a
-	// stale docstring suggesting empty means "all"), so when the
-	// caller asks for --all we enumerate live VTXOs here and pass
-	// them as explicit targets. Without this expansion the wallet
-	// gets target_count=0, registers an empty refresh package, and
-	// nothing actually happens — but the response previously
-	// synthesised `queued_outpoints` from a separate ListLiveVTXOs
-	// call below, which made the caller believe the refresh
-	// succeeded.
-	targets := explicit
-
-	if refreshAll {
-		if r.server.vtxoStore == nil {
-			return nil, status.Errorf(codes.Internal, "VTXO "+
-				"store not available for refresh --all")
-		}
-
-		liveVTXOs, err := r.server.vtxoStore.ListLiveVTXOs(ctx)
-		if err != nil {
-			return nil, status.Errorf(codes.Internal, "list live "+
-				"VTXOs: %v", err)
-		}
-
-		// ListLiveVTXOs returns every VTXO not in a terminal
-		// state — which includes PendingForfeit. Without this
-		// filter, a second `refresh --all` immediately after a
-		// first would re-queue the same outpoints that are
-		// already on their way through the round, double-
-		// registering the same forfeit intent. Restrict --all
-		// to outpoints actually in LiveState; explicit
-		// --outpoint callers retain the existing per-outpoint
-		// error path via the wallet's Errors map.
-		for _, v := range liveVTXOs {
-			if v.Status != vtxo.VTXOStatusLive {
-				continue
-			}
-			targets = append(targets, v.Outpoint)
-		}
-	}
-
-	// `--all` against a wallet with no live VTXOs is not an error —
-	// return an empty result so callers and scripts don't have to
-	// special-case the "nothing to refresh" path.
-	if len(targets) == 0 {
-		return &waverpc.RefreshVTXOsResponse{
-			QueuedOutpoints: nil,
-			Status:          "queued",
-		}, nil
+	// The wallet actor only refreshes outpoints it receives in
+	// TargetOutpoints (despite a stale docstring suggesting empty means
+	// "all"), so pass the resolved live targets explicitly.
+	targets := make([]wire.OutPoint, 0, len(descs))
+	for _, desc := range descs {
+		targets = append(targets, desc.Outpoint)
 	}
 
 	// Send the refresh request to the wallet actor and await its
