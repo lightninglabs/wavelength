@@ -951,8 +951,9 @@ message BalanceResponse {
     uint64 credit_reserved_sat = 5;
 
     // temporarily_unavailable_sat is owned VTXO value that cannot be
-    // spent while its batch lineage is in reorg/conflict limbo or is being
-    // reconciled. It returns to confirmed_sat if canonicality recovers.
+    // spent while its batch lineage is unseen, unregistered, in
+    // reorg/conflict limbo, or being reconciled. It returns to confirmed_sat
+    // if canonicality recovers.
     int64 temporarily_unavailable_sat = 6;
 }
 

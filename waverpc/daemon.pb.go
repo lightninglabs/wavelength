@@ -1666,9 +1666,10 @@ type GetBalanceResponse struct {
 	VtxoUnilateralExitSat int64 `protobuf:"varint,10,opt,name=vtxo_unilateral_exit_sat,json=vtxoUnilateralExitSat,proto3" json:"vtxo_unilateral_exit_sat,omitempty"`
 	// vtxo_temporarily_unavailable_sat is the value of lifecycle-live
 	// VTXOs whose canonicality lineage is currently unusable but not
-	// terminally invalidated. This includes reorg/conflict limbo and
-	// lineage reconciliation. It is excluded from vtxo_balance_sat and
-	// total_confirmed_sat and returns there if the lineage recovers.
+	// terminally invalidated. This includes unseen or unregistered lineage,
+	// reorg/conflict limbo, and lineage reconciliation. It is excluded from
+	// vtxo_balance_sat and total_confirmed_sat and returns there if the
+	// lineage recovers.
 	VtxoTemporarilyUnavailableSat int64 `protobuf:"varint,11,opt,name=vtxo_temporarily_unavailable_sat,json=vtxoTemporarilyUnavailableSat,proto3" json:"vtxo_temporarily_unavailable_sat,omitempty"`
 	unknownFields                 protoimpl.UnknownFields
 	sizeCache                     protoimpl.SizeCache

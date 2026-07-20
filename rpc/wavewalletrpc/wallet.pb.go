@@ -3247,8 +3247,9 @@ type BalanceResponse struct {
 	// reservation amount.
 	CreditReservedSat uint64 `protobuf:"varint,5,opt,name=credit_reserved_sat,json=creditReservedSat,proto3" json:"credit_reserved_sat,omitempty"`
 	// temporarily_unavailable_sat is owned VTXO value that cannot be
-	// spent while its batch lineage is in reorg/conflict limbo or is being
-	// reconciled. It returns to confirmed_sat if canonicality recovers.
+	// spent while its batch lineage is unseen, unregistered, in
+	// reorg/conflict limbo, or being reconciled. It returns to confirmed_sat
+	// if canonicality recovers.
 	TemporarilyUnavailableSat int64 `protobuf:"varint,6,opt,name=temporarily_unavailable_sat,json=temporarilyUnavailableSat,proto3" json:"temporarily_unavailable_sat,omitempty"`
 	unknownFields             protoimpl.UnknownFields
 	sizeCache                 protoimpl.SizeCache
