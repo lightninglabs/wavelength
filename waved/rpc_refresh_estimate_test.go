@@ -836,6 +836,44 @@ func TestRefreshDryRunEstimateRejectsNegativeComponent(t *testing.T) {
 	require.Zero(t, est.Outpoints[0].TotalFeeSat)
 }
 
+// TestRefreshDryRunEstimateRejectsMismatchedComponents verifies the
+// quote sanity check enforces the reconciliation the proto documents:
+// components that don't sum to total_fee_sat degrade the estimate
+// instead of echoing an itemization that contradicts its own total.
+func TestRefreshDryRunEstimateRejectsMismatchedComponents(t *testing.T) {
+	t.Parallel()
+
+	svc := &fakeArkService{
+		response: &arkrpc.EstimateFeeResponse{
+			LiquidityFeeSat: 50,
+			OnchainShareSat: 25,
+			MarginSat:       100,
+			TotalFeeSat:     999,
+		},
+	}
+	r, vtxoStore := newRefreshEstimateServer(t, svc, 900)
+
+	desc := newRefreshEstimateVTXO(t, 0x14, 100_000, 1_000)
+	require.NoError(t, vtxoStore.SaveVTXO(t.Context(), desc))
+
+	resp, err := r.RefreshVTXOs(
+		t.Context(), &waverpc.RefreshVTXOsRequest{
+			Selection: &waverpc.RefreshVTXOsRequest_All{
+				All: true,
+			},
+			DryRun: true,
+		},
+	)
+	require.NoError(t, err)
+
+	est := resp.FeeEstimate
+	require.NotNil(t, est)
+	require.Contains(t, est.EstimateError, "invalid")
+	require.Nil(t, est.EstimatedTotalFeeSat)
+	require.Len(t, est.Outpoints, 1)
+	require.Zero(t, est.Outpoints[0].TotalFeeSat)
+}
+
 // TestRefreshDryRunEstimateWindowBoundary pins the inclusive window
 // comparison against the operator's IsFreeRefreshWindow semantics: a
 // VTXO at exactly the advertised window is waiver-eligible, one block
