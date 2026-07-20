@@ -46,6 +46,7 @@ var allSubsystems = []string{
 	"TXCF",
 	"UNRL",
 	VHTLCRecoverySubsystem,
+	batchCanonSubsystem,
 }
 
 const (
@@ -73,6 +74,10 @@ const (
 	// Prometheus metrics HTTP server so its logs can be level-tuned
 	// independently of the main daemon logs.
 	MetricsSubsystem = "PROM"
+
+	// batchCanonSubsystem is the subsystem tag used for the
+	// batch-canonicality reorg-safety manager logs.
+	batchCanonSubsystem = "BCAN"
 )
 
 // SetupLoggersWithShutdownFn registers all subsystem loggers using a plain

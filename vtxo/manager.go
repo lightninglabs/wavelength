@@ -12,10 +12,12 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chaincfg/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/batchcanon"
 	"github.com/lightninglabs/wavelength/build"
 	"github.com/lightninglabs/wavelength/chainsource"
 	"github.com/lightninglabs/wavelength/coinselect"
@@ -68,6 +70,16 @@ type ManagerConfig struct {
 	ActorSystem  *actor.ActorSystem
 	ChainParams  *chaincfg.Params
 	ExpiryConfig *ExpiryConfig
+
+	// BatchCanonicality, when set, gates coin selection (and the explicit
+	// forfeit reserve path) on batch-lineage canonicality: a VTXO whose
+	// batch reorged out, was conflict-invalidated, or is not a ready,
+	// confirmed batch is excluded so it is never spent or forfeited while
+	// its lineage is off the canonical chain (lumos#454). Nil disables the
+	// gate. Because the reducer is fail-closed, the gate must only be
+	// activated once the batch producers (round, OOR) register their
+	// batches, or every unregistered VTXO is excluded.
+	BatchCanonicality batchcanon.Store
 
 	// Log is an optional logger for this manager instance. If None, the
 	// manager falls back to extracting a logger from context via
@@ -1305,6 +1317,15 @@ func (m *Manager) selectAndReserveVTXOs(ctx context.Context, p reserveParams) (
 		})
 	}
 
+	// Drop any candidate whose batch lineage is not usable (reorged out,
+	// invalidated, or — fail-closed — missing/reconciling/unregistered), so
+	// a VTXO off the canonical chain is never selected. No-op when no
+	// canonicality store is configured.
+	candidates, err = m.gateUnavailableLineage(ctx, candidates)
+	if err != nil {
+		return nil, 0, err
+	}
+
 	// Run largest-first selection through the shared selector. Map its
 	// typed outcomes back onto the manager's liquidity diagnostics: a
 	// dust-change rejection is reported verbatim, while any shortfall
@@ -1429,6 +1450,85 @@ func (m *Manager) selectAndReserveVTXOs(ctx context.Context, p reserveParams) (
 // insufficientLiquidityError distinguishes a true spendable-funds shortfall
 // from liquidity that is present but unavailable because another operation has
 // already moved it out of LiveState.
+// lineageCommitmentTxids returns the deduped set of commitment txids in a
+// VTXO's lineage: its direct commitment tx plus every distinct cross-commitment
+// ancestor batch recorded in its ancestry. A round-direct or same-commitment
+// OOR VTXO yields one txid; a cross-commitment multi-input OOR VTXO (born from
+// a merge that draws inputs from several batches) yields one per contributing
+// batch. The direct commitment txid is included even when the ancestry slice is
+// empty (e.g. an incoming VTXO materialized without its commitment tree) so the
+// gate still governs the leaf by its batch. The zero hash is skipped.
+func lineageCommitmentTxids(desc *Descriptor) []chainhash.Hash {
+	seen := make(map[chainhash.Hash]struct{}, len(desc.Ancestry)+1)
+	txids := make([]chainhash.Hash, 0, len(desc.Ancestry)+1)
+
+	add := func(txid chainhash.Hash) {
+		if txid == (chainhash.Hash{}) {
+			return
+		}
+		if _, ok := seen[txid]; ok {
+			return
+		}
+		seen[txid] = struct{}{}
+		txids = append(txids, txid)
+	}
+
+	add(desc.CommitmentTxID)
+	for i := range desc.Ancestry {
+		add(desc.Ancestry[i].CommitmentTxID)
+	}
+
+	return txids
+}
+
+// gateUnavailableLineage drops candidates whose batch lineage is not usable —
+// reorged-out (limbo), conflict-invalidated, or (fail-closed) missing,
+// reconciling, or unregistered — so a VTXO is never selected while ANY batch in
+// its lineage is not a ready, confirmed member of the canonical chain. It is a
+// no-op when no canonicality store is configured (the gate stays dormant until
+// the batch producers register their batches). It gates on the FULL lineage:
+// each candidate's direct commitment txid plus every cross-commitment ancestor
+// batch, since a multi-input OOR VTXO descends from more than one batch and any
+// single reorged-out or invalidated parent makes the leaf unspendable
+// (worst-of-N via CombineAvailability).
+func (m *Manager) gateUnavailableLineage(ctx context.Context,
+	candidates []*Descriptor) ([]*Descriptor, error) {
+
+	if m.cfg.BatchCanonicality == nil {
+		return candidates, nil
+	}
+
+	kept := make([]*Descriptor, 0, len(candidates))
+	for _, c := range candidates {
+		desc, err := m.cfg.Store.GetVTXO(ctx, c.Outpoint)
+		if err != nil {
+			return nil, fmt.Errorf("load vtxo for lineage gate "+
+				"%s: %w", c.Outpoint, err)
+		}
+
+		blocked, avail, err := batchcanon.LineageBlocked(
+			ctx, m.cfg.BatchCanonicality,
+			lineageCommitmentTxids(desc)...,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("lineage gate %s: %w",
+				c.Outpoint, err)
+		}
+		if blocked {
+			m.logger(ctx).DebugS(ctx, "Excluding VTXO with "+
+				"unavailable batch lineage from selection",
+				slog.String("outpoint", c.Outpoint.String()),
+				slog.String("availability", avail.String()))
+
+			continue
+		}
+
+		kept = append(kept, c)
+	}
+
+	return kept, nil
+}
+
 func (m *Manager) insufficientLiquidityError(ctx context.Context,
 	liveCandidates []*Descriptor, p reserveParams) error {
 
