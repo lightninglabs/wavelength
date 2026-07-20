@@ -124,9 +124,48 @@ type JoinRoundRequest struct {
 	// ForfeitReqs specifies the requests to forfeit VTXOs.
 	ForfeitReqs []*ForfeitRequest
 
+	// ClaimInputs contains independently-authorized claims for expired
+	// VTXOs whose value was recovered by the operator's sweep.
+	ClaimInputs []*VTXOClaimInput
+
+	// RoundID is the requested wire round identifier. Claim-only requests
+	// require the exact open round UUID returned by redeemability
+	// preflight; ordinary requests leave it empty and let the server assign
+	// a round.
+	RoundID string
+
 	// Auth contains the BIP-322 payload that authorizes this join
 	// request.
 	Auth *JoinRoundAuth
+}
+
+// VTXOClaimInput authorizes the operator to reissue one swept, expired VTXO.
+// The source registry entry determines the replacement amount and policy; the
+// claimant selects only a fresh tree-signing key.
+type VTXOClaimInput struct {
+	// SourceOutpoint identifies the expired VTXO being reissued.
+	SourceOutpoint wire.OutPoint
+
+	// ParticipantPubKey identifies one participant authorized by the source
+	// VTXO policy.
+	ParticipantPubKey *btcec.PublicKey
+
+	// ReplacementSigningKey is the fresh MuSig2 tree-signing key for the
+	// replacement VTXO. Its locator is local-only.
+	ReplacementSigningKey keychain.KeyDescriptor
+
+	// Nonce prevents replay of otherwise identical claims.
+	Nonce [32]byte
+
+	// ValidFrom is the first block height where this claim is valid.
+	ValidFrom uint32
+
+	// ValidUntil is the last block height where this claim is valid.
+	ValidUntil uint32
+
+	// Signature is the 64-byte BIP-340 Schnorr signature made by
+	// ParticipantPubKey over VTXOClaimAuthDigest.
+	Signature []byte
 }
 
 // LeaveRequest represents a request to leave the Ark with an on-chain UTXO.
@@ -219,6 +258,12 @@ const (
 	// VTXOReceivedMsg{Source=SourceRoundTransfer}, crediting
 	// transfers_in as a genuine counterparty revenue flow.
 	VTXOOriginRoundTransfer
+
+	// VTXOOriginClaimReissue marks the fee-free replacement of an expired
+	// operator-swept VTXO. The round actor deliberately skips its generic
+	// per-output ledger emission because the redemption finalizer sends one
+	// dedicated atomic source-to-replacement message instead.
+	VTXOOriginClaimReissue
 )
 
 // String returns a short human-readable label for the origin,
@@ -234,6 +279,9 @@ func (o VTXOOrigin) String() string {
 
 	case VTXOOriginRoundTransfer:
 		return "round_transfer"
+
+	case VTXOOriginClaimReissue:
+		return "claim_reissue"
 
 	default:
 		return "unknown"

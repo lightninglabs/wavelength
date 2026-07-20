@@ -68,6 +68,9 @@ type Querier interface {
 	// Used as the first half of an upsert when the VTXO manager fills in
 	// finalized lineage on top of a partially-written round-create row.
 	DeleteVTXOAncestryPaths(ctx context.Context, arg DeleteVTXOAncestryPathsParams) error
+	// DeleteVTXORedemptionOutbox acknowledges observer work with an exact
+	// source/replacement/round CAS so a stale callback cannot clear newer work.
+	DeleteVTXORedemptionOutbox(ctx context.Context, arg DeleteVTXORedemptionOutboxParams) (int64, error)
 	EscalateVHTLCRecoveryJob(ctx context.Context, arg EscalateVHTLCRecoveryJobParams) (int64, error)
 	FailVHTLCRecoveryJob(ctx context.Context, arg FailVHTLCRecoveryJobParams) (int64, error)
 	FinalizeRound(ctx context.Context, arg FinalizeRoundParams) error
@@ -111,6 +114,7 @@ type Querier interface {
 	GetRoundByCommitmentTxid(ctx context.Context, commitmentTxid []byte) (Round, error)
 	GetRoundClientTree(ctx context.Context, arg GetRoundClientTreeParams) (RoundClientTree, error)
 	GetRoundClientTrees(ctx context.Context, roundID string) ([]RoundClientTree, error)
+	GetRoundVtxoClaims(ctx context.Context, roundID string) ([]RoundVtxoClaim, error)
 	GetRoundVtxoRequests(ctx context.Context, roundID string) ([]RoundVtxoRequest, error)
 	// Returns cumulative Ark protocol fees paid to the operator (fees_paid
 	// account only). Does not include L1 chain/miner fees (onchain_fees).
@@ -122,6 +126,9 @@ type Querier interface {
 	// GetVTXOForfeitTx retrieves the persisted forfeit transaction for a VTXO.
 	// Used during recovery to restore the ForfeitingState with its tx.
 	GetVTXOForfeitTx(ctx context.Context, arg GetVTXOForfeitTxParams) (GetVTXOForfeitTxRow, error)
+	// GetVTXORedemptionOutbox loads one pending observer record for conflict
+	// validation and idempotent acknowledgement.
+	GetVTXORedemptionOutbox(ctx context.Context, arg GetVTXORedemptionOutboxParams) (GetVTXORedemptionOutboxRow, error)
 	// GetVTXOReplacement retrieves the replacement VTXO outpoint for a forfeited
 	// VTXO. Returns NULL if not forfeited or no replacement recorded.
 	GetVTXOReplacement(ctx context.Context, arg GetVTXOReplacementParams) (GetVTXOReplacementRow, error)
@@ -161,6 +168,8 @@ type Querier interface {
 	InsertRoundBoardingIntent(ctx context.Context, arg InsertRoundBoardingIntentParams) error
 	// Client trees queries.
 	InsertRoundClientTree(ctx context.Context, arg InsertRoundClientTreeParams) error
+	// Round VTXO claim queries.
+	InsertRoundVtxoClaim(ctx context.Context, arg InsertRoundVtxoClaimParams) error
 	// Round VTXO request queries.
 	InsertRoundVtxoRequest(ctx context.Context, arg InsertRoundVtxoRequestParams) error
 	// vHTLC recovery job queries.
@@ -175,6 +184,10 @@ type Querier interface {
 	// Callers replace the full set on update by deleting via
 	// DeleteVTXOAncestryPaths first.
 	InsertVTXOAncestryPath(ctx context.Context, arg InsertVTXOAncestryPathParams) error
+	// InsertVTXORedemptionOutbox persists the idempotent observer work in the
+	// same transaction that retires the source. A replay with the same source is
+	// validated by the store against GetVTXORedemptionOutbox.
+	InsertVTXORedemptionOutbox(ctx context.Context, arg InsertVTXORedemptionOutboxParams) (int64, error)
 	// Crash-replay safe: duplicate (outpoint, event) inserts from
 	// RestartMessage replay are silently ignored so the audit log stays
 	// at-most-once per outpoint+event.
@@ -229,7 +242,7 @@ type Querier interface {
 	ListLiveVTXOAncestryPaths(ctx context.Context) ([]VtxoAncestryPath, error)
 	// ListLiveVTXOs returns all VTXOs that are not in a terminal state.
 	// Terminal states are: Forfeited (3), Spent (4), UnilateralExit (5),
-	// Failed (6).
+	// Failed (6), Expired (8), Redeeming (9), Redeemed (10).
 	// Non-terminal states: Live (0), PendingForfeit (1), Forfeiting (2),
 	// Spending (7).
 	// This is used during startup to recover active VTXO actors.
@@ -288,6 +301,8 @@ type Querier interface {
 	// ListVTXOAncestryPathsByStatus returns every ancestry row whose parent
 	// VTXO matches the given status code. Companion to ListVTXOsByStatus.
 	ListVTXOAncestryPathsByStatus(ctx context.Context, status int32) ([]VtxoAncestryPath, error)
+	// ListVTXORedemptionOutbox is the durable startup/runtime replay queue.
+	ListVTXORedemptionOutbox(ctx context.Context) ([]ListVTXORedemptionOutboxRow, error)
 	// ListVTXOSelectionCandidatesByStatus returns the lightweight projection coin
 	// selection runs on: outpoint, amount, and pkScript. Selection happens on
 	// every payment and only needs these three fields, so this avoids decoding
@@ -357,11 +372,28 @@ type Querier interface {
 	// the forfeit round ID and transaction for crash recovery. Called when
 	// entering the forfeit flow.
 	MarkVTXOForfeiting(ctx context.Context, arg MarkVTXOForfeitingParams) error
+	// MarkVTXORedeemed links an authoritative, policy-validated completed mapping
+	// to its replacement. A completed mapping may supersede an abandoned local
+	// Redeeming round, so Expired/Redeeming sources adopt the replacement's round
+	// ID. Once Redeemed, only an exact round/replacement replay is accepted.
+	MarkVTXORedeemed(ctx context.Context, arg MarkVTXORedeemedParams) (int64, error)
+	// MarkVTXORedeeming records the round point-of-no-return for an expired
+	// claim. Restricting the source status prevents a stale callback from
+	// resurrecting a spent, forfeited, or already-redeemed VTXO.
+	MarkVTXORedeeming(ctx context.Context, arg MarkVTXORedeemingParams) (int64, error)
 	// Also sets status = 4 (Spent) to keep status in sync with spent flag.
 	MarkVTXOSpent(ctx context.Context, arg MarkVTXOSpentParams) error
 	// PullActivityEvents returns transition rows strictly after the cursor in
 	// event_seq order, the resumable-subscribe replay primitive.
 	PullActivityEvents(ctx context.Context, arg PullActivityEventsParams) ([]ActivityEvent, error)
+	// Older clients could persist a locally expired live VTXO as Failed. Recover
+	// only rows with the exact live-era shape: unspent, past their absolute
+	// expiry, and with no forfeit, replacement, or redemption lifecycle metadata.
+	// The metadata predicates deliberately leave unrelated Failed rows untouched.
+	RecoverLegacyExpiredVTXOs(ctx context.Context, arg RecoverLegacyExpiredVTXOsParams) ([]RecoverLegacyExpiredVTXOsRow, error)
+	// RevertVTXORedeeming returns a claim to the retryable Expired state after
+	// its adopted round terminates without producing a replacement.
+	RevertVTXORedeeming(ctx context.Context, arg RevertVTXORedeemingParams) (int64, error)
 	SumBoardingIntentAmountsByStatus(ctx context.Context, status string) (interface{}, error)
 	SumUnspentVTXOAmounts(ctx context.Context) (interface{}, error)
 	UpdateBoardingIntentStatus(ctx context.Context, arg UpdateBoardingIntentStatusParams) error

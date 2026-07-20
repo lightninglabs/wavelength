@@ -40,6 +40,8 @@ type IndexerServiceMailboxServer interface {
 	GetSubtreeByScripts(ctx context.Context, req *GetSubtreeByScriptsRequest) (*GetSubtreeByScriptsResponse, error)
 	// ListVTXOEventsByScripts handles ListVTXOEventsByScripts.
 	ListVTXOEventsByScripts(ctx context.Context, req *ListVTXOEventsByScriptsRequest) (*ListVTXOEventsByScriptsResponse, error)
+	// CheckVTXORedeemability handles CheckVTXORedeemability.
+	CheckVTXORedeemability(ctx context.Context, req *CheckVTXORedeemabilityRequest) (*CheckVTXORedeemabilityResponse, error)
 }
 
 // RegisterIndexerServiceMailboxServer registers handlers for IndexerService.
@@ -123,6 +125,16 @@ func RegisterIndexerServiceMailboxServer(r rpc.Router, impl IndexerServiceMailbo
 		}
 
 		return impl.ListVTXOEventsByScripts(ctx, req)
+	})
+	r.Handle("arkrpc.IndexerService", "CheckVTXORedeemability", func() proto.Message {
+		return &CheckVTXORedeemabilityRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*CheckVTXORedeemabilityRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.CheckVTXORedeemability(ctx, req)
 	})
 }
 
@@ -303,6 +315,29 @@ func (c *IndexerServiceMailboxClient) ListVTXOEventsByScripts(ctx context.Contex
 	}
 
 	resp := new(ListVTXOEventsByScriptsResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// CheckVTXORedeemability calls the CheckVTXORedeemability RPC.
+func (c *IndexerServiceMailboxClient) CheckVTXORedeemability(ctx context.Context, req *CheckVTXORedeemabilityRequest, opts ...rpc.RPCOptions) (*CheckVTXORedeemabilityResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "arkrpc.IndexerService",
+		Method:  "CheckVTXORedeemability",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(CheckVTXORedeemabilityResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

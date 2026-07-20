@@ -358,7 +358,7 @@ func TestBuildJoinRoundAuthBoardingOnly(t *testing.T) {
 
 	auth, err := buildJoinRoundAuth(
 		f.ctx, f.env, f.identifierKeyDesc(), intents, vtxoReqs, nil,
-		nil,
+		nil, nil,
 	)
 	require.NoError(t, err)
 	require.NotNil(t, auth)
@@ -398,6 +398,55 @@ func TestBuildJoinRoundAuthBoardingOnly(t *testing.T) {
 	f.verifyAuth(t, auth, proofPrevOuts)
 }
 
+// TestBuildJoinRoundAuthClaimOnly verifies a standalone claim can authorize a
+// join without pretending the swept source is still a spendable proof-of-funds
+// input. The outer BIP-322 proof binds the complete independently signed claim
+// envelope to the fresh identifier key.
+func TestBuildJoinRoundAuthClaimOnly(t *testing.T) {
+	t.Parallel()
+
+	f := newJoinAuthTestFixture(t)
+	replacement, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	claim := &types.VTXOClaimInput{
+		SourceOutpoint: wire.OutPoint{
+			Hash: chainhash.Hash{
+				9,
+				8,
+				7,
+			},
+			Index: 3,
+		},
+		ParticipantPubKey: f.clientPrivKey.PubKey(),
+		ReplacementSigningKey: keychain.KeyDescriptor{
+			PubKey: replacement.PubKey(),
+		},
+		ValidFrom:  f.signingHeight,
+		ValidUntil: f.signingHeight + joinRoundAuthWindowBlocks,
+		Signature:  make([]byte, types.VTXOClaimSignatureSize),
+	}
+	claim.Nonce[0] = 1
+	claim.Signature[0] = 2
+
+	intents := Intents{Claims: []VTXOClaimIntent{{Input: *claim}}}
+	auth, err := buildJoinRoundAuth(
+		f.ctx, f.env, f.identifierKeyDesc(), intents, nil, nil, nil,
+		[]*types.VTXOClaimInput{claim},
+	)
+	require.NoError(t, err)
+	require.NotNil(t, auth)
+	f.verifyAuth(t, auth, map[wire.OutPoint]*wire.TxOut{})
+
+	decoded, err := types.DecodeJoinRoundAuthMessage(auth.Message)
+	require.NoError(t, err)
+	require.Len(t, decoded.ClaimInputs, 1)
+	require.Equal(
+		t, claim.SourceOutpoint, decoded.ClaimInputs[0].SourceOutpoint,
+	)
+	require.Equal(t, claim.Signature, decoded.ClaimInputs[0].Signature)
+}
+
 // TestBuildJoinRoundAuthRejectsTamperedSig verifies that round-level auth
 // verification rejects payloads whose signature transaction was modified
 // after signing.
@@ -421,7 +470,7 @@ func TestBuildJoinRoundAuthRejectsTamperedSig(t *testing.T) {
 
 	auth, err := buildJoinRoundAuth(
 		f.ctx, f.env, f.identifierKeyDesc(), intents, vtxoReqs, nil,
-		nil,
+		nil, nil,
 	)
 	require.NoError(t, err)
 	require.NotNil(t, auth)
@@ -557,7 +606,7 @@ func TestBuildJoinRoundAuthWithForfeit(t *testing.T) {
 
 	auth, err := buildJoinRoundAuth(
 		f.ctx, f.env, f.identifierKeyDesc(), intents, vtxoReqs,
-		forfeitReqs, nil,
+		forfeitReqs, nil, nil,
 	)
 	require.NoError(t, err)
 	require.NotNil(t, auth)
@@ -654,7 +703,7 @@ func TestBuildJoinRoundAuthForfeitOnly(t *testing.T) {
 
 	auth, err := buildJoinRoundAuth(
 		f.ctx, f.env, f.identifierKeyDesc(), intents, vtxoReqs,
-		forfeitReqs, nil,
+		forfeitReqs, nil, nil,
 	)
 	require.NoError(t, err)
 	require.NotNil(t, auth)
@@ -786,7 +835,7 @@ func TestBuildJoinRoundAuthRejectsNoInputs(t *testing.T) {
 
 	_, err := buildJoinRoundAuth(
 		f.ctx, f.env, f.identifierKeyDesc(), intents, vtxoReqs, nil,
-		nil,
+		nil, nil,
 	)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "at least one proof-of-funds")
@@ -816,7 +865,7 @@ func TestBuildJoinRoundAuthRejectsMissingValidFromQuery(t *testing.T) {
 
 	_, err := buildJoinRoundAuth(
 		f.ctx, f.env, f.identifierKeyDesc(), intents, vtxoReqs, nil,
-		nil,
+		nil, nil,
 	)
 	require.Error(t, err)
 	require.Contains(

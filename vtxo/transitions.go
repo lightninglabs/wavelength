@@ -226,16 +226,7 @@ func (s *LiveState) handleBlockEpoch(_ context.Context, evt *BlockEpochEvent,
 		}, nil
 
 	case ExpiryStatusExpired:
-		// Batch has expired - this should not happen if monitoring
-		// works correctly.
-		return &VTXOStateTransition{
-			NextState: &FailedState{
-				VTXO: s.VTXO,
-				Reason: "batch expired before " +
-					"cooperative forfeit",
-				Recoverable: false,
-			},
-		}, nil
+		return transitionToExpired(s.VTXO, evt.Height, false), nil
 
 	default:
 		return nil, fmt.Errorf("unknown expiry: %d", expiryStatus)
@@ -617,10 +608,13 @@ func (s *PendingForfeitState) ProcessEvent(ctx context.Context, event VTXOEvent,
 		// Check if we've hit critical expiry while waiting for
 		// forfeit details.
 		expiryStatus := env.ExpiryConfig.CheckExpiry(s.VTXO, evt.Height)
+		if expiryStatus == ExpiryStatusExpired {
+			return transitionToExpired(
+				s.VTXO, evt.Height, false,
+			), nil
+		}
 
-		if expiryStatus == ExpiryStatusCritical ||
-			expiryStatus == ExpiryStatusExpired {
-
+		if expiryStatus == ExpiryStatusCritical {
 			blocksRemaining := BlocksUntilExpiry(s.VTXO, evt.Height)
 
 			// Non-terminal exit: no VTXOTerminatedNotification, so
@@ -877,10 +871,13 @@ func (s *ForfeitingState) ProcessEvent(ctx context.Context, event VTXOEvent,
 		// Check if we've hit expiry while forfeiting. If critical, we
 		// must escalate to chain resolver for unilateral exit.
 		expiryStatus := env.ExpiryConfig.CheckExpiry(s.VTXO, evt.Height)
+		if expiryStatus == ExpiryStatusExpired {
+			return transitionToExpired(
+				s.VTXO, evt.Height, false,
+			), nil
+		}
 
-		if expiryStatus == ExpiryStatusCritical ||
-			expiryStatus == ExpiryStatusExpired {
-
+		if expiryStatus == ExpiryStatusCritical {
 			blocksRemaining := BlocksUntilExpiry(s.VTXO, evt.Height)
 
 			// Non-terminal exit: no VTXOTerminatedNotification, so
@@ -1062,10 +1059,13 @@ func (s *SpendingState) ProcessEvent(_ context.Context, event VTXOEvent,
 		expiryStatus := env.ExpiryConfig.CheckExpiry(
 			s.VTXO, evt.Height,
 		)
+		if expiryStatus == ExpiryStatusExpired {
+			return transitionToExpired(
+				s.VTXO, evt.Height, true,
+			), nil
+		}
 
-		if expiryStatus == ExpiryStatusCritical ||
-			expiryStatus == ExpiryStatusExpired {
-
+		if expiryStatus == ExpiryStatusCritical {
 			blocksRemaining := BlocksUntilExpiry(
 				s.VTXO, evt.Height,
 			)
@@ -1204,6 +1204,60 @@ func (s *ForfeitedState) ProcessEvent(_ context.Context, _ VTXOEvent,
 	return &VTXOStateTransition{
 		NextState: s,
 	}, nil
+}
+
+// ProcessEvent keeps ExpiredState terminal. Redemption progress is driven by
+// the coordinator and persisted directly, not through the retired VTXO actor.
+func (s *ExpiredState) ProcessEvent(_ context.Context, _ VTXOEvent,
+	_ *VTXOEnvironment) (*VTXOStateTransition, error) {
+
+	return &VTXOStateTransition{NextState: s}, nil
+}
+
+// ProcessEvent keeps RedeemingState terminal while its round progresses.
+func (s *RedeemingState) ProcessEvent(_ context.Context, _ VTXOEvent,
+	_ *VTXOEnvironment) (*VTXOStateTransition, error) {
+
+	return &VTXOStateTransition{NextState: s}, nil
+}
+
+// ProcessEvent keeps RedeemedState terminal after replacement.
+func (s *RedeemedState) ProcessEvent(_ context.Context, _ VTXOEvent,
+	_ *VTXOEnvironment) (*VTXOStateTransition, error) {
+
+	return &VTXOStateTransition{NextState: s}, nil
+}
+
+// transitionToExpired retires a VTXO from spend and unroll admission once the
+// local synchronized chain height reaches the batch expiry. The status write
+// precedes the termination notification in the actor outbox, so a crash cannot
+// resurrect the VTXO as live on restart.
+func transitionToExpired(vtxo *Descriptor, height int32,
+	releaseSpendReservation bool) *VTXOStateTransition {
+
+	reason := fmt.Sprintf("batch expired at height %d", height)
+	statusUpdate := &VTXOStatusUpdate{
+		Outpoint:                vtxo.Outpoint,
+		NewStatus:               VTXOStatusExpired,
+		ReleaseSpendReservation: releaseSpendReservation,
+	}
+
+	return &VTXOStateTransition{
+		NextState: &ExpiredState{
+			VTXO:           vtxo,
+			ObservedHeight: height,
+		},
+		NewEvents: fn.Some(VTXOEmittedEvent{
+			Outbox: []VTXOOutMsg{
+				statusUpdate,
+				&VTXOTerminatedNotification{
+					VTXOOutpoint: vtxo.Outpoint,
+					FinalState:   "Expired",
+					Reason:       reason,
+				},
+			},
+		}),
+	}
 }
 
 // ProcessEvent handles events in UnilateralExitState. The VTXO has been

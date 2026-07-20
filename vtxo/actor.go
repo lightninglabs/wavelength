@@ -840,6 +840,15 @@ func statusToState(ctx context.Context, vtxo *Descriptor, store VTXOStore,
 			Reason: "recovered from storage",
 		}
 
+	case VTXOStatusExpired:
+		return &ExpiredState{VTXO: vtxo}
+
+	case VTXOStatusRedeeming:
+		return &RedeemingState{VTXO: vtxo}
+
+	case VTXOStatusRedeemed:
+		return &RedeemedState{VTXO: vtxo}
+
 	default:
 		return &LiveState{
 			VTXO:              vtxo,

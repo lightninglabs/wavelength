@@ -138,6 +138,7 @@ const (
 	utxoCreatedTLVType            tlv.Type = 0x9005
 	utxoSpentTLVType              tlv.Type = 0x9006
 	boardingSweepConfirmedTLVType tlv.Type = 0x9007
+	vtxoClaimReissuedTLVType      tlv.Type = 0x9008
 )
 
 // Per-message TLV record types. Each message defines its own
@@ -170,6 +171,12 @@ const (
 	vtxoSentRoundIDType     tlv.Type = 5
 	vtxoSentOutpointType    tlv.Type = 7
 	vtxoSentIdempotencyType tlv.Type = 9
+
+	// VTXOClaimReissuedMsg field types.
+	claimReissueSourceType      tlv.Type = 1
+	claimReissueReplacementType tlv.Type = 3
+	claimReissueAmountSatType   tlv.Type = 5
+	claimReissueRoundIDType     tlv.Type = 7
 
 	// ExitCostMsg field types.
 	exitCostOutpointHashType  tlv.Type = 1
@@ -647,6 +654,109 @@ func (m *VTXOSentMsg) Decode(r io.Reader) error {
 	m.AmountSat = amt
 	m.Outpoint = outpoint.OutPoint
 	m.IdempotencyKey = append(m.IdempotencyKey[:0], idempotencyKey...)
+
+	return nil
+}
+
+// VTXOClaimReissuedMsg records one zero-fee claim reissue as an atomic pair:
+// the expired source leaves the VTXO balance and its exact-value replacement
+// enters it. A dedicated message prevents generic round-refresh accounting
+// from attributing the send leg to the replacement outpoint.
+type VTXOClaimReissuedMsg struct {
+	actor.BaseMessage
+
+	// Source is the expired VTXO consumed by the operator sweep claim.
+	Source wire.OutPoint
+
+	// Replacement is the exact-value VTXO created by the reissue round.
+	Replacement wire.OutPoint
+
+	// AmountSat is both the source and replacement amount. Claim reissues
+	// are fee-free, so the handler rejects non-positive values and emits no
+	// fee leg.
+	AmountSat int64
+
+	// RoundID is the 16-byte UUID of the round that created Replacement.
+	RoundID [16]byte
+}
+
+// MessageType returns the message type name for routing.
+func (m *VTXOClaimReissuedMsg) MessageType() string {
+	return "VTXOClaimReissuedMsg"
+}
+
+// TLVType returns the TLV type tag for codec registration.
+func (m *VTXOClaimReissuedMsg) TLVType() tlv.Type {
+	return vtxoClaimReissuedTLVType
+}
+
+// Encode serializes the message as an additive TLV stream.
+func (m *VTXOClaimReissuedMsg) Encode(w io.Writer) error {
+	source := &outpointRecord{OutPoint: m.Source}
+	replacement := &outpointRecord{OutPoint: m.Replacement}
+	amountSat := uint64(m.AmountSat)
+	roundID := m.RoundID[:]
+
+	stream, err := tlv.NewStream(
+		makeOutpointRecord(claimReissueSourceType, source),
+		makeOutpointRecord(claimReissueReplacementType, replacement),
+		tlv.MakePrimitiveRecord(
+			claimReissueAmountSatType, &amountSat,
+		),
+		tlv.MakePrimitiveRecord(
+			claimReissueRoundIDType, &roundID,
+		),
+	)
+	if err != nil {
+		return err
+	}
+
+	return stream.Encode(w)
+}
+
+// Decode deserializes the claim-reissue TLV stream.
+func (m *VTXOClaimReissuedMsg) Decode(r io.Reader) error {
+	var (
+		source      outpointRecord
+		replacement outpointRecord
+		amountSat   uint64
+		roundID     []byte
+	)
+
+	stream, err := tlv.NewStream(
+		makeOutpointRecord(claimReissueSourceType, &source),
+		makeOutpointRecord(claimReissueReplacementType, &replacement),
+		tlv.MakePrimitiveRecord(
+			claimReissueAmountSatType, &amountSat,
+		),
+		tlv.MakePrimitiveRecord(
+			claimReissueRoundIDType, &roundID,
+		),
+	)
+	if err != nil {
+		return err
+	}
+
+	if _, err := stream.DecodeWithParsedTypes(r); err != nil {
+		return fmt.Errorf("decode VTXOClaimReissuedMsg: %w", err)
+	}
+	if err := decodeFixedBytes(
+		"VTXOClaimReissuedMsg.RoundID", roundID, len(m.RoundID),
+	); err != nil {
+		return err
+	}
+
+	amount, err := decodeAmountSat(
+		"VTXOClaimReissuedMsg.AmountSat", amountSat,
+	)
+	if err != nil {
+		return err
+	}
+
+	m.Source = source.OutPoint
+	m.Replacement = replacement.OutPoint
+	m.AmountSat = amount
+	copy(m.RoundID[:], roundID)
 
 	return nil
 }
@@ -1296,6 +1406,12 @@ func newLedgerCodec() *actor.MessageCodec {
 		},
 	)
 	codec.MustRegister(
+		vtxoClaimReissuedTLVType,
+		func() actor.TLVMessage {
+			return &VTXOClaimReissuedMsg{}
+		},
+	)
+	codec.MustRegister(
 		actor.RestartTLVType,
 		func() actor.TLVMessage {
 			return &actor.RestartMessage{}
@@ -1310,6 +1426,7 @@ var (
 	_ LedgerMsg = (*FeePaidMsg)(nil)
 	_ LedgerMsg = (*VTXOReceivedMsg)(nil)
 	_ LedgerMsg = (*VTXOSentMsg)(nil)
+	_ LedgerMsg = (*VTXOClaimReissuedMsg)(nil)
 	_ LedgerMsg = (*ExitCostMsg)(nil)
 	_ LedgerMsg = (*UTXOCreatedMsg)(nil)
 	_ LedgerMsg = (*UTXOSpentMsg)(nil)

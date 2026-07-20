@@ -155,7 +155,7 @@ func (q *Queries) GetClientTreeTxids(ctx context.Context, arg GetClientTreeTxids
 }
 
 const GetRound = `-- name: GetRound :one
-SELECT round_id, start_height, confirmation_height, confirmation_block_hash, commitment_tx, commitment_txid, vtxt_tree, status, creation_time, last_update_time, flow_version FROM rounds WHERE round_id = $1
+SELECT round_id, start_height, confirmation_height, confirmation_block_hash, commitment_tx, commitment_txid, vtxt_tree, status, creation_time, last_update_time, flow_version, sweep_delay FROM rounds WHERE round_id = $1
 `
 
 func (q *Queries) GetRound(ctx context.Context, roundID string) (Round, error) {
@@ -173,6 +173,7 @@ func (q *Queries) GetRound(ctx context.Context, roundID string) (Round, error) {
 		&i.CreationTime,
 		&i.LastUpdateTime,
 		&i.FlowVersion,
+		&i.SweepDelay,
 	)
 	return i, err
 }
@@ -216,7 +217,7 @@ func (q *Queries) GetRoundBoardingIntents(ctx context.Context, roundID string) (
 }
 
 const GetRoundByCommitmentTxid = `-- name: GetRoundByCommitmentTxid :one
-SELECT round_id, start_height, confirmation_height, confirmation_block_hash, commitment_tx, commitment_txid, vtxt_tree, status, creation_time, last_update_time, flow_version FROM rounds WHERE commitment_txid = $1
+SELECT round_id, start_height, confirmation_height, confirmation_block_hash, commitment_tx, commitment_txid, vtxt_tree, status, creation_time, last_update_time, flow_version, sweep_delay FROM rounds WHERE commitment_txid = $1
 `
 
 func (q *Queries) GetRoundByCommitmentTxid(ctx context.Context, commitmentTxid []byte) (Round, error) {
@@ -234,6 +235,7 @@ func (q *Queries) GetRoundByCommitmentTxid(ctx context.Context, commitmentTxid [
 		&i.CreationTime,
 		&i.LastUpdateTime,
 		&i.FlowVersion,
+		&i.SweepDelay,
 	)
 	return i, err
 }
@@ -282,8 +284,47 @@ func (q *Queries) GetRoundClientTrees(ctx context.Context, roundID string) ([]Ro
 	return items, nil
 }
 
+const GetRoundVtxoClaims = `-- name: GetRoundVtxoClaims :many
+SELECT round_id, request_index, source_hash, source_index, participant_pubkey, nonce, valid_from, valid_until, signature FROM round_vtxo_claims
+WHERE round_id = $1
+ORDER BY request_index ASC
+`
+
+func (q *Queries) GetRoundVtxoClaims(ctx context.Context, roundID string) ([]RoundVtxoClaim, error) {
+	rows, err := q.db.QueryContext(ctx, GetRoundVtxoClaims, roundID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []RoundVtxoClaim
+	for rows.Next() {
+		var i RoundVtxoClaim
+		if err := rows.Scan(
+			&i.RoundID,
+			&i.RequestIndex,
+			&i.SourceHash,
+			&i.SourceIndex,
+			&i.ParticipantPubkey,
+			&i.Nonce,
+			&i.ValidFrom,
+			&i.ValidUntil,
+			&i.Signature,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const GetRoundVtxoRequests = `-- name: GetRoundVtxoRequests :many
-SELECT round_id, request_index, amount, pk_script, expiry, policy_template, client_pubkey, operator_pubkey, owner_key_id, signing_key_id FROM round_vtxo_requests
+SELECT round_id, request_index, amount, pk_script, expiry, policy_template, client_pubkey, operator_pubkey, owner_key_id, signing_key_id, origin FROM round_vtxo_requests
 WHERE round_id = $1
 ORDER BY request_index ASC
 `
@@ -308,6 +349,7 @@ func (q *Queries) GetRoundVtxoRequests(ctx context.Context, roundID string) ([]R
 			&i.OperatorPubkey,
 			&i.OwnerKeyID,
 			&i.SigningKeyID,
+			&i.Origin,
 		); err != nil {
 			return nil, err
 		}
@@ -323,7 +365,7 @@ func (q *Queries) GetRoundVtxoRequests(ctx context.Context, roundID string) ([]R
 }
 
 const GetVTXO = `-- name: GetVTXO :one
-SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, policy_template, client_key_id, operator_pubkey, batch_expiry, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time, chain_depth, construction_version FROM vtxos
+SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, policy_template, client_key_id, operator_pubkey, batch_expiry, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time, chain_depth, construction_version, redemption_round_id FROM vtxos
 WHERE outpoint_hash = $1 AND outpoint_index = $2
 `
 
@@ -359,6 +401,7 @@ func (q *Queries) GetVTXO(ctx context.Context, arg GetVTXOParams) (Vtxo, error) 
 		&i.LastUpdateTime,
 		&i.ChainDepth,
 		&i.ConstructionVersion,
+		&i.RedemptionRoundID,
 	)
 	return i, err
 }
@@ -395,14 +438,15 @@ const InsertRound = `-- name: InsertRound :exec
 INSERT INTO rounds (
     round_id, confirmation_height, confirmation_block_hash, commitment_tx,
     commitment_txid, vtxt_tree, status, creation_time, last_update_time,
-    start_height, flow_version
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+    start_height, flow_version, sweep_delay
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 ON CONFLICT (round_id) DO UPDATE SET
     confirmation_height = COALESCE(excluded.confirmation_height, rounds.confirmation_height),
     confirmation_block_hash = COALESCE(excluded.confirmation_block_hash, rounds.confirmation_block_hash),
     commitment_tx = COALESCE(excluded.commitment_tx, rounds.commitment_tx),
     commitment_txid = COALESCE(excluded.commitment_txid, rounds.commitment_txid),
     vtxt_tree = COALESCE(excluded.vtxt_tree, rounds.vtxt_tree),
+    sweep_delay = excluded.sweep_delay,
     status = excluded.status,
     last_update_time = excluded.last_update_time
 `
@@ -419,6 +463,7 @@ type InsertRoundParams struct {
 	LastUpdateTime        int64
 	StartHeight           int32
 	FlowVersion           int32
+	SweepDelay            int64
 }
 
 // Round queries.
@@ -435,6 +480,7 @@ func (q *Queries) InsertRound(ctx context.Context, arg InsertRoundParams) error 
 		arg.LastUpdateTime,
 		arg.StartHeight,
 		arg.FlowVersion,
+		arg.SweepDelay,
 	)
 	return err
 }
@@ -500,12 +546,49 @@ func (q *Queries) InsertRoundClientTree(ctx context.Context, arg InsertRoundClie
 	return err
 }
 
+const InsertRoundVtxoClaim = `-- name: InsertRoundVtxoClaim :exec
+
+INSERT INTO round_vtxo_claims (
+    round_id, request_index, source_hash, source_index,
+    participant_pubkey, nonce, valid_from, valid_until, signature
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+ON CONFLICT (round_id, source_hash, source_index) DO NOTHING
+`
+
+type InsertRoundVtxoClaimParams struct {
+	RoundID           string
+	RequestIndex      int32
+	SourceHash        []byte
+	SourceIndex       int64
+	ParticipantPubkey []byte
+	Nonce             []byte
+	ValidFrom         int64
+	ValidUntil        int64
+	Signature         []byte
+}
+
+// Round VTXO claim queries.
+func (q *Queries) InsertRoundVtxoClaim(ctx context.Context, arg InsertRoundVtxoClaimParams) error {
+	_, err := q.db.ExecContext(ctx, InsertRoundVtxoClaim,
+		arg.RoundID,
+		arg.RequestIndex,
+		arg.SourceHash,
+		arg.SourceIndex,
+		arg.ParticipantPubkey,
+		arg.Nonce,
+		arg.ValidFrom,
+		arg.ValidUntil,
+		arg.Signature,
+	)
+	return err
+}
+
 const InsertRoundVtxoRequest = `-- name: InsertRoundVtxoRequest :exec
 
 INSERT INTO round_vtxo_requests (
     round_id, request_index, amount, pk_script, expiry, policy_template,
-    client_pubkey, operator_pubkey, owner_key_id, signing_key_id
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+    client_pubkey, operator_pubkey, owner_key_id, signing_key_id, origin
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
     ON CONFLICT (round_id, request_index) DO NOTHING
 `
 
@@ -520,6 +603,7 @@ type InsertRoundVtxoRequestParams struct {
 	OperatorPubkey []byte
 	OwnerKeyID     sql.NullInt64
 	SigningKeyID   sql.NullInt64
+	Origin         int32
 }
 
 // Round VTXO request queries.
@@ -535,6 +619,7 @@ func (q *Queries) InsertRoundVtxoRequest(ctx context.Context, arg InsertRoundVtx
 		arg.OperatorPubkey,
 		arg.OwnerKeyID,
 		arg.SigningKeyID,
+		arg.Origin,
 	)
 	return err
 }
@@ -546,10 +631,10 @@ INSERT INTO vtxos (
     policy_template, client_key_id,
     operator_pubkey, batch_expiry, chain_depth,
     created_height, commitment_txid, spent, creation_time, last_update_time,
-    construction_version
+    construction_version, redemption_round_id
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-    $17
+    $17, $18
 )
 ON CONFLICT (outpoint_hash, outpoint_index) DO UPDATE SET
     pk_script = CASE WHEN excluded.pk_script IS NOT NULL AND length(excluded.pk_script) > 0 THEN excluded.pk_script ELSE vtxos.pk_script END,
@@ -561,6 +646,7 @@ ON CONFLICT (outpoint_hash, outpoint_index) DO UPDATE SET
     chain_depth = CASE WHEN excluded.chain_depth != 0 THEN excluded.chain_depth ELSE vtxos.chain_depth END,
     created_height = CASE WHEN excluded.created_height != 0 THEN excluded.created_height ELSE vtxos.created_height END,
     commitment_txid = CASE WHEN excluded.commitment_txid IS NOT NULL AND length(excluded.commitment_txid) > 0 THEN excluded.commitment_txid ELSE vtxos.commitment_txid END,
+    redemption_round_id = COALESCE(excluded.redemption_round_id, vtxos.redemption_round_id),
     last_update_time = excluded.last_update_time
 `
 
@@ -582,6 +668,7 @@ type InsertVTXOParams struct {
 	CreationTime        int64
 	LastUpdateTime      int64
 	ConstructionVersion int32
+	RedemptionRoundID   sql.NullString
 }
 
 // VTXO queries.
@@ -608,6 +695,7 @@ func (q *Queries) InsertVTXO(ctx context.Context, arg InsertVTXOParams) error {
 		arg.CreationTime,
 		arg.LastUpdateTime,
 		arg.ConstructionVersion,
+		arg.RedemptionRoundID,
 	)
 	return err
 }
@@ -651,7 +739,7 @@ func (q *Queries) InsertVTXOAncestryPath(ctx context.Context, arg InsertVTXOAnce
 }
 
 const ListActiveRounds = `-- name: ListActiveRounds :many
-SELECT round_id, start_height, confirmation_height, confirmation_block_hash, commitment_tx, commitment_txid, vtxt_tree, status, creation_time, last_update_time, flow_version FROM rounds WHERE status = 'input_sig_sent' ORDER BY creation_time ASC
+SELECT round_id, start_height, confirmation_height, confirmation_block_hash, commitment_tx, commitment_txid, vtxt_tree, status, creation_time, last_update_time, flow_version, sweep_delay FROM rounds WHERE status = 'input_sig_sent' ORDER BY creation_time ASC
 `
 
 func (q *Queries) ListActiveRounds(ctx context.Context) ([]Round, error) {
@@ -675,6 +763,7 @@ func (q *Queries) ListActiveRounds(ctx context.Context) ([]Round, error) {
 			&i.CreationTime,
 			&i.LastUpdateTime,
 			&i.FlowVersion,
+			&i.SweepDelay,
 		); err != nil {
 			return nil, err
 		}
@@ -690,7 +779,7 @@ func (q *Queries) ListActiveRounds(ctx context.Context) ([]Round, error) {
 }
 
 const ListAllVTXOs = `-- name: ListAllVTXOs :many
-SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, policy_template, client_key_id, operator_pubkey, batch_expiry, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time, chain_depth, construction_version FROM vtxos ORDER BY creation_time DESC
+SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, policy_template, client_key_id, operator_pubkey, batch_expiry, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time, chain_depth, construction_version, redemption_round_id FROM vtxos ORDER BY creation_time DESC
 `
 
 func (q *Queries) ListAllVTXOs(ctx context.Context) ([]Vtxo, error) {
@@ -726,6 +815,7 @@ func (q *Queries) ListAllVTXOs(ctx context.Context) ([]Vtxo, error) {
 			&i.LastUpdateTime,
 			&i.ChainDepth,
 			&i.ConstructionVersion,
+			&i.RedemptionRoundID,
 		); err != nil {
 			return nil, err
 		}
@@ -788,7 +878,7 @@ func (q *Queries) ListLiveVTXOAncestryPaths(ctx context.Context) ([]VtxoAncestry
 }
 
 const ListRoundsByStatus = `-- name: ListRoundsByStatus :many
-SELECT round_id, start_height, confirmation_height, confirmation_block_hash, commitment_tx, commitment_txid, vtxt_tree, status, creation_time, last_update_time, flow_version FROM rounds WHERE status = $1 ORDER BY creation_time DESC
+SELECT round_id, start_height, confirmation_height, confirmation_block_hash, commitment_tx, commitment_txid, vtxt_tree, status, creation_time, last_update_time, flow_version, sweep_delay FROM rounds WHERE status = $1 ORDER BY creation_time DESC
 `
 
 func (q *Queries) ListRoundsByStatus(ctx context.Context, status string) ([]Round, error) {
@@ -812,6 +902,7 @@ func (q *Queries) ListRoundsByStatus(ctx context.Context, status string) ([]Roun
 			&i.CreationTime,
 			&i.LastUpdateTime,
 			&i.FlowVersion,
+			&i.SweepDelay,
 		); err != nil {
 			return nil, err
 		}
@@ -827,7 +918,7 @@ func (q *Queries) ListRoundsByStatus(ctx context.Context, status string) ([]Roun
 }
 
 const ListRoundsPaginated = `-- name: ListRoundsPaginated :many
-SELECT round_id, start_height, confirmation_height, confirmation_block_hash, commitment_tx, commitment_txid, vtxt_tree, status, creation_time, last_update_time, flow_version FROM rounds
+SELECT round_id, start_height, confirmation_height, confirmation_block_hash, commitment_tx, commitment_txid, vtxt_tree, status, creation_time, last_update_time, flow_version, sweep_delay FROM rounds
 WHERE ($1 = '' OR round_id > $1)
   AND ($2 = '' OR status = $2)
   AND ($3 = 0 OR creation_time >= $3)
@@ -873,6 +964,7 @@ func (q *Queries) ListRoundsPaginated(ctx context.Context, arg ListRoundsPaginat
 			&i.CreationTime,
 			&i.LastUpdateTime,
 			&i.FlowVersion,
+			&i.SweepDelay,
 		); err != nil {
 			return nil, err
 		}
@@ -934,7 +1026,7 @@ func (q *Queries) ListUnspentVTXOAncestryPaths(ctx context.Context) ([]VtxoAnces
 }
 
 const ListUnspentVTXOs = `-- name: ListUnspentVTXOs :many
-SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, policy_template, client_key_id, operator_pubkey, batch_expiry, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time, chain_depth, construction_version FROM vtxos
+SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, policy_template, client_key_id, operator_pubkey, batch_expiry, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time, chain_depth, construction_version, redemption_round_id FROM vtxos
 WHERE spent = FALSE
     AND status != 4
 ORDER BY creation_time DESC
@@ -974,6 +1066,7 @@ func (q *Queries) ListUnspentVTXOs(ctx context.Context) ([]Vtxo, error) {
 			&i.LastUpdateTime,
 			&i.ChainDepth,
 			&i.ConstructionVersion,
+			&i.RedemptionRoundID,
 		); err != nil {
 			return nil, err
 		}
@@ -1080,7 +1173,7 @@ func (q *Queries) ListVTXOAncestryPathsByStatus(ctx context.Context, status int3
 }
 
 const ListVTXOsByRound = `-- name: ListVTXOsByRound :many
-SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, policy_template, client_key_id, operator_pubkey, batch_expiry, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time, chain_depth, construction_version FROM vtxos WHERE round_id = $1 ORDER BY creation_time DESC
+SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, policy_template, client_key_id, operator_pubkey, batch_expiry, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time, chain_depth, construction_version, redemption_round_id FROM vtxos WHERE round_id = $1 ORDER BY creation_time DESC
 `
 
 func (q *Queries) ListVTXOsByRound(ctx context.Context, roundID string) ([]Vtxo, error) {
@@ -1116,6 +1209,7 @@ func (q *Queries) ListVTXOsByRound(ctx context.Context, roundID string) ([]Vtxo,
 			&i.LastUpdateTime,
 			&i.ChainDepth,
 			&i.ConstructionVersion,
+			&i.RedemptionRoundID,
 		); err != nil {
 			return nil, err
 		}

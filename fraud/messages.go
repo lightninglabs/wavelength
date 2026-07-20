@@ -95,6 +95,15 @@ type SpendObservedMsg struct {
 	// SpendingTxid is the transaction that spent Outpoint.
 	SpendingTxid chainhash.Hash
 
+	// SpendingTx is the confirmed transaction that spent Outpoint. The
+	// watcher uses its revealed tapleaf to distinguish the operator's
+	// committed expiry sweep from ancestry materialization fraud.
+	SpendingTx *wire.MsgTx
+
+	// SpenderInputIndex identifies the input in SpendingTx that consumed
+	// Outpoint.
+	SpenderInputIndex uint32
+
 	// Height is the confirmation height of SpendingTxid.
 	Height int32
 }

@@ -248,6 +248,169 @@ func TestRoundStoreCommitAndFetch(t *testing.T) {
 	require.Equal(t, testRound.RoundID, inputSigState.RoundID)
 }
 
+// TestRoundStoreClaimCheckpointRecovery verifies an InputSigSent checkpoint
+// preserves the full claim authorization, its source-to-request binding, the
+// replacement signing locator, and local claim origin.
+func TestRoundStoreClaimCheckpointRecovery(t *testing.T) {
+	t.Parallel()
+
+	store, _ := newRoundStoreForTest(t)
+	testRound := createTestRound(
+		t, testRoundIDDB("claim-checkpoint-recovery"),
+	)
+
+	// Force odd-y keys so replacing either explicit compressed key with the
+	// policy decoder's canonical x-only lift deterministically fails the
+	// parity assertions below.
+	newOddKey := func() *btcec.PrivateKey {
+		for {
+			key, err := btcec.NewPrivateKey()
+			require.NoError(t, err)
+			if key.PubKey().SerializeCompressed()[0] == 0x03 {
+				return key
+			}
+		}
+	}
+	owner := newOddKey()
+	operator := newOddKey()
+	signing, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	policy, err := arkscript.EncodeStandardVTXOTemplate(
+		owner.PubKey(), operator.PubKey(), 144,
+	)
+	require.NoError(t, err)
+	replacement := types.VTXORequest{
+		Amount:         125_000,
+		FixedAmount:    true,
+		PolicyTemplate: policy,
+		Expiry:         144,
+		ClientKey:      owner.PubKey(),
+		OwnerKey: keychain.KeyDescriptor{
+			PubKey: owner.PubKey(),
+			KeyLocator: keychain.KeyLocator{
+				Family: 71,
+				Index:  9,
+			},
+		},
+		OperatorKey: operator.PubKey(),
+		SigningKey: keychain.KeyDescriptor{
+			PubKey: signing.PubKey(),
+			KeyLocator: keychain.KeyLocator{
+				Family: 72,
+				Index:  11,
+			},
+		},
+		Origin: types.VTXOOriginClaimReissue,
+	}
+	replacement.PkScript, err = replacement.EffectivePkScript()
+	require.NoError(t, err)
+
+	var (
+		sourceHash chainhash.Hash
+		nonce      [types.VTXOClaimNonceSize]byte
+	)
+	sourceHash[0] = 0x91
+	nonce[0] = 0x42
+	claim := round.VTXOClaimIntent{
+		Input: types.VTXOClaimInput{
+			SourceOutpoint: wire.OutPoint{
+				Hash:  sourceHash,
+				Index: 3,
+			},
+			ParticipantPubKey:     owner.PubKey(),
+			ReplacementSigningKey: replacement.SigningKey,
+			Nonce:                 nonce,
+			ValidFrom:             700,
+			ValidUntil:            760,
+			Signature: bytes.Repeat(
+				[]byte{0x55}, types.VTXOClaimSignatureSize,
+			),
+		},
+		ExpectedOutput: replacement,
+	}
+	intents := round.Intents{
+		VTXOs: []types.VTXORequest{
+			replacement,
+		},
+		Claims: []round.VTXOClaimIntent{
+			claim,
+		},
+	}
+	testRound.Intents = intents
+
+	state := &round.InputSigSentState{
+		RoundID:     testRound.RoundID,
+		Intents:     intents,
+		ClientTrees: make(map[round.SignerKey]*tree.Tree),
+		SweepDelay:  1440,
+	}
+	testRound.CommitmentTx.WhenSome(func(packet *psbt.Packet) {
+		state.CommitmentTx = packet
+	})
+	testRound.VTXOTreePaths.WhenSome(func(treePaths map[int]*tree.Tree) {
+		state.VTXOTreePaths = treePaths
+	})
+
+	require.NoError(t, store.CommitState(t.Context(), testRound, state))
+	_, restoredState, err := store.FetchState(
+		t.Context(), testRound.RoundID,
+	)
+	require.NoError(t, err)
+	restored, ok := restoredState.(*round.InputSigSentState)
+	require.True(t, ok)
+	require.Len(t, restored.Intents.Claims, 1)
+	require.Len(t, restored.Intents.VTXOs, 1)
+	require.Equal(t, uint32(1440), restored.SweepDelay)
+
+	restoredClaim := restored.Intents.Claims[0]
+	require.Equal(
+		t, claim.Input.SourceOutpoint,
+		restoredClaim.Input.SourceOutpoint,
+	)
+	require.True(
+		t, claim.Input.ParticipantPubKey.IsEqual(
+			restoredClaim.Input.ParticipantPubKey,
+		),
+	)
+	require.Equal(t, claim.Input.Nonce, restoredClaim.Input.Nonce)
+	require.Equal(t, claim.Input.ValidFrom, restoredClaim.Input.ValidFrom)
+	require.Equal(t, claim.Input.ValidUntil,
+		restoredClaim.Input.ValidUntil)
+	require.Equal(t, claim.Input.Signature,
+		restoredClaim.Input.Signature)
+	require.Equal(
+		t, replacement.SigningKey.KeyLocator,
+		restoredClaim.Input.ReplacementSigningKey.KeyLocator,
+	)
+	require.True(
+		t, replacement.SigningKey.PubKey.IsEqual(
+			restoredClaim.Input.ReplacementSigningKey.PubKey,
+		),
+	)
+	require.Equal(
+		t, types.VTXOOriginClaimReissue,
+		restoredClaim.ExpectedOutput.Origin,
+	)
+	require.Equal(
+		t, replacement.SigningKey.KeyLocator,
+		restoredClaim.ExpectedOutput.SigningKey.KeyLocator,
+	)
+	require.Equal(
+		t, replacement.ClientKey.SerializeCompressed(),
+		restoredClaim.ExpectedOutput.ClientKey.SerializeCompressed(),
+	)
+	require.Equal(
+		t, replacement.OwnerKey.PubKey.SerializeCompressed(),
+		restoredClaim.ExpectedOutput.OwnerKey.PubKey.
+			SerializeCompressed(),
+	)
+	require.Equal(
+		t, replacement.OperatorKey.SerializeCompressed(),
+		restoredClaim.ExpectedOutput.OperatorKey.SerializeCompressed(),
+	)
+}
+
 // TestRoundStoreLookupByTxid tests looking up a round by commitment txid.
 func TestRoundStoreLookupByTxid(t *testing.T) {
 	t.Parallel()

@@ -255,6 +255,20 @@ type RoundVTXORequest struct {
 	SigningKey keychain.KeyDescriptor
 }
 
+// VTXOClaimIntent pairs the wire authorization for one swept VTXO with the
+// exact replacement output the client expects the operator to derive from the
+// source registry entry. ExpectedOutput is local-only and is never serialized
+// as a VTXORequest.
+type VTXOClaimIntent struct {
+	// Input is the independently signed claim submitted to the operator.
+	Input types.VTXOClaimInput
+
+	// ExpectedOutput carries the locally known amount, policy, owner key,
+	// and replacement tree-signing key used to validate the server quote
+	// and tree.
+	ExpectedOutput types.VTXORequest
+}
+
 // ToVTXORequest converts a RoundVTXORequest to a types.VTXORequest
 // for wire encoding and DB persistence.
 func (r RoundVTXORequest) ToVTXORequest() types.VTXORequest {
@@ -272,6 +286,11 @@ func (r RoundVTXORequest) ToVTXORequest() types.VTXORequest {
 // Intents holds the accumulated round participation data after signing
 // keys have been derived. All VTXO requests carry their signing keys.
 type Intents struct {
+	// RequestedRoundID is set only for claim-only registration. It is the
+	// exact open round UUID returned by selective claim preflight and is
+	// signed by every claim authorization.
+	RequestedRoundID string
+
 	// Boarding contains all boarding intents to include in the round.
 	Boarding []BoardingIntent
 
@@ -290,6 +309,12 @@ type Intents struct {
 	// is available (e.g., test environments).
 	Forfeits []types.ForfeitRequest
 
+	// Claims contains fixed, zero-fee replacements for expired VTXOs swept
+	// back by the operator. Once registration starts their ExpectedOutput
+	// entries are appended to VTXOs for the normal tree-signing and
+	// persistence pipeline.
+	Claims []VTXOClaimIntent
+
 	// QuotedLeaveAmounts optionally carries the server-authoritative
 	// leave output amounts (positional, matching Leaves) captured at
 	// QuoteAccepted time. Downstream accounting (fee computation,
@@ -302,12 +327,38 @@ type Intents struct {
 // Clone creates a copy of the Intents.
 func (i *Intents) Clone() Intents {
 	return Intents{
+		RequestedRoundID:   i.RequestedRoundID,
 		Boarding:           slices.Clone(i.Boarding),
 		VTXOs:              slices.Clone(i.VTXOs),
 		Leaves:             slices.Clone(i.Leaves),
 		Forfeits:           slices.Clone(i.Forfeits),
+		Claims:             slices.Clone(i.Claims),
 		QuotedLeaveAmounts: slices.Clone(i.QuotedLeaveAmounts),
 	}
+}
+
+// StandardVTXOCount returns the number of ordinary VTXO requests at the front
+// of VTXOs. Claim replacement outputs are appended one-for-one at
+// registration time.
+func (i *Intents) StandardVTXOCount() int {
+	if len(i.Claims) == 0 {
+		return len(i.VTXOs)
+	}
+
+	count := len(i.VTXOs) - len(i.Claims)
+	if count < 0 {
+		return 0
+	}
+
+	return count
+}
+
+// IsClaimOnly reports whether this intent contains only claim inputs and their
+// fixed replacement outputs.
+func (i *Intents) IsClaimOnly() bool {
+	return len(i.Claims) > 0 && len(i.Boarding) == 0 &&
+		len(i.Forfeits) == 0 && len(i.Leaves) == 0 &&
+		i.StandardVTXOCount() == 0
 }
 
 // LeaveAmount returns the authoritative output value (sats) for

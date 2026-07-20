@@ -59,6 +59,12 @@ service IndexerService {
     // local state deterministically.
     rpc ListVTXOEventsByScripts (ListVTXOEventsByScriptsRequest)
         returns (ListVTXOEventsByScriptsResponse);
+
+    // CheckVTXORedeemability selectively reconciles locally-expired VTXOs
+    // with the operator. The caller must prove control of every script scope;
+    // the response intentionally omits unknown, pre-final, and locked VTXOs.
+    rpc CheckVTXORedeemability (CheckVTXORedeemabilityRequest)
+        returns (CheckVTXORedeemabilityResponse);
 }
 
 message RegisterReceiveScriptRequest {
@@ -369,6 +375,11 @@ enum VTXOStatus {
 
     // VTXO_STATUS_FAILED indicates an unrecoverable error (terminal).
     VTXO_STATUS_FAILED = 8;
+
+    // VTXO_STATUS_EXPIRED indicates the VTXO's batch was swept after its
+    // expiry. A long-offline client materializes it as another local claim
+    // candidate instead of treating the lineage as unrecoverable.
+    VTXO_STATUS_EXPIRED = 9;
 }
 
 // VTXO describes a virtual transaction output and its authoritative indexer
@@ -482,6 +493,35 @@ message ListVTXOsByScriptsResponse {
 
     // next_cursor is empty when the result set is exhausted.
     bytes next_cursor = 2;
+}
+
+// CheckVTXORedeemabilityRequest asks whether a specific set of locally-expired
+// VTXOs can be reissued. Scripts carry the same proof-of-control used by the
+// other selective indexer queries.
+message CheckVTXORedeemabilityRequest {
+    repeated OutPoint outpoints = 1;
+    repeated ScriptScope scripts = 2;
+}
+
+// VTXORedemption records a completed reissuance. It lets a client recover the
+// replacement after crashing during a round or when another participant
+// submitted the claim.
+message VTXORedemption {
+    OutPoint source_outpoint = 1;
+    OutPoint replacement_outpoint = 2;
+}
+
+// CheckVTXORedeemabilityResponse returns only positive reconciliation facts.
+// Absence means unknown, pre-final, or currently locked; it is not a permanent
+// negative result.
+message CheckVTXORedeemabilityResponse {
+    repeated OutPoint redeemable_outpoints = 1;
+    repeated VTXORedemption redemptions = 2;
+
+    // claim_round_id is the exact currently-open round UUID that a client
+    // must bind into every authorization for redeemable_outpoints. It is
+    // empty when the response contains only completed redemptions.
+    string claim_round_id = 3;
 }
 
 message GetOORSessionByTxidRequest {

@@ -128,21 +128,34 @@ const (
 	// amount, originating round_id, and (once known) the commitment
 	// txid that will create them.
 	VTXOStatus_VTXO_STATUS_PENDING_ROUND VTXOStatus = 9
+	// VTXO_STATUS_EXPIRED indicates the synchronized client chain height
+	// reached the batch expiry. The VTXO is no longer spendable, but may
+	// become eligible for an operator-sweep reissue.
+	VTXOStatus_VTXO_STATUS_EXPIRED VTXOStatus = 10
+	// VTXO_STATUS_REDEEMING indicates an expired-VTXO claim was durably
+	// adopted by a reissue round whose replacement has not confirmed yet.
+	VTXOStatus_VTXO_STATUS_REDEEMING VTXOStatus = 11
+	// VTXO_STATUS_REDEEMED is terminal: the expired VTXO was linked to a
+	// replacement VTXO.
+	VTXOStatus_VTXO_STATUS_REDEEMED VTXOStatus = 12
 )
 
 // Enum value maps for VTXOStatus.
 var (
 	VTXOStatus_name = map[int32]string{
-		0: "VTXO_STATUS_UNSPECIFIED",
-		1: "VTXO_STATUS_LIVE",
-		2: "VTXO_STATUS_PENDING_FORFEIT",
-		3: "VTXO_STATUS_FORFEITING",
-		4: "VTXO_STATUS_FORFEITED",
-		5: "VTXO_STATUS_SPENT",
-		6: "VTXO_STATUS_UNILATERAL_EXIT",
-		7: "VTXO_STATUS_FAILED",
-		8: "VTXO_STATUS_SPENDING",
-		9: "VTXO_STATUS_PENDING_ROUND",
+		0:  "VTXO_STATUS_UNSPECIFIED",
+		1:  "VTXO_STATUS_LIVE",
+		2:  "VTXO_STATUS_PENDING_FORFEIT",
+		3:  "VTXO_STATUS_FORFEITING",
+		4:  "VTXO_STATUS_FORFEITED",
+		5:  "VTXO_STATUS_SPENT",
+		6:  "VTXO_STATUS_UNILATERAL_EXIT",
+		7:  "VTXO_STATUS_FAILED",
+		8:  "VTXO_STATUS_SPENDING",
+		9:  "VTXO_STATUS_PENDING_ROUND",
+		10: "VTXO_STATUS_EXPIRED",
+		11: "VTXO_STATUS_REDEEMING",
+		12: "VTXO_STATUS_REDEEMED",
 	}
 	VTXOStatus_value = map[string]int32{
 		"VTXO_STATUS_UNSPECIFIED":     0,
@@ -155,6 +168,9 @@ var (
 		"VTXO_STATUS_FAILED":          7,
 		"VTXO_STATUS_SPENDING":        8,
 		"VTXO_STATUS_PENDING_ROUND":   9,
+		"VTXO_STATUS_EXPIRED":         10,
+		"VTXO_STATUS_REDEEMING":       11,
+		"VTXO_STATUS_REDEEMED":        12,
 	}
 )
 
@@ -1664,6 +1680,11 @@ type GetBalanceResponse struct {
 	// total_confirmed_sat; reappears under onchain_wallet_confirmed_sat
 	// once the sweep confirms.
 	VtxoUnilateralExitSat int64 `protobuf:"varint,10,opt,name=vtxo_unilateral_exit_sat,json=vtxoUnilateralExitSat,proto3" json:"vtxo_unilateral_exit_sat,omitempty"`
+	// vtxo_pending_reissue_sat is the value of locally expired VTXOs that
+	// are waiting for a finalized operator-sweep claim or whose reissue
+	// round is in flight. It includes EXPIRED and REDEEMING VTXOs, is not
+	// spendable, and is excluded from total_confirmed_sat.
+	VtxoPendingReissueSat int64 `protobuf:"varint,11,opt,name=vtxo_pending_reissue_sat,json=vtxoPendingReissueSat,proto3" json:"vtxo_pending_reissue_sat,omitempty"`
 	unknownFields         protoimpl.UnknownFields
 	sizeCache             protoimpl.SizeCache
 }
@@ -1764,6 +1785,13 @@ func (x *GetBalanceResponse) GetVtxoPendingSat() int64 {
 func (x *GetBalanceResponse) GetVtxoUnilateralExitSat() int64 {
 	if x != nil {
 		return x.VtxoUnilateralExitSat
+	}
+	return 0
+}
+
+func (x *GetBalanceResponse) GetVtxoPendingReissueSat() int64 {
+	if x != nil {
+		return x.VtxoPendingReissueSat
 	}
 	return 0
 }
@@ -1933,7 +1961,11 @@ type VTXO struct {
 	// commitment tx of the leave/cooperative-forfeit round). It is present
 	// only for FORFEITED VTXOs whose forfeit round is known, and unset
 	// otherwise, so absence is explicit rather than a zero-value sentinel.
-	Settlement    *VTXOSettlement `protobuf:"bytes,14,opt,name=settlement,proto3" json:"settlement,omitempty"`
+	Settlement *VTXOSettlement `protobuf:"bytes,14,opt,name=settlement,proto3" json:"settlement,omitempty"`
+	// replaced_by is the canonical outpoint of the replacement VTXO after
+	// a cooperative refresh or expired-VTXO reissue. It is empty until the
+	// replacement is known locally.
+	ReplacedBy    string `protobuf:"bytes,15,opt,name=replaced_by,json=replacedBy,proto3" json:"replaced_by,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2064,6 +2096,13 @@ func (x *VTXO) GetSettlement() *VTXOSettlement {
 		return x.Settlement
 	}
 	return nil
+}
+
+func (x *VTXO) GetReplacedBy() string {
+	if x != nil {
+		return x.ReplacedBy
+	}
+	return ""
 }
 
 type VTXOSettlement struct {
@@ -9976,7 +10015,7 @@ const file_daemon_proto_rawDesc = "" +
 	"\x0fwallet_password\x18\x01 \x01(\fR\x0ewalletPassword\"?\n" +
 	"\x14UnlockWalletResponse\x12'\n" +
 	"\x0fidentity_pubkey\x18\x01 \x01(\tR\x0eidentityPubkey\"\x13\n" +
-	"\x11GetBalanceRequest\"\x9f\x04\n" +
+	"\x11GetBalanceRequest\"\xd8\x04\n" +
 	"\x12GetBalanceResponse\x124\n" +
 	"\x16boarding_confirmed_sat\x18\x01 \x01(\x03R\x14boardingConfirmedSat\x128\n" +
 	"\x18boarding_unconfirmed_sat\x18\x02 \x01(\x03R\x16boardingUnconfirmedSat\x12(\n" +
@@ -9988,7 +10027,8 @@ const file_daemon_proto_rawDesc = "" +
 	"\x14boarding_adopted_sat\x18\b \x01(\x03R\x12boardingAdoptedSat\x12(\n" +
 	"\x10vtxo_pending_sat\x18\t \x01(\x03R\x0evtxoPendingSat\x127\n" +
 	"\x18vtxo_unilateral_exit_sat\x18\n" +
-	" \x01(\x03R\x15vtxoUnilateralExitSat\"\x9e\x03\n" +
+	" \x01(\x03R\x15vtxoUnilateralExitSat\x127\n" +
+	"\x18vtxo_pending_reissue_sat\x18\v \x01(\x03R\x15vtxoPendingReissueSat\"\x9e\x03\n" +
 	"\x0eVTXOExpiryInfo\x121\n" +
 	"\x06status\x18\x01 \x01(\x0e2\x19.waverpc.VTXOExpiryStatusR\x06status\x12%\n" +
 	"\x0ecurrent_height\x18\x02 \x01(\x05R\rcurrentHeight\x12!\n" +
@@ -9999,7 +10039,7 @@ const file_daemon_proto_rawDesc = "" +
 	"\x0frelative_expiry\x18\a \x01(\rR\x0erelativeExpiry\x12$\n" +
 	"\x0emax_tree_depth\x18\b \x01(\rR\fmaxTreeDepth\x12\x1f\n" +
 	"\vchain_depth\x18\t \x01(\rR\n" +
-	"chainDepth\"\xb7\x04\n" +
+	"chainDepth\"\xd8\x04\n" +
 	"\x04VTXO\x12\x1a\n" +
 	"\boutpoint\x18\x01 \x01(\tR\boutpoint\x12\x1d\n" +
 	"\n" +
@@ -10020,7 +10060,9 @@ const file_daemon_proto_rawDesc = "" +
 	"expiryInfo\x127\n" +
 	"\n" +
 	"settlement\x18\x0e \x01(\v2\x17.waverpc.VTXOSettlementR\n" +
-	"settlement\"U\n" +
+	"settlement\x12\x1f\n" +
+	"\vreplaced_by\x18\x0f \x01(\tR\n" +
+	"replacedBy\"U\n" +
 	"\x0eVTXOSettlement\x12\x12\n" +
 	"\x04txid\x18\x01 \x01(\tR\x04txid\x12\x16\n" +
 	"\x06height\x18\x02 \x01(\x05R\x06height\x12\x17\n" +
@@ -10599,7 +10641,7 @@ const file_daemon_proto_rawDesc = "" +
 	"\x11WALLET_STATE_NONE\x10\x01\x12\x17\n" +
 	"\x13WALLET_STATE_LOCKED\x10\x02\x12\x16\n" +
 	"\x12WALLET_STATE_READY\x10\x03\x12\x18\n" +
-	"\x14WALLET_STATE_SYNCING\x10\x04*\xa0\x02\n" +
+	"\x14WALLET_STATE_SYNCING\x10\x04*\xee\x02\n" +
 	"\n" +
 	"VTXOStatus\x12\x1b\n" +
 	"\x17VTXO_STATUS_UNSPECIFIED\x10\x00\x12\x14\n" +
@@ -10611,7 +10653,11 @@ const file_daemon_proto_rawDesc = "" +
 	"\x1bVTXO_STATUS_UNILATERAL_EXIT\x10\x06\x12\x16\n" +
 	"\x12VTXO_STATUS_FAILED\x10\a\x12\x18\n" +
 	"\x14VTXO_STATUS_SPENDING\x10\b\x12\x1d\n" +
-	"\x19VTXO_STATUS_PENDING_ROUND\x10\t*\xb6\x01\n" +
+	"\x19VTXO_STATUS_PENDING_ROUND\x10\t\x12\x17\n" +
+	"\x13VTXO_STATUS_EXPIRED\x10\n" +
+	"\x12\x19\n" +
+	"\x15VTXO_STATUS_REDEEMING\x10\v\x12\x18\n" +
+	"\x14VTXO_STATUS_REDEEMED\x10\f*\xb6\x01\n" +
 	"\x10VTXOExpiryStatus\x12\x1e\n" +
 	"\x1aVTXO_EXPIRY_STATUS_UNKNOWN\x10\x00\x12\x1b\n" +
 	"\x17VTXO_EXPIRY_STATUS_SAFE\x10\x01\x12$\n" +

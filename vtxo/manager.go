@@ -128,6 +128,18 @@ type ManagerConfig struct {
 	// actor-owned work.
 	TerminalVTXOObserver func(context.Context, wire.OutPoint) error
 
+	// ExpiredVTXOObserver receives a best-effort notification after a VTXO
+	// is durably classified Expired and its actor is retired. The
+	// redemption coordinator uses this as a low-latency polling trigger;
+	// its startup/status scan remains the source of recovery after crashes.
+	ExpiredVTXOObserver func(context.Context, wire.OutPoint) error
+
+	// RedemptionBlockObserver receives every connected block even when no
+	// live VTXO actor remains. The selective redemption coordinator uses
+	// the edge to retry already-expired claims as soon as an operator sweep
+	// can have finalized; its periodic poll remains the recovery fallback.
+	RedemptionBlockObserver func(context.Context, int32) error
+
 	// ExitOutcomeResolver resolves terminal unilateral-exit job outcomes
 	// for VTXOs that remain persisted in VTXOStatusUnilateralExit at
 	// manager startup. When set, Start uses it to re-converge VTXO status
@@ -192,6 +204,21 @@ type Manager struct {
 	// and terminate hooks instead.
 	liveDescriptors []*Descriptor
 }
+
+const redemptionBlockSubscriptionID = "vtxo.redemption-reconcile"
+
+type redemptionBlockEpochMsg struct {
+	actor.BaseMessage
+	Height int32
+}
+
+// MessageType returns the internal block-trigger message name.
+func (m *redemptionBlockEpochMsg) MessageType() string {
+	return "RedemptionBlockEpoch"
+}
+
+// VTXOManagerMsg marks the block trigger as manager input.
+func (m *redemptionBlockEpochMsg) VTXOManagerMsg() {}
 
 // NewManager creates a new VTXO Manager.
 func NewManager(cfg *ManagerConfig) *Manager {
@@ -437,6 +464,30 @@ func (m *Manager) Start(ctx context.Context,
 
 	m.managerRef = selfRef
 
+	if m.cfg.RedemptionBlockObserver != nil && m.cfg.ChainSource != nil {
+		epochRef := chainsource.MapBlockEpoch(
+			selfRef, func(epoch chainsource.BlockEpoch) ManagerMsg {
+				return &redemptionBlockEpochMsg{
+					Height: epoch.Height,
+				}
+			},
+		)
+		notifyActor := fn.Some(epochRef)
+		result := m.cfg.ChainSource.Ask(
+			ctx, &chainsource.SubscribeBlocksRequest{
+				CallerID:    redemptionBlockSubscriptionID,
+				NotifyActor: notifyActor,
+			},
+		).Await(ctx)
+		if result.IsErr() {
+			m.logger(ctx).WarnS(
+				ctx,
+				"Failed to subscribe redemption block trigger",
+				result.Err(),
+			)
+		}
+	}
+
 	vtxos, err := m.cfg.Store.ListLiveVTXOs(ctx)
 	if err != nil {
 		return fmt.Errorf("list live vtxos: %w", err)
@@ -547,7 +598,29 @@ func (m *Manager) reconcileUnilateralExits(ctx context.Context) {
 
 // Stop gracefully shuts down the manager.
 func (m *Manager) Stop(ctx context.Context) {
+	if m.cfg.RedemptionBlockObserver != nil && m.cfg.ChainSource != nil {
+		err := m.cfg.ChainSource.Tell(
+			ctx, &chainsource.UnsubscribeBlocksRequest{
+				CallerID: redemptionBlockSubscriptionID,
+			},
+		)
+		if err != nil {
+			m.logger(ctx).WarnS(
+				ctx,
+				"Failed to unsubscribe redemption "+
+					"block trigger",
+				err,
+			)
+		}
+	}
 	m.logger(ctx).InfoS(ctx, "VTXO manager stopped")
+}
+
+// OnStop releases the manager-owned redemption block subscription.
+func (m *Manager) OnStop(ctx context.Context) error {
+	m.Stop(ctx)
+
+	return nil
 }
 
 // Receive processes incoming messages.
@@ -579,6 +652,22 @@ func (m *Manager) Receive(ctx context.Context,
 		)
 
 		return fn.Ok[ManagerResp](&ReleaseSpendResponse{})
+
+	case *redemptionBlockEpochMsg:
+		if m.cfg.RedemptionBlockObserver != nil {
+			err := m.cfg.RedemptionBlockObserver(ctx, req.Height)
+			if err != nil {
+				m.logger(ctx).WarnS(
+					ctx,
+					"Failed to notify redemption block "+
+						"observer",
+					err,
+					slog.Int("height", int(req.Height)),
+				)
+			}
+		}
+
+		return fn.Ok[ManagerResp](&ReconcileExpiryResponse{})
 
 	case *RelayToRoundMsg:
 		return m.handleRelayToRound(ctx, req)
@@ -619,6 +708,9 @@ func (m *Manager) Receive(ctx context.Context,
 		return fn.Ok[ManagerResp](&ListLiveDescriptorsResponse{
 			Descriptors: descs,
 		})
+
+	case *ReconcileExpiryRequest:
+		return m.handleReconcileExpiry(ctx, req)
 
 	case *ForceUnrollRequest:
 		return m.handleForceUnroll(ctx, req)
@@ -696,6 +788,7 @@ func (m *Manager) handleVTXOCreated(ctx context.Context,
 func (m *Manager) handleVTXOsMaterialized(ctx context.Context,
 	msg *VTXOsMaterializedNotification) fn.Result[ManagerResp] {
 
+	var materializationErrs []error
 	for _, descriptor := range msg.VTXOs {
 		if descriptor == nil {
 			continue
@@ -717,6 +810,11 @@ func (m *Manager) handleVTXOsMaterialized(ctx context.Context,
 				err,
 				slog.String("outpoint", outpoint.String()),
 			)
+			materializationErrs = append(
+				materializationErrs,
+				fmt.Errorf("spawn VTXO actor %s: %w", outpoint,
+					err),
+			)
 
 			continue
 		}
@@ -728,6 +826,9 @@ func (m *Manager) handleVTXOsMaterialized(ctx context.Context,
 			slog.Int64("amount", int64(descriptor.Amount)),
 			slog.Int("batch_expiry", int(descriptor.BatchExpiry)),
 		)
+	}
+	if err := errors.Join(materializationErrs...); err != nil {
+		return fn.Err[ManagerResp](err)
 	}
 
 	return fn.Ok[ManagerResp](&VTXOsMaterializedResp{})
@@ -1109,7 +1210,107 @@ func (m *Manager) handleVTXOTerminated(ctx context.Context,
 		}
 	}
 
+	if msg.FinalState == "Expired" && m.cfg.ExpiredVTXOObserver != nil {
+		err := m.cfg.ExpiredVTXOObserver(ctx, msg.Outpoint)
+		if err != nil {
+			m.logger(ctx).WarnS(
+				ctx,
+				"Failed to notify expired VTXO observer",
+				err,
+				slog.String("outpoint", msg.Outpoint.String()),
+			)
+		}
+	}
+
 	return fn.Ok[ManagerResp](&VTXOTerminatedResp{})
+}
+
+// handleReconcileExpiry classifies every recovered active VTXO against one
+// authoritative chain height. It runs only after the round and unroll targets
+// are registered, so any pre-expiry safety transition can resolve its normal
+// downstream actor while already-expired VTXOs retire locally without racing
+// an on-chain exit.
+func (m *Manager) handleReconcileExpiry(ctx context.Context,
+	req *ReconcileExpiryRequest) fn.Result[ManagerResp] {
+
+	var legacyRecovered []wire.OutPoint
+	legacyStore, ok := m.cfg.Store.(LegacyExpiredVTXOStore)
+	if ok {
+		var err error
+		legacyRecovered, err = legacyStore.RecoverLegacyExpiredVTXOs(
+			ctx, req.Height,
+		)
+		if err != nil {
+			return fn.Err[ManagerResp](
+				fmt.Errorf("recover legacy expired VTXOs at "+
+					"height %d: %w", req.Height, err),
+			)
+		}
+	}
+
+	// The compatibility update is durable before the coordinator trigger.
+	// Observer failures are best-effort just like ordinary Expired actor
+	// retirement: the coordinator's startup/status scan remains
+	// authoritative.
+	for _, outpoint := range legacyRecovered {
+		if m.cfg.ExpiredVTXOObserver == nil {
+			continue
+		}
+		if err := m.cfg.ExpiredVTXOObserver(ctx, outpoint); err != nil {
+			m.logger(ctx).WarnS(
+				ctx,
+				"Failed to notify recovered expired VTXO "+
+					"observer",
+				err,
+				slog.String("outpoint", outpoint.String()),
+			)
+		}
+	}
+
+	var (
+		checked int
+		expired = len(legacyRecovered)
+		errs    []error
+	)
+
+	for outpoint, ref := range m.actors {
+		result := m.askVTXOActor(ctx, ref, &BlockEpochEvent{
+			Height: req.Height,
+		})
+		resp, err := result.Unpack()
+		if err != nil {
+			errs = append(
+				errs, fmt.Errorf("classify %s at height "+
+					"%d: %w", outpoint, req.Height, err),
+			)
+
+			continue
+		}
+
+		checked++
+		actorResp, ok := resp.(VTXOActorResponse)
+		if !ok {
+			errs = append(
+				errs, fmt.Errorf("classify %s: unexpected "+
+					"response %T", outpoint, resp),
+			)
+
+			continue
+		}
+		if _, ok := actorResp.NewState.(*ExpiredState); ok {
+			expired++
+		}
+	}
+
+	if err := errors.Join(errs...); err != nil {
+		return fn.Err[ManagerResp](err)
+	}
+
+	return fn.Ok[ManagerResp](&ReconcileExpiryResponse{
+		Checked:         checked,
+		Expired:         expired,
+		LegacyRecovered: len(legacyRecovered),
+	})
 }
 
 // handleRelayToRound forwards a VTXO actor's message to the round actor.

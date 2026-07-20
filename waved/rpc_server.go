@@ -773,6 +773,28 @@ func (r *RPCServer) GetBalance(ctx context.Context,
 			}
 		}
 		resp.VtxoUnilateralExitSat = int64(exitSat)
+
+		// Expired and Redeeming value is locally known but no longer
+		// spendable. Keep it visible as pending reissue without
+		// inflating either live VTXO balance or total confirmed
+		// balance.
+		for _, reissueStatus := range []vtxo.VTXOStatus{
+			vtxo.VTXOStatusExpired,
+			vtxo.VTXOStatusRedeeming,
+		} {
+			pending, err := r.server.vtxoStore.
+				ListVTXOsByStatusLight(
+					ctx, reissueStatus,
+				)
+			if err != nil {
+				return nil, status.Errorf(codes.Internal,
+					"fetch pending reissue balance: %v",
+					err)
+			}
+			resp.VtxoPendingReissueSat += int64(
+				vtxo.SumBalance(pending),
+			)
+		}
 	}
 
 	// Fetch the confirmed balance of the backing on-chain wallet so
@@ -1356,6 +1378,18 @@ func protoStatusToDomain(s waverpc.VTXOStatus) (vtxo.VTXOStatus, error) {
 	case waverpc.VTXOStatus_VTXO_STATUS_FAILED:
 		return vtxo.VTXOStatusFailed, nil
 
+	case waverpc.VTXOStatus_VTXO_STATUS_SPENDING:
+		return vtxo.VTXOStatusSpending, nil
+
+	case waverpc.VTXOStatus_VTXO_STATUS_EXPIRED:
+		return vtxo.VTXOStatusExpired, nil
+
+	case waverpc.VTXOStatus_VTXO_STATUS_REDEEMING:
+		return vtxo.VTXOStatusRedeeming, nil
+
+	case waverpc.VTXOStatus_VTXO_STATUS_REDEEMED:
+		return vtxo.VTXOStatusRedeemed, nil
+
 	default:
 		return 0, fmt.Errorf("unknown VTXO status: %v", s)
 	}
@@ -1387,6 +1421,15 @@ func vtxoStatusToProto(s vtxo.VTXOStatus) waverpc.VTXOStatus {
 
 	case vtxo.VTXOStatusSpending:
 		return waverpc.VTXOStatus_VTXO_STATUS_SPENDING
+
+	case vtxo.VTXOStatusExpired:
+		return waverpc.VTXOStatus_VTXO_STATUS_EXPIRED
+
+	case vtxo.VTXOStatusRedeeming:
+		return waverpc.VTXOStatus_VTXO_STATUS_REDEEMING
+
+	case vtxo.VTXOStatusRedeemed:
+		return waverpc.VTXOStatus_VTXO_STATUS_REDEEMED
 
 	default:
 		return waverpc.VTXOStatus_VTXO_STATUS_UNSPECIFIED
@@ -1420,6 +1463,9 @@ func descriptorToProto(v *vtxo.Descriptor) *waverpc.VTXO {
 			Height: s.Height,
 			FeeSat: s.FeeSat,
 		}
+	})
+	v.ReplacedBy.WhenSome(func(replacement wire.OutPoint) {
+		proto.ReplacedBy = replacement.String()
 	})
 
 	return proto

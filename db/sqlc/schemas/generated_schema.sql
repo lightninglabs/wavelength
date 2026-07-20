@@ -1204,6 +1204,24 @@ CREATE TABLE round_statuses (
     status_name TEXT UNIQUE NOT NULL
 );
 
+CREATE TABLE round_vtxo_claims (
+    round_id TEXT NOT NULL,
+    request_index INTEGER NOT NULL,
+    source_hash BLOB NOT NULL,
+    source_index BIGINT NOT NULL,
+    participant_pubkey BLOB NOT NULL,
+    nonce BLOB NOT NULL,
+    valid_from BIGINT NOT NULL,
+    valid_until BIGINT NOT NULL,
+    signature BLOB NOT NULL,
+
+    PRIMARY KEY (round_id, source_hash, source_index),
+    UNIQUE (round_id, request_index),
+    FOREIGN KEY (round_id, request_index)
+        REFERENCES round_vtxo_requests(round_id, request_index)
+        ON DELETE CASCADE
+);
+
 CREATE TABLE round_vtxo_requests (
     -- round_id links to the parent round.
     round_id TEXT NOT NULL,
@@ -1240,7 +1258,7 @@ CREATE TABLE round_vtxo_requests (
 
     -- signing_key_id references the internal_keys registry row for the
     -- signing descriptor (signing_pubkey paired with its lnd KeyLocator).
-    signing_key_id BIGINT REFERENCES internal_keys(id),
+    signing_key_id BIGINT REFERENCES internal_keys(id), origin INTEGER NOT NULL DEFAULT 0,
 
     PRIMARY KEY (round_id, request_index),
     FOREIGN KEY (round_id) REFERENCES rounds(round_id) ON DELETE CASCADE
@@ -1292,7 +1310,7 @@ CREATE TABLE rounds (
     -- today is 0 (V1); a future, genuinely different round flow is added
     -- additively (V2 == 1, and so on). NOT NULL DEFAULT 0 keeps every row a
     -- valid V1 round.
-    flow_version INTEGER NOT NULL DEFAULT 0,
+    flow_version INTEGER NOT NULL DEFAULT 0, sweep_delay BIGINT NOT NULL DEFAULT 0,
 
     FOREIGN KEY (status) REFERENCES round_statuses(status_name)
 );
@@ -1604,6 +1622,17 @@ CREATE TABLE "vtxo_ancestry_paths" (
     CHECK (path_order >= 0 AND path_order < 64)
 );
 
+CREATE TABLE vtxo_redemption_outbox (
+    source_hash BLOB NOT NULL,
+    source_index INTEGER NOT NULL,
+    replacement_hash BLOB NOT NULL,
+    replacement_index INTEGER NOT NULL,
+    redemption_round_id TEXT NOT NULL,
+    creation_time BIGINT NOT NULL,
+
+    PRIMARY KEY (source_hash, source_index)
+);
+
 CREATE TABLE vtxos (
     -- outpoint_hash and outpoint_index form the VTXO outpoint (primary key).
     outpoint_hash BLOB NOT NULL,
@@ -1663,6 +1692,9 @@ CREATE TABLE vtxos (
     --   5 = UnilateralExit
     --   6 = Failed
     --   7 = Spending
+    --   8 = Expired
+    --   9 = Redeeming
+    --  10 = Redeemed
     status INTEGER NOT NULL DEFAULT 0,
 
     -- forfeit_round_id is the round in which this VTXO is being forfeited.
@@ -1701,7 +1733,7 @@ CREATE TABLE vtxos (
     -- zero-indexed, so the only understood value today is 0 (V1); a future,
     -- genuinely different construction is added additively (V2 == 1, and so
     -- on). NOT NULL DEFAULT 0 keeps every row a valid V1 object.
-    construction_version INTEGER NOT NULL DEFAULT 0,
+    construction_version INTEGER NOT NULL DEFAULT 0, redemption_round_id TEXT,
 
     PRIMARY KEY (outpoint_hash, outpoint_index),
     FOREIGN KEY (round_id) REFERENCES rounds(round_id)

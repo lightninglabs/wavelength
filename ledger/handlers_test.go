@@ -759,6 +759,125 @@ func TestHandleVTXOSendReceiveAreGross(t *testing.T) {
 	require.Equal(t, AccountTransfersOut, entries[1].DebitAccount)
 }
 
+// TestHandleVTXOClaimReissuedAtomicPair verifies a fee-free reissue records
+// the expired source as sent and the replacement as received, with exactly
+// cancelling balances and one replay-safe pair key.
+func TestHandleVTXOClaimReissuedAtomicPair(t *testing.T) {
+	t.Parallel()
+
+	store := newDedupLedgerStore()
+	a := newTestActorWithStore(t, store)
+	msg := &VTXOClaimReissuedMsg{
+		Source: wire.OutPoint{
+			Hash: chainhash.Hash{
+				0x11,
+			},
+			Index: 2,
+		},
+		Replacement: wire.OutPoint{
+			Hash: chainhash.Hash{
+				0x22,
+			},
+			Index: 3,
+		},
+		AmountSat: 75_000,
+		RoundID: [16]byte{
+			0x33,
+		},
+	}
+
+	require.NoError(t, run(t.Context(), a, msg))
+	require.NoError(t, run(t.Context(), a, msg))
+
+	entries := store.getEntries()
+	require.Len(t, entries, 2, "replay must not duplicate either leg")
+	sent, received := entries[0], entries[1]
+	require.Equal(t, EventVTXOSent, sent.EventType)
+	require.Equal(t, AccountTransfersOut, sent.DebitAccount)
+	require.Equal(t, AccountVTXOBalance, sent.CreditAccount)
+	require.Equal(t, msg.Source.Hash[:], sent.ChainTxid)
+	require.Equal(t, int32(msg.Source.Index), *sent.ChainVout)
+
+	require.Equal(t, EventVTXOReceived, received.EventType)
+	require.Equal(t, AccountVTXOBalance, received.DebitAccount)
+	require.Equal(t, AccountTransfersOut, received.CreditAccount)
+	require.Equal(t, msg.Replacement.Hash[:], received.ChainTxid)
+	require.Equal(t, int32(msg.Replacement.Index), *received.ChainVout)
+
+	require.Equal(t, msg.AmountSat, sent.AmountSat)
+	require.Equal(t, msg.AmountSat, received.AmountSat)
+	require.Equal(t, sent.IdempotencyKey, received.IdempotencyKey)
+	require.Equal(t, msg.RoundID[:], sent.RoundID)
+	require.Equal(t, msg.RoundID[:], received.RoundID)
+	require.NotContains(t, sent.EventType, "fee")
+	require.NotContains(t, received.EventType, "fee")
+}
+
+// TestHandleVTXOClaimReissuedRejectsMalformed locks the durable mailbox
+// boundary against incomplete or value-changing claim pairs.
+func TestHandleVTXOClaimReissuedRejectsMalformed(t *testing.T) {
+	t.Parallel()
+
+	valid := VTXOClaimReissuedMsg{
+		Source: wire.OutPoint{
+			Hash: chainhash.Hash{
+				0x44,
+			},
+		},
+		Replacement: wire.OutPoint{
+			Hash: chainhash.Hash{
+				0x55,
+			},
+		},
+		AmountSat: 1,
+		RoundID: [16]byte{
+			0x66,
+		},
+	}
+	tests := []struct {
+		name   string
+		mutate func(*VTXOClaimReissuedMsg)
+	}{
+		{
+			name: "zero amount",
+			mutate: func(msg *VTXOClaimReissuedMsg) {
+				msg.AmountSat = 0
+			},
+		},
+		{
+			name: "missing source",
+			mutate: func(msg *VTXOClaimReissuedMsg) {
+				msg.Source = wire.OutPoint{}
+			},
+		},
+		{
+			name: "same replacement",
+			mutate: func(msg *VTXOClaimReissuedMsg) {
+				msg.Replacement = msg.Source
+			},
+		},
+		{
+			name: "missing round",
+			mutate: func(msg *VTXOClaimReissuedMsg) {
+				msg.RoundID = [16]byte{}
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			msg := valid
+			test.mutate(&msg)
+			a, store := newTestActor(t)
+			err := run(t.Context(), a, &msg)
+			require.ErrorIs(t, err, ErrInvalidMessage)
+			require.Empty(t, store.getEntries())
+		})
+	}
+}
+
 // TestHandleExitCost verifies that a unilateral exit books two
 // ledger entries that together reduce vtxo_balance by the gross
 // AmountSat: a send leg for (AmountSat - ExitCostSat) debiting
@@ -1846,6 +1965,30 @@ func TestMessageTLVRoundTrip(t *testing.T) {
 			},
 			new: func() LedgerMsg {
 				return &VTXOSentMsg{}
+			},
+		},
+		{
+			name: "VTXOClaimReissued",
+			msg: &VTXOClaimReissuedMsg{
+				Source: wire.OutPoint{
+					Hash: chainhash.Hash{
+						0xca,
+					},
+					Index: 4,
+				},
+				Replacement: wire.OutPoint{
+					Hash: chainhash.Hash{
+						0xcb,
+					},
+					Index: 5,
+				},
+				AmountSat: 60_000,
+				RoundID: [16]byte{
+					0xcc,
+				},
+			},
+			new: func() LedgerMsg {
+				return &VTXOClaimReissuedMsg{}
 			},
 		},
 		{

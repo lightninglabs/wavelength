@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 
 	"github.com/btcsuite/btcd/btcjson"
 	"github.com/btcsuite/btcd/btcutil/v2"
@@ -495,7 +496,16 @@ func (b *LNDBackend) RegisterSpend(ctx context.Context, outpoint *wire.OutPoint,
 	reorgChan := make(chan uint64, reorgSignalBufferSize)
 	doneChan := make(chan struct{}, 1)
 
-	// Start a goroutine to convert and forward spend lifecycle events.
+	// Protect the notifier cancellation from the caller and forwarder both
+	// attempting cleanup at the same time.
+	var cancelOnce sync.Once
+	safeCancel := func() {
+		cancelOnce.Do(event.Cancel)
+	}
+
+	// Start a goroutine to convert and forward spend lifecycle events. LND
+	// keeps the same registration alive across a spend reorg and can send a
+	// later reconfirmation or replacement spend on event.Spend.
 	go func() {
 		// seq is a per-registration monotonic counter stamped onto
 		// every Spend and Reorged signal in the order this single
@@ -516,8 +526,10 @@ func (b *LNDBackend) RegisterSpend(ctx context.Context, outpoint *wire.OutPoint,
 		defer close(reorgChan)
 		defer close(doneChan)
 		defer cancel()
-		defer event.Cancel()
+		defer safeCancel()
 
+		eventReorgChan := event.Reorg
+		eventDoneChan := event.Done
 		for {
 			select {
 			case lndSpend, ok := <-event.Spend:
@@ -548,11 +560,19 @@ func (b *LNDBackend) RegisterSpend(ctx context.Context, outpoint *wire.OutPoint,
 					return
 				}
 
-			case _, ok := <-event.Reorg:
+			case _, ok := <-eventReorgChan:
 				if !ok {
-					event.Reorg = nil
+					eventReorgChan = nil
 					continue
 				}
+				b.logger(notifyCtx).DebugS(
+					notifyCtx,
+					"Spend notification reorged; awaiting "+
+						"replacement",
+					slog.String(
+						"outpoint", outpoint.String(),
+					),
+				)
 
 				seq++
 				if !forwardValue(notifyCtx, reorgChan, seq) {
@@ -560,13 +580,13 @@ func (b *LNDBackend) RegisterSpend(ctx context.Context, outpoint *wire.OutPoint,
 				}
 				doneOrder.ObserveReorg()
 
-			case _, ok := <-event.Done:
+			case _, ok := <-eventDoneChan:
 				if !ok {
-					event.Done = nil
+					eventDoneChan = nil
 					continue
 				}
 				if !doneOrder.ObserveDone() {
-					event.Done = nil
+					eventDoneChan = nil
 
 					continue
 				}
@@ -589,7 +609,7 @@ func (b *LNDBackend) RegisterSpend(ctx context.Context, outpoint *wire.OutPoint,
 		Done:    doneChan,
 		Cancel: func() {
 			cancel()
-			event.Cancel()
+			safeCancel()
 		},
 	}, nil
 }

@@ -1,10 +1,13 @@
 package fraud
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log/slog"
 
+	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/baselib/actor"
@@ -341,9 +344,38 @@ func (w *WatcherActor) handleSpendObserved(ctx context.Context,
 	if len(targets) == 0 {
 		return &AckResp{}, nil
 	}
+	watch, hasWatch := w.watches.pointAt(msg.Outpoint)
+	isOperatorSweep := hasWatch && operatorSweepSpend(msg, watch)
+	suppressed := make(map[wire.OutPoint]struct{})
+	if isOperatorSweep {
+		for target := range targets {
+			tracked := w.targets[target]
+			if tracked == nil ||
+				tracked.plan.BatchExpiry > msg.Height {
+
+				continue
+			}
+			suppressed[target] = struct{}{}
+		}
+	}
+
+	// A confirmed spend through the exact timeout leaf committed into the
+	// watched tree output is the operator's legitimate batch sweep, not
+	// recipient fraud. First drive the manager's normal local-height
+	// classifier synchronously; only suppress fraud escalation if that
+	// durable classification succeeds. This also closes the startup race in
+	// which a restored spend watch can fire before the first block epoch.
+	if len(suppressed) > 0 {
+		if err := w.reconcileExpiry(ctx, msg.Height); err != nil {
+			return nil, err
+		}
+	}
 
 	var errs error
 	for target := range targets {
+		if _, ok := suppressed[target]; ok {
+			continue
+		}
 		if err := w.ensureUnroll(ctx, target); err != nil {
 			errs = joinTrackError(errs, err)
 		}
@@ -354,6 +386,7 @@ func (w *WatcherActor) handleSpendObserved(ctx context.Context,
 		slog.String("spending_txid", msg.SpendingTxid.String()),
 		slog.Int("height", int(msg.Height)),
 		slog.Int("targets", len(targets)),
+		slog.Int("expiry_sweeps", len(suppressed)),
 	)
 
 	if errs != nil {
@@ -361,6 +394,78 @@ func (w *WatcherActor) handleSpendObserved(ctx context.Context,
 	}
 
 	return &AckResp{}, nil
+}
+
+// reconcileExpiry drives the VTXO manager's authoritative height classifier
+// before an operator sweep is allowed to bypass fraud escalation.
+func (w *WatcherActor) reconcileExpiry(ctx context.Context,
+	height int32) error {
+
+	resp, err := w.cfg.VTXOManagerRef.Ask(
+		ctx, &vtxo.ReconcileExpiryRequest{Height: height},
+	).Await(ctx).Unpack()
+	if err != nil {
+		return fmt.Errorf("classify operator sweep at height %d: %w",
+			height, err)
+	}
+	if _, ok := resp.(*vtxo.ReconcileExpiryResponse); !ok {
+		return fmt.Errorf("unexpected expiry response %T", resp)
+	}
+
+	return nil
+}
+
+// operatorSweepSpend verifies that a confirmed watched-tree input was spent
+// through the exact timeout tapleaf committed in its persisted ancestry. A
+// key-path tree materialization or a leaf-output checkpoint spend does not
+// match and still triggers the fraud path.
+func operatorSweepSpend(msg *SpendObservedMsg, watch WatchPoint) bool {
+	if msg == nil || msg.SpendingTx == nil ||
+		len(watch.SweepTapscriptRoot) != chainhash.HashSize ||
+		!txscript.IsPayToTaproot(watch.PkScript) {
+		return false
+	}
+	if int(msg.SpenderInputIndex) >= len(msg.SpendingTx.TxIn) {
+		return false
+	}
+	txIn := msg.SpendingTx.TxIn[msg.SpenderInputIndex]
+	if txIn.PreviousOutPoint != msg.Outpoint {
+		return false
+	}
+
+	witness := txIn.Witness
+	if len(witness) > 0 && len(witness[len(witness)-1]) > 0 &&
+		witness[len(witness)-1][0] == txscript.TaprootAnnexTag {
+
+		witness = witness[:len(witness)-1]
+	}
+	if len(witness) < 3 {
+		return false
+	}
+	revealedScript := witness[len(witness)-2]
+	controlBlock, err := txscript.ParseControlBlock(
+		witness[len(witness)-1],
+	)
+	if err != nil {
+		return false
+	}
+	leafHash := txscript.NewTapLeaf(
+		controlBlock.LeafVersion, revealedScript,
+	).TapHash()
+	if !bytes.Equal(leafHash[:], watch.SweepTapscriptRoot) {
+		return false
+	}
+
+	version, witnessProgram, err := txscript.ExtractWitnessProgramInfo(
+		watch.PkScript,
+	)
+	if err != nil || version != 1 || len(witnessProgram) != 32 {
+		return false
+	}
+
+	return txscript.VerifyTaprootLeafCommitment(
+		controlBlock, witnessProgram, revealedScript,
+	) == nil
 }
 
 // retainWatch records target as interested in watch.Outpoint. On the
@@ -405,9 +510,11 @@ func (w *WatcherActor) registerSpendWatch(ctx context.Context,
 	notifyRef := chainsource.MapSpendEvent(
 		w.selfRef, func(event chainsource.SpendEvent) Msg {
 			return &SpendObservedMsg{
-				Outpoint:     event.Outpoint,
-				SpendingTxid: event.SpendingTxid,
-				Height:       event.SpendingHeight,
+				Outpoint:          event.Outpoint,
+				SpendingTxid:      event.SpendingTxid,
+				SpendingTx:        event.SpendingTx,
+				SpenderInputIndex: event.SpenderInputIndex,
+				Height:            event.SpendingHeight,
 			}
 		},
 	)

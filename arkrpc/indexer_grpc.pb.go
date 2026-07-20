@@ -27,6 +27,7 @@ const (
 	IndexerService_GetOORSessionByTxid_FullMethodName            = "/arkrpc.IndexerService/GetOORSessionByTxid"
 	IndexerService_GetSubtreeByScripts_FullMethodName            = "/arkrpc.IndexerService/GetSubtreeByScripts"
 	IndexerService_ListVTXOEventsByScripts_FullMethodName        = "/arkrpc.IndexerService/ListVTXOEventsByScripts"
+	IndexerService_CheckVTXORedeemability_FullMethodName         = "/arkrpc.IndexerService/CheckVTXORedeemability"
 )
 
 // IndexerServiceClient is the client API for IndexerService service.
@@ -73,6 +74,10 @@ type IndexerServiceClient interface {
 	// Wallets can use this to catch up after being offline and to reconcile
 	// local state deterministically.
 	ListVTXOEventsByScripts(ctx context.Context, in *ListVTXOEventsByScriptsRequest, opts ...grpc.CallOption) (*ListVTXOEventsByScriptsResponse, error)
+	// CheckVTXORedeemability selectively reconciles locally-expired VTXOs
+	// with the operator. The caller must prove control of every script scope;
+	// the response intentionally omits unknown, pre-final, and locked VTXOs.
+	CheckVTXORedeemability(ctx context.Context, in *CheckVTXORedeemabilityRequest, opts ...grpc.CallOption) (*CheckVTXORedeemabilityResponse, error)
 }
 
 type indexerServiceClient struct {
@@ -163,6 +168,16 @@ func (c *indexerServiceClient) ListVTXOEventsByScripts(ctx context.Context, in *
 	return out, nil
 }
 
+func (c *indexerServiceClient) CheckVTXORedeemability(ctx context.Context, in *CheckVTXORedeemabilityRequest, opts ...grpc.CallOption) (*CheckVTXORedeemabilityResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CheckVTXORedeemabilityResponse)
+	err := c.cc.Invoke(ctx, IndexerService_CheckVTXORedeemability_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // IndexerServiceServer is the server API for IndexerService service.
 // All implementations must embed UnimplementedIndexerServiceServer
 // for forward compatibility.
@@ -207,6 +222,10 @@ type IndexerServiceServer interface {
 	// Wallets can use this to catch up after being offline and to reconcile
 	// local state deterministically.
 	ListVTXOEventsByScripts(context.Context, *ListVTXOEventsByScriptsRequest) (*ListVTXOEventsByScriptsResponse, error)
+	// CheckVTXORedeemability selectively reconciles locally-expired VTXOs
+	// with the operator. The caller must prove control of every script scope;
+	// the response intentionally omits unknown, pre-final, and locked VTXOs.
+	CheckVTXORedeemability(context.Context, *CheckVTXORedeemabilityRequest) (*CheckVTXORedeemabilityResponse, error)
 	mustEmbedUnimplementedIndexerServiceServer()
 }
 
@@ -240,6 +259,9 @@ func (UnimplementedIndexerServiceServer) GetSubtreeByScripts(context.Context, *G
 }
 func (UnimplementedIndexerServiceServer) ListVTXOEventsByScripts(context.Context, *ListVTXOEventsByScriptsRequest) (*ListVTXOEventsByScriptsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListVTXOEventsByScripts not implemented")
+}
+func (UnimplementedIndexerServiceServer) CheckVTXORedeemability(context.Context, *CheckVTXORedeemabilityRequest) (*CheckVTXORedeemabilityResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CheckVTXORedeemability not implemented")
 }
 func (UnimplementedIndexerServiceServer) mustEmbedUnimplementedIndexerServiceServer() {}
 func (UnimplementedIndexerServiceServer) testEmbeddedByValue()                        {}
@@ -406,6 +428,24 @@ func _IndexerService_ListVTXOEventsByScripts_Handler(srv interface{}, ctx contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _IndexerService_CheckVTXORedeemability_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CheckVTXORedeemabilityRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(IndexerServiceServer).CheckVTXORedeemability(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: IndexerService_CheckVTXORedeemability_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(IndexerServiceServer).CheckVTXORedeemability(ctx, req.(*CheckVTXORedeemabilityRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // IndexerService_ServiceDesc is the grpc.ServiceDesc for IndexerService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -444,6 +484,10 @@ var IndexerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListVTXOEventsByScripts",
 			Handler:    _IndexerService_ListVTXOEventsByScripts_Handler,
+		},
+		{
+			MethodName: "CheckVTXORedeemability",
+			Handler:    _IndexerService_CheckVTXORedeemability_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

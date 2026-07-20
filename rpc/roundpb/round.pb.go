@@ -1497,6 +1497,112 @@ func (x *ForfeitRequest) GetForfeitSpendPath() []byte {
 	return nil
 }
 
+// VTXOClaimInput authorizes reissuing a VTXO that expired while its owner was
+// offline and whose value was reclaimed by the operator's expiry sweep. The
+// server derives the replacement amount and policy from the source VTXO; the
+// client selects only the fresh tree-signing key.
+type VTXOClaimInput struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// source_outpoint identifies the expired VTXO being reissued.
+	SourceOutpoint *Outpoint `protobuf:"bytes,1,opt,name=source_outpoint,json=sourceOutpoint,proto3" json:"source_outpoint,omitempty"`
+	// participant_pubkey is the compressed owner key authorized by the
+	// source VTXO policy.
+	ParticipantPubkey []byte `protobuf:"bytes,2,opt,name=participant_pubkey,json=participantPubkey,proto3" json:"participant_pubkey,omitempty"`
+	// replacement_signing_pubkey is the fresh compressed MuSig2 tree-signing
+	// key for the replacement VTXO.
+	ReplacementSigningPubkey []byte `protobuf:"bytes,3,opt,name=replacement_signing_pubkey,json=replacementSigningPubkey,proto3" json:"replacement_signing_pubkey,omitempty"`
+	// nonce is a unique 32-byte replay-prevention value.
+	Nonce []byte `protobuf:"bytes,4,opt,name=nonce,proto3" json:"nonce,omitempty"`
+	// valid_from is the first block height where this claim is valid.
+	ValidFrom uint32 `protobuf:"varint,5,opt,name=valid_from,json=validFrom,proto3" json:"valid_from,omitempty"`
+	// valid_until is the last block height where this claim is valid.
+	ValidUntil uint32 `protobuf:"varint,6,opt,name=valid_until,json=validUntil,proto3" json:"valid_until,omitempty"`
+	// signature is a 64-byte BIP-340 Schnorr signature over the canonical
+	// claim message.
+	Signature     []byte `protobuf:"bytes,7,opt,name=signature,proto3" json:"signature,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *VTXOClaimInput) Reset() {
+	*x = VTXOClaimInput{}
+	mi := &file_round_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *VTXOClaimInput) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*VTXOClaimInput) ProtoMessage() {}
+
+func (x *VTXOClaimInput) ProtoReflect() protoreflect.Message {
+	mi := &file_round_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use VTXOClaimInput.ProtoReflect.Descriptor instead.
+func (*VTXOClaimInput) Descriptor() ([]byte, []int) {
+	return file_round_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *VTXOClaimInput) GetSourceOutpoint() *Outpoint {
+	if x != nil {
+		return x.SourceOutpoint
+	}
+	return nil
+}
+
+func (x *VTXOClaimInput) GetParticipantPubkey() []byte {
+	if x != nil {
+		return x.ParticipantPubkey
+	}
+	return nil
+}
+
+func (x *VTXOClaimInput) GetReplacementSigningPubkey() []byte {
+	if x != nil {
+		return x.ReplacementSigningPubkey
+	}
+	return nil
+}
+
+func (x *VTXOClaimInput) GetNonce() []byte {
+	if x != nil {
+		return x.Nonce
+	}
+	return nil
+}
+
+func (x *VTXOClaimInput) GetValidFrom() uint32 {
+	if x != nil {
+		return x.ValidFrom
+	}
+	return 0
+}
+
+func (x *VTXOClaimInput) GetValidUntil() uint32 {
+	if x != nil {
+		return x.ValidUntil
+	}
+	return 0
+}
+
+func (x *VTXOClaimInput) GetSignature() []byte {
+	if x != nil {
+		return x.Signature
+	}
+	return nil
+}
+
 // LeaveRequest specifies an on-chain output for leaving the Ark.
 //
 // The pk_script identifies the destination; the amount follows
@@ -1521,7 +1627,7 @@ type LeaveRequest struct {
 
 func (x *LeaveRequest) Reset() {
 	*x = LeaveRequest{}
-	mi := &file_round_proto_msgTypes[17]
+	mi := &file_round_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1533,7 +1639,7 @@ func (x *LeaveRequest) String() string {
 func (*LeaveRequest) ProtoMessage() {}
 
 func (x *LeaveRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_round_proto_msgTypes[17]
+	mi := &file_round_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1546,7 +1652,7 @@ func (x *LeaveRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LeaveRequest.ProtoReflect.Descriptor instead.
 func (*LeaveRequest) Descriptor() ([]byte, []int) {
-	return file_round_proto_rawDescGZIP(), []int{17}
+	return file_round_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *LeaveRequest) GetPkScript() []byte {
@@ -1588,7 +1694,7 @@ type JoinRoundAuth struct {
 
 func (x *JoinRoundAuth) Reset() {
 	*x = JoinRoundAuth{}
-	mi := &file_round_proto_msgTypes[18]
+	mi := &file_round_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1600,7 +1706,7 @@ func (x *JoinRoundAuth) String() string {
 func (*JoinRoundAuth) ProtoMessage() {}
 
 func (x *JoinRoundAuth) ProtoReflect() protoreflect.Message {
-	mi := &file_round_proto_msgTypes[18]
+	mi := &file_round_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1613,7 +1719,7 @@ func (x *JoinRoundAuth) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JoinRoundAuth.ProtoReflect.Descriptor instead.
 func (*JoinRoundAuth) Descriptor() ([]byte, []int) {
-	return file_round_proto_rawDescGZIP(), []int{18}
+	return file_round_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *JoinRoundAuth) GetMessage() []byte {
@@ -1669,14 +1775,17 @@ type JoinRoundRequest struct {
 	RoundId string `protobuf:"bytes,6,opt,name=round_id,json=roundId,proto3" json:"round_id,omitempty"`
 	// auth contains the BIP-322 authorization payload. Nil when join
 	// request auth is disabled.
-	Auth          *JoinRoundAuth `protobuf:"bytes,7,opt,name=auth,proto3" json:"auth,omitempty"`
+	Auth *JoinRoundAuth `protobuf:"bytes,7,opt,name=auth,proto3" json:"auth,omitempty"`
+	// claim_inputs contains independently-authorized expired VTXOs whose
+	// swept value should be reissued in this round.
+	ClaimInputs   []*VTXOClaimInput `protobuf:"bytes,8,rep,name=claim_inputs,json=claimInputs,proto3" json:"claim_inputs,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *JoinRoundRequest) Reset() {
 	*x = JoinRoundRequest{}
-	mi := &file_round_proto_msgTypes[19]
+	mi := &file_round_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1688,7 +1797,7 @@ func (x *JoinRoundRequest) String() string {
 func (*JoinRoundRequest) ProtoMessage() {}
 
 func (x *JoinRoundRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_round_proto_msgTypes[19]
+	mi := &file_round_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1701,7 +1810,7 @@ func (x *JoinRoundRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JoinRoundRequest.ProtoReflect.Descriptor instead.
 func (*JoinRoundRequest) Descriptor() ([]byte, []int) {
-	return file_round_proto_rawDescGZIP(), []int{19}
+	return file_round_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *JoinRoundRequest) GetIdentifier() []byte {
@@ -1753,6 +1862,13 @@ func (x *JoinRoundRequest) GetAuth() *JoinRoundAuth {
 	return nil
 }
 
+func (x *JoinRoundRequest) GetClaimInputs() []*VTXOClaimInput {
+	if x != nil {
+		return x.ClaimInputs
+	}
+	return nil
+}
+
 // FeeBreakdown decomposes the operator fee a JoinRoundQuote
 // charges so the client can verify the fee against its
 // user-facing cap and log the decomposition for observability.
@@ -1779,7 +1895,7 @@ type FeeBreakdown struct {
 
 func (x *FeeBreakdown) Reset() {
 	*x = FeeBreakdown{}
-	mi := &file_round_proto_msgTypes[20]
+	mi := &file_round_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1791,7 +1907,7 @@ func (x *FeeBreakdown) String() string {
 func (*FeeBreakdown) ProtoMessage() {}
 
 func (x *FeeBreakdown) ProtoReflect() protoreflect.Message {
-	mi := &file_round_proto_msgTypes[20]
+	mi := &file_round_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1804,7 +1920,7 @@ func (x *FeeBreakdown) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FeeBreakdown.ProtoReflect.Descriptor instead.
 func (*FeeBreakdown) Descriptor() ([]byte, []int) {
-	return file_round_proto_rawDescGZIP(), []int{20}
+	return file_round_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *FeeBreakdown) GetChainFeeSat() int64 {
@@ -1865,7 +1981,7 @@ type VTXOQuote struct {
 
 func (x *VTXOQuote) Reset() {
 	*x = VTXOQuote{}
-	mi := &file_round_proto_msgTypes[21]
+	mi := &file_round_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1877,7 +1993,7 @@ func (x *VTXOQuote) String() string {
 func (*VTXOQuote) ProtoMessage() {}
 
 func (x *VTXOQuote) ProtoReflect() protoreflect.Message {
-	mi := &file_round_proto_msgTypes[21]
+	mi := &file_round_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1890,7 +2006,7 @@ func (x *VTXOQuote) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VTXOQuote.ProtoReflect.Descriptor instead.
 func (*VTXOQuote) Descriptor() ([]byte, []int) {
-	return file_round_proto_rawDescGZIP(), []int{21}
+	return file_round_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *VTXOQuote) GetPkScript() []byte {
@@ -1930,7 +2046,7 @@ type LeaveQuote struct {
 
 func (x *LeaveQuote) Reset() {
 	*x = LeaveQuote{}
-	mi := &file_round_proto_msgTypes[22]
+	mi := &file_round_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1942,7 +2058,7 @@ func (x *LeaveQuote) String() string {
 func (*LeaveQuote) ProtoMessage() {}
 
 func (x *LeaveQuote) ProtoReflect() protoreflect.Message {
-	mi := &file_round_proto_msgTypes[22]
+	mi := &file_round_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1955,7 +2071,7 @@ func (x *LeaveQuote) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LeaveQuote.ProtoReflect.Descriptor instead.
 func (*LeaveQuote) Descriptor() ([]byte, []int) {
-	return file_round_proto_rawDescGZIP(), []int{22}
+	return file_round_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *LeaveQuote) GetPkScript() []byte {
@@ -1970,6 +2086,91 @@ func (x *LeaveQuote) GetAmountSat() int64 {
 		return x.AmountSat
 	}
 	return 0
+}
+
+// VTXOClaimQuote describes the exact replacement output derived by the server
+// for one claim input. Claim outputs are fixed-value and pay no operator fee.
+type VTXOClaimQuote struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// source_outpoint correlates this quote with the claim input.
+	SourceOutpoint *Outpoint `protobuf:"bytes,1,opt,name=source_outpoint,json=sourceOutpoint,proto3" json:"source_outpoint,omitempty"`
+	// pk_script is the exact replacement VTXO output script.
+	PkScript []byte `protobuf:"bytes,2,opt,name=pk_script,json=pkScript,proto3" json:"pk_script,omitempty"`
+	// amount_sat is the full source VTXO value.
+	AmountSat int64 `protobuf:"varint,3,opt,name=amount_sat,json=amountSat,proto3" json:"amount_sat,omitempty"`
+	// replacement_signing_pubkey echoes the fresh MuSig2 tree-signing key
+	// selected by the claimant.
+	ReplacementSigningPubkey []byte `protobuf:"bytes,4,opt,name=replacement_signing_pubkey,json=replacementSigningPubkey,proto3" json:"replacement_signing_pubkey,omitempty"`
+	// policy_template is the exact serialized historical policy copied from
+	// the swept source VTXO.
+	PolicyTemplate []byte `protobuf:"bytes,5,opt,name=policy_template,json=policyTemplate,proto3" json:"policy_template,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *VTXOClaimQuote) Reset() {
+	*x = VTXOClaimQuote{}
+	mi := &file_round_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *VTXOClaimQuote) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*VTXOClaimQuote) ProtoMessage() {}
+
+func (x *VTXOClaimQuote) ProtoReflect() protoreflect.Message {
+	mi := &file_round_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use VTXOClaimQuote.ProtoReflect.Descriptor instead.
+func (*VTXOClaimQuote) Descriptor() ([]byte, []int) {
+	return file_round_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *VTXOClaimQuote) GetSourceOutpoint() *Outpoint {
+	if x != nil {
+		return x.SourceOutpoint
+	}
+	return nil
+}
+
+func (x *VTXOClaimQuote) GetPkScript() []byte {
+	if x != nil {
+		return x.PkScript
+	}
+	return nil
+}
+
+func (x *VTXOClaimQuote) GetAmountSat() int64 {
+	if x != nil {
+		return x.AmountSat
+	}
+	return 0
+}
+
+func (x *VTXOClaimQuote) GetReplacementSigningPubkey() []byte {
+	if x != nil {
+		return x.ReplacementSigningPubkey
+	}
+	return nil
+}
+
+func (x *VTXOClaimQuote) GetPolicyTemplate() []byte {
+	if x != nil {
+		return x.PolicyTemplate
+	}
+	return nil
 }
 
 // JoinRoundQuote is sent from server to client as the Phase-2
@@ -2012,14 +2213,17 @@ type JoinRoundQuote struct {
 	// reject_reason is populated when the server drops this
 	// client's intent at seal time (e.g. residual would be
 	// negative). QUOTE_OK indicates a valid quote.
-	RejectReason  QuoteReason `protobuf:"varint,9,opt,name=reject_reason,json=rejectReason,proto3,enum=round.v1.QuoteReason" json:"reject_reason,omitempty"`
+	RejectReason QuoteReason `protobuf:"varint,9,opt,name=reject_reason,json=rejectReason,proto3,enum=round.v1.QuoteReason" json:"reject_reason,omitempty"`
+	// claim_quotes carries one fixed, zero-fee VTXOClaimQuote per claim input
+	// in the same order. Empty when reject_reason != QUOTE_OK.
+	ClaimQuotes   []*VTXOClaimQuote `protobuf:"bytes,10,rep,name=claim_quotes,json=claimQuotes,proto3" json:"claim_quotes,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *JoinRoundQuote) Reset() {
 	*x = JoinRoundQuote{}
-	mi := &file_round_proto_msgTypes[23]
+	mi := &file_round_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2031,7 +2235,7 @@ func (x *JoinRoundQuote) String() string {
 func (*JoinRoundQuote) ProtoMessage() {}
 
 func (x *JoinRoundQuote) ProtoReflect() protoreflect.Message {
-	mi := &file_round_proto_msgTypes[23]
+	mi := &file_round_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2044,7 +2248,7 @@ func (x *JoinRoundQuote) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JoinRoundQuote.ProtoReflect.Descriptor instead.
 func (*JoinRoundQuote) Descriptor() ([]byte, []int) {
-	return file_round_proto_rawDescGZIP(), []int{23}
+	return file_round_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *JoinRoundQuote) GetRoundId() string {
@@ -2110,6 +2314,13 @@ func (x *JoinRoundQuote) GetRejectReason() QuoteReason {
 	return QuoteReason_QUOTE_OK
 }
 
+func (x *JoinRoundQuote) GetClaimQuotes() []*VTXOClaimQuote {
+	if x != nil {
+		return x.ClaimQuotes
+	}
+	return nil
+}
+
 // JoinRoundAccept is sent from client to server to explicitly
 // accept a JoinRoundQuote. The server must receive an explicit
 // accept (or the quote must expire, or the client must reject)
@@ -2130,7 +2341,7 @@ type JoinRoundAccept struct {
 
 func (x *JoinRoundAccept) Reset() {
 	*x = JoinRoundAccept{}
-	mi := &file_round_proto_msgTypes[24]
+	mi := &file_round_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2142,7 +2353,7 @@ func (x *JoinRoundAccept) String() string {
 func (*JoinRoundAccept) ProtoMessage() {}
 
 func (x *JoinRoundAccept) ProtoReflect() protoreflect.Message {
-	mi := &file_round_proto_msgTypes[24]
+	mi := &file_round_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2155,7 +2366,7 @@ func (x *JoinRoundAccept) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JoinRoundAccept.ProtoReflect.Descriptor instead.
 func (*JoinRoundAccept) Descriptor() ([]byte, []int) {
-	return file_round_proto_rawDescGZIP(), []int{24}
+	return file_round_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *JoinRoundAccept) GetRoundId() string {
@@ -2192,7 +2403,7 @@ type JoinRoundReject struct {
 
 func (x *JoinRoundReject) Reset() {
 	*x = JoinRoundReject{}
-	mi := &file_round_proto_msgTypes[25]
+	mi := &file_round_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2204,7 +2415,7 @@ func (x *JoinRoundReject) String() string {
 func (*JoinRoundReject) ProtoMessage() {}
 
 func (x *JoinRoundReject) ProtoReflect() protoreflect.Message {
-	mi := &file_round_proto_msgTypes[25]
+	mi := &file_round_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2217,7 +2428,7 @@ func (x *JoinRoundReject) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JoinRoundReject.ProtoReflect.Descriptor instead.
 func (*JoinRoundReject) Descriptor() ([]byte, []int) {
-	return file_round_proto_rawDescGZIP(), []int{25}
+	return file_round_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *JoinRoundReject) GetRoundId() string {
@@ -2256,7 +2467,7 @@ type SubmitNoncesRequest struct {
 
 func (x *SubmitNoncesRequest) Reset() {
 	*x = SubmitNoncesRequest{}
-	mi := &file_round_proto_msgTypes[26]
+	mi := &file_round_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2268,7 +2479,7 @@ func (x *SubmitNoncesRequest) String() string {
 func (*SubmitNoncesRequest) ProtoMessage() {}
 
 func (x *SubmitNoncesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_round_proto_msgTypes[26]
+	mi := &file_round_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2281,7 +2492,7 @@ func (x *SubmitNoncesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubmitNoncesRequest.ProtoReflect.Descriptor instead.
 func (*SubmitNoncesRequest) Descriptor() ([]byte, []int) {
-	return file_round_proto_rawDescGZIP(), []int{26}
+	return file_round_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *SubmitNoncesRequest) GetRoundId() []byte {
@@ -2310,7 +2521,7 @@ type SignerNonces struct {
 
 func (x *SignerNonces) Reset() {
 	*x = SignerNonces{}
-	mi := &file_round_proto_msgTypes[27]
+	mi := &file_round_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2322,7 +2533,7 @@ func (x *SignerNonces) String() string {
 func (*SignerNonces) ProtoMessage() {}
 
 func (x *SignerNonces) ProtoReflect() protoreflect.Message {
-	mi := &file_round_proto_msgTypes[27]
+	mi := &file_round_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2335,7 +2546,7 @@ func (x *SignerNonces) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SignerNonces.ProtoReflect.Descriptor instead.
 func (*SignerNonces) Descriptor() ([]byte, []int) {
-	return file_round_proto_rawDescGZIP(), []int{27}
+	return file_round_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *SignerNonces) GetTxNonces() map[string][]byte {
@@ -2360,7 +2571,7 @@ type SubmitPartialSigRequest struct {
 
 func (x *SubmitPartialSigRequest) Reset() {
 	*x = SubmitPartialSigRequest{}
-	mi := &file_round_proto_msgTypes[28]
+	mi := &file_round_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2372,7 +2583,7 @@ func (x *SubmitPartialSigRequest) String() string {
 func (*SubmitPartialSigRequest) ProtoMessage() {}
 
 func (x *SubmitPartialSigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_round_proto_msgTypes[28]
+	mi := &file_round_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2385,7 +2596,7 @@ func (x *SubmitPartialSigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubmitPartialSigRequest.ProtoReflect.Descriptor instead.
 func (*SubmitPartialSigRequest) Descriptor() ([]byte, []int) {
-	return file_round_proto_rawDescGZIP(), []int{28}
+	return file_round_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *SubmitPartialSigRequest) GetRoundId() []byte {
@@ -2415,7 +2626,7 @@ type SignerPartialSigs struct {
 
 func (x *SignerPartialSigs) Reset() {
 	*x = SignerPartialSigs{}
-	mi := &file_round_proto_msgTypes[29]
+	mi := &file_round_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2427,7 +2638,7 @@ func (x *SignerPartialSigs) String() string {
 func (*SignerPartialSigs) ProtoMessage() {}
 
 func (x *SignerPartialSigs) ProtoReflect() protoreflect.Message {
-	mi := &file_round_proto_msgTypes[29]
+	mi := &file_round_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2440,7 +2651,7 @@ func (x *SignerPartialSigs) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SignerPartialSigs.ProtoReflect.Descriptor instead.
 func (*SignerPartialSigs) Descriptor() ([]byte, []int) {
-	return file_round_proto_rawDescGZIP(), []int{29}
+	return file_round_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *SignerPartialSigs) GetTxSigs() map[string][]byte {
@@ -2465,7 +2676,7 @@ type BoardingInputSignature struct {
 
 func (x *BoardingInputSignature) Reset() {
 	*x = BoardingInputSignature{}
-	mi := &file_round_proto_msgTypes[30]
+	mi := &file_round_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2477,7 +2688,7 @@ func (x *BoardingInputSignature) String() string {
 func (*BoardingInputSignature) ProtoMessage() {}
 
 func (x *BoardingInputSignature) ProtoReflect() protoreflect.Message {
-	mi := &file_round_proto_msgTypes[30]
+	mi := &file_round_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2490,7 +2701,7 @@ func (x *BoardingInputSignature) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BoardingInputSignature.ProtoReflect.Descriptor instead.
 func (*BoardingInputSignature) Descriptor() ([]byte, []int) {
-	return file_round_proto_rawDescGZIP(), []int{30}
+	return file_round_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *BoardingInputSignature) GetInputIndex() int32 {
@@ -2528,7 +2739,7 @@ type SubmitForfeitSigRequest struct {
 
 func (x *SubmitForfeitSigRequest) Reset() {
 	*x = SubmitForfeitSigRequest{}
-	mi := &file_round_proto_msgTypes[31]
+	mi := &file_round_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2540,7 +2751,7 @@ func (x *SubmitForfeitSigRequest) String() string {
 func (*SubmitForfeitSigRequest) ProtoMessage() {}
 
 func (x *SubmitForfeitSigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_round_proto_msgTypes[31]
+	mi := &file_round_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2553,7 +2764,7 @@ func (x *SubmitForfeitSigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubmitForfeitSigRequest.ProtoReflect.Descriptor instead.
 func (*SubmitForfeitSigRequest) Descriptor() ([]byte, []int) {
-	return file_round_proto_rawDescGZIP(), []int{31}
+	return file_round_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *SubmitForfeitSigRequest) GetRoundId() []byte {
@@ -2584,7 +2795,7 @@ type ForfeitParticipantSig struct {
 
 func (x *ForfeitParticipantSig) Reset() {
 	*x = ForfeitParticipantSig{}
-	mi := &file_round_proto_msgTypes[32]
+	mi := &file_round_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2596,7 +2807,7 @@ func (x *ForfeitParticipantSig) String() string {
 func (*ForfeitParticipantSig) ProtoMessage() {}
 
 func (x *ForfeitParticipantSig) ProtoReflect() protoreflect.Message {
-	mi := &file_round_proto_msgTypes[32]
+	mi := &file_round_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2609,7 +2820,7 @@ func (x *ForfeitParticipantSig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ForfeitParticipantSig.ProtoReflect.Descriptor instead.
 func (*ForfeitParticipantSig) Descriptor() ([]byte, []int) {
-	return file_round_proto_rawDescGZIP(), []int{32}
+	return file_round_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *ForfeitParticipantSig) GetPubkey() []byte {
@@ -2652,7 +2863,7 @@ type ForfeitTxSig struct {
 
 func (x *ForfeitTxSig) Reset() {
 	*x = ForfeitTxSig{}
-	mi := &file_round_proto_msgTypes[33]
+	mi := &file_round_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2664,7 +2875,7 @@ func (x *ForfeitTxSig) String() string {
 func (*ForfeitTxSig) ProtoMessage() {}
 
 func (x *ForfeitTxSig) ProtoReflect() protoreflect.Message {
-	mi := &file_round_proto_msgTypes[33]
+	mi := &file_round_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2677,7 +2888,7 @@ func (x *ForfeitTxSig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ForfeitTxSig.ProtoReflect.Descriptor instead.
 func (*ForfeitTxSig) Descriptor() ([]byte, []int) {
-	return file_round_proto_rawDescGZIP(), []int{33}
+	return file_round_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *ForfeitTxSig) GetVtxoOutpoint() *Outpoint {
@@ -2729,7 +2940,7 @@ type SubmitVTXOForfeitSigsRequest struct {
 
 func (x *SubmitVTXOForfeitSigsRequest) Reset() {
 	*x = SubmitVTXOForfeitSigsRequest{}
-	mi := &file_round_proto_msgTypes[34]
+	mi := &file_round_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2741,7 +2952,7 @@ func (x *SubmitVTXOForfeitSigsRequest) String() string {
 func (*SubmitVTXOForfeitSigsRequest) ProtoMessage() {}
 
 func (x *SubmitVTXOForfeitSigsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_round_proto_msgTypes[34]
+	mi := &file_round_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2754,7 +2965,7 @@ func (x *SubmitVTXOForfeitSigsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubmitVTXOForfeitSigsRequest.ProtoReflect.Descriptor instead.
 func (*SubmitVTXOForfeitSigsRequest) Descriptor() ([]byte, []int) {
-	return file_round_proto_rawDescGZIP(), []int{34}
+	return file_round_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *SubmitVTXOForfeitSigsRequest) GetRoundId() []byte {
@@ -2787,7 +2998,7 @@ type QueryRoundStatusRequest struct {
 
 func (x *QueryRoundStatusRequest) Reset() {
 	*x = QueryRoundStatusRequest{}
-	mi := &file_round_proto_msgTypes[35]
+	mi := &file_round_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2799,7 +3010,7 @@ func (x *QueryRoundStatusRequest) String() string {
 func (*QueryRoundStatusRequest) ProtoMessage() {}
 
 func (x *QueryRoundStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_round_proto_msgTypes[35]
+	mi := &file_round_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2812,7 +3023,7 @@ func (x *QueryRoundStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueryRoundStatusRequest.ProtoReflect.Descriptor instead.
 func (*QueryRoundStatusRequest) Descriptor() ([]byte, []int) {
-	return file_round_proto_rawDescGZIP(), []int{35}
+	return file_round_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *QueryRoundStatusRequest) GetRoundId() []byte {
@@ -2931,7 +3142,17 @@ const file_round_proto_rawDesc = "" +
 	"\x0eForfeitRequest\x127\n" +
 	"\rvtxo_outpoint\x18\x01 \x01(\v2\x12.round.v1.OutpointR\fvtxoOutpoint\x12&\n" +
 	"\x0fauth_spend_path\x18\x02 \x01(\fR\rauthSpendPath\x12,\n" +
-	"\x12forfeit_spend_path\x18\x03 \x01(\fR\x10forfeitSpendPath\"t\n" +
+	"\x12forfeit_spend_path\x18\x03 \x01(\fR\x10forfeitSpendPath\"\xae\x02\n" +
+	"\x0eVTXOClaimInput\x12;\n" +
+	"\x0fsource_outpoint\x18\x01 \x01(\v2\x12.round.v1.OutpointR\x0esourceOutpoint\x12-\n" +
+	"\x12participant_pubkey\x18\x02 \x01(\fR\x11participantPubkey\x12<\n" +
+	"\x1areplacement_signing_pubkey\x18\x03 \x01(\fR\x18replacementSigningPubkey\x12\x14\n" +
+	"\x05nonce\x18\x04 \x01(\fR\x05nonce\x12\x1d\n" +
+	"\n" +
+	"valid_from\x18\x05 \x01(\rR\tvalidFrom\x12\x1f\n" +
+	"\vvalid_until\x18\x06 \x01(\rR\n" +
+	"validUntil\x12\x1c\n" +
+	"\tsignature\x18\a \x01(\fR\tsignature\"t\n" +
 	"\fLeaveRequest\x12\x1b\n" +
 	"\tpk_script\x18\x01 \x01(\fR\bpkScript\x12*\n" +
 	"\x11target_amount_sat\x18\x02 \x01(\x03R\x0ftargetAmountSat\x12\x1b\n" +
@@ -2942,7 +3163,7 @@ const file_round_proto_rawDesc = "" +
 	"valid_from\x18\x02 \x01(\rR\tvalidFrom\x12\x1f\n" +
 	"\vvalid_until\x18\x03 \x01(\rR\n" +
 	"validUntil\x12\x1c\n" +
-	"\tsignature\x18\x04 \x01(\fR\tsignature\"\x82\x03\n" +
+	"\tsignature\x18\x04 \x01(\fR\tsignature\"\xbf\x03\n" +
 	"\x10JoinRoundRequest\x12\x1e\n" +
 	"\n" +
 	"identifier\x18\x01 \x01(\fR\n" +
@@ -2952,7 +3173,8 @@ const file_round_proto_rawDesc = "" +
 	"\x10forfeit_requests\x18\x04 \x03(\v2\x18.round.v1.ForfeitRequestR\x0fforfeitRequests\x12=\n" +
 	"\x0eleave_requests\x18\x05 \x03(\v2\x16.round.v1.LeaveRequestR\rleaveRequests\x12\x19\n" +
 	"\bround_id\x18\x06 \x01(\tR\aroundId\x12+\n" +
-	"\x04auth\x18\a \x01(\v2\x17.round.v1.JoinRoundAuthR\x04auth\"\xd2\x01\n" +
+	"\x04auth\x18\a \x01(\v2\x17.round.v1.JoinRoundAuthR\x04auth\x12;\n" +
+	"\fclaim_inputs\x18\b \x03(\v2\x18.round.v1.VTXOClaimInputR\vclaimInputs\"\xd2\x01\n" +
 	"\fFeeBreakdown\x12\"\n" +
 	"\rchain_fee_sat\x18\x01 \x01(\x03R\vchainFeeSat\x12*\n" +
 	"\x11liquidity_fee_sat\x18\x02 \x01(\x03R\x0fliquidityFeeSat\x12,\n" +
@@ -2969,7 +3191,14 @@ const file_round_proto_rawDesc = "" +
 	"LeaveQuote\x12\x1b\n" +
 	"\tpk_script\x18\x01 \x01(\fR\bpkScript\x12\x1d\n" +
 	"\n" +
-	"amount_sat\x18\x02 \x01(\x03R\tamountSat\"\xa5\x03\n" +
+	"amount_sat\x18\x02 \x01(\x03R\tamountSat\"\xf0\x01\n" +
+	"\x0eVTXOClaimQuote\x12;\n" +
+	"\x0fsource_outpoint\x18\x01 \x01(\v2\x12.round.v1.OutpointR\x0esourceOutpoint\x12\x1b\n" +
+	"\tpk_script\x18\x02 \x01(\fR\bpkScript\x12\x1d\n" +
+	"\n" +
+	"amount_sat\x18\x03 \x01(\x03R\tamountSat\x12<\n" +
+	"\x1areplacement_signing_pubkey\x18\x04 \x01(\fR\x18replacementSigningPubkey\x12'\n" +
+	"\x0fpolicy_template\x18\x05 \x01(\fR\x0epolicyTemplate\"\xe2\x03\n" +
 	"\x0eJoinRoundQuote\x12\x19\n" +
 	"\bround_id\x18\x01 \x01(\tR\aroundId\x12\x19\n" +
 	"\bquote_id\x18\x02 \x01(\fR\aquoteId\x12(\n" +
@@ -2980,7 +3209,9 @@ const file_round_proto_rawDesc = "" +
 	"\x10operator_fee_sat\x18\x06 \x01(\x03R\x0eoperatorFeeSat\x124\n" +
 	"\tbreakdown\x18\a \x01(\v2\x16.round.v1.FeeBreakdownR\tbreakdown\x12(\n" +
 	"\x10quote_expires_at\x18\b \x01(\x03R\x0equoteExpiresAt\x12:\n" +
-	"\rreject_reason\x18\t \x01(\x0e2\x15.round.v1.QuoteReasonR\frejectReason\"G\n" +
+	"\rreject_reason\x18\t \x01(\x0e2\x15.round.v1.QuoteReasonR\frejectReason\x12;\n" +
+	"\fclaim_quotes\x18\n" +
+	" \x03(\v2\x18.round.v1.VTXOClaimQuoteR\vclaimQuotes\"G\n" +
 	"\x0fJoinRoundAccept\x12\x19\n" +
 	"\bround_id\x18\x01 \x01(\tR\aroundId\x12\x19\n" +
 	"\bquote_id\x18\x02 \x01(\fR\aquoteId\"_\n" +
@@ -3075,7 +3306,7 @@ func file_round_proto_rawDescGZIP() []byte {
 }
 
 var file_round_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_round_proto_msgTypes = make([]protoimpl.MessageInfo, 45)
+var file_round_proto_msgTypes = make([]protoimpl.MessageInfo, 47)
 var file_round_proto_goTypes = []any{
 	(RoundFailureCode)(0),                // 0: round.v1.RoundFailureCode
 	(RoundLifecycleStatus)(0),            // 1: round.v1.RoundLifecycleStatus
@@ -3097,39 +3328,41 @@ var file_round_proto_goTypes = []any{
 	(*BoardingRequest)(nil),              // 17: round.v1.BoardingRequest
 	(*VTXORequest)(nil),                  // 18: round.v1.VTXORequest
 	(*ForfeitRequest)(nil),               // 19: round.v1.ForfeitRequest
-	(*LeaveRequest)(nil),                 // 20: round.v1.LeaveRequest
-	(*JoinRoundAuth)(nil),                // 21: round.v1.JoinRoundAuth
-	(*JoinRoundRequest)(nil),             // 22: round.v1.JoinRoundRequest
-	(*FeeBreakdown)(nil),                 // 23: round.v1.FeeBreakdown
-	(*VTXOQuote)(nil),                    // 24: round.v1.VTXOQuote
-	(*LeaveQuote)(nil),                   // 25: round.v1.LeaveQuote
-	(*JoinRoundQuote)(nil),               // 26: round.v1.JoinRoundQuote
-	(*JoinRoundAccept)(nil),              // 27: round.v1.JoinRoundAccept
-	(*JoinRoundReject)(nil),              // 28: round.v1.JoinRoundReject
-	(*SubmitNoncesRequest)(nil),          // 29: round.v1.SubmitNoncesRequest
-	(*SignerNonces)(nil),                 // 30: round.v1.SignerNonces
-	(*SubmitPartialSigRequest)(nil),      // 31: round.v1.SubmitPartialSigRequest
-	(*SignerPartialSigs)(nil),            // 32: round.v1.SignerPartialSigs
-	(*BoardingInputSignature)(nil),       // 33: round.v1.BoardingInputSignature
-	(*SubmitForfeitSigRequest)(nil),      // 34: round.v1.SubmitForfeitSigRequest
-	(*ForfeitParticipantSig)(nil),        // 35: round.v1.ForfeitParticipantSig
-	(*ForfeitTxSig)(nil),                 // 36: round.v1.ForfeitTxSig
-	(*SubmitVTXOForfeitSigsRequest)(nil), // 37: round.v1.SubmitVTXOForfeitSigsRequest
-	(*QueryRoundStatusRequest)(nil),      // 38: round.v1.QueryRoundStatusRequest
-	nil,                                  // 39: round.v1.TreeNode.ChildrenEntry
-	nil,                                  // 40: round.v1.ClientBatchInfo.VtxoTreePathsEntry
-	nil,                                  // 41: round.v1.ClientBatchInfo.ConnectorLeafMapEntry
-	nil,                                  // 42: round.v1.ClientVTXOAggNonces.AggNoncesEntry
-	nil,                                  // 43: round.v1.ClientVTXOAggSigs.AggSigsEntry
-	nil,                                  // 44: round.v1.SubmitNoncesRequest.NoncesEntry
-	nil,                                  // 45: round.v1.SignerNonces.TxNoncesEntry
-	nil,                                  // 46: round.v1.SubmitPartialSigRequest.SignaturesEntry
-	nil,                                  // 47: round.v1.SignerPartialSigs.TxSigsEntry
+	(*VTXOClaimInput)(nil),               // 20: round.v1.VTXOClaimInput
+	(*LeaveRequest)(nil),                 // 21: round.v1.LeaveRequest
+	(*JoinRoundAuth)(nil),                // 22: round.v1.JoinRoundAuth
+	(*JoinRoundRequest)(nil),             // 23: round.v1.JoinRoundRequest
+	(*FeeBreakdown)(nil),                 // 24: round.v1.FeeBreakdown
+	(*VTXOQuote)(nil),                    // 25: round.v1.VTXOQuote
+	(*LeaveQuote)(nil),                   // 26: round.v1.LeaveQuote
+	(*VTXOClaimQuote)(nil),               // 27: round.v1.VTXOClaimQuote
+	(*JoinRoundQuote)(nil),               // 28: round.v1.JoinRoundQuote
+	(*JoinRoundAccept)(nil),              // 29: round.v1.JoinRoundAccept
+	(*JoinRoundReject)(nil),              // 30: round.v1.JoinRoundReject
+	(*SubmitNoncesRequest)(nil),          // 31: round.v1.SubmitNoncesRequest
+	(*SignerNonces)(nil),                 // 32: round.v1.SignerNonces
+	(*SubmitPartialSigRequest)(nil),      // 33: round.v1.SubmitPartialSigRequest
+	(*SignerPartialSigs)(nil),            // 34: round.v1.SignerPartialSigs
+	(*BoardingInputSignature)(nil),       // 35: round.v1.BoardingInputSignature
+	(*SubmitForfeitSigRequest)(nil),      // 36: round.v1.SubmitForfeitSigRequest
+	(*ForfeitParticipantSig)(nil),        // 37: round.v1.ForfeitParticipantSig
+	(*ForfeitTxSig)(nil),                 // 38: round.v1.ForfeitTxSig
+	(*SubmitVTXOForfeitSigsRequest)(nil), // 39: round.v1.SubmitVTXOForfeitSigsRequest
+	(*QueryRoundStatusRequest)(nil),      // 40: round.v1.QueryRoundStatusRequest
+	nil,                                  // 41: round.v1.TreeNode.ChildrenEntry
+	nil,                                  // 42: round.v1.ClientBatchInfo.VtxoTreePathsEntry
+	nil,                                  // 43: round.v1.ClientBatchInfo.ConnectorLeafMapEntry
+	nil,                                  // 44: round.v1.ClientVTXOAggNonces.AggNoncesEntry
+	nil,                                  // 45: round.v1.ClientVTXOAggSigs.AggSigsEntry
+	nil,                                  // 46: round.v1.SubmitNoncesRequest.NoncesEntry
+	nil,                                  // 47: round.v1.SignerNonces.TxNoncesEntry
+	nil,                                  // 48: round.v1.SubmitPartialSigRequest.SignaturesEntry
+	nil,                                  // 49: round.v1.SignerPartialSigs.TxSigsEntry
 }
 var file_round_proto_depIdxs = []int32{
 	3,  // 0: round.v1.TreeNode.input:type_name -> round.v1.Outpoint
 	4,  // 1: round.v1.TreeNode.outputs:type_name -> round.v1.TxOut
-	39, // 2: round.v1.TreeNode.children:type_name -> round.v1.TreeNode.ChildrenEntry
+	41, // 2: round.v1.TreeNode.children:type_name -> round.v1.TreeNode.ChildrenEntry
 	5,  // 3: round.v1.VTXOTree.nodes:type_name -> round.v1.TreeNode
 	3,  // 4: round.v1.VTXOTree.batch_outpoint:type_name -> round.v1.Outpoint
 	4,  // 5: round.v1.VTXOTree.batch_output:type_name -> round.v1.TxOut
@@ -3138,57 +3371,61 @@ var file_round_proto_depIdxs = []int32{
 	3,  // 8: round.v1.ClientConnectorLeafInfo.connector_outpoint:type_name -> round.v1.Outpoint
 	3,  // 9: round.v1.ClientSuccessResp.accepted_boarding_outpoints:type_name -> round.v1.Outpoint
 	3,  // 10: round.v1.ClientSuccessResp.accepted_vtxo_outpoints:type_name -> round.v1.Outpoint
-	40, // 11: round.v1.ClientBatchInfo.vtxo_tree_paths:type_name -> round.v1.ClientBatchInfo.VtxoTreePathsEntry
-	41, // 12: round.v1.ClientBatchInfo.connector_leaf_map:type_name -> round.v1.ClientBatchInfo.ConnectorLeafMapEntry
-	42, // 13: round.v1.ClientVTXOAggNonces.agg_nonces:type_name -> round.v1.ClientVTXOAggNonces.AggNoncesEntry
-	43, // 14: round.v1.ClientVTXOAggSigs.agg_sigs:type_name -> round.v1.ClientVTXOAggSigs.AggSigsEntry
+	42, // 11: round.v1.ClientBatchInfo.vtxo_tree_paths:type_name -> round.v1.ClientBatchInfo.VtxoTreePathsEntry
+	43, // 12: round.v1.ClientBatchInfo.connector_leaf_map:type_name -> round.v1.ClientBatchInfo.ConnectorLeafMapEntry
+	44, // 13: round.v1.ClientVTXOAggNonces.agg_nonces:type_name -> round.v1.ClientVTXOAggNonces.AggNoncesEntry
+	45, // 14: round.v1.ClientVTXOAggSigs.agg_sigs:type_name -> round.v1.ClientVTXOAggSigs.AggSigsEntry
 	0,  // 15: round.v1.ClientRoundFailedResp.failure_code:type_name -> round.v1.RoundFailureCode
 	1,  // 16: round.v1.ClientRoundStatusReport.status:type_name -> round.v1.RoundLifecycleStatus
 	3,  // 17: round.v1.BoardingRequest.outpoint:type_name -> round.v1.Outpoint
 	3,  // 18: round.v1.ForfeitRequest.vtxo_outpoint:type_name -> round.v1.Outpoint
-	17, // 19: round.v1.JoinRoundRequest.boarding_requests:type_name -> round.v1.BoardingRequest
-	18, // 20: round.v1.JoinRoundRequest.vtxo_requests:type_name -> round.v1.VTXORequest
-	19, // 21: round.v1.JoinRoundRequest.forfeit_requests:type_name -> round.v1.ForfeitRequest
-	20, // 22: round.v1.JoinRoundRequest.leave_requests:type_name -> round.v1.LeaveRequest
-	21, // 23: round.v1.JoinRoundRequest.auth:type_name -> round.v1.JoinRoundAuth
-	24, // 24: round.v1.JoinRoundQuote.vtxo_quotes:type_name -> round.v1.VTXOQuote
-	25, // 25: round.v1.JoinRoundQuote.leave_quotes:type_name -> round.v1.LeaveQuote
-	23, // 26: round.v1.JoinRoundQuote.breakdown:type_name -> round.v1.FeeBreakdown
-	2,  // 27: round.v1.JoinRoundQuote.reject_reason:type_name -> round.v1.QuoteReason
-	44, // 28: round.v1.SubmitNoncesRequest.nonces:type_name -> round.v1.SubmitNoncesRequest.NoncesEntry
-	45, // 29: round.v1.SignerNonces.tx_nonces:type_name -> round.v1.SignerNonces.TxNoncesEntry
-	46, // 30: round.v1.SubmitPartialSigRequest.signatures:type_name -> round.v1.SubmitPartialSigRequest.SignaturesEntry
-	47, // 31: round.v1.SignerPartialSigs.tx_sigs:type_name -> round.v1.SignerPartialSigs.TxSigsEntry
-	3,  // 32: round.v1.BoardingInputSignature.outpoint:type_name -> round.v1.Outpoint
-	33, // 33: round.v1.SubmitForfeitSigRequest.signatures:type_name -> round.v1.BoardingInputSignature
-	3,  // 34: round.v1.ForfeitTxSig.vtxo_outpoint:type_name -> round.v1.Outpoint
-	35, // 35: round.v1.ForfeitTxSig.participant_sigs:type_name -> round.v1.ForfeitParticipantSig
-	36, // 36: round.v1.SubmitVTXOForfeitSigsRequest.forfeit_txs:type_name -> round.v1.ForfeitTxSig
-	6,  // 37: round.v1.ClientBatchInfo.VtxoTreePathsEntry.value:type_name -> round.v1.VTXOTree
-	7,  // 38: round.v1.ClientBatchInfo.ConnectorLeafMapEntry.value:type_name -> round.v1.ConnectorLeafInfo
-	30, // 39: round.v1.SubmitNoncesRequest.NoncesEntry.value:type_name -> round.v1.SignerNonces
-	32, // 40: round.v1.SubmitPartialSigRequest.SignaturesEntry.value:type_name -> round.v1.SignerPartialSigs
-	22, // 41: round.v1.RoundService.JoinRound:input_type -> round.v1.JoinRoundRequest
-	27, // 42: round.v1.RoundService.AcceptQuote:input_type -> round.v1.JoinRoundAccept
-	28, // 43: round.v1.RoundService.RejectQuote:input_type -> round.v1.JoinRoundReject
-	29, // 44: round.v1.RoundService.SubmitNonces:input_type -> round.v1.SubmitNoncesRequest
-	31, // 45: round.v1.RoundService.SubmitPartialSigs:input_type -> round.v1.SubmitPartialSigRequest
-	34, // 46: round.v1.RoundService.SubmitForfeitSigs:input_type -> round.v1.SubmitForfeitSigRequest
-	37, // 47: round.v1.RoundService.SubmitVTXOForfeitSigs:input_type -> round.v1.SubmitVTXOForfeitSigsRequest
-	38, // 48: round.v1.RoundService.QueryRoundStatus:input_type -> round.v1.QueryRoundStatusRequest
-	9,  // 49: round.v1.RoundService.JoinRound:output_type -> round.v1.ClientSuccessResp
-	9,  // 50: round.v1.RoundService.AcceptQuote:output_type -> round.v1.ClientSuccessResp
-	9,  // 51: round.v1.RoundService.RejectQuote:output_type -> round.v1.ClientSuccessResp
-	12, // 52: round.v1.RoundService.SubmitNonces:output_type -> round.v1.ClientVTXOAggNonces
-	13, // 53: round.v1.RoundService.SubmitPartialSigs:output_type -> round.v1.ClientVTXOAggSigs
-	11, // 54: round.v1.RoundService.SubmitForfeitSigs:output_type -> round.v1.ClientAwaitingInputSigsResp
-	9,  // 55: round.v1.RoundService.SubmitVTXOForfeitSigs:output_type -> round.v1.ClientSuccessResp
-	9,  // 56: round.v1.RoundService.QueryRoundStatus:output_type -> round.v1.ClientSuccessResp
-	49, // [49:57] is the sub-list for method output_type
-	41, // [41:49] is the sub-list for method input_type
-	41, // [41:41] is the sub-list for extension type_name
-	41, // [41:41] is the sub-list for extension extendee
-	0,  // [0:41] is the sub-list for field type_name
+	3,  // 19: round.v1.VTXOClaimInput.source_outpoint:type_name -> round.v1.Outpoint
+	17, // 20: round.v1.JoinRoundRequest.boarding_requests:type_name -> round.v1.BoardingRequest
+	18, // 21: round.v1.JoinRoundRequest.vtxo_requests:type_name -> round.v1.VTXORequest
+	19, // 22: round.v1.JoinRoundRequest.forfeit_requests:type_name -> round.v1.ForfeitRequest
+	21, // 23: round.v1.JoinRoundRequest.leave_requests:type_name -> round.v1.LeaveRequest
+	22, // 24: round.v1.JoinRoundRequest.auth:type_name -> round.v1.JoinRoundAuth
+	20, // 25: round.v1.JoinRoundRequest.claim_inputs:type_name -> round.v1.VTXOClaimInput
+	3,  // 26: round.v1.VTXOClaimQuote.source_outpoint:type_name -> round.v1.Outpoint
+	25, // 27: round.v1.JoinRoundQuote.vtxo_quotes:type_name -> round.v1.VTXOQuote
+	26, // 28: round.v1.JoinRoundQuote.leave_quotes:type_name -> round.v1.LeaveQuote
+	24, // 29: round.v1.JoinRoundQuote.breakdown:type_name -> round.v1.FeeBreakdown
+	2,  // 30: round.v1.JoinRoundQuote.reject_reason:type_name -> round.v1.QuoteReason
+	27, // 31: round.v1.JoinRoundQuote.claim_quotes:type_name -> round.v1.VTXOClaimQuote
+	46, // 32: round.v1.SubmitNoncesRequest.nonces:type_name -> round.v1.SubmitNoncesRequest.NoncesEntry
+	47, // 33: round.v1.SignerNonces.tx_nonces:type_name -> round.v1.SignerNonces.TxNoncesEntry
+	48, // 34: round.v1.SubmitPartialSigRequest.signatures:type_name -> round.v1.SubmitPartialSigRequest.SignaturesEntry
+	49, // 35: round.v1.SignerPartialSigs.tx_sigs:type_name -> round.v1.SignerPartialSigs.TxSigsEntry
+	3,  // 36: round.v1.BoardingInputSignature.outpoint:type_name -> round.v1.Outpoint
+	35, // 37: round.v1.SubmitForfeitSigRequest.signatures:type_name -> round.v1.BoardingInputSignature
+	3,  // 38: round.v1.ForfeitTxSig.vtxo_outpoint:type_name -> round.v1.Outpoint
+	37, // 39: round.v1.ForfeitTxSig.participant_sigs:type_name -> round.v1.ForfeitParticipantSig
+	38, // 40: round.v1.SubmitVTXOForfeitSigsRequest.forfeit_txs:type_name -> round.v1.ForfeitTxSig
+	6,  // 41: round.v1.ClientBatchInfo.VtxoTreePathsEntry.value:type_name -> round.v1.VTXOTree
+	7,  // 42: round.v1.ClientBatchInfo.ConnectorLeafMapEntry.value:type_name -> round.v1.ConnectorLeafInfo
+	32, // 43: round.v1.SubmitNoncesRequest.NoncesEntry.value:type_name -> round.v1.SignerNonces
+	34, // 44: round.v1.SubmitPartialSigRequest.SignaturesEntry.value:type_name -> round.v1.SignerPartialSigs
+	23, // 45: round.v1.RoundService.JoinRound:input_type -> round.v1.JoinRoundRequest
+	29, // 46: round.v1.RoundService.AcceptQuote:input_type -> round.v1.JoinRoundAccept
+	30, // 47: round.v1.RoundService.RejectQuote:input_type -> round.v1.JoinRoundReject
+	31, // 48: round.v1.RoundService.SubmitNonces:input_type -> round.v1.SubmitNoncesRequest
+	33, // 49: round.v1.RoundService.SubmitPartialSigs:input_type -> round.v1.SubmitPartialSigRequest
+	36, // 50: round.v1.RoundService.SubmitForfeitSigs:input_type -> round.v1.SubmitForfeitSigRequest
+	39, // 51: round.v1.RoundService.SubmitVTXOForfeitSigs:input_type -> round.v1.SubmitVTXOForfeitSigsRequest
+	40, // 52: round.v1.RoundService.QueryRoundStatus:input_type -> round.v1.QueryRoundStatusRequest
+	9,  // 53: round.v1.RoundService.JoinRound:output_type -> round.v1.ClientSuccessResp
+	9,  // 54: round.v1.RoundService.AcceptQuote:output_type -> round.v1.ClientSuccessResp
+	9,  // 55: round.v1.RoundService.RejectQuote:output_type -> round.v1.ClientSuccessResp
+	12, // 56: round.v1.RoundService.SubmitNonces:output_type -> round.v1.ClientVTXOAggNonces
+	13, // 57: round.v1.RoundService.SubmitPartialSigs:output_type -> round.v1.ClientVTXOAggSigs
+	11, // 58: round.v1.RoundService.SubmitForfeitSigs:output_type -> round.v1.ClientAwaitingInputSigsResp
+	9,  // 59: round.v1.RoundService.SubmitVTXOForfeitSigs:output_type -> round.v1.ClientSuccessResp
+	9,  // 60: round.v1.RoundService.QueryRoundStatus:output_type -> round.v1.ClientSuccessResp
+	53, // [53:61] is the sub-list for method output_type
+	45, // [45:53] is the sub-list for method input_type
+	45, // [45:45] is the sub-list for extension type_name
+	45, // [45:45] is the sub-list for extension extendee
+	0,  // [0:45] is the sub-list for field type_name
 }
 
 func init() { file_round_proto_init() }
@@ -3202,7 +3439,7 @@ func file_round_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_round_proto_rawDesc), len(file_round_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   45,
+			NumMessages:   47,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

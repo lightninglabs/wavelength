@@ -76,6 +76,9 @@ CREATE TABLE IF NOT EXISTS vtxos (
     --   5 = UnilateralExit
     --   6 = Failed
     --   7 = Spending
+    --   8 = Expired
+    --   9 = Redeeming
+    --  10 = Redeemed
     status INTEGER NOT NULL DEFAULT 0,
 
     -- forfeit_round_id is the round in which this VTXO is being forfeited.

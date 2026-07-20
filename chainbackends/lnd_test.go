@@ -247,6 +247,54 @@ func TestRegisterSpendSurvivesCallerContextCancellation(t *testing.T) {
 	reg.Cancel()
 }
 
+// TestRegisterSpendForwardsReplacementAfterReorg verifies the backend keeps
+// LND's spend subscription alive when the first confirmed spender is reorged
+// and forwards the later replacement from the same registration.
+func TestRegisterSpendForwardsReplacementAfterReorg(t *testing.T) {
+	t.Parallel()
+
+	spendChan := make(chan *chainntnfs.SpendDetail, 2)
+	reorgChan := make(chan struct{}, 1)
+	notifier := &stubNotifier{
+		spendEvent: &chainntnfs.SpendEvent{
+			Spend:  spendChan,
+			Reorg:  reorgChan,
+			Done:   make(chan struct{}),
+			Cancel: func() {},
+		},
+	}
+	backend := NewLNDBackend(
+		notifier, &stubFeeEstimator{}, &stubBroadcaster{},
+	)
+	outpoint := &wire.OutPoint{Index: 1}
+	reg, err := backend.RegisterSpend(
+		t.Context(), outpoint, []byte{0x51}, 100,
+	)
+	require.NoError(t, err)
+	defer reg.Cancel()
+
+	firstHash := chainhash.Hash{3}
+	spendChan <- &chainntnfs.SpendDetail{
+		SpentOutPoint:  outpoint,
+		SpenderTxHash:  &firstHash,
+		SpendingTx:     wire.NewMsgTx(2),
+		SpendingHeight: 144,
+	}
+	first := <-reg.Spend
+	require.Equal(t, firstHash, *first.SpenderTxHash)
+
+	reorgChan <- struct{}{}
+	replacementHash := chainhash.Hash{4}
+	spendChan <- &chainntnfs.SpendDetail{
+		SpentOutPoint:  outpoint,
+		SpenderTxHash:  &replacementHash,
+		SpendingTx:     wire.NewMsgTx(2),
+		SpendingHeight: 145,
+	}
+	replacement := <-reg.Spend
+	require.Equal(t, replacementHash, *replacement.SpenderTxHash)
+}
+
 func TestSubmitPackageUnsupported(t *testing.T) {
 	t.Parallel()
 

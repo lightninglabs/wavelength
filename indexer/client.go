@@ -11,6 +11,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	btclog "github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/arkrpc"
 	"github.com/lightninglabs/wavelength/build"
@@ -49,6 +50,10 @@ type Client struct {
 	// found.
 	Log fn.Option[btclog.Logger]
 }
+
+// MaxVTXORedeemabilityOutpoints is the maximum number of source outpoints in
+// one selective redemption query. Callers must chunk larger candidate sets.
+const MaxVTXORedeemabilityOutpoints = 1024
 
 // logger returns the configured logger, falling back to extracting a logger
 // from context. If neither is available, returns btclog.Disabled which safely
@@ -97,6 +102,11 @@ const (
 	// expected by the server when verifying script-scope proofs for
 	// ListVTXOEventsByScripts.
 	purposeListVTXOEventsByScripts = "list_vtxo_events_by_scripts"
+
+	// purposeCheckVTXORedeemability is the canonical purpose string
+	// expected by the server when verifying selective expiry-reconciliation
+	// scope proofs.
+	purposeCheckVTXORedeemability = "check_vtxo_redeemability"
 
 	// purposeOORRecipientEvents is the canonical purpose string
 	// expected by the server when verifying script-scope proofs
@@ -646,6 +656,62 @@ func (c *Client) ListVTXOsByScriptsTaproot(ctx context.Context,
 	}
 
 	return resp, nil
+}
+
+// BuildCheckVTXORedeemabilityTaprootRequest builds a proof-gated selective
+// reconciliation request for locally-expired VTXOs.
+func (c *Client) BuildCheckVTXORedeemabilityTaprootRequest(ctx context.Context,
+	outpoints []wire.OutPoint, scopes []TaprootScriptScope) (
+	*arkrpc.CheckVTXORedeemabilityRequest, error) {
+
+	if len(outpoints) == 0 {
+		return nil, fmt.Errorf("at least one VTXO outpoint is required")
+	}
+	if len(outpoints) > MaxVTXORedeemabilityOutpoints {
+		return nil, fmt.Errorf("too many VTXO outpoints: %d (max %d)",
+			len(outpoints), MaxVTXORedeemabilityOutpoints)
+	}
+	if len(scopes) == 0 {
+		return nil, fmt.Errorf("at least one script scope is required")
+	}
+
+	scriptScopes, err := c.buildTaprootScopes(
+		ctx, scopes, purposeCheckVTXORedeemability,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	protoOutpoints := make([]*arkrpc.OutPoint, 0, len(outpoints))
+	for i := range outpoints {
+		outpoint := outpoints[i]
+		protoOutpoints = append(protoOutpoints, &arkrpc.OutPoint{
+			Txid: bytes.Clone(outpoint.Hash[:]),
+			Vout: outpoint.Index,
+		})
+	}
+
+	return &arkrpc.CheckVTXORedeemabilityRequest{
+		Outpoints: protoOutpoints,
+		Scripts:   scriptScopes,
+	}, nil
+}
+
+// CheckVTXORedeemabilityTaproot performs a proof-gated selective
+// reconciliation for locally-expired VTXOs.
+func (c *Client) CheckVTXORedeemabilityTaproot(ctx context.Context,
+	outpoints []wire.OutPoint, scopes []TaprootScriptScope,
+	opts ...mailboxrpc.RPCOptions) (*arkrpc.CheckVTXORedeemabilityResponse,
+	error) {
+
+	req, err := c.BuildCheckVTXORedeemabilityTaprootRequest(
+		ctx, outpoints, scopes,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return c.rpc.CheckVTXORedeemability(ctx, req, firstOpt(opts))
 }
 
 // BuildGetOORSessionByTxidTaprootRequest builds the proof-gated indexer

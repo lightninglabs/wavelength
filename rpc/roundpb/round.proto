@@ -411,6 +411,36 @@ message ForfeitRequest {
     bytes forfeit_spend_path = 3;
 }
 
+// VTXOClaimInput authorizes reissuing a VTXO that expired while its owner was
+// offline and whose value was reclaimed by the operator's expiry sweep. The
+// server derives the replacement amount and policy from the source VTXO; the
+// client selects only the fresh tree-signing key.
+message VTXOClaimInput {
+    // source_outpoint identifies the expired VTXO being reissued.
+    Outpoint source_outpoint = 1;
+
+    // participant_pubkey is the compressed owner key authorized by the
+    // source VTXO policy.
+    bytes participant_pubkey = 2;
+
+    // replacement_signing_pubkey is the fresh compressed MuSig2 tree-signing
+    // key for the replacement VTXO.
+    bytes replacement_signing_pubkey = 3;
+
+    // nonce is a unique 32-byte replay-prevention value.
+    bytes nonce = 4;
+
+    // valid_from is the first block height where this claim is valid.
+    uint32 valid_from = 5;
+
+    // valid_until is the last block height where this claim is valid.
+    uint32 valid_until = 6;
+
+    // signature is a 64-byte BIP-340 Schnorr signature over the canonical
+    // claim message.
+    bytes signature = 7;
+}
+
 // LeaveRequest specifies an on-chain output for leaving the Ark.
 //
 // The pk_script identifies the destination; the amount follows
@@ -479,6 +509,10 @@ message JoinRoundRequest {
     // auth contains the BIP-322 authorization payload. Nil when join
     // request auth is disabled.
     JoinRoundAuth auth = 7;
+
+    // claim_inputs contains independently-authorized expired VTXOs whose
+    // swept value should be reissued in this round.
+    repeated VTXOClaimInput claim_inputs = 8;
 }
 
 // QuoteReason classifies why a JoinRoundQuote failed to admit the
@@ -559,6 +593,27 @@ message LeaveQuote {
     int64 amount_sat = 2;
 }
 
+// VTXOClaimQuote describes the exact replacement output derived by the server
+// for one claim input. Claim outputs are fixed-value and pay no operator fee.
+message VTXOClaimQuote {
+    // source_outpoint correlates this quote with the claim input.
+    Outpoint source_outpoint = 1;
+
+    // pk_script is the exact replacement VTXO output script.
+    bytes pk_script = 2;
+
+    // amount_sat is the full source VTXO value.
+    int64 amount_sat = 3;
+
+    // replacement_signing_pubkey echoes the fresh MuSig2 tree-signing key
+    // selected by the claimant.
+    bytes replacement_signing_pubkey = 4;
+
+    // policy_template is the exact serialized historical policy copied from
+    // the swept source VTXO.
+    bytes policy_template = 5;
+}
+
 // JoinRoundQuote is sent from server to client as the Phase-2
 // response of the seal-time fee handshake. Delivered via the
 // durable per-client mailbox egress (symmetric to
@@ -607,6 +662,10 @@ message JoinRoundQuote {
     // client's intent at seal time (e.g. residual would be
     // negative). QUOTE_OK indicates a valid quote.
     QuoteReason reject_reason = 9;
+
+    // claim_quotes carries one fixed, zero-fee VTXOClaimQuote per claim input
+    // in the same order. Empty when reject_reason != QUOTE_OK.
+    repeated VTXOClaimQuote claim_quotes = 10;
 }
 
 // JoinRoundAccept is sent from client to server to explicitly

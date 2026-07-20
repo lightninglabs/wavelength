@@ -458,7 +458,7 @@ type IntentPackage struct {
 // isEmpty returns true if the package contains no intents.
 func (e *IntentPackage) isEmpty() bool {
 	return len(e.Boarding) == 0 && len(e.Forfeits) == 0 &&
-		len(e.VTXOs) == 0 && len(e.Leaves) == 0
+		len(e.VTXOs) == 0 && len(e.Leaves) == 0 && len(e.Claims) == 0
 }
 
 // logAttributes returns structured logging arguments for the package.
@@ -468,6 +468,7 @@ func (e *IntentPackage) logAttributes() []any {
 		slog.Int("vtxo_requests", len(e.VTXOs)),
 		slog.Int("forfeits", len(e.Forfeits)),
 		slog.Int("leaves", len(e.Leaves)),
+		slog.Int("claims", len(e.Claims)),
 	}
 }
 

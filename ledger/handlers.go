@@ -6,6 +6,7 @@ import (
 	"log/slog"
 
 	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
@@ -370,6 +371,132 @@ func (a *LedgerActor) handleVTXOSent(ctx context.Context, msg *VTXOSentMsg,
 
 		return q.ledger.InsertLedgerEntry(ctx, entry)
 	})
+}
+
+// handleVTXOClaimReissued atomically books an expired source leaving and its
+// exact-value replacement entering. Both legs use the claim-reissue source,
+// carry distinct structured outpoints, and share one canonical pair key. The
+// durable actor's Commit transaction makes the pair all-or-nothing with the
+// mailbox acknowledgement; the key makes a replay a two-leg no-op.
+func (a *LedgerActor) handleVTXOClaimReissued(ctx context.Context,
+	msg *VTXOClaimReissuedMsg,
+	ax actor.Exec[ledgerTx]) fn.Result[LedgerResp] {
+
+	const errMsg = "Failed to handle VTXO claim reissue"
+
+	if msg.AmountSat <= 0 {
+		return a.fail(
+			ctx, errMsg, fmt.Errorf("%w: VTXOClaimReissuedMsg "+
+				"amount_sat must be positive (got %d)",
+				ErrInvalidMessage, msg.AmountSat),
+		)
+	}
+	if msg.Source.Hash.IsEqual(&zeroHash) {
+		return a.fail(
+			ctx, errMsg, fmt.Errorf("%w: claim reissue source "+
+				"outpoint is required", ErrInvalidMessage),
+		)
+	}
+	if msg.Replacement.Hash.IsEqual(&zeroHash) {
+		return a.fail(
+			ctx, errMsg, fmt.Errorf("%w: claim reissue "+
+				"replacement outpoint is required",
+				ErrInvalidMessage),
+		)
+	}
+	if msg.Source == msg.Replacement {
+		return a.fail(
+			ctx, errMsg, fmt.Errorf("%w: claim reissue "+
+				"replacement must differ from source",
+				ErrInvalidMessage),
+		)
+	}
+
+	roundID := roundIDOrNil(msg.RoundID)
+	if roundID == nil {
+		return a.fail(
+			ctx, errMsg, fmt.Errorf("%w: claim reissue round ID "+
+				"is required", ErrInvalidMessage),
+		)
+	}
+
+	idempotencyKey := claimReissueIdempotencyKey(
+		msg.Source, msg.Replacement,
+	)
+	sourceVout := int32(msg.Source.Index)
+	replacementVout := int32(msg.Replacement.Index)
+	createdAt := a.clk.Now().Unix()
+
+	sent := LedgerEntry{
+		DebitAccount:  AccountTransfersOut,
+		CreditAccount: AccountVTXOBalance,
+		AmountSat:     msg.AmountSat,
+		RoundID:       roundID,
+		EventType:     EventVTXOSent,
+		Description: fmt.Sprintf(
+			"VTXO sent via %s: %s", SourceClaimReissue,
+			msg.Source,
+		),
+		CreatedAt:      createdAt,
+		IdempotencyKey: idempotencyKey,
+		ChainTxid:      msg.Source.Hash[:],
+		ChainVout:      &sourceVout,
+	}
+	received := LedgerEntry{
+		DebitAccount:  AccountVTXOBalance,
+		CreditAccount: AccountTransfersOut,
+		AmountSat:     msg.AmountSat,
+		RoundID:       roundID,
+		EventType:     EventVTXOReceived,
+		Description: fmt.Sprintf(
+			"VTXO received via %s: %s", SourceClaimReissue,
+			msg.Replacement,
+		),
+		CreatedAt:      createdAt,
+		IdempotencyKey: idempotencyKey,
+		ChainTxid:      msg.Replacement.Hash[:],
+		ChainVout:      &replacementVout,
+	}
+
+	a.log.InfoS(ctx, "Recording VTXO claim reissue",
+		slog.String("source", msg.Source.String()),
+		slog.String("replacement", msg.Replacement.String()),
+		slog.Int64("amount_sat", msg.AmountSat),
+	)
+
+	return a.commit(ctx, ax, errMsg, func(ctx context.Context,
+		q ledgerTx) error {
+
+		if err := q.ledger.InsertLedgerEntry(ctx, sent); err != nil {
+			return fmt.Errorf("claim reissue sent leg: %w", err)
+		}
+		if err := q.ledger.InsertLedgerEntry(
+			ctx, received,
+		); err != nil {
+			return fmt.Errorf("claim reissue received leg: %w", err)
+		}
+
+		return nil
+	})
+}
+
+// claimReissueIdempotencyKey identifies one canonical source-to-replacement
+// pair. Including both outpoints prevents a conflicting repair from silently
+// colliding with the original pair while both ledger legs remain replay-safe.
+func claimReissueIdempotencyKey(source, replacement wire.OutPoint) []byte {
+	key := make([]byte, 0, 72)
+	key = append(
+		key, walletUTXOIdempotencyKey(
+			source.Hash, source.Index,
+		)...,
+	)
+	key = append(
+		key, walletUTXOIdempotencyKey(
+			replacement.Hash, replacement.Index,
+		)...,
+	)
+
+	return key
 }
 
 // zeroHash is a convenience sentinel for detecting an absent

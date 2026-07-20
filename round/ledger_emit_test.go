@@ -216,6 +216,29 @@ func TestEmitVTXOsReceivedUnknownOriginIsNoOp(t *testing.T) {
 	)
 }
 
+// TestEmitVTXOsReceivedClaimReissueIsNoOp verifies the generic round-output
+// path does not duplicate the finalizer's atomic source-to-replacement entry.
+func TestEmitVTXOsReceivedClaimReissueIsNoOp(t *testing.T) {
+	t.Parallel()
+
+	sink := actor.NewChannelTellOnlyRef[ledger.LedgerMsg](
+		"round-ledger", 4,
+	)
+	a := newLedgerEmitActor(t, sink)
+	a.emitVTXOsReceived(t.Context(), &VTXOCreatedNotification{
+		RoundID: uuid.New().String(),
+		VTXOs: []*ClientVTXO{{
+			Outpoint: wire.OutPoint{
+				Hash: chainhash.Hash{0x45},
+			},
+			Amount: btcutil.Amount(7_000),
+			Origin: types.VTXOOriginClaimReissue,
+		}},
+	})
+
+	require.Empty(t, drainLedgerMessages(t, sink))
+}
+
 // TestEmitVTXOsReceivedRefreshEmitsFeePaidMsg confirms the round
 // actor appends a single FeePaidMsg{FeeType=refresh} after the
 // paired VTXOSent+VTXOReceived legs when the round has
