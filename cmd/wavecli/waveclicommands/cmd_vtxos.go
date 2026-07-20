@@ -670,11 +670,26 @@ func maybeJoinNextRound(cmd *cobra.Command, client waverpc.DaemonServiceClient,
 	decision := decideAutoJoin(dryRun, noJoin)
 
 	if decision.Join {
-		if _, err := client.JoinNextRound(
+		resp, err := client.JoinNextRound(
 			cmd.Context(), &waverpc.JoinNextRoundRequest{},
-		); err != nil {
+		)
+		if err != nil {
 			return fmt.Errorf("auto-join next round failed: %w",
 				err)
+		}
+
+		// A refresh or leave that queued nothing (e.g. --all with no
+		// live VTXOs) leaves no pending round to join; the daemon
+		// reports this benign no-op rather than failing, so say so
+		// plainly instead of the ordinary auto-join notice, which
+		// would wrongly imply a round was joined.
+		if resp.GetStatus() == "nothing_to_join" {
+			fmt.Fprintln(
+				cmd.ErrOrStderr(),
+				"nothing queued to join",
+			)
+
+			return nil
 		}
 	}
 
