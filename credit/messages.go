@@ -336,6 +336,16 @@ type CreditOpSummary struct {
 	// WalletEntry transition. Always false for receive and redeem ops.
 	CreditOnly bool
 
+	// OORSessionID is the delegated Ark top-up OOR session id, when the
+	// operation funded credit through an OOR transfer. It lets the wallet
+	// activity view correlate the raw ledger row of the top-up transfer
+	// back to the credit operation it funded.
+	OORSessionID string
+
+	// TopupSat is the Ark top-up amount the operation funded to cover a
+	// pay shortfall, when known.
+	TopupSat int64
+
 	// LastError is the terminal failure reason, when failed.
 	LastError string
 }

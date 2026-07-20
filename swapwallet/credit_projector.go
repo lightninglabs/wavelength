@@ -27,6 +27,10 @@ const creditProjectInterval = 5 * time.Second
 // emit so the projected terminal update lands on the same row.
 const creditCounterparty = "credit"
 
+// creditTopupPhaseLabel is the progress phase label stamped on the ledger row
+// of the Ark top-up transfer that funded a credit-backed pay.
+const creditTopupPhaseLabel = "credit_topup"
+
 // creditProjectorOwnsSwapSummary reports whether this wallet's durable credit
 // operation, rather than the generic swap monitor or history reconciler, owns
 // a swap activity row. CREDIT settlement identifies the rail, while the local
