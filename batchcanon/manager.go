@@ -30,6 +30,17 @@ var ManagerServiceKey = actor.NewServiceKey[ManagerMsg, ManagerResp](
 // signalled separately by chainsource's Done event at its FinalityDepth.
 const usabilityConfs uint32 = 1
 
+// minWatchHeightHint is the lowest block-height hint a chain notifier will
+// accept: a registration with a hint of 0 is rejected outright ("a height hint
+// greater than 0 must be provided"), which would leave the batch permanently
+// unwatched and, because admission is fail-closed, never usable. A batch's
+// persisted WatchHeightHint can legitimately resolve to 0 (for example a round
+// FSM created at genesis height on a fresh regtest chain), so every watch
+// registration clamps its hint to this floor. A lower hint only widens the
+// notifier's scan window; it never skips the confirmation the watch exists to
+// observe, so clamping up is always safe.
+const minWatchHeightHint uint32 = 1
+
 // confState is the manager's in-memory view of a batch tx's confirmation
 // observation, distinct from any input-conflict view.
 type confState int
@@ -447,7 +458,12 @@ func (m *Manager) armWatches(ctx context.Context, w *batchWatch,
 		}
 	}
 
+	// Clamp the persisted hint to the notifier's accepted floor so a 0 hint
+	// can never abort watch arming (see minWatchHeightHint).
 	heightHint := w.heightHint
+	if heightHint < minWatchHeightHint {
+		heightHint = minWatchHeightHint
+	}
 
 	confReq := &chainsource.RegisterConfRequest{
 		CallerID:    confCallerID(w.txid),
