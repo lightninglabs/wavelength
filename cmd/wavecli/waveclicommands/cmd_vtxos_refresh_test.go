@@ -265,6 +265,60 @@ func TestConfirmRefreshPreviewWithoutEstimateStillPrompts(t *testing.T) {
 	require.Contains(t, out.String(), "still charged")
 }
 
+// TestBuildRefreshVTXOsRequestRejectsOutpointAndAll verifies that a
+// caller can't combine --outpoint and --all: before the shared
+// builder, --all silently won and the outpoints were dropped.
+func TestBuildRefreshVTXOsRequestRejectsOutpointAndAll(t *testing.T) {
+	t.Parallel()
+
+	_, err := buildRefreshVTXOsRequest(
+		[]string{
+			"aa:0",
+		},
+		true, false,
+	)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "mutually exclusive")
+}
+
+// TestBuildRefreshVTXOsRequestRejectsNoSelection verifies that a
+// caller with neither --outpoint nor --all gets a clean CLI-side
+// error rather than hitting the daemon with an empty request.
+func TestBuildRefreshVTXOsRequestRejectsNoSelection(t *testing.T) {
+	t.Parallel()
+
+	_, err := buildRefreshVTXOsRequest(nil, false, false)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "either --outpoint or --all")
+}
+
+// TestBuildRefreshVTXOsRequestBuildsSelections locks in the two
+// valid selection shapes and the dry_run passthrough.
+func TestBuildRefreshVTXOsRequestBuildsSelections(t *testing.T) {
+	t.Parallel()
+
+	req, err := buildRefreshVTXOsRequest(nil, true, true)
+	require.NoError(t, err)
+	require.True(t, req.GetAll())
+	require.True(t, req.DryRun)
+
+	req, err = buildRefreshVTXOsRequest(
+		[]string{
+			"aa:0", "bb:1",
+		},
+		false, false,
+	)
+	require.NoError(t, err)
+	require.Equal(
+		t, []string{
+			"aa:0",
+			"bb:1",
+		},
+		req.GetOutpoints().GetOutpoints(),
+	)
+	require.False(t, req.DryRun)
+}
+
 // TestSummarizeRefreshFeeEstimateNil verifies a response without an
 // estimate (real refresh, empty selection) renders no stderr lines.
 func TestSummarizeRefreshFeeEstimateNil(t *testing.T) {

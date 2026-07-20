@@ -298,21 +298,13 @@ func registerMCPTools(s *mcp.Server, client waverpc.DaemonServiceClient) {
 			return nil, nil, err
 		}
 
-		rpcReq := &waverpc.RefreshVTXOsRequest{
-			DryRun: args.DryRun,
+		rpcReq, err := buildRefreshVTXOsRequest(
+			args.Outpoints, args.All, args.DryRun,
+		)
+		if err != nil {
+			return nil, nil, err
 		}
-		if args.All {
-			rpcReq.Selection = &waverpc.RefreshVTXOsRequest_All{
-				All: true,
-			}
-		} else if len(args.Outpoints) > 0 {
-			sel := &waverpc.RefreshVTXOsRequest_Outpoints{
-				Outpoints: &waverpc.OutpointSelection{
-					Outpoints: args.Outpoints,
-				},
-			}
-			rpcReq.Selection = sel
-		}
+
 		resp, err := client.RefreshVTXOs(ctx, rpcReq)
 		if err != nil {
 			return nil, nil, err
