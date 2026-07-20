@@ -158,6 +158,7 @@ const (
 	batchEvidencePkScriptRecordType    tlv.Type = 7
 	batchEvidenceCSVDeltaRecordType    tlv.Type = 9
 	batchEvidenceInputsRecordType      tlv.Type = 11
+	batchEvidenceWatchHeightRecordType tlv.Type = 13
 )
 
 const (
@@ -742,6 +743,7 @@ func encodeBatchEvidence(evidence batchcanon.BatchEvidence) ([]byte, error) {
 	outputIndex := evidence.BatchOutputIndex
 	pkScript := evidence.ConfirmationPkScript
 	csvDelta := uint32(evidence.CSVExpiryDelta)
+	watchHeight := evidence.WatchHeightHint
 	inputs, err := encodeBatchEvidenceInputs(evidence.ConsumedInputs)
 	if err != nil {
 		return nil, err
@@ -761,6 +763,9 @@ func encodeBatchEvidence(evidence batchcanon.BatchEvidence) ([]byte, error) {
 		),
 		tlv.MakePrimitiveRecord(
 			batchEvidenceInputsRecordType, &inputs,
+		),
+		tlv.MakePrimitiveRecord(
+			batchEvidenceWatchHeightRecordType, &watchHeight,
 		),
 	)
 	if err != nil {
@@ -786,6 +791,7 @@ func decodeBatchEvidence(raw []byte,
 		pkScript    []byte
 		csvDelta    uint32
 		inputs      []byte
+		watchHeight uint32
 	)
 
 	stream, err := tlv.NewStream(
@@ -802,6 +808,9 @@ func decodeBatchEvidence(raw []byte,
 		),
 		tlv.MakePrimitiveRecord(
 			batchEvidenceInputsRecordType, &inputs,
+		),
+		tlv.MakePrimitiveRecord(
+			batchEvidenceWatchHeightRecordType, &watchHeight,
 		),
 	)
 	if err != nil {
@@ -836,6 +845,7 @@ func decodeBatchEvidence(raw []byte,
 		BatchTx:              bytes.Clone(tx),
 		BatchOutputIndex:     outputIndex,
 		ConfirmationPkScript: bytes.Clone(pkScript),
+		WatchHeightHint:      watchHeight,
 		CSVExpiryDelta:       decodedCSVDelta,
 		ConsumedInputs:       consumedInputs,
 	}

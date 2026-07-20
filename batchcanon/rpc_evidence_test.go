@@ -25,6 +25,7 @@ func TestEvidenceFromAncestryPaths(t *testing.T) {
 		t, valid.GetCommitmentCsvExpiryDelta(),
 		evidence[0].CSVExpiryDelta,
 	)
+	require.Equal(t, uint32(87), evidence[0].WatchHeightHint)
 	require.Len(t, evidence[0].ConsumedInputs, 2)
 
 	tests := []struct {
@@ -75,6 +76,13 @@ func TestEvidenceFromAncestryPaths(t *testing.T) {
 				path.CommitmentInputs[0].PrevOut.PkScript = nil
 			},
 			want: "input 0 has no previous output pkScript",
+		},
+		{
+			name: "negative commitment height",
+			mutate: func(path *arkrpc.AncestryPath) {
+				path.CommitmentHeight = -1
+			},
+			want: "commitment height must not be negative",
 		},
 		{
 			name: "non-positive CSV expiry",
@@ -174,8 +182,9 @@ func validRPCBatchEvidence(t *testing.T) *arkrpc.AncestryPath {
 	txid := tx.TxHash()
 
 	return &arkrpc.AncestryPath{
-		CommitmentTxid: append([]byte(nil), txid[:]...),
-		CommitmentTx:   raw.Bytes(),
+		CommitmentTxid:   append([]byte(nil), txid[:]...),
+		CommitmentHeight: 87,
+		CommitmentTx:     raw.Bytes(),
 		CommitmentInputs: []*arkrpc.CommitmentInputEvidence{
 			{
 				Outpoint: rpcTestOutpoint(inputA),
