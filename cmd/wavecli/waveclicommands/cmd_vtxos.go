@@ -183,7 +183,42 @@ func newVTXOsRefreshCmd() *cobra.Command {
 	return cmd
 }
 
-// vtxosRefresh executes the RefreshVTXOs RPC.
+// buildRefreshVTXOsRequest translates the flag surface into a
+// RefreshVTXOsRequest. Extracted so the MCP tool and the CLI share
+// the same selection guards — divergence here would let one surface
+// silently refresh a different VTXO set than the other.
+func buildRefreshVTXOsRequest(outpoints []string, all,
+	dryRun bool) (*waverpc.RefreshVTXOsRequest, error) {
+
+	if !all && len(outpoints) == 0 {
+		return nil, fmt.Errorf("either --outpoint or --all is required")
+	}
+
+	if all && len(outpoints) > 0 {
+		return nil, fmt.Errorf("--outpoint and --all are mutually " +
+			"exclusive")
+	}
+
+	req := &waverpc.RefreshVTXOsRequest{DryRun: dryRun}
+
+	if all {
+		req.Selection = &waverpc.RefreshVTXOsRequest_All{
+			All: true,
+		}
+	} else {
+		req.Selection = &waverpc.RefreshVTXOsRequest_Outpoints{
+			Outpoints: &waverpc.OutpointSelection{
+				Outpoints: outpoints,
+			},
+		}
+	}
+
+	return req, nil
+}
+
+// vtxosRefresh executes the RefreshVTXOs RPC. Flag handling lives in
+// buildRefreshVTXOsRequest so the same builder can be reused by the
+// MCP tool and covered with a focused unit test.
 func vtxosRefresh(cmd *cobra.Command, _ []string) error {
 	client, conn, err := getDaemonClient(cmd)
 	if err != nil {
@@ -199,24 +234,17 @@ func vtxosRefresh(cmd *cobra.Command, _ []string) error {
 		all, _ := cmd.Flags().GetBool("all")
 		dryRun, _ := cmd.Flags().GetBool("dry_run")
 
-		if !all && len(outpoints) == 0 {
-			return fmt.Errorf("either --outpoint or --all is " +
-				"required")
+		built, err := buildRefreshVTXOsRequest(
+			outpoints, all, dryRun,
+		)
+		if err != nil {
+			return err
 		}
 
-		if all {
-			req.Selection = &waverpc.RefreshVTXOsRequest_All{
-				All: true,
-			}
-		} else {
-			sel := &waverpc.RefreshVTXOsRequest_Outpoints{
-				Outpoints: &waverpc.OutpointSelection{
-					Outpoints: outpoints,
-				},
-			}
-			req.Selection = sel
-		}
-		req.DryRun = dryRun
+		// Proto pointer-receiver shims: copy built fields onto
+		// the outer req that parseRequest owns.
+		req.Selection = built.Selection
+		req.DryRun = built.DryRun
 
 		return nil
 	}); err != nil {
