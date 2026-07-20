@@ -490,6 +490,7 @@ func replaceBatchRecord(ctx context.Context, q BatchCanonicalityStore,
 			CsvExpiryDelta:       record.CSVExpiryDelta,
 			PolicyState:          int32(record.PolicyState),
 			ConfirmationPkScript: record.ConfirmationPkScript,
+			WatchHeightHint:      int64(record.WatchHeightHint),
 			CreatedAt:            now,
 			UpdatedAt:            now,
 		},
@@ -543,6 +544,10 @@ func registrationMatches(existing, next *batchcanon.Record) error {
 		existing.ConfirmationPkScript, next.ConfirmationPkScript,
 	):
 		return fmt.Errorf("%w: confirmation script changed",
+			batchcanon.ErrRegistrationConflict)
+
+	case existing.WatchHeightHint != next.WatchHeightHint:
+		return fmt.Errorf("%w: watch height hint changed",
 			batchcanon.ErrRegistrationConflict)
 
 	case existing.CSVExpiryDelta != next.CSVExpiryDelta:
@@ -1343,6 +1348,7 @@ func (s *BatchCanonicalityPersistenceStore) hydrateRecord(ctx context.Context,
 		CSVExpiryDelta:       row.CsvExpiryDelta,
 		PolicyState:          batchcanon.PolicyState(row.PolicyState),
 		ConfirmationPkScript: row.ConfirmationPkScript,
+		WatchHeightHint:      uint32(row.WatchHeightHint),
 		ConsumedInputs:       inputs,
 		DependentVTXOs:       deps,
 	}, nil

@@ -74,8 +74,9 @@ type inputWatch struct {
 
 // batchWatch is the manager's in-memory state for one watched batch.
 type batchWatch struct {
-	txid     chainhash.Hash
-	pkScript []byte
+	txid       chainhash.Hash
+	pkScript   []byte
+	heightHint uint32
 
 	conf   confState
 	inputs map[wire.OutPoint]*inputWatch
@@ -253,6 +254,7 @@ func (m *Manager) handleRegisterBatch(ctx context.Context,
 		CSVExpiryDelta:        req.CSVExpiryDelta,
 		PolicyState:           PolicyStateDefault,
 		ConfirmationPkScript:  req.ConfirmationPkScript,
+		WatchHeightHint:       req.WatchHeightHint,
 		ConsumedInputs:        req.ConsumedInputs,
 		DependentVTXOs:        req.DependentVTXOs,
 	}
@@ -445,7 +447,7 @@ func (m *Manager) armWatches(ctx context.Context, w *batchWatch,
 		}
 	}
 
-	heightHint := m.bestHeightHint(ctx)
+	heightHint := w.heightHint
 
 	confReq := &chainsource.RegisterConfRequest{
 		CallerID:    confCallerID(w.txid),
@@ -632,31 +634,6 @@ func (m *Manager) releaseWatchSet(ctx context.Context, w *batchWatch,
 				slog.String("batch", w.txid.String()),
 			)
 	}
-}
-
-// bestHeightHint asks chainsource for the current best height to use as a
-// watch height hint. On error it returns 0 (scan from the backend's default),
-// logging the failure rather than aborting registration.
-func (m *Manager) bestHeightHint(ctx context.Context) uint32 {
-	resp, err := m.cfg.ChainSource.Ask(
-		ctx, &chainsource.BestHeightRequest{},
-	).Await(ctx).Unpack()
-	if err != nil {
-		m.logger(ctx).WarnS(ctx, "Batch canonicality best-height "+
-			"query failed; using zero height hint", err)
-
-		return 0
-	}
-
-	height, ok := resp.(*chainsource.BestHeightResponse)
-	if !ok {
-		return 0
-	}
-	if height.Height < 0 {
-		return 0
-	}
-
-	return uint32(height.Height)
 }
 
 // handleGetBatchState serves a read of the persisted canonicality record.
@@ -1444,6 +1421,7 @@ func watchFromRecord(record *Record) *batchWatch {
 	w := &batchWatch{
 		txid:       record.BatchTxID,
 		pkScript:   record.ConfirmationPkScript,
+		heightHint: record.WatchHeightHint,
 		inputs:     make(map[wire.OutPoint]*inputWatch),
 		confHeight: record.ConfirmationHeight,
 		confBlock:  record.ConfirmationBlock,

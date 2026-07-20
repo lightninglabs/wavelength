@@ -67,7 +67,8 @@ WHERE batch_txid = $1
 RETURNING batch_txid, batch_tx, batch_output_index, state,
     registration_stage, observation_generation, ready_generation, revision,
     confirmation_height, confirmation_block_hash, csv_expiry_delta,
-    policy_state, created_at, updated_at, confirmation_pk_script
+    policy_state, created_at, updated_at, confirmation_pk_script,
+    watch_height_hint
 `
 
 type BeginBatchCanonicalityReconcileParams struct {
@@ -96,6 +97,7 @@ func (q *Queries) BeginBatchCanonicalityReconcile(ctx context.Context, arg Begin
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.ConfirmationPkScript,
+		&i.WatchHeightHint,
 	)
 	return i, err
 }
@@ -220,7 +222,8 @@ const GetBatchCanonicality = `-- name: GetBatchCanonicality :one
 SELECT batch_txid, batch_tx, batch_output_index, state, registration_stage,
     observation_generation, ready_generation, revision,
     confirmation_height, confirmation_block_hash, csv_expiry_delta,
-    policy_state, created_at, updated_at, confirmation_pk_script
+    policy_state, created_at, updated_at, confirmation_pk_script,
+    watch_height_hint
 FROM batch_canonicality
 WHERE batch_txid = $1
 `
@@ -246,6 +249,7 @@ func (q *Queries) GetBatchCanonicality(ctx context.Context, batchTxid []byte) (B
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.ConfirmationPkScript,
+		&i.WatchHeightHint,
 	)
 	return i, err
 }
@@ -383,7 +387,8 @@ const ListBatchCanonicalityByState = `-- name: ListBatchCanonicalityByState :man
 SELECT batch_txid, batch_tx, batch_output_index, state, registration_stage,
     observation_generation, ready_generation, revision,
     confirmation_height, confirmation_block_hash, csv_expiry_delta,
-    policy_state, created_at, updated_at, confirmation_pk_script
+    policy_state, created_at, updated_at, confirmation_pk_script,
+    watch_height_hint
 FROM batch_canonicality
 WHERE state = $1
 `
@@ -415,6 +420,7 @@ func (q *Queries) ListBatchCanonicalityByState(ctx context.Context, state int32)
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.ConfirmationPkScript,
+			&i.WatchHeightHint,
 		); err != nil {
 			return nil, err
 		}
@@ -869,10 +875,11 @@ INSERT INTO batch_canonicality (
     batch_txid, batch_tx, batch_output_index, state, registration_stage,
     observation_generation, ready_generation, revision,
     confirmation_height, confirmation_block_hash, csv_expiry_delta,
-    policy_state, created_at, updated_at, confirmation_pk_script
+    policy_state, created_at, updated_at, confirmation_pk_script,
+    watch_height_hint
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-    $15
+    $15, $16
 )
 ON CONFLICT (batch_txid) DO UPDATE SET
     batch_tx = EXCLUDED.batch_tx,
@@ -887,6 +894,7 @@ ON CONFLICT (batch_txid) DO UPDATE SET
     csv_expiry_delta = EXCLUDED.csv_expiry_delta,
     policy_state = EXCLUDED.policy_state,
     confirmation_pk_script = EXCLUDED.confirmation_pk_script,
+    watch_height_hint = EXCLUDED.watch_height_hint,
     updated_at = EXCLUDED.updated_at
 `
 
@@ -906,6 +914,7 @@ type UpsertBatchCanonicalityParams struct {
 	CreatedAt             int64
 	UpdatedAt             int64
 	ConfirmationPkScript  []byte
+	WatchHeightHint       int64
 }
 
 // Batch canonicality queries.
@@ -933,6 +942,7 @@ func (q *Queries) UpsertBatchCanonicality(ctx context.Context, arg UpsertBatchCa
 		arg.CreatedAt,
 		arg.UpdatedAt,
 		arg.ConfirmationPkScript,
+		arg.WatchHeightHint,
 	)
 	return err
 }

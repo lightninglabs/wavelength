@@ -77,6 +77,7 @@ type BatchCanonicality struct {
 	CreatedAt             int64
 	UpdatedAt             int64
 	ConfirmationPkScript  []byte
+	WatchHeightHint       int64
 }
 
 type BatchConsumedInput struct {

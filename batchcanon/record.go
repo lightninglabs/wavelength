@@ -70,6 +70,12 @@ type Record struct {
 	// batch-output pkScript to derive.
 	ConfirmationPkScript []byte
 
+	// WatchHeightHint is the earliest height from which confirmation and
+	// spend watches must scan. It is captured before the batch can confirm
+	// and retained across restarts so delayed watch installation cannot
+	// miss already-mined evidence.
+	WatchHeightHint uint32
+
 	// PolicyState is the reserved policy classification slot. See
 	// PolicyState.
 	PolicyState PolicyState

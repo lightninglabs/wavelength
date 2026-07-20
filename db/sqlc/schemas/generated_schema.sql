@@ -178,6 +178,13 @@ CREATE TABLE batch_canonicality (
     -- the generated model column order matches the query/store code.
     confirmation_pk_script BLOB,
 
+    -- watch_height_hint is captured before the batch can confirm. Reusing
+    -- it after delayed registration or restart prevents light-client
+    -- backends from starting their historical scan above an already-mined
+    -- confirmation.
+    watch_height_hint BIGINT NOT NULL DEFAULT 0
+        CHECK (watch_height_hint >= 0),
+
     CHECK ((batch_tx IS NULL AND batch_output_index IS NULL)
         OR (batch_tx IS NOT NULL AND batch_output_index IS NOT NULL)),
 
