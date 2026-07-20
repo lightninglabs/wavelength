@@ -363,6 +363,7 @@ type Round struct {
 	CreationTime          int64
 	LastUpdateTime        int64
 	FlowVersion           int32
+	SweepDelay            int32
 }
 
 type RoundBoardingIntent struct {
