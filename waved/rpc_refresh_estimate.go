@@ -175,16 +175,34 @@ func degradeRefreshEstimate(est *waverpc.RefreshFeeEstimate,
 	return est
 }
 
-// refreshQuoteSane rejects operator quotes carrying negative or
-// beyond-money-supply values. Such a quote is operator nonsense; it is
-// contained here so a broken (or hostile) operator can neither render
-// negative components nor poison the selection total.
+// refreshQuoteSane rejects operator quotes carrying negative,
+// beyond-money-supply, or internally inconsistent values. Such a quote
+// is operator nonsense; it is contained here so a broken (or hostile)
+// operator can neither render negative components, poison the
+// selection total, nor advertise an itemization that doesn't reconcile
+// with the total the seal charges.
 func refreshQuoteSane(quote *arkrpc.EstimateFeeResponse) bool {
-	return quote.LiquidityFeeSat >= 0 &&
-		quote.OnchainShareSat >= 0 &&
-		quote.MarginSat >= 0 &&
-		quote.TotalFeeSat >= 0 &&
-		quote.TotalFeeSat <= int64(btcutil.MaxSatoshi)
+	// Bound every component individually before summing: three
+	// values each capped at MaxSatoshi cannot overflow int64, so
+	// the reconciliation below is wrap-free.
+	maxSat := int64(btcutil.MaxSatoshi)
+	components := []int64{
+		quote.LiquidityFeeSat,
+		quote.OnchainShareSat,
+		quote.MarginSat,
+	}
+	var sum int64
+	for _, c := range components {
+		if c < 0 || c > maxSat {
+			return false
+		}
+		sum += c
+	}
+
+	// The operator's fee schedule defines total_fee_sat as exactly
+	// liquidity + on-chain share + margin; a quote whose parts
+	// don't sum to its total is as nonsensical as a negative one.
+	return quote.TotalFeeSat == sum && quote.TotalFeeSat <= maxSat
 }
 
 // estimateRefreshFees builds the advisory RefreshFeeEstimate for the
