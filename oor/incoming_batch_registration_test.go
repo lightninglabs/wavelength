@@ -49,6 +49,7 @@ func TestRegisterIncomingBatchEvidence(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Len(t, registrar.requests, 1)
+	require.Equal(t, uint32(87), registrar.requests[0].WatchHeightHint)
 	require.Equal(t, []wire.OutPoint{
 		{
 			Hash:  chainhash.Hash(sessionID),
@@ -135,7 +136,8 @@ func testIncomingBatchEvidence(t *testing.T,
 		ConfirmationPkScript: append(
 			[]byte(nil), tx.TxOut[0].PkScript...,
 		),
-		CSVExpiryDelta: 144,
+		WatchHeightHint: 87,
+		CSVExpiryDelta:  144,
 		ConsumedInputs: []batchcanon.ConsumedInput{{
 			Outpoint: input,
 			Value:    1_500,

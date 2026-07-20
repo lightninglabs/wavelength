@@ -26,6 +26,11 @@ type BatchEvidence struct {
 	// ConfirmationPkScript is the selected commitment output script.
 	ConfirmationPkScript []byte
 
+	// WatchHeightHint is the earliest height from which watches must scan.
+	// Indexer-sourced evidence uses the observed commitment height; locally
+	// produced evidence uses the round's pre-broadcast start height.
+	WatchHeightHint uint32
+
 	// CSVExpiryDelta is the batch sweep delay in blocks.
 	CSVExpiryDelta int32
 
@@ -50,6 +55,7 @@ func (e BatchEvidence) RegisterRequest(
 		BatchTx:              bytes.Clone(e.BatchTx),
 		BatchOutputIndex:     e.BatchOutputIndex,
 		ConfirmationPkScript: bytes.Clone(e.ConfirmationPkScript),
+		WatchHeightHint:      e.WatchHeightHint,
 		CSVExpiryDelta:       e.CSVExpiryDelta,
 		ConsumedInputs:       inputs,
 		DependentVTXOs: append(

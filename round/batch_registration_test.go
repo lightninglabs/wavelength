@@ -74,6 +74,7 @@ func TestInputSigSentRegistersBatchBeforeExposure(t *testing.T) {
 	require.Equal(t, commitmentTx.TxHash(), registration.BatchTxID)
 	require.Equal(t, uint32(0), registration.BatchOutputIndex)
 	require.Equal(t, int32(1008), registration.CSVExpiryDelta)
+	require.Equal(t, h.env.StartHeight, registration.WatchHeightHint)
 	require.Equal(
 		t, commitmentTx.TxOut[0].PkScript,
 		registration.ConfirmationPkScript,
