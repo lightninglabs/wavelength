@@ -4,6 +4,7 @@ package round
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -2026,6 +2027,14 @@ func (a *RoundClientActor) routeServerMessageByRoundID(ctx context.Context,
 	), true
 }
 
+// ErrNoPendingRound is returned when a server message — most notably an
+// IntentRequested join trigger — arrives with no pending round to route
+// it to. It is deliberately typed rather than a bare fmt.Errorf so
+// callers can tell this benign "nothing to join" shape (an auto-join
+// after a refresh or leave that queued nothing) apart from a genuine
+// internal fault, and report it as a no-op instead of an error.
+var ErrNoPendingRound = errors.New("no pending round")
+
 // routeServerMessageToPending dispatches a non-RoundID-keyed server
 // message to a pending (temp-keyed) round. Returns (fsm, _, false)
 // when an FSM was found; otherwise returns (_, errResult, true) so
@@ -2090,7 +2099,8 @@ func (a *RoundClientActor) routeServerMessageToPending(ctx context.Context,
 
 	if roundFSM == nil {
 		return nil, fn.Err[actormsg.RoundActorResp](
-			fmt.Errorf("no pending round for event %T", msg),
+			fmt.Errorf("no pending round for event %T: %w", msg,
+				ErrNoPendingRound),
 		), true
 	}
 
