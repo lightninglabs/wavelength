@@ -949,6 +949,11 @@ message BalanceResponse {
     // credit_reserved_sat is the server-authoritative in-flight credit
     // reservation amount.
     uint64 credit_reserved_sat = 5;
+
+    // temporarily_unavailable_sat is owned VTXO value that cannot be
+    // spent while its batch lineage is in reorg/conflict limbo or is being
+    // reconciled. It returns to confirmed_sat if canonicality recovers.
+    int64 temporarily_unavailable_sat = 6;
 }
 
 // StatusRequest is the empty request for WalletService.Status.

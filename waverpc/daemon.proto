@@ -556,6 +556,13 @@ message GetBalanceResponse {
     // total_confirmed_sat; reappears under onchain_wallet_confirmed_sat
     // once the sweep confirms.
     int64 vtxo_unilateral_exit_sat = 10;
+
+    // vtxo_temporarily_unavailable_sat is the value of lifecycle-live
+    // VTXOs whose canonicality lineage is currently unusable but not
+    // terminally invalidated. This includes reorg/conflict limbo and
+    // lineage reconciliation. It is excluded from vtxo_balance_sat and
+    // total_confirmed_sat and returns there if the lineage recovers.
+    int64 vtxo_temporarily_unavailable_sat = 11;
 }
 
 // VTXOStatus represents the lifecycle state of a virtual transaction
