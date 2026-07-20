@@ -1,6 +1,12 @@
 package vtxo
 
-import "github.com/btcsuite/btcd/btcutil/v2"
+import (
+	"context"
+	"fmt"
+
+	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/lightninglabs/wavelength/batchcanon"
+)
 
 // FilterOptions specifies the criteria for filtering a set of VTXO
 // descriptors. A zero-value FilterOptions matches everything.
@@ -91,4 +97,43 @@ func SumPendingBalance(descs []*Descriptor) btcutil.Amount {
 	}
 
 	return total
+}
+
+// ClassifyCanonicalityBalance separates lifecycle-live VTXOs into value that
+// can be spent now and value temporarily blocked by lineage canonicality. A
+// terminally invalidated lineage contributes to neither balance: it is no
+// longer wallet liquidity and belongs in history or recovery diagnostics.
+// A nil reader preserves the legacy behavior while the canonicality gate is
+// disabled.
+func ClassifyCanonicalityBalance(ctx context.Context, descs []*Descriptor,
+	reader batchcanon.Reader) (btcutil.Amount, btcutil.Amount, error) {
+
+	if reader == nil {
+		return SumSpendableBalance(descs), 0, nil
+	}
+
+	var spendable, unavailable btcutil.Amount
+	for _, desc := range descs {
+		if desc == nil || desc.Status != VTXOStatusLive {
+			continue
+		}
+
+		availability, err := batchcanon.LineageAvailability(
+			ctx, reader, LineageCommitmentTxIDs(desc)...,
+		)
+		if err != nil {
+			return 0, 0, fmt.Errorf("lineage availability for "+
+				"%s: %w", desc.Outpoint, err)
+		}
+
+		switch {
+		case availability.Usable():
+			spendable += desc.Amount
+
+		case availability != batchcanon.Invalidated:
+			unavailable += desc.Amount
+		}
+	}
+
+	return spendable, unavailable, nil
 }

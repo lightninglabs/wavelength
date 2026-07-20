@@ -201,6 +201,9 @@ func TestBatchCanonicalityGateBlocksReorgedVTXO(t *testing.T) {
 	h.Harness.Generate(1)
 	awaitBatchUsable(ctx, t, bcRef, batchTxid)
 
+	assertCanonicalityBalance(
+		ctx, t, vtxoStore, canonStore, f2VTXOAmount, 0,
+	)
 	assertVTXOSelected(ctx, t, vtxoRef, outpoint)
 	t.Logf(
 		"batch Provisional (1 conf): coin selection admitted %s",
@@ -236,6 +239,9 @@ func TestBatchCanonicalityGateBlocksReorgedVTXO(t *testing.T) {
 			"reorged out: the only candidate is gated out, "+
 			"leaving no liquidity",
 	)
+	assertCanonicalityBalance(
+		ctx, t, vtxoStore, canonStore, 0, f2VTXOAmount,
+	)
 	t.Logf(
 		"batch ReorgedOut: coin selection correctly excluded %s",
 		outpoint,
@@ -249,10 +255,34 @@ func TestBatchCanonicalityGateBlocksReorgedVTXO(t *testing.T) {
 	h.Harness.Generate(1)
 	awaitBatchUsable(ctx, t, bcRef, batchTxid)
 
+	assertCanonicalityBalance(
+		ctx, t, vtxoStore, canonStore, f2VTXOAmount, 0,
+	)
 	assertVTXOSelected(ctx, t, vtxoRef, outpoint)
 	t.Logf(
 		"batch reconfirmed Provisional: coin selection admitted %s",
 		outpoint,
+	)
+}
+
+// assertCanonicalityBalance checks the exact classification consumed by the
+// daemon's GetBalance RPC against the real durable canonicality store.
+func assertCanonicalityBalance(ctx context.Context, t *testing.T,
+	store *db.VTXOPersistenceStore, reader batchcanon.Reader,
+	wantSpendable, wantUnavailable btcutil.Amount) {
+
+	t.Helper()
+
+	descs, err := store.ListLiveVTXOs(ctx)
+	require.NoError(t, err, "list balance VTXOs")
+	spendable, unavailable, err := vtxo.ClassifyCanonicalityBalance(
+		ctx, descs, reader,
+	)
+	require.NoError(t, err, "classify canonicality-aware balance")
+	require.Equal(t, wantSpendable, spendable, "spendable balance")
+	require.Equal(
+		t, wantUnavailable, unavailable,
+		"temporarily unavailable balance",
 	)
 }
 

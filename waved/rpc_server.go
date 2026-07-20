@@ -816,7 +816,15 @@ func (r *RPCServer) GetBalance(ctx context.Context,
 			return nil, status.Errorf(codes.Internal, "fetch vtxo "+
 				"balance: %v", err)
 		}
-		resp.VtxoBalanceSat = int64(vtxo.SumSpendableBalance(liveVTXOs))
+		spendable, unavailable, err := vtxo.ClassifyCanonicalityBalance(
+			ctx, liveVTXOs, r.server.batchCanonStore,
+		)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "classify "+
+				"vtxo canonicality: %v", err)
+		}
+		resp.VtxoBalanceSat = int64(spendable)
+		resp.VtxoTemporarilyUnavailableSat = int64(unavailable)
 		resp.VtxoPendingSat = int64(vtxo.SumPendingBalance(liveVTXOs))
 
 		// Exiting VTXOs aren't in ListLiveVTXOs; query them directly.

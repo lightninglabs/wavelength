@@ -662,13 +662,15 @@ func balanceFromProto(balance *wavewalletrpc.BalanceResponse) Balance {
 	if balance == nil {
 		return Balance{}
 	}
+	temporarilyUnavailable := balance.GetTemporarilyUnavailableSat()
 
 	return Balance{
-		ConfirmedSat:       balance.GetConfirmedSat(),
-		PendingInSat:       balance.GetPendingInSat(),
-		PendingOutSat:      balance.GetPendingOutSat(),
-		CreditAvailableSat: balance.GetCreditAvailableSat(),
-		CreditReservedSat:  balance.GetCreditReservedSat(),
+		ConfirmedSat:              balance.GetConfirmedSat(),
+		PendingInSat:              balance.GetPendingInSat(),
+		PendingOutSat:             balance.GetPendingOutSat(),
+		TemporarilyUnavailableSat: temporarilyUnavailable,
+		CreditAvailableSat:        balance.GetCreditAvailableSat(),
+		CreditReservedSat:         balance.GetCreditReservedSat(),
 	}
 }
 

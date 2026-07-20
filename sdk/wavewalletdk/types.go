@@ -154,11 +154,12 @@ type OpenWalletResult struct {
 
 // Balance is the wallet-level balance view.
 type Balance struct {
-	ConfirmedSat       int64
-	PendingInSat       int64
-	PendingOutSat      int64
-	CreditAvailableSat uint64
-	CreditReservedSat  uint64
+	ConfirmedSat              int64
+	PendingInSat              int64
+	PendingOutSat             int64
+	TemporarilyUnavailableSat int64
+	CreditAvailableSat        uint64
+	CreditReservedSat         uint64
 }
 
 // DepositRequest creates a tracked boarding address.
