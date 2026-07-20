@@ -249,6 +249,7 @@ jobs:
           - unit-cover
           - unit tags="test_sqlite"
           - unit tags="test_postgres"
+          - unit-swapruntime
           - unit-race
 
     steps:
