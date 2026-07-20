@@ -327,6 +327,9 @@ func validateRegistration(req *RegisterBatchRequest,
 	if len(req.ConfirmationPkScript) == 0 {
 		return fmt.Errorf("batch confirmation pkScript is required")
 	}
+	if req.CSVExpiryDelta <= 0 {
+		return fmt.Errorf("batch CSV expiry delta must be positive")
+	}
 	if len(req.ConsumedInputs) == 0 {
 		return fmt.Errorf("batch must register every consumed input")
 	}

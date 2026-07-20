@@ -751,6 +751,9 @@ func (h *managerHarness) registerBatch(t *testing.T,
 	if len(req.ConfirmationPkScript) == 0 {
 		req.ConfirmationPkScript = []byte{0x51}
 	}
+	if req.CSVExpiryDelta <= 0 {
+		req.CSVExpiryDelta = 144
+	}
 	if len(req.ConsumedInputs) == 0 {
 		req.ConsumedInputs = []ConsumedInput{ci(wire.OutPoint{
 			Hash: req.BatchTxID,
