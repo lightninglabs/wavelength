@@ -9,8 +9,8 @@ import (
 
 // newBalanceCmd builds the top-level `balance` verb. It dials
 // wavewalletrpc.WalletService.Balance which returns the unified shape
-// (confirmed_sat, pending_in_sat, pending_out_sat) the wallet layer
-// projects onto every backend.
+// (confirmed_sat, pending_in_sat, pending_out_sat, and
+// temporarily_unavailable_sat) the wallet layer projects onto every backend.
 func newBalanceCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "balance",
@@ -19,7 +19,9 @@ func newBalanceCmd() *cobra.Command {
 			"spendable VTXOs (confirmed_sat), in-flight " +
 			"inbound (pending_in_sat: boarding + receive), " +
 			"and in-flight outbound (pending_out_sat: send + " +
-			"exit) — all in satoshis.\n\n" +
+			"exit), plus VTXOs temporarily blocked by lineage " +
+			"canonicality (temporarily_unavailable_sat) — all in " +
+			"satoshis.\n\n" +
 			"Example:\n" +
 			"  wavecli balance",
 		Args: cobra.NoArgs,
