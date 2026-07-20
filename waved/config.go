@@ -324,6 +324,16 @@ type Config struct {
 	// mainnet during development, since DefaultNetwork is "mainnet".
 	AllowMainnet bool `mapstructure:"allow-mainnet"`
 
+	// AllowInsecureMainnet permits the rpc.notls and rpc.no-macaroons
+	// options on mainnet TCP listeners. Both are refused on mainnet by
+	// default so a stray flag can't silently expose an unauthenticated,
+	// plaintext RPC surface. Deployments that terminate TLS and enforce
+	// authentication at an external proxy must set this explicitly to
+	// acknowledge that the daemon's own RPC listener runs without
+	// transport security. See the lightning-infra tracking issue for the
+	// deployment rationale.
+	AllowInsecureMainnet bool `mapstructure:"allow-insecure-mainnet"`
+
 	// Unroll configures the unilateral-exit subsystem.
 	Unroll *UnrollConfig `mapstructure:"unroll"`
 
@@ -1610,14 +1620,18 @@ func (c *Config) rpcMacaroonPath() string {
 
 // validateRPCSecurity normalizes daemon RPC TLS and macaroon paths.
 func (c *Config) validateRPCSecurity() error {
-	if c.Network == "mainnet" && c.RPC.Listener == nil {
+	if c.Network == "mainnet" && c.RPC.Listener == nil &&
+		!c.AllowInsecureMainnet {
+
 		if c.RPC.NoTLS {
 			return fmt.Errorf("rpc.notls cannot be used on " +
-				"mainnet TCP listeners")
+				"mainnet TCP listeners unless " +
+				"allow-insecure-mainnet is set")
 		}
 		if c.RPC.NoMacaroons {
 			return fmt.Errorf("rpc.no-macaroons cannot be used " +
-				"on mainnet TCP listeners")
+				"on mainnet TCP listeners unless " +
+				"allow-insecure-mainnet is set")
 		}
 	}
 
