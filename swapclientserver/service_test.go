@@ -964,7 +964,7 @@ func TestNewSwapServerClientsREST(t *testing.T) {
 
 	hint, err := clients.server.RequestChannelID(
 		t.Context(), clientPriv.PubKey(), lntypes.Hash{1},
-		btcutil.Amount(42_000), 30,
+		btcutil.Amount(42_000), 30, true,
 	)
 	require.NoError(t, err)
 	require.Len(t, hint.RouteHintPaths, 1)

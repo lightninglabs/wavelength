@@ -903,6 +903,8 @@ type testSwapServerConn struct {
 	lastServerAckHash   lntypes.Hash
 	lastServerAckPubkey *btcec.PublicKey
 
+	lastSupportsInArkCredit bool
+
 	submitForfeitErr         error
 	submitForfeitCalls       int
 	lastSubmitForfeitPayload *ForfeitSignaturePayload
@@ -954,10 +956,11 @@ func (r *testIncomingEventReceiver) WaitIncomingVHTLC(context.Context,
 // a single path wrapping the lone configured hint.
 func (c *testSwapServerConn) RequestChannelID(_ context.Context,
 	vhtlcPubkey *btcec.PublicKey, _ lntypes.Hash, amountSat btcutil.Amount,
-	_ uint32) (*OutSwapQuote, error) {
+	_ uint32, supportsInArkCredit bool) (*OutSwapQuote, error) {
 
 	c.lastVhtlcPubkey = vhtlcPubkey
 	c.lastAmountSat = amountSat
+	c.lastSupportsInArkCredit = supportsInArkCredit
 
 	hintPaths := c.hintPaths
 	if hintPaths == nil {
@@ -4281,4 +4284,277 @@ func TestReceiveSessionClaimReturnsLastSendError(t *testing.T) {
 	require.ErrorContains(t, err, "claim vHTLC")
 	require.NotContains(t, err.Error(), "<nil>")
 	require.Equal(t, 2, daemonConn.sendCustomCalls)
+}
+
+// TestReceiveSessionAcksServerForCreditShapedInArkEvent verifies a
+// credit-shaped in-ark event (the swap-server-funded leg of a credit-attach
+// receive) is accepted against the session's route quote triplet and, unlike
+// the legacy direct p2p rail, still sends the out-swap server ACK that gates
+// the server's funding.
+func TestReceiveSessionAcksServerForCreditShapedInArkEvent(t *testing.T) {
+	t.Parallel()
+
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	serverPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	preimage := lntypes.Preimage{0xa, 0xb, 0xc}
+	hash := preimage.Hash()
+	serverConn := &testSwapServerConn{}
+	daemonConn := &testDaemonConn{}
+	client := NewSwapClient(serverConn, daemonConn, nil, nil)
+
+	cfg := VHTLCConfig{
+		RefundLocktime:                       144,
+		UnilateralClaimDelay:                 12,
+		UnilateralRefundDelay:                24,
+		UnilateralRefundWithoutReceiverDelay: 36,
+		SwapServerPubkey: serverPriv.PubKey().
+			SerializeCompressed(),
+	}
+
+	ackCalls := 0
+	client.outEvents = &testIncomingEventReceiver{
+		notification: &IncomingVHTLCNotification{
+			InArk: &InArkHtlcEvent{
+				PaymentHash:        hash,
+				AmountSat:          1_100,
+				RequestedAmountSat: 300,
+				AttachedCreditSat:  800,
+				SenderPubkey:       serverPriv.PubKey(),
+				VHTLCConfig:        cfg,
+			},
+			AckCursor: 25,
+			Ack: func(context.Context) error {
+				ackCalls++
+
+				return nil
+			},
+		},
+	}
+
+	session := &ReceiveSession{
+		client:            client,
+		amountSat:         300,
+		expectedVHTLCSat:  1_100,
+		attachedCreditSat: 800,
+		settlementType:    SettlementTypeMixed,
+		state:             ReceiveStateInvoiceCreated,
+		PaymentHash:       hash,
+		clientPubKey:      clientPriv.PubKey(),
+		operatorPubKey:    operatorPriv.PubKey(),
+	}
+
+	err = session.waitForHTLCEvent(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, ReceiveStateHTLCEventAccepted, session.State())
+	require.Equal(t, SettlementTypeInArk, session.settlementType)
+	require.Equal(t, 1, ackCalls)
+	require.Equal(t, 1, serverConn.serverAckCalls)
+	require.Zero(t, session.pendingHTLCAckCursor)
+
+	// The claim policy commits to the swap server as the vHTLC sender and
+	// the Ark operator in the server slot, identical to the out-swap
+	// shape.
+	expected, err := arkscript.NewVHTLCPolicy(arkscript.VHTLCOpts{
+		Sender:                serverPriv.PubKey(),
+		Receiver:              clientPriv.PubKey(),
+		Server:                operatorPriv.PubKey(),
+		PreimageHash:          hash,
+		RefundLocktime:        cfg.RefundLocktime,
+		UnilateralClaimDelay:  cfg.UnilateralClaimDelay,
+		UnilateralRefundDelay: cfg.UnilateralRefundDelay,
+		UnilateralRefundWithoutReceiverDelay: cfg.
+			UnilateralRefundWithoutReceiverDelay,
+	})
+	require.NoError(t, err)
+
+	expectedScript, err := expected.PkScript()
+	require.NoError(t, err)
+	require.Equal(t, expectedScript, session.vhtlcPkScript)
+}
+
+// TestAcceptInArkHtlcEventRejectsMismatchedCreditShape verifies every leg of
+// the credit-shaped triplet validation fails the session terminally on a
+// mismatch against the route quote.
+func TestAcceptInArkHtlcEventRejectsMismatchedCreditShape(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name              string
+		attachedCreditSat uint64
+		expectedVHTLCSat  uint64
+		event             InArkHtlcEvent
+		wantReason        string
+	}{
+		{
+			name:              "requested amount mismatch",
+			attachedCreditSat: 500,
+			expectedVHTLCSat:  1_000,
+			event: InArkHtlcEvent{
+				AmountSat:          1_000,
+				RequestedAmountSat: 400,
+				AttachedCreditSat:  500,
+			},
+			wantReason: "requested amount 400 does not match",
+		},
+		{
+			name:              "attached credit mismatch",
+			attachedCreditSat: 500,
+			expectedVHTLCSat:  1_000,
+			event: InArkHtlcEvent{
+				AmountSat:          1_000,
+				RequestedAmountSat: 500,
+				AttachedCreditSat:  600,
+			},
+			wantReason: "attached credit 600 does not match",
+		},
+		{
+			name:              "padded amount mismatch",
+			attachedCreditSat: 500,
+			expectedVHTLCSat:  1_000,
+			event: InArkHtlcEvent{
+				AmountSat:          900,
+				RequestedAmountSat: 500,
+				AttachedCreditSat:  500,
+			},
+			wantReason: "does not match expected vHTLC amount",
+		},
+		{
+			name: "credit shape against plain session",
+			event: InArkHtlcEvent{
+				AmountSat:          1_000,
+				RequestedAmountSat: 500,
+				AttachedCreditSat:  500,
+			},
+			wantReason: "without a credit-attach plan",
+		},
+	}
+
+	for _, testCase := range testCases {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			senderPriv, err := btcec.NewPrivateKey()
+			require.NoError(t, err)
+
+			receiverPriv, err := btcec.NewPrivateKey()
+			require.NoError(t, err)
+
+			operatorPriv, err := btcec.NewPrivateKey()
+			require.NoError(t, err)
+
+			preimage := lntypes.Preimage{0xd, 0xe, 0xf}
+			hash := preimage.Hash()
+			session := &ReceiveSession{
+				client: &SwapClient{
+					daemon: &testDaemonConn{},
+					log:    btclog.Disabled,
+				},
+				amountSat:         btcutil.Amount(500),
+				attachedCreditSat: testCase.attachedCreditSat,
+				expectedVHTLCSat:  testCase.expectedVHTLCSat,
+				state:             ReceiveStateInvoiceCreated,
+				PaymentHash:       hash,
+				clientPubKey:      receiverPriv.PubKey(),
+				operatorPubKey:    operatorPriv.PubKey(),
+			}
+
+			event := testCase.event
+			event.PaymentHash = hash
+			event.SenderPubkey = senderPriv.PubKey()
+			event.VHTLCConfig = VHTLCConfig{
+				RefundLocktime:                       900,
+				UnilateralClaimDelay:                 5,
+				UnilateralRefundDelay:                6,
+				UnilateralRefundWithoutReceiverDelay: 7,
+				SwapServerPubkey: senderPriv.PubKey().
+					SerializeCompressed(),
+			}
+
+			err = session.acceptInArkHtlcEvent(
+				t.Context(), &event, 0,
+			)
+			require.ErrorContains(t, err, testCase.wantReason)
+			require.Equal(t, ReceiveStateFailed, session.State())
+		})
+	}
+}
+
+// TestRequestChannelIDAdvertisesInArkCreditByReceiver verifies the in-ark
+// credit capability is only advertised when the wired event receiver can
+// actually pull in-ark events; an out-swap-only receiver must not invite the
+// server onto a rail it can never surface.
+func TestRequestChannelIDAdvertisesInArkCreditByReceiver(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name      string
+		outEvents OutSwapEventReceiver
+		want      bool
+	}{
+		{
+			name:      "incoming vhtlc receiver",
+			outEvents: &testIncomingEventReceiver{},
+			want:      true,
+		},
+		{
+			name:      "out-swap only receiver",
+			outEvents: &blockingOutSwapEventReceiver{},
+			want:      false,
+		},
+	}
+
+	for _, testCase := range testCases {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			clientPriv, err := btcec.NewPrivateKey()
+			require.NoError(t, err)
+
+			serverPriv, err := btcec.NewPrivateKey()
+			require.NoError(t, err)
+
+			creator := &testInvoiceCreator{
+				invoice: &invoices.Invoice{
+					PaymentRequest: []byte("lnrtest1swap"),
+				},
+			}
+			serverConn := &testSwapServerConn{
+				hint: &RouteHint{
+					NodeID: serverPriv.PubKey().
+						SerializeCompressed(),
+					ChannelID:       99,
+					FeeBaseMsat:     1,
+					FeePropPpm:      2,
+					CltvExpiryDelta: 40,
+				},
+			}
+			daemonConn := &testDaemonConn{
+				identityKey: clientPriv.PubKey(),
+				blockHeight: 100,
+			}
+
+			client := NewSwapClient(
+				serverConn, daemonConn, nil, creator,
+			)
+			client.outEvents = testCase.outEvents
+
+			_, err = client.StartReceiveViaLightning(
+				t.Context(), btcutil.Amount(42_000),
+			)
+			require.NoError(t, err)
+			require.Equal(
+				t, testCase.want,
+				serverConn.lastSupportsInArkCredit,
+			)
+		})
+	}
 }
