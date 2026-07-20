@@ -73,6 +73,69 @@ func TestConfigValidateAllowsTestnet4InsecureRPC(t *testing.T) {
 	require.NoError(t, cfg.Validate())
 }
 
+// TestConfigValidateMainnetInsecureRPC verifies that rpc.notls and
+// rpc.no-macaroons are refused on mainnet TCP listeners by default, and
+// permitted once the operator opts in with allow-insecure-mainnet.
+func TestConfigValidateMainnetInsecureRPC(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		noTLS       bool
+		noMacaroons bool
+		override    bool
+		wantErr     string
+	}{
+		{
+			name:    "notls refused by default",
+			noTLS:   true,
+			wantErr: "rpc.notls cannot be used",
+		},
+		{
+			name:        "no-macaroons refused by default",
+			noMacaroons: true,
+			wantErr:     "rpc.no-macaroons cannot be used",
+		},
+		{
+			name:     "notls allowed with override",
+			noTLS:    true,
+			override: true,
+		},
+		{
+			name:        "no-macaroons allowed with override",
+			noMacaroons: true,
+			override:    true,
+		},
+		{
+			name:        "both allowed with override",
+			noTLS:       true,
+			noMacaroons: true,
+			override:    true,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := DefaultConfig()
+			cfg.Network = "mainnet"
+			cfg.AllowMainnet = true
+			cfg.RPC.NoTLS = tc.noTLS
+			cfg.RPC.NoMacaroons = tc.noMacaroons
+			cfg.AllowInsecureMainnet = tc.override
+
+			err := cfg.Validate()
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
 // TestConfigValidateWalletDefaults verifies Validate fills in the
 // network-default Esplora/fee URL for the lwwallet and btcwallet backends
 // when left empty, and still requires an explicit value on networks with no
