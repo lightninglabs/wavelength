@@ -128,7 +128,10 @@ surfaces the raw waverpc methods underlying them.
 # Raw VTXO inventory + lifecycle
 wavecli ark vtxos list --no-tls
 wavecli ark vtxos list --status live --min_amount 10000 --no-tls
-wavecli ark vtxos refresh --all --no-tls
+# A real refresh is fee-gated: preview with --dry_run, consent with
+# --yes (required on non-interactive stdin).
+wavecli ark vtxos refresh --all --dry_run --no-tls
+wavecli ark vtxos refresh --all --yes --no-tls
 
 # Raw transaction history (the wallet-shaped feed is `activity`)
 wavecli ark listtransactions --no-tls

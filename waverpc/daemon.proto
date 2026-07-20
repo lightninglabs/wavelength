@@ -1251,6 +1251,92 @@ message RefreshVTXOsResponse {
 
     // status is the result: "queued" on success, "preview" on dry_run.
     string status = 2;
+
+    // fee_estimate carries the advisory operator-fee preview for the
+    // selected VTXOs. Only populated on dry_run previews with a
+    // non-empty selection. The binding fee is set by the server-issued
+    // JoinRoundQuote at seal time and may differ from this estimate.
+    RefreshFeeEstimate fee_estimate = 3;
+}
+
+// RefreshFeeEstimate is the advisory operator-fee preview attached to a
+// RefreshVTXOs dry_run response. It itemizes what refreshing the
+// selected VTXOs is expected to cost at the operator's current rates,
+// including whether the operator's free-refresh window applies. All
+// values are advisory: the binding fee is set at seal time.
+message RefreshFeeEstimate {
+    // estimated_total_fee_sat is the advisory total operator fee for
+    // refreshing the full selection. Explicit presence: the field is
+    // only set when the total is meaningful — either the per-outpoint
+    // quotes all succeeded, or free_refresh_eligible is true (the
+    // waiver is computed locally, so its zero total stays valid even
+    // when estimate_error is set). When the estimate degrades the
+    // field is absent, never zero, so a missing number can not be
+    // misread as a free refresh.
+    optional int64 estimated_total_fee_sat = 1;
+
+    // outpoints itemizes the advisory per-outpoint quotes at the
+    // operator's current rates. Each row is the ordinary paid price and
+    // is NOT waiver-adjusted: its components always sum to the row's
+    // total_fee_sat, so under a free-refresh-eligible selection the rows
+    // show what the waiver saves.
+    repeated OutpointFeeEstimate outpoints = 2;
+
+    // free_refresh_eligible is true when every selected VTXO is inside
+    // the operator's advertised free-refresh window, so refreshing
+    // exactly this selection on its own is expected to seal with all
+    // fee components waived. The waiver is all-or-nothing per round:
+    // batching this selection with boarding, leave, or out-of-window
+    // inputs forfeits it.
+    bool free_refresh_eligible = 3;
+
+    // estimate_error is non-empty when the per-outpoint operator quotes
+    // could not be fetched (operator unreachable, chain height
+    // unavailable). The preview is still returned so dry_run keeps
+    // working as a validity probe; when set, treat the per-outpoint fee
+    // components and (unless free_refresh_eligible) the total as absent
+    // rather than zero.
+    string estimate_error = 4;
+}
+
+// OutpointFeeEstimate is one selected VTXO's advisory refresh-fee
+// quote, resolved from the daemon's own view of the VTXO (amount and
+// remaining lifetime) so callers do not have to supply either.
+message OutpointFeeEstimate {
+    // outpoint identifies the VTXO in "txid:index" format.
+    string outpoint = 1;
+
+    // amount_sat is the VTXO amount the quote is for.
+    int64 amount_sat = 2;
+
+    // remaining_blocks is the remaining VTXO lifetime used for the
+    // quote: batch expiry minus the current chain height. An expired or
+    // same-block-expiring VTXO is clamped to 1 so the quote never falls
+    // back to the operator's full-lifetime default for a zero value.
+    uint32 remaining_blocks = 3;
+
+    // liquidity_fee_sat is the time-value-of-money component.
+    int64 liquidity_fee_sat = 4;
+
+    // onchain_share_sat is the per-participant on-chain cost share.
+    int64 onchain_share_sat = 5;
+
+    // margin_sat is the fixed operator margin.
+    int64 margin_sat = 6;
+
+    // total_fee_sat is the sum of the components: the ordinary paid
+    // price for refreshing this VTXO, before any free-refresh waiver.
+    int64 total_fee_sat = 7;
+
+    // in_free_refresh_window is true when this VTXO's remaining
+    // lifetime is inside the operator's advertised free-refresh window.
+    bool in_free_refresh_window = 8;
+
+    // below_dust_warning mirrors the operator's warning that this
+    // VTXO's amount is below the minimum economically viable VTXO at
+    // current rates: refreshing it costs fees on a coin that already
+    // costs more to exit than it holds.
+    bool below_dust_warning = 9;
 }
 
 // CustomRefreshVTXOInput specifies one custom-policy VTXO input to refresh in

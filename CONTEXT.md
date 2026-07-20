@@ -103,7 +103,7 @@ wavecli ark vtxos list --ndjson | jq '.amount_sat'
 # Refresh — see BUGS_FOUND.md bug-1/bug-2; the refresh path is
 # currently not landing on the operator.
 wavecli ark vtxos refresh --outpoint txid:0 --dry_run
-wavecli ark vtxos refresh --outpoint txid:0
+wavecli ark vtxos refresh --outpoint txid:0 --yes
 ```
 
 ### Send operations

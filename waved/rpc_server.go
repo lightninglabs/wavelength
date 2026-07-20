@@ -1534,6 +1534,68 @@ func (r *RPCServer) RefreshVTXOs(ctx context.Context,
 	req *waverpc.RefreshVTXOsRequest) (*waverpc.RefreshVTXOsResponse,
 	error) {
 
+	// Pure-argument validation (selection shape / outpoint syntax)
+	// runs before the wallet-ready gate so a malformed request
+	// surfaces InvalidArgument regardless of wallet state, matching
+	// the LeaveVTXOs ordering rule: client bugs should always look
+	// like client bugs.
+	var (
+		explicit   []wire.OutPoint
+		refreshAll bool
+	)
+	switch sel := req.Selection.(type) {
+	case *waverpc.RefreshVTXOsRequest_All:
+		if !sel.All {
+			return nil, status.Errorf(codes.InvalidArgument,
+				"refresh selection 'all' must be true when set")
+		}
+		refreshAll = true
+
+	case *waverpc.RefreshVTXOsRequest_Outpoints:
+		if sel.Outpoints == nil ||
+			len(sel.Outpoints.Outpoints) == 0 {
+			return nil, status.Errorf(codes.InvalidArgument,
+				"outpoints list is empty")
+		}
+
+		// Dedupe while preserving order so both the preview and
+		// the real path see one canonical selection: a repeated
+		// outpoint would double-count in the fee estimate and
+		// register a doomed duplicate forfeit pair in the wallet.
+		seen := make(
+			map[wire.OutPoint]struct{},
+			len(sel.Outpoints.Outpoints),
+		)
+		for _, opStr := range sel.Outpoints.Outpoints {
+			op, err := parseOutpointString(opStr)
+			if err != nil {
+				return nil, status.Errorf(codes.InvalidArgument,
+					"invalid outpoint %q: %v", opStr, err)
+			}
+
+			if _, dup := seen[op]; dup {
+				continue
+			}
+			seen[op] = struct{}{}
+
+			explicit = append(explicit, op)
+		}
+
+	default:
+		return nil, status.Errorf(codes.InvalidArgument, "selection "+
+			"is required (outpoints or all)")
+	}
+
+	// The dry-run preview short-circuits before the wallet-ready
+	// gate (parity with the LeaveVTXOs dry-run ordering): resolving
+	// the selection and pricing it only needs the SQL VTXO view, the
+	// chain tip, and the operator connection, so callers can preview
+	// a refresh — including its advisory fee — without an unlocked
+	// wallet.
+	if req.DryRun {
+		return r.refreshDryRunPreview(ctx, explicit, refreshAll)
+	}
+
 	if err := r.requireWalletReady(); err != nil {
 		return nil, err
 	}
@@ -1555,15 +1617,9 @@ func (r *RPCServer) RefreshVTXOs(ctx context.Context,
 	// synthesised `queued_outpoints` from a separate ListLiveVTXOs
 	// call below, which made the caller believe the refresh
 	// succeeded.
-	var targets []wire.OutPoint
+	targets := explicit
 
-	switch sel := req.Selection.(type) {
-	case *waverpc.RefreshVTXOsRequest_All:
-		if !sel.All {
-			return nil, status.Errorf(codes.InvalidArgument,
-				"refresh selection 'all' must be true when set")
-		}
-
+	if refreshAll {
 		if r.server.vtxoStore == nil {
 			return nil, status.Errorf(codes.Internal, "VTXO "+
 				"store not available for refresh --all")
@@ -1590,27 +1646,6 @@ func (r *RPCServer) RefreshVTXOs(ctx context.Context,
 			}
 			targets = append(targets, v.Outpoint)
 		}
-
-	case *waverpc.RefreshVTXOsRequest_Outpoints:
-		if sel.Outpoints == nil ||
-			len(sel.Outpoints.Outpoints) == 0 {
-			return nil, status.Errorf(codes.InvalidArgument,
-				"outpoints list is empty")
-		}
-
-		for _, opStr := range sel.Outpoints.Outpoints {
-			op, err := parseOutpointString(opStr)
-			if err != nil {
-				return nil, status.Errorf(codes.InvalidArgument,
-					"invalid outpoint %q: %v", opStr, err)
-			}
-
-			targets = append(targets, op)
-		}
-
-	default:
-		return nil, status.Errorf(codes.InvalidArgument, "selection "+
-			"is required (outpoints or all)")
 	}
 
 	// `--all` against a wallet with no live VTXOs is not an error —
@@ -1620,23 +1655,6 @@ func (r *RPCServer) RefreshVTXOs(ctx context.Context,
 		return &waverpc.RefreshVTXOsResponse{
 			QueuedOutpoints: nil,
 			Status:          "queued",
-		}, nil
-	}
-
-	// For dry_run, validate inputs and return a preview without
-	// actually queuing anything.
-	if req.DryRun {
-		outpointStrs := make([]string, 0, len(targets))
-		for _, op := range targets {
-			outpointStrs = append(
-				outpointStrs,
-				fmt.Sprintf("%s:%d", op.Hash, op.Index),
-			)
-		}
-
-		return &waverpc.RefreshVTXOsResponse{
-			QueuedOutpoints: outpointStrs,
-			Status:          "preview",
 		}, nil
 	}
 

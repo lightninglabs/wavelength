@@ -9,6 +9,8 @@ import (
 
 	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/spf13/cobra"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -140,6 +142,13 @@ func newVTXOsRefreshCmd() *cobra.Command {
 		Long: "Queues one or more VTXOs for refresh and then " +
 			"commits the queued intents to the next round, " +
 			"extending the VTXOs' expiry.\n\n" +
+			"A refresh is charged an operator fee, set by the " +
+			"server-issued quote at seal time. Pass " +
+			"`--dry_run` to preview an itemized advisory " +
+			"estimate without queuing anything. An " +
+			"interactive refresh shows the estimate and asks " +
+			"for confirmation; pass `--yes` to skip the " +
+			"prompt (required on non-interactive stdin).\n\n" +
 			"Under the hood the refresh intent first " +
 			"accumulates in the round actor's " +
 			"PendingRoundAssembly state. By default this " +
@@ -161,7 +170,11 @@ func newVTXOsRefreshCmd() *cobra.Command {
 		"refresh all live VTXOs")
 
 	cmd.Flags().Bool("dry_run", false,
-		"validate without queuing")
+		"validate without queuing and preview the estimated "+
+			"operator fee")
+
+	cmd.Flags().Bool("yes", false,
+		"skip the interactive fee confirmation")
 
 	cmd.Flags().Bool("no_join", false,
 		"skip the implicit `ark rounds join` follow-up so this "+
@@ -170,7 +183,42 @@ func newVTXOsRefreshCmd() *cobra.Command {
 	return cmd
 }
 
-// vtxosRefresh executes the RefreshVTXOs RPC.
+// buildRefreshVTXOsRequest translates the flag surface into a
+// RefreshVTXOsRequest. Extracted so the MCP tool and the CLI share
+// the same selection guards — divergence here would let one surface
+// silently refresh a different VTXO set than the other.
+func buildRefreshVTXOsRequest(outpoints []string, all,
+	dryRun bool) (*waverpc.RefreshVTXOsRequest, error) {
+
+	if !all && len(outpoints) == 0 {
+		return nil, fmt.Errorf("either --outpoint or --all is required")
+	}
+
+	if all && len(outpoints) > 0 {
+		return nil, fmt.Errorf("--outpoint and --all are mutually " +
+			"exclusive")
+	}
+
+	req := &waverpc.RefreshVTXOsRequest{DryRun: dryRun}
+
+	if all {
+		req.Selection = &waverpc.RefreshVTXOsRequest_All{
+			All: true,
+		}
+	} else {
+		req.Selection = &waverpc.RefreshVTXOsRequest_Outpoints{
+			Outpoints: &waverpc.OutpointSelection{
+				Outpoints: outpoints,
+			},
+		}
+	}
+
+	return req, nil
+}
+
+// vtxosRefresh executes the RefreshVTXOs RPC. Flag handling lives in
+// buildRefreshVTXOsRequest so the same builder can be reused by the
+// MCP tool and covered with a focused unit test.
 func vtxosRefresh(cmd *cobra.Command, _ []string) error {
 	client, conn, err := getDaemonClient(cmd)
 	if err != nil {
@@ -186,27 +234,30 @@ func vtxosRefresh(cmd *cobra.Command, _ []string) error {
 		all, _ := cmd.Flags().GetBool("all")
 		dryRun, _ := cmd.Flags().GetBool("dry_run")
 
-		if !all && len(outpoints) == 0 {
-			return fmt.Errorf("either --outpoint or --all is " +
-				"required")
+		built, err := buildRefreshVTXOsRequest(
+			outpoints, all, dryRun,
+		)
+		if err != nil {
+			return err
 		}
 
-		if all {
-			req.Selection = &waverpc.RefreshVTXOsRequest_All{
-				All: true,
-			}
-		} else {
-			sel := &waverpc.RefreshVTXOsRequest_Outpoints{
-				Outpoints: &waverpc.OutpointSelection{
-					Outpoints: outpoints,
-				},
-			}
-			req.Selection = sel
-		}
-		req.DryRun = dryRun
+		// Proto pointer-receiver shims: copy built fields onto
+		// the outer req that parseRequest owns.
+		req.Selection = built.Selection
+		req.DryRun = built.DryRun
 
 		return nil
 	}); err != nil {
+		return err
+	}
+
+	if err := confirmRefreshIfNeeded(
+		cmd, req, func(preview *waverpc.RefreshVTXOsRequest) (
+			*waverpc.RefreshVTXOsResponse, error) {
+
+			return client.RefreshVTXOs(cmd.Context(), preview)
+		},
+	); err != nil {
 		return err
 	}
 
@@ -221,9 +272,238 @@ func vtxosRefresh(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
+	// The itemized estimate is in the JSON body on stdout; the
+	// summary goes to stderr so a human reading the terminal sees
+	// the headline number without stdout consumers having to strip
+	// prose.
+	for _, line := range summarizeRefreshFeeEstimate(
+		resp.GetFeeEstimate(),
+	) {
+		fmt.Fprintln(cmd.ErrOrStderr(), line)
+	}
+
+	// A non-empty dry-run preview without an estimate can only come
+	// from a daemon that predates the fee preview: the daemon omits
+	// the estimate solely for empty selections. Warn rather than
+	// stay silent — the flag help promises a fee preview, and
+	// silence here would read as "free".
+	if req.DryRun && len(resp.GetQueuedOutpoints()) > 0 &&
+		resp.GetFeeEstimate() == nil {
+
+		fmt.Fprintln(
+			cmd.ErrOrStderr(),
+			"warning: the daemon returned no fee estimate "+
+				"(older daemon?); a refresh is still "+
+				"charged the binding seal-time fee",
+		)
+	}
+
 	noJoin, _ := cmd.Flags().GetBool("no_join")
 
 	return maybeJoinNextRound(cmd, client, req.DryRun, noJoin)
+}
+
+// summarizeRefreshFeeEstimate renders the dry-run fee estimate as
+// human-readable stderr lines. Split from the IO wrapper so the
+// wording rules are covered by a focused unit test. A nil estimate
+// (real refresh, empty selection) renders nothing.
+//
+// Every branch repeats that the number is advisory: the binding fee is
+// set by the seal-time quote, and telling the user otherwise here
+// would overpromise exactly the guarantee the refresh flow cannot
+// make.
+func summarizeRefreshFeeEstimate(est *waverpc.RefreshFeeEstimate) []string {
+	if est == nil {
+		return nil
+	}
+
+	var lines []string
+
+	count := len(est.Outpoints)
+
+	switch {
+	case est.EstimateError != "":
+		lines = append(
+			lines, fmt.Sprintf("warning: refresh fee estimate "+
+				"unavailable (%s); a refresh is still "+
+				"charged the binding seal-time fee",
+				est.EstimateError),
+		)
+
+		if est.FreeRefreshEligible {
+			lines = append(
+				lines, fmt.Sprintf("expected free: all %d "+
+					"selected VTXO(s) are inside the "+
+					"operator's free-refresh window "+
+					"(advisory)", count),
+			)
+		}
+
+	case est.FreeRefreshEligible:
+		lines = append(
+			lines, fmt.Sprintf("estimated refresh fee: 0 sat — "+
+				"all %d selected VTXO(s) are inside the "+
+				"operator's free-refresh window (advisory; "+
+				"the binding fee is set at seal time)", count),
+		)
+
+	default:
+		lines = append(
+			lines,
+			fmt.Sprintf(
+				"estimated refresh fee: %d sat across %d "+
+					"VTXO(s) (advisory; the binding fee "+
+					"is set at seal time)",
+				est.GetEstimatedTotalFeeSat(), count,
+			),
+		)
+	}
+
+	var belowDust int
+	for _, row := range est.Outpoints {
+		if row.BelowDustWarning {
+			belowDust++
+		}
+	}
+	if belowDust > 0 {
+		lines = append(
+			lines, fmt.Sprintf("warning: %d selected VTXO(s) are "+
+				"below the operator's minimum viable amount; "+
+				"refreshing them pays fees on coins that "+
+				"already cost more to exit than they hold",
+				belowDust),
+		)
+	}
+
+	return lines
+}
+
+// confirmRefreshIfNeeded gates dispatch of a real refresh on explicit
+// consent: every refresh is charged an operator fee at seal time, and
+// before this gate the CLI queued the refresh without ever mentioning
+// it (#986). The check runs after parseRequest returns so it covers
+// both the flag-driven path and the --json path, mirroring
+// confirmLeaveAllIfNeeded. Skip when --yes is set (explicit scripted
+// consent) or when req.DryRun is set (previewing, not spending).
+//
+// When stdin is not a TTY (agents, CI, pipelines), the function
+// refuses to prompt — the caller must pass --yes or --dry_run — so a
+// non-interactive invocation is never blocked on a y/N it cannot
+// answer. Only on a TTY does it fetch the advisory estimate (via the
+// same RPC in dry-run form, through fetchPreview) and prompt, so the
+// operator consents to a number rather than a mystery fee. A preview
+// that fails with InvalidArgument aborts — the real refresh would
+// reject the same request shape — while any other preview failure
+// degrades to prompting with an "estimate unavailable" warning: a
+// broken estimate path must not make refreshes unconfirmable.
+func confirmRefreshIfNeeded(cmd *cobra.Command,
+	req *waverpc.RefreshVTXOsRequest,
+	fetchPreview func(*waverpc.RefreshVTXOsRequest) (
+		*waverpc.RefreshVTXOsResponse, error)) error {
+
+	if req.DryRun {
+		return nil
+	}
+
+	confirmYes, _ := cmd.Flags().GetBool("yes")
+	if confirmYes {
+		return nil
+	}
+
+	if !stdinIsTTY(cmd) {
+		return PrintError(
+			"INVALID_ARGS", "refresh is charged an operator "+
+				"fee at seal time and requires --yes "+
+				"(explicit consent) or --dry_run (fee "+
+				"preview) on non-interactive stdin; "+
+				"refusing to prompt because an agent "+
+				"cannot respond to y/N",
+		)
+	}
+
+	cloned := proto.Clone(req)
+	preview, ok := cloned.(*waverpc.RefreshVTXOsRequest)
+	if !ok {
+
+		// Unreachable: proto.Clone preserves the concrete type.
+		return fmt.Errorf("unexpected preview request type %T", cloned)
+	}
+	preview.DryRun = true
+
+	var lines []string
+	resp, err := fetchPreview(preview)
+	switch {
+	case status.Code(err) == codes.InvalidArgument:
+		// The dry-run validates the same request shape the real
+		// dispatch would; a caller mistake (unknown or malformed
+		// outpoint) should abort here, not after a confirmed
+		// queue.
+		return fmt.Errorf("refresh preview rejected: %w", err)
+
+	case err != nil:
+		lines = []string{
+			"warning: refresh fee estimate unavailable " +
+				"(preview failed); a refresh is still " +
+				"charged the binding seal-time fee",
+		}
+
+	default:
+		// An empty preview means the selection resolves to
+		// nothing (refresh --all with no live VTXOs): the real
+		// dispatch queues nothing and charges nothing, so there
+		// is no fee to consent to and warning about a charge
+		// would be false.
+		if resp.GetStatus() == "preview" &&
+			len(resp.GetQueuedOutpoints()) == 0 {
+
+			fmt.Fprintln(
+				cmd.ErrOrStderr(),
+				"no live VTXOs to refresh; nothing will be "+
+					"queued",
+			)
+
+			return nil
+		}
+
+		lines = summarizeRefreshFeeEstimate(resp.GetFeeEstimate())
+		if len(lines) == 0 {
+			lines = []string{
+				"warning: the daemon returned no fee " +
+					"estimate; a refresh is still " +
+					"charged the binding seal-time fee",
+			}
+		}
+	}
+
+	return promptRefreshConfirmation(cmd, lines)
+}
+
+// promptRefreshConfirmation shows the fee-estimate lines and asks the
+// operator to confirm the refresh on stdin. Any answer other than "y"
+// or "yes" (case-insensitive) aborts the command. Only called when
+// stdin is known to be a TTY (see confirmRefreshIfNeeded). All prompt
+// output goes to stderr: stdout is reserved for the JSON body, and a
+// prompt swallowed by a shell pipe would read as a hung command.
+func promptRefreshConfirmation(cmd *cobra.Command, lines []string) error {
+	out := cmd.ErrOrStderr()
+
+	for _, line := range lines {
+		fmt.Fprintln(out, line)
+	}
+	fmt.Fprint(out, "Proceed with refresh? [y/N]: ")
+
+	reader := bufio.NewReader(cmd.InOrStdin())
+	answer, err := reader.ReadString('\n')
+	if err != nil {
+		return fmt.Errorf("read confirmation: %w", err)
+	}
+
+	answer = strings.TrimSpace(strings.ToLower(answer))
+	if answer != "y" && answer != "yes" {
+		return fmt.Errorf("aborted by user")
+	}
+
+	return nil
 }
 
 // newVTXOsLeaveCmd creates the vtxos leave subcommand.
@@ -609,9 +889,12 @@ func defaultStdinIsTTY(cmd *cobra.Command) bool {
 // promptLeaveAllConfirmation asks the operator to confirm a
 // --all invocation on stdin. Any answer other than "y" or "yes"
 // (case-insensitive) aborts the command. Only called when stdin is
-// known to be a TTY (see confirmLeaveAllIfNeeded).
+// known to be a TTY (see confirmLeaveAllIfNeeded). The prompt goes to
+// stderr, matching promptRefreshConfirmation: stdout is reserved for
+// the JSON body, and a prompt swallowed by a shell pipe would read as
+// a hung command.
 func promptLeaveAllConfirmation(cmd *cobra.Command) error {
-	out := cmd.OutOrStdout()
+	out := cmd.ErrOrStderr()
 
 	fmt.Fprintln(
 		out, "About to queue ALL live VTXOs for cooperative leave. "+
