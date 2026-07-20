@@ -131,6 +131,13 @@ message RequestChannelIdRequest {
 
     // amount_sat is the exact invoice amount the payer should send.
     uint64 amount_sat = 4;
+
+    // supports_in_ark_credit signals that this receiver can validate and
+    // acknowledge a credit-shaped in-ark HTLC event (one carrying
+    // requested_amount_sat and attached_credit_sat). The server records the
+    // capability on the receive intent and only routes a credit-attach
+    // receive through the swap-server-funded in-ark leg when it is set.
+    bool supports_in_ark_credit = 5;
 }
 
 // RequestChannelIdResponse returns the route hint paths for one receive
@@ -282,6 +289,17 @@ message InArkHtlcEvent {
 
     // vhtlc_amount_sat is the observed vHTLC amount in satoshis when known.
     uint64 vhtlc_amount_sat = 6;
+
+    // requested_amount_sat is the invoice amount requested by the receiver.
+    // When set together with attached_credit_sat, amount_sat is the padded
+    // vHTLC amount of a credit-attach receive plan, mirroring
+    // OutSwapHtlcEvent. When zero, the event is a legacy direct p2p payment
+    // and amount_sat equals the invoice amount.
+    uint64 requested_amount_sat = 7;
+
+    // attached_credit_sat is the reserved credit amount added to the vHTLC
+    // on top of requested_amount_sat.
+    uint64 attached_credit_sat = 8;
 }
 
 // RouteHint describes one hop hint for a Lightning invoice route.

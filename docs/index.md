@@ -15,7 +15,7 @@ into specific topics below.
 | [oor_subsystem.md](oor_subsystem.md) | The OOR (out-of-round) subsystem: per-session actor model, the `oor_session_registry` single source of truth, the Read/Commit turn with its inline outbox switch, outgoing/incoming flows, crash recovery, and the per-session concurrency fix for issue #605 |
 | [fee_ledger.md](fee_ledger.md) | Client-side double-entry fee ledger: chart of accounts, per-flow walkthroughs, emission sites, replay safety |
 | [fee-change-model.md](fee-change-model.md) | Seal-time fee handshake (#270): change-output designation rules, 11-scenario catalogue, proto contract, CLI mapping |
-| [credit_system.md](credit_system.md) | Sat-native credit accounts for below-dust receives, credit-assisted receives, credit-backed sends, top-ups, and wavewalletdk integration, with mermaid diagrams |
+| [credit_system.md](credit_system.md) | Sat-native credit accounts for below-dust receives, credit-assisted receives, credit-backed sends (Lightning and same-Ark internal settlement), top-ups, and wavewalletdk integration, with mermaid diagrams |
 | [sdk_layered_architecture.md](sdk_layered_architecture.md) | SDK layering rationale: `sdk/ark` facade, remote vs. embedded modes, `sdk/swaps` future direction |
 | [swap_system.md](swap_system.md) | End-to-end swap walkthrough: vHTLC tree (collaborative vs. unilateral-exit leaves), receive (out-swap) and pay (in-swap) flows, the off-chain-first cancellation/timeout recovery ladder, same-Ark p2p detection, swap-server RPCs, and proof-gated indexer authorization, with mermaid diagrams |
 | [wavewalletdk_integration.md](wavewalletdk_integration.md) | Basic `wavewalletdk` integration flow, startup/config examples, swap accounting, and wrapper guidance |

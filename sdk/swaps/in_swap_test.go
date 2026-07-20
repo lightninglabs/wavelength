@@ -101,8 +101,8 @@ func (f *failAtExecDBTX) QueryRowContext(ctx context.Context, query string,
 
 // RequestChannelID is unused in these tests.
 func (c *testInSwapServerConn) RequestChannelID(_ context.Context,
-	_ *btcec.PublicKey, _ lntypes.Hash, _ btcutil.Amount, _ uint32) (
-	*OutSwapQuote, error) {
+	_ *btcec.PublicKey, _ lntypes.Hash, _ btcutil.Amount, _ uint32,
+	_ bool) (*OutSwapQuote, error) {
 
 	return nil, nil
 }

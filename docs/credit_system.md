@@ -122,6 +122,32 @@ The onion payload still validates against the Lightning invoice amount. Attached
 credits are Ark-side value added to the vHTLC, not part of the payer's
 Lightning invoice.
 
+A credit-assisted receive can settle over two rails, and the event that arrives
+tells the session which one fired:
+
+- **Lightning rail.** A remote payer pays the invoice over Lightning. The
+  server intercepts the HTLC and delivers an `OutSwapHtlcEvent` with onion
+  payloads, as above.
+- **Same-Ark rail.** The payer shares the Ark instance and pays through the
+  server's credit system. The server delivers a credit-shaped
+  `InArkHtlcEvent` instead: no onions, the same
+  `requested_amount_sat`/`attached_credit_sat` pair, and the server's own
+  funding key as the vHTLC sender.
+
+The session validates the same triplet on both rails and, in both cases, sends
+the out-swap acknowledgement before the server funds: the server funds the
+padded vHTLC only after the receiver durably accepted the event. This is the
+opposite of the legacy direct p2p rail (a plain in-ark payment with no credits
+involved), where the sender already funded the vHTLC and the session skips the
+acknowledgement because there is nothing left to gate.
+
+The client advertises this capability as `supports_in_ark_credit` on
+`RequestChannelId`. The server records the flag on the receive intent and only
+publishes credit-shaped in-ark events to receivers that set it; older clients
+keep receiving the Lightning rail only, and a same-Ark payment against them
+fails cleanly on the payer side instead of producing an event they would
+reject.
+
 ## Sends
 
 The public send API stays the same: callers use `PrepareSend`, display the
@@ -175,6 +201,40 @@ For a mixed payment, credits cover only the shortfall. For example, a wallet
 with a 1,000 sat vTXO and 200 sat of credits can pay a 1,200 sat invoice. The
 quote reserves 200 sat of credits and asks the wallet to fund the remaining
 amount through the normal pay flow, plus any swap fee.
+
+### Same-Ark Credit Pays
+
+When the invoice belongs to a credit-assisted receive on the same Ark
+instance, the `CREDIT` rail never touches Lightning. The server cannot pay
+such an invoice over Lightning at all — its route hints point back at the
+server's own virtual channel — so it settles the pay internally: it debits the
+payer's credit reservation, funds the receiver's padded vHTLC itself, and
+returns the receiver's claim preimage as the proof of payment.
+
+The wallet cannot tell the difference, and does not need to. The quote is a
+normal `CREDIT` quote (including the top-up flow when the account is short),
+`CreateInSwap` blocks until the receiver claims, and the response carries the
+preimage exactly like any other credit pay. The only observable change is that
+the call can wait on the receiver: if the receiver does not accept and claim
+before the RPC deadline, the pay returns a pending error while the settlement
+keeps running on the server, and a retried pay for the same invoice rejoins
+it.
+
+```mermaid
+sequenceDiagram
+    participant Payer as payer wallet
+    participant Server as swap server
+    participant Recv as receiver wallet
+
+    Payer->>Server: CreateInSwap(max_credit_sat)
+    Server->>Server: reserve payer credits
+    Server->>Recv: credit-shaped InArkHtlcEvent
+    Recv->>Server: AcknowledgeOutSwapHtlc
+    Server->>Recv: fund padded vHTLC (OOR)
+    Recv->>Recv: claim with invoice preimage
+    Server->>Server: debit payer, finalize receiver credits
+    Server-->>Payer: CREDIT settlement + preimage
+```
 
 ## Funding Credits
 
