@@ -4402,8 +4402,8 @@ func creatorLineage(vtxo *ClientVTXO) ([]chainhash.Hash, error) {
 // input is paired with its WitnessUtxo, and refresh inputs additionally bind
 // the exact next lifecycle revision plus their complete creator lineage.
 func roundBatchRegistration(ctx context.Context, state *InputSigSentState,
-	vtxos []*ClientVTXO, batchTxID chainhash.Hash,
-	store VTXOStore) (*batchcanon.RegisterBatchRequest, error) {
+	vtxos []*ClientVTXO, batchTxID chainhash.Hash, store VTXOStore,
+	watchHeightHint uint32) (*batchcanon.RegisterBatchRequest, error) {
 
 	if state.CommitmentTx == nil || state.CommitmentTx.UnsignedTx == nil {
 		return nil, fmt.Errorf("commitment PSBT is missing")
@@ -4484,10 +4484,11 @@ func roundBatchRegistration(ctx context.Context, state *InputSigSentState,
 		ConfirmationPkScript: bytes.Clone(
 			commitmentTx.TxOut[outputIdx].PkScript,
 		),
-		CSVExpiryDelta: int32(state.SweepDelay),
-		ConsumedInputs: consumedInputs,
-		DependentVTXOs: dependentVTXOs,
-		ConsumedVTXOs:  consumerEdges,
+		WatchHeightHint: watchHeightHint,
+		CSVExpiryDelta:  int32(state.SweepDelay),
+		ConsumedInputs:  consumedInputs,
+		DependentVTXOs:  dependentVTXOs,
+		ConsumedVTXOs:   consumerEdges,
 	}, nil
 }
 
@@ -4730,6 +4731,7 @@ func (s *InputSigSentState) ProcessEvent(ctx context.Context, event ClientEvent,
 			opCtx := context.WithoutCancel(ctx)
 			registration, err := roundBatchRegistration(
 				opCtx, s, vtxos, evt.TxID, env.VTXOStore,
+				env.StartHeight,
 			)
 			if err != nil {
 				return nil, fmt.Errorf("build batch "+

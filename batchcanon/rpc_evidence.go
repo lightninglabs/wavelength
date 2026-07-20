@@ -73,6 +73,10 @@ func evidenceFromAncestryPath(path *arkrpc.AncestryPath) (BatchEvidence,
 	if err != nil {
 		return BatchEvidence{}, err
 	}
+	if path.GetCommitmentHeight() < 0 {
+		return BatchEvidence{}, fmt.Errorf("commitment height must " +
+			"not be negative")
+	}
 
 	treePath := path.GetTreePath()
 	if treePath == nil || treePath.GetBatchOutpoint() == nil ||
@@ -170,6 +174,7 @@ func evidenceFromAncestryPath(path *arkrpc.AncestryPath) (BatchEvidence,
 		BatchTx:              bytes.Clone(rawTx),
 		BatchOutputIndex:     outputIndex,
 		ConfirmationPkScript: bytes.Clone(actualOutput.PkScript),
+		WatchHeightHint:      uint32(path.GetCommitmentHeight()),
 		CSVExpiryDelta:       path.GetCommitmentCsvExpiryDelta(),
 		ConsumedInputs:       consumedInputs,
 	}
@@ -206,6 +211,7 @@ func equalBatchEvidence(a, b BatchEvidence) bool {
 	if a.BatchTxID != b.BatchTxID ||
 		a.BatchOutputIndex != b.BatchOutputIndex ||
 		a.CSVExpiryDelta != b.CSVExpiryDelta ||
+		a.WatchHeightHint != b.WatchHeightHint ||
 		!bytes.Equal(a.BatchTx, b.BatchTx) ||
 		!bytes.Equal(a.ConfirmationPkScript, b.ConfirmationPkScript) ||
 		len(a.ConsumedInputs) != len(b.ConsumedInputs) {
