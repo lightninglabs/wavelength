@@ -9,7 +9,14 @@ import (
 	"time"
 
 	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
+	"golang.org/x/term"
 )
+
+// stdoutIsTTY is indirect so output-contract tests can exercise the pipe and
+// terminal paths without depending on the test runner's file descriptors.
+var stdoutIsTTY = func() bool {
+	return term.IsTerminal(int(os.Stdout.Fd()))
+}
 
 // validateListFormat rejects presentation formats that do not apply to the
 // selected list view.

@@ -38,7 +38,7 @@ unchanged).
 | `unlock` | `wavewalletrpc.Unlock` | Unlock an existing wallet (proxies UnlockWallet) |
 | `send <dest>` | `wavewalletrpc.Send` | Outbound payment. `--offchain` (default) for a BOLT-11 invoice via the swap subsystem; `--onchain` for an atomic on-chain send (`--sweep-all` drains). No prefix sniff |
 | `recv` | `wavewalletrpc.Recv` / `wavewalletrpc.Deposit` | Inbound. `--offchain` (default) returns a Lightning invoice; `--onchain` returns a boarding address |
-| `activity` | `wavewalletrpc.List` | Unified wallet activity view. Defaults to table output; `--format json` returns structured JSON. `--pending` and `--kind` narrow rows |
+| `activity` | `wavewalletrpc.List` | Unified wallet activity view. Defaults to table output; global `--json` or `--format json` returns structured JSON. `--pending` and `--kind` narrow rows |
 | `activity inspect <id>` | `wavewalletrpc.InspectActivity` | Correlated swap/VTXO/ledger detail for one activity entry |
 | `balance` | `wavewalletrpc.Balance` | Flat balance (confirmed_sat, pending_in_sat, pending_out_sat) |
 | `exit --outpoint TXID:VOUT` | `wavewalletrpc.Exit` | Queue a cooperative leave by default; unilateral unroll only fires with `--force-unroll-ack I_KNOW_WHAT_I_AM_DOING` |
@@ -104,7 +104,7 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/cmd/wave
 - `withWalletClient()` — maps `codes.Unimplemented` to
   `errWalletRPCDisabled` (with a pointer to `docs/wavewalletrpc_build.md`)
   for daemons built without the wavewalletrpc tag.
-- `parseRequest()` — generic JSON-or-flags proto request parser
+- `parseRequest()` — generic `--request-json`-or-flags proto request parser
   (consumed by `ark.*` commands).
 - `methodRegistry()` / `schemaMethod` / `schemaParam` —
   machine-readable schema for all CLI commands; shared source of

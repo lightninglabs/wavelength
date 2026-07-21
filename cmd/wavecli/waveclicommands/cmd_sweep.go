@@ -132,13 +132,19 @@ func sweepList(cmd *cobra.Command, _ []string) error {
 		_ = conn.Close()
 	}()
 
-	statusFilter, _ := cmd.Flags().GetString("status")
-	pageSize, _ := cmd.Flags().GetUint32("page-size")
-	pageToken, _ := cmd.Flags().GetString("page-token")
-	req := &waverpc.ListBoardingSweepsRequest{
-		Status:    statusFilter,
-		PageSize:  pageSize,
-		PageToken: pageToken,
+	req := &waverpc.ListBoardingSweepsRequest{}
+	if err := parseRequest(cmd, req, func() error {
+		statusFilter, _ := cmd.Flags().GetString("status")
+		pageSize, _ := cmd.Flags().GetUint32("page-size")
+		pageToken, _ := cmd.Flags().GetString("page-token")
+
+		req.Status = statusFilter
+		req.PageSize = pageSize
+		req.PageToken = pageToken
+
+		return nil
+	}); err != nil {
+		return err
 	}
 
 	ctx, cancel := rpcContext(cmd)

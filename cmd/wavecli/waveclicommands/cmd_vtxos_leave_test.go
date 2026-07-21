@@ -282,7 +282,7 @@ func TestParseDestinationValueEmpty(t *testing.T) {
 }
 
 // TestConfirmLeaveAllIfNeededJSONStillPrompts is the C-1 regression
-// guard: a request whose `selection.all` was set via the --json input
+// guard: a request whose `selection.all` was set via the --request-json input
 // path (i.e. without ever entering the flag callback) must still hit
 // the y/N prompt. Before the fix the prompt lived inside the flag
 // callback and the JSON path silently bypassed it.

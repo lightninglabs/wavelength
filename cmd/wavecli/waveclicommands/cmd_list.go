@@ -49,6 +49,10 @@ func walletActivity(cmd *cobra.Command, _ []string) error {
 	limit, _ := cmd.Flags().GetUint32("limit")
 	cursor, _ := cmd.Flags().GetString("cursor")
 	format, _ := cmd.Flags().GetString("format")
+	jsonOutput, _ := cmd.Flags().GetBool("json")
+	if jsonOutput {
+		format = "json"
+	}
 
 	if err := validateListFormat(
 		format, wavewalletrpc.ListView_LIST_VIEW_ACTIVITY,
@@ -82,6 +86,17 @@ func walletActivity(cmd *cobra.Command, _ []string) error {
 
 			switch format {
 			case "", "table":
+				if !stdoutIsTTY() {
+					fmt.Fprintln(
+						cmd.ErrOrStderr(),
+						"hint: stdout is not a "+
+							"TTY; use --json "+
+							"for "+
+							"machine-readable "+
+							"output",
+					)
+				}
+
 				if err := printWalletActivityTable(
 					resp,
 				); err != nil {

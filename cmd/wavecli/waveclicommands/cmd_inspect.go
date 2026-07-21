@@ -31,6 +31,10 @@ func newActivityInspectCmd() *cobra.Command {
 func inspectActivity(cmd *cobra.Command, args []string) error {
 	ledgerLimit, _ := cmd.Flags().GetUint32("ledger-limit")
 	format, _ := cmd.Flags().GetString("format")
+	jsonOutput, _ := cmd.Flags().GetBool("json")
+	if jsonOutput {
+		format = "json"
+	}
 	if err := validateInspectFormat(format); err != nil {
 		return err
 	}

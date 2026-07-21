@@ -135,12 +135,13 @@ func runMethod(cmd *cobra.Command, cfg Config, service protoreflect.FullName,
 	}
 
 	req := dynamicpb.NewMessage(method.input)
-	rawJSON, _ := cmd.Flags().GetString("json")
+	rawJSON, _ := cmd.Flags().GetString("request-json")
 	if rawJSON != "" {
 		if err := jsonUnmarshalOpts.Unmarshal(
 			[]byte(rawJSON), req,
 		); err != nil {
-			return fmt.Errorf("invalid --json payload: %w", err)
+			return fmt.Errorf("invalid --request-json payload: %w",
+				err)
 		}
 	} else {
 		if err := populateRequest(cmd, req, binders); err != nil {

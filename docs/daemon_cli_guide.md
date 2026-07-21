@@ -290,7 +290,8 @@ wavecli
 | `--no-tls` | `false` | Disable TLS (regtest / dev); requires `--no-macaroons` |
 | `--no-macaroons` | `false` | Disable macaroon auth (required alongside `--no-tls`) |
 | `--timeout` | `30s` | Maximum duration for each finite daemon RPC; `0` disables the deadline. Live watches use their stream-specific bounds. |
-| `--json` | | Raw JSON request payload (overrides bespoke flags) |
+| `--json` | `false` | Emit machine-readable JSON output |
+| `--request-json` | | Raw JSON request payload (overrides bespoke flags) |
 
 ### `getinfo`
 
@@ -462,7 +463,7 @@ wavecli ark send inround \
   --to bcrt1p...addr2 --amount 30000
 
 # Via JSON input
-wavecli ark send inround --json '{
+wavecli ark send inround --request-json '{
   "recipients": [
     {"address":"bcrt1p...","amount_sat":50000},
     {"address":"bcrt1p...","amount_sat":30000}
@@ -586,6 +587,7 @@ The merged wallet activity feed: send / recv / deposit / exit history.
 wavecli activity
 wavecli activity --pending --kind send,recv
 wavecli activity --format json
+wavecli activity --json
 wavecli activity --cursor <next_cursor>
 wavecli activity inspect <id>
 ```

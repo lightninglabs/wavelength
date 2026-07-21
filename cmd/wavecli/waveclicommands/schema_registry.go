@@ -46,9 +46,9 @@ type schemaMethod struct {
 	// reaches the daemon's dry-run RPC field.
 	DryRun bool `json:"dry_run,omitempty"`
 
-	// JSONInput indicates the command accepts --json for raw proto
+	// JSONInput indicates the command accepts --request-json for raw proto
 	// payloads.
-	JSONInput bool `json:"json_input"`
+	JSONInput bool `json:"request_json_input"`
 
 	// MCPTool indicates the method is exposed as an MCP tool with
 	// the same name. False means it is CLI-only (create / unlock
