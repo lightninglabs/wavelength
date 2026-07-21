@@ -126,10 +126,11 @@ func NewOutgoingSnapshot(sessionID SessionID,
 	}
 
 	snap := &OutgoingSnapshot{
-		// Version 6 adds the recipient and Taproot Asset transfer
-		// records. Restore remains backward-compatible because both TLV
-		// records are optional when decoding older snapshots.
-		Version:   6,
+		// Version 7 adds SDK-neutral asset identity and amount within
+		// the recipient and input records. Restore remains
+		// backward-compatible because the appended TLV fields are
+		// optional.
+		Version:   7,
 		SessionID: sessionID,
 	}
 
@@ -603,6 +604,8 @@ func cloneRecipientOutputs(
 			VTXOPolicyTemplate: bytes.Clone(
 				recipients[i].VTXOPolicyTemplate,
 			),
+			TaprootAssetRef:    recipients[i].TaprootAssetRef,
+			TaprootAssetAmount: recipients[i].TaprootAssetAmount,
 		}
 		if recipients[i].TaprootAssetRoot != nil {
 			root := *recipients[i].TaprootAssetRoot

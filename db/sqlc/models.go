@@ -449,6 +449,8 @@ type Vtxo struct {
 	ChainDepth          int32
 	ConstructionVersion int32
 	TaprootAssetRoot    []byte
+	TaprootAssetRef     sql.NullString
+	TaprootAssetAmount  []byte
 }
 
 type VtxoAncestryPath struct {

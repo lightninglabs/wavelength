@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -24,6 +25,8 @@ import (
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 )
+
+const taprootAssetAmountSize = 8
 
 // VTXOPersistenceStore implements the vtxo.VTXOStore interface using the
 // BatchedTx pattern for transaction-safe VTXO lifecycle operations.
@@ -690,6 +693,11 @@ func (s *VTXOPersistenceStore) descriptorToInsertParams(ctx context.Context,
 	if desc.TaprootAssetRoot != nil {
 		taprootAssetRoot = desc.TaprootAssetRoot.CloneBytes()
 	}
+	taprootAssetRef, taprootAssetAmount, err :=
+		encodeTaprootAssetMetadata(desc)
+	if err != nil {
+		return InsertVTXOParams{}, err
+	}
 
 	nowUnix := s.clock.Now().Unix()
 
@@ -735,7 +743,84 @@ func (s *VTXOPersistenceStore) descriptorToInsertParams(ctx context.Context,
 		// conflict.
 		ConstructionVersion: int32(desc.ConstructionVersion),
 		TaprootAssetRoot:    taprootAssetRoot,
+		TaprootAssetRef:     taprootAssetRef,
+		TaprootAssetAmount:  taprootAssetAmount,
 	}, nil
+}
+
+// encodeTaprootAssetMetadata maps the optional SDK-neutral asset identity and
+// amount onto nullable SQL columns. A historical root-only descriptor is
+// accepted so rows written before migration 18 remain usable. New metadata is
+// all-or-nothing and uses a fixed-width BLOB to preserve the complete uint64
+// range.
+func encodeTaprootAssetMetadata(desc *vtxo.Descriptor) (sql.NullString, []byte,
+	error) {
+
+	if desc == nil {
+		return sql.NullString{}, nil, fmt.Errorf("descriptor must be " +
+			"provided")
+	}
+
+	assetRef := desc.TaprootAssetRef
+	assetAmount := desc.TaprootAssetAmount
+	if assetRef == "" && assetAmount == 0 {
+		return sql.NullString{}, nil, nil
+	}
+	if desc.TaprootAssetRoot == nil {
+		return sql.NullString{}, nil, fmt.Errorf("Taproot Asset " +
+			"metadata requires a commitment root")
+	}
+	if assetRef == "" || assetAmount == 0 {
+		return sql.NullString{}, nil, fmt.Errorf("Taproot Asset ref " +
+			"and amount must both be provided")
+	}
+	if len(assetRef) > vtxo.MaxTaprootAssetRefBytes {
+		return sql.NullString{}, nil, fmt.Errorf("Taproot Asset ref "+
+			"exceeds %d bytes", vtxo.MaxTaprootAssetRefBytes)
+	}
+
+	amount := make([]byte, taprootAssetAmountSize)
+	binary.BigEndian.PutUint64(amount, assetAmount)
+
+	return sql.NullString{
+		String: assetRef,
+		Valid:  true,
+	}, amount, nil
+}
+
+// decodeTaprootAssetMetadata restores the optional asset identity and amount.
+// Empty columns represent either an ordinary Bitcoin VTXO or a historical
+// root-only asset row. Any partially populated or non-canonical encoding is a
+// database integrity error.
+func decodeTaprootAssetMetadata(root *chainhash.Hash, ref sql.NullString,
+	amount []byte) (string, uint64, error) {
+
+	if !ref.Valid && len(amount) == 0 {
+		return "", 0, nil
+	}
+	if root == nil {
+		return "", 0, fmt.Errorf("Taproot Asset metadata has no " +
+			"commitment root")
+	}
+	if !ref.Valid || ref.String == "" || len(amount) == 0 {
+		return "", 0, fmt.Errorf("incomplete Taproot Asset metadata")
+	}
+	if len(amount) != taprootAssetAmountSize {
+		return "", 0, fmt.Errorf("invalid Taproot Asset amount "+
+			"length: %d", len(amount))
+	}
+	if len(ref.String) > vtxo.MaxTaprootAssetRefBytes {
+		return "", 0, fmt.Errorf("Taproot Asset ref exceeds %d bytes",
+			vtxo.MaxTaprootAssetRefBytes)
+	}
+
+	decoded := binary.BigEndian.Uint64(amount)
+	if decoded == 0 {
+		return "", 0, fmt.Errorf("Taproot Asset amount must be " +
+			"positive")
+	}
+
+	return ref.String, decoded, nil
 }
 
 // rowToDescriptor converts a database VTXO row to a vtxo.Descriptor. The
@@ -842,28 +927,38 @@ func (s *VTXOPersistenceStore) rowToDescriptor(ctx context.Context,
 		copy(root[:], row.TaprootAssetRoot)
 		taprootAssetRoot = root
 	}
+	taprootAssetRef, taprootAssetAmount, err :=
+		decodeTaprootAssetMetadata(
+			taprootAssetRoot, row.TaprootAssetRef,
+			row.TaprootAssetAmount,
+		)
+	if err != nil {
+		return nil, err
+	}
 
 	if clientKey.PubKey == nil {
 		clientKey.PubKey = derived.clientPubkey
 	}
 
 	return &vtxo.Descriptor{
-		Outpoint:         outpoint,
-		Amount:           btcutil.Amount(row.Amount),
-		PolicyTemplate:   derived.policyTemplate,
-		PkScript:         row.PkScript,
-		TaprootAssetRoot: taprootAssetRoot,
-		ClientKey:        clientKey,
-		OperatorKey:      derived.operatorPubkey,
-		TapScript:        derived.tapscript,
-		Ancestry:         ancestry,
-		RoundID:          row.RoundID,
-		CommitmentTxID:   commitmentTxID,
-		BatchExpiry:      row.BatchExpiry,
-		RelativeExpiry:   derived.relativeExpiry,
-		ChainDepth:       int(row.ChainDepth),
-		CreatedHeight:    row.CreatedHeight,
-		Status:           vtxo.VTXOStatus(row.Status),
+		Outpoint:           outpoint,
+		Amount:             btcutil.Amount(row.Amount),
+		PolicyTemplate:     derived.policyTemplate,
+		PkScript:           row.PkScript,
+		TaprootAssetRoot:   taprootAssetRoot,
+		TaprootAssetRef:    taprootAssetRef,
+		TaprootAssetAmount: taprootAssetAmount,
+		ClientKey:          clientKey,
+		OperatorKey:        derived.operatorPubkey,
+		TapScript:          derived.tapscript,
+		Ancestry:           ancestry,
+		RoundID:            row.RoundID,
+		CommitmentTxID:     commitmentTxID,
+		BatchExpiry:        row.BatchExpiry,
+		RelativeExpiry:     derived.relativeExpiry,
+		ChainDepth:         int(row.ChainDepth),
+		CreatedHeight:      row.CreatedHeight,
+		Status:             vtxo.VTXOStatus(row.Status),
 		ConstructionVersion: arkrpc.ConstructionVersion(
 			row.ConstructionVersion,
 		),

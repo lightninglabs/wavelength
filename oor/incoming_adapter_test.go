@@ -6,6 +6,7 @@ import (
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/lightninglabs/wavelength/arkrpc"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
+	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
 	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/stretchr/testify/require"
 )
@@ -62,14 +63,32 @@ func TestIncomingRecipientsFromEventBindsTaprootAssetRoot(t *testing.T) {
 		Value:              uint64(recipients[0].Value),
 		VtxoPolicyTemplate: template,
 		TaprootAssetRoot:   assetRoot[:],
+		TaprootAssetRef:    "asset-id:010203",
+		TaprootAssetAmount: 21,
 	}
 	decoded, err := incomingRecipientsFromEvent(arkPSBT, evt)
 	require.NoError(t, err)
 	require.Equal(t, &assetRoot,
 		decoded[0].TaprootAssetRoot)
+	require.Equal(t, "asset-id:010203", decoded[0].TaprootAssetRef)
+	require.Equal(t, uint64(21), decoded[0].TaprootAssetAmount)
 
 	wrongRoot := chainhash.Hash{0xff}
 	evt.TaprootAssetRoot = wrongRoot[:]
 	_, err = incomingRecipientsFromEvent(arkPSBT, evt)
 	require.ErrorContains(t, err, "root and pkscript mismatch")
+
+	evt.TaprootAssetRoot = assetRoot[:]
+	evt.TaprootAssetAmount = 0
+	_, err = incomingRecipientsFromEvent(arkPSBT, evt)
+	require.ErrorContains(t, err, "ref and amount must both be provided")
+
+	evt.TaprootAssetAmount = 21
+	evt.TaprootAssetRef = string(
+		make(
+			[]byte, oortx.MaxTaprootAssetRefBytes+1,
+		),
+	)
+	_, err = incomingRecipientsFromEvent(arkPSBT, evt)
+	require.ErrorContains(t, err, "asset ref exceeds")
 }

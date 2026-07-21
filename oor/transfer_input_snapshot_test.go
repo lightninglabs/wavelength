@@ -94,10 +94,13 @@ func TestTransferInputSnapshotRoundTrip(t *testing.T) {
 				},
 				PubKey: clientKey.PubKey(),
 			},
-			OperatorKey:    operatorKey.PubKey(),
-			TapScript:      tapScript,
-			RelativeExpiry: exitDelay,
-			Status:         vtxo.VTXOStatusLive,
+			OperatorKey:        operatorKey.PubKey(),
+			TapScript:          tapScript,
+			RelativeExpiry:     exitDelay,
+			Status:             vtxo.VTXOStatusLive,
+			TaprootAssetRoot:   &assetRoot,
+			TaprootAssetRef:    "asset-id:010203",
+			TaprootAssetAmount: 21,
 		},
 		VTXOPolicyTemplate: vtxoPolicyTemplate,
 		TaprootAssetRoot:   &assetRoot,
@@ -155,6 +158,9 @@ func TestTransferInputSnapshotRoundTrip(t *testing.T) {
 	require.Equal(t, in.OwnerLeafPolicy, snap.OwnerLeafPolicy)
 	require.Equal(t, in.VTXOPolicyTemplate, snap.VTXOPolicyTemplate)
 	require.Equal(t, in.TaprootAssetRoot, snap.TaprootAssetRoot)
+	require.Equal(t, in.VTXO.TaprootAssetRef, snap.TaprootAssetRef)
+	require.Equal(t, in.VTXO.TaprootAssetAmount,
+		snap.TaprootAssetAmount)
 	require.Equal(t, in.CustomSpend.RequiredSequence,
 		snap.RequiredSequence)
 	require.Equal(t, in.CustomSpend.RequiredLockTime,
@@ -167,6 +173,9 @@ func TestTransferInputSnapshotRoundTrip(t *testing.T) {
 	snap, err = decodeTransferInputSnapshot(rawSnapshot)
 	require.NoError(t, err)
 	require.Equal(t, in.TaprootAssetRoot, snap.TaprootAssetRoot)
+	require.Equal(t, in.VTXO.TaprootAssetRef, snap.TaprootAssetRef)
+	require.Equal(t, in.VTXO.TaprootAssetAmount,
+		snap.TaprootAssetAmount)
 
 	rebuilt, err := TransferInputFromSnapshot(snap)
 	require.NoError(t, err)
@@ -192,6 +201,11 @@ func TestTransferInputSnapshotRoundTrip(t *testing.T) {
 	require.Equal(t, in.OwnerLeafPolicy, rebuilt.OwnerLeafPolicy)
 	require.Equal(t, in.VTXOPolicyTemplate, rebuilt.VTXOPolicyTemplate)
 	require.Equal(t, in.TaprootAssetRoot, rebuilt.TaprootAssetRoot)
+	require.Equal(t, in.VTXO.TaprootAssetRef,
+		rebuilt.VTXO.TaprootAssetRef)
+	require.Equal(
+		t, in.VTXO.TaprootAssetAmount, rebuilt.VTXO.TaprootAssetAmount,
+	)
 	spendPath, err := rebuilt.EffectiveSpendPath()
 	require.NoError(t, err)
 	require.GreaterOrEqual(t, len(spendPath.ControlBlock), 32)
@@ -215,9 +229,22 @@ func TestTransferInputSnapshotRoundTrip(t *testing.T) {
 		t, in.ExternalSignatures[0], rebuilt.ExternalSignatures[0],
 	)
 
+	disagreedRoot := assetRoot
+	disagreedRoot[0] ^= 1
+	rebuilt.TaprootAssetRoot = &disagreedRoot
+	err = rebuilt.Validate()
+	require.ErrorContains(t, err, "asset roots disagree")
+	rebuilt.TaprootAssetRoot = &assetRoot
+
+	rebuilt.VTXO.TaprootAssetAmount = 0
+	err = rebuilt.Validate()
+	require.ErrorContains(t, err, "ref and amount must both be provided")
+	rebuilt.VTXO.TaprootAssetAmount = in.VTXO.TaprootAssetAmount
+
 	wrongRoot := assetRoot
 	wrongRoot[0] ^= 1
 	rebuilt.TaprootAssetRoot = &wrongRoot
+	rebuilt.VTXO.TaprootAssetRoot = &wrongRoot
 	err = rebuilt.Validate()
 	require.ErrorContains(t, err, "asset root and vtxo pkscript mismatch")
 }

@@ -122,7 +122,10 @@ func NewIncomingSnapshot(sessionID SessionID,
 	}
 
 	snap := &IncomingSnapshot{
-		Version:   2,
+		// Version 3 adds SDK-neutral asset identity and amount within
+		// the incoming recipient record. The appended TLV fields are
+		// optional.
+		Version:   3,
 		SessionID: sessionID,
 	}
 

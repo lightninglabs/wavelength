@@ -781,6 +781,23 @@ message VTXO {
     // only for FORFEITED VTXOs whose forfeit round is known, and unset
     // otherwise, so absence is explicit rather than a zero-value sentinel.
     VTXOSettlement settlement = 14;
+
+    // taproot_asset is present when this VTXO carries a Taproot Asset.
+    // amount_sat above remains the separate Bitcoin carrier value.
+    VTXOTaprootAsset taproot_asset = 15;
+}
+
+// VTXOTaprootAsset is SDK-neutral asset metadata attached to one VTXO.
+message VTXOTaprootAsset {
+    // asset_ref is the opaque tap-sdk asset identity.
+    string asset_ref = 1;
+
+    // amount is the number of Taproot Asset units carried by the VTXO.
+    uint64 amount = 2;
+
+    // commitment_root is the 32-byte Taproot Asset commitment root composed
+    // beside the VTXO's semantic Ark policy.
+    bytes commitment_root = 3;
 }
 
 message VTXOSettlement {
