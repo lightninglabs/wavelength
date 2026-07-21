@@ -2674,6 +2674,9 @@ func (a *Ark) handleSelectAndLockVTXOs(ctx context.Context,
 			TargetAmount:    req.TargetAmount,
 			MinChangeAmount: req.MinChangeAmount,
 			Outpoints:       req.Outpoints,
+			RequiredOutpoints: append(
+				[]wire.OutPoint(nil), req.RequiredOutpoints...,
+			),
 		},
 	)
 	if err != nil {
@@ -2718,7 +2721,7 @@ func (a *Ark) handleUnlockVTXOs(ctx context.Context,
 
 	resp, err := a.askManager(
 		ctx, &actormsg.ReleaseSpendRequest{
-			Outpoints: req.Outpoints,
+			Outpoints:       req.Outpoints,
 		},
 	)
 	if err != nil {
@@ -2747,7 +2750,7 @@ func (a *Ark) handleCompleteSpendVTXOs(ctx context.Context,
 
 	resp, err := a.askManager(
 		ctx, &actormsg.CompleteSpendRequest{
-			Outpoints: req.Outpoints,
+			Outpoints:       req.Outpoints,
 		},
 	)
 	if err != nil {

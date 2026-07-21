@@ -137,6 +137,19 @@ func (r *RPCServer) SubLogger(tag string) btclog.Logger {
 	return r.server.subLogger(tag)
 }
 
+// OORReservationStore returns the daemon's shared durable spending
+// reservation store. Optional Taproot Asset runtimes use this narrow
+// interface to quarantine managed VTXOs before the first external tapd
+// commit, without gaining access to the daemon database itself.
+func (r *RPCServer) OORReservationStore() (oor.ReservationStore, error) {
+	if r == nil || r.server == nil || r.server.reservationStore == nil {
+		return nil, fmt.Errorf("spending reservation store is not " +
+			"ready")
+	}
+
+	return r.server.reservationStore, nil
+}
+
 // SignMailboxAuth returns a hex-encoded Schnorr mailbox auth signature for
 // the daemon identity key bound to the recipient mailbox ID. Optional
 // subservers use this to authenticate mailbox RPCs without learning how the
@@ -210,6 +223,9 @@ func vtxoAdmissionCode(err error) codes.Code {
 
 	case errors.Is(err, vtxo.ErrInsufficientSpendableFunds):
 		return codes.ResourceExhausted
+
+	case errors.Is(err, vtxo.ErrRequiredVTXOInvalid):
+		return codes.InvalidArgument
 
 	default:
 		return codes.Internal
@@ -3019,6 +3035,19 @@ func (r *RPCServer) SendVTXO(ctx context.Context,
 	}, nil
 }
 
+// sendOORRequiredOutpoints maps an optional asset intent to the wallet-managed
+// VTXO that coin selection must include. Bitcoin-only sends have no required
+// outpoints.
+func sendOORRequiredOutpoints(
+	assetIntent *oor.TaprootAssetOORIntent) []wire.OutPoint {
+
+	if assetIntent == nil {
+		return nil
+	}
+
+	return []wire.OutPoint{assetIntent.InputVTXOOutpoint}
+}
+
 // SendOOR initiates an out-of-round transfer directly between the
 // client and operator, without waiting for a round. The transfer
 // completes asynchronously via the OOR protocol.
@@ -3229,7 +3258,20 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 		locked              *wallet.SelectAndLockVTXOsResponse
 		customInputsRelease func()
 		releaseCustomInputs bool
+		releaseSelected     bool
 	)
+	defer func() {
+		if !releaseSelected {
+			return
+		}
+
+		unlockCtx, cancel := context.WithTimeout(
+			context.WithoutCancel(ctx), submittedOORUnlockTimeout,
+		)
+		defer cancel()
+
+		r.unlockSelectedVTXOsBestEffort(unlockCtx, locked)
+	}()
 
 	if len(req.CustomInputs) > 0 && !exactManagedInputs {
 		phaseStart = time.Now()
@@ -3285,10 +3327,12 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 		// path, but name the exact managed VTXOs that must be selected.
 		phaseStart = time.Now()
 		wRef := r.server.walletRef.UnsafeFromSome()
+		requiredOutpoints := sendOORRequiredOutpoints(assetIntent)
 
 		selectReq := &wallet.SelectAndLockVTXOsRequest{
-			TargetAmount:    targetAmt,
-			MinChangeAmount: terms.MinVTXOAmountFloor(),
+			TargetAmount:      targetAmt,
+			MinChangeAmount:   terms.MinVTXOAmountFloor(),
+			RequiredOutpoints: requiredOutpoints,
 		}
 		if exactManagedInputs {
 			selectReq.Outpoints = customOutpoints
@@ -3308,6 +3352,7 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 			return nil, status.Errorf(codes.Internal, "unexpected "+
 				"response type: %T", selectResp)
 		}
+		releaseSelected = true
 		inputSelectDuration = time.Since(phaseStart)
 
 		outpoints := make(
@@ -3325,8 +3370,6 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 		)
 		buildInputsDuration = time.Since(phaseStart)
 		if err != nil {
-			r.unlockSelectedVTXOsBestEffort(ctx, locked)
-
 			return nil, status.Errorf(codes.Internal, "build "+
 				"transfer inputs: %v", err)
 		}
@@ -3342,8 +3385,6 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 	phaseStart = time.Now()
 	inputTotal, err := sumOORInputAmounts(selectedInputs)
 	if err != nil {
-		r.unlockSelectedVTXOsBestEffort(ctx, locked)
-
 		return nil, status.Errorf(codes.Internal, "sum OOR input "+
 			"amounts: %v", err)
 	}
@@ -3367,8 +3408,6 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 		},
 	)
 	if err != nil {
-		r.unlockSelectedVTXOsBestEffort(ctx, locked)
-
 		return nil, err
 	}
 	changeOutputDuration = time.Since(phaseStart)
@@ -3402,6 +3441,13 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 			ctx, prepareRequest,
 		)
 		if err != nil {
+			if errors.Is(
+				err, oor.ErrTaprootAssetCommitOutcomeUnknown,
+			) {
+
+				releaseSelected = false
+			}
+
 			return nil, taprootAssetOORPreparationError(err)
 		}
 		if err := preparation.Validate(prepareRequest); err != nil {
@@ -3448,6 +3494,7 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 
 		if isAwaitContextError(ctx, err) {
 			releaseCustomInputs = false
+			releaseSelected = false
 			r.cleanupSubmittedOORStart(
 				ctx, future, locked, customInputsRelease,
 			)
@@ -3463,8 +3510,6 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 
 		// Unlock VTXOs on OOR failure so they can be
 		// reused (only for wallet-selected inputs).
-		r.unlockSelectedVTXOsBestEffort(ctx, locked)
-
 		r.server.emitMetric(ctx, &metrics.OORTransferSentMsg{
 			Status:   "failed",
 			Duration: time.Since(startTime),
@@ -3476,14 +3521,12 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 
 	resp, ok := oorResp.(*oor.StartTransferResponse)
 	if !ok {
-		r.unlockSelectedVTXOsBestEffort(ctx, locked)
-
 		return nil, status.Errorf(codes.Internal, "unexpected "+
 			"response type: %T", oorResp)
 	}
 
-	if resp.Existing {
-		r.unlockSelectedVTXOsBestEffort(ctx, locked)
+	if !resp.Existing {
+		releaseSelected = false
 	}
 
 	var recipientOutpoints []string

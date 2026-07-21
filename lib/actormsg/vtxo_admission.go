@@ -38,6 +38,11 @@ type SelectAndReserveSpendRequest struct {
 	// reserve instead of running coin selection. The requested order is
 	// preserved in the response.
 	Outpoints []wire.OutPoint
+
+	// RequiredOutpoints identifies managed VTXOs that must be included in
+	// the selection. The manager validates and reserves these before adding
+	// ordinary Bitcoin VTXOs to cover any remaining target.
+	RequiredOutpoints []wire.OutPoint
 }
 
 // VTXOManagerMsg implements VTXOManagerMsg marker interface.
@@ -59,6 +64,11 @@ type SelectedVTXO struct {
 
 	// PkScript is the output script for this VTXO.
 	PkScript []byte
+
+	// TaprootAssetRoot is non-nil when this VTXO carries a Taproot Asset
+	// commitment. Optional coin selection must exclude such VTXOs; required
+	// selection may include them explicitly.
+	TaprootAssetRoot *chainhash.Hash
 }
 
 // SelectAndReserveSpendResponse returns the VTXOs that were selected and

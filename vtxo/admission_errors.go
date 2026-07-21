@@ -25,4 +25,8 @@ var (
 	// ErrVTXOTerminal means the VTXO has reached a terminal state and
 	// holds no value that can still be moved.
 	ErrVTXOTerminal = errors.New("vtxo is no longer active")
+
+	// ErrRequiredVTXOInvalid means a caller-required outpoint is
+	// duplicated, missing, or not in Live state.
+	ErrRequiredVTXOInvalid = errors.New("invalid required vtxo")
 )

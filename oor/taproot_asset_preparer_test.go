@@ -108,9 +108,10 @@ func TestTaprootAssetOORPreparationBindsRequest(t *testing.T) {
 		Inputs:     inputs,
 		Recipients: requestRecipients,
 		Intent: TaprootAssetOORIntent{
-			AssetRef:    "tapr1asset",
-			AssetAmount: 21,
-			ProofFile:   []byte("confirmed-proof"),
+			InputVTXOOutpoint: inputs[0].VTXO.Outpoint,
+			AssetRef:          "tapr1asset",
+			AssetAmount:       21,
+			ProofFile:         []byte("confirmed-proof"),
 			RecipientScriptKey: recipientKey.PubKey().
 				SerializeCompressed(),
 		},
@@ -120,6 +121,13 @@ func TestTaprootAssetOORPreparationBindsRequest(t *testing.T) {
 		Recipients:     preparedRecipients,
 	}
 	require.NoError(t, preparation.Validate(request))
+
+	mismatchedInput := *request
+	mismatchedInput.Intent.InputVTXOOutpoint.Index++
+	require.ErrorContains(
+		t, mismatchedInput.Validate(),
+		"does not match",
+	)
 
 	valueChanged := *preparation
 	valueChanged.Recipients = cloneRecipientOutputs(
