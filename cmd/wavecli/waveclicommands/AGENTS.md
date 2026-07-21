@@ -112,7 +112,8 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/cmd/wave
   machine-readable schema for all CLI commands; shared source of
   truth for `schema` and MCP tool definitions. Built from the
   `walletAdmin`/`walletPayment`/`walletQuery`/`arkBase`/`arkVTXO`/
-  `arkSend`/`arkObservable` sub-registries.
+  `arkSend`/`arkObservable` sub-registries. MCP-only methods use
+  `mcp_only`; tools whose arguments differ from the CLI use `mcp_params`.
 - `buildMCPServer()` — constructs the MCP server and registers every
   exposed RPC as a typed tool; split from `mcpServe` (which owns the
   daemon dial and stdio transport) so the tool surface is testable.
@@ -159,10 +160,12 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/cmd/wave
   actionable `remediation` where the caller can recover. Invalid input exits
   2, authentication failures 3, missing resources 4, and non-interactive
   confirmation requirements 5. Successful dry runs exit 0.
-- MCP payment sends are two-phase: `send.prepare` validates and returns a
-  short-lived, single-use `send_intent_id`; `send` accepts only that id and
-  consumes the exact prepared intent. Never combine prepare and dispatch in
-  one MCP tool call.
+- The everyday wallet `send` MCP tool is two-phase: `send.prepare`
+  validates and returns a short-lived, single-use `send_intent_id`; `send`
+  accepts only that id and consumes the exact prepared intent, so an agent
+  cannot dispatch that payment without first previewing it. The raw
+  `ark.send.*` advanced MCP tools are NOT two-phase — they move funds in one
+  call, gated only by their optional `dry_run` flag.
 - `exit` defaults to a cooperative leave; it only starts a unilateral
   on-chain unroll when `--force-unroll-ack` matches the literal string
   `I_KNOW_WHAT_I_AM_DOING`, and that flag is mutually exclusive with

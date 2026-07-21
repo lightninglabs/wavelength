@@ -285,6 +285,10 @@ func prepareMCPWalletSend(ctx context.Context,
 	client wavewalletrpc.WalletServiceClient,
 	args mcpSendPrepareArgs) (*mcp.CallToolResult, error) {
 
+	if client == nil {
+		return nil, errWalletRPCDisabled
+	}
+
 	offchain, err := parseDirectionField(args.Direction)
 	if err != nil {
 		return nil, err
@@ -310,6 +314,10 @@ func prepareMCPWalletSend(ctx context.Context,
 func dispatchMCPWalletSend(ctx context.Context,
 	client wavewalletrpc.WalletServiceClient,
 	args mcpSendArgs) (*mcp.CallToolResult, error) {
+
+	if client == nil {
+		return nil, errWalletRPCDisabled
+	}
 
 	if args.SendIntentID == "" {
 		return nil, fmt.Errorf("send_intent_id is required; call " +
