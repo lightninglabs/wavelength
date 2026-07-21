@@ -3,6 +3,7 @@ package waveclicommands
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -326,8 +327,18 @@ func waitForSendTerminal(cmd *cobra.Command,
 			cmd.OutOrStdout(), sendResultFromEntry(lastEntry),
 		)
 	}
-	timeoutErr := func() error {
+	waitErr := func() error {
 		emitReceipt()
+		if sendWaitErrorCode(ctx.Err()) == "CANCELED" {
+			return PrintError(
+				"CANCELED",
+				fmt.Sprintf(
+					"canceled while waiting for %s; "+
+						"last phase: %s", id,
+					emptyDash(lastPhase),
+				),
+			)
+		}
 
 		return PrintError(
 			"WAIT_TIMEOUT",
@@ -354,7 +365,7 @@ func waitForSendTerminal(cmd *cobra.Command,
 					// timeout, not a hard failure: report
 					// the last phase the user saw.
 					if ctx.Err() != nil {
-						return timeoutErr()
+						return waitErr()
 					}
 
 					// The send itself was accepted, so
@@ -410,13 +421,23 @@ func waitForSendTerminal(cmd *cobra.Command,
 
 				select {
 				case <-ctx.Done():
-					return timeoutErr()
+					return waitErr()
 
 				case <-ticker.C:
 				}
 			}
 		},
 	)
+}
+
+// sendWaitErrorCode distinguishes caller cancellation from expiration of the
+// explicit settlement-wait deadline.
+func sendWaitErrorCode(err error) string {
+	if errors.Is(err, context.Canceled) {
+		return "CANCELED"
+	}
+
+	return "WAIT_TIMEOUT"
 }
 
 // emptyNonEmpty returns value when it is non-empty after trimming, otherwise
