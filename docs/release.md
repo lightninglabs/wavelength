@@ -71,12 +71,11 @@ build deliberately avoids. Neither is part of the signed manifest.
 ### Browser wasm runtime → hosted bucket
 
 The wasm wallet runtime (`wavewalletdk.wasm`, its gzip, `wasm_exec.js`, and
-the go-wasmsqlite worker assets) is pure Go with no CGO, but the SDK's web app
-serves it from a hosted bucket rather than a GitHub release: it fetches
-`<base>/<version>/<file>` at deploy time, where `<version>` is the SDK's
-`RUNTIME_MANIFEST_VERSION` and must equal the release tag. Publish it at tag
-time with the release manager's own `gcloud` credentials (no CI service
-account is wired for the bucket):
+the go-wasmsqlite worker assets) is pure Go with no CGO. The SDK's web app
+serves it from a hosted bucket and fetches `<base>/<version>/<file>` at deploy
+time, where `<version>` is the SDK's `RUNTIME_MANIFEST_VERSION` and must equal
+the release tag. Publish it at tag time with the release manager's own
+`gcloud` credentials (no CI service account is wired for the bucket):
 
 ```shell
 $  gcloud auth login            # once, if not already authenticated
@@ -89,18 +88,25 @@ front (`https://staging.lightning.engineering/walletdk/<TAG>/<file>`). The
 file list lives in `scripts/publish-wasm-assets.sh` and must stay in sync with
 the SDK's `RUNTIME_ASSET_FILES`.
 
+The Mobile Bindings workflow also runs `make wasm-wallet` for release tags,
+packages the complete runtime asset set as `Wavewalletdk.wasm.tar.gz`, and
+attaches that archive to the GitHub release. The archive makes the exact CI
+build available with the Android and iOS bindings, but it does not replace the
+hosted-bucket step required by the web app.
+
 ### Mobile bindings → GitHub release assets
 
 The gomobile bindings (`Wavewalletdk.aar`, `Wavewalletdk.xcframework`) depend
 on the Android NDK and Xcode, so they are built in CI and attached to the
 draft GitHub release automatically. The Mobile Bindings workflow
 (`.github/workflows/mobile-bindings.yml`) runs on every `v*` tag: it
-cross-compiles both bindings and its `publish` job creates a draft release for
-the tag if one does not exist yet, then uploads `Wavewalletdk.aar` and
-`Wavewalletdk.xcframework.tar.gz` as release assets. `wavelength-sdk`'s
-`packages/react-native` consumes these instead of building from a sibling
-checkout. No manual step is required beyond pushing the tag to publish the
-bindings.
+cross-compiles both mobile bindings, builds the browser WASM runtime, and its
+`publish` job creates a draft release for the tag if one does not exist yet.
+It then uploads `Wavewalletdk.aar`, `Wavewalletdk.xcframework.tar.gz`, and
+`Wavewalletdk.wasm.tar.gz` as release assets. `wavelength-sdk`'s
+`packages/react-native` consumes the mobile bindings instead of building from
+a sibling checkout. No manual step is required beyond pushing the tag to
+publish the GitHub release assets.
 
 The Release Build and Mobile Bindings workflows can finish in either order.
 They both target the same draft and create it only when absent, so re-runs do

@@ -5,8 +5,9 @@ name: Mobile Bindings
 # compile the whole embedded daemon for every ABI) run only on a tag push, so
 # routine merges do not trigger them. Two tag namespaces drive the heavy build:
 # a `mobile-v*` tag for a mobile-only cut (artifacts only), and a `v*` release
-# tag, which additionally attaches the built `.aar` / `.xcframework` to the
-# GitHub release for that tag (see the `publish` job).
+# tag, which additionally attaches the built `.aar`, `.xcframework`, and
+# browser WASM runtime archive to the GitHub release for that tag (see the
+# `publish` job).
 on:
   push:
     tags:
@@ -165,19 +166,59 @@ jobs:
           if-no-files-found: error
 
   ########################################################################
-  # Attach the built bindings to the GitHub release — v* tags only.
+  # Browser WASM runtime — tag builds only (mobile-v* or v*).
+  ########################################################################
+  wasm:
+    name: Build browser WASM runtime
+    if: startsWith(github.ref, 'refs/tags/mobile-v') || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Git checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Go ${{ env.GO_VERSION }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Build browser WASM runtime
+        run: make wasm-wallet
+
+      - name: Package browser WASM runtime
+        run: |
+          tar -czf Wavewalletdk.wasm.tar.gz -C bin/wasm \
+            wavewalletdk.wasm \
+            wavewalletdk.wasm.gz \
+            wasm_exec.js \
+            sqlite-bridge.js \
+            sqlite-worker.js \
+            sqlite3.js \
+            sqlite3.wasm \
+            sqlite3-opfs-async-proxy.js
+
+      - name: Upload browser WASM runtime
+        uses: actions/upload-artifact@v4
+        with:
+          name: Wavewalletdk-wasm
+          path: Wavewalletdk.wasm.tar.gz
+          if-no-files-found: error
+
+  ########################################################################
+  # Attach the built bindings and WASM runtime to the GitHub release — v*
+  # tags only.
   #
   # A `mobile-v*` tag stops at the artifact uploads above; only a real
   # release tag (`v*`) publishes the bindings as release assets so that
   # wavelength-sdk (packages/react-native/scripts/fetch-bindings.sh) can
   # download a stable set instead of building from a sibling checkout. The
-  # wasm runtime asset set is published separately to the hosted bucket via
-  # `make wasm-publish` (it is not a GitHub release asset).
+  # browser WASM archive is also attached for release distribution; the web
+  # consumer continues to use the separately hosted bucket populated by
+  # `make wasm-publish`.
   ########################################################################
   publish:
     name: Attach bindings to release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [android, ios]
+    needs: [android, ios, wasm]
     runs-on: ubuntu-latest
     concurrency:
       group: release-${{ github.ref }}
@@ -197,6 +238,12 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: Wavewalletdk-xcframework
+          path: dist
+
+      - name: Download browser WASM runtime
+        uses: actions/download-artifact@v4
+        with:
+          name: Wavewalletdk-wasm
           path: dist
 
       - name: Publish bindings to the GitHub release
@@ -221,7 +268,7 @@ jobs:
           if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             if ! gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
                 --draft --title "$TAG" --verify-tag $prerelease \
-                --notes "Provisional draft created by CI to attach the mobile gomobile bindings. The release build workflow attaches the reproducible \`waved\`/\`wavecli\` archives and manifest; maintainers add signatures and publish the release (see docs/release.md)."; then
+                --notes "Provisional draft created by CI to attach the Android, iOS, and browser WASM bindings. The release build workflow attaches the reproducible \`waved\`/\`wavecli\` archives and manifest; maintainers add signatures and publish the release (see docs/release.md)."; then
               # The release workflow may have created the draft between our
               # view and create calls. Only tolerate failure if it exists now.
               gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
@@ -230,4 +277,5 @@ jobs:
 
           gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber \
             dist/Wavewalletdk.aar \
-            dist/Wavewalletdk.xcframework.tar.gz
+            dist/Wavewalletdk.xcframework.tar.gz \
+            dist/Wavewalletdk.wasm.tar.gz
