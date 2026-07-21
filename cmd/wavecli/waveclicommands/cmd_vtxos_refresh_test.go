@@ -109,7 +109,7 @@ func TestConfirmRefreshYesFlagBypasses(t *testing.T) {
 
 // TestConfirmRefreshNonTTYRefusesPrompt is the agent-safety guard the
 // issue's acceptance criteria require: a non-interactive invocation
-// without --yes or --dry_run fails fast with an INVALID_ARGS envelope
+// without --yes or --dry-run fails fast with an INVALID_ARGS envelope
 // instead of blocking on a prompt an agent cannot answer.
 func TestConfirmRefreshNonTTYRefusesPrompt(t *testing.T) {
 	// NOT t.Parallel() — overrides the package-level stdinIsTTY
@@ -130,7 +130,7 @@ func TestConfirmRefreshNonTTYRefusesPrompt(t *testing.T) {
 	)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "--yes")
-	require.Contains(t, err.Error(), "--dry_run")
+	require.Contains(t, err.Error(), "--dry-run")
 	require.True(
 		t, ErrorWasPrinted(err),
 		"expected a printedError so main.go exits with the "+
@@ -612,7 +612,7 @@ func TestVTXOsRefreshWiringDeclineNeverDispatches(t *testing.T) {
 	require.Zero(t, fake.joinCalls)
 }
 
-// TestVTXOsRefreshWiringDryRunPrintsSummary verifies the --dry_run
+// TestVTXOsRefreshWiringDryRunPrintsSummary verifies the --dry-run
 // flag path end to end: one dry-run RPC, no join, no prompt, and the
 // stderr summary carries the estimate headline.
 func TestVTXOsRefreshWiringDryRunPrintsSummary(t *testing.T) {
@@ -638,7 +638,7 @@ func TestVTXOsRefreshWiringDryRunPrintsSummary(t *testing.T) {
 
 	cmd, out := newRefreshTestCmd(t, "" /* no stdin */)
 	require.NoError(t, cmd.Flags().Set("outpoint", "aa:0"))
-	require.NoError(t, cmd.Flags().Set("dry_run", "true"))
+	require.NoError(t, cmd.Flags().Set("dry-run", "true"))
 
 	require.NoError(t, vtxosRefresh(cmd, nil))
 	require.Len(t, fake.refreshReqs, 1)
@@ -667,7 +667,7 @@ func TestVTXOsRefreshWiringOldDaemonWarns(t *testing.T) {
 
 	cmd, out := newRefreshTestCmd(t, "" /* no stdin */)
 	require.NoError(t, cmd.Flags().Set("outpoint", "aa:0"))
-	require.NoError(t, cmd.Flags().Set("dry_run", "true"))
+	require.NoError(t, cmd.Flags().Set("dry-run", "true"))
 
 	require.NoError(t, vtxosRefresh(cmd, nil))
 	require.Contains(t, out.String(), "no fee estimate")

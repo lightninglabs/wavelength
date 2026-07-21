@@ -64,7 +64,7 @@ func newArkSendInRoundCmd() *cobra.Command {
 	cmd.Flags().Int64Slice("amount", nil,
 		"amount(s) in sats (one per recipient, in --to + --pubkey "+
 			"order)")
-	cmd.Flags().Bool("dry_run", false, "validate without submitting")
+	cmd.Flags().Bool("dry-run", false, "validate without submitting")
 
 	return cmd
 }
@@ -82,7 +82,7 @@ func sendInRound(cmd *cobra.Command, _ []string) error {
 		addresses, _ := cmd.Flags().GetStringSlice("to")
 		pubkeyHexes, _ := cmd.Flags().GetStringSlice("pubkey")
 		amounts, _ := cmd.Flags().GetInt64Slice("amount")
-		dryRun, _ := cmd.Flags().GetBool("dry_run")
+		dryRun, _ := cmd.Flags().GetBool("dry-run")
 
 		if len(addresses)+len(pubkeyHexes) == 0 {
 			return fmt.Errorf("at least one --to or --pubkey is " +
@@ -181,8 +181,8 @@ func newArkSendOORCmd() *cobra.Command {
 	cmd.Flags().String("pubkey", "",
 		"recipient 32-byte x-only pubkey hex")
 	cmd.Flags().Int64("amount", 0, "amount in sats")
-	cmd.Flags().Bool("dry_run", false, "validate without initiating")
-	cmd.Flags().String("idempotency_key", "",
+	cmd.Flags().Bool("dry-run", false, "validate without initiating")
+	cmd.Flags().String("idempotency-key", "",
 		"caller-provided key for retrying the same OOR send intent")
 
 	cmd.MarkFlagsMutuallyExclusive("to", "pubkey")
@@ -203,8 +203,8 @@ func sendOOR(cmd *cobra.Command, _ []string) error {
 		address, _ := cmd.Flags().GetString("to")
 		pubKeyHex, _ := cmd.Flags().GetString("pubkey")
 		amount, _ := cmd.Flags().GetInt64("amount")
-		dryRun, _ := cmd.Flags().GetBool("dry_run")
-		idempotencyKey, _ := cmd.Flags().GetString("idempotency_key")
+		dryRun, _ := cmd.Flags().GetBool("dry-run")
+		idempotencyKey, _ := cmd.Flags().GetString("idempotency-key")
 
 		recipient, err := buildOORRecipientOutput(
 			address, pubKeyHex, amount,

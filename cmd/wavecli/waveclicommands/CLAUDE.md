@@ -34,7 +34,7 @@ unchanged).
 
 | Command | RPC | Description |
 |---------|-----|-------------|
-| `create` | `wavewalletrpc.Create` | Initialize a new wallet (proxies GenSeed + InitWallet). Password from stdin / WAVED_WALLET_PASSWORD / --wallet_password_file |
+| `create` | `wavewalletrpc.Create` | Initialize a new wallet (proxies GenSeed + InitWallet). Password from stdin / WAVED_WALLET_PASSWORD / --wallet-password-file |
 | `unlock` | `wavewalletrpc.Unlock` | Unlock an existing wallet (proxies UnlockWallet) |
 | `send <dest>` | `wavewalletrpc.Send` | Outbound payment. `--offchain` (default) for a BOLT-11 invoice via the swap subsystem; `--onchain` for an atomic on-chain send (`--sweep-all` drains). No prefix sniff |
 | `recv` | `wavewalletrpc.Recv` / `wavewalletrpc.Deposit` | Inbound. `--offchain` (default) returns a Lightning invoice; `--onchain` returns a boarding address |
@@ -106,6 +106,8 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/cmd/wave
   for daemons built without the wavewalletrpc tag.
 - `parseRequest()` — generic `--request-json`-or-flags proto request parser
   (consumed by `ark.*` commands).
+- `snakeToKebabFlags()` — global flag normalizer: help and schemas use
+  kebab-case while snake_case remains a silent compatibility alias.
 - `methodRegistry()` / `schemaMethod` / `schemaParam` —
   machine-readable schema for all CLI commands; shared source of
   truth for `schema` and MCP tool definitions. Built from the
@@ -115,7 +117,7 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/cmd/wave
   exposed RPC as a typed tool; split from `mcpServe` (which owns the
   daemon dial and stdio transport) so the tool surface is testable.
 - `readPassword()` — reads wallet password from
-  `WAVED_WALLET_PASSWORD` → `--wallet_password_file` → stdin → TTY.
+  `WAVED_WALLET_PASSWORD` → `--wallet-password-file` → stdin → TTY.
   **Never from CLI args.**
 - `validateDestination()` / `validateOutpoint()` /
   `validateFreeText()` — input hardening shared across the top-level
@@ -145,7 +147,7 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/cmd/wave
   the authoritative parse.
 - The wallet password is NEVER read from argv. The supported sources
   are `WAVED_WALLET_PASSWORD` (highest priority), then
-  `--wallet_password_file`, then piped stdin, then interactive prompt.
+  `--wallet-password-file`, then piped stdin, then interactive prompt.
 - JSON output (`stdout`) and diagnostic output (`stderr`) are kept on
   separate streams so shell pipelines can consume the JSON body while
   a human reading the terminal sees informative warnings.
@@ -161,7 +163,7 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/cmd/wave
   non-interactive stdin without `--yes` (same posture as `leave --all`
   and `recovery escalate`). The MCP tool enforces the same contract
   through its `yes` argument — no prompt exists there, so a bare real
-  refresh returns an immediate actionable error. `--dry_run` previews
+  refresh returns an immediate actionable error. `--dry-run` previews
   the itemized advisory estimate and never prompts. A failed estimate
   degrades to a "still charged the seal-time fee" warning and its
   total is absent on the wire (explicit proto presence) — it never

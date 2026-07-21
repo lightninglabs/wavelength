@@ -77,7 +77,7 @@ func newSendCmd() *cobra.Command {
 	cmd.Flags().Uint64("amt", 0,
 		"amount in satoshis (required for onchain unless "+
 			"--sweep-all; ignored for amount-bearing invoices)")
-	cmd.Flags().Uint64("max_fee", 0,
+	cmd.Flags().Uint64("max-fee", 0,
 		"max swap fee in satoshis for invoice (Lightning) sends; 0 "+
 			"lets the daemon default the cap to ~1% of the amount "+
 			"(with a small floor), so a normal payment routes "+
@@ -124,7 +124,7 @@ func walletSend(cmd *cobra.Command, args []string) error {
 	}
 
 	amt, _ := cmd.Flags().GetUint64("amt")
-	maxFee, _ := cmd.Flags().GetUint64("max_fee")
+	maxFee, _ := cmd.Flags().GetUint64("max-fee")
 	note, _ := cmd.Flags().GetString("note")
 	sweepAll, _ := cmd.Flags().GetBool("sweep-all")
 

@@ -31,7 +31,7 @@ func zeroBytes(b []byte) {
 
 // readSeedPassphrase reads the optional aezeed seed passphrase from
 // the same sources used for the wallet password: WAVED_SEED_PASSPHRASE
-// env var, then --seed_passphrase_file flag. Returns an empty (not
+// env var, then --seed-passphrase-file flag. Returns an empty (not
 // nil) slice when neither source is set so the passphrase is genuinely
 // optional. The CLI does NOT accept the seed passphrase via argv —
 // `ps aux` and `/proc/<pid>/cmdline` would otherwise leak it.
@@ -40,7 +40,7 @@ func readSeedPassphrase(cmd *cobra.Command) ([]byte, error) {
 		return []byte(env), nil
 	}
 
-	path, _ := cmd.Flags().GetString("seed_passphrase_file")
+	path, _ := cmd.Flags().GetString("seed-passphrase-file")
 	if path == "" {
 		return []byte{}, nil
 	}
@@ -56,7 +56,7 @@ func readSeedPassphrase(cmd *cobra.Command) ([]byte, error) {
 }
 
 // readPassword reads the wallet password from one of these sources, in
-// priority order: WAVED_WALLET_PASSWORD env > --wallet_password_file
+// priority order: WAVED_WALLET_PASSWORD env > --wallet-password-file
 // flag > stdin pipe > interactive prompt. The env var is checked first
 // so that automated environments (such as the wavelengthtest REPL) can set
 // it without stdin races. The CLI never accepts passwords via argv.
@@ -85,8 +85,8 @@ func readWalletPassword(cmd *cobra.Command,
 		return []byte(envPass), nil
 	}
 
-	// Check --wallet_password_file flag.
-	passFile, _ := cmd.Flags().GetString("wallet_password_file")
+	// Check --wallet-password-file flag.
+	passFile, _ := cmd.Flags().GetString("wallet-password-file")
 	if passFile != "" {
 		// The file path is explicitly provided by the CLI user; a
 		// variable path is the intended API.

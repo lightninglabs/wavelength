@@ -57,7 +57,7 @@ func newVTXOsListCmd() *cobra.Command {
 		"filter by status: "+
 			strings.Join(validStatuses, ", "))
 
-	cmd.Flags().Int64("min_amount", 0,
+	cmd.Flags().Int64("min-amount", 0,
 		"minimum amount in sats")
 
 	addListOutputFlags(cmd, "VTXO")
@@ -76,7 +76,7 @@ func vtxosList(cmd *cobra.Command, _ []string) error {
 	req := &waverpc.ListVTXOsRequest{}
 	if err := parseRequest(cmd, req, func() error {
 		statusStr, _ := cmd.Flags().GetString("status")
-		minAmount, _ := cmd.Flags().GetInt64("min_amount")
+		minAmount, _ := cmd.Flags().GetInt64("min-amount")
 
 		if statusStr != "" {
 			statusFilter, ok := parseVTXOStatus(
@@ -145,7 +145,7 @@ func newVTXOsRefreshCmd() *cobra.Command {
 			"extending the VTXOs' expiry.\n\n" +
 			"A refresh is charged an operator fee, set by the " +
 			"server-issued quote at seal time. Pass " +
-			"`--dry_run` to preview an itemized advisory " +
+			"`--dry-run` to preview an itemized advisory " +
 			"estimate without queuing anything. An " +
 			"interactive refresh shows the estimate and asks " +
 			"for confirmation; pass `--yes` to skip the " +
@@ -155,11 +155,11 @@ func newVTXOsRefreshCmd() *cobra.Command {
 			"PendingRoundAssembly state. By default this " +
 			"command then issues `ark rounds join` on the " +
 			"caller's behalf so refresh is a one-shot " +
-			"operation. Pass `--no_join` to skip the join — " +
+			"operation. Pass `--no-join` to skip the join — " +
 			"useful for batching multiple refresh and/or " +
 			"leave RPCs into the same round (one shared " +
 			"change marker, one shared commitment fee). When " +
-			"`--no_join` is used, call `ark rounds join` " +
+			"`--no-join` is used, call `ark rounds join` " +
 			"explicitly once the batch is queued.",
 		RunE: vtxosRefresh,
 	}
@@ -170,14 +170,14 @@ func newVTXOsRefreshCmd() *cobra.Command {
 	cmd.Flags().Bool("all", false,
 		"refresh all live VTXOs")
 
-	cmd.Flags().Bool("dry_run", false,
+	cmd.Flags().Bool("dry-run", false,
 		"validate without queuing and preview the estimated "+
 			"operator fee")
 
 	cmd.Flags().Bool("yes", false,
 		"skip the interactive fee confirmation")
 
-	cmd.Flags().Bool("no_join", false,
+	cmd.Flags().Bool("no-join", false,
 		"skip the implicit `ark rounds join` follow-up so this "+
 			"refresh can batch with other queued intents")
 
@@ -233,7 +233,7 @@ func vtxosRefresh(cmd *cobra.Command, _ []string) error {
 			"outpoint",
 		)
 		all, _ := cmd.Flags().GetBool("all")
-		dryRun, _ := cmd.Flags().GetBool("dry_run")
+		dryRun, _ := cmd.Flags().GetBool("dry-run")
 
 		built, err := buildRefreshVTXOsRequest(
 			outpoints, all, dryRun,
@@ -303,7 +303,7 @@ func vtxosRefresh(cmd *cobra.Command, _ []string) error {
 		)
 	}
 
-	noJoin, _ := cmd.Flags().GetBool("no_join")
+	noJoin, _ := cmd.Flags().GetBool("no-join")
 
 	return maybeJoinNextRound(cmd, client, req.DryRun, noJoin)
 }
@@ -392,7 +392,7 @@ func summarizeRefreshFeeEstimate(est *waverpc.RefreshFeeEstimate) []string {
 // consent) or when req.DryRun is set (previewing, not spending).
 //
 // When stdin is not a TTY (agents, CI, pipelines), the function
-// refuses to prompt — the caller must pass --yes or --dry_run — so a
+// refuses to prompt — the caller must pass --yes or --dry-run — so a
 // non-interactive invocation is never blocked on a y/N it cannot
 // answer. Only on a TTY does it fetch the advisory estimate (via the
 // same RPC in dry-run form, through fetchPreview) and prompt, so the
@@ -419,7 +419,7 @@ func confirmRefreshIfNeeded(cmd *cobra.Command,
 		return PrintError(
 			"INVALID_ARGS", "refresh is charged an operator "+
 				"fee at seal time and requires --yes "+
-				"(explicit consent) or --dry_run (fee "+
+				"(explicit consent) or --dry-run (fee "+
 				"preview) on non-interactive stdin; "+
 				"refusing to prompt because an agent "+
 				"cannot respond to y/N",
@@ -527,11 +527,11 @@ func newVTXOsLeaveCmd() *cobra.Command {
 			"any queued refresh intents. By default this " +
 			"command then issues `ark rounds join` on the " +
 			"caller's behalf so leave is a one-shot " +
-			"operation. Pass `--no_join` to skip the join — " +
+			"operation. Pass `--no-join` to skip the join — " +
 			"useful for batching multiple leave and/or " +
 			"refresh RPCs into the same round (one shared " +
 			"change marker, one shared commitment fee). When " +
-			"`--no_join` is used, call `ark rounds join` " +
+			"`--no-join` is used, call `ark rounds join` " +
 			"explicitly once the batch is queued.",
 		RunE: vtxosLeave,
 	}
@@ -545,21 +545,21 @@ func newVTXOsLeaveCmd() *cobra.Command {
 	cmd.Flags().String("address", "",
 		"default on-chain destination address")
 
-	cmd.Flags().String("pk_script", "",
-		"default destination pk_script (hex); "+
+	cmd.Flags().String("pk-script", "",
+		"default destination pk-script (hex); "+
 			"alternative to --address")
 
 	cmd.Flags().StringToString("destination", nil,
 		"per-outpoint destination override: "+
 			"outpoint=addr or outpoint=script:<hex>")
 
-	cmd.Flags().Bool("dry_run", false,
+	cmd.Flags().Bool("dry-run", false,
 		"validate without queuing")
 
 	cmd.Flags().Bool("yes", false,
 		"skip interactive confirmation for --all")
 
-	cmd.Flags().Bool("no_join", false,
+	cmd.Flags().Bool("no-join", false,
 		"skip the implicit `ark rounds join` follow-up so this "+
 			"leave can batch with other queued intents")
 
@@ -581,11 +581,11 @@ func vtxosLeave(cmd *cobra.Command, _ []string) error {
 		outpoints, _ := cmd.Flags().GetStringSlice("outpoint")
 		all, _ := cmd.Flags().GetBool("all")
 		addr, _ := cmd.Flags().GetString("address")
-		pkScriptHex, _ := cmd.Flags().GetString("pk_script")
+		pkScriptHex, _ := cmd.Flags().GetString("pk-script")
 		destPairs, _ := cmd.Flags().GetStringToString(
 			"destination",
 		)
-		dryRun, _ := cmd.Flags().GetBool("dry_run")
+		dryRun, _ := cmd.Flags().GetBool("dry-run")
 
 		built, err := buildLeaveVTXOsRequest(
 			outpoints, all, addr, pkScriptHex, destPairs, dryRun,
@@ -622,7 +622,7 @@ func vtxosLeave(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	noJoin, _ := cmd.Flags().GetBool("no_join")
+	noJoin, _ := cmd.Flags().GetBool("no-join")
 
 	return maybeJoinNextRound(cmd, client, req.DryRun, noJoin)
 }
@@ -635,7 +635,7 @@ type autoJoinDecision struct {
 
 	// Notice is the stderr line that explains the decision so a
 	// human reading the terminal can see whether the round was
-	// auto-joined, deferred (--no_join), or skipped (--dry_run).
+	// auto-joined, deferred (--no-join), or skipped (--dry-run).
 	Notice string
 }
 
@@ -651,7 +651,7 @@ func decideAutoJoin(dryRun, noJoin bool) autoJoinDecision {
 
 	case noJoin:
 		return autoJoinDecision{
-			Notice: "--no_join set: intents queued; " +
+			Notice: "--no-join set: intents queued; " +
 				"run `ark rounds join` to commit",
 		}
 
@@ -659,15 +659,15 @@ func decideAutoJoin(dryRun, noJoin bool) autoJoinDecision {
 		return autoJoinDecision{
 			Join: true,
 			Notice: "auto-joined next round; " +
-				"pass --no_join to skip",
+				"pass --no-join to skip",
 		}
 	}
 }
 
 // maybeJoinNextRound issues the JoinNextRound RPC unless the caller
-// opted out via --no_join or asked for a dry run. The auto-join makes
+// opted out via --no-join or asked for a dry run. The auto-join makes
 // refresh / leave one-shot operations by default while preserving the
-// batched workflow via --no_join. A short status line goes to stderr so
+// batched workflow via --no-join. A short status line goes to stderr so
 // stdout JSON stays parseable by piped consumers.
 func maybeJoinNextRound(cmd *cobra.Command, client waverpc.DaemonServiceClient,
 	dryRun, noJoin bool) error {
@@ -737,10 +737,10 @@ func buildLeaveVTXOsRequest(outpoints []string, all bool, addr,
 		}
 	}
 
-	// Default destination: at most one of --address / --pk_script.
+	// Default destination: at most one of --address / --pk-script.
 	switch {
 	case addr != "" && pkScriptHex != "":
-		return nil, fmt.Errorf("--address and --pk_script are " +
+		return nil, fmt.Errorf("--address and --pk-script are " +
 			"mutually exclusive")
 
 	case addr != "":
@@ -753,7 +753,7 @@ func buildLeaveVTXOsRequest(outpoints []string, all bool, addr,
 	case pkScriptHex != "":
 		raw, err := hex.DecodeString(pkScriptHex)
 		if err != nil {
-			return nil, fmt.Errorf("invalid --pk_script hex: %w",
+			return nil, fmt.Errorf("invalid --pk-script hex: %w",
 				err)
 		}
 
@@ -793,7 +793,7 @@ func buildLeaveVTXOsRequest(outpoints []string, all bool, addr,
 	// validates outpoint strings, which we don't parse on the CLI
 	// side to avoid the btcd import weight).
 	if req.DefaultDestination == nil && len(req.Destinations) == 0 {
-		return nil, fmt.Errorf("either --address / --pk_script " +
+		return nil, fmt.Errorf("either --address / --pk-script " +
 			"(default destination) or --destination " +
 			"(per-outpoint overrides) is required")
 	}
@@ -842,7 +842,7 @@ func parseDestinationValue(raw string) (*waverpc.LeaveDestination, error) {
 //
 // When stdin is not a TTY (agents, CI, pipelines), the function
 // refuses to prompt: an interactive y/N read would block forever or
-// race against piped stdin. The caller must pass --yes or --dry_run
+// race against piped stdin. The caller must pass --yes or --dry-run
 // explicitly. Only when stdin IS a TTY does the function fall back
 // to the interactive prompt for ergonomics during operator use.
 func confirmLeaveAllIfNeeded(cmd *cobra.Command,
@@ -865,7 +865,7 @@ func confirmLeaveAllIfNeeded(cmd *cobra.Command,
 	if !stdinIsTTY(cmd) {
 		return PrintError(
 			"INVALID_ARGS", "--all requires --yes (explicit "+
-				"consent) or --dry_run (preview) on "+
+				"consent) or --dry-run (preview) on "+
 				"non-interactive stdin; refusing to prompt "+
 				"because an agent cannot respond to y/N",
 		)
@@ -882,7 +882,7 @@ var stdinIsTTY = defaultStdinIsTTY
 
 // defaultStdinIsTTY reports whether the y/N prompt is safe to drive
 // on the given command, returning true when the prompt may proceed
-// and false when the caller must pass --yes or --dry_run instead.
+// and false when the caller must pass --yes or --dry-run instead.
 //
 // Two paths return true (prompt is safe):
 //

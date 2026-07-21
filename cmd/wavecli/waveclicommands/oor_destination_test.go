@@ -113,7 +113,7 @@ func TestMethodRegistrySendOORSchema(t *testing.T) {
 	require.Contains(t, paramNames, "to")
 	require.Contains(t, paramNames, "pubkey")
 	require.Contains(t, paramNames, "amount")
-	require.Contains(t, paramNames, "idempotency_key")
+	require.Contains(t, paramNames, "idempotency-key")
 }
 
 // TestMethodRegistryOORReceiveSchema verifies the public schema still exposes
@@ -139,8 +139,10 @@ func TestOORGetAcceptsSnakeCaseSessionID(t *testing.T) {
 		t.Run(spelling, func(t *testing.T) {
 			t.Parallel()
 
-			cmd := newOORGetCmd()
-			err := cmd.Flags().Parse([]string{spelling, "sess-1"})
+			root := newRootCmd(false)
+			cmd, _, err := root.Find([]string{"ark", "oor", "get"})
+			require.NoError(t, err)
+			err = cmd.Flags().Parse([]string{spelling, "sess-1"})
 			require.NoError(t, err)
 
 			got, err := cmd.Flags().GetString("session-id")

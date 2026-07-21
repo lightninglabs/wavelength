@@ -82,7 +82,7 @@ func newRoundsJoinCmd() *cobra.Command {
 			"`ark vtxos refresh` and `ark vtxos leave` invoke " +
 			"this automatically on the caller's behalf. Use " +
 			"`join` directly only when one of those commands " +
-			"was passed `--no_join` to batch multiple intents " +
+			"was passed `--no-join` to batch multiple intents " +
 			"into the same round.",
 		RunE: roundsJoin,
 	}

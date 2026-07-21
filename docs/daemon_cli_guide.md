@@ -164,7 +164,7 @@ echo -n 'your_password' | wavecli create
 
 # Via password file
 wavecli create \
-  --wallet_password_file=/path/to/password_file
+  --wallet-password-file=/path/to/password_file
 
 # Interactive (prompts for password on TTY)
 wavecli create
@@ -293,6 +293,10 @@ wavecli
 | `--json` | `false` | Emit machine-readable JSON output |
 | `--request-json` | | Raw JSON request payload (overrides bespoke flags) |
 
+Flag names are canonical kebab-case in help and examples. Equivalent
+snake_case spellings remain silent compatibility aliases; proto JSON and MCP
+argument field names remain snake_case.
+
 ### `getinfo`
 
 Display daemon status information.
@@ -319,7 +323,7 @@ Allocate an inbound payment surface.
 | `--offchain` | bool | Returns a BOLT-11 invoice via the swap subsystem (default) |
 | `--onchain` | bool | Returns a fresh boarding address |
 | `--amt` | uint | Required for `--offchain`; ignored for `--onchain` |
-| `--amt_hint` | uint | Optional expected amount for `--onchain` (accounting only) |
+| `--amt-hint` | uint | Optional expected amount for `--onchain` (accounting only) |
 | `--memo` | string | Optional memo embedded in the offchain invoice |
 
 ```bash
@@ -366,7 +370,7 @@ List VTXOs known to the wallet with optional filters.
 | Flag | Type | Description |
 |------|------|-------------|
 | `--status` | string | Filter: live, pending_forfeit, forfeiting, forfeited, spent, unilateral_exit, failed, spending |
-| `--min_amount` | int64 | Minimum amount in sats |
+| `--min-amount` | int64 | Minimum amount in sats |
 | `--fields` | string | Comma-separated field names to include |
 | `--ndjson` | bool | Emit one JSON object per VTXO (newline-delimited) |
 
@@ -375,7 +379,7 @@ List VTXOs known to the wallet with optional filters.
 wavecli ark vtxos list
 
 # Live VTXOs above 10k sats, only outpoint and amount
-wavecli ark vtxos list --status live --min_amount 10000 \
+wavecli ark vtxos list --status live --min-amount 10000 \
   --fields outpoint,amount_sat
 
 # Streaming NDJSON for piping to jq
@@ -385,7 +389,7 @@ wavecli ark vtxos list --ndjson | jq '.amount_sat'
 ### `ark vtxos refresh`
 
 Queue VTXOs for refresh in the next round and (by default) join that
-round immediately. Pass `--no_join` to leave the intent queued in
+round immediately. Pass `--no-join` to leave the intent queued in
 `PendingRoundAssembly` so it can batch with subsequent refresh / leave
 RPCs; commit the batch later with `ark rounds join`.
 
@@ -403,7 +407,7 @@ already-connected wallets.
 
 A refresh is charged an operator fee (on-chain share + liquidity +
 margin), set by the server-issued quote at seal time and auto-accepted
-up to the daemon's `maxoperatorfeesat` cap. `--dry_run` previews an
+up to the daemon's `maxoperatorfeesat` cap. `--dry-run` previews an
 itemized advisory estimate for the selected VTXOs — per outpoint:
 amount, remaining lifetime, liquidity / on-chain / margin components —
 resolved entirely from the daemon's own view, with no manual amount or
@@ -417,28 +421,28 @@ seal-time quote and may differ from any estimate.
 
 An interactive real refresh shows the estimate and asks for
 confirmation. On non-interactive stdin (agents, pipelines) the command
-refuses to prompt: pass `--yes` (explicit consent) or `--dry_run`
+refuses to prompt: pass `--yes` (explicit consent) or `--dry-run`
 (preview). This mirrors the `leave --all` consent gate.
 
 | Flag | Type | Description |
 |------|------|-------------|
 | `--outpoint` | string[] | VTXO outpoint(s) to refresh (txid:index) |
 | `--all` | bool | Refresh all live VTXOs |
-| `--dry_run` | bool | Validate without queuing and preview the estimated fee |
+| `--dry-run` | bool | Validate without queuing and preview the estimated fee |
 | `--yes` | bool | Skip the interactive fee confirmation |
-| `--no_join` | bool | Skip the implicit `ark rounds join` follow-up |
+| `--no-join` | bool | Skip the implicit `ark rounds join` follow-up |
 
 ```bash
 # Preview the itemized fee estimate without queuing anything
-wavecli ark vtxos refresh --outpoint <txid:idx> --dry_run
+wavecli ark vtxos refresh --outpoint <txid:idx> --dry-run
 
 # Explicit outpoints (auto-joins the next round; prompts with the
 # estimate on a TTY, requires --yes when stdin is not interactive)
 wavecli ark vtxos refresh --outpoint <txid:idx> --yes
 
 # Batch with other intents — explicitly join later
-wavecli ark vtxos refresh --outpoint <txid:idx> --yes --no_join
-wavecli ark vtxos leave   --outpoint <txid:idx> --no_join \
+wavecli ark vtxos refresh --outpoint <txid:idx> --yes --no-join
+wavecli ark vtxos leave   --outpoint <txid:idx> --no-join \
   --address bcrt1p...
 wavecli ark rounds join
 ```
@@ -452,7 +456,7 @@ Send via in-round refresh (waits for next round to commit).
 | `--to` | string[] | Recipient address(es) (bech32m) |
 | `--pubkey` | string[] | Recipient x-only pubkey hex(es); paired after `--to` entries |
 | `--amount` | int64[] | Amount(s) in sats (one per recipient, `--to` then `--pubkey` order) |
-| `--dry_run` | bool | Validate without submitting |
+| `--dry-run` | bool | Validate without submitting |
 
 ```bash
 wavecli ark send inround --to bcrt1p... --amount 50000
@@ -480,13 +484,13 @@ Send via out-of-round transfer (immediate, through operator).
 | `--to` | string | Recipient address (one of `--to` / `--pubkey`) |
 | `--pubkey` | string | Recipient 32-byte x-only pubkey hex |
 | `--amount` | int64 | Amount in sats |
-| `--idempotency_key` | string | Caller-provided key for retry-safe sends |
-| `--dry_run` | bool | Validate without initiating |
+| `--idempotency-key` | string | Caller-provided key for retry-safe sends |
+| `--dry-run` | bool | Validate without initiating |
 
 ```bash
 wavecli ark send oor --pubkey <pubkey_xonly_hex> --amount 25000
 wavecli ark send oor --pubkey <hex> --amount 25000 \
-  --idempotency_key my-attempt-1
+  --idempotency-key my-attempt-1
 ```
 
 ### `send <invoice-or-address>` (wavewalletrpc)
@@ -507,7 +511,7 @@ pass `--force` or `--yes` to skip the confirmation prompt.
 | `--offchain` | bool | BOLT-11 dispatch via swap subsystem (default) |
 | `--onchain` | bool | Atomic onchain send via `SendOnChain` |
 | `--amt` | uint | Amount in sats (required for onchain unless `--sweep-all`) |
-| `--max_fee` | uint | Max swap fee in sats (invoice sends only) |
+| `--max-fee` | uint | Max swap fee in sats (invoice sends only) |
 | `--note` | string | Caller-supplied label |
 | `--sweep-all` | bool | Onchain only: drain wallet; `--amt` must be 0 |
 | `--force` / `--yes` | bool | Skip the interactive confirmation prompt |
@@ -681,7 +685,7 @@ Wallet passwords are never accepted as CLI arguments. The priority
 order for password resolution:
 
 1. **Environment variable** -- `WAVED_WALLET_PASSWORD=pass`
-2. **Password file** -- `--wallet_password_file=/path/to/file`
+2. **Password file** -- `--wallet-password-file=/path/to/file`
 3. **stdin pipe** -- `echo -n 'pass' | wavecli unlock`
 4. **Interactive prompt** -- prompted on TTY if none of the above
 
