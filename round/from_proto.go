@@ -118,6 +118,56 @@ func (e *JoinRoundQuoteReceived) FromProto(p proto.Message) error {
 		}
 	}
 
+	claimQuotes := pb.GetClaimQuotes()
+	if len(claimQuotes) > MaxQuoteEntriesPerClient {
+		return fmt.Errorf("claim_quotes length %d exceeds cap %d",
+			len(claimQuotes), MaxQuoteEntriesPerClient)
+	}
+	if len(claimQuotes) > 0 {
+		quote.ClaimQuotes = make(
+			[]VTXOClaimQuoteEntry, 0, len(claimQuotes),
+		)
+		for i, cq := range claimQuotes {
+			if cq.GetSourceOutpoint() == nil {
+				return fmt.Errorf(
+					"claim_quotes[%d].source_outpoint is "+
+						"required", i)
+			}
+			source, err := roundpb.OutpointFromProto(
+				cq.GetSourceOutpoint(),
+			)
+			if err != nil {
+				return fmt.Errorf(
+					"claim_quotes[%d].source_outpoint: %w",
+					i, err)
+			}
+			amt := cq.GetAmountSat()
+			if amt < 0 {
+				return fmt.Errorf(
+					"claim_quotes[%d].amount_sat is "+
+						"negative: %d", i, amt)
+			}
+			replacementSigningKey :=
+				cq.GetReplacementSigningPubkey()
+
+			quote.ClaimQuotes = append(
+				quote.ClaimQuotes, VTXOClaimQuoteEntry{
+					SourceOutpoint: source,
+					PkScript: bytes.Clone(
+						cq.GetPkScript(),
+					),
+					PolicyTemplate: bytes.Clone(
+						cq.GetPolicyTemplate(),
+					),
+					AmountSat: amt,
+					ReplacementSigningKey: bytes.Clone(
+						replacementSigningKey,
+					),
+				},
+			)
+		}
+	}
+
 	e.Quote = quote
 
 	return nil
@@ -637,6 +687,60 @@ func (m *JoinRoundRequest) FromProto(p proto.Message) error {
 		}
 
 		m.LeaveRequests[i] = req
+	}
+
+	// Convert independently signed expired-VTXO claims.
+	m.ClaimInputs = make(
+		[]*types.VTXOClaimInput, len(pb.ClaimInputs),
+	)
+	for i, ci := range pb.ClaimInputs {
+		if ci == nil || ci.SourceOutpoint == nil {
+			return fmt.Errorf("claim_inputs[%d].source_outpoint "+
+				"is required", i)
+		}
+
+		source, err := roundpb.OutpointFromProto(ci.SourceOutpoint)
+		if err != nil {
+			return fmt.Errorf(
+				"claim_inputs[%d].source_outpoint: %w", i, err)
+		}
+		participant, err := btcec.ParsePubKey(ci.ParticipantPubkey)
+		if err != nil {
+			return fmt.Errorf(
+				"claim_inputs[%d].participant_pubkey: %w", i,
+				err)
+		}
+		replacement, err := btcec.ParsePubKey(
+			ci.ReplacementSigningPubkey,
+		)
+		if err != nil {
+			return fmt.Errorf(
+				"claim_inputs[%d].replacement_signing_pubkey:"+
+					" %w", i, err)
+		}
+		if len(ci.Nonce) != types.VTXOClaimNonceSize {
+			return fmt.Errorf("claim_inputs[%d].nonce length "+
+				"%d, want %d", i, len(ci.Nonce),
+				types.VTXOClaimNonceSize)
+		}
+		if len(ci.Signature) != types.VTXOClaimSignatureSize {
+			return fmt.Errorf("claim_inputs[%d].signature length "+
+				"%d, want %d", i, len(ci.Signature),
+				types.VTXOClaimSignatureSize)
+		}
+
+		claim := &types.VTXOClaimInput{
+			SourceOutpoint:    source,
+			ParticipantPubKey: participant,
+			ReplacementSigningKey: keychain.KeyDescriptor{
+				PubKey: replacement,
+			},
+			ValidFrom:  ci.ValidFrom,
+			ValidUntil: ci.ValidUntil,
+			Signature:  bytes.Clone(ci.Signature),
+		}
+		copy(claim.Nonce[:], ci.Nonce)
+		m.ClaimInputs[i] = claim
 	}
 
 	m.RoundID = pb.RoundId

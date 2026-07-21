@@ -142,6 +142,41 @@ type ListLiveDescriptorsResponse struct {
 // VTXOManagerResp implements actormsg.VTXOManagerResp marker interface.
 func (r *ListLiveDescriptorsResponse) VTXOManagerResp() {}
 
+// ReconcileExpiryRequest asks the manager to classify every recovered active
+// VTXO against the current synchronized chain height. Waved sends this once on
+// startup before advertising wallet readiness; future block subscriptions
+// continue normal incremental monitoring.
+type ReconcileExpiryRequest struct {
+	actor.BaseMessage
+
+	// Height is the authoritative best chain height.
+	Height int32
+}
+
+// MessageType returns the message type identifier.
+func (r *ReconcileExpiryRequest) MessageType() string {
+	return "ReconcileExpiryRequest"
+}
+
+// VTXOManagerMsg implements actormsg.VTXOManagerMsg marker interface.
+func (r *ReconcileExpiryRequest) VTXOManagerMsg() {}
+
+// ReconcileExpiryResponse summarizes the required startup classification.
+type ReconcileExpiryResponse struct {
+	// Checked is the number of active VTXO actors successfully classified.
+	Checked int
+
+	// Expired is the number classified into ExpiredState at this height.
+	Expired int
+
+	// LegacyRecovered is the subset of Expired upgraded from the historical
+	// terminal Failed representation before active actors were classified.
+	LegacyRecovered int
+}
+
+// VTXOManagerResp implements actormsg.VTXOManagerResp marker interface.
+func (r *ReconcileExpiryResponse) VTXOManagerResp() {}
+
 // ExitOutcome classifies the terminal outcome of a unilateral-exit (unroll)
 // job, as reported by the unroll subsystem back to the VTXO manager.
 type ExitOutcome uint8

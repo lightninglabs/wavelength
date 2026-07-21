@@ -144,6 +144,32 @@ func (e *RegisterIntentRequest) MessageType() string {
 	return "RegisterIntentRequest"
 }
 
+// RegisterVTXOClaimsRequest is the narrow coordinator-facing entry point for
+// submitting reconciled expired-VTXO claims. Each claim includes its signed
+// wire authorization and the locally expected replacement output.
+type RegisterVTXOClaimsRequest struct {
+	actor.BaseMessage
+
+	// Claims are registered atomically in a dedicated claim-only FSM.
+	Claims []VTXOClaimIntent
+
+	// RoundID is the concrete operator round targeted by every claim in
+	// this bundle. Claim bundles with different targets must never share an
+	// assembling FSM. It is required for every claim registration.
+	RoundID string
+
+	// TriggerRegistration immediately submits the assembled claim intent.
+	TriggerRegistration bool
+}
+
+// RoundReceivable implements actormsg.RoundReceivable marker interface.
+func (e *RegisterVTXOClaimsRequest) RoundReceivable() {}
+
+// MessageType returns the message type for logging.
+func (e *RegisterVTXOClaimsRequest) MessageType() string {
+	return "RegisterVTXOClaimsRequest"
+}
+
 // buildVTXORequestFromRefresh constructs a types.VTXORequest from a
 // RefreshVTXORequest. The refresh request contains all info needed to
 // create the new VTXO output in the round. Origin is always
@@ -206,12 +232,27 @@ type RoundFSM struct {
 	// server. Zero value until the server assigns an ID.
 	RoundID RoundID
 
+	// RequestedRoundID is the operator round explicitly targeted by a
+	// claim-only join. It remains empty for ordinary boarding, refresh,
+	// send, and leave rounds. The field is actor-local until registration
+	// threads it into the signed JoinRoundRequest.
+	RequestedRoundID string
+
 	// TxID is the commitment transaction ID for this round.
 	TxID chainhash.Hash
 
 	// CommitmentTx is the commitment transaction as a PSBT, used for
 	// registering confirmation notifications with the correct pkScript.
 	CommitmentTx fn.Option[*psbt.Packet]
+
+	// ClaimIntents retains claim source metadata at the actor boundary. The
+	// checkpoint store persists the resulting output requests and trees,
+	// while startup reconciliation recovers source mappings after a crash.
+	ClaimIntents []VTXOClaimIntent
+
+	// ClaimReplacements maps each claim source to the replacement outpoint
+	// derived from its signed client tree at the durable checkpoint.
+	ClaimReplacements map[wire.OutPoint]wire.OutPoint
 }
 
 // RoundClientActor wraps the client boarding FSM in an actor interface. The
@@ -257,6 +298,20 @@ type RoundClientActor struct {
 	// silent drop. Bounded by maxPendingQuotes to keep a hostile
 	// server from flooding the buffer.
 	pendingQuotes map[RoundID]*JoinRoundQuoteReceived
+
+	// deferredRefreshes retains automatic refresh relays while another
+	// registration is still pre-seal. The source VTXO has already entered
+	// PendingForfeit before it sends this Tell, so returning a conflict
+	// would strand it without any caller available to perform rollback.
+	// Entries are deduplicated by source outpoint and drained after a
+	// server event seals or fails the blocking registration.
+	deferredRefreshes []*RefreshVTXORequest
+
+	// deferredBoardings retains confirmed wallet inputs that arrive while
+	// another registration is pre-seal. Wallet confirmations are one-shot
+	// actor notifications, so they need the same acknowledge-and-retain
+	// treatment as automatic refresh relays rather than a retryable error.
+	deferredBoardings []*WalletBoardingConfirmed
 
 	// env is the base FSM environment template containing all dependencies.
 	// Each new round FSM gets a copy with a fresh StartHeight.
@@ -324,6 +379,24 @@ type RoundClientConfig struct {
 	// messages so newly created VTXOs get an active VTXO actor.
 	// Optional - if nil, notifications are not forwarded.
 	VTXOManager actor.TellOnlyRef[VTXOManagerMsg]
+
+	// MarkVTXOClaimsRedeeming records claim adoption after the round state
+	// crosses its durable checkpoint. It is optional for clients that do
+	// not enable expired-VTXO reconciliation.
+	MarkVTXOClaimsRedeeming func(context.Context, string,
+		[]wire.OutPoint) error
+
+	// RevertVTXOClaimsRedeeming releases claim submissions after their
+	// round fails. Implementations must be idempotent because
+	// pre-checkpoint claims are still locally Expired.
+	RevertVTXOClaimsRedeeming func(context.Context, string,
+		[]wire.OutPoint) error
+
+	// FinalizeVTXOClaim links a source to the confirmed replacement
+	// outpoint. The replacement is already durable in VTXOStore when this
+	// hook runs.
+	FinalizeVTXOClaim func(context.Context, wire.OutPoint,
+		wire.OutPoint) error
 
 	// DropCustomForfeitSigningContexts clears daemon-local signing
 	// metadata for custom refresh inputs when a round fails before the
@@ -502,6 +575,10 @@ func NewRoundClientActor(cfg *RoundClientConfig) fn.Result[*RoundClientActor] {
 //     participant's directed send. Emits
 //     VTXOReceivedMsg{Source=SourceRoundTransfer} crediting
 //     transfers_in as counterparty revenue.
+//
+//   - VTXOOriginClaimReissue: the fee-free replacement of an expired,
+//     operator-swept source. Emits nothing here because FinalizeVTXOClaim
+//     records the source-to-replacement pair atomically.
 //
 //   - VTXOOriginUnknown: origin was never set. The caller is a
 //     legacy or test path; skip emission to avoid misclassifying.
@@ -723,6 +800,13 @@ func (a *RoundClientActor) emitOwnedVTXOLedgerEntry(ctx context.Context,
 			RoundID:       roundID,
 		}, outpoint, n.RoundID)
 
+	case types.VTXOOriginClaimReissue:
+		// FinalizeVTXOClaim owns the single atomic ledger entry for
+		// both sides of a reissue. Generic per-output traffic here
+		// would count the same balance-preserving replacement a second
+		// time.
+		return
+
 	default:
 		// Unknown origin: the composition path forgot to
 		// tag. Logging-only is the strictly safer default
@@ -821,6 +905,28 @@ func (a *RoundClientActor) createRoundFSMFromDB(ctx context.Context,
 	fsmPrefix := roundID.LogPrefix()
 	fsmLogger := a.log.WithPrefix(fsmPrefix)
 
+	// Claim authorization rows are checkpointed alongside their exact
+	// replacement requests. Rebuild the actor-level source mapping from the
+	// signed client trees before confirmation handling starts, so a daemon
+	// restart cannot lose the atomic source-to-replacement finalization
+	// path.
+	var (
+		claimIntents      []VTXOClaimIntent
+		claimReplacements map[wire.OutPoint]wire.OutPoint
+	)
+	if inputSigState, ok := state.(*InputSigSentState); ok {
+		claimIntents = slices.Clone(inputSigState.Intents.Claims)
+		claimReplacements = claimReplacementOutpoints(
+			ctx, fsmLogger, claimIntents, inputSigState.ClientTrees,
+		)
+		if len(claimReplacements) != len(
+			roundClaimSources(claimIntents),
+		) {
+			return nil, fmt.Errorf("failed to reconstruct all " +
+				"claim replacement outpoints")
+		}
+	}
+
 	env := &ClientEnvironment{
 		RoundStore:             a.cfg.RoundStore,
 		VTXOStore:              a.cfg.VTXOStore,
@@ -863,11 +969,13 @@ func (a *RoundClientActor) createRoundFSMFromDB(ctx context.Context,
 	)
 
 	return &RoundFSM{
-		FSM:          &fsm,
-		Key:          roundID,
-		RoundID:      round.RoundID,
-		TxID:         txid,
-		CommitmentTx: round.CommitmentTx,
+		FSM:               &fsm,
+		Key:               roundID,
+		RoundID:           round.RoundID,
+		TxID:              txid,
+		CommitmentTx:      round.CommitmentTx,
+		ClaimIntents:      claimIntents,
+		ClaimReplacements: claimReplacements,
 	}, nil
 }
 
@@ -970,7 +1078,26 @@ func roundInState[S ClientState]() fn.Pred[*RoundFSM] {
 // over Idle rounds. This ensures VTXOs are attached to rounds that have
 // inputs, preventing registration failures from empty input sets.
 func (a *RoundClientActor) findAssemblingRound() *RoundFSM {
-	rounds := slices.Collect(maps.Values(a.rounds))
+	rounds := fn.Filter(
+		slices.Collect(maps.Values(a.rounds)),
+		func(roundFSM *RoundFSM) bool {
+			if roundFSM.RequestedRoundID != "" ||
+				len(roundFSM.ClaimIntents) > 0 {
+				return false
+			}
+
+			state, err := roundFSM.FSM.CurrentState()
+			if err != nil {
+				return false
+			}
+			assembly, ok := state.(*PendingRoundAssembly)
+			if ok && len(assembly.Claims) > 0 {
+				return false
+			}
+
+			return true
+		},
+	)
 
 	// Prefer rounds that already have boarding intents.
 	if assembling := fn.Filter(
@@ -982,6 +1109,114 @@ func (a *RoundClientActor) findAssemblingRound() *RoundFSM {
 	// Fall back to idle rounds.
 	if idle := fn.Filter(rounds, roundInState[*Idle]()); len(idle) > 0 {
 		return idle[0]
+	}
+
+	return nil
+}
+
+// ordinaryAssemblingRound returns the ordinary assembly that may accept more
+// intents, or creates one after enforcing the cross-round pre-seal gate.
+func (a *RoundClientActor) ordinaryAssemblingRound(ctx context.Context) (
+	*RoundFSM, error) {
+
+	roundFSM := a.findAssemblingRound()
+	if err := a.checkPreSealRegistration(
+		roundFSM, preSealRegistration{},
+	); err != nil {
+		return nil, err
+	}
+	if roundFSM != nil {
+		return roundFSM, nil
+	}
+
+	return a.createNewRound(ctx)
+}
+
+type preSealRegistration struct {
+	isClaim bool
+	target  string
+}
+
+var errPreSealRegistrationConflict = errors.New("pre-seal round registration " +
+	"conflicts with active round")
+
+// preSealRegistrationFor reports registrations that can still collide in the
+// operator's ClientID-keyed assembling set. QuoteReceived and later states are
+// deliberately excluded: the quote is the seal boundary, after which the
+// operator has closed that registration set and may accept a new join.
+func preSealRegistrationFor(roundFSM *RoundFSM) (preSealRegistration, bool) {
+	var registration preSealRegistration
+	if roundFSM == nil || roundFSM.FSM == nil {
+		return registration, false
+	}
+
+	state, err := roundFSM.FSM.CurrentState()
+	if err != nil {
+		return registration, false
+	}
+	registration.target = roundFSM.RequestedRoundID
+	registration.isClaim = len(roundFSM.ClaimIntents) > 0 ||
+		registration.target != ""
+
+	switch state := state.(type) {
+	case *PendingRoundAssembly:
+		hasIntents := len(state.Boarding) > 0 || len(state.VTXOs) > 0 ||
+			len(state.Forfeits) > 0 || len(state.Leaves) > 0 ||
+			len(state.Claims) > 0
+		if !hasIntents {
+			return registration, false
+		}
+		registration.isClaim = registration.isClaim ||
+			len(state.Claims) > 0
+
+		return registration, true
+
+	case *IntentSentState:
+		registration.isClaim = registration.isClaim ||
+			len(state.Intents.Claims) > 0
+		if registration.target == "" &&
+			state.AdmittedRoundID != (RoundID{}) {
+
+			registration.target = state.AdmittedRoundID.String()
+		}
+
+		return registration, true
+
+	default:
+		return registration, false
+	}
+}
+
+// preSealRegistrationsConflict conservatively treats an unknown target as the
+// current open round. Two explicit, distinct target UUIDs are the only safe
+// concurrent case.
+func preSealRegistrationsConflict(a, b preSealRegistration) bool {
+	if a.target != "" && b.target != "" {
+		return a.target == b.target
+	}
+
+	return true
+}
+
+// checkPreSealRegistration rejects a local join that could replace another
+// registration for the same client and round on the operator. originating is
+// excluded so additional ordinary intents may still coalesce into their own
+// PendingRoundAssembly before its single JoinRoundRequest is emitted.
+func (a *RoundClientActor) checkPreSealRegistration(originating *RoundFSM,
+	candidate preSealRegistration) error {
+
+	for _, otherRound := range a.rounds {
+		if otherRound == originating {
+			continue
+		}
+
+		other, ok := preSealRegistrationFor(otherRound)
+		if !ok || !preSealRegistrationsConflict(candidate, other) {
+			continue
+		}
+
+		return fmt.Errorf("%w %s", errPreSealRegistrationConflict,
+			otherRound.Key.KeyString())
 	}
 
 	return nil
@@ -1021,7 +1256,11 @@ func (a *RoundClientActor) findRoundByOutpoints(
 		if !boardingMatches(regState.Intents.Boarding, boardingSet) {
 			continue
 		}
-		if !forfeitsMatch(regState.Intents.Forfeits, vtxoSet) {
+		if !vtxoInputsMatch(
+			regState.Intents.Forfeits, regState.Intents.Claims,
+			vtxoSet,
+		) {
+
 			continue
 		}
 
@@ -1060,14 +1299,14 @@ func boardingMatches(intents []BoardingIntent,
 	return true
 }
 
-// forfeitsMatch checks whether the forfeit VTXO outpoints of an
-// intent match the supplied set exactly. Treats nil VTXOOutpoint
-// entries as non-matches so the caller fails fast on malformed
-// intent state rather than silently coalescing with the empty set.
-func forfeitsMatch(forfeits []types.ForfeitRequest,
+// vtxoInputsMatch checks whether the forfeit and claim source outpoints of an
+// intent match the supplied accepted-VTXO set exactly. It treats nil forfeit
+// outpoints as malformed rather than silently coalescing them with the empty
+// set.
+func vtxoInputsMatch(forfeits []types.ForfeitRequest, claims []VTXOClaimIntent,
 	outpoints fn.Set[wire.OutPoint]) bool {
 
-	if uint(len(forfeits)) != outpoints.Size() {
+	if uint(len(forfeits)+len(claims)) != outpoints.Size() {
 		return false
 	}
 
@@ -1079,8 +1318,21 @@ func forfeitsMatch(forfeits []types.ForfeitRequest,
 			return false
 		}
 	}
+	for _, claim := range claims {
+		if !outpoints.Contains(claim.Input.SourceOutpoint) {
+			return false
+		}
+	}
 
 	return true
+}
+
+// forfeitsMatch preserves the focused helper used by existing tests and
+// callers that have no claim inputs.
+func forfeitsMatch(forfeits []types.ForfeitRequest,
+	outpoints fn.Set[wire.OutPoint]) bool {
+
+	return vtxoInputsMatch(forfeits, nil, outpoints)
 }
 
 // registerCommitmentConfirmation registers for confirmation monitoring of a
@@ -1162,6 +1414,19 @@ func (a *RoundClientActor) registerCommitmentConfirmation(ctx context.Context,
 func (a *RoundClientActor) askEventAndProcessOutbox(ctx context.Context,
 	roundFSM *RoundFSM, event ClientEvent) error {
 
+	if _, ok := event.(*IntentRequested); ok {
+		registration, pending := preSealRegistrationFor(roundFSM)
+		if !pending {
+			return fmt.Errorf("round %s has no pending "+
+				"registration", roundFSM.Key.KeyString())
+		}
+		if err := a.checkPreSealRegistration(
+			roundFSM, registration,
+		); err != nil {
+			return err
+		}
+	}
+
 	future := roundFSM.FSM.AskEvent(ctx, event)
 	result := future.Await(ctx)
 
@@ -1177,6 +1442,7 @@ func (a *RoundClientActor) askEventAndProcessOutbox(ctx context.Context,
 		slog.String("input_event_type", fmt.Sprintf("%T", event)),
 	)
 
+	var processErr error
 	if len(events) > 0 {
 		for i, e := range events {
 			a.log.DebugS(
@@ -1186,12 +1452,276 @@ func (a *RoundClientActor) askEventAndProcessOutbox(ctx context.Context,
 				slog.String("type", fmt.Sprintf("%T", e)),
 			)
 		}
-		if err := a.processOutbox(ctx, events); err != nil {
-			return fmt.Errorf("failed to process outbox: %w", err)
+		if err := a.processOutboxForRound(
+			ctx, roundFSM, events,
+		); err != nil {
+
+			processErr = fmt.Errorf("failed to process outbox: %w",
+				err)
 		}
 	}
 
-	return nil
+	// Some post-checkpoint failure transitions do not emit a dedicated
+	// failure outbox message. Inspect the resulting state after every event
+	// so claim reservations are released consistently on all failure paths.
+	a.revertFailedRoundClaims(ctx, roundFSM)
+
+	return processErr
+}
+
+// roundClaimSources returns claim source outpoints in registration order.
+func roundClaimSources(claims []VTXOClaimIntent) []wire.OutPoint {
+	outpoints := make([]wire.OutPoint, 0, len(claims))
+	seen := make(map[wire.OutPoint]struct{}, len(claims))
+	for _, claim := range claims {
+		outpoint := claim.Input.SourceOutpoint
+		if _, ok := seen[outpoint]; ok {
+			continue
+		}
+
+		seen[outpoint] = struct{}{}
+		outpoints = append(outpoints, outpoint)
+	}
+
+	return outpoints
+}
+
+// appendRoundClaimIntents retains one actor-level claim entry per source so a
+// pre-checkpoint failure can release the coordinator's in-memory submission.
+func appendRoundClaimIntents(existing,
+	additional []VTXOClaimIntent) []VTXOClaimIntent {
+
+	result := slices.Clone(existing)
+	seen := make(map[wire.OutPoint]struct{}, len(existing)+len(additional))
+	for _, claim := range existing {
+		seen[claim.Input.SourceOutpoint] = struct{}{}
+	}
+	for _, claim := range additional {
+		if _, ok := seen[claim.Input.SourceOutpoint]; ok {
+			continue
+		}
+
+		seen[claim.Input.SourceOutpoint] = struct{}{}
+		result = append(result, claim)
+	}
+
+	return result
+}
+
+// revertRoundClaimSubmissions returns this round's claims to the coordinator's
+// retry queue. The lifecycle hook is idempotent for claims that never advanced
+// beyond the locally-derived Expired state.
+func (a *RoundClientActor) revertRoundClaimSubmissions(ctx context.Context,
+	roundFSM *RoundFSM) {
+
+	if roundFSM == nil || a.cfg.RevertVTXOClaimsRedeeming == nil {
+		return
+	}
+
+	outpoints := roundClaimSources(roundFSM.ClaimIntents)
+	if len(outpoints) == 0 {
+		return
+	}
+
+	err := a.cfg.RevertVTXOClaimsRedeeming(
+		context.WithoutCancel(ctx), roundClaimRoundID(roundFSM),
+		outpoints,
+	)
+	if err != nil {
+		a.log.WarnS(ctx, "Failed to release VTXO claim submissions",
+			err,
+			slog.Int("claims", len(outpoints)),
+		)
+	}
+}
+
+// markRoundClaimsRedeeming records the server-assigned round that durably
+// admitted these claim sources. The caller treats a persistence error as a
+// local round failure so it never advances to quote acceptance with an
+// untracked server-side claim lock.
+func (a *RoundClientActor) markRoundClaimsRedeeming(ctx context.Context,
+	roundFSM *RoundFSM, roundID RoundID) error {
+
+	if roundFSM == nil || a.cfg.MarkVTXOClaimsRedeeming == nil {
+		return nil
+	}
+
+	outpoints := roundClaimSources(roundFSM.ClaimIntents)
+	if len(outpoints) == 0 {
+		return nil
+	}
+
+	return a.cfg.MarkVTXOClaimsRedeeming(
+		context.WithoutCancel(ctx), roundID.String(), outpoints,
+	)
+}
+
+// roundClaimRoundID returns the server-assigned round ID used for durable
+// lifecycle compare-and-set operations. Pre-admission failures return empty;
+// their sources are still Expired and only need their transient submission
+// reservations released.
+func roundClaimRoundID(roundFSM *RoundFSM) string {
+	if roundFSM == nil || roundFSM.Key == nil || roundFSM.Key.IsTemp() {
+		return ""
+	}
+
+	return roundFSM.RoundID.String()
+}
+
+// revertFailedRoundClaims releases claims whenever an event leaves the FSM in
+// ClientFailedState, including post-checkpoint failures with no outbox event.
+func (a *RoundClientActor) revertFailedRoundClaims(ctx context.Context,
+	roundFSM *RoundFSM) {
+
+	if roundFSM == nil || len(roundFSM.ClaimIntents) == 0 {
+		return
+	}
+
+	state, err := roundFSM.FSM.CurrentState()
+	if err != nil {
+		a.log.WarnS(ctx, "Failed to inspect round claim state", err)
+
+		return
+	}
+	if _, failed := state.(*ClientFailedState); !failed {
+		return
+	}
+
+	a.revertRoundClaimSubmissions(ctx, roundFSM)
+}
+
+// claimReplacementOutpoints derives the replacement outpoint committed by
+// each claim's signed client tree. Invalid entries are logged and omitted so
+// the round's already-durable confirmation watch still proceeds; selective
+// startup reconciliation remains the fallback for omitted mappings.
+func claimReplacementOutpoints(ctx context.Context, log btclog.Logger,
+	claims []VTXOClaimIntent,
+	trees map[SignerKey]*tree.Tree) map[wire.OutPoint]wire.OutPoint {
+
+	replacements := make(
+		map[wire.OutPoint]wire.OutPoint, len(claims),
+	)
+	used := make(map[wire.OutPoint]wire.OutPoint, len(claims))
+	for i := range claims {
+		claim := claims[i]
+		signingKey := claim.ExpectedOutput.SigningKey.PubKey
+		if signingKey == nil {
+			log.WarnS(
+				ctx,
+				"Claim replacement signing key is missing",
+				nil,
+				slog.Int("claim_index", i),
+			)
+
+			continue
+		}
+
+		clientTree := trees[NewSignerKey(signingKey)]
+		if clientTree == nil {
+			log.WarnS(ctx, "Claim replacement tree is missing",
+				nil,
+				slog.Int("claim_index", i),
+			)
+
+			continue
+		}
+
+		leaves := clientTree.Root.GetLeafNodes()
+		if len(leaves) != 1 {
+			log.WarnS(
+				ctx,
+				"Claim replacement tree has unexpected leaves",
+				nil,
+				slog.Int("claim_index", i),
+				slog.Int("leaves", len(leaves)),
+			)
+
+			continue
+		}
+
+		replacement, err := leaves[0].GetNonAnchorOutpoint()
+		if err != nil {
+			log.WarnS(
+				ctx,
+				"Failed to derive claim replacement outpoint",
+				err,
+				slog.Int("claim_index", i),
+			)
+
+			continue
+		}
+		if prior, ok := used[*replacement]; ok &&
+			prior != claim.Input.SourceOutpoint {
+
+			log.WarnS(
+				ctx,
+				"Claim replacement outpoint is duplicated",
+				nil,
+				slog.String("replacement",
+					replacement.String()),
+			)
+
+			continue
+		}
+
+		used[*replacement] = claim.Input.SourceOutpoint
+		replacements[claim.Input.SourceOutpoint] = *replacement
+	}
+
+	return replacements
+}
+
+// finalizeRoundClaims links confirmed replacement outpoints to their sources.
+// The round transition saves every ClientVTXO before emitting the creation
+// notification, so the lifecycle adapter can load and validate the complete
+// replacement descriptor atomically with retiring the source.
+func (a *RoundClientActor) finalizeRoundClaims(ctx context.Context,
+	roundFSM *RoundFSM, vtxos []*ClientVTXO) {
+
+	if roundFSM == nil || a.cfg.FinalizeVTXOClaim == nil ||
+		len(roundFSM.ClaimReplacements) == 0 {
+		return
+	}
+
+	owned := make(map[wire.OutPoint]struct{}, len(vtxos))
+	for _, vtxo := range vtxos {
+		if vtxo != nil {
+			owned[vtxo.Outpoint] = struct{}{}
+		}
+	}
+
+	for _, claim := range roundFSM.ClaimIntents {
+		source := claim.Input.SourceOutpoint
+		replacement, ok := roundFSM.ClaimReplacements[source]
+		if !ok {
+			continue
+		}
+		if _, ok := owned[replacement]; !ok {
+			a.log.WarnS(ctx, "Confirmed claim replacement is not locally "+
+				"owned", nil,
+				slog.String("source", source.String()),
+				slog.String("replacement", replacement.String()),
+			)
+
+			continue
+		}
+
+		err := a.cfg.FinalizeVTXOClaim(
+			context.WithoutCancel(ctx), source, replacement,
+		)
+		if err != nil {
+			a.log.WarnS(ctx, "Failed to finalize VTXO claim",
+				err,
+				slog.String("source", source.String()),
+				slog.String("replacement",
+					replacement.String()),
+			)
+
+			continue
+		}
+
+		delete(roundFSM.ClaimReplacements, source)
+	}
 }
 
 // replayCheckpointedServerMessages re-emits server-bound messages that are
@@ -1444,6 +1974,19 @@ func (a *RoundClientActor) Start(ctx context.Context) error {
 func (a *RoundClientActor) Receive(ctx context.Context,
 	msg actormsg.RoundReceivable) fn.Result[actormsg.RoundActorResp] {
 
+	result := a.receive(ctx, msg)
+	if result.IsOk() {
+		a.drainDeferredOrdinary(ctx)
+	}
+
+	return result
+}
+
+// receive dispatches one actor message without running post-dispatch queue
+// maintenance.
+func (a *RoundClientActor) receive(ctx context.Context,
+	msg actormsg.RoundReceivable) fn.Result[actormsg.RoundActorResp] {
+
 	switch m := msg.(type) {
 	case *WalletBoardingConfirmed:
 		return a.handleWalletBoardingConfirmed(ctx, m)
@@ -1471,6 +2014,9 @@ func (a *RoundClientActor) Receive(ctx context.Context,
 
 	case *RegisterIntentRequest:
 		return a.handleRegisterIntent(ctx, m)
+
+	case *RegisterVTXOClaimsRequest:
+		return a.handleRegisterVTXOClaims(ctx, m)
 
 	// NOTE: RegisterIntentMsg mirrors the fields of IntentPackage.
 	// If either type gains new fields, this adapter must be updated
@@ -1547,15 +2093,15 @@ func (a *RoundClientActor) handleWalletBoardingConfirmed(ctx context.Context,
 	// Find an existing assembling round (Idle or PendingRoundAssembly) or
 	// create a new one. This allows multiple boarding confirmations to
 	// accumulate in the same round.
-	roundFSM := a.findAssemblingRound()
-	if roundFSM == nil {
-		roundFSM, err = a.createNewRound(ctx)
-		if err != nil {
-			return fn.Err[actormsg.RoundActorResp](
-				fmt.Errorf("failed to create round for "+
-					"boarding: %w", err),
-			)
+	roundFSM, err := a.ordinaryAssemblingRound(ctx)
+	if err != nil {
+		if errors.Is(err, errPreSealRegistrationConflict) {
+			return a.deferWalletBoardingConfirmed(ctx, msg)
 		}
+
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("select round for boarding: %w", err),
+		)
 	}
 
 	// Send the boarding intent to the FSM as an IntentPackage.
@@ -1571,6 +2117,37 @@ func (a *RoundClientActor) handleWalletBoardingConfirmed(ctx context.Context,
 				"confirmation: %w", err),
 		)
 	}
+
+	return fn.Ok[actormsg.RoundActorResp](nil)
+}
+
+// deferWalletBoardingConfirmed retains one copy of a confirmed boarding input
+// until the active registration crosses its seal boundary. The wallet owns
+// durable confirmation persistence, while this queue preserves prompt
+// in-process liveness without emitting a competing JoinRoundRequest.
+func (a *RoundClientActor) deferWalletBoardingConfirmed(ctx context.Context,
+	msg *WalletBoardingConfirmed) fn.Result[actormsg.RoundActorResp] {
+
+	if msg == nil || msg.Intent == nil {
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("wallet boarding confirmed event missing " +
+				"intent"),
+		)
+	}
+	for _, pending := range a.deferredBoardings {
+		if pending.Intent.Outpoint == msg.Intent.Outpoint {
+			return fn.Ok[actormsg.RoundActorResp](nil)
+		}
+	}
+
+	clonedMsg := *msg
+	clonedIntent := *msg.Intent
+	clonedMsg.Intent = &clonedIntent
+	a.deferredBoardings = append(a.deferredBoardings, &clonedMsg)
+	a.log.InfoS(ctx, "Deferred boarding until registration seal",
+		slog.String("outpoint", msg.Intent.Outpoint.String()),
+		slog.Int("deferred", len(a.deferredBoardings)),
+	)
 
 	return fn.Ok[actormsg.RoundActorResp](nil)
 }
@@ -1671,20 +2248,14 @@ func (a *RoundClientActor) handleVTXORequests(ctx context.Context,
 		slog.Int("count", len(requests)),
 	)
 
-	var err error
-
 	// Find an existing assembling round (Idle or PendingRoundAssembly) or
 	// create a new one. This allows VTXOs to join a round that already has
 	// boarding intents being assembled.
-	roundFSM := a.findAssemblingRound()
-	if roundFSM == nil {
-		roundFSM, err = a.createNewRound(ctx)
-		if err != nil {
-			return fn.Err[actormsg.RoundActorResp](
-				fmt.Errorf("create new round for VTXO "+
-					"requests: %w", err),
-			)
-		}
+	roundFSM, err := a.ordinaryAssemblingRound(ctx)
+	if err != nil {
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("select round for VTXO requests: %w", err),
+		)
 	}
 
 	pkg := &IntentPackage{Intents: Intents{
@@ -1722,22 +2293,17 @@ func (a *RoundClientActor) handleVTXORequestsReceived(ctx context.Context,
 	// Find an existing assembling round (Idle or PendingRoundAssembly) or
 	// create a new one. This allows VTXOs to join a round that already has
 	// boarding intents being assembled.
-	roundFSM := a.findAssemblingRound()
-	if roundFSM == nil {
-		var err error
-		roundFSM, err = a.createNewRound(ctx)
-		if err != nil {
-			return fn.Err[actormsg.RoundActorResp](
-				fmt.Errorf("create new round for VTXO "+
-					"requests: %w", err),
-			)
-		}
+	roundFSM, err := a.ordinaryAssemblingRound(ctx)
+	if err != nil {
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("select round for VTXO requests: %w", err),
+		)
 	}
 
 	pkg := &IntentPackage{Intents: Intents{
 		VTXOs: req.Requests,
 	}}
-	err := a.askEventAndProcessOutbox(ctx, roundFSM, pkg)
+	err = a.askEventAndProcessOutbox(ctx, roundFSM, pkg)
 	if err != nil {
 		return fn.Err[actormsg.RoundActorResp](
 			fmt.Errorf("FSM error processing VTXO requests: %w",
@@ -1841,9 +2407,39 @@ func (a *RoundClientActor) handleRoundJoined(ctx context.Context,
 	// Now process the event normally.
 	err := a.askEventAndProcessOutbox(ctx, roundFSM, event)
 	if err != nil {
+		a.revertRoundClaimSubmissions(ctx, roundFSM)
+
 		return fn.Err[actormsg.RoundActorResp](
 			fmt.Errorf("FSM error processing RoundJoined: %w", err),
 		)
+	}
+
+	// RoundJoined is the durable server admission watermark. Persist the
+	// actual assigned round ID on every claim before accepting its quote. A
+	// local persistence failure fails the round and releases the claim for
+	// a later reconciled retry.
+	err = a.markRoundClaimsRedeeming(ctx, roundFSM, event.RoundID)
+	if err != nil {
+		markErr := fmt.Errorf("mark admitted VTXO claims redeeming: %w",
+			err)
+		failure := &BoardingFailed{
+			RoundID:     fn.Some(event.RoundID),
+			Reason:      "failed to persist VTXO claim admission",
+			Error:       markErr,
+			Recoverable: true,
+		}
+		if failureErr := a.askEventAndProcessOutbox(
+			ctx, roundFSM, failure,
+		); failureErr != nil {
+
+			a.revertRoundClaimSubmissions(ctx, roundFSM)
+			a.log.WarnS(ctx, "Failed to transition claim round after "+
+				"admission persistence error", failureErr,
+				slog.String("round_id", event.RoundID.String()),
+			)
+		}
+
+		return fn.Err[actormsg.RoundActorResp](markErr)
 	}
 
 	// If a JoinRoundQuoteReceived for this round arrived before the
@@ -2494,10 +3090,19 @@ func (a *RoundClientActor) handleTimeout(ctx context.Context,
 
 // processOutbox processes messages emitted by the FSM via Outbox and routes
 // them to the appropriate destination (server or chainsource).
-//
-//nolint:funlen
 func (a *RoundClientActor) processOutbox(ctx context.Context,
 	outbox []ClientOutMsg) error {
+
+	return a.processOutboxForRound(ctx, nil, outbox)
+}
+
+// processOutboxForRound dispatches outbox messages with optional access to the
+// originating round. The association lets lifecycle callbacks correlate
+// claim sources with their checkpointed replacement outputs.
+//
+//nolint:funlen // Keeping the outbox type dispatch together makes routing clear.
+func (a *RoundClientActor) processOutboxForRound(ctx context.Context,
+	originatingRound *RoundFSM, outbox []ClientOutMsg) error {
 
 	for _, msg := range outbox {
 		// Check if this message should be sent to the server. All
@@ -2651,6 +3256,8 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 				}
 			}
 
+			a.finalizeRoundClaims(ctx, originatingRound, m.VTXOs)
+
 			// Mirror each newly-confirmed VTXO into the client
 			// ledger so vtxo_balance follows round confirmation.
 			// Source is posted as SourceRoundTransfer with the
@@ -2712,6 +3319,18 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 				return fmt.Errorf("round not in "+
 					"InputSigSentState, got %T", state)
 			}
+
+			// Retain the exact source-to-replacement mapping before
+			// the source status moves to Redeeming. The output
+			// outpoint is already fixed by the signed client tree
+			// at this checkpoint.
+			roundFSM.ClaimIntents = slices.Clone(
+				inputSigState.Intents.Claims,
+			)
+			roundFSM.ClaimReplacements = claimReplacementOutpoints(
+				ctx, a.log, inputSigState.Intents.Claims,
+				inputSigState.ClientTrees,
+			)
 
 			// Update round FSM with commitment tx info.
 			txid := inputSigState.CommitmentTx.UnsignedTx.TxHash()
@@ -2995,16 +3614,15 @@ func (a *RoundClientActor) handleRefreshVTXORequest(ctx context.Context,
 	// temp-key status, which includes rounds in IntentSentState.
 	// Feeding an IntentPackage to IntentSentState would self-loop
 	// silently, discarding the intent.
-	var err error
-	roundFSM := a.findAssemblingRound()
-	if roundFSM == nil {
-		roundFSM, err = a.createNewRound(ctx)
-		if err != nil {
-			return fn.Err[actormsg.RoundActorResp](
-				fmt.Errorf("failed to create round for "+
-					"refresh: %w", err),
-			)
+	roundFSM, err := a.ordinaryAssemblingRound(ctx)
+	if err != nil {
+		if errors.Is(err, errPreSealRegistrationConflict) {
+			return a.deferRefreshVTXORequest(ctx, req)
 		}
+
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("select round for refresh: %w", err),
+		)
 	}
 
 	vtxoReq := buildVTXORequestFromRefresh(req)
@@ -3071,6 +3689,98 @@ func (a *RoundClientActor) handleRefreshVTXORequest(ctx context.Context,
 	return fn.Ok[actormsg.RoundActorResp](nil)
 }
 
+// deferRefreshVTXORequest keeps one automatic refresh relay per source while
+// an earlier registration is pre-seal. These relays arrive via Tell after the
+// VTXO has already entered PendingForfeit, so acknowledging and retaining the
+// work is the only path that cannot strand the source or race an unsafe second
+// JoinRoundRequest.
+func (a *RoundClientActor) deferRefreshVTXORequest(ctx context.Context,
+	req *RefreshVTXORequest) fn.Result[actormsg.RoundActorResp] {
+
+	if req == nil {
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("refresh request is nil"),
+		)
+	}
+	for _, pending := range a.deferredRefreshes {
+		if pending.VTXOOutpoint == req.VTXOOutpoint {
+			return fn.Ok[actormsg.RoundActorResp](nil)
+		}
+	}
+
+	cloned := *req
+	cloned.PolicyTemplate = slices.Clone(req.PolicyTemplate)
+	a.deferredRefreshes = append(a.deferredRefreshes, &cloned)
+	a.log.InfoS(ctx, "Deferred VTXO refresh until registration seal",
+		slog.String("outpoint", req.VTXOOutpoint.String()),
+		slog.Int("deferred", len(a.deferredRefreshes)),
+	)
+
+	return fn.Ok[actormsg.RoundActorResp](nil)
+}
+
+// drainDeferredRefreshes coalesces retained auto-refreshes into an ordinary
+// assembly as soon as no other pre-seal registration can collide. A
+// processing failure leaves the head in place for the next actor turn rather
+// than silently dropping a source that is already PendingForfeit.
+func (a *RoundClientActor) drainDeferredRefreshes(ctx context.Context) {
+	for len(a.deferredRefreshes) > 0 {
+		originating := a.findAssemblingRound()
+		if err := a.checkPreSealRegistration(
+			originating, preSealRegistration{},
+		); err != nil {
+			return
+		}
+
+		req := a.deferredRefreshes[0]
+		result := a.handleRefreshVTXORequest(ctx, req)
+		if result.IsErr() {
+			a.log.WarnS(
+				ctx,
+				"Failed to drain deferred VTXO refresh",
+				result.Err(),
+				slog.String(
+					"outpoint", req.VTXOOutpoint.String(),
+				),
+			)
+
+			return
+		}
+		a.deferredRefreshes = a.deferredRefreshes[1:]
+	}
+}
+
+// drainDeferredOrdinary drains one-shot boarding notifications before
+// automatic refreshes. Once the first item creates an ordinary assembly, the
+// remaining items safely coalesce into that same FSM.
+func (a *RoundClientActor) drainDeferredOrdinary(ctx context.Context) {
+	for len(a.deferredBoardings) > 0 {
+		originating := a.findAssemblingRound()
+		if err := a.checkPreSealRegistration(
+			originating, preSealRegistration{},
+		); err != nil {
+			return
+		}
+
+		msg := a.deferredBoardings[0]
+		result := a.handleWalletBoardingConfirmed(ctx, msg)
+		if result.IsErr() {
+			a.log.WarnS(ctx, "Failed to drain deferred boarding",
+				result.Err(),
+				slog.String(
+					"outpoint",
+					msg.Intent.Outpoint.String(),
+				),
+			)
+
+			return
+		}
+		a.deferredBoardings = a.deferredBoardings[1:]
+	}
+
+	a.drainDeferredRefreshes(ctx)
+}
+
 // handleRegisterIntent processes a pre-composed intent package from the
 // wallet. The wallet has already loaded VTXO descriptors and built the full
 // IntentPackage. The round actor registers it with the FSM.
@@ -3087,23 +3797,73 @@ func (a *RoundClientActor) handleRegisterIntent(ctx context.Context,
 			fmt.Errorf("empty intent package"),
 		)
 	}
+	if len(req.Package.Claims) > 0 {
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("VTXO claims require " +
+				"RegisterVTXOClaimsRequest"),
+		)
+	}
 
 	// Find an assembling round (Idle or PendingRoundAssembly) or create
 	// one. We must not use findPendingRound here because it matches by
 	// temp-key status, which includes rounds in IntentSentState.
 	// Feeding an IntentPackage to IntentSentState would self-loop
 	// silently, discarding the intent.
-	roundFSM := a.findAssemblingRound()
-	if roundFSM == nil {
-		var err error
-		roundFSM, err = a.createNewRound(ctx)
-		if err != nil {
-			return fn.Err[actormsg.RoundActorResp](
-				fmt.Errorf("failed to create round for "+
-					"intent: %w", err),
-			)
-		}
+	roundFSM, err := a.ordinaryAssemblingRound(ctx)
+	if err != nil {
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("select round for intent: %w", err),
+		)
 	}
+
+	return a.registerIntentPackage(ctx, roundFSM, req)
+}
+
+// handleRegisterVTXOClaims creates a fresh, dedicated claim-only FSM for one
+// atomic bundle. It deliberately bypasses findAssemblingRound: attaching a
+// claim to boarding/refresh/send/leave inputs would let the claim subsidize or
+// be delayed by an unrelated intent, while reusing an FSM for a different
+// concrete RoundID would invalidate the independently signed authorization.
+func (a *RoundClientActor) handleRegisterVTXOClaims(ctx context.Context,
+	req *RegisterVTXOClaimsRequest) fn.Result[actormsg.RoundActorResp] {
+
+	if req == nil || len(req.Claims) == 0 {
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("empty VTXO claim bundle"),
+		)
+	}
+	if err := a.checkPreSealRegistration(nil, preSealRegistration{
+		isClaim: true,
+		target:  req.RoundID,
+	}); err != nil {
+		return fn.Err[actormsg.RoundActorResp](err)
+	}
+
+	roundFSM, err := a.createNewRound(ctx)
+	if err != nil {
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("failed to create claim-only round: %w",
+				err),
+		)
+	}
+	roundFSM.RequestedRoundID = req.RoundID
+	roundFSM.ClaimIntents = slices.Clone(req.Claims)
+
+	return a.registerIntentPackage(ctx, roundFSM, &RegisterIntentRequest{
+		Package: &IntentPackage{Intents: Intents{
+			RequestedRoundID: req.RoundID,
+			Claims:           slices.Clone(req.Claims),
+		}},
+		TriggerRegistration: req.TriggerRegistration,
+	})
+}
+
+// registerIntentPackage registers a validated package on an already-selected
+// FSM. Selection is kept outside this helper so ordinary intents may coalesce
+// while claim bundles always receive their own isolated FSM.
+func (a *RoundClientActor) registerIntentPackage(ctx context.Context,
+	roundFSM *RoundFSM,
+	req *RegisterIntentRequest) fn.Result[actormsg.RoundActorResp] {
 
 	// Register locally-owned VTXO pkScripts from the intent so
 	// the OwnedScriptChecker recognizes them at confirmation
@@ -3134,11 +3894,47 @@ func (a *RoundClientActor) handleRegisterIntent(ctx context.Context,
 				)
 			}
 		}
+
+		for _, claim := range req.Package.Claims {
+			vtxo := claim.ExpectedOutput
+			if !vtxo.HasLocalOwner() {
+				continue
+			}
+
+			pkScript, err := vtxo.EffectivePkScript()
+			if err != nil {
+				return fn.Err[actormsg.RoundActorResp](
+					fmt.Errorf("derive claim replacement "+
+						"pkScript: %w", err),
+				)
+			}
+
+			regErr := a.cfg.OwnedScriptRegistrar.RegisterOwnedScript(
+				ctx, pkScript, vtxo.OwnerKey,
+			)
+			if regErr != nil {
+				return fn.Err[actormsg.RoundActorResp](
+					fmt.Errorf("register claim "+
+						"replacement script: %w",
+						regErr),
+				)
+			}
+		}
 	}
+
+	// Retain claim metadata at the actor boundary before driving the FSM.
+	// If this delivery or a later pre-checkpoint phase fails, the
+	// coordinator's in-memory submission reservation must be released for
+	// retry.
+	roundFSM.ClaimIntents = appendRoundClaimIntents(
+		roundFSM.ClaimIntents, req.Package.Claims,
+	)
 
 	// Feed the pre-composed package to the FSM.
 	err := a.askEventAndProcessOutbox(ctx, roundFSM, req.Package)
 	if err != nil {
+		a.revertRoundClaimSubmissions(ctx, roundFSM)
+
 		return fn.Err[actormsg.RoundActorResp](
 			fmt.Errorf("FSM error processing intent package: %w",
 				err),
@@ -3172,6 +3968,7 @@ func (a *RoundClientActor) handleRegisterIntent(ctx context.Context,
 		slog.Int("forfeits", len(req.Package.Forfeits)),
 		slog.Int("vtxos", len(req.Package.VTXOs)),
 		slog.Int("leaves", len(req.Package.Leaves)),
+		slog.Int("claims", len(req.Package.Claims)),
 	)
 
 	return fn.Ok[actormsg.RoundActorResp](nil)
@@ -3337,14 +4134,11 @@ func (a *RoundClientActor) handleTriggerBoard(ctx context.Context,
 	)
 
 	// Find an existing assembling round or create a new one.
-	roundFSM := a.findAssemblingRound()
-	if roundFSM == nil {
-		roundFSM, err = a.createNewRound(ctx)
-		if err != nil {
-			return fn.Err[actormsg.RoundActorResp](
-				fmt.Errorf("create round for board: %w", err),
-			)
-		}
+	roundFSM, err := a.ordinaryAssemblingRound(ctx)
+	if err != nil {
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("select round for board: %w", err),
+		)
 	}
 
 	// Register the VTXO output requests into the round FSM. A change

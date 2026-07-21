@@ -2530,6 +2530,128 @@ func TestInputSigSentState(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, *expectedOutpoint, vtxos[0].Outpoint)
 		})
+
+	t.Run("buildClientVTXOs_preserves_custom_claim_metadata",
+		func(t *testing.T) {
+			t.Parallel()
+
+			h := newTestHarness(t)
+			ownerKey, err := btcec.NewPrivateKey()
+			require.NoError(t, err)
+			peerKey, err := btcec.NewPrivateKey()
+			require.NoError(t, err)
+			historicalOperator, err := btcec.NewPrivateKey()
+			require.NoError(t, err)
+			signingKey, err := btcec.NewPrivateKey()
+			require.NoError(t, err)
+
+			const relativeExpiry = uint32(1008)
+			settlementKeys := []*btcec.PublicKey{
+				ownerKey.PubKey(), peerKey.PubKey(),
+				historicalOperator.PubKey(),
+			}
+			exitKeys := []*btcec.PublicKey{
+				ownerKey.PubKey(), peerKey.PubKey(),
+			}
+			exitPolicy := &arkscript.Multisig{
+				Keys: exitKeys,
+			}
+			policy := &arkscript.PolicyTemplate{
+				Leaves: []arkscript.LeafTemplate{
+					{
+						Node: &arkscript.Multisig{
+							Keys: settlementKeys,
+						},
+					},
+					{
+						Node: &arkscript.CSV{
+							Lock:  relativeExpiry,
+							Inner: exitPolicy,
+						},
+					},
+				},
+			}
+			policyTemplate, err := policy.Encode()
+			require.NoError(t, err)
+			pkScript, err := policy.PkScript()
+			require.NoError(t, err)
+			require.False(
+				t, arkscript.IsStandardVTXOTemplate(policy),
+			)
+			ownerLocator := keychain.KeyLocator{
+				Family: types.VTXOOwnerKeyFamily,
+				Index:  91,
+			}
+			signingLocator := keychain.KeyLocator{
+				Family: types.VTXOSigningKeyFamily,
+				Index:  92,
+			}
+
+			req := types.VTXORequest{
+				Amount:         75_000,
+				PolicyTemplate: policyTemplate,
+				PkScript:       pkScript,
+				Expiry:         relativeExpiry,
+				ClientKey:      ownerKey.PubKey(),
+				OwnerKey: keychain.KeyDescriptor{
+					PubKey:     ownerKey.PubKey(),
+					KeyLocator: ownerLocator,
+				},
+				OperatorKey: historicalOperator.PubKey(),
+				SigningKey: keychain.KeyDescriptor{
+					PubKey:     signingKey.PubKey(),
+					KeyLocator: signingLocator,
+				},
+				Origin: types.VTXOOriginClaimReissue,
+			}
+
+			batchPkScript, err := txscript.PayToTaprootScript(
+				h.operatorPubKey,
+			)
+			require.NoError(t, err)
+			vtxoTree, err := tree.NewTree(
+				wire.OutPoint{Hash: chainhash.Hash{93}},
+				&wire.TxOut{
+					Value:    int64(req.Amount),
+					PkScript: batchPkScript,
+				},
+				[]tree.LeafDescriptor{{
+					PkScript:    pkScript,
+					Amount:      req.Amount,
+					CoSignerKey: signingKey.PubKey(),
+				}},
+				h.operatorPubKey, nil, 2,
+			)
+			require.NoError(t, err)
+
+			vtxos, err := buildClientVTXOs(
+				t.Context(), nil,
+				Intents{VTXOs: []types.VTXORequest{req}},
+				map[SignerKey]*tree.Tree{
+					NewSignerKey(
+						req.SigningKey.PubKey,
+					): vtxoTree,
+				},
+				testRoundIDTr("custom-claim-metadata"),
+			)
+			require.NoError(t, err)
+			require.Len(t, vtxos, 1)
+			require.Equal(t, relativeExpiry, vtxos[0].Expiry)
+			require.True(
+				t,
+				vtxos[0].OperatorKey.IsEqual(
+					historicalOperator.PubKey(),
+				),
+			)
+			require.False(
+				t,
+				vtxos[0].OperatorKey.IsEqual(h.operatorPubKey),
+			)
+			require.Equal(
+				t, policyTemplate, vtxos[0].PolicyTemplate,
+			)
+			require.Equal(t, pkScript, vtxos[0].PkScript)
+		})
 }
 
 func TestConfirmedState(t *testing.T) {

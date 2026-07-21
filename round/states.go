@@ -54,6 +54,11 @@ func (s *Idle) clientStateSealed() {}
 // VTXO outputs, and leave outputs. The pools are validated at registration
 // time by checking sum(inputs) >= sum(outputs) + fees.
 type PendingRoundAssembly struct {
+	// RequestedRoundID binds claim-only registration to the exact open
+	// operator round returned by claim preflight. It is empty for every
+	// ordinary intent path.
+	RequestedRoundID string
+
 	// Boarding contains the collected boarding intents to include in the
 	// next round.
 	Boarding []BoardingIntent
@@ -69,6 +74,9 @@ type PendingRoundAssembly struct {
 	// Leaves tracks on-chain exit outputs for this round. Decoupled from
 	// forfeit inputs to enable many-to-many operations.
 	Leaves []*types.LeaveRequest
+
+	// Claims tracks independently authorized expired-VTXO replacements.
+	Claims []VTXOClaimIntent
 }
 
 func (s *PendingRoundAssembly) String() string {
@@ -185,6 +193,16 @@ type LeaveQuoteEntry struct {
 	AmountSat int64
 }
 
+// VTXOClaimQuoteEntry mirrors roundpb.VTXOClaimQuote. Every field is checked
+// against the local claim intent before the client accepts the quote.
+type VTXOClaimQuoteEntry struct {
+	SourceOutpoint        wire.OutPoint
+	PkScript              []byte
+	PolicyTemplate        []byte
+	AmountSat             int64
+	ReplacementSigningKey []byte
+}
+
 // ClientQuote is the client-side view of a server-issued
 // JoinRoundQuote. Mirrors roundpb.JoinRoundQuote with the fields
 // the FSM actually reasons about: the fee cap check against
@@ -217,6 +235,10 @@ type ClientQuote struct {
 	// entries, indexed by position. Each entry carries the
 	// echoed pkScript in addition to the amount.
 	LeaveQuotes []LeaveQuoteEntry
+
+	// ClaimQuotes holds one fixed, zero-fee replacement quote per claim
+	// input, in request order.
+	ClaimQuotes []VTXOClaimQuoteEntry
 
 	// QuoteExpiresAt is the unix timestamp (seconds) after which
 	// the server will treat this client as timed out on the

@@ -37,7 +37,8 @@ func TestIntentPackageLogAttributes(t *testing.T) {
 	require.Equal(t, int64(1), handler.attrs["vtxo_requests"].Int64())
 	require.Equal(t, int64(0), handler.attrs["forfeits"].Int64())
 	require.Equal(t, int64(0), handler.attrs["leaves"].Int64())
-	require.Len(t, handler.attrs, 4)
+	require.Equal(t, int64(0), handler.attrs["claims"].Int64())
+	require.Len(t, handler.attrs, 5)
 }
 
 // capturingHandler records slog records so tests can inspect structured

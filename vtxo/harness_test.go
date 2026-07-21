@@ -105,6 +105,19 @@ func (m *MockVTXOStore) UpdateVTXOStatus(ctx context.Context,
 	return args.Error(0)
 }
 
+//nolint:forcetypeassert
+func (m *MockVTXOStore) RecoverLegacyExpiredVTXOs(ctx context.Context,
+	bestHeight int32) ([]wire.OutPoint, error) {
+
+	args := m.Called(ctx, bestHeight)
+	var outpoints []wire.OutPoint
+	if args.Get(0) != nil {
+		outpoints = args.Get(0).([]wire.OutPoint)
+	}
+
+	return outpoints, args.Error(1)
+}
+
 func (m *MockVTXOStore) UpdateVTXOStatusReleasingReservation(
 	ctx context.Context, outpoint wire.OutPoint, status VTXOStatus) error {
 

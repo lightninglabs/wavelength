@@ -69,6 +69,48 @@ func TestJoinRoundAuthMessageBindsForfeitSpendPaths(t *testing.T) {
 	require.NotEqual(t, baseline, differentForfeit)
 }
 
+// TestJoinRoundAuthMessageBindsClaimInputs verifies the outer BIP-322 payload
+// commits to the complete independently signed claim envelope.
+func TestJoinRoundAuthMessageBindsClaimInputs(t *testing.T) {
+	t.Parallel()
+
+	req := testJoinRoundAuthRequest(t)
+	participant := testJoinAuthPubKey(t)
+	replacement := testJoinAuthPubKey(t)
+	claim := &VTXOClaimInput{
+		SourceOutpoint: wire.OutPoint{
+			Hash: chainhash.Hash{
+				0x33,
+			},
+			Index: 9,
+		},
+		ParticipantPubKey: participant,
+		ReplacementSigningKey: keychain.KeyDescriptor{
+			PubKey: replacement,
+		},
+		ValidFrom:  100,
+		ValidUntil: 200,
+		Signature:  bytes.Repeat([]byte{0x44}, VTXOClaimSignatureSize),
+	}
+	claim.Nonce[0] = 1
+	req.ClaimInputs = []*VTXOClaimInput{claim}
+
+	baseline, err := JoinRoundAuthMessage(req)
+	require.NoError(t, err)
+	decoded, err := DecodeJoinRoundAuthMessage(baseline)
+	require.NoError(t, err)
+	requireJoinRoundAuthRequestEqual(t, req, decoded)
+
+	changedReq := *req
+	changedClaim := *claim
+	changedClaim.Signature = bytes.Clone(claim.Signature)
+	changedClaim.Signature[0] ^= 1
+	changedReq.ClaimInputs = []*VTXOClaimInput{&changedClaim}
+	changed, err := JoinRoundAuthMessage(&changedReq)
+	require.NoError(t, err)
+	require.NotEqual(t, baseline, changed)
+}
+
 // TestDecodeJoinRoundAuthMessageRoundTrip asserts decode reconstructs join
 // requests from canonical message bytes.
 func TestDecodeJoinRoundAuthMessageRoundTrip(t *testing.T) {
@@ -103,6 +145,7 @@ func TestJoinRoundAuthMessageVersionedTLV(t *testing.T) {
 		vtxoRaw     []byte
 		forfeitRaw  []byte
 		leaveRaw    []byte
+		claimRaw    []byte
 	)
 
 	stream, err := tlv.NewStream(
@@ -126,6 +169,9 @@ func TestJoinRoundAuthMessageVersionedTLV(t *testing.T) {
 		),
 		tlv.MakePrimitiveRecord(
 			joinRoundAuthMessageLeaveRecordType, &leaveRaw,
+		),
+		tlv.MakePrimitiveRecord(
+			joinRoundAuthMessageClaimRecordType, &claimRaw,
 		),
 	)
 	require.NoError(t, err)
@@ -158,6 +204,10 @@ func TestJoinRoundAuthMessageVersionedTLV(t *testing.T) {
 		t, uint64(1),
 		decodeJoinAuthBlobListCount(t, leaveRaw),
 	)
+	require.Equal(
+		t, uint64(0),
+		decodeJoinAuthBlobListCount(t, claimRaw),
+	)
 }
 
 // TestJoinRoundAuthMessageRequiresIdentifier asserts identifier is mandatory
@@ -186,6 +236,7 @@ func TestDecodeJoinRoundAuthMessageRequiresIdentifierRecord(t *testing.T) {
 	vtxoRaw := testJoinAuthBlobListCountOnly(t, 0)
 	forfeitRaw := testJoinAuthBlobListCountOnly(t, 0)
 	leaveRaw := testJoinAuthBlobListCountOnly(t, 0)
+	claimRaw := testJoinAuthBlobListCountOnly(t, 0)
 
 	raw, err := encodeJoinAuthTLV([]tlv.Record{
 		tlv.MakePrimitiveRecord(
@@ -205,6 +256,9 @@ func TestDecodeJoinRoundAuthMessageRequiresIdentifierRecord(t *testing.T) {
 		),
 		tlv.MakePrimitiveRecord(
 			joinRoundAuthMessageLeaveRecordType, &leaveRaw,
+		),
+		tlv.MakePrimitiveRecord(
+			joinRoundAuthMessageClaimRecordType, &claimRaw,
 		),
 	})
 	require.NoError(t, err)
@@ -230,6 +284,7 @@ func TestDecodeJoinRoundAuthMessageRequestCountLimit(t *testing.T) {
 	vtxoRaw := testJoinAuthBlobListCountOnly(t, 0)
 	forfeitRaw := testJoinAuthBlobListCountOnly(t, 0)
 	leaveRaw := testJoinAuthBlobListCountOnly(t, 0)
+	claimRaw := testJoinAuthBlobListCountOnly(t, 0)
 
 	raw, err := encodeJoinAuthTLV([]tlv.Record{
 		tlv.MakePrimitiveRecord(
@@ -252,6 +307,9 @@ func TestDecodeJoinRoundAuthMessageRequestCountLimit(t *testing.T) {
 		),
 		tlv.MakePrimitiveRecord(
 			joinRoundAuthMessageLeaveRecordType, &leaveRaw,
+		),
+		tlv.MakePrimitiveRecord(
+			joinRoundAuthMessageClaimRecordType, &claimRaw,
 		),
 	})
 	require.NoError(t, err)
@@ -399,6 +457,35 @@ func requireJoinRoundAuthRequestEqual(t *testing.T, expected *JoinRoundRequest,
 			t, expectedReq.Output.PkScript,
 			actualReq.Output.PkScript,
 		)
+	}
+
+	require.Len(t, actual.ClaimInputs, len(expected.ClaimInputs))
+	for i := range expected.ClaimInputs {
+		expectedClaim := expected.ClaimInputs[i]
+		actualClaim := actual.ClaimInputs[i]
+		require.NotNil(t, expectedClaim)
+		require.NotNil(t, actualClaim)
+		require.Equal(
+			t, expectedClaim.SourceOutpoint,
+			actualClaim.SourceOutpoint,
+		)
+		require.Equal(
+			t,
+			expectedClaim.ParticipantPubKey.SerializeCompressed(),
+			actualClaim.ParticipantPubKey.SerializeCompressed(),
+		)
+		require.Equal(
+			t, expectedClaim.ReplacementSigningKey.PubKey.
+				SerializeCompressed(),
+			actualClaim.ReplacementSigningKey.PubKey.
+				SerializeCompressed(),
+		)
+		require.Equal(t, expectedClaim.Nonce, actualClaim.Nonce)
+		require.Equal(t, expectedClaim.ValidFrom, actualClaim.ValidFrom)
+		require.Equal(
+			t, expectedClaim.ValidUntil, actualClaim.ValidUntil,
+		)
+		require.Equal(t, expectedClaim.Signature, actualClaim.Signature)
 	}
 }
 

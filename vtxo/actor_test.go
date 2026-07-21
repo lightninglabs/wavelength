@@ -974,6 +974,58 @@ func TestStatusToStateFailed(t *testing.T) {
 	require.Equal(t, "recovered from storage", failedState.Reason)
 }
 
+// TestStatusToStateRedemptionLifecycle verifies append-only redemption
+// statuses never fall through to LiveState during direct recovery.
+func TestStatusToStateRedemptionLifecycle(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		status VTXOStatus
+		assert func(*testing.T, VTXOState)
+	}{
+		{
+			name:   "expired",
+			status: VTXOStatusExpired,
+			assert: func(t *testing.T, state VTXOState) {
+				_, ok := state.(*ExpiredState)
+				require.True(t, ok)
+			},
+		},
+		{
+			name:   "redeeming",
+			status: VTXOStatusRedeeming,
+			assert: func(t *testing.T, state VTXOState) {
+				_, ok := state.(*RedeemingState)
+				require.True(t, ok)
+			},
+		},
+		{
+			name:   "redeemed",
+			status: VTXOStatusRedeemed,
+			assert: func(t *testing.T, state VTXOState) {
+				_, ok := state.(*RedeemedState)
+				require.True(t, ok)
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newVTXOTestHarness(t)
+			desc := h.newTestDescriptor()
+			desc.Status = test.status
+			state := statusToState(
+				h.ctx, desc, h.store, btclog.Disabled,
+			)
+			test.assert(t, state)
+			require.True(t, state.IsTerminal())
+		})
+	}
+}
+
 // TestManagerGetActiveVTXOCount verifies the Manager returns the correct count
 // of active VTXO actors when queried via GetActiveVTXOCountRequest.
 func TestManagerGetActiveVTXOCount(t *testing.T) {

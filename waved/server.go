@@ -236,17 +236,29 @@ type Server struct {
 	runCtx context.Context //nolint:containedctx
 
 	// walletState tracks the lifecycle state of the wallet
-	// subsystem. In lnd mode this is always WalletStateReady
-	// after successful lnd connection. In lwwallet mode it
-	// transitions through None → Locked → Ready. Stored as
-	// atomic.Int32 for lock-free concurrent access from gRPC
-	// handler goroutines and the startup goroutine. State
-	// transitions use CompareAndSwap to prevent TOCTOU races.
+	// subsystem. Every backend remains WalletStateSyncing between backend
+	// readiness and startup expiry reconciliation. Self-managed wallets
+	// transition through None → Locked → Unlocking → Syncing → Ready.
+	// Stored as atomic.Int32 for lock-free concurrent access from gRPC
+	// handler goroutines and the startup goroutine. State transitions use
+	// CompareAndSwap to prevent TOCTOU races.
 	walletState atomic.Int32
 
-	// walletReadyOnce ensures the walletReady channel is closed
-	// exactly once, preventing a double-close panic if
-	// markWalletReady is called concurrently.
+	// walletBackendReadyOnce ensures the internal backend-ready signal is
+	// closed exactly once. Backend readiness starts wallet-dependent
+	// services, but deliberately remains private: local VTXO expiry must be
+	// reconciled before wallet RPCs are admitted.
+	walletBackendReadyOnce sync.Once
+
+	// walletBackendReady is closed once the selected wallet backend and its
+	// chain source are synchronized enough to bootstrap wallet-dependent
+	// services. It is distinct from walletReady, which is the public safety
+	// boundary after startup recovery and expiry reconciliation.
+	walletBackendReady chan struct{}
+
+	// walletReadyOnce ensures the walletReady channel is closed exactly
+	// once, preventing a double-close panic if markWalletReady is called
+	// concurrently.
 	walletReadyOnce sync.Once
 
 	// walletReady is closed when the wallet subsystem has been
@@ -356,6 +368,11 @@ type Server struct {
 		vtxo.ManagerMsg, vtxo.ManagerResp,
 	]]
 
+	// redemptionCoordinator owns selective operator reconciliation for
+	// locally expired VTXOs. Polling starts only after required best-height
+	// classification and mailbox ingress are complete.
+	redemptionCoordinator *vtxo.RedemptionCoordinator
+
 	// proofAssembler is the local recovery-proof assembler shared with
 	// the unroll registry. Stashed on the Server so harness-only
 	// accessors (see GetVTXOLineageTx) can build the same proof DAG
@@ -404,17 +421,18 @@ type Server struct {
 }
 
 // NewServer allocates a Server from a validated Config. The server is
-// inert until RunUntilShutdown is called. The walletReady channel and
-// recovery preimage registry are initialized here so RPC handlers can use
-// them immediately.
+// inert until RunUntilShutdown is called. The internal backend-ready and
+// public wallet-ready channels plus the recovery preimage registry are
+// initialized here so startup and RPC handlers can use them immediately.
 func NewServer(cfg *Config) (*Server, error) {
 	return &Server{
-		cfg:               cfg,
-		clk:               clock.NewDefaultClock(),
-		walletReady:       make(chan struct{}),
-		daemonReady:       make(chan struct{}),
-		vhtlcPreimages:    &unrollpolicy.PreimageResolverRegistry{},
-		forfeitSignatures: newForfeitSignatureBroker(),
+		cfg:                cfg,
+		clk:                clock.NewDefaultClock(),
+		walletBackendReady: make(chan struct{}),
+		walletReady:        make(chan struct{}),
+		daemonReady:        make(chan struct{}),
+		vhtlcPreimages:     &unrollpolicy.PreimageResolverRegistry{},
+		forfeitSignatures:  newForfeitSignatureBroker(),
 	}, nil
 }
 
@@ -443,6 +461,19 @@ func (s *Server) isWalletReady() bool {
 	}
 }
 
+// isWalletBackendReady returns true once the wallet backend and its chain
+// source are ready to start wallet-dependent services. This internal signal
+// intentionally precedes public wallet readiness.
+func (s *Server) isWalletBackendReady() bool {
+	select {
+	case <-s.walletBackendReady:
+		return true
+
+	default:
+		return false
+	}
+}
+
 // WalletLifecycleState returns the current wallet lifecycle state. Used
 // by RPC handlers that need to distinguish locked from not-yet-created
 // for tri-state UI surfaces (vs the binary isWalletReady predicate).
@@ -453,6 +484,16 @@ func (s *Server) WalletLifecycleState() WalletState {
 // WalletType returns the configured wallet backend type string.
 func (s *Server) WalletType() string {
 	return s.cfg.Wallet.Type
+}
+
+// markWalletBackendReady advances the internal startup pipeline without
+// admitting wallet RPCs. Public readiness is signaled only after recovered
+// VTXOs have been classified against the synchronized best height.
+func (s *Server) markWalletBackendReady() {
+	s.walletBackendReadyOnce.Do(func() {
+		s.walletState.Store(int32(WalletStateSyncing))
+		close(s.walletBackendReady)
+	})
 }
 
 // markWalletReady atomically stores WalletStateReady and closes the
@@ -859,6 +900,7 @@ func (s *Server) monitorOperatorConnection(ctx context.Context) {
 
 	ticker := time.NewTicker(operatorConnPollInterval)
 	defer ticker.Stop()
+	wasReady := s.serverConn.GetState() == connectivity.Ready
 
 	for {
 		select {
@@ -873,12 +915,23 @@ func (s *Server) monitorOperatorConnection(ctx context.Context) {
 			// A Ready transport is the live proof the operator is
 			// reachable; any other state (connecting, transient
 			// failure, idle, shutdown) means we have lost contact.
-			if s.serverConn.GetState() == connectivity.Ready {
+			isReady := s.serverConn.GetState() == connectivity.Ready
+			if isReady {
 				metrics.ServerConnectionUp.Set(1)
 				metrics.ServerSyncTimestamp.SetToCurrentTime()
+
+				// A reconnect is a useful edge-trigger for
+				// sparse claim reconciliation: retry
+				// immediately instead of waiting for the
+				// periodic poll after the operator becomes
+				// reachable.
+				if !wasReady && s.redemptionCoordinator != nil {
+					s.redemptionCoordinator.Trigger()
+				}
 			} else {
 				metrics.ServerConnectionUp.Set(0)
 			}
+			wasReady = isReady
 		}
 	}
 }
@@ -1220,7 +1273,7 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 	// service to be running. In this case, chain source actor
 	// registration is deferred until startBtcwallet populates
 	// s.chainBackend. The wallet-dependent actors (which are
-	// the only consumers) are also deferred behind walletReady.
+	// the only consumers) are also deferred behind walletBackendReady.
 	var chainSourceRef actor.ActorRef[
 		chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
 	]
@@ -1418,8 +1471,8 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 	// direct gRPC). In LND mode the wallet is always ready, so
 	// this runs synchronously. In lwwallet/btcwallet mode the
 	// wallet may not be unlocked yet, so everything is deferred
-	// to a background goroutine that fires after walletReady.
-	if s.isWalletReady() {
+	// to a background goroutine that fires after walletBackendReady.
+	if s.isWalletBackendReady() {
 		err := s.startWalletReadyServices(
 			ctx, chainSourceRef, timeoutRef,
 		)
@@ -1439,7 +1492,7 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 			defer deferredWg.Done()
 
 			select {
-			case <-s.walletReady:
+			case <-s.walletBackendReady:
 			case <-ctx.Done():
 				return
 			}
@@ -1509,11 +1562,84 @@ func (s *Server) startWalletReadyServices(ctx context.Context,
 		return err
 	}
 
+	// Required local classification runs after every downstream actor and
+	// mailbox target is online, but before daemon readiness. This closes
+	// the offline-start gap where VTXO actors otherwise wait for the next
+	// block notification before noticing that their batch already expired.
+	if err := s.reconcileVTXOExpiryAtBestHeight(
+		ctx, chainSourceRef,
+	); err != nil {
+		return err
+	}
+	if err := s.restoreFraudWatches(ctx); err != nil {
+		return err
+	}
+
+	// The backend-ready signal above is internal. Admit wallet RPCs only
+	// after recovery and best-height expiry classification have completed,
+	// so no caller can observe an expired descriptor as live during the
+	// startup gap.
+	s.markWalletReady()
+
+	if s.redemptionCoordinator != nil {
+		s.redemptionCoordinator.Start(ctx)
+	}
+
 	if err := s.runWalletReadyHooks(ctx); err != nil {
 		return err
 	}
 
 	s.markDaemonReady()
+
+	return nil
+}
+
+// reconcileVTXOExpiryAtBestHeight obtains the authoritative synchronized tip
+// and requires every recovered active VTXO to classify against it before the
+// daemon advertises readiness. Operator redemption checks start separately and
+// remain retryable/non-fatal after this local safety boundary succeeds.
+func (s *Server) reconcileVTXOExpiryAtBestHeight(ctx context.Context,
+	chainSourceRef actor.ActorRef[
+		chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
+	]) error {
+
+	heightResult := chainSourceRef.Ask(
+		ctx, &chainsource.BestHeightRequest{},
+	).Await(ctx)
+	heightRespAny, err := heightResult.Unpack()
+	if err != nil {
+		return fmt.Errorf("query startup best height: %w", err)
+	}
+	heightResp, ok := heightRespAny.(*chainsource.BestHeightResponse)
+	if !ok {
+		return fmt.Errorf("query startup best height: unexpected "+
+			"response %T", heightRespAny)
+	}
+
+	if s.vtxoMgrRef.IsNone() {
+		return fmt.Errorf("VTXO manager is not initialized")
+	}
+	reconcileResult := s.vtxoMgrRef.UnsafeFromSome().Ask(
+		ctx, &vtxo.ReconcileExpiryRequest{
+			Height: heightResp.Height,
+		},
+	).Await(ctx)
+	reconcileRespAny, err := reconcileResult.Unpack()
+	if err != nil {
+		return fmt.Errorf("reconcile VTXOs at height %d: %w",
+			heightResp.Height, err)
+	}
+	reconcileResp, ok := reconcileRespAny.(*vtxo.ReconcileExpiryResponse)
+	if !ok {
+		return fmt.Errorf("reconcile VTXOs: unexpected response %T",
+			reconcileRespAny)
+	}
+
+	s.log.InfoS(ctx, "Reconciled VTXO expiry at startup",
+		slog.Int("height", int(heightResp.Height)),
+		slog.Int("checked", reconcileResp.Checked),
+		slog.Int("expired", reconcileResp.Expired),
+	)
 
 	return nil
 }
@@ -1556,8 +1682,9 @@ func (s *Server) initLndBackend(ctx context.Context) error {
 		"pubkey", lndServices.NodePubkey,
 	)
 
-	// In lnd mode the wallet is immediately ready.
-	s.markWalletReady()
+	// The lnd backend is ready to bootstrap dependent services. Public
+	// wallet readiness waits for recovered VTXO expiry reconciliation.
+	s.markWalletBackendReady()
 
 	return nil
 }
@@ -1779,7 +1906,7 @@ func (s *Server) startLwwallet(ctx context.Context, seed []byte,
 
 	s.log.InfoS(ctx, "Lightweight wallet started")
 
-	s.markWalletReady()
+	s.markWalletBackendReady()
 
 	return nil
 }
@@ -2061,8 +2188,8 @@ func (s *Server) startBtcwallet(ctx context.Context, seed []byte,
 	// newly mined blocks to be missed.
 	//
 	// The goroutine polls until sync completes or the daemon
-	// shuts down. We use s.walletReady as the success signal
-	// (closed by markWalletReady) and a server-scoped quit
+	// shuts down. We use s.walletBackendReady as the internal success
+	// signal (closed by markWalletBackendReady) and a server-scoped quit
 	// channel so the goroutine doesn't outlive the daemon.
 	//
 	// We must NOT use the caller's ctx here: the RPC context
@@ -2119,7 +2246,7 @@ func (s *Server) startBtcwallet(ctx context.Context, seed []byte,
 					bestTimestamp),
 			)
 
-			s.markWalletReady()
+			s.markWalletBackendReady()
 
 			return
 		}
@@ -2150,6 +2277,9 @@ func (s *Server) registerChainSourceActor(
 		},
 	)
 
+	// The actor deliberately inherits the actor system's daemon-lifetime
+	// context instead of this registration call's context.
+	//nolint:contextcheck
 	ref := actor.RegisterWithSystem(
 		s.actorSystem, "chain-source", chainsource.ChainSourceKey,
 		chainActor,
@@ -2341,6 +2471,43 @@ func (s *Server) startWalletDependentActors(ctx context.Context,
 		chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
 	],
 	timeoutRef actor.TellOnlyRef[timeout.Msg]) error {
+
+	checker := s.cfg.VTXORedemptionChecker
+	if checker == nil {
+		checker = s.checkVTXORedeemability
+	}
+	submitter := s.cfg.VTXORedemptionSubmitter
+	if submitter == nil {
+		submitter = func(ctx context.Context, claimRoundID string,
+			descriptors []*vtxo.Descriptor) error {
+
+			return s.submitVTXORedemptionClaims(
+				ctx, chainSourceRef, claimRoundID, descriptors,
+			)
+		}
+	}
+	resolver := s.cfg.VTXOReplacementResolver
+	if resolver == nil {
+		resolver = s.resolveVTXORedemptionReplacement
+	}
+
+	// Construct the coordinator before the manager so expiry notifications
+	// can trigger it while startup classification is running. The polling
+	// loop starts later, after mailbox ingress and best-height
+	// classification.
+	s.redemptionCoordinator = vtxo.NewRedemptionCoordinator(
+		vtxo.RedemptionCoordinatorConfig{
+			Store:               s.vtxoStore,
+			Checker:             checker,
+			Submitter:           submitter,
+			ReplacementResolver: resolver,
+			FinalizedObserver:   s.observeVTXORedemption,
+			Clock:               s.clk,
+			PollInterval: s.cfg.
+				VTXORedemptionPollInterval,
+			Log: fn.Some(s.subLogger(vtxo.Subsystem)),
+		},
+	)
 
 	// -------------------------------------------------------
 	// 9. Register the wallet (boarding) actor.
@@ -3731,7 +3898,7 @@ func (s *Server) startActorOutboxPublisher(ctx context.Context) error {
 // connectAndBootstrapMailbox derives the identity key, connects to the
 // ark operator, fetches the operator pubkey, and wires the mailbox
 // transport runtime. This is called synchronously for LND (wallet
-// always ready) or after walletReady fires for lwwallet/btcwallet.
+// always ready) or after walletBackendReady fires for lwwallet/btcwallet.
 //
 //nolint:contextcheck // mailbox runtime owns lifecycle after bootstrap
 func (s *Server) connectAndBootstrapMailbox(ctx context.Context) error {
@@ -3795,16 +3962,14 @@ func (s *Server) connectAndBootstrapMailbox(ctx context.Context) error {
 	metrics.ServerSyncTimestamp.SetToCurrentTime()
 
 	// Keep those gauges honest for the rest of the daemon's life: the
-	// one-shot stamp above only proves the link came up once. The
-	// watcher drives the gauge back to 0 when the operator becomes
-	// unreachable and refreshes the sync timestamp while the link is
-	// healthy, so "connection down" and "no recent contact" alerts
-	// actually fire. Gated on metrics being enabled to avoid a needless
-	// goroutine on the disabled path. It runs on runCtx so it lives for
-	// the daemon's lifetime and unwinds on shutdown.
-	if s.metricsSink.IsSome() {
-		go s.monitorOperatorConnection(s.runCtx)
-	}
+	// one-shot stamp above only proves the link came up once. The watcher
+	// drives the gauge back to 0 when the operator becomes unreachable and
+	// refreshes the sync timestamp while the link is healthy, so
+	// "connection down" and "no recent contact" alerts actually fire. The
+	// watcher also triggers expired-VTXO reconciliation on reconnect, so it
+	// runs even when metric export is disabled. It runs on runCtx so it
+	// lives for the daemon's lifetime and unwinds on shutdown.
+	go s.monitorOperatorConnection(s.runCtx)
 
 	// Build the mailbox transport runtime.
 	edge := s.newMailboxEdge()
@@ -4155,6 +4320,11 @@ func (s *Server) initRoundActor(ctx context.Context,
 		TimeoutActor:   timeoutRef,
 		MaxOperatorFee: maxOperatorFee,
 		VTXOManager:    vtxoManager,
+		MarkVTXOClaimsRedeeming: s.redemptionCoordinator.
+			MarkRedeeming,
+		RevertVTXOClaimsRedeeming: s.redemptionCoordinator.
+			RevertRedeeming,
+		FinalizeVTXOClaim: s.finalizeVTXORedemptionClaim,
 		DropCustomForfeitSigningContexts: s.
 			dropCustomForfeitSigningContexts,
 		OwnedScriptChecker:   scriptChecker,
@@ -4263,6 +4433,24 @@ func (s *Server) initVTXOManager(ctx context.Context,
 
 			return s.untrackFraudVTXO(ctx, outpoint)
 		},
+		ExpiredVTXOObserver: func(_ context.Context,
+			_ wire.OutPoint) error {
+
+			if s.redemptionCoordinator != nil {
+				s.redemptionCoordinator.Trigger()
+			}
+
+			return nil
+		},
+		RedemptionBlockObserver: func(_ context.Context,
+			_ int32) error {
+
+			if s.redemptionCoordinator != nil {
+				s.redemptionCoordinator.Trigger()
+			}
+
+			return nil
+		},
 		ExitOutcomeResolver: func(ctx context.Context,
 			outpoint wire.OutPoint) (
 			fn.Option[vtxo.ExitOutcomeResolution], error) {
@@ -4273,6 +4461,9 @@ func (s *Server) initVTXOManager(ctx context.Context,
 	managerKey := actor.NewServiceKey[vtxo.ManagerMsg, vtxo.ManagerResp](
 		"vtxo-manager",
 	)
+	// The actor deliberately inherits the actor system's daemon-lifetime
+	// context instead of this registration call's context.
+	//nolint:contextcheck
 	managerRef := actor.RegisterWithSystem(
 		s.actorSystem, "vtxo-manager", managerKey, manager,
 	)
@@ -4818,6 +5009,17 @@ func (s *Server) signMailboxTLSBind(ctx context.Context, tlsLeafSPKI []byte) (
 func (s *Server) signTaggedSchnorr(ctx context.Context, msg, tag []byte,
 	opName string) (*schnorr.Signature, error) {
 
+	return s.signTaggedSchnorrWithKey(
+		ctx, s.clientKeyDesc, msg, tag, opName,
+	)
+}
+
+// signTaggedSchnorrWithKey produces a tagged Schnorr signature with the
+// supplied wallet-managed key descriptor across every supported backend.
+func (s *Server) signTaggedSchnorrWithKey(ctx context.Context,
+	keyDesc keychain.KeyDescriptor, msg, tag []byte, opName string) (
+	*schnorr.Signature, error) {
+
 	var (
 		sig *schnorr.Signature
 		err error
@@ -4829,7 +5031,7 @@ func (s *Server) signTaggedSchnorr(ctx context.Context, msg, tag []byte,
 	s.lnd.WhenSome(func(lndSvc *lndclient.GrpcLndServices) {
 		var rawSig []byte
 		rawSig, err = lndSvc.Signer.SignMessage(
-			ctx, msg, s.clientKeyDesc.KeyLocator,
+			ctx, msg, keyDesc.KeyLocator,
 			lndclient.SignSchnorr(nil), withSchnorrTag(tag),
 		)
 		if err != nil {
@@ -4849,7 +5051,7 @@ func (s *Server) signTaggedSchnorr(ctx context.Context, msg, tag []byte,
 	// — no private key extraction needed.
 	s.lwWallet.WhenSome(func(w *lwwallet.Wallet) {
 		sig, err = s.signTaggedSchnorrViaKeyRing(
-			w.KeyRing(), msg, tag, opName,
+			w.KeyRing(), keyDesc, msg, tag, opName,
 		)
 	})
 
@@ -4861,7 +5063,7 @@ func (s *Server) signTaggedSchnorr(ctx context.Context, msg, tag []byte,
 	// signing — same interface, no private key extraction.
 	s.btcwWallet.WhenSome(func(w *btcwbackend.Wallet) {
 		sig, err = s.signTaggedSchnorrViaKeyRing(
-			w.KeyRing(), msg, tag, opName,
+			w.KeyRing(), keyDesc, msg, tag, opName,
 		)
 	})
 
@@ -4878,10 +5080,11 @@ func (s *Server) signTaggedSchnorr(ctx context.Context, msg, tag []byte,
 // any private key extraction. opName is woven into the error
 // message so the caller can tell which signing purpose failed.
 func (s *Server) signTaggedSchnorrViaKeyRing(keyRing keychain.SecretKeyRing,
-	msg, tag []byte, opName string) (*schnorr.Signature, error) {
+	keyDesc keychain.KeyDescriptor, msg, tag []byte, opName string) (
+	*schnorr.Signature, error) {
 
 	sig, err := keyRing.SignMessageSchnorr(
-		s.clientKeyDesc.KeyLocator, msg, false, nil, tag,
+		keyDesc.KeyLocator, msg, false, nil, tag,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("keyring sign %s: %w", opName, err)
@@ -5837,11 +6040,10 @@ func (f *faultyUnrollTxConfirm) Ask(ctx context.Context,
 	return promise.Future()
 }
 
-// initFraudWatcher creates the passive recipient-fraud watcher and restores
-// watches for live OOR VTXOs after daemon restart. The live VTXO set is
-// sourced from the VTXO manager (the authoritative runtime view) so the
-// watcher arms exactly the same set of VTXOs the manager has spawned
-// child actors for, rather than reading the store directly.
+// initFraudWatcher creates the passive recipient-fraud watcher. Startup watch
+// restoration is deliberately deferred until after best-height expiry
+// classification, so a confirmed operator sweep cannot race a stale Live OOR
+// actor into unilateral exit while the daemon is booting.
 func (s *Server) initFraudWatcher(ctx context.Context,
 	chainSourceRef actor.ActorRef[
 		chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
@@ -5860,6 +6062,18 @@ func (s *Server) initFraudWatcher(ctx context.Context,
 	})
 	s.fraudWatcher = watcher
 	s.fraudWatcherRef = fn.Some(watcher.Ref())
+
+	return nil
+}
+
+// restoreFraudWatches arms watches for the OOR descriptors that remain live
+// after required startup expiry classification. The VTXO manager is the
+// authoritative runtime view, so no independently mirrored server state is
+// consulted.
+func (s *Server) restoreFraudWatches(ctx context.Context) error {
+	if !s.vtxoMgrRef.IsSome() {
+		return fmt.Errorf("VTXO manager not initialized")
+	}
 
 	resp, err := s.vtxoMgrRef.UnsafeFromSome().Ask(
 		ctx, &vtxo.ListLiveDescriptorsRequest{},

@@ -31,6 +31,7 @@ type (
 	RoundRow                  = sqlc.Round
 	RoundBoardingIntentRow    = sqlc.RoundBoardingIntent
 	RoundClientTreeRow        = sqlc.RoundClientTree
+	RoundVtxoClaimRow         = sqlc.RoundVtxoClaim
 	RoundVtxoRequestRow       = sqlc.RoundVtxoRequest
 	VTXORow                   = sqlc.Vtxo
 	InsertRoundParams         = sqlc.InsertRoundParams
@@ -105,6 +106,12 @@ type RoundStore interface {
 	GetRoundVtxoRequests(ctx context.Context,
 		roundID string) ([]RoundVtxoRequestRow, error)
 
+	InsertRoundVtxoClaim(ctx context.Context,
+		arg sqlc.InsertRoundVtxoClaimParams) error
+
+	GetRoundVtxoClaims(ctx context.Context,
+		roundID string) ([]RoundVtxoClaimRow, error)
+
 	InsertRoundClientTree(ctx context.Context,
 		arg sqlc.InsertRoundClientTreeParams) error
 
@@ -144,6 +151,10 @@ type RoundStore interface {
 		ctx context.Context, arg sqlc.UpdateVTXOStatusParams,
 	) error
 
+	RecoverLegacyExpiredVTXOs(ctx context.Context,
+		arg sqlc.RecoverLegacyExpiredVTXOsParams) (
+		[]sqlc.RecoverLegacyExpiredVTXOsRow, error)
+
 	// DeleteSpendingReservation removes a spending-reservation row so the
 	// VTXO store can atomically update a VTXO's status and drop its
 	// reservation in the same transaction when it leaves SpendingState.
@@ -169,6 +180,28 @@ type RoundStore interface {
 	MarkVTXOForfeited(
 		ctx context.Context, arg sqlc.MarkVTXOForfeitedParams,
 	) error
+
+	MarkVTXORedeeming(ctx context.Context,
+		arg sqlc.MarkVTXORedeemingParams) (int64, error)
+
+	RevertVTXORedeeming(ctx context.Context,
+		arg sqlc.RevertVTXORedeemingParams) (int64, error)
+
+	MarkVTXORedeemed(ctx context.Context,
+		arg sqlc.MarkVTXORedeemedParams) (int64, error)
+
+	InsertVTXORedemptionOutbox(ctx context.Context,
+		arg sqlc.InsertVTXORedemptionOutboxParams) (int64, error)
+
+	GetVTXORedemptionOutbox(ctx context.Context,
+		arg sqlc.GetVTXORedemptionOutboxParams) (
+		sqlc.GetVTXORedemptionOutboxRow, error)
+
+	ListVTXORedemptionOutbox(ctx context.Context) (
+		[]sqlc.ListVTXORedemptionOutboxRow, error)
+
+	DeleteVTXORedemptionOutbox(ctx context.Context,
+		arg sqlc.DeleteVTXORedemptionOutboxParams) (int64, error)
 
 	DeleteVTXO(ctx context.Context, arg sqlc.DeleteVTXOParams) error
 
@@ -284,6 +317,16 @@ func (s *RoundPersistenceStore) CommitState(ctx context.Context, r *round.Round,
 	writeTxOpts := WriteTxOption()
 
 	return s.db.ExecTx(ctx, writeTxOpts, func(q RoundStore) error {
+		// CommitState is valid only at the durable InputSigSent
+		// checkpoint. Extract it before writing the round header
+		// because per-round data such as sweep delay is part of the
+		// restart contract too.
+		inputSigState, ok := state.(*round.InputSigSentState)
+		if !ok {
+			return fmt.Errorf("CommitState called with "+
+				"non-InputSigSentState: %T", state)
+		}
+
 		// Serialize commitment tx if present.
 		commitmentTxBytes, commitmentTxid, err := serializeCommitmentTx(
 			r.CommitmentTx,
@@ -319,17 +362,10 @@ func (s *RoundPersistenceStore) CommitState(ctx context.Context, r *round.Round,
 			// zero-indexed, so an unstamped round reads as V1
 			// (the zero value) with no normalization needed.
 			FlowVersion: int32(r.FlowVersion),
+			SweepDelay:  int64(inputSigState.SweepDelay),
 		}
 		if err := q.InsertRound(ctx, roundParams); err != nil {
 			return fmt.Errorf("insert round: %w", err)
-		}
-
-		// Extract InputSigSentState to access input signatures. This is
-		// required since we only persist at the "point of no return".
-		inputSigState, ok := state.(*round.InputSigSentState)
-		if !ok {
-			return fmt.Errorf("CommitState called with "+
-				"non-InputSigSentState: %T", state)
 		}
 
 		// Insert boarding intents for this round.
@@ -422,6 +458,37 @@ func (s *RoundPersistenceStore) CommitState(ctx context.Context, r *round.Round,
 			err = q.InsertRoundVtxoRequest(ctx, reqParams)
 			if err != nil {
 				return fmt.Errorf("insert vtxo request: %w",
+					err)
+			}
+		}
+
+		// Persist claim authorization metadata separately from the
+		// replacement requests. Claim outputs occupy the trailing
+		// request positions one-for-one, so request_index durably binds
+		// every source to the exact signing key and output recovered
+		// above.
+		standardVTXOs := r.Intents.StandardVTXOCount()
+		for i := range r.Intents.Claims {
+			requestIndex := standardVTXOs + i
+			if requestIndex >= len(r.Intents.VTXOs) {
+				return fmt.Errorf("claim %d has no "+
+					"replacement request", i)
+			}
+
+			claimParams, err := vtxoClaimToRoundParams(
+				r.RoundID.String(), requestIndex,
+				&r.Intents.Claims[i],
+				&r.Intents.VTXOs[requestIndex],
+			)
+			if err != nil {
+				return fmt.Errorf("convert VTXO claim %d: %w",
+					i, err)
+			}
+
+			if err := q.InsertRoundVtxoClaim(
+				ctx, claimParams,
+			); err != nil {
+				return fmt.Errorf("insert VTXO claim %d: %w", i,
 					err)
 			}
 		}
@@ -1229,6 +1296,11 @@ func (s *RoundPersistenceStore) reconstructInputSigSentState(
 	if err != nil {
 		return nil, fmt.Errorf("parse round ID: %w", err)
 	}
+	if dbRound.SweepDelay < 0 ||
+		dbRound.SweepDelay > int64(^uint32(0)) {
+		return nil, fmt.Errorf("round sweep delay %d is out of range",
+			dbRound.SweepDelay)
+	}
 
 	state := &round.InputSigSentState{
 		RoundID:     roundID,
@@ -1237,6 +1309,7 @@ func (s *RoundPersistenceStore) reconstructInputSigSentState(
 		// Carry the persisted flow version onto the reconstructed
 		// state so a mid-round resume does not silently downgrade it.
 		FlowVersion: roundpb.FlowVersion(dbRound.FlowVersion),
+		SweepDelay:  uint32(dbRound.SweepDelay),
 	}
 
 	// Deserialize commitment tx.
@@ -1270,6 +1343,7 @@ func (s *RoundPersistenceStore) reconstructInputSigSentState(
 	}
 
 	vtxos := make([]types.VTXORequest, 0, len(dbVtxoReqs))
+	vtxosByIndex := make(map[int32]*types.VTXORequest, len(dbVtxoReqs))
 	for _, dbReq := range dbVtxoReqs {
 		req, err := dbVtxoRequestRowToVTXORequest(ctx, q, dbReq)
 		if err != nil {
@@ -1277,6 +1351,28 @@ func (s *RoundPersistenceStore) reconstructInputSigSentState(
 				err)
 		}
 		vtxos = append(vtxos, *req)
+		vtxosByIndex[dbReq.RequestIndex] = req
+	}
+
+	// Rebuild claim intents from their normalized source/auth rows and the
+	// exact replacement request they reference. The replacement key
+	// descriptor comes from the shared internal_keys registry through the
+	// request row, preserving its wallet locator across restart.
+	dbClaims, err := q.GetRoundVtxoClaims(ctx, dbRound.RoundID)
+	if err != nil {
+		return nil, fmt.Errorf("get round VTXO claims: %w", err)
+	}
+	claims := make([]round.VTXOClaimIntent, 0, len(dbClaims))
+	for i := range dbClaims {
+		claim, err := dbVtxoClaimRowToIntent(
+			&dbClaims[i], vtxosByIndex,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("convert round VTXO claim "+
+				"%d: %w", i, err)
+		}
+
+		claims = append(claims, *claim)
 	}
 
 	// Convert boarding intents and input signatures.
@@ -1335,6 +1431,7 @@ func (s *RoundPersistenceStore) reconstructInputSigSentState(
 		Boarding: intents,
 		VTXOs:    vtxos,
 		Forfeits: forfeits,
+		Claims:   claims,
 	}
 	state.InputSigs = inputSigs
 
@@ -1451,9 +1548,36 @@ func vtxoRequestToRoundParams(ctx context.Context, q RoundStore, now int64,
 	standardParams, err := req.DecodeStandardPolicyTemplate()
 	if err == nil {
 		expiry = int32(standardParams.ExitDelay)
-		clientPubkey = standardParams.OwnerKey.SerializeCompressed()
-		operatorPubkey = standardParams.OperatorKey.
-			SerializeCompressed()
+
+		// Standard policy templates commit x-only identities. Validate
+		// explicit full keys against those identities, but retain their
+		// compressed parity byte: historical participant/operator
+		// parity is required to reconstruct the exact descriptor after
+		// restart.
+		if err := validatePolicyKeyIdentity(
+			"client", req.ClientKey, standardParams.OwnerKey,
+		); err != nil {
+			return sqlc.InsertRoundVtxoRequestParams{}, err
+		}
+		if err := validatePolicyKeyIdentity(
+			"operator", req.OperatorKey, standardParams.OperatorKey,
+		); err != nil {
+			return sqlc.InsertRoundVtxoRequestParams{}, err
+		}
+		if err := validatePolicyKeyIdentity(
+			"owner", req.OwnerKey.PubKey, standardParams.OwnerKey,
+		); err != nil {
+			return sqlc.InsertRoundVtxoRequestParams{}, err
+		}
+
+		if req.ClientKey == nil {
+			clientPubkey = standardParams.OwnerKey.
+				SerializeCompressed()
+		}
+		if req.OperatorKey == nil {
+			operatorPubkey = standardParams.OperatorKey.
+				SerializeCompressed()
+		}
 	}
 	// A decode error here is expected for caller-supplied custom policy
 	// outputs such as vHTLC refresh replacements. The policy template and
@@ -1479,15 +1603,12 @@ func vtxoRequestToRoundParams(ctx context.Context, q RoundStore, now int64,
 	// Register the local owner descriptor when present. A foreign-owned
 	// request has no local owner descriptor, so owner_key_id stays NULL --
 	// the replacement for the old -1/-1 sentinel locator. The owner pubkey
-	// is the policy owner key (formerly the client_pubkey column) paired
-	// with the request's owner locator, matching the descriptor the old
-	// read path reconstructed.
+	// retains its explicit full compressed pubkey and locator. For standard
+	// policies its x-only identity was validated above without replacing
+	// its historical parity with the policy decoder's canonical lift.
 	var ownerKeyID sql.NullInt64
 	if req.OwnerKey.PubKey != nil {
 		ownerDesc := req.OwnerKey
-		if standardParams != nil {
-			ownerDesc.PubKey = standardParams.OwnerKey
-		}
 
 		id, err := RegisterInternalKeyTx(ctx, q, now, ownerDesc)
 		if err != nil {
@@ -1516,6 +1637,89 @@ func vtxoRequestToRoundParams(ctx context.Context, q RoundStore, now int64,
 		OperatorPubkey: operatorPubkey,
 		OwnerKeyID:     ownerKeyID,
 		SigningKeyID:   signingKeyID,
+		Origin:         int32(req.Origin),
+	}, nil
+}
+
+// validatePolicyKeyIdentity requires an explicit full key to match the x-only
+// identity committed by a standard policy while deliberately ignoring parity.
+func validatePolicyKeyIdentity(role string,
+	explicit, policyKey *btcec.PublicKey) error {
+
+	if explicit == nil {
+		return nil
+	}
+	if policyKey == nil || !bytes.Equal(
+		schnorr.SerializePubKey(explicit),
+		schnorr.SerializePubKey(policyKey),
+	) {
+		return fmt.Errorf("explicit %s key does not match policy", role)
+	}
+
+	return nil
+}
+
+// vtxoClaimToRoundParams converts one claim and its referenced replacement
+// request into the normalized checkpoint row. The replacement signing key is
+// already persisted by the request, so the claim row stores only source and
+// authorization fields.
+func vtxoClaimToRoundParams(roundID string, requestIndex int,
+	claim *round.VTXOClaimIntent,
+	replacement *types.VTXORequest) (sqlc.InsertRoundVtxoClaimParams,
+	error) {
+
+	if claim == nil || replacement == nil {
+		return sqlc.InsertRoundVtxoClaimParams{}, fmt.Errorf("claim " +
+			"and replacement must be provided")
+	}
+	if claim.Input.ParticipantPubKey == nil {
+		return sqlc.InsertRoundVtxoClaimParams{}, fmt.Errorf(
+			"participant pubkey is missing")
+	}
+	if claim.Input.ReplacementSigningKey.PubKey == nil ||
+		replacement.SigningKey.PubKey == nil {
+		return sqlc.InsertRoundVtxoClaimParams{}, fmt.Errorf(
+			"replacement signing key is missing")
+	}
+	if !claim.Input.ReplacementSigningKey.PubKey.IsEqual(
+		replacement.SigningKey.PubKey,
+	) {
+		return sqlc.InsertRoundVtxoClaimParams{}, fmt.Errorf("claim " +
+			"signing key does not match replacement request")
+	}
+	if replacement.Origin != types.VTXOOriginClaimReissue {
+		return sqlc.InsertRoundVtxoClaimParams{}, fmt.Errorf("claim "+
+			"replacement has origin %s", replacement.Origin)
+	}
+	if len(claim.Input.Signature) != types.VTXOClaimSignatureSize {
+		return sqlc.InsertRoundVtxoClaimParams{}, fmt.Errorf("claim "+
+			"signature must be %d bytes",
+			types.VTXOClaimSignatureSize)
+	}
+	if claim.Input.Nonce == ([types.VTXOClaimNonceSize]byte{}) {
+		return sqlc.InsertRoundVtxoClaimParams{}, fmt.Errorf("claim " +
+			"nonce is zero")
+	}
+	if claim.Input.ValidUntil == 0 ||
+		claim.Input.ValidUntil < claim.Input.ValidFrom {
+		return sqlc.InsertRoundVtxoClaimParams{}, fmt.Errorf("invalid "+
+			"claim validity window %d..%d", claim.Input.ValidFrom,
+			claim.Input.ValidUntil)
+	}
+
+	return sqlc.InsertRoundVtxoClaimParams{
+		RoundID:      roundID,
+		RequestIndex: int32(requestIndex),
+		SourceHash: bytes.Clone(
+			claim.Input.SourceOutpoint.Hash[:],
+		),
+		SourceIndex: int64(claim.Input.SourceOutpoint.Index),
+		ParticipantPubkey: claim.Input.ParticipantPubKey.
+			SerializeCompressed(),
+		Nonce:      bytes.Clone(claim.Input.Nonce[:]),
+		ValidFrom:  int64(claim.Input.ValidFrom),
+		ValidUntil: int64(claim.Input.ValidUntil),
+		Signature:  bytes.Clone(claim.Input.Signature),
 	}, nil
 }
 
@@ -1524,6 +1728,11 @@ func vtxoRequestToRoundParams(ctx context.Context, q RoundStore, now int64,
 // internal_keys registry via their FKs.
 func dbVtxoRequestRowToVTXORequest(ctx context.Context, q RoundStore,
 	t RoundVtxoRequestRow) (*types.VTXORequest, error) {
+
+	if t.Origin < int32(types.VTXOOriginUnknown) ||
+		t.Origin > int32(types.VTXOOriginClaimReissue) {
+		return nil, fmt.Errorf("unknown VTXO origin %d", t.Origin)
+	}
 
 	var clientPubkey *btcec.PublicKey
 	if len(t.ClientPubkey) > 0 {
@@ -1576,6 +1785,87 @@ func dbVtxoRequestRowToVTXORequest(ctx context.Context, q RoundStore,
 		Expiry:         uint32(t.Expiry),
 		OperatorKey:    operatorPubkey,
 		SigningKey:     signingKey,
+		Origin:         types.VTXOOrigin(t.Origin),
+	}, nil
+}
+
+// dbVtxoClaimRowToIntent reconstructs a claim using its referenced exact
+// replacement request. The request owns the replacement key descriptor so the
+// recovered claim retains the same wallet locator used by tree signing.
+func dbVtxoClaimRowToIntent(t *RoundVtxoClaimRow,
+	vtxosByIndex map[int32]*types.VTXORequest) (*round.VTXOClaimIntent,
+	error) {
+
+	if t == nil {
+		return nil, fmt.Errorf("claim row is missing")
+	}
+	if len(t.SourceHash) != chainhash.HashSize {
+		return nil, fmt.Errorf("source hash must be %d bytes, got %d",
+			chainhash.HashSize, len(t.SourceHash))
+	}
+	if len(t.Nonce) != types.VTXOClaimNonceSize {
+		return nil, fmt.Errorf("claim nonce must be %d bytes, got %d",
+			types.VTXOClaimNonceSize, len(t.Nonce))
+	}
+	if len(t.Signature) != types.VTXOClaimSignatureSize {
+		return nil, fmt.Errorf("claim signature must be %d "+
+			"bytes, got %d", types.VTXOClaimSignatureSize,
+			len(t.Signature))
+	}
+	if t.SourceIndex < 0 || t.SourceIndex > int64(^uint32(0)) {
+		return nil, fmt.Errorf("claim source index %d is out of range",
+			t.SourceIndex)
+	}
+	if t.ValidFrom < 0 || t.ValidFrom > int64(^uint32(0)) ||
+		t.ValidUntil > int64(^uint32(0)) {
+		return nil, fmt.Errorf("claim validity window %d..%d is out "+
+			"of range", t.ValidFrom, t.ValidUntil)
+	}
+	if t.ValidUntil <= 0 || t.ValidUntil < t.ValidFrom {
+		return nil, fmt.Errorf("invalid claim validity window %d..%d",
+			t.ValidFrom, t.ValidUntil)
+	}
+
+	participant, err := btcec.ParsePubKey(t.ParticipantPubkey)
+	if err != nil {
+		return nil, fmt.Errorf("parse participant pubkey: %w", err)
+	}
+	replacement, ok := vtxosByIndex[t.RequestIndex]
+	if !ok {
+		return nil, fmt.Errorf("replacement request %d is missing",
+			t.RequestIndex)
+	}
+	if replacement.Origin != types.VTXOOriginClaimReissue {
+		return nil, fmt.Errorf("replacement request %d has origin %s",
+			t.RequestIndex, replacement.Origin)
+	}
+	if replacement.SigningKey.PubKey == nil {
+		return nil, fmt.Errorf("replacement request %d signing key "+
+			"is missing", t.RequestIndex)
+	}
+
+	var (
+		sourceHash chainhash.Hash
+		nonce      [types.VTXOClaimNonceSize]byte
+	)
+	copy(sourceHash[:], t.SourceHash)
+	copy(nonce[:], t.Nonce)
+
+	return &round.VTXOClaimIntent{
+		Input: types.VTXOClaimInput{
+			SourceOutpoint: wire.OutPoint{
+				Hash:  sourceHash,
+				Index: uint32(t.SourceIndex),
+			},
+			ParticipantPubKey: participant,
+			ReplacementSigningKey: replacement.
+				SigningKey,
+			Nonce:      nonce,
+			ValidFrom:  uint32(t.ValidFrom),
+			ValidUntil: uint32(t.ValidUntil),
+			Signature:  bytes.Clone(t.Signature),
+		},
+		ExpectedOutput: *replacement,
 	}, nil
 }
 
@@ -1630,22 +1920,23 @@ func (s *RoundPersistenceStore) domainVTXOToInsertParams(ctx context.Context,
 	}
 
 	return InsertVTXOParams{
-		OutpointHash:   vtxo.Outpoint.Hash[:],
-		OutpointIndex:  int32(vtxo.Outpoint.Index),
-		RoundID:        roundIDStr,
-		Amount:         int64(vtxo.Amount),
-		PkScript:       vtxo.PkScript,
-		Expiry:         int32(vtxo.Expiry),
-		PolicyTemplate: policyTemplate,
-		ClientKeyID:    clientKeyID,
-		OperatorPubkey: operatorPubkey,
-		BatchExpiry:    vtxo.BatchExpiry,
-		ChainDepth:     0,
-		CreatedHeight:  vtxo.CreatedHeight,
-		CommitmentTxid: vtxo.CommitmentTxID[:],
-		Spent:          false,
-		CreationTime:   nowUnix,
-		LastUpdateTime: nowUnix,
+		OutpointHash:      vtxo.Outpoint.Hash[:],
+		OutpointIndex:     int32(vtxo.Outpoint.Index),
+		RoundID:           roundIDStr,
+		Amount:            int64(vtxo.Amount),
+		PkScript:          vtxo.PkScript,
+		Expiry:            int32(vtxo.Expiry),
+		PolicyTemplate:    policyTemplate,
+		ClientKeyID:       clientKeyID,
+		OperatorPubkey:    operatorPubkey,
+		BatchExpiry:       vtxo.BatchExpiry,
+		ChainDepth:        0,
+		CreatedHeight:     vtxo.CreatedHeight,
+		CommitmentTxid:    vtxo.CommitmentTxID[:],
+		Spent:             false,
+		CreationTime:      nowUnix,
+		LastUpdateTime:    nowUnix,
+		RedemptionRoundID: sql.NullString{},
 
 		// Round-created VTXOs are built under the current construction
 		// version (V1 today). Versions are zero-indexed, so V1 is the

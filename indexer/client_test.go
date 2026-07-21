@@ -10,6 +10,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	btclog "github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/arkrpc"
 	"github.com/lightninglabs/wavelength/internal/indexerlimits"
@@ -340,6 +341,100 @@ func TestBuildListVTXOsByScriptsTaprootRequestRejectsOversizedCursor(
 		nil,
 	)
 	require.ErrorContains(t, err, "after cursor: vtxo cursor length")
+}
+
+// TestBuildCheckVTXORedeemabilityTaprootRequest verifies selective
+// reconciliation preserves requested outpoint order and uses a distinct,
+// method-bound script-scope proof.
+func TestBuildCheckVTXORedeemabilityTaprootRequest(t *testing.T) {
+	t.Parallel()
+
+	priv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	pkScript := append(
+		[]byte{0x51, 0x20}, schnorr.SerializePubKey(priv.PubKey())...,
+	)
+	client := New(
+		&recordingRPCClient{}, &PrivKeySchnorrSigner{
+			Key: priv,
+		}, "test-server", "client:test",
+		fn.None[btclog.Logger](),
+	)
+	outpoints := []wire.OutPoint{
+		{
+			Hash: chainhash.Hash{
+				1,
+			},
+			Index: 2,
+		},
+		{
+			Hash: chainhash.Hash{
+				3,
+			},
+			Index: 4,
+		},
+	}
+
+	req, err := client.BuildCheckVTXORedeemabilityTaprootRequest(
+		t.Context(), outpoints, []TaprootScriptScope{
+			{PkScript: pkScript},
+		},
+	)
+	require.NoError(t, err)
+	require.Len(t, req.Outpoints, 2)
+	for i := range outpoints {
+		require.Equal(t, outpoints[i].Hash[:], req.Outpoints[i].Txid)
+		require.Equal(t, outpoints[i].Index, req.Outpoints[i].Vout)
+	}
+	require.Len(t, req.Scripts, 1)
+	proof := req.Scripts[0].GetTaprootSchnorr()
+	require.NotNil(t, proof)
+	decoded := decodeProofTLVBytes(t, proof.Message)
+	require.Equal(t, purposeCheckVTXORedeemability, decoded.purpose)
+}
+
+// TestBuildCheckVTXORedeemabilityTaprootRequestLimit verifies the client
+// accepts one full server-sized chunk and rejects an oversized request before
+// transport dispatch.
+func TestBuildCheckVTXORedeemabilityTaprootRequestLimit(t *testing.T) {
+	t.Parallel()
+
+	priv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	pkScript := append(
+		[]byte{0x51, 0x20}, schnorr.SerializePubKey(priv.PubKey())...,
+	)
+	client := New(
+		&recordingRPCClient{}, &PrivKeySchnorrSigner{
+			Key: priv,
+		}, "test-server", "client:test",
+		fn.None[btclog.Logger](),
+	)
+	outpoints := make([]wire.OutPoint, MaxVTXORedeemabilityOutpoints)
+	for i := range outpoints {
+		outpoints[i].Index = uint32(i)
+	}
+	scopes := []TaprootScriptScope{{PkScript: pkScript}}
+
+	req, err := client.BuildCheckVTXORedeemabilityTaprootRequest(
+		t.Context(), outpoints, scopes,
+	)
+	require.NoError(t, err)
+	require.Len(t, req.Outpoints, MaxVTXORedeemabilityOutpoints)
+
+	tooManyOutpoints := make(
+		[]wire.OutPoint, MaxVTXORedeemabilityOutpoints+1,
+	)
+	copy(tooManyOutpoints, outpoints)
+	tooManyOutpoints[MaxVTXORedeemabilityOutpoints] = wire.OutPoint{
+		Index: MaxVTXORedeemabilityOutpoints,
+	}
+	_, err = client.BuildCheckVTXORedeemabilityTaprootRequest(
+		t.Context(), tooManyOutpoints, scopes,
+	)
+	require.ErrorContains(
+		t, err, "too many VTXO outpoints: 1025 (max 1024)",
+	)
 }
 
 type testMessageSchnorrSigner struct {

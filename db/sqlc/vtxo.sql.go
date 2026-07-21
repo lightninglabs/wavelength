@@ -39,6 +39,39 @@ func (q *Queries) DeleteVTXO(ctx context.Context, arg DeleteVTXOParams) error {
 	return err
 }
 
+const DeleteVTXORedemptionOutbox = `-- name: DeleteVTXORedemptionOutbox :execrows
+DELETE FROM vtxo_redemption_outbox
+WHERE source_hash = $1
+    AND source_index = $2
+    AND replacement_hash = $3
+    AND replacement_index = $4
+    AND redemption_round_id = $5
+`
+
+type DeleteVTXORedemptionOutboxParams struct {
+	SourceHash        []byte
+	SourceIndex       int32
+	ReplacementHash   []byte
+	ReplacementIndex  int32
+	RedemptionRoundID string
+}
+
+// DeleteVTXORedemptionOutbox acknowledges observer work with an exact
+// source/replacement/round CAS so a stale callback cannot clear newer work.
+func (q *Queries) DeleteVTXORedemptionOutbox(ctx context.Context, arg DeleteVTXORedemptionOutboxParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, DeleteVTXORedemptionOutbox,
+		arg.SourceHash,
+		arg.SourceIndex,
+		arg.ReplacementHash,
+		arg.ReplacementIndex,
+		arg.RedemptionRoundID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const GetVTXOForfeitTx = `-- name: GetVTXOForfeitTx :one
 SELECT forfeit_tx, forfeit_round_id FROM vtxos
 WHERE outpoint_hash = $1 AND outpoint_index = $2
@@ -60,6 +93,42 @@ func (q *Queries) GetVTXOForfeitTx(ctx context.Context, arg GetVTXOForfeitTxPara
 	row := q.db.QueryRowContext(ctx, GetVTXOForfeitTx, arg.OutpointHash, arg.OutpointIndex)
 	var i GetVTXOForfeitTxRow
 	err := row.Scan(&i.ForfeitTx, &i.ForfeitRoundID)
+	return i, err
+}
+
+const GetVTXORedemptionOutbox = `-- name: GetVTXORedemptionOutbox :one
+SELECT source_hash, source_index, replacement_hash, replacement_index,
+    redemption_round_id
+FROM vtxo_redemption_outbox
+WHERE source_hash = $1
+    AND source_index = $2
+`
+
+type GetVTXORedemptionOutboxParams struct {
+	SourceHash  []byte
+	SourceIndex int32
+}
+
+type GetVTXORedemptionOutboxRow struct {
+	SourceHash        []byte
+	SourceIndex       int32
+	ReplacementHash   []byte
+	ReplacementIndex  int32
+	RedemptionRoundID string
+}
+
+// GetVTXORedemptionOutbox loads one pending observer record for conflict
+// validation and idempotent acknowledgement.
+func (q *Queries) GetVTXORedemptionOutbox(ctx context.Context, arg GetVTXORedemptionOutboxParams) (GetVTXORedemptionOutboxRow, error) {
+	row := q.db.QueryRowContext(ctx, GetVTXORedemptionOutbox, arg.SourceHash, arg.SourceIndex)
+	var i GetVTXORedemptionOutboxRow
+	err := row.Scan(
+		&i.SourceHash,
+		&i.SourceIndex,
+		&i.ReplacementHash,
+		&i.ReplacementIndex,
+		&i.RedemptionRoundID,
+	)
 	return i, err
 }
 
@@ -85,6 +154,45 @@ func (q *Queries) GetVTXOReplacement(ctx context.Context, arg GetVTXOReplacement
 	var i GetVTXOReplacementRow
 	err := row.Scan(&i.ReplacedByHash, &i.ReplacedByIndex)
 	return i, err
+}
+
+const InsertVTXORedemptionOutbox = `-- name: InsertVTXORedemptionOutbox :execrows
+INSERT INTO vtxo_redemption_outbox (
+    source_hash, source_index, replacement_hash, replacement_index,
+    redemption_round_id, creation_time
+) VALUES (
+    $1, $2,
+    $3, $4,
+    $5, $6
+)
+ON CONFLICT (source_hash, source_index) DO NOTHING
+`
+
+type InsertVTXORedemptionOutboxParams struct {
+	SourceHash        []byte
+	SourceIndex       int32
+	ReplacementHash   []byte
+	ReplacementIndex  int32
+	RedemptionRoundID string
+	CreationTime      int64
+}
+
+// InsertVTXORedemptionOutbox persists the idempotent observer work in the
+// same transaction that retires the source. A replay with the same source is
+// validated by the store against GetVTXORedemptionOutbox.
+func (q *Queries) InsertVTXORedemptionOutbox(ctx context.Context, arg InsertVTXORedemptionOutboxParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, InsertVTXORedemptionOutbox,
+		arg.SourceHash,
+		arg.SourceIndex,
+		arg.ReplacementHash,
+		arg.ReplacementIndex,
+		arg.RedemptionRoundID,
+		arg.CreationTime,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const ListForfeitingVTXOsByRound = `-- name: ListForfeitingVTXOsByRound :many
@@ -129,14 +237,14 @@ func (q *Queries) ListForfeitingVTXOsByRound(ctx context.Context, forfeitRoundID
 }
 
 const ListLiveVTXOs = `-- name: ListLiveVTXOs :many
-SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, policy_template, client_key_id, operator_pubkey, batch_expiry, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time, chain_depth, construction_version FROM vtxos
+SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, policy_template, client_key_id, operator_pubkey, batch_expiry, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time, chain_depth, construction_version, redemption_round_id FROM vtxos
 WHERE (status < 3 OR status = 7) AND spent = FALSE
 ORDER BY creation_time DESC
 `
 
 // ListLiveVTXOs returns all VTXOs that are not in a terminal state.
 // Terminal states are: Forfeited (3), Spent (4), UnilateralExit (5),
-// Failed (6).
+// Failed (6), Expired (8), Redeeming (9), Redeemed (10).
 // Non-terminal states: Live (0), PendingForfeit (1), Forfeiting (2),
 // Spending (7).
 // This is used during startup to recover active VTXO actors.
@@ -175,6 +283,52 @@ func (q *Queries) ListLiveVTXOs(ctx context.Context) ([]Vtxo, error) {
 			&i.LastUpdateTime,
 			&i.ChainDepth,
 			&i.ConstructionVersion,
+			&i.RedemptionRoundID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const ListVTXORedemptionOutbox = `-- name: ListVTXORedemptionOutbox :many
+SELECT source_hash, source_index, replacement_hash, replacement_index,
+    redemption_round_id
+FROM vtxo_redemption_outbox
+ORDER BY creation_time ASC
+`
+
+type ListVTXORedemptionOutboxRow struct {
+	SourceHash        []byte
+	SourceIndex       int32
+	ReplacementHash   []byte
+	ReplacementIndex  int32
+	RedemptionRoundID string
+}
+
+// ListVTXORedemptionOutbox is the durable startup/runtime replay queue.
+func (q *Queries) ListVTXORedemptionOutbox(ctx context.Context) ([]ListVTXORedemptionOutboxRow, error) {
+	rows, err := q.db.QueryContext(ctx, ListVTXORedemptionOutbox)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListVTXORedemptionOutboxRow
+	for rows.Next() {
+		var i ListVTXORedemptionOutboxRow
+		if err := rows.Scan(
+			&i.SourceHash,
+			&i.SourceIndex,
+			&i.ReplacementHash,
+			&i.ReplacementIndex,
+			&i.RedemptionRoundID,
 		); err != nil {
 			return nil, err
 		}
@@ -238,7 +392,7 @@ func (q *Queries) ListVTXOSelectionCandidatesByStatus(ctx context.Context, statu
 
 const ListVTXOsByStatus = `-- name: ListVTXOsByStatus :many
 
-SELECT vtxos.outpoint_hash, vtxos.outpoint_index, vtxos.round_id, vtxos.amount, vtxos.pk_script, vtxos.expiry, vtxos.policy_template, vtxos.client_key_id, vtxos.operator_pubkey, vtxos.batch_expiry, vtxos.created_height, vtxos.commitment_txid, vtxos.spent, vtxos.status, vtxos.forfeit_round_id, vtxos.forfeit_tx, vtxos.forfeit_txid, vtxos.replaced_by_hash, vtxos.replaced_by_index, vtxos.creation_time, vtxos.last_update_time, vtxos.chain_depth, vtxos.construction_version,
+SELECT vtxos.outpoint_hash, vtxos.outpoint_index, vtxos.round_id, vtxos.amount, vtxos.pk_script, vtxos.expiry, vtxos.policy_template, vtxos.client_key_id, vtxos.operator_pubkey, vtxos.batch_expiry, vtxos.created_height, vtxos.commitment_txid, vtxos.spent, vtxos.status, vtxos.forfeit_round_id, vtxos.forfeit_tx, vtxos.forfeit_txid, vtxos.replaced_by_hash, vtxos.replaced_by_index, vtxos.creation_time, vtxos.last_update_time, vtxos.chain_depth, vtxos.construction_version, vtxos.redemption_round_id,
     rounds.commitment_txid AS settlement_txid,
     rounds.confirmation_height AS settlement_height,
     CAST(COALESCE((
@@ -315,6 +469,7 @@ func (q *Queries) ListVTXOsByStatus(ctx context.Context, status int32) ([]ListVT
 			&i.Vtxo.LastUpdateTime,
 			&i.Vtxo.ChainDepth,
 			&i.Vtxo.ConstructionVersion,
+			&i.Vtxo.RedemptionRoundID,
 			&i.SettlementTxid,
 			&i.SettlementHeight,
 			&i.SettlementFeeSat,
@@ -395,6 +550,181 @@ func (q *Queries) MarkVTXOForfeiting(ctx context.Context, arg MarkVTXOForfeiting
 		arg.LastUpdateTime,
 	)
 	return err
+}
+
+const MarkVTXORedeemed = `-- name: MarkVTXORedeemed :execrows
+UPDATE vtxos
+SET status = 10, -- Redeemed
+    replaced_by_hash = $1,
+    replaced_by_index = $2,
+    redemption_round_id = $3,
+    last_update_time = $4
+WHERE outpoint_hash = $5
+    AND outpoint_index = $6
+    AND (
+        status = 8 OR
+        status = 9 OR
+        (status = 10 AND
+            redemption_round_id = $3)
+    )
+    AND (
+        replaced_by_hash IS NULL OR
+        (replaced_by_hash = $1 AND
+            replaced_by_index = $2)
+    )
+`
+
+type MarkVTXORedeemedParams struct {
+	ReplacedByHash    []byte
+	ReplacedByIndex   sql.NullInt32
+	RedemptionRoundID sql.NullString
+	LastUpdateTime    int64
+	OutpointHash      []byte
+	OutpointIndex     int32
+}
+
+// MarkVTXORedeemed links an authoritative, policy-validated completed mapping
+// to its replacement. A completed mapping may supersede an abandoned local
+// Redeeming round, so Expired/Redeeming sources adopt the replacement's round
+// ID. Once Redeemed, only an exact round/replacement replay is accepted.
+func (q *Queries) MarkVTXORedeemed(ctx context.Context, arg MarkVTXORedeemedParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, MarkVTXORedeemed,
+		arg.ReplacedByHash,
+		arg.ReplacedByIndex,
+		arg.RedemptionRoundID,
+		arg.LastUpdateTime,
+		arg.OutpointHash,
+		arg.OutpointIndex,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const MarkVTXORedeeming = `-- name: MarkVTXORedeeming :execrows
+UPDATE vtxos
+SET status = 9, -- Redeeming
+    redemption_round_id = $3,
+    last_update_time = $4
+WHERE outpoint_hash = $1 AND outpoint_index = $2
+    AND (
+        (status = 8 AND redemption_round_id IS NULL) OR
+        (status = 9 AND redemption_round_id = $3)
+    )
+`
+
+type MarkVTXORedeemingParams struct {
+	OutpointHash      []byte
+	OutpointIndex     int32
+	RedemptionRoundID sql.NullString
+	LastUpdateTime    int64
+}
+
+// MarkVTXORedeeming records the round point-of-no-return for an expired
+// claim. Restricting the source status prevents a stale callback from
+// resurrecting a spent, forfeited, or already-redeemed VTXO.
+func (q *Queries) MarkVTXORedeeming(ctx context.Context, arg MarkVTXORedeemingParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, MarkVTXORedeeming,
+		arg.OutpointHash,
+		arg.OutpointIndex,
+		arg.RedemptionRoundID,
+		arg.LastUpdateTime,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const RecoverLegacyExpiredVTXOs = `-- name: RecoverLegacyExpiredVTXOs :many
+UPDATE vtxos
+SET status = 8, -- Expired
+    last_update_time = $1
+WHERE status = 6 -- Failed
+    AND spent = FALSE
+    AND batch_expiry > 0
+    AND batch_expiry <= $2
+    AND round_id <> ''
+    AND amount > 0
+    AND length(pk_script) > 0
+    AND length(operator_pubkey) = 33
+    AND length(commitment_txid) = 32
+    AND forfeit_round_id IS NULL
+    AND forfeit_tx IS NULL
+    AND forfeit_txid IS NULL
+    AND replaced_by_hash IS NULL
+    AND replaced_by_index IS NULL
+    AND redemption_round_id IS NULL
+RETURNING outpoint_hash, outpoint_index
+`
+
+type RecoverLegacyExpiredVTXOsParams struct {
+	LastUpdateTime int64
+	BestHeight     int32
+}
+
+type RecoverLegacyExpiredVTXOsRow struct {
+	OutpointHash  []byte
+	OutpointIndex int32
+}
+
+// Older clients could persist a locally expired live VTXO as Failed. Recover
+// only rows with the exact live-era shape: unspent, past their absolute
+// expiry, and with no forfeit, replacement, or redemption lifecycle metadata.
+// The metadata predicates deliberately leave unrelated Failed rows untouched.
+func (q *Queries) RecoverLegacyExpiredVTXOs(ctx context.Context, arg RecoverLegacyExpiredVTXOsParams) ([]RecoverLegacyExpiredVTXOsRow, error) {
+	rows, err := q.db.QueryContext(ctx, RecoverLegacyExpiredVTXOs, arg.LastUpdateTime, arg.BestHeight)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []RecoverLegacyExpiredVTXOsRow
+	for rows.Next() {
+		var i RecoverLegacyExpiredVTXOsRow
+		if err := rows.Scan(&i.OutpointHash, &i.OutpointIndex); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const RevertVTXORedeeming = `-- name: RevertVTXORedeeming :execrows
+UPDATE vtxos
+SET status = 8, -- Expired
+    redemption_round_id = NULL,
+    last_update_time = $4
+WHERE outpoint_hash = $1 AND outpoint_index = $2 AND status = 9
+    AND redemption_round_id = $3
+`
+
+type RevertVTXORedeemingParams struct {
+	OutpointHash      []byte
+	OutpointIndex     int32
+	RedemptionRoundID sql.NullString
+	LastUpdateTime    int64
+}
+
+// RevertVTXORedeeming returns a claim to the retryable Expired state after
+// its adopted round terminates without producing a replacement.
+func (q *Queries) RevertVTXORedeeming(ctx context.Context, arg RevertVTXORedeemingParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, RevertVTXORedeeming,
+		arg.OutpointHash,
+		arg.OutpointIndex,
+		arg.RedemptionRoundID,
+		arg.LastUpdateTime,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const UpdateVTXOStatus = `-- name: UpdateVTXOStatus :exec

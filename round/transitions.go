@@ -419,10 +419,12 @@ func (s *Idle) ProcessEvent(ctx context.Context, event ClientEvent,
 
 		return &ClientStateTransition{
 			NextState: &PendingRoundAssembly{
-				Boarding: slices.Clone(evt.Boarding),
-				Forfeits: slices.Clone(evt.Forfeits),
-				VTXOs:    slices.Clone(evt.VTXOs),
-				Leaves:   slices.Clone(evt.Leaves),
+				RequestedRoundID: evt.RequestedRoundID,
+				Boarding:         slices.Clone(evt.Boarding),
+				Forfeits:         slices.Clone(evt.Forfeits),
+				VTXOs:            slices.Clone(evt.VTXOs),
+				Leaves:           slices.Clone(evt.Leaves),
+				Claims:           slices.Clone(evt.Claims),
 			},
 		}, nil
 
@@ -462,6 +464,22 @@ func (s *PendingRoundAssembly) processEvent(ctx context.Context,
 		// deduplicating boarding intents by outpoint.
 		if evt.isEmpty() {
 			return selfLoop(s), nil
+		}
+		requestedRoundID := s.RequestedRoundID
+		if evt.RequestedRoundID != "" {
+			if requestedRoundID != "" &&
+				requestedRoundID != evt.RequestedRoundID {
+				return failWithNotification(
+					"claim round target changed",
+					fmt.Errorf("claim round target %s "+
+						"does not match %s",
+						evt.RequestedRoundID,
+						requestedRoundID),
+					true,
+					fn.None[RoundID](),
+				), nil
+			}
+			requestedRoundID = evt.RequestedRoundID
 		}
 
 		// Build a set of existing boarding outpoints for O(1)
@@ -554,12 +572,30 @@ func (s *PendingRoundAssembly) processEvent(ctx context.Context,
 		updatedLeaves := slices.Clone(s.Leaves)
 		updatedLeaves = append(updatedLeaves, evt.Leaves...)
 
+		// Deduplicate claim inputs by source outpoint. Reconciliation
+		// can redeliver the same positive result across startup
+		// retries, but a source value may only be reissued once.
+		claimSeen := fn.NewSet[wire.OutPoint]()
+		for _, claim := range s.Claims {
+			claimSeen.Add(claim.Input.SourceOutpoint)
+		}
+		updatedClaims := slices.Clone(s.Claims)
+		for _, claim := range evt.Claims {
+			if claimSeen.Contains(claim.Input.SourceOutpoint) {
+				continue
+			}
+			claimSeen.Add(claim.Input.SourceOutpoint)
+			updatedClaims = append(updatedClaims, claim)
+		}
+
 		return &ClientStateTransition{
 			NextState: &PendingRoundAssembly{
-				Boarding: updatedBoarding,
-				VTXOs:    updatedVTXOs,
-				Forfeits: updatedForfeits,
-				Leaves:   updatedLeaves,
+				RequestedRoundID: requestedRoundID,
+				Boarding:         updatedBoarding,
+				VTXOs:            updatedVTXOs,
+				Forfeits:         updatedForfeits,
+				Leaves:           updatedLeaves,
+				Claims:           updatedClaims,
 			},
 		}, nil
 
@@ -572,6 +608,7 @@ func (s *PendingRoundAssembly) processEvent(ctx context.Context,
 			"Registration requested, preparing to join round",
 			slog.Int("boarding_intent_count", len(s.Boarding)),
 			slog.Int("vtxo_intent_count", len(s.VTXOs)),
+			slog.Int("claim_input_count", len(s.Claims)),
 		)
 
 		// Registration may outlive the triggering actor request, so use
@@ -579,6 +616,34 @@ func (s *PendingRoundAssembly) processEvent(ctx context.Context,
 		// still use the original actor context later when emitting the
 		// outbox.
 		opCtx := context.WithoutCancel(ctx)
+
+		if len(s.Claims) > 0 {
+			if s.RequestedRoundID == "" {
+				return failWithNotification(
+					"claim round target missing",
+					fmt.Errorf("claim-only registration "+
+						"requires a concrete round ID"),
+					true,
+					fn.None[RoundID](),
+				), nil
+			}
+			if _, err := ParseRoundID(
+				s.RequestedRoundID,
+			); err != nil {
+				return failWithNotification(
+					"claim round target invalid", err, true,
+					fn.None[RoundID](),
+				), nil
+			}
+		} else if s.RequestedRoundID != "" {
+			return failWithNotification(
+				"ordinary registration has claim round target",
+				fmt.Errorf("round target is only valid for "+
+					"claims"),
+				true,
+				fn.None[RoundID](),
+			), nil
+		}
 
 		// Calculate total input amount from all boarding intents.
 		var totalInput btcutil.Amount
@@ -590,6 +655,50 @@ func (s *PendingRoundAssembly) processEvent(ctx context.Context,
 		var totalOutput btcutil.Amount
 		for _, vtxo := range s.VTXOs {
 			totalOutput += vtxo.Amount
+		}
+
+		// A claim contributes the source value and one exact
+		// replacement output of the same value. Claims therefore cannot
+		// pay round fees or subsidize unrelated outputs.
+		for i := range s.Claims {
+			claim := &s.Claims[i]
+			expected := &claim.ExpectedOutput
+			if expected.Amount <= 0 {
+				return failWithNotification(
+					"invalid claim replacement amount",
+					fmt.Errorf("claim %d amount must be "+
+						"positive", i),
+					true,
+					fn.None[RoundID](),
+				), nil
+			}
+			if !expected.FixedAmount || expected.IsChange {
+				return failWithNotification(
+					"invalid claim replacement semantics",
+					fmt.Errorf("claim %d output must be "+
+						"fixed and not change", i),
+					true,
+					fn.None[RoundID](),
+				), nil
+			}
+			replacementKey :=
+				claim.Input.ReplacementSigningKey.PubKey
+			if expected.SigningKey.PubKey == nil ||
+				replacementKey == nil ||
+				!expected.SigningKey.PubKey.IsEqual(
+					replacementKey,
+				) {
+				return failWithNotification(
+					"invalid claim replacement signing key",
+					fmt.Errorf("claim %d replacement key "+
+						"mismatch", i),
+					true,
+					fn.None[RoundID](),
+				), nil
+			}
+
+			totalInput += expected.Amount
+			totalOutput += expected.Amount
 		}
 
 		// Include all forfeited VTXO amounts as inputs.
@@ -669,6 +778,22 @@ func (s *PendingRoundAssembly) processEvent(ctx context.Context,
 			), nil
 		}
 
+		// Claim outputs already carry the replacement key committed by
+		// their signatures. Append them only to local intents so the
+		// ordinary tree validation/signing/persistence path sees every
+		// output; they are not serialized as ordinary VTXORequest
+		// entries.
+		allVTXOReqs := slices.Clone(vtxoReqs)
+		claimInputs := make(
+			[]*types.VTXOClaimInput, 0, len(s.Claims),
+		)
+		for i := range s.Claims {
+			claim := s.Claims[i]
+			allVTXOReqs = append(allVTXOReqs, claim.ExpectedOutput)
+			claimInput := claim.Input
+			claimInputs = append(claimInputs, &claimInput)
+		}
+
 		// Build forfeit requests from the decoupled forfeit pool.
 		forfeitReqs, err := sortedForfeitRequests(s.Forfeits)
 		if err != nil {
@@ -693,19 +818,33 @@ func (s *PendingRoundAssembly) processEvent(ctx context.Context,
 		// present.
 		designateChangeMarker(vtxoReqs, leaveReqs)
 
+		// designateChangeMarker mutates the ordinary request slice.
+		// Rebuild the combined local output list afterward so those
+		// markers survive while fixed claim outputs remain unmarked at
+		// the tail.
+		allVTXOReqs = slices.Clone(vtxoReqs)
+		for i := range s.Claims {
+			allVTXOReqs = append(
+				allVTXOReqs, s.Claims[i].ExpectedOutput,
+			)
+		}
+
 		env.Log.InfoS(ctx, "Sending JoinRoundRequest to server",
 			slog.Int("boarding_requests", len(boardingReqs)),
 			slog.Int("vtxo_requests", len(vtxoReqs)),
 			slog.Int("forfeit_requests", len(forfeitReqs)),
 			slog.Int("leave_requests", len(leaveReqs)),
+			slog.Int("claim_inputs", len(claimInputs)),
 		)
 
 		// Build Intents with all pools for downstream validation.
 		intent := Intents{
-			Boarding: slices.Clone(s.Boarding),
-			VTXOs:    vtxoReqs,
-			Leaves:   leaveReqs,
-			Forfeits: slices.Clone(s.Forfeits),
+			RequestedRoundID: s.RequestedRoundID,
+			Boarding:         slices.Clone(s.Boarding),
+			VTXOs:            allVTXOReqs,
+			Leaves:           leaveReqs,
+			Forfeits:         slices.Clone(s.Forfeits),
+			Claims:           slices.Clone(s.Claims),
 		}
 
 		// Derive a fresh identifier key for the join-request
@@ -728,7 +867,7 @@ func (s *PendingRoundAssembly) processEvent(ctx context.Context,
 		if !env.DisableJoinRequestAuth {
 			auth, err := buildJoinRoundAuth(
 				opCtx, env, identifierKeyDesc, intent, vtxoReqs,
-				forfeitReqs, leaveReqs,
+				forfeitReqs, leaveReqs, claimInputs,
 			)
 			if err != nil {
 				return failWithNotification(
@@ -749,6 +888,8 @@ func (s *PendingRoundAssembly) processEvent(ctx context.Context,
 				VTXORequests:     vtxoReqs,
 				ForfeitRequests:  forfeitReqs,
 				LeaveRequests:    leaveReqs,
+				ClaimInputs:      claimInputs,
+				RoundID:          s.RequestedRoundID,
 				Identifier:       idPub,
 				Auth:             joinAuth,
 			},
@@ -1210,6 +1351,17 @@ func evaluateQuote(ctx context.Context, env *ClientEnvironment, roundID RoundID,
 			),
 		}
 	}
+	if intents.IsClaimOnly() && quote.OperatorFeeSat != 0 {
+		return &QuoteRejected{
+			RoundID: roundID,
+			QuoteID: quote.QuoteID,
+			Reason: fmt.Sprintf(
+				"claim-only quote must have zero operator "+
+					"fee, got %d",
+				quote.OperatorFeeSat,
+			),
+		}
+	}
 
 	// The spec (#270 "Quote expiry races") calls out that a slow
 	// client may receive a quote past its commit window and have
@@ -1236,7 +1388,7 @@ func evaluateQuote(ctx context.Context, env *ClientEnvironment, roundID RoundID,
 	// field through. Callers that want an uncapped environment
 	// can supply a sentinel (e.g. math.MaxInt64) deliberately.
 	feeCap := int64(env.MaxOperatorFee)
-	if feeCap <= 0 {
+	if feeCap <= 0 && !intents.IsClaimOnly() {
 		return &QuoteRejected{
 			RoundID: roundID,
 			QuoteID: quote.QuoteID,
@@ -1383,6 +1535,14 @@ func realisedQuoteFee(ctx context.Context, env *ClientEnvironment,
 		return 0, fmt.Errorf("forfeit amount lookup: %w", err)
 	}
 	inputsSat += int64(forfeitAmt)
+	for i := range intents.Claims {
+		amt := int64(intents.Claims[i].ExpectedOutput.Amount)
+		if amt < 0 {
+			return 0, fmt.Errorf("negative claim input "+
+				"amount: %d sat", amt)
+		}
+		inputsSat += amt
+	}
 
 	var outputsSat int64
 	for i := range quote.VTXOQuotes {
@@ -1397,6 +1557,14 @@ func realisedQuoteFee(ctx context.Context, env *ClientEnvironment,
 		amt := quote.LeaveQuotes[i].AmountSat
 		if amt < 0 {
 			return 0, fmt.Errorf("negative leave output amount at "+
+				"index %d: %d sat", i, amt)
+		}
+		outputsSat += amt
+	}
+	for i := range quote.ClaimQuotes {
+		amt := quote.ClaimQuotes[i].AmountSat
+		if amt < 0 {
+			return 0, fmt.Errorf("negative claim output amount at "+
 				"index %d: %d sat", i, amt)
 		}
 		outputsSat += amt
@@ -1433,15 +1601,20 @@ func quoteRejectReason(reason roundpb.QuoteReason) string {
 // only on the single IsChange=true output across both slices.
 // Returns a diagnostic reason and ok=false on first mismatch.
 func validateQuoteEchoes(intents Intents, quote *ClientQuote) (string, bool) {
-	if len(quote.VTXOQuotes) != len(intents.VTXOs) {
+	standardVTXOs := intents.StandardVTXOCount()
+	if len(quote.VTXOQuotes) != standardVTXOs {
 		return fmt.Sprintf("quote vtxo entries %d != intent "+
-			"vtxos %d", len(quote.VTXOQuotes),
-			len(intents.VTXOs)), false
+			"vtxos %d", len(quote.VTXOQuotes), standardVTXOs), false
 	}
 	if len(quote.LeaveQuotes) != len(intents.Leaves) {
 		return fmt.Sprintf("quote leave entries %d != intent "+
 			"leaves %d", len(quote.LeaveQuotes),
 			len(intents.Leaves)), false
+	}
+	if len(quote.ClaimQuotes) != len(intents.Claims) {
+		return fmt.Sprintf("quote claim entries %d != intent "+
+			"claims %d", len(quote.ClaimQuotes),
+			len(intents.Claims)), false
 	}
 
 	// When the intent carries exactly one non-fixed output across the
@@ -1455,10 +1628,10 @@ func validateQuoteEchoes(intents Intents, quote *ClientQuote) (string, bool) {
 	// realisedQuoteFee below is the authoritative security check, because
 	// it verifies the actual signed outputs imply the quoted, capped fee.
 	// FixedAmount disables this exception for contract outputs.
-	totalOutputs := len(intents.VTXOs) + len(intents.Leaves)
+	totalOutputs := standardVTXOs + len(intents.Leaves)
 	implicitChange := totalOutputs == 1 && !singleOutputFixed(intents)
 
-	for i := range intents.VTXOs {
+	for i := 0; i < standardVTXOs; i++ {
 		vtxoReq := intents.VTXOs[i]
 		entry := quote.VTXOQuotes[i]
 
@@ -1501,6 +1674,48 @@ func validateQuoteEchoes(intents Intents, quote *ClientQuote) (string, bool) {
 		}
 	}
 
+	for i := range intents.Claims {
+		claim := intents.Claims[i]
+		entry := quote.ClaimQuotes[i]
+		if entry.SourceOutpoint != claim.Input.SourceOutpoint {
+			return fmt.Sprintf("claim[%d] source outpoint "+
+				"echo mismatch", i), false
+		}
+
+		expectedScript, err := claim.ExpectedOutput.EffectivePkScript()
+		if err != nil {
+			return fmt.Sprintf("claim[%d] pkScript "+
+				"derivation: %v", i, err), false
+		}
+		if !bytes.Equal(entry.PkScript, expectedScript) {
+			return fmt.Sprintf("claim[%d] pkScript echo mismatch",
+					i),
+				false
+		}
+		if !bytes.Equal(
+			entry.PolicyTemplate,
+			claim.ExpectedOutput.PolicyTemplate,
+		) {
+			return fmt.Sprintf("claim[%d] policy template "+
+				"echo mismatch", i), false
+		}
+		if entry.AmountSat != int64(claim.ExpectedOutput.Amount) {
+			return fmt.Sprintf("claim[%d] amount %d != "+
+				"expected %d", i, entry.AmountSat,
+				claim.ExpectedOutput.Amount), false
+		}
+
+		var expectedKey []byte
+		if claim.Input.ReplacementSigningKey.PubKey != nil {
+			expectedKey = claim.Input.ReplacementSigningKey.PubKey.
+				SerializeCompressed()
+		}
+		if !bytes.Equal(entry.ReplacementSigningKey, expectedKey) {
+			return fmt.Sprintf("claim[%d] replacement "+
+				"signing key echo mismatch", i), false
+		}
+	}
+
 	for i := range intents.Leaves {
 		leaveReq := intents.Leaves[i]
 		entry := quote.LeaveQuotes[i]
@@ -1534,7 +1749,7 @@ func validateQuoteEchoes(intents Intents, quote *ClientQuote) (string, bool) {
 // singleOutputFixed reports whether a one-output intent carries a fixed VTXO
 // request. Leave outputs do not currently have fixed-amount metadata.
 func singleOutputFixed(intents Intents) bool {
-	if len(intents.VTXOs) != 1 || len(intents.Leaves) != 0 {
+	if intents.StandardVTXOCount() != 1 || len(intents.Leaves) != 0 {
 		return false
 	}
 
@@ -1972,7 +2187,19 @@ func quoteVTXOAmount(quote *ClientQuote, i int,
 		return vtxoReq.Amount
 	}
 
-	return btcutil.Amount(quote.VTXOQuotes[i].AmountSat)
+	if i < len(quote.VTXOQuotes) {
+		return btcutil.Amount(quote.VTXOQuotes[i].AmountSat)
+	}
+
+	claimIdx := i - len(quote.VTXOQuotes)
+	if claimIdx >= 0 && claimIdx < len(quote.ClaimQuotes) {
+		return btcutil.Amount(quote.ClaimQuotes[claimIdx].AmountSat)
+	}
+
+	// evaluateQuote rejects mismatched quote lengths before tree
+	// validation. Keep this defensive fallback for quote-less or legacy
+	// test harness paths.
+	return vtxoReq.Amount
 }
 
 // quoteLeaveAmounts returns a positional slice of expected leave
@@ -4107,6 +4334,13 @@ func computeClientOperatorFee(intents Intents, ownedVTXOs []*ClientVTXO) int64 {
 		}
 	}
 
+	for i := range intents.Claims {
+		amt := int64(intents.Claims[i].ExpectedOutput.Amount)
+		if amt > 0 {
+			inputsSat += amt
+		}
+	}
+
 	var outputsSat int64
 
 	// Locally owned outputs are counted from the BUILT VTXOs, not the
@@ -4275,6 +4509,36 @@ func buildClientVTXOs(ctx context.Context, checker OwnedScriptChecker,
 
 		params, err := req.DecodeStandardPolicyTemplate()
 		isStandard := err == nil
+		expiry := req.Expiry
+		operatorKey := req.OperatorKey
+		if isStandard {
+			// The policy is authoritative for the standard exit
+			// delay. An explicitly carried operator key retains its
+			// full compressed-key parity, which matters when a
+			// claim reissues a policy created before an
+			// operator-key rotation. The template only commits to
+			// the x-only key, so verify that identity before
+			// preserving the historical full key.
+			if expiry != 0 && expiry != params.ExitDelay {
+				return nil, fmt.Errorf("VTXO expiry %d does "+
+					"not match policy expiry %d", expiry,
+					params.ExitDelay)
+			}
+			expiry = params.ExitDelay
+
+			if operatorKey == nil {
+				operatorKey = params.OperatorKey
+			} else if !bytes.Equal(
+				schnorr.SerializePubKey(operatorKey),
+				schnorr.SerializePubKey(params.OperatorKey),
+			) {
+				return nil, fmt.Errorf("VTXO operator key " +
+					"does not match policy")
+			}
+		}
+		if operatorKey == nil {
+			return nil, fmt.Errorf("VTXO operator key is missing")
+		}
 
 		signerKey := NewSignerKey(req.SigningKey.PubKey)
 		clientTree := trees[signerKey]
@@ -4325,14 +4589,12 @@ func buildClientVTXOs(ctx context.Context, checker OwnedScriptChecker,
 			Amount:         leafAmount,
 			PolicyTemplate: policyTemplate,
 			PkScript:       pkScript,
+			Expiry:         expiry,
 			OwnerKey:       req.OwnerKey,
+			OperatorKey:    operatorKey,
 			Ancestry:       ancestry,
 			RoundID:        fn.Some(roundID),
 			Origin:         req.Origin,
-		}
-		if isStandard {
-			vtxo.Expiry = params.ExitDelay
-			vtxo.OperatorKey = params.OperatorKey
 		}
 
 		vtxos = append(vtxos, vtxo)

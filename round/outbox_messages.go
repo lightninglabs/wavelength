@@ -47,6 +47,10 @@ type JoinRoundRequest struct {
 	// are listed separately in ForfeitRequests.
 	LeaveRequests []*types.LeaveRequest
 
+	// ClaimInputs contains independently signed expired-VTXO reissuance
+	// claims. Their replacement outputs are derived by the server.
+	ClaimInputs []*types.VTXOClaimInput
+
 	// RoundID is optional; when empty it instructs the server to assign
 	// a new round. When non-empty, the request is for the specified round.
 	RoundID string
@@ -384,11 +388,45 @@ func (m *JoinRoundRequest) ToProto() fn.Result[proto.Message] {
 		leaveReqs[i] = lr
 	}
 
+	// Convert independently signed expired-VTXO claims.
+	claimInputs := make(
+		[]*roundpb.VTXOClaimInput, len(m.ClaimInputs),
+	)
+	for i, claim := range m.ClaimInputs {
+		if claim == nil {
+			return fn.Err[proto.Message](
+				fmt.Errorf("claim input %d must be provided",
+					i),
+			)
+		}
+
+		ci := &roundpb.VTXOClaimInput{
+			SourceOutpoint: roundpb.OutpointToProto(
+				claim.SourceOutpoint,
+			),
+			Nonce:      bytes.Clone(claim.Nonce[:]),
+			ValidFrom:  claim.ValidFrom,
+			ValidUntil: claim.ValidUntil,
+			Signature:  bytes.Clone(claim.Signature),
+		}
+		if claim.ParticipantPubKey != nil {
+			ci.ParticipantPubkey = claim.ParticipantPubKey.
+				SerializeCompressed()
+		}
+		if claim.ReplacementSigningKey.PubKey != nil {
+			ci.ReplacementSigningPubkey =
+				claim.ReplacementSigningKey.PubKey.
+					SerializeCompressed()
+		}
+		claimInputs[i] = ci
+	}
+
 	pb := &roundpb.JoinRoundRequest{
 		BoardingRequests: boardingReqs,
 		VtxoRequests:     vtxoReqs,
 		ForfeitRequests:  forfeitReqs,
 		LeaveRequests:    leaveReqs,
+		ClaimInputs:      claimInputs,
 		RoundId:          m.RoundID,
 	}
 

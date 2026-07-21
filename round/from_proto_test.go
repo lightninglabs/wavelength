@@ -154,6 +154,56 @@ func TestJoinRoundRequestFromProtoPreservesVTXOSigningKey(t *testing.T) {
 	)
 }
 
+// TestJoinRoundRequestFromProtoPreservesClaimInput verifies all independently
+// signed claim fields survive the wire decode path.
+func TestJoinRoundRequestFromProtoPreservesClaimInput(t *testing.T) {
+	t.Parallel()
+
+	participant, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	replacement, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	nonce := make([]byte, 32)
+	nonce[0] = 1
+	signature := make([]byte, 64)
+	signature[0] = 2
+
+	pb := &roundpb.JoinRoundRequest{
+		ClaimInputs: []*roundpb.VTXOClaimInput{{
+			SourceOutpoint: &roundpb.Outpoint{
+				TxHash:      make([]byte, 32),
+				OutputIndex: 3,
+			},
+			ParticipantPubkey: participant.PubKey().
+				SerializeCompressed(),
+			ReplacementSigningPubkey: replacement.PubKey().
+				SerializeCompressed(),
+			Nonce:      nonce,
+			ValidFrom:  11,
+			ValidUntil: 22,
+			Signature:  signature,
+		}},
+	}
+
+	var got JoinRoundRequest
+	err = got.FromProto(pb)
+	require.NoError(t, err)
+	require.Len(t, got.ClaimInputs, 1)
+	claim := got.ClaimInputs[0]
+	require.Equal(t, uint32(3), claim.SourceOutpoint.Index)
+	require.True(t, claim.ParticipantPubKey.IsEqual(participant.PubKey()))
+	require.True(
+		t,
+		claim.ReplacementSigningKey.PubKey.IsEqual(
+			replacement.PubKey(),
+		),
+	)
+	require.Equal(t, nonce, claim.Nonce[:])
+	require.Equal(t, uint32(11), claim.ValidFrom)
+	require.Equal(t, uint32(22), claim.ValidUntil)
+	require.Equal(t, signature, claim.Signature)
+}
+
 // TestJoinRoundRequestFromProtoPreservesCustomForfeitSpendPaths verifies that
 // custom refresh spend paths carried by the round wire message survive decode
 // into the client round domain type.

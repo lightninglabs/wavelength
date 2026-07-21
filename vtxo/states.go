@@ -246,3 +246,66 @@ func (s *FailedState) IsTerminal() bool {
 }
 
 func (s *FailedState) vtxoStateSealed() {}
+
+// ExpiredState is a terminal local-chain state. The batch timelock has
+// elapsed, so the VTXO must not remain selectable or race the operator's sweep.
+// A separate redemption coordinator checks whether the finalized sweep made
+// the value eligible for an off-chain reissue.
+type ExpiredState struct {
+	// VTXO is the descriptor for this VTXO.
+	VTXO *Descriptor
+
+	// ObservedHeight is the chain height that established expiry.
+	ObservedHeight int32
+}
+
+// String returns a human-readable state name.
+func (s *ExpiredState) String() string {
+	return "Expired"
+}
+
+// IsTerminal returns true because expiry monitoring moves to the redemption
+// coordinator after this state is reached.
+func (s *ExpiredState) IsTerminal() bool {
+	return true
+}
+
+func (s *ExpiredState) vtxoStateSealed() {}
+
+// RedeemingState is the terminal per-VTXO actor view of an expired claim that
+// a round durably adopted. The round and redemption coordinator own recovery.
+type RedeemingState struct {
+	// VTXO is the descriptor for this VTXO.
+	VTXO *Descriptor
+}
+
+// String returns a human-readable state name.
+func (s *RedeemingState) String() string {
+	return "Redeeming"
+}
+
+// IsTerminal returns true because the claim-bearing round owns progress.
+func (s *RedeemingState) IsTerminal() bool {
+	return true
+}
+
+func (s *RedeemingState) vtxoStateSealed() {}
+
+// RedeemedState is the terminal state for an expired VTXO whose value was
+// reissued into a replacement VTXO.
+type RedeemedState struct {
+	// VTXO is the descriptor for this VTXO.
+	VTXO *Descriptor
+}
+
+// String returns a human-readable state name.
+func (s *RedeemedState) String() string {
+	return "Redeemed"
+}
+
+// IsTerminal returns true because the old VTXO has been replaced.
+func (s *RedeemedState) IsTerminal() bool {
+	return true
+}
+
+func (s *RedeemedState) vtxoStateSealed() {}

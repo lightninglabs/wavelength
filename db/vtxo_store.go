@@ -98,25 +98,34 @@ func (s *VTXOPersistenceStore) SaveVTXO(
 	writeTxOpts := WriteTxOption()
 
 	return s.db.ExecTx(ctx, writeTxOpts, func(q RoundStore) error {
-		err := s.ensureRoundExists(ctx, q, desc)
-		if err != nil {
-			return fmt.Errorf("ensure round: %w", err)
-		}
-
-		params, err := s.descriptorToInsertParams(ctx, q, desc)
-		if err != nil {
-			return fmt.Errorf("convert descriptor: %w", err)
-		}
-
-		if err := q.InsertVTXO(ctx, params); err != nil {
-			return fmt.Errorf("insert VTXO: %w", err)
-		}
-
-		return upsertAncestryPaths(
-			ctx, q, desc.Outpoint.Hash[:],
-			int32(desc.Outpoint.Index), desc.Ancestry,
-		)
+		return s.saveVTXOTx(ctx, q, desc)
 	})
+}
+
+// saveVTXOTx persists a descriptor through an existing transaction. Keeping
+// this as the single write implementation lets redemption finalization insert
+// the replacement and retire the source atomically.
+func (s *VTXOPersistenceStore) saveVTXOTx(ctx context.Context, q RoundStore,
+	desc *vtxo.Descriptor) error {
+
+	err := s.ensureRoundExists(ctx, q, desc)
+	if err != nil {
+		return fmt.Errorf("ensure round: %w", err)
+	}
+
+	params, err := s.descriptorToInsertParams(ctx, q, desc)
+	if err != nil {
+		return fmt.Errorf("convert descriptor: %w", err)
+	}
+
+	if err := q.InsertVTXO(ctx, params); err != nil {
+		return fmt.Errorf("insert VTXO: %w", err)
+	}
+
+	return upsertAncestryPaths(
+		ctx, q, desc.Outpoint.Hash[:], int32(desc.Outpoint.Index),
+		desc.Ancestry,
+	)
 }
 
 // ensureRoundExists inserts a minimal confirmed round row when a VTXO refers
@@ -506,6 +515,49 @@ func (s *VTXOPersistenceStore) UpdateVTXOStatus(
 	})
 }
 
+// RecoverLegacyExpiredVTXOs upgrades the narrow row shape emitted by clients
+// that persisted locally expired live VTXOs as Failed. The SQL predicate owns
+// the compatibility boundary so the status transition and every exclusion
+// (spent, forfeit, replacement, or redemption metadata) are atomic.
+func (s *VTXOPersistenceStore) RecoverLegacyExpiredVTXOs(ctx context.Context,
+	bestHeight int32) ([]wire.OutPoint, error) {
+
+	writeTxOpts := WriteTxOption()
+	var recovered []wire.OutPoint
+	err := s.db.ExecTx(ctx, writeTxOpts, func(q RoundStore) error {
+		rows, err := q.RecoverLegacyExpiredVTXOs(
+			ctx, sqlc.RecoverLegacyExpiredVTXOsParams{
+				LastUpdateTime: s.clock.Now().Unix(),
+				BestHeight:     bestHeight,
+			},
+		)
+		if err != nil {
+			return fmt.Errorf("recover legacy expired VTXOs: %w",
+				err)
+		}
+
+		recovered = make([]wire.OutPoint, 0, len(rows))
+		for _, row := range rows {
+			if len(row.OutpointHash) != chainhash.HashSize {
+				return fmt.Errorf("recover legacy expired "+
+					"VTXO: invalid outpoint hash length %d",
+					len(row.OutpointHash))
+			}
+
+			var hash chainhash.Hash
+			copy(hash[:], row.OutpointHash)
+			recovered = append(recovered, wire.OutPoint{
+				Hash:  hash,
+				Index: uint32(row.OutpointIndex),
+			})
+		}
+
+		return nil
+	})
+
+	return recovered, err
+}
+
 // UpdateVTXOStatusReleasingReservation updates a VTXO's status and deletes its
 // spending-reservation row in the same transaction. It is used for transitions
 // that move a VTXO out of SpendingState so the durable index never retains a
@@ -691,23 +743,32 @@ func (s *VTXOPersistenceStore) descriptorToInsertParams(ctx context.Context,
 		clientKeyID = sql.NullInt64{Int64: id, Valid: true}
 	}
 
+	var redemptionRoundID sql.NullString
+	desc.RedemptionRoundID.WhenSome(func(roundID string) {
+		redemptionRoundID = sql.NullString{
+			String: roundID,
+			Valid:  roundID != "",
+		}
+	})
+
 	return InsertVTXOParams{
-		OutpointHash:   desc.Outpoint.Hash[:],
-		OutpointIndex:  int32(desc.Outpoint.Index),
-		RoundID:        desc.RoundID,
-		Amount:         int64(desc.Amount),
-		PkScript:       desc.PkScript,
-		Expiry:         int32(desc.RelativeExpiry),
-		PolicyTemplate: bytes.Clone(desc.PolicyTemplate),
-		ClientKeyID:    clientKeyID,
-		OperatorPubkey: operatorPubkey,
-		BatchExpiry:    desc.BatchExpiry,
-		ChainDepth:     int32(desc.ChainDepth),
-		CreatedHeight:  desc.CreatedHeight,
-		CommitmentTxid: desc.CommitmentTxID[:],
-		Spent:          false,
-		CreationTime:   nowUnix,
-		LastUpdateTime: nowUnix,
+		OutpointHash:      desc.Outpoint.Hash[:],
+		OutpointIndex:     int32(desc.Outpoint.Index),
+		RoundID:           desc.RoundID,
+		Amount:            int64(desc.Amount),
+		PkScript:          desc.PkScript,
+		Expiry:            int32(desc.RelativeExpiry),
+		PolicyTemplate:    bytes.Clone(desc.PolicyTemplate),
+		ClientKeyID:       clientKeyID,
+		OperatorPubkey:    operatorPubkey,
+		BatchExpiry:       desc.BatchExpiry,
+		ChainDepth:        int32(desc.ChainDepth),
+		CreatedHeight:     desc.CreatedHeight,
+		CommitmentTxid:    desc.CommitmentTxID[:],
+		Spent:             false,
+		CreationTime:      nowUnix,
+		LastUpdateTime:    nowUnix,
+		RedemptionRoundID: redemptionRoundID,
 
 		// Stamp the VTXO's construction version. Versions are
 		// zero-indexed, so an unstamped descriptor reads as V1 (the
@@ -815,26 +876,441 @@ func (s *VTXOPersistenceStore) rowToDescriptor(ctx context.Context,
 		clientKey.PubKey = derived.clientPubkey
 	}
 
+	var replacedBy fn.Option[wire.OutPoint]
+	if len(row.ReplacedByHash) == chainhash.HashSize &&
+		row.ReplacedByIndex.Valid {
+
+		var replacementHash chainhash.Hash
+		copy(replacementHash[:], row.ReplacedByHash)
+		replacedBy = fn.Some(wire.OutPoint{
+			Hash:  replacementHash,
+			Index: uint32(row.ReplacedByIndex.Int32),
+		})
+	}
+
+	var redemptionRoundID fn.Option[string]
+	if row.RedemptionRoundID.Valid {
+		redemptionRoundID = fn.Some(row.RedemptionRoundID.String)
+	}
+
 	return &vtxo.Descriptor{
-		Outpoint:       outpoint,
-		Amount:         btcutil.Amount(row.Amount),
-		PolicyTemplate: derived.policyTemplate,
-		PkScript:       row.PkScript,
-		ClientKey:      clientKey,
-		OperatorKey:    derived.operatorPubkey,
-		TapScript:      derived.tapscript,
-		Ancestry:       ancestry,
-		RoundID:        row.RoundID,
-		CommitmentTxID: commitmentTxID,
-		BatchExpiry:    row.BatchExpiry,
-		RelativeExpiry: derived.relativeExpiry,
-		ChainDepth:     int(row.ChainDepth),
-		CreatedHeight:  row.CreatedHeight,
-		Status:         vtxo.VTXOStatus(row.Status),
+		Outpoint:          outpoint,
+		Amount:            btcutil.Amount(row.Amount),
+		PolicyTemplate:    derived.policyTemplate,
+		PkScript:          row.PkScript,
+		ClientKey:         clientKey,
+		OperatorKey:       derived.operatorPubkey,
+		TapScript:         derived.tapscript,
+		Ancestry:          ancestry,
+		RoundID:           row.RoundID,
+		CommitmentTxID:    commitmentTxID,
+		BatchExpiry:       row.BatchExpiry,
+		RelativeExpiry:    derived.relativeExpiry,
+		ChainDepth:        int(row.ChainDepth),
+		CreatedHeight:     row.CreatedHeight,
+		Status:            vtxo.VTXOStatus(row.Status),
+		ReplacedBy:        replacedBy,
+		RedemptionRoundID: redemptionRoundID,
 		ConstructionVersion: arkrpc.ConstructionVersion(
 			row.ConstructionVersion,
 		),
 	}, nil
+}
+
+// MarkVTXORedeeming records that an expired claim crossed the round's durable
+// point of no return. Replaying the callback after it already landed is an
+// idempotent success.
+func (s *VTXOPersistenceStore) MarkVTXORedeeming(ctx context.Context,
+	roundID string, outpoint wire.OutPoint) error {
+
+	if roundID == "" {
+		return fmt.Errorf("redemption round ID is required")
+	}
+
+	writeTxOpts := WriteTxOption()
+
+	return s.db.ExecTx(ctx, writeTxOpts, func(q RoundStore) error {
+		row, err := q.GetVTXO(ctx, sqlc.GetVTXOParams{
+			OutpointHash:  outpoint.Hash[:],
+			OutpointIndex: int32(outpoint.Index),
+		})
+		if err != nil {
+			return fmt.Errorf("get redemption source: %w", err)
+		}
+		if vtxo.VTXOStatus(row.Status) == vtxo.VTXOStatusRedeeming {
+			if row.RedemptionRoundID.Valid &&
+				row.RedemptionRoundID.String == roundID {
+				return nil
+			}
+
+			return fmt.Errorf("VTXO %s belongs to redemption "+
+				"round %q", outpoint,
+				row.RedemptionRoundID.String)
+		}
+
+		updated, err := q.MarkVTXORedeeming(
+			ctx, sqlc.MarkVTXORedeemingParams{
+				OutpointHash:  outpoint.Hash[:],
+				OutpointIndex: int32(outpoint.Index),
+				RedemptionRoundID: sql.NullString{
+					String: roundID,
+					Valid:  true,
+				},
+				LastUpdateTime: s.clock.Now().Unix(),
+			},
+		)
+		if err != nil {
+			return err
+		}
+		if updated != 1 {
+			return fmt.Errorf("cannot mark VTXO %s "+
+				"redeeming from %s", outpoint,
+				vtxo.VTXOStatus(row.Status))
+		}
+
+		return nil
+	})
+}
+
+// RevertVTXORedeeming returns a claim to Expired after its adopted round
+// terminates without a replacement. Expired is already the desired result, so
+// duplicate rollback callbacks are harmless.
+func (s *VTXOPersistenceStore) RevertVTXORedeeming(ctx context.Context,
+	roundID string, outpoint wire.OutPoint) error {
+
+	if roundID == "" {
+		return fmt.Errorf("redemption round ID is required")
+	}
+
+	writeTxOpts := WriteTxOption()
+
+	return s.db.ExecTx(ctx, writeTxOpts, func(q RoundStore) error {
+		row, err := q.GetVTXO(ctx, sqlc.GetVTXOParams{
+			OutpointHash:  outpoint.Hash[:],
+			OutpointIndex: int32(outpoint.Index),
+		})
+		if err != nil {
+			return fmt.Errorf("get redemption source: %w", err)
+		}
+		if vtxo.VTXOStatus(row.Status) == vtxo.VTXOStatusExpired &&
+			!row.RedemptionRoundID.Valid {
+			return nil
+		}
+		if vtxo.VTXOStatus(row.Status) == vtxo.VTXOStatusRedeeming &&
+			(!row.RedemptionRoundID.Valid ||
+				row.RedemptionRoundID.String != roundID) {
+			return fmt.Errorf("VTXO %s belongs to redemption "+
+				"round %q", outpoint,
+				row.RedemptionRoundID.String)
+		}
+
+		updated, err := q.RevertVTXORedeeming(
+			ctx, sqlc.RevertVTXORedeemingParams{
+				OutpointHash:  outpoint.Hash[:],
+				OutpointIndex: int32(outpoint.Index),
+				RedemptionRoundID: sql.NullString{
+					String: roundID,
+					Valid:  true,
+				},
+				LastUpdateTime: s.clock.Now().Unix(),
+			},
+		)
+		if err != nil {
+			return err
+		}
+		if updated != 1 {
+			return fmt.Errorf("cannot revert VTXO %s from %s",
+				outpoint, vtxo.VTXOStatus(row.Status))
+		}
+
+		return nil
+	})
+}
+
+// ListPendingVTXORedemptions returns the durable observer outbox written with
+// a terminal redemption link. It is intentionally local-only: no operator
+// lifecycle mirror is required to replay accounting or actor materialization.
+func (s *VTXOPersistenceStore) ListPendingVTXORedemptions(ctx context.Context) (
+	[]vtxo.PendingRedemption, error) {
+
+	var result []vtxo.PendingRedemption
+	err := s.db.ExecTx(ctx, ReadTxOption(), func(q RoundStore) error {
+		rows, err := q.ListVTXORedemptionOutbox(ctx)
+		if err != nil {
+			return fmt.Errorf("list VTXO redemption outbox: %w",
+				err)
+		}
+
+		result = make([]vtxo.PendingRedemption, 0, len(rows))
+		for _, row := range rows {
+			pending, err := pendingRedemptionFromDB(
+				row.SourceHash, row.SourceIndex,
+				row.ReplacementHash, row.ReplacementIndex,
+				row.RedemptionRoundID,
+			)
+			if err != nil {
+				return err
+			}
+			result = append(result, pending)
+		}
+
+		return nil
+	})
+
+	return result, err
+}
+
+// AcknowledgeVTXORedemption removes one exact observer outbox record after
+// its idempotent effects have been durably accepted. A missing row is an
+// idempotent success; a conflicting tuple is rejected.
+func (s *VTXOPersistenceStore) AcknowledgeVTXORedemption(ctx context.Context,
+	pending vtxo.PendingRedemption) error {
+
+	if pending.RoundID == "" {
+		return fmt.Errorf("redemption round ID is required")
+	}
+
+	return s.db.ExecTx(ctx, WriteTxOption(), func(q RoundStore) error {
+		deleted, err := q.DeleteVTXORedemptionOutbox(
+			ctx, deleteRedemptionOutboxParams(pending),
+		)
+		if err != nil {
+			return fmt.Errorf("delete VTXO redemption outbox: %w",
+				err)
+		}
+		if deleted == 1 {
+			return nil
+		}
+
+		row, err := q.GetVTXORedemptionOutbox(
+			ctx, sqlc.GetVTXORedemptionOutboxParams{
+				SourceHash:  pending.Source.Hash[:],
+				SourceIndex: int32(pending.Source.Index),
+			},
+		)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("get VTXO redemption outbox: %w", err)
+		}
+
+		existing, err := pendingRedemptionFromDB(
+			row.SourceHash, row.SourceIndex, row.ReplacementHash,
+			row.ReplacementIndex, row.RedemptionRoundID,
+		)
+		if err != nil {
+			return err
+		}
+		if existing != pending {
+			return fmt.Errorf("redemption outbox for %s has "+
+				"conflicting replacement or round",
+				pending.Source)
+		}
+
+		return fmt.Errorf("redemption outbox for %s was not "+
+			"acknowledged", pending.Source)
+	})
+}
+
+// FinalizeVTXORedemption atomically persists the replacement VTXO, links the
+// expired source to it, and writes a durable observer outbox record. The
+// source is retired only after the complete replacement descriptor and all
+// information required to replay accounting/materialization are locally
+// durable.
+func (s *VTXOPersistenceStore) FinalizeVTXORedemption(ctx context.Context,
+	source wire.OutPoint, replacement *vtxo.Descriptor) error {
+
+	if replacement == nil {
+		return fmt.Errorf("replacement descriptor is required")
+	}
+	if source == replacement.Outpoint {
+		return fmt.Errorf("replacement must differ from source")
+	}
+	if replacement.RoundID == "" {
+		return fmt.Errorf("replacement round ID is required")
+	}
+
+	writeTxOpts := WriteTxOption()
+
+	return s.db.ExecTx(ctx, writeTxOpts, func(q RoundStore) error {
+		nowUnix := s.clock.Now().Unix()
+		existing, err := q.GetVTXO(ctx, sqlc.GetVTXOParams{
+			OutpointHash:  replacement.Outpoint.Hash[:],
+			OutpointIndex: int32(replacement.Outpoint.Index),
+		})
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			if err := s.saveVTXOTx(
+				ctx, q, replacement,
+			); err != nil {
+				return fmt.Errorf("save replacement: %w", err)
+			}
+
+		case err != nil:
+			return fmt.Errorf("get replacement: %w", err)
+
+		default:
+			// The normal round-confirmation path can persist the
+			// new VTXO before the reconciliation poll learns the
+			// source-to-replacement mapping. Accept that ordering
+			// only when the already-durable row is exactly the
+			// descriptor we are about to link.
+			if err := validateExistingRedemptionReplacement(
+				existing, replacement,
+			); err != nil {
+				return err
+			}
+		}
+
+		updated, err := q.MarkVTXORedeemed(
+			ctx, sqlc.MarkVTXORedeemedParams{
+				OutpointHash:   source.Hash[:],
+				OutpointIndex:  int32(source.Index),
+				ReplacedByHash: replacement.Outpoint.Hash[:],
+				ReplacedByIndex: sql.NullInt32{
+					Int32: int32(
+						replacement.Outpoint.Index,
+					),
+					Valid: true,
+				},
+				RedemptionRoundID: sql.NullString{
+					String: replacement.RoundID,
+					Valid:  replacement.RoundID != "",
+				},
+				LastUpdateTime: nowUnix,
+			},
+		)
+		if err != nil {
+			return err
+		}
+		if updated != 1 {
+			return fmt.Errorf("cannot link redemption source "+
+				"%s to %s", source, replacement.Outpoint)
+		}
+
+		pending := vtxo.PendingRedemption{
+			Source:      source,
+			Replacement: replacement.Outpoint,
+			RoundID:     replacement.RoundID,
+		}
+		inserted, err := q.InsertVTXORedemptionOutbox(
+			ctx, sqlc.InsertVTXORedemptionOutboxParams{
+				SourceHash:      source.Hash[:],
+				SourceIndex:     int32(source.Index),
+				ReplacementHash: replacement.Outpoint.Hash[:],
+				ReplacementIndex: int32(
+					replacement.Outpoint.Index,
+				),
+				RedemptionRoundID: replacement.RoundID,
+				CreationTime:      nowUnix,
+			},
+		)
+		if err != nil {
+			return fmt.Errorf("insert VTXO redemption outbox: %w",
+				err)
+		}
+		if inserted == 1 {
+			return nil
+		}
+
+		outboxRow, err := q.GetVTXORedemptionOutbox(
+			ctx, sqlc.GetVTXORedemptionOutboxParams{
+				SourceHash:  source.Hash[:],
+				SourceIndex: int32(source.Index),
+			},
+		)
+		if err != nil {
+			return fmt.Errorf("get VTXO redemption outbox: %w", err)
+		}
+		existingPending, err := pendingRedemptionFromDB(
+			outboxRow.SourceHash, outboxRow.SourceIndex,
+			outboxRow.ReplacementHash, outboxRow.ReplacementIndex,
+			outboxRow.RedemptionRoundID,
+		)
+		if err != nil {
+			return err
+		}
+		if existingPending != pending {
+			return fmt.Errorf("redemption outbox for %s conflicts "+
+				"with replacement %s", source,
+				replacement.Outpoint)
+		}
+
+		return nil
+	})
+}
+
+// pendingRedemptionFromDB validates and converts one persisted outbox tuple.
+func pendingRedemptionFromDB(sourceHash []byte, sourceIndex int32,
+	replacementHash []byte, replacementIndex int32,
+	roundID string) (vtxo.PendingRedemption, error) {
+
+	var pending vtxo.PendingRedemption
+	if len(sourceHash) != chainhash.HashSize {
+		return pending, fmt.Errorf("redemption source hash has "+
+			"length %d", len(sourceHash))
+	}
+	if len(replacementHash) != chainhash.HashSize {
+		return pending, fmt.Errorf("redemption replacement hash has "+
+			"length %d", len(replacementHash))
+	}
+	if sourceIndex < 0 || replacementIndex < 0 {
+		return pending, fmt.Errorf("redemption outbox has negative " +
+			"index")
+	}
+	if roundID == "" {
+		return pending, fmt.Errorf("redemption outbox has empty " +
+			"round ID")
+	}
+
+	copy(pending.Source.Hash[:], sourceHash)
+	pending.Source.Index = uint32(sourceIndex)
+	copy(pending.Replacement.Hash[:], replacementHash)
+	pending.Replacement.Index = uint32(replacementIndex)
+	pending.RoundID = roundID
+
+	return pending, nil
+}
+
+// deleteRedemptionOutboxParams converts an exact acknowledgement tuple.
+func deleteRedemptionOutboxParams(
+	pending vtxo.PendingRedemption) sqlc.DeleteVTXORedemptionOutboxParams {
+
+	return sqlc.DeleteVTXORedemptionOutboxParams{
+		SourceHash:        pending.Source.Hash[:],
+		SourceIndex:       int32(pending.Source.Index),
+		ReplacementHash:   pending.Replacement.Hash[:],
+		ReplacementIndex:  int32(pending.Replacement.Index),
+		RedemptionRoundID: pending.RoundID,
+	}
+}
+
+// validateExistingRedemptionReplacement rejects an outpoint collision while
+// permitting the ordinary round path to win the replacement insert race.
+func validateExistingRedemptionReplacement(row VTXORow,
+	replacement *vtxo.Descriptor) error {
+
+	matches := row.Amount == int64(replacement.Amount) &&
+		bytes.Equal(row.PkScript, replacement.PkScript) &&
+		bytes.Equal(row.PolicyTemplate, replacement.PolicyTemplate) &&
+		row.RoundID == replacement.RoundID &&
+		bytes.Equal(
+			row.CommitmentTxid, replacement.CommitmentTxID[:],
+		) &&
+		row.BatchExpiry == replacement.BatchExpiry &&
+		row.CreatedHeight == replacement.CreatedHeight &&
+		row.Expiry == int32(replacement.RelativeExpiry) &&
+		row.ChainDepth == int32(replacement.ChainDepth) &&
+		row.ConstructionVersion == int32(
+			replacement.ConstructionVersion,
+		)
+	if !matches {
+		return fmt.Errorf("stored replacement %s conflicts with "+
+			"redemption", replacement.Outpoint)
+	}
+
+	return nil
 }
 
 // deriveDescriptorParts computes the immutable derived parts of one VTXO row:
@@ -940,3 +1416,6 @@ func (s *VTXOPersistenceStore) deriveDescriptorParts(ctx context.Context,
 
 // Compile-time check that VTXOPersistenceStore implements vtxo.VTXOStore.
 var _ vtxo.VTXOStore = (*VTXOPersistenceStore)(nil)
+
+// Compile-time check for the expired-VTXO reconciliation surface.
+var _ vtxo.RedemptionStore = (*VTXOPersistenceStore)(nil)

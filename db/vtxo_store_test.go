@@ -1445,6 +1445,95 @@ func TestVTXOPersistenceStoreStatusTransitions(t *testing.T) {
 	require.Len(t, liveVTXOs, 0)
 }
 
+// TestRecoverLegacyExpiredVTXOs verifies the compatibility update only
+// revives the historical expired-live row shape. Future-expiry, spent, and
+// forfeit-associated failures remain Failed.
+func TestRecoverLegacyExpiredVTXOs(t *testing.T) {
+	t.Parallel()
+
+	vtxoStore, roundStore, _ := newVTXOStoreForTest(t)
+	ctx := t.Context()
+	roundID := testRoundIDDB("legacy-expired-vtxo")
+	testRound := createTestRound(t, roundID)
+	err := roundStore.CommitState(ctx, testRound, &round.InputSigSentState{
+		RoundID:     testRound.RoundID,
+		ClientTrees: make(map[round.SignerKey]*tree.Tree),
+	})
+	require.NoError(t, err)
+
+	legacyExpired := createTestVTXODescriptor(t, roundID, 1)
+	futureFailure := createTestVTXODescriptor(t, roundID, 2)
+	forfeitFailure := createTestVTXODescriptor(t, roundID, 3)
+	spentFailure := createTestVTXODescriptor(t, roundID, 4)
+	for _, desc := range []*vtxo.Descriptor{
+		legacyExpired, futureFailure, forfeitFailure, spentFailure,
+	} {
+		require.NoError(t, vtxoStore.SaveVTXO(ctx, desc))
+	}
+
+	require.NoError(
+		t, vtxoStore.UpdateVTXOStatus(
+			ctx, legacyExpired.Outpoint, vtxo.VTXOStatusFailed,
+		),
+	)
+	require.NoError(
+		t, vtxoStore.UpdateVTXOStatus(
+			ctx, futureFailure.Outpoint, vtxo.VTXOStatusFailed,
+		),
+	)
+	require.NoError(
+		t,
+		vtxoStore.MarkForfeiting(
+			ctx, forfeitFailure.Outpoint, roundID.String(), nil,
+		),
+	)
+	require.NoError(
+		t, vtxoStore.UpdateVTXOStatus(
+			ctx, forfeitFailure.Outpoint, vtxo.VTXOStatusFailed,
+		),
+	)
+	require.NoError(
+		t, vtxoStore.UpdateVTXOStatus(
+			ctx, spentFailure.Outpoint, vtxo.VTXOStatusSpent,
+		),
+	)
+	require.NoError(
+		t, vtxoStore.UpdateVTXOStatus(
+			ctx, spentFailure.Outpoint, vtxo.VTXOStatusFailed,
+		),
+	)
+
+	recovered, err := vtxoStore.RecoverLegacyExpiredVTXOs(ctx, 1_150)
+	require.NoError(t, err)
+	require.Equal(t, []wire.OutPoint{legacyExpired.Outpoint}, recovered)
+
+	for _, test := range []struct {
+		desc   *vtxo.Descriptor
+		status vtxo.VTXOStatus
+	}{
+		{
+			legacyExpired,
+			vtxo.VTXOStatusExpired,
+		},
+		{
+			futureFailure,
+			vtxo.VTXOStatusFailed,
+		},
+		{
+			forfeitFailure,
+			vtxo.VTXOStatusFailed,
+		},
+		{
+			spentFailure,
+			vtxo.VTXOStatusFailed,
+		},
+	} {
+		got, err := vtxoStore.GetVTXO(ctx, test.desc.Outpoint)
+		require.NoError(t, err)
+		require.Equal(t, test.status, got.Status)
+	}
+}
+
 // TestVTXOPersistenceStoreSpentStatusSynchronizesSpentFlag verifies that
 // setting status=Spent via UpdateVTXOStatus also marks spent=true and removes
 // the VTXO from round unspent listings.
@@ -1596,6 +1685,242 @@ func TestVTXOPersistenceStoreDeleteVTXO(t *testing.T) {
 	// Attempting to get the deleted VTXO should fail.
 	_, err = vtxoStore.GetVTXO(ctx, vtxo1.Outpoint)
 	require.Error(t, err, "getting deleted VTXO should fail")
+}
+
+// TestVTXOPersistenceStoreRedemptionLifecycle verifies the append-only local
+// claim states and the atomic replacement handoff used for crash recovery.
+func TestVTXOPersistenceStoreRedemptionLifecycle(t *testing.T) {
+	t.Parallel()
+
+	vtxoStore, roundStore, _ := newVTXOStoreForTest(t)
+	ctx := t.Context()
+
+	sourceRoundID := testRoundIDDB("redemption-source-round")
+	sourceRound := createTestRound(t, sourceRoundID)
+	err := roundStore.CommitState(
+		ctx, sourceRound, &round.InputSigSentState{
+			RoundID:     sourceRound.RoundID,
+			ClientTrees: make(map[round.SignerKey]*tree.Tree),
+		},
+	)
+	require.NoError(t, err)
+
+	source := createTestVTXODescriptor(t, sourceRoundID, 81)
+	require.NoError(t, vtxoStore.SaveVTXO(ctx, source))
+	require.NoError(
+		t, vtxoStore.UpdateVTXOStatus(
+			ctx, source.Outpoint, vtxo.VTXOStatusExpired,
+		),
+	)
+
+	// Adoption and rollback are both replay-safe.
+	firstClaimRoundID := testRoundIDDB("redemption-claim-round-a").String()
+	require.NoError(
+		t, vtxoStore.MarkVTXORedeeming(
+			ctx, firstClaimRoundID, source.Outpoint,
+		),
+	)
+	require.NoError(
+		t, vtxoStore.MarkVTXORedeeming(
+			ctx, firstClaimRoundID, source.Outpoint,
+		),
+	)
+	fetched, err := vtxoStore.GetVTXO(ctx, source.Outpoint)
+	require.NoError(t, err)
+	require.Equal(t, vtxo.VTXOStatusRedeeming, fetched.Status)
+	require.Equal(
+		t, firstClaimRoundID,
+		fetched.RedemptionRoundID.UnsafeFromSome(),
+	)
+
+	// A stale failure callback cannot release a claim adopted by another
+	// round.
+	require.Error(
+		t, vtxoStore.RevertVTXORedeeming(
+			ctx, "wrong-redemption-round", source.Outpoint,
+		),
+	)
+	require.Error(
+		t, vtxoStore.MarkVTXORedeeming(
+			ctx, "wrong-redemption-round", source.Outpoint,
+		),
+	)
+
+	require.NoError(
+		t, vtxoStore.RevertVTXORedeeming(
+			ctx, firstClaimRoundID, source.Outpoint,
+		),
+	)
+	require.NoError(
+		t, vtxoStore.RevertVTXORedeeming(
+			ctx, firstClaimRoundID, source.Outpoint,
+		),
+	)
+	fetched, err = vtxoStore.GetVTXO(ctx, source.Outpoint)
+	require.NoError(t, err)
+	require.Equal(t, vtxo.VTXOStatusExpired, fetched.Status)
+	require.True(t, fetched.RedemptionRoundID.IsNone())
+
+	replacementRoundID := testRoundIDDB("redemption-replacement-round")
+	require.NoError(
+		t,
+		vtxoStore.MarkVTXORedeeming(
+			ctx, replacementRoundID.String(), source.Outpoint,
+		),
+	)
+
+	replacement := createTestVTXODescriptor(t, replacementRoundID, 82)
+	replacement.Amount = source.Amount
+	replacement.PolicyTemplate = append(
+		[]byte(nil), source.PolicyTemplate...,
+	)
+	replacement.PkScript = append([]byte(nil), source.PkScript...)
+
+	// The normal round confirmation path can persist the replacement before
+	// the next selective reconciliation poll learns the canonical source
+	// link.
+	require.NoError(t, vtxoStore.SaveVTXO(ctx, replacement))
+	require.NoError(
+		t, vtxoStore.FinalizeVTXORedemption(
+			ctx, source.Outpoint, replacement,
+		),
+	)
+	// Confirmation replay with the same source/replacement is idempotent.
+	require.NoError(
+		t, vtxoStore.FinalizeVTXORedemption(
+			ctx, source.Outpoint, replacement,
+		),
+	)
+
+	fetched, err = vtxoStore.GetVTXO(ctx, source.Outpoint)
+	require.NoError(t, err)
+	require.Equal(t, vtxo.VTXOStatusRedeemed, fetched.Status)
+	require.Equal(
+		t, replacement.Outpoint, fetched.ReplacedBy.UnsafeFromSome(),
+	)
+	require.Equal(
+		t, replacementRoundID.String(),
+		fetched.RedemptionRoundID.UnsafeFromSome(),
+	)
+	persistedReplacement, err := vtxoStore.GetVTXO(
+		ctx, replacement.Outpoint,
+	)
+	require.NoError(t, err)
+	require.Equal(t, vtxo.VTXOStatusLive, persistedReplacement.Status)
+
+	// Finalization and observer enqueue are one transaction. The exact
+	// source/replacement/round tuple remains pending across restart until
+	// the idempotent observer acknowledges it; stale acknowledgements
+	// cannot clear the row.
+	pending, err := vtxoStore.ListPendingVTXORedemptions(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []vtxo.PendingRedemption{{
+		Source:      source.Outpoint,
+		Replacement: replacement.Outpoint,
+		RoundID:     replacement.RoundID,
+	}}, pending)
+	wrongAcknowledgement := pending[0]
+	wrongAcknowledgement.RoundID = "wrong-redemption-round"
+	require.Error(
+		t, vtxoStore.AcknowledgeVTXORedemption(
+			ctx, wrongAcknowledgement,
+		),
+	)
+	pending, err = vtxoStore.ListPendingVTXORedemptions(ctx)
+	require.NoError(t, err)
+	require.Len(t, pending, 1)
+	require.NoError(
+		t, vtxoStore.AcknowledgeVTXORedemption(ctx, pending[0]),
+	)
+	require.NoError(
+		t, vtxoStore.AcknowledgeVTXORedemption(ctx, pending[0]),
+	)
+	pending, err = vtxoStore.ListPendingVTXORedemptions(ctx)
+	require.NoError(t, err)
+	require.Empty(t, pending)
+
+	// A conflicting replay rolls back its replacement insert and preserves
+	// the original canonical link.
+	conflict := createTestVTXODescriptor(
+		t, testRoundIDDB("conflicting-replacement-round"), 83,
+	)
+	require.Error(
+		t, vtxoStore.FinalizeVTXORedemption(
+			ctx, source.Outpoint, conflict,
+		),
+	)
+	_, err = vtxoStore.GetVTXO(ctx, conflict.Outpoint)
+	require.ErrorIs(t, err, vtxo.ErrVTXONotFound)
+	fetched, err = vtxoStore.GetVTXO(ctx, source.Outpoint)
+	require.NoError(t, err)
+	require.Equal(
+		t, replacement.Outpoint, fetched.ReplacedBy.UnsafeFromSome(),
+	)
+}
+
+// TestFinalizeVTXORedemptionSupersedesAbandonedRound verifies an
+// authoritative completed mapping from another participant replaces a stale
+// local Redeeming owner and records the replacement round in both the source
+// row and durable observer outbox.
+func TestFinalizeVTXORedemptionSupersedesAbandonedRound(t *testing.T) {
+	t.Parallel()
+
+	vtxoStore, roundStore, _ := newVTXOStoreForTest(t)
+	ctx := t.Context()
+	sourceRoundID := testRoundIDDB("superseded-redemption-source")
+	sourceRound := createTestRound(t, sourceRoundID)
+	err := roundStore.CommitState(
+		ctx, sourceRound, &round.InputSigSentState{
+			RoundID:     sourceRound.RoundID,
+			ClientTrees: make(map[round.SignerKey]*tree.Tree),
+		},
+	)
+	require.NoError(t, err)
+
+	source := createTestVTXODescriptor(t, sourceRoundID, 91)
+	require.NoError(t, vtxoStore.SaveVTXO(ctx, source))
+	require.NoError(
+		t, vtxoStore.UpdateVTXOStatus(
+			ctx, source.Outpoint, vtxo.VTXOStatusExpired,
+		),
+	)
+	staleRoundID := testRoundIDDB("abandoned-redemption-round").String()
+	require.NoError(
+		t, vtxoStore.MarkVTXORedeeming(
+			ctx, staleRoundID, source.Outpoint,
+		),
+	)
+
+	replacementRoundID := testRoundIDDB("authoritative-redemption-round")
+	replacement := createTestVTXODescriptor(t, replacementRoundID, 92)
+	replacement.Amount = source.Amount
+	replacement.PolicyTemplate = append(
+		[]byte(nil), source.PolicyTemplate...,
+	)
+	replacement.PkScript = append([]byte(nil), source.PkScript...)
+	require.NoError(
+		t, vtxoStore.FinalizeVTXORedemption(
+			ctx, source.Outpoint, replacement,
+		),
+	)
+
+	fetched, err := vtxoStore.GetVTXO(ctx, source.Outpoint)
+	require.NoError(t, err)
+	require.Equal(t, vtxo.VTXOStatusRedeemed, fetched.Status)
+	require.Equal(
+		t, replacement.Outpoint, fetched.ReplacedBy.UnsafeFromSome(),
+	)
+	require.Equal(
+		t, replacementRoundID.String(),
+		fetched.RedemptionRoundID.UnsafeFromSome(),
+	)
+	pending, err := vtxoStore.ListPendingVTXORedemptions(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []vtxo.PendingRedemption{{
+		Source:      source.Outpoint,
+		Replacement: replacement.Outpoint,
+		RoundID:     replacementRoundID.String(),
+	}}, pending)
 }
 
 // TestVTXOPersistenceStoreMarkForfeitedRecordsTxID tests that MarkForfeited

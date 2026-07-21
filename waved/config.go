@@ -23,6 +23,7 @@ import (
 	"github.com/lightninglabs/wavelength/metrics"
 	"github.com/lightninglabs/wavelength/oor"
 	"github.com/lightninglabs/wavelength/rpc/roundpb"
+	"github.com/lightninglabs/wavelength/vtxo"
 	"google.golang.org/grpc"
 )
 
@@ -251,6 +252,27 @@ type Config struct {
 	// by a direct bitcoind RPC client. Set programmatically by the
 	// test harness; not serialized to config files.
 	PackageSubmitter chainbackends.PackageSubmitter
+
+	// VTXORedemptionChecker selectively cross-checks VTXOs that the local
+	// synchronized chain view already classified Expired. Nil keeps local
+	// classification enabled while operator support is unavailable.
+	VTXORedemptionChecker vtxo.RedemptionChecker `mapstructure:"-"`
+
+	// VTXORedemptionSubmitter hands redeemable descriptors to the round
+	// protocol. The integration owns authorization and calls the
+	// coordinator lifecycle hooks at round adoption, rollback, and
+	// confirmation.
+	VTXORedemptionSubmitter vtxo.RedemptionSubmitter `mapstructure:"-"`
+
+	// VTXOReplacementResolver fetches a complete replacement descriptor for
+	// an operator-reported outpoint. Nil falls back to the local VTXO
+	// store.
+	VTXOReplacementResolver vtxo.ReplacementResolver `mapstructure:"-"`
+
+	// VTXORedemptionPollInterval controls retry cadence after an expired
+	// claim is omitted or the operator checker is temporarily unavailable.
+	// Zero selects the coordinator default.
+	VTXORedemptionPollInterval time.Duration `mapstructure:"-"`
 
 	// FailUnrollBroadcastReason is a TEST-ONLY hook. When non-empty, the
 	// unroll subsystem's tx-confirmation requests are rejected with this

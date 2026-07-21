@@ -556,6 +556,12 @@ message GetBalanceResponse {
     // total_confirmed_sat; reappears under onchain_wallet_confirmed_sat
     // once the sweep confirms.
     int64 vtxo_unilateral_exit_sat = 10;
+
+    // vtxo_pending_reissue_sat is the value of locally expired VTXOs that
+    // are waiting for a finalized operator-sweep claim or whose reissue
+    // round is in flight. It includes EXPIRED and REDEEMING VTXOs, is not
+    // spendable, and is excluded from total_confirmed_sat.
+    int64 vtxo_pending_reissue_sat = 11;
 }
 
 // VTXOStatus represents the lifecycle state of a virtual transaction
@@ -602,6 +608,19 @@ enum VTXOStatus {
     // amount, originating round_id, and (once known) the commitment
     // txid that will create them.
     VTXO_STATUS_PENDING_ROUND = 9;
+
+    // VTXO_STATUS_EXPIRED indicates the synchronized client chain height
+    // reached the batch expiry. The VTXO is no longer spendable, but may
+    // become eligible for an operator-sweep reissue.
+    VTXO_STATUS_EXPIRED = 10;
+
+    // VTXO_STATUS_REDEEMING indicates an expired-VTXO claim was durably
+    // adopted by a reissue round whose replacement has not confirmed yet.
+    VTXO_STATUS_REDEEMING = 11;
+
+    // VTXO_STATUS_REDEEMED is terminal: the expired VTXO was linked to a
+    // replacement VTXO.
+    VTXO_STATUS_REDEEMED = 12;
 }
 
 // VTXOExpiryStatus describes how close a VTXO is to batch expiry using the
@@ -718,6 +737,11 @@ message VTXO {
     // only for FORFEITED VTXOs whose forfeit round is known, and unset
     // otherwise, so absence is explicit rather than a zero-value sentinel.
     VTXOSettlement settlement = 14;
+
+    // replaced_by is the canonical outpoint of the replacement VTXO after
+    // a cooperative refresh or expired-VTXO reissue. It is empty until the
+    // replacement is known locally.
+    string replaced_by = 15;
 }
 
 message VTXOSettlement {

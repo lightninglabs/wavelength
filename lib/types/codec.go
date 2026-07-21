@@ -18,7 +18,7 @@ import (
 const (
 	// joinRoundAuthMessageVersion is the canonical message encoding version
 	// used for join-round authentication payloads.
-	joinRoundAuthMessageVersion uint64 = 3
+	joinRoundAuthMessageVersion uint64 = 4
 
 	// joinRoundAuthDomainTag domain-separates join request authentication
 	// payloads from other signed messages.
@@ -33,6 +33,18 @@ const (
 	joinRoundAuthMessageVTXORecordType    tlv.Type = 5
 	joinRoundAuthMessageForfeitRecordType tlv.Type = 6
 	joinRoundAuthMessageLeaveRecordType   tlv.Type = 7
+	joinRoundAuthMessageClaimRecordType   tlv.Type = 8
+)
+
+const (
+	joinRoundAuthClaimSourceHashRecordType     tlv.Type = 1
+	joinRoundAuthClaimSourceIndexRecordType    tlv.Type = 2
+	joinRoundAuthClaimParticipantRecordType    tlv.Type = 3
+	joinRoundAuthClaimReplacementKeyRecordType tlv.Type = 4
+	joinRoundAuthClaimNonceRecordType          tlv.Type = 5
+	joinRoundAuthClaimValidFromRecordType      tlv.Type = 6
+	joinRoundAuthClaimValidUntilRecordType     tlv.Type = 7
+	joinRoundAuthClaimSignatureRecordType      tlv.Type = 8
 )
 
 const (
@@ -107,13 +119,14 @@ type JoinRoundAuth struct {
 //	+-------+-------------------------------------------+
 //	| type  | field                                     |
 //	+-------+-------------------------------------------+
-//	|   1   | version   (uint64, currently 3)           |
+//	|   1   | version   (uint64, currently 4)           |
 //	|   2   | domain    ("wavelength-join-round-auth")   |
 //	|   3   | identifier (33-byte compressed pubkey)    |
 //	|   4   | boarding  (blob list)                     |
 //	|   5   | vtxos     (blob list)                     |
 //	|   6   | forfeits  (blob list)                     |
 //	|   7   | leaves    (blob list)                     |
+//	|   8   | claims    (blob list)                     |
 //	+-------+-------------------------------------------+
 //
 // Each blob list is encoded as:
@@ -168,11 +181,16 @@ func JoinRoundAuthMessage(req *JoinRoundRequest) ([]byte, error) {
 		return nil, err
 	}
 
+	claimBlob, err := encodeJoinAuthClaimInputs(req.ClaimInputs)
+	if err != nil {
+		return nil, err
+	}
+
 	version := joinRoundAuthMessageVersion
 	domainTag := []byte(joinRoundAuthDomainTag)
 	identifier := req.Identifier.SerializeCompressed()
 
-	records := make([]tlv.Record, 0, 7)
+	records := make([]tlv.Record, 0, 8)
 	records = append(
 		records, tlv.MakePrimitiveRecord(
 			joinRoundAuthMessageVersionRecordType, &version,
@@ -209,6 +227,11 @@ func JoinRoundAuthMessage(req *JoinRoundRequest) ([]byte, error) {
 			joinRoundAuthMessageLeaveRecordType, &leaveBlob,
 		),
 	)
+	records = append(
+		records, tlv.MakePrimitiveRecord(
+			joinRoundAuthMessageClaimRecordType, &claimBlob,
+		),
+	)
 
 	return encodeJoinAuthTLV(records)
 }
@@ -229,6 +252,7 @@ func DecodeJoinRoundAuthMessage(raw []byte) (*JoinRoundRequest, error) {
 		vtxoRaw     []byte
 		forfeitRaw  []byte
 		leaveRaw    []byte
+		claimRaw    []byte
 	)
 
 	stream, err := tlv.NewStream(
@@ -252,6 +276,9 @@ func DecodeJoinRoundAuthMessage(raw []byte) (*JoinRoundRequest, error) {
 		),
 		tlv.MakePrimitiveRecord(
 			joinRoundAuthMessageLeaveRecordType, &leaveRaw,
+		),
+		tlv.MakePrimitiveRecord(
+			joinRoundAuthMessageClaimRecordType, &claimRaw,
 		),
 	)
 	if err != nil {
@@ -313,6 +340,12 @@ func DecodeJoinRoundAuthMessage(raw []byte) (*JoinRoundRequest, error) {
 	if err != nil {
 		return nil, err
 	}
+	err = requireJoinAuthRecord(
+		parsedTypes, joinRoundAuthMessageClaimRecordType, "claim",
+	)
+	if err != nil {
+		return nil, err
+	}
 
 	if version != joinRoundAuthMessageVersion {
 		return nil, fmt.Errorf("unsupported join auth message "+
@@ -343,6 +376,11 @@ func DecodeJoinRoundAuthMessage(raw []byte) (*JoinRoundRequest, error) {
 		return nil, err
 	}
 
+	claimInputs, err := decodeJoinAuthClaimInputs(claimRaw)
+	if err != nil {
+		return nil, err
+	}
+
 	identifierKey, err := decodeJoinAuthPubKey(identifier)
 	if err != nil {
 		return nil, fmt.Errorf("decode identifier: %w", err)
@@ -354,6 +392,7 @@ func DecodeJoinRoundAuthMessage(raw []byte) (*JoinRoundRequest, error) {
 		VTXOReqs:     vtxoReqs,
 		ForfeitReqs:  forfeitReqs,
 		LeaveReqs:    leaveReqs,
+		ClaimInputs:  claimInputs,
 	}, nil
 }
 
@@ -773,6 +812,168 @@ func decodeJoinAuthLeaveRequest(raw []byte) (*LeaveRequest, error) {
 	}, nil
 }
 
+// decodeJoinAuthClaimInputs parses a claim input list from blob-list bytes.
+func decodeJoinAuthClaimInputs(raw []byte) ([]*VTXOClaimInput, error) {
+	entries, err := decodeJoinAuthBlobList(
+		raw, joinRoundAuthMaxRequestCount,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("decode claim inputs: %w", err)
+	}
+
+	claims := make([]*VTXOClaimInput, 0, len(entries))
+	for i := 0; i < len(entries); i++ {
+		claim, err := decodeJoinAuthClaimInput(entries[i])
+		if err != nil {
+			return nil, fmt.Errorf("decode claim input %d: %w", i,
+				err)
+		}
+
+		claims = append(claims, claim)
+	}
+
+	return claims, nil
+}
+
+// decodeJoinAuthClaimInput parses one claim input entry.
+func decodeJoinAuthClaimInput(raw []byte) (*VTXOClaimInput, error) {
+	var (
+		hash        []byte
+		index       uint64
+		participant []byte
+		replacement []byte
+		nonce       []byte
+		validFrom   uint64
+		validUntil  uint64
+		signature   []byte
+	)
+
+	stream, err := tlv.NewStream(
+		tlv.MakePrimitiveRecord(
+			joinRoundAuthClaimSourceHashRecordType, &hash,
+		),
+		tlv.MakePrimitiveRecord(
+			joinRoundAuthClaimSourceIndexRecordType, &index,
+		),
+		tlv.MakePrimitiveRecord(
+			joinRoundAuthClaimParticipantRecordType, &participant,
+		),
+		tlv.MakePrimitiveRecord(
+			joinRoundAuthClaimReplacementKeyRecordType,
+			&replacement,
+		),
+		tlv.MakePrimitiveRecord(
+			joinRoundAuthClaimNonceRecordType, &nonce,
+		),
+		tlv.MakePrimitiveRecord(
+			joinRoundAuthClaimValidFromRecordType, &validFrom,
+		),
+		tlv.MakePrimitiveRecord(
+			joinRoundAuthClaimValidUntilRecordType, &validUntil,
+		),
+		tlv.MakePrimitiveRecord(
+			joinRoundAuthClaimSignatureRecordType, &signature,
+		),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("create claim decode stream: %w", err)
+	}
+
+	reader := bytes.NewReader(raw)
+	parsedTypes, err := stream.DecodeWithParsedTypes(reader)
+	if err != nil {
+		return nil, fmt.Errorf("decode claim input: %w", err)
+	}
+	if reader.Len() != 0 {
+		return nil, fmt.Errorf("decode claim input: %d trailing bytes",
+			reader.Len())
+	}
+
+	required := []struct {
+		typeID tlv.Type
+		name   string
+	}{
+		{
+			joinRoundAuthClaimSourceHashRecordType,
+			"source hash",
+		},
+		{
+			joinRoundAuthClaimSourceIndexRecordType,
+			"source index",
+		},
+		{
+			joinRoundAuthClaimParticipantRecordType,
+			"participant key",
+		},
+		{
+			joinRoundAuthClaimReplacementKeyRecordType,
+			"replacement key",
+		},
+		{
+			joinRoundAuthClaimNonceRecordType,
+			"nonce",
+		},
+		{
+			joinRoundAuthClaimValidFromRecordType,
+			"valid from",
+		},
+		{
+			joinRoundAuthClaimValidUntilRecordType,
+			"valid until",
+		},
+		{
+			joinRoundAuthClaimSignatureRecordType,
+			"signature",
+		},
+	}
+	for _, record := range required {
+		err := requireJoinAuthRecord(
+			parsedTypes, record.typeID, "claim "+record.name,
+		)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	outpoint, err := decodeJoinAuthOutPoint(hash, index)
+	if err != nil {
+		return nil, err
+	}
+	participantKey, err := decodeJoinAuthPubKey(participant)
+	if err != nil {
+		return nil, fmt.Errorf("decode claim participant key: %w", err)
+	}
+	replacementKey, err := decodeJoinAuthPubKey(replacement)
+	if err != nil {
+		return nil, fmt.Errorf("decode claim replacement key: %w", err)
+	}
+	if len(nonce) != VTXOClaimNonceSize {
+		return nil, fmt.Errorf("claim nonce must be %d bytes",
+			VTXOClaimNonceSize)
+	}
+	if len(signature) != VTXOClaimSignatureSize {
+		return nil, fmt.Errorf("claim signature must be %d bytes",
+			VTXOClaimSignatureSize)
+	}
+	if validFrom > math.MaxUint32 || validUntil > math.MaxUint32 {
+		return nil, fmt.Errorf("claim validity height exceeds uint32")
+	}
+
+	claim := &VTXOClaimInput{
+		SourceOutpoint:    *outpoint,
+		ParticipantPubKey: participantKey,
+		ReplacementSigningKey: keychain.KeyDescriptor{
+			PubKey: replacementKey,
+		},
+		ValidFrom:  uint32(validFrom),
+		ValidUntil: uint32(validUntil),
+		Signature:  bytes.Clone(signature),
+	}
+	copy(claim.Nonce[:], nonce)
+
+	return claim, nil
+}
+
 // decodeJoinAuthOutPoint parses a hash/index pair into a wire outpoint.
 func decodeJoinAuthOutPoint(hash []byte, index uint64) (*wire.OutPoint, error) {
 	if len(hash) != chainhash.HashSize {
@@ -1092,6 +1293,87 @@ func encodeJoinAuthLeaveRequests(requests []*LeaveRequest) ([]byte, error) {
 	}
 
 	return encodeJoinAuthBlobList(entries)
+}
+
+// encodeJoinAuthClaimInputs serializes claim inputs in request order.
+func encodeJoinAuthClaimInputs(claims []*VTXOClaimInput) ([]byte, error) {
+	entries := make([][]byte, 0, len(claims))
+	for i := 0; i < len(claims); i++ {
+		if claims[i] == nil {
+			return nil, fmt.Errorf("claim input %d must be "+
+				"provided", i)
+		}
+
+		entry, err := encodeJoinAuthClaimInput(claims[i])
+		if err != nil {
+			return nil, fmt.Errorf("claim input %d: %w", i, err)
+		}
+		entries = append(entries, entry)
+	}
+
+	return encodeJoinAuthBlobList(entries)
+}
+
+// encodeJoinAuthClaimInput serializes one claim input as TLV.
+func encodeJoinAuthClaimInput(claim *VTXOClaimInput) ([]byte, error) {
+	hash, index, err := encodeJoinAuthOutPoint(&claim.SourceOutpoint)
+	if err != nil {
+		return nil, fmt.Errorf("source outpoint: %w", err)
+	}
+	participant, err := encodeJoinAuthPubKey(claim.ParticipantPubKey)
+	if err != nil {
+		return nil, fmt.Errorf("participant key: %w", err)
+	}
+	replacement, err := encodeJoinAuthPubKey(
+		claim.ReplacementSigningKey.PubKey,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("replacement key: %w", err)
+	}
+	if claim.Nonce == ([VTXOClaimNonceSize]byte{}) {
+		return nil, fmt.Errorf("nonce must be non-zero")
+	}
+	if claim.ValidUntil == 0 || claim.ValidUntil < claim.ValidFrom {
+		return nil, fmt.Errorf("invalid validity window %d..%d",
+			claim.ValidFrom, claim.ValidUntil)
+	}
+	if len(claim.Signature) != VTXOClaimSignatureSize {
+		return nil, fmt.Errorf("signature must be %d bytes",
+			VTXOClaimSignatureSize)
+	}
+
+	nonce := bytes.Clone(claim.Nonce[:])
+	validFrom := uint64(claim.ValidFrom)
+	validUntil := uint64(claim.ValidUntil)
+	signature := bytes.Clone(claim.Signature)
+
+	return encodeJoinAuthTLV([]tlv.Record{
+		tlv.MakePrimitiveRecord(
+			joinRoundAuthClaimSourceHashRecordType, &hash,
+		),
+		tlv.MakePrimitiveRecord(
+			joinRoundAuthClaimSourceIndexRecordType, &index,
+		),
+		tlv.MakePrimitiveRecord(
+			joinRoundAuthClaimParticipantRecordType, &participant,
+		),
+		tlv.MakePrimitiveRecord(
+			joinRoundAuthClaimReplacementKeyRecordType,
+			&replacement,
+		),
+		tlv.MakePrimitiveRecord(
+			joinRoundAuthClaimNonceRecordType, &nonce,
+		),
+		tlv.MakePrimitiveRecord(
+			joinRoundAuthClaimValidFromRecordType, &validFrom,
+		),
+		tlv.MakePrimitiveRecord(
+			joinRoundAuthClaimValidUntilRecordType, &validUntil,
+		),
+		tlv.MakePrimitiveRecord(
+			joinRoundAuthClaimSignatureRecordType, &signature,
+		),
+	})
 }
 
 // encodeJoinAuthLeaveRequest serializes one leave request as TLV.

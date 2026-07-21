@@ -26,6 +26,10 @@ type WatchPlan struct {
 	// TargetOutpoint is the VTXO to unroll if any watched ancestor spends.
 	TargetOutpoint wire.OutPoint
 
+	// BatchExpiry is the absolute height at which the target stops being
+	// live and becomes eligible for operator-sweep reissue.
+	BatchExpiry int32
+
 	// Watches are the ancestor outpoints that indicate materialization has
 	// started.
 	Watches []WatchPoint
@@ -41,6 +45,11 @@ type WatchPoint struct {
 
 	// HeightHint is the earliest plausible spend height.
 	HeightHint uint32
+
+	// SweepTapscriptRoot is the committed operator timeout leaf for a
+	// VTXO-tree input. It is empty for the leaf-output watch, whose spend
+	// is always ancestry materialization rather than a batch-root sweep.
+	SweepTapscriptRoot []byte
 }
 
 // BuildWatchPlan builds the passive fraud watch set for desc.
@@ -69,7 +78,8 @@ func BuildWatchPlan(desc *vtxo.Descriptor) (*WatchPlan, error) {
 
 		err := collectTreeWatches(
 			treePath.Root, treePath.BatchOutput.PkScript,
-			heightHint, watchesByOutpoint,
+			treePath.SweepTapscriptRoot, heightHint,
+			watchesByOutpoint,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("ancestry %d: %w", i, err)
@@ -84,6 +94,7 @@ func BuildWatchPlan(desc *vtxo.Descriptor) (*WatchPlan, error) {
 
 	return &WatchPlan{
 		TargetOutpoint: desc.Outpoint,
+		BatchExpiry:    desc.BatchExpiry,
 		Watches:        watches,
 	}, nil
 }
@@ -92,7 +103,8 @@ func BuildWatchPlan(desc *vtxo.Descriptor) (*WatchPlan, error) {
 // inputs detect tree materialization; leaf-output watches detect the first OOR
 // checkpoint spending the materialized source VTXO.
 func collectTreeWatches(node *tree.Node, inputPkScript []byte,
-	heightHint uint32, watches map[wire.OutPoint]WatchPoint) error {
+	sweepTapscriptRoot []byte, heightHint uint32,
+	watches map[wire.OutPoint]WatchPoint) error {
 
 	if node == nil {
 		return fmt.Errorf("%w: nil tree node", ErrWatchInvalid)
@@ -106,6 +118,9 @@ func collectTreeWatches(node *tree.Node, inputPkScript []byte,
 		Outpoint:   node.Input,
 		PkScript:   append([]byte(nil), inputPkScript...),
 		HeightHint: heightHint,
+		SweepTapscriptRoot: append(
+			[]byte(nil), sweepTapscriptRoot...,
+		),
 	}
 
 	if node.IsLeaf() {
@@ -147,8 +162,8 @@ func collectTreeWatches(node *tree.Node, inputPkScript []byte,
 		}
 
 		err := collectTreeWatches(
-			child, node.Outputs[outputIndex].PkScript, heightHint,
-			watches,
+			child, node.Outputs[outputIndex].PkScript,
+			sweepTapscriptRoot, heightHint, watches,
 		)
 		if err != nil {
 			return err

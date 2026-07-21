@@ -85,6 +85,7 @@ const (
 	SourceRoundRefresh  = "round_refresh"
 	SourceRoundTransfer = "round_transfer"
 	SourceOOR           = "oor"
+	SourceClaimReissue  = "claim_reissue"
 )
 
 // Canonical FeePaidMsg.FeeType values. A misspelled or missing
@@ -498,6 +499,9 @@ func (a *LedgerActor) Receive(ctx context.Context, msg LedgerMsg,
 
 	case *VTXOSentMsg:
 		return a.handleVTXOSent(ctx, m, ax)
+
+	case *VTXOClaimReissuedMsg:
+		return a.handleVTXOClaimReissued(ctx, m, ax)
 
 	case *ExitCostMsg:
 		return a.handleExitCost(ctx, m, ax)

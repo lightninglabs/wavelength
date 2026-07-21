@@ -14,6 +14,7 @@ import (
 	"github.com/lightninglabs/wavelength/lib/types"
 	"github.com/lightninglabs/wavelength/rpc/roundpb"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
 )
 
@@ -215,6 +216,52 @@ func TestOutboxMessagesToProto(t *testing.T) {
 			t, mustEncodeMessageSpendPath(t, forfeitSpend),
 			pb.GetForfeitRequests()[0].GetForfeitSpendPath(),
 		)
+	})
+
+	t.Run("JoinRoundRequest_ToProto claim input", func(t *testing.T) {
+		t.Parallel()
+
+		replacement, err := btcec.NewPrivateKey()
+		require.NoError(t, err)
+		claim := &types.VTXOClaimInput{
+			SourceOutpoint: wire.OutPoint{
+				Hash: chainhash.Hash{
+					1,
+				},
+				Index: 2,
+			},
+			ParticipantPubKey: pubKey,
+			ReplacementSigningKey: keychain.KeyDescriptor{
+				PubKey: replacement.PubKey(),
+			},
+			ValidFrom:  10,
+			ValidUntil: 20,
+			Signature: make(
+				[]byte, types.VTXOClaimSignatureSize,
+			),
+		}
+		claim.Nonce[0] = 1
+
+		result := (&JoinRoundRequest{
+			ClaimInputs: []*types.VTXOClaimInput{
+				claim,
+			},
+		}).ToProto().UnwrapOrFail(t)
+		pb, ok := result.(*roundpb.JoinRoundRequest)
+		require.True(t, ok)
+		require.Len(t, pb.GetClaimInputs(), 1)
+		got := pb.GetClaimInputs()[0]
+		require.Equal(t, uint32(2), got.GetSourceOutpoint().OutputIndex)
+		require.Equal(
+			t, pubKey.SerializeCompressed(),
+			got.GetParticipantPubkey(),
+		)
+		require.Equal(
+			t, replacement.PubKey().SerializeCompressed(),
+			got.GetReplacementSigningPubkey(),
+		)
+		require.Equal(t, claim.Nonce[:], got.GetNonce())
+		require.Equal(t, claim.Signature, got.GetSignature())
 	})
 
 	t.Run("SubmitNoncesRequest_ToProto", func(t *testing.T) {

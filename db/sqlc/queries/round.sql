@@ -4,14 +4,15 @@
 INSERT INTO rounds (
     round_id, confirmation_height, confirmation_block_hash, commitment_tx,
     commitment_txid, vtxt_tree, status, creation_time, last_update_time,
-    start_height, flow_version
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+    start_height, flow_version, sweep_delay
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 ON CONFLICT (round_id) DO UPDATE SET
     confirmation_height = COALESCE(excluded.confirmation_height, rounds.confirmation_height),
     confirmation_block_hash = COALESCE(excluded.confirmation_block_hash, rounds.confirmation_block_hash),
     commitment_tx = COALESCE(excluded.commitment_tx, rounds.commitment_tx),
     commitment_txid = COALESCE(excluded.commitment_txid, rounds.commitment_txid),
     vtxt_tree = COALESCE(excluded.vtxt_tree, rounds.vtxt_tree),
+    sweep_delay = excluded.sweep_delay,
     status = excluded.status,
     last_update_time = excluded.last_update_time;
 
@@ -76,12 +77,26 @@ WHERE round_id = $1 AND outpoint_hash = $2 AND outpoint_index = $3;
 -- name: InsertRoundVtxoRequest :exec
 INSERT INTO round_vtxo_requests (
     round_id, request_index, amount, pk_script, expiry, policy_template,
-    client_pubkey, operator_pubkey, owner_key_id, signing_key_id
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+    client_pubkey, operator_pubkey, owner_key_id, signing_key_id, origin
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
     ON CONFLICT (round_id, request_index) DO NOTHING;
 
 -- name: GetRoundVtxoRequests :many
 SELECT * FROM round_vtxo_requests
+WHERE round_id = $1
+ORDER BY request_index ASC;
+
+-- Round VTXO claim queries.
+
+-- name: InsertRoundVtxoClaim :exec
+INSERT INTO round_vtxo_claims (
+    round_id, request_index, source_hash, source_index,
+    participant_pubkey, nonce, valid_from, valid_until, signature
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+ON CONFLICT (round_id, source_hash, source_index) DO NOTHING;
+
+-- name: GetRoundVtxoClaims :many
+SELECT * FROM round_vtxo_claims
 WHERE round_id = $1
 ORDER BY request_index ASC;
 
@@ -135,10 +150,10 @@ INSERT INTO vtxos (
     policy_template, client_key_id,
     operator_pubkey, batch_expiry, chain_depth,
     created_height, commitment_txid, spent, creation_time, last_update_time,
-    construction_version
+    construction_version, redemption_round_id
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-    $17
+    $17, $18
 )
 ON CONFLICT (outpoint_hash, outpoint_index) DO UPDATE SET
     pk_script = CASE WHEN excluded.pk_script IS NOT NULL AND length(excluded.pk_script) > 0 THEN excluded.pk_script ELSE vtxos.pk_script END,
@@ -150,6 +165,7 @@ ON CONFLICT (outpoint_hash, outpoint_index) DO UPDATE SET
     chain_depth = CASE WHEN excluded.chain_depth != 0 THEN excluded.chain_depth ELSE vtxos.chain_depth END,
     created_height = CASE WHEN excluded.created_height != 0 THEN excluded.created_height ELSE vtxos.created_height END,
     commitment_txid = CASE WHEN excluded.commitment_txid IS NOT NULL AND length(excluded.commitment_txid) > 0 THEN excluded.commitment_txid ELSE vtxos.commitment_txid END,
+    redemption_round_id = COALESCE(excluded.redemption_round_id, vtxos.redemption_round_id),
     last_update_time = excluded.last_update_time;
 
 -- name: InsertVTXOAncestryPath :exec

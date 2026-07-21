@@ -7,11 +7,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/chainsource"
 	"github.com/lightninglabs/wavelength/lib/actormsg"
+	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/vtxo"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
@@ -128,9 +131,10 @@ func (f *fakeChainSourceRef) emitSpend(t *testing.T, outpoint wire.OutPoint) {
 // ForceUnrollResponse. A non-nil err makes the Ask fail so the fanout
 // best-effort behavior can be exercised.
 type fakeManagerRef struct {
-	mu       sync.Mutex
-	requests []*actormsg.ForceUnrollRequest
-	err      error
+	mu               sync.Mutex
+	requests         []*actormsg.ForceUnrollRequest
+	reconcileHeights []int32
+	err              error
 }
 
 // ID returns the fake actor ID.
@@ -148,33 +152,46 @@ func (f *fakeManagerRef) Ask(_ context.Context,
 	msg vtxo.ManagerMsg) actor.Future[vtxo.ManagerResp] {
 
 	promise := actor.NewPromise[vtxo.ManagerResp]()
-	req, ok := msg.(*actormsg.ForceUnrollRequest)
-	if !ok {
+	switch req := msg.(type) {
+	case *vtxo.ReconcileExpiryRequest:
+		f.mu.Lock()
+		f.reconcileHeights = append(f.reconcileHeights, req.Height)
+		f.mu.Unlock()
+		promise.Complete(
+			fn.Ok[vtxo.ManagerResp](
+				&vtxo.ReconcileExpiryResponse{
+					Checked: 1,
+					Expired: 1,
+				},
+			),
+		)
+
+	case *actormsg.ForceUnrollRequest:
+		f.mu.Lock()
+		f.requests = append(f.requests, req)
+		f.mu.Unlock()
+		if f.err != nil {
+			promise.Complete(fn.Err[vtxo.ManagerResp](f.err))
+
+			return promise.Future()
+		}
+
+		promise.Complete(
+			fn.Ok[vtxo.ManagerResp](
+				&actormsg.ForceUnrollResponse{
+					Accepted: true,
+				},
+			),
+		)
+
+	default:
 		promise.Complete(
 			fn.Err[vtxo.ManagerResp](
 				fmt.Errorf("unexpected manager msg %T", msg),
 			),
 		)
 
-		return promise.Future()
 	}
-
-	f.mu.Lock()
-	f.requests = append(f.requests, req)
-	f.mu.Unlock()
-	if f.err != nil {
-		promise.Complete(fn.Err[vtxo.ManagerResp](f.err))
-
-		return promise.Future()
-	}
-
-	promise.Complete(
-		fn.Ok[vtxo.ManagerResp](
-			&actormsg.ForceUnrollResponse{
-				Accepted: true,
-			},
-		),
-	)
 
 	return promise.Future()
 }
@@ -198,6 +215,90 @@ func (f *fakeManagerRef) requestCount() int {
 	defer f.mu.Unlock()
 
 	return len(f.requests)
+}
+
+// reconciledHeights returns the expiry classifications requested by the
+// watcher.
+func (f *fakeManagerRef) reconciledHeights() []int32 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return append([]int32(nil), f.reconcileHeights...)
+}
+
+// TestWatcherClassifiesOperatorSweepAsExpiry verifies the operator's exact
+// committed timeout spend cannot race a long-offline OOR recipient into
+// unilateral exit. The watcher synchronously invokes local expiry
+// classification and leaves reissue, rather than fraud unroll, to the VTXO
+// lifecycle.
+func TestWatcherClassifiesOperatorSweepAsExpiry(t *testing.T) {
+	t.Parallel()
+
+	treePath, _ := testLeafTree(t, 70)
+	internalKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	sweepKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	sweepLeaf, err := arkscript.UnilateralCSVTimeoutTapLeaf(
+		sweepKey.PubKey(), 144,
+	)
+	require.NoError(t, err)
+	sweepRoot := sweepLeaf.TapHash()
+	treePath.SweepTapscriptRoot = append([]byte(nil), sweepRoot[:]...)
+	outputKey := txscript.ComputeTaprootOutputKey(
+		internalKey.PubKey(), sweepRoot[:],
+	)
+	treePath.BatchOutput.PkScript, err = txscript.PayToTaprootScript(
+		outputKey,
+	)
+	require.NoError(t, err)
+
+	tapTree := txscript.AssembleTaprootScriptTree(sweepLeaf)
+	controlBlock := tapTree.LeafMerkleProofs[0].ToControlBlock(
+		internalKey.PubKey(),
+	)
+	controlBytes, err := controlBlock.ToBytes()
+	require.NoError(t, err)
+
+	spendingTx := wire.NewMsgTx(2)
+	spendingTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: treePath.Root.Input,
+		Witness: wire.TxWitness{
+			make([]byte, 64),
+			sweepLeaf.Script,
+			controlBytes,
+		},
+	})
+	target := testInput(71)
+	desc := testDescriptor(target, treePath)
+	desc.BatchExpiry = 500
+
+	chainRef := &fakeChainSourceRef{}
+	managerRef := &fakeManagerRef{}
+	watcher := NewWatcherActor(WatcherConfig{
+		ChainSource:    chainRef,
+		VTXOManagerRef: managerRef,
+		Log:            fn.None[btclog.Logger](),
+	})
+	t.Cleanup(watcher.Stop)
+
+	_, err = watcher.Ref().Ask(t.Context(), &TrackVTXOsRequest{
+		VTXOs: []*vtxo.Descriptor{desc},
+	}).Await(t.Context()).Unpack()
+	require.NoError(t, err)
+
+	_, err = watcher.Ref().Ask(t.Context(), &SpendObservedMsg{
+		Outpoint:          treePath.Root.Input,
+		SpendingTxid:      spendingTx.TxHash(),
+		SpendingTx:        spendingTx,
+		SpenderInputIndex: 0,
+		Height:            desc.BatchExpiry,
+	}).Await(t.Context()).Unpack()
+	require.NoError(t, err)
+	require.Equal(
+		t, []int32{desc.BatchExpiry}, managerRef.reconciledHeights(),
+	)
+	require.Zero(t, managerRef.requestCount())
 }
 
 // TestWatcherTriggersUnrollOnAncestorSpend verifies the passive watcher calls

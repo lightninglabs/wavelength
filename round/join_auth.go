@@ -198,7 +198,8 @@ func computeTotalForfeitAmount(ctx context.Context, store VTXOStore,
 func buildJoinRoundAuth(ctx context.Context, env *ClientEnvironment,
 	identifierKeyDesc keychain.KeyDescriptor, intents Intents,
 	vtxoReqs []types.VTXORequest, forfeitReqs []*types.ForfeitRequest,
-	leaveReqs []*types.LeaveRequest) (*types.JoinRoundAuth, error) {
+	leaveReqs []*types.LeaveRequest,
+	claimInputs []*types.VTXOClaimInput) (*types.JoinRoundAuth, error) {
 
 	log := env.Log
 	log.InfoS(ctx, "Building join round auth",
@@ -206,6 +207,7 @@ func buildJoinRoundAuth(ctx context.Context, env *ClientEnvironment,
 		slog.Int("vtxo_request_count", len(vtxoReqs)),
 		slog.Int("forfeit_request_count", len(forfeitReqs)),
 		slog.Int("leave_request_count", len(leaveReqs)),
+		slog.Int("claim_input_count", len(claimInputs)),
 	)
 
 	// Step 1: Build the canonical request and collect signing
@@ -215,6 +217,7 @@ func buildJoinRoundAuth(ctx context.Context, env *ClientEnvironment,
 	// tapscript) needed to produce proof-of-funds witnesses.
 	joinReq, signingInputs, err := buildJoinRoundAuthRequest(
 		ctx, env, intents, vtxoReqs, forfeitReqs, leaveReqs,
+		claimInputs,
 	)
 	if err != nil {
 		return nil, err
@@ -222,7 +225,7 @@ func buildJoinRoundAuth(ctx context.Context, env *ClientEnvironment,
 
 	// Verify we have at least one provable input (boarding or
 	// forfeit) and that all signing keys are populated.
-	err = validateJoinAuthSigningInputs(signingInputs)
+	err = validateJoinAuthSigningInputs(signingInputs, len(claimInputs) > 0)
 	if err != nil {
 		return nil, err
 	}
@@ -345,8 +348,9 @@ func buildJoinRoundAuth(ctx context.Context, env *ClientEnvironment,
 // inputs in the same order.
 func buildJoinRoundAuthRequest(ctx context.Context, env *ClientEnvironment,
 	intents Intents, vtxoReqs []types.VTXORequest,
-	forfeitReqs []*types.ForfeitRequest, leaveReqs []*types.LeaveRequest) (
-	*types.JoinRoundRequest, []joinAuthInput, error) {
+	forfeitReqs []*types.ForfeitRequest, leaveReqs []*types.LeaveRequest,
+	claimInputs []*types.VTXOClaimInput) (*types.JoinRoundRequest,
+	[]joinAuthInput, error) {
 
 	boardingReqs := make(
 		[]*types.BoardingRequest, 0, len(intents.Boarding),
@@ -437,19 +441,23 @@ func buildJoinRoundAuthRequest(ctx context.Context, env *ClientEnvironment,
 
 	return &types.JoinRoundRequest{
 		Identifier:   nil,
+		RoundID:      intents.RequestedRoundID,
 		BoardingReqs: boardingReqs,
 		VTXOReqs:     sharedVTXOReqs,
 		ForfeitReqs:  forfeitReqs,
 		LeaveReqs:    leaveReqs,
+		ClaimInputs:  claimInputs,
 	}, signingInputs, nil
 }
 
 // validateJoinAuthSigningInputs checks that join-auth proof-of-funds
 // inputs are present and structurally complete.
-func validateJoinAuthSigningInputs(signingInputs []joinAuthInput) error {
-	if len(signingInputs) == 0 {
+func validateJoinAuthSigningInputs(signingInputs []joinAuthInput,
+	hasClaims bool) error {
+
+	if len(signingInputs) == 0 && !hasClaims {
 		return fmt.Errorf("join auth requires at least one " +
-			"proof-of-funds input")
+			"proof-of-funds input or VTXO claim")
 	}
 
 	for i := 0; i < len(signingInputs); i++ {

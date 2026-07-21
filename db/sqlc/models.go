@@ -313,6 +313,7 @@ type Round struct {
 	CreationTime          int64
 	LastUpdateTime        int64
 	FlowVersion           int32
+	SweepDelay            int64
 }
 
 type RoundBoardingIntent struct {
@@ -339,6 +340,18 @@ type RoundStatus struct {
 	StatusName string
 }
 
+type RoundVtxoClaim struct {
+	RoundID           string
+	RequestIndex      int32
+	SourceHash        []byte
+	SourceIndex       int64
+	ParticipantPubkey []byte
+	Nonce             []byte
+	ValidFrom         int64
+	ValidUntil        int64
+	Signature         []byte
+}
+
 type RoundVtxoRequest struct {
 	RoundID        string
 	RequestIndex   int32
@@ -350,6 +363,7 @@ type RoundVtxoRequest struct {
 	OperatorPubkey []byte
 	OwnerKeyID     sql.NullInt64
 	SigningKeyID   sql.NullInt64
+	Origin         int32
 }
 
 type SpendingReservation struct {
@@ -447,6 +461,7 @@ type Vtxo struct {
 	LastUpdateTime      int64
 	ChainDepth          int32
 	ConstructionVersion int32
+	RedemptionRoundID   sql.NullString
 }
 
 type VtxoAncestryPath struct {
@@ -458,6 +473,15 @@ type VtxoAncestryPath struct {
 	TreeDepth         int32
 	InputIndices      []byte
 	CommitmentHeight  int32
+}
+
+type VtxoRedemptionOutbox struct {
+	SourceHash        []byte
+	SourceIndex       int32
+	ReplacementHash   []byte
+	ReplacementIndex  int32
+	RedemptionRoundID string
+	CreationTime      int64
 }
 
 type WalletUtxoLog struct {

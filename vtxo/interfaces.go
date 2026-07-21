@@ -291,6 +291,20 @@ const (
 	// NOTE: Placed after VTXOStatusFailed to preserve the numeric
 	// values of existing statuses used in SQL queries.
 	VTXOStatusSpending
+
+	// VTXOStatusExpired indicates the local chain height reached the
+	// batch expiry before this client completed a cooperative refresh or
+	// unilateral exit. The VTXO is no longer spendable, but its value may
+	// be reissued after the operator's batch sweep is finalized.
+	VTXOStatusExpired
+
+	// VTXOStatusRedeeming indicates an expired VTXO claim was durably
+	// adopted by a round. The replacement has not confirmed yet.
+	VTXOStatusRedeeming
+
+	// VTXOStatusRedeemed indicates an expired VTXO was reissued into a
+	// replacement VTXO. This is a terminal status.
+	VTXOStatusRedeemed
 )
 
 // String returns a human-readable representation of the VTXO status.
@@ -319,6 +333,15 @@ func (s VTXOStatus) String() string {
 
 	case VTXOStatusSpending:
 		return "spending"
+
+	case VTXOStatusExpired:
+		return "expired"
+
+	case VTXOStatusRedeeming:
+		return "redeeming"
+
+	case VTXOStatusRedeemed:
+		return "redeemed"
 
 	default:
 		return "unknown"
@@ -405,6 +428,18 @@ type Descriptor struct {
 
 	// Status is the current lifecycle status of the VTXO.
 	Status VTXOStatus
+
+	// ReplacedBy identifies the replacement VTXO after a cooperative
+	// refresh or expired-VTXO reissue. None means no replacement has been
+	// linked yet.
+	ReplacedBy fn.Option[wire.OutPoint]
+
+	// RedemptionRoundID identifies the claim-bearing round that durably
+	// adopted this expired VTXO. It is set while Redeeming and retained
+	// after Redeemed for crash recovery and auditability. A rollback to
+	// Expired clears it so a later round can adopt the claim without a
+	// stale callback reverting the new owner.
+	RedemptionRoundID fn.Option[string]
 
 	// ConstructionVersion is the per-VTXO construction version: the rules
 	// under which this VTXO was built and must be spent/exited. It is
@@ -554,6 +589,19 @@ type VTXOStore interface {
 	// DeleteVTXO removes a VTXO from storage. Used for cleanup after
 	// terminal states are reached and the VTXO is no longer needed.
 	DeleteVTXO(ctx context.Context, outpoint wire.OutPoint) error
+}
+
+// LegacyExpiredVTXOStore is the compatibility extension implemented by the
+// durable production store. It stays separate from VTXOStore so lightweight
+// read-only/test stores do not need to own a one-time database upgrade.
+type LegacyExpiredVTXOStore interface {
+	// RecoverLegacyExpiredVTXOs upgrades the narrowly identifiable rows
+	// written by clients that represented local batch expiry as Failed. It
+	// atomically moves only unspent, metadata-free rows whose absolute
+	// expiry is at or below bestHeight into Expired and returns their
+	// outpoints. Unrelated Failed rows remain terminal failures.
+	RecoverLegacyExpiredVTXOs(ctx context.Context,
+		bestHeight int32) ([]wire.OutPoint, error)
 }
 
 // SpendingReservationStore is the subset of the durable spending-reservation

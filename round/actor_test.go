@@ -17,6 +17,7 @@ import (
 	"github.com/lightninglabs/wavelength/internal/testutils"
 	"github.com/lightninglabs/wavelength/lib/actormsg"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
+	"github.com/lightninglabs/wavelength/lib/tree"
 	"github.com/lightninglabs/wavelength/lib/types"
 	"github.com/lightninglabs/wavelength/serverconn"
 	"github.com/lightninglabs/wavelength/timeout"
@@ -346,6 +347,80 @@ func TestActorRecovery(t *testing.T) {
 		reg := h.chainSource.registrations[0]
 		require.NotNil(t, reg.Txid)
 		require.True(t, reg.Txid.IsEqual(&txid))
+	})
+
+	t.Run("claim_source_mapping", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		roundID := testRoundID("recovered-claim-source-mapping")
+		recoveredRound := h.newTestRound(roundID)
+		replacement := mkReq(t, h.operatorPubKey, 91, true)
+		replacement.req.Origin = types.VTXOOriginClaimReissue
+		source := wire.OutPoint{
+			Hash: chainhash.HashH(
+				[]byte("checkpointed-claim-source"),
+			),
+			Index: 2,
+		}
+		claim := VTXOClaimIntent{
+			Input: types.VTXOClaimInput{
+				SourceOutpoint: source,
+			},
+			ExpectedOutput: replacement.req,
+		}
+		state := &InputSigSentState{
+			RoundID: roundID,
+			CommitmentTx: recoveredRound.CommitmentTx.UnwrapOrFail(
+				t,
+			),
+			SweepDelay: 2016,
+			Intents: Intents{
+				VTXOs: []types.VTXORequest{
+					replacement.req,
+				},
+				Claims: []VTXOClaimIntent{
+					claim,
+				},
+			},
+			ClientTrees: map[SignerKey]*tree.Tree{
+				NewSignerKey(
+					replacement.req.SigningKey.PubKey,
+				): replacement.tree,
+			},
+		}
+
+		h.roundStore.On(
+			"ListActiveRounds", mock.Anything,
+		).Return([]*Round{recoveredRound}, nil)
+		h.roundStore.On(
+			"FetchState", mock.Anything, roundID,
+		).Return(recoveredRound, state, nil)
+
+		require.NoError(t, h.start())
+		roundFSM := h.actor.rounds[RoundKeyStr(roundID.KeyString())]
+		require.NotNil(t, roundFSM)
+		require.Len(t, roundFSM.ClaimIntents, 1)
+		require.Equal(
+			t, source,
+			roundFSM.ClaimIntents[0].Input.SourceOutpoint,
+		)
+		require.Equal(
+			t, types.VTXOOriginClaimReissue,
+			roundFSM.ClaimIntents[0].ExpectedOutput.Origin,
+		)
+		restoredState, err := roundFSM.FSM.CurrentState()
+		require.NoError(t, err)
+		restoredInputSigState, ok := restoredState.(*InputSigSentState)
+		require.True(t, ok)
+		require.Equal(
+			t, uint32(2016), restoredInputSigState.SweepDelay,
+		)
+
+		expected, err := replacement.tree.Root.GetLeafNodes()[0].
+			GetNonAnchorOutpoint()
+		require.NoError(t, err)
+		require.Equal(t, *expected, roundFSM.ClaimReplacements[source])
 	})
 
 	t.Run("multiple_active_rounds", func(t *testing.T) {
@@ -1168,7 +1243,7 @@ func TestActorLifecycle(t *testing.T) {
 		}
 	})
 
-	t.Run("concurrent_rounds", func(t *testing.T) {
+	t.Run("concurrent_rounds_after_registration_seal", func(t *testing.T) {
 		t.Parallel()
 
 		h := newActorTestHarness(t)
@@ -1189,68 +1264,54 @@ func TestActorLifecycle(t *testing.T) {
 		// Verify we have one round in IntentSentState.
 		states := h.queryState()
 		require.Len(t, states, 1, "expected one round")
-		var round1Key string
-		for k, info := range states {
+		for _, info := range states {
 			require.IsType(t, &IntentSentState{}, info.State)
-			round1Key = k
 		}
 
-		// Create second boarding intent - this should create a new
-		// round (round 2) since round 1 is past Idle state.
+		// A second one-shot boarding notification is retained while the
+		// first registration is still pre-seal. It must not emit a
+		// competing client join.
 		intent2 := h.newTestBoardingIntentWithSuffix("-second")
 		h.sendWalletConfirmation(intent2)
-
-		// Verify we now have two rounds.
 		states = h.queryState()
-		require.Len(t, states, 2, "expected two concurrent rounds")
+		require.Len(t, states, 1, "pre-seal join must stay singular")
+		require.Len(t, h.actor.deferredBoardings, 1)
 
-		// Verify round states: round 1 should still be in
-		// IntentSentState, round 2 in PendingRoundAssembly.
-		foundRound1 := false
-		foundRound2 := false
-		var round2Key string
-		for k, info := range states {
-			if k == round1Key {
-				foundRound1 = true
-				require.IsType(
-					t, &IntentSentState{}, info.State,
-					"round 1 in IntentSentState",
-				)
-			} else {
-				foundRound2 = true
-				round2Key = k
-				require.IsType(
-					t, &PendingRoundAssembly{}, info.State,
-					"round 2 in PendingRoundAssembly",
-				)
-			}
-		}
-		require.True(t, foundRound1, "round 1 not found")
-		require.True(t, foundRound2, "round 2 not found")
-
-		// Complete round 1 by sending RoundJoined.
+		// Admission alone does not seal the registration under the
+		// quote handshake, so the boarding remains deferred.
 		roundID1 := testRoundID("test-round-001")
 		outpoints1 := []wire.OutPoint{intent1.Outpoint}
 		h.simulateRoundJoined(roundID1, outpoints1)
+		require.Len(t, h.actor.deferredBoardings, 1)
 
-		// Verify round 1 transitioned and round 2 is still pending.
+		// Crossing into QuoteReceived seals the first registration. The
+		// next actor turn drains the retained boarding into a new
+		// ordinary assembly.
+		h.injectRoundInState(
+			roundID1, newQuoteReceivedTestState(0, 0),
+		)
+		result := h.receive(&GetClientStateRequest{})
+		require.True(t, result.IsOk())
+		require.Empty(t, h.actor.deferredBoardings)
 		states = h.queryState()
-		require.Len(t, states, 2, "still expected two rounds")
+		require.Len(t, states, 2, "expected two post-seal rounds")
 
-		// Round 1 should now be keyed by RoundID (re-keyed). The FSM
-		// stays parked in IntentSentState under the seal-time
-		// handshake — advancement waits for JoinRoundQuote.
 		round1KeyStr := RoundKeyStr(roundID1.KeyString())
 		round1Info, exists := states[string(round1KeyStr)]
 		require.True(t, exists, "round 1 should be re-keyed")
-		require.IsType(t, &IntentSentState{}, round1Info.State)
+		require.IsType(t, &QuoteReceivedState{}, round1Info.State)
 		require.False(t, round1Info.IsTemp, "round 1 not temp")
 
-		// Round 2 should still be temp-keyed.
-		round2Info, exists := states[round2Key]
-		require.True(t, exists, "round 2 should still exist")
-		require.IsType(t, &PendingRoundAssembly{}, round2Info.State)
-		require.True(t, round2Info.IsTemp, "round 2 should be temp")
+		var round2Key string
+		for key, info := range states {
+			if key == string(round1KeyStr) {
+				continue
+			}
+			round2Key = key
+			require.IsType(t, &PendingRoundAssembly{}, info.State)
+			require.True(t, info.IsTemp, "round 2 should be temp")
+		}
+		require.NotEmpty(t, round2Key)
 
 		// Cancel round 2 using the specific key.
 		cancelResult := h.receive(&CancelRoundRequest{
@@ -3622,7 +3683,7 @@ func TestHandleRegisterIntent(t *testing.T) {
 			"1 from register intent")
 	})
 
-	t.Run("intent_creates_new_round_when_existing_in_registration_sent",
+	t.Run("intent_rejected_when_existing_registration_is_pre_seal",
 		func(t *testing.T) {
 			t.Parallel()
 
@@ -3638,9 +3699,10 @@ func TestHandleRegisterIntent(t *testing.T) {
 			// silently self-looped.
 			h.setupRoundInIntentSentState()
 
-			// Now register an intent. With findAssemblingRound,
-			// this should create a new round rather than
-			// matching the RegistrationSent one.
+			// Explicit wallet requests have a caller that can
+			// release and retry reservations, so a second
+			// unknown-target registration is rejected instead of
+			// creating a competing client join.
 			vtxoOutpoint := wire.OutPoint{
 				Hash: chainhash.HashH(
 					[]byte("new-round"),
@@ -3674,36 +3736,18 @@ func TestHandleRegisterIntent(t *testing.T) {
 			}
 
 			result := h.receive(req)
-			require.True(
-				t, result.IsOk(),
-				"expected Ok, got: %v", result.Err(),
+			require.True(t, result.IsErr())
+			require.ErrorIs(
+				t, result.Err(), errPreSealRegistrationConflict,
 			)
 
-			// We should now have two rounds: one in
-			// RegistrationSent and a new one in
-			// PendingRoundAssembly with our intent.
 			states := h.queryState()
-			require.Len(t, states, 2,
-				"should have 2 rounds")
-
-			var foundAssembly bool
+			require.Len(t, states, 1)
 			for _, info := range states {
-				s := info.State
-				assembly, ok := s.(*PendingRoundAssembly)
-				if !ok {
-					continue
-				}
-
-				foundAssembly = true
-				require.Len(
-					t, assembly.Forfeits, 1,
-					"intent should be in new round",
+				require.IsType(
+					t, &IntentSentState{}, info.State,
 				)
 			}
-			require.True(
-				t, foundAssembly,
-				"should have a PendingRoundAssembly round",
-			)
 		},
 	)
 

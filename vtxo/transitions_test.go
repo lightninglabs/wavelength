@@ -100,12 +100,116 @@ func TestStateProperties(t *testing.T) {
 			},
 			isTerminal: true,
 		},
+		{
+			name: "ExpiredState",
+			state: &ExpiredState{
+				VTXO: vtxo,
+			},
+			isTerminal: true,
+		},
+		{
+			name: "RedeemingState",
+			state: &RedeemingState{
+				VTXO: vtxo,
+			},
+			isTerminal: true,
+		},
+		{
+			name: "RedeemedState",
+			state: &RedeemedState{
+				VTXO: vtxo,
+			},
+			isTerminal: true,
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			require.Equal(t, tc.isTerminal, tc.state.IsTerminal())
 			require.NotEmpty(t, tc.state.String())
+		})
+	}
+}
+
+// TestActiveStatesExpireLocally verifies that reaching the batch expiry is a
+// durable local classification, not a failed-state sink or a late unroll race.
+func TestActiveStatesExpireLocally(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                string
+		state               func(*Descriptor) VTXOState
+		releasesReservation bool
+	}{
+		{
+			name: "live",
+			state: func(desc *Descriptor) VTXOState {
+				return &LiveState{
+					VTXO: desc,
+				}
+			},
+		},
+		{
+			name: "pending forfeit",
+			state: func(desc *Descriptor) VTXOState {
+				return &PendingForfeitState{
+					VTXO: desc,
+				}
+			},
+		},
+		{
+			name: "forfeiting",
+			state: func(desc *Descriptor) VTXOState {
+				return &ForfeitingState{
+					VTXO: desc,
+				}
+			},
+		},
+		{
+			name: "spending",
+			state: func(desc *Descriptor) VTXOState {
+				return &SpendingState{
+					VTXO: desc,
+				}
+			},
+			releasesReservation: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newVTXOTestHarness(t)
+			desc := h.newTestDescriptor()
+			desc.BatchExpiry = 1000
+			h.withState(test.state(desc))
+
+			method := "UpdateVTXOStatus"
+			if test.releasesReservation {
+				method = "UpdateVTXOStatusReleasingReservation"
+			}
+			h.store.On(
+				method, h.ctx, desc.Outpoint, VTXOStatusExpired,
+			).Return(nil)
+
+			_, err := h.sendEvent(
+				h.newBlockEpochEvent(desc.BatchExpiry),
+			)
+			require.NoError(t, err)
+
+			expired := assertState[*ExpiredState](h)
+			require.Equal(
+				t, desc.BatchExpiry, expired.ObservedHeight,
+			)
+			update := assertOutboxContains[*VTXOStatusUpdate](h)
+			require.Equal(t, VTXOStatusExpired, update.NewStatus)
+			require.Equal(
+				t, test.releasesReservation,
+				update.ReleaseSpendReservation,
+			)
+			assertOutboxContains[*VTXOTerminatedNotification](h)
+			assertOutboxLacks[*ExpiringNotification](h)
 		})
 	}
 }

@@ -50,7 +50,7 @@ ORDER BY creation_time DESC;
 -- name: ListLiveVTXOs :many
 -- ListLiveVTXOs returns all VTXOs that are not in a terminal state.
 -- Terminal states are: Forfeited (3), Spent (4), UnilateralExit (5),
--- Failed (6).
+-- Failed (6), Expired (8), Redeeming (9), Redeemed (10).
 -- Non-terminal states: Live (0), PendingForfeit (1), Forfeiting (2),
 -- Spending (7).
 -- This is used during startup to recover active VTXO actors.
@@ -70,6 +70,31 @@ SET status = $3,
     spent = CASE WHEN $3 = 4 THEN TRUE ELSE spent END,
     last_update_time = $4
 WHERE outpoint_hash = $1 AND outpoint_index = $2;
+
+-- name: RecoverLegacyExpiredVTXOs :many
+-- Older clients could persist a locally expired live VTXO as Failed. Recover
+-- only rows with the exact live-era shape: unspent, past their absolute
+-- expiry, and with no forfeit, replacement, or redemption lifecycle metadata.
+-- The metadata predicates deliberately leave unrelated Failed rows untouched.
+UPDATE vtxos
+SET status = 8, -- Expired
+    last_update_time = sqlc.arg(last_update_time)
+WHERE status = 6 -- Failed
+    AND spent = FALSE
+    AND batch_expiry > 0
+    AND batch_expiry <= sqlc.arg(best_height)
+    AND round_id <> ''
+    AND amount > 0
+    AND length(pk_script) > 0
+    AND length(operator_pubkey) = 33
+    AND length(commitment_txid) = 32
+    AND forfeit_round_id IS NULL
+    AND forfeit_tx IS NULL
+    AND forfeit_txid IS NULL
+    AND replaced_by_hash IS NULL
+    AND replaced_by_index IS NULL
+    AND redemption_round_id IS NULL
+RETURNING outpoint_hash, outpoint_index;
 
 -- name: MarkVTXOForfeiting :exec
 -- MarkVTXOForfeiting transitions a VTXO to Forfeiting status and persists
@@ -122,6 +147,95 @@ WHERE outpoint_hash = $1 AND outpoint_index = $2;
 -- VTXO. Returns NULL if not forfeited or no replacement recorded.
 SELECT replaced_by_hash, replaced_by_index FROM vtxos
 WHERE outpoint_hash = $1 AND outpoint_index = $2;
+
+-- name: MarkVTXORedeeming :execrows
+-- MarkVTXORedeeming records the round point-of-no-return for an expired
+-- claim. Restricting the source status prevents a stale callback from
+-- resurrecting a spent, forfeited, or already-redeemed VTXO.
+UPDATE vtxos
+SET status = 9, -- Redeeming
+    redemption_round_id = $3,
+    last_update_time = $4
+WHERE outpoint_hash = $1 AND outpoint_index = $2
+    AND (
+        (status = 8 AND redemption_round_id IS NULL) OR
+        (status = 9 AND redemption_round_id = $3)
+    );
+
+-- name: RevertVTXORedeeming :execrows
+-- RevertVTXORedeeming returns a claim to the retryable Expired state after
+-- its adopted round terminates without producing a replacement.
+UPDATE vtxos
+SET status = 8, -- Expired
+    redemption_round_id = NULL,
+    last_update_time = $4
+WHERE outpoint_hash = $1 AND outpoint_index = $2 AND status = 9
+    AND redemption_round_id = $3;
+
+-- name: MarkVTXORedeemed :execrows
+-- MarkVTXORedeemed links an authoritative, policy-validated completed mapping
+-- to its replacement. A completed mapping may supersede an abandoned local
+-- Redeeming round, so Expired/Redeeming sources adopt the replacement's round
+-- ID. Once Redeemed, only an exact round/replacement replay is accepted.
+UPDATE vtxos
+SET status = 10, -- Redeemed
+    replaced_by_hash = sqlc.arg(replaced_by_hash),
+    replaced_by_index = sqlc.arg(replaced_by_index),
+    redemption_round_id = sqlc.arg(redemption_round_id),
+    last_update_time = sqlc.arg(last_update_time)
+WHERE outpoint_hash = sqlc.arg(outpoint_hash)
+    AND outpoint_index = sqlc.arg(outpoint_index)
+    AND (
+        status = 8 OR
+        status = 9 OR
+        (status = 10 AND
+            redemption_round_id = sqlc.arg(redemption_round_id))
+    )
+    AND (
+        replaced_by_hash IS NULL OR
+        (replaced_by_hash = sqlc.arg(replaced_by_hash) AND
+            replaced_by_index = sqlc.arg(replaced_by_index))
+    );
+
+-- name: InsertVTXORedemptionOutbox :execrows
+-- InsertVTXORedemptionOutbox persists the idempotent observer work in the
+-- same transaction that retires the source. A replay with the same source is
+-- validated by the store against GetVTXORedemptionOutbox.
+INSERT INTO vtxo_redemption_outbox (
+    source_hash, source_index, replacement_hash, replacement_index,
+    redemption_round_id, creation_time
+) VALUES (
+    sqlc.arg(source_hash), sqlc.arg(source_index),
+    sqlc.arg(replacement_hash), sqlc.arg(replacement_index),
+    sqlc.arg(redemption_round_id), sqlc.arg(creation_time)
+)
+ON CONFLICT (source_hash, source_index) DO NOTHING;
+
+-- name: GetVTXORedemptionOutbox :one
+-- GetVTXORedemptionOutbox loads one pending observer record for conflict
+-- validation and idempotent acknowledgement.
+SELECT source_hash, source_index, replacement_hash, replacement_index,
+    redemption_round_id
+FROM vtxo_redemption_outbox
+WHERE source_hash = sqlc.arg(source_hash)
+    AND source_index = sqlc.arg(source_index);
+
+-- name: ListVTXORedemptionOutbox :many
+-- ListVTXORedemptionOutbox is the durable startup/runtime replay queue.
+SELECT source_hash, source_index, replacement_hash, replacement_index,
+    redemption_round_id
+FROM vtxo_redemption_outbox
+ORDER BY creation_time ASC;
+
+-- name: DeleteVTXORedemptionOutbox :execrows
+-- DeleteVTXORedemptionOutbox acknowledges observer work with an exact
+-- source/replacement/round CAS so a stale callback cannot clear newer work.
+DELETE FROM vtxo_redemption_outbox
+WHERE source_hash = sqlc.arg(source_hash)
+    AND source_index = sqlc.arg(source_index)
+    AND replacement_hash = sqlc.arg(replacement_hash)
+    AND replacement_index = sqlc.arg(replacement_index)
+    AND redemption_round_id = sqlc.arg(redemption_round_id);
 
 -- name: CountVTXOsByStatus :one
 -- CountVTXOsByStatus returns the count of VTXOs with the specified status.
