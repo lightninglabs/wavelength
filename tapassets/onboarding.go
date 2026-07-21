@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"sync"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -26,6 +27,8 @@ const (
 	onboardingStateVersion  = uint16(0)
 	onboardingAttemptCommit = "commit"
 	onboardingStorePrefix   = "onboarding/"
+	onboardingLockIDDomain  = "wavelength/taproot-assets/onboarding-lock/v1"
+	onboardingDustFloorSat  = uint64(330)
 )
 
 // ErrOnboardingPendingConfirmation means the exact published asset anchor is
@@ -37,13 +40,16 @@ var ErrOnboardingPendingConfirmation = errors.New("taproot asset onboarding " +
 // OnboardingRequest selects one complete Taproot Asset proof and the standard
 // Wavelength policy that will own its new on-chain anchor.
 type OnboardingRequest struct {
-	RequestID    string
-	AssetRef     string
-	AssetAmount  uint64
-	ProofFile    []byte
-	AnchorFeeSat uint64
-	OperatorKey  *btcec.PublicKey
-	ExitDelay    uint32
+	RequestID          string
+	AssetRef           string
+	AssetAmount        uint64
+	ProofFile          []byte
+	CarrierValueSat    uint64
+	FeeRateSatPerVByte uint64
+	TargetConf         uint32
+	MaxFeeSat          uint64
+	OperatorKey        *btcec.PublicKey
+	ExitDelay          uint32
 }
 
 // OnboardingKeyDeriver returns the next wallet-owned standard VTXO key.
@@ -83,6 +89,7 @@ type OnboardingResult struct {
 	Status             OnboardingStatus
 	Outpoint           wire.OutPoint
 	ValueSat           int64
+	ActualFeeSat       uint64
 	PolicyTemplate     []byte
 	PkScript           []byte
 	TaprootAssetRoot   chainhash.Hash
@@ -354,12 +361,12 @@ func (o *Onboarder) commit(ctx context.Context, request *OnboardingRequest,
 	if err != nil {
 		return nil, err
 	}
-	if anchor.AmtSat <= int64(request.AnchorFeeSat) {
-		return nil, fmt.Errorf("asset anchor value %d does not "+
-			"cover fee %d", anchor.AmtSat, request.AnchorFeeSat)
+	fee, err := onboardingAnchorFee(request)
+	if err != nil {
+		return nil, err
 	}
-	outputValue := anchor.AmtSat - int64(request.AnchorFeeSat)
-	if outputValue < 330 {
+	outputValue := int64(request.CarrierValueSat)
+	if outputValue < int64(onboardingDustFloorSat) {
 		return nil, fmt.Errorf("onboarding output value %d is below "+
 			"the Taproot dust floor", outputValue)
 	}
@@ -381,6 +388,7 @@ func (o *Onboarder) commit(ctx context.Context, request *OnboardingRequest,
 			err)
 	}
 
+	requestDigest := onboardingRequestDigest(request)
 	requestDTO := &tapsdk.CustomAnchorRequest{
 		Inputs: []tapsdk.CustomAssetInput{{
 			ID:        "wavelength-onboarding-input-0",
@@ -406,7 +414,19 @@ func (o *Onboarder) commit(ctx context.Context, request *OnboardingRequest,
 			),
 		}},
 		AnchorPSBT: anchorPSBT,
-		Funding:    callerFundedExact(),
+		Funding: tapsdk.CustomAnchorFundingPlan{
+			Mode: tapsdk.CustomAnchorFundingWalletFunded,
+			WalletFunded: &tapsdk.CustomAnchorWalletFunding{
+				ChangeOutput: tapsdk.AnchorChangeOutput{
+					Mode: tapsdk.AnchorChangeOutputAdd,
+				},
+				Fee:       fee,
+				MaxFeeSat: request.MaxFeeSat,
+				CustomLockID: onboardingCustomLockID(
+					requestDigest,
+				),
+			},
+		},
 		PassiveAssets: tapsdk.CustomAnchorPassiveAssets{
 			Policy: tapsdk.CustomAnchorPassiveReject,
 		},
@@ -534,6 +554,20 @@ func onboardingResultFromCommit(request *OnboardingRequest,
 		return nil, fmt.Errorf("onboarding package must contain one " +
 			"input and one output")
 	}
+	if committed.fundingMode != tapsdk.CustomAnchorFundingWalletFunded {
+		return nil, fmt.Errorf("onboarding package is not wallet " +
+			"funded")
+	}
+	if committed.maxFeeSat != request.MaxFeeSat {
+		return nil, fmt.Errorf("onboarding package maximum fee %d "+
+			"does not match request %d", committed.maxFeeSat,
+			request.MaxFeeSat)
+	}
+	if committed.actualFeeSat > committed.maxFeeSat {
+		return nil, fmt.Errorf("onboarding package actual fee %d "+
+			"exceeds maximum %d", committed.actualFeeSat,
+			committed.maxFeeSat)
+	}
 	assetRef, err := tapsdk.ParseAssetRef(request.AssetRef)
 	if err != nil {
 		return nil, err
@@ -547,8 +581,13 @@ func onboardingResultFromCommit(request *OnboardingRequest,
 		return nil, fmt.Errorf("onboarding package asset selection " +
 			"mismatch")
 	}
-	if output.anchorOutputIndex != 0 || output.anchorValueSat <= 0 {
+	if output.anchorOutputIndex != 0 || output.anchorValueSat !=
+		int64(request.CarrierValueSat) {
 		return nil, fmt.Errorf("onboarding package output shape " +
+			"mismatch")
+	}
+	if output.anchorOutpoint.Index != output.anchorOutputIndex {
+		return nil, fmt.Errorf("onboarding package output index " +
 			"mismatch")
 	}
 	if output.taprootAssetRoot == (tapsdk.Hash{}) ||
@@ -576,18 +615,21 @@ func onboardingResultFromCommit(request *OnboardingRequest,
 	if err != nil {
 		return nil, err
 	}
-	if len(packet.UnsignedTx.TxOut) != 1 ||
-		packet.UnsignedTx.TxOut[0].Value != output.anchorValueSat {
+	if output.anchorOutputIndex >= uint32(len(packet.UnsignedTx.TxOut)) {
+		return nil, fmt.Errorf("onboarding package output index is " +
+			"out of range")
+	}
+	anchorOutput := packet.UnsignedTx.TxOut[output.anchorOutputIndex]
+	if anchorOutput.Value != output.anchorValueSat {
 		return nil, fmt.Errorf("committed onboarding anchor does not " +
 			"match VTXO policy and root")
 	}
 	if err := validateOutputCommitment(
-		packet.UnsignedTx.TxOut[0], policy.InternalKey, policy.RootHash,
-		output,
+		anchorOutput, policy.InternalKey, policy.RootHash, output,
 	); err != nil {
 		return nil, fmt.Errorf("committed onboarding output: %w", err)
 	}
-	if !bytes.Equal(packet.UnsignedTx.TxOut[0].PkScript, pkScript) {
+	if !bytes.Equal(anchorOutput.PkScript, pkScript) {
 		return nil, fmt.Errorf("committed onboarding output policy " +
 			"mismatch")
 	}
@@ -602,6 +644,7 @@ func onboardingResultFromCommit(request *OnboardingRequest,
 	return &OnboardingResult{
 		Outpoint:         outpoint,
 		ValueSat:         output.anchorValueSat,
+		ActualFeeSat:     committed.actualFeeSat,
 		PolicyTemplate:   append([]byte(nil), state.PolicyTemplate...),
 		PkScript:         pkScript,
 		TaprootAssetRoot: root,
@@ -686,9 +729,25 @@ func validateOnboardingRequest(request *OnboardingRequest) error {
 		return fmt.Errorf("taproot asset ref, amount, and proof are " +
 			"required")
 	}
-	if request.AnchorFeeSat == 0 {
-		return fmt.Errorf("taproot asset onboarding anchor fee is " +
+	if request.CarrierValueSat == 0 {
+		return fmt.Errorf("taproot asset onboarding carrier value is " +
 			"required")
+	}
+	if request.CarrierValueSat < onboardingDustFloorSat {
+		return fmt.Errorf("taproot asset onboarding carrier value %d "+
+			"is below the Taproot dust floor",
+			request.CarrierValueSat)
+	}
+	if request.CarrierValueSat > math.MaxInt64 {
+		return fmt.Errorf("taproot asset onboarding carrier value %d "+
+			"is too large", request.CarrierValueSat)
+	}
+	if request.MaxFeeSat == 0 {
+		return fmt.Errorf("taproot asset onboarding maximum fee is " +
+			"required")
+	}
+	if _, err := onboardingAnchorFee(request); err != nil {
+		return err
 	}
 	if request.OperatorKey == nil || request.ExitDelay == 0 {
 		return fmt.Errorf("taproot asset onboarding operator policy " +
@@ -704,12 +763,59 @@ func onboardingRequestDigest(request *OnboardingRequest) tapsdk.Hash {
 	writeDigestBytes(&value, []byte(request.AssetRef))
 	_ = binary.Write(&value, binary.BigEndian, request.AssetAmount)
 	writeDigestBytes(&value, request.ProofFile)
-	_ = binary.Write(&value, binary.BigEndian, request.AnchorFeeSat)
+	_ = binary.Write(&value, binary.BigEndian, request.CarrierValueSat)
+	_ = binary.Write(
+		&value, binary.BigEndian, request.FeeRateSatPerVByte,
+	)
+	_ = binary.Write(&value, binary.BigEndian, request.TargetConf)
+	_ = binary.Write(&value, binary.BigEndian, request.MaxFeeSat)
 	writeDigestBytes(&value, request.OperatorKey.SerializeCompressed())
 	_ = binary.Write(&value, binary.BigEndian, request.ExitDelay)
 	digest := sha256.Sum256(value.Bytes())
 
 	return tapsdk.Hash(digest)
+}
+
+func onboardingAnchorFee(request *OnboardingRequest) (tapsdk.AnchorFee, error) {
+	if request == nil {
+		return tapsdk.AnchorFee{}, fmt.Errorf("taproot asset " +
+			"onboarding request is required")
+	}
+	hasFeeRate := request.FeeRateSatPerVByte != 0
+	hasTargetConf := request.TargetConf != 0
+	if hasFeeRate == hasTargetConf {
+		return tapsdk.AnchorFee{}, fmt.Errorf("taproot asset " +
+			"onboarding requires exactly one of fee rate and " +
+			"target confirmation")
+	}
+	if hasTargetConf {
+		return tapsdk.AnchorFee{
+			Mode:       tapsdk.AnchorFeeTargetConf,
+			TargetConf: request.TargetConf,
+		}, nil
+	}
+
+	feeRate, err := tapsdk.NewFeeRateSatPerVByte(
+		request.FeeRateSatPerVByte,
+	)
+	if err != nil {
+		return tapsdk.AnchorFee{}, fmt.Errorf("taproot asset "+
+			"onboarding fee rate: %w", err)
+	}
+
+	return tapsdk.AnchorFee{
+		Mode:    tapsdk.AnchorFeeSatPerVByte,
+		FeeRate: feeRate,
+	}, nil
+}
+
+func onboardingCustomLockID(requestDigest tapsdk.Hash) []byte {
+	var value bytes.Buffer
+	writeDigestBytes(&value, []byte(onboardingLockIDDomain))
+	writeDigestBytes(&value, requestDigest[:])
+	lockID := sha256.Sum256(value.Bytes())
+
+	return lockID[:]
 }
 
 func ownerKeyFromState(state *onboardingState) (keychain.KeyDescriptor, error) {
