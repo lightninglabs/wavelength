@@ -1,7 +1,10 @@
 package main
 
 import (
+	"context"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/lightninglabs/wavelength/cmd/wavecli/waveclicommands"
 )
@@ -15,9 +18,14 @@ import (
 // we emit a normalized error envelope so stderr stays machine-readable
 // in every failure path.
 func main() {
+	ctx, stop := signal.NotifyContext(
+		context.Background(), os.Interrupt, syscall.SIGTERM,
+	)
+
 	root := waveclicommands.NewRootCmd()
 
-	err := root.Execute()
+	err := root.ExecuteContext(ctx)
+	stop()
 	if err == nil {
 		return
 	}

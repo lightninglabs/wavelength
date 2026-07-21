@@ -2,6 +2,7 @@ package waveclicommands
 
 import (
 	"bytes"
+	"context"
 	"strings"
 	"testing"
 
@@ -118,6 +119,15 @@ func TestPromptSendConfirmationDefaultsNo(t *testing.T) {
 
 	err := promptSendConfirmation(cmd, &wavewalletrpc.PrepareSendResponse{})
 	require.ErrorContains(t, err, "aborted by user")
+}
+
+// TestSendWaitErrorCode verifies that a process signal is not reported as an
+// expiration of the independent settlement-wait deadline.
+func TestSendWaitErrorCode(t *testing.T) {
+	require.Equal(t, "CANCELED", sendWaitErrorCode(context.Canceled))
+	require.Equal(
+		t, "WAIT_TIMEOUT", sendWaitErrorCode(context.DeadlineExceeded),
+	)
 }
 
 // TestSendWaitFlagDefaults verifies the wait family is wired with the expected
