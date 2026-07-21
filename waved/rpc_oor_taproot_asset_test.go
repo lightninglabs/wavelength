@@ -2,6 +2,7 @@ package waved
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -11,9 +12,11 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/arkrpc"
 	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/db"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
 	"github.com/lightninglabs/wavelength/oor"
@@ -35,6 +38,20 @@ type testTaprootAssetOORPreparer struct {
 }
 
 type assetPrepareRequest = oor.TaprootAssetOORPrepareRequest
+
+// TestOORReservationStoreShared proves the optional Taproot Asset registrar
+// receives the exact durable store cached for the manager and OOR runtime.
+func TestOORReservationStoreShared(t *testing.T) {
+	t.Parallel()
+
+	shared := &db.SpendingReservationPersistenceStore{}
+	server := &Server{reservationStore: shared}
+	require.Same(t, shared, server.spendingReservationStore(nil))
+
+	store, err := NewRPCServer(server).OORReservationStore()
+	require.NoError(t, err)
+	require.Same(t, shared, store)
+}
 
 func (p *testTaprootAssetOORPreparer) PrepareTaprootAssetOOR(_ context.Context,
 	request *oor.TaprootAssetOORPrepareRequest) (
@@ -117,6 +134,7 @@ type taprootAssetOORRPCFixture struct {
 	oorActor  *capturingSendOORActor
 	request   *waverpc.SendOORRequest
 	desc      *vtxo.Descriptor
+	wallet    *sendOORTestWallet
 }
 
 func newTaprootAssetOORRPCFixture(t *testing.T) *taprootAssetOORRPCFixture {
@@ -155,7 +173,11 @@ func newTaprootAssetOORRPCFixture(t *testing.T) *taprootAssetOORRPCFixture {
 		require.NoError(t, system.Shutdown(shutdownCtx))
 	})
 
-	testWallet := &sendOORTestWallet{}
+	testWallet := &sendOORTestWallet{
+		selections: [][]wallet.SelectedVTXO{{
+			selectedVTXOFromDescriptor(desc),
+		}},
+	}
 	walletKey := actor.NewServiceKey[
 		wallet.WalletMsg, wallet.WalletResp,
 	](
@@ -208,14 +230,12 @@ func newTaprootAssetOORRPCFixture(t *testing.T) *taprootAssetOORRPCFixture {
 				exitDelay, int64(amountSat),
 			),
 		},
-		CustomInputs: []*waverpc.CustomOORInput{{
-			Outpoint: desc.Outpoint.String(),
-		}},
 		IdempotencyKey: "taproot-asset-request-1",
 		TaprootAsset: &waverpc.TaprootAssetOORIntent{
-			AssetRef:       "tapr1asset",
-			AssetAmount:    21,
-			InputProofFile: []byte("confirmed-proof"),
+			InputVtxoOutpoint: desc.Outpoint.String(),
+			AssetRef:          "tapr1asset",
+			AssetAmount:       21,
+			InputProofFile:    []byte("confirmed-proof"),
 			RecipientScriptKey: assetScriptKey.PubKey().
 				SerializeCompressed(),
 			AcknowledgeUnconfirmed: true,
@@ -228,6 +248,7 @@ func newTaprootAssetOORRPCFixture(t *testing.T) *taprootAssetOORRPCFixture {
 		oorActor:  oorActor,
 		request:   request,
 		desc:      desc,
+		wallet:    testWallet,
 	}
 }
 
@@ -253,6 +274,10 @@ func TestSendOORTaprootAssetPreparesBeforeActor(t *testing.T) {
 	)
 	require.EqualValues(t, 21, prepareRequest.Intent.AssetAmount)
 	require.Equal(
+		t, fixture.desc.Outpoint,
+		prepareRequest.Intent.InputVTXOOutpoint,
+	)
+	require.Equal(
 		t, fixture.desc.TaprootAssetRoot,
 		prepareRequest.Inputs[0].TaprootAssetRoot,
 	)
@@ -265,6 +290,13 @@ func TestSendOORTaprootAssetPreparesBeforeActor(t *testing.T) {
 	require.NoError(
 		t, actorRequest.Recipients[0].ValidateTaprootAssetCommitment(),
 	)
+	selectRequests := fixture.wallet.selectionRequests()
+	require.Len(t, selectRequests, 1)
+	require.Equal(
+		t, []wire.OutPoint{fixture.desc.Outpoint},
+		selectRequests[0].RequiredOutpoints,
+	)
+	require.Empty(t, fixture.wallet.unlockBatches())
 }
 
 // TestSendOORTaprootAssetFailsClosed covers public-shape, feature-gate, BTC
@@ -277,7 +309,39 @@ func TestSendOORTaprootAssetFailsClosed(t *testing.T) {
 		mutate       func(*taprootAssetOORRPCFixture)
 		wantCode     codes.Code
 		wantContains string
+		wantSelect   bool
+		wantUnlock   bool
 	}{
+		{
+			name: "missing managed input outpoint",
+			mutate: func(f *taprootAssetOORRPCFixture) {
+				f.request.TaprootAsset.InputVtxoOutpoint = ""
+			},
+			wantCode:     codes.InvalidArgument,
+			wantContains: "input VTXO outpoint",
+		},
+		{
+			name: "malformed managed input outpoint",
+			mutate: func(f *taprootAssetOORRPCFixture) {
+				f.request.TaprootAsset.InputVtxoOutpoint = "bad"
+			},
+			wantCode:     codes.InvalidArgument,
+			wantContains: "input VTXO outpoint",
+		},
+		{
+			name: "custom input bypass rejected",
+			mutate: func(f *taprootAssetOORRPCFixture) {
+				customInput := &waverpc.CustomOORInput{
+					Outpoint: f.desc.Outpoint.String(),
+				}
+				customInputs := []*waverpc.CustomOORInput{
+					customInput,
+				}
+				f.request.CustomInputs = customInputs
+			},
+			wantCode:     codes.InvalidArgument,
+			wantContains: "do not support custom inputs",
+		},
 		{
 			name: "missing acknowledgement",
 			mutate: func(f *taprootAssetOORRPCFixture) {
@@ -311,6 +375,8 @@ func TestSendOORTaprootAssetFailsClosed(t *testing.T) {
 			},
 			wantCode:     codes.InvalidArgument,
 			wantContains: "requires exact BTC value",
+			wantSelect:   true,
+			wantUnlock:   true,
 		},
 		{
 			name: "adapter changes value",
@@ -319,6 +385,8 @@ func TestSendOORTaprootAssetFailsClosed(t *testing.T) {
 			},
 			wantCode:     codes.Internal,
 			wantContains: "recipient 0 value changed",
+			wantSelect:   true,
+			wantUnlock:   true,
 		},
 		{
 			name: "typed preparer error",
@@ -329,6 +397,8 @@ func TestSendOORTaprootAssetFailsClosed(t *testing.T) {
 			},
 			wantCode:     codes.Unavailable,
 			wantContains: "tapd unavailable",
+			wantSelect:   true,
+			wantUnlock:   true,
 		},
 	}
 
@@ -346,8 +416,44 @@ func TestSendOORTaprootAssetFailsClosed(t *testing.T) {
 			require.Equal(t, test.wantCode, status.Code(err))
 			require.ErrorContains(t, err, test.wantContains)
 			require.Empty(t, fixture.oorActor.capturedRequests())
+			if test.wantSelect {
+				require.Equal(
+					t, 1, fixture.wallet.selectCount(),
+				)
+			} else {
+				require.Zero(t, fixture.wallet.selectCount())
+			}
+			if test.wantUnlock {
+				require.Eventually(t, func() bool {
+					return len(
+						fixture.wallet.unlockBatches(),
+					) == 1
+				}, time.Second, 10*time.Millisecond)
+			} else {
+				require.Empty(t, fixture.wallet.unlockBatches())
+			}
 		})
 	}
+}
+
+// TestSendOORTaprootAssetAmbiguousCommitKeepsReservation proves an unknown
+// tapd outcome is surfaced distinctly and never releases the managed VTXO for
+// a competing spend.
+func TestSendOORTaprootAssetAmbiguousCommitKeepsReservation(t *testing.T) {
+	t.Parallel()
+
+	fixture := newTaprootAssetOORRPCFixture(t)
+	fixture.preparer.err = fmt.Errorf("tapd response lost: %w",
+		oor.ErrTaprootAssetCommitOutcomeUnknown)
+
+	_, err := fixture.rpcServer.SendOOR(t.Context(), fixture.request)
+	require.Equal(t, codes.Aborted, status.Code(err))
+	require.ErrorContains(t, err, "requires reconciliation")
+	require.Equal(t, 1, fixture.wallet.selectCount())
+	require.Empty(t, fixture.oorActor.capturedRequests())
+	require.Never(t, func() bool {
+		return len(fixture.wallet.unlockBatches()) != 0
+	}, 200*time.Millisecond, 10*time.Millisecond)
 }
 
 func incrementAssetRecipientValue(preparation *oor.TaprootAssetOORPreparation) {

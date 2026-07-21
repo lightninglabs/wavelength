@@ -79,13 +79,14 @@ func TestPreparerRestoresCommittedPackages(t *testing.T) {
 	driver := newFakeDriver()
 	store, err := NewFileStore(t.TempDir())
 	require.NoError(t, err)
-	first := newTestPreparer(driver, inventory, store)
+	reservations := &fakeReservationStore{}
+	first := newTestPreparer(driver, inventory, store, reservations)
 	prepared, err := first.PrepareTaprootAssetOOR(t.Context(), request)
 	require.NoError(t, err)
 	require.Len(t, driver.requests, 2)
 	inventory.err = errors.New("tapd unavailable")
 
-	restarted := newTestPreparer(driver, inventory, store)
+	restarted := newTestPreparer(driver, inventory, store, reservations)
 	restored, err := restarted.PrepareTaprootAssetOOR(t.Context(), request)
 	require.NoError(t, err)
 	require.Len(t, driver.requests, 2)
@@ -98,6 +99,21 @@ func TestPreparerRestoresCommittedPackages(t *testing.T) {
 	secondArk, err := psbtutil.Serialize(restored.PreparedSubmit.ArkPSBT)
 	require.NoError(t, err)
 	require.Equal(t, firstArk, secondArk)
+
+	digest, err := preparationRequestDigest(request)
+	require.NoError(t, err)
+	records := reservations.records()
+	require.Len(t, records, 2)
+	for _, record := range records {
+		require.Equal(
+			t, request.Inputs[0].VTXO.Outpoint, record.outpoint,
+		)
+		require.Equal(
+			t, oor.ReservationOwnerKindTaprootAssetPreparation,
+			record.ownerKind,
+		)
+		require.Equal(t, chainhash.Hash(digest), record.ownerID)
+	}
 }
 
 // TestPreparerBlocksUnknownCommitRetry proves an ambiguous external commit
@@ -117,6 +133,7 @@ func TestPreparerBlocksUnknownCommitRetry(t *testing.T) {
 
 	_, err = preparer.PrepareTaprootAssetOOR(t.Context(), request)
 	require.ErrorContains(t, err, "transport lost")
+	require.ErrorIs(t, err, ErrReconciliationRequired)
 	require.Len(t, driver.requests, 1)
 	driver.commitErr = nil
 
@@ -147,6 +164,60 @@ func TestPreparerRetriesKnownCommitFailure(t *testing.T) {
 	_, err = restarted.PrepareTaprootAssetOOR(t.Context(), request)
 	require.NoError(t, err)
 	require.Len(t, driver.requests, 3)
+}
+
+// TestPreparerQuarantinesAfterCheckpointCommit proves any later failure keeps
+// the original managed VTXO quarantined once tapd has accepted the checkpoint
+// transition, even when the subsequent Ark failure is known-negative.
+func TestPreparerQuarantinesAfterCheckpointCommit(t *testing.T) {
+	t.Parallel()
+
+	request, inventory := testPreparationRequest(t)
+	driver := newFakeDriver()
+	driver.commitErrs = []error{
+		nil, errors.New("Ark transition rejected"),
+	}
+	store, err := NewFileStore(t.TempDir())
+	require.NoError(t, err)
+	reservations := &fakeReservationStore{}
+	preparer := newTestPreparer(
+		driver, inventory, store, reservations,
+	)
+
+	_, err = preparer.PrepareTaprootAssetOOR(t.Context(), request)
+	require.ErrorContains(t, err, "Ark transition rejected")
+	require.ErrorIs(t, err, ErrReconciliationRequired)
+	require.Len(t, driver.requests, 2)
+	require.Len(t, reservations.records(), 1)
+
+	restarted := newTestPreparer(
+		driver, inventory, store, reservations,
+	)
+	_, err = restarted.PrepareTaprootAssetOOR(t.Context(), request)
+	require.NoError(t, err)
+	require.Len(t, driver.requests, 3)
+	require.Len(t, reservations.records(), 2)
+}
+
+// TestPreparerFailsBeforeCommitWhenReservationFails proves the durable input
+// quarantine is established before the first external tapd side effect.
+func TestPreparerFailsBeforeCommitWhenReservationFails(t *testing.T) {
+	t.Parallel()
+
+	request, inventory := testPreparationRequest(t)
+	driver := newFakeDriver()
+	store, err := NewFileStore(t.TempDir())
+	require.NoError(t, err)
+	reservations := &fakeReservationStore{
+		err: errors.New("reservation unavailable"),
+	}
+	preparer := newTestPreparer(
+		driver, inventory, store, reservations,
+	)
+
+	_, err = preparer.PrepareTaprootAssetOOR(t.Context(), request)
+	require.ErrorContains(t, err, "reserve Taproot Asset input 0")
+	require.Empty(t, driver.requests)
 }
 
 // TestPreparerRejectsIdempotencyRewrite proves the durable request digest
@@ -243,10 +314,11 @@ func TestProofInventoryVerifierBindsUnconfirmedAnchor(t *testing.T) {
 }
 
 type fakeDriver struct {
-	mu        sync.Mutex
-	requests  []*tapsdk.CustomAnchorRequest
-	results   map[string]*commitResult
-	commitErr error
+	mu         sync.Mutex
+	requests   []*tapsdk.CustomAnchorRequest
+	results    map[string]*commitResult
+	commitErr  error
+	commitErrs []error
 }
 
 // newFakeDriver constructs a deterministic SDK commit boundary for graph
@@ -264,6 +336,13 @@ func (d *fakeDriver) Commit(_ context.Context,
 	defer d.mu.Unlock()
 
 	d.requests = append(d.requests, request.Clone())
+	if len(d.commitErrs) != 0 {
+		commitErr := d.commitErrs[0]
+		d.commitErrs = d.commitErrs[1:]
+		if commitErr != nil {
+			return nil, commitErr
+		}
+	}
 	if d.commitErr != nil {
 		return nil, d.commitErr
 	}
@@ -370,6 +449,44 @@ type fakeInventory struct {
 	err          error
 }
 
+type reservationRecord struct {
+	outpoint  wire.OutPoint
+	ownerKind int
+	ownerID   chainhash.Hash
+}
+
+type fakeReservationStore struct {
+	mu  sync.Mutex
+	err error
+
+	upserts []reservationRecord
+}
+
+func (f *fakeReservationStore) UpsertReservation(_ context.Context,
+	outpoint wire.OutPoint, ownerKind int, ownerID chainhash.Hash) error {
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.err != nil {
+		return f.err
+	}
+	f.upserts = append(f.upserts, reservationRecord{
+		outpoint:  outpoint,
+		ownerKind: ownerKind,
+		ownerID:   ownerID,
+	})
+
+	return nil
+}
+
+func (f *fakeReservationStore) records() []reservationRecord {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return append([]reservationRecord(nil), f.upserts...)
+}
+
 // VerifyProof returns the configured tapd proof result.
 func (f *fakeInventory) VerifyProof(context.Context, []byte) (
 	*tapsdk.VerifyProofResponse, error) {
@@ -404,12 +521,18 @@ func (f *fakeInventory) onlyAnchor() *tapsdk.ManagedUtxo {
 // newTestPreparer installs fake SDK dependencies while retaining the real
 // durable journal and Wavelength graph builders.
 func newTestPreparer(driver customAnchorDriver, inventory proofInventoryClient,
-	store Store) *Preparer {
+	store Store, reservationStores ...oor.ReservationStore) *Preparer {
+
+	reservationStore := oor.ReservationStore(&fakeReservationStore{})
+	if len(reservationStores) != 0 {
+		reservationStore = reservationStores[0]
+	}
 
 	return &Preparer{
-		driver:    driver,
-		inventory: inventory,
-		store:     store,
+		driver:       driver,
+		inventory:    inventory,
+		store:        store,
+		reservations: reservationStore,
 	}
 }
 
@@ -499,9 +622,10 @@ func testPreparationRequest(t *testing.T) (*oor.TaprootAssetOORPrepareRequest,
 			VTXOPolicyTemplate: recipientPolicyBytes,
 		}},
 		Intent: oor.TaprootAssetOORIntent{
-			AssetRef:    assetRef.String(),
-			AssetAmount: 21,
-			ProofFile:   []byte("confirmed-proof"),
+			InputVTXOOutpoint: input.VTXO.Outpoint,
+			AssetRef:          assetRef.String(),
+			AssetAmount:       21,
+			ProofFile:         []byte("confirmed-proof"),
 			RecipientScriptKey: assetScript.
 				PubKey().
 				SerializeCompressed(),

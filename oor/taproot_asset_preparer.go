@@ -3,13 +3,22 @@ package oor
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
 )
+
+// ErrTaprootAssetCommitOutcomeUnknown reports an asset commit attempt whose
+// durable outcome cannot be established. Callers must retain every input
+// reservation and reconcile the tapd transition before retrying or releasing
+// the inputs.
+var ErrTaprootAssetCommitOutcomeUnknown = errors.New("taproot asset commit " +
+	"outcome is unknown")
 
 const (
 	// MaxTaprootAssetRefBytes bounds the opaque tap-sdk asset identifier at
@@ -29,6 +38,10 @@ const (
 // OOR caller. AssetAmount is measured in asset units and is deliberately
 // separate from the satoshi value of the containing Ark VTXO.
 type TaprootAssetOORIntent struct {
+	// InputVTXOOutpoint is the wallet-managed asset-bearing VTXO that must
+	// be selected and reserved through the normal VTXO manager path.
+	InputVTXOOutpoint wire.OutPoint
+
 	// AssetRef is the opaque tap-sdk asset or group identifier.
 	AssetRef string
 
@@ -141,6 +154,10 @@ func (r *TaprootAssetOORPrepareRequest) Validate() error {
 	}
 	if r.Inputs[0].TaprootAssetRoot == nil {
 		return fmt.Errorf("taproot asset OOR input root is required")
+	}
+	if r.Inputs[0].VTXO.Outpoint != r.Intent.InputVTXOOutpoint {
+		return fmt.Errorf("taproot asset OOR input outpoint does not " +
+			"match the requested managed VTXO")
 	}
 	if r.Recipients[0].Value != r.Inputs[0].VTXO.Amount {
 		return fmt.Errorf("taproot asset OOR requires exact BTC value")
