@@ -195,6 +195,14 @@ message OORRecipientEvent {
     // taproot_asset_transfer is the optional versioned Wavelength container
     // of sealed tap-sdk packages for the checkpoint and Ark transitions.
     bytes taproot_asset_transfer = 11;
+
+    // taproot_asset_ref is the opaque SDK-level asset identity carried by
+    // this recipient output.
+    string taproot_asset_ref = 12;
+
+    // taproot_asset_amount is the number of asset units carried by this
+    // output. value remains the separate Bitcoin carrier amount.
+    uint64 taproot_asset_amount = 13;
 }
 
 // OORSessionPackage carries finalized package artifacts for one OOR session.
@@ -468,6 +476,18 @@ message VTXO {
     // IncomingVTXOEvent) does not yet carry this field and adopts it as a
     // fast-follow. Today the only understood value is 1.
     uint32 construction_version = 20;
+
+    // taproot_asset_root is the optional 32-byte Taproot Asset commitment
+    // root anchored in this VTXO.
+    bytes taproot_asset_root = 21;
+
+    // taproot_asset_ref is the opaque SDK-level asset identity carried by
+    // this VTXO.
+    string taproot_asset_ref = 22;
+
+    // taproot_asset_amount is the number of asset units carried by this VTXO.
+    // value_sat remains the separate Bitcoin carrier value.
+    uint64 taproot_asset_amount = 23;
 }
 
 message ListVTXOsByScriptsRequest {
@@ -642,4 +662,16 @@ message IncomingVTXOEvent {
     // commitment transaction. This is distinct from the leaf txid
     // carried in the outpoint field.
     bytes commitment_txid = 11;
+
+    // taproot_asset_root is the optional 32-byte Taproot Asset commitment
+    // root anchored in this VTXO.
+    bytes taproot_asset_root = 12;
+
+    // taproot_asset_ref is the opaque SDK-level asset identity carried by
+    // this VTXO.
+    string taproot_asset_ref = 13;
+
+    // taproot_asset_amount is the number of asset units carried by this VTXO.
+    // value_sat remains the separate Bitcoin carrier value.
+    uint64 taproot_asset_amount = 14;
 }

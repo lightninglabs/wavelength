@@ -27,6 +27,14 @@ type ArkRecipientOutput struct {
 	// TaprootAssetRoot is the optional root of the Taproot Asset
 	// commitment composed beside VTXOPolicyTemplate in PkScript.
 	TaprootAssetRoot *chainhash.Hash
+
+	// TaprootAssetRef is the opaque SDK-level identity carried by the
+	// output.
+	TaprootAssetRef string
+
+	// TaprootAssetAmount is the number of asset units carried by the
+	// output. Value remains the Bitcoin carrier amount.
+	TaprootAssetAmount uint64
 }
 
 // ExtractArkRecipients returns the non-anchor outputs from a canonical Ark
@@ -89,6 +97,8 @@ func CloneArkRecipients(recipients []ArkRecipientOutput) []ArkRecipientOutput {
 				[]byte(nil),
 				recipients[i].VTXOPolicyTemplate...,
 			),
+			TaprootAssetRef:    recipients[i].TaprootAssetRef,
+			TaprootAssetAmount: recipients[i].TaprootAssetAmount,
 		}
 		if recipients[i].TaprootAssetRoot != nil {
 			root := *recipients[i].TaprootAssetRoot

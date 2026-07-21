@@ -173,6 +173,10 @@ func (m *StartTransferRequest) Encode(w io.Writer) error {
 					VTXOPolicyTemplate,
 				TaprootAssetRoot: m.Recipients[i].
 					TaprootAssetRoot,
+				TaprootAssetRef: m.Recipients[i].
+					TaprootAssetRef,
+				TaprootAssetAmount: m.Recipients[i].
+					TaprootAssetAmount,
 			},
 		)
 	}
@@ -260,7 +264,9 @@ func (m *StartTransferRequest) Decode(r io.Reader) error {
 			Value:    btcutil.Amount(recipient.ValueSat),
 			VTXOPolicyTemplate: recipient.
 				VTXOPolicyTemplate,
-			TaprootAssetRoot: recipient.TaprootAssetRoot,
+			TaprootAssetRoot:   recipient.TaprootAssetRoot,
+			TaprootAssetRef:    recipient.TaprootAssetRef,
+			TaprootAssetAmount: recipient.TaprootAssetAmount,
 		})
 	}
 

@@ -918,6 +918,8 @@ func validateArkResult(request *oor.TaprootAssetOORPrepareRequest,
 	recipients := cloneRecipients(request.Recipients)
 	root := chainhash.Hash(output.taprootAssetRoot)
 	recipients[0].TaprootAssetRoot = &root
+	recipients[0].TaprootAssetRef = output.assetRef.String()
+	recipients[0].TaprootAssetAmount = output.amount
 	template, err := arkscript.DecodePolicyTemplate(
 		recipients[0].VTXOPolicyTemplate,
 	)

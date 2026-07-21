@@ -85,6 +85,12 @@ func TestOnboarderResumesPendingConfirmation(t *testing.T) {
 	require.Equal(t, int64(1_000), result.ValueSat)
 	require.Equal(t, uint64(250), result.ActualFeeSat)
 	require.NotZero(t, result.TaprootAssetRoot)
+	require.Equal(t, request.AssetRef, result.AssetRef)
+	require.Equal(t, request.AssetAmount, result.AssetAmount)
+	require.Equal(t, request.AssetRef, registrations[0].TaprootAssetRef)
+	require.Equal(
+		t, request.AssetAmount, registrations[0].TaprootAssetAmount,
+	)
 	require.NotEmpty(t, result.PolicyTemplate)
 	require.NotEmpty(t, result.PkScript)
 

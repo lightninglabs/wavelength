@@ -111,6 +111,30 @@ func (i *TransferInput) Validate() error {
 	case !i.IsCustomSpend() && i.VTXO.ClientKey.PubKey == nil:
 		return fmt.Errorf("vtxo client key must be provided")
 	}
+	if (i.VTXO.TaprootAssetRef == "") !=
+		(i.VTXO.TaprootAssetAmount == 0) {
+		return fmt.Errorf("vtxo asset ref and amount must both be " +
+			"provided")
+	}
+	if len(i.VTXO.TaprootAssetRef) > MaxTaprootAssetRefBytes {
+		return fmt.Errorf("vtxo asset ref exceeds %d bytes",
+			MaxTaprootAssetRefBytes)
+	}
+	if i.VTXO.TaprootAssetRef != "" &&
+		i.VTXO.TaprootAssetRoot == nil {
+		return fmt.Errorf("vtxo asset metadata requires a commitment " +
+			"root")
+	}
+	if (i.TaprootAssetRoot == nil) !=
+		(i.VTXO.TaprootAssetRoot == nil) {
+		return fmt.Errorf("transfer input and vtxo asset roots " +
+			"disagree")
+	}
+	if i.TaprootAssetRoot != nil &&
+		*i.TaprootAssetRoot != *i.VTXO.TaprootAssetRoot {
+		return fmt.Errorf("transfer input and vtxo asset roots " +
+			"disagree")
+	}
 
 	defaultLeaf, defaultPolicy, err := defaultOwnerLeaf(
 		i.VTXO.ClientKey.PubKey, i.VTXO.OperatorKey,

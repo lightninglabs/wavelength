@@ -7,23 +7,45 @@ import (
 	tapsdk "github.com/lightninglabs/tap-sdk"
 )
 
+type commitProofSource struct {
+	kind      tapsdk.CustomAnchorProofSourceKind
+	contentID tapsdk.Hash
+	blob      []byte
+}
+
 type commitOutput struct {
-	anchorOutputIndex uint32
-	anchorOutpoint    tapsdk.Outpoint
-	anchorValueSat    int64
-	assetRef          tapsdk.AssetRef
-	amount            uint64
-	taprootAssetRoot  tapsdk.Hash
-	taprootMerkleRoot tapsdk.Hash
-	scriptKey         tapsdk.PubKey
-	opTrueWitness     [][]byte
-	proofBlob         []byte
+	logicalOutputID    string
+	logicalOutputIndex uint32
+	packetIndex        uint32
+	packetRole         tapsdk.CustomAnchorPacketRole
+	virtualOutputIndex uint32
+	anchorOutputIndex  uint32
+	anchorOutpoint     tapsdk.Outpoint
+	anchorValueSat     int64
+	assetRef           tapsdk.AssetRef
+	issuanceID         tapsdk.AssetID
+	amount             uint64
+	taprootAssetRoot   tapsdk.Hash
+	taprootMerkleRoot  tapsdk.Hash
+	scriptKey          tapsdk.PubKey
+	scriptMode         tapsdk.CustomAssetScriptMode
+	opTrueWitness      [][]byte
+	proofBlob          []byte
 }
 
 type commitInput struct {
-	anchorOutpoint tapsdk.Outpoint
-	assetRef       tapsdk.AssetRef
-	amount         uint64
+	logicalInputID    string
+	logicalInputIndex uint32
+	packetIndex       uint32
+	packetRole        tapsdk.CustomAnchorPacketRole
+	virtualInputIndex uint32
+	anchorInputIndex  uint32
+	anchorOutpoint    tapsdk.Outpoint
+	assetRef          tapsdk.AssetRef
+	issuanceID        tapsdk.AssetID
+	scriptKey         tapsdk.PubKey
+	amount            uint64
+	proofSource       commitProofSource
 }
 
 type commitResult struct {
@@ -201,9 +223,24 @@ func commitResultFromPackage(transfer *tapsdk.CustomAnchorTransferPackage) (
 	for idx := range transfer.Inputs {
 		input := transfer.Inputs[idx]
 		result.inputs[idx] = commitInput{
-			anchorOutpoint: input.AnchorOutpoint,
-			assetRef:       input.AssetRef,
-			amount:         input.Amount,
+			logicalInputID:    input.LogicalInputID,
+			logicalInputIndex: input.LogicalInputIndex,
+			packetIndex:       input.PacketIndex,
+			packetRole:        input.PacketRole,
+			virtualInputIndex: input.VirtualInputIndex,
+			anchorInputIndex:  input.AnchorInputIndex,
+			anchorOutpoint:    input.AnchorOutpoint,
+			assetRef:          input.AssetRef,
+			issuanceID:        input.IssuanceID,
+			scriptKey:         input.ScriptKey,
+			amount:            input.Amount,
+			proofSource: commitProofSource{
+				kind:      input.ProofSource.Kind,
+				contentID: input.ProofSource.ContentID,
+				blob: append(
+					[]byte(nil), input.ProofSource.Blob...,
+				),
+			},
 		}
 	}
 	for idx := range transfer.Outputs {
@@ -213,22 +250,41 @@ func commitResultFromPackage(transfer *tapsdk.CustomAnchorTransferPackage) (
 			witness = output.OPTrueSpend.WitnessStack()
 		}
 		result.outputs[idx] = commitOutput{
-			anchorOutputIndex: output.AnchorOutputIndex,
-			anchorOutpoint:    output.AnchorOutpoint,
-			anchorValueSat:    output.AnchorValueSat,
-			assetRef:          output.AssetRef,
-			amount:            output.Amount,
-			taprootAssetRoot:  output.TaprootAssetRoot,
-			taprootMerkleRoot: output.TaprootMerkleRoot,
-			scriptKey:         output.ScriptKey,
-			opTrueWitness:     witness,
+			logicalOutputID:    output.LogicalOutputID,
+			logicalOutputIndex: output.LogicalOutputIndex,
+			packetIndex:        output.PacketIndex,
+			packetRole:         output.PacketRole,
+			virtualOutputIndex: output.VirtualOutputIndex,
+			anchorOutputIndex:  output.AnchorOutputIndex,
+			anchorOutpoint:     output.AnchorOutpoint,
+			anchorValueSat:     output.AnchorValueSat,
+			assetRef:           output.AssetRef,
+			issuanceID:         output.IssuanceID,
+			amount:             output.Amount,
+			taprootAssetRoot:   output.TaprootAssetRoot,
+			taprootMerkleRoot:  output.TaprootMerkleRoot,
+			scriptKey:          output.ScriptKey,
+			scriptMode:         output.ScriptMode,
+			opTrueWitness:      witness,
 		}
 	}
 	for idx := range transfer.ProofUpdates {
 		update := transfer.ProofUpdates[idx]
 		for outputIdx := range result.outputs {
 			output := &result.outputs[outputIdx]
-			if output.anchorOutpoint == update.AnchorOutpoint &&
+			if output.logicalOutputID == update.LogicalOutputID &&
+				output.logicalOutputIndex ==
+					update.LogicalOutputIndex &&
+				output.packetIndex == update.PacketIndex &&
+				output.packetRole == update.PacketRole &&
+				output.virtualOutputIndex ==
+					update.VirtualOutputIndex &&
+				output.anchorOutputIndex ==
+					update.AnchorOutputIndex &&
+				output.anchorOutpoint ==
+					update.AnchorOutpoint &&
+				output.assetRef.Equivalent(update.AssetRef) &&
+				output.issuanceID == update.IssuanceID &&
 				output.scriptKey == update.ScriptKey {
 
 				output.proofBlob = append(
@@ -237,6 +293,12 @@ func commitResultFromPackage(transfer *tapsdk.CustomAnchorTransferPackage) (
 
 				break
 			}
+		}
+	}
+	for idx := range result.outputs {
+		if len(result.outputs[idx].proofBlob) == 0 {
+			return nil, fmt.Errorf("tap-sdk output %d has no "+
+				"exact proof update", idx)
 		}
 	}
 

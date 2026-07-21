@@ -23,7 +23,7 @@ var ErrTaprootAssetCommitOutcomeUnknown = errors.New("taproot asset commit " +
 const (
 	// MaxTaprootAssetRefBytes bounds the opaque tap-sdk asset identifier at
 	// the daemon boundary.
-	MaxTaprootAssetRefBytes = 512
+	MaxTaprootAssetRefBytes = oortx.MaxTaprootAssetRefBytes
 
 	// MaxTaprootAssetProofDeliveryBytes bounds host-owned receiver
 	// metadata.

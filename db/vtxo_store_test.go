@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"encoding/binary"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -373,6 +374,8 @@ func TestListSelectionCandidatesByStatus(t *testing.T) {
 	descAsset := createTestVTXODescriptor(t, roundID, 13)
 	assetRoot := chainhash.Hash{0xa1, 0xb2, 0xc3}
 	descAsset.TaprootAssetRoot = &assetRoot
+	descAsset.TaprootAssetRef = "asset:selection-candidate"
+	descAsset.TaprootAssetAmount = ^uint64(0)
 	assetPkScript, err := descAsset.EffectivePkScript()
 	require.NoError(t, err)
 	descAsset.PkScript = assetPkScript
@@ -404,6 +407,12 @@ func TestListSelectionCandidatesByStatus(t *testing.T) {
 	storedAsset, err := vtxoStore.GetVTXO(ctx, descAsset.Outpoint)
 	require.NoError(t, err)
 	require.Equal(t, &assetRoot, storedAsset.TaprootAssetRoot)
+	require.Equal(
+		t, descAsset.TaprootAssetRef, storedAsset.TaprootAssetRef,
+	)
+	require.Equal(
+		t, descAsset.TaprootAssetAmount, storedAsset.TaprootAssetAmount,
+	)
 	require.Equal(t, descAsset.PkScript, storedAsset.PkScript)
 
 	// A status the projection was not asked for stays invisible.
@@ -419,6 +428,248 @@ func TestListSelectionCandidatesByStatus(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, candidates, 1)
 	require.Equal(t, descB.Outpoint, candidates[0].Outpoint)
+}
+
+// TestTaprootAssetMetadataCodec verifies the SQL boundary preserves the full
+// uint64 asset-amount range while accepting historical root-only rows and
+// rejecting partial or non-canonical metadata.
+func TestTaprootAssetMetadataCodec(t *testing.T) {
+	t.Parallel()
+
+	root := chainhash.HashH([]byte("asset-metadata-root"))
+	maxAmount := ^uint64(0)
+	desc := &vtxo.Descriptor{
+		TaprootAssetRoot:   &root,
+		TaprootAssetRef:    "asset:max-supply",
+		TaprootAssetAmount: maxAmount,
+	}
+
+	ref, amount, err := encodeTaprootAssetMetadata(desc)
+	require.NoError(t, err)
+	require.Equal(t, sql.NullString{
+		String: desc.TaprootAssetRef,
+		Valid:  true,
+	}, ref)
+	require.Len(t, amount, taprootAssetAmountSize)
+	require.Equal(t, maxAmount, binary.BigEndian.Uint64(amount))
+
+	decodedRef, decodedAmount, err := decodeTaprootAssetMetadata(
+		&root, ref, amount,
+	)
+	require.NoError(t, err)
+	require.Equal(t, desc.TaprootAssetRef, decodedRef)
+	require.Equal(t, maxAmount, decodedAmount)
+
+	legacyRef, legacyAmount, err := encodeTaprootAssetMetadata(
+		&vtxo.Descriptor{
+			TaprootAssetRoot: &root,
+		},
+	)
+	require.NoError(t, err)
+	require.False(t, legacyRef.Valid)
+	require.Empty(t, legacyAmount)
+
+	decodedRef, decodedAmount, err = decodeTaprootAssetMetadata(
+		&root, sql.NullString{}, nil,
+	)
+	require.NoError(t, err)
+	require.Empty(t, decodedRef)
+	require.Zero(t, decodedAmount)
+
+	encodeTests := []struct {
+		name string
+		desc *vtxo.Descriptor
+		want string
+	}{
+		{
+			name: "nil descriptor",
+			want: "descriptor must be provided",
+		},
+		{
+			name: "metadata without root",
+			desc: &vtxo.Descriptor{
+				TaprootAssetRef:    "asset:no-root",
+				TaprootAssetAmount: 1,
+			},
+			want: "requires a commitment root",
+		},
+		{
+			name: "reference without amount",
+			desc: &vtxo.Descriptor{
+				TaprootAssetRoot: &root,
+				TaprootAssetRef:  "asset:partial",
+			},
+			want: "ref and amount must both be provided",
+		},
+		{
+			name: "amount without reference",
+			desc: &vtxo.Descriptor{
+				TaprootAssetRoot:   &root,
+				TaprootAssetAmount: 1,
+			},
+			want: "ref and amount must both be provided",
+		},
+	}
+	for _, test := range encodeTests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, _, err := encodeTaprootAssetMetadata(test.desc)
+			require.ErrorContains(t, err, test.want)
+		})
+	}
+
+	canonicalAmount := make([]byte, taprootAssetAmountSize)
+	binary.BigEndian.PutUint64(canonicalAmount, 1)
+	decodeTests := []struct {
+		name   string
+		root   *chainhash.Hash
+		ref    sql.NullString
+		amount []byte
+		want   string
+	}{
+		{
+			name: "metadata without root",
+			ref: sql.NullString{
+				String: "asset:no-root",
+				Valid:  true,
+			},
+			amount: canonicalAmount,
+			want:   "has no commitment root",
+		},
+		{
+			name:   "missing reference",
+			root:   &root,
+			amount: canonicalAmount,
+			want:   "incomplete Taproot Asset metadata",
+		},
+		{
+			name: "empty reference",
+			root: &root,
+			ref: sql.NullString{
+				Valid: true,
+			},
+			amount: canonicalAmount,
+			want:   "incomplete Taproot Asset metadata",
+		},
+		{
+			name: "missing amount",
+			root: &root,
+			ref: sql.NullString{
+				String: "asset:missing-amount",
+				Valid:  true,
+			},
+			want: "incomplete Taproot Asset metadata",
+		},
+		{
+			name: "short amount blob",
+			root: &root,
+			ref: sql.NullString{
+				String: "asset:short",
+				Valid:  true,
+			},
+			amount: []byte{
+				1,
+			},
+			want: "invalid Taproot Asset amount length",
+		},
+		{
+			name: "long amount blob",
+			root: &root,
+			ref: sql.NullString{
+				String: "asset:long",
+				Valid:  true,
+			},
+			amount: make([]byte, taprootAssetAmountSize+1),
+			want:   "invalid Taproot Asset amount length",
+		},
+		{
+			name: "zero amount",
+			root: &root,
+			ref: sql.NullString{
+				String: "asset:zero",
+				Valid:  true,
+			},
+			amount: make([]byte, taprootAssetAmountSize),
+			want:   "amount must be positive",
+		},
+	}
+	for _, test := range decodeTests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, _, err := decodeTaprootAssetMetadata(
+				test.root, test.ref, test.amount,
+			)
+			require.ErrorContains(t, err, test.want)
+		})
+	}
+}
+
+// TestVTXOPersistenceStoreTaprootAssetMetadataUpsert proves a historical
+// root-only row can be atomically enriched with asset identity and a full
+// uint64 amount, while partial or root-only retries cannot split or erase the
+// persisted metadata tuple.
+func TestVTXOPersistenceStoreTaprootAssetMetadataUpsert(t *testing.T) {
+	t.Parallel()
+
+	vtxoStore, roundStore, _ := newVTXOStoreForTest(t)
+	ctx := t.Context()
+
+	roundID := testRoundIDDB("test-asset-metadata-upsert")
+	testRound := createTestRound(t, roundID)
+	state := &round.InputSigSentState{
+		RoundID:     testRound.RoundID,
+		ClientTrees: make(map[round.SignerKey]*tree.Tree),
+	}
+	require.NoError(t, roundStore.CommitState(ctx, testRound, state))
+
+	root := chainhash.HashH([]byte("asset-upsert-root"))
+	desc := createTestVTXODescriptor(t, roundID, 31)
+	desc.TaprootAssetRoot = &root
+	pkScript, err := desc.EffectivePkScript()
+	require.NoError(t, err)
+	desc.PkScript = pkScript
+	require.NoError(t, vtxoStore.SaveVTXO(ctx, desc))
+
+	legacy, err := vtxoStore.GetVTXO(ctx, desc.Outpoint)
+	require.NoError(t, err)
+	require.Equal(t, &root, legacy.TaprootAssetRoot)
+	require.Empty(t, legacy.TaprootAssetRef)
+	require.Zero(t, legacy.TaprootAssetAmount)
+
+	const assetRef = "asset:upsert"
+	maxAmount := ^uint64(0)
+	desc.TaprootAssetRef = assetRef
+	desc.TaprootAssetAmount = maxAmount
+	require.NoError(t, vtxoStore.SaveVTXO(ctx, desc))
+
+	assertComplete := func() {
+		t.Helper()
+
+		stored, err := vtxoStore.GetVTXO(ctx, desc.Outpoint)
+		require.NoError(t, err)
+		require.Equal(t, &root, stored.TaprootAssetRoot)
+		require.Equal(t, assetRef, stored.TaprootAssetRef)
+		require.Equal(t, maxAmount, stored.TaprootAssetAmount)
+	}
+	assertComplete()
+
+	// A replay from a pre-migration daemon carries only the root. The
+	// upsert must preserve the richer tuple already stored.
+	desc.TaprootAssetRef = ""
+	desc.TaprootAssetAmount = 0
+	require.NoError(t, vtxoStore.SaveVTXO(ctx, desc))
+	assertComplete()
+
+	// A partial update is rejected before the SQL upsert and leaves the
+	// complete tuple intact.
+	desc.TaprootAssetRef = "asset:partial"
+	err = vtxoStore.SaveVTXO(ctx, desc)
+	require.ErrorContains(t, err, "ref and amount must both be provided")
+	assertComplete()
 }
 
 // TestListVTXOsLightSkipsAncestry exercises the light listing variants the
