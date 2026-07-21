@@ -7,8 +7,65 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 )
+
+func TestReadPasswordRequiresExplicitStdin(t *testing.T) {
+	prev := stdinIsTTY
+	stdinIsTTY = func(*cobra.Command) bool { return false }
+	t.Cleanup(func() {
+		stdinIsTTY = prev
+	})
+
+	cmd := newUnlockCmd()
+	cmd.SetIn(strings.NewReader("secret\n"))
+
+	password, err := readPassword(cmd)
+	require.Nil(t, password)
+	require.ErrorContains(t, err, "--password-stdin")
+}
+
+func TestReadPasswordFromExplicitStdin(t *testing.T) {
+	t.Parallel()
+
+	cmd := newUnlockCmd()
+	cmd.SetIn(strings.NewReader("secret\nignored\n"))
+	require.NoError(t, cmd.Flags().Set("password-stdin", "true"))
+
+	password, err := readPassword(cmd)
+	require.NoError(t, err)
+	require.Equal(t, []byte("secret"), password)
+}
+
+func TestNoInputAllowsExplicitPasswordSources(t *testing.T) {
+	t.Parallel()
+
+	root := newRootCmd(false)
+	require.NoError(t, root.PersistentFlags().Set("no-input", "true"))
+	cmd, _, err := root.Find([]string{"unlock"})
+	require.NoError(t, err)
+	cmd.SetIn(strings.NewReader("secret\n"))
+	require.NoError(t, cmd.Flags().Set("password-stdin", "true"))
+
+	password, err := readPassword(cmd)
+	require.NoError(t, err)
+	require.Equal(t, []byte("secret"), password)
+}
+
+func TestNoInputRejectsPasswordPrompt(t *testing.T) {
+	t.Parallel()
+
+	root := newRootCmd(false)
+	require.NoError(t, root.PersistentFlags().Set("no-input", "true"))
+	cmd, _, err := root.Find([]string{"unlock"})
+	require.NoError(t, err)
+	cmd.SetIn(strings.NewReader("secret\n"))
+
+	password, err := readPassword(cmd)
+	require.Nil(t, password)
+	require.ErrorContains(t, err, "wallet password input required")
+}
 
 // TestReadMaskedPasswordMasksInput confirms each entered byte is
 // echoed as a single asterisk and the raw password is never written

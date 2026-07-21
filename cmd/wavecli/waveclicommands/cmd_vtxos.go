@@ -1,7 +1,6 @@
 package waveclicommands
 
 import (
-	"bufio"
 	"encoding/hex"
 	"fmt"
 	"os"
@@ -415,14 +414,14 @@ func confirmRefreshIfNeeded(cmd *cobra.Command,
 		return nil
 	}
 
-	if !stdinIsTTY(cmd) {
+	if !canPrompt(cmd) {
 		return PrintError(
 			confirmationRequiredCode, "refresh is charged an "+
 				"operator fee at seal time and requires "+
 				"--yes (explicit consent) or --dry-run "+
-				"(fee preview) on non-interactive stdin; "+
-				"refusing to prompt because an agent "+
-				"cannot respond to y/N",
+				"(fee preview) on non-interactive stdin or "+
+				"when input is disabled; refusing to prompt "+
+				"because an agent cannot respond to y/N",
 		)
 	}
 
@@ -495,20 +494,8 @@ func promptRefreshConfirmation(cmd *cobra.Command, lines []string) error {
 	for _, line := range lines {
 		fmt.Fprintln(out, line)
 	}
-	fmt.Fprint(out, "Proceed with refresh? [y/N]: ")
 
-	reader := bufio.NewReader(cmd.InOrStdin())
-	answer, err := reader.ReadString('\n')
-	if err != nil {
-		return fmt.Errorf("read confirmation: %w", err)
-	}
-
-	answer = strings.TrimSpace(strings.ToLower(answer))
-	if answer != "y" && answer != "yes" {
-		return fmt.Errorf("aborted by user")
-	}
-
-	return nil
+	return promptConfirmation(cmd, "Proceed with refresh? [y/N]: ")
 }
 
 // newVTXOsLeaveCmd creates the vtxos leave subcommand.
@@ -862,12 +849,13 @@ func confirmLeaveAllIfNeeded(cmd *cobra.Command,
 	// race agents whose stdin is closed / piped. The agent-cli
 	// skill lists interactive prompts as an anti-pattern; this
 	// guard is the explicit replacement.
-	if !stdinIsTTY(cmd) {
+	if !canPrompt(cmd) {
 		return PrintError(
 			confirmationRequiredCode, "--all requires --yes "+
 				"(explicit consent) or --dry-run (preview) "+
-				"on non-interactive stdin; refusing to "+
-				"prompt because an agent cannot respond to y/N",
+				"on non-interactive stdin or when input is "+
+				"disabled; refusing to prompt because an "+
+				"agent cannot respond to y/N",
 		)
 	}
 
@@ -925,18 +913,6 @@ func promptLeaveAllConfirmation(cmd *cobra.Command) error {
 		out, "About to queue ALL live VTXOs for cooperative leave. "+
 			"This moves funds on-chain.",
 	)
-	fmt.Fprint(out, "Proceed? [y/N]: ")
 
-	reader := bufio.NewReader(cmd.InOrStdin())
-	answer, err := reader.ReadString('\n')
-	if err != nil {
-		return fmt.Errorf("read confirmation: %w", err)
-	}
-
-	answer = strings.TrimSpace(strings.ToLower(answer))
-	if answer != "y" && answer != "yes" {
-		return fmt.Errorf("aborted by user")
-	}
-
-	return nil
+	return promptConfirmation(cmd, "Proceed? [y/N]: ")
 }

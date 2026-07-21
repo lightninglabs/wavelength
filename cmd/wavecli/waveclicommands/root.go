@@ -107,6 +107,10 @@ func newRootCmd(devMode bool) *cobra.Command {
 			"request input uses --request-json)",
 	)
 
+	pf.Bool(
+		"no-input", false, "never prompt or implicitly consume stdin",
+	)
+
 	pf.String(
 		"request-json", "", "raw JSON request payload (maps "+
 			"directly to the RPC request proto); when set, "+

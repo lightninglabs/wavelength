@@ -1,10 +1,8 @@
 package waveclicommands
 
 import (
-	"bufio"
 	"encoding/hex"
 	"fmt"
-	"strings"
 
 	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/spf13/cobra"
@@ -220,16 +218,17 @@ func confirmRecoveryEscalation(cmd *cobra.Command, recoveryID string) error {
 	if yes {
 		return nil
 	}
-	if !stdinIsTTY(cmd) {
+	if !canPrompt(cmd) {
 		return PrintError(
 			confirmationRequiredCode, "recovery escalate "+
 				"requires --yes (explicit consent) on "+
-				"non-interactive stdin; refusing to prompt "+
-				"because an agent cannot respond to y/N",
+				"non-interactive stdin or when input is "+
+				"disabled; refusing to prompt because an "+
+				"agent cannot respond to y/N",
 		)
 	}
 
-	out := cmd.OutOrStdout()
+	out := cmd.ErrOrStderr()
 	fmt.Fprintf(
 		out, "About to start on-chain vHTLC recovery for %s.\n",
 		recoveryID,
@@ -239,19 +238,8 @@ func confirmRecoveryEscalation(cmd *cobra.Command, recoveryID string) error {
 			"recovery status/list first to confirm cooperative "+
 			"settlement cannot safely continue.",
 	)
-	fmt.Fprint(out, "Start recovery? [y/N]: ")
 
-	reader := bufio.NewReader(cmd.InOrStdin())
-	answer, err := reader.ReadString('\n')
-	if err != nil {
-		return fmt.Errorf("read confirmation: %w", err)
-	}
-	answer = strings.TrimSpace(strings.ToLower(answer))
-	if answer != "y" && answer != "yes" {
-		return fmt.Errorf("aborted by user")
-	}
-
-	return nil
+	return promptConfirmation(cmd, "Start recovery? [y/N]: ")
 }
 
 // decodeRecoveryPreimage decodes an optional 32-byte preimage. Empty input maps

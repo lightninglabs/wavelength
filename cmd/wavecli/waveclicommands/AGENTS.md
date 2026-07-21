@@ -34,7 +34,7 @@ unchanged).
 
 | Command | RPC | Description |
 |---------|-----|-------------|
-| `create` | `wavewalletrpc.Create` | Initialize a new wallet (proxies GenSeed + InitWallet). Password from stdin / WAVED_WALLET_PASSWORD / --wallet-password-file |
+| `create` | `wavewalletrpc.Create` | Initialize a new wallet (proxies GenSeed + InitWallet). Password from WAVED_WALLET_PASSWORD / --wallet-password-file / explicit --password-stdin |
 | `unlock` | `wavewalletrpc.Unlock` | Unlock an existing wallet (proxies UnlockWallet) |
 | `send <dest>` | `wavewalletrpc.Send` | Outbound payment. `--offchain` (default) for a BOLT-11 invoice via the swap subsystem; `--onchain` for an atomic on-chain send (`--sweep-all` drains). No prefix sniff |
 | `recv` | `wavewalletrpc.Recv` / `wavewalletrpc.Deposit` | Inbound. `--offchain` (default) returns a Lightning invoice; `--onchain` returns a boarding address |
@@ -117,8 +117,9 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/cmd/wave
   exposed RPC as a typed tool; split from `mcpServe` (which owns the
   daemon dial and stdio transport) so the tool surface is testable.
 - `readPassword()` — reads wallet password from
-  `WAVED_WALLET_PASSWORD` → `--wallet-password-file` → stdin → TTY.
-  **Never from CLI args.**
+  `WAVED_WALLET_PASSWORD` → `--wallet-password-file` → explicit
+  `--password-stdin` → TTY. **Never implicitly from stdin or from CLI
+  args.**
 - `validateDestination()` / `validateOutpoint()` /
   `validateFreeText()` — input hardening shared across the top-level
   wallet verbs (reject control chars, query/fragment chars, malformed
@@ -147,7 +148,10 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/cmd/wave
   the authoritative parse.
 - The wallet password is NEVER read from argv. The supported sources
   are `WAVED_WALLET_PASSWORD` (highest priority), then
-  `--wallet-password-file`, then piped stdin, then interactive prompt.
+  `--wallet-password-file`, explicit `--password-stdin`, then an
+  interactive prompt.
+- Global `--no-input` and `CI=true` disable interactive prompts without
+  suppressing command output. Explicit password sources still work.
 - JSON output (`stdout`) and diagnostic output (`stderr`) are kept on
   separate streams so shell pipelines can consume the JSON body while
   a human reading the terminal sees informative warnings.

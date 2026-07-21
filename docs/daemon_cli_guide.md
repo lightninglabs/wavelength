@@ -186,8 +186,8 @@ the only backup.
 # Via environment variable (recommended for automation)
 WAVED_WALLET_PASSWORD=your_password wavecli create
 
-# Via stdin pipe
-echo -n 'your_password' | wavecli create
+# Via explicit stdin (never consumed unless requested)
+printf '%s\n' 'your_password' | wavecli create --password-stdin
 
 # Via password file
 wavecli create \
@@ -713,8 +713,14 @@ order for password resolution:
 
 1. **Environment variable** -- `WAVED_WALLET_PASSWORD=pass`
 2. **Password file** -- `--wallet-password-file=/path/to/file`
-3. **stdin pipe** -- `echo -n 'pass' | wavecli unlock`
+3. **Explicit stdin** -- `printf '%s\n' 'pass' | wavecli unlock --password-stdin`
 4. **Interactive prompt** -- prompted on TTY if none of the above
+
+Plain piped stdin is never consumed as a password. Pass global `--no-input`
+when an invocation must never prompt or implicitly read input. `CI=true` also
+suppresses prompts while leaving stdout and stderr output unchanged. Explicit
+sources such as `--password-stdin`, a password file, or the environment remain
+available under `--no-input`.
 
 For production deployments, use the password file approach with
 restrictive file permissions (`chmod 600`).

@@ -107,6 +107,12 @@ func walletAdminMethodRegistry() []schemaMethod {
 			Description: "Create a new wallet from a fresh seed",
 			Params: []schemaParam{
 				{
+					Name: "password-stdin",
+					Type: "bool",
+					Description: "read one wallet " +
+						"password line from stdin",
+				},
+				{
 					Name: "wallet-password-file",
 					Type: "string",
 					Description: "path to file " +
@@ -135,6 +141,12 @@ func walletAdminMethodRegistry() []schemaMethod {
 			Method:      "unlock",
 			Description: "Unlock an existing wallet",
 			Params: []schemaParam{
+				{
+					Name: "password-stdin",
+					Type: "bool",
+					Description: "read one wallet " +
+						"password line from stdin",
+				},
 				{
 					Name: "wallet-password-file",
 					Type: "string",

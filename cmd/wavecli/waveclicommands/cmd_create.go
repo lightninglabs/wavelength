@@ -14,7 +14,7 @@ import (
 // exit) and dials wavewalletrpc.WalletService.Create which proxies
 // waverpc.GenSeed + waverpc.InitWallet under the hood. Both the
 // wallet password and the optional seed passphrase are read from
-// stdin / env var / file (never CLI args) so secrets never enter argv.
+// explicit non-argv sources so secrets never enter process listings.
 func newCreateCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "create",
@@ -24,9 +24,9 @@ func newCreateCmd() *cobra.Command {
 			"the caller can record it offline), and creates " +
 			"the wallet database encrypted under the " +
 			"supplied password.\n\n" +
-			"The wallet password is read from stdin / " +
-			"WAVED_WALLET_PASSWORD env / " +
-			"--wallet-password-file (never CLI args). The " +
+			"The wallet password is read from " +
+			"WAVED_WALLET_PASSWORD, --wallet-password-file, " +
+			"or explicit --password-stdin (never CLI args). The " +
 			"interactive password prompt asks for confirmation. " +
 			"The optional seed passphrase is read from " +
 			"WAVED_SEED_PASSPHRASE env / " +
@@ -36,13 +36,16 @@ func newCreateCmd() *cobra.Command {
 			"from stderr or pass --print-mnemonic-json to " +
 			"opt in to the machine-consumable form).\n\n" +
 			"Example:\n" +
-			"  echo -n 'hunter2hunter2' | wavecli create",
+			"  printf '%s\\n' 'hunter2hunter2' | " +
+			"wavecli create --password-stdin",
 		Args: cobra.NoArgs,
 		RunE: walletCreate,
 	}
 
 	cmd.Flags().String("wallet-password-file", "",
 		"path to file containing wallet password")
+	cmd.Flags().Bool("password-stdin", false,
+		"read one wallet password line from stdin")
 	cmd.Flags().String("seed-passphrase-file", "",
 		"path to file containing optional aezeed passphrase")
 	cmd.Flags().Bool("print-mnemonic-json", false,
