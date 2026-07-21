@@ -2,15 +2,19 @@ package waved
 
 import (
 	"context"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/lightninglabs/wavelength/arkrpc"
 	"github.com/lightninglabs/wavelength/lib/types"
 	mailboxconn "github.com/lightninglabs/wavelength/mailbox/conn"
+	mailboxrpc "github.com/lightninglabs/wavelength/mailbox/rpc"
 	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/proto"
 )
 
 // TestVTXOExpiryConfigUsesLatestTerms verifies long-lived VTXO actors observe
@@ -53,8 +57,9 @@ func activeArkPolicy(version uint32) *arkrpc.ArkVersionPolicy {
 // canned GetInfo response, used to drive the bootstrap negotiation without a
 // real transport.
 type stubArkServiceClient struct {
-	resp *arkrpc.GetInfoResponse
-	err  error
+	resp  *arkrpc.GetInfoResponse
+	err   error
+	calls int
 }
 
 // GetInfo returns the canned response.
@@ -62,11 +67,58 @@ func (s *stubArkServiceClient) GetInfo(_ context.Context,
 	_ *arkrpc.GetInfoRequest, _ ...grpc.CallOption) (
 	*arkrpc.GetInfoResponse, error) {
 
+	s.calls++
+
 	if s.err != nil {
 		return nil, s.err
 	}
 
 	return s.resp, nil
+}
+
+// stubMailboxRPCClient returns a canned GetInfo response while recording the
+// request sent through the generated mailbox client.
+type stubMailboxRPCClient struct {
+	resp   *arkrpc.GetInfoResponse
+	method mailboxrpc.ServiceMethod
+	req    *arkrpc.GetInfoRequest
+	calls  int
+	await  func(context.Context, proto.Message) error
+}
+
+// SendRPC records the request and returns a stable correlation ID.
+func (s *stubMailboxRPCClient) SendRPC(_ context.Context,
+	method mailboxrpc.ServiceMethod, req proto.Message,
+	_ mailboxrpc.RPCOptions) (mailboxrpc.SendResult, error) {
+
+	typedReq, ok := req.(*arkrpc.GetInfoRequest)
+	if !ok {
+		return mailboxrpc.SendResult{}, fmt.Errorf("unexpected "+
+			"request type: %T", req)
+	}
+
+	s.calls++
+	s.method = method
+	s.req = &arkrpc.GetInfoRequest{
+		SupportedArkVersions: append(
+			[]uint32(nil), typedReq.SupportedArkVersions...,
+		),
+	}
+
+	return mailboxrpc.SendResult{CorrelationID: "get-info"}, nil
+}
+
+// AwaitRPC copies the canned response into the generated client's target.
+func (s *stubMailboxRPCClient) AwaitRPC(ctx context.Context, _ string,
+	resp proto.Message) error {
+
+	if s.await != nil {
+		return s.await(ctx, resp)
+	}
+
+	proto.Merge(resp, s.resp)
+
+	return nil
 }
 
 // EstimateFee is unused by these tests.
@@ -165,6 +217,146 @@ func TestFetchOperatorTermsRefreshPinsVersion(t *testing.T) {
 
 	// The runtime version must be unchanged by a refresh.
 	require.Equal(t, uint32(1), srv.arkProtocolVersion)
+}
+
+// TestRefreshAuthenticatedOperatorTermsUsesMailbox verifies that the
+// post-bootstrap refresh replaces anonymous policy with the terms resolved for
+// the daemon's authenticated mailbox identity.
+func TestRefreshAuthenticatedOperatorTermsUsesMailbox(t *testing.T) {
+	t.Parallel()
+
+	pubKey := testOperatorPubKeyBytes(t)
+	direct := &stubArkServiceClient{
+		resp: &arkrpc.GetInfoResponse{
+			Pubkey:             pubKey,
+			SelectedArkVersion: 1,
+			MaxVtxoAmount:      200_000,
+		},
+	}
+	mailbox := &stubMailboxRPCClient{
+		resp: &arkrpc.GetInfoResponse{
+			Pubkey:             pubKey,
+			SelectedArkVersion: 1,
+			MaxVtxoAmount:      5_000_000,
+		},
+	}
+
+	srv := &Server{
+		arkClient:          direct,
+		ark:                arkrpc.NewArkServiceMailboxClient(mailbox),
+		arkProtocolVersion: 1,
+	}
+	srv.storeOperatorTerms(&types.OperatorTerms{
+		MaxVTXOAmount: 200_000,
+	})
+	srv.setServerConnected(true)
+
+	err := srv.refreshAuthenticatedOperatorTerms(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, 0, direct.calls)
+	require.Equal(t, 1, mailbox.calls)
+	require.Equal(t, "arkrpc.ArkService", mailbox.method.Service)
+	require.Equal(t, "GetInfo", mailbox.method.Method)
+	require.Equal(t, []uint32{1}, mailbox.req.SupportedArkVersions)
+	require.NotNil(t, srv.loadOperatorTerms().PubKey)
+	require.True(t, srv.hasPersonalizedLimits.Load())
+	require.EqualValues(
+		t, 5_000_000, srv.loadOperatorTerms().MaxVTXOAmount,
+	)
+}
+
+// TestFetchCurrentOperatorPubKeyPreservesPersonalizedLimits verifies that a
+// later anonymous key refresh cannot replace the policy learned through the
+// authenticated startup refresh.
+func TestFetchCurrentOperatorPubKeyPreservesPersonalizedLimits(t *testing.T) {
+	t.Parallel()
+
+	freshPubKey := testOperatorPubKeyBytes(t)
+	direct := &stubArkServiceClient{
+		resp: &arkrpc.GetInfoResponse{
+			Pubkey:             freshPubKey,
+			SelectedArkVersion: 1,
+			MaxVtxoAmount:      200_000,
+			MaxUserBalance:     100_000_000,
+		},
+	}
+	srv := &Server{
+		arkClient:          direct,
+		arkProtocolVersion: 1,
+	}
+	srv.hasPersonalizedLimits.Store(true)
+	srv.storeOperatorTerms(&types.OperatorTerms{
+		MaxVTXOAmount:  5_000_000,
+		MaxUserBalance: 150_000_000,
+	})
+
+	pubKey, err := srv.fetchCurrentOperatorPubKey(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, freshPubKey, pubKey.SerializeCompressed())
+	require.Equal(t, 1, direct.calls)
+	require.EqualValues(
+		t, 5_000_000, srv.loadOperatorTerms().MaxVTXOAmount,
+	)
+	require.EqualValues(
+		t, 150_000_000, srv.loadOperatorTerms().MaxUserBalance,
+	)
+}
+
+// TestFetchCurrentOperatorPubKeyUpdatesGlobalLimits verifies an ordinary
+// client can learn global policy changes from a later direct GetInfo.
+func TestFetchCurrentOperatorPubKeyUpdatesGlobalLimits(t *testing.T) {
+	t.Parallel()
+
+	direct := &stubArkServiceClient{
+		resp: &arkrpc.GetInfoResponse{
+			Pubkey:             testOperatorPubKeyBytes(t),
+			SelectedArkVersion: 1,
+			MaxVtxoAmount:      500_000,
+			MaxUserBalance:     200_000_000,
+		},
+	}
+	srv := &Server{
+		arkClient:          direct,
+		arkProtocolVersion: 1,
+	}
+	srv.storeOperatorTerms(&types.OperatorTerms{
+		MaxVTXOAmount:  200_000,
+		MaxUserBalance: 100_000_000,
+	})
+
+	_, err := srv.fetchCurrentOperatorPubKey(t.Context())
+	require.NoError(t, err)
+	require.False(t, srv.hasPersonalizedLimits.Load())
+	require.EqualValues(
+		t, 500_000, srv.loadOperatorTerms().MaxVTXOAmount,
+	)
+	require.EqualValues(
+		t, 200_000_000, srv.loadOperatorTerms().MaxUserBalance,
+	)
+}
+
+// TestRefreshAuthenticatedOperatorTermsHonorsDeadline verifies a stalled
+// mailbox response returns when the caller's startup deadline expires.
+func TestRefreshAuthenticatedOperatorTermsHonorsDeadline(t *testing.T) {
+	t.Parallel()
+
+	mailbox := &stubMailboxRPCClient{
+		await: func(ctx context.Context, _ proto.Message) error {
+			<-ctx.Done()
+
+			return ctx.Err()
+		},
+	}
+	srv := &Server{
+		ark: arkrpc.NewArkServiceMailboxClient(mailbox),
+	}
+	srv.setServerConnected(true)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+
+	err := srv.refreshAuthenticatedOperatorTerms(ctx)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
 }
 
 // TestFetchOperatorTermsRefreshRejectsRenegotiation proves a refresh that
