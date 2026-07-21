@@ -19,6 +19,9 @@ PKG := github.com/lightninglabs/wavelength
 TOOLS_DIR := tools
 
 GOCC ?= go
+DOCKER ?= docker
+IS_PODMAN := $(shell $(DOCKER) --version 2>/dev/null | \
+	grep -qi podman && echo 1 || echo 0)
 
 GOIMPORTS_PKG := github.com/rinchsan/gosimports/cmd/gosimports
 GOLINT_PKG := github.com/golangci/golangci-lint/v2/cmd/golangci-lint
@@ -173,15 +176,18 @@ VERSION_TAG = $(tag)
 VERSION_CHECK = ./scripts/release.sh check-tag "$(VERSION_TAG)"
 endif
 
-DOCKER_RELEASE_HELPER = docker run \
-  -it \
-  --rm \
-  --user $(shell id -u):$(shell id -g) \
-  -v $(shell pwd):/tmp/build/wavelength \
+# Rootless Podman remaps the host UID/GID, while Docker uses them to keep
+# generated release artifacts owned by the invoking user.
+ifeq ($(IS_PODMAN),1)
+DOCKER_RELEASE_USER_ARGS = --user=0:0
+else
+DOCKER_RELEASE_USER_ARGS = --user $(shell id -u):$(shell id -g)
+endif
+
+DOCKER_RELEASE_ARGS = --rm $(DOCKER_RELEASE_USER_ARGS) \
   -v $(shell bash -c "$(GOCC) env GOCACHE || (mkdir -p /tmp/go-cache; echo /tmp/go-cache)"):/tmp/build/.cache \
   -v $(shell bash -c "$(GOCC) env GOMODCACHE || (mkdir -p /tmp/go-modcache; echo /tmp/go-modcache)"):/tmp/build/.modcache \
-  -e SKIP_VERSION_CHECK \
-  wavelength-release-helper
+  -e SKIP_VERSION_CHECK
 
 # ============
 # DEPENDENCIES
@@ -561,11 +567,15 @@ docker-release: #? Same as release but within a docker container to support repr
 	@$(call print, "Building release helper docker image.")
 	if [ "$(tag)" = "" ]; then echo "Must specify tag=<commit_or_tag>!"; exit 1; fi
 
-	docker build -t wavelength-release-helper -f make/builder.Dockerfile make/
+	$(DOCKER) build -t wavelength-release-helper \
+		-f make/builder.Dockerfile make/
 
 	# Run the actual compilation inside the docker image. We pass in all
 	# flags that we might want to overwrite in manual tests.
-	$(DOCKER_RELEASE_HELPER) make release tag="$(tag)" sys="$(sys)" COMMIT="$(COMMIT)"
+	$(DOCKER) run $(DOCKER_RELEASE_ARGS) \
+		-v $(shell pwd):/tmp/build/wavelength \
+		wavelength-release-helper \
+		make release tag="$(tag)" sys="$(sys)" COMMIT="$(COMMIT)"
 
 # ============
 # CLEANUP

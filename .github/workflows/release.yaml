@@ -1,0 +1,104 @@
+name: Release build
+
+on:
+  push:
+    tags:
+      - "v[0-9]*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  # If you change this please also update GO_VERSION in the Makefile and
+  # make/builder.Dockerfile.
+  GO_VERSION: 1.26.0
+
+jobs:
+  main:
+    name: Release build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Git checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Clean up space
+        uses: ./.github/actions/cleanup-space
+
+      - name: Setup Go ${{ env.GO_VERSION }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: "false"
+
+      - name: Set release metadata
+        run: |
+          set -euo pipefail
+
+          echo "RELEASE_VERSION=${GITHUB_REF_NAME}" >> "${GITHUB_ENV}"
+          case "${GITHUB_REF_NAME}" in
+            *-rc*) prerelease=true ;;
+            *) prerelease=false ;;
+          esac
+          echo "IS_PRERELEASE=${prerelease}" >> "${GITHUB_ENV}"
+
+      - name: Build release for all architectures
+        run: make docker-release tag="${RELEASE_VERSION}"
+
+      - name: Create draft release
+        uses: lightninglabs/gh-actions/action-gh-release@c7149b6a7818d1c39b36b69e727569897b6f2c5a
+        with:
+          name: wavelength ${{ env.RELEASE_VERSION }}
+          draft: true
+          prerelease: ${{ env.IS_PRERELEASE }}
+          fail_on_unmatched_files: true
+          files: |
+            wavelength-${{ env.RELEASE_VERSION }}/*
+          body: |
+            This draft contains the reproducible `waved` and `wavecli`
+            archives and their manifest. Before publishing it, maintainers
+            must sign `manifest-${{ env.RELEASE_VERSION }}.txt` and attach the
+            detached `manifest-<username>-${{ env.RELEASE_VERSION }}.sig`
+            signatures.
+
+            # Verifying the release
+
+            Use the repository's verification helper to check the signatures
+            and the downloaded binary or archive:
+
+            ```shell
+            ./scripts/verify-install.sh ${{ env.RELEASE_VERSION }} <path>
+            ```
+
+            The binaries are built with Go ${{ env.GO_VERSION }}. Linux users
+            can reproduce all archives with:
+
+            ```shell
+            make release tag=${{ env.RELEASE_VERSION }}
+            ```
+
+            On macOS and other BSD platforms, use the pinned Docker builder:
+
+            ```shell
+            make docker-release tag=${{ env.RELEASE_VERSION }}
+            ```
+
+            See the [reproducible build guide](https://github.com/lightninglabs/wavelength/blob/${{ env.RELEASE_VERSION }}/docs/release.md)
+            for the complete signing and verification process.
+
+            # Release notes
+
+            TODO
+
+            # Contributors
+
+            TODO

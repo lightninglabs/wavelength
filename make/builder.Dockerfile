@@ -1,11 +1,12 @@
 # If you change this please also update GO_VERSION in the Makefile (then run
 # `make lint` to see where else it needs to be updated as well).
-FROM golang:1.26.0-bookworm
+FROM golang:1.26.0-bookworm@sha256:2a0ba12e116687098780d3ce700f9ce3cb340783779646aafbabed748fa6677c
 
-MAINTAINER Olaoluwa Osuntokun <laolu32@gmail.com>
+LABEL maintainer="Olaoluwa Osuntokun <laolu32@gmail.com>"
 
 # Golang build related environment variables that are static and used for all
 # architectures/OSes.
+ENV GODEBUG=netdns=cgo
 ENV CGO_ENABLED=0
 
 # Set up cache directories. Those will be mounted from the host system to

@@ -80,6 +80,9 @@ git push <upstream-remote> v0.1.0
 The helper verifies that HEAD is in sync with the upstream release branch and
 that `build/version.go` matches the requested tag before creating the signed
 tag, then prints the exact push command to run as the final maintainer step.
+Pushing the tag starts the Release Build and Mobile Bindings workflows, which
+populate a draft GitHub release. Sign the generated manifest and publish the
+draft by following [`docs/release.md`](release.md#publishing-a-release).
 
 ### Release Candidate Cycle (optional)
 

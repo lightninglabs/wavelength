@@ -49,6 +49,18 @@ archives of the release binaries (`waved` and `wavecli`) for each
 supported operating system and architecture, and a manifest file containing
 the hash of each archive.
 
+## Publishing a Release
+
+Pushing a `v*` tag starts the Release Build workflow
+(`.github/workflows/release.yaml`). It runs `make docker-release` with the
+builder image pinned by this repository, then uploads the archives, source
+bundle, vendored dependencies, and manifest to a draft GitHub release. Release
+candidate tags are marked as prereleases.
+
+The release stays a draft until maintainers have signed the manifest and
+uploaded the detached signatures described below. This keeps unsigned assets
+from being presented as a finished release.
+
 ## Publishing the wasm and mobile binding assets
 
 The reproducible manifest covers `waved` and `wavecli` only. Two auxiliary
@@ -81,21 +93,19 @@ the SDK's `RUNTIME_ASSET_FILES`.
 
 The gomobile bindings (`Wavewalletdk.aar`, `Wavewalletdk.xcframework`) depend
 on the Android NDK and Xcode, so they are built in CI and attached to the
-GitHub release automatically. The Mobile Bindings workflow
+draft GitHub release automatically. The Mobile Bindings workflow
 (`.github/workflows/mobile-bindings.yml`) runs on every `v*` tag: it
-cross-compiles both bindings and its `publish` job creates the release for the
-tag if one does not exist yet, then uploads `Wavewalletdk.aar` and
+cross-compiles both bindings and its `publish` job creates a draft release for
+the tag if one does not exist yet, then uploads `Wavewalletdk.aar` and
 `Wavewalletdk.xcframework.tar.gz` as release assets. `wavelength-sdk`'s
 `packages/react-native` consumes these instead of building from a sibling
 checkout. No manual step is required beyond pushing the tag to publish the
 bindings.
 
-Because the gomobile builds are fast, this `publish` job usually creates the
-GitHub release *before* you finish the reproducible manifest flow above. When
-it does, it seeds a deliberately provisional release note. Treat that release
-as a placeholder: once your signed manifest is ready, finalize the release
-title and notes and attach the `waved`/`wavecli` archives and
-`manifest-<TAG>.txt(.sig)` to that same release.
+The Release Build and Mobile Bindings workflows can finish in either order.
+They both target the same draft and create it only when absent, so re-runs do
+not create competing releases. Once the manifest is signed, finalize the title
+and notes, attach the signatures, and publish that draft.
 
 ## Verifying a Release
 
