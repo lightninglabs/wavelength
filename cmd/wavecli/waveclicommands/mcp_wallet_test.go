@@ -327,3 +327,21 @@ func TestCheckMCPRefreshConsent(t *testing.T) {
 	require.Contains(t, err.Error(), "yes:true")
 	require.Contains(t, err.Error(), "operator fee")
 }
+
+// TestCheckMCPSendConsent pins the MCP raw-send money gate: a dry-run
+// preview and an approved send pass, a bare real send is refused with
+// an actionable error naming both paths — matching the consent the
+// CLI applies and the schema registry advertises for ark.send.*.
+func TestCheckMCPSendConsent(t *testing.T) {
+	t.Parallel()
+
+	require.NoError(t, checkMCPSendConsent(true, false))
+	require.NoError(t, checkMCPSendConsent(false, true))
+	require.NoError(t, checkMCPSendConsent(true, true))
+
+	err := checkMCPSendConsent(false, false)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "yes:true")
+	require.Contains(t, err.Error(), "dry_run:true")
+	require.Contains(t, err.Error(), "moves funds")
+}
