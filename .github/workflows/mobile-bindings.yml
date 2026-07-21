@@ -68,6 +68,20 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/mobile-v') || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
+      # The .aar cross-compiles the whole embedded daemon (btcwallet /
+      # neutrino / lnd) for all four Android ABIs, and its Go build cache plus
+      # the ~160MB output exhausts the default ubuntu-latest disk ("No space
+      # left on device"). Reclaim space by deleting large preinstalled
+      # toolchains we don't use, keeping the Android SDK/NDK that
+      # setup-android relies on.
+      - name: Free up runner disk space
+        run: |
+          echo "before:"; df -h /
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+            /usr/share/swift /opt/hostedtoolcache/CodeQL || true
+          sudo docker image prune --all --force || true
+          echo "after:"; df -h /
+
       - name: Git checkout
         uses: actions/checkout@v5
 
