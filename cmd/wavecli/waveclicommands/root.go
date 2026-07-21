@@ -268,6 +268,9 @@ func (e *printedError) ExitCode() int {
 	case "METHOD_NOT_FOUND", "NOT_FOUND":
 		return ExitNotFound
 
+	case "CONFIRMATION_REQUIRED":
+		return ExitConfirmationRequired
+
 	case "DRY_RUN_OK":
 		return ExitDryRunOK
 	}

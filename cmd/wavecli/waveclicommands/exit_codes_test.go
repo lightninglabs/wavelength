@@ -47,6 +47,10 @@ func TestExitCodeForPrintedError(t *testing.T) {
 			ExitNotFound,
 		},
 		{
+			"CONFIRMATION_REQUIRED",
+			ExitConfirmationRequired,
+		},
+		{
 			"DRY_RUN_OK",
 			ExitDryRunOK,
 		},

@@ -65,18 +65,14 @@ func newArkSendInRoundCmd() *cobra.Command {
 		"amount(s) in sats (one per recipient, in --to + --pubkey "+
 			"order)")
 	cmd.Flags().Bool("dry_run", false, "validate without submitting")
+	cmd.Flags().Bool("yes", false,
+		"approve submitting the fund-moving transfer")
 
 	return cmd
 }
 
 // sendInRound executes the raw SendVTXO RPC.
 func sendInRound(cmd *cobra.Command, _ []string) error {
-	client, conn, err := getDaemonClient(cmd)
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-
 	req := &waverpc.SendVTXORequest{}
 	if err := parseRequest(cmd, req, func() error {
 		addresses, _ := cmd.Flags().GetStringSlice("to")
@@ -150,6 +146,19 @@ func sendInRound(cmd *cobra.Command, _ []string) error {
 	}); err != nil {
 		return err
 	}
+	if !req.GetDryRun() {
+		action := fmt.Sprintf("submit an in-round transfer to %d "+
+			"recipient(s)", len(req.GetRecipients()))
+		if err := confirmMoneyMovement(cmd, action); err != nil {
+			return err
+		}
+	}
+
+	client, conn, err := getDaemonClient(cmd)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
 
 	resp, err := client.SendVTXO(cmd.Context(), req)
 	if err != nil {
@@ -179,6 +188,8 @@ func newArkSendOORCmd() *cobra.Command {
 		"recipient 32-byte x-only pubkey hex")
 	cmd.Flags().Int64("amount", 0, "amount in sats")
 	cmd.Flags().Bool("dry_run", false, "validate without initiating")
+	cmd.Flags().Bool("yes", false,
+		"approve initiating the fund-moving transfer")
 	cmd.Flags().String("idempotency_key", "",
 		"caller-provided key for retrying the same OOR send intent")
 
@@ -189,12 +200,6 @@ func newArkSendOORCmd() *cobra.Command {
 
 // sendOOR executes the raw SendOOR RPC.
 func sendOOR(cmd *cobra.Command, _ []string) error {
-	client, conn, err := getDaemonClient(cmd)
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-
 	req := &waverpc.SendOORRequest{}
 	if err := parseRequest(cmd, req, func() error {
 		address, _ := cmd.Flags().GetString("to")
@@ -218,6 +223,19 @@ func sendOOR(cmd *cobra.Command, _ []string) error {
 	}); err != nil {
 		return err
 	}
+	if !req.GetDryRun() {
+		action := fmt.Sprintf("initiate an out-of-round transfer of "+
+			"%d satoshis", req.GetRecipients()[0].GetAmountSat())
+		if err := confirmMoneyMovement(cmd, action); err != nil {
+			return err
+		}
+	}
+
+	client, conn, err := getDaemonClient(cmd)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
 
 	resp, err := client.SendOOR(cmd.Context(), req)
 	if err != nil {
