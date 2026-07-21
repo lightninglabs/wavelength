@@ -30,6 +30,10 @@ type schemaMethod struct {
 	// Params lists the accepted parameters.
 	Params []schemaParam `json:"params"`
 
+	// MCPParams lists the MCP tool parameters when they differ from the CLI
+	// command. An omitted value means the MCP tool uses Params.
+	MCPParams []schemaParam `json:"mcp_params,omitempty"`
+
 	// RequestType is the proto request message name.
 	RequestType string `json:"request_type"`
 
@@ -55,6 +59,10 @@ type schemaMethod struct {
 	// are intentionally CLI-only because they handle secret
 	// material).
 	MCPTool bool `json:"mcp_tool,omitempty"`
+
+	// MCPOnly indicates that Method is discoverable only through MCP and
+	// has no corresponding Cobra command.
+	MCPOnly bool `json:"mcp_only,omitempty"`
 }
 
 // methodRegistry returns the full schema for all wavecli commands.
@@ -227,6 +235,65 @@ func walletPaymentMethodRegistry() []schemaMethod {
 			DryRun:             true,
 			JSONInput:          false,
 			MCPTool:            true,
+			MCPParams: []schemaParam{
+				{
+					Name: "send_intent_id",
+					Type: "string",
+					Description: "single-use id " +
+						"returned by send.prepare",
+					Required: true,
+				},
+			},
+		},
+		{
+			Method: "send.prepare",
+			Description: "Validate and preview a payment without " +
+				"moving funds",
+			Params: []schemaParam{
+				{
+					Name: "destination",
+					Type: "string",
+					Description: "invoice or on-chain " +
+						"address",
+					Required: true,
+				},
+				{
+					Name: "direction",
+					Type: "enum",
+					Description: "payment rail; defaults " +
+						"to offchain",
+					Values: []string{
+						"offchain",
+						"onchain",
+					},
+				},
+				{
+					Name:        "amt_sat",
+					Type:        "uint64",
+					Description: "amount in satoshis",
+				},
+				{
+					Name:        "max_fee_sat",
+					Type:        "uint64",
+					Description: "maximum fee in satoshis",
+				},
+				{
+					Name:        "note",
+					Type:        "string",
+					Description: "caller-supplied label",
+				},
+				{
+					Name: "sweep_all",
+					Type: "bool",
+					Description: "onchain only: drain " +
+						"every live VTXO",
+				},
+			},
+			RequestType:  "PrepareSendRequest",
+			ResponseType: "PrepareSendResponse",
+			JSONInput:    false,
+			MCPTool:      true,
+			MCPOnly:      true,
 		},
 		{
 			Method:      "recv",

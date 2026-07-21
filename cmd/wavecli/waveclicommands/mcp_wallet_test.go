@@ -99,6 +99,41 @@ func TestDispatchMCPWalletSendRequiresIntent(t *testing.T) {
 	require.Empty(t, client.sendReqs)
 }
 
+func TestMCPWalletSendRejectsNilClient(t *testing.T) {
+	t.Parallel()
+
+	result, err := prepareMCPWalletSend(
+		t.Context(), nil, mcpSendPrepareArgs{
+			Destination: "lnbcrt100u1pwlqxyz",
+		},
+	)
+	require.Nil(t, result)
+	require.ErrorIs(t, err, errWalletRPCDisabled)
+
+	result, err = dispatchMCPWalletSend(
+		t.Context(), nil, mcpSendArgs{
+			SendIntentID: "intent-123",
+		},
+	)
+	require.Nil(t, result)
+	require.ErrorIs(t, err, errWalletRPCDisabled)
+}
+
+func TestMCPWalletSendSchemaRegistry(t *testing.T) {
+	t.Parallel()
+
+	prepare := findSchemaMethod(t, "send.prepare")
+	require.True(t, prepare.MCPTool)
+	require.True(t, prepare.MCPOnly)
+	require.Equal(t, "destination", prepare.Params[0].Name)
+
+	send := findSchemaMethod(t, "send")
+	require.True(t, send.MCPTool)
+	require.Len(t, send.MCPParams, 1)
+	require.Equal(t, "send_intent_id", send.MCPParams[0].Name)
+	require.True(t, send.MCPParams[0].Required)
+}
+
 func TestMCPWalletSendToolsExposeTwoPhaseSchemas(t *testing.T) {
 	t.Parallel()
 

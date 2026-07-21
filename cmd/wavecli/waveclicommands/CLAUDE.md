@@ -106,7 +106,8 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/cmd/wave
   machine-readable schema for all CLI commands; shared source of
   truth for `schema` and MCP tool definitions. Built from the
   `walletAdmin`/`walletPayment`/`walletQuery`/`arkBase`/`arkVTXO`/
-  `arkSend`/`arkObservable` sub-registries.
+  `arkSend`/`arkObservable` sub-registries. MCP-only methods use
+  `mcp_only`; tools whose arguments differ from the CLI use `mcp_params`.
 - `buildMCPServer()` — constructs the MCP server and registers every
   exposed RPC as a typed tool; split from `mcpServe` (which owns the
   daemon dial and stdio transport) so the tool surface is testable.
