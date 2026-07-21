@@ -2,7 +2,9 @@ package waveclicommands
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -57,8 +59,11 @@ func promptConfirmation(cmd *cobra.Command, prompt string) error {
 
 	reader := bufio.NewReader(cmd.InOrStdin())
 	answer, err := reader.ReadString('\n')
-	if err != nil {
+	if err != nil && !errors.Is(err, io.EOF) {
 		return fmt.Errorf("read confirmation: %w", err)
+	}
+	if errors.Is(err, io.EOF) && strings.TrimSpace(answer) == "" {
+		return fmt.Errorf("read confirmation: %w", io.EOF)
 	}
 
 	answer = strings.TrimSpace(strings.ToLower(answer))

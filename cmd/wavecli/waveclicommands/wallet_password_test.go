@@ -24,6 +24,7 @@ func TestReadPasswordRequiresExplicitStdin(t *testing.T) {
 	password, err := readPassword(cmd)
 	require.Nil(t, password)
 	require.ErrorContains(t, err, "--password-stdin")
+	require.Equal(t, ExitInvalidArgs, ExitCodeFor(err))
 }
 
 func TestReadPasswordFromExplicitStdin(t *testing.T) {
@@ -36,6 +37,17 @@ func TestReadPasswordFromExplicitStdin(t *testing.T) {
 	password, err := readPassword(cmd)
 	require.NoError(t, err)
 	require.Equal(t, []byte("secret"), password)
+}
+
+func TestInteractivePasswordRejectsEmbeddedReader(t *testing.T) {
+	t.Parallel()
+
+	cmd := newUnlockCmd()
+	cmd.SetIn(strings.NewReader("secret\n"))
+
+	password, err := readInteractivePassword(cmd, "Password: ")
+	require.Nil(t, password)
+	require.ErrorContains(t, err, "requires a terminal")
 }
 
 func TestNoInputAllowsExplicitPasswordSources(t *testing.T) {
@@ -65,6 +77,7 @@ func TestNoInputRejectsPasswordPrompt(t *testing.T) {
 	password, err := readPassword(cmd)
 	require.Nil(t, password)
 	require.ErrorContains(t, err, "wallet password input required")
+	require.Equal(t, ExitInvalidArgs, ExitCodeFor(err))
 }
 
 // TestReadMaskedPasswordMasksInput confirms each entered byte is

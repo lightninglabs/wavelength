@@ -105,20 +105,26 @@ func readWalletPassword(cmd *cobra.Command,
 	if passwordStdin {
 		scanner := bufio.NewScanner(cmd.InOrStdin())
 		if scanner.Scan() {
-			return []byte(scanner.Text()), nil
+			return append([]byte(nil), scanner.Bytes()...), nil
 		}
 		if err := scanner.Err(); err != nil {
 			return nil, fmt.Errorf("unable to read password from "+
 				"stdin: %w", err)
 		}
 
-		return nil, fmt.Errorf("unable to read password from stdin")
+		return nil, newCLIError(
+			ExitInvalidArgs, fmt.Errorf("--password-stdin was "+
+				"set but no password line was read from stdin"),
+		)
 	}
 
 	if !canPrompt(cmd) {
-		return nil, fmt.Errorf("wallet password input required: set " +
-			"WAVED_WALLET_PASSWORD, use --wallet-password-file, " +
-			"or explicitly pass --password-stdin")
+		return nil, newCLIError(
+			ExitInvalidArgs, fmt.Errorf("wallet password input "+
+				"required: set WAVED_WALLET_PASSWORD, use "+
+				"--wallet-password-file, or explicitly pass "+
+				"--password-stdin"),
+		)
 	}
 
 	readInteractive := func(prompt string) ([]byte, error) {
@@ -136,25 +142,17 @@ func readWalletPassword(cmd *cobra.Command,
 func readInteractivePassword(cmd *cobra.Command,
 	prompt string) ([]byte, error) {
 
-	if err := writePrompt(cmd, prompt); err != nil {
-		return nil, fmt.Errorf("write password prompt: %w", err)
-	}
-
 	input := cmd.InOrStdin()
 	output := cmd.ErrOrStderr()
 	inputFile, ok := input.(*os.File)
-	if !ok {
-		password, err := readMaskedPassword(input, output)
-		_, printErr := fmt.Fprintln(output)
-		if err != nil {
-			return nil, err
-		}
-		if printErr != nil {
-			return nil, fmt.Errorf("unable to finalize password "+
-				"prompt: %w", printErr)
-		}
+	if !ok || !term.IsTerminal(int(inputFile.Fd())) {
+		return nil, fmt.Errorf("interactive password input requires " +
+			"a terminal; use --password-stdin for an explicit " +
+			"stream")
+	}
 
-		return password, nil
+	if err := writePrompt(cmd, prompt); err != nil {
+		return nil, fmt.Errorf("write password prompt: %w", err)
 	}
 
 	// Interactive prompt (TTY).
