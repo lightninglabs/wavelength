@@ -38,18 +38,19 @@ func TestDevDescribeDumpsMethodSchema(t *testing.T) {
 	require.Equal(t, "waverpc.ListVTXOsResponse", desc.ResponseType)
 	require.False(t, desc.ServerStreaming)
 
-	// status_filter is an enum field — describe should surface
+	// status-filter is an enum field — describe should surface
 	// the enum value list so an agent doesn't have to grep proto
 	// sources for the legal names.
 	var statusField *fieldDescription
 	for i := range desc.Fields {
-		if desc.Fields[i].Path == "status_filter" {
+		require.NotContains(t, desc.Fields[i].Path, "_")
+		if desc.Fields[i].Path == "status-filter" {
 			statusField = &desc.Fields[i]
 
 			break
 		}
 	}
-	require.NotNil(t, statusField, "status_filter must appear in schema")
+	require.NotNil(t, statusField, "status-filter must appear in schema")
 	require.Equal(t, "enum", statusField.Type)
 	require.Contains(t, statusField.EnumValues, "VTXO_STATUS_LIVE")
 }

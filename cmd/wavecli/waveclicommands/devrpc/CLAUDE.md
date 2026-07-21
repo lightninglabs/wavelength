@@ -18,8 +18,8 @@ hand-written code.
   tree rooted at `dev`. Child commands are organized by service then method.
 - `methodDescription` — Agent-CLI schema dump for one method: `Method`,
   `Service`, `RequestType`, `ResponseType`, `ServerStreaming`, `Fields`.
-- `fieldDescription` — Flat schema row for one CLI flag: `Path`, `Type`,
-  `Repeated`, `OneofGroup`, `EnumValues`, `Description`.
+- `fieldDescription` — Flat schema row for one canonical kebab-case CLI flag:
+  `Path`, `Type`, `Repeated`, `OneofGroup`, `EnumValues`, `Description`.
 
 ## Design
 

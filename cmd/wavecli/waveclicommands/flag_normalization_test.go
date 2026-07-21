@@ -17,7 +17,7 @@ func TestCanonicalFlagNamesUseKebabCase(t *testing.T) {
 	root := newRootCmd(true)
 	var walk func(*cobra.Command)
 	walk = func(cmd *cobra.Command) {
-		cmd.LocalNonPersistentFlags().VisitAll(func(flag *pflag.Flag) {
+		cmd.LocalFlags().VisitAll(func(flag *pflag.Flag) {
 			require.NotContainsf(
 				t, flag.Name, "_", "command %q flag %q is "+
 					"not kebab-case", cmd.CommandPath(),
