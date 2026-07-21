@@ -32,14 +32,16 @@ plan owns the Wavelength workflow and its deterministic tests only.
   and confirmed wallet-funded inputs, added bitcoin change, fee selection,
   fee ceiling, and deterministic lock IDs are available without an upstream
   change.
-- [ ] Change the durable onboarding request and tap-sdk plan from exact
-  caller-funded subtraction to an exact carrier output plus wallet funding.
-- [ ] Expose carrier and fee policy in the daemon RPC and `wavecli`, including
-  the effective carrier and actual fee in the response.
-- [ ] Add workflow, RPC, CLI, restart, and malformed-request tests, then run
-  formatting, focused tests, build, and changed-code lint.
-- [ ] Update this plan with final evidence and commit the carrier-onboarding
-  milestone as a signed commit stacked on the integration-refresh branch.
+- [x] (2026-07-21 17:02Z) Changed the durable onboarding request and tap-sdk
+  plan from exact caller-funded subtraction to an exact carrier output plus
+  wallet funding, deterministic lock identity, and sealed actual-fee checks.
+- [x] (2026-07-21 17:04Z) Exposed carrier and fee policy in the daemon RPC and
+  `wavecli`, including the effective carrier and actual fee in the response.
+- [x] (2026-07-21 17:11Z) Added workflow, RPC, CLI, restart, change-output,
+  funding-summary, and malformed-request tests; formatting, focused tests,
+  build, generated-code reproducibility, and changed-code lint pass.
+- [x] (2026-07-21 17:12Z) Committed the carrier-onboarding implementation as a
+  signed milestone stacked on the integration-refresh branch.
 
 ## Surprises & Discoveries
 
@@ -60,6 +62,11 @@ plan owns the Wavelength workflow and its deterministic tests only.
   a VTXO by the operator.
   Evidence: tap-sdk delegates `AnchorChangeOutputAdd` to WalletKit and records
   the backend-selected change index separately from asset outputs.
+- Observation: the repository RPC target could not run because the local
+  Docker daemon was unavailable, while the exact compiler and plugin versions
+  pinned by the repository produced byte-identical output on a second run.
+  Evidence: local protoc 3.21.12 generation printed `waverpc regeneration
+  clean`; `make build` and `make lint-changed-local` subsequently passed.
 
 ## Decision Log
 
@@ -94,10 +101,16 @@ plan owns the Wavelength workflow and its deterministic tests only.
 
 ## Outcomes & Retrospective
 
-The implementation is in progress. The refreshed substrate is available as
-the signed `feat/taproot-assets-integration-refresh` branch, and this plan is
-being implemented on `feat/taproot-assets-carrier-onboarding`. Final behavior,
-test evidence, and any remaining live-daemon gap will be recorded here.
+The Wavelength implementation is complete on
+`feat/taproot-assets-carrier-onboarding`. It preserves an exact carrier value,
+authorizes tapd/LND to add Bitcoin inputs and one ordinary change output,
+binds the request economics to a deterministic lock identity, and restores the
+actual fee from the sealed package after restart. A 1,000-satoshi source anchor
+now produces a 1,000-satoshi asset VTXO while paying a positive fee from added
+wallet value. Focused tests, `make build`, and changed-code lint pass. The
+remaining proof is the live paired LND/tapd flow in the stacked Lumos harness;
+that is intentionally not represented as complete by these deterministic
+tests.
 
 ## Context and Orientation
 
@@ -290,3 +303,7 @@ Revision note (2026-07-21): created this plan after rebasing the existing
 integration and auditing tap-sdk's wallet-funded custom-anchor contract. The
 scope deliberately ends at onboarding; mixed off-chain asset sends and the
 live Lumos topology remain separate reviewable milestones.
+
+Revision note (2026-07-21 17:11Z): recorded the completed wallet-funding,
+RPC/CLI, restart, change-output, fee-bound validation, and repository checks.
+The live daemon proof remains assigned to the Lumos integration milestone.
