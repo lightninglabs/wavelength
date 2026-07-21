@@ -270,8 +270,9 @@ service DaemonService {
         returns (ListVHTLCRecoveriesResponse);
 }
 
-// OnboardTaprootAssetRequest selects the complete confirmed asset proof and
-// caps the Bitcoin fee paid by its current anchor.
+// OnboardTaprootAssetRequest selects the complete confirmed asset proof, the
+// visible Bitcoin value carried by its Wavelength VTXO, and a bounded fee
+// policy for wallet funding.
 message OnboardTaprootAssetRequest {
     // idempotency_key is a stable caller-generated retry key.
     string idempotency_key = 1;
@@ -286,9 +287,22 @@ message OnboardTaprootAssetRequest {
     // input_proof_file is the complete confirmed Taproot Asset proof file.
     bytes input_proof_file = 4;
 
-    // max_fee_sat is the exact fee subtracted from the current anchor value.
-    // The name is a cap for forward compatibility; this PoC pays exactly it.
+    // max_fee_sat is the hard upper bound for the on-chain miner fee. It is
+    // independent of the fee-rate or confirmation-target estimator.
     uint64 max_fee_sat = 5;
+
+    // carrier_value_sat is the Bitcoin value assigned to the asset-bearing
+    // VTXO. Zero uses the operator's current minimum VTXO value.
+    uint64 carrier_value_sat = 6;
+
+    // fee_rate_sat_per_vbyte selects an explicit on-chain fee rate. Exactly
+    // one of this field and target_conf must be non-zero.
+    uint64 fee_rate_sat_per_vbyte = 7;
+
+    // target_conf asks the shared LND wallet to estimate a fee for this many
+    // blocks. Exactly one of this field and fee_rate_sat_per_vbyte must be
+    // non-zero.
+    uint32 target_conf = 8;
 }
 
 // TaprootAssetOnboardingState reports whether the transaction still needs a
@@ -306,6 +320,10 @@ message OnboardTaprootAssetResponse {
     bytes pk_script = 4;
     bytes taproot_asset_root = 5;
     int32 confirmation_height = 6;
+
+    // actual_fee_sat is the exact on-chain miner fee recorded in the sealed
+    // tap-sdk package. It remains stable across retries and restarts.
+    uint64 actual_fee_sat = 7;
 }
 
 // WalletState mirrors the daemon's in-process wallet lifecycle enum:

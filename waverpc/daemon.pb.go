@@ -883,8 +883,9 @@ func (VHTLCRecoveryState) EnumDescriptor() ([]byte, []int) {
 	return file_daemon_proto_rawDescGZIP(), []int{11}
 }
 
-// OnboardTaprootAssetRequest selects the complete confirmed asset proof and
-// caps the Bitcoin fee paid by its current anchor.
+// OnboardTaprootAssetRequest selects the complete confirmed asset proof, the
+// visible Bitcoin value carried by its Wavelength VTXO, and a bounded fee
+// policy for wallet funding.
 type OnboardTaprootAssetRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// idempotency_key is a stable caller-generated retry key.
@@ -896,9 +897,19 @@ type OnboardTaprootAssetRequest struct {
 	AssetAmount uint64 `protobuf:"varint,3,opt,name=asset_amount,json=assetAmount,proto3" json:"asset_amount,omitempty"`
 	// input_proof_file is the complete confirmed Taproot Asset proof file.
 	InputProofFile []byte `protobuf:"bytes,4,opt,name=input_proof_file,json=inputProofFile,proto3" json:"input_proof_file,omitempty"`
-	// max_fee_sat is the exact fee subtracted from the current anchor value.
-	// The name is a cap for forward compatibility; this PoC pays exactly it.
-	MaxFeeSat     uint64 `protobuf:"varint,5,opt,name=max_fee_sat,json=maxFeeSat,proto3" json:"max_fee_sat,omitempty"`
+	// max_fee_sat is the hard upper bound for the on-chain miner fee. It is
+	// independent of the fee-rate or confirmation-target estimator.
+	MaxFeeSat uint64 `protobuf:"varint,5,opt,name=max_fee_sat,json=maxFeeSat,proto3" json:"max_fee_sat,omitempty"`
+	// carrier_value_sat is the Bitcoin value assigned to the asset-bearing
+	// VTXO. Zero uses the operator's current minimum VTXO value.
+	CarrierValueSat uint64 `protobuf:"varint,6,opt,name=carrier_value_sat,json=carrierValueSat,proto3" json:"carrier_value_sat,omitempty"`
+	// fee_rate_sat_per_vbyte selects an explicit on-chain fee rate. Exactly
+	// one of this field and target_conf must be non-zero.
+	FeeRateSatPerVbyte uint64 `protobuf:"varint,7,opt,name=fee_rate_sat_per_vbyte,json=feeRateSatPerVbyte,proto3" json:"fee_rate_sat_per_vbyte,omitempty"`
+	// target_conf asks the shared LND wallet to estimate a fee for this many
+	// blocks. Exactly one of this field and fee_rate_sat_per_vbyte must be
+	// non-zero.
+	TargetConf    uint32 `protobuf:"varint,8,opt,name=target_conf,json=targetConf,proto3" json:"target_conf,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -968,6 +979,27 @@ func (x *OnboardTaprootAssetRequest) GetMaxFeeSat() uint64 {
 	return 0
 }
 
+func (x *OnboardTaprootAssetRequest) GetCarrierValueSat() uint64 {
+	if x != nil {
+		return x.CarrierValueSat
+	}
+	return 0
+}
+
+func (x *OnboardTaprootAssetRequest) GetFeeRateSatPerVbyte() uint64 {
+	if x != nil {
+		return x.FeeRateSatPerVbyte
+	}
+	return 0
+}
+
+func (x *OnboardTaprootAssetRequest) GetTargetConf() uint32 {
+	if x != nil {
+		return x.TargetConf
+	}
+	return 0
+}
+
 type OnboardTaprootAssetResponse struct {
 	state              protoimpl.MessageState      `protogen:"open.v1"`
 	State              TaprootAssetOnboardingState `protobuf:"varint,1,opt,name=state,proto3,enum=waverpc.TaprootAssetOnboardingState" json:"state,omitempty"`
@@ -976,8 +1008,11 @@ type OnboardTaprootAssetResponse struct {
 	PkScript           []byte                      `protobuf:"bytes,4,opt,name=pk_script,json=pkScript,proto3" json:"pk_script,omitempty"`
 	TaprootAssetRoot   []byte                      `protobuf:"bytes,5,opt,name=taproot_asset_root,json=taprootAssetRoot,proto3" json:"taproot_asset_root,omitempty"`
 	ConfirmationHeight int32                       `protobuf:"varint,6,opt,name=confirmation_height,json=confirmationHeight,proto3" json:"confirmation_height,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// actual_fee_sat is the exact on-chain miner fee recorded in the sealed
+	// tap-sdk package. It remains stable across retries and restarts.
+	ActualFeeSat  uint64 `protobuf:"varint,7,opt,name=actual_fee_sat,json=actualFeeSat,proto3" json:"actual_fee_sat,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *OnboardTaprootAssetResponse) Reset() {
@@ -1048,6 +1083,13 @@ func (x *OnboardTaprootAssetResponse) GetTaprootAssetRoot() []byte {
 func (x *OnboardTaprootAssetResponse) GetConfirmationHeight() int32 {
 	if x != nil {
 		return x.ConfirmationHeight
+	}
+	return 0
+}
+
+func (x *OnboardTaprootAssetResponse) GetActualFeeSat() uint64 {
+	if x != nil {
+		return x.ActualFeeSat
 	}
 	return 0
 }
@@ -10499,20 +10541,25 @@ var File_daemon_proto protoreflect.FileDescriptor
 
 const file_daemon_proto_rawDesc = "" +
 	"\n" +
-	"\fdaemon.proto\x12\awaverpc\"\xcf\x01\n" +
+	"\fdaemon.proto\x12\awaverpc\"\xd0\x02\n" +
 	"\x1aOnboardTaprootAssetRequest\x12'\n" +
 	"\x0fidempotency_key\x18\x01 \x01(\tR\x0eidempotencyKey\x12\x1b\n" +
 	"\tasset_ref\x18\x02 \x01(\tR\bassetRef\x12!\n" +
 	"\fasset_amount\x18\x03 \x01(\x04R\vassetAmount\x12(\n" +
 	"\x10input_proof_file\x18\x04 \x01(\fR\x0einputProofFile\x12\x1e\n" +
-	"\vmax_fee_sat\x18\x05 \x01(\x04R\tmaxFeeSat\"\x8e\x02\n" +
+	"\vmax_fee_sat\x18\x05 \x01(\x04R\tmaxFeeSat\x12*\n" +
+	"\x11carrier_value_sat\x18\x06 \x01(\x04R\x0fcarrierValueSat\x122\n" +
+	"\x16fee_rate_sat_per_vbyte\x18\a \x01(\x04R\x12feeRateSatPerVbyte\x12\x1f\n" +
+	"\vtarget_conf\x18\b \x01(\rR\n" +
+	"targetConf\"\xb4\x02\n" +
 	"\x1bOnboardTaprootAssetResponse\x12:\n" +
 	"\x05state\x18\x01 \x01(\x0e2$.waverpc.TaprootAssetOnboardingStateR\x05state\x12\x1a\n" +
 	"\boutpoint\x18\x02 \x01(\tR\boutpoint\x12\x1b\n" +
 	"\tvalue_sat\x18\x03 \x01(\x03R\bvalueSat\x12\x1b\n" +
 	"\tpk_script\x18\x04 \x01(\fR\bpkScript\x12,\n" +
 	"\x12taproot_asset_root\x18\x05 \x01(\fR\x10taprootAssetRoot\x12/\n" +
-	"\x13confirmation_height\x18\x06 \x01(\x05R\x12confirmationHeight\"\x10\n" +
+	"\x13confirmation_height\x18\x06 \x01(\x05R\x12confirmationHeight\x12$\n" +
+	"\x0eactual_fee_sat\x18\a \x01(\x04R\factualFeeSat\"\x10\n" +
 	"\x0eGetInfoRequest\"\xb1\x03\n" +
 	"\x0fGetInfoResponse\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\x12\x16\n" +

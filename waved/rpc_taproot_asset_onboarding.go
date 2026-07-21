@@ -89,7 +89,15 @@ func (r *RPCServer) OnboardTaprootAsset(ctx context.Context,
 		len(req.GetInputProofFile()) == 0 || req.GetMaxFeeSat() == 0 {
 		return nil, status.Error(
 			codes.InvalidArgument, "idempotency key, asset "+
-				"ref, amount, proof, and fee are required",
+				"ref, amount, proof, and maximum fee are "+
+				"required",
+		)
+	}
+	if (req.GetFeeRateSatPerVbyte() == 0) ==
+		(req.GetTargetConf() == 0) {
+		return nil, status.Error(
+			codes.InvalidArgument, "exactly one of fee rate "+
+				"and confirmation target is required",
 		)
 	}
 	if r.server.WalletLifecycleState() != WalletStateReady {
@@ -111,15 +119,42 @@ func (r *RPCServer) OnboardTaprootAsset(ctx context.Context,
 			"operator terms are not ready",
 		)
 	}
+	minimumCarrier := terms.MinVTXOAmountFloor()
+	if minimumCarrier <= 0 {
+		return nil, status.Error(
+			codes.FailedPrecondition,
+			"operator returned an invalid minimum VTXO amount",
+		)
+	}
+	carrierValue := req.GetCarrierValueSat()
+	if carrierValue == 0 {
+		carrierValue = uint64(minimumCarrier)
+	}
+	if carrierValue < uint64(minimumCarrier) {
+		return nil, status.Errorf(codes.InvalidArgument, "carrier "+
+			"value %d is below operator minimum %d", carrierValue,
+			minimumCarrier)
+	}
+	if carrierValue > math.MaxInt64 {
+		return nil, status.Error(
+			codes.InvalidArgument,
+			"carrier value exceeds the supported Bitcoin range",
+		)
+	}
 
 	result, err := onboarder.Onboard(ctx, &tapassets.OnboardingRequest{
-		RequestID:    req.GetIdempotencyKey(),
-		AssetRef:     req.GetAssetRef(),
-		AssetAmount:  req.GetAssetAmount(),
-		ProofFile:    append([]byte(nil), req.GetInputProofFile()...),
-		AnchorFeeSat: req.GetMaxFeeSat(),
-		OperatorKey:  terms.PubKey,
-		ExitDelay:    terms.VTXOExitDelay,
+		RequestID:   req.GetIdempotencyKey(),
+		AssetRef:    req.GetAssetRef(),
+		AssetAmount: req.GetAssetAmount(),
+		ProofFile: append(
+			[]byte(nil), req.GetInputProofFile()...,
+		),
+		CarrierValueSat:    carrierValue,
+		FeeRateSatPerVByte: req.GetFeeRateSatPerVbyte(),
+		TargetConf:         req.GetTargetConf(),
+		MaxFeeSat:          req.GetMaxFeeSat(),
+		OperatorKey:        terms.PubKey,
+		ExitDelay:          terms.VTXOExitDelay,
 	})
 	if errors.Is(err, tapassets.ErrReconciliationRequired) {
 		return nil, status.Error(codes.FailedPrecondition, err.Error())
@@ -135,9 +170,10 @@ func (r *RPCServer) OnboardTaprootAsset(ctx context.Context,
 	}
 
 	response := &waverpc.OnboardTaprootAssetResponse{
-		Outpoint: result.Outpoint.String(),
-		ValueSat: result.ValueSat,
-		PkScript: append([]byte(nil), result.PkScript...),
+		Outpoint:     result.Outpoint.String(),
+		ValueSat:     result.ValueSat,
+		PkScript:     append([]byte(nil), result.PkScript...),
+		ActualFeeSat: result.ActualFeeSat,
 		TaprootAssetRoot: append(
 			[]byte(nil), result.TaprootAssetRoot[:]...,
 		),
