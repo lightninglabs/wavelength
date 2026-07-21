@@ -159,6 +159,10 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/cmd/wave
   actionable `remediation` where the caller can recover. Invalid input exits
   2, authentication failures 3, missing resources 4, and non-interactive
   confirmation requirements 5. Successful dry runs exit 0.
+- MCP payment sends are two-phase: `send.prepare` validates and returns a
+  short-lived, single-use `send_intent_id`; `send` accepts only that id and
+  consumes the exact prepared intent. Never combine prepare and dispatch in
+  one MCP tool call.
 - `exit` defaults to a cooperative leave; it only starts a unilateral
   on-chain unroll when `--force-unroll-ack` matches the literal string
   `I_KNOW_WHAT_I_AM_DOING`, and that flag is mutually exclusive with
