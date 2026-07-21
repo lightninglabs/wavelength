@@ -608,6 +608,12 @@ wavecli schema ark.vtxos.list
 wavecli schema --all
 ```
 
+Every schema entry includes a stable `output_schema_id` and
+`output_schema_version`, plus a `side_effect` boolean and whether the same
+method is exposed through MCP. The unit suite walks the real cobra command
+tree and the live MCP tool list, so a declared flag or tool cannot silently
+drift from the executable surface.
+
 ### `mcp serve` (wavewalletrpc)
 
 Start an MCP (Model Context Protocol) server on stdio for AI agent
