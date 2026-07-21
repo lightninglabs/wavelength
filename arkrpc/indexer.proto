@@ -187,6 +187,14 @@ message OORRecipientEvent {
     // recipient output. Older servers may omit it, in which case clients fall
     // back to standard VTXO materialization.
     bytes vtxo_policy_template = 9;
+
+    // taproot_asset_root is the optional 32-byte Taproot Asset commitment
+    // root anchored in this recipient output.
+    bytes taproot_asset_root = 10;
+
+    // taproot_asset_transfer is the optional versioned Wavelength container
+    // of sealed tap-sdk packages for the checkpoint and Ark transitions.
+    bytes taproot_asset_transfer = 11;
 }
 
 // OORSessionPackage carries finalized package artifacts for one OOR session.
@@ -199,6 +207,10 @@ message OORSessionPackage {
 
     // checkpoint_psbts are the finalized checkpoint PSBTs for this package.
     repeated bytes checkpoint_psbts = 3;
+
+    // taproot_asset_transfer is the optional versioned Wavelength container
+    // of sealed tap-sdk packages for this session.
+    bytes taproot_asset_transfer = 4;
 }
 
 // IncomingOOREvent is a lightweight notification delivered as a mailbox EVENT

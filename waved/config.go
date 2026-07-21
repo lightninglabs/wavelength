@@ -47,6 +47,10 @@ const (
 	// lnd instance.
 	DefaultLndHost = "localhost:10009"
 
+	// DefaultTapdHost is the default address of the local tapd instance
+	// used by the optional Taproot Asset OOR PoC.
+	DefaultTapdHost = "localhost:10029"
+
 	// DefaultServerHost is the default address for the ark operator's
 	// mailbox edge server.
 	DefaultServerHost = "localhost:10010"
@@ -251,6 +255,24 @@ type Config struct {
 	// by a direct bitcoind RPC client. Set programmatically by the
 	// test harness; not serialized to config files.
 	PackageSubmitter chainbackends.PackageSubmitter
+
+	// TaprootAssetOORPreparer commits proof-selected Taproot Asset
+	// transitions into the caller-owned OOR Bitcoin graph. It is injected
+	// programmatically because the concrete adapter owns authenticated tapd
+	// connectivity and durable request reconciliation. A nil value disables
+	// asset-bearing OOR sends without affecting Bitcoin-only sends.
+	TaprootAssetOORPreparer oor.TaprootAssetOORPreparer `mapstructure:"-"`
+
+	// TaprootAssetOnboarder moves a confirmed tapd-managed asset into a
+	// standard Wavelength policy and registers it with the operator. The
+	// concrete service is wired programmatically alongside the
+	// authenticated tapd client and is never decoded from a configuration
+	// file.
+	TaprootAssetOnboarder TaprootAssetOnboardingService `mapstructure:"-"`
+
+	// TaprootAssets configures the optional tap-sdk-backed OOR adapter. The
+	// adapter is disabled by default and runs only in the client daemon.
+	TaprootAssets *TaprootAssetsConfig `mapstructure:"taprootassets"`
 
 	// FailUnrollBroadcastReason is a TEST-ONLY hook. When non-empty, the
 	// unroll subsystem's tx-confirmation requests are rejected with this
@@ -903,6 +925,37 @@ type LndConfig struct {
 	RPCTimeout time.Duration `mapstructure:"rpctimeout"`
 }
 
+// TaprootAssetsConfig holds the standalone daemon's optional connection to
+// tapd and its durable custom-anchor preparation journal.
+type TaprootAssetsConfig struct {
+	// Enabled installs the tap-sdk-backed OOR preparer. Bitcoin-only sends
+	// do not use this connection.
+	Enabled bool `mapstructure:"enabled"`
+
+	// Host is the tapd gRPC address.
+	Host string `mapstructure:"host"`
+
+	// TLSCertPath is the tapd TLS certificate. Empty uses tap-sdk's normal
+	// network-scoped default.
+	TLSCertPath string `mapstructure:"tlscertpath"`
+
+	// MacaroonPath is an admin macaroon accepted by all tapd services used
+	// by the custom-anchor flow. Empty uses tap-sdk's normal default.
+	MacaroonPath string `mapstructure:"macaroonpath"`
+
+	// Insecure disables tapd TLS verification. It is restricted to regtest
+	// and simnet.
+	Insecure bool `mapstructure:"insecure"`
+
+	// RPCTimeout bounds individual tapd calls. Zero selects the SDK
+	// default.
+	RPCTimeout time.Duration `mapstructure:"rpctimeout"`
+
+	// PreparationDir stores the durable commit-attempt journal. Empty uses
+	// NetworkDir()/taproot-assets-oor.
+	PreparationDir string `mapstructure:"preparationdir"`
+}
+
 // ServerConfig holds connection parameters for the ark operator's mailbox
 // edge server.
 type ServerConfig struct {
@@ -1128,6 +1181,9 @@ func DefaultConfig() *Config {
 			Host:       DefaultLndHost,
 			RPCTimeout: DefaultRPCTimeout,
 		},
+		TaprootAssets: &TaprootAssetsConfig{
+			Host: DefaultTapdHost,
+		},
 		Server: &ServerConfig{
 			Transport:    RPCTransportGRPC,
 			MaxTreeNodes: roundpb.DefaultMaxTreeNodes,
@@ -1166,6 +1222,18 @@ func (c *Config) Validate() error {
 	case "mainnet", "testnet", "testnet4", "regtest", "simnet", "signet":
 	default:
 		return fmt.Errorf("unknown network %q", c.Network)
+	}
+
+	if c.TaprootAssets != nil && c.TaprootAssets.Enabled {
+		if strings.TrimSpace(c.TaprootAssets.Host) == "" {
+			return fmt.Errorf("taprootassets.host is required " +
+				"when enabled")
+		}
+		if c.TaprootAssets.Insecure && c.Network != "regtest" &&
+			c.Network != "simnet" {
+			return fmt.Errorf("taprootassets.insecure is " +
+				"restricted to regtest and simnet")
+		}
 	}
 
 	// Require explicit opt-in for mainnet to prevent accidental
@@ -1667,6 +1735,14 @@ func (c *Config) expandPaths() error {
 	if c.Lnd != nil {
 		fields = append(fields,
 			&c.Lnd.TLSPath, &c.Lnd.MacaroonPath,
+		)
+	}
+
+	if c.TaprootAssets != nil {
+		fields = append(
+			fields, &c.TaprootAssets.TLSCertPath,
+			&c.TaprootAssets.MacaroonPath,
+			&c.TaprootAssets.PreparationDir,
 		)
 	}
 

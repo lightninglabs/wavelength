@@ -107,6 +107,11 @@ type StartTransferRequest struct {
 	// retries. Empty preserves the historical deterministic-session
 	// behavior.
 	IdempotencyKey string
+
+	// PreparedSubmit is the optional asset-committed graph. Its PSBT and
+	// sealed package bytes are persisted in this durable request before the
+	// session starts.
+	PreparedSubmit *PreparedSubmitPackage
 }
 
 // MessageType returns the type of this message.
@@ -154,8 +159,37 @@ func (m *StartTransferRequest) Encode(w io.Writer) error {
 				ValueSat: int64(m.Recipients[i].Value),
 				VTXOPolicyTemplate: m.Recipients[i].
 					VTXOPolicyTemplate,
+				TaprootAssetRoot: m.Recipients[i].
+					TaprootAssetRoot,
 			},
 		)
+	}
+
+	if m.PreparedSubmit != nil {
+		if err := m.PreparedSubmit.Validate(
+			m.Inputs, m.Recipients,
+		); err != nil {
+			return err
+		}
+
+		submitRaw, err := oortx.MarshalSubmitPackage(
+			&oortx.SubmitPackage{
+				ArkPSBT: m.PreparedSubmit.ArkPSBT,
+				CheckpointPSBTs: m.PreparedSubmit.
+					CheckpointPSBTs,
+			},
+		)
+		if err != nil {
+			return err
+		}
+		assetRaw, err := m.PreparedSubmit.TaprootAssetTransfer.
+			MarshalBinary()
+		if err != nil {
+			return err
+		}
+
+		payload.PreparedSubmit = submitRaw
+		payload.AssetTransfer = assetRaw
 	}
 
 	raw, err := encodeStartTransferPayload(payload)
@@ -213,7 +247,41 @@ func (m *StartTransferRequest) Decode(r io.Reader) error {
 			Value:    btcutil.Amount(recipient.ValueSat),
 			VTXOPolicyTemplate: recipient.
 				VTXOPolicyTemplate,
+			TaprootAssetRoot: recipient.TaprootAssetRoot,
 		})
+	}
+
+	m.PreparedSubmit = nil
+	if len(payload.PreparedSubmit) > 0 || len(payload.AssetTransfer) > 0 {
+		if len(payload.PreparedSubmit) == 0 ||
+			len(payload.AssetTransfer) == 0 {
+			return fmt.Errorf("prepared submit and asset " +
+				"transfer must both be provided")
+		}
+
+		submit, err := oortx.UnmarshalSubmitPackage(
+			payload.PreparedSubmit,
+		)
+		if err != nil {
+			return err
+		}
+		assetTransfer := &oortx.TaprootAssetTransfer{}
+		if err := assetTransfer.UnmarshalBinary(
+			payload.AssetTransfer,
+		); err != nil {
+			return err
+		}
+
+		m.PreparedSubmit = &PreparedSubmitPackage{
+			ArkPSBT:              submit.ArkPSBT,
+			CheckpointPSBTs:      submit.CheckpointPSBTs,
+			TaprootAssetTransfer: assetTransfer,
+		}
+		if err := m.PreparedSubmit.Validate(
+			m.Inputs, m.Recipients,
+		); err != nil {
+			return err
+		}
 	}
 
 	return nil

@@ -87,14 +87,16 @@ func TestWavelengthDevRevealsAdvancedGroup(t *testing.T) {
 	require.Contains(t, out, "recovery")
 }
 
-// TestAdvancedCommandsHiddenByDefault verifies that ark, dev, and recovery are
+// TestAdvancedCommandsHiddenByDefault verifies that advanced commands are
 // hidden and carry no group by default, so the empty-heading and group-panic
 // cobra edges never trigger.
 func TestAdvancedCommandsHiddenByDefault(t *testing.T) {
 	t.Parallel()
 
 	root := newRootCmd(false)
-	for _, name := range []string{"ark", "dev", "recovery"} {
+	for _, name := range []string{
+		"ark", "dev", "recovery", "taproot-assets",
+	} {
 		sub := findRootCommand(t, root, name)
 		require.Truef(t, sub.Hidden, "%q should be hidden", name)
 		require.Emptyf(
@@ -113,7 +115,9 @@ func TestAdvancedCommandsGroupedUnderDevMode(t *testing.T) {
 	root := newRootCmd(true)
 	require.Contains(t, rootGroupIDs(root), groupAdvanced)
 
-	for _, name := range []string{"ark", "dev", "recovery"} {
+	for _, name := range []string{
+		"ark", "dev", "recovery", "taproot-assets",
+	} {
 		sub := findRootCommand(t, root, name)
 		require.Falsef(t, sub.Hidden, "%q should be visible", name)
 		require.Equalf(

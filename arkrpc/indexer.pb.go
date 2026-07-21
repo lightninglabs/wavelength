@@ -935,8 +935,14 @@ type OORRecipientEvent struct {
 	// recipient output. Older servers may omit it, in which case clients fall
 	// back to standard VTXO materialization.
 	VtxoPolicyTemplate []byte `protobuf:"bytes,9,opt,name=vtxo_policy_template,json=vtxoPolicyTemplate,proto3" json:"vtxo_policy_template,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// taproot_asset_root is the optional 32-byte Taproot Asset commitment
+	// root anchored in this recipient output.
+	TaprootAssetRoot []byte `protobuf:"bytes,10,opt,name=taproot_asset_root,json=taprootAssetRoot,proto3" json:"taproot_asset_root,omitempty"`
+	// taproot_asset_transfer is the optional versioned Wavelength container
+	// of sealed tap-sdk packages for the checkpoint and Ark transitions.
+	TaprootAssetTransfer []byte `protobuf:"bytes,11,opt,name=taproot_asset_transfer,json=taprootAssetTransfer,proto3" json:"taproot_asset_transfer,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *OORRecipientEvent) Reset() {
@@ -1032,6 +1038,20 @@ func (x *OORRecipientEvent) GetVtxoPolicyTemplate() []byte {
 	return nil
 }
 
+func (x *OORRecipientEvent) GetTaprootAssetRoot() []byte {
+	if x != nil {
+		return x.TaprootAssetRoot
+	}
+	return nil
+}
+
+func (x *OORRecipientEvent) GetTaprootAssetTransfer() []byte {
+	if x != nil {
+		return x.TaprootAssetTransfer
+	}
+	return nil
+}
+
 // OORSessionPackage carries finalized package artifacts for one OOR session.
 type OORSessionPackage struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -1041,8 +1061,11 @@ type OORSessionPackage struct {
 	ArkPsbt []byte `protobuf:"bytes,2,opt,name=ark_psbt,json=arkPsbt,proto3" json:"ark_psbt,omitempty"`
 	// checkpoint_psbts are the finalized checkpoint PSBTs for this package.
 	CheckpointPsbts [][]byte `protobuf:"bytes,3,rep,name=checkpoint_psbts,json=checkpointPsbts,proto3" json:"checkpoint_psbts,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// taproot_asset_transfer is the optional versioned Wavelength container
+	// of sealed tap-sdk packages for this session.
+	TaprootAssetTransfer []byte `protobuf:"bytes,4,opt,name=taproot_asset_transfer,json=taprootAssetTransfer,proto3" json:"taproot_asset_transfer,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *OORSessionPackage) Reset() {
@@ -1092,6 +1115,13 @@ func (x *OORSessionPackage) GetArkPsbt() []byte {
 func (x *OORSessionPackage) GetCheckpointPsbts() [][]byte {
 	if x != nil {
 		return x.CheckpointPsbts
+	}
+	return nil
+}
+
+func (x *OORSessionPackage) GetTaprootAssetTransfer() []byte {
+	if x != nil {
+		return x.TaprootAssetTransfer
 	}
 	return nil
 }
@@ -2758,7 +2788,7 @@ const file_indexer_proto_rawDesc = "" +
 	"&ListOORRecipientEventsByScriptResponse\x121\n" +
 	"\x06events\x18\x01 \x03(\v2\x19.arkrpc.OORRecipientEventR\x06events\x12\x1f\n" +
 	"\vnext_cursor\x18\x02 \x01(\x04R\n" +
-	"nextCursor\"\xf6\x02\n" +
+	"nextCursor\"\xda\x03\n" +
 	"\x11OORRecipientEvent\x12.\n" +
 	"\x13recipient_pk_script\x18\x01 \x01(\fR\x11recipientPkScript\x12\x19\n" +
 	"\bevent_id\x18\x02 \x01(\x04R\aeventId\x12\x1d\n" +
@@ -2769,12 +2799,16 @@ const file_indexer_proto_rawDesc = "" +
 	"\bark_psbt\x18\x06 \x01(\fR\aarkPsbt\x12)\n" +
 	"\x10checkpoint_psbts\x18\a \x03(\fR\x0fcheckpointPsbts\x12F\n" +
 	"\x11ancestor_packages\x18\b \x03(\v2\x19.arkrpc.OORSessionPackageR\x10ancestorPackages\x120\n" +
-	"\x14vtxo_policy_template\x18\t \x01(\fR\x12vtxoPolicyTemplate\"x\n" +
+	"\x14vtxo_policy_template\x18\t \x01(\fR\x12vtxoPolicyTemplate\x12,\n" +
+	"\x12taproot_asset_root\x18\n" +
+	" \x01(\fR\x10taprootAssetRoot\x124\n" +
+	"\x16taproot_asset_transfer\x18\v \x01(\fR\x14taprootAssetTransfer\"\xae\x01\n" +
 	"\x11OORSessionPackage\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\fR\tsessionId\x12\x19\n" +
 	"\bark_psbt\x18\x02 \x01(\fR\aarkPsbt\x12)\n" +
-	"\x10checkpoint_psbts\x18\x03 \x03(\fR\x0fcheckpointPsbts\"\xc8\x01\n" +
+	"\x10checkpoint_psbts\x18\x03 \x03(\fR\x0fcheckpointPsbts\x124\n" +
+	"\x16taproot_asset_transfer\x18\x04 \x01(\fR\x14taprootAssetTransfer\"\xc8\x01\n" +
 	"\x10IncomingOOREvent\x12.\n" +
 	"\x13recipient_pk_script\x18\x01 \x01(\fR\x11recipientPkScript\x12,\n" +
 	"\x12recipient_event_id\x18\x02 \x01(\x04R\x10recipientEventId\x12\x1d\n" +

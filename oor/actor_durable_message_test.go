@@ -8,6 +8,7 @@ import (
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
+	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
 	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/stretchr/testify/require"
 )
@@ -402,16 +403,31 @@ func TestDriveEventRequestRoundTripSubmitAcceptedEvent(t *testing.T) {
 func TestDriveEventRequestRoundTripIncomingTransferEvent(t *testing.T) {
 	t.Parallel()
 
-	arkPSBT, checkpoints, _, _, _, _ :=
+	arkPSBT, checkpoints, recipients, _, _, _ :=
 		buildTestIncomingMaterialization(t)
 
 	sessionID := SessionID(arkPSBT.UnsignedTx.TxHash())
+	assetRoot := chainhash.Hash{0x31, 0x32, 0x33}
+	recipients[0].TaprootAssetRoot = &assetRoot
+	assetTransfer := &oortx.TaprootAssetTransfer{
+		Version: oortx.TaprootAssetTransferVersion,
+		CheckpointPackages: [][]byte{
+			{
+				0x41,
+			},
+		},
+		ArkPackage: []byte{
+			0x42,
+		},
+	}
 	msg := &DriveEventRequest{
 		SessionID: sessionID,
 		Event: &IncomingTransferEvent{
 			SessionID:            sessionID,
 			ArkPSBT:              arkPSBT,
 			FinalCheckpointPSBTs: checkpoints,
+			Recipients:           recipients,
+			TaprootAssetTransfer: assetTransfer,
 		},
 	}
 
@@ -428,6 +444,10 @@ func TestDriveEventRequestRoundTripIncomingTransferEvent(t *testing.T) {
 	require.Equal(t, sessionID, incomingEvt.SessionID)
 	require.NotNil(t, incomingEvt.ArkPSBT)
 	require.Len(t, incomingEvt.FinalCheckpointPSBTs, len(checkpoints))
+	require.Len(t, incomingEvt.Recipients, 1)
+	require.Equal(t, &assetRoot,
+		incomingEvt.Recipients[0].TaprootAssetRoot)
+	require.Equal(t, assetTransfer, incomingEvt.TaprootAssetTransfer)
 }
 
 // TestDriveEventRequestRoundTripIncomingHandledEvent asserts

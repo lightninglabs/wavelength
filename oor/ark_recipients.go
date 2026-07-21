@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/lightninglabs/wavelength/lib/tx/arktx"
 )
@@ -22,6 +23,10 @@ type ArkRecipientOutput struct {
 	// VTXOPolicyTemplate is the serialized arkscript policy template for
 	// the VTXO created by this output, when the server supplied it.
 	VTXOPolicyTemplate []byte
+
+	// TaprootAssetRoot is the optional root of the Taproot Asset
+	// commitment composed beside VTXOPolicyTemplate in PkScript.
+	TaprootAssetRoot *chainhash.Hash
 }
 
 // ExtractArkRecipients returns the non-anchor outputs from a canonical Ark
@@ -84,6 +89,10 @@ func CloneArkRecipients(recipients []ArkRecipientOutput) []ArkRecipientOutput {
 				[]byte(nil),
 				recipients[i].VTXOPolicyTemplate...,
 			),
+		}
+		if recipients[i].TaprootAssetRoot != nil {
+			root := *recipients[i].TaprootAssetRoot
+			out[i].TaprootAssetRoot = &root
 		}
 	}
 

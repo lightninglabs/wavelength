@@ -196,11 +196,12 @@ type Macaroon struct {
 }
 
 type OorPackage struct {
-	SessionID []byte
-	Direction int32
-	ArkPsbt   []byte
-	CreatedAt int64
-	UpdatedAt int64
+	SessionID            []byte
+	Direction            int32
+	ArkPsbt              []byte
+	CreatedAt            int64
+	UpdatedAt            int64
+	TaprootAssetTransfer []byte
 }
 
 type OorPackageCheckpoint struct {
@@ -447,6 +448,7 @@ type Vtxo struct {
 	LastUpdateTime      int64
 	ChainDepth          int32
 	ConstructionVersion int32
+	TaprootAssetRoot    []byte
 }
 
 type VtxoAncestryPath struct {

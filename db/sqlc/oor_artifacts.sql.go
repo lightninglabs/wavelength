@@ -21,7 +21,7 @@ func (q *Queries) DeleteOORPackageCheckpoints(ctx context.Context, sessionID []b
 }
 
 const GetOORPackage = `-- name: GetOORPackage :one
-SELECT session_id, direction, ark_psbt, created_at, updated_at FROM oor_packages
+SELECT session_id, direction, ark_psbt, created_at, updated_at, taproot_asset_transfer FROM oor_packages
 WHERE session_id = $1
 `
 
@@ -34,6 +34,7 @@ func (q *Queries) GetOORPackage(ctx context.Context, sessionID []byte) (OorPacka
 		&i.ArkPsbt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TaprootAssetTransfer,
 	)
 	return i, err
 }
@@ -43,6 +44,7 @@ SELECT
     p.session_id,
     p.direction,
     p.ark_psbt,
+    p.taproot_asset_transfer,
     p.created_at AS package_created_at,
     p.updated_at AS package_updated_at,
     b.outpoint_hash,
@@ -68,19 +70,20 @@ type GetOORPackageByOutpointParams struct {
 }
 
 type GetOORPackageByOutpointRow struct {
-	SessionID         []byte
-	Direction         int32
-	ArkPsbt           []byte
-	PackageCreatedAt  int64
-	PackageUpdatedAt  int64
-	OutpointHash      []byte
-	OutpointIndex     int32
-	OutputIndex       int32
-	LinkKind          int32
-	RecipientPkScript []byte
-	ValueSat          int64
-	BindingCreatedAt  int64
-	BindingUpdatedAt  int64
+	SessionID            []byte
+	Direction            int32
+	ArkPsbt              []byte
+	TaprootAssetTransfer []byte
+	PackageCreatedAt     int64
+	PackageUpdatedAt     int64
+	OutpointHash         []byte
+	OutpointIndex        int32
+	OutputIndex          int32
+	LinkKind             int32
+	RecipientPkScript    []byte
+	ValueSat             int64
+	BindingCreatedAt     int64
+	BindingUpdatedAt     int64
 }
 
 func (q *Queries) GetOORPackageByOutpoint(ctx context.Context, arg GetOORPackageByOutpointParams) (GetOORPackageByOutpointRow, error) {
@@ -90,6 +93,7 @@ func (q *Queries) GetOORPackageByOutpoint(ctx context.Context, arg GetOORPackage
 		&i.SessionID,
 		&i.Direction,
 		&i.ArkPsbt,
+		&i.TaprootAssetTransfer,
 		&i.PackageCreatedAt,
 		&i.PackageUpdatedAt,
 		&i.OutpointHash,
@@ -109,6 +113,7 @@ SELECT
     p.session_id,
     p.direction,
     p.ark_psbt,
+    p.taproot_asset_transfer,
     p.created_at AS package_created_at,
     p.updated_at AS package_updated_at,
     b.outpoint_hash,
@@ -135,19 +140,20 @@ type GetOORPackageByOutpointAndKindParams struct {
 }
 
 type GetOORPackageByOutpointAndKindRow struct {
-	SessionID         []byte
-	Direction         int32
-	ArkPsbt           []byte
-	PackageCreatedAt  int64
-	PackageUpdatedAt  int64
-	OutpointHash      []byte
-	OutpointIndex     int32
-	OutputIndex       int32
-	LinkKind          int32
-	RecipientPkScript []byte
-	ValueSat          int64
-	BindingCreatedAt  int64
-	BindingUpdatedAt  int64
+	SessionID            []byte
+	Direction            int32
+	ArkPsbt              []byte
+	TaprootAssetTransfer []byte
+	PackageCreatedAt     int64
+	PackageUpdatedAt     int64
+	OutpointHash         []byte
+	OutpointIndex        int32
+	OutputIndex          int32
+	LinkKind             int32
+	RecipientPkScript    []byte
+	ValueSat             int64
+	BindingCreatedAt     int64
+	BindingUpdatedAt     int64
 }
 
 func (q *Queries) GetOORPackageByOutpointAndKind(ctx context.Context, arg GetOORPackageByOutpointAndKindParams) (GetOORPackageByOutpointAndKindRow, error) {
@@ -157,6 +163,7 @@ func (q *Queries) GetOORPackageByOutpointAndKind(ctx context.Context, arg GetOOR
 		&i.SessionID,
 		&i.Direction,
 		&i.ArkPsbt,
+		&i.TaprootAssetTransfer,
 		&i.PackageCreatedAt,
 		&i.PackageUpdatedAt,
 		&i.OutpointHash,
@@ -325,7 +332,7 @@ func (q *Queries) ListOORPackageCheckpoints(ctx context.Context, sessionID []byt
 }
 
 const ListOORPackages = `-- name: ListOORPackages :many
-SELECT session_id, direction, ark_psbt, created_at, updated_at FROM oor_packages
+SELECT session_id, direction, ark_psbt, created_at, updated_at, taproot_asset_transfer FROM oor_packages
 ORDER BY updated_at DESC
 `
 
@@ -344,6 +351,7 @@ func (q *Queries) ListOORPackages(ctx context.Context) ([]OorPackage, error) {
 			&i.ArkPsbt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.TaprootAssetTransfer,
 		); err != nil {
 			return nil, err
 		}
@@ -359,7 +367,7 @@ func (q *Queries) ListOORPackages(ctx context.Context) ([]OorPackage, error) {
 }
 
 const ListOORPackagesByDirection = `-- name: ListOORPackagesByDirection :many
-SELECT session_id, direction, ark_psbt, created_at, updated_at FROM oor_packages
+SELECT session_id, direction, ark_psbt, created_at, updated_at, taproot_asset_transfer FROM oor_packages
 WHERE direction = $1
 ORDER BY updated_at DESC
 `
@@ -379,6 +387,7 @@ func (q *Queries) ListOORPackagesByDirection(ctx context.Context, direction int3
 			&i.ArkPsbt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.TaprootAssetTransfer,
 		); err != nil {
 			return nil, err
 		}
@@ -528,22 +537,25 @@ func (q *Queries) ListOwnedReceiveScripts(ctx context.Context) ([]OwnedReceiveSc
 const UpsertOORPackage = `-- name: UpsertOORPackage :execrows
 
 INSERT INTO oor_packages (
-    session_id, direction, ark_psbt, created_at, updated_at
+    session_id, direction, ark_psbt, created_at, updated_at,
+    taproot_asset_transfer
 ) VALUES (
-    $1, $2, $3, $4, $5
+    $1, $2, $3, $4, $5, $6
 )
 ON CONFLICT (session_id) DO UPDATE SET
     ark_psbt = EXCLUDED.ark_psbt,
+    taproot_asset_transfer = EXCLUDED.taproot_asset_transfer,
     updated_at = EXCLUDED.updated_at
 WHERE oor_packages.direction = EXCLUDED.direction
 `
 
 type UpsertOORPackageParams struct {
-	SessionID []byte
-	Direction int32
-	ArkPsbt   []byte
-	CreatedAt int64
-	UpdatedAt int64
+	SessionID            []byte
+	Direction            int32
+	ArkPsbt              []byte
+	CreatedAt            int64
+	UpdatedAt            int64
+	TaprootAssetTransfer []byte
 }
 
 // OOR artifact store queries.
@@ -554,6 +566,7 @@ func (q *Queries) UpsertOORPackage(ctx context.Context, arg UpsertOORPackagePara
 		arg.ArkPsbt,
 		arg.CreatedAt,
 		arg.UpdatedAt,
+		arg.TaprootAssetTransfer,
 	)
 	if err != nil {
 		return 0, err

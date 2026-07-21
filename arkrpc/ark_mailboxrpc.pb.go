@@ -28,6 +28,8 @@ type ArkServiceMailboxServer interface {
 	GetInfo(ctx context.Context, req *GetInfoRequest) (*GetInfoResponse, error)
 	// EstimateFee handles EstimateFee.
 	EstimateFee(ctx context.Context, req *EstimateFeeRequest) (*EstimateFeeResponse, error)
+	// RegisterTaprootAssetVTXO handles RegisterTaprootAssetVTXO.
+	RegisterTaprootAssetVTXO(ctx context.Context, req *RegisterTaprootAssetVTXORequest) (*RegisterTaprootAssetVTXOResponse, error)
 }
 
 // RegisterArkServiceMailboxServer registers handlers for ArkService.
@@ -51,6 +53,16 @@ func RegisterArkServiceMailboxServer(r rpc.Router, impl ArkServiceMailboxServer)
 		}
 
 		return impl.EstimateFee(ctx, req)
+	})
+	r.Handle("arkrpc.ArkService", "RegisterTaprootAssetVTXO", func() proto.Message {
+		return &RegisterTaprootAssetVTXORequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*RegisterTaprootAssetVTXORequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.RegisterTaprootAssetVTXO(ctx, req)
 	})
 }
 
@@ -93,6 +105,29 @@ func (c *ArkServiceMailboxClient) EstimateFee(ctx context.Context, req *Estimate
 	}
 
 	resp := new(EstimateFeeResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// RegisterTaprootAssetVTXO calls the RegisterTaprootAssetVTXO RPC.
+func (c *ArkServiceMailboxClient) RegisterTaprootAssetVTXO(ctx context.Context, req *RegisterTaprootAssetVTXORequest, opts ...rpc.RPCOptions) (*RegisterTaprootAssetVTXOResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "arkrpc.ArkService",
+		Method:  "RegisterTaprootAssetVTXO",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(RegisterTaprootAssetVTXOResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

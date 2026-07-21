@@ -89,6 +89,13 @@ service DaemonService {
     // client and operator, without waiting for a round.
     rpc SendOOR (SendOORRequest) returns (SendOORResponse);
 
+    // OnboardTaprootAsset moves one complete, isolated Taproot Asset anchor
+    // into a standard Wavelength VTXO policy. The request is idempotent: a
+    // retry resumes publication or operator registration without committing
+    // another asset transition.
+    rpc OnboardTaprootAsset (OnboardTaprootAssetRequest)
+        returns (OnboardTaprootAssetResponse);
+
     // PrepareOOR builds the deterministic OOR package without submitting it.
     // This lets callers collect signatures from external custom-input
     // participants before calling SendOOR with the same parameters.
@@ -261,6 +268,44 @@ service DaemonService {
     // EscalateVHTLCRecovery to start costly on-chain recovery.
     rpc ListVHTLCRecoveries (ListVHTLCRecoveriesRequest)
         returns (ListVHTLCRecoveriesResponse);
+}
+
+// OnboardTaprootAssetRequest selects the complete confirmed asset proof and
+// caps the Bitcoin fee paid by its current anchor.
+message OnboardTaprootAssetRequest {
+    // idempotency_key is a stable caller-generated retry key.
+    string idempotency_key = 1;
+
+    // asset_ref is the tap-sdk asset or group reference.
+    string asset_ref = 2;
+
+    // asset_amount must equal the complete amount selected by input_proof_file
+    // in the first PoC.
+    uint64 asset_amount = 3;
+
+    // input_proof_file is the complete confirmed Taproot Asset proof file.
+    bytes input_proof_file = 4;
+
+    // max_fee_sat is the exact fee subtracted from the current anchor value.
+    // The name is a cap for forward compatibility; this PoC pays exactly it.
+    uint64 max_fee_sat = 5;
+}
+
+// TaprootAssetOnboardingState reports whether the transaction still needs a
+// confirmation or is registered as a selectable VTXO.
+enum TaprootAssetOnboardingState {
+    TAPROOT_ASSET_ONBOARDING_STATE_UNSPECIFIED = 0;
+    TAPROOT_ASSET_ONBOARDING_STATE_PENDING_CONFIRMATION = 1;
+    TAPROOT_ASSET_ONBOARDING_STATE_READY = 2;
+}
+
+message OnboardTaprootAssetResponse {
+    TaprootAssetOnboardingState state = 1;
+    string outpoint = 2;
+    int64 value_sat = 3;
+    bytes pk_script = 4;
+    bytes taproot_asset_root = 5;
+    int32 confirmation_height = 6;
 }
 
 // WalletState mirrors the daemon's in-process wallet lifecycle enum:
@@ -998,6 +1043,45 @@ message SendOORRequest {
     // allows the daemon to return the existing local OOR session instead
     // of creating a duplicate transfer.
     string idempotency_key = 4;
+
+    // taproot_asset requests the experimental proof-selected Taproot Asset
+    // extension. The first release requires exactly one locally stored custom
+    // input, one recipient, equal input/output BTC values, and a non-empty
+    // idempotency_key. Bitcoin-only sends leave this field unset.
+    TaprootAssetOORIntent taproot_asset = 5;
+}
+
+// TaprootAssetOORIntent selects exact asset units for the experimental OOR
+// custom-anchor flow. The BTC amount remains on the enclosing recipient and
+// custom input; asset_amount is measured in independent Taproot Asset units.
+message TaprootAssetOORIntent {
+    // asset_ref is the opaque tap-sdk asset or group identifier.
+    string asset_ref = 1;
+
+    // asset_amount is the exact number of asset units selected by
+    // input_proof_file.
+    uint64 asset_amount = 2;
+
+    // input_proof_file is the complete confirmed proof for the selected
+    // asset. The configured client-side preparer must already have imported
+    // or be able to reconcile this proof with its tapd backend.
+    bytes input_proof_file = 3;
+
+    // recipient_script_key is the 33-byte compressed Taproot Asset output
+    // script key supplied by the receiver.
+    bytes recipient_script_key = 4;
+
+    // proof_courier_address optionally identifies the receiver proof courier.
+    string proof_courier_address = 5;
+
+    // proof_delivery_metadata is opaque receiver-owned delivery metadata
+    // sealed into the tap-sdk package.
+    bytes proof_delivery_metadata = 6;
+
+    // acknowledge_unconfirmed must be true. The first Wavelength slice
+    // persists compact unconfirmed proof paths but cannot yet publish and log
+    // them through tapd's chain porter.
+    bool acknowledge_unconfirmed = 7;
 }
 
 // CustomOORInput specifies a VTXO to spend with an explicit semantic policy

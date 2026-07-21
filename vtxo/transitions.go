@@ -346,14 +346,7 @@ func resolveForfeitSpendPath(vtxo *Descriptor,
 		return nil, fmt.Errorf("vtxo descriptor is required")
 	}
 
-	policy, err := arkscript.NewVTXOPolicy(
-		vtxo.ClientKey.PubKey, vtxo.OperatorKey, vtxo.RelativeExpiry,
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	spendInfo, err := policy.CollabSpendInfo()
+	spendInfo, err := vtxo.EffectiveStandardSpendInfo(0)
 	if err != nil {
 		return nil, err
 	}

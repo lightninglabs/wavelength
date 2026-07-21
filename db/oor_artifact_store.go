@@ -13,6 +13,7 @@ import (
 	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/db/sqlc"
+	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
 	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
 	types "github.com/lightninglabs/wavelength/lib/types"
 	"github.com/lightningnetwork/lnd/clock"
@@ -214,6 +215,10 @@ type OORPackageBundle struct {
 	// FinalCheckpointPSBTs is the persisted finalized checkpoint package.
 	FinalCheckpointPSBTs []*psbt.Packet
 
+	// TaprootAssetTransfer is the optional sealed asset transition
+	// container persisted with this package.
+	TaprootAssetTransfer *oortx.TaprootAssetTransfer
+
 	// Bindings are all known local outpoint links for this session.
 	Bindings []OORPackageBinding
 
@@ -292,6 +297,18 @@ func (s *OORArtifactPersistenceStore) UpsertPackage(ctx context.Context,
 	direction OORPackageDirection, sessionID chainhash.Hash,
 	ark *psbt.Packet, checkpoints []*psbt.Packet) error {
 
+	return s.UpsertPackageWithAssets(
+		ctx, direction, sessionID, ark, checkpoints, nil,
+	)
+}
+
+// UpsertPackageWithAssets writes one finalized Bitcoin package and its
+// optional immutable Taproot Asset transition container.
+func (s *OORArtifactPersistenceStore) UpsertPackageWithAssets(
+	ctx context.Context, direction OORPackageDirection,
+	sessionID chainhash.Hash, ark *psbt.Packet, checkpoints []*psbt.Packet,
+	assetTransfer *oortx.TaprootAssetTransfer) error {
+
 	if s == nil || s.db == nil {
 		return fmt.Errorf("store must be provided")
 	}
@@ -327,6 +344,20 @@ func (s *OORArtifactPersistenceStore) UpsertPackage(ctx context.Context,
 		rawCheckpoints = append(rawCheckpoints, raw)
 	}
 
+	var assetTransferRaw []byte
+	if assetTransfer != nil {
+		if err := assetTransfer.Validate(len(checkpoints)); err != nil {
+			return fmt.Errorf("validate Taproot Asset transfer: %w",
+				err)
+		}
+
+		assetTransferRaw, err = assetTransfer.MarshalBinary()
+		if err != nil {
+			return fmt.Errorf("encode Taproot Asset transfer: %w",
+				err)
+		}
+	}
+
 	now := s.clock.Now().Unix()
 	id := sessionID[:]
 
@@ -351,6 +382,7 @@ func (s *OORArtifactPersistenceStore) UpsertPackage(ctx context.Context,
 
 			samePayload, err := sameOORPackagePayload(
 				ctx, q, existing, arkRaw, rawCheckpoints,
+				assetTransferRaw,
 			)
 			if err != nil {
 				return err
@@ -371,11 +403,12 @@ func (s *OORArtifactPersistenceStore) UpsertPackage(ctx context.Context,
 
 		rowsAffected, err := q.UpsertOORPackage(
 			ctx, sqlc.UpsertOORPackageParams{
-				SessionID: id,
-				Direction: directionCode,
-				ArkPsbt:   arkRaw,
-				CreatedAt: now,
-				UpdatedAt: now,
+				SessionID:            id,
+				Direction:            directionCode,
+				ArkPsbt:              arkRaw,
+				CreatedAt:            now,
+				UpdatedAt:            now,
+				TaprootAssetTransfer: assetTransferRaw,
 			},
 		)
 		if err != nil {
@@ -574,11 +607,12 @@ func (s *OORArtifactPersistenceStore) GetPackageForOutpoint(ctx context.Context,
 		}
 
 		pkg, err := materializePackageBundle(ctx, q, sqlc.OorPackage{
-			SessionID: row.SessionID,
-			Direction: row.Direction,
-			ArkPsbt:   row.ArkPsbt,
-			CreatedAt: row.PackageCreatedAt,
-			UpdatedAt: row.PackageUpdatedAt,
+			SessionID:            row.SessionID,
+			Direction:            row.Direction,
+			ArkPsbt:              row.ArkPsbt,
+			TaprootAssetTransfer: row.TaprootAssetTransfer,
+			CreatedAt:            row.PackageCreatedAt,
+			UpdatedAt:            row.PackageUpdatedAt,
 		})
 		if err != nil {
 			return err
@@ -1041,6 +1075,13 @@ func materializePackageBundle(ctx context.Context, q OORArtifactStore,
 		checkpoints = append(checkpoints, pkt)
 	}
 
+	assetTransfer, err := decodeStoredTaprootAssetTransfer(
+		pkgRow.TaprootAssetTransfer, len(checkpoints),
+	)
+	if err != nil {
+		return nil, err
+	}
+
 	bindingRows, err := q.ListOORVTXOBindingsBySession(
 		ctx, pkgRow.SessionID,
 	)
@@ -1068,11 +1109,31 @@ func materializePackageBundle(ctx context.Context, q OORArtifactStore,
 		Direction:              direction,
 		ArkPSBT:                ark,
 		FinalCheckpointPSBTs:   checkpoints,
+		TaprootAssetTransfer:   assetTransfer,
 		Bindings:               bindings,
 		CreatedAt:              unixTimeUTC(pkgRow.CreatedAt),
 		UpdatedAt:              unixTimeUTC(pkgRow.UpdatedAt),
 		MatchedOutpointBinding: fn.None[OORPackageBinding](),
 	}, nil
+}
+
+func decodeStoredTaprootAssetTransfer(raw []byte,
+	checkpointCount int) (*oortx.TaprootAssetTransfer, error) {
+
+	if len(raw) == 0 {
+		return nil, nil
+	}
+
+	transfer := &oortx.TaprootAssetTransfer{}
+	if err := transfer.UnmarshalBinary(raw); err != nil {
+		return nil, fmt.Errorf("decode Taproot Asset transfer: %w", err)
+	}
+	if err := transfer.Validate(checkpointCount); err != nil {
+		return nil, fmt.Errorf("validate Taproot Asset transfer: %w",
+			err)
+	}
+
+	return transfer, nil
 }
 
 // bindingFromRow converts a raw binding row into the API binding shape.
@@ -1276,10 +1337,13 @@ func validatePackageDirection(direction OORPackageDirection) error {
 // sameOORPackagePayload reports whether an existing package row already holds
 // the exact serialized payload being upserted.
 func sameOORPackagePayload(ctx context.Context, q OORArtifactStore,
-	existing sqlc.OorPackage, arkRaw []byte,
-	rawCheckpoints [][]byte) (bool, error) {
+	existing sqlc.OorPackage, arkRaw []byte, rawCheckpoints [][]byte,
+	assetTransferRaw []byte) (bool, error) {
 
 	if !bytes.Equal(existing.ArkPsbt, arkRaw) {
+		return false, nil
+	}
+	if !bytes.Equal(existing.TaprootAssetTransfer, assetTransferRaw) {
 		return false, nil
 	}
 

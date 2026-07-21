@@ -12,6 +12,7 @@ const (
 	packageArtifactSessionIDRecordType   tlv.Type = 1
 	packageArtifactArkPSBTRecordType     tlv.Type = 3
 	packageArtifactCheckpointsRecordType tlv.Type = 5
+	packageArtifactAssetTransferType     tlv.Type = 7
 )
 
 // encodePackageArtifacts serializes a package-artifact slice as a length
@@ -95,6 +96,15 @@ func encodePackageArtifact(artifact PackageArtifact) ([]byte, error) {
 		return nil, err
 	}
 
+	var assetTransfer []byte
+	if artifact.TaprootAssetTransfer != nil {
+		assetTransfer, err = artifact.TaprootAssetTransfer.
+			MarshalBinary()
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	records := []tlv.Record{
 		tlv.MakePrimitiveRecord(
 			packageArtifactSessionIDRecordType, &sessionBytes,
@@ -104,6 +114,9 @@ func encodePackageArtifact(artifact PackageArtifact) ([]byte, error) {
 		),
 		tlv.MakePrimitiveRecord(
 			packageArtifactCheckpointsRecordType, &checkpointRaw,
+		),
+		tlv.MakePrimitiveRecord(
+			packageArtifactAssetTransferType, &assetTransfer,
 		),
 	}
 
@@ -126,9 +139,10 @@ func decodePackageArtifactWithLimits(raw []byte,
 	limits ReceiveLimits) (PackageArtifact, error) {
 
 	var (
-		sessionBytes []byte
-		arkPSBT      []byte
-		checkpoints  []byte
+		sessionBytes  []byte
+		arkPSBT       []byte
+		checkpoints   []byte
+		assetTransfer []byte
 	)
 
 	records := []tlv.Record{
@@ -140,6 +154,9 @@ func decodePackageArtifactWithLimits(raw []byte,
 		),
 		tlv.MakePrimitiveRecord(
 			packageArtifactCheckpointsRecordType, &checkpoints,
+		),
+		tlv.MakePrimitiveRecord(
+			packageArtifactAssetTransferType, &assetTransfer,
 		),
 	}
 
@@ -175,9 +192,17 @@ func decodePackageArtifactWithLimits(raw []byte,
 		return PackageArtifact{}, err
 	}
 
+	decodedAssetTransfer, err := decodeTaprootAssetTransfer(
+		assetTransfer, len(parsedCheckpoints),
+	)
+	if err != nil {
+		return PackageArtifact{}, err
+	}
+
 	return PackageArtifact{
 		SessionID:            sessionID,
 		ArkPSBT:              ark,
 		FinalCheckpointPSBTs: parsedCheckpoints,
+		TaprootAssetTransfer: decodedAssetTransfer,
 	}, nil
 }

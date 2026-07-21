@@ -44,7 +44,7 @@ ORDER BY vtxos.creation_time DESC;
 -- template decode) and the batched ancestry-path query on the hot path.
 SELECT outpoint_hash, outpoint_index, amount, pk_script
 FROM vtxos
-WHERE status = $1
+WHERE status = $1 AND taproot_asset_root IS NULL
 ORDER BY creation_time DESC;
 
 -- name: ListLiveVTXOs :many

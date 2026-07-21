@@ -52,9 +52,9 @@ func (b *sessionBehavior) handleStartTransfer(ctx context.Context,
 		})
 	}
 
-	session, outbox, err := NewSessionWithIdempotencyKey(
+	session, outbox, err := newSessionWithPrepared(
 		ctx, req.Policy, req.Inputs, req.Recipients, req.IdempotencyKey,
-		b.envConfig(),
+		b.envConfig(), req.PreparedSubmit,
 	)
 	if err != nil {
 		return fn.Err[ActorResp](err)
@@ -334,9 +334,10 @@ func (b *sessionBehavior) persistOutgoingPackage(ctx context.Context,
 
 	sessionHash := chainHashOf(b.sessionID)
 
-	err := b.cfg.PackageStore.UpsertPackage(
-		ctx, PackageDirectionOutgoing, sessionHash, state.ArkPSBT,
-		state.FinalCheckpointPSBTs,
+	err := upsertPackage(
+		ctx, b.cfg.PackageStore, PackageDirectionOutgoing, sessionHash,
+		state.ArkPSBT, state.FinalCheckpointPSBTs,
+		state.TaprootAssetTransfer,
 	)
 	if err != nil {
 		return err

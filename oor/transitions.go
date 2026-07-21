@@ -112,7 +112,7 @@ func (s *Idle) ProcessEvent(ctx context.Context, event Event,
 		// pre-rotation operator key would otherwise produce a
 		// checkpoint output the rotated operator cannot co-sign and the
 		// server rejects at submit. See normalizeCheckpointOwnerLeaves.
-		err := normalizeCheckpointOwnerLeaves(
+		err := NormalizeCheckpointOwnerLeaves(
 			evt.Policy, evt.VTXOInputs,
 		)
 		if err != nil {
@@ -128,11 +128,30 @@ func (s *Idle) ProcessEvent(ctx context.Context, event Event,
 		// - an Ark tx spends checkpoints and pays recipients
 		//
 		// The Ark txid is the stable v0 session identifier.
-		ark, checkpoints, err := buildSubmitPackage(
-			evt.Policy, evt.VTXOInputs, canonicalRecipients,
+		var (
+			ark           *psbt.Packet
+			checkpoints   []*psbt.Packet
+			assetTransfer *oortx.TaprootAssetTransfer
 		)
-		if err != nil {
-			return nil, err
+		if evt.PreparedSubmit != nil {
+			if err := evt.PreparedSubmit.Validate(
+				evt.VTXOInputs, canonicalRecipients,
+			); err != nil {
+				return nil, err
+			}
+
+			ark = evt.PreparedSubmit.ArkPSBT
+			checkpoints = evt.PreparedSubmit.CheckpointPSBTs
+			assetTransfer = evt.PreparedSubmit.
+				TaprootAssetTransfer.Clone()
+		} else {
+			var err error
+			ark, checkpoints, err = buildSubmitPackage(
+				evt.Policy, evt.VTXOInputs, canonicalRecipients,
+			)
+			if err != nil {
+				return nil, err
+			}
 		}
 
 		if ark == nil || ark.UnsignedTx == nil {
@@ -178,11 +197,12 @@ func (s *Idle) ProcessEvent(ctx context.Context, event Event,
 
 		return &StateTransition{
 			NextState: &AwaitingArkSignatures{
-				ArkPSBT:          ark,
-				CheckpointPSBTs:  checkpoints,
-				TransferInputs:   evt.VTXOInputs,
-				RecipientOutputs: canonicalRecipients,
-				IdempotencyKey:   evt.IdempotencyKey,
+				ArkPSBT:              ark,
+				CheckpointPSBTs:      checkpoints,
+				TransferInputs:       evt.VTXOInputs,
+				RecipientOutputs:     canonicalRecipients,
+				IdempotencyKey:       evt.IdempotencyKey,
+				TaprootAssetTransfer: assetTransfer,
 			},
 			NewEvents: fn.Some(EmittedEvent{
 				Outbox: []OutboxEvent{
@@ -244,11 +264,12 @@ func (s *AwaitingArkSignatures) ProcessEvent(ctx context.Context, event Event,
 		// submit would pin the session in AwaitingSubmitAccepted until
 		// restart.
 		next := &AwaitingSubmitAccepted{
-			ArkPSBT:          evt.ArkPSBT,
-			CheckpointPSBTs:  s.CheckpointPSBTs,
-			TransferInputs:   s.TransferInputs,
-			RecipientOutputs: s.RecipientOutputs,
-			IdempotencyKey:   s.IdempotencyKey,
+			ArkPSBT:              evt.ArkPSBT,
+			CheckpointPSBTs:      s.CheckpointPSBTs,
+			TransferInputs:       s.TransferInputs,
+			RecipientOutputs:     s.RecipientOutputs,
+			IdempotencyKey:       s.IdempotencyKey,
+			TaprootAssetTransfer: s.TaprootAssetTransfer,
 		}
 
 		return &StateTransition{
@@ -324,6 +345,7 @@ func (s *AwaitingSubmitAccepted) ProcessEvent(ctx context.Context, event Event,
 				CoSignedCheckpointPSBTs: checkpoints,
 				TransferInputs:          s.TransferInputs,
 				IdempotencyKey:          s.IdempotencyKey,
+				TaprootAssetTransfer:    s.TaprootAssetTransfer,
 			},
 			NewEvents: fn.Some(EmittedEvent{
 				Outbox: []OutboxEvent{
@@ -387,6 +409,7 @@ func (s *AwaitingCheckpointSignatures) ProcessEvent(ctx context.Context,
 			FinalCheckpointPSBTs: evt.FinalCheckpointPSBTs,
 			TransferInputs:       s.TransferInputs,
 			IdempotencyKey:       s.IdempotencyKey,
+			TaprootAssetTransfer: s.TaprootAssetTransfer,
 		}
 
 		return &StateTransition{
@@ -423,9 +446,10 @@ func (s *AwaitingFinalizeAccepted) ProcessEvent(ctx context.Context,
 
 		return &StateTransition{
 			NextState: &AwaitingLocalVTXOUpdate{
-				SessionID:      s.SessionID,
-				TransferInputs: s.TransferInputs,
-				IdempotencyKey: s.IdempotencyKey,
+				SessionID:            s.SessionID,
+				TransferInputs:       s.TransferInputs,
+				IdempotencyKey:       s.IdempotencyKey,
+				TaprootAssetTransfer: s.TaprootAssetTransfer,
 			},
 			NewEvents: fn.Some(EmittedEvent{
 				Outbox: []OutboxEvent{
@@ -689,7 +713,7 @@ func buildSubmitPackage(policy arkscript.CheckpointPolicy,
 	return BuildSubmitPackage(policy, inputs, outputs)
 }
 
-// normalizeCheckpointOwnerLeaves rebuilds each standard input's checkpoint
+// NormalizeCheckpointOwnerLeaves rebuilds each standard input's checkpoint
 // OUTPUT owner collaborative leaf so it commits to the session operator key
 // rather than the spent input VTXO's operator key.
 //
@@ -707,7 +731,7 @@ func buildSubmitPackage(policy arkscript.CheckpointPolicy,
 // per input). Custom spends (e.g. vHTLC) carry their own owner leaf and are
 // left untouched. Before any rotation the input and session keys are equal, so
 // this is a no-op then.
-func normalizeCheckpointOwnerLeaves(policy arkscript.CheckpointPolicy,
+func NormalizeCheckpointOwnerLeaves(policy arkscript.CheckpointPolicy,
 	inputs []TransferInput) error {
 
 	if policy.OperatorKey == nil {
@@ -744,6 +768,15 @@ func normalizeCheckpointOwnerLeaves(policy arkscript.CheckpointPolicy,
 	}
 
 	return nil
+}
+
+// normalizeCheckpointOwnerLeaves preserves the package-local helper name used
+// by older tests while the exported form is consumed by asset preparation at
+// the orchestration boundary.
+func normalizeCheckpointOwnerLeaves(policy arkscript.CheckpointPolicy,
+	inputs []TransferInput) error {
+
+	return NormalizeCheckpointOwnerLeaves(policy, inputs)
 }
 
 // BuildSubmitPackage constructs a v0 OOR submit package using the shared

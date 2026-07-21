@@ -42,6 +42,10 @@ message OORSigningDescriptor {
     // owner_leaf_policy is the serialized arkscript owner-leaf policy for
     // the checkpoint output created from this input.
     bytes owner_leaf_policy = 4;
+
+    // taproot_asset_root is the optional 32-byte Taproot Asset commitment
+    // root anchored in the spent VTXO.
+    bytes taproot_asset_root = 5;
 }
 
 // OORRecipientOutput carries one Ark recipient output plus optional semantic
@@ -56,6 +60,10 @@ message OORRecipientOutput {
     // vtxo_policy_template is the serialized arkscript policy for the created
     // output when known.
     bytes vtxo_policy_template = 3;
+
+    // taproot_asset_root is the optional 32-byte Taproot Asset commitment
+    // root anchored in this recipient output.
+    bytes taproot_asset_root = 4;
 }
 
 // SubmitPackageRequest carries submit-phase OOR data.
@@ -79,6 +87,10 @@ message SubmitPackageRequest {
     // persists it with the session. Every transfer is V1 today; an unset
     // value is treated as V1.
     uint32 flow_version = 5;
+
+    // taproot_asset_transfer is the optional versioned Wavelength container
+    // of sealed tap-sdk packages for the checkpoint and Ark transitions.
+    bytes taproot_asset_transfer = 6;
 }
 
 // OORRejectCode discriminates server-side OOR rejections so clients can
