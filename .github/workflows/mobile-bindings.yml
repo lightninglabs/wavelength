@@ -179,6 +179,9 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [android, ios]
     runs-on: ubuntu-latest
+    concurrency:
+      group: release-${{ github.ref }}
+      cancel-in-progress: false
     permissions:
       # Publishing release assets requires write access to repository
       # contents; the rest of this workflow only needs read.
@@ -203,27 +206,26 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Pre-releases (rc / alpha / beta tags) must not be flagged as the
-          # latest stable release.
+          # Release candidates must not be flagged as the latest stable
+          # release.
           prerelease=""
           case "$TAG" in
-            *-rc*|*-alpha*|*-beta*) prerelease="--prerelease" ;;
+            *-rc*) prerelease="--prerelease" ;;
           esac
 
-          # Create the release on first publish for this tag. A release
-          # manager also cuts the signed waved/wavecli manifest onto this same
-          # release (see docs/release.md); this CI job usually wins the race
-          # since the gomobile builds finish before the manual manifest flow.
-          # We therefore seed a deliberately provisional note (rather than
-          # --generate-notes, which would read as a finished changelog) so it
-          # is obvious the release manager still has to finalize the title/notes
-          # and attach the binaries. This only creates when absent, and the
-          # upload below clobbers, so re-runs are idempotent. --verify-tag
-          # refuses to invent a release for a tag that does not exist.
+          # Create a draft release on first publish for this tag. The release
+          # build workflow uploads the waved/wavecli archives and manifest to
+          # this same draft. Either workflow may win the race, so this creates
+          # only when absent and the upload below clobbers existing assets.
+          # --verify-tag refuses to invent a release for a missing tag.
           if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
-              --title "$TAG" --verify-tag $prerelease \
-              --notes "Provisional release created by CI to attach the mobile gomobile bindings. The release manager finalizes the notes and attaches the signed \`waved\`/\`wavecli\` binaries + manifest (see docs/release.md)."
+            if ! gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+                --draft --title "$TAG" --verify-tag $prerelease \
+                --notes "Provisional draft created by CI to attach the mobile gomobile bindings. The release build workflow attaches the reproducible \`waved\`/\`wavecli\` archives and manifest; maintainers add signatures and publish the release (see docs/release.md)."; then
+              # The release workflow may have created the draft between our
+              # view and create calls. Only tolerate failure if it exists now.
+              gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
+            fi
           fi
 
           gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber \
