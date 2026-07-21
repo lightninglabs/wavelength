@@ -423,6 +423,8 @@ func TestReceiveNotifiedAssetTransferSnapshotRoundTrip(t *testing.T) {
 	sessionID := SessionID(arkPSBT.UnsignedTx.TxHash())
 	assetRoot := chainhash.Hash{0x63, 0x64, 0x65}
 	recipients[0].TaprootAssetRoot = &assetRoot
+	recipients[0].TaprootAssetRef = "asset-id:010203"
+	recipients[0].TaprootAssetAmount = 21
 	assetTransfer := &oortx.TaprootAssetTransfer{
 		Version: oortx.TaprootAssetTransferVersion,
 		CheckpointPackages: [][]byte{
@@ -443,7 +445,7 @@ func TestReceiveNotifiedAssetTransferSnapshotRoundTrip(t *testing.T) {
 		TaprootAssetTransfer: assetTransfer,
 	})
 	require.NoError(t, err)
-	require.Equal(t, uint8(2), snapshot.Version)
+	require.Equal(t, uint8(3), snapshot.Version)
 
 	raw, err := encodeIncomingSnapshot(snapshot)
 	require.NoError(t, err)
@@ -457,6 +459,11 @@ func TestReceiveNotifiedAssetTransferSnapshotRoundTrip(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, &assetRoot,
 		notified.Recipients[0].TaprootAssetRoot)
+	require.Equal(
+		t, "asset-id:010203", notified.Recipients[0].TaprootAssetRef,
+	)
+	require.Equal(t, uint64(21),
+		notified.Recipients[0].TaprootAssetAmount)
 	require.Equal(t, assetTransfer, notified.TaprootAssetTransfer)
 }
 

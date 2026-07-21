@@ -46,6 +46,12 @@ message OORSigningDescriptor {
     // taproot_asset_root is the optional 32-byte Taproot Asset commitment
     // root anchored in the spent VTXO.
     bytes taproot_asset_root = 5;
+
+    // taproot_asset_ref is the canonical opaque SDK-level asset identity.
+    string taproot_asset_ref = 6;
+
+    // taproot_asset_amount is the number of asset units in the spent VTXO.
+    uint64 taproot_asset_amount = 7;
 }
 
 // OORRecipientOutput carries one Ark recipient output plus optional semantic
@@ -64,6 +70,14 @@ message OORRecipientOutput {
     // taproot_asset_root is the optional 32-byte Taproot Asset commitment
     // root anchored in this recipient output.
     bytes taproot_asset_root = 4;
+
+    // taproot_asset_ref is the opaque SDK-level asset identity carried by
+    // this output.
+    string taproot_asset_ref = 5;
+
+    // taproot_asset_amount is the number of asset units carried by this
+    // output. value_sat remains the separate Bitcoin carrier amount.
+    uint64 taproot_asset_amount = 6;
 }
 
 // SubmitPackageRequest carries submit-phase OOR data.

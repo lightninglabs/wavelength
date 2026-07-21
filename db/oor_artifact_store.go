@@ -635,6 +635,70 @@ func (s *OORArtifactPersistenceStore) GetPackageForOutpoint(ctx context.Context,
 	return result, nil
 }
 
+// GetCreatedPackageForOutpoint returns the exact package whose Ark
+// transaction created outpoint. Unlike GetPackageForOutpoint, this method can
+// never resolve a later consumed-input binding when the same VTXO has both
+// relations.
+func (s *OORArtifactPersistenceStore) GetCreatedPackageForOutpoint(
+	ctx context.Context, outpoint wire.OutPoint) (*OORPackageBundle,
+	error) {
+
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("store must be provided")
+	}
+
+	linkKind, err := bindingKindCode(OORPackageLinkKindCreatedOutput)
+	if err != nil {
+		return nil, err
+	}
+
+	readTx := ReadTxOption()
+	var result *OORPackageBundle
+	err = s.db.ExecTx(ctx, readTx, func(q OORArtifactStore) error {
+		row, err := q.GetOORPackageByOutpointAndKind(
+			ctx, sqlc.GetOORPackageByOutpointAndKindParams{
+				OutpointHash:  outpoint.Hash[:],
+				OutpointIndex: int32(outpoint.Index),
+				LinkKind:      linkKind,
+			},
+		)
+		if err != nil {
+			return err
+		}
+
+		pkg, err := materializePackageBundle(ctx, q, sqlc.OorPackage{
+			SessionID:            row.SessionID,
+			Direction:            row.Direction,
+			ArkPsbt:              row.ArkPsbt,
+			TaprootAssetTransfer: row.TaprootAssetTransfer,
+			CreatedAt:            row.PackageCreatedAt,
+			UpdatedAt:            row.PackageUpdatedAt,
+		})
+		if err != nil {
+			return err
+		}
+
+		matched, err := bindingFromOutpointAndKindJoinRow(row)
+		if err != nil {
+			return err
+		}
+		if matched.LinkKind != OORPackageLinkKindCreatedOutput {
+			return fmt.Errorf("created package query returned "+
+				"%s binding", matched.LinkKind)
+		}
+
+		pkg.MatchedOutpointBinding = fn.Some(*matched)
+		result = pkg
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
 // GetPackage returns the fully materialized package for one OOR session id.
 func (s *OORArtifactPersistenceStore) GetPackage(ctx context.Context,
 	sessionID chainhash.Hash) (*OORPackageBundle, error) {

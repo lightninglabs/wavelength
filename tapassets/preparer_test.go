@@ -430,6 +430,11 @@ func cloneCommitResult(result *commitResult) *commitResult {
 	clone.packageBytes = append([]byte(nil), result.packageBytes...)
 	clone.anchorPSBT = append([]byte(nil), result.anchorPSBT...)
 	clone.inputs = append([]commitInput(nil), result.inputs...)
+	for idx := range clone.inputs {
+		clone.inputs[idx].proofSource.blob = append(
+			[]byte(nil), result.inputs[idx].proofSource.blob...,
+		)
+	}
 	clone.outputs = append([]commitOutput(nil), result.outputs...)
 	for idx := range clone.outputs {
 		clone.outputs[idx].opTrueWitness = cloneByteSlices(
@@ -586,10 +591,13 @@ func testPreparationRequest(t *testing.T) (*oor.TaprootAssetOORPrepareRequest,
 				},
 				PubKey: owner.PubKey(),
 			},
-			OperatorKey:    operator.PubKey(),
-			TapScript:      legacyTapScript,
-			RelativeExpiry: 10,
-			Status:         vtxo.VTXOStatusLive,
+			OperatorKey:        operator.PubKey(),
+			TapScript:          legacyTapScript,
+			RelativeExpiry:     10,
+			Status:             vtxo.VTXOStatusLive,
+			TaprootAssetRoot:   &inputRoot,
+			TaprootAssetRef:    assetRef.String(),
+			TaprootAssetAmount: 21,
 		},
 		VTXOPolicyTemplate: inputPolicyBytes,
 		TaprootAssetRoot:   &inputRoot,

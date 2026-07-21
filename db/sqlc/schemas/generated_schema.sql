@@ -55,7 +55,7 @@ CREATE TABLE activity_entries (
 );
 
 CREATE TABLE activity_events (
-    event_seq BIGSERIAL PRIMARY KEY,
+    event_seq INTEGER PRIMARY KEY AUTOINCREMENT,
 
     canonical_id TEXT   NOT NULL REFERENCES activity_entries(canonical_id),
     status       BIGINT NOT NULL REFERENCES activity_statuses(id),
@@ -626,7 +626,7 @@ CREATE INDEX idx_vtxos_status
 CREATE TABLE internal_keys (
     -- id is the monotonically increasing surrogate key referenced by
     -- consumer tables' *_key_id foreign keys.
-    id BIGSERIAL PRIMARY KEY,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
 
     -- pubkey is the 33-byte compressed public key.
     pubkey BLOB NOT NULL,
@@ -652,7 +652,7 @@ CREATE TABLE internal_keys (
 );
 
 CREATE TABLE ledger_entries (
-    entry_id BIGSERIAL PRIMARY KEY,
+    entry_id INTEGER PRIMARY KEY AUTOINCREMENT,
 
     debit_account TEXT NOT NULL
         REFERENCES accounts(account_id),
@@ -798,7 +798,7 @@ CREATE TABLE oor_package_checkpoints (
 
 CREATE TABLE oor_package_directions (
     -- direction is the persisted package direction code.
-    direction BIGINT PRIMARY KEY NOT NULL,
+    direction INTEGER PRIMARY KEY NOT NULL,
 
     -- name is the stable string representation of the direction code.
     name TEXT NOT NULL UNIQUE
@@ -902,7 +902,7 @@ CREATE TABLE oor_session_registry (
 
 CREATE TABLE oor_vtxo_binding_link_kinds (
     -- link_kind is the persisted relation code.
-    link_kind BIGINT PRIMARY KEY NOT NULL,
+    link_kind INTEGER PRIMARY KEY NOT NULL,
 
     -- name is the stable string representation of the relation code.
     name TEXT NOT NULL UNIQUE
@@ -1009,7 +1009,7 @@ CREATE TABLE outbox_messages (
 
 CREATE TABLE owned_receive_script_sources (
     -- source is the persisted source code.
-    source BIGINT PRIMARY KEY NOT NULL,
+    source INTEGER PRIMARY KEY NOT NULL,
 
     -- name is the stable string representation of the source code.
     name TEXT NOT NULL UNIQUE
@@ -1701,14 +1701,14 @@ CREATE TABLE vtxos (
     -- zero-indexed, so the only understood value today is 0 (V1); a future,
     -- genuinely different construction is added additively (V2 == 1, and so
     -- on). NOT NULL DEFAULT 0 keeps every row a valid V1 object.
-    construction_version INTEGER NOT NULL DEFAULT 0, taproot_asset_root BLOB,
+    construction_version INTEGER NOT NULL DEFAULT 0, taproot_asset_root BLOB, taproot_asset_ref TEXT, taproot_asset_amount BLOB,
 
     PRIMARY KEY (outpoint_hash, outpoint_index),
     FOREIGN KEY (round_id) REFERENCES rounds(round_id)
 );
 
 CREATE TABLE wallet_utxo_log (
-    entry_id BIGSERIAL PRIMARY KEY,
+    entry_id INTEGER PRIMARY KEY AUTOINCREMENT,
 
     -- outpoint_hash is the transaction hash (32 bytes).
     outpoint_hash BLOB NOT NULL,

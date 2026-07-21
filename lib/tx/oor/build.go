@@ -13,6 +13,13 @@ import (
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/lib/tx/arktx"
 	"github.com/lightninglabs/wavelength/lib/tx/checkpoint"
+	"github.com/lightninglabs/wavelength/vtxo"
+)
+
+const (
+	// MaxTaprootAssetRefBytes bounds the opaque tap-sdk asset identifier on
+	// every SDK-neutral recipient and persistence boundary.
+	MaxTaprootAssetRefBytes = vtxo.MaxTaprootAssetRefBytes
 )
 
 // CheckpointInput describes the VTXO input being transformed into a checkpoint
@@ -88,12 +95,23 @@ type RecipientOutput struct {
 	// operators reconstruct the composed control blocks without importing
 	// taproot-assets implementation types.
 	TaprootAssetRoot *chainhash.Hash
+
+	// TaprootAssetRef is the opaque SDK-level identity of the asset carried
+	// by this output.
+	TaprootAssetRef string
+
+	// TaprootAssetAmount is the number of asset units carried by this
+	// output. Value remains the separate Bitcoin carrier amount.
+	TaprootAssetAmount uint64
 }
 
 // ValidateTaprootAssetCommitment proves that an asset-bearing recipient
 // output commits to both its semantic Ark policy and its declared Taproot
 // Asset root. Bitcoin-only outputs are unchanged.
 func (o RecipientOutput) ValidateTaprootAssetCommitment() error {
+	if err := o.ValidateTaprootAssetMetadata(); err != nil {
+		return err
+	}
 	if o.TaprootAssetRoot == nil {
 		return nil
 	}
@@ -126,6 +144,34 @@ func (o RecipientOutput) ValidateTaprootAssetCommitment() error {
 	if !bytes.Equal(wantPkScript, o.PkScript) {
 		return fmt.Errorf("recipient taproot asset root and pkscript " +
 			"mismatch")
+	}
+
+	return nil
+}
+
+// ValidateTaprootAssetMetadata checks that SDK-neutral asset identity and
+// quantity are either absent or complete. A root-only output is accepted for
+// compatibility with v0 packages created before identity and amount were
+// propagated.
+func (o RecipientOutput) ValidateTaprootAssetMetadata() error {
+	if o.TaprootAssetRoot == nil {
+		if o.TaprootAssetRef != "" || o.TaprootAssetAmount != 0 {
+			return fmt.Errorf("recipient asset metadata requires " +
+				"a commitment root")
+		}
+
+		return nil
+	}
+	if o.TaprootAssetRef == "" && o.TaprootAssetAmount == 0 {
+		return nil
+	}
+	if o.TaprootAssetRef == "" || o.TaprootAssetAmount == 0 {
+		return fmt.Errorf("recipient asset ref and amount must both " +
+			"be provided")
+	}
+	if len(o.TaprootAssetRef) > MaxTaprootAssetRefBytes {
+		return fmt.Errorf("recipient asset ref exceeds %d bytes",
+			MaxTaprootAssetRefBytes)
 	}
 
 	return nil

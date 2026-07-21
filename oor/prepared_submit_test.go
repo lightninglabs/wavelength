@@ -3,6 +3,7 @@ package oor
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -105,6 +106,7 @@ func TestPreparedSubmitRejectsMismatchedAssetMetadata(t *testing.T) {
 	wrongRoot := *inputs[0].TaprootAssetRoot
 	wrongRoot[0] ^= 1
 	inputs[0].TaprootAssetRoot = &wrongRoot
+	inputs[0].VTXO.TaprootAssetRoot = &wrongRoot
 	err := prepared.Validate(inputs, recipients)
 	require.ErrorContains(t, err, "asset root and vtxo pkscript mismatch")
 
@@ -115,6 +117,122 @@ func TestPreparedSubmitRejectsMismatchedAssetMetadata(t *testing.T) {
 	)
 	err = prepared.Validate(inputs, recipients)
 	require.ErrorContains(t, err, "does not match checkpoint count")
+}
+
+// TestPreparedSubmitAcceptsMixedBitcoinInputs pins positional empty checkpoint
+// slots for an asset input combined with zero, one, or several ordinary VTXOs.
+func TestPreparedSubmitAcceptsMixedBitcoinInputs(t *testing.T) {
+	t.Parallel()
+
+	assetVersion := oortx.TaprootAssetTransferVersion
+	for _, bitcoinInputs := range []int{0, 1, 3} {
+		bitcoinInputs := bitcoinInputs
+		t.Run(fmt.Sprintf("bitcoin_inputs_%d", bitcoinInputs),
+			func(t *testing.T) {
+				t.Parallel()
+
+				policy, inputs, recipients, _ :=
+					testPreparedSubmitPackage(t)
+				inputs, recipients = appendBitcoinPreparedEdges(
+					t, policy, inputs, recipients,
+					bitcoinInputs,
+				)
+				ark, checkpoints, err := BuildSubmitPackage(
+					policy, inputs, recipients,
+				)
+				require.NoError(t, err)
+
+				slots := make([][]byte, len(inputs))
+				slots[0] = []byte("asset-checkpoint")
+				assetTransfer := &oortx.TaprootAssetTransfer{
+					Version:            assetVersion,
+					CheckpointPackages: slots,
+					ArkPackage:         []byte("ark"),
+				}
+				prepared := &PreparedSubmitPackage{
+					ArkPSBT:              ark,
+					CheckpointPSBTs:      checkpoints,
+					TaprootAssetTransfer: assetTransfer,
+				}
+				require.NoError(
+					t,
+					prepared.Validate(inputs, recipients),
+				)
+
+				if bitcoinInputs == 0 {
+					return
+				}
+				prepared.TaprootAssetTransfer.
+					CheckpointPackages[1] = []byte("wrong")
+				err = prepared.Validate(inputs, recipients)
+				require.ErrorContains(
+					t, err, "package presence mismatch",
+				)
+			})
+	}
+}
+
+func appendBitcoinPreparedEdges(t *testing.T, policy arkscript.CheckpointPolicy,
+	inputs []TransferInput, recipients []oortx.RecipientOutput,
+	count int) ([]TransferInput, []oortx.RecipientOutput) {
+
+	t.Helper()
+	for idx := range count {
+		ownerKey, err := btcec.NewPrivateKey()
+		require.NoError(t, err)
+		inputPolicy, err := arkscript.NewVTXOPolicy(
+			ownerKey.PubKey(), policy.OperatorKey, policy.CSVDelay,
+		)
+		require.NoError(t, err)
+		inputPolicyRaw, err := inputPolicy.Template.Encode()
+		require.NoError(t, err)
+		inputPkScript, err := inputPolicy.Template.PkScript()
+		require.NoError(t, err)
+		inputTapScript, err := arkscript.VTXOTapScript(
+			ownerKey.PubKey(), policy.OperatorKey, policy.CSVDelay,
+		)
+		require.NoError(t, err)
+		value := btcutil.Amount(1_000 + idx)
+		inputs = append(inputs, TransferInput{
+			VTXO: &vtxo.Descriptor{
+				Outpoint: wire.OutPoint{
+					Hash:  chainhash.Hash{byte(idx + 20)},
+					Index: uint32(idx),
+				},
+				Amount:   value,
+				PkScript: inputPkScript,
+				ClientKey: keychain.KeyDescriptor{
+					PubKey: ownerKey.PubKey(),
+				},
+				OperatorKey:    policy.OperatorKey,
+				TapScript:      inputTapScript,
+				RelativeExpiry: policy.CSVDelay,
+				Status:         vtxo.VTXOStatusLive,
+			},
+			VTXOPolicyTemplate: inputPolicyRaw,
+		})
+
+		recipientKey, err := btcec.NewPrivateKey()
+		require.NoError(t, err)
+		recipientPolicy, err := arkscript.NewVTXOPolicy(
+			recipientKey.PubKey(), policy.OperatorKey,
+			policy.CSVDelay,
+		)
+		require.NoError(t, err)
+		recipientPolicyRaw, err := recipientPolicy.Template.Encode()
+		require.NoError(t, err)
+		recipientPkScript, err := recipientPolicy.Template.PkScript()
+		require.NoError(t, err)
+		recipients = append(recipients, oortx.RecipientOutput{
+			PkScript:           recipientPkScript,
+			Value:              value,
+			VTXOPolicyTemplate: recipientPolicyRaw,
+		})
+	}
+
+	require.NoError(t, NormalizeCheckpointOwnerLeaves(policy, inputs))
+
+	return inputs, recipients
 }
 
 func testPreparedSubmitPackage(t *testing.T) (arkscript.CheckpointPolicy,
@@ -170,10 +288,13 @@ func testPreparedSubmitPackage(t *testing.T) (arkscript.CheckpointPolicy,
 				},
 				PubKey: ownerKey.PubKey(),
 			},
-			OperatorKey:    operatorKey.PubKey(),
-			TapScript:      inputTapScript,
-			RelativeExpiry: 10,
-			Status:         vtxo.VTXOStatusLive,
+			OperatorKey:        operatorKey.PubKey(),
+			TapScript:          inputTapScript,
+			RelativeExpiry:     10,
+			Status:             vtxo.VTXOStatusLive,
+			TaprootAssetRoot:   &inputAssetRoot,
+			TaprootAssetRef:    "asset-id:010203",
+			TaprootAssetAmount: 21,
 		},
 		VTXOPolicyTemplate: inputPolicyRaw,
 		TaprootAssetRoot:   &inputAssetRoot,
@@ -202,6 +323,8 @@ func testPreparedSubmitPackage(t *testing.T) (arkscript.CheckpointPolicy,
 		Value:              5_000,
 		VTXOPolicyTemplate: recipientPolicyRaw,
 		TaprootAssetRoot:   &recipientAssetRoot,
+		TaprootAssetRef:    "asset-id:010203",
+		TaprootAssetAmount: 21,
 	}}
 
 	ark, checkpoints, err := BuildSubmitPackage(

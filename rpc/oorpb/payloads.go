@@ -46,6 +46,12 @@ type SigningDescriptor struct {
 	// TaprootAssetRoot is the optional root of the Taproot Asset
 	// commitment anchored in the spent VTXO.
 	TaprootAssetRoot *chainhash.Hash
+
+	// TaprootAssetRef is the canonical opaque SDK-level asset identity.
+	TaprootAssetRef string
+
+	// TaprootAssetAmount is the number of asset units in the spent VTXO.
+	TaprootAssetAmount uint64
 }
 
 // NewSubmitPackageRequest builds a typed proto request for SubmitPackage.
@@ -90,6 +96,11 @@ func NewSubmitPackageRequestWithAssets(ark *psbt.Packet,
 		[]*OORRecipientOutput, 0, len(recipients),
 	)
 	for i := range recipients {
+		err := recipients[i].ValidateTaprootAssetMetadata()
+		if err != nil {
+			return nil, fmt.Errorf("recipient output %d: %w", i,
+				err)
+		}
 		var assetRoot []byte
 		if recipients[i].TaprootAssetRoot != nil {
 			assetRoot = recipients[i].TaprootAssetRoot.CloneBytes()
@@ -101,6 +112,10 @@ func NewSubmitPackageRequestWithAssets(ark *psbt.Packet,
 				VtxoPolicyTemplate: recipients[i].
 					VTXOPolicyTemplate,
 				TaprootAssetRoot: assetRoot,
+				TaprootAssetRef: recipients[i].
+					TaprootAssetRef,
+				TaprootAssetAmount: recipients[i].
+					TaprootAssetAmount,
 			},
 		)
 	}
@@ -188,13 +203,21 @@ func ParseSubmitPackageRequestWithAssets(req *SubmitPackageRequest) (
 			return nil, nil, nil, nil, nil, err
 		}
 
-		recipients = append(recipients, oortx.RecipientOutput{
+		decodedRecipient := oortx.RecipientOutput{
 			PkScript: recipient.PkScript,
 			Value:    btcutil.Amount(recipient.ValueSat),
 			VTXOPolicyTemplate: recipient.
 				VtxoPolicyTemplate,
-			TaprootAssetRoot: assetRoot,
-		})
+			TaprootAssetRoot:   assetRoot,
+			TaprootAssetRef:    recipient.TaprootAssetRef,
+			TaprootAssetAmount: recipient.TaprootAssetAmount,
+		}
+		err = decodedRecipient.ValidateTaprootAssetMetadata()
+		if err != nil {
+			return nil, nil, nil, nil, nil, fmt.Errorf("recipient "+
+				"output %d: %w", i, err)
+		}
+		recipients = append(recipients, decodedRecipient)
 	}
 
 	var assetTransfer *oortx.TaprootAssetTransfer
@@ -440,11 +463,17 @@ func ParseFinalizePackageResponse(resp *FinalizePackageResponse) (
 func encodeSigningDescriptor(desc SigningDescriptor,
 	index int) (*OORSigningDescriptor, error) {
 
+	if err := validateSigningDescriptorAssetMetadata(desc); err != nil {
+		return nil, fmt.Errorf("signing descriptor %d: %w", index, err)
+	}
+
 	proto := &OORSigningDescriptor{
 		Outpoint:           encodeOutPoint(desc.Outpoint),
 		VtxoPolicyTemplate: desc.VTXOPolicyTemplate,
 		SpendPath:          desc.SpendPath,
 		OwnerLeafPolicy:    desc.OwnerLeafPolicy,
+		TaprootAssetRef:    desc.TaprootAssetRef,
+		TaprootAssetAmount: desc.TaprootAssetAmount,
 	}
 	if desc.TaprootAssetRoot != nil {
 		proto.TaprootAssetRoot = desc.TaprootAssetRoot.CloneBytes()
@@ -472,6 +501,8 @@ func decodeSigningDescriptor(desc *OORSigningDescriptor,
 		VTXOPolicyTemplate: desc.VtxoPolicyTemplate,
 		SpendPath:          desc.SpendPath,
 		OwnerLeafPolicy:    desc.OwnerLeafPolicy,
+		TaprootAssetRef:    desc.TaprootAssetRef,
+		TaprootAssetAmount: desc.TaprootAssetAmount,
 	}
 	result.TaprootAssetRoot, err = decodeOptionalHash(
 		desc.TaprootAssetRoot,
@@ -480,8 +511,20 @@ func decodeSigningDescriptor(desc *OORSigningDescriptor,
 	if err != nil {
 		return SigningDescriptor{}, err
 	}
+	if err := validateSigningDescriptorAssetMetadata(result); err != nil {
+		return SigningDescriptor{}, fmt.Errorf("signing descriptor "+
+			"%d: %w", index, err)
+	}
 
 	return result, nil
+}
+
+func validateSigningDescriptorAssetMetadata(desc SigningDescriptor) error {
+	return (oortx.RecipientOutput{
+		TaprootAssetRoot:   desc.TaprootAssetRoot,
+		TaprootAssetRef:    desc.TaprootAssetRef,
+		TaprootAssetAmount: desc.TaprootAssetAmount,
+	}).ValidateTaprootAssetMetadata()
 }
 
 // decodeOptionalHash parses an optional 32-byte hash field.

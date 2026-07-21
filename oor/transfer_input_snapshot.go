@@ -57,6 +57,14 @@ type TransferInputSnapshot struct {
 	// commitment anchored in the spent VTXO.
 	TaprootAssetRoot *chainhash.Hash
 
+	// TaprootAssetRef is the opaque SDK-level identity carried by the input
+	// VTXO.
+	TaprootAssetRef string
+
+	// TaprootAssetAmount is the number of asset units carried by the input
+	// VTXO. AmountSat remains the Bitcoin carrier amount.
+	TaprootAssetAmount uint64
+
 	// PkScript is the VTXO pkscript. Stored for custom spend paths
 	// where the pkscript cannot be derived from keys + exit delay.
 	PkScript []byte
@@ -119,6 +127,8 @@ func (i *TransferInput) ToSnapshot() (*TransferInputSnapshot, error) {
 		root := *i.TaprootAssetRoot
 		snap.TaprootAssetRoot = &root
 	}
+	snap.TaprootAssetRef = i.VTXO.TaprootAssetRef
+	snap.TaprootAssetAmount = i.VTXO.TaprootAssetAmount
 
 	if i.VTXO.ClientKey.PubKey != nil {
 		snap.ClientPubKey =
@@ -217,10 +227,13 @@ func TransferInputFromSnapshot(snap *TransferInputSnapshot) (TransferInput,
 			},
 			PubKey: clientPub,
 		},
-		OperatorKey:    operatorPub,
-		TapScript:      tapScript,
-		RelativeExpiry: snap.ExitDelay,
-		Status:         vtxo.VTXOStatusLive,
+		TaprootAssetRoot:   snap.TaprootAssetRoot,
+		TaprootAssetRef:    snap.TaprootAssetRef,
+		TaprootAssetAmount: snap.TaprootAssetAmount,
+		OperatorKey:        operatorPub,
+		TapScript:          tapScript,
+		RelativeExpiry:     snap.ExitDelay,
+		Status:             vtxo.VTXOStatusLive,
 	}
 
 	result := TransferInput{

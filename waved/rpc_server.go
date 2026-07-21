@@ -1488,6 +1488,13 @@ func descriptorToProto(v *vtxo.Descriptor) *waverpc.VTXO {
 		CommitmentTxid: v.CommitmentTxID.String(),
 		ChainDepth:     uint32(v.ChainDepth),
 	}
+	if v.TaprootAssetRoot != nil {
+		proto.TaprootAsset = &waverpc.VTXOTaprootAsset{
+			AssetRef:       v.TaprootAssetRef,
+			Amount:         v.TaprootAssetAmount,
+			CommitmentRoot: v.TaprootAssetRoot.CloneBytes(),
+		}
+	}
 
 	// Settlement remains private until the VTXO reaches its terminal
 	// FORFEITED state. FORFEITING descriptors may carry this data

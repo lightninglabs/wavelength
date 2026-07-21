@@ -70,6 +70,10 @@ func encodeOutgoingSnapshot(snapshot *OutgoingSnapshot) ([]byte, error) {
 				VTXOPolicyTemplate,
 			TaprootAssetRoot: snapshot.RecipientOutputs[i].
 				TaprootAssetRoot,
+			TaprootAssetRef: snapshot.RecipientOutputs[i].
+				TaprootAssetRef,
+			TaprootAssetAmount: snapshot.RecipientOutputs[i].
+				TaprootAssetAmount,
 		})
 	}
 	recipientOutputs, err := encodeRecipientPayloads(recipientPayloads)
@@ -247,6 +251,10 @@ func decodeOutgoingSnapshotWithLimits(raw []byte,
 						VTXOPolicyTemplate,
 					TaprootAssetRoot: recipient.
 						TaprootAssetRoot,
+					TaprootAssetRef: recipient.
+						TaprootAssetRef,
+					TaprootAssetAmount: recipient.
+						TaprootAssetAmount,
 				},
 			)
 		}
