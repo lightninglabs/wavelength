@@ -141,10 +141,20 @@ devices). The generated Java package is `engineering.lightning.wavewalletdk`.
 > The embedded build pulls in `btcwallet`/`neutrino`/`lnd`, so the `.aar` is
 > large. Measure binary size before shipping.
 
+### Publishing
+
+The commands above are for local development. On a `v*` release tag, CI builds
+both bindings and attaches `Wavewalletdk.aar` and
+`Wavewalletdk.xcframework.tar.gz` to the GitHub release automatically (see the
+`publish` job in [`mobile-bindings.yml`](../.github/workflows/mobile-bindings.yml)).
+The browser wasm runtime is published separately to the hosted bucket via
+`make wasm-publish`. Both flows are documented in
+[`docs/release.md`](release.md#publishing-the-wasm-and-mobile-binding-assets).
+
 ## Sample app
 
 The sample Android app (and, later, iOS app + idiomatic Kotlin/Swift wrappers)
-lives in a separate repo: **[lightninglabs/damobile](https://github.com/lightninglabs/damobile)**.
+lives in a separate repo: **[lightninglabs/wavelength-mobile](https://github.com/lightninglabs/wavelength-mobile)**.
 It consumes the `.aar` this repo produces via a `scripts/fetch-aar.sh` that
 calls `make mobile-android` against a sibling `wavelength` checkout. See that
 repo's README and `docs/signet.md` for the end-to-end run (emulator, signet
