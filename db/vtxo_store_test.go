@@ -201,9 +201,11 @@ func TestUpdateVTXOStatusReleasingReservation(t *testing.T) {
 	)
 
 	ownerID := chainhash.Hash{0x99}
+	const taprootAssetPreparationOwnerKind = 1
 	require.NoError(
 		t, reservationStore.UpsertReservation(
-			ctx, desc.Outpoint, 0, ownerID,
+			ctx, desc.Outpoint, taprootAssetPreparationOwnerKind,
+			ownerID,
 		),
 	)
 
@@ -211,33 +213,34 @@ func TestUpdateVTXOStatusReleasingReservation(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []wire.OutPoint{desc.Outpoint}, reserved)
 
-	// The combined update flips the status to Spent and drops the row in
-	// one transaction.
-	require.NoError(
-		t, vtxoStore.UpdateVTXOStatusReleasingReservation(
-			ctx, desc.Outpoint, vtxo.VTXOStatusSpent,
-		),
-	)
-
-	fetched, err := vtxoStore.GetVTXO(ctx, desc.Outpoint)
-	require.NoError(t, err)
-	require.Equal(t, vtxo.VTXOStatusSpent, fetched.Status)
-
-	reserved, err = reservationStore.ListReservedOutpoints(ctx)
-	require.NoError(t, err)
-	require.Empty(t, reserved)
-
-	// Releasing a reservation for an outpoint that has none is a no-op: the
-	// status still updates and no error surfaces.
+	// A known-safe setup failure releases the VTXO to Live and drops the
+	// preparation-owner row in one transaction.
 	require.NoError(
 		t, vtxoStore.UpdateVTXOStatusReleasingReservation(
 			ctx, desc.Outpoint, vtxo.VTXOStatusLive,
 		),
 	)
 
-	fetched, err = vtxoStore.GetVTXO(ctx, desc.Outpoint)
+	fetched, err := vtxoStore.GetVTXO(ctx, desc.Outpoint)
 	require.NoError(t, err)
 	require.Equal(t, vtxo.VTXOStatusLive, fetched.Status)
+
+	reserved, err = reservationStore.ListReservedOutpoints(ctx)
+	require.NoError(t, err)
+	require.Empty(t, reserved)
+
+	// Updating an outpoint whose reservation was already released is a
+	// no-op for the reservation table: the status still updates without an
+	// error.
+	require.NoError(
+		t, vtxoStore.UpdateVTXOStatusReleasingReservation(
+			ctx, desc.Outpoint, vtxo.VTXOStatusSpent,
+		),
+	)
+
+	fetched, err = vtxoStore.GetVTXO(ctx, desc.Outpoint)
+	require.NoError(t, err)
+	require.Equal(t, vtxo.VTXOStatusSpent, fetched.Status)
 }
 
 // TestVTXOPersistenceStoreSaveAndGet tests the basic save and get operations.
@@ -395,6 +398,7 @@ func TestListSelectionCandidatesByStatus(t *testing.T) {
 		require.True(t, ok)
 		require.Equal(t, desc.Amount, candidate.Amount)
 		require.Equal(t, desc.PkScript, candidate.PkScript)
+		require.Nil(t, candidate.TaprootAssetRoot)
 	}
 
 	storedAsset, err := vtxoStore.GetVTXO(ctx, descAsset.Outpoint)

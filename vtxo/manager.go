@@ -1239,6 +1239,7 @@ func (m *Manager) spawnVTXOActor(ctx context.Context, vtxo *Descriptor) (
 type reserveParams struct {
 	targetAmount    btcutil.Amount
 	minChangeAmount btcutil.Amount
+	required        []wire.OutPoint
 	reserveEvent    actormsg.VTXOActorMsg
 	rollback        func(ctx context.Context, ops []wire.OutPoint)
 	ask             func(context.Context, VTXOActorRef,
@@ -1267,6 +1268,20 @@ func (m *Manager) selectAndReserveVTXOs(ctx context.Context, p reserveParams) (
 		return nil, 0, fmt.Errorf("target amount must be positive")
 	}
 
+	required, requiredTotal, requiredSet, err := m.loadRequiredVTXOs(
+		ctx, p.required,
+	)
+	if err != nil {
+		return nil, 0, err
+	}
+	selected := append([]*Descriptor(nil), required...)
+	selectionRequest, selectOptional := optionalSelectionRequest(
+		requiredTotal, p.targetAmount, p.minChangeAmount,
+	)
+	if !selectOptional {
+		return m.reserveSelectedVTXOs(ctx, selected, p)
+	}
+
 	// List live candidates from the store via the lightweight selection
 	// projection: selection only consumes outpoint, amount, and pkScript,
 	// so there is no reason to decode full descriptors (taproot script
@@ -1293,6 +1308,12 @@ func (m *Manager) selectAndReserveVTXOs(ctx context.Context, p reserveParams) (
 	// selection paths funnel through this filter.
 	candidates := make([]*Descriptor, 0, len(rows))
 	for _, row := range rows {
+		if row.TaprootAssetRoot != nil {
+			continue
+		}
+		if _, ok := requiredSet[row.Outpoint]; ok {
+			continue
+		}
 		if m.isReserved(row.Outpoint) {
 			continue
 		}
@@ -1313,26 +1334,34 @@ func (m *Manager) selectAndReserveVTXOs(ctx context.Context, p reserveParams) (
 	res, err := coinselect.LargestFirst(
 		candidates, func(d *Descriptor) btcutil.Amount {
 			return d.Amount
-		}, coinselect.Request{
-			Target:    p.targetAmount,
-			MinChange: p.minChangeAmount,
-		},
+		}, selectionRequest,
 	)
 	switch {
 	case errors.Is(err, coinselect.ErrChangeBelowMin):
-		change := res.Total - p.targetAmount
+		change := requiredTotal + res.Total - p.targetAmount
 
 		return nil, 0, fmt.Errorf("change %d is below minimum change "+
 			"amount %d", change, p.minChangeAmount)
 
 	case errors.Is(err, coinselect.ErrSelectionShortfall),
 		errors.Is(err, coinselect.ErrNoCandidates):
-		return nil, 0, m.insufficientLiquidityError(ctx, candidates, p)
+		return nil, 0, m.insufficientLiquidityError(
+			ctx, candidates, requiredTotal, p,
+		)
 
 	case err != nil:
 		return nil, 0, err
 	}
-	selected := res.Selected
+	selected = append(selected, res.Selected...)
+
+	return m.reserveSelectedVTXOs(ctx, selected, p)
+}
+
+// reserveSelectedVTXOs atomically reserves an already selected required-first
+// VTXO list through the caller's spend or forfeit lifecycle.
+func (m *Manager) reserveSelectedVTXOs(ctx context.Context,
+	selected []*Descriptor, p reserveParams) ([]SelectedVTXO,
+	btcutil.Amount, error) {
 
 	// Reserve each selected VTXO via its actor. Track successfully
 	// reserved outpoints so we can roll back on partial failure.
@@ -1410,9 +1439,10 @@ func (m *Manager) selectAndReserveVTXOs(ctx context.Context, p reserveParams) (
 	)
 	for _, vtxo := range selected {
 		selectedVTXOs = append(selectedVTXOs, SelectedVTXO{
-			Outpoint: vtxo.Outpoint,
-			Amount:   vtxo.Amount,
-			PkScript: vtxo.PkScript,
+			Outpoint:         vtxo.Outpoint,
+			Amount:           vtxo.Amount,
+			PkScript:         vtxo.PkScript,
+			TaprootAssetRoot: vtxo.TaprootAssetRoot,
 		})
 		totalSelected += vtxo.Amount
 	}
@@ -1426,13 +1456,91 @@ func (m *Manager) selectAndReserveVTXOs(ctx context.Context, p reserveParams) (
 	return selectedVTXOs, totalSelected, nil
 }
 
+// loadRequiredVTXOs validates and loads caller-mandated VTXOs in request
+// order before optional coin selection can begin.
+func (m *Manager) loadRequiredVTXOs(ctx context.Context,
+	outpoints []wire.OutPoint) ([]*Descriptor, btcutil.Amount,
+	map[wire.OutPoint]struct{}, error) {
+
+	required := make([]*Descriptor, 0, len(outpoints))
+	seen := make(map[wire.OutPoint]struct{}, len(outpoints))
+	for _, outpoint := range outpoints {
+		if _, ok := seen[outpoint]; ok {
+			return nil, 0, nil, fmt.Errorf("%w: duplicate "+
+				"outpoint %s", ErrRequiredVTXOInvalid, outpoint)
+		}
+		seen[outpoint] = struct{}{}
+	}
+
+	var total btcutil.Amount
+	for _, outpoint := range outpoints {
+		desc, err := m.cfg.Store.GetVTXO(ctx, outpoint)
+		if errors.Is(err, ErrVTXONotFound) {
+			return nil, 0, nil, fmt.Errorf("%w: outpoint %s "+
+				"not found", ErrRequiredVTXOInvalid, outpoint)
+		}
+		if err != nil {
+			return nil, 0, nil, fmt.Errorf("load required VTXO "+
+				"%s: %w", outpoint, err)
+		}
+		if desc == nil || desc.Outpoint != outpoint {
+			return nil, 0, nil, fmt.Errorf("%w: descriptor "+
+				"mismatch for outpoint %s",
+				ErrRequiredVTXOInvalid, outpoint)
+		}
+		if desc.Status != VTXOStatusLive {
+			return nil, 0, nil, fmt.Errorf("%w: outpoint %s has "+
+				"status %s", ErrRequiredVTXOInvalid, outpoint,
+				desc.Status)
+		}
+		if m.isReserved(outpoint) {
+			return nil, 0, nil, fmt.Errorf("%w: required "+
+				"outpoint %s", ErrVTXOLiquidityLocked, outpoint)
+		}
+		if desc.Amount <= 0 || total > btcutil.MaxSatoshi-desc.Amount {
+			return nil, 0, nil, fmt.Errorf("%w: invalid amount %d "+
+				"for outpoint %s", ErrRequiredVTXOInvalid,
+				desc.Amount, outpoint)
+		}
+
+		total += desc.Amount
+		required = append(required, desc)
+	}
+
+	return required, total, seen, nil
+}
+
+// optionalSelectionRequest returns the ordinary-Bitcoin selection needed
+// after required value is accounted for. It preserves exact spends and raises
+// a sub-minimum required residual to the requested change floor.
+func optionalSelectionRequest(requiredTotal, target,
+	minChange btcutil.Amount) (coinselect.Request, bool) {
+
+	if requiredTotal < target {
+		return coinselect.Request{
+			Target:    target - requiredTotal,
+			MinChange: minChange,
+		}, true
+	}
+
+	change := requiredTotal - target
+	if change == 0 || minChange <= 0 || change >= minChange {
+		return coinselect.Request{}, false
+	}
+
+	return coinselect.Request{
+		Target: minChange - change,
+	}, true
+}
+
 // insufficientLiquidityError distinguishes a true spendable-funds shortfall
 // from liquidity that is present but unavailable because another operation has
 // already moved it out of LiveState.
 func (m *Manager) insufficientLiquidityError(ctx context.Context,
-	liveCandidates []*Descriptor, p reserveParams) error {
+	liveCandidates []*Descriptor, requiredTotal btcutil.Amount,
+	p reserveParams) error {
 
-	liveTotal := SumBalance(liveCandidates)
+	liveTotal := requiredTotal + SumBalance(liveCandidates)
 
 	nonTerminal, err := m.cfg.Store.ListLiveVTXOs(ctx)
 	if err != nil {
@@ -1444,6 +1552,9 @@ func (m *Manager) insufficientLiquidityError(ctx context.Context,
 		if desc == nil {
 			continue
 		}
+		if desc.TaprootAssetRoot != nil {
+			continue
+		}
 
 		if desc.Status == VTXOStatusLive {
 			continue
@@ -1452,7 +1563,14 @@ func (m *Manager) insufficientLiquidityError(ctx context.Context,
 		lockedTotal += desc.Amount
 	}
 
-	if lockedTotal > 0 && liveTotal+lockedTotal >= p.targetAmount {
+	neededTotal := p.targetAmount
+	change := requiredTotal - p.targetAmount
+	if requiredTotal > p.targetAmount && p.minChangeAmount > 0 &&
+		change < p.minChangeAmount {
+
+		neededTotal += p.minChangeAmount
+	}
+	if lockedTotal > 0 && liveTotal+lockedTotal >= neededTotal {
 		return fmt.Errorf("%w: need %d, spendable %d, locked %d",
 			ErrVTXOLiquidityLocked, p.targetAmount, liveTotal,
 			lockedTotal)
@@ -1472,11 +1590,14 @@ func (m *Manager) handleSelectAndReserveSpend(ctx context.Context,
 	vtxos, total, err := m.selectAndReserveVTXOs(ctx, reserveParams{
 		targetAmount:    req.TargetAmount,
 		minChangeAmount: req.MinChangeAmount,
-		reserveEvent:    &SpendReserveEvent{},
-		rollback:        m.rollbackSpend,
-		ask:             m.askVTXOActor,
-		label:           "spend",
-		detached:        true,
+		required: append(
+			[]wire.OutPoint(nil), req.RequiredOutpoints...,
+		),
+		reserveEvent: &SpendReserveEvent{},
+		rollback:     m.rollbackSpend,
+		ask:          m.askVTXOActor,
+		label:        "spend",
+		detached:     true,
 	})
 	if err != nil {
 		return fn.Err[ManagerResp](err)
@@ -1521,10 +1642,11 @@ func (m *Manager) rollbackSpend(ctx context.Context,
 }
 
 // sweepOrphanedReservations releases Spending VTXOs that have no live
-// reservation row. A reservation row exists IFF the owning spend session was
-// durably checkpointed, and a checkpointed session is always restored+resumed
-// on restart; so a Spending VTXO with no row is provably orphaned (its spend
-// died before checkpointing) and is safe to release back to LiveState.
+// reservation row. A row exists after the owning workflow crosses its durable
+// handoff boundary: either a Taproot Asset preparation is quarantined before
+// its first external commit, or an OOR session is checkpointed. A Spending
+// VTXO with no row is therefore provably orphaned and safe to release back to
+// LiveState.
 //
 // The sweep is conservative: if the reservation list cannot be read it aborts
 // without releasing anything, because releasing on incomplete information could
@@ -1549,8 +1671,8 @@ func (m *Manager) sweepOrphanedReservations(ctx context.Context) {
 
 	// Note: do not early-return when there are no Spending VTXOs. The
 	// reverse-direction recovery below re-drives reservation rows whose
-	// VTXO is still Live (the owning session checkpointed its reservation
-	// but the detached SpendingState write never landed before the
+	// VTXO is still Live (the owning workflow persisted its reservation but
+	// the detached SpendingState write never landed before the
 	// shutdown). In exactly that case the spending set is empty, so a
 	// len(spending) == 0 short-circuit here would skip recovery and leave
 	// the live input selectable by another spend.
@@ -1608,12 +1730,11 @@ func (m *Manager) sweepOrphanedReservations(ctx context.Context) {
 	}
 
 	// Reverse direction: a reservation row whose VTXO row is NOT in
-	// SpendingState means the owning session checkpointed but the
-	// detached Spending status write never landed before the shutdown.
-	// The session resumes on this boot and still owns the input, so
-	// re-mark the in-memory reservation and re-drive the reserve event
-	// to converge the durable status. Without this, a restarted daemon
-	// could select an input an in-flight session owns.
+	// SpendingState means the owning workflow persisted its durable handoff
+	// but the detached Spending status write never landed before shutdown.
+	// Re-mark the in-memory reservation and re-drive the reserve event to
+	// converge the durable status. Without this, a restarted daemon could
+	// select an input an in-flight or quarantined workflow owns.
 	spendingSet := fn.NewSet[wire.OutPoint]()
 	for _, desc := range spending {
 		spendingSet.Add(desc.Outpoint)

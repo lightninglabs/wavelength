@@ -3,10 +3,10 @@
 -- user requests across a daemon restart.
 
 -- spending_reservations is a durable index of VTXO outpoints currently held
--- in SpendingState by an active spend owner (e.g. an outgoing OOR session).
--- A row exists IFF the owning session was durably checkpointed, so a startup
--- sweep can deterministically identify orphaned Spending VTXOs (those with no
--- reservation row) and release them.
+-- in SpendingState by an active spend owner. A row exists after the owning
+-- workflow crosses its durable handoff boundary (pre-commit Taproot Asset
+-- preparation or checkpointed OOR session), so a startup sweep can identify
+-- orphaned Spending VTXOs (those with no reservation row) and release them.
 CREATE TABLE IF NOT EXISTS spending_reservations (
     -- outpoint_hash identifies the reserved VTXO outpoint. The 32-byte
     -- length check rejects truncated or malformed hashes at the DB layer.

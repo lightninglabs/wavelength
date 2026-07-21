@@ -186,12 +186,13 @@ type Server struct {
 	loggers    SubLoggers
 	log        btclog.Logger
 
-	db            *db.SqliteStore
-	deliveryStore actor.DeliveryStore
-	vtxoStore     *db.VTXOPersistenceStore
-	activityStore *db.ActivityPersistenceStore
-	roundStore    *db.RoundPersistenceStore
-	ueStore       *db.UnilateralExitPersistenceStore
+	db               *db.SqliteStore
+	deliveryStore    actor.DeliveryStore
+	vtxoStore        *db.VTXOPersistenceStore
+	reservationStore *db.SpendingReservationPersistenceStore
+	activityStore    *db.ActivityPersistenceStore
+	roundStore       *db.RoundPersistenceStore
+	ueStore          *db.UnilateralExitPersistenceStore
 
 	// oorSessionStore exposes the OOR session-registry control-plane rows
 	// for direct RPC reads (idempotency pre-flight); the OOR registry
@@ -1241,6 +1242,7 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 		s.subLogger(db.Subsystem),
 	)
 	s.vtxoStore = dbStore.NewVTXOStore(s.clk)
+	s.reservationStore = dbStore.NewSpendingReservationStore(s.clk)
 
 	// Build the activity-log store for the wavewalletrpc subserver.
 	s.activityStore = dbStore.NewActivityStore(s.clk)
@@ -4239,7 +4241,7 @@ func (s *Server) initVTXOManager(ctx context.Context,
 	)
 	vtxoStore := dbStore.NewVTXOStore(s.clk)
 	ueStore := dbStore.NewUnilateralExitStore(s.clk)
-	reservationStore := dbStore.NewSpendingReservationStore(s.clk)
+	reservationStore := s.spendingReservationStore(dbStore)
 	roundActor := round.NewServiceKey().Ref(s.actorSystem)
 	ledgerSink := ledger.NewSink(s.actorSystem)
 
@@ -4339,6 +4341,21 @@ func resolveExitOutcome(ctx context.Context,
 // wiring site instead.
 var _ oor.ReservationStore = (*db.SpendingReservationPersistenceStore)(nil)
 
+// spendingReservationStore returns the one reservation-store instance shared
+// by the VTXO manager, OOR registry, and optional Taproot Asset preparer. The
+// fallback construction keeps focused actor tests that initialize these
+// components without running the full daemon startup sequence working while
+// caching the result for every later consumer.
+func (s *Server) spendingReservationStore(
+	dbStore *db.Store) *db.SpendingReservationPersistenceStore {
+
+	if s.reservationStore == nil {
+		s.reservationStore = dbStore.NewSpendingReservationStore(s.clk)
+	}
+
+	return s.reservationStore
+}
+
 // initOORActor creates and starts the OOR (out-of-round) client actor.
 //
 // The OOR actor manages outgoing off-chain transfers: it drives the
@@ -4369,7 +4386,7 @@ func (s *Server) initOORActor(ctx context.Context,
 
 	vtxoStore := dbStore.NewVTXOStore(s.clk)
 	packageStore := dbStore.NewOORArtifactStore(s.clk)
-	reservationStore := dbStore.NewSpendingReservationStore(s.clk)
+	reservationStore := s.spendingReservationStore(dbStore)
 
 	operatorTerms := s.loadOperatorTerms()
 	if operatorTerms == nil {

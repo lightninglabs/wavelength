@@ -1063,15 +1063,18 @@ message SendOORRequest {
     string idempotency_key = 4;
 
     // taproot_asset requests the experimental proof-selected Taproot Asset
-    // extension. The first release requires exactly one locally stored custom
-    // input, one recipient, equal input/output BTC values, and a non-empty
-    // idempotency_key. Bitcoin-only sends leave this field unset.
+    // extension. The first release requires exactly one managed asset input,
+    // one recipient, equal input/output BTC values, and a non-empty
+    // idempotency_key. Asset transfers must identify the managed input through
+    // taproot_asset.input_vtxo_outpoint and must not use custom_inputs.
+    // Bitcoin-only sends leave this field unset.
     TaprootAssetOORIntent taproot_asset = 5;
 }
 
 // TaprootAssetOORIntent selects exact asset units for the experimental OOR
 // custom-anchor flow. The BTC amount remains on the enclosing recipient and
-// custom input; asset_amount is measured in independent Taproot Asset units.
+// managed VTXO input; asset_amount is measured in independent Taproot Asset
+// units.
 message TaprootAssetOORIntent {
     // asset_ref is the opaque tap-sdk asset or group identifier.
     string asset_ref = 1;
@@ -1100,6 +1103,11 @@ message TaprootAssetOORIntent {
     // persists compact unconfirmed proof paths but cannot yet publish and log
     // them through tapd's chain porter.
     bool acknowledge_unconfirmed = 7;
+
+    // input_vtxo_outpoint identifies the wallet-managed asset-bearing VTXO in
+    // "txid:vout" form. The wallet reserves this required input through the
+    // normal VTXO manager path before any Taproot Asset commit occurs.
+    string input_vtxo_outpoint = 8;
 }
 
 // CustomOORInput specifies a VTXO to spend with an explicit semantic policy

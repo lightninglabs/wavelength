@@ -28,10 +28,11 @@ type BatchedSpendingReservationStore interface {
 }
 
 // SpendingReservationPersistenceStore persists the durable index of VTXO
-// outpoints reserved by an active spend owner (e.g. an outgoing OOR session).
-// A row exists IFF the owning session was durably checkpointed, so a startup
-// sweep can deterministically release orphaned Spending VTXOs that have no
-// reservation row.
+// outpoints reserved by an active spend owner, such as a Taproot Asset
+// preparation or outgoing OOR session. A row exists only after the owner has
+// crossed its durable handoff boundary, so a startup sweep can
+// deterministically release orphaned Spending VTXOs that have no reservation
+// row.
 type SpendingReservationPersistenceStore struct {
 	db    BatchedSpendingReservationStore
 	clock clock.Clock

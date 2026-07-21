@@ -37,22 +37,25 @@ const (
 
 // ErrReconciliationRequired reports a commit attempt whose durable outcome is
 // unknown. Retrying it could create a competing Taproot Asset transition.
-var ErrReconciliationRequired = errors.New("taproot asset commit requires " +
-	"reconciliation")
+// It aliases the OOR-layer sentinel so the RPC boundary can preserve input
+// reservations without depending on this concrete adapter package.
+var ErrReconciliationRequired = oor.ErrTaprootAssetCommitOutcomeUnknown
 
 // PreparerConfig contains the dependencies of the concrete tap-sdk adapter.
 type PreparerConfig struct {
-	Wallet *tapsdk.Wallet
-	Store  Store
+	Wallet           *tapsdk.Wallet
+	Store            Store
+	ReservationStore oor.ReservationStore
 }
 
 // Preparer commits the checkpoint and Ark asset transitions before handing a
 // sealed, immutable package to Wavelength's outgoing OOR actor.
 type Preparer struct {
-	driver    customAnchorDriver
-	inventory proofInventoryClient
-	store     Store
-	mu        sync.Mutex
+	driver       customAnchorDriver
+	inventory    proofInventoryClient
+	store        Store
+	reservations oor.ReservationStore
+	mu           sync.Mutex
 }
 
 type preparationState struct {
@@ -72,13 +75,18 @@ func NewPreparer(cfg PreparerConfig) (*Preparer, error) {
 		return nil, fmt.Errorf("taproot asset preparation store is " +
 			"required")
 	}
+	if cfg.ReservationStore == nil {
+		return nil, fmt.Errorf("taproot asset reservation store is " +
+			"required")
+	}
 
 	return &Preparer{
 		driver: &sdkDriver{
 			wallet: cfg.Wallet,
 		},
-		inventory: cfg.Wallet.Client(),
-		store:     cfg.Store,
+		inventory:    cfg.Wallet.Client(),
+		store:        cfg.Store,
+		reservations: cfg.ReservationStore,
 	}, nil
 }
 
@@ -89,7 +97,9 @@ func (p *Preparer) PrepareTaprootAssetOOR(ctx context.Context,
 	request *oor.TaprootAssetOORPrepareRequest) (
 	*oor.TaprootAssetOORPreparation, error) {
 
-	if p == nil || p.driver == nil || p.inventory == nil || p.store == nil {
+	if p == nil || p.driver == nil || p.inventory == nil ||
+		p.store == nil ||
+		p.reservations == nil {
 		return nil, fmt.Errorf("taproot asset preparer is not " +
 			"configured")
 	}
@@ -118,10 +128,28 @@ func (p *Preparer) PrepareTaprootAssetOOR(ctx context.Context,
 			ErrReconciliationRequired, state.Attempt,
 			request.RequestID)
 	}
+	reservationOwner := chainhash.Hash(digest)
+	for idx := range request.Inputs {
+		err := p.reservations.UpsertReservation(
+			ctx, request.Inputs[idx].VTXO.Outpoint,
+			oor.ReservationOwnerKindTaprootAssetPreparation,
+			reservationOwner,
+		)
+		if err != nil {
+			return nil, preparationReconciliationError(
+				state, request.RequestID, fmt.Errorf(
+					"reserve Taproot Asset input %d: %w",
+					idx, err),
+			)
+		}
+	}
 
 	assetRef, err := tapsdk.ParseAssetRef(request.Intent.AssetRef)
 	if err != nil {
-		return nil, fmt.Errorf("parse Taproot Asset ref: %w", err)
+		return nil, preparationReconciliationError(
+			state, request.RequestID,
+			fmt.Errorf("parse Taproot Asset ref: %w", err),
+		)
 	}
 	input := &request.Inputs[0]
 	verifier := &proofInventoryVerifier{
@@ -138,7 +166,9 @@ func (p *Preparer) PrepareTaprootAssetOOR(ctx context.Context,
 			ctx, request.Intent.ProofFile,
 		)
 		if err != nil {
-			return nil, err
+			return nil, preparationReconciliationError(
+				state, request.RequestID, err,
+			)
 		}
 		if verification.PassiveAssetCount != 0 {
 			return nil, fmt.Errorf("Taproot Asset OOR PoC "+
@@ -152,7 +182,9 @@ func (p *Preparer) PrepareTaprootAssetOOR(ctx context.Context,
 		ctx, request, assetRef, digest, state,
 	)
 	if err != nil {
-		return nil, err
+		return nil, preparationReconciliationError(
+			state, request.RequestID, err,
+		)
 	}
 
 	ark, arkResult, recipients, err := p.prepareArk(
@@ -160,7 +192,9 @@ func (p *Preparer) PrepareTaprootAssetOOR(ctx context.Context,
 		state,
 	)
 	if err != nil {
-		return nil, err
+		return nil, preparationReconciliationError(
+			state, request.RequestID, err,
+		)
 	}
 
 	checkpointPackage := append(
@@ -185,8 +219,10 @@ func (p *Preparer) PrepareTaprootAssetOOR(ctx context.Context,
 		Recipients: recipients,
 	}
 	if err := prepared.Validate(request); err != nil {
-		return nil, fmt.Errorf("validate prepared Taproot "+
-			"Asset OOR: %w", err)
+		return nil, preparationReconciliationError(
+			state, request.RequestID, fmt.Errorf("validate "+
+				"prepared Taproot Asset OOR: %w", err),
+		)
 	}
 
 	return prepared, nil
@@ -296,9 +332,13 @@ func (p *Preparer) prepareCheckpoint(ctx context.Context,
 		state.CheckpointPackage = append(
 			[]byte(nil), committed.packageBytes...,
 		)
+		state.Attempt = ""
 		if err := p.storeState(
 			ctx, request.RequestID, state,
 		); err != nil {
+
+			state.Attempt = attemptCheckpoint
+
 			return nil, nil, fmt.Errorf("persist checkpoint "+
 				"package: %w", err)
 		}
@@ -481,9 +521,13 @@ func (p *Preparer) prepareArk(ctx context.Context,
 		state.ArkPackage = append(
 			[]byte(nil), committed.packageBytes...,
 		)
+		state.Attempt = ""
 		if err := p.storeState(
 			ctx, request.RequestID, state,
 		); err != nil {
+
+			state.Attempt = attemptArk
+
 			return nil, nil, nil, fmt.Errorf("persist Ark "+
 				"package: %w", err)
 		}
@@ -517,21 +561,46 @@ func (p *Preparer) commit(ctx context.Context, requestID string,
 	}
 	result, err := p.driver.Commit(ctx, request, verifier)
 	if err != nil {
-		if commitOutcomeKnown(err) {
-			state.Attempt = ""
-			if storeErr := p.storeState(
-				ctx, requestID, state,
-			); storeErr != nil {
-				return nil, fmt.Errorf("%v; clear commit "+
-					"intent: %w", err, storeErr)
-			}
+		if !commitOutcomeKnown(err) {
+			return nil, fmt.Errorf("%w: %s commit for request "+
+				"%q: %w", ErrReconciliationRequired, attempt,
+				requestID, err)
+		}
+
+		state.Attempt = ""
+		if storeErr := p.storeState(
+			ctx, requestID, state,
+		); storeErr != nil {
+
+			state.Attempt = attempt
+
+			return nil, fmt.Errorf("%w; clear commit intent: %w",
+				err, storeErr)
 		}
 
 		return nil, err
 	}
-	state.Attempt = ""
 
 	return result, nil
+}
+
+// preparationReconciliationError marks failures after the first external
+// transition boundary as unsafe to release. Before that boundary, callers can
+// safely unlock and delete the preparation reservation on ordinary failures.
+func preparationReconciliationError(state *preparationState, requestID string,
+	err error) error {
+
+	if err == nil || state == nil ||
+		errors.Is(err, ErrReconciliationRequired) {
+		return err
+	}
+	if state.Attempt == "" && len(state.CheckpointPackage) == 0 {
+		return err
+	}
+
+	return fmt.Errorf("%w: request %q crossed the first Taproot Asset "+
+		"commit boundary: %w", ErrReconciliationRequired, requestID,
+		err)
 }
 
 // loadState restores and validates the durable state for one request.

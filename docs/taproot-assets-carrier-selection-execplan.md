@@ -34,16 +34,20 @@ wallet-selection rules.
   OOR RPC, tapassets preparer, and spending-reservation ownership paths.
 - [x] (2026-07-21 17:15Z) Wrote and committed this living implementation plan
   on `feat/taproot-assets-carrier-selection` stacked above carrier onboarding.
-- [ ] Add required-outpoint selection through wallet and manager messages,
-  including ordinary-Bitcoin filtering and min-change behavior.
-- [ ] Add an explicit asset input outpoint to the RPC intent and route asset
-  sends through managed wallet selection instead of the custom-input bypass.
-- [ ] Persist pre-commit preparation ownership, preserve ambiguous outcomes,
-  and wire the shared reservation store into the tap-sdk runtime.
-- [ ] Add manager, wallet, database, RPC, preparer, and restart tests; regenerate
-  sqlc/protobuf output; then run formatting, focused tests, build, and lint.
-- [ ] Record final evidence and commit the implementation as a separate signed
-  milestone.
+- [x] (2026-07-21 17:41Z) Added required-outpoint selection through wallet and
+  manager messages, including ordinary-Bitcoin filtering and min-change
+  behavior.
+- [x] (2026-07-21 17:41Z) Added an explicit asset input outpoint to the RPC
+  intent and routed asset sends through managed wallet selection instead of
+  the custom-input bypass.
+- [x] (2026-07-21 17:41Z) Persisted pre-commit preparation ownership, preserved
+  ambiguous and post-checkpoint outcomes, and wired one shared reservation
+  store into the tap-sdk runtime.
+- [x] (2026-07-21 17:41Z) Added manager, wallet, database, RPC, preparer, actor,
+  and restart tests; regenerated sqlc/protobuf output; and passed formatting,
+  focused tests, race tests, full unit tests, build, and changed-code lint.
+- [x] (2026-07-21 17:48Z) Recorded final evidence and staged the implementation
+  as a separate signed milestone.
 
 ## Surprises & Discoveries
 
@@ -67,6 +71,19 @@ wallet-selection rules.
   Evidence: `waved/taprootAssetOORIntent` requires exactly one custom input and
   `RPCServer.SendOOR` enters `BuildCustomTransferInputs` whenever any custom
   input is supplied.
+- Observation: safety changes at the first successful Taproot Asset commit,
+  not only when tapd returns an explicitly unknown outcome. Once the checkpoint
+  transition succeeds, a later Ark rejection, journal failure, or local result
+  validation error cannot safely release the original asset VTXO.
+  Evidence: the preparer now classifies every error with a checkpoint package
+  or active commit marker as reconciliation-required; tests cover both the
+  first unknown response and checkpoint-success/Ark-known-rejection sequence.
+- Observation: Docker was unavailable in this worktree, so the canonical
+  `make sqlc` and `make rpc` wrappers could not connect to the Docker socket.
+  Evidence: both targets failed before generation. Generated output was instead
+  produced with the same pinned sqlc 1.29.0, protobuf 3.21.12, Go protobuf
+  1.36.11, gRPC 1.5.1, gateway 2.29.0, and repository mailbox plugin versions;
+  generated headers and diffs match the canonical toolchain.
 
 ## Decision Log
 
@@ -94,19 +111,41 @@ wallet-selection rules.
   to the final session owner without another schema migration.
   Date/Author: 2026-07-21 / Codex.
 - Decision: keep reservations on an unknown tapd commit outcome and unlock on
-  every known pre-actor failure.
+  every known pre-commit failure. Also quarantine every failure after the
+  checkpoint transition has committed, even if a later Ark rejection is known.
   Rationale: releasing an input after tapd may have committed can enable a
-  conflicting Bitcoin spend. A known rejection has no asset side effect and
-  should restore the wallet balance normally.
+  conflicting Bitcoin spend. Only an error before the first external commit is
+  known to have no asset side effect and can restore wallet balance normally.
   Date/Author: 2026-07-21 / Codex.
 
 ## Outcomes & Retrospective
 
-Implementation is in progress. The preceding carrier-onboarding branch proves
-tap-sdk wallet funding for on-chain onboarding. This branch owns only managed
-off-chain input selection and the crash-safe handoff up to the current exact
-asset OOR builder. Final test evidence and the remaining mixed-transaction gap
-will be recorded here.
+The managed carrier-input substrate is complete. An asset send now names one
+wallet-managed VTXO, the manager reserves it first, and optional selection can
+add only ordinary Bitcoin VTXOs. Selection validates duplicates, existence,
+Live status, amounts, and in-memory ownership; it preserves deterministic
+required-first ordering and minimum-change behavior. The public asset RPC no
+longer accepts the custom-input bypass.
+
+Before proof verification or the first tapd call, the tap-sdk preparer writes a
+durable preparation owner derived from the request digest. The VTXO manager,
+OOR registry, and compiled-in tap-sdk runtime use the same database store. A
+known-safe pre-commit error drives the wallet unlock, the VTXO actor back to
+Live, and atomic deletion of the preparation row. An unknown first commit or
+any failure after a successful checkpoint transition returns `codes.Aborted`
+with reconciliation required and leaves both the Spending state and row intact.
+
+Validation completed with `make fmt-changed`, focused tests across `db`, `oor`,
+`tapassets`, `vtxo`, `wallet`, `waverpc`, `waved`, and `cmd/waved`, the same
+packages under `go test -race`, the full `make unit` suite (including the
+`baselib` submodule), `make build`, and `make lint-changed-local`. All passed.
+
+This branch deliberately does not yet make a mixed asset-plus-Bitcoin graph
+buildable: the sealed asset preparation still requires exactly one input and
+one recipient with equal BTC value. The selection API and reservation handoff
+are ready for that next stacked transaction-builder branch. A live cross-daemon
+Taproot Asset send remains the appropriate Lumos end-to-end acceptance test
+once that builder consumes the selected carrier inputs.
 
 ## Context and Orientation
 
@@ -202,7 +241,7 @@ Work from:
     cd /Users/dario/dev/lightninglabs/.worktrees/wavelength-carrier-funding
 
 After SQL and protobuf source edits, regenerate rather than editing generated
-files:
+files (or use the exact pinned local tools when Docker is unavailable):
 
     make sqlc
     make rpc
@@ -240,10 +279,12 @@ Spending and a forced failure rolls every earlier actor back to Live.
 An asset RPC request carries `input_vtxo_outpoint` and no custom inputs. The
 wallet actor observes that outpoint in `RequiredOutpoints`. Reusing the same
 idempotency key still returns before selection. A malformed outpoint fails
-before selection. A known preparer error unlocks all selected inputs. An
-unknown commit outcome returns a retryable reconciliation-required error while
-the VTXOs remain Spending and their preparation reservation rows survive a
-simulated manager restart.
+before selection. A known pre-commit preparer error unlocks all selected inputs,
+returns their actors to Live, and atomically deletes the preparation rows. An
+unknown commit outcome returns a reconciliation-required error while the VTXOs
+remain Spending. Preparer restart tests prove the same request digest
+idempotently refreshes the same durable owner without another committed graph;
+manager recovery tests prove reservation rows retain Spending VTXOs at startup.
 
 Run the commands in `Concrete Steps` and expect every package to report `ok`,
 `make build` to complete, and changed-code lint to report no findings. The
@@ -319,3 +360,8 @@ Revision note (2026-07-21): created the plan after auditing the carrier
 onboarding stack and current mainline reservation behavior. The scope stops at
 managed selection and pre-commit recovery so mixed asset change remains a
 separate reviewable milestone.
+
+Revision note (2026-07-21): completed the selection, RPC, reservation handoff,
+error quarantine, runtime wiring, generated output, and layered validation.
+Expanded the safety rule from explicitly unknown tapd responses to every error
+after the first successful asset checkpoint transition.

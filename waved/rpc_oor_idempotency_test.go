@@ -56,6 +56,9 @@ func (w *sendOORTestWallet) Receive(_ context.Context,
 	case *wallet.SelectAndLockVTXOsRequest:
 		w.selects++
 		reqCopy := *msg
+		reqCopy.RequiredOutpoints = append(
+			[]wire.OutPoint(nil), msg.RequiredOutpoints...,
+		)
 		w.selectReqs = append(w.selectReqs, &reqCopy)
 
 		if len(w.selections) == 0 {
@@ -136,6 +139,9 @@ func (w *sendOORTestWallet) selectionRequests() []*selectionReq {
 	)
 	for _, req := range w.selectReqs {
 		reqCopy := *req
+		reqCopy.RequiredOutpoints = append(
+			[]wire.OutPoint(nil), req.RequiredOutpoints...,
+		)
 		requests = append(requests, &reqCopy)
 	}
 
