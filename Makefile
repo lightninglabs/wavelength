@@ -4,7 +4,7 @@
 .PHONY: unit unit-cover unit-race unit-swapruntime check-go-version build install clean release
 .PHONY: release-install cross-release-install docker-release
 .PHONY: build build-swapruntime build-swapclient build-wavewalletrpc rpc install install-swapruntime install-wavewalletrpc help clean-networks
-.PHONY: mobile mobile-android mobile-ios wasm-wallet
+.PHONY: mobile mobile-android mobile-ios wasm-wallet wasm-publish
 .PHONY: systest systest-verbose
 .PHONY: commitmsg-lint commitmsg-fmt commitmsg-reword
 
@@ -499,6 +499,13 @@ wasm-wallet: #? Build the wavewalletdk browser wasm blob + runtime assets into b
 	# copies writable so re-runs (and callers staging the bundle) aren't
 	# blocked by a read-only destination.
 	chmod -R u+w $(WASM_WALLET_OUT)
+
+wasm-publish: #? Build + upload the wasm runtime asset set to the hosted bucket (tag=<version> bucket=gs://...)
+	@if [ -z "$(tag)" ]; then echo "Must specify tag=<version> (e.g. tag=v0.1.0)!"; exit 1; fi
+	@case "$(bucket)" in "") echo "Must specify bucket=<gs://...> destination root!"; exit 1;; gs://*) ;; *) echo "bucket must be a gs:// URI (got: $(bucket))"; exit 1;; esac
+	@$(MAKE) wasm-wallet
+	@$(call print, "Publishing wasm runtime assets to bucket.")
+	./scripts/publish-wasm-assets.sh "$(tag)" "$(bucket)" "$(WASM_WALLET_OUT)"
 
 install: #? Build and install binaries to GOPATH/bin
 	@$(call print, "Installing binaries.")

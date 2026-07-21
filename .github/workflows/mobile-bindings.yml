@@ -2,12 +2,19 @@ name: Mobile Bindings
 
 # The mobile binding package compiles on every relevant PR (a fast, host-tagged
 # build), but the expensive gomobile .aar / .xcframework builds (which cross
-# compile the whole embedded daemon for every ABI) run only when a
-# `mobile-v*` tag is pushed, so routine merges do not trigger them.
+# compile the whole embedded daemon for every ABI) run only on a tag push, so
+# routine merges do not trigger them. Two tag namespaces drive the heavy build:
+# a `mobile-v*` tag for a mobile-only cut (artifacts only), and a `v*` release
+# tag, which additionally attaches the built `.aar` / `.xcframework` to the
+# GitHub release for that tag (see the `publish` job).
 on:
   push:
     tags:
       - "mobile-v*"
+      # Anchored to a digit so only real release tags (v0.1.0, v1.2.3-rc1)
+      # trigger the heavy build and the release-creating publish job, not any
+      # stray `v`-prefixed tag (e.g. `vendor-x`).
+      - "v[0-9]*"
   pull_request:
     paths:
       - "sdk/wavewalletdk/**"
@@ -54,11 +61,11 @@ jobs:
         run: go test -tags="${MOBILE_TAGS}" ./sdk/wavewalletdk/mobile/...
 
   ########################################################################
-  # Android .aar — tag builds only.
+  # Android .aar — tag builds only (mobile-v* or v*).
   ########################################################################
   android:
     name: Build Android .aar
-    if: startsWith(github.ref, 'refs/tags/mobile-v')
+    if: startsWith(github.ref, 'refs/tags/mobile-v') || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - name: Git checkout
@@ -105,11 +112,11 @@ jobs:
           if-no-files-found: error
 
   ########################################################################
-  # iOS .xcframework — tag builds only (macOS runner for Xcode).
+  # iOS .xcframework — tag builds only, mobile-v* or v* (macOS for Xcode).
   ########################################################################
   ios:
     name: Build iOS .xcframework
-    if: startsWith(github.ref, 'refs/tags/mobile-v')
+    if: startsWith(github.ref, 'refs/tags/mobile-v') || startsWith(github.ref, 'refs/tags/v')
     runs-on: macos-latest
     steps:
       - name: Git checkout
@@ -142,3 +149,69 @@ jobs:
           name: Wavewalletdk-xcframework
           path: Wavewalletdk.xcframework.tar.gz
           if-no-files-found: error
+
+  ########################################################################
+  # Attach the built bindings to the GitHub release — v* tags only.
+  #
+  # A `mobile-v*` tag stops at the artifact uploads above; only a real
+  # release tag (`v*`) publishes the bindings as release assets so that
+  # wavelength-sdk (packages/react-native/scripts/fetch-bindings.sh) can
+  # download a stable set instead of building from a sibling checkout. The
+  # wasm runtime asset set is published separately to the hosted bucket via
+  # `make wasm-publish` (it is not a GitHub release asset).
+  ########################################################################
+  publish:
+    name: Attach bindings to release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [android, ios]
+    runs-on: ubuntu-latest
+    permissions:
+      # Publishing release assets requires write access to repository
+      # contents; the rest of this workflow only needs read.
+      contents: write
+    steps:
+      - name: Download .aar
+        uses: actions/download-artifact@v4
+        with:
+          name: Wavewalletdk-aar
+          path: dist
+
+      - name: Download .xcframework
+        uses: actions/download-artifact@v4
+        with:
+          name: Wavewalletdk-xcframework
+          path: dist
+
+      - name: Publish bindings to the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          # Pre-releases (rc / alpha / beta tags) must not be flagged as the
+          # latest stable release.
+          prerelease=""
+          case "$TAG" in
+            *-rc*|*-alpha*|*-beta*) prerelease="--prerelease" ;;
+          esac
+
+          # Create the release on first publish for this tag. A release
+          # manager also cuts the signed waved/wavecli manifest onto this same
+          # release (see docs/release.md); this CI job usually wins the race
+          # since the gomobile builds finish before the manual manifest flow.
+          # We therefore seed a deliberately provisional note (rather than
+          # --generate-notes, which would read as a finished changelog) so it
+          # is obvious the release manager still has to finalize the title/notes
+          # and attach the binaries. This only creates when absent, and the
+          # upload below clobbers, so re-runs are idempotent. --verify-tag
+          # refuses to invent a release for a tag that does not exist.
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "$TAG" --verify-tag $prerelease \
+              --notes "Provisional release created by CI to attach the mobile gomobile bindings. The release manager finalizes the notes and attaches the signed \`waved\`/\`wavecli\` binaries + manifest (see docs/release.md)."
+          fi
+
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber \
+            dist/Wavewalletdk.aar \
+            dist/Wavewalletdk.xcframework.tar.gz

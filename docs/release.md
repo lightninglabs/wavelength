@@ -49,6 +49,54 @@ archives of the release binaries (`waved` and `wavecli`) for each
 supported operating system and architecture, and a manifest file containing
 the hash of each archive.
 
+## Publishing the wasm and mobile binding assets
+
+The reproducible manifest covers `waved` and `wavecli` only. Two auxiliary
+asset sets that downstream consumers (notably `wavelength-sdk`) depend on are
+published out of band, because they need host toolchains the reproducible
+build deliberately avoids. Neither is part of the signed manifest.
+
+### Browser wasm runtime → hosted bucket
+
+The wasm wallet runtime (`wavewalletdk.wasm`, its gzip, `wasm_exec.js`, and
+the go-wasmsqlite worker assets) is pure Go with no CGO, but the SDK's web app
+serves it from a hosted bucket rather than a GitHub release: it fetches
+`<base>/<version>/<file>` at deploy time, where `<version>` is the SDK's
+`RUNTIME_MANIFEST_VERSION` and must equal the release tag. Publish it at tag
+time with the release manager's own `gcloud` credentials (no CI service
+account is wired for the bucket):
+
+```shell
+$  gcloud auth login            # once, if not already authenticated
+$  make wasm-publish tag=<TAG> bucket=gs://<runtime-assets-bucket>
+```
+
+This builds the runtime (`make wasm-wallet`) and uploads the asset set to
+`gs://<runtime-assets-bucket>/<TAG>/`, which the SDK reads through its HTTPS
+front (`https://staging.lightning.engineering/walletdk/<TAG>/<file>`). The
+file list lives in `scripts/publish-wasm-assets.sh` and must stay in sync with
+the SDK's `RUNTIME_ASSET_FILES`.
+
+### Mobile bindings → GitHub release assets
+
+The gomobile bindings (`Wavewalletdk.aar`, `Wavewalletdk.xcframework`) depend
+on the Android NDK and Xcode, so they are built in CI and attached to the
+GitHub release automatically. The Mobile Bindings workflow
+(`.github/workflows/mobile-bindings.yml`) runs on every `v*` tag: it
+cross-compiles both bindings and its `publish` job creates the release for the
+tag if one does not exist yet, then uploads `Wavewalletdk.aar` and
+`Wavewalletdk.xcframework.tar.gz` as release assets. `wavelength-sdk`'s
+`packages/react-native` consumes these instead of building from a sibling
+checkout. No manual step is required beyond pushing the tag to publish the
+bindings.
+
+Because the gomobile builds are fast, this `publish` job usually creates the
+GitHub release *before* you finish the reproducible manifest flow above. When
+it does, it seeds a deliberately provisional release note. Treat that release
+as a placeholder: once your signed manifest is ready, finalize the release
+title and notes and attach the `waved`/`wavecli` archives and
+`manifest-<TAG>.txt(.sig)` to that same release.
+
 ## Verifying a Release
 
 Third parties can independently run the release process and verify that all
