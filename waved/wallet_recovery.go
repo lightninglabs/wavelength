@@ -404,23 +404,33 @@ func recoveryDescriptorFromIndexer(indexed *arkrpc.VTXO,
 	if err != nil {
 		return nil, false, fmt.Errorf("parse commitment txid: %w", err)
 	}
+	assetRoot, assetRef, assetAmount, err :=
+		indexerTaprootAssetMetadata(indexed)
+	if err != nil {
+		return nil, false, err
+	}
 
 	return &vtxo.Descriptor{
 		Outpoint:       outpoint,
 		Amount:         btcutil.Amount(indexed.GetValueSat()),
 		PolicyTemplate: policyTemplate,
-		PkScript:       append([]byte(nil), indexed.GetPkScript()...),
-		ClientKey:      keyDesc,
-		OperatorKey:    operatorKey,
-		TapScript:      tapscript,
-		Ancestry:       ancestry,
-		RoundID:        indexed.GetRoundId(),
-		CommitmentTxID: *commitmentTxID,
-		BatchExpiry:    indexed.GetBatchExpiryHeight(),
-		RelativeExpiry: exitDelay,
-		ChainDepth:     int(indexed.GetChainDepth()),
-		CreatedHeight:  indexed.GetCreatedHeight(),
-		Status:         status,
+		PkScript: append(
+			[]byte(nil), indexed.GetPkScript()...,
+		),
+		TaprootAssetRoot:   assetRoot,
+		TaprootAssetRef:    assetRef,
+		TaprootAssetAmount: assetAmount,
+		ClientKey:          keyDesc,
+		OperatorKey:        operatorKey,
+		TapScript:          tapscript,
+		Ancestry:           ancestry,
+		RoundID:            indexed.GetRoundId(),
+		CommitmentTxID:     *commitmentTxID,
+		BatchExpiry:        indexed.GetBatchExpiryHeight(),
+		RelativeExpiry:     exitDelay,
+		ChainDepth:         int(indexed.GetChainDepth()),
+		CreatedHeight:      indexed.GetCreatedHeight(),
+		Status:             status,
 
 		// Thread the operator's stamped construction version onto the
 		// recovered descriptor so both sides agree on the rules this

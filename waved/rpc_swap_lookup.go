@@ -214,8 +214,13 @@ func indexedVTXOToProto(vtxo *arkrpc.VTXO, currentHeight int32,
 
 		spentByTxid = spentHash.String()
 	}
+	assetRoot, assetRef, assetAmount, err :=
+		indexerTaprootAssetMetadata(vtxo)
+	if err != nil {
+		return nil, err
+	}
 
-	return &waverpc.VTXO{
+	result := &waverpc.VTXO{
 		Outpoint:       fmt.Sprintf("%s:%d", txid, outpoint.GetVout()),
 		AmountSat:      int64(vtxo.GetValueSat()),
 		Status:         status,
@@ -233,7 +238,16 @@ func indexedVTXOToProto(vtxo *arkrpc.VTXO, currentHeight int32,
 		ExpiryInfo: expiryInfoFromIndexedVTXO(
 			vtxo, currentHeight, cfg,
 		),
-	}, nil
+	}
+	if assetRoot != nil {
+		result.TaprootAsset = &waverpc.VTXOTaprootAsset{
+			AssetRef:       assetRef,
+			Amount:         assetAmount,
+			CommitmentRoot: assetRoot.CloneBytes(),
+		}
+	}
+
+	return result, nil
 }
 
 // indexerStatusToDaemonStatus converts arkrpc VTXO status enums to waverpc.

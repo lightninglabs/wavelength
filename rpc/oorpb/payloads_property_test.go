@@ -54,6 +54,12 @@ func genSigningDescriptor(t *rapid.T) SigningDescriptor {
 	if rapid.Bool().Draw(t, "has_asset_root") {
 		root := genHash(t)
 		desc.TaprootAssetRoot = &root
+		if rapid.Bool().Draw(t, "has_asset_metadata") {
+			desc.TaprootAssetRef = fmt.Sprintf("asset:%x", root[:])
+			desc.TaprootAssetAmount = rapid.Uint64Range(
+				1, ^uint64(0),
+			).Draw(t, "asset_amount")
+		}
 	}
 
 	return desc
@@ -119,6 +125,10 @@ func TestSigningDescriptorRoundTrip(t *testing.T) {
 		require.Equal(t, desc.SpendPath, got.SpendPath)
 		require.Equal(t, desc.OwnerLeafPolicy, got.OwnerLeafPolicy)
 		require.Equal(t, desc.TaprootAssetRoot, got.TaprootAssetRoot)
+		require.Equal(t, desc.TaprootAssetRef, got.TaprootAssetRef)
+		require.Equal(
+			t, desc.TaprootAssetAmount, got.TaprootAssetAmount,
+		)
 	})
 }
 
@@ -179,6 +189,21 @@ func TestSubmitPackageRequestRoundTripProperty(t *testing.T) {
 
 				root := genHash(rt)
 				recipient.TaprootAssetRoot = &root
+				if rapid.Bool().Draw(
+					rt, fmt.Sprintf("recipient_has_asset"+
+						"_metadata_%d", i),
+				) {
+
+					recipient.TaprootAssetRef = fmt.Sprintf(
+						"asset:%x", root[:])
+					recipient.TaprootAssetAmount =
+						rapid.Uint64Range(
+							1, ^uint64(0),
+						).Draw(
+							rt, fmt.Sprintf(
+								"amt_%d", i),
+						)
+				}
 			}
 			recipients[i] = recipient
 		}
@@ -223,6 +248,14 @@ func TestSubmitPackageRequestRoundTripProperty(t *testing.T) {
 			require.Equal(
 				t, descs[i].TaprootAssetRoot,
 				gotDescs[i].TaprootAssetRoot,
+			)
+			require.Equal(
+				t, descs[i].TaprootAssetRef,
+				gotDescs[i].TaprootAssetRef,
+			)
+			require.Equal(
+				t, descs[i].TaprootAssetAmount,
+				gotDescs[i].TaprootAssetAmount,
 			)
 		}
 

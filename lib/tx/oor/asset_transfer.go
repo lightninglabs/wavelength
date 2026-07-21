@@ -61,7 +61,9 @@ type TaprootAssetTransfer struct {
 	// Version identifies the container schema.
 	Version uint16
 
-	// CheckpointPackages contains one sealed package per checkpoint edge.
+	// CheckpointPackages contains one positional slot per checkpoint edge.
+	// A non-empty slot is the sealed package for an asset-bearing
+	// checkpoint; an empty slot marks an ordinary Bitcoin-only checkpoint.
 	CheckpointPackages [][]byte
 
 	// ArkPackage is the sealed package for the final Ark edge.
@@ -97,15 +99,26 @@ func (t *TaprootAssetTransfer) Validate(expectedCheckpoints int) error {
 			len(t.CheckpointPackages), expectedCheckpoints)
 	}
 
-	var total uint64
+	var (
+		total         uint64
+		assetPackages int
+	)
 	for i := range t.CheckpointPackages {
 		total += uint64(len(t.CheckpointPackages[i]))
+		if len(t.CheckpointPackages[i]) == 0 {
+			continue
+		}
+		assetPackages++
 		if err := validateTaprootAssetPackage(
 			fmt.Sprintf("checkpoint package %d", i),
 			t.CheckpointPackages[i],
 		); err != nil {
 			return err
 		}
+	}
+	if assetPackages == 0 {
+		return fmt.Errorf("%w: at least one asset-bearing checkpoint "+
+			"package is required", ErrTaprootAssetTransferInvalid)
 	}
 	total += uint64(len(t.ArkPackage))
 	if err := validateTaprootAssetPackage(
@@ -160,7 +173,7 @@ func (t *TaprootAssetTransfer) MarshalBinary() ([]byte, error) {
 		return nil, err
 	}
 	for i := range t.CheckpointPackages {
-		if err := writeTaprootAssetPackage(
+		if err := writeTaprootAssetCheckpointSlot(
 			&body, t.CheckpointPackages[i],
 		); err != nil {
 			return nil, err
@@ -243,7 +256,7 @@ func (t *TaprootAssetTransfer) UnmarshalBinary(encoded []byte) error {
 		CheckpointPackages: make([][]byte, count),
 	}
 	for i := range decoded.CheckpointPackages {
-		pkg, err := readTaprootAssetPackage(reader)
+		pkg, err := readTaprootAssetCheckpointSlot(reader)
 		if err != nil {
 			return fmt.Errorf("%w: checkpoint package %d: %w",
 				ErrTaprootAssetTransferInvalid, i, err)
@@ -300,6 +313,29 @@ func writeTaprootAssetPackage(w io.Writer, pkg []byte) error {
 	return err
 }
 
+func writeTaprootAssetCheckpointSlot(w io.Writer, pkg []byte) error {
+	if len(pkg) > MaxTaprootAssetPackageBytes {
+		return fmt.Errorf("%w: package size %d exceeds %d",
+			ErrTaprootAssetTransferInvalid, len(pkg),
+			MaxTaprootAssetPackageBytes)
+	}
+	if err := binary.Write(
+		w, binary.BigEndian,
+		uint32(
+			len(pkg),
+		),
+	); err != nil {
+		return err
+	}
+	if len(pkg) == 0 {
+		return nil
+	}
+
+	_, err := w.Write(pkg)
+
+	return err
+}
+
 func readTaprootAssetPackage(r *bytes.Reader) ([]byte, error) {
 	var length uint32
 	if err := binary.Read(r, binary.BigEndian, &length); err != nil {
@@ -307,6 +343,27 @@ func readTaprootAssetPackage(r *bytes.Reader) ([]byte, error) {
 	}
 	if length == 0 || length > MaxTaprootAssetPackageBytes {
 		return nil, fmt.Errorf("invalid package size %d", length)
+	}
+	if uint64(length) > uint64(r.Len()) {
+		return nil, io.ErrUnexpectedEOF
+	}
+
+	pkg := make([]byte, length)
+	_, err := io.ReadFull(r, pkg)
+
+	return pkg, err
+}
+
+func readTaprootAssetCheckpointSlot(r *bytes.Reader) ([]byte, error) {
+	var length uint32
+	if err := binary.Read(r, binary.BigEndian, &length); err != nil {
+		return nil, err
+	}
+	if length > MaxTaprootAssetPackageBytes {
+		return nil, fmt.Errorf("invalid package size %d", length)
+	}
+	if length == 0 {
+		return nil, nil
 	}
 	if uint64(length) > uint64(r.Len()) {
 		return nil, io.ErrUnexpectedEOF

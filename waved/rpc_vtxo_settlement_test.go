@@ -68,3 +68,58 @@ func TestDescriptorToProtoSettlement(t *testing.T) {
 		require.Nil(t, got.GetSettlement())
 	})
 }
+
+// TestDescriptorToProtoTaprootAsset separates the Bitcoin carrier value from
+// the nested SDK-neutral asset quantity and keeps ordinary VTXOs free of an
+// asset sub-message.
+func TestDescriptorToProtoTaprootAsset(t *testing.T) {
+	t.Parallel()
+
+	const carrierSats = 546
+	root := chainhash.HashH([]byte("vtxo-asset-root"))
+	desc := &vtxo.Descriptor{
+		Outpoint: wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("asset-vtxo")),
+			Index: 2,
+		},
+		Amount:             carrierSats,
+		Status:             vtxo.VTXOStatusLive,
+		TaprootAssetRoot:   &root,
+		TaprootAssetRef:    "asset:rpc-projection",
+		TaprootAssetAmount: ^uint64(0),
+	}
+
+	got := descriptorToProto(desc)
+	require.EqualValues(t, carrierSats, got.GetAmountSat())
+	require.NotNil(t, got.GetTaprootAsset())
+	require.Equal(
+		t, desc.TaprootAssetRef, got.GetTaprootAsset().GetAssetRef(),
+	)
+	require.Equal(
+		t, desc.TaprootAssetAmount, got.GetTaprootAsset().GetAmount(),
+	)
+	require.Equal(
+		t, root.CloneBytes(), got.GetTaprootAsset().GetCommitmentRoot(),
+	)
+
+	ordinary := &vtxo.Descriptor{
+		Outpoint: wire.OutPoint{
+			Hash: chainhash.HashH([]byte("bitcoin-vtxo")),
+		},
+		Amount: carrierSats,
+		Status: vtxo.VTXOStatusLive,
+	}
+	require.Nil(t, descriptorToProto(ordinary).GetTaprootAsset())
+
+	// Historical rows written before semantic asset metadata existed still
+	// expose their commitment root without inventing an identity or amount.
+	legacy := &vtxo.Descriptor{
+		Amount:           carrierSats,
+		TaprootAssetRoot: &root,
+	}
+	legacyAsset := descriptorToProto(legacy).GetTaprootAsset()
+	require.NotNil(t, legacyAsset)
+	require.Empty(t, legacyAsset.GetAssetRef())
+	require.Zero(t, legacyAsset.GetAmount())
+	require.Equal(t, root.CloneBytes(), legacyAsset.GetCommitmentRoot())
+}

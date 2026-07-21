@@ -58,9 +58,13 @@ func (p *PreparedSubmitPackage) Validate(inputs []TransferInput,
 		if err := inputs[i].Validate(); err != nil {
 			return fmt.Errorf("prepared input %d: %w", i, err)
 		}
-		if inputs[i].TaprootAssetRoot == nil {
-			return fmt.Errorf("prepared input %d asset root is "+
-				"required", i)
+		hasAssetRoot := inputs[i].TaprootAssetRoot != nil
+		hasAssetPackage := len(
+			p.TaprootAssetTransfer.CheckpointPackages[i],
+		) != 0
+		if hasAssetRoot != hasAssetPackage {
+			return fmt.Errorf("prepared input %d asset root and "+
+				"checkpoint package presence mismatch", i)
 		}
 
 		checkpoint := p.CheckpointPSBTs[i]
@@ -83,11 +87,11 @@ func (p *PreparedSubmitPackage) Validate(inputs []TransferInput,
 	if len(actualRecipients) != len(canonicalRecipients) {
 		return fmt.Errorf("prepared recipient count mismatch")
 	}
+	assetRecipients := 0
 	for i := range canonicalRecipients {
 		recipient := canonicalRecipients[i]
-		if recipient.TaprootAssetRoot == nil {
-			return fmt.Errorf("prepared recipient %d asset root "+
-				"is required", i)
+		if recipient.TaprootAssetRoot != nil {
+			assetRecipients++
 		}
 		err := recipient.ValidateTaprootAssetCommitment()
 		if err != nil {
@@ -99,6 +103,10 @@ func (p *PreparedSubmitPackage) Validate(inputs []TransferInput,
 			return fmt.Errorf("prepared recipient %d output "+
 				"mismatch", i)
 		}
+	}
+	if assetRecipients == 0 {
+		return fmt.Errorf("prepared recipients require at least one " +
+			"asset-bearing output")
 	}
 
 	return nil

@@ -244,6 +244,9 @@ func incomingRecipientsFromEvent(ark *psbt.Packet,
 			[]byte(nil), evt.GetVtxoPolicyTemplate()...,
 		)
 
+		recipients[i].TaprootAssetRef = evt.GetTaprootAssetRef()
+		recipients[i].TaprootAssetAmount =
+			evt.GetTaprootAssetAmount()
 		assetRootRaw := evt.GetTaprootAssetRoot()
 		if len(assetRootRaw) > 0 {
 			assetRoot, err := chainhash.NewHash(assetRootRaw)
@@ -253,18 +256,21 @@ func incomingRecipientsFromEvent(ark *psbt.Packet,
 			}
 			recipients[i].TaprootAssetRoot = assetRoot
 
-			assetRecipient := oortx.RecipientOutput{
-				Value:    recipients[i].Value,
-				PkScript: recipients[i].PkScript,
-				VTXOPolicyTemplate: recipients[i].
-					VTXOPolicyTemplate,
-				TaprootAssetRoot: assetRoot,
-			}
-			err = assetRecipient.ValidateTaprootAssetCommitment()
-			if err != nil {
-				return nil, fmt.Errorf("validate recipient "+
-					"Taproot Asset root: %w", err)
-			}
+		}
+
+		assetRecipient := oortx.RecipientOutput{
+			Value:    recipients[i].Value,
+			PkScript: recipients[i].PkScript,
+			VTXOPolicyTemplate: recipients[i].
+				VTXOPolicyTemplate,
+			TaprootAssetRoot:   recipients[i].TaprootAssetRoot,
+			TaprootAssetRef:    recipients[i].TaprootAssetRef,
+			TaprootAssetAmount: recipients[i].TaprootAssetAmount,
+		}
+		err = assetRecipient.ValidateTaprootAssetCommitment()
+		if err != nil {
+			return nil, fmt.Errorf("validate recipient Taproot "+
+				"Asset metadata: %w", err)
 		}
 
 		return recipients, nil
