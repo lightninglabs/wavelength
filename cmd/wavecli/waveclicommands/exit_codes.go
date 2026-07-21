@@ -28,6 +28,10 @@ const (
 	// daemon (unknown round id, missing exit job, etc.).
 	ExitNotFound = 4
 
+	// ExitConfirmationRequired indicates that a valid fund-moving action
+	// needs explicit approval in this non-interactive environment.
+	ExitConfirmationRequired = 5
+
 	// ExitDryRunOK indicates a --dry-run invocation passed all local
 	// validation; no RPC was dispatched.
 	ExitDryRunOK = 10

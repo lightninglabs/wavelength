@@ -425,6 +425,12 @@ func walletQueryMethodRegistry() []schemaMethod {
 						"omitted means preview only",
 				},
 				{
+					Name: "yes",
+					Type: "bool",
+					Description: "approve broadcasting " +
+						"the fund-moving sweep",
+				},
+				{
 					Name: "fee-rate",
 					Type: "int64",
 					Description: "explicit fee rate in " +
@@ -497,6 +503,12 @@ func arkBaseMethodRegistry() []schemaMethod {
 					Type: "bool",
 					Description: "broadcast aggregate " +
 						"sweep and track confirmation",
+				},
+				{
+					Name: "yes",
+					Type: "bool",
+					Description: "approve broadcasting " +
+						"the fund-moving sweep",
 				},
 				{
 					Name: "fee_rate_sat_per_vbyte",
@@ -763,6 +775,12 @@ func arkSendMethodRegistry() []schemaMethod {
 					Description: "amount(s) in sats " +
 						"(one per --to)",
 				},
+				{
+					Name: "yes",
+					Type: "bool",
+					Description: "approve submitting " +
+						"the fund-moving transfer",
+				},
 			},
 			RequestType:  "SendVTXORequest",
 			ResponseType: "SendVTXOResponse",
@@ -807,6 +825,12 @@ func arkSendMethodRegistry() []schemaMethod {
 					Type: "string",
 					Description: "stable caller intent " +
 						"key for retry-safe OOR sends",
+				},
+				{
+					Name: "yes",
+					Type: "bool",
+					Description: "approve initiating " +
+						"the fund-moving transfer",
 				},
 			},
 			RequestType:  "SendOORRequest",

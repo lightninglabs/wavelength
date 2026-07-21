@@ -73,3 +73,26 @@ func promptConfirmation(cmd *cobra.Command, prompt string) error {
 
 	return nil
 }
+
+// confirmMoneyMovement requires explicit approval before a command crosses its
+// fund-moving boundary. Interactive users see the concrete action in a y/N
+// prompt; non-interactive callers receive the stable exit-5 contract.
+func confirmMoneyMovement(cmd *cobra.Command, action string) error {
+	yes, err := cmd.Flags().GetBool("yes")
+	if err != nil {
+		return fmt.Errorf("read --yes: %w", err)
+	}
+	if yes {
+		return nil
+	}
+
+	if !canPrompt(cmd) {
+		return PrintError(
+			"CONFIRMATION_REQUIRED",
+			fmt.Sprintf("%s; rerun with --yes to approve this "+
+				"fund-moving action", action),
+		)
+	}
+
+	return promptConfirmation(cmd, action+". Proceed? [y/N]: ")
+}

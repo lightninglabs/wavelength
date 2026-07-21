@@ -45,7 +45,7 @@ unchanged).
 | `exit status --outpoint TXID:VOUT` | `wavewalletrpc.ExitStatus` | Query an exit/unroll job's status (proxies GetUnrollStatus) |
 | `exit summary` | `wavewalletrpc.ExitSummary` | Aggregate totals across all in-progress exits |
 | `exit plan --outpoint ...` | `wavewalletrpc.GetExitPlan` | Preview backing-wallet funding readiness for one or more exits |
-| `wallet-sweep --destination ADDR` | `wavewalletrpc.SweepWallet` | Preview, or with `--broadcast` publish, a sweep of confirmed backing-wallet UTXOs (boarding outputs excluded; see `ark sweep`) |
+| `wallet-sweep --destination ADDR` | `wavewalletrpc.SweepWallet` | Preview, or with `--broadcast --yes` publish, a sweep of confirmed backing-wallet UTXOs (boarding outputs excluded; see `ark sweep`) |
 
 ### Daemon introspection
 
@@ -67,10 +67,10 @@ who want direct access.
 | `ark rounds {get,join,list,watch}` | `GetRound` / (join) / `ListRounds` / `WatchRounds` | Round FSM state; `join` commits queued intents into the next round (`vtxos refresh`/`leave` call it automatically) |
 | `ark oor {receive,get,list}` | `NewReceiveScript` / `GetOORSession` / `ListOORSessions` | OOR session inspection |
 | `ark board` | `Board` | Trigger boarding with confirmed UTXOs |
-| `ark sweep [list]` | `SweepBoardingUTXOs` / `ListBoardingSweeps` | Boarding-timeout sweeps |
+| `ark sweep [list]` | `SweepBoardingUTXOs` / `ListBoardingSweeps` | Boarding-timeout sweeps; broadcasting requires interactive approval or `--yes` |
 | `ark fees {estimate,history}` | `EstimateFee` / `GetFeeHistory` | Fee estimation and history |
 | `ark listtransactions` | `ListTransactions` | Raw paginated transaction history |
-| `ark send {inround,oor}` | `SendVTXO` / `SendOOR` | Raw in-round / OOR send (superseded by `send` for the wallet shape) |
+| `ark send {inround,oor}` | `SendVTXO` / `SendOOR` | Raw in-round / OOR send; real transfers require interactive approval or `--yes` |
 
 ### `recovery.*` advanced commands
 

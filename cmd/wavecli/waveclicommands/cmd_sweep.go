@@ -34,6 +34,8 @@ func newSweepCmd() *cobra.Command {
 		"boarding UTXO outpoint to sweep (txid:index); repeatable")
 	cmd.Flags().Bool("broadcast", false,
 		"broadcast aggregate sweep and track it until confirmed spent")
+	cmd.Flags().Bool("yes", false,
+		"approve broadcasting the fund-moving sweep")
 	cmd.Flags().Int64("fee-rate-sat-per-vbyte", 0,
 		"fee rate override in sat/vbyte; zero estimates by conf target")
 	cmd.Flags().Uint32("conf-target", 0,
@@ -72,14 +74,6 @@ func newSweepListCmd() *cobra.Command {
 
 // sweep executes the SweepBoardingUTXOs RPC and prints the result.
 func sweep(cmd *cobra.Command, _ []string) error {
-	client, conn, err := getDaemonClient(cmd)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		_ = conn.Close()
-	}()
-
 	req := &waverpc.SweepBoardingUTXOsRequest{}
 	fromFlags := func() error {
 		outpoints, _ := cmd.Flags().GetStringSlice("outpoint")
@@ -111,6 +105,24 @@ func sweep(cmd *cobra.Command, _ []string) error {
 	if err := parseRequest(cmd, req, fromFlags); err != nil {
 		return err
 	}
+	if req.GetBroadcast() {
+		action := "broadcast a sweep of all mature boarding UTXOs"
+		if count := len(req.GetOutpoints()); count > 0 {
+			action = fmt.Sprintf("broadcast a sweep of %d "+
+				"selected boarding UTXO(s)", count)
+		}
+		if err := confirmMoneyMovement(cmd, action); err != nil {
+			return err
+		}
+	}
+
+	client, conn, err := getDaemonClient(cmd)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = conn.Close()
+	}()
 
 	resp, err := client.SweepBoardingUTXOs(context.Background(), req)
 	if err != nil {
