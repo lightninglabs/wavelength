@@ -143,7 +143,7 @@ func TestConfirmRefreshNonTTYRefusesPrompt(t *testing.T) {
 // interactive path consents to a number: the preview estimate is
 // printed before the prompt and "y" proceeds.
 func TestConfirmRefreshPromptShowsEstimateAndAcceptsYes(t *testing.T) {
-	t.Parallel()
+	requireInteractiveStdin(t)
 
 	cmd, out := newRefreshTestCmd(t, "y\n")
 
@@ -175,7 +175,7 @@ func TestConfirmRefreshPromptShowsEstimateAndAcceptsYes(t *testing.T) {
 // TestConfirmRefreshPromptRejectsNo verifies "n" aborts before any
 // dispatch, default-N posture included.
 func TestConfirmRefreshPromptRejectsNo(t *testing.T) {
-	t.Parallel()
+	requireInteractiveStdin(t)
 
 	for _, answer := range []string{"n\n", "\n"} {
 		cmd, _ := newRefreshTestCmd(t, answer)
@@ -195,7 +195,7 @@ func TestConfirmRefreshPromptRejectsNo(t *testing.T) {
 // the flow: the real dispatch would reject the same request shape, so
 // prompting the user to confirm it would be noise.
 func TestConfirmRefreshPreviewInvalidArgumentAborts(t *testing.T) {
-	t.Parallel()
+	requireInteractiveStdin(t)
 
 	cmd, _ := newRefreshTestCmd(t, "y\n")
 
@@ -217,7 +217,7 @@ func TestConfirmRefreshPreviewInvalidArgumentAborts(t *testing.T) {
 // with a warning instead of making refreshes unconfirmable — and the
 // warning says a fee still applies.
 func TestConfirmRefreshPreviewFailureStillPrompts(t *testing.T) {
-	t.Parallel()
+	requireInteractiveStdin(t)
 
 	cmd, out := newRefreshTestCmd(t, "y\n")
 
@@ -243,7 +243,7 @@ func TestConfirmRefreshPreviewFailureStillPrompts(t *testing.T) {
 // daemon behind a newer CLI) still yields a warning plus the prompt,
 // never a silent zero.
 func TestConfirmRefreshPreviewWithoutEstimateStillPrompts(t *testing.T) {
-	t.Parallel()
+	requireInteractiveStdin(t)
 
 	cmd, out := newRefreshTestCmd(t, "y\n")
 
@@ -595,6 +595,7 @@ func TestVTXOsRefreshWiringYesDispatchesOnce(t *testing.T) {
 // one dry-run fetch, zero real dispatches, zero joins.
 func TestVTXOsRefreshWiringDeclineNeverDispatches(t *testing.T) {
 	// NOT t.Parallel() — overrides getDaemonClient.
+	requireInteractiveStdin(t)
 
 	fake := &fakeRefreshDaemon{}
 	withFakeRefreshDaemon(t, fake)
@@ -680,6 +681,7 @@ func TestVTXOsRefreshWiringOldDaemonWarns(t *testing.T) {
 // so.
 func TestVTXOsRefreshWiringEmptyAllSkipsPrompt(t *testing.T) {
 	// NOT t.Parallel() — overrides getDaemonClient.
+	requireInteractiveStdin(t)
 
 	fake := &fakeRefreshDaemon{
 		previewResp: &waverpc.RefreshVTXOsResponse{

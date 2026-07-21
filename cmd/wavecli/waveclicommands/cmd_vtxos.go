@@ -864,19 +864,9 @@ var stdinIsTTY = defaultStdinIsTTY
 // on the given command, returning true when the prompt may proceed
 // and false when the caller must pass --yes or --dry_run instead.
 //
-// Two paths return true (prompt is safe):
-//
-//  1. cmd.InOrStdin() returns something other than os.Stdin. Only
-//     tests and embedded harnesses install custom stdin via
-//     cmd.SetIn; production agents do not, so a custom reader is
-//     the caller's signal that they will drive the prompt
-//     themselves (e.g. by piping a scripted "y\n").
-//
-//  2. cmd.InOrStdin() is os.Stdin and os.Stdin is an actual terminal
-//     (per term.IsTerminal), i.e. a device where the operator can
-//     answer interactively.
-//
-// All other cases return false and the caller refuses to prompt. A
+// Only an actual terminal returns true. Embedded readers and buffers are
+// non-interactive streams just like shell pipes and require an explicit
+// approval/input flag. All other cases return false. A
 // character-device check is deliberately NOT used here: /dev/null and
 // a closed descriptor are both character devices yet are not
 // terminals, and those are the most common non-interactive stdin
@@ -884,11 +874,12 @@ var stdinIsTTY = defaultStdinIsTTY
 // would print a y/N prompt that immediately reads EOF, which is the
 // exact hang-then-fail the consent gate exists to prevent.
 func defaultStdinIsTTY(cmd *cobra.Command) bool {
-	if cmd.InOrStdin() != os.Stdin {
-		return true
+	inputFile, ok := cmd.InOrStdin().(*os.File)
+	if !ok {
+		return false
 	}
 
-	return term.IsTerminal(int(os.Stdin.Fd()))
+	return term.IsTerminal(int(inputFile.Fd()))
 }
 
 // promptLeaveAllConfirmation asks the operator to confirm a

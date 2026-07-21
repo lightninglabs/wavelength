@@ -2,6 +2,7 @@ package waveclicommands
 
 import (
 	"bytes"
+	"io"
 	"strings"
 	"testing"
 
@@ -24,8 +25,27 @@ func TestPromptConfirmationUsesStderr(t *testing.T) {
 	require.Equal(t, "Proceed? [y/N]: ", stderr.String())
 }
 
-func TestRecoveryPromptUsesStderr(t *testing.T) {
+func TestPromptConfirmationAcceptsAnswerAtEOF(t *testing.T) {
 	t.Parallel()
+
+	cmd := &cobra.Command{}
+	cmd.SetIn(strings.NewReader("yes"))
+
+	require.NoError(t, promptConfirmation(cmd, "Proceed? [y/N]: "))
+}
+
+func TestPromptConfirmationRejectsEmptyEOF(t *testing.T) {
+	t.Parallel()
+
+	cmd := &cobra.Command{}
+	cmd.SetIn(strings.NewReader(""))
+
+	err := promptConfirmation(cmd, "Proceed? [y/N]: ")
+	require.ErrorIs(t, err, io.EOF)
+}
+
+func TestRecoveryPromptUsesStderr(t *testing.T) {
+	requireInteractiveStdin(t)
 
 	cmd := newRecoveryEscalateCmd()
 	cmd.SetIn(strings.NewReader("yes\n"))

@@ -287,7 +287,7 @@ func TestParseDestinationValueEmpty(t *testing.T) {
 // the y/N prompt. Before the fix the prompt lived inside the flag
 // callback and the JSON path silently bypassed it.
 func TestConfirmLeaveAllIfNeededJSONStillPrompts(t *testing.T) {
-	t.Parallel()
+	requireInteractiveStdin(t)
 
 	cmd, _ := newLeaveTestCmd(t, "n\n")
 
@@ -313,7 +313,7 @@ func TestConfirmLeaveAllIfNeededJSONStillPrompts(t *testing.T) {
 // TestConfirmLeaveAllIfNeededAcceptsYes verifies the prompt accepts
 // "y" and proceeds.
 func TestConfirmLeaveAllIfNeededAcceptsYes(t *testing.T) {
-	t.Parallel()
+	requireInteractiveStdin(t)
 
 	cmd, _ := newLeaveTestCmd(t, "y\n")
 
@@ -421,7 +421,7 @@ func TestConfirmLeaveAllIfNeededOutpointSelectionSkipsPrompt(t *testing.T) {
 // TestConfirmLeaveAllIfNeededRejectsBlankInput verifies that simply
 // pressing enter at the prompt aborts (default-N posture).
 func TestConfirmLeaveAllIfNeededRejectsBlankInput(t *testing.T) {
-	t.Parallel()
+	requireInteractiveStdin(t)
 
 	cmd, _ := newLeaveTestCmd(t, "\n")
 
