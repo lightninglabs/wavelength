@@ -274,6 +274,10 @@ type Config struct {
 	// adapter is disabled by default and runs only in the client daemon.
 	TaprootAssets *TaprootAssetsConfig `mapstructure:"taprootassets"`
 
+	// taprootAssetsRuntimeConfigured prevents embedded and command setup
+	// paths from installing the production lifecycle registrar twice.
+	taprootAssetsRuntimeConfigured bool
+
 	// FailUnrollBroadcastReason is a TEST-ONLY hook. When non-empty, the
 	// unroll subsystem's tx-confirmation requests are rejected with this
 	// reason before any broadcast, simulating a proof tx that cannot enter
