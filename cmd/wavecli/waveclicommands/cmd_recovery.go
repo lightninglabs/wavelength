@@ -222,10 +222,10 @@ func confirmRecoveryEscalation(cmd *cobra.Command, recoveryID string) error {
 	}
 	if !stdinIsTTY(cmd) {
 		return PrintError(
-			"INVALID_ARGS", "recovery escalate requires --yes "+
-				"(explicit consent) on non-interactive "+
-				"stdin; refusing to prompt because an "+
-				"agent cannot respond to y/N",
+			confirmationRequiredCode, "recovery escalate "+
+				"requires --yes (explicit consent) on "+
+				"non-interactive stdin; refusing to prompt "+
+				"because an agent cannot respond to y/N",
 		)
 	}
 

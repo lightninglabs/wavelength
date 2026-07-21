@@ -12,11 +12,11 @@ import (
 // main runs the wavecli root command and maps the returned error
 // onto a semantic exit code so agents can branch on the failure
 // category without parsing prose. See waveclicommands/exit_codes.go
-// for the full table (2=invalid args, 3=auth, 4=not found, 10=dry-run
-// passed). Any error that already carries the structured envelope set
-// by helpers like PrintError is treated as already-rendered; otherwise
-// we emit a normalized error envelope so stderr stays machine-readable
-// in every failure path.
+// for the full table (2=invalid args, 3=auth, 4=not found,
+// 5=confirmation required). Any error that already carries the
+// envelope set by helpers like PrintError is treated as already-rendered;
+// otherwise we emit a normalized error envelope so stderr stays
+// machine-readable in every failure path.
 func main() {
 	ctx, stop := signal.NotifyContext(
 		context.Background(), os.Interrupt, syscall.SIGTERM,

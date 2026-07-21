@@ -1,6 +1,7 @@
 package waveclicommands
 
 import (
+	"errors"
 	"io"
 	"strconv"
 	"strings"
@@ -11,9 +12,10 @@ import (
 )
 
 const (
-	defaultErrorCode = "EXECUTION_FAILED"
-	invalidArgsCode  = "INVALID_ARGS"
-	walletLockedCode = "WALLET_LOCKED"
+	defaultErrorCode         = "EXECUTION_FAILED"
+	invalidArgsCode          = "INVALID_ARGS"
+	walletLockedCode         = "WALLET_LOCKED"
+	confirmationRequiredCode = "CONFIRMATION_REQUIRED"
 )
 
 type commandError struct {
@@ -56,8 +58,23 @@ func formatCommandError(err error) commandError {
 		}
 	}
 
+	var cliErr *cliError
+	if errors.As(err, &cliErr) {
+		return commandError{
+			code:    cliCodeForExitCode(cliErr.code),
+			message: cliErr.err.Error(),
+		}
+	}
+
 	if waverpc.IsWalletNotReadyError(err) {
 		return formatWalletNotReadyError(err)
+	}
+
+	if credentialCode := credentialErrorCode(err); credentialCode != "" {
+		return commandError{
+			code:    credentialCode,
+			message: err.Error(),
+		}
 	}
 
 	if rpcErr, ok := parseRPCErrorChain(err.Error()); ok {
@@ -79,6 +96,95 @@ func formatCommandError(err error) commandError {
 		code:    defaultErrorCode,
 		message: err.Error(),
 	}
+}
+
+// cliCodeForExitCode maps explicit local classifications into the stable
+// public error-code vocabulary.
+func cliCodeForExitCode(exitCode int) string {
+	switch exitCode {
+	case ExitInvalidArgs:
+		return invalidArgsCode
+
+	case ExitAuthFailure:
+		return "AUTH_FAILURE"
+
+	case ExitNotFound:
+		return "NOT_FOUND"
+
+	case ExitConfirmationRequired:
+		return confirmationRequiredCode
+
+	default:
+		return defaultErrorCode
+	}
+}
+
+// credentialErrorCode recognizes local TLS and macaroon loading failures.
+func credentialErrorCode(err error) string {
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "tls cert") ||
+		strings.Contains(msg, "macaroon") {
+		return "AUTH_FAILURE"
+	}
+
+	return ""
+}
+
+// errorMetadata derives the stable retry and remediation contract from the
+// public error code. Message inspection is limited to local credential errors
+// that share AUTH_FAILURE but need different operator actions.
+func errorMetadata(code, message string) (bool, string) {
+	switch code {
+	case "UNAVAILABLE":
+		return true, "verify waved is running and --rpcserver points " +
+			"to it, then retry"
+
+	// DEADLINE_EXCEEDED, ABORTED, and WAIT_TIMEOUT can all fire after
+	// a fund-moving RPC has already been accepted by the daemon, so
+	// they are deliberately not retryable: a blind retry could
+	// double-spend. The remediation points at state inspection.
+	case "DEADLINE_EXCEEDED":
+		return false, "the request may already have been applied; " +
+			"check state (e.g. `wavecli activity`) before retrying"
+
+	case "ABORTED":
+		return false, "the request may already have been applied; " +
+			"check state before retrying"
+
+	case "RESOURCE_EXHAUSTED":
+		return true, "retry with backoff or reduce the request size"
+
+	case "WAIT_TIMEOUT":
+		return false, "inspect the returned activity id with " +
+			"`wavecli activity inspect <id>` before " +
+			"retrying the send"
+
+	case confirmationRequiredCode:
+		return false, "review the preview, then rerun with --yes " +
+			"to approve"
+
+	case "AUTH_FAILURE", "UNAUTHENTICATED", "PERMISSION_DENIED":
+		msg := strings.ToLower(message)
+		switch {
+		case strings.Contains(msg, "tls cert"):
+			return false, "verify --tlscertpath or start waved " +
+				"to create the certificate; use " +
+				"--no-tls only for trusted local " +
+				"development"
+
+		case strings.Contains(msg, "macaroon"):
+			return false, "verify --macaroonpath or start waved " +
+				"to create the macaroon; use " +
+				"--no-macaroons only for trusted " +
+				"local development"
+
+		default:
+			return false, "verify the daemon credentials and " +
+				"wallet state"
+		}
+	}
+
+	return false, ""
 }
 
 // formatWalletNotReadyError gives wallet lifecycle preconditions the

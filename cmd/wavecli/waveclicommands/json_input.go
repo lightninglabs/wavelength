@@ -24,8 +24,11 @@ func parseRequest[T proto.Message](cmd *cobra.Command, req T,
 		if err := jsonUnmarshalOpts.Unmarshal(
 			[]byte(raw), req,
 		); err != nil {
-			return fmt.Errorf("invalid --request-json payload: %w",
-				err)
+			return newCLIError(
+				ExitInvalidArgs,
+				fmt.Errorf("invalid --request-json "+
+					"payload: %w", err),
+			)
 		}
 
 		return nil

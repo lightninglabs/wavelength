@@ -330,7 +330,7 @@ func TestConfirmLeaveAllIfNeededAcceptsYes(t *testing.T) {
 // regression guard: when stdin is not a terminal (the production
 // agent / pipeline path), --all without --yes or --dry-run must NOT
 // hit the y/N prompt. Instead the function fails fast with an
-// INVALID_ARGS envelope so an agent gets exit code 2 and a clear
+// confirmation-required envelope so an agent gets exit code 5 and a clear
 // error directing it to pass --yes or --dry-run, rather than
 // hanging on a read of a closed stdin.
 func TestConfirmLeaveAllIfNeededNonTTYRefusesPrompt(t *testing.T) {
@@ -358,8 +358,9 @@ func TestConfirmLeaveAllIfNeededNonTTYRefusesPrompt(t *testing.T) {
 	require.True(
 		t, ErrorWasPrinted(err),
 		"expected a printedError so main.go can exit with the "+
-			"INVALID_ARGS code",
+			"confirmation-required code",
 	)
+	require.Equal(t, ExitConfirmationRequired, ExitCodeFor(err))
 }
 
 // TestConfirmLeaveAllIfNeededYesFlagBypasses verifies the --yes flag

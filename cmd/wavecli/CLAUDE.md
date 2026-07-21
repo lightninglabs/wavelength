@@ -5,8 +5,8 @@
 Binary entry point for the `wavecli` CLI. `main` is a thin wrapper: it
 builds the root cobra command from `waveclicommands`, executes it, and
 maps any returned error onto a semantic process exit code (2=invalid args,
-3=auth, 4=not found, 10=dry-run) so scripting agents can branch on failure
-category without parsing stderr prose.
+3=auth, 4=not found, 5=confirmation required) so scripting agents can
+branch on failure category without parsing stderr prose.
 
 ## Relationships
 

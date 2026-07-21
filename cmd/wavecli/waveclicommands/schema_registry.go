@@ -40,10 +40,10 @@ type schemaMethod struct {
 	// dry-run mode when it differs from ResponseType.
 	DryRunResponseType string `json:"dry_run_response_type,omitempty"`
 
-	// DryRun indicates whether the command supports --dry-run /
-	// --dry-run. Top-level wallet verbs use --dry-run (CLI-only
-	// validation, exits 10); ark.* commands use --dry-run that
-	// reaches the daemon's dry_run RPC field.
+	// DryRun indicates whether the command supports --dry-run.
+	// Top-level wallet verbs use --dry-run (CLI-only validation,
+	// exits 0); ark.* commands use --dry-run that reaches the
+	// daemon's dry_run RPC field.
 	DryRun bool `json:"dry_run,omitempty"`
 
 	// JSONInput indicates the command accepts --request-json for raw proto
@@ -339,7 +339,7 @@ func walletQueryMethodRegistry() []schemaMethod {
 					Type: "bool",
 					Description: "CLI-side validation " +
 						"only; print the proto-JSON " +
-						"preview and exit 10 without " +
+						"preview and exit 0 without " +
 						"dispatching",
 				},
 			},

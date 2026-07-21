@@ -27,15 +27,21 @@ func validateListFormat(format string, view wavewalletrpc.ListView) error {
 
 	case "table", "expanded", "x":
 		if view != wavewalletrpc.ListView_LIST_VIEW_ACTIVITY {
-			return fmt.Errorf("--format %s applies only to "+
-				"activity output", format)
+			return newCLIError(
+				ExitInvalidArgs,
+				fmt.Errorf("--format %s applies only to "+
+					"activity output", format),
+			)
 		}
 
 		return nil
 
 	default:
-		return fmt.Errorf("unknown list format %q: expected json, "+
-			"table, expanded, or x", format)
+		return newCLIError(
+			ExitInvalidArgs,
+			fmt.Errorf("unknown list format %q: expected json, "+
+				"table, expanded, or x", format),
+		)
 	}
 }
 

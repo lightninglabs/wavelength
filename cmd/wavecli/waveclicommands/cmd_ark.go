@@ -49,7 +49,7 @@ func newArkListTransactionsCmd() *cobra.Command {
 		Long: "Returns the daemon's unfiltered local transaction " +
 			"history (ledger + boarding sweeps) with full " +
 			"internal correlators. For the wallet-shaped view " +
-			"use `wavecli ark listtransactions`.",
+			"use `wavecli activity`.",
 		RunE: listTransactions,
 	}
 

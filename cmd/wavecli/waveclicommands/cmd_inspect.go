@@ -74,7 +74,10 @@ func validateInspectFormat(format string) error {
 		return nil
 
 	default:
-		return fmt.Errorf("unknown inspect format %q: expected json, "+
-			"expanded, or x", format)
+		return newCLIError(
+			ExitInvalidArgs,
+			fmt.Errorf("unknown inspect format %q: expected "+
+				"json, expanded, or x", format),
+		)
 	}
 }

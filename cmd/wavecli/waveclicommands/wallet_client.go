@@ -124,26 +124,23 @@ func invalidArgs(err error) error {
 // walletDryRunPreview emits a structured preview of the RPC that would
 // have been dispatched. The fully-validated request body is included
 // so an agent staging a transaction can diff the proto-JSON against
-// what it intended. A DRY_RUN_OK printedError is returned so main.go
-// exits with code 10 — the agent-cli skill's "dry-run passed" marker —
-// without re-printing the envelope.
+// what it intended. A successful preview returns nil so dry runs compose with
+// shell success checks while the dry_run marker distinguishes the preview.
 func walletDryRunPreview(method string, req proto.Message) error {
 	body, err := walletProtoMarshal.Marshal(req)
 	if err != nil {
 		return fmt.Errorf("marshal dry-run preview: %w", err)
 	}
 
-	// stdout carries the machine-readable preview; main.go's DRY_RUN_OK
-	// stderr envelope carries the marker that the dry-run validated.
-	fmt.Fprintf(
+	// stdout carries the machine-readable success marker and preview.
+	// Propagate the write error so a failed redirect (disk full, closed
+	// pipe) does not report a successful preview it never delivered.
+	_, err = fmt.Fprintf(
 		os.Stdout, `{"dry_run":true,"method":%q,"validation":"passed",`+
 			`"body":%s}`+"\n", method, string(body),
 	)
 
-	return PrintError(
-		"DRY_RUN_OK",
-		"dry-run validation passed; no RPC was dispatched",
-	)
+	return err
 }
 
 // parseEntryKind maps a user-facing kind string to the proto enum used

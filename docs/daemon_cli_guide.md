@@ -50,6 +50,33 @@ Two options:
 
 See [wavewalletrpc_build.md](wavewalletrpc_build.md) for more.
 
+## Automation Contract
+
+Command results are written to stdout. Failures are written to stderr as one
+JSON envelope with stable `code`, `message`, and `retryable` fields, plus
+`details` and `remediation` when useful:
+
+```json
+{
+  "error": {
+    "code": "UNAVAILABLE",
+    "message": "connection refused",
+    "remediation": "verify waved is running and --rpcserver points to it, then retry",
+    "retryable": true
+  }
+}
+```
+
+The process exits with `2` for invalid arguments, `3` for authentication or
+authorization failures, `4` for missing resources, and `5` when a valid
+fund-moving command needs explicit confirmation on non-interactive stdin.
+Other failures exit with `1`. A successful `--dry-run` is a normal result: it
+prints a JSON preview containing `"dry_run": true` and exits with `0`.
+
+If `send` needs confirmation but stdin is not interactive, its prepared amount,
+fee, rail, and destination preview is written to stderr before the
+`CONFIRMATION_REQUIRED` envelope. Review it and rerun with `--yes`.
+
 ## Daemon Configuration
 
 `waved` supports two wallet backends: **lwwallet** (standalone,

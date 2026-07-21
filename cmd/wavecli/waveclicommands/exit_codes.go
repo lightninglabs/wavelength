@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/lightninglabs/wavelength/waverpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -28,9 +29,10 @@ const (
 	// daemon (unknown round id, missing exit job, etc.).
 	ExitNotFound = 4
 
-	// ExitDryRunOK indicates a --dry-run invocation passed all local
-	// validation; no RPC was dispatched.
-	ExitDryRunOK = 10
+	// ExitConfirmationRequired indicates the command is valid but a
+	// fund-moving action needs explicit --yes approval in this
+	// non-interactive environment.
+	ExitConfirmationRequired = 5
 )
 
 // cliError wraps an underlying error with the exit code that main.go
@@ -78,6 +80,19 @@ func ExitCodeFor(err error) int {
 	var pe *printedError
 	if errors.As(err, &pe) {
 		return pe.ExitCode()
+	}
+
+	if credentialErrorCode(err) != "" {
+		return ExitAuthFailure
+	}
+
+	// Wallet lifecycle preconditions (locked / not created / syncing)
+	// map to the auth class so the process exit code agrees with the
+	// WALLET_LOCKED envelope formatCommandError emits; otherwise the
+	// gRPC FailedPrecondition mapping below would classify them as
+	// invalid args.
+	if waverpc.IsWalletNotReadyError(err) {
+		return ExitAuthFailure
 	}
 
 	// Map common gRPC status codes that the daemon returns onto the
@@ -154,10 +169,15 @@ var cobraArgErrorPrefixes = []string{
 	"unknown flag:",           // pflag: unrecognized flag
 	"unknown shorthand flag:", // pflag: unrecognized -x
 	"invalid argument",        // pflag: bad value for typed flag
-	"unknown command",         // cobra: unknown subcommand
-	"accepts ",                // cobra: ExactArgs/MaximumNArgs et al.
-	"requires at least",       // cobra: MinimumNArgs
-	"requires between",        // cobra: RangeArgs
-	"subcommand is required",  // cobra: NoArgs on a parent
+	// pflag: flag given without its value
+	"flag needs an argument:",
+	"bad flag syntax:",                // pflag: malformed flag token
+	"invalid --request-json payload:", // protojson: malformed raw request
+	"unknown command",                 // cobra: unknown subcommand
+	// cobra: ExactArgs/MaximumNArgs et al.
+	"accepts ",
+	"requires at least",      // cobra: MinimumNArgs
+	"requires between",       // cobra: RangeArgs
+	"subcommand is required", // cobra: NoArgs on a parent
 	"if any flags in the group",
 }
