@@ -20,6 +20,7 @@ import (
 	tapsdk "github.com/lightninglabs/tap-sdk"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
+	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightningnetwork/lnd/keychain"
 )
 
@@ -58,10 +59,12 @@ type OnboardingKeyDeriver func(context.Context) (*keychain.KeyDescriptor, error)
 // OnboardingRegistration is the credential-free package sent to the
 // operator after tap-sdk has committed and Wavelength has signed the anchor.
 type OnboardingRegistration struct {
-	TransferPackage  []byte
-	FinalAnchorPSBT  []byte
-	PolicyTemplate   []byte
-	TaprootAssetRoot tapsdk.Hash
+	TransferPackage    []byte
+	FinalAnchorPSBT    []byte
+	PolicyTemplate     []byte
+	TaprootAssetRoot   tapsdk.Hash
+	TaprootAssetRef    string
+	TaprootAssetAmount uint64
 }
 
 // OnboardingRegistrationResult is the operator's confirmed admission result.
@@ -89,6 +92,8 @@ type OnboardingResult struct {
 	Status             OnboardingStatus
 	Outpoint           wire.OutPoint
 	ValueSat           int64
+	AssetRef           string
+	AssetAmount        uint64
 	ActualFeeSat       uint64
 	PolicyTemplate     []byte
 	PkScript           []byte
@@ -304,6 +309,8 @@ func (o *Onboarder) Onboard(ctx context.Context, request *OnboardingRequest) (
 				TaprootAssetRoot: tapsdk.Hash(
 					result.TaprootAssetRoot,
 				),
+				TaprootAssetRef:    result.AssetRef,
+				TaprootAssetAmount: result.AssetAmount,
 			},
 		)
 		if errors.Is(registerErr, ErrOnboardingPendingConfirmation) {
@@ -644,6 +651,8 @@ func onboardingResultFromCommit(request *OnboardingRequest,
 	return &OnboardingResult{
 		Outpoint:         outpoint,
 		ValueSat:         output.anchorValueSat,
+		AssetRef:         output.assetRef.String(),
+		AssetAmount:      output.amount,
 		ActualFeeSat:     committed.actualFeeSat,
 		PolicyTemplate:   append([]byte(nil), state.PolicyTemplate...),
 		PkScript:         pkScript,
@@ -728,6 +737,10 @@ func validateOnboardingRequest(request *OnboardingRequest) error {
 		len(request.ProofFile) == 0 {
 		return fmt.Errorf("taproot asset ref, amount, and proof are " +
 			"required")
+	}
+	if len(request.AssetRef) > vtxo.MaxTaprootAssetRefBytes {
+		return fmt.Errorf("taproot asset ref exceeds %d bytes",
+			vtxo.MaxTaprootAssetRefBytes)
 	}
 	if request.CarrierValueSat == 0 {
 		return fmt.Errorf("taproot asset onboarding carrier value is " +

@@ -18,6 +18,12 @@ import (
 	"github.com/lightningnetwork/lnd/keychain"
 )
 
+const (
+	// MaxTaprootAssetRefBytes bounds the opaque SDK-level asset identity at
+	// every Wavelength persistence and wire boundary.
+	MaxTaprootAssetRefBytes = 512
+)
+
 // =============================================================================
 // MESSAGE SPEC
 // =============================================================================
@@ -357,6 +363,15 @@ type Descriptor struct {
 	// TapBranch(policy_root, taproot_asset_root), and all Ark spend paths
 	// must include this root as the final control-block sibling.
 	TaprootAssetRoot *chainhash.Hash
+
+	// TaprootAssetRef is the opaque tap-sdk asset identity carried by this
+	// VTXO. It is intentionally a string so the wallet domain does not
+	// depend on tap-sdk or taproot-assets types.
+	TaprootAssetRef string
+
+	// TaprootAssetAmount is the number of Taproot Asset units carried by
+	// this VTXO. Amount remains the separate Bitcoin carrier value.
+	TaprootAssetAmount uint64
 
 	// ClientKey is the client's key descriptor for this VTXO.
 	ClientKey keychain.KeyDescriptor

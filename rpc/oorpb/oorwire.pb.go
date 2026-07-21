@@ -182,8 +182,12 @@ type OORSigningDescriptor struct {
 	// taproot_asset_root is the optional 32-byte Taproot Asset commitment
 	// root anchored in the spent VTXO.
 	TaprootAssetRoot []byte `protobuf:"bytes,5,opt,name=taproot_asset_root,json=taprootAssetRoot,proto3" json:"taproot_asset_root,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// taproot_asset_ref is the canonical opaque SDK-level asset identity.
+	TaprootAssetRef string `protobuf:"bytes,6,opt,name=taproot_asset_ref,json=taprootAssetRef,proto3" json:"taproot_asset_ref,omitempty"`
+	// taproot_asset_amount is the number of asset units in the spent VTXO.
+	TaprootAssetAmount uint64 `protobuf:"varint,7,opt,name=taproot_asset_amount,json=taprootAssetAmount,proto3" json:"taproot_asset_amount,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *OORSigningDescriptor) Reset() {
@@ -251,6 +255,20 @@ func (x *OORSigningDescriptor) GetTaprootAssetRoot() []byte {
 	return nil
 }
 
+func (x *OORSigningDescriptor) GetTaprootAssetRef() string {
+	if x != nil {
+		return x.TaprootAssetRef
+	}
+	return ""
+}
+
+func (x *OORSigningDescriptor) GetTaprootAssetAmount() uint64 {
+	if x != nil {
+		return x.TaprootAssetAmount
+	}
+	return 0
+}
+
 // OORRecipientOutput carries one Ark recipient output plus optional semantic
 // policy metadata for the created VTXO.
 type OORRecipientOutput struct {
@@ -265,8 +283,14 @@ type OORRecipientOutput struct {
 	// taproot_asset_root is the optional 32-byte Taproot Asset commitment
 	// root anchored in this recipient output.
 	TaprootAssetRoot []byte `protobuf:"bytes,4,opt,name=taproot_asset_root,json=taprootAssetRoot,proto3" json:"taproot_asset_root,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// taproot_asset_ref is the opaque SDK-level asset identity carried by
+	// this output.
+	TaprootAssetRef string `protobuf:"bytes,5,opt,name=taproot_asset_ref,json=taprootAssetRef,proto3" json:"taproot_asset_ref,omitempty"`
+	// taproot_asset_amount is the number of asset units carried by this
+	// output. value_sat remains the separate Bitcoin carrier amount.
+	TaprootAssetAmount uint64 `protobuf:"varint,6,opt,name=taproot_asset_amount,json=taprootAssetAmount,proto3" json:"taproot_asset_amount,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *OORRecipientOutput) Reset() {
@@ -325,6 +349,20 @@ func (x *OORRecipientOutput) GetTaprootAssetRoot() []byte {
 		return x.TaprootAssetRoot
 	}
 	return nil
+}
+
+func (x *OORRecipientOutput) GetTaprootAssetRef() string {
+	if x != nil {
+		return x.TaprootAssetRef
+	}
+	return ""
+}
+
+func (x *OORRecipientOutput) GetTaprootAssetAmount() uint64 {
+	if x != nil {
+		return x.TaprootAssetAmount
+	}
+	return 0
 }
 
 // SubmitPackageRequest carries submit-phase OOR data.
@@ -768,19 +806,23 @@ const file_oorwire_proto_rawDesc = "" +
 	"\roorwire.proto\x12\x05oorpb\"5\n" +
 	"\vOOROutPoint\x12\x12\n" +
 	"\x04txid\x18\x01 \x01(\fR\x04txid\x12\x12\n" +
-	"\x04vout\x18\x02 \x01(\rR\x04vout\"\xf1\x01\n" +
+	"\x04vout\x18\x02 \x01(\rR\x04vout\"\xcf\x02\n" +
 	"\x14OORSigningDescriptor\x12.\n" +
 	"\boutpoint\x18\x01 \x01(\v2\x12.oorpb.OOROutPointR\boutpoint\x120\n" +
 	"\x14vtxo_policy_template\x18\x02 \x01(\fR\x12vtxoPolicyTemplate\x12\x1d\n" +
 	"\n" +
 	"spend_path\x18\x03 \x01(\fR\tspendPath\x12*\n" +
 	"\x11owner_leaf_policy\x18\x04 \x01(\fR\x0fownerLeafPolicy\x12,\n" +
-	"\x12taproot_asset_root\x18\x05 \x01(\fR\x10taprootAssetRoot\"\xae\x01\n" +
+	"\x12taproot_asset_root\x18\x05 \x01(\fR\x10taprootAssetRoot\x12*\n" +
+	"\x11taproot_asset_ref\x18\x06 \x01(\tR\x0ftaprootAssetRef\x120\n" +
+	"\x14taproot_asset_amount\x18\a \x01(\x04R\x12taprootAssetAmount\"\x8c\x02\n" +
 	"\x12OORRecipientOutput\x12\x1b\n" +
 	"\tpk_script\x18\x01 \x01(\fR\bpkScript\x12\x1b\n" +
 	"\tvalue_sat\x18\x02 \x01(\x03R\bvalueSat\x120\n" +
 	"\x14vtxo_policy_template\x18\x03 \x01(\fR\x12vtxoPolicyTemplate\x12,\n" +
-	"\x12taproot_asset_root\x18\x04 \x01(\fR\x10taprootAssetRoot\"\xcb\x02\n" +
+	"\x12taproot_asset_root\x18\x04 \x01(\fR\x10taprootAssetRoot\x12*\n" +
+	"\x11taproot_asset_ref\x18\x05 \x01(\tR\x0ftaprootAssetRef\x120\n" +
+	"\x14taproot_asset_amount\x18\x06 \x01(\x04R\x12taprootAssetAmount\"\xcb\x02\n" +
 	"\x14SubmitPackageRequest\x12\x19\n" +
 	"\bark_psbt\x18\x01 \x01(\fR\aarkPsbt\x12)\n" +
 	"\x10checkpoint_psbts\x18\x02 \x03(\fR\x0fcheckpointPsbts\x12L\n" +

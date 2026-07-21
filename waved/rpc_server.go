@@ -1425,6 +1425,13 @@ func descriptorToProto(v *vtxo.Descriptor) *waverpc.VTXO {
 		CommitmentTxid: v.CommitmentTxID.String(),
 		ChainDepth:     uint32(v.ChainDepth),
 	}
+	if v.TaprootAssetRoot != nil {
+		proto.TaprootAsset = &waverpc.VTXOTaprootAsset{
+			AssetRef:       v.TaprootAssetRef,
+			Amount:         v.TaprootAssetAmount,
+			CommitmentRoot: v.TaprootAssetRoot.CloneBytes(),
+		}
+	}
 
 	// Settlement is Some only for FORFEITED VTXOs whose forfeit round row
 	// was found by the by-status join; for every other VTXO it is None and

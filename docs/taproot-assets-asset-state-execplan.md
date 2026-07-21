@@ -44,17 +44,21 @@ simulated restart returns identical proof-path and witness bytes.
 - [x] (2026-07-21 17:54Z) Created
   `feat/taproot-assets-asset-state` above
   `feat/taproot-assets-carrier-selection` and wrote this living plan.
-- [ ] Add SDK-neutral asset identity and amount to descriptor persistence and
+- [x] (2026-07-21 18:24Z) Added SDK-neutral asset identity and amount to
+  descriptor persistence and
   the public VTXO projection, including a full-`uint64` database encoding.
-- [ ] Propagate asset metadata through onboarding, recipient wire messages,
+- [x] (2026-07-21 18:24Z) Propagated asset metadata through onboarding,
+  operator signing descriptors, recipient wire messages,
   OOR snapshots and actor messages, and incoming VTXO materialization.
-- [ ] Generalize the v0 sealed asset container and prepared-submit validation
+- [x] (2026-07-21 18:24Z) Generalized the v0 sealed asset container and
+  prepared-submit validation
   for positional Bitcoin-only checkpoint slots and Bitcoin-only recipients.
-- [ ] Add exact created-output package lookup and the tapassets proof-source
+- [x] (2026-07-21 18:24Z) Added exact created-output package lookup and the
+  tapassets proof-source
   resolver/projection.
-- [ ] Regenerate SQL/protobuf output, add comprehensive compatibility and
-  restart tests, and complete formatting, race, unit, build, lint, and commit
-  validation.
+- [x] (2026-07-21 18:56Z) Regenerated SQL/protobuf output, added
+  compatibility and restart tests, and completed formatting, focused and full
+  unit tests, focused race tests, build, and changed-file lint validation.
 
 ## Surprises & Discoveries
 
@@ -76,6 +80,24 @@ simulated restart returns identical proof-path and witness bytes.
   outpoint/script-key search. The upstream package additionally exposes stable
   logical IDs, packet and virtual indices, anchor indices, proof-source kind
   and bytes, script mode, and the exact OP_TRUE witness.
+- Observation: the Docker daemon was unavailable, so the repository wrappers
+  could not generate SQL or protobuf output. The same pinned tools were run
+  locally: sqlc 1.29.0, protoc 3.21.12, protoc-gen-go 1.36.11,
+  protoc-gen-go-grpc 1.5.1, and grpc-gateway 2.29.0. The merged SQL schema and
+  all protobuf packages were regenerated successfully.
+- Observation: generic seed recovery still queries the indexer with the
+  ordinary receive pkScript. An asset-bearing VTXO instead commits to the
+  composed Ark-policy and asset root, so metadata hydration alone cannot make
+  seed recovery discover those scripts. Recovery needs an indexer query by
+  owner identity or another asset-aware inventory primitive and remains an
+  explicit follow-up.
+- Observation: an incoming recipient event can locally bind its root to the
+  announced P2TR script and can enforce complete, bounded ref/amount metadata,
+  but the SDK-neutral OOR package layer cannot prove that the opaque ref and
+  amount correspond to that root. For this PoC, the operator is the
+  authoritative validator of the sealed Ark package before publishing these
+  fields. A later trust-minimized receiver path can inject the tapassets
+  projection at the wallet boundary.
 
 ## Decision Log
 
@@ -115,12 +137,26 @@ simulated restart returns identical proof-path and witness bytes.
   mappings once and return opaque proof bytes, plain strings and integers,
   `wire.OutPoint`, and cloned witness stacks.
   Date/Author: 2026-07-21 / Codex.
+- Decision: carry canonical asset reference and amount on both recipient
+  outputs and operator signing descriptors.
+  Rationale: Lumos must bind the sealed package to the exact consumed and
+  created states; root-only signing metadata would leave identity and quantity
+  as unauthenticated hints. The client therefore sources these fields from the
+  validated package-backed descriptor and preserves them through every durable
+  retry boundary.
+  Date/Author: 2026-07-21 / Codex.
 
 ## Outcomes & Retrospective
 
-Implementation is not complete yet. The current branch contains only this
-plan. Update this section after each milestone with the exact behavior, test
-evidence, compatibility consequences, and any remaining live integration gap.
+The implementation now persists full-width asset quantities separately from
+carrier sats, carries canonical SDK-neutral metadata through onboarding,
+operator, recipient, actor, snapshot, and incoming-materialization boundaries,
+accepts mixed Bitcoin/asset checkpoint graphs in the v0 positional package,
+and reconstructs a bounded compact proof path plus OP_TRUE witness from the
+exact created-output package. Historical root-only rows/messages and
+all-nonempty v0 packages remain readable. Formatting, focused and full unit
+tests, focused race tests, build, and changed-file lint all pass. The live
+Lumos cross-repository test and asset-aware seed recovery remain follow-ups.
 
 ## Context and Orientation
 

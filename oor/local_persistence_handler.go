@@ -431,7 +431,10 @@ func (h *LocalPersistenceOutboxHandler) materializeIncoming(ctx context.Context,
 				PolicyTemplate: recipient.
 					VTXOPolicyTemplate,
 				TaprootAssetRoot: recipient.TaprootAssetRoot,
-				Metadata:         metadata,
+				TaprootAssetRef:  recipient.TaprootAssetRef,
+				TaprootAssetAmount: recipient.
+					TaprootAssetAmount,
+				Metadata: metadata,
 			},
 		)
 		if err != nil {
@@ -460,6 +463,11 @@ func (h *LocalPersistenceOutboxHandler) materializeIncoming(ctx context.Context,
 				existing.TaprootAssetRoot,
 				desc.TaprootAssetRoot,
 			) {
+				return nil, err
+			}
+			if existing.TaprootAssetRef != desc.TaprootAssetRef ||
+				existing.TaprootAssetAmount !=
+					desc.TaprootAssetAmount {
 				return nil, err
 			}
 

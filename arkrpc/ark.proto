@@ -35,6 +35,14 @@ message RegisterTaprootAssetVTXORequest {
     // taproot_asset_root is repeated explicitly so cheap request bounds and
     // script composition checks can run before persistence.
     bytes taproot_asset_root = 4;
+
+    // taproot_asset_ref is the opaque SDK-level asset identity committed by
+    // the sealed package.
+    string taproot_asset_ref = 5;
+
+    // taproot_asset_amount is the number of asset units in the admitted
+    // output. The anchor output value remains carrier satoshis.
+    uint64 taproot_asset_amount = 6;
 }
 
 message RegisterTaprootAssetVTXOResponse {

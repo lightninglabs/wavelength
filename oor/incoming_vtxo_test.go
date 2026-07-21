@@ -426,8 +426,10 @@ func TestBuildIncomingVTXODescriptorPreservesTaprootAssetRoot(t *testing.T) {
 	require.NoError(t, err)
 	assetRoot := chainhash.Hash{0x91, 0x92, 0x93}
 	assetDesc := &vtxo.Descriptor{
-		PolicyTemplate:   template,
-		TaprootAssetRoot: &assetRoot,
+		PolicyTemplate:     template,
+		TaprootAssetRoot:   &assetRoot,
+		TaprootAssetRef:    "asset-id:010203",
+		TaprootAssetAmount: 21,
 	}
 	assetPkScript, err := assetDesc.EffectivePkScript()
 	require.NoError(t, err)
@@ -439,10 +441,12 @@ func TestBuildIncomingVTXODescriptorPreservesTaprootAssetRoot(t *testing.T) {
 		ClientKey: keychain.KeyDescriptor{
 			PubKey: recipientKey.PubKey(),
 		},
-		OperatorKey:      operatorKey,
-		ExitDelay:        10,
-		PolicyTemplate:   template,
-		TaprootAssetRoot: &assetRoot,
+		OperatorKey:        operatorKey,
+		ExitDelay:          10,
+		PolicyTemplate:     template,
+		TaprootAssetRoot:   &assetRoot,
+		TaprootAssetRef:    "asset-id:010203",
+		TaprootAssetAmount: 21,
 		Metadata: IncomingVTXOMetadata{
 			RoundID:        "test-round",
 			CommitmentTxID: commitHash,
@@ -457,6 +461,8 @@ func TestBuildIncomingVTXODescriptorPreservesTaprootAssetRoot(t *testing.T) {
 	desc, err := BuildIncomingVTXODescriptor(arkPSBT, cfg)
 	require.NoError(t, err)
 	require.Equal(t, &assetRoot, desc.TaprootAssetRoot)
+	require.Equal(t, "asset-id:010203", desc.TaprootAssetRef)
+	require.Equal(t, uint64(21), desc.TaprootAssetAmount)
 	require.Equal(t, assetPkScript, desc.PkScript)
 
 	wrongRoot := assetRoot

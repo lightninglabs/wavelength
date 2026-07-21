@@ -135,10 +135,11 @@ INSERT INTO vtxos (
     policy_template, client_key_id,
 	operator_pubkey, batch_expiry, chain_depth,
 	created_height, commitment_txid, spent, creation_time, last_update_time,
-	construction_version, taproot_asset_root
+	construction_version, taproot_asset_root, taproot_asset_ref,
+	taproot_asset_amount
 ) VALUES (
 	$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-	$17, $18
+	$17, $18, $19, $20
 )
 ON CONFLICT (outpoint_hash, outpoint_index) DO UPDATE SET
     pk_script = CASE WHEN excluded.pk_script IS NOT NULL AND length(excluded.pk_script) > 0 THEN excluded.pk_script ELSE vtxos.pk_script END,
@@ -150,7 +151,31 @@ ON CONFLICT (outpoint_hash, outpoint_index) DO UPDATE SET
     chain_depth = CASE WHEN excluded.chain_depth != 0 THEN excluded.chain_depth ELSE vtxos.chain_depth END,
     created_height = CASE WHEN excluded.created_height != 0 THEN excluded.created_height ELSE vtxos.created_height END,
 	commitment_txid = CASE WHEN excluded.commitment_txid IS NOT NULL AND length(excluded.commitment_txid) > 0 THEN excluded.commitment_txid ELSE vtxos.commitment_txid END,
-	taproot_asset_root = CASE WHEN excluded.taproot_asset_root IS NOT NULL AND length(excluded.taproot_asset_root) > 0 THEN excluded.taproot_asset_root ELSE vtxos.taproot_asset_root END,
+	taproot_asset_root = CASE
+		WHEN excluded.taproot_asset_root IS NOT NULL AND length(excluded.taproot_asset_root) > 0
+			AND excluded.taproot_asset_ref IS NOT NULL AND length(excluded.taproot_asset_ref) > 0
+			AND excluded.taproot_asset_amount IS NOT NULL AND length(excluded.taproot_asset_amount) > 0
+			THEN excluded.taproot_asset_root
+		WHEN excluded.taproot_asset_root IS NOT NULL AND length(excluded.taproot_asset_root) > 0
+			AND (vtxos.taproot_asset_ref IS NULL OR length(vtxos.taproot_asset_ref) = 0)
+			AND (vtxos.taproot_asset_amount IS NULL OR length(vtxos.taproot_asset_amount) = 0)
+			THEN excluded.taproot_asset_root
+		ELSE vtxos.taproot_asset_root
+	END,
+	taproot_asset_ref = CASE
+		WHEN excluded.taproot_asset_root IS NOT NULL AND length(excluded.taproot_asset_root) > 0
+			AND excluded.taproot_asset_ref IS NOT NULL AND length(excluded.taproot_asset_ref) > 0
+			AND excluded.taproot_asset_amount IS NOT NULL AND length(excluded.taproot_asset_amount) > 0
+			THEN excluded.taproot_asset_ref
+		ELSE vtxos.taproot_asset_ref
+	END,
+	taproot_asset_amount = CASE
+		WHEN excluded.taproot_asset_root IS NOT NULL AND length(excluded.taproot_asset_root) > 0
+			AND excluded.taproot_asset_ref IS NOT NULL AND length(excluded.taproot_asset_ref) > 0
+			AND excluded.taproot_asset_amount IS NOT NULL AND length(excluded.taproot_asset_amount) > 0
+			THEN excluded.taproot_asset_amount
+		ELSE vtxos.taproot_asset_amount
+	END,
 	last_update_time = excluded.last_update_time;
 
 -- name: InsertVTXOAncestryPath :exec

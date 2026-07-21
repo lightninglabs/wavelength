@@ -1,6 +1,7 @@
 package oor
 
 import (
+	"crypto/sha256"
 	"errors"
 	"testing"
 
@@ -27,6 +28,9 @@ func TestTaprootAssetTransferRoundTrip(t *testing.T) {
 	require.NoError(t, decoded.UnmarshalBinary(encoded))
 	require.Equal(t, original, &decoded)
 	require.NoError(t, decoded.Validate(2))
+	reencoded, err := decoded.MarshalBinary()
+	require.NoError(t, err)
+	require.Equal(t, encoded, reencoded)
 
 	clone := decoded.Clone()
 	clone.CheckpointPackages[0][0] ^= 1
@@ -35,6 +39,32 @@ func TestTaprootAssetTransferRoundTrip(t *testing.T) {
 		t, clone.CheckpointPackages[0], decoded.CheckpointPackages[0],
 	)
 	require.NotEqual(t, clone.ArkPackage, decoded.ArkPackage)
+}
+
+// TestTaprootAssetTransferMixedSlots pins the v0 positional encoding used by
+// one asset-bearing input alongside ordinary Bitcoin-only inputs.
+func TestTaprootAssetTransferMixedSlots(t *testing.T) {
+	t.Parallel()
+
+	original := &TaprootAssetTransfer{
+		Version: TaprootAssetTransferVersion,
+		CheckpointPackages: [][]byte{
+			[]byte("asset-0"), nil, []byte("asset-2"),
+		},
+		ArkPackage: []byte("ark"),
+	}
+	require.NoError(t, original.Validate(3))
+	encoded, err := original.MarshalBinary()
+	require.NoError(t, err)
+
+	var decoded TaprootAssetTransfer
+	require.NoError(t, decoded.UnmarshalBinary(encoded))
+	require.Equal(t, original, &decoded)
+	require.Nil(t, decoded.CheckpointPackages[1])
+
+	reencoded, err := decoded.MarshalBinary()
+	require.NoError(t, err)
+	require.Equal(t, encoded, reencoded)
 }
 
 func TestTaprootAssetTransferRejectsInvalidContainers(t *testing.T) {
@@ -91,7 +121,7 @@ func TestTaprootAssetTransferRejectsInvalidContainers(t *testing.T) {
 			target: ErrTaprootAssetTransferInvalid,
 		},
 		{
-			name: "empty checkpoint",
+			name: "all checkpoints empty",
 			value: &TaprootAssetTransfer{
 				Version: TaprootAssetTransferVersion,
 				CheckpointPackages: [][]byte{
@@ -140,4 +170,16 @@ func TestTaprootAssetTransferRejectsInvalidContainers(t *testing.T) {
 		t, errors.Is(err, ErrTaprootAssetTransferInvalid) ||
 			errors.Is(err, ErrTaprootAssetTransferVersion),
 	)
+
+	// Append a body byte and recompute the checksum so parsing reaches the
+	// explicit trailing-byte check instead of stopping at checksum failure.
+	body := append(
+		[]byte(nil), encoded[:len(encoded)-sha256.Size]...,
+	)
+	body = append(body, 0xff)
+	checksum := sha256.Sum256(body)
+	trailing := append([]byte(nil), body...)
+	trailing = append(trailing, checksum[:]...)
+	err = decoded.UnmarshalBinary(trailing)
+	require.ErrorContains(t, err, "trailing bytes")
 }

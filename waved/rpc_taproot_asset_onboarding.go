@@ -270,6 +270,8 @@ func (s *Server) registerTaprootAssetOnboarding(ctx context.Context,
 				[]byte(nil),
 				registration.TaprootAssetRoot[:]...,
 			),
+			TaprootAssetRef:    registration.TaprootAssetRef,
+			TaprootAssetAmount: registration.TaprootAssetAmount,
 		},
 	)
 	if status.Code(err) == codes.FailedPrecondition {
@@ -312,9 +314,13 @@ func (r *RPCServer) materializeTaprootAssetOnboarding(ctx context.Context,
 	}
 	root := result.TaprootAssetRoot
 	desc := &vtxo.Descriptor{
-		Outpoint:         result.Outpoint,
-		Amount:           btcutil.Amount(result.ValueSat),
-		PolicyTemplate:   append([]byte(nil), result.PolicyTemplate...),
+		Outpoint:           result.Outpoint,
+		Amount:             btcutil.Amount(result.ValueSat),
+		TaprootAssetRef:    result.AssetRef,
+		TaprootAssetAmount: result.AssetAmount,
+		PolicyTemplate: append(
+			[]byte(nil), result.PolicyTemplate...,
+		),
 		PkScript:         append([]byte(nil), result.PkScript...),
 		TaprootAssetRoot: &root,
 		ClientKey:        result.OwnerKey,
@@ -352,7 +358,10 @@ func (r *RPCServer) materializeTaprootAssetOnboarding(ctx context.Context,
 
 func sameOnboardedVTXO(left, right *vtxo.Descriptor) bool {
 	if left == nil || right == nil || left.Outpoint != right.Outpoint ||
-		left.Amount != right.Amount || left.TaprootAssetRoot == nil ||
+		left.Amount != right.Amount ||
+		left.TaprootAssetRef != right.TaprootAssetRef ||
+		left.TaprootAssetAmount != right.TaprootAssetAmount ||
+		left.TaprootAssetRoot == nil ||
 		right.TaprootAssetRoot == nil ||
 		*left.TaprootAssetRoot != *right.TaprootAssetRoot ||
 		left.RelativeExpiry != right.RelativeExpiry ||

@@ -58,13 +58,16 @@ func TestOnboardTaprootAssetPendingThenReady(t *testing.T) {
 		PubKey: owner.PubKey(),
 	}
 	ready := &tapassets.OnboardingResult{
-		Status:             tapassets.OnboardingStatusReady,
-		Outpoint:           outpoint,
-		ValueSat:           1_000,
-		ActualFeeSat:       125,
-		PolicyTemplate:     policyBytes,
-		PkScript:           pkScript,
-		TaprootAssetRoot:   root,
+		Status:           tapassets.OnboardingStatusReady,
+		Outpoint:         outpoint,
+		ValueSat:         1_000,
+		ActualFeeSat:     125,
+		PolicyTemplate:   policyBytes,
+		PkScript:         pkScript,
+		TaprootAssetRoot: root,
+		AssetRef: "asset:00000000000000000000000000000000" +
+			"00000000000000000000000000000001",
+		AssetAmount:        21,
 		OwnerKey:           ownerKey,
 		OperatorKey:        operator.PubKey(),
 		ExitDelay:          144,
@@ -156,6 +159,8 @@ func TestOnboardTaprootAssetPendingThenReady(t *testing.T) {
 	require.True(t, sameOnboardedVTXO(stored, <-materialized))
 	require.Empty(t, stored.Ancestry)
 	require.Equal(t, txid, stored.CommitmentTxID)
+	require.Equal(t, ready.AssetRef, stored.TaprootAssetRef)
+	require.Equal(t, ready.AssetAmount, stored.TaprootAssetAmount)
 
 	response, err = rpcServer.OnboardTaprootAsset(t.Context(), request)
 	require.NoError(t, err)
@@ -289,6 +294,8 @@ func TestRegisterTaprootAssetOnboarding(t *testing.T) {
 				[]byte("registration-root"),
 			),
 		),
+		TaprootAssetRef:    "asset-id:010203",
+		TaprootAssetAmount: 21,
 	}
 	_, err := server.registerTaprootAssetOnboarding(
 		t.Context(), registration,

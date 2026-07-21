@@ -238,8 +238,10 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncoming(t *testing.T) {
 	require.NoError(t, err)
 	assetRoot := chainhash.Hash{0x81, 0x82, 0x83}
 	assetDesc := &vtxo.Descriptor{
-		PolicyTemplate:   policyTemplate,
-		TaprootAssetRoot: &assetRoot,
+		PolicyTemplate:     policyTemplate,
+		TaprootAssetRoot:   &assetRoot,
+		TaprootAssetRef:    "asset-id:010203",
+		TaprootAssetAmount: 21,
 	}
 	assetPkScript, err := assetDesc.EffectivePkScript()
 	require.NoError(t, err)
@@ -248,6 +250,8 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncoming(t *testing.T) {
 	recipients[0].PkScript = assetPkScript
 	recipients[0].VTXOPolicyTemplate = policyTemplate
 	recipients[0].TaprootAssetRoot = &assetRoot
+	recipients[0].TaprootAssetRef = "asset-id:010203"
+	recipients[0].TaprootAssetAmount = 21
 	assetTransfer := &oortx.TaprootAssetTransfer{
 		Version: oortx.TaprootAssetTransferVersion,
 		CheckpointPackages: [][]byte{
@@ -340,6 +344,8 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncoming(t *testing.T) {
 	require.EqualValues(t, 1, desc.MaxTreeDepth())
 	require.EqualValues(t, 700, desc.CreatedHeight)
 	require.Equal(t, &assetRoot, desc.TaprootAssetRoot)
+	require.Equal(t, "asset-id:010203", desc.TaprootAssetRef)
+	require.Equal(t, uint64(21), desc.TaprootAssetAmount)
 	require.Equal(t, assetTransfer, packageStore.lastAssetTransfer)
 
 	// Re-materialization should be idempotent.

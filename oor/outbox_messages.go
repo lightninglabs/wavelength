@@ -171,6 +171,8 @@ func (m *SendSubmitPackageRequest) ToProto() fn.Result[proto.Message] {
 			SpendPath:          spendPathRaw,
 			OwnerLeafPolicy:    ti.OwnerLeafPolicy,
 			TaprootAssetRoot:   ti.TaprootAssetRoot,
+			TaprootAssetRef:    ti.VTXO.TaprootAssetRef,
+			TaprootAssetAmount: ti.VTXO.TaprootAssetAmount,
 		}
 		descs = append(descs, desc)
 	}

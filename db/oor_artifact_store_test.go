@@ -340,6 +340,24 @@ func TestOORArtifactStoreGetPackageForOutpointPrefersCreatedBinding(
 	matched := pkg.MatchedOutpointBinding.UnsafeFromSome()
 	require.Equal(t, OORPackageLinkKindCreatedOutput,
 		matched.LinkKind)
+
+	// The proof-source lookup has a stricter contract than the legacy
+	// convenience lookup above: it must select by created-output kind in
+	// SQL rather than relying on row ordering when the same outpoint is
+	// also consumed by another package.
+	createdPkg, err := store.GetCreatedPackageForOutpoint(
+		ctx, parentOutpoint,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, createdPkg)
+	require.Equal(t, parentSession, createdPkg.SessionID)
+	require.Equal(t, OORPackageDirectionIncoming, createdPkg.Direction)
+	require.True(t, createdPkg.MatchedOutpointBinding.IsSome())
+	createdBinding := createdPkg.MatchedOutpointBinding.UnsafeFromSome()
+	require.Equal(
+		t, OORPackageLinkKindCreatedOutput, createdBinding.LinkKind,
+	)
+	require.Equal(t, parentOutpoint, createdBinding.Outpoint)
 }
 
 // TestOORArtifactStoreBindingSessionConflict verifies a binding outpoint+kind

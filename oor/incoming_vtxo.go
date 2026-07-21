@@ -95,6 +95,14 @@ type IncomingVTXOConfig struct {
 	// TaprootAssetRoot is the optional asset commitment root composed next
 	// to PolicyTemplate in the recipient output.
 	TaprootAssetRoot *chainhash.Hash
+
+	// TaprootAssetRef is the opaque SDK-level identity carried by the
+	// recipient output.
+	TaprootAssetRef string
+
+	// TaprootAssetAmount is the number of asset units carried by the
+	// recipient output. The Ark output value remains carrier satoshis.
+	TaprootAssetAmount uint64
 }
 
 // BuildIncomingVTXODescriptor constructs a VTXO descriptor for a recipient
@@ -122,6 +130,21 @@ func BuildIncomingVTXODescriptor(ark *psbt.Packet,
 	case cfg.Metadata.ChainDepth < 0:
 		return nil, fmt.Errorf("chain depth must be "+
 			"non-negative, got %d", cfg.Metadata.ChainDepth)
+
+	case cfg.TaprootAssetRoot == nil &&
+		(cfg.TaprootAssetRef != "" || cfg.TaprootAssetAmount != 0):
+		return nil, fmt.Errorf("Taproot Asset metadata requires a " +
+			"commitment root")
+
+	case cfg.TaprootAssetRoot != nil &&
+		((cfg.TaprootAssetRef == "") !=
+			(cfg.TaprootAssetAmount == 0)):
+		return nil, fmt.Errorf("Taproot Asset ref and amount must " +
+			"both be provided")
+
+	case len(cfg.TaprootAssetRef) > vtxo.MaxTaprootAssetRefBytes:
+		return nil, fmt.Errorf("Taproot Asset ref exceeds %d bytes",
+			vtxo.MaxTaprootAssetRefBytes)
 	}
 
 	if cfg.Metadata.CommitmentTxID == (chainhash.Hash{}) {
@@ -173,21 +196,23 @@ func BuildIncomingVTXODescriptor(ark *psbt.Packet,
 			Hash:  arkTxid,
 			Index: cfg.OutputIndex,
 		},
-		Amount:           btcutil.Amount(out.Value),
-		PolicyTemplate:   policyTemplate,
-		PkScript:         out.PkScript,
-		TaprootAssetRoot: cfg.TaprootAssetRoot,
-		ClientKey:        cfg.ClientKey,
-		OperatorKey:      cfg.OperatorKey,
-		TapScript:        tapscript,
-		Ancestry:         ancestry,
-		RoundID:          cfg.Metadata.RoundID,
-		CommitmentTxID:   cfg.Metadata.CommitmentTxID,
-		BatchExpiry:      cfg.Metadata.BatchExpiry,
-		RelativeExpiry:   cfg.ExitDelay,
-		ChainDepth:       cfg.Metadata.ChainDepth,
-		CreatedHeight:    cfg.Metadata.CreatedHeight,
-		Status:           vtxo.VTXOStatusLive,
+		Amount:             btcutil.Amount(out.Value),
+		PolicyTemplate:     policyTemplate,
+		PkScript:           out.PkScript,
+		TaprootAssetRoot:   cfg.TaprootAssetRoot,
+		TaprootAssetRef:    cfg.TaprootAssetRef,
+		TaprootAssetAmount: cfg.TaprootAssetAmount,
+		ClientKey:          cfg.ClientKey,
+		OperatorKey:        cfg.OperatorKey,
+		TapScript:          tapscript,
+		Ancestry:           ancestry,
+		RoundID:            cfg.Metadata.RoundID,
+		CommitmentTxID:     cfg.Metadata.CommitmentTxID,
+		BatchExpiry:        cfg.Metadata.BatchExpiry,
+		RelativeExpiry:     cfg.ExitDelay,
+		ChainDepth:         cfg.Metadata.ChainDepth,
+		CreatedHeight:      cfg.Metadata.CreatedHeight,
+		Status:             vtxo.VTXOStatusLive,
 	}, nil
 }
 

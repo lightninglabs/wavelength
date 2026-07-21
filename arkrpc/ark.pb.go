@@ -88,8 +88,14 @@ type RegisterTaprootAssetVTXORequest struct {
 	// taproot_asset_root is repeated explicitly so cheap request bounds and
 	// script composition checks can run before persistence.
 	TaprootAssetRoot []byte `protobuf:"bytes,4,opt,name=taproot_asset_root,json=taprootAssetRoot,proto3" json:"taproot_asset_root,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// taproot_asset_ref is the opaque SDK-level asset identity committed by
+	// the sealed package.
+	TaprootAssetRef string `protobuf:"bytes,5,opt,name=taproot_asset_ref,json=taprootAssetRef,proto3" json:"taproot_asset_ref,omitempty"`
+	// taproot_asset_amount is the number of asset units in the admitted
+	// output. The anchor output value remains carrier satoshis.
+	TaprootAssetAmount uint64 `protobuf:"varint,6,opt,name=taproot_asset_amount,json=taprootAssetAmount,proto3" json:"taproot_asset_amount,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *RegisterTaprootAssetVTXORequest) Reset() {
@@ -148,6 +154,20 @@ func (x *RegisterTaprootAssetVTXORequest) GetTaprootAssetRoot() []byte {
 		return x.TaprootAssetRoot
 	}
 	return nil
+}
+
+func (x *RegisterTaprootAssetVTXORequest) GetTaprootAssetRef() string {
+	if x != nil {
+		return x.TaprootAssetRef
+	}
+	return ""
+}
+
+func (x *RegisterTaprootAssetVTXORequest) GetTaprootAssetAmount() uint64 {
+	if x != nil {
+		return x.TaprootAssetAmount
+	}
+	return 0
 }
 
 type RegisterTaprootAssetVTXOResponse struct {
@@ -738,12 +758,14 @@ var File_ark_proto protoreflect.FileDescriptor
 
 const file_ark_proto_rawDesc = "" +
 	"\n" +
-	"\tark.proto\x12\x06arkrpc\"\xd8\x01\n" +
+	"\tark.proto\x12\x06arkrpc\"\xb6\x02\n" +
 	"\x1fRegisterTaprootAssetVTXORequest\x12)\n" +
 	"\x10transfer_package\x18\x01 \x01(\fR\x0ftransferPackage\x12*\n" +
 	"\x11final_anchor_psbt\x18\x02 \x01(\fR\x0ffinalAnchorPsbt\x120\n" +
 	"\x14vtxo_policy_template\x18\x03 \x01(\fR\x12vtxoPolicyTemplate\x12,\n" +
-	"\x12taproot_asset_root\x18\x04 \x01(\fR\x10taprootAssetRoot\"\x8a\x01\n" +
+	"\x12taproot_asset_root\x18\x04 \x01(\fR\x10taprootAssetRoot\x12*\n" +
+	"\x11taproot_asset_ref\x18\x05 \x01(\tR\x0ftaprootAssetRef\x120\n" +
+	"\x14taproot_asset_amount\x18\x06 \x01(\x04R\x12taprootAssetAmount\"\x8a\x01\n" +
 	" RegisterTaprootAssetVTXOResponse\x12\x12\n" +
 	"\x04txid\x18\x01 \x01(\fR\x04txid\x12!\n" +
 	"\foutput_index\x18\x02 \x01(\rR\voutputIndex\x12/\n" +

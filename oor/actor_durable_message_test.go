@@ -62,6 +62,11 @@ func TestStartTransferPayloadTLVRoundTrip(t *testing.T) {
 					0x20,
 				},
 				ValueSat: 321,
+				TaprootAssetRoot: &chainhash.Hash{
+					0xaa,
+				},
+				TaprootAssetRef:    "asset-id:010203",
+				TaprootAssetAmount: 21,
 			},
 		},
 		IdempotencyKey: "funding-key-1",
@@ -409,6 +414,8 @@ func TestDriveEventRequestRoundTripIncomingTransferEvent(t *testing.T) {
 	sessionID := SessionID(arkPSBT.UnsignedTx.TxHash())
 	assetRoot := chainhash.Hash{0x31, 0x32, 0x33}
 	recipients[0].TaprootAssetRoot = &assetRoot
+	recipients[0].TaprootAssetRef = "asset-id:010203"
+	recipients[0].TaprootAssetAmount = 21
 	assetTransfer := &oortx.TaprootAssetTransfer{
 		Version: oortx.TaprootAssetTransferVersion,
 		CheckpointPackages: [][]byte{
@@ -447,6 +454,12 @@ func TestDriveEventRequestRoundTripIncomingTransferEvent(t *testing.T) {
 	require.Len(t, incomingEvt.Recipients, 1)
 	require.Equal(t, &assetRoot,
 		incomingEvt.Recipients[0].TaprootAssetRoot)
+	require.Equal(
+		t, "asset-id:010203", incomingEvt.Recipients[0].TaprootAssetRef,
+	)
+	require.Equal(
+		t, uint64(21), incomingEvt.Recipients[0].TaprootAssetAmount,
+	)
 	require.Equal(t, assetTransfer, incomingEvt.TaprootAssetTransfer)
 }
 
