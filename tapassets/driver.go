@@ -29,6 +29,9 @@ type commitInput struct {
 type commitResult struct {
 	packageBytes []byte
 	anchorPSBT   []byte
+	fundingMode  tapsdk.CustomAnchorFundingMode
+	actualFeeSat uint64
+	maxFeeSat    uint64
 	inputs       []commitInput
 	outputs      []commitOutput
 }
@@ -189,6 +192,9 @@ func commitResultFromPackage(transfer *tapsdk.CustomAnchorTransferPackage) (
 	result := &commitResult{
 		packageBytes: encoded,
 		anchorPSBT:   append([]byte(nil), transfer.AnchorPsbt...),
+		fundingMode:  transfer.Funding.Mode,
+		actualFeeSat: transfer.Funding.ActualFeeSat,
+		maxFeeSat:    transfer.Funding.MaxFeeSat,
 		inputs:       make([]commitInput, len(transfer.Inputs)),
 		outputs:      make([]commitOutput, len(transfer.Outputs)),
 	}

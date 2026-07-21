@@ -60,7 +60,8 @@ func TestOnboardTaprootAssetPendingThenReady(t *testing.T) {
 	ready := &tapassets.OnboardingResult{
 		Status:             tapassets.OnboardingStatusReady,
 		Outpoint:           outpoint,
-		ValueSat:           4_750,
+		ValueSat:           1_000,
+		ActualFeeSat:       125,
 		PolicyTemplate:     policyBytes,
 		PkScript:           pkScript,
 		TaprootAssetRoot:   root,
@@ -124,15 +125,17 @@ func TestOnboardTaprootAssetPendingThenReady(t *testing.T) {
 	server.operatorTerms.Store(&types.OperatorTerms{
 		PubKey:        operator.PubKey(),
 		VTXOExitDelay: 144,
+		MinVTXOAmount: 1_000,
 	})
 	rpcServer := &RPCServer{server: server}
 	request := &waverpc.OnboardTaprootAssetRequest{
 		IdempotencyKey: "onboarding-id",
 		AssetRef: "asset:00000000000000000000000000000000" +
 			"00000000000000000000000000000001",
-		AssetAmount:    21,
-		InputProofFile: []byte("proof"),
-		MaxFeeSat:      250,
+		AssetAmount:        21,
+		InputProofFile:     []byte("proof"),
+		MaxFeeSat:          250,
+		FeeRateSatPerVbyte: 2,
 	}
 
 	response, err := rpcServer.OnboardTaprootAsset(t.Context(), request)
@@ -146,6 +149,8 @@ func TestOnboardTaprootAssetPendingThenReady(t *testing.T) {
 	require.Equal(t, assetOnboardingReady, response.State)
 	require.Equal(t, outpoint.String(), response.Outpoint)
 	require.Equal(t, int32(321), response.ConfirmationHeight)
+	require.Equal(t, int64(1_000), response.ValueSat)
+	require.Equal(t, uint64(125), response.ActualFeeSat)
 	stored, err := vtxoStore.GetVTXO(t.Context(), outpoint)
 	require.NoError(t, err)
 	require.True(t, sameOnboardedVTXO(stored, <-materialized))
@@ -160,7 +165,52 @@ func TestOnboardTaprootAssetPendingThenReady(t *testing.T) {
 	for _, captured := range onboarder.requests {
 		require.Equal(t, operator.PubKey(), captured.OperatorKey)
 		require.Equal(t, uint32(144), captured.ExitDelay)
+		require.Equal(t, uint64(1_000), captured.CarrierValueSat)
+		require.Equal(t, uint64(2), captured.FeeRateSatPerVByte)
+		require.Zero(t, captured.TargetConf)
+		require.Equal(t, uint64(250), captured.MaxFeeSat)
 	}
+}
+
+// TestOnboardTaprootAssetValidatesCarrierAndFeePolicy rejects economic
+// parameters before an onboarding service can reserve or commit anything.
+func TestOnboardTaprootAssetValidatesCarrierAndFeePolicy(t *testing.T) {
+	t.Parallel()
+
+	operator, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	onboarder := &testTaprootAssetOnboarder{}
+	cfg := DefaultConfig()
+	cfg.TaprootAssetOnboarder = onboarder
+	server := &Server{cfg: cfg, walletReady: make(chan struct{})}
+	server.walletState.Store(int32(WalletStateReady))
+	server.operatorTerms.Store(&types.OperatorTerms{
+		PubKey:        operator.PubKey(),
+		VTXOExitDelay: 144,
+		MinVTXOAmount: 1_000,
+	})
+	rpcServer := &RPCServer{server: server}
+	request := &waverpc.OnboardTaprootAssetRequest{
+		IdempotencyKey:     "onboarding-id",
+		AssetRef:           "asset-ref",
+		AssetAmount:        21,
+		InputProofFile:     []byte("proof"),
+		MaxFeeSat:          250,
+		CarrierValueSat:    999,
+		FeeRateSatPerVbyte: 2,
+	}
+
+	_, err = rpcServer.OnboardTaprootAsset(t.Context(), request)
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
+	require.ErrorContains(t, err, "below operator minimum")
+	require.Empty(t, onboarder.requests)
+
+	request.CarrierValueSat = 1_000
+	request.TargetConf = 6
+	_, err = rpcServer.OnboardTaprootAsset(t.Context(), request)
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
+	require.ErrorContains(t, err, "exactly one")
+	require.Empty(t, onboarder.requests)
 }
 
 // TestOnboardTaprootAssetRequiresReadyFeature covers the public fail-closed
@@ -174,6 +224,7 @@ func TestOnboardTaprootAssetRequiresReadyFeature(t *testing.T) {
 		AssetAmount:    1,
 		InputProofFile: []byte("proof"),
 		MaxFeeSat:      1,
+		TargetConf:     6,
 	}
 	cfg := DefaultConfig()
 	server := &Server{cfg: cfg, walletReady: make(chan struct{})}

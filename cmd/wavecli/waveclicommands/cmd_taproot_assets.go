@@ -41,7 +41,10 @@ func newTaprootAssetOnboardCmd() *cobra.Command {
 		Long: "Move one complete, isolated, confirmed Taproot " +
 			"Asset proof into a standard Wavelength VTXO policy. " +
 			"The current prototype requires tapd and waved to " +
-			"use the same LND wallet. Pass --wait, or preserve " +
+			"use the same LND wallet, which supplies any " +
+			"additional Bitcoin needed for the visible carrier " +
+			"value, miner fee, and wallet change. Pass --wait, " +
+			"or preserve " +
 			"every flag and rerun this command after " +
 			"confirmation when the response state is pending.",
 		Args: cobra.NoArgs,
@@ -64,8 +67,19 @@ func newTaprootAssetOnboardCmd() *cobra.Command {
 		"path to the complete confirmed Taproot Asset proof file",
 	)
 	flags.Uint64(
-		"max-fee-sat", 0,
-		"exact Bitcoin fee subtracted from the current anchor",
+		"carrier-value-sat", 0, "Bitcoin value carried by the "+
+			"asset VTXO (zero uses the operator minimum)",
+	)
+	flags.Uint64(
+		"sat-per-vbyte", 0, "explicit on-chain fee rate (mutually "+
+			"exclusive with --target-conf)",
+	)
+	flags.Uint32(
+		"target-conf", 0, "on-chain confirmation target (mutually "+
+			"exclusive with --sat-per-vbyte)",
+	)
+	flags.Uint64(
+		"max-fee-sat", 0, "hard upper bound for the on-chain miner fee",
 	)
 	flags.Bool(
 		"wait", false,
@@ -153,6 +167,9 @@ func taprootAssetOnboardingRequest(cmd *cobra.Command) (
 	assetRef, _ := cmd.Flags().GetString("asset-ref")
 	assetAmount, _ := cmd.Flags().GetUint64("asset-amount")
 	proofPath, _ := cmd.Flags().GetString("proof-file")
+	carrierValueSat, _ := cmd.Flags().GetUint64("carrier-value-sat")
+	feeRateSatPerVByte, _ := cmd.Flags().GetUint64("sat-per-vbyte")
+	targetConf, _ := cmd.Flags().GetUint32("target-conf")
 	maxFeeSat, _ := cmd.Flags().GetUint64("max-fee-sat")
 
 	switch {
@@ -170,6 +187,14 @@ func taprootAssetOnboardingRequest(cmd *cobra.Command) (
 
 	case maxFeeSat == 0:
 		return nil, fmt.Errorf("--max-fee-sat must be positive")
+
+	case feeRateSatPerVByte == 0 && targetConf == 0:
+		return nil, fmt.Errorf("exactly one of --sat-per-vbyte and " +
+			"--target-conf is required")
+
+	case feeRateSatPerVByte != 0 && targetConf != 0:
+		return nil, fmt.Errorf("--sat-per-vbyte and --target-conf " +
+			"are mutually exclusive")
 	}
 
 	if err := validateFreeText(
@@ -195,10 +220,13 @@ func taprootAssetOnboardingRequest(cmd *cobra.Command) (
 	}
 
 	return &waverpc.OnboardTaprootAssetRequest{
-		IdempotencyKey: idempotencyKey,
-		AssetRef:       assetRef,
-		AssetAmount:    assetAmount,
-		InputProofFile: proofFile,
-		MaxFeeSat:      maxFeeSat,
+		IdempotencyKey:     idempotencyKey,
+		AssetRef:           assetRef,
+		AssetAmount:        assetAmount,
+		InputProofFile:     proofFile,
+		MaxFeeSat:          maxFeeSat,
+		CarrierValueSat:    carrierValueSat,
+		FeeRateSatPerVbyte: feeRateSatPerVByte,
+		TargetConf:         targetConf,
 	}, nil
 }
