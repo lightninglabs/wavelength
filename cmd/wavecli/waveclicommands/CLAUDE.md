@@ -145,6 +145,10 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/cmd/wave
 - JSON output (`stdout`) and diagnostic output (`stderr`) are kept on
   separate streams so shell pipelines can consume the JSON body while
   a human reading the terminal sees informative warnings.
+- MCP payment sends are two-phase: `send.prepare` validates and returns a
+  short-lived, single-use `send_intent_id`; `send` accepts only that id and
+  consumes the exact prepared intent. Never combine prepare and dispatch in
+  one MCP tool call.
 - `exit` defaults to a cooperative leave; it only starts a unilateral
   on-chain unroll when `--force-unroll-ack` matches the literal string
   `I_KNOW_WHAT_I_AM_DOING`, and that flag is mutually exclusive with
