@@ -73,10 +73,17 @@ func configureTaprootAssets(cfg *waved.Config) {
 
 				return nil, err
 			}
+			reservationStore, err := rpcServer.OORReservationStore()
+			if err != nil {
+				closeWallet()
+
+				return nil, err
+			}
 			preparer, err := tapassets.NewPreparer(
 				tapassets.PreparerConfig{
-					Wallet: wallet,
-					Store:  store,
+					Wallet:           wallet,
+					Store:            store,
+					ReservationStore: reservationStore,
 				},
 			)
 			if err != nil {

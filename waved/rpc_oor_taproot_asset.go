@@ -2,6 +2,7 @@ package waved
 
 import (
 	"bytes"
+	"errors"
 	"strings"
 
 	"github.com/lightninglabs/wavelength/oor"
@@ -29,9 +30,9 @@ func taprootAssetOORIntent(req *waverpc.SendOORRequest) (
 		return nil, status.Errorf(codes.InvalidArgument, "Taproot "+
 			"Asset OOR transfers require exactly one recipient")
 
-	case len(req.GetCustomInputs()) != 1:
+	case len(req.GetCustomInputs()) != 0:
 		return nil, status.Errorf(codes.InvalidArgument, "Taproot "+
-			"Asset OOR transfers require exactly one custom input")
+			"Asset OOR transfers do not support custom inputs")
 
 	case strings.TrimSpace(req.GetIdempotencyKey()) == "":
 		return nil, status.Errorf(codes.InvalidArgument, "Taproot "+
@@ -43,10 +44,20 @@ func taprootAssetOORIntent(req *waverpc.SendOORRequest) (
 			"acknowledge_unconfirmed=true")
 	}
 
+	inputOutpoint, err := parseOutpointString(
+		rpcIntent.GetInputVtxoOutpoint(),
+	)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "parse "+
+			"Taproot Asset input VTXO outpoint %q: %v",
+			rpcIntent.GetInputVtxoOutpoint(), err)
+	}
+
 	intent := &oor.TaprootAssetOORIntent{
-		AssetRef:    rpcIntent.GetAssetRef(),
-		AssetAmount: rpcIntent.GetAssetAmount(),
-		ProofFile:   bytes.Clone(rpcIntent.GetInputProofFile()),
+		InputVTXOOutpoint: inputOutpoint,
+		AssetRef:          rpcIntent.GetAssetRef(),
+		AssetAmount:       rpcIntent.GetAssetAmount(),
+		ProofFile:         bytes.Clone(rpcIntent.GetInputProofFile()),
 		RecipientScriptKey: bytes.Clone(
 			rpcIntent.GetRecipientScriptKey(),
 		),
@@ -81,6 +92,10 @@ func requireTaprootAssetOORPreparer(cfg *Config) (oor.TaprootAssetOORPreparer,
 func taprootAssetOORPreparationError(err error) error {
 	if err == nil {
 		return nil
+	}
+	if errors.Is(err, oor.ErrTaprootAssetCommitOutcomeUnknown) {
+		return status.Errorf(codes.Aborted, "prepare Taproot Asset "+
+			"OOR requires reconciliation: %v", err)
 	}
 	if status.Code(err) != codes.Unknown {
 		return err

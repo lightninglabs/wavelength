@@ -39,6 +39,27 @@ func TestSendVTXOResponseProtoRoundTrip(t *testing.T) {
 	require.Equal(t, original.SelectedCount, decoded.SelectedCount)
 }
 
+// TestTaprootAssetInputOutpointProtoRoundTrip guards the managed VTXO selector
+// that replaces the custom-input bypass for asset OOR transfers.
+func TestTaprootAssetInputOutpointProtoRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	original := &TaprootAssetOORIntent{
+		InputVtxoOutpoint: "0000000000000000000000000000000000000000" +
+			"000000000000000000000000:1",
+	}
+
+	payload, err := proto.Marshal(original)
+	require.NoError(t, err)
+
+	var decoded TaprootAssetOORIntent
+	require.NoError(t, proto.Unmarshal(payload, &decoded))
+	require.Equal(
+		t, original.GetInputVtxoOutpoint(),
+		decoded.GetInputVtxoOutpoint(),
+	)
+}
+
 // TestVTXOExpiryInfoProtoRoundTrip guards the expiry posture fields that swap
 // services use to decide whether a VTXO is safe to build a swap around.
 func TestVTXOExpiryInfoProtoRoundTrip(t *testing.T) {
