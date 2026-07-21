@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/spf13/cobra"
@@ -239,11 +240,7 @@ func roundsWatch(cmd *cobra.Command, _ []string) error {
 	}
 	defer conn.Close()
 
-	ctx, cancel := rpcContext(cmd)
-	if watchFor > 0 {
-		cancel()
-		ctx, cancel = context.WithTimeout(cmd.Context(), watchFor)
-	}
+	ctx, cancel := roundsWatchContext(cmd, watchFor)
 	defer cancel()
 
 	stream, err := client.WatchRounds(ctx, &waverpc.WatchRoundsRequest{})
@@ -277,6 +274,20 @@ func roundsWatch(cmd *cobra.Command, _ []string) error {
 			return nil
 		}
 	}
+}
+
+// roundsWatchContext keeps an unbounded watch alive until caller cancellation
+// unless the caller supplies the stream-specific --for limit. The global RPC
+// timeout applies to finite daemon calls, not to a deliberately live stream.
+func roundsWatchContext(cmd *cobra.Command,
+	watchFor time.Duration) (context.Context, context.CancelFunc) {
+
+	parent := commandContext(cmd)
+	if watchFor > 0 {
+		return context.WithTimeout(parent, watchFor)
+	}
+
+	return context.WithCancel(parent)
 }
 
 // parseRoundStateFilter converts a CLI state filter into the proto enum.

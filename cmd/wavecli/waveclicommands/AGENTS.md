@@ -97,8 +97,10 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/cmd/wave
   registered.
 - `getDaemonConn()` / `getDaemonClient()` — TLS-by-default daemon
   gRPC dial; `--no-tls` opts out for local dev.
-- `rpcContext()` — derives a cancellable daemon-RPC context with the global
-  `--timeout` deadline (30 seconds by default; zero disables it).
+- `rpcContext()` — derives a cancellable finite daemon-RPC context with the
+  global `--timeout` deadline (30 seconds by default; zero disables it).
+  Deliberately live streams such as `ark rounds watch` instead use `--for`,
+  `--max-events`, or caller cancellation.
 - `withWalletClient()` — maps `codes.Unimplemented` to
   `errWalletRPCDisabled` (with a pointer to `docs/wavewalletrpc_build.md`)
   for daemons built without the wavewalletrpc tag.

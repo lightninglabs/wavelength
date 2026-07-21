@@ -352,7 +352,9 @@ func waitForSendTerminal(cmd *cobra.Command,
 				req := &wavewalletrpc.InspectActivityRequest{
 					Id: id,
 				}
-				resp, err := c.InspectActivity(ctx, req)
+				pollCtx, cancel := rpcContextFrom(cmd, ctx)
+				resp, err := c.InspectActivity(pollCtx, req)
+				cancel()
 				if err != nil {
 					// A deadline hit while polling is a
 					// timeout, not a hard failure: report

@@ -44,6 +44,25 @@ func TestRPCContextAllowsDisablingTimeout(t *testing.T) {
 	require.ErrorIs(t, ctx.Err(), context.Canceled)
 }
 
+// TestRPCContextFromBoundsOneStep verifies that a multi-step command can apply
+// the global timeout to one RPC without replacing its overall parent context.
+func TestRPCContextFromBoundsOneStep(t *testing.T) {
+	t.Parallel()
+
+	cmd := findRootCommand(t, newRootCmd(false), "getinfo")
+	parent, parentCancel := context.WithCancel(t.Context())
+	defer parentCancel()
+
+	ctx, cancel := rpcContextFrom(cmd, parent)
+	defer cancel()
+
+	deadline, ok := ctx.Deadline()
+	require.True(t, ok)
+	require.WithinDuration(
+		t, time.Now().Add(defaultRPCTimeout), deadline, time.Second,
+	)
+}
+
 // TestRoundsWatchBounds verifies the streaming command exposes deterministic
 // duration and event-count completion controls for machine callers.
 func TestRoundsWatchBounds(t *testing.T) {
@@ -58,4 +77,15 @@ func TestRoundsWatchBounds(t *testing.T) {
 	watchFor, err := cmd.Flags().GetDuration("for")
 	require.NoError(t, err)
 	require.Zero(t, watchFor)
+
+	cmd.SetContext(t.Context())
+	ctx, cancel := roundsWatchContext(cmd, watchFor)
+	defer cancel()
+	_, ok := ctx.Deadline()
+	require.False(t, ok)
+
+	ctx, cancel = roundsWatchContext(cmd, time.Second)
+	defer cancel()
+	_, ok = ctx.Deadline()
+	require.True(t, ok)
 }
