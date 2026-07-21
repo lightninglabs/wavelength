@@ -7,9 +7,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestConfigureTaprootAssetsIsOptIn proves the standalone runtime only installs
-// a tapd lifecycle hook after explicit configuration.
-func TestConfigureTaprootAssetsIsOptIn(t *testing.T) {
+// TestConfigureTaprootAssetsDelegatesToWaved proves the command setup installs
+// the exported production registrar and inherits its idempotency.
+func TestConfigureTaprootAssetsDelegatesToWaved(t *testing.T) {
 	t.Parallel()
 
 	disabled := waved.DefaultConfig()
@@ -19,6 +19,9 @@ func TestConfigureTaprootAssetsIsOptIn(t *testing.T) {
 	enabled := waved.DefaultConfig()
 	enabled.Network = "regtest"
 	enabled.TaprootAssets.Enabled = true
+	configureTaprootAssets(enabled)
+	require.Len(t, enabled.RPCServiceRegistrars, 1)
+
 	configureTaprootAssets(enabled)
 	require.Len(t, enabled.RPCServiceRegistrars, 1)
 }
