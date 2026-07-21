@@ -64,7 +64,7 @@ who want direct access.
 | Command | RPC | Description |
 |---------|-----|-------------|
 | `ark vtxos {list,refresh,leave}` | `ListVTXOs` / `RefreshVTXOs` / `LeaveVTXOs` | VTXO inventory and lifecycle |
-| `ark rounds {get,join,list,watch}` | `GetRound` / (join) / `ListRounds` / `WatchRounds` | Round FSM state; `join` commits queued intents into the next round (`vtxos refresh`/`leave` call it automatically) |
+| `ark rounds {get,join,list,watch}` | `GetRound` / (join) / `ListRounds` / `WatchRounds` | Round FSM state; `join` commits queued intents into the next round (`vtxos refresh`/`leave` call it automatically); `watch --max-events`/`--for` bounds streams for machines |
 | `ark oor {receive,get,list}` | `NewReceiveScript` / `GetOORSession` / `ListOORSessions` | OOR session inspection |
 | `ark board` | `Board` | Trigger boarding with confirmed UTXOs |
 | `ark sweep [list]` | `SweepBoardingUTXOs` / `ListBoardingSweeps` | Boarding-timeout sweeps |
@@ -97,6 +97,8 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/cmd/wave
   registered.
 - `getDaemonConn()` / `getDaemonClient()` — TLS-by-default daemon
   gRPC dial; `--no-tls` opts out for local dev.
+- `rpcContext()` — derives a cancellable daemon-RPC context with the global
+  `--timeout` deadline (30 seconds by default; zero disables it).
 - `withWalletClient()` — maps `codes.Unimplemented` to
   `errWalletRPCDisabled` (with a pointer to `docs/wavewalletrpc_build.md`)
   for daemons built without the wavewalletrpc tag.

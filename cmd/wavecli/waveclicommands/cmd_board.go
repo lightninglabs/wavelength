@@ -1,7 +1,6 @@
 package waveclicommands
 
 import (
-	"context"
 	"fmt"
 
 	"github.com/lightninglabs/wavelength/waverpc"
@@ -58,7 +57,10 @@ func board(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	resp, err := client.Board(context.Background(), req)
+	ctx, cancel := rpcContext(cmd)
+	defer cancel()
+
+	resp, err := client.Board(ctx, req)
 	if err != nil {
 		// Map well-known server-side fee rejections to a
 		// concise CLI message. Fall through to the generic

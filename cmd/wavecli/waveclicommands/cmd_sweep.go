@@ -1,7 +1,6 @@
 package waveclicommands
 
 import (
-	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -112,7 +111,10 @@ func sweep(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	resp, err := client.SweepBoardingUTXOs(context.Background(), req)
+	ctx, cancel := rpcContext(cmd)
+	defer cancel()
+
+	resp, err := client.SweepBoardingUTXOs(ctx, req)
 	if err != nil {
 		return fmt.Errorf("SweepBoardingUTXOs RPC failed: %w", err)
 	}
@@ -139,7 +141,10 @@ func sweepList(cmd *cobra.Command, _ []string) error {
 		PageToken: pageToken,
 	}
 
-	resp, err := client.ListBoardingSweeps(context.Background(), req)
+	ctx, cancel := rpcContext(cmd)
+	defer cancel()
+
+	resp, err := client.ListBoardingSweeps(ctx, req)
 	if err != nil {
 		return fmt.Errorf("ListBoardingSweeps RPC failed: %w", err)
 	}

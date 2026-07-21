@@ -1,7 +1,6 @@
 package waveclicommands
 
 import (
-	"context"
 	"fmt"
 	"os"
 
@@ -113,9 +112,10 @@ func feesEstimate(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	resp, err := client.EstimateFee(
-		context.Background(), req,
-	)
+	ctx, cancel := rpcContext(cmd)
+	defer cancel()
+
+	resp, err := client.EstimateFee(ctx, req)
 	if err != nil {
 		return fmt.Errorf("EstimateFee RPC failed: %w", err)
 	}
@@ -179,9 +179,10 @@ func feesHistory(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	resp, err := client.GetFeeHistory(
-		context.Background(), req,
-	)
+	ctx, cancel := rpcContext(cmd)
+	defer cancel()
+
+	resp, err := client.GetFeeHistory(ctx, req)
 	if err != nil {
 		return fmt.Errorf("GetFeeHistory RPC failed: %w", err)
 	}

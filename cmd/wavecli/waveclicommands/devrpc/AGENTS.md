@@ -11,7 +11,8 @@ hand-written code.
 ## Key Types
 
 - `Config` — Integration glue: `GetConn(cmd) → *grpc.ClientConn` (dial
-  function), `PrintJSON(proto.Message) error` (output sink),
+  function), `RPCContext(cmd) → (context.Context, CancelFunc)` (bounded RPC
+  lifetime), `PrintJSON(proto.Message) error` (output sink), and
   `MapRPCError(error) error` (error humanization).
 - `NewDevCmd(cfg) *cobra.Command` — Creates the generated dev RPC command
   tree rooted at `dev`. Child commands are organized by service then method.

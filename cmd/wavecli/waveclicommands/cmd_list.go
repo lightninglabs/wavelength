@@ -72,7 +72,10 @@ func walletActivity(cmd *cobra.Command, _ []string) error {
 
 	return withWalletClient(
 		cmd, func(c wavewalletrpc.WalletServiceClient) error {
-			resp, err := c.List(cmd.Context(), req)
+			ctx, cancel := rpcContext(cmd)
+			defer cancel()
+
+			resp, err := c.List(ctx, req)
 			if err != nil {
 				return fmt.Errorf("activity: %w", err)
 			}

@@ -181,7 +181,9 @@ func walletSend(cmd *cobra.Command, args []string) error {
 
 	return withWalletClient(
 		cmd, func(c wavewalletrpc.WalletServiceClient) error {
-			prepareResp, err := c.PrepareSend(cmd.Context(), req)
+			prepareCtx, cancelPrepare := rpcContext(cmd)
+			prepareResp, err := c.PrepareSend(prepareCtx, req)
+			cancelPrepare()
 			if err != nil {
 				return fmt.Errorf("prepare send: %w", err)
 			}
@@ -206,11 +208,13 @@ func walletSend(cmd *cobra.Command, args []string) error {
 			}
 
 			intentID := prepareResp.GetSendIntentId()
+			sendCtx, cancelSend := rpcContext(cmd)
 			resp, err := c.Send(
-				cmd.Context(), &wavewalletrpc.SendRequest{
+				sendCtx, &wavewalletrpc.SendRequest{
 					SendIntentId: intentID,
 				},
 			)
+			cancelSend()
 			if err != nil {
 				return fmt.Errorf("send prepared intent: %w",
 					err)

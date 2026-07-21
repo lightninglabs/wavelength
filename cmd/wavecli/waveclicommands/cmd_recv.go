@@ -76,9 +76,12 @@ func walletRecv(cmd *cobra.Command, _ []string) error {
 
 	return withWalletClient(
 		cmd, func(c wavewalletrpc.WalletServiceClient) error {
+			ctx, cancel := rpcContext(cmd)
+			defer cancel()
+
 			if offchain {
 				resp, err := c.Recv(
-					cmd.Context(),
+					ctx,
 					&wavewalletrpc.RecvRequest{
 						AmtSat: amt,
 						Memo:   memo,
@@ -93,7 +96,7 @@ func walletRecv(cmd *cobra.Command, _ []string) error {
 			}
 
 			resp, err := c.Deposit(
-				cmd.Context(),
+				ctx,
 				&wavewalletrpc.DepositRequest{
 					AmtSatHint: amtHint,
 				},

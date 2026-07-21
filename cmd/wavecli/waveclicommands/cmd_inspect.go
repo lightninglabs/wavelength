@@ -42,7 +42,10 @@ func inspectActivity(cmd *cobra.Command, args []string) error {
 
 	return withWalletInspectionClient(
 		cmd, func(c wavewalletrpc.WalletInspectionServiceClient) error {
-			resp, err := c.InspectActivity(cmd.Context(), req)
+			ctx, cancel := rpcContext(cmd)
+			defer cancel()
+
+			resp, err := c.InspectActivity(ctx, req)
 			if err != nil {
 				return fmt.Errorf("activity inspect: %w", err)
 			}

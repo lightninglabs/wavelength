@@ -42,8 +42,11 @@ func walletUnlock(cmd *cobra.Command, _ []string) error {
 
 	return withWalletClient(
 		cmd, func(c wavewalletrpc.WalletServiceClient) error {
+			ctx, cancel := rpcContext(cmd)
+			defer cancel()
+
 			resp, err := c.Unlock(
-				cmd.Context(), &wavewalletrpc.UnlockRequest{
+				ctx, &wavewalletrpc.UnlockRequest{
 					WalletPassword: password,
 				},
 			)

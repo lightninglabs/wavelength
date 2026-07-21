@@ -1,6 +1,8 @@
 package devrpc
 
 import (
+	"context"
+
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
@@ -20,6 +22,9 @@ type Config struct {
 
 	// MapRPCError maps low-level gRPC errors into user-facing CLI errors.
 	MapRPCError func(error) error
+
+	// RPCContext derives the bounded context for one daemon RPC.
+	RPCContext func(*cobra.Command) (context.Context, context.CancelFunc)
 }
 
 type serviceSpec struct {

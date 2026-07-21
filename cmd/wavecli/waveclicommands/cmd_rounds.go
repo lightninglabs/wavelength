@@ -89,7 +89,7 @@ func newRoundsJoinCmd() *cobra.Command {
 
 // newRoundsWatchCmd creates the 'rounds watch' subcommand.
 func newRoundsWatchCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "watch",
 		Short: "Stream round state updates",
 		Long: "Opens a server-streaming connection " +
@@ -97,6 +97,13 @@ func newRoundsWatchCmd() *cobra.Command {
 			"as they occur. Press Ctrl-C to stop.",
 		RunE: roundsWatch,
 	}
+
+	cmd.Flags().Uint32("max-events", 0,
+		"stop after this many updates; 0 has no event-count limit")
+	cmd.Flags().Duration("for", 0,
+		"watch for this duration instead of the global --timeout")
+
+	return cmd
 }
 
 // roundsGet executes the GetRound RPC and prints the result.
@@ -121,7 +128,10 @@ func roundsGet(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	resp, err := client.GetRound(context.Background(), req)
+	ctx, cancel := rpcContext(cmd)
+	defer cancel()
+
+	resp, err := client.GetRound(ctx, req)
 	if err != nil {
 		return fmt.Errorf("GetRound RPC failed: %w", err)
 	}
@@ -170,7 +180,10 @@ func roundsList(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	resp, err := client.ListRounds(context.Background(), req)
+	ctx, cancel := rpcContext(cmd)
+	defer cancel()
+
+	resp, err := client.ListRounds(ctx, req)
 	if err != nil {
 		return fmt.Errorf("ListRounds RPC failed: %w", err)
 	}
@@ -200,7 +213,10 @@ func roundsJoin(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	resp, err := client.JoinNextRound(cmd.Context(), req)
+	ctx, cancel := rpcContext(cmd)
+	defer cancel()
+
+	resp, err := client.JoinNextRound(ctx, req)
 	if err != nil {
 		return fmt.Errorf("JoinNextRound RPC failed: %w", err)
 	}
@@ -211,30 +227,54 @@ func roundsJoin(cmd *cobra.Command, _ []string) error {
 // roundsWatch executes the WatchRounds streaming RPC and prints
 // each state update as it arrives.
 func roundsWatch(cmd *cobra.Command, _ []string) error {
+	maxEvents, _ := cmd.Flags().GetUint32("max-events")
+	watchFor, _ := cmd.Flags().GetDuration("for")
+	if watchFor < 0 {
+		return invalidArgs(fmt.Errorf("--for must be non-negative"))
+	}
+
 	client, conn, err := getDaemonClient(cmd)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
 
-	stream, err := client.WatchRounds(
-		context.Background(), &waverpc.WatchRoundsRequest{},
-	)
+	ctx, cancel := rpcContext(cmd)
+	if watchFor > 0 {
+		cancel()
+		ctx, cancel = context.WithTimeout(cmd.Context(), watchFor)
+	}
+	defer cancel()
+
+	stream, err := client.WatchRounds(ctx, &waverpc.WatchRoundsRequest{})
 	if err != nil {
 		return fmt.Errorf("WatchRounds RPC failed: %w", err)
 	}
 
+	var events uint32
 	for {
 		resp, err := stream.Recv()
 		if errors.Is(err, io.EOF) {
 			return nil
 		}
 		if err != nil {
+			if errors.Is(ctx.Err(), context.Canceled) ||
+				(watchFor > 0 && errors.Is(
+					ctx.Err(), context.DeadlineExceeded,
+				)) {
+				return nil
+			}
+
 			return fmt.Errorf("stream error: %w", err)
 		}
 
 		if err := printJSON(resp); err != nil {
 			return err
+		}
+
+		events++
+		if maxEvents > 0 && events >= maxEvents {
+			return nil
 		}
 	}
 }

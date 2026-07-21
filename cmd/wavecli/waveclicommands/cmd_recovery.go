@@ -54,8 +54,11 @@ func newRecoveryListCmd() *cobra.Command {
 			includeTerminal, _ := cmd.Flags().GetBool(
 				"include-terminal",
 			)
+			ctx, cancel := rpcContext(cmd)
+			defer cancel()
+
 			resp, err := client.ListVHTLCRecoveries(
-				cmd.Context(),
+				ctx,
 				&waverpc.ListVHTLCRecoveriesRequest{
 					IncludeTerminal: includeTerminal,
 				},
@@ -88,8 +91,11 @@ func newRecoveryStatusCmd() *cobra.Command {
 			}
 			defer conn.Close()
 
+			ctx, cancel := rpcContext(cmd)
+			defer cancel()
+
 			resp, err := client.GetVHTLCRecoveryStatus(
-				cmd.Context(),
+				ctx,
 				&waverpc.GetVHTLCRecoveryStatusRequest{
 					RecoveryId: args[0],
 				},
@@ -132,8 +138,11 @@ func newRecoveryEscalateCmd() *cobra.Command {
 				return err
 			}
 
+			ctx, cancel := rpcContext(cmd)
+			defer cancel()
+
 			resp, err := client.EscalateVHTLCRecovery(
-				cmd.Context(),
+				ctx,
 				&waverpc.EscalateVHTLCRecoveryRequest{
 					RecoveryId:    args[0],
 					Reason:        reason,
@@ -176,8 +185,11 @@ func newRecoveryCancelCmd() *cobra.Command {
 			reason, _ := cmd.Flags().GetString("reason")
 			txid, _ := cmd.Flags().GetString("cooperative-txid")
 
+			ctx, cancel := rpcContext(cmd)
+			defer cancel()
+
 			resp, err := client.CancelVHTLCRecovery(
-				cmd.Context(),
+				ctx,
 				&waverpc.CancelVHTLCRecoveryRequest{
 					RecoveryId:      args[0],
 					Reason:          reason,

@@ -154,17 +154,23 @@ func runMethod(cmd *cobra.Command, cfg Config, service protoreflect.FullName,
 	}
 	defer conn.Close()
 
+	ctx := cmd.Context()
+	cancel := func() {}
+	if cfg.RPCContext != nil {
+		ctx, cancel = cfg.RPCContext(cmd)
+	}
+	defer cancel()
+
 	fullMethod := "/" + string(service) + "/" + string(method.spec.Name)
 	if method.spec.ServerStreaming {
 		return runServerStream(
-			cmd.Context(), cfg, conn, fullMethod, method.output,
-			req,
+			ctx, cfg, conn, fullMethod, method.output, req,
 		)
 	}
 
 	resp := dynamicpb.NewMessage(method.output)
 	if err := conn.Invoke(
-		cmd.Context(), fullMethod, req, resp,
+		ctx, fullMethod, req, resp,
 	); err != nil {
 		return mapRPCError(cfg, err)
 	}
