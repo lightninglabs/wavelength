@@ -26,6 +26,8 @@ func TestTaprootAssetOnboardingRequest(t *testing.T) {
 	require.NoError(t, cmd.Flags().Set("asset-ref", "asset-id"))
 	require.NoError(t, cmd.Flags().Set("asset-amount", "42"))
 	require.NoError(t, cmd.Flags().Set("proof-file", proofPath))
+	require.NoError(t, cmd.Flags().Set("carrier-value-sat", "1000"))
+	require.NoError(t, cmd.Flags().Set("sat-per-vbyte", "2"))
 	require.NoError(t, cmd.Flags().Set("max-fee-sat", "500"))
 
 	request, err := taprootAssetOnboardingRequest(cmd)
@@ -34,7 +36,29 @@ func TestTaprootAssetOnboardingRequest(t *testing.T) {
 	require.Equal(t, "asset-id", request.AssetRef)
 	require.Equal(t, uint64(42), request.AssetAmount)
 	require.Equal(t, proof, request.InputProofFile)
+	require.Equal(t, uint64(1_000), request.CarrierValueSat)
+	require.Equal(t, uint64(2), request.FeeRateSatPerVbyte)
+	require.Zero(t, request.TargetConf)
 	require.Equal(t, uint64(500), request.MaxFeeSat)
+}
+
+// TestTaprootAssetOnboardingRequestTargetConf verifies the estimator mode and
+// the daemon-side operator-minimum carrier default remain explicit on the
+// wire.
+func TestTaprootAssetOnboardingRequestTargetConf(t *testing.T) {
+	t.Parallel()
+
+	proofPath := filepath.Join(t.TempDir(), "asset-proof.tasset")
+	require.NoError(t, os.WriteFile(proofPath, []byte("proof"), 0o600))
+	cmd := validTaprootAssetOnboardCmd(t, proofPath)
+	require.NoError(t, cmd.Flags().Set("sat-per-vbyte", "0"))
+	require.NoError(t, cmd.Flags().Set("target-conf", "6"))
+
+	request, err := taprootAssetOnboardingRequest(cmd)
+	require.NoError(t, err)
+	require.Zero(t, request.CarrierValueSat)
+	require.Zero(t, request.FeeRateSatPerVbyte)
+	require.Equal(t, uint32(6), request.TargetConf)
 }
 
 // TestWaitForTaprootAssetOnboarding verifies --wait reuses one byte-identical
@@ -116,6 +140,19 @@ func TestTaprootAssetOnboardingRequestRejectsInvalidInput(t *testing.T) {
 			value:   "0",
 			wantErr: "--max-fee-sat must be positive",
 		},
+		{
+			name:  "fee selector",
+			flag:  "sat-per-vbyte",
+			value: "0",
+			wantErr: "exactly one of --sat-per-vbyte and " +
+				"--target-conf is required",
+		},
+		{
+			name:    "two fee selectors",
+			flag:    "target-conf",
+			value:   "6",
+			wantErr: "mutually exclusive",
+		},
 	}
 
 	for _, test := range tests {
@@ -143,6 +180,7 @@ func validTaprootAssetOnboardCmd(t *testing.T,
 	require.NoError(t, cmd.Flags().Set("asset-ref", "asset-id"))
 	require.NoError(t, cmd.Flags().Set("asset-amount", "42"))
 	require.NoError(t, cmd.Flags().Set("proof-file", proofPath))
+	require.NoError(t, cmd.Flags().Set("sat-per-vbyte", "2"))
 	require.NoError(t, cmd.Flags().Set("max-fee-sat", "500"))
 
 	return cmd
