@@ -3803,9 +3803,11 @@ type SendOORRequest struct {
 	// of creating a duplicate transfer.
 	IdempotencyKey string `protobuf:"bytes,4,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
 	// taproot_asset requests the experimental proof-selected Taproot Asset
-	// extension. The first release requires exactly one locally stored custom
-	// input, one recipient, equal input/output BTC values, and a non-empty
-	// idempotency_key. Bitcoin-only sends leave this field unset.
+	// extension. The first release requires exactly one managed asset input,
+	// one recipient, equal input/output BTC values, and a non-empty
+	// idempotency_key. Asset transfers must identify the managed input through
+	// taproot_asset.input_vtxo_outpoint and must not use custom_inputs.
+	// Bitcoin-only sends leave this field unset.
 	TaprootAsset  *TaprootAssetOORIntent `protobuf:"bytes,5,opt,name=taproot_asset,json=taprootAsset,proto3" json:"taproot_asset,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -3878,7 +3880,8 @@ func (x *SendOORRequest) GetTaprootAsset() *TaprootAssetOORIntent {
 
 // TaprootAssetOORIntent selects exact asset units for the experimental OOR
 // custom-anchor flow. The BTC amount remains on the enclosing recipient and
-// custom input; asset_amount is measured in independent Taproot Asset units.
+// managed VTXO input; asset_amount is measured in independent Taproot Asset
+// units.
 type TaprootAssetOORIntent struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// asset_ref is the opaque tap-sdk asset or group identifier.
@@ -3902,8 +3905,12 @@ type TaprootAssetOORIntent struct {
 	// persists compact unconfirmed proof paths but cannot yet publish and log
 	// them through tapd's chain porter.
 	AcknowledgeUnconfirmed bool `protobuf:"varint,7,opt,name=acknowledge_unconfirmed,json=acknowledgeUnconfirmed,proto3" json:"acknowledge_unconfirmed,omitempty"`
-	unknownFields          protoimpl.UnknownFields
-	sizeCache              protoimpl.SizeCache
+	// input_vtxo_outpoint identifies the wallet-managed asset-bearing VTXO in
+	// "txid:vout" form. The wallet reserves this required input through the
+	// normal VTXO manager path before any Taproot Asset commit occurs.
+	InputVtxoOutpoint string `protobuf:"bytes,8,opt,name=input_vtxo_outpoint,json=inputVtxoOutpoint,proto3" json:"input_vtxo_outpoint,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *TaprootAssetOORIntent) Reset() {
@@ -3983,6 +3990,13 @@ func (x *TaprootAssetOORIntent) GetAcknowledgeUnconfirmed() bool {
 		return x.AcknowledgeUnconfirmed
 	}
 	return false
+}
+
+func (x *TaprootAssetOORIntent) GetInputVtxoOutpoint() string {
+	if x != nil {
+		return x.InputVtxoOutpoint
+	}
+	return ""
 }
 
 // CustomOORInput specifies a VTXO to spend with an explicit semantic policy
@@ -10753,7 +10767,7 @@ const file_daemon_proto_rawDesc = "" +
 	"\adry_run\x18\x02 \x01(\bR\x06dryRun\x12<\n" +
 	"\rcustom_inputs\x18\x03 \x03(\v2\x17.waverpc.CustomOORInputR\fcustomInputs\x12'\n" +
 	"\x0fidempotency_key\x18\x04 \x01(\tR\x0eidempotencyKey\x12C\n" +
-	"\rtaproot_asset\x18\x05 \x01(\v2\x1e.waverpc.TaprootAssetOORIntentR\ftaprootAsset\"\xd8\x02\n" +
+	"\rtaproot_asset\x18\x05 \x01(\v2\x1e.waverpc.TaprootAssetOORIntentR\ftaprootAsset\"\x88\x03\n" +
 	"\x15TaprootAssetOORIntent\x12\x1b\n" +
 	"\tasset_ref\x18\x01 \x01(\tR\bassetRef\x12!\n" +
 	"\fasset_amount\x18\x02 \x01(\x04R\vassetAmount\x12(\n" +
@@ -10761,7 +10775,8 @@ const file_daemon_proto_rawDesc = "" +
 	"\x14recipient_script_key\x18\x04 \x01(\fR\x12recipientScriptKey\x122\n" +
 	"\x15proof_courier_address\x18\x05 \x01(\tR\x13proofCourierAddress\x126\n" +
 	"\x17proof_delivery_metadata\x18\x06 \x01(\fR\x15proofDeliveryMetadata\x127\n" +
-	"\x17acknowledge_unconfirmed\x18\a \x01(\bR\x16acknowledgeUnconfirmed\"\x8b\x02\n" +
+	"\x17acknowledge_unconfirmed\x18\a \x01(\bR\x16acknowledgeUnconfirmed\x12.\n" +
+	"\x13input_vtxo_outpoint\x18\b \x01(\tR\x11inputVtxoOutpoint\"\x8b\x02\n" +
 	"\x0eCustomOORInput\x12\x1a\n" +
 	"\boutpoint\x18\x01 \x01(\tR\boutpoint\x120\n" +
 	"\x14vtxo_policy_template\x18\x02 \x01(\fR\x12vtxoPolicyTemplate\x12\x1d\n" +

@@ -285,6 +285,41 @@ func TestReceiveStatusUpdateFailurePreservesStateForRetry(t *testing.T) {
 	h.store.AssertExpectations(t)
 }
 
+// TestSpendReleasedPersistsLiveAndReservationRelease proves a known-safe OOR
+// setup failure leaves Spending through the actor and selects the atomic store
+// path that also deletes the durable preparation reservation.
+func TestSpendReleasedPersistsLiveAndReservationRelease(t *testing.T) {
+	t.Parallel()
+
+	h := newVTXOTestHarness(t)
+	vtxo := h.newTestDescriptor()
+	actor := &VTXOActor{
+		cfg: &VTXOActorConfig{
+			VTXO:        vtxo,
+			Store:       h.store,
+			ChainSource: noopChainSourceRef{},
+			ChainParams: &chaincfg.RegressionNetParams,
+		},
+		state: &SpendingState{
+			VTXO:              vtxo,
+			LastCheckedHeight: vtxo.CreatedHeight,
+		},
+		env: h.env,
+	}
+
+	h.store.On(
+		"UpdateVTXOStatusReleasingReservation", h.ctx, vtxo.Outpoint,
+		VTXOStatusLive,
+	).Return(nil).Once()
+
+	result := actor.Receive(h.ctx, &SpendReleasedEvent{})
+	_, err := result.Unpack()
+	require.NoError(t, err)
+	_, ok := actor.state.(*LiveState)
+	require.True(t, ok, "expected LiveState, got %T", actor.state)
+	h.store.AssertExpectations(t)
+}
+
 // TestProcessOutboxForfeitRequest verifies that ForfeitRequest messages are
 // relayed through the manager as a RelayToRoundMsg containing a
 // RefreshVTXORequest with the correct fields.

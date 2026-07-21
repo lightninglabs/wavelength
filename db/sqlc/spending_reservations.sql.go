@@ -86,8 +86,8 @@ type UpsertSpendingReservationParams struct {
 // active spend owner (e.g. an outgoing OOR session) so a startup sweep can
 // release orphaned Spending VTXOs that have no live reservation.
 // UpsertSpendingReservation records (or refreshes) the reservation for one
-// outpoint. The owner fields are updated on conflict so a re-checkpointed
-// session re-binds the same outpoint to its current owner.
+// outpoint. The owner fields are updated on conflict so a resumed workflow
+// re-binds the same outpoint to its current durable owner.
 func (q *Queries) UpsertSpendingReservation(ctx context.Context, arg UpsertSpendingReservationParams) error {
 	_, err := q.db.ExecContext(ctx, UpsertSpendingReservation,
 		arg.OutpointHash,

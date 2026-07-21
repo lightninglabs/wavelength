@@ -442,11 +442,11 @@ func (s *VTXOPersistenceStore) rowsToDescriptorsNoAncestry(ctx context.Context,
 }
 
 // ListSelectionCandidatesByStatus returns the lightweight projection coin
-// selection runs on: outpoint, amount, and pkScript per VTXO in the given
-// status. Selection happens on every payment and needs only these fields, so
-// this path skips the full descriptor decode (pubkey parsing, taproot script
-// reconstruction, policy template decode) and the batched ancestry query
-// entirely.
+// selection runs on: outpoint, amount, pkScript, and the optional Taproot
+// Asset root per VTXO in the given status. Selection happens on every payment
+// and needs only these fields, so this path skips the full descriptor decode
+// (pubkey parsing, taproot script reconstruction, policy template decode) and
+// the batched ancestry query entirely.
 func (s *VTXOPersistenceStore) ListSelectionCandidatesByStatus(
 	ctx context.Context, status vtxo.VTXOStatus) ([]vtxo.SelectedVTXO,
 	error) {
@@ -467,14 +467,28 @@ func (s *VTXOPersistenceStore) ListSelectionCandidatesByStatus(
 		for _, row := range rows {
 			var outpointHash chainhash.Hash
 			copy(outpointHash[:], row.OutpointHash)
+			var taprootAssetRoot *chainhash.Hash
+			if len(row.TaprootAssetRoot) > 0 {
+				if len(row.TaprootAssetRoot) !=
+					chainhash.HashSize {
+					return fmt.Errorf("invalid selection "+
+						"Taproot Asset root length: %d",
+						len(row.TaprootAssetRoot))
+				}
+
+				root := &chainhash.Hash{}
+				copy(root[:], row.TaprootAssetRoot)
+				taprootAssetRoot = root
+			}
 
 			candidates = append(candidates, vtxo.SelectedVTXO{
 				Outpoint: wire.OutPoint{
 					Hash:  outpointHash,
 					Index: uint32(row.OutpointIndex),
 				},
-				Amount:   btcutil.Amount(row.Amount),
-				PkScript: row.PkScript,
+				Amount:           btcutil.Amount(row.Amount),
+				PkScript:         row.PkScript,
+				TaprootAssetRoot: taprootAssetRoot,
 			})
 		}
 

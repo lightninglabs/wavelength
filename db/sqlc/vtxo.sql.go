@@ -191,22 +191,24 @@ func (q *Queries) ListLiveVTXOs(ctx context.Context) ([]Vtxo, error) {
 }
 
 const ListVTXOSelectionCandidatesByStatus = `-- name: ListVTXOSelectionCandidatesByStatus :many
-SELECT outpoint_hash, outpoint_index, amount, pk_script
+SELECT outpoint_hash, outpoint_index, amount, pk_script, taproot_asset_root
 FROM vtxos
 WHERE status = $1 AND taproot_asset_root IS NULL
 ORDER BY creation_time DESC
 `
 
 type ListVTXOSelectionCandidatesByStatusRow struct {
-	OutpointHash  []byte
-	OutpointIndex int32
-	Amount        int64
-	PkScript      []byte
+	OutpointHash     []byte
+	OutpointIndex    int32
+	Amount           int64
+	PkScript         []byte
+	TaprootAssetRoot []byte
 }
 
 // ListVTXOSelectionCandidatesByStatus returns the lightweight projection coin
-// selection runs on: outpoint, amount, and pkScript. Selection happens on
-// every payment and only needs these three fields, so this avoids decoding
+// selection runs on: outpoint, amount, pkScript, and the optional Taproot
+// Asset root. Selection happens on every payment and only needs these fields,
+// so this avoids decoding
 // full descriptors (pubkey parsing, taproot script reconstruction, policy
 // template decode) and the batched ancestry-path query on the hot path.
 func (q *Queries) ListVTXOSelectionCandidatesByStatus(ctx context.Context, status int32) ([]ListVTXOSelectionCandidatesByStatusRow, error) {
@@ -223,6 +225,7 @@ func (q *Queries) ListVTXOSelectionCandidatesByStatus(ctx context.Context, statu
 			&i.OutpointIndex,
 			&i.Amount,
 			&i.PkScript,
+			&i.TaprootAssetRoot,
 		); err != nil {
 			return nil, err
 		}

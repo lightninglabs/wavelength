@@ -38,11 +38,12 @@ ORDER BY vtxos.creation_time DESC;
 
 -- name: ListVTXOSelectionCandidatesByStatus :many
 -- ListVTXOSelectionCandidatesByStatus returns the lightweight projection coin
--- selection runs on: outpoint, amount, and pkScript. Selection happens on
--- every payment and only needs these three fields, so this avoids decoding
+-- selection runs on: outpoint, amount, pkScript, and the optional Taproot
+-- Asset root. Selection happens on every payment and only needs these fields,
+-- so this avoids decoding
 -- full descriptors (pubkey parsing, taproot script reconstruction, policy
 -- template decode) and the batched ancestry-path query on the hot path.
-SELECT outpoint_hash, outpoint_index, amount, pk_script
+SELECT outpoint_hash, outpoint_index, amount, pk_script, taproot_asset_root
 FROM vtxos
 WHERE status = $1 AND taproot_asset_root IS NULL
 ORDER BY creation_time DESC;

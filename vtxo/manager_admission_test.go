@@ -848,6 +848,248 @@ func TestSelectAndReserveSpendSuccess(t *testing.T) {
 	require.True(t, ok, "expected SpendingState, got %T", ref.state)
 }
 
+// TestSelectAndReserveSpendRequiredAssetWithBitcoin verifies a caller-named
+// asset VTXO is selected first and only ordinary Bitcoin VTXOs may cover the
+// remaining carrier target.
+func TestSelectAndReserveSpendRequiredAssetWithBitcoin(t *testing.T) {
+	t.Parallel()
+
+	requiredAsset := makeDescriptor(t, 600, 10)
+	requiredRoot := chainhash.Hash{1}
+	requiredAsset.TaprootAssetRoot = &requiredRoot
+	bitcoinLarge := makeDescriptor(t, 500, 11)
+	bitcoinSmall := makeDescriptor(t, 300, 12)
+	unrelatedAsset := makeDescriptor(t, 2_000, 13)
+	unrelatedRoot := chainhash.Hash{2}
+	unrelatedAsset.TaprootAssetRoot = &unrelatedRoot
+
+	mgr, store := newTestManager(t, []*Descriptor{
+		requiredAsset, bitcoinLarge, bitcoinSmall, unrelatedAsset,
+	})
+	store.On(
+		"GetVTXO", t.Context(), requiredAsset.Outpoint,
+	).Return(requiredAsset, nil).Once()
+	store.On(
+		"ListVTXOsByStatus", t.Context(), VTXOStatusLive,
+	).Return([]*Descriptor{
+		unrelatedAsset, bitcoinSmall, requiredAsset, bitcoinLarge,
+	}, nil).Once()
+
+	result := mgr.Receive(t.Context(), &SelectAndReserveSpendRequest{
+		TargetAmount:      1_000,
+		MinChangeAmount:   100,
+		RequiredOutpoints: []wire.OutPoint{requiredAsset.Outpoint},
+	})
+	resp, err := result.Unpack()
+	require.NoError(t, err)
+
+	spendResp, ok := resp.(*SelectAndReserveSpendResponse)
+	require.True(t, ok)
+	require.Equal(t, btcutil.Amount(1_100), spendResp.TotalSelected)
+	require.Len(t, spendResp.SelectedVTXOs, 2)
+	require.Equal(
+		t, requiredAsset.Outpoint, spendResp.SelectedVTXOs[0].Outpoint,
+	)
+	require.Equal(
+		t, &requiredRoot, spendResp.SelectedVTXOs[0].TaprootAssetRoot,
+	)
+	require.Equal(
+		t, bitcoinLarge.Outpoint, spendResp.SelectedVTXOs[1].Outpoint,
+	)
+	require.NotEqual(
+		t, unrelatedAsset.Outpoint, spendResp.SelectedVTXOs[1].Outpoint,
+	)
+}
+
+// TestSelectAndReserveSpendRequiredExact verifies an exact required asset
+// input reserves directly without consulting the ordinary candidate set.
+func TestSelectAndReserveSpendRequiredExact(t *testing.T) {
+	t.Parallel()
+
+	required := makeDescriptor(t, 1_000, 14)
+	root := chainhash.Hash{6}
+	required.TaprootAssetRoot = &root
+	mgr, store := newTestManager(t, []*Descriptor{required})
+	store.On(
+		"GetVTXO", t.Context(), required.Outpoint,
+	).Return(required, nil).Once()
+
+	result := mgr.Receive(t.Context(), &SelectAndReserveSpendRequest{
+		TargetAmount:      required.Amount,
+		MinChangeAmount:   500,
+		RequiredOutpoints: []wire.OutPoint{required.Outpoint},
+	})
+	resp, err := result.Unpack()
+	require.NoError(t, err)
+
+	spendResp, ok := resp.(*SelectAndReserveSpendResponse)
+	require.True(t, ok)
+	require.Equal(t, required.Amount, spendResp.TotalSelected)
+	require.Len(t, spendResp.SelectedVTXOs, 1)
+	require.Equal(
+		t, required.Outpoint, spendResp.SelectedVTXOs[0].Outpoint,
+	)
+}
+
+// TestSelectAndReserveSpendRequiredResidualTopUp verifies an already-covering
+// required input selects ordinary Bitcoin when its residual would otherwise
+// be below the minimum change amount.
+func TestSelectAndReserveSpendRequiredResidualTopUp(t *testing.T) {
+	t.Parallel()
+
+	required := makeDescriptor(t, 1_500, 20)
+	root := chainhash.Hash{3}
+	required.TaprootAssetRoot = &root
+	bitcoin := makeDescriptor(t, 500, 21)
+	mgr, store := newTestManager(t, []*Descriptor{required, bitcoin})
+	store.On(
+		"GetVTXO", t.Context(), required.Outpoint,
+	).Return(required, nil).Once()
+	store.On(
+		"ListVTXOsByStatus", t.Context(), VTXOStatusLive,
+	).Return([]*Descriptor{required, bitcoin}, nil).Once()
+
+	result := mgr.Receive(t.Context(), &SelectAndReserveSpendRequest{
+		TargetAmount:      600,
+		MinChangeAmount:   1_000,
+		RequiredOutpoints: []wire.OutPoint{required.Outpoint},
+	})
+	resp, err := result.Unpack()
+	require.NoError(t, err)
+
+	spendResp, ok := resp.(*SelectAndReserveSpendResponse)
+	require.True(t, ok)
+	require.Equal(t, btcutil.Amount(2_000), spendResp.TotalSelected)
+	require.Len(t, spendResp.SelectedVTXOs, 2)
+	require.Equal(t, required.Outpoint,
+		spendResp.SelectedVTXOs[0].Outpoint)
+	require.Equal(t, bitcoin.Outpoint,
+		spendResp.SelectedVTXOs[1].Outpoint)
+}
+
+// TestSelectAndReserveSpendRequiredValidation verifies malformed or
+// unavailable required outpoints fail before optional VTXO reservation.
+func TestSelectAndReserveSpendRequiredValidation(t *testing.T) {
+	t.Parallel()
+
+	t.Run("duplicate", func(t *testing.T) {
+		t.Parallel()
+
+		required := makeDescriptor(t, 1_000, 30)
+		mgr, _ := newTestManager(t, []*Descriptor{required})
+		result := mgr.Receive(
+			t.Context(), &SelectAndReserveSpendRequest{
+				TargetAmount: 1_000,
+				RequiredOutpoints: []wire.OutPoint{
+					required.Outpoint, required.Outpoint,
+				},
+			},
+		)
+		_, err := result.Unpack()
+		require.ErrorIs(t, err, ErrRequiredVTXOInvalid)
+		require.ErrorContains(t, err, "duplicate")
+	})
+
+	t.Run("missing", func(t *testing.T) {
+		t.Parallel()
+
+		required := makeDescriptor(t, 1_000, 31)
+		mgr, store := newTestManager(t, nil)
+		store.On(
+			"GetVTXO", t.Context(), required.Outpoint,
+		).Return(nil, ErrVTXONotFound).Once()
+		result := mgr.Receive(
+			t.Context(), &SelectAndReserveSpendRequest{
+				TargetAmount: 1_000,
+				RequiredOutpoints: []wire.OutPoint{
+					required.Outpoint,
+				},
+			},
+		)
+		_, err := result.Unpack()
+		require.ErrorIs(t, err, ErrRequiredVTXOInvalid)
+		require.ErrorContains(t, err, "not found")
+	})
+
+	t.Run("non live", func(t *testing.T) {
+		t.Parallel()
+
+		required := makeDescriptor(t, 1_000, 32)
+		required.Status = VTXOStatusSpending
+		mgr, store := newTestManager(t, nil)
+		store.On(
+			"GetVTXO", t.Context(), required.Outpoint,
+		).Return(required, nil).Once()
+		result := mgr.Receive(
+			t.Context(), &SelectAndReserveSpendRequest{
+				TargetAmount: 1_000,
+				RequiredOutpoints: []wire.OutPoint{
+					required.Outpoint,
+				},
+			},
+		)
+		_, err := result.Unpack()
+		require.ErrorIs(t, err, ErrRequiredVTXOInvalid)
+		require.ErrorContains(t, err, "status")
+	})
+
+	t.Run("reserved", func(t *testing.T) {
+		t.Parallel()
+
+		required := makeDescriptor(t, 1_000, 33)
+		mgr, store := newTestManager(t, []*Descriptor{required})
+		store.On(
+			"GetVTXO", t.Context(), required.Outpoint,
+		).Return(required, nil).Once()
+		mgr.markReserved(required.Outpoint)
+		result := mgr.Receive(
+			t.Context(), &SelectAndReserveSpendRequest{
+				TargetAmount: 1_000,
+				RequiredOutpoints: []wire.OutPoint{
+					required.Outpoint,
+				},
+			},
+		)
+		_, err := result.Unpack()
+		require.ErrorIs(t, err, ErrVTXOLiquidityLocked)
+	})
+}
+
+// TestSelectAndReserveSpendExcludesUnrequiredAssets verifies unrelated asset
+// carrier value is not counted in spendable or locked Bitcoin liquidity.
+func TestSelectAndReserveSpendExcludesUnrequiredAssets(t *testing.T) {
+	t.Parallel()
+
+	required := makeDescriptor(t, 600, 40)
+	requiredRoot := chainhash.Hash{4}
+	required.TaprootAssetRoot = &requiredRoot
+	bitcoin := makeDescriptor(t, 100, 41)
+	unrelated := makeDescriptor(t, 5_000, 42)
+	unrelatedRoot := chainhash.Hash{5}
+	unrelated.TaprootAssetRoot = &unrelatedRoot
+	mgr, store := newTestManager(t, []*Descriptor{
+		required, bitcoin, unrelated,
+	})
+	store.On(
+		"GetVTXO", t.Context(), required.Outpoint,
+	).Return(required, nil).Once()
+	store.On(
+		"ListVTXOsByStatus", t.Context(), VTXOStatusLive,
+	).Return([]*Descriptor{unrelated, bitcoin, required}, nil).Once()
+	store.On("ListLiveVTXOs", t.Context()).Return(
+		[]*Descriptor{required, bitcoin, unrelated}, nil,
+	).Once()
+
+	result := mgr.Receive(t.Context(), &SelectAndReserveSpendRequest{
+		TargetAmount:      1_000,
+		RequiredOutpoints: []wire.OutPoint{required.Outpoint},
+	})
+	_, err := result.Unpack()
+	require.ErrorIs(t, err, ErrInsufficientSpendableFunds)
+	require.NotErrorIs(t, err, ErrVTXOLiquidityLocked)
+	require.ErrorContains(t, err, "spendable 700")
+}
+
 // TestSelectAndReserveRespawnGuards verifies the self-heal path for a
 // live-in-DB but actorless selection candidate fails closed: a store miss
 // and a non-live row both surface as reservation errors instead of spawning

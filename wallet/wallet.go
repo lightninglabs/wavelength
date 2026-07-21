@@ -2651,6 +2651,9 @@ func (a *Ark) handleSelectAndLockVTXOs(ctx context.Context,
 		ctx, &actormsg.SelectAndReserveSpendRequest{
 			TargetAmount:    req.TargetAmount,
 			MinChangeAmount: req.MinChangeAmount,
+			RequiredOutpoints: append(
+				[]wire.OutPoint(nil), req.RequiredOutpoints...,
+			),
 		},
 	)
 	if err != nil {

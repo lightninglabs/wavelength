@@ -289,8 +289,9 @@ type Querier interface {
 	// VTXO matches the given status code. Companion to ListVTXOsByStatus.
 	ListVTXOAncestryPathsByStatus(ctx context.Context, status int32) ([]VtxoAncestryPath, error)
 	// ListVTXOSelectionCandidatesByStatus returns the lightweight projection coin
-	// selection runs on: outpoint, amount, and pkScript. Selection happens on
-	// every payment and only needs these three fields, so this avoids decoding
+	// selection runs on: outpoint, amount, pkScript, and the optional Taproot
+	// Asset root. Selection happens on every payment and only needs these fields,
+	// so this avoids decoding
 	// full descriptors (pubkey parsing, taproot script reconstruction, policy
 	// template decode) and the batched ancestry-path query on the hot path.
 	ListVTXOSelectionCandidatesByStatus(ctx context.Context, status int32) ([]ListVTXOSelectionCandidatesByStatusRow, error)
@@ -413,8 +414,8 @@ type Querier interface {
 	// active spend owner (e.g. an outgoing OOR session) so a startup sweep can
 	// release orphaned Spending VTXOs that have no live reservation.
 	// UpsertSpendingReservation records (or refreshes) the reservation for one
-	// outpoint. The owner fields are updated on conflict so a re-checkpointed
-	// session re-binds the same outpoint to its current owner.
+	// outpoint. The owner fields are updated on conflict so a resumed workflow
+	// re-binds the same outpoint to its current durable owner.
 	UpsertSpendingReservation(ctx context.Context, arg UpsertSpendingReservationParams) error
 	// Unilateral-exit job control-plane queries.
 	UpsertUnilateralExitJob(ctx context.Context, arg UpsertUnilateralExitJobParams) error

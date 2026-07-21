@@ -561,6 +561,10 @@ type SelectAndLockVTXOsRequest struct {
 	// MinChangeAmount, when positive, asks selection to avoid a
 	// non-zero residual below this amount. Exact spends are still valid.
 	MinChangeAmount btcutil.Amount
+
+	// RequiredOutpoints identifies managed VTXOs that must be included in
+	// the selection before ordinary Bitcoin VTXOs cover any shortfall.
+	RequiredOutpoints []wire.OutPoint
 }
 
 // MessageType returns the message type identifier for logging and debugging.

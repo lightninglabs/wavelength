@@ -5,8 +5,8 @@
 
 -- name: UpsertSpendingReservation :exec
 -- UpsertSpendingReservation records (or refreshes) the reservation for one
--- outpoint. The owner fields are updated on conflict so a re-checkpointed
--- session re-binds the same outpoint to its current owner.
+-- outpoint. The owner fields are updated on conflict so a resumed workflow
+-- re-binds the same outpoint to its current durable owner.
 INSERT INTO spending_reservations (
     outpoint_hash, outpoint_index, owner_kind, owner_id, created_at
 ) VALUES (
