@@ -95,6 +95,10 @@ func newRootCmd(devMode bool) *cobra.Command {
 			"for daemon connection (dev/regtest)",
 	)
 
+	pf.Bool(
+		"no-input", false, "never prompt or implicitly consume stdin",
+	)
+
 	pf.String(
 		"json", "", "raw JSON request payload (maps directly to "+
 			"the RPC request proto); when set, bespoke flags "+

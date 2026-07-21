@@ -15,8 +15,8 @@ import (
 // operations carry secrets (wallet password, seed passphrase) that
 // must not transit the MCP protocol where they could leak into agent
 // logs or provider APIs. Wallet setup stays on the CLI's secret-input
-// ladder (WAVED_WALLET_PASSWORD env > --wallet_password_file > stdin
-// > TTY prompt).
+// ladder (WAVED_WALLET_PASSWORD env > --wallet_password_file > explicit
+// --password-stdin > TTY prompt).
 //
 // Each tool maps gRPC Unimplemented to a clear "daemon was not built
 // with wavewalletrpc" error so an MCP consumer talking to a stub-build

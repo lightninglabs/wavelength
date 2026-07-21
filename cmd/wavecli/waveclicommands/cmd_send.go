@@ -1,7 +1,6 @@
 package waveclicommands
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -439,11 +438,12 @@ func confirmSendIfNeeded(cmd *cobra.Command,
 		return nil
 	}
 
-	if !stdinIsTTY(cmd) {
+	if !canPrompt(cmd) {
 		return PrintError(
 			"INVALID_ARGS", "send requires --force or --yes on "+
-				"non-interactive stdin; refusing to prompt "+
-				"because an agent cannot respond to y/N",
+				"non-interactive stdin or when input is "+
+				"disabled; refusing to prompt because an "+
+				"agent cannot respond to y/N",
 		)
 	}
 
@@ -485,20 +485,8 @@ func promptSendConfirmation(cmd *cobra.Command,
 	if warning := resp.GetWarning(); warning != "" {
 		fmt.Fprintf(out, "Warning: %s\n", warning)
 	}
-	fmt.Fprint(out, "\nProceed? [y/N]: ")
 
-	reader := bufio.NewReader(cmd.InOrStdin())
-	answer, err := reader.ReadString('\n')
-	if err != nil {
-		return fmt.Errorf("read confirmation: %w", err)
-	}
-
-	answer = strings.TrimSpace(strings.ToLower(answer))
-	if answer != "y" && answer != "yes" {
-		return fmt.Errorf("aborted by user")
-	}
-
-	return nil
+	return promptConfirmation(cmd, "\nProceed? [y/N]: ")
 }
 
 func sendPreviewHeadlineAmount(resp *wavewalletrpc.PrepareSendResponse) int64 {

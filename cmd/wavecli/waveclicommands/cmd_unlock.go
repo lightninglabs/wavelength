@@ -9,25 +9,29 @@ import (
 
 // newUnlockCmd builds the top-level `unlock` verb. It dials
 // wavewalletrpc.WalletService.Unlock which proxies
-// waverpc.UnlockWallet. The CLI reads the wallet password from
-// stdin / WAVED_WALLET_PASSWORD / --wallet_password_file (never CLI
-// args) so secrets never enter argv.
+// waverpc.UnlockWallet. The CLI reads the wallet password from an
+// environment variable, file, explicit stdin, or a TTY prompt so the
+// secret never enters argv.
 func newUnlockCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "unlock",
 		Short: "Unlock an existing wallet",
 		Long: "Opens the wallet database with its password and " +
 			"starts the wallet subsystem. The password is " +
-			"read from stdin / WAVED_WALLET_PASSWORD env var / " +
-			"--wallet_password_file (never CLI args).\n\n" +
+			"read from WAVED_WALLET_PASSWORD, " +
+			"--wallet_password_file, or explicit " +
+			"--password-stdin (never CLI args).\n\n" +
 			"Example:\n" +
-			"  echo -n 'hunter2hunter2' | wavecli unlock",
+			"  printf '%s\\n' 'hunter2hunter2' | " +
+			"wavecli unlock --password-stdin",
 		Args: cobra.NoArgs,
 		RunE: walletUnlock,
 	}
 
 	cmd.Flags().String("wallet_password_file", "",
 		"path to file containing wallet password")
+	cmd.Flags().Bool("password-stdin", false,
+		"read one wallet password line from stdin")
 
 	return cmd
 }

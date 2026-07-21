@@ -57,15 +57,14 @@ func readSeedPassphrase(cmd *cobra.Command) ([]byte, error) {
 
 // readPassword reads the wallet password from one of these sources, in
 // priority order: WAVED_WALLET_PASSWORD env > --wallet_password_file
-// flag > stdin pipe > interactive prompt. The env var is checked first
-// so that automated environments (such as the wavelengthtest REPL) can set
-// it without stdin races. The CLI never accepts passwords via argv.
+// flag > explicit --password-stdin > interactive prompt. The CLI never
+// consumes stdin implicitly or accepts passwords via argv.
 func readPassword(cmd *cobra.Command) ([]byte, error) {
 	return readWalletPassword(cmd, false)
 }
 
 // readPasswordConfirmed reads the wallet password with interactive
-// confirmation. Non-interactive sources (env, file, stdin pipe) stay
+// confirmation. Non-interactive sources (env, file, explicit stdin) stay
 // single-read so automated callers can continue to provide exactly one
 // secret.
 func readPasswordConfirmed(cmd *cobra.Command) ([]byte, error) {
@@ -102,31 +101,64 @@ func readWalletPassword(cmd *cobra.Command,
 		)), nil
 	}
 
-	// Check if stdin has data (piped input).
-	stat, _ := os.Stdin.Stat()
-	if (stat.Mode() & os.ModeCharDevice) == 0 {
-		scanner := bufio.NewScanner(os.Stdin)
+	passwordStdin, _ := cmd.Flags().GetBool("password-stdin")
+	if passwordStdin {
+		scanner := bufio.NewScanner(cmd.InOrStdin())
 		if scanner.Scan() {
 			return []byte(scanner.Text()), nil
+		}
+		if err := scanner.Err(); err != nil {
+			return nil, fmt.Errorf("unable to read password from "+
+				"stdin: %w", err)
 		}
 
 		return nil, fmt.Errorf("unable to read password from stdin")
 	}
 
-	if confirmInteractive {
-		return readConfirmedPassword(readInteractivePassword)
+	if !canPrompt(cmd) {
+		return nil, fmt.Errorf("wallet password input required: set " +
+			"WAVED_WALLET_PASSWORD, use --wallet_password_file, " +
+			"or explicitly pass --password-stdin")
 	}
 
-	return readInteractivePassword("Enter wallet password: ")
+	readInteractive := func(prompt string) ([]byte, error) {
+		return readInteractivePassword(cmd, prompt)
+	}
+	if confirmInteractive {
+		return readConfirmedPassword(readInteractive)
+	}
+
+	return readInteractive("Enter wallet password: ")
 }
 
 // readInteractivePassword reads one password from the controlling TTY
 // using the supplied prompt.
-func readInteractivePassword(prompt string) ([]byte, error) {
-	fmt.Fprint(os.Stderr, prompt)
+func readInteractivePassword(cmd *cobra.Command,
+	prompt string) ([]byte, error) {
+
+	if err := writePrompt(cmd, prompt); err != nil {
+		return nil, fmt.Errorf("write password prompt: %w", err)
+	}
+
+	input := cmd.InOrStdin()
+	output := cmd.ErrOrStderr()
+	inputFile, ok := input.(*os.File)
+	if !ok {
+		password, err := readMaskedPassword(input, output)
+		_, printErr := fmt.Fprintln(output)
+		if err != nil {
+			return nil, err
+		}
+		if printErr != nil {
+			return nil, fmt.Errorf("unable to finalize password "+
+				"prompt: %w", printErr)
+		}
+
+		return password, nil
+	}
 
 	// Interactive prompt (TTY).
-	fd := int(os.Stdin.Fd())
+	fd := int(inputFile.Fd())
 	oldState, err := term.MakeRaw(fd)
 	if err != nil {
 		return nil, fmt.Errorf("unable to configure terminal for "+
@@ -142,9 +174,9 @@ func readInteractivePassword(prompt string) ([]byte, error) {
 	}
 	defer restoreTerminal()
 
-	password, err := readMaskedPassword(os.Stdin, os.Stderr)
+	password, err := readMaskedPassword(input, output)
 	restoreTerminal()
-	_, printErr := fmt.Fprintln(os.Stderr)
+	_, printErr := fmt.Fprintln(output)
 	if err != nil {
 		return nil, err
 	}
