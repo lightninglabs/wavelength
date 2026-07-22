@@ -265,6 +265,7 @@ type confirmationObservedMsg struct {
 	actor.BaseMessage
 	txid        chainhash.Hash
 	blockHeight int32
+	blockHash   chainhash.Hash
 	numConfs    uint32
 }
 
@@ -1075,13 +1076,17 @@ func (a *TxBroadcasterActor) handleConfirmationObserved(ctx context.Context,
 	// a reorg), but we tolerate it by re-delivering TxConfirmed rather
 	// than failing the FSM.
 	if state == TxStateConfirmed {
-		a.notifyConfirmed(ctx, entry, msg.blockHeight, msg.numConfs)
+		a.notifyConfirmed(
+			ctx, entry, msg.blockHeight, msg.blockHash,
+			msg.numConfs,
+		)
 
 		return
 	}
 
 	if err := a.advanceTrackedTxFSM(ctx, entry, &trackedTxConfirmed{
 		BlockHeight: msg.blockHeight,
+		BlockHash:   msg.blockHash,
 	}); err != nil {
 
 		a.log.WarnS(ctx, "Failed to confirm tracked tx FSM",
@@ -1090,7 +1095,9 @@ func (a *TxBroadcasterActor) handleConfirmationObserved(ctx context.Context,
 		return
 	}
 
-	a.notifyConfirmed(ctx, entry, msg.blockHeight, msg.numConfs)
+	a.notifyConfirmed(
+		ctx, entry, msg.blockHeight, msg.blockHash, msg.numConfs,
+	)
 }
 
 // handleConfirmationReorged moves a Confirmed tracked txid back into
@@ -1200,6 +1207,7 @@ func (a *TxBroadcasterActor) handleConfirmationDone(ctx context.Context,
 		return
 	}
 	confirmHeight, _ := trackedTxConfirmHeight(fsmState)
+	confirmBlockHash, _ := trackedTxConfirmBlockHash(fsmState)
 
 	if err := a.advanceTrackedTxFSM(
 		ctx, entry, &trackedTxFinalized{},
@@ -1215,7 +1223,7 @@ func (a *TxBroadcasterActor) handleConfirmationDone(ctx context.Context,
 	// acknowledged the terminal TxFinalized notification. Failed
 	// deliveries leave the entry in place so retryLifecycleNotifications
 	// can resend on a later actor tick.
-	if !a.notifyFinalized(ctx, entry, confirmHeight) {
+	if !a.notifyFinalized(ctx, entry, confirmHeight, confirmBlockHash) {
 		return
 	}
 
@@ -1355,6 +1363,7 @@ func (a *TxBroadcasterActor) attachExistingSubscriber(
 		txConfirmed := &TxConfirmed{
 			Txid:        entry.data.Txid,
 			BlockHeight: confirmHeight,
+			BlockHash:   state.ConfirmBlockHash,
 			NumConfs:    entry.data.TargetConfs,
 		}
 
@@ -1611,6 +1620,7 @@ func (a *TxBroadcasterActor) registerConfWatch(ctx context.Context,
 			return &confirmationObservedMsg{
 				txid:        event.Txid,
 				blockHeight: event.BlockHeight,
+				blockHash:   event.BlockHash,
 				numConfs:    event.NumConfs,
 			}
 		},
@@ -1902,12 +1912,16 @@ func (a *TxBroadcasterActor) retryLifecycleNotifications(ctx context.Context,
 		// no retry tracking; they are skipped here. Returning false
 		// keeps the entry alive — the caller never evicts on
 		// Confirmed, only on terminal states.
-		a.retryConfirmedRedelivery(ctx, entry, state.ConfirmHeight)
+		a.retryConfirmedRedelivery(
+			ctx, entry, state.ConfirmHeight, state.ConfirmBlockHash,
+		)
 
 		return false
 
 	case *trackedTxStateFinalized:
-		return a.notifyFinalized(ctx, entry, state.ConfirmHeight)
+		return a.notifyFinalized(
+			ctx, entry, state.ConfirmHeight, state.ConfirmBlockHash,
+		)
 
 	case *trackedTxStateFailed:
 		reason, _ := trackedTxFailureReason(state)
@@ -1930,7 +1944,8 @@ func (a *TxBroadcasterActor) retryLifecycleNotifications(ctx context.Context,
 // later TxReorged / TxFinalized on this entry — eviction is
 // reserved for the truly terminal Finalized / Failed states.
 func (a *TxBroadcasterActor) retryConfirmedRedelivery(ctx context.Context,
-	entry *trackedTx, confirmHeight int32) {
+	entry *trackedTx, confirmHeight int32,
+	confirmBlockHash chainhash.Hash) {
 
 	for id, subscriber := range entry.subscribers {
 		if !subscriber.pendingConfirmed {
@@ -1940,6 +1955,7 @@ func (a *TxBroadcasterActor) retryConfirmedRedelivery(ctx context.Context,
 		txConfirmed := &TxConfirmed{
 			Txid:        entry.data.Txid,
 			BlockHeight: confirmHeight,
+			BlockHash:   confirmBlockHash,
 			NumConfs:    entry.data.TargetConfs,
 		}
 		if a.notifyOneConfirmed(
@@ -2061,12 +2077,14 @@ func (a *TxBroadcasterActor) handleTerminalNotifyResult(ctx context.Context,
 // happens only on TxFinalized / TxFailed acknowledgment, which is
 // when the reorg-aware lifecycle reaches a truly terminal state.
 func (a *TxBroadcasterActor) notifyConfirmed(ctx context.Context,
-	entry *trackedTx, blockHeight int32, numConfs uint32) {
+	entry *trackedTx, blockHeight int32, blockHash chainhash.Hash,
+	numConfs uint32) {
 
 	for id, subscriber := range entry.subscribers {
 		txConfirmed := &TxConfirmed{
 			Txid:        entry.data.Txid,
 			BlockHeight: blockHeight,
+			BlockHash:   blockHash,
 			NumConfs:    numConfs,
 		}
 
@@ -2204,7 +2222,8 @@ func (a *TxBroadcasterActor) notifyReversibleAsync(ctx context.Context,
 // re-TxConfirmed can recover the authoritative confirmation height
 // without an out-of-band lookup.
 func (a *TxBroadcasterActor) notifyFinalized(ctx context.Context,
-	entry *trackedTx, confirmHeight int32) bool {
+	entry *trackedTx, confirmHeight int32,
+	confirmBlockHash chainhash.Hash) bool {
 
 	// Seal the entry so any in-flight reversible delivery skips its Tell
 	// rather than trailing this terminal notification into a subscriber's
@@ -2218,6 +2237,7 @@ func (a *TxBroadcasterActor) notifyFinalized(ctx context.Context,
 				&TxConfirmed{
 					Txid:        entry.data.Txid,
 					BlockHeight: confirmHeight,
+					BlockHash:   confirmBlockHash,
 					NumConfs:    entry.data.TargetConfs,
 				},
 			) {
