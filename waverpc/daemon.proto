@@ -1654,6 +1654,23 @@ message BoardRequest {
     // the Board through the wallet's self-Tell on startup until the
     // round adopts or the user fires a fresh Board.
     bool no_persist = 2;
+
+    // vtxo_policy_template optionally pins the arkscript policy for every
+    // boarded VTXO output produced by this request. When empty, the daemon
+    // synthesizes the standard 2-of-2 collaborative policy with a freshly
+    // derived owner key (the legacy behavior). When supplied, the boarded
+    // outputs adopt this policy verbatim, letting a client board directly
+    // into a custom-owned VTXO (for example one owned by an external FROST
+    // aggregate key) without a follow-up refresh. The template must validate
+    // against the operator's terms, and it is persisted with the board intent
+    // so restart replay recreates the same custom output.
+    bytes vtxo_policy_template = 3;
+
+    // pk_script optionally pins the taproot output script for the boarded
+    // VTXOs. It is only valid alongside vtxo_policy_template, and when set it
+    // must match the script derived from that template. Leaving it empty lets
+    // the daemon derive the script from the template.
+    bytes pk_script = 4;
 }
 
 message BoardResponse {
