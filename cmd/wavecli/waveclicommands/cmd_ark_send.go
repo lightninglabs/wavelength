@@ -151,7 +151,10 @@ func sendInRound(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	resp, err := client.SendVTXO(cmd.Context(), req)
+	ctx, cancel := rpcContext(cmd)
+	defer cancel()
+
+	resp, err := client.SendVTXO(ctx, req)
 	if err != nil {
 		if feeErr := mapFeeError(err); feeErr != nil {
 			return feeErr
@@ -219,7 +222,10 @@ func sendOOR(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	resp, err := client.SendOOR(cmd.Context(), req)
+	ctx, cancel := rpcContext(cmd)
+	defer cancel()
+
+	resp, err := client.SendOOR(ctx, req)
 	if err != nil {
 		return fmt.Errorf("SendOOR RPC failed: %w", err)
 	}

@@ -103,7 +103,10 @@ func walletExit(cmd *cobra.Command, _ []string) error {
 
 	return withWalletClient(
 		cmd, func(c wavewalletrpc.WalletServiceClient) error {
-			resp, err := c.Exit(cmd.Context(), req)
+			ctx, cancel := rpcContext(cmd)
+			defer cancel()
+
+			resp, err := c.Exit(ctx, req)
 			if err != nil {
 				return fmt.Errorf("exit: %w", err)
 			}
@@ -158,8 +161,11 @@ func walletExitStatus(cmd *cobra.Command, _ []string) error {
 
 	return withWalletClient(
 		cmd, func(c wavewalletrpc.WalletServiceClient) error {
+			ctx, cancel := rpcContext(cmd)
+			defer cancel()
+
 			resp, err := c.ExitStatus(
-				cmd.Context(),
+				ctx,
 				&wavewalletrpc.ExitStatusRequest{
 					Outpoint: outpoint,
 					Detailed: detailed,
@@ -200,9 +206,11 @@ func newExitSummaryCmd() *cobra.Command {
 func walletExitSummary(cmd *cobra.Command, _ []string) error {
 	return withWalletClient(
 		cmd, func(c wavewalletrpc.WalletServiceClient) error {
+			ctx, cancel := rpcContext(cmd)
+			defer cancel()
+
 			resp, err := c.ExitSummary(
-				cmd.Context(),
-				&wavewalletrpc.ExitSummaryRequest{},
+				ctx, &wavewalletrpc.ExitSummaryRequest{},
 			)
 			if err != nil {
 				return fmt.Errorf("exit summary: %w", err)
@@ -256,8 +264,11 @@ func walletExitPlan(cmd *cobra.Command, _ []string) error {
 
 	return withWalletClient(
 		cmd, func(c wavewalletrpc.WalletServiceClient) error {
+			ctx, cancel := rpcContext(cmd)
+			defer cancel()
+
 			resp, err := c.GetExitPlan(
-				cmd.Context(),
+				ctx,
 				&wavewalletrpc.GetExitPlanRequest{
 					Outpoints: outpoints,
 				},

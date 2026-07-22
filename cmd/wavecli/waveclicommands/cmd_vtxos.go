@@ -104,10 +104,10 @@ func vtxosList(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	// cmd.Context() carries Ctrl+C / SIGTERM so the RPC actually
-	// cancels when the user interrupts the CLI. context.Background()
-	// here would orphan the request until the daemon responded.
-	resp, err := client.ListVTXOs(cmd.Context(), req)
+	ctx, cancel := rpcContext(cmd)
+	defer cancel()
+
+	resp, err := client.ListVTXOs(ctx, req)
 	if err != nil {
 		return fmt.Errorf("ListVTXOs RPC failed: %w", err)
 	}
@@ -256,15 +256,19 @@ func vtxosRefresh(cmd *cobra.Command, _ []string) error {
 		cmd, req, func(preview *waverpc.RefreshVTXOsRequest) (
 			*waverpc.RefreshVTXOsResponse, error) {
 
-			return client.RefreshVTXOs(cmd.Context(), preview)
+			ctx, cancel := rpcContext(cmd)
+			defer cancel()
+
+			return client.RefreshVTXOs(ctx, preview)
 		},
 	); err != nil {
 		return err
 	}
 
-	resp, err := client.RefreshVTXOs(
-		cmd.Context(), req,
-	)
+	ctx, cancel := rpcContext(cmd)
+	defer cancel()
+
+	resp, err := client.RefreshVTXOs(ctx, req)
 	if err != nil {
 		return fmt.Errorf("RefreshVTXOs RPC failed: %w", err)
 	}
@@ -606,9 +610,10 @@ func vtxosLeave(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	resp, err := client.LeaveVTXOs(
-		cmd.Context(), req,
-	)
+	ctx, cancel := rpcContext(cmd)
+	defer cancel()
+
+	resp, err := client.LeaveVTXOs(ctx, req)
 	if err != nil {
 		return fmt.Errorf("LeaveVTXOs RPC failed: %w", err)
 	}
@@ -670,8 +675,11 @@ func maybeJoinNextRound(cmd *cobra.Command, client waverpc.DaemonServiceClient,
 	decision := decideAutoJoin(dryRun, noJoin)
 
 	if decision.Join {
+		ctx, cancel := rpcContext(cmd)
+		defer cancel()
+
 		resp, err := client.JoinNextRound(
-			cmd.Context(), &waverpc.JoinNextRoundRequest{},
+			ctx, &waverpc.JoinNextRoundRequest{},
 		)
 		if err != nil {
 			return fmt.Errorf("auto-join next round failed: %w",

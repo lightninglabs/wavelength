@@ -289,6 +289,7 @@ wavecli
 | `--macaroonpath` | | Explicit admin macaroon path (overrides `--datadir`) |
 | `--no-tls` | `false` | Disable TLS (regtest / dev); requires `--no-macaroons` |
 | `--no-macaroons` | `false` | Disable macaroon auth (required alongside `--no-tls`) |
+| `--timeout` | `30s` | Maximum duration for each finite daemon RPC; `0` disables the deadline. Live watches use their stream-specific bounds. |
 | `--json` | | Raw JSON request payload (overrides bespoke flags) |
 
 ### `getinfo`

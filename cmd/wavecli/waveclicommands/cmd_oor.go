@@ -1,7 +1,6 @@
 package waveclicommands
 
 import (
-	"context"
 	"fmt"
 	"strings"
 
@@ -118,7 +117,10 @@ func oorGet(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	resp, err := client.GetOORSession(context.Background(), req)
+	ctx, cancel := rpcContext(cmd)
+	defer cancel()
+
+	resp, err := client.GetOORSession(ctx, req)
 	if err != nil {
 		return fmt.Errorf("GetOORSession RPC failed: %w", err)
 	}
@@ -163,7 +165,10 @@ func oorList(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	resp, err := client.ListOORSessions(context.Background(), req)
+	ctx, cancel := rpcContext(cmd)
+	defer cancel()
+
+	resp, err := client.ListOORSessions(ctx, req)
 	if err != nil {
 		return fmt.Errorf("ListOORSessions RPC failed: %w", err)
 	}
@@ -196,9 +201,10 @@ func oorReceive(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	resp, err := client.NewReceiveScript(
-		context.Background(), req,
-	)
+	ctx, cancel := rpcContext(cmd)
+	defer cancel()
+
+	resp, err := client.NewReceiveScript(ctx, req)
 	if err != nil {
 		return fmt.Errorf("NewReceiveScript RPC failed: %w", err)
 	}

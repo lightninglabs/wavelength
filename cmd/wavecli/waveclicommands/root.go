@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/lightninglabs/wavelength/build"
 	"github.com/lightninglabs/wavelength/cmd/wavecli/waveclicommands/devrpc"
@@ -15,7 +16,8 @@ import (
 
 const (
 	// defaultRPCServer is the default gRPC endpoint for the daemon.
-	defaultRPCServer = "localhost:10029"
+	defaultRPCServer  = "localhost:10029"
+	defaultRPCTimeout = 30 * time.Second
 
 	// groupWallet, groupIntrospection, and groupAdvanced are the cobra
 	// command-group IDs that shape the default --help face.
@@ -30,7 +32,7 @@ const (
 )
 
 // NewRootCmd creates the top-level cobra command for wavecli. Global
-// flags (--rpcserver, --format, --tlscertpath, --macaroonpath, --no-tls) are
+// flags (--rpcserver, --timeout, --tlscertpath, --macaroonpath, --no-tls) are
 // registered here and made available to all subcommands via PersistentFlags.
 //
 // The advanced subtrees (ark / dev / recovery) are hidden from the default
@@ -95,6 +97,11 @@ func newRootCmd(devMode bool) *cobra.Command {
 			"for daemon connection (dev/regtest)",
 	)
 
+	pf.Duration(
+		"timeout", defaultRPCTimeout,
+		"maximum duration for each daemon RPC; 0 disables the deadline",
+	)
+
 	pf.String(
 		"json", "", "raw JSON request payload (maps directly to "+
 			"the RPC request proto); when set, bespoke flags "+
@@ -147,6 +154,7 @@ func newRootCmd(devMode bool) *cobra.Command {
 				GetConn:     getDaemonConn,
 				PrintJSON:   printJSON,
 				MapRPCError: mapSwapRuntimeRPCError,
+				RPCContext:  rpcContext,
 			},
 		),
 	}

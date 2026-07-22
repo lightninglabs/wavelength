@@ -119,8 +119,11 @@ func walletCreate(cmd *cobra.Command, _ []string) error {
 
 	return withWalletClient(
 		cmd, func(c wavewalletrpc.WalletServiceClient) error {
+			ctx, cancel := rpcContext(cmd)
+			defer cancel()
+
 			resp, err := c.Create(
-				cmd.Context(), &wavewalletrpc.CreateRequest{
+				ctx, &wavewalletrpc.CreateRequest{
 					WalletPassword: password,
 					SeedPassphrase: seedPassphrase,
 					Mnemonic:       mnemonic,

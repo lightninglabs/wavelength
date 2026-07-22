@@ -79,7 +79,10 @@ func walletSweep(cmd *cobra.Command, _ []string) error {
 
 	return withWalletClient(
 		cmd, func(c wavewalletrpc.WalletServiceClient) error {
-			resp, err := c.SweepWallet(cmd.Context(), req)
+			ctx, cancel := rpcContext(cmd)
+			defer cancel()
+
+			resp, err := c.SweepWallet(ctx, req)
 			if err != nil {
 				return fmt.Errorf("wallet sweep: %w", err)
 			}
