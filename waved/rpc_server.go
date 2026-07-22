@@ -1905,6 +1905,67 @@ func (r *RPCServer) SubmitForfeitParticipantSignatures(ctx context.Context,
 	return &waverpc.SubmitForfeitParticipantSignaturesResponse{}, nil
 }
 
+// ListPendingTreeSigningRequests returns pending MuSig2 VTXO-tree signing
+// requests for externally signed cosigner keys.
+func (r *RPCServer) ListPendingTreeSigningRequests(_ context.Context,
+	req *waverpc.ListPendingTreeSigningRequestsRequest) (
+	*waverpc.ListPendingTreeSigningRequestsResponse, error) {
+
+	if r.server.treeSignatures == nil {
+		return nil, status.Error(
+			codes.FailedPrecondition,
+			"tree signature broker is not configured",
+		)
+	}
+
+	after := uint64(0)
+	limit := uint32(0)
+	if req != nil {
+		after = req.GetAfterSequence()
+		limit = req.GetLimit()
+	}
+
+	requests, next := r.server.treeSignatures.list(after, limit)
+
+	return &waverpc.ListPendingTreeSigningRequestsResponse{
+		Requests:     requests,
+		NextSequence: next,
+	}, nil
+}
+
+// SubmitTreeSignatures supplies the external cosigner's nonce or partial
+// signature for one pending tree-signing request.
+func (r *RPCServer) SubmitTreeSignatures(ctx context.Context,
+	req *waverpc.SubmitTreeSignaturesRequest) (
+	*waverpc.SubmitTreeSignaturesResponse, error) {
+
+	if req == nil {
+		return nil, status.Error(
+			codes.InvalidArgument, "request is required",
+		)
+	}
+	if r.server.treeSignatures == nil {
+		return nil, status.Error(
+			codes.FailedPrecondition,
+			"tree signature broker is not configured",
+		)
+	}
+
+	err := r.server.treeSignatures.submit(
+		req.GetRequestId(), req.GetRound(), req.GetPublicNonce(),
+		req.GetPartialSignature(),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	r.server.log.DebugS(ctx, "Accepted tree signing submission",
+		slog.String("round", req.GetRound().String()),
+	)
+
+	return &waverpc.SubmitTreeSignaturesResponse{}, nil
+}
+
 func buildCustomRefreshRequest(req *waverpc.RefreshCustomVTXOsRequest) (
 	[]wallet.CustomRefreshInput, []wallet.CustomRefreshOutput, []string,
 	error) {

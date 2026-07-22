@@ -588,6 +588,35 @@ func (c *DaemonServiceClient) SubmitForfeitParticipantSignatures(
 	return out, err
 }
 
+// ListPendingTreeSigningRequests lists pending external MuSig2 VTXO-tree
+// signing requests.
+func (c *DaemonServiceClient) ListPendingTreeSigningRequests(
+	ctx context.Context, in *waverpc.ListPendingTreeSigningRequestsRequest,
+	_ ...grpc.CallOption) (*waverpc.ListPendingTreeSigningRequestsResponse,
+	error) {
+
+	out := new(waverpc.ListPendingTreeSigningRequestsResponse)
+	err := c.client.Post(
+		ctx, "/v1/daemon/list-pending-tree-signing-requests", in, out,
+	)
+
+	return out, err
+}
+
+// SubmitTreeSignatures supplies the external cosigner's nonce or partial
+// signature for one pending tree-signing request.
+func (c *DaemonServiceClient) SubmitTreeSignatures(ctx context.Context,
+	in *waverpc.SubmitTreeSignaturesRequest, _ ...grpc.CallOption) (
+	*waverpc.SubmitTreeSignaturesResponse, error) {
+
+	out := new(waverpc.SubmitTreeSignaturesResponse)
+	err := c.client.Post(
+		ctx, "/v1/daemon/submit-tree-signatures", in, out,
+	)
+
+	return out, err
+}
+
 // LeaveVTXOs queues VTXOs for cooperative exit.
 func (c *DaemonServiceClient) LeaveVTXOs(ctx context.Context,
 	in *waverpc.LeaveVTXOsRequest, _ ...grpc.CallOption) (

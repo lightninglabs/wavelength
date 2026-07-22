@@ -412,6 +412,8 @@ type Server struct {
 	mailboxMux *mailboxrpc.ServeMux
 
 	forfeitSignatures *forfeitSignatureBroker
+
+	treeSignatures *treeSignatureBroker
 }
 
 // NewServer allocates a Server from a validated Config. The server is
@@ -426,6 +428,7 @@ func NewServer(cfg *Config) (*Server, error) {
 		daemonReady:       make(chan struct{}),
 		vhtlcPreimages:    &unrollpolicy.PreimageResolverRegistry{},
 		forfeitSignatures: newForfeitSignatureBroker(),
+		treeSignatures:    newTreeSignatureBroker(),
 	}, nil
 }
 
@@ -4178,17 +4181,18 @@ func (s *Server) initRoundActor(ctx context.Context,
 		SigningExecutor: round.NewSigningExecutor(
 			signingWorkers,
 		),
-		RoundStore:     roundStore,
-		VTXOStore:      roundStore,
-		OperatorTerms:  operatorTerms,
-		ServerConn:     s.runtime.TellRef(),
-		ChainSource:    chainSourceRef,
-		WalletActor:    walletRef,
-		ChainParams:    s.chainParams,
-		ActorSystem:    s.actorSystem,
-		TimeoutActor:   timeoutRef,
-		MaxOperatorFee: maxOperatorFee,
-		VTXOManager:    vtxoManager,
+		ExternalTreeSigner: s.treeSignatures,
+		RoundStore:         roundStore,
+		VTXOStore:          roundStore,
+		OperatorTerms:      operatorTerms,
+		ServerConn:         s.runtime.TellRef(),
+		ChainSource:        chainSourceRef,
+		WalletActor:        walletRef,
+		ChainParams:        s.chainParams,
+		ActorSystem:        s.actorSystem,
+		TimeoutActor:       timeoutRef,
+		MaxOperatorFee:     maxOperatorFee,
+		VTXOManager:        vtxoManager,
 		DropCustomForfeitSigningContexts: s.
 			dropCustomForfeitSigningContexts,
 		OwnedScriptChecker:   scriptChecker,
