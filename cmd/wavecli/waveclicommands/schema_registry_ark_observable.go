@@ -49,6 +49,16 @@ func arkObservableMutateMethodRegistry() []schemaMethod {
 			ResponseType: "BoardResponse",
 			JSONInput:    true,
 		},
+		{
+			Method: "ark.rounds.join",
+			Description: "Commit queued intents and join the " +
+				"next " +
+				"round",
+			Params:       nil,
+			RequestType:  "JoinNextRoundRequest",
+			ResponseType: "JoinNextRoundResponse",
+			JSONInput:    false,
+		},
 	}
 }
 

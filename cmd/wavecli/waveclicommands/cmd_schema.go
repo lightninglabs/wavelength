@@ -16,7 +16,8 @@ func newSchemaCmd() *cobra.Command {
 		Long: "Returns the full method signature for a " +
 			"CLI command as machine-readable JSON: " +
 			"params, types, required fields, enum " +
-			"values, request/response types. Use " +
+			"values, request/response types, side effects, " +
+			"and output-schema id/version. Use " +
 			"--all to dump every method.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: schemaRun,
