@@ -91,11 +91,18 @@ func NewRegistry(cfg RegistryConfig) (*Registry, error) {
 	if cfg.PollInterval <= 0 {
 		cfg.PollInterval = DefaultPollInterval
 	}
+	if cfg.ReceiveAdmitTimeout <= 0 {
+		// Preserve the original AdmitTimeout override for embedders
+		// that configured the receive CreateCredit call before the
+		// dedicated timeout existed.
+		if cfg.AdmitTimeout > 0 {
+			cfg.ReceiveAdmitTimeout = cfg.AdmitTimeout
+		} else {
+			cfg.ReceiveAdmitTimeout = DefaultReceiveAdmitTimeout
+		}
+	}
 	if cfg.AdmitTimeout <= 0 {
 		cfg.AdmitTimeout = DefaultAdmitTimeout
-	}
-	if cfg.ReceiveAdmitTimeout <= 0 {
-		cfg.ReceiveAdmitTimeout = DefaultReceiveAdmitTimeout
 	}
 
 	earmark := &atomic.Pointer[EarmarkFunc]{}
@@ -406,10 +413,10 @@ func (b *registryBehavior) admit(ctx context.Context, msg CreditMsg,
 //
 // This is the one server round-trip an admission makes on the supervisor
 // goroutine, which serializes every admission, resume, and reap. It is bounded
-// by AdmitTimeout so one slow or hung receive cannot head-of-line-block the
-// whole subsystem; on timeout the synchronous caller retries under the same
-// stable op key, and CreateCredit is idempotent, so the retry reuses the same
-// invoice.
+// by ReceiveAdmitTimeout so one slow or hung receive cannot
+// head-of-line-block the whole subsystem; on timeout the synchronous caller
+// retries under the same stable op key, and CreateCredit is idempotent, so the
+// retry reuses the same invoice.
 func (b *registryBehavior) createReceiveInvoice(ctx context.Context,
 	rec *db.CreditOperationRecord, memo string) error {
 

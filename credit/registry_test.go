@@ -47,6 +47,59 @@ func waitForState(t *testing.T, store Store, opID string, want State) {
 	}, 5*time.Second, 20*time.Millisecond)
 }
 
+// TestRegistryReceiveAdmitTimeoutFallback verifies that the dedicated receive
+// timeout preserves the legacy AdmitTimeout override while using its shorter
+// default for callers that left both fields unset.
+func TestRegistryReceiveAdmitTimeoutFallback(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		admit   time.Duration
+		receive time.Duration
+		want    time.Duration
+	}{
+		{
+			name: "default",
+			want: DefaultReceiveAdmitTimeout,
+		},
+		{
+			name:  "legacy override",
+			admit: 7 * time.Second,
+			want:  7 * time.Second,
+		},
+		{
+			name:    "dedicated override",
+			admit:   7 * time.Second,
+			receive: 3 * time.Second,
+			want:    3 * time.Second,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			registry, err := NewRegistry(RegistryConfig{
+				Store:               newFakeStore(),
+				DeliveryStore:       newTestDelivery(t),
+				Server:              newFakeServer(),
+				Daemon:              newFakeDaemon(),
+				AdmitTimeout:        test.admit,
+				ReceiveAdmitTimeout: test.receive,
+			})
+			require.NoError(t, err)
+			t.Cleanup(registry.Stop)
+
+			require.Equal(
+				t, test.want,
+				registry.behavior.cfg.ReceiveAdmitTimeout,
+			)
+		})
+	}
+}
+
 // TestRegistryPayNoTopupEndToEnd drives the full stack: a registry admission
 // durably pre-writes the row, spawns the per-operation child, and the child
 // drives the FSM to completion through the real durable mailbox.
