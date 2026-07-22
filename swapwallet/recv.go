@@ -5,10 +5,12 @@ package swapwallet
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 
 	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/credit"
 	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
 	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
@@ -202,6 +204,20 @@ func (r *receiver) recvCredit(ctx context.Context,
 		},
 	).Await(ctx).Unpack()
 	if err != nil {
+		// Preserve caller-owned cancellation and local shutdown. A
+		// canceled RPC, or a credit registry actor that is itself
+		// terminating during daemon shutdown, says nothing about the
+		// operator's credit subsystem: the operator never actually
+		// rejected the receive. Neither must leave a durable FAILED row
+		// for the caller, so return the underlying error unchanged
+		// instead of mapping it to the operator-blaming sentinel below.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		if errors.Is(err, actor.ErrActorTerminated) {
+			return nil, err
+		}
+
 		// A sub-dust receive that the swap server never completes must
 		// not vanish silently (wavelength#1041): log it, record a
 		// FAILED activity row, and return a typed, actionable error
