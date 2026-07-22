@@ -136,45 +136,28 @@ func registerMCPWalletQueryTools(s *mcp.Server,
 func registerMCPWalletMutateTools(s *mcp.Server,
 	client wavewalletrpc.WalletServiceClient) {
 
-	type sendArgs struct {
-		Destination string `json:"destination" jsonschema:"BOLT-11 invoice (offchain) or onchain address; the direction field picks which"` //nolint:ll
-		Direction   string `json:"direction,omitempty" jsonschema:"'offchain' (default) for invoice, 'onchain' for cooperative leave"`      //nolint:ll
-		AmtSat      uint64 `json:"amt_sat,omitempty" jsonschema:"amount in satoshis (required for onchain unless sweep_all)"`               //nolint:ll
-		MaxFeeSat   uint64 `json:"max_fee_sat,omitempty" jsonschema:"max fee in satoshis; zero uses daemon defaults"`                       //nolint:ll
-		Note        string `json:"note,omitempty" jsonschema:"caller-supplied label persisted with the entry"`                              //nolint:ll
-		SweepAll    bool   `json:"sweep_all,omitempty" jsonschema:"onchain only: drain every live VTXO"`                                    //nolint:ll
-	}
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "send.prepare",
+		Description: "Validate and preview a payment without " +
+			"moving funds. Returns a short-lived, single-use " +
+			"send_intent_id for the send tool.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest,
+		args mcpSendPrepareArgs) (*mcp.CallToolResult, any, error) {
+
+		r, err := prepareMCPWalletSend(ctx, client, args)
+
+		return r, nil, err
+	})
+
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "send",
-		Description: "Send a payment (offchain Lightning invoice " +
-			"by default; onchain cooperative leave with " +
-			"direction='onchain')",
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, args sendArgs) (
+		Description: "Dispatch exactly one previously prepared " +
+			"payment. Consumes the short-lived, single-use " +
+			"send_intent_id and may move funds.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args mcpSendArgs) (
 		*mcp.CallToolResult, any, error) {
 
-		offchain, err := parseDirectionField(args.Direction)
-		if err != nil {
-			return nil, nil, err
-		}
-		req, err := buildWalletPrepareSendRequest(
-			args.Destination, offchain, args.AmtSat, args.MaxFeeSat,
-			args.Note, args.SweepAll,
-		)
-		if err != nil {
-			return nil, nil, err
-		}
-		prepareResp, err := client.PrepareSend(ctx, req)
-		if err != nil {
-			return nil, nil, mapWalletRPCError(err)
-		}
-		resp, err := client.Send(ctx, &wavewalletrpc.SendRequest{
-			SendIntentId: prepareResp.GetSendIntentId(),
-		})
-		if err != nil {
-			return nil, nil, mapWalletRPCError(err)
-		}
-
-		r, err := mcpResult(resp)
+		r, err := dispatchMCPWalletSend(ctx, client, args)
 
 		return r, nil, err
 	})
@@ -282,6 +265,73 @@ func registerMCPWalletMutateTools(s *mcp.Server,
 
 		return r, nil, err
 	})
+}
+
+type mcpSendPrepareArgs struct {
+	Destination string `json:"destination" jsonschema:"BOLT-11 invoice (offchain) or onchain address; direction selects the rail"` //nolint:ll
+	Direction   string `json:"direction,omitempty" jsonschema:"'offchain' (default) for invoice, 'onchain' for cooperative leave"` //nolint:ll
+	AmtSat      uint64 `json:"amt_sat,omitempty" jsonschema:"amount in satoshis (required for onchain unless sweep_all)"`          //nolint:ll
+	MaxFeeSat   uint64 `json:"max_fee_sat,omitempty" jsonschema:"max fee in satoshis; zero uses daemon defaults"`                  //nolint:ll
+	Note        string `json:"note,omitempty" jsonschema:"caller-supplied label persisted with the entry"`                         //nolint:ll
+	SweepAll    bool   `json:"sweep_all,omitempty" jsonschema:"onchain only: drain every live VTXO"`                               //nolint:ll
+}
+
+type mcpSendArgs struct {
+	SendIntentID string `json:"send_intent_id" jsonschema:"short-lived, single-use id returned by send.prepare"` //nolint:ll
+}
+
+// prepareMCPWalletSend validates and quotes a send without dispatching it.
+func prepareMCPWalletSend(ctx context.Context,
+	client wavewalletrpc.WalletServiceClient,
+	args mcpSendPrepareArgs) (*mcp.CallToolResult, error) {
+
+	if client == nil {
+		return nil, errWalletRPCDisabled
+	}
+
+	offchain, err := parseDirectionField(args.Direction)
+	if err != nil {
+		return nil, err
+	}
+	req, err := buildWalletPrepareSendRequest(
+		args.Destination, offchain, args.AmtSat, args.MaxFeeSat,
+		args.Note, args.SweepAll,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := client.PrepareSend(ctx, req)
+	if err != nil {
+		return nil, mapWalletRPCError(err)
+	}
+
+	return mcpResult(resp)
+}
+
+// dispatchMCPWalletSend consumes a prepared intent without reconstructing or
+// silently changing any payment parameter.
+func dispatchMCPWalletSend(ctx context.Context,
+	client wavewalletrpc.WalletServiceClient,
+	args mcpSendArgs) (*mcp.CallToolResult, error) {
+
+	if client == nil {
+		return nil, errWalletRPCDisabled
+	}
+
+	if args.SendIntentID == "" {
+		return nil, fmt.Errorf("send_intent_id is required; call " +
+			"send.prepare first")
+	}
+
+	resp, err := client.Send(ctx, &wavewalletrpc.SendRequest{
+		SendIntentId: args.SendIntentID,
+	})
+	if err != nil {
+		return nil, mapWalletRPCError(err)
+	}
+
+	return mcpResult(resp)
 }
 
 // buildWalletActivityRequest translates MCP activityArgs into a ListRequest,

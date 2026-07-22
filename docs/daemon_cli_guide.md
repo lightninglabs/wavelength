@@ -623,6 +623,13 @@ transiting the protocol. Use the CLI directly for wallet operations.
 `ark.oor.receive` is exposed because it only allocates a fresh
 wallet-derived receive target and does not reveal seed material.
 
+MCP sends are intentionally two-phase. First call `send.prepare` with the
+destination, rail, amount, fee limit, and note. It validates the payment and
+returns the exact preview plus a short-lived, single-use `send_intent_id`
+without moving funds. After inspecting that preview, call `send` with only
+that `send_intent_id`. The second call consumes the prepared intent and may
+move funds; it cannot silently replace the reviewed payment parameters.
+
 ## Regtest Quickstart
 
 A complete end-to-end workflow on regtest using the default (no
