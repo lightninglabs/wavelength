@@ -25,6 +25,12 @@ permissions:
   # only needs read access for the action's own bookkeeping.
   contents: read
   pull-requests: read
+  # The failure canary opens its tracking issue with the workflow's own
+  # GITHUB_TOKEN rather than BOT_GITHUB_TOKEN, so an expired or revoked
+  # bot token can never take the canary down with it (that exact failure
+  # mode went unnoticed for two days when the bot PAT hit its 90-day
+  # expiry: checkout died AND the notify step died with the same 401).
+  issues: write
 
 jobs:
   sweep:
@@ -165,9 +171,28 @@ jobs:
                makes the sweep actually look at everything that changed
                since the last merged nightly (not just "new packages").
 
-            2. **Validate.** Phase 7 runs `make doc-check`. If it fails,
-               iterate to fix the errors — never commit broken docs. If you
-               cannot make it pass after reasonable effort, print
+            2. **Mirror and scrub, then validate.** Before running
+               `make doc-check`, do two things that the check itself will
+               NOT catch on its own:
+
+               - **Mirror every CLAUDE.md to its AGENTS.md.** For each
+                 `CLAUDE.md` you created or edited, `cp` it to the sibling
+                 `AGENTS.md` so the pair is byte-identical. The root
+                 `CLAUDE.md`/`AGENTS.md` pair is the one most often missed —
+                 mirror it too. `make doc-check` verifies byte-identity, so
+                 a missed mirror fails the build; do the copy proactively.
+               - **Scrub tool/formatting artifacts.** Fan-out doc edits can
+                 leak stray tags into `.md` files (e.g. a literal
+                 `</content>` or `</invoke>`, or a trailing
+                 ` ``` ` fence with no opener). Run
+                 `grep -rn -e '</content>' -e '</invoke>' -e '<parameter' .` over
+                 the changed docs and delete any such artifact before
+                 committing. A doc with a leaked tag is a failed sweep even
+                 if `make doc-check` is green.
+
+               Then run `make doc-check`. If it fails, iterate to fix the
+               errors — never commit broken docs. If you cannot make it
+               pass after reasonable effort, print
                `DOC-GARDENING ABORTED: make doc-check still failing` and
                exit without committing, pushing, or opening a PR.
 
@@ -220,6 +245,10 @@ jobs:
             - Never push to `main` directly.
             - Never modify files outside this repo.
             - Never add reviewers or assignees to the PR.
+            - This sweep is docs-only. Never run `go build`, `go test`, or
+              anything that compiles the tree — those drop stray binaries
+              (`accounting`, etc.) into package dirs that then get swept
+              into `git add -A`. Use `go doc` for symbol lookups only.
             - If any `gh` command fails, print the error and exit non-zero
               so the workflow's failure handler opens an issue.
           # Tool capability boundary for Claude.
@@ -243,6 +272,7 @@ jobs:
           # gh operations even with the native edit tools granted.
           claude_args: >-
             --max-turns 200
+            --model claude-opus-4-8
             --allowed-tools
             "Edit,Write,MultiEdit,Bash(git status:*),Bash(git diff:*),Bash(git add:*),Bash(git commit:*),Bash(git checkout:*),Bash(git log:*),Bash(git rev-parse:*),Bash(git branch:*),Bash(git fetch:*),Bash(git push:*),Bash(make doc-check:*),Bash(go doc:*),Bash(find:*),Bash(ls:*),Bash(cp:*),Bash(cat:*),Bash(head:*),Bash(tail:*),Bash(date:*),Bash(sort:*),Bash(sed:*),Bash(awk:*),Bash(gh pr create:*),Bash(gh pr list:*),Bash(gh pr view:*),Bash(gh auth status:*)"
             --disallowed-tools
@@ -252,7 +282,11 @@ jobs:
         if: failure()
         id: notify_create
         env:
-          GH_TOKEN: ${{ secrets.BOT_GITHUB_TOKEN }}
+          # Deliberately NOT the bot token: the most likely cause of a
+          # failed run is the bot token itself going bad, and a canary
+          # that authenticates with the thing it is monitoring reports
+          # nothing exactly when it matters most.
+          GH_TOKEN: ${{ github.token }}
         run: |
           # Create the tracking issue WITHOUT labels first so a missing or
           # renamed label can never swallow the canary. The label-attach
@@ -267,7 +301,7 @@ jobs:
         if: failure() && steps.notify_create.outputs.issue_url != ''
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.BOT_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           ISSUE_URL: ${{ steps.notify_create.outputs.issue_url }}
         run: |
           # Best-effort label attach. `continue-on-error: true` plus `|| true`
