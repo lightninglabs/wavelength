@@ -93,7 +93,7 @@ func openWASMWalletDB(dbDir string) (walletdb.DB, error) {
 		if err == nil {
 			return db, nil
 		}
-		if !isWASMWalletCantOpen(err) {
+		if !isWASMWalletRetryableOpen(err) {
 			return nil, fmt.Errorf("open OPFS wallet database: %w",
 				err)
 		}
@@ -111,6 +111,12 @@ func wasmWalletDBDSN(dbDir string) string {
 	values.Set("file", wasmWalletDBFileName(dbDir))
 	values.Set("vfs", "opfs")
 	values.Set("mode", "rwc")
+
+	// The wallet database must never silently degrade to the in-memory
+	// VFS (every write would be lost on page close), so fail closed when
+	// no persistent OPFS VFS can be opened, e.g. while another tab of the
+	// same origin holds the exclusive OPFS handles.
+	values.Set("require_persistent", "true")
 	values.Set("busy_timeout", wasmWalletDBBusyTimeoutMS)
 	values.Set("journal_mode", "WAL")
 	values.Set(
@@ -142,9 +148,14 @@ func wasmWalletDBFileName(dbDir string) string {
 	return fmt.Sprintf(wasmWalletDBFileNamePattern, hasher.Sum64())
 }
 
-// isWASMWalletCantOpen identifies the SQLite error returned while OPFS still
-// holds the wallet database from a just-unloaded page runtime.
-func isWASMWalletCantOpen(err error) bool {
+// isWASMWalletRetryableOpen identifies the SQLite errors returned while OPFS
+// still holds the wallet database from a just-unloaded page runtime:
+// SQLITE_CANTOPEN while the previous runtime's handles are still being torn
+// down, and SQLITE_BUSY now that require_persistent surfaces lock contention
+// as an open failure instead of an in-memory fallback.
+func isWASMWalletRetryableOpen(err error) bool {
 	return strings.Contains(err.Error(), "SQLITE_CANTOPEN") ||
+		strings.Contains(err.Error(), "SQLITE_BUSY") ||
+		strings.Contains(err.Error(), "database is locked") ||
 		strings.Contains(err.Error(), "unable to open database file")
 }
