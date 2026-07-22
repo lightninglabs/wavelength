@@ -229,7 +229,20 @@ func (m *StartUnrollRequest) Decode(r io.Reader) error {
 		return fmt.Errorf("create stream: %w", err)
 	}
 
-	parsed, err := stream.DecodeWithParsedTypes(r)
+	// Bound the record framing against bytes physically present before
+	// decoding: the lnd tlv non-P2P path sizes allocations from declared
+	// record lengths, so a hostile mailbox payload could otherwise panic
+	// or OOM via the policy-ref/kind DVarBytes records.
+	raw, err := io.ReadAll(r)
+	if err != nil {
+		return fmt.Errorf("read: %w", err)
+	}
+	safeReader, err := safeTLVReader(raw)
+	if err != nil {
+		return fmt.Errorf("decode: %w", err)
+	}
+
+	parsed, err := stream.DecodeWithParsedTypes(safeReader)
 	if err != nil {
 		return fmt.Errorf("decode: %w", err)
 	}
@@ -300,7 +313,7 @@ func (m *ResumeUnrollRequest) Decode(r io.Reader) error {
 		return fmt.Errorf("create stream: %w", err)
 	}
 
-	if err := stream.Decode(r); err != nil {
+	if err := safeDecodeStream(stream, r); err != nil {
 		return fmt.Errorf("decode: %w", err)
 	}
 
@@ -360,7 +373,7 @@ func (m *HeightObservedMsg) Decode(r io.Reader) error {
 		return fmt.Errorf("create stream: %w", err)
 	}
 
-	if err := stream.Decode(r); err != nil {
+	if err := safeDecodeStream(stream, r); err != nil {
 		return fmt.Errorf("decode: %w", err)
 	}
 
@@ -440,7 +453,7 @@ func (m *TxConfirmedMsg) Decode(r io.Reader) error {
 		return fmt.Errorf("create stream: %w", err)
 	}
 
-	if err := stream.Decode(r); err != nil {
+	if err := safeDecodeStream(stream, r); err != nil {
 		return fmt.Errorf("decode: %w", err)
 	}
 
@@ -511,7 +524,7 @@ func (m *TxFailedMsg) Decode(r io.Reader) error {
 		return fmt.Errorf("create stream: %w", err)
 	}
 
-	if err := stream.Decode(r); err != nil {
+	if err := safeDecodeStream(stream, r); err != nil {
 		return fmt.Errorf("decode: %w", err)
 	}
 
@@ -596,7 +609,7 @@ func (m *SpendObservedMsg) Decode(r io.Reader) error {
 		return fmt.Errorf("create stream: %w", err)
 	}
 
-	if err := stream.Decode(r); err != nil {
+	if err := safeDecodeStream(stream, r); err != nil {
 		return fmt.Errorf("decode: %w", err)
 	}
 

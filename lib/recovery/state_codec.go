@@ -134,7 +134,17 @@ func DecodeSessionState(raw []byte) (*SessionState, error) {
 		return nil, fmt.Errorf("create session state stream: %w", err)
 	}
 
-	parsed, err := stream.DecodeWithParsedTypes(bytes.NewReader(raw))
+	// Pre-validate the framing so a record declaring a length larger than
+	// the bytes present cannot drive an unbounded make() inside the tlv
+	// decoder (the DVarBytes-backed txStates, confirmHeights, failedTxid,
+	// and lastError records, plus the unknown-record discard buffer).
+	// Session state is read back from durable storage on restart.
+	reader, err := safeRecoveryTLVBytes(raw)
+	if err != nil {
+		return nil, fmt.Errorf("decode session state: %w", err)
+	}
+
+	parsed, err := stream.DecodeWithParsedTypes(reader)
 	if err != nil {
 		return nil, fmt.Errorf("decode session state: %w", err)
 	}

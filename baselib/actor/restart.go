@@ -105,8 +105,17 @@ func (m *RestartMessage) Decode(r io.Reader) error {
 		return err
 	}
 
+	// Bound the framing before decoding so a crafted durable checkpoint
+	// payload cannot drive an unbounded make() inside the tlv decoder
+	// (actorID/stateType/stateData are []byte records sized from their
+	// declared lengths).
+	safe, err := safeActorTLVReader(r)
+	if err != nil {
+		return err
+	}
+
 	// Decode and get typeMap showing which fields were present.
-	typeMap, err := stream.DecodeWithParsedTypes(r)
+	typeMap, err := stream.DecodeWithParsedTypes(safe)
 	if err != nil {
 		return err
 	}

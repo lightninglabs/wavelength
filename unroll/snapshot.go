@@ -307,7 +307,17 @@ func decodeCheckpoint(raw []byte) (*actorCheckpoint, error) {
 		return nil, fmt.Errorf("create checkpoint stream: %w", err)
 	}
 
-	parsed, err := stream.DecodeWithParsedTypes(bytes.NewReader(raw))
+	// Validate the record framing against the bytes physically present
+	// before decoding. The lnd tlv non-P2P decode path sizes allocations
+	// from the declared record length without bounding it, so a tampered
+	// checkpoint replayed from the durable mailbox could otherwise panic
+	// or OOM.
+	safeReader, err := safeTLVReader(raw)
+	if err != nil {
+		return nil, fmt.Errorf("decode checkpoint: %w", err)
+	}
+
+	parsed, err := stream.DecodeWithParsedTypes(safeReader)
 	if err != nil {
 		return nil, fmt.Errorf("decode checkpoint: %w", err)
 	}

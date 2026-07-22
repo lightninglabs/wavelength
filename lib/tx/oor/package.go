@@ -164,7 +164,15 @@ func UnmarshalSubmitPackage(b []byte) (*SubmitPackage, error) {
 		return nil, err
 	}
 
-	reader := bytes.NewReader(b)
+	// Validate the record framing against the bytes physically present
+	// before decoding. The lnd tlv non-P2P decode path sizes allocations
+	// from the declared record length without bounding it, so an
+	// attacker-controlled length on this RPC/durable path could otherwise
+	// panic or OOM.
+	reader, err := safeTLVReader(b)
+	if err != nil {
+		return nil, err
+	}
 	if _, err := stream.DecodeWithParsedTypes(reader); err != nil {
 		return nil, err
 	}
@@ -242,11 +250,29 @@ func decodeBlobList(raw []byte) ([][]byte, error) {
 		return nil, err
 	}
 
+	// Bound the declared count against the bytes physically present
+	// before allocating. Each blob is encoded as at least a one-byte
+	// length prefix, so a count larger than the remaining bytes is
+	// definitionally a lie and would otherwise drive an unbounded (or
+	// panicking) make() from attacker-controlled input.
+	if count > uint64(reader.Len()) {
+		return nil, fmt.Errorf("blob count %d exceeds %d remaining "+
+			"bytes", count, reader.Len())
+	}
+
 	blobs := make([][]byte, 0, count)
 	for i := uint64(0); i < count; i++ {
 		size, err := tlv.ReadVarInt(reader, &scratch)
 		if err != nil {
 			return nil, err
+		}
+
+		// Likewise bound each blob length against the bytes still
+		// available so a huge declared size cannot allocate gigabytes
+		// before io.ReadFull discovers the truncation.
+		if size > uint64(reader.Len()) {
+			return nil, fmt.Errorf("blob %d size %d exceeds %d "+
+				"remaining bytes", i, size, reader.Len())
 		}
 
 		blob := make([]byte, size)

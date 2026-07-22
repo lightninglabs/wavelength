@@ -3,6 +3,7 @@ package unroll
 import (
 	"bytes"
 	"fmt"
+	"io"
 
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/lightningnetwork/lnd/tlv"
@@ -107,6 +108,16 @@ func decodeDeferredCheckpoints(raw []byte) ([]DeferredCheckpoint, error) {
 			err)
 	}
 
+	// Bound the declared count against the bytes physically present
+	// before allocating. Each entry is at least a one-byte length prefix,
+	// so a count larger than the remaining bytes is a lie that would
+	// otherwise drive an unbounded (or panicking) make() from a tampered
+	// or truncated durable blob.
+	if count > uint64(reader.Len()) {
+		return nil, fmt.Errorf("deferred checkpoint count %d exceeds "+
+			"%d remaining bytes", count, reader.Len())
+	}
+
 	checkpoints := make([]DeferredCheckpoint, 0, count)
 	for i := uint64(0); i < count; i++ {
 		entryLen, err := tlv.ReadVarInt(reader, &scratch)
@@ -115,8 +126,21 @@ func decodeDeferredCheckpoints(raw []byte) ([]DeferredCheckpoint, error) {
 				"length: %w", i, err)
 		}
 
+		// Bound each entry length against the bytes still available so
+		// a huge declared length cannot pre-allocate before we discover
+		// the truncation.
+		if entryLen > uint64(reader.Len()) {
+			return nil, fmt.Errorf("deferred checkpoint %d length "+
+				"%d exceeds %d remaining bytes", i, entryLen,
+				reader.Len())
+		}
+
+		// Use io.ReadFull rather than reader.Read: a bare Read can
+		// return a short count without error, which would silently
+		// decode a truncated entry into a wrong-but-valid value
+		// (zero-padded tail) instead of failing closed.
 		entry := make([]byte, entryLen)
-		if _, err := reader.Read(entry); err != nil {
+		if _, err := io.ReadFull(reader, entry); err != nil {
 			return nil, fmt.Errorf("read deferred checkpoint %d "+
 				"body: %w", i, err)
 		}
@@ -160,7 +184,17 @@ func decodeDeferredCheckpointEntry(raw []byte) (DeferredCheckpoint, error) {
 			err)
 	}
 
-	if err := stream.Decode(bytes.NewReader(raw)); err != nil {
+	// Validate the inner entry framing before decoding. The txid record
+	// decodes through tlv DVarBytes, whose non-P2P path sizes
+	// make([]byte, length) directly from the declared length; without this
+	// guard a per-entry blob declaring a huge txid length panics or OOMs.
+	safeReader, err := safeTLVReader(raw)
+	if err != nil {
+		return DeferredCheckpoint{}, fmt.Errorf("decode entry "+
+			"stream: %w", err)
+	}
+
+	if err := stream.Decode(safeReader); err != nil {
 		return DeferredCheckpoint{}, fmt.Errorf("decode entry "+
 			"stream: %w", err)
 	}

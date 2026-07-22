@@ -303,7 +303,16 @@ func (m *SendClientEventRequest) Decode(r io.Reader) error {
 		return err
 	}
 
-	if _, err := stream.DecodeWithParsedTypes(r); err != nil {
+	// Bound the untrusted payload before decode: this wrapper persists
+	// in the durable outbox and is replayed from disk, so a crafted
+	// record length must not drive an unbounded make() in the tlv
+	// library.
+	safe, err := safeTLVReader(r)
+	if err != nil {
+		return err
+	}
+
+	if _, err := stream.DecodeWithParsedTypes(safe); err != nil {
 		return err
 	}
 
@@ -462,7 +471,14 @@ func (m *SendRPCRequest) Decode(r io.Reader) error {
 		return err
 	}
 
-	if _, err := stream.DecodeWithParsedTypes(r); err != nil {
+	// Bound the untrusted payload before decode so a crafted record
+	// length cannot drive an unbounded make() in the tlv library.
+	safe, err := safeTLVReader(r)
+	if err != nil {
+		return err
+	}
+
+	if _, err := stream.DecodeWithParsedTypes(safe); err != nil {
 		return err
 	}
 
@@ -622,7 +638,14 @@ func (m *SendUnaryRequest) Decode(r io.Reader) error {
 		return err
 	}
 
-	if _, err := stream.DecodeWithParsedTypes(r); err != nil {
+	// Bound the untrusted payload before decode so a crafted record
+	// length cannot drive an unbounded make() in the tlv library.
+	safe, err := safeTLVReader(r)
+	if err != nil {
+		return err
+	}
+
+	if _, err := stream.DecodeWithParsedTypes(safe); err != nil {
 		return err
 	}
 

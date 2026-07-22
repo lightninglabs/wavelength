@@ -135,7 +135,16 @@ func DecodeState(raw []byte) (*State, error) {
 		return nil, fmt.Errorf("create state stream: %w", err)
 	}
 
-	parsed, err := stream.DecodeWithParsedTypes(bytes.NewReader(raw))
+	// Validate the record framing against the bytes physically present
+	// before decoding. The lnd tlv non-P2P decode path sizes allocations
+	// from the declared record length without bounding it, so a tampered
+	// durable blob could otherwise panic or OOM.
+	safeReader, err := safeTLVReader(raw)
+	if err != nil {
+		return nil, fmt.Errorf("decode state: %w", err)
+	}
+
+	parsed, err := stream.DecodeWithParsedTypes(safeReader)
 	if err != nil {
 		return nil, fmt.Errorf("decode state: %w", err)
 	}
@@ -303,7 +312,15 @@ func decodeSweepState(raw []byte) (SweepState, error) {
 		return SweepState{}, err
 	}
 
-	parsed, err := stream.DecodeWithParsedTypes(bytes.NewReader(raw))
+	// As with the outer state stream, bound the nested sweep record
+	// framing before decoding to keep the unbounded allocation site
+	// unreachable from a tampered blob.
+	safeReader, err := safeTLVReader(raw)
+	if err != nil {
+		return SweepState{}, err
+	}
+
+	parsed, err := stream.DecodeWithParsedTypes(safeReader)
 	if err != nil {
 		return SweepState{}, err
 	}

@@ -3,6 +3,7 @@ package checkpoint
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 
 	"github.com/btcsuite/btcd/txscript/v2"
@@ -86,7 +87,16 @@ func DecodeTapTree(data []byte) ([][]byte, error) {
 		return nil, err
 	}
 
-	_, err = tlvStream.DecodeWithParsedTypes(bytes.NewReader(data))
+	// Validate the outer record framing against the bytes physically
+	// present before decoding. The lnd tlv non-P2P decode path sizes
+	// allocations from the declared record length without bounding it, so
+	// an attacker-controlled length could otherwise panic or OOM here.
+	safeReader, err := safeTLVReader(data)
+	if err != nil {
+		return nil, err
+	}
+
+	_, err = tlvStream.DecodeWithParsedTypes(safeReader)
 	if err != nil {
 		return nil, err
 	}
@@ -162,9 +172,31 @@ func leavesDecoder(r io.Reader, val interface{}, buf *[8]byte, l uint64) error {
 				return err
 			}
 
-			innerInnerTlvReader := io.LimitedReader{
-				R: &innerTlvReader,
-				N: int64(blobSize),
+			// Bound the declared per-leaf blob length against the
+			// bytes still available in the outer record. A leaf
+			// claiming more bytes than remain is malformed; without
+			// this the inner stream decode below would size a
+			// make([]byte, length) from this untrusted value and
+			// could panic or OOM.
+			if blobSize > uint64(innerTlvReader.N) {
+				return fmt.Errorf("%w: leaf blob declared %d, "+
+					"%d remaining", ErrTLVRecordTooLarge,
+					blobSize, innerTlvReader.N)
+			}
+
+			// Buffer the exact leaf blob and validate its inner
+			// record framing before decoding, so the inner DVarBytes
+			// and unknown-record paths cannot over-allocate either.
+			leafBlob := make([]byte, blobSize)
+			if _, err := io.ReadFull(
+				&innerTlvReader, leafBlob,
+			); err != nil {
+				return err
+			}
+
+			leafReader, err := safeTLVReader(leafBlob)
+			if err != nil {
+				return err
 			}
 
 			var (
@@ -184,7 +216,7 @@ func leavesDecoder(r io.Reader, val interface{}, buf *[8]byte, l uint64) error {
 			}
 
 			parsedTypes, err := tlvStream.DecodeWithParsedTypes(
-				&innerInnerTlvReader,
+				leafReader,
 			)
 			if err != nil {
 				return err
