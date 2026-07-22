@@ -41,9 +41,9 @@ type schemaMethod struct {
 	DryRunResponseType string `json:"dry_run_response_type,omitempty"`
 
 	// DryRun indicates whether the command supports --dry-run /
-	// --dry_run. Top-level wallet verbs use --dry-run (CLI-only
-	// validation, exits 10); ark.* commands use --dry_run that
-	// reaches the daemon's dry-run RPC field.
+	// --dry-run. Top-level wallet verbs use --dry-run (CLI-only
+	// validation, exits 10); ark.* commands use --dry-run that
+	// reaches the daemon's dry_run RPC field.
 	DryRun bool `json:"dry_run,omitempty"`
 
 	// JSONInput indicates the command accepts --request-json for raw proto
@@ -107,13 +107,13 @@ func walletAdminMethodRegistry() []schemaMethod {
 			Description: "Create a new wallet from a fresh seed",
 			Params: []schemaParam{
 				{
-					Name: "wallet_password_file",
+					Name: "wallet-password-file",
 					Type: "string",
 					Description: "path to file " +
 						"containing wallet password",
 				},
 				{
-					Name: "seed_passphrase_file",
+					Name: "seed-passphrase-file",
 					Type: "string",
 					Description: "path to file " +
 						"containing optional aezeed " +
@@ -136,7 +136,7 @@ func walletAdminMethodRegistry() []schemaMethod {
 			Description: "Unlock an existing wallet",
 			Params: []schemaParam{
 				{
-					Name: "wallet_password_file",
+					Name: "wallet-password-file",
 					Type: "string",
 					Description: "path to file " +
 						"containing wallet password",
@@ -186,7 +186,7 @@ func walletPaymentMethodRegistry() []schemaMethod {
 						"unless --sweep-all)",
 				},
 				{
-					Name: "max_fee",
+					Name: "max-fee",
 					Type: "uint64",
 					Description: "max fee in satoshis; " +
 						"zero uses daemon defaults",
@@ -256,7 +256,7 @@ func walletPaymentMethodRegistry() []schemaMethod {
 					Description: "optional invoice memo",
 				},
 				{
-					Name: "amt_hint",
+					Name: "amt-hint",
 					Type: "uint64",
 					Description: "optional expected " +
 						"deposit amount (--onchain)",
@@ -626,7 +626,7 @@ func arkVTXOMethodRegistry() []schemaMethod {
 					},
 				},
 				{
-					Name:        "min_amount",
+					Name:        "min-amount",
 					Type:        "int64",
 					Description: "minimum amount in sats",
 				},
@@ -638,9 +638,9 @@ func arkVTXOMethodRegistry() []schemaMethod {
 		{
 			Method: "ark.vtxos.refresh",
 			Description: "Queue VTXOs for refresh and join the " +
-				"next round (auto-joins unless --no_join). " +
+				"next round (auto-joins unless --no-join). " +
 				"Charged an operator fee at seal time; " +
-				"--dry_run previews an itemized estimate, " +
+				"--dry-run previews an itemized estimate, " +
 				"and a real refresh requires --yes on " +
 				"non-interactive stdin",
 			Params: []schemaParam{
@@ -662,7 +662,7 @@ func arkVTXOMethodRegistry() []schemaMethod {
 						"fee confirmation",
 				},
 				{
-					Name: "no_join",
+					Name: "no-join",
 					Type: "bool",
 					Description: "skip the implicit " +
 						"`ark rounds join` follow-up",
@@ -677,7 +677,7 @@ func arkVTXOMethodRegistry() []schemaMethod {
 			Method: "ark.vtxos.leave",
 			Description: "Queue VTXOs for cooperative leave " +
 				"(offboard) and join the next round " +
-				"(auto-joins unless --no_join)",
+				"(auto-joins unless --no-join)",
 			Params: []schemaParam{
 				{
 					Name: "outpoint",
@@ -697,7 +697,7 @@ func arkVTXOMethodRegistry() []schemaMethod {
 						"destination address",
 				},
 				{
-					Name: "pk_script",
+					Name: "pk-script",
 					Type: "string",
 					Description: "default destination " +
 						"pk_script (hex)",
@@ -716,7 +716,7 @@ func arkVTXOMethodRegistry() []schemaMethod {
 						"interactive confirmation",
 				},
 				{
-					Name: "no_join",
+					Name: "no-join",
 					Type: "bool",
 					Description: "skip the implicit " +
 						"`ark rounds join` follow-up",
@@ -777,7 +777,7 @@ func arkSendMethodRegistry() []schemaMethod {
 						"pk_script)",
 				},
 				{
-					Name: "pk_script",
+					Name: "pk-script",
 					Type: "string",
 					Description: "recipient raw " +
 						"pk_script hex (exactly one " +
@@ -791,7 +791,7 @@ func arkSendMethodRegistry() []schemaMethod {
 					Description: "amount in sats",
 				},
 				{
-					Name: "idempotency_key",
+					Name: "idempotency-key",
 					Type: "string",
 					Description: "stable caller intent " +
 						"key for retry-safe OOR sends",

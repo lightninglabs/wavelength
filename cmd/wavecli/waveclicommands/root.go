@@ -186,6 +186,7 @@ func newRootCmd(devMode bool) *cobra.Command {
 	cmd.AddCommand(walletCmds...)
 	cmd.AddCommand(introspectionCmds...)
 	cmd.AddCommand(advancedCmds...)
+	cmd.SetGlobalNormalizationFunc(snakeToKebabFlags)
 
 	return cmd
 }

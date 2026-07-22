@@ -90,7 +90,7 @@ func TestBuildLeaveVTXOsRequestAll(t *testing.T) {
 }
 
 // TestBuildLeaveVTXOsRequestPkScriptDefault verifies the
-// --pk_script alternative to --address: the default destination is
+// --pk-script alternative to --address: the default destination is
 // built from raw hex-decoded bytes.
 func TestBuildLeaveVTXOsRequestPkScriptDefault(t *testing.T) {
 	t.Parallel()
@@ -115,7 +115,7 @@ func TestBuildLeaveVTXOsRequestPkScriptDefault(t *testing.T) {
 }
 
 // TestBuildLeaveVTXOsRequestRejectsBothAddressAndPkScript locks in
-// the mutually-exclusive check on --address vs --pk_script for the
+// the mutually-exclusive check on --address vs --pk-script for the
 // default destination.
 func TestBuildLeaveVTXOsRequestRejectsBothAddressAndPkScript(t *testing.T) {
 	t.Parallel()
@@ -217,7 +217,7 @@ func TestBuildLeaveVTXOsRequestRejectsOutpointAndAll(t *testing.T) {
 }
 
 // TestBuildLeaveVTXOsRequestRejectsInvalidPkScriptHex locks in the
-// error path for a typo in --pk_script.
+// error path for a typo in --pk-script.
 func TestBuildLeaveVTXOsRequestRejectsInvalidPkScriptHex(t *testing.T) {
 	t.Parallel()
 
@@ -230,7 +230,7 @@ func TestBuildLeaveVTXOsRequestRejectsInvalidPkScriptHex(t *testing.T) {
 		false,
 	)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "invalid --pk_script hex")
+	require.Contains(t, err.Error(), "invalid --pk-script hex")
 }
 
 // TestParseDestinationValueAddress verifies that a plain string is
@@ -304,7 +304,7 @@ func TestConfirmLeaveAllIfNeededJSONStillPrompts(t *testing.T) {
 
 	err := confirmLeaveAllIfNeeded(cmd, req)
 	require.Error(
-		t, err, "selection=all without --yes/--dry_run must abort "+
+		t, err, "selection=all without --yes/--dry-run must abort "+
 			"when stdin says 'n'",
 	)
 	require.Contains(t, err.Error(), "aborted by user")
@@ -328,10 +328,10 @@ func TestConfirmLeaveAllIfNeededAcceptsYes(t *testing.T) {
 
 // TestConfirmLeaveAllIfNeededNonTTYRefusesPrompt is the agent-cli
 // regression guard: when stdin is not a terminal (the production
-// agent / pipeline path), --all without --yes or --dry_run must NOT
+// agent / pipeline path), --all without --yes or --dry-run must NOT
 // hit the y/N prompt. Instead the function fails fast with an
 // INVALID_ARGS envelope so an agent gets exit code 2 and a clear
-// error directing it to pass --yes or --dry_run, rather than
+// error directing it to pass --yes or --dry-run, rather than
 // hanging on a read of a closed stdin.
 func TestConfirmLeaveAllIfNeededNonTTYRefusesPrompt(t *testing.T) {
 	// NOT t.Parallel() — we override the package-level

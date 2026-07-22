@@ -70,7 +70,7 @@ func describeMethod(service protoreflect.FullName, method rpcMethod,
 func describeBinder(b *fieldBinder) fieldDescription {
 	leaf := b.leaf()
 	row := fieldDescription{
-		Path:        b.flagName,
+		Path:        canonicalFlagPath(b.flagName),
 		Type:        describeKind(leaf, b.inputKind),
 		Repeated:    leaf.IsList(),
 		Description: descriptorComment(leaf),
@@ -101,6 +101,12 @@ func describeBinder(b *fieldBinder) fieldDescription {
 	}
 
 	return row
+}
+
+// canonicalFlagPath converts proto-style field names into the kebab-case
+// spelling registered by the generated CLI's global normalization function.
+func canonicalFlagPath(path string) string {
+	return strings.ReplaceAll(path, "_", "-")
 }
 
 // describeKind names the field's input kind in a way that matches
