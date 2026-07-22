@@ -369,3 +369,55 @@ jobs:
             **/test-artifacts/
           retention-days: 5
           if-no-files-found: ignore
+
+  ##########################################
+  # system tests over the lnd REST backend
+  ##########################################
+  systest-lnd-rest:
+    name: Run system tests (lnd REST backend)
+    runs-on: [self-hosted]
+    steps:
+      - name: Git checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Fetch and rebase on ${{ github.base_ref }}
+        if: github.event_name == 'pull_request'
+        uses: ./.github/actions/rebase
+
+      - name: Setup go ${{ env.GO_VERSION }}
+        uses: ./.github/actions/setup-go
+        with:
+          go-version: '${{ env.GO_VERSION }}'
+          key-prefix: systest
+
+      - name: Run systest over the lnd REST transport
+        # ARK_SYSTEST_LND_TRANSPORT=rest points every daemon built by the
+        # directed-send fixture at lnd's REST gateway instead of gRPC, so the
+        # send / OOR / on-chain / refresh / leave / vHTLC-recovery flows
+        # exercise the lndrest wallet backend end to end (its signer,
+        # walletkit, chainkit, and streaming chain-notifier). The case filter
+        # selects exactly those fixture-driven flows; the other systests do
+        # not use the lnd backend, so re-running them here would add nothing.
+        # A single db backend (sqlite) suffices as the wallet transport is
+        # orthogonal to the DB. The sudo/env and 30m-timeout rationale matches
+        # the systest job above.
+        run: sudo env "PATH=$PATH" "GOPATH=$GOPATH" "ARK_SYSTEST_LND_TRANSPORT=rest" make systest-verbose case='Send|LNDREST|Stranded|VHTLCRecovery' SYSTEST_TIMEOUT=30m
+
+      - name: Fix artifact permissions
+        if: always()
+        run: |
+          # Fix permissions for test artifacts (created in package directories)
+          find . -type d -name "test-artifacts" -exec sudo chown -R "$(id -u):$(id -g)" {} + || true
+          find . -type d -name "test-artifacts" -exec sudo chmod -R a+r {} + || true
+
+      - name: Upload test artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: systest-artifacts-lnd-rest-${{ github.run_id }}
+          path: |
+            **/test-artifacts/
+          retention-days: 5
+          if-no-files-found: ignore

@@ -887,8 +887,17 @@ type MailboxEdgeFactory func(
 
 // LndConfig holds connection parameters for the backing lnd node.
 type LndConfig struct {
-	// Host is the network address of the lnd gRPC interface.
+	// Host is the lnd endpoint. Its meaning follows Transport: a
+	// host:port gRPC address for grpc, or an HTTP gateway base URL (for
+	// example https://localhost:8080) for rest. The REST client infers the
+	// scheme when the configured host is bare (loopback -> http, otherwise
+	// https).
 	Host string `mapstructure:"host"`
+
+	// Transport selects how the daemon talks to lnd: grpc uses the native
+	// gRPC lndclient, rest uses lnd's grpc-gateway HTTP/JSON interface.
+	// Empty values default to gRPC to preserve the historical behavior.
+	Transport string `mapstructure:"transport"`
 
 	// TLSPath is the path to lnd's TLS certificate file. If empty, the
 	// default lnd TLS cert location is used.
@@ -1126,6 +1135,7 @@ func DefaultConfig() *Config {
 		DebugLevel: DefaultDebugLevel,
 		Lnd: &LndConfig{
 			Host:       DefaultLndHost,
+			Transport:  RPCTransportGRPC,
 			RPCTimeout: DefaultRPCTimeout,
 		},
 		Server: &ServerConfig{
@@ -1308,6 +1318,21 @@ func (c *Config) validateWalletConfig() error {
 		if c.Lnd.Host == "" {
 			return fmt.Errorf("lnd host is required when " +
 				"wallet.type is lnd")
+		}
+		if err := validateRPCTransport(
+			"lnd.transport", c.Lnd.Transport,
+		); err != nil {
+			return err
+		}
+
+		// The REST transport cannot resolve lnd's per-network default
+		// macaroon path on its own (unlike the gRPC lndclient), so it
+		// must be given explicitly. Fail here at config-validation time
+		// rather than later at connect time.
+		if c.Lnd.Transport == RPCTransportREST &&
+			c.Lnd.MacaroonPath == "" {
+			return fmt.Errorf("lnd.macaroonpath is required when " +
+				"lnd.transport is rest")
 		}
 
 	case WalletTypeLwwallet:
