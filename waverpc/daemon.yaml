@@ -75,6 +75,12 @@ http:
     - selector: waverpc.DaemonService.SubmitForfeitParticipantSignatures
       post: /v1/daemon/submit-forfeit-participant-signatures
       body: "*"
+    - selector: waverpc.DaemonService.ListPendingTreeSigningRequests
+      post: /v1/daemon/list-pending-tree-signing-requests
+      body: "*"
+    - selector: waverpc.DaemonService.SubmitTreeSignatures
+      post: /v1/daemon/submit-tree-signatures
+      body: "*"
     - selector: waverpc.DaemonService.LeaveVTXOs
       post: /v1/daemon/leave-vtxos
       body: "*"
