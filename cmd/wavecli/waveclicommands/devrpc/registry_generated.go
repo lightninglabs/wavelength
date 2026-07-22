@@ -185,6 +185,20 @@ func generatedRegistry() []serviceSpec {
 					Comments: "SubmitForfeitParticipantSignatures supplies external participant\nsignatures for one pending connector-bound forfeit signing request. The\nrequest_id must be copied from the listed pending request; the daemon\nuses it to wake the blocked VTXO actor that is waiting for that exact\nround-assigned forfeit transaction. If the selected spend path requires\nno external participant keys after removing the local VTXO key and the\noperator key, callers may submit an empty signature set to acknowledge\nand unblock the request.",
 				},
 				{
+					Name:     "ListPendingTreeSigningRequests",
+					Aliases:  []string{"list-pending-tree-signing-requests"},
+					Input:    "waverpc.ListPendingTreeSigningRequestsRequest",
+					Output:   "waverpc.ListPendingTreeSigningRequestsResponse",
+					Comments: "ListPendingTreeSigningRequests returns pending MuSig2 VTXO-tree signing\nrequests for cosigner keys marked as externally signed (for example an\naggregate FROST key the client controls off-box). Each request is one\nround of the two-round MuSig2 ceremony for one transaction session:\nround NONCE asks for a fresh public nonce, round PARTIAL_SIG asks for a\npartial signature over the given sighash under the operator-aggregated\ncombined nonce. Callers poll this endpoint and answer with\nSubmitTreeSignatures. The private key never enters the daemon.",
+				},
+				{
+					Name:     "SubmitTreeSignatures",
+					Aliases:  []string{"submit-tree-signatures"},
+					Input:    "waverpc.SubmitTreeSignaturesRequest",
+					Output:   "waverpc.SubmitTreeSignaturesResponse",
+					Comments: "SubmitTreeSignatures supplies the external cosigner's material for one\npending tree-signing request. The request_id must be copied from the\nlisted pending request; the daemon uses it to wake the blocked round FSM\nthat is waiting for that exact session's nonce or partial signature.",
+				},
+				{
 					Name:     "LeaveVTXOs",
 					Aliases:  []string{"leave-vtxos"},
 					Input:    "waverpc.LeaveVTXOsRequest",
