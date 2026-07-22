@@ -2485,6 +2485,81 @@ func TestHandleTriggerBoardMultipleVTXOs(t *testing.T) {
 	)
 }
 
+// TestHandleTriggerBoardCustomPolicy verifies that when a board trigger pins a
+// custom VTXO policy template, the round actor builds the boarded output from
+// that template verbatim rather than synthesizing the standard policy: it
+// derives no owner key (the policy's owner is external to this daemon, e.g. an
+// aggregate FROST key the client controls off-box), leaves OwnerKey/ClientKey
+// zero, and still assigns the ephemeral MuSig2 tree-signing key. This is the
+// board-side mirror of the custom-refresh output path.
+func TestHandleTriggerBoardCustomPolicy(t *testing.T) {
+	t.Parallel()
+
+	h := newActorTestHarness(t)
+	h.setupMockRoundStoreForStart()
+
+	err := h.start()
+	require.NoError(t, err)
+
+	intent := h.newTestBoardingIntent()
+	h.walletActor.setConfirmedIntents(*intent)
+
+	// Model an external FROST-owned VTXO: the owner key is a key the daemon
+	// never derives. The template is otherwise a standard Ark VTXO shape so
+	// the operator still co-signs the collab leaf.
+	_, frostOwnerKey := generateTestKeyPair(t)
+	policyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
+		frostOwnerKey, h.operatorPubKey, testExitDelay,
+	)
+	require.NoError(t, err)
+
+	// The custom path must NOT derive an owner key. Only the ephemeral
+	// tree-signing key (family 45) is derived by the FSM at registration.
+	// Fail loudly if the owner-key family is ever requested.
+	h.wallet.On(
+		"DeriveNextKey", mock.Anything, types.VTXOOwnerKeyFamily,
+	).Panic("owner key must not be derived on the custom-policy board path")
+	h.wallet.On(
+		"DeriveNextKey", mock.Anything, types.VTXOSigningKeyFamily,
+	).Return(&keychain.KeyDescriptor{
+		PubKey: h.clientPubKey,
+		KeyLocator: keychain.KeyLocator{
+			Family: types.VTXOSigningKeyFamily,
+			Index:  7,
+		},
+	}, nil).Once()
+
+	result := h.receive(&actormsg.TriggerBoardMsg{
+		Amounts:        []btcutil.Amount{49_000},
+		PolicyTemplate: policyTemplate,
+	})
+	require.True(t, result.IsOk(), "expected Ok, got: %v", result.Err())
+
+	states := h.queryState()
+	tempState, exists := h.findTempState(states)
+	require.True(t, exists, "expected temp-keyed FSM state")
+
+	regState, ok := tempState.State.(*IntentSentState)
+	require.True(t, ok, "expected IntentSentState, got %T", tempState.State)
+	require.Len(t, regState.Intents.VTXOs, 1)
+
+	vtxoReq := regState.Intents.VTXOs[0]
+
+	// The boarded output carries the pinned template verbatim.
+	require.Equal(t, policyTemplate, vtxoReq.PolicyTemplate)
+	require.Equal(t, btcutil.Amount(49_000), vtxoReq.Amount)
+
+	// No owner key was derived: OwnerKey/ClientKey stay zero.
+	require.Zero(t, vtxoReq.OwnerKey.Family)
+	require.Nil(t, vtxoReq.OwnerKey.PubKey)
+	require.Nil(t, vtxoReq.ClientKey)
+
+	// The ephemeral tree-signing key is still assigned.
+	require.Equal(
+		t, types.VTXOSigningKeyFamily, vtxoReq.SigningKey.Family,
+	)
+}
+
 // TestHandleTriggerBoardFiltersToNamedOutpoints verifies that when a board
 // trigger names the boarding outpoints it sized its amounts over, the round
 // actor registers exactly those inputs and ignores other confirmed boarding
