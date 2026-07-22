@@ -1,7 +1,6 @@
 package waveclicommands
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -458,14 +457,14 @@ func confirmSendIfNeeded(cmd *cobra.Command,
 		return nil
 	}
 
-	if !stdinIsTTY(cmd) {
+	if !canPrompt(cmd) {
 		printSendPreview(cmd.ErrOrStderr(), resp)
 
 		return PrintError(
 			confirmationRequiredCode, "send requires --force "+
-				"or --yes on non-interactive stdin; "+
-				"refusing to prompt because an agent "+
-				"cannot respond to y/N",
+				"or --yes on non-interactive stdin or when "+
+				"input is disabled; refusing to prompt "+
+				"because an agent cannot respond to y/N",
 		)
 	}
 
@@ -475,22 +474,9 @@ func confirmSendIfNeeded(cmd *cobra.Command,
 func promptSendConfirmation(cmd *cobra.Command,
 	resp *wavewalletrpc.PrepareSendResponse) error {
 
-	out := cmd.ErrOrStderr()
-	printSendPreview(out, resp)
-	fmt.Fprint(out, "\nProceed? [y/N]: ")
+	printSendPreview(cmd.ErrOrStderr(), resp)
 
-	reader := bufio.NewReader(cmd.InOrStdin())
-	answer, err := reader.ReadString('\n')
-	if err != nil {
-		return fmt.Errorf("read confirmation: %w", err)
-	}
-
-	answer = strings.TrimSpace(strings.ToLower(answer))
-	if answer != "y" && answer != "yes" {
-		return fmt.Errorf("aborted by user")
-	}
-
-	return nil
+	return promptConfirmation(cmd, "\nProceed? [y/N]: ")
 }
 
 // printSendPreview writes the prepared amount, fee, rail, and destination

@@ -1,7 +1,6 @@
 package waveclicommands
 
 import (
-	"bufio"
 	"encoding/hex"
 	"fmt"
 	"os"
@@ -415,14 +414,14 @@ func confirmRefreshIfNeeded(cmd *cobra.Command,
 		return nil
 	}
 
-	if !stdinIsTTY(cmd) {
+	if !canPrompt(cmd) {
 		return PrintError(
 			confirmationRequiredCode, "refresh is charged an "+
 				"operator fee at seal time and requires "+
 				"--yes (explicit consent) or --dry-run "+
-				"(fee preview) on non-interactive stdin; "+
-				"refusing to prompt because an agent "+
-				"cannot respond to y/N",
+				"(fee preview) on non-interactive stdin or "+
+				"when input is disabled; refusing to "+
+				"prompt because an agent cannot respond to y/N",
 		)
 	}
 
@@ -495,20 +494,8 @@ func promptRefreshConfirmation(cmd *cobra.Command, lines []string) error {
 	for _, line := range lines {
 		fmt.Fprintln(out, line)
 	}
-	fmt.Fprint(out, "Proceed with refresh? [y/N]: ")
 
-	reader := bufio.NewReader(cmd.InOrStdin())
-	answer, err := reader.ReadString('\n')
-	if err != nil {
-		return fmt.Errorf("read confirmation: %w", err)
-	}
-
-	answer = strings.TrimSpace(strings.ToLower(answer))
-	if answer != "y" && answer != "yes" {
-		return fmt.Errorf("aborted by user")
-	}
-
-	return nil
+	return promptConfirmation(cmd, "Proceed with refresh? [y/N]: ")
 }
 
 // newVTXOsLeaveCmd creates the vtxos leave subcommand.
@@ -862,12 +849,13 @@ func confirmLeaveAllIfNeeded(cmd *cobra.Command,
 	// race agents whose stdin is closed / piped. The agent-cli
 	// skill lists interactive prompts as an anti-pattern; this
 	// guard is the explicit replacement.
-	if !stdinIsTTY(cmd) {
+	if !canPrompt(cmd) {
 		return PrintError(
 			confirmationRequiredCode, "--all requires --yes "+
 				"(explicit consent) or --dry-run (preview) "+
-				"on non-interactive stdin; refusing to "+
-				"prompt because an agent cannot respond to y/N",
+				"on non-interactive stdin or when input is "+
+				"disabled; refusing to prompt because an "+
+				"agent cannot respond to y/N",
 		)
 	}
 
@@ -884,19 +872,9 @@ var stdinIsTTY = defaultStdinIsTTY
 // on the given command, returning true when the prompt may proceed
 // and false when the caller must pass --yes or --dry-run instead.
 //
-// Two paths return true (prompt is safe):
-//
-//  1. cmd.InOrStdin() returns something other than os.Stdin. Only
-//     tests and embedded harnesses install custom stdin via
-//     cmd.SetIn; production agents do not, so a custom reader is
-//     the caller's signal that they will drive the prompt
-//     themselves (e.g. by piping a scripted "y\n").
-//
-//  2. cmd.InOrStdin() is os.Stdin and os.Stdin is an actual terminal
-//     (per term.IsTerminal), i.e. a device where the operator can
-//     answer interactively.
-//
-// All other cases return false and the caller refuses to prompt. A
+// Only an actual terminal returns true. Embedded readers and buffers are
+// non-interactive streams just like shell pipes and require an explicit
+// approval/input flag. All other cases return false. A
 // character-device check is deliberately NOT used here: /dev/null and
 // a closed descriptor are both character devices yet are not
 // terminals, and those are the most common non-interactive stdin
@@ -904,11 +882,12 @@ var stdinIsTTY = defaultStdinIsTTY
 // would print a y/N prompt that immediately reads EOF, which is the
 // exact hang-then-fail the consent gate exists to prevent.
 func defaultStdinIsTTY(cmd *cobra.Command) bool {
-	if cmd.InOrStdin() != os.Stdin {
-		return true
+	inputFile, ok := cmd.InOrStdin().(*os.File)
+	if !ok {
+		return false
 	}
 
-	return term.IsTerminal(int(os.Stdin.Fd()))
+	return term.IsTerminal(int(inputFile.Fd()))
 }
 
 // promptLeaveAllConfirmation asks the operator to confirm a
@@ -925,18 +904,6 @@ func promptLeaveAllConfirmation(cmd *cobra.Command) error {
 		out, "About to queue ALL live VTXOs for cooperative leave. "+
 			"This moves funds on-chain.",
 	)
-	fmt.Fprint(out, "Proceed? [y/N]: ")
 
-	reader := bufio.NewReader(cmd.InOrStdin())
-	answer, err := reader.ReadString('\n')
-	if err != nil {
-		return fmt.Errorf("read confirmation: %w", err)
-	}
-
-	answer = strings.TrimSpace(strings.ToLower(answer))
-	if answer != "y" && answer != "yes" {
-		return fmt.Errorf("aborted by user")
-	}
-
-	return nil
+	return promptConfirmation(cmd, "Proceed? [y/N]: ")
 }
