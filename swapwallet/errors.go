@@ -58,4 +58,13 @@ var (
 	// the cap.
 	ErrBalanceLimitExceeded = errors.New("amount would exceed the " +
 		"maximum allowed wallet balance")
+
+	// ErrCreditReceiveUnavailable is returned when a sub-dust receive is
+	// routed to the operator's credit subsystem but the swap server does
+	// not complete the credit request (it times out or errors). It maps to
+	// a gRPC Unavailable status so the failure is distinguishable from an
+	// opaque DEADLINE_EXCEEDED; the wrapped message carries the amount, the
+	// dust limit, and the guidance to receive at least the dust amount.
+	ErrCreditReceiveUnavailable = errors.New("sub-dust receive via the " +
+		"operator credit subsystem is unavailable")
 )

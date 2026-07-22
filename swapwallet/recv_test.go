@@ -11,6 +11,8 @@ import (
 	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
 	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // newRecvFixture builds a receiver fixture using the same fake plumbing
@@ -188,6 +190,85 @@ func TestRecvBelowDustHandsToCreditRegistry(t *testing.T) {
 	require.Equal(t, "tiny", projection.Note)
 	require.NotEmpty(t, projection.RequestJSON)
 	require.Equal(t, []byte{0xab, 0xcd}, projection.PaymentHash)
+}
+
+// TestRecvCreditFailureIsTypedAndRecorded locks the wavelength#1041 fix: when a
+// sub-dust receive is routed to the credit subsystem and the swap server never
+// completes the credit request (here a DeadlineExceeded, the exact symptom seen
+// on signet), the failure must (1) surface as the typed
+// ErrCreditReceiveUnavailable with actionable guidance rather than an opaque
+// deadline error, (2) NOT leak the underlying DeadlineExceeded code through the
+// error-mapping interceptor -- it must map to Unavailable, and (3) leave a
+// FAILED activity row so the attempt is not silent.
+func TestRecvCreditFailureIsTypedAndRecorded(t *testing.T) {
+	t.Parallel()
+
+	const (
+		dustLimit = uint64(1_000)
+		amt       = uint64(999)
+	)
+
+	swap := &fakeSwapService{}
+	rpc := &fakeRPCServer{
+		getInfoResp: &waverpc.GetInfoResponse{
+			ServerInfo: &waverpc.ServerInfo{
+				DustLimit: dustLimit,
+			},
+		},
+	}
+	reg := &fakeCreditRegistry{
+		// Mirror the live signet symptom: the credit Ask resolves with
+		// a gRPC DeadlineExceeded status (the credit admit timeout
+		// firing).
+		err: status.Error(
+			codes.DeadlineExceeded, "context deadline exceeded",
+		),
+	}
+	store := &fakeActivityProjector{}
+	deps := &Deps{
+		SwapService:    swap,
+		RPCServer:      rpc,
+		CreditRegistry: reg,
+		ActivityStore:  store,
+	}
+	runtime := newRuntime(t.Context(), deps)
+	t.Cleanup(runtime.stop)
+	receiver := newReceiver(deps, runtime)
+
+	_, err := receiver.Recv(t.Context(), &wavewalletrpc.RecvRequest{
+		AmtSat: amt,
+		Memo:   "tiny",
+	})
+
+	// (1) The failure is the typed sentinel carrying actionable guidance:
+	// the requested amount and the dust floor to retry at or above.
+	require.ErrorIs(t, err, ErrCreditReceiveUnavailable)
+	require.Contains(t, err.Error(), "999")
+	require.Contains(t, err.Error(), "1000")
+	require.Equal(t, 1, reg.receiveCalls)
+	require.Equal(t, 0, swap.startReceiveCalls)
+
+	// (2) The returned error must NOT carry the underlying DeadlineExceeded
+	// status: once mapped by the interceptor it is Unavailable, so a client
+	// sees a distinct, retriable-elsewhere code rather than an opaque
+	// deadline. This is the crux of the #1041 fix.
+	mapped := mapSentinel(err)
+	require.Equal(t, codes.Unavailable, status.Code(mapped))
+
+	// (3) A FAILED activity row was projected so the attempt leaves a
+	// trace, keyed to the credit counterparty and the requested amount.
+	require.Equal(t, 1, store.count())
+	row := store.lastProjection()
+	require.Equal(
+		t, int64(wavewalletrpc.EntryStatus_ENTRY_STATUS_FAILED),
+		row.Status,
+	)
+	require.Equal(
+		t, int64(wavewalletrpc.EntryKind_ENTRY_KIND_RECV), row.Kind,
+	)
+	require.Equal(t, "credit", row.Counterparty)
+	require.Equal(t, int64(amt), row.AmountSat)
+	require.NotEmpty(t, row.FailureReason)
 }
 
 // TestRecvDustLimitLookupFailureFallsBackOpen asserts that advisory dust

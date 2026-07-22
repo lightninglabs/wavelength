@@ -70,6 +70,16 @@ var sentinelMappings = []sentinelMapping{
 		ErrBalanceLimitExceeded, codes.FailedPrecondition,
 		wavewalletrpc.ReasonBalanceLimitExceeded,
 	},
+
+	// A sub-dust receive whose credit request the swap server never
+	// completes is Unavailable (a function of operator/server state, not a
+	// malformed argument), reusing the swap-backend-unavailable reason so
+	// no new wire reason enum is needed. The point is to replace the opaque
+	// DEADLINE_EXCEEDED with a typed, actionable status.
+	{
+		ErrCreditReceiveUnavailable, codes.Unavailable,
+		wavewalletrpc.ReasonCreditReceiveUnavailable,
+	},
 }
 
 // statusSwapBackendUnavailable returns the canonical gRPC status for a missing
