@@ -70,6 +70,17 @@ type BoardIntentPayload struct {
 	// "collapse the confirmed boarding balance into one VTXO", non-zero
 	// fans the balance into that many VTXOs.
 	TargetVTXOCount uint32
+
+	// PolicyTemplate mirrors BoardRequest.PolicyTemplate: the serialized
+	// arkscript policy the boarded outputs adopt, or nil for the standard
+	// collaborative policy. Persisted so restart replay recreates the same
+	// custom output rather than silently re-boarding into the standard
+	// shape.
+	PolicyTemplate []byte
+
+	// PkScript mirrors BoardRequest.PkScript: the pinned taproot output
+	// script, or nil to derive it from PolicyTemplate.
+	PkScript []byte
 }
 
 // Kind reports the board intent kind.
@@ -77,11 +88,17 @@ func (p *BoardIntentPayload) Kind() PendingIntentKind {
 	return PendingIntentKindBoard
 }
 
-// writeIDDigest writes the canonical field encoding for ID derivation.
+// writeIDDigest writes the canonical field encoding for ID derivation. Byte
+// slices are length-prefixed so two boards differing only by policy (or by an
+// empty vs a set script that shares a prefix) can never collide on the same
+// intent ID.
 func (p *BoardIntentPayload) writeIDDigest(w io.Writer) {
 	var b [4]byte
 	binary.BigEndian.PutUint32(b[:], p.TargetVTXOCount)
 	_, _ = w.Write(b[:])
+
+	writeLenPrefixed(w, p.PolicyTemplate)
+	writeLenPrefixed(w, p.PkScript)
 }
 
 func (p *BoardIntentPayload) sealPendingIntentPayload() {}
