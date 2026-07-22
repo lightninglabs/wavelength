@@ -3,8 +3,10 @@
 package swapwallet
 
 import (
+	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/lightninglabs/wavelength/credit"
 	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
@@ -269,6 +271,69 @@ func TestRecvCreditFailureIsTypedAndRecorded(t *testing.T) {
 	require.Equal(t, "credit", row.Counterparty)
 	require.Equal(t, int64(amt), row.AmountSat)
 	require.NotEmpty(t, row.FailureReason)
+}
+
+// TestRecvCreditCallerContextIsPreserved asserts that caller cancellation is
+// not reclassified as an operator credit outage or persisted as a failed
+// receive attempt.
+func TestRecvCreditCallerContextIsPreserved(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		want error
+		ctx  func(*testing.T) context.Context
+	}{
+		{
+			name: "canceled",
+			want: context.Canceled,
+			ctx: func(t *testing.T) context.Context {
+				ctx, cancel := context.WithCancel(t.Context())
+				cancel()
+
+				return ctx
+			},
+		},
+		{
+			name: "deadline exceeded",
+			want: context.DeadlineExceeded,
+			ctx: func(t *testing.T) context.Context {
+				ctx, cancel := context.WithDeadline(
+					t.Context(),
+					time.Now().Add(-time.Second),
+				)
+				t.Cleanup(cancel)
+
+				return ctx
+			},
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			registry := &fakeCreditRegistry{err: test.want}
+			store := &fakeActivityProjector{}
+			deps := &Deps{
+				CreditRegistry: registry,
+				ActivityStore:  store,
+			}
+			runtime := newRuntime(t.Context(), deps)
+			t.Cleanup(runtime.stop)
+			receiver := newReceiver(deps, runtime)
+
+			_, err := receiver.recvCredit(
+				test.ctx(t), &wavewalletrpc.RecvRequest{
+					Memo: "tiny",
+				}, 999, 1_000,
+			)
+			require.ErrorIs(t, err, test.want)
+			require.Equal(t, 1, registry.receiveCalls)
+			require.Equal(t, 0, store.count())
+		})
+	}
 }
 
 // TestRecvDustLimitLookupFailureFallsBackOpen asserts that advisory dust

@@ -202,6 +202,14 @@ func (r *receiver) recvCredit(ctx context.Context,
 		},
 	).Await(ctx).Unpack()
 	if err != nil {
+		// Preserve caller-owned cancellation. A canceled RPC says
+		// nothing about the operator's credit subsystem, and it must
+		// not leave a durable FAILED row for an attempt the caller
+		// abandoned.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+
 		// A sub-dust receive that the swap server never completes must
 		// not vanish silently (wavelength#1041): log it, record a
 		// FAILED activity row, and return a typed, actionable error
