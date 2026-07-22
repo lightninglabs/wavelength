@@ -1063,7 +1063,7 @@ func TestLateFinalizedSubscriberRetrySkipsConfirmed(t *testing.T) {
 	require.True(
 		t,
 		behavior.notifyFinalized(
-			t.Context(), entry, confirmHeight,
+			t.Context(), entry, confirmHeight, chainhash.Hash{},
 		),
 	)
 	notification, ok := sub.awaitMessage(testTimeout)

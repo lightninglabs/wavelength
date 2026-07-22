@@ -311,6 +311,9 @@ type TxConfirmed struct {
 	// BlockHeight is the block height where the transaction confirmed.
 	BlockHeight int32
 
+	// BlockHash is the hash of the block the transaction confirmed in.
+	BlockHash chainhash.Hash
+
 	// NumConfs is the confirmation count reported by the backend.
 	NumConfs uint32
 }
