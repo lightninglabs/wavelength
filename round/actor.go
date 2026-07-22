@@ -281,6 +281,13 @@ type RoundClientConfig struct {
 	// concurrency. If nil, the actor preserves serial behavior.
 	SigningExecutor SigningExecutor
 
+	// ExternalTreeSigner, when non-nil, supplies MuSig2 tree-signing
+	// material for VTXO signing keys marked ExternalTreeSigner, routing
+	// them to an external party (e.g. an aggregate FROST key the client
+	// controls off-box) instead of the local wallet. Nil disables external
+	// tree signing.
+	ExternalTreeSigner ExternalTreeSignerBackend
+
 	// RoundStore persists round coordination and checkpointing.
 	RoundStore RoundStore
 
@@ -415,6 +422,7 @@ func NewRoundClientActor(cfg *RoundClientConfig) fn.Result[*RoundClientActor] {
 		VTXOStore:              cfg.VTXOStore,
 		Wallet:                 cfg.Wallet,
 		SigningExecutor:        cfg.SigningExecutor,
+		ExternalTreeSigner:     cfg.ExternalTreeSigner,
 		OperatorTerms:          cfg.OperatorTerms,
 		ChainParams:            cfg.ChainParams,
 		MaxOperatorFee:         cfg.MaxOperatorFee,
@@ -826,6 +834,7 @@ func (a *RoundClientActor) createRoundFSMFromDB(ctx context.Context,
 		VTXOStore:              a.cfg.VTXOStore,
 		Wallet:                 a.cfg.Wallet,
 		SigningExecutor:        a.env.SigningExecutor,
+		ExternalTreeSigner:     a.env.ExternalTreeSigner,
 		OperatorTerms:          a.cfg.OperatorTerms,
 		ChainParams:            a.cfg.ChainParams,
 		MaxOperatorFee:         a.cfg.MaxOperatorFee,
@@ -900,6 +909,7 @@ func (a *RoundClientActor) createNewRound(ctx context.Context) (*RoundFSM,
 		VTXOStore:              a.cfg.VTXOStore,
 		Wallet:                 a.cfg.Wallet,
 		SigningExecutor:        a.env.SigningExecutor,
+		ExternalTreeSigner:     a.env.ExternalTreeSigner,
 		OperatorTerms:          a.cfg.OperatorTerms,
 		ChainParams:            a.cfg.ChainParams,
 		MaxOperatorFee:         a.cfg.MaxOperatorFee,
