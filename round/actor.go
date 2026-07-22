@@ -1800,6 +1800,27 @@ func (a *RoundClientActor) buildVTXORequest(ctx context.Context,
 	return req, nil
 }
 
+// buildCustomBoardVTXORequest constructs a boarded VTXO request from a
+// caller-supplied arkscript policy template. Unlike buildVTXORequest it derives
+// no owner key and registers no owned script: the policy's owner is external to
+// this daemon (for example an aggregate FROST key the client controls off-box),
+// so ClientKey/OwnerKey are intentionally left zero and the FSM still assigns
+// the ephemeral MuSig2 tree-signing key at registration time. This mirrors the
+// custom-refresh output construction so a custom-policy board and a
+// custom-policy refresh produce structurally identical VTXO requests. The
+// template and pkScript are validated at the RPC boundary before the board
+// intent is admitted.
+func buildCustomBoardVTXORequest(amount btcutil.Amount, policyTemplate,
+	pkScript []byte, origin types.VTXOOrigin) *types.VTXORequest {
+
+	return &types.VTXORequest{
+		PolicyTemplate: append([]byte(nil), policyTemplate...),
+		PkScript:       append([]byte(nil), pkScript...),
+		Amount:         amount,
+		Origin:         origin,
+	}
+}
+
 // handleRoundJoined handles the RoundJoined event which requires special
 // re-keying logic. It matches the accepted outpoints to find the correct
 // pending round, then re-keys the round from its TempRoundKey to the
@@ -3318,14 +3339,29 @@ func (a *RoundClientActor) handleTriggerBoard(ctx context.Context,
 		// SourceRoundBoarding. Tag origin here so the
 		// classification flows through the FSM to the
 		// VTXOCreatedNotification dispatch.
-		req, err := a.buildVTXORequest(
-			ctx, amount, types.VTXOOriginRoundBoarding,
-		)
-		if err != nil {
-			return fn.Err[actormsg.RoundActorResp](
-				fmt.Errorf("build board VTXO request %d: %w",
-					i, err),
+		//
+		// When the board request pins a custom policy template,
+		// build the output from it verbatim (mirroring the
+		// custom-refresh path) instead of synthesizing the
+		// standard policy with a freshly derived owner key. This
+		// lets a client board straight into a custom-owned VTXO,
+		// e.g. one owned by an external FROST aggregate key.
+		var req *types.VTXORequest
+		if len(cmd.PolicyTemplate) > 0 {
+			req = buildCustomBoardVTXORequest(
+				amount, cmd.PolicyTemplate, cmd.PkScript,
+				types.VTXOOriginRoundBoarding,
 			)
+		} else {
+			req, err = a.buildVTXORequest(
+				ctx, amount, types.VTXOOriginRoundBoarding,
+			)
+			if err != nil {
+				return fn.Err[actormsg.RoundActorResp](
+					fmt.Errorf("build board VTXO request "+
+						"%d: %w", i, err),
+				)
+			}
 		}
 
 		requests = append(requests, *req)
