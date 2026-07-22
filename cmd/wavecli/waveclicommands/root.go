@@ -102,10 +102,15 @@ func newRootCmd(devMode bool) *cobra.Command {
 		"maximum duration for each daemon RPC; 0 disables the deadline",
 	)
 
+	pf.Bool(
+		"json", false, "emit machine-readable JSON output (raw "+
+			"request input uses --request-json)",
+	)
+
 	pf.String(
-		"json", "", "raw JSON request payload (maps directly to "+
-			"the RPC request proto); when set, bespoke flags "+
-			"are ignored",
+		"request-json", "", "raw JSON request payload (maps "+
+			"directly to the RPC request proto); when set, "+
+			"bespoke flags are ignored",
 	)
 
 	// The visible face is two groups: the everyday Wallet verbs and

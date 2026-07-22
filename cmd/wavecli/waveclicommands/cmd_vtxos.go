@@ -387,7 +387,7 @@ func summarizeRefreshFeeEstimate(est *waverpc.RefreshFeeEstimate) []string {
 // consent: every refresh is charged an operator fee at seal time, and
 // before this gate the CLI queued the refresh without ever mentioning
 // it (#986). The check runs after parseRequest returns so it covers
-// both the flag-driven path and the --json path, mirroring
+// both the flag-driven path and the --request-json path, mirroring
 // confirmLeaveAllIfNeeded. Skip when --yes is set (explicit scripted
 // consent) or when req.DryRun is set (previewing, not spending).
 //
@@ -833,7 +833,7 @@ func parseDestinationValue(raw string) (*waverpc.LeaveDestination, error) {
 // confirmLeaveAllIfNeeded gates dispatch on an explicit confirmation
 // when the resolved request selects all VTXOs. The check runs after
 // parseRequest returns so it covers both the flag-driven path and the
-// --json path; previously the prompt lived inside the flag callback
+// --request-json path; previously the prompt lived inside the flag callback
 // and an agent piping `{"all":true,...}` would silently skip the gate
 // that the bespoke-flag path enforced. Skip when --yes is set
 // (explicit scripted consent), when req.DryRun is set (just
