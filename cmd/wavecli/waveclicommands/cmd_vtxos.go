@@ -417,10 +417,10 @@ func confirmRefreshIfNeeded(cmd *cobra.Command,
 
 	if !stdinIsTTY(cmd) {
 		return PrintError(
-			"INVALID_ARGS", "refresh is charged an operator "+
-				"fee at seal time and requires --yes "+
-				"(explicit consent) or --dry-run (fee "+
-				"preview) on non-interactive stdin; "+
+			confirmationRequiredCode, "refresh is charged an "+
+				"operator fee at seal time and requires "+
+				"--yes (explicit consent) or --dry-run "+
+				"(fee preview) on non-interactive stdin; "+
 				"refusing to prompt because an agent "+
 				"cannot respond to y/N",
 		)
@@ -864,10 +864,10 @@ func confirmLeaveAllIfNeeded(cmd *cobra.Command,
 	// guard is the explicit replacement.
 	if !stdinIsTTY(cmd) {
 		return PrintError(
-			"INVALID_ARGS", "--all requires --yes (explicit "+
-				"consent) or --dry-run (preview) on "+
-				"non-interactive stdin; refusing to prompt "+
-				"because an agent cannot respond to y/N",
+			confirmationRequiredCode, "--all requires --yes "+
+				"(explicit consent) or --dry-run (preview) "+
+				"on non-interactive stdin; refusing to "+
+				"prompt because an agent cannot respond to y/N",
 		)
 	}
 

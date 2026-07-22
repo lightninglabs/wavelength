@@ -109,7 +109,7 @@ func TestConfirmRefreshYesFlagBypasses(t *testing.T) {
 
 // TestConfirmRefreshNonTTYRefusesPrompt is the agent-safety guard the
 // issue's acceptance criteria require: a non-interactive invocation
-// without --yes or --dry-run fails fast with an INVALID_ARGS envelope
+// without --yes or --dry-run fails fast with a confirmation-required envelope
 // instead of blocking on a prompt an agent cannot answer.
 func TestConfirmRefreshNonTTYRefusesPrompt(t *testing.T) {
 	// NOT t.Parallel() — overrides the package-level stdinIsTTY
@@ -134,8 +134,9 @@ func TestConfirmRefreshNonTTYRefusesPrompt(t *testing.T) {
 	require.True(
 		t, ErrorWasPrinted(err),
 		"expected a printedError so main.go exits with the "+
-			"INVALID_ARGS code",
+			"confirmation-required code",
 	)
+	require.Equal(t, ExitConfirmationRequired, ExitCodeFor(err))
 	require.False(t, previewed)
 }
 
@@ -565,6 +566,7 @@ func TestVTXOsRefreshWiringNonTTYNeverDispatches(t *testing.T) {
 	err := vtxosRefresh(cmd, nil)
 	require.Error(t, err)
 	require.True(t, ErrorWasPrinted(err))
+	require.Equal(t, ExitConfirmationRequired, ExitCodeFor(err))
 	require.Empty(
 		t, fake.refreshReqs, "the refusal must fire before any RPC",
 	)

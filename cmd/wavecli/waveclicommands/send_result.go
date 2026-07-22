@@ -13,7 +13,7 @@ import (
 // the verbose inspection trace down to the fields a caller actually needs: the
 // amount that left the wallet, the fee, and, for a Lightning send, the payment
 // preimage that proves the invoice was paid. The full ledger, VTXO, and swap
-// breakdown stays available on demand via `da activity inspect <id>`.
+// breakdown stays available on demand via `wavecli activity inspect <id>`.
 type sendResult struct {
 	// Status is the short terminal status label (e.g. COMPLETE, PENDING).
 	Status string `json:"status"`
@@ -48,7 +48,7 @@ type sendResult struct {
 	// VtxoOutpoint is the settling vHTLC/VTXO outpoint when known.
 	VtxoOutpoint string `json:"vtxo_outpoint,omitempty"`
 
-	// ID is the wallet entry id, the handle for `da activity inspect`.
+	// ID is the wallet entry id, the handle for `wavecli activity inspect`.
 	ID string `json:"id"`
 }
 

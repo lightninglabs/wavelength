@@ -49,7 +49,7 @@ func newExitCmd() *cobra.Command {
 		"exact acknowledgement required to force unilateral unroll")
 	cmd.Flags().Bool("dry-run", false,
 		"validate inputs locally and print the preview without "+
-			"dispatching to the daemon; exits 10 on a valid "+
+			"dispatching to the daemon; exits 0 on a valid "+
 			"preview, non-zero on validation failure")
 
 	cmd.AddCommand(newExitStatusCmd())

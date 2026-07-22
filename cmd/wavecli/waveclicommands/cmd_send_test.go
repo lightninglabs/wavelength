@@ -3,6 +3,7 @@ package waveclicommands
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -19,9 +20,18 @@ func TestConfirmSendIfNeededRefusesNonTTY(t *testing.T) {
 	})
 
 	cmd := newSendCmd()
-	err := confirmSendIfNeeded(cmd, &wavewalletrpc.PrepareSendResponse{})
+	var stderr bytes.Buffer
+	cmd.SetErr(&stderr)
+	err := confirmSendIfNeeded(cmd, &wavewalletrpc.PrepareSendResponse{
+		AmountSat: 21_000,
+		Rail: wavewalletrpc.
+			SendRail_SEND_RAIL_LIGHTNING,
+	})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "non-interactive stdin")
+	require.Equal(t, ExitConfirmationRequired, ExitCodeFor(err))
+	require.Contains(t, stderr.String(), "Send 21000 sats")
+	require.Contains(t, stderr.String(), "Rail: Lightning")
 }
 
 func TestConfirmSendIfNeededForceSkipsPrompt(t *testing.T) {
@@ -128,6 +138,33 @@ func TestSendWaitErrorCode(t *testing.T) {
 	require.Equal(
 		t, "WAIT_TIMEOUT", sendWaitErrorCode(context.DeadlineExceeded),
 	)
+}
+
+func TestPrintSendDryRunPreviewIsSuccessfulJSON(t *testing.T) {
+	t.Parallel()
+
+	var stdout bytes.Buffer
+	err := printSendDryRunPreview(
+		&stdout, &wavewalletrpc.PrepareSendResponse{
+			AmountSat:      50_000,
+			ExpectedFeeSat: 123,
+			FeeKnown:       true,
+		},
+	)
+	require.NoError(t, err)
+
+	var preview struct {
+		DryRun  bool            `json:"dry_run"`
+		Preview json.RawMessage `json:"preview"`
+	}
+	require.NoError(t, json.Unmarshal(stdout.Bytes(), &preview))
+	require.True(t, preview.DryRun)
+
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(preview.Preview, &body))
+	require.Equal(t, "50000", body["amount_sat"])
+	require.Equal(t, "123", body["expected_fee_sat"])
+	require.Equal(t, true, body["fee_known"])
 }
 
 // TestSendWaitFlagDefaults verifies the wait family is wired with the expected

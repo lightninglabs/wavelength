@@ -2,8 +2,10 @@ package waveclicommands
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
+	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -14,10 +16,12 @@ import (
 func TestExitCodeForCLIError(t *testing.T) {
 	t.Parallel()
 
-	err := newCLIError(ExitDryRunOK, errors.New("preview"))
+	err := newCLIError(
+		ExitConfirmationRequired, errors.New("approval required"),
+	)
 
-	require.Equal(t, ExitDryRunOK, ExitCodeFor(err))
-	require.Equal(t, "preview", err.Error())
+	require.Equal(t, ExitConfirmationRequired, ExitCodeFor(err))
+	require.Equal(t, "approval required", err.Error())
 }
 
 // TestExitCodeForPrintedError verifies the printedError returned from
@@ -47,8 +51,8 @@ func TestExitCodeForPrintedError(t *testing.T) {
 			ExitNotFound,
 		},
 		{
-			"DRY_RUN_OK",
-			ExitDryRunOK,
+			confirmationRequiredCode,
+			ExitConfirmationRequired,
 		},
 		{
 			"SOMETHING_ELSE",
@@ -122,6 +126,40 @@ func TestExitCodeForNil(t *testing.T) {
 	require.False(t, ErrorWasPrinted(nil))
 }
 
+func TestExitCodeForCredentialLoadFailure(t *testing.T) {
+	t.Parallel()
+
+	cases := []error{
+		errors.New("unable to load TLS cert: file does not exist"),
+		errors.New("unable to load macaroon: file does not exist"),
+	}
+
+	for _, err := range cases {
+		require.Equal(t, ExitAuthFailure, ExitCodeFor(err))
+	}
+}
+
+// TestExitCodeForWalletNotReady verifies wallet lifecycle
+// preconditions exit with the auth code so the process status agrees
+// with the WALLET_LOCKED envelope, rather than the invalid-args code
+// the raw gRPC FailedPrecondition would otherwise produce.
+func TestExitCodeForWalletNotReady(t *testing.T) {
+	t.Parallel()
+
+	for _, state := range []string{
+		waverpc.WalletNotReadyStateLocked,
+		waverpc.WalletNotReadyStateNone,
+		waverpc.WalletNotReadyStateSyncing,
+	} {
+		err := waverpc.WalletNotReadyStateError("not ready", state)
+		require.Equal(t, ExitAuthFailure, ExitCodeFor(err))
+
+		// A wrapping fmt.Errorf must not lose the classification.
+		wrapped := fmt.Errorf("balance: %w", err)
+		require.Equal(t, ExitAuthFailure, ExitCodeFor(wrapped))
+	}
+}
+
 // TestExitCodeForCobraArgError covers the cobra/pflag pre-RunE
 // validation classifier. Each prefix the upstream libraries emit
 // must map onto ExitInvalidArgs so an agent that passes the wrong
@@ -134,6 +172,9 @@ func TestExitCodeForCobraArgError(t *testing.T) {
 		"unknown flag: --bogus",
 		"unknown shorthand flag: 'q' in -q",
 		"invalid argument \"foo\" for \"--amt\"",
+		"flag needs an argument: --amt",
+		"bad flag syntax: --=foo",
+		"invalid --request-json payload: unexpected token",
 		"unknown command \"shrug\" for \"wavecli\"",
 		"accepts 1 arg(s), received 0",
 		"requires at least 1 arg(s), received 0",
@@ -159,11 +200,11 @@ func TestIsCobraArgErrorSkipsClassifiedWrappers(t *testing.T) {
 	// A printedError whose message happens to start with a cobra
 	// prefix should still keep its own ExitCode.
 	pe := &printedError{
-		code: "DRY_RUN_OK",
+		code: confirmationRequiredCode,
 		msg:  "required flag(s) \"x\" not set",
 	}
 	require.False(t, IsCobraArgError(pe))
-	require.Equal(t, ExitDryRunOK, ExitCodeFor(pe))
+	require.Equal(t, ExitConfirmationRequired, ExitCodeFor(pe))
 
 	// A cliError wrapping a cobra-shaped message: the wrapper's
 	// explicit code wins.
