@@ -94,6 +94,9 @@ func NewRegistry(cfg RegistryConfig) (*Registry, error) {
 	if cfg.AdmitTimeout <= 0 {
 		cfg.AdmitTimeout = DefaultAdmitTimeout
 	}
+	if cfg.ReceiveAdmitTimeout <= 0 {
+		cfg.ReceiveAdmitTimeout = DefaultReceiveAdmitTimeout
+	}
 
 	earmark := &atomic.Pointer[EarmarkFunc]{}
 	if cfg.AutoRedeem.EarmarkedSat != nil {
@@ -415,7 +418,7 @@ func (b *registryBehavior) createReceiveInvoice(ctx context.Context,
 		return fmt.Errorf("get identity pubkey: %w", err)
 	}
 
-	callCtx, cancel := context.WithTimeout(ctx, b.cfg.AdmitTimeout)
+	callCtx, cancel := context.WithTimeout(ctx, b.cfg.ReceiveAdmitTimeout)
 	defer cancel()
 
 	res, err := b.cfg.Server.CreateCredit(
@@ -423,6 +426,16 @@ func (b *registryBehavior) createReceiveInvoice(ctx context.Context,
 		uint64(rec.AmountSat), memo,
 	)
 	if err != nil {
+		// Log at the exact failure site: this is the single synchronous
+		// swap-server round-trip a sub-dust receive makes, and when the
+		// operator's credit subsystem is unresponsive it is otherwise
+		// completely invisible (wavelength#1041).
+		b.logger(ctx).WarnS(ctx, "Credit receive CreateCredit failed",
+			err,
+			slog.String("op_key", rec.OpKey),
+			slog.Int64("amount_sat", rec.AmountSat),
+		)
+
 		return fmt.Errorf("create receive credit: %w", err)
 	}
 	if res.State.IsTerminalFailure() {
