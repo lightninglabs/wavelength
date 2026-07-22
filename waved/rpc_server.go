@@ -2619,6 +2619,49 @@ func (r *RPCServer) SendOnChain(ctx context.Context,
 // balance check, VTXO amount computation, and round registration. It
 // returns immediately after the wallet accepts the request; use
 // ListRounds/WatchRounds to observe round progress.
+// validateBoardPolicyTemplate validates an optional custom VTXO policy template
+// (and its optional pinned pk_script) supplied on a Board request against the
+// operator's terms. An empty template selects the standard collaborative
+// policy; a pinned pk_script without a template is rejected. A non-empty
+// template must be a well-formed Ark policy (operator on every collab leaf,
+// exit leaves gated by at least the operator's CSV floor) and, when a
+// pk_script is pinned, must derive to exactly that script. All failures map to
+// InvalidArgument so the caller can correct the request.
+func validateBoardPolicyTemplate(policyTemplate, pkScript []byte,
+	terms *types.OperatorTerms) error {
+
+	if len(policyTemplate) == 0 {
+		if len(pkScript) > 0 {
+			return status.Errorf(codes.InvalidArgument,
+				"pk_script requires vtxo_policy_template")
+		}
+
+		return nil
+	}
+
+	template, err := arkscript.DecodePolicyTemplate(policyTemplate)
+	if err != nil {
+		return status.Errorf(codes.InvalidArgument, "decode "+
+			"vtxo_policy_template: %v", err)
+	}
+
+	err = template.ValidateArkPolicy(arkscript.PolicyValidationOpts{
+		OperatorKey:  terms.PubKey,
+		MinExitDelay: terms.VTXOExitDelay,
+	})
+	if err != nil {
+		return status.Errorf(codes.InvalidArgument, "invalid "+
+			"vtxo_policy_template: %v", err)
+	}
+
+	if len(pkScript) > 0 && !template.MatchesPkScript(pkScript) {
+		return status.Errorf(codes.InvalidArgument, "pk_script does "+
+			"not match vtxo_policy_template")
+	}
+
+	return nil
+}
+
 func (r *RPCServer) Board(ctx context.Context, req *waverpc.BoardRequest) (
 	*waverpc.BoardResponse, error) {
 
@@ -2647,6 +2690,21 @@ func (r *RPCServer) Board(ctx context.Context, req *waverpc.BoardRequest) (
 	}
 	wRef := r.server.walletRef.UnsafeFromSome()
 
+	// When the caller pins a custom VTXO policy template for the boarded
+	// outputs, validate it against the operator's terms before admission so
+	// a malformed or unsafe policy (operator not on every collab leaf, exit
+	// leaf below the CSV floor, or a pinned script that does not match the
+	// template) is rejected at the RPC boundary rather than surfacing as a
+	// round failure. The operator's own fee authority under #270 is
+	// unaffected: the template governs ownership, not amounts.
+	policyTemplate := req.GetVtxoPolicyTemplate()
+	pkScript := req.GetPkScript()
+	if err := validateBoardPolicyTemplate(
+		policyTemplate, pkScript, terms,
+	); err != nil {
+		return nil, err
+	}
+
 	// Under the #270 seal-time fee handshake the server is the
 	// fee authority — the client no longer pre-computes or pre-
 	// deducts an operator fee at submit time. The wallet ships
@@ -2654,11 +2712,12 @@ func (r *RPCServer) Board(ctx context.Context, req *waverpc.BoardRequest) (
 	// residual into the boarding VTXO output when the round
 	// seals. Any CLI / UX fee preview is produced by the
 	// EstimateFee RPC, not by the Board admission path.
-	_ = terms
 
 	boardReq := &wallet.BoardRequest{
 		TargetVTXOCount: req.GetTargetVtxoCount(),
 		NoPersist:       req.GetNoPersist(),
+		PolicyTemplate:  policyTemplate,
+		PkScript:        pkScript,
 	}
 
 	future := wRef.Ask(ctx, boardReq)
