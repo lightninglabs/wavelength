@@ -5,9 +5,12 @@ package swapwallet
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/credit"
 	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
 	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
@@ -62,15 +65,36 @@ func (r *receiver) Recv(ctx context.Context, req *wavewalletrpc.RecvRequest) (
 	}
 	if dustLimit > 0 && amt < dustLimit {
 		availableCreditSat, err := r.availableCreditSat(ctx)
-		if err != nil {
-			return r.recvCredit(ctx, req, amt)
-		}
-		if amt > ^uint64(0)-availableCreditSat ||
-			amt+availableCreditSat < dustLimit {
-			return r.recvCredit(ctx, req, amt)
-		}
+		switch {
+		case err != nil:
+			// Credit balance lookup failed; still route to credit
+			// (a fresh wallet has no credits anyway), but log the
+			// decision so the sub-dust path is not silent.
+			r.deps.resolveLog().InfoS(ctx, "Routing sub-dust "+
+				"receive to credit subsystem",
+				slog.Uint64("amt_sat", amt),
+				slog.Uint64("dust_limit_sat", dustLimit),
+				slog.String("credit_balance", "unavailable"))
 
-		plannedVHTLCSat = amt + availableCreditSat
+			return r.recvCredit(ctx, req, amt, dustLimit)
+
+		case amt > ^uint64(0)-availableCreditSat ||
+			amt+availableCreditSat < dustLimit:
+
+			r.deps.resolveLog().InfoS(ctx, "Routing sub-dust "+
+				"receive to credit subsystem",
+				slog.Uint64("amt_sat", amt),
+				slog.Uint64("dust_limit_sat", dustLimit),
+				slog.Uint64(
+					"available_credit_sat",
+					availableCreditSat,
+				))
+
+			return r.recvCredit(ctx, req, amt, dustLimit)
+
+		default:
+			plannedVHTLCSat = amt + availableCreditSat
+		}
 	}
 
 	// Enforce the operator's per-VTXO and total-balance limits before a
@@ -159,7 +183,7 @@ func (r *receiver) availableCreditSat(ctx context.Context) (uint64, error) {
 // (inbound receives carry no double-spend risk that would need cross-call
 // dedup).
 func (r *receiver) recvCredit(ctx context.Context,
-	req *wavewalletrpc.RecvRequest, amt uint64) (
+	req *wavewalletrpc.RecvRequest, amt, dustLimit uint64) (
 	*wavewalletrpc.RecvResponse, error) {
 
 	if r.deps.CreditRegistry == nil {
@@ -180,7 +204,43 @@ func (r *receiver) recvCredit(ctx context.Context,
 		},
 	).Await(ctx).Unpack()
 	if err != nil {
-		return nil, fmt.Errorf("start credit receive: %w", err)
+		// Preserve caller-owned cancellation and local shutdown. A
+		// canceled RPC, or a credit registry actor that is itself
+		// terminating during daemon shutdown, says nothing about the
+		// operator's credit subsystem: the operator never actually
+		// rejected the receive. Neither must leave a durable FAILED row
+		// for the caller, so return the underlying error unchanged
+		// instead of mapping it to the operator-blaming sentinel below.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		if errors.Is(err, actor.ErrActorTerminated) {
+			return nil, err
+		}
+
+		// A sub-dust receive that the swap server never completes must
+		// not vanish silently (wavelength#1041): log it, record a
+		// FAILED activity row, and return a typed, actionable error
+		// instead of the opaque underlying deadline/RPC error.
+		r.deps.resolveLog().WarnS(ctx, "Sub-dust credit receive failed",
+			err,
+			slog.Uint64("amt_sat", amt),
+			slog.Uint64("dust_limit_sat", dustLimit),
+		)
+
+		r.projectFailedCreditReceive(ctx, req, "recv:"+keyID, amt)
+
+		// Return only the typed sentinel + actionable guidance. The
+		// underlying swap-server error is deliberately NOT wrapped into
+		// the returned error: it is a gRPC status (often
+		// DeadlineExceeded from the credit AdmitTimeout), and wrapping
+		// it would let the error-mapping interceptor pass that raw code
+		// through instead of the typed Unavailable. The underlying
+		// cause is logged above.
+		return nil, fmt.Errorf("%w: the operator did not complete the "+
+			"credit request for %d sat and may not support "+
+			"sub-dust receives; receive at least %d sat instead",
+			ErrCreditReceiveUnavailable, amt, dustLimit)
 	}
 
 	start, ok := resp.(*credit.StartCreditResponse)
@@ -208,6 +268,43 @@ func (r *receiver) recvCredit(ctx context.Context,
 			PaymentHash: paymentHashHex,
 		},
 	}, nil
+}
+
+// projectFailedCreditReceive records a terminal FAILED activity row for a
+// sub-dust credit receive whose admission never completed. Without it a failed
+// attempt leaves no trace at all (the success path is the only place that
+// projects a row), so the user has no evidence the receive was attempted
+// (wavelength#1041).
+func (r *receiver) projectFailedCreditReceive(ctx context.Context,
+	req *wavewalletrpc.RecvRequest, id string, amt uint64) {
+
+	now := nowUnix()
+	entry := &wavewalletrpc.WalletEntry{
+		Id:            id,
+		Kind:          wavewalletrpc.EntryKind_ENTRY_KIND_RECV,
+		Status:        wavewalletrpc.EntryStatus_ENTRY_STATUS_FAILED,
+		AmountSat:     int64(amt),
+		Counterparty:  "credit",
+		CreatedAtUnix: now,
+		UpdatedAtUnix: now,
+		Note:          req.GetMemo(),
+		FailureReason: "credit receive unavailable",
+		// Classify the row with a stable, machine-readable code so
+		// clients can branch on it without parsing the free-text
+		// reason. This mirrors how the credit projector tags a terminal
+		// credit-op failure (ENTRY_FAILURE_CODE_FAILED): the receive
+		// reached a terminal, non-actionable failure.
+		FailureCode: failureCodePtr(
+			wavewalletrpc.EntryFailureCode_ENTRY_FAILURE_CODE_FAILED,
+		),
+		Progress: &wavewalletrpc.WalletEntryProgress{
+			Phase: wavewalletrpc.
+				WalletEntryPhase_WALLET_ENTRY_PHASE_FAILED,
+			PhaseLabel: "failed",
+		},
+	}
+
+	r.runtime.projectAndEmit(context.WithoutCancel(ctx), entry)
 }
 
 func creditReceiveEntry(req *wavewalletrpc.RecvRequest, opID, invoice,

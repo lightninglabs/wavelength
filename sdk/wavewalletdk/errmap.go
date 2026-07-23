@@ -14,14 +14,15 @@ import (
 // match with errors.Is. The reason strings come from wavewalletrpc so the
 // client and the daemon-side mapper share one source of truth.
 var reasonToSentinel = map[string]error{
-	wavewalletrpc.ReasonInvalidDestination:     ErrInvalidDestination,
-	wavewalletrpc.ReasonInvalidSendIntent:      ErrInvalidSendIntent,
-	wavewalletrpc.ReasonAmountRequired:         ErrAmountRequired,
-	wavewalletrpc.ReasonAmountInvalid:          ErrAmountInvalid,
-	wavewalletrpc.ReasonUnsupportedKind:        ErrUnsupportedKind,
-	wavewalletrpc.ReasonSwapBackendUnavailable: ErrSwapBackendUnavailable,
-	wavewalletrpc.ReasonAmountExceedsVTXOLimit: ErrAmountExceedsVTXOLimit,
-	wavewalletrpc.ReasonBalanceLimitExceeded:   ErrBalanceLimitExceeded,
+	wavewalletrpc.ReasonInvalidDestination:       ErrInvalidDestination,
+	wavewalletrpc.ReasonInvalidSendIntent:        ErrInvalidSendIntent,
+	wavewalletrpc.ReasonAmountRequired:           ErrAmountRequired,
+	wavewalletrpc.ReasonAmountInvalid:            ErrAmountInvalid,
+	wavewalletrpc.ReasonUnsupportedKind:          ErrUnsupportedKind,
+	wavewalletrpc.ReasonSwapBackendUnavailable:   ErrSwapBackendUnavailable,
+	wavewalletrpc.ReasonAmountExceedsVTXOLimit:   ErrAmountExceedsVTXOLimit,
+	wavewalletrpc.ReasonBalanceLimitExceeded:     ErrBalanceLimitExceeded,
+	wavewalletrpc.ReasonCreditReceiveUnavailable: ErrCreditReceiveUnavailable, //nolint:ll
 }
 
 // sentinelForReason looks up the SDK sentinel for a daemon failure reason.

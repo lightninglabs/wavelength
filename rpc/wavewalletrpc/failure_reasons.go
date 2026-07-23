@@ -24,4 +24,12 @@ const (
 	ReasonSwapBackendUnavailable = "SWAP_BACKEND_UNAVAILABLE"
 	ReasonAmountExceedsVTXOLimit = "AMOUNT_EXCEEDS_VTXO_LIMIT"
 	ReasonBalanceLimitExceeded   = "BALANCE_LIMIT_EXCEEDED"
+
+	// ReasonCreditReceiveUnavailable tags a sub-dust receive that was
+	// routed to the operator's credit subsystem but which the swap server
+	// did not complete (it timed out or errored). It is distinct from
+	// SWAP_BACKEND_UNAVAILABLE so clients can tell "the whole swap backend
+	// is down" apart from "this operator does not (currently) serve
+	// sub-dust credit receives, try an amount at or above the dust limit".
+	ReasonCreditReceiveUnavailable = "CREDIT_RECEIVE_UNAVAILABLE"
 )
