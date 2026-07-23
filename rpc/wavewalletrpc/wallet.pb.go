@@ -3246,8 +3246,13 @@ type BalanceResponse struct {
 	// credit_reserved_sat is the server-authoritative in-flight credit
 	// reservation amount.
 	CreditReservedSat uint64 `protobuf:"varint,5,opt,name=credit_reserved_sat,json=creditReservedSat,proto3" json:"credit_reserved_sat,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// temporarily_unavailable_sat is owned VTXO value that cannot be
+	// spent while its batch lineage is unseen, unregistered, in
+	// reorg/conflict limbo, or being reconciled. It returns to confirmed_sat
+	// if canonicality recovers.
+	TemporarilyUnavailableSat int64 `protobuf:"varint,6,opt,name=temporarily_unavailable_sat,json=temporarilyUnavailableSat,proto3" json:"temporarily_unavailable_sat,omitempty"`
+	unknownFields             protoimpl.UnknownFields
+	sizeCache                 protoimpl.SizeCache
 }
 
 func (x *BalanceResponse) Reset() {
@@ -3311,6 +3316,13 @@ func (x *BalanceResponse) GetCreditAvailableSat() uint64 {
 func (x *BalanceResponse) GetCreditReservedSat() uint64 {
 	if x != nil {
 		return x.CreditReservedSat
+	}
+	return 0
+}
+
+func (x *BalanceResponse) GetTemporarilyUnavailableSat() int64 {
+	if x != nil {
+		return x.TemporarilyUnavailableSat
 	}
 	return 0
 }
@@ -5885,13 +5897,14 @@ const file_wallet_proto_rawDesc = "" +
 	"\x0fDepositResponse\x12'\n" +
 	"\x0fonchain_address\x18\x01 \x01(\tR\x0eonchainAddress\x120\n" +
 	"\x05entry\x18\x02 \x01(\v2\x1a.wavewalletrpc.WalletEntryR\x05entry\"\x10\n" +
-	"\x0eBalanceRequest\"\xe6\x01\n" +
+	"\x0eBalanceRequest\"\xa6\x02\n" +
 	"\x0fBalanceResponse\x12#\n" +
 	"\rconfirmed_sat\x18\x01 \x01(\x03R\fconfirmedSat\x12$\n" +
 	"\x0epending_in_sat\x18\x02 \x01(\x03R\fpendingInSat\x12&\n" +
 	"\x0fpending_out_sat\x18\x03 \x01(\x03R\rpendingOutSat\x120\n" +
 	"\x14credit_available_sat\x18\x04 \x01(\x04R\x12creditAvailableSat\x12.\n" +
-	"\x13credit_reserved_sat\x18\x05 \x01(\x04R\x11creditReservedSat\"\x0f\n" +
+	"\x13credit_reserved_sat\x18\x05 \x01(\x04R\x11creditReservedSat\x12>\n" +
+	"\x1btemporarily_unavailable_sat\x18\x06 \x01(\x03R\x19temporarilyUnavailableSat\"\x0f\n" +
 	"\rStatusRequest\"\xbb\x01\n" +
 	"\x0eStatusResponse\x12\x14\n" +
 	"\x05ready\x18\x01 \x01(\bR\x05ready\x12\x1a\n" +

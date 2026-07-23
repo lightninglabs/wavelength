@@ -152,3 +152,81 @@ func TestAdmissionFailsClosedOnObservationPersistenceError(t *testing.T) {
 		recovered.Token.Lineage[0].Revision,
 	)
 }
+
+// TestWiredGateFailsClosedViaManagerOverlay proves the WIRED admission gate —
+// which the VTXO manager drives through Manager.GetBatch / LineageBlocked, not
+// the actor QueryLineage path — fails closed after a reorg observation whose
+// durable write failed. Without the manager's GetBatch overlay the gate would
+// read the stale durable row (still Ready) and admit a VTXO whose commitment
+// just left the best chain.
+func TestWiredGateFailsClosedViaManagerOverlay(t *testing.T) {
+	t.Parallel()
+
+	h := newManagerHarness(t, 100)
+	txid := testBatchTxid(0xd7)
+	input := testOutpoint(0xd8, 0)
+	h.registerBatch(t, &RegisterBatchRequest{
+		BatchTxID:            txid,
+		ConfirmationPkScript: []byte{0x51, 0x20, 0xd7},
+		ConsumedInputs:       []ConsumedInput{ci(input)},
+	})
+	h.fireConfirmed(t, txid, 101, testBatchTxid(0xe1))
+	h.fireSpend(t, input, txid, 101)
+
+	// The chain events above are async Tells flowing through the mock
+	// chainsource into the manager actor. Ask the actor (serialized after
+	// them) to synchronize before each direct GetBatch/LineageBlocked call
+	// so the wired-path assertions are not racing that delivery.
+	sync := func() *QueryLineageResponse {
+		t.Helper()
+		resp, err := h.mgrRef.Ask(
+			t.Context(), &QueryLineageRequest{
+				BatchTxIDs: []chainhash.Hash{txid},
+			},
+		).Await(t.Context()).Unpack()
+		require.NoError(t, err)
+		lineage, ok := resp.(*QueryLineageResponse)
+		require.True(t, ok)
+
+		return lineage
+	}
+	require.Equal(t, AvailableProvisional, sync().Availability)
+
+	// Baseline: the wired gate (LineageBlocked over the manager as Reader)
+	// admits the usable provisional lineage.
+	blocked, avail, err := LineageBlocked(t.Context(), h.mgr, txid)
+	require.NoError(t, err)
+	require.False(t, blocked)
+	require.Equal(t, AvailableProvisional, avail)
+
+	// A reorg observation whose durable write fails leaves the durable row
+	// stale (still Ready), but the in-memory overlay knows better.
+	h.store.setApplyError(errors.New("injected durable write failure"))
+	h.fireConfReorged(t, txid)
+
+	// The actor path already fails closed here (it reads the same overlay);
+	// this also synchronizes the reorg before the direct GetBatch below.
+	require.Equal(t, LineageReconciling, sync().Availability)
+
+	durable, err := h.store.GetBatch(t.Context(), txid)
+	require.NoError(t, err)
+	require.True(
+		t, durable.Ready(),
+		"precondition: the durable row stays stale-usable after "+
+			"the failed write",
+	)
+
+	// The wired gate reads through Manager.GetBatch, whose overlay forces
+	// the stale-ready row not-ready, so admission fails closed.
+	overlaid, err := h.mgr.GetBatch(t.Context(), txid)
+	require.NoError(t, err)
+	require.False(
+		t, overlaid.Ready(),
+		"manager overlay must force the stale-ready row not-ready",
+	)
+
+	blocked, avail, err = LineageBlocked(t.Context(), h.mgr, txid)
+	require.NoError(t, err)
+	require.True(t, blocked, "wired gate must refuse admission")
+	require.Equal(t, LineageReconciling, avail)
+}

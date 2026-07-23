@@ -95,10 +95,9 @@ func (r *recordingBoardingSweepRef) await(
 // proves the chainsource finality-depth synthesizer fires after the
 // reorg-safety horizon, which is the same wire that would deliver
 // BoardingSweepTxStatusFinalized to the wallet handler. Including a
-// dedicated Finalized assertion here would require mining to the
-// 31-confirmation terminal boundary without exercising any
-// boarding-sweep-specific code
-// path that the unit tests in
+// dedicated Finalized assertion here would require mining to H+1
+// confirmations (31 only under the current default H=30) without exercising
+// any boarding-sweep-specific code path that the unit tests in
 // wallet/boarding_sweep_actor_test.go::TestSweepTxNotificationFinalizedIsBenign
 // do not already cover.
 //

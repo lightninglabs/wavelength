@@ -14,6 +14,7 @@ import (
 	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
+	"github.com/lightninglabs/wavelength/batchcanon"
 	clientdb "github.com/lightninglabs/wavelength/db"
 	"github.com/lightninglabs/wavelength/lib/tree"
 	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
@@ -136,6 +137,23 @@ const (
 	incomingMetadataMatchCreatedHeightRecordType  tlv.Type = 13
 	incomingMetadataMatchAncestryPathsRecordType  tlv.Type = 17
 	incomingMetadataMatchOperatorKeyRecordType    tlv.Type = 19
+	incomingMetadataMatchBatchEvidenceRecordType  tlv.Type = 23
+)
+
+const (
+	batchEvidenceTxIDRecordType        tlv.Type = 1
+	batchEvidenceTxRecordType          tlv.Type = 3
+	batchEvidenceOutputIndexRecordType tlv.Type = 5
+	batchEvidencePkScriptRecordType    tlv.Type = 7
+	batchEvidenceCSVDeltaRecordType    tlv.Type = 9
+	batchEvidenceInputsRecordType      tlv.Type = 11
+	batchEvidenceWatchHeightRecordType tlv.Type = 13
+)
+
+const (
+	batchEvidenceInputOutpointRecordType tlv.Type = 1
+	batchEvidenceInputValueRecordType    tlv.Type = 3
+	batchEvidenceInputPkScriptRecordType tlv.Type = 5
 )
 
 type startTransferPayload struct {
@@ -600,6 +618,280 @@ func decodeUint32List(raw []byte) ([]uint32, error) {
 	return out, nil
 }
 
+// encodeBatchEvidenceList encodes each immutable evidence item as its own TLV
+// stream so future additive fields remain replay-compatible.
+func encodeBatchEvidenceList(evidence []batchcanon.BatchEvidence) ([]byte,
+	error) {
+
+	blobs := make([][]byte, 0, len(evidence))
+	for i := range evidence {
+		raw, err := encodeBatchEvidence(evidence[i])
+		if err != nil {
+			return nil, fmt.Errorf("encode batch evidence %d: %w",
+				i, err)
+		}
+
+		blobs = append(blobs, raw)
+	}
+
+	return encodeLengthPrefixedBlobList(blobs)
+}
+
+// decodeBatchEvidenceList decodes and validates durable evidence before it is
+// returned to the receive FSM.
+func decodeBatchEvidenceList(raw []byte,
+	limits ReceiveLimits) ([]batchcanon.BatchEvidence, error) {
+
+	if len(raw) == 0 {
+		return nil, nil
+	}
+
+	blobs, err := decodeLengthPrefixedBlobListWithLimits(raw, limits)
+	if err != nil {
+		return nil, err
+	}
+
+	evidence := make([]batchcanon.BatchEvidence, 0, len(blobs))
+	for i := range blobs {
+		item, err := decodeBatchEvidence(blobs[i], limits)
+		if err != nil {
+			return nil, fmt.Errorf("decode batch evidence %d: %w",
+				i, err)
+		}
+
+		evidence = append(evidence, item)
+	}
+
+	return evidence, nil
+}
+
+// encodeBatchEvidence serializes one batch's authenticated watch inputs.
+func encodeBatchEvidence(evidence batchcanon.BatchEvidence) ([]byte, error) {
+	if err := evidence.Validate(); err != nil {
+		return nil, err
+	}
+	if evidence.CSVExpiryDelta <= 0 {
+		return nil, fmt.Errorf("batch evidence CSV expiry delta must " +
+			"be positive")
+	}
+
+	txid := evidence.BatchTxID[:]
+	tx := evidence.BatchTx
+	outputIndex := evidence.BatchOutputIndex
+	pkScript := evidence.ConfirmationPkScript
+	csvDelta := uint32(evidence.CSVExpiryDelta)
+	watchHeight := evidence.WatchHeightHint
+	inputs, err := encodeBatchEvidenceInputs(evidence.ConsumedInputs)
+	if err != nil {
+		return nil, err
+	}
+
+	stream, err := tlv.NewStream(
+		tlv.MakePrimitiveRecord(batchEvidenceTxIDRecordType, &txid),
+		tlv.MakePrimitiveRecord(batchEvidenceTxRecordType, &tx),
+		tlv.MakePrimitiveRecord(
+			batchEvidenceOutputIndexRecordType, &outputIndex,
+		),
+		tlv.MakePrimitiveRecord(
+			batchEvidencePkScriptRecordType, &pkScript,
+		),
+		tlv.MakePrimitiveRecord(
+			batchEvidenceCSVDeltaRecordType, &csvDelta,
+		),
+		tlv.MakePrimitiveRecord(
+			batchEvidenceInputsRecordType, &inputs,
+		),
+		tlv.MakePrimitiveRecord(
+			batchEvidenceWatchHeightRecordType, &watchHeight,
+		),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	var buf bytes.Buffer
+	if err := stream.Encode(&buf); err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
+}
+
+// decodeBatchEvidence reconstructs one evidence item from its TLV stream.
+func decodeBatchEvidence(raw []byte,
+	limits ReceiveLimits) (batchcanon.BatchEvidence, error) {
+
+	var (
+		txid        []byte
+		tx          []byte
+		outputIndex uint32
+		pkScript    []byte
+		csvDelta    uint32
+		inputs      []byte
+		watchHeight uint32
+	)
+
+	stream, err := tlv.NewStream(
+		tlv.MakePrimitiveRecord(batchEvidenceTxIDRecordType, &txid),
+		tlv.MakePrimitiveRecord(batchEvidenceTxRecordType, &tx),
+		tlv.MakePrimitiveRecord(
+			batchEvidenceOutputIndexRecordType, &outputIndex,
+		),
+		tlv.MakePrimitiveRecord(
+			batchEvidencePkScriptRecordType, &pkScript,
+		),
+		tlv.MakePrimitiveRecord(
+			batchEvidenceCSVDeltaRecordType, &csvDelta,
+		),
+		tlv.MakePrimitiveRecord(
+			batchEvidenceInputsRecordType, &inputs,
+		),
+		tlv.MakePrimitiveRecord(
+			batchEvidenceWatchHeightRecordType, &watchHeight,
+		),
+	)
+	if err != nil {
+		return batchcanon.BatchEvidence{}, err
+	}
+
+	reader := bytes.NewReader(raw)
+	if _, err := stream.DecodeWithParsedTypes(reader); err != nil {
+		return batchcanon.BatchEvidence{}, err
+	}
+	if len(txid) != chainhash.HashSize {
+		return batchcanon.BatchEvidence{}, fmt.Errorf("batch " +
+			"evidence txid must be provided")
+	}
+
+	decodedCSVDelta, err := uint32ToInt32(
+		csvDelta, "batch evidence CSV expiry delta",
+	)
+	if err != nil {
+		return batchcanon.BatchEvidence{}, err
+	}
+
+	consumedInputs, err := decodeBatchEvidenceInputs(inputs, limits)
+	if err != nil {
+		return batchcanon.BatchEvidence{}, err
+	}
+
+	var decodedTxID chainhash.Hash
+	copy(decodedTxID[:], txid)
+	evidence := batchcanon.BatchEvidence{
+		BatchTxID:            decodedTxID,
+		BatchTx:              bytes.Clone(tx),
+		BatchOutputIndex:     outputIndex,
+		ConfirmationPkScript: bytes.Clone(pkScript),
+		WatchHeightHint:      watchHeight,
+		CSVExpiryDelta:       decodedCSVDelta,
+		ConsumedInputs:       consumedInputs,
+	}
+	if evidence.CSVExpiryDelta <= 0 {
+		return batchcanon.BatchEvidence{}, fmt.Errorf("batch " +
+			"evidence CSV expiry delta must be positive")
+	}
+	if err := evidence.Validate(); err != nil {
+		return batchcanon.BatchEvidence{}, err
+	}
+
+	return evidence, nil
+}
+
+// encodeBatchEvidenceInputs serializes every previous output as a nested TLV
+// record, preserving transaction-input order.
+func encodeBatchEvidenceInputs(inputs []batchcanon.ConsumedInput) ([]byte,
+	error) {
+
+	blobs := make([][]byte, 0, len(inputs))
+	for i := range inputs {
+		input := inputs[i]
+		if input.Value < 0 {
+			return nil, fmt.Errorf("batch evidence input %d has "+
+				"negative value", i)
+		}
+
+		outpoint := outPointBytes(input.Outpoint)
+		value := uint64(input.Value)
+		pkScript := input.PkScript
+		stream, err := tlv.NewStream(
+			tlv.MakePrimitiveRecord(
+				batchEvidenceInputOutpointRecordType, &outpoint,
+			),
+			tlv.MakePrimitiveRecord(
+				batchEvidenceInputValueRecordType, &value,
+			),
+			tlv.MakePrimitiveRecord(
+				batchEvidenceInputPkScriptRecordType, &pkScript,
+			),
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		var buf bytes.Buffer
+		if err := stream.Encode(&buf); err != nil {
+			return nil, err
+		}
+		blobs = append(blobs, buf.Bytes())
+	}
+
+	return encodeLengthPrefixedBlobList(blobs)
+}
+
+// decodeBatchEvidenceInputs decodes the ordered previous-output records.
+func decodeBatchEvidenceInputs(raw []byte,
+	limits ReceiveLimits) ([]batchcanon.ConsumedInput, error) {
+
+	blobs, err := decodeLengthPrefixedBlobListWithLimits(raw, limits)
+	if err != nil {
+		return nil, err
+	}
+
+	inputs := make([]batchcanon.ConsumedInput, 0, len(blobs))
+	for i := range blobs {
+		var (
+			outpoint []byte
+			value    uint64
+			pkScript []byte
+		)
+		stream, err := tlv.NewStream(
+			tlv.MakePrimitiveRecord(
+				batchEvidenceInputOutpointRecordType, &outpoint,
+			),
+			tlv.MakePrimitiveRecord(
+				batchEvidenceInputValueRecordType, &value,
+			),
+			tlv.MakePrimitiveRecord(
+				batchEvidenceInputPkScriptRecordType, &pkScript,
+			),
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		reader := bytes.NewReader(blobs[i])
+		if _, err := stream.DecodeWithParsedTypes(reader); err != nil {
+			return nil, err
+		}
+		decodedOutpoint, err := parseOutPointBytes(outpoint)
+		if err != nil {
+			return nil, err
+		}
+		if value > math.MaxInt64 {
+			return nil, fmt.Errorf("batch evidence input %d value "+
+				"overflows int64", i)
+		}
+
+		inputs = append(inputs, batchcanon.ConsumedInput{
+			Outpoint: decodedOutpoint,
+			Value:    int64(value),
+			PkScript: bytes.Clone(pkScript),
+		})
+	}
+
+	return inputs, nil
+}
+
 func encodeIncomingMetadataMatch(match IncomingMetadataMatch) ([]byte, error) {
 	outputIndex := match.OutputIndex
 	roundID := []byte(match.Metadata.RoundID)
@@ -610,6 +902,12 @@ func encodeIncomingMetadataMatch(match IncomingMetadataMatch) ([]byte, error) {
 	operatorKey := encodeOptionalPubKey(match.Metadata.OperatorKey)
 
 	ancestryBytes, err := encodeAncestryList(match.Metadata.Ancestry)
+	if err != nil {
+		return nil, err
+	}
+	batchEvidence, err := encodeBatchEvidenceList(
+		match.Metadata.BatchEvidence,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -645,6 +943,10 @@ func encodeIncomingMetadataMatch(match IncomingMetadataMatch) ([]byte, error) {
 			incomingMetadataMatchOperatorKeyRecordType,
 			&operatorKey,
 		),
+		tlv.MakePrimitiveRecord(
+			incomingMetadataMatchBatchEvidenceRecordType,
+			&batchEvidence,
+		),
 	}
 
 	stream, err := tlv.NewStream(records...)
@@ -674,6 +976,7 @@ func decodeIncomingMetadataMatchWithLimits(raw []byte,
 		createdHeight  uint32
 		ancestryBytes  []byte
 		operatorKey    []byte
+		batchEvidence  []byte
 	)
 
 	records := []tlv.Record{
@@ -706,6 +1009,10 @@ func decodeIncomingMetadataMatchWithLimits(raw []byte,
 		tlv.MakePrimitiveRecord(
 			incomingMetadataMatchOperatorKeyRecordType,
 			&operatorKey,
+		),
+		tlv.MakePrimitiveRecord(
+			incomingMetadataMatchBatchEvidenceRecordType,
+			&batchEvidence,
 		),
 	}
 
@@ -757,6 +1064,13 @@ func decodeIncomingMetadataMatchWithLimits(raw []byte,
 		return IncomingMetadataMatch{}, err
 	}
 
+	decodedEvidence, err := decodeBatchEvidenceList(
+		batchEvidence, limits,
+	)
+	if err != nil {
+		return IncomingMetadataMatch{}, err
+	}
+
 	var decodedCommitmentTxID chainhash.Hash
 	copy(decodedCommitmentTxID[:], commitmentTxID)
 
@@ -770,6 +1084,7 @@ func decodeIncomingMetadataMatchWithLimits(raw []byte,
 			CreatedHeight:  decodedCreatedHeight,
 			OperatorKey:    decodedOperatorKey,
 			Ancestry:       ancestry,
+			BatchEvidence:  decodedEvidence,
 		},
 	}, nil
 }

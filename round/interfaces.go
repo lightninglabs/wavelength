@@ -13,6 +13,7 @@ import (
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/google/uuid"
 	"github.com/lightninglabs/wavelength/baselib/protofsm"
+	"github.com/lightninglabs/wavelength/batchcanon"
 	"github.com/lightninglabs/wavelength/lib/tree"
 	"github.com/lightninglabs/wavelength/lib/types"
 	"github.com/lightninglabs/wavelength/rpc/roundpb"
@@ -523,6 +524,20 @@ type ClientVTXO struct {
 	// CreatedHeight is the block height at which the commitment
 	// transaction was confirmed. Populated at confirmation time.
 	CreatedHeight int32
+
+	// BusinessRevision is the persisted lifecycle revision. A refresh
+	// registration binds the next revision, which is installed when this
+	// VTXO becomes forfeited by the new commitment transaction.
+	BusinessRevision uint64
+}
+
+// RoundBatchRegistrar installs authenticated commitment evidence before a
+// round exposes any VTXOs derived from that commitment.
+type RoundBatchRegistrar interface {
+	// RegisterBatch validates, persists, and starts observing one complete
+	// batch registration.
+	RegisterBatch(ctx context.Context,
+		req *batchcanon.RegisterBatchRequest) error
 }
 
 // OwnedScriptChecker determines whether a pkScript belongs to the local

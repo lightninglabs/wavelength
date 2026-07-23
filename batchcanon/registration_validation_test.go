@@ -37,6 +37,13 @@ func TestValidateRegistrationBindsSerializedEvidence(t *testing.T) {
 			want: "hash does not match",
 		},
 		{
+			name: "non-positive CSV expiry delta",
+			mutate: func(req *RegisterBatchRequest) {
+				req.CSVExpiryDelta = 0
+			},
+			want: "CSV expiry delta must be positive",
+		},
+		{
 			name: "trailing transaction bytes",
 			mutate: func(req *RegisterBatchRequest) {
 				req.BatchTx = append(req.BatchTx, 0)
@@ -128,6 +135,7 @@ func validRegistrationRequest(t *testing.T) *RegisterBatchRequest {
 		BatchTx:              raw.Bytes(),
 		BatchOutputIndex:     1,
 		ConfirmationPkScript: watchScript,
+		CSVExpiryDelta:       144,
 		ConsumedInputs: []ConsumedInput{
 			{
 				Outpoint: inputA,

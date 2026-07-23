@@ -1481,7 +1481,7 @@ CREATE TABLE rounds (
     -- today is 0 (V1); a future, genuinely different round flow is added
     -- additively (V2 == 1, and so on). NOT NULL DEFAULT 0 keeps every row a
     -- valid V1 round.
-    flow_version INTEGER NOT NULL DEFAULT 0,
+    flow_version INTEGER NOT NULL DEFAULT 0, sweep_delay INTEGER NOT NULL DEFAULT 0,
 
     FOREIGN KEY (status) REFERENCES round_statuses(status_name)
 );

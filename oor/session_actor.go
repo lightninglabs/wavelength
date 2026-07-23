@@ -48,6 +48,10 @@ type SessionActorConfig struct {
 	// Its writes join the turn transaction via the request context.
 	IncomingHandler OutboxHandler
 
+	// BatchRegistrar registers authenticated lineage before incoming VTXO
+	// materialization is staged into the actor's database transaction.
+	BatchRegistrar BatchRegistrar
+
 	// RegistryStore is the single source of truth for this session's
 	// durable state. The actor writes its snapshot here inside Commit
 	// (joining the turn transaction) and the registry reads it for restore
@@ -934,6 +938,13 @@ func (b *sessionBehavior) driveOutboxEvents(ctx context.Context,
 		// snapshot after the commit work runs.
 		case *MaterializeIncomingVTXOsRequest:
 			materialize := m
+			if err := RegisterIncomingBatchEvidence(
+				ctx, b.cfg.BatchRegistrar, b.sessionID,
+				materialize.MetadataMatches,
+			); err != nil {
+				return err
+			}
+
 			b.logger(ctx).DebugS(ctx, "Staging incoming VTXO "+
 				"materialization for commit",
 				slog.String(

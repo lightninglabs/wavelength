@@ -1498,8 +1498,16 @@ type AncestryPath struct {
 	// tx anchoring this fragment. Zero means unknown (legacy/unconfirmed),
 	// in which case the client falls back to a bounded lookback floor.
 	CommitmentHeight int32 `protobuf:"varint,5,opt,name=commitment_height,json=commitmentHeight,proto3" json:"commitment_height,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// commitment_tx is the serialized commitment transaction. Its hash must
+	// equal commitment_txid and tree_path.batch_outpoint.txid.
+	CommitmentTx []byte `protobuf:"bytes,6,opt,name=commitment_tx,json=commitmentTx,proto3" json:"commitment_tx,omitempty"`
+	// commitment_inputs contains one previous-output record for every actual
+	// commitment transaction input, in transaction input order.
+	CommitmentInputs []*CommitmentInputEvidence `protobuf:"bytes,7,rep,name=commitment_inputs,json=commitmentInputs,proto3" json:"commitment_inputs,omitempty"`
+	// commitment_csv_expiry_delta is the batch sweep delay in blocks.
+	CommitmentCsvExpiryDelta int32 `protobuf:"varint,8,opt,name=commitment_csv_expiry_delta,json=commitmentCsvExpiryDelta,proto3" json:"commitment_csv_expiry_delta,omitempty"`
+	unknownFields            protoimpl.UnknownFields
+	sizeCache                protoimpl.SizeCache
 }
 
 func (x *AncestryPath) Reset() {
@@ -1567,6 +1575,83 @@ func (x *AncestryPath) GetCommitmentHeight() int32 {
 	return 0
 }
 
+func (x *AncestryPath) GetCommitmentTx() []byte {
+	if x != nil {
+		return x.CommitmentTx
+	}
+	return nil
+}
+
+func (x *AncestryPath) GetCommitmentInputs() []*CommitmentInputEvidence {
+	if x != nil {
+		return x.CommitmentInputs
+	}
+	return nil
+}
+
+func (x *AncestryPath) GetCommitmentCsvExpiryDelta() int32 {
+	if x != nil {
+		return x.CommitmentCsvExpiryDelta
+	}
+	return 0
+}
+
+// CommitmentInputEvidence binds one commitment input to the full previous
+// output needed for authenticated conflict observation.
+type CommitmentInputEvidence struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// outpoint must equal the corresponding commitment transaction input.
+	Outpoint *OutPoint `protobuf:"bytes,1,opt,name=outpoint,proto3" json:"outpoint,omitempty"`
+	// prev_out supplies the value and pkScript of the spent output.
+	PrevOut       *TxOut `protobuf:"bytes,2,opt,name=prev_out,json=prevOut,proto3" json:"prev_out,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CommitmentInputEvidence) Reset() {
+	*x = CommitmentInputEvidence{}
+	mi := &file_indexer_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CommitmentInputEvidence) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CommitmentInputEvidence) ProtoMessage() {}
+
+func (x *CommitmentInputEvidence) ProtoReflect() protoreflect.Message {
+	mi := &file_indexer_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CommitmentInputEvidence.ProtoReflect.Descriptor instead.
+func (*CommitmentInputEvidence) Descriptor() ([]byte, []int) {
+	return file_indexer_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *CommitmentInputEvidence) GetOutpoint() *OutPoint {
+	if x != nil {
+		return x.Outpoint
+	}
+	return nil
+}
+
+func (x *CommitmentInputEvidence) GetPrevOut() *TxOut {
+	if x != nil {
+		return x.PrevOut
+	}
+	return nil
+}
+
 // ScriptScope selects a pkScript and carries a proof-of-control for that
 // script.
 //
@@ -1590,7 +1675,7 @@ type ScriptScope struct {
 
 func (x *ScriptScope) Reset() {
 	*x = ScriptScope{}
-	mi := &file_indexer_proto_msgTypes[19]
+	mi := &file_indexer_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1602,7 +1687,7 @@ func (x *ScriptScope) String() string {
 func (*ScriptScope) ProtoMessage() {}
 
 func (x *ScriptScope) ProtoReflect() protoreflect.Message {
-	mi := &file_indexer_proto_msgTypes[19]
+	mi := &file_indexer_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1615,7 +1700,7 @@ func (x *ScriptScope) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScriptScope.ProtoReflect.Descriptor instead.
 func (*ScriptScope) Descriptor() ([]byte, []int) {
-	return file_indexer_proto_rawDescGZIP(), []int{19}
+	return file_indexer_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *ScriptScope) GetPkScript() []byte {
@@ -1735,7 +1820,7 @@ type VTXO struct {
 
 func (x *VTXO) Reset() {
 	*x = VTXO{}
-	mi := &file_indexer_proto_msgTypes[20]
+	mi := &file_indexer_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1747,7 +1832,7 @@ func (x *VTXO) String() string {
 func (*VTXO) ProtoMessage() {}
 
 func (x *VTXO) ProtoReflect() protoreflect.Message {
-	mi := &file_indexer_proto_msgTypes[20]
+	mi := &file_indexer_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1760,7 +1845,7 @@ func (x *VTXO) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VTXO.ProtoReflect.Descriptor instead.
 func (*VTXO) Descriptor() ([]byte, []int) {
-	return file_indexer_proto_rawDescGZIP(), []int{20}
+	return file_indexer_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *VTXO) GetOutpoint() *OutPoint {
@@ -1906,7 +1991,7 @@ type ListVTXOsByScriptsRequest struct {
 
 func (x *ListVTXOsByScriptsRequest) Reset() {
 	*x = ListVTXOsByScriptsRequest{}
-	mi := &file_indexer_proto_msgTypes[21]
+	mi := &file_indexer_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1918,7 +2003,7 @@ func (x *ListVTXOsByScriptsRequest) String() string {
 func (*ListVTXOsByScriptsRequest) ProtoMessage() {}
 
 func (x *ListVTXOsByScriptsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_indexer_proto_msgTypes[21]
+	mi := &file_indexer_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1931,7 +2016,7 @@ func (x *ListVTXOsByScriptsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListVTXOsByScriptsRequest.ProtoReflect.Descriptor instead.
 func (*ListVTXOsByScriptsRequest) Descriptor() ([]byte, []int) {
-	return file_indexer_proto_rawDescGZIP(), []int{21}
+	return file_indexer_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *ListVTXOsByScriptsRequest) GetScripts() []*ScriptScope {
@@ -1977,7 +2062,7 @@ type ListVTXOsByScriptsResponse struct {
 
 func (x *ListVTXOsByScriptsResponse) Reset() {
 	*x = ListVTXOsByScriptsResponse{}
-	mi := &file_indexer_proto_msgTypes[22]
+	mi := &file_indexer_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1989,7 +2074,7 @@ func (x *ListVTXOsByScriptsResponse) String() string {
 func (*ListVTXOsByScriptsResponse) ProtoMessage() {}
 
 func (x *ListVTXOsByScriptsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_indexer_proto_msgTypes[22]
+	mi := &file_indexer_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2002,7 +2087,7 @@ func (x *ListVTXOsByScriptsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListVTXOsByScriptsResponse.ProtoReflect.Descriptor instead.
 func (*ListVTXOsByScriptsResponse) Descriptor() ([]byte, []int) {
-	return file_indexer_proto_rawDescGZIP(), []int{22}
+	return file_indexer_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *ListVTXOsByScriptsResponse) GetVtxos() []*VTXO {
@@ -2029,7 +2114,7 @@ type GetOORSessionByTxidRequest struct {
 
 func (x *GetOORSessionByTxidRequest) Reset() {
 	*x = GetOORSessionByTxidRequest{}
-	mi := &file_indexer_proto_msgTypes[23]
+	mi := &file_indexer_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2041,7 +2126,7 @@ func (x *GetOORSessionByTxidRequest) String() string {
 func (*GetOORSessionByTxidRequest) ProtoMessage() {}
 
 func (x *GetOORSessionByTxidRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_indexer_proto_msgTypes[23]
+	mi := &file_indexer_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2054,7 +2139,7 @@ func (x *GetOORSessionByTxidRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetOORSessionByTxidRequest.ProtoReflect.Descriptor instead.
 func (*GetOORSessionByTxidRequest) Descriptor() ([]byte, []int) {
-	return file_indexer_proto_rawDescGZIP(), []int{23}
+	return file_indexer_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *GetOORSessionByTxidRequest) GetScript() *ScriptScope {
@@ -2081,7 +2166,7 @@ type GetOORSessionByTxidResponse struct {
 
 func (x *GetOORSessionByTxidResponse) Reset() {
 	*x = GetOORSessionByTxidResponse{}
-	mi := &file_indexer_proto_msgTypes[24]
+	mi := &file_indexer_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2093,7 +2178,7 @@ func (x *GetOORSessionByTxidResponse) String() string {
 func (*GetOORSessionByTxidResponse) ProtoMessage() {}
 
 func (x *GetOORSessionByTxidResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_indexer_proto_msgTypes[24]
+	mi := &file_indexer_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2106,7 +2191,7 @@ func (x *GetOORSessionByTxidResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetOORSessionByTxidResponse.ProtoReflect.Descriptor instead.
 func (*GetOORSessionByTxidResponse) Descriptor() ([]byte, []int) {
-	return file_indexer_proto_rawDescGZIP(), []int{24}
+	return file_indexer_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *GetOORSessionByTxidResponse) GetArkPsbt() []byte {
@@ -2142,7 +2227,7 @@ type TreeNode struct {
 
 func (x *TreeNode) Reset() {
 	*x = TreeNode{}
-	mi := &file_indexer_proto_msgTypes[25]
+	mi := &file_indexer_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2154,7 +2239,7 @@ func (x *TreeNode) String() string {
 func (*TreeNode) ProtoMessage() {}
 
 func (x *TreeNode) ProtoReflect() protoreflect.Message {
-	mi := &file_indexer_proto_msgTypes[25]
+	mi := &file_indexer_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2167,7 +2252,7 @@ func (x *TreeNode) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TreeNode.ProtoReflect.Descriptor instead.
 func (*TreeNode) Descriptor() ([]byte, []int) {
-	return file_indexer_proto_rawDescGZIP(), []int{25}
+	return file_indexer_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *TreeNode) GetTxid() []byte {
@@ -2213,7 +2298,7 @@ type TreeEdge struct {
 
 func (x *TreeEdge) Reset() {
 	*x = TreeEdge{}
-	mi := &file_indexer_proto_msgTypes[26]
+	mi := &file_indexer_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2225,7 +2310,7 @@ func (x *TreeEdge) String() string {
 func (*TreeEdge) ProtoMessage() {}
 
 func (x *TreeEdge) ProtoReflect() protoreflect.Message {
-	mi := &file_indexer_proto_msgTypes[26]
+	mi := &file_indexer_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2238,7 +2323,7 @@ func (x *TreeEdge) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TreeEdge.ProtoReflect.Descriptor instead.
 func (*TreeEdge) Descriptor() ([]byte, []int) {
-	return file_indexer_proto_rawDescGZIP(), []int{26}
+	return file_indexer_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *TreeEdge) GetParentTxid() []byte {
@@ -2274,7 +2359,7 @@ type GetSubtreeByScriptsRequest struct {
 
 func (x *GetSubtreeByScriptsRequest) Reset() {
 	*x = GetSubtreeByScriptsRequest{}
-	mi := &file_indexer_proto_msgTypes[27]
+	mi := &file_indexer_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2286,7 +2371,7 @@ func (x *GetSubtreeByScriptsRequest) String() string {
 func (*GetSubtreeByScriptsRequest) ProtoMessage() {}
 
 func (x *GetSubtreeByScriptsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_indexer_proto_msgTypes[27]
+	mi := &file_indexer_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2299,7 +2384,7 @@ func (x *GetSubtreeByScriptsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSubtreeByScriptsRequest.ProtoReflect.Descriptor instead.
 func (*GetSubtreeByScriptsRequest) Descriptor() ([]byte, []int) {
-	return file_indexer_proto_rawDescGZIP(), []int{27}
+	return file_indexer_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *GetSubtreeByScriptsRequest) GetScripts() []*ScriptScope {
@@ -2330,7 +2415,7 @@ type GetSubtreeByScriptsResponse struct {
 
 func (x *GetSubtreeByScriptsResponse) Reset() {
 	*x = GetSubtreeByScriptsResponse{}
-	mi := &file_indexer_proto_msgTypes[28]
+	mi := &file_indexer_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2342,7 +2427,7 @@ func (x *GetSubtreeByScriptsResponse) String() string {
 func (*GetSubtreeByScriptsResponse) ProtoMessage() {}
 
 func (x *GetSubtreeByScriptsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_indexer_proto_msgTypes[28]
+	mi := &file_indexer_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2355,7 +2440,7 @@ func (x *GetSubtreeByScriptsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSubtreeByScriptsResponse.ProtoReflect.Descriptor instead.
 func (*GetSubtreeByScriptsResponse) Descriptor() ([]byte, []int) {
-	return file_indexer_proto_rawDescGZIP(), []int{28}
+	return file_indexer_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *GetSubtreeByScriptsResponse) GetVtxos() []*VTXO {
@@ -2394,7 +2479,7 @@ type VTXOEvent struct {
 
 func (x *VTXOEvent) Reset() {
 	*x = VTXOEvent{}
-	mi := &file_indexer_proto_msgTypes[29]
+	mi := &file_indexer_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2406,7 +2491,7 @@ func (x *VTXOEvent) String() string {
 func (*VTXOEvent) ProtoMessage() {}
 
 func (x *VTXOEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_indexer_proto_msgTypes[29]
+	mi := &file_indexer_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2419,7 +2504,7 @@ func (x *VTXOEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VTXOEvent.ProtoReflect.Descriptor instead.
 func (*VTXOEvent) Descriptor() ([]byte, []int) {
-	return file_indexer_proto_rawDescGZIP(), []int{29}
+	return file_indexer_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *VTXOEvent) GetEventId() uint64 {
@@ -2470,7 +2555,7 @@ type ListVTXOEventsByScriptsRequest struct {
 
 func (x *ListVTXOEventsByScriptsRequest) Reset() {
 	*x = ListVTXOEventsByScriptsRequest{}
-	mi := &file_indexer_proto_msgTypes[30]
+	mi := &file_indexer_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2482,7 +2567,7 @@ func (x *ListVTXOEventsByScriptsRequest) String() string {
 func (*ListVTXOEventsByScriptsRequest) ProtoMessage() {}
 
 func (x *ListVTXOEventsByScriptsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_indexer_proto_msgTypes[30]
+	mi := &file_indexer_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2495,7 +2580,7 @@ func (x *ListVTXOEventsByScriptsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListVTXOEventsByScriptsRequest.ProtoReflect.Descriptor instead.
 func (*ListVTXOEventsByScriptsRequest) Descriptor() ([]byte, []int) {
-	return file_indexer_proto_rawDescGZIP(), []int{30}
+	return file_indexer_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *ListVTXOEventsByScriptsRequest) GetScripts() []*ScriptScope {
@@ -2529,7 +2614,7 @@ type ListVTXOEventsByScriptsResponse struct {
 
 func (x *ListVTXOEventsByScriptsResponse) Reset() {
 	*x = ListVTXOEventsByScriptsResponse{}
-	mi := &file_indexer_proto_msgTypes[31]
+	mi := &file_indexer_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2541,7 +2626,7 @@ func (x *ListVTXOEventsByScriptsResponse) String() string {
 func (*ListVTXOEventsByScriptsResponse) ProtoMessage() {}
 
 func (x *ListVTXOEventsByScriptsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_indexer_proto_msgTypes[31]
+	mi := &file_indexer_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2554,7 +2639,7 @@ func (x *ListVTXOEventsByScriptsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListVTXOEventsByScriptsResponse.ProtoReflect.Descriptor instead.
 func (*ListVTXOEventsByScriptsResponse) Descriptor() ([]byte, []int) {
-	return file_indexer_proto_rawDescGZIP(), []int{31}
+	return file_indexer_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *ListVTXOEventsByScriptsResponse) GetEvents() []*VTXOEvent {
@@ -2608,7 +2693,7 @@ type IncomingVTXOEvent struct {
 
 func (x *IncomingVTXOEvent) Reset() {
 	*x = IncomingVTXOEvent{}
-	mi := &file_indexer_proto_msgTypes[32]
+	mi := &file_indexer_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2620,7 +2705,7 @@ func (x *IncomingVTXOEvent) String() string {
 func (*IncomingVTXOEvent) ProtoMessage() {}
 
 func (x *IncomingVTXOEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_indexer_proto_msgTypes[32]
+	mi := &file_indexer_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2633,7 +2718,7 @@ func (x *IncomingVTXOEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IncomingVTXOEvent.ProtoReflect.Descriptor instead.
 func (*IncomingVTXOEvent) Descriptor() ([]byte, []int) {
-	return file_indexer_proto_rawDescGZIP(), []int{32}
+	return file_indexer_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *IncomingVTXOEvent) GetEventId() uint64 {
@@ -2803,14 +2888,20 @@ const file_indexer_proto_rawDesc = "" +
 	"\x05nodes\x18\x01 \x03(\v2\x14.arkrpc.TreePathNodeR\x05nodes\x127\n" +
 	"\x0ebatch_outpoint\x18\x02 \x01(\v2\x10.arkrpc.OutPointR\rbatchOutpoint\x120\n" +
 	"\fbatch_output\x18\x03 \x01(\v2\r.arkrpc.TxOutR\vbatchOutput\x120\n" +
-	"\x14sweep_tapscript_root\x18\x04 \x01(\fR\x12sweepTapscriptRoot\"\xd7\x01\n" +
+	"\x14sweep_tapscript_root\x18\x04 \x01(\fR\x12sweepTapscriptRoot\"\x89\x03\n" +
 	"\fAncestryPath\x12-\n" +
 	"\ttree_path\x18\x01 \x01(\v2\x10.arkrpc.TreePathR\btreePath\x12'\n" +
 	"\x0fcommitment_txid\x18\x02 \x01(\fR\x0ecommitmentTxid\x12#\n" +
 	"\rinput_indices\x18\x03 \x03(\rR\finputIndices\x12\x1d\n" +
 	"\n" +
 	"tree_depth\x18\x04 \x01(\rR\ttreeDepth\x12+\n" +
-	"\x11commitment_height\x18\x05 \x01(\x05R\x10commitmentHeight\"\xaa\x01\n" +
+	"\x11commitment_height\x18\x05 \x01(\x05R\x10commitmentHeight\x12#\n" +
+	"\rcommitment_tx\x18\x06 \x01(\fR\fcommitmentTx\x12L\n" +
+	"\x11commitment_inputs\x18\a \x03(\v2\x1f.arkrpc.CommitmentInputEvidenceR\x10commitmentInputs\x12=\n" +
+	"\x1bcommitment_csv_expiry_delta\x18\b \x01(\x05R\x18commitmentCsvExpiryDelta\"q\n" +
+	"\x17CommitmentInputEvidence\x12,\n" +
+	"\boutpoint\x18\x01 \x01(\v2\x10.arkrpc.OutPointR\boutpoint\x12(\n" +
+	"\bprev_out\x18\x02 \x01(\v2\r.arkrpc.TxOutR\aprevOut\"\xaa\x01\n" +
 	"\vScriptScope\x12\x1b\n" +
 	"\tpk_script\x18\x01 \x01(\fR\bpkScript\x12F\n" +
 	"\x0ftaproot_schnorr\x18\n" +
@@ -2944,7 +3035,7 @@ func file_indexer_proto_rawDescGZIP() []byte {
 }
 
 var file_indexer_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_indexer_proto_msgTypes = make([]protoimpl.MessageInfo, 34)
+var file_indexer_proto_msgTypes = make([]protoimpl.MessageInfo, 35)
 var file_indexer_proto_goTypes = []any{
 	(VTXOStatus)(0),                                // 0: arkrpc.VTXOStatus
 	(VTXOEventType)(0),                             // 1: arkrpc.VTXOEventType
@@ -2968,21 +3059,22 @@ var file_indexer_proto_goTypes = []any{
 	(*TreePathNode)(nil),                           // 19: arkrpc.TreePathNode
 	(*TreePath)(nil),                               // 20: arkrpc.TreePath
 	(*AncestryPath)(nil),                           // 21: arkrpc.AncestryPath
-	(*ScriptScope)(nil),                            // 22: arkrpc.ScriptScope
-	(*VTXO)(nil),                                   // 23: arkrpc.VTXO
-	(*ListVTXOsByScriptsRequest)(nil),              // 24: arkrpc.ListVTXOsByScriptsRequest
-	(*ListVTXOsByScriptsResponse)(nil),             // 25: arkrpc.ListVTXOsByScriptsResponse
-	(*GetOORSessionByTxidRequest)(nil),             // 26: arkrpc.GetOORSessionByTxidRequest
-	(*GetOORSessionByTxidResponse)(nil),            // 27: arkrpc.GetOORSessionByTxidResponse
-	(*TreeNode)(nil),                               // 28: arkrpc.TreeNode
-	(*TreeEdge)(nil),                               // 29: arkrpc.TreeEdge
-	(*GetSubtreeByScriptsRequest)(nil),             // 30: arkrpc.GetSubtreeByScriptsRequest
-	(*GetSubtreeByScriptsResponse)(nil),            // 31: arkrpc.GetSubtreeByScriptsResponse
-	(*VTXOEvent)(nil),                              // 32: arkrpc.VTXOEvent
-	(*ListVTXOEventsByScriptsRequest)(nil),         // 33: arkrpc.ListVTXOEventsByScriptsRequest
-	(*ListVTXOEventsByScriptsResponse)(nil),        // 34: arkrpc.ListVTXOEventsByScriptsResponse
-	(*IncomingVTXOEvent)(nil),                      // 35: arkrpc.IncomingVTXOEvent
-	nil,                                            // 36: arkrpc.TreePathNode.ChildrenEntry
+	(*CommitmentInputEvidence)(nil),                // 22: arkrpc.CommitmentInputEvidence
+	(*ScriptScope)(nil),                            // 23: arkrpc.ScriptScope
+	(*VTXO)(nil),                                   // 24: arkrpc.VTXO
+	(*ListVTXOsByScriptsRequest)(nil),              // 25: arkrpc.ListVTXOsByScriptsRequest
+	(*ListVTXOsByScriptsResponse)(nil),             // 26: arkrpc.ListVTXOsByScriptsResponse
+	(*GetOORSessionByTxidRequest)(nil),             // 27: arkrpc.GetOORSessionByTxidRequest
+	(*GetOORSessionByTxidResponse)(nil),            // 28: arkrpc.GetOORSessionByTxidResponse
+	(*TreeNode)(nil),                               // 29: arkrpc.TreeNode
+	(*TreeEdge)(nil),                               // 30: arkrpc.TreeEdge
+	(*GetSubtreeByScriptsRequest)(nil),             // 31: arkrpc.GetSubtreeByScriptsRequest
+	(*GetSubtreeByScriptsResponse)(nil),            // 32: arkrpc.GetSubtreeByScriptsResponse
+	(*VTXOEvent)(nil),                              // 33: arkrpc.VTXOEvent
+	(*ListVTXOEventsByScriptsRequest)(nil),         // 34: arkrpc.ListVTXOEventsByScriptsRequest
+	(*ListVTXOEventsByScriptsResponse)(nil),        // 35: arkrpc.ListVTXOEventsByScriptsResponse
+	(*IncomingVTXOEvent)(nil),                      // 36: arkrpc.IncomingVTXOEvent
+	nil,                                            // 37: arkrpc.TreePathNode.ChildrenEntry
 }
 var file_indexer_proto_depIdxs = []int32{
 	4,  // 0: arkrpc.RegisterReceiveScriptRequest.taproot_schnorr:type_name -> arkrpc.TaprootSchnorrProof
@@ -2996,55 +3088,58 @@ var file_indexer_proto_depIdxs = []int32{
 	15, // 8: arkrpc.OORRecipientEvent.ancestor_packages:type_name -> arkrpc.OORSessionPackage
 	17, // 9: arkrpc.TreePathNode.input:type_name -> arkrpc.OutPoint
 	18, // 10: arkrpc.TreePathNode.outputs:type_name -> arkrpc.TxOut
-	36, // 11: arkrpc.TreePathNode.children:type_name -> arkrpc.TreePathNode.ChildrenEntry
+	37, // 11: arkrpc.TreePathNode.children:type_name -> arkrpc.TreePathNode.ChildrenEntry
 	19, // 12: arkrpc.TreePath.nodes:type_name -> arkrpc.TreePathNode
 	17, // 13: arkrpc.TreePath.batch_outpoint:type_name -> arkrpc.OutPoint
 	18, // 14: arkrpc.TreePath.batch_output:type_name -> arkrpc.TxOut
 	20, // 15: arkrpc.AncestryPath.tree_path:type_name -> arkrpc.TreePath
-	4,  // 16: arkrpc.ScriptScope.taproot_schnorr:type_name -> arkrpc.TaprootSchnorrProof
-	5,  // 17: arkrpc.ScriptScope.bip322:type_name -> arkrpc.BIP322Proof
-	17, // 18: arkrpc.VTXO.outpoint:type_name -> arkrpc.OutPoint
-	0,  // 19: arkrpc.VTXO.status:type_name -> arkrpc.VTXOStatus
-	21, // 20: arkrpc.VTXO.ancestry_paths:type_name -> arkrpc.AncestryPath
-	22, // 21: arkrpc.ListVTXOsByScriptsRequest.scripts:type_name -> arkrpc.ScriptScope
-	0,  // 22: arkrpc.ListVTXOsByScriptsRequest.status_filter:type_name -> arkrpc.VTXOStatus
-	23, // 23: arkrpc.ListVTXOsByScriptsResponse.vtxos:type_name -> arkrpc.VTXO
-	22, // 24: arkrpc.GetOORSessionByTxidRequest.script:type_name -> arkrpc.ScriptScope
-	17, // 25: arkrpc.TreeNode.input:type_name -> arkrpc.OutPoint
-	22, // 26: arkrpc.GetSubtreeByScriptsRequest.scripts:type_name -> arkrpc.ScriptScope
-	23, // 27: arkrpc.GetSubtreeByScriptsResponse.vtxos:type_name -> arkrpc.VTXO
-	28, // 28: arkrpc.GetSubtreeByScriptsResponse.nodes:type_name -> arkrpc.TreeNode
-	29, // 29: arkrpc.GetSubtreeByScriptsResponse.edges:type_name -> arkrpc.TreeEdge
-	1,  // 30: arkrpc.VTXOEvent.type:type_name -> arkrpc.VTXOEventType
-	17, // 31: arkrpc.VTXOEvent.outpoint:type_name -> arkrpc.OutPoint
-	0,  // 32: arkrpc.VTXOEvent.status:type_name -> arkrpc.VTXOStatus
-	22, // 33: arkrpc.ListVTXOEventsByScriptsRequest.scripts:type_name -> arkrpc.ScriptScope
-	32, // 34: arkrpc.ListVTXOEventsByScriptsResponse.events:type_name -> arkrpc.VTXOEvent
-	1,  // 35: arkrpc.IncomingVTXOEvent.type:type_name -> arkrpc.VTXOEventType
-	17, // 36: arkrpc.IncomingVTXOEvent.outpoint:type_name -> arkrpc.OutPoint
-	0,  // 37: arkrpc.IncomingVTXOEvent.status:type_name -> arkrpc.VTXOStatus
-	2,  // 38: arkrpc.IncomingVTXOEvent.origin:type_name -> arkrpc.VTXOOrigin
-	3,  // 39: arkrpc.IndexerService.RegisterReceiveScript:input_type -> arkrpc.RegisterReceiveScriptRequest
-	8,  // 40: arkrpc.IndexerService.ListMyReceiveScripts:input_type -> arkrpc.ListMyReceiveScriptsRequest
-	7,  // 41: arkrpc.IndexerService.UnregisterReceiveScript:input_type -> arkrpc.UnregisterReceiveScriptRequest
-	12, // 42: arkrpc.IndexerService.ListOORRecipientEventsByScript:input_type -> arkrpc.ListOORRecipientEventsByScriptRequest
-	24, // 43: arkrpc.IndexerService.ListVTXOsByScripts:input_type -> arkrpc.ListVTXOsByScriptsRequest
-	26, // 44: arkrpc.IndexerService.GetOORSessionByTxid:input_type -> arkrpc.GetOORSessionByTxidRequest
-	30, // 45: arkrpc.IndexerService.GetSubtreeByScripts:input_type -> arkrpc.GetSubtreeByScriptsRequest
-	33, // 46: arkrpc.IndexerService.ListVTXOEventsByScripts:input_type -> arkrpc.ListVTXOEventsByScriptsRequest
-	6,  // 47: arkrpc.IndexerService.RegisterReceiveScript:output_type -> arkrpc.RegisterReceiveScriptResponse
-	9,  // 48: arkrpc.IndexerService.ListMyReceiveScripts:output_type -> arkrpc.ListMyReceiveScriptsResponse
-	11, // 49: arkrpc.IndexerService.UnregisterReceiveScript:output_type -> arkrpc.UnregisterReceiveScriptResponse
-	13, // 50: arkrpc.IndexerService.ListOORRecipientEventsByScript:output_type -> arkrpc.ListOORRecipientEventsByScriptResponse
-	25, // 51: arkrpc.IndexerService.ListVTXOsByScripts:output_type -> arkrpc.ListVTXOsByScriptsResponse
-	27, // 52: arkrpc.IndexerService.GetOORSessionByTxid:output_type -> arkrpc.GetOORSessionByTxidResponse
-	31, // 53: arkrpc.IndexerService.GetSubtreeByScripts:output_type -> arkrpc.GetSubtreeByScriptsResponse
-	34, // 54: arkrpc.IndexerService.ListVTXOEventsByScripts:output_type -> arkrpc.ListVTXOEventsByScriptsResponse
-	47, // [47:55] is the sub-list for method output_type
-	39, // [39:47] is the sub-list for method input_type
-	39, // [39:39] is the sub-list for extension type_name
-	39, // [39:39] is the sub-list for extension extendee
-	0,  // [0:39] is the sub-list for field type_name
+	22, // 16: arkrpc.AncestryPath.commitment_inputs:type_name -> arkrpc.CommitmentInputEvidence
+	17, // 17: arkrpc.CommitmentInputEvidence.outpoint:type_name -> arkrpc.OutPoint
+	18, // 18: arkrpc.CommitmentInputEvidence.prev_out:type_name -> arkrpc.TxOut
+	4,  // 19: arkrpc.ScriptScope.taproot_schnorr:type_name -> arkrpc.TaprootSchnorrProof
+	5,  // 20: arkrpc.ScriptScope.bip322:type_name -> arkrpc.BIP322Proof
+	17, // 21: arkrpc.VTXO.outpoint:type_name -> arkrpc.OutPoint
+	0,  // 22: arkrpc.VTXO.status:type_name -> arkrpc.VTXOStatus
+	21, // 23: arkrpc.VTXO.ancestry_paths:type_name -> arkrpc.AncestryPath
+	23, // 24: arkrpc.ListVTXOsByScriptsRequest.scripts:type_name -> arkrpc.ScriptScope
+	0,  // 25: arkrpc.ListVTXOsByScriptsRequest.status_filter:type_name -> arkrpc.VTXOStatus
+	24, // 26: arkrpc.ListVTXOsByScriptsResponse.vtxos:type_name -> arkrpc.VTXO
+	23, // 27: arkrpc.GetOORSessionByTxidRequest.script:type_name -> arkrpc.ScriptScope
+	17, // 28: arkrpc.TreeNode.input:type_name -> arkrpc.OutPoint
+	23, // 29: arkrpc.GetSubtreeByScriptsRequest.scripts:type_name -> arkrpc.ScriptScope
+	24, // 30: arkrpc.GetSubtreeByScriptsResponse.vtxos:type_name -> arkrpc.VTXO
+	29, // 31: arkrpc.GetSubtreeByScriptsResponse.nodes:type_name -> arkrpc.TreeNode
+	30, // 32: arkrpc.GetSubtreeByScriptsResponse.edges:type_name -> arkrpc.TreeEdge
+	1,  // 33: arkrpc.VTXOEvent.type:type_name -> arkrpc.VTXOEventType
+	17, // 34: arkrpc.VTXOEvent.outpoint:type_name -> arkrpc.OutPoint
+	0,  // 35: arkrpc.VTXOEvent.status:type_name -> arkrpc.VTXOStatus
+	23, // 36: arkrpc.ListVTXOEventsByScriptsRequest.scripts:type_name -> arkrpc.ScriptScope
+	33, // 37: arkrpc.ListVTXOEventsByScriptsResponse.events:type_name -> arkrpc.VTXOEvent
+	1,  // 38: arkrpc.IncomingVTXOEvent.type:type_name -> arkrpc.VTXOEventType
+	17, // 39: arkrpc.IncomingVTXOEvent.outpoint:type_name -> arkrpc.OutPoint
+	0,  // 40: arkrpc.IncomingVTXOEvent.status:type_name -> arkrpc.VTXOStatus
+	2,  // 41: arkrpc.IncomingVTXOEvent.origin:type_name -> arkrpc.VTXOOrigin
+	3,  // 42: arkrpc.IndexerService.RegisterReceiveScript:input_type -> arkrpc.RegisterReceiveScriptRequest
+	8,  // 43: arkrpc.IndexerService.ListMyReceiveScripts:input_type -> arkrpc.ListMyReceiveScriptsRequest
+	7,  // 44: arkrpc.IndexerService.UnregisterReceiveScript:input_type -> arkrpc.UnregisterReceiveScriptRequest
+	12, // 45: arkrpc.IndexerService.ListOORRecipientEventsByScript:input_type -> arkrpc.ListOORRecipientEventsByScriptRequest
+	25, // 46: arkrpc.IndexerService.ListVTXOsByScripts:input_type -> arkrpc.ListVTXOsByScriptsRequest
+	27, // 47: arkrpc.IndexerService.GetOORSessionByTxid:input_type -> arkrpc.GetOORSessionByTxidRequest
+	31, // 48: arkrpc.IndexerService.GetSubtreeByScripts:input_type -> arkrpc.GetSubtreeByScriptsRequest
+	34, // 49: arkrpc.IndexerService.ListVTXOEventsByScripts:input_type -> arkrpc.ListVTXOEventsByScriptsRequest
+	6,  // 50: arkrpc.IndexerService.RegisterReceiveScript:output_type -> arkrpc.RegisterReceiveScriptResponse
+	9,  // 51: arkrpc.IndexerService.ListMyReceiveScripts:output_type -> arkrpc.ListMyReceiveScriptsResponse
+	11, // 52: arkrpc.IndexerService.UnregisterReceiveScript:output_type -> arkrpc.UnregisterReceiveScriptResponse
+	13, // 53: arkrpc.IndexerService.ListOORRecipientEventsByScript:output_type -> arkrpc.ListOORRecipientEventsByScriptResponse
+	26, // 54: arkrpc.IndexerService.ListVTXOsByScripts:output_type -> arkrpc.ListVTXOsByScriptsResponse
+	28, // 55: arkrpc.IndexerService.GetOORSessionByTxid:output_type -> arkrpc.GetOORSessionByTxidResponse
+	32, // 56: arkrpc.IndexerService.GetSubtreeByScripts:output_type -> arkrpc.GetSubtreeByScriptsResponse
+	35, // 57: arkrpc.IndexerService.ListVTXOEventsByScripts:output_type -> arkrpc.ListVTXOEventsByScriptsResponse
+	50, // [50:58] is the sub-list for method output_type
+	42, // [42:50] is the sub-list for method input_type
+	42, // [42:42] is the sub-list for extension type_name
+	42, // [42:42] is the sub-list for extension extendee
+	0,  // [0:42] is the sub-list for field type_name
 }
 
 func init() { file_indexer_proto_init() }
@@ -3064,7 +3159,7 @@ func file_indexer_proto_init() {
 		(*ListOORRecipientEventsByScriptRequest_TaprootSchnorr)(nil),
 		(*ListOORRecipientEventsByScriptRequest_Bip322)(nil),
 	}
-	file_indexer_proto_msgTypes[19].OneofWrappers = []any{
+	file_indexer_proto_msgTypes[20].OneofWrappers = []any{
 		(*ScriptScope_TaprootSchnorr)(nil),
 		(*ScriptScope_Bip322)(nil),
 	}
@@ -3074,7 +3169,7 @@ func file_indexer_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_indexer_proto_rawDesc), len(file_indexer_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   34,
+			NumMessages:   35,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

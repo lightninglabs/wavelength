@@ -8,6 +8,7 @@ import (
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
+	"github.com/lightninglabs/wavelength/batchcanon"
 	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/stretchr/testify/require"
 )
@@ -476,7 +477,9 @@ func TestDriveEventRequestRoundTripIncomingMetadataResolvedEvent(t *testing.T) {
 	t.Parallel()
 
 	sessionID := SessionID(chainhash.Hash{10, 10, 10})
-	commitmentTxID := chainhash.Hash{11, 11, 11}
+	evidence := testIncomingBatchEvidence(t, 0x11)
+	evidenceList := []batchcanon.BatchEvidence{evidence}
+	commitmentTxID := evidence.BatchTxID
 	operatorKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
 
@@ -496,6 +499,7 @@ func TestDriveEventRequestRoundTripIncomingMetadataResolvedEvent(t *testing.T) {
 						CommitmentTxID: commitmentTxID,
 						TreeDepth:      0,
 					}},
+					BatchEvidence: evidenceList,
 				},
 			}},
 		},
@@ -531,6 +535,8 @@ func TestDriveEventRequestRoundTripIncomingMetadataResolvedEvent(t *testing.T) {
 		t, commitmentTxID, match.Metadata.Ancestry[0].CommitmentTxID,
 	)
 	require.Nil(t, match.Metadata.Ancestry[0].TreePath)
+	require.Len(t, match.Metadata.BatchEvidence, 1)
+	require.True(t, evidence.Equal(match.Metadata.BatchEvidence[0]))
 }
 
 // TestDriveEventRequestRoundTripIncomingAckSentEvent asserts

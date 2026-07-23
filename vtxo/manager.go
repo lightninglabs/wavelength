@@ -79,7 +79,7 @@ type ManagerConfig struct {
 	// gate. Because the reducer is fail-closed, the gate must only be
 	// activated once the batch producers (round, OOR) register their
 	// batches, or every unregistered VTXO is excluded.
-	BatchCanonicality batchcanon.Store
+	BatchCanonicality batchcanon.Reader
 
 	// Log is an optional logger for this manager instance. If None, the
 	// manager falls back to extracting a logger from context via
@@ -1447,10 +1447,7 @@ func (m *Manager) selectAndReserveVTXOs(ctx context.Context, p reserveParams) (
 	return selectedVTXOs, totalSelected, nil
 }
 
-// insufficientLiquidityError distinguishes a true spendable-funds shortfall
-// from liquidity that is present but unavailable because another operation has
-// already moved it out of LiveState.
-// lineageCommitmentTxids returns the deduped set of commitment txids in a
+// LineageCommitmentTxIDs returns the deduped set of commitment txids in a
 // VTXO's lineage: its direct commitment tx plus every distinct cross-commitment
 // ancestor batch recorded in its ancestry. A round-direct or same-commitment
 // OOR VTXO yields one txid; a cross-commitment multi-input OOR VTXO (born from
@@ -1458,7 +1455,11 @@ func (m *Manager) selectAndReserveVTXOs(ctx context.Context, p reserveParams) (
 // batch. The direct commitment txid is included even when the ancestry slice is
 // empty (e.g. an incoming VTXO materialized without its commitment tree) so the
 // gate still governs the leaf by its batch. The zero hash is skipped.
-func lineageCommitmentTxids(desc *Descriptor) []chainhash.Hash {
+func LineageCommitmentTxIDs(desc *Descriptor) []chainhash.Hash {
+	if desc == nil {
+		return nil
+	}
+
 	seen := make(map[chainhash.Hash]struct{}, len(desc.Ancestry)+1)
 	txids := make([]chainhash.Hash, 0, len(desc.Ancestry)+1)
 
@@ -1508,7 +1509,7 @@ func (m *Manager) gateUnavailableLineage(ctx context.Context,
 
 		blocked, avail, err := batchcanon.LineageBlocked(
 			ctx, m.cfg.BatchCanonicality,
-			lineageCommitmentTxids(desc)...,
+			LineageCommitmentTxIDs(desc)...,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("lineage gate %s: %w",
@@ -1529,6 +1530,9 @@ func (m *Manager) gateUnavailableLineage(ctx context.Context,
 	return kept, nil
 }
 
+// insufficientLiquidityError distinguishes a true spendable-funds shortfall
+// from liquidity that is present but unavailable because another operation has
+// already moved it out of LiveState.
 func (m *Manager) insufficientLiquidityError(ctx context.Context,
 	liveCandidates []*Descriptor, p reserveParams) error {
 

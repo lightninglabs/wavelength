@@ -15,6 +15,7 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/arkrpc"
 	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/batchcanon"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/metrics"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -93,6 +94,16 @@ type IncomingVTXOExtras struct {
 	// to which block its round commit confirmed in, or sweep
 	// scheduling has no reference point).
 	CreatedHeight int32
+
+	// BatchEvidence authenticates every distinct commitment in Ancestry and
+	// supplies the subjects needed for canonicality watches.
+	BatchEvidence []batchcanon.BatchEvidence
+}
+
+// IncomingBatchRegistrar durably registers authenticated lineage before an
+// incoming descriptor is persisted or sent to the VTXO manager.
+type IncomingBatchRegistrar interface {
+	RegisterBatch(context.Context, *batchcanon.RegisterBatchRequest) error
 }
 
 // IncomingAncestryFetcher resolves the per-VTXO metadata the
@@ -136,6 +147,9 @@ type IncomingVTXOHandlerConfig struct {
 	// a non-nil implementation to keep the unilateral exit path
 	// usable for received VTXOs (see bug-3 in BUGS_FOUND.md).
 	AncestryFetcher IncomingAncestryFetcher
+
+	// BatchRegistrar registers fetched evidence before VTXO exposure.
+	BatchRegistrar IncomingBatchRegistrar
 
 	// MetricsSink is an optional reference to the client-side metrics
 	// actor. When set, the handler emits OORTransferReceivedMsg once
@@ -327,6 +341,7 @@ func (h *IncomingVTXOHandler) Receive(ctx context.Context,
 		RelativeExpiry: evt.RelativeExpiry,
 		Status:         VTXOStatusLive,
 	}
+	var batchEvidence []batchcanon.BatchEvidence
 
 	// Resolve ancestry before persisting so the descriptor lands
 	// with full unilateral-exit material from the first write. The
@@ -353,7 +368,17 @@ func (h *IncomingVTXOHandler) Receive(ctx context.Context,
 		} else {
 			desc.Ancestry = extras.Ancestry
 			desc.CreatedHeight = extras.CreatedHeight
+			batchEvidence = extras.BatchEvidence
 		}
+	}
+
+	if err := registerIncomingBatchEvidence(
+		ctx, h.cfg.BatchRegistrar, desc, batchEvidence,
+	); err != nil {
+
+		h.emitReceived(ctx, "failed")
+
+		return fn.Err[IncomingVTXOResp](err)
 	}
 
 	// Persist the VTXO. A save failure signals a database or

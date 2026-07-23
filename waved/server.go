@@ -391,14 +391,16 @@ type Server struct {
 	// VTXO coin-selection reorg-safety gate (lumos#454). It is threaded
 	// into the VTXO manager only when Config.BatchCanonicalityGate is set;
 	// a nil store leaves the gate dormant. Read lazily at admission time.
-	batchCanonStore batchcanon.Store
+	batchCanonStore batchcanon.Reader
 
 	// batchCanonRef is the BatchCanonicalityManager actor ref. The round
 	// and OOR producers will Tell it a RegisterBatchRequest as their VTXOs
 	// are born so each lineage batch gets reorg-aware conf/spend watches
 	// (producer registration lands in a follow-up). None until
 	// initBatchCanonicality registers the manager.
-	batchCanonRef fn.Option[actor.TellOnlyRef[batchcanon.ManagerMsg]]
+	batchCanonRef fn.Option[actor.ActorRef[
+		batchcanon.ManagerMsg, batchcanon.ManagerResp,
+	]]
 
 	serverConn        *grpc.ClientConn
 	arkClient         arkrpc.ArkServiceClient
@@ -4170,8 +4172,22 @@ func (s *Server) initRoundActor(ctx context.Context,
 		SigningExecutor: round.NewSigningExecutor(
 			signingWorkers,
 		),
-		RoundStore:     roundStore,
-		VTXOStore:      roundStore,
+		RoundStore: roundStore,
+		VTXOStore:  roundStore,
+		BatchRegistrar: fn.MapOptionZ(
+			s.batchCanonRef,
+			func(
+				ref actor.ActorRef[
+					batchcanon.ManagerMsg,
+					batchcanon.ManagerResp,
+				],
+			) round.RoundBatchRegistrar {
+
+				return &batchRegistrar{
+					ref: ref,
+				}
+			},
+		),
 		OperatorTerms:  operatorTerms,
 		ServerConn:     s.runtime.TellRef(),
 		ChainSource:    chainSourceRef,
@@ -4300,15 +4316,23 @@ func (s *Server) initBatchCanonicality(ctx context.Context,
 			err)
 	}
 
-	s.batchCanonRef = fn.Some[actor.TellOnlyRef[batchcanon.ManagerMsg]](
+	s.batchCanonRef = fn.Some[actor.ActorRef[
+		batchcanon.ManagerMsg, batchcanon.ManagerResp,
+	]](
 		mgrRef,
 	)
 
 	// Only activate the VTXO admission gate when explicitly enabled. The
 	// gate is fail-closed, so threading the store before producers register
 	// their batches would strand all liquidity (see the config field doc).
+	//
+	// Thread the manager (not the raw durable store) so admission reads go
+	// through its in-memory overlay: a reorg/conflict observation whose
+	// durable write failed still closes admission immediately, instead of
+	// leaving the stale durable row admissible until a restart (see
+	// Manager.GetBatch).
 	if s.cfg.BatchCanonicalityGate {
-		s.batchCanonStore = canonStore
+		s.batchCanonStore = mgr
 	}
 
 	s.log.InfoS(ctx, "Batch canonicality manager registered and started",
@@ -4538,17 +4562,25 @@ func (s *Server) initOORActor(ctx context.Context,
 		TimeoutActor: oorTimeoutRef,
 	}
 	oorKey := oor.NewServiceKey()
+	var incomingBatchRegistrar oor.BatchRegistrar
+	s.batchCanonRef.WhenSome(func(ref actor.ActorRef[
+		batchcanon.ManagerMsg, batchcanon.ManagerResp,
+	]) {
+
+		incomingBatchRegistrar = &batchRegistrar{ref: ref}
+	})
 
 	// The per-session OOR actors handle wallet signing inline, so there is
 	// no separate signing-effect actor. signingHandler remains the Next
 	// delegate of the local-persistence handler for retry scheduling.
 
 	outboxHandler := &oor.LocalPersistenceOutboxHandler{
-		Next:         signingHandler,
-		Store:        vtxoStore,
-		PackageStore: packageStore,
-		OperatorKey:  operatorTerms.PubKey,
-		ExitDelay:    operatorTerms.VTXOExitDelay,
+		Next:           signingHandler,
+		Store:          vtxoStore,
+		BatchRegistrar: incomingBatchRegistrar,
+		PackageStore:   packageStore,
+		OperatorKey:    operatorTerms.PubKey,
+		ExitDelay:      operatorTerms.VTXOExitDelay,
 		NotifyIncomingVTXOs: func(ctx context.Context,
 			descs []*vtxo.Descriptor) error {
 
@@ -4605,6 +4637,7 @@ func (s *Server) initOORActor(ctx context.Context,
 		Log:              fn.Some(s.subLogger(oor.Subsystem)),
 		Signer:           oorSigner,
 		IncomingHandler:  outboxHandler,
+		BatchRegistrar:   incomingBatchRegistrar,
 		RegistryStore:    registryStore,
 		DeliveryStore:    s.deliveryStore,
 		ServerConn:       s.runtime.TellRef(),
@@ -4687,6 +4720,7 @@ func (s *Server) initOORActor(ctx context.Context,
 			VTXOStore:       incomingVTXOStore,
 			VTXOManager:     vtxoManagerRef,
 			AncestryFetcher: ancestryFetcher,
+			BatchRegistrar:  incomingBatchRegistrar,
 			MetricsSink:     s.metricsSink,
 		},
 	)

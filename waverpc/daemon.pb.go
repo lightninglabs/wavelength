@@ -1664,8 +1664,15 @@ type GetBalanceResponse struct {
 	// total_confirmed_sat; reappears under onchain_wallet_confirmed_sat
 	// once the sweep confirms.
 	VtxoUnilateralExitSat int64 `protobuf:"varint,10,opt,name=vtxo_unilateral_exit_sat,json=vtxoUnilateralExitSat,proto3" json:"vtxo_unilateral_exit_sat,omitempty"`
-	unknownFields         protoimpl.UnknownFields
-	sizeCache             protoimpl.SizeCache
+	// vtxo_temporarily_unavailable_sat is the value of lifecycle-live
+	// VTXOs whose canonicality lineage is currently unusable but not
+	// terminally invalidated. This includes unseen or unregistered lineage,
+	// reorg/conflict limbo, and lineage reconciliation. It is excluded from
+	// vtxo_balance_sat and total_confirmed_sat and returns there if the
+	// lineage recovers.
+	VtxoTemporarilyUnavailableSat int64 `protobuf:"varint,11,opt,name=vtxo_temporarily_unavailable_sat,json=vtxoTemporarilyUnavailableSat,proto3" json:"vtxo_temporarily_unavailable_sat,omitempty"`
+	unknownFields                 protoimpl.UnknownFields
+	sizeCache                     protoimpl.SizeCache
 }
 
 func (x *GetBalanceResponse) Reset() {
@@ -1764,6 +1771,13 @@ func (x *GetBalanceResponse) GetVtxoPendingSat() int64 {
 func (x *GetBalanceResponse) GetVtxoUnilateralExitSat() int64 {
 	if x != nil {
 		return x.VtxoUnilateralExitSat
+	}
+	return 0
+}
+
+func (x *GetBalanceResponse) GetVtxoTemporarilyUnavailableSat() int64 {
+	if x != nil {
+		return x.VtxoTemporarilyUnavailableSat
 	}
 	return 0
 }
@@ -9976,7 +9990,7 @@ const file_daemon_proto_rawDesc = "" +
 	"\x0fwallet_password\x18\x01 \x01(\fR\x0ewalletPassword\"?\n" +
 	"\x14UnlockWalletResponse\x12'\n" +
 	"\x0fidentity_pubkey\x18\x01 \x01(\tR\x0eidentityPubkey\"\x13\n" +
-	"\x11GetBalanceRequest\"\x9f\x04\n" +
+	"\x11GetBalanceRequest\"\xe8\x04\n" +
 	"\x12GetBalanceResponse\x124\n" +
 	"\x16boarding_confirmed_sat\x18\x01 \x01(\x03R\x14boardingConfirmedSat\x128\n" +
 	"\x18boarding_unconfirmed_sat\x18\x02 \x01(\x03R\x16boardingUnconfirmedSat\x12(\n" +
@@ -9988,7 +10002,8 @@ const file_daemon_proto_rawDesc = "" +
 	"\x14boarding_adopted_sat\x18\b \x01(\x03R\x12boardingAdoptedSat\x12(\n" +
 	"\x10vtxo_pending_sat\x18\t \x01(\x03R\x0evtxoPendingSat\x127\n" +
 	"\x18vtxo_unilateral_exit_sat\x18\n" +
-	" \x01(\x03R\x15vtxoUnilateralExitSat\"\x9e\x03\n" +
+	" \x01(\x03R\x15vtxoUnilateralExitSat\x12G\n" +
+	" vtxo_temporarily_unavailable_sat\x18\v \x01(\x03R\x1dvtxoTemporarilyUnavailableSat\"\x9e\x03\n" +
 	"\x0eVTXOExpiryInfo\x121\n" +
 	"\x06status\x18\x01 \x01(\x0e2\x19.waverpc.VTXOExpiryStatusR\x06status\x12%\n" +
 	"\x0ecurrent_height\x18\x02 \x01(\x05R\rcurrentHeight\x12!\n" +

@@ -232,11 +232,13 @@ func TestServiceBalanceProjectsDaemonGetBalance(t *testing.T) {
 
 	svc, _, rpc := newServiceFixture(t)
 	rpc.getBalanceResp = &waverpc.GetBalanceResponse{
-		VtxoBalanceSat:          75_000,
-		BoardingConfirmedSat:    100_000,
-		BoardingUnconfirmedSat:  20_000,
-		BoardingAdoptedSat:      15_000,
-		TotalConfirmedSat:       175_000, // ignored by the mapping
+		VtxoBalanceSat:                75_000,
+		VtxoTemporarilyUnavailableSat: 42_000,
+		BoardingConfirmedSat:          100_000,
+		BoardingUnconfirmedSat:        20_000,
+		BoardingAdoptedSat:            15_000,
+		// ignored by the mapping
+		TotalConfirmedSat:       175_000,
 		BoardingPendingSweepSat: 5_000,
 		VtxoPendingSat:          8_000,
 		VtxoUnilateralExitSat:   3_000,
@@ -247,6 +249,9 @@ func TestServiceBalanceProjectsDaemonGetBalance(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Equal(t, int64(75_000), resp.GetConfirmedSat())
+	require.Equal(
+		t, int64(42_000), resp.GetTemporarilyUnavailableSat(),
+	)
 	require.Equal(t, int64(135_000), resp.GetPendingInSat())
 
 	// 5_000 + 8_000 + 3_000.

@@ -200,6 +200,7 @@ func TestRoundStoreCommitAndFetch(t *testing.T) {
 	state := &round.InputSigSentState{
 		RoundID:     testRound.RoundID,
 		ClientTrees: make(map[round.SignerKey]*tree.Tree),
+		SweepDelay:  1008,
 	}
 	testRound.CommitmentTx.WhenSome(func(packet *psbt.Packet) {
 		state.CommitmentTx = packet
@@ -246,6 +247,7 @@ func TestRoundStoreCommitAndFetch(t *testing.T) {
 	inputSigState, ok := fetchedState.(*round.InputSigSentState)
 	require.True(t, ok)
 	require.Equal(t, testRound.RoundID, inputSigState.RoundID)
+	require.Equal(t, state.SweepDelay, inputSigState.SweepDelay)
 }
 
 // TestRoundStoreLookupByTxid tests looking up a round by commitment txid.

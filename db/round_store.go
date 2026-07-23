@@ -298,6 +298,15 @@ func (s *RoundPersistenceStore) CommitState(ctx context.Context, r *round.Round,
 			return err
 		}
 
+		// The point-of-no-return checkpoint is defined by this state.
+		// Extract it before writing the round so every immutable term
+		// needed to resume the ceremony is persisted with that row.
+		inputSigState, ok := state.(*round.InputSigSentState)
+		if !ok {
+			return fmt.Errorf("CommitState called with "+
+				"non-InputSigSentState: %T", state)
+		}
+
 		nowUnix := s.clock.Now().Unix()
 
 		// Insert/update round. Status is always 'input_sig_sent' since
@@ -319,17 +328,14 @@ func (s *RoundPersistenceStore) CommitState(ctx context.Context, r *round.Round,
 			// zero-indexed, so an unstamped round reads as V1
 			// (the zero value) with no normalization needed.
 			FlowVersion: int32(r.FlowVersion),
+
+			// SweepDelay is delivered per round and must survive a
+			// restart. A process-wide default may have changed and
+			// is not authoritative for an already signed round.
+			SweepDelay: int32(inputSigState.SweepDelay),
 		}
 		if err := q.InsertRound(ctx, roundParams); err != nil {
 			return fmt.Errorf("insert round: %w", err)
-		}
-
-		// Extract InputSigSentState to access input signatures. This is
-		// required since we only persist at the "point of no return".
-		inputSigState, ok := state.(*round.InputSigSentState)
-		if !ok {
-			return fmt.Errorf("CommitState called with "+
-				"non-InputSigSentState: %T", state)
 		}
 
 		// Insert boarding intents for this round.
@@ -1233,6 +1239,7 @@ func (s *RoundPersistenceStore) reconstructInputSigSentState(
 	state := &round.InputSigSentState{
 		RoundID:     roundID,
 		ClientTrees: make(map[round.SignerKey]*tree.Tree),
+		SweepDelay:  uint32(dbRound.SweepDelay),
 
 		// Carry the persisted flow version onto the reconstructed
 		// state so a mid-round resume does not silently downgrade it.
@@ -1810,6 +1817,9 @@ func (s *RoundPersistenceStore) dbVTXOToDomainVTXO(ctx context.Context,
 		CommitmentTxID: commitmentTxID,
 		BatchExpiry:    dbVTXO.BatchExpiry,
 		CreatedHeight:  dbVTXO.CreatedHeight,
+		BusinessRevision: uint64(
+			dbVTXO.BusinessRevision,
+		),
 	}, nil
 }
 
