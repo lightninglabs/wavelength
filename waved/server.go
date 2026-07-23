@@ -4325,8 +4325,14 @@ func (s *Server) initBatchCanonicality(ctx context.Context,
 	// Only activate the VTXO admission gate when explicitly enabled. The
 	// gate is fail-closed, so threading the store before producers register
 	// their batches would strand all liquidity (see the config field doc).
+	//
+	// Thread the manager (not the raw durable store) so admission reads go
+	// through its in-memory overlay: a reorg/conflict observation whose
+	// durable write failed still closes admission immediately, instead of
+	// leaving the stale durable row admissible until a restart (see
+	// Manager.GetBatch).
 	if s.cfg.BatchCanonicalityGate {
-		s.batchCanonStore = canonStore
+		s.batchCanonStore = mgr
 	}
 
 	s.log.InfoS(ctx, "Batch canonicality manager registered and started",

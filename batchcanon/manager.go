@@ -1053,10 +1053,45 @@ func observationComplete(w *batchWatch) bool {
 	return true
 }
 
+// GetBatch implements batchcanon.Reader with the manager's in-memory overlay so
+// the wired admission gate fails closed the instant a reorg/conflict
+// observation cannot be persisted. The gate reads availability through this
+// method; when an in-memory watch is not ready — most importantly after an
+// ApplyObservation write failed in persistObservation — the returned record is
+// forced not-ready, so LineageAvailability derives LineageReconciling (never
+// usable) even though the stale durable row still reads ready. The overlay only
+// ever downgrades ready->not-ready, never the reverse, so it is strictly
+// fail-closed. Without it the gate would admit a VTXO whose commitment just
+// left the best chain until a restart durably reconciled the row.
+func (m *Manager) GetBatch(ctx context.Context, txid chainhash.Hash) (*Record,
+	error) {
+
+	record, err := m.cfg.Store.GetBatch(ctx, txid)
+	if err != nil {
+		return nil, err
+	}
+
+	m.mu.Lock()
+	w, watched := m.watches[txid]
+	overlayNotReady := watched && !w.ready
+	m.mu.Unlock()
+
+	if overlayNotReady && record.Ready() {
+		notReady := *record
+		notReady.ReadyGeneration = fn.None[uint64]()
+
+		return &notReady, nil
+	}
+
+	return record, nil
+}
+
 // persistObservation atomically writes the complete in-memory view. On any
-// error the manager's overlay closes admission immediately, even if the old
-// durable row was usable; restart reconciliation closes it durably before
-// re-arming watches.
+// error the in-memory watch is marked not-ready; the wired admission gate reads
+// through Manager.GetBatch, whose overlay forces such a batch not-ready even
+// though the stale durable row still reads ready, so admission closes
+// immediately. Restart reconciliation then closes it durably before re-arming
+// watches.
 func (m *Manager) persistObservation(ctx context.Context, w *batchWatch) {
 	inputs := make([]InputObservation, 0, len(w.inputs))
 	for outpoint, input := range w.inputs {
