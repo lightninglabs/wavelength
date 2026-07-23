@@ -622,6 +622,13 @@ type InSwapConfig struct {
 	// for this swap.
 	FeeSat uint64
 
+	// ServerFeeSat is the service fee retained by the swap server.
+	ServerFeeSat uint64
+
+	// RoutingFeeBudgetSat is the client-funded Lightning routing
+	// allowance included in FeeSat.
+	RoutingFeeBudgetSat uint64
+
 	// ServerPubkey is the swap server's public key for this swap
 	// instance.
 	ServerPubkey *btcec.PublicKey
@@ -663,6 +670,17 @@ type InSwapQuote struct {
 
 	// FeeSat is the fee in satoshis charged by the swap server.
 	FeeSat uint64
+
+	// ServerFeeSat is the service fee retained by the swap server.
+	ServerFeeSat uint64
+
+	// EstimatedRoutingFeeSat is the server's current whole-satoshi route
+	// estimate.
+	EstimatedRoutingFeeSat uint64
+
+	// RoutingFeeBudgetSat is the Lightning routing allowance that would be
+	// included in FeeSat.
+	RoutingFeeBudgetSat uint64
 
 	// Expiry is the wall-clock deadline by which the quoted swap must
 	// complete before it is considered stale.

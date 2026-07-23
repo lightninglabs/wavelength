@@ -139,10 +139,12 @@ func TestPaySessionPersistAllowsCreditOnlyWithoutVHTLC(t *testing.T) {
 		maxFeeSat: 100,
 		state:     PayStateCompleted,
 		cfg: &InSwapConfig{
-			PaymentHash:    preimage.Hash(),
-			SettlementType: SettlementTypeCredit,
-			Preimage:       &preimage,
-			Expiry:         now.Add(time.Hour),
+			PaymentHash:         preimage.Hash(),
+			ServerFeeSat:        3,
+			RoutingFeeBudgetSat: 7,
+			SettlementType:      SettlementTypeCredit,
+			Preimage:            &preimage,
+			Expiry:              now.Add(time.Hour),
 		},
 		preimage:       &preimage,
 		clientPubKey:   key.PubKey(),
@@ -157,6 +159,8 @@ func TestPaySessionPersistAllowsCreditOnlyWithoutVHTLC(t *testing.T) {
 	row, err := store.queries.GetPaySwap(ctx, paymentHash[:])
 	require.NoError(t, err)
 	require.Equal(t, string(SettlementTypeCredit), row.SettlementType)
+	require.EqualValues(t, 3, row.ServerFeeSat)
+	require.EqualValues(t, 7, row.RoutingFeeBudgetSat)
 	require.Empty(t, row.VhtlcPkscript)
 	require.Empty(t, row.VhtlcPolicyTemplate)
 	require.Empty(t, row.VhtlcOutpoint)
@@ -165,6 +169,7 @@ func TestPaySessionPersistAllowsCreditOnlyWithoutVHTLC(t *testing.T) {
 	resumed, err := client.ResumePayViaLightning(ctx, paymentHash)
 	require.NoError(t, err)
 	require.Equal(t, SettlementTypeCredit, resumed.cfg.SettlementType)
+	require.EqualValues(t, 7, resumed.routingFeeBudgetSat)
 	require.Empty(t, resumed.vhtlcPkScript)
 	require.Empty(t, resumed.vhtlcPolicyTemplate)
 }
