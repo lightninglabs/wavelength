@@ -1,6 +1,7 @@
 package wallet
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -321,6 +322,137 @@ func TestReplaySelfTellsBoardWhenAnchorIsStillConfirmed(t *testing.T) {
 	boardReq, ok := msg.(*BoardRequest)
 	require.True(t, ok, "expected *BoardRequest, got %T", msg)
 	require.Equal(t, uint32(4), boardReq.TargetVTXOCount)
+
+	store.AssertExpectations(t)
+}
+
+// TestBoardIntentIDDistinguishesPolicy verifies the intent-ID digest is
+// policy-sensitive: two board intents over the same anchors and target that
+// differ only by their custom policy (or by an empty vs a set policy) hash to
+// distinct IDs. Without this, a custom-policy board and a standard board over
+// the same outpoints would collide and upsert over each other in the outbox.
+func TestBoardIntentIDDistinguishesPolicy(t *testing.T) {
+	t.Parallel()
+
+	anchors := []wire.OutPoint{boardReplayTestOutpoint(0x71)}
+
+	standard := &BoardIntentPayload{TargetVTXOCount: 1}
+	customA := &BoardIntentPayload{
+		TargetVTXOCount: 1,
+		PolicyTemplate: []byte{
+			0x01,
+			0xaa,
+		},
+	}
+	customB := &BoardIntentPayload{
+		TargetVTXOCount: 1,
+		PolicyTemplate: []byte{
+			0x01,
+			0xbb,
+		},
+	}
+	customBWithScript := &BoardIntentPayload{
+		TargetVTXOCount: 1,
+		PolicyTemplate: []byte{
+			0x01,
+			0xbb,
+		},
+		PkScript: []byte{
+			0x02,
+		},
+	}
+
+	standardID := NewPendingIntentID(standard, anchors)
+	customAID := NewPendingIntentID(customA, anchors)
+	customBID := NewPendingIntentID(customB, anchors)
+	customBScriptID := NewPendingIntentID(customBWithScript, anchors)
+
+	require.NotEqual(
+		t, standardID, customAID,
+		"standard and custom policy must not collide",
+	)
+	require.NotEqual(
+		t, customAID, customBID,
+		"distinct policy templates must not collide",
+	)
+	require.NotEqual(
+		t, customBID, customBScriptID,
+		"pinned pk_script must affect the intent ID",
+	)
+
+	// The digest is deterministic for identical payloads.
+	require.Equal(t, customAID, NewPendingIntentID(customA, anchors))
+}
+
+// TestReplayCarriesCustomPolicyToBoardRequest verifies that a persisted board
+// intent's custom VTXO policy survives restart replay: the self-Telled
+// BoardRequest carries the same PolicyTemplate and PkScript, so replay
+// recreates the same custom-owned output instead of silently re-boarding into
+// the standard collaborative shape.
+func TestReplayCarriesCustomPolicyToBoardRequest(t *testing.T) {
+	t.Parallel()
+
+	liveOp := boardReplayTestOutpoint(0x61)
+
+	policyTemplate := []byte{0x01, 0xaa, 0xbb, 0xcc}
+	pkScript := bytes.Repeat([]byte{0x02}, 34)
+
+	payload := &BoardIntentPayload{
+		TargetVTXOCount: 3,
+		PolicyTemplate:  policyTemplate,
+		PkScript:        pkScript,
+	}
+	anchors := []wire.OutPoint{liveOp}
+	pending := []PendingIntent{{
+		ID:          NewPendingIntentID(payload, anchors),
+		Payload:     payload,
+		RequestedAt: 1_700_000_000,
+		Anchors:     anchors,
+	}}
+
+	store := &MockBoardingStore{}
+	store.On(
+		"ListPendingIntents", mock.Anything, PendingIntentKindBoard,
+	).Return(pending, nil)
+	store.On(
+		"ListPendingIntents", mock.Anything,
+		PendingIntentKindSendOnChain,
+	).Return([]PendingIntent(nil), nil)
+	store.On(
+		"FetchBoardingIntentsByStatus", mock.Anything,
+		BoardingStatusConfirmed,
+	).Return([]BoardingIntent{
+		{
+			Outpoint: liveOp,
+			ChainInfo: BoardingChainInfo{
+				OutPoint: liveOp,
+				Amount:   25_000,
+			},
+			Status: BoardingStatusConfirmed,
+		},
+	}, nil)
+
+	clk := clock.NewTestClock(time.Unix(1_700_000_000, 0))
+	w, _ := newBoardReplayTestWallet(t, store, clk)
+
+	selfRef := actor.NewChannelTellOnlyRef[WalletMsg](
+		"test-wallet-self", 4,
+	)
+	w.selfRef = selfRef
+
+	result := w.Receive(t.Context(), &ReplayPendingIntentsRequest{})
+	require.True(
+		t, result.IsOk(),
+		"replay must succeed; got %v", result.Err(),
+	)
+
+	msg, ok := selfRef.AwaitMessage(2 * time.Second)
+	require.True(t, ok, "expected replay to self-Tell a BoardRequest")
+	boardReq, ok := msg.(*BoardRequest)
+	require.True(t, ok, "expected *BoardRequest, got %T", msg)
+	require.Equal(t, uint32(3), boardReq.TargetVTXOCount)
+	require.Equal(t, policyTemplate, boardReq.PolicyTemplate)
+	require.Equal(t, pkScript, boardReq.PkScript)
 
 	store.AssertExpectations(t)
 }

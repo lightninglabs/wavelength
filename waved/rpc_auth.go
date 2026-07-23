@@ -105,11 +105,13 @@ func newWavedRPCPermissions() map[string][]bakery.Op {
 		daemon, entityVTXO, "read", "ListVTXOs",
 		"GetIndexedVTXOByPkScript", "GetVTXOExpiryInfo",
 		"ListPendingForfeitParticipantSignatureRequests",
+		"ListPendingTreeSigningRequests",
 	)
 	grant(
 		daemon, entityVTXO, "write", "SendVTXO", "SignVTXOForfeit",
 		"RefreshVTXOs", "RefreshCustomVTXOs",
 		"SubmitForfeitParticipantSignatures", "LeaveVTXOs",
+		"SubmitTreeSignatures",
 	)
 	grant(
 		daemon, entityAddress, "write", "NewAddress",

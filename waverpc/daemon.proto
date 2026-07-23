@@ -146,6 +146,24 @@ service DaemonService {
         SubmitForfeitParticipantSignaturesRequest)
         returns (SubmitForfeitParticipantSignaturesResponse);
 
+    // ListPendingTreeSigningRequests returns pending MuSig2 VTXO-tree signing
+    // requests for cosigner keys marked as externally signed (for example an
+    // aggregate FROST key the client controls off-box). Each request is one
+    // round of the two-round MuSig2 ceremony for one transaction session:
+    // round NONCE asks for a fresh public nonce, round PARTIAL_SIG asks for a
+    // partial signature over the given sighash under the operator-aggregated
+    // combined nonce. Callers poll this endpoint and answer with
+    // SubmitTreeSignatures. The private key never enters the daemon.
+    rpc ListPendingTreeSigningRequests (ListPendingTreeSigningRequestsRequest)
+        returns (ListPendingTreeSigningRequestsResponse);
+
+    // SubmitTreeSignatures supplies the external cosigner's material for one
+    // pending tree-signing request. The request_id must be copied from the
+    // listed pending request; the daemon uses it to wake the blocked round FSM
+    // that is waiting for that exact session's nonce or partial signature.
+    rpc SubmitTreeSignatures (SubmitTreeSignaturesRequest)
+        returns (SubmitTreeSignaturesResponse);
+
     // LeaveVTXOs queues one or more VTXOs for cooperative leave
     // (offboard) in the next round. Each VTXO is forfeited and the
     // forfeited amount (minus the quoted per-input operator fee)
@@ -1511,6 +1529,100 @@ message SubmitForfeitParticipantSignaturesRequest {
 message SubmitForfeitParticipantSignaturesResponse {
 }
 
+// TreeSigningRound distinguishes the two rounds of the MuSig2 tree-signing
+// ceremony that an external cosigner participates in.
+enum TreeSigningRound {
+    // TREE_SIGNING_ROUND_UNSPECIFIED is the zero value and is never emitted.
+    TREE_SIGNING_ROUND_UNSPECIFIED = 0;
+
+    // TREE_SIGNING_ROUND_NONCE asks the external party for a fresh public
+    // nonce for one transaction session (round one).
+    TREE_SIGNING_ROUND_NONCE = 1;
+
+    // TREE_SIGNING_ROUND_PARTIAL_SIG asks the external party for a partial
+    // signature over the request's sighash under its aggregate_nonce (round
+    // two). The party must sign under the exact secret nonce it committed to
+    // in the matching NONCE request for the same session_id.
+    TREE_SIGNING_ROUND_PARTIAL_SIG = 2;
+}
+
+// PendingTreeSigningRequest is one blocking MuSig2 tree-signing request for an
+// external cosigner key. It carries everything the external party needs to
+// independently produce the requested nonce or partial signature.
+message PendingTreeSigningRequest {
+    // request_id is the stable digest of this request. Echo it in
+    // SubmitTreeSignatures so the daemon can wake the blocked round FSM.
+    bytes request_id = 1;
+
+    // sequence is the monotonic cursor for paging the pending request stream.
+    uint64 sequence = 2;
+
+    // round selects which round of the ceremony this request is for.
+    TreeSigningRound round = 3;
+
+    // round_id is the 16-byte round identifier this signing material belongs
+    // to.
+    bytes round_id = 4;
+
+    // cosigner_pubkey is the 33-byte compressed public key of the external
+    // cosigner this material is requested for.
+    bytes cosigner_pubkey = 5;
+
+    // session_id is the 32-byte per-transaction MuSig2 session identifier. It
+    // is stable across the NONCE and PARTIAL_SIG rounds for one transaction.
+    bytes session_id = 6;
+
+    // cosigners is the full ordered MuSig2 participant set (the external
+    // cosigner plus the operator), each a 33-byte compressed public key.
+    repeated bytes cosigners = 7;
+
+    // sweep_tapscript_root is the taproot tweak applied to the aggregate key
+    // (the VTXO tree's sweep tapscript root). It changes the aggregate key and
+    // therefore the signature.
+    bytes sweep_tapscript_root = 8;
+
+    // sighash is the 32-byte taproot sighash the partial signature must cover.
+    // Set only on PARTIAL_SIG requests.
+    bytes sighash = 9;
+
+    // aggregate_nonce is the 66-byte operator-aggregated combined nonce for
+    // this session. Set only on PARTIAL_SIG requests.
+    bytes aggregate_nonce = 10;
+}
+
+message ListPendingTreeSigningRequestsRequest {
+    // after_sequence returns requests with a larger sequence. Zero starts at
+    // the beginning of the daemon-local pending request stream.
+    uint64 after_sequence = 1;
+
+    // limit caps the number of returned requests. Zero uses a daemon default.
+    uint32 limit = 2;
+}
+
+message ListPendingTreeSigningRequestsResponse {
+    repeated PendingTreeSigningRequest requests = 1;
+    uint64 next_sequence = 2;
+}
+
+message SubmitTreeSignaturesRequest {
+    // request_id identifies the pending request being answered. It must match
+    // a request_id previously returned by ListPendingTreeSigningRequests.
+    bytes request_id = 1;
+
+    // round must match the listed request's round.
+    TreeSigningRound round = 2;
+
+    // public_nonce is the 66-byte MuSig2 public nonce. Set on NONCE requests.
+    bytes public_nonce = 3;
+
+    // partial_signature is the serialized MuSig2 partial signature. Set on
+    // PARTIAL_SIG requests.
+    bytes partial_signature = 4;
+}
+
+message SubmitTreeSignaturesResponse {
+}
+
 // LeaveDestination describes where a single leave output should land.
 // Unlike Output (used for VTXO sends), leave destinations are on-chain
 // and carry no VTXO-shape constraints: any standard address or
@@ -1654,6 +1766,23 @@ message BoardRequest {
     // the Board through the wallet's self-Tell on startup until the
     // round adopts or the user fires a fresh Board.
     bool no_persist = 2;
+
+    // vtxo_policy_template optionally pins the arkscript policy for every
+    // boarded VTXO output produced by this request. When empty, the daemon
+    // synthesizes the standard 2-of-2 collaborative policy with a freshly
+    // derived owner key (the legacy behavior). When supplied, the boarded
+    // outputs adopt this policy verbatim, letting a client board directly
+    // into a custom-owned VTXO (for example one owned by an external FROST
+    // aggregate key) without a follow-up refresh. The template must validate
+    // against the operator's terms, and it is persisted with the board intent
+    // so restart replay recreates the same custom output.
+    bytes vtxo_policy_template = 3;
+
+    // pk_script optionally pins the taproot output script for the boarded
+    // VTXOs. It is only valid alongside vtxo_policy_template, and when set it
+    // must match the script derived from that template. Leaving it empty lets
+    // the daemon derive the script from the template.
+    bytes pk_script = 4;
 }
 
 message BoardResponse {

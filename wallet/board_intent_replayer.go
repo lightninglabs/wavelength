@@ -53,6 +53,8 @@ func (b *boardIntentReplayer) Replay(ctx context.Context,
 
 	var (
 		liveTarget          uint32
+		livePolicyTemplate  []byte
+		livePkScript        []byte
 		earliestRequestedAt int64
 		liveAnchors         int
 		liveIntents         int
@@ -94,6 +96,8 @@ func (b *boardIntentReplayer) Replay(ctx context.Context,
 				"non-board payload %T", intent.Payload)
 		}
 		liveTarget = payload.TargetVTXOCount
+		livePolicyTemplate = payload.PolicyTemplate
+		livePkScript = payload.PkScript
 
 		if earliestRequestedAt == 0 ||
 			intent.RequestedAt < earliestRequestedAt {
@@ -153,6 +157,8 @@ func (b *boardIntentReplayer) Replay(ctx context.Context,
 	// replay.
 	err = a.selfRef.Tell(ctx, &BoardRequest{
 		TargetVTXOCount: liveTarget,
+		PolicyTemplate:  livePolicyTemplate,
+		PkScript:        livePkScript,
 	})
 	if err != nil {
 		return false, fmt.Errorf("self-tell pending board request: %w",

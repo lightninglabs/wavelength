@@ -31,6 +31,14 @@ type ClientEnvironment struct {
 	// falls back to serial execution for focused FSM tests.
 	SigningExecutor SigningExecutor
 
+	// ExternalTreeSigner, when non-nil, supplies MuSig2 tree-signing
+	// material (nonces and partial signatures) for VTXO signing keys marked
+	// ExternalTreeSigner, routing them to an external party (e.g. an
+	// aggregate FROST key the client controls off-box) instead of the local
+	// wallet. Nil disables external tree signing, so every cosigner key
+	// signs with the wallet.
+	ExternalTreeSigner ExternalTreeSignerBackend
+
 	// OperatorTerms contains the operator's parameters including sweep
 	// keys, fee targets, confirmation thresholds, and amount limits.
 	OperatorTerms *types.OperatorTerms

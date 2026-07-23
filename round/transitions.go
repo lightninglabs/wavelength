@@ -2521,10 +2521,22 @@ func (s *CommitmentTxValidatedState) processEvent(ctx context.Context,
 					signerKey[:], err)
 			}
 
+			// By default the wallet signs this cosigner's tree
+			// path. When the VTXO's signing key is marked external,
+			// route its MuSig2 nonce and partial-signature
+			// production to the external party via a proxy signer
+			// instead. The private key never enters this daemon.
+			signer, err := selectTreeSigner(
+				ctx, env, s.RoundID, vtxoReq, signerKey,
+			)
+			if err != nil {
+				return nil, err
+			}
+
 			sessionJobs = append(
 				sessionJobs, CreateSignerSessionJob{
 					SignerKey:          signerKey,
-					Signer:             env.Wallet,
+					Signer:             signer,
 					SigningKey:         vtxoReq.SigningKey,
 					SweepTapscriptRoot: sweepTweak,
 					PrevOuts:           prevOutFetcher,

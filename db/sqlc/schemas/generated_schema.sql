@@ -1058,7 +1058,8 @@ CREATE TABLE pending_board_intents (
     -- the confirmed boarding balance into one VTXO, non-zero fans it out.
     target_vtxo_count INTEGER NOT NULL DEFAULT 0
         CHECK (target_vtxo_count >= 0)
-);
+, vtxo_policy_template BLOB, pk_script BLOB
+        CHECK (pk_script IS NULL OR length(pk_script) > 0));
 
 CREATE TABLE pending_intent_anchors (
     -- The anchored outpoint. For kind='board' this is a confirmed boarding

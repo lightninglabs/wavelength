@@ -121,6 +121,49 @@ func TestPendingIntentUpsertListRoundtrip(t *testing.T) {
 	require.EqualValues(t, 150, gotBoard[0].RequestedAt)
 }
 
+// TestPendingIntentBoardCustomPolicyRoundtrip verifies that a board intent's
+// custom VTXO policy template and pinned pk_script persist to their typed
+// columns and list back byte-for-byte, so restart replay recreates the same
+// custom-owned output. This exercises the full persistence path: the
+// 000016 migration columns, the sqlc upsert/list, and the store's nil-vs-empty
+// handling.
+func TestPendingIntentBoardCustomPolicyRoundtrip(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	h := newPendingIntentStoreForTest(t)
+
+	opA := wire.OutPoint{Hash: chainhash.Hash{0xd1}, Index: 0}
+
+	payload := &wallet.BoardIntentPayload{
+		TargetVTXOCount: 4,
+		PolicyTemplate: []byte{
+			0x01,
+			0xde,
+			0xad,
+			0xbe,
+			0xef,
+		},
+		PkScript: append(
+			[]byte{0x51, 0x20}, make([]byte, 32)...,
+		),
+	}
+	board := makePendingIntent(payload, 100, opA)
+	require.NoError(t, h.store.UpsertPendingIntent(ctx, board))
+
+	got, err := h.store.ListPendingIntents(
+		ctx, wallet.PendingIntentKindBoard,
+	)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.Equal(t, board.Payload, got[0].Payload)
+
+	gotPayload, ok := got[0].Payload.(*wallet.BoardIntentPayload)
+	require.True(t, ok)
+	require.Equal(t, payload.PolicyTemplate, gotPayload.PolicyTemplate)
+	require.Equal(t, payload.PkScript, gotPayload.PkScript)
+}
+
 // TestPendingIntentAnchorRebindSweepsOrphan verifies that a newer intent
 // claiming an older intent's anchors rebinds them, and that an older parent
 // left with zero anchors is swept in the same transaction.

@@ -268,8 +268,10 @@ type OwnedReceiveScriptSource struct {
 }
 
 type PendingBoardIntent struct {
-	IntentID        []byte
-	TargetVtxoCount int32
+	IntentID           []byte
+	TargetVtxoCount    int32
+	VtxoPolicyTemplate []byte
+	PkScript           []byte
 }
 
 type PendingIntent struct {

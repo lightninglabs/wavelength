@@ -43,6 +43,8 @@ const (
 	DaemonService_RefreshCustomVTXOs_FullMethodName                             = "/waverpc.DaemonService/RefreshCustomVTXOs"
 	DaemonService_ListPendingForfeitParticipantSignatureRequests_FullMethodName = "/waverpc.DaemonService/ListPendingForfeitParticipantSignatureRequests"
 	DaemonService_SubmitForfeitParticipantSignatures_FullMethodName             = "/waverpc.DaemonService/SubmitForfeitParticipantSignatures"
+	DaemonService_ListPendingTreeSigningRequests_FullMethodName                 = "/waverpc.DaemonService/ListPendingTreeSigningRequests"
+	DaemonService_SubmitTreeSignatures_FullMethodName                           = "/waverpc.DaemonService/SubmitTreeSignatures"
 	DaemonService_LeaveVTXOs_FullMethodName                                     = "/waverpc.DaemonService/LeaveVTXOs"
 	DaemonService_SendOnChain_FullMethodName                                    = "/waverpc.DaemonService/SendOnChain"
 	DaemonService_Board_FullMethodName                                          = "/waverpc.DaemonService/Board"
@@ -174,6 +176,20 @@ type DaemonServiceClient interface {
 	// operator key, callers may submit an empty signature set to acknowledge
 	// and unblock the request.
 	SubmitForfeitParticipantSignatures(ctx context.Context, in *SubmitForfeitParticipantSignaturesRequest, opts ...grpc.CallOption) (*SubmitForfeitParticipantSignaturesResponse, error)
+	// ListPendingTreeSigningRequests returns pending MuSig2 VTXO-tree signing
+	// requests for cosigner keys marked as externally signed (for example an
+	// aggregate FROST key the client controls off-box). Each request is one
+	// round of the two-round MuSig2 ceremony for one transaction session:
+	// round NONCE asks for a fresh public nonce, round PARTIAL_SIG asks for a
+	// partial signature over the given sighash under the operator-aggregated
+	// combined nonce. Callers poll this endpoint and answer with
+	// SubmitTreeSignatures. The private key never enters the daemon.
+	ListPendingTreeSigningRequests(ctx context.Context, in *ListPendingTreeSigningRequestsRequest, opts ...grpc.CallOption) (*ListPendingTreeSigningRequestsResponse, error)
+	// SubmitTreeSignatures supplies the external cosigner's material for one
+	// pending tree-signing request. The request_id must be copied from the
+	// listed pending request; the daemon uses it to wake the blocked round FSM
+	// that is waiting for that exact session's nonce or partial signature.
+	SubmitTreeSignatures(ctx context.Context, in *SubmitTreeSignaturesRequest, opts ...grpc.CallOption) (*SubmitTreeSignaturesResponse, error)
 	// LeaveVTXOs queues one or more VTXOs for cooperative leave
 	// (offboard) in the next round. Each VTXO is forfeited and the
 	// forfeited amount (minus the quoted per-input operator fee)
@@ -509,6 +525,26 @@ func (c *daemonServiceClient) SubmitForfeitParticipantSignatures(ctx context.Con
 	return out, nil
 }
 
+func (c *daemonServiceClient) ListPendingTreeSigningRequests(ctx context.Context, in *ListPendingTreeSigningRequestsRequest, opts ...grpc.CallOption) (*ListPendingTreeSigningRequestsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListPendingTreeSigningRequestsResponse)
+	err := c.cc.Invoke(ctx, DaemonService_ListPendingTreeSigningRequests_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) SubmitTreeSignatures(ctx context.Context, in *SubmitTreeSignaturesRequest, opts ...grpc.CallOption) (*SubmitTreeSignaturesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SubmitTreeSignaturesResponse)
+	err := c.cc.Invoke(ctx, DaemonService_SubmitTreeSignatures_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *daemonServiceClient) LeaveVTXOs(ctx context.Context, in *LeaveVTXOsRequest, opts ...grpc.CallOption) (*LeaveVTXOsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(LeaveVTXOsResponse)
@@ -836,6 +872,20 @@ type DaemonServiceServer interface {
 	// operator key, callers may submit an empty signature set to acknowledge
 	// and unblock the request.
 	SubmitForfeitParticipantSignatures(context.Context, *SubmitForfeitParticipantSignaturesRequest) (*SubmitForfeitParticipantSignaturesResponse, error)
+	// ListPendingTreeSigningRequests returns pending MuSig2 VTXO-tree signing
+	// requests for cosigner keys marked as externally signed (for example an
+	// aggregate FROST key the client controls off-box). Each request is one
+	// round of the two-round MuSig2 ceremony for one transaction session:
+	// round NONCE asks for a fresh public nonce, round PARTIAL_SIG asks for a
+	// partial signature over the given sighash under the operator-aggregated
+	// combined nonce. Callers poll this endpoint and answer with
+	// SubmitTreeSignatures. The private key never enters the daemon.
+	ListPendingTreeSigningRequests(context.Context, *ListPendingTreeSigningRequestsRequest) (*ListPendingTreeSigningRequestsResponse, error)
+	// SubmitTreeSignatures supplies the external cosigner's material for one
+	// pending tree-signing request. The request_id must be copied from the
+	// listed pending request; the daemon uses it to wake the blocked round FSM
+	// that is waiting for that exact session's nonce or partial signature.
+	SubmitTreeSignatures(context.Context, *SubmitTreeSignaturesRequest) (*SubmitTreeSignaturesResponse, error)
 	// LeaveVTXOs queues one or more VTXOs for cooperative leave
 	// (offboard) in the next round. Each VTXO is forfeited and the
 	// forfeited amount (minus the quoted per-input operator fee)
@@ -1002,6 +1052,12 @@ func (UnimplementedDaemonServiceServer) ListPendingForfeitParticipantSignatureRe
 }
 func (UnimplementedDaemonServiceServer) SubmitForfeitParticipantSignatures(context.Context, *SubmitForfeitParticipantSignaturesRequest) (*SubmitForfeitParticipantSignaturesResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SubmitForfeitParticipantSignatures not implemented")
+}
+func (UnimplementedDaemonServiceServer) ListPendingTreeSigningRequests(context.Context, *ListPendingTreeSigningRequestsRequest) (*ListPendingTreeSigningRequestsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListPendingTreeSigningRequests not implemented")
+}
+func (UnimplementedDaemonServiceServer) SubmitTreeSignatures(context.Context, *SubmitTreeSignaturesRequest) (*SubmitTreeSignaturesResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SubmitTreeSignatures not implemented")
 }
 func (UnimplementedDaemonServiceServer) LeaveVTXOs(context.Context, *LeaveVTXOsRequest) (*LeaveVTXOsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method LeaveVTXOs not implemented")
@@ -1519,6 +1575,42 @@ func _DaemonService_SubmitForfeitParticipantSignatures_Handler(srv interface{}, 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DaemonService_ListPendingTreeSigningRequests_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListPendingTreeSigningRequestsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).ListPendingTreeSigningRequests(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_ListPendingTreeSigningRequests_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).ListPendingTreeSigningRequests(ctx, req.(*ListPendingTreeSigningRequestsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_SubmitTreeSignatures_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SubmitTreeSignaturesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).SubmitTreeSignatures(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_SubmitTreeSignatures_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).SubmitTreeSignatures(ctx, req.(*SubmitTreeSignaturesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _DaemonService_LeaveVTXOs_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(LeaveVTXOsRequest)
 	if err := dec(in); err != nil {
@@ -1992,6 +2084,14 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SubmitForfeitParticipantSignatures",
 			Handler:    _DaemonService_SubmitForfeitParticipantSignatures_Handler,
+		},
+		{
+			MethodName: "ListPendingTreeSigningRequests",
+			Handler:    _DaemonService_ListPendingTreeSigningRequests_Handler,
+		},
+		{
+			MethodName: "SubmitTreeSignatures",
+			Handler:    _DaemonService_SubmitTreeSignatures_Handler,
 		},
 		{
 			MethodName: "LeaveVTXOs",

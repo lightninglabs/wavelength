@@ -297,6 +297,15 @@ type VTXORequest struct {
 	// need the key locator for signing operations.
 	SigningKey keychain.KeyDescriptor
 
+	// ExternalTreeSigner marks this VTXO's tree-signing (MuSig2 cosigner)
+	// key as living outside this daemon: the round FSM must not derive a
+	// wallet key for it and must route its tree nonce and partial-signature
+	// production to an external party (e.g. an aggregate FROST key the
+	// client controls off-box) instead of the local wallet signer. When
+	// set, SigningKey.PubKey must be the external cosigner public key; the
+	// key locator is ignored because the key is not wallet-derivable.
+	ExternalTreeSigner bool
+
 	// Origin classifies how a locally-owned VTXO came into
 	// existence (boarding, refresh, or participant transfer). It
 	// is set by the wallet at intent-composition time and flows
