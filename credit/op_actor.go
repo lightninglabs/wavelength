@@ -396,6 +396,9 @@ func buildRecord(opID string,
 			TopupSat:     int64(m.TopupSat),
 			MaxCreditSat: int64(m.MaxCreditSat),
 			MaxFeeSat:    int64(m.MaxFeeSat),
+			RoutingFeeBudgetSat: int64(
+				m.RoutingFeeBudgetSat,
+			),
 		}, &opSnapshot{CreditOnly: m.CreditOnly}
 
 	case *StartCreditReceiveRequest:

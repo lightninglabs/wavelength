@@ -541,6 +541,7 @@ func TestRouterSendInvoiceHandsCreditPayToRegistry(t *testing.T) {
 			Destination: &wavewalletrpc.PrepareSendRequest_Invoice{
 				Invoice: invoice,
 			},
+			RoutingFeeBudgetSat: 9,
 		},
 	)
 	require.NoError(t, err)
@@ -561,6 +562,7 @@ func TestRouterSendInvoiceHandsCreditPayToRegistry(t *testing.T) {
 	require.Equal(t, uint64(1_000), reg.lastPay.TopupSat)
 	require.Equal(t, invoice, reg.lastPay.Invoice)
 	require.Equal(t, uint64(500_000), reg.lastPay.MaxCreditSat)
+	require.Equal(t, uint64(9), reg.lastPay.RoutingFeeBudgetSat)
 	require.True(t, reg.lastPay.CreditOnly)
 	require.True(
 		t,

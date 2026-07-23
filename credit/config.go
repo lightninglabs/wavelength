@@ -163,7 +163,7 @@ type CreditServer interface {
 	// reconciled to settlement by matching the invoice payment hash against
 	// the pay operation surfaced in ListCredits.
 	StartPay(ctx context.Context, invoice string, maxFeeSat,
-		maxCreditSat uint64) error
+		routingFeeBudgetSat, maxCreditSat uint64) error
 }
 
 // Store is the durable control-plane store the credit actors read and write.

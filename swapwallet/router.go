@@ -301,14 +301,15 @@ func (r *router) sendCreditInvoiceIntent(ctx context.Context,
 	opKey := "pay:" + hex.EncodeToString(paymentHash[:])
 	paymentHashHex := hex.EncodeToString(paymentHash[:])
 	resp, err := r.deps.CreditRegistry.Ask(ctx, &credit.StartCreditPayRequest{
-		OpKey:        opKey,
-		Invoice:      intent.invoice,
-		PaymentHash:  paymentHash,
-		AmountSat:    intent.amountSat,
-		TopupSat:     topupSat,
-		MaxCreditSat: intent.maxCreditSat,
-		MaxFeeSat:    intent.maxFeeSat,
-		CreditOnly:   creditOnly,
+		OpKey:               opKey,
+		Invoice:             intent.invoice,
+		PaymentHash:         paymentHash,
+		AmountSat:           intent.amountSat,
+		TopupSat:            topupSat,
+		MaxCreditSat:        intent.maxCreditSat,
+		MaxFeeSat:           intent.maxFeeSat,
+		RoutingFeeBudgetSat: intent.routingFeeBudgetSat,
+		CreditOnly:          creditOnly,
 	}).Await(ctx).Unpack()
 	if err != nil {
 		return nil, fmt.Errorf("start credit pay: %w", err)

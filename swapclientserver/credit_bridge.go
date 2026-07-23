@@ -113,12 +113,13 @@ func (b *creditServerBridge) RedeemCredit(ctx context.Context, _ []byte,
 // StartPay forwards to the swap subserver's StartPay handler, which dedups by
 // payment hash and starts (or reuses) the background pay worker.
 func (b *creditServerBridge) StartPay(ctx context.Context, invoice string,
-	maxFeeSat, maxCreditSat uint64) error {
+	maxFeeSat, routingFeeBudgetSat, maxCreditSat uint64) error {
 
 	_, err := b.svc.StartPay(ctx, &swapclientrpc.StartPayRequest{
-		Invoice:      invoice,
-		MaxFeeSat:    maxFeeSat,
-		MaxCreditSat: maxCreditSat,
+		Invoice:             invoice,
+		MaxFeeSat:           maxFeeSat,
+		RoutingFeeBudgetSat: routingFeeBudgetSat,
+		MaxCreditSat:        maxCreditSat,
 	})
 
 	return err

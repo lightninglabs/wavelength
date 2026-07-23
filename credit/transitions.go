@@ -159,7 +159,7 @@ func (payingState) ProcessEvent(ctx context.Context, _ CreditEvent,
 
 	err := b.cfg.Server.StartPay(
 		ctx, b.rec.Invoice, uint64(b.rec.MaxFeeSat),
-		uint64(b.rec.MaxCreditSat),
+		uint64(b.rec.RoutingFeeBudgetSat), uint64(b.rec.MaxCreditSat),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("start pay: %w", err)

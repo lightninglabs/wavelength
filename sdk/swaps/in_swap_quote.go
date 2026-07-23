@@ -161,7 +161,8 @@ func validateInSwapOptions(options InSwapOptions) error {
 		return fmt.Errorf("routing fee budget %d sat exceeds int64",
 			options.RoutingFeeBudgetSat)
 
-	case options.MaxCreditSat > maxInt64Uint:
+	case options.MaxCreditSat > maxInt64Uint &&
+		options.MaxCreditSat != ^uint64(0):
 		return fmt.Errorf("max credit %d sat exceeds int64",
 			options.MaxCreditSat)
 

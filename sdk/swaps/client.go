@@ -716,6 +716,7 @@ type InSwapOptions struct {
 	RoutingFeeBudgetSat uint64
 
 	// MaxCreditSat is the maximum credit amount the caller authorizes.
+	// MaxUint64 requests a quote using all available credit.
 	MaxCreditSat uint64
 }
 

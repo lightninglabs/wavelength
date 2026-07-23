@@ -161,15 +161,19 @@ type fakeServerOp struct {
 type fakeServer struct {
 	mu sync.Mutex
 
-	ops         map[string]*fakeServerOp // keyed by idempotency key
-	available   uint64
-	createCalls map[string]int
-	redeemCalls map[string]int
-	startPayCnt int
-	startPayErr error
-	createState ServerCreditState
-	redeemState ServerCreditState
-	receiveHash []byte
+	// ops is keyed by idempotency key.
+	ops                   map[string]*fakeServerOp
+	available             uint64
+	createCalls           map[string]int
+	redeemCalls           map[string]int
+	startPayCnt           int
+	startPayMaxFee        uint64
+	startPayRoutingBudget uint64
+	startPayMaxCredit     uint64
+	startPayErr           error
+	createState           ServerCreditState
+	redeemState           ServerCreditState
+	receiveHash           []byte
 }
 
 func newFakeServer() *fakeServer {
@@ -255,11 +259,16 @@ func (s *fakeServer) RedeemCredit(_ context.Context, _ []byte,
 	return &RedeemResult{OperationID: op.id, State: op.state}, nil
 }
 
-func (s *fakeServer) StartPay(_ context.Context, _ string, _, _ uint64) error {
+func (s *fakeServer) StartPay(_ context.Context, _ string, maxFeeSat,
+	routingFeeBudgetSat, maxCreditSat uint64) error {
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.startPayCnt++
+	s.startPayMaxFee = maxFeeSat
+	s.startPayRoutingBudget = routingFeeBudgetSat
+	s.startPayMaxCredit = maxCreditSat
 
 	return s.startPayErr
 }
@@ -659,17 +668,23 @@ func TestPayNoTopupCompletes(t *testing.T) {
 	b := testBehavior("op1", store, server, daemon)
 
 	admit(t, b, store, &StartCreditPayRequest{
-		OpKey:        "pay:abc",
-		Invoice:      "lnbc1",
-		PaymentHash:  payHash(),
-		AmountSat:    500,
-		TopupSat:     0,
-		MaxCreditSat: 500,
+		OpKey:               "pay:abc",
+		Invoice:             "lnbc1",
+		PaymentHash:         payHash(),
+		AmountSat:           500,
+		TopupSat:            0,
+		MaxCreditSat:        500,
+		MaxFeeSat:           40,
+		RoutingFeeBudgetSat: 17,
 	})
 	drive(t, b, &ResumeCreditOpRequest{OpID: "op1"})
 
 	require.Equal(t, string(StateCompleted), b.rec.State)
 	require.Equal(t, 1, server.startPayCnt)
+	require.Equal(t, uint64(40), server.startPayMaxFee)
+	require.Equal(t, uint64(17), server.startPayRoutingBudget)
+	require.Equal(t, uint64(500), server.startPayMaxCredit)
+	require.Equal(t, int64(17), b.rec.RoutingFeeBudgetSat)
 	require.Empty(t, daemon.sendOORCalls)
 	require.Empty(t, server.createCalls)
 }

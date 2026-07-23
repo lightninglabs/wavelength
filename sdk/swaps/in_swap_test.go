@@ -478,6 +478,17 @@ func TestValidateInSwapOptionsRejectsOverflow(t *testing.T) {
 	}
 }
 
+// TestValidateInSwapOptionsAllowsUnlimitedCredit verifies the established
+// MaxUint64 sentinel remains available for all-credit quote discovery.
+func TestValidateInSwapOptionsAllowsUnlimitedCredit(t *testing.T) {
+	t.Parallel()
+
+	err := validateInSwapOptions(InSwapOptions{
+		MaxCreditSat: ^uint64(0),
+	})
+	require.NoError(t, err)
+}
+
 // TestValidateInSwapPreviewAllowsCreditOnlyZeroAmount verifies credit-only
 // quotes can report zero Ark funding while still binding to the invoice.
 func TestValidateInSwapPreviewAllowsCreditOnlyZeroAmount(t *testing.T) {

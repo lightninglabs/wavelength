@@ -15,6 +15,67 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestValidateStartCreditPayRequestRejectsOverflow verifies every unsigned
+// admission amount fits the durable signed BIGINT representation.
+func TestValidateStartCreditPayRequestRejectsOverflow(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		mutate  func(*StartCreditPayRequest)
+		errText string
+	}{
+		{
+			name: "amount",
+			mutate: func(req *StartCreditPayRequest) {
+				req.AmountSat = ^uint64(0)
+			},
+			errText: "amount",
+		},
+		{
+			name: "topup",
+			mutate: func(req *StartCreditPayRequest) {
+				req.TopupSat = ^uint64(0)
+			},
+			errText: "topup",
+		},
+		{
+			name: "max credit",
+			mutate: func(req *StartCreditPayRequest) {
+				req.MaxCreditSat = ^uint64(0)
+			},
+			errText: "max credit",
+		},
+		{
+			name: "max fee",
+			mutate: func(req *StartCreditPayRequest) {
+				req.MaxFeeSat = ^uint64(0)
+			},
+			errText: "max fee",
+		},
+		{
+			name: "routing fee budget",
+			mutate: func(req *StartCreditPayRequest) {
+				req.RoutingFeeBudgetSat = ^uint64(0)
+			},
+			errText: "routing fee budget",
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			req := &StartCreditPayRequest{}
+			test.mutate(req)
+
+			err := validateStartCreditPayRequest(req)
+			require.ErrorContains(t, err, test.errText)
+		})
+	}
+}
+
 // newTestDelivery builds a real sqlite-backed durable mailbox delivery store,
 // the same transport the daemon wires in production. The credit control-plane
 // store is faked in-memory (it is decoupled via the credit.Store interface,
