@@ -92,6 +92,8 @@ INSERT INTO pay_swaps (
     state,
     amount_sat,
     fee_sat,
+    server_fee_sat,
+    routing_fee_budget_sat,
     expiry_unix,
     client_pubkey,
     operator_pubkey,
@@ -116,7 +118,7 @@ INSERT INTO pay_swaps (
     updated_at_unix
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-    $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28
+    $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30
 )
 ON CONFLICT (payment_hash) DO UPDATE SET
     invoice = EXCLUDED.invoice,
@@ -124,6 +126,8 @@ ON CONFLICT (payment_hash) DO UPDATE SET
     state = EXCLUDED.state,
     amount_sat = EXCLUDED.amount_sat,
     fee_sat = EXCLUDED.fee_sat,
+    server_fee_sat = EXCLUDED.server_fee_sat,
+    routing_fee_budget_sat = EXCLUDED.routing_fee_budget_sat,
     expiry_unix = EXCLUDED.expiry_unix,
     client_pubkey = EXCLUDED.client_pubkey,
     operator_pubkey = EXCLUDED.operator_pubkey,

@@ -4,11 +4,11 @@
 INSERT INTO credit_operations (
     op_id, op_key, kind, state, status, server_op_id, payment_hash,
     destination_pubkey, oor_session_id, invoice, amount_sat, topup_sat,
-    max_credit_sat, max_fee_sat, last_error, snapshot_data, snapshot_version,
-    created_at, updated_at
+    max_credit_sat, max_fee_sat, routing_fee_budget_sat, last_error,
+    snapshot_data, snapshot_version, created_at, updated_at
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
-    $18, $19
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
+    $17, $18, $19, $20
 )
 ON CONFLICT (op_id) DO UPDATE SET
     op_key = EXCLUDED.op_key,
@@ -24,6 +24,7 @@ ON CONFLICT (op_id) DO UPDATE SET
     topup_sat = EXCLUDED.topup_sat,
     max_credit_sat = EXCLUDED.max_credit_sat,
     max_fee_sat = EXCLUDED.max_fee_sat,
+    routing_fee_budget_sat = EXCLUDED.routing_fee_budget_sat,
     last_error = EXCLUDED.last_error,
     snapshot_data = EXCLUDED.snapshot_data,
     snapshot_version = EXCLUDED.snapshot_version,

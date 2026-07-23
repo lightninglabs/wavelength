@@ -674,6 +674,14 @@ func (a *swapClientAdapter) StartPayViaLightningWithCredits(ctx context.Context,
 	)
 }
 
+// StartPayViaLightningWithOptions starts a real sdk/swaps pay session with
+// explicit fee and credit limits.
+func (a *swapClientAdapter) StartPayViaLightningWithOptions(ctx context.Context,
+	invoice string, options swaps.InSwapOptions) (paySwapSession, error) {
+
+	return a.client.StartPayViaLightningWithOptions(ctx, invoice, options)
+}
+
 // QuotePayViaLightning previews a pay swap without creating durable state.
 func (a *swapClientAdapter) QuotePayViaLightning(ctx context.Context,
 	invoice string, maxFeeSat uint64) (*swaps.InSwapQuote, error) {
@@ -689,6 +697,15 @@ func (a *swapClientAdapter) QuotePayViaLightningWithCredits(ctx context.Context,
 	return a.client.QuotePayViaLightningWithCredits(
 		ctx, invoice, maxFeeSat, maxCreditSat,
 	)
+}
+
+// QuotePayViaLightningWithOptions previews a pay swap with explicit fee and
+// credit limits.
+func (a *swapClientAdapter) QuotePayViaLightningWithOptions(ctx context.Context,
+	invoice string, options swaps.InSwapOptions) (*swaps.InSwapQuote,
+	error) {
+
+	return a.client.QuotePayViaLightningWithOptions(ctx, invoice, options)
 }
 
 // CreateCredit forwards credit funding requests to sdk/swaps.
@@ -1345,33 +1362,65 @@ func (s *swapClientService) validatePayInvoiceAmount(ctx context.Context,
 // when the SDK client supports credits so a sub-dust or credit-assisted pay is
 // quoted against the caller's credit balance.
 func (s *swapClientService) quotePay(ctx context.Context, invoice string,
-	maxFeeSat uint64, maxCreditSat uint64) (*swaps.InSwapQuote, error) {
+	options swaps.InSwapOptions) (*swaps.InSwapQuote, error) {
+
+	if client, ok := s.client.(interface {
+		QuotePayViaLightningWithOptions(context.Context, string,
+			swaps.InSwapOptions) (*swaps.InSwapQuote, error)
+	}); ok {
+		return client.QuotePayViaLightningWithOptions(
+			ctx, invoice, options,
+		)
+	}
+
+	if options.RoutingFeeBudgetSat != 0 {
+		return nil, fmt.Errorf("swap client does not support " +
+			"explicit routing fee budgets")
+	}
 
 	if client, ok := s.client.(interface {
 		QuotePayViaLightningWithCredits(context.Context, string, uint64,
 			uint64) (*swaps.InSwapQuote, error)
 	}); ok {
 		return client.QuotePayViaLightningWithCredits(
-			ctx, invoice, maxFeeSat, maxCreditSat,
+			ctx, invoice, options.MaxFeeSat, options.MaxCreditSat,
 		)
 	}
 
-	return s.client.QuotePayViaLightning(ctx, invoice, maxFeeSat)
+	return s.client.QuotePayViaLightning(
+		ctx, invoice, options.MaxFeeSat,
+	)
 }
 
 func (s *swapClientService) startPay(ctx context.Context, invoice string,
-	maxFeeSat uint64, maxCreditSat uint64) (paySwapSession, error) {
+	options swaps.InSwapOptions) (paySwapSession, error) {
+
+	if client, ok := s.client.(interface {
+		StartPayViaLightningWithOptions(context.Context, string,
+			swaps.InSwapOptions) (paySwapSession, error)
+	}); ok {
+		return client.StartPayViaLightningWithOptions(
+			ctx, invoice, options,
+		)
+	}
+
+	if options.RoutingFeeBudgetSat != 0 {
+		return nil, fmt.Errorf("swap client does not support " +
+			"explicit routing fee budgets")
+	}
 
 	if client, ok := s.client.(interface {
 		StartPayViaLightningWithCredits(context.Context, string, uint64,
 			uint64) (paySwapSession, error)
 	}); ok {
 		return client.StartPayViaLightningWithCredits(
-			ctx, invoice, maxFeeSat, maxCreditSat,
+			ctx, invoice, options.MaxFeeSat, options.MaxCreditSat,
 		)
 	}
 
-	return s.client.StartPayViaLightning(ctx, invoice, maxFeeSat)
+	return s.client.StartPayViaLightning(
+		ctx, invoice, options.MaxFeeSat,
+	)
 }
 
 // QuotePay previews a pay swap through sdk/swaps without starting a daemon
@@ -1405,7 +1454,11 @@ func (s *swapClientService) QuotePay(ctx context.Context,
 	)
 
 	quote, err := s.quotePay(
-		ctx, req.GetInvoice(), maxFeeSat, req.GetMaxCreditSat(),
+		ctx, req.GetInvoice(), swaps.InSwapOptions{
+			MaxFeeSat:           maxFeeSat,
+			RoutingFeeBudgetSat: req.GetRoutingFeeBudgetSat(),
+			MaxCreditSat:        req.GetMaxCreditSat(),
+		},
 	)
 	if err != nil {
 		return nil, fmt.Errorf("quote pay swap: %w", wrapInSwapFeeError(
@@ -1447,7 +1500,11 @@ func (s *swapClientService) StartPay(ctx context.Context,
 	)
 
 	session, err := s.startPay(
-		ctx, req.GetInvoice(), maxFeeSat, req.GetMaxCreditSat(),
+		ctx, req.GetInvoice(), swaps.InSwapOptions{
+			MaxFeeSat:           maxFeeSat,
+			RoutingFeeBudgetSat: req.GetRoutingFeeBudgetSat(),
+			MaxCreditSat:        req.GetMaxCreditSat(),
+		},
 	)
 	if err != nil {
 		return nil, fmt.Errorf("start pay swap: %w", wrapInSwapFeeError(
@@ -2033,24 +2090,26 @@ func swapSummaryToProto(summary swaps.SwapSummary) *swapclientrpc.SwapSummary {
 	}
 
 	return &swapclientrpc.SwapSummary{
-		Direction:        swapDirectionToProto(summary.Direction),
-		PaymentHash:      hex.EncodeToString(summary.PaymentHash[:]),
-		Invoice:          summary.Invoice,
-		State:            swapStateToProto(summary.State),
-		Pending:          summary.Pending,
-		AmountSat:        summary.AmountSat,
-		FeeSat:           summary.FeeSat,
-		MaxFeeSat:        summary.MaxFeeSat,
-		VhtlcOutpoint:    summary.VHTLCOutpoint,
-		VhtlcAmountSat:   summary.VHTLCAmountSat,
-		FundingSessionId: summary.FundingSessionID,
-		ClaimSessionId:   summary.ClaimSessionID,
-		RefundSessionId:  summary.RefundSessionID,
-		TerminalReason:   summary.TerminalReason,
-		CreatedAtUnix:    summary.CreatedAt.Unix(),
-		UpdatedAtUnix:    summary.UpdatedAt.Unix(),
-		DeadlineUnix:     summary.Deadline.Unix(),
-		RefundLocktime:   summary.RefundLocktime,
+		Direction:           swapDirectionToProto(summary.Direction),
+		PaymentHash:         hex.EncodeToString(summary.PaymentHash[:]),
+		Invoice:             summary.Invoice,
+		State:               swapStateToProto(summary.State),
+		Pending:             summary.Pending,
+		AmountSat:           summary.AmountSat,
+		FeeSat:              summary.FeeSat,
+		ServerFeeSat:        summary.ServerFeeSat,
+		RoutingFeeBudgetSat: summary.RoutingFeeBudgetSat,
+		MaxFeeSat:           summary.MaxFeeSat,
+		VhtlcOutpoint:       summary.VHTLCOutpoint,
+		VhtlcAmountSat:      summary.VHTLCAmountSat,
+		FundingSessionId:    summary.FundingSessionID,
+		ClaimSessionId:      summary.ClaimSessionID,
+		RefundSessionId:     summary.RefundSessionID,
+		TerminalReason:      summary.TerminalReason,
+		CreatedAtUnix:       summary.CreatedAt.Unix(),
+		UpdatedAtUnix:       summary.UpdatedAt.Unix(),
+		DeadlineUnix:        summary.Deadline.Unix(),
+		RefundLocktime:      summary.RefundLocktime,
 		SettlementType: swapSettlementTypeToProto(
 			summary.SettlementType,
 		),
@@ -2081,9 +2140,12 @@ func quotePayToProto(quote *swaps.InSwapQuote) (*swapclientrpc.QuotePayResponse,
 		SettlementType: swapSettlementTypeToProto(
 			quote.SettlementType,
 		),
-		ExpiresAtUnix: quote.Expiry.Unix(),
-		ExceedsMaxFee: quote.ExceedsMaxFee,
-		CreditQuote:   creditQuoteToProto(quote.CreditQuote),
+		ExpiresAtUnix:          quote.Expiry.Unix(),
+		ExceedsMaxFee:          quote.ExceedsMaxFee,
+		CreditQuote:            creditQuoteToProto(quote.CreditQuote),
+		ServerFeeSat:           quote.ServerFeeSat,
+		EstimatedRoutingFeeSat: quote.EstimatedRoutingFeeSat,
+		RoutingFeeBudgetSat:    quote.RoutingFeeBudgetSat,
 	}, nil
 }
 

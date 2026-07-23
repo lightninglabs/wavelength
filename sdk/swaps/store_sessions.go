@@ -322,14 +322,18 @@ func paySummaryFromRow(row swapsqlc.PaySwap) (SwapSummary, error) {
 	}
 
 	return SwapSummary{
-		Direction:        SwapDirectionPay,
-		PaymentHash:      paymentHash,
-		Preimage:         preimage,
-		Invoice:          row.Invoice,
-		State:            state.String(),
-		Pending:          !state.IsTerminal(),
-		AmountSat:        row.AmountSat,
-		FeeSat:           uint64(row.FeeSat),
+		Direction:    SwapDirectionPay,
+		PaymentHash:  paymentHash,
+		Preimage:     preimage,
+		Invoice:      row.Invoice,
+		State:        state.String(),
+		Pending:      !state.IsTerminal(),
+		AmountSat:    row.AmountSat,
+		FeeSat:       uint64(row.FeeSat),
+		ServerFeeSat: uint64(row.ServerFeeSat),
+		RoutingFeeBudgetSat: uint64(
+			row.RoutingFeeBudgetSat,
+		),
 		MaxFeeSat:        uint64(row.MaxFeeSat),
 		VHTLCOutpoint:    row.VhtlcOutpoint,
 		VHTLCAmountSat:   row.VhtlcAmount,
@@ -650,7 +654,13 @@ func (s *paySession) persist(ctx context.Context) error {
 		State:       s.state.String(),
 		AmountSat:   s.cfg.AmountSat,
 		FeeSat:      int64(s.cfg.FeeSat),
-		ExpiryUnix:  s.cfg.Expiry.Unix(),
+		ServerFeeSat: int64(
+			s.cfg.ServerFeeSat,
+		),
+		RoutingFeeBudgetSat: int64(
+			s.cfg.RoutingFeeBudgetSat,
+		),
+		ExpiryUnix: s.cfg.Expiry.Unix(),
 		ClientPubkey: append(
 			[]byte(nil), s.clientPubKey.SerializeCompressed()...,
 		),
@@ -893,9 +903,13 @@ func paySessionFromRow(c *SwapClient,
 	}
 
 	cfg := &InSwapConfig{
-		PaymentHash:    paymentHash,
-		AmountSat:      row.AmountSat,
-		FeeSat:         uint64(row.FeeSat),
+		PaymentHash:  paymentHash,
+		AmountSat:    row.AmountSat,
+		FeeSat:       uint64(row.FeeSat),
+		ServerFeeSat: uint64(row.ServerFeeSat),
+		RoutingFeeBudgetSat: uint64(
+			row.RoutingFeeBudgetSat,
+		),
 		ServerPubkey:   serverKey,
 		SettlementType: settlementType,
 		VHTLCConfig: restoreVHTLCConfig(
@@ -908,13 +922,14 @@ func paySessionFromRow(c *SwapClient,
 	}
 
 	session := &paySession{
-		client:        c,
-		invoice:       row.Invoice,
-		maxFeeSat:     uint64(row.MaxFeeSat),
-		state:         state,
-		cfg:           cfg,
-		vhtlcPolicy:   policy,
-		vhtlcPkScript: append([]byte(nil), row.VhtlcPkscript...),
+		client:              c,
+		invoice:             row.Invoice,
+		maxFeeSat:           uint64(row.MaxFeeSat),
+		routingFeeBudgetSat: uint64(row.RoutingFeeBudgetSat),
+		state:               state,
+		cfg:                 cfg,
+		vhtlcPolicy:         policy,
+		vhtlcPkScript:       append([]byte(nil), row.VhtlcPkscript...),
 		vhtlcPolicyTemplate: append(
 			[]byte(nil), row.VhtlcPolicyTemplate...,
 		),

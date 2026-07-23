@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -223,6 +224,10 @@ func (b *registryBehavior) Receive(ctx context.Context,
 
 	switch m := msg.(type) {
 	case *StartCreditPayRequest:
+		if err := validateStartCreditPayRequest(m); err != nil {
+			return fn.Err[CreditResp](err)
+		}
+
 		return b.admit(ctx, m, m.OpKey)
 
 	case *StartCreditReceiveRequest:
@@ -262,6 +267,48 @@ func (b *registryBehavior) Receive(ctx context.Context,
 				msg),
 		)
 	}
+}
+
+// validateStartCreditPayRequest rejects values that cannot be represented by
+// the durable signed BIGINT fields used by credit operations.
+func validateStartCreditPayRequest(req *StartCreditPayRequest) error {
+	if req == nil {
+		return fmt.Errorf("credit pay request is required")
+	}
+
+	values := []struct {
+		name  string
+		value uint64
+	}{
+		{
+			name:  "amount",
+			value: req.AmountSat,
+		},
+		{
+			name:  "topup",
+			value: req.TopupSat,
+		},
+		{
+			name:  "max credit",
+			value: req.MaxCreditSat,
+		},
+		{
+			name:  "max fee",
+			value: req.MaxFeeSat,
+		},
+		{
+			name:  "routing fee budget",
+			value: req.RoutingFeeBudgetSat,
+		},
+	}
+	for _, value := range values {
+		if value.value > math.MaxInt64 {
+			return fmt.Errorf("%s %d sat exceeds int64", value.name,
+				value.value)
+		}
+	}
+
+	return nil
 }
 
 // OnStop stops resident child actors from the registry actor goroutine and

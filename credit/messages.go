@@ -87,8 +87,11 @@ type StartCreditPayRequest struct {
 	// MaxCreditSat is the credit cap passed to StartPay.
 	MaxCreditSat uint64
 
-	// MaxFeeSat is the caller's max routing fee.
+	// MaxFeeSat is the caller's maximum total swap fee.
 	MaxFeeSat uint64
+
+	// RoutingFeeBudgetSat is the client-funded Lightning routing allowance.
+	RoutingFeeBudgetSat uint64
 
 	// CreditOnly marks a pay that settles entirely from credit with no
 	// Lightning swap leg. The wallet's credit-op projector owns the

@@ -11,7 +11,7 @@ import (
 )
 
 const GetCreditOperation = `-- name: GetCreditOperation :one
-SELECT op_id, op_key, kind, state, status, server_op_id, payment_hash, destination_pubkey, oor_session_id, invoice, amount_sat, topup_sat, max_credit_sat, max_fee_sat, last_error, snapshot_data, snapshot_version, created_at, updated_at FROM credit_operations
+SELECT op_id, op_key, kind, state, status, server_op_id, payment_hash, destination_pubkey, oor_session_id, invoice, amount_sat, topup_sat, max_credit_sat, max_fee_sat, last_error, snapshot_data, snapshot_version, created_at, updated_at, routing_fee_budget_sat FROM credit_operations
 WHERE op_id = $1
 `
 
@@ -38,12 +38,13 @@ func (q *Queries) GetCreditOperation(ctx context.Context, opID string) (CreditOp
 		&i.SnapshotVersion,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.RoutingFeeBudgetSat,
 	)
 	return i, err
 }
 
 const ListAllCreditOperations = `-- name: ListAllCreditOperations :many
-SELECT op_id, op_key, kind, state, status, server_op_id, payment_hash, destination_pubkey, oor_session_id, invoice, amount_sat, topup_sat, max_credit_sat, max_fee_sat, last_error, snapshot_data, snapshot_version, created_at, updated_at FROM credit_operations
+SELECT op_id, op_key, kind, state, status, server_op_id, payment_hash, destination_pubkey, oor_session_id, invoice, amount_sat, topup_sat, max_credit_sat, max_fee_sat, last_error, snapshot_data, snapshot_version, created_at, updated_at, routing_fee_budget_sat FROM credit_operations
 ORDER BY created_at ASC
 `
 
@@ -76,6 +77,7 @@ func (q *Queries) ListAllCreditOperations(ctx context.Context) ([]CreditOperatio
 			&i.SnapshotVersion,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.RoutingFeeBudgetSat,
 		); err != nil {
 			return nil, err
 		}
@@ -91,7 +93,7 @@ func (q *Queries) ListAllCreditOperations(ctx context.Context) ([]CreditOperatio
 }
 
 const ListNonTerminalCreditOperations = `-- name: ListNonTerminalCreditOperations :many
-SELECT op_id, op_key, kind, state, status, server_op_id, payment_hash, destination_pubkey, oor_session_id, invoice, amount_sat, topup_sat, max_credit_sat, max_fee_sat, last_error, snapshot_data, snapshot_version, created_at, updated_at FROM credit_operations
+SELECT op_id, op_key, kind, state, status, server_op_id, payment_hash, destination_pubkey, oor_session_id, invoice, amount_sat, topup_sat, max_credit_sat, max_fee_sat, last_error, snapshot_data, snapshot_version, created_at, updated_at, routing_fee_budget_sat FROM credit_operations
 WHERE status NOT IN (1, 2)
 ORDER BY created_at ASC
 `
@@ -127,6 +129,7 @@ func (q *Queries) ListNonTerminalCreditOperations(ctx context.Context) ([]Credit
 			&i.SnapshotVersion,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.RoutingFeeBudgetSat,
 		); err != nil {
 			return nil, err
 		}
@@ -142,7 +145,7 @@ func (q *Queries) ListNonTerminalCreditOperations(ctx context.Context) ([]Credit
 }
 
 const LookupActiveCreditOperationByKey = `-- name: LookupActiveCreditOperationByKey :one
-SELECT op_id, op_key, kind, state, status, server_op_id, payment_hash, destination_pubkey, oor_session_id, invoice, amount_sat, topup_sat, max_credit_sat, max_fee_sat, last_error, snapshot_data, snapshot_version, created_at, updated_at FROM credit_operations
+SELECT op_id, op_key, kind, state, status, server_op_id, payment_hash, destination_pubkey, oor_session_id, invoice, amount_sat, topup_sat, max_credit_sat, max_fee_sat, last_error, snapshot_data, snapshot_version, created_at, updated_at, routing_fee_budget_sat FROM credit_operations
 WHERE op_key = $1 AND status != 2
 `
 
@@ -172,6 +175,7 @@ func (q *Queries) LookupActiveCreditOperationByKey(ctx context.Context, opKey st
 		&i.SnapshotVersion,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.RoutingFeeBudgetSat,
 	)
 	return i, err
 }
@@ -181,11 +185,11 @@ const UpsertCreditOperation = `-- name: UpsertCreditOperation :exec
 INSERT INTO credit_operations (
     op_id, op_key, kind, state, status, server_op_id, payment_hash,
     destination_pubkey, oor_session_id, invoice, amount_sat, topup_sat,
-    max_credit_sat, max_fee_sat, last_error, snapshot_data, snapshot_version,
-    created_at, updated_at
+    max_credit_sat, max_fee_sat, routing_fee_budget_sat, last_error,
+    snapshot_data, snapshot_version, created_at, updated_at
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
-    $18, $19
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
+    $17, $18, $19, $20
 )
 ON CONFLICT (op_id) DO UPDATE SET
     op_key = EXCLUDED.op_key,
@@ -201,6 +205,7 @@ ON CONFLICT (op_id) DO UPDATE SET
     topup_sat = EXCLUDED.topup_sat,
     max_credit_sat = EXCLUDED.max_credit_sat,
     max_fee_sat = EXCLUDED.max_fee_sat,
+    routing_fee_budget_sat = EXCLUDED.routing_fee_budget_sat,
     last_error = EXCLUDED.last_error,
     snapshot_data = EXCLUDED.snapshot_data,
     snapshot_version = EXCLUDED.snapshot_version,
@@ -208,25 +213,26 @@ ON CONFLICT (op_id) DO UPDATE SET
 `
 
 type UpsertCreditOperationParams struct {
-	OpID              string
-	OpKey             string
-	Kind              int32
-	State             string
-	Status            int32
-	ServerOpID        sql.NullString
-	PaymentHash       []byte
-	DestinationPubkey []byte
-	OorSessionID      sql.NullString
-	Invoice           sql.NullString
-	AmountSat         int64
-	TopupSat          int64
-	MaxCreditSat      int64
-	MaxFeeSat         int64
-	LastError         sql.NullString
-	SnapshotData      []byte
-	SnapshotVersion   int32
-	CreatedAt         int64
-	UpdatedAt         int64
+	OpID                string
+	OpKey               string
+	Kind                int32
+	State               string
+	Status              int32
+	ServerOpID          sql.NullString
+	PaymentHash         []byte
+	DestinationPubkey   []byte
+	OorSessionID        sql.NullString
+	Invoice             sql.NullString
+	AmountSat           int64
+	TopupSat            int64
+	MaxCreditSat        int64
+	MaxFeeSat           int64
+	RoutingFeeBudgetSat int64
+	LastError           sql.NullString
+	SnapshotData        []byte
+	SnapshotVersion     int32
+	CreatedAt           int64
+	UpdatedAt           int64
 }
 
 // Credit operations control-plane queries.
@@ -246,6 +252,7 @@ func (q *Queries) UpsertCreditOperation(ctx context.Context, arg UpsertCreditOpe
 		arg.TopupSat,
 		arg.MaxCreditSat,
 		arg.MaxFeeSat,
+		arg.RoutingFeeBudgetSat,
 		arg.LastError,
 		arg.SnapshotData,
 		arg.SnapshotVersion,

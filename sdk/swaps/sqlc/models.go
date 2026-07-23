@@ -33,6 +33,8 @@ type PaySwap struct {
 	CreatedAtUnix                        int64
 	UpdatedAtUnix                        int64
 	SettlementType                       string
+	ServerFeeSat                         int64
+	RoutingFeeBudgetSat                  int64
 }
 
 type ReceiveSwap struct {

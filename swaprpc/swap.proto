@@ -371,6 +371,11 @@ message CreateInSwapRequest {
     // max_credit_sat is the maximum credit amount the caller authorizes this
     // payment to reserve. Zero means credit use is not allowed.
     uint64 max_credit_sat = 5;
+
+    // routing_fee_budget_sat is the Lightning routing allowance the client
+    // authorizes the server to charge into the vHTLC. Zero asks the server to
+    // use its compatibility policy.
+    uint64 routing_fee_budget_sat = 6;
 }
 
 // CreateInSwapResponse returns the negotiated parameters for one in-swap.
@@ -403,6 +408,13 @@ message CreateInSwapResponse {
     // preimage is set for credit-only pays after the swap server has already
     // paid the Lightning invoice from reserved credits.
     bytes preimage = 9;
+
+    // server_fee_sat is the service fee retained by the swap server.
+    uint64 server_fee_sat = 10;
+
+    // routing_fee_budget_sat is the client-funded Lightning routing
+    // allowance included in fee_sat.
+    uint64 routing_fee_budget_sat = 11;
 }
 
 // QuoteInSwapRequest previews one Ark-to-Lightning invoice send.
@@ -422,6 +434,10 @@ message QuoteInSwapRequest {
     // use. Zero means the quote reports whether credits are required but does
     // not apply optional credits.
     uint64 max_credit_sat = 4;
+
+    // routing_fee_budget_sat is the Lightning routing allowance the client
+    // would fund. Zero previews the server's compatibility policy.
+    uint64 routing_fee_budget_sat = 5;
 }
 
 // QuoteInSwapResponse returns the non-binding preview for one invoice send.
@@ -452,6 +468,17 @@ message QuoteInSwapResponse {
 
     // credit_quote describes how credits would be used for this invoice.
     CreditQuote credit_quote = 8;
+
+    // server_fee_sat is the service fee retained by the swap server.
+    uint64 server_fee_sat = 9;
+
+    // estimated_routing_fee_sat is the server's current whole-satoshi
+    // Lightning route estimate.
+    uint64 estimated_routing_fee_sat = 10;
+
+    // routing_fee_budget_sat is the Lightning routing allowance that would
+    // be charged into the vHTLC.
+    uint64 routing_fee_budget_sat = 11;
 }
 
 // CreditQuote describes the credit component of a pay quote.

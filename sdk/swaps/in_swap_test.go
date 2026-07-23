@@ -46,12 +46,20 @@ type testInSwapServerConn struct {
 	quoteCalls          int
 	quoteInvoice        string
 	quoteMaxFeeSat      uint64
+	quoteRoutingBudget  uint64
 	createCalls         int
 	createAccountKey    []byte
 	createMaxCreditSat  uint64
+	createRoutingBudget uint64
 	refundAuthorization *InSwapRefundAuthorization
 	refundAuthorizeErr  error
 	refundAuthorizeReq  *testRefundAuthorizeReq
+}
+
+// legacyInSwapServerConn exposes only the original connection interface so
+// option-aware compatibility guards can be exercised.
+type legacyInSwapServerConn struct {
+	SwapServerConn
 }
 
 type testRefundAuthorizeReq struct {
@@ -136,6 +144,20 @@ func (c *testInSwapServerConn) CreateInSwapWithCredits(_ context.Context,
 	return c.cfg, nil
 }
 
+// CreateInSwapWithOptions returns the preconfigured config and records all
+// caller-controlled limits.
+func (c *testInSwapServerConn) CreateInSwapWithOptions(_ context.Context,
+	_ string, options InSwapOptions, _ *btcec.PublicKey,
+	accountKey []byte) (*InSwapConfig, error) {
+
+	c.createCalls++
+	c.createAccountKey = append([]byte(nil), accountKey...)
+	c.createMaxCreditSat = options.MaxCreditSat
+	c.createRoutingBudget = options.RoutingFeeBudgetSat
+
+	return c.cfg, nil
+}
+
 // QuoteInSwap returns the preconfigured in-swap quote.
 func (c *testInSwapServerConn) QuoteInSwap(_ context.Context, invoice string,
 	maxFeeSat uint64) (*InSwapQuote, error) {
@@ -143,6 +165,22 @@ func (c *testInSwapServerConn) QuoteInSwap(_ context.Context, invoice string,
 	c.quoteCalls++
 	c.quoteInvoice = invoice
 	c.quoteMaxFeeSat = maxFeeSat
+	if c.quoteErr != nil {
+		return nil, c.quoteErr
+	}
+
+	return c.quote, nil
+}
+
+// QuoteInSwapWithOptions returns the preconfigured quote and records all
+// caller-controlled limits.
+func (c *testInSwapServerConn) QuoteInSwapWithOptions(_ context.Context,
+	invoice string, options InSwapOptions, _ []byte) (*InSwapQuote, error) {
+
+	c.quoteCalls++
+	c.quoteInvoice = invoice
+	c.quoteMaxFeeSat = options.MaxFeeSat
+	c.quoteRoutingBudget = options.RoutingFeeBudgetSat
 	if c.quoteErr != nil {
 		return nil, c.quoteErr
 	}
@@ -317,8 +355,12 @@ func TestQuotePayViaLightningReturnsBoundPreview(t *testing.T) {
 		NewSwapClient(serverConn, nil, nil, nil),
 	)
 
-	quote, err := client.QuotePayViaLightning(
-		t.Context(), invoice, testInSwapFeeSat-1,
+	const routingBudgetSat = uint64(21)
+	quote, err := client.QuotePayViaLightningWithOptions(
+		t.Context(), invoice, InSwapOptions{
+			MaxFeeSat:           testInSwapFeeSat - 1,
+			RoutingFeeBudgetSat: routingBudgetSat,
+		},
 	)
 	require.NoError(t, err)
 	require.Equal(t, preimage.Hash(), quote.PaymentHash)
@@ -332,7 +374,119 @@ func TestQuotePayViaLightningReturnsBoundPreview(t *testing.T) {
 	require.Equal(t, invoice, serverConn.quoteInvoice)
 	require.Equal(t, uint64(testInSwapFeeSat-1),
 		serverConn.quoteMaxFeeSat)
+	require.Equal(t, routingBudgetSat, serverConn.quoteRoutingBudget)
 	require.Zero(t, serverConn.createCalls)
+}
+
+// TestQuotePayViaLightningRejectsUnsupportedRoutingBudget verifies an explicit
+// allowance cannot be silently discarded by a legacy server connection.
+func TestQuotePayViaLightningRejectsUnsupportedRoutingBudget(t *testing.T) {
+	t.Parallel()
+
+	serverConn := &testInSwapServerConn{}
+	client := configureTestPayClient(
+		NewSwapClient(
+			&legacyInSwapServerConn{
+				SwapServerConn: serverConn,
+			},
+			nil,
+			nil,
+			nil,
+		),
+	)
+
+	_, err := client.QuotePayViaLightningWithOptions(
+		t.Context(), "invoice", InSwapOptions{
+			RoutingFeeBudgetSat: 1,
+		},
+	)
+	require.ErrorContains(t, err, "does not support explicit routing")
+	require.Zero(t, serverConn.quoteCalls)
+}
+
+// TestStartPayViaLightningRejectsUnsupportedRoutingBudget verifies an
+// explicit allowance cannot be silently discarded during swap creation.
+func TestStartPayViaLightningRejectsUnsupportedRoutingBudget(t *testing.T) {
+	t.Parallel()
+
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	serverConn := &testInSwapServerConn{}
+	client := configureTestPayClient(
+		NewSwapClient(
+			&legacyInSwapServerConn{
+				SwapServerConn: serverConn,
+			}, &testDaemonConn{
+				identityKey: clientPriv.PubKey(),
+			},
+			nil,
+			nil,
+		),
+	)
+
+	_, err = client.StartPayViaLightningWithOptions(
+		t.Context(), "invoice", InSwapOptions{
+			RoutingFeeBudgetSat: 1,
+		},
+	)
+	require.ErrorContains(t, err, "does not support explicit routing")
+	require.Zero(t, serverConn.createCalls)
+}
+
+// TestValidateInSwapOptionsRejectsOverflow verifies fee and credit limits fit
+// their durable BIGINT representation before a session is created.
+func TestValidateInSwapOptionsRejectsOverflow(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		options InSwapOptions
+		errText string
+	}{
+		{
+			name: "max fee",
+			options: InSwapOptions{
+				MaxFeeSat: maxInt64Uint + 1,
+			},
+			errText: "max fee",
+		},
+		{
+			name: "routing fee budget",
+			options: InSwapOptions{
+				RoutingFeeBudgetSat: maxInt64Uint + 1,
+			},
+			errText: "routing fee budget",
+		},
+		{
+			name: "max credit",
+			options: InSwapOptions{
+				MaxCreditSat: maxInt64Uint + 1,
+			},
+			errText: "max credit",
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := validateInSwapOptions(test.options)
+			require.ErrorContains(t, err, test.errText)
+		})
+	}
+}
+
+// TestValidateInSwapOptionsAllowsUnlimitedCredit verifies the established
+// MaxUint64 sentinel remains available for all-credit quote discovery.
+func TestValidateInSwapOptionsAllowsUnlimitedCredit(t *testing.T) {
+	t.Parallel()
+
+	err := validateInSwapOptions(InSwapOptions{
+		MaxCreditSat: ^uint64(0),
+	})
+	require.NoError(t, err)
 }
 
 // TestValidateInSwapPreviewAllowsCreditOnlyZeroAmount verifies credit-only
@@ -429,6 +583,24 @@ func TestValidateInSwapQuoteRejectsServerMismatches(t *testing.T) {
 			cfg.FeeSat = maxInt64Uint + 1
 		},
 		wantErr: "fee overflows int64 range",
+	}, {
+		name:        "server fee overflows int64",
+		invoice:     invoice,
+		maxFeeSat:   testInSwapFeeSat,
+		chainParams: &chaincfg.RegressionNetParams,
+		mutate: func(cfg *InSwapConfig) {
+			cfg.ServerFeeSat = maxInt64Uint + 1
+		},
+		wantErr: "server fee overflows int64 range",
+	}, {
+		name:        "routing fee budget overflows int64",
+		invoice:     invoice,
+		maxFeeSat:   testInSwapFeeSat,
+		chainParams: &chaincfg.RegressionNetParams,
+		mutate: func(cfg *InSwapConfig) {
+			cfg.RoutingFeeBudgetSat = maxInt64Uint + 1
+		},
+		wantErr: "routing fee budget overflows int64 range",
 	}, {
 		name:        "amount below invoice plus fee",
 		invoice:     invoice,
@@ -573,8 +745,13 @@ func TestPaySessionCreditOnlyStartCompletesWithoutVHTLC(t *testing.T) {
 		NewSwapClient(serverConn, daemonConn, nil, nil),
 	)
 
-	session, err := client.StartPayViaLightningWithCredits(
-		t.Context(), invoice, testInSwapFeeSat, creditSat,
+	const routingBudgetSat = uint64(17)
+	session, err := client.StartPayViaLightningWithOptions(
+		t.Context(), invoice, InSwapOptions{
+			MaxFeeSat:           testInSwapFeeSat,
+			RoutingFeeBudgetSat: routingBudgetSat,
+			MaxCreditSat:        creditSat,
+		},
 	)
 	require.NoError(t, err)
 	require.Equal(t, PayStateCompleted, session.State())
@@ -585,6 +762,7 @@ func TestPaySessionCreditOnlyStartCompletesWithoutVHTLC(t *testing.T) {
 		serverConn.createAccountKey,
 	)
 	require.Equal(t, creditSat, serverConn.createMaxCreditSat)
+	require.Equal(t, routingBudgetSat, serverConn.createRoutingBudget)
 
 	result, err := session.Wait(t.Context())
 	require.NoError(t, err)
@@ -2449,13 +2627,8 @@ func TestPaySessionResumeFundingGraceEventuallyRetries(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	waitCtx, cancel := context.WithTimeout(
-		t.Context(), 5*time.Millisecond,
-	)
-	defer cancel()
-
-	_, err = resumed.Wait(waitCtx)
-	require.ErrorIs(t, err, context.DeadlineExceeded)
+	err = resumed.ensureFundingSubmitted(t.Context(), false)
+	require.NoError(t, err)
 	require.Equal(t, 1, daemonConn.sendPolicyCalls)
 	require.Equal(t, PayStateFundingInitiated, resumed.State())
 

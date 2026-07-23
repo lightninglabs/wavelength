@@ -108,6 +108,9 @@ type CreditOperationRecord struct {
 	// MaxFeeSat is the caller's max routing fee for a pay op.
 	MaxFeeSat int64
 
+	// RoutingFeeBudgetSat is the client-funded Lightning routing allowance.
+	RoutingFeeBudgetSat int64
+
 	// LastError is the latest terminal failure reason.
 	LastError string
 
@@ -194,6 +197,8 @@ func (s *CreditOperationStoreDB) UpsertOperation(ctx context.Context,
 					TopupSat:     record.TopupSat,
 					MaxCreditSat: record.MaxCreditSat,
 					MaxFeeSat:    record.MaxFeeSat,
+					RoutingFeeBudgetSat: record.
+						RoutingFeeBudgetSat,
 					LastError: nullString(
 						record.LastError,
 					),
@@ -337,21 +342,22 @@ func creditOperationRecordFromRow(
 	row sqlc.CreditOperation) CreditOperationRecord {
 
 	record := CreditOperationRecord{
-		OpID:              row.OpID,
-		OpKey:             row.OpKey,
-		Kind:              CreditOpKind(row.Kind),
-		State:             row.State,
-		Status:            CreditOpStatus(row.Status),
-		PaymentHash:       row.PaymentHash,
-		DestinationPubkey: row.DestinationPubkey,
-		AmountSat:         row.AmountSat,
-		TopupSat:          row.TopupSat,
-		MaxCreditSat:      row.MaxCreditSat,
-		MaxFeeSat:         row.MaxFeeSat,
-		SnapshotData:      row.SnapshotData,
-		SnapshotVersion:   row.SnapshotVersion,
-		CreatedAt:         time.Unix(row.CreatedAt, 0),
-		UpdatedAt:         time.Unix(row.UpdatedAt, 0),
+		OpID:                row.OpID,
+		OpKey:               row.OpKey,
+		Kind:                CreditOpKind(row.Kind),
+		State:               row.State,
+		Status:              CreditOpStatus(row.Status),
+		PaymentHash:         row.PaymentHash,
+		DestinationPubkey:   row.DestinationPubkey,
+		AmountSat:           row.AmountSat,
+		TopupSat:            row.TopupSat,
+		MaxCreditSat:        row.MaxCreditSat,
+		MaxFeeSat:           row.MaxFeeSat,
+		RoutingFeeBudgetSat: row.RoutingFeeBudgetSat,
+		SnapshotData:        row.SnapshotData,
+		SnapshotVersion:     row.SnapshotVersion,
+		CreatedAt:           time.Unix(row.CreatedAt, 0),
+		UpdatedAt:           time.Unix(row.UpdatedAt, 0),
 	}
 
 	if row.ServerOpID.Valid {

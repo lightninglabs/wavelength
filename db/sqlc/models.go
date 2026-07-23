@@ -133,25 +133,26 @@ type ClientTreeTxid struct {
 }
 
 type CreditOperation struct {
-	OpID              string
-	OpKey             string
-	Kind              int32
-	State             string
-	Status            int32
-	ServerOpID        sql.NullString
-	PaymentHash       []byte
-	DestinationPubkey []byte
-	OorSessionID      sql.NullString
-	Invoice           sql.NullString
-	AmountSat         int64
-	TopupSat          int64
-	MaxCreditSat      int64
-	MaxFeeSat         int64
-	LastError         sql.NullString
-	SnapshotData      []byte
-	SnapshotVersion   int32
-	CreatedAt         int64
-	UpdatedAt         int64
+	OpID                string
+	OpKey               string
+	Kind                int32
+	State               string
+	Status              int32
+	ServerOpID          sql.NullString
+	PaymentHash         []byte
+	DestinationPubkey   []byte
+	OorSessionID        sql.NullString
+	Invoice             sql.NullString
+	AmountSat           int64
+	TopupSat            int64
+	MaxCreditSat        int64
+	MaxFeeSat           int64
+	LastError           sql.NullString
+	SnapshotData        []byte
+	SnapshotVersion     int32
+	CreatedAt           int64
+	UpdatedAt           int64
+	RoutingFeeBudgetSat int64
 }
 
 type ExitFundingAddress struct {

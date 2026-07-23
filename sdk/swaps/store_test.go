@@ -139,10 +139,12 @@ func TestPaySessionPersistAllowsCreditOnlyWithoutVHTLC(t *testing.T) {
 		maxFeeSat: 100,
 		state:     PayStateCompleted,
 		cfg: &InSwapConfig{
-			PaymentHash:    preimage.Hash(),
-			SettlementType: SettlementTypeCredit,
-			Preimage:       &preimage,
-			Expiry:         now.Add(time.Hour),
+			PaymentHash:         preimage.Hash(),
+			ServerFeeSat:        3,
+			RoutingFeeBudgetSat: 7,
+			SettlementType:      SettlementTypeCredit,
+			Preimage:            &preimage,
+			Expiry:              now.Add(time.Hour),
 		},
 		preimage:       &preimage,
 		clientPubKey:   key.PubKey(),
@@ -157,6 +159,8 @@ func TestPaySessionPersistAllowsCreditOnlyWithoutVHTLC(t *testing.T) {
 	row, err := store.queries.GetPaySwap(ctx, paymentHash[:])
 	require.NoError(t, err)
 	require.Equal(t, string(SettlementTypeCredit), row.SettlementType)
+	require.EqualValues(t, 3, row.ServerFeeSat)
+	require.EqualValues(t, 7, row.RoutingFeeBudgetSat)
 	require.Empty(t, row.VhtlcPkscript)
 	require.Empty(t, row.VhtlcPolicyTemplate)
 	require.Empty(t, row.VhtlcOutpoint)
@@ -165,6 +169,7 @@ func TestPaySessionPersistAllowsCreditOnlyWithoutVHTLC(t *testing.T) {
 	resumed, err := client.ResumePayViaLightning(ctx, paymentHash)
 	require.NoError(t, err)
 	require.Equal(t, SettlementTypeCredit, resumed.cfg.SettlementType)
+	require.EqualValues(t, 7, resumed.routingFeeBudgetSat)
 	require.Empty(t, resumed.vhtlcPkScript)
 	require.Empty(t, resumed.vhtlcPolicyTemplate)
 }
@@ -227,16 +232,18 @@ func TestListSwapSummariesIncludesFeesAndPendingFilter(t *testing.T) {
 	expiryUnix := time.Unix(1_700, 0).Unix()
 
 	err := store.queries.UpsertPaySwap(ctx, swapsqlc.UpsertPaySwapParams{
-		PaymentHash:    payHash[:],
-		Invoice:        "ln-pay",
-		MaxFeeSat:      999,
-		State:          fundingState,
-		AmountSat:      42_000,
-		FeeSat:         123,
-		ExpiryUnix:     expiryUnix,
-		ClientPubkey:   testPubKeyBytes(2),
-		OperatorPubkey: testPubKeyBytes(3),
-		ServerPubkey:   testPubKeyBytes(4),
+		PaymentHash:         payHash[:],
+		Invoice:             "ln-pay",
+		MaxFeeSat:           999,
+		State:               fundingState,
+		AmountSat:           42_000,
+		FeeSat:              123,
+		ServerFeeSat:        100,
+		RoutingFeeBudgetSat: 23,
+		ExpiryUnix:          expiryUnix,
+		ClientPubkey:        testPubKeyBytes(2),
+		OperatorPubkey:      testPubKeyBytes(3),
+		ServerPubkey:        testPubKeyBytes(4),
 		SettlementType: string(
 			SettlementTypeLightning,
 		),
@@ -297,6 +304,8 @@ func TestListSwapSummariesIncludesFeesAndPendingFilter(t *testing.T) {
 	require.Equal(t, SwapDirectionPay, all[0].Direction)
 	require.Equal(t, "ln-pay", all[0].Invoice)
 	require.EqualValues(t, 123, all[0].FeeSat)
+	require.EqualValues(t, 100, all[0].ServerFeeSat)
+	require.EqualValues(t, 23, all[0].RoutingFeeBudgetSat)
 	require.EqualValues(t, 999, all[0].MaxFeeSat)
 	require.Equal(t, SettlementTypeLightning, all[0].SettlementType)
 	require.True(t, all[0].Pending)

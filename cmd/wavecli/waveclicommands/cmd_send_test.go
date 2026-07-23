@@ -173,6 +173,10 @@ func TestPrintSendDryRunPreviewIsSuccessfulJSON(t *testing.T) {
 func TestSendWaitFlagDefaults(t *testing.T) {
 	cmd := newSendCmd()
 
+	routingBudget, err := cmd.Flags().GetUint64("routing-fee-budget")
+	require.NoError(t, err)
+	require.Zero(t, routingBudget)
+
 	noWait, err := cmd.Flags().GetBool("no-wait")
 	require.NoError(t, err)
 	require.False(t, noWait)

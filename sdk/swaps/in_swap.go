@@ -228,12 +228,13 @@ var payTransitions = map[PayState]map[payEvent]PayState{
 type paySession struct {
 	client *SwapClient
 
-	invoice      string
-	maxFeeSat    uint64
-	maxCreditSat uint64
-	state        PayState
-	createdAt    time.Time
-	updatedAt    time.Time
+	invoice             string
+	maxFeeSat           uint64
+	routingFeeBudgetSat uint64
+	maxCreditSat        uint64
+	state               PayState
+	createdAt           time.Time
+	updatedAt           time.Time
 
 	cfg                 *InSwapConfig
 	vhtlcPolicy         *arkscript.VHTLCPolicy
@@ -472,7 +473,9 @@ func (c *SwapClient) PayViaLightning(ctx context.Context, invoice string,
 func (c *SwapClient) StartPayViaLightning(ctx context.Context, invoice string,
 	maxFeeSat uint64) (*PaySession, error) {
 
-	return c.StartPayViaLightningWithCredits(ctx, invoice, maxFeeSat, 0)
+	return c.StartPayViaLightningWithOptions(ctx, invoice, InSwapOptions{
+		MaxFeeSat: maxFeeSat,
+	})
 }
 
 // StartPayViaLightningWithCredits creates an Ark-to-Lightning pay session and
@@ -481,12 +484,28 @@ func (c *SwapClient) StartPayViaLightningWithCredits(ctx context.Context,
 	invoice string, maxFeeSat uint64, maxCreditSat uint64) (*PaySession,
 	error) {
 
+	return c.StartPayViaLightningWithOptions(ctx, invoice, InSwapOptions{
+		MaxFeeSat:    maxFeeSat,
+		MaxCreditSat: maxCreditSat,
+	})
+}
+
+// StartPayViaLightningWithOptions creates an Ark-to-Lightning pay session
+// with explicit fee and credit limits.
+func (c *SwapClient) StartPayViaLightningWithOptions(ctx context.Context,
+	invoice string, options InSwapOptions) (*PaySession, error) {
+
+	if err := validateInSwapOptions(options); err != nil {
+		return nil, err
+	}
+
 	session := &paySession{
-		client:       c,
-		invoice:      invoice,
-		maxFeeSat:    maxFeeSat,
-		maxCreditSat: maxCreditSat,
-		state:        PayStateCreated,
+		client:              c,
+		invoice:             invoice,
+		maxFeeSat:           options.MaxFeeSat,
+		routingFeeBudgetSat: options.RoutingFeeBudgetSat,
+		maxCreditSat:        options.MaxCreditSat,
+		state:               PayStateCreated,
 	}
 
 	if err := session.runUntil(ctx, PayStateSwapCreated); err != nil {
@@ -560,6 +579,21 @@ func (s *paySession) createSwap(ctx context.Context) error {
 
 	var cfg *InSwapConfig
 	if server, ok := s.client.server.(interface {
+		CreateInSwapWithOptions(context.Context, string, InSwapOptions,
+			*btcec.PublicKey, []byte) (*InSwapConfig, error)
+	}); ok {
+
+		cfg, err = server.CreateInSwapWithOptions(
+			ctx, s.invoice, InSwapOptions{
+				MaxFeeSat:           s.maxFeeSat,
+				RoutingFeeBudgetSat: s.routingFeeBudgetSat,
+				MaxCreditSat:        s.maxCreditSat,
+			}, clientKey, clientKey.SerializeCompressed(),
+		)
+	} else if s.routingFeeBudgetSat != 0 {
+		return fmt.Errorf("swap server connection does not support " +
+			"explicit routing fee budgets")
+	} else if server, ok := s.client.server.(interface {
 		CreateInSwapWithCredits(context.Context, string, uint64,
 			*btcec.PublicKey, []byte, uint64) (*InSwapConfig, error)
 	}); ok {
