@@ -2,6 +2,7 @@ package swaps
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -22,8 +23,30 @@ type testSwapServiceClient struct {
 	signForfeitErr   error
 	submitForfeitErr error
 	lastAckReq       *swaprpc.AcknowledgeOutSwapHtlcRequest
+	lastCreateReq    *swaprpc.CreateInSwapRequest
+	lastQuoteReq     *swaprpc.QuoteInSwapRequest
 	lastSignReq      *swaprpc.SignInSwapForfeitRequest
 	lastSubmitSigReq *swaprpc.SubmitOutSwapForfeitSignatureRequest
+}
+
+// CreateInSwap records the request and returns the configured transport error.
+func (c *testSwapServiceClient) CreateInSwap(_ context.Context,
+	req *swaprpc.CreateInSwapRequest, _ ...grpc.CallOption) (
+	*swaprpc.CreateInSwapResponse, error) {
+
+	c.lastCreateReq = req
+
+	return nil, errors.New("stop after request")
+}
+
+// QuoteInSwap records the request and returns the configured transport error.
+func (c *testSwapServiceClient) QuoteInSwap(_ context.Context,
+	req *swaprpc.QuoteInSwapRequest, _ ...grpc.CallOption) (
+	*swaprpc.QuoteInSwapResponse, error) {
+
+	c.lastQuoteReq = req
+
+	return nil, errors.New("stop after request")
 }
 
 func (c *testSwapServiceClient) AuthorizeInSwapRefund(context.Context,
@@ -86,6 +109,54 @@ func testForfeitSignaturePayload() *ForfeitSignaturePayload {
 		ConnectorPkScript:     []byte("connector-pk-script"),
 		ServerForfeitPkScript: []byte("server-forfeit-pk-script"),
 	}
+}
+
+// TestInSwapOptionsMapToRPC verifies client-funded routing allowances remain
+// distinct from total fee and credit caps on both in-swap RPCs.
+func TestInSwapOptionsMapToRPC(t *testing.T) {
+	t.Parallel()
+
+	client := &testSwapServiceClient{}
+	conn := &GRPCSwapServerConn{client: client}
+	key, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	options := InSwapOptions{
+		MaxFeeSat:           101,
+		RoutingFeeBudgetSat: 23,
+		MaxCreditSat:        47,
+	}
+	accountKey := []byte("account")
+
+	_, err = conn.CreateInSwapWithOptions(
+		t.Context(),
+		"invoice", options, key.PubKey(), accountKey,
+	)
+	require.ErrorContains(t, err, "CreateInSwap RPC")
+	require.Equal(t, options.MaxFeeSat, client.lastCreateReq.GetMaxFeeSat())
+	require.Equal(
+		t, options.RoutingFeeBudgetSat,
+		client.lastCreateReq.GetRoutingFeeBudgetSat(),
+	)
+	require.Equal(
+		t, options.MaxCreditSat, client.lastCreateReq.GetMaxCreditSat(),
+	)
+	require.Equal(t, accountKey, client.lastCreateReq.GetAccountPubkey())
+
+	_, err = conn.QuoteInSwapWithOptions(
+		t.Context(),
+		"invoice", options, accountKey,
+	)
+	require.ErrorContains(t, err, "QuoteInSwap RPC")
+	require.Equal(t, options.MaxFeeSat, client.lastQuoteReq.GetMaxFeeSat())
+	require.Equal(
+		t, options.RoutingFeeBudgetSat,
+		client.lastQuoteReq.GetRoutingFeeBudgetSat(),
+	)
+	require.Equal(
+		t, options.MaxCreditSat, client.lastQuoteReq.GetMaxCreditSat(),
+	)
+	require.Equal(t, accountKey, client.lastQuoteReq.GetAccountPubkey())
 }
 
 // TestRouteHintPathsFromProto verifies alternative route-hint paths convert

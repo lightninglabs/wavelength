@@ -698,6 +698,20 @@ type InSwapQuote struct {
 	CreditQuote *CreditQuote
 }
 
+// InSwapOptions contains caller-controlled fee and credit limits for an
+// Ark-to-Lightning payment.
+type InSwapOptions struct {
+	// MaxFeeSat is the maximum total fee the caller accepts.
+	MaxFeeSat uint64
+
+	// RoutingFeeBudgetSat is the Lightning routing allowance the caller
+	// funds. Zero asks the server to use its compatibility policy.
+	RoutingFeeBudgetSat uint64
+
+	// MaxCreditSat is the maximum credit amount the caller authorizes.
+	MaxCreditSat uint64
+}
+
 // SwapServerConn abstracts the connection to the swap server's
 // gRPC service. This allows the client to talk to the swap server
 // without importing the server module.

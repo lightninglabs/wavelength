@@ -148,18 +148,34 @@ func (g *GRPCSwapServerConn) CreateInSwapWithCredits(ctx context.Context,
 	invoice string, maxFeeSat uint64, clientVhtlcPubkey *btcec.PublicKey,
 	accountPubKey []byte, maxCreditSat uint64) (*InSwapConfig, error) {
 
+	return g.CreateInSwapWithOptions(
+		ctx, invoice, InSwapOptions{
+			MaxFeeSat:    maxFeeSat,
+			MaxCreditSat: maxCreditSat,
+		}, clientVhtlcPubkey, accountPubKey,
+	)
+}
+
+// CreateInSwapWithOptions initiates one Ark-to-Lightning swap with explicit
+// fee and credit limits.
+func (g *GRPCSwapServerConn) CreateInSwapWithOptions(ctx context.Context,
+	invoice string, options InSwapOptions,
+	clientVhtlcPubkey *btcec.PublicKey, accountPubKey []byte) (
+	*InSwapConfig, error) {
+
 	if clientVhtlcPubkey == nil {
 		return nil, fmt.Errorf("client vHTLC pubkey must be provided")
 	}
 
 	resp, err := g.client.CreateInSwap(
 		ctx, &swaprpc.CreateInSwapRequest{
-			Invoice:   invoice,
-			MaxFeeSat: maxFeeSat,
+			Invoice:             invoice,
+			MaxFeeSat:           options.MaxFeeSat,
+			RoutingFeeBudgetSat: options.RoutingFeeBudgetSat,
 			ClientVhtlcPubkey: clientVhtlcPubkey.
 				SerializeCompressed(),
 			AccountPubkey: append([]byte(nil), accountPubKey...),
-			MaxCreditSat:  maxCreditSat,
+			MaxCreditSat:  options.MaxCreditSat,
 		},
 	)
 	if err != nil {
@@ -183,12 +199,29 @@ func (g *GRPCSwapServerConn) QuoteInSwapWithCredits(ctx context.Context,
 	invoice string, maxFeeSat uint64, accountPubKey []byte,
 	maxCreditSat uint64) (*InSwapQuote, error) {
 
+	return g.QuoteInSwapWithOptions(
+		ctx, invoice, InSwapOptions{
+			MaxFeeSat:    maxFeeSat,
+			MaxCreditSat: maxCreditSat,
+		}, accountPubKey,
+	)
+}
+
+// QuoteInSwapWithOptions previews one Ark-to-Lightning swap with explicit fee
+// and credit limits.
+func (g *GRPCSwapServerConn) QuoteInSwapWithOptions(ctx context.Context,
+	invoice string, options InSwapOptions, accountPubKey []byte) (
+	*InSwapQuote, error) {
+
 	resp, err := g.client.QuoteInSwap(
 		ctx, &swaprpc.QuoteInSwapRequest{
-			Invoice:       invoice,
-			MaxFeeSat:     maxFeeSat,
-			AccountPubkey: append([]byte(nil), accountPubKey...),
-			MaxCreditSat:  maxCreditSat,
+			Invoice:   invoice,
+			MaxFeeSat: options.MaxFeeSat,
+			AccountPubkey: append(
+				[]byte(nil), accountPubKey...,
+			),
+			MaxCreditSat:        options.MaxCreditSat,
+			RoutingFeeBudgetSat: options.RoutingFeeBudgetSat,
 		},
 	)
 	if err != nil {
@@ -823,13 +856,15 @@ func inSwapConfigFromProto(resp *swaprpc.CreateInSwapResponse) (*InSwapConfig,
 		}
 
 		return &InSwapConfig{
-			PaymentHash:    paymentHash,
-			AmountSat:      0,
-			FeeSat:         resp.GetFeeSat(),
-			Expiry:         expiryTime,
-			SettlementType: settlementType,
-			CreditQuote:    creditQuote,
-			Preimage:       &preimage,
+			PaymentHash:         paymentHash,
+			AmountSat:           0,
+			FeeSat:              resp.GetFeeSat(),
+			ServerFeeSat:        resp.GetServerFeeSat(),
+			RoutingFeeBudgetSat: resp.GetRoutingFeeBudgetSat(),
+			Expiry:              expiryTime,
+			SettlementType:      settlementType,
+			CreditQuote:         creditQuote,
+			Preimage:            &preimage,
 		}, nil
 	}
 
@@ -856,14 +891,16 @@ func inSwapConfigFromProto(resp *swaprpc.CreateInSwapResponse) (*InSwapConfig,
 	}
 
 	return &InSwapConfig{
-		PaymentHash:    paymentHash,
-		AmountSat:      int64(resp.GetAmountSat()),
-		FeeSat:         resp.GetFeeSat(),
-		ServerPubkey:   serverPubkey,
-		VHTLCConfig:    *cfg,
-		Expiry:         expiryTime,
-		SettlementType: settlementType,
-		CreditQuote:    creditQuote,
+		PaymentHash:         paymentHash,
+		AmountSat:           int64(resp.GetAmountSat()),
+		FeeSat:              resp.GetFeeSat(),
+		ServerFeeSat:        resp.GetServerFeeSat(),
+		RoutingFeeBudgetSat: resp.GetRoutingFeeBudgetSat(),
+		ServerPubkey:        serverPubkey,
+		VHTLCConfig:         *cfg,
+		Expiry:              expiryTime,
+		SettlementType:      settlementType,
+		CreditQuote:         creditQuote,
 	}, nil
 }
 
@@ -950,14 +987,17 @@ func inSwapQuoteFromProto(resp *swaprpc.QuoteInSwapResponse) (*InSwapQuote,
 	copy(paymentHash[:], resp.GetPaymentHash())
 
 	return &InSwapQuote{
-		PaymentHash:      paymentHash,
-		InvoiceAmountSat: resp.GetInvoiceAmountSat(),
-		AmountSat:        resp.GetAmountSat(),
-		FeeSat:           resp.GetFeeSat(),
-		Expiry:           expiryTime,
-		SettlementType:   settlementType,
-		ExceedsMaxFee:    resp.GetExceedsMaxFee(),
-		CreditQuote:      creditQuote,
+		PaymentHash:            paymentHash,
+		InvoiceAmountSat:       resp.GetInvoiceAmountSat(),
+		AmountSat:              resp.GetAmountSat(),
+		FeeSat:                 resp.GetFeeSat(),
+		ServerFeeSat:           resp.GetServerFeeSat(),
+		EstimatedRoutingFeeSat: resp.GetEstimatedRoutingFeeSat(),
+		RoutingFeeBudgetSat:    resp.GetRoutingFeeBudgetSat(),
+		Expiry:                 expiryTime,
+		SettlementType:         settlementType,
+		ExceedsMaxFee:          resp.GetExceedsMaxFee(),
+		CreditQuote:            creditQuote,
 	}, nil
 }
 
