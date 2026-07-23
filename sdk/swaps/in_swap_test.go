@@ -1591,17 +1591,14 @@ func TestPaySessionResumeAfterAcceptedRefundFindsOutput(t *testing.T) {
 	require.Equal(t, PayStateRefunded, reloaded.State())
 }
 
-// TestPaySessionResumeAfterAcceptedRefundUsesSpentVHTLCFallback exercises the
-// same accepted-refund restart window as
+// TestPaySessionResumeAfterAcceptedRefundRejectsSpentVHTLCFallback exercises
+// the same accepted-refund restart window as
 // TestPaySessionResumeAfterAcceptedRefundFindsOutput, but with the wallet
-// indexer lagging on the newly-created refund output. In that case the funded
-// vHTLC spend is already visible without a claim preimage, while the refund
-// destination script returns no live output yet. The session must still treat
-// the spend as a successful cooperative refund, because the pre-locktime refund
-// path requires the client, operator, and server signatures. This pins the
-// fallback that prevents a recovered refund from being misclassified as
-// NeedsIntervention during restart reconciliation.
-func TestPaySessionResumeAfterAcceptedRefundUsesSpentVHTLCFallback(
+// indexer lagging on the newly-created refund output. A bare spent-vHTLC
+// spender txid is not durable proof that the client-owned refund session was
+// accepted before the refund session id was persisted, so the session must stop
+// for intervention instead of adopting the observed spender as its refund.
+func TestPaySessionResumeAfterAcceptedRefundRejectsSpentVHTLCFallback(
 	t *testing.T) {
 
 	t.Parallel()
@@ -1727,16 +1724,20 @@ func TestPaySessionResumeAfterAcceptedRefundUsesSpentVHTLCFallback(
 	require.Nil(t, refundOutput)
 
 	_, err = resumed.Wait(t.Context())
-	require.ErrorIs(t, err, ErrSwapRefunded)
-	require.Equal(t, PayStateRefunded, resumed.State())
-	require.Equal(t, "refund-session", resumed.refundSessionID)
+	require.ErrorContains(
+		t, err, "funded vHTLC spent before refund session was accepted",
+	)
+	require.Equal(t, PayStateNeedsIntervention, resumed.State())
+	require.Empty(t, resumed.refundSessionID)
+	require.Contains(t, resumed.InterventionReason(), "refund-session")
 	require.Equal(t, 1, daemonConn.sendCustomCalls)
 
 	reloaded, err := resumedClient.ResumePayViaLightning(
 		t.Context(), preimage.Hash(),
 	)
 	require.NoError(t, err)
-	require.Equal(t, PayStateRefunded, reloaded.State())
+	require.Equal(t, PayStateNeedsIntervention, reloaded.State())
+	require.Contains(t, reloaded.InterventionReason(), "refund-session")
 }
 
 // TestPaySessionObserveRefundOutputIgnoresWrongAmount verifies that a live VTXO
@@ -2762,6 +2763,133 @@ func TestPaySessionNeedsInterventionOnSpentWithoutPreimage(t *testing.T) {
 	)
 	require.Equal(t, "funding:0", resumed.vhtlcOutpoint)
 	require.EqualValues(t, testInSwapAmountSat, resumed.vhtlcAmount)
+}
+
+// TestPaySessionRejectsUnknownRefundSpend asserts refund reconciliation does
+// not adopt an arbitrary vHTLC spender as the client's own refund session.
+func TestPaySessionRejectsUnknownRefundSpend(t *testing.T) {
+	t.Parallel()
+
+	preimage, err := NewPreimage()
+	require.NoError(t, err)
+
+	daemonConn := &testDaemonConn{
+		spentVTXO: &VTXOInfo{
+			Outpoint:    "funding:0",
+			AmountSat:   testInSwapAmountSat,
+			SpentByTxID: "server-claim-session",
+		},
+		indexedPackage: &OORPackageInfo{},
+	}
+
+	client := configureTestPayClient(
+		NewSwapClient(nil, daemonConn, nil, nil),
+	)
+	client.waitPollInterval = time.Millisecond
+
+	session := &paySession{
+		client: client,
+		state:  PayStateRefundInitiated,
+		cfg: &InSwapConfig{
+			PaymentHash: preimage.Hash(),
+			AmountSat:   testInSwapAmountSat,
+			VHTLCConfig: VHTLCConfig{
+				RefundLocktime: 200,
+			},
+		},
+		vhtlcPkScript: []byte{
+			0x51,
+			0x20,
+			0x99,
+		},
+		vhtlcOutpoint: "funding:0",
+		vhtlcAmount:   testInSwapAmountSat,
+		refundReceiveScript: []byte{
+			0x51,
+			0x20,
+			0xaa,
+		},
+	}
+
+	err = session.completeRefund(t.Context())
+	require.ErrorContains(
+		t, err, "funded vHTLC spent before refund session was accepted",
+	)
+	require.Equal(t, PayStateNeedsIntervention, session.State())
+	require.Contains(
+		t, session.InterventionReason(),
+		"funded vHTLC spent before refund session was accepted",
+	)
+	require.Contains(
+		t, session.InterventionReason(),
+		"server-claim-session",
+	)
+	require.Empty(t, session.refundSessionID)
+	require.Equal(t, "funding:0", session.vhtlcOutpoint)
+	require.EqualValues(t, testInSwapAmountSat, session.vhtlcAmount)
+}
+
+// TestPaySessionAcceptsKnownRefundSpend asserts refund reconciliation still
+// terminalizes when the observed vHTLC spender matches the persisted refund
+// session.
+func TestPaySessionAcceptsKnownRefundSpend(t *testing.T) {
+	t.Parallel()
+
+	preimage, err := NewPreimage()
+	require.NoError(t, err)
+
+	daemonConn := &testDaemonConn{
+		spentVTXO: &VTXOInfo{
+			Outpoint:    "funding:0",
+			AmountSat:   testInSwapAmountSat,
+			SpentByTxID: "refund-session",
+		},
+		indexedPackage: &OORPackageInfo{},
+	}
+
+	client := configureTestPayClient(
+		NewSwapClient(nil, daemonConn, nil, nil),
+	)
+	client.waitPollInterval = time.Millisecond
+
+	session := &paySession{
+		client: client,
+		state:  PayStateRefundInitiated,
+		cfg: &InSwapConfig{
+			PaymentHash: preimage.Hash(),
+			AmountSat:   testInSwapAmountSat,
+			VHTLCConfig: VHTLCConfig{
+				RefundLocktime: 200,
+			},
+		},
+		vhtlcPkScript: []byte{
+			0x51,
+			0x20,
+			0x99,
+		},
+		vhtlcOutpoint: "funding:0",
+		vhtlcAmount:   testInSwapAmountSat,
+		refundReceiveScript: []byte{
+			0x51,
+			0x20,
+			0xaa,
+		},
+		refundSessionID:  "refund-session",
+		refundRecoveryID: "recovery",
+	}
+
+	err = session.completeRefund(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, PayStateRefunded, session.State())
+	require.Equal(t, "refund-session", session.refundSessionID)
+	require.Equal(t, 1, daemonConn.cancelCalls)
+	require.Equal(
+		t, recoveryReasonRefundSessionCompleted,
+		daemonConn.lastCancel.GetReason(),
+	)
+	require.Equal(
+		t, "refund-session", daemonConn.lastCancel.GetCooperativeTxid(),
+	)
 }
 
 // TestWaitForInSwapClaimObservationToleratesPreimageLag asserts an indexed

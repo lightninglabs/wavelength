@@ -245,8 +245,7 @@ type paySession struct {
 	refundReceivePubKey []byte
 	refundReceiveScript []byte
 	// refundSessionID stores the daemon OOR session id when this process
-	// submitted the refund, or the observed spender txid when a resume
-	// adopts an already-indexed refund spend.
+	// submitted the refund.
 	refundSessionID         string
 	refundRecoveryID        string
 	refundRecoveryFailureAt time.Time
@@ -1710,12 +1709,60 @@ func (s *paySession) markRefunded(ctx context.Context,
 	if spentVHTLC == nil {
 		return nil
 	}
+	if s.refundSessionID == "" {
+		reason := "funded vHTLC spent before refund session was " +
+			"accepted"
+		if spentVHTLC.SpentByTxID != "" {
+			reason = fmt.Sprintf("%s (spender %s)", reason,
+				spentVHTLC.SpentByTxID)
+		}
+
+		return s.needsIntervention(ctx, reason, nil, func() {
+			if spentVHTLC.Outpoint != "" {
+				s.vhtlcOutpoint = spentVHTLC.Outpoint
+			}
+			if spentVHTLC.AmountSat != 0 {
+				s.vhtlcAmount = spentVHTLC.AmountSat
+			}
+		})
+	}
+	if spentVHTLC.SpentByTxID == "" {
+		s.client.log.InfoS(
+			ctx,
+			"Pay swap refund spend lacks spender txid",
+			btclog.Hex("hash", s.cfg.PaymentHash[:]),
+			slog.String("outpoint", spentVHTLC.Outpoint),
+			slog.String("refund_session_id", s.refundSessionID),
+		)
+
+		return waitForFixedPoll(ctx, s.client.waitPollInterval)
+	}
+	if spentVHTLC.SpentByTxID != s.refundSessionID {
+		reason := fmt.Sprintf("funded vHTLC spent by unexpected txid "+
+			"%s before refund session %s completed",
+			spentVHTLC.SpentByTxID, s.refundSessionID)
+
+		return s.needsIntervention(ctx, reason, nil, func() {
+			if spentVHTLC.Outpoint != "" {
+				s.vhtlcOutpoint = spentVHTLC.Outpoint
+			}
+			if spentVHTLC.AmountSat != 0 {
+				s.vhtlcAmount = spentVHTLC.AmountSat
+			}
+		})
+	}
 
 	s.client.log.InfoS(ctx, "Pay swap refunded",
 		btclog.Hex("hash", s.cfg.PaymentHash[:]),
 		slog.String("outpoint", spentVHTLC.Outpoint),
 		slog.String("spender", spentVHTLC.SpentByTxID),
 	)
+	if err := cancelVHTLCRecovery(
+		ctx, s.client.daemon, s.refundRecoveryID,
+		recoveryReasonRefundSessionCompleted, s.refundSessionID,
+	); err != nil {
+		return newRetryableActionError(err)
+	}
 
 	// The refund spend is on-chain, so the daemon-owned recovery armed at
 	// funding time is no longer needed. Cancel it before recording the
@@ -1742,9 +1789,6 @@ func (s *paySession) markRefunded(ctx context.Context,
 		}
 		if spentVHTLC.AmountSat != 0 {
 			s.vhtlcAmount = spentVHTLC.AmountSat
-		}
-		if s.refundSessionID == "" && spentVHTLC.SpentByTxID != "" {
-			s.refundSessionID = spentVHTLC.SpentByTxID
 		}
 
 		return s.transition(payEventRefunded)
