@@ -2627,13 +2627,8 @@ func TestPaySessionResumeFundingGraceEventuallyRetries(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	waitCtx, cancel := context.WithTimeout(
-		t.Context(), 5*time.Millisecond,
-	)
-	defer cancel()
-
-	_, err = resumed.Wait(waitCtx)
-	require.ErrorIs(t, err, context.DeadlineExceeded)
+	err = resumed.ensureFundingSubmitted(t.Context(), false)
+	require.NoError(t, err)
 	require.Equal(t, 1, daemonConn.sendPolicyCalls)
 	require.Equal(t, PayStateFundingInitiated, resumed.State())
 
