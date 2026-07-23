@@ -349,7 +349,7 @@ CREATE TABLE credit_operations (
     created_at BIGINT NOT NULL,
 
     -- updated_at is the unix timestamp of the latest row update.
-    updated_at BIGINT NOT NULL,
+    updated_at BIGINT NOT NULL, routing_fee_budget_sat BIGINT NOT NULL DEFAULT 0,
 
     PRIMARY KEY (op_id)
 );
