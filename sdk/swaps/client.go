@@ -191,6 +191,13 @@ type SwapSummary struct {
 	// FeeSat is the negotiated swap-server fee in satoshis when known.
 	FeeSat uint64
 
+	// ServerFeeSat is the service fee retained by the swap server.
+	ServerFeeSat uint64
+
+	// RoutingFeeBudgetSat is the client-funded Lightning routing
+	// allowance included in FeeSat.
+	RoutingFeeBudgetSat uint64
+
 	// PayerFeeMsat is the payer-paid Lightning route fee quoted for
 	// receive swaps. It is not deducted from AmountSat.
 	PayerFeeMsat uint64

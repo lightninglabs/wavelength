@@ -232,16 +232,18 @@ func TestListSwapSummariesIncludesFeesAndPendingFilter(t *testing.T) {
 	expiryUnix := time.Unix(1_700, 0).Unix()
 
 	err := store.queries.UpsertPaySwap(ctx, swapsqlc.UpsertPaySwapParams{
-		PaymentHash:    payHash[:],
-		Invoice:        "ln-pay",
-		MaxFeeSat:      999,
-		State:          fundingState,
-		AmountSat:      42_000,
-		FeeSat:         123,
-		ExpiryUnix:     expiryUnix,
-		ClientPubkey:   testPubKeyBytes(2),
-		OperatorPubkey: testPubKeyBytes(3),
-		ServerPubkey:   testPubKeyBytes(4),
+		PaymentHash:         payHash[:],
+		Invoice:             "ln-pay",
+		MaxFeeSat:           999,
+		State:               fundingState,
+		AmountSat:           42_000,
+		FeeSat:              123,
+		ServerFeeSat:        100,
+		RoutingFeeBudgetSat: 23,
+		ExpiryUnix:          expiryUnix,
+		ClientPubkey:        testPubKeyBytes(2),
+		OperatorPubkey:      testPubKeyBytes(3),
+		ServerPubkey:        testPubKeyBytes(4),
 		SettlementType: string(
 			SettlementTypeLightning,
 		),
@@ -302,6 +304,8 @@ func TestListSwapSummariesIncludesFeesAndPendingFilter(t *testing.T) {
 	require.Equal(t, SwapDirectionPay, all[0].Direction)
 	require.Equal(t, "ln-pay", all[0].Invoice)
 	require.EqualValues(t, 123, all[0].FeeSat)
+	require.EqualValues(t, 100, all[0].ServerFeeSat)
+	require.EqualValues(t, 23, all[0].RoutingFeeBudgetSat)
 	require.EqualValues(t, 999, all[0].MaxFeeSat)
 	require.Equal(t, SettlementTypeLightning, all[0].SettlementType)
 	require.True(t, all[0].Pending)

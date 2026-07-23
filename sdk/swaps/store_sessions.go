@@ -322,14 +322,18 @@ func paySummaryFromRow(row swapsqlc.PaySwap) (SwapSummary, error) {
 	}
 
 	return SwapSummary{
-		Direction:        SwapDirectionPay,
-		PaymentHash:      paymentHash,
-		Preimage:         preimage,
-		Invoice:          row.Invoice,
-		State:            state.String(),
-		Pending:          !state.IsTerminal(),
-		AmountSat:        row.AmountSat,
-		FeeSat:           uint64(row.FeeSat),
+		Direction:    SwapDirectionPay,
+		PaymentHash:  paymentHash,
+		Preimage:     preimage,
+		Invoice:      row.Invoice,
+		State:        state.String(),
+		Pending:      !state.IsTerminal(),
+		AmountSat:    row.AmountSat,
+		FeeSat:       uint64(row.FeeSat),
+		ServerFeeSat: uint64(row.ServerFeeSat),
+		RoutingFeeBudgetSat: uint64(
+			row.RoutingFeeBudgetSat,
+		),
 		MaxFeeSat:        uint64(row.MaxFeeSat),
 		VHTLCOutpoint:    row.VhtlcOutpoint,
 		VHTLCAmountSat:   row.VhtlcAmount,
