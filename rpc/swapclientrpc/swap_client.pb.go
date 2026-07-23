@@ -398,9 +398,12 @@ type QuotePayRequest struct {
 	// max_credit_sat is the maximum credit amount the caller is willing to
 	// use for this quote. Zero means only required-credit shortfalls are
 	// reported.
-	MaxCreditSat  uint64 `protobuf:"varint,3,opt,name=max_credit_sat,json=maxCreditSat,proto3" json:"max_credit_sat,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	MaxCreditSat uint64 `protobuf:"varint,3,opt,name=max_credit_sat,json=maxCreditSat,proto3" json:"max_credit_sat,omitempty"`
+	// routing_fee_budget_sat is the Lightning routing allowance the caller
+	// would fund. Zero uses the swap server's compatibility policy.
+	RoutingFeeBudgetSat uint64 `protobuf:"varint,4,opt,name=routing_fee_budget_sat,json=routingFeeBudgetSat,proto3" json:"routing_fee_budget_sat,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *QuotePayRequest) Reset() {
@@ -454,6 +457,13 @@ func (x *QuotePayRequest) GetMaxCreditSat() uint64 {
 	return 0
 }
 
+func (x *QuotePayRequest) GetRoutingFeeBudgetSat() uint64 {
+	if x != nil {
+		return x.RoutingFeeBudgetSat
+	}
+	return 0
+}
+
 type QuotePayResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// payment_hash is the hex Lightning payment hash that identifies the
@@ -472,8 +482,14 @@ type QuotePayResponse struct {
 	// larger than that cap.
 	ExceedsMaxFee bool         `protobuf:"varint,7,opt,name=exceeds_max_fee,json=exceedsMaxFee,proto3" json:"exceeds_max_fee,omitempty"`
 	CreditQuote   *CreditQuote `protobuf:"bytes,8,opt,name=credit_quote,json=creditQuote,proto3" json:"credit_quote,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// server_fee_sat is the service fee retained by the swap server.
+	ServerFeeSat uint64 `protobuf:"varint,9,opt,name=server_fee_sat,json=serverFeeSat,proto3" json:"server_fee_sat,omitempty"`
+	// estimated_routing_fee_sat is the current whole-satoshi route estimate.
+	EstimatedRoutingFeeSat uint64 `protobuf:"varint,10,opt,name=estimated_routing_fee_sat,json=estimatedRoutingFeeSat,proto3" json:"estimated_routing_fee_sat,omitempty"`
+	// routing_fee_budget_sat is the routing allowance that would be funded.
+	RoutingFeeBudgetSat uint64 `protobuf:"varint,11,opt,name=routing_fee_budget_sat,json=routingFeeBudgetSat,proto3" json:"routing_fee_budget_sat,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *QuotePayResponse) Reset() {
@@ -562,6 +578,27 @@ func (x *QuotePayResponse) GetCreditQuote() *CreditQuote {
 	return nil
 }
 
+func (x *QuotePayResponse) GetServerFeeSat() uint64 {
+	if x != nil {
+		return x.ServerFeeSat
+	}
+	return 0
+}
+
+func (x *QuotePayResponse) GetEstimatedRoutingFeeSat() uint64 {
+	if x != nil {
+		return x.EstimatedRoutingFeeSat
+	}
+	return 0
+}
+
+func (x *QuotePayResponse) GetRoutingFeeBudgetSat() uint64 {
+	if x != nil {
+		return x.RoutingFeeBudgetSat
+	}
+	return 0
+}
+
 type StartPayRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// invoice is the BOLT-11 Lightning invoice to pay.
@@ -575,9 +612,12 @@ type StartPayRequest struct {
 	IdempotencyKey string `protobuf:"bytes,3,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
 	// max_credit_sat is the maximum credit amount the caller authorizes this
 	// pay to reserve.
-	MaxCreditSat  uint64 `protobuf:"varint,4,opt,name=max_credit_sat,json=maxCreditSat,proto3" json:"max_credit_sat,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	MaxCreditSat uint64 `protobuf:"varint,4,opt,name=max_credit_sat,json=maxCreditSat,proto3" json:"max_credit_sat,omitempty"`
+	// routing_fee_budget_sat is the Lightning routing allowance the caller
+	// funds. Zero uses the swap server's compatibility policy.
+	RoutingFeeBudgetSat uint64 `protobuf:"varint,5,opt,name=routing_fee_budget_sat,json=routingFeeBudgetSat,proto3" json:"routing_fee_budget_sat,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *StartPayRequest) Reset() {
@@ -634,6 +674,13 @@ func (x *StartPayRequest) GetIdempotencyKey() string {
 func (x *StartPayRequest) GetMaxCreditSat() uint64 {
 	if x != nil {
 		return x.MaxCreditSat
+	}
+	return 0
+}
+
+func (x *StartPayRequest) GetRoutingFeeBudgetSat() uint64 {
+	if x != nil {
+		return x.RoutingFeeBudgetSat
 	}
 	return 0
 }
@@ -2031,8 +2078,13 @@ type SwapSummary struct {
 	// available_credit_sat is the balance considered when the receive route was
 	// planned.
 	AvailableCreditSat uint64 `protobuf:"varint,26,opt,name=available_credit_sat,json=availableCreditSat,proto3" json:"available_credit_sat,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// server_fee_sat is the service fee retained by the swap server.
+	ServerFeeSat uint64 `protobuf:"varint,27,opt,name=server_fee_sat,json=serverFeeSat,proto3" json:"server_fee_sat,omitempty"`
+	// routing_fee_budget_sat is the client-funded Lightning routing
+	// allowance included in fee_sat.
+	RoutingFeeBudgetSat uint64 `protobuf:"varint,28,opt,name=routing_fee_budget_sat,json=routingFeeBudgetSat,proto3" json:"routing_fee_budget_sat,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *SwapSummary) Reset() {
@@ -2247,15 +2299,30 @@ func (x *SwapSummary) GetAvailableCreditSat() uint64 {
 	return 0
 }
 
+func (x *SwapSummary) GetServerFeeSat() uint64 {
+	if x != nil {
+		return x.ServerFeeSat
+	}
+	return 0
+}
+
+func (x *SwapSummary) GetRoutingFeeBudgetSat() uint64 {
+	if x != nil {
+		return x.RoutingFeeBudgetSat
+	}
+	return 0
+}
+
 var File_swap_client_proto protoreflect.FileDescriptor
 
 const file_swap_client_proto_rawDesc = "" +
 	"\n" +
-	"\x11swap_client.proto\x12\rswapclientrpc\"q\n" +
+	"\x11swap_client.proto\x12\rswapclientrpc\"\xa6\x01\n" +
 	"\x0fQuotePayRequest\x12\x18\n" +
 	"\ainvoice\x18\x01 \x01(\tR\ainvoice\x12\x1e\n" +
 	"\vmax_fee_sat\x18\x02 \x01(\x04R\tmaxFeeSat\x12$\n" +
-	"\x0emax_credit_sat\x18\x03 \x01(\x04R\fmaxCreditSat\"\xf6\x02\n" +
+	"\x0emax_credit_sat\x18\x03 \x01(\x04R\fmaxCreditSat\x123\n" +
+	"\x16routing_fee_budget_sat\x18\x04 \x01(\x04R\x13routingFeeBudgetSat\"\x8c\x04\n" +
 	"\x10QuotePayResponse\x12!\n" +
 	"\fpayment_hash\x18\x01 \x01(\tR\vpaymentHash\x12,\n" +
 	"\x12invoice_amount_sat\x18\x02 \x01(\x04R\x10invoiceAmountSat\x12\x1d\n" +
@@ -2265,12 +2332,17 @@ const file_swap_client_proto_rawDesc = "" +
 	"\x0fsettlement_type\x18\x05 \x01(\x0e2!.swapclientrpc.SwapSettlementTypeR\x0esettlementType\x12&\n" +
 	"\x0fexpires_at_unix\x18\x06 \x01(\x03R\rexpiresAtUnix\x12&\n" +
 	"\x0fexceeds_max_fee\x18\a \x01(\bR\rexceedsMaxFee\x12=\n" +
-	"\fcredit_quote\x18\b \x01(\v2\x1a.swapclientrpc.CreditQuoteR\vcreditQuote\"\x9a\x01\n" +
+	"\fcredit_quote\x18\b \x01(\v2\x1a.swapclientrpc.CreditQuoteR\vcreditQuote\x12$\n" +
+	"\x0eserver_fee_sat\x18\t \x01(\x04R\fserverFeeSat\x129\n" +
+	"\x19estimated_routing_fee_sat\x18\n" +
+	" \x01(\x04R\x16estimatedRoutingFeeSat\x123\n" +
+	"\x16routing_fee_budget_sat\x18\v \x01(\x04R\x13routingFeeBudgetSat\"\xcf\x01\n" +
 	"\x0fStartPayRequest\x12\x18\n" +
 	"\ainvoice\x18\x01 \x01(\tR\ainvoice\x12\x1e\n" +
 	"\vmax_fee_sat\x18\x02 \x01(\x04R\tmaxFeeSat\x12'\n" +
 	"\x0fidempotency_key\x18\x03 \x01(\tR\x0eidempotencyKey\x12$\n" +
-	"\x0emax_credit_sat\x18\x04 \x01(\x04R\fmaxCreditSat\"e\n" +
+	"\x0emax_credit_sat\x18\x04 \x01(\x04R\fmaxCreditSat\x123\n" +
+	"\x16routing_fee_budget_sat\x18\x05 \x01(\x04R\x13routingFeeBudgetSat\"e\n" +
 	"\x10StartPayResponse\x12!\n" +
 	"\fpayment_hash\x18\x01 \x01(\tR\vpaymentHash\x12.\n" +
 	"\x04swap\x18\x02 \x01(\v2\x1a.swapclientrpc.SwapSummaryR\x04swap\"\xad\x01\n" +
@@ -2375,7 +2447,7 @@ const file_swap_client_proto_rawDesc = "" +
 	"\x10include_existing\x18\x01 \x01(\bR\x0fincludeExisting\x12!\n" +
 	"\fpending_only\x18\x02 \x01(\bR\vpendingOnly\"H\n" +
 	"\x16SubscribeSwapsResponse\x12.\n" +
-	"\x04swap\x18\x01 \x01(\v2\x1a.swapclientrpc.SwapSummaryR\x04swap\"\xca\b\n" +
+	"\x04swap\x18\x01 \x01(\v2\x1a.swapclientrpc.SwapSummaryR\x04swap\"\xa5\t\n" +
 	"\vSwapSummary\x12:\n" +
 	"\tdirection\x18\x01 \x01(\x0e2\x1c.swapclientrpc.SwapDirectionR\tdirection\x12!\n" +
 	"\fpayment_hash\x18\x02 \x01(\tR\vpaymentHash\x12.\n" +
@@ -2404,7 +2476,9 @@ const file_swap_client_proto_rawDesc = "" +
 	"\x14requested_amount_sat\x18\x17 \x01(\x04R\x12requestedAmountSat\x12.\n" +
 	"\x13attached_credit_sat\x18\x18 \x01(\x04R\x11attachedCreditSat\x12$\n" +
 	"\x0edust_limit_sat\x18\x19 \x01(\x04R\fdustLimitSat\x120\n" +
-	"\x14available_credit_sat\x18\x1a \x01(\x04R\x12availableCreditSat*c\n" +
+	"\x14available_credit_sat\x18\x1a \x01(\x04R\x12availableCreditSat\x12$\n" +
+	"\x0eserver_fee_sat\x18\x1b \x01(\x04R\fserverFeeSat\x123\n" +
+	"\x16routing_fee_budget_sat\x18\x1c \x01(\x04R\x13routingFeeBudgetSat*c\n" +
 	"\rSwapDirection\x12\x1e\n" +
 	"\x1aSWAP_DIRECTION_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12SWAP_DIRECTION_PAY\x10\x01\x12\x1a\n" +

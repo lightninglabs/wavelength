@@ -1060,9 +1060,13 @@ type PrepareSendRequest struct {
 	// amt_sat otherwise. This makes "drain the wallet" structurally
 	// distinct from "amt_sat defaulted to zero" so a typo cannot empty
 	// the wallet by accident. Ignored on the invoice path.
-	SweepAll      bool `protobuf:"varint,6,opt,name=sweep_all,json=sweepAll,proto3" json:"sweep_all,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	SweepAll bool `protobuf:"varint,6,opt,name=sweep_all,json=sweepAll,proto3" json:"sweep_all,omitempty"`
+	// routing_fee_budget_sat is the Lightning routing allowance to fund for
+	// an invoice send. Zero uses the swap server's compatibility policy. It
+	// is ignored for onchain sends.
+	RoutingFeeBudgetSat uint64 `protobuf:"varint,7,opt,name=routing_fee_budget_sat,json=routingFeeBudgetSat,proto3" json:"routing_fee_budget_sat,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *PrepareSendRequest) Reset() {
@@ -1148,6 +1152,13 @@ func (x *PrepareSendRequest) GetSweepAll() bool {
 	return false
 }
 
+func (x *PrepareSendRequest) GetRoutingFeeBudgetSat() uint64 {
+	if x != nil {
+		return x.RoutingFeeBudgetSat
+	}
+	return 0
+}
+
 type isPrepareSendRequest_Destination interface {
 	isPrepareSendRequest_Destination()
 }
@@ -1221,8 +1232,14 @@ type PrepareSendResponse struct {
 	// credit_preview is populated when the invoice send will or can use
 	// sat-native server credits.
 	CreditPreview *CreditPreview `protobuf:"bytes,15,opt,name=credit_preview,json=creditPreview,proto3" json:"credit_preview,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// server_fee_sat is the service fee retained by the swap server.
+	ServerFeeSat uint64 `protobuf:"varint,16,opt,name=server_fee_sat,json=serverFeeSat,proto3" json:"server_fee_sat,omitempty"`
+	// estimated_routing_fee_sat is the current whole-satoshi route estimate.
+	EstimatedRoutingFeeSat uint64 `protobuf:"varint,17,opt,name=estimated_routing_fee_sat,json=estimatedRoutingFeeSat,proto3" json:"estimated_routing_fee_sat,omitempty"`
+	// routing_fee_budget_sat is the routing allowance that Send will fund.
+	RoutingFeeBudgetSat uint64 `protobuf:"varint,18,opt,name=routing_fee_budget_sat,json=routingFeeBudgetSat,proto3" json:"routing_fee_budget_sat,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *PrepareSendResponse) Reset() {
@@ -1358,6 +1375,27 @@ func (x *PrepareSendResponse) GetCreditPreview() *CreditPreview {
 		return x.CreditPreview
 	}
 	return nil
+}
+
+func (x *PrepareSendResponse) GetServerFeeSat() uint64 {
+	if x != nil {
+		return x.ServerFeeSat
+	}
+	return 0
+}
+
+func (x *PrepareSendResponse) GetEstimatedRoutingFeeSat() uint64 {
+	if x != nil {
+		return x.EstimatedRoutingFeeSat
+	}
+	return 0
+}
+
+func (x *PrepareSendResponse) GetRoutingFeeBudgetSat() uint64 {
+	if x != nil {
+		return x.RoutingFeeBudgetSat
+	}
+	return 0
 }
 
 // SendRequest dispatches a previously prepared send by consuming the
@@ -5707,15 +5745,16 @@ const file_wallet_proto_rawDesc = "" +
 	"\rUnlockRequest\x12'\n" +
 	"\x0fwallet_password\x18\x01 \x01(\fR\x0ewalletPassword\"9\n" +
 	"\x0eUnlockResponse\x12'\n" +
-	"\x0fidentity_pubkey\x18\x01 \x01(\tR\x0eidentityPubkey\"\xd4\x01\n" +
+	"\x0fidentity_pubkey\x18\x01 \x01(\tR\x0eidentityPubkey\"\x89\x02\n" +
 	"\x12PrepareSendRequest\x12\x1a\n" +
 	"\ainvoice\x18\x01 \x01(\tH\x00R\ainvoice\x12)\n" +
 	"\x0fonchain_address\x18\x02 \x01(\tH\x00R\x0eonchainAddress\x12\x17\n" +
 	"\aamt_sat\x18\x03 \x01(\x04R\x06amtSat\x12\x12\n" +
 	"\x04note\x18\x04 \x01(\tR\x04note\x12\x1e\n" +
 	"\vmax_fee_sat\x18\x05 \x01(\x04R\tmaxFeeSat\x12\x1b\n" +
-	"\tsweep_all\x18\x06 \x01(\bR\bsweepAllB\r\n" +
-	"\vdestination\"\xb9\x05\n" +
+	"\tsweep_all\x18\x06 \x01(\bR\bsweepAll\x123\n" +
+	"\x16routing_fee_budget_sat\x18\a \x01(\x04R\x13routingFeeBudgetSatB\r\n" +
+	"\vdestination\"\xcf\x06\n" +
 	"\x13PrepareSendResponse\x12$\n" +
 	"\x0esend_intent_id\x18\x01 \x01(\tR\fsendIntentId\x12\x1d\n" +
 	"\n" +
@@ -5733,7 +5772,10 @@ const file_wallet_proto_rawDesc = "" +
 	"\x0fexpires_at_unix\x18\f \x01(\x03R\rexpiresAtUnix\x12-\n" +
 	"\x12selected_outpoints\x18\r \x03(\tR\x11selectedOutpoints\x12\x18\n" +
 	"\awarning\x18\x0e \x01(\tR\awarning\x12C\n" +
-	"\x0ecredit_preview\x18\x0f \x01(\v2\x1c.wavewalletrpc.CreditPreviewR\rcreditPreview\"3\n" +
+	"\x0ecredit_preview\x18\x0f \x01(\v2\x1c.wavewalletrpc.CreditPreviewR\rcreditPreview\x12$\n" +
+	"\x0eserver_fee_sat\x18\x10 \x01(\x04R\fserverFeeSat\x129\n" +
+	"\x19estimated_routing_fee_sat\x18\x11 \x01(\x04R\x16estimatedRoutingFeeSat\x123\n" +
+	"\x16routing_fee_budget_sat\x18\x12 \x01(\x04R\x13routingFeeBudgetSat\"3\n" +
 	"\vSendRequest\x12$\n" +
 	"\x0esend_intent_id\x18\x01 \x01(\tR\fsendIntentId\"l\n" +
 	"\fSendResponse\x120\n" +

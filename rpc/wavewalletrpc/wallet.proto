@@ -359,6 +359,11 @@ message PrepareSendRequest {
     // distinct from "amt_sat defaulted to zero" so a typo cannot empty
     // the wallet by accident. Ignored on the invoice path.
     bool sweep_all = 6;
+
+    // routing_fee_budget_sat is the Lightning routing allowance to fund for
+    // an invoice send. Zero uses the swap server's compatibility policy. It
+    // is ignored for onchain sends.
+    uint64 routing_fee_budget_sat = 7;
 }
 
 // PrepareSendResponse is the preview of a prepared send: the single-use
@@ -426,6 +431,15 @@ message PrepareSendResponse {
     // credit_preview is populated when the invoice send will or can use
     // sat-native server credits.
     CreditPreview credit_preview = 15;
+
+    // server_fee_sat is the service fee retained by the swap server.
+    uint64 server_fee_sat = 16;
+
+    // estimated_routing_fee_sat is the current whole-satoshi route estimate.
+    uint64 estimated_routing_fee_sat = 17;
+
+    // routing_fee_budget_sat is the routing allowance that Send will fund.
+    uint64 routing_fee_budget_sat = 18;
 }
 
 // SendRequest dispatches a previously prepared send by consuming the

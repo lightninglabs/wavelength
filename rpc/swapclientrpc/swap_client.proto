@@ -118,6 +118,10 @@ message QuotePayRequest {
     // use for this quote. Zero means only required-credit shortfalls are
     // reported.
     uint64 max_credit_sat = 3;
+
+    // routing_fee_budget_sat is the Lightning routing allowance the caller
+    // would fund. Zero uses the swap server's compatibility policy.
+    uint64 routing_fee_budget_sat = 4;
 }
 
 message QuotePayResponse {
@@ -144,6 +148,15 @@ message QuotePayResponse {
     bool exceeds_max_fee = 7;
 
     CreditQuote credit_quote = 8;
+
+    // server_fee_sat is the service fee retained by the swap server.
+    uint64 server_fee_sat = 9;
+
+    // estimated_routing_fee_sat is the current whole-satoshi route estimate.
+    uint64 estimated_routing_fee_sat = 10;
+
+    // routing_fee_budget_sat is the routing allowance that would be funded.
+    uint64 routing_fee_budget_sat = 11;
 }
 
 message StartPayRequest {
@@ -162,6 +175,10 @@ message StartPayRequest {
     // max_credit_sat is the maximum credit amount the caller authorizes this
     // pay to reserve.
     uint64 max_credit_sat = 4;
+
+    // routing_fee_budget_sat is the Lightning routing allowance the caller
+    // funds. Zero uses the swap server's compatibility policy.
+    uint64 routing_fee_budget_sat = 5;
 }
 
 message StartPayResponse {
@@ -429,4 +446,11 @@ message SwapSummary {
     // available_credit_sat is the balance considered when the receive route was
     // planned.
     uint64 available_credit_sat = 26;
+
+    // server_fee_sat is the service fee retained by the swap server.
+    uint64 server_fee_sat = 27;
+
+    // routing_fee_budget_sat is the client-funded Lightning routing
+    // allowance included in fee_sat.
+    uint64 routing_fee_budget_sat = 28;
 }
