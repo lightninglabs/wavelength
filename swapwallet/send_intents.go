@@ -26,14 +26,15 @@ type preparedSendIntent struct {
 	kind      preparedSendKind
 	expiresAt time.Time
 
-	invoice        string
-	onchainAddress string
-	amountSat      uint64
-	note           string
-	maxFeeSat      uint64
-	maxCreditSat   uint64
-	creditPreview  *wavewalletrpc.CreditPreview
-	sweepAll       bool
+	invoice             string
+	onchainAddress      string
+	amountSat           uint64
+	note                string
+	maxFeeSat           uint64
+	routingFeeBudgetSat uint64
+	maxCreditSat        uint64
+	creditPreview       *wavewalletrpc.CreditPreview
+	sweepAll            bool
 
 	selectedOutpoints []string
 	actualAmountSat   int64
@@ -52,6 +53,9 @@ type prepareSendPreview struct {
 	paymentHash             string
 	warning                 string
 	creditPreview           *wavewalletrpc.CreditPreview
+	serverFeeSat            uint64
+	estimatedRoutingFeeSat  uint64
+	routingFeeBudgetSat     uint64
 }
 
 type preparedSendStore struct {
@@ -181,7 +185,10 @@ func prepareResponseFromIntent(intent *preparedSendIntent,
 		SelectedOutpoints: append(
 			[]string(nil), intent.selectedOutpoints...,
 		),
-		Warning:       preview.warning,
-		CreditPreview: preview.creditPreview,
+		Warning:                preview.warning,
+		CreditPreview:          preview.creditPreview,
+		ServerFeeSat:           preview.serverFeeSat,
+		EstimatedRoutingFeeSat: preview.estimatedRoutingFeeSat,
+		RoutingFeeBudgetSat:    preview.routingFeeBudgetSat,
 	}
 }

@@ -81,6 +81,9 @@ func newSendCmd() *cobra.Command {
 			"lets the daemon default the cap to ~1% of the amount "+
 			"(with a small floor), so a normal payment routes "+
 			"without setting this")
+	cmd.Flags().Uint64("routing-fee-budget", 0,
+		"Lightning routing allowance to fund for invoice sends; 0 "+
+			"uses the swap server compatibility policy")
 	cmd.Flags().String("note", "",
 		"caller-supplied label to attach to the entry")
 	cmd.Flags().Bool("sweep-all", false,
@@ -124,6 +127,7 @@ func walletSend(cmd *cobra.Command, args []string) error {
 
 	amt, _ := cmd.Flags().GetUint64("amt")
 	maxFee, _ := cmd.Flags().GetUint64("max-fee")
+	routingFeeBudget, _ := cmd.Flags().GetUint64("routing-fee-budget")
 	note, _ := cmd.Flags().GetString("note")
 	sweepAll, _ := cmd.Flags().GetBool("sweep-all")
 
@@ -146,6 +150,12 @@ func walletSend(cmd *cobra.Command, args []string) error {
 	// front so a typo'd zero never lands on the wallet RPC.
 	if !offchain {
 		switch {
+		case routingFeeBudget != 0:
+			return PrintError(
+				"INVALID_ARGS", "--routing-fee-budget is "+
+					"only valid for invoice sends",
+			)
+
 		case sweepAll && amt != 0:
 			return PrintError(
 				"INVALID_ARGS", "--sweep-all requires "+
@@ -163,10 +173,11 @@ func walletSend(cmd *cobra.Command, args []string) error {
 	}
 
 	req := &wavewalletrpc.PrepareSendRequest{
-		AmtSat:    amt,
-		MaxFeeSat: maxFee,
-		Note:      note,
-		SweepAll:  sweepAll,
+		AmtSat:              amt,
+		MaxFeeSat:           maxFee,
+		RoutingFeeBudgetSat: routingFeeBudget,
+		Note:                note,
+		SweepAll:            sweepAll,
 	}
 	if offchain {
 		req.Destination = &wavewalletrpc.PrepareSendRequest_Invoice{

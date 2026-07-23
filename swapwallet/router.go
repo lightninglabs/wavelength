@@ -139,9 +139,10 @@ func (r *router) prepareInvoice(ctx context.Context, invoice string,
 
 	quote, err := r.deps.SwapService.QuotePay(
 		ctx, &swapclientrpc.QuotePayRequest{
-			Invoice:      invoice,
-			MaxFeeSat:    req.GetMaxFeeSat(),
-			MaxCreditSat: ^uint64(0),
+			Invoice:             invoice,
+			MaxFeeSat:           req.GetMaxFeeSat(),
+			MaxCreditSat:        ^uint64(0),
+			RoutingFeeBudgetSat: req.GetRoutingFeeBudgetSat(),
 		},
 	)
 	if err != nil {
@@ -151,11 +152,12 @@ func (r *router) prepareInvoice(ctx context.Context, invoice string,
 	}
 
 	intent := &preparedSendIntent{
-		kind:      preparedSendInvoice,
-		invoice:   invoice,
-		amountSat: amountSat,
-		note:      req.GetNote(),
-		maxFeeSat: req.GetMaxFeeSat(),
+		kind:                preparedSendInvoice,
+		invoice:             invoice,
+		amountSat:           amountSat,
+		note:                req.GetNote(),
+		maxFeeSat:           req.GetMaxFeeSat(),
+		routingFeeBudgetSat: req.GetRoutingFeeBudgetSat(),
 	}
 
 	preview, err := prepareInvoicePreview(
@@ -202,9 +204,10 @@ func (r *router) sendInvoiceIntent(ctx context.Context,
 
 	startResp, err := r.deps.SwapService.StartPay(
 		ctx, &swapclientrpc.StartPayRequest{
-			Invoice:      intent.invoice,
-			MaxFeeSat:    intent.maxFeeSat,
-			MaxCreditSat: intent.maxCreditSat,
+			Invoice:             intent.invoice,
+			MaxFeeSat:           intent.maxFeeSat,
+			MaxCreditSat:        intent.maxCreditSat,
+			RoutingFeeBudgetSat: intent.routingFeeBudgetSat,
 		},
 	)
 	if err != nil {
@@ -794,6 +797,9 @@ func prepareInvoicePreviewFromQuote(invoice, description, paymentHash string,
 		paymentHash:             quote.GetPaymentHash(),
 		warning:                 warning,
 		creditPreview:           creditPreview,
+		serverFeeSat:            quote.GetServerFeeSat(),
+		estimatedRoutingFeeSat:  quote.GetEstimatedRoutingFeeSat(),
+		routingFeeBudgetSat:     quote.GetRoutingFeeBudgetSat(),
 	}, nil
 }
 

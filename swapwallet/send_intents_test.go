@@ -42,3 +42,18 @@ func TestPreparedSendStoreRejectsNilIntent(t *testing.T) {
 	require.ErrorIs(t, err, ErrInvalidSendIntent)
 	require.Empty(t, id)
 }
+
+// TestPrepareResponseUsesNegotiatedRoutingBudget verifies a missing or zero
+// server response is not presented as though the requested allowance was
+// accepted and funded.
+func TestPrepareResponseUsesNegotiatedRoutingBudget(t *testing.T) {
+	t.Parallel()
+
+	resp := prepareResponseFromIntent(
+		&preparedSendIntent{
+			routingFeeBudgetSat: 20,
+		},
+		prepareSendPreview{},
+	)
+	require.Zero(t, resp.GetRoutingFeeBudgetSat())
+}

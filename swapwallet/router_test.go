@@ -150,10 +150,13 @@ func TestRouterPrepareSendInvoiceReturnsRemoteQuote(t *testing.T) {
 	r, swap, rpc := newRouterFixture(t)
 	invoice, paymentHash := testPreparedInvoice(t, 12_345, "coffee")
 	swap.quotePayResp = &swapclientrpc.QuotePayResponse{
-		PaymentHash:      paymentHash,
-		InvoiceAmountSat: 12_345,
-		AmountSat:        12_555,
-		FeeSat:           210,
+		PaymentHash:            paymentHash,
+		InvoiceAmountSat:       12_345,
+		AmountSat:              12_555,
+		FeeSat:                 210,
+		ServerFeeSat:           190,
+		EstimatedRoutingFeeSat: 4,
+		RoutingFeeBudgetSat:    20,
 		SettlementType: swapclientrpc.
 			SwapSettlementType_SWAP_SETTLEMENT_TYPE_LIGHTNING,
 		ExpiresAtUnix: time.Now().Add(time.Minute).Unix(),
@@ -164,8 +167,9 @@ func TestRouterPrepareSendInvoiceReturnsRemoteQuote(t *testing.T) {
 			Destination: &wavewalletrpc.PrepareSendRequest_Invoice{
 				Invoice: invoice,
 			},
-			AmtSat:    99_999,
-			MaxFeeSat: 25,
+			AmtSat:              99_999,
+			MaxFeeSat:           25,
+			RoutingFeeBudgetSat: 20,
 		},
 	)
 	require.NoError(t, err)
@@ -181,6 +185,9 @@ func TestRouterPrepareSendInvoiceReturnsRemoteQuote(t *testing.T) {
 	require.True(t, resp.GetFeeKnown())
 	require.True(t, resp.GetTotalOutflowKnown())
 	require.Equal(t, int64(210), resp.GetExpectedFeeSat())
+	require.Equal(t, uint64(190), resp.GetServerFeeSat())
+	require.Equal(t, uint64(4), resp.GetEstimatedRoutingFeeSat())
+	require.Equal(t, uint64(20), resp.GetRoutingFeeBudgetSat())
 	require.Equal(t, int64(12_555), resp.GetExpectedTotalOutflowSat())
 	require.Equal(t, "coffee", resp.GetInvoiceDescription())
 	require.Equal(t, paymentHash, resp.GetPaymentHash())
@@ -189,6 +196,9 @@ func TestRouterPrepareSendInvoiceReturnsRemoteQuote(t *testing.T) {
 	require.Equal(t, 1, swap.quotePayCalls)
 	require.Equal(t, invoice, swap.quotePayLastReq.GetInvoice())
 	require.Equal(t, uint64(25), swap.quotePayLastReq.GetMaxFeeSat())
+	require.Equal(
+		t, uint64(20), swap.quotePayLastReq.GetRoutingFeeBudgetSat(),
+	)
 	require.Equal(t, 0, swap.startPayCalls)
 	require.Equal(t, 0, rpc.leaveCalls)
 }
@@ -405,6 +415,53 @@ func TestRouterSendInvoiceDispatchesStartPay(t *testing.T) {
 	require.Equal(
 		t, wavewalletrpc.EntryKind_ENTRY_KIND_SEND,
 		resp.GetEntry().GetKind(),
+	)
+}
+
+// TestRouterSendInvoicePreservesRoutingBudget verifies a prepared allowance
+// reaches StartPay unchanged instead of being recomputed at dispatch.
+func TestRouterSendInvoicePreservesRoutingBudget(t *testing.T) {
+	t.Parallel()
+
+	r, swap, _ := newRouterFixture(t)
+	invoice, paymentHash := testPreparedInvoice(t, 12_345, "budget")
+	swap.quotePayResp = &swapclientrpc.QuotePayResponse{
+		PaymentHash:         paymentHash,
+		InvoiceAmountSat:    12_345,
+		AmountSat:           12_370,
+		FeeSat:              25,
+		RoutingFeeBudgetSat: 20,
+		SettlementType: swapclientrpc.
+			SwapSettlementType_SWAP_SETTLEMENT_TYPE_LIGHTNING,
+		ExpiresAtUnix: time.Now().Add(time.Minute).Unix(),
+	}
+	swap.startPayResp = &swapclientrpc.StartPayResponse{
+		PaymentHash: paymentHash,
+		Swap: &swapclientrpc.SwapSummary{
+			PaymentHash: paymentHash,
+			Direction: swapclientrpc.
+				SwapDirection_SWAP_DIRECTION_PAY,
+			Pending: true,
+		},
+	}
+
+	prepared, err := r.PrepareSend(
+		t.Context(), &wavewalletrpc.PrepareSendRequest{
+			Destination: &wavewalletrpc.PrepareSendRequest_Invoice{
+				Invoice: invoice,
+			},
+			MaxFeeSat:           25,
+			RoutingFeeBudgetSat: 20,
+		},
+	)
+	require.NoError(t, err)
+
+	_, err = r.Send(t.Context(), &wavewalletrpc.SendRequest{
+		SendIntentId: prepared.GetSendIntentId(),
+	})
+	require.NoError(t, err)
+	require.Equal(
+		t, uint64(20), swap.startPayLastReq.GetRoutingFeeBudgetSat(),
 	)
 }
 
