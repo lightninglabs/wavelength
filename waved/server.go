@@ -80,6 +80,7 @@ import (
 	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 )
@@ -2666,12 +2667,26 @@ func (s *Server) connectLnd(ctx context.Context) (*lndclient.GrpcLndServices,
 	})
 }
 
+// operatorKeepaliveParams bounds how long the operator connection can sit on
+// a network path that silently drops packets (a stale conntrack entry after
+// the operator restarts, a NAT timeout, etc.) before gRPC notices and
+// re-dials. Without an explicit keepalive, grpc-go never pings an idle
+// connection, so a peer that vanishes without sending a TCP RST can leave the
+// channel reporting READY indefinitely while every RPC on it hangs.
+var operatorKeepaliveParams = keepalive.ClientParameters{
+	Time:                30 * time.Second,
+	Timeout:             10 * time.Second,
+	PermitWithoutStream: true,
+}
+
 // dialServer establishes a gRPC connection to the ark operator's mailbox
 // edge server. When TLSCertPath is set, the connection uses a custom cert
 // pool anchored to that certificate. When Insecure is set, TLS is disabled
 // entirely (for regtest/development only).
 func (s *Server) dialServer() (*grpc.ClientConn, error) {
-	var dialOpts []grpc.DialOption
+	dialOpts := []grpc.DialOption{
+		grpc.WithKeepaliveParams(operatorKeepaliveParams),
+	}
 
 	// Instrument the operator connection with client-side gRPC metrics
 	// (per-method request count, error rate, handling-time histograms).
