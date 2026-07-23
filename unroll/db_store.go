@@ -107,8 +107,9 @@ func (s *DBRegistryStore) ListNonTerminalRecords(ctx context.Context) (
 
 // MarkTerminal marks one target terminal in the unilateral-exit job table.
 // recoverable selects UnilateralExitJobStatusFailedRecoverable over the
-// plain Failed status for a no-footprint failure so boot-time reconciliation
-// can roll the VTXO back to live (wavelength#602).
+// plain Failed status for a no-footprint failure with objective
+// canonical-absence evidence, allowing boot-time reconciliation to roll the
+// VTXO back to live (wavelength#602).
 func (s *DBRegistryStore) MarkTerminal(ctx context.Context,
 	target wire.OutPoint, phase Phase, recoverable bool, failReason string,
 	sweepTxid *chainhash.Hash) error {
@@ -194,8 +195,8 @@ func registryExitPolicy(record RegistryRecord,
 	return exitPolicyKind(record.ExitPolicyKind), record.ExitPolicyRef
 }
 
-// statusForRecord maps a registry record into the DB status enum, routing a
-// recoverable (no-footprint) failure to the distinct FailedRecoverable status
+// statusForRecord maps a registry record into the DB status enum, routing an
+// authoritatively recoverable failure to the distinct FailedRecoverable status
 // so it round-trips back to RecoverableFailure=true on the next read.
 func statusForRecord(record RegistryRecord) db.UnilateralExitJobStatus {
 	if record.Phase == PhaseFailed && record.RecoverableFailure {
@@ -229,6 +230,20 @@ func statusForPhase(phase Phase) db.UnilateralExitJobStatus {
 
 	case PhaseFailed:
 		return db.UnilateralExitJobStatusFailed
+
+	case PhaseMaterializing:
+		return db.UnilateralExitJobStatusMaterializing
+
+	// PhaseExternalSpendObserved is deliberately collapsed onto
+	// Materializing: it is a transient, reorg-reversible parked phase (an
+	// external spend was seen but has not finalized), the DB status enum
+	// has no dedicated value for it, and the true phase is always
+	// reconstructed from the durable checkpoint on restore -- so no state
+	// is lost. The collapse only affects the coarse operator-facing status
+	// during the parked window; add a dedicated enum value if that window
+	// needs to be independently observable.
+	case PhaseExternalSpendObserved:
+		return db.UnilateralExitJobStatusMaterializing
 
 	default:
 		return db.UnilateralExitJobStatusMaterializing

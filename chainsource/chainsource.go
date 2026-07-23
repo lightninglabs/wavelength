@@ -20,13 +20,7 @@ const (
 	epochChannelSize = 10
 
 	// DefaultFinalityDepth is the conventional Bitcoin reorg-safety
-	// depth. After this many inclusive confirmations the ConfActor
-	// and SpendActor synthesize their Done events when the backend
-	// transport (notably lndclient over gRPC) does not surface one
-	// of its own. Six is the value the wider Lightning stack treats
-	// as final for the purposes of channel funding / settlement, so
-	// using it here keeps the unroll subsystem's finality threshold
-	// aligned with the rest of the daemon's chain assumptions.
+	// depth. Daemon policy may override it through ChainSourceConfig.
 	DefaultFinalityDepth uint32 = 6
 )
 

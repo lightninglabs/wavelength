@@ -103,6 +103,40 @@ type JobState struct {
 	// SweepAttempts counts sweep build or broadcast failures so the actor
 	// can retry up to maxSweepAttempts before giving up.
 	SweepAttempts int
+
+	// ProvisionalExternalSpend records an external spend of the target
+	// outpoint that has been observed but has not yet been finalized
+	// past the backend's reorg-safety depth. While set, the actor is
+	// parked: deriveStateTransition refuses to advance toward a sweep,
+	// since the on-chain state says the target output no longer exists.
+	// A SpendReorgedEvent clears the anchor and lets planning resume;
+	// a SpendFinalizedEvent resolves the target as permanently consumed.
+	//
+	// This field is persisted so a restart cannot forget a reversible
+	// spend and resume planning before canonical evidence is reconciled.
+	ProvisionalExternalSpend fn.Option[ExternalSpendAnchor]
+
+	// ExternalSpendFinalized records that the provisional target spend
+	// crossed policy finality. It is a terminal on-chain resolution, not a
+	// recoverable failure: the VTXO manager must retire the consumed coin.
+	ExternalSpendFinalized bool
+
+	// ReliveUnsafe is set before a job issues or reissues any chain side
+	// effect. Until authoritative canonical absence exists, a later
+	// clean-looking broadcast failure cannot prove the off-chain VTXO
+	// remained live.
+	ReliveUnsafe bool
+}
+
+// ExternalSpendAnchor captures the identity of an external spend of the
+// target outpoint that the actor has observed but has not yet treated
+// as final.
+type ExternalSpendAnchor struct {
+	// SpendingTxid is the txid that consumed the target outpoint.
+	SpendingTxid chainhash.Hash
+
+	// SpendingHeight is the block height the spending tx confirmed at.
+	SpendingHeight int32
 }
 
 // Copy returns a deep copy of the job state.
@@ -113,14 +147,17 @@ func (j *JobState) Copy() *JobState {
 
 	deferred := copyDeferredCheckpoints(j.DeferredCheckpoints)
 	copyState := &JobState{
-		Height:              j.Height,
-		Trigger:             j.Trigger,
-		ExitPolicyKind:      exitPolicyKind(j.ExitPolicyKind),
-		ExitPolicyRef:       j.ExitPolicyRef,
-		PlannerState:        copyPlannerState(j.PlannerState),
-		DeferredCheckpoints: deferred,
-		FailReason:          j.FailReason,
-		SweepAttempts:       j.SweepAttempts,
+		Height:                   j.Height,
+		Trigger:                  j.Trigger,
+		ExitPolicyKind:           exitPolicyKind(j.ExitPolicyKind),
+		ExitPolicyRef:            j.ExitPolicyRef,
+		PlannerState:             copyPlannerState(j.PlannerState),
+		DeferredCheckpoints:      deferred,
+		FailReason:               j.FailReason,
+		SweepAttempts:            j.SweepAttempts,
+		ProvisionalExternalSpend: j.ProvisionalExternalSpend,
+		ExternalSpendFinalized:   j.ExternalSpendFinalized,
+		ReliveUnsafe:             j.ReliveUnsafe,
 	}
 
 	return copyState
@@ -198,10 +235,66 @@ type TxFailedEvent struct {
 
 	// Reason is the stable human-readable failure reason.
 	Reason string
+
+	// DefinitelyNotBroadcast proves that the failed transaction never
+	// crossed the chain boundary. Only this explicit evidence may clear
+	// the fail-closed relive guard.
+	DefinitelyNotBroadcast bool
 }
 
 // eventSealed marks TxFailedEvent as an FSM event.
 func (e *TxFailedEvent) eventSealed() {}
+
+// TxReorgedEvent records that a previously confirmed proof or sweep
+// transaction was reorged out of the canonical chain.
+type TxReorgedEvent struct {
+	// Txid is the reorged transaction hash.
+	Txid chainhash.Hash
+}
+
+// eventSealed marks TxReorgedEvent as an FSM event.
+func (e *TxReorgedEvent) eventSealed() {}
+
+// TxFinalizedEvent records that a confirmation is past the backend's
+// reorg-safety depth.
+type TxFinalizedEvent struct {
+	// Txid is the finalized transaction hash.
+	Txid chainhash.Hash
+}
+
+// eventSealed marks TxFinalizedEvent as an FSM event.
+func (e *TxFinalizedEvent) eventSealed() {}
+
+// ExternalSpendObservedEvent records an external spend of the target
+// outpoint that has not yet been finalized. The reducer parks the
+// actor in AwaitingExternalSpendFinality.
+type ExternalSpendObservedEvent struct {
+	// SpendingTxid is the txid that consumed the target outpoint.
+	SpendingTxid chainhash.Hash
+
+	// SpendingHeight is the block height the spending tx confirmed at.
+	SpendingHeight int32
+}
+
+// eventSealed marks ExternalSpendObservedEvent as an FSM event.
+func (e *ExternalSpendObservedEvent) eventSealed() {}
+
+// SpendReorgedEvent records that a previously observed spend of the
+// target outpoint was reorged out of the canonical chain. The reducer
+// clears any provisional external-spend block on JobState.
+type SpendReorgedEvent struct{}
+
+// eventSealed marks SpendReorgedEvent as an FSM event.
+func (e *SpendReorgedEvent) eventSealed() {}
+
+// SpendFinalizedEvent records that a previously observed external spend
+// of the target outpoint is past the backend's reorg-safety depth. The
+// reducer promotes any provisional external-spend block to terminal consumed
+// state so the VTXO is retired rather than restored.
+type SpendFinalizedEvent struct{}
+
+// eventSealed marks SpendFinalizedEvent as an FSM event.
+func (e *SpendFinalizedEvent) eventSealed() {}
 
 // SweepBroadcastedEvent records that the actor built the final sweep and
 // submitted it to txconfirm.
@@ -315,6 +408,7 @@ func (s *Idle) ProcessEvent(ctx context.Context, event Event,
 			Trigger:        e.Trigger,
 			ExitPolicyKind: exitPolicyKind(e.ExitPolicyKind),
 			ExitPolicyRef:  e.ExitPolicyRef,
+			ReliveUnsafe:   true,
 		}
 
 		return deriveStateTransition(
@@ -323,9 +417,10 @@ func (s *Idle) ProcessEvent(ctx context.Context, event Event,
 
 	case *ResumeEvent:
 		job := &JobState{
-			Height:     e.Height,
-			Trigger:    TriggerRestart,
-			FailReason: "",
+			Height:       e.Height,
+			Trigger:      TriggerRestart,
+			FailReason:   "",
+			ReliveUnsafe: true,
 		}
 
 		return deriveStateTransition(
@@ -445,7 +540,46 @@ func (s *AwaitingSweepConfirmation) ProcessEvent(ctx context.Context,
 	return processEventWithJob(ctx, s.Job, event, env)
 }
 
-// Completed indicates the final sweep has confirmed.
+// AwaitingExternalSpendFinality indicates the actor has observed an
+// external spend of the target outpoint but is waiting for either a
+// reorg (which clears the observation and resumes planning) or a
+// finality signal (which retires the consumed target).
+type AwaitingExternalSpendFinality struct {
+	// Job is the durable FSM state.
+	Job *JobState
+}
+
+// String returns a human-readable state label.
+func (s *AwaitingExternalSpendFinality) String() string {
+	return "AwaitingExternalSpendFinality"
+}
+
+// IsTerminal returns false because the observation is reversible.
+func (s *AwaitingExternalSpendFinality) IsTerminal() bool {
+	return false
+}
+
+// stateSealed marks AwaitingExternalSpendFinality as implementing State.
+func (s *AwaitingExternalSpendFinality) stateSealed() {}
+
+// ProcessEvent delegates to the shared reducer so every event kind is
+// applied uniformly; the reducer's planner-gate keeps the actor parked
+// in this state until SpendReorgedEvent or SpendFinalizedEvent clears
+// or promotes the provisional anchor.
+func (s *AwaitingExternalSpendFinality) ProcessEvent(ctx context.Context,
+	event Event, env *Environment) (*StateTransition, error) {
+
+	return processEventWithJob(ctx, s.Job, event, env)
+}
+
+// Completed indicates the target is durably resolved on chain, either by the
+// final sweep or by a finalized external spend.
+//
+// Completed is reversible until finality: a TxReorgedEvent for the
+// recorded sweep txid (or for the target tx that the sweep depended on)
+// must be routed through the same reducer as the non-terminal states so
+// the actor can roll back to AwaitingSweepConfirmation when the chain
+// disagrees. Any other event is rejected as before.
 type Completed struct {
 	// Job is the durable FSM state.
 	Job *JobState
@@ -456,19 +590,33 @@ func (s *Completed) String() string {
 	return "Completed"
 }
 
-// IsTerminal returns true because this state is terminal.
+// IsTerminal reports whether the planner-derived state is still
+// terminal. Completed remains the public phase label, but a reorg event
+// can re-enter the FSM so it cannot be marked terminal at the protofsm
+// level — otherwise the engine refuses to deliver the rollback event.
 func (s *Completed) IsTerminal() bool {
-	return true
+	return false
 }
 
 // stateSealed marks Completed as implementing State.
 func (s *Completed) stateSealed() {}
 
-// ProcessEvent rejects further events in the terminal completed state.
-func (s *Completed) ProcessEvent(context.Context, Event, *Environment) (
-	*StateTransition, error) {
+// ProcessEvent applies reorg / finality events in the completed state
+// and absorbs every other event kind as an idempotent no-op. Late
+// chain notifications (a TxConfirmedEvent or HeightUpdatedEvent that
+// raced the terminal transition while the registry is draining the
+// actor for cleanup) are already reflected in the terminal checkpoint
+// and should not error.
+func (s *Completed) ProcessEvent(ctx context.Context, event Event,
+	env *Environment) (*StateTransition, error) {
 
-	return nil, fmt.Errorf("completed state is terminal")
+	switch event.(type) {
+	case *TxReorgedEvent, *TxFinalizedEvent:
+		return processEventWithJob(ctx, s.Job, event, env)
+
+	default:
+		return &StateTransition{NextState: s}, nil
+	}
 }
 
 // Failed indicates the actor reached terminal failure.

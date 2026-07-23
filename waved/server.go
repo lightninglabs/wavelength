@@ -2190,13 +2190,13 @@ func (s *Server) registerChainSourceActor(
 		chainsource.ChainSourceConfig{
 			Backend: s.chainBackend,
 			System:  s.actorSystem,
-			// Enable height-based Done synthesis at the default
-			// safety depth. Without this, conf/spend sub-actors
-			// driven through lndclient (whose Done channel is
-			// allocated-but-never-written) would never receive a
-			// finality signal, and reorg-aware consumers like
-			// txconfirm would leak watch state forever.
-			FinalityDepth: chainsource.DefaultFinalityDepth,
+			// Enable height-based Done synthesis just beyond the
+			// configured recovery horizon. Without this, conf/spend
+			// sub-actors driven through lndclient (whose Done
+			// channel is allocated-but-never-written) would never
+			// receive a finality signal, and reorg-aware consumers
+			// like txconfirm would leak watch state forever.
+			FinalityDepth: s.cfg.chainFinalityDepth(),
 		},
 	)
 
@@ -5527,6 +5527,35 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 		exitObserver = fn.Some[actor.TellOnlyRef[vtxo.ManagerMsg]](ref)
 	})
 
+	// Build a chainsource-backed reconciler factory so every per-target
+	// actor re-observes persisted positive anchors before restart. The
+	// current subscription API cannot prove absence, so silence leaves the
+	// checkpoint unchanged and fails closed; it is never treated as a
+	// reorg. See unroll/reconcile.go for the safety rationale.
+	//
+	// The factory bakes the target outpoint into the chainsource
+	// caller-ID prefix so two actors that reconcile the same
+	// shared proof-graph ancestor concurrently land on distinct
+	// service keys (chainsource keys on (CallerID, Txid, PkScript,
+	// TargetConfs)); a static prefix would collide.
+	reconcileLog := s.subLogger("UREC")
+	probeTimeout := s.unrollReconcileProbeTimeout()
+	reconcilerFactory := func(target wire.OutPoint,
+		proof *recovery.Proof) unroll.ChainReconciler {
+
+		return unroll.NewChainSourceReconciler(
+			unroll.ChainSourceReconcilerConfig{
+				ChainSource: chainSourceRef,
+				Proof:       proof,
+				CallerID: fmt.Sprintf(
+					"unroll-reconcile-%s", target,
+				),
+				ProbeTimeout: probeTimeout,
+				Log:          fn.Some(reconcileLog),
+			},
+		)
+	}
+
 	registry := unroll.NewUnrollRegistryActor(unroll.RegistryConfig{
 		Store: &unroll.DBRegistryStore{
 			UEStore: ueStore,
@@ -5547,6 +5576,9 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 			Preimage: preimages,
 		},
 		VTXOExitObserver: exitObserver,
+		ChainReconcilerFactory: fn.Some(
+			unroll.ChainReconcilerFactory(reconcilerFactory),
+		),
 	})
 	s.unrollRegistry = registry
 	s.unrollRegistryRef = fn.Some(registry.Ref())
@@ -5928,9 +5960,10 @@ func (f *faultyUnrollTxConfirm) Ask(ctx context.Context,
 	promise.Complete(
 		fn.Ok[txconfirm.Resp](
 			&txconfirm.EnsureConfirmedResp{
-				Txid:    req.Tx.TxHash(),
-				State:   txconfirm.TxStateFailed,
-				Created: true,
+				Txid:                   req.Tx.TxHash(),
+				State:                  txconfirm.TxStateFailed,
+				Created:                true,
+				DefinitelyNotBroadcast: true,
 			},
 		),
 	)
@@ -6013,6 +6046,20 @@ func (s *Server) unrollMaxFeeRate() int64 {
 	if s.cfg != nil && s.cfg.Unroll != nil &&
 		s.cfg.Unroll.MaxFeeRateSatPerVByte > 0 {
 		return s.cfg.Unroll.MaxFeeRateSatPerVByte
+	}
+
+	return 0
+}
+
+// unrollReconcileProbeTimeout returns the configured per-anchor probe
+// timeout for the chainsource-backed restart reconciler, or zero so
+// the reconciler falls back to defaultReconcileProbeTimeout.
+func (s *Server) unrollReconcileProbeTimeout() time.Duration {
+	if s.cfg.Unroll != nil &&
+		s.cfg.Unroll.ReconcileProbeTimeoutSec > 0 {
+		return time.Duration(
+			s.cfg.Unroll.ReconcileProbeTimeoutSec,
+		) * time.Second
 	}
 
 	return 0

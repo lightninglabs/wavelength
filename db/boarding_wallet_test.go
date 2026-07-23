@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"errors"
 	"testing"
 
 	btcaddr "github.com/btcsuite/btcd/address/v2"
@@ -822,6 +823,94 @@ func TestBoardingSweepFailedRestoresIntent(t *testing.T) {
 	require.Equal(t, wallet.BoardingStatusConfirmed, updated.Status)
 }
 
+// TestBoardingSweepFailedPreservesTerminalInput verifies that a local
+// sweep-level failure restores only unresolved siblings. An input with a
+// final external spend must remain unavailable forever.
+func TestBoardingSweepFailedPreservesTerminalInput(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store, _ := newBoardingStoreForTest(t)
+	terminal := createSweepStoreIntentWithSeed(t, store, 31)
+	unresolved := createSweepStoreIntentWithSeed(t, store, 32)
+
+	sweepTx := wire.NewMsgTx(2)
+	sweepTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: terminal.Outpoint,
+	})
+	sweepTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: unresolved.Outpoint,
+	})
+	sweepTx.AddTxOut(&wire.TxOut{
+		Value:    19_000,
+		PkScript: []byte{txscript.OP_TRUE},
+	})
+	sweepTxid := sweepTx.TxHash()
+
+	err := store.CreatePendingBoardingSweep(ctx, wallet.NewBoardingSweep{
+		Tx:          sweepTx,
+		TotalAmount: 20_000,
+		FeeAmount:   1_000,
+		VBytes:      300,
+		Inputs: []wallet.NewBoardingSweepInput{
+			{
+				Outpoint:       terminal.Outpoint,
+				Amount:         terminal.ChainInfo.Amount,
+				PreviousStatus: terminal.Status,
+			},
+			{
+				Outpoint:       unresolved.Outpoint,
+				Amount:         unresolved.ChainInfo.Amount,
+				PreviousStatus: unresolved.Status,
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	externalTxid := chainhash.Hash{0xfa}
+	resolved, err := store.MarkBoardingSweepInputSpent(
+		ctx, terminal.Outpoint, externalTxid, 333,
+	)
+	require.NoError(t, err)
+	require.False(t, resolved)
+
+	terminalIntent, err := store.GetIntent(ctx, terminal.Outpoint)
+	require.NoError(t, err)
+	require.Equal(t, wallet.BoardingStatusSwept, terminalIntent.Status)
+
+	err = store.MarkBoardingSweepFailed(
+		ctx, sweepTxid, errors.New("conflicting input"),
+	)
+	require.NoError(t, err)
+
+	terminalIntent, err = store.GetIntent(ctx, terminal.Outpoint)
+	require.NoError(t, err)
+	require.Equal(t, wallet.BoardingStatusSwept, terminalIntent.Status)
+
+	unresolvedIntent, err := store.GetIntent(ctx, unresolved.Outpoint)
+	require.NoError(t, err)
+	require.Equal(
+		t, wallet.BoardingStatusConfirmed, unresolvedIntent.Status,
+	)
+
+	record, err := store.GetBoardingSweep(ctx, sweepTxid)
+	require.NoError(t, err)
+	require.NotNil(t, record)
+	require.Equal(t, wallet.BoardingSweepStatusFailed, record.Status)
+	statusByOutpoint := make(map[wire.OutPoint]string, len(record.Inputs))
+	for _, input := range record.Inputs {
+		statusByOutpoint[input.Outpoint] = input.Status
+	}
+	require.Equal(
+		t, wallet.BoardingSweepInputStatusExternalSpent,
+		statusByOutpoint[terminal.Outpoint],
+	)
+	require.Equal(
+		t, wallet.BoardingSweepInputStatusFailed,
+		statusByOutpoint[unresolved.Outpoint],
+	)
+}
+
 // TestBoardingSweepExternalSpendResolvesSeparately verifies an externally
 // spent sweep input does not make the aggregate look confirmed by our tx.
 func TestBoardingSweepExternalSpendResolvesSeparately(t *testing.T) {
@@ -880,6 +969,26 @@ func TestBoardingSweepExternalSpendResolvesSeparately(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Empty(t, confirmed)
+
+	// A stale broadcaster failure cannot overwrite the objective terminal
+	// spend or restore the consumed boarding intent.
+	err = store.MarkBoardingSweepFailed(
+		ctx, sweepTxid, errors.New("late broadcaster failure"),
+	)
+	require.NoError(t, err)
+
+	record, err := store.GetBoardingSweep(ctx, sweepTxid)
+	require.NoError(t, err)
+	require.Equal(
+		t, wallet.BoardingSweepStatusExternalResolved, record.Status,
+	)
+	require.Equal(
+		t, wallet.BoardingSweepInputStatusExternalSpent,
+		dbSweepInputStatus(t, record.Inputs),
+	)
+	updatedIntent, err := store.GetIntent(ctx, intent.Outpoint)
+	require.NoError(t, err)
+	require.Equal(t, wallet.BoardingStatusSwept, updatedIntent.Status)
 }
 
 // TestActiveBoardingSweepInputUnique verifies the DB enforces that one
