@@ -225,12 +225,15 @@ func TestStartPayReturnsSummaryAndStartsWorker(t *testing.T) {
 	payHash := testHash(3)
 	fakeClient := newFakeSwapRuntime(
 		swaps.SwapSummary{
-			Direction:   swaps.SwapDirectionPay,
-			PaymentHash: payHash,
-			State:       "created",
-			Pending:     true,
-			AmountSat:   10_000,
-			MaxFeeSat:   25,
+			Direction:           swaps.SwapDirectionPay,
+			PaymentHash:         payHash,
+			State:               "created",
+			Pending:             true,
+			AmountSat:           10_000,
+			FeeSat:              25,
+			ServerFeeSat:        15,
+			RoutingFeeBudgetSat: 10,
+			MaxFeeSat:           25,
 		},
 	)
 	fakeClient.startPaySession = &fakePaySession{hash: payHash}
@@ -239,13 +242,19 @@ func TestStartPayReturnsSummaryAndStartsWorker(t *testing.T) {
 
 	resp, err := service.StartPay(
 		t.Context(), &swapclientrpc.StartPayRequest{
-			Invoice:   "lnbc1test",
-			MaxFeeSat: 25,
+			Invoice:      "lnbc1test",
+			MaxFeeSat:    25,
+			MaxCreditSat: 11,
 		},
 	)
 	require.NoError(t, err)
 	require.Equal(t, hex.EncodeToString(payHash[:]), resp.GetPaymentHash())
 	require.Equal(t, int64(10_000), resp.GetSwap().GetAmountSat())
+	require.Equal(t, uint64(15), resp.GetSwap().GetServerFeeSat())
+	require.Equal(
+		t, uint64(10), resp.GetSwap().GetRoutingFeeBudgetSat(),
+	)
+	require.Equal(t, uint64(11), fakeClient.startMaxCreditSat)
 
 	fakeClient.awaitPayResume(t, payHash)
 	require.Equal(t, 1, fakeClient.startPayCount())
@@ -261,21 +270,25 @@ func TestQuotePayReturnsRemotePreview(t *testing.T) {
 	expiresAt := time.Unix(1_700_200_000, 0)
 	fakeClient := newFakeSwapRuntime()
 	fakeClient.quotePayResp = &swaps.InSwapQuote{
-		PaymentHash:      payHash,
-		InvoiceAmountSat: 10_000,
-		AmountSat:        10_210,
-		FeeSat:           210,
-		Expiry:           expiresAt,
-		SettlementType:   swaps.SettlementTypeLightning,
-		ExceedsMaxFee:    true,
+		PaymentHash:            payHash,
+		InvoiceAmountSat:       10_000,
+		AmountSat:              10_210,
+		FeeSat:                 210,
+		ServerFeeSat:           190,
+		EstimatedRoutingFeeSat: 3,
+		RoutingFeeBudgetSat:    20,
+		Expiry:                 expiresAt,
+		SettlementType:         swaps.SettlementTypeLightning,
+		ExceedsMaxFee:          true,
 	}
 	service := newTestSwapClientService(fakeClient)
 	defer service.cancel()
 
 	resp, err := service.QuotePay(
 		t.Context(), &swapclientrpc.QuotePayRequest{
-			Invoice:   "lnbc1test",
-			MaxFeeSat: 1,
+			Invoice:      "lnbc1test",
+			MaxFeeSat:    1,
+			MaxCreditSat: 30,
 		},
 	)
 	require.NoError(t, err)
@@ -283,6 +296,9 @@ func TestQuotePayReturnsRemotePreview(t *testing.T) {
 	require.Equal(t, uint64(10_000), resp.GetInvoiceAmountSat())
 	require.Equal(t, uint64(10_210), resp.GetAmountSat())
 	require.Equal(t, uint64(210), resp.GetFeeSat())
+	require.Equal(t, uint64(190), resp.GetServerFeeSat())
+	require.Equal(t, uint64(3), resp.GetEstimatedRoutingFeeSat())
+	require.Equal(t, uint64(20), resp.GetRoutingFeeBudgetSat())
 	require.Equal(
 		t, swapclientrpc.
 			SwapSettlementType_SWAP_SETTLEMENT_TYPE_LIGHTNING,
@@ -293,6 +309,7 @@ func TestQuotePayReturnsRemotePreview(t *testing.T) {
 	require.Equal(t, 1, fakeClient.quotePayCalls)
 	require.Equal(t, "lnbc1test", fakeClient.quotePayInvoice)
 	require.Equal(t, uint64(1), fakeClient.quotePayMaxFeeSat)
+	require.Equal(t, uint64(30), fakeClient.quoteMaxCreditSat)
 	require.Equal(t, 0, fakeClient.startPayCount())
 }
 
@@ -751,30 +768,32 @@ func TestSwapSummaryToProtoCopiesDurableFields(t *testing.T) {
 	)
 
 	got := swapSummaryToProto(swaps.SwapSummary{
-		Direction:        swaps.SwapDirectionReceive,
-		PaymentHash:      hash,
-		Invoice:          "lnbc1summary",
-		State:            "Completed",
-		Pending:          false,
-		AmountSat:        1_000,
-		FeeSat:           20,
-		MaxFeeSat:        30,
-		VHTLCOutpoint:    "txid:0",
-		VHTLCAmountSat:   990,
-		FundingSessionID: "funding",
-		ClaimSessionID:   "claim",
-		RefundSessionID:  "refund",
-		TerminalReason:   "done",
-		CreatedAt:        createdAt,
-		UpdatedAt:        updatedAt,
-		Deadline:         deadline,
-		RefundLocktime:   42,
-		SettlementType:   swaps.SettlementTypeInArk,
-		SenderPubkey:     senderPubKey,
+		Direction:           swaps.SwapDirectionPay,
+		PaymentHash:         hash,
+		Invoice:             "lnbc1summary",
+		State:               "Completed",
+		Pending:             false,
+		AmountSat:           1_000,
+		FeeSat:              20,
+		ServerFeeSat:        12,
+		RoutingFeeBudgetSat: 8,
+		MaxFeeSat:           30,
+		VHTLCOutpoint:       "txid:0",
+		VHTLCAmountSat:      990,
+		FundingSessionID:    "funding",
+		ClaimSessionID:      "claim",
+		RefundSessionID:     "refund",
+		TerminalReason:      "done",
+		CreatedAt:           createdAt,
+		UpdatedAt:           updatedAt,
+		Deadline:            deadline,
+		RefundLocktime:      42,
+		SettlementType:      swaps.SettlementTypeInArk,
+		SenderPubkey:        senderPubKey,
 	})
 
 	require.Equal(
-		t, swapclientrpc.SwapDirection_SWAP_DIRECTION_RECEIVE,
+		t, swapclientrpc.SwapDirection_SWAP_DIRECTION_PAY,
 		got.GetDirection(),
 	)
 	require.Equal(t, hex.EncodeToString(hash[:]), got.GetPaymentHash())
@@ -785,6 +804,8 @@ func TestSwapSummaryToProtoCopiesDurableFields(t *testing.T) {
 	require.False(t, got.GetPending())
 	require.Equal(t, int64(1_000), got.GetAmountSat())
 	require.Equal(t, uint64(20), got.GetFeeSat())
+	require.Equal(t, uint64(12), got.GetServerFeeSat())
+	require.Equal(t, uint64(8), got.GetRoutingFeeBudgetSat())
 	require.Equal(t, uint64(30), got.GetMaxFeeSat())
 	require.Equal(t, "txid:0", got.GetVhtlcOutpoint())
 	require.Equal(t, int64(990), got.GetVhtlcAmountSat())
@@ -1421,7 +1442,9 @@ type fakeSwapRuntime struct {
 	quotePayCalls      int
 	quotePayInvoice    string
 	quotePayMaxFeeSat  uint64
+	quoteMaxCreditSat  uint64
 	startPayMaxFeeSat  uint64
+	startMaxCreditSat  uint64
 	startPayCalls      int
 	startReceiveCalls  int
 	startReceiveMemo   string
@@ -1469,6 +1492,28 @@ func (f *fakeSwapRuntime) QuotePayViaLightning(_ context.Context,
 	return f.quotePayResp, nil
 }
 
+// QuotePayViaLightningWithOptions records explicit fee and credit limits.
+func (f *fakeSwapRuntime) QuotePayViaLightningWithOptions(_ context.Context,
+	invoice string, options swaps.InSwapOptions) (*swaps.InSwapQuote,
+	error) {
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.quotePayCalls++
+	f.quotePayInvoice = invoice
+	f.quotePayMaxFeeSat = options.MaxFeeSat
+	f.quoteMaxCreditSat = options.MaxCreditSat
+	if f.quotePayErr != nil {
+		return nil, f.quotePayErr
+	}
+	if f.quotePayResp == nil {
+		return nil, errors.New("quote pay response not configured")
+	}
+
+	return f.quotePayResp, nil
+}
+
 func (f *fakeSwapRuntime) StartPayViaLightning(_ context.Context, _ string,
 	maxFeeSat uint64) (paySwapSession, error) {
 
@@ -1477,6 +1522,26 @@ func (f *fakeSwapRuntime) StartPayViaLightning(_ context.Context, _ string,
 
 	f.startPayCalls++
 	f.startPayMaxFeeSat = maxFeeSat
+	if f.startPayErr != nil {
+		return nil, f.startPayErr
+	}
+	if f.startPaySession == nil {
+		return nil, errors.New("start pay session not configured")
+	}
+
+	return f.startPaySession, nil
+}
+
+// StartPayViaLightningWithOptions records explicit fee and credit limits.
+func (f *fakeSwapRuntime) StartPayViaLightningWithOptions(_ context.Context,
+	_ string, options swaps.InSwapOptions) (paySwapSession, error) {
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.startPayCalls++
+	f.startPayMaxFeeSat = options.MaxFeeSat
+	f.startMaxCreditSat = options.MaxCreditSat
 	if f.startPayErr != nil {
 		return nil, f.startPayErr
 	}
