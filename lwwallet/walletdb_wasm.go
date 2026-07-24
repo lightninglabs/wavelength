@@ -11,9 +11,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/btcsuite/btcwallet/waddrmgr"
+	base "github.com/btcsuite/btcwallet/wallet"
 	"github.com/btcsuite/btcwallet/walletdb"
 	_ "github.com/lightninglabs/go-wasmsqlite"
 	"github.com/lightninglabs/wavelength/internal/sqlbase"
+	"github.com/lightninglabs/wavelength/walletcore"
 	"github.com/lightningnetwork/lnd/lnwallet/btcwallet"
 )
 
@@ -25,6 +28,61 @@ const (
 	wasmWalletDBMaxConnections  = 1
 	wasmWalletDBFileNamePattern = "/wallet-%016x.db"
 )
+
+var browserPublicScrypt = waddrmgr.ScryptOptions{
+	N: 16,
+	R: 8,
+	P: 1,
+}
+
+// newWalletBootstrap opens the browser wallet directly so Wavelength can
+// select independent public and private KDF profiles. The public passphrase is
+// fixed and protects non-secret metadata, so it uses the fast profile. The
+// private passphrase keeps btcwallet's default profile.
+func newWalletBootstrap(cfg Config) (*base.Wallet,
+	[]btcwallet.LoaderOption, func(), error) {
+
+	opts, cleanup, err := newWalletLoaderOptions(cfg)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	loader, err := btcwallet.NewWalletLoader(
+		cfg.ChainParams, cfg.RecoveryWindow, opts...,
+	)
+	if err != nil {
+		cleanup()
+
+		return nil, nil, nil, err
+	}
+	err = loader.SetCreateScryptOptions(
+		&browserPublicScrypt,
+		&waddrmgr.DefaultScryptOptions,
+	)
+	if err != nil {
+		cleanup()
+
+		return nil, nil, nil, err
+	}
+
+	var wallet *base.Wallet
+	if cfg.Seed != nil {
+		wallet, err = loader.CreateNewWallet(
+			walletcore.PublicWalletPassphrase, cfg.WalletPassword,
+			cfg.Seed, cfg.Birthday,
+		)
+	} else {
+		wallet, err = loader.OpenExistingWallet(
+			walletcore.PublicWalletPassphrase, false,
+		)
+	}
+	if err != nil {
+		cleanup()
+
+		return nil, nil, nil, err
+	}
+
+	return wallet, nil, cleanup, nil
+}
 
 // newWalletLoaderOptions opens btcwallet through an OPFS-backed SQLite
 // walletdb implementation for browser builds. The cleanup func closes

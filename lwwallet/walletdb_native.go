@@ -5,8 +5,22 @@ package lwwallet
 import (
 	"time"
 
+	base "github.com/btcsuite/btcwallet/wallet"
 	"github.com/lightningnetwork/lnd/lnwallet/btcwallet"
 )
+
+// newWalletBootstrap leaves wallet creation and opening to lnd's native
+// btcwallet loader.
+func newWalletBootstrap(cfg Config) (*base.Wallet, []btcwallet.LoaderOption,
+	func(), error) {
+
+	opts, cleanup, err := newWalletLoaderOptions(cfg)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	return nil, opts, cleanup, nil
+}
 
 // newWalletLoaderOptions returns the native btcwallet bbolt loader
 // options. The cleanup func is a no-op: the local database is opened
