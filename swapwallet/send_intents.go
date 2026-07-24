@@ -52,6 +52,9 @@ type prepareSendPreview struct {
 	paymentHash             string
 	warning                 string
 	creditPreview           *wavewalletrpc.CreditPreview
+	serverFeeSat            uint64
+	estimatedRoutingFeeSat  uint64
+	routingFeeBudgetSat     uint64
 }
 
 type preparedSendStore struct {
@@ -181,7 +184,10 @@ func prepareResponseFromIntent(intent *preparedSendIntent,
 		SelectedOutpoints: append(
 			[]string(nil), intent.selectedOutpoints...,
 		),
-		Warning:       preview.warning,
-		CreditPreview: preview.creditPreview,
+		Warning:                preview.warning,
+		CreditPreview:          preview.creditPreview,
+		ServerFeeSat:           preview.serverFeeSat,
+		EstimatedRoutingFeeSat: preview.estimatedRoutingFeeSat,
+		RoutingFeeBudgetSat:    preview.routingFeeBudgetSat,
 	}
 }

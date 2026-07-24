@@ -16,6 +16,7 @@ import (
 	"github.com/lightninglabs/wavelength/credit"
 	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
 	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
+	"github.com/lightninglabs/wavelength/sdk/swaps"
 	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/lightningnetwork/lnd/zpay32"
 	"google.golang.org/grpc/codes"
@@ -141,7 +142,7 @@ func (r *router) prepareInvoice(ctx context.Context, invoice string,
 		ctx, &swapclientrpc.QuotePayRequest{
 			Invoice:      invoice,
 			MaxFeeSat:    req.GetMaxFeeSat(),
-			MaxCreditSat: ^uint64(0),
+			MaxCreditSat: swaps.AllAvailableCredit,
 		},
 	)
 	if err != nil {
@@ -794,6 +795,9 @@ func prepareInvoicePreviewFromQuote(invoice, description, paymentHash string,
 		paymentHash:             quote.GetPaymentHash(),
 		warning:                 warning,
 		creditPreview:           creditPreview,
+		serverFeeSat:            quote.GetServerFeeSat(),
+		estimatedRoutingFeeSat:  quote.GetEstimatedRoutingFeeSat(),
+		routingFeeBudgetSat:     quote.GetRoutingFeeBudgetSat(),
 	}, nil
 }
 
