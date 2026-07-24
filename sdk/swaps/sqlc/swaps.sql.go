@@ -10,7 +10,7 @@ import (
 )
 
 const GetPaySwap = `-- name: GetPaySwap :one
-SELECT payment_hash, invoice, max_fee_sat, state, amount_sat, fee_sat, expiry_unix, client_pubkey, operator_pubkey, server_pubkey, refund_locktime, unilateral_claim_delay, unilateral_refund_delay, unilateral_refund_without_receiver_delay, vhtlc_pkscript, vhtlc_policy_template, vhtlc_outpoint, vhtlc_amount, funding_session_id, refund_receive_pubkey, refund_receive_pkscript, refund_session_id, refund_recovery_id, preimage, intervention_reason, created_at_unix, updated_at_unix, settlement_type FROM pay_swaps
+SELECT payment_hash, invoice, max_fee_sat, state, amount_sat, fee_sat, expiry_unix, client_pubkey, operator_pubkey, server_pubkey, refund_locktime, unilateral_claim_delay, unilateral_refund_delay, unilateral_refund_without_receiver_delay, vhtlc_pkscript, vhtlc_policy_template, vhtlc_outpoint, vhtlc_amount, funding_session_id, refund_receive_pubkey, refund_receive_pkscript, refund_session_id, refund_recovery_id, preimage, intervention_reason, created_at_unix, updated_at_unix, settlement_type, server_fee_sat, routing_fee_budget_sat FROM pay_swaps
 WHERE payment_hash = $1
 LIMIT 1
 `
@@ -47,6 +47,8 @@ func (q *Queries) GetPaySwap(ctx context.Context, paymentHash []byte) (PaySwap, 
 		&i.CreatedAtUnix,
 		&i.UpdatedAtUnix,
 		&i.SettlementType,
+		&i.ServerFeeSat,
+		&i.RoutingFeeBudgetSat,
 	)
 	return i, err
 }
@@ -98,7 +100,7 @@ func (q *Queries) GetReceiveSwap(ctx context.Context, paymentHash []byte) (Recei
 }
 
 const ListPaySwaps = `-- name: ListPaySwaps :many
-SELECT payment_hash, invoice, max_fee_sat, state, amount_sat, fee_sat, expiry_unix, client_pubkey, operator_pubkey, server_pubkey, refund_locktime, unilateral_claim_delay, unilateral_refund_delay, unilateral_refund_without_receiver_delay, vhtlc_pkscript, vhtlc_policy_template, vhtlc_outpoint, vhtlc_amount, funding_session_id, refund_receive_pubkey, refund_receive_pkscript, refund_session_id, refund_recovery_id, preimage, intervention_reason, created_at_unix, updated_at_unix, settlement_type FROM pay_swaps
+SELECT payment_hash, invoice, max_fee_sat, state, amount_sat, fee_sat, expiry_unix, client_pubkey, operator_pubkey, server_pubkey, refund_locktime, unilateral_claim_delay, unilateral_refund_delay, unilateral_refund_without_receiver_delay, vhtlc_pkscript, vhtlc_policy_template, vhtlc_outpoint, vhtlc_amount, funding_session_id, refund_receive_pubkey, refund_receive_pkscript, refund_session_id, refund_recovery_id, preimage, intervention_reason, created_at_unix, updated_at_unix, settlement_type, server_fee_sat, routing_fee_budget_sat FROM pay_swaps
 ORDER BY created_at_unix ASC
 `
 
@@ -140,6 +142,8 @@ func (q *Queries) ListPaySwaps(ctx context.Context) ([]PaySwap, error) {
 			&i.CreatedAtUnix,
 			&i.UpdatedAtUnix,
 			&i.SettlementType,
+			&i.ServerFeeSat,
+			&i.RoutingFeeBudgetSat,
 		); err != nil {
 			return nil, err
 		}
@@ -155,7 +159,7 @@ func (q *Queries) ListPaySwaps(ctx context.Context) ([]PaySwap, error) {
 }
 
 const ListPendingPaySwaps = `-- name: ListPendingPaySwaps :many
-SELECT payment_hash, invoice, max_fee_sat, state, amount_sat, fee_sat, expiry_unix, client_pubkey, operator_pubkey, server_pubkey, refund_locktime, unilateral_claim_delay, unilateral_refund_delay, unilateral_refund_without_receiver_delay, vhtlc_pkscript, vhtlc_policy_template, vhtlc_outpoint, vhtlc_amount, funding_session_id, refund_receive_pubkey, refund_receive_pkscript, refund_session_id, refund_recovery_id, preimage, intervention_reason, created_at_unix, updated_at_unix, settlement_type FROM pay_swaps
+SELECT payment_hash, invoice, max_fee_sat, state, amount_sat, fee_sat, expiry_unix, client_pubkey, operator_pubkey, server_pubkey, refund_locktime, unilateral_claim_delay, unilateral_refund_delay, unilateral_refund_without_receiver_delay, vhtlc_pkscript, vhtlc_policy_template, vhtlc_outpoint, vhtlc_amount, funding_session_id, refund_receive_pubkey, refund_receive_pkscript, refund_session_id, refund_recovery_id, preimage, intervention_reason, created_at_unix, updated_at_unix, settlement_type, server_fee_sat, routing_fee_budget_sat FROM pay_swaps
 WHERE state NOT IN (
     'Completed', 'Expired', 'Refunded', 'NeedsIntervention', 'Failed'
 )
@@ -200,6 +204,8 @@ func (q *Queries) ListPendingPaySwaps(ctx context.Context) ([]PaySwap, error) {
 			&i.CreatedAtUnix,
 			&i.UpdatedAtUnix,
 			&i.SettlementType,
+			&i.ServerFeeSat,
+			&i.RoutingFeeBudgetSat,
 		); err != nil {
 			return nil, err
 		}
@@ -345,6 +351,8 @@ INSERT INTO pay_swaps (
     state,
     amount_sat,
     fee_sat,
+    server_fee_sat,
+    routing_fee_budget_sat,
     expiry_unix,
     client_pubkey,
     operator_pubkey,
@@ -369,7 +377,7 @@ INSERT INTO pay_swaps (
     updated_at_unix
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-    $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28
+    $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30
 )
 ON CONFLICT (payment_hash) DO UPDATE SET
     invoice = EXCLUDED.invoice,
@@ -377,6 +385,8 @@ ON CONFLICT (payment_hash) DO UPDATE SET
     state = EXCLUDED.state,
     amount_sat = EXCLUDED.amount_sat,
     fee_sat = EXCLUDED.fee_sat,
+    server_fee_sat = EXCLUDED.server_fee_sat,
+    routing_fee_budget_sat = EXCLUDED.routing_fee_budget_sat,
     expiry_unix = EXCLUDED.expiry_unix,
     client_pubkey = EXCLUDED.client_pubkey,
     operator_pubkey = EXCLUDED.operator_pubkey,
@@ -408,6 +418,8 @@ type UpsertPaySwapParams struct {
 	State                                string
 	AmountSat                            int64
 	FeeSat                               int64
+	ServerFeeSat                         int64
+	RoutingFeeBudgetSat                  int64
 	ExpiryUnix                           int64
 	ClientPubkey                         []byte
 	OperatorPubkey                       []byte
@@ -440,6 +452,8 @@ func (q *Queries) UpsertPaySwap(ctx context.Context, arg UpsertPaySwapParams) er
 		arg.State,
 		arg.AmountSat,
 		arg.FeeSat,
+		arg.ServerFeeSat,
+		arg.RoutingFeeBudgetSat,
 		arg.ExpiryUnix,
 		arg.ClientPubkey,
 		arg.OperatorPubkey,

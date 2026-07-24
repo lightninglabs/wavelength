@@ -321,26 +321,33 @@ func paySummaryFromRow(row swapsqlc.PaySwap) (SwapSummary, error) {
 		preimage = &decoded
 	}
 
+	serverFeeSat, routingFeeBudgetSat := normalizeInSwapFeeTerms(
+		uint64(row.FeeSat), uint64(row.ServerFeeSat),
+		uint64(row.RoutingFeeBudgetSat),
+	)
+
 	return SwapSummary{
-		Direction:        SwapDirectionPay,
-		PaymentHash:      paymentHash,
-		Preimage:         preimage,
-		Invoice:          row.Invoice,
-		State:            state.String(),
-		Pending:          !state.IsTerminal(),
-		AmountSat:        row.AmountSat,
-		FeeSat:           uint64(row.FeeSat),
-		MaxFeeSat:        uint64(row.MaxFeeSat),
-		VHTLCOutpoint:    row.VhtlcOutpoint,
-		VHTLCAmountSat:   row.VhtlcAmount,
-		FundingSessionID: row.FundingSessionID,
-		RefundSessionID:  row.RefundSessionID,
-		SettlementType:   SettlementType(row.SettlementType),
-		TerminalReason:   row.InterventionReason,
-		CreatedAt:        time.Unix(row.CreatedAtUnix, 0),
-		UpdatedAt:        time.Unix(row.UpdatedAtUnix, 0),
-		Deadline:         time.Unix(row.ExpiryUnix, 0),
-		RefundLocktime:   uint32(row.RefundLocktime),
+		Direction:           SwapDirectionPay,
+		PaymentHash:         paymentHash,
+		Preimage:            preimage,
+		Invoice:             row.Invoice,
+		State:               state.String(),
+		Pending:             !state.IsTerminal(),
+		AmountSat:           row.AmountSat,
+		FeeSat:              uint64(row.FeeSat),
+		ServerFeeSat:        serverFeeSat,
+		RoutingFeeBudgetSat: routingFeeBudgetSat,
+		MaxFeeSat:           uint64(row.MaxFeeSat),
+		VHTLCOutpoint:       row.VhtlcOutpoint,
+		VHTLCAmountSat:      row.VhtlcAmount,
+		FundingSessionID:    row.FundingSessionID,
+		RefundSessionID:     row.RefundSessionID,
+		SettlementType:      SettlementType(row.SettlementType),
+		TerminalReason:      row.InterventionReason,
+		CreatedAt:           time.Unix(row.CreatedAtUnix, 0),
+		UpdatedAt:           time.Unix(row.UpdatedAtUnix, 0),
+		Deadline:            time.Unix(row.ExpiryUnix, 0),
+		RefundLocktime:      uint32(row.RefundLocktime),
 	}, nil
 }
 
@@ -650,7 +657,13 @@ func (s *paySession) persist(ctx context.Context) error {
 		State:       s.state.String(),
 		AmountSat:   s.cfg.AmountSat,
 		FeeSat:      int64(s.cfg.FeeSat),
-		ExpiryUnix:  s.cfg.Expiry.Unix(),
+		ServerFeeSat: int64(
+			s.cfg.ServerFeeSat,
+		),
+		RoutingFeeBudgetSat: int64(
+			s.cfg.RoutingFeeBudgetSat,
+		),
+		ExpiryUnix: s.cfg.Expiry.Unix(),
 		ClientPubkey: append(
 			[]byte(nil), s.clientPubKey.SerializeCompressed()...,
 		),
@@ -893,9 +906,13 @@ func paySessionFromRow(c *SwapClient,
 	}
 
 	cfg := &InSwapConfig{
-		PaymentHash:    paymentHash,
-		AmountSat:      row.AmountSat,
-		FeeSat:         uint64(row.FeeSat),
+		PaymentHash:  paymentHash,
+		AmountSat:    row.AmountSat,
+		FeeSat:       uint64(row.FeeSat),
+		ServerFeeSat: uint64(row.ServerFeeSat),
+		RoutingFeeBudgetSat: uint64(
+			row.RoutingFeeBudgetSat,
+		),
 		ServerPubkey:   serverKey,
 		SettlementType: settlementType,
 		VHTLCConfig: restoreVHTLCConfig(
@@ -906,15 +923,18 @@ func paySessionFromRow(c *SwapClient,
 		),
 		Expiry: time.Unix(row.ExpiryUnix, 0),
 	}
+	normalizeInSwapConfigFeeTerms(cfg)
 
 	session := &paySession{
-		client:        c,
-		invoice:       row.Invoice,
-		maxFeeSat:     uint64(row.MaxFeeSat),
-		state:         state,
-		cfg:           cfg,
-		vhtlcPolicy:   policy,
-		vhtlcPkScript: append([]byte(nil), row.VhtlcPkscript...),
+		client:      c,
+		invoice:     row.Invoice,
+		maxFeeSat:   uint64(row.MaxFeeSat),
+		state:       state,
+		cfg:         cfg,
+		vhtlcPolicy: policy,
+		vhtlcPkScript: append(
+			[]byte(nil), row.VhtlcPkscript...,
+		),
 		vhtlcPolicyTemplate: append(
 			[]byte(nil), row.VhtlcPolicyTemplate...,
 		),

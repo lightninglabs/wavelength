@@ -53,3 +53,26 @@ func TestPaySummaryFromRowNilPreimageWhilePending(t *testing.T) {
 	require.NoError(t, err)
 	require.Nil(t, summary.Preimage)
 }
+
+// TestPaySummaryFromLegacyRowReconcilesFeeTerms verifies pre-migration rows
+// expose a conservative split instead of an irreconcilable zero breakdown.
+func TestPaySummaryFromLegacyRowReconcilesFeeTerms(t *testing.T) {
+	t.Parallel()
+
+	var paymentHash lntypes.Hash
+	paymentHash[0] = 0xcd
+
+	summary, err := paySummaryFromRow(swapsqlc.PaySwap{
+		PaymentHash: paymentHash[:],
+		State:       PayStateCompleted.String(),
+		AmountSat:   10_100,
+		FeeSat:      100,
+	})
+	require.NoError(t, err)
+	require.Zero(t, summary.ServerFeeSat)
+	require.Equal(t, uint64(100), summary.RoutingFeeBudgetSat)
+	require.Equal(
+		t, summary.FeeSat,
+		summary.ServerFeeSat+summary.RoutingFeeBudgetSat,
+	)
+}
