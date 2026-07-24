@@ -140,6 +140,7 @@ func TestPaySessionPersistAllowsCreditOnlyWithoutVHTLC(t *testing.T) {
 		state:     PayStateCompleted,
 		cfg: &InSwapConfig{
 			PaymentHash:         preimage.Hash(),
+			FeeSat:              10,
 			ServerFeeSat:        3,
 			RoutingFeeBudgetSat: 7,
 			SettlementType:      SettlementTypeCredit,
@@ -173,6 +174,56 @@ func TestPaySessionPersistAllowsCreditOnlyWithoutVHTLC(t *testing.T) {
 	require.EqualValues(t, 7, resumed.cfg.RoutingFeeBudgetSat)
 	require.Empty(t, resumed.vhtlcPkScript)
 	require.Empty(t, resumed.vhtlcPolicyTemplate)
+}
+
+// TestPaySessionRestoreRejectsInvalidFeeTerms verifies corrupted durable fee
+// components cannot resume into a payment session.
+func TestPaySessionRestoreRejectsInvalidFeeTerms(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := newTestSwapStore(t)
+	client := NewSwapClientWithStore(nil, nil, nil, nil, store)
+
+	key, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	preimage, err := NewPreimage()
+	require.NoError(t, err)
+
+	now := time.Now()
+	session := &paySession{
+		client:    client,
+		invoice:   "ln-invalid-fee-terms",
+		maxFeeSat: 100,
+		state:     PayStateCompleted,
+		cfg: &InSwapConfig{
+			PaymentHash:         preimage.Hash(),
+			FeeSat:              10,
+			ServerFeeSat:        3,
+			RoutingFeeBudgetSat: 7,
+			SettlementType:      SettlementTypeCredit,
+			Preimage:            &preimage,
+			Expiry:              now.Add(time.Hour),
+		},
+		preimage:       &preimage,
+		clientPubKey:   key.PubKey(),
+		operatorPubKey: key.PubKey(),
+		serverPubKey:   key.PubKey(),
+		createdAt:      now,
+	}
+	require.NoError(t, session.persist(ctx))
+
+	paymentHash := preimage.Hash()
+	_, err = store.DB().ExecContext(
+		ctx, "UPDATE pay_swaps SET server_fee_sat = 11 "+
+			"WHERE payment_hash = ?", paymentHash[:],
+	)
+	require.NoError(t, err)
+
+	_, err = client.ResumePayViaLightning(ctx, paymentHash)
+	require.ErrorContains(t, err, "restore in-swap fee terms")
+	require.ErrorContains(t, err, "fee split does not reconcile")
 }
 
 // TestReceiveAuthKeyDerivesAcrossRestart verifies receive-auth keys come from

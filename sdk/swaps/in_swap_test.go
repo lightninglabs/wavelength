@@ -46,6 +46,7 @@ type testInSwapServerConn struct {
 	quoteCalls          int
 	quoteInvoice        string
 	quoteMaxFeeSat      uint64
+	quoteAccountKey     []byte
 	createCalls         int
 	createAccountKey    []byte
 	createMaxCreditSat  uint64
@@ -136,6 +137,31 @@ func (c *testInSwapServerConn) CreateInSwapWithCredits(_ context.Context,
 	return c.cfg, nil
 }
 
+// CreateInSwapWithOptions returns the preconfigured config and records all
+// caller-controlled limits.
+func (c *testInSwapServerConn) CreateInSwapWithOptions(_ context.Context,
+	_ string, options InSwapOptions, _ *btcec.PublicKey,
+	accountKey []byte) (*InSwapConfig, error) {
+
+	c.createCalls++
+	c.createAccountKey = append([]byte(nil), accountKey...)
+	c.createMaxCreditSat = options.MaxCreditSat
+
+	cfg := c.cfg
+	if cfg != nil && cfg.FeeSat > 0 && cfg.ServerFeeSat == 0 &&
+		cfg.RoutingFeeBudgetSat == 0 {
+
+		// Most FSM fixtures predate the additive fee split. Model a
+		// conforming options-capable server without duplicating the
+		// same routing-only split in every unrelated lifecycle test.
+		clone := *cfg
+		clone.RoutingFeeBudgetSat = clone.FeeSat
+		cfg = &clone
+	}
+
+	return cfg, nil
+}
+
 // QuoteInSwap returns the preconfigured in-swap quote.
 func (c *testInSwapServerConn) QuoteInSwap(_ context.Context, invoice string,
 	maxFeeSat uint64) (*InSwapQuote, error) {
@@ -143,6 +169,23 @@ func (c *testInSwapServerConn) QuoteInSwap(_ context.Context, invoice string,
 	c.quoteCalls++
 	c.quoteInvoice = invoice
 	c.quoteMaxFeeSat = maxFeeSat
+	if c.quoteErr != nil {
+		return nil, c.quoteErr
+	}
+
+	return c.quote, nil
+}
+
+// QuoteInSwapWithOptions returns the preconfigured quote and records all
+// caller-controlled limits.
+func (c *testInSwapServerConn) QuoteInSwapWithOptions(_ context.Context,
+	invoice string, options InSwapOptions, accountKey []byte) (*InSwapQuote,
+	error) {
+
+	c.quoteCalls++
+	c.quoteInvoice = invoice
+	c.quoteMaxFeeSat = options.MaxFeeSat
+	c.quoteAccountKey = append([]byte(nil), accountKey...)
 	if c.quoteErr != nil {
 		return nil, c.quoteErr
 	}
@@ -270,10 +313,12 @@ func testInSwapConfig(serverPubkey *btcec.PublicKey, preimage lntypes.Preimage,
 	expiry time.Time) *InSwapConfig {
 
 	return &InSwapConfig{
-		PaymentHash:  preimage.Hash(),
-		AmountSat:    testInSwapAmountSat,
-		FeeSat:       testInSwapFeeSat,
-		ServerPubkey: serverPubkey,
+		PaymentHash:         preimage.Hash(),
+		AmountSat:           testInSwapAmountSat,
+		FeeSat:              testInSwapFeeSat,
+		ServerFeeSat:        23,
+		RoutingFeeBudgetSat: testInSwapFeeSat - 23,
+		ServerPubkey:        serverPubkey,
 		VHTLCConfig: VHTLCConfig{
 			RefundLocktime:                       144,
 			UnilateralClaimDelay:                 12,
@@ -302,23 +347,30 @@ func TestQuotePayViaLightningReturnsBoundPreview(t *testing.T) {
 	invoice := testValidPayInvoice(t, preimage)
 
 	expiry := time.Now().Add(time.Minute)
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
 	serverConn := &testInSwapServerConn{
 		quote: &InSwapQuote{
-			PaymentHash:      preimage.Hash(),
-			InvoiceAmountSat: testInSwapInvoiceSat,
-			AmountSat:        testInSwapAmountSat,
-			FeeSat:           testInSwapFeeSat,
-			Expiry:           expiry,
-			SettlementType:   SettlementTypeLightning,
-			ExceedsMaxFee:    true,
+			PaymentHash:         preimage.Hash(),
+			InvoiceAmountSat:    testInSwapInvoiceSat,
+			AmountSat:           testInSwapAmountSat,
+			FeeSat:              testInSwapFeeSat,
+			ServerFeeSat:        23,
+			RoutingFeeBudgetSat: testInSwapFeeSat - 23,
+			Expiry:              expiry,
+			SettlementType:      SettlementTypeLightning,
+			ExceedsMaxFee:       true,
 		},
 	}
+	daemonConn := &testDaemonConn{identityKey: clientPriv.PubKey()}
 	client := configureTestPayClient(
-		NewSwapClient(serverConn, nil, nil, nil),
+		NewSwapClient(serverConn, daemonConn, nil, nil),
 	)
 
-	quote, err := client.QuotePayViaLightning(
-		t.Context(), invoice, testInSwapFeeSat-1,
+	quote, err := client.QuotePayViaLightningWithOptions(
+		t.Context(), invoice, InSwapOptions{
+			MaxFeeSat: testInSwapFeeSat - 1,
+		},
 	)
 	require.NoError(t, err)
 	require.Equal(t, preimage.Hash(), quote.PaymentHash)
@@ -332,7 +384,140 @@ func TestQuotePayViaLightningReturnsBoundPreview(t *testing.T) {
 	require.Equal(t, invoice, serverConn.quoteInvoice)
 	require.Equal(t, uint64(testInSwapFeeSat-1),
 		serverConn.quoteMaxFeeSat)
+	require.Equal(
+		t, clientPriv.PubKey().SerializeCompressed(),
+		serverConn.quoteAccountKey,
+	)
 	require.Zero(t, serverConn.createCalls)
+}
+
+// TestQuotePayViaLightningRequiresDaemon verifies options-capable quote
+// connections report a missing wallet daemon instead of dereferencing it.
+func TestQuotePayViaLightningRequiresDaemon(t *testing.T) {
+	t.Parallel()
+
+	preimage, err := NewPreimage()
+	require.NoError(t, err)
+	invoice := testValidPayInvoice(t, preimage)
+	serverConn := &testInSwapServerConn{}
+	client := configureTestPayClient(
+		NewSwapClient(serverConn, nil, nil, nil),
+	)
+
+	_, err = client.QuotePayViaLightningWithOptions(
+		t.Context(), invoice, InSwapOptions{},
+	)
+	require.ErrorContains(t, err, "daemon is not configured")
+	require.Zero(t, serverConn.quoteCalls)
+}
+
+// TestQuotePayViaLightningNormalizesLegacyFeeTerms verifies older server
+// interfaces remain compatible when they cannot return a fee decomposition.
+func TestQuotePayViaLightningNormalizesLegacyFeeTerms(t *testing.T) {
+	t.Parallel()
+
+	preimage, err := NewPreimage()
+	require.NoError(t, err)
+	invoice := testValidPayInvoice(t, preimage)
+	serverConn := &testInSwapServerConn{
+		quote: &InSwapQuote{
+			PaymentHash:      preimage.Hash(),
+			InvoiceAmountSat: testInSwapInvoiceSat,
+			AmountSat:        testInSwapAmountSat,
+			FeeSat:           testInSwapFeeSat,
+			Expiry:           time.Now().Add(time.Minute),
+			SettlementType:   SettlementTypeLightning,
+		},
+	}
+	legacyServer := struct{ SwapServerConn }{serverConn}
+	client := configureTestPayClient(
+		NewSwapClient(&legacyServer, nil, nil, nil),
+	)
+
+	quote, err := client.QuotePayViaLightningWithOptions(
+		t.Context(), invoice, InSwapOptions{
+			MaxFeeSat: testInSwapFeeSat,
+		},
+	)
+	require.NoError(t, err)
+	require.Zero(t, quote.ServerFeeSat)
+	require.Equal(t, uint64(testInSwapFeeSat),
+		quote.RoutingFeeBudgetSat)
+}
+
+// TestQuotePayViaLightningRejectsMissingCurrentFeeTerms verifies the options
+// contract cannot hide a current server that omits its fee decomposition.
+func TestQuotePayViaLightningRejectsMissingCurrentFeeTerms(t *testing.T) {
+	t.Parallel()
+
+	preimage, err := NewPreimage()
+	require.NoError(t, err)
+	invoice := testValidPayInvoice(t, preimage)
+	serverConn := &testInSwapServerConn{
+		quote: &InSwapQuote{
+			PaymentHash:      preimage.Hash(),
+			InvoiceAmountSat: testInSwapInvoiceSat,
+			AmountSat:        testInSwapAmountSat,
+			FeeSat:           testInSwapFeeSat,
+			Expiry:           time.Now().Add(time.Minute),
+			SettlementType:   SettlementTypeLightning,
+		},
+	}
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	client := configureTestPayClient(
+		NewSwapClient(
+			serverConn, &testDaemonConn{
+				identityKey: clientPriv.PubKey(),
+			},
+			nil,
+			nil,
+		),
+	)
+
+	_, err = client.QuotePayViaLightningWithOptions(
+		t.Context(), invoice, InSwapOptions{
+			MaxFeeSat: testInSwapFeeSat,
+		},
+	)
+	require.ErrorContains(t, err, "fee split does not reconcile")
+}
+
+// TestValidateInSwapOptionsRejectsOverflow verifies fee and credit limits fit
+// their durable BIGINT representation before a session is created.
+func TestValidateInSwapOptionsRejectsOverflow(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		options InSwapOptions
+		errText string
+	}{
+		{
+			name: "max fee",
+			options: InSwapOptions{
+				MaxFeeSat: maxInt64Uint + 1,
+			},
+			errText: "max fee",
+		},
+		{
+			name: "max credit",
+			options: InSwapOptions{
+				MaxCreditSat: maxInt64Uint + 1,
+			},
+			errText: "max credit",
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := validateInSwapOptions(test.options)
+			require.ErrorContains(t, err, test.errText)
+		})
+	}
 }
 
 // TestValidateInSwapPreviewAllowsCreditOnlyZeroAmount verifies credit-only
@@ -361,6 +546,62 @@ func TestValidateInSwapPreviewAllowsCreditOnlyZeroAmount(t *testing.T) {
 		invoice, quote, &chaincfg.RegressionNetParams,
 	)
 	require.NoError(t, err)
+}
+
+// TestValidateInSwapPreviewRejectsInvalidFeeTerms verifies wallet previews do
+// not display overflowing or internally inconsistent server fee components.
+func TestValidateInSwapPreviewRejectsInvalidFeeTerms(t *testing.T) {
+	t.Parallel()
+
+	preimage, err := NewPreimage()
+	require.NoError(t, err)
+	invoice := testValidPayInvoice(t, preimage)
+
+	baseQuote := InSwapQuote{
+		PaymentHash:         preimage.Hash(),
+		InvoiceAmountSat:    testInSwapInvoiceSat,
+		AmountSat:           testInSwapAmountSat,
+		FeeSat:              testInSwapFeeSat,
+		ServerFeeSat:        23,
+		RoutingFeeBudgetSat: testInSwapFeeSat - 23,
+		Expiry:              time.Now().Add(time.Minute),
+		SettlementType:      SettlementTypeLightning,
+	}
+
+	tests := []struct {
+		name    string
+		mutate  func(*InSwapQuote)
+		errText string
+	}{
+		{
+			name: "estimated routing fee overflow",
+			mutate: func(quote *InSwapQuote) {
+				quote.EstimatedRoutingFeeSat = maxInt64Uint + 1
+			},
+			errText: "estimated routing fee overflows",
+		},
+		{
+			name: "fee split mismatch",
+			mutate: func(quote *InSwapQuote) {
+				quote.RoutingFeeBudgetSat--
+			},
+			errText: "fee split does not reconcile",
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			quote := baseQuote
+			test.mutate(&quote)
+			err := validateInSwapPreview(
+				invoice, &quote, &chaincfg.RegressionNetParams,
+			)
+			require.ErrorContains(t, err, test.errText)
+		})
+	}
 }
 
 // TestValidateInSwapQuoteRejectsServerMismatches verifies the client treats
@@ -429,6 +670,33 @@ func TestValidateInSwapQuoteRejectsServerMismatches(t *testing.T) {
 			cfg.FeeSat = maxInt64Uint + 1
 		},
 		wantErr: "fee overflows int64 range",
+	}, {
+		name:        "server fee overflows int64",
+		invoice:     invoice,
+		maxFeeSat:   testInSwapFeeSat,
+		chainParams: &chaincfg.RegressionNetParams,
+		mutate: func(cfg *InSwapConfig) {
+			cfg.ServerFeeSat = maxInt64Uint + 1
+		},
+		wantErr: "server fee overflows int64 range",
+	}, {
+		name:        "routing fee budget overflows int64",
+		invoice:     invoice,
+		maxFeeSat:   testInSwapFeeSat,
+		chainParams: &chaincfg.RegressionNetParams,
+		mutate: func(cfg *InSwapConfig) {
+			cfg.RoutingFeeBudgetSat = maxInt64Uint + 1
+		},
+		wantErr: "routing fee budget overflows int64 range",
+	}, {
+		name:        "fee split mismatch",
+		invoice:     invoice,
+		maxFeeSat:   testInSwapFeeSat,
+		chainParams: &chaincfg.RegressionNetParams,
+		mutate: func(cfg *InSwapConfig) {
+			cfg.RoutingFeeBudgetSat--
+		},
+		wantErr: "fee split does not reconcile",
 	}, {
 		name:        "amount below invoice plus fee",
 		invoice:     invoice,
@@ -573,8 +841,11 @@ func TestPaySessionCreditOnlyStartCompletesWithoutVHTLC(t *testing.T) {
 		NewSwapClient(serverConn, daemonConn, nil, nil),
 	)
 
-	session, err := client.StartPayViaLightningWithCredits(
-		t.Context(), invoice, testInSwapFeeSat, creditSat,
+	session, err := client.StartPayViaLightningWithOptions(
+		t.Context(), invoice, InSwapOptions{
+			MaxFeeSat:    testInSwapFeeSat,
+			MaxCreditSat: creditSat,
+		},
 	)
 	require.NoError(t, err)
 	require.Equal(t, PayStateCompleted, session.State())

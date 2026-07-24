@@ -57,7 +57,11 @@ func ceilMsatToSat(msat uint64) uint64 {
 func (c *SwapClient) QuotePayViaLightning(ctx context.Context, invoice string,
 	maxFeeSat uint64) (*InSwapQuote, error) {
 
-	return c.QuotePayViaLightningWithCredits(ctx, invoice, maxFeeSat, 0)
+	return c.QuotePayViaLightningWithOptions(
+		ctx, invoice, InSwapOptions{
+			MaxFeeSat: maxFeeSat,
+		},
+	)
 }
 
 // QuotePayViaLightningWithCredits previews a pay-side in-swap with optional
@@ -66,37 +70,78 @@ func (c *SwapClient) QuotePayViaLightningWithCredits(ctx context.Context,
 	invoice string, maxFeeSat uint64, maxCreditSat uint64) (*InSwapQuote,
 	error) {
 
+	return c.QuotePayViaLightningWithOptions(ctx, invoice, InSwapOptions{
+		MaxFeeSat:    maxFeeSat,
+		MaxCreditSat: maxCreditSat,
+	})
+}
+
+// QuotePayViaLightningWithOptions previews a pay-side in-swap with explicit
+// fee and credit limits.
+func (c *SwapClient) QuotePayViaLightningWithOptions(ctx context.Context,
+	invoice string, options InSwapOptions) (*InSwapQuote, error) {
+
 	if c == nil || c.server == nil {
 		return nil, fmt.Errorf("swap server is required")
 	}
+	if err := validateInSwapOptions(options); err != nil {
+		return nil, err
+	}
 
-	var quote *InSwapQuote
+	var (
+		quote          *InSwapQuote
+		legacyFeeTerms bool
+	)
 	if server, ok := c.server.(interface {
-		QuoteInSwapWithCredits(context.Context, string, uint64, []byte,
-			uint64) (*InSwapQuote, error)
+		QuoteInSwapWithOptions(context.Context, string, InSwapOptions,
+			[]byte) (*InSwapQuote, error)
 	}); ok {
 
-		accountKey, err := c.daemon.IdentityPubKey(ctx)
+		accountKey, err := c.inSwapQuoteAccountKey(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("get credit account pubkey: %w",
-				err)
+			return nil, err
 		}
 
-		quote, err = server.QuoteInSwapWithCredits(
-			ctx, invoice, maxFeeSat,
-			accountKey.SerializeCompressed(), maxCreditSat,
+		quoted, err := server.QuoteInSwapWithOptions(
+			ctx, invoice, options, accountKey,
 		)
 		if err != nil {
 			return nil, err
 		}
+		quote = quoted
+	} else if server, ok := c.server.(interface {
+		QuoteInSwapWithCredits(context.Context, string, uint64, []byte,
+			uint64) (*InSwapQuote, error)
+	}); ok {
+
+		legacyFeeTerms = true
+		accountKey, err := c.inSwapQuoteAccountKey(ctx)
+		if err != nil {
+			return nil, err
+		}
+
+		quoted, err := server.QuoteInSwapWithCredits(
+			ctx, invoice, options.MaxFeeSat, accountKey,
+			options.MaxCreditSat,
+		)
+		if err != nil {
+			return nil, err
+		}
+		quote = quoted
 	} else {
+		legacyFeeTerms = true
 		var err error
-		quote, err = c.server.QuoteInSwap(ctx, invoice, maxFeeSat)
+		quote, err = c.server.QuoteInSwap(
+			ctx, invoice, options.MaxFeeSat,
+		)
 		if err != nil {
 			return nil, err
 		}
 	}
 
+	if legacyFeeTerms {
+		normalizeInSwapQuoteFeeTerms(quote)
+	}
 	if err := validateInSwapPreview(
 		invoice, quote, c.chainParams,
 	); err != nil {
@@ -104,6 +149,111 @@ func (c *SwapClient) QuotePayViaLightningWithCredits(ctx context.Context,
 	}
 
 	return quote, nil
+}
+
+// validateInSwapOptions rejects values that cannot be represented by durable
+// SQLite and PostgreSQL BIGINT columns.
+func validateInSwapOptions(options InSwapOptions) error {
+	switch {
+	case options.MaxFeeSat > maxInt64Uint:
+		return fmt.Errorf("max fee %d sat exceeds int64",
+			options.MaxFeeSat)
+
+	case options.MaxCreditSat > maxInt64Uint &&
+		options.MaxCreditSat != AllAvailableCredit:
+		return fmt.Errorf("max credit %d sat exceeds int64",
+			options.MaxCreditSat)
+
+	default:
+		return nil
+	}
+}
+
+// inSwapQuoteAccountKey returns the wallet account used to resolve any credit
+// requirements attached to a quote.
+func (c *SwapClient) inSwapQuoteAccountKey(ctx context.Context) ([]byte,
+	error) {
+
+	if c == nil || c.daemon == nil {
+		return nil, fmt.Errorf("daemon is not configured")
+	}
+
+	accountKey, err := c.daemon.IdentityPubKey(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("get credit account pubkey: %w", err)
+	}
+
+	return accountKey.SerializeCompressed(), nil
+}
+
+// normalizeInSwapQuoteFeeTerms supplies the conservative legacy split used
+// when an older server returns no decomposition for a non-zero total fee.
+func normalizeInSwapQuoteFeeTerms(quote *InSwapQuote) {
+	if quote == nil {
+		return
+	}
+
+	quote.ServerFeeSat, quote.RoutingFeeBudgetSat =
+		normalizeInSwapFeeTerms(
+			quote.FeeSat, quote.ServerFeeSat,
+			quote.RoutingFeeBudgetSat,
+		)
+}
+
+// normalizeInSwapConfigFeeTerms supplies the conservative legacy split used
+// when an older server returns no decomposition for a non-zero total fee.
+func normalizeInSwapConfigFeeTerms(cfg *InSwapConfig) {
+	if cfg == nil {
+		return
+	}
+
+	cfg.ServerFeeSat, cfg.RoutingFeeBudgetSat = normalizeInSwapFeeTerms(
+		cfg.FeeSat, cfg.ServerFeeSat, cfg.RoutingFeeBudgetSat,
+	)
+}
+
+// normalizeInSwapFeeTerms treats an absent legacy decomposition as entirely
+// routing-funded so the reported components still reconcile to the total fee.
+func normalizeInSwapFeeTerms(feeSat, serverFeeSat,
+	routingFeeBudgetSat uint64) (uint64, uint64) {
+
+	if feeSat > 0 && serverFeeSat == 0 && routingFeeBudgetSat == 0 {
+		return 0, feeSat
+	}
+
+	return serverFeeSat, routingFeeBudgetSat
+}
+
+// validateInSwapFeeTerms verifies the server's fee decomposition is durable
+// and reconciles exactly to the accepted total fee.
+func validateInSwapFeeTerms(feeSat, serverFeeSat, estimatedRoutingFeeSat,
+	routingFeeBudgetSat uint64) error {
+
+	switch {
+	case feeSat > maxInt64Uint:
+		return fmt.Errorf("in-swap fee overflows int64 range")
+
+	case serverFeeSat > maxInt64Uint:
+		return fmt.Errorf("in-swap server fee overflows int64 range")
+
+	case estimatedRoutingFeeSat > maxInt64Uint:
+		return fmt.Errorf("in-swap estimated routing fee overflows " +
+			"int64 range")
+
+	case routingFeeBudgetSat > maxInt64Uint:
+		return fmt.Errorf("in-swap routing fee budget overflows " +
+			"int64 range")
+
+	case serverFeeSat > feeSat ||
+		routingFeeBudgetSat != feeSat-serverFeeSat:
+		return fmt.Errorf("in-swap fee split does not reconcile: "+
+			"service fee %d + routing fee budget %d != "+
+			"total fee %d", serverFeeSat, routingFeeBudgetSat,
+			feeSat)
+
+	default:
+		return nil
+	}
 }
 
 // validateInSwapPreview verifies that a server quote is bound to the caller's
@@ -153,8 +303,12 @@ func validateInSwapPreview(invoice string, quote *InSwapQuote,
 			expectedInvoiceSat)
 	}
 
-	if quote.FeeSat > maxInt64Uint {
-		return fmt.Errorf("in-swap quote fee overflows int64 range")
+	err = validateInSwapFeeTerms(
+		quote.FeeSat, quote.ServerFeeSat, quote.EstimatedRoutingFeeSat,
+		quote.RoutingFeeBudgetSat,
+	)
+	if err != nil {
+		return fmt.Errorf("invalid in-swap quote: %w", err)
 	}
 
 	if expectedInvoiceSat > maxInt64Uint-quote.FeeSat {
@@ -221,8 +375,11 @@ func validateInSwapQuote(invoice string, maxFeeSat uint64, cfg *InSwapConfig,
 			cfg.FeeSat, maxFeeSat)
 	}
 
-	if cfg.FeeSat > maxInt64Uint {
-		return fmt.Errorf("in-swap fee overflows int64 range")
+	err = validateInSwapFeeTerms(
+		cfg.FeeSat, cfg.ServerFeeSat, 0, cfg.RoutingFeeBudgetSat,
+	)
+	if err != nil {
+		return fmt.Errorf("invalid in-swap quote: %w", err)
 	}
 
 	if amountSat > maxInt64Uint-cfg.FeeSat {

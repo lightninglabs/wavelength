@@ -472,7 +472,9 @@ func (c *SwapClient) PayViaLightning(ctx context.Context, invoice string,
 func (c *SwapClient) StartPayViaLightning(ctx context.Context, invoice string,
 	maxFeeSat uint64) (*PaySession, error) {
 
-	return c.StartPayViaLightningWithCredits(ctx, invoice, maxFeeSat, 0)
+	return c.StartPayViaLightningWithOptions(ctx, invoice, InSwapOptions{
+		MaxFeeSat: maxFeeSat,
+	})
 }
 
 // StartPayViaLightningWithCredits creates an Ark-to-Lightning pay session and
@@ -481,11 +483,26 @@ func (c *SwapClient) StartPayViaLightningWithCredits(ctx context.Context,
 	invoice string, maxFeeSat uint64, maxCreditSat uint64) (*PaySession,
 	error) {
 
+	return c.StartPayViaLightningWithOptions(ctx, invoice, InSwapOptions{
+		MaxFeeSat:    maxFeeSat,
+		MaxCreditSat: maxCreditSat,
+	})
+}
+
+// StartPayViaLightningWithOptions creates an Ark-to-Lightning pay session
+// with explicit fee and credit limits.
+func (c *SwapClient) StartPayViaLightningWithOptions(ctx context.Context,
+	invoice string, options InSwapOptions) (*PaySession, error) {
+
+	if err := validateInSwapOptions(options); err != nil {
+		return nil, err
+	}
+
 	session := &paySession{
 		client:       c,
 		invoice:      invoice,
-		maxFeeSat:    maxFeeSat,
-		maxCreditSat: maxCreditSat,
+		maxFeeSat:    options.MaxFeeSat,
+		maxCreditSat: options.MaxCreditSat,
 		state:        PayStateCreated,
 	}
 
@@ -558,17 +575,33 @@ func (s *paySession) createSwap(ctx context.Context) error {
 		return fmt.Errorf("get client pubkey: %w", err)
 	}
 
-	var cfg *InSwapConfig
+	var (
+		cfg            *InSwapConfig
+		legacyFeeTerms bool
+	)
 	if server, ok := s.client.server.(interface {
+		CreateInSwapWithOptions(context.Context, string, InSwapOptions,
+			*btcec.PublicKey, []byte) (*InSwapConfig, error)
+	}); ok {
+
+		cfg, err = server.CreateInSwapWithOptions(
+			ctx, s.invoice, InSwapOptions{
+				MaxFeeSat:    s.maxFeeSat,
+				MaxCreditSat: s.maxCreditSat,
+			}, clientKey, clientKey.SerializeCompressed(),
+		)
+	} else if server, ok := s.client.server.(interface {
 		CreateInSwapWithCredits(context.Context, string, uint64,
 			*btcec.PublicKey, []byte, uint64) (*InSwapConfig, error)
 	}); ok {
 
+		legacyFeeTerms = true
 		cfg, err = server.CreateInSwapWithCredits(
 			ctx, s.invoice, s.maxFeeSat, clientKey,
 			clientKey.SerializeCompressed(), s.maxCreditSat,
 		)
 	} else {
+		legacyFeeTerms = true
 		cfg, err = s.client.server.CreateInSwap(
 			ctx, s.invoice, s.maxFeeSat, clientKey,
 		)
@@ -583,6 +616,9 @@ func (s *paySession) createSwap(ctx context.Context) error {
 		cfg.SettlementType = SettlementTypeLightning
 	}
 
+	if legacyFeeTerms {
+		normalizeInSwapConfigFeeTerms(cfg)
+	}
 	err = validateInSwapQuote(
 		s.invoice, s.maxFeeSat, cfg, s.client.chainParams,
 	)

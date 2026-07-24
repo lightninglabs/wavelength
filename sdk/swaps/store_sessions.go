@@ -924,6 +924,12 @@ func paySessionFromRow(c *SwapClient,
 		Expiry: time.Unix(row.ExpiryUnix, 0),
 	}
 	normalizeInSwapConfigFeeTerms(cfg)
+	err = validateInSwapFeeTerms(
+		cfg.FeeSat, cfg.ServerFeeSat, 0, cfg.RoutingFeeBudgetSat,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("restore in-swap fee terms: %w", err)
+	}
 
 	session := &paySession{
 		client:      c,
