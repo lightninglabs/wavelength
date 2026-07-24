@@ -155,7 +155,7 @@ func New(cfg Config) (*Wallet, error) {
 		walletcore.DefaultBlockCacheSize,
 	)
 
-	loaderOptions, loaderCleanup, err := newWalletLoaderOptions(cfg)
+	baseWallet, loaderOptions, loaderCleanup, err := newWalletBootstrap(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("create wallet loader options: %w", err)
 	}
@@ -170,6 +170,7 @@ func New(cfg Config) (*Wallet, error) {
 		CoinType:       coinType,
 		RecoveryWindow: cfg.RecoveryWindow,
 		LoaderOptions:  loaderOptions,
+		Wallet:         baseWallet,
 	}, blockCache)
 	if err != nil {
 		// On failure the wallet never adopted the loader's
@@ -179,7 +180,6 @@ func New(cfg Config) (*Wallet, error) {
 
 		return nil, fmt.Errorf("create btcwallet: %w", err)
 	}
-
 	// Create the keyring from btcwallet's internal wallet. This
 	// provides HD key derivation using the same m/1017'/coinType'
 	// scope as LND.
