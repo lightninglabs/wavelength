@@ -1296,9 +1296,14 @@ type CreateInSwapResponse struct {
 	CreditQuote *CreditQuote `protobuf:"bytes,8,opt,name=credit_quote,json=creditQuote,proto3" json:"credit_quote,omitempty"`
 	// preimage is set for credit-only pays after the swap server has already
 	// paid the Lightning invoice from reserved credits.
-	Preimage      []byte `protobuf:"bytes,9,opt,name=preimage,proto3" json:"preimage,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Preimage []byte `protobuf:"bytes,9,opt,name=preimage,proto3" json:"preimage,omitempty"`
+	// server_fee_sat is the service fee retained by the swap server.
+	ServerFeeSat uint64 `protobuf:"varint,10,opt,name=server_fee_sat,json=serverFeeSat,proto3" json:"server_fee_sat,omitempty"`
+	// routing_fee_budget_sat is the client-funded Lightning routing
+	// allowance charged into the vHTLC as part of fee_sat.
+	RoutingFeeBudgetSat uint64 `protobuf:"varint,11,opt,name=routing_fee_budget_sat,json=routingFeeBudgetSat,proto3" json:"routing_fee_budget_sat,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *CreateInSwapResponse) Reset() {
@@ -1392,6 +1397,20 @@ func (x *CreateInSwapResponse) GetPreimage() []byte {
 		return x.Preimage
 	}
 	return nil
+}
+
+func (x *CreateInSwapResponse) GetServerFeeSat() uint64 {
+	if x != nil {
+		return x.ServerFeeSat
+	}
+	return 0
+}
+
+func (x *CreateInSwapResponse) GetRoutingFeeBudgetSat() uint64 {
+	if x != nil {
+		return x.RoutingFeeBudgetSat
+	}
+	return 0
 }
 
 // QuoteInSwapRequest previews one Ark-to-Lightning invoice send.
@@ -1492,9 +1511,17 @@ type QuoteInSwapResponse struct {
 	// larger than that cap.
 	ExceedsMaxFee bool `protobuf:"varint,7,opt,name=exceeds_max_fee,json=exceedsMaxFee,proto3" json:"exceeds_max_fee,omitempty"`
 	// credit_quote describes how credits would be used for this invoice.
-	CreditQuote   *CreditQuote `protobuf:"bytes,8,opt,name=credit_quote,json=creditQuote,proto3" json:"credit_quote,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	CreditQuote *CreditQuote `protobuf:"bytes,8,opt,name=credit_quote,json=creditQuote,proto3" json:"credit_quote,omitempty"`
+	// server_fee_sat is the service fee retained by the swap server.
+	ServerFeeSat uint64 `protobuf:"varint,9,opt,name=server_fee_sat,json=serverFeeSat,proto3" json:"server_fee_sat,omitempty"`
+	// estimated_routing_fee_sat is the server's current whole-satoshi
+	// Lightning route estimate.
+	EstimatedRoutingFeeSat uint64 `protobuf:"varint,10,opt,name=estimated_routing_fee_sat,json=estimatedRoutingFeeSat,proto3" json:"estimated_routing_fee_sat,omitempty"`
+	// routing_fee_budget_sat is the client-funded Lightning routing allowance
+	// that would be charged into the vHTLC as part of fee_sat.
+	RoutingFeeBudgetSat uint64 `protobuf:"varint,11,opt,name=routing_fee_budget_sat,json=routingFeeBudgetSat,proto3" json:"routing_fee_budget_sat,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *QuoteInSwapResponse) Reset() {
@@ -1581,6 +1608,27 @@ func (x *QuoteInSwapResponse) GetCreditQuote() *CreditQuote {
 		return x.CreditQuote
 	}
 	return nil
+}
+
+func (x *QuoteInSwapResponse) GetServerFeeSat() uint64 {
+	if x != nil {
+		return x.ServerFeeSat
+	}
+	return 0
+}
+
+func (x *QuoteInSwapResponse) GetEstimatedRoutingFeeSat() uint64 {
+	if x != nil {
+		return x.EstimatedRoutingFeeSat
+	}
+	return 0
+}
+
+func (x *QuoteInSwapResponse) GetRoutingFeeBudgetSat() uint64 {
+	if x != nil {
+		return x.RoutingFeeBudgetSat
+	}
+	return 0
 }
 
 // CreditQuote describes the credit component of a pay quote.
@@ -3051,7 +3099,7 @@ const file_swap_proto_rawDesc = "" +
 	"\vmax_fee_sat\x18\x02 \x01(\x04R\tmaxFeeSat\x12.\n" +
 	"\x13client_vhtlc_pubkey\x18\x03 \x01(\fR\x11clientVhtlcPubkey\x12%\n" +
 	"\x0eaccount_pubkey\x18\x04 \x01(\fR\raccountPubkey\x12$\n" +
-	"\x0emax_credit_sat\x18\x05 \x01(\x04R\fmaxCreditSat\"\x9a\x03\n" +
+	"\x0emax_credit_sat\x18\x05 \x01(\x04R\fmaxCreditSat\"\xf5\x03\n" +
 	"\x14CreateInSwapResponse\x12!\n" +
 	"\fpayment_hash\x18\x01 \x01(\fR\vpaymentHash\x12\x1d\n" +
 	"\n" +
@@ -3062,12 +3110,15 @@ const file_swap_proto_rawDesc = "" +
 	"\x06expiry\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\x06expiry\x12@\n" +
 	"\x0fsettlement_type\x18\a \x01(\x0e2\x17.swaprpc.SettlementTypeR\x0esettlementType\x127\n" +
 	"\fcredit_quote\x18\b \x01(\v2\x14.swaprpc.CreditQuoteR\vcreditQuote\x12\x1a\n" +
-	"\bpreimage\x18\t \x01(\fR\bpreimage\"\x9b\x01\n" +
+	"\bpreimage\x18\t \x01(\fR\bpreimage\x12$\n" +
+	"\x0eserver_fee_sat\x18\n" +
+	" \x01(\x04R\fserverFeeSat\x123\n" +
+	"\x16routing_fee_budget_sat\x18\v \x01(\x04R\x13routingFeeBudgetSat\"\x9b\x01\n" +
 	"\x12QuoteInSwapRequest\x12\x18\n" +
 	"\ainvoice\x18\x01 \x01(\tR\ainvoice\x12\x1e\n" +
 	"\vmax_fee_sat\x18\x02 \x01(\x04R\tmaxFeeSat\x12%\n" +
 	"\x0eaccount_pubkey\x18\x03 \x01(\fR\raccountPubkey\x12$\n" +
-	"\x0emax_credit_sat\x18\x04 \x01(\x04R\fmaxCreditSat\"\xf5\x02\n" +
+	"\x0emax_credit_sat\x18\x04 \x01(\x04R\fmaxCreditSat\"\x8b\x04\n" +
 	"\x13QuoteInSwapResponse\x12!\n" +
 	"\fpayment_hash\x18\x01 \x01(\fR\vpaymentHash\x12,\n" +
 	"\x12invoice_amount_sat\x18\x02 \x01(\x04R\x10invoiceAmountSat\x12\x1d\n" +
@@ -3077,7 +3128,11 @@ const file_swap_proto_rawDesc = "" +
 	"\x0fsettlement_type\x18\x05 \x01(\x0e2\x17.swaprpc.SettlementTypeR\x0esettlementType\x122\n" +
 	"\x06expiry\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\x06expiry\x12&\n" +
 	"\x0fexceeds_max_fee\x18\a \x01(\bR\rexceedsMaxFee\x127\n" +
-	"\fcredit_quote\x18\b \x01(\v2\x14.swaprpc.CreditQuoteR\vcreditQuote\"\xe7\x01\n" +
+	"\fcredit_quote\x18\b \x01(\v2\x14.swaprpc.CreditQuoteR\vcreditQuote\x12$\n" +
+	"\x0eserver_fee_sat\x18\t \x01(\x04R\fserverFeeSat\x129\n" +
+	"\x19estimated_routing_fee_sat\x18\n" +
+	" \x01(\x04R\x16estimatedRoutingFeeSat\x123\n" +
+	"\x16routing_fee_budget_sat\x18\v \x01(\x04R\x13routingFeeBudgetSat\"\xe7\x01\n" +
 	"\vCreditQuote\x12&\n" +
 	"\x0fmust_use_credit\x18\x01 \x01(\bR\rmustUseCredit\x12,\n" +
 	"\x12credit_applied_sat\x18\x02 \x01(\x04R\x10creditAppliedSat\x120\n" +

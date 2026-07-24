@@ -61,6 +61,10 @@ type CreditQuote struct {
 	ArkFundingSat      uint64
 }
 
+// AllAvailableCredit authorizes the server to consider the caller's complete
+// available credit balance.
+const AllAvailableCredit = ^uint64(0)
+
 // CreditFundingSource identifies how value enters a credit account.
 type CreditFundingSource string
 
@@ -190,6 +194,13 @@ type SwapSummary struct {
 
 	// FeeSat is the negotiated swap-server fee in satoshis when known.
 	FeeSat uint64
+
+	// ServerFeeSat is the service fee retained by the swap server.
+	ServerFeeSat uint64
+
+	// RoutingFeeBudgetSat is the client-funded Lightning routing
+	// allowance included in FeeSat.
+	RoutingFeeBudgetSat uint64
 
 	// PayerFeeMsat is the payer-paid Lightning route fee quoted for
 	// receive swaps. It is not deducted from AmountSat.
@@ -622,6 +633,13 @@ type InSwapConfig struct {
 	// for this swap.
 	FeeSat uint64
 
+	// ServerFeeSat is the service fee retained by the swap server.
+	ServerFeeSat uint64
+
+	// RoutingFeeBudgetSat is the client-funded Lightning routing
+	// allowance included in FeeSat.
+	RoutingFeeBudgetSat uint64
+
 	// ServerPubkey is the swap server's public key for this swap
 	// instance.
 	ServerPubkey *btcec.PublicKey
@@ -664,6 +682,17 @@ type InSwapQuote struct {
 	// FeeSat is the fee in satoshis charged by the swap server.
 	FeeSat uint64
 
+	// ServerFeeSat is the service fee retained by the swap server.
+	ServerFeeSat uint64
+
+	// EstimatedRoutingFeeSat is the server's current whole-satoshi route
+	// estimate.
+	EstimatedRoutingFeeSat uint64
+
+	// RoutingFeeBudgetSat is the Lightning routing allowance that would be
+	// included in FeeSat.
+	RoutingFeeBudgetSat uint64
+
 	// Expiry is the wall-clock deadline by which the quoted swap must
 	// complete before it is considered stale.
 	Expiry time.Time
@@ -678,6 +707,17 @@ type InSwapQuote struct {
 
 	// CreditQuote describes how credits would be used for this invoice.
 	CreditQuote *CreditQuote
+}
+
+// InSwapOptions contains caller-controlled fee and credit limits for an
+// Ark-to-Lightning payment.
+type InSwapOptions struct {
+	// MaxFeeSat is the maximum total fee the caller accepts.
+	MaxFeeSat uint64
+
+	// MaxCreditSat is the maximum credit amount the caller authorizes.
+	// MaxUint64 requests a quote using all available credit.
+	MaxCreditSat uint64
 }
 
 // SwapServerConn abstracts the connection to the swap server's

@@ -403,6 +403,13 @@ message CreateInSwapResponse {
     // preimage is set for credit-only pays after the swap server has already
     // paid the Lightning invoice from reserved credits.
     bytes preimage = 9;
+
+    // server_fee_sat is the service fee retained by the swap server.
+    uint64 server_fee_sat = 10;
+
+    // routing_fee_budget_sat is the client-funded Lightning routing
+    // allowance charged into the vHTLC as part of fee_sat.
+    uint64 routing_fee_budget_sat = 11;
 }
 
 // QuoteInSwapRequest previews one Ark-to-Lightning invoice send.
@@ -452,6 +459,17 @@ message QuoteInSwapResponse {
 
     // credit_quote describes how credits would be used for this invoice.
     CreditQuote credit_quote = 8;
+
+    // server_fee_sat is the service fee retained by the swap server.
+    uint64 server_fee_sat = 9;
+
+    // estimated_routing_fee_sat is the server's current whole-satoshi
+    // Lightning route estimate.
+    uint64 estimated_routing_fee_sat = 10;
+
+    // routing_fee_budget_sat is the client-funded Lightning routing allowance
+    // that would be charged into the vHTLC as part of fee_sat.
+    uint64 routing_fee_budget_sat = 11;
 }
 
 // CreditQuote describes the credit component of a pay quote.
