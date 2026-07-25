@@ -57,11 +57,30 @@ macaroon auth and writes both credentials under the network's data directory
 The server repo (`lumos`) includes a `docker-compose.yml` that
 orchestrates the complete environment: bitcoind + 2x lnd + lumosd + waved.
 
+Two prerequisites bite on a fresh lumos clone, and neither is optional:
+
+1. **`LND_SOURCE` must point at an lnd source tree.** The `lnd-server` and
+   `lnd-client` services build from it, so compose refuses to even
+   interpolate the file without it: `required variable LND_SOURCE is
+   missing a value: Set LND_SOURCE to the path of your lnd source tree`.
+2. **lumos's `client` submodule must be initialized.** That submodule *is*
+   this repo, and both images reach into it: the lumosd Dockerfile copies
+   `client/go.mod`, `client/go.sum`, and `client/baselib/go.sum`, and the
+   `waved` service builds with `context: ./client`. Left uninitialized, the
+   lumosd build dies on `"/client/baselib/go.sum": not found` and the waved
+   build on `failed to read dockerfile: open Dockerfile: no such file or
+   directory`.
+
 ```bash
 # From the lumos (server) repo root:
-docker-compose up -d --build
+git submodule update --init --recursive
+export LND_SOURCE=/path/to/lnd
+docker compose up -d --build
 ./scripts/docker-regtest-setup.sh
 ```
+
+Use `docker compose` (the v2 subcommand), not the standalone
+`docker-compose` binary, which is no longer shipped with Docker Desktop.
 
 ## Configuration Flags
 
@@ -210,9 +229,13 @@ Outside Docker the equivalent is `make build-wavewalletrpc`. See
 # Follow container logs (stdout).
 docker logs -f ark-client
 
-# With docker-compose:
-docker-compose logs -f waved
+# With compose, by service name (the container is named ark-client):
+docker compose logs -f waved
 
 # Increase verbosity:
-# Set WAVED_DEBUG=trace in docker-compose.yml or pass --debuglevel=trace
+#   - daemon env var:  WAVED_DEBUGLEVEL=trace
+#   - daemon flag:     --debuglevel=trace
+#   - lumos compose:   WAVED_DEBUG=trace, which is a compose interpolation
+#     variable feeding --debuglevel=${WAVED_DEBUG:-debug}, not a waved
+#     env var. Setting WAVED_DEBUG on the daemon directly does nothing.
 ```
