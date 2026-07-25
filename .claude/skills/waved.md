@@ -6,8 +6,19 @@
 operator server via a mailbox transport, manages VTXOs (virtual
 transaction outputs), and exposes a gRPC API for wallet operations.
 
-`wavecli` is the CLI for driving the daemon. Output is always JSON.
-All commands accept `--json` for raw proto-JSON request payloads.
+`wavecli` is the CLI for driving the daemon. Almost everything it prints is
+already JSON, so an agent can parse the default output: `getinfo`, `balance`,
+`recv`, `send`, the `ark` verbs and the rest all render through one
+`printJSON` helper with no format switch at all.
+
+Two commands are the exception, and they are the only two that read the
+global `--json` bool: `activity` (default `--format table`) and `activity
+inspect` (default `--format expanded`). For those, pass `--json` (or
+`--format json`) to get machine-readable output. Passing `--json` anywhere
+else is silently inert.
+
+Input is a separate flag: `--request-json` takes a raw proto-JSON request
+payload.
 
 ## Building
 
@@ -119,9 +130,16 @@ The CLI surface is three tiers:
    surface. Backed by `wavewalletrpc.WalletService`, which needs the
    `wavewalletrpc` **and** `swapruntime` tags together (build with
    `make build-wavewalletrpc`, which sets both).
-2. **Daemon introspection at root** — `getinfo`, `schema`, `mcp`, `dev`.
-3. **Advanced subtrees** — `ark.*` (raw waverpc) and `swap.*`
-   (`swapruntime` build only).
+2. **Daemon introspection at root**: `getinfo`, `schema`, `mcp`.
+3. **Advanced subtrees**: `ark.*` (raw waverpc), `recovery.*` (daemon-owned
+   vHTLC recovery rows), and `dev.*` (generated low-level daemon RPCs). The
+   old `swap.*` subtree is gone; `wavecli swap ...` now exits with
+   `unknown command "swap" for "wavecli"`.
+
+The advanced subtrees are hidden from `--help` unless `WAVELENGTH_DEV=1` is
+set. That only changes CLI visibility: they are registered and dispatchable
+either way, which is separate from whether the daemon serves the RPC behind
+them.
 
 If the daemon is built without the tags, the eight top-level verbs return a
 structured error pointing at `docs/wavewalletrpc_build.md`. Tier 2 and the
@@ -191,10 +209,10 @@ surfaces the raw waverpc methods underlying them.
 ```bash
 # Raw VTXO inventory + lifecycle
 wavecli --network=regtest ark vtxos list
-wavecli --network=regtest ark vtxos list --status live --min_amount 10000
-# A real refresh is fee-gated: preview with --dry_run, consent with
+wavecli --network=regtest ark vtxos list --status live --min-amount 10000
+# A real refresh is fee-gated: preview with --dry-run, consent with
 # --yes (required on non-interactive stdin).
-wavecli --network=regtest ark vtxos refresh --all --dry_run
+wavecli --network=regtest ark vtxos refresh --all --dry-run
 wavecli --network=regtest ark vtxos refresh --all --yes
 
 # Raw transaction history (the wallet-shaped feed is `activity`)
@@ -204,8 +222,9 @@ wavecli --network=regtest ark listtransactions
 wavecli --network=regtest ark send inround --to tb1p... --amount 50000
 wavecli --network=regtest ark send oor --to tb1p... --amount 25000
 
-# JSON input for complex requests
-wavecli --network=regtest ark send inround --json '{
+# Raw JSON request payloads use --request-json, not --json (which is the
+# output-format bool, and inert on this command).
+wavecli --network=regtest ark send inround --request-json '{
   "recipients": [
     {"address": "tb1p...", "amount_sat": 50000},
     {"address": "tb1p...", "amount_sat": 30000}
@@ -213,30 +232,42 @@ wavecli --network=regtest ark send inround --json '{
 }'
 ```
 
+Flag names are canonically kebab-case (`--min-amount`, `--dry-run`,
+`--wallet-password-file`). A global normalizer folds the snake_case spelling
+onto the same flag, so older `--min_amount` style invocations still work.
+
 ### Password Input (Never as CLI args)
 
-Priority order (matches `readPassword` in `wallet_password.go`):
-1. `WAVED_WALLET_PASSWORD` env var (highest priority — wins even
-   when stdin is also piped, so automated REPLs do not race).
-2. `--wallet_password_file` flag (file is read and the trailing
+Priority order (matches `readWalletPassword` in `wallet_password.go`):
+1. `WAVED_WALLET_PASSWORD` env var (highest priority, so callers with
+   something already on stdin do not have to fight over it).
+2. `--wallet-password-file` flag (file is read and the trailing
    newline is stripped).
-3. Piped stdin (non-TTY).
+3. `--password-stdin`, which must be passed explicitly.
 4. Interactive TTY prompt (lowest priority).
 
-The optional aezeed seed passphrase is read with the same priority,
-from `WAVED_SEED_PASSPHRASE` and `--seed_passphrase_file`. The
-seed passphrase is NOT accepted via CLI args either — both secrets
-stay out of `argv`.
+Stdin is never consumed implicitly. A bare pipe with no
+`--password-stdin` is an error, not a fallback:
+
+```
+wallet password input required: set WAVED_WALLET_PASSWORD, use
+--wallet-password-file, or explicitly pass --password-stdin
+```
+
+The optional aezeed seed passphrase is read from
+`WAVED_SEED_PASSPHRASE`, then `--seed-passphrase-file`. The seed
+passphrase is NOT accepted via CLI args either, so both secrets stay out
+of `argv`.
 
 ```bash
 # Env var
 WAVED_WALLET_PASSWORD=pass wavecli --network=regtest unlock
 
 # File
-wavecli --network=regtest unlock --wallet_password_file=/tmp/pass
+wavecli --network=regtest unlock --wallet-password-file=/tmp/pass
 
-# Pipe
-echo -n 'pass' | wavecli --network=regtest unlock
+# Pipe, which needs the explicit opt-in
+echo -n 'pass' | wavecli --network=regtest unlock --password-stdin
 ```
 
 ## Regtest Workflow
@@ -262,12 +293,17 @@ against a default-tag build.
 | Variable | Description |
 |----------|-------------|
 | `WAVED_WALLET_PASSWORD` | Wallet password for create/unlock |
+| `WAVED_SEED_PASSPHRASE` | Optional aezeed seed passphrase for create |
 | `WAVED_NETWORK` | Bitcoin network override |
 | `WAVED_WALLET_TYPE` | Wallet backend type override |
 | `WAVED_WALLET_ESPLORAURL` | Esplora URL override |
+| `WAVED_DEBUGLEVEL` | Log verbosity override (the daemon flag is `--debuglevel`) |
+| `WAVELENGTH_DEV` | Set to `1` to reveal the `ark` / `recovery` / `dev` subtrees in `wavecli --help` |
 
 All daemon config flags can be set via env vars with the `WAVED_`
 prefix, dots replaced by underscores (e.g., `WAVED_SERVER_HOST`).
+`WAVELENGTH_DEV` is the one exception: it is a `wavecli` help-visibility
+toggle, not daemon config.
 
 ## Troubleshooting
 
@@ -280,7 +316,9 @@ prefix, dots replaced by underscores (e.g., `WAVED_SERVER_HOST`).
 | `--sweep-all requires --amt=0` | On `send --onchain`: pass `--sweep-all` for "drain wallet", or set `--amt N` |
 | `--offchain and --onchain are mutually exclusive` | Pick one direction on `send` / `recv` |
 | `GenSeed: lwwallet mode only` | Switch daemon to `--wallet.type=lwwallet` |
+| `wallet password input required: ...` | Stdin is never read implicitly. Use `WAVED_WALLET_PASSWORD`, `--wallet-password-file`, or an explicit `--password-stdin` |
 | `unknown flag: --server.localmailboxid` | Mailbox IDs are daemon-derived now; delete the flag |
+| `unknown command "swap" for "wavecli"` | The `swap` subtree was retired; use the wallet verbs or `ark.*` |
 | `unable to load TLS cert: .../data/mainnet/tls.cert: no such file...` | wavecli is on the default `--network=mainnet`. Pass `--network=regtest` |
 | `read macaroon: .../data/mainnet/admin.macaroon: no such file...` | Same cause one step later. Pass `--network=regtest` or `--no-macaroons` |
 | `error reading server preface: EOF` | A `--no-tls` client against a TLS listener. Drop `--no-tls` |
