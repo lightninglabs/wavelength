@@ -1,4 +1,4 @@
-# waved / wavecli — Ark Client Daemon
+# waved / wavecli: Ark Client Daemon
 
 ## Overview
 
@@ -50,7 +50,7 @@ Full detail on the tags and what each one turns on:
 
 ## Starting the Daemon
 
-### lwwallet Mode (Standalone — No lnd Required)
+### lwwallet Mode (Standalone, No lnd Required)
 
 ```bash
 ./bin/waved \
