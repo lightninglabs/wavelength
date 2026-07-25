@@ -83,14 +83,61 @@ etc.
 
 ## CLI Access
 
+`wavecli --network` defaults to `mainnet`, and it is what derives the default
+TLS cert and macaroon paths under the data directory. A regtest daemon keeps
+both under `data/regtest/`, so point a bare `wavecli` at one and it goes
+looking in the wrong place and gives up before it ever dials:
+
+```
+unable to load TLS cert: open /root/.waved/data/mainnet/tls.cert: no such file or directory
+```
+
+`--network=regtest` is the whole fix on a stock daemon, which serves TLS with
+macaroon auth and has the matching credentials sitting right there on disk:
+
 ```bash
 # Inside the container:
-docker exec ark-client wavecli --rpcserver=localhost:10029 getinfo
-docker exec ark-client wavecli --rpcserver=localhost:10029 balance
+docker exec ark-client wavecli --network=regtest \
+    --rpcserver=localhost:10029 getinfo
+
+docker exec ark-client wavecli --network=regtest \
+    --rpcserver=localhost:10029 balance
 
 # Interactive shell:
 docker exec -it ark-client /bin/sh
 ```
+
+`--rpcserver=localhost:10029` is already the default, so it can be dropped.
+`--network=regtest` cannot.
+
+### When the daemon runs plaintext
+
+A daemon started with `--rpc.notls --rpc.no-macaroons` needs the matching
+`--no-tls --no-macaroons` on the client. Those two travel as a pair: pass
+`--no-tls` on its own and gRPC refuses to put per-RPC credentials on a
+plaintext link (`the credentials require transport level security`).
+
+With both set, wavecli reads nothing off disk at all, so `--network` stops
+mattering for the connection. It is still worth passing so the same command
+survives the daemon flipping back to TLS.
+
+Do not reach for these by reflex. Against a stock TLS daemon they fail with
+`error reading server preface: EOF`, which reads like a dead daemon rather
+than a client too eager to speak plaintext.
+
+### Connection errors and what they actually mean
+
+Getting this half-right produces six distinct errors, none of which say
+"you have a flag wrong":
+
+| Error | Cause |
+|-------|-------|
+| `unable to load TLS cert: open .../data/mainnet/tls.cert: no such file...` | wavecli is on the default `--network=mainnet` and looked for the cert in the wrong directory. Pass `--network=regtest`. |
+| `read macaroon: open .../data/mainnet/admin.macaroon: no such file...` | Same cause, one step later: `--no-tls` silenced the cert lookup but the macaroon path is still mainnet. Pass `--network=regtest` or `--no-macaroons`. |
+| `error reading server preface: EOF` | A `--no-tls` client against a TLS listener. Drop `--no-tls`. |
+| `authentication handshake failed: tls: first record does not look like a TLS handshake` | The reverse: a TLS client against a `--rpc.notls` daemon. Add `--no-tls`. |
+| `grpc: the credentials require transport level security` | `--no-tls` without `--no-macaroons`. gRPC will not ship per-RPC credentials over a plaintext link, so the two dev flags travel as a pair. |
+| `expected 1 macaroon, got 0` | The reverse of that: `--no-macaroons` against a daemon that still enforces them, so the connection is fine but the call carries no credential. Drop `--no-macaroons`, or turn enforcement off on the daemon with `--rpc.no-macaroons`. Adding `--macaroonpath` alongside `--no-macaroons` does nothing: `client.go` only reads the path when macaroons are enabled. |
 
 ## Logs
 

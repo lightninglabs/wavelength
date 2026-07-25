@@ -74,7 +74,25 @@ and `--rpc.no-macaroons`, which are covered below.
 ## CLI Quick Reference
 
 All commands connect to the daemon at `--rpcserver` (default
-`localhost:10029`). Use `--no-tls` for regtest.
+`localhost:10029`). Every example below passes `--network=regtest`, which is
+not optional: it defaults to `mainnet` and is what derives the default TLS
+cert and macaroon paths, so without it wavecli reads from the wrong data
+directory and fails before dialing:
+
+```
+unable to load TLS cert: open ~/.waved/data/mainnet/tls.cert: no such file or directory
+```
+
+That is all a stock daemon needs, since it serves TLS with macaroon auth and
+the credentials are already on disk under `~/.waved/data/regtest/`.
+
+If the daemon was started with `--rpc.notls --rpc.no-macaroons`, add the
+matching `--no-tls --no-macaroons`. Those two travel as a pair: `--no-tls`
+alone fails with `grpc: the credentials require transport level security`,
+because gRPC will not ship per-RPC credentials over a plaintext link. With
+both set nothing is read off disk, so `--network` no longer matters for the
+connection. Against a stock TLS daemon they instead produce `error reading
+server preface: EOF`, so do not pass them by default.
 
 The CLI surface is three tiers:
 
@@ -92,38 +110,38 @@ verbs return a structured error pointing at `docs/wavewalletrpc_build.md`.
 
 ```bash
 # Status
-wavecli getinfo --no-tls
+wavecli --network=regtest getinfo
 
 # Create + unlock (password from env, never argv).
-WAVED_WALLET_PASSWORD=testpass wavecli create --no-tls
-WAVED_WALLET_PASSWORD=testpass wavecli unlock --no-tls
+WAVED_WALLET_PASSWORD=testpass wavecli --network=regtest create
+WAVED_WALLET_PASSWORD=testpass wavecli --network=regtest unlock
 
 # Balance: confirmed_sat / pending_in_sat / pending_out_sat
-wavecli balance --no-tls
+wavecli --network=regtest balance
 
 # Receive: offchain (invoice) or onchain (boarding address)
-wavecli recv --offchain --amt 5000 --memo "coffee" --no-tls
-wavecli recv --onchain --no-tls
+wavecli --network=regtest recv --offchain --amt 5000 --memo "coffee"
+wavecli --network=regtest recv --onchain
 
 # Send: --offchain (default) = invoice; --onchain = cooperative leave.
 # The CLI does NOT sniff the destination string; pick the direction
 # explicitly.
-wavecli send lnbcrt... --offchain --no-tls
-wavecli send bcrt1... --onchain --amt 1000 --no-tls
-wavecli send bcrt1... --onchain --sweep-all --no-tls
+wavecli --network=regtest send lnbcrt... --offchain
+wavecli --network=regtest send bcrt1... --onchain --amt 1000
+wavecli --network=regtest send bcrt1... --onchain --sweep-all
 
 # Activity: merged send/recv/deposit/exit feed.
-wavecli activity --no-tls                            # all activity
-wavecli activity --pending --kind send,recv --no-tls # filter
-wavecli activity --format json --no-tls              # JSON output
+wavecli --network=regtest activity                            # all activity
+wavecli --network=regtest activity --pending --kind send,recv # filter
+wavecli --network=regtest activity --format json              # JSON output
 # VTXO inventory and on-chain history are not part of the activity feed;
 # use the `ark` subtree: `ark vtxos list` (live VTXOs),
 # `ark listtransactions` (raw tx / onchain history),
 # `ark sweep list` (boarding-timeout sweep records).
 
 # Exit: trigger and query a unilateral exit (unroll).
-wavecli exit --outpoint TXID:VOUT --no-tls
-wavecli exit status --outpoint TXID:VOUT --no-tls
+wavecli --network=regtest exit --outpoint TXID:VOUT
+wavecli --network=regtest exit status --outpoint TXID:VOUT
 ```
 
 ### Advanced (`ark.*`) commands
@@ -133,22 +151,22 @@ surfaces the raw waverpc methods underlying them.
 
 ```bash
 # Raw VTXO inventory + lifecycle
-wavecli ark vtxos list --no-tls
-wavecli ark vtxos list --status live --min_amount 10000 --no-tls
+wavecli --network=regtest ark vtxos list
+wavecli --network=regtest ark vtxos list --status live --min_amount 10000
 # A real refresh is fee-gated: preview with --dry_run, consent with
 # --yes (required on non-interactive stdin).
-wavecli ark vtxos refresh --all --dry_run --no-tls
-wavecli ark vtxos refresh --all --yes --no-tls
+wavecli --network=regtest ark vtxos refresh --all --dry_run
+wavecli --network=regtest ark vtxos refresh --all --yes
 
 # Raw transaction history (the wallet-shaped feed is `activity`)
-wavecli ark listtransactions --no-tls
+wavecli --network=regtest ark listtransactions
 
 # Raw send paths
-wavecli ark send inround --to tb1p... --amount 50000 --no-tls
-wavecli ark send oor --to tb1p... --amount 25000 --no-tls
+wavecli --network=regtest ark send inround --to tb1p... --amount 50000
+wavecli --network=regtest ark send oor --to tb1p... --amount 25000
 
 # JSON input for complex requests
-wavecli ark send inround --no-tls --json '{
+wavecli --network=regtest ark send inround --json '{
   "recipients": [
     {"address": "tb1p...", "amount_sat": 50000},
     {"address": "tb1p...", "amount_sat": 30000}
@@ -173,13 +191,13 @@ stay out of `argv`.
 
 ```bash
 # Env var
-WAVED_WALLET_PASSWORD=pass wavecli unlock --no-tls
+WAVED_WALLET_PASSWORD=pass wavecli --network=regtest unlock
 
 # File
-wavecli unlock --wallet_password_file=/tmp/pass --no-tls
+wavecli --network=regtest unlock --wallet_password_file=/tmp/pass
 
 # Pipe
-echo -n 'pass' | wavecli unlock --no-tls
+echo -n 'pass' | wavecli --network=regtest unlock
 ```
 
 ## Regtest Workflow
@@ -188,14 +206,14 @@ echo -n 'pass' | wavecli unlock --no-tls
 2. Start waved in lwwallet mode (see above) built with
    `make build-wavewalletrpc`.
 3. Create + unlock the wallet via CLI:
-   `WAVED_WALLET_PASSWORD=testpass wavecli create --no-tls`
-   `WAVED_WALLET_PASSWORD=testpass wavecli unlock --no-tls`
-4. Get a boarding address: `wavecli recv --onchain --no-tls`
+   `WAVED_WALLET_PASSWORD=testpass wavecli --network=regtest create`
+   `WAVED_WALLET_PASSWORD=testpass wavecli --network=regtest unlock`
+4. Get a boarding address: `wavecli --network=regtest recv --onchain`
 5. Fund it: `bitcoin-cli sendtoaddress <addr> 0.01`
 6. Mine a block: `bitcoin-cli generatetoaddress 1 <miner_addr>`
-7. Check balance: `wavecli balance --no-tls`
+7. Check balance: `wavecli --network=regtest balance`
 8. List VTXOs (once boarding completes):
-   `wavecli ark vtxos list --no-tls`
+   `wavecli --network=regtest ark vtxos list`
 
 ## Environment Variables
 
@@ -221,4 +239,9 @@ prefix, dots replaced by underscores (e.g., `WAVED_SERVER_HOST`).
 | `--offchain and --onchain are mutually exclusive` | Pick one direction on `send` / `recv` |
 | `GenSeed: lwwallet mode only` | Switch daemon to `--wallet.type=lwwallet` |
 | `unknown flag: --server.localmailboxid` | Mailbox IDs are daemon-derived now; delete the flag |
-| TLS errors | Use `--no-tls` for regtest, or set `--tlscertpath` |
+| `unable to load TLS cert: .../data/mainnet/tls.cert: no such file...` | wavecli is on the default `--network=mainnet`. Pass `--network=regtest` |
+| `read macaroon: .../data/mainnet/admin.macaroon: no such file...` | Same cause one step later. Pass `--network=regtest` or `--no-macaroons` |
+| `error reading server preface: EOF` | A `--no-tls` client against a TLS listener. Drop `--no-tls` |
+| `tls: first record does not look like a TLS handshake` | The reverse: TLS client against a `--rpc.notls` daemon. Add `--no-tls` |
+| `grpc: the credentials require transport level security` | `--no-tls` without `--no-macaroons`; the two dev flags travel as a pair |
+| `expected 1 macaroon, got 0` | `--no-macaroons` against a daemon that still enforces them. Drop `--no-macaroons`, or turn enforcement off with `--rpc.no-macaroons` on the daemon. Adding `--macaroonpath` alone does nothing: it is only read when macaroons are enabled |
