@@ -29,8 +29,6 @@ make unit pkg=waved  # run unit tests for a package
   --wallet.esploraurl=http://localhost:3000 \
   --server.host=localhost:10010 \
   --server.insecure \
-  --server.localmailboxid=client1 \
-  --server.remotemailboxid=server \
   --rpc.listenaddr=localhost:10029
 ```
 
@@ -59,10 +57,19 @@ WAVED_WALLET_PASSWORD=testpass ./bin/waved \
   --lnd.macaroonpath=~/.lnd/data/chain/bitcoin/regtest/admin.macaroon \
   --server.host=localhost:10010 \
   --server.insecure \
-  --server.localmailboxid=client1 \
-  --server.remotemailboxid=server \
   --rpc.listenaddr=localhost:10029
 ```
+
+`--server.localmailboxid` and `--server.remotemailboxid` used to appear in
+both of the above. They are gone: the daemon derives its mailbox identifiers
+itself, and passing either one now aborts startup with
+`unknown flag: --server.localmailboxid`.
+
+Neither example disables transport security on waved's own listener, so both
+daemons serve TLS with macaroon auth and drop the credentials under
+`~/.waved/data/regtest/`. `--server.insecure` is the outbound leg to the
+operator and does not change that; the listener is governed by `--rpc.notls`
+and `--rpc.no-macaroons`, which are covered below.
 
 ## CLI Quick Reference
 
@@ -213,4 +220,5 @@ prefix, dots replaced by underscores (e.g., `WAVED_SERVER_HOST`).
 | `--sweep-all requires --amt=0` | On `send --onchain`: pass `--sweep-all` for "drain wallet", or set `--amt N` |
 | `--offchain and --onchain are mutually exclusive` | Pick one direction on `send` / `recv` |
 | `GenSeed: lwwallet mode only` | Switch daemon to `--wallet.type=lwwallet` |
+| `unknown flag: --server.localmailboxid` | Mailbox IDs are daemon-derived now; delete the flag |
 | TLS errors | Use `--no-tls` for regtest, or set `--tlscertpath` |
