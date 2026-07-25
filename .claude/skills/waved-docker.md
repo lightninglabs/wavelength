@@ -15,6 +15,22 @@ The Dockerfile uses a multi-stage build:
 1. Builder stage: compiles `waved` and `wavecli` from source
 2. Runtime stage: minimal alpine image with the two binaries
 
+The builder compiles with the **default tag set**, so the `waved` in the
+image has neither `swapruntime` nor `wavewalletrpc` linked in. That is fine
+for the raw Ark RPCs, but it costs you the everyday wallet verbs.
+
+To get them, pass the tags through the `GOTAGS` build argument. It takes the
+same space-separated value as the Makefile's `tags=` parameter, and the two
+tags are required together:
+
+```bash
+docker build --build-arg GOTAGS="wavewalletrpc swapruntime" -t waved:wallet .
+```
+
+`GOTAGS` defaults to empty, so a plain `docker build` keeps producing the
+default tag set. See
+[Wallet verbs need a wavewalletrpc daemon](#wallet-verbs-need-a-wavewalletrpc-daemon).
+
 ## Running Standalone
 
 ```bash
@@ -138,6 +154,55 @@ Getting this half-right produces six distinct errors, none of which say
 | `authentication handshake failed: tls: first record does not look like a TLS handshake` | The reverse: a TLS client against a `--rpc.notls` daemon. Add `--no-tls`. |
 | `grpc: the credentials require transport level security` | `--no-tls` without `--no-macaroons`. gRPC will not ship per-RPC credentials over a plaintext link, so the two dev flags travel as a pair. |
 | `expected 1 macaroon, got 0` | The reverse of that: `--no-macaroons` against a daemon that still enforces them, so the connection is fine but the call carries no credential. Drop `--no-macaroons`, or turn enforcement off on the daemon with `--rpc.no-macaroons`. Adding `--macaroonpath` alongside `--no-macaroons` does nothing: `client.go` only reads the path when macaroons are enabled. |
+
+### Wallet verbs need a wavewalletrpc daemon
+
+The eight top-level wallet verbs (`create`, `unlock`, `send`, `recv`,
+`activity`, `balance`, `exit`, `wallet-sweep`), the `mcp` server's wallet
+tools, and `activity inspect` all ride on `wavewalletrpc.WalletService`.
+That service only exists in a daemon built with **both** the `wavewalletrpc`
+and `swapruntime` tags. Either one alone is not enough:
+`cmd/waved/wavewalletrpc_stub.go` is built under
+`!wavewalletrpc || !swapruntime`, and the stub registers nothing. Against a
+default-tag daemon, which is what an unqualified `docker build` and therefore
+lumos's compose produce, they all fail with:
+
+```
+daemon was not built with -tags wavewalletrpc; rebuild with `make build-wavewalletrpc` or see docs/wavewalletrpc_build.md
+```
+
+This is not a broken stack. `wavecli` registers the verbs unconditionally so
+the CLI surface never shifts under an agent; the gating is entirely
+daemon-side, and the CLI maps the gRPC `Unimplemented` back to that message.
+
+Working against a default-tag daemon:
+
+- `getinfo`, `schema`, and `mcp` (the introspection group).
+- The `ark` subtree, which is the raw waverpc surface: `ark vtxos list`,
+  `ark listtransactions`, `ark sweep list`, `ark send inround`, and friends.
+- The `recovery` subtree. Like `ark`, it rides on `waverpc.DaemonService`,
+  which every build registers.
+- `dev daemon *`, the generated view of that same always-present service.
+
+`dev` is not all-or-nothing, though. It is a generated registry spanning
+several services, so a default-tag daemon answers `dev daemon *` and refuses
+the rest: `dev wallet *` and `dev wallet-inspection *` come back
+`UNIMPLEMENTED: unknown service wavewalletrpc.WalletService`, and
+`dev swapclient *` reports `daemon was built without swapruntime support`.
+
+The `ark`, `recovery`, and `dev` subtrees are hidden from `--help` unless
+`WAVELENGTH_DEV=1` is set. That only changes CLI visibility, which is a
+separate question from whether the daemon serves the RPC behind them.
+
+To get the wallet verbs in a container, rebuild the image with the tags:
+
+```bash
+docker build --build-arg GOTAGS="wavewalletrpc swapruntime" -t waved:wallet .
+```
+
+Then point the compose `waved` service at that image, or run it directly.
+Outside Docker the equivalent is `make build-wavewalletrpc`. See
+[`docs/wavewalletrpc_build.md`](../../docs/wavewalletrpc_build.md).
 
 ## Logs
 

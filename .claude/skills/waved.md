@@ -12,11 +12,30 @@ All commands accept `--json` for raw proto-JSON request payloads.
 ## Building
 
 ```bash
-make build          # produces bin/waved and bin/wavecli
+make build          # produces bin/waved and bin/wavecli, default tag set
 make install        # installs to $GOPATH/bin
 make lint           # run linter
 make unit pkg=waved  # run unit tests for a package
 ```
+
+`make build` uses the **default tag set**, which leaves out both
+`swapruntime` and `wavewalletrpc`. That is enough for the raw Ark RPCs but
+not for the everyday wallet verbs, which need the two tags together, so most
+local work wants:
+
+```bash
+make build-wavewalletrpc    # -tags "wavewalletrpc swapruntime"
+make install-wavewalletrpc  # same, into $GOPATH/bin
+```
+
+In Docker the same thing is a build argument:
+
+```bash
+docker build --build-arg GOTAGS="wavewalletrpc swapruntime" -t waved:wallet .
+```
+
+Full detail on the tags and what each one turns on:
+[`docs/wavewalletrpc_build.md`](../../docs/wavewalletrpc_build.md).
 
 ## Starting the Daemon
 
@@ -35,8 +54,8 @@ make unit pkg=waved  # run unit tests for a package
 Then create and unlock the wallet:
 
 ```bash
-# Create (password via env var for automation). Build with wavewalletrpc:
-#   make build-wavewalletrpc
+# Create (password via env var for automation). Needs a daemon built with
+# make build-wavewalletrpc.
 WAVED_WALLET_PASSWORD=testpass wavecli create --no-tls
 
 # Or auto-unlock at startup:
@@ -96,20 +115,38 @@ server preface: EOF`, so do not pass them by default.
 
 The CLI surface is three tiers:
 
-1. **Seven top-level wallet verbs (implicit, no parent)** — the everyday
-   surface. Backed by `wavewalletrpc.WalletService` (build with
-   `make build-wavewalletrpc`).
+1. **Eight top-level wallet verbs (implicit, no parent)**: the everyday
+   surface. Backed by `wavewalletrpc.WalletService`, which needs the
+   `wavewalletrpc` **and** `swapruntime` tags together (build with
+   `make build-wavewalletrpc`, which sets both).
 2. **Daemon introspection at root** — `getinfo`, `schema`, `mcp`, `dev`.
 3. **Advanced subtrees** — `ark.*` (raw waverpc) and `swap.*`
    (`swapruntime` build only).
 
-If the daemon is built without the `wavewalletrpc` tag, the seven top-level
-verbs return a structured error pointing at `docs/wavewalletrpc_build.md`.
+If the daemon is built without the tags, the eight top-level verbs return a
+structured error pointing at `docs/wavewalletrpc_build.md`. Tier 2 and the
+`ark` and `recovery` subtrees are unaffected, since they ride on
+`waverpc.DaemonService`, which every build registers.
+
+`dev.*` is the one tier-3 subtree that is not all-or-nothing: it is a
+generated registry spanning six services, so availability is per service.
+
+| `dev` service | Default-tag daemon |
+|---|---|
+| `dev daemon` (`waverpc.DaemonService`) | works |
+| `dev wallet` (`wavewalletrpc.WalletService`) | `UNIMPLEMENTED: unknown service wavewalletrpc.WalletService` |
+| `dev wallet-inspection` (`wavewalletrpc.WalletInspectionService`) | same, for `WalletInspectionService` |
+| `dev swapclient` (`swapclientrpc.SwapClientService`) | `daemon was built without swapruntime support; rebuild waved with tags="swapruntime"` |
+
+The two `wavewalletrpc` services need both tags:
+`cmd/waved/wavewalletrpc_stub.go` is built under
+`!wavewalletrpc || !swapruntime`, so either tag alone still gets the stub,
+which registers nothing.
 
 ### Top-level wallet verbs
 
 ```bash
-# Status
+# Status (works against any daemon build)
 wavecli --network=regtest getinfo
 
 # Create + unlock (password from env, never argv).
@@ -143,6 +180,8 @@ wavecli --network=regtest activity --format json              # JSON output
 wavecli --network=regtest exit --outpoint TXID:VOUT
 wavecli --network=regtest exit status --outpoint TXID:VOUT
 ```
+
+Every verb in this block except `getinfo` needs a `wavewalletrpc` daemon.
 
 ### Advanced (`ark.*`) commands
 
@@ -215,6 +254,9 @@ echo -n 'pass' | wavecli --network=regtest unlock
 8. List VTXOs (once boarding completes):
    `wavecli --network=regtest ark vtxos list`
 
+Steps 3, 4, and 7 need a `wavewalletrpc` daemon (step 2). Only step 8 works
+against a default-tag build.
+
 ## Environment Variables
 
 | Variable | Description |
@@ -234,7 +276,7 @@ prefix, dots replaced by underscores (e.g., `WAVED_SERVER_HOST`).
 | `connection refused` | Daemon not running or wrong `--rpcserver` |
 | `wallet not ready` | Run `wavecli unlock` first |
 | `wallet already exists` | Wallet was already created; use `unlock` |
-| `daemon was not built with -tags wavewalletrpc` | Rebuild with `make build-wavewalletrpc`; the seven top-level verbs require the wavewalletrpc tag |
+| `daemon was not built with -tags wavewalletrpc` | Rebuild the **daemon** with `make build-wavewalletrpc` (both tags); all eight top-level wallet verbs plus the `mcp` wallet tools need them. `getinfo`, `schema`, `ark.*`, `recovery.*` and `dev daemon *` do not, so a default-tag daemon is not a broken one |
 | `--sweep-all requires --amt=0` | On `send --onchain`: pass `--sweep-all` for "drain wallet", or set `--amt N` |
 | `--offchain and --onchain are mutually exclusive` | Pick one direction on `send` / `recv` |
 | `GenSeed: lwwallet mode only` | Switch daemon to `--wallet.type=lwwallet` |
