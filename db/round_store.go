@@ -319,6 +319,13 @@ func (s *RoundPersistenceStore) CommitState(ctx context.Context, r *round.Round,
 			// zero-indexed, so an unstamped round reads as V1
 			// (the zero value) with no normalization needed.
 			FlowVersion: int32(r.FlowVersion),
+
+			// Persist the per-round sweep delay so a round that
+			// confirms after a restart can still derive each new
+			// VTXO's absolute batch expiry. Without it the
+			// resumed round stamps BatchExpiry == CreatedHeight,
+			// which reads back as already expired.
+			SweepDelay: int32(r.SweepDelay),
 		}
 		if err := q.InsertRound(ctx, roundParams); err != nil {
 			return fmt.Errorf("insert round: %w", err)
@@ -980,6 +987,7 @@ func (s *RoundPersistenceStore) dbRoundToDomainRound(ctx context.Context,
 		RoundID:     roundID,
 		StartHeight: uint32(dbRound.StartHeight),
 		FlowVersion: roundpb.FlowVersion(dbRound.FlowVersion),
+		SweepDelay:  uint32(dbRound.SweepDelay),
 	}
 
 	// Populate confirmation info if present.
@@ -1237,6 +1245,12 @@ func (s *RoundPersistenceStore) reconstructInputSigSentState(
 		// Carry the persisted flow version onto the reconstructed
 		// state so a mid-round resume does not silently downgrade it.
 		FlowVersion: roundpb.FlowVersion(dbRound.FlowVersion),
+
+		// Restore the sweep delay the operator set for this round.
+		// The confirmation handler derives batch expiry from it, so
+		// losing it across a restart would stamp every VTXO the
+		// resumed round produces as already expired.
+		SweepDelay: uint32(dbRound.SweepDelay),
 	}
 
 	// Deserialize commitment tx.

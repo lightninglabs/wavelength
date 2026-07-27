@@ -155,7 +155,7 @@ func (q *Queries) GetClientTreeTxids(ctx context.Context, arg GetClientTreeTxids
 }
 
 const GetRound = `-- name: GetRound :one
-SELECT round_id, start_height, confirmation_height, confirmation_block_hash, commitment_tx, commitment_txid, vtxt_tree, status, creation_time, last_update_time, flow_version FROM rounds WHERE round_id = $1
+SELECT round_id, start_height, confirmation_height, confirmation_block_hash, commitment_tx, commitment_txid, vtxt_tree, status, creation_time, last_update_time, flow_version, sweep_delay FROM rounds WHERE round_id = $1
 `
 
 func (q *Queries) GetRound(ctx context.Context, roundID string) (Round, error) {
@@ -173,6 +173,7 @@ func (q *Queries) GetRound(ctx context.Context, roundID string) (Round, error) {
 		&i.CreationTime,
 		&i.LastUpdateTime,
 		&i.FlowVersion,
+		&i.SweepDelay,
 	)
 	return i, err
 }
@@ -216,7 +217,7 @@ func (q *Queries) GetRoundBoardingIntents(ctx context.Context, roundID string) (
 }
 
 const GetRoundByCommitmentTxid = `-- name: GetRoundByCommitmentTxid :one
-SELECT round_id, start_height, confirmation_height, confirmation_block_hash, commitment_tx, commitment_txid, vtxt_tree, status, creation_time, last_update_time, flow_version FROM rounds WHERE commitment_txid = $1
+SELECT round_id, start_height, confirmation_height, confirmation_block_hash, commitment_tx, commitment_txid, vtxt_tree, status, creation_time, last_update_time, flow_version, sweep_delay FROM rounds WHERE commitment_txid = $1
 `
 
 func (q *Queries) GetRoundByCommitmentTxid(ctx context.Context, commitmentTxid []byte) (Round, error) {
@@ -234,6 +235,7 @@ func (q *Queries) GetRoundByCommitmentTxid(ctx context.Context, commitmentTxid [
 		&i.CreationTime,
 		&i.LastUpdateTime,
 		&i.FlowVersion,
+		&i.SweepDelay,
 	)
 	return i, err
 }
@@ -395,8 +397,8 @@ const InsertRound = `-- name: InsertRound :exec
 INSERT INTO rounds (
     round_id, confirmation_height, confirmation_block_hash, commitment_tx,
     commitment_txid, vtxt_tree, status, creation_time, last_update_time,
-    start_height, flow_version
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+    start_height, flow_version, sweep_delay
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 ON CONFLICT (round_id) DO UPDATE SET
     confirmation_height = COALESCE(excluded.confirmation_height, rounds.confirmation_height),
     confirmation_block_hash = COALESCE(excluded.confirmation_block_hash, rounds.confirmation_block_hash),
@@ -404,7 +406,14 @@ ON CONFLICT (round_id) DO UPDATE SET
     commitment_txid = COALESCE(excluded.commitment_txid, rounds.commitment_txid),
     vtxt_tree = COALESCE(excluded.vtxt_tree, rounds.vtxt_tree),
     status = excluded.status,
-    last_update_time = excluded.last_update_time
+    last_update_time = excluded.last_update_time,
+    -- The sweep delay is fixed for the life of a round, so a later
+    -- checkpoint must never clear a value an earlier one recorded. Only
+    -- adopt the incoming value when it is actually set.
+    sweep_delay = CASE
+        WHEN excluded.sweep_delay > 0 THEN excluded.sweep_delay
+        ELSE rounds.sweep_delay
+    END
 `
 
 type InsertRoundParams struct {
@@ -419,6 +428,7 @@ type InsertRoundParams struct {
 	LastUpdateTime        int64
 	StartHeight           int32
 	FlowVersion           int32
+	SweepDelay            int32
 }
 
 // Round queries.
@@ -435,6 +445,7 @@ func (q *Queries) InsertRound(ctx context.Context, arg InsertRoundParams) error 
 		arg.LastUpdateTime,
 		arg.StartHeight,
 		arg.FlowVersion,
+		arg.SweepDelay,
 	)
 	return err
 }
@@ -651,7 +662,7 @@ func (q *Queries) InsertVTXOAncestryPath(ctx context.Context, arg InsertVTXOAnce
 }
 
 const ListActiveRounds = `-- name: ListActiveRounds :many
-SELECT round_id, start_height, confirmation_height, confirmation_block_hash, commitment_tx, commitment_txid, vtxt_tree, status, creation_time, last_update_time, flow_version FROM rounds WHERE status = 'input_sig_sent' ORDER BY creation_time ASC
+SELECT round_id, start_height, confirmation_height, confirmation_block_hash, commitment_tx, commitment_txid, vtxt_tree, status, creation_time, last_update_time, flow_version, sweep_delay FROM rounds WHERE status = 'input_sig_sent' ORDER BY creation_time ASC
 `
 
 func (q *Queries) ListActiveRounds(ctx context.Context) ([]Round, error) {
@@ -675,6 +686,7 @@ func (q *Queries) ListActiveRounds(ctx context.Context) ([]Round, error) {
 			&i.CreationTime,
 			&i.LastUpdateTime,
 			&i.FlowVersion,
+			&i.SweepDelay,
 		); err != nil {
 			return nil, err
 		}
@@ -788,7 +800,7 @@ func (q *Queries) ListLiveVTXOAncestryPaths(ctx context.Context) ([]VtxoAncestry
 }
 
 const ListRoundsByStatus = `-- name: ListRoundsByStatus :many
-SELECT round_id, start_height, confirmation_height, confirmation_block_hash, commitment_tx, commitment_txid, vtxt_tree, status, creation_time, last_update_time, flow_version FROM rounds WHERE status = $1 ORDER BY creation_time DESC
+SELECT round_id, start_height, confirmation_height, confirmation_block_hash, commitment_tx, commitment_txid, vtxt_tree, status, creation_time, last_update_time, flow_version, sweep_delay FROM rounds WHERE status = $1 ORDER BY creation_time DESC
 `
 
 func (q *Queries) ListRoundsByStatus(ctx context.Context, status string) ([]Round, error) {
@@ -812,6 +824,7 @@ func (q *Queries) ListRoundsByStatus(ctx context.Context, status string) ([]Roun
 			&i.CreationTime,
 			&i.LastUpdateTime,
 			&i.FlowVersion,
+			&i.SweepDelay,
 		); err != nil {
 			return nil, err
 		}
@@ -827,7 +840,7 @@ func (q *Queries) ListRoundsByStatus(ctx context.Context, status string) ([]Roun
 }
 
 const ListRoundsPaginated = `-- name: ListRoundsPaginated :many
-SELECT round_id, start_height, confirmation_height, confirmation_block_hash, commitment_tx, commitment_txid, vtxt_tree, status, creation_time, last_update_time, flow_version FROM rounds
+SELECT round_id, start_height, confirmation_height, confirmation_block_hash, commitment_tx, commitment_txid, vtxt_tree, status, creation_time, last_update_time, flow_version, sweep_delay FROM rounds
 WHERE ($1 = '' OR round_id > $1)
   AND ($2 = '' OR status = $2)
   AND ($3 = 0 OR creation_time >= $3)
@@ -873,6 +886,7 @@ func (q *Queries) ListRoundsPaginated(ctx context.Context, arg ListRoundsPaginat
 			&i.CreationTime,
 			&i.LastUpdateTime,
 			&i.FlowVersion,
+			&i.SweepDelay,
 		); err != nil {
 			return nil, err
 		}

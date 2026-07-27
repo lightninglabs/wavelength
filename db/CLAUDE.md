@@ -71,7 +71,7 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   safety bounds enforced during `DeserializeTree`.
 - `resolveInputPackage` / `loadPackageBundleBySessionID` — two-stage
   OOR ancestry resolver (`oor_unroll_resolver.go`).
-- `LatestMigrationVersion = 15` — current schema version.
+- `LatestMigrationVersion = 16` — current schema version.
 - `PendingIntentPersistenceStore` — implements `wallet.PendingIntentStore`,
   the persistence half of the generic restart-safe intent outbox (header
   `pending_intents` + per-kind detail tables + `pending_intent_anchors`).
@@ -212,6 +212,16 @@ when adding one.
   SetVersion leaves the migration dirty and the next boot fails with
   ErrDirty; forcing the version and re-running is safe because the
   backfill guards on `round_uuid IS NULL` and re-executes as a no-op.
+- `000016_round_sweep_delay` — adds `rounds.sweep_delay`. A round is
+  checkpointed at `input_sig_sent` and can confirm after a restart; the
+  confirmation handler derives each new VTXO's absolute batch expiry as
+  `confirmation_height + sweep_delay`, so a delay held only in memory made
+  a resumed round stamp `BatchExpiry == CreatedHeight` and the wallet read
+  the VTXO back as already expired. `InsertRound` only adopts a non-zero
+  incoming value, since the delay is fixed for the life of a round and a
+  later checkpoint must not clear what an earlier one recorded. Rows
+  predating the column read back zero, which the confirmation path treats
+  as "unknown" and leaves the expiry unstamped rather than wrong.
 
 ## Deep Docs
 

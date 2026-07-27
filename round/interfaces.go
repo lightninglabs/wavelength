@@ -367,6 +367,16 @@ type Round struct {
 	// starting point.
 	StartHeight uint32
 
+	// SweepDelay is this round's batch-wide sweep timelock in blocks,
+	// delivered by the operator with the commitment tx. It is persisted
+	// because a round checkpointed at input_sig_sent can confirm after a
+	// restart, and the confirmation handler derives every new VTXO's
+	// absolute batch expiry as confirmation_height + SweepDelay. Without
+	// it a resumed round stamps BatchExpiry == CreatedHeight, which reads
+	// back as already expired. Zero means unrecorded (rounds checkpointed
+	// before the column existed).
+	SweepDelay uint32
+
 	// ConfInfo contains chain information about when the round's commitment
 	// transaction was confirmed. None until the commitment tx is confirmed
 	// on-chain.
