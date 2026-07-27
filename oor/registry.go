@@ -74,25 +74,29 @@ const detachedWaitTimeout = 5 * time.Minute
 // the registry's own wiring is a per-session dependency forwarded verbatim into
 // each child actor via childConfig.
 type OORRegistryConfig struct {
-	Log                  fn.Option[btclog.Logger]
-	Signer               input.Signer
-	IncomingHandler      OutboxHandler
-	BatchRegistrar       BatchRegistrar
-	RegistryStore        SessionRegistryStore
-	DeliveryStore        actor.DeliveryStore
-	ServerConn           actor.TellOnlyRef[serverconn.ServerConnMsg]
-	VTXOManager          actor.TellOnlyRef[vtxo.ManagerMsg]
-	SpendCompleter       SpendCompleter
-	SpendReleaser        SpendReleaser
-	ReservationStore     ReservationStore
-	PackageStore         PackagePersistence
-	VTXOStore            vtxo.VTXOStore
-	LedgerSink           fn.Option[ledger.Sink]
-	IncomingVTXOObserver IncomingVTXONotifier
-	Limits               ReceiveLimits
-	TimeoutActor         actor.TellOnlyRef[timeout.Msg]
-	CallbackRef          actor.TellOnlyRef[*timeout.ExpiredMsg]
-	ActorSystem          actor.SystemContext
+	Log             fn.Option[btclog.Logger]
+	Signer          input.Signer
+	IncomingHandler OutboxHandler
+	BatchRegistrar  BatchRegistrar
+	// IncomingLineageVerifier binds a received VTXO's ancestry to its
+	// authenticated commitments before any reorg watch is armed (F-H1); nil
+	// skips it. Threaded into each session's SessionActorConfig.
+	IncomingLineageVerifier IncomingLineageVerifier
+	RegistryStore           SessionRegistryStore
+	DeliveryStore           actor.DeliveryStore
+	ServerConn              actor.TellOnlyRef[serverconn.ServerConnMsg]
+	VTXOManager             actor.TellOnlyRef[vtxo.ManagerMsg]
+	SpendCompleter          SpendCompleter
+	SpendReleaser           SpendReleaser
+	ReservationStore        ReservationStore
+	PackageStore            PackagePersistence
+	VTXOStore               vtxo.VTXOStore
+	LedgerSink              fn.Option[ledger.Sink]
+	IncomingVTXOObserver    IncomingVTXONotifier
+	Limits                  ReceiveLimits
+	TimeoutActor            actor.TellOnlyRef[timeout.Msg]
+	CallbackRef             actor.TellOnlyRef[*timeout.ExpiredMsg]
+	ActorSystem             actor.SystemContext
 
 	// Clock is the deterministic time source forwarded into every session
 	// FSM Environment. When nil, sessions default to a real clock.
@@ -1604,6 +1608,7 @@ func (r *oorRegistryBehavior) childConfig(sessionID SessionID,
 		Signer:                  r.cfg.Signer,
 		IncomingHandler:         r.cfg.IncomingHandler,
 		BatchRegistrar:          r.cfg.BatchRegistrar,
+		IncomingLineageVerifier: r.cfg.IncomingLineageVerifier,
 		RegistryStore:           r.cfg.RegistryStore,
 		DeliveryStore:           r.cfg.DeliveryStore,
 		ServerConn:              r.cfg.ServerConn,

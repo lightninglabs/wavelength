@@ -99,6 +99,12 @@ type LocalPersistenceOutboxHandler struct {
 	// their commit transaction before invoking this handler.
 	BatchRegistrar BatchRegistrar
 
+	// IncomingLineageVerifier cryptographically binds a received VTXO's
+	// ancestry to its authenticated commitments before any reorg watch is
+	// armed (F-H1). Nil skips the binding; production wires
+	// vtxo.VerifyOORAncestryLineage.
+	IncomingLineageVerifier IncomingLineageVerifier
+
 	// PackageStore persists finalized OOR package artifacts and local
 	// outpoint bindings.
 	PackageStore PackagePersistence
@@ -171,6 +177,10 @@ func (h *LocalPersistenceOutboxHandler) handleMaterializeIncoming(
 		err := RegisterIncomingBatchEvidence(
 			ctx, h.BatchRegistrar, msg.SessionID,
 			msg.MetadataMatches,
+			BaseCoinInputs(
+				msg.FinalCheckpointPSBTs, msg.AncestorPackages,
+			),
+			h.IncomingLineageVerifier,
 		)
 		if err != nil {
 			return nil, err

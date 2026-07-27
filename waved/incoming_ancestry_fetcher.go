@@ -62,10 +62,31 @@ func incomingAncestryFetcher(idx *indexer.Client,
 			)
 		}
 
-		return vtxo.ResolveIncomingAncestry(
+		extras, err := vtxo.ResolveIncomingAncestry(
 			ctx, query, outpoint, pkScript,
 			vtxo.DefaultIncomingAncestryIndexPageSize,
 			uint64(oor.DefaultMaxVTXOMatches),
 		)
+		if err != nil {
+			return vtxo.IncomingVTXOExtras{}, err
+		}
+
+		// ResolveIncomingAncestry has authenticated each tree's batch
+		// output against its real commitment tx
+		// (EvidenceFromAncestryPaths). Now cryptographically bind the
+		// received VTXO to that authenticated lineage (F-H1): prove it
+		// is a genuine, operator-signed leaf of the commitment we will
+		// watch, not a decoy the indexer named. A failure surfaces as a
+		// fetch failure, and the handler then persists the VTXO without
+		// ancestry (fail closed -- no reorg watch armed on an unverified
+		// commitment; exit material restored by a later backfill).
+		if err := vtxo.VerifyReceivedVTXOBinding(
+			extras.Ancestry, pkScript,
+		); err != nil {
+			return vtxo.IncomingVTXOExtras{}, fmt.Errorf(
+				"bind received vtxo to commitment: %w", err)
+		}
+
+		return extras, nil
 	}, nil
 }
