@@ -4729,12 +4729,13 @@ func (s *Server) initOORActor(ctx context.Context,
 	// delegate of the local-persistence handler for retry scheduling.
 
 	outboxHandler := &oor.LocalPersistenceOutboxHandler{
-		Next:           signingHandler,
-		Store:          vtxoStore,
-		BatchRegistrar: incomingBatchRegistrar,
-		PackageStore:   packageStore,
-		OperatorKey:    operatorTerms.PubKey,
-		ExitDelay:      operatorTerms.VTXOExitDelay,
+		Next:                    signingHandler,
+		Store:                   vtxoStore,
+		BatchRegistrar:          incomingBatchRegistrar,
+		IncomingLineageVerifier: vtxo.VerifyOORAncestryLineage,
+		PackageStore:            packageStore,
+		OperatorKey:             operatorTerms.PubKey,
+		ExitDelay:               operatorTerms.VTXOExitDelay,
 		NotifyIncomingVTXOs: func(ctx context.Context,
 			descs []*vtxo.Descriptor) error {
 
@@ -4788,20 +4789,22 @@ func (s *Server) initOORActor(ctx context.Context,
 	s.oorSessionStore = registryStore
 
 	s.oorRegistry, err = oor.NewOORRegistryActor(oor.OORRegistryConfig{
-		Log:              fn.Some(s.subLogger(oor.Subsystem)),
-		Signer:           oorSigner,
-		IncomingHandler:  outboxHandler,
-		BatchRegistrar:   incomingBatchRegistrar,
-		RegistryStore:    registryStore,
-		DeliveryStore:    s.deliveryStore,
-		ServerConn:       s.runtime.TellRef(),
-		VTXOManager:      vtxoManagerRef,
-		SpendCompleter:   s.oorCompleteSpend,
-		SpendReleaser:    s.oorReleaseSpend,
-		ReservationStore: reservationStore,
-		PackageStore:     packageStore,
-		VTXOStore:        vtxoStore,
-		LedgerSink:       fn.Some(ledger.NewSink(s.actorSystem)),
+		Log:             fn.Some(s.subLogger(oor.Subsystem)),
+		Signer:          oorSigner,
+		IncomingHandler: outboxHandler,
+		BatchRegistrar:  incomingBatchRegistrar,
+
+		IncomingLineageVerifier: vtxo.VerifyOORAncestryLineage,
+		RegistryStore:           registryStore,
+		DeliveryStore:           s.deliveryStore,
+		ServerConn:              s.runtime.TellRef(),
+		VTXOManager:             vtxoManagerRef,
+		SpendCompleter:          s.oorCompleteSpend,
+		SpendReleaser:           s.oorReleaseSpend,
+		ReservationStore:        reservationStore,
+		PackageStore:            packageStore,
+		VTXOStore:               vtxoStore,
+		LedgerSink:              fn.Some(ledger.NewSink(s.actorSystem)),
 		IncomingVTXOObserver: func(ctx context.Context,
 			descs []*vtxo.Descriptor) error {
 

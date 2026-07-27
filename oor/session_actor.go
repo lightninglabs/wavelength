@@ -52,6 +52,12 @@ type SessionActorConfig struct {
 	// materialization is staged into the actor's database transaction.
 	BatchRegistrar BatchRegistrar
 
+	// IncomingLineageVerifier cryptographically binds a received VTXO's
+	// ancestry to its authenticated commitments before any reorg watch is
+	// armed (F-H1). Nil skips the binding (harness paths); production wires
+	// vtxo.VerifyOORAncestryLineage.
+	IncomingLineageVerifier IncomingLineageVerifier
+
 	// RegistryStore is the single source of truth for this session's
 	// durable state. The actor writes its snapshot here inside Commit
 	// (joining the turn transaction) and the registry reads it for restore
@@ -941,6 +947,11 @@ func (b *sessionBehavior) driveOutboxEvents(ctx context.Context,
 			if err := RegisterIncomingBatchEvidence(
 				ctx, b.cfg.BatchRegistrar, b.sessionID,
 				materialize.MetadataMatches,
+				BaseCoinInputs(
+					materialize.FinalCheckpointPSBTs,
+					materialize.AncestorPackages,
+				),
+				b.cfg.IncomingLineageVerifier,
 			); err != nil {
 				return err
 			}

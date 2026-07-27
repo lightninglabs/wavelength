@@ -639,7 +639,13 @@ func (r *RPCServer) recoveryOORHandler(
 		Store:        r.server.vtxoStore,
 		PackageStore: packageStore,
 		OperatorKey:  terms.PubKey,
-		ExitDelay:    terms.VTXOExitDelay,
+
+		// No BatchRegistrar is wired here, so no reorg watch is armed on
+		// this path today; wire the lineage verifier defensively anyway
+		// so that if a registrar is ever added the F-H1 bind cannot be
+		// silently bypassed (fail-open).
+		IncomingLineageVerifier: vtxo.VerifyOORAncestryLineage,
+		ExitDelay:               terms.VTXOExitDelay,
 		NotifyIncomingVTXOs: func(ctx context.Context,
 			descs []*vtxo.Descriptor) error {
 

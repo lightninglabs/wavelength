@@ -5,8 +5,10 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/batchcanon"
+	"github.com/lightninglabs/wavelength/vtxo"
 )
 
 // BatchRegistrar durably registers authenticated batch evidence and arms its
@@ -15,11 +17,74 @@ type BatchRegistrar interface {
 	RegisterBatch(context.Context, *batchcanon.RegisterBatchRequest) error
 }
 
+// BaseCoinInputs returns the committed base-VTXO outpoints the received coin
+// ultimately descends from, across the full OOR checkpoint/ark chain (F-H1
+// terminator). Each finalized checkpoint has exactly one input; a prevout that
+// spends an ancestor package's ark output is an intermediate OOR hop, so it is
+// skipped — the BASE checkpoints, whose prevouts are the actual commitment-tree
+// leaves, spend no ancestor output. This makes the ancestry bind work uniformly
+// for single-hop AND multi-hop receives: the returned outpoints must each be an
+// authenticated ancestry leaf. Malformed checkpoints (no input) are skipped;
+// upstream ValidateFinalizePackage guarantees well-formed, matched checkpoints,
+// and a fully-empty result fails the bind closed.
+func BaseCoinInputs(rootCheckpoints []*psbt.Packet,
+	ancestors []PackageArtifact) []wire.OutPoint {
+
+	ancestorSessions := make(map[SessionID]struct{}, len(ancestors))
+	for _, a := range ancestors {
+		ancestorSessions[a.SessionID] = struct{}{}
+	}
+
+	var base []wire.OutPoint
+	collect := func(checkpoints []*psbt.Packet) {
+		for _, cp := range checkpoints {
+			if cp == nil || cp.UnsignedTx == nil ||
+				len(cp.UnsignedTx.TxIn) == 0 {
+
+				continue
+			}
+			prevOut := cp.UnsignedTx.TxIn[0].PreviousOutPoint
+			if _, ok := ancestorSessions[SessionID(
+				prevOut.Hash,
+			)]; ok {
+				continue
+			}
+			base = append(base, prevOut)
+		}
+	}
+
+	collect(rootCheckpoints)
+	for _, a := range ancestors {
+		collect(a.FinalCheckpointPSBTs)
+	}
+
+	return base
+}
+
+// IncomingLineageVerifier cryptographically binds a received VTXO's ancestry to
+// the commitments the client is about to watch: it proves each ancestry tree is
+// a genuine, operator-signed descent from its authenticated commitment output
+// (vtxo.VerifyOORAncestryLineage). It is injected rather than called directly so
+// registration-logic tests, which use mock (unsigned) trees, can leave it nil;
+// production wiring always supplies the real verifier. A nil verifier skips the
+// binding.
+type IncomingLineageVerifier func(ancestry []vtxo.Ancestry,
+	evidence []batchcanon.BatchEvidence, chainDepth int,
+	coinInputs []wire.OutPoint) error
+
 // RegisterIncomingBatchEvidence registers every distinct commitment named by
 // the resolved metadata. Replays merge the same dependent VTXOs idempotently.
+// When verifyLineage is non-nil, each match's ancestry is cryptographically
+// bound to its authenticated commitments before any watch is armed (F-H1); a
+// failure fails closed, so no reorg watch is registered on an unverified
+// commitment. coinInputs are the ark tx's real spent outpoints (the checkpoint
+// prevouts), shared across matches: a single-hop receive's ancestry must
+// account for them so a decoy commitment tree cannot be watched in place of the
+// coin's true lineage.
 func RegisterIncomingBatchEvidence(ctx context.Context,
 	registrar BatchRegistrar, sessionID SessionID,
-	matches []IncomingMetadataMatch) error {
+	matches []IncomingMetadataMatch, coinInputs []wire.OutPoint,
+	verifyLineage IncomingLineageVerifier) error {
 
 	type pendingRegistration struct {
 		evidence   batchcanon.BatchEvidence
@@ -42,6 +107,28 @@ func RegisterIncomingBatchEvidence(ctx context.Context,
 		); err != nil {
 			return fmt.Errorf("incoming metadata output %d: %w",
 				match.OutputIndex, err)
+		}
+
+		// Bind the received VTXO's ancestry to its authenticated
+		// commitments before any watch is armed: prove each ancestry
+		// tree is a genuine, operator-signed descent from its
+		// authenticated commitment output, so a malicious indexer
+		// cannot name a real-but-decoy commitment for the client to
+		// watch (F-H1). Only when evidence is present: an absent
+		// evidence extension arms no watch (older-indexer / pre-gate
+		// compatibility, handled above), so there is nothing to bind
+		// and the receive degrades rather than failing. Fail-closed
+		// otherwise.
+		if verifyLineage != nil && len(match.Metadata.BatchEvidence) > 0 {
+			if err := verifyLineage(
+				match.Metadata.Ancestry,
+				match.Metadata.BatchEvidence,
+				match.Metadata.ChainDepth, coinInputs,
+			); err != nil {
+				return fmt.Errorf("incoming metadata output "+
+					"%d: bind lineage: %w",
+					match.OutputIndex, err)
+			}
 		}
 
 		dependent := wire.OutPoint{

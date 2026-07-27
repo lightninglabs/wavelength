@@ -45,7 +45,7 @@ func TestRegisterIncomingBatchEvidence(t *testing.T) {
 	}
 
 	err := RegisterIncomingBatchEvidence(
-		context.Background(), registrar, sessionID, matches,
+		context.Background(), registrar, sessionID, matches, nil, nil,
 	)
 	require.NoError(t, err)
 	require.Len(t, registrar.requests, 1)
@@ -77,7 +77,7 @@ func TestRegisterIncomingBatchEvidenceFailClosed(t *testing.T) {
 
 	err := RegisterIncomingBatchEvidence(
 		context.Background(), &recordingBatchRegistrar{}, SessionID{},
-		[]IncomingMetadataMatch{metadata},
+		[]IncomingMetadataMatch{metadata}, nil, nil,
 	)
 	require.ErrorContains(t, err, "covers 1 of 2")
 
@@ -87,9 +87,27 @@ func TestRegisterIncomingBatchEvidenceFailClosed(t *testing.T) {
 			err: registrationErr,
 		}, SessionID{}, []IncomingMetadataMatch{
 			incomingEvidenceMatch(1, evidence),
-		},
+		}, nil, nil,
 	)
 	require.ErrorIs(t, err, registrationErr)
+}
+
+// TestRegisterIncomingBatchEvidenceVerifiesLineage proves the injected lineage
+// verifier is actually invoked and fails the registration closed: the real
+// verifier rejects the mock (nil-tree) ancestry, so no watch is armed.
+func TestRegisterIncomingBatchEvidenceVerifiesLineage(t *testing.T) {
+	t.Parallel()
+
+	evidence := testIncomingBatchEvidence(t, 0x66)
+	registrar := &recordingBatchRegistrar{}
+
+	err := RegisterIncomingBatchEvidence(
+		context.Background(), registrar, SessionID{},
+		[]IncomingMetadataMatch{incomingEvidenceMatch(0, evidence)},
+		nil, vtxo.VerifyOORAncestryLineage,
+	)
+	require.ErrorContains(t, err, "bind lineage")
+	require.Empty(t, registrar.requests, "no watch armed on binding failure")
 }
 
 // incomingEvidenceMatch builds one output's ancestry/evidence metadata.
