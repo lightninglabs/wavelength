@@ -1408,14 +1408,18 @@ func (a *RoundClientActor) Start(ctx context.Context) error {
 		}
 
 		// A reloaded round sits back in InputSigSentState with its
-		// forfeit signatures already out, so the wavelength#844
-		// hazard window reopens across the restart. Re-arm the
-		// status-reconcile timeout for forfeit-bearing rounds so a
-		// round whose failure raced the crash still converges on a
-		// QueryRoundStatus probe rather than stranding.
-		if len(round.Intents.Forfeits) > 0 &&
-			a.env.StatusReconcileTimeout > 0 {
-
+		// signatures already out, so the wavelength#844 hazard window
+		// reopens across the restart. Re-arm the status-reconcile
+		// timeout so a round whose failure raced the crash still
+		// converges on a QueryRoundStatus probe rather than stranding.
+		//
+		// Boarding-only rounds re-arm too. They hold no forfeit
+		// reservations, but the probe is still their only exit from
+		// InputSigSentState once the operator has rolled the round
+		// back before broadcast: no commitment can ever confirm and no
+		// failure will ever be delivered, so without the clock the
+		// deposit strands until the CSV expires (wavelength#1051).
+		if a.env.StatusReconcileTimeout > 0 {
 			if err := a.processOutbox(ctx, []ClientOutMsg{
 				&StartTimeoutReq{
 					RoundKey: RoundKeyStr(
