@@ -133,6 +133,94 @@ func TestExpiryStatusUnknownString(t *testing.T) {
 	require.Equal(t, "unknown", ExpiryStatusUnknown.String())
 }
 
+// TestCriticalThresholdIncludesOORHops asserts that the critical threshold
+// budgets time for the OOR checkpoint chain, not just the commitment tree.
+//
+// The critical threshold exists so the client never has to race the operator's
+// sweep. An exit must confirm the deepest tree path AND one recovery
+// transaction per OOR hop before its final CSV even starts, so omitting
+// ChainDepth under-sizes exactly the deep OOR chains that need the most room.
+func TestCriticalThresholdIncludesOORHops(t *testing.T) {
+	t.Parallel()
+
+	const (
+		treeDepthMultiplier = int32(6)
+		relativeExpiry      = uint32(144)
+		chainDepth          = 4
+	)
+
+	cfg := &ExpiryConfig{
+		// Floor kept low so the dynamic term is what is measured.
+		CriticalThresholdBlocks: 1,
+		RefreshThresholdBlocks:  1,
+		MinRefreshBuffer:        1,
+		TreeDepthMultiplier:     treeDepthMultiplier,
+	}
+
+	// Identical VTXOs except for the OOR hop count. Both carry a
+	// single-fragment ancestry so MaxTreeDepth is equal.
+	ancestry := []Ancestry{{TreeDepth: 3}}
+
+	roundBorn := &Descriptor{
+		Ancestry:       ancestry,
+		RelativeExpiry: relativeExpiry,
+		ChainDepth:     0,
+	}
+	oorDerived := &Descriptor{
+		Ancestry:       ancestry,
+		RelativeExpiry: relativeExpiry,
+		ChainDepth:     chainDepth,
+	}
+
+	roundThreshold := cfg.CalculateCriticalThreshold(roundBorn)
+	oorThreshold := cfg.CalculateCriticalThreshold(oorDerived)
+
+	require.Greater(
+		t, oorThreshold, roundThreshold, "an OOR-derived VTXO "+
+			"needs a larger exit budget than an otherwise "+
+			"identical round-born one",
+	)
+	require.Equal(
+		t, roundThreshold+chainDepth*treeDepthMultiplier, oorThreshold,
+		"each OOR hop must cost one recovery transaction of budget",
+	)
+}
+
+// TestCriticalThresholdIgnoresNegativeChainDepth asserts that a corrupt hop
+// count cannot shorten the exit budget below the round-born baseline.
+func TestCriticalThresholdIgnoresNegativeChainDepth(t *testing.T) {
+	t.Parallel()
+
+	cfg := &ExpiryConfig{
+		CriticalThresholdBlocks: 1,
+		TreeDepthMultiplier:     6,
+	}
+
+	desc := &Descriptor{
+		Ancestry: []Ancestry{
+			{
+				TreeDepth: 3,
+			},
+		},
+		RelativeExpiry: 144,
+		ChainDepth:     -5,
+	}
+	baseline := &Descriptor{
+		Ancestry: []Ancestry{
+			{
+				TreeDepth: 3,
+			},
+		},
+		RelativeExpiry: 144,
+		ChainDepth:     0,
+	}
+
+	require.Equal(
+		t, cfg.CalculateCriticalThreshold(baseline),
+		cfg.CalculateCriticalThreshold(desc),
+	)
+}
+
 // TestLiveStateBlockEpochUnusableExpiry asserts that a VTXO whose expiry
 // cannot be trusted is held in LiveState: it is neither surrendered to the
 // expiry path nor allowed to fail the transition, which would wedge the actor

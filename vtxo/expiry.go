@@ -1,5 +1,7 @@
 package vtxo
 
+import "math"
+
 // ExpiryStatus represents the result of an expiry check.
 type ExpiryStatus int
 
@@ -202,10 +204,37 @@ func (c *ExpiryConfig) DetermineRefreshUrgency(
 	return RefreshUrgencyNormal
 }
 
+// exitTxDepth returns the number of transactions that must confirm in
+// sequence before a unilateral exit can even begin its final CSV wait.
+//
+// Two segments stack. First the deepest commitment-tree path, since a VTXO
+// with several ancestry fragments must land them all and they confirm in
+// parallel, so the worst branch sets the pace. Then one recovery transaction
+// per OOR hop between that commitment and this VTXO: those are strictly
+// sequential, because each checkpoint spends the previous one. unroll already
+// budgets fees this way (one recovery tx per ChainDepth hop), so the time
+// budget has to agree or an exit is admitted with no room to finish.
+func exitTxDepth(vtxo *Descriptor) int32 {
+	depth := int64(vtxo.MaxTreeDepth())
+
+	// A negative ChainDepth is rejected as invalid elsewhere; treat it as
+	// zero here rather than letting it shorten the budget.
+	if vtxo.ChainDepth > 0 {
+		depth += int64(vtxo.ChainDepth)
+	}
+
+	if depth > math.MaxInt32 {
+		return math.MaxInt32
+	}
+
+	return int32(depth)
+}
+
 // CalculateCriticalThreshold returns the dynamic critical threshold for a VTXO
-// based on its tree depth and CSV delay.
+// based on the depth of its unilateral-exit transaction chain and its CSV
+// delay.
 func (c *ExpiryConfig) CalculateCriticalThreshold(vtxo *Descriptor) int32 {
-	treeDepthBuffer := int32(vtxo.MaxTreeDepth()) * c.TreeDepthMultiplier
+	treeDepthBuffer := exitTxDepth(vtxo) * c.TreeDepthMultiplier
 	csvBuffer := int32(vtxo.RelativeExpiry)
 	safeExitBuffer := treeDepthBuffer + csvBuffer
 
