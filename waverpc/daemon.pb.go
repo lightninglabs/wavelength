@@ -128,21 +128,28 @@ const (
 	// amount, originating round_id, and (once known) the commitment
 	// txid that will create them.
 	VTXOStatus_VTXO_STATUS_PENDING_ROUND VTXOStatus = 9
+	// VTXO_STATUS_EXPIRED indicates the VTXO's batch expiry has passed, so
+	// the operator's sweep path is mature and no client-driven exit can
+	// complete any more. It is NOT terminal and NOT spendable: the value is
+	// recovered by forfeiting the VTXO in an ordinary round, which reissues
+	// it as a fresh VTXO. It is excluded from spendable balance until then.
+	VTXOStatus_VTXO_STATUS_EXPIRED VTXOStatus = 10
 )
 
 // Enum value maps for VTXOStatus.
 var (
 	VTXOStatus_name = map[int32]string{
-		0: "VTXO_STATUS_UNSPECIFIED",
-		1: "VTXO_STATUS_LIVE",
-		2: "VTXO_STATUS_PENDING_FORFEIT",
-		3: "VTXO_STATUS_FORFEITING",
-		4: "VTXO_STATUS_FORFEITED",
-		5: "VTXO_STATUS_SPENT",
-		6: "VTXO_STATUS_UNILATERAL_EXIT",
-		7: "VTXO_STATUS_FAILED",
-		8: "VTXO_STATUS_SPENDING",
-		9: "VTXO_STATUS_PENDING_ROUND",
+		0:  "VTXO_STATUS_UNSPECIFIED",
+		1:  "VTXO_STATUS_LIVE",
+		2:  "VTXO_STATUS_PENDING_FORFEIT",
+		3:  "VTXO_STATUS_FORFEITING",
+		4:  "VTXO_STATUS_FORFEITED",
+		5:  "VTXO_STATUS_SPENT",
+		6:  "VTXO_STATUS_UNILATERAL_EXIT",
+		7:  "VTXO_STATUS_FAILED",
+		8:  "VTXO_STATUS_SPENDING",
+		9:  "VTXO_STATUS_PENDING_ROUND",
+		10: "VTXO_STATUS_EXPIRED",
 	}
 	VTXOStatus_value = map[string]int32{
 		"VTXO_STATUS_UNSPECIFIED":     0,
@@ -155,6 +162,7 @@ var (
 		"VTXO_STATUS_FAILED":          7,
 		"VTXO_STATUS_SPENDING":        8,
 		"VTXO_STATUS_PENDING_ROUND":   9,
+		"VTXO_STATUS_EXPIRED":         10,
 	}
 )
 
@@ -10856,7 +10864,7 @@ const file_daemon_proto_rawDesc = "" +
 	"\x11WALLET_STATE_NONE\x10\x01\x12\x17\n" +
 	"\x13WALLET_STATE_LOCKED\x10\x02\x12\x16\n" +
 	"\x12WALLET_STATE_READY\x10\x03\x12\x18\n" +
-	"\x14WALLET_STATE_SYNCING\x10\x04*\xa0\x02\n" +
+	"\x14WALLET_STATE_SYNCING\x10\x04*\xb9\x02\n" +
 	"\n" +
 	"VTXOStatus\x12\x1b\n" +
 	"\x17VTXO_STATUS_UNSPECIFIED\x10\x00\x12\x14\n" +
@@ -10868,7 +10876,9 @@ const file_daemon_proto_rawDesc = "" +
 	"\x1bVTXO_STATUS_UNILATERAL_EXIT\x10\x06\x12\x16\n" +
 	"\x12VTXO_STATUS_FAILED\x10\a\x12\x18\n" +
 	"\x14VTXO_STATUS_SPENDING\x10\b\x12\x1d\n" +
-	"\x19VTXO_STATUS_PENDING_ROUND\x10\t*\xb6\x01\n" +
+	"\x19VTXO_STATUS_PENDING_ROUND\x10\t\x12\x17\n" +
+	"\x13VTXO_STATUS_EXPIRED\x10\n" +
+	"*\xb6\x01\n" +
 	"\x10VTXOExpiryStatus\x12\x1e\n" +
 	"\x1aVTXO_EXPIRY_STATUS_UNKNOWN\x10\x00\x12\x1b\n" +
 	"\x17VTXO_EXPIRY_STATUS_SAFE\x10\x01\x12$\n" +
