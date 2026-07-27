@@ -3,12 +3,14 @@ package vtxo
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
+	"github.com/lightninglabs/wavelength/build"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/lib/tx"
 	"github.com/lightninglabs/wavelength/lib/types"
@@ -155,7 +157,7 @@ func (s *LiveState) handleForceUnroll(_ context.Context,
 
 // handleBlockEpoch processes a new block notification and checks if the VTXO
 // needs to be forfeited cooperatively or escalated to unilateral exit.
-func (s *LiveState) handleBlockEpoch(_ context.Context, evt *BlockEpochEvent,
+func (s *LiveState) handleBlockEpoch(ctx context.Context, evt *BlockEpochEvent,
 	env *VTXOEnvironment) (*VTXOStateTransition, error) {
 
 	s.LastCheckedHeight = evt.Height
@@ -165,6 +167,26 @@ func (s *LiveState) handleBlockEpoch(_ context.Context, evt *BlockEpochEvent,
 	switch expiryStatus {
 	case ExpiryStatusSafe:
 		// Nothing to do, stay in LiveState.
+		return &VTXOStateTransition{
+			NextState: s,
+		}, nil
+
+	case ExpiryStatusUnknown:
+		// The descriptor carries no expiry we can reason about, so
+		// hold the VTXO live rather than guessing. Failing the
+		// transition instead would wedge the actor on every block, and
+		// treating it as expired would surrender funds that may well
+		// be live. The value is stamped at creation and never
+		// rewritten, so this is a persistent data fault worth a
+		// warning until an operator notices.
+		build.LoggerFromContext(ctx).WithPrefix(Subsystem).WarnS(
+			ctx, "VTXO has no usable batch expiry; holding live "+
+				"without expiry monitoring", nil,
+			slog.String("outpoint", s.VTXO.Outpoint.String()),
+			slog.Int("batch_expiry", int(s.VTXO.BatchExpiry)),
+			slog.Int("created_height", int(s.VTXO.CreatedHeight)),
+		)
+
 		return &VTXOStateTransition{
 			NextState: s,
 		}, nil

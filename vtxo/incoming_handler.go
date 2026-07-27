@@ -222,6 +222,30 @@ func (h *IncomingVTXOHandler) Receive(ctx context.Context,
 		return fn.Ok[IncomingVTXOResp](nil)
 	}
 
+	// The batch expiry is copied verbatim onto the persisted descriptor
+	// and every later expiry decision is derived from it, so refuse to
+	// materialize a VTXO we could never reason about. A non-positive
+	// expiry reads back as "expired by the entire height of the chain"
+	// and would route a brand-new VTXO straight to the expiry path.
+	//
+	// Dropping is the safer failure: the wallet still re-derives this
+	// VTXO from ListVTXOsByScripts, which reads the authoritative expiry
+	// off the server's round row, whereas a poisoned expiry persists
+	// locally and is never rewritten.
+	if evt.GetBatchExpiryHeight() <= 0 {
+		h.log.WarnS(ctx, "IncomingVTXOEvent has unusable batch "+
+			"expiry; not materializing", nil,
+			slog.Int(
+				"batch_expiry",
+				int(
+					evt.GetBatchExpiryHeight(),
+				),
+			),
+		)
+
+		return fn.Ok[IncomingVTXOResp](nil)
+	}
+
 	var outpoint wire.OutPoint
 	copy(outpoint.Hash[:], op.Txid)
 	outpoint.Index = op.Vout
