@@ -20,6 +20,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chaincfg/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
@@ -4589,14 +4590,31 @@ func (s *Server) initVTXOManager(ctx context.Context,
 	ledgerSink := ledger.NewSink(s.actorSystem)
 
 	manager := vtxo.NewManager(&vtxo.ManagerConfig{
-		Store:                    vtxoStore,
-		ReservationStore:         reservationStore,
-		Wallet:                   vtxoWallet,
-		ChainSource:              chainSourceRef,
-		ActorSystem:              s.actorSystem,
-		ChainParams:              s.chainParams,
-		ExpiryConfig:             s.vtxoExpiryConfig(),
-		BatchCanonicality:        s.batchCanonStore,
+		Store:             vtxoStore,
+		ReservationStore:  reservationStore,
+		Wallet:            vtxoWallet,
+		ChainSource:       chainSourceRef,
+		ActorSystem:       s.actorSystem,
+		ChainParams:       s.chainParams,
+		ExpiryConfig:      s.vtxoExpiryConfig(),
+		BatchCanonicality: s.batchCanonStore,
+		RedriveConsumerForfeit: func(ctx context.Context,
+			consumerBatch chainhash.Hash) error {
+
+			// After a forfeiture marker is persisted, ask the batch
+			// canonicality manager to re-resolve any terminal
+			// consumer edge that deferred because it ran before the
+			// marker existed. No-op when canonicality is disabled.
+			if s.batchCanonRef.IsNone() {
+				return nil
+			}
+
+			return s.batchCanonRef.UnsafeFromSome().Tell(
+				ctx, &batchcanon.ConsumerForfeitPersistedMsg{
+					ConsumerBatch: consumerBatch,
+				},
+			)
+		},
 		Log:                      fn.Some(s.subLogger(vtxo.Subsystem)),
 		RoundActor:               roundActor,
 		LedgerSink:               fn.Some(ledgerSink),

@@ -111,6 +111,16 @@ type ManagerConfig struct {
 	// batches, or every unregistered VTXO is excluded.
 	BatchCanonicality batchcanon.Reader
 
+	// RedriveConsumerForfeit, when set, is invoked (via the VTXO actor)
+	// after a VTXO's forfeiture marker is durably persisted, passing the
+	// consuming batch. It asks the batch canonicality manager to re-resolve
+	// any terminal consumer edge for that batch, closing the race where the
+	// consumer became terminally conflict-finalized before the forfeiture
+	// marker existed (so the earlier resolution deferred and would strand
+	// the consumed VTXO until restart, lumos#454). Nil disables the redrive.
+	RedriveConsumerForfeit func(ctx context.Context,
+		consumerBatch chainhash.Hash) error
+
 	// Log is an optional logger for this manager instance. If None, the
 	// manager falls back to extracting a logger from context via
 	// LoggerFromContext, or uses btclog.Disabled if no logger is found.
@@ -1929,6 +1939,7 @@ func (m *Manager) spawnVTXOActor(ctx context.Context, vtxo *Descriptor) (
 		RefreshFeeQuoter:         m.cfg.RefreshFeeQuoter,
 		FetchOperatorKey:         m.cfg.FetchOperatorKey,
 		ForfeitParticipantSigner: m.cfg.ForfeitParticipantSigner,
+		NotifyForfeitPersisted:   m.cfg.RedriveConsumerForfeit,
 	}
 
 	vtxoActor := NewVTXOActor(ctx, actorCfg)

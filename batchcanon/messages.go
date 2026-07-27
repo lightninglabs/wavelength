@@ -221,6 +221,30 @@ func (m *ackResponse) MessageType() string {
 
 func (m *ackResponse) managerRespSealed() {}
 
+// ConsumerForfeitPersistedMsg tells the manager that a VTXO's forfeiture
+// marker for the given consumer batch has been durably persisted. It closes an
+// ordering race: a consumer batch can become terminally ConflictFinalized
+// (driving restoreProvisionalConsumers) before the ForfeitedBy(consumer)
+// business-revision marker is written, in which case the terminal restore
+// compare-and-swap finds the consumed VTXO at the wrong revision and defers.
+// No further batchcanon event is then guaranteed on the consumer, so the
+// consumed VTXO would stay stranded until the next restart redrive. The VTXO
+// actor sends this the moment MarkForfeited succeeds so resolution can make
+// progress on the newly-durable evidence.
+type ConsumerForfeitPersistedMsg struct {
+	actor.BaseMessage
+
+	// ConsumerBatch is the batch tx into which the VTXO was forfeited.
+	ConsumerBatch chainhash.Hash
+}
+
+// MessageType returns the message type identifier.
+func (m *ConsumerForfeitPersistedMsg) MessageType() string {
+	return "batchcanon.ConsumerForfeitPersistedMsg"
+}
+
+func (m *ConsumerForfeitPersistedMsg) managerMsgSealed() {}
+
 // batchConfirmedMsg is the internal re-wrap of a chainsource ConfirmationEvent
 // for a watched batch tx.
 type batchConfirmedMsg struct {

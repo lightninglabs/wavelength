@@ -214,6 +214,9 @@ func (m *Manager) Receive(ctx context.Context,
 	case *inputSpendDoneMsg:
 		m.handleInputSpendDone(ctx, v)
 
+	case *ConsumerForfeitPersistedMsg:
+		m.handleConsumerForfeitPersisted(ctx, v.ConsumerBatch)
+
 	default:
 		return fn.Err[ManagerResp](
 			fmt.Errorf("unknown batchcanon message: %T", msg),
@@ -1358,6 +1361,36 @@ func (m *Manager) redriveConsumersForCreator(ctx context.Context,
 	}
 
 	return nil
+}
+
+// handleConsumerForfeitPersisted redrives terminal consumer-edge resolution for
+// a batch whose consumed-VTXO forfeiture marker has just become durable. It is
+// the event-driven complement to the restart-time redrive
+// (redriveTerminalConsumerLifecycles): when a consumer batch reaches a terminal
+// state before its ForfeitedBy(consumer) marker exists, the original resolution
+// defers on the revision compare-and-swap, and no further batchcanon event is
+// guaranteed. The marker's arrival is exactly the evidence change that can now
+// let the terminal restore succeed. Resolution is gated on the consumer being
+// Ready and terminal, so a not-yet-final consumer (the common case, since the
+// marker is usually written well before finality) is a harmless no-op.
+func (m *Manager) handleConsumerForfeitPersisted(ctx context.Context,
+	consumerBatch chainhash.Hash) {
+
+	record, err := m.cfg.Store.GetBatch(ctx, consumerBatch)
+	if err != nil {
+		// No record yet (or a transient read error): the restart-time
+		// redrive remains the backstop, so treat this as a no-op.
+		m.logger(ctx).DebugS(ctx, "No batch record to redrive on "+
+			"forfeit persist",
+			slog.String("batch", consumerBatch.String()))
+
+		return
+	}
+	if !record.Ready() || !terminalState(record.State) {
+		return
+	}
+
+	m.handleConsumerLifecycle(ctx, consumerBatch, record.State)
 }
 
 // releaseSpendWatches unregisters the per-input spend watches for a batch,

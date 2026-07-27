@@ -28,6 +28,13 @@ type fakeStore struct {
 	records   map[chainhash.Hash]*Record
 	consumers map[chainhash.Hash][]ConsumerEdge
 	applyErr  error
+
+	// deferConsumerEdges, when true, makes ResolveConsumerEdge report
+	// ConsumerEdgeDeferred without consuming the edge, modelling the real
+	// store's revision compare-and-swap deferring because the
+	// ForfeitedBy(consumer) marker is not yet persisted. Clearing it
+	// simulates the marker becoming durable so a redrive can resolve.
+	deferConsumerEdges bool
 }
 
 func newFakeStore() *fakeStore {
@@ -328,6 +335,12 @@ func (s *fakeStore) setApplyError(err error) {
 	s.applyErr = err
 }
 
+func (s *fakeStore) setDeferConsumerEdges(defer_ bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deferConsumerEdges = defer_
+}
+
 func (s *fakeStore) UpsertBatch(_ context.Context, r *Record) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -478,6 +491,12 @@ func (s *fakeStore) ResolveConsumerEdge(_ context.Context, edge ConsumerEdge,
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Model the revision compare-and-swap deferring while the forfeiture
+	// marker is not yet durable: the edge stays pending for a later redrive.
+	if s.deferConsumerEdges {
+		return ConsumerEdgeDeferred, nil
+	}
 
 	edges := s.consumers[edge.ConsumerBatch]
 	for i, pending := range edges {
