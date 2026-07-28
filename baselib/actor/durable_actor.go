@@ -95,8 +95,21 @@ type DurableActorConfig[M TLVMessage, R any] struct {
 	// PollInterval is how often to poll for new messages when empty.
 	// Same-process sends wake the mailbox immediately, so polling is only
 	// the fallback for missed wakes, restarts, and external enqueues.
+	// It is the floor of the idle poll backoff; see MaxPollInterval.
 	// Default: 1s.
 	PollInterval time.Duration
+
+	// MaxPollInterval is the ceiling of the idle poll backoff. Consecutive
+	// empty polls roughly double the wait from PollInterval up to this
+	// value, and any wake or claimed message snaps it back to the floor, so
+	// a resident-but-idle actor costs one fallback poll per
+	// MaxPollInterval rather than one per PollInterval. Because the
+	// store's post-commit wake is same-process only, this ceiling is also
+	// the worst-case latency for discovering a message enqueued by another
+	// process or replica. See DurableMailboxConfig.MaxPollInterval for the
+	// full rationale.
+	// Default: 30s.
+	MaxPollInterval time.Duration
 
 	// MaxAttempts is the default maximum delivery attempts.
 	// Default: 10.
@@ -196,7 +209,8 @@ func DefaultDurableActorConfig[M TLVMessage, R any](
 		TellRetryPolicy:   DefaultTellRetryPolicy,
 		LeaseDuration:     leaseDuration,
 		HeartbeatInterval: leaseDuration / 3,
-		PollInterval:      time.Second,
+		PollInterval:      defaultPollInterval,
+		MaxPollInterval:   defaultMaxPollInterval,
 		MaxAttempts:       10,
 		CleanupTimeout:    5 * time.Second,
 		DeduplicationTTL:  24 * time.Hour,
@@ -367,14 +381,18 @@ func NewDurableActor[M TLVMessage, R any](
 		numWorkers = 1
 	}
 
+	// The poll floor/ceiling are passed through raw; NewDurableMailbox
+	// normalizes zero and inverted values, so an actor config that predates
+	// MaxPollInterval still lands on the default ceiling.
 	mailboxCfg := DurableMailboxConfig{
-		MailboxID:     cfg.ID,
-		Store:         cfg.Store,
-		Codec:         cfg.Codec,
-		Clock:         cfg.Clock,
-		LeaseDuration: cfg.LeaseDuration,
-		PollInterval:  cfg.PollInterval,
-		MaxAttempts:   cfg.MaxAttempts,
+		MailboxID:       cfg.ID,
+		Store:           cfg.Store,
+		Codec:           cfg.Codec,
+		Clock:           cfg.Clock,
+		LeaseDuration:   cfg.LeaseDuration,
+		PollInterval:    cfg.PollInterval,
+		MaxPollInterval: cfg.MaxPollInterval,
+		MaxAttempts:     cfg.MaxAttempts,
 
 		// Size the wake channel to the worker count so a burst of
 		// enqueues can rouse every idle worker at once.
