@@ -121,6 +121,24 @@ func (s *FileStore) Store(ctx context.Context, requestID string,
 		return fmt.Errorf("replace taproot asset preparation: %w", err)
 	}
 
+	// Sync the containing directory after the rename. Syncing the temporary
+	// file alone does not make the directory entry durable across a sudden
+	// restart, which could otherwise lose the commit-attempt marker while
+	// the external tapd mutation survives.
+	directory, err := os.Open(s.dir)
+	if err != nil {
+		return fmt.Errorf("open taproot asset store directory: %w", err)
+	}
+	if err := directory.Sync(); err != nil {
+		_ = directory.Close()
+
+		return fmt.Errorf("sync taproot asset store directory: %w", err)
+	}
+	if err := directory.Close(); err != nil {
+		return fmt.Errorf("close taproot asset store directory: %w",
+			err)
+	}
+
 	return nil
 }
 

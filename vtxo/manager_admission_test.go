@@ -848,6 +848,33 @@ func TestSelectAndReserveSpendSuccess(t *testing.T) {
 	require.True(t, ok, "expected SpendingState, got %T", ref.state)
 }
 
+// TestSelectAndReserveSpendWaitForDurableAwaitsActor proves callers that need
+// a durable carrier-selection barrier do not receive optimistic selection
+// success while the child VTXO actor's Spending write is still pending.
+func TestSelectAndReserveSpendWaitForDurableAwaitsActor(t *testing.T) {
+	t.Parallel()
+
+	vtxo := makeDescriptor(t, 50000, 0)
+	mgr, store := newTestManager(t, []*Descriptor{vtxo})
+	mgr.actors[vtxo.Outpoint] = &blockingVTXOActorRef{
+		id: vtxo.Outpoint.String(),
+	}
+	store.On(
+		"ListVTXOsByStatus", mock.Anything, VTXOStatusLive,
+	).Return([]*Descriptor{vtxo}, nil).Once()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+
+	result := mgr.Receive(ctx, &SelectAndReserveSpendRequest{
+		TargetAmount:   40000,
+		WaitForDurable: true,
+	})
+	_, err := result.Unpack()
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	store.AssertExpectations(t)
+}
+
 // TestSelectAndReserveSpendRequiredAssetWithBitcoin verifies a caller-named
 // asset VTXO is selected first and only ordinary Bitcoin VTXOs may cover the
 // remaining carrier target.

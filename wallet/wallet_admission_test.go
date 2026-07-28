@@ -275,6 +275,7 @@ func TestSelectAndLockVTXOs(t *testing.T) {
 	req := &SelectAndLockVTXOsRequest{
 		TargetAmount:    70000,
 		MinChangeAmount: 1000,
+		WaitForDurable:  true,
 		RequiredOutpoints: []wire.OutPoint{
 			testOutpoint(9),
 		},
@@ -294,6 +295,7 @@ func TestSelectAndLockVTXOs(t *testing.T) {
 		resp.SelectedVTXOs[0].Amount)
 	require.Equal(t, btcutil.Amount(70000), mgr.selectReq.TargetAmount)
 	require.Equal(t, btcutil.Amount(1000), mgr.selectReq.MinChangeAmount)
+	require.True(t, mgr.selectReq.WaitForDurable)
 	require.Equal(
 		t, []wire.OutPoint{testOutpoint(9)},
 		mgr.selectReq.RequiredOutpoints,

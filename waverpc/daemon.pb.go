@@ -3878,11 +3878,12 @@ type SendOORRequest struct {
 	// of creating a duplicate transfer.
 	IdempotencyKey string `protobuf:"bytes,4,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
 	// taproot_asset requests the experimental proof-selected Taproot Asset
-	// extension. The first release requires exactly one managed asset input,
-	// one recipient, equal input/output BTC values, and a non-empty
-	// idempotency_key. Asset transfers must identify the managed input through
-	// taproot_asset.input_vtxo_outpoint and must not use custom_inputs.
-	// Bitcoin-only sends leave this field unset.
+	// extension. It requires exactly one managed asset input, one recipient,
+	// explicit Bitcoin carriers for every asset-bearing output, and a
+	// non-empty idempotency_key. The wallet may add ordinary Bitcoin VTXOs to
+	// cover a carrier shortfall. Asset transfers identify the managed asset
+	// input through taproot_asset.input_vtxo_outpoint and must not use
+	// custom_inputs. Bitcoin-only sends leave this field unset.
 	TaprootAsset  *TaprootAssetOORIntent `protobuf:"bytes,5,opt,name=taproot_asset,json=taprootAsset,proto3" json:"taproot_asset,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -3961,15 +3962,15 @@ type TaprootAssetOORIntent struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// asset_ref is the opaque tap-sdk asset or group identifier.
 	AssetRef string `protobuf:"bytes,1,opt,name=asset_ref,json=assetRef,proto3" json:"asset_ref,omitempty"`
-	// asset_amount is the exact number of asset units selected by
-	// input_proof_file.
+	// asset_amount is the exact number of asset units carried by the selected
+	// input VTXO.
 	AssetAmount uint64 `protobuf:"varint,2,opt,name=asset_amount,json=assetAmount,proto3" json:"asset_amount,omitempty"`
-	// input_proof_file is the complete confirmed proof for the selected
-	// asset. The configured client-side preparer must already have imported
-	// or be able to reconcile this proof with its tapd backend.
+	// input_proof_file is the complete confirmed proof for an initially
+	// onboarded asset. It can be omitted for a chained Wavelength transfer
+	// whose exact locally created package supplies the proof lineage.
 	InputProofFile []byte `protobuf:"bytes,3,opt,name=input_proof_file,json=inputProofFile,proto3" json:"input_proof_file,omitempty"`
-	// recipient_script_key is the 33-byte compressed Taproot Asset output
-	// script key supplied by the receiver.
+	// recipient_script_key is deprecated and must be empty. Ark-policy-owned
+	// outputs use a wallet-derived OP_TRUE asset script.
 	RecipientScriptKey []byte `protobuf:"bytes,4,opt,name=recipient_script_key,json=recipientScriptKey,proto3" json:"recipient_script_key,omitempty"`
 	// proof_courier_address optionally identifies the receiver proof courier.
 	ProofCourierAddress string `protobuf:"bytes,5,opt,name=proof_courier_address,json=proofCourierAddress,proto3" json:"proof_courier_address,omitempty"`
@@ -3984,8 +3985,17 @@ type TaprootAssetOORIntent struct {
 	// "txid:vout" form. The wallet reserves this required input through the
 	// normal VTXO manager path before any Taproot Asset commit occurs.
 	InputVtxoOutpoint string `protobuf:"bytes,8,opt,name=input_vtxo_outpoint,json=inputVtxoOutpoint,proto3" json:"input_vtxo_outpoint,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// recipient_asset_amount is the number of asset units assigned to the
+	// caller's recipient. Zero retains the legacy full-send behavior and
+	// assigns all asset_amount units to the recipient.
+	RecipientAssetAmount uint64 `protobuf:"varint,9,opt,name=recipient_asset_amount,json=recipientAssetAmount,proto3" json:"recipient_asset_amount,omitempty"`
+	// asset_change_carrier_value_sat is the explicit Bitcoin value assigned
+	// to asset change. It is required for a partial asset send and must be
+	// zero for a full asset send. Asset units are never converted into these
+	// carrier satoshis.
+	AssetChangeCarrierValueSat uint64 `protobuf:"varint,10,opt,name=asset_change_carrier_value_sat,json=assetChangeCarrierValueSat,proto3" json:"asset_change_carrier_value_sat,omitempty"`
+	unknownFields              protoimpl.UnknownFields
+	sizeCache                  protoimpl.SizeCache
 }
 
 func (x *TaprootAssetOORIntent) Reset() {
@@ -4072,6 +4082,20 @@ func (x *TaprootAssetOORIntent) GetInputVtxoOutpoint() string {
 		return x.InputVtxoOutpoint
 	}
 	return ""
+}
+
+func (x *TaprootAssetOORIntent) GetRecipientAssetAmount() uint64 {
+	if x != nil {
+		return x.RecipientAssetAmount
+	}
+	return 0
+}
+
+func (x *TaprootAssetOORIntent) GetAssetChangeCarrierValueSat() uint64 {
+	if x != nil {
+		return x.AssetChangeCarrierValueSat
+	}
+	return 0
 }
 
 // CustomOORInput specifies a VTXO to spend with an explicit semantic policy
@@ -10847,7 +10871,7 @@ const file_daemon_proto_rawDesc = "" +
 	"\adry_run\x18\x02 \x01(\bR\x06dryRun\x12<\n" +
 	"\rcustom_inputs\x18\x03 \x03(\v2\x17.waverpc.CustomOORInputR\fcustomInputs\x12'\n" +
 	"\x0fidempotency_key\x18\x04 \x01(\tR\x0eidempotencyKey\x12C\n" +
-	"\rtaproot_asset\x18\x05 \x01(\v2\x1e.waverpc.TaprootAssetOORIntentR\ftaprootAsset\"\x88\x03\n" +
+	"\rtaproot_asset\x18\x05 \x01(\v2\x1e.waverpc.TaprootAssetOORIntentR\ftaprootAsset\"\x82\x04\n" +
 	"\x15TaprootAssetOORIntent\x12\x1b\n" +
 	"\tasset_ref\x18\x01 \x01(\tR\bassetRef\x12!\n" +
 	"\fasset_amount\x18\x02 \x01(\x04R\vassetAmount\x12(\n" +
@@ -10856,7 +10880,10 @@ const file_daemon_proto_rawDesc = "" +
 	"\x15proof_courier_address\x18\x05 \x01(\tR\x13proofCourierAddress\x126\n" +
 	"\x17proof_delivery_metadata\x18\x06 \x01(\fR\x15proofDeliveryMetadata\x127\n" +
 	"\x17acknowledge_unconfirmed\x18\a \x01(\bR\x16acknowledgeUnconfirmed\x12.\n" +
-	"\x13input_vtxo_outpoint\x18\b \x01(\tR\x11inputVtxoOutpoint\"\x8b\x02\n" +
+	"\x13input_vtxo_outpoint\x18\b \x01(\tR\x11inputVtxoOutpoint\x124\n" +
+	"\x16recipient_asset_amount\x18\t \x01(\x04R\x14recipientAssetAmount\x12B\n" +
+	"\x1easset_change_carrier_value_sat\x18\n" +
+	" \x01(\x04R\x1aassetChangeCarrierValueSat\"\x8b\x02\n" +
 	"\x0eCustomOORInput\x12\x1a\n" +
 	"\boutpoint\x18\x01 \x01(\tR\boutpoint\x120\n" +
 	"\x14vtxo_policy_template\x18\x02 \x01(\fR\x12vtxoPolicyTemplate\x12\x1d\n" +

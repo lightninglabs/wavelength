@@ -58,7 +58,17 @@ type commitResult struct {
 	outputs      []commitOutput
 }
 
+type commitmentPreview struct {
+	logicalOutputID   string
+	anchorOutputIndex uint32
+	assetRoot         tapsdk.Hash
+	merkleRoot        tapsdk.Hash
+}
+
 type customAnchorDriver interface {
+	Preview(context.Context, *tapsdk.CustomAnchorRequest,
+		tapsdk.ConfirmedProofVerifier) ([]commitmentPreview, error)
+
 	Commit(context.Context, *tapsdk.CustomAnchorRequest,
 		tapsdk.ConfirmedProofVerifier) (*commitResult, error)
 
@@ -67,6 +77,43 @@ type customAnchorDriver interface {
 
 type sdkDriver struct {
 	wallet *tapsdk.Wallet
+}
+
+// Preview builds and verifies a custom-anchor plan without mutating tapd, then
+// projects the roots needed by Wavelength's canonical output fixed point.
+func (d *sdkDriver) Preview(ctx context.Context,
+	request *tapsdk.CustomAnchorRequest,
+	verifier tapsdk.ConfirmedProofVerifier) ([]commitmentPreview, error) {
+
+	if d == nil || d.wallet == nil {
+		return nil, fmt.Errorf("tap-sdk wallet is required")
+	}
+
+	builder := d.wallet.NewCustomAnchorTxBuilder()
+	if verifier != nil {
+		builder.SetConfirmedProofVerifier(verifier)
+	}
+	plan, err := builder.Build(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+	previews, err := plan.PreviewOutputCommitments()
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]commitmentPreview, len(previews))
+	for idx := range previews {
+		preview := previews[idx]
+		result[idx] = commitmentPreview{
+			logicalOutputID:   preview.LogicalOutputID,
+			anchorOutputIndex: preview.AnchorOutputIndex,
+			assetRoot:         preview.TaprootAssetRoot,
+			merkleRoot:        preview.TaprootMerkleRoot,
+		}
+	}
+
+	return result, nil
 }
 
 // Commit builds, commits, verifies, and seals one SDK custom-anchor request.

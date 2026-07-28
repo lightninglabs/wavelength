@@ -2654,6 +2654,7 @@ func (a *Ark) handleSelectAndLockVTXOs(ctx context.Context,
 			RequiredOutpoints: append(
 				[]wire.OutPoint(nil), req.RequiredOutpoints...,
 			),
+			WaitForDurable: req.WaitForDurable,
 		},
 	)
 	if err != nil {

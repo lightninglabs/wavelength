@@ -44,7 +44,7 @@ func TestPreparerBuildsTwoTransitionGraph(t *testing.T) {
 	require.NotNil(t, driver.requests[1].Inputs[0].ProofPath)
 	require.Len(t, driver.requests[1].Inputs[0].ProofPath.Steps, 1)
 	require.Equal(
-		t, []byte("checkpoint-proof"),
+		t, []byte("wavelength-checkpoint-proof"),
 		driver.requests[1].Inputs[0].ProofPath.Steps[0].TransitionProof,
 	)
 	require.Equal(
@@ -87,6 +87,19 @@ func TestPreparerRestoresCommittedPackages(t *testing.T) {
 	inventory.err = errors.New("tapd unavailable")
 
 	restarted := newTestPreparer(driver, inventory, store, reservations)
+	resume, err := restarted.ResumeTaprootAssetOOR(
+		t.Context(), testResumeRequest(request),
+	)
+	require.NoError(t, err)
+	require.Equal(
+		t, oor.InputOutpoints(request.Inputs), resume.InputOutpoints,
+	)
+
+	changed := testResumeRequest(request)
+	changed.Recipients[0].Value--
+	_, err = restarted.ResumeTaprootAssetOOR(t.Context(), changed)
+	require.ErrorContains(t, err, "idempotency key reused")
+
 	restored, err := restarted.PrepareTaprootAssetOOR(t.Context(), request)
 	require.NoError(t, err)
 	require.Len(t, driver.requests, 2)
@@ -100,8 +113,6 @@ func TestPreparerRestoresCommittedPackages(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, firstArk, secondArk)
 
-	digest, err := preparationRequestDigest(request)
-	require.NoError(t, err)
 	records := reservations.records()
 	require.Len(t, records, 2)
 	for _, record := range records {
@@ -112,8 +123,67 @@ func TestPreparerRestoresCommittedPackages(t *testing.T) {
 			t, oor.ReservationOwnerKindTaprootAssetPreparation,
 			record.ownerKind,
 		)
-		require.Equal(t, chainhash.Hash(digest), record.ownerID)
+		require.Equal(
+			t, oor.TaprootAssetPreparationReservationOwner(
+				request.RequestID,
+			),
+			record.ownerID,
+		)
 	}
+}
+
+// TestPreparerRestoresAfterOORReservationHandoff proves the admitted OOR
+// actor's deterministic session ownership is accepted without stealing the
+// complete input set back for the preparation request.
+func TestPreparerRestoresAfterOORReservationHandoff(t *testing.T) {
+	t.Parallel()
+
+	request, inventory := testPreparationRequest(t)
+	driver := newFakeDriver()
+	store, err := NewFileStore(t.TempDir())
+	require.NoError(t, err)
+	reservations := &fakeReservationStore{}
+	first := newTestPreparer(driver, inventory, store, reservations)
+	prepared, err := first.PrepareTaprootAssetOOR(t.Context(), request)
+	require.NoError(t, err)
+	require.Len(t, driver.requests, 2)
+
+	sessionID := prepared.PreparedSubmit.ArkPSBT.UnsignedTx.TxHash()
+	require.NoError(
+		t,
+		reservations.UpsertReservation(
+			t.Context(), request.Inputs[0].VTXO.Outpoint,
+			oor.ReservationOwnerKindOOROutgoing, sessionID,
+		),
+	)
+
+	restarted := newTestPreparer(
+		driver, inventory, store, reservations,
+	)
+	resume, err := restarted.ResumeTaprootAssetOOR(
+		t.Context(), testResumeRequest(request),
+	)
+	require.NoError(t, err)
+	require.Equal(
+		t, oor.InputOutpoints(request.Inputs), resume.InputOutpoints,
+	)
+	restored, err := restarted.PrepareTaprootAssetOOR(
+		t.Context(), request,
+	)
+	require.NoError(t, err)
+	require.Equal(
+		t, prepared.PreparedSubmit.TaprootAssetTransfer,
+		restored.PreparedSubmit.TaprootAssetTransfer,
+	)
+	require.Len(t, driver.requests, 2)
+
+	records := reservations.records()
+	require.Len(t, records, 2)
+	require.Equal(
+		t, oor.ReservationOwnerKindOOROutgoing,
+		records[len(records)-1].ownerKind,
+	)
+	require.Equal(t, sessionID, records[len(records)-1].ownerID)
 }
 
 // TestPreparerBlocksUnknownCommitRetry proves an ambiguous external commit
@@ -138,9 +208,180 @@ func TestPreparerBlocksUnknownCommitRetry(t *testing.T) {
 	driver.commitErr = nil
 
 	restarted := newTestPreparer(driver, inventory, store)
+	_, err = restarted.ResumeTaprootAssetOOR(
+		t.Context(), testResumeRequest(request),
+	)
+	require.ErrorIs(t, err, ErrReconciliationRequired)
 	_, err = restarted.PrepareTaprootAssetOOR(t.Context(), request)
 	require.ErrorIs(t, err, ErrReconciliationRequired)
 	require.Len(t, driver.requests, 1)
+}
+
+// TestPreparerRebindsCarrierSelectionBeforeCommit proves a known-negative
+// pre-checkpoint failure can retry the same public intent with a different
+// Bitcoin top-up set, while carrier inputs become immutable at the first
+// external transition boundary.
+func TestPreparerRebindsCarrierSelectionBeforeCommit(t *testing.T) {
+	t.Parallel()
+
+	store, err := NewFileStore(t.TempDir())
+	require.NoError(t, err)
+	preparer := &Preparer{
+		store:        store,
+		reservations: &fakeReservationStore{},
+	}
+	intentDigest := tapsdk.Hash(sha256Bytes([]byte("intent")))
+	firstDigest := tapsdk.Hash(sha256Bytes([]byte("first")))
+	secondDigest := tapsdk.Hash(sha256Bytes([]byte("second")))
+	thirdDigest := tapsdk.Hash(sha256Bytes([]byte("third")))
+	firstInputs := []wire.OutPoint{{
+		Hash: chainhash.Hash(sha256Bytes([]byte("first-input"))),
+	}}
+	secondInputs := []wire.OutPoint{{
+		Hash: chainhash.Hash(sha256Bytes([]byte("second-input"))),
+	}}
+
+	state, err := preparer.loadState(
+		t.Context(),
+		"rebind", firstDigest, intentDigest, firstInputs,
+	)
+	require.NoError(t, err)
+	state.PlannedRecipients = []oortx.RecipientOutput{{Value: 123}}
+	require.NoError(
+		t, preparer.storeState(t.Context(), "rebind", state),
+	)
+
+	rebound, err := preparer.loadState(
+		t.Context(),
+		"rebind", secondDigest, intentDigest, secondInputs,
+	)
+	require.NoError(t, err)
+	require.Equal(t, secondDigest, rebound.RequestDigest)
+	require.Equal(t, secondInputs, rebound.InputOutpoints)
+	require.Empty(t, rebound.PlannedRecipients)
+
+	rebound.CheckpointPackage = []byte("committed")
+	require.NoError(
+		t,
+		preparer.storeState(
+			t.Context(),
+			"rebind", rebound,
+		),
+	)
+	_, err = preparer.loadState(
+		t.Context(),
+		"rebind", thirdDigest, intentDigest, firstInputs,
+	)
+	require.ErrorContains(t, err, "different carrier inputs")
+}
+
+// TestPreparerResumeBeforeCommitAndRejectsCorruptVersion pins the concrete v2
+// journal behavior used by the RPC adoption bridge.
+func TestPreparerResumeBeforeCommitAndRejectsCorruptVersion(t *testing.T) {
+	t.Parallel()
+
+	request, _ := testPreparationRequest(t)
+	store, err := NewFileStore(t.TempDir())
+	require.NoError(t, err)
+	reservations := &fakeReservationStore{}
+	preparer := &Preparer{
+		store:        store,
+		reservations: reservations,
+	}
+	requestDigest, err := preparationRequestDigest(request)
+	require.NoError(t, err)
+	resumeRequest := testResumeRequest(request)
+	intentDigest, err := preparationIntentDigest(resumeRequest)
+	require.NoError(t, err)
+	state, err := preparer.loadState(
+		t.Context(), request.RequestID, requestDigest, intentDigest,
+		oor.InputOutpoints(request.Inputs),
+	)
+	require.NoError(t, err)
+
+	resume, err := preparer.ResumeTaprootAssetOOR(
+		t.Context(), resumeRequest,
+	)
+	require.NoError(t, err)
+	require.Nil(t, resume)
+
+	require.NoError(
+		t,
+		reservations.UpsertReservationSet(
+			t.Context(), state.InputOutpoints,
+			oor.ReservationOwnerKindTaprootAssetPreparation,
+			oor.TaprootAssetPreparationReservationOwner(
+				request.RequestID,
+			),
+		),
+	)
+	resume, err = preparer.ResumeTaprootAssetOOR(
+		t.Context(), resumeRequest,
+	)
+	require.NoError(t, err)
+	require.Equal(t, state.InputOutpoints, resume.InputOutpoints)
+
+	require.NoError(
+		t,
+		reservations.UpsertReservation(
+			t.Context(), state.InputOutpoints[0],
+			oor.ReservationOwnerKindOOROutgoing,
+			chainhash.HashH(
+				[]byte("other owner"),
+			),
+		),
+	)
+	_, err = preparer.ResumeTaprootAssetOOR(
+		t.Context(), resumeRequest,
+	)
+	require.ErrorIs(t, err, ErrReconciliationRequired)
+
+	state.Version++
+	require.NoError(
+		t,
+		preparer.storeState(
+			t.Context(), request.RequestID, state,
+		),
+	)
+	_, err = preparer.ResumeTaprootAssetOOR(
+		t.Context(), resumeRequest,
+	)
+	require.ErrorContains(t, err, "unsupported taproot asset preparation")
+}
+
+// TestPreparerRejectsCorruptPlannedRecipientsBeforeCommit proves journaled
+// change scripts are revalidated before any tapd mutation on restart.
+func TestPreparerRejectsCorruptPlannedRecipientsBeforeCommit(t *testing.T) {
+	t.Parallel()
+
+	request, inventory := testPreparationRequest(t)
+	driver := newFakeDriver()
+	store, err := NewFileStore(t.TempDir())
+	require.NoError(t, err)
+	preparer := newTestPreparer(driver, inventory, store)
+	requestDigest, err := preparationRequestDigest(request)
+	require.NoError(t, err)
+	intentDigest, err := preparationIntentDigest(
+		testResumeRequest(request),
+	)
+	require.NoError(t, err)
+	state, err := preparer.loadState(
+		t.Context(), request.RequestID, requestDigest, intentDigest,
+		oor.InputOutpoints(request.Inputs),
+	)
+	require.NoError(t, err)
+	state.PlannedRecipients = cloneRecipients(request.Recipients)
+	state.PlannedRecipients[0].Value++
+	require.NoError(
+		t,
+		preparer.storeState(
+			t.Context(), request.RequestID, state,
+		),
+	)
+
+	_, err = preparer.PrepareTaprootAssetOOR(t.Context(), request)
+	require.ErrorContains(t, err, "caller receiver changed")
+	require.Empty(t, driver.requests)
 }
 
 // TestPreparerRetriesKnownCommitFailure proves a known-negative SDK response
@@ -153,14 +394,27 @@ func TestPreparerRetriesKnownCommitFailure(t *testing.T) {
 	driver.commitErr = errors.New("tapd rejected request")
 	store, err := NewFileStore(t.TempDir())
 	require.NoError(t, err)
-	preparer := newTestPreparer(driver, inventory, store)
+	reservations := &fakeReservationStore{}
+	preparer := newTestPreparer(
+		driver, inventory, store, reservations,
+	)
 
 	_, err = preparer.PrepareTaprootAssetOOR(t.Context(), request)
 	require.ErrorContains(t, err, "tapd rejected request")
+	require.ErrorIs(t, err, ErrReconciliationRequired)
 	require.Len(t, driver.requests, 1)
 	driver.commitErr = nil
 
-	restarted := newTestPreparer(driver, inventory, store)
+	restarted := newTestPreparer(
+		driver, inventory, store, reservations,
+	)
+	resume, err := restarted.ResumeTaprootAssetOOR(
+		t.Context(), testResumeRequest(request),
+	)
+	require.NoError(t, err)
+	require.Equal(
+		t, oor.InputOutpoints(request.Inputs), resume.InputOutpoints,
+	)
 	_, err = restarted.PrepareTaprootAssetOOR(t.Context(), request)
 	require.NoError(t, err)
 	require.Len(t, driver.requests, 3)
@@ -216,7 +470,30 @@ func TestPreparerFailsBeforeCommitWhenReservationFails(t *testing.T) {
 	)
 
 	_, err = preparer.PrepareTaprootAssetOOR(t.Context(), request)
-	require.ErrorContains(t, err, "reserve Taproot Asset input 0")
+	require.ErrorContains(t, err, "Taproot Asset input reservations")
+	require.ErrorIs(t, err, ErrReconciliationRequired)
+	require.Empty(t, driver.requests)
+}
+
+// TestPreparerVerifiesProofBeforeReservation proves deterministic proof and
+// inventory failures do not quarantine otherwise healthy carrier inputs.
+func TestPreparerVerifiesProofBeforeReservation(t *testing.T) {
+	t.Parallel()
+
+	request, inventory := testPreparationRequest(t)
+	inventory.err = errors.New("proof inventory unavailable")
+	driver := newFakeDriver()
+	store, err := NewFileStore(t.TempDir())
+	require.NoError(t, err)
+	reservations := &fakeReservationStore{}
+	preparer := newTestPreparer(
+		driver, inventory, store, reservations,
+	)
+
+	_, err = preparer.PrepareTaprootAssetOOR(t.Context(), request)
+	require.ErrorContains(t, err, "preflight Taproot Asset confirmed proof")
+	require.ErrorContains(t, err, "proof inventory unavailable")
+	require.Empty(t, reservations.records())
 	require.Empty(t, driver.requests)
 }
 
@@ -314,11 +591,19 @@ func TestProofInventoryVerifierBindsUnconfirmedAnchor(t *testing.T) {
 }
 
 type fakeDriver struct {
-	mu         sync.Mutex
-	requests   []*tapsdk.CustomAnchorRequest
-	results    map[string]*commitResult
-	commitErr  error
-	commitErrs []error
+	mu                   sync.Mutex
+	requests             []*tapsdk.CustomAnchorRequest
+	previewRequests      []*tapsdk.CustomAnchorRequest
+	results              map[string]*commitResult
+	commitErr            error
+	commitErrs           []error
+	commitPreviewMutator func(
+		*tapsdk.CustomAnchorRequest, []commitmentPreview,
+	)
+	forcedAssetInputIndex   *uint32
+	assetCheckpointOutpoint *wire.OutPoint
+	assetPreviousOutpoint   *wire.OutPoint
+	assetCheckpointTx       []byte
 }
 
 // newFakeDriver constructs a deterministic SDK commit boundary for graph
@@ -327,14 +612,34 @@ func newFakeDriver() *fakeDriver {
 	return &fakeDriver{results: make(map[string]*commitResult)}
 }
 
-// Commit records one SDK request and returns a root-composed anchor PSBT.
-func (d *fakeDriver) Commit(_ context.Context,
-	request *tapsdk.CustomAnchorRequest, _ tapsdk.ConfirmedProofVerifier) (
-	*commitResult, error) {
+// Preview records one read-only SDK plan and returns the same roots Commit
+// will seal.
+func (d *fakeDriver) Preview(ctx context.Context,
+	request *tapsdk.CustomAnchorRequest,
+	verifier tapsdk.ConfirmedProofVerifier) ([]commitmentPreview, error) {
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
+	if err := d.verifyFakeSource(ctx, request, verifier); err != nil {
+		return nil, err
+	}
+	d.previewRequests = append(d.previewRequests, request.Clone())
+
+	return fakeCommitmentPreviews(request)
+}
+
+// Commit records one SDK request and returns a root-composed anchor PSBT.
+func (d *fakeDriver) Commit(ctx context.Context,
+	request *tapsdk.CustomAnchorRequest,
+	verifier tapsdk.ConfirmedProofVerifier) (*commitResult, error) {
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if err := d.verifyFakeSource(ctx, request, verifier); err != nil {
+		return nil, err
+	}
 	d.requests = append(d.requests, request.Clone())
 	if len(d.commitErrs) != 0 {
 		commitErr := d.commitErrs[0]
@@ -350,65 +655,220 @@ func (d *fakeDriver) Commit(_ context.Context,
 	if err != nil {
 		return nil, err
 	}
-	outputRequest := request.Outputs[0]
-	assetRoot := tapsdk.Hash(
-		sha256Bytes(
-			[]byte(outputRequest.ID + "-asset"),
-		),
-	)
-	policyRoot, internalKey, err := requestPolicyRoot(outputRequest.Anchor)
+	previews, err := fakeCommitmentPreviews(request)
 	if err != nil {
 		return nil, err
 	}
-	combined := tapBranchHash(policyRoot[:], assetRoot[:])
-	outputKey := txscript.ComputeTaprootOutputKey(internalKey, combined[:])
-	packet.UnsignedTx.TxOut[outputRequest.AnchorOutputIndex].PkScript, err =
-		txscript.PayToTaprootScript(outputKey)
-	if err != nil {
-		return nil, err
+	if d.commitPreviewMutator != nil {
+		d.commitPreviewMutator(request, previews)
+	}
+	outputs := make([]commitOutput, len(request.Outputs))
+	for idx := range request.Outputs {
+		outputRequest := request.Outputs[idx]
+		preview := previews[idx]
+		policyRoot, internalKey, err := requestPolicyRoot(
+			outputRequest.Anchor,
+		)
+		if err != nil {
+			return nil, err
+		}
+		combined := tapBranchHash(
+			policyRoot[:], preview.assetRoot[:],
+		)
+		outputKey := txscript.ComputeTaprootOutputKey(
+			internalKey, combined[:],
+		)
+		pkScript, err := txscript.PayToTaprootScript(
+			outputKey,
+		)
+		if err != nil {
+			return nil, err
+		}
+		packet.UnsignedTx.TxOut[outputRequest.AnchorOutputIndex].
+			PkScript = pkScript
+		outputs[idx] = commitOutput{
+			logicalOutputID:   outputRequest.ID,
+			anchorOutputIndex: outputRequest.AnchorOutputIndex,
+			anchorValueSat:    int64(outputRequest.AnchorValueSat),
+			assetRef:          outputRequest.AssetRef,
+			amount:            outputRequest.Amount,
+			taprootAssetRoot:  preview.assetRoot,
+			taprootMerkleRoot: preview.merkleRoot,
+			scriptMode:        tapsdk.CustomAssetScriptOPTrue,
+			opTrueWitness: [][]byte{
+				{
+					txscript.OP_TRUE,
+				}, {
+					byte(idx + 1),
+					2,
+					3,
+				},
+			},
+			proofBlob: []byte(
+				fmt.Sprintf("%s-proof", outputRequest.ID),
+			),
+		}
 	}
 	encoded, err := psbtutil.Serialize(packet)
 	if err != nil {
 		return nil, err
 	}
 	input := request.Inputs[0]
+	isCheckpoint := request.Outputs[0].ID == "wavelength-checkpoint"
 	packageBytes := []byte("checkpoint-package")
-	proofBlob := []byte("checkpoint-proof")
-	var opTrueWitness [][]byte
-	if input.ProofPath != nil {
+	if !isCheckpoint {
 		packageBytes = []byte("ark-package")
-		proofBlob = []byte("ark-proof")
-	} else {
-		opTrueWitness = [][]byte{{txscript.OP_TRUE}, {1, 2, 3}}
 	}
+	anchorInputIndex := uint32(0)
+	if !isCheckpoint && d.assetCheckpointOutpoint != nil {
+		for idx := range packet.UnsignedTx.TxIn {
+			if packet.UnsignedTx.TxIn[idx].PreviousOutPoint ==
+				*d.assetCheckpointOutpoint {
+
+				anchorInputIndex = uint32(idx)
+				break
+			}
+		}
+	}
+	if d.forcedAssetInputIndex != nil {
+		anchorInputIndex = *d.forcedAssetInputIndex
+	}
+	assetAnchorOutpoint := sdkOutpoint(
+		packet.UnsignedTx.TxIn[anchorInputIndex].PreviousOutPoint,
+	)
 	result := &commitResult{
 		packageBytes: packageBytes,
 		anchorPSBT:   encoded,
+		fundingMode:  tapsdk.CustomAnchorFundingCallerFundedExact,
 		inputs: []commitInput{{
-			anchorOutpoint: sdkOutpoint(
-				packet.UnsignedTx.TxIn[0].PreviousOutPoint,
-			),
-			assetRef: input.AssetRef,
-			amount:   input.Amount,
+			anchorInputIndex: anchorInputIndex,
+			anchorOutpoint:   assetAnchorOutpoint,
+			assetRef:         input.AssetRef,
+			amount:           input.Amount,
 		}},
-		outputs: []commitOutput{{
-			anchorOutputIndex: outputRequest.AnchorOutputIndex,
-			anchorOutpoint: sdkOutpoint(wire.OutPoint{
+		outputs: outputs,
+	}
+	for idx := range result.outputs {
+		result.outputs[idx].anchorOutpoint = sdkOutpoint(
+			wire.OutPoint{
 				Hash:  packet.UnsignedTx.TxHash(),
-				Index: outputRequest.AnchorOutputIndex,
-			}),
-			anchorValueSat:    int64(outputRequest.AnchorValueSat),
-			assetRef:          outputRequest.AssetRef,
-			amount:            outputRequest.Amount,
-			taprootAssetRoot:  assetRoot,
-			taprootMerkleRoot: tapsdk.Hash(combined),
-			opTrueWitness:     opTrueWitness,
-			proofBlob:         proofBlob,
-		}},
+				Index: result.outputs[idx].anchorOutputIndex,
+			},
+		)
+	}
+	if isCheckpoint {
+		outpoint := wire.OutPoint{
+			Hash:  packet.UnsignedTx.TxHash(),
+			Index: result.outputs[0].anchorOutputIndex,
+		}
+		d.assetCheckpointOutpoint = &outpoint
+		previous := packet.UnsignedTx.TxIn[0].PreviousOutPoint
+		d.assetPreviousOutpoint = &previous
+		d.assetCheckpointTx = serializeTx(packet.UnsignedTx)
 	}
 	d.results[string(packageBytes)] = result
 
 	return cloneCommitResult(result), nil
+}
+
+func fakeCommitmentPreviews(request *tapsdk.CustomAnchorRequest) (
+	[]commitmentPreview, error) {
+
+	previews := make([]commitmentPreview, len(request.Outputs))
+	for idx := range request.Outputs {
+		output := request.Outputs[idx]
+		rootMaterial := []byte(
+			fmt.Sprintf("%s-%d-asset", output.ID,
+				output.AnchorOutputIndex),
+		)
+		if output.Script.OPTrue != nil {
+			opTrueKey := output.
+				Script.
+				OPTrue.
+				InternalKey.
+				RawKeyBytes
+			rootMaterial = append(
+				rootMaterial,
+				opTrueKey[:]...,
+			)
+		}
+		assetRoot := tapsdk.Hash(
+			sha256Bytes(rootMaterial),
+		)
+		policyRoot, _, err := requestPolicyRoot(output.Anchor)
+		if err != nil {
+			return nil, err
+		}
+		combined := tapBranchHash(policyRoot[:], assetRoot[:])
+		previews[idx] = commitmentPreview{
+			logicalOutputID:   output.ID,
+			anchorOutputIndex: output.AnchorOutputIndex,
+			assetRoot:         assetRoot,
+			merkleRoot:        tapsdk.Hash(combined),
+		}
+	}
+
+	return previews, nil
+}
+
+func (d *fakeDriver) verifyFakeSource(ctx context.Context,
+	request *tapsdk.CustomAnchorRequest,
+	verifier tapsdk.ConfirmedProofVerifier) error {
+
+	if verifier == nil || len(request.Inputs) == 0 {
+		return nil
+	}
+	proofFile := request.Inputs[0].ProofFile
+	if request.Inputs[0].ProofPath != nil {
+		proofFile = request.Inputs[0].ProofPath.ConfirmedBaseProof
+	}
+	verification, err := verifier.VerifyConfirmedProof(
+		ctx, proofFile,
+	)
+	if err != nil {
+		return err
+	}
+	if verification == nil ||
+		!verification.AnchorAssetInventoryComplete ||
+		verification.PassiveAssetCount != 0 {
+		return fmt.Errorf("fake verifier rejected passive inventory")
+	}
+	if request.Inputs[0].ProofPath != nil &&
+		len(request.Inputs[0].ProofPath.Steps) != 0 {
+
+		if d.assetPreviousOutpoint == nil ||
+			d.assetCheckpointOutpoint == nil ||
+			len(d.assetCheckpointTx) == 0 {
+			return fmt.Errorf("fake checkpoint lineage is " +
+				"incomplete")
+		}
+		stepIndex := len(request.Inputs[0].ProofPath.Steps) - 1
+		unconfirmedVerifier, ok :=
+			verifier.(tapsdk.UnconfirmedAnchorVerifier)
+		if !ok {
+			return fmt.Errorf("fake verifier has no unconfirmed " +
+				"anchor verifier")
+		}
+		verification := tapsdk.UnconfirmedAnchorVerification{
+			StepIndex: uint16(stepIndex),
+			PreviousAnchorOutpoint: sdkOutpoint(
+				*d.assetPreviousOutpoint,
+			),
+			AnchorOutpoint: sdkOutpoint(
+				*d.assetCheckpointOutpoint,
+			),
+			AnchorTransaction: append(
+				[]byte(nil), d.assetCheckpointTx...,
+			),
+		}
+		if err := unconfirmedVerifier.VerifyUnconfirmedAnchor(
+			ctx, verification,
+		); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // DecodePackage restores a previously returned fake package.
@@ -485,6 +945,118 @@ func (f *fakeReservationStore) UpsertReservation(_ context.Context,
 	return nil
 }
 
+func (f *fakeReservationStore) UpsertReservationSet(_ context.Context,
+	outpoints []wire.OutPoint, ownerKind int,
+	ownerID chainhash.Hash) error {
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.err != nil {
+		return f.err
+	}
+	for _, outpoint := range outpoints {
+		f.upserts = append(f.upserts, reservationRecord{
+			outpoint:  outpoint,
+			ownerKind: ownerKind,
+			ownerID:   ownerID,
+		})
+	}
+
+	return nil
+}
+
+func (f *fakeReservationStore) InspectReservationSet(_ context.Context,
+	outpoints []wire.OutPoint, ownerKind int, ownerID chainhash.Hash) (
+	oor.ReservationSetState, error) {
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.err != nil {
+		return oor.ReservationSetAbsent, f.err
+	}
+	latest := make(map[wire.OutPoint]reservationRecord, len(f.upserts))
+	for _, record := range f.upserts {
+		latest[record.outpoint] = record
+	}
+	found := 0
+	for _, outpoint := range outpoints {
+		record, ok := latest[outpoint]
+		if !ok {
+			continue
+		}
+		found++
+		if record.ownerKind != ownerKind || record.ownerID != ownerID {
+			return oor.ReservationSetInconsistent, nil
+		}
+	}
+	if found == 0 {
+		return oor.ReservationSetAbsent, nil
+	}
+	if found != len(outpoints) {
+		return oor.ReservationSetInconsistent, nil
+	}
+
+	return oor.ReservationSetOwned, nil
+}
+
+func (f *fakeReservationStore) HandoffReservationSet(_ context.Context,
+	outpoints []wire.OutPoint, fromOwnerKind int,
+	fromOwnerID chainhash.Hash, toOwnerKind int,
+	toOwnerID chainhash.Hash) error {
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.err != nil {
+		return f.err
+	}
+
+	latest := make(map[wire.OutPoint]reservationRecord, len(f.upserts))
+	for _, record := range f.upserts {
+		latest[record.outpoint] = record
+	}
+	var replay bool
+	for idx, outpoint := range outpoints {
+		record, ok := latest[outpoint]
+		if !ok {
+			return fmt.Errorf("reservation %v is absent", outpoint)
+		}
+		isSource := record.ownerKind == fromOwnerKind &&
+			record.ownerID == fromOwnerID
+		isTarget := record.ownerKind == toOwnerKind &&
+			record.ownerID == toOwnerID
+		if idx == 0 {
+			switch {
+			case isSource:
+				replay = false
+
+			case isTarget:
+				replay = true
+
+			default:
+				return fmt.Errorf("reservation %v has "+
+					"wrong owner", outpoint)
+			}
+		}
+		if (!replay && !isSource) || (replay && !isTarget) {
+			return fmt.Errorf("reservation %v has wrong owner",
+				outpoint)
+		}
+	}
+
+	for _, outpoint := range outpoints {
+		f.upserts = append(f.upserts, reservationRecord{
+			outpoint:  outpoint,
+			ownerKind: toOwnerKind,
+			ownerID:   toOwnerID,
+		})
+	}
+
+	return nil
+}
+
 func (f *fakeReservationStore) records() []reservationRecord {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -526,9 +1098,9 @@ func (f *fakeInventory) onlyAnchor() *tapsdk.ManagedUtxo {
 // newTestPreparer installs fake SDK dependencies while retaining the real
 // durable journal and Wavelength graph builders.
 func newTestPreparer(driver customAnchorDriver, inventory proofInventoryClient,
-	store Store, reservationStores ...oor.ReservationStore) *Preparer {
+	store Store, reservationStores ...oor.ReservationSetStore) *Preparer {
 
-	reservationStore := oor.ReservationStore(&fakeReservationStore{})
+	reservationStore := oor.ReservationSetStore(&fakeReservationStore{})
 	if len(reservationStores) != 0 {
 		reservationStore = reservationStores[0]
 	}
@@ -619,8 +1191,9 @@ func testPreparationRequest(t *testing.T) (*oor.TaprootAssetOORPrepareRequest,
 	require.NoError(t, err)
 
 	request := &oor.TaprootAssetOORPrepareRequest{
-		RequestID: "taproot-asset-request",
-		Policy:    policy,
+		RequestID:   "taproot-asset-request",
+		Policy:      policy,
+		OutputFloor: 1_000,
 		Inputs: []oor.TransferInput{
 			input,
 		},
@@ -634,9 +1207,6 @@ func testPreparationRequest(t *testing.T) (*oor.TaprootAssetOORPrepareRequest,
 			AssetRef:          assetRef.String(),
 			AssetAmount:       21,
 			ProofFile:         []byte("confirmed-proof"),
-			RecipientScriptKey: assetScript.
-				PubKey().
-				SerializeCompressed(),
 		},
 	}
 	require.NoError(t, request.Validate())
@@ -675,6 +1245,20 @@ func testPreparationRequest(t *testing.T) (*oor.TaprootAssetOORPrepareRequest,
 	}
 
 	return request, inventory
+}
+
+type testAssetOORResumeRequest = oor.TaprootAssetOORResumeRequest
+
+func testResumeRequest(
+	request *oor.TaprootAssetOORPrepareRequest) *testAssetOORResumeRequest {
+
+	return &oor.TaprootAssetOORResumeRequest{
+		RequestID:   request.RequestID,
+		Policy:      request.Policy,
+		Recipients:  cloneRecipients(request.Recipients),
+		OutputFloor: request.OutputFloor,
+		Intent:      request.Intent,
+	}
 }
 
 // requestPolicyRoot derives the exact host-policy root in one fake SDK output

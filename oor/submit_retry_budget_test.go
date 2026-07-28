@@ -161,6 +161,45 @@ func TestHandleSubmitOutboxErrorGivesUpPastBudget(t *testing.T) {
 	require.Equal(t, []wire.OutPoint{outpoint}, release.Outpoints)
 }
 
+// TestHandleAssetSubmitOutboxErrorGivesUpPastBudget asserts that exhausting
+// the submit retry budget never releases an asset transfer's inputs. Tapd has
+// already committed the prepared anchor transition, so reconciliation must
+// keep those inputs quarantined even though the operator has not accepted the
+// submit package.
+func TestHandleAssetSubmitOutboxErrorGivesUpPastBudget(t *testing.T) {
+	t.Parallel()
+
+	current, _ := newTestSubmitState(t)
+	current.TaprootAssetTransfer = &oortx.TaprootAssetTransfer{
+		Version: oortx.TaprootAssetTransferVersion,
+	}
+
+	start := time.Unix(1_700_000_000, 0)
+	current.FirstRejectUnixNanos = start.UnixNano()
+
+	env := &Environment{
+		Clock: clock.NewTestClock(
+			start.Add(2 * time.Hour),
+		),
+		MaxTransientSubmitRetry: time.Hour,
+	}
+
+	transition, err := handleSubmitOutboxError(
+		env, current, &OutboxErrorEvent{
+			OutboxType:  "submit",
+			Retryable:   true,
+			RetryAfter:  15 * time.Second,
+			ErrorReason: "user balance exceeded",
+		},
+	)
+	require.NoError(t, err)
+
+	failed, ok := transition.NextState.(*Failed)
+	require.True(t, ok)
+	require.Contains(t, failed.Reason, "retry budget")
+	require.True(t, transition.NewEvents.IsNone())
+}
+
 // TestHandleSubmitOutboxErrorUnboundedNeverGivesUp asserts a zero budget
 // preserves the legacy unbounded behavior: a retryable reject always
 // reschedules and never fails, no matter how far the clock has advanced.
@@ -225,4 +264,36 @@ func TestHandleSubmitOutboxErrorNonRetryableTerminal(t *testing.T) {
 	release, ok := emitted.Outbox[0].(*ReleaseInputsRequest)
 	require.True(t, ok)
 	require.Equal(t, []wire.OutPoint{outpoint}, release.Outpoints)
+}
+
+// TestHandleAssetSubmitOutboxErrorNonRetryableTerminal asserts that a
+// non-retryable submit rejection fails an asset session without releasing its
+// inputs. The tapd preparation commit is already authoritative at this point,
+// so a later reconciliation attempt must retain exclusive ownership of them.
+func TestHandleAssetSubmitOutboxErrorNonRetryableTerminal(t *testing.T) {
+	t.Parallel()
+
+	current, _ := newTestSubmitState(t)
+	current.TaprootAssetTransfer = &oortx.TaprootAssetTransfer{
+		Version: oortx.TaprootAssetTransferVersion,
+	}
+
+	env := &Environment{
+		Clock:                   clock.NewTestClock(time.Unix(1, 0)),
+		MaxTransientSubmitRetry: time.Hour,
+	}
+
+	transition, err := handleSubmitOutboxError(
+		env, current, &OutboxErrorEvent{
+			OutboxType:  "submit",
+			Retryable:   false,
+			ErrorReason: "output policy violation",
+		},
+	)
+	require.NoError(t, err)
+
+	failed, ok := transition.NextState.(*Failed)
+	require.True(t, ok)
+	require.Equal(t, "output policy violation", failed.Reason)
+	require.True(t, transition.NewEvents.IsNone())
 }

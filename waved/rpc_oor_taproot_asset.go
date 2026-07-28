@@ -2,10 +2,16 @@ package waved
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"fmt"
 	"strings"
 
+	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/btcsuite/btcd/wire/v2"
+	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
 	"github.com/lightninglabs/wavelength/oor"
+	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightninglabs/wavelength/waverpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -54,10 +60,15 @@ func taprootAssetOORIntent(req *waverpc.SendOORRequest) (
 	}
 
 	intent := &oor.TaprootAssetOORIntent{
-		InputVTXOOutpoint: inputOutpoint,
-		AssetRef:          rpcIntent.GetAssetRef(),
-		AssetAmount:       rpcIntent.GetAssetAmount(),
-		ProofFile:         bytes.Clone(rpcIntent.GetInputProofFile()),
+		InputVTXOOutpoint:    inputOutpoint,
+		AssetRef:             rpcIntent.GetAssetRef(),
+		AssetAmount:          rpcIntent.GetAssetAmount(),
+		RecipientAssetAmount: rpcIntent.GetRecipientAssetAmount(),
+		AssetChangeCarrierValueSat: rpcIntent.
+			GetAssetChangeCarrierValueSat(),
+		ProofFile: bytes.Clone(
+			rpcIntent.GetInputProofFile(),
+		),
 		RecipientScriptKey: bytes.Clone(
 			rpcIntent.GetRecipientScriptKey(),
 		),
@@ -105,17 +116,129 @@ func taprootAssetOORPreparationError(err error) error {
 		err)
 }
 
-// validateTaprootAssetExactBTC keeps asset units and satoshis independent
-// while requiring the first custom-anchor slice to avoid a Bitcoin change
-// output that has no defined asset allocation.
-func validateTaprootAssetExactBTC(inputTotal, targetAmount int64) error {
-	if inputTotal == targetAmount {
-		return nil
+// resumeTaprootAssetOOR asks a durable concrete preparer whether this exact
+// public request already owns a complete durable reservation set or crossed
+// tapd's first commit boundary. Preparers that do not implement restart
+// adoption retain the ordinary selection behavior.
+func resumeTaprootAssetOOR(ctx context.Context,
+	preparer oor.TaprootAssetOORPreparer,
+	request *oor.TaprootAssetOORResumeRequest) (*oor.TaprootAssetOORResume,
+	error) {
+
+	resumer, ok := preparer.(oor.TaprootAssetOORPreparationResumer)
+	if !ok {
+		return nil, nil
+	}
+	resume, err := resumer.ResumeTaprootAssetOOR(ctx, request)
+	if err != nil {
+		return nil, taprootAssetOORPreparationError(err)
+	}
+	if resume == nil {
+		return nil, nil
+	}
+	if len(resume.InputOutpoints) == 0 ||
+		len(resume.InputOutpoints) >
+			oortx.MaxTaprootAssetCheckpointPackages {
+		return nil, invalidTaprootAssetPreparation(
+			fmt.Errorf(
+				"resume input count %d is invalid",
+				len(resume.InputOutpoints),
+			),
+		)
 	}
 
-	return status.Errorf(codes.InvalidArgument, "Taproot Asset OOR "+
-		"transfer requires exact BTC value: input %d, recipient %d",
-		inputTotal, targetAmount)
+	seen := make(map[wire.OutPoint]struct{}, len(resume.InputOutpoints))
+	assetMatches := 0
+	for _, outpoint := range resume.InputOutpoints {
+		if _, ok := seen[outpoint]; ok {
+			return nil, invalidTaprootAssetPreparation(
+				fmt.Errorf("resume contains duplicate "+
+					"input %s", outpoint),
+			)
+		}
+		seen[outpoint] = struct{}{}
+		if outpoint == request.Intent.InputVTXOOutpoint {
+			assetMatches++
+		}
+	}
+	if assetMatches != 1 {
+		return nil, invalidTaprootAssetPreparation(
+			fmt.Errorf("resume does not contain the requested " +
+				"asset input exactly once"),
+		)
+	}
+
+	return resume, nil
+}
+
+// validateTaprootAssetOORResumeInputs binds preparer-side reservation
+// ownership to the wallet's authoritative lifecycle state. Descriptor lookup
+// alone is not adoption: a Live, spent, or exiting VTXO must never reach
+// resumed tapd work even if a stale journal names its outpoint.
+func validateTaprootAssetOORResumeInputs(ctx context.Context,
+	store vtxo.VTXOStore, resume *oor.TaprootAssetOORResume) error {
+
+	if store == nil || resume == nil {
+		return invalidTaprootAssetPreparation(
+			fmt.Errorf("resume VTXO store and inputs are required"),
+		)
+	}
+	for _, outpoint := range resume.InputOutpoints {
+		descriptor, err := store.GetVTXO(ctx, outpoint)
+		if err != nil {
+			return invalidTaprootAssetPreparation(
+				fmt.Errorf("load resumed input %s: %w",
+					outpoint, err),
+			)
+		}
+		if descriptor == nil || descriptor.Outpoint != outpoint {
+			return invalidTaprootAssetPreparation(
+				fmt.Errorf("resumed input %s descriptor "+
+					"mismatch", outpoint),
+			)
+		}
+		if descriptor.Status != vtxo.VTXOStatusSpending {
+			return taprootAssetOORPreparationError(
+				fmt.Errorf("%w: resumed input %s has "+
+					"status %s",
+					oor.ErrTaprootAssetCommitOutcomeUnknown,
+					outpoint, descriptor.Status),
+			)
+		}
+	}
+
+	return nil
+}
+
+// taprootAssetOORSelectionTarget adds the explicit local asset-change carrier
+// to the receiver carrier without conflating either quantity with asset units.
+func taprootAssetOORSelectionTarget(receiverCarrier btcutil.Amount,
+	intent *oor.TaprootAssetOORIntent,
+	outputFloor btcutil.Amount) (btcutil.Amount, error) {
+
+	if intent == nil {
+		return receiverCarrier, nil
+	}
+
+	if intent.AssetChangeCarrierValueSat > uint64(btcutil.MaxSatoshi) {
+		return 0, status.Errorf(codes.InvalidArgument, "Taproot Asset "+
+			"change carrier must be <= %d",
+			int64(btcutil.MaxSatoshi))
+	}
+
+	changeCarrier := btcutil.Amount(intent.AssetChangeCarrierValueSat)
+	if changeCarrier != 0 && changeCarrier < outputFloor {
+		return 0, status.Errorf(codes.InvalidArgument, "Taproot Asset "+
+			"change carrier %d sat is below operator "+
+			"minimum %d sat", changeCarrier, outputFloor)
+	}
+	if receiverCarrier > btcutil.MaxSatoshi-changeCarrier {
+		return 0, status.Errorf(codes.InvalidArgument, "Taproot Asset "+
+			"carrier total must be <= %d",
+			int64(btcutil.MaxSatoshi))
+	}
+
+	return receiverCarrier + changeCarrier, nil
 }
 
 // invalidTaprootAssetPreparation reports a bug or compromised adapter result.
