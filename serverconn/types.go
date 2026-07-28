@@ -194,6 +194,20 @@ type ConnectorConfig struct {
 	// early response) is retained before stale cleanup.
 	ResponseWaiterTTL time.Duration
 
+	// MaxInFlightUnary caps how many unary RPCs this client may have
+	// outstanding against the remote mailbox at once. A non-positive value
+	// selects DefaultMaxInFlightUnary.
+	//
+	// The mailbox protocol has no cancel envelope, so a caller that gives
+	// up on its deadline cannot recall the request: the operator runs it
+	// to completion and delivers a response with no waiter left to receive
+	// it. Capping the outstanding set is the only client-side bound on how
+	// much of that abandoned work one client can queue. Exceeding it fails
+	// the send locally with ResourceExhausted, which is the same fast-fail
+	// signal a shedding operator sends, so callers back off on it without
+	// needing to know where it came from.
+	MaxInFlightUnary int
+
 	// HeartbeatInterval is the interval between heartbeat sends to
 	// the server. A zero or negative value uses
 	// DefaultHeartbeatInterval (30 s). The server's staleness
@@ -305,6 +319,13 @@ func (c *ConnectorConfig) mergeAuthHeaders(
 // per-correlation-key FIFO claim.
 const DefaultEgressWorkers = 4
 
+// DefaultMaxInFlightUnary is the default cap on concurrently outstanding unary
+// RPCs. It is set well above any legitimate burst the daemon produces (the
+// heaviest client, seed recovery, walks the recovery window sequentially) so
+// the cap only bites when responses have stopped coming back and requests are
+// piling up on a remote that is not answering.
+const DefaultMaxInFlightUnary = 256
+
 // stampEnvelope stamps the runtime's immutable mailbox transport and Ark
 // protocol versions onto an envelope immediately before it is sent. It
 // overwrites any pre-existing version values so no send path — including a
@@ -335,5 +356,6 @@ func DefaultConnectorConfig() ConnectorConfig {
 		RetryMaxDelay:          30 * time.Second,
 		ResponseWaiterTTL:      mailboxconn.DefaultResponseWaiterTTL,
 		EgressWorkers:          DefaultEgressWorkers,
+		MaxInFlightUnary:       DefaultMaxInFlightUnary,
 	}
 }
