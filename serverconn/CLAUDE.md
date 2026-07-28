@@ -66,6 +66,8 @@ background ingress polling with event routing.
 ## Invariants
 
 - Ack watermark only advances AFTER durable local dispatch commit (prevents message loss on crash).
+- The ingress fold never holds the database writer across network IO. `runFoldedDispatch` runs waiter-backed responses and the `ConnectorConfig.NonTxRoutes` requests BEFORE opening the write transaction; only durable enqueues and the cursor checkpoint go inside it. A route is hoisted only when it is listed in `NonTxRoutes` AND the envelope is a `KIND_REQUEST`, so a durable actor `Tell` can never escape the fold. Any new dispatcher that terminates in `Edge.Send` rather than a durable enqueue MUST be added to `NonTxRoutes` at wiring time (see `waved.Server.buildRPCDispatchers`), otherwise it pins the SQLite global writer lock (production opens with `_txlock=immediate`) or a SERIALIZABLE Postgres snapshot for the length of a round trip to the operator.
+- Pre-transaction dispatch happens before the commit, never after. A crash in between re-pulls the batch and redelivers, which is the at-least-once contract; committing first would advance the cursor past a request that was never answered.
 - Unary RPC responses use in-memory registry first; if no waiter exists (crash replay), the ingress falls back to durable EventRouter dispatch. The ResponseRegistry returns a tri-state delivery result (waiter/buffered/dropped) so the ingress knows whether to route durably.
 - `SendClientEventRequest` auto-derives `Service`/`Method` from `Message.ServiceMethod()` when callers leave them empty, preventing silent drops.
 - Idempotency keys are derived from message payload hash; same key on retry enables server deduplication.

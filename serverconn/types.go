@@ -60,6 +60,11 @@ type EnvelopeDispatcher func(
 	ctx context.Context, env *mailboxpb.Envelope,
 ) error
 
+// RouteSet is a set of (service, method) pairs. It is used to tag a subset of
+// the dispatch table with a delivery property that the closure itself cannot
+// advertise, since an EnvelopeDispatcher is an opaque function value.
+type RouteSet = map[mailboxrpc.ServiceMethod]struct{}
+
 // DurableUnaryRequestBuilder constructs proof-gated unary request payloads
 // for durable transport messages that only persist the query spec. The
 // returned proto is wrapped into a mailbox KIND_REQUEST envelope after the
@@ -138,6 +143,28 @@ type ConnectorConfig struct {
 	// The ingress loop uses this table to route KIND_REQUEST and
 	// KIND_EVENT envelopes to the correct local actor via ServiceKey.
 	Dispatchers map[mailboxrpc.ServiceMethod]EnvelopeDispatcher
+
+	// NonTxRoutes marks the subset of Dispatchers whose closure serves an
+	// inbound KIND_REQUEST end to end -- it runs the local handler and
+	// then puts the KIND_RESPONSE envelope back on the wire with
+	// Edge.Send -- instead of enqueuing into a local durable mailbox.
+	// Those dispatchers block on a network round trip, so the ingress
+	// loop runs them BEFORE it opens the folded write transaction. A
+	// marked route left unmarked would hold the database writer across
+	// that round trip: on SQLite, which production opens with
+	// _txlock=immediate, that is the single global writer lock and every
+	// other writer in the process stalls behind it; on Postgres, where
+	// db.BaseDB.BeginTx pins SERIALIZABLE, it is a multi-second SSI
+	// conflict window and a source of 40001 aborts.
+	//
+	// Marking is opt-in because an EnvelopeDispatcher is an opaque
+	// closure: only the wiring layer knows whether a given route
+	// terminates in a durable enqueue or in blocking IO. A route is only
+	// hoisted out of the transaction when it is listed here AND the
+	// envelope is a KIND_REQUEST, so a durable event or response route
+	// can never be hoisted by accident. Any new route whose dispatcher
+	// performs IO rather than a durable enqueue MUST be listed here.
+	NonTxRoutes RouteSet
 
 	// Store is the delivery store used by both the durable actor runtime
 	// (for inbox persistence) and checkpoint persistence (for ack
