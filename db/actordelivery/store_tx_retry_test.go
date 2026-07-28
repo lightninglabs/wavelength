@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -185,6 +186,36 @@ func TestExecTxGivesUpAfterRetryBudget(t *testing.T) {
 	// error, otherwise an operator only learns that something was retried
 	// and never what the conflict was.
 	require.True(t, db.IsSerializationError(err))
+}
+
+// TestExecTxRetryBudgetFloor asserts that a nonsensical budget still runs the
+// transaction once. Taking a zero or negative budget literally would skip the
+// loop entirely and report exhausted retries for work that was never attempted,
+// which loses the caller's transaction instead of failing it.
+func TestExecTxRetryBudgetFloor(t *testing.T) {
+	t.Parallel()
+
+	for _, budget := range []int{0, -1} {
+		t.Run(fmt.Sprintf("budget %d", budget), func(t *testing.T) {
+			t.Parallel()
+
+			store := newRetryTestStore(t, WithTxRetries(budget))
+
+			var attempts int
+			err := store.ExecTx(
+				context.Background(), false,
+				func(context.Context,
+					actor.DeliveryStore) error {
+
+					attempts++
+
+					return nil
+				},
+			)
+			require.NoError(t, err)
+			require.Equal(t, 1, attempts)
+		})
+	}
 }
 
 // TestExecTxStopsRetryingOnContextCancel asserts that a cancelled context ends

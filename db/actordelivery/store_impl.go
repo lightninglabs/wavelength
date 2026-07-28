@@ -1650,8 +1650,17 @@ func defaultTxRetryConfig() *txRetryConfig {
 type TxRetryOption func(*txRetryConfig)
 
 // WithTxRetries sets how many attempts ExecTx makes before giving up.
+//
+// A budget below one is raised to one. Taking it literally would skip the loop
+// body entirely, so ExecTx would report that it exhausted its retries without
+// ever having run the transaction, and the caller's work would be silently
+// dropped rather than attempted and failed.
 func WithTxRetries(numRetries int) TxRetryOption {
 	return func(c *txRetryConfig) {
+		if numRetries < 1 {
+			numRetries = 1
+		}
+
 		c.numRetries = numRetries
 	}
 }
@@ -1712,6 +1721,15 @@ func NewTxAwareActorDeliveryStore(
 // transaction, so callers must keep side effects that are not durable writes
 // out of fn and place them after ExecTx returns. See the retry loop for why
 // that matters to a caller whose fn is slow enough to outlast its lease.
+//
+// NOTE: serverconn's runFoldedDispatch does not satisfy that contract yet. It
+// calls dispatchBatch inside fn, and the mux-bridged routes there terminate in
+// a network send, so a retryable error raised after the send replays it. The
+// path was already at-least-once, since a failed fold nacks and the batch is
+// re-pulled, and the operator absorbs the duplicate by correlation ID. Retrying
+// in place makes that happen up to numRetries times per turn instead of once,
+// which is why moving the send out of the transaction is the fix rather than a
+// tidiness follow-up. Until it lands, this is the one known in-tree exception.
 func (s *TxAwareActorDeliveryStore) ExecTx(
 	ctx context.Context, readOnly bool, fn actor.TxFunc,
 ) error {
