@@ -198,6 +198,14 @@ type ConnectorConfig struct {
 	// outstanding against the remote mailbox at once. A non-positive value
 	// selects DefaultMaxInFlightUnary.
 	//
+	// What it counts is live UnaryFacade waiters in the response registry,
+	// so it bounds the live unary path and nothing else. The durable
+	// egress paths (SendUnaryRequest, SendRPCRequest) do not register an
+	// in-memory waiter and are not gated here, which is deliberate: their
+	// responses fall through to durable route dispatch when no waiter is
+	// left, so an abandoned one is redelivered rather than discarded, and
+	// it is the discarding that this cap exists to bound.
+	//
 	// The mailbox protocol has no cancel envelope, so a caller that gives
 	// up on its deadline cannot recall the request: the operator runs it
 	// to completion and delivers a response with no waiter left to receive
