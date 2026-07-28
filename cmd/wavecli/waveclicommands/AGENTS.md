@@ -114,6 +114,10 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/cmd/wave
   `walletAdmin`/`walletPayment`/`walletQuery`/`arkBase`/`arkVTXO`/
   `arkSend`/`arkObservable` sub-registries. MCP-only methods use
   `mcp_only`; tools whose arguments differ from the CLI use `mcp_params`.
+- `schema_parity_test.go` walks the real cobra tree and an in-memory real MCP
+  server. Every visible local flag on the curated wallet/ark surface must
+  match the registry name and type, and `MCPTool` must match the exact live
+  tool set.
 - `buildMCPServer()` — constructs the MCP server and registers every
   exposed RPC as a typed tool; split from `mcpServe` (which owns the
   daemon dial and stdio transport) so the tool surface is testable.
