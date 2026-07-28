@@ -72,16 +72,6 @@ type RetryPolicy struct {
 	MaxDelay time.Duration
 }
 
-// DefaultRetryPolicy returns the production retry policy for logical mailbox
-// RPCs.
-func DefaultRetryPolicy() RetryPolicy {
-	return RetryPolicy{
-		MaxAttempts: DefaultRetryAttempts,
-		BaseDelay:   DefaultRetryBaseDelay,
-		MaxDelay:    DefaultRetryMaxDelay,
-	}
-}
-
 // normalize replaces non-positive fields with their defaults so the retry loop
 // never has to re-check them.
 func (p RetryPolicy) normalize() RetryPolicy {
@@ -146,17 +136,21 @@ func IsShedError(err error) bool {
 func Retry(ctx context.Context, policy RetryPolicy,
 	call func(context.Context, RPCOptions) error) error {
 
-	key, err := NewIdempotencyKey()
-	if err != nil {
-		return err
-	}
-
-	return RetryWithKey(ctx, policy, key, call)
+	return RetryWithKey(ctx, policy, "", call)
 }
 
 // RetryWithKey is Retry for callers that already hold the logical request's
 // idempotency key, for example because the key is derived from a durable
 // record so it survives a restart. Passing an empty key mints one.
+//
+// The key must not already be in flight elsewhere when this is called. Both
+// the operator's deduplication and the transport's habit of defaulting the
+// correlation ID to the key assume one live request per key, so two callers
+// retrying concurrently under the same key would land two waiters on one
+// correlation ID and let either one collect the other's answer. Nothing here
+// enforces that, because every caller today re-issues sequentially from a
+// single goroutine; a caller that wants concurrent attempts of the same
+// logical request needs its own key per attempt-set.
 func RetryWithKey(ctx context.Context, policy RetryPolicy, key string,
 	call func(context.Context, RPCOptions) error) error {
 

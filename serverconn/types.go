@@ -206,6 +206,15 @@ type ConnectorConfig struct {
 	// the send locally with ResourceExhausted, which is the same fast-fail
 	// signal a shedding operator sends, so callers back off on it without
 	// needing to know where it came from.
+	//
+	// The cap is per connector rather than per subsystem, so it is shared
+	// by every unary caller in the daemon. One subsystem that saturates it
+	// therefore fails unrelated unary RPCs daemon-wide until its requests
+	// drain. That is the intent: the resource being protected is the
+	// operator's queue, which is also shared, and a per-subsystem cap
+	// would let N subsystems each queue their own N without any of them
+	// noticing. The cost is that the loudest caller can starve the quiet
+	// ones, which is why the default sits well above any legitimate burst.
 	MaxInFlightUnary int
 
 	// HeartbeatInterval is the interval between heartbeat sends to
