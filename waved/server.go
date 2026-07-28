@@ -2793,9 +2793,15 @@ func (s *Server) newMailboxEdge() mailboxpb.MailboxServiceClient {
 // KIND_REQUEST envelopes are bridged to the local ServeMux (e.g.,
 // DaemonService.GetInfo). KIND_EVENT envelopes for server-push OOR responses
 // are routed to the OOR actor via the EventRouter and service key lookup.
-func (s *Server) buildRPCDispatchers(
-	edge mailboxpb.MailboxServiceClient,
-) map[mailboxrpc.ServiceMethod]serverconn.EnvelopeDispatcher {
+//
+// It also returns the set of routes that must be dispatched outside the
+// ingress loop's folded write transaction. Every route bridged to the ServeMux
+// belongs in that set: those dispatchers answer over the network via
+// Edge.Send, so leaving one out would hold the SQLite writer lock (or a
+// SERIALIZABLE Postgres snapshot) open across a round trip to the operator.
+func (s *Server) buildRPCDispatchers(edge mailboxpb.MailboxServiceClient) (
+	map[mailboxrpc.ServiceMethod]serverconn.EnvelopeDispatcher,
+	serverconn.RouteSet) {
 
 	// Create a catch-all dispatcher that routes any inbound
 	// KIND_REQUEST to the ServeMux. We register one entry per
@@ -2816,17 +2822,28 @@ func (s *Server) buildRPCDispatchers(
 	// on the RPC dispatch entries.
 	dispatchers := eventRouter.AsDispatcherMap()
 
+	// Register each mux-bridged route in both maps at once so a future
+	// route cannot pick up the dispatcher without also being marked
+	// non-transactional.
+	nonTxRoutes := make(serverconn.RouteSet)
+	addMuxRoute := func(service, method string) {
+		key := mailboxrpc.ServiceMethod{
+			Service: service,
+			Method:  method,
+		}
+
+		dispatchers[key] = dispatch
+		nonTxRoutes[key] = struct{}{}
+	}
+
 	// DaemonService.GetInfo — server queries client status.
-	dispatchers[mailboxrpc.ServiceMethod{
-		Service: "waverpc.DaemonService",
-		Method:  "GetInfo",
-	}] = dispatch
+	addMuxRoute("waverpc.DaemonService", "GetInfo")
 
 	// TODO(roasbeef): Add indexer and wallet service methods
 	// here once their clients are initialized (e.g.,
 	// WalletService.SignVTXO, RoundService.SubmitNonces).
 
-	return dispatchers
+	return dispatchers, nonTxRoutes
 }
 
 // buildEventRoutes registers typed event routes for server-push envelopes.
@@ -3857,7 +3874,7 @@ func (s *Server) connectAndBootstrapMailbox(ctx context.Context) error {
 
 	// Build the mailbox transport runtime.
 	edge := s.newMailboxEdge()
-	dispatchers := s.buildRPCDispatchers(edge)
+	dispatchers, nonTxRoutes := s.buildRPCDispatchers(edge)
 
 	// Derive compound mailbox ID: operator:client.
 	s.localMailboxID = serverconn.PubKeyMailboxID(
@@ -3905,6 +3922,7 @@ func (s *Server) connectAndBootstrapMailbox(ctx context.Context) error {
 	connCfg.ArkProtocolVersion = s.arkProtocolVersion
 	connCfg.Store = s.deliveryStore
 	connCfg.Dispatchers = dispatchers
+	connCfg.NonTxRoutes = nonTxRoutes
 	connCfg.AuthSignature = authSig
 	connCfg.TLSBindSignature = tlsBindSig
 	connCfg.InitAuthHeader()
