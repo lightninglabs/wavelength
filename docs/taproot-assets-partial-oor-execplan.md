@@ -37,22 +37,35 @@ credentials.
 - [x] (2026-07-21 21:30Z) Restacked the Wavelength asset-state branch on the
   exported runtime-registration branch so exact-package lookup can be injected
   without exposing database or tapd types to swapd.
-- [ ] Extend the public intent additively with receiver asset units and an
+- [x] (2026-07-21 20:03Z) Extended the public intent additively with receiver
+  asset units and an
   explicit asset-change carrier; retain a legacy full-send default.
-- [ ] Derive asset and Bitcoin change before the first external commit, and
+- [x] (2026-07-21 20:03Z) Derived asset and Bitcoin change before the first
+  external commit, and
   persist the resulting scripts and deterministic ordering state.
-- [ ] Build one checkpoint per input with exactly one asset package and empty
+- [x] (2026-07-21 20:03Z) Built one checkpoint per input with exactly one asset
+  package and empty
   positional slots for Bitcoin-only checkpoints.
-- [ ] Stabilize canonical output indices using tap-sdk preview, compose Ark
+- [x] (2026-07-21 20:03Z) Stabilized canonical output indices using tap-sdk
+  preview, composed Ark
   policies with the previewed roots, and reject preview/commit divergence.
-- [ ] Resolve chained proof sources from the exact locally created package and
+- [x] (2026-07-21 20:03Z) Resolved chained proof sources from the exact locally
+  created package and
   distinguish initial managed-inventory verification from chained lineage
   verification.
-- [ ] Add amount, carrier, mixed-input, output-ordering, restart,
+- [x] (2026-07-21 20:03Z) Added amount, carrier, mixed-input, output-ordering,
+  restart,
   reconciliation, proof-lineage, and response-filtering tests.
-- [ ] Run generation, formatting, focused and race tests, full unit/build/lint
-  checks, update this plan with evidence, and create a signed implementation
-  commit.
+- [x] (2026-07-21 20:03Z) Added synchronous durable carrier selection, an
+  atomic reservation-set acquisition and ownership handoff, retained
+  post-commit quarantine, and restart adoption of only still-Spending inputs.
+- [x] (2026-07-28 17:10Z) Regenerated RPC and SQLC artifacts during
+  implementation; ran formatting, changed-source lint with zero findings,
+  focused tests, focused race tests, the full unit suite including `baselib`,
+  and the debug build. All completed successfully.
+- [x] (2026-07-28 17:15Z) Created the signed implementation commit. Publishing
+  remains a separate review-stack action because the root prototype PR is
+  currently conflicted with `main`.
 
 ## Surprises & Discoveries
 
@@ -79,6 +92,21 @@ credentials.
   Evidence: commit `d263d8c2` exposes
   `CustomAnchorPlan.PreviewOutputCommitments`, allowing Wavelength to stabilize
   output indices without mutating tapd state.
+- Observation: the two virtual transitions need more proof capacity than the
+  previous exact-send estimate.
+  Evidence: the builder reserves two transition leaves plus serialization
+  headroom before either tapd commit, and rejects an undersized source proof
+  during preflight.
+- Observation: optimistic VTXO selection is too weak for an external tapd
+  mutation boundary.
+  Evidence: an asset preparation could otherwise reserve rows before each
+  child VTXO actor had durably entered Spending. Asset sends now await those
+  actor writes; ordinary Bitcoin OOR sends retain detached admission.
+- Observation: per-input reservation writes leave a crash and exit race.
+  Evidence: preparation now acquires the complete set atomically and OOR actor
+  admission atomically hands that exact set to the session owner while every
+  VTXO remains Spending. Absent, partial, mixed, stale, and foreign sets fail
+  closed.
 
 ## Decision Log
 
@@ -126,15 +154,36 @@ credentials.
   validates the exact persisted package lineage, and uses the caller-known
   OP_TRUE witness; requiring foreign inventory would break receiver custody.
   Date/Author: 2026-07-21 / Codex.
+- Decision: derive the temporary preparation reservation owner from a
+  domain-separated hash of the non-empty public idempotency key, then hand the
+  complete set to the outgoing session in its actor commit transaction.
+  Rationale: both the preparer and durable actor can reconstruct that identity
+  without widening the public wire. Safety comes from the journal's exact
+  intent/input digest and the store's exact-set, exact-owner, and Spending
+  preconditions; the hash is an identity, not a secret capability.
+  Date/Author: 2026-07-21 / Codex.
+- Decision: retain all selected inputs after atomic preparation ownership has
+  been acquired if a later preparation step fails.
+  Rationale: after tapd may have been mutated, best-effort per-input release
+  can create an unrecoverable partial set. The prototype instead returns an
+  explicit reconciliation error and preserves the complete quarantine.
+  Date/Author: 2026-07-21 / Codex.
 
 ## Outcomes & Retrospective
 
-Implementation is in progress. The preceding branches provide carrier-funded
-onboarding, explicit asset-aware coin selection, exported runtime registration,
-durable asset identity and quantity, sparse checkpoint-package slots, and exact
-created-package proof-source reconstruction. This branch turns those pieces
-into a partial-send transaction builder. Cross-repository operator validation
-and the live two-wallet regtest remain separate stacked Lumos milestones.
+The Wavelength implementation is complete and locally validated. It provides
+explicit receiver/change carriers, partial and full sends, mixed asset/Bitcoin
+inputs, deterministic output stabilization, exact sealed-package lineage,
+durable restart state, and atomic input quarantine/adoption. It does not hide
+carrier sats or exchange asset units for Bitcoin.
+
+Two limits remain deliberate for the prototype. Chained verification trusts
+the exact locally persisted, operator-accepted package as the lineage root
+after tapd verifies its confirmed base proof; it cannot independently prove
+that a foreign confirmed base had no hidden passive assets. Existing v0/v1
+preparation journals have no migration to v2 and should be reset in a PoC
+environment. Cross-repository operator validation and the live two-wallet
+regtest remain separate stacked Lumos milestones.
 
 ## Context and Orientation
 
@@ -265,9 +314,11 @@ restart without fresh key derivation; ambiguous commit reconciliation; a
 fully committed restart with no tapd calls; and a receiver-side chained spend
 whose tapd does not list the sender's base anchor.
 
-Bitcoin-only OOR behavior must remain unchanged. Every malformed request or
-package must fail before the ordinary OOR actor locks inputs or emits a signing
-effect.
+Bitcoin-only OOR behavior must remain unchanged. Request, proof, source,
+capacity, and recipient-policy preflight failures occur before tapd mutation.
+After atomic preparation ownership, every failure retains the complete input
+set for deterministic retry or reconciliation rather than releasing a
+possibly asset-committed input.
 
 ## Idempotence and Recovery
 
@@ -280,9 +331,23 @@ input reservation and requires reconciliation rather than a blind competing
 commit. Once every sealed package exists, restoration performs no external
 commit.
 
-The tap-sdk dependency is temporarily pinned to the reviewed commit from PR
-#166. Remove that pin through a separate dependency-only commit after the
-upstream PR merges; do not substitute a local `replace` directive.
+Selection waits until every carrier VTXO has durably entered Spending before
+the preparation store can atomically acquire the exact set. The reservation
+owner is derived from the idempotency key. Durable actor admission changes the
+complete set to the deterministic OOR session owner in the same transaction
+that checkpoints the actor; it never inserts missing rows or steals partial or
+foreign sets. Restart adoption requires every journaled descriptor to remain
+Spending and accepts either the complete preparation owner or the complete
+already-handed-off session owner. State-file replacement also syncs the parent
+directory so a successful rename survives a crash boundary.
+
+The preparation journal format is version 2 and intentionally has no migration
+from earlier unpublished prototype versions. PoC deployments carrying an older
+journal must clear that state before upgrade.
+
+The tap-sdk dependency is pinned to the pseudo-version containing merged PR
+#166. Move to the next tagged tap-sdk release through a separate dependency-only
+commit when available; do not substitute a local `replace` directive.
 
 ## Artifacts and Notes
 
@@ -307,6 +372,12 @@ passes one caller receiver. `tapassets.PreparerConfig` receives a narrow
 change-recipient builder and exact created-package loader. The internal
 `customAnchorDriver` exposes a read-only preview operation backed by
 `CustomAnchorPlan.PreviewOutputCommitments`.
+
+`oor.ReservationSetStore` atomically acquires, inspects, and hands off complete
+carrier sets. Asset wallet selection sets `WaitForDurable`; Bitcoin-only OOR
+selection preserves its existing detached path. The preparation resumer
+returns exact journaled outpoints for restart adoption without selecting a new
+carrier set.
 
 The only new upstream dependency is tap-sdk commit
 `d263d8c2c4005a1037277b9202cb2bd28a14fb0c` from PR #166. Lumos, swapd, and

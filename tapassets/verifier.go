@@ -20,6 +20,7 @@ type proofInventoryClient interface {
 }
 
 type expectedUnconfirmedAnchor struct {
+	stepIndex        uint16
 	previousOutpoint tapsdk.Outpoint
 	anchorOutpoint   tapsdk.Outpoint
 	transaction      []byte
@@ -118,7 +119,7 @@ func (v *proofInventoryVerifier) VerifyUnconfirmedAnchor(_ context.Context,
 			"configured")
 	}
 	expected := v.unconfirmed
-	if transition.StepIndex != 0 {
+	if transition.StepIndex != expected.stepIndex {
 		return fmt.Errorf("unexpected unconfirmed proof step %d",
 			transition.StepIndex)
 	}
@@ -132,6 +133,66 @@ func (v *proofInventoryVerifier) VerifyUnconfirmedAnchor(_ context.Context,
 	if !bytes.Equal(transition.AnchorTransaction, expected.transaction) {
 		return fmt.Errorf("unconfirmed proof anchor transaction " +
 			"mismatch")
+	}
+
+	return nil
+}
+
+// proofLineageVerifier verifies a chained path's confirmed base with tapd and
+// delegates cryptographic validation of every sealed unconfirmed step to
+// tap-sdk. The exact package that created the local VTXO is the authority for
+// passive isolation; a receiver must not need the sender's base anchor in its
+// own ListUtxos inventory.
+type proofLineageVerifier struct {
+	client       proofInventoryClient
+	expectedLast *expectedUnconfirmedAnchor
+}
+
+// VerifyConfirmedProof verifies the confirmed base through tapd. Complete
+// passive isolation is inherited from the exact, operator-accepted package
+// lineage that supplied the compact path.
+func (v *proofLineageVerifier) VerifyConfirmedProof(ctx context.Context,
+	proofFile []byte) (*tapsdk.ConfirmedProofVerification, error) {
+
+	if v == nil || v.client == nil {
+		return nil, fmt.Errorf("tapd proof client is required")
+	}
+	verified, err := v.client.VerifyProof(ctx, proofFile)
+	if err != nil {
+		return nil, fmt.Errorf("verify chained proof base with "+
+			"tapd: %w", err)
+	}
+	if verified == nil || !verified.Valid || verified.DecodedProof == nil {
+		return nil, fmt.Errorf("tapd rejected chained proof base")
+	}
+
+	return &tapsdk.ConfirmedProofVerification{
+		AnchorAssetInventoryComplete: true,
+		PassiveAssetCount:            0,
+	}, nil
+}
+
+// VerifyUnconfirmedAnchor accepts sealed historical steps after tap-sdk has
+// verified their transactions and asset transitions. When a new checkpoint
+// step is appended, it additionally binds that last step to Wavelength's exact
+// committed transaction.
+func (v *proofLineageVerifier) VerifyUnconfirmedAnchor(_ context.Context,
+	transition tapsdk.UnconfirmedAnchorVerification) error {
+
+	if v == nil || v.expectedLast == nil ||
+		transition.StepIndex != v.expectedLast.stepIndex {
+		return nil
+	}
+
+	expected := v.expectedLast
+	if transition.PreviousAnchorOutpoint != expected.previousOutpoint {
+		return fmt.Errorf("chained proof previous outpoint mismatch")
+	}
+	if transition.AnchorOutpoint != expected.anchorOutpoint {
+		return fmt.Errorf("chained proof anchor outpoint mismatch")
+	}
+	if !bytes.Equal(transition.AnchorTransaction, expected.transaction) {
+		return fmt.Errorf("chained proof anchor transaction mismatch")
 	}
 
 	return nil

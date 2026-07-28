@@ -65,3 +65,9 @@ into specific topics below.
 | Document | Description |
 |----------|-------------|
 | [PLANS.md](../PLANS.md) | ExecPlan specification for complex features |
+| [taproot-assets-onboarding-execplan.md](taproot-assets-onboarding-execplan.md) | Prototype plan for onboarding a Taproot Asset into a Wavelength VTXO |
+| [taproot-assets-carrier-onboarding-execplan.md](taproot-assets-carrier-onboarding-execplan.md) | Prototype plan for funding onboarding carriers from the shared Bitcoin wallet |
+| [taproot-assets-carrier-selection-execplan.md](taproot-assets-carrier-selection-execplan.md) | Prototype plan for mandatory asset-input and ordinary Bitcoin carrier selection |
+| [taproot-assets-oor-execplan.md](taproot-assets-oor-execplan.md) | Prototype plan for sealed Taproot Asset OOR packages |
+| [taproot-assets-asset-state-execplan.md](taproot-assets-asset-state-execplan.md) | Prototype plan for durable asset state and mixed-package bindings |
+| [taproot-assets-partial-oor-execplan.md](taproot-assets-partial-oor-execplan.md) | Prototype plan for partial asset sends with explicit carrier satoshis |

@@ -2376,7 +2376,7 @@ func (m *Manager) handleSelectAndReserveSpend(ctx context.Context,
 		rollback:     m.rollbackSpend,
 		ask:          m.askVTXOActor,
 		label:        "spend",
-		detached:     true,
+		detached:     !req.WaitForDurable,
 	})
 	if err != nil {
 		return fn.Err[ManagerResp](err)

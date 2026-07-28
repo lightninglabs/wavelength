@@ -100,10 +100,26 @@ const (
 
 	// ReservationOwnerKindTaprootAssetPreparation records a reservation
 	// before the first external Taproot Asset commit. The deterministic
-	// request digest is the owner ID, allowing retries and restart recovery
-	// to upsert the same reservation.
+	// domain-separated idempotency-key hash is the owner ID, allowing the
+	// preparer and durable OOR actor to identify the same handoff boundary.
 	ReservationOwnerKindTaprootAssetPreparation = 1
 )
+
+const taprootAssetPreparationReservationDomain = "wavelength/" +
+	"taproot-assets-preparation-reservation/v0/"
+
+// TaprootAssetPreparationReservationOwner derives the stable reservation
+// owner used between carrier selection and durable OOR-session admission. The
+// public idempotency key is available at both boundaries, while the private
+// preparation digest additionally binds selected inputs and therefore cannot
+// be reconstructed by the OOR actor.
+func TaprootAssetPreparationReservationOwner(requestID string) chainhash.Hash {
+	return chainhash.HashH(
+		[]byte(
+			taprootAssetPreparationReservationDomain + requestID,
+		),
+	)
+}
 
 // ReservationStore is the minimal storage contract the OOR runtime needs to
 // record durable spending reservations. A row is written either before the
@@ -118,6 +134,49 @@ type ReservationStore interface {
 	// owner identified by ownerKind/ownerID.
 	UpsertReservation(ctx context.Context, outpoint wire.OutPoint,
 		ownerKind int, ownerID chainhash.Hash) error
+}
+
+// ReservationSetState aliases the shared reservation-set inspection result.
+type ReservationSetState = libtypes.ReservationSetState
+
+const (
+	// ReservationSetAbsent means none of the requested outpoints has a
+	// reservation row.
+	ReservationSetAbsent = libtypes.ReservationSetAbsent
+
+	// ReservationSetOwned means every requested outpoint is reserved by the
+	// exact owner kind and ID supplied by the caller.
+	ReservationSetOwned = libtypes.ReservationSetOwned
+
+	// ReservationSetInconsistent means the set is only partly reserved or
+	// at least one row belongs to a different owner.
+	ReservationSetInconsistent = libtypes.ReservationSetInconsistent
+)
+
+// ReservationSetStore is the optional reservation-store extension for
+// atomically inspecting and acquiring a complete input set. Asset preparation
+// requires this stronger boundary so a crash cannot leave only part of its
+// selected inputs durably owned.
+//
+// All methods reject empty sets and duplicate outpoints. UpsertReservationSet
+// is idempotent for rows already held by the exact owner and rejects any row
+// held by another owner; unlike UpsertReservation, it never performs an owner
+// handoff. HandoffReservationSet changes ownership only when the complete set
+// is still held by the expected source owner (or is already held by the exact
+// target owner on replay).
+type ReservationSetStore interface {
+	ReservationStore
+
+	UpsertReservationSet(ctx context.Context, outpoints []wire.OutPoint,
+		ownerKind int, ownerID chainhash.Hash) error
+
+	InspectReservationSet(ctx context.Context, outpoints []wire.OutPoint,
+		ownerKind int,
+		ownerID chainhash.Hash) (ReservationSetState, error)
+
+	HandoffReservationSet(ctx context.Context, outpoints []wire.OutPoint,
+		fromOwnerKind int, fromOwnerID chainhash.Hash, toOwnerKind int,
+		toOwnerID chainhash.Hash) error
 }
 
 // PackageArtifact carries the finalized package data for one OOR session.

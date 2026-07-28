@@ -528,20 +528,27 @@ func (s *Failed) ProcessEvent(ctx context.Context, event Event,
 	return unexpectedEvent(s), nil
 }
 
-// prePONRInputOutpoints returns the session's reserved input outpoints
-// when the session has not yet crossed the point of no return (the
-// server co-signing the checkpoints). Past that point the inputs must
-// stay reserved: the server holds a co-signed spend of them, so
-// releasing locally would invite double-spend attempts. Pre-PONR the
-// server never locked anything, so a terminal failure can hand the
-// inputs straight back to the spendable set.
+// prePONRInputOutpoints returns the session's reserved input outpoints when
+// neither the operator nor tapd has crossed a point of no return. Standard
+// transfers cross that boundary when the server co-signs the checkpoints.
+// Asset transfers cross it earlier, when tapd commits the prepared anchor
+// transition, so their inputs must remain quarantined for reconciliation even
+// if the Ark submit is rejected before the server co-signs it.
 func prePONRInputOutpoints(state State) []wire.OutPoint {
 	var inputs []TransferInput
 	switch s := state.(type) {
 	case *AwaitingArkSignatures:
+		if s.TaprootAssetTransfer != nil {
+			return nil
+		}
+
 		inputs = s.TransferInputs
 
 	case *AwaitingSubmitAccepted:
+		if s.TaprootAssetTransfer != nil {
+			return nil
+		}
+
 		inputs = s.TransferInputs
 
 	default:
