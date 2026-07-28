@@ -21,6 +21,7 @@ import (
 	"github.com/lightninglabs/wavelength/indexer"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	libtypes "github.com/lightninglabs/wavelength/lib/types"
+	mailboxrpc "github.com/lightninglabs/wavelength/mailbox/rpc"
 	"github.com/lightninglabs/wavelength/oor"
 	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightninglabs/wavelength/wallet"
@@ -36,7 +37,8 @@ const (
 	recoveryOORPageSize  = 128
 
 	recoveryIndexerRetryAttempts = 8
-	recoveryIndexerRetryDelay    = 150 * time.Millisecond
+	recoveryIndexerRetryBase     = 150 * time.Millisecond
+	recoveryIndexerRetryMax      = 5 * time.Second
 )
 
 type walletRecoveryResult struct {
@@ -49,32 +51,27 @@ type walletRecoveryResult struct {
 
 // retryRecoveryIndexerRPC retries recovery-local indexer calls that hit the
 // operator's per-client query limiter.
-func retryRecoveryIndexerRPC(ctx context.Context, call func() error) error {
-	var err error
-	for attempt := 0; attempt < recoveryIndexerRetryAttempts; attempt++ {
-		err = call()
-		if status.Code(err) != codes.ResourceExhausted {
-			return err
-		}
+//
+// Seed recovery walks the whole recovery window one script at a time, so it is
+// the heaviest indexer client the daemon has and the one most likely to be
+// shed. Each re-issue therefore has to look like a retry to the operator
+// rather than like a fresh query: the call receives the RPCOptions carrying
+// the logical request's stable idempotency key, and must forward them to the
+// indexer client so the operator can dedup the attempt instead of re-running
+// it.
+func retryRecoveryIndexerRPC(ctx context.Context,
+	call func(mailboxrpc.RPCOptions) error) error {
 
-		if attempt == recoveryIndexerRetryAttempts-1 {
-			break
-		}
-
-		timer := time.NewTimer(recoveryIndexerRetryDelay)
-		select {
-		case <-timer.C:
-		case <-ctx.Done():
-			if !timer.Stop() {
-				<-timer.C
-			}
-
-			return fmt.Errorf("wait for indexer retry: %w",
-				ctx.Err())
-		}
-	}
-
-	return err
+	return mailboxrpc.Retry(
+		ctx, mailboxrpc.RetryPolicy{
+			MaxAttempts: recoveryIndexerRetryAttempts,
+			BaseDelay:   recoveryIndexerRetryBase,
+			MaxDelay:    recoveryIndexerRetryMax,
+		},
+		func(_ context.Context, opts mailboxrpc.RPCOptions) error {
+			return call(opts)
+		},
+	)
 }
 
 func (r walletRecoveryResult) apply(resp *waverpc.InitWalletResponse) {
@@ -265,9 +262,12 @@ func (r *RPCServer) recoverIndexedVTXOs(ctx context.Context,
 		expiresAt := r.server.clk.Now().Add(
 			defaultOORReceiveScriptRegistrationTTL,
 		)
-		err = retryRecoveryIndexerRPC(ctx, func() error {
+		err = retryRecoveryIndexerRPC(ctx, func(
+			opts mailboxrpc.RPCOptions) error {
+
 			_, err := idx.RegisterReceiveScriptTaproot(
 				ctx, pkScript, expiresAt, "seed-recovery-vtxo",
+				opts,
 			)
 
 			return err
@@ -279,7 +279,9 @@ func (r *RPCServer) recoverIndexedVTXOs(ctx context.Context,
 		cursor := []byte(nil)
 		for {
 			var resp *arkrpc.ListVTXOsByScriptsResponse
-			err := retryRecoveryIndexerRPC(ctx, func() error {
+			err := retryRecoveryIndexerRPC(ctx, func(
+				opts mailboxrpc.RPCOptions) error {
+
 				var err error
 				resp, err = idx.ListVTXOsByScriptsTaproot(
 					ctx,
@@ -287,7 +289,7 @@ func (r *RPCServer) recoverIndexedVTXOs(ctx context.Context,
 						PkScript: pkScript,
 					}},
 					cursor, recoveryVTXOPageSize,
-					nil,
+					nil, opts,
 				)
 
 				return err
@@ -532,9 +534,13 @@ func (r *RPCServer) recoverOORReceiveScripts(ctx context.Context,
 	result *walletRecoveryResult) error {
 
 	var registered *arkrpc.ListMyReceiveScriptsResponse
-	err := retryRecoveryIndexerRPC(ctx, func() error {
+	err := retryRecoveryIndexerRPC(ctx, func(
+		opts mailboxrpc.RPCOptions) error {
+
 		var err error
-		registered, err = r.server.indexer.ListMyReceiveScripts(ctx)
+		registered, err = r.server.indexer.ListMyReceiveScripts(
+			ctx, opts,
+		)
 
 		return err
 	})
@@ -673,11 +679,13 @@ func (r *RPCServer) recoverOOREventsForScript(ctx context.Context,
 	var afterEventID uint64
 	for {
 		var resp *arkrpc.ListOORRecipientEventsByScriptResponse
-		err := retryRecoveryIndexerRPC(ctx, func() error {
+		err := retryRecoveryIndexerRPC(ctx, func(
+			opts mailboxrpc.RPCOptions) error {
+
 			var err error
 			resp, err = idx.ListOORRecipientEventsByScriptTaproot(
 				ctx, pkScript, afterEventID,
-				recoveryOORPageSize,
+				recoveryOORPageSize, opts,
 			)
 
 			return err
