@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"io"
+	"math"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1573,19 +1574,56 @@ func TestPollBackoff(t *testing.T) {
 		require.Equal(t, defaultMaxPollInterval, backoff.current())
 	})
 
+	// A ceiling above MaxInt64/2 means the doubling in decay overflows to a
+	// negative duration. A bare "> ceiling" clamp misses that, and
+	// timer.Reset treats a negative duration as "fire immediately", so the
+	// backoff would tight-spin the store rather than widen. Reaching the
+	// overflow by repeated doubling from a realistic floor would take more
+	// than forty decays, which is why this is pinned deterministically
+	// rather than left to the property test below.
+	t.Run("overflowing decay clamps to the ceiling", func(t *testing.T) {
+		t.Parallel()
+
+		backoff := newPollBackoff(
+			time.Second, time.Duration(math.MaxInt64),
+		)
+
+		// Step cur to just past the halfway mark so the next doubling
+		// is guaranteed to overflow.
+		backoff.cur = time.Duration(math.MaxInt64/2 + 1)
+		backoff.decay()
+
+		require.Positive(
+			t, backoff.current(),
+			"decay overflowed to a non-positive duration, "+
+				"which timer.Reset fires immediately",
+		)
+		require.Equal(
+			t, time.Duration(math.MaxInt64), backoff.current(),
+		)
+	})
+
 	t.Run("always within bounds", func(t *testing.T) {
 		t.Parallel()
 
 		// Whatever sequence of decays and resets it sees, the backoff
 		// never leaves [floor, ceiling] and never shrinks except on a
 		// reset.
+		// The ceiling domain deliberately reaches into the top of the
+		// int64 range. A ceiling above MaxInt64/2 makes the doubling in
+		// decay overflow to a negative duration, which timer.Reset
+		// treats as "fire immediately", so the invariant below is what
+		// pins that the clamp catches it rather than tight-spinning.
 		rapid.Check(t, func(rt *rapid.T) {
 			floorNanos := rapid.Int64Range(-1000, 1e6).Draw(
 				rt, "floor",
 			)
-			ceilingNanos := rapid.Int64Range(-1000, 1e6).Draw(
-				rt, "ceiling",
-			)
+			ceilingNanos := rapid.OneOf(
+				rapid.Int64Range(-1000, 1e6),
+				rapid.Int64Range(
+					math.MaxInt64/2, math.MaxInt64,
+				),
+			).Draw(rt, "ceiling")
 
 			rawFloor := time.Duration(floorNanos)
 			rawCeiling := time.Duration(ceilingNanos)

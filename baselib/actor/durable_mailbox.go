@@ -117,6 +117,17 @@ type DurableMailboxConfig struct {
 	// multi-replica deployment that cares about that latency should lower
 	// this knob, at the cost of more empty polls per idle actor.
 	//
+	// Two other visibility events are wakeless and so are bounded by this
+	// ceiling in the same way. A nacked message becomes eligible again when
+	// its retry delay elapses, and nothing signals the wake channel at that
+	// moment, so a retry scheduled D in the future surfaces up to
+	// min(D, MaxPollInterval) late rather than within PollInterval. A lease
+	// that expires after a crash is likewise picked up by the poll alone,
+	// so its recovery is LeaseDuration plus up to MaxPollInterval. Neither
+	// affects at-least-once delivery, but both are real latency the fixed
+	// poll did not have, and a deployment that cares about redelivery
+	// promptness should size this knob against its retry delays.
+	//
 	// A value <= 0 normalizes to the default, and a value below
 	// PollInterval is raised to PollInterval (which disables the decay
 	// rather than producing a wait that shrinks below the floor).
@@ -259,8 +270,13 @@ func (p *pollBackoff) decay() {
 		return
 	}
 
+	// The <= 0 arm catches a doubling that overflowed past MaxInt64. That
+	// needs an absurd ceiling (over ~146 years) to reach, but an overflowed
+	// cur goes negative, which the > ceiling comparison would miss and
+	// which timer.Reset treats as "fire immediately" -- turning the backoff
+	// into a tight spin against the store, the opposite of the point.
 	p.cur *= 2
-	if p.cur > p.ceiling {
+	if p.cur > p.ceiling || p.cur <= 0 {
 		p.cur = p.ceiling
 	}
 }
