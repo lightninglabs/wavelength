@@ -18,6 +18,8 @@ import (
 	"github.com/lightninglabs/wavelength/oor"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -253,12 +255,84 @@ func TestResolveIncomingMetadataSameCommitmentMultiLeaf(t *testing.T) {
 	)
 }
 
+// TestResolveIncomingMetadataRecoveryRetriesShedPage pins that the recovery
+// flavour of the resolver survives a shed page and re-issues it under one key.
+//
+// Recovery resolves metadata for every OOR event it replays, so this call is
+// as much of the recovery scan as the listing calls around it. Left
+// single-shot it was the one call in the flow that turned an operator's "slow
+// down" into a failed InitWallet, and the natural response to that is to re-run
+// recovery from the top, which re-mints a key for every script in the window.
+func TestResolveIncomingMetadataRecoveryRetriesShedPage(t *testing.T) {
+	t.Parallel()
+
+	sessionID := oor.SessionID(testTxID(1))
+	idx, rpcClient, recipient, _ := newTestIncomingMetadataIndexer(
+		t,
+		testIncomingMetadataResponse(
+			nil, testIncomingVTXO(sessionID, recipientIndex),
+		),
+	)
+
+	// The operator sheds the first two attempts, then serves the page.
+	rpcClient.shedFirst = 2
+
+	metadata, err := resolveIncomingMetadataWithRetry(
+		t.Context(), idx, sessionID, recipient, oor.ReceiveLimits{
+			MaxVTXOMatches: 2,
+		},
+		retryRecoveryIndexerRPC,
+	)
+	require.NoError(t, err)
+	require.Equal(t, testTxID(10).String(), metadata.RoundID)
+
+	// Every attempt at the page has to carry the same key, or the operator
+	// bills three separate scans for the one page we asked for.
+	keys := rpcClient.idempotencyKeys()
+	require.Len(t, keys, 3)
+	require.NotEmpty(t, keys[0])
+	require.Equal(t, keys[0], keys[1])
+	require.Equal(t, keys[0], keys[2])
+}
+
+// TestResolveIncomingMetadataLiveReceiveStaysSingleShot pins that the live OOR
+// receive path did not quietly inherit recovery's retries. It has a caller
+// blocked on the other end of a receive, so failing fast beats holding that
+// caller through a backoff.
+func TestResolveIncomingMetadataLiveReceiveStaysSingleShot(t *testing.T) {
+	t.Parallel()
+
+	sessionID := oor.SessionID(testTxID(1))
+	idx, rpcClient, recipient, _ := newTestIncomingMetadataIndexer(
+		t,
+		testIncomingMetadataResponse(
+			nil, testIncomingVTXO(sessionID, recipientIndex),
+		),
+	)
+
+	rpcClient.shedFirst = 1
+
+	_, err := ResolveIncomingMetadataFromIndexerWithLimits(
+		t.Context(), idx, sessionID, recipient, oor.ReceiveLimits{
+			MaxVTXOMatches: 2,
+		},
+	)
+	require.Equal(t, codes.ResourceExhausted, status.Code(err))
+	require.Len(t, rpcClient.idempotencyKeys(), 1)
+}
+
 // scriptedIndexerRPC returns scripted ListVTXOsByScripts responses.
 type scriptedIndexerRPC struct {
 	mu        sync.Mutex
 	responses []*arkrpc.ListVTXOsByScriptsResponse
 	sent      []*arkrpc.ListVTXOsByScriptsRequest
+	sentOpts  []mailboxrpc.RPCOptions
 	awaits    int
+
+	// shedFirst makes the first shedFirst sends fail with
+	// ResourceExhausted, standing in for the operator's per-client query
+	// limiter shedding a page.
+	shedFirst int
 }
 
 type scriptedMetadataResponse struct {
@@ -293,10 +367,20 @@ func listVTXOsByScriptResponse(_ []byte,
 // SendRPC records the request and returns a deterministic correlation id.
 func (r *scriptedIndexerRPC) SendRPC(_ context.Context,
 	_ mailboxrpc.ServiceMethod, req proto.Message,
-	_ mailboxrpc.RPCOptions) (mailboxrpc.SendResult, error) {
+	opts mailboxrpc.RPCOptions) (mailboxrpc.SendResult, error) {
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	// Record the options on every attempt, shed or not, so a test can
+	// check what key the operator would have seen for each send.
+	r.sentOpts = append(r.sentOpts, opts)
+
+	if len(r.sentOpts) <= r.shedFirst {
+		return mailboxrpc.SendResult{}, status.Error(
+			codes.ResourceExhausted, "rate limited",
+		)
+	}
 
 	listReq, ok := req.(*arkrpc.ListVTXOsByScriptsRequest)
 	if !ok {
@@ -345,6 +429,20 @@ func (r *scriptedIndexerRPC) sendCount() int {
 	defer r.mu.Unlock()
 
 	return len(r.sent)
+}
+
+// idempotencyKeys returns the key carried by every attempted send, including
+// the ones that were shed.
+func (r *scriptedIndexerRPC) idempotencyKeys() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	keys := make([]string, 0, len(r.sentOpts))
+	for _, opts := range r.sentOpts {
+		keys = append(keys, opts.IdempotencyKey)
+	}
+
+	return keys
 }
 
 // newTestIncomingMetadataIndexer returns a proof-capable indexer client and a

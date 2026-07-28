@@ -760,7 +760,14 @@ func (r *RPCServer) materializeRecoveredOOREvent(ctx context.Context,
 			continue
 		}
 
-		metadata, err := ResolveIncomingMetadataFromIndexerWithLimits(
+		// Recovery resolves metadata for every event it replays, so
+		// this is as much of the recovery scan as the listing calls
+		// above and has to survive a shed the same way. Left
+		// single-shot it was the one call in the flow that turned an
+		// operator's "slow down" into a failed InitWallet, and the
+		// natural response to that is to re-run recovery from the
+		// top, which re-mints a key for every script in the window.
+		metadata, err := resolveIncomingMetadataWithRetry(
 			build.ContextWithLogger(
 				ctx, r.server.subLogger(Subsystem),
 			),
@@ -768,6 +775,7 @@ func (r *RPCServer) materializeRecoveredOOREvent(ctx context.Context,
 			sessionID,
 			recipient,
 			r.server.cfg.OORReceiveLimits(),
+			retryRecoveryIndexerRPC,
 		)
 		if err != nil {
 			return err
