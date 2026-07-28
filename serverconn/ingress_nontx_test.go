@@ -326,3 +326,56 @@ func TestRunFoldedDispatchValidatesBeforeAnyDelivery(t *testing.T) {
 	require.Empty(t, probe.durableHeld)
 	require.Empty(t, store.observed())
 }
+
+// TestDispatchBatchSkipsMislabeledNonTxKinds closes the hole the kind guard
+// would otherwise leave open. The hoist gate only takes a KIND_REQUEST out of
+// the fold, so an envelope stamped KIND_EVENT, or a KIND_RESPONSE whose waiter
+// is gone, still resolves to the marked route's dispatcher inside the
+// transaction. That dispatcher is the mux bridge, which never looks at the
+// kind: it would serve the envelope as a request and answer over the wire with
+// the writer lock held, which is the same stall this split removes for the
+// well-formed case. The sender controls the kind, so leaving that path live
+// would leave the fix half applied.
+func TestDispatchBatchSkipsMislabeledNonTxKinds(t *testing.T) {
+	t.Parallel()
+
+	store := newWriterLockStore()
+	probe := newNonTxProbe(t, store, nil)
+
+	// A KIND_RESPONSE on the marked route with no waiter registered falls
+	// through to the same dispatch table lookup as an event does.
+	orphanResp := nonTxTestEnvelope(
+		mailboxpb.RpcMeta_KIND_RESPONSE, nonTxService, nonTxMethod, 2,
+	)
+	orphanResp.Rpc.CorrelationId = "no-such-waiter"
+
+	envelopes := []*mailboxpb.Envelope{
+		nonTxTestEnvelope(
+			mailboxpb.RpcMeta_KIND_EVENT, nonTxService, nonTxMethod,
+			1,
+		),
+		orphanResp,
+		nonTxTestEnvelope(
+			mailboxpb.RpcMeta_KIND_EVENT, durableService,
+			durableMethod, 3,
+		),
+	}
+
+	newState, err := probe.conn.runFoldedDispatch(
+		t.Context(), store, envelopes, 4, AckState{},
+	)
+	require.NoError(t, err)
+
+	// Neither mislabeled envelope reached the mux bridge, so no round trip
+	// happened under the transaction.
+	require.Empty(t, probe.requestHeld)
+	require.NotContains(t, store.observed(), "serve-request")
+
+	// The rest of the batch still ran and the cursor still advanced. A
+	// mislabeled envelope must not wedge the loop: a dispatch error here
+	// is not permanent, so returning one would back off and re-pull the
+	// same envelope forever.
+	require.Equal(t, []bool{true}, probe.durableHeld)
+	require.Equal(t, uint64(4), newState.PullCursor)
+	require.Equal(t, uint64(4), newState.DispatchCommittedTo)
+}

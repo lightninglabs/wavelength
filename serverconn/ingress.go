@@ -392,6 +392,35 @@ func (a *ServerConnectionActor) dispatchBatch(ctx context.Context,
 			continue
 		}
 
+		// A marked route's dispatcher answers the operator over the
+		// network, and the hoist gate has already pulled every
+		// KIND_REQUEST on such a route out of the fold. Anything else
+		// arriving on one is mislabeled by the sender, and the mux
+		// bridge does not look at the kind: it would serve the
+		// envelope as a request anyway and put that round trip back
+		// under the write transaction, which is the exact stall the
+		// split exists to remove. Skip it the way the table skips any
+		// other envelope it cannot route, so the batch still makes
+		// progress. Returning an error instead would be worse than
+		// the stall: a dispatch failure is not permanent, so the loop
+		// would back off and re-pull the same envelope forever.
+		if env.Rpc.Kind != mailboxpb.RpcMeta_KIND_REQUEST &&
+			a.isNonTxRoute(env) {
+
+			a.log.WarnS(
+				ctx,
+				"Skipping non-request envelope on a "+
+					"non-transactional route",
+				nil,
+				slog.String("service", env.Rpc.Service),
+				slog.String("method", env.Rpc.Method),
+				slog.Int("kind", int(env.Rpc.Kind)),
+				slog.Uint64("event_seq", env.EventSeq),
+			)
+
+			continue
+		}
+
 		switch env.Rpc.Kind {
 		case mailboxpb.RpcMeta_KIND_RESPONSE:
 			// Prefer unary waiters for low-latency RPC
@@ -765,6 +794,28 @@ func (a *ServerConnectionActor) isNonTxRequest(
 	return ok
 }
 
+// isNonTxRoute reports whether an envelope's route is marked in NonTxRoutes,
+// ignoring its kind. isNonTxRequest is the gate that decides what gets
+// hoisted, and it is deliberately stricter. This is the weaker question
+// dispatchBatch needs: not "may this be hoisted" but "is this route's
+// dispatcher one that answers over the network", which is what makes running
+// it inside the write transaction unacceptable no matter what kind the sender
+// stamped on the envelope.
+func (a *ServerConnectionActor) isNonTxRoute(env *mailboxpb.Envelope) bool {
+	if env.Rpc == nil {
+		return false
+	}
+
+	key := mailboxrpc.ServiceMethod{
+		Service: env.Rpc.Service,
+		Method:  env.Rpc.Method,
+	}
+
+	_, ok := a.cfg.NonTxRoutes[key]
+
+	return ok
+}
+
 // dispatchNonTxRequests serves the hoisted inbound requests with no write
 // transaction open, in event_seq order. Each dispatcher runs the local handler
 // and sends the KIND_RESPONSE back over the edge, so this is where the network
@@ -785,9 +836,20 @@ func (a *ServerConnectionActor) dispatchNonTxRequests(ctx context.Context,
 		}
 
 		// isNonTxRequest already proved the lookup succeeds, so a miss
-		// here would mean the dispatch table mutated mid-batch.
+		// here would mean the dispatch table mutated mid-batch. Skip
+		// rather than fail, matching how dispatchBatch treats an
+		// unroutable envelope, but say so: the cursor is about to
+		// advance past a request nobody answered, and that is the one
+		// way this path can silently drop instead of redeliver.
 		dispatcher, ok := a.cfg.Dispatchers[key]
 		if !ok {
+			a.log.WarnS(ctx, "No dispatcher for hoisted request",
+				nil,
+				slog.String("service", env.Rpc.Service),
+				slog.String("method", env.Rpc.Method),
+				slog.Uint64("event_seq", env.EventSeq),
+			)
+
 			continue
 		}
 
