@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -1624,11 +1625,50 @@ func (s *TxActorDeliveryStore) CleanupExpired(ctx context.Context) error {
 // Compile-time check that TxActorDeliveryStore implements actor.DeliveryStore.
 var _ actor.DeliveryStore = (*TxActorDeliveryStore)(nil)
 
+// txRetryConfig governs how ExecTx replays a transaction that failed with a
+// retryable error.
+type txRetryConfig struct {
+	// numRetries is the number of attempts ExecTx makes before it gives up
+	// and returns ErrRetriesExceeded.
+	numRetries int
+
+	// backoff returns how long to wait before the given retry attempt.
+	backoff func(attempt int) time.Duration
+}
+
+// defaultTxRetryConfig returns the retry settings ExecTx uses unless a caller
+// overrides them. They deliberately match the ones db.TransactionExecutor
+// applies to every other transaction in the codebase.
+func defaultTxRetryConfig() *txRetryConfig {
+	return &txRetryConfig{
+		numRetries: db.DefaultNumTxRetries,
+		backoff:    db.RandRetryDelay,
+	}
+}
+
+// TxRetryOption customizes the retry behavior of a TxAwareActorDeliveryStore.
+type TxRetryOption func(*txRetryConfig)
+
+// WithTxRetries sets how many attempts ExecTx makes before giving up.
+func WithTxRetries(numRetries int) TxRetryOption {
+	return func(c *txRetryConfig) {
+		c.numRetries = numRetries
+	}
+}
+
+// WithTxRetryBackoff sets the delay schedule ExecTx waits out between attempts.
+func WithTxRetryBackoff(backoff func(attempt int) time.Duration) TxRetryOption {
+	return func(c *txRetryConfig) {
+		c.backoff = backoff
+	}
+}
+
 // TxAwareActorDeliveryStore extends Store with transaction
 // execution support for atomic multi-operation workflows.
 type TxAwareActorDeliveryStore struct {
 	*Store
 	querier db.BatchedQuerier
+	retry   *txRetryConfig
 }
 
 // NewTxAwareActorDeliveryStore creates a new transaction-aware delivery store.
@@ -1636,11 +1676,18 @@ func NewTxAwareActorDeliveryStore(
 	db BatchedActorDeliveryQueries,
 	querier db.BatchedQuerier,
 	clock clock.Clock,
+	opts ...TxRetryOption,
 ) *TxAwareActorDeliveryStore {
+
+	retry := defaultTxRetryConfig()
+	for _, opt := range opts {
+		opt(retry)
+	}
 
 	return &TxAwareActorDeliveryStore{
 		Store:   NewStore(db, clock),
 		querier: querier,
+		retry:   retry,
 	}
 }
 
@@ -1648,6 +1695,22 @@ func NewTxAwareActorDeliveryStore(
 // a context with the transaction attached (via WithTx) and a transaction-scoped
 // DeliveryStore. All operations within the function participate in the same
 // transaction.
+//
+// This is the transaction the durable actor framework commits every message
+// turn in, so it carries the ack, the mailbox enqueues the behavior asked for,
+// and the processed marker together. On Postgres those enqueues contend with
+// the consumers' predicate reads, which under SERIALIZABLE surfaces as a 40001
+// abort. We replay the whole transaction on that class of error rather than
+// letting it out, because the alternative is a nack that both burns one of the
+// message's finite delivery attempts and drops any response the turn owed a
+// client.
+//
+// NOTE: fn may run more than once. Replay imposes no requirement the framework
+// did not already have: the pre-existing answer to a failed commit is a nack
+// and a redelivery, which re-runs the same behavior against the same in-memory
+// actor. What replay must not do is re-apply an effect that escaped the
+// transaction, so callers must keep side effects that are not durable writes
+// out of fn and place them after ExecTx returns.
 func (s *TxAwareActorDeliveryStore) ExecTx(
 	ctx context.Context, readOnly bool, fn actor.TxFunc,
 ) error {
@@ -1659,9 +1722,45 @@ func (s *TxAwareActorDeliveryStore) ExecTx(
 		txOpts = db.WriteTxOption()
 	}
 
+	var lastErr error
+	for attempt := 0; attempt < s.retry.numRetries; attempt++ {
+		err := s.execTxAttempt(ctx, txOpts, fn)
+		if err == nil {
+			return nil
+		}
+
+		// Anything the transaction cannot shake off by running again
+		// belongs to the caller.
+		if !db.IsRetryableTxError(err) {
+			return err
+		}
+
+		lastErr = err
+
+		// Back off before replaying so that a set of transactions that
+		// conflicted once does not line up and conflict again. The
+		// budget is bounded well inside the message lease, so a turn
+		// cannot retry its way past its own lease expiry.
+		select {
+		case <-time.After(s.retry.backoff(attempt)):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
+	return fmt.Errorf("%w: %w", db.ErrRetriesExceeded, lastErr)
+}
+
+// execTxAttempt runs a single attempt of the transaction body, from BeginTx
+// through commit and the post-commit wakes. Every attempt gets a fresh
+// transaction, a fresh transaction-scoped store, and fresh enqueue bookkeeping,
+// so a replay cannot inherit anything the rolled-back attempt recorded.
+func (s *TxAwareActorDeliveryStore) execTxAttempt(ctx context.Context,
+	txOpts db.TxOptions, fn actor.TxFunc) error {
+
 	tx, err := s.querier.BeginTx(ctx, txOpts)
 	if err != nil {
-		return err
+		return db.MapSQLError(err)
 	}
 
 	defer func() {
@@ -1687,11 +1786,11 @@ func (s *TxAwareActorDeliveryStore) ExecTx(
 
 	// Execute the function with the transaction-scoped store.
 	if err := fn(txCtx, txStore); err != nil {
-		return err
+		return db.MapSQLError(err)
 	}
 
 	if err := tx.Commit(); err != nil {
-		return err
+		return db.MapSQLError(err)
 	}
 
 	if outboxEnqueued {
