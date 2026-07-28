@@ -175,6 +175,16 @@ func (t *txExecutorOptions) randRetryDelay(attempt int) time.Duration {
 	return actualDelay
 }
 
+// RandRetryDelay returns the default randomized backoff for the given retry
+// attempt, doubling with each attempt and capped at DefaultMaxRetryDelay.
+//
+// This exists so that transaction executors outside this type, such as the
+// durable actor framework's commit transaction, can back off on exactly the
+// same schedule instead of growing a second copy of the policy.
+func RandRetryDelay(attempt int) time.Duration {
+	return defaultTxExecutorOptions().randRetryDelay(attempt)
+}
+
 // TxExecutorOption is a functional option that allows us to pass in optional
 // argument when creating the executor.
 type TxExecutorOption func(*txExecutorOptions)
