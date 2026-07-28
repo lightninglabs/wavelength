@@ -103,6 +103,7 @@ func TestDurableMailboxNewMailbox(t *testing.T) {
 	require.Equal(t, "test-mailbox", mailbox.cfg.MailboxID)
 	require.Equal(t, 30*time.Second, mailbox.cfg.LeaseDuration)
 	require.Equal(t, time.Second, mailbox.cfg.PollInterval)
+	require.Equal(t, 30*time.Second, mailbox.cfg.MaxPollInterval)
 	require.Equal(t, 10, mailbox.cfg.MaxAttempts)
 }
 
@@ -1412,4 +1413,624 @@ func TestDurableMailboxSendPreservesSenderTx(t *testing.T) {
 		t, HasTx(capturing.lastCtx),
 		"EnqueueMessage context should carry the sender's tx",
 	)
+}
+
+// TestNormalizePollIntervals verifies that the idle-poll floor and ceiling are
+// resolved sanely from raw config values: unset fields take their defaults, and
+// a ceiling below the floor is raised to the floor so the backoff can never
+// produce a wait shorter than the configured poll interval.
+func TestNormalizePollIntervals(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		floor       time.Duration
+		ceiling     time.Duration
+		wantFloor   time.Duration
+		wantCeiling time.Duration
+	}{
+		{
+			name:        "both unset take defaults",
+			wantFloor:   defaultPollInterval,
+			wantCeiling: defaultMaxPollInterval,
+		},
+		{
+			name:        "unset ceiling takes the default",
+			floor:       5 * time.Second,
+			wantFloor:   5 * time.Second,
+			wantCeiling: defaultMaxPollInterval,
+		},
+		{
+			name:        "unset floor takes the default",
+			ceiling:     time.Minute,
+			wantFloor:   defaultPollInterval,
+			wantCeiling: time.Minute,
+		},
+		{
+			name:        "negative values take defaults",
+			floor:       -time.Second,
+			ceiling:     -time.Minute,
+			wantFloor:   defaultPollInterval,
+			wantCeiling: defaultMaxPollInterval,
+		},
+		{
+			// A ceiling under the floor would otherwise ask for a
+			// wait that shrinks below what the operator configured.
+			name:        "ceiling below floor is raised",
+			floor:       10 * time.Second,
+			ceiling:     time.Second,
+			wantFloor:   10 * time.Second,
+			wantCeiling: 10 * time.Second,
+		},
+		{
+			// A floor above the default ceiling is the same
+			// misconfiguration reached via the default, and must
+			// not silently shrink the operator's poll interval.
+			name:        "floor above the default ceiling wins",
+			floor:       time.Hour,
+			wantFloor:   time.Hour,
+			wantCeiling: time.Hour,
+		},
+		{
+			name:        "valid pair passes through",
+			floor:       time.Second,
+			ceiling:     30 * time.Second,
+			wantFloor:   time.Second,
+			wantCeiling: 30 * time.Second,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			floor, ceiling := normalizePollIntervals(
+				tc.floor, tc.ceiling,
+			)
+			require.Equal(t, tc.wantFloor, floor)
+			require.Equal(t, tc.wantCeiling, ceiling)
+		})
+	}
+}
+
+// TestPollBackoff verifies the idle-poll backoff schedule: it starts at the
+// floor, doubles on each empty poll, pins at the ceiling, and snaps back to the
+// floor on reset.
+func TestPollBackoff(t *testing.T) {
+	t.Parallel()
+
+	t.Run("doubles up to the ceiling", func(t *testing.T) {
+		t.Parallel()
+
+		backoff := newPollBackoff(time.Second, 30*time.Second)
+
+		// The first idle wait is the floor; each empty poll doubles the
+		// next one until the ceiling pins it. Note that 16s doubles to
+		// 32s, which is clamped down to the 30s ceiling rather than
+		// overshooting it.
+		want := []time.Duration{
+			time.Second,
+			2 * time.Second,
+			4 * time.Second,
+			8 * time.Second,
+			16 * time.Second,
+			30 * time.Second,
+			30 * time.Second,
+			30 * time.Second,
+		}
+
+		got := make([]time.Duration, 0, len(want))
+		for range want {
+			got = append(got, backoff.current())
+			backoff.decay()
+		}
+
+		require.Equal(t, want, got)
+	})
+
+	t.Run("reset returns to the floor", func(t *testing.T) {
+		t.Parallel()
+
+		backoff := newPollBackoff(time.Second, 30*time.Second)
+
+		// Decay all the way to the ceiling, then reset.
+		for range 10 {
+			backoff.decay()
+		}
+		require.Equal(t, 30*time.Second, backoff.current())
+
+		backoff.reset()
+		require.Equal(t, time.Second, backoff.current())
+
+		// The schedule restarts from the floor rather than resuming
+		// where it left off.
+		backoff.decay()
+		require.Equal(t, 2*time.Second, backoff.current())
+	})
+
+	t.Run("misconfigured ceiling disables decay", func(t *testing.T) {
+		t.Parallel()
+
+		// A ceiling below the floor is clamped up, which leaves a
+		// constant-cadence poll at the floor -- never a shrinking one.
+		backoff := newPollBackoff(50*time.Second, 10*time.Second)
+
+		for range 5 {
+			require.Equal(t, 50*time.Second, backoff.current())
+			backoff.decay()
+		}
+	})
+
+	t.Run("zero values take defaults", func(t *testing.T) {
+		t.Parallel()
+
+		backoff := newPollBackoff(0, 0)
+		require.Equal(t, defaultPollInterval, backoff.current())
+
+		for range 20 {
+			backoff.decay()
+		}
+		require.Equal(t, defaultMaxPollInterval, backoff.current())
+	})
+
+	t.Run("always within bounds", func(t *testing.T) {
+		t.Parallel()
+
+		// Whatever sequence of decays and resets it sees, the backoff
+		// never leaves [floor, ceiling] and never shrinks except on a
+		// reset.
+		rapid.Check(t, func(rt *rapid.T) {
+			floorNanos := rapid.Int64Range(-1000, 1e6).Draw(
+				rt, "floor",
+			)
+			ceilingNanos := rapid.Int64Range(-1000, 1e6).Draw(
+				rt, "ceiling",
+			)
+
+			rawFloor := time.Duration(floorNanos)
+			rawCeiling := time.Duration(ceilingNanos)
+
+			backoff := newPollBackoff(rawFloor, rawCeiling)
+			floor, ceiling := normalizePollIntervals(
+				rawFloor, rawCeiling,
+			)
+
+			ops := rapid.SliceOfN(rapid.Bool(), 0, 64).Draw(
+				rt, "ops",
+			)
+
+			for _, isDecay := range ops {
+				prev := backoff.current()
+
+				if isDecay {
+					backoff.decay()
+					require.GreaterOrEqual(
+						rt, backoff.current(), prev,
+					)
+				} else {
+					backoff.reset()
+					require.Equal(
+						rt, floor, backoff.current(),
+					)
+				}
+
+				require.GreaterOrEqual(
+					rt, backoff.current(), floor,
+				)
+				require.LessOrEqual(
+					rt, backoff.current(), ceiling,
+				)
+			}
+		})
+	})
+}
+
+// TestDurableMailboxNormalizesPollIntervals verifies that a hand-built config
+// that predates MaxPollInterval (or sets it nonsensically) still yields usable
+// effective values on the constructed mailbox, so no construction path can end
+// up with a zero-length poll wait that would tight-spin the store.
+func TestDurableMailboxNormalizesPollIntervals(t *testing.T) {
+	t.Parallel()
+
+	store := newMockDeliveryStore()
+	codec := newDurableTestCodec()
+	ctx := context.Background()
+
+	t.Run("unset fields take defaults", func(t *testing.T) {
+		t.Parallel()
+
+		mailbox := NewDurableMailbox[*durableTestMsg, int](
+			ctx, DurableMailboxConfig{
+				MailboxID: "unset",
+				Store:     store,
+				Codec:     codec,
+			},
+		)
+
+		require.Equal(
+			t, defaultPollInterval, mailbox.cfg.PollInterval,
+		)
+		require.Equal(
+			t, defaultMaxPollInterval, mailbox.cfg.MaxPollInterval,
+		)
+	})
+
+	t.Run("unset ceiling takes the default", func(t *testing.T) {
+		t.Parallel()
+
+		mailbox := NewDurableMailbox[*durableTestMsg, int](
+			ctx, DurableMailboxConfig{
+				MailboxID:    "legacy",
+				Store:        store,
+				Codec:        codec,
+				PollInterval: 250 * time.Millisecond,
+			},
+		)
+
+		require.Equal(
+			t, 250*time.Millisecond, mailbox.cfg.PollInterval,
+		)
+		require.Equal(
+			t, defaultMaxPollInterval, mailbox.cfg.MaxPollInterval,
+		)
+	})
+
+	t.Run("ceiling below floor is raised", func(t *testing.T) {
+		t.Parallel()
+
+		mailbox := NewDurableMailbox[*durableTestMsg, int](
+			ctx, DurableMailboxConfig{
+				MailboxID:       "inverted",
+				Store:           store,
+				Codec:           codec,
+				PollInterval:    10 * time.Second,
+				MaxPollInterval: time.Second,
+			},
+		)
+
+		require.Equal(t, 10*time.Second, mailbox.cfg.PollInterval)
+		require.Equal(t, 10*time.Second, mailbox.cfg.MaxPollInterval)
+	})
+}
+
+// pollRecorderStore wraps a mockDeliveryStore and timestamps every claim the
+// receive loop makes. Tests assert on the observed sequence of claims -- their
+// count and the gaps between them -- rather than on wall-clock sleeps, so the
+// assertions describe the poll cadence the loop actually produced.
+type pollRecorderStore struct {
+	*mockDeliveryStore
+
+	pollMu sync.Mutex
+	polls  []time.Time
+}
+
+// newPollRecorderStore builds a recording store over a fresh mock.
+func newPollRecorderStore() *pollRecorderStore {
+	return &pollRecorderStore{
+		mockDeliveryStore: newMockDeliveryStore(),
+	}
+}
+
+// LeaseNextMessage records the moment of the claim before delegating to the
+// underlying mock.
+func (s *pollRecorderStore) LeaseNextMessage(ctx context.Context,
+	mailboxID string, leaseToken string, leaseDuration time.Duration) (
+	*LeasedMessage, error) {
+
+	s.pollMu.Lock()
+	s.polls = append(s.polls, time.Now())
+	s.pollMu.Unlock()
+
+	return s.mockDeliveryStore.LeaseNextMessage(
+		ctx, mailboxID, leaseToken, leaseDuration,
+	)
+}
+
+// pollCount returns how many claims the receive loop has made so far.
+func (s *pollRecorderStore) pollCount() int {
+	s.pollMu.Lock()
+	defer s.pollMu.Unlock()
+
+	return len(s.polls)
+}
+
+// pollGaps returns the observed waits between consecutive claims.
+func (s *pollRecorderStore) pollGaps() []time.Duration {
+	s.pollMu.Lock()
+	defer s.pollMu.Unlock()
+
+	gaps := make([]time.Duration, 0, len(s.polls))
+	for i := 1; i < len(s.polls); i++ {
+		gaps = append(gaps, s.polls[i].Sub(s.polls[i-1]))
+	}
+
+	return gaps
+}
+
+// runPollTestMailbox builds a mailbox with the given poll floor/ceiling over a
+// recording store and drains its Receive iterator on a background goroutine.
+// The returned channel carries every delivered message; the cleanup registered
+// on t stops the loop and waits for it to exit.
+func runPollTestMailbox(ctx context.Context, t *testing.T, mailboxID string,
+	floor, ceiling time.Duration) (*pollRecorderStore,
+	*DurableMailbox[*durableTestMsg, int], <-chan *durableTestMsg) {
+
+	t.Helper()
+
+	store := newPollRecorderStore()
+	codec := newDurableTestCodec()
+
+	cfg := DefaultDurableMailboxConfig(mailboxID, store, codec)
+	cfg.PollInterval = floor
+	cfg.MaxPollInterval = ceiling
+
+	loopCtx, cancel := context.WithCancel(ctx)
+	mailbox := NewDurableMailbox[*durableTestMsg, int](loopCtx, cfg)
+
+	// The delivery channel is unbuffered so the test observes each delivery
+	// at the moment the loop yields it.
+	delivered := make(chan *durableTestMsg)
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+
+		for env := range mailbox.Receive(loopCtx) {
+			select {
+			case delivered <- env.message:
+			case <-loopCtx.Done():
+				return
+			}
+		}
+	}()
+
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+
+	return store, mailbox, delivered
+}
+
+// seedPollTestMessage enqueues a message straight into the store, bypassing
+// Send and therefore firing no wake. This models the cross-process enqueue that
+// only the fallback poll can discover: the store's RegisterMailboxWake callback
+// is same-process, so a row committed by another replica arrives with no local
+// signal at all.
+func seedPollTestMessage(ctx context.Context, t *testing.T,
+	store *pollRecorderStore, mailboxID, msgID string, value uint64) {
+
+	t.Helper()
+
+	codec := newDurableTestCodec()
+	msg := &durableTestMsg{
+		Value: tlv.NewPrimitiveRecord[tlv.TlvType1](value),
+	}
+	payload, err := codec.Encode(msg)
+	require.NoError(t, err)
+
+	params := EnqueueParams{
+		ID:          msgID,
+		MailboxID:   mailboxID,
+		MessageType: msg.MessageType(),
+		Payload:     payload,
+		AvailableAt: time.Now().Add(-time.Minute),
+		MaxAttempts: 10,
+	}
+	require.NoError(t, store.EnqueueMessage(ctx, params))
+}
+
+// TestDurableMailboxIdlePollBackoffGrows verifies that consecutive empty polls
+// widen the wait between claims along the doubling schedule and then pin at the
+// ceiling. Every assertion is one-sided in the safe direction (a timer never
+// fires early), so a loaded machine can only make the observed gaps longer,
+// never shorter -- a fixed-cadence poll is what fails here, not a slow CI box.
+func TestDurableMailboxIdlePollBackoffGrows(t *testing.T) {
+	t.Parallel()
+
+	const (
+		floor   = 20 * time.Millisecond
+		ceiling = 160 * time.Millisecond
+	)
+
+	// The scheduled waits after the loop's first (immediate) claim. Six
+	// gaps is 620ms of idling on a correct implementation.
+	want := []time.Duration{
+		floor, 2 * floor, 4 * floor, ceiling, ceiling, ceiling,
+	}
+
+	store, _, _ := runPollTestMailbox(
+		t.Context(), t, "decay-mailbox", floor, ceiling,
+	)
+
+	scheduleDone := func() bool {
+		return store.pollCount() >= len(want)+1
+	}
+	require.Eventually(
+		t, scheduleDone, 5*time.Second, 5*time.Millisecond,
+		"receive loop did not complete the idle poll schedule",
+	)
+
+	// Allow a small slack purely for timestamp granularity: the failure
+	// this guards against (no decay at all) is off by a full floor, which
+	// dwarfs it.
+	const slack = 2 * time.Millisecond
+
+	gaps := store.pollGaps()
+	require.GreaterOrEqual(t, len(gaps), len(want))
+
+	for i, wantGap := range want {
+		require.GreaterOrEqualf(
+			t, gaps[i], wantGap-slack, "idle poll %d came after "+
+				"%v, expected at least %v: the backoff did "+
+				"not widen (gaps: %v)", i+1, gaps[i], wantGap,
+			gaps[:len(want)],
+		)
+	}
+}
+
+// TestDurableMailboxIdlePollBackoffCaps verifies the ceiling actually bounds
+// the wait. It asserts on elapsed work rather than on any single gap: an
+// uncapped doubling schedule needs over twenty seconds to reach ten idle polls
+// at this floor, while a capped one needs under half a second, so the budget
+// here separates the two by an order of magnitude in both directions.
+func TestDurableMailboxIdlePollBackoffCaps(t *testing.T) {
+	t.Parallel()
+
+	const (
+		floor   = 20 * time.Millisecond
+		ceiling = 40 * time.Millisecond
+
+		// 20ms + 9 * 40ms = 380ms capped, versus 20 * (2^10 - 1) =
+		// 20.4s uncapped.
+		wantPolls = 11
+	)
+
+	store, _, _ := runPollTestMailbox(
+		t.Context(), t, "cap-mailbox", floor, ceiling,
+	)
+
+	cappedPollsDone := func() bool {
+		return store.pollCount() >= wantPolls
+	}
+	require.Eventually(
+		t, cappedPollsDone, 3*time.Second, 5*time.Millisecond, "idle"+
+			" polls did not cap at the ceiling: the backoff "+
+			"kept doubling past MaxPollInterval",
+	)
+
+	// The loop must still have decayed on the way up to the ceiling.
+	gaps := store.pollGaps()
+	require.GreaterOrEqual(t, len(gaps), 2)
+	require.GreaterOrEqual(t, gaps[1], 2*floor-2*time.Millisecond)
+}
+
+// TestDurableMailboxWakeResetsPollBackoff verifies that a wake signal snaps the
+// idle backoff back to its floor. This is the property that keeps the decay off
+// the delivery path: a same-process enqueue signals the wake channel (directly
+// from Send, and again from the store's post-commit callback for an enqueue
+// folded into a caller's transaction), so however far the backoff had decayed,
+// the mailbox returns to its configured cadence immediately.
+func TestDurableMailboxWakeResetsPollBackoff(t *testing.T) {
+	t.Parallel()
+
+	const (
+		floor   = 20 * time.Millisecond
+		ceiling = time.Second
+	)
+
+	store, mailbox, _ := runPollTestMailbox(
+		t.Context(), t, "wake-reset-mailbox", floor, ceiling,
+	)
+
+	// Let the mailbox idle long enough for the backoff to widen well past
+	// the floor (20+40+80+160 = 300ms of schedule elapses inside this
+	// window, leaving the next wait at 320ms or more).
+	time.Sleep(400 * time.Millisecond)
+
+	base := store.pollCount()
+	require.Positive(t, base)
+
+	mailbox.Wake()
+
+	// After the reset the next few polls run at the floor again: the wake's
+	// own poll plus 20+40+80ms of schedule, about 140ms. Without the reset
+	// the very next gap alone is already 320ms and the one after that
+	// 640ms, so three more polls could not land inside this budget.
+	backAtFloor := func() bool {
+		return store.pollCount() >= base+4
+	}
+	require.Eventually(
+		t, backAtFloor, time.Second, 5*time.Millisecond,
+		"wake did not reset the idle poll backoff to its floor",
+	)
+}
+
+// TestDurableMailboxClaimResetsPollBackoff verifies that successfully claiming
+// a message snaps the backoff back to its floor, so a mailbox that goes busy
+// after a long quiet stretch polls responsively from the very next gap. The
+// message is seeded straight into the store with no wake, so the claim is the
+// only thing that could have caused the reset.
+func TestDurableMailboxClaimResetsPollBackoff(t *testing.T) {
+	t.Parallel()
+
+	const (
+		floor   = 20 * time.Millisecond
+		ceiling = time.Second
+	)
+
+	ctx := t.Context()
+	store, _, delivered := runPollTestMailbox(
+		ctx, t, "claim-reset-mailbox", floor, ceiling,
+	)
+
+	// Idle long enough that the backoff is several multiples of the floor.
+	time.Sleep(400 * time.Millisecond)
+
+	seedPollTestMessage(ctx, t, store, "claim-reset-mailbox", "msg-1", 42)
+
+	select {
+	case msg := <-delivered:
+		require.Equal(t, uint64(42), msg.Value.Val)
+
+	case <-time.After(5 * time.Second):
+		t.Fatal("decayed poll never discovered the seeded message")
+	}
+
+	base := store.pollCount()
+
+	// The claim resets the backoff, so the mailbox returns to floor cadence
+	// even though it found nothing on the polls that follow (the claimed
+	// message is leased out and no longer eligible). Without the reset the
+	// backoff would still be at hundreds of milliseconds and climbing.
+	backAtFloor := func() bool {
+		return store.pollCount() >= base+4
+	}
+	require.Eventually(
+		t, backAtFloor, time.Second, 5*time.Millisecond,
+		"claiming a message did not reset the idle poll backoff",
+	)
+}
+
+// TestDurableMailboxPollNeverStops verifies that the fallback poll survives an
+// arbitrarily long idle stretch. Once the backoff is pinned at its ceiling the
+// timer must keep firing, because it is the only discovery mechanism for a row
+// enqueued by another process or replica: RegisterMailboxWake is a same-process
+// callback, so a cross-process enqueue arrives with no local wake at all.
+func TestDurableMailboxPollNeverStops(t *testing.T) {
+	t.Parallel()
+
+	const (
+		floor   = 10 * time.Millisecond
+		ceiling = 50 * time.Millisecond
+	)
+
+	ctx := t.Context()
+	store, _, delivered := runPollTestMailbox(
+		ctx, t, "never-stops-mailbox", floor, ceiling,
+	)
+
+	// Idle far past the point where the backoff is pinned at its ceiling.
+	time.Sleep(500 * time.Millisecond)
+
+	pinned := store.pollCount()
+	require.Positive(t, pinned)
+
+	// A cross-process enqueue: the row appears with no wake of any kind.
+	seedPollTestMessage(ctx, t, store, "never-stops-mailbox", "msg-1", 7)
+
+	select {
+	case msg := <-delivered:
+		require.Equal(t, uint64(7), msg.Value.Val)
+
+	case <-time.After(5 * time.Second):
+		t.Fatal(
+			"poll timer stopped: a wakeless enqueue was never " +
+				"discovered",
+		)
+	}
+
+	// The discovery came from a poll that happened after the backoff was
+	// already pinned, not from a leftover pre-idle tick.
+	require.Greater(t, store.pollCount(), pinned)
 }
