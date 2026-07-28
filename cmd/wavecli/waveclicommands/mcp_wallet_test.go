@@ -1,11 +1,183 @@
 package waveclicommands
 
 import (
+	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
 )
+
+type recordingWalletServiceClient struct {
+	wavewalletrpc.WalletServiceClient
+
+	prepareReqs []*wavewalletrpc.PrepareSendRequest
+	sendReqs    []*wavewalletrpc.SendRequest
+}
+
+func (c *recordingWalletServiceClient) PrepareSend(_ context.Context,
+	req *wavewalletrpc.PrepareSendRequest, _ ...grpc.CallOption) (
+	*wavewalletrpc.PrepareSendResponse, error) {
+
+	c.prepareReqs = append(c.prepareReqs, req)
+
+	return &wavewalletrpc.PrepareSendResponse{
+		SendIntentId:   "intent-123",
+		AmountSat:      50_000,
+		ExpectedFeeSat: 123,
+		FeeKnown:       true,
+	}, nil
+}
+
+func (c *recordingWalletServiceClient) Send(_ context.Context,
+	req *wavewalletrpc.SendRequest, _ ...grpc.CallOption) (
+	*wavewalletrpc.SendResponse, error) {
+
+	c.sendReqs = append(c.sendReqs, req)
+
+	return &wavewalletrpc.SendResponse{}, nil
+}
+
+func TestPrepareMCPWalletSendDoesNotDispatch(t *testing.T) {
+	t.Parallel()
+
+	client := &recordingWalletServiceClient{}
+	result, err := prepareMCPWalletSend(
+		t.Context(), client, mcpSendPrepareArgs{
+			Destination: "lnbcrt100u1pwlqxyz",
+			MaxFeeSat:   250,
+			Note:        "coffee",
+		},
+	)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Len(t, client.prepareReqs, 1)
+	require.Empty(t, client.sendReqs)
+	require.Equal(
+		t, "lnbcrt100u1pwlqxyz", client.prepareReqs[0].GetInvoice(),
+	)
+	require.Equal(t, uint64(250), client.prepareReqs[0].GetMaxFeeSat())
+
+	text, ok := result.Content[0].(*mcp.TextContent)
+	require.True(t, ok)
+	var preview map[string]any
+	require.NoError(t, json.Unmarshal([]byte(text.Text), &preview))
+	require.Equal(t, "intent-123", preview["send_intent_id"])
+}
+
+func TestDispatchMCPWalletSendConsumesExactIntent(t *testing.T) {
+	t.Parallel()
+
+	client := &recordingWalletServiceClient{}
+	result, err := dispatchMCPWalletSend(
+		t.Context(), client, mcpSendArgs{
+			SendIntentID: "intent-123",
+		},
+	)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Empty(t, client.prepareReqs)
+	require.Len(t, client.sendReqs, 1)
+	require.Equal(
+		t, "intent-123", client.sendReqs[0].GetSendIntentId(),
+	)
+}
+
+func TestDispatchMCPWalletSendRequiresIntent(t *testing.T) {
+	t.Parallel()
+
+	client := &recordingWalletServiceClient{}
+	result, err := dispatchMCPWalletSend(
+		t.Context(), client, mcpSendArgs{},
+	)
+	require.Nil(t, result)
+	require.ErrorContains(t, err, "send.prepare")
+	require.Empty(t, client.prepareReqs)
+	require.Empty(t, client.sendReqs)
+}
+
+func TestMCPWalletSendRejectsNilClient(t *testing.T) {
+	t.Parallel()
+
+	result, err := prepareMCPWalletSend(
+		t.Context(), nil, mcpSendPrepareArgs{
+			Destination: "lnbcrt100u1pwlqxyz",
+		},
+	)
+	require.Nil(t, result)
+	require.ErrorIs(t, err, errWalletRPCDisabled)
+
+	result, err = dispatchMCPWalletSend(
+		t.Context(), nil, mcpSendArgs{
+			SendIntentID: "intent-123",
+		},
+	)
+	require.Nil(t, result)
+	require.ErrorIs(t, err, errWalletRPCDisabled)
+}
+
+func TestMCPWalletSendSchemaRegistry(t *testing.T) {
+	t.Parallel()
+
+	prepare := findSchemaMethod(t, "send.prepare")
+	require.True(t, prepare.MCPTool)
+	require.True(t, prepare.MCPOnly)
+	require.Equal(t, "destination", prepare.Params[0].Name)
+
+	send := findSchemaMethod(t, "send")
+	require.True(t, send.MCPTool)
+	require.Len(t, send.MCPParams, 1)
+	require.Equal(t, "send_intent_id", send.MCPParams[0].Name)
+	require.True(t, send.MCPParams[0].Required)
+}
+
+func TestMCPWalletSendToolsExposeTwoPhaseSchemas(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	server := buildMCPServer(nil, nil)
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+
+	serverSession, err := server.Connect(ctx, serverTransport, nil)
+	require.NoError(t, err)
+	defer serverSession.Close()
+
+	client := mcp.NewClient(
+		&mcp.Implementation{
+			Name:    "test",
+			Version: "0",
+		},
+		nil,
+	)
+	clientSession, err := client.Connect(ctx, clientTransport, nil)
+	require.NoError(t, err)
+	defer clientSession.Close()
+
+	tools, err := clientSession.ListTools(ctx, nil)
+	require.NoError(t, err)
+
+	var prepareSchema, sendSchema []byte
+	for _, tool := range tools.Tools {
+		schema, err := json.Marshal(tool.InputSchema)
+		require.NoError(t, err)
+
+		switch tool.Name {
+		case "send.prepare":
+			prepareSchema = schema
+
+		case "send":
+			sendSchema = schema
+		}
+	}
+
+	require.Contains(t, string(prepareSchema), `"destination"`)
+	require.NotContains(t, string(prepareSchema), `"send_intent_id"`)
+	require.Contains(t, string(sendSchema), `"send_intent_id"`)
+	require.NotContains(t, string(sendSchema), `"destination"`)
+}
 
 // TestParseDirectionFieldDefaultsToOffchain confirms an agent that
 // omits the direction string lands on the safe invoice path. The CLI
