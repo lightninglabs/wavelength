@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	mailboxpb "github.com/lightninglabs/wavelength/mailbox/pb"
@@ -378,4 +379,54 @@ func TestDispatchBatchSkipsMislabeledNonTxKinds(t *testing.T) {
 	require.Equal(t, []bool{true}, probe.durableHeld)
 	require.Equal(t, uint64(4), newState.PullCursor)
 	require.Equal(t, uint64(4), newState.DispatchCommittedTo)
+}
+
+// TestDispatchBatchKeepsWaiterResponseOnNonTxRoute pins the one carve-out the
+// mislabeled-kind skip needs. A KIND_RESPONSE with a live waiter never reaches
+// the dispatch table: dispatchBatch hands it to the waiter in memory and
+// breaks. Skipping it because its route happens to be marked would silently
+// drop a response a caller is blocked on, so the skip has to be scoped to the
+// envelopes that actually resolve to a dispatcher.
+//
+// Only the legacy path can present one here, since splitIngressEnvelopes peels
+// waiter-backed responses off before the fold. Marked routes carry inbound
+// requests today and waiters belong to outbound RPCs, so the collision does
+// not arise in the current wiring; this test is what keeps that from being an
+// unstated invariant.
+func TestDispatchBatchKeepsWaiterResponseOnNonTxRoute(t *testing.T) {
+	t.Parallel()
+
+	store := newWriterLockStore()
+	probe := newNonTxProbe(t, store, nil)
+
+	const corrID = CorrelationID("live-waiter")
+
+	future := probe.conn.RegisterWaiter(corrID)
+	require.True(t, probe.conn.hasResponseWaiter(corrID))
+
+	resp := nonTxTestEnvelope(
+		mailboxpb.RpcMeta_KIND_RESPONSE, nonTxService, nonTxMethod, 1,
+	)
+	resp.Rpc.CorrelationId = string(corrID)
+
+	// Drive dispatchBatch directly: this is the legacy, non-transactional
+	// store path, the only one that presents a waiter-backed response to
+	// it.
+	cursor, err := probe.conn.dispatchBatch(
+		t.Context(), []*mailboxpb.Envelope{resp}, 2,
+	)
+	require.NoError(t, err)
+	require.Equal(t, uint64(2), cursor)
+
+	// The waiter got its response rather than the skip, and the marked
+	// route's dispatcher was never involved. The wait is bounded because
+	// the regression this guards against is a silent drop, which would
+	// otherwise hang here until the whole package times out.
+	awaitCtx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+
+	delivered, err := future.Await(awaitCtx).Unpack()
+	require.NoError(t, err)
+	require.Equal(t, resp, delivered)
+	require.Empty(t, probe.requestHeld)
 }

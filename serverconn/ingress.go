@@ -404,9 +404,7 @@ func (a *ServerConnectionActor) dispatchBatch(ctx context.Context,
 		// progress. Returning an error instead would be worse than
 		// the stall: a dispatch failure is not permanent, so the loop
 		// would back off and re-pull the same envelope forever.
-		if env.Rpc.Kind != mailboxpb.RpcMeta_KIND_REQUEST &&
-			a.isNonTxRoute(env) {
-
+		if a.resolvesToNonTxDispatcher(env) {
 			a.log.WarnS(
 				ctx,
 				"Skipping non-request envelope on a "+
@@ -814,6 +812,45 @@ func (a *ServerConnectionActor) isNonTxRoute(env *mailboxpb.Envelope) bool {
 	_, ok := a.cfg.NonTxRoutes[key]
 
 	return ok
+}
+
+// resolvesToNonTxDispatcher reports whether an envelope would reach a marked
+// route's dispatcher from inside dispatchBatch, which is the one thing the
+// fold must not let happen: that dispatcher answers the operator over the
+// network, and dispatchBatch runs with the write transaction open.
+//
+// A KIND_REQUEST is excluded because it is the kind the mark is about. On the
+// folded path isNonTxRequest has already hoisted it out; on the legacy path
+// there is no transaction to protect, so it dispatches normally. Everything
+// else on a marked route is mislabeled by the sender, and the mux bridge does
+// not check the kind, so it would be served as a request anyway.
+//
+// A KIND_RESPONSE with a live waiter is excluded too, because it never reaches
+// the dispatch table at all: dispatchBatch hands it to the in-memory waiter and
+// breaks. Only the no-waiter fallback resolves to a dispatcher. The folded path
+// never presents such an envelope here, since splitIngressEnvelopes peels
+// waiter-backed responses off before the fold, but the legacy path does, and
+// skipping one there would silently drop a response a caller is blocked on.
+// Marked routes carry inbound requests today and waiters belong to outbound
+// RPCs, so the two never collide; this keeps that from being load-bearing.
+func (a *ServerConnectionActor) resolvesToNonTxDispatcher(
+	env *mailboxpb.Envelope) bool {
+
+	if env.Rpc == nil || env.Rpc.Kind == mailboxpb.RpcMeta_KIND_REQUEST {
+		return false
+	}
+
+	if !a.isNonTxRoute(env) {
+		return false
+	}
+
+	if env.Rpc.Kind != mailboxpb.RpcMeta_KIND_RESPONSE {
+		return true
+	}
+
+	corrID := CorrelationID(env.Rpc.CorrelationId)
+
+	return corrID == "" || !a.hasResponseWaiter(corrID)
 }
 
 // dispatchNonTxRequests serves the hoisted inbound requests with no write
