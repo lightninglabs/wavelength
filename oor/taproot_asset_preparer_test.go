@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
+	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
 	"github.com/stretchr/testify/require"
 )
 
@@ -14,14 +14,10 @@ import (
 func TestTaprootAssetOORIntentValidate(t *testing.T) {
 	t.Parallel()
 
-	recipientKey, err := btcec.NewPrivateKey()
-	require.NoError(t, err)
-
 	valid := TaprootAssetOORIntent{
-		AssetRef:           "tapr1asset",
-		AssetAmount:        21,
-		ProofFile:          []byte("confirmed-proof"),
-		RecipientScriptKey: recipientKey.PubKey().SerializeCompressed(),
+		AssetRef:    "tapr1asset",
+		AssetAmount: 21,
+		ProofFile:   []byte("confirmed-proof"),
 	}
 	require.NoError(t, valid.Validate())
 
@@ -45,22 +41,20 @@ func TestTaprootAssetOORIntentValidate(t *testing.T) {
 			wantErr: "asset amount is required",
 		},
 		{
-			name: "missing proof",
-			mutate: func(intent *TaprootAssetOORIntent) {
-				intent.ProofFile = nil
-			},
-			wantErr: "input proof is required",
-		},
-		{
-			name: "invalid recipient script key",
+			name: "deprecated recipient script key",
 			mutate: func(intent *TaprootAssetOORIntent) {
 				intent.RecipientScriptKey = []byte{
 					1,
-					2,
-					3,
 				}
 			},
-			wantErr: "recipient script key",
+			wantErr: "deprecated and must be empty",
+		},
+		{
+			name: "malformed proof courier",
+			mutate: func(intent *TaprootAssetOORIntent) {
+				intent.ProofCourierAddress = "://missing-scheme"
+			},
+			wantErr: "proof courier address is invalid",
 		},
 	}
 
@@ -90,11 +84,10 @@ func TestTaprootAssetOORPreparationBindsRequest(t *testing.T) {
 
 	policy, inputs, preparedRecipients, prepared :=
 		testPreparedSubmitPackage(t)
-	recipientKey, err := btcec.NewPrivateKey()
-	require.NoError(t, err)
-
 	requestRecipients := cloneRecipientOutputs(preparedRecipients)
 	requestRecipients[0].TaprootAssetRoot = nil
+	requestRecipients[0].TaprootAssetRef = ""
+	requestRecipients[0].TaprootAssetAmount = 0
 	template, err := arkscript.DecodePolicyTemplate(
 		requestRecipients[0].VTXOPolicyTemplate,
 	)
@@ -103,24 +96,48 @@ func TestTaprootAssetOORPreparationBindsRequest(t *testing.T) {
 	require.NoError(t, err)
 
 	request := &TaprootAssetOORPrepareRequest{
-		RequestID:  "asset-request-1",
-		Policy:     policy,
-		Inputs:     inputs,
-		Recipients: requestRecipients,
+		RequestID:   "asset-request-1",
+		Policy:      policy,
+		Inputs:      inputs,
+		Recipients:  requestRecipients,
+		OutputFloor: 1_000,
 		Intent: TaprootAssetOORIntent{
 			InputVTXOOutpoint: inputs[0].VTXO.Outpoint,
-			AssetRef:          "tapr1asset",
+			AssetRef:          "asset-id:010203",
 			AssetAmount:       21,
 			ProofFile:         []byte("confirmed-proof"),
-			RecipientScriptKey: recipientKey.PubKey().
-				SerializeCompressed(),
 		},
 	}
 	preparation := &TaprootAssetOORPreparation{
 		PreparedSubmit: prepared,
 		Recipients:     preparedRecipients,
+		Receiver:       preparedRecipients[0],
 	}
 	require.NoError(t, preparation.Validate(request))
+
+	tooManyInputs := *request
+	tooManyInputs.Inputs = make(
+		[]TransferInput, oortx.MaxTaprootAssetCheckpointPackages+1,
+	)
+	for idx := range tooManyInputs.Inputs {
+		tooManyInputs.Inputs[idx] = request.Inputs[0]
+	}
+	require.ErrorContains(
+		t, tooManyInputs.Validate(),
+		"input count 65 exceeds 64",
+	)
+
+	duplicateInput := *request
+	duplicateInput.Inputs = append(
+		[]TransferInput(nil), request.Inputs...,
+	)
+	duplicateInput.Inputs = append(
+		duplicateInput.Inputs, request.Inputs[0],
+	)
+	require.ErrorContains(
+		t, duplicateInput.Validate(),
+		"duplicate outpoint",
+	)
 
 	mismatchedInput := *request
 	mismatchedInput.Intent.InputVTXOOutpoint.Index++
@@ -133,7 +150,7 @@ func TestTaprootAssetOORPreparationBindsRequest(t *testing.T) {
 	valueChanged.Recipients = cloneRecipientOutputs(
 		preparation.Recipients,
 	)
-	valueChanged.Recipients[0].Value++
+	valueChanged.Receiver.Value++
 	require.ErrorContains(
 		t, valueChanged.Validate(request),
 		"recipient 0 value changed",
@@ -143,7 +160,7 @@ func TestTaprootAssetOORPreparationBindsRequest(t *testing.T) {
 	policyChanged.Recipients = cloneRecipientOutputs(
 		preparation.Recipients,
 	)
-	policyChanged.Recipients[0].VTXOPolicyTemplate = []byte("changed")
+	policyChanged.Receiver.VTXOPolicyTemplate = []byte("changed")
 	require.ErrorContains(
 		t, policyChanged.Validate(request),
 		"recipient 0 policy changed",

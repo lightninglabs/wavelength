@@ -43,6 +43,12 @@ type SelectAndReserveSpendRequest struct {
 	// the selection. The manager validates and reserves these before adding
 	// ordinary Bitcoin VTXOs to cover any remaining target.
 	RequiredOutpoints []wire.OutPoint
+
+	// WaitForDurable makes the manager await every VTXO actor's persisted
+	// Spending transition before returning. Taproot Asset preparation uses
+	// this barrier before it establishes an external tapd transition;
+	// ordinary BTC OOR selection retains detached admission by default.
+	WaitForDurable bool
 }
 
 // VTXOManagerMsg implements VTXOManagerMsg marker interface.

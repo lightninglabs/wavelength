@@ -1,9 +1,12 @@
 package waved
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 	"path/filepath"
 
+	"github.com/btcsuite/btcd/wire/v2"
 	tapsdk "github.com/lightninglabs/tap-sdk"
 	tapgrpc "github.com/lightninglabs/tap-sdk/grpc"
 	"github.com/lightninglabs/tap-sdk/macaroon"
@@ -92,10 +95,42 @@ func registerTaprootAssets(_ context.Context, _ *grpc.Server,
 
 		return nil, err
 	}
+	artifactStore := rpcServer.newLocalOORArtifactStore()
+	loadCreatedPackage := tapassets.CreatedPackageLoader(
+		func(ctx context.Context, outpoint wire.OutPoint) ([]byte,
+			error) {
+
+			if artifactStore == nil {
+				return nil, fmt.Errorf("OOR artifact store " +
+					"is unavailable")
+			}
+			store := artifactStore
+			bundle, err := store.GetCreatedPackageForOutpoint(
+				ctx, outpoint,
+			)
+			if err != nil {
+				return nil, err
+			}
+			if bundle == nil {
+				return nil, fmt.Errorf("created OOR package " +
+					"has no sealed Taproot Asset " +
+					"transition")
+			}
+			transfer := bundle.TaprootAssetTransfer
+			if transfer == nil || len(transfer.ArkPackage) == 0 {
+				return nil, fmt.Errorf("created OOR package " +
+					"has no sealed Taproot Asset " +
+					"transition")
+			}
+
+			return bytes.Clone(transfer.ArkPackage), nil
+		},
+	)
 	preparer, err := tapassets.NewPreparer(tapassets.PreparerConfig{
-		Wallet:           wallet,
-		Store:            store,
-		ReservationStore: reservationStore,
+		Wallet:             wallet,
+		Store:              store,
+		ReservationStore:   reservationStore,
+		LoadCreatedPackage: loadCreatedPackage,
 	})
 	if err != nil {
 		closeWallet()

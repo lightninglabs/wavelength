@@ -26,10 +26,12 @@ import (
 )
 
 const (
-	preparationStateVersion = uint16(0)
+	preparationStateVersion = uint16(2)
 	attemptCheckpoint       = "checkpoint"
 	attemptArk              = "ark"
 	opTrueKeyDomain         = "wavelength/taproot-assets-oor/optrue/v0/"
+	maxOrderingNonces       = 256
+	maxOrderingIterations   = 16
 	witnessBackendSigner    = tapsdk.CustomAssetWitnessBackendSigner
 	witnessCallerProvided   = tapsdk.CustomAssetWitnessCallerProvided
 	scriptExternal          = tapsdk.CustomAssetScriptExternal
@@ -41,29 +43,40 @@ const (
 // reservations without depending on this concrete adapter package.
 var ErrReconciliationRequired = oor.ErrTaprootAssetCommitOutcomeUnknown
 
+// CreatedPackageLoader returns the sealed Ark package that created an exact
+// local asset VTXO. It is injected by waved without exposing database types to
+// tapassets or tap-sdk types to the daemon RPC layer.
+type CreatedPackageLoader func(context.Context, wire.OutPoint) ([]byte, error)
+
 // PreparerConfig contains the dependencies of the concrete tap-sdk adapter.
 type PreparerConfig struct {
-	Wallet           *tapsdk.Wallet
-	Store            Store
-	ReservationStore oor.ReservationStore
+	Wallet             *tapsdk.Wallet
+	Store              Store
+	ReservationStore   oor.ReservationSetStore
+	LoadCreatedPackage CreatedPackageLoader
 }
 
 // Preparer commits the checkpoint and Ark asset transitions before handing a
 // sealed, immutable package to Wavelength's outgoing OOR actor.
 type Preparer struct {
-	driver       customAnchorDriver
-	inventory    proofInventoryClient
-	store        Store
-	reservations oor.ReservationStore
-	mu           sync.Mutex
+	driver             customAnchorDriver
+	inventory          proofInventoryClient
+	store              Store
+	reservations       oor.ReservationSetStore
+	loadCreatedPackage CreatedPackageLoader
+	mu                 sync.Mutex
 }
 
 type preparationState struct {
-	Version           uint16      `json:"version"`
-	RequestDigest     tapsdk.Hash `json:"request_digest"`
-	Attempt           string      `json:"attempt,omitempty"`
-	CheckpointPackage []byte      `json:"checkpoint_package,omitempty"`
-	ArkPackage        []byte      `json:"ark_package,omitempty"`
+	Version           uint16                  `json:"version"`
+	IntentDigest      tapsdk.Hash             `json:"intent_digest"`
+	RequestDigest     tapsdk.Hash             `json:"request_digest"`
+	InputOutpoints    []wire.OutPoint         `json:"input_outpoints"`
+	Attempt           string                  `json:"attempt,omitempty"`
+	CheckpointPackage []byte                  `json:"checkpoint_package,omitempty"` //nolint:ll
+	ArkPackage        []byte                  `json:"ark_package,omitempty"`
+	PlannedRecipients []oortx.RecipientOutput `json:"planned_recipients,omitempty"` //nolint:ll
+	OrderingNonce     uint32                  `json:"ordering_nonce,omitempty"`     //nolint:ll
 }
 
 // NewPreparer constructs a production tap-sdk-backed OOR preparer.
@@ -84,15 +97,16 @@ func NewPreparer(cfg PreparerConfig) (*Preparer, error) {
 		driver: &sdkDriver{
 			wallet: cfg.Wallet,
 		},
-		inventory:    cfg.Wallet.Client(),
-		store:        cfg.Store,
-		reservations: cfg.ReservationStore,
+		inventory:          cfg.Wallet.Client(),
+		store:              cfg.Store,
+		reservations:       cfg.ReservationStore,
+		loadCreatedPackage: cfg.LoadCreatedPackage,
 	}, nil
 }
 
-// PrepareTaprootAssetOOR implements oor.TaprootAssetOORPreparer. The first PoC
-// intentionally accepts one standard Wavelength input, one two-leaf recipient
-// policy, and one isolated asset allocation.
+// PrepareTaprootAssetOOR implements oor.TaprootAssetOORPreparer. It commits one
+// asset checkpoint beside zero or more Bitcoin checkpoints and then commits the
+// split receiver/change transition into the canonically ordered Ark outputs.
 func (p *Preparer) PrepareTaprootAssetOOR(ctx context.Context,
 	request *oor.TaprootAssetOORPrepareRequest) (
 	*oor.TaprootAssetOORPreparation, error) {
@@ -106,10 +120,16 @@ func (p *Preparer) PrepareTaprootAssetOOR(ctx context.Context,
 	if err := request.Validate(); err != nil {
 		return nil, err
 	}
-	if request.Inputs[0].CustomSpend != nil ||
-		len(request.Inputs[0].ExternalSignatures) != 0 {
-		return nil, fmt.Errorf("Taproot Asset OOR PoC requires a " +
-			"standard VTXO input")
+	assetInputIndex, err := request.AssetInputIndex()
+	if err != nil {
+		return nil, err
+	}
+	for idx := range request.Inputs {
+		if request.Inputs[idx].CustomSpend != nil ||
+			len(request.Inputs[idx].ExternalSignatures) != 0 {
+			return nil, fmt.Errorf("Taproot Asset OOR input %d "+
+				"must be a standard VTXO", idx)
+		}
 	}
 
 	p.mu.Lock()
@@ -119,7 +139,22 @@ func (p *Preparer) PrepareTaprootAssetOOR(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
-	state, err := p.loadState(ctx, request.RequestID, digest)
+	intentDigest, err := preparationIntentDigest(
+		&oor.TaprootAssetOORResumeRequest{
+			RequestID:   request.RequestID,
+			Policy:      request.Policy,
+			Recipients:  request.Recipients,
+			OutputFloor: request.OutputFloor,
+			Intent:      request.Intent,
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+	state, err := p.loadState(
+		ctx, request.RequestID, digest, intentDigest,
+		oor.InputOutpoints(request.Inputs),
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -128,423 +163,132 @@ func (p *Preparer) PrepareTaprootAssetOOR(ctx context.Context,
 			ErrReconciliationRequired, state.Attempt,
 			request.RequestID)
 	}
-	reservationOwner := chainhash.Hash(digest)
-	for idx := range request.Inputs {
-		err := p.reservations.UpsertReservation(
-			ctx, request.Inputs[idx].VTXO.Outpoint,
-			oor.ReservationOwnerKindTaprootAssetPreparation,
-			reservationOwner,
-		)
-		if err != nil {
-			return nil, preparationReconciliationError(
-				state, request.RequestID, fmt.Errorf(
-					"reserve Taproot Asset input %d: %w",
-					idx, err),
-			)
-		}
+	recipients, err := p.plannedRecipients(ctx, request, state)
+	if err != nil {
+		return nil, err
 	}
-
 	assetRef, err := tapsdk.ParseAssetRef(request.Intent.AssetRef)
 	if err != nil {
-		return nil, preparationReconciliationError(
-			state, request.RequestID,
-			fmt.Errorf("parse Taproot Asset ref: %w", err),
-		)
+		return nil, fmt.Errorf("parse Taproot Asset ref: %w", err)
 	}
-	input := &request.Inputs[0]
-	verifier := &proofInventoryVerifier{
-		client:    p.inventory,
-		assetRef:  assetRef,
-		amount:    request.Intent.AssetAmount,
-		anchor:    sdkOutpoint(input.VTXO.Outpoint),
-		assetRoot: tapsdk.Hash(*input.TaprootAssetRoot),
-	}
-	// A fully committed journal is self-contained. Restoring it must not
-	// depend on tapd availability because no external effect remains.
-	if len(state.CheckpointPackage) == 0 {
-		verification, err := verifier.VerifyConfirmedProof(
-			ctx, request.Intent.ProofFile,
+	var source *assetSpendSource
+	if len(state.CheckpointPackage) == 0 || len(state.ArkPackage) == 0 {
+		source, err = p.resolveAssetSpendSource(
+			ctx, request, assetInputIndex, assetRef,
 		)
 		if err != nil {
-			return nil, preparationReconciliationError(
-				state, request.RequestID, err,
-			)
+			return nil, err
 		}
-		if verification.PassiveAssetCount != 0 {
-			return nil, fmt.Errorf("Taproot Asset OOR PoC "+
-				"requires an isolated anchor, found %d "+
-				"passive assets",
-				verification.PassiveAssetCount)
+		if err := source.validateTransitionCapacity(); err != nil {
+			return nil, err
+		}
+		if err := source.verify(ctx); err != nil {
+			return nil, err
 		}
 	}
 
-	checkpoint, checkpointResult, err := p.prepareCheckpoint(
-		ctx, request, assetRef, digest, state,
-	)
-	if err != nil {
-		return nil, preparationReconciliationError(
-			state, request.RequestID, err,
-		)
+	if err := p.ensureReservationSet(
+		ctx, request.RequestID, state,
+	); err != nil {
+		return nil, err
 	}
 
-	ark, arkResult, recipients, err := p.prepareArk(
-		ctx, request, assetRef, checkpoint, checkpointResult, verifier,
-		state,
+	checkpoints, artifacts, checkpointResult, err := p.prepareCheckpoints(
+		ctx, request, assetInputIndex, assetRef, digest, source, state,
 	)
 	if err != nil {
-		return nil, preparationReconciliationError(
-			state, request.RequestID, err,
-		)
+		return nil, retainedPreparationError(request.RequestID, err)
 	}
 
-	checkpointPackage := append(
+	ark, arkResult, recipients, err := p.prepareMixedArk(
+		ctx, request, assetInputIndex, assetRef, checkpoints, artifacts,
+		checkpointResult, recipients, digest, source, state,
+	)
+	if err != nil {
+		return nil, retainedPreparationError(request.RequestID, err)
+	}
+
+	checkpointPackages := make([][]byte, len(checkpoints))
+	checkpointPackages[assetInputIndex] = append(
 		[]byte(nil), checkpointResult.packageBytes...,
 	)
+	assetTransfer := &oortx.TaprootAssetTransfer{
+		Version:            oortx.TaprootAssetTransferVersion,
+		CheckpointPackages: checkpointPackages,
+		ArkPackage: append(
+			[]byte(nil), arkResult.packageBytes...,
+		),
+	}
 	prepared := &oor.TaprootAssetOORPreparation{
 		PreparedSubmit: &oor.PreparedSubmitPackage{
-			ArkPSBT: ark,
-			CheckpointPSBTs: []*psbt.Packet{
-				checkpoint,
-			},
-			TaprootAssetTransfer: &oortx.TaprootAssetTransfer{
-				Version: oortx.TaprootAssetTransferVersion,
-				CheckpointPackages: [][]byte{
-					checkpointPackage,
-				},
-				ArkPackage: append(
-					[]byte(nil), arkResult.packageBytes...,
-				),
-			},
+			ArkPSBT:              ark,
+			CheckpointPSBTs:      checkpoints,
+			TaprootAssetTransfer: assetTransfer,
 		},
 		Recipients: recipients,
+		Receiver:   recipients[0],
 	}
 	if err := prepared.Validate(request); err != nil {
-		return nil, preparationReconciliationError(
-			state, request.RequestID, fmt.Errorf("validate "+
-				"prepared Taproot Asset OOR: %w", err),
+		return nil, retainedPreparationError(
+			request.RequestID, fmt.Errorf("validate prepared "+
+				"Taproot Asset OOR: %w", err),
 		)
 	}
 
 	return prepared, nil
 }
 
-// prepareCheckpoint commits the confirmed asset input into the checkpoint
-// policy output, using a unique OP_TRUE asset script for the next transition.
-func (p *Preparer) prepareCheckpoint(ctx context.Context,
-	request *oor.TaprootAssetOORPrepareRequest, assetRef tapsdk.AssetRef,
-	digest tapsdk.Hash, state *preparationState) (*psbt.Packet,
-	*commitResult, error) {
+// ensureReservationSet either atomically acquires/revalidates preparation
+// ownership, or accepts the one valid handoff to the already-admitted OOR
+// session derived from the sealed Ark package. It never steals another owner.
+func (p *Preparer) ensureReservationSet(ctx context.Context, requestID string,
+	state *preparationState) error {
 
-	input := &request.Inputs[0]
-	checkpointInput, err := input.CheckpointInput()
-	if err != nil {
-		return nil, nil, err
-	}
-	artifact, err := oortx.BuildCheckpointPSBT(
-		request.Policy, checkpointInput,
+	outpoints := cloneOutpoints(state.InputOutpoints)
+	ownerID := oor.TaprootAssetPreparationReservationOwner(requestID)
+	reservationState, err := p.reservations.InspectReservationSet(
+		ctx, outpoints, oor.ReservationOwnerKindTaprootAssetPreparation,
+		ownerID,
 	)
 	if err != nil {
-		return nil, nil, err
+		return fmt.Errorf("%w: inspect Taproot Asset input "+
+			"reservations for request %q: %v",
+			ErrReconciliationRequired, requestID, err)
 	}
-	spendPath, err := input.EffectiveSpendPath()
-	if err != nil {
-		return nil, nil, err
+	if reservationState == oor.ReservationSetInconsistent &&
+		len(state.ArkPackage) != 0 {
+
+		reservationState, err = p.inspectOORReservationHandoff(
+			ctx, state,
+		)
+		if err != nil {
+			return fmt.Errorf("%w: inspect Taproot Asset OOR "+
+				"reservation handoff for request %q: %v",
+				ErrReconciliationRequired, requestID, err)
+		}
+		if reservationState == oor.ReservationSetOwned {
+			return nil
+		}
 	}
-	if err := psbtutil.AddTapLeafScript(
-		&artifact.PSBT.Inputs[0], spendPath.SpendInfo,
+	if reservationState == oor.ReservationSetInconsistent {
+		return fmt.Errorf("%w: input reservation ownership for "+
+			"request %q is inconsistent", ErrReconciliationRequired,
+			requestID)
+	}
+
+	// This write is also an atomic lifecycle precondition check in the
+	// production store. Repeating it for an already-owned set closes the
+	// window where an exit could remove the reservation before tapd work.
+	if err := p.reservations.UpsertReservationSet(
+		ctx, outpoints, oor.ReservationOwnerKindTaprootAssetPreparation,
+		ownerID,
 	); err != nil {
-		return nil, nil, err
+		return fmt.Errorf("%w: atomically reserve Taproot Asset "+
+			"inputs for request %q: %v", ErrReconciliationRequired,
+			requestID, err)
 	}
 
-	var committed *commitResult
-	if len(state.CheckpointPackage) != 0 {
-		committed, err = p.driver.DecodePackage(state.CheckpointPackage)
-		if err != nil {
-			return nil, nil, fmt.Errorf("restore checkpoint "+
-				"package: %w", err)
-		}
-	} else {
-		anchorPlan, err := checkpointAnchorPlan(
-			request.Policy, input.OwnerLeafScript,
-		)
-		if err != nil {
-			return nil, nil, err
-		}
-		anchorBytes, err := psbtutil.Serialize(artifact.PSBT)
-		if err != nil {
-			return nil, nil, err
-		}
-		opTrueKey := deterministicKey(digest, attemptCheckpoint)
-		opTrueScript := &tapsdk.CustomAssetOPTrueScriptPlan{
-			InternalKey: tapsdk.KeyDescriptor{
-				RawKeyBytes: opTrueKey,
-			},
-		}
-		sdkRequest := &tapsdk.CustomAnchorRequest{
-			Inputs: []tapsdk.CustomAssetInput{{
-				ID:       "wavelength-input-0",
-				AssetRef: assetRef,
-				Amount:   request.Intent.AssetAmount,
-				ProofFile: append(
-					[]byte(nil),
-					request.Intent.ProofFile...,
-				),
-				Witness: tapsdk.CustomAssetWitnessPlan{
-					Mode: witnessBackendSigner,
-				},
-			}},
-			Outputs: []tapsdk.CustomAssetOutput{{
-				ID:                "wavelength-checkpoint-0",
-				AssetRef:          assetRef,
-				Amount:            request.Intent.AssetAmount,
-				AnchorOutputIndex: 0,
-				AnchorValueSat:    uint64(input.VTXO.Amount),
-				Script: tapsdk.CustomAssetScriptPlan{
-					Mode:   tapsdk.CustomAssetScriptOPTrue,
-					OPTrue: opTrueScript,
-				},
-				Anchor: anchorPlan,
-			}},
-			AnchorPSBT: anchorBytes,
-			Funding:    callerFundedExact(),
-			PassiveAssets: tapsdk.CustomAnchorPassiveAssets{
-				Policy: tapsdk.CustomAnchorPassiveReject,
-			},
-			LossPolicy: tapsdk.CustomAnchorLossPolicy{
-				Mode: tapsdk.CustomAnchorLossReject,
-			},
-			SigningPlans: []tapsdk.CustomAnchorInputSigningPlan{
-				scriptSigningPlan(
-					0, spendPath.WitnessScript,
-					input.VTXO.ClientKey.PubKey,
-					input.VTXO.OperatorKey,
-				),
-			},
-		}
-
-		committed, err = p.commit(
-			ctx, request.RequestID, state, attemptCheckpoint,
-			sdkRequest, nil,
-		)
-		if err != nil {
-			return nil, nil, err
-		}
-		state.CheckpointPackage = append(
-			[]byte(nil), committed.packageBytes...,
-		)
-		state.Attempt = ""
-		if err := p.storeState(
-			ctx, request.RequestID, state,
-		); err != nil {
-
-			state.Attempt = attemptCheckpoint
-
-			return nil, nil, fmt.Errorf("persist checkpoint "+
-				"package: %w", err)
-		}
-	}
-
-	checkpoint, err := psbtutil.Parse(committed.anchorPSBT)
-	if err != nil {
-		return nil, nil, err
-	}
-	if err := validateCheckpointResult(
-		request, assetRef, checkpoint, committed,
-	); err != nil {
-		return nil, nil, err
-	}
-
-	return checkpoint, committed, nil
-}
-
-// prepareArk commits the unconfirmed checkpoint proof tip into the final
-// Wavelength recipient output.
-func (p *Preparer) prepareArk(ctx context.Context,
-	request *oor.TaprootAssetOORPrepareRequest, assetRef tapsdk.AssetRef,
-	checkpoint *psbt.Packet, checkpointResult *commitResult,
-	verifier *proofInventoryVerifier, state *preparationState) (
-	*psbt.Packet, *commitResult, []oortx.RecipientOutput, error) {
-
-	checkpointOutput := checkpointResult.outputs[0]
-	checkpointTxID := checkpoint.UnsignedTx.TxHash()
-	checkpointOut := oortx.CheckpointOutput{
-		Txid:   checkpointTxID,
-		Output: checkpoint.UnsignedTx.TxOut[0],
-	}
-	checkpointArtifactInput, err := request.Inputs[0].CheckpointInput()
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	artifact, err := oortx.BuildCheckpointPSBT(
-		request.Policy, checkpointArtifactInput,
-	)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	checkpointOut.TapTreeEncoded = artifact.TapTreeEncoded
-	checkpointOut.OwnerLeafScript = artifact.OwnerLeafScript
-	checkpointOut.OwnerLeafPolicy = artifact.OwnerLeafPolicy
-
-	recipients := cloneRecipients(request.Recipients)
-	arkTemplate, err := oortx.BuildArkPSBT(
-		[]oortx.CheckpointOutput{checkpointOut}, recipients,
-	)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	leaf, err := oortx.BuildTaprootTapLeafScript(
-		artifact.TapTreeEncoded, artifact.OwnerLeafScript,
-	)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	leaf, err = composeTapLeaf(leaf, checkpointOutput.taprootAssetRoot)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	arkTemplate.Inputs[0].TaprootLeafScript =
-		[]*psbt.TaprootTapLeafScript{leaf}
-
-	var committed *commitResult
-	if len(state.ArkPackage) != 0 {
-		committed, err = p.driver.DecodePackage(state.ArkPackage)
-		if err != nil {
-			return nil, nil, nil, fmt.Errorf("restore Ark "+
-				"package: %w", err)
-		}
-	} else {
-		anchorPlan, policy, err := recipientAnchorPlan(recipients[0])
-		if err != nil {
-			return nil, nil, nil, err
-		}
-		if len(policy.Leaves) != 2 {
-			return nil, nil, nil, fmt.Errorf("Taproot Asset OOR " +
-				"PoC requires a two-leaf recipient policy")
-		}
-		anchorBytes, err := psbtutil.Serialize(arkTemplate)
-		if err != nil {
-			return nil, nil, nil, err
-		}
-		scriptKey, err := tapsdk.ParseScriptKey(
-			request.Intent.RecipientScriptKey,
-		)
-		if err != nil {
-			return nil, nil, nil, fmt.Errorf("parse recipient "+
-				"asset script key: %w", err)
-		}
-		verifier.unconfirmed = &expectedUnconfirmedAnchor{
-			previousOutpoint: sdkOutpoint(
-				request.Inputs[0].VTXO.Outpoint,
-			),
-			anchorOutpoint: checkpointOutput.anchorOutpoint,
-			transaction:    serializeTx(checkpoint.UnsignedTx),
-		}
-		transitionProof := append(
-			[]byte(nil), checkpointOutput.proofBlob...,
-		)
-		proofStep := tapsdk.AssetProofPathStep{
-			TransitionProof: transitionProof,
-		}
-		externalScript := &tapsdk.CustomAssetExternalScriptPlan{
-			ScriptKey: tapsdk.ScriptKey{
-				PubKey: scriptKey,
-			},
-		}
-		proofMetadata := append(
-			[]byte(nil), request.Intent.ProofDeliveryMetadata...,
-		)
-		sdkRequest := &tapsdk.CustomAnchorRequest{
-			Inputs: []tapsdk.CustomAssetInput{{
-				ID:       "wavelength-checkpoint-0",
-				AssetRef: assetRef,
-				Amount:   request.Intent.AssetAmount,
-				ProofPath: &tapsdk.AssetProofPath{
-					Version: tapsdk.AssetProofPathVersionV0,
-					ConfirmedBaseProof: append(
-						[]byte(nil),
-						request.Intent.ProofFile...,
-					),
-					Steps: []tapsdk.AssetProofPathStep{
-						proofStep,
-					},
-				},
-				Witness: tapsdk.CustomAssetWitnessPlan{
-					Mode: witnessCallerProvided,
-					Stack: cloneByteSlices(
-						checkpointOutput.opTrueWitness,
-					),
-				},
-			}},
-			Outputs: []tapsdk.CustomAssetOutput{{
-				ID:                "wavelength-recipient-0",
-				AssetRef:          assetRef,
-				Amount:            request.Intent.AssetAmount,
-				AnchorOutputIndex: 0,
-				AnchorValueSat:    uint64(recipients[0].Value),
-				Script: tapsdk.CustomAssetScriptPlan{
-					Mode:     scriptExternal,
-					External: externalScript,
-				},
-				Anchor: anchorPlan,
-				ProofDelivery: tapsdk.CustomAssetProofDelivery{
-					RecipientID: request.RequestID,
-					CourierAddress: request.
-						Intent.
-						ProofCourierAddress,
-					OpaqueMetadata: proofMetadata,
-				},
-			}},
-			AnchorPSBT: anchorBytes,
-			Funding:    callerFundedExact(),
-			PassiveAssets: tapsdk.CustomAnchorPassiveAssets{
-				Policy: tapsdk.CustomAnchorPassiveReject,
-			},
-			LossPolicy: tapsdk.CustomAnchorLossPolicy{
-				Mode: tapsdk.CustomAnchorLossReject,
-			},
-			SigningPlans: []tapsdk.CustomAnchorInputSigningPlan{
-				scriptSigningPlan(
-					0, artifact.OwnerLeafScript,
-					request.Inputs[0].VTXO.ClientKey.PubKey,
-					request.Inputs[0].VTXO.OperatorKey,
-				),
-			},
-		}
-
-		committed, err = p.commit(
-			ctx, request.RequestID, state, attemptArk, sdkRequest,
-			verifier,
-		)
-		if err != nil {
-			return nil, nil, nil, err
-		}
-		state.ArkPackage = append(
-			[]byte(nil), committed.packageBytes...,
-		)
-		state.Attempt = ""
-		if err := p.storeState(
-			ctx, request.RequestID, state,
-		); err != nil {
-
-			state.Attempt = attemptArk
-
-			return nil, nil, nil, fmt.Errorf("persist Ark "+
-				"package: %w", err)
-		}
-	}
-
-	ark, err := psbtutil.Parse(committed.anchorPSBT)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	recipients, err = validateArkResult(
-		request, assetRef, ark, checkpointResult, committed,
-	)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-
-	return ark, committed, recipients, nil
+	return nil
 }
 
 // commit journals the intent before making the external tapd call. A
@@ -584,34 +328,147 @@ func (p *Preparer) commit(ctx context.Context, requestID string,
 	return result, nil
 }
 
-// preparationReconciliationError marks failures after the first external
-// transition boundary as unsafe to release. Before that boundary, callers can
-// safely unlock and delete the preparation reservation on ordinary failures.
-func preparationReconciliationError(state *preparationState, requestID string,
-	err error) error {
-
-	if err == nil || state == nil ||
-		errors.Is(err, ErrReconciliationRequired) {
-		return err
-	}
-	if state.Attempt == "" && len(state.CheckpointPackage) == 0 {
+// retainedPreparationError marks every failure after atomic reservation-set
+// acquisition as unsafe to release. Retaining the complete set avoids a crash
+// halfway through per-VTXO cleanup from producing a partial, unresumable set.
+func retainedPreparationError(requestID string, err error) error {
+	if err == nil || errors.Is(err, ErrReconciliationRequired) {
 		return err
 	}
 
-	return fmt.Errorf("%w: request %q crossed the first Taproot Asset "+
-		"commit boundary: %w", ErrReconciliationRequired, requestID,
+	return fmt.Errorf("%w: request %q owns a durable Taproot Asset input "+
+		"reservation set: %w", ErrReconciliationRequired, requestID,
 		err)
 }
 
-// loadState restores and validates the durable state for one request.
+// ResumeTaprootAssetOOR returns the exact carrier input set for a preparation
+// that crossed the first tapd commit boundary. The RPC layer can then adopt
+// the already-Spending VTXOs without repeating wallet selection.
+func (p *Preparer) ResumeTaprootAssetOOR(ctx context.Context,
+	request *oor.TaprootAssetOORResumeRequest) (*oor.TaprootAssetOORResume,
+	error) {
+
+	if p == nil || p.store == nil || p.reservations == nil {
+		return nil, fmt.Errorf("taproot asset preparation store is " +
+			"not configured")
+	}
+	digest, err := preparationIntentDigest(request)
+	if err != nil {
+		return nil, err
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	encoded, err := p.store.Load(ctx, request.RequestID)
+	if errors.Is(err, ErrStoreNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	state, err := decodePreparationState(encoded)
+	if err != nil {
+		return nil, err
+	}
+	if state.IntentDigest != digest {
+		return nil, fmt.Errorf("Taproot Asset OOR idempotency key " +
+			"reused with different request")
+	}
+	reservationOwner := oor.TaprootAssetPreparationReservationOwner(
+		request.RequestID,
+	)
+	reservationState, err := p.reservations.InspectReservationSet(
+		ctx, state.InputOutpoints,
+		oor.ReservationOwnerKindTaprootAssetPreparation,
+		reservationOwner,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("inspect Taproot Asset input "+
+			"reservations: %w", err)
+	}
+	if reservationState == oor.ReservationSetInconsistent &&
+		len(state.ArkPackage) != 0 {
+
+		reservationState, err = p.inspectOORReservationHandoff(
+			ctx, state,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("inspect Taproot Asset OOR "+
+				"reservation handoff: %w", err)
+		}
+	}
+	if reservationState == oor.ReservationSetInconsistent {
+		return nil, fmt.Errorf("%w: input reservation ownership for "+
+			"request %q is inconsistent", ErrReconciliationRequired,
+			request.RequestID)
+	}
+	if state.Attempt != "" {
+		return nil, fmt.Errorf("%w: %s commit for request %q",
+			ErrReconciliationRequired, state.Attempt,
+			request.RequestID)
+	}
+	if reservationState == oor.ReservationSetAbsent {
+		if len(state.CheckpointPackage) != 0 ||
+			len(state.ArkPackage) != 0 {
+			return nil, fmt.Errorf("%w: committed request %q has "+
+				"no owned input reservations",
+				ErrReconciliationRequired, request.RequestID)
+		}
+
+		return nil, nil
+	}
+
+	return &oor.TaprootAssetOORResume{
+		InputOutpoints: cloneOutpoints(state.InputOutpoints),
+	}, nil
+}
+
+// inspectOORReservationHandoff accepts the one intentional ownership change:
+// once the durable OOR actor admits the sealed Ark package, it owns the same
+// complete set under the deterministic Ark txid/session ID. Any partial or
+// foreign handoff remains inconsistent.
+func (p *Preparer) inspectOORReservationHandoff(ctx context.Context,
+	state *preparationState) (oor.ReservationSetState, error) {
+
+	if p.driver == nil || state == nil || len(state.ArkPackage) == 0 {
+		return oor.ReservationSetInconsistent, nil
+	}
+	result, err := p.driver.DecodePackage(state.ArkPackage)
+	if err != nil {
+		return oor.ReservationSetInconsistent, err
+	}
+	ark, err := psbtutil.Parse(result.anchorPSBT)
+	if err != nil {
+		return oor.ReservationSetInconsistent, err
+	}
+	if ark == nil || ark.UnsignedTx == nil {
+		return oor.ReservationSetInconsistent,
+			fmt.Errorf("sealed Ark transaction is missing")
+	}
+	ownerID := ark.UnsignedTx.TxHash()
+
+	return p.reservations.InspectReservationSet(
+		ctx, state.InputOutpoints, oor.ReservationOwnerKindOOROutgoing,
+		ownerID,
+	)
+}
+
+// loadState restores and validates the durable state for one request. Before
+// the first external commit, the same public intent may bind a newly selected
+// Bitcoin carrier set after a known-negative failure. Once a checkpoint could
+// exist, the exact input set is immutable.
 func (p *Preparer) loadState(ctx context.Context, requestID string,
-	digest tapsdk.Hash) (*preparationState, error) {
+	digest, intentDigest tapsdk.Hash, inputOutpoints []wire.OutPoint) (
+	*preparationState, error) {
 
 	encoded, err := p.store.Load(ctx, requestID)
 	if errors.Is(err, ErrStoreNotFound) {
 		state := &preparationState{
-			Version:       preparationStateVersion,
-			RequestDigest: digest,
+			Version:        preparationStateVersion,
+			IntentDigest:   intentDigest,
+			RequestDigest:  digest,
+			InputOutpoints: cloneOutpoints(inputOutpoints),
 		}
 		if err := p.storeState(ctx, requestID, state); err != nil {
 			return nil, err
@@ -623,7 +480,45 @@ func (p *Preparer) loadState(ctx context.Context, requestID string,
 		return nil, err
 	}
 
+	state, err := decodePreparationState(encoded)
+	if err != nil {
+		return nil, err
+	}
+	if state.IntentDigest != intentDigest {
+		return nil, fmt.Errorf("Taproot Asset OOR idempotency key " +
+			"reused with different request")
+	}
+	if state.RequestDigest != digest {
+		if state.Attempt != "" || len(state.CheckpointPackage) != 0 ||
+			len(state.ArkPackage) != 0 {
+			return nil, fmt.Errorf("Taproot Asset OOR " +
+				"idempotency key reused with different " +
+				"carrier inputs")
+		}
+
+		state.RequestDigest = digest
+		state.InputOutpoints = cloneOutpoints(inputOutpoints)
+		state.PlannedRecipients = nil
+		state.OrderingNonce = 0
+		if err := p.storeState(ctx, requestID, state); err != nil {
+			return nil, fmt.Errorf("rebind Taproot Asset carrier "+
+				"selection: %w", err)
+		}
+	} else if !outpointsEqual(state.InputOutpoints, inputOutpoints) {
+		return nil, fmt.Errorf("Taproot Asset preparation input " +
+			"journal does not match request digest")
+	}
+
+	return state, nil
+}
+
+// decodePreparationState validates the durable envelope before any caller
+// makes a restart or reconciliation decision from it.
+func decodePreparationState(encoded []byte) (*preparationState, error) {
 	var state preparationState
+	// wire.OutPoint intentionally uses its stable exported field names in
+	// this versioned private envelope.
+	//nolint:musttag
 	if err := json.Unmarshal(encoded, &state); err != nil {
 		return nil, fmt.Errorf("decode taproot asset preparation "+
 			"state: %w", err)
@@ -632,14 +527,27 @@ func (p *Preparer) loadState(ctx context.Context, requestID string,
 		return nil, fmt.Errorf("unsupported taproot asset preparation "+
 			"state version %d", state.Version)
 	}
-	if state.RequestDigest != digest {
-		return nil, fmt.Errorf("Taproot Asset OOR idempotency key " +
-			"reused with different request")
-	}
 	if state.Attempt != "" && state.Attempt != attemptCheckpoint &&
 		state.Attempt != attemptArk {
 		return nil, fmt.Errorf("invalid taproot asset commit "+
 			"attempt %q", state.Attempt)
+	}
+	if len(state.ArkPackage) != 0 && len(state.CheckpointPackage) == 0 {
+		return nil, fmt.Errorf("Taproot Asset Ark package has no " +
+			"checkpoint package")
+	}
+	if (state.Attempt != "" || len(state.CheckpointPackage) != 0) &&
+		len(state.InputOutpoints) == 0 {
+		return nil, fmt.Errorf("Taproot Asset preparation has no " +
+			"input journal")
+	}
+	seen := make(map[wire.OutPoint]struct{}, len(state.InputOutpoints))
+	for _, outpoint := range state.InputOutpoints {
+		if _, ok := seen[outpoint]; ok {
+			return nil, fmt.Errorf("Taproot Asset preparation has "+
+				"duplicate input %s", outpoint)
+		}
+		seen[outpoint] = struct{}{}
 	}
 
 	return &state, nil
@@ -649,6 +557,9 @@ func (p *Preparer) loadState(ctx context.Context, requestID string,
 func (p *Preparer) storeState(ctx context.Context, requestID string,
 	state *preparationState) error {
 
+	// wire.OutPoint intentionally uses its stable exported field names in
+	// this versioned private envelope.
+	//nolint:musttag
 	encoded, err := json.Marshal(state)
 	if err != nil {
 		return fmt.Errorf("encode taproot asset preparation state: %w",
@@ -839,7 +750,7 @@ func tapBranchHash(left, right []byte) chainhash.Hash {
 // validateCheckpointResult binds the first SDK package to the Wavelength
 // input and committed checkpoint output.
 func validateCheckpointResult(request *oor.TaprootAssetOORPrepareRequest,
-	assetRef tapsdk.AssetRef, checkpoint *psbt.Packet,
+	assetInputIndex int, assetRef tapsdk.AssetRef, checkpoint *psbt.Packet,
 	result *commitResult) error {
 
 	if checkpoint == nil || checkpoint.UnsignedTx == nil {
@@ -849,9 +760,14 @@ func validateCheckpointResult(request *oor.TaprootAssetOORPrepareRequest,
 		return fmt.Errorf("checkpoint package must contain one asset " +
 			"input and output")
 	}
+	if result.fundingMode != tapsdk.CustomAnchorFundingCallerFundedExact ||
+		result.actualFeeSat != 0 || result.maxFeeSat != 0 {
+		return fmt.Errorf("checkpoint package funding mode mismatch")
+	}
 	input := result.inputs[0]
 	output := result.outputs[0]
-	expectedInput := sdkOutpoint(request.Inputs[0].VTXO.Outpoint)
+	assetInput := request.Inputs[assetInputIndex]
+	expectedInput := sdkOutpoint(assetInput.VTXO.Outpoint)
 	if input.anchorOutpoint != expectedInput ||
 		!input.assetRef.Equivalent(assetRef) ||
 		input.amount != request.Intent.AssetAmount {
@@ -862,7 +778,7 @@ func validateCheckpointResult(request *oor.TaprootAssetOORPrepareRequest,
 			Hash: checkpoint.UnsignedTx.TxHash(), Index: 0,
 		}) || !output.assetRef.Equivalent(assetRef) ||
 		output.amount != request.Intent.AssetAmount ||
-		output.anchorValueSat != int64(request.Inputs[0].VTXO.Amount) ||
+		output.anchorValueSat != int64(assetInput.VTXO.Amount) ||
 		len(output.opTrueWitness) == 0 || len(output.proofBlob) == 0 {
 		return fmt.Errorf("checkpoint package asset output mismatch")
 	}
@@ -870,7 +786,7 @@ func validateCheckpointResult(request *oor.TaprootAssetOORPrepareRequest,
 		return fmt.Errorf("committed checkpoint outputs are incomplete")
 	}
 	tree, err := arkscript.CheckpointTapScript(
-		request.Policy, request.Inputs[0].OwnerLeafScript,
+		request.Policy, assetInput.OwnerLeafScript,
 	)
 	if err != nil {
 		return err
@@ -883,71 +799,6 @@ func validateCheckpointResult(request *oor.TaprootAssetOORPrepareRequest,
 	}
 
 	return nil
-}
-
-// validateArkResult binds the second SDK package to the committed checkpoint
-// and returns the composed recipient metadata.
-func validateArkResult(request *oor.TaprootAssetOORPrepareRequest,
-	assetRef tapsdk.AssetRef, ark *psbt.Packet, checkpoint,
-	result *commitResult) ([]oortx.RecipientOutput, error) {
-
-	if ark == nil || ark.UnsignedTx == nil {
-		return nil, fmt.Errorf("committed Ark PSBT is required")
-	}
-	if len(result.inputs) != 1 || len(result.outputs) != 1 {
-		return nil, fmt.Errorf("Ark package must contain one asset " +
-			"input and output")
-	}
-	input := result.inputs[0]
-	output := result.outputs[0]
-	if input.anchorOutpoint != checkpoint.outputs[0].anchorOutpoint ||
-		!input.assetRef.Equivalent(assetRef) ||
-		input.amount != request.Intent.AssetAmount {
-		return nil, fmt.Errorf("Ark package asset input mismatch")
-	}
-	if output.anchorOutputIndex != 0 ||
-		output.anchorOutpoint != sdkOutpoint(wire.OutPoint{
-			Hash: ark.UnsignedTx.TxHash(), Index: 0,
-		}) || !output.assetRef.Equivalent(assetRef) ||
-		output.amount != request.Intent.AssetAmount ||
-		output.anchorValueSat != int64(request.Recipients[0].Value) ||
-		len(output.proofBlob) == 0 {
-		return nil, fmt.Errorf("Ark package asset output mismatch")
-	}
-
-	recipients := cloneRecipients(request.Recipients)
-	root := chainhash.Hash(output.taprootAssetRoot)
-	recipients[0].TaprootAssetRoot = &root
-	recipients[0].TaprootAssetRef = output.assetRef.String()
-	recipients[0].TaprootAssetAmount = output.amount
-	template, err := arkscript.DecodePolicyTemplate(
-		recipients[0].VTXOPolicyTemplate,
-	)
-	if err != nil {
-		return nil, err
-	}
-	policy, err := template.Compile()
-	if err != nil {
-		return nil, err
-	}
-	composed, err := arkscript.ComposeWithSiblingRoot(policy, root)
-	if err != nil {
-		return nil, err
-	}
-	recipients[0].PkScript, err = txscript.PayToTaprootScript(
-		composed.OutputKey(),
-	)
-	if err != nil {
-		return nil, err
-	}
-	if err := validateOutputCommitment(
-		ark.UnsignedTx.TxOut[0], policy.InternalKey, policy.RootHash,
-		output,
-	); err != nil {
-		return nil, fmt.Errorf("Ark recipient output: %w", err)
-	}
-
-	return recipients, nil
 }
 
 // validateOutputCommitment checks both SDK root hints and the actual P2TR
@@ -974,31 +825,149 @@ func validateOutputCommitment(txOut *wire.TxOut, internalKey *btcec.PublicKey,
 	return nil
 }
 
-// preparationRequestDigest binds an idempotency key to all supported PoC
-// request fields without relying on unstable Go struct encodings.
+// preparationRequestDigest binds the exact carrier selection and signing
+// material in addition to the selection-independent public send intent.
 func preparationRequestDigest(request *oor.TaprootAssetOORPrepareRequest) (
 	tapsdk.Hash, error) {
 
+	if request == nil {
+		return tapsdk.Hash{}, fmt.Errorf("Taproot Asset OOR prepare " +
+			"request is required")
+	}
+	intentDigest, err := preparationIntentDigest(
+		&oor.TaprootAssetOORResumeRequest{
+			RequestID:   request.RequestID,
+			Policy:      request.Policy,
+			Recipients:  request.Recipients,
+			OutputFloor: request.OutputFloor,
+			Intent:      request.Intent,
+		},
+	)
+	if err != nil {
+		return tapsdk.Hash{}, err
+	}
+
 	var value bytes.Buffer
+	writeDigestBytes(&value, []byte("wavelength-asset-prepare-v2"))
+	writeDigestBytes(&value, intentDigest[:])
+	_ = binary.Write(&value, binary.BigEndian, uint32(len(request.Inputs)))
+	for idx := range request.Inputs {
+		input := request.Inputs[idx]
+		if input.VTXO == nil {
+			return tapsdk.Hash{}, fmt.Errorf("Taproot Asset OOR "+
+				"input %d has no VTXO", idx)
+		}
+		writeDigestBytes(&value, input.VTXO.Outpoint.Hash[:])
+		_ = binary.Write(
+			&value, binary.BigEndian, input.VTXO.Outpoint.Index,
+		)
+		_ = binary.Write(
+			&value, binary.BigEndian, uint64(input.VTXO.Amount),
+		)
+		writeDigestBytes(&value, input.VTXO.PkScript)
+		writeDigestBytes(&value, input.VTXOPolicyTemplate)
+		writeDigestBytes(&value, input.OwnerLeafScript)
+		writeDigestBytes(&value, input.OwnerLeafPolicy)
+		if input.TaprootAssetRoot != nil {
+			writeDigestBytes(&value, input.TaprootAssetRoot[:])
+		} else {
+			writeDigestBytes(&value, nil)
+		}
+		writeDigestBytes(
+			&value, []byte(input.VTXO.TaprootAssetRef),
+		)
+		_ = binary.Write(
+			&value, binary.BigEndian, input.VTXO.TaprootAssetAmount,
+		)
+		if input.VTXO.ClientKey.PubKey != nil {
+			writeDigestBytes(
+				&value, input.VTXO.ClientKey.PubKey.
+					SerializeCompressed(),
+			)
+		} else {
+			writeDigestBytes(&value, nil)
+		}
+		_ = binary.Write(
+			&value, binary.BigEndian,
+			int32(input.VTXO.ClientKey.Family),
+		)
+		_ = binary.Write(
+			&value, binary.BigEndian, input.VTXO.ClientKey.Index,
+		)
+		if input.VTXO.OperatorKey != nil {
+			writeDigestBytes(
+				&value,
+				input.VTXO.OperatorKey.SerializeCompressed(),
+			)
+		} else {
+			writeDigestBytes(&value, nil)
+		}
+		_ = binary.Write(
+			&value, binary.BigEndian, input.VTXO.RelativeExpiry,
+		)
+	}
+	digest := sha256.Sum256(value.Bytes())
+
+	return tapsdk.Hash(digest), nil
+}
+
+// preparationIntentDigest binds the public send and current operator policy
+// independently of whichever ordinary Bitcoin VTXOs coin selection adds.
+func preparationIntentDigest(request *oor.TaprootAssetOORResumeRequest) (
+	tapsdk.Hash, error) {
+
+	if request == nil {
+		return tapsdk.Hash{}, fmt.Errorf("Taproot Asset OOR resume " +
+			"request is required")
+	}
+	if request.RequestID == "" {
+		return tapsdk.Hash{}, fmt.Errorf("Taproot Asset OOR request " +
+			"ID is required")
+	}
+	if request.Policy.OperatorKey == nil {
+		return tapsdk.Hash{}, fmt.Errorf("Taproot Asset OOR operator " +
+			"key is required")
+	}
+	if len(request.Recipients) != 1 {
+		return tapsdk.Hash{}, fmt.Errorf("Taproot Asset OOR requires " +
+			"exactly one recipient")
+	}
+	if request.OutputFloor <= 0 {
+		return tapsdk.Hash{}, fmt.Errorf("Taproot Asset OOR output " +
+			"floor is required")
+	}
+	if err := request.Intent.Validate(); err != nil {
+		return tapsdk.Hash{}, err
+	}
+
+	var value bytes.Buffer
+	writeDigestBytes(&value, []byte("wavelength-asset-intent-v2"))
+	writeDigestBytes(&value, []byte(request.RequestID))
 	writeDigestBytes(
 		&value, request.Policy.OperatorKey.SerializeCompressed(),
 	)
 	_ = binary.Write(&value, binary.BigEndian, request.Policy.CSVDelay)
-	input := request.Inputs[0]
-	writeDigestBytes(&value, input.VTXO.Outpoint.Hash[:])
-	_ = binary.Write(&value, binary.BigEndian, input.VTXO.Outpoint.Index)
-	_ = binary.Write(&value, binary.BigEndian, uint64(input.VTXO.Amount))
-	writeDigestBytes(&value, input.VTXO.PkScript)
-	writeDigestBytes(&value, input.VTXOPolicyTemplate)
-	writeDigestBytes(&value, input.OwnerLeafScript)
-	writeDigestBytes(&value, input.OwnerLeafPolicy)
-	writeDigestBytes(&value, input.TaprootAssetRoot[:])
 	recipient := request.Recipients[0]
 	_ = binary.Write(&value, binary.BigEndian, uint64(recipient.Value))
 	writeDigestBytes(&value, recipient.PkScript)
 	writeDigestBytes(&value, recipient.VTXOPolicyTemplate)
+	_ = binary.Write(
+		&value, binary.BigEndian, uint64(request.OutputFloor),
+	)
+	writeDigestBytes(&value, request.Intent.InputVTXOOutpoint.Hash[:])
+	_ = binary.Write(
+		&value, binary.BigEndian,
+		request.Intent.InputVTXOOutpoint.Index,
+	)
 	writeDigestBytes(&value, []byte(request.Intent.AssetRef))
 	_ = binary.Write(&value, binary.BigEndian, request.Intent.AssetAmount)
+	_ = binary.Write(
+		&value, binary.BigEndian, request.Intent.RecipientAssetAmount,
+	)
+	_ = binary.Write(
+		&value, binary.BigEndian,
+		request.Intent.AssetChangeCarrierValueSat,
+	)
 	writeDigestBytes(&value, request.Intent.ProofFile)
 	writeDigestBytes(&value, request.Intent.RecipientScriptKey)
 	writeDigestBytes(&value, []byte(request.Intent.ProofCourierAddress))
@@ -1012,6 +981,23 @@ func preparationRequestDigest(request *oor.TaprootAssetOORPrepareRequest) (
 func writeDigestBytes(buffer *bytes.Buffer, value []byte) {
 	_ = binary.Write(buffer, binary.BigEndian, uint64(len(value)))
 	_, _ = buffer.Write(value)
+}
+
+func cloneOutpoints(values []wire.OutPoint) []wire.OutPoint {
+	return append([]wire.OutPoint(nil), values...)
+}
+
+func outpointsEqual(left, right []wire.OutPoint) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for idx := range left {
+		if left[idx] != right[idx] {
+			return false
+		}
+	}
+
+	return true
 }
 
 // sdkOutpoint converts the shared btcd outpoint into the SDK-owned DTO.

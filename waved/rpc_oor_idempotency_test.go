@@ -183,6 +183,7 @@ type capturingSendOORActor struct {
 	mu       sync.Mutex
 	requests []*oor.StartTransferRequest
 	response *oor.StartTransferResponse
+	err      error
 }
 
 func (a *capturingSendOORActor) Receive(_ context.Context,
@@ -204,7 +205,11 @@ func (a *capturingSendOORActor) Receive(_ context.Context,
 	a.mu.Lock()
 	a.requests = append(a.requests, &reqCopy)
 	resp := a.response
+	err := a.err
 	a.mu.Unlock()
+	if err != nil {
+		return fn.Err[oor.ActorResp](err)
+	}
 
 	return fn.Ok[oor.ActorResp](resp)
 }
