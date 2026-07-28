@@ -99,6 +99,18 @@ func classifyPostgresError(code string, dbErr error) error {
 			DBError: dbErr,
 		}
 
+	// A statement was issued against a transaction that an earlier failure
+	// already aborted. Postgres rejects every further command until the
+	// block ends, so this code is never the root cause, only its echo. The
+	// root cause is frequently a serialization failure that an intervening
+	// caller logged and swallowed, which leaves the retry layer looking at
+	// 25P02 instead of the 40001 underneath it. Rolling back and replaying
+	// the transaction is the only way forward either way.
+	case pgerrcode.InFailedSQLTransaction:
+		return &ErrAbortedTransaction{
+			DBError: dbErr,
+		}
+
 	// Handle schema error.
 	case pgerrcode.UndefinedColumn, pgerrcode.UndefinedTable:
 		return &ErrSchemaError{
@@ -154,6 +166,23 @@ func (e ErrDeadlockError) Error() string {
 	return e.DBError.Error()
 }
 
+// ErrAbortedTransaction is an error type which represents a database agnostic
+// error that a statement was issued against a transaction that an earlier
+// failure had already aborted.
+type ErrAbortedTransaction struct {
+	DBError error
+}
+
+// Unwrap returns the wrapped error.
+func (e ErrAbortedTransaction) Unwrap() error {
+	return e.DBError
+}
+
+// Error returns the error message.
+func (e ErrAbortedTransaction) Error() string {
+	return e.DBError.Error()
+}
+
 // IsSerializationError returns true if the given error is a serialization
 // error.
 func IsSerializationError(err error) bool {
@@ -169,10 +198,33 @@ func IsDeadlockError(err error) bool {
 	return errors.As(err, &deadlockError)
 }
 
+// IsAbortedTransactionError returns true if the given error reports that the
+// transaction the statement ran in had already been aborted.
+func IsAbortedTransactionError(err error) bool {
+	var abortedTx *ErrAbortedTransaction
+
+	return errors.As(err, &abortedTx)
+}
+
 // IsSerializationOrDeadlockError returns true if the given error is either a
 // deadlock error or a serialization error.
 func IsSerializationOrDeadlockError(err error) bool {
 	return IsDeadlockError(err) || IsSerializationError(err)
+}
+
+// IsRetryableTxError returns true if the given error means the transaction it
+// came from can be replayed from the top with a reasonable chance of a
+// different outcome.
+//
+// This is a superset of IsSerializationOrDeadlockError: it also covers the
+// aborted-transaction state, which is what a caller that logs and swallows a
+// serialization failure leaves behind for the next statement to trip over.
+// Retrying on that echo costs a bounded number of replays when the underlying
+// failure turns out to be deterministic, and recovers the transaction when it
+// does not.
+func IsRetryableTxError(err error) bool {
+	return IsSerializationOrDeadlockError(err) ||
+		IsAbortedTransactionError(err)
 }
 
 // ErrSchemaError is an error type which represents a database agnostic error
