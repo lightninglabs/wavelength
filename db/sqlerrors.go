@@ -190,6 +190,18 @@ func (e ErrSQLUniqueConstraintViolation) Error() string {
 		withPgDetail(e.DBError))
 }
 
+// Unwrap returns the wrapped error.
+//
+// Without this, the mapped error is a dead end for errors.As, and the
+// PgErrorConstraint and PgErrorDetail extractors return empty for every caller
+// that holds the mapped error rather than the raw driver one. That is the
+// normal case, since ExecTx returns the mapped error, and identifying which of
+// the partial unique indexes actually fired is the whole point of surfacing
+// the constraint name.
+func (e ErrSQLUniqueConstraintViolation) Unwrap() error {
+	return e.DBError
+}
+
 // ErrSerializationError is an error type which represents a database agnostic
 // error that a transaction couldn't be serialized with other concurrent db
 // transactions.

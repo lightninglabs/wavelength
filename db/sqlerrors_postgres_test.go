@@ -177,6 +177,13 @@ func TestPostgresConflictShapes(t *testing.T) {
 		require.NotEmpty(t, PgErrorConstraint(err))
 		require.Contains(t, mapped.Error(), "constraint:")
 		require.Contains(t, mapped.Error(), "chain_name")
+
+		// Extraction has to work through the mapped error too, not
+		// just the raw driver error. A caller downstream of ExecTx
+		// only ever sees the mapped one, so this is the path that
+		// actually gets used.
+		require.NotEmpty(t, PgErrorConstraint(mapped))
+		require.NotEmpty(t, PgErrorDetail(mapped))
 	})
 
 	// The limit of the shape above, and the reason the write-path audit
