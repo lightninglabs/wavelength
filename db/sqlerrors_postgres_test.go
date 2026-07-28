@@ -178,4 +178,94 @@ func TestPostgresConflictShapes(t *testing.T) {
 		require.Contains(t, mapped.Error(), "constraint:")
 		require.Contains(t, mapped.Error(), "chain_name")
 	})
+
+	// The limit of the shape above, and the reason the write-path audit
+	// splits the lost creation race in two. SSI only promotes a creation
+	// race to a retryable 40001 when the losing transaction read the
+	// contested key first, because that read is what leaves the SIRead
+	// predicate lock the conflict graph is built from. Two transactions
+	// that insert blind, with no preceding read, have no dependency for
+	// SSI to find, so the loser gets the same non-retryable 23505 at
+	// SERIALIZABLE that it would get at REPEATABLE READ.
+	//
+	// This is what says that a blind-write upsert whose ON CONFLICT target
+	// misses the index that can actually fire is exposed today, rather
+	// than being masked by SSI and unmasked by relaxing the level.
+	t.Run("serializable blind creation race", func(t *testing.T) {
+		txA := beginAt(t, ctx, store, sql.LevelSerializable)
+		txB := beginAt(t, ctx, store, sql.LevelSerializable)
+
+		const insertRow = "INSERT INTO chain_info (id, chain_name, " +
+			"genesis_hash) VALUES ($1, 'blind-race', '\\x01')"
+
+		_, err := txA.ExecContext(ctx, insertRow, 400)
+		require.NoError(t, err)
+
+		// txB blocks on the unique index until txA resolves.
+		errChan := make(chan error, 1)
+		go func() {
+			_, execErr := txB.ExecContext(ctx, insertRow, 401)
+			errChan <- execErr
+		}()
+
+		require.NoError(t, txA.Commit())
+
+		err = <-errChan
+		require.Error(t, err)
+
+		mapped := MapSQLError(err)
+
+		// Identical classification to the REPEATABLE READ case above,
+		// which is the whole point: SERIALIZABLE bought this path
+		// nothing, so relaxing the level costs it nothing.
+		require.False(t, IsSerializationOrDeadlockError(mapped))
+		require.True(t, IsUniqueConstraintViolation(mapped))
+		require.NotEmpty(t, PgErrorConstraint(err))
+	})
+
+	// The other half of the split: once the losing transaction reads the
+	// contested key before inserting it, SSI does see the dependency and
+	// reports a retryable 40001 carrying a pivot reason code. A read-check
+	// then insert really is masked by SERIALIZABLE today, and really would
+	// degrade to a bare 23505 at REPEATABLE READ.
+	t.Run("serializable read-check creation race", func(t *testing.T) {
+		txA := beginAt(t, ctx, store, sql.LevelSerializable)
+		txB := beginAt(t, ctx, store, sql.LevelSerializable)
+
+		const probe = "SELECT COUNT(*) FROM chain_info WHERE " +
+			"chain_name = 'checked-race'"
+		const insertRow = "INSERT INTO chain_info (id, chain_name, " +
+			"genesis_hash) VALUES ($1, 'checked-race', '\\x01')"
+
+		// Both transactions observe the absence of the key first,
+		// which is the read that takes the predicate lock.
+		var count int
+		require.NoError(
+			t, txA.QueryRowContext(ctx, probe).Scan(&count),
+		)
+		require.Zero(t, count)
+		require.NoError(
+			t, txB.QueryRowContext(ctx, probe).Scan(&count),
+		)
+		require.Zero(t, count)
+
+		_, err := txA.ExecContext(ctx, insertRow, 500)
+		require.NoError(t, err)
+
+		errChan := make(chan error, 1)
+		go func() {
+			_, execErr := txB.ExecContext(ctx, insertRow, 501)
+			errChan <- execErr
+		}()
+
+		require.NoError(t, txA.Commit())
+
+		err = <-errChan
+		require.Error(t, err)
+
+		mapped := MapSQLError(err)
+		require.True(t, IsSerializationOrDeadlockError(mapped))
+		require.False(t, IsUniqueConstraintViolation(mapped))
+		require.Contains(t, mapped.Error(), "Reason code")
+	})
 }
