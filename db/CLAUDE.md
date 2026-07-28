@@ -221,4 +221,6 @@ when adding one.
   `READ ONLY` (no `SIRead` predicate locks, never a 40001), writers stay
   `SERIALIZABLE`. Also holds the write-path snapshot-isolation audit and the
   inventory of the six partial unique indexes that any new `ON CONFLICT`
-  target has to be checked against.
+  target has to be checked against, along with the caveat that a conflict
+  target can also miss a plain unique constraint declared inline in a
+  `CREATE TABLE`.
