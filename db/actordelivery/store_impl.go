@@ -1710,7 +1710,8 @@ func NewTxAwareActorDeliveryStore(
 // and a redelivery, which re-runs the same behavior against the same in-memory
 // actor. What replay must not do is re-apply an effect that escaped the
 // transaction, so callers must keep side effects that are not durable writes
-// out of fn and place them after ExecTx returns.
+// out of fn and place them after ExecTx returns. See the retry loop for why
+// that matters to a caller whose fn is slow enough to outlast its lease.
 func (s *TxAwareActorDeliveryStore) ExecTx(
 	ctx context.Context, readOnly bool, fn actor.TxFunc,
 ) error {
@@ -1737,10 +1738,26 @@ func (s *TxAwareActorDeliveryStore) ExecTx(
 
 		lastErr = err
 
+		// The last attempt has nothing left to wait for.
+		if attempt == s.retry.numRetries-1 {
+			break
+		}
+
 		// Back off before replaying so that a set of transactions that
-		// conflicted once does not line up and conflict again. The
-		// budget is bounded well inside the message lease, so a turn
-		// cannot retry its way past its own lease expiry.
+		// conflicted once does not line up and conflict again.
+		//
+		// NOTE: the backoff alone is bounded (~13s at the default
+		// budget), but the total time spent here also includes one
+		// execution of fn per attempt, and fn runs the actor behavior.
+		// A slow behavior can therefore push a turn past its own
+		// message lease, and this path starts no heartbeat to extend
+		// it: only the non-transactional paths do. Durable state
+		// survives that, since the fenced ack of whichever worker lost
+		// the lease fails and nacks rather than committing, but any
+		// effect the behavior has outside the transaction would run
+		// twice. Behaviors that both take seconds and act outside the
+		// transaction should carry a lease long enough to cover the
+		// retry budget.
 		select {
 		case <-time.After(s.retry.backoff(attempt)):
 		case <-ctx.Done():

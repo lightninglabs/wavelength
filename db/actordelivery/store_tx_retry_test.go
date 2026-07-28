@@ -244,12 +244,20 @@ func TestExecTxCommitsReplayedWork(t *testing.T) {
 		func(txCtx context.Context, txStore actor.DeliveryStore) error {
 			attempts++
 
+			// Tag the payload per attempt so the assertions below
+			// identify which attempt's row survived, not merely
+			// that one did.
+			payload := []byte("replayed")
+			if attempts < 2 {
+				payload = []byte("rolled-back")
+			}
+
 			err := txStore.EnqueueMessage(
 				txCtx, actor.EnqueueParams{
 					ID:          generateTestID(),
 					MailboxID:   mailboxID,
 					MessageType: "test.Message",
-					Payload:     []byte("replayed"),
+					Payload:     payload,
 					AvailableAt: time.
 						Now().
 						Add(-time.Minute),
