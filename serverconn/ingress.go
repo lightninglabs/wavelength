@@ -734,6 +734,15 @@ func splitIngressEnvelopes(envelopes []*mailboxpb.Envelope,
 // Edge.Send rather than in a mailbox enqueue. And a dispatcher must actually
 // be registered for the route, so the hoisted path never has to reproduce
 // dispatchBatch's skip-warn for an unroutable envelope.
+//
+// NOTE: hoisting moves the send ahead of the commit, so a crash in between
+// leaves the cursor unmoved and the request is served a second time on the
+// re-pull. That is free for a read, which is all that is hoisted today, and
+// the operator demultiplexes the duplicate response by correlation ID. It
+// stops being free for a route that changes state: anything on the money path,
+// such as WalletService.SignVTXO or RoundService.SubmitNonces, needs its own
+// idempotency before it is added to NonTxRoutes, because correlation-ID dedup
+// on the operator does not make a second signature harmless.
 func (a *ServerConnectionActor) isNonTxRequest(
 	env *mailboxpb.Envelope,
 ) bool {
