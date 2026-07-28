@@ -164,6 +164,18 @@ type ConnectorConfig struct {
 	// envelope is a KIND_REQUEST, so a durable event or response route
 	// can never be hoisted by accident. Any new route whose dispatcher
 	// performs IO rather than a durable enqueue MUST be listed here.
+	//
+	// The mark only ever errs in one direction. Leaving a route out costs
+	// the stall described above, which is what the code did before this
+	// field existed. Marking a route whose dispatcher is actually a
+	// durable Tell is the expensive mistake: the enqueue would commit on
+	// its own ahead of the cursor, and because the ingress path
+	// propagates no outbox ID, the re-pull after a crash in that window
+	// enqueues a second copy under a fresh UUIDv7 that
+	// EnqueueMailboxMessage's ON CONFLICT (id) DO NOTHING cannot
+	// collapse. That turns exactly-once local delivery into a duplicate
+	// the receiving actor never sees coming, which is why the mark and
+	// the dispatcher are registered together.
 	NonTxRoutes RouteSet
 
 	// Store is the delivery store used by both the durable actor runtime
