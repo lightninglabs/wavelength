@@ -201,6 +201,46 @@ func TestRegistryForwardsCompletionAsConfirmed(t *testing.T) {
 	require.Equal(t, vtxo.ExitOutcomeConfirmed, notes[0].Outcome)
 }
 
+// TestRegistryForwardsSourceConflictAsConflicted verifies a terminal failure
+// flagged as a source-batch conflict is forwarded as ExitOutcomeConflicted —
+// even though it has an on-chain footprint — so the VTXO manager retires the
+// coin out of pending rather than leaving it exit-pending forever
+// (wavelength#1050). It also pins the durable record to ConflictedFailure so a
+// restart reconciles the same outcome.
+func TestRegistryForwardsSourceConflictAsConflicted(t *testing.T) {
+	target := wire.OutPoint{Hash: chainhash.Hash{5}, Index: 0}
+	behavior, observer := newExitObserverRegistry(target)
+
+	const reason = "source batch was swept by the operator; unilateral " +
+		"exit is no longer possible"
+	_, err := behavior.handleTerminated(t.Context(), &UnrollTerminatedMsg{
+		Outpoint:   target,
+		ActorID:    actorIDForTarget(target),
+		Phase:      PhaseFailed,
+		FailReason: reason,
+		// A conflict has broadcast the doomed root, so it bears a
+		// footprint — yet it must still be forwarded (not held in
+		// exit).
+		HadOnChainFootprint: true,
+		Conflicted:          true,
+	}).Unpack()
+	require.NoError(t, err)
+
+	notes := observer.notifications()
+	require.Len(t, notes, 1)
+	require.Equal(t, target, notes[0].Outpoint)
+	require.Equal(t, vtxo.ExitOutcomeConflicted, notes[0].Outcome)
+	require.Equal(t, reason, notes[0].Reason)
+
+	// The durable record is classified conflicted (and not recoverable), so
+	// boot-time reconciliation retires the coin rather than reliving it.
+	// The record→DB-status mapping itself is pinned in db_store_test.go.
+	persisted, ok := behavior.pending[target]
+	require.True(t, ok)
+	require.True(t, persisted.ConflictedFailure)
+	require.False(t, persisted.RecoverableFailure)
+}
+
 // TestRegistryRecoversCleanFailureEndToEnd is the in-process integration test
 // for the wavelength#602 recovery path. Unlike the unit tests above (which
 // call handleTerminated directly with a synthetic UnrollTerminatedMsg), this

@@ -101,6 +101,7 @@ func processEventWithJob(ctx context.Context, job *JobState, event Event,
 
 	case *FailEvent:
 		nextJob.FailReason = e.Reason
+		nextJob.Conflicted = e.Conflict
 
 	case *StartEvent:
 		if e.Height > nextJob.Height {

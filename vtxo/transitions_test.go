@@ -428,6 +428,101 @@ func TestUnilateralExitConfirms(t *testing.T) {
 	require.Equal(t, "Spent", term.FinalState)
 }
 
+// TestUnilateralExitConflicts verifies that an ExitConflictedEvent routes the
+// VTXO to the non-terminal ExpiredState (not back to live, not to spent, not to
+// a terminal Failed) and emits NO VTXOTerminatedNotification, so the actor
+// stays alive to reclaim the coin. This is the swept-source path: the operator
+// can only sweep the source batch past expiry, so the coin is expired, not
+// lost, and is recoverable through the ordinary refresh path
+// (wavelength#1050 / #1000).
+func TestUnilateralExitConflicts(t *testing.T) {
+	t.Parallel()
+
+	h := newVTXOTestHarness(t)
+	vtxo := h.newTestDescriptor()
+
+	h.withState(&UnilateralExitState{
+		VTXO:              vtxo,
+		Reason:            "manual unroll",
+		LastCheckedHeight: 200,
+	})
+
+	h.store.On(
+		"UpdateVTXOStatus", h.ctx, vtxo.Outpoint, VTXOStatusExpired,
+	).Return(nil)
+
+	const reason = "source batch swept by the operator; unilateral exit " +
+		"is no longer possible"
+	_, err := h.sendEvent(&ExitConflictedEvent{Reason: reason})
+	require.NoError(t, err)
+
+	expired := assertState[*ExpiredState](h)
+	require.Equal(t, int32(200), expired.ObservedHeight)
+	update := assertOutboxContains[*VTXOStatusUpdate](h)
+	require.Equal(t, VTXOStatusExpired, update.NewStatus)
+	// No terminated notification: ExpiredState is non-terminal so the actor
+	// survives to drive the reclaim.
+	assertOutboxLacks[*VTXOTerminatedNotification](h)
+}
+
+// TestUnilateralExitConflictReclaimsWhenExpired pins the soundness of routing a
+// source-batch conflict to ExpiredState (wavelength#1050): the following block
+// epoch must drive the cooperative reclaim and must NEVER roll the coin back to
+// LiveState. ExpiredState's block-epoch handler relives a coin when CheckExpiry
+// reports it is not expired; that branch is unreachable for a conflicted coin
+// because the operator can only sweep a source batch output past its expiry and
+// BatchExpiry is the most-restrictive expiry across the VTXO's contributing
+// commitments — so the conflict is always observed at height >= BatchExpiry.
+// This test exercises that guaranteed condition and asserts the reclaim, not a
+// relive.
+func TestUnilateralExitConflictReclaimsWhenExpired(t *testing.T) {
+	t.Parallel()
+
+	h := newVTXOTestHarness(t)
+	vtxo := h.newTestDescriptor()
+
+	// The default test descriptor has BatchExpiry = 1000. A source-batch
+	// sweep can only confirm past that height, so the conflict — and every
+	// block epoch after it — is observed at a height already past expiry.
+	const conflictHeight = 1005
+
+	h.withState(&UnilateralExitState{
+		VTXO:              vtxo,
+		Reason:            "manual unroll",
+		LastCheckedHeight: conflictHeight,
+	})
+
+	// The conflict routes the coin to the non-terminal ExpiredState.
+	_, err := h.sendEvent(&ExitConflictedEvent{
+		Reason: "source batch swept by the operator",
+	})
+	require.NoError(t, err)
+	require.IsType(t, &ExpiredState{}, h.currentState)
+
+	// The next block epoch, still past BatchExpiry, must drive the
+	// cooperative reclaim (ForfeitRequest -> PendingForfeit) rather than
+	// relive the dead-lineage coin as spendable.
+	_, err = h.sendEvent(h.newBlockEpochEvent(conflictHeight))
+	require.NoError(t, err)
+
+	// PendingForfeitState (not LiveState) proves the coin was reclaimed,
+	// not relived, and a ForfeitRequest was dispatched to start the
+	// refresh.
+	assertState[*PendingForfeitState](h)
+	assertOutboxContains[*ForfeitRequest](h)
+
+	// Belt-and-suspenders: no Live status update was ever emitted, so the
+	// coin never re-entered the spendable set.
+	for _, msg := range h.outboxMessages {
+		if u, ok := msg.(*VTXOStatusUpdate); ok {
+			require.NotEqual(
+				t, VTXOStatusLive, u.NewStatus,
+				"conflicted coin must never be relived to Live",
+			)
+		}
+	}
+}
+
 // TestUnilateralExitSelfLoopsWhileExiting verifies that truly inert events
 // received while the exit is in flight (block epochs, resume) leave the VTXO
 // in UnilateralExitState and emit nothing: the exit is already at the chain

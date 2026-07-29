@@ -93,6 +93,13 @@ const (
 	// checkpointExitPolicyRefRecordType carries the policy-specific
 	// durable-state reference.
 	checkpointExitPolicyRefRecordType tlv.Type = 21
+
+	// checkpointConflictedRecordType is optional; present (a 1-byte true)
+	// only when the terminal failure was a source-batch conflict — the
+	// operator swept a commitment output the exit depends on. It is omitted
+	// entirely when false so a non-conflicted checkpoint encodes to the
+	// same bytes it did before this field existed (wavelength#1050).
+	checkpointConflictedRecordType tlv.Type = 23
 )
 
 // actorCheckpoint is the durable checkpoint shape for one VTXO unroll actor.
@@ -106,6 +113,7 @@ type actorCheckpoint struct {
 	ExitPolicyRef       string
 	SweepTx             *wire.MsgTx
 	Fail                string
+	Conflicted          bool
 	SweepAttempts       int
 	DeferredCheckpoints []DeferredCheckpoint
 }
@@ -226,6 +234,19 @@ func encodeCheckpoint(value *actorCheckpoint) ([]byte, error) {
 		)
 	}
 
+	// Conflicted (type 23) is the highest record type, so it is appended
+	// last to keep records in the ascending order tlv.NewStream requires.
+	// It is emitted only when true, so a non-conflicted checkpoint is
+	// byte-for- byte identical to one written before this field existed.
+	if value.Conflicted {
+		conflicted := uint8(1)
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				checkpointConflictedRecordType, &conflicted,
+			),
+		)
+	}
+
 	stream, err := tlv.NewStream(records...)
 	if err != nil {
 		return nil, fmt.Errorf("create checkpoint stream: %w", err)
@@ -266,6 +287,7 @@ func decodeCheckpoint(raw []byte) (*actorCheckpoint, error) {
 		deferredBytes []byte
 		policyKind    []byte
 		policyRef     []byte
+		conflicted    uint8
 	)
 
 	stream, err := tlv.NewStream(
@@ -301,6 +323,9 @@ func decodeCheckpoint(raw []byte) (*actorCheckpoint, error) {
 		),
 		tlv.MakePrimitiveRecord(
 			checkpointExitPolicyRefRecordType, &policyRef,
+		),
+		tlv.MakePrimitiveRecord(
+			checkpointConflictedRecordType, &conflicted,
 		),
 	)
 	if err != nil {
@@ -356,6 +381,10 @@ func decodeCheckpoint(raw []byte) (*actorCheckpoint, error) {
 
 	if _, ok := parsed[checkpointFailRecordType]; ok {
 		checkpoint.Fail = string(failBytes)
+	}
+
+	if _, ok := parsed[checkpointConflictedRecordType]; ok {
+		checkpoint.Conflicted = conflicted != 0
 	}
 
 	if _, ok := parsed[checkpointDeferredCheckpointsRecordType]; ok {

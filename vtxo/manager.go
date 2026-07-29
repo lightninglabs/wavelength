@@ -1042,6 +1042,9 @@ func (m *Manager) handleExitOutcome(ctx context.Context,
 	case ExitOutcomeConfirmed:
 		return m.confirmExitedVTXO(ctx, req)
 
+	case ExitOutcomeConflicted:
+		return m.conflictExitedVTXO(ctx, req)
+
 	default:
 		return fn.Err[ManagerResp](
 			fmt.Errorf("unknown exit outcome: %d", req.Outcome),
@@ -1199,6 +1202,102 @@ func (m *Manager) confirmExitedVTXO(ctx context.Context,
 			fmt.Errorf("persist spent status: %w", err),
 		)
 	}
+
+	return fn.Ok[ManagerResp](&ExitOutcomeResp{})
+}
+
+// conflictExitedVTXO retires a VTXO to the terminal FailedState after its
+// unilateral exit was defeated by a confirmed conflicting spend — the operator
+// swept a source batch commitment output the recovery tree depends on, so the
+// unilateral exit is provably impossible (wavelength#1050). The operator can
+// only sweep that output past batch expiry, so the coin is expired, not lost:
+// its value is still recoverable through the ordinary refresh path
+// (wavelength#1000). Unlike confirmExitedVTXO the exit did NOT succeed, and
+// unlike a terminal failure the value is NOT gone — so the VTXO is routed to
+// the non-terminal ExpiredState (quarantined from coin selection, reclaimed by
+// the next block epoch) rather than the terminal FailedState. When the actor is
+// alive it drives the ExitConflictedEvent through the FSM; otherwise it
+// re-materializes an expired actor from the persisted descriptor so a daemon
+// that restarted mid-exit still reclaims the coin.
+func (m *Manager) conflictExitedVTXO(ctx context.Context,
+	req *ExitOutcomeNotification) fn.Result[ManagerResp] {
+
+	// A recovery-only target (a non-standard exit policy, e.g. a vHTLC
+	// refund) must never be reclaimed into the live coin set: it is a
+	// swap-contract output, not spendable wallet liquidity, so refreshing
+	// it into a round would be wrong. Hold it in UnilateralExit and let the
+	// owning recovery subsystem decide the terminal outcome, mirroring
+	// recoverExitedVTXO's recovery-only guard.
+	if req.ExitPolicyKind.Valid() {
+		m.logger(ctx).InfoS(ctx, "Holding recovery-only VTXO in exit "+
+			"after source-batch conflict",
+			slog.String("outpoint", req.Outpoint.String()),
+			slog.String(
+				"exit_policy_kind", string(req.ExitPolicyKind),
+			),
+			slog.String("reason", req.Reason),
+		)
+
+		return fn.Ok[ManagerResp](&ExitOutcomeResp{})
+	}
+
+	if actorRef, ok := m.actors[req.Outpoint]; ok {
+		_, err := m.askVTXOActor(ctx, actorRef, &ExitConflictedEvent{
+			Reason: req.Reason,
+		}).Unpack()
+		if err != nil {
+			return fn.Err[ManagerResp](
+				fmt.Errorf("ask exit-conflicted: %w", err),
+			)
+		}
+
+		return fn.Ok[ManagerResp](&ExitOutcomeResp{})
+	}
+
+	// No live actor: re-materialize one in ExpiredState from the persisted
+	// descriptor. This covers the restart case where an exiting VTXO was
+	// not part of the live-recovery set, so no actor was spawned at Start.
+	// Only act on a VTXO still in the exit state so a re-delivered conflict
+	// cannot stomp a VTXO that has since been reissued or recovered.
+	descriptor, err := m.cfg.Store.GetVTXO(ctx, req.Outpoint)
+	if err != nil {
+		return fn.Err[ManagerResp](
+			fmt.Errorf("load vtxo for conflict: %w", err),
+		)
+	}
+	if descriptor == nil || descriptor.Status != VTXOStatusUnilateralExit {
+		return fn.Ok[ManagerResp](&ExitOutcomeResp{})
+	}
+
+	// Spawn the expired actor BEFORE persisting the status flip, mirroring
+	// recoverExitedVTXO: the actor is what drives the reclaim, so if we
+	// persisted Expired first and the spawn then failed, the VTXO would be
+	// expired in the DB with nothing reclaiming it until the next restart.
+	// A failed status write is re-converged by boot reconciliation (the
+	// VTXO stays in unilateral-exit on disk, so the next boot re-drives
+	// this).
+	descriptor.Status = VTXOStatusExpired
+
+	ref, err := m.spawnVTXOActor(ctx, descriptor)
+	if err != nil {
+		return fn.Err[ManagerResp](
+			fmt.Errorf("respawn conflicted vtxo actor: %w", err),
+		)
+	}
+	m.actors[req.Outpoint] = ref
+
+	if err := m.cfg.Store.UpdateVTXOStatus(
+		ctx, req.Outpoint, VTXOStatusExpired,
+	); err != nil {
+		return fn.Err[ManagerResp](
+			fmt.Errorf("persist expired status: %w", err),
+		)
+	}
+
+	m.logger(ctx).InfoS(ctx, "Routed conflicted exit to expired reclaim",
+		slog.String("outpoint", req.Outpoint.String()),
+		slog.String("reason", req.Reason),
+	)
 
 	return fn.Ok[ManagerResp](&ExitOutcomeResp{})
 }
