@@ -95,6 +95,15 @@ type SpendObservedMsg struct {
 	// SpendingTxid is the transaction that spent Outpoint.
 	SpendingTxid chainhash.Hash
 
+	// SpendingTx is the full spending transaction. Its witness is what
+	// establishes which taproot path the spend took, which is the only
+	// way to tell the operator's legitimate batch sweep apart from a
+	// sender materializing ancestry.
+	SpendingTx *wire.MsgTx
+
+	// SpenderInputIndex is the input of SpendingTx that consumes Outpoint.
+	SpenderInputIndex uint32
+
 	// Height is the confirmation height of SpendingTxid.
 	Height int32
 }

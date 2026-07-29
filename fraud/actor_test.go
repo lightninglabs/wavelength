@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/baselib/actor"
@@ -246,6 +247,175 @@ func TestWatcherTriggersUnrollOnAncestorSpend(t *testing.T) {
 	chainRef.mu.Lock()
 	require.Len(t, chainRef.unregisters, 2)
 	chainRef.mu.Unlock()
+}
+
+// testSweepScript is a stand-in for the operator's unilateral-CSV timeout
+// script. Only its tap hash matters to the watcher.
+var testSweepScript = []byte{0x51, 0xb2, 0x75}
+
+// testSweepLeafHash returns the tap hash the watcher expects to see revealed
+// by a legitimate operator sweep of testSweepScript.
+func testSweepLeafHash() []byte {
+	hash := txscript.NewBaseTapLeaf(testSweepScript).TapHash()
+
+	return hash[:]
+}
+
+// emitSpendWithWitness delivers a spend whose input carries the given witness,
+// so a test can control which taproot path the spend appears to take.
+func (f *fakeChainSourceRef) emitSpendWithWitness(t *testing.T,
+	outpoint wire.OutPoint, witness [][]byte) {
+
+	t.Helper()
+
+	f.mu.Lock()
+	ref := f.spendRefs[outpoint]
+	f.mu.Unlock()
+	require.NotNil(t, ref)
+
+	spendingTx := wire.NewMsgTx(2)
+	spendingTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: outpoint,
+		Witness:          witness,
+	})
+
+	require.NoError(
+		t,
+		ref.Tell(
+			t.Context(), chainsource.SpendEvent{
+				Outpoint:          outpoint,
+				SpendingTxid:      spendingTx.TxHash(),
+				SpendingTx:        spendingTx,
+				SpenderInputIndex: 0,
+				SpendingHeight:    33,
+			},
+		),
+	)
+}
+
+// sweepWitness is the witness shape of a taproot script-path spend revealing
+// the operator's sweep leaf: signature, script, control block.
+func sweepWitness(script []byte) [][]byte {
+	return [][]byte{{0x01}, script, {0xc0}}
+}
+
+// TestWatcherSkipsUnrollOnOperatorSweep verifies that a spend revealing the
+// operator's committed timeout leaf does not escalate.
+//
+// The operator's batch sweep spends exactly the outputs the watcher monitors,
+// so without this the sweep would drive a pointless unroll on every affected
+// target.
+func TestWatcherSkipsUnrollOnOperatorSweep(t *testing.T) {
+	treePath, _ := testLeafTree(t, 60)
+	treePath.SweepTapscriptRoot = testSweepLeafHash()
+
+	// The operator sweeps tree node outputs, not VTXO leaves: a leaf's
+	// taproot commits only the collaborative and owner-timeout paths. The
+	// node input is therefore what a sweep spends.
+	source := treePath.Root.Input
+
+	target := testInput(61)
+	desc := testDescriptor(target, treePath)
+
+	chainRef := &fakeChainSourceRef{}
+	managerRef := &fakeManagerRef{}
+	watcher := NewWatcherActor(WatcherConfig{
+		ChainSource:    chainRef,
+		VTXOManagerRef: managerRef,
+		Log:            fn.None[btclog.Logger](),
+	})
+	t.Cleanup(watcher.Stop)
+
+	_, err := watcher.Ref().Ask(t.Context(), &TrackVTXOsRequest{
+		VTXOs: []*vtxo.Descriptor{desc},
+	}).Await(t.Context()).Unpack()
+	require.NoError(t, err)
+
+	chainRef.emitSpendWithWitness(
+		t, source, sweepWitness(testSweepScript),
+	)
+
+	require.Never(t, func() bool {
+		return managerRef.requestCount() > 0
+	}, 300*time.Millisecond, 20*time.Millisecond)
+}
+
+// TestWatcherEscalatesHostileSpendRevealingOtherLeaf verifies that a spend
+// which does NOT reveal the operator's sweep leaf still escalates, even though
+// the operator's timeout path has matured.
+//
+// This is the case a height-based check gets wrong. Maturity says the operator
+// COULD sweep; it does not say this transaction did. A sender materializing
+// ancestry can win the race against a conflicting sweep, and suppressing there
+// would guarantee inaction exactly when fraud response is needed.
+func TestWatcherEscalatesHostileSpendRevealingOtherLeaf(t *testing.T) {
+	treePath, _ := testLeafTree(t, 70)
+	treePath.SweepTapscriptRoot = testSweepLeafHash()
+	source := treePath.Root.Input
+
+	target := testInput(71)
+	desc := testDescriptor(target, treePath)
+
+	chainRef := &fakeChainSourceRef{}
+	managerRef := &fakeManagerRef{}
+	watcher := NewWatcherActor(WatcherConfig{
+		ChainSource:    chainRef,
+		VTXOManagerRef: managerRef,
+		Log:            fn.None[btclog.Logger](),
+	})
+	t.Cleanup(watcher.Stop)
+
+	_, err := watcher.Ref().Ask(t.Context(), &TrackVTXOsRequest{
+		VTXOs: []*vtxo.Descriptor{desc},
+	}).Await(t.Context()).Unpack()
+	require.NoError(t, err)
+
+	// Same height a sweep would confirm at, but a different script.
+	chainRef.emitSpendWithWitness(
+		t, source,
+		sweepWitness(
+			[]byte{0x52, 0xb2, 0x75},
+		),
+	)
+
+	require.Eventually(t, func() bool {
+		return managerRef.requestCount() == 1
+	}, testTimeout, 10*time.Millisecond)
+	require.Equal(t, target, managerRef.lastRequest(t).Outpoint)
+}
+
+// TestWatcherEscalatesWithoutCommittedSweepLeaf verifies that a tree carrying
+// no sweep script never attributes a spend to the operator. An incomplete
+// watch plan must not silently disarm fraud defense.
+func TestWatcherEscalatesWithoutCommittedSweepLeaf(t *testing.T) {
+	treePath, _ := testLeafTree(t, 80)
+	treePath.SweepTapscriptRoot = nil
+	source := treePath.Root.Input
+
+	target := testInput(81)
+	desc := testDescriptor(target, treePath)
+
+	chainRef := &fakeChainSourceRef{}
+	managerRef := &fakeManagerRef{}
+	watcher := NewWatcherActor(WatcherConfig{
+		ChainSource:    chainRef,
+		VTXOManagerRef: managerRef,
+		Log:            fn.None[btclog.Logger](),
+	})
+	t.Cleanup(watcher.Stop)
+
+	_, err := watcher.Ref().Ask(t.Context(), &TrackVTXOsRequest{
+		VTXOs: []*vtxo.Descriptor{desc},
+	}).Await(t.Context()).Unpack()
+	require.NoError(t, err)
+
+	chainRef.emitSpendWithWitness(
+		t, source, sweepWitness(testSweepScript),
+	)
+
+	require.Eventually(t, func() bool {
+		return managerRef.requestCount() == 1
+	}, testTimeout, 10*time.Millisecond)
 }
 
 // TestWatcherTracksOnlyLiveOORVTXOs verifies admission keeps passive fraud

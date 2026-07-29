@@ -342,18 +342,44 @@ func (w *WatcherActor) handleSpendObserved(ctx context.Context,
 		return &AckResp{}, nil
 	}
 
-	var errs error
-	for target := range targets {
-		if err := w.ensureUnroll(ctx, target); err != nil {
-			errs = joinTrackError(errs, err)
+	// Establish what actually spent the ancestor before deciding. The
+	// operator's batch sweep spends exactly these outputs, so without this
+	// check every legitimate sweep would escalate a pointless unroll on
+	// each affected target.
+	//
+	// The test is provenance, not timing. Chain height only proves the
+	// operator's timeout path has matured; it says nothing about which
+	// path a given transaction took, so a hostile expansion confirmed
+	// after expiry would look identical to a sweep. Matching the revealed
+	// tapleaf against the one committed in the watched output settles it,
+	// and leaves genuine post-expiry fraud escalating.
+	operatorSweep := false
+	if watch, ok := w.watches.pointAt(msg.Outpoint); ok {
+		operatorSweep = watch.IsOperatorSweepSpend(
+			msg.SpendingTx, msg.SpenderInputIndex,
+		)
+	}
+
+	var (
+		errs      error
+		escalated int
+	)
+	if !operatorSweep {
+		for target := range targets {
+			escalated++
+			if err := w.ensureUnroll(ctx, target); err != nil {
+				errs = joinTrackError(errs, err)
+			}
 		}
 	}
 
-	w.log.DebugS(ctx, "Triggered recipient fraud unroll",
+	w.log.DebugS(ctx, "Handled watched ancestor spend",
 		slog.String("watched_outpoint", msg.Outpoint.String()),
 		slog.String("spending_txid", msg.SpendingTxid.String()),
 		slog.Int("height", int(msg.Height)),
 		slog.Int("targets", len(targets)),
+		slog.Int("escalated", escalated),
+		slog.Bool("operator_sweep", operatorSweep),
 	)
 
 	if errs != nil {
@@ -405,9 +431,11 @@ func (w *WatcherActor) registerSpendWatch(ctx context.Context,
 	notifyRef := chainsource.MapSpendEvent(
 		w.selfRef, func(event chainsource.SpendEvent) Msg {
 			return &SpendObservedMsg{
-				Outpoint:     event.Outpoint,
-				SpendingTxid: event.SpendingTxid,
-				Height:       event.SpendingHeight,
+				Outpoint:          event.Outpoint,
+				SpendingTxid:      event.SpendingTxid,
+				SpendingTx:        event.SpendingTx,
+				SpenderInputIndex: event.SpenderInputIndex,
+				Height:            event.SpendingHeight,
 			}
 		},
 	)
