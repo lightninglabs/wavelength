@@ -15,6 +15,8 @@ import (
 	mailboxrpc "github.com/lightninglabs/wavelength/mailbox/rpc"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/tlv"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 )
@@ -1142,6 +1144,29 @@ func (a *ServerConnectionActor) RegisterWaiter(
 // cancellation or timeout.
 func (a *ServerConnectionActor) removeWaiter(id CorrelationID) {
 	a.responseRegistry.RemoveWaiter(id)
+}
+
+// admitUnary reports whether another unary request may go on the wire, given
+// how many are already outstanding.
+//
+// The bound is deliberately soft: concurrent senders read the count before any
+// of them registers, so the outstanding set can overshoot by the size of one
+// burst. That is fine, because the point is to stop unbounded growth against a
+// remote that has stopped answering, not to hold an exact ceiling. Making it
+// exact would mean holding the registry lock across the whole send.
+func (a *ServerConnectionActor) admitUnary() error {
+	limit := a.cfg.MaxInFlightUnary
+	if limit <= 0 {
+		limit = DefaultMaxInFlightUnary
+	}
+
+	inFlight := a.responseRegistry.WaiterCount()
+	if inFlight < limit {
+		return nil
+	}
+
+	return status.Errorf(codes.ResourceExhausted, "unary requests in "+
+		"flight (%d) at limit %d", inFlight, limit)
 }
 
 // removePendingResponse drops any buffered early response for the correlation

@@ -165,6 +165,21 @@ func (r *ResponseRegistry) HasWaiter(id CorrelationID) bool {
 	return ok
 }
 
+// WaiterCount returns how many live in-memory waiters are registered, which is
+// how many unary requests this client currently has outstanding against the
+// remote mailbox. Callers use it as an admission signal: an abandoned request
+// keeps executing remotely, so a client that never bounds its outstanding set
+// converts remote slowness into a queue of work nobody is left to receive.
+// Stale waiters are pruned first so an expired entry cannot inflate the count.
+func (r *ResponseRegistry) WaiterCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.pruneStaleLocked(time.Now())
+
+	return len(r.waiters)
+}
+
 // FailAll completes every registered waiter's promise with err and clears the
 // waiter set. It is used to fail all in-flight unary callers at once when the
 // connector transitions to a terminal incompatible state, so no caller blocks
