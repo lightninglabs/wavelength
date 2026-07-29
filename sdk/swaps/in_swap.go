@@ -692,9 +692,7 @@ func (s *paySession) createSwap(ctx context.Context) error {
 // wall-clock funding deadline is effectively exhausted or the vHTLC refund
 // locktime is already imminent.
 func (s *paySession) ensureFundingStillSafe(ctx context.Context) error {
-	now := s.client.currentTime()
-	if !s.cfg.Expiry.IsZero() &&
-		!now.Add(s.client.fundingExpiryBuffer).Before(s.cfg.Expiry) {
+	if s.fundingAdmissionClosed() {
 		return s.markExpired(
 			ctx, fmt.Sprintf("funding deadline %s is too close "+
 				"or already reached", s.cfg.Expiry),
@@ -718,6 +716,24 @@ func (s *paySession) ensureFundingStillSafe(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// fundingAdmissionDeadline returns the wall-clock cutoff shared with Waved.
+// The local safety buffer closes admission before the swap's hard expiry so a
+// newly accepted vHTLC still has time to propagate and be reconciled.
+func (s *paySession) fundingAdmissionDeadline() time.Time {
+	if s == nil || s.cfg == nil || s.cfg.Expiry.IsZero() {
+		return time.Time{}
+	}
+
+	return s.cfg.Expiry.Add(-s.client.fundingExpiryBuffer)
+}
+
+func (s *paySession) fundingAdmissionClosed() bool {
+	deadline := s.fundingAdmissionDeadline()
+
+	return !deadline.IsZero() &&
+		!s.client.currentTime().Before(deadline)
 }
 
 // fundOrAdoptVHTLC reconciles already-indexed state before submitting funding,
@@ -842,8 +858,16 @@ func (s *paySession) waitForFundedVHTLC(ctx context.Context) error {
 			})
 		}
 
-		if err := s.ensureFundingStillSafe(ctx); err != nil {
-			return err
+		// Once admission closes, a FundingInitiated session is
+		// ambiguous: the original detached OOR may have committed even
+		// when its RPC response was lost. Skip terminal expiry here and
+		// issue a read-only keyed reconciliation below. Waved's
+		// matching admission deadline guarantees that a NotFound
+		// response cannot later turn into a fresh transfer.
+		if !s.fundingAdmissionClosed() {
+			if err := s.ensureFundingStillSafe(ctx); err != nil {
+				return err
+			}
 		}
 
 		if err := s.ensureFundingSubmitted(ctx, false); err != nil {
@@ -868,9 +892,13 @@ func (s *paySession) waitForFundedVHTLC(ctx context.Context) error {
 					)
 				}
 
-				return s.mutateAndPersist(ctx, func() error {
-					return s.transition(payEventExpired)
-				})
+				// The ambiguity grace can span the hard swap
+				// expiry. Never let that timer bypass
+				// authoritative keyed reconciliation: force an
+				// immediate existing-only probe, which either
+				// recovers the winner, expires on NotFound, or
+				// remains retryable.
+				return s.ensureFundingSubmitted(ctx, true)
 			}
 
 			return err
@@ -903,11 +931,24 @@ func (s *paySession) ensureFundingSubmitted(ctx context.Context,
 		}
 	}
 
-	result, err := s.client.daemon.SendOORWithPolicyAndKeyDetails(
-		ctx, s.cfg.AmountSat, s.vhtlcPolicyTemplate,
-		inSwapFundingIdempotencyKey(s.cfg.PaymentHash),
+	existingOnly := s.fundingAdmissionClosed()
+	result, err := s.client.daemon.SendOORWithPolicyOptionsDetails(
+		ctx, s.cfg.AmountSat, s.vhtlcPolicyTemplate, OORSendOptions{
+			IdempotencyKey: inSwapFundingIdempotencyKey(
+				s.cfg.PaymentHash,
+			),
+			AdmissionDeadline: s.fundingAdmissionDeadline(),
+			ExistingOnly:      existingOnly,
+		},
 	)
 	if err != nil {
+		if existingOnly && status.Code(err) == codes.NotFound {
+			return s.markExpired(
+				ctx, "funding admission closed with no "+
+					"accepted OOR transfer",
+			)
+		}
+
 		// A retry can race with a funding attempt that was accepted but
 		// not yet observed by this SDK instance. Reconcile once before
 		// surfacing the send failure.

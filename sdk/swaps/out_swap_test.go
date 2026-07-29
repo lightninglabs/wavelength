@@ -1704,6 +1704,7 @@ type testDaemonConn struct {
 	skipLiveOnCustom  bool
 	sendPolicyCalls   int
 	sendPolicyKeys    []string
+	sendPolicyOpts    []OORSendOptions
 	sendCustomCalls   int
 	oorSessionCalls   int
 	liveLookupCalls   int
@@ -1739,19 +1740,20 @@ func (d *testDaemonConn) BlockHeight(context.Context) (uint32, error) {
 	return d.blockHeight, nil
 }
 
-// SendOORWithPolicyAndKeyDetails records the requested output policy template
-// and caller-owned idempotency key.
-func (d *testDaemonConn) SendOORWithPolicyAndKeyDetails(_ context.Context,
-	_ int64, recipientPolicyTemplate []byte, idempotencyKey string) (
+// SendOORWithPolicyOptionsDetails records the requested output policy template
+// and caller-owned admission options.
+func (d *testDaemonConn) SendOORWithPolicyOptionsDetails(_ context.Context,
+	_ int64, recipientPolicyTemplate []byte, opts OORSendOptions) (
 	*OORSendResult, error) {
 
 	d.sendPolicyCalls++
-	d.sendPolicyKeys = append(d.sendPolicyKeys, idempotencyKey)
+	d.sendPolicyKeys = append(d.sendPolicyKeys, opts.IdempotencyKey)
+	d.sendPolicyOpts = append(d.sendPolicyOpts, opts)
 	d.lastSendPolicy = append(
 		[]byte(nil), recipientPolicyTemplate...,
 	)
 	if d.sendPolicyHook != nil {
-		return d.sendPolicyHook(d.sendPolicyCalls, idempotencyKey)
+		return d.sendPolicyHook(d.sendPolicyCalls, opts.IdempotencyKey)
 	}
 
 	if d.sendPolicyErr != nil {

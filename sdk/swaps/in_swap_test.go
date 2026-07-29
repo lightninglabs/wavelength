@@ -2583,8 +2583,9 @@ func TestPaySessionFundingReplayAfterLostResponse(t *testing.T) {
 	resumedClient.waitPollInterval = time.Millisecond
 	resumedClient.fundingResumeGracePeriod = grace
 	resumedClient.now = func() time.Time {
-		return start.Add(2 * grace)
+		return start.Add(time.Minute)
 	}
+	resumedClient.fundingResumeGracePeriod = 2 * time.Minute
 
 	resumed, err := resumedClient.ResumePayViaLightning(
 		t.Context(), preimage.Hash(),
@@ -2607,12 +2608,114 @@ func TestPaySessionFundingReplayAfterLostResponse(t *testing.T) {
 	require.EqualValues(t, testInSwapAmountSat, resumed.vhtlcAmount)
 	require.Len(t, accepted, 1)
 	require.Equal(t, 3, daemonConn.sendPolicyCalls)
+	require.Equal(t, 1, daemonConn.armRecoveryCalls)
 
 	wantKey := inSwapFundingIdempotencyKey(preimage.Hash())
 	require.Equal(
 		t, []string{wantKey, wantKey, wantKey},
 		daemonConn.sendPolicyKeys,
 	)
+	require.Len(t, daemonConn.sendPolicyOpts, 3)
+	require.False(t, daemonConn.sendPolicyOpts[0].ExistingOnly)
+	require.True(t, daemonConn.sendPolicyOpts[1].ExistingOnly)
+	require.True(t, daemonConn.sendPolicyOpts[2].ExistingOnly)
+	for _, opts := range daemonConn.sendPolicyOpts {
+		require.Equal(
+			t, start.Add(55*time.Second), opts.AdmissionDeadline,
+		)
+	}
+}
+
+// TestPaySessionExpiresAfterAuthoritativeFundingMiss verifies an ambiguous
+// FundingInitiated session only expires after Waved authoritatively reports
+// that no transfer won the key. The post-deadline call must be read-only so
+// recovering a stale session can never create an already-expired vHTLC.
+func TestPaySessionExpiresAfterAuthoritativeFundingMiss(t *testing.T) {
+	t.Parallel()
+
+	store := newTestSwapStore(t)
+
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	serverPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	preimage, err := NewPreimage()
+	require.NoError(t, err)
+	invoice := testValidPayInvoice(t, preimage)
+
+	start := time.Unix(1_700_000_000, 0)
+	serverConn := &testInSwapServerConn{
+		cfg: testInSwapConfig(
+			serverPriv.PubKey(), preimage, start.Add(time.Minute),
+		),
+	}
+	daemonConn := &testDaemonConn{
+		identityKey: clientPriv.PubKey(),
+		operatorKey: operatorPriv.PubKey(),
+		blockHeight: 100,
+		sendPolicyHook: func(int, string) (*OORSendResult, error) {
+			return nil, status.Error(
+				codes.NotFound, "no accepted funding transfer",
+			)
+		},
+	}
+
+	client := configureTestPayClient(
+		NewSwapClientWithStore(
+			serverConn, daemonConn, nil, nil, store,
+		),
+	)
+	client.now = func() time.Time { return start }
+
+	session, err := client.StartPayViaLightning(
+		t.Context(), invoice, testInSwapFeeSat,
+	)
+	require.NoError(t, err)
+
+	err = session.mutateAndPersist(t.Context(), func() error {
+		return session.transition(payEventFundingInitiated)
+	})
+	require.NoError(t, err)
+
+	resumedClient := configureTestPayClient(
+		NewSwapClientWithStore(
+			serverConn, daemonConn, nil, nil, store,
+		),
+	)
+	resumedClient.now = func() time.Time {
+		return start.Add(time.Minute)
+	}
+	resumedClient.fundingResumeGracePeriod = 2 * time.Minute
+
+	resumed, err := resumedClient.ResumePayViaLightning(
+		t.Context(), preimage.Hash(),
+	)
+	require.NoError(t, err)
+
+	_, err = resumed.Wait(t.Context())
+	require.ErrorIs(t, err, errSwapExpired)
+	require.Equal(t, PayStateExpired, resumed.State())
+	require.Empty(t, resumed.fundingSessionID)
+	require.Empty(t, resumed.vhtlcOutpoint)
+	require.Equal(t, 0, daemonConn.armRecoveryCalls)
+	require.Equal(t, 1, daemonConn.sendPolicyCalls)
+	require.Equal(
+		t,
+		inSwapFundingIdempotencyKey(
+			preimage.Hash(),
+		),
+		daemonConn.sendPolicyOpts[0].IdempotencyKey,
+	)
+	require.Equal(
+		t, start.Add(55*time.Second),
+		daemonConn.sendPolicyOpts[0].AdmissionDeadline,
+	)
+	require.True(t, daemonConn.sendPolicyOpts[0].ExistingOnly)
 }
 
 // TestPaySessionRefundsAmountMismatch asserts the client preserves mismatch
