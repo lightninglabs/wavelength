@@ -60,13 +60,26 @@ const (
 	// the exit has begun on-chain) so boot-time reconciliation can decide
 	// whether to recover the VTXO (wavelength#602).
 	UnilateralExitJobStatusFailedRecoverable
+
+	// UnilateralExitJobStatusFailedConflicted means the job failed
+	// terminally because a confirmed foreign spend conflicts with the
+	// recovery tree — the operator swept a source batch commitment output
+	// the exit depends on, so the exit can never complete. Unlike a plain
+	// Failed job, boot-time reconciliation must retire the target VTXO out
+	// of unilateral-exit (clearing it from pending balance) rather than
+	// leaving it pending forever, and unlike a recoverable failure it must
+	// NOT roll the VTXO back to live: the coin is provably gone
+	// (wavelength#1050). Appended after the original enum so existing rows'
+	// numeric meaning never shifts.
+	UnilateralExitJobStatusFailedConflicted
 )
 
 // IsTerminal reports whether the control-plane job status is terminal.
 func (s UnilateralExitJobStatus) IsTerminal() bool {
 	return s == UnilateralExitJobStatusCompleted ||
 		s == UnilateralExitJobStatusFailed ||
-		s == UnilateralExitJobStatusFailedRecoverable
+		s == UnilateralExitJobStatusFailedRecoverable ||
+		s == UnilateralExitJobStatusFailedConflicted
 }
 
 // UnilateralExitJobTrigger records what started an exit job.
