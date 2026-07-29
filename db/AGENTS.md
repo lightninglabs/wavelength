@@ -71,7 +71,7 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   safety bounds enforced during `DeserializeTree`.
 - `resolveInputPackage` / `loadPackageBundleBySessionID` — two-stage
   OOR ancestry resolver (`oor_unroll_resolver.go`).
-- `LatestMigrationVersion = 14` — current schema version.
+- `LatestMigrationVersion = 16` — current schema version.
 - `PendingIntentPersistenceStore` — implements `wallet.PendingIntentStore`,
   the persistence half of the generic restart-safe intent outbox (header
   `pending_intents` + per-kind detail tables + `pending_intent_anchors`).
@@ -201,3 +201,9 @@ when adding one.
 ## Deep Docs
 
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map.
+- `000016_round_sweep_delay` — adds `rounds.sweep_delay` so a round that
+  confirms after a restart can still derive each new VTXO's absolute batch
+  expiry (`confirmation_height + sweep_delay`). `InsertRound` only adopts a
+  non-zero incoming value; rows predating the column read back zero, which
+  the confirmation path treats as unknown and leaves the expiry unstamped
+  rather than wrong.

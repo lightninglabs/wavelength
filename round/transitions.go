@@ -55,6 +55,11 @@ func cleanupSignerSessions(sessions map[SignerKey]*tree.SignerSession) error {
 	return errors.Join(cleanupErrors...)
 }
 
+// errNoRoundSweepDelay is reported when a confirming round carries no
+// recorded sweep delay, so no absolute batch expiry can be derived for the
+// VTXOs it creates.
+var errNoRoundSweepDelay = errors.New("round has no recorded sweep delay")
+
 // failWithNotification creates a state transition to ClientFailedState and
 // emits a RoundFailedNotification. This is the standard pattern for handling
 // internal errors without returning an error to the FSM (which would halt it).
@@ -2946,6 +2951,7 @@ func (s *ForfeitSignaturesCollectingState) checkpointRound(
 	return &Round{
 		RoundID:       s.RoundID,
 		StartHeight:   startHeight,
+		SweepDelay:    s.SweepDelay,
 		CommitmentTx:  fn.Some(s.CommitmentTx),
 		VTXOTreePaths: fn.Some(s.VTXOTreePaths),
 		Intents:       intents,
@@ -3392,6 +3398,7 @@ func (s *PartialSigsSentState) processEvent(ctx context.Context,
 		round := &Round{
 			RoundID:       s.RoundID,
 			StartHeight:   env.StartHeight,
+			SweepDelay:    s.SweepDelay,
 			CommitmentTx:  fn.Some(s.CommitmentTx),
 			VTXOTreePaths: fn.Some(s.VTXOTreePaths),
 			Intents:       intents,
@@ -4551,9 +4558,31 @@ func (s *InputSigSentState) ProcessEvent(ctx context.Context, event ClientEvent,
 		)
 
 		// Compute batch expiry as absolute block height using this
-		// round's sweep delay (delivered per round, not a global term).
+		// round's sweep delay (delivered per round, not a global
+		// term). The delay is persisted with the round checkpoint, so
+		// it survives a restart between input_sig_sent and
+		// confirmation.
+		//
+		// A zero delay means the round was checkpointed before the
+		// column existed and has no recorded value. Stamping
+		// BatchExpiry == CreatedHeight would be worse than leaving it
+		// unset: the wallet reads that back as long expired. Leave it
+		// unstamped instead, which classifies as
+		// ExpiryStatusUnknown — the VTXO stays live and spendable,
+		// only expiry monitoring is disabled, and the authoritative
+		// expiry can still be recovered from the operator's indexer.
 		sweepDelay := int32(s.SweepDelay)
-		batchExpiry := evt.BlockHeight + sweepDelay
+		batchExpiry := int32(0)
+		if sweepDelay > 0 {
+			batchExpiry = evt.BlockHeight + sweepDelay
+		} else {
+			env.Log.ErrorS(ctx, "Round has no recorded sweep "+
+				"delay; leaving batch expiry unstamped",
+				errNoRoundSweepDelay,
+				slog.String("round_id", s.RoundID.String()),
+				slog.Int("block_height", int(evt.BlockHeight)),
+			)
+		}
 
 		// Fill in round metadata so VTXOs are complete from the
 		// first write. This avoids a race where callers read the

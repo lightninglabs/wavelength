@@ -17,7 +17,8 @@ automatically triggers unilateral exit for all affected recipient VTXOs.
   (VTXO manager handle that owns the exit transition and starts the durable
   unroll job), `Log`, `MailboxSize` (default 64).
 - `WatchPlan` — Passive watch set for one VTXO. Contains a target
-  outpoint and a list of `WatchPoint` ancestors to monitor.
+  outpoint, the target's absolute `BatchExpiry`, and a list of
+  `WatchPoint` ancestors to monitor.
 - `WatchPoint` — Single outpoint to watch: `Outpoint`, `PkScript`,
   `HeightHint`.
 - `Msg` / `Resp` — Sealed message interfaces (fraud-only).
@@ -68,6 +69,16 @@ automatically triggers unilateral exit for all affected recipient VTXOs.
 - **Filter at admission.** Only VTXO descriptors with `Status=Live` and
   `ChainDepth > 0` are tracked; already-terminal or non-OOR VTXOs are
   skipped.
+- **Escalation is suppressed only for a proven operator sweep.** A spend is
+  attributed to the operator when its witness reveals exactly the
+  unilateral-CSV timeout leaf committed in the watched output
+  (`WatchPoint.SweepLeafHash`, taken from the tree's `SweepTapscriptRoot`).
+  Chain height is deliberately NOT the test: maturity proves the operator
+  *could* sweep, not that this transaction did, so a hostile expansion
+  confirmed after expiry would be indistinguishable from a sweep under a
+  height check. An empty `SweepLeafHash` never suppresses, so a VTXO leaf
+  output (whose taproot commits only the collaborative and owner-timeout
+  paths) and an incomplete watch plan both keep escalating.
 
 ## Deep Docs
 

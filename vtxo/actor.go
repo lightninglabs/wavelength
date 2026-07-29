@@ -327,6 +327,16 @@ func (a *VTXOActor) tellManager(ctx context.Context, msg ManagerMsg) {
 func (a *VTXOActor) quoteRefreshFee(ctx context.Context, vtxo *Descriptor,
 	lastCheckedHeight int32) btcutil.Amount {
 
+	// Expired recovery is a pure one-for-one ordinary refresh whose
+	// authoritative seal-time fee is waived by the operator. Avoid an
+	// advisory EstimateFee call with remaining_blocks=0: that value means
+	// "use the full lifetime" to the generic estimator and would report a
+	// fee the round will not charge.
+	if HasUsableBatchExpiry(vtxo) &&
+		lastCheckedHeight >= vtxo.BatchExpiry {
+		return 0
+	}
+
 	if a.cfg.RefreshFeeQuoter == nil {
 		return 0
 	}
@@ -535,10 +545,16 @@ func (a *VTXOActor) processOutboxWithOperatorKey(ctx context.Context,
 					),
 				)
 
+				rollbackStatus := VTXOStatusLive
+				_, expired := a.state.(*ExpiredState)
+				if expired {
+					rollbackStatus = VTXOStatusExpired
+				}
+
 				rollbackErr := a.processStatusUpdate(
 					ctx, &VTXOStatusUpdate{
 						Outpoint:  vtxo.Outpoint,
-						NewStatus: VTXOStatusLive,
+						NewStatus: rollbackStatus,
 					},
 				)
 				if rollbackErr != nil {
@@ -794,6 +810,14 @@ func statusToState(ctx context.Context, vtxo *Descriptor, store VTXOStore,
 		return &SpendingState{
 			VTXO:              vtxo,
 			LastCheckedHeight: vtxo.CreatedHeight,
+		}
+
+	case VTXOStatusExpired:
+		// Non-terminal: the actor is restored so the VTXO can still be
+		// forfeited into a round to recover its value.
+		return &ExpiredState{
+			VTXO:           vtxo,
+			ObservedHeight: vtxo.CreatedHeight,
 		}
 
 	case VTXOStatusPendingForfeit:

@@ -122,6 +122,14 @@ func (s *testVTXOStore) ListLiveVTXOs(_ context.Context) ([]*vtxo.Descriptor,
 	return out, nil
 }
 
+// ListRecoverableVTXOs mirrors ListLiveVTXOs: this fixture holds no expired
+// records, so the recoverable and live sets coincide.
+func (s *testVTXOStore) ListRecoverableVTXOs(ctx context.Context) (
+	[]*vtxo.Descriptor, error) {
+
+	return s.ListLiveVTXOs(ctx)
+}
+
 // ListVTXOsByStatus returns descriptors matching the given status.
 func (s *testVTXOStore) ListVTXOsByStatus(_ context.Context,
 	status vtxo.VTXOStatus) ([]*vtxo.Descriptor, error) {

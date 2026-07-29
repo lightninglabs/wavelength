@@ -189,6 +189,67 @@ func (q *Queries) ListLiveVTXOs(ctx context.Context) ([]Vtxo, error) {
 	return items, nil
 }
 
+const ListRecoverableVTXOs = `-- name: ListRecoverableVTXOs :many
+SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, policy_template, client_key_id, operator_pubkey, batch_expiry, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time, chain_depth, construction_version FROM vtxos
+WHERE (status < 3 OR status = 7 OR status = 8) AND spent = FALSE
+ORDER BY creation_time DESC
+`
+
+// ListRecoverableVTXOs returns every VTXO whose actor must be restored at
+// startup: the non-terminal set of ListLiveVTXOs plus Expired (8).
+//
+// Expired is deliberately absent from ListLiveVTXOs, which feeds spendable
+// balance and refresh estimation, because an expired VTXO holds no spendable
+// value until it has been reissued. Its actor still has to exist though: the
+// value is recoverable by forfeiting the VTXO in an ordinary round, and the
+// actor is what holds the descriptor and signing material that forfeit needs.
+func (q *Queries) ListRecoverableVTXOs(ctx context.Context) ([]Vtxo, error) {
+	rows, err := q.db.QueryContext(ctx, ListRecoverableVTXOs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Vtxo
+	for rows.Next() {
+		var i Vtxo
+		if err := rows.Scan(
+			&i.OutpointHash,
+			&i.OutpointIndex,
+			&i.RoundID,
+			&i.Amount,
+			&i.PkScript,
+			&i.Expiry,
+			&i.PolicyTemplate,
+			&i.ClientKeyID,
+			&i.OperatorPubkey,
+			&i.BatchExpiry,
+			&i.CreatedHeight,
+			&i.CommitmentTxid,
+			&i.Spent,
+			&i.Status,
+			&i.ForfeitRoundID,
+			&i.ForfeitTx,
+			&i.ForfeitTxid,
+			&i.ReplacedByHash,
+			&i.ReplacedByIndex,
+			&i.CreationTime,
+			&i.LastUpdateTime,
+			&i.ChainDepth,
+			&i.ConstructionVersion,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const ListVTXOSelectionCandidatesByStatus = `-- name: ListVTXOSelectionCandidatesByStatus :many
 SELECT outpoint_hash, outpoint_index, amount, pk_script
 FROM vtxos

@@ -106,19 +106,26 @@ func (r *RPCServer) resolveRefreshPreviewTargets(ctx context.Context,
 	explicit []wire.OutPoint, all bool) ([]*vtxo.Descriptor, error) {
 
 	if all {
-		liveVTXOs, err := r.server.vtxoStore.ListLiveVTXOs(ctx)
+		// Read the recoverable set rather than the live one so
+		// "refresh all" also reclaims expired VTXOs. An expired VTXO
+		// is exactly what a user wants swept up here: it holds no
+		// spendable value until it is reissued, and forfeiting it in
+		// a round is the only way to get that value back.
+		candidates, err := r.server.vtxoStore.ListRecoverableVTXOs(ctx)
 		if err != nil {
-			return nil, status.Errorf(codes.Internal, "list live "+
-				"VTXOs: %v", err)
+			return nil, status.Errorf(codes.Internal, "list "+
+				"recoverable VTXOs: %v", err)
 		}
 
-		// Keep only VTXOs actually in LiveState, matching the
-		// real refresh path's filter: anything already on its
-		// way through a round must not be double-counted in the
-		// preview either.
-		descs := make([]*vtxo.Descriptor, 0, len(liveVTXOs))
-		for _, desc := range liveVTXOs {
-			if desc.Status != vtxo.VTXOStatusLive {
+		// Keep only VTXOs actually in LiveState or ExpiredState,
+		// matching the real refresh path's filter: anything already
+		// on its way through a round must not be double-counted in
+		// the preview either.
+		descs := make([]*vtxo.Descriptor, 0, len(candidates))
+		for _, desc := range candidates {
+			switch desc.Status {
+			case vtxo.VTXOStatusLive, vtxo.VTXOStatusExpired:
+			default:
 				continue
 			}
 
@@ -143,11 +150,20 @@ func (r *RPCServer) resolveRefreshPreviewTargets(ctx context.Context,
 		}
 
 		// GetVTXO resolves rows in any lifecycle state; the --all
-		// branch filters to LiveState, and the explicit branch
-		// must be as strict — a spent or in-flight VTXO would
+		// branch filters to Live and Expired, and the explicit
+		// branch must match — a spent or in-flight VTXO would
 		// preview as refreshable (and be priced) while the real
 		// dispatch is guaranteed to fail on it.
-		if desc.Status != vtxo.VTXOStatusLive {
+		//
+		// Expired is accepted because refreshing an expired VTXO is
+		// exactly how its owner recovers the value: the operator
+		// admits the forfeit, the round reissues the amount, and the
+		// dispatch below succeeds. Rejecting it here would make the
+		// recovery path unreachable through the RPC even though every
+		// layer beneath it supports the flow.
+		switch desc.Status {
+		case vtxo.VTXOStatusLive, vtxo.VTXOStatusExpired:
+		default:
 			return nil, status.Errorf(codes.InvalidArgument,
 				"VTXO %s:%d is not refreshable (status %v)",
 				op.Hash, op.Index, desc.Status)
@@ -266,9 +282,11 @@ func (r *RPCServer) estimateRefreshFees(ctx context.Context,
 	// quote's remaining-blocks figure is clamped to 1 because the
 	// operator treats zero as "use the full sweep-delay lifetime",
 	// which would massively over-quote an expiring VTXO; window
-	// membership uses the unclamped value (an expired VTXO is not
-	// waiver-eligible).
-	allInWindow := true
+	// membership uses the unclamped value. Expired VTXOs are also
+	// waiver-eligible when their expiry is usable: recovery is an exact
+	// ordinary refresh and must not charge value the operator already owes
+	// back to the client.
+	allWaiverEligible := true
 	for _, desc := range descs {
 		remaining := vtxo.BlocksUntilExpiry(desc, height)
 		clamped := remaining
@@ -278,8 +296,9 @@ func (r *RPCServer) estimateRefreshFees(ctx context.Context,
 
 		inWindow := window > 0 && remaining > 0 &&
 			uint32(remaining) <= window
-		if !inWindow {
-			allInWindow = false
+		expired := vtxo.HasUsableBatchExpiry(desc) && remaining <= 0
+		if !inWindow && !expired {
+			allWaiverEligible = false
 		}
 
 		est.Outpoints = append(
@@ -294,7 +313,7 @@ func (r *RPCServer) estimateRefreshFees(ctx context.Context,
 			},
 		)
 	}
-	est.FreeRefreshEligible = allInWindow
+	est.FreeRefreshEligible = allWaiverEligible
 
 	// Second pass: fetch and validate the operator quotes, deduped
 	// on (amount, remaining blocks), and pre-compute the selection

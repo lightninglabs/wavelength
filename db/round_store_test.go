@@ -248,6 +248,68 @@ func TestRoundStoreCommitAndFetch(t *testing.T) {
 	require.Equal(t, testRound.RoundID, inputSigState.RoundID)
 }
 
+// TestRoundStoreSweepDelayRoundTrip asserts the per-round sweep delay
+// survives the checkpoint/restore cycle on both the round record and the
+// restored FSM state.
+//
+// A round is checkpointed at input_sig_sent and can confirm after a daemon
+// restart. The confirmation handler derives every new VTXO's absolute batch
+// expiry as confirmation_height + sweep_delay, so losing the delay makes the
+// resumed round stamp BatchExpiry == CreatedHeight, which the wallet reads
+// back as already expired.
+func TestRoundStoreSweepDelayRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	const sweepDelay = uint32(1008)
+
+	store, _ := newRoundStoreForTest(t)
+	ctx := t.Context()
+
+	testRound := createTestRound(t, testRoundIDDB("sweep-delay-round"))
+	testRound.SweepDelay = sweepDelay
+
+	state := &round.InputSigSentState{
+		RoundID:     testRound.RoundID,
+		SweepDelay:  sweepDelay,
+		ClientTrees: make(map[round.SignerKey]*tree.Tree),
+	}
+	testRound.CommitmentTx.WhenSome(func(packet *psbt.Packet) {
+		state.CommitmentTx = packet
+	})
+	testRound.VTXOTreePaths.WhenSome(func(paths map[int]*tree.Tree) {
+		state.VTXOTreePaths = paths
+	})
+
+	require.NoError(t, store.CommitState(ctx, testRound, state))
+
+	fetchedRound, fetchedState, err := store.FetchState(
+		ctx, testRound.RoundID,
+	)
+	require.NoError(t, err)
+
+	require.Equal(t, sweepDelay, fetchedRound.SweepDelay)
+
+	inputSigState, ok := fetchedState.(*round.InputSigSentState)
+	require.True(t, ok)
+	require.Equal(t, sweepDelay, inputSigState.SweepDelay)
+
+	// A later checkpoint that carries no delay must not erase the
+	// recorded one: the value is fixed for the life of the round.
+	testRound.SweepDelay = 0
+	state.SweepDelay = 0
+	require.NoError(t, store.CommitState(ctx, testRound, state))
+
+	fetchedRound, fetchedState, err = store.FetchState(
+		ctx, testRound.RoundID,
+	)
+	require.NoError(t, err)
+	require.Equal(t, sweepDelay, fetchedRound.SweepDelay)
+
+	inputSigState, ok = fetchedState.(*round.InputSigSentState)
+	require.True(t, ok)
+	require.Equal(t, sweepDelay, inputSigState.SweepDelay)
+}
+
 // TestRoundStoreLookupByTxid tests looking up a round by commitment txid.
 func TestRoundStoreLookupByTxid(t *testing.T) {
 	t.Parallel()

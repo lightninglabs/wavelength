@@ -60,6 +60,19 @@ SELECT * FROM vtxos
 WHERE (status < 3 OR status = 7) AND spent = FALSE
 ORDER BY creation_time DESC;
 
+-- name: ListRecoverableVTXOs :many
+-- ListRecoverableVTXOs returns every VTXO whose actor must be restored at
+-- startup: the non-terminal set of ListLiveVTXOs plus Expired (8).
+--
+-- Expired is deliberately absent from ListLiveVTXOs, which feeds spendable
+-- balance and refresh estimation, because an expired VTXO holds no spendable
+-- value until it has been reissued. Its actor still has to exist though: the
+-- value is recoverable by forfeiting the VTXO in an ordinary round, and the
+-- actor is what holds the descriptor and signing material that forfeit needs.
+SELECT * FROM vtxos
+WHERE (status < 3 OR status = 7 OR status = 8) AND spent = FALSE
+ORDER BY creation_time DESC;
+
 -- name: UpdateVTXOStatus :exec
 -- UpdateVTXOStatus atomically updates a VTXO's status. This is the primary
 -- method for state transitions that don't require additional data.

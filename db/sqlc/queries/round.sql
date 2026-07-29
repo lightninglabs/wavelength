@@ -4,8 +4,8 @@
 INSERT INTO rounds (
     round_id, confirmation_height, confirmation_block_hash, commitment_tx,
     commitment_txid, vtxt_tree, status, creation_time, last_update_time,
-    start_height, flow_version
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+    start_height, flow_version, sweep_delay
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 ON CONFLICT (round_id) DO UPDATE SET
     confirmation_height = COALESCE(excluded.confirmation_height, rounds.confirmation_height),
     confirmation_block_hash = COALESCE(excluded.confirmation_block_hash, rounds.confirmation_block_hash),
@@ -13,7 +13,14 @@ ON CONFLICT (round_id) DO UPDATE SET
     commitment_txid = COALESCE(excluded.commitment_txid, rounds.commitment_txid),
     vtxt_tree = COALESCE(excluded.vtxt_tree, rounds.vtxt_tree),
     status = excluded.status,
-    last_update_time = excluded.last_update_time;
+    last_update_time = excluded.last_update_time,
+    -- The sweep delay is fixed for the life of a round, so a later
+    -- checkpoint must never clear a value an earlier one recorded. Only
+    -- adopt the incoming value when it is actually set.
+    sweep_delay = CASE
+        WHEN excluded.sweep_delay > 0 THEN excluded.sweep_delay
+        ELSE rounds.sweep_delay
+    END;
 
 -- name: GetRound :one
 SELECT * FROM rounds WHERE round_id = $1;

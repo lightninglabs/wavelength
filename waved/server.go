@@ -781,10 +781,15 @@ func (s *Server) fetchCachedOperatorTerms(ctx context.Context) (
 
 // fetchLiveVTXOBalance sums the wallet's non-terminal VTXO holdings for
 // the boarding headroom computation. The full non-terminal set (Live,
-// PendingForfeit, Forfeiting, Spending) is deliberately counted rather
-// than just the spendable subset: in-flight outbound value still
+// PendingForfeit, Forfeiting, Spending, Expired) is deliberately counted
+// rather than just the spendable subset: in-flight outbound value still
 // occupies the user's balance until it terminally leaves, so counting
 // it keeps back-to-back boards from overshooting the operator's cap.
+//
+// Expired value is counted for the same reason even though it is not
+// spendable. The operator still owes it — the owner can reclaim it by
+// refreshing the VTXO into a round — so leaving it out would let a client
+// board up to the cap, then reclaim on top and end up above it.
 //
 // We use the "light" variant: balance summing only reads each
 // descriptor's amount, so we skip the ancestry side-table join whose
@@ -798,7 +803,7 @@ func (s *Server) fetchLiveVTXOBalance(ctx context.Context) (btcutil.Amount,
 		return 0, fmt.Errorf("vtxo store is not initialized")
 	}
 
-	descs, err := s.vtxoStore.ListLiveVTXOsLight(ctx)
+	descs, err := s.vtxoStore.ListRecoverableVTXOsLight(ctx)
 	if err != nil {
 		return 0, err
 	}
@@ -2429,6 +2434,14 @@ func (s *Server) startWalletDependentActors(ctx context.Context,
 		return err
 	}
 
+	// Apply the already-synchronized chain tip only after the round actor
+	// is available. This lets VTXOs that expired while the client was
+	// offline enter the ordinary refresh flow without racing the round
+	// service during actor recovery.
+	if err := s.reconcileVTXOExpiry(ctx, vtxoManagerRef); err != nil {
+		s.log.WarnS(ctx, "Failed to reconcile VTXO expiry", err)
+	}
+
 	// -------------------------------------------------------
 	// 12. Register the unilateral-exit subsystem.
 	// -------------------------------------------------------
@@ -2470,6 +2483,26 @@ func (s *Server) startWalletDependentActors(ctx context.Context,
 	}
 
 	s.log.InfoS(ctx, "Wallet-dependent actors started")
+
+	return nil
+}
+
+// reconcileVTXOExpiry asks the VTXO manager to apply the current chain tip to
+// all actors recovered during startup. Failure is non-fatal because ordinary
+// block subscriptions continue to drive expiry after startup.
+func (s *Server) reconcileVTXOExpiry(ctx context.Context,
+	managerRef actor.ActorRef[vtxo.ManagerMsg, vtxo.ManagerResp]) error {
+
+	response, err := managerRef.Ask(
+		ctx, &vtxo.ReconcileExpiryRequest{},
+	).Await(ctx).Unpack()
+	if err != nil {
+		return fmt.Errorf("ask VTXO expiry reconcile: %w", err)
+	}
+	if _, ok := response.(*vtxo.ReconcileExpiryResponse); !ok {
+		return fmt.Errorf("unexpected VTXO expiry response: %T",
+			response)
+	}
 
 	return nil
 }

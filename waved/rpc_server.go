@@ -1356,6 +1356,9 @@ func protoStatusToDomain(s waverpc.VTXOStatus) (vtxo.VTXOStatus, error) {
 	case waverpc.VTXOStatus_VTXO_STATUS_FAILED:
 		return vtxo.VTXOStatusFailed, nil
 
+	case waverpc.VTXOStatus_VTXO_STATUS_EXPIRED:
+		return vtxo.VTXOStatusExpired, nil
+
 	default:
 		return 0, fmt.Errorf("unknown VTXO status: %v", s)
 	}
@@ -1387,6 +1390,9 @@ func vtxoStatusToProto(s vtxo.VTXOStatus) waverpc.VTXOStatus {
 
 	case vtxo.VTXOStatusSpending:
 		return waverpc.VTXOStatus_VTXO_STATUS_SPENDING
+
+	case vtxo.VTXOStatusExpired:
+		return waverpc.VTXOStatus_VTXO_STATUS_EXPIRED
 
 	default:
 		return waverpc.VTXOStatus_VTXO_STATUS_UNSPECIFIED

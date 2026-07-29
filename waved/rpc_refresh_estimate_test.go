@@ -542,8 +542,9 @@ func TestRefreshDryRunEstimateOperatorDownFreeWindow(t *testing.T) {
 // TestRefreshDryRunEstimateExpiredClampsRemaining verifies an already
 // expired VTXO quotes at a clamped remaining lifetime of 1 instead of
 // 0: the operator treats zero as "use the full sweep-delay lifetime",
-// which would massively over-quote. An expired VTXO is also never
-// waiver-eligible.
+// which would massively over-quote. The selection-level result still reports
+// the expired-recovery waiver, so the quoted components are advisory and the
+// total is zero.
 func TestRefreshDryRunEstimateExpiredClampsRemaining(t *testing.T) {
 	t.Parallel()
 
@@ -574,7 +575,9 @@ func TestRefreshDryRunEstimateExpiredClampsRemaining(t *testing.T) {
 	require.Len(t, est.Outpoints, 1)
 	require.Equal(t, uint32(1), est.Outpoints[0].RemainingBlocks)
 	require.False(t, est.Outpoints[0].InFreeRefreshWindow)
-	require.False(t, est.FreeRefreshEligible)
+	require.True(t, est.FreeRefreshEligible)
+	require.NotNil(t, est.EstimatedTotalFeeSat)
+	require.Zero(t, *est.EstimatedTotalFeeSat)
 
 	require.NotNil(t, svc.lastRequest)
 	require.Equal(t, uint32(1), svc.lastRequest.RemainingBlocks)

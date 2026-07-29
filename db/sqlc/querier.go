@@ -261,6 +261,15 @@ type Querier interface {
 	// Only status = 'pending' rows replay; a 'failed' intent is terminally
 	// retired and must not be re-submitted on restart.
 	ListPendingSendIntents(ctx context.Context) ([]ListPendingSendIntentsRow, error)
+	// ListRecoverableVTXOs returns every VTXO whose actor must be restored at
+	// startup: the non-terminal set of ListLiveVTXOs plus Expired (8).
+	//
+	// Expired is deliberately absent from ListLiveVTXOs, which feeds spendable
+	// balance and refresh estimation, because an expired VTXO holds no spendable
+	// value until it has been reissued. Its actor still has to exist though: the
+	// value is recoverable by forfeiting the VTXO in an ordinary round, and the
+	// actor is what holds the descriptor and signing material that forfeit needs.
+	ListRecoverableVTXOs(ctx context.Context) ([]Vtxo, error)
 	ListRoundsByStatus(ctx context.Context, status string) ([]Round, error)
 	// ListRoundsPaginated returns rounds ordered by round_id with cursor-
 	// based pagination. When cursor is empty, returns from the beginning.
