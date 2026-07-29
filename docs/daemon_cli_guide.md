@@ -288,16 +288,16 @@ wavecli
 ├── send                      — Lightning invoice / onchain leave (wavewalletrpc)
 ├── activity [inspect]        — unified wallet activity feed (wavewalletrpc)
 ├── exit {status|summary|plan} — cooperative leave by default, forced unroll (wavewalletrpc)
-├── wallet-sweep              — sweep backing wallet to a destination (wavewalletrpc)
+├── wallet-sweep              — preview a backing-wallet sweep; broadcast requires approval
 ├── mcp serve                 — MCP server for AI agents (wavewalletrpc)
 ├── schema                    — JSON dump of CLI methods
 ├── ark                       — power-user parent (hidden; no wavewalletrpc)
 │   ├── board                 — board confirmed boarding UTXOs
 │   ├── vtxos {list|refresh|leave}
 │   ├── oor {receive|get|list}
-│   ├── send {oor|inround}
+│   ├── send {oor|inround}    — real transfers require approval
 │   ├── rounds {get|list|join|watch}
-│   ├── sweep [list]
+│   ├── sweep [list]          — broadcast requires approval
 │   ├── fees {estimate|history}
 │   └── listtransactions
 ├── recovery {list|status|escalate|cancel} — daemon-owned vHTLC recovery rows (hidden)
@@ -323,6 +323,15 @@ wavecli
 Flag names are canonical kebab-case in help and examples. Equivalent
 snake_case spellings remain silent compatibility aliases; proto JSON and MCP
 argument field names remain snake_case.
+
+### Money-movement confirmation
+
+`wallet-sweep --broadcast`, `ark sweep --broadcast`, and real
+`ark send inround|oor` calls require a y/N confirmation on a terminal. Agents,
+pipelines, `--no-input`, and `CI=true` must pass the command-local `--yes`
+flag. Without it, the CLI describes the blocked action and returns
+`CONFIRMATION_REQUIRED` with exit code 5 before dialing the daemon. Preview and
+`--dry-run` paths never require approval.
 
 ### `getinfo`
 
@@ -484,9 +493,10 @@ Send via in-round refresh (waits for next round to commit).
 | `--pubkey` | string[] | Recipient x-only pubkey hex(es); paired after `--to` entries |
 | `--amount` | int64[] | Amount(s) in sats (one per recipient, `--to` then `--pubkey` order) |
 | `--dry-run` | bool | Validate without submitting |
+| `--yes` | bool | Approve submitting the real transfer without a prompt |
 
 ```bash
-wavecli ark send inround --to bcrt1p... --amount 50000
+wavecli ark send inround --to bcrt1p... --amount 50000 --yes
 
 # Multiple recipients
 wavecli ark send inround \
@@ -513,9 +523,10 @@ Send via out-of-round transfer (immediate, through operator).
 | `--amount` | int64 | Amount in sats |
 | `--idempotency-key` | string | Caller-provided key for retry-safe sends |
 | `--dry-run` | bool | Validate without initiating |
+| `--yes` | bool | Approve initiating the real transfer without a prompt |
 
 ```bash
-wavecli ark send oor --pubkey <pubkey_xonly_hex> --amount 25000
+wavecli ark send oor --pubkey <pubkey_xonly_hex> --amount 25000 --yes
 wavecli ark send oor --pubkey <hex> --amount 25000 \
   --idempotency-key my-attempt-1
 ```
