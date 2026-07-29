@@ -93,6 +93,10 @@ const (
 	// OwnedReceiveScriptSourceSync marks scripts restored from
 	// sync/recovery.
 	OwnedReceiveScriptSourceSync OwnedReceiveScriptSource = 2
+
+	// OwnedReceiveScriptSourceAssetAlias marks a final asset-composed
+	// output script linked to its pre-registered semantic receive key.
+	OwnedReceiveScriptSourceAssetAlias OwnedReceiveScriptSource = 3
 )
 
 func (s OwnedReceiveScriptSource) String() string {
@@ -105,6 +109,9 @@ func (s OwnedReceiveScriptSource) String() string {
 
 	case OwnedReceiveScriptSourceSync:
 		return "sync"
+
+	case OwnedReceiveScriptSourceAssetAlias:
+		return "asset_alias"
 
 	default:
 		return fmt.Sprintf("unknown(%d)", s)
@@ -2030,7 +2037,8 @@ func validateOwnedReceiveScriptSource(source OwnedReceiveScriptSource) error {
 	switch source {
 	case OwnedReceiveScriptSourceWallet,
 		OwnedReceiveScriptSourceRPC,
-		OwnedReceiveScriptSourceSync:
+		OwnedReceiveScriptSourceSync,
+		OwnedReceiveScriptSourceAssetAlias:
 		return nil
 
 	default:
@@ -2061,6 +2069,9 @@ func ownedReceiveScriptSourceFromCode(sourceCode int32) (
 
 	case int32(OwnedReceiveScriptSourceSync):
 		return OwnedReceiveScriptSourceSync, nil
+
+	case int32(OwnedReceiveScriptSourceAssetAlias):
+		return OwnedReceiveScriptSourceAssetAlias, nil
 
 	default:
 		return 0, fmt.Errorf("unsupported owned receive script source "+

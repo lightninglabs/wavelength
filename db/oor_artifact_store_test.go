@@ -3,8 +3,6 @@ package db
 import (
 	"context"
 	"database/sql"
-	"path/filepath"
-	"sync"
 	"testing"
 	"time"
 
@@ -58,36 +56,6 @@ func newOORArtifactStoreForTest(t *testing.T) (*OORArtifactPersistenceStore,
 	)
 
 	return NewOORArtifactPersistenceStore(artifactDB, clk), roundStore
-}
-
-// newOORArtifactStoreFromBaseDB creates an artifact store over an existing
-// test database handle.
-func newOORArtifactStoreFromBaseDB(
-	baseDB *BaseDB) *OORArtifactPersistenceStore {
-
-	artifactDB := NewTransactionExecutor(
-		baseDB,
-		func(tx *sql.Tx) OORArtifactStore {
-			return baseDB.WithTx(tx)
-		},
-		btclog.Disabled,
-	)
-
-	return NewOORArtifactPersistenceStore(
-		artifactDB, clock.NewDefaultClock(),
-	)
-}
-
-// newOORArtifactStoreForTestPath opens an artifact store at a stable test
-// database path so callers can close and reopen it to model restart.
-func newOORArtifactStoreForTestPath(t *testing.T,
-	dbPath string) (*OORArtifactPersistenceStore, *BaseDB) {
-
-	t.Helper()
-
-	testDB := NewTestDBHandleFromPath(t, dbPath)
-
-	return newOORArtifactStoreFromBaseDB(testDB.BaseDB), testDB.BaseDB
 }
 
 func seedBindingOutpoint(t *testing.T, ctx context.Context,
@@ -665,6 +633,182 @@ func TestOORArtifactStoreOwnedReceiveScriptCRUD(t *testing.T) {
 	require.Equal(t, recA.PkScript, rows[1].PkScript)
 }
 
+// TestOwnedReceiveScriptAssetAliasSourceRoundTrip verifies the append-only
+// source value used by durable final-script aliases survives persistence.
+func TestOwnedReceiveScriptAssetAliasSourceRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store, _ := newOORArtifactStoreForTest(t)
+
+	code, err := ownedReceiveScriptSourceCode(
+		OwnedReceiveScriptSourceAssetAlias,
+	)
+	require.NoError(t, err)
+	require.Equal(t, int32(3), code)
+
+	source, err := ownedReceiveScriptSourceFromCode(code)
+	require.NoError(t, err)
+	require.Equal(t, OwnedReceiveScriptSourceAssetAlias, source)
+	require.Equal(t, "asset_alias", source.String())
+
+	clientPrivKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	operatorPrivKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	rec := OwnedReceiveScriptRecord{
+		PkScript: []byte{
+			0x51,
+			0x30,
+			0x03,
+		},
+		ClientKey: keychain.KeyDescriptor{
+			KeyLocator: keychain.KeyLocator{
+				Family: 17,
+				Index:  3,
+			},
+			PubKey: clientPrivKey.PubKey(),
+		},
+		OperatorPubKey: operatorPrivKey.PubKey(),
+		ExitDelay:      144,
+		Source:         OwnedReceiveScriptSourceAssetAlias,
+		CreatedAt:      time.Unix(300, 0).UTC(),
+	}
+
+	err = store.UpsertOwnedReceiveScript(ctx, rec)
+	require.NoError(t, err)
+
+	got, err := store.LookupOwnedReceiveScript(ctx, rec.PkScript)
+	require.NoError(t, err)
+	require.Equal(t, rec.Source, got.Source)
+	require.Equal(t, rec.PkScript, got.PkScript)
+}
+
+// buildTestOORPackage constructs a deterministic incoming-style OOR package
+// fixture and returns the primary outpoints used by storage tests.
+func buildTestOORPackage(t *testing.T, seed byte) (chainhash.Hash, *psbt.Packet,
+	[]*psbt.Packet, wire.OutPoint, []byte, int64, wire.OutPoint) {
+
+	inputOutpoint := wire.OutPoint{
+		Hash: chainhash.Hash{
+			seed,
+			0xaa,
+		},
+		Index: 0,
+	}
+
+	return buildTestOORPackageWithInput(t, seed, inputOutpoint)
+}
+
+// buildTestOORPackageWithInput builds a fixture package that spends the
+// provided input outpoint in its checkpoint transaction.
+func buildTestOORPackageWithInput(t *testing.T, seed byte,
+	inputOutpoint wire.OutPoint) (chainhash.Hash, *psbt.Packet,
+	[]*psbt.Packet, wire.OutPoint, []byte, int64, wire.OutPoint) {
+
+	t.Helper()
+
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	recipientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	policy := arkscript.CheckpointPolicy{
+		OperatorKey: operatorKey.PubKey(),
+		CSVDelay:    10,
+	}
+
+	spentPkScript, err := txscript.PayToTaprootScript(operatorKey.PubKey())
+	require.NoError(t, err)
+
+	inputValue := btcutil.Amount(10_000)
+	checkpointInput := oortx.CheckpointInput{
+		SpentVTXO: oortx.SpentVTXORef{
+			Outpoint: inputOutpoint,
+			Output: &wire.TxOut{
+				Value:    int64(inputValue),
+				PkScript: spentPkScript,
+			},
+		},
+		OwnerLeafScript: []byte{
+			0x51,
+		},
+	}
+
+	checkpointRes, err := oortx.BuildCheckpointPSBT(policy, checkpointInput)
+	require.NoError(t, err)
+
+	recipientTapKey, err := arkscript.VTXOTapKey(
+		recipientKey.PubKey(), operatorKey.PubKey(), 10,
+	)
+	require.NoError(t, err)
+
+	recipientPkScript, err := txscript.PayToTaprootScript(recipientTapKey)
+	require.NoError(t, err)
+
+	checkpointTxID := checkpointRes.PSBT.UnsignedTx.TxHash()
+	checkpointOutput := checkpointRes.PSBT.UnsignedTx.TxOut[0]
+
+	arkPSBT, err := oortx.BuildArkPSBT(
+		[]oortx.CheckpointOutput{
+			{
+				Txid:           checkpointTxID,
+				Output:         checkpointOutput,
+				TapTreeEncoded: checkpointRes.TapTreeEncoded,
+			},
+		},
+		[]oortx.RecipientOutput{
+			{
+				PkScript: recipientPkScript,
+				Value:    inputValue,
+			},
+		},
+	)
+	require.NoError(t, err)
+
+	sessionID := arkPSBT.UnsignedTx.TxHash()
+	recipientOutpoint := wire.OutPoint{
+		Hash:  sessionID,
+		Index: 0,
+	}
+
+	return sessionID, arkPSBT, []*psbt.Packet{checkpointRes.PSBT},
+		recipientOutpoint, recipientPkScript, int64(inputValue),
+		inputOutpoint
+}
+
+// newOORArtifactStoreFromBaseDB creates an artifact store over an existing
+// test database handle.
+func newOORArtifactStoreFromBaseDB(
+	baseDB *BaseDB) *OORArtifactPersistenceStore {
+
+	artifactDB := NewTransactionExecutor(
+		baseDB,
+		func(tx *sql.Tx) OORArtifactStore {
+			return baseDB.WithTx(tx)
+		},
+		btclog.Disabled,
+	)
+
+	return NewOORArtifactPersistenceStore(
+		artifactDB, clock.NewDefaultClock(),
+	)
+}
+
+// newOORArtifactStoreForTestPath opens an artifact store at a stable test
+// database path so callers can close and reopen it to model restart.
+func newOORArtifactStoreForTestPath(t *testing.T,
+	dbPath string) (*OORArtifactPersistenceStore, *BaseDB) {
+
+	t.Helper()
+
+	testDB := NewTestDBHandleFromPath(t, dbPath)
+
+	return newOORArtifactStoreFromBaseDB(testDB.BaseDB), testDB.BaseDB
+}
+
 // testIdempotentOwnedReceiveScript builds deterministic ownership metadata for
 // one retry-safe receive-script admission.
 func testIdempotentOwnedReceiveScript(t *testing.T, seed byte, idempotencyKey,
@@ -1098,98 +1242,4 @@ func TestOORArtifactStoreOwnedReceiveScriptCompletionIdempotency(t *testing.T) {
 	require.ErrorContains(
 		t, err, "registration completion invariant failed",
 	)
-}
-
-// buildTestOORPackage constructs a deterministic incoming-style OOR package
-// fixture and returns the primary outpoints used by storage tests.
-func buildTestOORPackage(t *testing.T, seed byte) (chainhash.Hash, *psbt.Packet,
-	[]*psbt.Packet, wire.OutPoint, []byte, int64, wire.OutPoint) {
-
-	inputOutpoint := wire.OutPoint{
-		Hash: chainhash.Hash{
-			seed,
-			0xaa,
-		},
-		Index: 0,
-	}
-
-	return buildTestOORPackageWithInput(t, seed, inputOutpoint)
-}
-
-// buildTestOORPackageWithInput builds a fixture package that spends the
-// provided input outpoint in its checkpoint transaction.
-func buildTestOORPackageWithInput(t *testing.T, seed byte,
-	inputOutpoint wire.OutPoint) (chainhash.Hash, *psbt.Packet,
-	[]*psbt.Packet, wire.OutPoint, []byte, int64, wire.OutPoint) {
-
-	t.Helper()
-
-	operatorKey, err := btcec.NewPrivateKey()
-	require.NoError(t, err)
-
-	recipientKey, err := btcec.NewPrivateKey()
-	require.NoError(t, err)
-
-	policy := arkscript.CheckpointPolicy{
-		OperatorKey: operatorKey.PubKey(),
-		CSVDelay:    10,
-	}
-
-	spentPkScript, err := txscript.PayToTaprootScript(operatorKey.PubKey())
-	require.NoError(t, err)
-
-	inputValue := btcutil.Amount(10_000)
-	checkpointInput := oortx.CheckpointInput{
-		SpentVTXO: oortx.SpentVTXORef{
-			Outpoint: inputOutpoint,
-			Output: &wire.TxOut{
-				Value:    int64(inputValue),
-				PkScript: spentPkScript,
-			},
-		},
-		OwnerLeafScript: []byte{
-			0x51,
-		},
-	}
-
-	checkpointRes, err := oortx.BuildCheckpointPSBT(policy, checkpointInput)
-	require.NoError(t, err)
-
-	recipientTapKey, err := arkscript.VTXOTapKey(
-		recipientKey.PubKey(), operatorKey.PubKey(), 10,
-	)
-	require.NoError(t, err)
-
-	recipientPkScript, err := txscript.PayToTaprootScript(recipientTapKey)
-	require.NoError(t, err)
-
-	checkpointTxID := checkpointRes.PSBT.UnsignedTx.TxHash()
-	checkpointOutput := checkpointRes.PSBT.UnsignedTx.TxOut[0]
-
-	arkPSBT, err := oortx.BuildArkPSBT(
-		[]oortx.CheckpointOutput{
-			{
-				Txid:           checkpointTxID,
-				Output:         checkpointOutput,
-				TapTreeEncoded: checkpointRes.TapTreeEncoded,
-			},
-		},
-		[]oortx.RecipientOutput{
-			{
-				PkScript: recipientPkScript,
-				Value:    inputValue,
-			},
-		},
-	)
-	require.NoError(t, err)
-
-	sessionID := arkPSBT.UnsignedTx.TxHash()
-	recipientOutpoint := wire.OutPoint{
-		Hash:  sessionID,
-		Index: 0,
-	}
-
-	return sessionID, arkPSBT, []*psbt.Packet{checkpointRes.PSBT},
-		recipientOutpoint, recipientPkScript, int64(inputValue),
-		inputOutpoint
 }
