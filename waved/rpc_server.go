@@ -2963,11 +2963,19 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 			// initiated.
 			//
 			// This fast path returns before resolving the current
-			// request, so the recipient outpoint is intentionally
-			// omitted. Full request replay below can recompute it.
+			// request or selecting wallet inputs. Recover recipient
+			// outpoints from the original durable snapshot instead
+			// of rebuilding the transfer. A caller recovering from
+			// a lost response needs both the stable session id and
+			// the original output location to resume safely.
 			return &waverpc.SendOORResponse{
 				Status:    "submitted",
 				SessionId: sessionID.String(),
+				RecipientOutpoints: r.
+					resolveExistingOORRecipientOutpoints(
+						ctx, sessionID,
+						requestRecipients,
+					),
 			}, nil
 		}
 	}
@@ -3238,9 +3246,21 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 		r.unlockSelectedVTXOsBestEffort(ctx, locked)
 	}
 
-	recipientOutpoints := r.resolveOORRecipientOutpoints(
-		ctx, resp.SessionID, recipients, requestOORRecipients,
-	)
+	var recipientOutpoints []string
+	if resp.Existing && req.GetIdempotencyKey() != "" {
+		// The actor can discover a keyed winner after this RPC already
+		// selected inputs. Resolve against that winner's durable
+		// package; the fresh selection may have produced a different
+		// change output and therefore a different canonical output
+		// order.
+		recipientOutpoints = r.resolveExistingOORRecipientOutpoints(
+			ctx, resp.SessionID, requestRecipients,
+		)
+	} else {
+		recipientOutpoints = r.resolveOORRecipientOutpoints(
+			ctx, resp.SessionID, recipients, requestOORRecipients,
+		)
+	}
 	r.server.log.InfoS(ctx, "OOR transfer submitted",
 		slog.String("session_id", resp.SessionID.String()),
 		slog.Bool("existing_session", resp.Existing),
@@ -3857,6 +3877,92 @@ func (r *RPCServer) findOutgoingOORSessionByIdempotencyKey(ctx context.Context,
 	}
 
 	return oor.SessionID(record.SessionID), true, nil
+}
+
+// resolveExistingOORRecipientOutpoints maps a keyed replay's requested
+// recipients onto the original transfer snapshot. The snapshot is the only
+// trustworthy source here: a retry can select different inputs and create a
+// different change output even though the OOR actor correctly returns the
+// first idempotency-key winner.
+//
+// Recovery is best-effort at the generic SendOOR boundary. The stable session
+// id is still returned when local snapshot metadata cannot be read, while
+// higher-level callers that require an outpoint can fail closed and retry the
+// same key.
+func (r *RPCServer) resolveExistingOORRecipientOutpoints(ctx context.Context,
+	sessionID oor.SessionID, requestRecipients []*waverpc.Output) []string {
+
+	store := r.server.oorSessionStore
+	if store == nil || len(requestRecipients) == 0 {
+		return nil
+	}
+
+	record, err := store.GetSession(
+		ctx, chainhash.Hash(sessionID),
+	)
+	if err != nil {
+		r.server.log.WarnS(ctx, "Unable to load existing OOR "+
+			"snapshot", err,
+			slog.String("session_id", sessionID.String()))
+
+		return nil
+	}
+
+	recipients, err := oor.OutgoingSnapshotRecipients(record.SnapshotData)
+	if err != nil {
+		r.server.log.WarnS(ctx, "Unable to decode existing OOR "+
+			"recipients", err,
+			slog.String("session_id", sessionID.String()))
+
+		return nil
+	}
+
+	sessionHash := chainhash.Hash(sessionID)
+	outpoints := make([]string, len(requestRecipients))
+	for i, requestRecipient := range requestRecipients {
+		pkScript, err := r.resolveOutputPkScript(ctx, requestRecipient)
+		if err != nil {
+			r.server.log.WarnS(ctx, "Unable to resolve replayed OOR "+
+				"recipient", err,
+				slog.String("session_id", sessionID.String()),
+				slog.Int("recipient_index", i))
+
+			continue
+		}
+
+		var (
+			outputIndex uint32
+			matches     int
+		)
+		requestAmount := btcutil.Amount(requestRecipient.GetAmountSat())
+		for _, recipient := range recipients {
+			if recipient.Value != requestAmount ||
+				!bytes.Equal(recipient.PkScript, pkScript) {
+
+				continue
+			}
+
+			outputIndex = recipient.OutputIndex
+			matches++
+		}
+
+		if matches != 1 {
+			r.server.log.WarnS(ctx, "Unable to match replayed OOR "+
+				"recipient to durable snapshot", nil,
+				slog.String("session_id", sessionID.String()),
+				slog.Int("recipient_index", i),
+				slog.Int("matches", matches))
+
+			continue
+		}
+
+		outpoints[i] = wire.OutPoint{
+			Hash:  sessionHash,
+			Index: outputIndex,
+		}.String()
+	}
+
+	return outpoints
 }
 
 // buildOORChangeRecipient allocates and registers a wallet-owned receive
