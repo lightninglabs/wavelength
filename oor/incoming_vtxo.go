@@ -86,6 +86,16 @@ type IncomingVTXOConfig struct {
 	// Metadata carries authoritative lineage and expiry attributes.
 	Metadata IncomingVTXOMetadata
 
+	// FinalCheckpointPSBTs are the finalized checkpoints spent by the
+	// incoming Ark transaction. External-root ancestry is bound to these
+	// exact transactions before the descriptor is accepted.
+	FinalCheckpointPSBTs []*psbt.Packet
+
+	// AncestorPackages are the validated prior OOR packages reachable from
+	// FinalCheckpointPSBTs. They let an inherited external root be traced
+	// through more than one OOR hop without weakening input coverage.
+	AncestorPackages []PackageArtifact
+
 	// PolicyTemplate is the optional semantic policy template supplied with
 	// the incoming recipient output. When omitted, descriptor construction
 	// derives the standard VTXO policy from ClientKey, OperatorKey, and
@@ -176,6 +186,13 @@ func BuildIncomingVTXODescriptor(ark *psbt.Packet,
 	// DoS. Failures here surface as *ErrInvalidAncestry so the receive
 	// FSM can route them to a session-failure ack.
 	err = validateIncomingAncestry(cfg.Metadata, uint32(len(tx.TxIn)))
+	if err != nil {
+		return nil, err
+	}
+	err = validateExternalRootBindings(
+		cfg.Metadata, ark, cfg.FinalCheckpointPSBTs,
+		cfg.AncestorPackages,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -420,62 +437,59 @@ func validateIncomingAncestry(meta IncomingVTXOMetadata,
 		}
 		seen[key] = struct{}{}
 
-		// Validate the per-fragment tree depth here as a
-		// defense-in-depth check. The RPC ingress
-		// (arkrpc.ValidateAncestryPathDepth) is the primary trust
-		// boundary, but any code path that constructs Ancestry
-		// in-process (tests, future internal materializers) must
-		// also enforce that the stored TreeDepth matches the actual
-		// path. Without this, an under-reported depth could survive
-		// to drive expiry-monitoring decisions and silently delay a
-		// unilateral exit past its safe deadline.
-		if err := arkrpc.ValidateAncestryPathDepth(
-			frag.TreeDepth, frag.TreePath,
-		); err != nil {
-			return &ErrInvalidAncestry{
-				Reason: fmt.Sprintf(
-					"fragment %d depth: %v", i, err,
-				),
+		if frag.IsExternalRoot() {
+			if err := frag.ValidateExternalRoot(); err != nil {
+				return &ErrInvalidAncestry{
+					Reason: fmt.Sprintf(
+						"fragment %d external root: %v",
+						i, err,
+					),
+				}
 			}
-		}
-
-		// Bind the supplied tree path to its claimed commitment.
-		// The TreePath.BatchOutpoint is the batch output of the
-		// commitment tx the path extracts from; if the operator
-		// substitutes a path rooted in some other commitment, the
-		// fragment cannot drive a valid unilateral exit and we
-		// have no way to detect the mismatch later when the user
-		// is already racing the exit CSV.
-		if frag.TreePath.BatchOutpoint.Hash != frag.CommitmentTxID {
-			return &ErrInvalidAncestry{
-				Reason: fmt.Sprintf(
-					"fragment %d tree path batch "+
-						"outpoint hash %s does not "+
-						"match claimed commitment "+
-						"txid %s", i,
-					frag.TreePath.BatchOutpoint.Hash,
-					frag.CommitmentTxID,
-				),
+		} else {
+			// Validate the per-fragment tree depth here as a
+			// defense-in-depth check. The RPC ingress
+			// (arkrpc.ValidateAncestryPathDepth) is the primary
+			// trust boundary, but any code path that constructs
+			// Ancestry in-process (tests, future internal
+			// materializers) must also enforce that the stored
+			// TreeDepth matches the actual path.
+			if err := arkrpc.ValidateAncestryPathDepth(
+				frag.TreeDepth, frag.TreePath,
+			); err != nil {
+				return &ErrInvalidAncestry{
+					Reason: fmt.Sprintf(
+						"fragment %d depth: %v", i, err,
+					),
+				}
 			}
-		}
 
-		// Cross-fragment proof-node consistency. Same-commitment
-		// multi-leaf fragments legitimately overlap on their shared
-		// prefix nodes, and the unroll proof assembler tolerates
-		// that overlap only when duplicate txids carry byte-identical
-		// transactions — addProofNode rejects a conflicting duplicate
-		// and fails assembly of the ENTIRE proof. Without this gate a
-		// malicious operator could pad the ancestry with a
-		// near-duplicate path (e.g. one shared node's signature
-		// stripped) that passes every other check and persists
-		// cleanly, only to poison proof assembly at unilateral-exit
-		// time when the user is racing a CSV. Honest fragments
-		// extract their paths from one signed tree, so shared nodes
-		// are always byte-identical and this rejects nothing
-		// legitimate.
-		err = checkFragmentNodeConsistency(i, frag, seenNodes)
-		if err != nil {
-			return err
+			// Bind the supplied tree path to its claimed
+			// commitment. The TreePath.BatchOutpoint is the batch
+			// output of the commitment tx the path extracts from.
+			batchHash := frag.TreePath.BatchOutpoint.Hash
+			if batchHash != frag.CommitmentTxID {
+				return &ErrInvalidAncestry{
+					Reason: fmt.Sprintf(
+						"fragment %d tree path batch "+
+							"outpoint hash %s "+
+							"does "+
+							"not match claimed "+
+							"commitment txid %s", i,
+						batchHash, frag.CommitmentTxID,
+					),
+				}
+			}
+
+			// Cross-fragment proof-node consistency.
+			// Same-commitment multi-leaf fragments may overlap, but
+			// shared txids must carry byte-identical transactions.
+			err = checkFragmentNodeConsistency(
+				i, frag, seenNodes,
+			)
+			if err != nil {
+				return err
+			}
 		}
 
 		if len(frag.InputIndices) == 0 {
@@ -552,6 +566,231 @@ func validateIncomingAncestry(meta IncomingVTXOMetadata,
 	}
 
 	return nil
+}
+
+// validateExternalRootBindings binds every explicit external-root ancestry
+// entry to the finalized OOR package graph. InputIndices select exact inputs
+// in the current BIP69-sorted Ark transaction; each selected checkpoint
+// branch must recursively reach the declared direct outpoint, and the
+// checkpoint that first spends it must carry a byte-identical WitnessUtxo.
+//
+// This proves that the marker describes real recovery material supplied with
+// this receive. Independent confirmation/authentication of the direct anchor
+// remains the Taproot Asset proof/chain verifier's responsibility.
+func validateExternalRootBindings(meta IncomingVTXOMetadata, ark *psbt.Packet,
+	checkpoints []*psbt.Packet, ancestors []PackageArtifact) error {
+
+	hasExternal := false
+	for i := range meta.Ancestry {
+		if meta.Ancestry[i].IsExternalRoot() {
+			hasExternal = true
+			break
+		}
+	}
+	if !hasExternal {
+		return nil
+	}
+
+	if ark == nil || ark.UnsignedTx == nil {
+		return &ErrInvalidAncestry{
+			Reason: "external-root binding missing ark transaction",
+		}
+	}
+	if len(checkpoints) == 0 {
+		return &ErrInvalidAncestry{
+			Reason: "external-root binding missing checkpoints",
+		}
+	}
+
+	ancestorBySession := make(
+		map[SessionID]PackageArtifact, len(ancestors),
+	)
+	for i := range ancestors {
+		ancestor := ancestors[i]
+		if ancestor.SessionID == (SessionID{}) ||
+			ancestor.ArkPSBT == nil ||
+			ancestor.ArkPSBT.UnsignedTx == nil {
+			return &ErrInvalidAncestry{
+				Reason: fmt.Sprintf(
+					"external-root ancestor package %d is "+
+						"incomplete", i,
+				),
+			}
+		}
+
+		ancestorBySession[ancestor.SessionID] = ancestor
+	}
+
+	for fragmentIndex := range meta.Ancestry {
+		fragment := meta.Ancestry[fragmentIndex]
+		if !fragment.IsExternalRoot() {
+			continue
+		}
+
+		for _, inputIndex := range fragment.InputIndices {
+			checkpoint, err := checkpointForArkInput(
+				ark, checkpoints, inputIndex,
+			)
+			if err != nil {
+				return &ErrInvalidAncestry{
+					Reason: fmt.Sprintf(
+						"external-root fragment %d "+
+							"input %d: %v",
+						fragmentIndex, inputIndex,
+						err,
+					),
+				}
+			}
+
+			found, err := checkpointBranchReachesExternalRoot(
+				checkpoint, fragment, ancestorBySession,
+				make(map[SessionID]struct{}),
+			)
+			if err != nil {
+				return &ErrInvalidAncestry{
+					Reason: fmt.Sprintf(
+						"external-root fragment %d "+
+							"input %d: %v",
+						fragmentIndex, inputIndex,
+						err,
+					),
+				}
+			}
+			if !found {
+				root, _ := fragment.ExternalRootOutpoint()
+
+				return &ErrInvalidAncestry{
+					Reason: fmt.Sprintf(
+						"external-root "+
+							"fragment %d input %d "+
+							"does not reach "+
+							"declared root %v",
+						fragmentIndex, inputIndex,
+						root,
+					),
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// checkpointForArkInput returns the finalized checkpoint transaction spent by
+// one current Ark input. Matching uses the checkpoint txid, never persistence
+// slice position, because Ark inputs are BIP69-sorted.
+func checkpointForArkInput(ark *psbt.Packet, checkpoints []*psbt.Packet,
+	inputIndex uint32) (*psbt.Packet, error) {
+
+	if inputIndex >= uint32(len(ark.UnsignedTx.TxIn)) ||
+		inputIndex >= uint32(len(ark.Inputs)) {
+		return nil, fmt.Errorf("ark input index out of range")
+	}
+
+	arkInput := ark.UnsignedTx.TxIn[inputIndex]
+	checkpointTxID := arkInput.PreviousOutPoint.Hash
+	for i := range checkpoints {
+		checkpoint := checkpoints[i]
+		if checkpoint == nil || checkpoint.UnsignedTx == nil {
+			continue
+		}
+		if checkpoint.UnsignedTx.TxHash() != checkpointTxID {
+			continue
+		}
+
+		outputIndex := arkInput.PreviousOutPoint.Index
+		if outputIndex >= uint32(len(checkpoint.UnsignedTx.TxOut)) {
+			return nil, fmt.Errorf("checkpoint output %d out "+
+				"of range", outputIndex)
+		}
+
+		expected := checkpoint.UnsignedTx.TxOut[outputIndex]
+		actual := ark.Inputs[inputIndex].WitnessUtxo
+		if !txOutputsEqual(expected, actual) {
+			return nil, fmt.Errorf("ark input witness UTXO does " +
+				"not match checkpoint output")
+		}
+
+		return checkpoint, nil
+	}
+
+	return nil, fmt.Errorf("checkpoint %s not found", checkpointTxID)
+}
+
+// checkpointBranchReachesExternalRoot walks one checkpoint branch through
+// supplied ancestor OOR packages until it reaches root. The exact outpoint and
+// WitnessUtxo must both match; a txid-only match is insufficient because one
+// anchor transaction may contain several independent direct VTXOs.
+func checkpointBranchReachesExternalRoot(checkpoint *psbt.Packet,
+	root vtxo.Ancestry, ancestors map[SessionID]PackageArtifact,
+	seen map[SessionID]struct{}) (bool, error) {
+
+	if checkpoint == nil || checkpoint.UnsignedTx == nil {
+		return false, fmt.Errorf("checkpoint is missing")
+	}
+	if len(checkpoint.UnsignedTx.TxIn) == 0 ||
+		len(checkpoint.Inputs) != len(checkpoint.UnsignedTx.TxIn) {
+		return false, fmt.Errorf("checkpoint input metadata is " +
+			"incomplete")
+	}
+
+	rootOutpoint, ok := root.ExternalRootOutpoint()
+	if !ok {
+		return false, fmt.Errorf("ancestry is not an external root")
+	}
+
+	for i, txIn := range checkpoint.UnsignedTx.TxIn {
+		parent := txIn.PreviousOutPoint
+		if parent == rootOutpoint {
+			if !root.ExternalRootOutputMatches(
+				checkpoint.Inputs[i].WitnessUtxo,
+			) {
+				return false, fmt.Errorf("external root " +
+					"witness UTXO does not match " +
+					"declared output")
+			}
+
+			return true, nil
+		}
+
+		parentID := SessionID(parent.Hash)
+		ancestor, ok := ancestors[parentID]
+		if !ok || !validAncestorOutput(
+			ancestor.ArkPSBT, parent.Index,
+		) {
+
+			continue
+		}
+		if _, duplicate := seen[parentID]; duplicate {
+			continue
+		}
+
+		seen[parentID] = struct{}{}
+		for j := range ancestor.FinalCheckpointPSBTs {
+			found, err := checkpointBranchReachesExternalRoot(
+				ancestor.FinalCheckpointPSBTs[j], root,
+				ancestors, seen,
+			)
+			if err != nil {
+				return false, err
+			}
+			if found {
+				return true, nil
+			}
+		}
+	}
+
+	return false, nil
+}
+
+// txOutputsEqual reports whether two transaction outputs have identical value
+// and script.
+func txOutputsEqual(a, b *wire.TxOut) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+
+	return a.Value == b.Value && bytes.Equal(a.PkScript, b.PkScript)
 }
 
 // checkFragmentNodeConsistency walks one fragment's tree nodes and
