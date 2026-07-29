@@ -1,6 +1,7 @@
 package waved
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"github.com/lightninglabs/wavelength/db"
 	"github.com/lightninglabs/wavelength/indexer"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
+	oorlib "github.com/lightninglabs/wavelength/lib/tx/oor"
 	"github.com/lightninglabs/wavelength/oor"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -55,6 +57,13 @@ type ownedReceiveScriptStore interface {
 type ownedReceiveScriptLookup interface {
 	LookupOwnedReceiveScript(ctx context.Context,
 		pkScript []byte) (*db.OwnedReceiveScriptRecord, error)
+}
+
+// ownedReceiveScriptResolutionStore resolves existing scripts and persists
+// derived aliases for final asset-composed outputs.
+type ownedReceiveScriptResolutionStore interface {
+	ownedReceiveScriptStore
+	ownedReceiveScriptLookup
 }
 
 // ownedReceiveScriptLister lists locally owned receive-script metadata.
@@ -112,7 +121,7 @@ func BuildPubKeyVTXOReceiveScript(recipientKey, operatorKey *btcec.PublicKey,
 // ResolveOwnedReceiveScriptKey resolves the locally owned wallet key for an
 // incoming recipient output using the persisted receive-script ownership map.
 func ResolveOwnedReceiveScriptKey(ctx context.Context,
-	store ownedReceiveScriptLookup,
+	store ownedReceiveScriptResolutionStore,
 	recipient oor.ArkRecipientOutput) (keychain.KeyDescriptor, error) {
 
 	switch {
@@ -125,7 +134,21 @@ func ResolveOwnedReceiveScriptKey(ctx context.Context,
 			"script must be provided")
 	}
 
-	rec, err := store.LookupOwnedReceiveScript(ctx, recipient.PkScript)
+	output := oorlib.RecipientOutput{
+		PkScript:           recipient.PkScript,
+		Value:              recipient.Value,
+		VTXOPolicyTemplate: recipient.VTXOPolicyTemplate,
+		TaprootAssetRoot:   recipient.TaprootAssetRoot,
+		TaprootAssetRef:    recipient.TaprootAssetRef,
+		TaprootAssetAmount: recipient.TaprootAssetAmount,
+	}
+	routingPkScript, err := output.RoutingPkScript()
+	if err != nil {
+		return keychain.KeyDescriptor{}, fmt.Errorf("derive incoming "+
+			"recipient routing script: %w", err)
+	}
+
+	rec, err := store.LookupOwnedReceiveScript(ctx, routingPkScript)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return keychain.KeyDescriptor{},
@@ -134,6 +157,21 @@ func ResolveOwnedReceiveScriptKey(ctx context.Context,
 
 		return keychain.KeyDescriptor{}, fmt.Errorf("lookup owned "+
 			"receive script: %w", err)
+	}
+
+	if !bytes.Equal(routingPkScript, recipient.PkScript) {
+		alias := *rec
+		alias.PkScript = append([]byte(nil), recipient.PkScript...)
+		alias.Source = db.OwnedReceiveScriptSourceAssetAlias
+		alias.CreatedAt = time.Now()
+		alias.LastUsedAt = fn.None[time.Time]()
+
+		if err := store.UpsertOwnedReceiveScript(
+			ctx, alias,
+		); err != nil {
+			return keychain.KeyDescriptor{}, fmt.Errorf("persist "+
+				"asset receive script alias: %w", err)
+		}
 	}
 
 	return rec.ClientKey, nil
