@@ -127,6 +127,19 @@ func wasmWalletDBDSN(dbDir string) string {
 	}
 	values.Set("mode", "rwc")
 	values.Set("busy_timeout", wasmWalletDBBusyTimeoutMS)
+
+	// WAL survives here only because of the locking_mode=EXCLUSIVE pragma
+	// below. No wasm VFS implements xShmMap, so this is the WAL mode SQLite
+	// documents for hosts without shared memory, which keeps the WAL index
+	// on the heap and requires the connection to already be exclusive. The
+	// driver hoists the locking mode ahead of the journal mode for that
+	// reason, and then reads the effective mode back, so dropping the
+	// exclusive lock would fail the open rather than silently move the
+	// wallet onto the rollback journal.
+	//
+	// The journal mode travels as its own DSN key rather than in the pragma
+	// list, because only that route is checked against the mode SQLite
+	// actually ended up in.
 	values.Set("journal_mode", "WAL")
 
 	// The wallet's seed and key state have no second copy anywhere, so an
