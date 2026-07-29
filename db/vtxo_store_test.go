@@ -1917,3 +1917,74 @@ func TestVTXOPersistenceStoreGetVTXONotFound(t *testing.T) {
 		"the driver error stays in the chain for back-compat",
 	)
 }
+
+// TestVTXOStoreExpiredExcludedFromLiveSet asserts the split between the two
+// list queries: an expired VTXO must not count as spendable liquidity, but
+// its actor must still be recovered so the value can be reclaimed by
+// forfeiting it in an ordinary round.
+//
+// Getting this backwards is a real hazard in both directions. Including
+// expired in the live set inflates the wallet's balance with value it cannot
+// spend; excluding it from recovery strands the value permanently, because
+// with no actor there is nothing to hold the descriptor and signing material
+// a forfeit needs.
+func TestVTXOStoreExpiredExcludedFromLiveSet(t *testing.T) {
+	t.Parallel()
+
+	vtxoStore, roundStore, _ := newVTXOStoreForTest(t)
+	ctx := t.Context()
+
+	roundID := testRoundIDDB("test-round-expired-split")
+	testRound := createTestRound(t, roundID)
+	state := &round.InputSigSentState{
+		RoundID:     testRound.RoundID,
+		ClientTrees: make(map[round.SignerKey]*tree.Tree),
+	}
+	require.NoError(t, roundStore.CommitState(ctx, testRound, state))
+
+	liveDesc := createTestVTXODescriptor(t, roundID, 11)
+	require.NoError(t, vtxoStore.SaveVTXO(ctx, liveDesc))
+
+	expiredDesc := createTestVTXODescriptor(t, roundID, 12)
+	require.NoError(t, vtxoStore.SaveVTXO(ctx, expiredDesc))
+	require.NoError(
+		t, vtxoStore.UpdateVTXOStatus(
+			ctx, expiredDesc.Outpoint, vtxo.VTXOStatusExpired,
+		),
+	)
+
+	outpoints := func(descs []*vtxo.Descriptor) []wire.OutPoint {
+		out := make([]wire.OutPoint, 0, len(descs))
+		for _, desc := range descs {
+			out = append(out, desc.Outpoint)
+		}
+
+		return out
+	}
+
+	live, err := vtxoStore.ListLiveVTXOs(ctx)
+	require.NoError(t, err)
+	require.Equal(
+		t, []wire.OutPoint{liveDesc.Outpoint}, outpoints(live),
+		"an expired VTXO holds no spendable value",
+	)
+
+	// The light variant must agree: it feeds the boarding-headroom cap,
+	// where omitting expired value would let a client board up to the cap
+	// and then reclaim on top of it.
+	light, err := vtxoStore.ListRecoverableVTXOsLight(ctx)
+	require.NoError(t, err)
+	require.ElementsMatch(
+		t, []wire.OutPoint{liveDesc.Outpoint, expiredDesc.Outpoint},
+		outpoints(light),
+	)
+
+	recoverable, err := vtxoStore.ListRecoverableVTXOs(ctx)
+	require.NoError(t, err)
+	require.ElementsMatch(
+		t, []wire.OutPoint{liveDesc.Outpoint, expiredDesc.Outpoint},
+		outpoints(recoverable),
+		"an expired VTXO's actor must still be restored so its "+
+			"value can be reclaimed",
+	)
+}

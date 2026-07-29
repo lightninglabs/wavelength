@@ -81,7 +81,7 @@ func TestSumSpendableBalanceEmpty(t *testing.T) {
 }
 
 // TestSumPendingBalance checks that only PendingForfeit, Forfeiting, and
-// Spending are summed, excluding Live and the terminal states.
+// Spending are summed, excluding Live, Expired, and the terminal states.
 func TestSumPendingBalance(t *testing.T) {
 	t.Parallel()
 
@@ -117,6 +117,10 @@ func TestSumPendingBalance(t *testing.T) {
 		{
 			Amount: 19_000,
 			Status: VTXOStatusFailed,
+		},
+		{
+			Amount: 23_000,
+			Status: VTXOStatusExpired,
 		},
 	}
 

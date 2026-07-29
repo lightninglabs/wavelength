@@ -291,6 +291,26 @@ const (
 	// NOTE: Placed after VTXOStatusFailed to preserve the numeric
 	// values of existing statuses used in SQL queries.
 	VTXOStatusSpending
+
+	// VTXOStatusExpired indicates the VTXO's batch expiry has passed. The
+	// wallet missed both its refresh and its critical-exit window, so the
+	// operator's sweep path is mature and no client-driven exit can be
+	// completed any more.
+	//
+	// This is NOT terminal. The value is recoverable: the owner can join
+	// an ordinary round and forfeit the expired VTXO, and the operator
+	// admits it because the forfeit signature proves ownership and gives
+	// the operator the same protection it relies on for a refresh. The
+	// actor therefore stays alive and keeps the descriptor and signing
+	// material an eventual forfeit needs.
+	//
+	// The VTXO must not be selectable for ordinary spends while in this
+	// state — there is nothing left to spend cooperatively until it has
+	// been reissued.
+	//
+	// NOTE: Appended last so the numeric values of existing statuses used
+	// in SQL queries are unchanged.
+	VTXOStatusExpired
 )
 
 // String returns a human-readable representation of the VTXO status.
@@ -319,6 +339,9 @@ func (s VTXOStatus) String() string {
 
 	case VTXOStatusSpending:
 		return "spending"
+
+	case VTXOStatusExpired:
+		return "expired"
 
 	default:
 		return "unknown"
@@ -500,9 +523,17 @@ type VTXOStore interface {
 	GetVTXO(ctx context.Context,
 		outpoint wire.OutPoint) (*Descriptor, error)
 
-	// ListLiveVTXOs returns all VTXOs not in a terminal state. Used during
-	// startup to recover active VTXO actors after restart.
+	// ListLiveVTXOs returns all VTXOs not in a terminal state, excluding
+	// expired ones. This is the spendable-liquidity view: an expired VTXO
+	// holds no spendable value until it has been reissued.
 	ListLiveVTXOs(ctx context.Context) ([]*Descriptor, error)
+
+	// ListRecoverableVTXOs returns every VTXO whose actor must be restored
+	// at startup: the ListLiveVTXOs set plus expired ones. An expired VTXO
+	// is not spendable, but its value is recoverable by forfeiting it in
+	// an ordinary round, so its actor must exist to hold the descriptor
+	// and signing material that forfeit needs.
+	ListRecoverableVTXOs(ctx context.Context) ([]*Descriptor, error)
 
 	// ListVTXOsByStatus returns all VTXOs matching the given status.
 	// This enables querying terminal states (spent, forfeited) that

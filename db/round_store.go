@@ -128,6 +128,11 @@ type RoundStore interface {
 	// VTXO lifecycle status queries.
 	ListLiveVTXOs(ctx context.Context) ([]VTXORow, error)
 
+	// ListRecoverableVTXOs returns the non-terminal set plus expired
+	// VTXOs, whose actors must still be restored so their value can be
+	// reclaimed by forfeiting them in a round.
+	ListRecoverableVTXOs(ctx context.Context) ([]VTXORow, error)
+
 	ListVTXOsByStatus(ctx context.Context,
 		status int32) ([]sqlc.ListVTXOsByStatusRow, error)
 

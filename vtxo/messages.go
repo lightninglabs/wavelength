@@ -142,6 +142,31 @@ type ListLiveDescriptorsResponse struct {
 // VTXOManagerResp implements actormsg.VTXOManagerResp marker interface.
 func (r *ListLiveDescriptorsResponse) VTXOManagerResp() {}
 
+// ReconcileExpiryRequest asks the manager to apply the current chain tip to
+// every recovered VTXO. The server sends this once the round actor is ready so
+// an offline VTXO can enter the ordinary refresh flow without racing actor
+// registration during startup.
+type ReconcileExpiryRequest struct {
+	actor.BaseMessage
+}
+
+// MessageType returns the message type identifier.
+func (r *ReconcileExpiryRequest) MessageType() string {
+	return "ReconcileExpiryRequest"
+}
+
+// VTXOManagerMsg implements actormsg.VTXOManagerMsg marker interface.
+func (r *ReconcileExpiryRequest) VTXOManagerMsg() {}
+
+// ReconcileExpiryResponse reports how many recovered VTXOs were checked.
+type ReconcileExpiryResponse struct {
+	// Checked is the number of VTXO actors that accepted the current tip.
+	Checked int
+}
+
+// VTXOManagerResp implements actormsg.VTXOManagerResp marker interface.
+func (r *ReconcileExpiryResponse) VTXOManagerResp() {}
+
 // ExitOutcome classifies the terminal outcome of a unilateral-exit (unroll)
 // job, as reported by the unroll subsystem back to the VTXO manager.
 type ExitOutcome uint8

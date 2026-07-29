@@ -49,6 +49,12 @@ func (s *testCustomInputStore) ListLiveVTXOs(context.Context) (
 	return nil, fmt.Errorf("unexpected ListLiveVTXOs call")
 }
 
+func (s *testCustomInputStore) ListRecoverableVTXOs(context.Context) (
+	[]*vtxo.Descriptor, error) {
+
+	return nil, fmt.Errorf("unexpected ListRecoverableVTXOs call")
+}
+
 func (s *testCustomInputStore) ListVTXOsByStatus(context.Context,
 	vtxo.VTXOStatus) ([]*vtxo.Descriptor, error) {
 

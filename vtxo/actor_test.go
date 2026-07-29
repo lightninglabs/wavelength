@@ -461,6 +461,97 @@ func TestProcessOutboxForfeitRequestQuotesFee(t *testing.T) {
 	)
 }
 
+// TestExpiredCatchupWaitsForStartupReconcile verifies the actor persists local
+// expiry without immediately entering a refresh round. The manager rechecks
+// the actor after the round service is registered.
+func TestExpiredCatchupWaitsForStartupReconcile(t *testing.T) {
+	t.Parallel()
+
+	h := newVTXOTestHarness(t)
+	desc := h.newTestDescriptor()
+	height := desc.BatchExpiry
+
+	h.store.On(
+		"UpdateVTXOStatus", h.ctx, desc.Outpoint,
+		VTXOStatusExpired,
+	).Return(nil).Once()
+	manager := newMockManagerRef(t)
+	actorUnderTest := &VTXOActor{
+		cfg: &VTXOActorConfig{
+			VTXO:        desc,
+			Store:       h.store,
+			Wallet:      h.wallet,
+			ChainParams: &chaincfg.RegressionNetParams,
+			Manager:     manager,
+			RefreshFeeQuoter: func(context.Context, btcutil.Amount,
+				uint32) btcutil.Amount {
+
+				t.Fatal(
+					"expired recovery must not request " +
+						"a paid quote",
+				)
+
+				return 0
+			},
+		},
+		state: &LiveState{
+			VTXO: desc,
+		},
+		env: h.env,
+	}
+
+	epoch := h.newBlockEpochEvent(height)
+	result := actorUnderTest.Receive(h.ctx, epoch)
+	_, err := result.Unpack()
+	require.NoError(t, err)
+	require.IsType(t, &ExpiredState{}, actorUnderTest.state)
+	require.Empty(t, manager.getMessages())
+
+	h.store.AssertExpectations(t)
+}
+
+// TestExpiredRefreshPreflightFailureStaysExpired verifies an unavailable
+// operator rolls the durable reservation back to Expired rather than
+// accidentally restoring swept value to the spendable set.
+func TestExpiredRefreshPreflightFailureStaysExpired(t *testing.T) {
+	t.Parallel()
+
+	h := newVTXOTestHarness(t)
+	desc := h.newTestDescriptor()
+	height := desc.BatchExpiry
+	fetchErr := errors.New("operator unavailable")
+
+	h.store.On(
+		"UpdateVTXOStatus", h.ctx, desc.Outpoint,
+		VTXOStatusPendingForfeit,
+	).Return(nil).Once()
+	h.store.On(
+		"UpdateVTXOStatus", h.ctx, desc.Outpoint,
+		VTXOStatusExpired,
+	).Return(nil).Once()
+
+	manager := newMockManagerRef(t)
+	actorUnderTest := newRefreshTestActor(
+		h, desc, manager,
+		func(context.Context) (*btcec.PublicKey, error) {
+			return nil, fetchErr
+		},
+	)
+	actorUnderTest.state = &ExpiredState{
+		VTXO:           desc,
+		ObservedHeight: height,
+	}
+
+	result := actorUnderTest.Receive(
+		h.ctx, h.newBlockEpochEvent(height),
+	)
+	_, err := result.Unpack()
+	require.ErrorIs(t, err, fetchErr)
+	require.IsType(t, &ExpiredState{}, actorUnderTest.state)
+	require.Empty(t, manager.getMessages())
+	h.store.AssertExpectations(t)
+}
+
 // TestAutoRefreshTermsLookupFailureRetries verifies a transient GetInfo
 // failure leaves the VTXO live and retries on the next block without writing a
 // PendingForfeit reservation.

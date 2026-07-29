@@ -124,6 +124,13 @@ type ForfeitingState struct {
 	// VTXO is the descriptor for this VTXO.
 	VTXO *Descriptor
 
+	// LastCheckedHeight is the most recent chain height observed before
+	// entering this state, carried forward from PendingForfeitState. A
+	// release needs it to tell an ordinary refresh apart from a reclaim of
+	// an already-expired VTXO, which must roll back to Expired rather than
+	// re-entering the spendable set.
+	LastCheckedHeight int32
+
 	// NewRoundID is the round where the refreshed VTXO will be created.
 	NewRoundID string
 
@@ -246,3 +253,41 @@ func (s *FailedState) IsTerminal() bool {
 }
 
 func (s *FailedState) vtxoStateSealed() {}
+
+// ExpiredState is the non-terminal state of a VTXO whose batch expiry has
+// passed. The wallet missed both its refresh and its critical-exit window, so
+// the operator's sweep path is mature and no client-driven exit can be
+// completed any more.
+//
+// There is deliberately no post-expiry unilateral fallback. Completing an exit
+// from here means confirming the whole ancestry and then waiting out the exit
+// CSV while racing an operator whose sweep is already spendable. The
+// critical-expiry threshold exists precisely so the wallet never has to depend
+// on winning that race, and attempting it anyway only burns fees.
+//
+// The state is NOT terminal, because the value is still recoverable: the owner
+// can join an ordinary round and forfeit this VTXO. The operator admits it
+// because the forfeit signature both proves ownership and gives the operator
+// the protection it relies on for any refresh. Keeping the actor alive is what
+// preserves the descriptor and signing material that forfeit needs, and lets
+// the wallet retry on a later block if the first attempt does not land.
+type ExpiredState struct {
+	// VTXO is the descriptor for this VTXO.
+	VTXO *Descriptor
+
+	// ObservedHeight is the chain height at which expiry was established.
+	ObservedHeight int32
+}
+
+// String returns a human-readable state name.
+func (s *ExpiredState) String() string {
+	return "Expired"
+}
+
+// IsTerminal returns false: the VTXO's value is still recoverable through a
+// cooperative forfeit, so the actor must stay alive to carry it out.
+func (s *ExpiredState) IsTerminal() bool {
+	return false
+}
+
+func (s *ExpiredState) vtxoStateSealed() {}

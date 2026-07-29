@@ -17,6 +17,64 @@ import (
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
+// stateAfterForfeitRelease picks the state a VTXO returns to when a round
+// releases its forfeit reservation before the point of no return.
+//
+// The naive answer, LiveState, is wrong for a reclaim. A reclaim commits an
+// already-expired VTXO to a round; if that round fails, restoring the VTXO to
+// live puts value the operator may already have swept back into spendable
+// balance and coin selection. A payment funded from it would build on a dead
+// lineage and the recipient would receive nothing.
+//
+// lastHeight is the most recent chain height the releasing state observed.
+// Zero means "unknown" and resolves to live, which is the pre-existing
+// behaviour: without a height there is no evidence of expiry, and wrongly
+// quarantining an ordinary refresh would drop live value out of the wallet's
+// balance. That case only arises on the restart path, where the first block
+// epoch arrives almost immediately and reclassifies before anything can spend.
+func stateAfterForfeitRelease(cfg *ExpiryConfig, vtxo *Descriptor,
+	lastHeight int32) VTXOState {
+
+	expired := lastHeight > 0 &&
+		cfg.CheckExpiry(vtxo, lastHeight) == ExpiryStatusExpired
+
+	if !expired {
+		return &LiveState{
+			VTXO:              vtxo,
+			LastCheckedHeight: lastHeight,
+		}
+	}
+
+	return &ExpiredState{
+		VTXO:           vtxo,
+		ObservedHeight: lastHeight,
+	}
+}
+
+// forfeitReleaseTransition builds the release transition for the state
+// returned by stateAfterForfeitRelease, persisting the matching status so the
+// durable row agrees with the in-memory state across a restart.
+func forfeitReleaseTransition(next VTXOState,
+	outpoint wire.OutPoint) *VTXOStateTransition {
+
+	status := VTXOStatusLive
+	if _, expired := next.(*ExpiredState); expired {
+		status = VTXOStatusExpired
+	}
+
+	return &VTXOStateTransition{
+		NextState: next,
+		NewEvents: fn.Some(VTXOEmittedEvent{
+			Outbox: []VTXOOutMsg{
+				&VTXOStatusUpdate{
+					Outpoint:  outpoint,
+					NewStatus: status,
+				},
+			},
+		}),
+	}
+}
+
 // ProcessEvent handles events in LiveState. The VTXO monitors block epochs for
 // expiry and can receive forfeit requests from the round actor.
 func (s *LiveState) ProcessEvent(ctx context.Context, event VTXOEvent,
@@ -248,15 +306,33 @@ func (s *LiveState) handleBlockEpoch(ctx context.Context, evt *BlockEpochEvent,
 		}, nil
 
 	case ExpiryStatusExpired:
-		// Batch has expired - this should not happen if monitoring
-		// works correctly.
+		// The batch expired while we were not watching — the wallet
+		// was offline through both the refresh and critical-exit
+		// windows.
+		//
+		// Persist the expiry rather than only recording it in memory.
+		// Without the status update the row stays Live, so the VTXO
+		// keeps counting toward spendable balance, keeps being offered
+		// to coin selection, and is recovered as Live on every restart
+		// only to re-fail on the next block.
+		//
+		// No VTXOTerminatedNotification: ExpiredState is not terminal.
+		// The value is still recoverable by forfeiting this VTXO in an
+		// ordinary round, and the actor has to stay alive to hold the
+		// descriptor and signing material that forfeit needs.
 		return &VTXOStateTransition{
-			NextState: &FailedState{
-				VTXO: s.VTXO,
-				Reason: "batch expired before " +
-					"cooperative forfeit",
-				Recoverable: false,
+			NextState: &ExpiredState{
+				VTXO:           s.VTXO,
+				ObservedHeight: evt.Height,
 			},
+			NewEvents: fn.Some(VTXOEmittedEvent{
+				Outbox: []VTXOOutMsg{
+					&VTXOStatusUpdate{
+						Outpoint:  s.VTXO.Outpoint,
+						NewStatus: VTXOStatusExpired,
+					},
+				},
+			}),
 		}, nil
 
 	default:
@@ -331,6 +407,7 @@ func (s *LiveState) handleForfeitRequest(ctx context.Context,
 	return &VTXOStateTransition{
 		NextState: &ForfeitingState{
 			VTXO:              s.VTXO,
+			LastCheckedHeight: s.LastCheckedHeight,
 			NewRoundID:        evt.RoundID,
 			ConnectorOutpoint: evt.ConnectorOutpoint,
 			ForfeitTxID:       forfeitTxID,
@@ -640,9 +717,13 @@ func (s *PendingForfeitState) ProcessEvent(ctx context.Context, event VTXOEvent,
 		// forfeit details.
 		expiryStatus := env.ExpiryConfig.CheckExpiry(s.VTXO, evt.Height)
 
-		if expiryStatus == ExpiryStatusCritical ||
-			expiryStatus == ExpiryStatusExpired {
-
+		// Only critical expiry escalates. Past the deadline a
+		// unilateral exit can no longer complete — it would have to
+		// confirm the whole ancestry and then wait out the exit CSV
+		// while racing an already-spendable operator sweep — and
+		// escalating would abort the in-flight cooperative spend that
+		// IS the recovery. Staying put lets it finish.
+		if expiryStatus == ExpiryStatusCritical {
 			blocksRemaining := BlocksUntilExpiry(s.VTXO, evt.Height)
 
 			// Non-terminal exit: no VTXOTerminatedNotification, so
@@ -772,6 +853,7 @@ func (s *PendingForfeitState) ProcessEvent(ctx context.Context, event VTXOEvent,
 		return &VTXOStateTransition{
 			NextState: &ForfeitingState{
 				VTXO:              s.VTXO,
+				LastCheckedHeight: s.RequestedAtHeight,
 				NewRoundID:        evt.RoundID,
 				ConnectorOutpoint: evt.ConnectorOutpoint,
 				ForfeitTxID:       forfeitTxID,
@@ -798,25 +880,18 @@ func (s *PendingForfeitState) ProcessEvent(ctx context.Context, event VTXOEvent,
 		}, nil
 
 	case *ForfeitReleasedEvent:
-		// Release this VTXO back to LiveState. This happens when
-		// cooperative round registration fails after admission.
-		// Restore RequestedAtHeight as LastCheckedHeight so expiry
-		// checking resumes from where it left off rather than
-		// re-evaluating from zero.
-		return &VTXOStateTransition{
-			NextState: &LiveState{
-				VTXO:              s.VTXO,
-				LastCheckedHeight: s.RequestedAtHeight,
-			},
-			NewEvents: fn.Some(VTXOEmittedEvent{
-				Outbox: []VTXOOutMsg{
-					&VTXOStatusUpdate{
-						Outpoint:  s.VTXO.Outpoint,
-						NewStatus: VTXOStatusLive,
-					},
-				},
-			}),
-		}, nil
+		// Release this VTXO. This happens when cooperative round
+		// registration fails after admission. RequestedAtHeight is the
+		// most recent height this state observed, so expiry checking
+		// resumes from where it left off rather than re-evaluating
+		// from zero — and a released reclaim returns to Expired rather
+		// than re-entering the spendable set.
+		return forfeitReleaseTransition(
+			stateAfterForfeitRelease(
+				env.ExpiryConfig, s.VTXO, s.RequestedAtHeight,
+			),
+			s.VTXO.Outpoint,
+		), nil
 
 	case *SpendReserveEvent:
 		// Cannot claim for OOR spend while pending forfeit.
@@ -859,6 +934,7 @@ func (s *ForfeitingState) ProcessEvent(ctx context.Context, event VTXOEvent,
 		return &VTXOStateTransition{
 			NextState: &ForfeitingState{
 				VTXO:              s.VTXO,
+				LastCheckedHeight: s.LastCheckedHeight,
 				NewRoundID:        s.NewRoundID,
 				ConnectorOutpoint: s.ConnectorOutpoint,
 				ForfeitTxID:       evt.ForfeitTxID,
@@ -900,9 +976,13 @@ func (s *ForfeitingState) ProcessEvent(ctx context.Context, event VTXOEvent,
 		// must escalate to chain resolver for unilateral exit.
 		expiryStatus := env.ExpiryConfig.CheckExpiry(s.VTXO, evt.Height)
 
-		if expiryStatus == ExpiryStatusCritical ||
-			expiryStatus == ExpiryStatusExpired {
-
+		// Only critical expiry escalates. Past the deadline a
+		// unilateral exit can no longer complete — it would have to
+		// confirm the whole ancestry and then wait out the exit CSV
+		// while racing an already-spendable operator sweep — and
+		// escalating would abort the in-flight cooperative spend that
+		// IS the recovery. Staying put lets it finish.
+		if expiryStatus == ExpiryStatusCritical {
 			blocksRemaining := BlocksUntilExpiry(s.VTXO, evt.Height)
 
 			// Non-terminal exit: no VTXOTerminatedNotification, so
@@ -995,19 +1075,16 @@ func (s *ForfeitingState) ProcessEvent(ctx context.Context, event VTXOEvent,
 		// tracks no block height, so LastCheckedHeight stays zero and
 		// the next block epoch re-seeds expiry checking (mirroring the
 		// ForceUnrollEvent recovery path above).
-		return &VTXOStateTransition{
-			NextState: &LiveState{
-				VTXO: s.VTXO,
-			},
-			NewEvents: fn.Some(VTXOEmittedEvent{
-				Outbox: []VTXOOutMsg{
-					&VTXOStatusUpdate{
-						Outpoint:  s.VTXO.Outpoint,
-						NewStatus: VTXOStatusLive,
-					},
-				},
-			}),
-		}, nil
+		//
+		// LastCheckedHeight is carried in from PendingForfeitState so
+		// a released reclaim returns to Expired rather than
+		// re-entering the spendable set.
+		return forfeitReleaseTransition(
+			stateAfterForfeitRelease(
+				env.ExpiryConfig, s.VTXO, s.LastCheckedHeight,
+			),
+			s.VTXO.Outpoint,
+		), nil
 
 	case *VTXOFailedEvent:
 		return &VTXOStateTransition{
@@ -1057,18 +1134,27 @@ func (s *SpendingState) ProcessEvent(_ context.Context, event VTXOEvent,
 		}, nil
 
 	case *SpendReleasedEvent:
-		// OOR operation failed or was cancelled. Return to LiveState
-		// so the VTXO can be used again.
+		// OOR operation failed or was cancelled. Return the VTXO so it
+		// can be used again — but not to LiveState if its batch
+		// expired while the spend was in flight, since that would put
+		// value the operator may already have swept back into
+		// spendable balance and coin selection.
+		next := stateAfterForfeitRelease(
+			env.ExpiryConfig, s.VTXO, s.LastCheckedHeight,
+		)
+
+		status := VTXOStatusLive
+		if _, expired := next.(*ExpiredState); expired {
+			status = VTXOStatusExpired
+		}
+
 		return &VTXOStateTransition{
-			NextState: &LiveState{
-				VTXO:              s.VTXO,
-				LastCheckedHeight: s.LastCheckedHeight,
-			},
+			NextState: next,
 			NewEvents: fn.Some(VTXOEmittedEvent{
 				Outbox: []VTXOOutMsg{
 					&VTXOStatusUpdate{
 						Outpoint:  s.VTXO.Outpoint,
-						NewStatus: VTXOStatusLive,
+						NewStatus: status,
 
 						ReleaseSpendReservation: true,
 					},
@@ -1079,15 +1165,27 @@ func (s *SpendingState) ProcessEvent(_ context.Context, event VTXOEvent,
 	case *BlockEpochEvent:
 		// Expiry safety: even while spending, we must escalate to
 		// unilateral exit if critical expiry is reached.
+		//
+		// Expiry itself does NOT escalate. An exit started past the
+		// deadline cannot complete, so escalating would abandon an
+		// in-flight OOR that may still settle. The spend terminates
+		// either way: SpendCompletedEvent retires the VTXO to Spent,
+		// and SpendReleasedEvent returns it above — to Expired rather
+		// than Live, so an expired outgoing spend is not left
+		// spendable once its session gives up.
 		s.LastCheckedHeight = evt.Height
 
 		expiryStatus := env.ExpiryConfig.CheckExpiry(
 			s.VTXO, evt.Height,
 		)
 
-		if expiryStatus == ExpiryStatusCritical ||
-			expiryStatus == ExpiryStatusExpired {
-
+		// Only critical expiry escalates. Past the deadline a
+		// unilateral exit can no longer complete — it would have to
+		// confirm the whole ancestry and then wait out the exit CSV
+		// while racing an already-spendable operator sweep — and
+		// escalating would abort the in-flight cooperative spend that
+		// IS the recovery. Staying put lets it finish.
+		if expiryStatus == ExpiryStatusCritical {
 			blocksRemaining := BlocksUntilExpiry(
 				s.VTXO, evt.Height,
 			)
@@ -1335,4 +1433,166 @@ func (s *FailedState) ProcessEvent(_ context.Context, _ VTXOEvent,
 	return &VTXOStateTransition{
 		NextState: s,
 	}, nil
+}
+
+// ProcessEvent handles events in ExpiredState. The batch expiry has passed, so
+// the VTXO has no cooperative spend or unilateral exit left of its own — but
+// its value is still recoverable by forfeiting it in an ordinary round, so the
+// state is not terminal and the actor keeps serving forfeit requests.
+func (s *ExpiredState) ProcessEvent(ctx context.Context, event VTXOEvent,
+	env *VTXOEnvironment) (*VTXOStateTransition, error) {
+
+	switch evt := event.(type) {
+	case *BlockEpochEvent:
+		s.ObservedHeight = evt.Height
+
+		// Re-evaluate rather than assuming expiry is permanent. A real
+		// deadline never moves, so the common case is a no-op, but a
+		// VTXO can reach this state without the chain having been
+		// consulted: a released or restart-orphaned reclaim rolls back
+		// here deliberately, because quarantining value that might be
+		// swept is safer than offering it for a payment that would
+		// build on a dead lineage. This is the check that undoes that
+		// caution once a real height proves the VTXO is still live.
+		if env.ExpiryConfig.CheckExpiry(s.VTXO, evt.Height) !=
+			ExpiryStatusExpired {
+
+			build.LoggerFromContext(ctx).WithPrefix(Subsystem).
+				InfoS(ctx, "VTXO is not expired after all; "+
+					"returning it to the live set", nil,
+					slog.String(
+						"outpoint",
+						s.VTXO.Outpoint.String(),
+					),
+					slog.Int("height", int(evt.Height)),
+					slog.Int(
+						"batch_expiry",
+						int(s.VTXO.BatchExpiry),
+					),
+				)
+
+			live := &LiveState{
+				VTXO:              s.VTXO,
+				LastCheckedHeight: evt.Height,
+			}
+
+			return forfeitReleaseTransition(
+				live, s.VTXO.Outpoint,
+			), nil
+		}
+
+		// The VTXO is still expired, so recover it through the ordinary
+		// refresh path. The server admits the input from its effective
+		// batch expiry and the normal connector-bound forfeit protects
+		// the operator; no sweep-state handshake is needed.
+		outbox := []VTXOOutMsg{
+			&ForfeitRequest{
+				VTXOOutpoint:      s.VTXO.Outpoint,
+				LastCheckedHeight: evt.Height,
+			},
+			&VTXOStatusUpdate{
+				Outpoint:  s.VTXO.Outpoint,
+				NewStatus: VTXOStatusPendingForfeit,
+			},
+		}
+
+		return &VTXOStateTransition{
+			NextState: &PendingForfeitState{
+				VTXO:              s.VTXO,
+				RequestedAtHeight: evt.Height,
+			},
+			NewEvents: fn.Some(VTXOEmittedEvent{Outbox: outbox}),
+		}, nil
+
+	case *PendingForfeitEvent:
+		// The reclaim path: the wallet has committed this expired
+		// VTXO to a round. From here it follows the ordinary forfeit
+		// choreography, because a reclaim IS an ordinary refresh whose
+		// input happens to be expired.
+		update := &VTXOStatusUpdate{
+			Outpoint:  s.VTXO.Outpoint,
+			NewStatus: VTXOStatusPendingForfeit,
+		}
+
+		return &VTXOStateTransition{
+			NextState: &PendingForfeitState{
+				VTXO:              s.VTXO,
+				RequestedAtHeight: s.ObservedHeight,
+			},
+			NewEvents: fn.Some(VTXOEmittedEvent{
+				Outbox: []VTXOOutMsg{update},
+			}),
+		}, nil
+
+	case *ForfeitRequestEvent:
+		// The round supplied connector details directly. Reuse
+		// LiveState's handler verbatim: the forfeit an expired VTXO
+		// signs is byte-for-byte the one it would sign while live, and
+		// duplicating the construction here would be a second place
+		// for the two to drift apart.
+		live := &LiveState{
+			VTXO:              s.VTXO,
+			LastCheckedHeight: s.ObservedHeight,
+		}
+
+		return live.handleForfeitRequest(ctx, evt, env)
+
+	case *SpendReserveEvent:
+		// Refuse ordinary spends. There is nothing left to spend
+		// cooperatively until the VTXO has been reissued, so staying
+		// put is what keeps the expired value out of coin selection.
+		return &VTXOStateTransition{
+			NextState: s,
+		}, nil
+
+	case *ResumeVTXOEvent:
+		return &VTXOStateTransition{
+			NextState: s,
+		}, nil
+
+	case *ForceUnrollEvent:
+		// Deliberately refused. Completing an exit from here means
+		// confirming the whole ancestry and then waiting out the exit
+		// CSV while racing an operator whose sweep is already
+		// spendable, so it burns fees on an exit that cannot land.
+		// Recovery goes through the cooperative forfeit instead.
+		build.LoggerFromContext(ctx).WithPrefix(Subsystem).WarnS(
+			ctx, "Refusing unilateral exit for expired VTXO; "+
+				"recover it by forfeiting in a round", nil,
+			slog.String("outpoint", s.VTXO.Outpoint.String()),
+			slog.Int("batch_expiry", int(s.VTXO.BatchExpiry)),
+		)
+
+		return &VTXOStateTransition{
+			NextState: s,
+		}, nil
+
+	case *VTXOFailedEvent:
+		return &VTXOStateTransition{
+			NextState: &FailedState{
+				VTXO:        s.VTXO,
+				Reason:      evt.Reason,
+				Error:       evt.Error,
+				Recoverable: evt.Recoverable,
+			},
+		}, nil
+
+	case *SpendReleasedEvent, *SpendCompletedEvent, *ForfeitReleasedEvent,
+		*ExitFailedEvent, *ExitConfirmedEvent:
+		// Stale events from a path that ran before this VTXO expired.
+		// An expired VTXO is long-lived, so these can arrive well
+		// after the fact; absorbing them keeps the actor alive without
+		// acting on state that no longer applies.
+		return &VTXOStateTransition{
+			NextState: s,
+		}, nil
+
+	default:
+		// Anything else is a genuine protocol surprise. Surfacing it
+		// beats silently absorbing it: a blanket default would let a
+		// real routing or lifecycle bug sit invisible for the whole
+		// life of the VTXO. The FSM reports the error without
+		// transitioning, so the actor survives.
+		return nil, fmt.Errorf("expired: unexpected event: %T", event)
+	}
 }
