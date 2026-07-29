@@ -1075,6 +1075,28 @@ func (f *fakeInventory) VerifyProof(context.Context, []byte) (
 	return f.verification, nil
 }
 
+// UnpackProofFile returns one synthetic issuance proof for chained-path tests.
+func (*fakeInventory) UnpackProofFile(_ context.Context, proofFile []byte) (
+	[][]byte, error) {
+
+	return [][]byte{append([]byte(nil), proofFile...)}, nil
+}
+
+// DecodeProof returns the synthetic issuance marker needed by chained-path
+// tests. Detailed bootstrap behavior is covered by verifier_test.go.
+func (*fakeInventory) DecodeProof(context.Context, []byte) (
+	*tapsdk.DecodedProof, error) {
+
+	return &tapsdk.DecodedProof{IsIssuance: true}, nil
+}
+
+// InsertProof accepts the synthetic issuance used by chained-path tests.
+func (*fakeInventory) InsertProof(context.Context, []byte,
+	*tapsdk.DecodedProof) error {
+
+	return nil
+}
+
 // ListUtxos returns the configured complete anchor inventory.
 func (f *fakeInventory) ListUtxos(context.Context, *tapsdk.ListUtxosRequest) (
 	map[string]*tapsdk.ManagedUtxo, error) {
