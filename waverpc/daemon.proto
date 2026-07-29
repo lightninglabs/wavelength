@@ -998,6 +998,18 @@ message SendOORRequest {
     // allows the daemon to return the existing local OOR session instead
     // of creating a duplicate transfer.
     string idempotency_key = 4;
+
+    // admission_deadline_unix_nanos is the latest wall-clock time at which
+    // the daemon may admit a new transfer for this request. An existing
+    // idempotency-key winner may still be returned after the deadline. Zero
+    // leaves admission unbounded.
+    int64 admission_deadline_unix_nanos = 5;
+
+    // existing_only restricts an idempotent request to read-only
+    // reconciliation. The daemon returns an existing winner or NotFound and
+    // never selects inputs or admits a new transfer. This requires a non-empty
+    // idempotency_key.
+    bool existing_only = 6;
 }
 
 // CustomOORInput specifies a VTXO to spend with an explicit semantic policy

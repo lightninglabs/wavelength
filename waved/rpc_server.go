@@ -2937,6 +2937,19 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 		return nil, err
 	}
 
+	if req.GetExistingOnly() && req.GetIdempotencyKey() == "" {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"existing_only requires idempotency_key")
+	}
+	if req.GetExistingOnly() && req.GetDryRun() {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"existing_only cannot be combined with dry_run")
+	}
+	if req.GetAdmissionDeadlineUnixNanos() < 0 {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"admission_deadline_unix_nanos must not be negative")
+	}
+
 	if req.GetIdempotencyKey() != "" && !req.DryRun {
 		phaseStart := time.Now()
 		key := req.GetIdempotencyKey()
@@ -2978,6 +2991,44 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 					),
 			}, nil
 		}
+
+		if req.GetExistingOnly() {
+			sessionID, found, pending, err :=
+				r.lookupOutgoingOORSessionByIdempotencyKey(
+					ctx, key,
+				)
+			if err != nil {
+				return nil, err
+			}
+			if !found && !pending {
+				return nil, status.Errorf(codes.NotFound,
+					"no active OOR transfer for "+
+						"idempotency key")
+			}
+
+			replayStatus := "pending"
+			var recipientOutpoints []string
+			if found {
+				replayStatus = "submitted"
+				recipientOutpoints = r.
+					resolveExistingOORRecipientOutpoints(
+						ctx, sessionID,
+						requestRecipients,
+					)
+			}
+
+			return &waverpc.SendOORResponse{
+				Status:             replayStatus,
+				SessionId:          sessionID.String(),
+				RecipientOutpoints: recipientOutpoints,
+			}, nil
+		}
+	}
+
+	if deadline := req.GetAdmissionDeadlineUnixNanos(); deadline > 0 &&
+		!time.Now().Before(time.Unix(0, deadline)) {
+		return nil, status.Errorf(codes.FailedPrecondition, "OOR "+
+			"admission deadline reached")
 	}
 
 	// Fetch operator terms for the checkpoint policy.
@@ -3196,6 +3247,8 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 		Inputs:         selectedInputs,
 		Recipients:     recipients,
 		IdempotencyKey: req.GetIdempotencyKey(),
+		AdmissionDeadlineUnixNanos: req.
+			GetAdmissionDeadlineUnixNanos(),
 	}
 
 	phaseStart = time.Now()
@@ -3206,6 +3259,13 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 
 	oorResp, err := oorResult.Unpack()
 	if err != nil {
+		if errors.Is(err, oor.ErrOutgoingAdmissionExpired) {
+			r.unlockSelectedVTXOsBestEffort(ctx, locked)
+
+			return nil, status.Errorf(codes.FailedPrecondition,
+				"OOR admission deadline reached")
+		}
+
 		if isAwaitContextError(ctx, err) {
 			releaseCustomInputs = false
 			r.cleanupSubmittedOORStart(
@@ -3879,6 +3939,40 @@ func (r *RPCServer) findOutgoingOORSessionByIdempotencyKey(ctx context.Context,
 	return oor.SessionID(record.SessionID), true, nil
 }
 
+// lookupOutgoingOORSessionByIdempotencyKey serializes a read-only key probe
+// through the registry actor. This observes admissions already accepted by the
+// registry, including the child-commit handoff where the durable row is not yet
+// visible, without selecting inputs or admitting a transfer.
+func (r *RPCServer) lookupOutgoingOORSessionByIdempotencyKey(
+	ctx context.Context, idempotencyKey string) (oor.SessionID, bool, bool,
+	error) {
+
+	if r.server.actorSystem == nil {
+		return oor.SessionID{}, false, false, status.Errorf(
+			codes.Internal, "actor system not initialized")
+	}
+
+	ref := oor.NewServiceKey().Ref(r.server.actorSystem)
+	result := ref.Ask(ctx, &oor.LookupTransferRequest{
+		IdempotencyKey: idempotencyKey,
+	}).Await(ctx)
+	resp, err := result.Unpack()
+	if err != nil {
+		return oor.SessionID{}, false, false, status.Errorf(
+			codes.Internal, "OOR idempotency reconciliation "+
+				"failed: %v", err)
+	}
+
+	lookup, ok := resp.(*oor.LookupTransferResponse)
+	if !ok {
+		return oor.SessionID{}, false, false, status.Errorf(
+			codes.Internal, "unexpected OOR lookup response "+
+				"type: %T", resp)
+	}
+
+	return lookup.SessionID, lookup.Found, lookup.Pending, nil
+}
+
 // resolveExistingOORRecipientOutpoints maps a keyed replay's requested
 // recipients onto the original transfer snapshot. The snapshot is the only
 // trustworthy source here: a retry can select different inputs and create a
@@ -3888,7 +3982,9 @@ func (r *RPCServer) findOutgoingOORSessionByIdempotencyKey(ctx context.Context,
 // Recovery is best-effort at the generic SendOOR boundary. The stable session
 // id is still returned when local snapshot metadata cannot be read, while
 // higher-level callers that require an outpoint can fail closed and retry the
-// same key.
+// same key. A decoded snapshot produces one positional result per request
+// recipient; an unresolved or ambiguous recipient keeps an empty string at
+// that index.
 func (r *RPCServer) resolveExistingOORRecipientOutpoints(ctx context.Context,
 	sessionID oor.SessionID, requestRecipients []*waverpc.Output) []string {
 
