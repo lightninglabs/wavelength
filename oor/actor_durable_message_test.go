@@ -63,7 +63,8 @@ func TestStartTransferPayloadTLVRoundTrip(t *testing.T) {
 				ValueSat: 321,
 			},
 		},
-		IdempotencyKey: "funding-key-1",
+		IdempotencyKey:             "funding-key-1",
+		AdmissionDeadlineUnixNanos: 1_700_000_000_123_456_789,
 	}
 
 	raw, err := encodeStartTransferPayload(payload)
@@ -78,8 +79,29 @@ func TestStartTransferPayloadTLVRoundTrip(t *testing.T) {
 	require.Equal(t, payload.CSVDelay, decoded.CSVDelay)
 	require.Equal(t, payload.Recipients, decoded.Recipients)
 	require.Equal(t, payload.IdempotencyKey, decoded.IdempotencyKey)
+	require.Equal(
+		t, payload.AdmissionDeadlineUnixNanos,
+		decoded.AdmissionDeadlineUnixNanos,
+	)
 	require.Len(t, decoded.Inputs, 1)
 	require.Equal(t, payload.Inputs[0], decoded.Inputs[0])
+}
+
+// TestLookupTransferRequestRoundTrip verifies a read-only keyed reconciliation
+// request survives the durable registry mailbox codec.
+func TestLookupTransferRequestRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	msg := &LookupTransferRequest{
+		IdempotencyKey: "in-swap-funding:001122",
+	}
+
+	var buf bytes.Buffer
+	require.NoError(t, msg.Encode(&buf))
+
+	var decoded LookupTransferRequest
+	require.NoError(t, decoded.Decode(&buf))
+	require.Equal(t, msg.IdempotencyKey, decoded.IdempotencyKey)
 }
 
 // TestListSessionsRequestRoundTrip verifies the durable status-query message

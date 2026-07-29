@@ -64,6 +64,12 @@ func newOORActorCodec(limits ReceiveLimits) *actor.MessageCodec {
 	codec.MustRegister(ListSessionsRequestTLVType, func() actor.TLVMessage {
 		return &ListSessionsRequest{}
 	})
+	codec.MustRegister(
+		LookupTransferRequestTLVType,
+		func() actor.TLVMessage {
+			return &LookupTransferRequest{}
+		},
+	)
 	codec.MustRegister(DriveEventRequestTLVType, func() actor.TLVMessage {
 		return &DriveEventRequest{limits: limits}
 	})

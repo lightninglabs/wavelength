@@ -52,6 +52,11 @@ func (b *sessionBehavior) handleStartTransfer(ctx context.Context,
 		})
 	}
 
+	now := b.envConfig().newEnvironment(b.sessionID).Now()
+	if admissionDeadlineReached(now, req.AdmissionDeadlineUnixNanos) {
+		return fn.Err[ActorResp](ErrOutgoingAdmissionExpired)
+	}
+
 	session, outbox, err := NewSessionWithIdempotencyKey(
 		ctx, req.Policy, req.Inputs, req.Recipients, req.IdempotencyKey,
 		b.envConfig(),

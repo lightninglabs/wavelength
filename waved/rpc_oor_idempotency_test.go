@@ -695,6 +695,10 @@ func TestSendOORReturnsExistingIdempotencyKeyBeforeWalletSelection(
 	secondResp, err := rpcServer.SendOOR(ctx, &waverpc.SendOORRequest{
 		Recipients:     []*waverpc.Output{recipient},
 		IdempotencyKey: idempotencyKey,
+		AdmissionDeadlineUnixNanos: time.Now().
+			Add(-time.Second).
+			UnixNano(),
+		ExistingOnly: true,
 	})
 	require.NoError(t, err)
 	require.Equal(t, firstResp.SessionId, secondResp.SessionId)
@@ -703,6 +707,24 @@ func TestSendOORReturnsExistingIdempotencyKeyBeforeWalletSelection(
 	)
 	require.Equal(t, 1, testWallet.selectCount())
 	require.Empty(t, testWallet.unlockBatches())
+
+	_, err = rpcServer.SendOOR(ctx, &waverpc.SendOORRequest{
+		Recipients:     []*waverpc.Output{recipient},
+		IdempotencyKey: "missing-existing-only-key",
+		ExistingOnly:   true,
+	})
+	require.Equal(t, codes.NotFound, status.Code(err))
+	require.Equal(t, 1, testWallet.selectCount())
+
+	_, err = rpcServer.SendOOR(ctx, &waverpc.SendOORRequest{
+		Recipients:     []*waverpc.Output{recipient},
+		IdempotencyKey: "expired-admission-key",
+		AdmissionDeadlineUnixNanos: time.Now().
+			Add(-time.Second).
+			UnixNano(),
+	})
+	require.Equal(t, codes.FailedPrecondition, status.Code(err))
+	require.Equal(t, 1, testWallet.selectCount())
 }
 
 // TestSendOORUnlocksSelectedInputsForExistingSession verifies the daemon

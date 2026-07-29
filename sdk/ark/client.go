@@ -927,6 +927,20 @@ type OORSendResult struct {
 	RecipientOutpoint string
 }
 
+// OORSendOptions controls idempotent admission and read-only reconciliation.
+type OORSendOptions struct {
+	// IdempotencyKey identifies one caller intent across retries.
+	IdempotencyKey string
+
+	// AdmissionDeadline is the latest time Waved may admit a new transfer.
+	// Existing keyed winners remain readable after this time.
+	AdmissionDeadline time.Time
+
+	// ExistingOnly returns an existing keyed winner or NotFound without
+	// selecting inputs or admitting a transfer.
+	ExistingOnly bool
+}
+
 // SendOORWithPolicy sends one OOR transfer to a semantic policy-backed
 // destination and returns the resulting OOR session id.
 func (c *Client) SendOORWithPolicy(ctx context.Context, amountSat int64,
@@ -975,6 +989,24 @@ func (c *Client) SendOORWithPolicyAndKeyDetails(ctx context.Context,
 	amountSat int64, recipientPolicyTemplate []byte,
 	idempotencyKey string) (*OORSendResult, error) {
 
+	return c.SendOORWithPolicyOptionsDetails(
+		ctx, amountSat, recipientPolicyTemplate, OORSendOptions{
+			IdempotencyKey: idempotencyKey,
+		},
+	)
+}
+
+// SendOORWithPolicyOptionsDetails sends or reconciles one semantic
+// policy-backed OOR transfer under explicit admission options.
+func (c *Client) SendOORWithPolicyOptionsDetails(ctx context.Context,
+	amountSat int64, recipientPolicyTemplate []byte, opts OORSendOptions) (
+	*OORSendResult, error) {
+
+	var admissionDeadlineUnixNanos int64
+	if !opts.AdmissionDeadline.IsZero() {
+		admissionDeadlineUnixNanos = opts.AdmissionDeadline.UnixNano()
+	}
+
 	resp, err := c.SendOOR(ctx, &waverpc.SendOORRequest{
 		Recipients: []*waverpc.Output{
 			{
@@ -987,7 +1019,9 @@ func (c *Client) SendOORWithPolicyAndKeyDetails(ctx context.Context,
 				AmountSat: amountSat,
 			},
 		},
-		IdempotencyKey: idempotencyKey,
+		IdempotencyKey:             opts.IdempotencyKey,
+		AdmissionDeadlineUnixNanos: admissionDeadlineUnixNanos,
+		ExistingOnly:               opts.ExistingOnly,
 	})
 	if err != nil {
 		return nil, err

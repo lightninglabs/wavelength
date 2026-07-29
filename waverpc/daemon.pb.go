@@ -3527,8 +3527,18 @@ type SendOORRequest struct {
 	// allows the daemon to return the existing local OOR session instead
 	// of creating a duplicate transfer.
 	IdempotencyKey string `protobuf:"bytes,4,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// admission_deadline_unix_nanos is the latest wall-clock time at which
+	// the daemon may admit a new transfer for this request. An existing
+	// idempotency-key winner may still be returned after the deadline. Zero
+	// leaves admission unbounded.
+	AdmissionDeadlineUnixNanos int64 `protobuf:"varint,5,opt,name=admission_deadline_unix_nanos,json=admissionDeadlineUnixNanos,proto3" json:"admission_deadline_unix_nanos,omitempty"`
+	// existing_only restricts an idempotent request to read-only
+	// reconciliation. The daemon returns an existing winner or NotFound and
+	// never selects inputs or admits a new transfer. This requires a non-empty
+	// idempotency_key.
+	ExistingOnly  bool `protobuf:"varint,6,opt,name=existing_only,json=existingOnly,proto3" json:"existing_only,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SendOORRequest) Reset() {
@@ -3587,6 +3597,20 @@ func (x *SendOORRequest) GetIdempotencyKey() string {
 		return x.IdempotencyKey
 	}
 	return ""
+}
+
+func (x *SendOORRequest) GetAdmissionDeadlineUnixNanos() int64 {
+	if x != nil {
+		return x.AdmissionDeadlineUnixNanos
+	}
+	return 0
+}
+
+func (x *SendOORRequest) GetExistingOnly() bool {
+	if x != nil {
+		return x.ExistingOnly
+	}
+	return false
 }
 
 // CustomOORInput specifies a VTXO to spend with an explicit semantic policy
@@ -10317,14 +10341,16 @@ const file_daemon_proto_rawDesc = "" +
 	"\bround_id\x18\x02 \x01(\tR\aroundId\x12(\n" +
 	"\x10total_amount_sat\x18\x03 \x01(\x03R\x0etotalAmountSat\x12*\n" +
 	"\x11change_amount_sat\x18\x04 \x01(\x03R\x0fchangeAmountSat\x12%\n" +
-	"\x0eselected_count\x18\x05 \x01(\x05R\rselectedCount\"\xc1\x01\n" +
+	"\x0eselected_count\x18\x05 \x01(\x05R\rselectedCount\"\xa9\x02\n" +
 	"\x0eSendOORRequest\x12/\n" +
 	"\n" +
 	"recipients\x18\x01 \x03(\v2\x0f.waverpc.OutputR\n" +
 	"recipients\x12\x17\n" +
 	"\adry_run\x18\x02 \x01(\bR\x06dryRun\x12<\n" +
 	"\rcustom_inputs\x18\x03 \x03(\v2\x17.waverpc.CustomOORInputR\fcustomInputs\x12'\n" +
-	"\x0fidempotency_key\x18\x04 \x01(\tR\x0eidempotencyKey\"\x8b\x02\n" +
+	"\x0fidempotency_key\x18\x04 \x01(\tR\x0eidempotencyKey\x12A\n" +
+	"\x1dadmission_deadline_unix_nanos\x18\x05 \x01(\x03R\x1aadmissionDeadlineUnixNanos\x12#\n" +
+	"\rexisting_only\x18\x06 \x01(\bR\fexistingOnly\"\x8b\x02\n" +
 	"\x0eCustomOORInput\x12\x1a\n" +
 	"\boutpoint\x18\x01 \x01(\tR\boutpoint\x120\n" +
 	"\x14vtxo_policy_template\x18\x02 \x01(\fR\x12vtxoPolicyTemplate\x12\x1d\n" +

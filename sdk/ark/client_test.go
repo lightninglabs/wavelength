@@ -724,6 +724,18 @@ func TestDialRemotePolicyHelpers(t *testing.T) {
 	require.Equal(t, "session-123", oorResult.SessionID)
 	require.Equal(t, "session-123:0", oorResult.RecipientOutpoint)
 
+	admissionDeadline := time.Unix(1_700_000_000, 123)
+	oorResult, err = client.SendOORWithPolicyOptionsDetails(
+		context.Background(), 42_000, []byte{0xaa, 0xbb},
+		OORSendOptions{
+			IdempotencyKey:    "funding-key",
+			AdmissionDeadline: admissionDeadline,
+			ExistingOnly:      true,
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, "session-123", oorResult.SessionID)
+
 	service.mu.Lock()
 	policyReq := service.lastSendOORReq
 	service.mu.Unlock()
@@ -737,6 +749,12 @@ func TestDialRemotePolicyHelpers(t *testing.T) {
 		t, []byte{0xaa, 0xbb},
 		policyReq.GetRecipients()[0].GetPolicyTemplate(),
 	)
+	require.Equal(t, "funding-key", policyReq.GetIdempotencyKey())
+	require.Equal(
+		t, admissionDeadline.UnixNano(),
+		policyReq.GetAdmissionDeadlineUnixNanos(),
+	)
+	require.True(t, policyReq.GetExistingOnly())
 
 	sessionID, err = client.SendOORWithCustomInputs(
 		context.Background(), []byte{0x11, 0x22}, 21_000,
