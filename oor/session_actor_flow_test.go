@@ -468,6 +468,55 @@ func (s *failingReservationStore) UpsertReservation(context.Context,
 	return s.err
 }
 
+type reservationHandoffCall struct {
+	outpoints     []wire.OutPoint
+	fromOwnerKind int
+	fromOwnerID   chainhash.Hash
+	toOwnerKind   int
+	toOwnerID     chainhash.Hash
+}
+
+type recordingReservationSetStore struct {
+	upserts  int
+	handoffs []reservationHandoffCall
+}
+
+func (s *recordingReservationSetStore) UpsertReservation(context.Context,
+	wire.OutPoint, int, chainhash.Hash) error {
+
+	s.upserts++
+
+	return nil
+}
+
+func (s *recordingReservationSetStore) UpsertReservationSet(context.Context,
+	[]wire.OutPoint, int, chainhash.Hash) error {
+
+	return nil
+}
+
+func (s *recordingReservationSetStore) InspectReservationSet(context.Context,
+	[]wire.OutPoint, int, chainhash.Hash) (ReservationSetState, error) {
+
+	return ReservationSetAbsent, nil
+}
+
+func (s *recordingReservationSetStore) HandoffReservationSet(_ context.Context,
+	outpoints []wire.OutPoint, fromOwnerKind int,
+	fromOwnerID chainhash.Hash, toOwnerKind int,
+	toOwnerID chainhash.Hash) error {
+
+	s.handoffs = append(s.handoffs, reservationHandoffCall{
+		outpoints:     append([]wire.OutPoint(nil), outpoints...),
+		fromOwnerKind: fromOwnerKind,
+		fromOwnerID:   fromOwnerID,
+		toOwnerKind:   toOwnerKind,
+		toOwnerID:     toOwnerID,
+	})
+
+	return nil
+}
+
 // TestSessionActorReservationWriteErrorPropagates verifies a failed
 // spending-reservation write surfaces from recordReservations (and therefore
 // fails the admission turn whose commit work stages it), while a nil store
@@ -488,11 +537,89 @@ func TestSessionActorReservationWriteErrorPropagates(t *testing.T) {
 		sessionID: oorSessionID(0x72),
 	}
 
-	err := b.recordReservations(ctx, inputs)
+	err := b.recordReservations(ctx, inputs, false, "")
 	require.ErrorIs(t, err, errFilterBroken)
 
 	b.cfg.ReservationStore = nil
-	require.NoError(t, b.recordReservations(ctx, inputs))
+	require.NoError(t, b.recordReservations(ctx, inputs, false, ""))
+}
+
+// TestSessionActorAssetReservationHandoff verifies asset admission moves the
+// complete carrier set from the deterministic preparation owner to the OOR
+// session in one store operation. Ordinary Bitcoin admission keeps the
+// historical singular reservation writes.
+func TestSessionActorAssetReservationHandoff(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	inputs := testRetryTransferInputs(t)
+	requestID := "asset-handoff"
+	store := &recordingReservationSetStore{}
+	b := &sessionBehavior{
+		cfg: SessionActorConfig{
+			ReservationStore: store,
+		},
+		log:       btclog.Disabled,
+		sessionID: oorSessionID(0x73),
+	}
+
+	require.NoError(
+		t, b.recordReservations(ctx, inputs, true, requestID),
+	)
+	require.Zero(t, store.upserts)
+	require.Len(t, store.handoffs, 1)
+	require.Equal(t, reservationHandoffCall{
+		outpoints:     InputOutpoints(inputs),
+		fromOwnerKind: ReservationOwnerKindTaprootAssetPreparation,
+		fromOwnerID: TaprootAssetPreparationReservationOwner(
+			requestID,
+		),
+		toOwnerKind: ReservationOwnerKindOOROutgoing,
+		toOwnerID:   chainHashOf(b.sessionID),
+	}, store.handoffs[0])
+
+	require.NoError(t, b.recordReservations(ctx, inputs, false, ""))
+	require.Equal(t, len(inputs), store.upserts)
+	require.Len(t, store.handoffs, 1)
+}
+
+// TestSessionActorAssetReservationRequiresSetStore fails closed when an
+// asset-bearing actor is wired to the legacy singular reservation contract.
+func TestSessionActorAssetReservationRequiresSetStore(t *testing.T) {
+	t.Parallel()
+
+	b := &sessionBehavior{
+		cfg: SessionActorConfig{
+			ReservationStore: &failingReservationStore{},
+		},
+		log:       btclog.Disabled,
+		sessionID: oorSessionID(0x74),
+	}
+
+	err := b.recordReservations(
+		t.Context(), testRetryTransferInputs(t), true, "asset-handoff",
+	)
+	require.ErrorContains(t, err, "atomic Taproot Asset ownership handoff")
+}
+
+// TestSessionActorAssetAdmissionRequiresIdempotencyKey ensures a direct actor
+// caller cannot accidentally bypass the preparation-owner handoff by omitting
+// the key that identifies that owner.
+func TestSessionActorAssetAdmissionRequiresIdempotencyKey(t *testing.T) {
+	t.Parallel()
+
+	policy, inputs, recipients, prepared := testPreparedSubmitPackage(t)
+	b := &sessionBehavior{log: btclog.Disabled}
+	result := b.handleStartTransfer(t.Context(), &StartTransferRequest{
+		Policy:         policy,
+		Inputs:         inputs,
+		Recipients:     recipients,
+		IdempotencyKey: "  ",
+		PreparedSubmit: prepared,
+	})
+
+	require.True(t, result.IsErr())
+	require.ErrorContains(t, result.Err(), "idempotency key is required")
 }
 
 // TestSessionActorTransportTellFailureFailsTurn verifies a failed direct

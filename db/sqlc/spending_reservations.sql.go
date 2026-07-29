@@ -26,6 +26,103 @@ func (q *Queries) DeleteSpendingReservation(ctx context.Context, arg DeleteSpend
 	return err
 }
 
+const GetSpendingReservation = `-- name: GetSpendingReservation :one
+SELECT owner_kind, owner_id
+FROM spending_reservations
+WHERE outpoint_hash = $1 AND outpoint_index = $2
+`
+
+type GetSpendingReservationParams struct {
+	OutpointHash  []byte
+	OutpointIndex int32
+}
+
+type GetSpendingReservationRow struct {
+	OwnerKind int32
+	OwnerID   []byte
+}
+
+// GetSpendingReservation returns the owner recorded for one reserved
+// outpoint. Atomic reservation-set operations use it to reject partial sets
+// and owner handoffs before crossing an external commit boundary.
+func (q *Queries) GetSpendingReservation(ctx context.Context, arg GetSpendingReservationParams) (GetSpendingReservationRow, error) {
+	row := q.db.QueryRowContext(ctx, GetSpendingReservation, arg.OutpointHash, arg.OutpointIndex)
+	var i GetSpendingReservationRow
+	err := row.Scan(&i.OwnerKind, &i.OwnerID)
+	return i, err
+}
+
+const HandoffSpendingReservation = `-- name: HandoffSpendingReservation :execrows
+UPDATE spending_reservations
+SET owner_kind = $1,
+    owner_id = $2
+WHERE outpoint_hash = $3
+  AND outpoint_index = $4
+  AND owner_kind = $5
+  AND owner_id = $6
+`
+
+type HandoffSpendingReservationParams struct {
+	ToOwnerKind   int32
+	ToOwnerID     []byte
+	OutpointHash  []byte
+	OutpointIndex int32
+	FromOwnerKind int32
+	FromOwnerID   []byte
+}
+
+// HandoffSpendingReservation changes one reservation owner only when the row
+// still belongs to the exact expected owner. A zero-row result is a conflict;
+// callers must roll back the complete reservation-set transaction.
+func (q *Queries) HandoffSpendingReservation(ctx context.Context, arg HandoffSpendingReservationParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, HandoffSpendingReservation,
+		arg.ToOwnerKind,
+		arg.ToOwnerID,
+		arg.OutpointHash,
+		arg.OutpointIndex,
+		arg.FromOwnerKind,
+		arg.FromOwnerID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const InsertSpendingReservation = `-- name: InsertSpendingReservation :execrows
+INSERT INTO spending_reservations (
+    outpoint_hash, outpoint_index, owner_kind, owner_id, created_at
+) VALUES (
+    $1, $2, $3, $4, $5
+)
+ON CONFLICT (outpoint_hash, outpoint_index) DO NOTHING
+`
+
+type InsertSpendingReservationParams struct {
+	OutpointHash  []byte
+	OutpointIndex int32
+	OwnerKind     int32
+	OwnerID       []byte
+	CreatedAt     int64
+}
+
+// InsertSpendingReservation acquires an unowned outpoint without changing an
+// existing owner. Set acquisition inspects a zero-row result to distinguish
+// an idempotent same-owner race from a conflicting owner.
+func (q *Queries) InsertSpendingReservation(ctx context.Context, arg InsertSpendingReservationParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, InsertSpendingReservation,
+		arg.OutpointHash,
+		arg.OutpointIndex,
+		arg.OwnerKind,
+		arg.OwnerID,
+		arg.CreatedAt,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const ListSpendingReservationOutpoints = `-- name: ListSpendingReservationOutpoints :many
 SELECT outpoint_hash, outpoint_index FROM spending_reservations
 `
@@ -86,8 +183,8 @@ type UpsertSpendingReservationParams struct {
 // active spend owner (e.g. an outgoing OOR session) so a startup sweep can
 // release orphaned Spending VTXOs that have no live reservation.
 // UpsertSpendingReservation records (or refreshes) the reservation for one
-// outpoint. The owner fields are updated on conflict so a re-checkpointed
-// session re-binds the same outpoint to its current owner.
+// outpoint. The owner fields are updated on conflict so a resumed workflow
+// re-binds the same outpoint to its current durable owner.
 func (q *Queries) UpsertSpendingReservation(ctx context.Context, arg UpsertSpendingReservationParams) error {
 	_, err := q.db.ExecContext(ctx, UpsertSpendingReservation,
 		arg.OutpointHash,

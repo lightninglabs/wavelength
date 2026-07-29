@@ -30,6 +30,25 @@ const (
 	OORPackageLinkKindConsumedInput OORPackageLinkKind = 1
 )
 
+// ReservationSetState describes how a requested reservation set relates to
+// one exact owner. Callers use this to distinguish a fresh preparation from a
+// resumable one without interpreting database rows directly.
+type ReservationSetState uint8
+
+const (
+	// ReservationSetAbsent means none of the requested outpoints has a
+	// reservation row.
+	ReservationSetAbsent ReservationSetState = iota
+
+	// ReservationSetOwned means every requested outpoint is reserved by the
+	// exact owner kind and ID supplied by the caller.
+	ReservationSetOwned
+
+	// ReservationSetInconsistent means the set is only partly reserved or
+	// at least one row belongs to a different owner.
+	ReservationSetInconsistent
+)
+
 var (
 	// ErrOORBindingOutpointNotFound indicates that a binding references an
 	// outpoint that is not present in the local VTXO store.

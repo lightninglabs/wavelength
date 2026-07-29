@@ -8,6 +8,7 @@ import (
 	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
+	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
 	"github.com/lightninglabs/wavelength/rpc/oorpb"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/anypb"
@@ -23,12 +24,23 @@ func TestOutboxToProtoSubmitRequest(t *testing.T) {
 	msg := &SendSubmitPackageRequest{
 		ArkPSBT:         ark,
 		CheckpointPSBTs: checkpoints,
+		TaprootAssetTransfer: &oortx.TaprootAssetTransfer{
+			Version: oortx.TaprootAssetTransferVersion,
+			CheckpointPackages: [][]byte{
+				[]byte("checkpoint"),
+			},
+			ArkPackage: []byte("ark"),
+		},
 	}
 
 	result := msg.ToProto().UnwrapOrFail(t)
 
-	_, ok := result.(*oorpb.SubmitPackageRequest)
+	request, ok := result.(*oorpb.SubmitPackageRequest)
 	require.True(t, ok)
+	_, _, _, _, assetTransfer, err :=
+		oorpb.ParseSubmitPackageRequestWithAssets(request)
+	require.NoError(t, err)
+	require.Equal(t, msg.TaprootAssetTransfer, assetTransfer)
 }
 
 // TestOutboxToProtoSubmitRequestError verifies that a submit request

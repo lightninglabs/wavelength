@@ -7,7 +7,9 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/lightninglabs/wavelength/arkrpc"
+	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
 )
@@ -114,6 +116,61 @@ func TestIncomingVTXOHandlerOwnedScript(t *testing.T) {
 	require.Equal(t, pkScript, desc.PkScript)
 	require.Equal(t, "round-1", desc.RoundID)
 	require.Equal(t, VTXOStatusLive, desc.Status)
+}
+
+// TestIncomingVTXOHandlerAssetMetadata verifies the generic indexer event
+// path materializes the SDK-neutral identity and amount while retaining the
+// event value as the independent carrier-satoshi amount.
+func TestIncomingVTXOHandlerAssetMetadata(t *testing.T) {
+	t.Parallel()
+
+	owner, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	operator, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	root := chainhash.Hash{9, 8, 7}
+	policy, err := arkscript.NewVTXOPolicy(
+		owner.PubKey(), operator.PubKey(), 144,
+	)
+	require.NoError(t, err)
+	composed, err := arkscript.ComposeWithSiblingRoot(
+		policy.CompiledPolicy, root,
+	)
+	require.NoError(t, err)
+	pkScript, err := txscript.PayToTaprootScript(composed.OutputKey())
+	require.NoError(t, err)
+
+	lookup := &mockScriptLookup{scripts: map[string]*OwnedReceiveScript{
+		string(pkScript): {
+			ClientKey: keychain.KeyDescriptor{
+				PubKey: owner.PubKey(),
+			},
+			OperatorPubKey: operator.PubKey(),
+			ExitDelay:      144,
+		},
+	}}
+	saver := &mockVTXOSaver{}
+	handler := NewIncomingVTXOHandler(IncomingVTXOHandlerConfig{
+		ScriptStore: lookup,
+		VTXOStore:   saver,
+	})
+	txid := chainhash.Hash{1}
+	evt := newTestEvent(txid, 0, pkScript, 1_000, "asset-round")
+	evt.TaprootAssetRoot = root[:]
+	evt.TaprootAssetRef = "asset-id:010203"
+	evt.TaprootAssetAmount = 800
+
+	_, resultErr := handler.Receive(
+		t.Context(), IncomingVTXOMsg{Event: evt},
+	).Unpack()
+	require.NoError(t, resultErr)
+	require.Len(t, saver.saved, 1)
+	require.Equal(t, int64(1_000), int64(saver.saved[0].Amount))
+	require.Equal(t, &root, saver.saved[0].TaprootAssetRoot)
+	require.Equal(t, "asset-id:010203",
+		saver.saved[0].TaprootAssetRef)
+	require.Equal(t, uint64(800),
+		saver.saved[0].TaprootAssetAmount)
 }
 
 // TestIncomingVTXOHandlerUnownedScript verifies that a VTXO_CREATED

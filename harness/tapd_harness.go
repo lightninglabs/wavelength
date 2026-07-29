@@ -131,6 +131,9 @@ func (h *Harness) NewTapdHarness(name string) *TapdHarness {
 	h.Logf("Initializing LND wallet for %s...", name)
 	th.initAndWaitLND()
 
+	tapdImage, tapdTag, err := h.tapdImage()
+	require.NoError(h.T, err, "failed to prepare tapd image")
+
 	h.Logf("Starting tapd for %s...", name)
 	th.tapd = h.startTapdContainer(tapdConfig{
 		name:         name + "-tapd",
@@ -139,8 +142,8 @@ func (h *Harness) NewTapdHarness(name string) *TapdHarness {
 		lndContainer: th.lnd,
 		network:      h.network,
 		group:        h.group,
-		image:        imageRepo(h.opts.TapdImage),
-		tag:          imageTag(h.opts.TapdImage),
+		image:        tapdImage,
+		tag:          tapdTag,
 	})
 	th.setupTapdPaths()
 

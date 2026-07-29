@@ -129,7 +129,7 @@ func (q *Queries) ListForfeitingVTXOsByRound(ctx context.Context, forfeitRoundID
 }
 
 const ListLiveVTXOs = `-- name: ListLiveVTXOs :many
-SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, policy_template, client_key_id, operator_pubkey, batch_expiry, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time, chain_depth, construction_version FROM vtxos
+SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, policy_template, client_key_id, operator_pubkey, batch_expiry, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time, chain_depth, construction_version, taproot_asset_root, taproot_asset_ref, taproot_asset_amount FROM vtxos
 WHERE (status < 3 OR status = 7) AND spent = FALSE
 ORDER BY creation_time DESC
 `
@@ -175,6 +175,9 @@ func (q *Queries) ListLiveVTXOs(ctx context.Context) ([]Vtxo, error) {
 			&i.LastUpdateTime,
 			&i.ChainDepth,
 			&i.ConstructionVersion,
+			&i.TaprootAssetRoot,
+			&i.TaprootAssetRef,
+			&i.TaprootAssetAmount,
 		); err != nil {
 			return nil, err
 		}
@@ -190,22 +193,24 @@ func (q *Queries) ListLiveVTXOs(ctx context.Context) ([]Vtxo, error) {
 }
 
 const ListVTXOSelectionCandidatesByStatus = `-- name: ListVTXOSelectionCandidatesByStatus :many
-SELECT outpoint_hash, outpoint_index, amount, pk_script
+SELECT outpoint_hash, outpoint_index, amount, pk_script, taproot_asset_root
 FROM vtxos
-WHERE status = $1
+WHERE status = $1 AND taproot_asset_root IS NULL
 ORDER BY creation_time DESC
 `
 
 type ListVTXOSelectionCandidatesByStatusRow struct {
-	OutpointHash  []byte
-	OutpointIndex int32
-	Amount        int64
-	PkScript      []byte
+	OutpointHash     []byte
+	OutpointIndex    int32
+	Amount           int64
+	PkScript         []byte
+	TaprootAssetRoot []byte
 }
 
 // ListVTXOSelectionCandidatesByStatus returns the lightweight projection coin
-// selection runs on: outpoint, amount, and pkScript. Selection happens on
-// every payment and only needs these three fields, so this avoids decoding
+// selection runs on: outpoint, amount, pkScript, and the optional Taproot
+// Asset root. Selection happens on every payment and only needs these fields,
+// so this avoids decoding
 // full descriptors (pubkey parsing, taproot script reconstruction, policy
 // template decode) and the batched ancestry-path query on the hot path.
 func (q *Queries) ListVTXOSelectionCandidatesByStatus(ctx context.Context, status int32) ([]ListVTXOSelectionCandidatesByStatusRow, error) {
@@ -222,6 +227,7 @@ func (q *Queries) ListVTXOSelectionCandidatesByStatus(ctx context.Context, statu
 			&i.OutpointIndex,
 			&i.Amount,
 			&i.PkScript,
+			&i.TaprootAssetRoot,
 		); err != nil {
 			return nil, err
 		}
@@ -238,7 +244,7 @@ func (q *Queries) ListVTXOSelectionCandidatesByStatus(ctx context.Context, statu
 
 const ListVTXOsByStatus = `-- name: ListVTXOsByStatus :many
 
-SELECT vtxos.outpoint_hash, vtxos.outpoint_index, vtxos.round_id, vtxos.amount, vtxos.pk_script, vtxos.expiry, vtxos.policy_template, vtxos.client_key_id, vtxos.operator_pubkey, vtxos.batch_expiry, vtxos.created_height, vtxos.commitment_txid, vtxos.spent, vtxos.status, vtxos.forfeit_round_id, vtxos.forfeit_tx, vtxos.forfeit_txid, vtxos.replaced_by_hash, vtxos.replaced_by_index, vtxos.creation_time, vtxos.last_update_time, vtxos.chain_depth, vtxos.construction_version,
+SELECT vtxos.outpoint_hash, vtxos.outpoint_index, vtxos.round_id, vtxos.amount, vtxos.pk_script, vtxos.expiry, vtxos.policy_template, vtxos.client_key_id, vtxos.operator_pubkey, vtxos.batch_expiry, vtxos.created_height, vtxos.commitment_txid, vtxos.spent, vtxos.status, vtxos.forfeit_round_id, vtxos.forfeit_tx, vtxos.forfeit_txid, vtxos.replaced_by_hash, vtxos.replaced_by_index, vtxos.creation_time, vtxos.last_update_time, vtxos.chain_depth, vtxos.construction_version, vtxos.taproot_asset_root, vtxos.taproot_asset_ref, vtxos.taproot_asset_amount,
     rounds.commitment_txid AS settlement_txid,
     rounds.confirmation_height AS settlement_height,
     CAST(COALESCE((
@@ -315,6 +321,9 @@ func (q *Queries) ListVTXOsByStatus(ctx context.Context, status int32) ([]ListVT
 			&i.Vtxo.LastUpdateTime,
 			&i.Vtxo.ChainDepth,
 			&i.Vtxo.ConstructionVersion,
+			&i.Vtxo.TaprootAssetRoot,
+			&i.Vtxo.TaprootAssetRef,
+			&i.Vtxo.TaprootAssetAmount,
 			&i.SettlementTxid,
 			&i.SettlementHeight,
 			&i.SettlementFeeSat,

@@ -56,6 +56,9 @@ func (w *sendOORTestWallet) Receive(_ context.Context,
 	case *wallet.SelectAndLockVTXOsRequest:
 		w.selects++
 		reqCopy := *msg
+		reqCopy.RequiredOutpoints = append(
+			[]wire.OutPoint(nil), msg.RequiredOutpoints...,
+		)
 		w.selectReqs = append(w.selectReqs, &reqCopy)
 
 		if len(w.selections) == 0 {
@@ -136,6 +139,9 @@ func (w *sendOORTestWallet) selectionRequests() []*selectionReq {
 	)
 	for _, req := range w.selectReqs {
 		reqCopy := *req
+		reqCopy.RequiredOutpoints = append(
+			[]wire.OutPoint(nil), req.RequiredOutpoints...,
+		)
 		requests = append(requests, &reqCopy)
 	}
 
@@ -177,6 +183,7 @@ type capturingSendOORActor struct {
 	mu       sync.Mutex
 	requests []*oor.StartTransferRequest
 	response *oor.StartTransferResponse
+	err      error
 }
 
 func (a *capturingSendOORActor) Receive(_ context.Context,
@@ -198,7 +205,11 @@ func (a *capturingSendOORActor) Receive(_ context.Context,
 	a.mu.Lock()
 	a.requests = append(a.requests, &reqCopy)
 	resp := a.response
+	err := a.err
 	a.mu.Unlock()
+	if err != nil {
+		return fn.Err[oor.ActorResp](err)
+	}
 
 	return fn.Ok[oor.ActorResp](resp)
 }

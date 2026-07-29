@@ -200,9 +200,7 @@ func (p *StandardVTXOExitSpendPolicy) BuildSpendTx(ctx context.Context,
 		PkScript: append([]byte(nil), req.DestinationPkScript...),
 	})
 
-	spendInfo, err := arkscript.NewVTXOSpendInfoFromPolicy(
-		desc.ClientKey.PubKey, desc.OperatorKey, p.CSVDelay(), 1,
-	)
+	spendInfo, err := desc.EffectiveStandardSpendInfo(1)
 	if err != nil {
 		return nil, fmt.Errorf("timeout spend info: %w", err)
 	}

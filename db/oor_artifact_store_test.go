@@ -98,9 +98,22 @@ func TestOORArtifactStoreGetPackageForOutpoint(t *testing.T) {
 	sessionID, arkPSBT, checkpoints, recipientOutpoint, recipientPkScript,
 		valueSat, _ := buildTestOORPackage(t, 0x11)
 
-	err := store.UpsertPackage(
+	assetTransfer := &oortx.TaprootAssetTransfer{
+		Version: oortx.TaprootAssetTransferVersion,
+		CheckpointPackages: [][]byte{
+			{
+				0x01,
+				0x02,
+			},
+		},
+		ArkPackage: []byte{
+			0x03,
+			0x04,
+		},
+	}
+	err := store.UpsertPackageWithAssets(
 		ctx, OORPackageDirectionIncoming, sessionID, arkPSBT,
-		checkpoints,
+		checkpoints, assetTransfer,
 	)
 	require.NoError(t, err)
 
@@ -121,6 +134,7 @@ func TestOORArtifactStoreGetPackageForOutpoint(t *testing.T) {
 	require.Equal(t, sessionID, pkg.SessionID)
 	require.Equal(t, OORPackageDirectionIncoming, pkg.Direction)
 	require.Len(t, pkg.FinalCheckpointPSBTs, 1)
+	require.Equal(t, assetTransfer, pkg.TaprootAssetTransfer)
 	require.True(t, pkg.MatchedOutpointBinding.IsSome())
 	matched := pkg.MatchedOutpointBinding.UnsafeFromSome()
 	require.Equal(t, OORPackageLinkKindCreatedOutput,
@@ -326,6 +340,24 @@ func TestOORArtifactStoreGetPackageForOutpointPrefersCreatedBinding(
 	matched := pkg.MatchedOutpointBinding.UnsafeFromSome()
 	require.Equal(t, OORPackageLinkKindCreatedOutput,
 		matched.LinkKind)
+
+	// The proof-source lookup has a stricter contract than the legacy
+	// convenience lookup above: it must select by created-output kind in
+	// SQL rather than relying on row ordering when the same outpoint is
+	// also consumed by another package.
+	createdPkg, err := store.GetCreatedPackageForOutpoint(
+		ctx, parentOutpoint,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, createdPkg)
+	require.Equal(t, parentSession, createdPkg.SessionID)
+	require.Equal(t, OORPackageDirectionIncoming, createdPkg.Direction)
+	require.True(t, createdPkg.MatchedOutpointBinding.IsSome())
+	createdBinding := createdPkg.MatchedOutpointBinding.UnsafeFromSome()
+	require.Equal(
+		t, OORPackageLinkKindCreatedOutput, createdBinding.LinkKind,
+	)
+	require.Equal(t, parentOutpoint, createdBinding.Outpoint)
 }
 
 // TestOORArtifactStoreBindingSessionConflict verifies a binding outpoint+kind
@@ -599,6 +631,58 @@ func TestOORArtifactStoreOwnedReceiveScriptCRUD(t *testing.T) {
 
 	require.Equal(t, recB.PkScript, rows[0].PkScript)
 	require.Equal(t, recA.PkScript, rows[1].PkScript)
+}
+
+// TestOwnedReceiveScriptAssetAliasSourceRoundTrip verifies the append-only
+// source value used by durable final-script aliases survives persistence.
+func TestOwnedReceiveScriptAssetAliasSourceRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store, _ := newOORArtifactStoreForTest(t)
+
+	code, err := ownedReceiveScriptSourceCode(
+		OwnedReceiveScriptSourceAssetAlias,
+	)
+	require.NoError(t, err)
+	require.Equal(t, int32(3), code)
+
+	source, err := ownedReceiveScriptSourceFromCode(code)
+	require.NoError(t, err)
+	require.Equal(t, OwnedReceiveScriptSourceAssetAlias, source)
+	require.Equal(t, "asset_alias", source.String())
+
+	clientPrivKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	operatorPrivKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	rec := OwnedReceiveScriptRecord{
+		PkScript: []byte{
+			0x51,
+			0x30,
+			0x03,
+		},
+		ClientKey: keychain.KeyDescriptor{
+			KeyLocator: keychain.KeyLocator{
+				Family: 17,
+				Index:  3,
+			},
+			PubKey: clientPrivKey.PubKey(),
+		},
+		OperatorPubKey: operatorPrivKey.PubKey(),
+		ExitDelay:      144,
+		Source:         OwnedReceiveScriptSourceAssetAlias,
+		CreatedAt:      time.Unix(300, 0).UTC(),
+	}
+
+	err = store.UpsertOwnedReceiveScript(ctx, rec)
+	require.NoError(t, err)
+
+	got, err := store.LookupOwnedReceiveScript(ctx, rec.PkScript)
+	require.NoError(t, err)
+	require.Equal(t, rec.Source, got.Source)
+	require.Equal(t, rec.PkScript, got.PkScript)
 }
 
 // buildTestOORPackage constructs a deterministic incoming-style OOR package

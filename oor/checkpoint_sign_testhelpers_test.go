@@ -6,10 +6,8 @@ import (
 	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/lightninglabs/wavelength/lib/tx"
 	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
 	"github.com/lightningnetwork/lnd/input"
-	"github.com/lightningnetwork/lnd/keychain"
 )
 
 // coSignCheckpointPSBTsForTest attaches operator collaborative signatures to
@@ -79,24 +77,18 @@ func coSignCheckpointPSBTsForTest(signer input.Signer, inputs []TransferInput,
 		prevFetcher := txscript.NewCannedPrevOutputFetcher(
 			prevOut.PkScript, prevOut.Value,
 		)
-		sigHashes := txscript.NewTxSigHashes(
-			checkpoint.UnsignedTx, prevFetcher,
-		)
-
-		signDesc, spendInfo, err := tx.NewVTXOCollabSignDescriptor(
-			&tx.VTXOSpendContext{
-				Outpoint:  vtxo.Outpoint,
-				Output:    prevOut,
-				TapScript: vtxo.TapScript,
-			},
-			keychain.KeyDescriptor{PubKey: vtxo.OperatorKey},
-			0,
-			sigHashes,
-			prevFetcher,
-		)
+		spendPath, err := in.EffectiveSpendPath()
 		if err != nil {
 			return err
 		}
+
+		sigHashes := txscript.NewTxSigHashes(
+			checkpoint.UnsignedTx, prevFetcher,
+		)
+		signDesc := spendPath.SpendInfo.BuildSignDescriptor(
+			in.VTXO.ClientKey, prevOut, sigHashes, prevFetcher, 0,
+		)
+		signDesc.KeyDesc.PubKey = vtxo.OperatorKey
 
 		sig, err := signer.SignOutputRaw(
 			checkpoint.UnsignedTx, signDesc,
@@ -112,13 +104,13 @@ func coSignCheckpointPSBTsForTest(signer input.Signer, inputs []TransferInput,
 
 		input := &checkpoint.Inputs[0]
 
-		err = psbtutil.AddTapLeafScript(input, spendInfo)
+		err = psbtutil.AddTapLeafScript(input, spendPath.SpendInfo)
 		if err != nil {
 			return err
 		}
 
 		err = psbtutil.AddTaprootScriptSpendSig(
-			input, vtxo.OperatorKey, spendInfo.WitnessScript,
+			input, vtxo.OperatorKey, spendPath.WitnessScript,
 			sigBytes, signDesc.HashType,
 		)
 		if err != nil {

@@ -18,6 +18,12 @@ import (
 	"github.com/lightningnetwork/lnd/keychain"
 )
 
+const (
+	// MaxTaprootAssetRefBytes bounds the opaque SDK-level asset identity at
+	// every Wavelength persistence and wire boundary.
+	MaxTaprootAssetRefBytes = 512
+)
+
 // =============================================================================
 // MESSAGE SPEC
 // =============================================================================
@@ -352,6 +358,21 @@ type Descriptor struct {
 	// collaborative and timeout spend paths).
 	PkScript []byte
 
+	// TaprootAssetRoot is the optional root of the Taproot Asset commitment
+	// composed beside PolicyTemplate. When set, PkScript commits to
+	// TapBranch(policy_root, taproot_asset_root), and all Ark spend paths
+	// must include this root as the final control-block sibling.
+	TaprootAssetRoot *chainhash.Hash
+
+	// TaprootAssetRef is the opaque tap-sdk asset identity carried by this
+	// VTXO. It is intentionally a string so the wallet domain does not
+	// depend on tap-sdk or taproot-assets types.
+	TaprootAssetRef string
+
+	// TaprootAssetAmount is the number of Taproot Asset units carried by
+	// this VTXO. Amount remains the separate Bitcoin carrier value.
+	TaprootAssetAmount uint64
+
 	// ClientKey is the client's key descriptor for this VTXO.
 	ClientKey keychain.KeyDescriptor
 
@@ -511,9 +532,10 @@ type VTXOStore interface {
 		status VTXOStatus) ([]*Descriptor, error)
 
 	// ListSelectionCandidatesByStatus returns the lightweight
-	// (outpoint, amount, pkScript) projection coin selection runs on.
-	// Selection happens on every payment and needs only these fields,
-	// so this avoids decoding full descriptors on the hot path.
+	// (outpoint, amount, pkScript, optional Taproot Asset root) projection
+	// coin selection runs on. Selection happens on every payment and needs
+	// only these fields, so this avoids decoding full descriptors on the
+	// hot path.
 	ListSelectionCandidatesByStatus(ctx context.Context,
 		status VTXOStatus) ([]SelectedVTXO, error)
 

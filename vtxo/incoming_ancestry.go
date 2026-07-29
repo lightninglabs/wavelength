@@ -56,6 +56,29 @@ func AncestryFromRPC(paths []*arkrpc.AncestryPath) ([]Ancestry, error) {
 				err)
 		}
 
+		entry := Ancestry{
+			TreePath:         treePath,
+			CommitmentTxID:   commitmentTxID,
+			InputIndices:     slices.Clone(p.GetInputIndices()),
+			TreeDepth:        p.GetTreeDepth(),
+			CommitmentHeight: p.GetCommitmentHeight(),
+		}
+
+		// A strict rootless TreePath is the explicit direct-on-chain
+		// variant. It has depth zero by construction and is validated
+		// against its exact external outpoint/output instead of being
+		// fed into the ordinary non-zero tree-depth validator.
+		if entry.IsExternalRoot() {
+			if err := entry.ValidateExternalRoot(); err != nil {
+				return nil, fmt.Errorf("path[%d] external "+
+					"root: %w", i, err)
+			}
+
+			out = append(out, entry)
+
+			continue
+		}
+
 		// Validate the indexer-supplied tree_depth against the
 		// reconstructed path before it can be persisted. A zero or
 		// truncated claim would otherwise survive the rest of the
@@ -70,13 +93,7 @@ func AncestryFromRPC(paths []*arkrpc.AncestryPath) ([]Ancestry, error) {
 			return nil, fmt.Errorf("path[%d] depth: %w", i, err)
 		}
 
-		out = append(out, Ancestry{
-			TreePath:         treePath,
-			CommitmentTxID:   commitmentTxID,
-			InputIndices:     slices.Clone(p.GetInputIndices()),
-			TreeDepth:        p.GetTreeDepth(),
-			CommitmentHeight: p.GetCommitmentHeight(),
-		})
+		out = append(out, entry)
 	}
 
 	return out, nil

@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
@@ -28,6 +29,12 @@ type TransferInput struct {
 	// Ark ownership is derived from the descriptor's
 	// owner/operator/expiry tuple.
 	VTXOPolicyTemplate []byte
+
+	// TaprootAssetRoot is the optional root of the Taproot Asset
+	// commitment anchored in the spent VTXO. The semantic VTXO policy is
+	// the sibling branch. When present, EffectiveSpendPath extends the
+	// policy control block with this root before any signer sees it.
+	TaprootAssetRoot *chainhash.Hash
 
 	// OwnerLeafScript is the leaf script committed to the checkpoint
 	// tap tree. When empty and VTXO.ClientKey + VTXO.OperatorKey are
@@ -104,6 +111,30 @@ func (i *TransferInput) Validate() error {
 	case !i.IsCustomSpend() && i.VTXO.ClientKey.PubKey == nil:
 		return fmt.Errorf("vtxo client key must be provided")
 	}
+	if (i.VTXO.TaprootAssetRef == "") !=
+		(i.VTXO.TaprootAssetAmount == 0) {
+		return fmt.Errorf("vtxo asset ref and amount must both be " +
+			"provided")
+	}
+	if len(i.VTXO.TaprootAssetRef) > MaxTaprootAssetRefBytes {
+		return fmt.Errorf("vtxo asset ref exceeds %d bytes",
+			MaxTaprootAssetRefBytes)
+	}
+	if i.VTXO.TaprootAssetRef != "" &&
+		i.VTXO.TaprootAssetRoot == nil {
+		return fmt.Errorf("vtxo asset metadata requires a commitment " +
+			"root")
+	}
+	if (i.TaprootAssetRoot == nil) !=
+		(i.VTXO.TaprootAssetRoot == nil) {
+		return fmt.Errorf("transfer input and vtxo asset roots " +
+			"disagree")
+	}
+	if i.TaprootAssetRoot != nil &&
+		*i.TaprootAssetRoot != *i.VTXO.TaprootAssetRoot {
+		return fmt.Errorf("transfer input and vtxo asset roots " +
+			"disagree")
+	}
 
 	defaultLeaf, defaultPolicy, err := defaultOwnerLeaf(
 		i.VTXO.ClientKey.PubKey, i.VTXO.OperatorKey,
@@ -114,6 +145,16 @@ func (i *TransferInput) Validate() error {
 
 	if len(i.VTXOPolicyTemplate) == 0 {
 		i.VTXOPolicyTemplate, err = i.defaultVTXOPolicyTemplate()
+		if err != nil {
+			return err
+		}
+	}
+
+	if i.TaprootAssetRoot != nil {
+		err := validateTaprootAssetPkScript(
+			i.VTXOPolicyTemplate, *i.TaprootAssetRoot,
+			i.VTXO.PkScript,
+		)
 		if err != nil {
 			return err
 		}
@@ -176,6 +217,40 @@ func (i *TransferInput) Validate() error {
 	return nil
 }
 
+// validateTaprootAssetPkScript proves that the semantic Ark policy and asset
+// commitment root derive the actual VTXO output script. This check prevents a
+// caller from supplying a valid asset root that belongs to a different
+// anchor output.
+func validateTaprootAssetPkScript(policyTemplate []byte,
+	assetRoot chainhash.Hash, pkScript []byte) error {
+
+	template, err := arkscript.DecodePolicyTemplate(policyTemplate)
+	if err != nil {
+		return fmt.Errorf("decode asset-bearing vtxo policy: %w", err)
+	}
+
+	compiled, err := template.Compile()
+	if err != nil {
+		return fmt.Errorf("compile asset-bearing vtxo policy: %w", err)
+	}
+
+	composed, err := arkscript.ComposeWithSiblingRoot(compiled, assetRoot)
+	if err != nil {
+		return fmt.Errorf("compose asset-bearing vtxo policy: %w", err)
+	}
+
+	wantPkScript, err := txscript.PayToTaprootScript(composed.OutputKey())
+	if err != nil {
+		return fmt.Errorf("derive asset-bearing vtxo pkscript: %w", err)
+	}
+	if !bytes.Equal(wantPkScript, pkScript) {
+		return fmt.Errorf("taproot asset root and vtxo pkscript " +
+			"mismatch")
+	}
+
+	return nil
+}
+
 // EffectiveVTXOPolicyTemplate returns the semantic policy encoding for the
 // spent input VTXO.
 func (i *TransferInput) EffectiveVTXOPolicyTemplate() ([]byte, error) {
@@ -221,6 +296,25 @@ func (i *TransferInput) EffectiveSpendPath() (*arkscript.SpendPath, error) {
 	info, err := policy.CollabSpendInfo()
 	if err != nil {
 		return nil, fmt.Errorf("derive collab spend info: %w", err)
+	}
+	if i.TaprootAssetRoot != nil {
+		leafIndex := policy.ScriptIndex(info.WitnessScript)
+		if leafIndex < 0 {
+			return nil, fmt.Errorf("derive collab spend leaf index")
+		}
+
+		composed, err := arkscript.ComposeWithSiblingRoot(
+			policy.CompiledPolicy, *i.TaprootAssetRoot,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("compose vtxo asset root: %w",
+				err)
+		}
+		info, err = composed.SpendInfo(leafIndex)
+		if err != nil {
+			return nil, fmt.Errorf("derive composed collab spend "+
+				"info: %w", err)
+		}
 	}
 
 	return &arkscript.SpendPath{
@@ -318,7 +412,30 @@ func (i *TransferInput) defaultVTXOPolicyTemplate() ([]byte, error) {
 			err)
 	}
 
-	if !template.MatchesPkScript(i.VTXO.PkScript) {
+	if i.TaprootAssetRoot == nil {
+		if !template.MatchesPkScript(i.VTXO.PkScript) {
+			return nil, nil
+		}
+
+		return policy, nil
+	}
+
+	compiled, err := template.Compile()
+	if err != nil {
+		return nil, fmt.Errorf("compile standard vtxo policy: %w", err)
+	}
+	composed, err := arkscript.ComposeWithSiblingRoot(
+		compiled, *i.TaprootAssetRoot,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("compose standard vtxo asset root: %w",
+			err)
+	}
+	pkScript, err := txscript.PayToTaprootScript(composed.OutputKey())
+	if err != nil {
+		return nil, fmt.Errorf("derive composed vtxo pkscript: %w", err)
+	}
+	if !bytes.Equal(pkScript, i.VTXO.PkScript) {
 		return nil, nil
 	}
 

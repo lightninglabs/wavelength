@@ -136,6 +136,13 @@ func generatedRegistry() []serviceSpec {
 					Comments: "SendOOR initiates an out-of-round transfer directly between the\nclient and operator, without waiting for a round.",
 				},
 				{
+					Name:     "OnboardTaprootAsset",
+					Aliases:  []string{"onboard-taproot-asset"},
+					Input:    "waverpc.OnboardTaprootAssetRequest",
+					Output:   "waverpc.OnboardTaprootAssetResponse",
+					Comments: "OnboardTaprootAsset moves one complete, isolated Taproot Asset anchor\ninto a standard Wavelength VTXO policy. The request is idempotent: a\nretry resumes publication or operator registration without committing\nanother asset transition.",
+				},
+				{
 					Name:     "PrepareOOR",
 					Aliases:  []string{"prepare-oor"},
 					Input:    "waverpc.PrepareOORRequest",

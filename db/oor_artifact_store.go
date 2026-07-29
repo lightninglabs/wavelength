@@ -13,6 +13,7 @@ import (
 	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/db/sqlc"
+	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
 	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
 	types "github.com/lightninglabs/wavelength/lib/types"
 	"github.com/lightningnetwork/lnd/clock"
@@ -68,6 +69,10 @@ const (
 	// OwnedReceiveScriptSourceSync marks scripts restored from
 	// sync/recovery.
 	OwnedReceiveScriptSourceSync OwnedReceiveScriptSource = 2
+
+	// OwnedReceiveScriptSourceAssetAlias marks a final asset-composed
+	// output script linked to its pre-registered semantic receive key.
+	OwnedReceiveScriptSourceAssetAlias OwnedReceiveScriptSource = 3
 )
 
 func (s OwnedReceiveScriptSource) String() string {
@@ -80,6 +85,9 @@ func (s OwnedReceiveScriptSource) String() string {
 
 	case OwnedReceiveScriptSourceSync:
 		return "sync"
+
+	case OwnedReceiveScriptSourceAssetAlias:
+		return "asset_alias"
 
 	default:
 		return fmt.Sprintf("unknown(%d)", s)
@@ -214,6 +222,10 @@ type OORPackageBundle struct {
 	// FinalCheckpointPSBTs is the persisted finalized checkpoint package.
 	FinalCheckpointPSBTs []*psbt.Packet
 
+	// TaprootAssetTransfer is the optional sealed asset transition
+	// container persisted with this package.
+	TaprootAssetTransfer *oortx.TaprootAssetTransfer
+
 	// Bindings are all known local outpoint links for this session.
 	Bindings []OORPackageBinding
 
@@ -292,6 +304,18 @@ func (s *OORArtifactPersistenceStore) UpsertPackage(ctx context.Context,
 	direction OORPackageDirection, sessionID chainhash.Hash,
 	ark *psbt.Packet, checkpoints []*psbt.Packet) error {
 
+	return s.UpsertPackageWithAssets(
+		ctx, direction, sessionID, ark, checkpoints, nil,
+	)
+}
+
+// UpsertPackageWithAssets writes one finalized Bitcoin package and its
+// optional immutable Taproot Asset transition container.
+func (s *OORArtifactPersistenceStore) UpsertPackageWithAssets(
+	ctx context.Context, direction OORPackageDirection,
+	sessionID chainhash.Hash, ark *psbt.Packet, checkpoints []*psbt.Packet,
+	assetTransfer *oortx.TaprootAssetTransfer) error {
+
 	if s == nil || s.db == nil {
 		return fmt.Errorf("store must be provided")
 	}
@@ -327,6 +351,20 @@ func (s *OORArtifactPersistenceStore) UpsertPackage(ctx context.Context,
 		rawCheckpoints = append(rawCheckpoints, raw)
 	}
 
+	var assetTransferRaw []byte
+	if assetTransfer != nil {
+		if err := assetTransfer.Validate(len(checkpoints)); err != nil {
+			return fmt.Errorf("validate Taproot Asset transfer: %w",
+				err)
+		}
+
+		assetTransferRaw, err = assetTransfer.MarshalBinary()
+		if err != nil {
+			return fmt.Errorf("encode Taproot Asset transfer: %w",
+				err)
+		}
+	}
+
 	now := s.clock.Now().Unix()
 	id := sessionID[:]
 
@@ -351,6 +389,7 @@ func (s *OORArtifactPersistenceStore) UpsertPackage(ctx context.Context,
 
 			samePayload, err := sameOORPackagePayload(
 				ctx, q, existing, arkRaw, rawCheckpoints,
+				assetTransferRaw,
 			)
 			if err != nil {
 				return err
@@ -371,11 +410,12 @@ func (s *OORArtifactPersistenceStore) UpsertPackage(ctx context.Context,
 
 		rowsAffected, err := q.UpsertOORPackage(
 			ctx, sqlc.UpsertOORPackageParams{
-				SessionID: id,
-				Direction: directionCode,
-				ArkPsbt:   arkRaw,
-				CreatedAt: now,
-				UpdatedAt: now,
+				SessionID:            id,
+				Direction:            directionCode,
+				ArkPsbt:              arkRaw,
+				CreatedAt:            now,
+				UpdatedAt:            now,
+				TaprootAssetTransfer: assetTransferRaw,
 			},
 		)
 		if err != nil {
@@ -574,11 +614,12 @@ func (s *OORArtifactPersistenceStore) GetPackageForOutpoint(ctx context.Context,
 		}
 
 		pkg, err := materializePackageBundle(ctx, q, sqlc.OorPackage{
-			SessionID: row.SessionID,
-			Direction: row.Direction,
-			ArkPsbt:   row.ArkPsbt,
-			CreatedAt: row.PackageCreatedAt,
-			UpdatedAt: row.PackageUpdatedAt,
+			SessionID:            row.SessionID,
+			Direction:            row.Direction,
+			ArkPsbt:              row.ArkPsbt,
+			TaprootAssetTransfer: row.TaprootAssetTransfer,
+			CreatedAt:            row.PackageCreatedAt,
+			UpdatedAt:            row.PackageUpdatedAt,
 		})
 		if err != nil {
 			return err
@@ -587,6 +628,70 @@ func (s *OORArtifactPersistenceStore) GetPackageForOutpoint(ctx context.Context,
 		matched, err := bindingFromOutpointJoinRow(row)
 		if err != nil {
 			return err
+		}
+
+		pkg.MatchedOutpointBinding = fn.Some(*matched)
+		result = pkg
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
+// GetCreatedPackageForOutpoint returns the exact package whose Ark
+// transaction created outpoint. Unlike GetPackageForOutpoint, this method can
+// never resolve a later consumed-input binding when the same VTXO has both
+// relations.
+func (s *OORArtifactPersistenceStore) GetCreatedPackageForOutpoint(
+	ctx context.Context, outpoint wire.OutPoint) (*OORPackageBundle,
+	error) {
+
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("store must be provided")
+	}
+
+	linkKind, err := bindingKindCode(OORPackageLinkKindCreatedOutput)
+	if err != nil {
+		return nil, err
+	}
+
+	readTx := ReadTxOption()
+	var result *OORPackageBundle
+	err = s.db.ExecTx(ctx, readTx, func(q OORArtifactStore) error {
+		row, err := q.GetOORPackageByOutpointAndKind(
+			ctx, sqlc.GetOORPackageByOutpointAndKindParams{
+				OutpointHash:  outpoint.Hash[:],
+				OutpointIndex: int32(outpoint.Index),
+				LinkKind:      linkKind,
+			},
+		)
+		if err != nil {
+			return err
+		}
+
+		pkg, err := materializePackageBundle(ctx, q, sqlc.OorPackage{
+			SessionID:            row.SessionID,
+			Direction:            row.Direction,
+			ArkPsbt:              row.ArkPsbt,
+			TaprootAssetTransfer: row.TaprootAssetTransfer,
+			CreatedAt:            row.PackageCreatedAt,
+			UpdatedAt:            row.PackageUpdatedAt,
+		})
+		if err != nil {
+			return err
+		}
+
+		matched, err := bindingFromOutpointAndKindJoinRow(row)
+		if err != nil {
+			return err
+		}
+		if matched.LinkKind != OORPackageLinkKindCreatedOutput {
+			return fmt.Errorf("created package query returned "+
+				"%s binding", matched.LinkKind)
 		}
 
 		pkg.MatchedOutpointBinding = fn.Some(*matched)
@@ -1041,6 +1146,13 @@ func materializePackageBundle(ctx context.Context, q OORArtifactStore,
 		checkpoints = append(checkpoints, pkt)
 	}
 
+	assetTransfer, err := decodeStoredTaprootAssetTransfer(
+		pkgRow.TaprootAssetTransfer, len(checkpoints),
+	)
+	if err != nil {
+		return nil, err
+	}
+
 	bindingRows, err := q.ListOORVTXOBindingsBySession(
 		ctx, pkgRow.SessionID,
 	)
@@ -1068,11 +1180,31 @@ func materializePackageBundle(ctx context.Context, q OORArtifactStore,
 		Direction:              direction,
 		ArkPSBT:                ark,
 		FinalCheckpointPSBTs:   checkpoints,
+		TaprootAssetTransfer:   assetTransfer,
 		Bindings:               bindings,
 		CreatedAt:              unixTimeUTC(pkgRow.CreatedAt),
 		UpdatedAt:              unixTimeUTC(pkgRow.UpdatedAt),
 		MatchedOutpointBinding: fn.None[OORPackageBinding](),
 	}, nil
+}
+
+func decodeStoredTaprootAssetTransfer(raw []byte,
+	checkpointCount int) (*oortx.TaprootAssetTransfer, error) {
+
+	if len(raw) == 0 {
+		return nil, nil
+	}
+
+	transfer := &oortx.TaprootAssetTransfer{}
+	if err := transfer.UnmarshalBinary(raw); err != nil {
+		return nil, fmt.Errorf("decode Taproot Asset transfer: %w", err)
+	}
+	if err := transfer.Validate(checkpointCount); err != nil {
+		return nil, fmt.Errorf("validate Taproot Asset transfer: %w",
+			err)
+	}
+
+	return transfer, nil
 }
 
 // bindingFromRow converts a raw binding row into the API binding shape.
@@ -1276,10 +1408,13 @@ func validatePackageDirection(direction OORPackageDirection) error {
 // sameOORPackagePayload reports whether an existing package row already holds
 // the exact serialized payload being upserted.
 func sameOORPackagePayload(ctx context.Context, q OORArtifactStore,
-	existing sqlc.OorPackage, arkRaw []byte,
-	rawCheckpoints [][]byte) (bool, error) {
+	existing sqlc.OorPackage, arkRaw []byte, rawCheckpoints [][]byte,
+	assetTransferRaw []byte) (bool, error) {
 
 	if !bytes.Equal(existing.ArkPsbt, arkRaw) {
+		return false, nil
+	}
+	if !bytes.Equal(existing.TaprootAssetTransfer, assetTransferRaw) {
 		return false, nil
 	}
 
@@ -1367,7 +1502,8 @@ func validateOwnedReceiveScriptSource(source OwnedReceiveScriptSource) error {
 	switch source {
 	case OwnedReceiveScriptSourceWallet,
 		OwnedReceiveScriptSourceRPC,
-		OwnedReceiveScriptSourceSync:
+		OwnedReceiveScriptSourceSync,
+		OwnedReceiveScriptSourceAssetAlias:
 		return nil
 
 	default:
@@ -1398,6 +1534,9 @@ func ownedReceiveScriptSourceFromCode(sourceCode int32) (
 
 	case int32(OwnedReceiveScriptSourceSync):
 		return OwnedReceiveScriptSourceSync, nil
+
+	case int32(OwnedReceiveScriptSourceAssetAlias):
+		return OwnedReceiveScriptSourceAssetAlias, nil
 
 	default:
 		return 0, fmt.Errorf("unsupported owned receive script source "+

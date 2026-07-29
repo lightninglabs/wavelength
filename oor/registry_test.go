@@ -306,6 +306,45 @@ func TestOORRegistryStartTransferRetryAfterFailure(t *testing.T) {
 	require.True(t, res.IsErr())
 }
 
+// TestOORRegistryAssetRetryAfterFailureRequiresReconciliation verifies a
+// sealed asset package cannot be reported as freshly submitted by restoring
+// the deterministic session row whose FSM is already terminal Failed.
+func TestOORRegistryAssetRetryAfterFailureRequiresReconciliation(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newFakeRegistryStore()
+	b, rec := newTestRegistryBehavior(store)
+	policy, inputs, recipients, prepared := testPreparedSubmitPackage(t)
+	request := &StartTransferRequest{
+		Policy:         policy,
+		Inputs:         inputs,
+		Recipients:     recipients,
+		IdempotencyKey: "asset-failed",
+		PreparedSubmit: prepared,
+	}
+	session, _, err := newSessionWithPrepared(
+		ctx, policy, inputs, recipients, request.IdempotencyKey,
+		b.envConfig(), prepared,
+	)
+	require.NoError(t, err)
+	failedID := session.ID
+	session.FSM.Stop()
+
+	upsertRegistryRow(
+		t, store, failedID, clientdb.OORSessionDirectionOutgoing,
+		"failed", request.IdempotencyKey,
+		clientdb.OORSessionStatusFailed,
+	)
+
+	result := b.handleStartTransfer(ctx, request)
+	require.True(t, result.IsErr())
+	require.ErrorIs(
+		t, result.Err(), ErrTaprootAssetCommitOutcomeUnknown,
+	)
+	require.Zero(t, rec.spawns)
+}
+
 // TestOORRegistryListSessions verifies the coarse list projects the
 // control-plane rows -- including terminal/failed ones with their failure
 // reason -- and honours the direction and pending-only filters.

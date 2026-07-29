@@ -79,6 +79,73 @@ func TestMigrationSteps(t *testing.T) {
 	require.Equal(t, "testnet", chainName)
 }
 
+// TestOwnedReceiveAssetAliasMigration verifies migration 19 preserves existing
+// owned receive scripts and permits the append-only asset alias source.
+func TestOwnedReceiveAssetAliasMigration(t *testing.T) {
+	ctx := t.Context()
+
+	db := NewTestDBWithVersion(t, 18)
+
+	insertExisting := transformByteLiterals(t, db.BaseDB, `
+		INSERT INTO owned_receive_scripts (
+			pk_script, client_key_id, operator_pubkey, exit_delay,
+			source, created_at, last_used_at
+		) VALUES (
+			X'512001', NULL, X'0201', 144, 0, 42, NULL
+		)
+	`)
+	_, err := db.ExecContext(ctx, insertExisting)
+	require.NoError(t, err)
+
+	err = db.ExecuteMigrations(TargetLatest)
+	require.NoError(t, err)
+
+	var (
+		source    int32
+		createdAt int64
+	)
+	selectExisting := transformByteLiterals(t, db.BaseDB, `
+		SELECT source, created_at
+		FROM owned_receive_scripts
+		WHERE pk_script = X'512001'
+	`)
+	err = db.QueryRowContext(ctx, selectExisting).Scan(
+		&source, &createdAt,
+	)
+	require.NoError(t, err)
+	require.Equal(t, int32(0), source)
+	require.Equal(t, int64(42), createdAt)
+
+	var sourceName string
+	err = db.QueryRowContext(ctx, `
+		SELECT name
+		FROM owned_receive_script_sources
+		WHERE source = 3
+	`).Scan(&sourceName)
+	require.NoError(t, err)
+	require.Equal(t, "asset_alias", sourceName)
+
+	insertAlias := transformByteLiterals(t, db.BaseDB, `
+		INSERT INTO owned_receive_scripts (
+			pk_script, client_key_id, operator_pubkey, exit_delay,
+			source, created_at, last_used_at
+		) VALUES (
+			X'512002', NULL, X'0202', 144, 3, 43, NULL
+		)
+	`)
+	_, err = db.ExecContext(ctx, insertAlias)
+	require.NoError(t, err)
+
+	var aliasCount int
+	err = db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM owned_receive_scripts
+		WHERE source = 3
+	`).Scan(&aliasCount)
+	require.NoError(t, err)
+	require.Equal(t, 1, aliasCount)
+}
+
 // TestMigrationDowngrade tests that downgrading the database is prevented.
 func TestMigrationDowngrade(t *testing.T) {
 	// For this test, with the current hard coded latest version.

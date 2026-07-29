@@ -42,12 +42,35 @@ type SigningDescriptor struct {
 	// OwnerLeafPolicy is the serialized arkscript owner-leaf policy
 	// for the checkpoint output created from this input.
 	OwnerLeafPolicy []byte
+
+	// TaprootAssetRoot is the optional root of the Taproot Asset
+	// commitment anchored in the spent VTXO.
+	TaprootAssetRoot *chainhash.Hash
+
+	// TaprootAssetRef is the canonical opaque SDK-level asset identity.
+	TaprootAssetRef string
+
+	// TaprootAssetAmount is the number of asset units in the spent VTXO.
+	TaprootAssetAmount uint64
 }
 
 // NewSubmitPackageRequest builds a typed proto request for SubmitPackage.
 func NewSubmitPackageRequest(ark *psbt.Packet, checkpoints []*psbt.Packet,
 	descs []SigningDescriptor,
 	recipients []oortx.RecipientOutput) (*SubmitPackageRequest, error) {
+
+	return NewSubmitPackageRequestWithAssets(
+		ark, checkpoints, descs, recipients, nil,
+	)
+}
+
+// NewSubmitPackageRequestWithAssets builds a submit request with an optional
+// opaque Taproot Asset transfer container.
+func NewSubmitPackageRequestWithAssets(ark *psbt.Packet,
+	checkpoints []*psbt.Packet, descs []SigningDescriptor,
+	recipients []oortx.RecipientOutput,
+	assetTransfer *oortx.TaprootAssetTransfer) (*SubmitPackageRequest,
+	error) {
 
 	arkRaw, err := psbtutil.Serialize(ark)
 	if err != nil {
@@ -73,21 +96,48 @@ func NewSubmitPackageRequest(ark *psbt.Packet, checkpoints []*psbt.Packet,
 		[]*OORRecipientOutput, 0, len(recipients),
 	)
 	for i := range recipients {
+		err := recipients[i].ValidateTaprootAssetMetadata()
+		if err != nil {
+			return nil, fmt.Errorf("recipient output %d: %w", i,
+				err)
+		}
+		var assetRoot []byte
+		if recipients[i].TaprootAssetRoot != nil {
+			assetRoot = recipients[i].TaprootAssetRoot.CloneBytes()
+		}
 		protoRecipients = append(
 			protoRecipients, &OORRecipientOutput{
 				PkScript: recipients[i].PkScript,
 				ValueSat: int64(recipients[i].Value),
 				VtxoPolicyTemplate: recipients[i].
 					VTXOPolicyTemplate,
+				TaprootAssetRoot: assetRoot,
+				TaprootAssetRef: recipients[i].
+					TaprootAssetRef,
+				TaprootAssetAmount: recipients[i].
+					TaprootAssetAmount,
 			},
 		)
 	}
 
+	var assetTransferRaw []byte
+	if assetTransfer != nil {
+		if err := assetTransfer.Validate(len(checkpoints)); err != nil {
+			return nil, err
+		}
+
+		assetTransferRaw, err = assetTransfer.MarshalBinary()
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	return &SubmitPackageRequest{
-		ArkPsbt:            arkRaw,
-		CheckpointPsbts:    checkpointRaw,
-		SigningDescriptors: protoDescs,
-		RecipientOutputs:   protoRecipients,
+		ArkPsbt:              arkRaw,
+		CheckpointPsbts:      checkpointRaw,
+		SigningDescriptors:   protoDescs,
+		RecipientOutputs:     protoRecipients,
+		TaprootAssetTransfer: assetTransferRaw,
 	}, nil
 }
 
@@ -95,19 +145,31 @@ func NewSubmitPackageRequest(ark *psbt.Packet, checkpoints []*psbt.Packet,
 func ParseSubmitPackageRequest(req *SubmitPackageRequest) (*psbt.Packet,
 	[]*psbt.Packet, []SigningDescriptor, []oortx.RecipientOutput, error) {
 
+	ark, checkpoints, descs, recipients, _, err :=
+		ParseSubmitPackageRequestWithAssets(req)
+
+	return ark, checkpoints, descs, recipients, err
+}
+
+// ParseSubmitPackageRequestWithAssets decodes a submit request and validates
+// its optional sealed asset-transfer container against checkpoint count.
+func ParseSubmitPackageRequestWithAssets(req *SubmitPackageRequest) (
+	*psbt.Packet, []*psbt.Packet, []SigningDescriptor,
+	[]oortx.RecipientOutput, *oortx.TaprootAssetTransfer, error) {
+
 	if req == nil {
-		return nil, nil, nil, nil,
+		return nil, nil, nil, nil, nil,
 			fmt.Errorf("submit request is required")
 	}
 
 	ark, err := psbtutil.Parse(req.ArkPsbt)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
 
 	checkpoints, err := decodePSBTSlice(req.CheckpointPsbts)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
 
 	descs := make([]SigningDescriptor, 0, len(req.SigningDescriptors))
@@ -116,7 +178,7 @@ func ParseSubmitPackageRequest(req *SubmitPackageRequest) (*psbt.Packet,
 			req.SigningDescriptors[i], i,
 		)
 		if err != nil {
-			return nil, nil, nil, nil, err
+			return nil, nil, nil, nil, nil, err
 		}
 
 		descs = append(descs, desc)
@@ -128,19 +190,50 @@ func ParseSubmitPackageRequest(req *SubmitPackageRequest) (*psbt.Packet,
 	for i := range req.RecipientOutputs {
 		recipient := req.RecipientOutputs[i]
 		if recipient == nil {
-			return nil, nil, nil, nil, fmt.Errorf("recipient "+
+			return nil, nil, nil, nil, nil, fmt.Errorf("recipient "+
 				"output %d is nil", i)
 		}
 
-		recipients = append(recipients, oortx.RecipientOutput{
+		assetRoot, err := decodeOptionalHash(
+			recipient.TaprootAssetRoot,
+			fmt.Sprintf("recipient output %d taproot asset root",
+				i),
+		)
+		if err != nil {
+			return nil, nil, nil, nil, nil, err
+		}
+
+		decodedRecipient := oortx.RecipientOutput{
 			PkScript: recipient.PkScript,
 			Value:    btcutil.Amount(recipient.ValueSat),
 			VTXOPolicyTemplate: recipient.
 				VtxoPolicyTemplate,
-		})
+			TaprootAssetRoot:   assetRoot,
+			TaprootAssetRef:    recipient.TaprootAssetRef,
+			TaprootAssetAmount: recipient.TaprootAssetAmount,
+		}
+		err = decodedRecipient.ValidateTaprootAssetMetadata()
+		if err != nil {
+			return nil, nil, nil, nil, nil, fmt.Errorf("recipient "+
+				"output %d: %w", i, err)
+		}
+		recipients = append(recipients, decodedRecipient)
 	}
 
-	return ark, checkpoints, descs, recipients, nil
+	var assetTransfer *oortx.TaprootAssetTransfer
+	if len(req.TaprootAssetTransfer) > 0 {
+		assetTransfer = &oortx.TaprootAssetTransfer{}
+		if err := assetTransfer.UnmarshalBinary(
+			req.TaprootAssetTransfer,
+		); err != nil {
+			return nil, nil, nil, nil, nil, err
+		}
+		if err := assetTransfer.Validate(len(checkpoints)); err != nil {
+			return nil, nil, nil, nil, nil, err
+		}
+	}
+
+	return ark, checkpoints, descs, recipients, assetTransfer, nil
 }
 
 // NewSubmitPackageResponse builds a typed proto response for SubmitPackage's
@@ -370,11 +463,20 @@ func ParseFinalizePackageResponse(resp *FinalizePackageResponse) (
 func encodeSigningDescriptor(desc SigningDescriptor,
 	index int) (*OORSigningDescriptor, error) {
 
+	if err := validateSigningDescriptorAssetMetadata(desc); err != nil {
+		return nil, fmt.Errorf("signing descriptor %d: %w", index, err)
+	}
+
 	proto := &OORSigningDescriptor{
 		Outpoint:           encodeOutPoint(desc.Outpoint),
 		VtxoPolicyTemplate: desc.VTXOPolicyTemplate,
 		SpendPath:          desc.SpendPath,
 		OwnerLeafPolicy:    desc.OwnerLeafPolicy,
+		TaprootAssetRef:    desc.TaprootAssetRef,
+		TaprootAssetAmount: desc.TaprootAssetAmount,
+	}
+	if desc.TaprootAssetRoot != nil {
+		proto.TaprootAssetRoot = desc.TaprootAssetRoot.CloneBytes()
 	}
 
 	return proto, nil
@@ -399,9 +501,46 @@ func decodeSigningDescriptor(desc *OORSigningDescriptor,
 		VTXOPolicyTemplate: desc.VtxoPolicyTemplate,
 		SpendPath:          desc.SpendPath,
 		OwnerLeafPolicy:    desc.OwnerLeafPolicy,
+		TaprootAssetRef:    desc.TaprootAssetRef,
+		TaprootAssetAmount: desc.TaprootAssetAmount,
+	}
+	result.TaprootAssetRoot, err = decodeOptionalHash(
+		desc.TaprootAssetRoot,
+		fmt.Sprintf("signing descriptor %d taproot asset root", index),
+	)
+	if err != nil {
+		return SigningDescriptor{}, err
+	}
+	if err := validateSigningDescriptorAssetMetadata(result); err != nil {
+		return SigningDescriptor{}, fmt.Errorf("signing descriptor "+
+			"%d: %w", index, err)
 	}
 
 	return result, nil
+}
+
+func validateSigningDescriptorAssetMetadata(desc SigningDescriptor) error {
+	return (oortx.RecipientOutput{
+		TaprootAssetRoot:   desc.TaprootAssetRoot,
+		TaprootAssetRef:    desc.TaprootAssetRef,
+		TaprootAssetAmount: desc.TaprootAssetAmount,
+	}).ValidateTaprootAssetMetadata()
+}
+
+// decodeOptionalHash parses an optional 32-byte hash field.
+func decodeOptionalHash(raw []byte, name string) (*chainhash.Hash, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	if len(raw) != chainhash.HashSize {
+		return nil, fmt.Errorf("invalid %s length: got %d want %d",
+			name, len(raw), chainhash.HashSize)
+	}
+
+	var hash chainhash.Hash
+	copy(hash[:], raw)
+
+	return &hash, nil
 }
 
 // encodeOutPoint converts wire.OutPoint to proto form.

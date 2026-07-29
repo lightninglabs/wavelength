@@ -344,6 +344,10 @@ func cloneDaemonConfig(cfg *waved.Config) *waved.Config {
 		lndCfg := *cfg.Lnd
 		clone.Lnd = &lndCfg
 	}
+	if cfg.TaprootAssets != nil {
+		assetCfg := *cfg.TaprootAssets
+		clone.TaprootAssets = &assetCfg
+	}
 	if cfg.Server != nil {
 		serverCfg := *cfg.Server
 		clone.Server = &serverCfg

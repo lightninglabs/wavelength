@@ -820,7 +820,7 @@ CREATE TABLE oor_packages (
     created_at BIGINT NOT NULL,
 
     -- updated_at is the unix timestamp of the last row update.
-    updated_at BIGINT NOT NULL,
+    updated_at BIGINT NOT NULL, taproot_asset_transfer BLOB,
 
     -- Direction enum foreign key.
     FOREIGN KEY (direction) REFERENCES oor_package_directions(direction)
@@ -1015,7 +1015,7 @@ CREATE TABLE owned_receive_script_sources (
     name TEXT NOT NULL UNIQUE
 );
 
-CREATE TABLE owned_receive_scripts (
+CREATE TABLE "owned_receive_scripts" (
     -- pk_script is the owned receive script primary key.
     pk_script BLOB PRIMARY KEY NOT NULL,
 
@@ -1038,7 +1038,8 @@ CREATE TABLE owned_receive_scripts (
     --   0 = wallet
     --   1 = rpc
     --   2 = sync
-    source INTEGER NOT NULL CHECK (source IN (0, 1, 2)),
+    --   3 = final Taproot Asset output alias
+    source INTEGER NOT NULL CHECK (source IN (0, 1, 2, 3)),
 
     -- created_at is the unix timestamp when this script was registered.
     created_at BIGINT NOT NULL,
@@ -1701,7 +1702,7 @@ CREATE TABLE vtxos (
     -- zero-indexed, so the only understood value today is 0 (V1); a future,
     -- genuinely different construction is added additively (V2 == 1, and so
     -- on). NOT NULL DEFAULT 0 keeps every row a valid V1 object.
-    construction_version INTEGER NOT NULL DEFAULT 0,
+    construction_version INTEGER NOT NULL DEFAULT 0, taproot_asset_root BLOB, taproot_asset_ref TEXT, taproot_asset_amount BLOB,
 
     PRIMARY KEY (outpoint_hash, outpoint_index),
     FOREIGN KEY (round_id) REFERENCES rounds(round_id)

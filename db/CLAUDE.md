@@ -71,7 +71,7 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   safety bounds enforced during `DeserializeTree`.
 - `resolveInputPackage` / `loadPackageBundleBySessionID` — two-stage
   OOR ancestry resolver (`oor_unroll_resolver.go`).
-- `LatestMigrationVersion = 15` — current schema version.
+- `LatestMigrationVersion = 17` — current schema version.
 - `PendingIntentPersistenceStore` — implements `wallet.PendingIntentStore`,
   the persistence half of the generic restart-safe intent outbox (header
   `pending_intents` + per-kind detail tables + `pending_intent_anchors`).
@@ -88,9 +88,10 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
 - `PendingIntentStore` / `BatchedPendingIntentStore` — internal sqlc-backed
   query interfaces for the pending-intent tables.
 - `SpendingReservationPersistenceStore` — Persists the durable index of VTXO
-  outpoints reserved by an active spend owner (e.g. an outgoing OOR session).
-  A row exists IFF the owning session was durably checkpointed, so a startup
-  sweep can deterministically release orphaned Spending VTXOs with no row.
+  outpoints reserved by an active spend owner (a pre-commit Taproot Asset
+  preparation or outgoing OOR session). A row exists after the owner crosses
+  its durable handoff boundary, so a startup sweep can deterministically
+  release orphaned Spending VTXOs with no row.
   Methods: `UpsertReservation(ctx, outpoint, ownerKind, ownerID)` (upserts a
   row), `ListReservedOutpoints(ctx)` (returns all reserved outpoints for the
   startup sweep). Implements both `oor.ReservationStore` and
@@ -175,9 +176,9 @@ when adding one.
   `(swap_id, action, vtxo_txid, vtxo_vout)` so a refreshed vHTLC (new
   outpoint) arms a new recovery generation instead of colliding with
   the prior job.
-- `000008_intents` — `spending_reservations` (a row exists IFF the
-  owning spend session was durably checkpointed; supports the startup
-  orphan sweep in `vtxo.Manager.sweepOrphanedReservations`) plus the
+- `000008_intents` — `spending_reservations` (a row exists after a Taproot
+  Asset preparation is quarantined or an OOR session is checkpointed; supports
+  the startup orphan sweep in `vtxo.Manager.sweepOrphanedReservations`) plus the
   pending-intent outbox supertype/subtype set: `pending_intent_kinds`,
   `pending_intents` header, `pending_board_intents` /
   `pending_send_intents` detail tables, and `pending_intent_anchors`.
@@ -212,6 +213,10 @@ when adding one.
   SetVersion leaves the migration dirty and the next boot fails with
   ErrDirty; forcing the version and re-running is safe because the
   backfill guards on `round_uuid IS NULL` and re-executes as a no-op.
+- `000016_taproot_asset_vtxos` — optional Taproot Asset commitment root on
+  VTXO descriptors; generic Bitcoin coin selection excludes these rows.
+- `000017_oor_taproot_asset_packages` — optional sealed Taproot Asset
+  transition container on finalized OOR package rows.
 
 ## Deep Docs
 

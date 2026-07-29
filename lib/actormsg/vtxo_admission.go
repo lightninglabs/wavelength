@@ -34,6 +34,17 @@ type SelectAndReserveSpendRequest struct {
 	// MinChangeAmount, when positive, asks selection to avoid a
 	// non-zero residual below this amount. Exact spends are still valid.
 	MinChangeAmount btcutil.Amount
+
+	// RequiredOutpoints identifies managed VTXOs that must be included in
+	// the selection. The manager validates and reserves these before adding
+	// ordinary Bitcoin VTXOs to cover any remaining target.
+	RequiredOutpoints []wire.OutPoint
+
+	// WaitForDurable makes the manager await every VTXO actor's persisted
+	// Spending transition before returning. Taproot Asset preparation uses
+	// this barrier before it establishes an external tapd transition;
+	// ordinary BTC OOR selection retains detached admission by default.
+	WaitForDurable bool
 }
 
 // VTXOManagerMsg implements VTXOManagerMsg marker interface.
@@ -55,6 +66,11 @@ type SelectedVTXO struct {
 
 	// PkScript is the output script for this VTXO.
 	PkScript []byte
+
+	// TaprootAssetRoot is non-nil when this VTXO carries a Taproot Asset
+	// commitment. Optional coin selection must exclude such VTXOs; required
+	// selection may include them explicitly.
+	TaprootAssetRoot *chainhash.Hash
 }
 
 // SelectAndReserveSpendResponse returns the VTXOs that were selected and

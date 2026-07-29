@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/btcsuite/btclog/v2"
@@ -554,6 +555,15 @@ func (r *oorRegistryBehavior) handleRestoreNonTerminal(ctx context.Context,
 func (r *oorRegistryBehavior) handleStartTransfer(ctx context.Context,
 	req *StartTransferRequest) fn.Result[ActorResp] {
 
+	assetPrepared := req != nil && req.PreparedSubmit != nil &&
+		req.PreparedSubmit.TaprootAssetTransfer != nil
+	if assetPrepared && strings.TrimSpace(req.IdempotencyKey) == "" {
+		return fn.Err[ActorResp](
+			fmt.Errorf("Taproot Asset OOR idempotency key is " +
+				"required"),
+		)
+	}
+
 	// Idempotency dedup against the durable store first. The lookup skips
 	// failed rows, so a keyed retry after a failed transfer admits a fresh
 	// session instead of echoing the dead one.
@@ -594,15 +604,48 @@ func (r *oorRegistryBehavior) handleStartTransfer(ctx context.Context,
 	// discarded; the spawned child rebuilds the identical one. Stop it
 	// immediately so its driveMachine goroutine does not linger for the
 	// daemon's lifetime (one leak per outgoing admission otherwise).
-	session, _, err := NewSessionWithIdempotencyKey(
+	session, _, err := newSessionWithPrepared(
 		ctx, req.Policy, req.Inputs, req.Recipients, req.IdempotencyKey,
-		r.envConfig(),
+		r.envConfig(), req.PreparedSubmit,
 	)
 	if err != nil {
 		return fn.Err[ActorResp](err)
 	}
 	sessionID := session.ID
 	session.FSM.Stop()
+
+	// Failed Bitcoin-only sessions deliberately do not block a keyed retry:
+	// the caller can select a fresh input set and therefore produce a new
+	// session ID. An asset-prepared retry is different. Its tapd commits
+	// and exact carrier set are already immutable, so rebuilding the same
+	// failed session would only restore terminal Failed and falsely look
+	// submitted. Preserve the quarantine and require explicit
+	// reconciliation instead.
+	if assetPrepared {
+		existing, err := r.cfg.RegistryStore.GetSession(
+			ctx, chainHashOf(sessionID),
+		)
+		switch {
+		case err == nil &&
+			existing.Status == clientdb.OORSessionStatusFailed:
+			return fn.Err[ActorResp](
+				fmt.Errorf("%w: Taproot Asset OOR session %s "+
+					"is terminal failed: %s",
+					ErrTaprootAssetCommitOutcomeUnknown,
+					sessionID, existing.LastError),
+			)
+
+		case err == nil:
+			// Pending and completed sessions are handled by the
+			// ordinary idempotency and resident-child paths below.
+
+		case errors.Is(err, clientdb.ErrOORSessionNotFound):
+			// This is a fresh deterministic session.
+
+		default:
+			return fn.Err[ActorResp](err)
+		}
+	}
 
 	// A resident child only answers Existing when a durable row backs it. A
 	// failed admission on the production (detachable) path is reaped

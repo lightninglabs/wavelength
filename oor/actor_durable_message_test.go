@@ -8,6 +8,8 @@ import (
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
+	"github.com/lightninglabs/wavelength/lib/tree"
+	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
 	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/stretchr/testify/require"
 )
@@ -61,6 +63,11 @@ func TestStartTransferPayloadTLVRoundTrip(t *testing.T) {
 					0x20,
 				},
 				ValueSat: 321,
+				TaprootAssetRoot: &chainhash.Hash{
+					0xaa,
+				},
+				TaprootAssetRef:    "asset-id:010203",
+				TaprootAssetAmount: 21,
 			},
 		},
 		IdempotencyKey: "funding-key-1",
@@ -396,22 +403,92 @@ func TestDriveEventRequestRoundTripSubmitAcceptedEvent(t *testing.T) {
 	require.Equal(t, chainhash.Hash(sessionID), decodedTxID)
 }
 
+// TestAncestryEntryExternalRootRoundTrip verifies that durable actor replay
+// preserves both the rootless direct-on-chain sentinel and its confirmation
+// height. Losing either field across restart would turn a previously accepted
+// incoming VTXO into malformed or unauthenticated ancestry.
+func TestAncestryEntryExternalRootRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	commitment := chainhash.Hash{
+		0x21, 0x22, 0x23,
+	}
+	original := vtxo.Ancestry{
+		TreePath: &tree.Tree{
+			BatchOutpoint: wire.OutPoint{
+				Hash:  commitment,
+				Index: 4,
+			},
+			BatchOutput: &wire.TxOut{
+				Value: 7_654,
+				PkScript: []byte{
+					0x51, 0x20, 0x01,
+				},
+			},
+		},
+		CommitmentTxID: commitment,
+		InputIndices: []uint32{
+			1, 3,
+		},
+		TreeDepth:        0,
+		CommitmentHeight: 456,
+	}
+
+	raw, err := encodeAncestryEntry(original)
+	require.NoError(t, err)
+
+	decoded, err := decodeAncestryEntry(raw)
+	require.NoError(t, err)
+	require.Equal(t, original.CommitmentTxID, decoded.CommitmentTxID)
+	require.Equal(t, original.InputIndices, decoded.InputIndices)
+	require.Equal(t, original.TreeDepth, decoded.TreeDepth)
+	require.Equal(
+		t, original.CommitmentHeight, decoded.CommitmentHeight,
+	)
+	require.NotNil(t, decoded.TreePath)
+	require.Nil(t, decoded.TreePath.Root)
+	require.Equal(
+		t, original.TreePath.BatchOutpoint,
+		decoded.TreePath.BatchOutpoint,
+	)
+	require.Equal(
+		t, original.TreePath.BatchOutput, decoded.TreePath.BatchOutput,
+	)
+}
+
 // TestDriveEventRequestRoundTripIncomingTransferEvent asserts
 // DriveEventRequest TLV Encode/Decode round-trips IncomingTransferEvent
 // correctly.
 func TestDriveEventRequestRoundTripIncomingTransferEvent(t *testing.T) {
 	t.Parallel()
 
-	arkPSBT, checkpoints, _, _, _, _ :=
+	arkPSBT, checkpoints, recipients, _, _, _ :=
 		buildTestIncomingMaterialization(t)
 
 	sessionID := SessionID(arkPSBT.UnsignedTx.TxHash())
+	assetRoot := chainhash.Hash{0x31, 0x32, 0x33}
+	recipients[0].TaprootAssetRoot = &assetRoot
+	recipients[0].TaprootAssetRef = "asset-id:010203"
+	recipients[0].TaprootAssetAmount = 21
+	assetTransfer := &oortx.TaprootAssetTransfer{
+		Version: oortx.TaprootAssetTransferVersion,
+		CheckpointPackages: [][]byte{
+			{
+				0x41,
+			},
+		},
+		ArkPackage: []byte{
+			0x42,
+		},
+	}
 	msg := &DriveEventRequest{
 		SessionID: sessionID,
 		Event: &IncomingTransferEvent{
 			SessionID:            sessionID,
 			ArkPSBT:              arkPSBT,
 			FinalCheckpointPSBTs: checkpoints,
+			Recipients:           recipients,
+			TaprootAssetTransfer: assetTransfer,
 		},
 	}
 
@@ -428,6 +505,16 @@ func TestDriveEventRequestRoundTripIncomingTransferEvent(t *testing.T) {
 	require.Equal(t, sessionID, incomingEvt.SessionID)
 	require.NotNil(t, incomingEvt.ArkPSBT)
 	require.Len(t, incomingEvt.FinalCheckpointPSBTs, len(checkpoints))
+	require.Len(t, incomingEvt.Recipients, 1)
+	require.Equal(t, &assetRoot,
+		incomingEvt.Recipients[0].TaprootAssetRoot)
+	require.Equal(
+		t, "asset-id:010203", incomingEvt.Recipients[0].TaprootAssetRef,
+	)
+	require.Equal(
+		t, uint64(21), incomingEvt.Recipients[0].TaprootAssetAmount,
+	)
+	require.Equal(t, assetTransfer, incomingEvt.TaprootAssetTransfer)
 }
 
 // TestDriveEventRequestRoundTripIncomingHandledEvent asserts

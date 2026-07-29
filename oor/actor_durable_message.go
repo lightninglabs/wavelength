@@ -16,6 +16,7 @@ import (
 	"github.com/btcsuite/btcd/wire/v2"
 	clientdb "github.com/lightninglabs/wavelength/db"
 	"github.com/lightninglabs/wavelength/lib/tree"
+	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
 	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
 	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightningnetwork/lnd/tlv"
@@ -30,6 +31,14 @@ const (
 	// startPayloadIdempotencyKeyType stores the optional caller-provided
 	// OOR send idempotency key.
 	startPayloadIdempotencyKeyType tlv.Type = 5
+
+	// startPayloadPreparedSubmitType stores the versioned OOR submit
+	// package after external Taproot Asset commitment insertion.
+	startPayloadPreparedSubmitType tlv.Type = 6
+
+	// startPayloadTaprootAssetTransferType stores the matching versioned
+	// sealed-package container.
+	startPayloadTaprootAssetTransferType tlv.Type = 7
 )
 
 const (
@@ -84,6 +93,7 @@ const (
 	eventPayloadRetryableRecordType        tlv.Type = 19
 	eventPayloadRetryAfterNanosRecordType  tlv.Type = 21
 	eventPayloadIncomingRecipientsType     tlv.Type = 23
+	eventPayloadTaprootAssetTransferType   tlv.Type = 25
 )
 
 const (
@@ -118,13 +128,19 @@ const (
 	transferInputRequiredSequenceRecordType   tlv.Type = 15
 	transferInputRequiredLockTimeRecordType   tlv.Type = 16
 	transferInputExternalSignaturesRecordType tlv.Type = 17
+	transferInputTaprootAssetRootRecordType   tlv.Type = 18
+	transferInputTaprootAssetRefRecordType    tlv.Type = 19
+	transferInputTaprootAssetAmountRecordType tlv.Type = 20
 )
 
 const (
-	recipientPkScriptRecordType    tlv.Type = 1
-	recipientValueSatRecordType    tlv.Type = 2
-	recipientVTXOPolicyRecordType  tlv.Type = 3
-	recipientOutputIndexRecordType tlv.Type = 5
+	recipientPkScriptRecordType     tlv.Type = 1
+	recipientValueSatRecordType     tlv.Type = 2
+	recipientVTXOPolicyRecordType   tlv.Type = 3
+	recipientTaprootAssetRootType   tlv.Type = 4
+	recipientOutputIndexRecordType  tlv.Type = 5
+	recipientTaprootAssetRefType    tlv.Type = 6
+	recipientTaprootAssetAmountType tlv.Type = 7
 )
 
 const (
@@ -144,12 +160,17 @@ type startTransferPayload struct {
 	Inputs         []*TransferInputSnapshot
 	Recipients     []recipientPayload
 	IdempotencyKey string
+	PreparedSubmit []byte
+	AssetTransfer  []byte
 }
 
 type recipientPayload struct {
 	PkScript           []byte
 	ValueSat           int64
 	VTXOPolicyTemplate []byte
+	TaprootAssetRoot   *chainhash.Hash
+	TaprootAssetRef    string
+	TaprootAssetAmount uint64
 }
 
 type incomingRecipientPayload struct {
@@ -157,6 +178,9 @@ type incomingRecipientPayload struct {
 	PkScript           []byte
 	ValueSat           int64
 	VTXOPolicyTemplate []byte
+	TaprootAssetRoot   *chainhash.Hash
+	TaprootAssetRef    string
+	TaprootAssetAmount uint64
 }
 
 func encodeStartTransferPayload(payload startTransferPayload) ([]byte, error) {
@@ -173,6 +197,8 @@ func encodeStartTransferPayload(payload startTransferPayload) ([]byte, error) {
 	operatorKey := payload.OperatorPubKey
 	csvDelay := payload.CSVDelay
 	idempotencyKey := []byte(payload.IdempotencyKey)
+	preparedSubmit := payload.PreparedSubmit
+	assetTransfer := payload.AssetTransfer
 
 	records := []tlv.Record{
 		tlv.MakePrimitiveRecord(
@@ -189,6 +215,12 @@ func encodeStartTransferPayload(payload startTransferPayload) ([]byte, error) {
 		),
 		tlv.MakePrimitiveRecord(
 			startPayloadIdempotencyKeyType, &idempotencyKey,
+		),
+		tlv.MakePrimitiveRecord(
+			startPayloadPreparedSubmitType, &preparedSubmit,
+		),
+		tlv.MakePrimitiveRecord(
+			startPayloadTaprootAssetTransferType, &assetTransfer,
 		),
 	}
 
@@ -222,6 +254,8 @@ func decodeStartTransferPayloadWithLimits(raw []byte,
 		inputsRaw   []byte
 		recipients  []byte
 		idKey       []byte
+		preparedRaw []byte
+		assetRaw    []byte
 	)
 
 	records := []tlv.Record{
@@ -238,6 +272,12 @@ func decodeStartTransferPayloadWithLimits(raw []byte,
 			startPayloadRecipientsRecordType, &recipients,
 		),
 		tlv.MakePrimitiveRecord(startPayloadIdempotencyKeyType, &idKey),
+		tlv.MakePrimitiveRecord(
+			startPayloadPreparedSubmitType, &preparedRaw,
+		),
+		tlv.MakePrimitiveRecord(
+			startPayloadTaprootAssetTransferType, &assetRaw,
+		),
 	}
 
 	stream, err := tlv.NewStream(records...)
@@ -270,6 +310,8 @@ func decodeStartTransferPayloadWithLimits(raw []byte,
 		Inputs:         inputs,
 		Recipients:     recipientsPayload,
 		IdempotencyKey: string(idKey),
+		PreparedSubmit: preparedRaw,
+		AssetTransfer:  assetRaw,
 	}, nil
 }
 
@@ -392,6 +434,7 @@ const (
 	ancestryPathCommitmentTxIDRecordType tlv.Type = 3
 	ancestryPathInputIndicesRecordType   tlv.Type = 5
 	ancestryPathTreeDepthRecordType      tlv.Type = 7
+	ancestryPathCommitmentHeightType     tlv.Type = 9
 )
 
 // encodeAncestryList encodes []vtxo.Ancestry as a length-prefixed blob
@@ -453,6 +496,14 @@ func encodeAncestryEntry(a vtxo.Ancestry) ([]byte, error) {
 	// Serialize input_indices as a length-prefixed list of uint32.
 	indices := encodeUint32List(a.InputIndices)
 	treeDepth := a.TreeDepth
+	// Bitcoin block heights are non-negative and fit in uint32. The TLV
+	// primitive codec does not support signed int32 values, so keep the
+	// durable representation unsigned and convert at the domain boundary.
+	if a.CommitmentHeight < 0 {
+		return nil, fmt.Errorf("ancestry commitment height must be "+
+			"non-negative, got %d", a.CommitmentHeight)
+	}
+	commitmentHeight := uint32(a.CommitmentHeight)
 
 	records := []tlv.Record{
 		tlv.MakePrimitiveRecord(
@@ -466,6 +517,9 @@ func encodeAncestryEntry(a vtxo.Ancestry) ([]byte, error) {
 		),
 		tlv.MakePrimitiveRecord(
 			ancestryPathTreeDepthRecordType, &treeDepth,
+		),
+		tlv.MakePrimitiveRecord(
+			ancestryPathCommitmentHeightType, &commitmentHeight,
 		),
 	}
 
@@ -485,10 +539,11 @@ func encodeAncestryEntry(a vtxo.Ancestry) ([]byte, error) {
 // decodeAncestryEntry is the inverse of encodeAncestryEntry.
 func decodeAncestryEntry(raw []byte) (vtxo.Ancestry, error) {
 	var (
-		treePath       []byte
-		commitmentTxID []byte
-		indicesRaw     []byte
-		treeDepth      uint32
+		treePath         []byte
+		commitmentTxID   []byte
+		indicesRaw       []byte
+		treeDepth        uint32
+		commitmentHeight uint32
 	)
 
 	records := []tlv.Record{
@@ -503,6 +558,9 @@ func decodeAncestryEntry(raw []byte) (vtxo.Ancestry, error) {
 		),
 		tlv.MakePrimitiveRecord(
 			ancestryPathTreeDepthRecordType, &treeDepth,
+		),
+		tlv.MakePrimitiveRecord(
+			ancestryPathCommitmentHeightType, &commitmentHeight,
 		),
 	}
 
@@ -529,6 +587,11 @@ func decodeAncestryEntry(raw []byte) (vtxo.Ancestry, error) {
 	if err != nil {
 		return vtxo.Ancestry{}, err
 	}
+	if commitmentHeight > math.MaxInt32 {
+		return vtxo.Ancestry{}, fmt.Errorf("ancestry commitment "+
+			"height %d exceeds max %d", commitmentHeight,
+			math.MaxInt32)
+	}
 
 	var decodedTreePath *tree.Tree
 	if len(treePath) > 0 {
@@ -539,10 +602,11 @@ func decodeAncestryEntry(raw []byte) (vtxo.Ancestry, error) {
 	}
 
 	return vtxo.Ancestry{
-		TreePath:       decodedTreePath,
-		CommitmentTxID: decodedCommitmentTxID,
-		InputIndices:   indices,
-		TreeDepth:      treeDepth,
+		TreePath:         decodedTreePath,
+		CommitmentTxID:   decodedCommitmentTxID,
+		InputIndices:     indices,
+		TreeDepth:        treeDepth,
+		CommitmentHeight: int32(commitmentHeight),
 	}, nil
 }
 
@@ -799,6 +863,12 @@ func decodeOptionalPubKey(raw []byte, name string) (*btcec.PublicKey, error) {
 }
 
 func encodeRecipientPayload(payload recipientPayload) ([]byte, error) {
+	if err := validateDurableAssetMetadata(
+		payload.TaprootAssetRoot, payload.TaprootAssetRef,
+		payload.TaprootAssetAmount,
+	); err != nil {
+		return nil, fmt.Errorf("recipient asset metadata: %w", err)
+	}
 	pkScript := payload.PkScript
 	if payload.ValueSat < 0 {
 		return nil, fmt.Errorf("recipient value must be non-negative")
@@ -812,6 +882,30 @@ func encodeRecipientPayload(payload recipientPayload) ([]byte, error) {
 			recipientVTXOPolicyRecordType,
 			&payload.VTXOPolicyTemplate,
 		),
+	}
+	if payload.TaprootAssetRoot != nil {
+		assetRoot := payload.TaprootAssetRoot.CloneBytes()
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				recipientTaprootAssetRootType, &assetRoot,
+			),
+		)
+	}
+	if payload.TaprootAssetRef != "" {
+		assetRef := []byte(payload.TaprootAssetRef)
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				recipientTaprootAssetRefType, &assetRef,
+			),
+		)
+	}
+	if payload.TaprootAssetAmount != 0 {
+		assetAmount := payload.TaprootAssetAmount
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				recipientTaprootAssetAmountType, &assetAmount,
+			),
+		)
 	}
 
 	stream, err := tlv.NewStream(records...)
@@ -832,6 +926,9 @@ func decodeRecipientPayload(raw []byte) (recipientPayload, error) {
 		pkScript           []byte
 		valueSat           uint64
 		vtxoPolicyTemplate []byte
+		assetRootRaw       []byte
+		assetRefRaw        []byte
+		assetAmount        uint64
 	)
 
 	records := []tlv.Record{
@@ -839,6 +936,15 @@ func decodeRecipientPayload(raw []byte) (recipientPayload, error) {
 		tlv.MakePrimitiveRecord(recipientValueSatRecordType, &valueSat),
 		tlv.MakePrimitiveRecord(
 			recipientVTXOPolicyRecordType, &vtxoPolicyTemplate,
+		),
+		tlv.MakePrimitiveRecord(
+			recipientTaprootAssetRootType, &assetRootRaw,
+		),
+		tlv.MakePrimitiveRecord(
+			recipientTaprootAssetRefType, &assetRefRaw,
+		),
+		tlv.MakePrimitiveRecord(
+			recipientTaprootAssetAmountType, &assetAmount,
 		),
 	}
 
@@ -859,11 +965,31 @@ func decodeRecipientPayload(raw []byte) (recipientPayload, error) {
 		return recipientPayload{}, err
 	}
 
-	return recipientPayload{
+	result := recipientPayload{
 		PkScript:           pkScript,
 		ValueSat:           decodedValueSat,
 		VTXOPolicyTemplate: vtxoPolicyTemplate,
-	}, nil
+		TaprootAssetRef:    string(assetRefRaw),
+		TaprootAssetAmount: assetAmount,
+	}
+	if len(assetRootRaw) > 0 {
+		assetRoot, err := chainhash.NewHash(assetRootRaw)
+		if err != nil {
+			return recipientPayload{}, fmt.Errorf("decode "+
+				"recipient taproot asset root: %w", err)
+		}
+
+		result.TaprootAssetRoot = assetRoot
+	}
+	if err := validateDurableAssetMetadata(
+		result.TaprootAssetRoot, result.TaprootAssetRef,
+		result.TaprootAssetAmount,
+	); err != nil {
+		return recipientPayload{}, fmt.Errorf("recipient asset "+
+			"metadata: %w", err)
+	}
+
+	return result, nil
 }
 
 func encodeIncomingRecipients(recipients []ArkRecipientOutput) ([]byte, error) {
@@ -880,6 +1006,12 @@ func encodeIncomingRecipients(recipients []ArkRecipientOutput) ([]byte, error) {
 					[]byte(nil),
 					recipients[i].VTXOPolicyTemplate...,
 				),
+				TaprootAssetRoot: recipients[i].
+					TaprootAssetRoot,
+				TaprootAssetRef: recipients[i].
+					TaprootAssetRef,
+				TaprootAssetAmount: recipients[i].
+					TaprootAssetAmount,
 			},
 		)
 		if err != nil {
@@ -920,6 +1052,9 @@ func decodeIncomingRecipientsWithLimits(raw []byte,
 			VTXOPolicyTemplate: append(
 				[]byte(nil), payload.VTXOPolicyTemplate...,
 			),
+			TaprootAssetRoot:   payload.TaprootAssetRoot,
+			TaprootAssetRef:    payload.TaprootAssetRef,
+			TaprootAssetAmount: payload.TaprootAssetAmount,
 		})
 	}
 
@@ -929,6 +1064,14 @@ func decodeIncomingRecipientsWithLimits(raw []byte,
 func encodeIncomingRecipientPayload(payload incomingRecipientPayload) ([]byte,
 	error) {
 
+	if err := validateDurableAssetMetadata(
+		payload.TaprootAssetRoot, payload.TaprootAssetRef,
+		payload.TaprootAssetAmount,
+	); err != nil {
+		return nil, fmt.Errorf("incoming recipient asset metadata: %w",
+			err)
+	}
+
 	pkScript := payload.PkScript
 	if payload.ValueSat < 0 {
 		return nil, fmt.Errorf("incoming recipient value must be " +
@@ -936,6 +1079,12 @@ func encodeIncomingRecipientPayload(payload incomingRecipientPayload) ([]byte,
 	}
 	valueSat := uint64(payload.ValueSat)
 	outputIndex := uint64(payload.OutputIndex)
+	var taprootAssetRoot []byte
+	if payload.TaprootAssetRoot != nil {
+		taprootAssetRoot = payload.TaprootAssetRoot.CloneBytes()
+	}
+	taprootAssetRef := []byte(payload.TaprootAssetRef)
+	taprootAssetAmount := payload.TaprootAssetAmount
 
 	records := []tlv.Record{
 		tlv.MakePrimitiveRecord(
@@ -949,7 +1098,16 @@ func encodeIncomingRecipientPayload(payload incomingRecipientPayload) ([]byte,
 			&payload.VTXOPolicyTemplate,
 		),
 		tlv.MakePrimitiveRecord(
+			recipientTaprootAssetRootType, &taprootAssetRoot,
+		),
+		tlv.MakePrimitiveRecord(
 			recipientOutputIndexRecordType, &outputIndex,
+		),
+		tlv.MakePrimitiveRecord(
+			recipientTaprootAssetRefType, &taprootAssetRef,
+		),
+		tlv.MakePrimitiveRecord(
+			recipientTaprootAssetAmountType, &taprootAssetAmount,
 		),
 	}
 
@@ -974,6 +1132,9 @@ func decodeIncomingRecipientPayload(raw []byte) (incomingRecipientPayload,
 		valueSat           uint64
 		vtxoPolicyTemplate []byte
 		outputIndex        uint64
+		taprootAssetRoot   []byte
+		taprootAssetRef    []byte
+		taprootAssetAmount uint64
 	)
 
 	records := []tlv.Record{
@@ -983,7 +1144,16 @@ func decodeIncomingRecipientPayload(raw []byte) (incomingRecipientPayload,
 			recipientVTXOPolicyRecordType, &vtxoPolicyTemplate,
 		),
 		tlv.MakePrimitiveRecord(
+			recipientTaprootAssetRootType, &taprootAssetRoot,
+		),
+		tlv.MakePrimitiveRecord(
 			recipientOutputIndexRecordType, &outputIndex,
+		),
+		tlv.MakePrimitiveRecord(
+			recipientTaprootAssetRefType, &taprootAssetRef,
+		),
+		tlv.MakePrimitiveRecord(
+			recipientTaprootAssetAmountType, &taprootAssetAmount,
 		),
 	}
 
@@ -1011,12 +1181,42 @@ func decodeIncomingRecipientPayload(raw []byte) (incomingRecipientPayload,
 		return incomingRecipientPayload{}, err
 	}
 
-	return incomingRecipientPayload{
+	result := incomingRecipientPayload{
 		OutputIndex:        decodedOutputIndex,
 		PkScript:           pkScript,
 		ValueSat:           decodedValueSat,
 		VTXOPolicyTemplate: vtxoPolicyTemplate,
-	}, nil
+		TaprootAssetRef:    string(taprootAssetRef),
+		TaprootAssetAmount: taprootAssetAmount,
+	}
+	if len(taprootAssetRoot) > 0 {
+		root, err := chainhash.NewHash(taprootAssetRoot)
+		if err != nil {
+			return incomingRecipientPayload{}, fmt.Errorf("decode "+
+				"incoming recipient Taproot Asset root: %w",
+				err)
+		}
+		result.TaprootAssetRoot = root
+	}
+	if err := validateDurableAssetMetadata(
+		result.TaprootAssetRoot, result.TaprootAssetRef,
+		result.TaprootAssetAmount,
+	); err != nil {
+		return incomingRecipientPayload{}, fmt.Errorf("incoming "+
+			"recipient asset metadata: %w", err)
+	}
+
+	return result, nil
+}
+
+func validateDurableAssetMetadata(root *chainhash.Hash, ref string,
+	amount uint64) error {
+
+	return (oortx.RecipientOutput{
+		TaprootAssetRoot:   root,
+		TaprootAssetRef:    ref,
+		TaprootAssetAmount: amount,
+	}).ValidateTaprootAssetMetadata()
 }
 
 func encodeTransferInputSnapshots(inputs []*TransferInputSnapshot) ([]byte,
@@ -1062,6 +1262,12 @@ func encodeTransferInputSnapshot(input *TransferInputSnapshot) ([]byte, error) {
 	if input == nil {
 		return nil, fmt.Errorf("transfer input snapshot must be " +
 			"provided")
+	}
+	if err := validateDurableAssetMetadata(
+		input.TaprootAssetRoot, input.TaprootAssetRef,
+		input.TaprootAssetAmount,
+	); err != nil {
+		return nil, fmt.Errorf("transfer input asset metadata: %w", err)
 	}
 
 	outpoint := outPointBytes(input.Outpoint)
@@ -1203,6 +1409,34 @@ func encodeTransferInputSnapshot(input *TransferInputSnapshot) ([]byte, error) {
 		)
 	}
 
+	if input.TaprootAssetRoot != nil {
+		assetRoot := input.TaprootAssetRoot.CloneBytes()
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				transferInputTaprootAssetRootRecordType,
+				&assetRoot,
+			),
+		)
+	}
+	if input.TaprootAssetRef != "" {
+		assetRef := []byte(input.TaprootAssetRef)
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				transferInputTaprootAssetRefRecordType,
+				&assetRef,
+			),
+		)
+	}
+	if input.TaprootAssetAmount != 0 {
+		assetAmount := input.TaprootAssetAmount
+		records = append(
+			records, tlv.MakePrimitiveRecord(
+				transferInputTaprootAssetAmountRecordType,
+				&assetAmount,
+			),
+		)
+	}
+
 	stream, err := tlv.NewStream(records...)
 	if err != nil {
 		return nil, err
@@ -1235,6 +1469,9 @@ func decodeTransferInputSnapshot(raw []byte) (*TransferInputSnapshot, error) {
 		externalSigBlob    []byte
 		requiredSequence   uint32
 		requiredLockTime   uint32
+		assetRootRaw       []byte
+		assetRefRaw        []byte
+		assetAmount        uint64
 	)
 
 	records := []tlv.Record{
@@ -1295,6 +1532,15 @@ func decodeTransferInputSnapshot(raw []byte) (*TransferInputSnapshot, error) {
 			transferInputExternalSignaturesRecordType,
 			&externalSigBlob,
 		),
+		tlv.MakePrimitiveRecord(
+			transferInputTaprootAssetRootRecordType, &assetRootRaw,
+		),
+		tlv.MakePrimitiveRecord(
+			transferInputTaprootAssetRefRecordType, &assetRefRaw,
+		),
+		tlv.MakePrimitiveRecord(
+			transferInputTaprootAssetAmountRecordType, &assetAmount,
+		),
 	}
 
 	stream, err := tlv.NewStream(records...)
@@ -1340,6 +1586,8 @@ func decodeTransferInputSnapshot(raw []byte) (*TransferInputSnapshot, error) {
 		SpendControlBlock:  controlBlock,
 		RequiredSequence:   requiredSequence,
 		RequiredLockTime:   requiredLockTime,
+		TaprootAssetRef:    string(assetRefRaw),
+		TaprootAssetAmount: assetAmount,
 	}
 
 	if len(condBlob) > 0 {
@@ -1358,6 +1606,22 @@ func decodeTransferInputSnapshot(raw []byte) (*TransferInputSnapshot, error) {
 		}
 
 		snap.ExternalSignatures = sigs
+	}
+
+	if len(assetRootRaw) > 0 {
+		assetRoot, rootErr := chainhash.NewHash(assetRootRaw)
+		if rootErr != nil {
+			return nil, fmt.Errorf("decode taproot asset root: %w",
+				rootErr)
+		}
+
+		snap.TaprootAssetRoot = assetRoot
+	}
+	if err := validateDurableAssetMetadata(
+		snap.TaprootAssetRoot, snap.TaprootAssetRef,
+		snap.TaprootAssetAmount,
+	); err != nil {
+		return nil, fmt.Errorf("transfer input asset metadata: %w", err)
 	}
 
 	return snap, nil
@@ -2026,6 +2290,7 @@ func encodeEventPayload(event Event) ([]byte, error) {
 		retryAfterNanos  uint64
 		err              error
 		recipientPayload []byte
+		assetTransferRaw []byte
 	)
 
 	switch evt := event.(type) {
@@ -2128,6 +2393,13 @@ func encodeEventPayload(event Event) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
+		if evt.TaprootAssetTransfer != nil {
+			assetTransferRaw, err = evt.TaprootAssetTransfer.
+				MarshalBinary()
+			if err != nil {
+				return nil, err
+			}
+		}
 
 	case *IncomingHandledEvent:
 		eventKind = eventKindIncomingHandled
@@ -2211,6 +2483,9 @@ func encodeEventPayload(event Event) ([]byte, error) {
 		tlv.MakePrimitiveRecord(
 			eventPayloadIncomingRecipientsType, &recipientPayload,
 		),
+		tlv.MakePrimitiveRecord(
+			eventPayloadTaprootAssetTransferType, &assetTransferRaw,
+		),
 	}
 
 	stream, err := tlv.NewStream(records...)
@@ -2244,6 +2519,7 @@ func decodeEventPayloadWithLimits(raw []byte,
 		retryable        uint8
 		retryAfterNanos  uint64
 		recipientPayload []byte
+		assetTransferRaw []byte
 	)
 
 	records := []tlv.Record{
@@ -2279,6 +2555,9 @@ func decodeEventPayloadWithLimits(raw []byte,
 		),
 		tlv.MakePrimitiveRecord(
 			eventPayloadIncomingRecipientsType, &recipientPayload,
+		),
+		tlv.MakePrimitiveRecord(
+			eventPayloadTaprootAssetTransferType, &assetTransferRaw,
 		),
 	}
 
@@ -2353,43 +2632,10 @@ func decodeEventPayloadWithLimits(raw []byte,
 		return &FailEvent{Reason: string(reason)}, nil
 
 	case eventKindIncomingTransfer:
-		if len(arkPSBT) == 0 {
-			return nil, fmt.Errorf("incoming transfer event ark " +
-				"psbt must be provided")
-		}
-
-		ark, err := psbtutil.Parse(arkPSBT)
-		if err != nil {
-			return nil, err
-		}
-
-		checkpoints, err := decodeCheckpointPSBTsWithLimits(
-			checkpointPSBT, limits,
+		return decodeIncomingTransferEventPayload(
+			arkPSBT, checkpointPSBT, ancestorPayload,
+			recipientPayload, assetTransferRaw, limits,
 		)
-		if err != nil {
-			return nil, err
-		}
-
-		ancestors, err := decodePackageArtifactsWithLimits(
-			ancestorPayload, limits,
-		)
-		if err != nil {
-			return nil, err
-		}
-
-		recipients, err := decodeIncomingRecipientsWithLimits(
-			recipientPayload, limits,
-		)
-		if err != nil {
-			return nil, err
-		}
-
-		return &IncomingTransferEvent{
-			ArkPSBT:              ark,
-			FinalCheckpointPSBTs: checkpoints,
-			AncestorPackages:     ancestors,
-			Recipients:           recipients,
-		}, nil
 
 	case eventKindIncomingHandled:
 		outpoints, err := decodeOutPointListWithLimits(
@@ -2429,6 +2675,51 @@ func decodeEventPayloadWithLimits(raw []byte,
 	default:
 		return nil, fmt.Errorf("unknown event kind: %d", eventKind)
 	}
+}
+
+func decodeIncomingTransferEventPayload(arkRaw, checkpointRaw, ancestorRaw,
+	recipientRaw, assetTransferRaw []byte,
+	limits ReceiveLimits) (Event, error) {
+
+	if len(arkRaw) == 0 {
+		return nil, fmt.Errorf("incoming transfer event ark psbt " +
+			"must be provided")
+	}
+
+	ark, err := psbtutil.Parse(arkRaw)
+	if err != nil {
+		return nil, err
+	}
+	checkpoints, err := decodeCheckpointPSBTsWithLimits(
+		checkpointRaw, limits,
+	)
+	if err != nil {
+		return nil, err
+	}
+	ancestors, err := decodePackageArtifactsWithLimits(ancestorRaw, limits)
+	if err != nil {
+		return nil, err
+	}
+	recipients, err := decodeIncomingRecipientsWithLimits(
+		recipientRaw, limits,
+	)
+	if err != nil {
+		return nil, err
+	}
+	assetTransfer, err := decodeTaprootAssetTransfer(
+		assetTransferRaw, len(checkpoints),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return &IncomingTransferEvent{
+		ArkPSBT:              ark,
+		FinalCheckpointPSBTs: checkpoints,
+		AncestorPackages:     ancestors,
+		Recipients:           recipients,
+		TaprootAssetTransfer: assetTransfer,
+	}, nil
 }
 
 // decodeCheckpointPSBTsWithLimits decodes checkpoint PSBT lists using receive
