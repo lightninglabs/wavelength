@@ -163,6 +163,9 @@ type CreditRedemption struct {
 // OORSendResult contains daemon metadata for an accepted OOR transfer.
 type OORSendResult = sdkark.OORSendResult
 
+// OORSendOptions controls idempotent daemon admission and reconciliation.
+type OORSendOptions = sdkark.OORSendOptions
+
 // SwapSummary is the stable list view for one persisted swap session.
 type SwapSummary struct {
 	// Direction identifies whether this is a pay or receive session.
@@ -744,11 +747,11 @@ type DaemonConn interface {
 	// BlockHeight returns the daemon's best known chain height.
 	BlockHeight(ctx context.Context) (uint32, error)
 
-	// SendOORWithPolicyAndKeyDetails sends an OOR transfer to a semantic
-	// policy-backed destination under a caller-owned idempotency key.
-	SendOORWithPolicyAndKeyDetails(ctx context.Context, amountSat int64,
+	// SendOORWithPolicyOptionsDetails sends or reconciles an OOR transfer
+	// under caller-owned idempotency and admission options.
+	SendOORWithPolicyOptionsDetails(ctx context.Context, amountSat int64,
 		recipientPolicyTemplate []byte,
-		idempotencyKey string) (*OORSendResult, error)
+		opts OORSendOptions) (*OORSendResult, error)
 
 	// SendOORWithCustomInputs sends an OOR with custom inputs into one
 	// standard pubkey-backed Ark receive destination.
