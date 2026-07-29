@@ -149,6 +149,38 @@ func (o RecipientOutput) ValidateTaprootAssetCommitment() error {
 	return nil
 }
 
+// RoutingPkScript returns the stable receive script used to address this
+// output to its owner. Taproot Asset composition changes the final output
+// script only after the receiver has registered its semantic Ark policy, so
+// asset outputs route through the uncomposed policy script.
+func (o RecipientOutput) RoutingPkScript() ([]byte, error) {
+	if err := o.ValidateTaprootAssetCommitment(); err != nil {
+		return nil, err
+	}
+	if o.TaprootAssetRoot == nil {
+		return append([]byte(nil), o.PkScript...), nil
+	}
+
+	template, err := arkscript.DecodePolicyTemplate(o.VTXOPolicyTemplate)
+	if err != nil {
+		return nil, fmt.Errorf("decode recipient routing policy: %w",
+			err)
+	}
+	compiled, err := template.Compile()
+	if err != nil {
+		return nil, fmt.Errorf("compile recipient routing policy: %w",
+			err)
+	}
+
+	pkScript, err := txscript.PayToTaprootScript(compiled.OutputKey())
+	if err != nil {
+		return nil, fmt.Errorf("derive recipient routing pkscript: %w",
+			err)
+	}
+
+	return pkScript, nil
+}
+
 // ValidateTaprootAssetMetadata checks that SDK-neutral asset identity and
 // quantity are either absent or complete. A root-only output is accepted for
 // compatibility with v0 packages created before identity and amount were

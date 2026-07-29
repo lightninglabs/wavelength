@@ -9,10 +9,13 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/txscript/v2"
 	btclog "github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/arkrpc"
 	"github.com/lightninglabs/wavelength/db"
 	"github.com/lightninglabs/wavelength/indexer"
+	"github.com/lightninglabs/wavelength/lib/arkscript"
 	mailboxrpc "github.com/lightninglabs/wavelength/mailbox/rpc"
 	"github.com/lightninglabs/wavelength/oor"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -320,6 +323,96 @@ func TestResolveOwnedReceiveScriptKeyNotOwned(t *testing.T) {
 		ctx, &testReceiveScriptStore{}, recipient,
 	)
 	require.ErrorIs(t, err, oor.ErrIncomingRecipientNotOwned)
+}
+
+// TestResolveOwnedReceiveScriptKeyAliasesAssetOutput verifies that ownership
+// follows the registered semantic policy and persists the final composed
+// script for subsequent metadata proofs after restart.
+func TestResolveOwnedReceiveScriptKeyAliasesAssetOutput(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	owner := testKeyDescriptor(t, 41)
+	operator := testKeyDescriptor(t, 42)
+	policy, routingPkScript, err := arkscript.EncodeStandardVTXOArtifacts(
+		owner.PubKey, operator.PubKey, 144,
+	)
+	require.NoError(t, err)
+
+	template, err := arkscript.DecodePolicyTemplate(policy)
+	require.NoError(t, err)
+	compiled, err := template.Compile()
+	require.NoError(t, err)
+	assetRoot := chainhash.Hash{1, 2, 3}
+	composed, err := arkscript.ComposeWithSiblingRoot(compiled, assetRoot)
+	require.NoError(t, err)
+	finalPkScript, err := txscript.PayToTaprootScript(
+		composed.OutputKey(),
+	)
+	require.NoError(t, err)
+
+	store := &testReceiveScriptStore{
+		records: []db.OwnedReceiveScriptRecord{{
+			PkScript:       routingPkScript,
+			ClientKey:      owner,
+			OperatorPubKey: operator.PubKey,
+			ExitDelay:      144,
+			Source:         db.OwnedReceiveScriptSourceWallet,
+			CreatedAt:      time.Unix(10, 0),
+			LastUsedAt:     fn.None[time.Time](),
+		}},
+	}
+	recipient := oor.ArkRecipientOutput{
+		OutputIndex:        0,
+		PkScript:           finalPkScript,
+		Value:              1000,
+		VTXOPolicyTemplate: policy,
+		TaprootAssetRoot:   &assetRoot,
+		TaprootAssetRef:    "asset-id:010203",
+		TaprootAssetAmount: 800,
+	}
+
+	resolved, err := ResolveOwnedReceiveScriptKey(ctx, store, recipient)
+	require.NoError(t, err)
+	require.Equal(
+		t, owner.PubKey.SerializeCompressed(),
+		resolved.PubKey.SerializeCompressed(),
+	)
+
+	alias, err := store.LookupOwnedReceiveScript(ctx, finalPkScript)
+	require.NoError(t, err)
+	require.Equal(t, db.OwnedReceiveScriptSourceAssetAlias, alias.Source)
+	require.Equal(
+		t, owner.PubKey.SerializeCompressed(),
+		alias.ClientKey.PubKey.SerializeCompressed(),
+	)
+	require.Equal(
+		t, operator.PubKey.SerializeCompressed(),
+		alias.OperatorPubKey.SerializeCompressed(),
+	)
+	require.Equal(t, int64(144), alias.ExitDelay)
+
+	// The exact alias is all the dynamic signer needs after a daemon
+	// restart; no asset proof state is required for key selection.
+	signer := NewOwnedReceiveScriptSigner(
+		store,
+		func(keyDesc keychain.KeyDescriptor) indexer.SchnorrSigner {
+			return &testOwnedReceiveScriptSigner{
+				keyDesc: keyDesc,
+				tagSig:  []byte("asset-alias"),
+			}
+		},
+	)
+	pubKeySource, ok := signer.(interface {
+		ProofPubKey([]byte) (*btcec.PublicKey, error)
+	})
+	require.True(t, ok)
+	proofKey, err := pubKeySource.ProofPubKey(finalPkScript)
+	require.NoError(t, err)
+	require.Equal(
+		t, owner.PubKey.SerializeCompressed(),
+		proofKey.SerializeCompressed(),
+	)
 }
 
 // testKeyDescriptor creates a deterministic test key descriptor.
