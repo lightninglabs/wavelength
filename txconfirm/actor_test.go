@@ -1190,7 +1190,9 @@ func TestTerminalNotificationTimeoutDoesNotBlockActor(t *testing.T) {
 	require.Less(t, time.Since(start), testTimeout)
 	require.True(t, <-started)
 
-	key := terminalNotifyKey(txid, sub.ID(), "finalized")
+	// No tracked entry is registered in this test, so notifyOneTerminal
+	// falls back to the zero reorg epoch / height when building the key.
+	key := terminalNotifyKey(txid, sub.ID(), "finalized", 0, 0)
 	_, inflight := behavior.terminalNotifyInflight[key]
 	require.True(t, inflight)
 	require.Equal(t, 1, sub.attemptsCount())
@@ -2248,4 +2250,134 @@ func TestInitialConfirmedAsyncDeliveryRetainsSubscriber(t *testing.T) {
 		"TxReorged never reached subscriber whose initial TxConfirmed "+
 			"completed via the async path — handleTerminalNotify"+
 			"Result probably evicted it on completion")
+}
+
+// outboxCapturingRef records the OutboxID (terminal-notification idempotency
+// key) the actor stamps on each delivery, so a test can assert the key changes
+// across a reorg-and-reconfirmation.
+type outboxCapturingRef struct {
+	id  string
+	mu  sync.Mutex
+	got []struct {
+		notification Notification
+		outboxID     string
+	}
+}
+
+func newOutboxCapturingRef(id string) *outboxCapturingRef {
+	return &outboxCapturingRef{id: id}
+}
+
+// ID returns the subscriber id.
+func (r *outboxCapturingRef) ID() string { return r.id }
+
+// Tell records the delivered notification together with the OutboxID visible
+// on its context.
+func (r *outboxCapturingRef) Tell(ctx context.Context, msg Notification) error {
+	oid, _ := actor.OutboxIDFromContext(ctx)
+
+	r.mu.Lock()
+	r.got = append(r.got, struct {
+		notification Notification
+		outboxID     string
+	}{msg, oid})
+	r.mu.Unlock()
+
+	return nil
+}
+
+// TryTell mirrors Tell for the non-blocking TellOnlyRef contract; the capturing
+// ref never applies backpressure, so it simply delegates.
+func (r *outboxCapturingRef) TryTell(ctx context.Context,
+	msg Notification) error {
+
+	return r.Tell(ctx, msg)
+}
+
+// confirmedOutboxIDs returns the OutboxIDs of every TxConfirmed delivery seen.
+func (r *outboxCapturingRef) confirmedOutboxIDs() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	var ids []string
+	for _, d := range r.got {
+		if _, ok := d.notification.(*TxConfirmed); ok {
+			ids = append(ids, d.outboxID)
+		}
+	}
+
+	return ids
+}
+
+// TestConfirmationReorgReconfirmDeliversFreshKey is a regression test for the
+// unilateral-exit stall found in live reorg testing (see the txconfirm
+// confReorgEpoch field): when a confirmed tx is reorged out and reconfirms, the
+// re-confirmation must carry a NEW terminal-notification idempotency key.
+// Otherwise a durable subscriber's dedup drops it as a duplicate of the
+// pre-reorg confirmation and the subscriber (e.g. an in-progress unilateral
+// exit) never re-drives.
+func TestConfirmationReorgReconfirmDeliversFreshKey(t *testing.T) {
+	chain := newFakeChainSourceRef(100)
+	tx := makeTestTx(false)
+	txid := tx.TxHash()
+
+	ref, _ := newTestActor(t, Config{ChainSource: chain})
+
+	sub := newOutboxCapturingRef("unroll-sub")
+
+	// Initial ensure -> first confirmation via the terminal delivery path.
+	resp := mustEnsure(t, ref.Ref(), &EnsureConfirmedReq{
+		Tx:         tx,
+		Subscriber: sub,
+	})
+	require.True(t, resp.Created)
+
+	chain.emitConfirmation(t, txid, 105)
+	mustEventually(t, func() bool {
+		return len(sub.confirmedOutboxIDs()) == 1
+	}, "expected first TxConfirmed")
+
+	// Reorg the confirmation out.
+	chain.emitConfReorged(t, txid)
+
+	// The reorg-aware consumer re-submits the same tx on rollback, which
+	// re-arms the terminal delivery path for the next confirmation exactly
+	// as the unroll actor does.
+	mustEventually(t, func() bool {
+		resp, err := ref.Ref().Ask(t.Context(), &EnsureConfirmedReq{
+			Tx:         tx,
+			Subscriber: sub,
+		}).Await(t.Context()).Unpack()
+		if err != nil {
+			return false
+		}
+		typed, ok := resp.(*EnsureConfirmedResp)
+
+		return ok && typed.State == TxStateAwaitingConfirmation
+	}, "expected entry back in AwaitingConfirmation after reorg")
+
+	// Re-confirmation at the SAME height as before. Keying on height alone
+	// would not distinguish this from the pre-reorg confirmation, so a
+	// fresh key here proves the reorg epoch is the load-bearing component
+	// (a real reorg can re-mine a tx at the same height on the winning
+	// branch).
+	chain.emitConfirmation(t, txid, 105)
+	mustEventually(t, func() bool {
+		return len(sub.confirmedOutboxIDs()) == 2
+	}, "expected re-confirmation TxConfirmed after reorg")
+
+	ids := sub.confirmedOutboxIDs()
+	require.Len(t, ids, 2)
+	require.NotEmpty(
+		t, ids[0], "first confirmation must use the terminal key",
+	)
+	require.NotEmpty(
+		t, ids[1], "re-confirmation must use the terminal key",
+	)
+	require.NotEqual(
+		t, ids[0], ids[1], "re-confirmation after a reorg must "+
+			"carry a fresh idempotency key so a durable "+
+			"subscriber does not dedup it as a duplicate of "+
+			"the pre-reorg confirmation",
+	)
 }
