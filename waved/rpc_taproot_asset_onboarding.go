@@ -11,11 +11,13 @@ import (
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/wire/v2"
+	"github.com/google/uuid"
 	tapsdk "github.com/lightninglabs/tap-sdk"
 	"github.com/lightninglabs/wavelength/arkrpc"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
 	"github.com/lightninglabs/wavelength/lib/types"
+	"github.com/lightninglabs/wavelength/round"
 	"github.com/lightninglabs/wavelength/tapassets"
 	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightninglabs/wavelength/waverpc"
@@ -326,8 +328,9 @@ func (r *RPCServer) materializeTaprootAssetOnboarding(ctx context.Context,
 		ClientKey:        result.OwnerKey,
 		OperatorKey:      result.OperatorKey,
 		TapScript:        tapscript,
-		RoundID: "taproot-asset-onboarding-" +
-			result.Outpoint.Hash.String(),
+		RoundID: taprootAssetOnboardingRoundID(
+			result.Outpoint.Hash,
+		).String(),
 		CommitmentTxID: result.Outpoint.Hash,
 		BatchExpiry:    math.MaxInt32,
 		RelativeExpiry: result.ExitDelay,
@@ -354,6 +357,20 @@ func (r *RPCServer) materializeTaprootAssetOnboarding(ctx context.Context,
 	}
 
 	return desc, nil
+}
+
+// taprootAssetOnboardingRoundID derives a stable UUID for the minimal local
+// round row required by the client VTXO schema. Direct onboarding has no Ark
+// round of its own, so the anchor txid is namespaced into a synthetic ID that
+// remains parseable anywhere ordinary round rows are listed.
+func taprootAssetOnboardingRoundID(anchorTxid chainhash.Hash) round.RoundID {
+	const domain = "wavelength/taproot-assets/onboarding-round/v1"
+
+	name := make([]byte, 0, len(domain)+len(anchorTxid))
+	name = append(name, []byte(domain)...)
+	name = append(name, anchorTxid[:]...)
+
+	return round.RoundID(uuid.NewSHA1(uuid.NameSpaceOID, name))
 }
 
 func sameOnboardedVTXO(left, right *vtxo.Descriptor) bool {

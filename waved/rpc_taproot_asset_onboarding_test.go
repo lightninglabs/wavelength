@@ -15,6 +15,7 @@ import (
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
 	"github.com/lightninglabs/wavelength/lib/types"
+	"github.com/lightninglabs/wavelength/round"
 	"github.com/lightninglabs/wavelength/tapassets"
 	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightninglabs/wavelength/waverpc"
@@ -161,6 +162,9 @@ func TestOnboardTaprootAssetPendingThenReady(t *testing.T) {
 	require.Equal(t, txid, stored.CommitmentTxID)
 	require.Equal(t, ready.AssetRef, stored.TaprootAssetRef)
 	require.Equal(t, ready.AssetAmount, stored.TaprootAssetAmount)
+	parsedRoundID, err := round.ParseRoundID(stored.RoundID)
+	require.NoError(t, err)
+	require.Equal(t, taprootAssetOnboardingRoundID(txid), parsedRoundID)
 
 	response, err = rpcServer.OnboardTaprootAsset(t.Context(), request)
 	require.NoError(t, err)
