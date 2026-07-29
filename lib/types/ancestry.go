@@ -1,7 +1,11 @@
 package types
 
 import (
+	"bytes"
+	"fmt"
+
 	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/lib/tree"
 )
 
@@ -24,8 +28,11 @@ import (
 // vtxo.Descriptor can carry the same multi-fragment ancestry without an
 // import cycle (vtxo already imports round).
 type Ancestry struct {
-	// TreePath is the extracted commitment-tree path from the batch root
-	// down to the input VTXO leaf served by this fragment.
+	// TreePath is either the extracted commitment-tree path from the batch
+	// root down to the input VTXO leaf, or an explicit external-root
+	// sentinel. The sentinel is a non-nil tree with Root == nil and exact
+	// BatchOutpoint/BatchOutput fields describing an already-confirmed
+	// direct VTXO. A nil TreePath is always malformed.
 	TreePath *tree.Tree
 
 	// CommitmentTxID is the txid of the commitment tx anchoring this
@@ -51,6 +58,83 @@ type Ancestry struct {
 	// which case callers fall back to a bounded lookback floor rather than
 	// trusting this value.
 	CommitmentHeight int32
+}
+
+// IsExternalRoot reports whether this ancestry entry is the explicit
+// direct-on-chain variant. A non-nil rootless TreePath is reserved for that
+// variant; a nil TreePath remains ordinary missing ancestry and is never
+// interpreted as an external root.
+func (a Ancestry) IsExternalRoot() bool {
+	return a.TreePath != nil && a.TreePath.Root == nil
+}
+
+// ValidateExternalRoot validates the strict rootless ancestry sentinel. The
+// sentinel carries no recovery transaction of its own: BatchOutpoint is the
+// already-confirmed external VTXO, while BatchOutput is the authoritative
+// output the first checkpoint spends.
+func (a Ancestry) ValidateExternalRoot() error {
+	switch {
+	case !a.IsExternalRoot():
+		return fmt.Errorf("ancestry is not an external root")
+
+	case a.CommitmentTxID == (chainhash.Hash{}):
+		return fmt.Errorf("external root commitment txid is zero")
+
+	case a.TreePath.BatchOutpoint.Hash != a.CommitmentTxID:
+		return fmt.Errorf("external root outpoint hash %s does not "+
+			"match commitment %s", a.TreePath.BatchOutpoint.Hash,
+			a.CommitmentTxID)
+
+	case a.TreePath.BatchOutput == nil:
+		return fmt.Errorf("external root output is missing")
+
+	case a.TreePath.BatchOutput.Value <= 0:
+		return fmt.Errorf("external root output value %d must be "+
+			"positive", a.TreePath.BatchOutput.Value)
+
+	case len(a.TreePath.BatchOutput.PkScript) == 0:
+		return fmt.Errorf("external root output script is empty")
+
+	case len(a.TreePath.SweepTapscriptRoot) != 0:
+		return fmt.Errorf("external root must not carry a sweep root")
+
+	case a.TreeDepth != 0:
+		return fmt.Errorf("external root tree depth must be "+
+			"zero, got %d", a.TreeDepth)
+
+	case a.CommitmentHeight <= 0:
+		return fmt.Errorf("external root confirmation height must be "+
+			"positive, got %d", a.CommitmentHeight)
+
+	case len(a.InputIndices) == 0:
+		return fmt.Errorf("external root input indices are empty")
+	}
+
+	return nil
+}
+
+// ExternalRootOutpoint returns the exact direct-on-chain root outpoint. The
+// boolean is false for ordinary tree ancestry.
+func (a Ancestry) ExternalRootOutpoint() (wire.OutPoint, bool) {
+	if !a.IsExternalRoot() {
+		return wire.OutPoint{}, false
+	}
+
+	return a.TreePath.BatchOutpoint, true
+}
+
+// ExternalRootOutputMatches reports whether output is byte-identical to the
+// authoritative external output carried by this entry.
+func (a Ancestry) ExternalRootOutputMatches(output *wire.TxOut) bool {
+	if !a.IsExternalRoot() || a.TreePath.BatchOutput == nil ||
+		output == nil {
+		return false
+	}
+
+	return a.TreePath.BatchOutput.Value == output.Value &&
+		bytes.Equal(
+			a.TreePath.BatchOutput.PkScript, output.PkScript,
+		)
 }
 
 // MaxAncestryTreeDepth returns the largest TreeDepth across the given
