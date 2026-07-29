@@ -48,6 +48,18 @@ func isExpectedShutdownErr(err error) bool {
 	return false
 }
 
+const (
+	// defaultPollInterval is the floor of the idle-mailbox poll backoff,
+	// i.e. the wait before the first fallback poll after the mailbox goes
+	// quiet.
+	defaultPollInterval = time.Second
+
+	// defaultMaxPollInterval is the ceiling of the idle-mailbox poll
+	// backoff, i.e. the longest an actor that has been idle for a while
+	// waits between fallback polls.
+	defaultMaxPollInterval = 30 * time.Second
+)
+
 // generateID generates a UUIDv7 which provides both uniqueness and
 // time-ordering. UUIDv7 embeds a Unix timestamp in milliseconds in the most
 // significant bits, ensuring that IDs generated later sort after IDs generated
@@ -79,8 +91,48 @@ type DurableMailboxConfig struct {
 	// PollInterval is how often to poll for new messages when empty.
 	// Same-process sends wake the mailbox immediately, so polling is only
 	// the fallback for missed wakes, restarts, and external enqueues.
+	// It is the FLOOR of the idle poll backoff: the first fallback poll
+	// after the mailbox goes quiet waits exactly this long, and any wake or
+	// claimed message snaps the backoff straight back here.
 	// Default: 1s.
 	PollInterval time.Duration
+
+	// MaxPollInterval is the CEILING of the idle poll backoff. Each
+	// consecutive empty poll roughly doubles the wait, starting at
+	// PollInterval and capped here, so an actor that is resident but idle
+	// settles at one fallback poll per MaxPollInterval instead of one per
+	// PollInterval. This matters at scale: on a Postgres-backed deployment
+	// every empty poll is a full SERIALIZABLE write transaction, so a few
+	// thousand idle actors polling at 1Hz burn thousands of transactions a
+	// second that change no rows.
+	//
+	// The decay costs nothing on the normal delivery path, which is
+	// wake-driven rather than poll-driven: the store's post-commit
+	// RegisterMailboxWake callback rouses the exact mailbox a committed
+	// transaction enqueued into, regardless of how far the backoff has
+	// decayed. But that callback is SAME-PROCESS only, so the fallback poll
+	// remains the only discovery mechanism for a message enqueued by
+	// another process or another replica. MaxPollInterval is therefore the
+	// worst-case cross-process/cross-replica delivery latency: a
+	// multi-replica deployment that cares about that latency should lower
+	// this knob, at the cost of more empty polls per idle actor.
+	//
+	// Two other visibility events are wakeless and so are bounded by this
+	// ceiling in the same way. A nacked message becomes eligible again when
+	// its retry delay elapses, and nothing signals the wake channel at that
+	// moment, so a retry scheduled D in the future surfaces up to
+	// min(D, MaxPollInterval) late rather than within PollInterval. A lease
+	// that expires after a crash is likewise picked up by the poll alone,
+	// so its recovery is LeaseDuration plus up to MaxPollInterval. Neither
+	// affects at-least-once delivery, but both are real latency the fixed
+	// poll did not have, and a deployment that cares about redelivery
+	// promptness should size this knob against its retry delays.
+	//
+	// A value <= 0 normalizes to the default, and a value below
+	// PollInterval is raised to PollInterval (which disables the decay
+	// rather than producing a wait that shrinks below the floor).
+	// Default: 30s.
+	MaxPollInterval time.Duration
 
 	// MaxAttempts is the default maximum delivery attempts.
 	// Default: 10.
@@ -129,13 +181,111 @@ func DefaultDurableMailboxConfig(mailboxID string, store DeliveryStore,
 	codec *MessageCodec) DurableMailboxConfig {
 
 	return DurableMailboxConfig{
-		MailboxID:     mailboxID,
-		Store:         store,
-		Codec:         codec,
-		LeaseDuration: 30 * time.Second,
-		PollInterval:  time.Second,
-		MaxAttempts:   10,
+		MailboxID:       mailboxID,
+		Store:           store,
+		Codec:           codec,
+		LeaseDuration:   30 * time.Second,
+		PollInterval:    defaultPollInterval,
+		MaxPollInterval: defaultMaxPollInterval,
+		MaxAttempts:     10,
 	}
+}
+
+// normalizePollIntervals resolves the idle-poll floor and ceiling from raw
+// config values. A zero or negative value falls back to its default. A ceiling
+// below the floor is raised to the floor rather than honored: a shrinking wait
+// would poll more aggressively than the operator asked for, so a misconfigured
+// pair degrades to a constant-cadence poll at the floor, which is exactly the
+// pre-decay behavior.
+func normalizePollIntervals(floor, ceiling time.Duration) (time.Duration,
+	time.Duration) {
+
+	if floor <= 0 {
+		floor = defaultPollInterval
+	}
+
+	if ceiling <= 0 {
+		ceiling = defaultMaxPollInterval
+	}
+
+	if ceiling < floor {
+		ceiling = floor
+	}
+
+	return floor, ceiling
+}
+
+// pollBackoff tracks the wait before the next fallback poll of an idle durable
+// mailbox. It starts at the floor, roughly doubles on every consecutive empty
+// poll, and is capped at the ceiling. Any evidence that the mailbox is live
+// again -- a wake signal or a successfully claimed message -- resets it to the
+// floor.
+//
+// The decay exists because the fallback poll is not the delivery path. A
+// same-process enqueue signals the wake channel (and, for an enqueue folded
+// into a caller's transaction, the store's post-commit
+// RegisterMailboxWake callback fires once the row is actually visible), so a
+// deeply decayed backoff never delays a local send. What the poll does cover is
+// missed wakes, restarts, and enqueues from another process, none of which are
+// on the latency-critical path. Polling that fallback at a fixed 1Hz per
+// resident actor is what turns an idle process into a transaction generator,
+// since every empty poll on a Postgres-backed store is a full SERIALIZABLE
+// write transaction that updates no rows.
+type pollBackoff struct {
+	// floor is the shortest wait, used for the first poll after the mailbox
+	// goes quiet and after every reset.
+	floor time.Duration
+
+	// ceiling is the longest wait the backoff will ever grow to.
+	ceiling time.Duration
+
+	// cur is the wait the next idle poll will use. It is always within
+	// [floor, ceiling].
+	cur time.Duration
+}
+
+// newPollBackoff builds a pollBackoff over the given floor and ceiling,
+// normalizing both, and starts it at the floor.
+func newPollBackoff(floor, ceiling time.Duration) *pollBackoff {
+	floor, ceiling = normalizePollIntervals(floor, ceiling)
+
+	return &pollBackoff{
+		floor:   floor,
+		ceiling: ceiling,
+		cur:     floor,
+	}
+}
+
+// current returns the wait to use before the next fallback poll.
+func (p *pollBackoff) current() time.Duration {
+	return p.cur
+}
+
+// decay widens the wait after a fallback poll that found nothing, doubling it
+// up to the ceiling.
+func (p *pollBackoff) decay() {
+	if p.cur >= p.ceiling {
+		p.cur = p.ceiling
+
+		return
+	}
+
+	// The <= 0 arm catches a doubling that overflowed past MaxInt64. That
+	// needs an absurd ceiling (over ~146 years) to reach, but an overflowed
+	// cur goes negative, which the > ceiling comparison would miss and
+	// which timer.Reset treats as "fire immediately" -- turning the backoff
+	// into a tight spin against the store, the opposite of the point.
+	p.cur *= 2
+	if p.cur > p.ceiling || p.cur <= 0 {
+		p.cur = p.ceiling
+	}
+}
+
+// reset snaps the wait back to the floor. It is called whenever the mailbox
+// shows a sign of life, so a burst of traffic after a long idle period is
+// polled at the configured floor from its very first gap.
+func (p *pollBackoff) reset() {
+	p.cur = p.floor
 }
 
 // DurableMailbox implements the Mailbox interface with SQLite-backed
@@ -182,6 +332,15 @@ func NewDurableMailbox[M TLVMessage, R any](
 	if wakeBuffer < 1 {
 		wakeBuffer = 1
 	}
+
+	// Resolve the idle-poll floor and ceiling up front so every
+	// construction path (including hand-built configs that skip
+	// DefaultDurableMailboxConfig) carries usable values, and so the
+	// effective settings are visible on m.cfg rather than only inside the
+	// receive loop.
+	cfg.PollInterval, cfg.MaxPollInterval = normalizePollIntervals(
+		cfg.PollInterval, cfg.MaxPollInterval,
+	)
 
 	m := &DurableMailbox[M, R]{
 		cfg:             cfg,
@@ -375,8 +534,72 @@ func (m *DurableMailbox[M, R]) Receive(
 	ctx context.Context) iter.Seq[envelope[M, R]] {
 
 	return func(yield func(envelope[M, R]) bool) {
-		ticker := time.NewTicker(m.cfg.PollInterval)
-		defer ticker.Stop()
+		// The fallback poll decays from PollInterval toward
+		// MaxPollInterval while the mailbox stays empty, so the wait is
+		// no longer a fixed cadence and a Ticker cannot express it. A
+		// Timer re-armed per wait can. This module builds with Go
+		// 1.23+ timer semantics (see the go directive in go.mod), where
+		// Reset is guaranteed to clear any value from before the call,
+		// so re-arming needs no manual channel drain.
+		backoff := newPollBackoff(
+			m.cfg.PollInterval, m.cfg.MaxPollInterval,
+		)
+		timer := time.NewTimer(backoff.current())
+		defer timer.Stop()
+
+		// waitIdle parks the loop until the current backoff elapses, a
+		// wake arrives, or the loop must exit. It reports whether the
+		// caller should keep looping.
+		//
+		// The timer is armed only here, on the paths that have nothing
+		// to do, so a busy mailbox never pays for a poll timer at all.
+		waitIdle := func() bool {
+			timer.Reset(backoff.current())
+
+			select {
+			case <-timer.C:
+				// The fallback poll came up empty again, so
+				// widen the next wait. The timer is never
+				// stopped outright: it is the sole discovery
+				// path for a crash-recovered lease and for an
+				// enqueue committed by another process, whose
+				// wake callback is same-process only.
+				backoff.decay()
+
+				return true
+
+			case <-m.wake:
+				// A wake means an enqueue either just happened
+				// or just committed against this mailbox, so
+				// the mailbox is live and the next idle gap
+				// should start from the floor again.
+				//
+				// Resetting here (rather than on the enqueue
+				// itself) is what keeps the decay off the
+				// delivery path: Send signals this channel
+				// pre-commit, and for an enqueue folded into a
+				// caller's transaction the store's post-commit
+				// RegisterMailboxWake callback signals it again
+				// once the row is visible. Either way the loop
+				// re-polls immediately, no matter how far the
+				// backoff had decayed. Wakes are best-effort
+				// (the channel is depth-limited and a signal is
+				// dropped when one is already pending), so the
+				// reset must never be load-bearing for
+				// correctness -- and it is not, since a dropped
+				// wake only leaves the backoff wide and the
+				// message is still found by the next poll.
+				backoff.reset()
+
+				return true
+
+			case <-ctx.Done():
+				return false
+
+			case <-m.actorCtx.Done():
+				return false
+			}
+		}
 
 		for {
 			// Check for cancellation.
@@ -444,38 +667,35 @@ func (m *DurableMailbox[M, R]) Receive(
 					"message from mailbox",
 					err, "mailbox_id", m.cfg.MailboxID)
 
-				select {
-				case <-ticker.C:
-					continue
-
-				case <-m.wake:
-					continue
-
-				case <-ctx.Done():
-					return
-
-				case <-m.actorCtx.Done():
+				// The error path decays exactly like the empty
+				// path. A store that is failing every claim is
+				// precisely when retrying it once per second
+				// per actor is most harmful, and the reset
+				// semantics are identical, so a transient blip
+				// costs at most one extra doubling before the
+				// next wake or claim pulls the wait back to the
+				// floor.
+				if !waitIdle() {
 					return
 				}
+
+				continue
 			}
 
 			if leased == nil {
-				// No messages available, wait for poll interval
-				// or wake signal.
-				select {
-				case <-ticker.C:
-					continue
-
-				case <-m.wake:
-					continue
-
-				case <-ctx.Done():
-					return
-
-				case <-m.actorCtx.Done():
+				// No messages available, wait out the current
+				// backoff or a wake signal.
+				if !waitIdle() {
 					return
 				}
+
+				continue
 			}
+
+			// A claim is proof the mailbox is live, so the next
+			// idle stretch starts over at the floor rather than
+			// inheriting however far the previous one had decayed.
+			backoff.reset()
 
 			// Decode the message.
 			decoded, err := m.cfg.Codec.Decode(leased.Payload)
@@ -568,20 +788,17 @@ func (m *DurableMailbox[M, R]) Receive(
 			// wedged DB. Back off for a poll interval (or until a
 			// wake) before the next claim, matching the implicit
 			// lease-expiry backoff of the fenced path.
+			//
+			// The backoff was just reset by the successful claim
+			// above, so this throttle is a flat poll interval, as
+			// it was before the decay existed: every iteration
+			// here claims a message and resets again.
 			if delivery.MutationFailed() {
-				select {
-				case <-ticker.C:
-					continue
-
-				case <-m.wake:
-					continue
-
-				case <-ctx.Done():
-					return
-
-				case <-m.actorCtx.Done():
+				if !waitIdle() {
 					return
 				}
+
+				continue
 			}
 		}
 	}
