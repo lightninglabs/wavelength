@@ -19,6 +19,21 @@ type proofInventoryClient interface {
 	)
 }
 
+// proofLineageClient adds the public Universe operations needed by a fresh
+// receiver to learn the issuance that anchors a grouped asset proof. It
+// deliberately omits wallet transfer registration because Wavelength's
+// unconfirmed OP_TRUE asset is not owned by the receiver's tapd wallet.
+type proofLineageClient interface {
+	VerifyProof(context.Context,
+		[]byte) (*tapsdk.VerifyProofResponse, error)
+
+	UnpackProofFile(context.Context, []byte) ([][]byte, error)
+
+	DecodeProof(context.Context, []byte) (*tapsdk.DecodedProof, error)
+
+	InsertProof(context.Context, []byte, *tapsdk.DecodedProof) error
+}
+
 type expectedUnconfirmedAnchor struct {
 	stepIndex        uint16
 	previousOutpoint tapsdk.Outpoint
@@ -144,7 +159,7 @@ func (v *proofInventoryVerifier) VerifyUnconfirmedAnchor(_ context.Context,
 // passive isolation; a receiver must not need the sender's base anchor in its
 // own ListUtxos inventory.
 type proofLineageVerifier struct {
-	client       proofInventoryClient
+	client       proofLineageClient
 	expectedLast *expectedUnconfirmedAnchor
 }
 
@@ -156,6 +171,10 @@ func (v *proofLineageVerifier) VerifyConfirmedProof(ctx context.Context,
 
 	if v == nil || v.client == nil {
 		return nil, fmt.Errorf("tapd proof client is required")
+	}
+	if err := bootstrapProofIssuance(ctx, v.client, proofFile); err != nil {
+		return nil, fmt.Errorf("bootstrap chained proof issuance: %w",
+			err)
 	}
 	verified, err := v.client.VerifyProof(ctx, proofFile)
 	if err != nil {
@@ -170,6 +189,42 @@ func (v *proofLineageVerifier) VerifyConfirmedProof(ctx context.Context,
 		AnchorAssetInventoryComplete: true,
 		PassiveAssetCount:            0,
 	}, nil
+}
+
+// bootstrapProofIssuance teaches a fresh receiver's local Universe about the
+// public issuance at the start of the received proof chain. InsertProof
+// validates and idempotently persists that issuance. Importing or registering
+// the later transfer proofs would incorrectly claim the sender's asset in the
+// receiver's tapd wallet.
+func bootstrapProofIssuance(ctx context.Context, client proofLineageClient,
+	proofFile []byte) error {
+
+	rawProofs, err := client.UnpackProofFile(ctx, proofFile)
+	if err != nil {
+		return fmt.Errorf("unpack proof file: %w", err)
+	}
+	if len(rawProofs) == 0 {
+		return fmt.Errorf("proof file contains no proofs")
+	}
+	if len(rawProofs[0]) == 0 {
+		return fmt.Errorf("issuance proof is empty")
+	}
+
+	issuance, err := client.DecodeProof(ctx, rawProofs[0])
+	if err != nil {
+		return fmt.Errorf("decode issuance proof: %w", err)
+	}
+	if issuance == nil {
+		return fmt.Errorf("decoded issuance proof is empty")
+	}
+	if !issuance.IsIssuance {
+		return fmt.Errorf("first proof is not an issuance")
+	}
+	if err := client.InsertProof(ctx, rawProofs[0], issuance); err != nil {
+		return fmt.Errorf("insert issuance proof: %w", err)
+	}
+
+	return nil
 }
 
 // VerifyUnconfirmedAnchor accepts sealed historical steps after tap-sdk has
