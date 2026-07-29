@@ -1,9 +1,11 @@
 package serverconn
 
 import (
+	"context"
 	"testing"
 
 	mailboxpb "github.com/lightninglabs/wavelength/mailbox/pb"
+	mailboxrpc "github.com/lightninglabs/wavelength/mailbox/rpc"
 	"github.com/stretchr/testify/require"
 )
 
@@ -50,11 +52,14 @@ func TestSplitIngressEnvelopesWaiterRouting(t *testing.T) {
 		responseEnvelope("", 4),
 	}
 
-	responses, durables := splitIngressEnvelopes(envelopes, hasWaiter)
+	responses, nonTx, durables := splitIngressEnvelopes(
+		envelopes, hasWaiter, nil,
+	)
 
 	// Only the waiter-backed response takes the pre-transaction path.
 	require.Len(t, responses, 1)
 	require.Equal(t, uint64(1), responses[0].EventSeq)
+	require.Empty(t, nonTx)
 
 	// The waiterless response, the event, and the correlation-less
 	// response all fold into the durable transaction in event_seq order.
@@ -78,10 +83,143 @@ func TestSplitIngressEnvelopesNoWaiters(t *testing.T) {
 		eventEnvelope(3),
 	}
 
-	responses, durables := splitIngressEnvelopes(envelopes, hasWaiter)
+	responses, nonTx, durables := splitIngressEnvelopes(
+		envelopes, hasWaiter, nil,
+	)
 
 	require.Empty(t, responses)
+	require.Empty(t, nonTx)
 	require.Len(t, durables, 3)
+}
+
+// requestEnvelope builds a KIND_REQUEST envelope for the given route and
+// event_seq for split-partition tests.
+func requestEnvelope(service, method string, seq uint64) *mailboxpb.Envelope {
+	return &mailboxpb.Envelope{
+		EventSeq: seq,
+		Rpc: &mailboxpb.RpcMeta{
+			Kind:    mailboxpb.RpcMeta_KIND_REQUEST,
+			Service: service,
+			Method:  method,
+		},
+	}
+}
+
+// TestIsNonTxRequestRequiresAllConditions pins the three guards that keep the
+// hoisted path from ever pulling a durable enqueue out of the cursor fold. A
+// route is only hoisted when it is a KIND_REQUEST, its route is explicitly
+// marked in NonTxRoutes, and a dispatcher is actually registered for it.
+func TestIsNonTxRequestRequiresAllConditions(t *testing.T) {
+	t.Parallel()
+
+	const (
+		service = "waverpc.DaemonService"
+		method  = "GetInfo"
+	)
+
+	route := mailboxrpc.ServiceMethod{Service: service, Method: method}
+	dispatch := func(context.Context, *mailboxpb.Envelope) error {
+		return nil
+	}
+
+	tests := []struct {
+		name        string
+		dispatchers DispatcherMap
+		nonTxRoutes RouteSet
+		env         *mailboxpb.Envelope
+		want        bool
+	}{
+		{
+			name: "marked request with dispatcher",
+			dispatchers: DispatcherMap{
+				route: dispatch,
+			},
+			nonTxRoutes: RouteSet{
+				route: {},
+			},
+			env:  requestEnvelope(service, method, 1),
+			want: true,
+		},
+		{
+			name: "marked route but event kind",
+			dispatchers: DispatcherMap{
+				route: dispatch,
+			},
+			nonTxRoutes: RouteSet{
+				route: {},
+			},
+			env: func() *mailboxpb.Envelope {
+				env := requestEnvelope(service, method, 1)
+				env.Rpc.Kind = mailboxpb.RpcMeta_KIND_EVENT
+
+				return env
+			}(),
+			want: false,
+		},
+		{
+			name: "marked route but response kind",
+			dispatchers: DispatcherMap{
+				route: dispatch,
+			},
+			nonTxRoutes: RouteSet{
+				route: {},
+			},
+			env: func() *mailboxpb.Envelope {
+				env := requestEnvelope(service, method, 1)
+				env.Rpc.Kind = mailboxpb.RpcMeta_KIND_RESPONSE
+
+				return env
+			}(),
+			want: false,
+		},
+		{
+			name: "unmarked request",
+			dispatchers: DispatcherMap{
+				route: dispatch,
+			},
+			nonTxRoutes: nil,
+			env:         requestEnvelope(service, method, 1),
+			want:        false,
+		},
+		{
+			name:        "marked route with no dispatcher",
+			dispatchers: DispatcherMap{},
+			nonTxRoutes: RouteSet{
+				route: {},
+			},
+			env:  requestEnvelope(service, method, 1),
+			want: false,
+		},
+		{
+			name: "envelope without rpc metadata",
+			dispatchers: DispatcherMap{
+				route: dispatch,
+			},
+			nonTxRoutes: RouteSet{
+				route: {},
+			},
+			env: &mailboxpb.Envelope{
+				EventSeq: 1,
+			},
+			want: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			mb := newInMemoryMailbox()
+			store := newMemCheckpointStore()
+			cfg := newTestConnectorConfig(mb, store)
+			cfg.Dispatchers = tc.dispatchers
+			cfg.NonTxRoutes = tc.nonTxRoutes
+
+			conn := NewServerConnectionActor(cfg)
+
+			require.Equal(t, tc.want, conn.isNonTxRequest(tc.env))
+		})
+	}
 }
 
 // TestDeliverWaiterResponsesDefersVanishedWaiters covers the TOCTOU guard in
