@@ -83,6 +83,88 @@ func TestBuildIncomingVTXODescriptorZeroChainDepth(t *testing.T) {
 	require.Equal(t, 0, desc.ChainDepth)
 }
 
+// TestBuildIncomingVTXODescriptorExternalRoot binds the explicit direct
+// on-chain ancestry sentinel to the exact checkpoint input and witness UTXO
+// supplied with the incoming OOR package. This is the first-hop shape used
+// when a directly onboarded Taproot Asset VTXO is spent into Wavelength.
+func TestBuildIncomingVTXODescriptorExternalRoot(t *testing.T) {
+	t.Parallel()
+
+	arkPSBT, checkpoints, recipients, commitment, recipientKey,
+		operatorKey := buildTestIncomingMaterialization(t)
+	require.Len(t, checkpoints, 1)
+	require.Len(t, checkpoints[0].UnsignedTx.TxIn, 1)
+	require.Len(t, checkpoints[0].Inputs, 1)
+	require.NotNil(t, checkpoints[0].Inputs[0].WitnessUtxo)
+
+	rootOutpoint :=
+		checkpoints[0].UnsignedTx.TxIn[0].PreviousOutPoint
+	rootOutput := checkpoints[0].Inputs[0].WitnessUtxo
+	rootPkScript := append([]byte(nil), rootOutput.PkScript...)
+	require.Equal(t, commitment, rootOutpoint.Hash)
+
+	newConfig := func() IncomingVTXOConfig {
+		batchOutput := &wire.TxOut{
+			Value: rootOutput.Value,
+			PkScript: append(
+				[]byte(nil), rootPkScript...,
+			),
+		}
+
+		return IncomingVTXOConfig{
+			OutputIndex: recipients[0].OutputIndex,
+			ClientKey: keychain.KeyDescriptor{
+				PubKey: recipientKey.PubKey(),
+			},
+			OperatorKey:          operatorKey,
+			ExitDelay:            10,
+			FinalCheckpointPSBTs: checkpoints,
+			Metadata: IncomingVTXOMetadata{
+				RoundID:        "direct-onchain-root",
+				CommitmentTxID: commitment,
+				BatchExpiry:    1000,
+				CreatedHeight:  500,
+				Ancestry: []vtxo.Ancestry{{
+					TreePath: &lib_tree.Tree{
+						BatchOutpoint: rootOutpoint,
+						BatchOutput:   batchOutput,
+					},
+					CommitmentTxID: commitment,
+					InputIndices: []uint32{
+						0,
+					},
+					TreeDepth:        0,
+					CommitmentHeight: 321,
+				}},
+			},
+		}
+	}
+
+	desc, err := BuildIncomingVTXODescriptor(arkPSBT, newConfig())
+	require.NoError(t, err)
+	require.Len(t, desc.Ancestry, 1)
+	require.True(t, desc.Ancestry[0].IsExternalRoot())
+	require.Equal(t, int32(321), desc.Ancestry[0].CommitmentHeight)
+
+	t.Run("wrong outpoint", func(t *testing.T) {
+		cfg := newConfig()
+		cfg.Metadata.Ancestry[0].TreePath.BatchOutpoint.Index++
+
+		_, err := BuildIncomingVTXODescriptor(arkPSBT, cfg)
+		require.ErrorIs(t, err, &ErrInvalidAncestry{})
+		require.Contains(t, err.Error(), "does not reach declared root")
+	})
+
+	t.Run("wrong witness UTXO", func(t *testing.T) {
+		cfg := newConfig()
+		cfg.Metadata.Ancestry[0].TreePath.BatchOutput.PkScript[0] ^= 1
+
+		_, err := BuildIncomingVTXODescriptor(arkPSBT, cfg)
+		require.ErrorIs(t, err, &ErrInvalidAncestry{})
+		require.Contains(t, err.Error(), "witness UTXO does not match")
+	})
+}
+
 // TestBuildIncomingVTXODescriptorNormalizesPrimaryAncestry verifies that
 // cross-round multi-input metadata may carry the descriptor's commitment
 // fragment after another valid fragment, and descriptor construction still

@@ -8,6 +8,7 @@ import (
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
+	"github.com/lightninglabs/wavelength/lib/tree"
 	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
 	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/stretchr/testify/require"
@@ -422,6 +423,59 @@ func TestDriveEventRequestRoundTripSubmitAcceptedEvent(t *testing.T) {
 
 	decodedTxID := submitEvt.ArkPSBT.UnsignedTx.TxHash()
 	require.Equal(t, chainhash.Hash(sessionID), decodedTxID)
+}
+
+// TestAncestryEntryExternalRootRoundTrip verifies that durable actor replay
+// preserves both the rootless direct-on-chain sentinel and its confirmation
+// height. Losing either field across restart would turn a previously accepted
+// incoming VTXO into malformed or unauthenticated ancestry.
+func TestAncestryEntryExternalRootRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	commitment := chainhash.Hash{
+		0x21, 0x22, 0x23,
+	}
+	original := vtxo.Ancestry{
+		TreePath: &tree.Tree{
+			BatchOutpoint: wire.OutPoint{
+				Hash:  commitment,
+				Index: 4,
+			},
+			BatchOutput: &wire.TxOut{
+				Value: 7_654,
+				PkScript: []byte{
+					0x51, 0x20, 0x01,
+				},
+			},
+		},
+		CommitmentTxID: commitment,
+		InputIndices: []uint32{
+			1, 3,
+		},
+		TreeDepth:        0,
+		CommitmentHeight: 456,
+	}
+
+	raw, err := encodeAncestryEntry(original)
+	require.NoError(t, err)
+
+	decoded, err := decodeAncestryEntry(raw)
+	require.NoError(t, err)
+	require.Equal(t, original.CommitmentTxID, decoded.CommitmentTxID)
+	require.Equal(t, original.InputIndices, decoded.InputIndices)
+	require.Equal(t, original.TreeDepth, decoded.TreeDepth)
+	require.Equal(
+		t, original.CommitmentHeight, decoded.CommitmentHeight,
+	)
+	require.NotNil(t, decoded.TreePath)
+	require.Nil(t, decoded.TreePath.Root)
+	require.Equal(
+		t, original.TreePath.BatchOutpoint,
+		decoded.TreePath.BatchOutpoint,
+	)
+	require.Equal(
+		t, original.TreePath.BatchOutput, decoded.TreePath.BatchOutput,
+	)
 }
 
 // TestDriveEventRequestRoundTripIncomingTransferEvent asserts

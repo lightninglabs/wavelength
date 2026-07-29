@@ -132,6 +132,59 @@ func TestAncestryPathRoundTrip(t *testing.T) {
 	}
 }
 
+// TestAncestryPathToTreeExternalRoot verifies that a present, zero-node
+// tree_path remains distinguishable from absent ancestry. This is the wire
+// sentinel used for a confirmed direct-on-chain VTXO: it has no Ark recovery
+// transaction but must retain the exact outpoint and output spent by the
+// first checkpoint.
+func TestAncestryPathToTreeExternalRoot(t *testing.T) {
+	t.Parallel()
+
+	commitment := chainhash.Hash{
+		0x10, 0x20, 0x30,
+	}
+	pkScript := []byte{
+		0x51, 0x20, 0x01,
+	}
+
+	got, err := AncestryPathToTree(&AncestryPath{
+		TreePath: &TreePath{
+			BatchOutpoint: &OutPoint{
+				Txid: commitment[:],
+				Vout: 3,
+			},
+			BatchOutput: &TxOut{
+				Value:    4_321,
+				PkScript: pkScript,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AncestryPathToTree: %v", err)
+	}
+
+	if got == nil {
+		t.Fatalf("decoded external-root tree is nil")
+	}
+	if got.Root != nil {
+		t.Fatalf("external-root sentinel unexpectedly has a root node")
+	}
+	if got.BatchOutpoint != (wire.OutPoint{
+		Hash:  commitment,
+		Index: 3,
+	}) {
+
+		t.Fatalf("external-root outpoint mismatch: %v",
+			got.BatchOutpoint)
+	}
+	if got.BatchOutput == nil ||
+		got.BatchOutput.Value != 4_321 ||
+		!bytes.Equal(got.BatchOutput.PkScript, pkScript) {
+
+		t.Fatalf("external-root output mismatch: %v", got.BatchOutput)
+	}
+}
+
 // TestAncestryCommitmentTxIDRejectsBadLength ensures malformed commitment
 // txid byte slices are rejected, not silently truncated.
 func TestAncestryCommitmentTxIDRejectsBadLength(t *testing.T) {

@@ -434,7 +434,9 @@ func (h *LocalPersistenceOutboxHandler) materializeIncoming(ctx context.Context,
 				TaprootAssetRef:  recipient.TaprootAssetRef,
 				TaprootAssetAmount: recipient.
 					TaprootAssetAmount,
-				Metadata: metadata,
+				Metadata:             metadata,
+				FinalCheckpointPSBTs: msg.FinalCheckpointPSBTs,
+				AncestorPackages:     msg.AncestorPackages,
 			},
 		)
 		if err != nil {

@@ -499,6 +499,7 @@ const (
 	ancestryPathCommitmentTxIDRecordType tlv.Type = 3
 	ancestryPathInputIndicesRecordType   tlv.Type = 5
 	ancestryPathTreeDepthRecordType      tlv.Type = 7
+	ancestryPathCommitmentHeightType     tlv.Type = 9
 )
 
 // encodeAncestryList encodes []vtxo.Ancestry as a length-prefixed blob
@@ -560,6 +561,14 @@ func encodeAncestryEntry(a vtxo.Ancestry) ([]byte, error) {
 	// Serialize input_indices as a length-prefixed list of uint32.
 	indices := encodeUint32List(a.InputIndices)
 	treeDepth := a.TreeDepth
+	// Bitcoin block heights are non-negative and fit in uint32. The TLV
+	// primitive codec does not support signed int32 values, so keep the
+	// durable representation unsigned and convert at the domain boundary.
+	if a.CommitmentHeight < 0 {
+		return nil, fmt.Errorf("ancestry commitment height must be "+
+			"non-negative, got %d", a.CommitmentHeight)
+	}
+	commitmentHeight := uint32(a.CommitmentHeight)
 
 	records := []tlv.Record{
 		tlv.MakePrimitiveRecord(
@@ -573,6 +582,9 @@ func encodeAncestryEntry(a vtxo.Ancestry) ([]byte, error) {
 		),
 		tlv.MakePrimitiveRecord(
 			ancestryPathTreeDepthRecordType, &treeDepth,
+		),
+		tlv.MakePrimitiveRecord(
+			ancestryPathCommitmentHeightType, &commitmentHeight,
 		),
 	}
 
@@ -592,10 +604,11 @@ func encodeAncestryEntry(a vtxo.Ancestry) ([]byte, error) {
 // decodeAncestryEntry is the inverse of encodeAncestryEntry.
 func decodeAncestryEntry(raw []byte) (vtxo.Ancestry, error) {
 	var (
-		treePath       []byte
-		commitmentTxID []byte
-		indicesRaw     []byte
-		treeDepth      uint32
+		treePath         []byte
+		commitmentTxID   []byte
+		indicesRaw       []byte
+		treeDepth        uint32
+		commitmentHeight uint32
 	)
 
 	records := []tlv.Record{
@@ -610,6 +623,9 @@ func decodeAncestryEntry(raw []byte) (vtxo.Ancestry, error) {
 		),
 		tlv.MakePrimitiveRecord(
 			ancestryPathTreeDepthRecordType, &treeDepth,
+		),
+		tlv.MakePrimitiveRecord(
+			ancestryPathCommitmentHeightType, &commitmentHeight,
 		),
 	}
 
@@ -636,6 +652,11 @@ func decodeAncestryEntry(raw []byte) (vtxo.Ancestry, error) {
 	if err != nil {
 		return vtxo.Ancestry{}, err
 	}
+	if commitmentHeight > math.MaxInt32 {
+		return vtxo.Ancestry{}, fmt.Errorf("ancestry commitment "+
+			"height %d exceeds max %d", commitmentHeight,
+			math.MaxInt32)
+	}
 
 	var decodedTreePath *tree.Tree
 	if len(treePath) > 0 {
@@ -646,10 +667,11 @@ func decodeAncestryEntry(raw []byte) (vtxo.Ancestry, error) {
 	}
 
 	return vtxo.Ancestry{
-		TreePath:       decodedTreePath,
-		CommitmentTxID: decodedCommitmentTxID,
-		InputIndices:   indices,
-		TreeDepth:      treeDepth,
+		TreePath:         decodedTreePath,
+		CommitmentTxID:   decodedCommitmentTxID,
+		InputIndices:     indices,
+		TreeDepth:        treeDepth,
+		CommitmentHeight: int32(commitmentHeight),
 	}, nil
 }
 
