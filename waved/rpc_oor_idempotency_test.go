@@ -698,7 +698,9 @@ func TestSendOORReturnsExistingIdempotencyKeyBeforeWalletSelection(
 	})
 	require.NoError(t, err)
 	require.Equal(t, firstResp.SessionId, secondResp.SessionId)
-	require.Empty(t, secondResp.RecipientOutpoints)
+	require.Equal(
+		t, firstResp.RecipientOutpoints, secondResp.RecipientOutpoints,
+	)
 	require.Equal(t, 1, testWallet.selectCount())
 	require.Empty(t, testWallet.unlockBatches())
 }

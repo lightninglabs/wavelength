@@ -135,6 +135,15 @@ func TestSnapshotRetryMetadataRoundTrip(t *testing.T) {
 	raw, err := encodeOutgoingSnapshot(snapshot)
 	require.NoError(t, err)
 
+	snapshotRecipients, err := OutgoingSnapshotRecipients(raw)
+	require.NoError(t, err)
+	require.Len(t, snapshotRecipients, 1)
+	require.Equal(t, uint32(0), snapshotRecipients[0].OutputIndex)
+	require.Equal(t, inputValue, snapshotRecipients[0].Value)
+	require.Equal(
+		t, recipients[0].PkScript, snapshotRecipients[0].PkScript,
+	)
+
 	decoded, err := decodeOutgoingSnapshot(raw)
 	require.NoError(t, err)
 
