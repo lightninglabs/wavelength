@@ -257,6 +257,22 @@ type trackedTx struct {
 	// Tell and skips if the entry has sealed. It is atomic because it is
 	// read off the actor goroutine; only the actor goroutine writes it.
 	sealed atomic.Bool
+
+	// confReorgEpoch counts how many times this tx's confirmation has been
+	// reorged out. It is folded into the terminal-notification idempotency
+	// key (terminalNotifyKey) so a re-confirmation after a reorg is
+	// delivered afresh instead of being suppressed by the durable
+	// subscriber's dedup as a duplicate of the pre-reorg confirmation. It
+	// is incremented on the actor goroutine in handleConfirmationReorged.
+	confReorgEpoch uint64
+
+	// lastConfirmHeight is the height of the most recent observed
+	// confirmation. It is also folded into the terminal-notification key so
+	// a re-confirmation at a new height is distinguished across a process
+	// restart (which reconstructs the entry with confReorgEpoch reset to
+	// zero). Set on the actor goroutine whenever a confirmation is fanned
+	// out.
+	lastConfirmHeight int32
 }
 
 // confirmationObservedMsg routes a chainsource confirmation callback back into
@@ -1127,6 +1143,15 @@ func (a *TxBroadcasterActor) handleConfirmationReorged(ctx context.Context,
 	if state != TxStateConfirmed {
 		return
 	}
+
+	// Advance the reorg epoch so the re-confirmation that follows this
+	// reorg carries a fresh terminal-notification idempotency key. Without
+	// this, the re-confirmed TxConfirmed reuses the pre-reorg key and the
+	// durable subscriber's dedup drops it as a duplicate, stranding a
+	// reorg-aware consumer (e.g. an in-progress unilateral exit) that
+	// rolled its state back on the TxReorged and is now waiting for the
+	// confirmation to re-drive.
+	entry.confReorgEpoch++
 
 	if err := a.advanceTrackedTxFSM(
 		ctx, entry, &trackedTxReorged{},
@@ -2096,6 +2121,11 @@ func (a *TxBroadcasterActor) notifyConfirmed(ctx context.Context,
 	entry *trackedTx, blockHeight int32, blockHash chainhash.Hash,
 	numConfs uint32) {
 
+	// Record the height of this confirmation so terminal notifications key
+	// their idempotency on it (see terminalNotifyKey); a re-confirmation at
+	// a new height is then delivered rather than deduped.
+	entry.lastConfirmHeight = blockHeight
+
 	for id, subscriber := range entry.subscribers {
 		txConfirmed := &TxConfirmed{
 			Txid:        entry.data.Txid,
@@ -2353,7 +2383,21 @@ func (a *TxBroadcasterActor) notifyOneTerminal(ctx context.Context,
 	kind string, deliver func(context.Context) error) bool {
 
 	subscriberID := subscriber.ID()
-	inflightKey := terminalNotifyKey(txid, subscriberID, kind)
+
+	// Fold the entry's reorg epoch and last confirmation height into the
+	// idempotency key so a re-confirmation after a reorg is not suppressed
+	// as a duplicate by the durable subscriber's dedup. A missing entry
+	// (already evicted) keeps the zero values, which is fine: terminal
+	// delivery for an evicted entry is a one-shot with no reorg to follow.
+	var epoch uint64
+	var height int32
+	if entry, ok := a.tracked[txid]; ok {
+		epoch = entry.confReorgEpoch
+		height = entry.lastConfirmHeight
+	}
+	inflightKey := terminalNotifyKey(
+		txid, subscriberID, kind, epoch, height,
+	)
 	if _, ok := a.terminalNotifyInflight[inflightKey]; ok {
 		return false
 	}
@@ -2430,13 +2474,17 @@ func (a *TxBroadcasterActor) completeTerminalNotifyAsync(inflightKey string,
 	}()
 }
 
-// terminalNotifyKey returns the stable idempotency key for one terminal
-// subscriber notification.
-func terminalNotifyKey(txid chainhash.Hash, subscriberID string,
-	kind string) string {
+// terminalNotifyKey returns the idempotency key for one terminal subscriber
+// notification. The key is stable across genuine retries of the same delivery
+// (same epoch and height) so a durable subscriber dedups them, but it changes
+// across a reorg-and-reconfirmation: epoch increments on every reorg and height
+// tracks the confirmation block, so a re-confirmed TxConfirmed is delivered
+// afresh rather than being suppressed as a duplicate of the pre-reorg one.
+func terminalNotifyKey(txid chainhash.Hash, subscriberID, kind string,
+	epoch uint64, height int32) string {
 
-	return fmt.Sprintf("txconfirm-terminal-%s-%s-%s", kind, txid,
-		subscriberID)
+	return fmt.Sprintf("txconfirm-terminal-%s-%s-%s-e%d-h%d", kind, txid,
+		subscriberID, epoch, height)
 }
 
 // terminalNotifyContext isolates subscriber notification from txconfirm's actor
