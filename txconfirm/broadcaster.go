@@ -479,6 +479,26 @@ func (b *CPFPBroadcaster) reserveFeeInput(ctx context.Context,
 	}
 }
 
+// feeOutpointReserved reports whether the parent txid already holds a
+// reservation on the given outpoint. It distinguishes a fee input carried over
+// from a prior committed bump (which TRUC package RBF requires the replacement
+// child to keep double-spending, so it must stay reserved) from one freshly
+// selected during the current submission (safe to release if abandoned). It
+// does not create a parent state entry, so a pre-reservation probe cannot leak
+// an empty shell.
+func (b *CPFPBroadcaster) feeOutpointReserved(parentTxid chainhash.Hash,
+	op wire.OutPoint) bool {
+
+	state, ok := b.parentStates[parentTxid]
+	if !ok || state.UsedFeeOutpoints == nil {
+		return false
+	}
+
+	_, held := state.UsedFeeOutpoints[op]
+
+	return held
+}
+
 // releaseWalletLease calls wallet.ReleaseOutput with the package-scoped
 // LockID, silently ignoring "unknown output" / "not leased" class
 // errors since those are a normal consequence of a wallet that is
@@ -889,6 +909,13 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context, height int32,
 			err)
 	}
 
+	// Record whether this input was carried over from a prior committed
+	// bump before we (re-)reserve it. If a later reselect abandons it, we
+	// only release inputs freshly selected this submission: a carried-over
+	// input must stay reserved because TRUC package RBF requires the
+	// replacement child to double-spend the previous child's fee input.
+	feeInputCarriedOver := b.feeOutpointReserved(txid, feeInput.Outpoint)
+
 	b.reserveFeeInput(ctx, txid, feeInput)
 
 	// If the chosen fee-input's actual script class differs from the
@@ -932,6 +959,20 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context, height int32,
 				)
 			}
 			if reselected.Outpoint != feeInput.Outpoint {
+				// The child will spend the reselected input, so
+				// release the abandoned original's reservation
+				// and wallet lease -- otherwise it stays locked
+				// for the parent's whole lifetime while nothing
+				// spends it (#664). Skip a carried-over input:
+				// TRUC RBF still needs the previous child's fee
+				// input reserved, so releasing it would drop an
+				// input the replacement must double-spend.
+				if !feeInputCarriedOver {
+					b.releaseFeeOutpoint(
+						ctx, txid, feeInput.Outpoint,
+					)
+				}
+
 				feeInput = reselected
 				b.reserveFeeInput(ctx, txid, feeInput)
 			}
