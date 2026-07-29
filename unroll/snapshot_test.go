@@ -111,6 +111,24 @@ func TestCheckpointCodecRoundTripHandcrafted(t *testing.T) {
 				}},
 			},
 		},
+		{
+			name: "failed_conflicted",
+			checkpoint: &actorCheckpoint{
+				Version: checkpointVersion,
+				Height:  314626,
+				Started: true,
+				Trigger: TriggerManual,
+				State: unrollplan.State{
+					InFlightTxids: []chainhash.Hash{
+						targetTxid,
+					},
+				},
+				Fail: "source batch swept by the operator; " +
+					"unilateral exit is no longer possible",
+				Conflicted:    true,
+				SweepAttempts: 0,
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -133,6 +151,37 @@ func TestCheckpointCodecRoundTripHandcrafted(t *testing.T) {
 			)
 		})
 	}
+}
+
+// TestCheckpointConflictedRecordOmittedWhenFalse guards backward
+// compatibility: a non-conflicted checkpoint must encode without the
+// conflicted record, so it is byte-identical to one written before the field
+// existed. Only a true value adds the record (wavelength#1050).
+func TestCheckpointConflictedRecordOmittedWhenFalse(t *testing.T) {
+	base := &actorCheckpoint{
+		Version: checkpointVersion,
+		Height:  100,
+		Started: true,
+		Trigger: TriggerManual,
+		State:   unrollplan.State{},
+		Fail:    "some failure",
+	}
+
+	notConflicted, err := encodeCheckpoint(base)
+	require.NoError(t, err)
+
+	base.Conflicted = true
+	conflicted, err := encodeCheckpoint(base)
+	require.NoError(t, err)
+
+	// The false encoding omits the record entirely; the true encoding is
+	// strictly longer by exactly that record.
+	require.Less(t, len(notConflicted), len(conflicted))
+
+	// The false encoding round-trips to Conflicted=false.
+	decoded, err := decodeCheckpoint(notConflicted)
+	require.NoError(t, err)
+	require.False(t, decoded.Conflicted)
 }
 
 // TestCheckpointCodecVersionMismatch verifies that a checkpoint encoded with
@@ -572,6 +621,7 @@ func requireCheckpointEqual(t *testing.T, want, got *actorCheckpoint) {
 	require.Equal(t, want.Started, got.Started)
 	require.Equal(t, want.Trigger, got.Trigger)
 	require.Equal(t, want.Fail, got.Fail)
+	require.Equal(t, want.Conflicted, got.Conflicted)
 	require.Equal(t, want.SweepAttempts, got.SweepAttempts)
 	require.ElementsMatch(
 		t, want.DeferredCheckpoints, got.DeferredCheckpoints,

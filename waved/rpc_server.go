@@ -5623,12 +5623,14 @@ func unrollJobStatusToProto(
 	case db.UnilateralExitJobStatusCompleted:
 		return waverpc.UnrollJobStatus_UNROLL_JOB_STATUS_COMPLETED
 
-	// Both terminal failure flavours surface as FAILED to clients. The
-	// recoverable variant is an internal distinction used by boot-time
-	// reconciliation to roll a no-footprint failure back to live; the
-	// user-visible job still failed.
+	// All terminal failure flavours surface as FAILED to clients. The
+	// recoverable and conflicted variants are internal distinctions used by
+	// boot-time reconciliation (roll a no-footprint failure back to live;
+	// retire a source-batch conflict out of pending); the user-visible job
+	// still failed.
 	case db.UnilateralExitJobStatusFailed,
-		db.UnilateralExitJobStatusFailedRecoverable:
+		db.UnilateralExitJobStatusFailedRecoverable,
+		db.UnilateralExitJobStatusFailedConflicted:
 		return waverpc.UnrollJobStatus_UNROLL_JOB_STATUS_FAILED
 
 	default:

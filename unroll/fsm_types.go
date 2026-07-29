@@ -100,6 +100,15 @@ type JobState struct {
 	// FailReason records a terminal failure reason, if any.
 	FailReason string
 
+	// Conflicted marks a terminal failure that was caused by a confirmed
+	// spend conflicting with the recovery tree — the operator swept a
+	// source batch commitment output the exit depends on (wavelength#1050).
+	// It is persisted so the terminal handoff to the VTXO manager stays
+	// classified as a conflict (retire the coin out of pending, do not
+	// relive it) even if the child crashes after the failure checkpoint but
+	// before the registry records it.
+	Conflicted bool
+
 	// SweepAttempts counts sweep build or broadcast failures so the actor
 	// can retry up to maxSweepAttempts before giving up.
 	SweepAttempts int
@@ -120,6 +129,7 @@ func (j *JobState) Copy() *JobState {
 		PlannerState:        copyPlannerState(j.PlannerState),
 		DeferredCheckpoints: deferred,
 		FailReason:          j.FailReason,
+		Conflicted:          j.Conflicted,
 		SweepAttempts:       j.SweepAttempts,
 	}
 
@@ -217,6 +227,14 @@ func (e *SweepBroadcastedEvent) eventSealed() {}
 type FailEvent struct {
 	// Reason is the stable human-readable failure reason.
 	Reason string
+
+	// Conflict marks the failure as a source-batch conflict: a confirmed
+	// foreign spend consumed a commitment output the recovery tree depends
+	// on, so the exit is provably impossible (wavelength#1050). It is
+	// carried into JobState.Conflicted so the terminal handoff retires the
+	// VTXO out of pending rather than leaving it exit-pending or reliving
+	// it.
+	Conflict bool
 }
 
 // eventSealed marks FailEvent as an FSM event.

@@ -182,6 +182,18 @@ const (
 	// confirmed on-chain, so the VTXO should be retired to the terminal
 	// SpentState.
 	ExitOutcomeConfirmed
+
+	// ExitOutcomeConflicted indicates the unilateral exit is provably
+	// impossible because a confirmed foreign spend conflicts with the
+	// recovery tree — the operator swept a source batch commitment output
+	// the exit depends on (wavelength#1050). The exit did NOT succeed
+	// (unlike ExitOutcomeConfirmed), but the coin is NOT lost: the operator
+	// can only sweep that output past batch expiry, so the VTXO is expired
+	// and its value is still recoverable through the ordinary refresh path
+	// (wavelength#1000). The VTXO manager routes it to the non-terminal
+	// ExpiredState — quarantined from coin selection, reclaimed by the next
+	// block epoch — rather than retiring it to a terminal FailedState.
+	ExitOutcomeConflicted
 )
 
 // String returns a human-readable label for the exit outcome.
@@ -192,6 +204,9 @@ func (o ExitOutcome) String() string {
 
 	case ExitOutcomeConfirmed:
 		return "confirmed"
+
+	case ExitOutcomeConflicted:
+		return "conflicted"
 
 	default:
 		return "unknown"

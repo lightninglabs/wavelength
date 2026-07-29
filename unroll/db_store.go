@@ -145,6 +145,8 @@ func recordFromDB(job db.UnilateralExitJobRecord) RegistryRecord {
 		SweepTxid:     sweepTxidFromBytes(job.SweepTxid),
 		RecoverableFailure: job.Status ==
 			db.UnilateralExitJobStatusFailedRecoverable,
+		ConflictedFailure: job.Status ==
+			db.UnilateralExitJobStatusFailedConflicted,
 	}
 }
 
@@ -196,8 +198,15 @@ func registryExitPolicy(record RegistryRecord,
 
 // statusForRecord maps a registry record into the DB status enum, routing a
 // recoverable (no-footprint) failure to the distinct FailedRecoverable status
-// so it round-trips back to RecoverableFailure=true on the next read.
+// and a source-batch conflict to the distinct FailedConflicted status, so each
+// round-trips back to the matching flag on the next read. A conflict takes
+// precedence: it is never a recoverable no-footprint failure, and boot-time
+// reconciliation must retire the coin rather than relive it (wavelength#1050).
 func statusForRecord(record RegistryRecord) db.UnilateralExitJobStatus {
+	if record.Phase == PhaseFailed && record.ConflictedFailure {
+		return db.UnilateralExitJobStatusFailedConflicted
+	}
+
 	if record.Phase == PhaseFailed && record.RecoverableFailure {
 		return db.UnilateralExitJobStatusFailedRecoverable
 	}
@@ -254,7 +263,8 @@ func phaseFromDB(status db.UnilateralExitJobStatus) Phase {
 		return PhaseCompleted
 
 	case db.UnilateralExitJobStatusFailed,
-		db.UnilateralExitJobStatusFailedRecoverable:
+		db.UnilateralExitJobStatusFailedRecoverable,
+		db.UnilateralExitJobStatusFailedConflicted:
 		return PhaseFailed
 
 	default:
