@@ -633,6 +633,58 @@ func TestOORArtifactStoreOwnedReceiveScriptCRUD(t *testing.T) {
 	require.Equal(t, recA.PkScript, rows[1].PkScript)
 }
 
+// TestOwnedReceiveScriptAssetAliasSourceRoundTrip verifies the append-only
+// source value used by durable final-script aliases survives persistence.
+func TestOwnedReceiveScriptAssetAliasSourceRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store, _ := newOORArtifactStoreForTest(t)
+
+	code, err := ownedReceiveScriptSourceCode(
+		OwnedReceiveScriptSourceAssetAlias,
+	)
+	require.NoError(t, err)
+	require.Equal(t, int32(3), code)
+
+	source, err := ownedReceiveScriptSourceFromCode(code)
+	require.NoError(t, err)
+	require.Equal(t, OwnedReceiveScriptSourceAssetAlias, source)
+	require.Equal(t, "asset_alias", source.String())
+
+	clientPrivKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	operatorPrivKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	rec := OwnedReceiveScriptRecord{
+		PkScript: []byte{
+			0x51,
+			0x30,
+			0x03,
+		},
+		ClientKey: keychain.KeyDescriptor{
+			KeyLocator: keychain.KeyLocator{
+				Family: 17,
+				Index:  3,
+			},
+			PubKey: clientPrivKey.PubKey(),
+		},
+		OperatorPubKey: operatorPrivKey.PubKey(),
+		ExitDelay:      144,
+		Source:         OwnedReceiveScriptSourceAssetAlias,
+		CreatedAt:      time.Unix(300, 0).UTC(),
+	}
+
+	err = store.UpsertOwnedReceiveScript(ctx, rec)
+	require.NoError(t, err)
+
+	got, err := store.LookupOwnedReceiveScript(ctx, rec.PkScript)
+	require.NoError(t, err)
+	require.Equal(t, rec.Source, got.Source)
+	require.Equal(t, rec.PkScript, got.PkScript)
+}
+
 // buildTestOORPackage constructs a deterministic incoming-style OOR package
 // fixture and returns the primary outpoints used by storage tests.
 func buildTestOORPackage(t *testing.T, seed byte) (chainhash.Hash, *psbt.Packet,

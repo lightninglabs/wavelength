@@ -1015,7 +1015,7 @@ CREATE TABLE owned_receive_script_sources (
     name TEXT NOT NULL UNIQUE
 );
 
-CREATE TABLE owned_receive_scripts (
+CREATE TABLE "owned_receive_scripts" (
     -- pk_script is the owned receive script primary key.
     pk_script BLOB PRIMARY KEY NOT NULL,
 
@@ -1038,7 +1038,8 @@ CREATE TABLE owned_receive_scripts (
     --   0 = wallet
     --   1 = rpc
     --   2 = sync
-    source INTEGER NOT NULL CHECK (source IN (0, 1, 2)),
+    --   3 = final Taproot Asset output alias
+    source INTEGER NOT NULL CHECK (source IN (0, 1, 2, 3)),
 
     -- created_at is the unix timestamp when this script was registered.
     created_at BIGINT NOT NULL,
