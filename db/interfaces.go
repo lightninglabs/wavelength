@@ -377,13 +377,57 @@ type BaseDB struct {
 	*sqlc.Queries
 }
 
+// txIsolationLevel returns the isolation level a transaction against the given
+// backend should be opened with.
+//
+// Read-write transactions always run at SERIALIZABLE, which is the level the
+// storage layer has always promised writers. Read-only transactions on Postgres
+// are instead opened at REPEATABLE READ, which in Postgres is snapshot
+// isolation: the transaction reads from a single consistent snapshot for its
+// whole lifetime, taken when its first statement runs rather than at BEGIN.
+//
+// That is a real, if modest, weakening. Snapshot isolation is not
+// serializability, so the reader is no longer guaranteed to observe a state
+// that corresponds to some serial ordering of the writers running alongside it.
+// The read-only transaction anomaly described by Fekete and O'Neil is once
+// again permitted. We accept that because our read paths only ever consume a
+// point-in-time view of the database and never depended on being ordered
+// against writers in other transactions. A read that feeds a later write in a
+// separate transaction was never protected across that boundary at any
+// isolation level.
+//
+// In exchange, a read-only REPEATABLE READ transaction takes no part in
+// Postgres' serializable snapshot isolation conflict graph. It acquires no
+// SIRead predicate locks, is not itself subject to SSI serialization failures,
+// and can no longer cause a concurrent writer to be aborted as a pivot. Since
+// the daemon is extremely read heavy, this removes a large amount of needless
+// abort pressure from the system.
+//
+// SQLite is always effectively serializable because it only ever admits a
+// single writer, so there is nothing to gain there and we leave it alone.
+func txIsolationLevel(backend sqlc.BackendType,
+	readOnly bool) sql.IsolationLevel {
+
+	if readOnly && backend == sqlc.BackendTypePostgres {
+		return sql.LevelRepeatableRead
+	}
+
+	return sql.LevelSerializable
+}
+
 // BeginTx wraps the normal sql specific BeginTx method with the TxOptions
 // interface. This interface is then mapped to the concrete sql tx options
 // struct.
 func (s *BaseDB) BeginTx(ctx context.Context, opts TxOptions) (*sql.Tx, error) {
+	readOnly := opts.ReadOnly()
+
+	// The read-only flag is not just advisory here: Postgres only skips
+	// predicate lock acquisition for a transaction that is actually
+	// declared READ ONLY, so the flag is what makes the relaxed isolation
+	// level worth anything.
 	sqlOptions := sql.TxOptions{
-		ReadOnly:  opts.ReadOnly(),
-		Isolation: sql.LevelSerializable,
+		ReadOnly:  readOnly,
+		Isolation: txIsolationLevel(s.Backend(), readOnly),
 	}
 
 	return s.DB.BeginTx(ctx, &sqlOptions)

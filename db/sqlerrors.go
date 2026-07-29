@@ -123,6 +123,74 @@ func classifyPostgresError(code string, dbErr error) error {
 	}
 }
 
+// PgErrorDetail extracts the Detail field of an underlying Postgres error, if
+// there is one. The Error method of pgconn.PgError renders only the severity,
+// the message and the SQLSTATE code, so the Detail is otherwise dropped on the
+// floor before it ever reaches a log line.
+//
+// That detail is the only thing that tells two very different 40001 aborts
+// apart. A true serializable snapshot isolation abort carries a "Reason code"
+// naming the transaction's role in the conflict graph, whereas an ordinary
+// write-write conflict on the same row carries none. Once read-only
+// transactions stop taking predicate locks, this is the signal that says
+// whether a given write path still depends on SSI or would be equally happy at
+// REPEATABLE READ. For a 23505 the detail names the constraint and the
+// conflicting key values, which is what identifies a lost creation race.
+func PgErrorDetail(err error) string {
+	var pgErrV4 *pgconnv4.PgError
+	if errors.As(err, &pgErrV4) {
+		return pgErrV4.Detail
+	}
+
+	var pgErrV5 *pgconnv5.PgError
+	if errors.As(err, &pgErrV5) {
+		return pgErrV5.Detail
+	}
+
+	return ""
+}
+
+// PgErrorConstraint extracts the name of the constraint that a Postgres error
+// was raised against, if there is one. The schema carries six partial unique
+// indexes, and without the constraint name a 23505 raised by any of them looks
+// exactly like a 23505 raised by the table's primary key.
+func PgErrorConstraint(err error) string {
+	var pgErrV4 *pgconnv4.PgError
+	if errors.As(err, &pgErrV4) {
+		return pgErrV4.ConstraintName
+	}
+
+	var pgErrV5 *pgconnv5.PgError
+	if errors.As(err, &pgErrV5) {
+		return pgErrV5.ConstraintName
+	}
+
+	return ""
+}
+
+// withPgDetail renders a database error together with the Postgres constraint
+// name and detail when they are available, and falls back to the plain error
+// otherwise.
+func withPgDetail(err error) string {
+	constraint := PgErrorConstraint(err)
+	detail := PgErrorDetail(err)
+
+	switch {
+	case constraint != "" && detail != "":
+		return fmt.Sprintf("%v (constraint: %s, detail: %s)", err,
+			constraint, detail)
+
+	case constraint != "":
+		return fmt.Sprintf("%v (constraint: %s)", err, constraint)
+
+	case detail != "":
+		return fmt.Sprintf("%v (detail: %s)", err, detail)
+
+	default:
+		return err.Error()
+	}
+}
+
 // ErrSQLUniqueConstraintViolation is an error type which represents a database
 // agnostic SQL unique constraint violation.
 type ErrSQLUniqueConstraintViolation struct {
@@ -130,7 +198,20 @@ type ErrSQLUniqueConstraintViolation struct {
 }
 
 func (e ErrSQLUniqueConstraintViolation) Error() string {
-	return fmt.Sprintf("sql unique constraint violation: %v", e.DBError)
+	return fmt.Sprintf("sql unique constraint violation: %v",
+		withPgDetail(e.DBError))
+}
+
+// Unwrap returns the wrapped error.
+//
+// Without this, the mapped error is a dead end for errors.As, and the
+// PgErrorConstraint and PgErrorDetail extractors return empty for every caller
+// that holds the mapped error rather than the raw driver one. That is the
+// normal case, since ExecTx returns the mapped error, and identifying which of
+// the partial unique indexes actually fired is the whole point of surfacing
+// the constraint name.
+func (e ErrSQLUniqueConstraintViolation) Unwrap() error {
+	return e.DBError
 }
 
 // ErrSerializationError is an error type which represents a database agnostic
@@ -147,7 +228,7 @@ func (e ErrSerializationError) Unwrap() error {
 
 // Error returns the error message.
 func (e ErrSerializationError) Error() string {
-	return e.DBError.Error()
+	return withPgDetail(e.DBError)
 }
 
 // ErrDeadlockError is an error type which represents a database agnostic error
@@ -163,7 +244,22 @@ func (e ErrDeadlockError) Unwrap() error {
 
 // Error returns the error message.
 func (e ErrDeadlockError) Error() string {
-	return e.DBError.Error()
+	return withPgDetail(e.DBError)
+}
+
+// IsUniqueConstraintViolation returns true if the given error is a unique
+// constraint violation.
+//
+// This is deliberately not part of IsSerializationOrDeadlockError. A unique
+// violation is not safe to retry blindly, because a retry of a plain insert
+// that lost a creation race just loses it again. Callers that can lose such a
+// race need to either rephrase the insert as a no-op upsert or translate the
+// violation into a domain level "already exists", which is why the classifier
+// is exposed separately.
+func IsUniqueConstraintViolation(err error) bool {
+	var uniqueErr *ErrSQLUniqueConstraintViolation
+
+	return errors.As(err, &uniqueErr)
 }
 
 // ErrAbortedTransaction is an error type which represents a database agnostic
