@@ -45,6 +45,10 @@ func openSQLiteDatabase(cfg SQLiteOpenConfig) (*SQLiteOpenResult, error) {
 			values.Set("busy_timeout", pragma.Value)
 
 		case "journal_mode":
+			// The driver takes the journal mode as its own DSN key
+			// rather than as a pragma, because it applies it last
+			// and then reads the effective mode back. See the
+			// locking_mode note below for why the order matters.
 			values.Set("journal_mode", pragma.Value)
 
 		case "fullfsync":
@@ -60,6 +64,15 @@ func openSQLiteDatabase(cfg SQLiteOpenConfig) (*SQLiteOpenResult, error) {
 		}
 	}
 
+	// Exclusive locking is not merely an optimization for a single-connection
+	// handle: it is what makes WAL reachable at all here. Neither wasm VFS
+	// implements xShmMap, so the only WAL available is the mode SQLite
+	// documents for hosts without shared memory, where an EXCLUSIVE
+	// connection keeps the WAL index on the heap. The driver applies these
+	// pragmas before the journal mode for exactly that reason, and then
+	// verifies the mode it ended up in, so a regression here surfaces as a
+	// startup error rather than as a database quietly running on the rollback
+	// journal while `synchronous` was chosen for WAL.
 	pragmas = append(pragmas, "locking_mode=EXCLUSIVE")
 	values.Set("pragma", strings.Join(pragmas, ";"))
 
