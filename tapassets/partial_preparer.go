@@ -387,6 +387,10 @@ func (p *Preparer) resolveAssetSpendSource(ctx context.Context,
 		return nil, fmt.Errorf("decode created Taproot Asset path: %w",
 			err)
 	}
+	lineageClient, ok := p.inventory.(proofLineageClient)
+	if !ok {
+		return nil, fmt.Errorf("tapd proof lineage client is required")
+	}
 
 	return &assetSpendSource{
 		proofPath: path.Clone(),
@@ -395,7 +399,7 @@ func (p *Preparer) resolveAssetSpendSource(ctx context.Context,
 			Stack: cloneByteSlices(resolved.OPTrueWitness),
 		},
 		verifier: &proofLineageVerifier{
-			client: p.inventory,
+			client: lineageClient,
 		},
 	}, nil
 }
