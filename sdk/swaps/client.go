@@ -744,10 +744,11 @@ type DaemonConn interface {
 	// BlockHeight returns the daemon's best known chain height.
 	BlockHeight(ctx context.Context) (uint32, error)
 
-	// SendOORWithPolicyDetails sends an OOR transfer to a semantic
-	// policy-backed destination.
-	SendOORWithPolicyDetails(ctx context.Context, amountSat int64,
-		recipientPolicyTemplate []byte) (*OORSendResult, error)
+	// SendOORWithPolicyAndKeyDetails sends an OOR transfer to a semantic
+	// policy-backed destination under a caller-owned idempotency key.
+	SendOORWithPolicyAndKeyDetails(ctx context.Context, amountSat int64,
+		recipientPolicyTemplate []byte,
+		idempotencyKey string) (*OORSendResult, error)
 
 	// SendOORWithCustomInputs sends an OOR with custom inputs into one
 	// standard pubkey-backed Ark receive destination.

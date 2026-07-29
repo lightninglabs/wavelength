@@ -24,6 +24,13 @@ const (
 	refundLocktimeMaxPollInterval = time.Minute
 )
 
+// inSwapFundingIdempotencyKey derives the daemon-side OOR identity for one
+// Ark-to-Lightning vHTLC funding intent. The payment hash is the durable swap
+// identity, so this format must remain stable across process restarts.
+func inSwapFundingIdempotencyKey(hash lntypes.Hash) string {
+	return fmt.Sprintf("in-swap-funding:%s", hash.String())
+}
+
 // PayState identifies the client-side lifecycle state of an Ark-to-Lightning
 // pay flow.
 type PayState uint8
@@ -842,6 +849,16 @@ func (s *paySession) waitForFundedVHTLC(ctx context.Context) error {
 		if err := s.ensureFundingSubmitted(ctx, false); err != nil {
 			return err
 		}
+		if s.state == PayStateVHTLCFunded {
+
+			// A keyed replay can recover the original outpoint and
+			// advance the durable state without waiting for the
+			// authoritative indexer. Return control to the FSM so
+			// it can enter WaitingForClaim instead of remaining
+			// inside the FundingInitiated action after its state
+			// already changed.
+			return nil
+		}
 
 		if err := s.waitForNextPoll(ctx); err != nil {
 			if errors.Is(err, errSwapExpired) {
@@ -886,8 +903,9 @@ func (s *paySession) ensureFundingSubmitted(ctx context.Context,
 		}
 	}
 
-	result, err := s.client.daemon.SendOORWithPolicyDetails(
+	result, err := s.client.daemon.SendOORWithPolicyAndKeyDetails(
 		ctx, s.cfg.AmountSat, s.vhtlcPolicyTemplate,
+		inSwapFundingIdempotencyKey(s.cfg.PaymentHash),
 	)
 	if err != nil {
 		// A retry can race with a funding attempt that was accepted but
@@ -912,11 +930,32 @@ func (s *paySession) ensureFundingSubmitted(ctx context.Context,
 			})
 		}
 
-		return fmt.Errorf("fund vHTLC: %w", err)
+		// Any transport-level send failure is ambiguous: the daemon can
+		// durably accept the detached OOR before this RPC loses its
+		// response. Keep FundingInitiated retryable so the next attempt
+		// replays the same payment-scoped key instead of terminalizing
+		// a potentially funded swap.
+		return newRetryableActionError(
+			fmt.Errorf("fund vHTLC: %w", err),
+		)
 	}
 	if result == nil || result.SessionID == "" {
-		return fmt.Errorf("fund vHTLC: daemon returned empty OOR " +
-			"session id")
+		return newRetryableActionError(
+			fmt.Errorf("fund vHTLC: daemon returned empty OOR " +
+				"session id"),
+		)
+	}
+	if result.RecipientOutpoint == "" {
+
+		// Do not persist a session without the exact vHTLC output. The
+		// payment-hash key makes another call a read-only replay of
+		// this funding intent, while persisting incomplete metadata
+		// could strand same-Ark swaps whose script is not queryable
+		// through the payer's authoritative indexer principal.
+		return newRetryableActionError(
+			fmt.Errorf("fund vHTLC: daemon returned empty " +
+				"recipient outpoint"),
+		)
 	}
 
 	s.client.log.InfoS(ctx, "In-swap vHTLC funding submitted",
@@ -930,9 +969,6 @@ func (s *paySession) ensureFundingSubmitted(ctx context.Context,
 		s.cfg.AmountSat,
 	); err != nil {
 		return newRetryableActionError(err)
-	}
-	if result.RecipientOutpoint == "" {
-		return nil
 	}
 
 	return s.markVHTLCFundedFromLocalMetadata(ctx)
