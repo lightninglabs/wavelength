@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
@@ -150,6 +151,45 @@ func TestPreparerBuildsPartialAssetTransferWithCarrierTopUp(t *testing.T) {
 	// the corresponding transfer checkpoint, not its caller-side index.
 	ark, err := psbtutil.Parse(arkRequest.AnchorPSBT)
 	require.NoError(t, err)
+	bitcoinChangeIndex, err := oortx.RecipientOutputIndex(
+		prepared.Recipients, prepared.Recipients[2],
+	)
+	require.NoError(t, err)
+	require.Zero(
+		t, bitcoinChangeIndex, "the 300-sat Bitcoin change must "+
+			"move from caller position 2 to canonical position 0",
+	)
+	bitcoinChangeOutput := ark.Outputs[bitcoinChangeIndex]
+	_, bitcoinChangePolicy, err := recipientAnchorPlan(
+		prepared.Recipients[2],
+	)
+	require.NoError(t, err)
+	require.Equal(
+		t, schnorr.SerializePubKey(bitcoinChangePolicy.InternalKey),
+		bitcoinChangeOutput.TaprootInternalKey,
+	)
+	bitcoinChangeRoot := assertBIP371TapTree(
+		t, bitcoinChangeOutput.TaprootTapTree, bitcoinChangePolicy,
+	)
+	require.Equal(
+		t, bitcoinChangePolicy.RootHash, bitcoinChangeRoot[:],
+	)
+	privateTapTree, err := arkscript.EncodeTapTree(bitcoinChangePolicy)
+	require.NoError(t, err)
+	require.NotEqual(
+		t, privateTapTree, bitcoinChangeOutput.TaprootTapTree, "Wave"+
+			"length's count-prefixed checkpoint encoding is "+
+			"not BIP-371",
+	)
+	for idx := range arkRequest.Outputs {
+		anchorIndex := arkRequest.Outputs[idx].AnchorOutputIndex
+		assetOutput := ark.Outputs[anchorIndex]
+		require.Empty(t, assetOutput.TaprootInternalKey)
+		require.Empty(t, assetOutput.TaprootTapTree)
+	}
+	p2aOutput := ark.Outputs[len(ark.Outputs)-1]
+	require.Empty(t, p2aOutput.TaprootInternalKey)
+	require.Empty(t, p2aOutput.TaprootTapTree)
 	require.Len(t, arkRequest.SigningPlans, 2)
 	for idx := range request.Inputs {
 		checkpoint := prepared.PreparedSubmit.CheckpointPSBTs[idx]
@@ -178,6 +218,111 @@ func TestPreparerBuildsPartialAssetTransferWithCarrierTopUp(t *testing.T) {
 	require.Equal(t, prepared.Recipients, restored.Recipients)
 	require.Equal(t, prepared.Receiver, restored.Receiver)
 	require.Len(t, reservations.records(), 4)
+}
+
+// TestEncodeBIP371TapTreePreservesArkShape proves the standard depth-first
+// tuples reconstruct the exact Ark root for balanced and non-power-of-two
+// policy shapes.
+func TestEncodeBIP371TapTreePreservesArkShape(t *testing.T) {
+	t.Parallel()
+
+	for _, leafCount := range []int{1, 2, 3, 5} {
+		t.Run(fmt.Sprintf("%d leaves", leafCount), func(t *testing.T) {
+			leaves := make([]arkscript.PolicyLeaf, leafCount)
+			for idx := range leaves {
+				script, err := txscript.NewScriptBuilder().
+					AddInt64(int64(idx + 1)).Script()
+				require.NoError(t, err)
+				leaves[idx] = arkscript.PolicyLeaf{
+					Leaf: txscript.NewBaseTapLeaf(script),
+				}
+			}
+			policy, err := arkscript.BuildTree(
+				leaves, &arkscript.ARKNUMSKey,
+			)
+			require.NoError(t, err)
+
+			encoded, err := encodeBIP371TapTree(policy)
+			require.NoError(t, err)
+			root := assertBIP371TapTree(t, encoded, policy)
+			require.Equal(t, policy.RootHash, root[:])
+		})
+	}
+}
+
+// bip371TreeNode is one pending node while reconstructing a depth-first tree.
+type bip371TreeNode struct {
+	depth uint8
+	hash  chainhash.Hash
+}
+
+// assertBIP371TapTree verifies the standard depth-first tuple encoding used by
+// PSBT_OUT_TAP_TREE, independently of Wavelength's private count-prefixed
+// checkpoint encoding.
+func assertBIP371TapTree(t *testing.T, encoded []byte,
+	policy *arkscript.CompiledPolicy) chainhash.Hash {
+
+	t.Helper()
+	require.NotEmpty(t, encoded)
+
+	reader := bytes.NewReader(encoded)
+	nodes := make([]bip371TreeNode, 0, len(policy.Leaves))
+	for idx := range policy.Leaves {
+		depth, err := reader.ReadByte()
+		require.NoError(t, err)
+		spendInfo, err := policy.SpendInfo(idx)
+		require.NoError(t, err)
+		require.EqualValues(
+			t, (len(spendInfo.ControlBlock)-33)/chainhash.HashSize,
+			depth,
+		)
+
+		version, err := reader.ReadByte()
+		require.NoError(t, err)
+		require.EqualValues(
+			t, policy.Leaves[idx].Leaf.LeafVersion, version,
+		)
+
+		scriptLen, err := wire.ReadVarInt(reader, 0)
+		require.NoError(t, err)
+		script := make([]byte, int(scriptLen))
+		read, err := reader.Read(script)
+		require.NoError(t, err)
+		require.Equal(t, int(scriptLen), read)
+		require.Equal(t, policy.Leaves[idx].Leaf.Script, script)
+
+		leaf := txscript.NewTapLeaf(
+			txscript.TapscriptLeafVersion(version), script,
+		)
+		nodes = append(nodes, bip371TreeNode{
+			depth: depth,
+			hash:  leaf.TapHash(),
+		})
+		for len(nodes) >= 2 {
+			left := nodes[len(nodes)-2]
+			right := nodes[len(nodes)-1]
+			if left.depth != right.depth {
+				break
+			}
+			require.NotZero(
+				t, left.depth,
+				"two roots cannot occupy depth zero",
+			)
+
+			parent := tapBranchHash(left.hash[:], right.hash[:])
+			nodes = append(
+				nodes[:len(nodes)-2], bip371TreeNode{
+					depth: left.depth - 1,
+					hash:  parent,
+				},
+			)
+		}
+	}
+	require.Zero(t, reader.Len())
+	require.Len(t, nodes, 1)
+	require.Zero(t, nodes[0].depth)
+
+	return nodes[0].hash
 }
 
 // TestPreparerRejectsInvalidRecipientPlansBeforeReservation proves policy

@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/psbt/v2"
@@ -925,6 +926,7 @@ func buildArkRequest(request *oor.TaprootAssetOORPrepareRequest,
 
 	specs := assetRecipientSpecs(request)
 	outputs := make([]tapsdk.CustomAssetOutput, len(specs))
+	assetOutputIndices := make(map[uint32]struct{}, len(specs))
 	for idx := range specs {
 		spec := specs[idx]
 		recipient := planned[spec.recipientIndex]
@@ -938,6 +940,7 @@ func buildArkRequest(request *oor.TaprootAssetOORPrepareRequest,
 		if err != nil {
 			return nil, err
 		}
+		assetOutputIndices[outputIndex] = struct{}{}
 		opTrueKey := deterministicKey(
 			digest, fmt.Sprintf("ark/%d/%s", nonce, spec.logicalID),
 		)
@@ -958,6 +961,11 @@ func buildArkRequest(request *oor.TaprootAssetOORPrepareRequest,
 			Anchor:        anchorPlan,
 			ProofDelivery: spec.proofDelivery,
 		}
+	}
+	if err := addNonAssetArkOutputMetadata(
+		ark, current, assetOutputIndices,
+	); err != nil {
+		return nil, err
 	}
 	anchorBytes, err := psbtutil.Serialize(ark)
 	if err != nil {
@@ -982,6 +990,99 @@ func buildArkRequest(request *oor.TaprootAssetOORPrepareRequest,
 		},
 		verifier: verifier,
 	}, nil
+}
+
+// addNonAssetArkOutputMetadata attaches the complete standard PSBT Taproot
+// output metadata for Bitcoin-only VTXOs. Asset-bearing outputs are described
+// by their CustomAssetOutput plans and are completed by tap-sdk.
+func addNonAssetArkOutputMetadata(ark *psbt.Packet,
+	recipients []oortx.RecipientOutput,
+	assetOutputIndices map[uint32]struct{}) error {
+
+	if ark == nil || ark.UnsignedTx == nil {
+		return fmt.Errorf("Ark PSBT is required")
+	}
+	canonical := oortx.CanonicalRecipientOutputs(recipients)
+	if len(ark.Outputs) != len(canonical)+1 {
+		return fmt.Errorf("Ark PSBT output count mismatch")
+	}
+
+	for idx := range canonical {
+		outputIndex := uint32(idx)
+		if _, ok := assetOutputIndices[outputIndex]; ok {
+			continue
+		}
+
+		_, policy, err := recipientAnchorPlan(canonical[idx])
+		if err != nil {
+			return fmt.Errorf("Bitcoin-only recipient %d "+
+				"policy: %w", idx, err)
+		}
+		tapTree, err := encodeBIP371TapTree(policy)
+		if err != nil {
+			return fmt.Errorf("Bitcoin-only recipient %d tap "+
+				"tree: %w", idx, err)
+		}
+
+		ark.Outputs[idx].TaprootInternalKey = schnorr.SerializePubKey(
+			policy.InternalKey,
+		)
+		ark.Outputs[idx].TaprootTapTree = tapTree
+	}
+
+	return nil
+}
+
+// encodeBIP371TapTree serializes an Ark policy into PSBT_OUT_TAP_TREE. This is
+// deliberately distinct from arkscript.EncodeTapTree, whose leading leaf count
+// is part of Wavelength's private checkpoint encoding.
+func encodeBIP371TapTree(policy *arkscript.CompiledPolicy) ([]byte, error) {
+	if policy == nil || policy.InternalKey == nil ||
+		len(policy.Leaves) == 0 {
+		return nil, fmt.Errorf("compiled policy is required")
+	}
+
+	var encoded bytes.Buffer
+	for idx := range policy.Leaves {
+		spendInfo, err := policy.SpendInfo(idx)
+		if err != nil {
+			return nil, err
+		}
+		if len(spendInfo.ControlBlock) < 33 ||
+			(len(spendInfo.ControlBlock)-33)%
+				chainhash.HashSize != 0 {
+			return nil, fmt.Errorf("leaf %d control block "+
+				"is invalid", idx)
+		}
+		depth := (len(spendInfo.ControlBlock) - 33) /
+			chainhash.HashSize
+		if depth > 255 {
+			return nil, fmt.Errorf("leaf %d depth exceeds 255", idx)
+		}
+
+		leaf := policy.Leaves[idx].Leaf
+		if err := encoded.WriteByte(byte(depth)); err != nil {
+			return nil, err
+		}
+		if err := encoded.WriteByte(
+			byte(leaf.LeafVersion),
+		); err != nil {
+			return nil, err
+		}
+		if err := wire.WriteVarInt(
+			&encoded, 0,
+			uint64(
+				len(leaf.Script),
+			),
+		); err != nil {
+			return nil, err
+		}
+		if _, err := encoded.Write(leaf.Script); err != nil {
+			return nil, err
+		}
+	}
+
+	return encoded.Bytes(), nil
 }
 
 func assetRecipientSpecs(
