@@ -26,10 +26,11 @@ WHERE target_outpoint_hash = $1
 ;
 
 -- name: ListNonTerminalUnilateralExitJobs :many
--- Status 4 = Completed, 5 = Failed, 7 = FailedRecoverable (anchored to Go
--- iota in db/unilateral_exit_store.go UnilateralExitJobStatus).
+-- Status 4 = Completed, 5 = Failed, 7 = FailedRecoverable, 8 =
+-- FailedConflicted (anchored to Go iota in db/unilateral_exit_store.go
+-- UnilateralExitJobStatus). All four are terminal and excluded from restore.
 SELECT * FROM unilateral_exit_jobs
-WHERE status NOT IN (4, 5, 7)
+WHERE status NOT IN (4, 5, 7, 8)
 ORDER BY created_at ASC
 ;
 
