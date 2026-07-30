@@ -37,7 +37,38 @@ var (
 		// Wallet-layer variants.
 		"output already spent",
 	}
+
+	// ignorableRemoveErrs lists error substrings returned when removing a
+	// transaction that the wallet does not (or no longer) knows about. The
+	// caller's goal -- the transaction is not in the wallet's rebroadcast
+	// set -- is already satisfied in that case, so the removal is treated
+	// as a success (wavelength#609).
+	ignorableRemoveErrs = []string{
+		"not found",
+		"unable to locate transaction",
+		"no such transaction",
+		"already confirmed",
+	}
 )
+
+// IsIgnorableRemoveError returns true when a transaction-removal error means
+// the transaction is already absent from the wallet's rebroadcast set (unknown,
+// already removed, or already confirmed), so the removal can be treated as a
+// success.
+func IsIgnorableRemoveError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	errStr := strings.ToLower(err.Error())
+	for _, substring := range ignorableRemoveErrs {
+		if strings.Contains(errStr, substring) {
+			return true
+		}
+	}
+
+	return false
+}
 
 // IsIgnorableBroadcastError returns true if the error is expected to happen
 // when broadcasting the same transaction multiple times.
