@@ -175,6 +175,42 @@ func (m *BroadcastTxResponse) MessageType() string {
 // chainSourceRespSealed implements the sealed ChainSourceResp interface.
 func (m *BroadcastTxResponse) chainSourceRespSealed() {}
 
+// RemoveTxRequest asks the backend to remove a previously broadcast
+// transaction from the wallet so it stops being rebroadcast. It is a no-op on
+// backends that do not implement the optional TxRemover capability
+// (wavelength#609).
+type RemoveTxRequest struct {
+	actor.BaseMessage
+
+	// Txid is the hash of the transaction to remove.
+	Txid chainhash.Hash
+}
+
+// MessageType returns the message type identifier for logging and debugging.
+func (m *RemoveTxRequest) MessageType() string {
+	return "RemoveTxRequest"
+}
+
+// chainSourceMsgSealed implements the sealed ChainSourceMsg interface.
+func (m *RemoveTxRequest) chainSourceMsgSealed() {}
+
+// RemoveTxResponse acknowledges a RemoveTxRequest.
+type RemoveTxResponse struct {
+	actor.BaseMessage
+
+	// Txid is the hash of the transaction that was removed (or the no-op
+	// target on a backend without the TxRemover capability).
+	Txid chainhash.Hash
+}
+
+// MessageType returns the message type identifier for logging and debugging.
+func (m *RemoveTxResponse) MessageType() string {
+	return "RemoveTxResponse"
+}
+
+// chainSourceRespSealed implements the sealed ChainSourceResp interface.
+func (m *RemoveTxResponse) chainSourceRespSealed() {}
+
 // SubmitPackageRequest requests atomic submission of a parent+child
 // transaction package. The parents must be in dependency order and the
 // child pays the package fee.

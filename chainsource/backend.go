@@ -134,6 +134,21 @@ type ChainBackend interface {
 	Stop() error
 }
 
+// TxRemover is an optional capability a ChainBackend may implement to remove a
+// previously broadcast transaction from the wallet, so the wallet stops
+// rebroadcasting it. A caller that has abandoned a transaction (e.g. a
+// unilateral-exit proof tx whose job terminally failed) uses it to stop a
+// full-node wallet from perpetually re-publishing a transaction that can never
+// confirm (wavelength#609). Backends without a rebroadcasting wallet (e.g. a
+// pure Esplora chain source) do not implement it; the chainsource actor treats
+// a RemoveTxRequest as a no-op for those.
+type TxRemover interface {
+	// RemoveTx removes the transaction with the given hash, and any
+	// transactions that depend on it, from the wallet's store and its
+	// unconfirmed-rebroadcast set.
+	RemoveTx(ctx context.Context, txid chainhash.Hash) error
+}
+
 // ConfRegistration encapsulates the channels and control functions for a
 // confirmation registration. This mirrors lnd's chainntnfs.ConfirmationEvent
 // structure but provides a backend-agnostic interface.
