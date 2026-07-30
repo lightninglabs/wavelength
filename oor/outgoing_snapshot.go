@@ -103,6 +103,29 @@ type OutgoingSnapshot struct {
 	FirstRejectUnixNanos int64
 }
 
+// OutgoingSnapshotRecipients extracts the canonical Ark recipients from one
+// durable outgoing snapshot. Callers use this to recover response metadata for
+// an idempotent replay without rebuilding the transfer or selecting new wallet
+// inputs.
+func OutgoingSnapshotRecipients(raw []byte) ([]ArkRecipientOutput, error) {
+	snapshot, err := decodeOutgoingSnapshot(raw)
+	if err != nil {
+		return nil, fmt.Errorf("decode outgoing snapshot: %w", err)
+	}
+
+	ark, err := psbtutil.Parse(snapshot.ArkPSBT)
+	if err != nil {
+		return nil, fmt.Errorf("parse outgoing Ark PSBT: %w", err)
+	}
+
+	recipients, err := ExtractArkRecipients(ark)
+	if err != nil {
+		return nil, fmt.Errorf("extract outgoing recipients: %w", err)
+	}
+
+	return recipients, nil
+}
+
 // NewOutgoingSnapshot exports an outgoing transfer FSM state into a snapshot.
 func NewOutgoingSnapshot(sessionID SessionID,
 	state State) (*OutgoingSnapshot, error) {

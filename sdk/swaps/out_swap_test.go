@@ -1668,6 +1668,9 @@ func TestWaitForVHTLCExpiresOnPersistentUnregisteredScript(t *testing.T) {
 	require.Equal(t, 1, daemonConn.liveLookupCalls)
 }
 
+type testSendPolicyHook func(call int, idempotencyKey string) (
+	*OORSendResult, error)
+
 type testDaemonConn struct {
 	identityKey       *btcec.PublicKey
 	operatorKey       *btcec.PublicKey
@@ -1688,6 +1691,7 @@ type testDaemonConn struct {
 	preparedOOR       *PreparedOOR
 	prepareOOREErr    error
 	sendPolicyErr     error
+	sendPolicyHook    testSendPolicyHook
 	sendCustomErr     error
 	oorSession        *waverpc.OORSessionInfo
 	oorSessionErr     error
@@ -1699,6 +1703,8 @@ type testDaemonConn struct {
 	spendOnCustom     bool
 	skipLiveOnCustom  bool
 	sendPolicyCalls   int
+	sendPolicyKeys    []string
+	sendPolicyOpts    []OORSendOptions
 	sendCustomCalls   int
 	oorSessionCalls   int
 	liveLookupCalls   int
@@ -1734,14 +1740,21 @@ func (d *testDaemonConn) BlockHeight(context.Context) (uint32, error) {
 	return d.blockHeight, nil
 }
 
-// SendOORWithPolicyDetails records the requested output policy template.
-func (d *testDaemonConn) SendOORWithPolicyDetails(_ context.Context, _ int64,
-	recipientPolicyTemplate []byte) (*OORSendResult, error) {
+// SendOORWithPolicyOptionsDetails records the requested output policy template
+// and caller-owned admission options.
+func (d *testDaemonConn) SendOORWithPolicyOptionsDetails(_ context.Context,
+	_ int64, recipientPolicyTemplate []byte, opts OORSendOptions) (
+	*OORSendResult, error) {
 
 	d.sendPolicyCalls++
+	d.sendPolicyKeys = append(d.sendPolicyKeys, opts.IdempotencyKey)
+	d.sendPolicyOpts = append(d.sendPolicyOpts, opts)
 	d.lastSendPolicy = append(
 		[]byte(nil), recipientPolicyTemplate...,
 	)
+	if d.sendPolicyHook != nil {
+		return d.sendPolicyHook(d.sendPolicyCalls, opts.IdempotencyKey)
+	}
 
 	if d.sendPolicyErr != nil {
 		return nil, d.sendPolicyErr

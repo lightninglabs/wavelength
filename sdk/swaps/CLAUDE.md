@@ -114,7 +114,9 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/sdk/swap
 ## Sends / Receives
 
 Both FSMs tick via `loopfsm.StateMachine.SendEvent(ctx, OnAdvance,
-nil)`. Pay calls `DaemonConn.SendOORWithPolicyDetails` to fund and
+nil)`. Pay calls `DaemonConn.SendOORWithPolicyOptionsDetails` with the
+stable `in-swap-funding:<payment_hash>` key and buffered admission
+deadline to fund and
 `SendOORWithCustomInputs` to refund. Receive calls
 `SendOORWithCustomInputs` to claim via the preimage spend path.
 
@@ -132,6 +134,14 @@ result into an `IncomingVHTLCNotification`.
 - OOR session IDs must be persisted before transitioning; failure
   wraps in `newRetryableActionError` so the FSM retries rather than
   advancing past a durable boundary.
+- Pay-side funding transport failures and incomplete replay metadata remain
+  retryable in `FundingInitiated`. Every retry uses the same payment-scoped OOR
+  key, and the exact recipient outpoint is required before funding metadata is
+  persisted or refund recovery is armed.
+- Once the buffered funding admission deadline closes, pay-side retries set
+  `ExistingOnly`: an existing keyed winner is recovered and protected, a
+  daemon `NotFound` expires the swap, and unavailable or pending results remain
+  retryable. A post-deadline reconciliation must never admit a new vHTLC.
 - The store is optional — both `NewSwapClient` and
   `NewSwapClientWithStore` are valid; `persist()` is a no-op when
   `store == nil`.

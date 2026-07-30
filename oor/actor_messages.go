@@ -45,6 +45,10 @@ const (
 	// in the durable OOR actor mailbox.
 	ListSessionsRequestTLVType tlv.Type = 0x7017
 
+	// LookupTransferRequestTLVType identifies read-only idempotency-key
+	// reconciliation requests.
+	LookupTransferRequestTLVType tlv.Type = 0x7018
+
 	// SessionTerminalNotificationTLVType identifies
 	// SessionTerminalNotification messages sent from a per-session child
 	// to the registry coordinator after a terminal commit.
@@ -107,6 +111,11 @@ type StartTransferRequest struct {
 	// retries. Empty preserves the historical deterministic-session
 	// behavior.
 	IdempotencyKey string
+
+	// AdmissionDeadlineUnixNanos is the latest wall-clock time at which a
+	// new transfer may be admitted. Existing keyed winners remain readable
+	// after this deadline. Zero leaves admission unbounded.
+	AdmissionDeadlineUnixNanos int64
 }
 
 // MessageType returns the type of this message.
@@ -125,9 +134,12 @@ func (m *StartTransferRequest) TLVType() tlv.Type {
 // Encode serializes the message to the provided writer.
 func (m *StartTransferRequest) Encode(w io.Writer) error {
 	payload := startTransferPayload{
-		CSVDelay:       m.Policy.CSVDelay,
-		IdempotencyKey: m.IdempotencyKey,
-		Recipients:     make([]recipientPayload, 0, len(m.Recipients)),
+		CSVDelay:                   m.Policy.CSVDelay,
+		IdempotencyKey:             m.IdempotencyKey,
+		AdmissionDeadlineUnixNanos: m.AdmissionDeadlineUnixNanos,
+		Recipients: make(
+			[]recipientPayload, 0, len(m.Recipients),
+		),
 		Inputs: make(
 			[]*TransferInputSnapshot, 0, len(m.Inputs),
 		),
@@ -192,6 +204,7 @@ func (m *StartTransferRequest) Decode(r io.Reader) error {
 		CSVDelay:    payload.CSVDelay,
 	}
 	m.IdempotencyKey = payload.IdempotencyKey
+	m.AdmissionDeadlineUnixNanos = payload.AdmissionDeadlineUnixNanos
 
 	m.Inputs = make([]TransferInput, 0, len(payload.Inputs))
 	for i := range payload.Inputs {
@@ -238,6 +251,81 @@ func (m *StartTransferResponse) MessageType() string {
 
 // actorRespSealed marks this as implementing the sealed ActorResp interface.
 func (m *StartTransferResponse) actorRespSealed() {}
+
+// LookupTransferRequest asks the registry to reconcile one idempotency key
+// without admitting a transfer. The request is serialized through the registry
+// mailbox so it observes admissions already accepted by that actor.
+type LookupTransferRequest struct {
+	actor.BaseMessage
+
+	// IdempotencyKey identifies the caller intent to reconcile.
+	IdempotencyKey string
+}
+
+// MessageType returns the type of this message.
+func (m *LookupTransferRequest) MessageType() string {
+	return "LookupTransferRequest"
+}
+
+// actorMsgSealed marks this as implementing the sealed ActorMsg interface.
+func (m *LookupTransferRequest) actorMsgSealed() {}
+
+// TLVType returns the unique TLV type identifier for this message.
+func (m *LookupTransferRequest) TLVType() tlv.Type {
+	return LookupTransferRequestTLVType
+}
+
+// Encode serializes the message to the provided writer.
+func (m *LookupTransferRequest) Encode(w io.Writer) error {
+	if m == nil || m.IdempotencyKey == "" {
+		return fmt.Errorf("idempotency key must be provided")
+	}
+
+	raw, err := encodeLookupTransferPayload(m.IdempotencyKey)
+	if err != nil {
+		return err
+	}
+
+	_, err = w.Write(raw)
+
+	return err
+}
+
+// Decode deserializes the message from the provided reader.
+func (m *LookupTransferRequest) Decode(r io.Reader) error {
+	raw, err := io.ReadAll(r)
+	if err != nil {
+		return err
+	}
+
+	m.IdempotencyKey, err = decodeLookupTransferPayload(raw)
+
+	return err
+}
+
+// LookupTransferResponse reports whether an idempotency-key winner exists or
+// is still being admitted. Found and Pending are mutually exclusive.
+type LookupTransferResponse struct {
+	actor.BaseMessage
+
+	// SessionID identifies the durable winner or in-flight admission.
+	SessionID SessionID
+
+	// Found is true when a durable active winner exists.
+	Found bool
+
+	// Pending is true while an accepted admission has not committed its
+	// durable session row yet.
+	Pending bool
+}
+
+// MessageType returns the type of this message.
+func (m *LookupTransferResponse) MessageType() string {
+	return "LookupTransferResponse"
+}
+
+// actorRespSealed marks this as implementing the sealed ActorResp interface.
+func (m *LookupTransferResponse) actorRespSealed() {}
 
 // SessionDirection is a filter for listing locally known OOR sessions.
 type SessionDirection uint8
