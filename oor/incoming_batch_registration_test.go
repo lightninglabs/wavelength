@@ -107,7 +107,9 @@ func TestRegisterIncomingBatchEvidenceVerifiesLineage(t *testing.T) {
 		nil, vtxo.VerifyOORAncestryLineage,
 	)
 	require.ErrorContains(t, err, "bind lineage")
-	require.Empty(t, registrar.requests, "no watch armed on binding failure")
+	require.Empty(
+		t, registrar.requests, "no watch armed on binding failure",
+	)
 }
 
 // incomingEvidenceMatch builds one output's ancestry/evidence metadata.

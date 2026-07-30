@@ -154,16 +154,17 @@ func evidenceFromAncestryPath(path *arkrpc.AncestryPath) (BatchEvidence,
 
 		// TRUST BOUNDARY: the input outpoint and ordering are
 		// authenticated against the commitment tx's own TxIn above, but
-		// the previous-output value and pkScript below are taken from the
-		// indexer as-is and only sanity-checked for shape (non-negative
-		// value, non-empty script). They are NOT proven against chain
-		// truth here. This matters because the pkScript later keys the
-		// reorg-aware spend notifier for conflict detection: a wrong
-		// script would silently arm the watch on the wrong output and
-		// miss an invalidation-driven restore. Proving each prevout
-		// against the chain (or an authenticated ancestry proof) is the
-		// receive-path authentication slice tracked separately; until it
-		// lands, these fields are trusted-from-indexer, not authenticated.
+		// the previous-output value and pkScript below are taken from
+		// the indexer as-is and only sanity-checked for shape
+		// (non-negative value, non-empty script). They are NOT proven
+		// against chain truth here. This matters because the pkScript
+		// later keys the reorg-aware spend notifier for conflict
+		// detection: a wrong script would silently arm the watch on the
+		// wrong output and miss an invalidation-driven restore. Proving
+		// each prevout against the chain (or an authenticated ancestry
+		// proof) is the receive-path authentication slice tracked
+		// separately; until it lands, these fields are
+		// trusted-from-indexer, not authenticated.
 		prevOut := input.GetPrevOut()
 		if prevOut.GetValue() < 0 {
 			return BatchEvidence{}, fmt.Errorf("commitment input "+

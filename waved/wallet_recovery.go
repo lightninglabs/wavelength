@@ -640,10 +640,10 @@ func (r *RPCServer) recoveryOORHandler(
 		PackageStore: packageStore,
 		OperatorKey:  terms.PubKey,
 
-		// No BatchRegistrar is wired here, so no reorg watch is armed on
-		// this path today; wire the lineage verifier defensively anyway
-		// so that if a registrar is ever added the F-H1 bind cannot be
-		// silently bypassed (fail-open).
+		// No BatchRegistrar is wired here, so no reorg watch is armed
+		// on this path today; wire the lineage verifier defensively
+		// anyway so that if a registrar is ever added the F-H1 bind
+		// cannot be silently bypassed (fail-open).
 		IncomingLineageVerifier: vtxo.VerifyOORAncestryLineage,
 		ExitDelay:               terms.VTXOExitDelay,
 		NotifyIncomingVTXOs: func(ctx context.Context,

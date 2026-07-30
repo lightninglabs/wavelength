@@ -176,8 +176,7 @@ func (h *LocalPersistenceOutboxHandler) handleMaterializeIncoming(
 	if !hasActorDBTx(ctx) {
 		err := RegisterIncomingBatchEvidence(
 			ctx, h.BatchRegistrar, msg.SessionID,
-			msg.MetadataMatches,
-			BaseCoinInputs(
+			msg.MetadataMatches, BaseCoinInputs(
 				msg.FinalCheckpointPSBTs, msg.AncestorPackages,
 			),
 			h.IncomingLineageVerifier,

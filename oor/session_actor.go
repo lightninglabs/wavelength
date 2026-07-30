@@ -946,8 +946,7 @@ func (b *sessionBehavior) driveOutboxEvents(ctx context.Context,
 			materialize := m
 			if err := RegisterIncomingBatchEvidence(
 				ctx, b.cfg.BatchRegistrar, b.sessionID,
-				materialize.MetadataMatches,
-				BaseCoinInputs(
+				materialize.MetadataMatches, BaseCoinInputs(
 					materialize.FinalCheckpointPSBTs,
 					materialize.AncestorPackages,
 				),

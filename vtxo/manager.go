@@ -117,7 +117,8 @@ type ManagerConfig struct {
 	// any terminal consumer edge for that batch, closing the race where the
 	// consumer became terminally conflict-finalized before the forfeiture
 	// marker existed (so the earlier resolution deferred and would strand
-	// the consumed VTXO until restart, lumos#454). Nil disables the redrive.
+	// the consumed VTXO until restart, lumos#454). Nil disables the
+	// redrive.
 	RedriveConsumerForfeit func(ctx context.Context,
 		consumerBatch chainhash.Hash) error
 
@@ -1042,13 +1043,16 @@ func (m *Manager) handleForceUnroll(ctx context.Context,
 	// proof/sweep side effects for funding that may have left the chain.
 	// Fraud response routes straight into this path, so without the gate a
 	// missing/reorged-lineage VTXO could still trigger a unilateral exit.
-	// Both objectively-invalidated and reversibly-limbo lineage are refused;
-	// the derived availability is surfaced so the caller can tell them apart.
+	// Both objectively-invalidated and reversibly-limbo lineage are
+	// refused; the derived availability is surfaced so the caller can tell
+	// them apart.
 	if m.cfg.BatchCanonicality != nil {
 		desc, err := m.cfg.Store.GetVTXO(ctx, req.Outpoint)
 		if err != nil {
-			return fn.Err[ManagerResp](fmt.Errorf("load vtxo for "+
-				"unroll lineage gate %s: %w", req.Outpoint, err))
+			return fn.Err[ManagerResp](
+				fmt.Errorf("load vtxo for unroll lineage "+
+					"gate %s: %w", req.Outpoint, err),
+			)
 		}
 
 		blocked, avail, err := batchcanon.LineageBlocked(
@@ -1056,13 +1060,18 @@ func (m *Manager) handleForceUnroll(ctx context.Context,
 			LineageCommitmentTxIDs(desc)...,
 		)
 		if err != nil {
-			return fn.Err[ManagerResp](fmt.Errorf("unroll lineage "+
-				"gate %s: %w", req.Outpoint, err))
+			return fn.Err[ManagerResp](
+				fmt.Errorf("unroll lineage gate %s: %w",
+					req.Outpoint, err),
+			)
 		}
 		if blocked {
-			return fn.Err[ManagerResp](fmt.Errorf("refusing force-"+
-				"unroll of %s: batch lineage is not admissible "+
-				"(availability=%s)", req.Outpoint, avail))
+			return fn.Err[ManagerResp](
+				fmt.Errorf("refusing force-unroll of %s: "+
+					"batch lineage is not admissible "+
+					"(availability=%s)", req.Outpoint,
+					avail),
+			)
 		}
 	}
 

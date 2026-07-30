@@ -945,7 +945,8 @@ func (a *VTXOActor) processStatusUpdate(ctx context.Context,
 	// this marker existed (the consumer batch reached ConflictFinalized
 	// first). Best-effort: on failure the restart-time redrive remains the
 	// backstop, so we log rather than fail the status write. Skipped when
-	// no consuming batch is recorded (a plain forfeit with no reverse edge).
+	// no consuming batch is recorded (a plain forfeit with no reverse
+	// edge).
 	if m.NewStatus == VTXOStatusForfeited &&
 		a.cfg.NotifyForfeitPersisted != nil &&
 		m.ConsumerBatchTxID != (chainhash.Hash{}) {
@@ -957,8 +958,10 @@ func (a *VTXOActor) processStatusUpdate(ctx context.Context,
 			a.logger(ctx).WarnS(ctx, "Failed to redrive consumer "+
 				"edge after forfeit persist", err,
 				slog.String("outpoint", m.Outpoint.String()),
-				slog.String("consumer_batch",
-					m.ConsumerBatchTxID.String()))
+				slog.String(
+					"consumer_batch",
+					m.ConsumerBatchTxID.String(),
+				))
 		}
 	}
 

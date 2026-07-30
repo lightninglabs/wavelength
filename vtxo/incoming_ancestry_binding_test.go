@@ -20,8 +20,8 @@ func bindingKey(t *testing.T) *btcec.PublicKey {
 	return priv.PubKey()
 }
 
-// taprootScript returns PayToTaproot(ComputeFinalKey([keys...], sweepRoot)) — the
-// output script a genuine tree node commits its children to.
+// taprootScript returns PayToTaproot(ComputeFinalKey([keys...], sweepRoot)) —
+// the output script a genuine tree node commits its children to.
 func taprootScript(t *testing.T, sweepRoot []byte,
 	keys ...*btcec.PublicKey) []byte {
 
@@ -35,8 +35,9 @@ func taprootScript(t *testing.T, sweepRoot []byte,
 }
 
 // oneLeafTree builds a structurally-valid single-leaf VTXO tree whose root
-// spends `batchOutput` (the authenticated commitment output) and whose leaf pays
-// vtxoScript, cosigned by operator+owner. It is UNSIGNED (NewTree does not sign).
+// spends `batchOutput` (the authenticated commitment output) and whose leaf
+// pays vtxoScript, cosigned by operator+owner. It is UNSIGNED (NewTree does not
+// sign).
 func oneLeafTree(t *testing.T, commitment chainhash.Hash, sweepRoot []byte,
 	operator, owner *btcec.PublicKey, batchOutput *wire.TxOut,
 	vtxoScript []byte) *tree.Tree {
@@ -48,8 +49,14 @@ func oneLeafTree(t *testing.T, commitment chainhash.Hash, sweepRoot []byte,
 		CoSignerKey: owner,
 	}}
 	tr, err := tree.NewTree(
-		wire.OutPoint{Hash: commitment}, batchOutput, leaves,
-		operator, sweepRoot, 2,
+		wire.OutPoint{
+			Hash: commitment,
+		},
+		batchOutput,
+		leaves,
+		operator,
+		sweepRoot,
+		2,
 	)
 	require.NoError(t, err)
 
@@ -57,12 +64,13 @@ func oneLeafTree(t *testing.T, commitment chainhash.Hash, sweepRoot []byte,
 }
 
 // TestBindingRejectsForeignKeys is THE bypass-defense assertion. An attacker
-// fabricates an internally-consistent tree signed with THEIR OWN keys (so a bare
-// signature check would pass) whose leaf carries the victim's public script. But
-// the batch output is authenticated to the REAL commitment output = a taproot
-// key the attacker does not control. The key-to-output binding rejects it: the
-// root's recomputed aggregate key does not match the authenticated output it
-// spends. This is the single check that closes the "signs with own keys" hole.
+// fabricates an internally-consistent tree signed with THEIR OWN keys (so a
+// bare signature check would pass) whose leaf carries the victim's public
+// script. But the batch output is authenticated to the REAL commitment output =
+// a taproot key the attacker does not control. The key-to-output binding
+// rejects it: the root's recomputed aggregate key does not match the
+// authenticated output it spends. This is the single check that closes the
+// "signs with own keys" hole.
 func TestBindingRejectsForeignKeys(t *testing.T) {
 	t.Parallel()
 
@@ -89,7 +97,9 @@ func TestBindingRejectsForeignKeys(t *testing.T) {
 	)
 
 	err := VerifyReceivedVTXOBinding(
-		[]Ancestry{{TreePath: tr, CommitmentTxID: commitment}},
+		[]Ancestry{
+			{TreePath: tr, CommitmentTxID: commitment},
+		},
 		vtxoScript,
 	)
 	require.Error(t, err)
@@ -99,10 +109,10 @@ func TestBindingRejectsForeignKeys(t *testing.T) {
 // TestBindingUnsignedGenuineTreeFailsOnlyAtSignatures proves the key-to-output
 // binding does NOT false-reject a genuine tree: a structurally-genuine tree
 // whose batch output IS PayToTaproot(its own root key) passes structure and the
-// key binding, and is rejected only because it is unsigned. This is the negative
-// control for the check in TestBindingRejectsForeignKeys and shows genuine trees
-// clear steps 1-3 (so the accept path — validated end-to-end against real signed
-// trees in itests — is not blocked by this check).
+// key binding, and is rejected only because it is unsigned. This is the
+// negative control for the check in TestBindingRejectsForeignKeys and shows
+// genuine trees clear steps 1-3 (so the accept path — validated end-to-end
+// against real signed trees in itests — is not blocked by this check).
 func TestBindingUnsignedGenuineTreeFailsOnlyAtSignatures(t *testing.T) {
 	t.Parallel()
 
@@ -124,14 +134,17 @@ func TestBindingUnsignedGenuineTreeFailsOnlyAtSignatures(t *testing.T) {
 	)
 
 	err := VerifyReceivedVTXOBinding(
-		[]Ancestry{{TreePath: tr, CommitmentTxID: commitment}},
+		[]Ancestry{
+			{TreePath: tr, CommitmentTxID: commitment},
+		},
 		vtxoScript,
 	)
 	require.Error(t, err)
 	require.Contains(
-		t, err.Error(), "signatures",
-		"a genuine-structured tree must clear structure + key binding "+
-			"and fail only on the missing signatures",
+		t, err.Error(),
+		"signatures", "a genuine-structured tree must clear "+
+			"structure + key binding and fail only on the "+
+			"missing signatures",
 	)
 	require.NotContains(t, err.Error(), "does not match the output")
 }
@@ -162,13 +175,20 @@ func TestOORLineageRejectsForeignKeys(t *testing.T) {
 	attackerOwner := bindingKey(t)
 	tr := oneLeafTree(
 		t, commitment, sweepRoot, attackerOperator, attackerOwner,
-		&wire.TxOut{Value: 1000, PkScript: authedScript},
+		&wire.TxOut{
+			Value:    1000,
+			PkScript: authedScript,
+		},
 		[]byte("input_vtxo_script"),
 	)
 
 	err := VerifyOORAncestryLineage(
-		[]Ancestry{{TreePath: tr, CommitmentTxID: commitment}},
-		evidence, 0, nil,
+		[]Ancestry{
+			{TreePath: tr, CommitmentTxID: commitment},
+		},
+		evidence,
+		0,
+		nil,
 	)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "does not match the output it spends")
@@ -203,17 +223,25 @@ func TestOORLineageRejectsEvidenceMismatch(t *testing.T) {
 	)
 	tr := oneLeafTree(
 		t, commitment, sweepRoot, attackerOperator, attackerOwner,
-		&wire.TxOut{Value: 1000, PkScript: attackerScript},
+		&wire.TxOut{
+			Value:    1000,
+			PkScript: attackerScript,
+		},
 		[]byte("input_vtxo_script"),
 	)
 
 	err := VerifyOORAncestryLineage(
-		[]Ancestry{{TreePath: tr, CommitmentTxID: commitment}},
-		evidence, 0, nil,
+		[]Ancestry{
+			{TreePath: tr, CommitmentTxID: commitment},
+		},
+		evidence,
+		0,
+		nil,
 	)
 	require.Error(t, err)
 	require.Contains(
-		t, err.Error(), "does not match the authenticated commitment",
+		t, err.Error(),
+		"does not match the authenticated commitment",
 	)
 }
 
@@ -229,14 +257,21 @@ func TestOORLineageRejectsMissingEvidence(t *testing.T) {
 
 	tr := oneLeafTree(
 		t, commitment, sweepRoot, bindingKey(t), bindingKey(t),
-		&wire.TxOut{Value: 1000, PkScript: []byte{0x51}},
+		&wire.TxOut{
+			Value:    1000,
+			PkScript: []byte{0x51},
+		},
 		[]byte("x"),
 	)
 	evidence := []batchcanon.BatchEvidence{{BatchTxID: other}}
 
 	err := VerifyOORAncestryLineage(
-		[]Ancestry{{TreePath: tr, CommitmentTxID: commitment}},
-		evidence, 0, nil,
+		[]Ancestry{
+			{TreePath: tr, CommitmentTxID: commitment},
+		},
+		evidence,
+		0,
+		nil,
 	)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "no authenticated evidence")
@@ -249,10 +284,15 @@ func TestBindingRejectsEmptyScript(t *testing.T) {
 	require.Error(t, VerifyReceivedVTXOBinding(nil, nil))
 
 	var commitment chainhash.Hash
-	require.Error(t, VerifyReceivedVTXOBinding(
-		[]Ancestry{{TreePath: nil, CommitmentTxID: commitment}},
-		[]byte("s"),
-	))
+	require.Error(
+		t,
+		VerifyReceivedVTXOBinding(
+			[]Ancestry{
+				{TreePath: nil, CommitmentTxID: commitment},
+			},
+			[]byte("s"),
+		),
+	)
 }
 
 // TestBindCoinInputsToLeaves covers the single-hop OOR terminator's matching
@@ -271,9 +311,12 @@ func TestBindCoinInputsToLeaves(t *testing.T) {
 	}
 
 	// Single-hop: every coin input produced by a leaf -> accept.
-	require.NoError(t, bindCoinInputsToLeaves(
-		leaves, []wire.OutPoint{op(a, 0), op(b, 1)},
-	))
+	require.NoError(
+		t,
+		bindCoinInputsToLeaves(
+			leaves, []wire.OutPoint{op(a, 0), op(b, 1)},
+		),
+	)
 
 	// Single-hop: a coin input NOT produced by any leaf (decoy lineage) ->
 	// reject. This is the fail-open the terminator closes.
