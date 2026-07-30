@@ -49,6 +49,15 @@ func (b *LndClientTxBroadcaster) PublishTransaction(ctx context.Context,
 	return b.walletKit.PublishTransaction(ctx, tx, label)
 }
 
+// RemoveTransaction removes the transaction (and its descendants) from lnd's
+// wallet via the WalletKit RemoveTransaction RPC, stopping lnd from
+// rebroadcasting it.
+func (b *LndClientTxBroadcaster) RemoveTransaction(ctx context.Context,
+	txid chainhash.Hash) error {
+
+	return b.walletKit.RemoveTransaction(ctx, txid)
+}
+
 // Ensure LndClientTxBroadcaster implements TxBroadcaster.
 var _ TxBroadcaster = (*LndClientTxBroadcaster)(nil)
 
