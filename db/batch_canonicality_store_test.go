@@ -695,6 +695,7 @@ func TestBatchRegistrationIsAtomicAndImmutable(t *testing.T) {
 		ObservationGeneration: 1,
 		State:                 batchcanon.StateUnseen,
 		CSVExpiryDelta:        144,
+		WatchHeightHint:       90,
 		ConfirmationPkScript: []byte{
 			0x51,
 			0x20,
@@ -724,6 +725,10 @@ func TestBatchRegistrationIsAtomicAndImmutable(t *testing.T) {
 	// An idempotent retry may add dependents and consumer edges, but it
 	// carries the same immutable output/input evidence.
 	retry := *record
+	// A reconfirmed indexer observation can report a later height. The
+	// original lower scan point remains conservative and must not turn this
+	// otherwise-identical registration into contradictory evidence.
+	retry.WatchHeightHint = 105
 	retry.DependentVTXOs = []wire.OutPoint{secondDependent}
 	require.NoError(
 		t,
@@ -737,6 +742,7 @@ func TestBatchRegistrationIsAtomicAndImmutable(t *testing.T) {
 	got, err := store.GetBatch(ctx, txid)
 	require.NoError(t, err)
 	require.True(t, inputFlags(t, got, input.Outpoint).Conflicting)
+	require.Equal(t, uint32(90), got.WatchHeightHint)
 	require.ElementsMatch(
 		t, []wire.OutPoint{firstDependent, secondDependent},
 		got.DependentVTXOs,

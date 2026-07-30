@@ -546,10 +546,6 @@ func registrationMatches(existing, next *batchcanon.Record) error {
 		return fmt.Errorf("%w: confirmation script changed",
 			batchcanon.ErrRegistrationConflict)
 
-	case existing.WatchHeightHint != next.WatchHeightHint:
-		return fmt.Errorf("%w: watch height hint changed",
-			batchcanon.ErrRegistrationConflict)
-
 	case existing.CSVExpiryDelta != next.CSVExpiryDelta:
 		return fmt.Errorf("%w: csv expiry changed",
 			batchcanon.ErrRegistrationConflict)
