@@ -285,8 +285,17 @@ func TestGetBatchReadsUnderLock(t *testing.T) {
 	h.fireConfirmed(t, txid, 101, testBatchTxid(0xf3))
 	h.fireSpend(t, input, txid, 101)
 
-	// Swap in the lock-asserting store after setup (the actor is now idle,
-	// so there is no concurrent reader of cfg.Store).
+	// Drain the actor before swapping cfg.Store. The mailbox is FIFO and
+	// single-threaded, so this Ask is answered only after every prior
+	// message — including the spend observation that reads cfg.Store on the
+	// actor goroutine — has been fully processed. Without this the bare
+	// field swap below races that read.
+	h.mgrRef.Ask(t.Context(), &QueryLineageRequest{
+		BatchTxIDs: []chainhash.Hash{txid},
+	}).Await(t.Context())
+
+	// Swap in the lock-asserting store; the actor is now idle, so there is
+	// no concurrent reader of cfg.Store.
 	var reads int
 	h.mgr.cfg.Store = storeLockAsserter{
 		Store: h.store, mu: &h.mgr.mu, t: t, reads: &reads,
