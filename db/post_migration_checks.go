@@ -9,6 +9,7 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database"
+	"github.com/google/uuid"
 	"github.com/lightninglabs/wavelength/db/sqlc"
 )
 
@@ -21,13 +22,58 @@ var (
 	// database migration with the version specified in the key has been
 	// applied. These functions are used to perform additional checks on the
 	// database state that are not fully expressible in SQL.
-	//
-	// NOTE: This is empty for now, but can be populated with custom
-	// migration checks as needed.
-	//
-	//nolint:unused
-	postMigrationChecks = map[uint]postMigrationCheck{}
+	postMigrationChecks = map[uint]postMigrationCheck{
+		// Migration 15 adds the round_uuid TEXT mirror of the ledger's
+		// raw round_id BLOB; the string conversion itself is only
+		// expressible in Go.
+		15: backfillLedgerRoundUUIDs,
+	}
 )
+
+// backfillLedgerRoundUUIDs mirrors every distinct raw 16-byte round_id in
+// ledger_entries into the round_uuid TEXT column added by migration 15, using
+// the same canonical lowercase form that rounds.round_id and
+// vtxos.forfeit_round_id store. Rows whose round_id is not exactly 16 bytes
+// (which no writer produces) are left NULL rather than failing the whole
+// migration. The per-round UPDATE is guarded on round_uuid IS NULL, so a
+// crash-interrupted backfill re-runs as a no-op for already-converted rows.
+func backfillLedgerRoundUUIDs(ctx context.Context, q sqlc.Querier) error {
+	roundIDs, err := q.ListLedgerRoundIDsMissingUuid(ctx)
+	if err != nil {
+		return fmt.Errorf("list ledger round ids missing uuid: %w", err)
+	}
+
+	for _, rawID := range roundIDs {
+		// Abort early on a cancelled migration context rather than
+		// issuing further per-round writes.
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		if len(rawID) != 16 {
+			continue
+		}
+
+		var id uuid.UUID
+		copy(id[:], rawID)
+
+		err := q.BackfillLedgerRoundUuid(
+			ctx, sqlc.BackfillLedgerRoundUuidParams{
+				RoundUuid: sql.NullString{
+					String: id.String(),
+					Valid:  true,
+				},
+				RoundID: rawID,
+			},
+		)
+		if err != nil {
+			return fmt.Errorf("backfill ledger round uuid %s: %w",
+				id, err)
+		}
+	}
+
+	return nil
+}
 
 // DatabaseBackend is an interface that contains all methods our different
 // database backends implement.

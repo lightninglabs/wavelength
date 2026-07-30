@@ -7,7 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/google/uuid"
 	"github.com/lightninglabs/wavelength/db/sqlc"
 	"github.com/lightninglabs/wavelength/ledger"
 	"github.com/lightninglabs/wavelength/wallet"
@@ -230,6 +232,154 @@ func TestLedgerStoreInsertAndRetrieve(t *testing.T) {
 	require.Equal(t, entry.EventType, got.EventType)
 	require.Equal(t, entry.Description, got.Description)
 	require.Equal(t, entry.CreatedAt, got.CreatedAt)
+}
+
+// TestLedgerStoreInsertStampsRoundUUID proves the insert adapter mirrors a
+// 16-byte round_id into the canonical round_uuid TEXT column, and leaves it
+// NULL for entries without a well-formed round linkage.
+func TestLedgerStoreInsertStampsRoundUUID(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newLedgerStoreForTest(t)
+
+	roundID := uuid.New()
+	require.NoError(
+		t,
+		store.InsertLedgerEntry(
+			ctx, makeLedgerEntry(
+				"fees_paid", "vtxo_balance", 500,
+				"refresh_fee_paid", roundID[:], 1_000,
+			),
+		),
+	)
+
+	// A non-16-byte round id (nothing produces one, but the column is
+	// unconstrained) must degrade to a NULL round_uuid, not an error.
+	require.NoError(
+		t,
+		store.InsertLedgerEntry(
+			ctx,
+			makeLedgerEntry(
+				"fees_paid", "vtxo_balance", 600,
+				"boarding_fee_paid", []byte("short-round-id"),
+				1_001,
+			),
+		),
+	)
+
+	entries, err := store.ListLedgerEntries(ctx, 10, 0)
+	require.NoError(t, err)
+	require.Len(t, entries, 2)
+
+	// Newest first: the malformed-round entry, then the UUID-keyed one.
+	require.False(t, entries[0].RoundUuid.Valid)
+	require.True(t, entries[1].RoundUuid.Valid)
+	require.Equal(t, roundID.String(), entries[1].RoundUuid.String)
+}
+
+// TestLedgerStoreGetConfirmedExitCost proves the exit-cost lookup returns
+// exactly the onchain_fee_paid leg keyed by the exited VTXO's outpoint: the
+// send leg sharing the same idempotency key and a fee leg for a different
+// outpoint contribute nothing, and an unknown outpoint reads zero.
+func TestLedgerStoreGetConfirmedExitCost(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newLedgerStoreForTest(t)
+
+	var exited, other wire.OutPoint
+	exited.Hash[0] = 0xaa
+	exited.Index = 1
+	other.Hash[0] = 0xbb
+
+	insert := func(debit, credit, eventType string, amount int64,
+		op wire.OutPoint) {
+
+		entry := makeLedgerEntry(
+			debit, credit, amount, eventType, nil, 1_000,
+		)
+		entry.IdempotencyKey = ledger.ExitIdempotencyKey(
+			op.Hash, op.Index,
+		)
+		require.NoError(t, store.InsertLedgerEntry(ctx, entry))
+	}
+
+	// The two legs handleExitCost books for the exited outpoint, plus an
+	// unrelated exit's fee leg.
+	insert("transfers_out", "vtxo_balance", "vtxo_sent", 6_377, exited)
+	insert("onchain_fees", "vtxo_balance", "onchain_fee_paid", 623, exited)
+	insert("onchain_fees", "vtxo_balance", "onchain_fee_paid", 999, other)
+
+	cost, err := store.GetConfirmedExitCost(ctx, exited)
+	require.NoError(t, err)
+	require.Equal(t, int64(623), cost)
+
+	var unknown wire.OutPoint
+	unknown.Hash[0] = 0xcc
+	cost, err = store.GetConfirmedExitCost(ctx, unknown)
+	require.NoError(t, err)
+	require.Zero(t, cost)
+}
+
+// TestBackfillLedgerRoundUUIDs proves the migration-15 post-step converts
+// pre-existing raw round_id BLOBs into their canonical UUID text form,
+// skips rows without a round linkage, and re-runs as a no-op.
+func TestBackfillLedgerRoundUUIDs(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	_, db := newLedgerStoreAndDBForTest(t)
+
+	// Insert directly through the generated query with a NULL round_uuid,
+	// simulating rows written before migration 15 existed.
+	roundA := uuid.New()
+	roundB := uuid.New()
+	insert := func(roundID []byte, eventType string, amount int64) {
+		err := db.InsertClientLedgerEntry(
+			ctx, sqlc.InsertClientLedgerEntryParams{
+				DebitAccount:  "fees_paid",
+				CreditAccount: "vtxo_balance",
+				AmountSat:     amount,
+				RoundID:       roundID,
+				EventType:     eventType,
+				Description:   "backfill test entry",
+				CreatedAt:     1_000,
+			},
+		)
+		require.NoError(t, err)
+	}
+	insert(roundA[:], "refresh_fee_paid", 100)
+	insert(roundB[:], "boarding_fee_paid", 200)
+	insert(nil, "onchain_fee_paid", 300)
+
+	require.NoError(t, backfillLedgerRoundUUIDs(ctx, db.Queries))
+
+	entries, err := db.ListClientLedgerEntries(
+		ctx, sqlc.ListClientLedgerEntriesParams{
+			Limit: 10,
+		},
+	)
+	require.NoError(t, err)
+	require.Len(t, entries, 3)
+
+	gotByEvent := make(map[string]sqlc.LedgerEntry, len(entries))
+	for _, entry := range entries {
+		gotByEvent[entry.EventType] = entry
+	}
+
+	require.Equal(
+		t, roundA.String(),
+		gotByEvent["refresh_fee_paid"].RoundUuid.String,
+	)
+	require.Equal(
+		t, roundB.String(),
+		gotByEvent["boarding_fee_paid"].RoundUuid.String,
+	)
+	require.False(t, gotByEvent["onchain_fee_paid"].RoundUuid.Valid)
+
+	// Re-running the backfill (crash-recovery shape) is a no-op.
+	require.NoError(t, backfillLedgerRoundUUIDs(ctx, db.Queries))
 }
 
 // TestLedgerStoreTransactionHistoryFiltersBeforePagination verifies the

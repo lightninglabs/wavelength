@@ -1,5 +1,7 @@
 package vtxo
 
+import "math"
+
 // ExpiryStatus represents the result of an expiry check.
 type ExpiryStatus int
 
@@ -16,6 +18,15 @@ const (
 
 	// ExpiryStatusExpired indicates the batch has already expired.
 	ExpiryStatusExpired
+
+	// ExpiryStatusUnknown indicates the VTXO carries no usable batch
+	// expiry, so no expiry conclusion can be drawn from it. Callers must
+	// decline to act rather than assume either extreme: treating a
+	// missing expiry as "expired" would surrender live funds, and
+	// treating it as "safe" would silently skip the refresh a real
+	// deadline needs. It is appended last so the numeric values of the
+	// existing statuses are unchanged.
+	ExpiryStatusUnknown
 )
 
 // String returns a human-readable representation of the expiry status.
@@ -33,9 +44,35 @@ func (s ExpiryStatus) String() string {
 	case ExpiryStatusExpired:
 		return "expired"
 
+	case ExpiryStatusUnknown:
+		return "unknown"
+
 	default:
 		return "unknown"
 	}
+}
+
+// HasUsableBatchExpiry reports whether the descriptor carries a batch expiry
+// that an expiry decision may be based on.
+//
+// A zero expiry is not a benign default. It is copied verbatim from the wire
+// (see the incoming-VTXO handler) and every expiry calculation is
+// `BatchExpiry - currentHeight`, so a zero reads back as "expired by the
+// entire height of the chain" and would route a brand-new VTXO straight to
+// the expiry path. An expiry earlier than the height the VTXO was created at
+// is the same class of corruption: a VTXO cannot expire before it existed.
+func HasUsableBatchExpiry(vtxo *Descriptor) bool {
+	if vtxo == nil || vtxo.BatchExpiry <= 0 {
+		return false
+	}
+
+	// CreatedHeight is not always populated (recovery paths leave it
+	// zero), so only cross-check when it is.
+	if vtxo.CreatedHeight > 0 && vtxo.BatchExpiry < vtxo.CreatedHeight {
+		return false
+	}
+
+	return true
 }
 
 // ExpiryConfig holds configurable thresholds for VTXO expiry monitoring. These
@@ -104,6 +141,14 @@ func (c *ExpiryConfig) CheckExpiry(
 	vtxo *Descriptor, currentHeight int32,
 ) ExpiryStatus {
 
+	// Refuse to draw any conclusion from an expiry we cannot trust. This
+	// must come first: every branch below is derived from BatchExpiry, so
+	// a corrupt value would otherwise be indistinguishable from a real
+	// deadline that has already passed.
+	if !HasUsableBatchExpiry(vtxo) {
+		return ExpiryStatusUnknown
+	}
+
 	blocksRemaining := vtxo.BatchExpiry - currentHeight
 
 	// If batch has already expired, status is expired.
@@ -159,10 +204,37 @@ func (c *ExpiryConfig) DetermineRefreshUrgency(
 	return RefreshUrgencyNormal
 }
 
+// exitTxDepth returns the number of transactions that must confirm in
+// sequence before a unilateral exit can even begin its final CSV wait.
+//
+// Two segments stack. First the deepest commitment-tree path, since a VTXO
+// with several ancestry fragments must land them all and they confirm in
+// parallel, so the worst branch sets the pace. Then one recovery transaction
+// per OOR hop between that commitment and this VTXO: those are strictly
+// sequential, because each checkpoint spends the previous one. unroll already
+// budgets fees this way (one recovery tx per ChainDepth hop), so the time
+// budget has to agree or an exit is admitted with no room to finish.
+func exitTxDepth(vtxo *Descriptor) int32 {
+	depth := int64(vtxo.MaxTreeDepth())
+
+	// A negative ChainDepth is rejected as invalid elsewhere; treat it as
+	// zero here rather than letting it shorten the budget.
+	if vtxo.ChainDepth > 0 {
+		depth += int64(vtxo.ChainDepth)
+	}
+
+	if depth > math.MaxInt32 {
+		return math.MaxInt32
+	}
+
+	return int32(depth)
+}
+
 // CalculateCriticalThreshold returns the dynamic critical threshold for a VTXO
-// based on its tree depth and CSV delay.
+// based on the depth of its unilateral-exit transaction chain and its CSV
+// delay.
 func (c *ExpiryConfig) CalculateCriticalThreshold(vtxo *Descriptor) int32 {
-	treeDepthBuffer := int32(vtxo.MaxTreeDepth()) * c.TreeDepthMultiplier
+	treeDepthBuffer := exitTxDepth(vtxo) * c.TreeDepthMultiplier
 	csvBuffer := int32(vtxo.RelativeExpiry)
 	safeExitBuffer := treeDepthBuffer + csvBuffer
 

@@ -1,7 +1,6 @@
 package waveclicommands
 
 import (
-	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -34,6 +33,8 @@ func newSweepCmd() *cobra.Command {
 		"boarding UTXO outpoint to sweep (txid:index); repeatable")
 	cmd.Flags().Bool("broadcast", false,
 		"broadcast aggregate sweep and track it until confirmed spent")
+	cmd.Flags().Bool("yes", false,
+		"approve broadcasting the fund-moving sweep")
 	cmd.Flags().Int64("fee-rate-sat-per-vbyte", 0,
 		"fee rate override in sat/vbyte; zero estimates by conf target")
 	cmd.Flags().Uint32("conf-target", 0,
@@ -72,14 +73,6 @@ func newSweepListCmd() *cobra.Command {
 
 // sweep executes the SweepBoardingUTXOs RPC and prints the result.
 func sweep(cmd *cobra.Command, _ []string) error {
-	client, conn, err := getDaemonClient(cmd)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		_ = conn.Close()
-	}()
-
 	req := &waverpc.SweepBoardingUTXOsRequest{}
 	fromFlags := func() error {
 		outpoints, _ := cmd.Flags().GetStringSlice("outpoint")
@@ -111,8 +104,29 @@ func sweep(cmd *cobra.Command, _ []string) error {
 	if err := parseRequest(cmd, req, fromFlags); err != nil {
 		return err
 	}
+	if req.GetBroadcast() {
+		action := "broadcast a sweep of all mature boarding UTXOs"
+		if count := len(req.GetOutpoints()); count > 0 {
+			action = fmt.Sprintf("broadcast a sweep of %d "+
+				"selected boarding UTXO(s)", count)
+		}
+		if err := confirmMoneyMovement(cmd, action); err != nil {
+			return err
+		}
+	}
 
-	resp, err := client.SweepBoardingUTXOs(context.Background(), req)
+	client, conn, err := getDaemonClient(cmd)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = conn.Close()
+	}()
+
+	ctx, cancel := rpcContext(cmd)
+	defer cancel()
+
+	resp, err := client.SweepBoardingUTXOs(ctx, req)
 	if err != nil {
 		return fmt.Errorf("SweepBoardingUTXOs RPC failed: %w", err)
 	}
@@ -130,16 +144,25 @@ func sweepList(cmd *cobra.Command, _ []string) error {
 		_ = conn.Close()
 	}()
 
-	statusFilter, _ := cmd.Flags().GetString("status")
-	pageSize, _ := cmd.Flags().GetUint32("page-size")
-	pageToken, _ := cmd.Flags().GetString("page-token")
-	req := &waverpc.ListBoardingSweepsRequest{
-		Status:    statusFilter,
-		PageSize:  pageSize,
-		PageToken: pageToken,
+	req := &waverpc.ListBoardingSweepsRequest{}
+	if err := parseRequest(cmd, req, func() error {
+		statusFilter, _ := cmd.Flags().GetString("status")
+		pageSize, _ := cmd.Flags().GetUint32("page-size")
+		pageToken, _ := cmd.Flags().GetString("page-token")
+
+		req.Status = statusFilter
+		req.PageSize = pageSize
+		req.PageToken = pageToken
+
+		return nil
+	}); err != nil {
+		return err
 	}
 
-	resp, err := client.ListBoardingSweeps(context.Background(), req)
+	ctx, cancel := rpcContext(cmd)
+	defer cancel()
+
+	resp, err := client.ListBoardingSweeps(ctx, req)
 	if err != nil {
 		return fmt.Errorf("ListBoardingSweeps RPC failed: %w", err)
 	}

@@ -3,6 +3,7 @@ package vtxo
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -167,6 +168,76 @@ func TestIncomingVTXOHandlerNonCreatedEvent(t *testing.T) {
 	require.NoError(t, resultErr)
 
 	require.Empty(t, saver.saved)
+}
+
+// TestIncomingVTXOHandlerUnusableBatchExpiry verifies that an event carrying
+// an expiry the wallet could never reason about is dropped rather than
+// materialized. Persisting it would stamp the bad expiry onto the descriptor
+// permanently, and every later expiry decision reads it back as a deadline
+// that has already passed.
+func TestIncomingVTXOHandlerUnusableBatchExpiry(t *testing.T) {
+	t.Parallel()
+
+	privKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	pkScript := []byte{0x51, 0x20, 0xaa, 0xbb}
+
+	// The script IS owned, so a drop here can only be the expiry guard.
+	newLookup := func() *mockScriptLookup {
+		return &mockScriptLookup{
+			scripts: map[string]*OwnedReceiveScript{
+				string(pkScript): {
+					ClientKey: keychain.KeyDescriptor{
+						PubKey: privKey.PubKey(),
+						KeyLocator: keychain.KeyLocator{
+							Family: 44,
+							Index:  0,
+						},
+					},
+					OperatorPubKey: operatorPriv.PubKey(),
+					ExitDelay:      144,
+				},
+			},
+		}
+	}
+
+	var txid chainhash.Hash
+	txid[0] = 0x01
+
+	for _, expiry := range []int32{0, -1} {
+		t.Run(fmt.Sprintf("expiry %d", expiry), func(t *testing.T) {
+			t.Parallel()
+
+			saver := &mockVTXOSaver{}
+			handler := NewIncomingVTXOHandler(
+				IncomingVTXOHandlerConfig{
+					ScriptStore: newLookup(),
+					VTXOStore:   saver,
+				},
+			)
+
+			evt := newTestEvent(
+				txid, 0, pkScript, 50_000, "round-1",
+			)
+			evt.BatchExpiryHeight = expiry
+
+			result := handler.Receive(
+				t.Context(), IncomingVTXOMsg{
+					Event: evt,
+				},
+			)
+			_, resultErr := result.Unpack()
+
+			// Dropping must stay silent: the handler cannot crash
+			// the actor or block the indexer push stream.
+			require.NoError(t, resultErr)
+			require.Empty(t, saver.saved)
+		})
+	}
 }
 
 // TestIncomingVTXOHandlerNilEvent verifies that a nil event is

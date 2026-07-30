@@ -169,3 +169,30 @@ func TestResponseRegistryHasWaiterPrunesStale(t *testing.T) {
 
 	require.False(t, registry.HasWaiter(id))
 }
+
+// TestResponseRegistryWaiterCount verifies the count tracks live waiters and
+// prunes stale ones first. Callers gate new sends on this number, so a
+// TTL-lapsed entry that lingered in the count would wedge the client out of
+// sending long after the requests it counted were gone.
+func TestResponseRegistryWaiterCount(t *testing.T) {
+	t.Parallel()
+
+	registry := NewResponseRegistry(20 * time.Millisecond)
+	require.Zero(t, registry.WaiterCount())
+
+	registry.RegisterWaiter(CorrelationID("corr-a"))
+	registry.RegisterWaiter(CorrelationID("corr-b"))
+	require.Equal(t, 2, registry.WaiterCount())
+
+	// Re-registering the same ID reuses the waiter rather than counting
+	// twice.
+	registry.RegisterWaiter(CorrelationID("corr-a"))
+	require.Equal(t, 2, registry.WaiterCount())
+
+	registry.RemoveWaiter(CorrelationID("corr-a"))
+	require.Equal(t, 1, registry.WaiterCount())
+
+	time.Sleep(30 * time.Millisecond)
+
+	require.Zero(t, registry.WaiterCount())
+}

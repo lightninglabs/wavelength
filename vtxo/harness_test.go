@@ -61,6 +61,14 @@ func (m *MockVTXOStore) ListLiveVTXOs(ctx context.Context) ([]*Descriptor,
 	return vtxos, args.Error(1)
 }
 
+// ListRecoverableVTXOs shares ListLiveVTXOs' expectation so existing tests
+// that only stub the live set keep driving actor recovery unchanged.
+func (m *MockVTXOStore) ListRecoverableVTXOs(ctx context.Context) (
+	[]*Descriptor, error) {
+
+	return m.ListLiveVTXOs(ctx)
+}
+
 //nolint:forcetypeassert
 func (m *MockVTXOStore) ListVTXOsByStatus(ctx context.Context,
 	status VTXOStatus) ([]*Descriptor, error) {

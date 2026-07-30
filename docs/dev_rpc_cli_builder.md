@@ -42,7 +42,7 @@ Examples:
 ```shell
 wavecli dev waverpc.DaemonService GetInfo
 wavecli dev daemon getinfo
-wavecli dev daemon list-vtxos --status_filter live
+wavecli dev daemon list-vtxos --status-filter live
 wavecli dev swapclient start-pay --invoice <bolt11>
 ```
 
@@ -55,15 +55,19 @@ The runtime builds request messages dynamically from protobuf descriptors.
 Generated flags use proto field names so the command stays predictable and
 does not drift from the wire contract.
 
+Help and examples show kebab-case flag names. The corresponding snake_case
+spellings remain silent aliases, while field names inside JSON payloads stay
+snake_case to match proto JSON.
+
 Field handling rules:
 
-- Scalar fields become `--field_name`.
+- Scalar fields become canonical `--field-name` flags.
 - Boolean fields become normal Cobra bool flags.
-- Repeated scalar fields become repeatable `--field_name` flags.
+- Repeated scalar fields become repeatable `--field-name` flags.
 - Bytes fields accept hex strings, with or without a `0x` prefix.
 - Enums accept numeric values, full enum value names, or lower aliases.
 - Singular nested message fields are flattened with dotted flag names.
-- Repeated messages and maps stay JSON via `--field_name-json`.
+- Repeated messages and maps stay JSON via `--field-name-json`.
 - The global `--json` flag remains a raw protojson escape hatch and takes
   precedence over generated flags.
 
@@ -72,12 +76,12 @@ Flattening is deliberately bounded to singular messages. For example:
 ```shell
 wavecli dev daemon prepare-oor \
   --recipient.address bcrt1... \
-  --recipient.amount_sat 1000
+  --recipient.amount-sat 1000
 
 wavecli dev daemon refresh-vtxos \
   --outpoints.outpoints txid:0 \
   --outpoints.outpoints txid:1 \
-  --dry_run
+  --dry-run
 ```
 
 Repeated message fields are not flattened because indexed flags would need a
@@ -101,7 +105,7 @@ oneofs reached through flattened paths. These two flags conflict:
 But multiple fields under the same selected message are allowed:
 
 ```shell
---recipient.address bcrt1... --recipient.amount_sat 1000
+--recipient.address bcrt1... --recipient.amount-sat 1000
 ```
 
 Daemon-side validation remains authoritative. The generated command only

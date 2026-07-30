@@ -60,6 +60,11 @@ type EnvelopeDispatcher func(
 	ctx context.Context, env *mailboxpb.Envelope,
 ) error
 
+// RouteSet is a set of (service, method) pairs. It is used to tag a subset of
+// the dispatch table with a delivery property that the closure itself cannot
+// advertise, since an EnvelopeDispatcher is an opaque function value.
+type RouteSet = map[mailboxrpc.ServiceMethod]struct{}
+
 // DurableUnaryRequestBuilder constructs proof-gated unary request payloads
 // for durable transport messages that only persist the query spec. The
 // returned proto is wrapped into a mailbox KIND_REQUEST envelope after the
@@ -139,6 +144,40 @@ type ConnectorConfig struct {
 	// KIND_EVENT envelopes to the correct local actor via ServiceKey.
 	Dispatchers map[mailboxrpc.ServiceMethod]EnvelopeDispatcher
 
+	// NonTxRoutes marks the subset of Dispatchers whose closure serves an
+	// inbound KIND_REQUEST end to end -- it runs the local handler and
+	// then puts the KIND_RESPONSE envelope back on the wire with
+	// Edge.Send -- instead of enqueuing into a local durable mailbox.
+	// Those dispatchers block on a network round trip, so the ingress
+	// loop runs them BEFORE it opens the folded write transaction. A
+	// marked route left unmarked would hold the database writer across
+	// that round trip: on SQLite, which production opens with
+	// _txlock=immediate, that is the single global writer lock and every
+	// other writer in the process stalls behind it; on Postgres, where
+	// db.BaseDB.BeginTx pins SERIALIZABLE, it is a multi-second SSI
+	// conflict window and a source of 40001 aborts.
+	//
+	// Marking is opt-in because an EnvelopeDispatcher is an opaque
+	// closure: only the wiring layer knows whether a given route
+	// terminates in a durable enqueue or in blocking IO. A route is only
+	// hoisted out of the transaction when it is listed here AND the
+	// envelope is a KIND_REQUEST, so a durable event or response route
+	// can never be hoisted by accident. Any new route whose dispatcher
+	// performs IO rather than a durable enqueue MUST be listed here.
+	//
+	// The mark only ever errs in one direction. Leaving a route out costs
+	// the stall described above, which is what the code did before this
+	// field existed. Marking a route whose dispatcher is actually a
+	// durable Tell is the expensive mistake: the enqueue would commit on
+	// its own ahead of the cursor, and because the ingress path
+	// propagates no outbox ID, the re-pull after a crash in that window
+	// enqueues a second copy under a fresh UUIDv7 that
+	// EnqueueMailboxMessage's ON CONFLICT (id) DO NOTHING cannot
+	// collapse. That turns exactly-once local delivery into a duplicate
+	// the receiving actor never sees coming, which is why the mark and
+	// the dispatcher are registered together.
+	NonTxRoutes RouteSet
+
 	// Store is the delivery store used by both the durable actor runtime
 	// (for inbox persistence) and checkpoint persistence (for ack
 	// watermark state). This is the single durability source of truth.
@@ -193,6 +232,37 @@ type ConnectorConfig struct {
 	// ResponseWaiterTTL bounds how long a response waiter (or buffered
 	// early response) is retained before stale cleanup.
 	ResponseWaiterTTL time.Duration
+
+	// MaxInFlightUnary caps how many unary RPCs this client may have
+	// outstanding against the remote mailbox at once. A non-positive value
+	// selects DefaultMaxInFlightUnary.
+	//
+	// What it counts is live UnaryFacade waiters in the response registry,
+	// so it bounds the live unary path and nothing else. The durable
+	// egress paths (SendUnaryRequest, SendRPCRequest) do not register an
+	// in-memory waiter and are not gated here, which is deliberate: their
+	// responses fall through to durable route dispatch when no waiter is
+	// left, so an abandoned one is redelivered rather than discarded, and
+	// it is the discarding that this cap exists to bound.
+	//
+	// The mailbox protocol has no cancel envelope, so a caller that gives
+	// up on its deadline cannot recall the request: the operator runs it
+	// to completion and delivers a response with no waiter left to receive
+	// it. Capping the outstanding set is the only client-side bound on how
+	// much of that abandoned work one client can queue. Exceeding it fails
+	// the send locally with ResourceExhausted, which is the same fast-fail
+	// signal a shedding operator sends, so callers back off on it without
+	// needing to know where it came from.
+	//
+	// The cap is per connector rather than per subsystem, so it is shared
+	// by every unary caller in the daemon. One subsystem that saturates it
+	// therefore fails unrelated unary RPCs daemon-wide until its requests
+	// drain. That is the intent: the resource being protected is the
+	// operator's queue, which is also shared, and a per-subsystem cap
+	// would let N subsystems each queue their own N without any of them
+	// noticing. The cost is that the loudest caller can starve the quiet
+	// ones, which is why the default sits well above any legitimate burst.
+	MaxInFlightUnary int
 
 	// HeartbeatInterval is the interval between heartbeat sends to
 	// the server. A zero or negative value uses
@@ -305,6 +375,13 @@ func (c *ConnectorConfig) mergeAuthHeaders(
 // per-correlation-key FIFO claim.
 const DefaultEgressWorkers = 4
 
+// DefaultMaxInFlightUnary is the default cap on concurrently outstanding unary
+// RPCs. It is set well above any legitimate burst the daemon produces (the
+// heaviest client, seed recovery, walks the recovery window sequentially) so
+// the cap only bites when responses have stopped coming back and requests are
+// piling up on a remote that is not answering.
+const DefaultMaxInFlightUnary = 256
+
 // stampEnvelope stamps the runtime's immutable mailbox transport and Ark
 // protocol versions onto an envelope immediately before it is sent. It
 // overwrites any pre-existing version values so no send path — including a
@@ -335,5 +412,6 @@ func DefaultConnectorConfig() ConnectorConfig {
 		RetryMaxDelay:          30 * time.Second,
 		ResponseWaiterTTL:      mailboxconn.DefaultResponseWaiterTTL,
 		EgressWorkers:          DefaultEgressWorkers,
+		MaxInFlightUnary:       DefaultMaxInFlightUnary,
 	}
 }

@@ -108,6 +108,20 @@ func checkMCPRefreshConsent(dryRun, yes bool) error {
 		"fee and queue the refresh")
 }
 
+// checkMCPSendConsent enforces the same money-movement gate on the raw
+// MCP send tools that the CLI applies via confirmMoneyMovement. MCP
+// cannot prompt, so a real send must carry yes:true; dry_run previews
+// stay ungated. Otherwise it returns immediately with an actionable
+// error telling the agent how to proceed.
+func checkMCPSendConsent(dryRun, yes bool) error {
+	if dryRun || yes {
+		return nil
+	}
+
+	return fmt.Errorf("this raw send moves funds; pass yes:true to " +
+		"approve, or dry_run:true to preview without dispatching")
+}
+
 // mcpResult builds a CallToolResult from a proto message response.
 func mcpResult(msg proto.Message) (*mcp.CallToolResult, error) {
 	opts := protojson.MarshalOptions{
@@ -365,14 +379,21 @@ func registerMCPSendTools(s *mcp.Server, client waverpc.DaemonServiceClient) {
 		AmountSat int64  `json:"amount_sat" jsonschema:"amount in sats"`
 	}
 	type sendInRoundArgs struct {
-		Recipients []sendRecipient `json:"recipients" jsonschema:"list of recipients"`                 //nolint:ll
-		DryRun     bool            `json:"dry_run,omitempty" jsonschema:"validate without submitting"` //nolint:ll
+		Recipients []sendRecipient `json:"recipients" jsonschema:"list of recipients"`                                            //nolint:ll
+		DryRun     bool            `json:"dry_run,omitempty" jsonschema:"validate without submitting"`                            //nolint:ll
+		Yes        bool            `json:"yes,omitempty" jsonschema:"approve the fund-moving transfer (required unless dry_run)"` //nolint:ll
 	}
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ark.send.inround",
 		Description: "Send via in-round refresh",
 	}, func(ctx context.Context, req *mcp.CallToolRequest,
 		args sendInRoundArgs) (*mcp.CallToolResult, any, error) {
+
+		if err := checkMCPSendConsent(
+			args.DryRun, args.Yes,
+		); err != nil {
+			return nil, nil, err
+		}
 
 		outputs := make(
 			[]*waverpc.Output, 0,
@@ -410,6 +431,7 @@ func registerMCPSendTools(s *mcp.Server, client waverpc.DaemonServiceClient) {
 		PubKeyXOnlyHex string `json:"pubkey_xonly_hex,omitempty" jsonschema:"recipient 32-byte x-only pubkey hex (mutually exclusive with address)"` //nolint:ll
 		AmountSat      int64  `json:"amount_sat" jsonschema:"amount in sats"`                                                                        //nolint:ll
 		DryRun         bool   `json:"dry_run,omitempty" jsonschema:"validate without initiating"`                                                    //nolint:ll
+		Yes            bool   `json:"yes,omitempty" jsonschema:"approve the fund-moving transfer (required unless dry_run)"`                         //nolint:ll
 		IdempotencyKey string `json:"idempotency_key,omitempty" jsonschema:"stable caller intent key for retry-safe OOR sends"`                      //nolint:ll
 	}
 	mcp.AddTool(s, &mcp.Tool{
@@ -417,6 +439,12 @@ func registerMCPSendTools(s *mcp.Server, client waverpc.DaemonServiceClient) {
 		Description: "Send via out-of-round transfer",
 	}, func(ctx context.Context, req *mcp.CallToolRequest,
 		args sendOORArgs) (*mcp.CallToolResult, any, error) {
+
+		if err := checkMCPSendConsent(
+			args.DryRun, args.Yes,
+		); err != nil {
+			return nil, nil, err
+		}
 
 		recipient, err := buildOORRecipientOutput(
 			args.Address, args.PubKeyXOnlyHex, args.AmountSat,

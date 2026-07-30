@@ -1356,6 +1356,9 @@ func protoStatusToDomain(s waverpc.VTXOStatus) (vtxo.VTXOStatus, error) {
 	case waverpc.VTXOStatus_VTXO_STATUS_FAILED:
 		return vtxo.VTXOStatusFailed, nil
 
+	case waverpc.VTXOStatus_VTXO_STATUS_EXPIRED:
+		return vtxo.VTXOStatusExpired, nil
+
 	default:
 		return 0, fmt.Errorf("unknown VTXO status: %v", s)
 	}
@@ -1388,6 +1391,9 @@ func vtxoStatusToProto(s vtxo.VTXOStatus) waverpc.VTXOStatus {
 	case vtxo.VTXOStatusSpending:
 		return waverpc.VTXOStatus_VTXO_STATUS_SPENDING
 
+	case vtxo.VTXOStatusExpired:
+		return waverpc.VTXOStatus_VTXO_STATUS_EXPIRED
+
 	default:
 		return waverpc.VTXOStatus_VTXO_STATUS_UNSPECIFIED
 	}
@@ -1418,6 +1424,7 @@ func descriptorToProto(v *vtxo.Descriptor) *waverpc.VTXO {
 		proto.Settlement = &waverpc.VTXOSettlement{
 			Txid:   s.TxID.String(),
 			Height: s.Height,
+			FeeSat: s.FeeSat,
 		}
 	})
 
@@ -4865,6 +4872,8 @@ func (r *RPCServer) GetUnrollStatus(ctx context.Context,
 			return nil, err
 		}
 		if found {
+			r.stampConfirmedExitCost(ctx, resp, outpoint)
+
 			return resp, nil
 		}
 	}
@@ -4916,7 +4925,43 @@ func (r *RPCServer) GetUnrollStatus(ctx context.Context,
 		r.enrichExitFees(ctx, resp, outpoint, fn.None[int64](), nil)
 	}
 
+	r.stampConfirmedExitCost(ctx, resp, outpoint)
+
 	return resp, nil
+}
+
+// stampConfirmedExitCost attaches the ledger's settled exit-cost figure to a
+// COMPLETED unroll status. Unlike the estimate breakdown a detailed probe
+// projects, this is the onchain_fee_paid leg unroll booked after the final
+// sweep confirmed, so it is only meaningful once the job is terminal-complete
+// and is left zero otherwise. Best-effort: a missing ledger store or a read
+// failure never fails the status query.
+func (r *RPCServer) stampConfirmedExitCost(ctx context.Context,
+	resp *waverpc.GetUnrollStatusResponse, outpoint wire.OutPoint) {
+
+	if resp == nil || !resp.GetFound() || r.server.ledgerStore == nil {
+		return
+	}
+
+	completed := waverpc.UnrollJobStatus_UNROLL_JOB_STATUS_COMPLETED
+	if resp.GetStatus() != completed {
+		return
+	}
+
+	// A read failure on a wired ledger store is not an expected condition:
+	// it silently zeroes exit_cost_sat on a COMPLETED response, so it
+	// warrants more than debug visibility.
+	cost, err := r.server.ledgerStore.GetConfirmedExitCost(ctx, outpoint)
+	if err != nil {
+		r.server.log.WarnS(ctx, "Confirmed exit cost lookup failed",
+			err,
+			slog.String("outpoint", outpoint.String()),
+		)
+
+		return
+	}
+
+	resp.ExitCostSat = cost
 }
 
 // queryUnrollRegistry asks the live unroll registry actor for the

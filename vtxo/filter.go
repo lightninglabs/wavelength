@@ -86,7 +86,8 @@ func SumPendingBalance(descs []*Descriptor) btcutil.Amount {
 
 		// Spendable, terminal, or separately accounted.
 		case VTXOStatusLive, VTXOStatusForfeited, VTXOStatusSpent,
-			VTXOStatusUnilateralExit, VTXOStatusFailed:
+			VTXOStatusUnilateralExit, VTXOStatusFailed,
+			VTXOStatusExpired:
 		}
 	}
 

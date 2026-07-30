@@ -154,6 +154,9 @@ func (e *trackedTxFeeBumpStarted) trackedTxEventSealed() {}
 type trackedTxConfirmed struct {
 	// BlockHeight is the block height where the tx confirmed.
 	BlockHeight int32
+
+	// BlockHash is the hash of the block the tx confirmed in.
+	BlockHash chainhash.Hash
 }
 
 // trackedTxEventSealed marks trackedTxConfirmed as a tracked-tx event.
@@ -332,6 +335,21 @@ func trackedTxConfirmHeight(state trackedTxState) (int32, bool) {
 
 	default:
 		return 0, false
+	}
+}
+
+// trackedTxConfirmBlockHash returns the state's confirmation block hash if
+// the transaction has already confirmed.
+func trackedTxConfirmBlockHash(state trackedTxState) (chainhash.Hash, bool) {
+	switch s := state.(type) {
+	case *trackedTxStateConfirmed:
+		return s.ConfirmBlockHash, true
+
+	case *trackedTxStateFinalized:
+		return s.ConfirmBlockHash, true
+
+	default:
+		return chainhash.Hash{}, false
 	}
 }
 

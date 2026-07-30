@@ -211,7 +211,7 @@ func TestClampBoardingAmount(t *testing.T) {
 
 			clamp, err := clampBoardingAmount(
 				tc.total, tc.targetCount, tc.maxVTXO,
-				tc.headroom, dust,
+				tc.headroom, dust, 0,
 			)
 			if tc.wantErr != nil {
 				require.ErrorIs(t, err, tc.wantErr)
@@ -255,6 +255,111 @@ func TestClampBoardingAmount(t *testing.T) {
 	}
 }
 
+// TestClampBoardingAmountPerRoundCap locks the wavelength#858 fix: the
+// per-round VTXO cap bounds the fanout the operator's per-VTXO maximum would
+// otherwise force, routing the excess to change instead of minting a
+// round-window-overrunning number of pieces on a single boarding round.
+func TestClampBoardingAmountPerRoundCap(t *testing.T) {
+	t.Parallel()
+
+	const (
+		floor   = btcutil.Amount(1_000)
+		bigCap  = btcutil.Amount(1 << 50)
+		maxVTXO = btcutil.Amount(200_000)
+
+		// MaxUserBalance / MaxVTXOAmount = 100_000_000 / 200_000 = 500
+		// pieces — the fanout that stranded the deposit on signet.
+		total = btcutil.Amount(100_000_000)
+
+		roundCap = uint32(128)
+	)
+
+	// Baseline: with the cap disabled the operator terms force the full
+	// 500-piece fanout (the bug), with nothing returned as change.
+	uncapped, err := clampBoardingAmount(
+		total, 0, maxVTXO, bigCap, floor, 0,
+	)
+	require.NoError(t, err)
+	require.Equal(t, uint32(500), uncapped.VTXOCount)
+	require.Equal(t, btcutil.Amount(0), uncapped.Change)
+
+	// Capped: board at most roundCap max-size VTXOs; the remainder returns
+	// as change to re-board next round.
+	capped, err := clampBoardingAmount(
+		total, 0, maxVTXO, bigCap, floor, roundCap,
+	)
+	require.NoError(t, err)
+	require.Equal(t, roundCap, capped.VTXOCount)
+	require.Equal(
+		t, btcutil.Amount(int64(roundCap)*int64(maxVTXO)),
+		capped.BoardAmount,
+	)
+	require.Equal(t, total-capped.BoardAmount, capped.Change)
+	require.Equal(t, btcutil.Amount(0), capped.DustToFee)
+
+	// Conservation holds under the cap.
+	require.Equal(
+		t, total, capped.BoardAmount+capped.Change+capped.DustToFee,
+	)
+
+	// The change remainder re-boards, and each re-board is again capped, so
+	// boarding converges over a handful of rounds rather than looping on
+	// one oversized shape.
+	next, err := clampBoardingAmount(
+		capped.Change, 0, maxVTXO, bigCap, floor, roundCap,
+	)
+	require.NoError(t, err)
+	require.LessOrEqual(t, next.VTXOCount, roundCap)
+
+	// A cap that is not binding (fewer pieces needed than the cap) leaves
+	// the split untouched — no spurious change.
+	small := btcutil.Amount(10 * int64(maxVTXO))
+	nonBinding, err := clampBoardingAmount(
+		small, 0, maxVTXO, bigCap, floor, roundCap,
+	)
+	require.NoError(t, err)
+	require.Equal(t, uint32(10), nonBinding.VTXOCount)
+	require.Equal(t, btcutil.Amount(0), nonBinding.Change)
+
+	// A total just above the per-round max lands the clipped remainder
+	// sub-floor, so the change-shift fires on top of the cap clip: the
+	// board shrinks to hold the change at exactly the floor, the count
+	// stays at or under the cap, and value is still conserved.
+	perRoundMax := btcutil.Amount(int64(roundCap) * int64(maxVTXO))
+	overCap := perRoundMax + floor/2
+	shifted, err := clampBoardingAmount(
+		overCap, 0, maxVTXO, bigCap, floor, roundCap,
+	)
+	require.NoError(t, err)
+	require.Equal(t, floor, shifted.Change)
+	require.LessOrEqual(t, shifted.VTXOCount, roundCap)
+	require.Equal(
+		t, overCap,
+		shifted.BoardAmount+shifted.Change+shifted.DustToFee,
+	)
+
+	// A large caller-supplied target count must ALSO be capped, not just
+	// the boarded amount. Here the balance (50 max-size VTXOs' worth) sits
+	// below perRoundMax, so the amount is NOT clipped at all — yet a
+	// requested 500-way split with a small floor would, without the count
+	// cap, mint 500 sub-maximum pieces and overrun the round window.
+	// Clipping the amount alone would miss this; the count cap is what
+	// bounds it. Each of the (now 128) pieces stays a valid [floor,
+	// maxVTXO] output and value is fully conserved with no change.
+	belowPerRoundMax := btcutil.Amount(50 * int64(maxVTXO))
+	targetDriven, err := clampBoardingAmount(
+		belowPerRoundMax, 500, maxVTXO, bigCap, floor, roundCap,
+	)
+	require.NoError(t, err)
+	require.Equal(t, roundCap, targetDriven.VTXOCount)
+	require.Equal(t, belowPerRoundMax, targetDriven.BoardAmount)
+	require.Equal(t, btcutil.Amount(0), targetDriven.Change)
+	pieceValue := int64(targetDriven.BoardAmount) /
+		int64(targetDriven.VTXOCount)
+	require.GreaterOrEqual(t, pieceValue, int64(floor))
+	require.LessOrEqual(t, pieceValue, int64(maxVTXO))
+}
+
 // TestClampBoardingAmountInvariants fuzzes the boarding clamp + split over
 // random operator limits and asserts the dust-safety invariants for every
 // accepted board: value is conserved, no VTXO piece lands below the floor or
@@ -295,8 +400,16 @@ func TestClampBoardingAmountInvariants(t *testing.T) {
 
 		targetCount := rapid.Uint32Range(0, 4_000).Draw(rt, "count")
 
+		// A per-round cap of zero disables the cap; otherwise it ranges
+		// from tight to loose. The clamp invariants (conservation,
+		// piece bounds) must hold regardless of the cap.
+		perRoundCap := rapid.Uint32Range(0, 4_000).Draw(
+			rt, "perRoundCap",
+		)
+
 		clamp, err := clampBoardingAmount(
 			total, targetCount, maxVTXO, headroom, floor,
+			perRoundCap,
 		)
 		if err != nil {
 

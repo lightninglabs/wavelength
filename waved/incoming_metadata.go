@@ -11,11 +11,37 @@ import (
 	"github.com/lightninglabs/wavelength/build"
 	"github.com/lightninglabs/wavelength/indexer"
 	"github.com/lightninglabs/wavelength/internal/indexerlimits"
+	mailboxrpc "github.com/lightninglabs/wavelength/mailbox/rpc"
 	"github.com/lightninglabs/wavelength/oor"
 	"github.com/lightninglabs/wavelength/vtxo"
 )
 
 const incomingMetadataIndexPageSize = 128
+
+// indexerPageCall issues one indexer page fetch. It is the seam that decides
+// whether a page shed by the operator is re-issued, and under which
+// idempotency key.
+//
+// The resolver pages through a script's inventory, and each page is its own
+// logical query because it carries its own cursor. A caller that re-issues a
+// shed page therefore has to hold one key for that page and not for the whole
+// scan, which is why the seam sits inside the loop rather than around it.
+type indexerPageCall func(
+	ctx context.Context, call func(mailboxrpc.RPCOptions) error,
+) error
+
+// singleShotIndexerPage issues one page fetch and returns whatever it gets,
+// leaving the transport to mint the idempotency key.
+//
+// This is right for a caller that does not re-issue: with exactly one attempt
+// there is no second send for the operator to recognize, so a per-send key
+// costs nothing. It is wrong for anything that retries, which is what
+// retryRecoveryIndexerRPC is for.
+func singleShotIndexerPage(_ context.Context,
+	call func(mailboxrpc.RPCOptions) error) error {
+
+	return call(mailboxrpc.RPCOptions{})
+}
 
 // ResolveIncomingMetadataFromIndexer queries the authoritative indexer
 // inventory for the just-created OOR output and maps the result into the
@@ -33,10 +59,28 @@ func ResolveIncomingMetadataFromIndexer(ctx context.Context,
 // indexer inventory for the just-created OOR output and maps the result into
 // the incoming materialization metadata required by the local VTXO store,
 // applying caller-provided receive limits to pagination work.
+//
+// Each page is sent once and a shed page fails the resolve, which is the
+// behavior the live receive path wants: it has a caller waiting on the other
+// end of an OOR receive, so failing fast beats holding that caller through a
+// backoff. Seed recovery has no such caller and should retry instead, so it
+// goes through resolveIncomingMetadataWithRetry.
 func ResolveIncomingMetadataFromIndexerWithLimits(ctx context.Context,
 	idx *indexer.Client, sessionID oor.SessionID,
 	recipient oor.ArkRecipientOutput,
 	limits oor.ReceiveLimits) (oor.IncomingVTXOMetadata, error) {
+
+	return resolveIncomingMetadataWithRetry(
+		ctx, idx, sessionID, recipient, limits, singleShotIndexerPage,
+	)
+}
+
+// resolveIncomingMetadataWithRetry is the shared resolver body, with page
+// fetches issued through the caller-supplied seam.
+func resolveIncomingMetadataWithRetry(ctx context.Context, idx *indexer.Client,
+	sessionID oor.SessionID, recipient oor.ArkRecipientOutput,
+	limits oor.ReceiveLimits,
+	issuePage indexerPageCall) (oor.IncomingVTXOMetadata, error) {
 
 	if idx == nil {
 		return oor.IncomingVTXOMetadata{}, fmt.Errorf("indexer " +
@@ -65,15 +109,26 @@ func ResolveIncomingMetadataFromIndexerWithLimits(ctx context.Context,
 	var cursor []byte
 	var scanned uint64
 	for {
-		resp, err := idx.ListVTXOsByScriptsTaproot(
-			ctx,
-			[]indexer.TaprootScriptScope{{
-				PkScript: append(
-					[]byte(nil), recipient.PkScript...,
-				),
-			}},
-			cursor, pageSize, nil,
-		)
+		// The cursor is captured by the closure, so every re-issue of
+		// this page asks for the same page. Combined with the one key
+		// the seam holds across those attempts, a shed page looks to
+		// the operator like the single query it is.
+		var resp *arkrpc.ListVTXOsByScriptsResponse
+		err := issuePage(ctx, func(opts mailboxrpc.RPCOptions) error {
+			var err error
+			resp, err = idx.ListVTXOsByScriptsTaproot(
+				ctx,
+				[]indexer.TaprootScriptScope{{
+					PkScript: append(
+						[]byte(nil),
+						recipient.PkScript...,
+					),
+				}},
+				cursor, pageSize, nil, opts,
+			)
+
+			return err
+		})
 		if err != nil {
 			return oor.IncomingVTXOMetadata{}, fmt.Errorf("list "+
 				"VTXOs by script: %w", err)

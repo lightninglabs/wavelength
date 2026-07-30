@@ -329,6 +329,18 @@ type RegistryConfig struct {
 	// and reap. Zero falls back to DefaultAdmitTimeout.
 	AdmitTimeout time.Duration
 
+	// ReceiveAdmitTimeout bounds the synchronous CreateCredit call made by
+	// a sub-dust receive admission. It is separate from (and shorter than)
+	// AdmitTimeout because a receive is an interactive wallet call: the
+	// caller is blocked waiting for the invoice, and a healthy swap server
+	// answers CreateCredit about as fast as RequestChannelId (sub-second).
+	// A long bound therefore just turns an operator whose credit subsystem
+	// is unresponsive into a silent multi-second hang (wavelength#1041). No
+	// durable operation row is written until CreateCredit succeeds, so
+	// timing out here leaves no orphaned client state. Zero falls back to
+	// DefaultReceiveAdmitTimeout.
+	ReceiveAdmitTimeout time.Duration
+
 	// AutoRedeem configures the wallet-owned auto-redeem policy.
 	AutoRedeem AutoRedeemConfig
 
@@ -377,6 +389,14 @@ const (
 	// DefaultAdmitTimeout bounds the synchronous server work an admission
 	// performs on the supervisor goroutine.
 	DefaultAdmitTimeout = 30 * time.Second
+
+	// DefaultReceiveAdmitTimeout bounds the synchronous CreateCredit call
+	// for a sub-dust receive admission. 15s is generous headroom over a
+	// healthy swap server's sub-second CreateCredit latency while failing
+	// an unresponsive credit subsystem in half the time of the general
+	// AdmitTimeout, so an interactive receive does not hang the full 30s
+	// before surfacing the actionable ErrCreditReceiveUnavailable error.
+	DefaultReceiveAdmitTimeout = 15 * time.Second
 
 	// DefaultMaxAwaitingPolls bounds how many reconciliation polls a single
 	// awaiting state (top-up funding or credit-pay settlement) may take

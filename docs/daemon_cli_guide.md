@@ -50,6 +50,33 @@ Two options:
 
 See [wavewalletrpc_build.md](wavewalletrpc_build.md) for more.
 
+## Automation Contract
+
+Command results are written to stdout. Failures are written to stderr as one
+JSON envelope with stable `code`, `message`, and `retryable` fields, plus
+`details` and `remediation` when useful:
+
+```json
+{
+  "error": {
+    "code": "UNAVAILABLE",
+    "message": "connection refused",
+    "remediation": "verify waved is running and --rpcserver points to it, then retry",
+    "retryable": true
+  }
+}
+```
+
+The process exits with `2` for invalid arguments, `3` for authentication or
+authorization failures, `4` for missing resources, and `5` when a valid
+fund-moving command needs explicit confirmation on non-interactive stdin.
+Other failures exit with `1`. A successful `--dry-run` is a normal result: it
+prints a JSON preview containing `"dry_run": true` and exits with `0`.
+
+If `send` needs confirmation but stdin is not interactive, its prepared amount,
+fee, rail, and destination preview is written to stderr before the
+`CONFIRMATION_REQUIRED` envelope. Review it and rerun with `--yes`.
+
 ## Daemon Configuration
 
 `waved` supports two wallet backends: **lwwallet** (standalone,
@@ -159,12 +186,12 @@ the only backup.
 # Via environment variable (recommended for automation)
 WAVED_WALLET_PASSWORD=your_password wavecli create
 
-# Via stdin pipe
-echo -n 'your_password' | wavecli create
+# Via explicit stdin (never consumed unless requested)
+printf '%s\n' 'your_password' | wavecli create --password-stdin
 
 # Via password file
 wavecli create \
-  --wallet_password_file=/path/to/password_file
+  --wallet-password-file=/path/to/password_file
 
 # Interactive (prompts for password on TTY)
 wavecli create
@@ -261,16 +288,16 @@ wavecli
 ├── send                      — Lightning invoice / onchain leave (wavewalletrpc)
 ├── activity [inspect]        — unified wallet activity feed (wavewalletrpc)
 ├── exit {status|summary|plan} — cooperative leave by default, forced unroll (wavewalletrpc)
-├── wallet-sweep              — sweep backing wallet to a destination (wavewalletrpc)
+├── wallet-sweep              — preview a backing-wallet sweep; broadcast requires approval
 ├── mcp serve                 — MCP server for AI agents (wavewalletrpc)
 ├── schema                    — JSON dump of CLI methods
 ├── ark                       — power-user parent (hidden; no wavewalletrpc)
 │   ├── board                 — board confirmed boarding UTXOs
 │   ├── vtxos {list|refresh|leave}
 │   ├── oor {receive|get|list}
-│   ├── send {oor|inround}
+│   ├── send {oor|inround}    — real transfers require approval
 │   ├── rounds {get|list|join|watch}
-│   ├── sweep [list]
+│   ├── sweep [list]          — broadcast requires approval
 │   ├── fees {estimate|history}
 │   └── listtransactions
 ├── recovery {list|status|escalate|cancel} — daemon-owned vHTLC recovery rows (hidden)
@@ -289,7 +316,22 @@ wavecli
 | `--macaroonpath` | | Explicit admin macaroon path (overrides `--datadir`) |
 | `--no-tls` | `false` | Disable TLS (regtest / dev); requires `--no-macaroons` |
 | `--no-macaroons` | `false` | Disable macaroon auth (required alongside `--no-tls`) |
-| `--json` | | Raw JSON request payload (overrides bespoke flags) |
+| `--timeout` | `30s` | Maximum duration for each finite daemon RPC; `0` disables the deadline. Live watches use their stream-specific bounds. |
+| `--json` | `false` | Emit machine-readable JSON output |
+| `--request-json` | | Raw JSON request payload (overrides bespoke flags) |
+
+Flag names are canonical kebab-case in help and examples. Equivalent
+snake_case spellings remain silent compatibility aliases; proto JSON and MCP
+argument field names remain snake_case.
+
+### Money-movement confirmation
+
+`wallet-sweep --broadcast`, `ark sweep --broadcast`, and real
+`ark send inround|oor` calls require a y/N confirmation on a terminal. Agents,
+pipelines, `--no-input`, and `CI=true` must pass the command-local `--yes`
+flag. Without it, the CLI describes the blocked action and returns
+`CONFIRMATION_REQUIRED` with exit code 5 before dialing the daemon. Preview and
+`--dry-run` paths never require approval.
 
 ### `getinfo`
 
@@ -317,7 +359,7 @@ Allocate an inbound payment surface.
 | `--offchain` | bool | Returns a BOLT-11 invoice via the swap subsystem (default) |
 | `--onchain` | bool | Returns a fresh boarding address |
 | `--amt` | uint | Required for `--offchain`; ignored for `--onchain` |
-| `--amt_hint` | uint | Optional expected amount for `--onchain` (accounting only) |
+| `--amt-hint` | uint | Optional expected amount for `--onchain` (accounting only) |
 | `--memo` | string | Optional memo embedded in the offchain invoice |
 
 ```bash
@@ -364,7 +406,7 @@ List VTXOs known to the wallet with optional filters.
 | Flag | Type | Description |
 |------|------|-------------|
 | `--status` | string | Filter: live, pending_forfeit, forfeiting, forfeited, spent, unilateral_exit, failed, spending |
-| `--min_amount` | int64 | Minimum amount in sats |
+| `--min-amount` | int64 | Minimum amount in sats |
 | `--fields` | string | Comma-separated field names to include |
 | `--ndjson` | bool | Emit one JSON object per VTXO (newline-delimited) |
 
@@ -373,7 +415,7 @@ List VTXOs known to the wallet with optional filters.
 wavecli ark vtxos list
 
 # Live VTXOs above 10k sats, only outpoint and amount
-wavecli ark vtxos list --status live --min_amount 10000 \
+wavecli ark vtxos list --status live --min-amount 10000 \
   --fields outpoint,amount_sat
 
 # Streaming NDJSON for piping to jq
@@ -383,7 +425,7 @@ wavecli ark vtxos list --ndjson | jq '.amount_sat'
 ### `ark vtxos refresh`
 
 Queue VTXOs for refresh in the next round and (by default) join that
-round immediately. Pass `--no_join` to leave the intent queued in
+round immediately. Pass `--no-join` to leave the intent queued in
 `PendingRoundAssembly` so it can batch with subsequent refresh / leave
 RPCs; commit the batch later with `ark rounds join`.
 
@@ -401,7 +443,7 @@ already-connected wallets.
 
 A refresh is charged an operator fee (on-chain share + liquidity +
 margin), set by the server-issued quote at seal time and auto-accepted
-up to the daemon's `maxoperatorfeesat` cap. `--dry_run` previews an
+up to the daemon's `maxoperatorfeesat` cap. `--dry-run` previews an
 itemized advisory estimate for the selected VTXOs — per outpoint:
 amount, remaining lifetime, liquidity / on-chain / margin components —
 resolved entirely from the daemon's own view, with no manual amount or
@@ -415,28 +457,28 @@ seal-time quote and may differ from any estimate.
 
 An interactive real refresh shows the estimate and asks for
 confirmation. On non-interactive stdin (agents, pipelines) the command
-refuses to prompt: pass `--yes` (explicit consent) or `--dry_run`
+refuses to prompt: pass `--yes` (explicit consent) or `--dry-run`
 (preview). This mirrors the `leave --all` consent gate.
 
 | Flag | Type | Description |
 |------|------|-------------|
 | `--outpoint` | string[] | VTXO outpoint(s) to refresh (txid:index) |
 | `--all` | bool | Refresh all live VTXOs |
-| `--dry_run` | bool | Validate without queuing and preview the estimated fee |
+| `--dry-run` | bool | Validate without queuing and preview the estimated fee |
 | `--yes` | bool | Skip the interactive fee confirmation |
-| `--no_join` | bool | Skip the implicit `ark rounds join` follow-up |
+| `--no-join` | bool | Skip the implicit `ark rounds join` follow-up |
 
 ```bash
 # Preview the itemized fee estimate without queuing anything
-wavecli ark vtxos refresh --outpoint <txid:idx> --dry_run
+wavecli ark vtxos refresh --outpoint <txid:idx> --dry-run
 
 # Explicit outpoints (auto-joins the next round; prompts with the
 # estimate on a TTY, requires --yes when stdin is not interactive)
 wavecli ark vtxos refresh --outpoint <txid:idx> --yes
 
 # Batch with other intents — explicitly join later
-wavecli ark vtxos refresh --outpoint <txid:idx> --yes --no_join
-wavecli ark vtxos leave   --outpoint <txid:idx> --no_join \
+wavecli ark vtxos refresh --outpoint <txid:idx> --yes --no-join
+wavecli ark vtxos leave   --outpoint <txid:idx> --no-join \
   --address bcrt1p...
 wavecli ark rounds join
 ```
@@ -450,10 +492,11 @@ Send via in-round refresh (waits for next round to commit).
 | `--to` | string[] | Recipient address(es) (bech32m) |
 | `--pubkey` | string[] | Recipient x-only pubkey hex(es); paired after `--to` entries |
 | `--amount` | int64[] | Amount(s) in sats (one per recipient, `--to` then `--pubkey` order) |
-| `--dry_run` | bool | Validate without submitting |
+| `--dry-run` | bool | Validate without submitting |
+| `--yes` | bool | Approve submitting the real transfer without a prompt |
 
 ```bash
-wavecli ark send inround --to bcrt1p... --amount 50000
+wavecli ark send inround --to bcrt1p... --amount 50000 --yes
 
 # Multiple recipients
 wavecli ark send inround \
@@ -461,7 +504,7 @@ wavecli ark send inround \
   --to bcrt1p...addr2 --amount 30000
 
 # Via JSON input
-wavecli ark send inround --json '{
+wavecli ark send inround --request-json '{
   "recipients": [
     {"address":"bcrt1p...","amount_sat":50000},
     {"address":"bcrt1p...","amount_sat":30000}
@@ -478,13 +521,14 @@ Send via out-of-round transfer (immediate, through operator).
 | `--to` | string | Recipient address (one of `--to` / `--pubkey`) |
 | `--pubkey` | string | Recipient 32-byte x-only pubkey hex |
 | `--amount` | int64 | Amount in sats |
-| `--idempotency_key` | string | Caller-provided key for retry-safe sends |
-| `--dry_run` | bool | Validate without initiating |
+| `--idempotency-key` | string | Caller-provided key for retry-safe sends |
+| `--dry-run` | bool | Validate without initiating |
+| `--yes` | bool | Approve initiating the real transfer without a prompt |
 
 ```bash
-wavecli ark send oor --pubkey <pubkey_xonly_hex> --amount 25000
+wavecli ark send oor --pubkey <pubkey_xonly_hex> --amount 25000 --yes
 wavecli ark send oor --pubkey <hex> --amount 25000 \
-  --idempotency_key my-attempt-1
+  --idempotency-key my-attempt-1
 ```
 
 ### `send <invoice-or-address>` (wavewalletrpc)
@@ -505,7 +549,7 @@ pass `--force` or `--yes` to skip the confirmation prompt.
 | `--offchain` | bool | BOLT-11 dispatch via swap subsystem (default) |
 | `--onchain` | bool | Atomic onchain send via `SendOnChain` |
 | `--amt` | uint | Amount in sats (required for onchain unless `--sweep-all`) |
-| `--max_fee` | uint | Max swap fee in sats (invoice sends only) |
+| `--max-fee` | uint | Max swap fee in sats (invoice sends only) |
 | `--note` | string | Caller-supplied label |
 | `--sweep-all` | bool | Onchain only: drain wallet; `--amt` must be 0 |
 | `--force` / `--yes` | bool | Skip the interactive confirmation prompt |
@@ -585,6 +629,7 @@ The merged wallet activity feed: send / recv / deposit / exit history.
 wavecli activity
 wavecli activity --pending --kind send,recv
 wavecli activity --format json
+wavecli activity --json
 wavecli activity --cursor <next_cursor>
 wavecli activity inspect <id>
 ```
@@ -608,6 +653,12 @@ wavecli schema ark.vtxos.list
 wavecli schema --all
 ```
 
+Every schema entry includes a stable `output_schema_id` and
+`output_schema_version`, plus a `side_effect` boolean and whether the same
+method is exposed through MCP. The unit suite walks the real cobra command
+tree and the live MCP tool list, so a declared flag or tool cannot silently
+drift from the executable surface.
+
 ### `mcp serve` (wavewalletrpc)
 
 Start an MCP (Model Context Protocol) server on stdio for AI agent
@@ -622,6 +673,16 @@ intentionally excluded from MCP to prevent sensitive material from
 transiting the protocol. Use the CLI directly for wallet operations.
 `ark.oor.receive` is exposed because it only allocates a fresh
 wallet-derived receive target and does not reveal seed material.
+
+The everyday wallet `send` MCP tool is intentionally two-phase. First call
+`send.prepare` with the destination, rail, amount, fee limit, and note. It
+validates the payment and returns the exact preview plus a short-lived,
+single-use `send_intent_id` without moving funds. After inspecting that
+preview, call `send` with only that `send_intent_id`. The second call consumes
+the prepared intent and may move funds; it cannot silently replace the
+reviewed payment parameters. The raw `ark.send.inround` / `ark.send.oor`
+advanced tools are not two-phase — they dispatch in one call, gated only by
+their optional `dry_run` flag.
 
 ## Regtest Quickstart
 
@@ -678,9 +739,15 @@ Wallet passwords are never accepted as CLI arguments. The priority
 order for password resolution:
 
 1. **Environment variable** -- `WAVED_WALLET_PASSWORD=pass`
-2. **Password file** -- `--wallet_password_file=/path/to/file`
-3. **stdin pipe** -- `echo -n 'pass' | wavecli unlock`
+2. **Password file** -- `--wallet-password-file=/path/to/file`
+3. **Explicit stdin** -- `printf '%s\n' 'pass' | wavecli unlock --password-stdin`
 4. **Interactive prompt** -- prompted on TTY if none of the above
+
+Plain piped stdin is never consumed as a password. Pass global `--no-input`
+when an invocation must never prompt or implicitly read input. `CI=true` also
+suppresses prompts while leaving stdout and stderr output unchanged. Explicit
+sources such as `--password-stdin`, a password file, or the environment remain
+available under `--no-input`.
 
 For production deployments, use the password file approach with
 restrictive file permissions (`chmod 600`).

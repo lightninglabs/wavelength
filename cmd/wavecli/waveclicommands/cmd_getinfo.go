@@ -1,7 +1,6 @@
 package waveclicommands
 
 import (
-	"context"
 	"fmt"
 
 	"github.com/lightninglabs/wavelength/waverpc"
@@ -35,7 +34,10 @@ func getInfo(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	resp, err := client.GetInfo(context.Background(), req)
+	ctx, cancel := rpcContext(cmd)
+	defer cancel()
+
+	resp, err := client.GetInfo(ctx, req)
 	if err != nil {
 		return fmt.Errorf("GetInfo RPC failed: %w", err)
 	}

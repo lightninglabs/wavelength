@@ -1,5 +1,7 @@
 # wavelength
 
+[![MIT licensed](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 `wavelength` is a self-custodial Bitcoin wallet system written in Go. It
 unifies three layers that usually live in separate tools: an Ark client, a
 Lightning swap engine, and an on-chain wallet. All of it runs behind one
@@ -238,6 +240,4 @@ across minor versions.
 
 ## License
 
-A `LICENSE` file has not yet been published in this repository. Until one is
-added, treat the code as all-rights-reserved and contact the maintainers
-before redistributing.
+Wavelength is released under the [MIT License](LICENSE).

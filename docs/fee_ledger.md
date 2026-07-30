@@ -149,19 +149,32 @@ Event 1 (wallet_utxo_created) — emitted when the wallet UTXO first confirmed:
   credit opening_balance   += gross
 
 Event 2 (vtxo_received, SourceRoundBoarding) — emitted when the round confirms:
-  debit  vtxo_balance      += gross
-  credit wallet_balance    += gross   (asset down)
+  debit  vtxo_balance      += sealed  (gross − fee: the server's seal-time
+  credit wallet_balance    += sealed   quote residual that lands in the leaf)
 
 Event 3 (boarding_fee_paid) — if the round charged an operator fee:
   debit  fees_paid         += fee
-  credit vtxo_balance      += fee
+  credit wallet_balance    += fee
 ```
+
+The received leg books the SEALED leaf value (what the VTXO is
+actually worth), so the fee leg credits `wallet_balance` — the
+account the fee was truly paid from — completing the gross
+wallet outflow without disturbing `vtxo_balance`.
+
+The fee typing is round-level: a composed round mixing boarding
+inputs with forfeited VTXOs emits ONE fee row typed boarding
+(boarding takes precedence), so the refresh-carved share of that
+round's fee is also credited from `wallet_balance`. The drift is
+bounded by one round's fee and only affects the per-account audit
+split, not any balance an RPC consumer reads today; a per-type
+fee split proportioned by input source would eliminate it.
 
 Per-account net effect:
 - `opening_balance` ↑ by gross (tracks that these funds
   originated externally).
-- `wallet_balance` unchanged (deposit in, boarding out).
-- `vtxo_balance` ↑ by gross - fee.
+- `wallet_balance` unchanged (deposit in; sealed value + fee out).
+- `vtxo_balance` ↑ by gross - fee (the sealed VTXO value).
 - `fees_paid` ↑ by fee when a boarding operator fee exists.
 
 The scenario test
@@ -179,17 +192,23 @@ emitter: round.RoundClientActor.emitVTXOsReceived (VTXOOriginRoundRefresh branch
          round.RoundClientActor.emitRoundFee
 
 Event 1 (vtxo_sent):
-  debit  transfers_out     += gross
-  credit vtxo_balance      += gross   (asset down)
+  debit  transfers_out     += sealed
+  credit vtxo_balance      += sealed  (asset down)
 
 Event 2 (vtxo_received, SourceRoundRefresh):
-  debit  vtxo_balance      += gross
-  credit transfers_out     += gross   (expense down, cancelling Event 1's debit)
+  debit  vtxo_balance      += sealed
+  credit transfers_out     += sealed  (expense down, cancelling Event 1's debit)
 
 Event 3 (refresh_fee_paid):
   debit  fees_paid         += fee
   credit vtxo_balance      += fee     (asset down by fee)
 ```
+
+Both paired legs carry the same amount — the sealed value of the
+replacement VTXO — so they cancel exactly and the fee leg is the
+only real movement. A refresh fee is carved out of forfeited VTXO
+value, so (unlike the boarding fee above) it credits
+`vtxo_balance`.
 
 Per-account net effect across all three events:
 - `transfers_out` ↓ 0 (+gross from event 1 debit, −gross from event 2 credit).

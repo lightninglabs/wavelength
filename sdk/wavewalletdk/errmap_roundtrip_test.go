@@ -64,6 +64,11 @@ var reasonContract = []struct {
 		swapwallet.ErrBalanceLimitExceeded, ErrBalanceLimitExceeded,
 		codes.FailedPrecondition,
 	},
+	{
+		wavewalletrpc.ReasonCreditReceiveUnavailable,
+		swapwallet.ErrCreditReceiveUnavailable, ErrCreditReceiveUnavailable,
+		codes.Unavailable,
+	},
 }
 
 // TestSentinelMessageParity guards against drift between the daemon's

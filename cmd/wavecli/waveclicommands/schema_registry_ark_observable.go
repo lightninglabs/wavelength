@@ -49,6 +49,16 @@ func arkObservableMutateMethodRegistry() []schemaMethod {
 			ResponseType: "BoardResponse",
 			JSONInput:    true,
 		},
+		{
+			Method: "ark.rounds.join",
+			Description: "Commit queued intents and join the " +
+				"next " +
+				"round",
+			Params:       nil,
+			RequestType:  "JoinNextRoundRequest",
+			ResponseType: "JoinNextRoundResponse",
+			JSONInput:    false,
+		},
 	}
 }
 
@@ -184,7 +194,22 @@ func arkObservableSingletonMethodRegistry() []schemaMethod {
 		{
 			Method:      "ark.rounds.watch",
 			Description: "Stream round state updates",
-			Params:      nil,
+			Params: []schemaParam{
+				{
+					Name: "max-events",
+					Type: "uint32",
+					Description: "stop after this many " +
+						"updates; 0 has no " +
+						"event-count limit",
+				},
+				{
+					Name: "for",
+					Type: "duration",
+					Description: "watch for this " +
+						"duration instead of the " +
+						"global --timeout",
+				},
+			},
 			RequestType: "WatchRoundsRequest",
 			ResponseType: "RoundStateUpdate (server " +
 				"stream)",

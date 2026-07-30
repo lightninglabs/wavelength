@@ -1,13 +1,10 @@
 package waveclicommands
 
 import (
-	"context"
 	"fmt"
-	"strings"
 
 	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/spf13/cobra"
-	"github.com/spf13/pflag"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -40,24 +37,7 @@ func newOORGetCmd() *cobra.Command {
 	cmd.Flags().String("session-id", "",
 		"OOR session id to fetch")
 
-	// Accept the snake_case spelling (--session_id) as well as the
-	// registered kebab form. The RPC field, `oor list` JSON output, and the
-	// daemon logs all name this field session_id, so a user copying that
-	// name should not hit an "unknown flag" error (issue #900). This only
-	// adds an alias: every flag on this command (and the inherited global
-	// flags) is defined in kebab case, so folding underscores to dashes
-	// never renames an existing flag.
-	cmd.Flags().SetNormalizeFunc(snakeToKebabFlags)
-
 	return cmd
-}
-
-// snakeToKebabFlags folds a snake_case flag name onto its canonical kebab-case
-// spelling so both spellings resolve to the same flag. Apply it only to
-// commands whose flags are all defined in kebab case, where it acts purely as
-// an alias.
-func snakeToKebabFlags(_ *pflag.FlagSet, name string) pflag.NormalizedName {
-	return pflag.NormalizedName(strings.ReplaceAll(name, "_", "-"))
 }
 
 // newOORListCmd creates the oor list subcommand.
@@ -118,7 +98,10 @@ func oorGet(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	resp, err := client.GetOORSession(context.Background(), req)
+	ctx, cancel := rpcContext(cmd)
+	defer cancel()
+
+	resp, err := client.GetOORSession(ctx, req)
 	if err != nil {
 		return fmt.Errorf("GetOORSession RPC failed: %w", err)
 	}
@@ -163,7 +146,10 @@ func oorList(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	resp, err := client.ListOORSessions(context.Background(), req)
+	ctx, cancel := rpcContext(cmd)
+	defer cancel()
+
+	resp, err := client.ListOORSessions(ctx, req)
 	if err != nil {
 		return fmt.Errorf("ListOORSessions RPC failed: %w", err)
 	}
@@ -196,9 +182,10 @@ func oorReceive(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	resp, err := client.NewReceiveScript(
-		context.Background(), req,
-	)
+	ctx, cancel := rpcContext(cmd)
+	defer cancel()
+
+	resp, err := client.NewReceiveScript(ctx, req)
 	if err != nil {
 		return fmt.Errorf("NewReceiveScript RPC failed: %w", err)
 	}

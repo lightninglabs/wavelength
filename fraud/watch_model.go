@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/lib/tree"
 	"github.com/lightninglabs/wavelength/vtxo"
@@ -41,6 +43,15 @@ type WatchPoint struct {
 
 	// HeightHint is the earliest plausible spend height.
 	HeightHint uint32
+
+	// SweepLeafHash is the tap hash of the operator's unilateral-CSV
+	// timeout leaf committed in this output's taproot. A spend that
+	// reveals exactly this leaf is the operator's legitimate batch sweep
+	// rather than a sender materializing ancestry, so it is what
+	// distinguishes the two. Empty when the tree carries no sweep script
+	// (connector trees), in which case no spend can be attributed to the
+	// operator and every spend escalates.
+	SweepLeafHash []byte
 }
 
 // BuildWatchPlan builds the passive fraud watch set for desc.
@@ -69,7 +80,8 @@ func BuildWatchPlan(desc *vtxo.Descriptor) (*WatchPlan, error) {
 
 		err := collectTreeWatches(
 			treePath.Root, treePath.BatchOutput.PkScript,
-			heightHint, watchesByOutpoint,
+			heightHint, treePath.SweepTapscriptRoot,
+			watchesByOutpoint,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("ancestry %d: %w", i, err)
@@ -92,7 +104,8 @@ func BuildWatchPlan(desc *vtxo.Descriptor) (*WatchPlan, error) {
 // inputs detect tree materialization; leaf-output watches detect the first OOR
 // checkpoint spending the materialized source VTXO.
 func collectTreeWatches(node *tree.Node, inputPkScript []byte,
-	heightHint uint32, watches map[wire.OutPoint]WatchPoint) error {
+	heightHint uint32, sweepLeafHash []byte,
+	watches map[wire.OutPoint]WatchPoint) error {
 
 	if node == nil {
 		return fmt.Errorf("%w: nil tree node", ErrWatchInvalid)
@@ -103,9 +116,10 @@ func collectTreeWatches(node *tree.Node, inputPkScript []byte,
 	}
 
 	watches[node.Input] = WatchPoint{
-		Outpoint:   node.Input,
-		PkScript:   append([]byte(nil), inputPkScript...),
-		HeightHint: heightHint,
+		Outpoint:      node.Input,
+		PkScript:      append([]byte(nil), inputPkScript...),
+		HeightHint:    heightHint,
+		SweepLeafHash: append([]byte(nil), sweepLeafHash...),
 	}
 
 	if node.IsLeaf() {
@@ -119,6 +133,10 @@ func collectTreeWatches(node *tree.Node, inputPkScript []byte,
 				ErrWatchInvalid, *leafOutpoint)
 		}
 
+		// A VTXO leaf output commits no operator sweep leaf: its
+		// taproot carries only the collaborative and owner-timeout
+		// paths. Leave SweepLeafHash empty so no spend of it can ever
+		// be attributed to the operator.
 		watches[*leafOutpoint] = WatchPoint{
 			Outpoint: *leafOutpoint,
 			PkScript: append(
@@ -148,7 +166,7 @@ func collectTreeWatches(node *tree.Node, inputPkScript []byte,
 
 		err := collectTreeWatches(
 			child, node.Outputs[outputIndex].PkScript, heightHint,
-			watches,
+			sweepLeafHash, watches,
 		)
 		if err != nil {
 			return err
@@ -186,4 +204,60 @@ func outpointLess(a, b wire.OutPoint) bool {
 	}
 
 	return a.Index < b.Index
+}
+
+// revealedTapLeafHash returns the tap hash of the script revealed by a
+// tapscript spend of the given input, and whether the input was a tapscript
+// spend at all.
+//
+// A taproot script-path witness ends with the control block and carries the
+// revealed script immediately before it. A key-path spend (a single signature)
+// reveals no script and returns false, as does any witness too short to be a
+// script path.
+func revealedTapLeafHash(tx *wire.MsgTx,
+	inputIndex uint32) (chainhash.Hash, bool) {
+
+	if tx == nil || inputIndex >= uint32(len(tx.TxIn)) {
+		return chainhash.Hash{}, false
+	}
+
+	witness := tx.TxIn[inputIndex].Witness
+
+	// script + control block is the minimum for a script-path spend.
+	const minScriptPathWitnessItems = 2
+	if len(witness) < minScriptPathWitnessItems {
+		return chainhash.Hash{}, false
+	}
+
+	script := witness[len(witness)-2]
+	if len(script) == 0 {
+		return chainhash.Hash{}, false
+	}
+
+	return txscript.NewBaseTapLeaf(script).TapHash(), true
+}
+
+// IsOperatorSweepSpend reports whether the observed spend of this watch point
+// took the operator's committed unilateral-CSV timeout leaf, i.e. whether it
+// is the operator's legitimate batch sweep.
+//
+// Provenance, not timing, is the test. Chain height only proves the timeout
+// path has matured; it says nothing about which path a given transaction
+// actually used, so a hostile expansion confirmed after expiry would pass a
+// height check while being exactly the thing fraud response exists to answer.
+// Matching the revealed tapleaf against the one committed in the watched
+// output settles it.
+func (p WatchPoint) IsOperatorSweepSpend(tx *wire.MsgTx,
+	inputIndex uint32) bool {
+
+	if len(p.SweepLeafHash) == 0 {
+		return false
+	}
+
+	revealed, ok := revealedTapLeafHash(tx, inputIndex)
+	if !ok {
+		return false
+	}
+
+	return bytes.Equal(revealed[:], p.SweepLeafHash)
 }

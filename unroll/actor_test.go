@@ -74,6 +74,12 @@ func (m *mockVTXOStore) ListLiveVTXOs(context.Context) ([]*vtxo.Descriptor,
 	return nil, nil
 }
 
+func (m *mockVTXOStore) ListRecoverableVTXOs(context.Context) (
+	[]*vtxo.Descriptor, error) {
+
+	return nil, nil
+}
+
 // ListVTXOsByStatus is unused in these tests.
 func (m *mockVTXOStore) ListVTXOsByStatus(context.Context, vtxo.VTXOStatus) (
 	[]*vtxo.Descriptor, error) {

@@ -43,6 +43,8 @@ func newWalletSweepCmd() *cobra.Command {
 	_ = cmd.MarkFlagRequired("destination")
 	cmd.Flags().Bool("broadcast", false,
 		"publish the sweep; omitted means preview only")
+	cmd.Flags().Bool("yes", false,
+		"approve broadcasting the fund-moving sweep")
 	cmd.Flags().Int64("fee-rate", 0,
 		"explicit fee rate in sat/vByte; zero estimates from the "+
 			"chain backend at --conf-target")
@@ -76,10 +78,20 @@ func walletSweep(cmd *cobra.Command, _ []string) error {
 		FeeRateSatPerVbyte: feeRate,
 		ConfTarget:         confTarget,
 	}
+	if broadcast {
+		action := fmt.Sprintf("broadcast the backing-wallet "+
+			"sweep to %q", destination)
+		if err := confirmMoneyMovement(cmd, action); err != nil {
+			return err
+		}
+	}
 
 	return withWalletClient(
 		cmd, func(c wavewalletrpc.WalletServiceClient) error {
-			resp, err := c.SweepWallet(cmd.Context(), req)
+			ctx, cancel := rpcContext(cmd)
+			defer cancel()
+
+			resp, err := c.SweepWallet(ctx, req)
 			if err != nil {
 				return fmt.Errorf("wallet sweep: %w", err)
 			}

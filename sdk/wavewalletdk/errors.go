@@ -77,4 +77,15 @@ var (
 	// balance.
 	ErrBalanceLimitExceeded = errors.New("amount would exceed the " +
 		"maximum allowed wallet balance")
+
+	// ErrCreditReceiveUnavailable reports that a sub-dust receive was
+	// routed to the operator's credit subsystem but the swap server did not
+	// complete the credit request (it timed out or errored). It is distinct
+	// from ErrSwapBackendUnavailable so callers can tell "the whole swap
+	// backend is down" apart from "this operator does not (currently) serve
+	// sub-dust credit receives; retry at or above the dust limit". The
+	// message MUST match the daemon-side swapwallet sentinel verbatim
+	// (TestSentinelMessageParity enforces this).
+	ErrCreditReceiveUnavailable = errors.New("sub-dust receive via the " +
+		"operator credit subsystem is unavailable")
 )

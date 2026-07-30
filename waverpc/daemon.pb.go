@@ -128,21 +128,28 @@ const (
 	// amount, originating round_id, and (once known) the commitment
 	// txid that will create them.
 	VTXOStatus_VTXO_STATUS_PENDING_ROUND VTXOStatus = 9
+	// VTXO_STATUS_EXPIRED indicates the VTXO's batch expiry has passed, so
+	// the operator's sweep path is mature and no client-driven exit can
+	// complete any more. It is NOT terminal and NOT spendable: the value is
+	// recovered by forfeiting the VTXO in an ordinary round, which reissues
+	// it as a fresh VTXO. It is excluded from spendable balance until then.
+	VTXOStatus_VTXO_STATUS_EXPIRED VTXOStatus = 10
 )
 
 // Enum value maps for VTXOStatus.
 var (
 	VTXOStatus_name = map[int32]string{
-		0: "VTXO_STATUS_UNSPECIFIED",
-		1: "VTXO_STATUS_LIVE",
-		2: "VTXO_STATUS_PENDING_FORFEIT",
-		3: "VTXO_STATUS_FORFEITING",
-		4: "VTXO_STATUS_FORFEITED",
-		5: "VTXO_STATUS_SPENT",
-		6: "VTXO_STATUS_UNILATERAL_EXIT",
-		7: "VTXO_STATUS_FAILED",
-		8: "VTXO_STATUS_SPENDING",
-		9: "VTXO_STATUS_PENDING_ROUND",
+		0:  "VTXO_STATUS_UNSPECIFIED",
+		1:  "VTXO_STATUS_LIVE",
+		2:  "VTXO_STATUS_PENDING_FORFEIT",
+		3:  "VTXO_STATUS_FORFEITING",
+		4:  "VTXO_STATUS_FORFEITED",
+		5:  "VTXO_STATUS_SPENT",
+		6:  "VTXO_STATUS_UNILATERAL_EXIT",
+		7:  "VTXO_STATUS_FAILED",
+		8:  "VTXO_STATUS_SPENDING",
+		9:  "VTXO_STATUS_PENDING_ROUND",
+		10: "VTXO_STATUS_EXPIRED",
 	}
 	VTXOStatus_value = map[string]int32{
 		"VTXO_STATUS_UNSPECIFIED":     0,
@@ -155,6 +162,7 @@ var (
 		"VTXO_STATUS_FAILED":          7,
 		"VTXO_STATUS_SPENDING":        8,
 		"VTXO_STATUS_PENDING_ROUND":   9,
+		"VTXO_STATUS_EXPIRED":         10,
 	}
 )
 
@@ -2072,7 +2080,13 @@ type VTXOSettlement struct {
 	// the VTXO (the leave/cooperative-forfeit round).
 	Txid string `protobuf:"bytes,1,opt,name=txid,proto3" json:"txid,omitempty"`
 	// height is the block height at which txid confirmed.
-	Height        int32 `protobuf:"varint,2,opt,name=height,proto3" json:"height,omitempty"`
+	Height int32 `protobuf:"varint,2,opt,name=height,proto3" json:"height,omitempty"`
+	// fee_sat is the TOTAL operator fee the client's ledger booked for the
+	// forfeit round. It is a round-level figure: every VTXO forfeited in the
+	// same round reports the same value, so consumers must not sum it across
+	// VTXOs. Zero when the ledger has no fee row for the round (fee-free
+	// rounds, and daemons whose ledger predates fee-by-round attribution).
+	FeeSat        int64 `protobuf:"varint,3,opt,name=fee_sat,json=feeSat,proto3" json:"fee_sat,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2117,6 +2131,13 @@ func (x *VTXOSettlement) GetTxid() string {
 func (x *VTXOSettlement) GetHeight() int32 {
 	if x != nil {
 		return x.Height
+	}
+	return 0
+}
+
+func (x *VTXOSettlement) GetFeeSat() int64 {
+	if x != nil {
+		return x.FeeSat
 	}
 	return 0
 }
@@ -9081,6 +9102,12 @@ type GetUnrollStatusResponse struct {
 	// current_height is the best block height the unroll actor has observed.
 	// Set only on a detailed query against a live job.
 	CurrentHeight int32 `protobuf:"varint,10,opt,name=current_height,json=currentHeight,proto3" json:"current_height,omitempty"`
+	// exit_cost_sat is the CONFIRMED on-chain cost of the exit: the ledger's
+	// onchain_fee_paid leg booked after the final sweep confirmed. Unlike the
+	// estimates in fees, this is the settled figure, so it is set (on both
+	// plain and detailed queries) only once the job is COMPLETED, and reads
+	// zero for exits predating exit-cost accounting.
+	ExitCostSat   int64 `protobuf:"varint,11,opt,name=exit_cost_sat,json=exitCostSat,proto3" json:"exit_cost_sat,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -9181,6 +9208,13 @@ func (x *GetUnrollStatusResponse) GetBestCaseBlocksRemaining() int32 {
 func (x *GetUnrollStatusResponse) GetCurrentHeight() int32 {
 	if x != nil {
 		return x.CurrentHeight
+	}
+	return 0
+}
+
+func (x *GetUnrollStatusResponse) GetExitCostSat() int64 {
+	if x != nil {
+		return x.ExitCostSat
 	}
 	return 0
 }
@@ -10232,10 +10266,11 @@ const file_daemon_proto_rawDesc = "" +
 	"expiryInfo\x127\n" +
 	"\n" +
 	"settlement\x18\x0e \x01(\v2\x17.waverpc.VTXOSettlementR\n" +
-	"settlement\"<\n" +
+	"settlement\"U\n" +
 	"\x0eVTXOSettlement\x12\x12\n" +
 	"\x04txid\x18\x01 \x01(\tR\x04txid\x12\x16\n" +
-	"\x06height\x18\x02 \x01(\x05R\x06height\"\xac\x01\n" +
+	"\x06height\x18\x02 \x01(\x05R\x06height\x12\x17\n" +
+	"\afee_sat\x18\x03 \x01(\x03R\x06feeSat\"\xac\x01\n" +
 	"\x10ListVTXOsRequest\x128\n" +
 	"\rstatus_filter\x18\x01 \x01(\x0e2\x13.waverpc.VTXOStatusR\fstatusFilter\x12$\n" +
 	"\x0emin_amount_sat\x18\x02 \x01(\x03R\fminAmountSat\x128\n" +
@@ -10727,7 +10762,7 @@ const file_daemon_proto_rawDesc = "" +
 	"\x11net_recovered_sat\x18\x05 \x01(\x03R\x0fnetRecoveredSat\x12+\n" +
 	"\x12fee_rate_sat_vbyte\x18\x06 \x01(\x03R\x0ffeeRateSatVbyte\x12(\n" +
 	"\x10sweep_fee_actual\x18\a \x01(\bR\x0esweepFeeActual\x12'\n" +
-	"\x10spent_so_far_sat\x18\b \x01(\x03R\rspentSoFarSat\"\xaa\x03\n" +
+	"\x10spent_so_far_sat\x18\b \x01(\x03R\rspentSoFarSat\"\xce\x03\n" +
 	"\x17GetUnrollStatusResponse\x12\x14\n" +
 	"\x05found\x18\x01 \x01(\bR\x05found\x120\n" +
 	"\x06status\x18\x02 \x01(\x0e2\x18.waverpc.UnrollJobStatusR\x06status\x12\x1d\n" +
@@ -10741,7 +10776,8 @@ const file_daemon_proto_rawDesc = "" +
 	"\x04fees\x18\b \x01(\v2\x13.waverpc.UnrollFeesR\x04fees\x12;\n" +
 	"\x1abest_case_blocks_remaining\x18\t \x01(\x05R\x17bestCaseBlocksRemaining\x12%\n" +
 	"\x0ecurrent_height\x18\n" +
-	" \x01(\x05R\rcurrentHeight\"\xd4\x06\n" +
+	" \x01(\x05R\rcurrentHeight\x12\"\n" +
+	"\rexit_cost_sat\x18\v \x01(\x03R\vexitCostSat\"\xd4\x06\n" +
 	"\x17ArmVHTLCRecoveryRequest\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x17\n" +
@@ -10828,7 +10864,7 @@ const file_daemon_proto_rawDesc = "" +
 	"\x11WALLET_STATE_NONE\x10\x01\x12\x17\n" +
 	"\x13WALLET_STATE_LOCKED\x10\x02\x12\x16\n" +
 	"\x12WALLET_STATE_READY\x10\x03\x12\x18\n" +
-	"\x14WALLET_STATE_SYNCING\x10\x04*\xa0\x02\n" +
+	"\x14WALLET_STATE_SYNCING\x10\x04*\xb9\x02\n" +
 	"\n" +
 	"VTXOStatus\x12\x1b\n" +
 	"\x17VTXO_STATUS_UNSPECIFIED\x10\x00\x12\x14\n" +
@@ -10840,7 +10876,9 @@ const file_daemon_proto_rawDesc = "" +
 	"\x1bVTXO_STATUS_UNILATERAL_EXIT\x10\x06\x12\x16\n" +
 	"\x12VTXO_STATUS_FAILED\x10\a\x12\x18\n" +
 	"\x14VTXO_STATUS_SPENDING\x10\b\x12\x1d\n" +
-	"\x19VTXO_STATUS_PENDING_ROUND\x10\t*\xb6\x01\n" +
+	"\x19VTXO_STATUS_PENDING_ROUND\x10\t\x12\x17\n" +
+	"\x13VTXO_STATUS_EXPIRED\x10\n" +
+	"*\xb6\x01\n" +
 	"\x10VTXOExpiryStatus\x12\x1e\n" +
 	"\x1aVTXO_EXPIRY_STATUS_UNKNOWN\x10\x00\x12\x1b\n" +
 	"\x17VTXO_EXPIRY_STATUS_SAFE\x10\x01\x12$\n" +

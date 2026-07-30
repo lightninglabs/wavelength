@@ -228,6 +228,15 @@ type Ark struct {
 	// defaultTipTickInterval at Start time.
 	tipTickInterval time.Duration
 
+	// maxVTXOsPerBoardRound caps how many VTXO outputs a single boarding
+	// round mints, bounding the client's O(N) per-VTXO nonce signing so it
+	// stays within the operator's nonce-collection window. A boarding
+	// balance that would need more pieces boards the excess as a change
+	// leave output that re-boards over the next rounds, so a large deposit
+	// is not stranded by a round that overruns the window (wavelength#858).
+	// Zero falls back to DefaultMaxVTXOsPerBoardRound.
+	maxVTXOsPerBoardRound uint32
+
 	// latestKnownTip is the most recent chain tip observed via a
 	// BlockEpochNotification Tell. The block-epoch handler stores into
 	// this atomic ptr with no other work, so a burst of N notifications
@@ -421,6 +430,20 @@ func WithClock(clk clock.Clock) ArkOption {
 func WithEagerRoundJoin(enabled bool) ArkOption {
 	return func(a *Ark) {
 		a.eagerRoundJoin = enabled
+	}
+}
+
+// WithMaxVTXOsPerBoardRound overrides how many VTXO outputs a single boarding
+// round may mint. The default (DefaultMaxVTXOsPerBoardRound) bounds the
+// client's per-round O(N) nonce-signing work so a large boarding balance does
+// not overrun the operator's nonce-collection window and strand the deposit
+// (wavelength#858); the clipped remainder re-boards over successive rounds via
+// a change leave output. Set a lower value for an operator with a tighter
+// round window, or higher when the backend signs nonces fast enough. Zero
+// falls back to the default.
+func WithMaxVTXOsPerBoardRound(n uint32) ArkOption {
+	return func(a *Ark) {
+		a.maxVTXOsPerBoardRound = n
 	}
 }
 

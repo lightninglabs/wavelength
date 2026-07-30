@@ -1,7 +1,6 @@
 package waveclicommands
 
 import (
-	"context"
 	"fmt"
 	"os"
 
@@ -43,7 +42,7 @@ func newFeesEstimateCmd() *cobra.Command {
 			"To preview the fee for refreshing specific " +
 			"VTXOs without looking up their amounts and " +
 			"remaining lifetimes by hand, use `ark vtxos " +
-			"refresh --dry_run` instead: it resolves each " +
+			"refresh --dry-run` instead: it resolves each " +
 			"selected VTXO and returns a per-outpoint " +
 			"estimate.",
 		RunE: feesEstimate,
@@ -113,9 +112,10 @@ func feesEstimate(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	resp, err := client.EstimateFee(
-		context.Background(), req,
-	)
+	ctx, cancel := rpcContext(cmd)
+	defer cancel()
+
+	resp, err := client.EstimateFee(ctx, req)
 	if err != nil {
 		return fmt.Errorf("EstimateFee RPC failed: %w", err)
 	}
@@ -179,9 +179,10 @@ func feesHistory(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	resp, err := client.GetFeeHistory(
-		context.Background(), req,
-	)
+	ctx, cancel := rpcContext(cmd)
+	defer cancel()
+
+	resp, err := client.GetFeeHistory(ctx, req)
 	if err != nil {
 		return fmt.Errorf("GetFeeHistory RPC failed: %w", err)
 	}

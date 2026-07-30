@@ -11,14 +11,15 @@ hand-written code.
 ## Key Types
 
 - `Config` — Integration glue: `GetConn(cmd) → *grpc.ClientConn` (dial
-  function), `PrintJSON(proto.Message) error` (output sink),
+  function), `RPCContext(cmd) → (context.Context, CancelFunc)` (bounded RPC
+  lifetime), `PrintJSON(proto.Message) error` (output sink), and
   `MapRPCError(error) error` (error humanization).
 - `NewDevCmd(cfg) *cobra.Command` — Creates the generated dev RPC command
   tree rooted at `dev`. Child commands are organized by service then method.
 - `methodDescription` — Agent-CLI schema dump for one method: `Method`,
   `Service`, `RequestType`, `ResponseType`, `ServerStreaming`, `Fields`.
-- `fieldDescription` — Flat schema row for one CLI flag: `Path`, `Type`,
-  `Repeated`, `OneofGroup`, `EnumValues`, `Description`.
+- `fieldDescription` — Flat schema row for one canonical kebab-case CLI flag:
+  `Path`, `Type`, `Repeated`, `OneofGroup`, `EnumValues`, `Description`.
 
 ## Design
 

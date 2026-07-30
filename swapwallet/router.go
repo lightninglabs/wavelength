@@ -617,7 +617,7 @@ func (r *router) sendOnchainIntent(ctx context.Context,
 	}
 	entry := leaveEntryStub(
 		sendResp.GetSendJobId(), sendResp.GetSelectedOutpoints(),
-		intent.onchainAddress, entryAmt, intent.note,
+		intent.onchainAddress, entryAmt, intent.note, intent.sweepAll,
 	)
 
 	// The row is keyed by the daemon's stable leave-job id (id above).

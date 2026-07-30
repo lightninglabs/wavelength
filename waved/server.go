@@ -80,6 +80,7 @@ import (
 	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 )
@@ -309,6 +310,17 @@ type Server struct {
 	// terms. It is stored atomically because startup writes race with
 	// concurrent GetInfo RPC reads.
 	operatorTerms atomic.Pointer[types.OperatorTerms]
+
+	// operatorTermsUpdateMu serializes the authenticated terms refresh
+	// with direct operator-key refreshes. Readers continue to use the
+	// atomic snapshot above without taking this lock.
+	operatorTermsUpdateMu sync.Mutex
+
+	// hasPersonalizedLimits records whether the authenticated terms differ
+	// from the anonymous policy. Direct GetInfo responses may replace
+	// global limits, but must not overwrite policy resolved for this
+	// identity.
+	hasPersonalizedLimits atomic.Bool
 
 	// arkProtocolVersion is the Ark protocol version negotiated during
 	// bootstrap and bound to the mailbox runtime for its lifetime. Later
@@ -677,9 +689,22 @@ func (s *Server) vtxoExpiryConfig() *vtxo.ExpiryConfig {
 func (s *Server) fetchCurrentOperatorPubKey(ctx context.Context) (
 	*btcec.PublicKey, error) {
 
+	s.operatorTermsUpdateMu.Lock()
+	defer s.operatorTermsUpdateMu.Unlock()
+
 	terms, err := s.fetchOperatorTerms(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("fetch operator terms: %w", err)
+	}
+
+	// Direct GetInfo does not carry a mailbox identity, so retain the
+	// personalized limits learned through the authenticated startup
+	// refresh while updating the operator's shared terms.
+	if s.hasPersonalizedLimits.Load() {
+		if cached := s.loadOperatorTerms(); cached != nil {
+			terms.MaxVTXOAmount = cached.MaxVTXOAmount
+			terms.MaxUserBalance = cached.MaxUserBalance
+		}
 	}
 
 	// Refresh the cache so unrelated readers (e.g. GetInfo) reflect the
@@ -756,10 +781,15 @@ func (s *Server) fetchCachedOperatorTerms(ctx context.Context) (
 
 // fetchLiveVTXOBalance sums the wallet's non-terminal VTXO holdings for
 // the boarding headroom computation. The full non-terminal set (Live,
-// PendingForfeit, Forfeiting, Spending) is deliberately counted rather
-// than just the spendable subset: in-flight outbound value still
+// PendingForfeit, Forfeiting, Spending, Expired) is deliberately counted
+// rather than just the spendable subset: in-flight outbound value still
 // occupies the user's balance until it terminally leaves, so counting
 // it keeps back-to-back boards from overshooting the operator's cap.
+//
+// Expired value is counted for the same reason even though it is not
+// spendable. The operator still owes it — the owner can reclaim it by
+// refreshing the VTXO into a round — so leaving it out would let a client
+// board up to the cap, then reclaim on top and end up above it.
 //
 // We use the "light" variant: balance summing only reads each
 // descriptor's amount, so we skip the ancestry side-table join whose
@@ -773,7 +803,7 @@ func (s *Server) fetchLiveVTXOBalance(ctx context.Context) (btcutil.Amount,
 		return 0, fmt.Errorf("vtxo store is not initialized")
 	}
 
-	descs, err := s.vtxoStore.ListLiveVTXOsLight(ctx)
+	descs, err := s.vtxoStore.ListRecoverableVTXOsLight(ctx)
 	if err != nil {
 		return 0, err
 	}
@@ -799,6 +829,11 @@ func (s *Server) setServerConnected(connected bool) {
 // between detecting an operator outage promptly and not busy-polling the
 // gRPC connectivity API.
 const operatorConnPollInterval = 15 * time.Second
+
+// operatorTermsRefreshTimeout bounds the authenticated startup GetInfo. The
+// refresh remains fatal because starting with anonymous policy can size a
+// Board incorrectly, but a stalled mailbox must not hang startup forever.
+const operatorTermsRefreshTimeout = 30 * time.Second
 
 // oorTransientRejectRetryDelay is how long the OOR FSM waits before re-driving
 // a submit that the operator rejected with a transient code. The wait only
@@ -1507,6 +1542,26 @@ func (s *Server) startWalletReadyServices(ctx context.Context,
 
 	if err := s.startMailboxIngress(ctx); err != nil {
 		return err
+	}
+
+	// The bootstrap GetInfo call cannot use the mailbox identity because
+	// the runtime does not exist yet. Refresh the cached terms now that
+	// authenticated mailbox ingress is running, before a recovered Board
+	// intent can size its outputs from the anonymous bootstrap limits.
+	refreshCtx, refreshCancel := context.WithTimeout(
+		ctx, operatorTermsRefreshTimeout,
+	)
+	refreshErr := s.refreshAuthenticatedOperatorTerms(refreshCtx)
+	refreshCancel()
+	if refreshErr != nil {
+		return refreshErr
+	}
+
+	if err := s.replayPendingIntents(
+		ctx, s.walletRef.UnsafeFromSome(),
+	); err != nil {
+
+		s.log.WarnS(ctx, "Failed to replay pending intents", err)
 	}
 
 	if err := s.runWalletReadyHooks(ctx); err != nil {
@@ -2379,6 +2434,14 @@ func (s *Server) startWalletDependentActors(ctx context.Context,
 		return err
 	}
 
+	// Apply the already-synchronized chain tip only after the round actor
+	// is available. This lets VTXOs that expired while the client was
+	// offline enter the ordinary refresh flow without racing the round
+	// service during actor recovery.
+	if err := s.reconcileVTXOExpiry(ctx, vtxoManagerRef); err != nil {
+		s.log.WarnS(ctx, "Failed to reconcile VTXO expiry", err)
+	}
+
 	// -------------------------------------------------------
 	// 12. Register the unilateral-exit subsystem.
 	// -------------------------------------------------------
@@ -2398,22 +2461,6 @@ func (s *Server) startWalletDependentActors(ctx context.Context,
 	// -------------------------------------------------------
 	if err := s.resumeBoardingSweeps(ctx, walletRef); err != nil {
 		s.log.WarnS(ctx, "Failed to resume persisted boarding sweeps",
-			err,
-		)
-	}
-
-	// -------------------------------------------------------
-	// 13b. Replay any persisted Board RPC the user issued before the
-	//      last shutdown. Like resumeBoardingSweeps, this Ask MUST run
-	//      AFTER the round-client actor has registered with the
-	//      receptionist (step 11) — the replay's downstream
-	//      TriggerBoardMsg dispatch goes through the actor system,
-	//      and a Tell against an unresolved service key is a silent
-	//      drop. Driving the replay from wallet.Ark.Start would race
-	//      the registration and leave the recovered Board orphaned.
-	// -------------------------------------------------------
-	if err := s.replayPendingIntents(ctx, walletRef); err != nil {
-		s.log.WarnS(ctx, "Failed to replay pending intents",
 			err,
 		)
 	}
@@ -2440,11 +2487,32 @@ func (s *Server) startWalletDependentActors(ctx context.Context,
 	return nil
 }
 
-// replayPendingIntents Asks the wallet actor to replay any persisted
-// user intent (Board, SendOnChain, ...) across daemon restart. Called
-// once during startup, after the round-client actor has registered
-// with the receptionist, so the wallet's replayers can resolve the
-// round actor via the service-key router without racing.
+// reconcileVTXOExpiry asks the VTXO manager to apply the current chain tip to
+// all actors recovered during startup. Failure is non-fatal because ordinary
+// block subscriptions continue to drive expiry after startup.
+func (s *Server) reconcileVTXOExpiry(ctx context.Context,
+	managerRef actor.ActorRef[vtxo.ManagerMsg, vtxo.ManagerResp]) error {
+
+	response, err := managerRef.Ask(
+		ctx, &vtxo.ReconcileExpiryRequest{},
+	).Await(ctx).Unpack()
+	if err != nil {
+		return fmt.Errorf("ask VTXO expiry reconcile: %w", err)
+	}
+	if _, ok := response.(*vtxo.ReconcileExpiryResponse); !ok {
+		return fmt.Errorf("unexpected VTXO expiry response: %T",
+			response)
+	}
+
+	return nil
+}
+
+// replayPendingIntents Asks the wallet actor to replay any persisted user
+// intent (Board, SendOnChain, ...) across daemon restart. Called once during
+// startup, after the round-client actor has registered and authenticated
+// operator terms have replaced the anonymous bootstrap snapshot, so the
+// wallet's replayers can resolve the round actor without racing and size a
+// recovered Board from the caller's effective policy.
 //
 // A failure here does not block daemon startup: a fresh RPC by the
 // user overwrites the pending intents, and a future restart re-tries
@@ -2632,12 +2700,26 @@ func (s *Server) connectLnd(ctx context.Context) (*lndclient.GrpcLndServices,
 	})
 }
 
+// operatorKeepaliveParams bounds how long the operator connection can sit on
+// a network path that silently drops packets (a stale conntrack entry after
+// the operator restarts, a NAT timeout, etc.) before gRPC notices and
+// re-dials. Without an explicit keepalive, grpc-go never pings an idle
+// connection, so a peer that vanishes without sending a TCP RST can leave the
+// channel reporting READY indefinitely while every RPC on it hangs.
+var operatorKeepaliveParams = keepalive.ClientParameters{
+	Time:                30 * time.Second,
+	Timeout:             10 * time.Second,
+	PermitWithoutStream: true,
+}
+
 // dialServer establishes a gRPC connection to the ark operator's mailbox
 // edge server. When TLSCertPath is set, the connection uses a custom cert
 // pool anchored to that certificate. When Insecure is set, TLS is disabled
 // entirely (for regtest/development only).
 func (s *Server) dialServer() (*grpc.ClientConn, error) {
-	var dialOpts []grpc.DialOption
+	dialOpts := []grpc.DialOption{
+		grpc.WithKeepaliveParams(operatorKeepaliveParams),
+	}
 
 	// Instrument the operator connection with client-side gRPC metrics
 	// (per-method request count, error rate, handling-time histograms).
@@ -2744,9 +2826,15 @@ func (s *Server) newMailboxEdge() mailboxpb.MailboxServiceClient {
 // KIND_REQUEST envelopes are bridged to the local ServeMux (e.g.,
 // DaemonService.GetInfo). KIND_EVENT envelopes for server-push OOR responses
 // are routed to the OOR actor via the EventRouter and service key lookup.
-func (s *Server) buildRPCDispatchers(
-	edge mailboxpb.MailboxServiceClient,
-) map[mailboxrpc.ServiceMethod]serverconn.EnvelopeDispatcher {
+//
+// It also returns the set of routes that must be dispatched outside the
+// ingress loop's folded write transaction. Every route bridged to the ServeMux
+// belongs in that set: those dispatchers answer over the network via
+// Edge.Send, so leaving one out would hold the SQLite writer lock (or a
+// SERIALIZABLE Postgres snapshot) open across a round trip to the operator.
+func (s *Server) buildRPCDispatchers(edge mailboxpb.MailboxServiceClient) (
+	map[mailboxrpc.ServiceMethod]serverconn.EnvelopeDispatcher,
+	serverconn.RouteSet) {
 
 	// Create a catch-all dispatcher that routes any inbound
 	// KIND_REQUEST to the ServeMux. We register one entry per
@@ -2767,17 +2855,28 @@ func (s *Server) buildRPCDispatchers(
 	// on the RPC dispatch entries.
 	dispatchers := eventRouter.AsDispatcherMap()
 
+	// Register each mux-bridged route in both maps at once so a future
+	// route cannot pick up the dispatcher without also being marked
+	// non-transactional.
+	nonTxRoutes := make(serverconn.RouteSet)
+	addMuxRoute := func(service, method string) {
+		key := mailboxrpc.ServiceMethod{
+			Service: service,
+			Method:  method,
+		}
+
+		dispatchers[key] = dispatch
+		nonTxRoutes[key] = struct{}{}
+	}
+
 	// DaemonService.GetInfo — server queries client status.
-	dispatchers[mailboxrpc.ServiceMethod{
-		Service: "waverpc.DaemonService",
-		Method:  "GetInfo",
-	}] = dispatch
+	addMuxRoute("waverpc.DaemonService", "GetInfo")
 
 	// TODO(roasbeef): Add indexer and wallet service methods
 	// here once their clients are initialized (e.g.,
 	// WalletService.SignVTXO, RoundService.SubmitNonces).
 
-	return dispatchers
+	return dispatchers, nonTxRoutes
 }
 
 // buildEventRoutes registers typed event routes for server-push envelopes.
@@ -3808,7 +3907,7 @@ func (s *Server) connectAndBootstrapMailbox(ctx context.Context) error {
 
 	// Build the mailbox transport runtime.
 	edge := s.newMailboxEdge()
-	dispatchers := s.buildRPCDispatchers(edge)
+	dispatchers, nonTxRoutes := s.buildRPCDispatchers(edge)
 
 	// Derive compound mailbox ID: operator:client.
 	s.localMailboxID = serverconn.PubKeyMailboxID(
@@ -3856,6 +3955,7 @@ func (s *Server) connectAndBootstrapMailbox(ctx context.Context) error {
 	connCfg.ArkProtocolVersion = s.arkProtocolVersion
 	connCfg.Store = s.deliveryStore
 	connCfg.Dispatchers = dispatchers
+	connCfg.NonTxRoutes = nonTxRoutes
 	connCfg.AuthSignature = authSig
 	connCfg.TLSBindSignature = tlsBindSig
 	connCfg.InitAuthHeader()
@@ -4612,17 +4712,12 @@ func mapRoundVTXOManagerMsg(msg round.VTXOManagerMsg) vtxo.ManagerMsg {
 	return mapped
 }
 
-// fetchOperatorTerms refreshes the operator's terms from the Ark server via a
-// direct ArkService.GetInfo RPC. It is refresh-only: it is NOT a negotiation.
+// fetchOperatorTerms refreshes the operator's shared terms over the direct
+// ArkService connection. It is refresh-only: it is NOT a negotiation.
 // connectAndBootstrapMailbox is the sole owner of Ark protocol version
 // selection, so this call pins the runtime-bound version by sending it as the
 // singleton supported list and rejects any response that selects a different
 // or zero version. It never mutates the runtime version.
-//
-// This must not depend on mailbox ingress: a restarted client can already have
-// queued server-push envelopes in its mailbox targeting actors that have not
-// yet been registered, so using the mailbox transport here can deadlock
-// round/OOR bootstrap behind redelivery of those pending events.
 //
 // The terms include the operator pubkey, sweep delay, VTXO exit delay,
 // forfeit script, dust limit, and fee rate.
@@ -4639,11 +4734,23 @@ func (s *Server) fetchOperatorTerms(ctx context.Context) (*types.OperatorTerms,
 	boundVersion := s.arkProtocolVersion
 
 	resp, err := client.GetInfo(ctx, &arkrpc.GetInfoRequest{
-		SupportedArkVersions: []uint32{boundVersion},
+		SupportedArkVersions: []uint32{
+			boundVersion,
+		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("GetInfo RPC: %w", err)
 	}
+
+	return s.operatorTermsFromRefreshResponse(ctx, resp)
+}
+
+// operatorTermsFromRefreshResponse validates that a refresh kept the
+// runtime-bound protocol version, then parses the returned terms.
+func (s *Server) operatorTermsFromRefreshResponse(ctx context.Context,
+	resp *arkrpc.GetInfoResponse) (*types.OperatorTerms, error) {
+
+	boundVersion := s.arkProtocolVersion
 
 	// A refresh that selects a different version is a terminal
 	// compatibility failure: the runtime is bound for its lifetime, so the
@@ -4661,6 +4768,51 @@ func (s *Server) fetchOperatorTerms(ctx context.Context) (*types.OperatorTerms,
 	}
 
 	return operatorTermsFromResponse(resp)
+}
+
+// refreshAuthenticatedOperatorTerms replaces the anonymous bootstrap terms
+// with the policy resolved for this daemon's authenticated mailbox identity.
+// It must run only after mailbox ingress starts, otherwise a unary response
+// cannot be delivered to the waiting facade.
+func (s *Server) refreshAuthenticatedOperatorTerms(ctx context.Context) error {
+	s.operatorTermsUpdateMu.Lock()
+	defer s.operatorTermsUpdateMu.Unlock()
+
+	if !s.isServerConnected() {
+		return fmt.Errorf("mailbox ingress not running")
+	}
+	if s.ark == nil {
+		return fmt.Errorf("authenticated operator client not " +
+			"initialized")
+	}
+
+	resp, err := s.ark.GetInfo(ctx, &arkrpc.GetInfoRequest{
+		SupportedArkVersions: []uint32{s.arkProtocolVersion},
+	})
+	if err != nil {
+		return fmt.Errorf("authenticated GetInfo RPC: %w", err)
+	}
+
+	terms, err := s.operatorTermsFromRefreshResponse(ctx, resp)
+	if err != nil {
+		return fmt.Errorf("validate authenticated operator terms: %w",
+			err)
+	}
+
+	// Only protect the personalized fields from later anonymous refreshes
+	// when authentication actually changed their values. Standard clients
+	// can therefore continue to learn global limit updates at runtime.
+	if anonymous := s.loadOperatorTerms(); anonymous != nil {
+		s.hasPersonalizedLimits.Store(
+			terms.MaxVTXOAmount != anonymous.MaxVTXOAmount ||
+				terms.MaxUserBalance !=
+					anonymous.MaxUserBalance,
+		)
+	}
+
+	s.storeOperatorTerms(terms)
+
+	return nil
 }
 
 // deriveIdentityKeyEarly derives the client's identity key before the
