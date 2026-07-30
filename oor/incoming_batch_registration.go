@@ -47,6 +47,7 @@ func BaseCoinInputs(rootCheckpoints []*psbt.Packet,
 			if _, ok := ancestorSessions[SessionID(
 				prevOut.Hash,
 			)]; ok {
+
 				continue
 			}
 			base = append(base, prevOut)
@@ -64,10 +65,10 @@ func BaseCoinInputs(rootCheckpoints []*psbt.Packet,
 // IncomingLineageVerifier cryptographically binds a received VTXO's ancestry to
 // the commitments the client is about to watch: it proves each ancestry tree is
 // a genuine, operator-signed descent from its authenticated commitment output
-// (vtxo.VerifyOORAncestryLineage). It is injected rather than called directly so
-// registration-logic tests, which use mock (unsigned) trees, can leave it nil;
-// production wiring always supplies the real verifier. A nil verifier skips the
-// binding.
+// (vtxo.VerifyOORAncestryLineage). It is injected rather than called directly
+// so registration-logic tests, which use mock (unsigned) trees, can leave it
+// nil; production wiring always supplies the real verifier. A nil verifier
+// skips the binding.
 type IncomingLineageVerifier func(ancestry []vtxo.Ancestry,
 	evidence []batchcanon.BatchEvidence, chainDepth int,
 	coinInputs []wire.OutPoint) error
@@ -119,7 +120,9 @@ func RegisterIncomingBatchEvidence(ctx context.Context,
 		// compatibility, handled above), so there is nothing to bind
 		// and the receive degrades rather than failing. Fail-closed
 		// otherwise.
-		if verifyLineage != nil && len(match.Metadata.BatchEvidence) > 0 {
+		if verifyLineage != nil &&
+			len(match.Metadata.BatchEvidence) > 0 {
+
 			if err := verifyLineage(
 				match.Metadata.Ancestry,
 				match.Metadata.BatchEvidence,

@@ -121,8 +121,8 @@ func AncestryFromRPC(paths []*arkrpc.AncestryPath) ([]Ancestry, error) {
 // VTXO script, so the proven lineage actually terminates at this coin. Genuine
 // trees satisfy (3) by construction (each parent output IS PayToTaproot of its
 // child's aggregate), so this never false-rejects a real receive; and it is
-// key-identity-agnostic (never demands a specific key), so it does not depend on
-// the operator identity key (which is NOT the tree's per-round signing key).
+// key-identity-agnostic (never demands a specific key), so it does not depend
+// on the operator identity key (which is NOT the tree's per-round signing key).
 func VerifyReceivedVTXOBinding(ancestry []Ancestry, vtxoScript []byte) error {
 	if len(vtxoScript) == 0 {
 		return fmt.Errorf("missing pkScript for received-VTXO binding")
@@ -143,6 +143,7 @@ func VerifyReceivedVTXOBinding(ancestry []Ancestry, vtxoScript []byte) error {
 			if len(leaf.Outputs) > 0 && bytes.Equal(
 				leaf.Outputs[0].PkScript, vtxoScript,
 			) {
+
 				paysReceivedVTXO = true
 			}
 		}
@@ -211,10 +212,9 @@ func VerifyOORAncestryLineage(ancestry []Ancestry,
 			!bytes.Equal(
 				tp.BatchOutput.PkScript, e.ConfirmationPkScript,
 			) {
-
-			return fmt.Errorf("ancestry path %d: tree batch output "+
-				"does not match the authenticated commitment "+
-				"output", i)
+			return fmt.Errorf("ancestry path %d: tree batch "+
+				"output does not match the authenticated "+
+				"commitment output", i)
 		}
 
 		if err := verifyAuthenticatedTree(tp); err != nil {
@@ -231,9 +231,9 @@ func VerifyOORAncestryLineage(ancestry []Ancestry,
 		}
 	}
 
-	// chainDepth is intentionally not consulted: it is indexer-supplied, and
-	// trusting it would let an attacker skip the bind by claiming a deeper
-	// chain. The bind is unconditional.
+	// chainDepth is intentionally not consulted: it is indexer-supplied,
+	// and trusting it would let an attacker skip the bind by claiming a
+	// deeper chain. The bind is unconditional.
 	_ = chainDepth
 
 	return bindCoinInputsToLeaves(leafTxids, coinInputs)
@@ -241,12 +241,12 @@ func VerifyOORAncestryLineage(ancestry []Ancestry,
 
 // bindCoinInputsToLeaves enforces the terminator: every coin input (checkpoint
 // prevout) must be produced by an authenticated ancestry leaf, so a
-// genuine-but-unrelated commitment tree cannot be watched in place of the coin's
-// real lineage. The bind is UNCONDITIONAL and never keys off the indexer-
-// supplied chain depth: trusting that value would let an attacker claim a deeper
-// chain to skip the check on a single-hop coin. coinInputs come from the
-// co-signed checkpoint PSBTs (the coin's real spent outpoints), so a decoy
-// ancestry — whose leaves are not the coin's actual inputs — is rejected.
+// genuine-but-unrelated commitment tree cannot be watched in place of the
+// coin's real lineage. The bind is UNCONDITIONAL and never keys off the
+// indexer- supplied chain depth: trusting that value would let an attacker
+// claim a deeper chain to skip the check on a single-hop coin. coinInputs come
+// from the co-signed checkpoint PSBTs (the coin's real spent outpoints), so a
+// decoy ancestry — whose leaves are not the coin's actual inputs — is rejected.
 func bindCoinInputsToLeaves(leafTxids map[chainhash.Hash]struct{},
 	coinInputs []wire.OutPoint) error {
 
@@ -256,8 +256,8 @@ func bindCoinInputsToLeaves(leafTxids map[chainhash.Hash]struct{},
 	}
 	for _, in := range coinInputs {
 		if _, ok := leafTxids[in.Hash]; !ok {
-			return fmt.Errorf("coin input %s is not produced by any "+
-				"authenticated ancestry leaf", in)
+			return fmt.Errorf("coin input %s is not produced by "+
+				"any authenticated ancestry leaf", in)
 		}
 	}
 
@@ -275,16 +275,16 @@ func verifyAuthenticatedTree(tp *tree.Tree) error {
 		return fmt.Errorf("structure: %w", err)
 	}
 
-	// The prevout fetcher maps each node's input to the output it spends: the
-	// authenticated batch output for the root, and the parent's output for
-	// every child.
+	// The prevout fetcher maps each node's input to the output it spends:
+	// the authenticated batch output for the root, and the parent's output
+	// for every child.
 	fetcher, err := tp.Root.PrevOutputFetcher(tp.BatchOutput)
 	if err != nil {
 		return fmt.Errorf("prevouts: %w", err)
 	}
 
-	// (2)+(3): recompute each node's aggregate key and require it to equal the
-	// taproot key of the output it spends. The root is pinned to the
+	// (2)+(3): recompute each node's aggregate key and require it to equal
+	// the taproot key of the output it spends. The root is pinned to the
 	// authenticated commitment output; the cascade pins the rest.
 	if err := tp.Root.ForEach(func(n *tree.Node) error {
 		finalKey, err := tree.ComputeFinalKey(
@@ -302,7 +302,6 @@ func verifyAuthenticatedTree(tp *tree.Tree) error {
 		prevOut := fetcher.FetchPrevOutput(n.Input)
 		if prevOut == nil ||
 			!bytes.Equal(wantScript, prevOut.PkScript) {
-
 			return fmt.Errorf("node aggregate key does not match " +
 				"the output it spends")
 		}

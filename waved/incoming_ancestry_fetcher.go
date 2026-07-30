@@ -78,13 +78,14 @@ func incomingAncestryFetcher(idx *indexer.Client,
 		// is a genuine, operator-signed leaf of the commitment we will
 		// watch, not a decoy the indexer named. A failure surfaces as a
 		// fetch failure, and the handler then persists the VTXO without
-		// ancestry (fail closed -- no reorg watch armed on an unverified
-		// commitment; exit material restored by a later backfill).
+		// ancestry (fail closed -- no reorg watch armed on an
+		// unverified commitment; exit material restored by a later
+		// backfill).
 		if err := vtxo.VerifyReceivedVTXOBinding(
 			extras.Ancestry, pkScript,
 		); err != nil {
-			return vtxo.IncomingVTXOExtras{}, fmt.Errorf(
-				"bind received vtxo to commitment: %w", err)
+			return vtxo.IncomingVTXOExtras{}, fmt.Errorf("bind "+
+				"received vtxo to commitment: %w", err)
 		}
 
 		return extras, nil

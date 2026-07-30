@@ -111,13 +111,13 @@ func TestManagerRestoresForfeitedVTXOOnConflictFinalized(t *testing.T) {
 	require.Empty(t, remaining, "edges must be cleared after restore")
 }
 
-// TestConsumerForfeitPersistedRedrivesDeferredEdge proves the R14 ordering
-// fix: when a consumer batch reaches ConflictFinalized BEFORE its
-// ForfeitedBy(consumer) marker is durable, the terminal restore compare-and-swap
-// defers and no further batchcanon event is guaranteed -- the consumed VTXO
-// would stay stranded until restart. Once MarkForfeited persists the marker,
-// the VTXO actor sends ConsumerForfeitPersistedMsg, which redrives resolution
-// and restores the VTXO without a restart.
+// TestConsumerForfeitPersistedRedrivesDeferredEdge proves the R14 ordering fix:
+// when a consumer batch reaches ConflictFinalized BEFORE its
+// ForfeitedBy(consumer) marker is durable, the terminal restore
+// compare-and-swap defers and no further batchcanon event is guaranteed -- the
+// consumed VTXO would stay stranded until restart. Once MarkForfeited persists
+// the marker, the VTXO actor sends ConsumerForfeitPersistedMsg, which redrives
+// resolution and restores the VTXO without a restart.
 func TestConsumerForfeitPersistedRedrivesDeferredEdge(t *testing.T) {
 	t.Parallel()
 

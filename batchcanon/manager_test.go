@@ -493,7 +493,8 @@ func (s *fakeStore) ResolveConsumerEdge(_ context.Context, edge ConsumerEdge,
 	defer s.mu.Unlock()
 
 	// Model the revision compare-and-swap deferring while the forfeiture
-	// marker is not yet durable: the edge stays pending for a later redrive.
+	// marker is not yet durable: the edge stays pending for a later
+	// redrive.
 	if s.deferConsumerEdges {
 		return ConsumerEdgeDeferred, nil
 	}
