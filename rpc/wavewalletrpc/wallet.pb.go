@@ -1760,13 +1760,6 @@ type ListRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// view selects which slice of wallet state to return. The default
 	// (LIST_VIEW_UNSPECIFIED) is treated as LIST_VIEW_ACTIVITY.
-	//
-	// WIRE-BREAKING CHANGE: this message intentionally renumbers the
-	// PR #440 fields (pending_only/kinds/limit/offset). wavewalletrpc has
-	// no deployed external consumers yet, so the cleaner shape with
-	// `view` at field 1 is preferred over a backwards-compatible
-	// append. Any binary built against PR #440's ListRequest must be
-	// recompiled.
 	View ListView `protobuf:"varint,1,opt,name=view,proto3,enum=wavewalletrpc.ListView" json:"view,omitempty"`
 	// pending_only filters the returned entries to those still in
 	// flight. Applies to the ACTIVITY view; ignored for VTXOS and
@@ -1868,13 +1861,6 @@ func (x *ListRequest) GetCursor() string {
 // discriminated by the requested view.
 type ListResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// WIRE-BREAKING CHANGE: PR #440 had
-	// `repeated WalletEntry entries = 1; uint32 total = 2;` at the top
-	// level. Those fields are now reachable as `body.activity.entries`
-	// and `body.activity.total`. wavewalletrpc has no deployed external
-	// consumers, so the cleaner oneof shape is preferred over
-	// reserving the old numbers.
-	//
 	// body discriminates the typed result by view. Callers should
 	// switch on the populated variant; an empty body indicates an
 	// empty result for the requested view.
@@ -2117,7 +2103,7 @@ func (x *VTXOInventory) GetTotal() uint32 {
 
 // WalletVTXO is the wallet-facing view of one VTXO. Internal lifecycle
 // detail (forfeiting flow, chain depth, etc.) is hidden; power-users can
-// reach the full shape via `ark vtxos list`.
+// reach the full shape via `wavecli ark vtxos list`.
 type WalletVTXO struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// outpoint is the VTXO's outpoint in "txid:index" format.
@@ -3504,8 +3490,9 @@ type ExitPlanEntry struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// outpoint is the previewed VTXO outpoint, formatted as "txid:index".
 	Outpoint string `protobuf:"bytes,1,opt,name=outpoint,proto3" json:"outpoint,omitempty"`
-	// funding_address is empty when can_start is true (no shortfall, so no
-	// address is allocated).
+	// funding_address is a backing-wallet address the caller can fund to
+	// cover the fee shortfall this exit needs. It is empty when can_start
+	// is true (no shortfall, so no address is allocated).
 	FundingAddress string `protobuf:"bytes,2,opt,name=funding_address,json=fundingAddress,proto3" json:"funding_address,omitempty"`
 	// required_confirmations is the number of confirmations a
 	// backing-wallet UTXO must have before it can fund the unroll CPFP.
@@ -5489,7 +5476,15 @@ func (x *LightningInvoiceRequest) GetPaymentHash() string {
 type OnchainAddressRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// address is the bech32 onchain address originally issued or targeted.
-	Address       string `protobuf:"bytes,1,opt,name=address,proto3" json:"address,omitempty"`
+	Address string `protobuf:"bytes,1,opt,name=address,proto3" json:"address,omitempty"`
+	// sweep_all marks an onchain send that drained the selected VTXOs
+	// entirely (wavecli send --send-all). A sweep's pending amount is the
+	// gross outflow with the operator fee still baked in (the fee is only
+	// known once the leave round seals), so completion uses this marker to
+	// net the settled fee back out of the displayed amount. Bounded sends
+	// leave it false: their amount is the exact destination value and the
+	// fee is paid on top out of change.
+	SweepAll      bool `protobuf:"varint,2,opt,name=sweep_all,json=sweepAll,proto3" json:"sweep_all,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -5529,6 +5524,13 @@ func (x *OnchainAddressRequest) GetAddress() string {
 		return x.Address
 	}
 	return ""
+}
+
+func (x *OnchainAddressRequest) GetSweepAll() bool {
+	if x != nil {
+		return x.SweepAll
+	}
+	return false
 }
 
 // ArkAddressRequest captures the Ark address associated with an activity entry.
@@ -6036,9 +6038,10 @@ const file_wallet_proto_rawDesc = "" +
 	"\arequest\"V\n" +
 	"\x17LightningInvoiceRequest\x12\x18\n" +
 	"\ainvoice\x18\x01 \x01(\tR\ainvoice\x12!\n" +
-	"\fpayment_hash\x18\x02 \x01(\tR\vpaymentHash\"1\n" +
+	"\fpayment_hash\x18\x02 \x01(\tR\vpaymentHash\"N\n" +
 	"\x15OnchainAddressRequest\x12\x18\n" +
-	"\aaddress\x18\x01 \x01(\tR\aaddress\"-\n" +
+	"\aaddress\x18\x01 \x01(\tR\aaddress\x12\x1b\n" +
+	"\tsweep_all\x18\x02 \x01(\bR\bsweepAll\"-\n" +
 	"\x11ArkAddressRequest\x12\x18\n" +
 	"\aaddress\x18\x01 \x01(\tR\aaddress\"\x96\x02\n" +
 	"\x13WalletEntryProgress\x125\n" +

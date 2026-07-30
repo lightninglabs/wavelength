@@ -10,6 +10,27 @@ import (
 	"database/sql"
 )
 
+const BackfillLedgerRoundUuid = `-- name: BackfillLedgerRoundUuid :exec
+UPDATE ledger_entries
+SET round_uuid = $1
+WHERE round_id = $2
+  AND round_uuid IS NULL
+`
+
+type BackfillLedgerRoundUuidParams struct {
+	RoundUuid sql.NullString
+	RoundID   []byte
+}
+
+// BackfillLedgerRoundUuid stamps the canonical UUID string form onto every
+// entry carrying the given raw round_id that does not have one yet. The
+// round_uuid IS NULL guard makes re-running the backfill (e.g. after a crash
+// mid-migration) a no-op for already-converted rows.
+func (q *Queries) BackfillLedgerRoundUuid(ctx context.Context, arg BackfillLedgerRoundUuidParams) error {
+	_, err := q.db.ExecContext(ctx, BackfillLedgerRoundUuid, arg.RoundUuid, arg.RoundID)
+	return err
+}
+
 const CountClientLedgerEntries = `-- name: CountClientLedgerEntries :one
 SELECT COUNT(*) FROM ledger_entries
 `
@@ -58,6 +79,25 @@ func (q *Queries) GetClientLedgerStats(ctx context.Context) (GetClientLedgerStat
 	return i, err
 }
 
+const GetConfirmedExitCost = `-- name: GetConfirmedExitCost :one
+SELECT CAST(COALESCE(SUM(amount_sat), 0) AS BIGINT) AS exit_cost_sat
+FROM ledger_entries
+WHERE event_type = 'onchain_fee_paid'
+  AND idempotency_key = $1
+`
+
+// GetConfirmedExitCost returns the confirmed on-chain cost of a unilateral
+// exit: the onchain_fee_paid leg the ledger booked after the exit's final
+// sweep confirmed, keyed by the exit's outpoint-derived idempotency key
+// (ledger.ExitIdempotencyKey). Zero when the exit has not confirmed (or
+// predates exit-cost accounting).
+func (q *Queries) GetConfirmedExitCost(ctx context.Context, idempotencyKey []byte) (int64, error) {
+	row := q.db.QueryRowContext(ctx, GetConfirmedExitCost, idempotencyKey)
+	var exit_cost_sat int64
+	err := row.Scan(&exit_cost_sat)
+	return exit_cost_sat, err
+}
+
 const GetTotalOperatorFeesPaid = `-- name: GetTotalOperatorFeesPaid :one
 SELECT CAST(COALESCE(SUM(amount_sat), 0) AS BIGINT) AS total_fees
 FROM ledger_entries
@@ -78,8 +118,9 @@ INSERT INTO ledger_entries (
     debit_account, credit_account, amount_sat,
     round_id, session_id, idempotency_key,
     event_type, description, created_at,
-    chain_txid, chain_vout, confirmation_height
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+    chain_txid, chain_vout, confirmation_height,
+    round_uuid
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 ON CONFLICT DO NOTHING
 `
 
@@ -96,6 +137,7 @@ type InsertClientLedgerEntryParams struct {
 	ChainTxid          []byte
 	ChainVout          sql.NullInt32
 	ConfirmationHeight sql.NullInt32
+	RoundUuid          sql.NullString
 }
 
 // Column order matches the ledger_entries CREATE TABLE layout
@@ -130,6 +172,7 @@ func (q *Queries) InsertClientLedgerEntry(ctx context.Context, arg InsertClientL
 		arg.ChainTxid,
 		arg.ChainVout,
 		arg.ConfirmationHeight,
+		arg.RoundUuid,
 	)
 	return err
 }
@@ -221,7 +264,7 @@ const ListClientLedgerEntries = `-- name: ListClientLedgerEntries :many
 SELECT entry_id, debit_account, credit_account, amount_sat,
        round_id, session_id, idempotency_key,
        event_type, description, created_at,
-       chain_txid, chain_vout, confirmation_height
+       chain_txid, chain_vout, confirmation_height, round_uuid
 FROM ledger_entries
 ORDER BY created_at DESC
 LIMIT $1 OFFSET $2
@@ -255,6 +298,7 @@ func (q *Queries) ListClientLedgerEntries(ctx context.Context, arg ListClientLed
 			&i.ChainTxid,
 			&i.ChainVout,
 			&i.ConfirmationHeight,
+			&i.RoundUuid,
 		); err != nil {
 			return nil, err
 		}
@@ -273,7 +317,7 @@ const ListClientLedgerEntriesByType = `-- name: ListClientLedgerEntriesByType :m
 SELECT entry_id, debit_account, credit_account, amount_sat,
        round_id, session_id, idempotency_key,
        event_type, description, created_at,
-       chain_txid, chain_vout, confirmation_height
+       chain_txid, chain_vout, confirmation_height, round_uuid
 FROM ledger_entries
 WHERE event_type = $1
 ORDER BY created_at DESC
@@ -309,6 +353,7 @@ func (q *Queries) ListClientLedgerEntriesByType(ctx context.Context, arg ListCli
 			&i.ChainTxid,
 			&i.ChainVout,
 			&i.ConfirmationHeight,
+			&i.RoundUuid,
 		); err != nil {
 			return nil, err
 		}
@@ -351,6 +396,41 @@ func (q *Queries) ListClientLedgerEventTotals(ctx context.Context) ([]ListClient
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const ListLedgerRoundIDsMissingUuid = `-- name: ListLedgerRoundIDsMissingUuid :many
+SELECT DISTINCT round_id
+FROM ledger_entries
+WHERE round_id IS NOT NULL
+  AND round_uuid IS NULL
+`
+
+// ListLedgerRoundIDsMissingUuid returns the distinct raw round_id BLOBs that
+// have not yet been mirrored into the round_uuid TEXT column. The BLOB-to-UUID
+// string conversion is not expressible in the SQL dialect subset shared by
+// SQLite and Postgres, so the migration-015 post-step performs it in Go and
+// writes the result back via BackfillLedgerRoundUuid.
+func (q *Queries) ListLedgerRoundIDsMissingUuid(ctx context.Context) ([][]byte, error) {
+	rows, err := q.db.QueryContext(ctx, ListLedgerRoundIDsMissingUuid)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items [][]byte
+	for rows.Next() {
+		var round_id []byte
+		if err := rows.Scan(&round_id); err != nil {
+			return nil, err
+		}
+		items = append(items, round_id)
 	}
 	if err := rows.Close(); err != nil {
 		return nil, err

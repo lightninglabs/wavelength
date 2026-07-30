@@ -26,6 +26,27 @@ const minChangeFloor = btcutil.Amount(330)
 // minting oversized or unboundedly many outputs.
 const maxBoardOutputs = 1000
 
+// DefaultMaxVTXOsPerBoardRound bounds how many VTXO outputs a single boarding
+// round mints. Boarding signs one MuSig2 nonce per VTXO — an O(N) step the
+// operator collects within a bounded round window — so a balance whose
+// per-VTXO split (MaxUserBalance / MaxVTXOAmount) needs many hundreds of
+// pieces can overrun that window; the round fails "recoverable", the deposit
+// never converts, and every retry re-issues the same oversized shape and
+// re-fails, stranding the deposit (wavelength#858).
+//
+// 128 keeps the per-round signing work well inside a typical window even on
+// the slowest (serial-signing) backend (~5s at the ~38ms/nonce observed on
+// signet). The clipped remainder returns as a change leave output paying a
+// fresh boarding script, which re-confirms on-chain as a new boarding intent
+// ready to board again. That next board is driven the same way any board is:
+// automatically on the next confirmation under WithEagerRoundJoin, or by the
+// operator's/host's usual board trigger otherwise — so a large balance clears
+// over a handful of rounds rather than stranding on one oversized shape. It is
+// a deliberately conservative default because the operator does not advertise
+// its nonce-collection deadline; tune it with WithMaxVTXOsPerBoardRound for a
+// tighter or looser window.
+const DefaultMaxVTXOsPerBoardRound uint32 = 128
+
 var (
 	// ErrBoardingCapReached is returned when the operator's maximum
 	// user balance leaves no usable headroom to board any of the
@@ -102,7 +123,8 @@ type boardingClamp struct {
 // change output could neither be created in the batch transaction nor
 // re-boarded later.
 func clampBoardingAmount(total btcutil.Amount, targetCount uint32, maxVTXO,
-	headroom, floor btcutil.Amount) (*boardingClamp, error) {
+	headroom, floor btcutil.Amount,
+	perRoundVTXOCap uint32) (*boardingClamp, error) {
 
 	if total <= 0 {
 		return nil, fmt.Errorf("boarding balance must be positive")
@@ -117,6 +139,35 @@ func clampBoardingAmount(total btcutil.Amount, targetCount uint32, maxVTXO,
 		boardAmt = headroom
 		cappedByHeadroom = true
 	}
+
+	// Cap the per-round fanout so the client's O(N) nonce signing stays
+	// inside the operator's nonce-collection window. A balance whose split
+	// (MaxUserBalance / MaxVTXOAmount) would need more than perRoundVTXOCap
+	// pieces can overrun that window and strand the deposit
+	// (wavelength#858), so board at most the cap's worth of max-size VTXOs
+	// and let the remainder return as change to re-board next round. This
+	// reuses the change-routing below, and bounds minByMax at or under the
+	// cap. Zero disables the per-round cap; it needs a per-VTXO maximum to
+	// size a piece.
+	if perRoundVTXOCap > 0 && maxVTXO > 0 {
+		cap64 := int64(perRoundVTXOCap)
+		perRoundMax := cap64 * int64(maxVTXO)
+
+		// Clip only when the bound is trustworthy and spendable. The
+		// division check skips an overflowed multiply. Requiring
+		// perRoundMax >= floor keeps the clipped board above dust and
+		// preserves error attribution: on an absurdly small per-VTXO
+		// max (maxVTXO < floor) the clip is skipped, so the switch
+		// below reports ErrMaxVTXOBelowFloor, not a misleading
+		// below-floor error against the full balance.
+		if perRoundMax/cap64 == int64(maxVTXO) &&
+			perRoundMax >= int64(floor) &&
+			int64(boardAmt) > perRoundMax {
+
+			boardAmt = btcutil.Amount(perRoundMax)
+		}
+	}
+
 	switch {
 	case boardAmt <= 0:
 		// Headroom is zero or negative: the wallet is already at or
@@ -215,6 +266,24 @@ func clampBoardingAmount(total btcutil.Amount, targetCount uint32, maxVTXO,
 				count = uint32(maxByFloor)
 			}
 
+			// Cap the piece count at the per-round budget so the
+			// O(N) nonce signing stays inside the operator's
+			// collection window (wavelength#858). Clipping boardAmt
+			// alone does NOT bound the count: the window above
+			// honors the caller's targetCount up to maxByFloor, so
+			// a large requested count with a small floor could
+			// still mint far more than the cap's worth of
+			// sub-maximum pieces. The boardAmt clip guarantees
+			// perRoundMax = cap * maxVTXO, hence minByMax <= cap,
+			// so capping here never drops count below minByMax; and
+			// since count stays <= maxByFloor the (now fewer,
+			// larger) pieces remain within [floor, maxVTXO].
+			if perRoundVTXOCap > 0 &&
+				count > perRoundVTXOCap {
+
+				count = perRoundVTXOCap
+			}
+
 		// Infeasible even at the fewest pieces the maximum allows:
 		// boardAmt cannot be divided into whole [floor, maxVTXO]
 		// pieces. Board as many full maximum-size VTXOs as fit and
@@ -293,8 +362,19 @@ func (a *Ark) applyBoardingLimits(ctx context.Context, total btcutil.Amount,
 		floor = minChangeFloor
 	}
 
+	// Resolve the per-round VTXO cap, defaulting when unset so the
+	// per-VTXO-maximum-driven fanout is always bounded (wavelength#858).
+	// The cap engages only when the operator advertises a per-VTXO maximum;
+	// with no per-VTXO max the split is instead bounded by the caller's
+	// target count and the dust floor, which is not the #858 vector.
+	perRoundCap := a.maxVTXOsPerBoardRound
+	if perRoundCap == 0 {
+		perRoundCap = DefaultMaxVTXOsPerBoardRound
+	}
+
 	clamp, err := clampBoardingAmount(
 		total, targetCount, terms.MaxVTXOAmount, headroom, floor,
+		perRoundCap,
 	)
 	if err != nil {
 		return nil, nil, err

@@ -45,7 +45,7 @@ func newRecvCmd() *cobra.Command {
 	cmd.Flags().String("memo", "",
 		"optional human-readable memo embedded in the offchain "+
 			"invoice")
-	cmd.Flags().Uint64("amt_hint", 0,
+	cmd.Flags().Uint64("amt-hint", 0,
 		"optional expected amount for --onchain (accounting only)")
 
 	return cmd
@@ -60,7 +60,7 @@ func walletRecv(cmd *cobra.Command, _ []string) error {
 
 	amt, _ := cmd.Flags().GetUint64("amt")
 	memo, _ := cmd.Flags().GetString("memo")
-	amtHint, _ := cmd.Flags().GetUint64("amt_hint")
+	amtHint, _ := cmd.Flags().GetUint64("amt-hint")
 
 	if err := invalidArgs(validateFreeText("--memo", memo)); err != nil {
 		return err
@@ -76,9 +76,12 @@ func walletRecv(cmd *cobra.Command, _ []string) error {
 
 	return withWalletClient(
 		cmd, func(c wavewalletrpc.WalletServiceClient) error {
+			ctx, cancel := rpcContext(cmd)
+			defer cancel()
+
 			if offchain {
 				resp, err := c.Recv(
-					cmd.Context(),
+					ctx,
 					&wavewalletrpc.RecvRequest{
 						AmtSat: amt,
 						Memo:   memo,
@@ -93,7 +96,7 @@ func walletRecv(cmd *cobra.Command, _ []string) error {
 			}
 
 			resp, err := c.Deposit(
-				cmd.Context(),
+				ctx,
 				&wavewalletrpc.DepositRequest{
 					AmtSatHint: amtHint,
 				},

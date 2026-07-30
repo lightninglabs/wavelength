@@ -135,12 +135,13 @@ func runMethod(cmd *cobra.Command, cfg Config, service protoreflect.FullName,
 	}
 
 	req := dynamicpb.NewMessage(method.input)
-	rawJSON, _ := cmd.Flags().GetString("json")
+	rawJSON, _ := cmd.Flags().GetString("request-json")
 	if rawJSON != "" {
 		if err := jsonUnmarshalOpts.Unmarshal(
 			[]byte(rawJSON), req,
 		); err != nil {
-			return fmt.Errorf("invalid --json payload: %w", err)
+			return fmt.Errorf("invalid --request-json payload: %w",
+				err)
 		}
 	} else {
 		if err := populateRequest(cmd, req, binders); err != nil {
@@ -154,17 +155,23 @@ func runMethod(cmd *cobra.Command, cfg Config, service protoreflect.FullName,
 	}
 	defer conn.Close()
 
+	ctx := cmd.Context()
+	cancel := func() {}
+	if cfg.RPCContext != nil {
+		ctx, cancel = cfg.RPCContext(cmd)
+	}
+	defer cancel()
+
 	fullMethod := "/" + string(service) + "/" + string(method.spec.Name)
 	if method.spec.ServerStreaming {
 		return runServerStream(
-			cmd.Context(), cfg, conn, fullMethod, method.output,
-			req,
+			ctx, cfg, conn, fullMethod, method.output, req,
 		)
 	}
 
 	resp := dynamicpb.NewMessage(method.output)
 	if err := conn.Invoke(
-		cmd.Context(), fullMethod, req, resp,
+		ctx, fullMethod, req, resp,
 	); err != nil {
 		return mapRPCError(cfg, err)
 	}

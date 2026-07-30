@@ -34,18 +34,18 @@ unchanged).
 
 | Command | RPC | Description |
 |---------|-----|-------------|
-| `create` | `wavewalletrpc.Create` | Initialize a new wallet (proxies GenSeed + InitWallet). Password from stdin / WAVED_WALLET_PASSWORD / --wallet_password_file |
+| `create` | `wavewalletrpc.Create` | Initialize a new wallet (proxies GenSeed + InitWallet). Password from WAVED_WALLET_PASSWORD / --wallet-password-file / explicit --password-stdin |
 | `unlock` | `wavewalletrpc.Unlock` | Unlock an existing wallet (proxies UnlockWallet) |
 | `send <dest>` | `wavewalletrpc.Send` | Outbound payment. `--offchain` (default) for a BOLT-11 invoice via the swap subsystem; `--onchain` for an atomic on-chain send (`--sweep-all` drains). No prefix sniff |
 | `recv` | `wavewalletrpc.Recv` / `wavewalletrpc.Deposit` | Inbound. `--offchain` (default) returns a Lightning invoice; `--onchain` returns a boarding address |
-| `activity` | `wavewalletrpc.List` | Unified wallet activity view. Defaults to table output; `--format json` returns structured JSON. `--pending` and `--kind` narrow rows |
+| `activity` | `wavewalletrpc.List` | Unified wallet activity view. Defaults to table output; global `--json` or `--format json` returns structured JSON. `--pending` and `--kind` narrow rows |
 | `activity inspect <id>` | `wavewalletrpc.InspectActivity` | Correlated swap/VTXO/ledger detail for one activity entry |
 | `balance` | `wavewalletrpc.Balance` | Flat balance (confirmed_sat, pending_in_sat, pending_out_sat) |
 | `exit --outpoint TXID:VOUT` | `wavewalletrpc.Exit` | Queue a cooperative leave by default; unilateral unroll only fires with `--force-unroll-ack I_KNOW_WHAT_I_AM_DOING` |
 | `exit status --outpoint TXID:VOUT` | `wavewalletrpc.ExitStatus` | Query an exit/unroll job's status (proxies GetUnrollStatus) |
 | `exit summary` | `wavewalletrpc.ExitSummary` | Aggregate totals across all in-progress exits |
 | `exit plan --outpoint ...` | `wavewalletrpc.GetExitPlan` | Preview backing-wallet funding readiness for one or more exits |
-| `wallet-sweep --destination ADDR` | `wavewalletrpc.SweepWallet` | Preview, or with `--broadcast` publish, a sweep of confirmed backing-wallet UTXOs (boarding outputs excluded; see `ark sweep`) |
+| `wallet-sweep --destination ADDR` | `wavewalletrpc.SweepWallet` | Preview, or with `--broadcast --yes` publish, a sweep of confirmed backing-wallet UTXOs (boarding outputs excluded; see `ark sweep`) |
 
 ### Daemon introspection
 
@@ -64,13 +64,13 @@ who want direct access.
 | Command | RPC | Description |
 |---------|-----|-------------|
 | `ark vtxos {list,refresh,leave}` | `ListVTXOs` / `RefreshVTXOs` / `LeaveVTXOs` | VTXO inventory and lifecycle |
-| `ark rounds {get,join,list,watch}` | `GetRound` / (join) / `ListRounds` / `WatchRounds` | Round FSM state; `join` commits queued intents into the next round (`vtxos refresh`/`leave` call it automatically) |
+| `ark rounds {get,join,list,watch}` | `GetRound` / (join) / `ListRounds` / `WatchRounds` | Round FSM state; `join` commits queued intents into the next round (`vtxos refresh`/`leave` call it automatically); `watch --max-events`/`--for` bounds streams for machines |
 | `ark oor {receive,get,list}` | `NewReceiveScript` / `GetOORSession` / `ListOORSessions` | OOR session inspection |
 | `ark board` | `Board` | Trigger boarding with confirmed UTXOs |
-| `ark sweep [list]` | `SweepBoardingUTXOs` / `ListBoardingSweeps` | Boarding-timeout sweeps |
+| `ark sweep [list]` | `SweepBoardingUTXOs` / `ListBoardingSweeps` | Boarding-timeout sweeps; broadcasting requires interactive approval or `--yes` |
 | `ark fees {estimate,history}` | `EstimateFee` / `GetFeeHistory` | Fee estimation and history |
 | `ark listtransactions` | `ListTransactions` | Raw paginated transaction history |
-| `ark send {inround,oor}` | `SendVTXO` / `SendOOR` | Raw in-round / OOR send (superseded by `send` for the wallet shape) |
+| `ark send {inround,oor}` | `SendVTXO` / `SendOOR` | Raw in-round / OOR send; real transfers require interactive approval or `--yes` |
 
 ### `recovery.*` advanced commands
 
@@ -97,22 +97,34 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/cmd/wave
   registered.
 - `getDaemonConn()` / `getDaemonClient()` — TLS-by-default daemon
   gRPC dial; `--no-tls` opts out for local dev.
+- `rpcContext()` — derives a cancellable finite daemon-RPC context with the
+  global `--timeout` deadline (30 seconds by default; zero disables it).
+  Deliberately live streams such as `ark rounds watch` instead use `--for`,
+  `--max-events`, or caller cancellation.
 - `withWalletClient()` — maps `codes.Unimplemented` to
   `errWalletRPCDisabled` (with a pointer to `docs/wavewalletrpc_build.md`)
   for daemons built without the wavewalletrpc tag.
-- `parseRequest()` — generic JSON-or-flags proto request parser
+- `parseRequest()` — generic `--request-json`-or-flags proto request parser
   (consumed by `ark.*` commands).
+- `snakeToKebabFlags()` — global flag normalizer: help and schemas use
+  kebab-case while snake_case remains a silent compatibility alias.
 - `methodRegistry()` / `schemaMethod` / `schemaParam` —
   machine-readable schema for all CLI commands; shared source of
   truth for `schema` and MCP tool definitions. Built from the
   `walletAdmin`/`walletPayment`/`walletQuery`/`arkBase`/`arkVTXO`/
-  `arkSend`/`arkObservable` sub-registries.
+  `arkSend`/`arkObservable` sub-registries. MCP-only methods use
+  `mcp_only`; tools whose arguments differ from the CLI use `mcp_params`.
+- `schema_parity_test.go` walks the real cobra tree and an in-memory real MCP
+  server. Every visible local flag on the curated wallet/ark surface must
+  match the registry name and type, and `MCPTool` must match the exact live
+  tool set.
 - `buildMCPServer()` — constructs the MCP server and registers every
   exposed RPC as a typed tool; split from `mcpServe` (which owns the
   daemon dial and stdio transport) so the tool surface is testable.
 - `readPassword()` — reads wallet password from
-  `WAVED_WALLET_PASSWORD` → `--wallet_password_file` → stdin → TTY.
-  **Never from CLI args.**
+  `WAVED_WALLET_PASSWORD` → `--wallet-password-file` → explicit
+  `--password-stdin` → TTY. **Never implicitly from stdin or from CLI
+  args.**
 - `validateDestination()` / `validateOutpoint()` /
   `validateFreeText()` — input hardening shared across the top-level
   wallet verbs (reject control chars, query/fragment chars, malformed
@@ -141,10 +153,23 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/cmd/wave
   the authoritative parse.
 - The wallet password is NEVER read from argv. The supported sources
   are `WAVED_WALLET_PASSWORD` (highest priority), then
-  `--wallet_password_file`, then piped stdin, then interactive prompt.
+  `--wallet-password-file`, explicit `--password-stdin`, then an
+  interactive prompt.
+- Global `--no-input` and `CI=true` disable interactive prompts without
+  suppressing command output. Explicit password sources still work.
 - JSON output (`stdout`) and diagnostic output (`stderr`) are kept on
   separate streams so shell pipelines can consume the JSON body while
   a human reading the terminal sees informative warnings.
+- Failure envelopes always include a stable `retryable` boolean and add
+  actionable `remediation` where the caller can recover. Invalid input exits
+  2, authentication failures 3, missing resources 4, and non-interactive
+  confirmation requirements 5. Successful dry runs exit 0.
+- The everyday wallet `send` MCP tool is two-phase: `send.prepare`
+  validates and returns a short-lived, single-use `send_intent_id`; `send`
+  accepts only that id and consumes the exact prepared intent, so an agent
+  cannot dispatch that payment without first previewing it. The raw
+  `ark.send.*` advanced MCP tools are NOT two-phase — they move funds in one
+  call, gated only by their optional `dry_run` flag.
 - `exit` defaults to a cooperative leave; it only starts a unilateral
   on-chain unroll when `--force-unroll-ack` matches the literal string
   `I_KNOW_WHAT_I_AM_DOING`, and that flag is mutually exclusive with
@@ -157,7 +182,7 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/cmd/wave
   non-interactive stdin without `--yes` (same posture as `leave --all`
   and `recovery escalate`). The MCP tool enforces the same contract
   through its `yes` argument — no prompt exists there, so a bare real
-  refresh returns an immediate actionable error. `--dry_run` previews
+  refresh returns an immediate actionable error. `--dry-run` previews
   the itemized advisory estimate and never prompts. A failed estimate
   degrades to a "still charged the seal-time fee" warning and its
   total is absent on the wire (explicit proto presence) — it never

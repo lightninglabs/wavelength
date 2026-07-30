@@ -31,8 +31,11 @@ func newBalanceCmd() *cobra.Command {
 func walletBalance(cmd *cobra.Command, _ []string) error {
 	return withWalletClient(
 		cmd, func(c wavewalletrpc.WalletServiceClient) error {
+			ctx, cancel := rpcContext(cmd)
+			defer cancel()
+
 			resp, err := c.Balance(
-				cmd.Context(), &wavewalletrpc.BalanceRequest{},
+				ctx, &wavewalletrpc.BalanceRequest{},
 			)
 			if err != nil {
 				return fmt.Errorf("balance: %w", err)

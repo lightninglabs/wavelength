@@ -266,6 +266,89 @@ func (s *VTXOPersistenceStore) ListLiveVTXOs(ctx context.Context) (
 	return result, err
 }
 
+// ListRecoverableVTXOsLight returns the recoverable set without the ancestry
+// join, for callers that only need each descriptor's amount.
+func (s *VTXOPersistenceStore) ListRecoverableVTXOsLight(ctx context.Context) (
+	[]*vtxo.Descriptor, error) {
+
+	readTxOpts := ReadTxOption()
+
+	var result []*vtxo.Descriptor
+
+	err := s.db.ExecTx(ctx, readTxOpts, func(q RoundStore) error {
+		rows, err := q.ListRecoverableVTXOs(ctx)
+		if err != nil {
+			return fmt.Errorf("list recoverable VTXOs: %w", err)
+		}
+
+		descs, err := s.rowsToDescriptorsNoAncestry(ctx, q, rows)
+		if err != nil {
+			return err
+		}
+
+		result = descs
+
+		return nil
+	})
+
+	return result, err
+}
+
+// ListRecoverableVTXOs returns every VTXO whose actor must be restored at
+// startup: the ListLiveVTXOs set plus expired ones.
+//
+// Expired VTXOs are excluded from ListLiveVTXOs because they hold no
+// spendable value until reissued, but their actors must still exist so the
+// value can be reclaimed by forfeiting them in an ordinary round.
+func (s *VTXOPersistenceStore) ListRecoverableVTXOs(ctx context.Context) (
+	[]*vtxo.Descriptor, error) {
+
+	readTxOpts := ReadTxOption()
+
+	var result []*vtxo.Descriptor
+
+	err := s.db.ExecTx(ctx, readTxOpts, func(q RoundStore) error {
+		rows, err := q.ListRecoverableVTXOs(ctx)
+		if err != nil {
+			return fmt.Errorf("list recoverable VTXOs: %w", err)
+		}
+
+		// The ancestry projection is keyed by outpoint and filtered on
+		// "unspent", which is a superset of the recoverable set, so
+		// the expired rows find their paths here too.
+		ancestryRows, err := q.ListUnspentVTXOAncestryPaths(ctx)
+		if err != nil {
+			return fmt.Errorf("list unspent ancestry paths: %w",
+				err)
+		}
+
+		ancestryByOutpoint, err := groupAncestryRowsWithCache(
+			ancestryRows, s.ancestryCache,
+		)
+		if err != nil {
+			return fmt.Errorf("group ancestry rows: %w", err)
+		}
+
+		descs := make([]*vtxo.Descriptor, 0, len(rows))
+		for _, row := range rows {
+			desc, err := s.rowToDescriptor(
+				ctx, q, row, ancestryByOutpoint,
+			)
+			if err != nil {
+				return fmt.Errorf("convert VTXO: %w", err)
+			}
+
+			descs = append(descs, desc)
+		}
+
+		result = descs
+
+		return nil
+	})
+
+	return result, err
+}
+
 // ListVTXOsByStatus returns all VTXOs matching the given status. This
 // enables the ListVTXOs RPC to query terminal states (spent, forfeited)
 // directly from the database instead of filtering in memory. Like
@@ -400,15 +483,16 @@ func (s *VTXOPersistenceStore) byStatusRowsToDescriptors(ctx context.Context,
 
 		// settlement_txid is a 32-byte BLOB when the forfeit round row
 		// exists; treat any other length (NULL join, short/legacy) as
-		// unset so the descriptor's Settlement stays None. The txid and
-		// height come from one round row, so they are attached
-		// together.
+		// unset so the descriptor's Settlement stays None. The txid,
+		// height, and round-level operator fee are attached together,
+		// as they all describe the same forfeit round.
 		if len(row.SettlementTxid) == chainhash.HashSize {
 			var settle vtxo.Settlement
 			copy(settle.TxID[:], row.SettlementTxid)
 			if row.SettlementHeight.Valid {
 				settle.Height = row.SettlementHeight.Int32
 			}
+			settle.FeeSat = row.SettlementFeeSat
 			desc.Settlement = fn.Some(settle)
 		}
 

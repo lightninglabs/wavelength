@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/lightninglabs/wavelength/build"
 	"github.com/lightninglabs/wavelength/cmd/wavecli/waveclicommands/devrpc"
@@ -15,7 +16,8 @@ import (
 
 const (
 	// defaultRPCServer is the default gRPC endpoint for the daemon.
-	defaultRPCServer = "localhost:10029"
+	defaultRPCServer  = "localhost:10029"
+	defaultRPCTimeout = 30 * time.Second
 
 	// groupWallet, groupIntrospection, and groupAdvanced are the cobra
 	// command-group IDs that shape the default --help face.
@@ -30,7 +32,7 @@ const (
 )
 
 // NewRootCmd creates the top-level cobra command for wavecli. Global
-// flags (--rpcserver, --format, --tlscertpath, --macaroonpath, --no-tls) are
+// flags (--rpcserver, --timeout, --tlscertpath, --macaroonpath, --no-tls) are
 // registered here and made available to all subcommands via PersistentFlags.
 //
 // The advanced subtrees (ark / dev / recovery) are hidden from the default
@@ -52,8 +54,8 @@ func newRootCmd(devMode bool) *cobra.Command {
 		Long: "wavecli is the command-line interface for " +
 			"the Ark protocol client daemon (waved). " +
 			"It issues gRPC calls to a running daemon " +
-			"and prints structured JSON output suitable " +
-			"for both human and agent consumption.",
+			"and prints command-appropriate human or " +
+			"machine-readable output.",
 		Version: build.Version(),
 		// Silence usage on errors so we control the error
 		// output format.
@@ -95,10 +97,24 @@ func newRootCmd(devMode bool) *cobra.Command {
 			"for daemon connection (dev/regtest)",
 	)
 
+	pf.Duration(
+		"timeout", defaultRPCTimeout,
+		"maximum duration for each daemon RPC; 0 disables the deadline",
+	)
+
+	pf.Bool(
+		"json", false, "emit machine-readable JSON output (raw "+
+			"request input uses --request-json)",
+	)
+
+	pf.Bool(
+		"no-input", false, "never prompt or implicitly consume stdin",
+	)
+
 	pf.String(
-		"json", "", "raw JSON request payload (maps directly to "+
-			"the RPC request proto); when set, bespoke flags "+
-			"are ignored",
+		"request-json", "", "raw JSON request payload (maps "+
+			"directly to the RPC request proto); when set, "+
+			"bespoke flags are ignored",
 	)
 
 	// The visible face is two groups: the everyday Wallet verbs and
@@ -147,6 +163,7 @@ func newRootCmd(devMode bool) *cobra.Command {
 				GetConn:     getDaemonConn,
 				PrintJSON:   printJSON,
 				MapRPCError: mapSwapRuntimeRPCError,
+				RPCContext:  rpcContext,
 			},
 		),
 	}
@@ -173,6 +190,7 @@ func newRootCmd(devMode bool) *cobra.Command {
 	cmd.AddCommand(walletCmds...)
 	cmd.AddCommand(introspectionCmds...)
 	cmd.AddCommand(advancedCmds...)
+	cmd.SetGlobalNormalizationFunc(snakeToKebabFlags)
 
 	return cmd
 }
@@ -182,9 +200,11 @@ type errorEnvelope struct {
 }
 
 type errorPayload struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
-	Details string `json:"details,omitempty"`
+	Code        string `json:"code"`
+	Message     string `json:"message"`
+	Details     string `json:"details,omitempty"`
+	Remediation string `json:"remediation,omitempty"`
+	Retryable   bool   `json:"retryable"`
 }
 
 // PrintError writes a structured error to stderr in JSON format and
@@ -218,11 +238,24 @@ func printError(w io.Writer, code string, msg string) error {
 func printErrorDetails(w io.Writer, code string, msg string,
 	details string) error {
 
+	retryable, remediation := errorMetadata(code, msg)
+
+	return printErrorMetadata(
+		w, code, msg, details, remediation, retryable,
+	)
+}
+
+// printErrorMetadata writes one fully classified public error envelope.
+func printErrorMetadata(w io.Writer, code, msg, details, remediation string,
+	retryable bool) error {
+
 	data, err := json.MarshalIndent(errorEnvelope{
 		Error: errorPayload{
-			Code:    code,
-			Message: msg,
-			Details: details,
+			Code:        code,
+			Message:     msg,
+			Details:     details,
+			Remediation: remediation,
+			Retryable:   retryable,
 		},
 	}, "", "  ")
 	if err != nil {
@@ -264,8 +297,8 @@ func (e *printedError) ExitCode() int {
 	case "METHOD_NOT_FOUND", "NOT_FOUND":
 		return ExitNotFound
 
-	case "DRY_RUN_OK":
-		return ExitDryRunOK
+	case confirmationRequiredCode:
+		return ExitConfirmationRequired
 	}
 
 	return ExitGenericError

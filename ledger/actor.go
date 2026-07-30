@@ -93,9 +93,12 @@ const (
 // of silently misclassifying the entry.
 //
 // FeeTypeBoarding and FeeTypeRefresh book operator (Ark protocol)
-// fees: debit fees_paid, credit vtxo_balance. They MUST be paired
-// with a same-RoundID VTXOReceivedMsg carrying the gross pre-fee
-// amount.
+// fees, debiting fees_paid. The credit side names the account the
+// fee was paid from: wallet_balance for boarding (the fee comes out
+// of the wallet funds entering the Ark layer, alongside a
+// same-RoundID VTXOReceivedMsg carrying the SEALED post-fee VTXO
+// value) and vtxo_balance for refresh (the fee is carved out of
+// forfeited VTXO value).
 //
 // FeeTypeOnchainSweep books wallet-level sweep chain cost
 // (currently emitted by the boarding-sweep flow): debit

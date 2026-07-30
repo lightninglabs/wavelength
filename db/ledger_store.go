@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 
+	"github.com/btcsuite/btcd/wire/v2"
+	"github.com/google/uuid"
 	"github.com/lightninglabs/wavelength/db/sqlc"
 	"github.com/lightninglabs/wavelength/ledger"
 )
@@ -58,10 +60,13 @@ func (s *LedgerStoreDB) InsertLedgerEntry(ctx context.Context,
 		func(qtx *sqlc.Queries) error {
 			return qtx.InsertClientLedgerEntry(
 				ctx, sqlc.InsertClientLedgerEntryParams{
-					DebitAccount:   entry.DebitAccount,
-					CreditAccount:  entry.CreditAccount,
-					AmountSat:      entry.AmountSat,
-					RoundID:        entry.RoundID,
+					DebitAccount:  entry.DebitAccount,
+					CreditAccount: entry.CreditAccount,
+					AmountSat:     entry.AmountSat,
+					RoundID:       entry.RoundID,
+					RoundUuid: roundUUIDText(
+						entry.RoundID,
+					),
 					SessionID:      entry.SessionID,
 					EventType:      entry.EventType,
 					Description:    entry.Description,
@@ -80,6 +85,24 @@ func (s *LedgerStoreDB) InsertLedgerEntry(ctx context.Context,
 	)
 }
 
+// roundUUIDText mirrors a raw 16-byte ledger round_id into the canonical
+// lowercase UUID string stored by rounds.round_id and vtxos.forfeit_round_id,
+// so ledger rows are joinable against those tables in portable SQL. A nil or
+// non-16-byte input yields NULL, mirroring the round_id column's nullability.
+func roundUUIDText(roundID []byte) sql.NullString {
+	if len(roundID) != 16 {
+		return sql.NullString{}
+	}
+
+	var id uuid.UUID
+	copy(id[:], roundID)
+
+	return sql.NullString{
+		String: id.String(),
+		Valid:  true,
+	}
+}
+
 // sqlInt32Ptr converts an optional int32 pointer to the nullable sqlc shape
 // used by ledger chain metadata columns.
 func sqlInt32Ptr(v *int32) sql.NullInt32 {
@@ -91,6 +114,29 @@ func sqlInt32Ptr(v *int32) sql.NullInt32 {
 		Int32: *v,
 		Valid: true,
 	}
+}
+
+// GetConfirmedExitCost returns the confirmed on-chain cost the ledger booked
+// for a unilateral exit of the given VTXO outpoint (the onchain_fee_paid leg
+// unroll emits after the final sweep confirms). Zero when no exit-cost leg
+// exists — the exit has not confirmed, or predates exit-cost accounting.
+func (s *LedgerStoreDB) GetConfirmedExitCost(ctx context.Context,
+	outpoint wire.OutPoint) (int64, error) {
+
+	key := ledger.ExitIdempotencyKey(outpoint.Hash, outpoint.Index)
+
+	var cost int64
+	err := s.ExecTx(
+		ctx, ReadTxOption(),
+		func(qtx *sqlc.Queries) error {
+			var txErr error
+			cost, txErr = qtx.GetConfirmedExitCost(ctx, key)
+
+			return txErr
+		},
+	)
+
+	return cost, err
 }
 
 // GetAccountBalance returns the net balance (debits minus credits) for

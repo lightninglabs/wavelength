@@ -31,6 +31,10 @@ func newActivityInspectCmd() *cobra.Command {
 func inspectActivity(cmd *cobra.Command, args []string) error {
 	ledgerLimit, _ := cmd.Flags().GetUint32("ledger-limit")
 	format, _ := cmd.Flags().GetString("format")
+	jsonOutput, _ := cmd.Flags().GetBool("json")
+	if jsonOutput {
+		format = "json"
+	}
 	if err := validateInspectFormat(format); err != nil {
 		return err
 	}
@@ -42,7 +46,10 @@ func inspectActivity(cmd *cobra.Command, args []string) error {
 
 	return withWalletInspectionClient(
 		cmd, func(c wavewalletrpc.WalletInspectionServiceClient) error {
-			resp, err := c.InspectActivity(cmd.Context(), req)
+			ctx, cancel := rpcContext(cmd)
+			defer cancel()
+
+			resp, err := c.InspectActivity(ctx, req)
 			if err != nil {
 				return fmt.Errorf("activity inspect: %w", err)
 			}
@@ -67,7 +74,10 @@ func validateInspectFormat(format string) error {
 		return nil
 
 	default:
-		return fmt.Errorf("unknown inspect format %q: expected json, "+
-			"expanded, or x", format)
+		return newCLIError(
+			ExitInvalidArgs,
+			fmt.Errorf("unknown inspect format %q: expected "+
+				"json, expanded, or x", format),
+		)
 	}
 }

@@ -14,7 +14,7 @@ import (
 // exit) and dials wavewalletrpc.WalletService.Create which proxies
 // waverpc.GenSeed + waverpc.InitWallet under the hood. Both the
 // wallet password and the optional seed passphrase are read from
-// stdin / env var / file (never CLI args) so secrets never enter argv.
+// explicit non-argv sources so secrets never enter process listings.
 func newCreateCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "create",
@@ -24,26 +24,29 @@ func newCreateCmd() *cobra.Command {
 			"the caller can record it offline), and creates " +
 			"the wallet database encrypted under the " +
 			"supplied password.\n\n" +
-			"The wallet password is read from stdin / " +
-			"WAVED_WALLET_PASSWORD env / " +
-			"--wallet_password_file (never CLI args). The " +
+			"The wallet password is read from " +
+			"WAVED_WALLET_PASSWORD, --wallet-password-file, " +
+			"or explicit --password-stdin (never CLI args). The " +
 			"interactive password prompt asks for confirmation. " +
 			"The optional seed passphrase is read from " +
 			"WAVED_SEED_PASSPHRASE env / " +
-			"--seed_passphrase_file. The mnemonic is shown " +
+			"--seed-passphrase-file. The mnemonic is shown " +
 			"on stderr ONCE and is NOT included in the JSON " +
 			"response on stdout (the caller must capture it " +
 			"from stderr or pass --print-mnemonic-json to " +
 			"opt in to the machine-consumable form).\n\n" +
 			"Example:\n" +
-			"  echo -n 'hunter2hunter2' | wavecli create",
+			"  printf '%s\\n' 'hunter2hunter2' | " +
+			"wavecli create --password-stdin",
 		Args: cobra.NoArgs,
 		RunE: walletCreate,
 	}
 
-	cmd.Flags().String("wallet_password_file", "",
+	cmd.Flags().String("wallet-password-file", "",
 		"path to file containing wallet password")
-	cmd.Flags().String("seed_passphrase_file", "",
+	cmd.Flags().Bool("password-stdin", false,
+		"read one wallet password line from stdin")
+	cmd.Flags().String("seed-passphrase-file", "",
 		"path to file containing optional aezeed passphrase")
 	cmd.Flags().Bool("print-mnemonic-json", false,
 		"include the mnemonic in the JSON response on stdout "+
@@ -52,16 +55,9 @@ func newCreateCmd() *cobra.Command {
 		"import an existing mnemonic and recover Ark wallet state")
 	cmd.Flags().String("mnemonic-file", "",
 		"path to file containing an existing 24-word aezeed mnemonic")
-	cmd.Flags().String("mnemonic_file", "",
-		"path to file containing an existing 24-word aezeed mnemonic")
 	cmd.Flags().Uint32("recovery-window", 0,
 		"number of key indexes to scan per recovery family "+
 			"(default: daemon wallet.recoverywindow)")
-	cmd.Flags().Uint32("recovery_window", 0,
-		"number of key indexes to scan per recovery family "+
-			"(default: daemon wallet.recoverywindow)")
-	_ = cmd.Flags().MarkHidden("mnemonic_file")
-	_ = cmd.Flags().MarkHidden("recovery_window")
 
 	return cmd
 }
@@ -69,20 +65,8 @@ func newCreateCmd() *cobra.Command {
 // walletCreate implements the top-level `create` verb.
 func walletCreate(cmd *cobra.Command, _ []string) error {
 	recoverWallet, _ := cmd.Flags().GetBool("recover")
-	mnemonicFile, err := aliasedFlag(
-		cmd, "mnemonic-file", "mnemonic_file", cmd.Flags().GetString,
-	)
-	if err != nil {
-		return err
-	}
-
-	recoveryWindow, err := aliasedFlag(
-		cmd, "recovery-window", "recovery_window",
-		cmd.Flags().GetUint32,
-	)
-	if err != nil {
-		return err
-	}
+	mnemonicFile, _ := cmd.Flags().GetString("mnemonic-file")
+	recoveryWindow, _ := cmd.Flags().GetUint32("recovery-window")
 
 	switch {
 	case recoverWallet && mnemonicFile == "":
@@ -119,8 +103,11 @@ func walletCreate(cmd *cobra.Command, _ []string) error {
 
 	return withWalletClient(
 		cmd, func(c wavewalletrpc.WalletServiceClient) error {
+			ctx, cancel := rpcContext(cmd)
+			defer cancel()
+
 			resp, err := c.Create(
-				cmd.Context(), &wavewalletrpc.CreateRequest{
+				ctx, &wavewalletrpc.CreateRequest{
 					WalletPassword: password,
 					SeedPassphrase: seedPassphrase,
 					Mnemonic:       mnemonic,
@@ -178,24 +165,4 @@ func readMnemonicFile(path string) ([]string, error) {
 	}
 
 	return words, nil
-}
-
-// aliasedFlag reads a flag with a hidden compatibility alias.
-func aliasedFlag[T any](cmd *cobra.Command, primary, alias string,
-	get func(string) (T, error)) (T, error) {
-
-	primaryChanged := cmd.Flags().Changed(primary)
-	aliasChanged := cmd.Flags().Changed(alias)
-	var zero T
-	switch {
-	case primaryChanged && aliasChanged:
-		return zero, fmt.Errorf("--%s and --%s cannot both be set",
-			primary, alias)
-
-	case aliasChanged:
-		return get(alias)
-
-	default:
-		return get(primary)
-	}
 }

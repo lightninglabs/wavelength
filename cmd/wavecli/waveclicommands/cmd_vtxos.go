@@ -1,7 +1,6 @@
 package waveclicommands
 
 import (
-	"bufio"
 	"encoding/hex"
 	"fmt"
 	"os"
@@ -57,7 +56,7 @@ func newVTXOsListCmd() *cobra.Command {
 		"filter by status: "+
 			strings.Join(validStatuses, ", "))
 
-	cmd.Flags().Int64("min_amount", 0,
+	cmd.Flags().Int64("min-amount", 0,
 		"minimum amount in sats")
 
 	addListOutputFlags(cmd, "VTXO")
@@ -76,7 +75,7 @@ func vtxosList(cmd *cobra.Command, _ []string) error {
 	req := &waverpc.ListVTXOsRequest{}
 	if err := parseRequest(cmd, req, func() error {
 		statusStr, _ := cmd.Flags().GetString("status")
-		minAmount, _ := cmd.Flags().GetInt64("min_amount")
+		minAmount, _ := cmd.Flags().GetInt64("min-amount")
 
 		if statusStr != "" {
 			statusFilter, ok := parseVTXOStatus(
@@ -104,10 +103,10 @@ func vtxosList(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	// cmd.Context() carries Ctrl+C / SIGTERM so the RPC actually
-	// cancels when the user interrupts the CLI. context.Background()
-	// here would orphan the request until the daemon responded.
-	resp, err := client.ListVTXOs(cmd.Context(), req)
+	ctx, cancel := rpcContext(cmd)
+	defer cancel()
+
+	resp, err := client.ListVTXOs(ctx, req)
 	if err != nil {
 		return fmt.Errorf("ListVTXOs RPC failed: %w", err)
 	}
@@ -145,7 +144,7 @@ func newVTXOsRefreshCmd() *cobra.Command {
 			"extending the VTXOs' expiry.\n\n" +
 			"A refresh is charged an operator fee, set by the " +
 			"server-issued quote at seal time. Pass " +
-			"`--dry_run` to preview an itemized advisory " +
+			"`--dry-run` to preview an itemized advisory " +
 			"estimate without queuing anything. An " +
 			"interactive refresh shows the estimate and asks " +
 			"for confirmation; pass `--yes` to skip the " +
@@ -155,11 +154,11 @@ func newVTXOsRefreshCmd() *cobra.Command {
 			"PendingRoundAssembly state. By default this " +
 			"command then issues `ark rounds join` on the " +
 			"caller's behalf so refresh is a one-shot " +
-			"operation. Pass `--no_join` to skip the join — " +
+			"operation. Pass `--no-join` to skip the join — " +
 			"useful for batching multiple refresh and/or " +
 			"leave RPCs into the same round (one shared " +
 			"change marker, one shared commitment fee). When " +
-			"`--no_join` is used, call `ark rounds join` " +
+			"`--no-join` is used, call `ark rounds join` " +
 			"explicitly once the batch is queued.",
 		RunE: vtxosRefresh,
 	}
@@ -170,14 +169,14 @@ func newVTXOsRefreshCmd() *cobra.Command {
 	cmd.Flags().Bool("all", false,
 		"refresh all live VTXOs")
 
-	cmd.Flags().Bool("dry_run", false,
+	cmd.Flags().Bool("dry-run", false,
 		"validate without queuing and preview the estimated "+
 			"operator fee")
 
 	cmd.Flags().Bool("yes", false,
 		"skip the interactive fee confirmation")
 
-	cmd.Flags().Bool("no_join", false,
+	cmd.Flags().Bool("no-join", false,
 		"skip the implicit `ark rounds join` follow-up so this "+
 			"refresh can batch with other queued intents")
 
@@ -233,7 +232,7 @@ func vtxosRefresh(cmd *cobra.Command, _ []string) error {
 			"outpoint",
 		)
 		all, _ := cmd.Flags().GetBool("all")
-		dryRun, _ := cmd.Flags().GetBool("dry_run")
+		dryRun, _ := cmd.Flags().GetBool("dry-run")
 
 		built, err := buildRefreshVTXOsRequest(
 			outpoints, all, dryRun,
@@ -256,15 +255,19 @@ func vtxosRefresh(cmd *cobra.Command, _ []string) error {
 		cmd, req, func(preview *waverpc.RefreshVTXOsRequest) (
 			*waverpc.RefreshVTXOsResponse, error) {
 
-			return client.RefreshVTXOs(cmd.Context(), preview)
+			ctx, cancel := rpcContext(cmd)
+			defer cancel()
+
+			return client.RefreshVTXOs(ctx, preview)
 		},
 	); err != nil {
 		return err
 	}
 
-	resp, err := client.RefreshVTXOs(
-		cmd.Context(), req,
-	)
+	ctx, cancel := rpcContext(cmd)
+	defer cancel()
+
+	resp, err := client.RefreshVTXOs(ctx, req)
 	if err != nil {
 		return fmt.Errorf("RefreshVTXOs RPC failed: %w", err)
 	}
@@ -299,7 +302,7 @@ func vtxosRefresh(cmd *cobra.Command, _ []string) error {
 		)
 	}
 
-	noJoin, _ := cmd.Flags().GetBool("no_join")
+	noJoin, _ := cmd.Flags().GetBool("no-join")
 
 	return maybeJoinNextRound(cmd, client, req.DryRun, noJoin)
 }
@@ -383,12 +386,12 @@ func summarizeRefreshFeeEstimate(est *waverpc.RefreshFeeEstimate) []string {
 // consent: every refresh is charged an operator fee at seal time, and
 // before this gate the CLI queued the refresh without ever mentioning
 // it (#986). The check runs after parseRequest returns so it covers
-// both the flag-driven path and the --json path, mirroring
+// both the flag-driven path and the --request-json path, mirroring
 // confirmLeaveAllIfNeeded. Skip when --yes is set (explicit scripted
 // consent) or when req.DryRun is set (previewing, not spending).
 //
 // When stdin is not a TTY (agents, CI, pipelines), the function
-// refuses to prompt — the caller must pass --yes or --dry_run — so a
+// refuses to prompt — the caller must pass --yes or --dry-run — so a
 // non-interactive invocation is never blocked on a y/N it cannot
 // answer. Only on a TTY does it fetch the advisory estimate (via the
 // same RPC in dry-run form, through fetchPreview) and prompt, so the
@@ -411,14 +414,14 @@ func confirmRefreshIfNeeded(cmd *cobra.Command,
 		return nil
 	}
 
-	if !stdinIsTTY(cmd) {
+	if !canPrompt(cmd) {
 		return PrintError(
-			"INVALID_ARGS", "refresh is charged an operator "+
-				"fee at seal time and requires --yes "+
-				"(explicit consent) or --dry_run (fee "+
-				"preview) on non-interactive stdin; "+
-				"refusing to prompt because an agent "+
-				"cannot respond to y/N",
+			confirmationRequiredCode, "refresh is charged an "+
+				"operator fee at seal time and requires "+
+				"--yes (explicit consent) or --dry-run "+
+				"(fee preview) on non-interactive stdin or "+
+				"when input is disabled; refusing to "+
+				"prompt because an agent cannot respond to y/N",
 		)
 	}
 
@@ -491,20 +494,8 @@ func promptRefreshConfirmation(cmd *cobra.Command, lines []string) error {
 	for _, line := range lines {
 		fmt.Fprintln(out, line)
 	}
-	fmt.Fprint(out, "Proceed with refresh? [y/N]: ")
 
-	reader := bufio.NewReader(cmd.InOrStdin())
-	answer, err := reader.ReadString('\n')
-	if err != nil {
-		return fmt.Errorf("read confirmation: %w", err)
-	}
-
-	answer = strings.TrimSpace(strings.ToLower(answer))
-	if answer != "y" && answer != "yes" {
-		return fmt.Errorf("aborted by user")
-	}
-
-	return nil
+	return promptConfirmation(cmd, "Proceed with refresh? [y/N]: ")
 }
 
 // newVTXOsLeaveCmd creates the vtxos leave subcommand.
@@ -523,11 +514,11 @@ func newVTXOsLeaveCmd() *cobra.Command {
 			"any queued refresh intents. By default this " +
 			"command then issues `ark rounds join` on the " +
 			"caller's behalf so leave is a one-shot " +
-			"operation. Pass `--no_join` to skip the join — " +
+			"operation. Pass `--no-join` to skip the join — " +
 			"useful for batching multiple leave and/or " +
 			"refresh RPCs into the same round (one shared " +
 			"change marker, one shared commitment fee). When " +
-			"`--no_join` is used, call `ark rounds join` " +
+			"`--no-join` is used, call `ark rounds join` " +
 			"explicitly once the batch is queued.",
 		RunE: vtxosLeave,
 	}
@@ -541,21 +532,21 @@ func newVTXOsLeaveCmd() *cobra.Command {
 	cmd.Flags().String("address", "",
 		"default on-chain destination address")
 
-	cmd.Flags().String("pk_script", "",
-		"default destination pk_script (hex); "+
+	cmd.Flags().String("pk-script", "",
+		"default destination pk-script (hex); "+
 			"alternative to --address")
 
 	cmd.Flags().StringToString("destination", nil,
 		"per-outpoint destination override: "+
 			"outpoint=addr or outpoint=script:<hex>")
 
-	cmd.Flags().Bool("dry_run", false,
+	cmd.Flags().Bool("dry-run", false,
 		"validate without queuing")
 
 	cmd.Flags().Bool("yes", false,
 		"skip interactive confirmation for --all")
 
-	cmd.Flags().Bool("no_join", false,
+	cmd.Flags().Bool("no-join", false,
 		"skip the implicit `ark rounds join` follow-up so this "+
 			"leave can batch with other queued intents")
 
@@ -577,11 +568,11 @@ func vtxosLeave(cmd *cobra.Command, _ []string) error {
 		outpoints, _ := cmd.Flags().GetStringSlice("outpoint")
 		all, _ := cmd.Flags().GetBool("all")
 		addr, _ := cmd.Flags().GetString("address")
-		pkScriptHex, _ := cmd.Flags().GetString("pk_script")
+		pkScriptHex, _ := cmd.Flags().GetString("pk-script")
 		destPairs, _ := cmd.Flags().GetStringToString(
 			"destination",
 		)
-		dryRun, _ := cmd.Flags().GetBool("dry_run")
+		dryRun, _ := cmd.Flags().GetBool("dry-run")
 
 		built, err := buildLeaveVTXOsRequest(
 			outpoints, all, addr, pkScriptHex, destPairs, dryRun,
@@ -606,9 +597,10 @@ func vtxosLeave(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	resp, err := client.LeaveVTXOs(
-		cmd.Context(), req,
-	)
+	ctx, cancel := rpcContext(cmd)
+	defer cancel()
+
+	resp, err := client.LeaveVTXOs(ctx, req)
 	if err != nil {
 		return fmt.Errorf("LeaveVTXOs RPC failed: %w", err)
 	}
@@ -617,7 +609,7 @@ func vtxosLeave(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	noJoin, _ := cmd.Flags().GetBool("no_join")
+	noJoin, _ := cmd.Flags().GetBool("no-join")
 
 	return maybeJoinNextRound(cmd, client, req.DryRun, noJoin)
 }
@@ -630,7 +622,7 @@ type autoJoinDecision struct {
 
 	// Notice is the stderr line that explains the decision so a
 	// human reading the terminal can see whether the round was
-	// auto-joined, deferred (--no_join), or skipped (--dry_run).
+	// auto-joined, deferred (--no-join), or skipped (--dry-run).
 	Notice string
 }
 
@@ -646,7 +638,7 @@ func decideAutoJoin(dryRun, noJoin bool) autoJoinDecision {
 
 	case noJoin:
 		return autoJoinDecision{
-			Notice: "--no_join set: intents queued; " +
+			Notice: "--no-join set: intents queued; " +
 				"run `ark rounds join` to commit",
 		}
 
@@ -654,15 +646,15 @@ func decideAutoJoin(dryRun, noJoin bool) autoJoinDecision {
 		return autoJoinDecision{
 			Join: true,
 			Notice: "auto-joined next round; " +
-				"pass --no_join to skip",
+				"pass --no-join to skip",
 		}
 	}
 }
 
 // maybeJoinNextRound issues the JoinNextRound RPC unless the caller
-// opted out via --no_join or asked for a dry run. The auto-join makes
+// opted out via --no-join or asked for a dry run. The auto-join makes
 // refresh / leave one-shot operations by default while preserving the
-// batched workflow via --no_join. A short status line goes to stderr so
+// batched workflow via --no-join. A short status line goes to stderr so
 // stdout JSON stays parseable by piped consumers.
 func maybeJoinNextRound(cmd *cobra.Command, client waverpc.DaemonServiceClient,
 	dryRun, noJoin bool) error {
@@ -670,8 +662,11 @@ func maybeJoinNextRound(cmd *cobra.Command, client waverpc.DaemonServiceClient,
 	decision := decideAutoJoin(dryRun, noJoin)
 
 	if decision.Join {
+		ctx, cancel := rpcContext(cmd)
+		defer cancel()
+
 		resp, err := client.JoinNextRound(
-			cmd.Context(), &waverpc.JoinNextRoundRequest{},
+			ctx, &waverpc.JoinNextRoundRequest{},
 		)
 		if err != nil {
 			return fmt.Errorf("auto-join next round failed: %w",
@@ -729,10 +724,10 @@ func buildLeaveVTXOsRequest(outpoints []string, all bool, addr,
 		}
 	}
 
-	// Default destination: at most one of --address / --pk_script.
+	// Default destination: at most one of --address / --pk-script.
 	switch {
 	case addr != "" && pkScriptHex != "":
-		return nil, fmt.Errorf("--address and --pk_script are " +
+		return nil, fmt.Errorf("--address and --pk-script are " +
 			"mutually exclusive")
 
 	case addr != "":
@@ -745,7 +740,7 @@ func buildLeaveVTXOsRequest(outpoints []string, all bool, addr,
 	case pkScriptHex != "":
 		raw, err := hex.DecodeString(pkScriptHex)
 		if err != nil {
-			return nil, fmt.Errorf("invalid --pk_script hex: %w",
+			return nil, fmt.Errorf("invalid --pk-script hex: %w",
 				err)
 		}
 
@@ -785,7 +780,7 @@ func buildLeaveVTXOsRequest(outpoints []string, all bool, addr,
 	// validates outpoint strings, which we don't parse on the CLI
 	// side to avoid the btcd import weight).
 	if req.DefaultDestination == nil && len(req.Destinations) == 0 {
-		return nil, fmt.Errorf("either --address / --pk_script " +
+		return nil, fmt.Errorf("either --address / --pk-script " +
 			"(default destination) or --destination " +
 			"(per-outpoint overrides) is required")
 	}
@@ -825,7 +820,7 @@ func parseDestinationValue(raw string) (*waverpc.LeaveDestination, error) {
 // confirmLeaveAllIfNeeded gates dispatch on an explicit confirmation
 // when the resolved request selects all VTXOs. The check runs after
 // parseRequest returns so it covers both the flag-driven path and the
-// --json path; previously the prompt lived inside the flag callback
+// --request-json path; previously the prompt lived inside the flag callback
 // and an agent piping `{"all":true,...}` would silently skip the gate
 // that the bespoke-flag path enforced. Skip when --yes is set
 // (explicit scripted consent), when req.DryRun is set (just
@@ -834,7 +829,7 @@ func parseDestinationValue(raw string) (*waverpc.LeaveDestination, error) {
 //
 // When stdin is not a TTY (agents, CI, pipelines), the function
 // refuses to prompt: an interactive y/N read would block forever or
-// race against piped stdin. The caller must pass --yes or --dry_run
+// race against piped stdin. The caller must pass --yes or --dry-run
 // explicitly. Only when stdin IS a TTY does the function fall back
 // to the interactive prompt for ergonomics during operator use.
 func confirmLeaveAllIfNeeded(cmd *cobra.Command,
@@ -854,12 +849,13 @@ func confirmLeaveAllIfNeeded(cmd *cobra.Command,
 	// race agents whose stdin is closed / piped. The agent-cli
 	// skill lists interactive prompts as an anti-pattern; this
 	// guard is the explicit replacement.
-	if !stdinIsTTY(cmd) {
+	if !canPrompt(cmd) {
 		return PrintError(
-			"INVALID_ARGS", "--all requires --yes (explicit "+
-				"consent) or --dry_run (preview) on "+
-				"non-interactive stdin; refusing to prompt "+
-				"because an agent cannot respond to y/N",
+			confirmationRequiredCode, "--all requires --yes "+
+				"(explicit consent) or --dry-run (preview) "+
+				"on non-interactive stdin or when input is "+
+				"disabled; refusing to prompt because an "+
+				"agent cannot respond to y/N",
 		)
 	}
 
@@ -874,21 +870,11 @@ var stdinIsTTY = defaultStdinIsTTY
 
 // defaultStdinIsTTY reports whether the y/N prompt is safe to drive
 // on the given command, returning true when the prompt may proceed
-// and false when the caller must pass --yes or --dry_run instead.
+// and false when the caller must pass --yes or --dry-run instead.
 //
-// Two paths return true (prompt is safe):
-//
-//  1. cmd.InOrStdin() returns something other than os.Stdin. Only
-//     tests and embedded harnesses install custom stdin via
-//     cmd.SetIn; production agents do not, so a custom reader is
-//     the caller's signal that they will drive the prompt
-//     themselves (e.g. by piping a scripted "y\n").
-//
-//  2. cmd.InOrStdin() is os.Stdin and os.Stdin is an actual terminal
-//     (per term.IsTerminal), i.e. a device where the operator can
-//     answer interactively.
-//
-// All other cases return false and the caller refuses to prompt. A
+// Only an actual terminal returns true. Embedded readers and buffers are
+// non-interactive streams just like shell pipes and require an explicit
+// approval/input flag. All other cases return false. A
 // character-device check is deliberately NOT used here: /dev/null and
 // a closed descriptor are both character devices yet are not
 // terminals, and those are the most common non-interactive stdin
@@ -896,11 +882,12 @@ var stdinIsTTY = defaultStdinIsTTY
 // would print a y/N prompt that immediately reads EOF, which is the
 // exact hang-then-fail the consent gate exists to prevent.
 func defaultStdinIsTTY(cmd *cobra.Command) bool {
-	if cmd.InOrStdin() != os.Stdin {
-		return true
+	inputFile, ok := cmd.InOrStdin().(*os.File)
+	if !ok {
+		return false
 	}
 
-	return term.IsTerminal(int(os.Stdin.Fd()))
+	return term.IsTerminal(int(inputFile.Fd()))
 }
 
 // promptLeaveAllConfirmation asks the operator to confirm a
@@ -917,18 +904,6 @@ func promptLeaveAllConfirmation(cmd *cobra.Command) error {
 		out, "About to queue ALL live VTXOs for cooperative leave. "+
 			"This moves funds on-chain.",
 	)
-	fmt.Fprint(out, "Proceed? [y/N]: ")
 
-	reader := bufio.NewReader(cmd.InOrStdin())
-	answer, err := reader.ReadString('\n')
-	if err != nil {
-		return fmt.Errorf("read confirmation: %w", err)
-	}
-
-	answer = strings.TrimSpace(strings.ToLower(answer))
-	if answer != "y" && answer != "yes" {
-		return fmt.Errorf("aborted by user")
-	}
-
-	return nil
+	return promptConfirmation(cmd, "Proceed? [y/N]: ")
 }

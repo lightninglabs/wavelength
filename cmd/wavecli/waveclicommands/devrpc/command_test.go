@@ -353,10 +353,12 @@ func TestDevCmdAcceptsRawJSONRequest(t *testing.T) {
 	cmd, cleanup := newTestDevCmd(t, server, &out)
 	defer cleanup()
 
-	cmd.PersistentFlags().String("json", "", "raw JSON request payload")
+	cmd.PersistentFlags().String(
+		"request-json", "", "raw JSON request payload",
+	)
 	cmd.SetArgs([]string{
 		"daemon", "list-vtxos",
-		"--json", `{"status_filter":"VTXO_STATUS_SPENT"}`,
+		"--request-json", `{"status_filter":"VTXO_STATUS_SPENT"}`,
 		"--min_amount_sat", "10",
 	})
 	if err := cmd.Execute(); err != nil {
@@ -372,8 +374,8 @@ func TestDevCmdAcceptsRawJSONRequest(t *testing.T) {
 		t.Fatalf("status filter = %v", server.listReq.StatusFilter)
 	}
 	if server.listReq.MinAmountSat != 0 {
-		t.Fatalf("expected --json to ignore flags, min amount = %v",
-			server.listReq.MinAmountSat)
+		t.Fatalf("expected --request-json to ignore flags, min "+
+			"amount = %v", server.listReq.MinAmountSat)
 	}
 }
 

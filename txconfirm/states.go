@@ -3,6 +3,8 @@ package txconfirm
 import (
 	"context"
 	"fmt"
+
+	"github.com/btcsuite/btcd/chainhash/v2"
 )
 
 // trackedTxStateNew is the initial tracked-tx FSM state.
@@ -114,6 +116,7 @@ func (s *trackedTxStateBroadcasting) ProcessEvent(_ context.Context,
 				trackedTxData:     s.trackedTxData,
 				trackedTxProgress: s.trackedTxProgress,
 				ConfirmHeight:     e.BlockHeight,
+				ConfirmBlockHash:  e.BlockHash,
 			},
 		}, nil
 
@@ -172,6 +175,7 @@ func (s *trackedTxStateAwaitingConfirmation) ProcessEvent(_ context.Context,
 				trackedTxData:     s.trackedTxData,
 				trackedTxProgress: s.trackedTxProgress,
 				ConfirmHeight:     event.BlockHeight,
+				ConfirmBlockHash:  event.BlockHash,
 			},
 		}, nil
 
@@ -232,6 +236,7 @@ func (s *trackedTxStateFeeBumping) ProcessEvent(_ context.Context,
 				trackedTxData:     s.trackedTxData,
 				trackedTxProgress: s.trackedTxProgress,
 				ConfirmHeight:     e.BlockHeight,
+				ConfirmBlockHash:  e.BlockHash,
 			},
 		}, nil
 
@@ -259,6 +264,9 @@ type trackedTxStateConfirmed struct {
 
 	// ConfirmHeight is the block height where the tx confirmed.
 	ConfirmHeight int32
+
+	// ConfirmBlockHash is the hash of the block the tx confirmed in.
+	ConfirmBlockHash chainhash.Hash
 }
 
 // String returns a human-readable representation of the confirmed state.
@@ -297,6 +305,7 @@ func (s *trackedTxStateConfirmed) ProcessEvent(_ context.Context,
 				trackedTxData:     s.trackedTxData,
 				trackedTxProgress: s.trackedTxProgress,
 				ConfirmHeight:     s.ConfirmHeight,
+				ConfirmBlockHash:  s.ConfirmBlockHash,
 			},
 		}, nil
 
@@ -314,6 +323,10 @@ type trackedTxStateFinalized struct {
 	// ConfirmHeight is the block height where the tx confirmed before
 	// being finalized.
 	ConfirmHeight int32
+
+	// ConfirmBlockHash is the hash of the block the tx confirmed in
+	// before being finalized.
+	ConfirmBlockHash chainhash.Hash
 }
 
 // String returns a human-readable representation of the finalized state.

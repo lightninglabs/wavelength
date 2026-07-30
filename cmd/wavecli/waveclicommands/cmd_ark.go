@@ -49,7 +49,7 @@ func newArkListTransactionsCmd() *cobra.Command {
 		Long: "Returns the daemon's unfiltered local transaction " +
 			"history (ledger + boarding sweeps) with full " +
 			"internal correlators. For the wallet-shaped view " +
-			"use `wavecli ark listtransactions`.",
+			"use `wavecli activity`.",
 		RunE: listTransactions,
 	}
 
@@ -117,7 +117,10 @@ func listTransactions(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	resp, err := client.ListTransactions(cmd.Context(), req)
+	ctx, cancel := rpcContext(cmd)
+	defer cancel()
+
+	resp, err := client.ListTransactions(ctx, req)
 	if err != nil {
 		return fmt.Errorf("ListTransactions RPC failed: %w", err)
 	}

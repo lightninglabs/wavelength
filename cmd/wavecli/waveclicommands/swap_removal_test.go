@@ -120,6 +120,7 @@ func TestMCPServerAdvertisesNoSwapTools(t *testing.T) {
 	// introspection, so a regression that dropped either while removing
 	// swap fails here rather than shipping green.
 	require.Contains(t, names, "send")
+	require.Contains(t, names, "send.prepare")
 	require.Contains(t, names, "balance")
 	require.Contains(t, names, "getinfo")
 }

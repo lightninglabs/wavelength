@@ -9,7 +9,14 @@ import (
 	"time"
 
 	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
+	"golang.org/x/term"
 )
+
+// stdoutIsTTY is indirect so output-contract tests can exercise the pipe and
+// terminal paths without depending on the test runner's file descriptors.
+var stdoutIsTTY = func() bool {
+	return term.IsTerminal(int(os.Stdout.Fd()))
+}
 
 // validateListFormat rejects presentation formats that do not apply to the
 // selected list view.
@@ -20,15 +27,21 @@ func validateListFormat(format string, view wavewalletrpc.ListView) error {
 
 	case "table", "expanded", "x":
 		if view != wavewalletrpc.ListView_LIST_VIEW_ACTIVITY {
-			return fmt.Errorf("--format %s applies only to "+
-				"activity output", format)
+			return newCLIError(
+				ExitInvalidArgs,
+				fmt.Errorf("--format %s applies only to "+
+					"activity output", format),
+			)
 		}
 
 		return nil
 
 	default:
-		return fmt.Errorf("unknown list format %q: expected json, "+
-			"table, expanded, or x", format)
+		return newCLIError(
+			ExitInvalidArgs,
+			fmt.Errorf("unknown list format %q: expected json, "+
+				"table, expanded, or x", format),
+		)
 	}
 }
 

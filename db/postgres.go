@@ -161,7 +161,14 @@ func NewPostgresStore(cfg *PostgresConfig,
 	if !cfg.SkipMigrations {
 		storeLog.InfoS(ctx, "Starting Postgres schema migrations")
 
-		err := s.ExecuteMigrations(TargetLatest)
+		err := s.ExecuteMigrations(
+			TargetLatest,
+			WithPostStepCallbacks(
+				makePostStepCallbacks(
+					s, storeLog, postMigrationChecks,
+				),
+			),
+		)
 		if err != nil {
 			return nil, fmt.Errorf("error executing migrations: %w",
 				err)

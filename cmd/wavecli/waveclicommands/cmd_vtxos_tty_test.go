@@ -22,6 +22,18 @@ func withStdin(t *testing.T, f *os.File) {
 	})
 }
 
+// requireInteractiveStdin marks a sequential prompt test as interactive
+// without weakening production detection for embedded buffers and pipes.
+func requireInteractiveStdin(t *testing.T) {
+	t.Helper()
+
+	previous := stdinIsTTY
+	stdinIsTTY = func(*cobra.Command) bool { return true }
+	t.Cleanup(func() {
+		stdinIsTTY = previous
+	})
+}
+
 // TestDefaultStdinIsTTY pins the consent gate's non-interactive
 // detection. The gate refuses to prompt unless stdin is a real
 // terminal, so every non-terminal descriptor must report false — a
@@ -34,14 +46,14 @@ func TestDefaultStdinIsTTY(t *testing.T) {
 	// This test mutates the process-global os.Stdin, so it must not run
 	// in parallel with other tests that may read it.
 
-	// A custom reader installed via cmd.SetIn signals that the caller
-	// drives the prompt itself (tests, embedded harnesses), so the
-	// gate is allowed to proceed regardless of os.Stdin.
-	t.Run("custom reader proceeds", func(t *testing.T) {
+	// A custom reader is still a non-terminal stream. Embedded callers must
+	// opt into consuming it with the same explicit flags as shell
+	// pipelines.
+	t.Run("custom reader is not a tty", func(t *testing.T) {
 		cmd := &cobra.Command{}
 		cmd.SetIn(bytes.NewBufferString("y\n"))
 
-		require.True(t, defaultStdinIsTTY(cmd))
+		require.False(t, defaultStdinIsTTY(cmd))
 	})
 
 	// /dev/null is a character device but not a terminal: the

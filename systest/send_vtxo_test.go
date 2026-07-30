@@ -282,11 +282,12 @@ func (s *fakeMailboxServer) replyWithOperatorInfo(ctx context.Context,
 	}
 
 	responseEnv := &mailboxpb.Envelope{
-		ProtocolVersion: env.ProtocolVersion,
-		Sender:          s.operatorMailbox,
-		Recipient:       env.Rpc.ReplyTo,
-		CreatedAtUnixMs: time.Now().UnixMilli(),
-		Body:            body,
+		ProtocolVersion:    env.ProtocolVersion,
+		ArkProtocolVersion: env.ArkProtocolVersion,
+		Sender:             s.operatorMailbox,
+		Recipient:          env.Rpc.ReplyTo,
+		CreatedAtUnixMs:    time.Now().UnixMilli(),
+		Body:               body,
 		Rpc: &mailboxpb.RpcMeta{
 			Kind:          mailboxpb.RpcMeta_KIND_RESPONSE,
 			Service:       env.Rpc.Service,

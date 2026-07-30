@@ -41,6 +41,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/status"
 )
 
@@ -868,6 +869,18 @@ func (d *daemonAuthOnlyInvoiceCreator) CreateInvoiceWithKeyRouteHintPaths(
 	)
 }
 
+// swapServerKeepaliveParams bounds how long the swap-server connection can
+// sit on a network path that silently drops packets (a stale conntrack entry
+// after swapdk-server restarts, a NAT timeout, etc.) before gRPC notices and
+// re-dials. Without an explicit keepalive, grpc-go never pings an idle
+// connection, so a peer that vanishes without sending a TCP RST can leave the
+// channel reporting READY indefinitely while every RPC on it hangs.
+var swapServerKeepaliveParams = keepalive.ClientParameters{
+	Time:                30 * time.Second,
+	Timeout:             10 * time.Second,
+	PermitWithoutStream: true,
+}
+
 // swapServerDialOptions maps daemon swap config into gRPC transport options
 // for swapdk-server.
 func swapServerDialOptions(cfg *waved.SwapConfig, addr string,
@@ -879,6 +892,7 @@ func swapServerDialOptions(cfg *waved.SwapConfig, addr string,
 	waitForReadyInterceptorOpt := grpc.WithChainUnaryInterceptor(
 		swapServerWaitForReadyInterceptor,
 	)
+	keepaliveOpt := grpc.WithKeepaliveParams(swapServerKeepaliveParams)
 
 	switch {
 	case cfg.ServerTLSCertPath != "":
@@ -894,6 +908,7 @@ func swapServerDialOptions(cfg *waved.SwapConfig, addr string,
 				credentials.NewTLS(tlsCfg),
 			),
 			waitForReadyInterceptorOpt,
+			keepaliveOpt,
 		}, nil
 
 	case useInsecureSwapServerTransport(cfg, addr):
@@ -902,6 +917,7 @@ func swapServerDialOptions(cfg *waved.SwapConfig, addr string,
 				insecure.NewCredentials(),
 			),
 			waitForReadyInterceptorOpt,
+			keepaliveOpt,
 		}, nil
 
 	default:
@@ -917,6 +933,7 @@ func swapServerDialOptions(cfg *waved.SwapConfig, addr string,
 				credentials.NewTLS(tlsCfg),
 			),
 			waitForReadyInterceptorOpt,
+			keepaliveOpt,
 		}, nil
 	}
 }

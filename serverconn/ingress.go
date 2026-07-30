@@ -392,6 +392,33 @@ func (a *ServerConnectionActor) dispatchBatch(ctx context.Context,
 			continue
 		}
 
+		// A marked route's dispatcher answers the operator over the
+		// network, and the hoist gate has already pulled every
+		// KIND_REQUEST on such a route out of the fold. Anything else
+		// arriving on one is mislabeled by the sender, and the mux
+		// bridge does not look at the kind: it would serve the
+		// envelope as a request anyway and put that round trip back
+		// under the write transaction, which is the exact stall the
+		// split exists to remove. Skip it the way the table skips any
+		// other envelope it cannot route, so the batch still makes
+		// progress. Returning an error instead would be worse than
+		// the stall: a dispatch failure is not permanent, so the loop
+		// would back off and re-pull the same envelope forever.
+		if a.resolvesToNonTxDispatcher(env) {
+			a.log.WarnS(
+				ctx,
+				"Skipping non-request envelope on a "+
+					"non-transactional route",
+				nil,
+				slog.String("service", env.Rpc.Service),
+				slog.String("method", env.Rpc.Method),
+				slog.Int("kind", int(env.Rpc.Kind)),
+				slog.Uint64("event_seq", env.EventSeq),
+			)
+
+			continue
+		}
+
 		switch env.Rpc.Kind {
 		case mailboxpb.RpcMeta_KIND_RESPONSE:
 			// Prefer unary waiters for low-latency RPC
@@ -560,18 +587,39 @@ func (a *ServerConnectionActor) loadCheckpoint(ctx context.Context) (AckState,
 	return state, nil
 }
 
-// runFoldedDispatch delivers a pulled batch's waiter-backed response
-// envelopes BEFORE the write transaction, then folds the durable dispatches
-// and the advanced AckState checkpoint into ONE commit. Waiter delivery is
+// runFoldedDispatch runs a pulled batch's two non-transactional kinds of
+// delivery BEFORE the write transaction, then folds the durable dispatches and
+// the advanced AckState checkpoint into ONE commit.
+//
+// The first pre-transaction kind is waiter-backed responses. Waiter delivery is
 // in-memory and at-most-once, cannot be rolled back, and must never wait in
 // the single-writer queue: unary callers sit blocked on these with RPC
 // deadlines, so gating them on the writer lock turns write contention into
-// payment-wide timeout collapse. Every durable dispatcher Tell joins the
-// ambient transaction via the context (DurableMailbox.Send flows it into
-// EnqueueMessage), so a batch of k durable envelopes costs one commit
-// instead of k+1 and the cursor can never run ahead of the enqueues: any
-// failure rolls back both, leaves the returned state untouched, and the
-// batch is re-pulled intact.
+// payment-wide timeout collapse.
+//
+// The second is the NonTxRoutes requests. Those dispatchers serve an inbound
+// KIND_REQUEST through the local mux and put the KIND_RESPONSE back on the
+// wire with Edge.Send, so they block on a network round trip and touch no
+// local durable mailbox. Running them under the transaction would pin the
+// SQLite global writer lock (production opens with _txlock=immediate) or a
+// SERIALIZABLE Postgres snapshot across that round trip, stalling or aborting
+// every other writer in the process for as long as the operator takes to
+// answer. Nothing they do belongs in the fold, so they are hoisted out of it.
+//
+// Every remaining dispatcher Tell joins the ambient transaction via the
+// context (DurableMailbox.Send flows it into EnqueueMessage), so a batch of k
+// durable envelopes costs one commit instead of k+1 and the cursor can never
+// run ahead of the enqueues: any failure rolls back both, leaves the returned
+// state untouched, and the batch is re-pulled intact.
+//
+// Ordering is pre-transaction work first, commit second, which is what
+// at-least-once requires. A crash between a hoisted send and the commit
+// re-pulls the batch and redelivers, and the operator absorbs the duplicate
+// KIND_RESPONSE by correlation ID exactly as it does for the legacy
+// non-transactional dispatch path. Committing first and sending after would
+// invert that into at-most-once: a crash in the window would advance the
+// cursor past a request that was never answered, and the caller would only
+// ever see its own RPC deadline.
 //
 // The split-time waiter peek is only a hint: a waiter can vanish (RPC
 // deadline cancel or TTL prune) between the peek and the actual delivery
@@ -583,32 +631,41 @@ func (a *ServerConnectionActor) runFoldedDispatch(ctx context.Context,
 	txStore actor.TxAwareDeliveryStore, envelopes []*mailboxpb.Envelope,
 	nextCursor uint64, state AckState) (AckState, error) {
 
-	responses, durables := splitIngressEnvelopes(
-		envelopes, a.hasResponseWaiter,
-	)
-
-	// Waiter-backed responses deliver in-memory BEFORE the transaction and
-	// so bypass dispatchBatch, which is where the durable partition is
-	// validated. Validate them against the bound version pair here so every
-	// inbound envelope is checked before dispatch, just like the legacy
-	// path. A mismatch is permanent and surfaces to the caller, which
-	// drives the terminal incompatibility transition.
-	for _, resp := range responses {
-		if err := a.validateInboundEnvelope(resp); err != nil {
+	// Validate the whole pulled batch against the bound version pair up
+	// front. Only the durable partition is validated inside dispatchBatch,
+	// and by then the pre-transaction steps below have already delivered
+	// to waiters and answered inbound requests, neither of which can be
+	// taken back. Checking every envelope first means one permanently
+	// incompatible envelope anywhere in the batch stops the loop before
+	// any of the batch is acted on.
+	for _, env := range envelopes {
+		if err := a.validateInboundEnvelope(env); err != nil {
 			return state, err
 		}
 	}
+
+	responses, nonTx, durables := splitIngressEnvelopes(
+		envelopes, a.hasResponseWaiter, a.isNonTxRequest,
+	)
 
 	// Deliver the waiter-backed responses to their live waiters outside
 	// the transaction. Any whose waiter vanished since the split peek come
 	// back as stragglers and fold into the durable batch in event_seq
 	// order, so their enqueue commits inside the cursor fold, never ahead
-	// of it.
+	// of it. This runs before the request dispatch below because it is
+	// in-memory and instant, while a request costs a full round trip.
 	if stragglers := a.deliverWaiterResponses(
 		responses,
 	); len(stragglers) > 0 {
 
 		durables = mergeEnvelopesByEventSeq(durables, stragglers)
+	}
+
+	// Serve the hoisted inbound requests with no transaction open. A
+	// failure here returns before the fold, so the cursor does not move
+	// and the batch is re-pulled whole.
+	if err := a.dispatchNonTxRequests(ctx, nonTx); err != nil {
+		return state, err
 	}
 
 	newState := state
@@ -636,22 +693,34 @@ func (a *ServerConnectionActor) runFoldedDispatch(ctx context.Context,
 	return newState, nil
 }
 
-// splitIngressEnvelopes partitions a pulled batch into in-memory response
-// envelopes and durable dispatch envelopes. A KIND_RESPONSE only takes the
-// pre-transaction path when an active in-memory waiter is registered for its
-// correlation ID, as reported by hasWaiter: those callers sit blocked on an
-// RPC deadline and must never queue behind the database writer lock. A
-// KIND_RESPONSE with no live waiter would otherwise fall through to the durable
-// dispatch table; folding it into the transaction alongside requests and events
-// keeps event_seq order on the target actor lane and ties its enqueue to the
-// cursor commit, so a rolled-back batch never re-delivers it. Everything else
-// (requests, events, and malformed or correlation-less envelopes, which the
-// dispatch loop skip-warns) folds into the transaction too.
+// splitIngressEnvelopes partitions a pulled batch into the three ways an
+// envelope can be delivered: in-memory waiter responses, hoisted inbound
+// requests, and durable dispatches folded into the write transaction. The
+// first two run before the transaction opens; only the third belongs in it.
+//
+// A KIND_RESPONSE only takes the waiter path when an active in-memory waiter
+// is registered for its correlation ID, as reported by hasWaiter: those
+// callers sit blocked on an RPC deadline and must never queue behind the
+// database writer lock. A KIND_RESPONSE with no live waiter would otherwise
+// fall through to the durable dispatch table; folding it into the transaction
+// alongside requests and events keeps event_seq order on the target actor lane
+// and ties its enqueue to the cursor commit, so a rolled-back batch never
+// re-delivers it.
+//
+// An envelope takes the hoisted request path only when isNonTx accepts it,
+// which requires both an explicitly marked route and a KIND_REQUEST, so a
+// durable enqueue can never leave the fold by accident. Everything else
+// (unmarked requests, events, and malformed or correlation-less envelopes,
+// which the dispatch loop skip-warns) folds into the transaction.
+//
+// The three returned slices are, in order, the waiter-backed responses, the
+// hoisted requests, and the durable partition.
 func splitIngressEnvelopes(envelopes []*mailboxpb.Envelope,
-	hasWaiter func(CorrelationID) bool) ([]*mailboxpb.Envelope,
-	[]*mailboxpb.Envelope) {
+	hasWaiter func(CorrelationID) bool,
+	isNonTx func(*mailboxpb.Envelope) bool) ([]*mailboxpb.Envelope,
+	[]*mailboxpb.Envelope, []*mailboxpb.Envelope) {
 
-	var responses, durables []*mailboxpb.Envelope
+	var responses, nonTx, durables []*mailboxpb.Envelope
 	for _, env := range envelopes {
 		isResponse := env.Rpc != nil &&
 			env.Rpc.Kind == mailboxpb.RpcMeta_KIND_RESPONSE
@@ -666,12 +735,167 @@ func splitIngressEnvelopes(envelopes []*mailboxpb.Envelope,
 		}
 		if isResponse && corrID != "" && hasWaiter(corrID) {
 			responses = append(responses, env)
-		} else {
-			durables = append(durables, env)
+
+			continue
+		}
+
+		if isNonTx != nil && isNonTx(env) {
+			nonTx = append(nonTx, env)
+
+			continue
+		}
+
+		durables = append(durables, env)
+	}
+
+	return responses, nonTx, durables
+}
+
+// isNonTxRequest reports whether an envelope must be dispatched outside the
+// folded write transaction. Three conditions all have to hold, and each one
+// rules out a different way of hoisting durable work by mistake. The envelope
+// must be a KIND_REQUEST, because a KIND_EVENT or the no-waiter KIND_RESPONSE
+// fallback resolves to a durable actor Tell that has to commit with the
+// cursor. Its route must be listed in NonTxRoutes, because the wiring layer is
+// the only place that knows an EnvelopeDispatcher closure terminates in
+// Edge.Send rather than in a mailbox enqueue. And a dispatcher must actually
+// be registered for the route, so the hoisted path never has to reproduce
+// dispatchBatch's skip-warn for an unroutable envelope.
+//
+// NOTE: hoisting moves the send ahead of the commit, so a crash in between
+// leaves the cursor unmoved and the request is served a second time on the
+// re-pull. That is free for a read, which is all that is hoisted today, and
+// the operator demultiplexes the duplicate response by correlation ID. It
+// stops being free for a route that changes state: anything on the money path,
+// such as WalletService.SignVTXO or RoundService.SubmitNonces, needs its own
+// idempotency before it is added to NonTxRoutes, because correlation-ID dedup
+// on the operator does not make a second signature harmless.
+func (a *ServerConnectionActor) isNonTxRequest(
+	env *mailboxpb.Envelope,
+) bool {
+
+	if env.Rpc == nil || env.Rpc.Kind != mailboxpb.RpcMeta_KIND_REQUEST {
+		return false
+	}
+
+	key := mailboxrpc.ServiceMethod{
+		Service: env.Rpc.Service,
+		Method:  env.Rpc.Method,
+	}
+
+	if _, ok := a.cfg.NonTxRoutes[key]; !ok {
+		return false
+	}
+
+	_, ok := a.cfg.Dispatchers[key]
+
+	return ok
+}
+
+// isNonTxRoute reports whether an envelope's route is marked in NonTxRoutes,
+// ignoring its kind. isNonTxRequest is the gate that decides what gets
+// hoisted, and it is deliberately stricter. This is the weaker question
+// dispatchBatch needs: not "may this be hoisted" but "is this route's
+// dispatcher one that answers over the network", which is what makes running
+// it inside the write transaction unacceptable no matter what kind the sender
+// stamped on the envelope.
+func (a *ServerConnectionActor) isNonTxRoute(env *mailboxpb.Envelope) bool {
+	if env.Rpc == nil {
+		return false
+	}
+
+	key := mailboxrpc.ServiceMethod{
+		Service: env.Rpc.Service,
+		Method:  env.Rpc.Method,
+	}
+
+	_, ok := a.cfg.NonTxRoutes[key]
+
+	return ok
+}
+
+// resolvesToNonTxDispatcher reports whether an envelope would reach a marked
+// route's dispatcher from inside dispatchBatch, which is the one thing the
+// fold must not let happen: that dispatcher answers the operator over the
+// network, and dispatchBatch runs with the write transaction open.
+//
+// A KIND_REQUEST is excluded because it is the kind the mark is about. On the
+// folded path isNonTxRequest has already hoisted it out; on the legacy path
+// there is no transaction to protect, so it dispatches normally. Everything
+// else on a marked route is mislabeled by the sender, and the mux bridge does
+// not check the kind, so it would be served as a request anyway.
+//
+// A KIND_RESPONSE with a live waiter is excluded too, because it never reaches
+// the dispatch table at all: dispatchBatch hands it to the in-memory waiter and
+// breaks. Only the no-waiter fallback resolves to a dispatcher. The folded path
+// never presents such an envelope here, since splitIngressEnvelopes peels
+// waiter-backed responses off before the fold, but the legacy path does, and
+// skipping one there would silently drop a response a caller is blocked on.
+// Marked routes carry inbound requests today and waiters belong to outbound
+// RPCs, so the two never collide; this keeps that from being load-bearing.
+func (a *ServerConnectionActor) resolvesToNonTxDispatcher(
+	env *mailboxpb.Envelope) bool {
+
+	if env.Rpc == nil || env.Rpc.Kind == mailboxpb.RpcMeta_KIND_REQUEST {
+		return false
+	}
+
+	if !a.isNonTxRoute(env) {
+		return false
+	}
+
+	if env.Rpc.Kind != mailboxpb.RpcMeta_KIND_RESPONSE {
+		return true
+	}
+
+	corrID := CorrelationID(env.Rpc.CorrelationId)
+
+	return corrID == "" || !a.hasResponseWaiter(corrID)
+}
+
+// dispatchNonTxRequests serves the hoisted inbound requests with no write
+// transaction open, in event_seq order. Each dispatcher runs the local handler
+// and sends the KIND_RESPONSE back over the edge, so this is where the network
+// round trip that used to sit inside the fold now happens.
+//
+// A failure stops the batch and surfaces to the caller, which leaves the
+// cursor where it was and re-pulls. Requests already served earlier in the
+// batch are then served a second time; that is the same at-least-once exposure
+// the legacy dispatch path has always had, and the operator demultiplexes the
+// duplicate response by correlation ID.
+func (a *ServerConnectionActor) dispatchNonTxRequests(ctx context.Context,
+	envelopes []*mailboxpb.Envelope) error {
+
+	for _, env := range envelopes {
+		key := mailboxrpc.ServiceMethod{
+			Service: env.Rpc.Service,
+			Method:  env.Rpc.Method,
+		}
+
+		// isNonTxRequest already proved the lookup succeeds, so a miss
+		// here would mean the dispatch table mutated mid-batch. Skip
+		// rather than fail, matching how dispatchBatch treats an
+		// unroutable envelope, but say so: the cursor is about to
+		// advance past a request nobody answered, and that is the one
+		// way this path can silently drop instead of redeliver.
+		dispatcher, ok := a.cfg.Dispatchers[key]
+		if !ok {
+			a.log.WarnS(ctx, "No dispatcher for hoisted request",
+				nil,
+				slog.String("service", env.Rpc.Service),
+				slog.String("method", env.Rpc.Method),
+				slog.Uint64("event_seq", env.EventSeq),
+			)
+
+			continue
+		}
+
+		if err := dispatcher(ctx, env); err != nil {
+			return err
 		}
 	}
 
-	return responses, durables
+	return nil
 }
 
 // deliverWaiterResponses delivers each split-time waiter-backed response to

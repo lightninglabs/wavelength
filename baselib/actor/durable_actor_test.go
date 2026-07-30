@@ -2125,3 +2125,50 @@ func TestFinishNonTxLeaselessTerminalTellMarksProcessed(t *testing.T) {
 	require.Contains(t, store.deadLetters, msgID)
 	require.NotContains(t, store.messages, msgID)
 }
+
+// TestDurableActorPollIntervalPlumbing verifies that the actor-level idle-poll
+// floor and ceiling carry the same defaults as the mailbox and are handed
+// through to the mailbox it builds, including for a config written before
+// MaxPollInterval existed (which leaves the field zero and must normalize to
+// the default rather than resolve a zero-length wait).
+func TestDurableActorPollIntervalPlumbing(t *testing.T) {
+	t.Parallel()
+
+	store := newMockDeliveryStore()
+	codec := newActorTestCodec()
+	behavior := newMockBehavior(fn.Ok(42))
+
+	cfg := DefaultDurableActorConfig(
+		"poll-defaults", behavior, store, codec,
+	)
+	require.Equal(t, defaultPollInterval, cfg.PollInterval)
+	require.Equal(t, defaultMaxPollInterval, cfg.MaxPollInterval)
+
+	actor := NewDurableActor(cfg).UnwrapOrFail(t)
+	require.Equal(t, defaultPollInterval, actor.mailbox.cfg.PollInterval)
+	require.Equal(
+		t, defaultMaxPollInterval, actor.mailbox.cfg.MaxPollInterval,
+	)
+
+	// An explicit pair flows through untouched.
+	cfg.PollInterval = 100 * time.Millisecond
+	cfg.MaxPollInterval = 5 * time.Second
+
+	tuned := NewDurableActor(cfg).UnwrapOrFail(t)
+	require.Equal(
+		t, 100*time.Millisecond, tuned.mailbox.cfg.PollInterval,
+	)
+	require.Equal(t, 5*time.Second, tuned.mailbox.cfg.MaxPollInterval)
+
+	// A legacy config that never set the ceiling still lands on the
+	// default.
+	cfg.MaxPollInterval = 0
+
+	legacy := NewDurableActor(cfg).UnwrapOrFail(t)
+	require.Equal(
+		t, 100*time.Millisecond, legacy.mailbox.cfg.PollInterval,
+	)
+	require.Equal(
+		t, defaultMaxPollInterval, legacy.mailbox.cfg.MaxPollInterval,
+	)
+}

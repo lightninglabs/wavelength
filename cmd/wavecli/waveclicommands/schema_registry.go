@@ -1,5 +1,7 @@
 package waveclicommands
 
+import "strings"
+
 // schemaParam describes a single parameter for a CLI command / RPC
 // method.
 type schemaParam struct {
@@ -9,6 +11,11 @@ type schemaParam struct {
 	// Type is the parameter type (string, int64, bool, enum, etc.).
 	Type string `json:"type"`
 
+	// FlagType records the exact pflag type when Type intentionally uses a
+	// friendlier schema spelling, for example repeatable StringArray
+	// values.
+	FlagType string `json:"flag_type,omitempty"`
+
 	// Description explains what the parameter does.
 	Description string `json:"description,omitempty"`
 
@@ -17,6 +24,9 @@ type schemaParam struct {
 
 	// Values lists valid values for enum-typed parameters.
 	Values []string `json:"values,omitempty"`
+
+	// Positional marks command arguments that are not cobra flags.
+	Positional bool `json:"positional,omitempty"`
 }
 
 // schemaMethod describes a single CLI command / RPC method.
@@ -30,6 +40,10 @@ type schemaMethod struct {
 	// Params lists the accepted parameters.
 	Params []schemaParam `json:"params"`
 
+	// MCPParams lists the MCP tool parameters when they differ from the CLI
+	// command. An omitted value means the MCP tool uses Params.
+	MCPParams []schemaParam `json:"mcp_params,omitempty"`
+
 	// RequestType is the proto request message name.
 	RequestType string `json:"request_type"`
 
@@ -40,21 +54,34 @@ type schemaMethod struct {
 	// dry-run mode when it differs from ResponseType.
 	DryRunResponseType string `json:"dry_run_response_type,omitempty"`
 
-	// DryRun indicates whether the command supports --dry-run /
-	// --dry_run. Top-level wallet verbs use --dry-run (CLI-only
-	// validation, exits 10); ark.* commands use --dry_run that
-	// reaches the daemon's dry-run RPC field.
+	// DryRun indicates whether the command supports --dry-run.
+	// Top-level wallet verbs use --dry-run (CLI-only validation,
+	// exits 0); ark.* commands use --dry-run that reaches the
+	// daemon's dry_run RPC field.
 	DryRun bool `json:"dry_run,omitempty"`
 
-	// JSONInput indicates the command accepts --json for raw proto
+	// JSONInput indicates the command accepts --request-json for raw proto
 	// payloads.
-	JSONInput bool `json:"json_input"`
+	JSONInput bool `json:"request_json_input"`
 
 	// MCPTool indicates the method is exposed as an MCP tool with
 	// the same name. False means it is CLI-only (create / unlock
 	// are intentionally CLI-only because they handle secret
 	// material).
 	MCPTool bool `json:"mcp_tool,omitempty"`
+
+	// MCPOnly indicates that Method is discoverable only through MCP and
+	// has no corresponding Cobra command.
+	MCPOnly bool `json:"mcp_only,omitempty"`
+
+	// SideEffect reports whether invoking the method can change wallet or
+	// daemon state. It is always emitted so agents need not infer defaults.
+	SideEffect bool `json:"side_effect"`
+
+	// OutputSchemaID and OutputSchemaVersion identify the additive output
+	// contract for this command without wrapping the proto JSON response.
+	OutputSchemaID      string `json:"output_schema_id"`
+	OutputSchemaVersion uint32 `json:"output_schema_version"`
 }
 
 // methodRegistry returns the full schema for all wavecli commands.
@@ -71,7 +98,30 @@ func methodRegistry() []schemaMethod {
 	out = append(out, arkSendMethodRegistry()...)
 	out = append(out, arkObservableMethodRegistry()...)
 
+	for i := range out {
+		out[i].OutputSchemaID = "wavecli." +
+			strings.ReplaceAll(out[i].Method, ".", "-") + ".output"
+		out[i].OutputSchemaVersion = 1
+		out[i].SideEffect = schemaMethodHasSideEffect(out[i].Method)
+	}
+
 	return out
+}
+
+// schemaMethodHasSideEffect keeps the coarse safety label explicit and small.
+// Preview-only and query methods are false; methods that allocate, queue,
+// dispatch, unlock, or broadcast are true.
+func schemaMethodHasSideEffect(method string) bool {
+	switch method {
+	case "create", "unlock", "send", "recv", "exit", "wallet-sweep",
+		"ark.sweep", "ark.board", "ark.rounds.join",
+		"ark.oor.newaddress", "ark.oor.receive", "ark.vtxos.refresh",
+		"ark.vtxos.leave", "ark.send.inround", "ark.send.oor":
+		return true
+
+	default:
+		return false
+	}
 }
 
 // listOutputParams returns the standard agent-CLI output-shape
@@ -107,13 +157,19 @@ func walletAdminMethodRegistry() []schemaMethod {
 			Description: "Create a new wallet from a fresh seed",
 			Params: []schemaParam{
 				{
-					Name: "wallet_password_file",
+					Name: "password-stdin",
+					Type: "bool",
+					Description: "read one wallet " +
+						"password line from stdin",
+				},
+				{
+					Name: "wallet-password-file",
 					Type: "string",
 					Description: "path to file " +
 						"containing wallet password",
 				},
 				{
-					Name: "seed_passphrase_file",
+					Name: "seed-passphrase-file",
 					Type: "string",
 					Description: "path to file " +
 						"containing optional aezeed " +
@@ -126,6 +182,26 @@ func walletAdminMethodRegistry() []schemaMethod {
 						"in the JSON response on " +
 						"stdout (default: stderr only)",
 				},
+				{
+					Name: "recover",
+					Type: "bool",
+					Description: "recover from an " +
+						"existing " +
+						"mnemonic",
+				},
+				{
+					Name: "mnemonic-file",
+					Type: "string",
+					Description: "path to an existing " +
+						"24-word aezeed mnemonic",
+				},
+				{
+					Name: "recovery-window",
+					Type: "uint32",
+					Description: "key indexes to scan " +
+						"per " +
+						"recovery family",
+				},
 			},
 			RequestType:  "CreateRequest",
 			ResponseType: "CreateResponse",
@@ -136,7 +212,13 @@ func walletAdminMethodRegistry() []schemaMethod {
 			Description: "Unlock an existing wallet",
 			Params: []schemaParam{
 				{
-					Name: "wallet_password_file",
+					Name: "password-stdin",
+					Type: "bool",
+					Description: "read one wallet " +
+						"password line from stdin",
+				},
+				{
+					Name: "wallet-password-file",
 					Type: "string",
 					Description: "path to file " +
 						"containing wallet password",
@@ -153,6 +235,28 @@ func walletAdminMethodRegistry() []schemaMethod {
 			RequestType:  "GetInfoRequest",
 			ResponseType: "GetInfoResponse",
 			JSONInput:    true,
+			MCPTool:      true,
+		},
+		{
+			Method: "daemon.balance",
+			Description: "Display the raw daemon balance " +
+				"breakdown",
+			Params:       nil,
+			RequestType:  "GetBalanceRequest",
+			ResponseType: "GetBalanceResponse",
+			JSONInput:    false,
+			MCPTool:      true,
+			MCPOnly:      true,
+		},
+		{
+			Method:       "ark.oor.newaddress",
+			Description:  "Generate a new boarding address",
+			Params:       nil,
+			RequestType:  "NewAddressRequest",
+			ResponseType: "NewAddressResponse",
+			JSONInput:    false,
+			MCPTool:      true,
+			MCPOnly:      true,
 		},
 	}
 }
@@ -165,6 +269,14 @@ func walletPaymentMethodRegistry() []schemaMethod {
 			Method:      "send",
 			Description: "Send a payment (offchain or onchain)",
 			Params: []schemaParam{
+				{
+					Name: "destination",
+					Type: "string",
+					Description: "invoice or on-chain " +
+						"address",
+					Required:   true,
+					Positional: true,
+				},
 				{
 					Name: "offchain",
 					Type: "bool",
@@ -186,7 +298,7 @@ func walletPaymentMethodRegistry() []schemaMethod {
 						"unless --sweep-all)",
 				},
 				{
-					Name: "max_fee",
+					Name: "max-fee",
 					Type: "uint64",
 					Description: "max fee in satoshis; " +
 						"zero uses daemon defaults",
@@ -220,6 +332,26 @@ func walletPaymentMethodRegistry() []schemaMethod {
 					Type:        "bool",
 					Description: "alias for force",
 				},
+				{
+					Name: "no-wait",
+					Type: "bool",
+					Description: "return after dispatch " +
+						"instead " +
+						"of waiting for settlement",
+				},
+				{
+					Name: "wait-timeout",
+					Type: "duration",
+					Description: "maximum settlement " +
+						"wait; " +
+						"zero waits indefinitely",
+				},
+				{
+					Name: "wait-poll-interval",
+					Type: "duration",
+					Description: "settlement status poll " +
+						"interval",
+				},
 			},
 			RequestType:        "PrepareSendRequest",
 			ResponseType:       "SendResponse",
@@ -227,6 +359,65 @@ func walletPaymentMethodRegistry() []schemaMethod {
 			DryRun:             true,
 			JSONInput:          false,
 			MCPTool:            true,
+			MCPParams: []schemaParam{
+				{
+					Name: "send_intent_id",
+					Type: "string",
+					Description: "single-use id " +
+						"returned by send.prepare",
+					Required: true,
+				},
+			},
+		},
+		{
+			Method: "send.prepare",
+			Description: "Validate and preview a payment without " +
+				"moving funds",
+			Params: []schemaParam{
+				{
+					Name: "destination",
+					Type: "string",
+					Description: "invoice or on-chain " +
+						"address",
+					Required: true,
+				},
+				{
+					Name: "direction",
+					Type: "enum",
+					Description: "payment rail; defaults " +
+						"to offchain",
+					Values: []string{
+						"offchain",
+						"onchain",
+					},
+				},
+				{
+					Name:        "amt_sat",
+					Type:        "uint64",
+					Description: "amount in satoshis",
+				},
+				{
+					Name:        "max_fee_sat",
+					Type:        "uint64",
+					Description: "maximum fee in satoshis",
+				},
+				{
+					Name:        "note",
+					Type:        "string",
+					Description: "caller-supplied label",
+				},
+				{
+					Name: "sweep_all",
+					Type: "bool",
+					Description: "onchain only: drain " +
+						"every live VTXO",
+				},
+			},
+			RequestType:  "PrepareSendRequest",
+			ResponseType: "PrepareSendResponse",
+			JSONInput:    false,
+			MCPTool:      true,
+			MCPOnly:      true,
 		},
 		{
 			Method:      "recv",
@@ -256,7 +447,7 @@ func walletPaymentMethodRegistry() []schemaMethod {
 					Description: "optional invoice memo",
 				},
 				{
-					Name: "amt_hint",
+					Name: "amt-hint",
 					Type: "uint64",
 					Description: "optional expected " +
 						"deposit amount (--onchain)",
@@ -272,7 +463,8 @@ func walletPaymentMethodRegistry() []schemaMethod {
 
 // walletQueryMethodRegistry returns the wallet query verbs (activity,
 // balance, exit, exit.status, activity.inspect).
-func walletQueryMethodRegistry() []schemaMethod {
+func walletQueryMethodRegistry() []schemaMethod { //nolint:funlen
+
 	return []schemaMethod{
 		{
 			Method:      "activity",
@@ -295,9 +487,9 @@ func walletQueryMethodRegistry() []schemaMethod {
 						"daemon default",
 				},
 				{
-					Name:        "offset",
-					Type:        "uint32",
-					Description: "pagination offset",
+					Name:        "cursor",
+					Type:        "string",
+					Description: "activity page token",
 				},
 				{
 					Name:        "format",
@@ -339,8 +531,21 @@ func walletQueryMethodRegistry() []schemaMethod {
 					Type: "bool",
 					Description: "CLI-side validation " +
 						"only; print the proto-JSON " +
-						"preview and exit 10 without " +
+						"preview and exit 0 without " +
 						"dispatching",
+				},
+				{
+					Name: "onchain-address",
+					Type: "string",
+					Description: "cooperative leave " +
+						"destination",
+				},
+				{
+					Name: "force-unroll-ack",
+					Type: "string",
+					Description: "exact acknowledgement " +
+						"for " +
+						"unilateral unroll",
 				},
 			},
 			RequestType:  "ExitRequest",
@@ -359,6 +564,13 @@ func walletQueryMethodRegistry() []schemaMethod {
 					Required: true,
 					Description: "VTXO outpoint " +
 						"(txid:vout)",
+				},
+				{
+					Name: "detailed",
+					Type: "bool",
+					Description: "include tree, CSV, and " +
+						"fee " +
+						"progress",
 				},
 			},
 			RequestType:  "ExitStatusRequest",
@@ -384,6 +596,7 @@ func walletQueryMethodRegistry() []schemaMethod {
 				{
 					Name:     "outpoint",
 					Type:     "string[]",
+					FlagType: "stringArray",
 					Required: true,
 					Description: "VTXO outpoint " +
 						"(txid:vout); repeatable",
@@ -392,7 +605,6 @@ func walletQueryMethodRegistry() []schemaMethod {
 			RequestType:  "GetExitPlanRequest",
 			ResponseType: "GetExitPlanResponse",
 			JSONInput:    false,
-			MCPTool:      true,
 		},
 		{
 			Method: "wallet-sweep",
@@ -413,6 +625,12 @@ func walletQueryMethodRegistry() []schemaMethod {
 						"omitted means preview only",
 				},
 				{
+					Name: "yes",
+					Type: "bool",
+					Description: "approve broadcasting " +
+						"the fund-moving sweep",
+				},
+				{
 					Name: "fee-rate",
 					Type: "int64",
 					Description: "explicit fee rate in " +
@@ -429,7 +647,6 @@ func walletQueryMethodRegistry() []schemaMethod {
 			RequestType:  "SweepWalletRequest",
 			ResponseType: "SweepWalletResponse",
 			JSONInput:    false,
-			MCPTool:      true,
 		},
 		{
 			Method: "activity.inspect",
@@ -441,6 +658,7 @@ func walletQueryMethodRegistry() []schemaMethod {
 					Type:        "string",
 					Required:    true,
 					Description: "WalletEntry id",
+					Positional:  true,
 				},
 				{
 					Name: "ledger-limit",
@@ -487,19 +705,25 @@ func arkBaseMethodRegistry() []schemaMethod {
 						"sweep and track confirmation",
 				},
 				{
-					Name: "fee_rate_sat_per_vbyte",
+					Name: "yes",
+					Type: "bool",
+					Description: "approve broadcasting " +
+						"the fund-moving sweep",
+				},
+				{
+					Name: "fee-rate-sat-per-vbyte",
 					Type: "int64",
 					Description: "fee rate override; " +
 						"zero estimates by target",
 				},
 				{
-					Name: "conf_target",
+					Name: "conf-target",
 					Type: "uint32",
 					Description: "confirmation target; " +
 						"zero uses default",
 				},
 				{
-					Name: "sweep_address",
+					Name: "sweep-address",
 					Type: "string",
 					Description: "optional destination; " +
 						"empty uses wallet address",
@@ -522,13 +746,13 @@ func arkBaseMethodRegistry() []schemaMethod {
 						"external_resolved, or failed",
 				},
 				{
-					Name: "page_size",
+					Name: "page-size",
 					Type: "uint32",
 					Description: "maximum sweeps to " +
 						"return; zero uses default",
 				},
 				{
-					Name: "page_token",
+					Name: "page-token",
 					Type: "string",
 					Description: "token from a previous " +
 						"sweep list response",
@@ -596,6 +820,7 @@ func arkBaseMethodRegistry() []schemaMethod {
 			RequestType:  "NewReceiveScriptRequest",
 			ResponseType: "NewReceiveScriptResponse",
 			JSONInput:    true,
+			MCPTool:      true,
 		},
 	}
 }
@@ -626,7 +851,7 @@ func arkVTXOMethodRegistry() []schemaMethod {
 					},
 				},
 				{
-					Name:        "min_amount",
+					Name:        "min-amount",
 					Type:        "int64",
 					Description: "minimum amount in sats",
 				},
@@ -634,13 +859,14 @@ func arkVTXOMethodRegistry() []schemaMethod {
 			RequestType:  "ListVTXOsRequest",
 			ResponseType: "ListVTXOsResponse",
 			JSONInput:    true,
+			MCPTool:      true,
 		},
 		{
 			Method: "ark.vtxos.refresh",
 			Description: "Queue VTXOs for refresh and join the " +
-				"next round (auto-joins unless --no_join). " +
+				"next round (auto-joins unless --no-join). " +
 				"Charged an operator fee at seal time; " +
-				"--dry_run previews an itemized estimate, " +
+				"--dry-run previews an itemized estimate, " +
 				"and a real refresh requires --yes on " +
 				"non-interactive stdin",
 			Params: []schemaParam{
@@ -662,7 +888,12 @@ func arkVTXOMethodRegistry() []schemaMethod {
 						"fee confirmation",
 				},
 				{
-					Name: "no_join",
+					Name:        "dry-run",
+					Type:        "bool",
+					Description: "preview without queuing",
+				},
+				{
+					Name: "no-join",
 					Type: "bool",
 					Description: "skip the implicit " +
 						"`ark rounds join` follow-up",
@@ -672,12 +903,13 @@ func arkVTXOMethodRegistry() []schemaMethod {
 			ResponseType: "RefreshVTXOsResponse",
 			DryRun:       true,
 			JSONInput:    true,
+			MCPTool:      true,
 		},
 		{
 			Method: "ark.vtxos.leave",
 			Description: "Queue VTXOs for cooperative leave " +
 				"(offboard) and join the next round " +
-				"(auto-joins unless --no_join)",
+				"(auto-joins unless --no-join)",
 			Params: []schemaParam{
 				{
 					Name: "outpoint",
@@ -697,7 +929,7 @@ func arkVTXOMethodRegistry() []schemaMethod {
 						"destination address",
 				},
 				{
-					Name: "pk_script",
+					Name: "pk-script",
 					Type: "string",
 					Description: "default destination " +
 						"pk_script (hex)",
@@ -716,7 +948,12 @@ func arkVTXOMethodRegistry() []schemaMethod {
 						"interactive confirmation",
 				},
 				{
-					Name: "no_join",
+					Name:        "dry-run",
+					Type:        "bool",
+					Description: "preview without queuing",
+				},
+				{
+					Name: "no-join",
 					Type: "bool",
 					Description: "skip the implicit " +
 						"`ark rounds join` follow-up",
@@ -726,6 +963,7 @@ func arkVTXOMethodRegistry() []schemaMethod {
 			ResponseType: "LeaveVTXOsResponse",
 			DryRun:       true,
 			JSONInput:    true,
+			MCPTool:      true,
 		},
 	}
 }
@@ -741,21 +979,39 @@ func arkSendMethodRegistry() []schemaMethod {
 				{
 					Name:        "to",
 					Type:        "string[]",
-					Required:    true,
 					Description: "recipient address(es)",
+				},
+				{
+					Name: "pubkey",
+					Type: "string[]",
+					Description: "recipient x-only " +
+						"public key(s)",
 				},
 				{
 					Name:     "amount",
 					Type:     "int64[]",
 					Required: true,
 					Description: "amount(s) in sats " +
-						"(one per --to)",
+						"(one per recipient)",
+				},
+				{
+					Name: "dry-run",
+					Type: "bool",
+					Description: "validate without " +
+						"submitting",
+				},
+				{
+					Name: "yes",
+					Type: "bool",
+					Description: "approve submitting " +
+						"the fund-moving transfer",
 				},
 			},
 			RequestType:  "SendVTXORequest",
 			ResponseType: "SendVTXOResponse",
 			DryRun:       true,
 			JSONInput:    true,
+			MCPTool:      true,
 		},
 		{
 			Method:      "ark.send.oor",
@@ -765,24 +1021,14 @@ func arkSendMethodRegistry() []schemaMethod {
 					Name: "to",
 					Type: "string",
 					Description: "recipient address " +
-						"(exactly one of to, pubkey, " +
-						"or pk_script)",
+						"(exactly one of to or pubkey)",
 				},
 				{
 					Name: "pubkey",
 					Type: "string",
 					Description: "recipient 32-byte " +
 						"x-only pubkey hex (exactly " +
-						"one of to, pubkey, or " +
-						"pk_script)",
-				},
-				{
-					Name: "pk_script",
-					Type: "string",
-					Description: "recipient raw " +
-						"pk_script hex (exactly one " +
-						"of to, pubkey, or " +
-						"pk_script)",
+						"one of to or pubkey)",
 				},
 				{
 					Name:        "amount",
@@ -791,16 +1037,29 @@ func arkSendMethodRegistry() []schemaMethod {
 					Description: "amount in sats",
 				},
 				{
-					Name: "idempotency_key",
+					Name: "idempotency-key",
 					Type: "string",
 					Description: "stable caller intent " +
 						"key for retry-safe OOR sends",
+				},
+				{
+					Name: "dry-run",
+					Type: "bool",
+					Description: "validate without " +
+						"initiating",
+				},
+				{
+					Name: "yes",
+					Type: "bool",
+					Description: "approve initiating " +
+						"the fund-moving transfer",
 				},
 			},
 			RequestType:  "SendOORRequest",
 			ResponseType: "SendOORResponse",
 			DryRun:       true,
 			JSONInput:    true,
+			MCPTool:      true,
 		},
 	}
 }

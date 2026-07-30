@@ -12,4 +12,4 @@ runs:
         git fetch upstream ${{ github.base_ref }}:refs/remotes/upstream/${{ github.base_ref }}
         export GIT_COMMITTER_EMAIL="wavelength-ci@example.com"
         export GIT_COMMITTER_NAME="Wavelength CI"
-        git rebase upstream/${{ github.base_ref }}
+        git rebase --rebase-merges upstream/${{ github.base_ref }}

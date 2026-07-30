@@ -437,9 +437,12 @@ func (m *Manager) Start(ctx context.Context,
 
 	m.managerRef = selfRef
 
-	vtxos, err := m.cfg.Store.ListLiveVTXOs(ctx)
+	// Recover actors for expired VTXOs too, not just spendable ones: an
+	// expired VTXO's value is still reclaimable by forfeiting it in a
+	// round, and the actor is what holds the material that forfeit needs.
+	vtxos, err := m.cfg.Store.ListRecoverableVTXOs(ctx)
 	if err != nil {
-		return fmt.Errorf("list live vtxos: %w", err)
+		return fmt.Errorf("list recoverable vtxos: %w", err)
 	}
 
 	for _, vtxo := range vtxos {
@@ -620,6 +623,9 @@ func (m *Manager) Receive(ctx context.Context,
 			Descriptors: descs,
 		})
 
+	case *ReconcileExpiryRequest:
+		return m.handleReconcileExpiry(ctx)
+
 	case *ForceUnrollRequest:
 		return m.handleForceUnroll(ctx, req)
 
@@ -631,6 +637,101 @@ func (m *Manager) Receive(ctx context.Context,
 			fmt.Errorf("unknown message: %T", msg),
 		)
 	}
+}
+
+// handleReconcileExpiry applies the current chain tip to every recovered VTXO
+// after the round actor has registered. A Live VTXO needs one event to persist
+// Expired and a second to enter the ordinary refresh flow; a VTXO recovered in
+// Expired needs only the latter. Querying the tip explicitly also covers chain
+// backends whose subscription starts after the current epoch and therefore
+// emits nothing until the next block.
+func (m *Manager) handleReconcileExpiry(
+	ctx context.Context) fn.Result[ManagerResp] {
+
+	// A recovered Expired actor may have received a subscription epoch
+	// while the round actor was still starting. Release that startup
+	// reservation before driving the now-ready refresh path.
+	m.releaseOrphanedForfeits(ctx)
+
+	result := m.cfg.ChainSource.Ask(
+		ctx, &chainsource.BestHeightRequest{},
+	).Await(ctx)
+	response, err := result.Unpack()
+	if err != nil {
+		return fn.Err[ManagerResp](
+			fmt.Errorf("get best height for expiry reconcile: %w",
+				err),
+		)
+	}
+
+	tip, ok := response.(*chainsource.BestHeightResponse)
+	if !ok {
+		return fn.Err[ManagerResp](
+			fmt.Errorf("unexpected best height response: %T",
+				response),
+		)
+	}
+
+	epoch := &BlockEpochEvent{
+		Height: tip.Height,
+		Hash:   tip.Hash,
+	}
+
+	var checked int
+	for outpoint, ref := range m.actors {
+		actorResult := m.askForfeitVTXOActor(ctx, ref, epoch)
+		actorResponse, err := actorResult.Unpack()
+		if err != nil {
+			m.logger(ctx).WarnS(
+				ctx,
+				"Startup VTXO expiry check failed",
+				err,
+				slog.String("outpoint", outpoint.String()),
+			)
+
+			continue
+		}
+
+		checked++
+		transition, ok := actorResponse.(VTXOActorResponse)
+		if !ok {
+			m.logger(ctx).WarnS(
+				ctx, "Unexpected startup VTXO response", nil,
+				slog.String("outpoint", outpoint.String()),
+				slog.String(
+					"response_type", fmt.Sprintf("%T",
+						actorResponse),
+				),
+			)
+
+			continue
+		}
+
+		_, becameExpired := transition.NewState.(*ExpiredState)
+		_, wasExpired := transition.PriorState.(*ExpiredState)
+		if !becameExpired || wasExpired {
+			continue
+		}
+
+		_, err = m.askForfeitVTXOActor(ctx, ref, epoch).Unpack()
+		if err != nil {
+			m.logger(ctx).WarnS(
+				ctx,
+				"Startup expired VTXO refresh failed",
+				err,
+				slog.String("outpoint", outpoint.String()),
+			)
+		}
+	}
+
+	m.logger(ctx).InfoS(ctx, "Startup VTXO expiry check complete",
+		slog.Int("checked", checked),
+		slog.Int("height", int(tip.Height)),
+	)
+
+	return fn.Ok[ManagerResp](&ReconcileExpiryResponse{
+		Checked: checked,
+	})
 }
 
 // handleVTXOCreated spawns a new VTXO actor for each created VTXO.
@@ -805,6 +906,25 @@ func (m *Manager) handleForceUnroll(ctx context.Context,
 		return fn.Ok[ManagerResp](&ForceUnrollResponse{
 			Accepted: false,
 			Reason:   "already terminal",
+		})
+	}
+
+	// An expired VTXO also refuses the unroll, but it is not terminal, so
+	// the check above does not catch it and the caller would be told the
+	// exit was accepted when nothing was scheduled. Past the deadline an
+	// exit cannot complete: it would have to confirm the whole ancestry
+	// and then wait out the exit CSV while racing an operator sweep that
+	// is already spendable. Recovery goes through a cooperative forfeit
+	// instead, so say so.
+	if _, expired := actorResp.NewState.(*ExpiredState); expired {
+		m.logger(ctx).InfoS(ctx, "Force-unroll refused on expired VTXO",
+			slog.String("outpoint", req.Outpoint.String()),
+		)
+
+		return fn.Ok[ManagerResp](&ForceUnrollResponse{
+			Accepted: false,
+			Reason: "batch expired; recover by refreshing this " +
+				"VTXO into a round",
 		})
 	}
 

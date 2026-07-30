@@ -9,9 +9,28 @@
 -- height. The join columns are NULL for every VTXO whose forfeit round is
 -- unknown (all non-forfeited VTXOs, and forfeited ones whose round row is
 -- absent), so consumers must treat them as optional.
+--
+-- settlement_fee_sat is the TOTAL operator fee the client's ledger booked for
+-- the forfeit round (boarding_fee_paid + refresh_fee_paid, joined via the
+-- round_uuid TEXT mirror of the ledger's BLOB round_id). Every VTXO forfeited
+-- in the same round reports the same round-level figure — consumers must not
+-- sum it across VTXOs. Zero when the forfeit round is unknown or its fee rows
+-- are absent (e.g. rows written before the round_uuid backfill ran).
+--
+-- The fee lookup is a correlated scalar subquery rather than a grouped join:
+-- the planner then resolves it as a per-row probe of the
+-- idx_client_ledger_round_uuid index for the (few) forfeited rows that carry
+-- a forfeit_round_id, instead of aggregating every fee row in the ledger on
+-- every call.
 SELECT sqlc.embed(vtxos),
     rounds.commitment_txid AS settlement_txid,
-    rounds.confirmation_height AS settlement_height
+    rounds.confirmation_height AS settlement_height,
+    CAST(COALESCE((
+        SELECT SUM(le.amount_sat)
+        FROM ledger_entries AS le
+        WHERE le.round_uuid = vtxos.forfeit_round_id
+          AND le.event_type IN ('boarding_fee_paid', 'refresh_fee_paid')
+    ), 0) AS BIGINT) AS settlement_fee_sat
 FROM vtxos
 LEFT JOIN rounds ON vtxos.forfeit_round_id = rounds.round_id
 WHERE vtxos.status = $1
@@ -39,6 +58,19 @@ ORDER BY creation_time DESC;
 -- flag before the status field was introduced.
 SELECT * FROM vtxos
 WHERE (status < 3 OR status = 7) AND spent = FALSE
+ORDER BY creation_time DESC;
+
+-- name: ListRecoverableVTXOs :many
+-- ListRecoverableVTXOs returns every VTXO whose actor must be restored at
+-- startup: the non-terminal set of ListLiveVTXOs plus Expired (8).
+--
+-- Expired is deliberately absent from ListLiveVTXOs, which feeds spendable
+-- balance and refresh estimation, because an expired VTXO holds no spendable
+-- value until it has been reissued. Its actor still has to exist though: the
+-- value is recoverable by forfeiting the VTXO in an ordinary round, and the
+-- actor is what holds the descriptor and signing material that forfeit needs.
+SELECT * FROM vtxos
+WHERE (status < 3 OR status = 7 OR status = 8) AND spent = FALSE
 ORDER BY creation_time DESC;
 
 -- name: UpdateVTXOStatus :exec

@@ -26,7 +26,7 @@ func TestPrintErrorFormatsIndentedJSON(t *testing.T) {
 	encoded, err := json.Marshal(msg)
 	require.NoError(t, err)
 	expected := `{"error":{"code":"EXECUTION_FAILED","message":` +
-		string(encoded) + `}}`
+		string(encoded) + `,"retryable":false}}`
 	require.JSONEq(t, expected, buf.String())
 
 	require.Contains(t, buf.String(), "\n  \"error\": {\n")
@@ -55,7 +55,8 @@ func TestPrintCommandErrorPromotesNestedGRPCStatus(t *testing.T) {
 		"error": {
 			"code": "ALREADY_EXISTS",
 			"message": "receive intent already used",
-			"details": "` + details + `"
+			"details": "` + details + `",
+			"retryable": false
 		}
 	}`
 	require.JSONEq(t, expected, buf.String())
@@ -76,7 +77,8 @@ func TestPrintCommandErrorAddsStatusWrapperDetails(t *testing.T) {
 		"error": {
 			"code": "ALREADY_EXISTS",
 			"message": "receive intent already used",
-			"details": "send"
+			"details": "send",
+			"retryable": false
 		}
 	}`
 	require.JSONEq(t, expected, buf.String())
@@ -122,7 +124,8 @@ func TestPrintCommandErrorMapsWalletNotReadyToStateHint(t *testing.T) {
 			require.NoError(t, printCommandError(&buf, err))
 
 			const expectedTemplate = `{"error":{"code":` +
-				`"WALLET_LOCKED","message":%q}}`
+				`"WALLET_LOCKED","message":%q,` +
+				`"retryable":false}}`
 			expected := fmt.Sprintf(expectedTemplate, tc.msg)
 			require.JSONEq(t, expected, buf.String())
 		})
@@ -140,10 +143,130 @@ func TestPrintCommandErrorHandlesBareGRPCStatus(t *testing.T) {
 	expected := `{
 		"error": {
 			"code": "ALREADY_EXISTS",
-			"message": "receive intent already used"
+			"message": "receive intent already used",
+			"retryable": false
 		}
 	}`
 	require.JSONEq(t, expected, buf.String())
+}
+
+func TestPrintCommandErrorAddsRetryMetadata(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name      string
+		code      codes.Code
+		retryable bool
+	}{
+		{
+			name:      "unavailable",
+			code:      codes.Unavailable,
+			retryable: true,
+		},
+		{
+			name:      "resource exhausted",
+			code:      codes.ResourceExhausted,
+			retryable: true,
+		},
+		// DEADLINE_EXCEEDED and ABORTED may fire after a fund-moving
+		// RPC was already accepted, so they carry remediation but are
+		// not retryable — a blind retry could double-spend.
+		{
+			name:      "deadline",
+			code:      codes.DeadlineExceeded,
+			retryable: false,
+		},
+		{
+			name:      "aborted",
+			code:      codes.Aborted,
+			retryable: false,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var buf bytes.Buffer
+			err := status.Error(tc.code, "temporary failure")
+			require.NoError(t, printCommandError(&buf, err))
+
+			var envelope errorEnvelope
+			require.NoError(
+				t,
+				json.Unmarshal(
+					buf.Bytes(), &envelope,
+				),
+			)
+			require.Equal(t, tc.retryable, envelope.Error.Retryable)
+			require.NotEmpty(t, envelope.Error.Remediation)
+		})
+	}
+}
+
+func TestPrintCommandErrorClassifiesCredentialFailures(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name            string
+		err             error
+		remediationPart string
+	}{
+		{
+			name: "TLS certificate",
+			err: errors.New(
+				"unable to load TLS cert: file does not exist",
+			),
+			remediationPart: "--tlscertpath",
+		},
+		{
+			name: "macaroon",
+			err: errors.New(
+				"unable to load macaroon: file does not exist",
+			),
+			remediationPart: "--macaroonpath",
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var buf bytes.Buffer
+			require.NoError(t, printCommandError(&buf, tc.err))
+
+			var envelope errorEnvelope
+			require.NoError(
+				t,
+				json.Unmarshal(
+					buf.Bytes(), &envelope,
+				),
+			)
+			require.Equal(t, "AUTH_FAILURE", envelope.Error.Code)
+			require.False(t, envelope.Error.Retryable)
+			require.Contains(
+				t, envelope.Error.Remediation,
+				tc.remediationPart,
+			)
+		})
+	}
+}
+
+func TestPrintCommandErrorPreservesLocalClassification(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	err := newCLIError(
+		ExitInvalidArgs, errors.New("unknown output format \"yaml\""),
+	)
+	require.NoError(t, printCommandError(&buf, err))
+
+	var envelope errorEnvelope
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &envelope))
+	require.Equal(t, invalidArgsCode, envelope.Error.Code)
+	require.False(t, envelope.Error.Retryable)
 }
 
 func TestPrintCommandErrorLeavesPlainErrorsGeneric(t *testing.T) {
@@ -155,7 +278,8 @@ func TestPrintCommandErrorLeavesPlainErrorsGeneric(t *testing.T) {
 	expected := `{
 		"error": {
 			"code": "EXECUTION_FAILED",
-			"message": "boom"
+			"message": "boom",
+			"retryable": false
 		}
 	}`
 	require.JSONEq(t, expected, buf.String())
@@ -170,7 +294,8 @@ func TestPrintCommandErrorHandlesNilError(t *testing.T) {
 	expected := `{
 		"error": {
 			"code": "EXECUTION_FAILED",
-			"message": "unknown error"
+			"message": "unknown error",
+			"retryable": false
 		}
 	}`
 	require.JSONEq(t, expected, buf.String())

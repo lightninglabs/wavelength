@@ -494,6 +494,10 @@ CREATE UNIQUE INDEX idx_client_ledger_idempotent_session
 CREATE INDEX idx_client_ledger_round
     ON ledger_entries(round_id);
 
+CREATE INDEX idx_client_ledger_round_uuid
+    ON ledger_entries(round_uuid, event_type)
+    WHERE round_uuid IS NOT NULL;
+
 CREATE INDEX idx_client_tree_txids_tree
     ON client_tree_txids(round_id, client_key, tree_level);
 
@@ -694,7 +698,7 @@ CREATE TABLE ledger_entries (
     -- UTXO idempotency keys on every query.
     chain_txid BLOB,
     chain_vout INTEGER,
-    confirmation_height INTEGER,
+    confirmation_height INTEGER, round_uuid TEXT,
 
     -- Debit and credit must target different accounts.
     CHECK (debit_account != credit_account)
@@ -1288,7 +1292,7 @@ CREATE TABLE rounds (
     -- today is 0 (V1); a future, genuinely different round flow is added
     -- additively (V2 == 1, and so on). NOT NULL DEFAULT 0 keeps every row a
     -- valid V1 round.
-    flow_version INTEGER NOT NULL DEFAULT 0,
+    flow_version INTEGER NOT NULL DEFAULT 0, sweep_delay INTEGER NOT NULL DEFAULT 0,
 
     FOREIGN KEY (status) REFERENCES round_statuses(status_name)
 );

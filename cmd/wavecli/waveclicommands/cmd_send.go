@@ -1,8 +1,8 @@
 package waveclicommands
 
 import (
-	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -76,7 +76,7 @@ func newSendCmd() *cobra.Command {
 	cmd.Flags().Uint64("amt", 0,
 		"amount in satoshis (required for onchain unless "+
 			"--sweep-all; ignored for amount-bearing invoices)")
-	cmd.Flags().Uint64("max_fee", 0,
+	cmd.Flags().Uint64("max-fee", 0,
 		"max swap fee in satoshis for invoice (Lightning) sends; 0 "+
 			"lets the daemon default the cap to ~1% of the amount "+
 			"(with a small floor), so a normal payment routes "+
@@ -123,7 +123,7 @@ func walletSend(cmd *cobra.Command, args []string) error {
 	}
 
 	amt, _ := cmd.Flags().GetUint64("amt")
-	maxFee, _ := cmd.Flags().GetUint64("max_fee")
+	maxFee, _ := cmd.Flags().GetUint64("max-fee")
 	note, _ := cmd.Flags().GetString("note")
 	sweepAll, _ := cmd.Flags().GetBool("sweep-all")
 
@@ -181,22 +181,16 @@ func walletSend(cmd *cobra.Command, args []string) error {
 
 	return withWalletClient(
 		cmd, func(c wavewalletrpc.WalletServiceClient) error {
-			prepareResp, err := c.PrepareSend(cmd.Context(), req)
+			prepareCtx, cancelPrepare := rpcContext(cmd)
+			prepareResp, err := c.PrepareSend(prepareCtx, req)
+			cancelPrepare()
 			if err != nil {
 				return fmt.Errorf("prepare send: %w", err)
 			}
 
 			if dryRun, _ := cmd.Flags().GetBool("dry-run"); dryRun {
-				if err := printWalletProto(
-					prepareResp,
-				); err != nil {
-					return err
-				}
-
-				return PrintError(
-					"DRY_RUN_OK", "dry-run validation "+
-						"passed; no funds were "+
-						"dispatched",
+				return printSendDryRunPreview(
+					cmd.OutOrStdout(), prepareResp,
 				)
 			}
 
@@ -206,11 +200,13 @@ func walletSend(cmd *cobra.Command, args []string) error {
 			}
 
 			intentID := prepareResp.GetSendIntentId()
+			sendCtx, cancelSend := rpcContext(cmd)
 			resp, err := c.Send(
-				cmd.Context(), &wavewalletrpc.SendRequest{
+				sendCtx, &wavewalletrpc.SendRequest{
 					SendIntentId: intentID,
 				},
 			)
+			cancelSend()
 			if err != nil {
 				return fmt.Errorf("send prepared intent: %w",
 					err)
@@ -292,8 +288,8 @@ func waitForSendTerminal(cmd *cobra.Command,
 	if id == "" {
 		return PrintError(
 			"WAIT_UNAVAILABLE", "send did not return an entry "+
-				"id to wait on; poll `da activity inspect "+
-				"<id>` manually",
+				"id to wait on; poll `wavecli activity "+
+				"inspect <id>` manually",
 		)
 	}
 
@@ -326,8 +322,18 @@ func waitForSendTerminal(cmd *cobra.Command,
 			cmd.OutOrStdout(), sendResultFromEntry(lastEntry),
 		)
 	}
-	timeoutErr := func() error {
+	waitErr := func() error {
 		emitReceipt()
+		if sendWaitErrorCode(ctx.Err()) == "CANCELED" {
+			return PrintError(
+				"CANCELED",
+				fmt.Sprintf(
+					"canceled while waiting for %s; "+
+						"last phase: %s", id,
+					emptyDash(lastPhase),
+				),
+			)
+		}
 
 		return PrintError(
 			"WAIT_TIMEOUT",
@@ -348,13 +354,15 @@ func waitForSendTerminal(cmd *cobra.Command,
 				req := &wavewalletrpc.InspectActivityRequest{
 					Id: id,
 				}
-				resp, err := c.InspectActivity(ctx, req)
+				pollCtx, cancel := rpcContextFrom(cmd, ctx)
+				resp, err := c.InspectActivity(pollCtx, req)
+				cancel()
 				if err != nil {
 					// A deadline hit while polling is a
 					// timeout, not a hard failure: report
 					// the last phase the user saw.
 					if ctx.Err() != nil {
-						return timeoutErr()
+						return waitErr()
 					}
 
 					// The send itself was accepted, so
@@ -382,8 +390,8 @@ func waitForSendTerminal(cmd *cobra.Command,
 				case entryStatusComplete:
 					// On success collapse the verbose trace
 					// down to the compact summary; the full
-					// breakdown stays available via `da
-					// activity inspect <id>`.
+					// breakdown stays available via
+					// `wavecli activity inspect <id>`.
 					return printSendResult(
 						cmd.OutOrStdout(),
 						sendResultFromInspection(resp),
@@ -410,13 +418,23 @@ func waitForSendTerminal(cmd *cobra.Command,
 
 				select {
 				case <-ctx.Done():
-					return timeoutErr()
+					return waitErr()
 
 				case <-ticker.C:
 				}
 			}
 		},
 	)
+}
+
+// sendWaitErrorCode distinguishes caller cancellation from expiration of the
+// explicit settlement-wait deadline.
+func sendWaitErrorCode(err error) string {
+	if errors.Is(err, context.Canceled) {
+		return "CANCELED"
+	}
+
+	return "WAIT_TIMEOUT"
 }
 
 // emptyNonEmpty returns value when it is non-empty after trimming, otherwise
@@ -439,10 +457,13 @@ func confirmSendIfNeeded(cmd *cobra.Command,
 		return nil
 	}
 
-	if !stdinIsTTY(cmd) {
+	if !canPrompt(cmd) {
+		printSendPreview(cmd.ErrOrStderr(), resp)
+
 		return PrintError(
-			"INVALID_ARGS", "send requires --force or --yes on "+
-				"non-interactive stdin; refusing to prompt "+
+			confirmationRequiredCode, "send requires --force "+
+				"or --yes on non-interactive stdin or when "+
+				"input is disabled; refusing to prompt "+
 				"because an agent cannot respond to y/N",
 		)
 	}
@@ -453,8 +474,14 @@ func confirmSendIfNeeded(cmd *cobra.Command,
 func promptSendConfirmation(cmd *cobra.Command,
 	resp *wavewalletrpc.PrepareSendResponse) error {
 
-	out := cmd.ErrOrStderr()
+	printSendPreview(cmd.ErrOrStderr(), resp)
 
+	return promptConfirmation(cmd, "\nProceed? [y/N]: ")
+}
+
+// printSendPreview writes the prepared amount, fee, rail, and destination
+// before either an interactive prompt or a non-interactive refusal.
+func printSendPreview(out io.Writer, resp *wavewalletrpc.PrepareSendResponse) {
 	fmt.Fprintf(out, "Send %d sats\n", sendPreviewHeadlineAmount(resp))
 	fmt.Fprintf(out, "Rail: %s\n", sendRailLabel(resp.GetRail()))
 	if resp.GetFeeKnown() {
@@ -485,20 +512,23 @@ func promptSendConfirmation(cmd *cobra.Command,
 	if warning := resp.GetWarning(); warning != "" {
 		fmt.Fprintf(out, "Warning: %s\n", warning)
 	}
-	fmt.Fprint(out, "\nProceed? [y/N]: ")
+}
 
-	reader := bufio.NewReader(cmd.InOrStdin())
-	answer, err := reader.ReadString('\n')
+// printSendDryRunPreview emits a successful preview with an explicit marker
+// and no error envelope.
+func printSendDryRunPreview(out io.Writer,
+	resp *wavewalletrpc.PrepareSendResponse) error {
+
+	body, err := walletProtoMarshal.Marshal(resp)
 	if err != nil {
-		return fmt.Errorf("read confirmation: %w", err)
+		return fmt.Errorf("marshal send dry-run preview: %w", err)
 	}
 
-	answer = strings.TrimSpace(strings.ToLower(answer))
-	if answer != "y" && answer != "yes" {
-		return fmt.Errorf("aborted by user")
-	}
+	_, err = fmt.Fprintf(
+		out, `{"dry_run":true,"preview":%s}`+"\n", body,
+	)
 
-	return nil
+	return err
 }
 
 func sendPreviewHeadlineAmount(resp *wavewalletrpc.PrepareSendResponse) int64 {

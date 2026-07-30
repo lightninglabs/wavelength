@@ -13,7 +13,7 @@ when the local wallet owns the receive script.
 
 ## Key Types
 
-- `VTXOState` — Sealed interface for all states (Live, Spending, Spent, PendingForfeit, Forfeiting, Forfeited, UnilateralExit, Failed).
+- `VTXOState` — Sealed interface for all states (Live, Spending, Spent, PendingForfeit, Forfeiting, Forfeited, UnilateralExit, Expired, Failed).
 - `Descriptor` — Complete VTXO metadata: `Outpoint`, `Amount`, `PolicyTemplate`
   (the authoritative semantic policy for ownership/spend semantics),
   `PkScript`, `ClientKey` (keychain.KeyDescriptor), `OperatorKey`,
@@ -122,6 +122,23 @@ when the local wallet owns the receive script.
 
 ## Invariants
 
+- **Expiry is persisted and non-terminal.** `LiveState` + `ExpiryStatusExpired`
+  transitions to `ExpiredState` and emits `VTXOStatusUpdate{Expired}`. It does
+  NOT emit `VTXOTerminatedNotification`: the value is still recoverable by
+  forfeiting the VTXO in an ordinary round, so the actor stays alive to hold
+  the descriptor and signing material forfeit needs. `ExpiredState` accepts
+  `PendingForfeitEvent`/`ForfeitRequestEvent` (the reclaim path, which reuses
+  `LiveState.handleForfeitRequest` verbatim so the two cannot drift), refuses
+  `SpendReserveEvent` (nothing left to spend cooperatively until reissued),
+  and refuses `ForceUnrollEvent` — an exit started past expiry must confirm
+  the whole ancestry and then wait out the exit CSV while racing an
+  already-spendable operator sweep, so it burns fees on an exit that cannot
+  land.
+- **Expired VTXOs are recovered but not spendable.** `ListLiveVTXOs` excludes
+  them (it feeds spendable balance and refresh estimation);
+  `ListRecoverableVTXOs` includes them and is what `Manager.Start` recovers
+  actors from. Coin selection is already `VTXOStatusLive`-scoped via
+  `ListSelectionCandidatesByStatus`, so it excludes them by construction.
 - VTXO actor state is the single source of truth for availability.
 - Forfeit transaction is not broadcast until the connector output's round confirms (atomic replacement).
 - Refresh is auto-triggered at configurable height before expiry.

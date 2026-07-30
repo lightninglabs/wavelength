@@ -104,6 +104,20 @@ func mergeActivityContext(
 		next.CreatedAtUnix = existing.GetCreatedAtUnix()
 	}
 
+	// A recorded fee is sticky: no producer ever legitimately moves a
+	// row's fee from a settled value back to zero, but a completion pass
+	// that races the fee ledger's durable commit (or hits a transient
+	// read error) re-derives the row with fee 0 and would otherwise
+	// regress the stored figure. The amount is restored together with the
+	// fee because the two are coupled: the fee-carrying projection also
+	// netted the fee out of the amount (sweep-all leaves, unilateral
+	// exits), so keeping the fee while adopting the re-derived gross
+	// amount would double-count it.
+	if next.GetFeeSat() == 0 && existing.GetFeeSat() > 0 {
+		next.FeeSat = existing.GetFeeSat()
+		next.AmountSat = existing.GetAmountSat()
+	}
+
 	existingProgress := existing.GetProgress()
 	if existingProgress == nil {
 		return next
@@ -308,15 +322,31 @@ func (r *Runtime) reprojectRecentActivity(ctx context.Context,
 // row, and dropping the record stops later passes from re-decorating a settled
 // row. It is a no-op for ids not in the map (e.g. unilateral rows synthesized
 // from ListVTXOs) and for non-terminal or non-EXIT rows.
+//
+// A COMPLETE row carrying a zero fee is retained for a bounded number of
+// passes (deferFeeZeroClear) before its record is dropped. The fee is read
+// back from the ledger actor's durable commit, which the forfeit/exit status
+// this row completes off does not wait for, so the first terminal pass can
+// race a fee row that lands milliseconds later; clearing immediately would
+// freeze the projected row at fee 0 forever — the exact symptom the fee
+// plumbing exists to eliminate. Retention keeps the row re-derivable until
+// either the fee appears (re-projected, then cleared on the next pass) or the
+// grace is exhausted (a genuinely fee-free round).
 func (r *Runtime) clearProjectedTerminalExit(entry *wavewalletrpc.WalletEntry) {
 	if entry.GetKind() != wavewalletrpc.EntryKind_ENTRY_KIND_EXIT {
 		return
 	}
 
 	switch entry.GetStatus() {
-	case wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE,
-		wavewalletrpc.EntryStatus_ENTRY_STATUS_FAILED:
+	case wavewalletrpc.EntryStatus_ENTRY_STATUS_COMPLETE:
+		if entry.GetFeeSat() == 0 &&
+			!r.deferFeeZeroClear(entry.GetId()) {
+			return
+		}
 
+		r.clearPending(entry.GetId())
+
+	case wavewalletrpc.EntryStatus_ENTRY_STATUS_FAILED:
 		r.clearPending(entry.GetId())
 	}
 }

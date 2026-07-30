@@ -230,7 +230,14 @@ func NewSqliteStore(cfg *SqliteConfig,
 	if !cfg.SkipMigrations {
 		storeLog.InfoS(ctx, "Starting SQLite schema migrations")
 
-		err := s.ExecuteMigrations(s.backupAndMigrate)
+		err := s.ExecuteMigrations(
+			s.backupAndMigrate,
+			WithPostStepCallbacks(
+				makePostStepCallbacks(
+					s, storeLog, postMigrationChecks,
+				),
+			),
+		)
 		if err != nil {
 			return nil, fmt.Errorf("error executing migrations: %w",
 				err)

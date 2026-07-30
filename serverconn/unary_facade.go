@@ -56,6 +56,24 @@ func (f *UnaryFacade) SendRPC(ctx context.Context,
 		return mailboxrpc.SendResult{}, ce
 	}
 
+	// Refuse the send once too many requests are already outstanding.
+	// There is no cancel envelope in the mailbox protocol, so a request
+	// the caller abandons on its deadline still runs to completion
+	// remotely; without a cap, a remote that has stopped answering turns
+	// every fresh call into more queued work nobody is left to receive.
+	// Failing here costs a round trip instead of a full deadline, and the
+	// ResourceExhausted code is the same fast-fail signal a shedding
+	// operator sends, so callers back off on it either way.
+	if err := f.connector.admitUnary(); err != nil {
+		f.connector.log.WarnS(ctx, "Refusing unary send at in-flight "+
+			"limit", err,
+			slog.String("service", method.Service),
+			slog.String("method", method.Method),
+		)
+
+		return mailboxrpc.SendResult{}, err
+	}
+
 	cfg := f.connector.cfg
 
 	msgID, err := randomID(16)
@@ -64,15 +82,27 @@ func (f *UnaryFacade) SendRPC(ctx context.Context,
 			"msg id: %w", err)
 	}
 
+	// A caller that leaves the key empty gets a fresh one per send, which
+	// means the operator cannot tell that caller's retry apart from a new
+	// request. That fallback exists only so a single-shot call still has a
+	// well-formed envelope; anything that re-issues must own its key for
+	// the life of the logical request, which is what mailboxrpc.Retry is
+	// for.
 	idempotencyKey := opts.IdempotencyKey
 	if idempotencyKey == "" {
-		idempotencyKey, err = randomID(16)
+		idempotencyKey, err = mailboxrpc.NewIdempotencyKey()
 		if err != nil {
-			return mailboxrpc.SendResult{}, fmt.Errorf("generate "+
-				"idempotency key: %w", err)
+			return mailboxrpc.SendResult{}, err
 		}
 	}
 
+	// Defaulting the correlation ID to the idempotency key means a retry
+	// reuses the abandoned attempt's correlation ID too. That is
+	// deliberate: SendRPC registers the waiter before it sends, so an
+	// answer to the abandoned attempt that lands after the retry is on the
+	// wire is delivered to the retry's waiter instead of being acked into
+	// the void. Retries of one logical request are sequential by
+	// construction, so the shared ID never spans two live waiters.
 	correlationID := opts.CorrelationID
 	if correlationID == "" {
 		correlationID = idempotencyKey

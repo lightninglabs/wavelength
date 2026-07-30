@@ -80,7 +80,8 @@ func getDaemonConn(cmd *cobra.Command) (*grpc.ClientConn, error) {
 			macaroonPath,
 		)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("unable to load macaroon: %w",
+				err)
 		}
 
 		opts = append(opts, macaroonOpt)

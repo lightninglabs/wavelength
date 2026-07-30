@@ -72,6 +72,7 @@ func (m *mockVTXOActorRef) Ask(ctx context.Context,
 		return promise.Future()
 	}
 
+	priorState := m.state
 	transition, err := m.state.ProcessEvent(ctx, vtxoEvent, m.env)
 	if err != nil {
 		promise.Complete(fn.Err[actormsg.VTXOActorResp](err))
@@ -87,7 +88,8 @@ func (m *mockVTXOActorRef) Ask(ctx context.Context,
 	promise.Complete(
 		fn.Ok[actormsg.VTXOActorResp](
 			VTXOActorResponse{
-				NewState: m.state,
+				PriorState: priorState,
+				NewState:   m.state,
 			},
 		),
 	)
@@ -2355,5 +2357,49 @@ func TestSelectAndReserveForfeitPartialRollback(t *testing.T) {
 	require.True(
 		t, ok, "expected LiveState after rollback, got %T",
 		actorRef.state,
+	)
+}
+
+// TestReserveForfeitAdmitsExpiredVTXO verifies that an expired VTXO can be
+// reserved for cooperative consumption. This is the whole client-side
+// recovery path: an offline wallet that missed its refresh window gets its
+// value back by forfeiting the expired VTXO in an ordinary round, so the
+// admission gate must not treat expiry as a dead end.
+func TestReserveForfeitAdmitsExpiredVTXO(t *testing.T) {
+	t.Parallel()
+
+	expired := makeDescriptor(t, 50_000, 0)
+	expired.Status = VTXOStatusExpired
+
+	store := &MockVTXOStore{}
+	mgr := &Manager{
+		cfg: &ManagerConfig{
+			Store:      store,
+			RoundActor: newMockRoundActorRef(t),
+		},
+		actors: make(map[wire.OutPoint]VTXOActorRef),
+	}
+
+	// The actor is restored in ExpiredState, which is what
+	// ListRecoverableVTXOs makes possible after a restart.
+	ref := newMockVTXOActorRef(
+		expired.Outpoint.String(),
+		&ExpiredState{
+			VTXO:           expired,
+			ObservedHeight: expired.CreatedHeight,
+		},
+	)
+	mgr.actors[expired.Outpoint] = ref
+
+	result := mgr.Receive(t.Context(), &ReserveForfeitRequest{
+		Outpoints: []wire.OutPoint{expired.Outpoint},
+	})
+	_, err := result.Unpack()
+	require.NoError(t, err, "an expired VTXO must still be reclaimable")
+
+	_, ok := ref.state.(*PendingForfeitState)
+	require.True(
+		t, ok, "reserving an expired VTXO must commit it to the "+
+			"round, got %T", ref.state,
 	)
 }
