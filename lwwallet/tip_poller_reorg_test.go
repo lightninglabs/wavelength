@@ -3,6 +3,7 @@ package lwwallet
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -65,6 +66,8 @@ func (c *stubChain) reorgTo(t *testing.T, forkHeight, newTip, gen int32) {
 		c.blocks[h] = hdr
 		hash := hdr.BlockHash()
 		c.hashAt[h] = hash
+		c.allBlocks[hash] = hdr
+		c.heightByHash[hash] = h
 		prev = hash
 	}
 
@@ -356,4 +359,211 @@ func TestTipPollerReorgDuringMultiBlockAdvance(t *testing.T) {
 	}
 
 	requireTipEventually(t, tp, 112)
+}
+
+// TestTipPollerDoesNotPollWithPartialSeed reproduces a reorg racing the
+// asynchronous startup walk. The poll loop must wait for the old-chain ring
+// to be complete, and the walk must remain anchored to the original tip even
+// after height lookups switch to the replacement chain.
+func TestTipPollerDoesNotPollWithPartialSeed(t *testing.T) {
+	chain := newStubChain(100)
+	chain.mu.Lock()
+	old99 := chain.hashAt[99]
+	oldDisconnected := []chainhash.Hash{
+		chain.hashAt[98], chain.hashAt[99], chain.hashAt[100],
+	}
+	chain.mu.Unlock()
+
+	seedBlocked := make(chan struct{})
+	release := make(chan struct{})
+	var (
+		blockedOnce sync.Once
+		releaseOnce sync.Once
+	)
+	releaseSeed := func() {
+		releaseOnce.Do(func() {
+			close(release)
+		})
+	}
+	defer releaseSeed()
+
+	baseHandler := stubEsploraHandler(t, chain)
+	blockedPath := "/block/" + old99.String() + "/header"
+	srv := mockEsploraServer(
+		t, http.HandlerFunc(func(w http.ResponseWriter,
+			r *http.Request) {
+
+			if r.URL.Path == blockedPath {
+				blockedOnce.Do(func() {
+					close(seedBlocked)
+				})
+
+				select {
+				case <-release:
+				case <-r.Context().Done():
+					return
+				}
+			}
+
+			baseHandler(w, r)
+		}),
+	)
+
+	tp := NewTipPollerWithConfig(
+		NewEsploraClient(srv.URL, btclog.Disabled), 10*time.Millisecond,
+		4, btclog.Disabled,
+	)
+	require.NoError(t, tp.Start())
+	t.Cleanup(tp.Stop)
+
+	reorgSub, err := tp.SubscribeReorgs()
+	require.NoError(t, err)
+	defer reorgSub.Cancel()
+
+	select {
+	case <-seedBlocked:
+	case <-time.After(2 * time.Second):
+		t.Fatal("seed walk did not reach the blocked old-chain header")
+	}
+
+	chain.reorgTo(t, 97, 100, 1)
+
+	select {
+	case event := <-reorgSub.Updates():
+		t.Fatalf("poll emitted reorg from partial seed: %+v", event)
+
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	releaseSeed()
+
+	select {
+	case event := <-reorgSub.Updates():
+		require.NotNil(t, event)
+		require.Equal(t, int32(97), event.ForkHeight)
+		require.Equal(t, oldDisconnected, event.Disconnected)
+
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for complete startup reorg")
+	}
+}
+
+// TestTipPollerRetriesHistorySeed verifies that one transient raw-header
+// failure cannot leave a permanent gap in the retained ring. Polling begins
+// only after the retry reconstructs the complete old-chain snapshot.
+func TestTipPollerRetriesHistorySeed(t *testing.T) {
+	chain := newStubChain(100)
+	chain.mu.Lock()
+	old99 := chain.hashAt[99]
+	oldDisconnected := []chainhash.Hash{
+		chain.hashAt[98], chain.hashAt[99], chain.hashAt[100],
+	}
+	chain.mu.Unlock()
+
+	seedFailed := make(chan struct{})
+	var failOnce sync.Once
+	baseHandler := stubEsploraHandler(t, chain)
+	failingPath := "/block/" + old99.String() + "/header"
+	srv := mockEsploraServer(
+		t, http.HandlerFunc(func(w http.ResponseWriter,
+			r *http.Request) {
+
+			fail := false
+			if r.URL.Path == failingPath {
+				failOnce.Do(func() {
+					fail = true
+					close(seedFailed)
+				})
+			}
+			if fail {
+				http.Error(
+					w, "transient failure",
+					http.StatusInternalServerError,
+				)
+
+				return
+			}
+
+			baseHandler(w, r)
+		}),
+	)
+
+	tp := NewTipPollerWithConfig(
+		NewEsploraClient(srv.URL, btclog.Disabled), 10*time.Millisecond,
+		4, btclog.Disabled,
+	)
+	require.NoError(t, tp.Start())
+	t.Cleanup(tp.Stop)
+
+	reorgSub, err := tp.SubscribeReorgs()
+	require.NoError(t, err)
+	defer reorgSub.Cancel()
+
+	select {
+	case <-seedFailed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("seed walk did not hit the transient failure")
+	}
+
+	chain.reorgTo(t, 97, 100, 1)
+
+	select {
+	case event := <-reorgSub.Updates():
+		require.NotNil(t, event)
+		require.Equal(t, int32(97), event.ForkHeight)
+		require.Equal(t, oldDisconnected, event.Disconnected)
+
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for reorg after seed retry")
+	}
+}
+
+// TestTipPollerStopCancelsSeedRequest ensures the component-owned lifecycle
+// context releases an in-flight startup seed request during shutdown.
+func TestTipPollerStopCancelsSeedRequest(t *testing.T) {
+	chain := newStubChain(100)
+	seedRequested := make(chan struct{})
+	var requestedOnce sync.Once
+
+	baseHandler := stubEsploraHandler(t, chain)
+	srv := mockEsploraServer(
+		t, http.HandlerFunc(func(w http.ResponseWriter,
+			r *http.Request) {
+
+			if strings.HasSuffix(r.URL.Path, "/header") {
+				requestedOnce.Do(func() {
+					close(seedRequested)
+				})
+				<-r.Context().Done()
+
+				return
+			}
+
+			baseHandler(w, r)
+		}),
+	)
+
+	tp := NewTipPollerWithConfig(
+		NewEsploraClient(srv.URL, btclog.Disabled), time.Hour, 4,
+		btclog.Disabled,
+	)
+	require.NoError(t, tp.Start())
+
+	select {
+	case <-seedRequested:
+	case <-time.After(2 * time.Second):
+		t.Fatal("seed request did not start")
+	}
+
+	stopped := make(chan struct{})
+	go func() {
+		tp.Stop()
+		close(stopped)
+	}()
+
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop did not cancel the seed request")
+	}
 }
