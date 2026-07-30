@@ -959,6 +959,89 @@ func TestCPFPReselectsAfterPreciseFeeGrowth(t *testing.T) {
 	)
 }
 
+// TestCPFPBumpFailsClosedAtFeeRateCap reproduces wavelength#403: the BIP-125
+// Rule 4 replacement floor ratchets the feerate to prev+1 without re-checking
+// MaxFeeRateSatPerVByte, so once a prior bump sat at the cap every subsequent
+// bump would escalate one sat/vB above it -- forcing the wallet to pay fees
+// over the operator's configured safety limit. The bump must instead fail
+// closed with ErrFeeRateCapReached (a benign no-op that keeps the prior in-cap
+// submission live) rather than pay past the cap.
+func TestCPFPBumpFailsClosedAtFeeRateCap(t *testing.T) {
+	t.Parallel()
+
+	const feeCap = 10
+
+	parent := makeTestTx(true)
+	txid := parent.TxHash()
+
+	t.Run("prior at cap fails closed", func(t *testing.T) {
+		t.Parallel()
+
+		chain := newFakeChainSourceRef(100)
+
+		// Under the cap: the Rule 4 floor, not the estimator, is what
+		// pushes the replacement feerate over the ceiling.
+		chain.feeRate = 5
+
+		b := NewCPFPBroadcaster(BroadcasterConfig{
+			ChainSource:           chain,
+			Wallet:                &fakeWallet{},
+			MaxFeeRateSatPerVByte: feeCap,
+		})
+
+		// A prior submission already sitting at the cap: Rule 4 forces
+		// the next feerate to feeCap + 1.
+		b.parentStates[txid] = &parentBumpState{
+			LastFeeRate:    feeCap,
+			LastPackageFee: 1,
+		}
+
+		_, err := b.Submit(t.Context(), 100, &BroadcastRequest{
+			Tx: parent, Label: "cap-bump", IsFeeBump: true,
+		})
+		require.ErrorIs(t, err, ErrFeeRateCapReached)
+
+		// Nothing may go out at an over-cap fee -- neither a package
+		// submission nor a direct broadcast.
+		require.Zero(t, chain.packageCallCount())
+		require.Zero(t, chain.broadcastCallCount())
+	})
+
+	t.Run("prior below cap proceeds", func(t *testing.T) {
+		t.Parallel()
+
+		chain := newFakeChainSourceRef(100)
+		chain.feeRate = 5
+
+		// A large fee input so the CPFP child can actually be built.
+		w := &fakeWallet{
+			utxos: []*walletcore.Utxo{
+				makeWalletUTXOWithAmount(10_000_000, 0xcc),
+			},
+		}
+		b := NewCPFPBroadcaster(BroadcasterConfig{
+			ChainSource:           chain,
+			Wallet:                w,
+			MaxFeeRateSatPerVByte: feeCap,
+		})
+
+		// Prior submission well below the cap: the floor bumps to
+		// prev + 1 = 8, still under the cap, so the bump proceeds
+		// normally rather than being refused.
+		b.parentStates[txid] = &parentBumpState{
+			LastFeeRate:    7,
+			LastPackageFee: 1,
+		}
+
+		_, err := b.Submit(t.Context(), 100, &BroadcastRequest{
+			Tx: parent, Label: "ok-bump", IsFeeBump: true,
+		})
+		require.NoError(t, err)
+		require.NotErrorIs(t, err, ErrFeeRateCapReached)
+		require.Equal(t, 1, chain.packageCallCount())
+	})
+}
+
 // makeCheckpointShapedParent builds a v3/TRUC parent that mirrors a finalized
 // OOR checkpoint / fraud-response tx: its sole non-anchor input already carries
 // a real (pre-signed) taproot key-spend witness, it has a taproot checkpoint

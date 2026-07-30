@@ -1318,8 +1318,24 @@ func (a *TxBroadcasterActor) handleBlockObserved(ctx context.Context,
 				// the FSM back to AwaitingConfirmation with an
 				// updated broadcast height so the next bump
 				// waits the full interval.
-				a.log.WarnS(ctx, "Fee bump failed, will retry",
-					err, "txid", entry.data.Txid)
+				//
+				// A cap-reached refusal is an expected
+				// steady-state condition -- the tx is
+				// intentionally parked at the configured max
+				// fee rate -- rather than a transient failure,
+				// so it is logged at debug to avoid emitting a
+				// warning every interval for the tx's whole
+				// lifetime (wavelength#403).
+				if errors.Is(err, ErrFeeRateCapReached) {
+					a.log.DebugS(ctx, "Fee bump held at the "+
+						"max fee rate cap; leaving tx at "+
+						"its last in-cap fee",
+						"txid", entry.data.Txid)
+				} else {
+					a.log.WarnS(ctx, "Fee bump failed, "+
+						"will retry", err,
+						"txid", entry.data.Txid)
+				}
 
 				progress := trackedTxProgress{
 					LastBroadcastHeight: fn.Some(
