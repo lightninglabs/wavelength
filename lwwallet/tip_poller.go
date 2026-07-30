@@ -12,12 +12,22 @@ import (
 	"github.com/btcsuite/btclog/v2"
 )
 
-// DefaultHashHistorySize is the default upper bound on entries retained
-// in the TipPoller's bounded height -> hash history map. It is sized to
-// at least twice the conventional Bitcoin reorg-safety depth (6) so a
-// reorg at finality depth still has its disconnected hashes available
-// for walk-back, with headroom. Configurable via NewTipPollerWithConfig.
-const DefaultHashHistorySize = 100
+const (
+	// DefaultHashHistorySize is the default upper bound on entries retained
+	// in the TipPoller's bounded height -> hash history map. It is sized to
+	// at least twice the conventional Bitcoin reorg-safety depth (6) so a
+	// reorg at finality depth still has its disconnected hashes available
+	// for walk-back, with headroom. Configurable via
+	// NewTipPollerWithConfig.
+	DefaultHashHistorySize = 100
+
+	// seedRetryInitialBackoff and seedRetryMaxBackoff bound how quickly a
+	// transient raw-header failure is retried before polling begins. The
+	// retry continues until the history is complete or Stop cancels runCtx;
+	// only the delay is bounded.
+	seedRetryInitialBackoff = 100 * time.Millisecond
+	seedRetryMaxBackoff     = 5 * time.Second
+)
 
 // TipBlock describes a newly detected block emitted by TipPoller.
 // Each subscriber receives one TipBlock per advance: when the tip
@@ -122,6 +132,13 @@ type TipPoller struct {
 	pollInterval time.Duration
 	log          btclog.Logger
 
+	// runCtx and runCancel are owned by the poller and bound every
+	// Esplora request made by its background work. Stop cancels the
+	// context before waiting, so an in-flight seed or poll request cannot
+	// hold shutdown open indefinitely.
+	runCtx    context.Context //nolint:containedctx
+	runCancel context.CancelFunc
+
 	// historySize caps the bounded height -> hash history map that
 	// lets the poller resolve old-chain hashes during reorg walk-back.
 	historySize int
@@ -193,12 +210,15 @@ func NewTipPollerWithConfig(esplora *EsploraClient, pollInterval time.Duration,
 	if historySize <= 0 {
 		historySize = DefaultHashHistorySize
 	}
+	runCtx, runCancel := context.WithCancel(context.Background())
 
 	return &TipPoller{
 		esplora:      esplora,
 		pollInterval: pollInterval,
 		historySize:  historySize,
 		log:          log,
+		runCtx:       runCtx,
+		runCancel:    runCancel,
 		events:       NewEventServer[*TipBlock](log),
 		reorgs:       NewEventServer[*ReorgEvent](log),
 		chain:        NewEventServer[*ChainEvent](log),
@@ -239,7 +259,7 @@ func (t *TipPoller) Start() error {
 		t.mu.Unlock()
 	}
 
-	height, err := t.esplora.GetTipHeight(context.Background())
+	height, err := t.esplora.GetTipHeight(t.runCtx)
 	if err != nil {
 		resetStarted()
 
@@ -247,7 +267,7 @@ func (t *TipPoller) Start() error {
 	}
 
 	hash, err := t.esplora.GetBlockHashByHeight(
-		context.Background(), height,
+		t.runCtx, height,
 	)
 	if err != nil {
 		resetStarted()
@@ -263,14 +283,12 @@ func (t *TipPoller) Start() error {
 	// tested path never reads `tipTime`.
 	var tipTime time.Time
 	header, hdrErr := t.esplora.GetBlockHeader(
-		context.Background(), hash,
+		t.runCtx, hash,
 	)
 	if hdrErr == nil {
 		tipTime = time.Unix(header.Timestamp, 0)
 	} else {
-		t.log.WarnS(
-			context.Background(),
-			"Tip poller initial header fetch failed",
+		t.log.WarnS(t.runCtx, "Tip poller initial header fetch failed",
 			hdrErr,
 			slog.String("hash", hash.String()),
 		)
@@ -299,16 +317,9 @@ func (t *TipPoller) Start() error {
 		return fmt.Errorf("start chain event server: %w", err)
 	}
 
-	// Seed recentHashes by walking back historySize-1 heights so a
-	// reorg whose disconnected range extends below the seeded tip
-	// but within the configured history can still resolve every
-	// disconnected hash from the cache. Without this, a fresh
-	// poller would only ever cache the initial tip, leaving a
-	// downstream chain.Interface consumer unable to enumerate every
-	// hash btcwallet must roll back on a multi-block reorg below
-	// the seeded tip. The walk-back is best-effort: a single
-	// per-height fetch failure ends the seed loop early; the next
-	// poll tick still drives the cache forward as the chain grows.
+	// Publish the tip before anything else: this is what Start()'s
+	// callers actually wait for. See seedHashHistory for the rest of
+	// the ring.
 	t.mu.Lock()
 	t.tipHeight = height
 	t.tipHash = hash
@@ -316,30 +327,27 @@ func (t *TipPoller) Start() error {
 	t.recordHashLocked(height, hash)
 	t.mu.Unlock()
 
-	for h := height - 1; h > height-int32(t.historySize) && h >= 0; h-- {
-		liveHash, err := t.esplora.GetBlockHashByHeight(
-			context.Background(), h,
-		)
-		if err != nil {
-			t.log.WarnS(
-				context.Background(),
-				"Tip poller history seed fetch failed",
-				err,
-				slog.Int("height", int(h)),
-			)
+	// The walk-back runs in the background rather than inline: it is
+	// historySize-1 sequential Esplora round trips (99 by default),
+	// which on a mobile connection is ~15s of dead time before
+	// Start() returns — and Start() gates the whole wallet, since
+	// btcwallet and the chain backend are started after it. Nothing
+	// reads the seeded ring until pollLoop observes a reorg. The poll
+	// loop therefore starts only after the seed finishes, preventing a
+	// reorg from consuming a partially populated ring. Both phases share
+	// one component-owned goroutine and lifecycle context.
+	t.wg.Add(1)
+	go func() {
+		defer t.wg.Done()
 
-			break
+		if !t.seedHashHistoryWithRetry(height, hash) {
+			return
 		}
 
-		t.mu.Lock()
-		t.recordHashLocked(h, liveHash)
-		t.mu.Unlock()
-	}
+		t.pollLoop()
+	}()
 
-	t.wg.Add(1)
-	go t.pollLoop()
-
-	t.log.InfoS(context.Background(), "Tip poller started",
+	t.log.InfoS(t.runCtx, "Tip poller started",
 		slog.Int("tip_height", int(height)),
 		slog.String("tip_hash", hash.String()),
 	)
@@ -347,11 +355,84 @@ func (t *TipPoller) Start() error {
 	return nil
 }
 
-// Stop signals the polling goroutine to exit, waits for it to
-// drain, and tears down the event server. Stop is idempotent; the
-// second call returns immediately after the first has finished.
+// seedHashHistory walks back from tipHeight filling the recent-hash ring
+// so a reorg whose disconnected range extends below the seeded tip can
+// still resolve every disconnected hash from the cache. Without it, a
+// fresh poller would only ever cache the initial tip, leaving a
+// downstream chain.Interface consumer unable to enumerate every hash
+// btcwallet must roll back on a multi-block reorg below that tip.
+//
+// The walk follows PrevBlock links from the tip snapshot rather than live
+// height lookups. That keeps the ring on one chain if a reorg happens while
+// the asynchronous seed is in flight.
+func (t *TipPoller) seedHashHistory(tipHeight int32,
+	tipHash chainhash.Hash) error {
+
+	lowest := tipHeight - int32(t.historySize)
+	currentHash := tipHash
+	for h := tipHeight - 1; h > lowest && h >= 0; h-- {
+		header, err := t.esplora.GetRawBlockHeader(
+			t.runCtx, currentHash,
+		)
+		if err != nil {
+			return fmt.Errorf("get seed header %s for height "+
+				"%d: %w", currentHash, h, err)
+		}
+
+		currentHash = header.PrevBlock
+		t.mu.Lock()
+		t.recordHashLocked(h, currentHash)
+		t.mu.Unlock()
+	}
+
+	return nil
+}
+
+// seedHashHistoryWithRetry completes the startup history before handing the
+// component-owned goroutine to pollLoop. A capped exponential delay avoids a
+// tight retry loop while preserving the invariant that polling never observes
+// a partially seeded ring.
+func (t *TipPoller) seedHashHistoryWithRetry(tipHeight int32,
+	tipHash chainhash.Hash) bool {
+
+	backoff := seedRetryInitialBackoff
+	for {
+		err := t.seedHashHistory(tipHeight, tipHash)
+		if err == nil {
+			return true
+		}
+		if t.runCtx.Err() != nil {
+			return false
+		}
+
+		t.log.WarnS(
+			t.runCtx,
+			"Tip poller history seed failed; retrying",
+			err,
+			slog.Duration("retry_delay", backoff),
+		)
+
+		timer := time.NewTimer(backoff)
+		select {
+		case <-timer.C:
+		case <-t.runCtx.Done():
+			timer.Stop()
+
+			return false
+		}
+
+		backoff *= 2
+		if backoff > seedRetryMaxBackoff {
+			backoff = seedRetryMaxBackoff
+		}
+	}
+}
+
+// Stop signals the polling goroutine to exit, waits for it to drain, and
+// tears down the event servers. Stop is idempotent.
 func (t *TipPoller) Stop() {
 	t.stopOnce.Do(func() {
+		t.runCancel()
 		close(t.quit)
 	})
 
@@ -362,7 +443,7 @@ func (t *TipPoller) Stop() {
 	// its subscriber handler.
 	if err := t.events.Stop(); err != nil {
 		t.log.WarnS(
-			context.Background(),
+			t.runCtx,
 			"Tip poller event server stop returned error",
 			err,
 		)
@@ -370,7 +451,7 @@ func (t *TipPoller) Stop() {
 
 	if err := t.reorgs.Stop(); err != nil {
 		t.log.WarnS(
-			context.Background(),
+			t.runCtx,
 			"Tip poller reorg event server stop returned error",
 			err,
 		)
@@ -378,7 +459,7 @@ func (t *TipPoller) Stop() {
 
 	if err := t.chain.Stop(); err != nil {
 		t.log.WarnS(
-			context.Background(),
+			t.runCtx,
 			"Tip poller chain event server stop returned error",
 			err,
 		)
@@ -529,8 +610,6 @@ func (t *TipPoller) hashAtHeightLocked(height int32) (chainhash.Hash, bool) {
 // gap from the cached tip to the new tip emitting one TipBlock per
 // step.
 func (t *TipPoller) pollLoop() {
-	defer t.wg.Done()
-
 	ticker := time.NewTicker(t.pollInterval)
 	defer ticker.Stop()
 
@@ -566,10 +645,10 @@ func (t *TipPoller) pollLoop() {
 // cycle so subscribers never see an out-of-order event; the next
 // tick re-attempts from the same starting point.
 func (t *TipPoller) poll() {
-	newHeight, err := t.esplora.GetTipHeight(context.Background())
+	newHeight, err := t.esplora.GetTipHeight(t.runCtx)
 	if err != nil {
 		t.log.WarnS(
-			context.Background(),
+			t.runCtx,
 			"Tip poller GetTipHeight failed",
 			err,
 		)
@@ -604,11 +683,11 @@ func (t *TipPoller) poll() {
 		// orphaning reorg to a shorter chain would be silently
 		// ignored until the new chain grew past our stale tip.
 		newTipHash, err := t.esplora.GetBlockHashByHeight(
-			context.Background(), newHeight,
+			t.runCtx, newHeight,
 		)
 		if err != nil {
 			t.log.WarnS(
-				context.Background(),
+				t.runCtx,
 				"Tip poller shorter-chain hash check failed",
 				err,
 				slog.Int("height", int(newHeight)),
@@ -630,7 +709,7 @@ func (t *TipPoller) poll() {
 		// re-check next tick rather than walk a pruned history.
 		case !haveCached:
 			t.log.WarnS(
-				context.Background(),
+				t.runCtx,
 				"Tip poller remote tip below retained "+
 					"history floor; ignoring",
 				fmt.Errorf("history floor exceeded"),
@@ -661,11 +740,11 @@ func (t *TipPoller) poll() {
 		// height we have a same-height reorg; if it matches
 		// the chain has not moved.
 		newTipHash, err := t.esplora.GetBlockHashByHeight(
-			context.Background(), newHeight,
+			t.runCtx, newHeight,
 		)
 		if err != nil {
 			t.log.WarnS(
-				context.Background(),
+				t.runCtx,
 				"Tip poller same-height hash check failed",
 				err,
 				slog.Int("height", int(newHeight)),
@@ -697,7 +776,7 @@ func (t *TipPoller) poll() {
 // broadcast, including when a reorg lands midway through a multi-block
 // catch-up walk.
 func (t *TipPoller) advance(oldHeight, newHeight int32) {
-	t.log.DebugS(context.Background(), "Tip poller advancing",
+	t.log.DebugS(t.runCtx, "Tip poller advancing",
 		slog.Int("old_height", int(oldHeight)),
 		slog.Int("new_height", int(newHeight)),
 	)
@@ -707,7 +786,7 @@ func (t *TipPoller) advance(oldHeight, newHeight int32) {
 	t.mu.Unlock()
 	if !ok {
 		t.log.WarnS(
-			context.Background(),
+			t.runCtx,
 			"Tip poller advance starts below retained history",
 			fmt.Errorf("history floor exceeded"),
 			slog.Int("old_height", int(oldHeight)),
@@ -718,11 +797,11 @@ func (t *TipPoller) advance(oldHeight, newHeight int32) {
 
 	for height := oldHeight + 1; height <= newHeight; height++ {
 		hash, err := t.esplora.GetBlockHashByHeight(
-			context.Background(), height,
+			t.runCtx, height,
 		)
 		if err != nil {
 			t.log.WarnS(
-				context.Background(),
+				t.runCtx,
 				"Tip poller GetBlockHashByHeight failed",
 				err,
 				slog.Int("height", int(height)),
@@ -732,11 +811,11 @@ func (t *TipPoller) advance(oldHeight, newHeight int32) {
 		}
 
 		header, err := t.esplora.GetBlockHeader(
-			context.Background(), hash,
+			t.runCtx, hash,
 		)
 		if err != nil {
 			t.log.WarnS(
-				context.Background(),
+				t.runCtx,
 				"Tip poller GetBlockHeader failed",
 				err,
 				slog.String("hash", hash.String()),
@@ -749,14 +828,14 @@ func (t *TipPoller) advance(oldHeight, newHeight int32) {
 		// height would miss a reorg that lands after an earlier block
 		// in this catch-up walk has already been broadcast.
 		rawHdr, err := t.esplora.GetRawBlockHeader(
-			context.Background(), hash,
+			t.runCtx, hash,
 		)
 		if err != nil {
 			// Without the raw header we cannot prove that this
 			// block connects to the last one subscribers saw.
 			// Abort without advancing; the next tick retries.
 			t.log.WarnS(
-				context.Background(),
+				t.runCtx,
 				"Tip poller raw header fetch failed; aborting "+
 					"cycle",
 				err,
@@ -771,11 +850,11 @@ func (t *TipPoller) advance(oldHeight, newHeight int32) {
 			// actual current tip and let handleReorg disconnect any
 			// earlier blocks this iteration already broadcast.
 			tipHash, tipErr := t.esplora.GetBlockHashByHeight(
-				context.Background(), newHeight,
+				t.runCtx, newHeight,
 			)
 			if tipErr != nil {
 				t.log.WarnS(
-					context.Background(),
+					t.runCtx,
 					"Tip poller reorg tip fetch failed",
 					tipErr,
 					slog.Int("height", int(newHeight)),
@@ -830,9 +909,7 @@ func (t *TipPoller) broadcastTipBlock(event *TipBlock) bool {
 	t.mu.Unlock()
 
 	if tipErr != nil {
-		t.log.WarnS(
-			context.Background(),
-			"Tip poller send update failed",
+		t.log.WarnS(t.runCtx, "Tip poller send update failed",
 			tipErr,
 			slog.Int("height", int(event.Height)),
 		)
@@ -841,9 +918,7 @@ func (t *TipPoller) broadcastTipBlock(event *TipBlock) bool {
 	}
 
 	if chainErr != nil {
-		t.log.WarnS(
-			context.Background(),
-			"Tip poller chain stream send failed",
+		t.log.WarnS(t.runCtx, "Tip poller chain stream send failed",
 			chainErr,
 			slog.Int("height", int(event.Height)),
 		)
@@ -862,7 +937,7 @@ func (t *TipPoller) broadcastTipBlock(event *TipBlock) bool {
 // as TipBlock events in ascending height order so consumers can
 // re-check registrations against each new block.
 func (t *TipPoller) handleReorg(newTipHeight int32, newTipHash chainhash.Hash) {
-	t.log.InfoS(context.Background(), "Tip poller detected reorg",
+	t.log.InfoS(t.runCtx, "Tip poller detected reorg",
 		slog.Int("new_tip_height", int(newTipHeight)),
 		slog.String("new_tip_hash", newTipHash.String()),
 	)
@@ -905,11 +980,11 @@ func (t *TipPoller) handleReorg(newTipHeight int32, newTipHash chainhash.Hash) {
 		// slice capacity.
 		if probeHeight > cachedTipHeight {
 			liveHash, err := t.esplora.GetBlockHashByHeight(
-				context.Background(), probeHeight,
+				t.runCtx, probeHeight,
 			)
 			if err != nil {
 				t.log.WarnS(
-					context.Background(),
+					t.runCtx,
 					"Tip poller reorg walk-back failed",
 					err,
 					slog.Int("height", int(probeHeight)),
@@ -928,31 +1003,37 @@ func (t *TipPoller) handleReorg(newTipHeight int32, newTipHash chainhash.Hash) {
 		t.mu.Unlock()
 
 		if !haveCached {
-			// We never broadcast a block at this height
-			// (typically because it's older than our
-			// retained history's start, e.g. on a fresh
-			// poller that only ever cached the initial
-			// tip). Treat probeHeight as the fork point:
-			// anything at or below it is not part of our
-			// old broadcast set, so it cannot be
-			// "disconnected" from a downstream consumer's
-			// point of view. The live hash at this height
-			// is not a new connected block we owe
-			// subscribers either; only blocks strictly
-			// above probeHeight that we previously
-			// broadcast (and that have now changed) form
-			// the reorg boundary.
-			forkHeight = probeHeight
+			// The height exactly at cutoff is the expected
+			// boundary below the retained ring. Preserve the
+			// bounded deep-reorg signal for consumers that
+			// re-query their registrations canonically.
+			if probeHeight == cutoff {
+				forkHeight = probeHeight
 
-			break
+				break
+			}
+
+			// Any gap above cutoff means the startup seed was
+			// incomplete. Guessing that the gap is the fork
+			// point would emit only a suffix of an otherwise
+			// recoverable reorg and leave btcwallet on an
+			// impossible mixed history. Fail closed and retry.
+			t.log.WarnS(
+				t.runCtx,
+				"Tip poller reorg history is incomplete",
+				fmt.Errorf("missing cached block hash"),
+				slog.Int("height", int(probeHeight)),
+			)
+
+			return
 		}
 
 		liveHash, err := t.esplora.GetBlockHashByHeight(
-			context.Background(), probeHeight,
+			t.runCtx, probeHeight,
 		)
 		if err != nil {
 			t.log.WarnS(
-				context.Background(),
+				t.runCtx,
 				"Tip poller reorg walk-back failed",
 				err,
 				slog.Int("height", int(probeHeight)),
@@ -983,7 +1064,7 @@ func (t *TipPoller) handleReorg(newTipHeight int32, newTipHash chainhash.Hash) {
 		// is a developer / operator problem, not a
 		// productionally recoverable condition.
 		t.log.WarnS(
-			context.Background(),
+			t.runCtx,
 			"Tip poller reorg deeper than retained history; "+
 				"giving up walk-back",
 			fmt.Errorf("history exhausted"),
@@ -1030,11 +1111,11 @@ func (t *TipPoller) handleReorg(newTipHeight int32, newTipHash chainhash.Hash) {
 	for _, h := range connectedHeights {
 		hash := connectedByHeight[h]
 		header, err := t.esplora.GetBlockHeader(
-			context.Background(), hash,
+			t.runCtx, hash,
 		)
 		if err != nil {
 			t.log.WarnS(
-				context.Background(),
+				t.runCtx,
 				"Tip poller reorg header fetch failed",
 				err,
 				slog.String("hash", hash.String()),
@@ -1065,7 +1146,7 @@ func (t *TipPoller) handleReorg(newTipHeight int32, newTipHash chainhash.Hash) {
 		Connected:    connected,
 	}
 
-	t.log.InfoS(context.Background(), "Tip poller emitting reorg",
+	t.log.InfoS(t.runCtx, "Tip poller emitting reorg",
 		slog.Int("fork_height", int(forkHeight)),
 		slog.Int("disconnected", len(disconnected)),
 		slog.Int("connected", len(connected)),
@@ -1073,7 +1154,7 @@ func (t *TipPoller) handleReorg(newTipHeight int32, newTipHash chainhash.Hash) {
 
 	if err := t.reorgs.SendUpdate(reorgEvent); err != nil {
 		t.log.WarnS(
-			context.Background(),
+			t.runCtx,
 			"Tip poller reorg send failed",
 			err,
 		)
@@ -1093,9 +1174,7 @@ func (t *TipPoller) handleReorg(newTipHeight int32, newTipHash chainhash.Hash) {
 		&ChainEvent{Reorg: reorgEvent},
 	); err != nil {
 
-		t.log.WarnS(
-			context.Background(),
-			"Tip poller chain reorg send failed",
+		t.log.WarnS(t.runCtx, "Tip poller chain reorg send failed",
 			err,
 		)
 
