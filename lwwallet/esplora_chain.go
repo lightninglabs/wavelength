@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"sync"
 	"time"
 
@@ -229,15 +230,51 @@ func (s *EsploraChainService) IsCurrent() bool {
 	return true
 }
 
-// FilterBlocks scans a batch of blocks for transactions relevant to
-// the provided addresses and watched outpoints. For each block in the
-// request, the full block is fetched and every transaction is checked
-// for outputs matching external/internal addresses and inputs spending
-// watched outpoints. Returns the first block containing any match.
+// FilterBlocks reports the first block in the batch containing a
+// transaction relevant to the given addresses or watched outpoints.
+//
+// It answers from the Esplora address index rather than by downloading
+// blocks. The block-scanning shape of chain.Interface is a poor fit for
+// an indexed backend: btcwallet's recovery loop calls this once per
+// matching block while it expands its gap-limit horizon, so a per-block
+// implementation costs one full block download per block in the range —
+// on a restore-from-seed that is the entire chain since the wallet's
+// birthday, twice over (recovery here, then the catch-up rescan).
+//
+// Nothing in the FilterBlocksRequest/Response contract requires reading
+// blocks: the caller asks which of *these* addresses appear in *this*
+// range and where the earliest such block is. That is a history lookup
+// per address, which is what an index is for. Matching itself still goes
+// through filterBlock on the candidate transactions, so the semantics of
+// what counts as a match are identical to the scanning path.
 func (s *EsploraChainService) FilterBlocks(req *chain.FilterBlocksRequest) (
 	*chain.FilterBlocksResponse, error) {
 
 	ctx := s.requestContext()
+
+	if len(req.Blocks) == 0 {
+		return nil, nil
+	}
+
+	// Index the requested range by height. Results from the address
+	// index are clamped to this set: it is the caller's view of the
+	// chain, and the live index can report a height the caller has not
+	// asked about (or one a reorg has since retracted).
+	type blockSlot struct {
+		batchIdx uint32
+		meta     wtxmgr.BlockMeta
+	}
+	slots := make(map[int32]blockSlot, len(req.Blocks))
+	minHeight := req.Blocks[0].Height
+	for i, meta := range req.Blocks {
+		slots[meta.Height] = blockSlot{
+			batchIdx: uint32(i),
+			meta:     meta,
+		}
+		if meta.Height < minHeight {
+			minHeight = meta.Height
+		}
+	}
 
 	// Build a pkScript lookup table from the address sets so we
 	// can efficiently match transaction outputs.
@@ -269,10 +306,212 @@ func (s *EsploraChainService) FilterBlocks(req *chain.FilterBlocksRequest) (
 		}
 	}
 
-	for batchIdx, blockMeta := range req.Blocks {
-		block, err := s.esplora.GetRawBlock(
-			ctx, blockMeta.Hash,
+	// Probe every script the caller cares about. The watched outpoints'
+	// addresses are probed too but deliberately kept out of
+	// addrScripts: a transaction spending a watched outpoint is
+	// relevant even when it pays none of the derived addresses, yet the
+	// outpoint's own address must not be reported as a *found* address
+	// or it would push the recovery horizon on evidence the caller did
+	// not ask about.
+	probes := make(map[string]struct{}, len(addrScripts))
+	for script := range addrScripts {
+		probes[script] = struct{}{}
+	}
+	for _, addr := range req.WatchedOutPoints {
+		pkScript, err := txscript.PayToAddrScript(addr)
+		if err != nil {
+			return s.fallbackFilterBlocks(
+				ctx, req, addrScripts, fmt.Errorf("derive "+
+					"watched outpoint script: %w", err),
+			)
+		}
+		probes[string(pkScript)] = struct{}{}
+	}
+
+	// Collect candidate txids per requested height. Every indexed block
+	// identity is checked against the caller's canonical batch before its
+	// transactions are trusted.
+	candidates := make(map[int32]map[chainhash.Hash]struct{})
+	for script := range probes {
+		refs, err := s.scriptHistoryToHeight(
+			ctx, []byte(script), minHeight,
 		)
+		if err != nil {
+			return s.fallbackFilterBlocks(
+				ctx, req, addrScripts, err,
+			)
+		}
+
+		for _, ref := range refs {
+			if !ref.Status.Confirmed {
+				continue
+			}
+
+			height, blockHash, err := indexedBlock(ref)
+			if err != nil {
+				return s.fallbackFilterBlocks(
+					ctx, req, addrScripts, err,
+				)
+			}
+
+			slot, wanted := slots[height]
+			if !wanted {
+				continue
+			}
+			if blockHash != slot.meta.Hash {
+				err := fmt.Errorf("indexed block mismatch at "+
+					"%d: got %s, want %s", height,
+					blockHash, slot.meta.Hash)
+
+				return s.fallbackFilterBlocks(
+					ctx, req, addrScripts, err,
+				)
+			}
+
+			txid, err := chainhash.NewHashFromStr(ref.Txid)
+			if err != nil {
+				err := fmt.Errorf("parse history txid %q: %w",
+					ref.Txid, err)
+
+				return s.fallbackFilterBlocks(
+					ctx, req, addrScripts, err,
+				)
+			}
+
+			if candidates[height] == nil {
+				candidates[height] = make(
+					map[chainhash.Hash]struct{},
+				)
+			}
+			candidates[height][*txid] = struct{}{}
+		}
+	}
+
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+
+	// The caller trims its batch past the returned block, so candidates
+	// must be tested from lowest to highest. An indexed history entry can
+	// still be a false candidate, notably a funding transaction for a
+	// watched-outpoint script that does not itself spend the outpoint.
+	heights := make([]int32, 0, len(candidates))
+	for height := range candidates {
+		heights = append(heights, height)
+	}
+	sort.Slice(heights, func(i, j int) bool {
+		return heights[i] < heights[j]
+	})
+
+	for _, height := range heights {
+		slot := slots[height]
+		block := &wire.MsgBlock{}
+		for txid := range candidates[height] {
+			tx, err := s.esplora.GetRawTx(ctx, txid)
+			if err != nil {
+				err := fmt.Errorf("get history tx %s: %w", txid,
+					err)
+
+				return s.fallbackFilterBlocks(
+					ctx, req, addrScripts, err,
+				)
+			}
+			block.Transactions = append(block.Transactions, tx)
+		}
+
+		ordered, err := sortTxsByDependency(block.Transactions)
+		if err != nil {
+			return s.fallbackFilterBlocks(
+				ctx, req, addrScripts, err,
+			)
+		}
+		block.Transactions = ordered
+
+		resp := s.filterBlock(
+			block, slot.meta, slot.batchIdx, addrScripts,
+			req.WatchedOutPoints,
+		)
+		if resp != nil {
+			return resp, nil
+		}
+	}
+
+	return nil, nil
+}
+
+// scriptHistoryToHeight returns the script's confirmed history, paging
+// back until it reaches minHeight or runs out.
+//
+// Esplora returns history newest-first, 25 confirmed entries per page, so
+// an address with a long history needs paging to reach an old recovery
+// batch. The page budget bounds a pathological address (an exchange hot
+// wallet someone pasted a key from) rather than walking forever.
+func (s *EsploraChainService) scriptHistoryToHeight(ctx context.Context,
+	pkScript []byte, minHeight int32) ([]esploraScriptTx, error) {
+
+	var (
+		all      []esploraScriptTx
+		lastSeen string
+	)
+
+	for range maxScriptTxPages {
+		refs, err := s.esplora.GetScriptChainTxs(
+			ctx, pkScript, lastSeen,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("get script history: %w", err)
+		}
+		if len(refs) == 0 {
+			return all, nil
+		}
+
+		all = append(all, refs...)
+		last := refs[len(refs)-1]
+		if int32(last.Status.BlockHeight) < minHeight {
+			return all, nil
+		}
+		if last.Txid == lastSeen {
+			return nil, fmt.Errorf("script history pagination did "+
+				"not advance past %s", lastSeen)
+		}
+
+		lastSeen = last.Txid
+	}
+
+	return nil, errHistoryTooLong
+}
+
+// fallbackFilterBlocks scans the requested blocks when the address index
+// cannot safely and completely answer the query.
+func (s *EsploraChainService) fallbackFilterBlocks(ctx context.Context,
+	req *chain.FilterBlocksRequest, addrScripts map[string]addressMatch,
+	indexErr error) (*chain.FilterBlocksResponse, error) {
+
+	if ctx.Err() != nil {
+		return nil, indexErr
+	}
+
+	s.log.WarnS(ctx, "Address index filter failed; scanning blocks",
+		indexErr,
+	)
+
+	resp, err := s.filterBlocksFromBlocks(ctx, req, addrScripts)
+	if err != nil {
+		return nil, fmt.Errorf("address index failed (%v), block "+
+			"scan: %w", indexErr, err)
+	}
+
+	return resp, nil
+}
+
+// filterBlocksFromBlocks implements FilterBlocks by downloading and
+// scanning each requested block in order.
+func (s *EsploraChainService) filterBlocksFromBlocks(ctx context.Context,
+	req *chain.FilterBlocksRequest, addrScripts map[string]addressMatch) (
+	*chain.FilterBlocksResponse, error) {
+
+	for batchIdx, blockMeta := range req.Blocks {
+		block, err := s.esplora.GetRawBlock(ctx, blockMeta.Hash)
 		if err != nil {
 			return nil, fmt.Errorf("get block %s: %w",
 				blockMeta.Hash, err)
@@ -282,13 +521,99 @@ func (s *EsploraChainService) FilterBlocks(req *chain.FilterBlocksRequest) (
 			block, blockMeta, uint32(batchIdx), addrScripts,
 			req.WatchedOutPoints,
 		)
-
 		if resp != nil {
 			return resp, nil
 		}
 	}
 
 	return nil, nil
+}
+
+// indexedBlock validates and returns one history entry's block identity.
+func indexedBlock(ref esploraScriptTx) (int32, chainhash.Hash, error) {
+	var none chainhash.Hash
+
+	if !ref.Status.Confirmed {
+		return 0, none, fmt.Errorf("history tx %s is unconfirmed",
+			ref.Txid)
+	}
+
+	height := int32(ref.Status.BlockHeight)
+	if int64(height) != ref.Status.BlockHeight || height < 0 {
+		return 0, none, fmt.Errorf("history tx %s has invalid "+
+			"height %d", ref.Txid, ref.Status.BlockHeight)
+	}
+
+	blockHash, err := chainhash.NewHashFromStr(ref.Status.BlockHash)
+	if err != nil {
+		return 0, none, fmt.Errorf("parse history block hash %q: %w",
+			ref.Status.BlockHash, err)
+	}
+
+	return height, *blockHash, nil
+}
+
+// sortTxsByDependency orders a transaction set so every in-set parent
+// precedes its children. Esplora history order and Go map iteration do not
+// preserve the block order btcwallet relies on when crediting and spending
+// wallet outputs in the same block.
+func sortTxsByDependency(txs []*wire.MsgTx) ([]*wire.MsgTx, error) {
+	byHash := make(map[chainhash.Hash]*wire.MsgTx, len(txs))
+	for _, tx := range txs {
+		txHash := tx.TxHash()
+		if _, ok := byHash[txHash]; ok {
+			return nil, fmt.Errorf("duplicate transaction %s",
+				txHash)
+		}
+		byHash[txHash] = tx
+	}
+
+	indegree := make(map[chainhash.Hash]int, len(txs))
+	children := make(map[chainhash.Hash][]chainhash.Hash)
+	for txHash, tx := range byHash {
+		for _, txIn := range tx.TxIn {
+			parent := txIn.PreviousOutPoint.Hash
+			if _, ok := byHash[parent]; !ok {
+				continue
+			}
+
+			indegree[txHash]++
+			children[parent] = append(children[parent], txHash)
+		}
+	}
+
+	ready := make([]chainhash.Hash, 0, len(txs))
+	for txHash := range byHash {
+		if indegree[txHash] == 0 {
+			ready = append(ready, txHash)
+		}
+	}
+	sort.Slice(ready, func(i, j int) bool {
+		return ready[i].String() < ready[j].String()
+	})
+
+	ordered := make([]*wire.MsgTx, 0, len(txs))
+	for len(ready) > 0 {
+		txHash := ready[0]
+		ready = ready[1:]
+		ordered = append(ordered, byHash[txHash])
+
+		for _, child := range children[txHash] {
+			indegree[child]--
+			if indegree[child] == 0 {
+				ready = append(ready, child)
+			}
+		}
+		sort.Slice(ready, func(i, j int) bool {
+			return ready[i].String() < ready[j].String()
+		})
+	}
+
+	if len(ordered) != len(txs) {
+		return nil, fmt.Errorf("transaction dependency cycle")
+	}
+
+	return ordered, nil
 }
 
 // addressMatch pairs an address's key scope and index with whether
@@ -482,6 +807,28 @@ func (s *EsploraChainService) Rescan(startHash *chainhash.Hash,
 	// asynchronously. See method doc for deadlock rationale.
 	var pending []interface{}
 
+	// Ask the address index which transactions in this range are
+	// relevant, instead of downloading every block and scanning it.
+	// The wallet still needs a notification per height to advance its
+	// sync state (waddrmgr's PutSyncedTo requires the previous height's
+	// hash to exist, so heights cannot be skipped), but the block
+	// *bodies* are what cost real bandwidth on a long rescan — a 4MB
+	// block per height versus a handful of history lookups for the
+	// whole range.
+	relevantByHeight, err := s.rescanRelevantTxs(
+		ctx, addrScripts, outpoints, startHeight, tipHeight,
+	)
+	if err != nil {
+		if ctx.Err() != nil {
+			return err
+		}
+
+		s.log.WarnS(ctx, "Address index rescan failed; scanning blocks",
+			err,
+		)
+		relevantByHeight = nil
+	}
+
 	// Walk each block from start to tip.
 	for height := startHeight; height <= tipHeight; height++ {
 		blockHash, err := s.esplora.GetBlockHashByHeight(
@@ -490,13 +837,6 @@ func (s *EsploraChainService) Rescan(startHash *chainhash.Hash,
 		if err != nil {
 			return fmt.Errorf("get block hash at %d: %w", height,
 				err)
-		}
-
-		block, err := s.esplora.GetRawBlock(
-			ctx, blockHash,
-		)
-		if err != nil {
-			return fmt.Errorf("get block at %d: %w", height, err)
 		}
 
 		blockHeader, err := s.esplora.GetBlockHeader(
@@ -515,16 +855,46 @@ func (s *EsploraChainService) Rescan(startHash *chainhash.Hash,
 			Time: time.Unix(blockHeader.Timestamp, 0),
 		}
 
-		// Filter transactions in this block.
-		var relevantTxs []*wtxmgr.TxRecord
-		for _, tx := range block.Transactions {
-			if !s.txMatchesRescan(
-				tx, addrScripts, outpoints,
-			) {
+		// Build records for whatever the index attributed to this
+		// canonical block. An inconsistent index answer falls back to
+		// the original full-block scan. An empty answer is trusted; see
+		// the package invariant documenting the index-completeness
+		// boundary.
+		var matchedTxs []*wire.MsgTx
+		indexed, hasIndexed := relevantByHeight[height]
+		scanBlock := relevantByHeight == nil
+		if hasIndexed && indexed.blockHash != blockHash {
+			s.log.WarnS(ctx, "Indexed rescan block mismatch; "+
+				"scanning block", fmt.Errorf("got %s, want %s",
+				indexed.blockHash, blockHash),
+				slog.Int("height", int(height)),
+			)
+			scanBlock = true
+		}
 
-				continue
+		if scanBlock {
+			block, err := s.esplora.GetRawBlock(ctx, blockHash)
+			if err != nil {
+				return fmt.Errorf("get block at %d: %w", height,
+					err)
 			}
 
+			for _, tx := range block.Transactions {
+				if !s.txMatchesRescan(
+					tx, addrScripts, outpoints,
+				) {
+
+					continue
+				}
+
+				matchedTxs = append(matchedTxs, tx)
+			}
+		} else if hasIndexed {
+			matchedTxs = indexed.txs
+		}
+
+		var relevantTxs []*wtxmgr.TxRecord
+		for _, tx := range matchedTxs {
 			rec, err := wtxmgr.NewTxRecordFromMsgTx(
 				tx, blockMeta.Time,
 			)
@@ -576,6 +946,132 @@ func (s *EsploraChainService) Rescan(startHash *chainhash.Hash,
 	}()
 
 	return nil
+}
+
+// indexedBlockTxs groups relevant transactions by the indexed block hash
+// they were confirmed in.
+type indexedBlockTxs struct {
+	blockHash chainhash.Hash
+	txs       []*wire.MsgTx
+}
+
+// rescanRelevantTxs returns, grouped by block height, every confirmed
+// transaction between startHeight and tipHeight that pays to one of
+// addrScripts or spends one of outpoints.
+//
+// It probes the address index rather than reading blocks. The scripts
+// behind the watched outpoints are probed too: a transaction spending one
+// is relevant even when it pays none of the rescanned addresses, and
+// Esplora lists a transaction in the history of every script it touches,
+// including those it spends from.
+//
+// Results are clamped to [startHeight, tipHeight] — the index is live and
+// can report a height outside the range the caller asked to rescan.
+func (s *EsploraChainService) rescanRelevantTxs(ctx context.Context,
+	addrScripts map[string]struct{},
+	outpoints map[wire.OutPoint]btcaddr.Address,
+	startHeight, tipHeight int32) (map[int32]indexedBlockTxs, error) {
+
+	probes := make(map[string]struct{}, len(addrScripts))
+	for script := range addrScripts {
+		probes[script] = struct{}{}
+	}
+	for _, addr := range outpoints {
+		pkScript, err := txscript.PayToAddrScript(addr)
+		if err != nil {
+			return nil, fmt.Errorf("derive watched outpoint "+
+				"script: %w", err)
+		}
+		probes[string(pkScript)] = struct{}{}
+	}
+
+	// Deduplicate across scripts: one transaction commonly touches
+	// several of the wallet's own scripts, and it must be reported once.
+	type indexedLocation struct {
+		height    int32
+		blockHash chainhash.Hash
+	}
+	seen := make(map[chainhash.Hash]indexedLocation)
+	byHeight := make(map[int32]indexedBlockTxs)
+
+	for script := range probes {
+		refs, err := s.scriptHistoryToHeight(
+			ctx, []byte(script), startHeight,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, ref := range refs {
+			if !ref.Status.Confirmed {
+				continue
+			}
+
+			height, blockHash, err := indexedBlock(ref)
+			if err != nil {
+				return nil, err
+			}
+			if height < startHeight || height > tipHeight {
+				continue
+			}
+
+			txid, err := chainhash.NewHashFromStr(ref.Txid)
+			if err != nil {
+				return nil, fmt.Errorf("parse history txid "+
+					"%q: %w", ref.Txid, err)
+			}
+			location := indexedLocation{
+				height:    height,
+				blockHash: blockHash,
+			}
+			if previous, dup := seen[*txid]; dup {
+				if previous != location {
+					return nil, fmt.Errorf("history tx %s "+
+						"has conflicting block "+
+						"locations", txid)
+				}
+
+				continue
+			}
+			seen[*txid] = location
+
+			tx, err := s.esplora.GetRawTx(ctx, *txid)
+			if err != nil {
+				return nil, fmt.Errorf("get rescan tx %s: %w",
+					txid, err)
+			}
+
+			// The index says this script appears in the tx; keep
+			// the authoritative match check so what lands in the
+			// wallet is exactly what the scanning path would have
+			// accepted.
+			if !s.txMatchesRescan(tx, addrScripts, outpoints) {
+				continue
+			}
+
+			indexed := byHeight[height]
+			if len(indexed.txs) > 0 &&
+				indexed.blockHash != blockHash {
+				return nil, fmt.Errorf("history height %d has "+
+					"conflicting block hashes", height)
+			}
+			indexed.blockHash = blockHash
+			indexed.txs = append(indexed.txs, tx)
+			byHeight[height] = indexed
+		}
+	}
+
+	for height, indexed := range byHeight {
+		ordered, err := sortTxsByDependency(indexed.txs)
+		if err != nil {
+			return nil, fmt.Errorf("order indexed txs at %d: %w",
+				height, err)
+		}
+		indexed.txs = ordered
+		byHeight[height] = indexed
+	}
+
+	return byHeight, nil
 }
 
 // txMatchesRescan checks whether a transaction matches any of the
