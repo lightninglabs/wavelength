@@ -24,6 +24,13 @@ const (
 	refundLocktimeMaxPollInterval = time.Minute
 )
 
+// inSwapFundingIdempotencyKey derives the daemon-side OOR identity for one
+// Ark-to-Lightning vHTLC funding intent. The payment hash is the durable swap
+// identity, so this format must remain stable across process restarts.
+func inSwapFundingIdempotencyKey(hash lntypes.Hash) string {
+	return fmt.Sprintf("in-swap-funding:%s", hash.String())
+}
+
 // PayState identifies the client-side lifecycle state of an Ark-to-Lightning
 // pay flow.
 type PayState uint8
@@ -685,9 +692,7 @@ func (s *paySession) createSwap(ctx context.Context) error {
 // wall-clock funding deadline is effectively exhausted or the vHTLC refund
 // locktime is already imminent.
 func (s *paySession) ensureFundingStillSafe(ctx context.Context) error {
-	now := s.client.currentTime()
-	if !s.cfg.Expiry.IsZero() &&
-		!now.Add(s.client.fundingExpiryBuffer).Before(s.cfg.Expiry) {
+	if s.fundingAdmissionClosed() {
 		return s.markExpired(
 			ctx, fmt.Sprintf("funding deadline %s is too close "+
 				"or already reached", s.cfg.Expiry),
@@ -711,6 +716,24 @@ func (s *paySession) ensureFundingStillSafe(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// fundingAdmissionDeadline returns the wall-clock cutoff shared with Waved.
+// The local safety buffer closes admission before the swap's hard expiry so a
+// newly accepted vHTLC still has time to propagate and be reconciled.
+func (s *paySession) fundingAdmissionDeadline() time.Time {
+	if s == nil || s.cfg == nil || s.cfg.Expiry.IsZero() {
+		return time.Time{}
+	}
+
+	return s.cfg.Expiry.Add(-s.client.fundingExpiryBuffer)
+}
+
+func (s *paySession) fundingAdmissionClosed() bool {
+	deadline := s.fundingAdmissionDeadline()
+
+	return !deadline.IsZero() &&
+		!s.client.currentTime().Before(deadline)
 }
 
 // fundOrAdoptVHTLC reconciles already-indexed state before submitting funding,
@@ -835,12 +858,30 @@ func (s *paySession) waitForFundedVHTLC(ctx context.Context) error {
 			})
 		}
 
-		if err := s.ensureFundingStillSafe(ctx); err != nil {
-			return err
+		// Once admission closes, a FundingInitiated session is
+		// ambiguous: the original detached OOR may have committed even
+		// when its RPC response was lost. Skip terminal expiry here and
+		// issue a read-only keyed reconciliation below. Waved's
+		// matching admission deadline guarantees that a NotFound
+		// response cannot later turn into a fresh transfer.
+		if !s.fundingAdmissionClosed() {
+			if err := s.ensureFundingStillSafe(ctx); err != nil {
+				return err
+			}
 		}
 
 		if err := s.ensureFundingSubmitted(ctx, false); err != nil {
 			return err
+		}
+		if s.state == PayStateVHTLCFunded {
+
+			// A keyed replay can recover the original outpoint and
+			// advance the durable state without waiting for the
+			// authoritative indexer. Return control to the FSM so
+			// it can enter WaitingForClaim instead of remaining
+			// inside the FundingInitiated action after its state
+			// already changed.
+			return nil
 		}
 
 		if err := s.waitForNextPoll(ctx); err != nil {
@@ -851,9 +892,13 @@ func (s *paySession) waitForFundedVHTLC(ctx context.Context) error {
 					)
 				}
 
-				return s.mutateAndPersist(ctx, func() error {
-					return s.transition(payEventExpired)
-				})
+				// The ambiguity grace can span the hard swap
+				// expiry. Never let that timer bypass
+				// authoritative keyed reconciliation: force an
+				// immediate existing-only probe, which either
+				// recovers the winner, expires on NotFound, or
+				// remains retryable.
+				return s.ensureFundingSubmitted(ctx, true)
 			}
 
 			return err
@@ -886,10 +931,24 @@ func (s *paySession) ensureFundingSubmitted(ctx context.Context,
 		}
 	}
 
-	result, err := s.client.daemon.SendOORWithPolicyDetails(
-		ctx, s.cfg.AmountSat, s.vhtlcPolicyTemplate,
+	existingOnly := s.fundingAdmissionClosed()
+	result, err := s.client.daemon.SendOORWithPolicyOptionsDetails(
+		ctx, s.cfg.AmountSat, s.vhtlcPolicyTemplate, OORSendOptions{
+			IdempotencyKey: inSwapFundingIdempotencyKey(
+				s.cfg.PaymentHash,
+			),
+			AdmissionDeadline: s.fundingAdmissionDeadline(),
+			ExistingOnly:      existingOnly,
+		},
 	)
 	if err != nil {
+		if existingOnly && status.Code(err) == codes.NotFound {
+			return s.markExpired(
+				ctx, "funding admission closed with no "+
+					"accepted OOR transfer",
+			)
+		}
+
 		// A retry can race with a funding attempt that was accepted but
 		// not yet observed by this SDK instance. Reconcile once before
 		// surfacing the send failure.
@@ -912,11 +971,32 @@ func (s *paySession) ensureFundingSubmitted(ctx context.Context,
 			})
 		}
 
-		return fmt.Errorf("fund vHTLC: %w", err)
+		// Any transport-level send failure is ambiguous: the daemon can
+		// durably accept the detached OOR before this RPC loses its
+		// response. Keep FundingInitiated retryable so the next attempt
+		// replays the same payment-scoped key instead of terminalizing
+		// a potentially funded swap.
+		return newRetryableActionError(
+			fmt.Errorf("fund vHTLC: %w", err),
+		)
 	}
 	if result == nil || result.SessionID == "" {
-		return fmt.Errorf("fund vHTLC: daemon returned empty OOR " +
-			"session id")
+		return newRetryableActionError(
+			fmt.Errorf("fund vHTLC: daemon returned empty OOR " +
+				"session id"),
+		)
+	}
+	if result.RecipientOutpoint == "" {
+
+		// Do not persist a session without the exact vHTLC output. The
+		// payment-hash key makes another call a read-only replay of
+		// this funding intent, while persisting incomplete metadata
+		// could strand same-Ark swaps whose script is not queryable
+		// through the payer's authoritative indexer principal.
+		return newRetryableActionError(
+			fmt.Errorf("fund vHTLC: daemon returned empty " +
+				"recipient outpoint"),
+		)
 	}
 
 	s.client.log.InfoS(ctx, "In-swap vHTLC funding submitted",
@@ -930,9 +1010,6 @@ func (s *paySession) ensureFundingSubmitted(ctx context.Context,
 		s.cfg.AmountSat,
 	); err != nil {
 		return newRetryableActionError(err)
-	}
-	if result.RecipientOutpoint == "" {
-		return nil
 	}
 
 	return s.markVHTLCFundedFromLocalMetadata(ctx)

@@ -630,6 +630,7 @@ func TestPayViaLightningReturnsClaimPreimage(t *testing.T) {
 		identityKey:   clientPriv.PubKey(),
 		operatorKey:   operatorPriv.PubKey(),
 		sendSessionID: "funding-session",
+		sendOutpoint:  "funding-session:0",
 		spentVTXO: &VTXOInfo{
 			SpentByTxID: "0123456789abcdef0123456789abcdef" +
 				"0123456789abcdef0123456789abcdef",
@@ -658,6 +659,10 @@ func TestPayViaLightningReturnsClaimPreimage(t *testing.T) {
 	require.Equal(t, "funding-session", result.FundingSessionID)
 	require.EqualValues(t, testInSwapFeeSat, result.FeeSat)
 	require.NotEmpty(t, daemonConn.lastSendPolicy)
+	require.Equal(
+		t, []string{inSwapFundingIdempotencyKey(preimage.Hash())},
+		daemonConn.sendPolicyKeys,
+	)
 }
 
 // TestPayViaLightningRequiresClaimPreimage asserts the pay FSM never treats an
@@ -699,6 +704,7 @@ func TestPayViaLightningRequiresClaimPreimage(t *testing.T) {
 		identityKey:   clientPriv.PubKey(),
 		operatorKey:   operatorPriv.PubKey(),
 		sendSessionID: "funding-session",
+		sendOutpoint:  "funding-session:0",
 	}
 
 	client := configureTestPayClient(
@@ -2071,6 +2077,7 @@ func TestPaySessionResumeFromStore(t *testing.T) {
 		identityKey:   clientPriv.PubKey(),
 		operatorKey:   operatorPriv.PubKey(),
 		sendSessionID: "funding-session",
+		sendOutpoint:  "funding-session:0",
 	}
 
 	client := configureTestPayClient(
@@ -2157,6 +2164,7 @@ func TestPaySessionCancelDoesNotPersistFailed(t *testing.T) {
 		identityKey:   clientPriv.PubKey(),
 		operatorKey:   operatorPriv.PubKey(),
 		sendSessionID: "funding-session",
+		sendOutpoint:  "funding-session:0",
 	}
 
 	client := configureTestPayClient(
@@ -2321,6 +2329,7 @@ func TestPaySessionResumeFundingGraceSkipsImmediateResend(t *testing.T) {
 		identityKey:   clientPriv.PubKey(),
 		operatorKey:   operatorPriv.PubKey(),
 		sendSessionID: "funding-session",
+		sendOutpoint:  "funding-session:0",
 	}
 
 	client := configureTestPayClient(
@@ -2412,6 +2421,7 @@ func TestPaySessionResumeFundingGraceEventuallyRetries(t *testing.T) {
 		identityKey:   clientPriv.PubKey(),
 		operatorKey:   operatorPriv.PubKey(),
 		sendSessionID: "funding-session",
+		sendOutpoint:  "funding-session:0",
 	}
 
 	client := configureTestPayClient(
@@ -2449,22 +2459,263 @@ func TestPaySessionResumeFundingGraceEventuallyRetries(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	waitCtx, cancel := context.WithTimeout(
-		t.Context(), 5*time.Millisecond,
-	)
-	defer cancel()
-
-	_, err = resumed.Wait(waitCtx)
-	require.ErrorIs(t, err, context.DeadlineExceeded)
+	err = resumed.runUntil(t.Context(), PayStateWaitingForClaim)
+	require.NoError(t, err)
 	require.Equal(t, 1, daemonConn.sendPolicyCalls)
-	require.Equal(t, PayStateFundingInitiated, resumed.State())
+	require.Equal(t, PayStateWaitingForClaim, resumed.State())
+	require.Equal(
+		t, []string{inSwapFundingIdempotencyKey(preimage.Hash())},
+		daemonConn.sendPolicyKeys,
+	)
 
 	reloaded, err := resumedClient.ResumePayViaLightning(
 		t.Context(), preimage.Hash(),
 	)
 	require.NoError(t, err)
 	require.Equal(t, "funding-session", reloaded.fundingSessionID)
-	require.Equal(t, PayStateFundingInitiated, reloaded.State())
+	require.Equal(t, "funding-session:0", reloaded.vhtlcOutpoint)
+	require.Equal(t, PayStateWaitingForClaim, reloaded.State())
+}
+
+// TestPaySessionFundingReplayAfterLostResponse verifies an accepted funding
+// OOR whose RPC response is lost is recovered under the same payment-scoped
+// idempotency key. The resumed SDK must obtain the original session/outpoint;
+// it must not create a second daemon-side funding intent.
+func TestPaySessionFundingReplayAfterLostResponse(t *testing.T) {
+	t.Parallel()
+
+	store := newTestSwapStore(t)
+
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	serverPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	preimage, err := NewPreimage()
+	require.NoError(t, err)
+	invoice := testValidPayInvoice(t, preimage)
+
+	start := time.Unix(1_700_000_000, 0)
+	grace := 10 * time.Millisecond
+	serverConn := &testInSwapServerConn{
+		cfg: &InSwapConfig{
+			PaymentHash:  preimage.Hash(),
+			AmountSat:    testInSwapAmountSat,
+			FeeSat:       testInSwapFeeSat,
+			ServerPubkey: serverPriv.PubKey(),
+			VHTLCConfig: VHTLCConfig{
+				RefundLocktime:                       200,
+				UnilateralClaimDelay:                 12,
+				UnilateralRefundDelay:                24,
+				UnilateralRefundWithoutReceiverDelay: 36,
+			},
+			Expiry: start.Add(time.Minute),
+		},
+	}
+
+	accepted := make(map[string]*OORSendResult)
+	daemonConn := &testDaemonConn{
+		identityKey: clientPriv.PubKey(),
+		operatorKey: operatorPriv.PubKey(),
+		blockHeight: 100,
+	}
+	daemonConn.sendPolicyHook = func(call int, idempotencyKey string) (
+		*OORSendResult, error) {
+
+		if result, ok := accepted[idempotencyKey]; ok {
+			resultCopy := *result
+			if call == 2 {
+				// Model the daemon finding the keyed winner
+				// before its snapshot metadata can be returned.
+				// The SDK must retain FundingInitiated and
+				// replay, not persist a session that it cannot
+				// safely refund.
+				resultCopy.RecipientOutpoint = ""
+			}
+
+			return &resultCopy, nil
+		}
+
+		accepted[idempotencyKey] = &OORSendResult{
+			SessionID:         "funding-session",
+			RecipientOutpoint: "funding-session:0",
+		}
+
+		// Model Waved durably accepting the OOR before the caller's
+		// deadline wins the response race.
+		return nil, status.Error(
+			codes.DeadlineExceeded,
+			"funding accepted but response lost",
+		)
+	}
+
+	client := configureTestPayClient(
+		NewSwapClientWithStore(
+			serverConn, daemonConn, nil, nil, store,
+		),
+	)
+	client.waitPollInterval = time.Millisecond
+	client.fundingResumeGracePeriod = grace
+	client.now = func() time.Time { return start }
+
+	session, err := client.StartPayViaLightning(
+		t.Context(), invoice, testInSwapFeeSat,
+	)
+	require.NoError(t, err)
+
+	_, err = session.Wait(t.Context())
+	require.ErrorContains(t, err, "funding accepted but response lost")
+	require.Equal(t, PayStateFundingInitiated, session.State())
+	require.Empty(t, session.fundingSessionID)
+	require.Empty(t, session.vhtlcOutpoint)
+	require.Len(t, accepted, 1)
+	require.Equal(t, 1, daemonConn.sendPolicyCalls)
+
+	resumedClient := configureTestPayClient(
+		NewSwapClientWithStore(
+			serverConn, daemonConn, nil, nil, store,
+		),
+	)
+	resumedClient.waitPollInterval = time.Millisecond
+	resumedClient.fundingResumeGracePeriod = grace
+	resumedClient.now = func() time.Time {
+		return start.Add(time.Minute)
+	}
+	resumedClient.fundingResumeGracePeriod = 2 * time.Minute
+
+	resumed, err := resumedClient.ResumePayViaLightning(
+		t.Context(), preimage.Hash(),
+	)
+	require.NoError(t, err)
+	require.Equal(t, PayStateFundingInitiated, resumed.State())
+
+	err = resumed.runUntil(t.Context(), PayStateWaitingForClaim)
+	require.ErrorContains(t, err, "empty recipient outpoint")
+	require.Equal(t, PayStateFundingInitiated, resumed.State())
+	require.Empty(t, resumed.fundingSessionID)
+	require.Empty(t, resumed.vhtlcOutpoint)
+	require.Len(t, accepted, 1)
+	require.Equal(t, 2, daemonConn.sendPolicyCalls)
+
+	err = resumed.runUntil(t.Context(), PayStateWaitingForClaim)
+	require.NoError(t, err)
+	require.Equal(t, "funding-session", resumed.fundingSessionID)
+	require.Equal(t, "funding-session:0", resumed.vhtlcOutpoint)
+	require.EqualValues(t, testInSwapAmountSat, resumed.vhtlcAmount)
+	require.Len(t, accepted, 1)
+	require.Equal(t, 3, daemonConn.sendPolicyCalls)
+	require.Equal(t, 1, daemonConn.armRecoveryCalls)
+
+	wantKey := inSwapFundingIdempotencyKey(preimage.Hash())
+	require.Equal(
+		t, []string{wantKey, wantKey, wantKey},
+		daemonConn.sendPolicyKeys,
+	)
+	require.Len(t, daemonConn.sendPolicyOpts, 3)
+	require.False(t, daemonConn.sendPolicyOpts[0].ExistingOnly)
+	require.True(t, daemonConn.sendPolicyOpts[1].ExistingOnly)
+	require.True(t, daemonConn.sendPolicyOpts[2].ExistingOnly)
+	for _, opts := range daemonConn.sendPolicyOpts {
+		require.Equal(
+			t, start.Add(55*time.Second), opts.AdmissionDeadline,
+		)
+	}
+}
+
+// TestPaySessionExpiresAfterAuthoritativeFundingMiss verifies an ambiguous
+// FundingInitiated session only expires after Waved authoritatively reports
+// that no transfer won the key. The post-deadline call must be read-only so
+// recovering a stale session can never create an already-expired vHTLC.
+func TestPaySessionExpiresAfterAuthoritativeFundingMiss(t *testing.T) {
+	t.Parallel()
+
+	store := newTestSwapStore(t)
+
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	serverPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	preimage, err := NewPreimage()
+	require.NoError(t, err)
+	invoice := testValidPayInvoice(t, preimage)
+
+	start := time.Unix(1_700_000_000, 0)
+	serverConn := &testInSwapServerConn{
+		cfg: testInSwapConfig(
+			serverPriv.PubKey(), preimage, start.Add(time.Minute),
+		),
+	}
+	daemonConn := &testDaemonConn{
+		identityKey: clientPriv.PubKey(),
+		operatorKey: operatorPriv.PubKey(),
+		blockHeight: 100,
+		sendPolicyHook: func(int, string) (*OORSendResult, error) {
+			return nil, status.Error(
+				codes.NotFound, "no accepted funding transfer",
+			)
+		},
+	}
+
+	client := configureTestPayClient(
+		NewSwapClientWithStore(
+			serverConn, daemonConn, nil, nil, store,
+		),
+	)
+	client.now = func() time.Time { return start }
+
+	session, err := client.StartPayViaLightning(
+		t.Context(), invoice, testInSwapFeeSat,
+	)
+	require.NoError(t, err)
+
+	err = session.mutateAndPersist(t.Context(), func() error {
+		return session.transition(payEventFundingInitiated)
+	})
+	require.NoError(t, err)
+
+	resumedClient := configureTestPayClient(
+		NewSwapClientWithStore(
+			serverConn, daemonConn, nil, nil, store,
+		),
+	)
+	resumedClient.now = func() time.Time {
+		return start.Add(time.Minute)
+	}
+	resumedClient.fundingResumeGracePeriod = 2 * time.Minute
+
+	resumed, err := resumedClient.ResumePayViaLightning(
+		t.Context(), preimage.Hash(),
+	)
+	require.NoError(t, err)
+
+	_, err = resumed.Wait(t.Context())
+	require.ErrorIs(t, err, errSwapExpired)
+	require.Equal(t, PayStateExpired, resumed.State())
+	require.Empty(t, resumed.fundingSessionID)
+	require.Empty(t, resumed.vhtlcOutpoint)
+	require.Equal(t, 0, daemonConn.armRecoveryCalls)
+	require.Equal(t, 1, daemonConn.sendPolicyCalls)
+	require.Equal(
+		t,
+		inSwapFundingIdempotencyKey(
+			preimage.Hash(),
+		),
+		daemonConn.sendPolicyOpts[0].IdempotencyKey,
+	)
+	require.Equal(
+		t, start.Add(55*time.Second),
+		daemonConn.sendPolicyOpts[0].AdmissionDeadline,
+	)
+	require.True(t, daemonConn.sendPolicyOpts[0].ExistingOnly)
 }
 
 // TestPaySessionRefundsAmountMismatch asserts the client preserves mismatch
@@ -2728,12 +2979,7 @@ func TestPaySessionNeedsInterventionOnSpentWithoutPreimage(t *testing.T) {
 		operatorKey:   operatorPriv.PubKey(),
 		blockHeight:   100,
 		sendSessionID: "funding-session",
-		spentVTXO: &VTXOInfo{
-			Outpoint:    "funding:0",
-			AmountSat:   testInSwapAmountSat,
-			SpentByTxID: "deadbeef",
-		},
-		indexedPackage: &OORPackageInfo{},
+		sendOutpoint:  "funding:0",
 	}
 
 	client := configureTestPayClient(
@@ -2747,6 +2993,23 @@ func TestPaySessionNeedsInterventionOnSpentWithoutPreimage(t *testing.T) {
 		t.Context(), invoice, testInSwapFeeSat,
 	)
 	require.NoError(t, err)
+
+	err = session.runUntil(t.Context(), PayStateWaitingForClaim)
+	require.NoError(t, err)
+
+	// This case exercises an unattributed spend before any local refund
+	// destination exists. The ordinary funding path allocates that
+	// destination while arming recovery, so clear it to preserve the
+	// anomaly this regression is specifically about.
+	session.refundReceivePubKey = nil
+	session.refundReceiveScript = nil
+
+	daemonConn.spentVTXO = &VTXOInfo{
+		Outpoint:    "funding:0",
+		AmountSat:   testInSwapAmountSat,
+		SpentByTxID: "deadbeef",
+	}
+	daemonConn.indexedPackage = &OORPackageInfo{}
 
 	_, err = session.Wait(t.Context())
 	require.ErrorContains(t, err, "spent without claim preimage")

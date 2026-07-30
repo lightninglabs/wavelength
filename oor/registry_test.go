@@ -16,6 +16,7 @@ import (
 	clientdb "github.com/lightninglabs/wavelength/db"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
+	"github.com/lightningnetwork/lnd/clock"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/stretchr/testify/require"
@@ -144,6 +145,9 @@ func newTestRegistryBehavior(store SessionRegistryStore) (*oorRegistryBehavior,
 		active:     make(map[SessionID]*OORSessionActor),
 		activeDirs: make(map[SessionID]clientdb.OORSessionDirection),
 		incoming:   make(map[SessionID]struct{}),
+		pendingOutgoingKeys: make(
+			map[string]SessionID,
+		),
 	}
 	b.spawnFunc = func(id SessionID, dir clientdb.OORSessionDirection) (
 		*OORSessionActor, error) {
@@ -278,6 +282,97 @@ func TestOORRegistryStartTransferDedup(t *testing.T) {
 	require.True(t, resp.Existing)
 	require.Equal(t, existing, resp.SessionID)
 	require.Equal(t, 0, rec.spawns)
+}
+
+// TestOORRegistryAdmissionDeadline verifies a new transfer cannot cross its
+// caller-owned admission deadline, while an existing key winner remains
+// readable after the same cutoff.
+func TestOORRegistryAdmissionDeadline(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(1_700_000_000, 0)
+	store := newFakeRegistryStore()
+	b, rec := newTestRegistryBehavior(store)
+	b.cfg.Clock = clock.NewTestClock(now)
+
+	const key = "deadline-key"
+	expired := b.handleStartTransfer(t.Context(), &StartTransferRequest{
+		IdempotencyKey:             key,
+		AdmissionDeadlineUnixNanos: now.Add(-time.Second).UnixNano(),
+	})
+	require.True(t, expired.IsErr())
+	require.ErrorIs(t, expired.Err(), ErrOutgoingAdmissionExpired)
+	require.Equal(t, 0, rec.spawns)
+
+	existing := oorSessionID(0x12)
+	upsertRegistryRow(
+		t, store, existing, clientdb.OORSessionDirectionOutgoing,
+		"submit_sent", key, clientdb.OORSessionStatusPending,
+	)
+
+	replay := b.handleStartTransfer(t.Context(), &StartTransferRequest{
+		IdempotencyKey:             key,
+		AdmissionDeadlineUnixNanos: now.Add(-time.Second).UnixNano(),
+	})
+	require.True(t, replay.IsOk(), replay.Err())
+
+	resp, ok := replay.UnwrapOr(nil).(*StartTransferResponse)
+	require.True(t, ok)
+	require.True(t, resp.Existing)
+	require.Equal(t, existing, resp.SessionID)
+	require.Equal(t, 0, rec.spawns)
+}
+
+// TestOORRegistryLookupTransfer distinguishes a durable winner, an accepted
+// child admission that has not committed its row, and an authoritative miss.
+func TestOORRegistryLookupTransfer(t *testing.T) {
+	t.Parallel()
+
+	store := newFakeRegistryStore()
+	b, _ := newTestRegistryBehavior(store)
+
+	const key = "lookup-key"
+	missing := b.handleLookupTransfer(t.Context(), &LookupTransferRequest{
+		IdempotencyKey: key,
+	})
+	require.True(t, missing.IsOk(), missing.Err())
+
+	missingResp, ok := missing.UnwrapOr(nil).(*LookupTransferResponse)
+	require.True(t, ok)
+	require.False(t, missingResp.Found)
+	require.False(t, missingResp.Pending)
+
+	pendingID := oorSessionID(0x13)
+	b.pendingOutgoingKeys[key] = pendingID
+	b.active[pendingID] = &OORSessionActor{}
+
+	pending := b.handleLookupTransfer(t.Context(), &LookupTransferRequest{
+		IdempotencyKey: key,
+	})
+	require.True(t, pending.IsOk(), pending.Err())
+
+	pendingResp, ok := pending.UnwrapOr(nil).(*LookupTransferResponse)
+	require.True(t, ok)
+	require.False(t, pendingResp.Found)
+	require.True(t, pendingResp.Pending)
+	require.Equal(t, pendingID, pendingResp.SessionID)
+
+	upsertRegistryRow(
+		t, store, pendingID, clientdb.OORSessionDirectionOutgoing,
+		"submit_sent", key, clientdb.OORSessionStatusPending,
+	)
+
+	found := b.handleLookupTransfer(t.Context(), &LookupTransferRequest{
+		IdempotencyKey: key,
+	})
+	require.True(t, found.IsOk(), found.Err())
+
+	foundResp, ok := found.UnwrapOr(nil).(*LookupTransferResponse)
+	require.True(t, ok)
+	require.True(t, foundResp.Found)
+	require.False(t, foundResp.Pending)
+	require.Equal(t, pendingID, foundResp.SessionID)
+	require.NotContains(t, b.pendingOutgoingKeys, key)
 }
 
 // TestOORRegistryStartTransferRetryAfterFailure verifies a failed keyed

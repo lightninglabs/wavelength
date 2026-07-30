@@ -30,6 +30,17 @@ const (
 	// startPayloadIdempotencyKeyType stores the optional caller-provided
 	// OOR send idempotency key.
 	startPayloadIdempotencyKeyType tlv.Type = 5
+
+	// Type 6 is deliberately unused. New backward-compatible records use
+	// odd TLV types so older readers can safely ignore them.
+
+	// startPayloadAdmissionDeadlineType stores the optional absolute
+	// admission deadline as Unix nanoseconds.
+	startPayloadAdmissionDeadlineType tlv.Type = 7
+)
+
+const (
+	lookupTransferIdempotencyKeyRecordType tlv.Type = 1
 )
 
 const (
@@ -139,11 +150,12 @@ const (
 )
 
 type startTransferPayload struct {
-	OperatorPubKey []byte
-	CSVDelay       uint32
-	Inputs         []*TransferInputSnapshot
-	Recipients     []recipientPayload
-	IdempotencyKey string
+	OperatorPubKey             []byte
+	CSVDelay                   uint32
+	Inputs                     []*TransferInputSnapshot
+	Recipients                 []recipientPayload
+	IdempotencyKey             string
+	AdmissionDeadlineUnixNanos int64
 }
 
 type recipientPayload struct {
@@ -173,6 +185,7 @@ func encodeStartTransferPayload(payload startTransferPayload) ([]byte, error) {
 	operatorKey := payload.OperatorPubKey
 	csvDelay := payload.CSVDelay
 	idempotencyKey := []byte(payload.IdempotencyKey)
+	admissionDeadline := uint64(payload.AdmissionDeadlineUnixNanos)
 
 	records := []tlv.Record{
 		tlv.MakePrimitiveRecord(
@@ -189,6 +202,9 @@ func encodeStartTransferPayload(payload startTransferPayload) ([]byte, error) {
 		),
 		tlv.MakePrimitiveRecord(
 			startPayloadIdempotencyKeyType, &idempotencyKey,
+		),
+		tlv.MakePrimitiveRecord(
+			startPayloadAdmissionDeadlineType, &admissionDeadline,
 		),
 	}
 
@@ -222,6 +238,7 @@ func decodeStartTransferPayloadWithLimits(raw []byte,
 		inputsRaw   []byte
 		recipients  []byte
 		idKey       []byte
+		deadline    uint64
 	)
 
 	records := []tlv.Record{
@@ -238,6 +255,9 @@ func decodeStartTransferPayloadWithLimits(raw []byte,
 			startPayloadRecipientsRecordType, &recipients,
 		),
 		tlv.MakePrimitiveRecord(startPayloadIdempotencyKeyType, &idKey),
+		tlv.MakePrimitiveRecord(
+			startPayloadAdmissionDeadlineType, &deadline,
+		),
 	}
 
 	stream, err := tlv.NewStream(records...)
@@ -265,12 +285,55 @@ func decodeStartTransferPayloadWithLimits(raw []byte,
 	}
 
 	return startTransferPayload{
-		OperatorPubKey: operatorKey,
-		CSVDelay:       csvDelay,
-		Inputs:         inputs,
-		Recipients:     recipientsPayload,
-		IdempotencyKey: string(idKey),
+		OperatorPubKey:             operatorKey,
+		CSVDelay:                   csvDelay,
+		Inputs:                     inputs,
+		Recipients:                 recipientsPayload,
+		IdempotencyKey:             string(idKey),
+		AdmissionDeadlineUnixNanos: int64(deadline),
 	}, nil
+}
+
+func encodeLookupTransferPayload(idempotencyKey string) ([]byte, error) {
+	key := []byte(idempotencyKey)
+	stream, err := tlv.NewStream(
+		tlv.MakePrimitiveRecord(
+			lookupTransferIdempotencyKeyRecordType, &key,
+		),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	var buf bytes.Buffer
+	if err := stream.Encode(&buf); err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
+}
+
+func decodeLookupTransferPayload(raw []byte) (string, error) {
+	var key []byte
+	stream, err := tlv.NewStream(
+		tlv.MakePrimitiveRecord(
+			lookupTransferIdempotencyKeyRecordType, &key,
+		),
+	)
+	if err != nil {
+		return "", err
+	}
+
+	if _, err := stream.DecodeWithParsedTypes(
+		bytes.NewReader(raw),
+	); err != nil {
+		return "", err
+	}
+	if len(key) == 0 {
+		return "", fmt.Errorf("idempotency key must be provided")
+	}
+
+	return string(key), nil
 }
 
 func encodeRecipientPayloads(payloads []recipientPayload) ([]byte, error) {

@@ -39,6 +39,12 @@ var errIncomingAdmissionCapped = errors.New("incoming OOR admission " +
 var errSelfTransferDeferred = errors.New("outgoing session still active for " +
 	"incoming hint")
 
+// ErrOutgoingAdmissionExpired is returned when a new outgoing transfer reaches
+// the durable admission boundary at or after its caller-supplied deadline.
+// Existing keyed winners are looked up before this check and remain readable.
+var ErrOutgoingAdmissionExpired = errors.New("outgoing OOR admission " +
+	"deadline reached")
+
 // selfHintRedeliveryBackoff is the flat redelivery backoff for a deferred
 // self-transfer hint's durable delivery. The terminal-reap redrive is the
 // fast path, so the durable copy only needs to cover a crash or a missed
@@ -234,11 +240,14 @@ func NewOORRegistryActor(cfg OORRegistryConfig) (*OORRegistryActor, error) {
 	cfg.Limits = normalizeReceiveLimits(cfg.Limits)
 
 	behavior := &oorRegistryBehavior{
-		cfg:        cfg,
-		log:        cfg.Log.UnwrapOr(btclog.Disabled),
-		active:     make(map[SessionID]*OORSessionActor),
-		activeDirs: make(map[SessionID]clientdb.OORSessionDirection),
-		incoming:   make(map[SessionID]struct{}),
+		cfg:    cfg,
+		log:    cfg.Log.UnwrapOr(btclog.Disabled),
+		active: make(map[SessionID]*OORSessionActor),
+		activeDirs: make(
+			map[SessionID]clientdb.OORSessionDirection,
+		),
+		incoming:            make(map[SessionID]struct{}),
+		pendingOutgoingKeys: make(map[string]SessionID),
 		parkedSelfHints: make(
 			map[SessionID]*ResolveIncomingTransferRequest,
 		),
@@ -338,6 +347,17 @@ type oorRegistryBehavior struct {
 	// non-incoming delete is a no-op). The cap defends against an operator
 	// pinning unbounded children by streaming unanswered incoming hints.
 	incoming map[SessionID]struct{}
+
+	// pendingOutgoingKeys tracks keyed admissions that the registry
+	// accepted and forwarded to a child but whose durable session row may
+	// not have committed yet. A read-only lookup arriving behind that
+	// registry turn must report Pending rather than a false authoritative
+	// miss. This map is intentionally a same-boot witness: restart restores
+	// children exclusively from non-terminal registry rows, never from a
+	// row-less child mailbox. A crash before the child's first commit
+	// therefore leaves no resumable transfer, while that first commit makes
+	// the registry row the durable witness before any funding can progress.
+	pendingOutgoingKeys map[string]SessionID
 
 	// selfRef is the registry's own tell-only reference, handed to each
 	// child so it can report a terminal commit for reaping.
@@ -453,6 +473,9 @@ func (r *oorRegistryBehavior) Receive(ctx context.Context, msg OORDurableMsg,
 
 	case *ListSessionsRequest:
 		return r.handleListSessions(ctx, m)
+
+	case *LookupTransferRequest:
+		return r.handleLookupTransfer(ctx, m)
 	}
 
 	// Clear any handoff staged by a prior turn so a dispatch that stages a
@@ -564,6 +587,7 @@ func (r *oorRegistryBehavior) handleStartTransfer(ctx context.Context,
 		)
 		switch {
 		case err == nil:
+			delete(r.pendingOutgoingKeys, req.IdempotencyKey)
 			r.logger(ctx).InfoS(ctx, "Idempotency-key dedup hit; "+
 				"returning existing OOR session",
 				slog.String(
@@ -584,10 +608,28 @@ func (r *oorRegistryBehavior) handleStartTransfer(ctx context.Context,
 			return fn.Err[ActorResp](err)
 		}
 
+		pendingID, pending := r.pendingOutgoingKeys[req.IdempotencyKey]
+		if pending {
+			if _, active := r.active[pendingID]; active {
+				return fn.Ok[ActorResp](&StartTransferResponse{
+					SessionID: pendingID,
+					Existing:  true,
+				})
+			}
+
+			delete(r.pendingOutgoingKeys, req.IdempotencyKey)
+		}
+
 		r.logger(ctx).DebugS(ctx, "Idempotency-key dedup miss; "+
 			"admitting fresh OOR session",
 			slog.String("idempotency_key", req.IdempotencyKey),
 		)
+	}
+
+	if admissionDeadlineReached(
+		r.registryNow(), req.AdmissionDeadlineUnixNanos,
+	) {
+		return fn.Err[ActorResp](ErrOutgoingAdmissionExpired)
 	}
 
 	// Build the deterministic session to learn its id. This FSM is
@@ -663,6 +705,14 @@ func (r *oorRegistryBehavior) handleStartTransfer(ctx context.Context,
 		slog.Int("num_recipients", len(req.Recipients)),
 	)
 
+	if req.IdempotencyKey != "" {
+		if r.pendingOutgoingKeys == nil {
+			r.pendingOutgoingKeys = make(map[string]SessionID)
+		}
+
+		r.pendingOutgoingKeys[req.IdempotencyKey] = sessionID
+	}
+
 	// Forward the admission to the child: the Ask persists the request in
 	// the child's durable mailbox so the forward survives a crash. The
 	// caller-promise handoff (detach + continuation wiring, or the inline
@@ -678,6 +728,67 @@ func (r *oorRegistryBehavior) handleStartTransfer(ctx context.Context,
 	}
 
 	return fn.Ok[ActorResp](&StartTransferResponse{SessionID: sessionID})
+}
+
+// handleLookupTransfer reconciles one key without building a transfer or
+// selecting inputs. The registry mailbox orders this read behind admissions it
+// has already accepted; pendingOutgoingKeys covers the child-commit handoff
+// where the durable row is not visible yet.
+func (r *oorRegistryBehavior) handleLookupTransfer(ctx context.Context,
+	req *LookupTransferRequest) fn.Result[ActorResp] {
+
+	if req == nil || req.IdempotencyKey == "" {
+		return fn.Err[ActorResp](
+			fmt.Errorf("idempotency key must be provided"),
+		)
+	}
+
+	record, err := r.cfg.RegistryStore.LookupActiveSessionByIdempotencyKey(
+		ctx, req.IdempotencyKey,
+	)
+	switch {
+	case err == nil:
+		delete(r.pendingOutgoingKeys, req.IdempotencyKey)
+
+		return fn.Ok[ActorResp](&LookupTransferResponse{
+			SessionID: SessionID(record.SessionID),
+			Found:     true,
+		})
+
+	case !errors.Is(err, clientdb.ErrOORSessionNotFound):
+		return fn.Err[ActorResp](err)
+	}
+
+	sessionID, pending := r.pendingOutgoingKeys[req.IdempotencyKey]
+	if !pending {
+		return fn.Ok[ActorResp](&LookupTransferResponse{})
+	}
+	if _, active := r.active[sessionID]; !active {
+		delete(r.pendingOutgoingKeys, req.IdempotencyKey)
+
+		return fn.Ok[ActorResp](&LookupTransferResponse{})
+	}
+
+	return fn.Ok[ActorResp](&LookupTransferResponse{
+		SessionID: sessionID,
+		Pending:   true,
+	})
+}
+
+func (r *oorRegistryBehavior) registryNow() time.Time {
+	if r.cfg.Clock != nil {
+		return r.cfg.Clock.Now()
+	}
+
+	return time.Now()
+}
+
+func admissionDeadlineReached(now time.Time, deadlineUnixNanos int64) bool {
+	if deadlineUnixNanos <= 0 {
+		return false
+	}
+
+	return !now.Before(time.Unix(0, deadlineUnixNanos))
 }
 
 // completeAdmissionHandoff settles the caller's promise for an outgoing
@@ -1466,6 +1577,11 @@ func (r *oorRegistryBehavior) dropChild(sessionID SessionID,
 	delete(r.active, sessionID)
 	delete(r.activeDirs, sessionID)
 	delete(r.incoming, sessionID)
+	for key, pendingID := range r.pendingOutgoingKeys {
+		if pendingID == sessionID {
+			delete(r.pendingOutgoingKeys, key)
+		}
+	}
 }
 
 // spawn creates one durable per-session actor from the shared child config.
