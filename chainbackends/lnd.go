@@ -61,6 +61,13 @@ type TxBroadcaster interface {
 	// The label parameter is optional and may be used for wallet tracking.
 	PublishTransaction(ctx context.Context, tx *wire.MsgTx,
 		label string) error
+
+	// RemoveTransaction removes the transaction with the given hash, and
+	// any transactions that depend on it, from the wallet's store and its
+	// unconfirmed-rebroadcast set. It is used to abandon a transaction the
+	// caller no longer wants the wallet to keep rebroadcasting (e.g. a
+	// unilateral-exit proof tx whose job has terminally failed).
+	RemoveTransaction(ctx context.Context, txid chainhash.Hash) error
 }
 
 // PackageSubmitter atomically submits parent+child transaction packages.
@@ -236,6 +243,23 @@ func (b *LNDBackend) BroadcastTx(ctx context.Context, tx *wire.MsgTx,
 	b.logger(ctx).InfoS(ctx, "Transaction broadcast successfully",
 		btclog.Hex("txid", txHash[:]),
 	)
+
+	return nil
+}
+
+// RemoveTx removes a previously broadcast transaction from lnd's wallet so it
+// stops being rebroadcast. It satisfies the optional chainsource.TxRemover
+// capability; a caller that has abandoned a transaction (e.g. a terminally
+// failed unilateral-exit proof tx) uses it to stop lnd from perpetually
+// re-publishing a transaction that can never confirm.
+func (b *LNDBackend) RemoveTx(ctx context.Context, txid chainhash.Hash) error {
+	b.logger(ctx).InfoS(ctx, "Removing transaction from LND wallet",
+		btclog.Hex("txid", txid[:]),
+	)
+
+	if err := b.broadcaster.RemoveTransaction(ctx, txid); err != nil {
+		return fmt.Errorf("failed to remove transaction: %w", err)
+	}
 
 	return nil
 }

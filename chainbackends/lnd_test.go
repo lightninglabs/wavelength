@@ -93,6 +93,13 @@ func (s *stubBroadcaster) PublishTransaction(
 	return nil
 }
 
+func (s *stubBroadcaster) RemoveTransaction(
+	_ context.Context, _ chainhash.Hash,
+) error {
+
+	return nil
+}
+
 type stubPackageSubmitter struct {
 	result *btcjson.SubmitPackageResult
 	err    error
