@@ -38,6 +38,7 @@ import (
 	"github.com/lightninglabs/taproot-assets/taprpc"
 	"github.com/lightninglabs/wavelength/chain"
 	lnrpc "github.com/lightningnetwork/lnd/lnrpc"
+	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
 	"github.com/lightningnetwork/lnd/macaroons"
 	"github.com/ory/dockertest/v3"
 	"github.com/ory/dockertest/v3/docker"
@@ -2356,6 +2357,17 @@ func (h *Harness) startLND() *LndInstance {
 func (h *Harness) startLNDInstance(name, dataDir string,
 	requireInterceptor bool, chainBackend string) *LndInstance {
 
+	return h.startLNDInstanceWithOptions(
+		name, dataDir, requireInterceptor, chainBackend, false, nil,
+	)
+}
+
+// startLNDInstanceWithOptions starts an lnd container whose wallet can either
+// use the harness's automatic seed or be initialized explicitly by the caller.
+func (h *Harness) startLNDInstanceWithOptions(name, dataDir string,
+	requireInterceptor bool, chainBackend string, manualWalletInit bool,
+	extraArgs []string) *LndInstance {
+
 	h.T.Helper()
 
 	require.NoError(h.T, os.MkdirAll(dataDir, 0o755))
@@ -2369,6 +2381,8 @@ func (h *Harness) startLNDInstance(name, dataDir string,
 		image:              imageRepo(h.opts.LNDImage),
 		tag:                imageTag(h.opts.LNDImage),
 		requireInterceptor: requireInterceptor,
+		manualWalletInit:   manualWalletInit,
+		extraArgs:          extraArgs,
 		chainBackend:       chainBackend,
 	})
 
@@ -2542,6 +2556,132 @@ func (h *Harness) StartAdditionalLNDWithBackend(name,
 	h.extraLNDs[name] = inst
 
 	return inst
+}
+
+// StartAdditionalWatchOnlyLND launches an lnd node backed by a separate remote
+// signer. The signer retains the private wallet state while the returned node
+// imports its account xpubs and handles normal wallet and channel RPCs.
+func (h *Harness) StartAdditionalWatchOnlyLND(name string) *LndInstance {
+	h.T.Helper()
+
+	if name == "" {
+		name = fmt.Sprintf("lnd-watch-only-%d", len(h.extraLNDs)+1)
+	}
+	if _, exists := h.extraLNDs[name]; exists {
+		h.T.Fatalf("LND instance %s already exists", name)
+	}
+
+	signerName := name + "-signer"
+	signer := h.StartAdditionalLND(signerName)
+
+	ctx, cancel := context.WithTimeout(h.T.Context(), defaultTimeout)
+	defer cancel()
+
+	accounts, err := signer.Client.WalletKit.ListAccounts(
+		ctx, "", walletrpc.AddressType_UNKNOWN,
+	)
+	require.NoError(h.T, err, "export %s wallet accounts", signerName)
+	watchOnlyAccounts, err := walletrpc.AccountsToWatchOnly(accounts)
+	require.NoError(
+		h.T, err, "convert %s accounts to watch-only", signerName,
+	)
+
+	dataDir := filepath.Join(h.artifactsDir, name)
+	remoteSignerDir := filepath.Join(dataDir, "remote-signer")
+	require.NoError(h.T, os.MkdirAll(remoteSignerDir, 0o700))
+
+	remoteTLSPath := filepath.Join(remoteSignerDir, "tls.cert")
+	remoteMacaroonPath := filepath.Join(
+		remoteSignerDir, "admin.macaroon",
+	)
+	copyFile(h.T, signer.TLSCert, remoteTLSPath, 0o600)
+	copyFile(h.T, signer.Macaroon, remoteMacaroonPath, 0o600)
+
+	inst := h.startLNDInstanceWithOptions(
+		name, dataDir, false, LNDChainBackendBitcoind, true,
+		[]string{
+			"--remotesigner.enable",
+			fmt.Sprintf("--remotesigner.rpchost=%s:10009",
+				signer.ContainerName),
+			"--remotesigner.tlscertpath=" +
+				"/data/remote-signer/tls.cert",
+			"--remotesigner.macaroonpath=" +
+				"/data/remote-signer/admin.macaroon",
+		},
+	)
+	h.initWatchOnlyLND(inst, watchOnlyAccounts)
+	h.initAndWaitLNDInstance(inst)
+	h.extraLNDs[name] = inst
+
+	return inst
+}
+
+// initWatchOnlyLND imports account xpubs while lnd is serving only its wallet
+// unlocker RPC. The remote signer flags are already active at this point.
+func (h *Harness) initWatchOnlyLND(inst *LndInstance,
+	accounts []*lnrpc.WatchOnlyAccount) {
+
+	h.T.Helper()
+
+	tlsCert, err := loadClientTLSCredentials(inst.TLSCert)
+	require.NoError(h.T, err, "load %s TLS credentials", inst.Name)
+
+	addr := net.JoinHostPort("127.0.0.1", inst.GRPCPort)
+	conn, err := grpc.NewClient(
+		addr, grpc.WithTransportCredentials(tlsCert),
+	)
+	require.NoError(h.T, err, "connect to %s wallet unlocker", inst.Name)
+	defer conn.Close()
+
+	stateClient := lnrpc.NewStateClient(conn)
+	require.Eventually(
+		h.T, func() bool {
+			const checkTimeout = 5 * time.Second
+
+			ctx, cancel := context.WithTimeout(
+				h.T.Context(), checkTimeout,
+			)
+			defer cancel()
+
+			resp, err := stateClient.GetState(
+				ctx, &lnrpc.GetStateRequest{},
+			)
+			if err != nil {
+				return false
+			}
+
+			return resp.State == lnrpc.WalletState_NON_EXISTING
+		},
+		lndStartupTimeout, time.Second,
+		fmt.Sprintf("%s wallet not ready for initialization",
+			inst.Name),
+	)
+
+	ctx, cancel := context.WithTimeout(h.T.Context(), defaultTimeout)
+	defer cancel()
+
+	_, err = lnrpc.NewWalletUnlockerClient(conn).InitWallet(
+		ctx, &lnrpc.InitWalletRequest{
+			WalletPassword: []byte("itestpassword"),
+			WatchOnly: &lnrpc.WatchOnly{
+				Accounts: accounts,
+			},
+		},
+	)
+	require.NoError(h.T, err, "initialize %s watch-only wallet", inst.Name)
+}
+
+// copyFile copies a small credential file without retaining broader source
+// directory access inside the watch-only container.
+func copyFile(t *testing.T, source, destination string, mode os.FileMode) {
+	t.Helper()
+
+	contents, err := os.ReadFile(source)
+	require.NoError(t, err, "read %s", source)
+	require.NoError(
+		t, os.WriteFile(destination, contents, mode),
+		"write %s", destination,
+	)
 }
 
 // GetAdditionalLND returns a previously started extra LND instance by name.

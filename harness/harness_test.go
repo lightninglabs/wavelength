@@ -14,6 +14,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/v2"
 	_ "github.com/lib/pq"
 	"github.com/lightninglabs/wavelength/harness"
+	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
 )
 
@@ -514,4 +515,44 @@ func TestHarnessMultiNode(t *testing.T) {
 	)
 
 	t.Log("Successfully verified multi-node setup and channel creation")
+}
+
+// TestHarnessWatchOnlyLND verifies that the harness provisions a usable
+// watch-only wallet with the standard lnd account-family range.
+func TestHarnessWatchOnlyLND(t *testing.T) {
+	ParallelN(t)
+
+	opts := harness.DefaultOptions()
+	opts.GroupName = t.Name()
+
+	h := harness.NewHarness(t, &opts)
+	t.Cleanup(h.Stop)
+	h.Start()
+
+	watchOnly := h.StartAdditionalWatchOnlyLND("watch-only")
+	signer := h.GetAdditionalLND("watch-only-signer")
+
+	watchOnlyInfo, err := watchOnly.Client.Client.GetInfo(t.Context())
+	require.NoError(t, err, "get watch-only node info")
+	signerInfo, err := signer.Client.Client.GetInfo(t.Context())
+	require.NoError(t, err, "get remote signer node info")
+	require.Equal(
+		t, signerInfo.IdentityPubkey, watchOnlyInfo.IdentityPubkey,
+	)
+
+	_, err = watchOnly.Client.WalletKit.DeriveNextKey(
+		t.Context(),
+		int32(
+			keychain.KeyFamily(100),
+		),
+	)
+	require.NoError(t, err, "derive imported watch-only family")
+
+	_, err = watchOnly.Client.WalletKit.DeriveNextKey(
+		t.Context(),
+		int32(
+			keychain.KeyFamily(9999),
+		),
+	)
+	require.ErrorContains(t, err, "watching-only")
 }

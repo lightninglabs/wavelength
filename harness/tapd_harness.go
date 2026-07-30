@@ -80,6 +80,14 @@ type lndConfig struct {
 	// sets it.
 	requireInterceptor bool
 
+	// manualWalletInit leaves lnd at the wallet unlocker so the caller can
+	// initialize a restored or watch-only wallet through RPC.
+	manualWalletInit bool
+
+	// extraArgs supplies role-specific lnd flags, such as the remote signer
+	// endpoint used by a watch-only node.
+	extraArgs []string
+
 	// chainBackend selects lnd's chain backend: LNDChainBackendBitcoind
 	// (default) or LNDChainBackendNeutrino. Neutrino backs lnd via SPV over
 	// the regtest bitcoind's P2P + compact filters, exercising lnd's native
@@ -167,12 +175,15 @@ func (h *Harness) startLNDContainer(cfg lndConfig) *dockertest.Resource {
 		"--listen=0.0.0.0:9735",
 		fmt.Sprintf("--tlsextradomain=%s", lndName),
 		fmt.Sprintf("--tlsextraip=%s", lndName),
-		"--noseedbackup",
 		"--nobootstrap",
 		"--accept-keysend",
 		"--protocol.option-scid-alias",
 		"--protocol.zero-conf",
 	}
+	if !cfg.manualWalletInit {
+		cmd = append(cmd, "--noseedbackup")
+	}
+	cmd = append(cmd, cfg.extraArgs...)
 
 	// The swap node must retain and replay held HTLCs across an interceptor
 	// disconnect rather than resuming (and thus failing) them, which is
