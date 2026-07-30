@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"time"
 
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
@@ -151,12 +152,13 @@ type behavior struct {
 	session *Session
 	pending *actorCheckpoint
 
-	sweepTx           *wire.MsgTx
-	blockSubActive    bool
-	spendWatchActive  bool
-	proofSpendWatches map[wire.OutPoint]struct{}
-	terminalNotified  bool
-	exitCostNotified  bool
+	sweepTx                    *wire.MsgTx
+	blockSubActive             bool
+	spendWatchActive           bool
+	proofSpendWatches          map[wire.OutPoint]struct{}
+	terminalNotified           bool
+	exitCostNotified           bool
+	abandonedBroadcastsRemoved bool
 
 	// requiredLockTime caches the exit policy's absolute nLockTime once the
 	// policy has been resolved (in startSweep). The standard timeout policy
@@ -740,6 +742,13 @@ func safeTxOutPkScript(tx *wire.MsgTx, index uint32) ([]byte, error) {
 // back to this bounded lookback, preserving the pre-commitment-height
 // behaviour exactly.
 const proofNodeHeightHintLookback uint32 = 10000
+
+// removeAbandonedBroadcastTimeout bounds each best-effort wallet RemoveTx RPC
+// issued on the terminal-failure cleanup path. lnd's RemoveTransaction is a
+// fast local wallet mutation, so 30s is generous headroom for a heavily loaded
+// node while still guaranteeing that a hung or unresponsive backend cannot leak
+// the detached cleanup goroutine indefinitely (wavelength#609).
+const removeAbandonedBroadcastTimeout = 30 * time.Second
 
 // proofNodeHeightHint returns the earliest safe confirmation height hint for
 // proof-graph transactions given the actor's current best height. Roots and
@@ -2158,6 +2167,17 @@ func (b *behavior) notifyRegistryIfTerminal(ctx context.Context) {
 		return
 	}
 
+	// On a terminal failure, ask the wallet backend to drop the job's
+	// broadcast-but-unconfirmed transactions so a full-node wallet stops
+	// perpetually rebroadcasting a proof (or sweep) tx that can never
+	// confirm now that the exit has failed (wavelength#609). Gated by its
+	// own once-flag so it is independent of the registry handoff below and
+	// does not re-issue removals on every subsequent terminal tick.
+	if phase == PhaseFailed && !b.abandonedBroadcastsRemoved {
+		b.removeAbandonedBroadcasts(ctx, job)
+		b.abandonedBroadcastsRemoved = true
+	}
+
 	if b.cfg.RegistryRef == nil || b.terminalNotified {
 		return
 	}
@@ -2194,6 +2214,82 @@ func (b *behavior) notifyRegistryIfTerminal(ctx context.Context) {
 	}
 
 	b.terminalNotified = true
+}
+
+// removeAbandonedBroadcasts asks the chain backend to drop the job's
+// broadcast-but-unconfirmed transactions from the wallet after a terminal
+// failure, so a full-node wallet stops perpetually rebroadcasting a proof (or
+// sweep) transaction that can never confirm now that the exit has failed
+// (wavelength#609). Only in-flight (submitted, not yet confirmed) transactions
+// are removed; confirmed transactions are on-chain and are never rebroadcast.
+// The removal is best-effort: a failure is logged and does not affect the
+// terminal handoff, and a backend without the wallet-removal capability
+// (chainsource.TxRemover) treats the request as a no-op.
+func (b *behavior) removeAbandonedBroadcasts(ctx context.Context,
+	job *JobState) {
+
+	if b.cfg.ChainSource == nil || job == nil {
+		return
+	}
+
+	seen := make(map[chainhash.Hash]struct{})
+	txids := make(
+		[]chainhash.Hash, 0, len(job.PlannerState.InFlightTxids)+1,
+	)
+	for _, txid := range job.PlannerState.InFlightTxids {
+		if _, dup := seen[txid]; dup {
+			continue
+		}
+		seen[txid] = struct{}{}
+		txids = append(txids, txid)
+	}
+
+	// Include the sweep tx if it was broadcast (advanced past pending); a
+	// materialization failure leaves the sweep pending, so this is nil
+	// then.
+	if sweepTxid := effectiveSweepTxid(
+		job.PlannerState, b.sweepTx,
+	); sweepTxid != nil {
+
+		if _, dup := seen[*sweepTxid]; !dup {
+			txids = append(txids, *sweepTxid)
+		}
+	}
+
+	if len(txids) == 0 {
+		return
+	}
+
+	// Fire the removals off the actor Receive goroutine. This cleanup is
+	// pure best-effort housekeeping — the terminal outcome is already
+	// decided — so it must never sit in front of the terminal registry
+	// handoff below. A slow or hung lnd RemoveTransaction RPC on a
+	// synchronous Ask would otherwise wedge the actor's single Receive
+	// goroutine, stalling the terminal notification and every later message
+	// for this target. Detaching mirrors txconfirm's async wallet-lease
+	// release. Each op carries its own timeout so a stuck backend bounds
+	// the goroutine's lifetime, and cancellation is detached from the
+	// request ctx so a caller disconnect cannot suppress the cleanup.
+	chainSource := b.cfg.ChainSource
+	log := b.log
+	go func() {
+		for _, txid := range txids {
+			opCtx, cancel := context.WithTimeout(
+				context.WithoutCancel(ctx),
+				removeAbandonedBroadcastTimeout,
+			)
+			_, err := chainSource.Ask(
+				opCtx, &chainsource.RemoveTxRequest{Txid: txid},
+			).Await(opCtx).Unpack()
+			cancel()
+			if err != nil {
+				log.WarnS(opCtx, "Failed to remove abandoned "+
+					"broadcast on terminal failure", err,
+					slog.String("txid", txid.String()),
+				)
+			}
+		}
+	}()
 }
 
 // emitExitCostIfCompleted sends the final unilateral exit miner fee to the

@@ -415,15 +415,16 @@ type confReq = chainsource.RegisterConfRequest
 // fakeChainSourceRef is a minimal chainsource actor ref for sweep fee
 // estimation tests.
 type fakeChainSourceRef struct {
-	mu         sync.Mutex
-	bestHeight int32
-	feeRate    int64
-	feeErr     error
-	blockRef   actor.TellOnlyRef[chainsource.BlockEpoch]
-	spendRefs  map[wire.OutPoint]spendEventRef
-	spendRegs  []wire.OutPoint
-	confRefs   map[chainhash.Hash]confRef
-	confReqs   map[chainhash.Hash]*confReq
+	mu          sync.Mutex
+	bestHeight  int32
+	feeRate     int64
+	feeErr      error
+	blockRef    actor.TellOnlyRef[chainsource.BlockEpoch]
+	spendRefs   map[wire.OutPoint]spendEventRef
+	spendRegs   []wire.OutPoint
+	removedTxes []chainhash.Hash
+	confRefs    map[chainhash.Hash]confRef
+	confReqs    map[chainhash.Hash]*confReq
 }
 
 // spendEventRef is the fake chain-source spend notification actor reference.
@@ -512,6 +513,18 @@ func (f *fakeChainSourceRef) Ask(_ context.Context,
 		promise.Complete(
 			fn.Ok[chainsource.ChainSourceResp](
 				&chainsource.SubscribeBlocksResponse{},
+			),
+		)
+
+	case *chainsource.RemoveTxRequest:
+		f.mu.Lock()
+		f.removedTxes = append(f.removedTxes, msg.Txid)
+		f.mu.Unlock()
+		promise.Complete(
+			fn.Ok[chainsource.ChainSourceResp](
+				&chainsource.RemoveTxResponse{
+					Txid: msg.Txid,
+				},
 			),
 		)
 
@@ -657,6 +670,15 @@ func (f *fakeChainSourceRef) spendRegistrations() []wire.OutPoint {
 	defer f.mu.Unlock()
 
 	return append([]wire.OutPoint(nil), f.spendRegs...)
+}
+
+// removedTxSnapshot returns the txids the actor asked to remove from the wallet
+// via RemoveTxRequest.
+func (f *fakeChainSourceRef) removedTxSnapshot() []chainhash.Hash {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return append([]chainhash.Hash(nil), f.removedTxes...)
 }
 
 // fakeSweepWallet is a minimal signer plus wallet-destination test double.
@@ -2467,6 +2489,115 @@ func TestExternalProofSpendTerminatesActor(t *testing.T) {
 	require.True(t, ok)
 	require.Contains(t, stateResp.FailReason, rootOutpoint.String())
 	require.Contains(t, stateResp.FailReason, "spent externally")
+}
+
+// TestTerminalFailureRemovesAbandonedBroadcasts verifies wavelength#609: when
+// an unroll job fails terminally, the actor asks the wallet backend to drop its
+// broadcast-but-unconfirmed transactions so a full-node wallet stops
+// perpetually rebroadcasting a proof tx that can never confirm.
+func TestTerminalFailureRemovesAbandonedBroadcasts(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	unrollActor, beh, _, _ := newActorHarness(t, proof, desc)
+
+	chainSource, ok := beh.cfg.ChainSource.(*fakeChainSourceRef)
+	require.True(t, ok)
+
+	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
+		Height:  100,
+		Trigger: TriggerManual,
+	})
+
+	// The root proof tx is submitted (in-flight) on start. Wait for the
+	// target spend watch, then fail the job with an external spend of the
+	// target outpoint (case 4). A target spend, unlike a root-output spend,
+	// does not confirm the still-in-flight root.
+	target := proof.TargetOutpoint()
+	rootTxid := proof.RootTxids()[0]
+	require.Eventually(t, func() bool {
+		for _, outpoint := range chainSource.spendRegistrations() {
+			if outpoint == target {
+				return true
+			}
+		}
+
+		return false
+	}, testTimeout, 10*time.Millisecond)
+
+	chainSource.emitSpendForOutpoint(t, target, chainhash.Hash{0xee}, 101)
+
+	require.Eventually(t, func() bool {
+		stateResp, ok := mustAsk(
+			t, unrollActor.Ref(), &GetStateRequest{},
+		).(*GetStateResp)
+		require.True(t, ok)
+
+		return stateResp.Phase == PhaseFailed
+	}, testTimeout, 10*time.Millisecond)
+
+	// The in-flight root tx must have been removed from the wallet so a
+	// full-node wallet stops rebroadcasting it.
+	require.Eventually(t, func() bool {
+		for _, txid := range chainSource.removedTxSnapshot() {
+			if txid == rootTxid {
+				return true
+			}
+		}
+
+		return false
+	}, testTimeout, 10*time.Millisecond,
+		"terminal failure must remove the in-flight proof tx (#609)")
+}
+
+// TestAbandonedBroadcastRemovalSkipsConfirmedTxids verifies that the terminal
+// cleanup removes only in-flight (broadcast-but-unconfirmed) transactions and
+// never a confirmed one: a confirmed tx is on-chain, so removing it from the
+// wallet would be wrong (and lnd would reject it anyway).
+func TestAbandonedBroadcastRemovalSkipsConfirmedTxids(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	_, beh, _, _ := newActorHarness(t, proof, desc)
+
+	chainSource, ok := beh.cfg.ChainSource.(*fakeChainSourceRef)
+	require.True(t, ok)
+
+	inFlightTxid := chainhash.Hash{0xa1}
+	confirmedTxid := chainhash.Hash{0xc0}
+
+	job := &JobState{
+		PlannerState: unrollplan.State{
+			InFlightTxids: []chainhash.Hash{
+				inFlightTxid,
+			},
+			ConfirmedTxids: []chainhash.Hash{
+				confirmedTxid,
+			},
+		},
+	}
+
+	beh.removeAbandonedBroadcasts(context.Background(), job)
+
+	// The in-flight tx must be removed; the removal runs on a detached
+	// goroutine, so poll for it.
+	require.Eventually(t, func() bool {
+		for _, txid := range chainSource.removedTxSnapshot() {
+			if txid == inFlightTxid {
+				return true
+			}
+		}
+
+		return false
+	}, testTimeout, 10*time.Millisecond,
+		"in-flight tx must be removed on terminal failure (#609)")
+
+	// The confirmed tx must never be removed. Its absence is stable once
+	// the in-flight removal above has been observed.
+	for _, txid := range chainSource.removedTxSnapshot() {
+		require.NotEqual(
+			t, confirmedTxid, txid,
+			"a confirmed tx must never be removed from the wallet",
+		)
+	}
 }
 
 // TestConfirmedNodesAdvanceToSweep verifies that node confirmations move the
