@@ -20,7 +20,7 @@ require (
 	github.com/jackc/pgerrcode v0.0.0-20250907135507-afb5586c32a6
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/lib/pq v1.11.1
-	github.com/lightninglabs/lndclient v1.0.1-0.20260701212139-09c54915cfba
+	github.com/lightninglabs/lndclient v1.0.1-0.20260730152521-c255827dd83e
 	github.com/lightninglabs/loop v0.33.0-beta
 	github.com/lightninglabs/neutrino v0.18.0
 	github.com/lightninglabs/neutrino/cache v1.1.4
