@@ -2302,6 +2302,56 @@ func decodeBoundCustomRefreshSpend(index int, field string, raw,
 //
 // Shape mirrors RefreshVTXOs: OutpointSelection oneof + dry_run +
 // {queued_outpoints, status}.
+// bitcoinOnlyOutpoints returns the outpoints of the descriptors that
+// carry no Taproot Asset. Round-based flows (leave, sweep, refresh)
+// have no asset transition, so asset-bearing VTXOs must never enter
+// them: consuming one would destroy the asset commitment.
+func bitcoinOnlyOutpoints(descs []*vtxo.Descriptor) []wire.OutPoint {
+	outpoints := make([]wire.OutPoint, 0, len(descs))
+	for _, d := range descs {
+		if d.TaprootAssetRoot != nil {
+			continue
+		}
+
+		outpoints = append(outpoints, d.Outpoint)
+	}
+
+	return outpoints
+}
+
+// errAssetBearingVTXO is the InvalidArgument returned when a caller
+// names an asset-bearing VTXO for a round-based flow (leave, sweep,
+// refresh). These flows carry no asset transition, so consuming such a
+// VTXO would destroy the asset commitment while preserving only its
+// carrier sats.
+func errAssetBearingVTXO(op wire.OutPoint, action string) error {
+	return status.Errorf(codes.InvalidArgument, "VTXO %s:%d carries a "+
+		"Taproot Asset and cannot be %s; spend it via an asset OOR "+
+		"transfer instead", op.Hash, op.Index, action)
+}
+
+// rejectAssetBearingTargets fails when any explicitly selected target
+// carries a Taproot Asset.
+func (r *RPCServer) rejectAssetBearingTargets(ctx context.Context,
+	targets []wire.OutPoint, action string) error {
+
+	for _, op := range targets {
+		desc, err := r.server.vtxoStore.GetVTXO(ctx, op)
+		if err != nil {
+			// Unknown outpoints keep their existing
+			// per-outpoint error path in the wallet.
+			continue
+		}
+
+		if desc.TaprootAssetRoot != nil {
+			return errAssetBearingVTXO(op, action)
+		}
+	}
+
+	return nil
+}
+
+//nolint:funlen
 func (r *RPCServer) LeaveVTXOs(ctx context.Context,
 	req *waverpc.LeaveVTXOsRequest) (*waverpc.LeaveVTXOsResponse, error) {
 
@@ -2449,8 +2499,17 @@ func (r *RPCServer) LeaveVTXOs(ctx context.Context,
 				"VTXOs: %v", err)
 		}
 
-		for _, v := range liveVTXOs {
-			targets = append(targets, v.Outpoint)
+		targets = append(
+			targets, bitcoinOnlyOutpoints(liveVTXOs)...,
+		)
+	}
+
+	// Explicitly selected targets get the same protection: reject a
+	// named asset-bearing VTXO instead of destroying its commitment.
+	if !leaveAll && r.server.vtxoStore != nil {
+		err := r.rejectAssetBearingTargets(ctx, targets, "left")
+		if err != nil {
+			return nil, err
 		}
 	}
 
@@ -2636,13 +2695,11 @@ func (r *RPCServer) SendOnChain(ctx context.Context,
 			return nil, status.Errorf(codes.Internal, "list live "+
 				"VTXOs: %v", err)
 		}
-		if len(liveVTXOs) == 0 {
-			return nil, status.Errorf(codes.FailedPrecondition,
-				"no live VTXOs to sweep")
-		}
 
-		for _, v := range liveVTXOs {
-			sweepOutpoints = append(sweepOutpoints, v.Outpoint)
+		sweepOutpoints = bitcoinOnlyOutpoints(liveVTXOs)
+		if len(sweepOutpoints) == 0 {
+			return nil, status.Errorf(codes.FailedPrecondition,
+				"no sweepable live VTXOs")
 		}
 	}
 
