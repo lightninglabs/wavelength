@@ -115,10 +115,15 @@ func (r *RPCServer) resolveRefreshPreviewTargets(ctx context.Context,
 		// Keep only VTXOs actually in LiveState, matching the
 		// real refresh path's filter: anything already on its
 		// way through a round must not be double-counted in the
-		// preview either.
+		// preview either. Asset-bearing VTXOs are excluded: a
+		// round consumes the input without an asset transition,
+		// destroying the asset commitment.
 		descs := make([]*vtxo.Descriptor, 0, len(liveVTXOs))
 		for _, desc := range liveVTXOs {
 			if desc.Status != vtxo.VTXOStatusLive {
+				continue
+			}
+			if desc.TaprootAssetRoot != nil {
 				continue
 			}
 
@@ -151,6 +156,13 @@ func (r *RPCServer) resolveRefreshPreviewTargets(ctx context.Context,
 			return nil, status.Errorf(codes.InvalidArgument,
 				"VTXO %s:%d is not refreshable (status %v)",
 				op.Hash, op.Index, desc.Status)
+		}
+
+		// A round consumes the input without an asset transition, so
+		// refreshing an asset-bearing VTXO would destroy the asset
+		// commitment while preserving only its carrier sats.
+		if desc.TaprootAssetRoot != nil {
+			return nil, errAssetBearingVTXO(op, "refreshed")
 		}
 
 		descs = append(descs, desc)
