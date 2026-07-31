@@ -5478,7 +5478,7 @@ type OnchainAddressRequest struct {
 	// address is the bech32 onchain address originally issued or targeted.
 	Address string `protobuf:"bytes,1,opt,name=address,proto3" json:"address,omitempty"`
 	// sweep_all marks an onchain send that drained the selected VTXOs
-	// entirely (wavecli send --send-all). A sweep's pending amount is the
+	// entirely (wavecli send --sweep-all). A sweep's pending amount is the
 	// gross outflow with the operator fee still baked in (the fee is only
 	// known once the leave round seals), so completion uses this marker to
 	// net the settled fee back out of the displayed amount. Bounded sends
