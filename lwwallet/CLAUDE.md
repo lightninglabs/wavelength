@@ -107,6 +107,13 @@ base logic with the neutrino-backed `btcwbackend` sibling via the extracted
   partial history is indistinguishable from an unused script. A restore in
   that window stamps above its own funds permanently, since the stamp is
   written verified. Point `EsploraURL` at an endpoint you control.
+- `FilterBlocks` and `Rescan` also trust successful script-history responses
+  to be complete. Errors, truncated pagination, and block-identity conflicts
+  fall back to full block scans, but an empty response is indistinguishable
+  from a script with no activity. If the tip is current while the script index
+  lags, btcwallet can advance `PutSyncedTo` past unindexed activity
+  permanently. Avoid load-balanced public endpoints; point `EsploraURL` at a
+  self-consistent instance you control.
 - UTXO enumeration queries Esplora directly rather than btcwallet's internal
   UTXO set, because btcwallet does not credit-mark non-default scope outputs.
 - `Stop()` explicitly closes btcwallet's internal database to prevent resource

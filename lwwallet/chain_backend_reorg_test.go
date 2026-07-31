@@ -49,6 +49,11 @@ type fakeChain struct {
 	// heights simulates chain advance.
 	blocks map[int32]*fakeBlock
 
+	// blocksByHash retains replaced blocks for content-addressed header
+	// requests that were already in flight when a reorg changed the
+	// canonical height map.
+	blocksByHash map[chainhash.Hash]*fakeBlock
+
 	// txStatus is the response to /tx/<txid>/status.
 	txStatus map[chainhash.Hash]esploraTxStatus
 
@@ -80,9 +85,10 @@ type fakeBlock struct {
 	timestamp int64
 }
 
-// newFakeChain seeds a fakeChain with a single block at the given
-// tip height. tag is mixed into the block hash so independent
-// fakeChains in parallel tests produce distinct hashes.
+// newFakeChain seeds a connected fake chain through the given tip height.
+// tag is mixed into every block hash so independent fake chains in parallel
+// tests produce distinct hashes. Keeping the recent ancestors available is
+// part of the Esplora contract the tip poller's startup seed relies on.
 func newFakeChain(t *testing.T, tip int32, tag string) *fakeChain {
 	t.Helper()
 
@@ -90,6 +96,7 @@ func newFakeChain(t *testing.T, tip int32, tag string) *fakeChain {
 		t:             t,
 		tip:           tip,
 		blocks:        make(map[int32]*fakeBlock),
+		blocksByHash:  make(map[chainhash.Hash]*fakeBlock),
 		txStatus:      make(map[chainhash.Hash]esploraTxStatus),
 		rawTx:         make(map[chainhash.Hash][]byte),
 		outspends:     make(map[wire.OutPoint]esploraOutspend),
@@ -97,7 +104,15 @@ func newFakeChain(t *testing.T, tip int32, tag string) *fakeChain {
 		failRawHeader: make(map[chainhash.Hash]struct{}),
 	}
 
-	c.blocks[tip] = c.mintBlock(tip, chainhash.Hash{}, tag)
+	var prev chainhash.Hash
+	for height := int32(0); height <= tip; height++ {
+		block := c.mintBlock(
+			height, prev, fmt.Sprintf("%s-%d", tag, height),
+		)
+		c.blocks[height] = block
+		c.blocksByHash[block.hash] = block
+		prev = block.hash
+	}
 
 	return c
 }
@@ -151,6 +166,7 @@ func (c *fakeChain) replaceTip(tag string) *fakeBlock {
 
 	blk := c.mintBlock(c.tip, prevHash, tag)
 	c.blocks[c.tip] = blk
+	c.blocksByHash[blk.hash] = blk
 
 	return blk
 }
@@ -165,6 +181,7 @@ func (c *fakeChain) extend(tag string) *fakeBlock {
 	blk := c.mintBlock(c.tip+1, tipBlk.hash, tag)
 	c.tip++
 	c.blocks[c.tip] = blk
+	c.blocksByHash[blk.hash] = blk
 
 	return blk
 }
@@ -185,6 +202,7 @@ func (c *fakeChain) rewriteFrom(start int32, tagPrefix string) {
 		blk := c.mintBlock(h, prev,
 			fmt.Sprintf("%s-%d", tagPrefix, h))
 		c.blocks[h] = blk
+		c.blocksByHash[blk.hash] = blk
 		prev = blk.hash
 	}
 }
@@ -304,12 +322,14 @@ func (c *fakeChain) serveBlockReq(w http.ResponseWriter, _ *http.Request,
 		return
 	}
 
-	var found *fakeBlock
-	for _, b := range c.blocks {
-		if b.hash == *hash {
-			found = b
+	found := c.blocksByHash[*hash]
+	if found == nil {
+		for _, block := range c.blocks {
+			if block.hash == *hash {
+				found = block
 
-			break
+				break
+			}
 		}
 	}
 	if found == nil {
@@ -824,13 +844,83 @@ func TestChainBackendSpendReorgSkipsTransientStatusFailure(t *testing.T) {
 	require.Equal(t, statePositive, state)
 }
 
+// TestTipPollerStartDoesNotBlockOnSeedWalk pins the reason the seed walk
+// is asynchronous: it is historySize-1 sequential Esplora round trips, and
+// Start() gates the whole wallet (btcwallet and the chain backend are
+// started after it in Wallet.Start). On a mobile connection at ~145ms per
+// fetch the default history of 100 turned a foreground resume into ~15s of
+// dead time.
+//
+// The test injects a per-fetch delay and asserts Start() returns in well
+// under the time the full walk needs. Inline seeding would take at least
+// historySize-1 delays.
+func TestTipPollerStartDoesNotBlockOnSeedWalk(t *testing.T) {
+	t.Parallel()
+
+	const (
+		fetchDelay  = 120 * time.Millisecond
+		historySize = 6
+	)
+
+	chain := newFakeChain(t, 100, "seed-100")
+	chain.mu.Lock()
+	var prev chainhash.Hash
+	for h := int32(94); h <= 100; h++ {
+		blk := chain.mintBlock(h, prev, fmt.Sprintf("seed-%d", h))
+		chain.blocks[h] = blk
+		prev = blk.hash
+	}
+	chain.mu.Unlock()
+
+	// Delay only the content-addressed raw-header lookups the seed walk
+	// makes; the initial tip fetch stays fast so the measurement isolates
+	// the walk.
+	inner := chain.handler()
+	slow := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/header") {
+			time.Sleep(fetchDelay)
+		}
+		inner.ServeHTTP(w, r)
+	})
+	srv := httptest.NewServer(slow)
+	t.Cleanup(srv.Close)
+
+	esplora := NewEsploraClient(srv.URL, btclog.Disabled)
+	tipPoller := NewTipPollerWithConfig(
+		esplora, time.Hour, historySize, btclog.Disabled,
+	)
+
+	start := time.Now()
+	require.NoError(t, tipPoller.Start())
+	elapsed := time.Since(start)
+	t.Cleanup(tipPoller.Stop)
+
+	// Inline seeding would cost (historySize-1) * fetchDelay = 600ms.
+	// Allow generous headroom for the one tip fetch and CI scheduling
+	// while still failing decisively if the walk is back on the
+	// critical path.
+	require.Less(
+		t, elapsed, time.Duration(historySize-1)*fetchDelay/2,
+		"Start must not wait on the seed walk",
+	)
+
+	// The walk still completes, just off the startup path.
+	require.Eventually(t, func() bool {
+		tipPoller.mu.Lock()
+		defer tipPoller.mu.Unlock()
+		_, ok := tipPoller.hashAtHeightLocked(95)
+
+		return ok
+	}, 5*time.Second, 10*time.Millisecond, "seed walk never completed")
+}
+
 // TestTipPollerSeedsHashHistoryOnStart pins the property that the
-// poller seeds its recent-hash ring back through historySize-1
-// heights at Start. Without this, a fresh poller would only ever
-// cache the initial tip, leaving any reorg-event consumer with an
-// incomplete disconnected set for reorgs deeper than 1 block but
-// within the configured history. The chain.Interface consumer
-// (EsploraChainService) depends on a complete disconnected set to
+// poller seeds its recent-hash ring back through historySize-1 heights
+// before its asynchronous poll loop begins. Without this,
+// a fresh poller would only ever cache the initial tip, leaving any
+// reorg-event consumer with an incomplete disconnected set for reorgs
+// deeper than 1 block but within the configured history. The chain.Interface
+// consumer (EsploraChainService) depends on a complete disconnected set to
 // emit a BlockDisconnected for every height btcwallet must roll
 // back.
 func TestTipPollerSeedsHashHistoryOnStart(t *testing.T) {
@@ -841,9 +931,9 @@ func TestTipPollerSeedsHashHistoryOnStart(t *testing.T) {
 	// pre-populated with {97, 98, 99, 100}.
 	chain := newFakeChain(t, 100, "seed-100")
 	// fakeChain only populates the tip block; the test needs lower
-	// heights in the response. Extend backwards by minting blocks
-	// at 99, 98, 97 with the correct PrevBlock chain so the
-	// poller's seed walk resolves each height.
+	// heights in the response. Extend backwards by minting blocks at 99,
+	// 98, 97 with the correct PrevBlock chain so the poller's seed walk can
+	// follow raw headers back from the tip snapshot.
 	chain.mu.Lock()
 	var prev chainhash.Hash
 	for h := int32(97); h <= 100; h++ {
@@ -863,6 +953,19 @@ func TestTipPollerSeedsHashHistoryOnStart(t *testing.T) {
 	)
 	require.NoError(t, tipPoller.Start())
 	t.Cleanup(tipPoller.Stop)
+
+	// The seed walk is asynchronous: it is historySize-1 sequential
+	// Esplora round trips, which must not gate Start because Start
+	// gates the whole wallet. Wait for the ring to reach the deepest
+	// height before rewriting the chain, or the reorg races the seed
+	// and the observed fork point is nondeterministic.
+	require.Eventually(t, func() bool {
+		tipPoller.mu.Lock()
+		defer tipPoller.mu.Unlock()
+		_, ok := tipPoller.hashAtHeightLocked(97)
+
+		return ok
+	}, 5*time.Second, 5*time.Millisecond, "seed walk never filled the ring")
 
 	reorgSub, err := tipPoller.SubscribeReorgs()
 	require.NoError(t, err)
