@@ -1702,8 +1702,15 @@ func (s *Server) tryAutoUnlockLwwallet(ctx context.Context) {
 			password = devWalletPassword
 		}
 
+		birthday, err := LoadSeedBirthdayFromEnv()
+		if err != nil {
+			s.log.ErrorS(ctx, "Invalid seed birthday", err)
+
+			return
+		}
+
 		if err := s.startLwwallet(
-			ctx, seed, password, time.Time{},
+			ctx, seed, password, birthday,
 		); err != nil {
 
 			s.log.ErrorS(
@@ -1759,6 +1766,9 @@ func (s *Server) tryAutoUnlockLwwallet(ctx context.Context) {
 
 	s.log.InfoS(ctx, "Auto-unlocking lwwallet")
 
+	// The zero birthday is inert on this path: a nil seed opens the
+	// existing database, and btcwallet only reads the birthday on the
+	// create branch.
 	if err := s.startLwwallet(
 		ctx, nil, password, time.Time{},
 	); err != nil {
@@ -1908,8 +1918,21 @@ func (s *Server) tryAutoUnlockBtcwallet(ctx context.Context) {
 			password = devWalletPassword
 		}
 
+		// A raw hex seed carries no birthday, so without an
+		// explicit one btcwallet resolves the birthday block to
+		// genesis and scans the whole chain. Unlike the lwwallet
+		// sibling there is no address index to recover the real
+		// start height from here, so the operator has to supply
+		// it. Unset stays genesis-anchored: slow, never wrong.
+		birthday, err := LoadSeedBirthdayFromEnv()
+		if err != nil {
+			s.log.ErrorS(ctx, "Invalid seed birthday", err)
+
+			return
+		}
+
 		if err := s.startBtcwallet(
-			ctx, seed, password, time.Time{},
+			ctx, seed, password, birthday,
 		); err != nil {
 
 			s.log.ErrorS(
@@ -1964,6 +1987,9 @@ func (s *Server) tryAutoUnlockBtcwallet(ctx context.Context) {
 
 	s.log.InfoS(ctx, "Auto-unlocking btcwallet")
 
+	// The zero birthday is inert on this path: a nil seed opens the
+	// existing database, and btcwallet only reads the birthday on the
+	// create branch.
 	if err := s.startBtcwallet(
 		ctx, nil, password, time.Time{},
 	); err != nil {
