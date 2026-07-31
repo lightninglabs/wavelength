@@ -183,3 +183,67 @@ func TestWalletSeedFromMnemonicValidation(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "invalid mnemonic")
 }
+
+// TestLoadSeedBirthdayFromEnv covers the birthday override for the raw
+// dev/CI seed. Unset must stay the zero time, which btcwallet reads as
+// "scan from genesis": slow, but it never hides funds. A malformed
+// value must be an error rather than a silent fall back to that same
+// zero time, since a typo would otherwise degrade quietly into a full
+// chain scan.
+func TestLoadSeedBirthdayFromEnv(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		want    time.Time
+		wantErr bool
+	}{{
+		name:  "unset scans from genesis",
+		value: "",
+		want:  time.Time{},
+	}, {
+		name:  "calendar date",
+		value: "2024-05-03",
+		want:  time.Date(2024, 5, 3, 0, 0, 0, 0, time.UTC),
+	}, {
+		name:  "rfc3339",
+		value: "2024-05-03T23:11:00Z",
+		want:  time.Date(2024, 5, 3, 23, 11, 0, 0, time.UTC),
+	}, {
+		name:  "surrounding whitespace tolerated",
+		value: "  2024-05-03  ",
+		want:  time.Date(2024, 5, 3, 0, 0, 0, 0, time.UTC),
+	}, {
+		name:    "malformed is an error, not a silent genesis scan",
+		value:   "May 3rd 2024",
+		wantErr: true,
+	}, {
+		name:    "unix timestamp is not accepted",
+		value:   "1714777860",
+		wantErr: true,
+	}}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if test.value != "" {
+				t.Setenv(seedBirthdayEnvVar, test.value)
+			}
+
+			got, err := LoadSeedBirthdayFromEnv()
+			if test.wantErr {
+				require.Error(t, err)
+
+				// A rejected value must not leak a usable
+				// birthday to the caller.
+				require.True(t, got.IsZero())
+
+				return
+			}
+
+			require.NoError(t, err)
+			require.True(
+				t, test.want.Equal(got),
+				"want %v, got %v", test.want, got,
+			)
+		})
+	}
+}

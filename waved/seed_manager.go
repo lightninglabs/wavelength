@@ -19,6 +19,18 @@ const (
 	// environments.
 	seedEnvVar = "WAVED_LWWALLET_SEED"
 
+	// seedBirthdayEnvVar is the environment variable name for the
+	// creation date of the seed supplied via seedEnvVar. A raw hex
+	// seed carries no birthday of its own, unlike an aezeed mnemonic,
+	// so without this the wallet is created with a zero time.Time.
+	// btcwallet reads that as January of year 1 and resolves the
+	// birthday block to genesis, then scans the whole chain.
+	//
+	// Leaving it unset keeps that genesis-anchored behaviour, which is
+	// slow but never misses funds. Set it only when the seed is known
+	// to have no history before the given date.
+	seedBirthdayEnvVar = "WAVED_LWWALLET_SEED_BIRTHDAY"
+
 	// walletPasswordEnvVar is the environment variable name for
 	// providing the wallet password for auto-unlock at daemon
 	// startup.
@@ -132,6 +144,39 @@ func LoadSeedFromEnv() (*[rawSeedLen]byte, error) {
 	copy(seed[:], decoded)
 
 	return &seed, nil
+}
+
+// seedBirthdayLayouts are the accepted date formats for
+// seedBirthdayEnvVar, tried in order: a full RFC3339 timestamp, or a
+// plain calendar date, which is the granularity a seed birthday
+// actually has.
+var seedBirthdayLayouts = []string{time.RFC3339, time.DateOnly}
+
+// LoadSeedBirthdayFromEnv reads the birthday of the raw seed supplied
+// via seedEnvVar. An unset variable yields the zero time, which is what
+// btcwallet already treats as "scan from genesis" and is the safe
+// default: too early only costs scanning, while too late silently hides
+// funds received before it.
+//
+// A malformed value is an error rather than a fall back to the zero
+// time. Falling back would turn an operator's typo into a silent
+// full-chain scan, which is exactly the kind of quiet degradation the
+// explicit variable exists to prevent.
+func LoadSeedBirthdayFromEnv() (time.Time, error) {
+	raw := strings.TrimSpace(os.Getenv(seedBirthdayEnvVar))
+	if raw == "" {
+		return time.Time{}, nil
+	}
+
+	for _, layout := range seedBirthdayLayouts {
+		birthday, err := time.Parse(layout, raw)
+		if err == nil {
+			return birthday, nil
+		}
+	}
+
+	return time.Time{}, fmt.Errorf("invalid date in %s: %q is neither "+
+		"RFC3339 nor %s", seedBirthdayEnvVar, raw, time.DateOnly)
 }
 
 // LoadPasswordFromEnv reads the wallet password from the

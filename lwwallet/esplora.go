@@ -177,16 +177,18 @@ type esploraBlock struct {
 	Timestamp int64 `json:"timestamp"`
 }
 
-// scriptHashHex computes the Esplora script hash for a pkScript. The hash
-// is SHA256(pkScript) with the bytes reversed and hex-encoded, matching
-// Electrum's script hash format used by Esplora.
+// scriptHashHex computes the Esplora script hash for a pkScript: the
+// hex-encoded SHA256 of the script, in the digest's natural byte order.
+//
+// This is deliberately NOT the Electrum convention. The Electrum wire
+// protocol (blockchain.scripthash.*) takes the digest byte-reversed, and
+// Esplora's REST API does not — /scripthash/:hash wants it forward.
+// Reversing here makes every lookup miss silently, since the API answers
+// an unknown script hash with an empty result rather than a 404. See
+// systest.TestEsploraScriptHashEncoding, which pins the byte order
+// against a real electrs instance rather than against this function.
 func scriptHashHex(pkScript []byte) string {
 	h := sha256.Sum256(pkScript)
-
-	// Reverse the hash bytes (Electrum convention).
-	for i, j := 0, len(h)-1; i < j; i, j = i+1, j-1 {
-		h[i], h[j] = h[j], h[i]
-	}
 
 	return hex.EncodeToString(h[:])
 }
