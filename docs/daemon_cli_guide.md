@@ -161,10 +161,22 @@ prefix and dots replaced by underscores:
 |----------|-------------|
 | `WAVED_WALLET_PASSWORD` | Wallet password for create/unlock |
 | `WAVED_LWWALLET_SEED` | Hex-encoded raw seed (dev/CI only) |
+| `WAVED_LWWALLET_SEED_BIRTHDAY` | Creation date of that seed, `YYYY-MM-DD` or RFC3339 |
 | `WAVED_NETWORK` | Bitcoin network override |
 | `WAVED_WALLET_TYPE` | Wallet backend type |
 | `WAVED_WALLET_ESPLORAURL` | Esplora URL |
 | `WAVED_SERVER_HOST` | Operator server address |
+
+A raw seed carries no birthday, unlike an aezeed mnemonic, so a wallet
+created from `WAVED_LWWALLET_SEED` without `WAVED_LWWALLET_SEED_BIRTHDAY`
+starts scanning at genesis. That is slow but never misses funds. Set the
+birthday only when the seed is known to have no history before that date:
+too early only costs scan time, while too late silently hides earlier
+funds. A malformed date is rejected rather than treated as unset.
+
+The `lwwallet` backend usually resolves its own start height from the
+Esplora address index and ignores this, so it matters most for the
+neutrino-backed `btcwallet` backend, which has no index to consult.
 
 ## Initial Wallet Setup
 
