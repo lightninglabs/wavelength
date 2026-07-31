@@ -84,12 +84,11 @@ func TestChainBackendBlockNotification(t *testing.T) {
 		blockHdrs         = make(map[int32]*wire.BlockHeader)
 	)
 
-	// Pre-generate real chained block headers so the tip poller's
-	// PrevBlock continuity check during advance can resolve the raw
-	// header endpoint with a header that actually links back to the
-	// previous height.
+	// Pre-generate the retained history plus the blocks this test mines.
+	// The poll loop starts only after its startup history is complete, and
+	// every later raw-header continuity check must link to its predecessor.
 	var prevHash chainhash.Hash
-	for h := int32(100); h <= 103; h++ {
+	for h := int32(0); h <= 103; h++ {
 		hdr := mintStubHeader(h, prevHash)
 		blockHdrs[h] = hdr
 		hash := hdr.BlockHash()

@@ -34,6 +34,12 @@ type stubChain struct {
 
 	// hashAt[h] is the chainhash.Hash for height h.
 	hashAt map[int32]chainhash.Hash
+
+	// allBlocks retains headers by hash after a reorg. Esplora's
+	// content-addressed block routes can still answer an in-flight request
+	// for the old chain even after height lookups move to the new chain.
+	allBlocks    map[chainhash.Hash]*wire.BlockHeader
+	heightByHash map[chainhash.Hash]int32
 }
 
 // mintStubHeader builds a deterministic wire.BlockHeader for a given
@@ -60,9 +66,11 @@ func mintStubHeader(height int32, prev chainhash.Hash) *wire.BlockHeader {
 
 func newStubChain(tipHeight int32) *stubChain {
 	c := &stubChain{
-		tipHeight: tipHeight,
-		blocks:    make(map[int32]*wire.BlockHeader),
-		hashAt:    make(map[int32]chainhash.Hash),
+		tipHeight:    tipHeight,
+		blocks:       make(map[int32]*wire.BlockHeader),
+		hashAt:       make(map[int32]chainhash.Hash),
+		allBlocks:    make(map[chainhash.Hash]*wire.BlockHeader),
+		heightByHash: make(map[chainhash.Hash]int32),
 	}
 
 	var prev chainhash.Hash
@@ -71,6 +79,8 @@ func newStubChain(tipHeight int32) *stubChain {
 		c.blocks[h] = hdr
 		hash := hdr.BlockHash()
 		c.hashAt[h] = hash
+		c.allBlocks[hash] = hdr
+		c.heightByHash[hash] = h
 		prev = hash
 	}
 
@@ -90,6 +100,8 @@ func (c *stubChain) advance(t *testing.T, n int32) {
 		c.blocks[h] = hdr
 		hash := hdr.BlockHash()
 		c.hashAt[h] = hash
+		c.allBlocks[hash] = hdr
+		c.heightByHash[hash] = h
 		prev = hash
 	}
 
@@ -152,21 +164,12 @@ func stubEsploraHandler(t *testing.T, chain *stubChain) http.HandlerFunc {
 			h, err := chainhash.NewHashFromStr(hashStr)
 			require.NoError(t, err)
 
-			// Find the height for this hash so we can
-			// craft a header whose BlockHash actually
-			// matches.
-			var height int32 = -1
 			chain.mu.Lock()
-			for hh, hash := range chain.hashAt {
-				if hash == *h {
-					height = hh
-
-					break
-				}
-			}
+			height, ok := chain.heightByHash[*h]
+			hdr := chain.allBlocks[*h]
 			chain.mu.Unlock()
 
-			if height < 0 {
+			if !ok || hdr == nil {
 				http.Error(w, "not found",
 					http.StatusNotFound)
 
@@ -184,17 +187,6 @@ func stubEsploraHandler(t *testing.T, chain *stubChain) http.HandlerFunc {
 
 			case "/header":
 				// Raw 80-byte header, hex-encoded.
-				chain.mu.Lock()
-				hdr := chain.blocks[height]
-				chain.mu.Unlock()
-				if hdr == nil {
-					http.Error(
-						w, "not found",
-						http.StatusNotFound,
-					)
-
-					return
-				}
 				var buf bytes.Buffer
 				require.NoError(t, hdr.Serialize(&buf))
 				_, _ = fmt.Fprint(
