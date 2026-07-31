@@ -45,6 +45,16 @@ base logic with the neutrino-backed `btcwbackend` sibling via the extracted
 - `EsploraChainService` — `chain.Interface` adapter over `EsploraClient`,
   driven by a shared `TipPoller`. Feeds btcwallet's internal address-credit
   pipeline. Constructor: `NewEsploraChainService(esplora, tipPoller, logger)`.
+- Start-block discovery (`start_block.go`) — resolves where a new or
+  restored wallet begins scanning from the Esplora address index instead of
+  from the seed birthday, and writes it into `waddrmgr` as a *verified*
+  birthday block before `BtcWallet.Start()`. Entry point:
+  `Wallet.stampStartBlock`. Left to itself btcwallet binary searches block
+  timestamps (`locateBirthdayBlock`), which bottoms out at genesis for any
+  birthday older than the chain and then walks every block to the tip.
+  Discovery instead derives each active key scope's receive/change scripts
+  through btcwallet's own scoped key managers, probes `/scripthash/:h` under
+  the configured gap limit, and takes the earliest confirmed height.
 - `BoardingBackendAdapter` — Embeds `walletcore.BoardingBackendBase` for
   shared key derivation/script import; implements `wallet.BoardingBackend`
   and `wallet.OutputLeaser`. Queries Esplora directly for UTXOs (bypasses
@@ -79,6 +89,31 @@ base logic with the neutrino-backed `btcwbackend` sibling via the extracted
   (known limitation; acceptable for confirmation-target use cases).
 - LRU caches only hold immutable, hash-addressed data; a verified hash prevents
   a compromised Esplora endpoint from injecting arbitrary cache entries.
+- `scriptHashHex` hex-encodes the SHA256 digest in its natural byte order.
+  Esplora's REST API differs from the Electrum wire protocol here, which
+  reverses it, and a wrong order fails silently because the API answers an
+  unknown script hash with an empty result rather than an error.
+- Start-block discovery only ever stamps a wallet that has no birthday block
+  at all, and never moves the sync cursor backwards. Once btcwallet has
+  recorded a birthday block it owns the cursor.
+- A discovery failure is non-fatal: the wallet still starts and btcwallet
+  falls back to its own timestamp search, just slowly. Discovery refuses to
+  stamp rather than stamping on partial information, because a short walk
+  finds fewer used scripts, which raises the height it reports and moves the
+  stamp toward the tip: the direction that loses funds.
+- Start-block discovery trusts the Esplora index. That holds for a single
+  self-consistent instance, but a load-balanced public endpoint can serve a
+  current tip and a still-syncing script index from different backends, and
+  partial history is indistinguishable from an unused script. A restore in
+  that window stamps above its own funds permanently, since the stamp is
+  written verified. Point `EsploraURL` at an endpoint you control.
+- `FilterBlocks` and `Rescan` also trust successful script-history responses
+  to be complete. Errors, truncated pagination, and block-identity conflicts
+  fall back to full block scans, but an empty response is indistinguishable
+  from a script with no activity. If the tip is current while the script index
+  lags, btcwallet can advance `PutSyncedTo` past unindexed activity
+  permanently. Avoid load-balanced public endpoints; point `EsploraURL` at a
+  self-consistent instance you control.
 - UTXO enumeration queries Esplora directly rather than btcwallet's internal
   UTXO set, because btcwallet does not credit-mark non-default scope outputs.
 - `Stop()` explicitly closes btcwallet's internal database to prevent resource
