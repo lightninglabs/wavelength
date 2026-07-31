@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/stretchr/testify/require"
 )
 
@@ -37,9 +38,17 @@ func TestSumSpendableBalance(t *testing.T) {
 			Amount: 4_834_745,
 			Status: VTXOStatusSpending,
 		},
+		{
+			Amount: 330,
+			Status: VTXOStatusLive,
+			TaprootAssetRoot: &chainhash.Hash{
+				1,
+			},
+		},
 	}
 
-	// Only the two Live VTXOs are spendable.
+	// Only the two Bitcoin-only Live VTXOs are spendable: the asset
+	// VTXO's satoshis are carrier value that coin selection never uses.
 	require.Equal(
 		t, btcutil.Amount(3_000), SumSpendableBalance(descs),
 	)
@@ -47,7 +56,7 @@ func TestSumSpendableBalance(t *testing.T) {
 	// SumBalance over the same set sums everything, demonstrating why
 	// GetBalance must not use it for the spendable figure.
 	require.Equal(
-		t, btcutil.Amount(4_849_745), SumBalance(descs),
+		t, btcutil.Amount(4_850_075), SumBalance(descs),
 	)
 }
 
