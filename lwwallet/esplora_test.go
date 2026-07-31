@@ -2,6 +2,7 @@ package lwwallet
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
@@ -155,9 +156,12 @@ func TestEsploraGetScriptUtxos(t *testing.T) {
 	srv := httptest.NewServer(
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Verify the path contains the correct script hash.
-			expectedHash := scriptHashHex(pkScript)
-			expectedPath := "/scripthash/" + expectedHash +
-				"/utxo"
+			// The expectation is computed here rather than via
+			// scriptHashHex so this asserts the encoding instead
+			// of merely agreeing with whatever the helper does.
+			sum := sha256.Sum256(pkScript)
+			expectedPath := "/scripthash/" +
+				hex.EncodeToString(sum[:]) + "/utxo"
 			require.Equal(t, expectedPath, r.URL.Path)
 
 			utxos := []esploraUtxo{
@@ -411,4 +415,44 @@ func TestEsploraHTTPError(t *testing.T) {
 	_, err := client.GetTipHeight(t.Context())
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "404")
+}
+
+// TestScriptHashEncoding pins the byte order Esplora's /scripthash/
+// routes expect. Esplora takes the SHA256 digest of the script in its
+// natural order, unlike the Electrum wire protocol, which reverses it.
+// Getting this wrong is silent: the API answers an unknown script hash
+// with an empty result rather than an error, so every lookup simply
+// comes back with nothing found.
+//
+// The expectation is a fixed vector rather than a recomputation, so this
+// disagrees with the implementation when the implementation changes.
+// systest.TestEsploraScriptHashEncoding is the companion check against a
+// real electrs instance.
+func TestScriptHashEncoding(t *testing.T) {
+	t.Parallel()
+
+	// A P2WPKH script paying the all-zero key hash.
+	pkScript := append([]byte{0x00, 0x14}, make([]byte, 20)...)
+
+	const wantForward = "5c210f7cc5455eec4b9438c47c365fc4afdb29fa1da456" +
+		"1440dc8d34e39ce273"
+
+	require.Equal(
+		t, wantForward, scriptHashHex(pkScript),
+		"scriptHashHex must hex-encode the SHA256 digest in its "+
+			"natural byte order, not the Electrum reversal",
+	)
+
+	// Spell out the reversal that used to live here so a change back
+	// to it fails loudly rather than silently finding nothing.
+	reversed, err := hex.DecodeString(wantForward)
+	require.NoError(t, err)
+
+	for i, j := 0, len(reversed)-1; i < j; i, j = i+1, j-1 {
+		reversed[i], reversed[j] = reversed[j], reversed[i]
+	}
+
+	require.NotEqual(
+		t, hex.EncodeToString(reversed), scriptHashHex(pkScript),
+	)
 }
