@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/lightninglabs/lndclient"
-	"github.com/lightninglabs/taproot-assets/taprpc"
 	lnrpc "github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/ory/dockertest/v3"
 	"github.com/ory/dockertest/v3/docker"
@@ -512,21 +511,10 @@ func (th *TapdHarness) waitForTapdReady() {
 		defer cancel()
 
 		addr := net.JoinHostPort("127.0.0.1", th.TapdGRPCPort)
-		conn, err := getTapdClientConn(
+
+		return tapdSyncedToChain(
 			ctx, addr, th.TapdTLSCert, th.TapdMacaroon,
 		)
-		if err != nil {
-			return false
-		}
-		defer conn.Close()
-
-		client := taprpc.NewTaprootAssetsClient(conn)
-		resp, err := client.GetInfo(ctx, &taprpc.GetInfoRequest{})
-		if err != nil {
-			return false
-		}
-
-		return resp.SyncToChain
 	}, defaultTimeout, time.Second, th.Name+" tapd not ready or not synced")
 }
 
