@@ -432,6 +432,9 @@ func (r *RPCServer) UnlockWallet(ctx context.Context,
 	// Open the existing wallet database with the supplied password
 	// as btcwallet's private passphrase. A wrong password surfaces
 	// as an unlock failure from the wallet backend.
+	// The zero birthday is inert here: a nil seed opens the existing
+	// database, and btcwallet only reads the birthday on the create
+	// branch.
 	if err := r.server.startSelfManagedWallet(
 		ctx, nil, req.WalletPassword, time.Time{},
 	); err != nil {
