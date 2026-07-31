@@ -57,6 +57,18 @@ type Wallet struct {
 	// boardingBackend wraps btcwallet to provide the
 	// wallet.BoardingBackend interface for Ark boarding.
 	boardingBackend *BoardingBackendAdapter
+
+	// recoveryWindow is the configured address look-ahead. It is kept
+	// here because Esplora-index start-block discovery walks each
+	// address branch under the same gap limit btcwallet's own recovery
+	// applies.
+	recoveryWindow uint32
+
+	// maxDiscoveryIndex bounds how far one start-block discovery branch
+	// walk may run. It is a field rather than a bare constant so tests
+	// can drive the budget-exhausted paths without deriving ten
+	// thousand addresses.
+	maxDiscoveryIndex uint32
 }
 
 // ErrWalletNotFound is returned when opening an existing wallet was
@@ -204,11 +216,13 @@ func New(cfg Config) (*Wallet, error) {
 			ChainParams: cfg.ChainParams,
 			WalletLog:   cfg.Log,
 		},
-		tipPoller:       tipPoller,
-		chainSvc:        chainSvc,
-		esplora:         esplora,
-		chainBackend:    chainBackend,
-		boardingBackend: boardingBackend,
+		tipPoller:         tipPoller,
+		chainSvc:          chainSvc,
+		esplora:           esplora,
+		chainBackend:      chainBackend,
+		boardingBackend:   boardingBackend,
+		recoveryWindow:    cfg.RecoveryWindow,
+		maxDiscoveryIndex: defaultMaxDiscoveryIndex,
 	}, nil
 }
 
@@ -257,6 +271,20 @@ func (w *Wallet) Start() error {
 		return fmt.Errorf("start tip poller: %w", err)
 	}
 	rollback = append(rollback, w.tipPoller.Stop)
+
+	// Resolve where this wallet should start scanning from before
+	// btcwallet gets a chance to answer that question itself. Left to
+	// its own devices btcwallet binary searches block timestamps for
+	// the seed birthday, which bottoms out at genesis for any birthday
+	// older than the chain and then walks every block to the tip over
+	// Esplora. A failure here is not fatal: the wallet still starts
+	// and btcwallet falls back to that search, just slowly.
+	if err := w.stampStartBlock(ctx); err != nil {
+		w.Logger(ctx).WarnS(ctx, "Esplora start-block discovery "+
+			"failed, falling back to btcwallet birthday search",
+			err,
+		)
+	}
 
 	// btcWallet.Start() unlocks the wallet, creates key scopes,
 	// starts the chain service (which subscribes to the tip
