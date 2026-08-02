@@ -12,7 +12,7 @@ crash-safe at-least-once delivery with exactly-once deduplication.
 - `ActorBehavior[M, R]` — Interface that actors implement: `Start`, `Receive`, `Stop`.
 - `ActorConfig[M, R]` — Configuration for actor creation (behavior, mailbox, codec, delivery store).
 - `ActorRef[M, R]` — Typed reference for sending messages to an actor (`Tell`, `TryTell`, `Ask`).
-- `TellOnlyRef[M]` — Fire-and-forget reference (no response type): `Tell` blocks for mailbox room, `TryTell` never does.
+- `TellOnlyRef[M]` — Fire-and-forget reference (no response type). `Tell` blocks for mailbox room, `TryTell` never does.
 - `ActorSystem` — Container managing actor lifecycles, registration, and
   shutdown. `DeadLetters() ActorRef[Message, any]` returns the dead-letter
   outlet configured via `ActorConfig.DLO`.
