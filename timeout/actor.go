@@ -25,6 +25,13 @@ const (
 	// never overflow the duration. Every attempt past it waits
 	// retryMaxDelay.
 	maxRetryShift = 5
+
+	// selfSignalRetry is how long a clock goroutine waits before
+	// re-offering a timer fire that the actor's own mailbox had no room
+	// for. It is short because an internal fire is the actor's own work,
+	// and the mailbox only stays full for as long as the actor is behind
+	// on its queue.
+	selfSignalRetry = 50 * time.Millisecond
 )
 
 // retryDelay returns how long to wait before delivery attempt n, doubling
@@ -165,13 +172,38 @@ func (a *Actor) loadSelf() (actor.TellOnlyRef[Msg], bool) {
 // It runs on a clock goroutine, so it must not touch actor state
 // directly: the state mutation happens when Receive picks the message
 // up.
+//
+// The send never blocks. A blocking one would leave a goroutine parked
+// per timer fire for as long as the actor stayed backed up, which is a
+// slow leak triggered by exactly the situation the actor is trying to
+// work through. Instead a full mailbox re-arms the fire, so pending
+// fires coalesce into one outstanding timer rather than a growing pile
+// of parked senders.
 func (a *Actor) signalSelf(msg Msg) {
 	self, ok := a.loadSelf()
 	if !ok {
 		return
 	}
 
-	_ = self.Tell(context.Background(), msg)
+	err := self.TryTell(context.Background(), msg)
+	if err == nil {
+		return
+	}
+
+	// The actor is stopped or its mailbox closed. The fire has nowhere to
+	// go and no amount of waiting will change that, so let the chain end
+	// here.
+	if !errors.Is(err, actor.ErrMailboxFull) {
+		return
+	}
+
+	// The retry handle is deliberately not recorded on the entry: we are
+	// off the receive goroutine, where touching actor state would race.
+	// A Cancel landing in the meantime is still honoured, because the
+	// generation check drops the fire when it finally arrives.
+	a.clock.AfterFunc(selfSignalRetry, func() {
+		a.signalSelf(msg)
+	})
 }
 
 // Receive processes incoming messages.
