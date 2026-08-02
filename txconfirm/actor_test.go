@@ -147,12 +147,16 @@ func (b *blockingNotifyRef) Tell(ctx context.Context, _ Notification) error {
 	return ctx.Err()
 }
 
-// TryTell delegates to Tell, which is all this double needs: no test
-// drives the non-blocking path through it.
-func (b *blockingNotifyRef) TryTell(ctx context.Context,
-	msg Notification) error {
+// TryTell reports a full mailbox. Delegating to Tell would park the caller
+// on b.release, which is precisely what a non-blocking send promises never to
+// do; a subscriber that cannot be sent to without blocking is one whose
+// mailbox is full, so that is what this double reports.
+func (b *blockingNotifyRef) TryTell(_ context.Context, _ Notification) error {
+	b.mu.Lock()
+	b.attempts++
+	b.mu.Unlock()
 
-	return b.Tell(ctx, msg)
+	return actor.ErrMailboxFull
 }
 
 // attemptsCount returns the number of attempted notifications.
@@ -220,12 +224,13 @@ func (d *deferringNotifyRef) Tell(_ context.Context, n Notification) error {
 	return nil
 }
 
-// TryTell delegates to Tell, which is all this double needs: no test
-// drives the non-blocking path through it.
-func (d *deferringNotifyRef) TryTell(ctx context.Context,
-	msg Notification) error {
-
-	return d.Tell(ctx, msg)
+// TryTell refuses to guess. This double exists to model a Tell that completes
+// long after the caller's deadline, which has no non-blocking equivalent:
+// answering "full" would lose the deferred completion the tests turn on, and
+// delegating to Tell would park a caller that was promised it would not be.
+// A test that routes here needs a different double.
+func (d *deferringNotifyRef) TryTell(_ context.Context, _ Notification) error {
+	panic("deferringNotifyRef does not model TryTell")
 }
 
 // waitStarted blocks until the first Tell has begun, so the test can
