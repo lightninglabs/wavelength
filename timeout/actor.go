@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightningnetwork/lnd/fn/v2"
 )
@@ -141,6 +142,11 @@ type Actor struct {
 	// in tests.
 	clock Clock
 
+	// log is the logger injected by the daemon. It is btclog.Disabled
+	// when the caller supplied none, in which case the actor falls back
+	// to the context logger.
+	log btclog.Logger
+
 	// self is the actor's reference to its own mailbox. Set by Start
 	// after the actor system has registered the behavior. Clock
 	// callbacks run in separate goroutines, so Start publishes the ref
@@ -160,22 +166,45 @@ type Actor struct {
 	recurring map[ID]*recurringEntry
 }
 
+// Config carries the timeout actor's optional dependencies.
+type Config struct {
+	// Clock is the time source. Defaults to RealClock; tests pass a fake
+	// clock to drive scheduling deterministically.
+	Clock fn.Option[Clock]
+
+	// Log is the logger the actor writes to. Daemons should always set
+	// it: without it the actor's diagnostics only reach a logger carried
+	// on the request context, which the actor's own receive loop does not
+	// have.
+	Log fn.Option[btclog.Logger]
+}
+
+// NewActorWithConfig creates a timeout actor from an explicit config. This is
+// the constructor daemons should use, because it is the only one that can
+// inject a logger.
+func NewActorWithConfig(cfg Config) *Actor {
+	return &Actor{
+		clock:     cfg.Clock.UnwrapOr(RealClock{}),
+		log:       cfg.Log.UnwrapOr(btclog.Disabled),
+		oneshots:  make(map[ID]*oneshotEntry),
+		recurring: make(map[ID]*recurringEntry),
+	}
+}
+
 // NewActor creates a new timeout actor backed by the real wall clock.
 // The returned actor must be wired to its mailbox via Start before any
 // schedule request is delivered.
 func NewActor() *Actor {
-	return NewActorWithClock(RealClock{})
+	return NewActorWithConfig(Config{})
 }
 
 // NewActorWithClock creates a new timeout actor that uses the supplied
 // clock. Tests use this constructor with a fake clock to drive
 // scheduling deterministically.
 func NewActorWithClock(clock Clock) *Actor {
-	return &Actor{
-		clock:     clock,
-		oneshots:  make(map[ID]*oneshotEntry),
-		recurring: make(map[ID]*recurringEntry),
-	}
+	return NewActorWithConfig(Config{
+		Clock: fn.Some(clock),
+	})
 }
 
 // Start attaches the actor's self-reference. Production callers obtain
@@ -216,8 +245,19 @@ func (a *Actor) loadSelf() (actor.TellOnlyRef[Msg], bool) {
 // fires coalesce into one outstanding timer rather than a growing pile
 // of parked senders.
 func (a *Actor) signalSelf(msg Msg) {
+	// Fires that arrive before Start wired the self-ref have nowhere to
+	// go. That only happens in direct tests or a miswired daemon, so say
+	// so rather than dropping the timer in silence.
 	self, ok := a.loadSelf()
 	if !ok {
+		bgCtx := context.Background()
+
+		a.logger(bgCtx).DebugS(
+			bgCtx,
+			"Dropping timer fire, actor self-ref not set",
+			slog.String("msg_type", msg.MessageType()),
+		)
+
 		return
 	}
 
@@ -385,7 +425,7 @@ func (a *Actor) handleTimerFired(ctx context.Context,
 	case terminalDelivery(err):
 		delete(a.oneshots, m.ID)
 
-		logger(ctx).WarnS(ctx, "Dropping expired timeout, callback "+
+		a.logger(ctx).WarnS(ctx, "Dropping expired timeout, callback "+
 			"unreachable", err,
 			slog.String("timeout_id", string(m.ID)),
 			slog.String("callback", entry.callback.ID()),
@@ -412,7 +452,7 @@ func (a *Actor) retryOneshot(ctx context.Context, id ID, entry *oneshotEntry,
 	entry.attempts++
 	delay := retryDelay(entry.attempts)
 
-	logger(ctx).WarnS(ctx, "Timeout callback delivery failed, retrying",
+	a.logger(ctx).WarnS(ctx, "Timeout callback delivery failed, retrying",
 		cause,
 		slog.String("timeout_id", string(id)),
 		slog.String("callback", entry.callback.ID()),
@@ -476,7 +516,7 @@ func (a *Actor) handleTickFired(ctx context.Context,
 	case terminalDelivery(err):
 		delete(a.recurring, m.ID)
 
-		logger(ctx).WarnS(ctx, "Stopping recurring tick, callback "+
+		a.logger(ctx).WarnS(ctx, "Stopping recurring tick, callback "+
 			"unreachable", err,
 			slog.String("tick_id", string(m.ID)),
 			slog.String("callback", entry.callback.ID()),
@@ -489,7 +529,7 @@ func (a *Actor) handleTickFired(ctx context.Context,
 		entry.attempts++
 		delay := tickRetryDelay(entry.interval, entry.attempts)
 
-		logger(ctx).WarnS(ctx, "Tick callback delivery failed, "+
+		a.logger(ctx).WarnS(ctx, "Tick callback delivery failed, "+
 			"retrying", err,
 			slog.String("tick_id", string(m.ID)),
 			slog.String("callback", entry.callback.ID()),

@@ -1,6 +1,7 @@
 package timeout
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -9,7 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
 )
 
@@ -882,4 +885,42 @@ func TestSelfSignalRetriesUntilMailboxDrains(t *testing.T) {
 	fired, ok := self.AwaitMessage(time.Second)
 	require.True(t, ok, "deferred fire never arrived")
 	require.Equal(t, "internalTimerFired", fired.MessageType())
+}
+
+// TestActorLogsThroughInjectedLogger is the regression test for the actor's
+// diagnostics being invisible in production. An actor's receive loop runs on a
+// context descended from context.Background(), so a logger resolved from ctx
+// alone is always disabled. Only the injected one reaches an operator.
+func TestActorLogsThroughInjectedLogger(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+
+	handler := btclog.NewDefaultHandler(&buf, btclog.WithNoTimestamp())
+	handler.SetLevel(btclog.LevelWarn)
+
+	clock := newFakeClock(startEpoch)
+	a := NewActorWithConfig(Config{
+		Clock: fn.Some[Clock](clock),
+		Log:   fn.Some(btclog.NewSLogger(handler)),
+	})
+	a.Start(newSyncSelfRef(a))
+
+	cb := newWedgeableCallbackRef("wedged-requester", actor.ErrMailboxFull)
+
+	// t.Context() carries no logger, so anything that reaches the buffer
+	// got there through the injected one.
+	res := a.Receive(t.Context(), &ScheduleTimeoutRequest{
+		ID:       "logged",
+		Duration: 50 * time.Millisecond,
+		Callback: cb,
+	})
+	require.True(t, res.IsOk())
+
+	clock.Advance(50 * time.Millisecond)
+
+	logged := buf.String()
+	require.Contains(t, logged, "Timeout callback delivery failed")
+	require.Contains(t, logged, "wedged-requester")
+	require.Contains(t, logged, "logged")
 }

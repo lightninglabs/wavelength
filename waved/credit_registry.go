@@ -28,7 +28,9 @@ func (s *Server) initCreditRegistry(ctx context.Context) error {
 	// OOR timeout actor. When a per-operation poll timer fires, the
 	// callback ref maps the expiry into a ResumeCreditOpRequest told to the
 	// registry.
-	creditTimeoutBehavior := timeout.NewActor()
+	creditTimeoutBehavior := timeout.NewActorWithConfig(timeout.Config{
+		Log: fn.Some(s.subLogger(timeout.Subsystem)),
+	})
 	creditTimeoutKey := actor.NewServiceKey[timeout.Msg, timeout.Resp](
 		"credit-timeout",
 	)
