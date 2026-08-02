@@ -117,6 +117,25 @@ func (r *Router[M, R]) Tell(ctx context.Context, msg M) error {
 	return selectedActor.Tell(ctx, msg)
 }
 
+// TryTell selects an actor with the routing strategy and attempts a
+// non-blocking send to it. Note that the strategy still consumes its turn even
+// when the selected actor's mailbox is full, so a caller retrying a full send
+// may well land on a different actor.
+func (r *Router[M, R]) TryTell(ctx context.Context, msg M) error {
+	selectedActor, err := r.getActor()
+	if err != nil {
+		// If no actors are available for the service, and a DLO is
+		// configured, forward the message there.
+		if errors.Is(err, ErrNoActorsAvailable) && r.dlo != nil {
+			_ = r.dlo.TryTell(context.Background(), msg)
+		}
+
+		return err
+	}
+
+	return selectedActor.TryTell(ctx, msg)
+}
+
 // Ask sends a message to one of the actors managed by the router, selected by
 // the routing strategy, and returns a Future for the response. If no actors are
 // available (ErrNoActorsAvailable), the Future will be completed with this

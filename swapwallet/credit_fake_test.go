@@ -39,6 +39,14 @@ func (f *fakeCreditRegistry) Tell(context.Context, credit.CreditMsg) error {
 	return nil
 }
 
+// TryTell delegates to Tell, which is all this double needs: no test
+// drives the non-blocking path through it.
+func (f *fakeCreditRegistry) TryTell(ctx context.Context,
+	msg credit.CreditMsg) error {
+
+	return f.Tell(ctx, msg)
+}
+
 // Ask records pay admissions and resolves with the configured response.
 func (f *fakeCreditRegistry) Ask(_ context.Context,
 	msg credit.CreditMsg) actor.Future[credit.CreditResp] {

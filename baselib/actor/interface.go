@@ -145,6 +145,23 @@ type TellOnlyRef[M Message] interface {
 	// stopped, or mailbox full). For durable mailboxes, a nil error
 	// indicates the message was durably persisted.
 	Tell(ctx context.Context, msg M) error
+
+	// TryTell enqueues a message only if the target can accept it right
+	// now. It never parks the calling goroutine, which is what makes it
+	// safe to call from inside another actor's receive loop: a backed up
+	// peer can no longer freeze the sender. A mailbox at capacity returns
+	// ErrMailboxFull, leaving the message in the caller's hands to drop,
+	// stash, or reschedule for a later retry.
+	//
+	// The context is consulted only for an immediate cancellation check.
+	// TryTell never waits on it, so attaching a deadline buys nothing.
+	// Every other failure matches Tell: ErrActorTerminated once the
+	// target has stopped, ErrMailboxClosed once its mailbox is closed.
+	//
+	// A durable mailbox enqueues through a database write, so its
+	// "immediate" attempt is bounded by a short internal deadline rather
+	// than being strictly instantaneous.
+	TryTell(ctx context.Context, msg M) error
 }
 
 // ActorRef is a reference to an actor that supports both "tell" and "ask"

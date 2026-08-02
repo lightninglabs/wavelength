@@ -5991,6 +5991,13 @@ func (f *faultyUnrollTxConfirm) Tell(ctx context.Context,
 	return f.inner.Tell(ctx, msg)
 }
 
+// TryTell forwards non-blocking fire-and-forget messages to the real actor.
+func (f *faultyUnrollTxConfirm) TryTell(ctx context.Context,
+	msg txconfirm.Msg) error {
+
+	return f.inner.TryTell(ctx, msg)
+}
+
 // Ask rejects confirmation requests with a failed state and forwards
 // everything else to the real actor.
 func (f *faultyUnrollTxConfirm) Ask(ctx context.Context,

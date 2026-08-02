@@ -31,6 +31,14 @@ func (b *bestHeightRef) Tell(_ context.Context,
 	return nil
 }
 
+// TryTell delegates to Tell, which is all this double needs: no test
+// drives the non-blocking path through it.
+func (b *bestHeightRef) TryTell(ctx context.Context,
+	msg chainsource.ChainSourceMsg) error {
+
+	return b.Tell(ctx, msg)
+}
+
 // Ask returns the configured best height.
 func (b *bestHeightRef) Ask(_ context.Context,
 	msg chainsource.ChainSourceMsg,

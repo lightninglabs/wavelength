@@ -43,6 +43,15 @@ func (m *MapInputRef[In, Out]) Tell(ctx context.Context, msg In) error {
 	return m.targetRef.Tell(ctx, transformed)
 }
 
+// TryTell transforms the incoming message using mapFn and hands it to the
+// target's non-blocking send, so a wrapped ref stays as backpressure-friendly
+// as the ref it wraps.
+func (m *MapInputRef[In, Out]) TryTell(ctx context.Context, msg In) error {
+	transformed := m.mapFn(msg)
+
+	return m.targetRef.TryTell(ctx, transformed)
+}
+
 // ID returns a composite identifier incorporating the target's ID.
 func (m *MapInputRef[In, Out]) ID() string {
 	return fmt.Sprintf("map-input->%s", m.targetRef.ID())
@@ -96,6 +105,21 @@ func (m *FilterMapInputRef[In, Out]) Tell(ctx context.Context, msg In) error {
 	}
 
 	return m.targetRef.Tell(ctx, transformed)
+}
+
+// TryTell transforms the incoming message using mapFn and hands it to the
+// target's non-blocking send. A message the transform drops reports success,
+// mirroring Tell: a dropped event is a normal outcome here, not a failure the
+// caller should retry.
+func (m *FilterMapInputRef[In, Out]) TryTell(ctx context.Context,
+	msg In) error {
+
+	transformed, ok := m.mapFn(msg)
+	if !ok {
+		return nil
+	}
+
+	return m.targetRef.TryTell(ctx, transformed)
 }
 
 // ID returns a composite identifier incorporating the target's ID.
