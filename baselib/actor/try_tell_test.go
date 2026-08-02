@@ -2,10 +2,12 @@ package actor
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/tlv"
 	"github.com/stretchr/testify/require"
 )
 
@@ -229,4 +231,217 @@ func TestTryTellThroughMapInputRef(t *testing.T) {
 
 	err := wrapped.TryTell(t.Context(), newTestMsg("overflow"))
 	require.ErrorIs(t, err, ErrMailboxFull)
+}
+
+// TestTryTellThroughFilterMapInputRef verifies the filtering wrapper reports
+// a dropped message as success (there is nothing to retry) while still
+// surfacing the target's backpressure for messages it does forward.
+func TestTryTellThroughFilterMapInputRef(t *testing.T) {
+	t.Parallel()
+
+	h := newActorTestHarness(t)
+	a, _ := wedgedActor(t, h)
+
+	wrapped := NewFilterMapInputRef(
+		a.Ref(), func(msg *testMsg) (*testMsg, bool) {
+			return msg, msg.data != "dropped"
+		},
+	)
+
+	// A message the transform drops never reaches the full mailbox.
+	require.NoError(t, wrapped.TryTell(t.Context(), newTestMsg("dropped")))
+
+	// One it forwards reports the target's answer unchanged.
+	err := wrapped.TryTell(t.Context(), newTestMsg("forwarded"))
+	require.ErrorIs(t, err, ErrMailboxFull)
+}
+
+// TestTryTellThroughMapRef verifies the ask-capable wrapper forwards the
+// non-blocking send, and that a transform failure is reported before the
+// target is touched at all.
+func TestTryTellThroughMapRef(t *testing.T) {
+	t.Parallel()
+
+	h := newActorTestHarness(t)
+	a, _ := wedgedActor(t, h)
+
+	transformErr := errors.New("bad input")
+	failing := NewMapRef(
+		a.Ref(),
+		func(msg *testMsg) (*testMsg, error) {
+			return nil, transformErr
+		},
+		func(r string) string { return r },
+	)
+
+	err := failing.TryTell(t.Context(), newTestMsg("unmapped"))
+	require.ErrorIs(t, err, transformErr)
+	require.NotErrorIs(t, err, ErrMailboxFull)
+
+	forwarding := NewMapRef(
+		a.Ref(),
+		func(msg *testMsg) (*testMsg, error) { return msg, nil },
+		func(r string) string { return r },
+	)
+
+	err = forwarding.TryTell(t.Context(), newTestMsg("forwarded"))
+	require.ErrorIs(t, err, ErrMailboxFull)
+}
+
+// TestTryTellThroughRouter verifies the router reports the selected actor's
+// backpressure, and reports its own inability to select one when the service
+// key has no registrations. The latter is transient by design, so callers
+// must not read it as a permanent failure.
+func TestTryTellThroughRouter(t *testing.T) {
+	t.Parallel()
+
+	h := newRouterTestHarness(t)
+	key := NewServiceKey[*testMsg, string]("try-tell-router")
+
+	router := NewRouter(
+		h.receptionist, key, NewRoundRobinStrategy[*testMsg, string](),
+		nil,
+	)
+
+	// With nothing registered there is no actor to try.
+	err := router.TryTell(t.Context(), newTestMsg("unrouted"))
+	require.ErrorIs(t, err, ErrNoActorsAvailable)
+
+	// With a wedged actor registered, the router surfaces the mailbox
+	// answer rather than its own.
+	a, _ := wedgedActor(t, h.actorTestHarness)
+	require.NoError(
+		t,
+		RegisterWithReceptionist(
+			h.receptionist, key, a.Ref(),
+		),
+	)
+
+	err = router.TryTell(t.Context(), newTestMsg("routed"))
+	require.ErrorIs(t, err, ErrMailboxFull)
+}
+
+// slowEnqueueStore wraps a delivery store and holds every enqueue until it is
+// released, modelling a database too busy to answer promptly.
+type slowEnqueueStore struct {
+	*mockDeliveryStore
+
+	release chan struct{}
+}
+
+// newSlowEnqueueStore returns a store whose enqueues park until released.
+func newSlowEnqueueStore() *slowEnqueueStore {
+	return &slowEnqueueStore{
+		mockDeliveryStore: newMockDeliveryStore(),
+		release:           make(chan struct{}),
+	}
+}
+
+// EnqueueMessage waits for the test to release it, for the caller's context
+// to expire, whichever comes first.
+func (s *slowEnqueueStore) EnqueueMessage(ctx context.Context,
+	params EnqueueParams) error {
+
+	select {
+	case <-s.release:
+		return s.mockDeliveryStore.EnqueueMessage(ctx, params)
+
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// TestDurableTryTellPersists verifies the success path of the durable
+// implementation: the message is written to the store, just as Tell writes it.
+func TestDurableTryTellPersists(t *testing.T) {
+	t.Parallel()
+
+	store := newMockDeliveryStore()
+	cfg := DefaultDurableActorConfig(
+		"durable-try-tell",
+		newMockBehavior(
+			fn.Ok(42),
+		),
+		store,
+		newActorTestCodec(),
+	)
+	a := NewDurableActor(cfg).UnwrapOrFail(t)
+
+	msg := &actorTestMsg{
+		Value:   tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(7)),
+		Payload: tlv.NewPrimitiveRecord[tlv.TlvType2]([]byte("try")),
+	}
+	require.NoError(t, a.Ref().TryTell(t.Context(), msg))
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	require.Len(t, store.messages, 1)
+}
+
+// TestDurableTryTellSlowWriteIsNotMailboxFull pins the semantics that make
+// the durable implementation the odd one out. Its queue has no capacity, so
+// it never reports a full mailbox; a database that cannot answer inside the
+// mailbox's internal deadline shows up as a deadline instead. A caller that
+// only retries ErrMailboxFull silently discards durable messages exactly when
+// the database is struggling, which is when losing them hurts most.
+func TestDurableTryTellSlowWriteIsNotMailboxFull(t *testing.T) {
+	t.Parallel()
+
+	store := newSlowEnqueueStore()
+	defer close(store.release)
+
+	cfg := DefaultDurableActorConfig(
+		"durable-slow-write",
+		newMockBehavior(
+			fn.Ok(42),
+		),
+		store,
+		newActorTestCodec(),
+	)
+	a := NewDurableActor(cfg).UnwrapOrFail(t)
+
+	msg := &actorTestMsg{
+		Value:   tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(9)),
+		Payload: tlv.NewPrimitiveRecord[tlv.TlvType2]([]byte("slow")),
+	}
+
+	err := a.Ref().TryTell(t.Context(), msg)
+	require.Error(t, err)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.NotErrorIs(t, err, ErrMailboxFull)
+
+	// The caller's own context is untouched: the deadline that expired
+	// belongs to the mailbox, not to them.
+	require.NoError(t, t.Context().Err())
+}
+
+// TestDurableTryTellTerminatedActor verifies the durable ref still reports
+// the terminal error that tells a caller to stop retrying.
+func TestDurableTryTellTerminatedActor(t *testing.T) {
+	t.Parallel()
+
+	cfg := DefaultDurableActorConfig(
+		"durable-terminated",
+		newMockBehavior(
+			fn.Ok(42),
+		),
+		newMockDeliveryStore(),
+		newActorTestCodec(),
+	)
+	a := NewDurableActor(cfg).UnwrapOrFail(t)
+
+	a.Start()
+	a.Stop()
+
+	msg := &actorTestMsg{
+		Value:   tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(11)),
+		Payload: tlv.NewPrimitiveRecord[tlv.TlvType2]([]byte("dead")),
+	}
+
+	require.Eventually(t, func() bool {
+		return errors.Is(
+			a.Ref().TryTell(t.Context(), msg),
+			ErrActorTerminated,
+		)
+	}, time.Second, 10*time.Millisecond)
 }

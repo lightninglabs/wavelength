@@ -1539,7 +1539,15 @@ func (ref *durableActorRefImpl[M, R]) Tell(ctx context.Context, msg M) error {
 // away. The enqueue is a database write, so the mailbox bounds the attempt
 // with its own short deadline instead of returning instantaneously; what the
 // caller is guaranteed is that it will never park waiting on a backlogged
-// consumer.
+// consumer. A durable queue has no capacity, so this never reports
+// ErrMailboxFull: a database too slow to answer inside that deadline shows up
+// as a wrapped context.DeadlineExceeded instead.
+//
+// Unlike Tell, this does not carry the caller's transaction into the enqueue.
+// The mailbox runs its bounded write on its own background context, so the
+// row commits on its own regardless of what the caller's transaction does.
+// Stripping the transaction here makes that explicit rather than leaving a
+// transaction in the envelope that the write will not honour.
 func (ref *durableActorRefImpl[M, R]) TryTell(ctx context.Context,
 	msg M) error {
 
@@ -1556,7 +1564,7 @@ func (ref *durableActorRefImpl[M, R]) TryTell(ctx context.Context,
 	env := envelope[M, R]{
 		message:   msg,
 		promise:   nil,
-		callerCtx: ctx,
+		callerCtx: WithoutTx(ctx),
 	}
 
 	if err := ref.actor.mailbox.TrySend(env); err != nil {

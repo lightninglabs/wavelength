@@ -158,9 +158,40 @@ type TellOnlyRef[M Message] interface {
 	// Every other failure matches Tell: ErrActorTerminated once the
 	// target has stopped, ErrMailboxClosed once its mailbox is closed.
 	//
-	// A durable mailbox enqueues through a database write, so its
-	// "immediate" attempt is bounded by a short internal deadline rather
-	// than being strictly instantaneous.
+	// Durable targets behave differently in three ways that callers must
+	// plan for.
+	//
+	// First, a durable queue has no capacity, so a durable ref never
+	// returns ErrMailboxFull. What it returns under load is the failure
+	// of a bounded database write, because the enqueue is a write that
+	// the mailbox bounds with a short internal deadline rather than
+	// completing instantaneously. That is usually a wrapped
+	// context.DeadlineExceeded, but the identity is the driver's to
+	// choose and some report a deadline as an error of their own. A
+	// caller that only retries on ErrMailboxFull therefore discards
+	// durable messages the moment the database slows down, and one that
+	// keys off the deadline instead is only slightly better off. Decide
+	// by exclusion: retry on anything that is not ErrActorTerminated or
+	// ErrMailboxClosed.
+	//
+	// Second, a durable TryTell drops the caller's database transaction:
+	// the mailbox performs its bounded write on its own background
+	// context, so the row is committed independently. Tell, by contrast,
+	// carries the caller's transaction into the enqueue so the message
+	// and the caller's state change land atomically. Swapping Tell for
+	// TryTell inside a commit closure therefore breaks that atomicity
+	// silently, and the message can survive a rolled back transaction.
+	// Keep durable enqueues that must be atomic on Tell. On a
+	// single-writer store such as SQLite the swap does not even buy a
+	// working send: the independent write waits on the writer the caller
+	// is still holding, so every attempt burns its whole deadline and
+	// fails.
+	//
+	// Third, retrying a failed durable TryTell is at-least-once. A write
+	// that misses the mailbox's deadline may still commit, and the retry
+	// enqueues under a fresh message ID, so nothing deduplicates the two
+	// rows and the consumer sees the message twice. Anything retried
+	// into a durable target has to be idempotent.
 	TryTell(ctx context.Context, msg M) error
 }
 
