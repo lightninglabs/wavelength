@@ -2,6 +2,8 @@ package timeout
 
 import (
 	"context"
+	"fmt"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -456,4 +458,111 @@ func TestTimeoutActorStaysResponsiveWhileCallbackWedged(t *testing.T) {
 	// And it must still fire the timers it accepted.
 	_, ok := healthy.AwaitMessage(5 * time.Second)
 	require.True(t, ok, "timer never fired while a callback was wedged")
+}
+
+// goroutineFloor samples the process goroutine count a few times and returns
+// the smallest reading, which filters out the short-lived goroutines a timer
+// fire spawns and leaves only the ones that are actually parked.
+func goroutineFloor() int {
+	floor := runtime.NumGoroutine()
+	for range 10 {
+		time.Sleep(5 * time.Millisecond)
+
+		if n := runtime.NumGoroutine(); n < floor {
+			floor = n
+		}
+	}
+
+	return floor
+}
+
+// TestSelfSignalDoesNotLeakGoroutines verifies that timer fires landing on a
+// backed up actor coalesce instead of stacking parked senders. A blocking
+// self-tell leaked one goroutine per fire for as long as the actor stayed
+// behind, which is precisely when timers fire fastest.
+func TestSelfSignalDoesNotLeakGoroutines(t *testing.T) {
+	// Deliberately not parallel: this test counts goroutines
+	// process-wide.
+	ctx := t.Context()
+
+	a := NewActor()
+
+	// A self-ref whose mailbox is full and stays full, so every internal
+	// fire meets a target that will not take it.
+	wedgedSelf := actor.NewChannelTellOnlyRef[Msg]("wedged-self", 1)
+	require.NoError(t, wedgedSelf.TryTell(ctx, &internalTimerFired{}))
+
+	a.Start(wedgedSelf)
+
+	t.Cleanup(func() {
+		// Drain the queued fires so the retry chains find room and
+		// end, rather than spinning for the rest of the run.
+		for {
+			select {
+			case <-wedgedSelf.Messages():
+			case <-time.After(100 * time.Millisecond):
+				return
+			}
+		}
+	})
+
+	callback := actor.NewChannelTellOnlyRef[*ExpiredMsg]("callback", 1)
+
+	before := goroutineFloor()
+
+	const timers = 40
+
+	for i := range timers {
+		res := a.Receive(ctx, &ScheduleTimeoutRequest{
+			ID:       ID(fmt.Sprintf("leak-%d", i)),
+			Duration: 5 * time.Millisecond,
+			Callback: callback,
+		})
+		require.True(t, res.IsOk())
+	}
+
+	// Long enough for every timer to fire and retry several times over.
+	time.Sleep(300 * time.Millisecond)
+
+	after := goroutineFloor()
+
+	require.Less(
+		t, after, before+timers/2,
+		"timer fires parked goroutines on the wedged mailbox",
+	)
+}
+
+// TestSelfSignalRetriesUntilMailboxDrains verifies the coalesced fire is a
+// deferral and not a drop: once the actor's own mailbox has room again, the
+// fire it could not accept arrives.
+func TestSelfSignalRetriesUntilMailboxDrains(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	clock := newFakeClock(startEpoch)
+	a := NewActorWithClock(clock)
+
+	self := actor.NewChannelTellOnlyRef[Msg]("full-self", 1)
+	require.NoError(t, self.TryTell(ctx, &internalTimerFired{}))
+
+	a.Start(self)
+
+	res := a.Receive(ctx, &ScheduleTimeoutRequest{
+		ID:       "deferred",
+		Duration: 50 * time.Millisecond,
+		Callback: newMockCallbackRef(t, "callback"),
+	})
+	require.True(t, res.IsOk())
+
+	// The fire finds no room, so it is re-armed rather than dropped or
+	// parked.
+	clock.Advance(50 * time.Millisecond)
+
+	// Make room and let the retry run.
+	<-self.Messages()
+	clock.Advance(selfSignalRetry)
+
+	fired, ok := self.AwaitMessage(time.Second)
+	require.True(t, ok, "deferred fire never arrived")
+	require.Equal(t, "internalTimerFired", fired.MessageType())
 }
