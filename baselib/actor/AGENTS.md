@@ -11,8 +11,8 @@ crash-safe at-least-once delivery with exactly-once deduplication.
 - `Actor[M, R]` — Generic actor with typed message `M` and response `R`. Processes messages sequentially from its mailbox.
 - `ActorBehavior[M, R]` — Interface that actors implement: `Start`, `Receive`, `Stop`.
 - `ActorConfig[M, R]` — Configuration for actor creation (behavior, mailbox, codec, delivery store).
-- `ActorRef[M, R]` — Typed reference for sending messages to an actor (`Tell`, `Ask`).
-- `TellOnlyRef[M]` — Fire-and-forget reference (no response type).
+- `ActorRef[M, R]` — Typed reference for sending messages to an actor (`Tell`, `TryTell`, `Ask`).
+- `TellOnlyRef[M]` — Fire-and-forget reference (no response type): `Tell` blocks for mailbox room, `TryTell` never does.
 - `ActorSystem` — Container managing actor lifecycles, registration, and
   shutdown. `DeadLetters() ActorRef[Message, any]` returns the dead-letter
   outlet configured via `ActorConfig.DLO`.
@@ -104,6 +104,12 @@ crash-safe at-least-once delivery with exactly-once deduplication.
 - `RestartMessage` has `RestartPriority` (MaxInt32) ensuring it is processed before all other messages on recovery.
 - Transaction context (`WithTx`/`RequireTx`) enables same-DB-transaction joining between actors and their callers.
 - `Mailbox.Send` returns the exact failure error (`ErrMailboxClosed`, `ErrActorTerminated`, `context.Canceled`, `context.DeadlineExceeded`) rather than a boolean; `Tell` and `Ask` propagate this directly to callers.
+- **Never `Tell` from inside a receive goroutine without a bound.** A blocking
+  send into a full peer mailbox parks the whole receive loop, and if the peer
+  is waiting on that actor the pair deadlocks. Use `TryTell`, which returns
+  `ErrMailboxFull` immediately so the caller can drop, stash, or reschedule
+  the message. A `context.WithTimeout` around `Tell` is the weaker option: it
+  burns the entire deadline against a peer that is already wedged.
 - During daemon teardown, the underlying DB is closed before every actor's lease loop has wound down. The lease loop uses `isExpectedShutdownErr` to demote these "database is closed" errors to debug level; real operational errors still surface as warnings because neither the actor context nor the outer context is done in those cases.
 - **Per-correlation-key FIFO claim.** Two messages in the same mailbox that
   share a non-empty `CorrelationKey()` are processed in emission order
