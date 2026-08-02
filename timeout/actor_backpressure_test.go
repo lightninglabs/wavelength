@@ -2,6 +2,7 @@ package timeout
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"runtime"
 	"sync"
@@ -92,16 +93,19 @@ type wedgeableTickRef struct {
 
 	id       string
 	wedged   bool
+	err      error
 	attempts int
 	msgs     []TickFiredMsg
 }
 
-// newWedgeableTickRef returns a tick callback that refuses deliveries until
-// release is called.
+// newWedgeableTickRef returns a tick callback that refuses deliveries with a
+// full mailbox until release is called. Tests override err to model a
+// different failure.
 func newWedgeableTickRef(id string) *wedgeableTickRef {
 	return &wedgeableTickRef{
 		id:     id,
 		wedged: true,
+		err:    actor.ErrMailboxFull,
 	}
 }
 
@@ -126,7 +130,7 @@ func (w *wedgeableTickRef) TryTell(_ context.Context, msg *TickFiredMsg) error {
 	w.attempts++
 
 	if w.wedged {
-		return actor.ErrMailboxFull
+		return w.err
 	}
 
 	w.msgs = append(w.msgs, *msg)
@@ -164,6 +168,311 @@ func TestRetryDelayBackoff(t *testing.T) {
 	require.Equal(t, 16*time.Second, retryDelay(5))
 	require.Equal(t, retryMaxDelay, retryDelay(6))
 	require.Equal(t, retryMaxDelay, retryDelay(1000))
+}
+
+// TestTickRetryDelayStartsFromInterval verifies that a fast ticker starts its
+// backoff from its own cadence rather than jumping to the one second base,
+// while a ticker slower than that base keeps the standard backoff. It is the
+// starting point that moves and nothing else: the doubling and the 30s
+// ceiling apply to a recurring entry exactly as they do to a one-shot, so a
+// consumer that stays unreachable backs off well past its own interval.
+func TestTickRetryDelayStartsFromInterval(t *testing.T) {
+	t.Parallel()
+
+	const fast = 100 * time.Millisecond
+
+	require.Equal(t, fast, tickRetryDelay(fast, 1))
+	require.Equal(t, 2*fast, tickRetryDelay(fast, 2))
+	require.Equal(t, 4*fast, tickRetryDelay(fast, 3))
+
+	// The ceiling is the global one, not the interval. A ticker whose
+	// consumer stays unreachable ends up far slower than its configured
+	// cadence, which is the point: every attempt against a durable
+	// callback is a bounded database write.
+	require.Equal(t, retryMaxDelay, tickRetryDelay(fast, 1000))
+	require.Greater(t, tickRetryDelay(fast, 1000), fast)
+
+	// A slow ticker is already slower than the base, so nothing is
+	// capped and it behaves exactly like a one-shot retry.
+	const slow = time.Minute
+
+	require.Equal(t, retryBaseDelay, tickRetryDelay(slow, 1))
+	require.Equal(t, 2*retryBaseDelay, tickRetryDelay(slow, 2))
+
+	// A nonsensical interval must not spin the doubling loop.
+	require.Equal(t, retryBaseDelay, tickRetryDelay(0, 1))
+}
+
+// TestTimeoutRetriesTransientFailures is the regression test for treating
+// every non-terminal delivery error as permanent. Durable callbacks (OOR
+// session retries, credit polls) never report a full mailbox: their enqueue
+// is a database write that surfaces a deadline when the database is slow, and
+// a Router reports that it momentarily has no actor. Discarding the reminder
+// in those cases is worse than what the old blocking send did, because
+// nothing re-derives it until the daemon restarts.
+func TestTimeoutRetriesTransientFailures(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{
+			name: "mailbox full",
+			err:  actor.ErrMailboxFull,
+		},
+		{
+			// What a durable mailbox returns when the write does
+			// not finish inside its internal deadline.
+			name: "slow durable write",
+			err: fmt.Errorf("enqueue message: %w",
+				context.DeadlineExceeded),
+		},
+		{
+			// What a Router returns before its target registers,
+			// or while the target is being replaced.
+			name: "no actors available",
+			err:  actor.ErrNoActorsAvailable,
+		},
+		{
+			name: "unknown transport failure",
+			err:  errors.New("connection reset"),
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			clock := newFakeClock(startEpoch)
+			a := newTestActor(clock)
+			cb := newWedgeableCallbackRef("transient", tc.err)
+
+			res := a.Receive(ctx, &ScheduleTimeoutRequest{
+				ID:       "transient",
+				Duration: 50 * time.Millisecond,
+				Callback: cb,
+			})
+			require.True(t, res.IsOk())
+
+			// The failure must not consume the reminder.
+			clock.Advance(50 * time.Millisecond)
+
+			msgs, attempts := cb.snapshot()
+			require.Empty(t, msgs)
+			require.Equal(t, 1, attempts)
+			require.Len(t, a.oneshots, 1)
+
+			// Once the requester recovers, the held reminder is
+			// delivered on the next retry.
+			cb.release()
+			clock.Advance(retryBaseDelay)
+
+			msgs, _ = cb.snapshot()
+			require.Len(t, msgs, 1)
+			require.Equal(t, ID("transient"), msgs[0].ID)
+			require.Empty(t, a.oneshots)
+		})
+	}
+}
+
+// TestTimeoutDropsTerminalCallbacks verifies the two errors that really are
+// end states release the entry instead of retrying into a corpse forever.
+func TestTimeoutDropsTerminalCallbacks(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{
+			name: "actor terminated",
+			err:  actor.ErrActorTerminated,
+		},
+		{
+			name: "mailbox closed",
+			err:  actor.ErrMailboxClosed,
+		},
+		{
+			name: "wrapped terminal error",
+			err: fmt.Errorf("deliver expiry: %w",
+				actor.ErrActorTerminated),
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			clock := newFakeClock(startEpoch)
+			a := newTestActor(clock)
+			cb := newWedgeableCallbackRef("terminal", tc.err)
+
+			res := a.Receive(ctx, &ScheduleTimeoutRequest{
+				ID:       "terminal",
+				Duration: 50 * time.Millisecond,
+				Callback: cb,
+			})
+			require.True(t, res.IsOk())
+
+			clock.Advance(50 * time.Millisecond)
+			require.Empty(t, a.oneshots)
+
+			// No retry chain outlives the entry.
+			clock.Advance(time.Minute)
+
+			msgs, attempts := cb.snapshot()
+			require.Empty(t, msgs)
+			require.Equal(t, 1, attempts)
+		})
+	}
+}
+
+// TestTickRetriesTransientFailure verifies the recurring path shares the
+// one-shot verdict: a transient failure holds the tick and retries, and only
+// a terminal one stops the ticker.
+func TestTickRetriesTransientFailure(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	clock := newFakeClock(startEpoch)
+	a := newTestActor(clock)
+	cb := newWedgeableTickRef("slow-db-tick")
+	cb.err = fmt.Errorf("enqueue message: %w", context.DeadlineExceeded)
+
+	res := a.Receive(ctx, &ScheduleRecurringTickRequest{
+		ID:       "tick",
+		Interval: time.Second,
+		Callback: cb,
+	})
+	require.True(t, res.IsOk())
+
+	clock.Advance(time.Second)
+
+	msgs, attempts := cb.snapshot()
+	require.Empty(t, msgs)
+	require.Equal(t, 1, attempts)
+	require.Len(t, a.recurring, 1)
+
+	cb.release()
+	clock.Advance(retryBaseDelay)
+
+	msgs, _ = cb.snapshot()
+	require.Len(t, msgs, 1)
+	require.Equal(t, startEpoch.Add(time.Second), msgs[0].FiredAt)
+}
+
+// TestTickStopsOnTerminalCallback verifies a ticker whose consumer is gone
+// releases its entry rather than re-arming forever.
+func TestTickStopsOnTerminalCallback(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	clock := newFakeClock(startEpoch)
+	a := newTestActor(clock)
+	cb := newWedgeableTickRef("dead-tick")
+	cb.err = actor.ErrActorTerminated
+
+	res := a.Receive(ctx, &ScheduleRecurringTickRequest{
+		ID:       "tick",
+		Interval: time.Second,
+		Callback: cb,
+	})
+	require.True(t, res.IsOk())
+
+	clock.Advance(time.Second)
+	require.Empty(t, a.recurring)
+
+	clock.Advance(time.Minute)
+
+	msgs, attempts := cb.snapshot()
+	require.Empty(t, msgs)
+	require.Equal(t, 1, attempts)
+}
+
+// TestRescheduleSupersedesArmedRetry verifies a fresh schedule for an ID with
+// a retry in flight wins outright: the old reminder never lands, and the new
+// one fires on its own duration.
+func TestRescheduleSupersedesArmedRetry(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	clock := newFakeClock(startEpoch)
+	a := newTestActor(clock)
+	cb := newWedgeableCallbackRef("wedged", actor.ErrMailboxFull)
+
+	res := a.Receive(ctx, &ScheduleTimeoutRequest{
+		ID:       "resched",
+		Duration: 50 * time.Millisecond,
+		Callback: cb,
+	})
+	require.True(t, res.IsOk())
+
+	clock.Advance(50 * time.Millisecond)
+	require.Len(t, a.oneshots, 1)
+
+	// Re-scheduling the same ID replaces the entry, which stops the armed
+	// retry and resets the attempt count with it.
+	healthy := newWedgeableCallbackRef("healthy", actor.ErrMailboxFull)
+	healthy.release()
+
+	res = a.Receive(ctx, &ScheduleTimeoutRequest{
+		ID:       "resched",
+		Duration: 10 * time.Second,
+		Callback: healthy,
+	})
+	require.True(t, res.IsOk())
+
+	// The old retry instant passes without waking the old callback.
+	cb.release()
+	clock.Advance(5 * time.Second)
+
+	msgs, _ := cb.snapshot()
+	require.Empty(t, msgs)
+
+	msgs, _ = healthy.snapshot()
+	require.Empty(t, msgs)
+
+	// The replacement fires on its own schedule.
+	clock.Advance(5 * time.Second)
+
+	msgs, _ = healthy.snapshot()
+	require.Len(t, msgs, 1)
+	require.Empty(t, a.oneshots)
+}
+
+// TestCancelDuringRecurringRetry verifies a cancel lands even while a tick is
+// held for retry: the ticker stops and the held tick is never delivered.
+func TestCancelDuringRecurringRetry(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	clock := newFakeClock(startEpoch)
+	a := newTestActor(clock)
+	cb := newWedgeableTickRef("wedged-tick")
+
+	res := a.Receive(ctx, &ScheduleRecurringTickRequest{
+		ID:       "tick",
+		Interval: time.Second,
+		Callback: cb,
+	})
+	require.True(t, res.IsOk())
+
+	clock.Advance(time.Second)
+	require.Len(t, a.recurring, 1)
+
+	res = a.Receive(ctx, &CancelTimeoutRequest{ID: "tick"})
+	require.True(t, res.IsOk())
+	require.Empty(t, a.recurring)
+
+	cb.release()
+	clock.Advance(time.Minute)
+
+	msgs, attempts := cb.snapshot()
+	require.Empty(t, msgs)
+	require.Equal(t, 1, attempts)
 }
 
 // TestTimeoutRetriesWedgedCallback verifies an expiry that cannot be
@@ -315,14 +624,22 @@ func TestTickRetryPreservesFireInstant(t *testing.T) {
 	require.Empty(t, msgs)
 	require.Equal(t, 1, attempts)
 
+	// The retry base is capped at the interval, so the second attempt
+	// comes one interval later rather than a full second later.
+	clock.Advance(100 * time.Millisecond)
+
+	msgs, attempts = cb.snapshot()
+	require.Empty(t, msgs)
+	require.Equal(t, 2, attempts)
+
 	// The retry replaces the cadence while the consumer is behind, so no
 	// second tick piles up during the backoff window.
 	cb.release()
-	clock.Advance(time.Second)
+	clock.Advance(200 * time.Millisecond)
 
 	msgs, attempts = cb.snapshot()
 	require.Len(t, msgs, 1)
-	require.Equal(t, 2, attempts)
+	require.Equal(t, 3, attempts)
 	require.Equal(t, firedAt, msgs[0].FiredAt)
 
 	// With the consumer drained, the ticker resumes its normal interval.

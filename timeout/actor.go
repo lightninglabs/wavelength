@@ -21,11 +21,6 @@ const (
 	// long stall still gets its reminder reasonably promptly.
 	retryMaxDelay = 30 * time.Second
 
-	// maxRetryShift bounds the doubling exponent so the shift below can
-	// never overflow the duration. Every attempt past it waits
-	// retryMaxDelay.
-	maxRetryShift = 5
-
 	// selfSignalRetry is how long a clock goroutine waits before
 	// re-offering a timer fire that the actor's own mailbox had no room
 	// for. It is short because an internal fire is the actor's own work,
@@ -34,25 +29,61 @@ const (
 	selfSignalRetry = 50 * time.Millisecond
 )
 
-// retryDelay returns how long to wait before delivery attempt n, doubling
-// from retryBaseDelay and flattening out at retryMaxDelay.
-func retryDelay(attempt int) time.Duration {
-	// Attempts are one-based, and a zero would turn the shift below into a
-	// negative one, which panics.
+// terminalDelivery reports whether a failed delivery is permanent. Only a
+// stopped actor and a closed mailbox qualify, because those are end states
+// that no amount of waiting reverses. Everything else is treated as passing
+// and retried: a full mailbox, a slow write behind a durable mailbox
+// surfacing as a deadline, and a router that momentarily has no actor
+// registered are all conditions the requester recovers from. Guessing the
+// other way round means silently discarding a reminder nobody will re-derive.
+func terminalDelivery(err error) bool {
+	return errors.Is(err, actor.ErrActorTerminated) ||
+		errors.Is(err, actor.ErrMailboxClosed)
+}
+
+// backoffDelay returns the delay before attempt n of a delivery that keeps
+// failing, doubling from base and flattening out at retryMaxDelay. The
+// doubling runs as a loop that returns at the cap, so no attempt count can
+// overflow the duration.
+func backoffDelay(base time.Duration, attempt int) time.Duration {
+	// A non-positive base would make the loop below spin forever, and a
+	// zero-th attempt has no doubling to do.
+	if base <= 0 {
+		base = retryBaseDelay
+	}
 	if attempt < 1 {
-		return retryBaseDelay
+		return base
 	}
 
-	if attempt > maxRetryShift {
-		return retryMaxDelay
-	}
-
-	delay := retryBaseDelay << (attempt - 1)
-	if delay > retryMaxDelay {
-		return retryMaxDelay
+	delay := base
+	for range attempt - 1 {
+		delay *= 2
+		if delay >= retryMaxDelay {
+			return retryMaxDelay
+		}
 	}
 
 	return delay
+}
+
+// retryDelay returns how long to wait before one-shot delivery attempt n.
+func retryDelay(attempt int) time.Duration {
+	return backoffDelay(retryBaseDelay, attempt)
+}
+
+// tickRetryDelay returns how long to wait before recurring delivery attempt
+// n. A ticker faster than the standard base starts its doubling from its own
+// interval instead, so a single transient failure does not stretch a 100ms
+// ticker to a full second; anything slower than the base keeps it.
+//
+// Only the starting point moves. The doubling and the retryMaxDelay ceiling
+// apply to a recurring entry exactly as they do to a one-shot, so a consumer
+// that stays unreachable ends up retrying well past its own cadence. That is
+// deliberate rather than an oversight: every attempt against a durable
+// callback is a bounded database write, and re-offering a 100ms tick every
+// 100ms forever would hammer the store it is already struggling with.
+func tickRetryDelay(interval time.Duration, attempt int) time.Duration {
+	return backoffDelay(min(interval, retryBaseDelay), attempt)
 }
 
 // oneshotEntry tracks a one-shot timeout scheduled via
@@ -154,8 +185,13 @@ func NewActorWithClock(clock Clock) *Actor {
 // ActorSystem) inject a synchronous self-ref via newSyncSelfRef.
 //
 // Start must be called before any ScheduleTimeoutRequest or
-// ScheduleRecurringTickRequest is delivered. It is safe to call once
-// only — subsequent calls overwrite the self-ref.
+// ScheduleRecurringTickRequest is delivered, and is meant to be called
+// once. The ref is published through an atomic.Value, so a second call
+// carrying the same concrete type replaces the first, while one
+// carrying a different concrete type panics. Nothing in the daemon
+// restarts an actor with a different ref implementation, but a test
+// swapping a real ref for a synchronous one mid-life would find that
+// edge.
 func (a *Actor) Start(self actor.TellOnlyRef[Msg]) {
 	a.self.Store(self)
 }
@@ -193,7 +229,7 @@ func (a *Actor) signalSelf(msg Msg) {
 	// The actor is stopped or its mailbox closed. The fire has nowhere to
 	// go and no amount of waiting will change that, so let the chain end
 	// here.
-	if !errors.Is(err, actor.ErrMailboxFull) {
+	if terminalDelivery(err) {
 		return
 	}
 
@@ -344,14 +380,9 @@ func (a *Actor) handleTimerFired(ctx context.Context,
 	case err == nil:
 		delete(a.oneshots, m.ID)
 
-	// The requester is merely behind. Keep the entry, which is the only
-	// copy of this reminder, and re-arm the same fire later.
-	case errors.Is(err, actor.ErrMailboxFull):
-		a.retryOneshot(ctx, m.ID, entry)
-
 	// The requester is gone for good, so there is nobody left to remind
 	// and no backoff that would change that.
-	default:
+	case terminalDelivery(err):
 		delete(a.oneshots, m.ID)
 
 		logger(ctx).WarnS(ctx, "Dropping expired timeout, callback "+
@@ -359,6 +390,11 @@ func (a *Actor) handleTimerFired(ctx context.Context,
 			slog.String("timeout_id", string(m.ID)),
 			slog.String("callback", entry.callback.ID()),
 		)
+
+	// Anything else is a passing failure. Keep the entry, which is the
+	// only copy of this reminder, and re-arm the same fire later.
+	default:
+		a.retryOneshot(ctx, m.ID, entry, err)
 	}
 
 	return fn.Ok[Resp](&AckResponse{
@@ -366,16 +402,18 @@ func (a *Actor) handleTimerFired(ctx context.Context,
 	})
 }
 
-// retryOneshot re-arms an expiry whose callback had no room for it. The
+// retryOneshot re-arms an expiry whose callback could not take it. The
 // entry keeps its generation so the re-armed fire still matches on
 // arrival, and the new timer handle is recorded on the entry so a
 // Cancel or reschedule can stop the retry chain.
-func (a *Actor) retryOneshot(ctx context.Context, id ID, entry *oneshotEntry) {
+func (a *Actor) retryOneshot(ctx context.Context, id ID, entry *oneshotEntry,
+	cause error) {
+
 	entry.attempts++
 	delay := retryDelay(entry.attempts)
 
-	logger(ctx).WarnS(ctx, "Timeout callback mailbox full, retrying "+
-		"delivery", actor.ErrMailboxFull,
+	logger(ctx).WarnS(ctx, "Timeout callback delivery failed, retrying",
+		cause,
 		slog.String("timeout_id", string(id)),
 		slog.String("callback", entry.callback.ID()),
 		slog.Int("attempt", entry.attempts),
@@ -433,15 +471,26 @@ func (a *Actor) handleTickFired(ctx context.Context,
 		//nolint:contextcheck // timer is owned by timeout actor
 		a.armRecurring(m.ID, entry.gen, entry.interval)
 
-	// The consumer is behind. Hold the tick and come back for it rather
-	// than dropping it on the floor.
-	case errors.Is(err, actor.ErrMailboxFull):
+	// A ticker with no reachable consumer is pure overhead, so stop the
+	// chain instead of re-arming into a dead actor forever.
+	case terminalDelivery(err):
+		delete(a.recurring, m.ID)
+
+		logger(ctx).WarnS(ctx, "Stopping recurring tick, callback "+
+			"unreachable", err,
+			slog.String("tick_id", string(m.ID)),
+			slog.String("callback", entry.callback.ID()),
+		)
+
+	// The consumer could not take this tick. Hold it and come back for
+	// it rather than dropping it on the floor.
+	default:
 		entry.pending = tick
 		entry.attempts++
-		delay := retryDelay(entry.attempts)
+		delay := tickRetryDelay(entry.interval, entry.attempts)
 
-		logger(ctx).WarnS(ctx, "Tick callback mailbox full, retrying "+
-			"delivery", err,
+		logger(ctx).WarnS(ctx, "Tick callback delivery failed, "+
+			"retrying", err,
 			slog.String("tick_id", string(m.ID)),
 			slog.String("callback", entry.callback.ID()),
 			slog.Int("attempt", entry.attempts),
@@ -450,17 +499,6 @@ func (a *Actor) handleTickFired(ctx context.Context,
 
 		//nolint:contextcheck // timer is owned by timeout actor
 		a.armRecurring(m.ID, entry.gen, delay)
-
-	// A ticker with no reachable consumer is pure overhead, so stop the
-	// chain instead of re-arming into a dead actor forever.
-	default:
-		delete(a.recurring, m.ID)
-
-		logger(ctx).WarnS(ctx, "Stopping recurring tick, callback "+
-			"unreachable", err,
-			slog.String("tick_id", string(m.ID)),
-			slog.String("callback", entry.callback.ID()),
-		)
 	}
 
 	return fn.Ok[Resp](&AckResponse{
