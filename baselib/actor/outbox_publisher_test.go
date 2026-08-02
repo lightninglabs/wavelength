@@ -134,6 +134,12 @@ func (r *mockActorRef) Tell(ctx context.Context, msg Message) error {
 	return r.system.tellError
 }
 
+// TryTell delegates to Tell, which is all this double needs: no test
+// drives the non-blocking path through it.
+func (r *mockActorRef) TryTell(ctx context.Context, msg Message) error {
+	return r.Tell(ctx, msg)
+}
+
 func (r *mockActorRef) Ask(ctx context.Context, msg Message) Future[any] {
 	promise := NewPromise[any]()
 	promise.Complete(fn.Err[any](errors.New("Ask not supported in mock")))

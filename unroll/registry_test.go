@@ -301,6 +301,14 @@ func (f *fakeRegistryChainSourceRef) Tell(_ context.Context,
 	return nil
 }
 
+// TryTell delegates to Tell, which is all this double needs: no test
+// drives the non-blocking path through it.
+func (f *fakeRegistryChainSourceRef) TryTell(ctx context.Context,
+	msg chainsource.ChainSourceMsg) error {
+
+	return f.Tell(ctx, msg)
+}
+
 // Ask returns fixed best-height and fee-estimate responses.
 func (f *fakeRegistryChainSourceRef) Ask(_ context.Context,
 	msg chainsource.ChainSourceMsg,
@@ -506,6 +514,12 @@ func (r *terminalDrainRef) Tell(context.Context, Msg) error {
 	return nil
 }
 
+// TryTell delegates to Tell, which is all this double needs: no test
+// drives the non-blocking path through it.
+func (r *terminalDrainRef) TryTell(ctx context.Context, msg Msg) error {
+	return r.Tell(ctx, msg)
+}
+
 func (r *terminalDrainRef) Ask(ctx context.Context,
 	msg Msg) actor.Future[Resp] {
 
@@ -552,6 +566,14 @@ func (n noopRegistryTellRef) ID() string {
 
 func (n noopRegistryTellRef) Tell(context.Context, RegistryMsg) error {
 	return nil
+}
+
+// TryTell delegates to Tell, which is all this double needs: no test
+// drives the non-blocking path through it.
+func (n noopRegistryTellRef) TryTell(ctx context.Context,
+	msg RegistryMsg) error {
+
+	return n.Tell(ctx, msg)
 }
 
 // TestRegistryEnsureDedupesSameTarget verifies that the registry creates one

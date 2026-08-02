@@ -1211,6 +1211,14 @@ func (f *fakeOORServerConn) Tell(context.Context,
 	return nil
 }
 
+// TryTell delegates to Tell, which is all this double needs: no test
+// drives the non-blocking path through it.
+func (f *fakeOORServerConn) TryTell(ctx context.Context,
+	msg serverconn.ServerConnMsg) error {
+
+	return f.Tell(ctx, msg)
+}
+
 // noopOORHandler is an oor.OutboxHandler stub used to satisfy the registry
 // constructor's required-dep check in tests that exercise the RPC idempotency
 // pre-flight rather than the incoming receive path.

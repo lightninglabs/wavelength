@@ -1535,6 +1535,51 @@ func (ref *durableActorRefImpl[M, R]) Tell(ctx context.Context, msg M) error {
 	return nil
 }
 
+// TryTell enqueues a message only if the durable mailbox can take it right
+// away. The enqueue is a database write, so the mailbox bounds the attempt
+// with its own short deadline instead of returning instantaneously; what the
+// caller is guaranteed is that it will never park waiting on a backlogged
+// consumer.
+func (ref *durableActorRefImpl[M, R]) TryTell(ctx context.Context,
+	msg M) error {
+
+	logger(ctx).TraceS(ctx, "Sending TryTell to durable actor",
+		"actor_id", ref.actor.id,
+		"msg_type", msg.MessageType())
+
+	// A caller that has already given up should not have its message
+	// persisted.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	env := envelope[M, R]{
+		message:   msg,
+		promise:   nil,
+		callerCtx: ctx,
+	}
+
+	if err := ref.actor.mailbox.TrySend(env); err != nil {
+		if errors.Is(err, ErrActorTerminated) {
+			logger(ctx).DebugS(
+				ctx,
+				"TryTell failed, routing to DLO",
+				"actor_id", ref.actor.id,
+				"msg_type", msg.MessageType(),
+			)
+
+			// Use context.Background() since the actor is
+			// terminated and the original context might already be
+			// cancelled.
+			ref.trySendToDLO(context.Background(), msg)
+		}
+
+		return err
+	}
+
+	return nil
+}
+
 // Ask sends a message and returns a Future for the response.
 func (ref *durableActorRefImpl[M, R]) Ask(ctx context.Context,
 	msg M) Future[R] {

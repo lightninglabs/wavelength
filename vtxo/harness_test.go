@@ -803,6 +803,14 @@ func (m *mockRoundActorRef) Tell(
 	return nil
 }
 
+// TryTell delegates to Tell, which is all this double needs: no test
+// drives the non-blocking path through it.
+func (m *mockRoundActorRef) TryTell(ctx context.Context,
+	msg actormsg.RoundReceivable) error {
+
+	return m.Tell(ctx, msg)
+}
+
 // getMessages returns all captured messages.
 func (m *mockRoundActorRef) getMessages() []actormsg.RoundReceivable {
 	m.mu.Lock()
@@ -838,6 +846,12 @@ func (m *mockManagerRef) Tell(_ context.Context, msg ManagerMsg) error {
 	m.messages = append(m.messages, msg)
 
 	return nil
+}
+
+// TryTell delegates to Tell, which is all this double needs: no test
+// drives the non-blocking path through it.
+func (m *mockManagerRef) TryTell(ctx context.Context, msg ManagerMsg) error {
+	return m.Tell(ctx, msg)
 }
 
 func (m *mockManagerRef) getMessages() []ManagerMsg {
@@ -880,6 +894,14 @@ func (m *mockChainResolverRef) Tell(
 	m.messages = append(m.messages, msg)
 
 	return nil
+}
+
+// TryTell delegates to Tell, which is all this double needs: no test
+// drives the non-blocking path through it.
+func (m *mockChainResolverRef) TryTell(ctx context.Context,
+	msg ExpiringNotification) error {
+
+	return m.Tell(ctx, msg)
 }
 
 // getMessages returns all captured messages.

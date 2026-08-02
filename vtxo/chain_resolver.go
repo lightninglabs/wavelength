@@ -73,3 +73,24 @@ func (l *LazyChainResolver) Tell(ctx context.Context,
 
 	return t.Tell(ctx, msg)
 }
+
+// TryTell forwards the message to the real target without blocking. Before
+// the target is wired the notification is buffered, which never blocks
+// either, so this path is safe to call from a receive goroutine.
+func (l *LazyChainResolver) TryTell(ctx context.Context,
+	msg ExpiringNotification) error {
+
+	l.mu.Lock()
+	t := l.target
+	if t == nil {
+		l.buffered = append(l.buffered, bufferedNotification{
+			msg: msg,
+		})
+		l.mu.Unlock()
+
+		return nil
+	}
+	l.mu.Unlock()
+
+	return t.TryTell(ctx, msg)
+}

@@ -32,6 +32,14 @@ func (n noopChainSourceRef) Tell(_ context.Context,
 	return nil
 }
 
+// TryTell delegates to Tell, which is all this double needs: no test
+// drives the non-blocking path through it.
+func (n noopChainSourceRef) TryTell(ctx context.Context,
+	msg chainsource.ChainSourceMsg) error {
+
+	return n.Tell(ctx, msg)
+}
+
 func (n noopChainSourceRef) Ask(_ context.Context,
 	msg chainsource.ChainSourceMsg,
 ) actor.Future[chainsource.ChainSourceResp] {
@@ -78,6 +86,14 @@ func (c *cancelSensitiveChainResolverRef) Tell(ctx context.Context,
 	c.seen <- err
 
 	return err
+}
+
+// TryTell delegates to Tell, which is all this double needs: no test
+// drives the non-blocking path through it.
+func (c *cancelSensitiveChainResolverRef) TryTell(ctx context.Context,
+	msg ExpiringNotification) error {
+
+	return c.Tell(ctx, msg)
 }
 
 var _ actor.ActorRef[

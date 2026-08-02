@@ -79,6 +79,20 @@ func (m *MapRef[In, Out, InR, OutR]) Tell(ctx context.Context, msg In) error {
 	return m.targetRef.Tell(ctx, transformed)
 }
 
+// TryTell transforms the incoming message using mapInput and hands it to the
+// target's non-blocking send. A transform failure is reported before the
+// target is touched at all.
+func (m *MapRef[In, Out, InR, OutR]) TryTell(ctx context.Context,
+	msg In) error {
+
+	transformed, err := m.mapInput(msg)
+	if err != nil {
+		return fmt.Errorf("map input: %w", err)
+	}
+
+	return m.targetRef.TryTell(ctx, transformed)
+}
+
 // Ask transforms the incoming message using mapInput, forwards it to the
 // target reference, and transforms the response using mapOutput.
 func (m *MapRef[In, Out, InR, OutR]) Ask(

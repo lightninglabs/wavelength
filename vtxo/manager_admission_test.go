@@ -54,6 +54,14 @@ func (m *mockVTXOActorRef) Tell(_ context.Context,
 	return nil
 }
 
+// TryTell delegates to Tell, which is all this double needs: no test
+// drives the non-blocking path through it.
+func (m *mockVTXOActorRef) TryTell(ctx context.Context,
+	msg actormsg.VTXOActorMsg) error {
+
+	return m.Tell(ctx, msg)
+}
+
 // Ask processes the event through the real FSM state and returns a
 // completed Future with the result.
 func (m *mockVTXOActorRef) Ask(ctx context.Context,
@@ -120,6 +128,14 @@ func (c *capturingManagerRef) Tell(_ context.Context, msg ManagerMsg) error {
 	return nil
 }
 
+// TryTell delegates to Tell, which is all this double needs: no test
+// drives the non-blocking path through it.
+func (c *capturingManagerRef) TryTell(ctx context.Context,
+	msg ManagerMsg) error {
+
+	return c.Tell(ctx, msg)
+}
+
 // captured returns a snapshot of the recorded messages.
 func (c *capturingManagerRef) captured() []ManagerMsg {
 	c.mu.Lock()
@@ -148,6 +164,14 @@ func (b *blockingVTXOActorRef) Tell(_ context.Context,
 	return nil
 }
 
+// TryTell delegates to Tell, which is all this double needs: no test
+// drives the non-blocking path through it.
+func (b *blockingVTXOActorRef) TryTell(ctx context.Context,
+	msg actormsg.VTXOActorMsg) error {
+
+	return b.Tell(ctx, msg)
+}
+
 // Ask returns a future that remains pending until the await context ends.
 func (b *blockingVTXOActorRef) Ask(_ context.Context,
 	_ actormsg.VTXOActorMsg) actor.Future[actormsg.VTXOActorResp] {
@@ -172,6 +196,14 @@ func (f failingChainSourceRef) Tell(_ context.Context,
 	_ chainsource.ChainSourceMsg) error {
 
 	return nil
+}
+
+// TryTell delegates to Tell, which is all this double needs: no test
+// drives the non-blocking path through it.
+func (f failingChainSourceRef) TryTell(ctx context.Context,
+	msg chainsource.ChainSourceMsg) error {
+
+	return f.Tell(ctx, msg)
 }
 
 // Ask returns a failed future for every chain-source request.

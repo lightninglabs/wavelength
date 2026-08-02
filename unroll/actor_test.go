@@ -159,6 +159,14 @@ func (f *fakeTxConfirmRef) Tell(context.Context, txconfirm.Msg) error {
 	return nil
 }
 
+// TryTell delegates to Tell, which is all this double needs: no test
+// drives the non-blocking path through it.
+func (f *fakeTxConfirmRef) TryTell(ctx context.Context,
+	msg txconfirm.Msg) error {
+
+	return f.Tell(ctx, msg)
+}
+
 // Ask records the request and returns an awaiting-confirmation response.
 func (f *fakeTxConfirmRef) Ask(_ context.Context,
 	msg txconfirm.Msg) actor.Future[txconfirm.Resp] {
@@ -442,6 +450,14 @@ func (f *fakeChainSourceRef) Tell(_ context.Context,
 	}
 
 	return nil
+}
+
+// TryTell delegates to Tell, which is all this double needs: no test
+// drives the non-blocking path through it.
+func (f *fakeChainSourceRef) TryTell(ctx context.Context,
+	msg chainsource.ChainSourceMsg) error {
+
+	return f.Tell(ctx, msg)
 }
 
 // Ask returns fixed fee-estimate responses.

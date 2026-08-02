@@ -79,6 +79,14 @@ func (m *mockServerConnRef) Tell(
 	return nil
 }
 
+// TryTell delegates to Tell, which is all this double needs: no test
+// drives the non-blocking path through it.
+func (m *mockServerConnRef) TryTell(ctx context.Context,
+	msg serverconn.ServerConnMsg) error {
+
+	return m.Tell(ctx, msg)
+}
+
 func (m *mockServerConnRef) clearMessages() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -157,6 +165,14 @@ func (m *mockChainSourceRef) Tell(
 	return nil
 }
 
+// TryTell delegates to Tell, which is all this double needs: no test
+// drives the non-blocking path through it.
+func (m *mockChainSourceRef) TryTell(ctx context.Context,
+	msg chainsource.ChainSourceMsg) error {
+
+	return m.Tell(ctx, msg)
+}
+
 // Ask implements actor.ActorRef for the mock. It returns a BestHeightResponse
 // for height queries.
 func (m *mockChainSourceRef) Ask(
@@ -221,6 +237,14 @@ func (m *mockWalletActorRef) Tell(_ context.Context,
 	_ = msg
 
 	return nil
+}
+
+// TryTell delegates to Tell, which is all this double needs: no test
+// drives the non-blocking path through it.
+func (m *mockWalletActorRef) TryTell(ctx context.Context,
+	msg wallet.WalletMsg) error {
+
+	return m.Tell(ctx, msg)
 }
 
 func (m *mockWalletActorRef) Ask(_ context.Context,
@@ -323,6 +347,14 @@ func (m *mockSelfRef) Tell(
 	return nil
 }
 
+// TryTell delegates to Tell, which is all this double needs: no test
+// drives the non-blocking path through it.
+func (m *mockSelfRef) TryTell(ctx context.Context,
+	msg actormsg.RoundReceivable) error {
+
+	return m.Tell(ctx, msg)
+}
+
 // waitForMessage blocks until a message arrives or the timeout expires,
 // enabling synchronous test assertions on asynchronous actor messages.
 func (m *mockSelfRef) waitForMessage(timeout time.Duration) (
@@ -386,6 +418,12 @@ func (m *mockTimeoutActor) Tell(_ context.Context, msg timeout.Msg) error {
 	}
 
 	return nil
+}
+
+// TryTell delegates to Tell, which is all this double needs: no test
+// drives the non-blocking path through it.
+func (m *mockTimeoutActor) TryTell(ctx context.Context, msg timeout.Msg) error {
+	return m.Tell(ctx, msg)
 }
 
 // assertTimeoutScheduled verifies a timeout was scheduled.
@@ -457,6 +495,14 @@ func (m *mockVTXOManagerRef) Tell(_ context.Context, msg VTXOManagerMsg) error {
 	m.messages = append(m.messages, msg)
 
 	return nil
+}
+
+// TryTell delegates to Tell, which is all this double needs: no test
+// drives the non-blocking path through it.
+func (m *mockVTXOManagerRef) TryTell(ctx context.Context,
+	msg VTXOManagerMsg) error {
+
+	return m.Tell(ctx, msg)
 }
 
 // assertVTXOCreatedReceived verifies a VTXOCreatedNotification was received.
