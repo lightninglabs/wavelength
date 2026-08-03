@@ -153,10 +153,23 @@ func upsertPendingIntentDetail(ctx context.Context, q PendingIntentStore,
 
 	switch p := intent.Payload.(type) {
 	case *wallet.BoardIntentPayload:
+		// Store nil rather than a zero-length slice when there is no
+		// custom policy so the columns round-trip as NULL on Postgres
+		// (the x'' BYTEA pitfall) and the pk_script length CHECK holds.
+		var policyTemplate, pkScript []byte
+		if len(p.PolicyTemplate) > 0 {
+			policyTemplate = p.PolicyTemplate
+		}
+		if len(p.PkScript) > 0 {
+			pkScript = p.PkScript
+		}
+
 		err := q.UpsertPendingBoardIntent(
 			ctx, sqlc.UpsertPendingBoardIntentParams{
-				IntentID:        intent.ID[:],
-				TargetVtxoCount: int32(p.TargetVTXOCount),
+				IntentID:           intent.ID[:],
+				TargetVtxoCount:    int32(p.TargetVTXOCount),
+				VtxoPolicyTemplate: policyTemplate,
+				PkScript:           pkScript,
 			},
 		)
 		if err != nil {
@@ -315,6 +328,8 @@ func listPendingBoardIntents(ctx context.Context, q PendingIntentStore,
 			ID: id,
 			Payload: &wallet.BoardIntentPayload{
 				TargetVTXOCount: uint32(row.TargetVtxoCount),
+				PolicyTemplate:  row.VtxoPolicyTemplate,
+				PkScript:        row.PkScript,
 			},
 			RequestedAt: row.RequestedAtUnix,
 			Anchors:     anchors[id],

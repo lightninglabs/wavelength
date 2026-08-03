@@ -19,10 +19,14 @@ SET requested_at_unix = excluded.requested_at_unix,
 -- name: UpsertPendingBoardIntent :exec
 INSERT INTO pending_board_intents (
     intent_id,
-    target_vtxo_count
-) VALUES ($1, $2)
+    target_vtxo_count,
+    vtxo_policy_template,
+    pk_script
+) VALUES ($1, $2, $3, $4)
 ON CONFLICT (intent_id) DO UPDATE
-SET target_vtxo_count = excluded.target_vtxo_count;
+SET target_vtxo_count = excluded.target_vtxo_count,
+    vtxo_policy_template = excluded.vtxo_policy_template,
+    pk_script = excluded.pk_script;
 
 -- name: UpsertPendingSendIntent :exec
 INSERT INTO pending_send_intents (
@@ -56,7 +60,7 @@ SET intent_id = excluded.intent_id;
 -- retired and must not be re-submitted on restart.
 SELECT
     i.intent_id, i.requested_at_unix,
-    b.target_vtxo_count
+    b.target_vtxo_count, b.vtxo_policy_template, b.pk_script
 FROM pending_intents i
 JOIN pending_board_intents b ON b.intent_id = i.intent_id
 WHERE i.kind = 'board' AND i.status = 'pending'

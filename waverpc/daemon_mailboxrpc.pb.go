@@ -72,6 +72,10 @@ type DaemonServiceMailboxServer interface {
 	ListPendingForfeitParticipantSignatureRequests(ctx context.Context, req *ListPendingForfeitParticipantSignatureRequestsRequest) (*ListPendingForfeitParticipantSignatureRequestsResponse, error)
 	// SubmitForfeitParticipantSignatures handles SubmitForfeitParticipantSignatures.
 	SubmitForfeitParticipantSignatures(ctx context.Context, req *SubmitForfeitParticipantSignaturesRequest) (*SubmitForfeitParticipantSignaturesResponse, error)
+	// ListPendingTreeSigningRequests handles ListPendingTreeSigningRequests.
+	ListPendingTreeSigningRequests(ctx context.Context, req *ListPendingTreeSigningRequestsRequest) (*ListPendingTreeSigningRequestsResponse, error)
+	// SubmitTreeSignatures handles SubmitTreeSignatures.
+	SubmitTreeSignatures(ctx context.Context, req *SubmitTreeSignaturesRequest) (*SubmitTreeSignaturesResponse, error)
 	// LeaveVTXOs handles LeaveVTXOs.
 	LeaveVTXOs(ctx context.Context, req *LeaveVTXOsRequest) (*LeaveVTXOsResponse, error)
 	// SendOnChain handles SendOnChain.
@@ -357,6 +361,26 @@ func RegisterDaemonServiceMailboxServer(r rpc.Router, impl DaemonServiceMailboxS
 		}
 
 		return impl.SubmitForfeitParticipantSignatures(ctx, req)
+	})
+	r.Handle("waverpc.DaemonService", "ListPendingTreeSigningRequests", func() proto.Message {
+		return &ListPendingTreeSigningRequestsRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*ListPendingTreeSigningRequestsRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.ListPendingTreeSigningRequests(ctx, req)
+	})
+	r.Handle("waverpc.DaemonService", "SubmitTreeSignatures", func() proto.Message {
+		return &SubmitTreeSignaturesRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*SubmitTreeSignaturesRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.SubmitTreeSignatures(ctx, req)
 	})
 	r.Handle("waverpc.DaemonService", "LeaveVTXOs", func() proto.Message {
 		return &LeaveVTXOsRequest{}
@@ -1115,6 +1139,52 @@ func (c *DaemonServiceMailboxClient) SubmitForfeitParticipantSignatures(ctx cont
 	}
 
 	resp := new(SubmitForfeitParticipantSignaturesResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// ListPendingTreeSigningRequests calls the ListPendingTreeSigningRequests RPC.
+func (c *DaemonServiceMailboxClient) ListPendingTreeSigningRequests(ctx context.Context, req *ListPendingTreeSigningRequestsRequest, opts ...rpc.RPCOptions) (*ListPendingTreeSigningRequestsResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "waverpc.DaemonService",
+		Method:  "ListPendingTreeSigningRequests",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(ListPendingTreeSigningRequestsResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// SubmitTreeSignatures calls the SubmitTreeSignatures RPC.
+func (c *DaemonServiceMailboxClient) SubmitTreeSignatures(ctx context.Context, req *SubmitTreeSignaturesRequest, opts ...rpc.RPCOptions) (*SubmitTreeSignaturesResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "waverpc.DaemonService",
+		Method:  "SubmitTreeSignatures",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(SubmitTreeSignaturesResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

@@ -2372,6 +2372,8 @@ func (a *Ark) handleBoard(ctx context.Context,
 
 		payload := &BoardIntentPayload{
 			TargetVTXOCount: req.TargetVTXOCount,
+			PolicyTemplate:  req.PolicyTemplate,
+			PkScript:        req.PkScript,
 		}
 
 		pendingIntent := PendingIntent{
@@ -2403,9 +2405,11 @@ func (a *Ark) handleBoard(ctx context.Context,
 
 	if err := roundRef.Tell(
 		ctx, &actormsg.TriggerBoardMsg{
-			Amounts:   vtxoAmounts,
-			Outpoints: boardOutpoints,
-			Change:    changeLeave,
+			Amounts:        vtxoAmounts,
+			Outpoints:      boardOutpoints,
+			Change:         changeLeave,
+			PolicyTemplate: req.PolicyTemplate,
+			PkScript:       req.PkScript,
 		},
 	); err != nil {
 		// The persisted row stays in place so the next daemon

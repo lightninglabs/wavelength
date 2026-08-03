@@ -127,6 +127,20 @@ type TriggerBoardMsg struct {
 	// board later once headroom frees up. Nil when the full balance
 	// boards.
 	Change *types.LeaveRequest
+
+	// PolicyTemplate optionally pins the serialized arkscript policy for
+	// every boarded VTXO output. Nil selects the standard collaborative
+	// policy with a freshly derived owner key (the legacy behavior); when
+	// set, the round actor builds each boarded output from this template
+	// verbatim instead of synthesizing one, letting a client board directly
+	// into a custom-owned VTXO (e.g. one owned by an external FROST
+	// aggregate key).
+	PolicyTemplate []byte
+
+	// PkScript optionally pins the taproot output script for the boarded
+	// VTXOs. Only valid alongside PolicyTemplate; empty means derive it
+	// from the template.
+	PkScript []byte
 }
 
 // RoundReceivable implements the RoundReceivable marker interface.

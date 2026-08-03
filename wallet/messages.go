@@ -737,6 +737,20 @@ type BoardRequest struct {
 	// sets this to false so a replay re-persists with a fresh
 	// timestamp.
 	NoPersist bool
+
+	// PolicyTemplate optionally pins the arkscript policy for every boarded
+	// VTXO output. When nil, the round actor synthesizes the standard
+	// collaborative policy with a freshly derived owner key. When set, the
+	// boarded outputs adopt this serialized template verbatim, so a client
+	// can board directly into a custom-owned VTXO (e.g. one owned by an
+	// external FROST aggregate key). It is persisted with the board intent
+	// and re-applied on restart replay.
+	PolicyTemplate []byte
+
+	// PkScript optionally pins the taproot output script for the boarded
+	// VTXOs. Only valid alongside PolicyTemplate; when empty the script is
+	// derived from the template.
+	PkScript []byte
 }
 
 // MessageType returns the message type identifier for logging and debugging.
