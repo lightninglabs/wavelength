@@ -25,7 +25,7 @@ require (
 	github.com/lightninglabs/neutrino v0.18.0
 	github.com/lightninglabs/neutrino/cache v1.1.4
 	github.com/lightninglabs/taproot-assets v0.7.1-0.20260729123750-e798aabc7f20
-	github.com/lightninglabs/taproot-assets/taprpc v1.1.1-0.20260729123750-e798aabc7f20
+	github.com/lightninglabs/taproot-assets/taprpc v1.1.1-0.20260729123750-e798aabc7f20 // indirect
 	github.com/lightninglabs/wavelength/baselib v0.0.0-00010101000000-000000000000
 	github.com/lightningnetwork/lightning-onion v1.4.0
 	github.com/lightningnetwork/lnd v0.21.0-beta.rc2.0.20260630214209-40c64f9db30d
@@ -63,7 +63,7 @@ require (
 	github.com/btcsuite/btcd/txscript/v2 v2.0.0
 	github.com/btcsuite/btcd/wire/v2 v2.0.0
 	github.com/lightninglabs/go-wasmsqlite v0.0.0-20260627090804-0dce68fc5287
-	github.com/lightninglabs/tap-sdk v0.1.1-0.20260729124414-c3701b659431
+	github.com/lightninglabs/tap-sdk v0.1.1-0.20260803083718-078e401f418d
 )
 
 require (
