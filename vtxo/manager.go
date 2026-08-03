@@ -1473,6 +1473,11 @@ func (m *Manager) handleRelayToRound(ctx context.Context,
 				req.VTXOOutpoint, member.generation,
 			)
 		}
+		if refresh && req.Automatic {
+			m.rollbackForfeit(
+				ctx, []wire.OutPoint{req.VTXOOutpoint},
+			)
+		}
 		m.logger(ctx).WarnS(ctx, "Failed to relay to round",
 			err,
 			slog.String(
@@ -1514,6 +1519,13 @@ func (m *Manager) coordinateAutoRefreshCohort(ctx context.Context,
 		cohortCtx, cancel = context.WithTimeout(ctx, timeout)
 	}
 	defer cancel()
+
+	operatorKey, keyOK := m.autoRefreshCohortOperatorKey(
+		cohortCtx, req,
+	)
+	if !keyOK {
+		return nil
+	}
 
 	liveCandidates, err := m.cfg.Store.ListVTXOsByStatus(
 		cohortCtx, VTXOStatusLive,
@@ -1621,6 +1633,7 @@ func (m *Manager) coordinateAutoRefreshCohort(ctx context.Context,
 				BatchExpiry:    req.BatchExpiry,
 				LeaderOutpoint: req.VTXOOutpoint,
 				Generation:     generation,
+				OperatorKey:    operatorKey,
 			},
 		).Unpack()
 		if err != nil {
@@ -1693,6 +1706,33 @@ func (m *Manager) coordinateAutoRefreshCohort(ctx context.Context,
 	)
 
 	return members
+}
+
+// autoRefreshCohortOperatorKey returns one operator-key snapshot for every
+// sibling in a cohort. A leader normally carries the key used to build its
+// own replacement policy; the fallback covers direct and legacy callers.
+func (m *Manager) autoRefreshCohortOperatorKey(ctx context.Context,
+	req *round.RefreshVTXORequest) (*btcec.PublicKey, bool) {
+
+	if req.OperatorKey != nil || m.cfg.FetchOperatorKey == nil {
+		return req.OperatorKey, true
+	}
+
+	operatorKey, err := m.cfg.FetchOperatorKey(ctx)
+	if err == nil && operatorKey != nil {
+		return operatorKey, true
+	}
+	if err == nil {
+		err = fmt.Errorf("nil operator key returned")
+	}
+	m.logger(ctx).WarnS(
+		ctx,
+		"Failed to snapshot automatic refresh cohort terms",
+		err,
+		slog.String("leader_outpoint", req.VTXOOutpoint.String()),
+	)
+
+	return nil, false
 }
 
 // rememberAdoptedAutoRefreshRelay records a same-block leader relay that is

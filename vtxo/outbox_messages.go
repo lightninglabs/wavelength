@@ -72,8 +72,9 @@ type ForfeitRequest struct {
 	// recursive discovery.
 	ExpandCohort bool
 
-	// CohortMember returns the constructed round request to the manager's
-	// active coordination turn instead of re-entering the manager mailbox.
+	// CohortMember tells the actor to return the constructed round request
+	// to the manager's active coordination turn instead of re-entering the
+	// manager mailbox.
 	CohortMember bool
 }
 
