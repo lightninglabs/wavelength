@@ -172,7 +172,82 @@ func TestLiveStateBlockEpochNeedsRefresh(t *testing.T) {
 	assertState[*PendingForfeitState](h)
 
 	// Should emit ForfeitRequest.
-	assertOutboxContains[*ForfeitRequest](h)
+	request := assertOutboxContains[*ForfeitRequest](h)
+	require.True(t, request.ExpandCohort)
+	require.False(t, request.CohortMember)
+}
+
+// TestLiveStateCohortRefreshEligibility verifies a same-expiry safe sibling
+// can join the leader while mismatched and critical VTXOs preserve their own
+// safety decisions.
+func TestLiveStateCohortRefreshEligibility(t *testing.T) {
+	t.Parallel()
+
+	const (
+		batchExpiry = int32(1_000)
+		safeHeight  = int32(700)
+	)
+
+	t.Run("same expiry safe sibling joins", func(t *testing.T) {
+		t.Parallel()
+
+		h := newVTXOTestHarness(t)
+		vtxo := h.newTestDescriptor()
+		vtxo.BatchExpiry = batchExpiry
+		h.withState(&LiveState{VTXO: vtxo})
+		h.store.On(
+			"UpdateVTXOStatus", h.ctx, vtxo.Outpoint,
+			VTXOStatusPendingForfeit,
+		).Return(nil)
+
+		_, err := h.sendEvent(&CohortRefreshEvent{
+			Height:      safeHeight,
+			BatchExpiry: batchExpiry,
+		})
+		require.NoError(t, err)
+		assertState[*PendingForfeitState](h)
+
+		request := assertOutboxContains[*ForfeitRequest](h)
+		require.False(t, request.ExpandCohort)
+		require.True(t, request.CohortMember)
+	})
+
+	t.Run("different expiry remains live", func(t *testing.T) {
+		t.Parallel()
+
+		h := newVTXOTestHarness(t)
+		vtxo := h.newTestDescriptor()
+		vtxo.BatchExpiry = batchExpiry + 1
+		h.withState(&LiveState{VTXO: vtxo})
+
+		_, err := h.sendEvent(&CohortRefreshEvent{
+			Height:      safeHeight,
+			BatchExpiry: batchExpiry,
+		})
+		require.NoError(t, err)
+		assertState[*LiveState](h)
+		require.Empty(t, h.outboxMessages)
+	})
+
+	t.Run(
+		"critical sibling remains live for block path",
+		func(t *testing.T) {
+			t.Parallel()
+
+			h := newVTXOTestHarness(t)
+			vtxo := h.newTestDescriptor()
+			vtxo.BatchExpiry = batchExpiry
+			h.withState(&LiveState{VTXO: vtxo})
+
+			_, err := h.sendEvent(&CohortRefreshEvent{
+				Height:      batchExpiry - 1,
+				BatchExpiry: batchExpiry,
+			})
+			require.NoError(t, err)
+			assertState[*LiveState](h)
+			require.Empty(t, h.outboxMessages)
+		},
+	)
 }
 
 // TestPendingForfeitEventFromLiveState verifies that a round-driven pending

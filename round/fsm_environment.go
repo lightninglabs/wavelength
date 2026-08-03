@@ -56,6 +56,16 @@ type ClientEnvironment struct {
 	// environment must supply a sentinel like math.MaxInt64.
 	MaxOperatorFee btcutil.Amount
 
+	// MaxAutoRefreshFeeRatePPM is an optional proportional cap for rounds
+	// containing expiry-driven maintenance. The denominator includes only
+	// automatically refreshed value. Zero disables this additional policy;
+	// MaxOperatorFee still applies to every quote and reseal.
+	MaxAutoRefreshFeeRatePPM uint32
+
+	// MaxAutoRefreshFee optionally tightens the absolute cap for rounds
+	// containing expiry-driven maintenance. Zero disables it.
+	MaxAutoRefreshFee btcutil.Amount
+
 	// Log is the logger for FSM transitions and operations.
 	Log btclog.Logger
 

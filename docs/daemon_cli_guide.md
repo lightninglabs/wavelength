@@ -445,8 +445,11 @@ Automatic expiry handling delays to the advertised window boundary when doing
 so preserves the wallet's dynamic critical threshold and minimum cooperative
 retry buffer. If the operator configures a narrower, later window, the wallet
 keeps its normal earlier threshold and pays the quoted fee instead of weakening
-unilateral-exit safety. VTXOs that cross a safe boundary in the same block are
-coalesced into one automatic round registration.
+unilateral-exit safety. When one VTXO reaches its trigger, the wallet coalesces
+eligible siblings from the same expiry batch into one automatic round
+registration, even when their individual trigger heights are staggered. A
+sibling remains deferred when it still has a safe future free-refresh window
+worth preserving.
 The daemon learns the window from its cached operator terms at bootstrap (and
 on later terms refreshes). When the cached boundary fires, it fetches a fresh
 `GetInfo` snapshot and rechecks the current window before reserving the VTXO.
@@ -466,6 +469,15 @@ ordinary paid quote to show what the waiver saves. The estimate is
 best-effort: if the operator or chain tip is unreachable the preview
 still returns with `estimate_error` set. The binding fee remains the
 seal-time quote and may differ from any estimate.
+
+Operators can set stricter limits for automatic maintenance with
+`maxautorefreshfeesat` (an absolute satoshi cap) and
+`maxautorefreshfeerateppm` (parts per million of the automatically refreshed
+value). Both default to zero, which disables only the additional limit; the
+global `maxoperatorfeesat` cap always remains in force. If an automatic quote
+is rejected while the VTXOs are still safe, the wallet waits six blocks before
+retrying. Critical or expired VTXOs bypass that cooldown so the wallet does not
+trade unilateral-exit safety for fee throttling.
 
 An interactive real refresh shows the estimate and asks for
 confirmation. On non-interactive stdin (agents, pipelines) the command

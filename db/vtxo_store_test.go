@@ -1117,10 +1117,10 @@ func TestVTXOPersistenceStoreListVTXOsByStatusBatchedAncestry(t *testing.T) {
 }
 
 // TestVTXOPersistenceStoreListVTXOsByStatusSettlement proves the by-status
-// read joins each forfeited VTXO to its forfeit round (via forfeit_round_id)
-// and surfaces the round's commitment txid + confirmation height as the VTXO's
-// settlement coordinates. A live VTXO, which has no forfeit round, must leave
-// the settlement fields zero (issue #924).
+// read joins each forfeiting/forfeited VTXO to its forfeit round (via
+// forfeit_round_id) and surfaces the round's commitment txid + confirmation
+// height as the VTXO's settlement coordinates. A live VTXO, which has no
+// forfeit round, must leave the settlement fields zero (issue #924).
 func TestVTXOPersistenceStoreListVTXOsByStatusSettlement(t *testing.T) {
 	t.Parallel()
 
@@ -1218,6 +1218,22 @@ func TestVTXOPersistenceStoreListVTXOsByStatusSettlement(t *testing.T) {
 			nil,
 		),
 	)
+
+	// The crash-gap state is still Forfeiting even though the consuming
+	// round has already finalized. Its joined settlement must be available
+	// so startup can re-drive the lost ForfeitConfirmedEvent.
+	forfeiting, err := vtxoStore.ListVTXOsByStatus(
+		ctx, vtxo.VTXOStatusForfeiting,
+	)
+	require.NoError(t, err)
+	require.Len(t, forfeiting, 1)
+	forfeitingSettle := forfeiting[0].Settlement.UnwrapOrFail(t)
+	require.Equal(t, settlementTxid, forfeitingSettle.TxID)
+	require.Equal(t, settlementHeight, forfeitingSettle.Height)
+	require.Equal(
+		t, refreshFeeSat+boardingFeeSat, forfeitingSettle.FeeSat,
+	)
+
 	require.NoError(
 		t,
 		vtxoStore.MarkForfeited(
@@ -1429,6 +1445,10 @@ func TestVTXOPersistenceStoreStatusTransitions(t *testing.T) {
 	fetched, err = vtxoStore.GetVTXO(ctx, desc.Outpoint)
 	require.NoError(t, err)
 	require.Equal(t, vtxo.VTXOStatusForfeiting, fetched.Status)
+	require.Equal(t, desc.RoundID, fetched.RoundID)
+	require.Equal(
+		t, forfeitRoundID.String(), fetched.ForfeitRoundID,
+	)
 
 	// Transition to Forfeited via MarkForfeited.
 	forfeitTxID := chainhash.Hash{0xab, 0xcd}
@@ -1438,6 +1458,9 @@ func TestVTXOPersistenceStoreStatusTransitions(t *testing.T) {
 	fetched, err = vtxoStore.GetVTXO(ctx, desc.Outpoint)
 	require.NoError(t, err)
 	require.Equal(t, vtxo.VTXOStatusForfeited, fetched.Status)
+	require.Equal(
+		t, forfeitRoundID.String(), fetched.ForfeitRoundID,
+	)
 
 	// Verify VTXO is no longer in live list (terminal state).
 	liveVTXOs, err := vtxoStore.ListLiveVTXOs(ctx)

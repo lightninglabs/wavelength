@@ -4282,7 +4282,12 @@ func (s *Server) initRoundActor(ctx context.Context,
 		ActorSystem:    s.actorSystem,
 		TimeoutActor:   timeoutRef,
 		MaxOperatorFee: maxOperatorFee,
-		VTXOManager:    vtxoManager,
+		MaxAutoRefreshFeeRatePPM: s.cfg.
+			MaxAutoRefreshFeeRatePPM,
+		MaxAutoRefreshFee: btcutil.Amount(
+			s.cfg.MaxAutoRefreshFeeSat,
+		),
+		VTXOManager: vtxoManager,
 		DropCustomForfeitSigningContexts: s.
 			dropCustomForfeitSigningContexts,
 		OwnedScriptChecker:   scriptChecker,
@@ -4366,6 +4371,7 @@ func (s *Server) initVTXOManager(ctx context.Context,
 		s.subLogger(db.Subsystem),
 	)
 	vtxoStore := dbStore.NewVTXOStore(s.clk)
+	roundStore := dbStore.NewRoundStore(s.chainParams, s.clk)
 	ueStore := dbStore.NewUnilateralExitStore(s.clk)
 	reservationStore := dbStore.NewSpendingReservationStore(s.clk)
 	roundActor := round.NewServiceKey().Ref(s.actorSystem)
@@ -4397,6 +4403,7 @@ func (s *Server) initVTXOManager(ctx context.Context,
 
 			return resolveExitOutcome(ctx, ueStore, outpoint)
 		},
+		HasForfeitRoundCheckpoint: roundStore.HasForfeitRoundCheckpoint,
 	})
 	managerKey := actor.NewServiceKey[vtxo.ManagerMsg, vtxo.ManagerResp](
 		"vtxo-manager",

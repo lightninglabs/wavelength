@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -278,6 +279,44 @@ func NewRoundPersistenceStore(
 		chainParams: chainParams,
 		clock:       clk,
 	}
+}
+
+// HasForfeitRoundCheckpoint reports whether roundID has a durable round row.
+// CommitState creates that row at InputSigSent, before any collected VTXO
+// forfeit signatures are submitted to the operator. Consequently, absence is
+// positive proof that a recovered Forfeiting VTXO never crossed the signature
+// handoff boundary and may safely be released. Malformed IDs and query errors
+// are returned so callers can fail closed.
+func (s *RoundPersistenceStore) HasForfeitRoundCheckpoint(ctx context.Context,
+	roundID string) (bool, error) {
+
+	if _, err := round.ParseRoundID(roundID); err != nil {
+		return false, fmt.Errorf("parse forfeit round id: %w", err)
+	}
+
+	readTxOpts := ReadTxOption()
+	var exists bool
+	err := s.db.ExecTx(ctx, readTxOpts, func(q RoundStore) error {
+		_, err := q.GetRound(ctx, roundID)
+		switch {
+		case err == nil:
+			exists = true
+
+			return nil
+
+		case errors.Is(err, sql.ErrNoRows):
+			return nil
+
+		default:
+			return fmt.Errorf("get forfeit round checkpoint: %w",
+				err)
+		}
+	})
+	if err != nil {
+		return false, err
+	}
+
+	return exists, nil
 }
 
 // CommitState atomically persists both the round data and FSM state. This

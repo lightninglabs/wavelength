@@ -99,6 +99,25 @@ type RefreshVTXORequest struct {
 	// schedule or when the quote RPC was unreachable.
 	OperatorFee int64
 
+	// Automatic identifies expiry-driven wallet maintenance. It is
+	// local-only provenance and is never serialized onto the round wire.
+	Automatic bool
+
+	// BatchExpiry identifies the maintenance cohort. The VTXO manager uses
+	// it to pull other eligible live VTXOs from the same batch into this
+	// registration before the round actor's coalescing timer fires.
+	BatchExpiry int32
+
+	// TriggerHeight is the chain height that caused automatic maintenance.
+	// It lets the manager apply the same safety decision to cohort siblings
+	// and makes the queued-request log auditable.
+	TriggerHeight int32
+
+	// ExpandCohort is local-only coordination provenance. It is true only
+	// for a threshold-triggered leader; manager-forced siblings leave it
+	// false so their relay cannot recursively rediscover the same batch.
+	ExpandCohort bool
+
 	// PolicyTemplate is the semantic arkscript policy for the refreshed
 	// output. This is the authoritative round-registration representation.
 	PolicyTemplate []byte
@@ -108,7 +127,10 @@ type RefreshVTXORequest struct {
 	// confirmed VTXO locally.
 	OwnerKey keychain.KeyDescriptor
 
-	// SigningKey is the key descriptor for signing the new VTXO's tree.
+	// SigningKey is retained for compatibility with older local callers but
+	// is deliberately ignored when building the replacement output. Every
+	// refreshed VTXO receives a freshly derived signing key when the intent
+	// is sealed, including outputs that share the same owner and policy.
 	SigningKey keychain.KeyDescriptor
 }
 
@@ -118,6 +140,26 @@ func (e *RefreshVTXORequest) RoundReceivable() {}
 // MessageType returns the message type for logging.
 func (e *RefreshVTXORequest) MessageType() string {
 	return "RefreshVTXORequest"
+}
+
+// RefreshVTXOCohortRequest atomically adds a manager-coordinated maintenance
+// cohort to one assembling round. It is local-only and prevents per-member
+// mailbox latency from starting the short registration timer before the
+// leader and every accepted sibling have arrived.
+type RefreshVTXOCohortRequest struct {
+	actor.BaseMessage
+
+	// Requests contains the leader and all successfully reserved siblings
+	// in canonical outpoint order.
+	Requests []*RefreshVTXORequest
+}
+
+// RoundReceivable implements actormsg.RoundReceivable marker interface.
+func (e *RefreshVTXOCohortRequest) RoundReceivable() {}
+
+// MessageType returns the message type for logging.
+func (e *RefreshVTXOCohortRequest) MessageType() string {
+	return "RefreshVTXOCohortRequest"
 }
 
 // RegisterIntentRequest is the primary entry point for registering a
@@ -146,10 +188,10 @@ func (e *RegisterIntentRequest) MessageType() string {
 
 // buildVTXORequestFromRefresh constructs a types.VTXORequest from a
 // RefreshVTXORequest. The refresh request contains all info needed to
-// create the new VTXO output in the round. Origin is always
-// VTXOOriginRoundRefresh so the round actor routes the downstream
-// ledger emission to SourceRoundRefresh (cancels the paired forfeit on
-// transfers_out rather than crediting wallet_balance).
+// create the new VTXO output in the round. Expiry-driven requests retain
+// distinct VTXOOriginAutoRefresh provenance; manual callers use
+// VTXOOriginRoundRefresh. Both route downstream ledger traffic to
+// SourceRoundRefresh.
 //
 // Under the seal-time fee handshake (#270) the server is the amount
 // authority and requires exactly one IsChange=true marker across the
@@ -160,13 +202,19 @@ func (e *RegisterIntentRequest) MessageType() string {
 // N expiring VTXOs auto-refresh into the same assembling round, which
 // the server rejects with INVALID_CHANGE_DESIGNATION.
 func buildVTXORequestFromRefresh(req *RefreshVTXORequest) types.VTXORequest {
+	origin := types.VTXOOriginRoundRefresh
+	if req.Automatic {
+		origin = types.VTXOOriginAutoRefresh
+	}
+	sourceOutpoint := req.VTXOOutpoint
+
 	return types.VTXORequest{
-		PolicyTemplate: req.PolicyTemplate,
-		Amount:         btcutil.Amount(req.Amount),
-		ClientKey:      req.OwnerKey.PubKey,
-		OwnerKey:       req.OwnerKey,
-		SigningKey:     req.SigningKey,
-		Origin:         types.VTXOOriginRoundRefresh,
+		PolicyTemplate:        req.PolicyTemplate,
+		Amount:                btcutil.Amount(req.Amount),
+		ClientKey:             req.OwnerKey.PubKey,
+		OwnerKey:              req.OwnerKey,
+		Origin:                origin,
+		RefreshSourceOutpoint: &sourceOutpoint,
 	}
 }
 
@@ -319,6 +367,16 @@ type RoundClientConfig struct {
 	// amounts and total VTXO output amounts.
 	MaxOperatorFee btcutil.Amount
 
+	// MaxAutoRefreshFeeRatePPM optionally caps the authoritative seal-time
+	// fee for any round containing automatic maintenance. The denominator
+	// includes only automatically refreshed value. Zero disables the
+	// proportional cap; the absolute MaxOperatorFee remains mandatory.
+	MaxAutoRefreshFeeRatePPM uint32
+
+	// MaxAutoRefreshFee is an optional automatic-maintenance-specific
+	// absolute cap. Zero disables it; MaxOperatorFee remains mandatory.
+	MaxAutoRefreshFee btcutil.Amount
+
 	// VTXOManager receives VTXO creation notifications after rounds
 	// complete. The round actor forwards VTXOCreatedNotification
 	// messages so newly created VTXOs get an active VTXO actor.
@@ -411,13 +469,16 @@ func NewRoundClientActor(cfg *RoundClientConfig) fn.Result[*RoundClientActor] {
 	// (e.g., lib.NewTreeSignerSession, signing helpers). StartHeight is set
 	// to 0 here and will be set per-round when FSMs are created.
 	env := &ClientEnvironment{
-		RoundStore:             cfg.RoundStore,
-		VTXOStore:              cfg.VTXOStore,
-		Wallet:                 cfg.Wallet,
-		SigningExecutor:        cfg.SigningExecutor,
-		OperatorTerms:          cfg.OperatorTerms,
-		ChainParams:            cfg.ChainParams,
-		MaxOperatorFee:         cfg.MaxOperatorFee,
+		RoundStore:      cfg.RoundStore,
+		VTXOStore:       cfg.VTXOStore,
+		Wallet:          cfg.Wallet,
+		SigningExecutor: cfg.SigningExecutor,
+		OperatorTerms:   cfg.OperatorTerms,
+		ChainParams:     cfg.ChainParams,
+		MaxOperatorFee:  cfg.MaxOperatorFee,
+		MaxAutoRefreshFeeRatePPM: cfg.
+			MaxAutoRefreshFeeRatePPM,
+		MaxAutoRefreshFee:      cfg.MaxAutoRefreshFee,
 		Log:                    actorLog,
 		DisableJoinRequestAuth: cfg.DisableJoinRequestAuth,
 		OwnedScriptChecker:     cfg.OwnedScriptChecker,
@@ -489,8 +550,9 @@ func NewRoundClientActor(cfg *RoundClientConfig) fn.Result[*RoundClientActor] {
 //     Ark layer. Emits VTXOReceivedMsg{Source=SourceRoundBoarding}
 //     which debits vtxo_balance and credits wallet_balance.
 //
-//   - VTXOOriginRoundRefresh: includes both straight refreshes and
-//     directed-send self-change. Emits a paired
+//   - VTXOOriginRoundRefresh / VTXOOriginAutoRefresh: includes manual
+//     refreshes, directed-send self-change, and expiry-driven maintenance.
+//     Emits a paired
 //     VTXOSentMsg{RoundID} + VTXOReceivedMsg{Source=
 //     SourceRoundRefresh} for the gross amount. Their legs cancel
 //     on transfers_out, leaving only the operator fee (booked
@@ -690,7 +752,7 @@ func (a *RoundClientActor) emitOwnedVTXOLedgerEntry(ctx context.Context,
 			RoundID:       roundID,
 		}, outpoint, n.RoundID)
 
-	case types.VTXOOriginRoundRefresh:
+	case types.VTXOOriginRoundRefresh, types.VTXOOriginAutoRefresh:
 		// Paired emission so transfers_out nets to zero and
 		// only the fee (emitted by task B) actually moves
 		// vtxo_balance. The gross amount on both messages
@@ -822,13 +884,16 @@ func (a *RoundClientActor) createRoundFSMFromDB(ctx context.Context,
 	fsmLogger := a.log.WithPrefix(fsmPrefix)
 
 	env := &ClientEnvironment{
-		RoundStore:             a.cfg.RoundStore,
-		VTXOStore:              a.cfg.VTXOStore,
-		Wallet:                 a.cfg.Wallet,
-		SigningExecutor:        a.env.SigningExecutor,
-		OperatorTerms:          a.cfg.OperatorTerms,
-		ChainParams:            a.cfg.ChainParams,
-		MaxOperatorFee:         a.cfg.MaxOperatorFee,
+		RoundStore:      a.cfg.RoundStore,
+		VTXOStore:       a.cfg.VTXOStore,
+		Wallet:          a.cfg.Wallet,
+		SigningExecutor: a.env.SigningExecutor,
+		OperatorTerms:   a.cfg.OperatorTerms,
+		ChainParams:     a.cfg.ChainParams,
+		MaxOperatorFee:  a.cfg.MaxOperatorFee,
+		MaxAutoRefreshFeeRatePPM: a.cfg.
+			MaxAutoRefreshFeeRatePPM,
+		MaxAutoRefreshFee:      a.cfg.MaxAutoRefreshFee,
 		Log:                    fsmLogger,
 		StartHeight:            startHeight,
 		QueryBestHeight:        a.queryBestHeight,
@@ -894,13 +959,16 @@ func (a *RoundClientActor) createNewRound(ctx context.Context) (*RoundFSM,
 	fsmLogger := a.log.WithPrefix(fsmPrefix)
 
 	env := &ClientEnvironment{
-		RoundStore:             a.cfg.RoundStore,
-		VTXOStore:              a.cfg.VTXOStore,
-		Wallet:                 a.cfg.Wallet,
-		SigningExecutor:        a.env.SigningExecutor,
-		OperatorTerms:          a.cfg.OperatorTerms,
-		ChainParams:            a.cfg.ChainParams,
-		MaxOperatorFee:         a.cfg.MaxOperatorFee,
+		RoundStore:      a.cfg.RoundStore,
+		VTXOStore:       a.cfg.VTXOStore,
+		Wallet:          a.cfg.Wallet,
+		SigningExecutor: a.env.SigningExecutor,
+		OperatorTerms:   a.cfg.OperatorTerms,
+		ChainParams:     a.cfg.ChainParams,
+		MaxOperatorFee:  a.cfg.MaxOperatorFee,
+		MaxAutoRefreshFeeRatePPM: a.cfg.
+			MaxAutoRefreshFeeRatePPM,
+		MaxAutoRefreshFee:      a.cfg.MaxAutoRefreshFee,
 		Log:                    fsmLogger,
 		StartHeight:            startHeight,
 		QueryBestHeight:        a.queryBestHeight,
@@ -1483,6 +1551,9 @@ func (a *RoundClientActor) Receive(ctx context.Context,
 
 	case *RefreshVTXORequest:
 		return a.handleRefreshVTXORequest(ctx, m)
+
+	case *RefreshVTXOCohortRequest:
+		return a.handleRefreshVTXOCohortRequest(ctx, m)
 
 	case *ForfeitSignatureResponse:
 		return a.handleForfeitSignatureResponse(ctx, m)
@@ -2986,6 +3057,112 @@ func (a *RoundClientActor) processConfirmationRequest(
 func (a *RoundClientActor) handleRefreshVTXORequest(ctx context.Context,
 	req *RefreshVTXORequest) fn.Result[actormsg.RoundActorResp] {
 
+	return a.handleRefreshVTXOCohortRequest(
+		ctx, &RefreshVTXOCohortRequest{
+			Requests: []*RefreshVTXORequest{req},
+		},
+	)
+}
+
+// handleRefreshVTXOCohortRequest schedules one registration timer and adds
+// every coordinated refresh input and replacement output in one FSM event. No
+// partial cohort can seal between actor-mailbox deliveries because there is
+// only one delivery and one state-machine turn.
+func (a *RoundClientActor) handleRefreshVTXOCohortRequest(
+	ctx context.Context, cohort *RefreshVTXOCohortRequest,
+) fn.Result[actormsg.RoundActorResp] {
+
+	if cohort == nil || len(cohort.Requests) == 0 {
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("empty refresh cohort"),
+		)
+	}
+
+	// The VTXO actors are already PendingForfeit when this message lands.
+	// Collect a deduplicated rollback set before validation so every
+	// unsuccessful handler return releases the whole reservation cohort.
+	// Once the atomic package is accepted, the round FSM owns normal
+	// failure cleanup through releaseForfeitsOnFailure.
+	releaseOutpoints := make([]wire.OutPoint, 0, len(cohort.Requests))
+	releaseSeen := make(map[wire.OutPoint]struct{}, len(cohort.Requests))
+	for _, req := range cohort.Requests {
+		if req == nil {
+			continue
+		}
+		if _, ok := releaseSeen[req.VTXOOutpoint]; ok {
+			continue
+		}
+
+		releaseSeen[req.VTXOOutpoint] = struct{}{}
+		releaseOutpoints = append(releaseOutpoints, req.VTXOOutpoint)
+	}
+
+	packageAccepted := false
+	defer func() {
+		if packageAccepted {
+			return
+		}
+
+		a.releaseRejectedRefreshCohort(ctx, releaseOutpoints)
+	}()
+
+	if len(cohort.Requests) > MaxQuoteEntriesPerClient {
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf(
+				"refresh cohort has %d entries, maximum is %d",
+				len(cohort.Requests), MaxQuoteEntriesPerClient,
+			),
+		)
+	}
+
+	forfeits := make([]types.ForfeitRequest, 0, len(cohort.Requests))
+	vtxos := make([]types.VTXORequest, 0, len(cohort.Requests))
+	seen := make(map[wire.OutPoint]struct{}, len(cohort.Requests))
+	for i, req := range cohort.Requests {
+		if req == nil {
+			return fn.Err[actormsg.RoundActorResp](
+				fmt.Errorf("refresh cohort request %d is nil",
+					i),
+			)
+		}
+		if _, ok := seen[req.VTXOOutpoint]; ok {
+			return fn.Err[actormsg.RoundActorResp](
+				fmt.Errorf("duplicate refresh cohort "+
+					"outpoint %s", req.VTXOOutpoint),
+			)
+		}
+		seen[req.VTXOOutpoint] = struct{}{}
+
+		vtxoReq := buildVTXORequestFromRefresh(req)
+		pkScript, err := vtxoReq.EffectivePkScript()
+		if err != nil {
+			return fn.Err[actormsg.RoundActorResp](
+				fmt.Errorf("derive refresh vtxo pkScript: %w",
+					err),
+			)
+		}
+		if a.cfg.OwnedScriptRegistrar != nil &&
+			vtxoReq.HasLocalOwner() {
+
+			regErr := a.cfg.OwnedScriptRegistrar.RegisterOwnedScript(
+				ctx, pkScript, vtxoReq.OwnerKey,
+			)
+			if regErr != nil {
+				return fn.Err[actormsg.RoundActorResp](
+					fmt.Errorf("register refresh owned "+
+						"script: %w", regErr),
+				)
+			}
+		}
+
+		outpoint := req.VTXOOutpoint
+		forfeits = append(forfeits, types.ForfeitRequest{
+			VTXOOutpoint: &outpoint,
+			Amount:       btcutil.Amount(req.Amount),
+		})
+		vtxos = append(vtxos, vtxoReq)
+	}
+
 	// Find an assembling round (Idle or PendingRoundAssembly) or create
 	// one. We must not use findPendingRound here because it matches by
 	// temp-key status, which includes rounds in IntentSentState.
@@ -3003,48 +3180,12 @@ func (a *RoundClientActor) handleRefreshVTXORequest(ctx context.Context,
 		}
 	}
 
-	vtxoReq := buildVTXORequestFromRefresh(req)
-	if a.cfg.OwnedScriptRegistrar != nil && vtxoReq.HasLocalOwner() {
-		pkScript, err := vtxoReq.EffectivePkScript()
-		if err != nil {
-			return fn.Err[actormsg.RoundActorResp](
-				fmt.Errorf("derive refresh vtxo pkScript: %w",
-					err),
-			)
-		}
-
-		regErr := a.cfg.OwnedScriptRegistrar.RegisterOwnedScript(
-			ctx, pkScript, vtxoReq.OwnerKey,
-		)
-		if regErr != nil {
-			return fn.Err[actormsg.RoundActorResp](
-				fmt.Errorf("register refresh owned script: %w",
-					regErr),
-			)
-		}
-	}
-
-	// Bundle the forfeit input and new VTXO output atomically.
-	pkg := &IntentPackage{Intents: Intents{
-		Forfeits: []types.ForfeitRequest{{
-			VTXOOutpoint: &req.VTXOOutpoint,
-			Amount:       btcutil.Amount(req.Amount),
-		}},
-		VTXOs: []types.VTXORequest{
-			vtxoReq,
-		},
-	}}
-	err = a.askEventAndProcessOutbox(ctx, roundFSM, pkg)
-	if err != nil {
-		return fn.Err[actormsg.RoundActorResp](
-			fmt.Errorf("FSM error processing refresh package: %w",
-				err),
-		)
-	}
-
-	// Reschedule one timeout for the assembling round on every refresh.
-	// This gives other VTXOs from the same block epoch a brief window to
-	// join the same intent before its single registration is emitted.
+	// Schedule before mutating the FSM. Actor-turn serialization keeps the
+	// timeout message behind this handler, while this order removes the
+	// only post-acceptance operation that can fail. If package acceptance
+	// fails, the stale timeout is harmless: an idle/failed FSM ignores it,
+	// while an existing assembly correctly registers only its prior
+	// intents.
 	err = a.processOutbox(ctx, []ClientOutMsg{
 		&StartTimeoutReq{
 			RoundKey: RoundKeyStr(roundFSM.Key.KeyString()),
@@ -3059,12 +3200,54 @@ func (a *RoundClientActor) handleRefreshVTXORequest(ctx context.Context,
 		)
 	}
 
-	a.log.InfoS(ctx, "Queued VTXO for refresh",
-		slog.String("outpoint", req.VTXOOutpoint.String()),
-		slog.Int64("amount", req.Amount),
+	// Bundle every forfeit input and replacement output atomically.
+	pkg := &IntentPackage{Intents: Intents{
+		Forfeits: forfeits,
+		VTXOs:    vtxos,
+	}}
+	err = a.askEventAndProcessOutbox(ctx, roundFSM, pkg)
+	if err != nil {
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("FSM error processing refresh package: %w",
+				err),
+		)
+	}
+	packageAccepted = true
+
+	a.log.InfoS(ctx, "Queued VTXO cohort for refresh",
+		slog.Int("cohort_size", len(cohort.Requests)),
+		slog.String(
+			"first_outpoint",
+			cohort.Requests[0].VTXOOutpoint.String(),
+		),
 	)
 
 	return fn.Ok[actormsg.RoundActorResp](nil)
+}
+
+// releaseRejectedRefreshCohort returns a cohort that the round actor could not
+// accept to the VTXO manager. The detached context lets cleanup survive caller
+// cancellation; a failed Tell is logged and the startup checkpoint sweep
+// remains the final fail-safe.
+func (a *RoundClientActor) releaseRejectedRefreshCohort(ctx context.Context,
+	outpoints []wire.OutPoint) {
+
+	if a.cfg.VTXOManager == nil || len(outpoints) == 0 {
+		return
+	}
+
+	releaseCtx := context.WithoutCancel(ctx)
+	err := a.cfg.VTXOManager.Tell(
+		releaseCtx, &actormsg.ReleaseForfeitRequest{
+			Outpoints: outpoints,
+		},
+	)
+	if err != nil {
+		a.log.WarnS(ctx, "Failed to release rejected refresh cohort",
+			err,
+			slog.Int("outpoints", len(outpoints)),
+		)
+	}
 }
 
 // handleRegisterIntent processes a pre-composed intent package from the

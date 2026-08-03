@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 
 	"github.com/lightninglabs/lndclient"
 	"github.com/lightninglabs/wavelength/arkrpc"
@@ -290,9 +291,15 @@ func expiryInfoFromTiming(batchExpiry int32, relativeExpiry, maxTreeDepth,
 		return info
 	}
 
+	descriptorChainDepth := int32(chainDepth)
+	if chainDepth > uint32(math.MaxInt32) {
+		descriptorChainDepth = math.MaxInt32
+	}
+
 	desc := &vtxo.Descriptor{
 		BatchExpiry:    batchExpiry,
 		RelativeExpiry: relativeExpiry,
+		ChainDepth:     int(descriptorChainDepth),
 		Ancestry: []vtxo.Ancestry{{
 			TreeDepth: maxTreeDepth,
 		}},

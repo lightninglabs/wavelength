@@ -134,6 +134,73 @@ func TestExpiryStatusUnknownString(t *testing.T) {
 	require.Equal(t, "unknown", ExpiryStatusUnknown.String())
 }
 
+// TestShouldWaitForFreeRefreshWindow verifies cohorting preserves a safe,
+// configured future waiver while disabled or too-late windows do not delay
+// maintenance.
+func TestShouldWaitForFreeRefreshWindow(t *testing.T) {
+	t.Parallel()
+
+	vtxo := &Descriptor{
+		BatchExpiry:    1_000,
+		CreatedHeight:  100,
+		RelativeExpiry: 10,
+	}
+
+	tests := []struct {
+		name     string
+		window   uint32
+		height   int32
+		wantWait bool
+	}{
+		{
+			name:     "safe future window",
+			window:   120,
+			height:   800,
+			wantWait: true,
+		},
+		{
+			name:     "inside window",
+			window:   120,
+			height:   880,
+			wantWait: false,
+		},
+		{
+			name:     "disabled window",
+			window:   0,
+			height:   800,
+			wantWait: false,
+		},
+		{
+			name:     "unsafe late window",
+			window:   40,
+			height:   800,
+			wantWait: false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := &ExpiryConfig{
+				CriticalThresholdBlocks: 30,
+				MinRefreshBuffer:        50,
+				TreeDepthMultiplier:     1,
+				FreeRefreshWindow: func() uint32 {
+					return test.window
+				},
+			}
+
+			require.Equal(
+				t, test.wantWait,
+				cfg.ShouldWaitForFreeRefreshWindow(
+					vtxo, test.height,
+				),
+			)
+		})
+	}
+}
+
 // TestCriticalThresholdIncludesOORHops asserts that the critical threshold
 // budgets time for the OOR checkpoint chain, not just the commitment tree.
 //

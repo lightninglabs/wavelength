@@ -370,6 +370,18 @@ type Config struct {
 	// below any reasonable mainnet abuse threshold.
 	MaxOperatorFeeSat int64 `mapstructure:"maxoperatorfeesat"`
 
+	// MaxAutoRefreshFeeRatePPM optionally caps the authoritative operator
+	// fee for any round containing automatic maintenance. The denominator
+	// includes only automatically refreshed value. Zero disables this
+	// proportional policy while the mandatory MaxOperatorFeeSat remains.
+	//nolint:ll
+	MaxAutoRefreshFeeRatePPM uint32 `mapstructure:"maxautorefreshfeerateppm"`
+
+	// MaxAutoRefreshFeeSat optionally tightens the absolute fee cap for any
+	// round containing automatic maintenance. Zero disables it; the global
+	// MaxOperatorFeeSat cap remains mandatory.
+	MaxAutoRefreshFeeSat int64 `mapstructure:"maxautorefreshfeesat"`
+
 	// OOR configures off-band receive/send actor behavior.
 	OOR *OORConfig `mapstructure:"oor"`
 
@@ -1183,6 +1195,14 @@ func (c *Config) Validate() error {
 	if c.MaxOperatorFeeSat <= 0 {
 		return fmt.Errorf("maxoperatorfeesat must be positive: got %d",
 			c.MaxOperatorFeeSat)
+	}
+	if c.MaxAutoRefreshFeeRatePPM > 1_000_000 {
+		return fmt.Errorf("maxautorefreshfeerateppm must not exceed "+
+			"1000000: got %d", c.MaxAutoRefreshFeeRatePPM)
+	}
+	if c.MaxAutoRefreshFeeSat < 0 {
+		return fmt.Errorf("maxautorefreshfeesat must be "+
+			"non-negative: got %d", c.MaxAutoRefreshFeeSat)
 	}
 
 	if c.SigningWorkers < 0 {
