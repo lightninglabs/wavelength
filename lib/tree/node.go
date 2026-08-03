@@ -216,6 +216,29 @@ func NewBranchNode(input wire.OutPoint, groups [][]LeafDescriptor,
 	}, nil
 }
 
+// ComputeInternalKey computes the MuSig2 aggregate key of the given
+// cosigners without any taproot tweak. Asset-aware materialization hands
+// this untweaked key to tapd, which applies the combined tapscript/asset
+// commitment tweak itself when deriving the anchor output key.
+func ComputeInternalKey(cosigners []*btcec.PublicKey) (*btcec.PublicKey,
+	error) {
+
+	if len(cosigners) == 0 {
+		return nil, fmt.Errorf("no cosigners provided")
+	}
+
+	if len(cosigners) == 1 {
+		return cosigners[0], nil
+	}
+
+	aggKey, _, _, err := musig2.AggregateKeys(cosigners, true)
+	if err != nil {
+		return nil, fmt.Errorf("failed to aggregate keys: %w", err)
+	}
+
+	return aggKey.PreTweakedKey, nil
+}
+
 // ComputeFinalKey computes the final aggregated public key for signing.
 // This is a helper function that aggregates the cosigners and applies the
 // taproot tweak with the given sweep tapscript root. It handles both

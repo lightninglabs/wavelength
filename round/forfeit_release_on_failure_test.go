@@ -764,7 +764,7 @@ func (h *realSigningTestHarness) newUnaggregatedSignerSession(
 
 	session, err := tree.NewSignerSession(
 		h.clientSigner, &vtxoReq.SigningKey,
-		vtxtTree.SweepTapscriptRoot, prevOutFetcher, vtxtTree.Root,
+		vtxtTree.SweepTapscriptRoot, prevOutFetcher, vtxtTree.Root, nil,
 	)
 	require.NoError(h.t, err)
 

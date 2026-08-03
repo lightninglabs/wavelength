@@ -515,7 +515,7 @@ func TestSignerSession(t *testing.T) {
 		sweepRoot := make([]byte, 32)
 
 		session, err := NewSignerSession(
-			signer, keyDesc, sweepRoot, fetcher, root,
+			signer, keyDesc, sweepRoot, fetcher, root, nil,
 		)
 		require.NoError(t, err)
 		require.NotNil(t, session)
@@ -547,7 +547,7 @@ func TestSignerSession(t *testing.T) {
 		sweepRoot := make([]byte, 32)
 
 		session, err := NewSignerSession(
-			signer, keyDesc, sweepRoot, fetcher, leaf,
+			signer, keyDesc, sweepRoot, fetcher, leaf, nil,
 		)
 		require.Error(t, err)
 		require.Nil(t, session)
@@ -572,7 +572,7 @@ func TestSignerSession(t *testing.T) {
 		sweepRoot := make([]byte, 32)
 
 		session, err := NewSignerSession(
-			signer, keyDesc, sweepRoot, fetcher, leaf,
+			signer, keyDesc, sweepRoot, fetcher, leaf, nil,
 		)
 		require.NoError(t, err)
 
@@ -608,7 +608,7 @@ func TestSignerSession(t *testing.T) {
 			sweepRoot := make([]byte, 32)
 
 			session, err := NewSignerSession(
-				signer, keyDesc, sweepRoot, fetcher, leaf,
+				signer, keyDesc, sweepRoot, fetcher, leaf, nil,
 			)
 			require.NoError(t, err)
 
@@ -665,12 +665,12 @@ func TestSignerSession(t *testing.T) {
 
 		// Create sessions for both signers.
 		session1, err := NewSignerSession(
-			signer1, keyDesc1, sweepRoot, fetcher, leaf,
+			signer1, keyDesc1, sweepRoot, fetcher, leaf, nil,
 		)
 		require.NoError(t, err)
 
 		session2, err := NewSignerSession(
-			signer2, keyDesc2, sweepRoot, fetcher, leaf,
+			signer2, keyDesc2, sweepRoot, fetcher, leaf, nil,
 		)
 		require.NoError(t, err)
 
@@ -725,7 +725,7 @@ func TestSignerSession(t *testing.T) {
 		sweepRoot := make([]byte, 32)
 
 		session, err := NewSignerSession(
-			signer, keyDesc, sweepRoot, fetcher, leaf,
+			signer, keyDesc, sweepRoot, fetcher, leaf, nil,
 		)
 		require.NoError(t, err)
 
@@ -804,7 +804,7 @@ func TestSignerSessionCleanup(t *testing.T) {
 		keyDesc := &keychain.KeyDescriptor{PubKey: pubKey}
 
 		session, err := NewSignerSession(
-			signer, keyDesc, make([]byte, 32), fetcher, tree,
+			signer, keyDesc, make([]byte, 32), fetcher, tree, nil,
 		)
 		require.NoError(t, err)
 		require.Len(t, session.txs, 2)
@@ -827,7 +827,7 @@ func TestSignerSessionCleanup(t *testing.T) {
 		keyDesc := &keychain.KeyDescriptor{PubKey: pubKey}
 
 		session, err := NewSignerSession(
-			signer, keyDesc, make([]byte, 32), fetcher, tree,
+			signer, keyDesc, make([]byte, 32), fetcher, tree, nil,
 		)
 		require.ErrorContains(
 			t, err, "injected session creation failure",
@@ -927,7 +927,7 @@ func TestSignerSessionMultiTx(t *testing.T) {
 		sweepRoot := make([]byte, 32)
 
 		session, err := NewSignerSession(
-			signer, keyDesc, sweepRoot, fetcher, root,
+			signer, keyDesc, sweepRoot, fetcher, root, nil,
 		)
 		require.NoError(t, err)
 
@@ -966,7 +966,7 @@ func TestSignerSessionMultiTx(t *testing.T) {
 		sweepRoot := make([]byte, 32)
 
 		session, err := NewSignerSession(
-			signer, keyDesc, sweepRoot, fetcher, leaf,
+			signer, keyDesc, sweepRoot, fetcher, leaf, nil,
 		)
 		require.NoError(t, err)
 
@@ -1106,11 +1106,13 @@ func TestFullSigningFlow(t *testing.T) {
 
 			session1, err := NewSignerSession(
 				signer1, keyDesc1, sweepRoot, fetcher, leaf,
+				nil,
 			)
 			require.NoError(t, err)
 
 			session2, err := NewSignerSession(
 				signer2, keyDesc2, sweepRoot, fetcher, leaf,
+				nil,
 			)
 			require.NoError(t, err)
 
@@ -1221,11 +1223,13 @@ func TestFullSigningFlow(t *testing.T) {
 
 			session1, err := NewSignerSession(
 				signer1, keyDesc1, sweepRoot, fetcher, root,
+				nil,
 			)
 			require.NoError(t, err)
 
 			session2, err := NewSignerSession(
 				signer2, keyDesc2, sweepRoot, fetcher, root,
+				nil,
 			)
 			require.NoError(t, err)
 
