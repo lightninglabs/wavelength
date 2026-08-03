@@ -99,6 +99,11 @@ same enable-only / non-empty overlay semantics (the zero value defers to the
 `wavewalletrpc` build defaults). An empty string boots from
 `wavewalletdk.DefaultConfig`.
 
+For unattended expiry maintenance, `max_auto_refresh_fee_sat` sets an optional
+absolute fee limit and `max_auto_refresh_fee_rate_ppm` sets an optional limit
+relative to the automatically refreshed value. Zero disables the additional
+limit; the global `max_operator_fee_sat` limit remains in force.
+
 Empty `server_address` and `swap_server_address` values select the endpoint
 for the configured network and transport. They don't disable either service.
 Set the fields explicitly when a mobile host needs a custom or local endpoint.

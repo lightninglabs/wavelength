@@ -58,6 +58,39 @@ func newRoundStoreForTest(t *testing.T) (*RoundPersistenceStore, *BaseDB) {
 	return store, db.BaseDB
 }
 
+// TestHasForfeitRoundCheckpoint verifies the read-only restart fence used by
+// the VTXO manager. A missing round is an explicit safe-to-release result,
+// while malformed IDs fail closed and a CommitState row proves signature
+// handoff may have occurred.
+func TestHasForfeitRoundCheckpoint(t *testing.T) {
+	t.Parallel()
+
+	store, _ := newRoundStoreForTest(t)
+	ctx := t.Context()
+
+	missingID := testRoundIDDB("missing-forfeit-checkpoint")
+	exists, err := store.HasForfeitRoundCheckpoint(
+		ctx, missingID.String(),
+	)
+	require.NoError(t, err)
+	require.False(t, exists)
+
+	_, err = store.HasForfeitRoundCheckpoint(ctx, "not-a-round-id")
+	require.Error(t, err)
+
+	roundID := testRoundIDDB("present-forfeit-checkpoint")
+	testRound := createTestRound(t, roundID)
+	state := &round.InputSigSentState{
+		RoundID:     testRound.RoundID,
+		ClientTrees: make(map[round.SignerKey]*tree.Tree),
+	}
+	require.NoError(t, store.CommitState(ctx, testRound, state))
+
+	exists, err = store.HasForfeitRoundCheckpoint(ctx, roundID.String())
+	require.NoError(t, err)
+	require.True(t, exists)
+}
+
 // createTestRound creates a test round with minimal data.
 func createTestRound(t *testing.T, roundID round.RoundID) *round.Round {
 	// Create a simple commitment transaction as a PSBT.

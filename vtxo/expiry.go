@@ -268,3 +268,32 @@ func (c *ExpiryConfig) CalculateRefreshThreshold(vtxo *Descriptor) int32 {
 
 	return int32(windowBlocks)
 }
+
+// ShouldWaitForFreeRefreshWindow reports whether a same-expiry cohort sibling
+// should remain live until the operator's advertised fee waiver begins. A
+// window only wins when it preserves the same critical threshold plus retry
+// buffer used by ordinary automatic refresh; disabled or unsafe-late windows
+// never prevent the manager from cohorting the VTXO earlier.
+func (c *ExpiryConfig) ShouldWaitForFreeRefreshWindow(vtxo *Descriptor,
+	currentHeight int32) bool {
+
+	if c == nil || c.FreeRefreshWindow == nil ||
+		!HasUsableBatchExpiry(vtxo) {
+		return false
+	}
+
+	window := c.FreeRefreshWindow()
+	if window == 0 {
+		return false
+	}
+
+	safetyFloor := c.CalculateCriticalThreshold(vtxo) +
+		c.MinRefreshBuffer
+	if uint64(window) < uint64(safetyFloor) {
+		return false
+	}
+
+	remaining := BlocksUntilExpiry(vtxo, currentHeight)
+
+	return remaining > 0 && uint64(remaining) > uint64(window)
+}

@@ -11,9 +11,8 @@ import (
 )
 
 // TestDescriptorToProtoSettlement verifies the settlement message is emitted
-// for a FORFEITED descriptor carrying a settlement, and stays nil for a
-// descriptor with no settlement (a LIVE VTXO or an old daemon), so absence is
-// explicit on the wire and the RPC surface degrades to prior behavior (#924).
+// only for a FORFEITED descriptor carrying a settlement. Internal checkpoint
+// data on a FORFEITING descriptor must not widen the public RPC contract.
 func TestDescriptorToProtoSettlement(t *testing.T) {
 	t.Parallel()
 
@@ -55,6 +54,18 @@ func TestDescriptorToProtoSettlement(t *testing.T) {
 		t.Parallel()
 
 		got := descriptorToProto(base(vtxo.VTXOStatusLive))
+		require.Nil(t, got.GetSettlement())
+	})
+
+	t.Run("forfeiting checkpoint stays private", func(t *testing.T) {
+		t.Parallel()
+
+		desc := base(vtxo.VTXOStatusForfeiting)
+		desc.Settlement = fn.Some(vtxo.Settlement{
+			TxID: settlementTxid,
+		})
+
+		got := descriptorToProto(desc)
 		require.Nil(t, got.GetSettlement())
 	})
 

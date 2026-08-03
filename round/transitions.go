@@ -513,12 +513,15 @@ func (s *PendingRoundAssembly) processEvent(ctx context.Context,
 			)
 		}
 
-		// Deduplicate VTXO requests by effective pkScript. Two refresh
-		// paths (wallet-driven and auto-expiry) could race to
-		// create an output for the same VTXO. Duplicate outputs
-		// would inflate totalOutput and cause the balance check
-		// to fail, locking the VTXO in PendingForfeitState.
+		// Untagged requests retain the historic pkScript deduplication
+		// so wallet-driven and auto-expiry paths racing the same
+		// replacement do not double-pay it. Tagged refresh requests
+		// deduplicate by their source outpoint instead: distinct
+		// same-policy inputs legitimately require one replacement each
+		// even when pkScripts are identical.
 		vtxoScriptSeen := fn.NewSet[string]()
+		untaggedVTXOScriptSeen := fn.NewSet[string]()
+		refreshSourceSeen := fn.NewSet[wire.OutPoint]()
 		for _, v := range s.VTXOs {
 			pkScript, err := v.EffectivePkScript()
 			if err != nil {
@@ -532,6 +535,11 @@ func (s *PendingRoundAssembly) processEvent(ctx context.Context,
 			}
 
 			vtxoScriptSeen.Add(string(pkScript))
+			if v.RefreshSourceOutpoint == nil {
+				untaggedVTXOScriptSeen.Add(string(pkScript))
+			} else {
+				refreshSourceSeen.Add(*v.RefreshSourceOutpoint)
+			}
 		}
 
 		updatedVTXOs := slices.Clone(s.VTXOs)
@@ -548,8 +556,19 @@ func (s *PendingRoundAssembly) processEvent(ctx context.Context,
 			}
 
 			key := string(pkScript)
-			if vtxoScriptSeen.Contains(key) {
-				continue
+			if newVTXO.RefreshSourceOutpoint != nil {
+				source := *newVTXO.RefreshSourceOutpoint
+				if refreshSourceSeen.Contains(source) ||
+					untaggedVTXOScriptSeen.Contains(key) {
+
+					continue
+				}
+				refreshSourceSeen.Add(source)
+			} else {
+				if vtxoScriptSeen.Contains(key) {
+					continue
+				}
+				untaggedVTXOScriptSeen.Add(key)
 			}
 
 			vtxoScriptSeen.Add(key)
@@ -651,12 +670,16 @@ func (s *PendingRoundAssembly) processEvent(ctx context.Context,
 		// QuoteReceivedState against env.MaxOperatorFee. The
 		// balance invariant (outputs <= inputs) stays here as a
 		// sanity guard.
-		operatorFee := totalInput - totalOutput
+		intentAmountDelta := totalInput - totalOutput
 
-		env.Log.InfoS(ctx, "Intent balance check passed",
+		env.Log.InfoS(ctx, "Intent balance check passed; "+
+			"authoritative operator fee pending seal-time quote",
 			btclog.Fmt("total_input", "%v", totalInput),
 			btclog.Fmt("total_output", "%v", totalOutput),
-			btclog.Fmt("estimated_operator_fee", "%v", operatorFee),
+			slog.Int64(
+				"intent_amount_delta_sat",
+				int64(intentAmountDelta),
+			),
 		)
 
 		// Extract the set of values from the intent map, as we don't
@@ -1061,8 +1084,10 @@ func (s *IntentSentState) processEvent(ctx context.Context, event ClientEvent,
 //     two would let the server reject the round.
 //
 //  3. If no marker is set and the total output count is greater
-//     than one, stamp the first non-fixed VTXO. When there is no
-//     non-fixed VTXO, stamp the first leave. Single-output intents
+//     than one, stamp the largest non-fixed VTXO. Putting the full
+//     residual on the output with the most headroom avoids shrinking a
+//     small cohort sibling below the negotiated VTXO minimum. When there
+//     is no non-fixed VTXO, stamp the first leave. Single-output intents
 //     get no marker.
 //
 // Mutates the slices in place.
@@ -1164,12 +1189,22 @@ func designateChangeMarker(vtxoReqs []types.VTXORequest,
 	if totalOutputs <= 1 {
 		return
 	}
+	largestVTXOIdx := -1
+	var largestVTXOAmount btcutil.Amount
 	for i := range vtxoReqs {
 		if vtxoReqs[i].FixedAmount {
 			continue
 		}
+		amount := vtxoReqs[i].Amount
+		if largestVTXOIdx >= 0 && amount <= largestVTXOAmount {
+			continue
+		}
 
-		vtxoReqs[i].IsChange = true
+		largestVTXOIdx = i
+		largestVTXOAmount = amount
+	}
+	if largestVTXOIdx >= 0 {
+		vtxoReqs[largestVTXOIdx].IsChange = true
 
 		return
 	}
@@ -1275,6 +1310,31 @@ func evaluateQuote(ctx context.Context, env *ClientEnvironment, roundID RoundID,
 		}
 	}
 
+	// The pre-registration amount check only protects the requested target.
+	// A change quote can shrink that target after seal-time fees, so
+	// enforce the negotiated floor again against every authoritative quoted
+	// VTXO.
+	minVTXO := env.OperatorTerms.MinVTXOAmountFloor()
+	if minVTXO > 0 {
+		for i := range quote.VTXOQuotes {
+			amount := quote.VTXOQuotes[i].AmountSat
+			if amount >= int64(minVTXO) {
+				continue
+			}
+
+			return &QuoteRejected{
+				RoundID: roundID,
+				QuoteID: quote.QuoteID,
+				Reason: fmt.Sprintf(
+					"quoted vtxo[%d] amount %d is below "+
+						"operator minimum %d",
+					i, amount,
+					int64(minVTXO),
+				),
+			}
+		}
+	}
+
 	// Realised-fee cap enforcement (#379). The
 	// quote.OperatorFeeSat field is an operator-supplied claim;
 	// the actual economic fee the client will pay is
@@ -1334,10 +1394,90 @@ func evaluateQuote(ctx context.Context, env *ClientEnvironment, roundID RoundID,
 		}
 	}
 
+	// Automatic maintenance can briefly share an assembling round with a
+	// manual intent. Starting a second same-client FSM would create
+	// competing server registrations, so apply the automatic budgets
+	// conservatively to the entire realised client fee whenever any
+	// auto-origin output exists. The proportional denominator contains only
+	// automatic target value. A mixed round can therefore reject, but it
+	// cannot hide maintenance fees.
+	autoValue, hasAutoRefresh := autoRefreshValue(intents)
+	if hasAutoRefresh && env.MaxAutoRefreshFee > 0 &&
+		realised > int64(env.MaxAutoRefreshFee) {
+		return &QuoteRejected{
+			RoundID: roundID,
+			QuoteID: quote.QuoteID,
+			Reason: fmt.Sprintf(
+				"automatic refresh round fee %d exceeds "+
+					"automatic cap %d", realised,
+				int64(env.MaxAutoRefreshFee),
+			),
+		}
+	}
+
+	if hasAutoRefresh && env.MaxAutoRefreshFeeRatePPM > 0 {
+		const ppmDenominator = int64(1_000_000)
+		rate := int64(env.MaxAutoRefreshFeeRatePPM)
+		if rate > ppmDenominator {
+			return &QuoteRejected{
+				RoundID: roundID,
+				QuoteID: quote.QuoteID,
+				Reason: fmt.Sprintf(
+					"automatic refresh fee rate cap %d "+
+						"ppm exceeds 1000000 ppm",
+					rate,
+				),
+			}
+		}
+
+		// Split the multiplication around the denominator so even a
+		// malformed near-MaxInt64 aggregate cannot overflow.
+		proportionalCap := autoValue/ppmDenominator*rate +
+			autoValue%ppmDenominator*rate/ppmDenominator
+		if realised > proportionalCap {
+			return &QuoteRejected{
+				RoundID: roundID,
+				QuoteID: quote.QuoteID,
+				Reason: fmt.Sprintf(
+					"automatic refresh fee %d "+
+						"exceeds %d ppm cap %d for %d "+
+						"sat cohort",
+					realised,
+					rate, proportionalCap, autoValue,
+				),
+			}
+		}
+	}
+
 	return &QuoteAccepted{
 		RoundID: roundID,
 		QuoteID: quote.QuoteID,
 	}
+}
+
+// autoRefreshValue returns the total target value of automatic-maintenance
+// outputs and whether the round contains any. Manual outputs are intentionally
+// excluded from the denominator while the caller applies the resulting cap to
+// the entire realised round fee.
+func autoRefreshValue(intents Intents) (int64, bool) {
+	var total int64
+	var found bool
+	for i := range intents.VTXOs {
+		req := intents.VTXOs[i]
+		if req.Origin != types.VTXOOriginAutoRefresh {
+			continue
+		}
+
+		found = true
+		amount := int64(req.Amount)
+		if amount <= 0 || total > math.MaxInt64-amount {
+			return 0, true
+		}
+
+		total += amount
+	}
+
+	return total, found
 }
 
 // realisedQuoteFee returns the economic operator fee the client
@@ -1610,9 +1750,22 @@ func (s *QuoteReceivedState) processEvent(ctx context.Context,
 		}, nil
 
 	case *QuoteAccepted:
+		autoValue, automatic := autoRefreshValue(s.Intents)
 		env.Log.InfoS(ctx, "Accepting seal-time quote",
 			slog.String("round_id", evt.RoundID.String()),
 			slog.Int64("operator_fee_sat", s.Quote.OperatorFeeSat),
+			slog.Bool("automatic_refresh", automatic),
+			slog.Int64("automatic_refresh_value_sat", autoValue),
+			slog.Int("vtxo_count", len(s.Intents.VTXOs)),
+			slog.Uint64("seal_pass", uint64(s.Quote.SealPass)),
+			slog.Int64(
+				"automatic_fee_cap_sat",
+				int64(env.MaxAutoRefreshFee),
+			),
+			slog.Uint64(
+				"automatic_fee_rate_cap_ppm",
+				uint64(env.MaxAutoRefreshFeeRatePPM),
+			),
 		)
 
 		accept := &JoinRoundAcceptOutbox{
@@ -1648,10 +1801,32 @@ func (s *QuoteReceivedState) processEvent(ctx context.Context,
 		}, nil
 
 	case *QuoteRejected:
+		autoValue, automatic := autoRefreshValue(s.Intents)
+		var (
+			quotedFee int64
+			sealPass  uint32
+		)
+		if s.Quote != nil {
+			quotedFee = s.Quote.OperatorFeeSat
+			sealPass = s.Quote.SealPass
+		}
 		env.Log.WarnS(ctx, "Rejecting seal-time quote",
 			nil,
 			slog.String("round_id", evt.RoundID.String()),
 			slog.String("reason", evt.Reason),
+			slog.Int64("operator_fee_sat", quotedFee),
+			slog.Bool("automatic_refresh", automatic),
+			slog.Int64("automatic_refresh_value_sat", autoValue),
+			slog.Int("vtxo_count", len(s.Intents.VTXOs)),
+			slog.Uint64("seal_pass", uint64(sealPass)),
+			slog.Int64(
+				"automatic_fee_cap_sat",
+				int64(env.MaxAutoRefreshFee),
+			),
+			slog.Uint64(
+				"automatic_fee_rate_cap_ppm",
+				uint64(env.MaxAutoRefreshFeeRatePPM),
+			),
 		)
 
 		reject := &JoinRoundRejectOutbox{

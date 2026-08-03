@@ -219,6 +219,13 @@ const (
 	// VTXOReceivedMsg{Source=SourceRoundTransfer}, crediting
 	// transfers_in as a genuine counterparty revenue flow.
 	VTXOOriginRoundTransfer
+
+	// VTXOOriginAutoRefresh means the VTXO was produced by the wallet's
+	// expiry-driven maintenance path. It books identically to
+	// VTXOOriginRoundRefresh, but remains distinct local provenance so the
+	// client can apply automatic-only fee policy and emit useful audit logs
+	// without treating a directed-send change output as maintenance.
+	VTXOOriginAutoRefresh
 )
 
 // String returns a short human-readable label for the origin,
@@ -234,6 +241,9 @@ func (o VTXOOrigin) String() string {
 
 	case VTXOOriginRoundTransfer:
 		return "round_transfer"
+
+	case VTXOOriginAutoRefresh:
+		return "auto_refresh"
 
 	default:
 		return "unknown"
@@ -304,6 +314,12 @@ type VTXORequest struct {
 	// typed VTXOReceivedMsg to the ledger actor. Local-only;
 	// never serialized over the wire.
 	Origin VTXOOrigin
+
+	// RefreshSourceOutpoint identifies the forfeited VTXO this replacement
+	// corresponds to. It is local-only and lets round assembly preserve one
+	// output per automatic-refresh input even when siblings share the same
+	// effective pkScript. It is never serialized over the round wire.
+	RefreshSourceOutpoint *wire.OutPoint
 }
 
 // HasLocalOwner reports whether the request carries a local owner descriptor

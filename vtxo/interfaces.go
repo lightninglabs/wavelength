@@ -156,11 +156,13 @@ var MessageSpec = struct {
 	// Handled in: SpendingState
 	SpendCompletedEvent InboundEvent[*SpendCompletedEvent]
 
-	// ForfeitReleasedEvent releases a VTXO from pending forfeit back
-	// to LiveState. Only valid from PendingForfeitState.
+	// ForfeitReleasedEvent releases a VTXO whose cooperative round did not
+	// cross the signature-handoff checkpoint. It is valid from
+	// PendingForfeitState and from a ForfeitingState that durable round
+	// storage positively proves is still pre-checkpoint.
 	//
 	// Source: VTXO Manager (on behalf of wallet) → VTXO Actor
-	// Handled in: PendingForfeitState
+	// Handled in: PendingForfeitState, safe pre-checkpoint ForfeitingState
 	ForfeitReleasedEvent InboundEvent[*ForfeitReleasedEvent]
 
 	// VTXOFailedEvent signals an unrecoverable error from any source.
@@ -397,6 +399,12 @@ type Descriptor struct {
 	// RoundID identifies which round created this VTXO.
 	RoundID string
 
+	// ForfeitRoundID identifies the later round that consumed this VTXO.
+	// It is distinct from RoundID, which always names the creation round.
+	// During restart recovery, the manager uses this binding to determine
+	// whether a Forfeiting VTXO has crossed the persisted round checkpoint.
+	ForfeitRoundID string
+
 	// CommitmentTxID is the txid of the commitment transaction.
 	CommitmentTxID chainhash.Hash
 
@@ -404,8 +412,9 @@ type Descriptor struct {
 	// round commitment transaction that forfeited this VTXO (the leave /
 	// cooperative-forfeit round). Unlike CommitmentTxID, which anchors the
 	// round that CREATED this VTXO, this is the round that CONSUMED it. It
-	// is Some only for FORFEITED VTXOs whose forfeit round row is known,
-	// and None otherwise.
+	// is Some whenever the joined forfeit round carries a commitment txid,
+	// including a Forfeiting crash-gap row. Height > 0 proves that round
+	// confirmed; None means the settlement join is unavailable.
 	Settlement fn.Option[Settlement]
 
 	// BatchExpiry is the absolute block height at which the batch expires
@@ -450,9 +459,11 @@ type Descriptor struct {
 }
 
 // Settlement identifies the round commitment transaction that forfeited a
-// VTXO and the height at which it confirmed. It is carried as an optional on
-// the Descriptor (Some only for FORFEITED VTXOs whose forfeit round is known)
-// so absence is modelled explicitly rather than via a zero-hash sentinel.
+// VTXO and its confirmation height when known. It is carried as an optional
+// on the Descriptor for both Forfeiting and Forfeited rows whose joined
+// forfeit round has a commitment txid. A zero Height means checkpointed but
+// not confirmed; absence is modelled explicitly rather than via a zero-hash
+// sentinel.
 type Settlement struct {
 	// TxID is the txid of the forfeit round's commitment transaction.
 	TxID chainhash.Hash

@@ -100,6 +100,17 @@ type Config struct {
 	// MaxOperatorFeeSat caps the per-round operator fee the daemon accepts.
 	MaxOperatorFeeSat int64
 
+	// MaxAutoRefreshFeeSat optionally tightens the absolute operator-fee
+	// cap for rounds containing automatic expiry maintenance. Zero disables
+	// this additional cap; MaxOperatorFeeSat remains mandatory.
+	MaxAutoRefreshFeeSat int64
+
+	// MaxAutoRefreshFeeRatePPM optionally caps the operator fee for
+	// automatic expiry maintenance as parts per million of the
+	// automatically refreshed value. Zero disables this proportional cap;
+	// MaxOperatorFeeSat remains mandatory.
+	MaxAutoRefreshFeeRatePPM uint32
+
 	// SigningWorkers bounds concurrent VTXO MuSig2 signer sessions. Zero
 	// selects the wallet-backend default and one forces serial signing.
 	SigningWorkers int

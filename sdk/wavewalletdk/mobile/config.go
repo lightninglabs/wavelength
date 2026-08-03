@@ -49,10 +49,12 @@ type mobileConfig struct {
 	SwapServerInsecure    bool   `json:"swap_server_insecure"`
 	SwapDatabaseFileName  string `json:"swap_database_file_name"`
 
-	MaxOperatorFeeSat int64 `json:"max_operator_fee_sat"`
-	SigningWorkers    int64 `json:"signing_workers"`
-	EagerRoundJoin    bool  `json:"eager_round_join"`
-	BufferSize        int   `json:"buffer_size"`
+	MaxOperatorFeeSat        int64 `json:"max_operator_fee_sat"`
+	MaxAutoRefreshFeeSat     int64 `json:"max_auto_refresh_fee_sat"`
+	MaxAutoRefreshFeeRatePPM int64 `json:"max_auto_refresh_fee_rate_ppm"`
+	SigningWorkers           int64 `json:"signing_workers"`
+	EagerRoundJoin           bool  `json:"eager_round_join"`
+	BufferSize               int   `json:"buffer_size"`
 }
 
 // parseConfig decodes the host JSON config into a wavewalletdk.Config. An empty
@@ -105,6 +107,14 @@ func (mc mobileConfig) validate() error {
 			mc.MaxOperatorFeeSat,
 		},
 		{
+			"max_auto_refresh_fee_sat",
+			mc.MaxAutoRefreshFeeSat,
+		},
+		{
+			"max_auto_refresh_fee_rate_ppm",
+			mc.MaxAutoRefreshFeeRatePPM,
+		},
+		{
 			"signing_workers",
 			mc.SigningWorkers,
 		},
@@ -130,6 +140,10 @@ func (mc mobileConfig) validate() error {
 	if mc.SigningWorkers > int64(wavewalletdk.MaxSigningWorkers) {
 		return fmt.Errorf("signing_workers exceeds maximum %d: %d",
 			wavewalletdk.MaxSigningWorkers, mc.SigningWorkers)
+	}
+	if mc.MaxAutoRefreshFeeRatePPM > 1_000_000 {
+		return fmt.Errorf("max_auto_refresh_fee_rate_ppm exceeds "+
+			"1000000: %d", mc.MaxAutoRefreshFeeRatePPM)
 	}
 
 	return nil
@@ -214,6 +228,13 @@ func applyMobileConfig(cfg *wavewalletdk.Config, mc mobileConfig) {
 
 	if mc.MaxOperatorFeeSat != 0 {
 		cfg.MaxOperatorFeeSat = mc.MaxOperatorFeeSat
+	}
+	if mc.MaxAutoRefreshFeeSat != 0 {
+		cfg.MaxAutoRefreshFeeSat = mc.MaxAutoRefreshFeeSat
+	}
+	if mc.MaxAutoRefreshFeeRatePPM != 0 {
+		cfg.MaxAutoRefreshFeeRatePPM =
+			uint32(mc.MaxAutoRefreshFeeRatePPM)
 	}
 	if mc.SigningWorkers != 0 {
 		cfg.SigningWorkers = int(mc.SigningWorkers)

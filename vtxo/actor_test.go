@@ -351,7 +351,8 @@ func TestProcessOutboxForfeitRequest(t *testing.T) {
 	require.Equal(t, vtxo.Outpoint, refreshReq.VTXOOutpoint)
 	require.Equal(t, int64(vtxo.Amount), refreshReq.Amount)
 	require.Equal(t, policyTemplate, refreshReq.PolicyTemplate)
-	require.Equal(t, vtxo.ClientKey, refreshReq.SigningKey)
+	require.Equal(t, vtxo.ClientKey, refreshReq.OwnerKey)
+	require.Nil(t, refreshReq.SigningKey.PubKey)
 
 	// With no RefreshFeeQuoter configured, OperatorFee stays zero
 	// (pre-#269 behavior). Under a non-zero fee schedule the server's
@@ -913,7 +914,8 @@ func TestActorRecoveryFromForfeiting(t *testing.T) {
 	h := newVTXOTestHarness(t)
 	vtxo := h.newTestDescriptor()
 	vtxo.Status = VTXOStatusForfeiting
-	vtxo.RoundID = "round-789"
+	vtxo.RoundID = "creation-round"
+	vtxo.ForfeitRoundID = "forfeit-round-789"
 
 	forfeitTx := wire.NewMsgTx(2)
 	forfeitTx.AddTxIn(&wire.TxIn{
@@ -929,7 +931,7 @@ func TestActorRecoveryFromForfeiting(t *testing.T) {
 	forfeitingState, ok := state.(*ForfeitingState)
 	require.True(t, ok, "expected ForfeitingState, got %T", state)
 	require.Equal(t, vtxo, forfeitingState.VTXO)
-	require.Equal(t, "round-789", forfeitingState.NewRoundID)
+	require.Equal(t, "forfeit-round-789", forfeitingState.NewRoundID)
 	require.NotNil(t, forfeitingState.ForfeitTx)
 	require.Equal(t, forfeitTx.TxHash(), forfeitingState.ForfeitTx.TxHash())
 }
@@ -942,7 +944,8 @@ func TestActorRecoveryFromForfeitingNoTx(t *testing.T) {
 	h := newVTXOTestHarness(t)
 	vtxo := h.newTestDescriptor()
 	vtxo.Status = VTXOStatusForfeiting
-	vtxo.RoundID = "round-999"
+	vtxo.RoundID = "creation-round"
+	vtxo.ForfeitRoundID = "forfeit-round-999"
 
 	h.store.On("GetForfeitTx", mock.Anything, vtxo.Outpoint).Return(
 		nil, nil,
@@ -953,6 +956,7 @@ func TestActorRecoveryFromForfeitingNoTx(t *testing.T) {
 	forfeitingState, ok := state.(*ForfeitingState)
 	require.True(t, ok, "expected ForfeitingState, got %T", state)
 	require.Equal(t, vtxo, forfeitingState.VTXO)
+	require.Equal(t, "forfeit-round-999", forfeitingState.NewRoundID)
 	require.Nil(t, forfeitingState.ForfeitTx)
 }
 
@@ -982,14 +986,15 @@ func TestStatusToStateForfeited(t *testing.T) {
 	h := newVTXOTestHarness(t)
 	vtxo := h.newTestDescriptor()
 	vtxo.Status = VTXOStatusForfeited
-	vtxo.RoundID = "round-final"
+	vtxo.RoundID = "creation-round"
+	vtxo.ForfeitRoundID = "forfeit-round-final"
 
 	state := statusToState(h.ctx, vtxo, h.store, btclog.Disabled)
 
 	forfeitedState, ok := state.(*ForfeitedState)
 	require.True(t, ok, "expected ForfeitedState, got %T", state)
 	require.Equal(t, vtxo, forfeitedState.VTXO)
-	require.Equal(t, "round-final", forfeitedState.NewRoundID)
+	require.Equal(t, "forfeit-round-final", forfeitedState.NewRoundID)
 }
 
 // TestStatusToStateSpending verifies statusToState returns SpendingState for

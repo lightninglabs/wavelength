@@ -31,6 +31,18 @@ type lifecycleProbeState struct {
 	ctxErr chan error
 }
 
+type rejectingOwnedScriptRegistrar struct {
+	err error
+}
+
+// RegisterOwnedScript rejects every local script registration.
+func (r *rejectingOwnedScriptRegistrar) RegisterOwnedScript(
+	_ context.Context, _ []byte, _ keychain.KeyDescriptor,
+) error {
+
+	return r.err
+}
+
 // ProcessEvent records whether the state machine lifecycle context was
 // cancelled when a later event was processed.
 func (s *lifecycleProbeState) ProcessEvent(ctx context.Context, _ ClientEvent,
@@ -2067,6 +2079,171 @@ func TestAutoRefreshBatchedSingleChangeMarker(t *testing.T) {
 	)
 	require.Len(t, joinReq.ForfeitRequests, 2)
 	require.Len(t, joinReq.VTXORequests, 2)
+}
+
+// TestAutoRefreshCohortSamePolicyGetsUniqueSigningKeys verifies that one
+// atomic maintenance cohort preserves same-policy replacement outputs and
+// derives a distinct signing key for each. Reusing the source owner key would
+// make both requests identical and the operator would reject the intent with
+// ErrSigningKeyNotUnique.
+func TestAutoRefreshCohortSamePolicyGetsUniqueSigningKeys(t *testing.T) {
+	t.Parallel()
+
+	h := newActorTestHarness(t)
+	h.setupMockRoundStoreForStart()
+	require.NoError(t, h.start())
+
+	ownerKey := h.newKeyDescriptor()
+	policyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
+		ownerKey.PubKey, h.operatorPubKey, 144,
+	)
+	require.NoError(t, err)
+
+	requests := make([]*RefreshVTXORequest, 0, 2)
+	for i, label := range []string{"same-policy-a", "same-policy-b"} {
+		outpoint := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte(label)),
+			Index: uint32(i),
+		}
+		amount := btcutil.Amount(50_000)
+		h.vtxoStore.On(
+			"GetVTXO", mock.Anything, outpoint,
+		).Return(&ClientVTXO{
+			Outpoint: outpoint,
+			Amount:   amount,
+		}, nil)
+
+		requests = append(requests, &RefreshVTXORequest{
+			VTXOOutpoint:   outpoint,
+			Amount:         int64(amount),
+			Automatic:      true,
+			PolicyTemplate: policyTemplate,
+			OwnerKey:       ownerKey,
+			// A legacy caller may still populate SigningKey with
+			// the source owner key. The round must ignore it.
+			SigningKey: ownerKey,
+		})
+	}
+
+	result := h.receive(&RefreshVTXOCohortRequest{Requests: requests})
+	require.True(t, result.IsOk(), "cohort failed: %v", result.Err())
+
+	states := h.queryState()
+	require.Len(t, states, 1)
+
+	var tempKey RoundKeyStr
+	var tempState FSMStateInfo
+	for key, state := range states {
+		tempKey = RoundKeyStr(key)
+		tempState = state
+	}
+	assembly, ok := tempState.State.(*PendingRoundAssembly)
+	require.True(
+		t, ok, "expected PendingRoundAssembly, got %T", tempState.State,
+	)
+	require.Len(t, assembly.Forfeits, 2)
+	require.Len(t, assembly.VTXOs, 2)
+
+	firstScript, err := assembly.VTXOs[0].EffectivePkScript()
+	require.NoError(t, err)
+	secondScript, err := assembly.VTXOs[1].EffectivePkScript()
+	require.NoError(t, err)
+	require.Equal(t, firstScript, secondScript)
+	require.NotNil(t, assembly.VTXOs[0].RefreshSourceOutpoint)
+	require.NotNil(t, assembly.VTXOs[1].RefreshSourceOutpoint)
+	require.NotEqual(
+		t, *assembly.VTXOs[0].RefreshSourceOutpoint,
+		*assembly.VTXOs[1].RefreshSourceOutpoint,
+	)
+
+	timeoutID := makeTimeoutID(
+		tempKey, TimeoutPhaseRefreshRegistration,
+	)
+	h.timeoutActor.assertTimeoutScheduleCount(t, timeoutID, 1)
+	require.Empty(t, h.serverMessages())
+
+	result = h.receive(&TimeoutMsg{TimeoutID: timeoutID})
+	require.True(t, result.IsOk(), "registration failed: %v", result.Err())
+
+	states = h.queryState()
+	tempState, exists := h.findTempState(states)
+	require.True(t, exists, "expected temp-keyed FSM state")
+	intentSent, ok := tempState.State.(*IntentSentState)
+	require.True(t, ok, "expected IntentSentState, got %T", tempState.State)
+	require.Len(t, intentSent.Intents.VTXOs, 2)
+	require.NotNil(t, intentSent.Intents.VTXOs[0].SigningKey.PubKey)
+	require.NotNil(t, intentSent.Intents.VTXOs[1].SigningKey.PubKey)
+	require.False(
+		t, intentSent.Intents.VTXOs[0].SigningKey.PubKey.IsEqual(
+			intentSent.Intents.VTXOs[1].SigningKey.PubKey,
+		),
+	)
+	require.Equal(t, 1, markerCount(intentSent.Intents))
+
+	msgs := h.serverMessages()
+	require.Len(t, msgs, 1)
+	sendReq, ok := msgs[0].(*serverconn.SendClientEventRequest)
+	require.True(t, ok, "expected SendClientEventRequest, got %T", msgs[0])
+	joinReq, ok := sendReq.Message.(*JoinRoundRequest)
+	require.True(
+		t, ok, "expected JoinRoundRequest, got %T", sendReq.Message,
+	)
+	require.Len(t, joinReq.ForfeitRequests, 2)
+	require.Len(t, joinReq.VTXORequests, 2)
+}
+
+// TestAutoRefreshCohortRegistrationFailureReleasesAll verifies that a
+// pre-FSM handler failure cannot strand a manager-coordinated cohort in
+// PendingForfeit. The round emits one deduplicated rollback covering every
+// member, including the leader.
+func TestAutoRefreshCohortRegistrationFailureReleasesAll(t *testing.T) {
+	t.Parallel()
+
+	h := newActorTestHarness(t)
+	h.setupMockRoundStoreForStart()
+	h.actor.cfg.OwnedScriptRegistrar = &rejectingOwnedScriptRegistrar{
+		err: fmt.Errorf("owned-script store unavailable"),
+	}
+	require.NoError(t, h.start())
+
+	ownerKey := h.newKeyDescriptor()
+	policyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
+		ownerKey.PubKey, h.operatorPubKey, 144,
+	)
+	require.NoError(t, err)
+
+	requests := make([]*RefreshVTXORequest, 0, 2)
+	wantOutpoints := make([]wire.OutPoint, 0, 2)
+	for i, label := range []string{"release-a", "release-b"} {
+		outpoint := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte(label)),
+			Index: uint32(i),
+		}
+		wantOutpoints = append(wantOutpoints, outpoint)
+		requests = append(requests, &RefreshVTXORequest{
+			VTXOOutpoint:   outpoint,
+			Amount:         50_000,
+			Automatic:      true,
+			PolicyTemplate: policyTemplate,
+			OwnerKey:       ownerKey,
+		})
+	}
+
+	result := h.receive(&RefreshVTXOCohortRequest{Requests: requests})
+	require.True(t, result.IsErr())
+	require.Contains(
+		t, result.Err().Error(),
+		"owned-script store unavailable",
+	)
+	require.Empty(t, h.queryState(), "failure must not accept an intent")
+
+	messages := h.vtxoManager.getMessages()
+	require.Len(t, messages, 1)
+	release, ok := messages[0].(*actormsg.ReleaseForfeitRequest)
+	require.True(
+		t, ok, "expected ReleaseForfeitRequest, got %T", messages[0],
+	)
+	require.Equal(t, wantOutpoints, release.Outpoints)
 }
 
 // TestSequentialRefreshLeaveSingleChangeMarker is the regression

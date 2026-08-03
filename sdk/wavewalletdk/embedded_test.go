@@ -39,6 +39,41 @@ func TestSigningWorkersOverride(t *testing.T) {
 	})
 }
 
+// TestAutoRefreshFeeOverrides verifies embedded hosts can opt into stricter
+// automatic-maintenance limits while zero convenience values preserve a
+// caller-owned daemon policy.
+func TestAutoRefreshFeeOverrides(t *testing.T) {
+	t.Parallel()
+
+	t.Run("convenience overrides", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := DefaultConfig()
+		cfg.MaxAutoRefreshFeeSat = 2_000
+		cfg.MaxAutoRefreshFeeRatePPM = 25_000
+		daemonCfg, err := daemonConfig(cfg)
+		require.NoError(t, err)
+		require.Equal(t, int64(2_000), daemonCfg.MaxAutoRefreshFeeSat)
+		require.Equal(
+			t, uint32(25_000), daemonCfg.MaxAutoRefreshFeeRatePPM,
+		)
+	})
+
+	t.Run("zero preserves daemon config", func(t *testing.T) {
+		t.Parallel()
+
+		base := waved.DefaultConfig()
+		base.MaxAutoRefreshFeeSat = 3_000
+		base.MaxAutoRefreshFeeRatePPM = 50_000
+		daemonCfg, err := daemonConfig(Config{DaemonConfig: base})
+		require.NoError(t, err)
+		require.Equal(t, int64(3_000), daemonCfg.MaxAutoRefreshFeeSat)
+		require.Equal(
+			t, uint32(50_000), daemonCfg.MaxAutoRefreshFeeRatePPM,
+		)
+	})
+}
+
 // TestCloneDaemonConfigIsolation verifies that cloneDaemonConfig produces a
 // graph whose reference-typed fields can be mutated independently of the
 // original. This is the actual contract Start relies on when it injects its

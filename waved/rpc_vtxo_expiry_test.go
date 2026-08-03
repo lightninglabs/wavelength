@@ -44,8 +44,8 @@ func TestExpiryInfoFromDescriptorUsesDefaultThresholds(t *testing.T) {
 	require.Equal(t, int32(784), info.GetCurrentHeight())
 	require.Equal(t, int32(1000), info.GetBatchExpiry())
 	require.Equal(t, int32(216), info.GetBlocksRemaining())
-	require.Equal(t, int32(234), info.GetRefreshThresholdBlocks())
-	require.Equal(t, int32(162), info.GetCriticalThresholdBlocks())
+	require.Equal(t, int32(246), info.GetRefreshThresholdBlocks())
+	require.Equal(t, int32(174), info.GetCriticalThresholdBlocks())
 	require.Equal(t, uint32(144), info.GetRelativeExpiry())
 	require.Equal(t, uint32(3), info.GetMaxTreeDepth())
 	require.Equal(t, uint32(2), info.GetChainDepth())
@@ -151,11 +151,33 @@ func TestExpiryInfoFromIndexedVTXOUsesMaxAncestryPathDepth(t *testing.T) {
 		info.GetStatus(),
 	)
 	require.Equal(t, int32(150), info.GetBlocksRemaining())
-	require.Equal(t, int32(150), info.GetRefreshThresholdBlocks())
-	require.Equal(t, int32(78), info.GetCriticalThresholdBlocks())
+	require.Equal(t, int32(180), info.GetRefreshThresholdBlocks())
+	require.Equal(t, int32(108), info.GetCriticalThresholdBlocks())
 	require.Equal(t, uint32(24), info.GetRelativeExpiry())
 	require.Equal(t, uint32(9), info.GetMaxTreeDepth())
 	require.Equal(t, uint32(5), info.GetChainDepth())
+}
+
+// TestExpiryInfoFromTimingIncludesChainDepth verifies the public posture uses
+// the same OOR-hop budget as the live actor instead of merely echoing depth.
+func TestExpiryInfoFromTimingIncludesChainDepth(t *testing.T) {
+	t.Parallel()
+
+	withoutOOR := expiryInfoFromTiming(
+		1_000, 144, 3, 0, 700, vtxo.DefaultExpiryConfig(),
+	)
+	withOOR := expiryInfoFromTiming(
+		1_000, 144, 3, 2, 700, vtxo.DefaultExpiryConfig(),
+	)
+
+	require.Equal(t, int32(162),
+		withoutOOR.GetCriticalThresholdBlocks())
+	require.Equal(t, int32(174),
+		withOOR.GetCriticalThresholdBlocks())
+	require.Greater(
+		t, withOOR.GetRefreshThresholdBlocks(),
+		withoutOOR.GetRefreshThresholdBlocks(),
+	)
 }
 
 // TestIndexedExpiryStatusFilterDefaultsToLive verifies pkScript expiry lookups

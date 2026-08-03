@@ -466,9 +466,10 @@ func (s *VTXOPersistenceStore) ListVTXOsByStatusLight(ctx context.Context,
 // byStatusRowsToDescriptors converts the joined by-status rows to descriptors
 // using the supplied (possibly empty) preloaded ancestry index, then stamps
 // the settlement txid/height carried by the LEFT JOIN onto rounds. The join
-// columns are NULL for every VTXO whose forfeit round is unknown, so a VTXO
-// that is not a confirmed forfeit keeps the zero settlement values and the RPC
-// surface degrades to today's behavior.
+// columns are NULL for every VTXO whose forfeit round is unknown. A Forfeiting
+// row can therefore expose a checkpointed settlement with Height zero, or a
+// confirmed crash-gap settlement with positive Height; rows without a known
+// forfeit round keep Settlement unset.
 func (s *VTXOPersistenceStore) byStatusRowsToDescriptors(ctx context.Context,
 	q RoundStore, rows []sqlc.ListVTXOsByStatusRow,
 	preloaded map[wire.OutPoint][]vtxo.Ancestry) ([]*vtxo.Descriptor,
@@ -481,11 +482,12 @@ func (s *VTXOPersistenceStore) byStatusRowsToDescriptors(ctx context.Context,
 			return nil, fmt.Errorf("convert VTXO: %w", err)
 		}
 
-		// settlement_txid is a 32-byte BLOB when the forfeit round row
-		// exists; treat any other length (NULL join, short/legacy) as
-		// unset so the descriptor's Settlement stays None. The txid,
-		// height, and round-level operator fee are attached together,
-		// as they all describe the same forfeit round.
+		// settlement_txid is a 32-byte BLOB when the joined
+		// forfeit round has a commitment transaction. Treat any other
+		// length (NULL join, short/legacy) as unset so the descriptor's
+		// Settlement stays None.
+		// The txid, height, and round-level operator fee are attached
+		// together, as they all describe the same forfeit round.
 		if len(row.SettlementTxid) == chainhash.HashSize {
 			var settle vtxo.Settlement
 			copy(settle.TxID[:], row.SettlementTxid)
@@ -908,6 +910,7 @@ func (s *VTXOPersistenceStore) rowToDescriptor(ctx context.Context,
 		TapScript:      derived.tapscript,
 		Ancestry:       ancestry,
 		RoundID:        row.RoundID,
+		ForfeitRoundID: row.ForfeitRoundID.String,
 		CommitmentTxID: commitmentTxID,
 		BatchExpiry:    row.BatchExpiry,
 		RelativeExpiry: derived.relativeExpiry,
