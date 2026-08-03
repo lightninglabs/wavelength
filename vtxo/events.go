@@ -1,6 +1,7 @@
 package vtxo
 
 import (
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/lib/actormsg"
@@ -83,6 +84,10 @@ type CohortRefreshEvent struct {
 	// prevents a delayed rollback from an earlier retry releasing a newer
 	// reservation led by the same outpoint.
 	Generation uint64
+
+	// OperatorKey is the leader's join-time operator-key snapshot. Every
+	// sibling uses the same key so one cohort cannot mix operator terms.
+	OperatorKey *btcec.PublicKey
 }
 
 // VTXOActorMsg implements actormsg.VTXOActorMsg.

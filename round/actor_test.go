@@ -315,6 +315,43 @@ func TestActorStart(t *testing.T) {
 		require.Equal(t, *ownerKey, req.OwnerKey)
 		require.Nil(t, req.SigningKey.PubKey)
 	})
+
+	t.Run("registers_explicit_vtxo_change_index", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.setupMockRoundStoreForStart()
+		require.NoError(t, h.start())
+
+		for i := 0; i < 2; i++ {
+			h.wallet.On(
+				"DeriveNextKey", mock.Anything,
+				types.VTXOOwnerKeyFamily,
+			).Return(&keychain.KeyDescriptor{
+				KeyLocator: keychain.KeyLocator{
+					Family: types.VTXOOwnerKeyFamily,
+					Index:  uint32(i),
+				},
+				PubKey: h.clientPubKey,
+			}, nil).Once()
+		}
+
+		changeIndex := 1
+		result := h.receive(&RegisterVTXORequestsRequest{
+			Amounts:     []btcutil.Amount{99_000, 1_000},
+			ChangeIndex: &changeIndex,
+		})
+		require.True(t, result.IsOk())
+
+		states := h.queryState()
+		tempState, found := h.findTempState(states)
+		require.True(t, found)
+		assembly, ok := tempState.State.(*PendingRoundAssembly)
+		require.True(t, ok)
+		require.Len(t, assembly.VTXOs, 2)
+		require.False(t, assembly.VTXOs[0].IsChange)
+		require.True(t, assembly.VTXOs[1].IsChange)
+	})
 }
 
 // TestActorRecovery validates that the actor can restore its state after a

@@ -447,7 +447,11 @@ func (a *VTXOActor) Receive(ctx context.Context,
 		}
 	}
 
-	refreshKey, deferRefresh, err := a.preflightAutoRefresh(
+	var refreshKey *btcec.PublicKey
+	if cohortRefresh {
+		refreshKey = cohortEvent.OperatorKey
+	}
+	preflightKey, deferRefresh, err := a.preflightAutoRefresh(
 		ctx, vtxoEvent,
 	)
 	if err != nil {
@@ -465,6 +469,9 @@ func (a *VTXOActor) Receive(ctx context.Context,
 			PriorState: a.state,
 			NewState:   a.state,
 		})
+	}
+	if preflightKey != nil {
+		refreshKey = preflightKey
 	}
 
 	transition, err := a.state.ProcessEvent(ctx, vtxoEvent, a.env)
@@ -685,9 +692,17 @@ func (a *VTXOActor) processOutboxWithOperatorKey(ctx context.Context,
 			// the round-specific message here since the VTXO
 			// actor has the descriptor data needed.
 			vtxo := a.cfg.VTXO
-			policyTemplate, err := a.refreshOutputTemplateWithKey(
-				ctx, vtxo, refreshKey,
-			)
+			var err error
+			if refreshKey == nil && a.cfg.FetchOperatorKey != nil {
+				refreshKey, err = a.fetchOperatorKey(ctx)
+			}
+			var policyTemplate []byte
+			if err == nil {
+				policyTemplate, err =
+					a.refreshOutputTemplateWithKey(
+						ctx, vtxo, refreshKey,
+					)
+			}
 			if err != nil {
 				// WarnS, not ErrorS: this can fail because
 				// the FetchOperatorKey callback returned an
@@ -763,6 +778,7 @@ func (a *VTXOActor) processOutboxWithOperatorKey(ctx context.Context,
 				BatchExpiry:    vtxo.BatchExpiry,
 				TriggerHeight:  m.LastCheckedHeight,
 				ExpandCohort:   m.ExpandCohort,
+				OperatorKey:    refreshKey,
 				PolicyTemplate: policyTemplate,
 				OwnerKey:       vtxo.ClientKey,
 			}

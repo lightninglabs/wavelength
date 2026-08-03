@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/lib/actormsg"
@@ -32,6 +33,7 @@ type cohortActorRef struct {
 	hasToken     bool
 	askCount     int
 	releaseCount int
+	operatorKey  *btcec.PublicKey
 }
 
 // newCohortActorRef creates a deterministic manager test child.
@@ -125,8 +127,23 @@ func (c *cohortActorRef) Ask(ctx context.Context,
 func (c *cohortActorRef) processCohortAsk(
 	msg actormsg.VTXOActorMsg) fn.Result[actormsg.VTXOActorResp] {
 
-	event, ok := msg.(*CohortRefreshEvent)
-	if !ok {
+	if _, release := msg.(*ForfeitReleasedEvent); release {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+
+		prior := c.state
+		c.state = &LiveState{VTXO: c.desc}
+		c.hasToken = false
+		c.releaseCount++
+
+		return fn.Ok[actormsg.VTXOActorResp](VTXOActorResponse{
+			PriorState: prior,
+			NewState:   c.state,
+		})
+	}
+
+	event, cohortOK := msg.(*CohortRefreshEvent)
+	if !cohortOK {
 		return fn.Err[actormsg.VTXOActorResp](
 			fmt.Errorf("unexpected cohort test event %T", msg),
 		)
@@ -134,6 +151,7 @@ func (c *cohortActorRef) processCohortAsk(
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.operatorKey = event.OperatorKey
 
 	prior := c.state
 	triggerHeight := event.Height
@@ -172,8 +190,17 @@ func (c *cohortActorRef) processCohortAsk(
 			Automatic:     true,
 			BatchExpiry:   c.desc.BatchExpiry,
 			TriggerHeight: triggerHeight,
+			OperatorKey:   event.OperatorKey,
 		},
 	})
+}
+
+// keySnapshot returns the operator key observed by the latest cohort Ask.
+func (c *cohortActorRef) keySnapshot() *btcec.PublicKey {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return c.operatorKey
 }
 
 // snapshot returns child state and counters under the mock lock.
@@ -271,8 +298,11 @@ func TestManagerBuildsAtomicAutoRefreshCohort(t *testing.T) {
 		mgr.actors[desc.Outpoint] = ref
 	}
 
+	_, operatorKey := generateTestKeyPair(t)
+	leaderRequest := autoRefreshLeaderRequest(leader, height)
+	leaderRequest.OperatorKey = operatorKey
 	_, err := mgr.Receive(t.Context(), &RelayToRoundMsg{
-		Payload: autoRefreshLeaderRequest(leader, height),
+		Payload: leaderRequest,
 	}).Unpack()
 	require.NoError(t, err)
 
@@ -286,11 +316,61 @@ func TestManagerBuildsAtomicAutoRefreshCohort(t *testing.T) {
 
 	state, _, _ := children[eligible].snapshot()
 	require.IsType(t, &PendingForfeitState{}, state)
+	require.True(
+		t,
+		xOnlyEqual(
+			operatorKey, children[eligible].keySnapshot(),
+		),
+	)
 	for _, excluded := range []*Descriptor{
 		reserved, waitsForFree, different,
 	} {
 		state, _, _ = children[excluded].snapshot()
 		require.IsType(t, &LiveState{}, state)
+	}
+	store.AssertExpectations(t)
+}
+
+// TestManagerAutoRefreshRelayFailureReleasesWholeCohort verifies a failed
+// round-actor handoff releases both manager-reserved siblings and the leader.
+func TestManagerAutoRefreshRelayFailureReleasesWholeCohort(t *testing.T) {
+	t.Parallel()
+
+	const (
+		batchExpiry = int32(1_000)
+		height      = int32(800)
+	)
+	leader := deterministicCohortDescriptor(t, 0, batchExpiry)
+	sibling := deterministicCohortDescriptor(t, 1, batchExpiry)
+	leaderRef := newCohortActorRef(leader, &PendingForfeitState{
+		VTXO:              leader,
+		RequestedAtHeight: height,
+	})
+	siblingRef := newCohortActorRef(
+		sibling, &LiveState{VTXO: sibling},
+	)
+
+	store := &MockVTXOStore{}
+	expectCohortListings(store, []*Descriptor{leader, sibling}, nil)
+	roundActor := newMockRoundActorRef(t)
+	roundActor.tellErr = fmt.Errorf("round actor unavailable")
+	mgr := NewManager(&ManagerConfig{
+		Store:      store,
+		RoundActor: roundActor,
+	})
+	mgr.actors[leader.Outpoint] = leaderRef
+	mgr.actors[sibling.Outpoint] = siblingRef
+
+	_, err := mgr.Receive(t.Context(), &RelayToRoundMsg{
+		Payload: autoRefreshLeaderRequest(leader, height),
+	}).Unpack()
+	require.ErrorContains(t, err, "round actor unavailable")
+	require.Empty(t, roundActor.getMessages())
+
+	for _, ref := range []*cohortActorRef{leaderRef, siblingRef} {
+		state, _, releases := ref.snapshot()
+		require.IsType(t, &LiveState{}, state)
+		require.Equal(t, 1, releases)
 	}
 	store.AssertExpectations(t)
 }

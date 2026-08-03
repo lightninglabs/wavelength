@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chaincfg/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
@@ -117,6 +118,12 @@ type RefreshVTXORequest struct {
 	// for a threshold-triggered leader; manager-forced siblings leave it
 	// false so their relay cannot recursively rediscover the same batch.
 	ExpandCohort bool
+
+	// OperatorKey is the join-time operator-key snapshot used to build this
+	// replacement output. The manager reuses it for every sibling in an
+	// automatic cohort so one registration cannot mix operator terms.
+	// It is local-only and is never serialized onto the round wire.
+	OperatorKey *btcec.PublicKey
 
 	// PolicyTemplate is the semantic arkscript policy for the refreshed
 	// output. This is the authoritative round-registration representation.
@@ -1697,6 +1704,13 @@ func (a *RoundClientActor) handleVTXORequests(ctx context.Context,
 			fmt.Errorf("VTXO request amounts are empty"),
 		)
 	}
+	if msg.ChangeIndex != nil &&
+		(*msg.ChangeIndex < 0 || *msg.ChangeIndex >= len(msg.Amounts)) {
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("VTXO change index %d is out of range",
+				*msg.ChangeIndex),
+		)
+	}
 
 	requests := make([]types.VTXORequest, 0, len(msg.Amounts))
 	for i, amount := range msg.Amounts {
@@ -1720,6 +1734,9 @@ func (a *RoundClientActor) handleVTXORequests(ctx context.Context,
 			return fn.Err[actormsg.RoundActorResp](
 				fmt.Errorf("build VTXO request %d: %w", i, err),
 			)
+		}
+		if msg.ChangeIndex != nil && *msg.ChangeIndex == i {
+			req.IsChange = true
 		}
 
 		// The legacy bare-amounts path is used by tests that
