@@ -41,6 +41,12 @@ type Tree struct {
 	// For VTXO trees, this is the operator's sweep script.
 	// For connector trees, this is nil (no sweep script).
 	SweepTapscriptRoot []byte
+
+	// AssetContext carries the per-node asset data of an asset-aware
+	// tree: signing tweaks and sealed packages keyed by node input
+	// outpoint. Nil for Bitcoin-only trees. Outpoint keying keeps the
+	// context valid across path extraction, which clones nodes.
+	AssetContext *AssetTreeContext
 }
 
 // NewTree constructs a transaction tree from the given leaves using BFS.
@@ -132,6 +138,7 @@ func (t *Tree) ExtractPathForCoSigners(targetKeys ...*btcec.PublicKey) (*Tree,
 		BatchOutpoint:      t.BatchOutpoint,
 		BatchOutput:        t.BatchOutput,
 		SweepTapscriptRoot: t.SweepTapscriptRoot,
+		AssetContext:       t.AssetContext,
 	}, nil
 }
 
@@ -164,6 +171,7 @@ func (t *Tree) ExtractPathForIndices(leafIndices ...int) (*Tree, error) {
 		BatchOutpoint:      t.BatchOutpoint,
 		BatchOutput:        t.BatchOutput,
 		SweepTapscriptRoot: t.SweepTapscriptRoot,
+		AssetContext:       t.AssetContext,
 	}, nil
 }
 

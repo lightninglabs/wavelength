@@ -27,6 +27,11 @@ type AssetTreeContext struct {
 	// materializer to size the asset split at every branch.
 	amountsByNode map[*Node]uint64
 
+	// amountsByInput re-keys the subtree totals by input outpoint once
+	// materialization assigns inputs, so lookups survive path
+	// extraction (which clones nodes) and serialization.
+	amountsByInput map[wire.OutPoint]uint64
+
 	// tweaksByInput holds the taproot signing tweak for the node
 	// transaction spending each outpoint: the parent output's combined
 	// tapscript root, committing to both the sweep leaf and the asset
@@ -39,26 +44,42 @@ type AssetTreeContext struct {
 	// suffixes feed unroll publication and its authenticated summaries
 	// feed validation.
 	packagesByInput map[wire.OutPoint][]byte
+
+	// assetRef identifies the asset carried by every leaf of the tree,
+	// in its canonical string encoding (group key reference for grouped
+	// assets).
+	assetRef string
 }
 
 // NewAssetTreeContext returns an empty asset tree context.
 func NewAssetTreeContext() *AssetTreeContext {
 	return &AssetTreeContext{
 		amountsByNode:   make(map[*Node]uint64),
+		amountsByInput:  make(map[wire.OutPoint]uint64),
 		tweaksByInput:   make(map[wire.OutPoint][]byte),
 		packagesByInput: make(map[wire.OutPoint][]byte),
 	}
 }
 
-// SetNodeAssetAmount records the subtree asset total for a node.
+// SetNodeAssetAmount records the subtree asset total for a node. Nodes
+// that already carry their input outpoint are additionally indexed by it,
+// so the amount stays resolvable on extracted or deserialized clones.
 func (c *AssetTreeContext) SetNodeAssetAmount(node *Node, amount uint64) {
 	c.amountsByNode[node] = amount
+	if node.Input != (wire.OutPoint{}) {
+		c.amountsByInput[node.Input] = amount
+	}
 }
 
 // NodeAssetAmount returns the subtree asset total for a node, or zero when
-// the node carries no assets.
+// the node carries no assets. Node identity wins; clones resolve through
+// their input outpoint.
 func (c *AssetTreeContext) NodeAssetAmount(node *Node) uint64 {
-	return c.amountsByNode[node]
+	if amount, ok := c.amountsByNode[node]; ok {
+		return amount
+	}
+
+	return c.amountsByInput[node.Input]
 }
 
 // SetSigningTweak records the taproot signing tweak for the node
@@ -83,6 +104,24 @@ func (c *AssetTreeContext) SetSealedPackage(input wire.OutPoint, pkg []byte) {
 // transaction spending the given outpoint, or nil when none was recorded.
 func (c *AssetTreeContext) SealedPackage(input wire.OutPoint) []byte {
 	return c.packagesByInput[input]
+}
+
+// SetAssetRef records the canonical string encoding of the tree's asset.
+func (c *AssetTreeContext) SetAssetRef(ref string) {
+	c.assetRef = ref
+}
+
+// AssetRef returns the canonical string encoding of the tree's asset, or
+// the empty string when none was recorded.
+func (c *AssetTreeContext) AssetRef() string {
+	return c.assetRef
+}
+
+// IsEmpty reports whether the context carries no asset data at all.
+func (c *AssetTreeContext) IsEmpty() bool {
+	return len(c.amountsByNode) == 0 && len(c.amountsByInput) == 0 &&
+		len(c.tweaksByInput) == 0 && len(c.packagesByInput) == 0 &&
+		c.assetRef == ""
 }
 
 // TweakLookup adapts the context to the signer sessions: nodes whose input
