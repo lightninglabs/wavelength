@@ -39,7 +39,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Checkout (bot token)
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           # Use BOT_GITHUB_TOKEN so subsequent `git push` operations
           # authenticate as the bot. This is required for the resulting PR
@@ -52,8 +52,19 @@ jobs:
           # returns empty history and turns the sweep into a false no-op.
           fetch-depth: 0
 
+      - name: Neutralize git hooks
+        # Point core.hooksPath at an empty target so no repository hook can
+        # execute during this run. The model is granted native Write and
+        # Bash(git commit:*), so a prompt injection could otherwise drop a
+        # .git/hooks/pre-commit and have the sweep's own `git commit` run
+        # it with the bot token in env. `git config` is deliberately NOT in
+        # the model's allowlist, and `git -c core.hooksPath=... commit` does
+        # not match the Bash(git commit:*) prefix, so the model cannot undo
+        # this from inside the action.
+        run: git config core.hooksPath /dev/null
+
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
           cache: true
@@ -83,7 +94,7 @@ jobs:
             done
 
       - name: Run /doc-gardening sweep and open PR
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@fb326f7c687fa273d0843a59bbd2ddbc9e481ca1 # v1
         env:
           # Belt-and-suspenders: also surface the bot token as GH_TOKEN on
           # the step env so `gh` inside Claude's Bash subprocess picks it
@@ -121,11 +132,16 @@ jobs:
           # the Actions log so we can grep what the model actually did
           # on a NO-OP day. Without this, the action buffers stdout
           # internally and the Actions log shows only step start/end.
-          # GitHub auto-masks `secrets.*` values, so BOT_GITHUB_TOKEN
-          # and CLAUDE_CODE_OAUTH_TOKEN remain redacted; the residual
-          # leak risk is content Claude reads off disk that isn't
-          # registered as a secret. For a docs-only sweep on a public
-          # repo, that risk is acceptable.
+          # GitHub auto-masks `secrets.*` values in the log, so
+          # BOT_GITHUB_TOKEN and CLAUDE_CODE_OAUTH_TOKEN stay redacted
+          # there. Two residual risks remain on this private repo: content
+          # Claude reads off disk that isn't registered as a secret, and
+          # the base64-encoded credential actions/checkout persists into
+          # .git/config (a different string than the masked secret, so a
+          # `cat .git/config` would print it unredacted). Both are bounded
+          # by keeping BOT_GITHUB_TOKEN a fine-grained PAT scoped to only
+          # these repos; log readers are first-party. Accepted on that
+          # basis.
           show_full_output: "true"
           prompt: |
             You are running in a nightly GitHub Actions cron job. Your job
@@ -204,7 +220,11 @@ jobs:
                - Create and check out a fresh branch:
                  `BRANCH="doc-gardening/nightly-$(date -u +%Y-%m-%d)-${RUN_NUMBER}"`
                  then `git checkout -b "$BRANCH"`.
-               - Stage everything with `git add -A`.
+               - Stage only markdown docs with `git add -- '*.md'`. Never
+                 `git add -A`: this sweep is docs-only, so scoping the add
+                 to `*.md` guarantees a stray binary or any secret-bearing
+                 file dropped into the worktree can never be committed or
+                 pushed.
                - Write the commit message to `.git/COMMIT_MSG` using this
                  template (substitute today's UTC date):
 

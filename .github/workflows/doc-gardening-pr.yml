@@ -39,7 +39,7 @@ jobs:
       !contains(github.event.pull_request.labels.*.name, 'automation')
     steps:
       - name: Checkout (bot token)
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           token: ${{ secrets.BOT_GITHUB_TOKEN }}
           # Full history + the PR head so the skill can diff base..head to
@@ -48,7 +48,7 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
           cache: true
@@ -57,7 +57,7 @@ jobs:
         run: go mod download
 
       - name: Run scoped /doc-gardening and post advisory
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@fb326f7c687fa273d0843a59bbd2ddbc9e481ca1 # v1
         env:
           GH_TOKEN: ${{ secrets.BOT_GITHUB_TOKEN }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
