@@ -81,7 +81,7 @@ jobs:
 
             1. **Find the changed packages.** Run:
 
-                   git diff --name-only "$BASE_SHA".."$HEAD_SHA" -- '*.go' \
+                   git diff --name-only "$BASE_SHA"..."$HEAD_SHA" -- '*.go' \
                      | xargs -r -n1 dirname | sort -u
 
                For each directory in that list, keep only the ones that
@@ -95,7 +95,7 @@ jobs:
             2. **Audit each scoped package.** Read
                `.claude/skills/doc-gardening/SKILL.md` and apply its
                update logic (Phases 2-6) to ONLY the packages in SCOPE.
-               For each, diff `"$BASE_SHA".."$HEAD_SHA"` over that package's
+               For each, diff `"$BASE_SHA"..."$HEAD_SHA"` over that package's
                `.go` files and reconcile its `CLAUDE.md` against the current
                code: new/removed/renamed exported types, changed CLI flags or
                config, new invariants, changed dependency relationships. Edit
@@ -105,12 +105,19 @@ jobs:
             3. **Self-check.** Run `make doc-check`. If it fails, fix the
                errors before proposing anything. Also grep the changed docs
                for leaked artifacts
-               (`grep -rn -e '</content>' -e '</invoke>' -e '<parameter' .`)
+               (`grep -rn --include='*.md' -e '</content>' -e '</invoke>'
+               -e '<parameter' .` — scoped to markdown so a legitimate
+               occurrence in Go source or a test fixture is never treated
+               as an artifact to delete)
                and remove any. Never propose a diff that would not pass
                `make doc-check`.
 
-            4. **Compute the proposal.** Run `git diff -- '**/CLAUDE.md'
-               '**/AGENTS.md' '**/*.md'`. If the diff is empty, print
+            4. **Compute the proposal.** Run `git diff -- '*.md'`. The
+               single-star pathspec is deliberate: git's `*` already spans
+               `/`, so a leading `**/` requires at least one slash and
+               would silently skip the root `CLAUDE.md`/`AGENTS.md` pair —
+               exactly the pair a root-level `.go` change puts in SCOPE.
+               If the diff is empty, print
                `DOC-PR NO-OP: scoped docs already current` and stop without
                commenting.
 
@@ -153,6 +160,12 @@ jobs:
             - Never create new `CLAUDE.md`/`AGENTS.md` files; only update ones
               that already exist for packages in SCOPE.
             - Never modify files outside this repo.
+            - The comment body must contain ONLY the doc diff described
+              above. Never read `.git/config`, environment variables, or
+              any credential into it. `actions/checkout` persists the bot
+              token into `.git/config`, and a posted comment is not
+              log-masked, so the comment is the one egress channel that
+              could carry a secret off this runner.
           claude_args: >-
             --max-turns 120
             --model claude-opus-5

@@ -201,8 +201,11 @@ jobs:
                  leak stray tags into `.md` files (e.g. a literal
                  `</content>` or `</invoke>`, or a trailing
                  ` ``` ` fence with no opener). Run
-                 `grep -rn -e '</content>' -e '</invoke>' -e '<parameter' .` over
-                 the changed docs and delete any such artifact before
+                 `grep -rn --include='*.md' -e '</content>' -e '</invoke>'
+                 -e '<parameter' .` over the changed docs (scoped to
+                 markdown so a legitimate occurrence in Go source or a test
+                 fixture is never treated as an artifact) and delete any
+                 such artifact before
                  committing. A doc with a leaked tag is a failed sweep even
                  if `make doc-check` is green.
 
@@ -294,7 +297,7 @@ jobs:
             --max-turns 200
             --model claude-opus-5
             --allowed-tools
-            "Edit,Write,MultiEdit,Bash(git status:*),Bash(git diff:*),Bash(git add:*),Bash(git commit:*),Bash(git checkout:*),Bash(git log:*),Bash(git rev-parse:*),Bash(git branch:*),Bash(git fetch:*),Bash(git push:*),Bash(make doc-check:*),Bash(go doc:*),Bash(ls:*),Bash(cp:*),Bash(cat:*),Bash(head:*),Bash(tail:*),Bash(date:*),Bash(sort:*),Bash(gh pr create:*),Bash(gh pr list:*),Bash(gh pr view:*),Bash(gh auth status:*)"
+            "Edit,Write,MultiEdit,Bash(git status:*),Bash(git diff:*),Bash(git add:*),Bash(git commit:*),Bash(git checkout:*),Bash(git log:*),Bash(git rev-parse:*),Bash(git branch:*),Bash(git fetch:*),Bash(git push:*),Bash(make doc-check:*),Bash(go doc:*),Bash(grep:*),Bash(ls:*),Bash(cp:*),Bash(cat:*),Bash(head:*),Bash(tail:*),Bash(date:*),Bash(sort:*),Bash(gh pr create:*),Bash(gh pr list:*),Bash(gh pr view:*),Bash(gh auth status:*)"
             --disallowed-tools
             "Bash(rm:*),Bash(rmdir:*),Bash(git push --force:*),Bash(git push -f:*),Bash(git push --delete:*),Bash(git reset --hard:*),Bash(git commit --amend:*),Bash(gh api:*),Bash(gh secret:*),Bash(gh auth login:*),Bash(gh auth logout:*),Bash(gh auth refresh:*),Bash(gh repo delete:*),Bash(gh workflow:*),Bash(gh release:*),Bash(curl:*),Bash(wget:*)"
 
