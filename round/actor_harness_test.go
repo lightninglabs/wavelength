@@ -1014,11 +1014,10 @@ func (h *actorTestHarness) setupRoundInInputSigSentState(
 	}
 
 	// Create a new FSM starting in InputSigSentState.
-	errReporter := newContextErrorReporter(
-		h.ctx, roundID.LogPrefix(),
-	)
+	fsmLogger := h.actor.log.WithPrefix(roundID.LogPrefix())
+	errReporter := newLoggerErrorReporter(fsmLogger)
 	fsmCfg := ClientStateMachineCfg{
-		Logger:        h.actor.log.WithPrefix(roundID.LogPrefix()),
+		Logger:        fsmLogger,
 		ErrorReporter: errReporter,
 		InitialState:  initialState,
 		Env:           h.actor.env,
@@ -1086,11 +1085,10 @@ func (h *actorTestHarness) setupRoundInForfeitCollectingState(roundID RoundID) {
 		),
 	}
 
-	errReporter := newContextErrorReporter(
-		h.ctx, roundID.LogPrefix(),
-	)
+	fsmLogger := h.actor.log.WithPrefix(roundID.LogPrefix())
+	errReporter := newLoggerErrorReporter(fsmLogger)
 	fsmCfg := ClientStateMachineCfg{
-		Logger:        h.actor.log.WithPrefix(roundID.LogPrefix()),
+		Logger:        fsmLogger,
 		ErrorReporter: errReporter,
 		InitialState:  initialState,
 		Env:           h.actor.env,
@@ -1120,11 +1118,10 @@ func (h *actorTestHarness) setupRoundInIntentSentState() TempRoundKey {
 		Intents: Intents{},
 	}
 
-	errReporter := newContextErrorReporter(
-		h.ctx, tempKey.LogPrefix(),
-	)
+	fsmLogger := h.actor.log.WithPrefix(tempKey.LogPrefix())
+	errReporter := newLoggerErrorReporter(fsmLogger)
 	fsmCfg := ClientStateMachineCfg{
-		Logger:        h.actor.log.WithPrefix(tempKey.LogPrefix()),
+		Logger:        fsmLogger,
 		ErrorReporter: errReporter,
 		InitialState:  initialState,
 		Env:           h.actor.env,
@@ -1152,11 +1149,10 @@ func (h *actorTestHarness) injectRoundInState(roundID RoundID,
 
 	h.t.Helper()
 
-	errReporter := newContextErrorReporter(
-		h.ctx, roundID.LogPrefix(),
-	)
+	fsmLogger := h.actor.log.WithPrefix(roundID.LogPrefix())
+	errReporter := newLoggerErrorReporter(fsmLogger)
 	fsmCfg := ClientStateMachineCfg{
-		Logger:        h.actor.log.WithPrefix(roundID.LogPrefix()),
+		Logger:        fsmLogger,
 		ErrorReporter: errReporter,
 		InitialState:  initialState,
 		Env:           h.actor.env,
