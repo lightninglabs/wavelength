@@ -48,7 +48,8 @@ type TreeRootAssetSource struct {
 	ProofPath []byte
 
 	// Witness is the caller-provided asset witness stack authorizing
-	// the batch output's asset spend.
+	// the batch output's asset spend. Empty selects tapd's backend
+	// signer, for batch outputs whose asset script key is wallet-owned.
 	Witness [][]byte
 
 	// Verifier verifies the proof source when building each commit.
@@ -91,10 +92,55 @@ type TreeMaterializerConfig struct {
 	Digest tapsdk.Hash
 }
 
+// treePathVerifier binds every unconfirmed step of a node's compact proof
+// path to the exact ancestor transaction the materializer committed.
+// Unlike the OOR verifiers, which bind only the newest step, tree paths
+// grow one step per level and every level is materializer-authored, so
+// each one is checked byte-for-byte.
+type treePathVerifier struct {
+	base  tapsdk.ConfirmedProofVerifier
+	steps []*expectedUnconfirmedAnchor
+}
+
+// VerifyConfirmedProof delegates the confirmed base to the batch anchor's
+// verifier.
+func (v *treePathVerifier) VerifyConfirmedProof(ctx context.Context,
+	proofFile []byte) (*tapsdk.ConfirmedProofVerification, error) {
+
+	return v.base.VerifyConfirmedProof(ctx, proofFile)
+}
+
+// VerifyUnconfirmedAnchor requires the step to match the recorded ancestor
+// transaction at its exact position.
+func (v *treePathVerifier) VerifyUnconfirmedAnchor(_ context.Context,
+	transition tapsdk.UnconfirmedAnchorVerification) error {
+
+	if int(transition.StepIndex) >= len(v.steps) {
+		return fmt.Errorf("unexpected unconfirmed proof step %d",
+			transition.StepIndex)
+	}
+	expected := v.steps[transition.StepIndex]
+	if transition.PreviousAnchorOutpoint != expected.previousOutpoint {
+		return fmt.Errorf("step %d previous outpoint mismatch",
+			transition.StepIndex)
+	}
+	if transition.AnchorOutpoint != expected.anchorOutpoint {
+		return fmt.Errorf("step %d anchor outpoint mismatch",
+			transition.StepIndex)
+	}
+	if !bytes.Equal(transition.AnchorTransaction, expected.transaction) {
+		return fmt.Errorf("step %d anchor transaction mismatch",
+			transition.StepIndex)
+	}
+
+	return nil
+}
+
 // nodeAssetHandoff carries everything a child node commit needs from its
 // materialized parent.
 type nodeAssetHandoff struct {
 	source       *assetSpendSource
+	steps        []*expectedUnconfirmedAnchor
 	amount       uint64
 	signingTweak tapsdk.Hash
 	pkScript     []byte
@@ -108,6 +154,10 @@ type TreeMaterializer struct {
 	cfg      TreeMaterializerConfig
 	driver   customAnchorDriver
 	handoffs map[wire.OutPoint]*nodeAssetHandoff
+
+	// currentSteps are the expected unconfirmed anchors of the node
+	// being materialized, extended per child in prepareChildren.
+	currentSteps []*expectedUnconfirmedAnchor
 }
 
 // NewTreeMaterializer returns a materializer for one asset tree.
@@ -201,10 +251,12 @@ func (m *TreeMaterializer) resolveInput(input wire.OutPoint) (*assetSpendSource,
 
 	if handoff, ok := m.handoffs[input]; ok {
 		delete(m.handoffs, input)
+		m.currentSteps = handoff.steps
 
 		return handoff.source, handoff.amount,
 			handoff.signingTweak[:], handoff.pkScript, nil
 	}
+	m.currentSteps = nil
 
 	// No handoff means this is the root node spending the batch output.
 	root := m.cfg.Root
@@ -213,11 +265,21 @@ func (m *TreeMaterializer) resolveInput(input wire.OutPoint) (*assetSpendSource,
 			"incomplete")
 	}
 
-	source := &assetSpendSource{
-		witness: tapsdk.CustomAssetWitnessPlan{
+	// An empty witness stack selects the backend signer: the batch
+	// output's asset script key is a tapd wallet key, so tapd signs the
+	// root transition itself. Tree-internal outputs are OP_TRUE and
+	// always hand their witness stacks forward explicitly.
+	witnessPlan := tapsdk.CustomAssetWitnessPlan{
+		Mode: witnessBackendSigner,
+	}
+	if len(root.Witness) != 0 {
+		witnessPlan = tapsdk.CustomAssetWitnessPlan{
 			Mode:  witnessCallerProvided,
 			Stack: cloneByteSlices(root.Witness),
-		},
+		}
+	}
+	source := &assetSpendSource{
+		witness:  witnessPlan,
 		verifier: root.Verifier,
 	}
 	switch {
@@ -360,6 +422,8 @@ func (m *TreeMaterializer) commitNode(ctx context.Context, node *tree.Node,
 		return nil, err
 	}
 
+	sessionContext := []byte(input.String())
+
 	// The node input's total asset amount is the sum of its outputs:
 	// tree transitions never burn or mint.
 	var total uint64
@@ -418,7 +482,7 @@ func (m *TreeMaterializer) commitNode(ctx context.Context, node *tree.Node,
 			Mode: tapsdk.CustomAnchorLossReject,
 		},
 		SigningPlans: []tapsdk.CustomAnchorInputSigningPlan{
-			musig2SigningPlan(0, node.CoSigners),
+			musig2SigningPlan(0, node.CoSigners, sessionContext),
 		},
 	}
 
@@ -571,26 +635,37 @@ func (m *TreeMaterializer) prepareChildren(node *tree.Node, input wire.OutPoint,
 		}
 
 		childInput := wire.OutPoint{Hash: txid, Index: idx}
-		transitionInput, verifier, err := source.appendTransition(
-			out.proofBlob, out.opTrueWitness,
-			&expectedUnconfirmedAnchor{
-				previousOutpoint: sdkOutpoint(input),
-				anchorOutpoint:   out.anchorOutpoint,
-				transaction: append(
-					[]byte(nil), serializedTx...,
-				),
-			},
+		expected := &expectedUnconfirmedAnchor{
+			previousOutpoint: sdkOutpoint(input),
+			anchorOutpoint:   out.anchorOutpoint,
+			transaction:      append([]byte(nil), serializedTx...),
+		}
+		transitionInput, _, err := source.appendTransition(
+			out.proofBlob, out.opTrueWitness, expected,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("child %d: %w", idx, err)
 		}
 
+		// The child's path carries every ancestor transition, so
+		// its verifier binds every step, not only the newest one.
+		childSteps := make(
+			[]*expectedUnconfirmedAnchor, len(m.currentSteps),
+			len(m.currentSteps)+1,
+		)
+		copy(childSteps, m.currentSteps)
+		childSteps = append(childSteps, expected)
+
 		m.handoffs[childInput] = &nodeAssetHandoff{
 			source: &assetSpendSource{
 				proofPath: transitionInput.ProofPath,
 				witness:   transitionInput.Witness,
-				verifier:  verifier,
+				verifier: &treePathVerifier{
+					base:  m.cfg.Root.Verifier,
+					steps: childSteps,
+				},
 			},
+			steps:        childSteps,
 			amount:       out.amount,
 			signingTweak: out.taprootMerkleRoot,
 			pkScript: append(
@@ -628,12 +703,25 @@ func boundFinalKey(cosigners []*btcec.PublicKey, tweak,
 }
 
 // musig2SigningPlan declares the MuSig2 aggregate key spend of one anchor
-// input.
-func musig2SigningPlan(index uint32,
-	cosigners []*btcec.PublicKey) tapsdk.CustomAnchorInputSigningPlan {
+// input. The session context distinguishes signing sessions; the spent
+// outpoint is unique per node and public by construction.
+func musig2SigningPlan(index uint32, cosigners []*btcec.PublicKey,
+	sessionContext []byte) tapsdk.CustomAnchorInputSigningPlan {
 
-	participants := make([]tapsdk.XOnlyPubKey, 0, len(cosigners))
-	for _, cosigner := range cosigners {
+	// The aggregate internal key sorts cosigners before aggregation, and
+	// the backend aggregates participants in declared order, so declare
+	// them pre-sorted for the two derivations to agree.
+	sorted := make([]*btcec.PublicKey, len(cosigners))
+	copy(sorted, cosigners)
+	sort.Slice(sorted, func(i, j int) bool {
+		return bytes.Compare(
+			sorted[i].SerializeCompressed(),
+			sorted[j].SerializeCompressed(),
+		) < 0
+	})
+
+	participants := make([]tapsdk.XOnlyPubKey, 0, len(sorted))
+	for _, cosigner := range sorted {
 		key, _ := tapsdk.ParseXOnlyPubKey(
 			schnorr.SerializePubKey(cosigner),
 		)
@@ -643,7 +731,8 @@ func musig2SigningPlan(index uint32,
 	return tapsdk.CustomAnchorInputSigningPlan{
 		InputIndex: index,
 		MuSig2: &tapsdk.CustomAnchorMuSig2SigningPlan{
-			Participants: participants,
+			Participants:   participants,
+			SessionContext: sessionContext,
 		},
 	}
 }
