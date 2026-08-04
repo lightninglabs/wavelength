@@ -1235,7 +1235,9 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 	// timer scheduling for any subsystem that needs deadlines.
 	// Start receives the registered ref so the actor's clock-driven
 	// fire callbacks can self-tell through the actor system mailbox.
-	timeoutBehavior := timeout.NewActor()
+	timeoutBehavior := timeout.NewActorWithConfig(timeout.Config{
+		Log: fn.Some(s.subLogger(timeout.Subsystem)),
+	})
 	timeoutRef := actor.RegisterWithSystem(
 		s.actorSystem, "timeout",
 		actor.NewServiceKey[timeout.Msg, timeout.Resp]("timeout"),
@@ -4513,7 +4515,9 @@ func (s *Server) initOORActor(ctx context.Context,
 	// AfterFunc callbacks self-tell through a real mailbox; the
 	// signing handler holds the ActorRef and Tells schedule requests
 	// rather than calling Receive directly.
-	oorTimeoutBehavior := timeout.NewActor()
+	oorTimeoutBehavior := timeout.NewActorWithConfig(timeout.Config{
+		Log: fn.Some(s.subLogger(timeout.Subsystem)),
+	})
 	oorTimeoutKey := actor.NewServiceKey[timeout.Msg, timeout.Resp](
 		"oor-timeout",
 	)
@@ -5989,6 +5993,13 @@ func (f *faultyUnrollTxConfirm) Tell(ctx context.Context,
 	msg txconfirm.Msg) error {
 
 	return f.inner.Tell(ctx, msg)
+}
+
+// TryTell forwards non-blocking fire-and-forget messages to the real actor.
+func (f *faultyUnrollTxConfirm) TryTell(ctx context.Context,
+	msg txconfirm.Msg) error {
+
+	return f.inner.TryTell(ctx, msg)
 }
 
 // Ask rejects confirmation requests with a failed state and forwards

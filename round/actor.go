@@ -841,12 +841,10 @@ func (a *RoundClientActor) createRoundFSMFromDB(ctx context.Context,
 		OwnedScriptChecker:     a.cfg.OwnedScriptChecker,
 	}
 	fsmCfg := ClientStateMachineCfg{
-		Logger: fsmLogger,
-		ErrorReporter: newContextErrorReporter(
-			a.lifecycleCtx(ctx), fsmPrefix,
-		),
-		InitialState: state,
-		Env:          env,
+		Logger:        fsmLogger,
+		ErrorReporter: newLoggerErrorReporter(fsmLogger),
+		InitialState:  state,
+		Env:           env,
 	}
 	fsm := protofsm.NewStateMachine(fsmCfg)
 	a.startRoundFSM(ctx, &fsm)
@@ -915,12 +913,10 @@ func (a *RoundClientActor) createNewRound(ctx context.Context) (*RoundFSM,
 		OwnedScriptChecker:     a.cfg.OwnedScriptChecker,
 	}
 	fsmCfg := ClientStateMachineCfg{
-		Logger: fsmLogger,
-		ErrorReporter: newContextErrorReporter(
-			a.lifecycleCtx(ctx), fsmPrefix,
-		),
-		InitialState: &Idle{},
-		Env:          env,
+		Logger:        fsmLogger,
+		ErrorReporter: newLoggerErrorReporter(fsmLogger),
+		InitialState:  &Idle{},
+		Env:           env,
 	}
 	fsm := protofsm.NewStateMachine(fsmCfg)
 	a.startRoundFSM(ctx, &fsm)

@@ -13,6 +13,7 @@ import (
 	"github.com/lightninglabs/wavelength/oor"
 	"github.com/lightninglabs/wavelength/round"
 	"github.com/lightninglabs/wavelength/serverconn"
+	"github.com/lightninglabs/wavelength/timeout"
 	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightninglabs/wavelength/wallet"
 	lndbuild "github.com/lightningnetwork/lnd/build"
@@ -33,6 +34,7 @@ var allSubsystems = []string{
 	lwwallet.Subsystem,
 	btcwbackend.Subsystem,
 	serverconn.Subsystem,
+	timeout.Subsystem,
 	chainbackends.Subsystem,
 	chainbackends.LndClientSubsystem,
 	chainfees.Subsystem,

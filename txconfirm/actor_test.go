@@ -147,6 +147,18 @@ func (b *blockingNotifyRef) Tell(ctx context.Context, _ Notification) error {
 	return ctx.Err()
 }
 
+// TryTell reports a full mailbox. Delegating to Tell would park the caller
+// on b.release, which is precisely what a non-blocking send promises never to
+// do; a subscriber that cannot be sent to without blocking is one whose
+// mailbox is full, so that is what this double reports.
+func (b *blockingNotifyRef) TryTell(_ context.Context, _ Notification) error {
+	b.mu.Lock()
+	b.attempts++
+	b.mu.Unlock()
+
+	return actor.ErrMailboxFull
+}
+
 // attemptsCount returns the number of attempted notifications.
 func (b *blockingNotifyRef) attemptsCount() int {
 	b.mu.Lock()
@@ -212,6 +224,15 @@ func (d *deferringNotifyRef) Tell(_ context.Context, n Notification) error {
 	return nil
 }
 
+// TryTell refuses to guess. This double exists to model a Tell that completes
+// long after the caller's deadline, which has no non-blocking equivalent:
+// answering "full" would lose the deferred completion the tests turn on, and
+// delegating to Tell would park a caller that was promised it would not be.
+// A test that routes here needs a different double.
+func (d *deferringNotifyRef) TryTell(_ context.Context, _ Notification) error {
+	panic("deferringNotifyRef does not model TryTell")
+}
+
 // waitStarted blocks until the first Tell has begun, so the test can
 // release after the actor-side timeout has fired.
 func (d *deferringNotifyRef) waitStarted(t *testing.T) {
@@ -268,6 +289,14 @@ func (r *contextInspectNotifyRef) Tell(ctx context.Context,
 	return nil
 }
 
+// TryTell delegates to Tell, which is all this double needs: no test
+// drives the non-blocking path through it.
+func (r *contextInspectNotifyRef) TryTell(ctx context.Context,
+	msg Notification) error {
+
+	return r.Tell(ctx, msg)
+}
+
 // snapshot returns the inspected context values and delivered messages.
 func (r *contextInspectNotifyRef) snapshot() (bool, error, []Notification) {
 	r.mu.Lock()
@@ -300,6 +329,12 @@ func (r *retryNotifyRef) Tell(ctx context.Context, msg Notification) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// TryTell delegates to Tell, which is all this double needs: no test
+// drives the non-blocking path through it.
+func (r *retryNotifyRef) TryTell(ctx context.Context, msg Notification) error {
+	return r.Tell(ctx, msg)
 }
 
 // attemptsCount returns the number of attempted notifications.
@@ -380,6 +415,14 @@ func (f *fakeChainSourceRef) Tell(_ context.Context,
 	_ chainsource.ChainSourceMsg) error {
 
 	return nil
+}
+
+// TryTell delegates to Tell, which is all this double needs: no test
+// drives the non-blocking path through it.
+func (f *fakeChainSourceRef) TryTell(ctx context.Context,
+	msg chainsource.ChainSourceMsg) error {
+
+	return f.Tell(ctx, msg)
 }
 
 // Ask handles the chainsource request synchronously and returns an already

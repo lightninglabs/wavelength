@@ -45,6 +45,12 @@ func (m *mockCallbackRef) Tell(_ context.Context, msg *ExpiredMsg) error {
 	return nil
 }
 
+// TryTell delegates to Tell, which is all this double needs: no test
+// drives the non-blocking path through it.
+func (m *mockCallbackRef) TryTell(ctx context.Context, msg *ExpiredMsg) error {
+	return m.Tell(ctx, msg)
+}
+
 // getMessages returns a copy of all received messages.
 func (m *mockCallbackRef) getMessages() []ExpiredMsg {
 	m.mu.Lock()

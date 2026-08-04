@@ -215,7 +215,36 @@ There are two main ways to send messages using an `ActorRef`:
     operation if, for example, the actor's mailbox is full and the send would
     block for too long.
 
-2.  **Ask (Request-Response)**: Used when you need a response from the actor.
+2.  **TryTell (Non-Blocking Fire-and-Forget)**: Same as `Tell`, except that a
+    target with no mailbox room reports `ErrMailboxFull` right away instead of
+    waiting for space.
+
+    ```go
+    err := actorRef.TryTell(ctx, requestMsg)
+    switch {
+    case errors.Is(err, actor.ErrMailboxFull):
+        // The peer is behind. Drop, stash, or reschedule the message; do
+        // not wait for it.
+    case err != nil:
+        // The target is terminated or its mailbox is closed.
+    }
+    ```
+    Reach for this whenever the sender is itself inside a receive goroutine.
+    A blocking `Tell` there parks the sender's own message processing on the
+    peer's backlog, and if the peer is waiting on a reply from the sender the
+    two deadlock. The context is only consulted for an immediate cancellation
+    check, so attaching a deadline to `TryTell` buys nothing.
+
+    Two cautions for durable targets. Their queue has no capacity, so they
+    never report `ErrMailboxFull`; a slow database write surfaces as a wrapped
+    `context.DeadlineExceeded` instead, which is why a retry decision should
+    test for the terminal errors (`ErrActorTerminated`, `ErrMailboxClosed`)
+    rather than for `ErrMailboxFull`. And unlike `Tell`, a durable `TryTell`
+    does not carry the caller's transaction into the enqueue, so a message
+    sent inside a commit closure can outlive a rolled back transaction. Keep
+    durable enqueues that must be atomic on `Tell`.
+
+3.  **Ask (Request-Response)**: Used when you need a response from the actor.
     This returns a `Future[R]`, which represents the eventual reply.
 
     ```go

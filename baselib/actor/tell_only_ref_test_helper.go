@@ -36,6 +36,23 @@ func (c *ChannelTellOnlyRef[M]) Tell(ctx context.Context, msg M) error {
 	}
 }
 
+// TryTell sends the message to the internal channel only if it has room,
+// returning ErrMailboxFull otherwise. Tests use this to model a wedged
+// recipient without any timing dependency.
+func (c *ChannelTellOnlyRef[M]) TryTell(ctx context.Context, msg M) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	select {
+	case c.msgs <- msg:
+		return nil
+
+	default:
+		return ErrMailboxFull
+	}
+}
+
 // ID returns the reference ID.
 func (c *ChannelTellOnlyRef[M]) ID() string {
 	return c.id

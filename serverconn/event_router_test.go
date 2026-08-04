@@ -232,6 +232,12 @@ func (r *stoppedRef) Tell(context.Context, *helloStartedMsg) error {
 	return r.tellErr
 }
 
+// TryTell delegates to Tell, which is all this double needs: no test
+// drives the non-blocking path through it.
+func (r *stoppedRef) TryTell(ctx context.Context, msg *helloStartedMsg) error {
+	return r.Tell(ctx, msg)
+}
+
 func (r *stoppedRef) Ask(context.Context,
 	*helloStartedMsg) actor.Future[struct{}] {
 

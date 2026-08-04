@@ -42,6 +42,14 @@ func (f *fakeChainSourceRef) Tell(context.Context,
 	return nil
 }
 
+// TryTell delegates to Tell, which is all this double needs: no test
+// drives the non-blocking path through it.
+func (f *fakeChainSourceRef) TryTell(ctx context.Context,
+	msg chainsource.ChainSourceMsg) error {
+
+	return f.Tell(ctx, msg)
+}
+
 // Ask records spend registration requests.
 func (f *fakeChainSourceRef) Ask(_ context.Context,
 	msg chainsource.ChainSourceMsg,
@@ -142,6 +150,14 @@ func (f *fakeManagerRef) ID() string {
 // Tell is unused by these tests.
 func (f *fakeManagerRef) Tell(context.Context, vtxo.ManagerMsg) error {
 	return nil
+}
+
+// TryTell delegates to Tell, which is all this double needs: no test
+// drives the non-blocking path through it.
+func (f *fakeManagerRef) TryTell(ctx context.Context,
+	msg vtxo.ManagerMsg) error {
+
+	return f.Tell(ctx, msg)
 }
 
 // Ask records force-unroll requests.

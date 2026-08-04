@@ -373,6 +373,53 @@ func (ref *actorRefImpl[M, R]) Tell(ctx context.Context, msg M) error {
 	return nil
 }
 
+// TryTell enqueues a message only if the mailbox can take it immediately,
+// returning ErrMailboxFull rather than waiting for room. Callers that run
+// inside another actor's receive loop use this so a backlogged target cannot
+// stall their own message processing.
+func (ref *actorRefImpl[M, R]) TryTell(ctx context.Context, msg M) error {
+	logger(ctx).TraceS(ctx, "Sending TryTell message",
+		"actor_id", ref.actor.id,
+		"msg_type", msg.MessageType())
+
+	// A caller that has already given up should not have its message
+	// enqueued. This is the only way the context participates: TrySend
+	// itself never waits, so there is nothing for a deadline to interrupt.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	// As with Tell, this is fire-and-forget delivery, so the caller's
+	// database transaction must not ride along into the receiving actor's
+	// turn.
+	sendCtx := WithoutTx(ctx)
+
+	env := envelope[M, R]{
+		message:   msg,
+		promise:   nil,
+		callerCtx: sendCtx,
+	}
+	if err := ref.actor.mailbox.TrySend(env); err != nil {
+		// A terminated actor will never drain its mailbox, so the
+		// message is dead and belongs in the DLO. A full mailbox is
+		// transient by comparison and stays the caller's problem.
+		if errors.Is(err, ErrActorTerminated) {
+			logger(ctx).DebugS(
+				ctx,
+				"TryTell failed, routing to DLO",
+				"actor_id", ref.actor.id,
+				"msg_type", msg.MessageType(),
+			)
+
+			ref.trySendToDLO(msg)
+		}
+
+		return err
+	}
+
+	return nil
+}
+
 // Ask sends a message and returns a Future for the response. The Future will be
 // completed with the actor's reply or an error if the operation fails (e.g.,
 // context cancellation before send).

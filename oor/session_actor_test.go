@@ -1163,6 +1163,14 @@ func (fakeServerConnRef) Tell(context.Context, serverconn.ServerConnMsg) error {
 	return nil
 }
 
+// TryTell delegates to Tell, which is all this double needs: no test
+// drives the non-blocking path through it.
+func (r fakeServerConnRef) TryTell(ctx context.Context,
+	msg serverconn.ServerConnMsg) error {
+
+	return r.Tell(ctx, msg)
+}
+
 // recordingServerConnRef captures every transport Tell so a test can assert
 // the turn delivered (or withheld) its transport into the serverconn durable
 // actor.
@@ -1183,6 +1191,14 @@ func (r *recordingServerConnRef) Tell(_ context.Context,
 	r.msgs = append(r.msgs, msg)
 
 	return nil
+}
+
+// TryTell delegates to Tell, which is all this double needs: no test
+// drives the non-blocking path through it.
+func (r *recordingServerConnRef) TryTell(ctx context.Context,
+	msg serverconn.ServerConnMsg) error {
+
+	return r.Tell(ctx, msg)
 }
 
 func (r *recordingServerConnRef) recorded() []serverconn.ServerConnMsg {
@@ -1206,6 +1222,14 @@ func (r failingServerConnRef) Tell(context.Context,
 	serverconn.ServerConnMsg) error {
 
 	return r.err
+}
+
+// TryTell delegates to Tell, which is all this double needs: no test
+// drives the non-blocking path through it.
+func (r failingServerConnRef) TryTell(ctx context.Context,
+	msg serverconn.ServerConnMsg) error {
+
+	return r.Tell(ctx, msg)
 }
 
 // TestSessionActorTerminalCommitNotifiesRegistry verifies a turn that commits
@@ -1288,6 +1312,14 @@ func (s *recordingLedgerSink) Tell(_ context.Context,
 	s.toldInCommit = append(s.toldInCommit, *s.inCommit)
 
 	return nil
+}
+
+// TryTell delegates to Tell, which is all this double needs: no test
+// drives the non-blocking path through it.
+func (s *recordingLedgerSink) TryTell(ctx context.Context,
+	msg ledger.LedgerMsg) error {
+
+	return s.Tell(ctx, msg)
 }
 
 // commitTrackingExec flags when the commit closure is running so tests can
@@ -1483,6 +1515,14 @@ func (r *recordingTimeoutRef) Tell(_ context.Context, msg timeout.Msg) error {
 	return nil
 }
 
+// TryTell delegates to Tell, which is all this double needs: no test
+// drives the non-blocking path through it.
+func (r *recordingTimeoutRef) TryTell(ctx context.Context,
+	msg timeout.Msg) error {
+
+	return r.Tell(ctx, msg)
+}
+
 // scheduled returns a copy of the recorded timeout messages.
 func (r *recordingTimeoutRef) scheduled() []timeout.Msg {
 	r.mu.Lock()
@@ -1500,6 +1540,14 @@ func (fakeExpiredRef) ID() string {
 
 func (fakeExpiredRef) Tell(context.Context, *timeout.ExpiredMsg) error {
 	return nil
+}
+
+// TryTell delegates to Tell, which is all this double needs: no test
+// drives the non-blocking path through it.
+func (r fakeExpiredRef) TryTell(ctx context.Context,
+	msg *timeout.ExpiredMsg) error {
+
+	return r.Tell(ctx, msg)
 }
 
 // TestSessionActorResumeMetadataBackoff verifies resuming an incoming session

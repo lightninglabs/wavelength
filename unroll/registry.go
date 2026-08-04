@@ -42,6 +42,12 @@ const (
 	// terminalChildDrainTimeout bounds the cleanup probe used before
 	// stopping a terminal child actor.
 	terminalChildDrainTimeout = 30 * time.Second
+
+	// selfTellRetry is how long the registry waits before re-offering a
+	// message to its own mailbox that had no room for it. It is short
+	// because the mailbox only stays full for as long as the registry is
+	// behind on its own queue.
+	selfTellRetry = 50 * time.Millisecond
 )
 
 // RegistryRecord stores the coarse control-plane view of one unroll target.
@@ -1602,13 +1608,43 @@ func (r *registryBehavior) persistRecordAsync(target wire.OutPoint, attempt int,
 			result.Err = err.Error()
 		}
 
-		_ = r.selfRef.Tell(context.Background(), result)
+		r.tellSelf(result)
 	}()
+}
+
+// tellSelf hands a message to the registry's own mailbox without ever parking
+// the caller.
+//
+// A blocking send here is a deadlock waiting to happen, because most callers
+// are the registry's own receive goroutine: with the mailbox full, the send
+// waits for room that only the sender itself could make. The rest are
+// detached goroutines, where a blocking send instead parks one goroutine per
+// event for as long as the registry stays behind.
+//
+// A mailbox with no room therefore re-arms the send on a short delay. This is
+// all the registry's own follow-up work, so deferring beats dropping, and a
+// stopped registry ends the chain since no delay repairs a closed mailbox.
+func (r *registryBehavior) tellSelf(msg RegistryMsg) {
+	err := r.selfRef.TryTell(context.Background(), msg)
+	if err == nil {
+		return
+	}
+
+	if errors.Is(err, actor.ErrActorTerminated) ||
+		errors.Is(err, actor.ErrMailboxClosed) {
+		return
+	}
+
+	// The retry runs off the registry goroutine, so it must not touch
+	// registry state; re-offering the same message is the whole of it.
+	time.AfterFunc(selfTellRetry, func() {
+		r.tellSelf(msg)
+	})
 }
 
 // requestPersist enqueues one immediate persistence attempt for the target.
 func (r *registryBehavior) requestPersist(target wire.OutPoint, attempt int) {
-	_ = r.selfRef.Tell(context.Background(), &persistActiveRecordMsg{
+	r.tellSelf(&persistActiveRecordMsg{
 		Outpoint: target,
 		Attempt:  attempt,
 	})
@@ -1621,11 +1657,10 @@ func (r *registryBehavior) schedulePersistRetry(target wire.OutPoint,
 	delay := persistRetryDelay(attempt)
 
 	time.AfterFunc(delay, func() {
-		msg := &persistActiveRecordMsg{
+		r.tellSelf(&persistActiveRecordMsg{
 			Outpoint: target,
 			Attempt:  attempt,
-		}
-		_ = r.selfRef.Tell(context.Background(), msg)
+		})
 	})
 }
 
