@@ -3019,6 +3019,17 @@ func tapdSyncedToChain(ctx context.Context, addr, tlsPath,
 	return info.SyncedToChain
 }
 
+// TapdTLSCertPath returns the shared tapd instance's TLS certificate
+// path.
+func (h *Harness) TapdTLSCertPath() string {
+	return h.tapdTLSCert
+}
+
+// TapdMacaroonPath returns the shared tapd instance's admin macaroon path.
+func (h *Harness) TapdMacaroonPath() string {
+	return h.tapdMacaroon
+}
+
 // waitForTapdReady waits until tapd's GetInfo RPC responds and reports that
 // tapd is synced to chain.
 func (h *Harness) waitForTapdReady() {
