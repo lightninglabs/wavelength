@@ -109,6 +109,63 @@ polling the direct gRPC connection's transport state every 15s.
 | `waved_server_connection_up` | gauge | — | daemon (connection watcher) | `1` when the direct gRPC connection to the ark operator is `Ready`, `0` otherwise (transient failure, idle, shutdown). |
 | `waved_server_sync_timestamp_seconds` | gauge | — | daemon (connection watcher) | Unix timestamp of the last poll that observed the operator connection in the `Ready` **transport** state. This is transport liveness, not a completed application round-trip — an idle-but-`Ready` link keeps the stamp fresh. A stale value signals lost transport contact. |
 
+## Ingress Liveness (`serverconn`)
+
+Set directly by the connector's ingress loop, for the same reason the two gauges
+above are set by the daemon: the connector owns no metrics sink, and the ingress
+goroutine is precisely the one that must not take a new actor edge to report that
+it is alive.
+
+The loop is the process's only consumer of the server mailbox, so when it stalls
+the client goes deaf to the operator while read-only RPCs keep answering — a pod
+that looks healthy and has stopped hearing about rounds. Nothing else in the
+process observes that: the connector's other timestamp is outbound-only, and
+`GetInfo`'s `server_connected` is stamped once at startup and never cleared on a
+stall.
+
+| Metric | Type | Labels | Source | Description |
+|--------|------|--------|--------|-------------|
+| `waved_serverconn_last_ingress_poll_timestamp_seconds` | gauge | — | connector (ingress loop) | Unix timestamp of the last `Pull` that returned to the ingress loop, including an empty long-poll. Fresh at the long-poll cadence on an idle client, so staleness means the loop goroutine itself is gone. |
+| `waved_serverconn_last_ingress_event_timestamp_seconds` | gauge | — | connector (ingress loop) | Unix timestamp of the last pulled batch the loop delivered and committed, including a partial commit made while backpressure held the rest. Only advances on real traffic, so on its own it cannot tell an idle client from a wedged one; a fresh poll stamp with a stale event stamp says the loop is running but dispatch is not getting through. |
+| `waved_serverconn_ingress_dispatch_deferred_total` | counter | `service`, `method` | connector (ingress loop) | Redrives a full target actor mailbox turned away, by the route of the envelope that was refused. One increment per re-pull that could not deliver, **not** one per queued envelope: the loop meets the full mailbox once and stops there, so the envelopes behind the first are never attempted. Nothing is lost — the refused envelope is unacknowledged and re-pulled after a short backoff — but a rate that does not fall back to zero means a local actor has stopped draining. |
+
+### Alerting
+
+There are two distinct failures here and they need different expressions.
+
+**The loop is gone** (panic, or a park somewhere the fix below does not cover):
+
+```
+time() - waved_serverconn_last_ingress_poll_timestamp_seconds > 300
+  and waved_server_connection_up == 1
+```
+
+**A local actor has stopped draining**, which is the wedge this instrumentation
+was added for. Poll staleness cannot see it: the loop keeps polling and keeps
+this gauge fresh the whole time the target is wedged, deliberately, so that the
+two failures stay separable. Key on the deferral counter instead:
+
+```
+rate(waved_serverconn_ingress_dispatch_deferred_total[10m]) > 0
+```
+
+for 5m, which distinguishes a target that briefly filled up (deferrals stop) from
+one that has stopped entirely (they do not). The corroborating reading is a
+**fresh** poll stamp with a **stale** event stamp:
+
+```
+time() - waved_serverconn_last_ingress_poll_timestamp_seconds < 60
+  and time() - waved_serverconn_last_ingress_event_timestamp_seconds > 300
+```
+
+That pair is subject to false positives on a genuinely idle client, so it is a
+diagnostic to read next to the counter rather than a page on its own.
+
+Both gauges are unlabelled, which assumes one connector per process — true today
+(`waved/server.go` constructs exactly one). A second one would silently make each
+gauge the max of the two and the first alert blind; add a `mailbox_id` label
+before that happens.
+
 ## gRPC Client Metrics
 
 Per-method **client-side** metrics for calls `waved` makes to the ark
@@ -141,6 +198,9 @@ metrics.
 - **Event-driven**: add a message type to `messages.go`, handle it in
   `actor.go:Receive`, define the metric in `metrics.go`, register it in
   `allCollectors()`, and `Tell` it from the call site via `Server.emitMetric`.
+  The exception is a metric that reports on the health of a goroutine which must
+  not acquire new dependencies to do so (the liveness gauges above): those are
+  defined in `metrics.go`, registered in `allCollectors()`, and set directly.
 - **Scrape-driven**: add a method to `SystemStatsQuerier` in `collector.go`,
   implement it in the `waved` `systemStatsAdapter`, add a descriptor, and emit
   it from a `Collect` sub-method (each group is queried independently so a
