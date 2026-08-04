@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/lightninglabs/wavelength/swaprpc"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/stretchr/testify/require"
@@ -196,10 +197,12 @@ func TestAcknowledgeOutSwapHTLCPreservesStatusCode(t *testing.T) {
 
 	pubkey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
+	ackSig, err := schnorr.Sign(pubkey, make([]byte, 32))
+	require.NoError(t, err)
 
 	hash := lntypes.Hash{1, 2, 3}
 	err = conn.AcknowledgeOutSwapHTLC(
-		context.Background(), hash, pubkey.PubKey(),
+		context.Background(), hash, pubkey.PubKey(), ackSig,
 	)
 	require.Error(t, err)
 	require.Equal(t, codes.FailedPrecondition, status.Code(err))
@@ -207,6 +210,10 @@ func TestAcknowledgeOutSwapHTLCPreservesStatusCode(t *testing.T) {
 	require.Equal(
 		t, pubkey.PubKey().SerializeCompressed(),
 		client.lastAckReq.GetClientVhtlcPubkey(),
+	)
+	require.Equal(
+		t, ackSig.Serialize(),
+		client.lastAckReq.GetAcknowledgementSignature(),
 	)
 }
 
@@ -221,9 +228,28 @@ func TestAcknowledgeOutSwapHTLCRejectsMissingPubkey(t *testing.T) {
 	}
 
 	err := conn.AcknowledgeOutSwapHTLC(
-		context.Background(), lntypes.Hash{}, nil,
+		context.Background(), lntypes.Hash{}, nil, nil,
 	)
 	require.ErrorContains(t, err, "vHTLC pubkey must be provided")
+	require.Nil(t, client.lastAckReq)
+}
+
+// TestAcknowledgeOutSwapHTLCRejectsMissingSignature verifies incomplete local
+// acknowledgement state is rejected before sending the request.
+func TestAcknowledgeOutSwapHTLCRejectsMissingSignature(t *testing.T) {
+	t.Parallel()
+
+	client := &testSwapServiceClient{}
+	conn := &GRPCSwapServerConn{
+		client: client,
+	}
+	pubkey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	err = conn.AcknowledgeOutSwapHTLC(
+		context.Background(), lntypes.Hash{}, pubkey.PubKey(), nil,
+	)
+	require.ErrorContains(t, err, "signature must be provided")
 	require.Nil(t, client.lastAckReq)
 }
 

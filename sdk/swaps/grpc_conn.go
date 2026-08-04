@@ -7,6 +7,7 @@ import (
 	"math"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/lightninglabs/wavelength/rpc/restclient"
 	"github.com/lightninglabs/wavelength/swaprpc"
@@ -110,10 +111,14 @@ func (g *GRPCSwapServerConn) RequestChannelID(ctx context.Context,
 // AcknowledgeOutSwapHTLC tells the swap server this receiver validated and
 // durably accepted the out-swap HTLC event.
 func (g *GRPCSwapServerConn) AcknowledgeOutSwapHTLC(ctx context.Context,
-	paymentHash lntypes.Hash, vhtlcPubkey *btcec.PublicKey) error {
+	paymentHash lntypes.Hash, vhtlcPubkey *btcec.PublicKey,
+	ackSignature *schnorr.Signature) error {
 
 	if vhtlcPubkey == nil {
 		return fmt.Errorf("vHTLC pubkey must be provided")
+	}
+	if ackSignature == nil {
+		return fmt.Errorf("acknowledgement signature must be provided")
 	}
 
 	_, err := g.client.AcknowledgeOutSwapHtlc(
@@ -121,7 +126,9 @@ func (g *GRPCSwapServerConn) AcknowledgeOutSwapHTLC(ctx context.Context,
 			PaymentHash: append(
 				[]byte(nil), paymentHash[:]...,
 			),
-			ClientVhtlcPubkey: vhtlcPubkey.SerializeCompressed(),
+			ClientVhtlcPubkey: vhtlcPubkey.
+				SerializeCompressed(),
+			AcknowledgementSignature: ackSignature.Serialize(),
 		},
 	)
 	if err != nil {
