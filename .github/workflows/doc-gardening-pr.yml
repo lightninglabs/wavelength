@@ -157,6 +157,6 @@ jobs:
             --max-turns 120
             --model claude-opus-5
             --allowed-tools
-            "Edit,Write,MultiEdit,Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git rev-parse:*),Bash(make doc-check:*),Bash(go doc:*),Bash(find:*),Bash(ls:*),Bash(cp:*),Bash(cat:*),Bash(head:*),Bash(tail:*),Bash(sort:*),Bash(uniq:*),Bash(sed:*),Bash(awk:*),Bash(grep:*),Bash(xargs:*),Bash(dirname:*),Bash(echo:*),Bash(gh pr comment:*),Bash(gh pr view:*),Bash(gh pr diff:*)"
+            "Edit,Write,MultiEdit,Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git rev-parse:*),Bash(make doc-check:*),Bash(go doc:*),Bash(ls:*),Bash(cp:*),Bash(cat:*),Bash(head:*),Bash(tail:*),Bash(sort:*),Bash(uniq:*),Bash(grep:*),Bash(xargs:*),Bash(dirname:*),Bash(echo:*),Bash(gh pr comment:*),Bash(gh pr view:*),Bash(gh pr diff:*)"
             --disallowed-tools
             "Bash(rm:*),Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(git checkout:*),Bash(git reset:*),Bash(go build:*),Bash(go test:*),Bash(gh pr create:*),Bash(gh pr merge:*),Bash(gh api:*),Bash(gh secret:*),Bash(gh workflow:*),Bash(curl:*),Bash(wget:*)"
