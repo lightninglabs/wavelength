@@ -29,9 +29,12 @@ All `*.pb.go` files are generated — never edit directly; regenerate with
   `PSBTFromBytes`/`ToBytes`, `MsgTxFromBytes`/`ToBytes`,
   `SchnorrSigFromBytes`/`ToBytes` — wire/proto ⇄ Go conversions for the
   round protocol's payload types.
-- `FlowVersion` / `FlowVersionV1` / `ValidateFlowVersion` — the per-round
-  choreography version stamped by the operator and validated by the
-  client; fails closed on any version this build does not understand.
+- `FlowVersion` / `FlowVersionV1` / `FlowVersionV2` /
+  `ValidateFlowVersion` — the per-round choreography version stamped by
+  the operator and validated by the client; fails closed on any version
+  this build does not understand. V2 rounds carry asset-aware trees and
+  use the RBF-signalling node sequence (`tree.SequenceV2`), applied at
+  deserialization via `WithNodeSequence`.
 
 `MethodSubmitForfeitSigs` and `MethodSubmitVTXOForfeitSigs` are distinct
 wire methods for two different payload types; see `round/CLAUDE.md` for
@@ -56,8 +59,8 @@ distinction.
   malicious server from encoding cycles or out-of-range references in a
   `VTXOTree` and DoS-ing tree traversal. Do not relax these checks.
 - `ValidateFlowVersion` must reject any `FlowVersion` other than the
-  versions this build implements (currently only `FlowVersionV1`); never
-  make it permissive by default.
+  versions this build implements (currently V1 and V2); never make it
+  permissive by default.
 
 ## Deep Docs
 
