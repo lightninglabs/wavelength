@@ -459,3 +459,52 @@ func TestTreeMaterializerRejectsTamperedCommit(t *testing.T) {
 		})
 	}
 }
+
+// TestBuildAssetTree drives both passes through the assembler and checks
+// the conservation guards.
+func TestBuildAssetTree(t *testing.T) {
+	t.Parallel()
+
+	f := newTreeMaterializerFixture(t, 800, 200, 500)
+
+	req := AssetTreeRequest{
+		Leaves:        assemblerLeaves(t, 800, 200, 500),
+		OperatorKey:   f.structure.Root.CoSigners[0],
+		Radix:         2,
+		BatchOutpoint: f.batch,
+		BatchOutput:   f.batchOut,
+		AssetAmount:   1_500,
+	}
+
+	short := req
+	short.AssetAmount = 1_499
+	_, _, err := buildAssetTree(t.Context(), f.mat, short)
+	require.ErrorContains(t, err, "batch asset amount")
+
+	wrongValue := req
+	wrongValue.BatchOutput = wire.NewTxOut(29_999, f.batchOut.PkScript)
+	_, _, err = buildAssetTree(t.Context(), f.mat, wrongValue)
+	require.ErrorContains(t, err, "batch output value")
+}
+
+// assemblerLeaves rebuilds leaf descriptors matching the fixture's BTC
+// amounts for assembler-level tests.
+func assemblerLeaves(t *testing.T, amounts ...uint64) []tree.LeafDescriptor {
+	t.Helper()
+
+	leaves := make([]tree.LeafDescriptor, len(amounts))
+	for i, amount := range amounts {
+		_, owner := createTestPubKey(t)
+		leaves[i] = tree.LeafDescriptor{
+			PkScript: []byte{
+				0x51,
+				byte(i),
+			},
+			Amount:      10_000,
+			CoSignerKey: owner,
+			AssetAmount: amount,
+		}
+	}
+
+	return leaves
+}
