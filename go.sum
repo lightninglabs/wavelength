@@ -1080,10 +1080,10 @@ github.com/lightninglabs/protobuf-go-hex-display v1.33.0-hex-display h1:Y2WiPkBS
 github.com/lightninglabs/protobuf-go-hex-display v1.33.0-hex-display/go.mod h1:c6P6GXX6sHbq/GpV6MGZEdwhWPcYBgnhAHhKbcUYpos=
 github.com/lightninglabs/tap-sdk v0.1.1-0.20260803083718-078e401f418d h1:cPbjG7fqblZw0Ji4aJ4G+/GrV16UjqZv2nNv7K4tz8E=
 github.com/lightninglabs/tap-sdk v0.1.1-0.20260803083718-078e401f418d/go.mod h1:RI0Z+A0ySP5itemPcUcSe8czEjczOzRk9IK6zaF9rnc=
-github.com/lightninglabs/taproot-assets v0.7.1-0.20260729123750-e798aabc7f20 h1:UAT9Gyakh2BdelcgATIoC8X8gOL/Kaq0myk+J6MFTIU=
-github.com/lightninglabs/taproot-assets v0.7.1-0.20260729123750-e798aabc7f20/go.mod h1:fm0WaNsDpP7jEgR9zMap3hpum7lXVDtjsi783MW9BxY=
-github.com/lightninglabs/taproot-assets/taprpc v1.1.1-0.20260729123750-e798aabc7f20 h1:kf8jqYz9YS9aN25X5H8NSImc+UQzFXVZxDboEzCxfJU=
-github.com/lightninglabs/taproot-assets/taprpc v1.1.1-0.20260729123750-e798aabc7f20/go.mod h1:RkBWxHKN8JpPtoa/yBK5qZW5svz5pR9GAOT2rUP7oOI=
+github.com/lightninglabs/taproot-assets v0.7.1-0.20260804093026-95bd8d412bef h1:4vHoQMzUkpkPoNKHT+QdTUbWoWaz0T5CDx6CWsforXM=
+github.com/lightninglabs/taproot-assets v0.7.1-0.20260804093026-95bd8d412bef/go.mod h1:fm0WaNsDpP7jEgR9zMap3hpum7lXVDtjsi783MW9BxY=
+github.com/lightninglabs/taproot-assets/taprpc v1.1.1-0.20260804093026-95bd8d412bef h1:3uhbpFZUp3JwLxSlhdelA56g0dULFfcYlC6Q/wQICk0=
+github.com/lightninglabs/taproot-assets/taprpc v1.1.1-0.20260804093026-95bd8d412bef/go.mod h1:RkBWxHKN8JpPtoa/yBK5qZW5svz5pR9GAOT2rUP7oOI=
 github.com/lightningnetwork/lightning-onion v1.4.0 h1:qWE1icOH4AKXRcq1KCzt6P/TesqptgBTP++V7wowTc0=
 github.com/lightningnetwork/lightning-onion v1.4.0/go.mod h1:YDPkvVTVQ6FBBE6Yj93tDd7zA3iTSrryi9xq46i7bKE=
 github.com/lightningnetwork/lnd v0.21.0-beta.rc2.0.20260630214209-40c64f9db30d h1:mDcB9mwuwJXRbDmxps6mBgGs318Iz5ZbOrt0ieEx0os=

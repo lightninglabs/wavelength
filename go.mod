@@ -24,8 +24,8 @@ require (
 	github.com/lightninglabs/loop v0.33.0-beta
 	github.com/lightninglabs/neutrino v0.18.0
 	github.com/lightninglabs/neutrino/cache v1.1.4
-	github.com/lightninglabs/taproot-assets v0.7.1-0.20260729123750-e798aabc7f20
-	github.com/lightninglabs/taproot-assets/taprpc v1.1.1-0.20260729123750-e798aabc7f20 // indirect
+	github.com/lightninglabs/taproot-assets v0.7.1-0.20260804093026-95bd8d412bef
+	github.com/lightninglabs/taproot-assets/taprpc v1.1.1-0.20260804093026-95bd8d412bef // indirect
 	github.com/lightninglabs/wavelength/baselib v0.0.0-00010101000000-000000000000
 	github.com/lightningnetwork/lightning-onion v1.4.0
 	github.com/lightningnetwork/lnd v0.21.0-beta.rc2.0.20260630214209-40c64f9db30d
