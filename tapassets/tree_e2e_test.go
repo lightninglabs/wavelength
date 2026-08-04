@@ -229,27 +229,17 @@ type treeE2EParticipant struct {
 	signer *localTreeSigner
 }
 
-// newTreeE2EParticipant creates a participant with a fresh even-Y key.
-// tap-sdk declares MuSig2 participants as x-only keys (implicitly even-Y),
-// so tree signing keys — ephemeral by design — use the even-Y convention
-// to keep the full-key signing aggregate equal to the x-only validation
-// aggregate.
+// newTreeE2EParticipant creates a participant with a fresh key.
 func newTreeE2EParticipant(t *testing.T) *treeE2EParticipant {
 	t.Helper()
 
-	for {
-		priv, err := btcec.NewPrivateKey()
-		require.NoError(t, err)
-		pub := priv.PubKey()
-		if pub.SerializeCompressed()[0] != 0x02 {
-			continue
-		}
+	priv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
 
-		return &treeE2EParticipant{
-			priv:   priv,
-			pub:    pub,
-			signer: newLocalTreeSigner(priv),
-		}
+	return &treeE2EParticipant{
+		priv:   priv,
+		pub:    priv.PubKey(),
+		signer: newLocalTreeSigner(priv),
 	}
 }
 

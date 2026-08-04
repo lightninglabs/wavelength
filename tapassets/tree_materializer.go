@@ -7,7 +7,6 @@ import (
 	"sort"
 
 	"github.com/btcsuite/btcd/btcec/v2"
-	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
@@ -720,11 +719,9 @@ func musig2SigningPlan(index uint32, cosigners []*btcec.PublicKey,
 		) < 0
 	})
 
-	participants := make([]tapsdk.XOnlyPubKey, 0, len(sorted))
+	participants := make([]tapsdk.PubKey, 0, len(sorted))
 	for _, cosigner := range sorted {
-		key, _ := tapsdk.ParseXOnlyPubKey(
-			schnorr.SerializePubKey(cosigner),
-		)
+		key, _ := tapsdk.ParsePubKey(cosigner.SerializeCompressed())
 		participants = append(participants, key)
 	}
 
