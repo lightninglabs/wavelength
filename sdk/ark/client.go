@@ -10,6 +10,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/lightningnetwork/lnd/lntypes"
@@ -495,6 +496,33 @@ func (c *Client) IdentityPubKey(ctx context.Context) (*btcec.PublicKey, error) {
 	}
 
 	return parseHexPubKey(info.IdentityPubKey, "identity")
+}
+
+// SignOutSwapHTLCAck asks the daemon identity key to sign accepted out-swap
+// vHTLC terms.
+func (c *Client) SignOutSwapHTLCAck(ctx context.Context,
+	paymentHash lntypes.Hash, amountSat uint64, vhtlcPkScript []byte) (
+	*schnorr.Signature, error) {
+
+	resp, err := c.daemon.SignOutSwapHtlcAck(
+		ctx, &waverpc.SignOutSwapHtlcAckRequest{
+			PaymentHash:   paymentHash[:],
+			AmountSat:     amountSat,
+			VhtlcPkScript: append([]byte(nil), vhtlcPkScript...),
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("sign out-swap HTLC acknowledgement: %w",
+			err)
+	}
+
+	sig, err := schnorr.ParseSignature(resp.GetSignature())
+	if err != nil {
+		return nil, fmt.Errorf("parse out-swap HTLC "+
+			"acknowledgement: %w", err)
+	}
+
+	return sig, nil
 }
 
 // OperatorPubKey parses and returns the operator public key from the daemon's
