@@ -420,13 +420,13 @@ type Round struct {
 // Rounds coordinate multiple boarding intents (and future: refreshes,
 // offboards) into a single commitment transaction.
 //
-// At the "point of no return" (after sending partial signatures), the
-// FSM state must be checkpointed to allow recovery if the server
-// broadcasts the commitment transaction.
+// At the "point of no return", the FSM state must be checkpointed before
+// emitting signatures that let the server broadcast the commitment
+// transaction. The durable checkpoint is the recovery safety fence.
 type RoundStore interface {
 	// CommitState atomically persists both the round data and FSM state.
-	// This should be called at the "point of no return" when the client
-	// has sent partial signatures and the server may broadcast.
+	// This must be called at the "point of no return" before the client
+	// emits partial or forfeit signatures that let the server broadcast.
 	//
 	// The round parameter contains the round data (commitment tx, intents,
 	// tree). The state parameter is the current FSM state. Both are

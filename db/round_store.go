@@ -320,8 +320,8 @@ func (s *RoundPersistenceStore) HasForfeitRoundCheckpoint(ctx context.Context,
 }
 
 // CommitState atomically persists both the round data and FSM state. This
-// should be called at the "point of no return" when the client has sent
-// partial signatures and the server may broadcast.
+// must be called at the "point of no return" before the client emits partial
+// or forfeit signatures that let the server broadcast.
 func (s *RoundPersistenceStore) CommitState(ctx context.Context, r *round.Round,
 	state round.ClientState) error {
 
