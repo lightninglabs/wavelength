@@ -492,8 +492,11 @@ type AcknowledgeOutSwapHtlcRequest struct {
 	// registered. The server checks it against the persisted out-swap before
 	// treating the acknowledgement as valid.
 	ClientVhtlcPubkey []byte `protobuf:"bytes,2,opt,name=client_vhtlc_pubkey,json=clientVhtlcPubkey,proto3" json:"client_vhtlc_pubkey,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// acknowledgement_signature is the receiver's BIP-340 signature over
+	// the accepted vHTLC terms.
+	AcknowledgementSignature []byte `protobuf:"bytes,3,opt,name=acknowledgement_signature,json=acknowledgementSignature,proto3" json:"acknowledgement_signature,omitempty"`
+	unknownFields            protoimpl.UnknownFields
+	sizeCache                protoimpl.SizeCache
 }
 
 func (x *AcknowledgeOutSwapHtlcRequest) Reset() {
@@ -536,6 +539,13 @@ func (x *AcknowledgeOutSwapHtlcRequest) GetPaymentHash() []byte {
 func (x *AcknowledgeOutSwapHtlcRequest) GetClientVhtlcPubkey() []byte {
 	if x != nil {
 		return x.ClientVhtlcPubkey
+	}
+	return nil
+}
+
+func (x *AcknowledgeOutSwapHtlcRequest) GetAcknowledgementSignature() []byte {
+	if x != nil {
+		return x.AcknowledgementSignature
 	}
 	return nil
 }
@@ -2996,10 +3006,11 @@ const file_swap_proto_rawDesc = "" +
 	"\x10vhtlc_amount_sat\x18\x06 \x01(\x04R\x0evhtlcAmountSat\x12$\n" +
 	"\x0edust_limit_sat\x18\a \x01(\x04R\fdustLimitSat\x12@\n" +
 	"\x0fsettlement_type\x18\b \x01(\x0e2\x17.swaprpc.SettlementTypeR\x0esettlementType\x12@\n" +
-	"\x10route_hint_paths\x18\t \x03(\v2\x16.swaprpc.RouteHintPathR\x0erouteHintPathsJ\x04\b\x01\x10\x02R\x0froute_hint_path\"r\n" +
+	"\x10route_hint_paths\x18\t \x03(\v2\x16.swaprpc.RouteHintPathR\x0erouteHintPathsJ\x04\b\x01\x10\x02R\x0froute_hint_path\"\xaf\x01\n" +
 	"\x1dAcknowledgeOutSwapHtlcRequest\x12!\n" +
 	"\fpayment_hash\x18\x01 \x01(\fR\vpaymentHash\x12.\n" +
-	"\x13client_vhtlc_pubkey\x18\x02 \x01(\fR\x11clientVhtlcPubkey\" \n" +
+	"\x13client_vhtlc_pubkey\x18\x02 \x01(\fR\x11clientVhtlcPubkey\x12;\n" +
+	"\x19acknowledgement_signature\x18\x03 \x01(\fR\x18acknowledgementSignature\" \n" +
 	"\x1eAcknowledgeOutSwapHtlcResponse\"\xbe\x02\n" +
 	"\x10OutSwapHtlcEvent\x12!\n" +
 	"\fpayment_hash\x18\x01 \x01(\fR\vpaymentHash\x12\x1d\n" +
