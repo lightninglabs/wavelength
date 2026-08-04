@@ -54,6 +54,16 @@ message TreeNode {
     // signature is the final aggregated MuSig2 schnorr signature (64 bytes)
     // for the input. Empty if unsigned.
     bytes signature = 6;
+
+    // signing_tweak is the node's combined taproot tweak for asset-aware
+    // trees: the tapscript root committing to both the sweep leaf and the
+    // node's asset commitment root. Empty for Bitcoin-only trees, where the
+    // tree-wide sweep_tapscript_root applies instead.
+    bytes signing_tweak = 7;
+
+    // asset_amount is the total asset amount carried by this node's
+    // subtree. Zero for Bitcoin-only trees.
+    uint64 asset_amount = 8;
 }
 
 // VTXOTree is a flattened representation of a VTXO or connector tree.
@@ -73,6 +83,11 @@ message VTXOTree {
     // sweep_tapscript_root is the tapscript root hash for tweaking branch
     // outputs. Empty for connector trees.
     bytes sweep_tapscript_root = 4;
+
+    // asset_ref identifies the Taproot Asset carried by every leaf of this
+    // tree (group key reference for grouped assets). Empty for Bitcoin-only
+    // trees.
+    string asset_ref = 5;
 }
 
 // --------------------------------------------------------------------------
