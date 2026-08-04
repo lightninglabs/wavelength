@@ -238,6 +238,10 @@ func (m *TreeMaterializer) MaterializeNode(ctx context.Context, node *tree.Node,
 		params.Input, committed.packageBytes,
 	)
 
+	// Re-register the subtree total now that the node carries its input,
+	// so the amount stays resolvable on extracted or deserialized clones.
+	m.cfg.AssetContext.SetNodeAssetAmount(node, amount)
+
 	return m.prepareChildren(
 		node, params.Input, source, committedTx, committed, outputSpecs,
 	)
@@ -315,7 +319,7 @@ func (m *TreeMaterializer) buildTemplate(node *tree.Node) (*psbt.Packet,
 	tx := wire.NewMsgTx(3)
 	tx.AddTxIn(&wire.TxIn{
 		PreviousOutPoint: node.Input,
-		Sequence:         wire.MaxTxInSequenceNum,
+		Sequence:         node.TxSequence(),
 	})
 
 	var specs []treeOutputSpec
