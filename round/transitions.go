@@ -2988,6 +2988,8 @@ func (s *ForfeitSignaturesCollectingState) waitForMoreForfeitSignatures(
 	}
 }
 
+// finishForfeitCollection checkpoints the signature-bearing state before it
+// emits the collected signatures to the server.
 func (s *ForfeitSignaturesCollectingState) finishForfeitCollection(
 	ctx context.Context, env *ClientEnvironment,
 	collectedForfeits map[wire.OutPoint]*ForfeitSignatureResponse) (
@@ -3028,6 +3030,12 @@ func (s *ForfeitSignaturesCollectingState) finishForfeitCollection(
 
 	// Checkpointing may outlive the triggering actor request, so
 	// use a detached context for the local store write.
+	//
+	// This write must precede every outbox emission.
+	// HasForfeitRoundCheckpoint and releasePreCheckpointForfeits treat a
+	// missing row as proof that no collected VTXO signature reached the
+	// operator and may safely release the reservation. A failed write
+	// therefore returns without NewEvents.
 	opCtx := context.WithoutCancel(ctx)
 	err = env.RoundStore.CommitState(opCtx, round, nextState)
 	if err != nil {
