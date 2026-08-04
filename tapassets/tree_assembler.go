@@ -105,6 +105,7 @@ func buildAssetTree(ctx context.Context, materializer *TreeMaterializer,
 	// The materializer reads subtree totals from the structure's
 	// context; rebind it so callers cannot desynchronize the two.
 	materializer.cfg.AssetContext = structure.AssetContext
+	structure.AssetContext.SetAssetRef(materializer.cfg.AssetRef.String())
 
 	err = tree.Materialize(
 		ctx, structure.Root, tree.MaterializeParams{
@@ -122,6 +123,7 @@ func buildAssetTree(ctx context.Context, materializer *TreeMaterializer,
 		BatchOutpoint:      req.BatchOutpoint,
 		BatchOutput:        req.BatchOutput,
 		SweepTapscriptRoot: sweepRoot[:],
+		AssetContext:       structure.AssetContext,
 	}
 	if err := built.Verify(); err != nil {
 		return nil, nil, fmt.Errorf("materialized tree is "+
