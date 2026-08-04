@@ -161,9 +161,10 @@ func (e *SpendCompletedEvent) MessageType() string {
 	return "SpendCompletedEvent"
 }
 
-// ForfeitReleasedEvent releases a VTXO from pending forfeit back to LiveState.
-// This is used when cooperative round registration fails after the VTXO was
-// admitted for forfeiture.
+// ForfeitReleasedEvent releases a VTXO whose cooperative round did not cross
+// the signature-handoff checkpoint. It is accepted from PendingForfeitState,
+// and from ForfeitingState only when the manager has durable proof that no
+// round checkpoint exists.
 type ForfeitReleasedEvent struct {
 	actor.BaseMessage
 }

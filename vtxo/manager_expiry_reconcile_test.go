@@ -5,9 +5,11 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/chainsource"
+	"github.com/lightninglabs/wavelength/lib/actormsg"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
 )
@@ -18,6 +20,48 @@ import (
 type bestHeightRef struct {
 	height int32
 }
+
+// failingVTXOActorRef preserves its state and rejects every Ask.
+type failingVTXOActorRef struct {
+	id    string
+	state VTXOState
+}
+
+// ID returns the test actor identifier.
+func (f *failingVTXOActorRef) ID() string {
+	return f.id
+}
+
+// Tell accepts fire-and-forget messages without changing test state.
+func (f *failingVTXOActorRef) Tell(_ context.Context,
+	_ actormsg.VTXOActorMsg) error {
+
+	return nil
+}
+
+// TryTell delegates to Tell because this test double does not model mailbox
+// saturation.
+func (f *failingVTXOActorRef) TryTell(ctx context.Context,
+	msg actormsg.VTXOActorMsg) error {
+
+	return f.Tell(ctx, msg)
+}
+
+// Ask returns a deterministic actor failure.
+func (f *failingVTXOActorRef) Ask(_ context.Context,
+	_ actormsg.VTXOActorMsg) actor.Future[actormsg.VTXOActorResp] {
+
+	promise := actor.NewPromise[actormsg.VTXOActorResp]()
+	promise.Complete(
+		fn.Err[actormsg.VTXOActorResp](
+			errors.New("actor unavailable"),
+		),
+	)
+
+	return promise.Future()
+}
+
+var _ VTXOActorRef = (*failingVTXOActorRef)(nil)
 
 // ID returns the test actor identifier.
 func (b *bestHeightRef) ID() string {
@@ -82,6 +126,9 @@ func TestReconcileExpiryUsesCurrentTip(t *testing.T) {
 	store.On(
 		"ListVTXOsByStatus", t.Context(), VTXOStatusPendingForfeit,
 	).Return([]*Descriptor{}, nil)
+	store.On(
+		"ListVTXOsByStatus", t.Context(), VTXOStatusForfeiting,
+	).Return([]*Descriptor{}, nil)
 
 	mgr := NewManager(&ManagerConfig{
 		Store:       store,
@@ -125,6 +172,9 @@ func TestReconcileExpiryContinuesRecoveredExpired(t *testing.T) {
 	store.On(
 		"ListVTXOsByStatus", t.Context(), VTXOStatusPendingForfeit,
 	).Return([]*Descriptor{}, nil)
+	store.On(
+		"ListVTXOsByStatus", t.Context(), VTXOStatusForfeiting,
+	).Return([]*Descriptor{}, nil)
 
 	mgr := NewManager(&ManagerConfig{
 		Store:       store,
@@ -143,5 +193,115 @@ func TestReconcileExpiryContinuesRecoveredExpired(t *testing.T) {
 	require.IsType(
 		t, &PendingForfeitState{}, actorState(t, mgr, expired.Outpoint),
 	)
+	store.AssertExpectations(t)
+}
+
+// TestReconcileExpiryFinalizesConfirmedForfeitCrashGap verifies startup
+// repairs a crash after round finalization but before the best-effort VTXO
+// confirmation Tell. A positive settlement height terminalizes the old VTXO;
+// an active checkpoint (height zero) and actor errors remain Forfeiting.
+func TestReconcileExpiryFinalizesConfirmedForfeitCrashGap(t *testing.T) {
+	t.Parallel()
+
+	confirmed := makeDescriptor(t, 50_000, 0)
+	confirmed.Status = VTXOStatusForfeiting
+	confirmed.ForfeitRoundID = "confirmed-round"
+	confirmedTxID := chainhash.Hash{0xaa}
+	confirmed.Settlement = fn.Some(Settlement{
+		TxID:   confirmedTxID,
+		Height: 101,
+		FeeSat: 500,
+	})
+
+	active := makeDescriptor(t, 40_000, 1)
+	active.Status = VTXOStatusForfeiting
+	active.ForfeitRoundID = "active-round"
+	active.Settlement = fn.Some(Settlement{
+		TxID: chainhash.Hash{0xbb},
+	})
+
+	actorFailure := makeDescriptor(t, 30_000, 2)
+	actorFailure.Status = VTXOStatusForfeiting
+	actorFailure.ForfeitRoundID = "confirmed-but-unavailable"
+	actorFailure.Settlement = fn.Some(Settlement{
+		TxID:   chainhash.Hash{0xcc},
+		Height: 102,
+	})
+
+	store := &MockVTXOStore{}
+	store.On(
+		"ListVTXOsByStatus", t.Context(), VTXOStatusPendingForfeit,
+	).Return([]*Descriptor{}, nil)
+	store.On(
+		"ListVTXOsByStatus", t.Context(), VTXOStatusForfeiting,
+	).Return([]*Descriptor{confirmed, active, actorFailure}, nil)
+
+	confirmedRef := newMockVTXOActorRef(
+		confirmed.Outpoint.String(), &ForfeitingState{
+			VTXO:       confirmed,
+			NewRoundID: confirmed.ForfeitRoundID,
+		},
+	)
+	activeRef := newMockVTXOActorRef(
+		active.Outpoint.String(), &ForfeitingState{
+			VTXO:       active,
+			NewRoundID: active.ForfeitRoundID,
+		},
+	)
+	failedRef := &failingVTXOActorRef{
+		id: actorFailure.Outpoint.String(),
+		state: &ForfeitingState{
+			VTXO:       actorFailure,
+			NewRoundID: actorFailure.ForfeitRoundID,
+		},
+	}
+
+	mgr := NewManager(&ManagerConfig{
+		Store:       store,
+		ChainSource: &bestHeightRef{height: 100},
+	})
+	mgr.actors = map[wire.OutPoint]VTXOActorRef{
+		confirmed.Outpoint:    confirmedRef,
+		active.Outpoint:       activeRef,
+		actorFailure.Outpoint: failedRef,
+	}
+
+	response, err := mgr.handleReconcileExpiry(t.Context()).Unpack()
+	require.NoError(t, err)
+	reconcileResponse, ok := response.(*ReconcileExpiryResponse)
+	require.True(t, ok)
+	require.Equal(t, 1, reconcileResponse.Checked)
+
+	confirmedState, ok := confirmedRef.state.(*ForfeitedState)
+	require.True(t, ok, "confirmed VTXO must become Forfeited")
+	require.Equal(t, confirmedTxID, confirmedState.CommitmentTxID)
+	require.IsType(t, &ForfeitingState{}, activeRef.state)
+	require.IsType(t, &ForfeitingState{}, failedRef.state)
+	store.AssertExpectations(t)
+}
+
+// TestReconcileConfirmedForfeitsListErrorFailsClosed verifies a store lookup
+// failure cannot terminalize a recovered Forfeiting VTXO.
+func TestReconcileConfirmedForfeitsListErrorFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	desc := makeDescriptor(t, 50_000, 0)
+	desc.Status = VTXOStatusForfeiting
+	ref := newMockVTXOActorRef(
+		desc.Outpoint.String(), &ForfeitingState{
+			VTXO: desc,
+		},
+	)
+	store := &MockVTXOStore{}
+	store.On(
+		"ListVTXOsByStatus", t.Context(), VTXOStatusForfeiting,
+	).Return([]*Descriptor(nil), errors.New("store unavailable"))
+
+	mgr := NewManager(&ManagerConfig{Store: store})
+	mgr.actors[desc.Outpoint] = ref
+
+	reconciled := mgr.reconcileConfirmedForfeits(t.Context())
+	require.Empty(t, reconciled)
+	require.IsType(t, &ForfeitingState{}, ref.state)
 	store.AssertExpectations(t)
 }

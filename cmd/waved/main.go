@@ -185,14 +185,7 @@ func newRootCmd() *cobra.Command {
 			"provided externally)",
 	)
 
-	// Cap the per-round operator fee the client is willing to pay
-	// under the #270 seal-time fee handshake. Zero is rejected at
-	// config-load time as an explicit misconfiguration.
-	f.Int64(
-		"maxoperatorfeesat", cfg.MaxOperatorFeeSat, "maximum "+
-			"operator fee (sats) the client will accept per "+
-			"seal-time quote; must be positive",
-	)
+	registerOperatorFeeFlags(f, cfg)
 
 	// Bound concurrent MuSig2 work. Zero lets the daemon choose a safe
 	// backend-aware default; one restores serial signing.
@@ -276,6 +269,31 @@ func newRootCmd() *cobra.Command {
 	_ = v.BindPFlags(f)
 
 	return cmd
+}
+
+const (
+	autoRefreshFeeFloorHelp = "automatic-refresh fee floor in sats; " +
+		"zero disables it"
+	autoRefreshFeeRateHelp = "automatic-refresh proportional fee " +
+		"allowance in ppm; zero disables it"
+)
+
+// registerOperatorFeeFlags registers the global seal-time fee cap and the
+// optional automatic-maintenance budget curve.
+func registerOperatorFeeFlags(f *pflag.FlagSet, cfg *waved.Config) {
+	f.Int64(
+		"maxoperatorfeesat", cfg.MaxOperatorFeeSat, "maximum "+
+			"operator fee (sats) the client will accept per "+
+			"seal-time quote; must be positive",
+	)
+	f.Int64(
+		"autorefreshfeefloorsat", cfg.AutoRefreshFeeFloorSat,
+		autoRefreshFeeFloorHelp,
+	)
+	f.Uint32(
+		"autorefreshfeerateppm", cfg.AutoRefreshFeeRatePPM,
+		autoRefreshFeeRateHelp,
+	)
 }
 
 // registerFeeEstimationFlags registers the optional external fee-provider

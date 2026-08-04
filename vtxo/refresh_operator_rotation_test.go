@@ -84,7 +84,65 @@ func TestRefreshEmissionUsesJoinTimeOperatorKey(t *testing.T) {
 			"emitted template must no longer carry the "+
 				"descriptor's stale K1",
 		)
+		require.True(
+			t, xOnlyEqual(refreshReq.OperatorKey, k2),
+			"leader request must carry its join-time key snapshot",
+		)
 	})
+
+	t.Run("cohort reuses leader snapshot without fetching",
+		func(t *testing.T) {
+			t.Parallel()
+
+			h := newVTXOTestHarness(t)
+			vtxo := h.newTestDescriptor()
+			vtxo.BatchExpiry = 1_000
+			_, snapshotKey := generateTestKeyPair(t)
+			fetchCalls := 0
+			actor := newRefreshTestActor(
+				h, vtxo, newMockManagerRef(t),
+				func(_ context.Context) (*btcec.PublicKey,
+					error) {
+
+					fetchCalls++
+
+					return nil, errors.New("unexpected " +
+						"fetch")
+				},
+			)
+			h.store.On(
+				"UpdateVTXOStatus", h.ctx, vtxo.Outpoint,
+				VTXOStatusPendingForfeit,
+			).Return(nil).Once()
+
+			response, err := actor.Receive(
+				h.ctx, &CohortRefreshEvent{
+					Height:      700,
+					BatchExpiry: vtxo.BatchExpiry,
+					OperatorKey: snapshotKey,
+				},
+			).Unpack()
+			require.NoError(t, err)
+			require.Zero(t, fetchCalls)
+
+			transition, ok := response.(VTXOActorResponse)
+			require.True(t, ok)
+			require.NotNil(t, transition.RoundRequest)
+			params := decodeStandardParams(
+				t, transition.RoundRequest.PolicyTemplate,
+			)
+			require.True(
+				t, xOnlyEqual(params.OperatorKey, snapshotKey),
+			)
+			require.True(
+				t, xOnlyEqual(
+					transition.RoundRequest.OperatorKey,
+					snapshotKey,
+				),
+			)
+			h.store.AssertExpectations(t)
+		},
+	)
 
 	t.Run("falls back to stored template when fetch unset",
 		func(t *testing.T) {

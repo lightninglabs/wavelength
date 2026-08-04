@@ -1,6 +1,7 @@
 package vtxo
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -45,6 +46,22 @@ func newPendingForfeitManager(t *testing.T,
 	}
 
 	return mgr, store
+}
+
+// addForfeitingDescriptors mirrors restart recovery for descriptors whose
+// actors persisted Forfeiting before the daemon stopped.
+func addForfeitingDescriptors(mgr *Manager, descriptors ...*Descriptor) {
+	for _, desc := range descriptors {
+		desc.Status = VTXOStatusForfeiting
+		mgr.liveDescriptors = append(mgr.liveDescriptors, desc)
+		mgr.actors[desc.Outpoint] = newMockVTXOActorRef(
+			desc.Outpoint.String(), &ForfeitingState{
+				VTXO:              desc,
+				LastCheckedHeight: desc.CreatedHeight,
+				NewRoundID:        desc.ForfeitRoundID,
+			},
+		)
+	}
 }
 
 // snapshotStatus returns the status of the given outpoint in the manager's
@@ -148,6 +165,80 @@ func TestReleaseOrphanedForfeitsSkipsMissingActor(t *testing.T) {
 
 	_, present := mgr.actors[missing.Outpoint]
 	require.False(t, present, "missing VTXO must not gain an actor")
+
+	store.AssertExpectations(t)
+}
+
+// TestReleaseOrphanedForfeitsChecksDurableRoundBoundary verifies the crash
+// boundary around signature collection. Only an explicit no-checkpoint result
+// releases Forfeiting; a durable checkpoint, lookup error, or missing binding
+// retains the VTXO so ambiguous state cannot create a double spend.
+func TestReleaseOrphanedForfeitsChecksDurableRoundBoundary(t *testing.T) {
+	t.Parallel()
+
+	releasable := makeDescriptor(t, 50_000, 0)
+	releasable.ForfeitRoundID = "pre-checkpoint"
+	checkpointed := makeDescriptor(t, 40_000, 1)
+	checkpointed.ForfeitRoundID = "checkpointed"
+	lookupFailure := makeDescriptor(t, 30_000, 2)
+	lookupFailure.ForfeitRoundID = "lookup-failure"
+	missingBinding := makeDescriptor(t, 20_000, 3)
+
+	mgr, store := newPendingForfeitManager(t, nil)
+	addForfeitingDescriptors(
+		mgr, releasable, checkpointed, lookupFailure, missingBinding,
+	)
+	mgr.cfg.HasForfeitRoundCheckpoint = func(_ context.Context,
+		roundID string) (bool, error) {
+
+		switch roundID {
+		case releasable.ForfeitRoundID:
+			return false, nil
+
+		case checkpointed.ForfeitRoundID:
+			return true, nil
+
+		case lookupFailure.ForfeitRoundID:
+			return false, errors.New("checkpoint store unavailable")
+
+		default:
+			return false, errors.New("unexpected round id")
+		}
+	}
+
+	store.On(
+		"ListVTXOsByStatus", t.Context(), VTXOStatusPendingForfeit,
+	).Return([]*Descriptor{}, nil)
+	store.On(
+		"ListVTXOsByStatus", t.Context(), VTXOStatusForfeiting,
+	).Return([]*Descriptor{
+		releasable, checkpointed, lookupFailure, missingBinding,
+	}, nil)
+
+	mgr.releaseOrphanedForfeits(t.Context())
+
+	_, ok := actorState(t, mgr, releasable.Outpoint).(*LiveState)
+	require.True(t, ok, "uncheckpointed VTXO must return to Live")
+	for _, retained := range []*Descriptor{
+		checkpointed, lookupFailure, missingBinding,
+	} {
+		_, ok :=
+			actorState(t, mgr, retained.Outpoint).(*ForfeitingState)
+		require.True(
+			t, ok, "%s must remain Forfeiting", retained.Outpoint,
+		)
+	}
+
+	status, found := snapshotStatus(mgr, releasable.Outpoint)
+	require.True(t, found)
+	require.Equal(t, VTXOStatusLive, status)
+	for _, retained := range []*Descriptor{
+		checkpointed, lookupFailure, missingBinding,
+	} {
+		status, found := snapshotStatus(mgr, retained.Outpoint)
+		require.True(t, found)
+		require.Equal(t, VTXOStatusForfeiting, status)
+	}
 
 	store.AssertExpectations(t)
 }

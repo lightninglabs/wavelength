@@ -65,6 +65,17 @@ type ForfeitRequest struct {
 	// runs). Zero means "unknown"; the quoter then falls back to
 	// the server's SweepDelay default.
 	LastCheckedHeight int32
+
+	// ExpandCohort marks a threshold-triggered leader whose manager should
+	// discover same-expiry siblings before relaying it to the round. Forced
+	// siblings and expired-recovery requests leave it false, preventing
+	// recursive discovery.
+	ExpandCohort bool
+
+	// CohortMember tells the actor to return the constructed round request
+	// to the manager's active coordination turn instead of re-entering the
+	// manager mailbox.
+	CohortMember bool
 }
 
 func (m *ForfeitRequest) vtxoOutMsgSealed() {}

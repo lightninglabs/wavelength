@@ -775,6 +775,7 @@ func assertOutboxContainsReal[T VTXOOutMsg](h *realVTXOSigningHarness) T {
 type mockRoundActorRef struct {
 	t        *testing.T
 	messages []actormsg.RoundReceivable
+	tellErr  error
 	mu       sync.Mutex
 }
 
@@ -798,6 +799,9 @@ func (m *mockRoundActorRef) Tell(
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.tellErr != nil {
+		return m.tellErr
+	}
 	m.messages = append(m.messages, msg)
 
 	return nil

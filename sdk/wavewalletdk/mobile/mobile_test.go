@@ -42,6 +42,8 @@ func TestParseConfigOverlaysSetFields(t *testing.T) {
 		"wallet_poll_interval_seconds": 5,
 		"wallet_recovery_window": 250,
 		"max_operator_fee_sat": 1000,
+		"auto_refresh_fee_floor_sat": 750,
+		"auto_refresh_fee_rate_ppm": 25000,
 		"signing_workers": 1,
 		"buffer_size": 4096
 	}`
@@ -72,6 +74,14 @@ func TestParseConfigOverlaysSetFields(t *testing.T) {
 	if got.MaxOperatorFeeSat != 1000 {
 		t.Fatalf("max operator fee = %d", got.MaxOperatorFeeSat)
 	}
+	if got.AutoRefreshFeeFloorSat != 750 {
+		t.Fatalf("auto refresh fee floor = %d",
+			got.AutoRefreshFeeFloorSat)
+	}
+	if got.AutoRefreshFeeRatePPM != 25_000 {
+		t.Fatalf("auto refresh fee rate = %d",
+			got.AutoRefreshFeeRatePPM)
+	}
 	if got.SigningWorkers != 1 {
 		t.Fatalf("signing workers = %d", got.SigningWorkers)
 	}
@@ -96,6 +106,8 @@ func TestParseConfigRejectsNegativeScalars(t *testing.T) {
 		"poll interval":    `{"wallet_poll_interval_seconds": -1}`,
 		"recovery window":  `{"wallet_recovery_window": -5}`,
 		"max operator fee": `{"max_operator_fee_sat": -1000}`,
+		"auto fee floor":   `{"auto_refresh_fee_floor_sat": -1}`,
+		"auto fee rate":    `{"auto_refresh_fee_rate_ppm": -1}`,
 		"signing workers":  `{"signing_workers": -1}`,
 		"buffer size":      `{"buffer_size": -1}`,
 	}
@@ -103,6 +115,17 @@ func TestParseConfigRejectsNegativeScalars(t *testing.T) {
 		if _, err := parseConfig(cfgJSON); err == nil {
 			t.Fatalf("%s: expected error for negative value", name)
 		}
+	}
+}
+
+// TestParseConfigRejectsExcessiveAutoRefreshRate verifies the mobile boundary
+// rejects rates above 100%, matching waved's configuration validation.
+func TestParseConfigRejectsExcessiveAutoRefreshRate(t *testing.T) {
+	if _, err := parseConfig(
+		`{"auto_refresh_fee_rate_ppm": 1000001}`,
+	); err == nil {
+
+		t.Fatal("expected error for auto-refresh fee rate above 100%")
 	}
 }
 

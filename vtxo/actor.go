@@ -20,6 +20,12 @@ import (
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
+// autoRefreshRetryDelayBlocks prevents a rejected maintenance round from
+// being re-created on every block. Six blocks is long enough to avoid a
+// same-hour retry storm while remaining far inside the default 72-block
+// refresh-to-critical safety buffer. Critical expiry always bypasses it.
+const autoRefreshRetryDelayBlocks int32 = 6
+
 // VTXOActorServiceKey returns the service key for looking up a VTXO actor.
 // This delegates to actormsg.VTXOActorServiceKey to ensure both packages use
 // the same key for registration and lookup, avoiding type mismatches.
@@ -125,6 +131,23 @@ type VTXOActor struct {
 	env   *VTXOEnvironment
 
 	selfRef actor.TellOnlyRef[actormsg.VTXOActorMsg]
+
+	// lastObservedHeight tracks block progress while the VTXO is reserved,
+	// so a late release starts its cooldown from the current tip rather
+	// than the original request height.
+	lastObservedHeight int32
+
+	// autoRefreshRetryHeight is an in-memory maintenance cooldown. It is
+	// deliberately fail-safe on restart: clearing it can cause one earlier
+	// retry, but can never delay the critical unilateral-exit path.
+	autoRefreshRetryHeight int32
+
+	// autoRefreshCohortLeader owns a manager-forced pending reservation.
+	// Token-matched rollback prevents a timed-out cohort Ask from releasing
+	// a reservation that a manual or competing round acquired first.
+	autoRefreshCohortLeader     wire.OutPoint
+	autoRefreshCohortGeneration uint64
+	hasAutoRefreshCohort        bool
 }
 
 // NewVTXOActor creates a new VTXO actor with the given configuration. For
@@ -399,7 +422,36 @@ func (a *VTXOActor) Receive(ctx context.Context,
 		)
 	}
 
-	refreshKey, deferRefresh, err := a.preflightAutoRefresh(
+	cohortEvent, cohortRefresh := vtxoEvent.(*CohortRefreshEvent)
+	release, cohortRelease := vtxoEvent.(*CohortRefreshReleaseEvent)
+	if cohortRelease {
+		if !a.hasAutoRefreshCohort ||
+			a.autoRefreshCohortLeader != release.LeaderOutpoint ||
+			a.autoRefreshCohortGeneration != release.Generation {
+			return fn.Ok[actormsg.VTXOActorResp](VTXOActorResponse{
+				PriorState: a.state,
+				NewState:   a.state,
+			})
+		}
+
+		vtxoEvent = &ForfeitReleasedEvent{}
+	}
+
+	if height, automatic := automaticRefreshHeight(vtxoEvent); automatic {
+		a.lastObservedHeight = max(a.lastObservedHeight, height)
+		if a.deferAutomaticRefresh(ctx, height) {
+			return fn.Ok[actormsg.VTXOActorResp](VTXOActorResponse{
+				PriorState: a.state,
+				NewState:   a.state,
+			})
+		}
+	}
+
+	var refreshKey *btcec.PublicKey
+	if cohortRefresh {
+		refreshKey = cohortEvent.OperatorKey
+	}
+	preflightKey, deferRefresh, err := a.preflightAutoRefresh(
 		ctx, vtxoEvent,
 	)
 	if err != nil {
@@ -417,6 +469,9 @@ func (a *VTXOActor) Receive(ctx context.Context,
 			PriorState: a.state,
 			NewState:   a.state,
 		})
+	}
+	if preflightKey != nil {
+		refreshKey = preflightKey
 	}
 
 	transition, err := a.state.ProcessEvent(ctx, vtxoEvent, a.env)
@@ -464,10 +519,25 @@ func (a *VTXOActor) Receive(ctx context.Context,
 	// transition. If the durable write fails, callers must see an error
 	// and retries must re-drive the original state rather than observing
 	// a terminal state that never made it to disk.
-	if err := a.processOutboxWithOperatorKey(
+	roundRequest, err := a.processOutboxWithOperatorKey(
 		ctx, outbox, refreshKey,
-	); err != nil {
+	)
+	if err != nil {
 		return fn.Err[actormsg.VTXOActorResp](err)
+	}
+
+	a.recordAutomaticRefreshRelease(ctx, priorState, vtxoEvent)
+	if cohortRefresh {
+		_, wasLive := priorState.(*LiveState)
+		_, isPending := nextState.(*PendingForfeitState)
+		if wasLive && isPending {
+			a.autoRefreshCohortLeader = cohortEvent.LeaderOutpoint
+			a.autoRefreshCohortGeneration = cohortEvent.Generation
+			a.hasAutoRefreshCohort = true
+		}
+	}
+	if _, released := vtxoEvent.(*ForfeitReleasedEvent); released {
+		a.hasAutoRefreshCohort = false
 	}
 
 	a.state = nextState
@@ -478,10 +548,103 @@ func (a *VTXOActor) Receive(ctx context.Context,
 	}
 
 	return fn.Ok[actormsg.VTXOActorResp](VTXOActorResponse{
-		PriorState: priorState,
-		NewState:   a.state,
-		Outbox:     outbox,
+		PriorState:   priorState,
+		NewState:     a.state,
+		Outbox:       outbox,
+		RoundRequest: roundRequest,
 	})
+}
+
+// automaticRefreshHeight identifies block- and cohort-driven maintenance
+// events. Other VTXO events, especially manual reservations, never consult the
+// automatic cooldown.
+func automaticRefreshHeight(event VTXOEvent) (int32, bool) {
+	switch evt := event.(type) {
+	case *BlockEpochEvent:
+		return evt.Height, true
+
+	case *CohortRefreshEvent:
+		return evt.Height, true
+
+	default:
+		return 0, false
+	}
+}
+
+// deferAutomaticRefresh applies the fixed cooldown only while cooperative
+// maintenance remains safe. Critical/expired LiveState decisions bypass it so
+// retry throttling can never defer unilateral exit or expiry accounting.
+func (a *VTXOActor) deferAutomaticRefresh(ctx context.Context,
+	height int32) bool {
+
+	if a.autoRefreshRetryHeight <= 0 {
+		return false
+	}
+	if height >= a.autoRefreshRetryHeight {
+		a.autoRefreshRetryHeight = 0
+
+		return false
+	}
+
+	switch state := a.state.(type) {
+	case *LiveState:
+		status := a.env.ExpiryConfig.CheckExpiry(state.VTXO, height)
+		if status == ExpiryStatusCritical ||
+			status == ExpiryStatusExpired {
+
+			a.autoRefreshRetryHeight = 0
+
+			return false
+		}
+		state.LastCheckedHeight = height
+
+	case *ExpiredState:
+		// Expired recovery is already racing an operator sweep. Never
+		// throttle it, even if an earlier live refresh installed a
+		// cooldown just before the deadline.
+		a.autoRefreshRetryHeight = 0
+
+		return false
+
+	default:
+		return false
+	}
+
+	a.logger(ctx).DebugS(ctx, "Automatic refresh retry is cooling down",
+		slog.String("outpoint", a.cfg.VTXO.Outpoint.String()),
+		slog.Int("height", int(height)),
+		slog.Int("retry_height", int(a.autoRefreshRetryHeight)),
+	)
+
+	return true
+}
+
+// recordAutomaticRefreshRelease starts a common cooldown for every member of
+// a failed cohort. RequestedAtHeight distinguishes expiry-driven reservations
+// from manual ones, so a rejected send/leave never changes this policy.
+func (a *VTXOActor) recordAutomaticRefreshRelease(ctx context.Context,
+	prior VTXOState, event VTXOEvent) {
+
+	if _, released := event.(*ForfeitReleasedEvent); !released {
+		return
+	}
+	pending, automatic := prior.(*PendingForfeitState)
+	if !automatic || pending.RequestedAtHeight <= 0 {
+		return
+	}
+
+	baseHeight := max(
+		pending.RequestedAtHeight, a.lastObservedHeight,
+	)
+	a.autoRefreshRetryHeight = baseHeight + autoRefreshRetryDelayBlocks
+
+	a.logger(ctx).InfoS(ctx,
+		"Automatic refresh released; applying retry cooldown",
+		slog.String("outpoint", a.cfg.VTXO.Outpoint.String()),
+		slog.Int("retry_delay_blocks",
+			int(autoRefreshRetryDelayBlocks)),
+		slog.Int("retry_height", int(a.autoRefreshRetryHeight)),
+	)
 }
 
 // processOutbox routes outbox messages to their destinations. This includes
@@ -492,13 +655,18 @@ func (a *VTXOActor) Receive(ctx context.Context,
 func (a *VTXOActor) processOutbox(ctx context.Context,
 	outbox []VTXOOutMsg) error {
 
-	return a.processOutboxWithOperatorKey(ctx, outbox, nil)
+	_, err := a.processOutboxWithOperatorKey(ctx, outbox, nil)
+
+	return err
 }
 
 // processOutboxWithOperatorKey routes outbox messages while reusing the key
 // fetched immediately before an automatic refresh transition.
 func (a *VTXOActor) processOutboxWithOperatorKey(ctx context.Context,
-	outbox []VTXOOutMsg, refreshKey *btcec.PublicKey) error {
+	outbox []VTXOOutMsg, refreshKey *btcec.PublicKey) (
+	*round.RefreshVTXORequest, error) {
+
+	var cohortRequest *round.RefreshVTXORequest
 
 	// Persist status updates first so a DB failure causes Receive to
 	// return an error before applying the in-memory state transition.
@@ -509,7 +677,7 @@ func (a *VTXOActor) processOutboxWithOperatorKey(ctx context.Context,
 		}
 
 		if err := a.processStatusUpdate(ctx, statusUpdate); err != nil {
-			return err
+			return nil, err
 		}
 	}
 
@@ -524,9 +692,17 @@ func (a *VTXOActor) processOutboxWithOperatorKey(ctx context.Context,
 			// the round-specific message here since the VTXO
 			// actor has the descriptor data needed.
 			vtxo := a.cfg.VTXO
-			policyTemplate, err := a.refreshOutputTemplateWithKey(
-				ctx, vtxo, refreshKey,
-			)
+			var err error
+			if refreshKey == nil && a.cfg.FetchOperatorKey != nil {
+				refreshKey, err = a.fetchOperatorKey(ctx)
+			}
+			var policyTemplate []byte
+			if err == nil {
+				policyTemplate, err =
+					a.refreshOutputTemplateWithKey(
+						ctx, vtxo, refreshKey,
+					)
+			}
 			if err != nil {
 				// WarnS, not ErrorS: this can fail because
 				// the FetchOperatorKey callback returned an
@@ -545,6 +721,17 @@ func (a *VTXOActor) processOutboxWithOperatorKey(ctx context.Context,
 					),
 				)
 
+				// Pending cohort adoption did not write a new
+				// status; its original leader relay remains
+				// authoritative. Do not roll its existing
+				// reservation back on a duplicate template
+				// failure.
+				if m.CohortMember &&
+					isPendingForfeitState(a.state) {
+					return nil, fmt.Errorf("build refresh "+
+						"output template: %w", err)
+				}
+
 				rollbackStatus := VTXOStatusLive
 				_, expired := a.state.(*ExpiredState)
 				if expired {
@@ -558,7 +745,7 @@ func (a *VTXOActor) processOutboxWithOperatorKey(ctx context.Context,
 					},
 				)
 				if rollbackErr != nil {
-					return errors.Join(
+					return nil, errors.Join(
 						err, fmt.Errorf(
 							"roll back failed "+
 								"automatic "+
@@ -567,7 +754,7 @@ func (a *VTXOActor) processOutboxWithOperatorKey(ctx context.Context,
 					)
 				}
 
-				return fmt.Errorf("build refresh output "+
+				return nil, fmt.Errorf("build refresh output "+
 					"template: %w", err)
 			}
 
@@ -587,9 +774,18 @@ func (a *VTXOActor) processOutboxWithOperatorKey(ctx context.Context,
 				VTXOOutpoint:   m.VTXOOutpoint,
 				Amount:         int64(vtxo.Amount),
 				OperatorFee:    int64(operatorFee),
+				Automatic:      true,
+				BatchExpiry:    vtxo.BatchExpiry,
+				TriggerHeight:  m.LastCheckedHeight,
+				ExpandCohort:   m.ExpandCohort,
+				OperatorKey:    refreshKey,
 				PolicyTemplate: policyTemplate,
 				OwnerKey:       vtxo.ClientKey,
-				SigningKey:     vtxo.ClientKey,
+			}
+			if m.CohortMember {
+				cohortRequest = refreshReq
+
+				continue
 			}
 			a.tellManager(ctx, &RelayToRoundMsg{
 				Payload: refreshReq,
@@ -664,7 +860,15 @@ func (a *VTXOActor) processOutboxWithOperatorKey(ctx context.Context,
 		}
 	}
 
-	return nil
+	return cohortRequest, nil
+}
+
+// isPendingForfeitState reports whether a lifecycle state already owns a
+// cooperative forfeit reservation.
+func isPendingForfeitState(state VTXOState) bool {
+	_, ok := state.(*PendingForfeitState)
+
+	return ok
 }
 
 // processStatusUpdate persists a VTXO status transition and returns any write
@@ -789,6 +993,11 @@ type VTXOActorResponse struct {
 	PriorState VTXOState
 	NewState   VTXOState
 	Outbox     []VTXOOutMsg
+
+	// RoundRequest is populated only for a manager-coordinated cohort
+	// member. Returning the request to the coordinator avoids re-entering
+	// the manager's own bounded mailbox while its discovery turn is active.
+	RoundRequest *round.RefreshVTXORequest
 }
 
 // VTXOActorResp implements actormsg.VTXOActorResp marker interface.
@@ -842,12 +1051,15 @@ func statusToState(ctx context.Context, vtxo *Descriptor, store VTXOStore,
 
 		return &ForfeitingState{
 			VTXO:       vtxo,
-			NewRoundID: vtxo.RoundID,
+			NewRoundID: vtxo.ForfeitRoundID,
 			ForfeitTx:  forfeitTx,
 		}
 
 	case VTXOStatusForfeited:
-		return &ForfeitedState{VTXO: vtxo, NewRoundID: vtxo.RoundID}
+		return &ForfeitedState{
+			VTXO:       vtxo,
+			NewRoundID: vtxo.ForfeitRoundID,
+		}
 
 	case VTXOStatusSpent:
 		return &SpentState{VTXO: vtxo}
