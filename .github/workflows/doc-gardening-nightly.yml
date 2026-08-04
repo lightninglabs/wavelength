@@ -272,7 +272,7 @@ jobs:
           # gh operations even with the native edit tools granted.
           claude_args: >-
             --max-turns 200
-            --model claude-opus-4-8
+            --model claude-opus-5
             --allowed-tools
             "Edit,Write,MultiEdit,Bash(git status:*),Bash(git diff:*),Bash(git add:*),Bash(git commit:*),Bash(git checkout:*),Bash(git log:*),Bash(git rev-parse:*),Bash(git branch:*),Bash(git fetch:*),Bash(git push:*),Bash(make doc-check:*),Bash(go doc:*),Bash(find:*),Bash(ls:*),Bash(cp:*),Bash(cat:*),Bash(head:*),Bash(tail:*),Bash(date:*),Bash(sort:*),Bash(sed:*),Bash(awk:*),Bash(gh pr create:*),Bash(gh pr list:*),Bash(gh pr view:*),Bash(gh auth status:*)"
             --disallowed-tools
