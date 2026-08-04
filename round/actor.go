@@ -63,6 +63,34 @@ const defaultRegistrationTimeout = 60 * time.Second
 // between unanswered probes.
 const defaultStatusReconcileTimeout = 90 * time.Second
 
+// defaultWalletAskTimeout bounds every Ask this actor makes into the wallet
+// actor. Both actors are single-goroutine loops that Ask each other — the
+// wallet asks the round actor from handleRefreshVTXOs, handleLeaveVTXOs and
+// friends — so an unbounded Ask in this direction closes a circular wait that
+// nothing can break: each loop sits on the other's promise with no timer
+// anywhere in the cycle, and because a board trigger arrives by Tell there is
+// no caller deadline to fall back on either. Bounding this side is enough to
+// break the cycle, since whichever side gives up frees its loop to serve the
+// other's message.
+//
+// Unlike wallet.replayRoundRegisterTimeout, the bounded context keeps its
+// parent rather than detaching with WithoutCancel: the parent here is the
+// actor's own lifecycle context, so keeping it preserves the shutdown escape
+// instead of removing it.
+//
+// NOTE: 30s is chosen to match the wallet's own replay budget so a wallet that
+// is slow rather than wedged still gets its answer through, and it is the same
+// number the boot-time registration Ask in Start uses. The cost is paid on this
+// actor's single receive loop, which every inbound round route funnels through:
+// while an Ask is outstanding the mailbox does not drain, and once it fills the
+// connector's ingress loop defers and re-pulls
+// (serverconn.ErrDispatchDeferred), so this constant is one of the things that
+// CAUSES the backpressure the connector now handles. Shortening it trades a
+// longer wallet stall for a shorter deaf window; the reverse direction is still
+// unbounded at four of six wallet-to-round call sites, so the cycle is broken
+// by this side alone and that asymmetry is deliberate.
+const defaultWalletAskTimeout = 30 * time.Second
+
 // defaultRefreshRegistrationDelay is the quiet period used to coalesce
 // expiry-driven refreshes before registering their round. Block epochs can
 // make several VTXO actors request refreshes back-to-back; registering the
@@ -417,6 +445,12 @@ type RoundClientConfig struct {
 	// A negative value disables the timeout (rounds wait indefinitely for
 	// admission), which restores the pre-#653 behavior.
 	RegistrationTimeout time.Duration
+
+	// WalletAskTimeout bounds every Ask this actor makes into the wallet
+	// actor, which is what keeps the two single-goroutine loops from
+	// parking on each other forever. If zero or negative,
+	// defaultWalletAskTimeout is used.
+	WalletAskTimeout time.Duration
 
 	// StatusReconcileTimeout bounds how long a forfeit-bearing round sits
 	// in InputSigSentState — forfeit signatures out, no confirmation, no
@@ -1024,11 +1058,55 @@ func (a *RoundClientActor) createNewRound(ctx context.Context) (*RoundFSM,
 	return roundFSM, nil
 }
 
+// fsmState returns a round FSM's current state, bounded so this actor's receive
+// loop can never be parked by a transition that is still running. The FSM
+// answers state queries only between transitions, so a query is a read that has
+// to be allowed to fail; every caller below degrades on the error instead of
+// waiting for it to succeed.
+//
+// The bound is derived from the caller's context rather than replacing it, so a
+// query also ends when the actor is stopped — and so a caller that already
+// bounded a whole scan of FSMs keeps its own, shorter deadline. See
+// fsmScanContext.
+func fsmState(ctx context.Context, fsm *ClientStateMachine) (
+	protofsm.State[ClientEvent, ClientOutMsg, *ClientEnvironment], error) {
+
+	queryCtx, cancel := context.WithTimeout(
+		ctx, protofsm.DefaultStateQueryTimeout,
+	)
+	defer cancel()
+
+	return fsm.CurrentStateWithContext(queryCtx)
+}
+
+// fsmScanContext bounds a whole pass over the tracked rounds with ONE deadline,
+// which every caller below that scans a.rounds must use.
+//
+// A per-FSM bound does not compose: the scans are over a map whose size is not
+// tightly bounded (recovery rounds are never reaped, and failed ones linger
+// until the next assembly), and several handlers scan more than once per
+// message, so a per-FSM second turns into len(a.rounds) seconds — on the single
+// receive loop that gates every inbound round route in the process, and through
+// the connector's shared cursor, the whole inbound plane. One shared deadline
+// makes a scan cost at most DefaultStateQueryTimeout no matter how many rounds
+// are tracked.
+//
+// The trade-off is that an FSM early in the scan which is slow to answer can
+// consume the budget and leave later ones reporting a deadline instead of a
+// state. That is the same outcome those rounds already get when they are the
+// slow one, and every caller treats an unreadable state as "skip this round",
+// so the failure mode is a round not considered for this message rather than a
+// wrong answer. Spending a bounded amount of the receive loop is worth more
+// than reading every FSM.
+func fsmScanContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, protofsm.DefaultStateQueryTimeout)
+}
+
 // roundInState returns a predicate that checks if a RoundFSM is in the
 // specified state type.
-func roundInState[S ClientState]() fn.Pred[*RoundFSM] {
+func roundInState[S ClientState](ctx context.Context) fn.Pred[*RoundFSM] {
 	return func(r *RoundFSM) bool {
-		state, err := r.FSM.CurrentState()
+		state, err := fsmState(ctx, r.FSM)
 		if err != nil {
 			return false
 		}
@@ -1042,18 +1120,25 @@ func roundInState[S ClientState]() fn.Pred[*RoundFSM] {
 // It prioritizes PendingRoundAssembly (which already has boarding inputs)
 // over Idle rounds. This ensures VTXOs are attached to rounds that have
 // inputs, preventing registration failures from empty input sets.
-func (a *RoundClientActor) findAssemblingRound() *RoundFSM {
+func (a *RoundClientActor) findAssemblingRound(ctx context.Context) *RoundFSM {
 	rounds := slices.Collect(maps.Values(a.rounds))
+
+	// Both filters below are one logical scan and share one deadline: this
+	// runs on the receive loop, and it queries every tracked round twice.
+	scanCtx, cancel := fsmScanContext(ctx)
+	defer cancel()
 
 	// Prefer rounds that already have boarding intents.
 	if assembling := fn.Filter(
-		rounds, roundInState[*PendingRoundAssembly](),
+		rounds, roundInState[*PendingRoundAssembly](scanCtx),
 	); len(assembling) > 0 {
 		return assembling[0]
 	}
 
 	// Fall back to idle rounds.
-	if idle := fn.Filter(rounds, roundInState[*Idle]()); len(idle) > 0 {
+	if idle := fn.Filter(
+		rounds, roundInState[*Idle](scanCtx),
+	); len(idle) > 0 {
 		return idle[0]
 	}
 
@@ -1073,15 +1158,19 @@ func (a *RoundClientActor) findAssemblingRound() *RoundFSM {
 // when no round matches AND also when more than one candidate
 // matches (ambiguous re-key), so the caller can log and fail rather
 // than silently route into the wrong FSM.
-func (a *RoundClientActor) findRoundByOutpoints(
+func (a *RoundClientActor) findRoundByOutpoints(ctx context.Context,
 	boardingOutpoints, vtxoOutpoints []wire.OutPoint) *RoundFSM {
 
 	boardingSet := fn.NewSet(boardingOutpoints...)
 	vtxoSet := fn.NewSet(vtxoOutpoints...)
 
+	// One deadline for the whole scan; see fsmScanContext.
+	scanCtx, cancel := fsmScanContext(ctx)
+	defer cancel()
+
 	var match *RoundFSM
 	for _, roundFSM := range a.rounds {
-		state, err := roundFSM.FSM.CurrentState()
+		state, err := fsmState(scanCtx, roundFSM.FSM)
 		if err != nil {
 			continue
 		}
@@ -1276,7 +1365,7 @@ func (a *RoundClientActor) replayCheckpointedServerMessages(
 	ctx context.Context, roundFSM *RoundFSM,
 ) error {
 
-	state, err := roundFSM.FSM.CurrentState()
+	state, err := fsmState(ctx, roundFSM.FSM)
 	if err != nil {
 		return fmt.Errorf("get current state: %w", err)
 	}
@@ -1328,13 +1417,22 @@ func (a *RoundClientActor) OnStop(ctx context.Context) error {
 		slog.Int("rounds", len(a.rounds)),
 	)
 
+	// The state reads across this loop share one deadline, so the stop
+	// budget is spent on the cleanup rather than on the queries. With a
+	// per-FSM bound, five mid-transition rounds exhausted the framework's
+	// whole 5s OnStop budget on reads alone and left nothing for the MuSig2
+	// session cleanup that this method exists to perform — which is the
+	// external-signer state that leaks across a restart if it is skipped.
+	scanCtx, cancel := fsmScanContext(ctx)
+	defer cancel()
+
 	// Stop all round FSMs.
 	for keyStr, roundFSM := range a.rounds {
 		a.log.DebugS(ctx, "Stopping round FSM",
 			slog.String("key", string(keyStr)),
 		)
 
-		state, err := roundFSM.FSM.CurrentState()
+		state, err := fsmState(scanCtx, roundFSM.FSM)
 		if err == nil {
 			clientState, ok := state.(ClientState)
 			if !ok {
@@ -1416,10 +1514,20 @@ func (a *RoundClientActor) Start(ctx context.Context) error {
 		MinConf:       fn.Some(a.cfg.OperatorTerms.MinConfirmations),
 	}
 
-	future := a.cfg.WalletActor.Ask(ctx, regReq)
-	result := future.Await(ctx)
-	if result.IsErr() {
-		return fmt.Errorf("register with wallet: %w", result.Err())
+	// Bounded like every other Ask into the wallet: a wallet that never
+	// answers must fail the start with a diagnosable error instead of
+	// hanging daemon startup with no output.
+	//
+	// NOTE: this shares the steady-state budget rather than taking a longer
+	// one of its own, which is the deliberate trade: a wallet still
+	// replaying intents past 30s at boot turns a slow start into a failed
+	// start and a restart, instead of a silent hang. Nothing is left
+	// half-initialized — initRoundActor propagates the error and the daemon
+	// refuses to come up — and the registration is a read that the next
+	// attempt redoes. If boot replay ever grows past this, it wants its own
+	// longer startup constant, not a longer steady-state one.
+	if _, err := a.askWallet(ctx, regReq); err != nil {
+		return fmt.Errorf("register with wallet: %w", err)
 	}
 
 	a.log.InfoS(
@@ -1623,7 +1731,7 @@ func (a *RoundClientActor) handleWalletBoardingConfirmed(ctx context.Context,
 	// Find an existing assembling round (Idle or PendingRoundAssembly) or
 	// create a new one. This allows multiple boarding confirmations to
 	// accumulate in the same round.
-	roundFSM := a.findAssemblingRound()
+	roundFSM := a.findAssemblingRound(ctx)
 	if roundFSM == nil {
 		roundFSM, err = a.createNewRound(ctx)
 		if err != nil {
@@ -1762,7 +1870,7 @@ func (a *RoundClientActor) handleVTXORequests(ctx context.Context,
 	// Find an existing assembling round (Idle or PendingRoundAssembly) or
 	// create a new one. This allows VTXOs to join a round that already has
 	// boarding intents being assembled.
-	roundFSM := a.findAssemblingRound()
+	roundFSM := a.findAssemblingRound(ctx)
 	if roundFSM == nil {
 		roundFSM, err = a.createNewRound(ctx)
 		if err != nil {
@@ -1808,7 +1916,7 @@ func (a *RoundClientActor) handleVTXORequestsReceived(ctx context.Context,
 	// Find an existing assembling round (Idle or PendingRoundAssembly) or
 	// create a new one. This allows VTXOs to join a round that already has
 	// boarding intents being assembled.
-	roundFSM := a.findAssemblingRound()
+	roundFSM := a.findAssemblingRound(ctx)
 	if roundFSM == nil {
 		var err error
 		roundFSM, err = a.createNewRound(ctx)
@@ -1897,7 +2005,8 @@ func (a *RoundClientActor) handleRoundJoined(ctx context.Context,
 	// boarding outpoints, but this will be extended for VTXO operations
 	// (forfeit, leave, refresh) when implemented.
 	roundFSM := a.findRoundByOutpoints(
-		event.AcceptedBoardingOutpoints, event.AcceptedVTXOOutpoints,
+		ctx, event.AcceptedBoardingOutpoints,
+		event.AcceptedVTXOOutpoints,
 	)
 	if roundFSM == nil {
 		return fn.Err[actormsg.RoundActorResp](
@@ -2217,8 +2326,12 @@ func (a *RoundClientActor) handleGetState(ctx context.Context,
 
 	states := make(map[string]FSMStateInfo)
 
+	// One deadline for the whole scan; see fsmScanContext.
+	scanCtx, cancel := fsmScanContext(ctx)
+	defer cancel()
+
 	for keyStr, roundFSM := range a.rounds {
-		roundState, err := roundFSM.FSM.CurrentState()
+		roundState, err := fsmState(scanCtx, roundFSM.FSM)
 		if err != nil {
 			a.log.WarnS(ctx, "Failed to get FSM state for round",
 				err,
@@ -2380,8 +2493,12 @@ func (a *RoundClientActor) onRoundComplete(ctx context.Context, roundID RoundID,
 // broadcast and is awaiting confirmation — in-flight work, not a settled
 // failure.
 func (a *RoundClientActor) reapFailedRounds(ctx context.Context) {
+	// One deadline for the whole scan; see fsmScanContext.
+	scanCtx, cancel := fsmScanContext(ctx)
+	defer cancel()
+
 	for keyStr, roundFSM := range a.rounds {
-		state, err := roundFSM.FSM.CurrentState()
+		state, err := fsmState(scanCtx, roundFSM.FSM)
 		if err != nil {
 			continue
 		}
@@ -2488,7 +2605,7 @@ func (a *RoundClientActor) handleTimeout(ctx context.Context,
 	var timeoutEvt ClientEvent
 	switch phase {
 	case TimeoutPhaseRefreshRegistration:
-		state, stateErr := roundFSM.FSM.CurrentState()
+		state, stateErr := fsmState(ctx, roundFSM.FSM)
 		if stateErr != nil {
 			return fn.Err[actormsg.RoundActorResp](
 				fmt.Errorf("read round state for automatic "+
@@ -2787,7 +2904,7 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 			}
 
 			// Get the current state to extract commitment tx info.
-			state, err := roundFSM.FSM.CurrentState()
+			state, err := fsmState(ctx, roundFSM.FSM)
 			if err != nil {
 				return fmt.Errorf("failed to get state: %w",
 					err)
@@ -3188,7 +3305,7 @@ func (a *RoundClientActor) handleRefreshVTXOCohortRequest(
 	// Feeding an IntentPackage to IntentSentState would self-loop
 	// silently, discarding the intent.
 	var err error
-	roundFSM := a.findAssemblingRound()
+	roundFSM := a.findAssemblingRound(ctx)
 	if roundFSM == nil {
 		roundFSM, err = a.createNewRound(ctx)
 		if err != nil {
@@ -3291,7 +3408,7 @@ func (a *RoundClientActor) handleRegisterIntent(ctx context.Context,
 	// temp-key status, which includes rounds in IntentSentState.
 	// Feeding an IntentPackage to IntentSentState would self-loop
 	// silently, discarding the intent.
-	roundFSM := a.findAssemblingRound()
+	roundFSM := a.findAssemblingRound(ctx)
 	if roundFSM == nil {
 		var err error
 		roundFSM, err = a.createNewRound(ctx)
@@ -3416,6 +3533,39 @@ func (a *RoundClientActor) handleForfeitSignatureResponse(ctx context.Context,
 	return fn.Ok[actormsg.RoundActorResp](nil)
 }
 
+// askWallet sends an Ask to the wallet actor and waits for the reply under
+// walletAskTimeout. The one bounded context covers both halves of the exchange,
+// because Ask blocks on the wallet's mailbox before it hands back a Future: a
+// deadline applied only to Await bounds the reply and leaves the enqueue
+// unbounded, which is the half that a wedged wallet actor stalls.
+//
+// A timeout is logged here rather than only at the call site: the callers that
+// return the error are handling a Tell-delivered message, and the actor
+// framework drops a Tell handler's error without logging it, so this is the
+// only place the cycle-breaking event becomes visible.
+func (a *RoundClientActor) askWallet(ctx context.Context,
+	msg wallet.WalletMsg) (wallet.WalletResp, error) {
+
+	timeout := a.cfg.WalletAskTimeout
+	if timeout <= 0 {
+		timeout = defaultWalletAskTimeout
+	}
+
+	askCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	resp, err := a.cfg.WalletActor.Ask(askCtx, msg).Await(askCtx).Unpack()
+	if errors.Is(err, context.DeadlineExceeded) {
+		a.log.ErrorS(ctx, "Wallet actor did not answer in time; "+
+			"giving up to keep the round actor live", err,
+			slog.String("msg_type", msg.MessageType()),
+			slog.String("timeout", timeout.String()),
+		)
+	}
+
+	return resp, err
+}
+
 // handleTriggerBoard processes a board request forwarded from the wallet actor.
 // It registers the VTXO output amounts into a round FSM and then triggers
 // IntentRequested to kick off the round join flow. This combines the
@@ -3433,9 +3583,14 @@ func (a *RoundClientActor) handleTriggerBoard(ctx context.Context,
 	// Resolve the boarding inputs before minting any VTXO owner keys, so a
 	// redundant trigger short-circuits without advancing the wallet key
 	// ring or registering owned scripts for outputs we never send.
-	confirmedBoarding, err := a.cfg.WalletActor.Ask(
+	//
+	// The Ask is bounded, and the same bounded context is passed to both
+	// Ask and Await: the enqueue inside Ask is itself a blocking mailbox
+	// send, so a deadline on Await alone would leave the wait unbounded
+	// whenever the wallet's mailbox is the thing that is full.
+	confirmedBoarding, err := a.askWallet(
 		ctx, &wallet.GetConfirmedBoardingIntentsRequest{},
-	).Await(ctx).Unpack()
+	)
 	if err != nil {
 		return fn.Err[actormsg.RoundActorResp](
 			fmt.Errorf("fetch confirmed boarding intents: %w", err),
@@ -3535,7 +3690,7 @@ func (a *RoundClientActor) handleTriggerBoard(ctx context.Context,
 	)
 
 	// Find an existing assembling round or create a new one.
-	roundFSM := a.findAssemblingRound()
+	roundFSM := a.findAssemblingRound(ctx)
 	if roundFSM == nil {
 		roundFSM, err = a.createNewRound(ctx)
 		if err != nil {

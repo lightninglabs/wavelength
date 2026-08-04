@@ -214,6 +214,29 @@ type mockWalletActorRef struct {
 
 	// confirmedIntents are returned to TriggerBoard recovery queries.
 	confirmedIntents []wallet.BoardingIntent
+
+	// askGate, when non-nil, holds every Ask until it is closed or the
+	// caller's context ends. See blockAsk.
+	askGate chan struct{}
+}
+
+// blockAsk makes every subsequent Ask park as a wallet actor with a wedged
+// receive loop would, and returns the func that lets them through again.
+//
+// The gate honors the Ask context, which is the whole point: a real mailbox
+// send escapes on the caller's context, so a caller that bounds its Ask gets
+// its deadline back instead of parking. A gate that ignored the context would
+// model a mailbox that does not exist.
+func (m *mockWalletActorRef) blockAsk() func() {
+	gate := make(chan struct{})
+
+	m.mu.Lock()
+	m.askGate = gate
+	m.mu.Unlock()
+
+	return sync.OnceFunc(func() {
+		close(gate)
+	})
 }
 
 func newMockWalletActorRef(t *testing.T) *mockWalletActorRef {
@@ -247,8 +270,20 @@ func (m *mockWalletActorRef) TryTell(ctx context.Context,
 	return m.Tell(ctx, msg)
 }
 
-func (m *mockWalletActorRef) Ask(_ context.Context,
+func (m *mockWalletActorRef) Ask(ctx context.Context,
 	msg wallet.WalletMsg) actor.Future[wallet.WalletResp] {
+
+	m.mu.Lock()
+	gate := m.askGate
+	m.mu.Unlock()
+
+	if gate != nil {
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return newErrFuture[wallet.WalletResp](ctx.Err())
+		}
+	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -543,6 +578,12 @@ type immediateFuture[T any] struct {
 
 func newImmediateFuture[T any](val T) actor.Future[T] {
 	return &immediateFuture[T]{result: fn.Ok(val)}
+}
+
+// newErrFuture returns an already-failed future, which is what a real ActorRef
+// hands back when the send could not be completed.
+func newErrFuture[T any](err error) actor.Future[T] {
+	return &immediateFuture[T]{result: fn.Err[T](err)}
 }
 
 func (f *immediateFuture[T]) Await(_ context.Context) fn.Result[T] {
