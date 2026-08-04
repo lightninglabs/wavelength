@@ -28,6 +28,11 @@ type CreateSignerSessionJob struct {
 	// SweepTapscriptRoot tweaks the VTXO tree key-spend path.
 	SweepTapscriptRoot []byte
 
+	// TweakLookup optionally overrides the taproot tweak per node.
+	// Asset-aware trees commit a per-node asset root into each output
+	// key; nil signs every node with SweepTapscriptRoot.
+	TweakLookup tree.TaprootTweakLookup
+
 	// PrevOuts provides the outputs spent by transactions in the path.
 	PrevOuts txscript.PrevOutputFetcher
 
@@ -101,6 +106,7 @@ func NewSigningExecutor(maxWorkers int) SigningExecutor {
 			return tree.NewSignerSession(
 				job.Signer, &job.SigningKey,
 				job.SweepTapscriptRoot, job.PrevOuts, job.Root,
+				job.TweakLookup,
 			)
 		},
 		getNonces: func(
