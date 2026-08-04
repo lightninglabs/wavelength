@@ -4282,12 +4282,11 @@ func (s *Server) initRoundActor(ctx context.Context,
 		ActorSystem:    s.actorSystem,
 		TimeoutActor:   timeoutRef,
 		MaxOperatorFee: maxOperatorFee,
-		MaxAutoRefreshFeeRatePPM: s.cfg.
-			MaxAutoRefreshFeeRatePPM,
-		MaxAutoRefreshFee: btcutil.Amount(
-			s.cfg.MaxAutoRefreshFeeSat,
+		AutoRefreshFeeFloor: btcutil.Amount(
+			s.cfg.AutoRefreshFeeFloorSat,
 		),
-		VTXOManager: vtxoManager,
+		AutoRefreshFeeRatePPM: s.cfg.AutoRefreshFeeRatePPM,
+		VTXOManager:           vtxoManager,
 		DropCustomForfeitSigningContexts: s.
 			dropCustomForfeitSigningContexts,
 		OwnedScriptChecker:   scriptChecker,

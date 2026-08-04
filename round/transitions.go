@@ -1396,56 +1396,40 @@ func evaluateQuote(ctx context.Context, env *ClientEnvironment, roundID RoundID,
 
 	// Automatic maintenance can briefly share an assembling round with a
 	// manual intent. Starting a second same-client FSM would create
-	// competing server registrations, so apply the automatic budgets
-	// conservatively to the entire realised client fee whenever any
-	// auto-origin output exists. The proportional denominator contains only
-	// automatic target value. A mixed round can therefore reject, but it
-	// cannot hide maintenance fees.
+	// competing server registrations, so apply the automatic budget to the
+	// entire realised client fee whenever any auto-origin output exists.
+	// The budget curve uses only automatic target value as its proportional
+	// denominator. A mixed round can therefore reject, but it cannot hide
+	// maintenance fees.
 	autoValue, hasAutoRefresh := autoRefreshValue(intents)
-	if hasAutoRefresh && env.MaxAutoRefreshFee > 0 &&
-		realised > int64(env.MaxAutoRefreshFee) {
+	if hasAutoRefresh && env.AutoRefreshFeeRatePPM > 1_000_000 {
 		return &QuoteRejected{
 			RoundID: roundID,
 			QuoteID: quote.QuoteID,
 			Reason: fmt.Sprintf(
-				"automatic refresh round fee %d exceeds "+
-					"automatic cap %d", realised,
-				int64(env.MaxAutoRefreshFee),
+				"automatic refresh fee rate %d ppm exceeds "+
+					"1000000 ppm",
+				env.AutoRefreshFeeRatePPM,
 			),
 		}
 	}
 
-	if hasAutoRefresh && env.MaxAutoRefreshFeeRatePPM > 0 {
-		const ppmDenominator = int64(1_000_000)
-		rate := int64(env.MaxAutoRefreshFeeRatePPM)
-		if rate > ppmDenominator {
-			return &QuoteRejected{
-				RoundID: roundID,
-				QuoteID: quote.QuoteID,
-				Reason: fmt.Sprintf(
-					"automatic refresh fee rate cap %d "+
-						"ppm exceeds 1000000 ppm",
-					rate,
-				),
-			}
-		}
-
-		// Split the multiplication around the denominator so even a
-		// malformed near-MaxInt64 aggregate cannot overflow.
-		proportionalCap := autoValue/ppmDenominator*rate +
-			autoValue%ppmDenominator*rate/ppmDenominator
-		if realised > proportionalCap {
-			return &QuoteRejected{
-				RoundID: roundID,
-				QuoteID: quote.QuoteID,
-				Reason: fmt.Sprintf(
-					"automatic refresh fee %d "+
-						"exceeds %d ppm cap %d for %d "+
-						"sat cohort",
-					realised,
-					rate, proportionalCap, autoValue,
-				),
-			}
+	autoBudget, budgetEnabled := autoRefreshFeeBudget(
+		env.MaxOperatorFee, env.AutoRefreshFeeFloor,
+		env.AutoRefreshFeeRatePPM, autoValue,
+	)
+	if hasAutoRefresh && budgetEnabled && realised > autoBudget {
+		return &QuoteRejected{
+			RoundID: roundID,
+			QuoteID: quote.QuoteID,
+			Reason: fmt.Sprintf(
+				"automatic refresh fee %d exceeds budget %d "+
+					"for %d sat cohort (floor=%d sat, "+
+					"rate=%d ppm)",
+				realised, autoBudget, autoValue,
+				int64(env.AutoRefreshFeeFloor),
+				env.AutoRefreshFeeRatePPM,
+			),
 		}
 	}
 
@@ -1453,6 +1437,45 @@ func evaluateQuote(ctx context.Context, env *ClientEnvironment, roundID RoundID,
 		RoundID: roundID,
 		QuoteID: quote.QuoteID,
 	}
+}
+
+// autoRefreshFeeBudget computes the single unattended-maintenance budget
+// curve. The fixed floor covers the operation's fixed fee components for
+// small cohorts, while the proportional allowance scales with preserved
+// value. MaxOperatorFee remains the hard ceiling over both components.
+func autoRefreshFeeBudget(maxOperatorFee, floor btcutil.Amount, ratePPM uint32,
+	autoValue int64) (int64, bool) {
+
+	if floor <= 0 && ratePPM == 0 {
+		return int64(maxOperatorFee), false
+	}
+
+	// A configured policy must fail closed if malformed intents overflowed
+	// or otherwise failed to produce a positive automatic value.
+	if autoValue <= 0 {
+		return 0, true
+	}
+
+	budget := int64(floor)
+	if ratePPM > 0 {
+		const ppmDenominator = int64(1_000_000)
+		rate := int64(ratePPM)
+
+		// Split the multiplication around the denominator so even a
+		// malformed near-MaxInt64 aggregate cannot overflow.
+		proportionalBudget := autoValue/ppmDenominator*rate +
+			autoValue%ppmDenominator*rate/ppmDenominator
+		if proportionalBudget > budget {
+			budget = proportionalBudget
+		}
+	}
+
+	globalCap := int64(maxOperatorFee)
+	if budget > globalCap {
+		budget = globalCap
+	}
+
+	return budget, true
 }
 
 // autoRefreshValue returns the total target value of automatic-maintenance
@@ -1751,6 +1774,10 @@ func (s *QuoteReceivedState) processEvent(ctx context.Context,
 
 	case *QuoteAccepted:
 		autoValue, automatic := autoRefreshValue(s.Intents)
+		autoBudget, budgetEnabled := autoRefreshFeeBudget(
+			env.MaxOperatorFee, env.AutoRefreshFeeFloor,
+			env.AutoRefreshFeeRatePPM, autoValue,
+		)
 		env.Log.InfoS(ctx, "Accepting seal-time quote",
 			slog.String("round_id", evt.RoundID.String()),
 			slog.Int64("operator_fee_sat", s.Quote.OperatorFeeSat),
@@ -1758,13 +1785,15 @@ func (s *QuoteReceivedState) processEvent(ctx context.Context,
 			slog.Int64("automatic_refresh_value_sat", autoValue),
 			slog.Int("vtxo_count", len(s.Intents.VTXOs)),
 			slog.Uint64("seal_pass", uint64(s.Quote.SealPass)),
-			slog.Int64(
-				"automatic_fee_cap_sat",
-				int64(env.MaxAutoRefreshFee),
-			),
+			slog.Bool("automatic_fee_budget_enabled", budgetEnabled),
+			slog.Int64("automatic_fee_budget_sat", autoBudget),
 			slog.Uint64(
-				"automatic_fee_rate_cap_ppm",
-				uint64(env.MaxAutoRefreshFeeRatePPM),
+				"automatic_fee_rate_ppm",
+				uint64(env.AutoRefreshFeeRatePPM),
+			),
+			slog.Int64(
+				"automatic_fee_floor_sat",
+				int64(env.AutoRefreshFeeFloor),
 			),
 		)
 
@@ -1802,6 +1831,10 @@ func (s *QuoteReceivedState) processEvent(ctx context.Context,
 
 	case *QuoteRejected:
 		autoValue, automatic := autoRefreshValue(s.Intents)
+		autoBudget, budgetEnabled := autoRefreshFeeBudget(
+			env.MaxOperatorFee, env.AutoRefreshFeeFloor,
+			env.AutoRefreshFeeRatePPM, autoValue,
+		)
 		var (
 			quotedFee int64
 			sealPass  uint32
@@ -1819,13 +1852,15 @@ func (s *QuoteReceivedState) processEvent(ctx context.Context,
 			slog.Int64("automatic_refresh_value_sat", autoValue),
 			slog.Int("vtxo_count", len(s.Intents.VTXOs)),
 			slog.Uint64("seal_pass", uint64(sealPass)),
-			slog.Int64(
-				"automatic_fee_cap_sat",
-				int64(env.MaxAutoRefreshFee),
-			),
+			slog.Bool("automatic_fee_budget_enabled", budgetEnabled),
+			slog.Int64("automatic_fee_budget_sat", autoBudget),
 			slog.Uint64(
-				"automatic_fee_rate_cap_ppm",
-				uint64(env.MaxAutoRefreshFeeRatePPM),
+				"automatic_fee_rate_ppm",
+				uint64(env.AutoRefreshFeeRatePPM),
+			),
+			slog.Int64(
+				"automatic_fee_floor_sat",
+				int64(env.AutoRefreshFeeFloor),
 			),
 		)
 

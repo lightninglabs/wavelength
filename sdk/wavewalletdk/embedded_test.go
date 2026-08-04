@@ -49,13 +49,13 @@ func TestAutoRefreshFeeOverrides(t *testing.T) {
 		t.Parallel()
 
 		cfg := DefaultConfig()
-		cfg.MaxAutoRefreshFeeSat = 2_000
-		cfg.MaxAutoRefreshFeeRatePPM = 25_000
+		cfg.AutoRefreshFeeFloorSat = 2_000
+		cfg.AutoRefreshFeeRatePPM = 25_000
 		daemonCfg, err := daemonConfig(cfg)
 		require.NoError(t, err)
-		require.Equal(t, int64(2_000), daemonCfg.MaxAutoRefreshFeeSat)
+		require.Equal(t, int64(2_000), daemonCfg.AutoRefreshFeeFloorSat)
 		require.Equal(
-			t, uint32(25_000), daemonCfg.MaxAutoRefreshFeeRatePPM,
+			t, uint32(25_000), daemonCfg.AutoRefreshFeeRatePPM,
 		)
 	})
 
@@ -63,13 +63,13 @@ func TestAutoRefreshFeeOverrides(t *testing.T) {
 		t.Parallel()
 
 		base := waved.DefaultConfig()
-		base.MaxAutoRefreshFeeSat = 3_000
-		base.MaxAutoRefreshFeeRatePPM = 50_000
+		base.AutoRefreshFeeFloorSat = 3_000
+		base.AutoRefreshFeeRatePPM = 50_000
 		daemonCfg, err := daemonConfig(Config{DaemonConfig: base})
 		require.NoError(t, err)
-		require.Equal(t, int64(3_000), daemonCfg.MaxAutoRefreshFeeSat)
+		require.Equal(t, int64(3_000), daemonCfg.AutoRefreshFeeFloorSat)
 		require.Equal(
-			t, uint32(50_000), daemonCfg.MaxAutoRefreshFeeRatePPM,
+			t, uint32(50_000), daemonCfg.AutoRefreshFeeRatePPM,
 		)
 	})
 }

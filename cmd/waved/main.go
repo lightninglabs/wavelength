@@ -271,8 +271,15 @@ func newRootCmd() *cobra.Command {
 	return cmd
 }
 
+const (
+	autoRefreshFeeFloorHelp = "automatic-refresh fee floor in sats; " +
+		"zero disables it"
+	autoRefreshFeeRateHelp = "automatic-refresh proportional fee " +
+		"allowance in ppm; zero disables it"
+)
+
 // registerOperatorFeeFlags registers the global seal-time fee cap and the
-// optional tighter limits for automatic maintenance.
+// optional automatic-maintenance budget curve.
 func registerOperatorFeeFlags(f *pflag.FlagSet, cfg *waved.Config) {
 	f.Int64(
 		"maxoperatorfeesat", cfg.MaxOperatorFeeSat, "maximum "+
@@ -280,16 +287,12 @@ func registerOperatorFeeFlags(f *pflag.FlagSet, cfg *waved.Config) {
 			"seal-time quote; must be positive",
 	)
 	f.Int64(
-		"maxautorefreshfeesat", cfg.MaxAutoRefreshFeeSat, "maximum "+
-			"operator fee (sats) for a round containing "+
-			"automatic refresh maintenance; zero disables this "+
-			"additional cap",
+		"autorefreshfeefloorsat", cfg.AutoRefreshFeeFloorSat,
+		autoRefreshFeeFloorHelp,
 	)
 	f.Uint32(
-		"maxautorefreshfeerateppm", cfg.MaxAutoRefreshFeeRatePPM, "m"+
-			"aximum automatic-refresh operator fee as parts "+
-			"per million of refreshed value; zero disables "+
-			"this additional cap",
+		"autorefreshfeerateppm", cfg.AutoRefreshFeeRatePPM,
+		autoRefreshFeeRateHelp,
 	)
 }
 
