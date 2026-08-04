@@ -65,6 +65,13 @@ type Node struct {
 	// that must sign this node's input. This is cached to avoid repeated
 	// MuSig2 aggregations during signature verification.
 	FinalKey *btcec.PublicKey
+
+	// Sequence is the input sequence of this node's transaction. Zero
+	// selects the flow-V1 default (MaxTxInSequenceNum); V2 trees use an
+	// RBF-signalling sequence. Sequence is consensus-visible: it changes
+	// the node's txid and sighash, so every node of a tree must carry
+	// the same value.
+	Sequence uint32
 }
 
 // NewLeafNode creates a leaf node (transaction with leaf output).
@@ -281,6 +288,20 @@ func (n *Node) SetChildren(children map[uint32]*Node) {
 	n.Children = children
 }
 
+// SequenceV2 is the RBF-signalling input sequence carried by flow-V2
+// tree transactions. V1 trees use MaxTxInSequenceNum (final).
+const SequenceV2 = wire.MaxTxInSequenceNum - 2
+
+// TxSequence returns the input sequence of this node's transaction: the
+// node's explicit sequence when set, the flow-V1 default otherwise.
+func (n *Node) TxSequence() uint32 {
+	if n.Sequence != 0 {
+		return n.Sequence
+	}
+
+	return wire.MaxTxInSequenceNum
+}
+
 // ToTx converts the Node into its unsigned wire.MsgTx representation.
 func (n *Node) ToTx() (*wire.MsgTx, error) {
 	// Virtual transactions are V3 since they use ephemeral anchors.
@@ -289,7 +310,7 @@ func (n *Node) ToTx() (*wire.MsgTx, error) {
 	// Add the single, unsigned input.
 	tx.AddTxIn(&wire.TxIn{
 		PreviousOutPoint: n.Input,
-		Sequence:         wire.MaxTxInSequenceNum,
+		Sequence:         n.TxSequence(),
 	})
 
 	// Add all outputs.
@@ -528,6 +549,7 @@ func (n *Node) ExtractPathForCoSigners(targetKeys ...*btcec.PublicKey) (*Node,
 		Outputs:   n.Outputs,
 		Signature: n.Signature,
 		FinalKey:  n.FinalKey,
+		Sequence:  n.Sequence,
 		Children:  make(map[uint32]*Node),
 	}
 
@@ -623,6 +645,7 @@ func (n *Node) extractPathForIndicesRecursive(targetSet fn.Set[int],
 				Outputs:   n.Outputs,
 				Signature: n.Signature,
 				FinalKey:  n.FinalKey,
+				Sequence:  n.Sequence,
 				Children:  make(map[uint32]*Node),
 			}, currentIndex + 1, true
 		}
@@ -637,6 +660,7 @@ func (n *Node) extractPathForIndicesRecursive(targetSet fn.Set[int],
 		Outputs:   n.Outputs,
 		Signature: n.Signature,
 		FinalKey:  n.FinalKey,
+		Sequence:  n.Sequence,
 		Children:  make(map[uint32]*Node),
 	}
 
