@@ -84,6 +84,127 @@ func TestHandleExitOutcomeConfirmedDrivesActorToSpent(t *testing.T) {
 	)
 }
 
+// TestHandleExitOutcomeConflictedDrivesActorToExpired verifies a source-batch
+// conflict drives the live actor's FSM to the non-terminal ExpiredState — not
+// back to live (as a recoverable failure would), not to spent, and not to a
+// terminal Failed — so the coin is quarantined from coin selection but stays
+// reclaimable through the ordinary refresh path (wavelength#1050 / #1000).
+func TestHandleExitOutcomeConflictedDrivesActorToExpired(t *testing.T) {
+	t.Parallel()
+
+	vtxo := makeDescriptor(t, 30_745, 1)
+	mgr, _, ref := newExitTestManager(t, vtxo, &UnilateralExitState{
+		VTXO:   vtxo,
+		Reason: "manual unroll",
+	})
+
+	resp := mgr.Receive(t.Context(), &ExitOutcomeNotification{
+		Outpoint: vtxo.Outpoint,
+		Outcome:  ExitOutcomeConflicted,
+		Reason:   "source batch swept by the operator",
+	})
+	_, err := resp.Unpack()
+	require.NoError(t, err)
+
+	require.IsType(
+		t, &ExpiredState{}, ref.state,
+		"conflicted outcome should route the actor to expired reclaim",
+	)
+}
+
+// TestHandleExitOutcomeConflictedHoldsRecoveryOnlyTarget verifies that a
+// source-batch conflict does NOT reclaim a recovery-only target (a non-standard
+// exit policy, e.g. a vHTLC refund) into the wallet: refreshing a swap-contract
+// output would be wrong, so the live actor is held in UnilateralExitState and
+// the owning recovery subsystem decides the terminal outcome.
+func TestHandleExitOutcomeConflictedHoldsRecoveryOnlyTarget(t *testing.T) {
+	t.Parallel()
+
+	vtxo := makeDescriptor(t, 1_799, 8)
+	mgr, _, ref := newExitTestManager(t, vtxo, &UnilateralExitState{
+		VTXO:   vtxo,
+		Reason: "vhtlc recovery",
+	})
+
+	resp := mgr.Receive(t.Context(), &ExitOutcomeNotification{
+		Outpoint:       vtxo.Outpoint,
+		Outcome:        ExitOutcomeConflicted,
+		Reason:         "source batch swept by the operator",
+		ExitPolicyKind: actormsg.ExitPolicyVHTLCRefundWithoutReceiver,
+	})
+	_, err := resp.Unpack()
+	require.NoError(t, err)
+
+	require.IsType(
+		t, &UnilateralExitState{}, ref.state,
+		"recovery-only target must not be reclaimed via refresh",
+	)
+}
+
+// TestHandleExitOutcomeConflictedNoActorHoldsRecoveryOnlyTarget verifies the
+// store-fallback path also holds a recovery-only target: with no live actor,
+// the conflicted outcome must not load the descriptor or spawn/persist. The
+// guard short-circuits before any store access.
+func TestHandleExitOutcomeConflictedNoActorHoldsRecoveryOnlyTarget(
+	t *testing.T) {
+
+	t.Parallel()
+
+	vtxo := makeDescriptor(t, 1_799, 10)
+	vtxo.Status = VTXOStatusUnilateralExit
+	store := &MockVTXOStore{}
+	mgr := &Manager{
+		cfg: &ManagerConfig{
+			Store: store,
+		},
+		actors: make(map[wire.OutPoint]VTXOActorRef),
+	}
+
+	resp := mgr.Receive(t.Context(), &ExitOutcomeNotification{
+		Outpoint:       vtxo.Outpoint,
+		Outcome:        ExitOutcomeConflicted,
+		ExitPolicyKind: actormsg.ExitPolicyVHTLCRefundWithoutReceiver,
+	})
+	_, err := resp.Unpack()
+	require.NoError(t, err)
+
+	store.AssertNotCalled(t, "GetVTXO")
+	store.AssertNotCalled(t, "UpdateVTXOStatus")
+}
+
+// TestHandleExitOutcomeConflictedNoActorSkipsNonExiting verifies the
+// idempotency guard on the store-fallback path: a re-delivered conflict for a
+// VTXO that has since moved off the exit state (e.g. already reissued or
+// recovered) is a no-op — it must not spawn an actor or overwrite the status.
+func TestHandleExitOutcomeConflictedNoActorSkipsNonExiting(t *testing.T) {
+	t.Parallel()
+
+	vtxo := makeDescriptor(t, 30_745, 9)
+	vtxo.Status = VTXOStatusLive
+	store := &MockVTXOStore{}
+	mgr := &Manager{
+		cfg: &ManagerConfig{
+			Store: store,
+		},
+		actors: make(map[wire.OutPoint]VTXOActorRef),
+	}
+
+	// The conflict path loads the descriptor to guard against reclaiming a
+	// VTXO that has since moved off the exit state.
+	store.On("GetVTXO", t.Context(), vtxo.Outpoint).Return(vtxo, nil)
+
+	resp := mgr.Receive(t.Context(), &ExitOutcomeNotification{
+		Outpoint: vtxo.Outpoint,
+		Outcome:  ExitOutcomeConflicted,
+		Reason:   "source batch swept by the operator",
+	})
+	_, err := resp.Unpack()
+	require.NoError(t, err)
+
+	store.AssertExpectations(t)
+	store.AssertNotCalled(t, "UpdateVTXOStatus")
+}
+
 // TestHandleExitOutcomeRecoverableHoldsRecoveryOnlyTarget verifies that a
 // recoverable exit failure does NOT relive a recovery-only target (a
 // non-standard exit policy, e.g. a vHTLC refund) into the live coin set: the
