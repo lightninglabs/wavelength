@@ -106,6 +106,14 @@ func (r *recordingManagerRef) Tell(_ context.Context,
 	return nil
 }
 
+// TryTell delegates to Tell, which is all this double needs: no test
+// drives the non-blocking path through it.
+func (r *recordingManagerRef) TryTell(ctx context.Context,
+	msg vtxo.ManagerMsg) error {
+
+	return r.Tell(ctx, msg)
+}
+
 func (r *recordingManagerRef) recorded() []vtxo.ManagerMsg {
 	r.mu.Lock()
 	defer r.mu.Unlock()

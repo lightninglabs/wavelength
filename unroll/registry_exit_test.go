@@ -41,6 +41,14 @@ func (c *captureExitObserver) Tell(_ context.Context,
 	return nil
 }
 
+// TryTell delegates to Tell, which is all this double needs: no test
+// drives the non-blocking path through it.
+func (c *captureExitObserver) TryTell(ctx context.Context,
+	msg vtxo.ManagerMsg) error {
+
+	return c.Tell(ctx, msg)
+}
+
 // notifications returns a copy of the captured notifications.
 func (c *captureExitObserver) notifications() []*vtxo.ExitOutcomeNotification {
 	c.mu.Lock()

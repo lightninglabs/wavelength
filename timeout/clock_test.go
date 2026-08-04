@@ -174,6 +174,12 @@ func (s *syncSelfRef) Tell(ctx context.Context, msg Msg) error {
 	return nil
 }
 
+// TryTell delegates to Tell, which is all this double needs: no test
+// drives the non-blocking path through it.
+func (s *syncSelfRef) TryTell(ctx context.Context, msg Msg) error {
+	return s.Tell(ctx, msg)
+}
+
 // newTestActor constructs an Actor wired to a synchronous self-ref so
 // internal AfterFunc callbacks loop back into Receive on the same
 // goroutine that drove the schedule.
@@ -213,6 +219,14 @@ func (m *mockTickCallback) Tell(_ context.Context, msg *TickFiredMsg) error {
 	m.messages = append(m.messages, *msg)
 
 	return nil
+}
+
+// TryTell delegates to Tell, which is all this double needs: no test
+// drives the non-blocking path through it.
+func (m *mockTickCallback) TryTell(ctx context.Context,
+	msg *TickFiredMsg) error {
+
+	return m.Tell(ctx, msg)
 }
 
 // count returns how many tick messages have arrived.

@@ -53,6 +53,14 @@ func (r *recordingNotificationRef) Tell(_ context.Context,
 	return nil
 }
 
+// TryTell delegates to Tell, which is all this double needs: no test
+// drives the non-blocking path through it.
+func (r *recordingNotificationRef) TryTell(ctx context.Context,
+	msg txconfirm.Notification) error {
+
+	return r.Tell(ctx, msg)
+}
+
 // await pulls the next notification or fails the test on timeout.
 func (r *recordingNotificationRef) await(t *testing.T) txconfirm.Notification {
 	t.Helper()

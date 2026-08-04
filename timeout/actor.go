@@ -2,13 +2,90 @@ package timeout
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"sync/atomic"
 	"time"
 
+	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightningnetwork/lnd/fn/v2"
 )
+
+const (
+	// retryBaseDelay is how long the actor waits before re-attempting a
+	// callback delivery that found the requester's mailbox full.
+	retryBaseDelay = time.Second
+
+	// retryMaxDelay caps the backoff so a requester that recovers after a
+	// long stall still gets its reminder reasonably promptly.
+	retryMaxDelay = 30 * time.Second
+
+	// selfSignalRetry is how long a clock goroutine waits before
+	// re-offering a timer fire that the actor's own mailbox had no room
+	// for. It is short because an internal fire is the actor's own work,
+	// and the mailbox only stays full for as long as the actor is behind
+	// on its queue.
+	selfSignalRetry = 50 * time.Millisecond
+)
+
+// terminalDelivery reports whether a failed delivery is permanent. Only a
+// stopped actor and a closed mailbox qualify, because those are end states
+// that no amount of waiting reverses. Everything else is treated as passing
+// and retried: a full mailbox, a slow write behind a durable mailbox
+// surfacing as a deadline, and a router that momentarily has no actor
+// registered are all conditions the requester recovers from. Guessing the
+// other way round means silently discarding a reminder nobody will re-derive.
+func terminalDelivery(err error) bool {
+	return errors.Is(err, actor.ErrActorTerminated) ||
+		errors.Is(err, actor.ErrMailboxClosed)
+}
+
+// backoffDelay returns the delay before attempt n of a delivery that keeps
+// failing, doubling from base and flattening out at retryMaxDelay. The
+// doubling runs as a loop that returns at the cap, so no attempt count can
+// overflow the duration.
+func backoffDelay(base time.Duration, attempt int) time.Duration {
+	// A non-positive base would make the loop below spin forever, and a
+	// zero-th attempt has no doubling to do.
+	if base <= 0 {
+		base = retryBaseDelay
+	}
+	if attempt < 1 {
+		return base
+	}
+
+	delay := base
+	for range attempt - 1 {
+		delay *= 2
+		if delay >= retryMaxDelay {
+			return retryMaxDelay
+		}
+	}
+
+	return delay
+}
+
+// retryDelay returns how long to wait before one-shot delivery attempt n.
+func retryDelay(attempt int) time.Duration {
+	return backoffDelay(retryBaseDelay, attempt)
+}
+
+// tickRetryDelay returns how long to wait before recurring delivery attempt
+// n. A ticker faster than the standard base starts its doubling from its own
+// interval instead, so a single transient failure does not stretch a 100ms
+// ticker to a full second; anything slower than the base keeps it.
+//
+// Only the starting point moves. The doubling and the retryMaxDelay ceiling
+// apply to a recurring entry exactly as they do to a one-shot, so a consumer
+// that stays unreachable ends up retrying well past its own cadence. That is
+// deliberate rather than an oversight: every attempt against a durable
+// callback is a bounded database write, and re-offering a 100ms tick every
+// 100ms forever would hammer the store it is already struggling with.
+func tickRetryDelay(interval time.Duration, attempt int) time.Duration {
+	return backoffDelay(min(interval, retryBaseDelay), attempt)
+}
 
 // oneshotEntry tracks a one-shot timeout scheduled via
 // ScheduleTimeoutRequest. The generation counter lets a stale fire that
@@ -18,6 +95,12 @@ type oneshotEntry struct {
 	timer    Stoppable
 	gen      uint64
 	callback actor.TellOnlyRef[*ExpiredMsg]
+
+	// attempts counts how many times delivery to callback has been tried
+	// and found its mailbox full. It only drives the backoff: the entry
+	// itself is the single copy of the reminder and survives every retry,
+	// so a slow requester costs one entry, not one per attempt.
+	attempts int
 }
 
 // recurringEntry tracks a recurring tick scheduled via
@@ -29,6 +112,16 @@ type recurringEntry struct {
 	gen      uint64
 	interval time.Duration
 	callback actor.TellOnlyRef[*TickFiredMsg]
+
+	// attempts counts consecutive failed deliveries of pending, resetting
+	// to zero as soon as a tick lands.
+	attempts int
+
+	// pending holds a tick the callback could not accept yet. Holding the
+	// message rather than rebuilding it means a retried tick still reports
+	// the instant its timer fired, not the instant delivery finally
+	// succeeded.
+	pending *TickFiredMsg
 }
 
 // Actor is the timeout scheduling actor. It manages one-shot timers and
@@ -49,6 +142,11 @@ type Actor struct {
 	// in tests.
 	clock Clock
 
+	// log is the logger injected by the daemon. It is btclog.Disabled
+	// when the caller supplied none, in which case the actor falls back
+	// to the context logger.
+	log btclog.Logger
+
 	// self is the actor's reference to its own mailbox. Set by Start
 	// after the actor system has registered the behavior. Clock
 	// callbacks run in separate goroutines, so Start publishes the ref
@@ -68,22 +166,45 @@ type Actor struct {
 	recurring map[ID]*recurringEntry
 }
 
+// Config carries the timeout actor's optional dependencies.
+type Config struct {
+	// Clock is the time source. Defaults to RealClock; tests pass a fake
+	// clock to drive scheduling deterministically.
+	Clock fn.Option[Clock]
+
+	// Log is the logger the actor writes to. Daemons should always set
+	// it: without it the actor's diagnostics only reach a logger carried
+	// on the request context, which the actor's own receive loop does not
+	// have.
+	Log fn.Option[btclog.Logger]
+}
+
+// NewActorWithConfig creates a timeout actor from an explicit config. This is
+// the constructor daemons should use, because it is the only one that can
+// inject a logger.
+func NewActorWithConfig(cfg Config) *Actor {
+	return &Actor{
+		clock:     cfg.Clock.UnwrapOr(RealClock{}),
+		log:       cfg.Log.UnwrapOr(btclog.Disabled),
+		oneshots:  make(map[ID]*oneshotEntry),
+		recurring: make(map[ID]*recurringEntry),
+	}
+}
+
 // NewActor creates a new timeout actor backed by the real wall clock.
 // The returned actor must be wired to its mailbox via Start before any
 // schedule request is delivered.
 func NewActor() *Actor {
-	return NewActorWithClock(RealClock{})
+	return NewActorWithConfig(Config{})
 }
 
 // NewActorWithClock creates a new timeout actor that uses the supplied
 // clock. Tests use this constructor with a fake clock to drive
 // scheduling deterministically.
 func NewActorWithClock(clock Clock) *Actor {
-	return &Actor{
-		clock:     clock,
-		oneshots:  make(map[ID]*oneshotEntry),
-		recurring: make(map[ID]*recurringEntry),
-	}
+	return NewActorWithConfig(Config{
+		Clock: fn.Some(clock),
+	})
 }
 
 // Start attaches the actor's self-reference. Production callers obtain
@@ -93,8 +214,13 @@ func NewActorWithClock(clock Clock) *Actor {
 // ActorSystem) inject a synchronous self-ref via newSyncSelfRef.
 //
 // Start must be called before any ScheduleTimeoutRequest or
-// ScheduleRecurringTickRequest is delivered. It is safe to call once
-// only — subsequent calls overwrite the self-ref.
+// ScheduleRecurringTickRequest is delivered, and is meant to be called
+// once. The ref is published through an atomic.Value, so a second call
+// carrying the same concrete type replaces the first, while one
+// carrying a different concrete type panics. Nothing in the daemon
+// restarts an actor with a different ref implementation, but a test
+// swapping a real ref for a synchronous one mid-life would find that
+// edge.
 func (a *Actor) Start(self actor.TellOnlyRef[Msg]) {
 	a.self.Store(self)
 }
@@ -105,6 +231,55 @@ func (a *Actor) loadSelf() (actor.TellOnlyRef[Msg], bool) {
 	self, ok := a.self.Load().(actor.TellOnlyRef[Msg])
 
 	return self, ok
+}
+
+// signalSelf hands an internal fire message to the actor's own mailbox.
+// It runs on a clock goroutine, so it must not touch actor state
+// directly: the state mutation happens when Receive picks the message
+// up.
+//
+// The send never blocks. A blocking one would leave a goroutine parked
+// per timer fire for as long as the actor stayed backed up, which is a
+// slow leak triggered by exactly the situation the actor is trying to
+// work through. Instead a full mailbox re-arms the fire, so pending
+// fires coalesce into one outstanding timer rather than a growing pile
+// of parked senders.
+func (a *Actor) signalSelf(msg Msg) {
+	// Fires that arrive before Start wired the self-ref have nowhere to
+	// go. That only happens in direct tests or a miswired daemon, so say
+	// so rather than dropping the timer in silence.
+	self, ok := a.loadSelf()
+	if !ok {
+		bgCtx := context.Background()
+
+		a.logger(bgCtx).DebugS(
+			bgCtx,
+			"Dropping timer fire, actor self-ref not set",
+			slog.String("msg_type", msg.MessageType()),
+		)
+
+		return
+	}
+
+	err := self.TryTell(context.Background(), msg)
+	if err == nil {
+		return
+	}
+
+	// The actor is stopped or its mailbox closed. The fire has nowhere to
+	// go and no amount of waiting will change that, so let the chain end
+	// here.
+	if terminalDelivery(err) {
+		return
+	}
+
+	// The retry handle is deliberately not recorded on the entry: we are
+	// off the receive goroutine, where touching actor state would race.
+	// A Cancel landing in the meantime is still honoured, because the
+	// generation check drops the fire when it finally arrives.
+	a.clock.AfterFunc(selfSignalRetry, func() {
+		a.signalSelf(msg)
+	})
 }
 
 // Receive processes incoming messages.
@@ -142,17 +317,12 @@ func (a *Actor) handleSchedule(_ context.Context,
 	id := req.ID
 
 	// AfterFunc fires from the clock's own goroutine; it must not touch
-	// any actor state directly. Instead it Tells an internalTimerFired
+	// any actor state directly. Instead it signals an internalTimerFired
 	// message back into self, where Receive will deliver the
 	// user-visible ExpiredMsg single-threadedly.
 	//nolint:contextcheck // timer callback outlives scheduling actor turn
 	timer := a.clock.AfterFunc(req.Duration, func() {
-		self, ok := a.loadSelf()
-		if !ok {
-			return
-		}
-
-		_ = self.Tell(context.Background(), &internalTimerFired{
+		a.signalSelf(&internalTimerFired{
 			ID:  id,
 			Gen: gen,
 		})
@@ -202,7 +372,7 @@ func (a *Actor) handleScheduleRecurring(_ context.Context,
 		callback: req.Callback,
 	}
 
-	//nolint:contextcheck // recurring timer is owned by timeout actor
+	//nolint:contextcheck // timer is owned by timeout actor
 	a.armRecurring(req.ID, gen, req.Interval)
 
 	return fn.Ok[Resp](&AckResponse{
@@ -225,6 +395,12 @@ func (a *Actor) handleCancel(_ context.Context,
 // handleTimerFired delivers a one-shot expiry to its callback. Stale
 // fires (cancelled or rescheduled before the timer ran) are dropped via
 // the generation check.
+//
+// Delivery is non-blocking on purpose. The timeout actor is a
+// process-wide singleton shared by every subsystem, so parking this
+// goroutine on one backlogged requester would freeze every other timer
+// in the daemon. A requester that cannot take the message right now has
+// its expiry re-armed on a backoff instead.
 func (a *Actor) handleTimerFired(ctx context.Context,
 	m *internalTimerFired) fn.Result[Resp] {
 
@@ -235,20 +411,75 @@ func (a *Actor) handleTimerFired(ctx context.Context,
 		})
 	}
 
-	delete(a.oneshots, m.ID)
-
-	_ = entry.callback.Tell(ctx, &ExpiredMsg{
+	err := entry.callback.TryTell(ctx, &ExpiredMsg{
 		ID: m.ID,
 	})
+
+	switch {
+	// The reminder landed, so the entry has done its job.
+	case err == nil:
+		delete(a.oneshots, m.ID)
+
+	// The requester is gone for good, so there is nobody left to remind
+	// and no backoff that would change that.
+	case terminalDelivery(err):
+		delete(a.oneshots, m.ID)
+
+		a.logger(ctx).WarnS(ctx, "Dropping expired timeout, callback "+
+			"unreachable", err,
+			slog.String("timeout_id", string(m.ID)),
+			slog.String("callback", entry.callback.ID()),
+		)
+
+	// Anything else is a passing failure. Keep the entry, which is the
+	// only copy of this reminder, and re-arm the same fire later.
+	default:
+		a.retryOneshot(ctx, m.ID, entry, err)
+	}
 
 	return fn.Ok[Resp](&AckResponse{
 		Success: true,
 	})
 }
 
+// retryOneshot re-arms an expiry whose callback could not take it. The
+// entry keeps its generation so the re-armed fire still matches on
+// arrival, and the new timer handle is recorded on the entry so a
+// Cancel or reschedule can stop the retry chain.
+func (a *Actor) retryOneshot(ctx context.Context, id ID, entry *oneshotEntry,
+	cause error) {
+
+	entry.attempts++
+	delay := retryDelay(entry.attempts)
+
+	a.logger(ctx).WarnS(ctx, "Timeout callback delivery failed, retrying",
+		cause,
+		slog.String("timeout_id", string(id)),
+		slog.String("callback", entry.callback.ID()),
+		slog.Int("attempt", entry.attempts),
+		slog.Duration("retry_in", delay),
+	)
+
+	gen := entry.gen
+
+	//nolint:contextcheck // retry timer outlives this actor turn
+	entry.timer = a.clock.AfterFunc(delay, func() {
+		a.signalSelf(&internalTimerFired{
+			ID:  id,
+			Gen: gen,
+		})
+	})
+}
+
 // handleTickFired delivers a recurring-tick fire to its callback and
 // re-arms the next one-shot. Stale fires (cancelled or replaced before
 // the timer ran) are dropped via the generation check.
+//
+// As with one-shot expiries, delivery never blocks. A tick the consumer
+// cannot take is held on the entry and retried on a backoff, which also
+// stretches the cadence for as long as the consumer stays behind. That
+// is the intended backpressure: a slow consumer slows its own ticker
+// rather than the whole daemon's timers.
 func (a *Actor) handleTickFired(ctx context.Context,
 	m *internalTickFired) fn.Result[Resp] {
 
@@ -259,13 +490,56 @@ func (a *Actor) handleTickFired(ctx context.Context,
 		})
 	}
 
-	_ = entry.callback.Tell(ctx, &TickFiredMsg{
-		ID:      m.ID,
-		FiredAt: m.FiredAt,
-	})
+	// A retry re-delivers the tick that could not land earlier, so the
+	// consumer still sees the instant its timer fired.
+	tick := entry.pending
+	if tick == nil {
+		tick = &TickFiredMsg{
+			ID:      m.ID,
+			FiredAt: m.FiredAt,
+		}
+	}
 
-	//nolint:contextcheck // recurring timer is owned by timeout actor
-	a.armRecurring(m.ID, entry.gen, entry.interval)
+	err := entry.callback.TryTell(ctx, tick)
+
+	switch {
+	// The tick landed, so the cadence resumes from a clean slate.
+	case err == nil:
+		entry.pending = nil
+		entry.attempts = 0
+
+		//nolint:contextcheck // timer is owned by timeout actor
+		a.armRecurring(m.ID, entry.gen, entry.interval)
+
+	// A ticker with no reachable consumer is pure overhead, so stop the
+	// chain instead of re-arming into a dead actor forever.
+	case terminalDelivery(err):
+		delete(a.recurring, m.ID)
+
+		a.logger(ctx).WarnS(ctx, "Stopping recurring tick, callback "+
+			"unreachable", err,
+			slog.String("tick_id", string(m.ID)),
+			slog.String("callback", entry.callback.ID()),
+		)
+
+	// The consumer could not take this tick. Hold it and come back for
+	// it rather than dropping it on the floor.
+	default:
+		entry.pending = tick
+		entry.attempts++
+		delay := tickRetryDelay(entry.interval, entry.attempts)
+
+		a.logger(ctx).WarnS(ctx, "Tick callback delivery failed, "+
+			"retrying", err,
+			slog.String("tick_id", string(m.ID)),
+			slog.String("callback", entry.callback.ID()),
+			slog.Int("attempt", entry.attempts),
+			slog.Duration("retry_in", delay),
+		)
+
+		//nolint:contextcheck // timer is owned by timeout actor
+		a.armRecurring(m.ID, entry.gen, delay)
+	}
 
 	return fn.Ok[Resp](&AckResponse{
 		Success: true,
@@ -280,12 +554,7 @@ func (a *Actor) handleTickFired(ctx context.Context,
 // gen check on arrival.
 func (a *Actor) armRecurring(id ID, gen uint64, d time.Duration) {
 	timer := a.clock.AfterFunc(d, func() {
-		self, ok := a.loadSelf()
-		if !ok {
-			return
-		}
-
-		_ = self.Tell(context.Background(), &internalTickFired{
+		a.signalSelf(&internalTickFired{
 			ID:      id,
 			Gen:     gen,
 			FiredAt: a.clock.Now(),

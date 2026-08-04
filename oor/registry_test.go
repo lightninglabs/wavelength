@@ -45,6 +45,14 @@ func (r *recordingTellRef) Tell(_ context.Context, msg OORDurableMsg) error {
 	return nil
 }
 
+// TryTell delegates to Tell, which is all this double needs: no test
+// drives the non-blocking path through it.
+func (r *recordingTellRef) TryTell(ctx context.Context,
+	msg OORDurableMsg) error {
+
+	return r.Tell(ctx, msg)
+}
+
 // recordingActorRef extends recordingTellRef with an Ask that completes from
 // the recorder's configured admission result, modeling a child's first turn.
 type recordingActorRef struct {

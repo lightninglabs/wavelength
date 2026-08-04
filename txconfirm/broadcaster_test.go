@@ -44,6 +44,14 @@ func (s *staticChainSourceRef) Tell(_ context.Context,
 	return nil
 }
 
+// TryTell delegates to Tell, which is all this double needs: no test
+// drives the non-blocking path through it.
+func (s *staticChainSourceRef) TryTell(ctx context.Context,
+	msg chainsource.ChainSourceMsg) error {
+
+	return s.Tell(ctx, msg)
+}
+
 // Ask handles the chainsource request synchronously and returns an already
 // completed future.
 func (s *staticChainSourceRef) Ask(ctx context.Context,
@@ -287,6 +295,14 @@ func (f *failingNotifyRef) ID() string {
 // Tell always returns an error.
 func (f *failingNotifyRef) Tell(_ context.Context, _ Notification) error {
 	return fmt.Errorf("notify failed")
+}
+
+// TryTell delegates to Tell, which is all this double needs: no test
+// drives the non-blocking path through it.
+func (f *failingNotifyRef) TryTell(ctx context.Context,
+	msg Notification) error {
+
+	return f.Tell(ctx, msg)
 }
 
 // testMappedMsg is a small actor message used to cover MapNotification.

@@ -72,7 +72,7 @@ func TestRoundFSMOutlivesCreationRequest(t *testing.T) {
 	state := &lifecycleProbeState{ctxErr: make(chan error, 1)}
 	fsm := protofsm.NewStateMachine(ClientStateMachineCfg{
 		Logger:        btclog.Disabled,
-		ErrorReporter: newContextErrorReporter(t.Context(), "probe"),
+		ErrorReporter: newLoggerErrorReporter(btclog.Disabled),
 		InitialState:  state,
 		Env:           &ClientEnvironment{},
 	})
