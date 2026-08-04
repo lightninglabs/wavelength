@@ -29,9 +29,9 @@ testnet3, testnet4, and signet endpoints.
 
 Automatic expiry maintenance always inherits the daemon's global
 `MaxOperatorFeeSat` limit. Hosts that want tighter unattended-spend policy can
-also set `MaxAutoRefreshFeeSat` and `MaxAutoRefreshFeeRatePPM`; zero disables
-the additional absolute or proportional limit without weakening the global
-cap.
+set `AutoRefreshFeeFloorSat` and `AutoRefreshFeeRatePPM`. Together they form
+one budget curve: the larger fixed or proportional allowance applies, always
+clamped by `MaxOperatorFeeSat`. Zero/zero leaves only the global cap in force.
 
 1. Build a `wavewalletdk.Config`.
 2. Start the embedded daemon with `wavewalletdk.Start`, or connect to an external

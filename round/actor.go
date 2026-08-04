@@ -374,15 +374,14 @@ type RoundClientConfig struct {
 	// amounts and total VTXO output amounts.
 	MaxOperatorFee btcutil.Amount
 
-	// MaxAutoRefreshFeeRatePPM optionally caps the authoritative seal-time
-	// fee for any round containing automatic maintenance. The denominator
-	// includes only automatically refreshed value. Zero disables the
-	// proportional cap; the absolute MaxOperatorFee remains mandatory.
-	MaxAutoRefreshFeeRatePPM uint32
+	// AutoRefreshFeeFloor is the optional fixed allowance in the automatic
+	// maintenance budget curve. The larger of this floor and the
+	// proportional allowance is always clamped by MaxOperatorFee.
+	AutoRefreshFeeFloor btcutil.Amount
 
-	// MaxAutoRefreshFee is an optional automatic-maintenance-specific
-	// absolute cap. Zero disables it; MaxOperatorFee remains mandatory.
-	MaxAutoRefreshFee btcutil.Amount
+	// AutoRefreshFeeRatePPM is the optional proportional allowance in the
+	// automatic maintenance budget curve. Zero disables this component.
+	AutoRefreshFeeRatePPM uint32
 
 	// VTXOManager receives VTXO creation notifications after rounds
 	// complete. The round actor forwards VTXOCreatedNotification
@@ -483,9 +482,10 @@ func NewRoundClientActor(cfg *RoundClientConfig) fn.Result[*RoundClientActor] {
 		OperatorTerms:   cfg.OperatorTerms,
 		ChainParams:     cfg.ChainParams,
 		MaxOperatorFee:  cfg.MaxOperatorFee,
-		MaxAutoRefreshFeeRatePPM: cfg.
-			MaxAutoRefreshFeeRatePPM,
-		MaxAutoRefreshFee:      cfg.MaxAutoRefreshFee,
+		AutoRefreshFeeFloor: cfg.
+			AutoRefreshFeeFloor,
+		AutoRefreshFeeRatePPM: cfg.
+			AutoRefreshFeeRatePPM,
 		Log:                    actorLog,
 		DisableJoinRequestAuth: cfg.DisableJoinRequestAuth,
 		OwnedScriptChecker:     cfg.OwnedScriptChecker,
@@ -898,9 +898,10 @@ func (a *RoundClientActor) createRoundFSMFromDB(ctx context.Context,
 		OperatorTerms:   a.cfg.OperatorTerms,
 		ChainParams:     a.cfg.ChainParams,
 		MaxOperatorFee:  a.cfg.MaxOperatorFee,
-		MaxAutoRefreshFeeRatePPM: a.cfg.
-			MaxAutoRefreshFeeRatePPM,
-		MaxAutoRefreshFee:      a.cfg.MaxAutoRefreshFee,
+		AutoRefreshFeeFloor: a.cfg.
+			AutoRefreshFeeFloor,
+		AutoRefreshFeeRatePPM: a.cfg.
+			AutoRefreshFeeRatePPM,
 		Log:                    fsmLogger,
 		StartHeight:            startHeight,
 		QueryBestHeight:        a.queryBestHeight,
@@ -973,9 +974,10 @@ func (a *RoundClientActor) createNewRound(ctx context.Context) (*RoundFSM,
 		OperatorTerms:   a.cfg.OperatorTerms,
 		ChainParams:     a.cfg.ChainParams,
 		MaxOperatorFee:  a.cfg.MaxOperatorFee,
-		MaxAutoRefreshFeeRatePPM: a.cfg.
-			MaxAutoRefreshFeeRatePPM,
-		MaxAutoRefreshFee:      a.cfg.MaxAutoRefreshFee,
+		AutoRefreshFeeFloor: a.cfg.
+			AutoRefreshFeeFloor,
+		AutoRefreshFeeRatePPM: a.cfg.
+			AutoRefreshFeeRatePPM,
 		Log:                    fsmLogger,
 		StartHeight:            startHeight,
 		QueryBestHeight:        a.queryBestHeight,

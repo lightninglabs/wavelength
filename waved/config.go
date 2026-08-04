@@ -370,17 +370,17 @@ type Config struct {
 	// below any reasonable mainnet abuse threshold.
 	MaxOperatorFeeSat int64 `mapstructure:"maxoperatorfeesat"`
 
-	// MaxAutoRefreshFeeRatePPM optionally caps the authoritative operator
-	// fee for any round containing automatic maintenance. The denominator
-	// includes only automatically refreshed value. Zero disables this
-	// proportional policy while the mandatory MaxOperatorFeeSat remains.
-	//nolint:ll
-	MaxAutoRefreshFeeRatePPM uint32 `mapstructure:"maxautorefreshfeerateppm"`
+	// AutoRefreshFeeFloorSat is the optional fixed allowance in the
+	// automatic maintenance budget curve. The effective budget is the
+	// larger of this floor and AutoRefreshFeeRatePPM applied to
+	// automatically refreshed value, always clamped by MaxOperatorFeeSat.
+	// Zero disables the floor.
+	AutoRefreshFeeFloorSat int64 `mapstructure:"autorefreshfeefloorsat"`
 
-	// MaxAutoRefreshFeeSat optionally tightens the absolute fee cap for any
-	// round containing automatic maintenance. Zero disables it; the global
-	// MaxOperatorFeeSat cap remains mandatory.
-	MaxAutoRefreshFeeSat int64 `mapstructure:"maxautorefreshfeesat"`
+	// AutoRefreshFeeRatePPM is the optional proportional allowance in the
+	// automatic maintenance budget curve. Zero disables this component.
+	// When both components are zero, only MaxOperatorFeeSat applies.
+	AutoRefreshFeeRatePPM uint32 `mapstructure:"autorefreshfeerateppm"`
 
 	// OOR configures off-band receive/send actor behavior.
 	OOR *OORConfig `mapstructure:"oor"`
@@ -1196,13 +1196,18 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("maxoperatorfeesat must be positive: got %d",
 			c.MaxOperatorFeeSat)
 	}
-	if c.MaxAutoRefreshFeeRatePPM > 1_000_000 {
-		return fmt.Errorf("maxautorefreshfeerateppm must not exceed "+
-			"1000000: got %d", c.MaxAutoRefreshFeeRatePPM)
+	if c.AutoRefreshFeeRatePPM > 1_000_000 {
+		return fmt.Errorf("autorefreshfeerateppm must not exceed "+
+			"1000000: got %d", c.AutoRefreshFeeRatePPM)
 	}
-	if c.MaxAutoRefreshFeeSat < 0 {
-		return fmt.Errorf("maxautorefreshfeesat must be "+
-			"non-negative: got %d", c.MaxAutoRefreshFeeSat)
+	if c.AutoRefreshFeeFloorSat < 0 {
+		return fmt.Errorf("autorefreshfeefloorsat must be "+
+			"non-negative: got %d", c.AutoRefreshFeeFloorSat)
+	}
+	if c.AutoRefreshFeeFloorSat > c.MaxOperatorFeeSat {
+		return fmt.Errorf("autorefreshfeefloorsat must not exceed "+
+			"maxoperatorfeesat: floor=%d, max=%d",
+			c.AutoRefreshFeeFloorSat, c.MaxOperatorFeeSat)
 	}
 
 	if c.SigningWorkers < 0 {

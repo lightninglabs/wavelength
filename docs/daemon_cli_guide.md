@@ -470,14 +470,16 @@ best-effort: if the operator or chain tip is unreachable the preview
 still returns with `estimate_error` set. The binding fee remains the
 seal-time quote and may differ from any estimate.
 
-Operators can set stricter limits for automatic maintenance with
-`maxautorefreshfeesat` (an absolute satoshi cap) and
-`maxautorefreshfeerateppm` (parts per million of the automatically refreshed
-value). Both default to zero, which disables only the additional limit; the
-global `maxoperatorfeesat` cap always remains in force. If an automatic quote
-is rejected while the VTXOs are still safe, the wallet waits six blocks before
-retrying. Critical or expired VTXOs bypass that cooldown so the wallet does not
-trade unilateral-exit safety for fee throttling.
+Operators can give automatic maintenance one budget curve with
+`autorefreshfeefloorsat` (a fixed allowance for the round) and
+`autorefreshfeerateppm` (a proportional allowance in parts per million of the
+automatically refreshed value). The effective automatic budget is the larger
+of those allowances, always capped by `maxoperatorfeesat`. The floor covers
+fixed round costs for small VTXOs while the rate scales with value. Both
+default to zero, which leaves only the global cap in force. If an automatic
+quote is rejected while the VTXOs are still safe, the wallet waits six blocks
+before retrying. Critical or expired VTXOs bypass that cooldown so the wallet
+does not trade unilateral-exit safety for fee throttling.
 
 An interactive real refresh shows the estimate and asks for
 confirmation. On non-interactive stdin (agents, pipelines) the command

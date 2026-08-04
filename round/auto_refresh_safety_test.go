@@ -86,24 +86,24 @@ func TestQuoteReceivedResealRejectsVTXOBelowOperatorMinimum(t *testing.T) {
 	require.Contains(t, rejected.Reason, "below operator minimum")
 }
 
-// TestEvaluateQuoteAppliesAutomaticAbsoluteCap verifies the optional absolute
+// TestEvaluateQuoteAppliesAutomaticFloor verifies the fixed component of the
 // maintenance budget is evaluated against the authoritative realised fee.
-func TestEvaluateQuoteAppliesAutomaticAbsoluteCap(t *testing.T) {
+func TestEvaluateQuoteAppliesAutomaticFloor(t *testing.T) {
 	t.Parallel()
 
 	intents := mixedAutoRefreshIntents(t)
 	quote := quoteFromIntents(t, intents, 5_000)
 
 	env := quoteReceivedTestEnv(10_000)
-	env.MaxAutoRefreshFee = btcutil.Amount(4_999)
+	env.AutoRefreshFeeFloor = btcutil.Amount(4_999)
 	decision := evaluateQuote(
 		context.Background(), env, RoundID{}, intents, quote,
 	)
 	rejected, ok := decision.(*QuoteRejected)
 	require.True(t, ok)
-	require.Contains(t, rejected.Reason, "automatic cap")
+	require.Contains(t, rejected.Reason, "automatic refresh fee")
 
-	env.MaxAutoRefreshFee = btcutil.Amount(5_000)
+	env.AutoRefreshFeeFloor = btcutil.Amount(5_000)
 	decision = evaluateQuote(
 		context.Background(), env, RoundID{}, intents, quote,
 	)
@@ -111,10 +111,10 @@ func TestEvaluateQuoteAppliesAutomaticAbsoluteCap(t *testing.T) {
 	require.True(t, ok)
 }
 
-// TestEvaluateQuoteAppliesAutomaticProportionalCapToMixedRound verifies a
+// TestEvaluateQuoteAppliesAutomaticProportionalBudgetToMixedRound verifies a
 // manual output cannot dilute the proportional denominator or bypass policy
 // when it shares an assembling round with automatic maintenance.
-func TestEvaluateQuoteAppliesAutomaticProportionalCapToMixedRound(
+func TestEvaluateQuoteAppliesAutomaticProportionalBudgetToMixedRound(
 	t *testing.T) {
 
 	t.Parallel()
@@ -123,10 +123,10 @@ func TestEvaluateQuoteAppliesAutomaticProportionalCapToMixedRound(
 	quote := quoteFromIntents(t, intents, 5_000)
 
 	// Only the 40,000-sat automatic target is the denominator. A 124,999
-	// ppm cap rounds down to 4,999 sat, so the entire 5,000-sat realised
-	// mixed-round fee must reject.
+	// ppm allowance rounds down to 4,999 sat, so the entire 5,000-sat
+	// realised mixed-round fee must reject.
 	env := quoteReceivedTestEnv(10_000)
-	env.MaxAutoRefreshFeeRatePPM = 124_999
+	env.AutoRefreshFeeRatePPM = 124_999
 	decision := evaluateQuote(
 		context.Background(), env, RoundID{}, intents, quote,
 	)
@@ -134,10 +134,52 @@ func TestEvaluateQuoteAppliesAutomaticProportionalCapToMixedRound(
 	require.True(t, ok)
 	require.Contains(t, rejected.Reason, "automatic refresh fee")
 
-	env.MaxAutoRefreshFeeRatePPM = 125_000
+	env.AutoRefreshFeeRatePPM = 125_000
 	decision = evaluateQuote(
 		context.Background(), env, RoundID{}, intents, quote,
 	)
 	_, ok = decision.(*QuoteAccepted)
 	require.True(t, ok)
+}
+
+// TestAutoRefreshFeeBudgetUsesOneCurve verifies the fixed allowance rescues a
+// small VTXO from a percentage budget below the operation's fixed costs, while
+// the proportional allowance takes over for larger cohorts.
+func TestAutoRefreshFeeBudgetUsesOneCurve(t *testing.T) {
+	t.Parallel()
+
+	budget, enabled := autoRefreshFeeBudget(
+		10_000, 300, 10_000, 1_000,
+	)
+	require.True(t, enabled)
+	require.Equal(t, int64(300), budget)
+
+	budget, enabled = autoRefreshFeeBudget(
+		10_000, 300, 10_000, 100_000,
+	)
+	require.True(t, enabled)
+	require.Equal(t, int64(1_000), budget)
+}
+
+// TestAutoRefreshFeeBudgetClampsToGlobalCap verifies the mandatory global cap
+// remains the hard ceiling over both automatic budget components.
+func TestAutoRefreshFeeBudgetClampsToGlobalCap(t *testing.T) {
+	t.Parallel()
+
+	budget, enabled := autoRefreshFeeBudget(
+		500, 750, 100_000, 100_000,
+	)
+	require.True(t, enabled)
+	require.Equal(t, int64(500), budget)
+}
+
+// TestAutoRefreshFeeBudgetDefaultsToGlobalCap verifies zero/zero preserves
+// the existing global-only policy rather than rejecting every automatic
+// refresh with a zero budget.
+func TestAutoRefreshFeeBudgetDefaultsToGlobalCap(t *testing.T) {
+	t.Parallel()
+
+	budget, enabled := autoRefreshFeeBudget(10_000, 0, 0, 1_000)
+	require.False(t, enabled)
+	require.Equal(t, int64(10_000), budget)
 }

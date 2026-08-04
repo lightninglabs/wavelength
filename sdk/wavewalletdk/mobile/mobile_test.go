@@ -42,8 +42,8 @@ func TestParseConfigOverlaysSetFields(t *testing.T) {
 		"wallet_poll_interval_seconds": 5,
 		"wallet_recovery_window": 250,
 		"max_operator_fee_sat": 1000,
-		"max_auto_refresh_fee_sat": 750,
-		"max_auto_refresh_fee_rate_ppm": 25000,
+		"auto_refresh_fee_floor_sat": 750,
+		"auto_refresh_fee_rate_ppm": 25000,
 		"signing_workers": 1,
 		"buffer_size": 4096
 	}`
@@ -74,12 +74,13 @@ func TestParseConfigOverlaysSetFields(t *testing.T) {
 	if got.MaxOperatorFeeSat != 1000 {
 		t.Fatalf("max operator fee = %d", got.MaxOperatorFeeSat)
 	}
-	if got.MaxAutoRefreshFeeSat != 750 {
-		t.Fatalf("max auto refresh fee = %d", got.MaxAutoRefreshFeeSat)
+	if got.AutoRefreshFeeFloorSat != 750 {
+		t.Fatalf("auto refresh fee floor = %d",
+			got.AutoRefreshFeeFloorSat)
 	}
-	if got.MaxAutoRefreshFeeRatePPM != 25_000 {
-		t.Fatalf("max auto refresh fee rate = %d",
-			got.MaxAutoRefreshFeeRatePPM)
+	if got.AutoRefreshFeeRatePPM != 25_000 {
+		t.Fatalf("auto refresh fee rate = %d",
+			got.AutoRefreshFeeRatePPM)
 	}
 	if got.SigningWorkers != 1 {
 		t.Fatalf("signing workers = %d", got.SigningWorkers)
@@ -105,8 +106,8 @@ func TestParseConfigRejectsNegativeScalars(t *testing.T) {
 		"poll interval":    `{"wallet_poll_interval_seconds": -1}`,
 		"recovery window":  `{"wallet_recovery_window": -5}`,
 		"max operator fee": `{"max_operator_fee_sat": -1000}`,
-		"max auto fee":     `{"max_auto_refresh_fee_sat": -1}`,
-		"max auto rate":    `{"max_auto_refresh_fee_rate_ppm": -1}`,
+		"auto fee floor":   `{"auto_refresh_fee_floor_sat": -1}`,
+		"auto fee rate":    `{"auto_refresh_fee_rate_ppm": -1}`,
 		"signing workers":  `{"signing_workers": -1}`,
 		"buffer size":      `{"buffer_size": -1}`,
 	}
@@ -121,7 +122,7 @@ func TestParseConfigRejectsNegativeScalars(t *testing.T) {
 // rejects rates above 100%, matching waved's configuration validation.
 func TestParseConfigRejectsExcessiveAutoRefreshRate(t *testing.T) {
 	if _, err := parseConfig(
-		`{"max_auto_refresh_fee_rate_ppm": 1000001}`,
+		`{"auto_refresh_fee_rate_ppm": 1000001}`,
 	); err == nil {
 
 		t.Fatal("expected error for auto-refresh fee rate above 100%")
