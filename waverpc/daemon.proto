@@ -261,6 +261,11 @@ service DaemonService {
     // EscalateVHTLCRecovery to start costly on-chain recovery.
     rpc ListVHTLCRecoveries (ListVHTLCRecoveriesRequest)
         returns (ListVHTLCRecoveriesResponse);
+
+    // SignOutSwapHtlcAck signs the accepted terms of an out-swap vHTLC with
+    // the daemon identity key.
+    rpc SignOutSwapHtlcAck (SignOutSwapHtlcAckRequest)
+        returns (SignOutSwapHtlcAckResponse);
 }
 
 // WalletState mirrors the daemon's in-process wallet lifecycle enum:
@@ -2818,4 +2823,20 @@ message VHTLCRecoveryStatus {
     // unilateral_refund_without_receiver_delay is the Ark CSV delay for the
     // unilateral refund leaf recorded on the recovery row.
     int32 unilateral_refund_without_receiver_delay = 25;
+}
+
+message SignOutSwapHtlcAckRequest {
+    // payment_hash is the 32-byte Lightning payment hash.
+    bytes payment_hash = 1;
+
+    // amount_sat is the accepted vHTLC output amount.
+    uint64 amount_sat = 2;
+
+    // vhtlc_pk_script is the accepted vHTLC output script.
+    bytes vhtlc_pk_script = 3;
+}
+
+message SignOutSwapHtlcAckResponse {
+    // signature is the 64-byte BIP-340 Schnorr signature.
+    bytes signature = 1;
 }

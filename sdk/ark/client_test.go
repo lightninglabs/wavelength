@@ -20,7 +20,9 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	btcecdsa "github.com/btcsuite/btcd/btcec/v2/ecdsa"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/lightninglabs/wavelength/swaprpc"
 	"github.com/lightninglabs/wavelength/waved"
 	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/lightningnetwork/lnd/lntypes"
@@ -48,6 +50,7 @@ type fakeDaemonService struct {
 	lastExpiryInfoReq  *waverpc.GetVTXOExpiryInfoRequest
 	lastIndexedOORReq  *waverpc.GetIndexedOORSessionByTxidRequest
 	lastSendOORReq     *waverpc.SendOORRequest
+	lastOutSwapAckReq  *waverpc.SignOutSwapHtlcAckRequest
 }
 
 const (
@@ -250,6 +253,17 @@ func compressedPubKeyHex(scalar byte) string {
 func fakeReceiveAuthPrivKey() *btcec.PrivateKey {
 	privKeyBytes := make([]byte, 32)
 	privKeyBytes[len(privKeyBytes)-1] = 4
+
+	privKey, _ := btcec.PrivKeyFromBytes(privKeyBytes)
+
+	return privKey
+}
+
+// fakeIdentityPrivKey returns the deterministic identity key advertised by
+// the fake daemon.
+func fakeIdentityPrivKey() *btcec.PrivateKey {
+	privKeyBytes := make([]byte, 32)
+	privKeyBytes[len(privKeyBytes)-1] = 1
 
 	privKey, _ := btcec.PrivKeyFromBytes(privKeyBytes)
 
@@ -464,6 +478,31 @@ func (f *fakeDaemonService) ReceiveAuthECDH(context.Context,
 
 	return &waverpc.ReceiveAuthECDHResponse{
 		SharedSecret: bytes.Repeat([]byte{0x55}, 32),
+	}, nil
+}
+
+// SignOutSwapHtlcAck signs accepted vHTLC terms with the fake identity key.
+func (f *fakeDaemonService) SignOutSwapHtlcAck(_ context.Context,
+	req *waverpc.SignOutSwapHtlcAckRequest) (
+	*waverpc.SignOutSwapHtlcAckResponse, error) {
+
+	f.mu.Lock()
+	f.lastOutSwapAckReq = req
+	f.mu.Unlock()
+
+	var paymentHash lntypes.Hash
+	copy(paymentHash[:], req.GetPaymentHash())
+	digest := swaprpc.OutSwapHTLCAckDigest(
+		fakeIdentityPrivKey().PubKey(), paymentHash, req.GetAmountSat(),
+		req.GetVhtlcPkScript(),
+	)
+	sig, err := schnorr.Sign(fakeIdentityPrivKey(), digest[:])
+	if err != nil {
+		return nil, err
+	}
+
+	return &waverpc.SignOutSwapHtlcAckResponse{
+		Signature: sig.Serialize(),
 	}, nil
 }
 
@@ -900,6 +939,29 @@ func TestDialRemotePolicyHelpers(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.NotEmpty(t, compactSig)
+
+	ackHash := lntypes.Hash{4, 5, 6}
+	ackScript := []byte{0x51, 0x20, 0xaa}
+	ackSig, err := client.SignOutSwapHTLCAck(
+		context.Background(), ackHash, 42_000, ackScript,
+	)
+	require.NoError(t, err)
+	ackDigest := swaprpc.OutSwapHTLCAckDigest(
+		fakeIdentityPrivKey().PubKey(), ackHash, 42_000, ackScript,
+	)
+	require.True(
+		t,
+		ackSig.Verify(
+			ackDigest[:], fakeIdentityPrivKey().PubKey(),
+		),
+	)
+
+	service.mu.Lock()
+	ackReq := service.lastOutSwapAckReq
+	service.mu.Unlock()
+	require.Equal(t, ackHash[:], ackReq.GetPaymentHash())
+	require.Equal(t, uint64(42_000), ackReq.GetAmountSat())
+	require.Equal(t, ackScript, ackReq.GetVhtlcPkScript())
 
 	remotePriv, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
