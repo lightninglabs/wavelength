@@ -52,10 +52,16 @@ type AckState = mailboxconn.AckState
 const ackStateType = mailboxconn.CheckpointStateType
 
 // EnvelopeDispatcher routes an inbound envelope to the correct local actor.
-// A nil error means the envelope was durably committed to the target actor's
-// mailbox (i.e., DurableActor.Tell returned nil, confirming persistence).
-// The dispatcher is a closure configured at wiring time that captures a
-// ServiceKey reference for the target actor.
+// A nil error means the target accepted the envelope: durably committed to its
+// mailbox for a durable actor, or queued in a fixed-capacity in-memory mailbox
+// for an ordinary one. The dispatcher is a closure configured at wiring time
+// that captures a ServiceKey reference for the target actor.
+//
+// An error wrapping ErrDispatchDeferred is the one non-failure a dispatcher may
+// return: the target's in-memory mailbox had no room. The envelope is untouched
+// and unacknowledged, and the ingress loop re-pulls it after a backoff. A
+// dispatcher must never park waiting for room, because one goroutine dispatches
+// every inbound route in the process.
 type EnvelopeDispatcher func(
 	ctx context.Context, env *mailboxpb.Envelope,
 ) error
@@ -164,6 +170,17 @@ type ConnectorConfig struct {
 	// envelope is a KIND_REQUEST, so a durable event or response route
 	// can never be hoisted by accident. Any new route whose dispatcher
 	// performs IO rather than a durable enqueue MUST be listed here.
+	//
+	// The rule the mark encodes is "this dispatcher can block on something
+	// other than this transaction's own writes", not merely "this
+	// dispatcher does network IO". The narrower reading is what let a real
+	// wedge through: the round and incoming-VTXO dispatchers do no IO at
+	// all, but they used to deliver with a blocking send into a
+	// fixed-capacity in-memory mailbox, which pinned the writer for as long
+	// as the target took to drain — forever, when it had stopped. Those
+	// routes do not need the mark because they no longer block at all (see
+	// deliverToActor), but a future dispatcher that can wait on anything
+	// else does.
 	//
 	// The mark only ever errs in one direction. Leaving a route out costs
 	// the stall described above, which is what the code did before this

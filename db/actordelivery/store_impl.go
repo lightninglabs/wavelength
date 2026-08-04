@@ -1722,14 +1722,16 @@ func NewTxAwareActorDeliveryStore(
 // out of fn and place them after ExecTx returns. See the retry loop for why
 // that matters to a caller whose fn is slow enough to outlast its lease.
 //
-// NOTE: serverconn's runFoldedDispatch does not satisfy that contract yet. It
-// calls dispatchBatch inside fn, and the mux-bridged routes there terminate in
-// a network send, so a retryable error raised after the send replays it. The
-// path was already at-least-once, since a failed fold nacks and the batch is
-// re-pulled, and the operator absorbs the duplicate by correlation ID. Retrying
-// in place makes that happen up to numRetries times per turn instead of once,
-// which is why moving the send out of the transaction is the fix rather than a
-// tidiness follow-up. Until it lands, this is the one known in-tree exception.
+// NOTE: serverconn's runFoldedDispatch is the one caller that has to work at
+// this contract rather than simply satisfying it, because the inbound envelopes
+// it dispatches inside fn do not all end in a durable write. The network sends
+// are hoisted: a mux-bridged route's request is served before the transaction
+// opens, so a replay cannot repeat it. What remains inside fn is delivery into
+// a bounded in-memory mailbox, which is not in the transaction either and
+// cannot be rolled back — so that path records the event_seq of every hand-off
+// in a set that lives outside the closure and skips it on a replay. See
+// serverconn/dispatch_replay.go. Any new effect placed inside that fold needs
+// the same treatment or it will run once per attempt.
 func (s *TxAwareActorDeliveryStore) ExecTx(
 	ctx context.Context, readOnly bool, fn actor.TxFunc,
 ) error {

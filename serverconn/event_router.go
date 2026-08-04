@@ -47,10 +47,12 @@ type EventRouteConfig[M actor.Message, R any] struct {
 	// provide the unmarshal target.
 	NewEvent func() proto.Message
 
-	// Key is the ServiceKey for the target durable actor. The router
-	// calls key.Ref(system).Tell(ctx, msg) for each dispatched event,
-	// which persists the message to the actor's durable mailbox before
-	// returning nil.
+	// Key is the ServiceKey for the target actor. The router hands each
+	// dispatched event to key.Ref(system) and returns nil once the target
+	// has accepted it: for a durable target that means the message was
+	// persisted, and for one with a fixed-capacity in-memory mailbox it
+	// means the mailbox had room. A full in-memory mailbox comes back as
+	// ErrDispatchDeferred rather than parking the ingress loop.
 	Key actor.ServiceKey[M, R]
 
 	// Adapt converts the deserialized proto.Message to the actor message
@@ -67,11 +69,14 @@ type EventRouteConfig[M actor.Message, R any] struct {
 	ResolveKey func(M) (actor.ServiceKey[M, R], bool)
 }
 
-// EventRouter maps inbound KIND_REQUEST and KIND_EVENT envelope routes to
-// typed durable actor mailboxes via ServiceKey.
+// EventRouter maps inbound KIND_REQUEST and KIND_EVENT envelope routes to typed
+// actor mailboxes via ServiceKey.
 //
-// EventRouter resolves target actors through the actor system's Receptionist,
-// guaranteeing durable delivery before returning from each dispatch call.
+// EventRouter resolves target actors through the actor system's Receptionist
+// and does not return from a dispatch call until the target has accepted the
+// message, or has refused it for want of mailbox room. It never waits for room:
+// its sole caller is the ingress loop, whose one goroutine feeds every inbound
+// route in the process.
 //
 // At wiring time, callers call AddRoute for each (service, method) pair they
 // want to handle, then pass AsDispatcherMap() to ConnectorConfig.Dispatchers.
@@ -129,7 +134,7 @@ type InboundEventRouteConfig[M InboundActorMessage, R any] struct {
 	// Method is the protobuf method name (e.g., "HelloStarted").
 	Method string
 
-	// Key is the ServiceKey for the target durable actor.
+	// Key is the ServiceKey for the target actor.
 	Key actor.ServiceKey[M, R]
 
 	// NewEvent must return a fresh zero-value proto.Message for the
@@ -251,12 +256,19 @@ func AddEnvelopeRoute[M actor.Message, R any](r *EventRouter,
 					system.Receptionist(), key,
 				)
 				if len(refs) > 0 {
-					return refs[0].Tell(ctx, actorMsg)
+					return deliverToActor(
+						ctx, refs[0], actorMsg,
+						cfg.Service, cfg.Method,
+						env.EventSeq,
+					)
 				}
 			}
 		}
 
-		return actorKey.Ref(system).Tell(ctx, actorMsg)
+		return deliverToActor(
+			ctx, actorKey.Ref(system), actorMsg, cfg.Service,
+			cfg.Method, env.EventSeq,
+		)
 	}
 
 	serviceMethod := mailboxrpc.ServiceMethod{
