@@ -3,8 +3,10 @@ package serverconn
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	mailboxconn "github.com/lightninglabs/wavelength/mailbox/conn"
@@ -12,6 +14,30 @@ import (
 	mailboxrpc "github.com/lightninglabs/wavelength/mailbox/rpc"
 	"github.com/lightninglabs/wavelength/serverconn/mailboxpull"
 )
+
+// redriveState is what the ingress loop remembers across the re-pulls of one
+// backpressure episode. Both fields exist to keep a redrive from repeating work
+// the previous cycle already did: the loop re-pulls the same window every
+// backoff cycle for as long as a target stays wedged, and the pre-transaction
+// half of a folded dispatch is not idempotent from the operator's point of
+// view.
+type redriveState struct {
+	// deferredSeq is the event_seq of the envelope a full mailbox turned
+	// away last cycle, or zero when no deferral is outstanding. It clamps
+	// the next redrive to the envelopes at or before it: nothing past it
+	// can commit until that one is delivered, so handling the rest again is
+	// pure duplicate effort.
+	deferredSeq uint64
+
+	// servedNonTxSeq is the highest event_seq of a hoisted request this
+	// loop has already answered over the network. A request beyond the
+	// cursor a deferred cycle commits is served optimistically — the send
+	// has to precede the commit, or a crash in between would advance the
+	// cursor past a request nobody answered — and it then stays in the pull
+	// window until the cursor reaches it. This watermark is what makes that
+	// one serve instead of one per cycle.
+	servedNonTxSeq uint64
+}
 
 // ingressLoop is the main pull-dispatch-ack loop. It runs in its own
 // goroutine, started from ServerConnectionActor.StartIngress. The loop:
@@ -44,6 +70,30 @@ func (a *ServerConnectionActor) ingressLoop(ctx context.Context,
 	txStore, txOK := a.cfg.Store.(actor.TxAwareDeliveryStore)
 	var ackDirty bool
 
+	// episode tracks an open backpressure episode, so a target that has
+	// stopped draining is logged on an interval rather than on every
+	// re-pull. It lives here, on the single ingress goroutine's stack,
+	// because that is the only place that sees every dispatch outcome in
+	// order.
+	var episode deferralEpisode
+
+	// deferFailCount is the redrive schedule for backpressure, kept apart
+	// from the transport failCount above because the two failures want
+	// opposite cadences. A black-holed connection should be retried slowly;
+	// a full local mailbox should be redriven as soon as it might have
+	// room, because the redrive is the only thing draining the client's
+	// inbound backlog. Sharing one counter made a recovering target drain
+	// at one pull per RetryMaxDelay.
+	var deferFailCount int
+
+	// redrive is what this loop remembers about a deferred cycle so the
+	// next one does not repeat its work. It lives here for the same reason
+	// as episode: only this goroutine sees every dispatch outcome in order.
+	// A fresh ingressLoop starts with a fresh one, which is the right scope
+	// — after a restart the cursor is the only surviving state and
+	// redelivery is the documented behaviour.
+	var redrive redriveState
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -65,72 +115,14 @@ func (a *ServerConnectionActor) ingressLoop(ctx context.Context,
 		}
 
 		// Step 2: Pull a batch of envelopes from the remote mailbox.
-		envelopes, nextCursor, err := a.pullBatch(
-			ctx, state.PullCursor,
+		envelopes, nextCursor, exit, retry := a.pullPhase(
+			ctx, &state, &ackDirty, &failCount,
 		)
-		if err != nil {
-			if isIngressShutdownErr(ctx, err) {
-				a.logIngressExit(ctx)
-
-				return
-			}
-
-			// A permanent version error is terminal: stop the loop
-			// rather than retrying forever.
-			if a.checkPermanentStatus(ctx, err) {
-				return
-			}
-
-			a.log.WarnS(ctx, "Pull failed, retrying",
-				err,
-				slog.Uint64("cursor", state.PullCursor),
-			)
-
-			a.sleepBackoff(ctx, &failCount)
-
+		if exit {
+			return
+		} else if retry {
 			continue
 		}
-
-		if len(envelopes) == 0 {
-			// Long-poll returned empty. Flush a dirty ack
-			// watermark while the connection is idle so a
-			// restart does not re-ack forever.
-			if ackDirty {
-				if err := a.saveCheckpoint(
-					ctx, state,
-				); err != nil {
-
-					// Back off on a failing checkpoint
-					// store rather than retrying at the
-					// bare long-poll cadence, mirroring the
-					// ack-path policy above. ackDirty stays
-					// set so the next attempt re-flushes.
-					a.log.WarnS(ctx,
-						"Failed to flush ack "+
-							"checkpoint while idle",
-						err)
-
-					a.sleepBackoff(ctx, &failCount)
-
-					continue
-				}
-
-				ackDirty = false
-			}
-
-			// Reset fail count and loop again immediately — the
-			// long-poll timeout already provides the delay.
-			failCount = 0
-
-			continue
-		}
-
-		a.log.TraceS(
-			ctx, "Pulled envelopes",
-			slog.Int("count", len(envelopes)),
-			slog.Uint64("cursor", state.PullCursor),
-			slog.Uint64("next_cursor", nextCursor),
-		)
 
 		// Step 3 (transactional path): deliver in-memory responses
 		// outside the transaction, then fold the durable dispatches
@@ -138,8 +130,48 @@ func (a *ServerConnectionActor) ingressLoop(ctx context.Context,
 		if txOK {
 			newState, foldErr := a.runFoldedDispatch(
 				ctx, txStore, envelopes, nextCursor, state,
+				&redrive,
 			)
 			if foldErr != nil {
+				// A full target mailbox is backpressure, not a
+				// failure. The commit still covered the prefix
+				// that was delivered, so the advanced state is
+				// adopted and the re-pull resumes at the
+				// undelivered envelope instead of redelivering
+				// everything ahead of it.
+				deferral := a.noteDispatchDeferral(
+					ctx, foldErr, &episode,
+				)
+				if deferral != nil {
+					// A cursor that moved means the last
+					// redrive delivered part of the
+					// backlog, which is progress and not a
+					// failure to back off from: the
+					// schedule starts over so a draining
+					// target is redriven promptly instead
+					// of at the ceiling. It also means
+					// events ARE getting through, so the
+					// traffic gauge is stamped for the
+					// partial commit.
+					if newState.PullCursor >
+						state.PullCursor {
+
+						deferFailCount = 0
+
+						markIngressEvent()
+					}
+
+					state = newState
+					ackDirty = false
+					redrive.deferredSeq = deferral.eventSeq
+
+					a.sleepDeferralBackoff(
+						ctx, &deferFailCount,
+					)
+
+					continue
+				}
+
 				// A permanent inbound version mismatch is
 				// terminal: stop the loop WITHOUT advancing the
 				// cursor so the offending envelope is preserved
@@ -168,6 +200,11 @@ func (a *ServerConnectionActor) ingressLoop(ctx context.Context,
 			state = newState
 			ackDirty = false
 			failCount = 0
+			deferFailCount = 0
+			redrive.deferredSeq = 0
+
+			a.clearDispatchDeferral(ctx, &episode)
+			markIngressEvent()
 
 			continue
 		}
@@ -179,18 +216,38 @@ func (a *ServerConnectionActor) ingressLoop(ctx context.Context,
 			ctx, envelopes, nextCursor,
 		)
 		if dispatchErr != nil {
+			// A full target mailbox is backpressure rather than a
+			// dispatch failure, and it gets its own throttled log
+			// instead of one line per re-pull. The partial advance
+			// below is the same in either case: the cursor stops at
+			// the undelivered envelope.
+			//
+			// This path needs no deferredSeq clamp. It dispatches
+			// the batch strictly in order and stops at the
+			// deferral, so nothing past the undelivered envelope is
+			// ever touched to begin with.
+			deferred := a.noteDispatchDeferral(
+				ctx, dispatchErr, &episode,
+			) != nil
+
 			// A permanent inbound version mismatch is terminal:
 			// stop the loop WITHOUT advancing the cursor so the
 			// offending envelope is preserved for a future
 			// compatible restart, and never acknowledged.
-			if a.checkPermanentStatus(ctx, dispatchErr) {
+			if !deferred && a.checkPermanentStatus(
+				ctx, dispatchErr,
+			) {
 				return
 			}
 
-			a.log.WarnS(ctx, "Dispatch failed",
-				dispatchErr,
-				slog.Uint64("committed_to", committedCursor),
-			)
+			if !deferred {
+				a.log.WarnS(ctx, "Dispatch failed",
+					dispatchErr,
+					slog.Uint64(
+						"committed_to", committedCursor,
+					),
+				)
+			}
 
 			// Even on partial failure, advance state past the
 			// last committed envelope so we don't re-dispatch
@@ -200,9 +257,9 @@ func (a *ServerConnectionActor) ingressLoop(ctx context.Context,
 			// consistent with batchNextCursor on the success
 			// path.
 			nextCursor := committedCursor + 1
-			if committedCursor > 0 &&
-				nextCursor > state.PullCursor {
-
+			progressed := committedCursor > 0 &&
+				nextCursor > state.PullCursor
+			if progressed {
 				state.AdvanceDispatch(nextCursor)
 				state.PullCursor = nextCursor
 
@@ -215,6 +272,23 @@ func (a *ServerConnectionActor) ingressLoop(ctx context.Context,
 							"after partial dispatch",
 						cpErr)
 				}
+			}
+
+			// Backpressure gets the short redrive schedule, and a
+			// redrive that delivered part of the backlog resets it;
+			// a real dispatch failure keeps the transport schedule.
+			// The reasoning is the same as on the folded path
+			// above.
+			if deferred {
+				if progressed {
+					deferFailCount = 0
+
+					markIngressEvent()
+				}
+
+				a.sleepDeferralBackoff(ctx, &deferFailCount)
+
+				continue
 			}
 
 			a.sleepBackoff(ctx, &failCount)
@@ -240,6 +314,10 @@ func (a *ServerConnectionActor) ingressLoop(ctx context.Context,
 		}
 
 		failCount = 0
+		deferFailCount = 0
+
+		a.clearDispatchDeferral(ctx, &episode)
+		markIngressEvent()
 	}
 }
 
@@ -310,6 +388,89 @@ func (a *ServerConnectionActor) ackPhase(ctx context.Context, state *AckState,
 	*failCount = 0
 
 	return false, false
+}
+
+// pullPhase pulls the next batch of envelopes from the remote mailbox and
+// absorbs the two outcomes that are not a batch to dispatch: a failed pull and
+// an empty long-poll. It mutates state, ackDirty and failCount in place and
+// returns (envelopes, nextCursor, exit, retry) on the same convention as
+// ackPhase — exit is true when the loop must stop (local shutdown or a
+// permanent version error), and retry is true when the caller should continue
+// without dispatching. Both booleans are false only when envelopes holds a
+// non-empty batch, and any backoff a retry needs has already been slept here.
+func (a *ServerConnectionActor) pullPhase(ctx context.Context, state *AckState,
+	ackDirty *bool, failCount *int) ([]*mailboxpb.Envelope, uint64, bool,
+	bool) {
+
+	envelopes, nextCursor, err := a.pullBatch(ctx, state.PullCursor)
+	if err != nil {
+		if isIngressShutdownErr(ctx, err) {
+			a.logIngressExit(ctx)
+
+			return nil, 0, true, false
+		}
+
+		// A permanent version error is terminal: stop the loop rather
+		// than retrying forever.
+		if a.checkPermanentStatus(ctx, err) {
+			return nil, 0, true, false
+		}
+
+		a.log.WarnS(ctx, "Pull failed, retrying",
+			err,
+			slog.Uint64("cursor", state.PullCursor),
+		)
+
+		a.sleepBackoff(ctx, failCount)
+
+		return nil, 0, false, true
+	}
+
+	// The pull returned, so the one goroutine that consumes the remote
+	// mailbox is still running its loop. Stamping here rather than after
+	// dispatch is what lets a staleness alert separate a parked ingress
+	// goroutine from a client that simply has no traffic: an idle client
+	// keeps this gauge fresh at the long-poll cadence, and a parked one
+	// stops updating it immediately.
+	markIngressPoll()
+
+	if len(envelopes) == 0 {
+		// Long-poll returned empty. Flush a dirty ack watermark while
+		// the connection is idle so a restart does not re-ack forever.
+		if *ackDirty {
+			if err := a.saveCheckpoint(ctx, *state); err != nil {
+				// Back off on a failing checkpoint store rather
+				// than retrying at the bare long-poll cadence,
+				// mirroring the ack-path policy in ackPhase.
+				// ackDirty stays set so the next attempt
+				// re-flushes.
+				a.log.WarnS(ctx,
+					"Failed to flush ack checkpoint "+
+						"while idle", err)
+
+				a.sleepBackoff(ctx, failCount)
+
+				return nil, 0, false, true
+			}
+
+			*ackDirty = false
+		}
+
+		// Reset fail count and loop again immediately — the long-poll
+		// timeout already provides the delay.
+		*failCount = 0
+
+		return nil, 0, false, true
+	}
+
+	a.log.TraceS(
+		ctx, "Pulled envelopes",
+		slog.Int("count", len(envelopes)),
+		slog.Uint64("cursor", state.PullCursor),
+		slog.Uint64("next_cursor", nextCursor),
+	)
+
+	return envelopes, nextCursor, false, false
 }
 
 // logIngressExit emits the common ingress shutdown log line.
@@ -627,9 +788,16 @@ func (a *ServerConnectionActor) loadCheckpoint(ctx context.Context) (AckState,
 // and folds any straggler whose waiter disappeared back into the durable
 // transaction, so a durable response enqueue never commits outside the
 // cursor fold even if the peek was stale.
+//
+// redrive carries what the previous cycle of a backpressure episode already
+// did. It matters because the pre-transaction work runs over the WHOLE pulled
+// batch: with the cursor stalled at a wedged target, every hoisted request in
+// the window would otherwise be served again on every redrive, forever. See
+// redriveState.
 func (a *ServerConnectionActor) runFoldedDispatch(ctx context.Context,
 	txStore actor.TxAwareDeliveryStore, envelopes []*mailboxpb.Envelope,
-	nextCursor uint64, state AckState) (AckState, error) {
+	nextCursor uint64, state AckState, redrive *redriveState) (AckState,
+	error) {
 
 	// Validate the whole pulled batch against the bound version pair up
 	// front. Only the durable partition is validated inside dispatchBatch,
@@ -643,6 +811,13 @@ func (a *ServerConnectionActor) runFoldedDispatch(ctx context.Context,
 			return state, err
 		}
 	}
+
+	// Validation covers the pulled batch; everything after it works on the
+	// clamped one, so a redrive repeats no pre-transaction work it already
+	// did.
+	envelopes, nextCursor = clampToDeferred(
+		envelopes, nextCursor, redrive.deferredSeq,
+	)
 
 	responses, nonTx, durables := splitIngressEnvelopes(
 		envelopes, a.hasResponseWaiter, a.isNonTxRequest,
@@ -662,27 +837,64 @@ func (a *ServerConnectionActor) runFoldedDispatch(ctx context.Context,
 	}
 
 	// Serve the hoisted inbound requests with no transaction open. A
-	// failure here returns before the fold, so the cursor does not move
-	// and the batch is re-pulled whole.
-	if err := a.dispatchNonTxRequests(ctx, nonTx); err != nil {
+	// failure here returns before the fold, so the cursor does not move and
+	// the batch is re-pulled; the requests already answered are not served
+	// again, because the watermark that records them advanced before the
+	// failure.
+	if err := a.dispatchNonTxRequests(ctx, nonTx, redrive); err != nil {
 		return state, err
 	}
 
-	newState := state
+	// The durable partition's in-memory half (a TryTell into a bounded
+	// mailbox) is the one delivery below that a rolled-back transaction
+	// does not undo, and the production store replays its body on a
+	// retryable error. The record is created out here, OUTSIDE the closure,
+	// so a replay can see what the previous attempt already handed over and
+	// skip it. Everything else in the closure derives from the caller's
+	// state and is safe to redo.
+	ctx = withDeliveredOutsideTx(ctx)
+
+	var (
+		newState AckState
+		deferral *deferredDispatchError
+	)
 	err := txStore.ExecTx(ctx, false, func(txCtx context.Context,
 		store actor.DeliveryStore) error {
 
+		// Derive both outputs from the caller's state on every attempt,
+		// so a store that runs the closure more than once cannot fold a
+		// previous attempt's advance into this one.
+		newState = state
+		deferral = nil
+
+		cursor := nextCursor
 		if len(durables) > 0 {
 			_, dispatchErr := a.dispatchBatch(
 				txCtx, durables, nextCursor,
 			)
-			if dispatchErr != nil {
+
+			// A full target mailbox is backpressure, not a failed
+			// batch: the envelope is intact on the remote mailbox
+			// and the loop re-pulls it. Commit up to the
+			// undelivered envelope and stop there, because acking
+			// past an event that never reached its actor is how
+			// backpressure would turn into a lost round event.
+			//
+			// Nothing to adjust when the whole partition went out:
+			// the cursor already covers the batch.
+			switch {
+			case errors.As(dispatchErr, &deferral):
+				cursor = deferredCursor(
+					deferral.eventSeq, state.PullCursor,
+				)
+
+			case dispatchErr != nil:
 				return dispatchErr
 			}
 		}
 
-		newState.AdvanceDispatch(nextCursor)
-		newState.PullCursor = nextCursor
+		newState.AdvanceDispatch(cursor)
+		newState.PullCursor = cursor
 
 		return a.saveCheckpointTo(txCtx, store, newState)
 	})
@@ -690,7 +902,82 @@ func (a *ServerConnectionActor) runFoldedDispatch(ctx context.Context,
 		return state, err
 	}
 
+	// The prefix and the watermark committed together; the deferral is
+	// reported so the loop backs off instead of pulling straight into the
+	// same full mailbox.
+	if deferral != nil {
+		return newState, deferral
+	}
+
 	return newState, nil
+}
+
+// deferredCursor returns the cursor to commit when a full mailbox stopped a
+// batch partway. deferredSeq is the undelivered envelope's own event_seq, and
+// that is exactly where the exclusive cursor belongs: everything ahead of it in
+// the batch has been fully handled by the time the deferral is raised — waiter
+// responses delivered and hoisted requests served before the transaction
+// opened, the durable prefix enqueued inside it, unroutable envelopes
+// skip-warned — while the deferred envelope itself has not been delivered and
+// must be re-pulled. Committing here therefore acks everything before it and
+// nothing at or after it, and the next pull starts on the envelope that has to
+// be retried.
+//
+// Stopping one past the last DELIVERED envelope instead would be safe but not
+// sufficient: any hoisted request sitting between it and the deferred envelope
+// would come back in every redrive's pull window and be served again on each
+// one.
+//
+// The cursor never goes backwards, which keeps a re-pull of already-committed
+// envelopes from rewinding it. A zero deferredSeq is impossible — the mailbox
+// assigns event_seq from 1, and zero is the never-acked cursor sentinel — but
+// it is treated as "do not move" rather than trusted, because reading it as a
+// cursor is the one arithmetic here that could ack an undelivered envelope.
+func deferredCursor(deferredSeq, pullCursor uint64) uint64 {
+	if deferredSeq == 0 || deferredSeq <= pullCursor {
+		return pullCursor
+	}
+
+	return deferredSeq
+}
+
+// clampToDeferred restricts a redriven batch to the envelopes at or before the
+// event_seq that a full mailbox turned away last cycle, returning the batch to
+// process and the exclusive cursor that covers it.
+//
+// The clamp is what keeps a redrive from repeating work. The pre-transaction
+// steps — waiter delivery and the hoisted request round trips — run over the
+// whole batch before the transaction opens, but the cursor stops at the
+// deferred envelope, so everything behind it stays inside the pull window for
+// as long as the target stays wedged. Without the clamp each of those envelopes
+// is re-handled once per backoff cycle, indefinitely: for a hoisted request
+// that is a duplicate local serve plus a duplicate response sent to the
+// operator, and the routes waiting to be hoisted next are state-changing ones
+// where a duplicate is not free.
+//
+// A batch with nothing at or before deferredSeq is returned whole. That means
+// the envelope the last cycle could not deliver is no longer on the mailbox, so
+// there is nothing left to protect, and clamping to an empty batch would
+// instead let the caller advance the cursor over envelopes it never dispatched.
+func clampToDeferred(envelopes []*mailboxpb.Envelope, nextCursor,
+	deferredSeq uint64) ([]*mailboxpb.Envelope, uint64) {
+
+	if deferredSeq == 0 {
+		return envelopes, nextCursor
+	}
+
+	clamped := make([]*mailboxpb.Envelope, 0, len(envelopes))
+	for _, env := range envelopes {
+		if env.EventSeq <= deferredSeq {
+			clamped = append(clamped, env)
+		}
+	}
+
+	if len(clamped) == 0 || len(clamped) == len(envelopes) {
+		return envelopes, nextCursor
+	}
+
+	return clamped, deferredSeq + 1
 }
 
 // splitIngressEnvelopes partitions a pulled batch into the three ways an
@@ -770,6 +1057,12 @@ func splitIngressEnvelopes(envelopes []*mailboxpb.Envelope,
 // such as WalletService.SignVTXO or RoundService.SubmitNonces, needs its own
 // idempotency before it is added to NonTxRoutes, because correlation-ID dedup
 // on the operator does not make a second signature harmless.
+//
+// That exposure is bounded, and keeping it bounded is load-bearing. A crash or
+// a failed fold can repeat a serve; a stalled cursor cannot. Backpressure
+// re-pulls the same window every backoff cycle, so without redriveState's
+// watermark and clamp one wedged local actor would turn a single queued request
+// into one serve per cycle, indefinitely.
 func (a *ServerConnectionActor) isNonTxRequest(
 	env *mailboxpb.Envelope,
 ) bool {
@@ -858,15 +1151,28 @@ func (a *ServerConnectionActor) resolvesToNonTxDispatcher(
 // and sends the KIND_RESPONSE back over the edge, so this is where the network
 // round trip that used to sit inside the fold now happens.
 //
-// A failure stops the batch and surfaces to the caller, which leaves the
-// cursor where it was and re-pulls. Requests already served earlier in the
-// batch are then served a second time; that is the same at-least-once exposure
-// the legacy dispatch path has always had, and the operator demultiplexes the
-// duplicate response by correlation ID.
+// A failure stops the batch and surfaces to the caller, which leaves the cursor
+// where it was and re-pulls. Requests this loop already answered are not served
+// again on that re-pull: redrive.servedNonTxSeq remembers how far the serving
+// got, which is what keeps a stalled cursor from turning one queued request
+// into one operator round trip per backoff cycle. The watermark is per ingress
+// goroutine, so a restart still redelivers — that is the same at-least-once
+// exposure the legacy dispatch path has always had, and the operator
+// demultiplexes the duplicate response by correlation ID.
 func (a *ServerConnectionActor) dispatchNonTxRequests(ctx context.Context,
-	envelopes []*mailboxpb.Envelope) error {
+	envelopes []*mailboxpb.Envelope, redrive *redriveState) error {
 
 	for _, env := range envelopes {
+		// Already answered by an earlier cycle of this episode. The
+		// cursor has not passed it yet, so the mailbox keeps handing it
+		// back; serving it again would send the operator a second
+		// response to a request it has already had answered.
+		if env.EventSeq != 0 &&
+			env.EventSeq <= redrive.servedNonTxSeq {
+
+			continue
+		}
+
 		key := mailboxrpc.ServiceMethod{
 			Service: env.Rpc.Service,
 			Method:  env.Rpc.Method,
@@ -892,6 +1198,13 @@ func (a *ServerConnectionActor) dispatchNonTxRequests(ctx context.Context,
 
 		if err := dispatcher(ctx, env); err != nil {
 			return err
+		}
+
+		// Only a serve that returned records the watermark: a failed
+		// one may not have reached the operator, so it has to be
+		// retried rather than suppressed.
+		if env.EventSeq > redrive.servedNonTxSeq {
+			redrive.servedNonTxSeq = env.EventSeq
 		}
 	}
 
@@ -1009,4 +1322,41 @@ func (a *ServerConnectionActor) backoffConfig() mailboxpull.BackoffConfig {
 		BaseDelay: a.cfg.RetryBaseDelay,
 		MaxDelay:  a.cfg.RetryMaxDelay,
 	}
+}
+
+// maxDeferralDelay caps the redrive delay during a backpressure episode. It is
+// deliberately far below RetryMaxDelay, because the two delays are waiting for
+// different things. A transport retry waits for a remote endpoint, where a long
+// ceiling is politeness. A backpressure redrive waits for a local actor to
+// drain one mailbox turn, and the redrive is the only thing that moves the
+// client's inbound backlog: at the transport ceiling a recovered target drains
+// at one pull window per 30s, which is slower than the round client's own 60s
+// registration and 90s reconcile deadlines and would fail rounds that had
+// already put forfeit signatures on the wire.
+//
+// Half a second is chosen to be longer than any single mailbox turn a healthy
+// actor takes, so a briefly busy target is not hammered, and short enough that
+// a backlog of several pull windows still drains in seconds. The configured
+// RetryMaxDelay still applies when it is SHORTER, so a deployment (or a test)
+// that wants a tighter schedule keeps it.
+const maxDeferralDelay = 500 * time.Millisecond
+
+// sleepDeferralBackoff sleeps before redriving a deferred dispatch, on the
+// backpressure schedule rather than the transport one.
+func (a *ServerConnectionActor) sleepDeferralBackoff(ctx context.Context,
+	failCount *int) {
+
+	cfg := a.backoffConfig()
+	if cfg.MaxDelay <= 0 || cfg.MaxDelay > maxDeferralDelay {
+		cfg.MaxDelay = maxDeferralDelay
+	}
+
+	// A base delay above the ceiling would make the very first redrive wait
+	// longer than the ceiling allows, since the schedule starts at the
+	// base.
+	if cfg.BaseDelay > cfg.MaxDelay {
+		cfg.BaseDelay = cfg.MaxDelay
+	}
+
+	mailboxpull.Sleep(ctx, cfg, failCount)
 }

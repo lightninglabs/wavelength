@@ -38,7 +38,26 @@
 // Inbound KIND_REQUEST and KIND_EVENT envelopes are routed via a
 // map[ServiceMethod]EnvelopeDispatcher configured at wiring time. Each
 // dispatcher is a closure that captures a ServiceKey reference for the target
-// actor and calls Tell to durably enqueue the message.
+// actor and hands the message to it.
+//
+// Not every target is durable, which the dispatch contract has to account for.
+// The round client and the incoming-VTXO handler are ordinary actors with
+// fixed-capacity in-memory mailboxes, so a delivery to them can be refused for
+// want of room. Those deliveries use TryTell and a refusal comes back as
+// ErrDispatchDeferred: the cursor stops at the undelivered envelope and the
+// loop re-pulls it after a backoff, which is what keeps a slow actor from
+// becoming a lost event. A blocking Tell there instead would park the process's
+// only mailbox puller for as long as the target took to drain, with the write
+// transaction open. See deliverToActor.
+//
+// Known residual: one strictly-ordered cursor feeds every inbound route, so an
+// actor that stops draining still stops delivery on ALL of them. What the
+// deferral changes is the blast radius and the diagnosis — the database writer
+// is no longer pinned, read paths keep working, and the stall is now counted
+// (ServerConnIngressDeferredTotal) and logged instead of being invisible — not
+// the head-of-line coupling itself. Removing that would take a per-target
+// deferral queue with its own cursor, which is a larger change than this one
+// and has to preserve per-lane event_seq ordering to be worth doing.
 //
 // KIND_RESPONSE envelopes are delivered to in-memory response waiters via the
 // response registry. This is not durable — if the process crashes, callers'
