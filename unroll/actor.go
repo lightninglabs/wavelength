@@ -160,6 +160,17 @@ type behavior struct {
 	exitCostNotified           bool
 	abandonedBroadcastsRemoved bool
 
+	// failedBroadcastTxids records every txid txconfirm has reported as
+	// failed during this actor lifetime. It exists because applyFailedEvent
+	// strips the failing txid from PlannerState.InFlightTxids before it
+	// stamps FailReason, so by the time the terminal cleanup reads planner
+	// state the transaction that actually killed the job is no longer
+	// listed there — and that is precisely the transaction lnd is still
+	// rebroadcasting (wavelength#609). Kept in memory only: the registry
+	// restores non-terminal records, so a terminal job never re-runs the
+	// cleanup after a restart and has nothing to reload.
+	failedBroadcastTxids map[chainhash.Hash]struct{}
+
 	// requiredLockTime caches the exit policy's absolute nLockTime once the
 	// policy has been resolved (in startSweep). The standard timeout policy
 	// reports zero; a vHTLC refund-without-receiver policy reports the
@@ -292,6 +303,8 @@ func (b *behavior) dispatch(ctx context.Context, ax actor.Exec[unrollTx],
 		})
 
 	case *TxFailedMsg:
+		b.recordFailedBroadcast(m.Txid)
+
 		return b.handleEvent(ctx, ax, &TxFailedEvent{
 			Txid:   m.Txid,
 			Reason: b.failureReasonForTx(m.Txid, m.Reason),
@@ -923,6 +936,8 @@ func (b *behavior) ensureNodeConfirmed(ctx context.Context,
 	}
 
 	if ensureResp.State == txconfirm.TxStateFailed {
+		b.recordFailedBroadcast(txid)
+
 		return b.driveEvent(ctx, ax, &TxFailedEvent{
 			Txid: txid,
 			Reason: b.failureReasonForTx(
@@ -2216,6 +2231,24 @@ func (b *behavior) notifyRegistryIfTerminal(ctx context.Context) {
 	b.terminalNotified = true
 }
 
+// recordFailedBroadcast notes that txconfirm reported txid as failed, so the
+// terminal cleanup can still ask the wallet to drop it. The FSM removes a
+// failing txid from PlannerState.InFlightTxids as it stamps the failure, which
+// would otherwise hide the one transaction most in need of removal
+// (wavelength#609).
+//
+// A proof-node failure is terminal by construction: an operator-signed proof
+// node cannot be rebuilt or replaced, and txconfirm has already evicted the
+// transaction (TxStateFailed is terminal) and released its fee-input lease. So
+// the transaction is provably dead and nothing else is still working on it.
+func (b *behavior) recordFailedBroadcast(txid chainhash.Hash) {
+	if b.failedBroadcastTxids == nil {
+		b.failedBroadcastTxids = make(map[chainhash.Hash]struct{})
+	}
+
+	b.failedBroadcastTxids[txid] = struct{}{}
+}
+
 // removeAbandonedBroadcasts asks the chain backend to drop the job's
 // broadcast-but-unconfirmed transactions from the wallet after a terminal
 // failure, so a full-node wallet stops perpetually rebroadcasting a proof (or
@@ -2252,13 +2285,36 @@ func (b *behavior) removeAbandonedBroadcasts(ctx context.Context,
 	); sweepTxid != nil {
 
 		if _, dup := seen[*sweepTxid]; !dup {
+			seen[*sweepTxid] = struct{}{}
 			txids = append(txids, *sweepTxid)
 		}
+	}
+
+	// Finally, include every transaction txconfirm reported as failed. The
+	// FSM drops a failing txid from InFlightTxids as it stamps the failure,
+	// so this is the only place the rejected transaction — the one lnd is
+	// still rebroadcasting — reappears (wavelength#609). A confirmed
+	// transaction is still excluded: it is on-chain, never rebroadcast, and
+	// lnd refuses to remove it.
+	for txid := range b.failedBroadcastTxids {
+		if _, dup := seen[txid]; dup {
+			continue
+		}
+		if containsHash(job.PlannerState.ConfirmedTxids, txid) {
+			continue
+		}
+
+		seen[txid] = struct{}{}
+		txids = append(txids, txid)
 	}
 
 	if len(txids) == 0 {
 		return
 	}
+
+	// Map iteration is unordered; sort so the removal sequence (and the
+	// resulting log lines) are deterministic across runs.
+	sortHashes(txids)
 
 	// Fire the removals off the actor Receive goroutine. This cleanup is
 	// pure best-effort housekeeping — the terminal outcome is already
