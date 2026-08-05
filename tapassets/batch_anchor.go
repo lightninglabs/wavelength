@@ -101,6 +101,13 @@ type BatchAnchorScript struct {
 // material and a ready root source for materializing the tree beneath the
 // still-unconfirmed batch output.
 type BatchAnchorCommit struct {
+	// AssetRef is the canonical string encoding of the committed asset.
+	AssetRef string
+
+	// OutputIndex is the batch output's position in the anchor
+	// transaction.
+	OutputIndex uint32
+
 	// PackageBytes is the sealed transfer package.
 	PackageBytes []byte
 
@@ -269,6 +276,8 @@ func (c *BatchAnchorCommitter) Commit(ctx context.Context,
 	}
 
 	return &BatchAnchorCommit{
+		AssetRef:     req.AssetRef.String(),
+		OutputIndex:  req.OutputIndex,
 		PackageBytes: append([]byte(nil), committed.packageBytes...),
 		AnchorPSBT:   append([]byte(nil), committed.anchorPSBT...),
 		Script:       *derived,
