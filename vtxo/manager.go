@@ -2056,7 +2056,7 @@ func (m *Manager) selectReservationCandidates(ctx context.Context,
 	candidates []*Descriptor, p reserveParams) ([]*Descriptor, error) {
 
 	if len(p.exactOutpoints) > 0 {
-		return m.selectExactReservationCandidates(candidates, p)
+		return m.selectExactReservationCandidates(ctx, candidates, p)
 	}
 
 	// Run largest-first selection through the shared selector. Map its
@@ -2092,8 +2092,8 @@ func (m *Manager) selectReservationCandidates(ctx context.Context,
 
 // selectExactReservationCandidates validates and returns exact managed inputs
 // without substituting other wallet liquidity.
-func (m *Manager) selectExactReservationCandidates(candidates []*Descriptor,
-	p reserveParams) ([]*Descriptor, error) {
+func (m *Manager) selectExactReservationCandidates(ctx context.Context,
+	candidates []*Descriptor, p reserveParams) ([]*Descriptor, error) {
 
 	byOutpoint := make(map[wire.OutPoint]*Descriptor, len(candidates))
 	for _, candidate := range candidates {
@@ -2118,9 +2118,7 @@ func (m *Manager) selectExactReservationCandidates(candidates []*Descriptor,
 
 		candidate, ok := byOutpoint[op]
 		if !ok {
-			return nil, fmt.Errorf("%w: exact spend outpoint %s "+
-				"is not live", ErrInsufficientSpendableFunds,
-				op)
+			return nil, m.exactSpendUnavailableError(ctx, op)
 		}
 
 		selected = append(selected, candidate)
@@ -2139,6 +2137,41 @@ func (m *Manager) selectExactReservationCandidates(candidates []*Descriptor,
 	}
 
 	return selected, nil
+}
+
+// exactSpendUnavailableError distinguishes a temporarily locked exact input
+// from one that is terminal, expired, or unknown. The live selection
+// projection cannot make that distinction because it excludes every non-live
+// status before exact-input matching.
+func (m *Manager) exactSpendUnavailableError(ctx context.Context,
+	op wire.OutPoint) error {
+
+	desc, err := m.cfg.Store.GetVTXO(ctx, op)
+	switch {
+	case errors.Is(err, ErrVTXONotFound), desc == nil && err == nil:
+		return fmt.Errorf("%w: exact spend outpoint %s is unknown",
+			ErrInsufficientSpendableFunds, op)
+
+	case err != nil:
+		return fmt.Errorf("look up exact spend outpoint %s: %w", op,
+			err)
+	}
+
+	switch desc.Status {
+	case VTXOStatusLive, VTXOStatusPendingForfeit,
+		VTXOStatusForfeiting, VTXOStatusSpending:
+		return fmt.Errorf("%w: exact spend outpoint %s has status %s",
+			ErrVTXOLiquidityLocked, op, desc.Status)
+
+	case VTXOStatusForfeited, VTXOStatusSpent,
+		VTXOStatusUnilateralExit, VTXOStatusFailed,
+		VTXOStatusExpired:
+		return fmt.Errorf("%w: exact spend outpoint %s has status %s",
+			ErrInsufficientSpendableFunds, op, desc.Status)
+	}
+
+	return fmt.Errorf("%w: exact spend outpoint %s has unknown status %d",
+		ErrInsufficientSpendableFunds, op, desc.Status)
 }
 
 // insufficientLiquidityError distinguishes a true spendable-funds shortfall

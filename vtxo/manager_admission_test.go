@@ -949,6 +949,50 @@ func TestSelectAndReserveSpendExactOutpoints(t *testing.T) {
 	}
 }
 
+// TestSelectAndReserveSpendExactLockedOutpoint verifies an exact input that
+// fell out of the live projection because its durable status is locked remains
+// a retryable liquidity error after the manager's in-memory marks are lost.
+func TestSelectAndReserveSpendExactLockedOutpoint(t *testing.T) {
+	t.Parallel()
+
+	for _, lockedStatus := range []VTXOStatus{
+		VTXOStatusPendingForfeit,
+		VTXOStatusForfeiting,
+		VTXOStatusSpending,
+	} {
+		t.Run(lockedStatus.String(), func(t *testing.T) {
+			t.Parallel()
+
+			locked := makeDescriptor(t, 50_000, 0)
+			locked.Status = lockedStatus
+
+			mgr, store := newTestManager(t, nil)
+			store.On(
+				"ListVTXOsByStatus", t.Context(),
+				VTXOStatusLive,
+			).Return([]*Descriptor{}, nil)
+			store.On(
+				"GetVTXO", t.Context(), locked.Outpoint,
+			).Return(locked, nil)
+
+			result := mgr.Receive(
+				t.Context(), &SelectAndReserveSpendRequest{
+					TargetAmount: 40_000,
+					Outpoints: []wire.OutPoint{
+						locked.Outpoint,
+					},
+				},
+			)
+			_, err := result.Unpack()
+			require.ErrorIs(t, err, ErrVTXOLiquidityLocked)
+			require.NotErrorIs(
+				t, err, ErrInsufficientSpendableFunds,
+			)
+			require.ErrorContains(t, err, lockedStatus.String())
+		})
+	}
+}
+
 // TestSelectAndReserveRespawnGuards verifies the self-heal path for a
 // live-in-DB but actorless selection candidate fails closed: a store miss
 // and a non-live row both surface as reservation errors instead of spawning
