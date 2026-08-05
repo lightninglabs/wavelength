@@ -262,6 +262,61 @@ func (r *RPCServer) reserveCustomInputs(outpoints []wire.OutPoint) (func(),
 	return release, nil
 }
 
+// classifyCustomOORInputs parses custom input outpoints and distinguishes
+// exact managed wallet inputs from explicitly described custom spend paths.
+func classifyCustomOORInputs(inputs []*waverpc.CustomOORInput) ([]wire.OutPoint,
+	bool, error) {
+
+	if len(inputs) == 0 {
+		return nil, false, nil
+	}
+
+	outpoints := make([]wire.OutPoint, 0, len(inputs))
+	seen := make(map[wire.OutPoint]struct{}, len(inputs))
+	var (
+		hasManaged bool
+		hasCustom  bool
+	)
+
+	for i, input := range inputs {
+		if input == nil {
+			return nil, false, fmt.Errorf("custom input %d is nil",
+				i)
+		}
+
+		op, err := parseOutpointString(input.GetOutpoint())
+		if err != nil {
+			return nil, false, fmt.Errorf("parse custom input "+
+				"outpoint %q: %w", input.GetOutpoint(), err)
+		}
+		if _, ok := seen[op]; ok {
+			return nil, false, fmt.Errorf("duplicate custom input "+
+				"outpoint %s", op)
+		}
+		seen[op] = struct{}{}
+		outpoints = append(outpoints, op)
+
+		explicit := len(input.GetVtxoPolicyTemplate()) > 0 ||
+			len(input.GetSpendPath()) > 0 ||
+			input.GetAmountSat() != 0 ||
+			len(input.GetPkScript()) > 0 ||
+			len(input.GetExternalSignatures()) > 0
+		if explicit {
+			hasCustom = true
+		} else {
+			hasManaged = true
+		}
+	}
+
+	if hasManaged && hasCustom {
+		return nil, false, fmt.Errorf("cannot mix outpoint-only " +
+			"managed inputs with explicitly described custom " +
+			"inputs")
+	}
+
+	return outpoints, hasManaged, nil
+}
+
 type oorChangeRecipientBuilder func(context.Context,
 	btcutil.Amount) (oortx.RecipientOutput, error)
 
@@ -3059,9 +3114,17 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 		return nil, err
 	}
 
-	if len(req.CustomInputs) > 0 && len(oorRecipients) != 1 {
-		return nil, status.Errorf(codes.InvalidArgument, "custom "+
-			"inputs require exactly one recipient")
+	customOutpoints, exactManagedInputs, err := classifyCustomOORInputs(
+		req.CustomInputs,
+	)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+
+	if len(req.CustomInputs) > 0 && !exactManagedInputs &&
+		len(oorRecipients) != 1 {
+		return nil, status.Errorf(codes.InvalidArgument, "explicit "+
+			"custom inputs require exactly one recipient")
 	}
 
 	// For dry_run, return a preview before selecting wallet inputs or
@@ -3100,10 +3163,10 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 		releaseCustomInputs bool
 	)
 
-	if len(req.CustomInputs) > 0 {
+	if len(req.CustomInputs) > 0 && !exactManagedInputs {
 		phaseStart = time.Now()
-		// Custom inputs provided — bypass wallet selection and
-		// build TransferInputs from the specified VTXOs.
+		// Explicit custom inputs bypass wallet selection and build
+		// TransferInputs from the supplied policy and spend data.
 		//
 		// Custom inputs typically refer to non-standard VTXOs
 		// (e.g. vHTLC claim outpoints) that live outside the
@@ -3119,20 +3182,6 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 		// already been accepted and the caller only stopped waiting for
 		// its response. In that case the release is deferred until the
 		// actor future actually completes.
-		customOutpoints := make(
-			[]wire.OutPoint, 0, len(req.CustomInputs),
-		)
-		for _, ci := range req.CustomInputs {
-			op, err := parseOutpointString(ci.Outpoint)
-			if err != nil {
-				return nil, status.Errorf(codes.InvalidArgument,
-					"parse custom input outpoint %q: %v",
-					ci.Outpoint, err)
-			}
-
-			customOutpoints = append(customOutpoints, op)
-		}
-
 		release, err := r.reserveCustomInputs(customOutpoints)
 		if err != nil {
 			return nil, status.Errorf(codes.Aborted, "custom "+
@@ -3163,13 +3212,18 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 			return nil, err
 		}
 	} else {
-		// Standard path: select and lock VTXOs from wallet.
+		// The standard path lets the wallet select inputs.
+		// Outpoint-only custom inputs use the same durable reservation
+		// path, but name the exact managed VTXOs that must be selected.
 		phaseStart = time.Now()
 		wRef := r.server.walletRef.UnsafeFromSome()
 
 		selectReq := &wallet.SelectAndLockVTXOsRequest{
 			TargetAmount:    targetAmt,
 			MinChangeAmount: terms.MinVTXOAmountFloor(),
+		}
+		if exactManagedInputs {
+			selectReq.Outpoints = customOutpoints
 		}
 		selectFuture := wRef.Ask(ctx, selectReq)
 		selectResult := selectFuture.Await(ctx)

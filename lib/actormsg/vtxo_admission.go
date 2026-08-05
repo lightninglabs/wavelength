@@ -20,10 +20,9 @@ import (
 // (wallet → vtxo → round → wallet).
 
 // SelectAndReserveSpendRequest asks the VTXO manager to select VTXOs covering
-// a target amount and atomically reserve them for an OOR spend. The manager
-// runs largest-first coin selection, then Asks each selected VTXO actor to
-// process SpendReserveEvent. If any reservation fails, already-reserved
-// VTXOs are rolled back.
+// a target amount, or use explicitly named managed VTXOs, and reserve them for
+// an OOR spend. If any reservation fails, already-reserved VTXOs are rolled
+// back.
 type SelectAndReserveSpendRequest struct {
 	actor.BaseMessage
 
@@ -34,6 +33,11 @@ type SelectAndReserveSpendRequest struct {
 	// MinChangeAmount, when positive, asks selection to avoid a
 	// non-zero residual below this amount. Exact spends are still valid.
 	MinChangeAmount btcutil.Amount
+
+	// Outpoints, when non-empty, identifies the exact managed VTXOs to
+	// reserve instead of running coin selection. The requested order is
+	// preserved in the response.
+	Outpoints []wire.OutPoint
 }
 
 // VTXOManagerMsg implements VTXOManagerMsg marker interface.
