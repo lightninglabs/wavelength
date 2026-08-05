@@ -407,6 +407,157 @@ func TestSendOORSubmitsMultipleRecipients(t *testing.T) {
 	require.Empty(t, testWallet.unlockBatches())
 }
 
+// TestSendOORReservesExactManagedCustomInputs verifies that outpoint-only
+// custom inputs use the wallet's durable spend reservation path while still
+// selecting precisely the caller-named VTXOs.
+func TestSendOORReservesExactManagedCustomInputs(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	recipientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	const (
+		inputAmount = btcutil.Amount(744)
+		amountSat   = int64(2 * inputAmount)
+		exitDelay   = uint32(10)
+	)
+
+	vtxoStore, _, _ := newSendOORTestStores(t)
+	input1, _ := newSendOORTestVTXO(
+		t, operatorKey.PubKey(), 0x61, inputAmount,
+	)
+	input2, _ := newSendOORTestVTXO(
+		t, operatorKey.PubKey(), 0x62, inputAmount,
+	)
+	require.NoError(t, vtxoStore.SaveVTXO(ctx, input1))
+	require.NoError(t, vtxoStore.SaveVTXO(ctx, input2))
+
+	testWallet := &sendOORTestWallet{
+		selections: [][]wallet.SelectedVTXO{{
+			selectedVTXOFromDescriptor(input2),
+			selectedVTXOFromDescriptor(input1),
+		}},
+	}
+
+	system := actor.NewActorSystem()
+	t.Cleanup(func() {
+		shutdownCtx, cancel := context.WithTimeout(
+			context.Background(), 5*time.Second,
+		)
+		defer cancel()
+
+		require.NoError(t, system.Shutdown(shutdownCtx))
+	})
+
+	walletKey := actor.NewServiceKey[
+		wallet.WalletMsg, wallet.WalletResp,
+	](
+		"send-oor-exact-test-wallet",
+	)
+	walletRef := walletKey.Spawn(
+		system, "send-oor-exact-test-wallet", testWallet,
+	)
+
+	sessionHash := chainhash.HashH([]byte("send-oor-exact-session"))
+	oorActor := &capturingSendOORActor{
+		response: &oor.StartTransferResponse{
+			SessionID: oor.SessionID(sessionHash),
+		},
+	}
+	oorKey := oor.NewServiceKey()
+	oorKey.Spawn(system, "send-oor-exact-test-actor", oorActor)
+
+	walletReady := make(chan struct{})
+	close(walletReady)
+
+	server := &Server{
+		cfg:         &Config{},
+		log:         btclog.Disabled,
+		walletReady: walletReady,
+		chainParams: &chaincfg.RegressionNetParams,
+		serverConn: newBufconnClient(t, &fakeArkService{
+			getInfoResponse: &arkrpc.GetInfoResponse{
+				Pubkey: operatorKey.
+					PubKey().
+					SerializeCompressed(),
+				VtxoExitDelay: exitDelay,
+				DustLimit:     1000,
+			},
+		}),
+		actorSystem: system,
+		vtxoStore:   vtxoStore,
+		walletRef:   fn.Some(walletRef),
+	}
+
+	recipient := sendOORPolicyRecipient(
+		t, recipientKey.PubKey(), operatorKey.PubKey(), exitDelay,
+		amountSat,
+	)
+	requestedOutpoints := []wire.OutPoint{
+		input2.Outpoint, input1.Outpoint,
+	}
+
+	resp, err := NewRPCServer(server).SendOOR(
+		ctx, &waverpc.SendOORRequest{
+			Recipients: []*waverpc.Output{recipient},
+			CustomInputs: []*waverpc.CustomOORInput{
+				{Outpoint: requestedOutpoints[0].String()},
+				{Outpoint: requestedOutpoints[1].String()},
+			},
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, "submitted", resp.GetStatus())
+
+	selectReqs := testWallet.selectionRequests()
+	require.Len(t, selectReqs, 1)
+	require.Equal(t, btcutil.Amount(amountSat),
+		selectReqs[0].TargetAmount)
+	require.Equal(t, btcutil.Amount(1000),
+		selectReqs[0].MinChangeAmount)
+	require.Equal(t, requestedOutpoints, selectReqs[0].Outpoints)
+
+	requests := oorActor.capturedRequests()
+	require.Len(t, requests, 1)
+	require.Len(t, requests[0].Inputs, 2)
+	require.Equal(
+		t, requestedOutpoints[0], requests[0].Inputs[0].VTXO.Outpoint,
+	)
+	require.Equal(
+		t, requestedOutpoints[1], requests[0].Inputs[1].VTXO.Outpoint,
+	)
+}
+
+// TestClassifyCustomOORInputsRejectsMixedModes verifies a request cannot
+// silently bypass durable wallet reservation by mixing a managed outpoint with
+// an explicitly described custom-policy input.
+func TestClassifyCustomOORInputsRejectsMixedModes(t *testing.T) {
+	t.Parallel()
+
+	op1 := wire.OutPoint{
+		Hash:  chainhash.HashH([]byte("managed-custom-input")),
+		Index: 1,
+	}
+	op2 := wire.OutPoint{
+		Hash:  chainhash.HashH([]byte("explicit-custom-input")),
+		Index: 2,
+	}
+
+	_, _, err := classifyCustomOORInputs([]*waverpc.CustomOORInput{
+		{Outpoint: op1.String()},
+		{
+			Outpoint:  op2.String(),
+			AmountSat: 1000,
+		},
+	})
+	require.ErrorContains(t, err, "cannot mix outpoint-only managed")
+}
+
 // TestSendOORRejectsTooManyRecipients verifies the daemon rejects oversized
 // OOR fanout before resolving scripts or selecting wallet inputs. The OOR
 // actor also has request-size limits, but the RPC layer does enough per
