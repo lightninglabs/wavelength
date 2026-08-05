@@ -110,6 +110,19 @@ var (
 	// this as a terminal broadcast failure.
 	ErrParentAlreadyBroadcast = errors.New("parent already broadcast by " +
 		"another path; cpfp child rejected")
+
+	// ErrFeeRateCapReached indicates that satisfying the BIP-125 Rule 4
+	// replacement floor (a strictly higher feerate than the prior
+	// submission) would push the package above the configured
+	// MaxFeeRateSatPerVByte ceiling. The estimator is clamped to the cap,
+	// but the replacement floor ratchets past it once a prior bump already
+	// sat at the cap, so we fail the bump closed rather than pay above the
+	// operator's safety limit. The prior submission stays live, so callers
+	// treat this as a benign no-op (Bumped=false): the tx keeps its last
+	// in-cap fee and can still confirm; only the over-cap replacement is
+	// refused (wavelength#403).
+	ErrFeeRateCapReached = errors.New("replacement feerate floor exceeds " +
+		"the configured max fee rate cap")
 )
 
 // txconfirmLockID is the package-scoped LockID used by CPFPBroadcaster
@@ -810,6 +823,24 @@ func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context, height int32,
 	feeRate, totalFee = b.applyReplacementFloor(
 		req.Tx, txid, feeRate, totalFee, childVSize,
 	)
+
+	// The estimator (and any operator target) is clamped to
+	// MaxFeeRateSatPerVByte, but the replacement floor above ratchets the
+	// feerate to prev.LastFeeRate + 1 to satisfy BIP-125 Rule 4 without
+	// re-checking that ceiling. Once a prior bump already sat at the cap,
+	// each subsequent bump would escalate one sat/vB above it indefinitely,
+	// making the wallet pay fees over the configured safety limit. The cap
+	// is a hard ceiling, so fail closed here rather than pay past it: no
+	// compliant replacement exists within the cap once the prior submission
+	// is already at it. The bump is a benign no-op -- the prior tx stays
+	// live and can still confirm at its last in-cap fee -- so the actor's
+	// fee-bump-error path recovers to AwaitingConfirmation and retries
+	// (wavelength#403).
+	if feeRate > b.cfg.MaxFeeRateSatPerVByte {
+		return nil, fmt.Errorf("%w: replacement requires %d sat/vB, "+
+			"above the %d sat/vB cap", ErrFeeRateCapReached,
+			feeRate, b.cfg.MaxFeeRateSatPerVByte)
+	}
 
 	// A funded parent may already pay the whole package target on its own
 	// (a flat-rate re-bump, or an operator target at or under the parent's
