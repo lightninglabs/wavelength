@@ -39,14 +39,16 @@ func DefaultConfig() Config {
 			BtcwBlockSource,
 		WalletBtcwalletFilterHeadersSource: cfg.Wallet.
 			BtcwFilterSource,
-		SwapServerAddress:     cfg.Swap.ServerAddress,
-		SwapServerTransport:   Transport(cfg.Swap.ServerTransport),
-		SwapServerTLSCertPath: cfg.Swap.ServerTLSCertPath,
-		SwapServerInsecure:    cfg.Swap.ServerInsecure,
-		SwapDatabaseFileName:  cfg.Swap.DatabaseFileName,
-		MaxOperatorFeeSat:     cfg.MaxOperatorFeeSat,
-		SigningWorkers:        cfg.SigningWorkers,
-		EagerRoundJoin:        cfg.EagerRoundJoin,
+		SwapServerAddress:      cfg.Swap.ServerAddress,
+		SwapServerTransport:    Transport(cfg.Swap.ServerTransport),
+		SwapServerTLSCertPath:  cfg.Swap.ServerTLSCertPath,
+		SwapServerInsecure:     cfg.Swap.ServerInsecure,
+		SwapDatabaseFileName:   cfg.Swap.DatabaseFileName,
+		MaxOperatorFeeSat:      cfg.MaxOperatorFeeSat,
+		AutoRefreshFeeFloorSat: cfg.AutoRefreshFeeFloorSat,
+		AutoRefreshFeeRatePPM:  cfg.AutoRefreshFeeRatePPM,
+		SigningWorkers:         cfg.SigningWorkers,
+		EagerRoundJoin:         cfg.EagerRoundJoin,
 	}
 }
 
@@ -261,6 +263,12 @@ func applyConfigOverrides(daemonCfg *waved.Config, cfg Config) {
 	}
 	if cfg.MaxOperatorFeeSat != 0 {
 		daemonCfg.MaxOperatorFeeSat = cfg.MaxOperatorFeeSat
+	}
+	if cfg.AutoRefreshFeeFloorSat != 0 {
+		daemonCfg.AutoRefreshFeeFloorSat = cfg.AutoRefreshFeeFloorSat
+	}
+	if cfg.AutoRefreshFeeRatePPM != 0 {
+		daemonCfg.AutoRefreshFeeRatePPM = cfg.AutoRefreshFeeRatePPM
 	}
 	if cfg.SigningWorkers != 0 {
 		daemonCfg.SigningWorkers = cfg.SigningWorkers

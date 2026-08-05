@@ -84,6 +84,9 @@ func (s *LiveState) ProcessEvent(ctx context.Context, event VTXOEvent,
 	case *BlockEpochEvent:
 		return s.handleBlockEpoch(ctx, evt, env)
 
+	case *CohortRefreshEvent:
+		return s.handleCohortRefresh(evt, env)
+
 	case *SpendReserveEvent:
 		return s.handleSpendReserve(ctx, env)
 
@@ -126,6 +129,55 @@ func (s *LiveState) ProcessEvent(ctx context.Context, event VTXOEvent,
 
 	default:
 		return nil, fmt.Errorf("live: unexpected event: %T", event)
+	}
+}
+
+// handleCohortRefresh joins an expiry-driven sibling cohort while preserving
+// the VTXO's own critical-exit decision. A stale/mismatched request is a
+// no-op; critical or expired coins remain on their normal block-epoch path.
+func (s *LiveState) handleCohortRefresh(evt *CohortRefreshEvent,
+	env *VTXOEnvironment) (*VTXOStateTransition, error) {
+
+	if evt.BatchExpiry <= 0 || s.VTXO.BatchExpiry != evt.BatchExpiry {
+		return &VTXOStateTransition{NextState: s}, nil
+	}
+
+	status := env.ExpiryConfig.CheckExpiry(s.VTXO, evt.Height)
+	if status != ExpiryStatusSafe && status != ExpiryStatusNeedsRefresh {
+		return &VTXOStateTransition{NextState: s}, nil
+	}
+
+	s.LastCheckedHeight = evt.Height
+
+	return s.autoRefreshTransition(evt.Height, true), nil
+}
+
+// autoRefreshTransition reserves this VTXO for expiry-driven cooperative
+// maintenance and emits the round request. Both threshold-triggered and
+// manager-cohort paths use it so their persistence and provenance cannot
+// drift.
+func (s *LiveState) autoRefreshTransition(height int32,
+	cohortMember bool) *VTXOStateTransition {
+
+	outbox := []VTXOOutMsg{
+		&ForfeitRequest{
+			VTXOOutpoint:      s.VTXO.Outpoint,
+			LastCheckedHeight: height,
+			ExpandCohort:      !cohortMember,
+			CohortMember:      cohortMember,
+		},
+		&VTXOStatusUpdate{
+			Outpoint:  s.VTXO.Outpoint,
+			NewStatus: VTXOStatusPendingForfeit,
+		},
+	}
+
+	return &VTXOStateTransition{
+		NextState: &PendingForfeitState{
+			VTXO:              s.VTXO,
+			RequestedAtHeight: height,
+		},
+		NewEvents: fn.Some(VTXOEmittedEvent{Outbox: outbox}),
 	}
 }
 
@@ -256,24 +308,7 @@ func (s *LiveState) handleBlockEpoch(ctx context.Context, evt *BlockEpochEvent,
 		// remaining-blocks without reading its own state (which the
 		// Receive loop has already advanced to PendingForfeitState
 		// by the time the outbox is dispatched).
-		outbox := []VTXOOutMsg{
-			&ForfeitRequest{
-				VTXOOutpoint:      s.VTXO.Outpoint,
-				LastCheckedHeight: evt.Height,
-			},
-			&VTXOStatusUpdate{
-				Outpoint:  s.VTXO.Outpoint,
-				NewStatus: VTXOStatusPendingForfeit,
-			},
-		}
-
-		return &VTXOStateTransition{
-			NextState: &PendingForfeitState{
-				VTXO:              s.VTXO,
-				RequestedAtHeight: evt.Height,
-			},
-			NewEvents: fn.Some(VTXOEmittedEvent{Outbox: outbox}),
-		}, nil
+		return s.autoRefreshTransition(evt.Height, false), nil
 
 	case ExpiryStatusCritical:
 		// Escalate to chain resolver for unilateral exit.
@@ -712,6 +747,31 @@ func (s *PendingForfeitState) ProcessEvent(ctx context.Context, event VTXOEvent,
 	env *VTXOEnvironment) (*VTXOStateTransition, error) {
 
 	switch evt := event.(type) {
+	case *CohortRefreshEvent:
+		// Another same-block leader may have already moved this VTXO
+		// into automatic PendingForfeit and queued its own manager
+		// relay. Re-emit the request to the active coordinator without
+		// another status write; RequestedAtHeight==0 is reserved for
+		// manual/directed admissions and must never be adopted.
+		if s.RequestedAtHeight <= 0 ||
+			s.RequestedAtHeight != evt.Height ||
+			evt.BatchExpiry <= 0 ||
+			s.VTXO.BatchExpiry != evt.BatchExpiry {
+			return nil, fmt.Errorf("pending_forfeit: automatic " +
+				"cohort adoption does not own reservation")
+		}
+
+		return &VTXOStateTransition{
+			NextState: s,
+			NewEvents: fn.Some(VTXOEmittedEvent{
+				Outbox: []VTXOOutMsg{&ForfeitRequest{
+					VTXOOutpoint:      s.VTXO.Outpoint,
+					LastCheckedHeight: s.RequestedAtHeight,
+					CohortMember:      true,
+				}},
+			}),
+		}, nil
+
 	case *BlockEpochEvent:
 		// Check if we've hit critical expiry while waiting for
 		// forfeit details.

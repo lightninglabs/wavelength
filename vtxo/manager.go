@@ -6,12 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chaincfg/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/btcsuite/btcwallet/waddrmgr"
@@ -28,6 +30,30 @@ import (
 // defaultForfeitVTXOActorAskTimeout bounds one stalled refresh/forfeit child
 // actor turn without making healthy child work race an overly short deadline.
 const defaultForfeitVTXOActorAskTimeout = 5 * time.Second
+
+// maxAutoRefreshCohortSize keeps coordinated fanout well below the default
+// actor mailbox capacity. Larger same-expiry sets are picked up by later
+// threshold leaders instead of monopolizing the manager admission turn.
+const maxAutoRefreshCohortSize = 32
+
+// autoRefreshCohortMember is a sibling whose VTXO actor completed its local
+// reservation and returned a round request to the active manager turn.
+type autoRefreshCohortMember struct {
+	outpoint wire.OutPoint
+	ref      VTXOActorRef
+	request  *round.RefreshVTXORequest
+
+	// adopted is true when the sibling had already self-transitioned and
+	// queued its own leader relay. On aggregate handoff failure that relay
+	// is unsuppressed instead of releasing a reservation we did not create.
+	adopted    bool
+	generation uint64
+}
+
+type autoRefreshCandidate struct {
+	descriptor *Descriptor
+	pending    bool
+}
 
 // ExitOutcomeResolution is the persisted terminal result for an exiting VTXO,
 // as resolved from the subsystem that owns unilateral-exit jobs.
@@ -50,6 +76,11 @@ type ExitOutcomeResolution struct {
 type ExitOutcomeResolver func(
 	context.Context, wire.OutPoint,
 ) (fn.Option[ExitOutcomeResolution], error)
+
+// ForfeitRoundCheckpointLookup reports whether a forfeit round reached its
+// durable InputSigSent checkpoint. A false result is positive proof that no
+// collected forfeit signatures were handed to the operator.
+type ForfeitRoundCheckpointLookup func(context.Context, string) (bool, error)
 
 // VTXOActorRef is the actor reference type for VTXO actors. Uses
 // actormsg.VTXOActorMsg as the message type to enable both round and vtxo
@@ -134,6 +165,13 @@ type ManagerConfig struct {
 	// with the exit job's terminal result.
 	ExitOutcomeResolver ExitOutcomeResolver
 
+	// HasForfeitRoundCheckpoint lets startup distinguish a Forfeiting VTXO
+	// stranded before signature handoff from one owned by a persisted
+	// round. Missing bindings, lookup errors, and a nil callback fail
+	// closed: the VTXO remains Forfeiting. Only an explicit false result is
+	// releasable.
+	HasForfeitRoundCheckpoint ForfeitRoundCheckpointLookup
+
 	// ReservationStore is the durable spending-reservation index. When set,
 	// the manager runs a startup sweep that releases orphaned Spending
 	// VTXOs (those with no reservation row) and deletes reservations as
@@ -183,6 +221,17 @@ type Manager struct {
 	// reserveEpoch is the monotonic counter stamped into the reserved map
 	// on each markReserved. Manager-goroutine-owned, like the map.
 	reserveEpoch uint64
+
+	// autoRefreshCohortGeneration is a manager-goroutine-owned monotonic
+	// token that prevents rollback from one coordination attempt releasing
+	// a later attempt led by the same VTXO.
+	autoRefreshCohortGeneration uint64
+
+	// adoptedAutoRefreshRelays suppresses already-queued same-block leader
+	// relays after their requests were adopted into an earlier atomic
+	// cohort. The trigger height prevents a later retry on the same
+	// outpoint from being mistaken for the adopted delivery.
+	adoptedAutoRefreshRelays map[wire.OutPoint]int32
 
 	// liveDescriptors snapshots the live VTXO descriptors recovered
 	// from the store during Start. The list is the source of truth for
@@ -653,6 +702,12 @@ func (m *Manager) handleReconcileExpiry(
 	// reservation before driving the now-ready refresh path.
 	m.releaseOrphanedForfeits(ctx)
 
+	// Finalizing a round and notifying each old VTXO are separate outbox
+	// effects. A crash between them leaves the round durably confirmed but
+	// its VTXO actor restored in Forfeiting. Re-drive those confirmations
+	// on this serialized manager turn before broadcasting the startup tip.
+	confirmedForfeits := m.reconcileConfirmedForfeits(ctx)
+
 	result := m.cfg.ChainSource.Ask(
 		ctx, &chainsource.BestHeightRequest{},
 	).Await(ctx)
@@ -679,6 +734,10 @@ func (m *Manager) handleReconcileExpiry(
 
 	var checked int
 	for outpoint, ref := range m.actors {
+		if _, confirmed := confirmedForfeits[outpoint]; confirmed {
+			continue
+		}
+
 		actorResult := m.askForfeitVTXOActor(ctx, ref, epoch)
 		actorResponse, err := actorResult.Unpack()
 		if err != nil {
@@ -732,6 +791,115 @@ func (m *Manager) handleReconcileExpiry(
 	return fn.Ok[ManagerResp](&ReconcileExpiryResponse{
 		Checked: checked,
 	})
+}
+
+// reconcileConfirmedForfeits closes the crash gap between round finalization
+// and the best-effort ForfeitConfirmedEvent Tell to each old VTXO actor. A
+// joined settlement with a positive confirmation height is durable proof that
+// the consuming round confirmed; absent or incomplete settlement data and all
+// lookup/actor errors fail closed in Forfeiting.
+func (m *Manager) reconcileConfirmedForfeits(
+	ctx context.Context,
+) map[wire.OutPoint]struct{} {
+
+	reconciled := make(map[wire.OutPoint]struct{})
+	forfeiting, err := m.cfg.Store.ListVTXOsByStatus(
+		ctx, VTXOStatusForfeiting,
+	)
+	if err != nil {
+		m.logger(ctx).WarnS(
+			ctx,
+			"Confirmed forfeit reconcile: list failed",
+			err,
+		)
+
+		return reconciled
+	}
+
+	for _, desc := range forfeiting {
+		if desc == nil || desc.Settlement.IsNone() {
+			continue
+		}
+
+		settlement := desc.Settlement.UnsafeFromSome()
+		if desc.ForfeitRoundID == "" || settlement.Height <= 0 ||
+			settlement.TxID == (chainhash.Hash{}) {
+
+			continue
+		}
+
+		ref, ok := m.actors[desc.Outpoint]
+		if !ok {
+			m.logger(ctx).WarnS(
+				ctx,
+				"Confirmed forfeit reconcile: actor missing",
+				nil,
+				slog.String("outpoint", desc.Outpoint.String()),
+				slog.String(
+					"commitment_txid",
+					settlement.TxID.String(),
+				),
+			)
+
+			continue
+		}
+
+		response, err := m.askForfeitVTXOActor(
+			ctx, ref, &round.ForfeitConfirmedEvent{
+				CommitmentTxID: settlement.TxID,
+				BlockHeight:    settlement.Height,
+			},
+		).Unpack()
+		if err != nil {
+			m.logger(ctx).WarnS(
+				ctx,
+				"Confirmed forfeit reconcile: actor failed",
+				err,
+				slog.String("outpoint", desc.Outpoint.String()),
+			)
+
+			continue
+		}
+
+		transition, ok := response.(VTXOActorResponse)
+		if !ok {
+			m.logger(ctx).WarnS(
+				ctx,
+				"Confirmed forfeit reconcile: bad response",
+				nil,
+				slog.String("outpoint", desc.Outpoint.String()),
+				slog.String(
+					"response_type",
+					fmt.Sprintf("%T", response),
+				),
+			)
+
+			continue
+		}
+		if _, ok := transition.NewState.(*ForfeitedState); !ok {
+			m.logger(ctx).WarnS(
+				ctx,
+				"Confirmed forfeit reconcile: not terminal",
+				nil,
+				slog.String("outpoint", desc.Outpoint.String()),
+				slog.String(
+					"state", fmt.Sprintf("%T",
+						transition.NewState),
+				),
+			)
+
+			continue
+		}
+
+		reconciled[desc.Outpoint] = struct{}{}
+	}
+
+	m.logger(ctx).InfoS(ctx, "Confirmed forfeit reconcile complete",
+		slog.Int("forfeiting", len(forfeiting)),
+		slog.Int("reconciled", len(reconciled)),
+	)
+
+	return reconciled
 }
 
 // handleVTXOCreated spawns a new VTXO actor for each created VTXO.
@@ -1249,16 +1417,71 @@ func (m *Manager) handleVTXOTerminated(ctx context.Context,
 func (m *Manager) handleRelayToRound(ctx context.Context,
 	msg *RelayToRoundMsg) fn.Result[ManagerResp] {
 
+	payload := msg.Payload
+	var cohortMembers []autoRefreshCohortMember
+	req, refresh := msg.Payload.(*round.RefreshVTXORequest)
+	if refresh && req.Automatic && m.consumeAdoptedAutoRefreshRelay(req) {
+		m.logger(ctx).DebugS(
+			ctx,
+			"Suppressed adopted automatic refresh leader relay",
+			slog.String("outpoint", req.VTXOOutpoint.String()),
+			slog.Int("trigger_height", int(req.TriggerHeight)),
+		)
+
+		return fn.Ok[ManagerResp](&RelayToRoundResp{})
+	}
+	if refresh && req.Automatic && req.ExpandCohort {
+		cohortMembers = m.coordinateAutoRefreshCohort(ctx, req)
+		requests := make(
+			[]*round.RefreshVTXORequest, 0, len(cohortMembers)+1,
+		)
+		for i := range cohortMembers {
+			requests = append(requests, cohortMembers[i].request)
+		}
+		requests = append(requests, req)
+		sort.Slice(requests, func(i, j int) bool {
+			left := requests[i].VTXOOutpoint
+			right := requests[j].VTXOOutpoint
+			if cmp := bytes.Compare(
+				left.Hash[:], right.Hash[:],
+			); cmp != 0 {
+				return cmp < 0
+			}
+
+			return left.Index < right.Index
+		})
+		payload = &round.RefreshVTXOCohortRequest{
+			Requests: requests,
+		}
+	}
+
 	// Relay messages can originate from async VTXO outbox work. The caller
 	// context is only useful for enqueue cancellation, so detach before the
 	// final round-actor handoff and let the destination actor lifecycle
 	// decide whether the message can be accepted.
 	notifyCtx := context.WithoutCancel(ctx)
-	if err := m.cfg.RoundActor.Tell(notifyCtx, msg.Payload); err != nil {
+	if err := m.cfg.RoundActor.Tell(notifyCtx, payload); err != nil {
+		for i := range cohortMembers {
+			member := cohortMembers[i]
+			if member.adopted {
+				m.forgetAdoptedAutoRefreshRelay(member.request)
+
+				continue
+			}
+			m.releaseAutoRefreshCohortMember(
+				ctx, member.ref, member.outpoint,
+				req.VTXOOutpoint, member.generation,
+			)
+		}
+		if refresh && req.Automatic {
+			m.rollbackForfeit(
+				ctx, []wire.OutPoint{req.VTXOOutpoint},
+			)
+		}
 		m.logger(ctx).WarnS(ctx, "Failed to relay to round",
 			err,
 			slog.String(
-				"payload_type", fmt.Sprintf("%T", msg.Payload),
+				"payload_type", fmt.Sprintf("%T", payload),
 			),
 		)
 
@@ -1268,6 +1491,312 @@ func (m *Manager) handleRelayToRound(ctx context.Context,
 	}
 
 	return fn.Ok[ManagerResp](&RelayToRoundResp{})
+}
+
+// coordinateAutoRefreshCohort pulls eligible live siblings from the same
+// batch into the initiating automatic refresh. Child transitions are driven
+// with sequential Asks under one aggregate deadline before the leader reaches
+// the round actor. Cohort members return their constructed request directly
+// in the Ask response, avoiding recursive manager-mailbox re-entry.
+//
+// Cohort expansion is best-effort. A store or child failure must not delay the
+// initiating VTXO's own maintenance attempt, and each child independently
+// refuses stale, critical, reserved, or non-live requests.
+func (m *Manager) coordinateAutoRefreshCohort(ctx context.Context,
+	req *round.RefreshVTXORequest) []autoRefreshCohortMember {
+
+	if m.cfg.Store == nil || req.BatchExpiry <= 0 ||
+		req.TriggerHeight <= 0 {
+		return nil
+	}
+
+	m.autoRefreshCohortGeneration++
+	generation := m.autoRefreshCohortGeneration
+
+	cohortCtx := ctx
+	cancel := func() {}
+	if timeout := m.forfeitVTXOActorAskTimeout(); timeout > 0 {
+		cohortCtx, cancel = context.WithTimeout(ctx, timeout)
+	}
+	defer cancel()
+
+	operatorKey, keyOK := m.autoRefreshCohortOperatorKey(
+		cohortCtx, req,
+	)
+	if !keyOK {
+		return nil
+	}
+
+	liveCandidates, err := m.cfg.Store.ListVTXOsByStatus(
+		cohortCtx, VTXOStatusLive,
+	)
+	if err != nil {
+		m.logger(ctx).WarnS(
+			ctx,
+			"Failed to list automatic refresh cohort",
+			err,
+			slog.String(
+				"leader_outpoint", req.VTXOOutpoint.String(),
+			),
+			slog.Int("batch_expiry", int(req.BatchExpiry)),
+		)
+
+		return nil
+	}
+	pendingCandidates, pendingErr := m.cfg.Store.ListVTXOsByStatus(
+		cohortCtx, VTXOStatusPendingForfeit,
+	)
+	if pendingErr != nil {
+		m.logger(ctx).WarnS(
+			ctx,
+			"Failed to list pending automatic refresh cohort",
+			pendingErr,
+			slog.String(
+				"leader_outpoint", req.VTXOOutpoint.String(),
+			),
+			slog.Int("batch_expiry", int(req.BatchExpiry)),
+		)
+	}
+
+	eligible := make(
+		[]autoRefreshCandidate, 0,
+		len(liveCandidates)+len(pendingCandidates),
+	)
+	seen := make(map[wire.OutPoint]struct{}, cap(eligible))
+	expiryConfig := m.cfg.ExpiryConfig
+	addCandidates := func(candidates []*Descriptor, pending bool) {
+		for _, candidate := range candidates {
+			if candidate == nil ||
+				candidate.Outpoint == req.VTXOOutpoint ||
+				candidate.BatchExpiry != req.BatchExpiry ||
+				m.isReserved(candidate.Outpoint) {
+
+				continue
+			}
+			waitForFreeWindow := !pending &&
+				expiryConfig.ShouldWaitForFreeRefreshWindow(
+					candidate, req.TriggerHeight,
+				)
+			if waitForFreeWindow {
+				continue
+			}
+			if _, ok := m.actors[candidate.Outpoint]; !ok {
+				continue
+			}
+			if _, ok := seen[candidate.Outpoint]; ok {
+				continue
+			}
+			seen[candidate.Outpoint] = struct{}{}
+
+			eligible = append(eligible, autoRefreshCandidate{
+				descriptor: candidate,
+				pending:    pending,
+			})
+		}
+	}
+	addCandidates(pendingCandidates, true)
+	addCandidates(liveCandidates, false)
+
+	// Store iteration order must not choose which siblings fit the bounded
+	// cohort or influence equal-value output ordering in the round.
+	sort.Slice(eligible, func(i, j int) bool {
+		if eligible[i].pending != eligible[j].pending {
+			return eligible[i].pending
+		}
+		left := eligible[i].descriptor.Outpoint
+		right := eligible[j].descriptor.Outpoint
+		if cmp := bytes.Compare(left.Hash[:], right.Hash[:]); cmp != 0 {
+			return cmp < 0
+		}
+
+		return left.Index < right.Index
+	})
+
+	// The leader consumes one slot. Overflow is deliberately left Live so
+	// later threshold ticks can form another bounded cohort.
+	remaining := maxAutoRefreshCohortSize - 1
+	members := make([]autoRefreshCohortMember, 0, remaining)
+	for _, candidate := range eligible {
+		if remaining <= 0 {
+			break
+		}
+		if cohortCtx.Err() != nil {
+			break
+		}
+
+		descriptor := candidate.descriptor
+		ref := m.actors[descriptor.Outpoint]
+
+		response, err := m.askForfeitVTXOActor(
+			cohortCtx, ref, &CohortRefreshEvent{
+				Height:         req.TriggerHeight,
+				BatchExpiry:    req.BatchExpiry,
+				LeaderOutpoint: req.VTXOOutpoint,
+				Generation:     generation,
+				OperatorKey:    operatorKey,
+			},
+		).Unpack()
+		if err != nil {
+			m.logger(ctx).WarnS(ctx,
+				"Automatic refresh cohort member declined",
+				err,
+				slog.String(
+					"outpoint",
+					descriptor.Outpoint.String(),
+				),
+				slog.String(
+					"leader_outpoint",
+					req.VTXOOutpoint.String(),
+				),
+			)
+			m.releaseAutoRefreshCohortMember(
+				ctx, ref, descriptor.Outpoint, req.VTXOOutpoint,
+				generation,
+			)
+
+			if cohortCtx.Err() != nil {
+				break
+			}
+
+			continue
+		}
+
+		transition, ok := response.(VTXOActorResponse)
+		if !ok {
+			continue
+		}
+		_, wasLive := transition.PriorState.(*LiveState)
+		_, wasPending := transition.PriorState.(*PendingForfeitState)
+		_, isPending := transition.NewState.(*PendingForfeitState)
+		if (!wasLive && !wasPending) || !isPending {
+			continue
+		}
+		if transition.RoundRequest == nil {
+			m.releaseAutoRefreshCohortMember(
+				ctx, ref, descriptor.Outpoint, req.VTXOOutpoint,
+				generation,
+			)
+
+			continue
+		}
+
+		members = append(members, autoRefreshCohortMember{
+			outpoint:   descriptor.Outpoint,
+			ref:        ref,
+			request:    transition.RoundRequest,
+			adopted:    wasPending,
+			generation: generation,
+		})
+		if wasPending {
+			m.rememberAdoptedAutoRefreshRelay(
+				transition.RoundRequest,
+			)
+		}
+		remaining--
+	}
+
+	m.logger(ctx).InfoS(ctx, "Coordinated automatic refresh cohort",
+		slog.String("leader_outpoint", req.VTXOOutpoint.String()),
+		slog.Int("batch_expiry", int(req.BatchExpiry)),
+		slog.Int("trigger_height", int(req.TriggerHeight)),
+		slog.Int("cohort_members_reserved", len(members)),
+		slog.Int("cohort_size", len(members)+1),
+		slog.Int("cohort_limit", maxAutoRefreshCohortSize),
+		slog.Bool("deadline_exhausted", cohortCtx.Err() != nil),
+	)
+
+	return members
+}
+
+// autoRefreshCohortOperatorKey returns one operator-key snapshot for every
+// sibling in a cohort. A leader normally carries the key used to build its
+// own replacement policy; the fallback covers direct and legacy callers.
+func (m *Manager) autoRefreshCohortOperatorKey(ctx context.Context,
+	req *round.RefreshVTXORequest) (*btcec.PublicKey, bool) {
+
+	if req.OperatorKey != nil || m.cfg.FetchOperatorKey == nil {
+		return req.OperatorKey, true
+	}
+
+	operatorKey, err := m.cfg.FetchOperatorKey(ctx)
+	if err == nil && operatorKey != nil {
+		return operatorKey, true
+	}
+	if err == nil {
+		err = fmt.Errorf("nil operator key returned")
+	}
+	m.logger(ctx).WarnS(
+		ctx,
+		"Failed to snapshot automatic refresh cohort terms",
+		err,
+		slog.String("leader_outpoint", req.VTXOOutpoint.String()),
+	)
+
+	return nil, false
+}
+
+// rememberAdoptedAutoRefreshRelay records a same-block leader relay that is
+// already represented in the atomic cohort about to reach the round actor.
+func (m *Manager) rememberAdoptedAutoRefreshRelay(
+	req *round.RefreshVTXORequest) {
+
+	if m.adoptedAutoRefreshRelays == nil {
+		m.adoptedAutoRefreshRelays = make(map[wire.OutPoint]int32)
+	}
+	m.adoptedAutoRefreshRelays[req.VTXOOutpoint] = req.TriggerHeight
+}
+
+// forgetAdoptedAutoRefreshRelay lets the original queued leader relay retry
+// when the aggregate manager-to-round handoff itself failed.
+func (m *Manager) forgetAdoptedAutoRefreshRelay(req *round.RefreshVTXORequest) {
+	if trigger, ok := m.adoptedAutoRefreshRelays[req.VTXOOutpoint]; ok &&
+		trigger == req.TriggerHeight {
+
+		delete(m.adoptedAutoRefreshRelays, req.VTXOOutpoint)
+	}
+}
+
+// consumeAdoptedAutoRefreshRelay drops exactly the queued delivery already
+// included by an earlier manager turn, without suppressing future retries.
+func (m *Manager) consumeAdoptedAutoRefreshRelay(
+	req *round.RefreshVTXORequest) bool {
+
+	trigger, ok := m.adoptedAutoRefreshRelays[req.VTXOOutpoint]
+	if !ok || trigger != req.TriggerHeight {
+		return false
+	}
+
+	delete(m.adoptedAutoRefreshRelays, req.VTXOOutpoint)
+
+	return true
+}
+
+// releaseAutoRefreshCohortMember queues a sibling rollback after an ambiguous
+// Ask result or failed round relay. Per-actor mailbox FIFO makes the release
+// land after any timed-out cohort transition that may still finish. The
+// enqueue gets a fresh bounded context because the aggregate discovery
+// deadline may already have expired.
+func (m *Manager) releaseAutoRefreshCohortMember(ctx context.Context,
+	ref VTXOActorRef, outpoint, leaderOutpoint wire.OutPoint,
+	generation uint64) {
+
+	rollbackCtx, cancel := m.rollbackContext(ctx)
+	defer cancel()
+
+	err := ref.Tell(rollbackCtx, &CohortRefreshReleaseEvent{
+		LeaderOutpoint: leaderOutpoint,
+		Generation:     generation,
+	})
+	if err == nil {
+		return
+	}
+
+	m.logger(ctx).WarnS(
+		ctx,
+		"Failed to release automatic refresh cohort member",
+		err,
+		slog.String("outpoint", outpoint.String()),
+	)
 }
 
 // spawnVTXOActor creates a new VTXO FSM actor.
@@ -1774,23 +2303,27 @@ func (m *Manager) sweepOrphanedReservations(ctx context.Context) {
 	)
 }
 
-// releaseOrphanedForfeits returns VTXOs stranded in PendingForfeitState back to
-// LiveState at startup. A VTXO enters PendingForfeitState when an in-flight
-// cooperative round (refresh, leave, or directed send) reserves it as a forfeit
-// input. That reservation is owned by the round FSM, which is in-memory only:
-// temp rounds are never persisted, and the rounds table is not written until
-// InputSigSentState, the point of no return. A daemon that restarts while a
-// round sits in any pre-signing state therefore loses the FSM that would have
-// released the reservation on failure (round.releaseForfeitsOnFailure), leaving
-// the VTXO orphaned in PendingForfeitState with no path back to Live.
+// releaseOrphanedForfeits returns VTXOs stranded before the durable round
+// checkpoint back to LiveState at startup. A VTXO enters PendingForfeitState
+// when an in-flight cooperative round (refresh, leave, or directed send)
+// reserves it as a forfeit input. That reservation is owned by the round FSM,
+// which is in-memory only: temp rounds are never persisted, and the rounds
+// table is not written until InputSigSentState, the point of no return. A
+// daemon that restarts while a round sits in any pre-signing state therefore
+// loses the FSM that would have released the reservation on failure
+// (round.releaseForfeitsOnFailure), leaving the VTXO orphaned in
+// PendingForfeitState with no path back to Live.
 //
 // Any VTXO found in PendingForfeitState at startup is provably orphaned.
 // Forfeit signatures are only submitted on the PendingForfeit -> Forfeiting
 // transition, so a still-PendingForfeit VTXO has leaked no signature and the
 // operator cannot broadcast a forfeit; returning it to LiveState is safe and
-// cannot double-spend. VTXOs already in Forfeiting or Forfeited are past the
-// point of no return and are deliberately left untouched for chain-confirmation
-// reconciliation.
+// cannot double-spend. A Forfeiting VTXO may also be pre-checkpoint: actors
+// persist that state while collecting signatures, before the round persists
+// InputSigSent and hands the signatures to the operator. Such a VTXO is
+// released only when its forfeit-round binding is present and the durable
+// lookup explicitly proves that no checkpoint row exists. Missing bindings
+// and lookup errors retain the VTXO, as do all checkpointed rounds.
 func (m *Manager) releaseOrphanedForfeits(ctx context.Context) {
 	pending, err := m.cfg.Store.ListVTXOsByStatus(
 		ctx, VTXOStatusPendingForfeit,
@@ -1849,6 +2382,96 @@ func (m *Manager) releaseOrphanedForfeits(ctx context.Context) {
 
 	m.logger(ctx).InfoS(ctx, "Forfeit sweep complete",
 		slog.Int("pending_forfeit", len(pending)),
+		slog.Int("released", released),
+	)
+
+	m.releasePreCheckpointForfeits(ctx)
+}
+
+// releasePreCheckpointForfeits releases recovered Forfeiting VTXOs only when
+// durable storage positively proves their consuming round never reached the
+// InputSigSent checkpoint. Every ambiguous case is retained.
+func (m *Manager) releasePreCheckpointForfeits(ctx context.Context) {
+	lookup := m.cfg.HasForfeitRoundCheckpoint
+	if lookup == nil {
+		return
+	}
+
+	forfeiting, err := m.cfg.Store.ListVTXOsByStatus(
+		ctx, VTXOStatusForfeiting,
+	)
+	if err != nil {
+		m.logger(ctx).WarnS(
+			ctx,
+			"Forfeit sweep: list Forfeiting VTXOs failed",
+			err,
+		)
+
+		return
+	}
+
+	var released int
+	for _, desc := range forfeiting {
+		op := desc.Outpoint
+		if desc.ForfeitRoundID == "" {
+			m.logger(ctx).WarnS(
+				ctx,
+				"Forfeit sweep: missing forfeit round binding",
+				nil,
+				slog.String("outpoint", op.String()),
+			)
+
+			continue
+		}
+
+		checkpointed, err := lookup(ctx, desc.ForfeitRoundID)
+		if err != nil {
+			m.logger(ctx).WarnS(
+				ctx,
+				"Forfeit sweep: checkpoint lookup failed",
+				err,
+				slog.String("outpoint", op.String()),
+				slog.String("round_id", desc.ForfeitRoundID),
+			)
+
+			continue
+		}
+		if checkpointed {
+			continue
+		}
+
+		ref, ok := m.actors[op]
+		if !ok {
+			m.logger(ctx).WarnS(
+				ctx,
+				"Forfeit sweep: no actor for pre-checkpoint "+
+					"Forfeiting VTXO", nil,
+				slog.String("outpoint", op.String()),
+			)
+
+			continue
+		}
+
+		result := m.askForfeitVTXOActor(
+			ctx, ref, &ForfeitReleasedEvent{},
+		)
+		if _, err := result.Unpack(); err != nil {
+			m.logger(ctx).WarnS(
+				ctx,
+				"Forfeit sweep: pre-checkpoint release failed",
+				err,
+				slog.String("outpoint", op.String()),
+			)
+
+			continue
+		}
+
+		m.markDescriptorLive(op)
+		released++
+	}
+
+	m.logger(ctx).InfoS(ctx, "Pre-checkpoint forfeit sweep complete",
+		slog.Int("forfeiting", len(forfeiting)),
 		slog.Int("released", released),
 	)
 }

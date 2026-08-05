@@ -5,10 +5,11 @@
 -- name: ListVTXOsByStatus :many
 -- ListVTXOsByStatus returns all VTXOs with the specified status. It also
 -- LEFT JOINs the round that forfeited each VTXO (via forfeit_round_id) so a
--- FORFEITED VTXO can surface the settling commitment txid and its confirmation
--- height. The join columns are NULL for every VTXO whose forfeit round is
--- unknown (all non-forfeited VTXOs, and forfeited ones whose round row is
--- absent), so consumers must treat them as optional.
+-- FORFEITING or FORFEITED VTXO can surface the settling commitment txid and
+-- its confirmation height. A positive height on a FORFEITING row closes the
+-- restart gap between round finalization and VTXO notification. The join
+-- columns are NULL whenever the forfeit round is unknown, so consumers must
+-- treat them as optional.
 --
 -- settlement_fee_sat is the TOTAL operator fee the client's ledger booked for
 -- the forfeit round (boarding_fee_paid + refresh_fee_paid, joined via the

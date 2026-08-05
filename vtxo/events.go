@@ -1,6 +1,8 @@
 package vtxo
 
 import (
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/lib/actormsg"
 	"github.com/lightninglabs/wavelength/round"
@@ -59,6 +61,63 @@ type (
 	// LiveState.
 	ForfeitReleasedEvent = round.ForfeitReleasedEvent
 )
+
+// CohortRefreshEvent asks an eligible sibling VTXO to join an automatic
+// refresh already triggered by another VTXO from the same batch. The manager
+// sends these requests with bounded Ask backpressure before forwarding the
+// initiating request to the round actor.
+type CohortRefreshEvent struct {
+	actor.BaseMessage
+
+	// Height is the chain height that triggered the cohort leader.
+	Height int32
+
+	// BatchExpiry is the shared absolute expiry used as a defensive
+	// cross-check before the sibling leaves LiveState.
+	BatchExpiry int32
+
+	// LeaderOutpoint is the coordination generation token. A best-effort
+	// rollback only applies if this leader reserved the sibling.
+	LeaderOutpoint wire.OutPoint
+
+	// Generation uniquely identifies this leader's coordination attempt. It
+	// prevents a delayed rollback from an earlier retry releasing a newer
+	// reservation led by the same outpoint.
+	Generation uint64
+
+	// OperatorKey is the leader's join-time operator-key snapshot. Every
+	// sibling uses the same key so one cohort cannot mix operator terms.
+	OperatorKey *btcec.PublicKey
+}
+
+// VTXOActorMsg implements actormsg.VTXOActorMsg.
+func (e *CohortRefreshEvent) VTXOActorMsg() {}
+
+// MessageType returns the message type for logging.
+func (e *CohortRefreshEvent) MessageType() string {
+	return "CohortRefreshEvent"
+}
+
+// CohortRefreshReleaseEvent rolls back only the automatic reservation owned
+// by the named cohort leader. It cannot release a manual or competing round's
+// pending forfeit if the store snapshot raced another admission.
+type CohortRefreshReleaseEvent struct {
+	actor.BaseMessage
+
+	// LeaderOutpoint identifies the cohort whose reservation is released.
+	LeaderOutpoint wire.OutPoint
+
+	// Generation identifies the exact coordination attempt to release.
+	Generation uint64
+}
+
+// VTXOActorMsg implements actormsg.VTXOActorMsg.
+func (e *CohortRefreshReleaseEvent) VTXOActorMsg() {}
+
+// MessageType returns the message type for logging.
+func (e *CohortRefreshReleaseEvent) MessageType() string {
+	return "CohortRefreshReleaseEvent"
+}
 
 // ForceUnrollEvent is sent to a VTXO actor when a unilateral exit is
 // requested (manual RPC, fraud spend, or vHTLC recovery). The VTXO actor

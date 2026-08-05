@@ -70,3 +70,48 @@ func TestDefaultConfigHasPositiveMaxOperatorFee(t *testing.T) {
 	require.Positive(t, cfg.MaxOperatorFeeSat)
 	require.Equal(t, DefaultMaxOperatorFeeSat, cfg.MaxOperatorFeeSat)
 }
+
+// TestDefaultConfigDisablesAutomaticRefreshBudgets verifies the optional
+// maintenance-specific caps preserve existing behavior unless configured.
+func TestDefaultConfigDisablesAutomaticRefreshBudgets(t *testing.T) {
+	t.Parallel()
+
+	cfg := DefaultConfig()
+	require.Zero(t, cfg.AutoRefreshFeeFloorSat)
+	require.Zero(t, cfg.AutoRefreshFeeRatePPM)
+}
+
+// TestConfigValidateAutomaticRefreshBudgets checks both public policy bounds.
+func TestConfigValidateAutomaticRefreshBudgets(t *testing.T) {
+	t.Parallel()
+
+	newConfig := func() *Config {
+		cfg := DefaultConfig()
+		cfg.Network = "regtest"
+		cfg.Server.Host = "127.0.0.1:10010"
+		cfg.Wallet.EsploraURL = "http://127.0.0.1:3000"
+
+		return cfg
+	}
+
+	negativeFloor := newConfig()
+	negativeFloor.AutoRefreshFeeFloorSat = -1
+	err := negativeFloor.Validate()
+	require.ErrorContains(t, err, "autorefreshfeefloorsat")
+
+	invalidRate := newConfig()
+	invalidRate.AutoRefreshFeeRatePPM = 1_000_001
+	err = invalidRate.Validate()
+	require.ErrorContains(t, err, "autorefreshfeerateppm")
+
+	floorAboveGlobal := newConfig()
+	floorAboveGlobal.AutoRefreshFeeFloorSat =
+		floorAboveGlobal.MaxOperatorFeeSat + 1
+	err = floorAboveGlobal.Validate()
+	require.ErrorContains(t, err, "must not exceed maxoperatorfeesat")
+
+	valid := newConfig()
+	valid.AutoRefreshFeeFloorSat = 10_000
+	valid.AutoRefreshFeeRatePPM = 25_000
+	require.NoError(t, valid.Validate())
+}

@@ -1416,17 +1416,19 @@ func descriptorToProto(v *vtxo.Descriptor) *waverpc.VTXO {
 		ChainDepth:     uint32(v.ChainDepth),
 	}
 
-	// Settlement is Some only for FORFEITED VTXOs whose forfeit round row
-	// was found by the by-status join; for every other VTXO it is None and
-	// the proto settlement message stays nil, so absence is explicit on the
-	// wire.
-	v.Settlement.WhenSome(func(s vtxo.Settlement) {
-		proto.Settlement = &waverpc.VTXOSettlement{
-			Txid:   s.TxID.String(),
-			Height: s.Height,
-			FeeSat: s.FeeSat,
-		}
-	})
+	// Settlement remains private until the VTXO reaches its terminal
+	// FORFEITED state. FORFEITING descriptors may carry this data
+	// internally so startup reconciliation can close the confirmation crash
+	// gap.
+	if v.Status == vtxo.VTXOStatusForfeited {
+		v.Settlement.WhenSome(func(s vtxo.Settlement) {
+			proto.Settlement = &waverpc.VTXOSettlement{
+				Txid:   s.TxID.String(),
+				Height: s.Height,
+				FeeSat: s.FeeSat,
+			}
+		})
+	}
 
 	return proto
 }

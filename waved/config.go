@@ -370,6 +370,18 @@ type Config struct {
 	// below any reasonable mainnet abuse threshold.
 	MaxOperatorFeeSat int64 `mapstructure:"maxoperatorfeesat"`
 
+	// AutoRefreshFeeFloorSat is the optional fixed allowance in the
+	// automatic maintenance budget curve. The effective budget is the
+	// larger of this floor and AutoRefreshFeeRatePPM applied to
+	// automatically refreshed value, always clamped by MaxOperatorFeeSat.
+	// Zero disables the floor.
+	AutoRefreshFeeFloorSat int64 `mapstructure:"autorefreshfeefloorsat"`
+
+	// AutoRefreshFeeRatePPM is the optional proportional allowance in the
+	// automatic maintenance budget curve. Zero disables this component.
+	// When both components are zero, only MaxOperatorFeeSat applies.
+	AutoRefreshFeeRatePPM uint32 `mapstructure:"autorefreshfeerateppm"`
+
 	// OOR configures off-band receive/send actor behavior.
 	OOR *OORConfig `mapstructure:"oor"`
 
@@ -1183,6 +1195,19 @@ func (c *Config) Validate() error {
 	if c.MaxOperatorFeeSat <= 0 {
 		return fmt.Errorf("maxoperatorfeesat must be positive: got %d",
 			c.MaxOperatorFeeSat)
+	}
+	if c.AutoRefreshFeeRatePPM > 1_000_000 {
+		return fmt.Errorf("autorefreshfeerateppm must not exceed "+
+			"1000000: got %d", c.AutoRefreshFeeRatePPM)
+	}
+	if c.AutoRefreshFeeFloorSat < 0 {
+		return fmt.Errorf("autorefreshfeefloorsat must be "+
+			"non-negative: got %d", c.AutoRefreshFeeFloorSat)
+	}
+	if c.AutoRefreshFeeFloorSat > c.MaxOperatorFeeSat {
+		return fmt.Errorf("autorefreshfeefloorsat must not exceed "+
+			"maxoperatorfeesat: floor=%d, max=%d",
+			c.AutoRefreshFeeFloorSat, c.MaxOperatorFeeSat)
 	}
 
 	if c.SigningWorkers < 0 {

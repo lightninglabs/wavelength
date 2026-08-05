@@ -3065,6 +3065,53 @@ func TestForfeitSignaturesCollectingState(t *testing.T) {
 			}
 		})
 
+	t.Run("checkpoint_failure_emits_no_signatures", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+		checkpointErr := fmt.Errorf("checkpoint unavailable")
+		h.roundStore.On(
+			"CommitState", mock.Anything, mock.Anything,
+			mock.Anything,
+		).Return(checkpointErr).Once()
+
+		vtxoOutpoint := h.newTestOutpoint()
+		connectorOutpoint := h.newTestOutpoint()
+		roundID := testRoundIDTr("round-checkpoint-failure")
+		state := h.newForfeitCollectingState(
+			roundID, Intents{},
+			map[wire.OutPoint]*ConnectorLeafInfo{
+				vtxoOutpoint: {
+					LeafIndex:         0,
+					ConnectorOutpoint: connectorOutpoint,
+					ConnectorPkScript: []byte{0x51, 0x20},
+					ConnectorAmount:   546,
+					VTXOAmount:        50000,
+				},
+			},
+		)
+		h.withState(state)
+
+		event := &ForfeitSignatureResponse{
+			VTXOOutpoint: vtxoOutpoint,
+			RoundID:      roundID.String(),
+			ForfeitTx: h.newTestForfeitTx(
+				vtxoOutpoint, connectorOutpoint,
+				h.forfeitScript(),
+			),
+			Signature: testutils.TestSchnorrSignature(
+				t, "checkpoint-failure",
+			),
+		}
+
+		transition, err := h.sendEvent(event)
+		require.ErrorIs(t, err, checkpointErr)
+		require.Nil(t, transition)
+		require.Same(t, state, h.currentState)
+		h.assertOutboxLen(0)
+		h.roundStore.AssertExpectations(t)
+	})
+
 	t.Run("multiple_forfeits_wait_for_all", func(t *testing.T) {
 		t.Parallel()
 

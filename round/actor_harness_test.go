@@ -505,6 +505,14 @@ func (m *mockVTXOManagerRef) TryTell(ctx context.Context,
 	return m.Tell(ctx, msg)
 }
 
+// getMessages returns a snapshot of messages sent to the VTXO manager.
+func (m *mockVTXOManagerRef) getMessages() []actor.Message {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return append([]actor.Message(nil), m.messages...)
+}
+
 // assertVTXOCreatedReceived verifies a VTXOCreatedNotification was received.
 func (m *mockVTXOManagerRef) assertVTXOCreatedReceived(
 	t *testing.T,

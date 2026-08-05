@@ -57,8 +57,8 @@ func leaveIsChangeAt(reqs []*types.LeaveRequest, i int) bool {
 // wallet/wallet.go:874 (manual refresh): N expiring VTXOs flowing
 // into a single assembling round must produce exactly one change
 // marker, not N. With the entry points stripped of in-line
-// IsChange=true, designateChangeMarker stamps the marker on the
-// FIRST VTXO of the composed intent.
+// IsChange=true, designateChangeMarker stamps the marker on the largest VTXO
+// of the composed intent. Equal amounts retain deterministic first position.
 func TestDesignateChangeMarkerRefreshOnlyMultipleVTXOs(t *testing.T) {
 	t.Parallel()
 
@@ -81,6 +81,31 @@ func TestDesignateChangeMarkerRefreshOnlyMultipleVTXOs(t *testing.T) {
 		t, vtxoIsChangeAt(vtxos, 2),
 		"third VTXO must remain unmarked",
 	)
+}
+
+// TestDesignateChangeMarkerUsesLargestFlexibleVTXO verifies the output with
+// the most headroom absorbs the fee, protecting smaller cohort siblings from
+// being resealed below the operator's minimum.
+func TestDesignateChangeMarkerUsesLargestFlexibleVTXO(t *testing.T) {
+	t.Parallel()
+
+	vtxos := []types.VTXORequest{
+		{
+			Amount: 2_000,
+		},
+		{
+			Amount: 20_000,
+		},
+		{
+			Amount: 5_000,
+		},
+	}
+
+	designateChangeMarker(vtxos, nil)
+
+	require.False(t, vtxos[0].IsChange)
+	require.True(t, vtxos[1].IsChange)
+	require.False(t, vtxos[2].IsChange)
 }
 
 // TestDesignateChangeMarkerSkipsFixedVTXOs verifies the default marker is not
