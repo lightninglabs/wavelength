@@ -408,8 +408,8 @@ func TestSendOORSubmitsMultipleRecipients(t *testing.T) {
 }
 
 // TestSendOORReservesExactManagedCustomInputs verifies that outpoint-only
-// custom inputs use the wallet's durable spend reservation path while still
-// selecting precisely the caller-named VTXOs.
+// custom inputs use the wallet's durable spend reservation path, select
+// precisely the caller-named VTXOs, and retain ordinary recipient fanout.
 func TestSendOORReservesExactManagedCustomInputs(t *testing.T) {
 	t.Parallel()
 
@@ -418,13 +418,18 @@ func TestSendOORReservesExactManagedCustomInputs(t *testing.T) {
 	operatorKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
 
-	recipientKey, err := btcec.NewPrivateKey()
+	recipientKeyA, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	recipientKeyB, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
 
 	const (
-		inputAmount = btcutil.Amount(744)
-		amountSat   = int64(2 * inputAmount)
-		exitDelay   = uint32(10)
+		inputAmount     = btcutil.Amount(744)
+		recipientAmount = int64(inputAmount)
+		totalAmount     = 2 * inputAmount
+		floor           = btcutil.Amount(700)
+		exitDelay       = uint32(10)
 	)
 
 	vtxoStore, _, _ := newSendOORTestStores(t)
@@ -486,7 +491,7 @@ func TestSendOORReservesExactManagedCustomInputs(t *testing.T) {
 					PubKey().
 					SerializeCompressed(),
 				VtxoExitDelay: exitDelay,
-				DustLimit:     1000,
+				DustLimit:     int64(floor),
 			},
 		}),
 		actorSystem: system,
@@ -494,9 +499,13 @@ func TestSendOORReservesExactManagedCustomInputs(t *testing.T) {
 		walletRef:   fn.Some(walletRef),
 	}
 
-	recipient := sendOORPolicyRecipient(
-		t, recipientKey.PubKey(), operatorKey.PubKey(), exitDelay,
-		amountSat,
+	recipientA := sendOORPolicyRecipient(
+		t, recipientKeyA.PubKey(), operatorKey.PubKey(), exitDelay,
+		recipientAmount,
+	)
+	recipientB := sendOORPolicyRecipient(
+		t, recipientKeyB.PubKey(), operatorKey.PubKey(), exitDelay,
+		recipientAmount,
 	)
 	requestedOutpoints := []wire.OutPoint{
 		input2.Outpoint, input1.Outpoint,
@@ -504,7 +513,9 @@ func TestSendOORReservesExactManagedCustomInputs(t *testing.T) {
 
 	resp, err := NewRPCServer(server).SendOOR(
 		ctx, &waverpc.SendOORRequest{
-			Recipients: []*waverpc.Output{recipient},
+			Recipients: []*waverpc.Output{
+				recipientA, recipientB,
+			},
 			CustomInputs: []*waverpc.CustomOORInput{
 				{Outpoint: requestedOutpoints[0].String()},
 				{Outpoint: requestedOutpoints[1].String()},
@@ -513,18 +524,18 @@ func TestSendOORReservesExactManagedCustomInputs(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Equal(t, "submitted", resp.GetStatus())
+	require.Len(t, resp.GetRecipientOutpoints(), 2)
 
 	selectReqs := testWallet.selectionRequests()
 	require.Len(t, selectReqs, 1)
-	require.Equal(t, btcutil.Amount(amountSat),
-		selectReqs[0].TargetAmount)
-	require.Equal(t, btcutil.Amount(1000),
-		selectReqs[0].MinChangeAmount)
+	require.Equal(t, totalAmount, selectReqs[0].TargetAmount)
+	require.Equal(t, floor, selectReqs[0].MinChangeAmount)
 	require.Equal(t, requestedOutpoints, selectReqs[0].Outpoints)
 
 	requests := oorActor.capturedRequests()
 	require.Len(t, requests, 1)
 	require.Len(t, requests[0].Inputs, 2)
+	require.Len(t, requests[0].Recipients, 2)
 	require.Equal(
 		t, requestedOutpoints[0], requests[0].Inputs[0].VTXO.Outpoint,
 	)
@@ -634,12 +645,12 @@ func TestSendOORRejectsDuplicateRecipientOutputs(t *testing.T) {
 	require.ErrorContains(t, err, "recipient 1 duplicates recipient 0")
 }
 
-// TestSendOORRejectsCustomInputsWithMultipleRecipients verifies the daemon
-// keeps custom-input sends single-recipient. Custom inputs carry per-input
-// signing material for specialized spend paths, so widening them should happen
-// as a separate protocol change rather than accidentally piggybacking on
-// wallet-selected fanout.
-func TestSendOORRejectsCustomInputsWithMultipleRecipients(t *testing.T) {
+// TestSendOORRejectsExplicitCustomInputsWithMultipleRecipients verifies the
+// daemon keeps custom-spend sends single-recipient. These inputs carry
+// per-input signing material, unlike outpoint-only managed exact inputs.
+func TestSendOORRejectsExplicitCustomInputsWithMultipleRecipients(
+	t *testing.T) {
+
 	t.Parallel()
 
 	operatorKey, err := btcec.NewPrivateKey()
@@ -683,6 +694,12 @@ func TestSendOORRejectsCustomInputsWithMultipleRecipients(t *testing.T) {
 		t, recipientKeyB.PubKey(), operatorKey.PubKey(), exitDelay,
 		amountSat,
 	)
+	customOutpoint := wire.OutPoint{
+		Hash: chainhash.HashH(
+			[]byte("explicit-custom-multi-recipient"),
+		),
+		Index: 0,
+	}
 
 	_, err = NewRPCServer(server).SendOOR(
 		t.Context(), &waverpc.SendOORRequest{
@@ -692,13 +709,14 @@ func TestSendOORRejectsCustomInputsWithMultipleRecipients(t *testing.T) {
 			},
 			DryRun: true,
 			CustomInputs: []*waverpc.CustomOORInput{{
-				Outpoint: "00:0",
+				Outpoint:  customOutpoint.String(),
+				AmountSat: amountSat,
 			}},
 		},
 	)
 	require.Equal(t, codes.InvalidArgument, status.Code(err))
 	require.ErrorContains(
-		t, err, "custom inputs require exactly one recipient",
+		t, err, "explicit custom inputs require exactly one recipient",
 	)
 }
 

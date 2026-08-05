@@ -3114,16 +3114,17 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 		return nil, err
 	}
 
-	if len(req.CustomInputs) > 0 && len(oorRecipients) != 1 {
-		return nil, status.Errorf(codes.InvalidArgument, "custom "+
-			"inputs require exactly one recipient")
-	}
-
 	customOutpoints, exactManagedInputs, err := classifyCustomOORInputs(
 		req.CustomInputs,
 	)
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+
+	if len(req.CustomInputs) > 0 && !exactManagedInputs &&
+		len(oorRecipients) != 1 {
+		return nil, status.Errorf(codes.InvalidArgument, "explicit "+
+			"custom inputs require exactly one recipient")
 	}
 
 	// For dry_run, return a preview before selecting wallet inputs or
