@@ -1,11 +1,14 @@
 package swaps
 
 import (
+	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/lightninglabs/wavelength/swaprpc"
 	"github.com/lightningnetwork/lnd/lntypes"
@@ -34,6 +37,12 @@ func TestRESTSwapServerConnRequestChannelID(t *testing.T) {
 					t, "/v1/swap/request-channel-id",
 					r.URL.Path,
 				)
+				requestBody, err := io.ReadAll(r.Body)
+				require.NoError(t, err)
+				var req swaprpc.RequestChannelIdRequest
+				err = protojson.Unmarshal(requestBody, &req)
+				require.NoError(t, err)
+				require.NotNil(t, req.GetAccountAuthorization())
 
 				routeHintPaths := []*swaprpc.RouteHintPath{{
 					Hops: []*swaprpc.RouteHint{
@@ -61,7 +70,23 @@ func TestRESTSwapServerConnRequestChannelID(t *testing.T) {
 	clientPriv, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
 
-	client := NewRESTSwapServerConn(server.URL)
+	signer := func(_ context.Context, accountKey []byte,
+		requestDigest [32]byte, expiresAtUnix int64,
+		nonce [swaprpc.CreditAccountNonceSize]byte) (*schnorr.Signature,
+		error) {
+
+		require.Equal(
+			t, clientPriv.PubKey().SerializeCompressed(),
+			accountKey,
+		)
+		digest := swaprpc.CreditAccountAuthDigest(
+			clientPriv.PubKey().SerializeCompressed(),
+			requestDigest, expiresAtUnix, nonce[:],
+		)
+
+		return schnorr.Sign(clientPriv, digest[:])
+	}
+	client := NewAuthenticatedRESTSwapServerConn(server.URL, signer)
 	quote, err := client.RequestChannelID(
 		t.Context(), clientPriv.PubKey(), lntypes.Hash{1},
 		btcutil.Amount(42_000), 30, true,

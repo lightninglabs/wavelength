@@ -1,11 +1,14 @@
 package swaps
 
 import (
+	"bytes"
 	"context"
 	"testing"
+	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
+	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/lightninglabs/wavelength/swaprpc"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/stretchr/testify/require"
@@ -25,6 +28,7 @@ type testSwapServiceClient struct {
 	lastAckReq       *swaprpc.AcknowledgeOutSwapHtlcRequest
 	lastSignReq      *swaprpc.SignInSwapForfeitRequest
 	lastSubmitSigReq *swaprpc.SubmitOutSwapForfeitSignatureRequest
+	listCreditReqs   []*swaprpc.ListCreditsRequest
 }
 
 func (c *testSwapServiceClient) AuthorizeInSwapRefund(context.Context,
@@ -68,6 +72,16 @@ func (c *testSwapServiceClient) SubmitOutSwapForfeitSignature(_ context.Context,
 	return &swaprpc.SubmitOutSwapForfeitSignatureResponse{}, nil
 }
 
+// ListCredits records account-scoped requests for authorization assertions.
+func (c *testSwapServiceClient) ListCredits(_ context.Context,
+	req *swaprpc.ListCreditsRequest, _ ...grpc.CallOption) (
+	*swaprpc.ListCreditsResponse, error) {
+
+	c.listCreditReqs = append(c.listCreditReqs, req)
+
+	return &swaprpc.ListCreditsResponse{}, nil
+}
+
 func testForfeitSignaturePayload() *ForfeitSignaturePayload {
 	return &ForfeitSignaturePayload{
 		RequestID: []byte("request-id"),
@@ -87,6 +101,99 @@ func testForfeitSignaturePayload() *ForfeitSignaturePayload {
 		ConnectorPkScript:     []byte("connector-pk-script"),
 		ServerForfeitPkScript: []byte("server-forfeit-pk-script"),
 	}
+}
+
+// TestCreditAccountRPCRequiresSigner verifies an account-scoped request never
+// reaches the server when the transport has no wallet signer.
+func TestCreditAccountRPCRequiresSigner(t *testing.T) {
+	t.Parallel()
+
+	client := &testSwapServiceClient{}
+	conn := newSwapServerConn(client)
+	privKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	_, err = conn.ListCredits(t.Context(), []byte{2, 3, 4}, 10)
+	require.ErrorContains(
+		t, err, "credit account authorization signer is required",
+	)
+	require.Empty(t, client.listCreditReqs)
+
+	_, err = conn.RequestChannelID(
+		t.Context(), privKey.PubKey(), lntypes.Hash{1},
+		btcutil.Amount(1_000), 30, false,
+	)
+	require.ErrorContains(
+		t, err, "credit account authorization signer is required",
+	)
+}
+
+// TestCreditAccountRPCUsesFreshAuthorization verifies every account-scoped
+// call carries a valid signature with a new nonce.
+func TestCreditAccountRPCUsesFreshAuthorization(t *testing.T) {
+	t.Parallel()
+
+	privKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	accountKey := privKey.PubKey().SerializeCompressed()
+	fixedNow := time.Unix(1_800_000_000, 0)
+	nonceBytes := append(
+		bytes.Repeat(
+			[]byte{1}, 32,
+		),
+		bytes.Repeat([]byte{2}, 32)...,
+	)
+
+	client := &testSwapServiceClient{}
+	conn := newSwapServerConn(client)
+	conn.authNow = func() time.Time {
+		return fixedNow
+	}
+	conn.authRand = bytes.NewReader(nonceBytes)
+	conn.creditAccountSigner = func(_ context.Context, gotAccountKey []byte,
+		requestDigest [32]byte, expiresAtUnix int64,
+		nonce [creditAccountNonceSize]byte) (*schnorr.Signature,
+		error) {
+
+		require.Equal(t, accountKey, gotAccountKey)
+		digest := swaprpc.CreditAccountAuthDigest(
+			accountKey, requestDigest, expiresAtUnix, nonce[:],
+		)
+
+		return schnorr.Sign(privKey, digest[:])
+	}
+
+	for range 2 {
+		_, err := conn.ListCredits(t.Context(), accountKey, 10)
+		require.NoError(t, err)
+	}
+	require.Len(t, client.listCreditReqs, 2)
+
+	for _, req := range client.listCreditReqs {
+		auth := req.GetAccountAuthorization()
+		require.NotNil(t, auth)
+		require.Equal(
+			t, fixedNow.Add(creditAccountAuthorizationTTL).Unix(),
+			auth.GetExpiresAtUnix(),
+		)
+
+		requestDigest, gotAccount, err :=
+			swaprpc.CreditAccountRequestDigest(req)
+		require.NoError(t, err)
+		require.Equal(t, accountKey, gotAccount)
+		digest := swaprpc.CreditAccountAuthDigest(
+			accountKey, requestDigest, auth.GetExpiresAtUnix(),
+			auth.GetNonce(),
+		)
+		sig, err := schnorr.ParseSignature(auth.GetSignature())
+		require.NoError(t, err)
+		require.True(t, sig.Verify(digest[:], privKey.PubKey()))
+	}
+	require.NotEqual(
+		t,
+		client.listCreditReqs[0].GetAccountAuthorization().GetNonce(),
+		client.listCreditReqs[1].GetAccountAuthorization().GetNonce(),
+	)
 }
 
 // TestRouteHintPathsFromProto verifies alternative route-hint paths convert
