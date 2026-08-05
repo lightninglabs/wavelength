@@ -87,7 +87,7 @@ package may import from a higher layer.
 
 | Package | Purpose |
 |---------|---------|
-| [`p-models`](p-models/) | Executable P formal models and Go conformance bridge for distributed-systems properties (durable mailbox, Read/Commit fence) |
+| [`p-models`](p-models/) | Executable P formal models and Go conformance bridge for distributed-systems properties (durable mailbox, Read/Commit fence, ingress deferral and redrive) |
 | [`p-models/durableactor/bridge`](p-models/durableactor/bridge/) | Go conformance harness: replays P model mailbox traces against the real `db/actordelivery` store |
 | [`harness`](harness/) | Docker-based Bitcoin/LND integration test environment |
 | [`systest`](systest/) | System-level end-to-end tests |

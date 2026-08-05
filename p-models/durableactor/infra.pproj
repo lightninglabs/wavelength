@@ -3,8 +3,10 @@
 <InputFiles>
 <PFile>src/mailbox_fifo.p</PFile>
 <PFile>src/ingress_fold.p</PFile>
+<PFile>src/ingress_deferral.p</PFile>
 <PFile>test/mailbox_fifo_test.p</PFile>
 <PFile>test/ingress_fold_test.p</PFile>
+<PFile>test/ingress_deferral_test.p</PFile>
 </InputFiles>
 <OutputDir>PGenerated</OutputDir>
 </Project>
