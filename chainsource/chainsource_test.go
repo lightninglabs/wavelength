@@ -3,6 +3,7 @@ package chainsource
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -374,6 +375,109 @@ func TestChainSourceActorBroadcastTx(t *testing.T) {
 	require.True(t, ok)
 	expectedHash := tx.TxHash()
 	require.Equal(t, expectedHash, broadcastResp.Txid)
+}
+
+// removerBackend is a mockBackend that also implements the optional TxRemover
+// capability, recording the txids it is asked to remove and optionally
+// returning a configured error.
+type removerBackend struct {
+	*mockBackend
+
+	mu      sync.Mutex
+	removed []chainhash.Hash
+	err     error
+}
+
+func (b *removerBackend) RemoveTx(_ context.Context,
+	txid chainhash.Hash) error {
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	b.removed = append(b.removed, txid)
+
+	return b.err
+}
+
+func (b *removerBackend) removedTxids() []chainhash.Hash {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return append([]chainhash.Hash(nil), b.removed...)
+}
+
+// TestChainSourceActorRemoveTx covers the RemoveTx handler: a backend that
+// implements TxRemover has the removal forwarded to it, an ignorable
+// "not found" error is treated as success, and a backend without the
+// capability treats the request as a no-op (wavelength#609).
+func TestChainSourceActorRemoveTx(t *testing.T) {
+	t.Parallel()
+
+	txid := chainhash.Hash{0x42}
+
+	newActor := func(t *testing.T, backend ChainBackend) actor.ActorRef[
+		ChainSourceMsg, ChainSourceResp] {
+
+		t.Helper()
+
+		system := actor.NewActorSystem()
+		t.Cleanup(func() { _ = system.Shutdown(t.Context()) })
+
+		chainSource := NewChainSourceActor(ChainSourceConfig{
+			Backend: backend,
+			System:  system,
+		})
+
+		return ChainSourceKey.Spawn(
+			system, "chainsource-removetx", chainSource,
+		)
+	}
+
+	t.Run("forwards to a capable backend", func(t *testing.T) {
+		t.Parallel()
+
+		backend := &removerBackend{mockBackend: newMockBackend()}
+		ref := newActor(t, backend)
+
+		resp, err := ref.Ask(
+			t.Context(), &RemoveTxRequest{Txid: txid},
+		).Await(t.Context()).Unpack()
+		require.NoError(t, err)
+		removeResp, ok := resp.(*RemoveTxResponse)
+		require.True(t, ok)
+		require.Equal(t, txid, removeResp.Txid)
+		require.Equal(t, []chainhash.Hash{txid}, backend.removedTxids())
+	})
+
+	t.Run("ignorable error is a success", func(t *testing.T) {
+		t.Parallel()
+
+		backend := &removerBackend{
+			mockBackend: newMockBackend(),
+			err: errors.New("transaction not found in " +
+				"wallet"),
+		}
+		ref := newActor(t, backend)
+
+		_, err := ref.Ask(
+			t.Context(), &RemoveTxRequest{Txid: txid},
+		).Await(t.Context()).Unpack()
+		require.NoError(t, err)
+	})
+
+	t.Run("no-op on a backend without the capability", func(t *testing.T) {
+		t.Parallel()
+
+		ref := newActor(t, newMockBackend())
+
+		resp, err := ref.Ask(
+			t.Context(), &RemoveTxRequest{Txid: txid},
+		).Await(t.Context()).Unpack()
+		require.NoError(t, err)
+		removeResp, ok := resp.(*RemoveTxResponse)
+		require.True(t, ok)
+		require.Equal(t, txid, removeResp.Txid)
+	})
 }
 
 // TestChainSourceActorSubmitPackage tests package submission through the

@@ -105,6 +105,9 @@ func (a *ChainSourceActor) Receive(actorCtx context.Context,
 	case *BroadcastTxRequest:
 		return a.handleBroadcastTx(actorCtx, m)
 
+	case *RemoveTxRequest:
+		return a.handleRemoveTx(actorCtx, m)
+
 	case *SubmitPackageRequest:
 		return a.handleSubmitPackage(actorCtx, m)
 
@@ -194,6 +197,50 @@ func (a *ChainSourceActor) handleTestMempoolAccept(ctx context.Context,
 	return fn.Ok[ChainSourceResp](&TestMempoolAcceptResponse{
 		Results: results,
 	})
+}
+
+// handleRemoveTx removes a previously broadcast transaction from the backend
+// wallet so it stops being rebroadcast. The removal is a capability the
+// backend opts into via TxRemover: a backend without a rebroadcasting wallet
+// (e.g. a pure Esplora chain source) does not implement it, and the request is
+// acknowledged as a no-op. A backend that reports the transaction as unknown
+// (already gone / never in the wallet) is likewise treated as success, since
+// the caller's goal -- the tx is not in the wallet's rebroadcast set -- is
+// already met (wavelength#609).
+func (a *ChainSourceActor) handleRemoveTx(ctx context.Context,
+	req *RemoveTxRequest) fn.Result[ChainSourceResp] {
+
+	remover, ok := a.cfg.Backend.(TxRemover)
+	if !ok {
+		a.logger(ctx).DebugS(ctx, "Backend does not support tx "+
+			"removal; treating RemoveTx as a no-op",
+			slog.String("txid", req.Txid.String()),
+		)
+
+		return fn.Ok[ChainSourceResp](&RemoveTxResponse{Txid: req.Txid})
+	}
+
+	if err := remover.RemoveTx(ctx, req.Txid); err != nil {
+		if IsIgnorableRemoveError(err) {
+			a.logger(ctx).DebugS(ctx, "RemoveTx returned "+
+				"ignorable error",
+				slog.String("txid", req.Txid.String()),
+				slog.String("remove_error", err.Error()),
+			)
+
+			return fn.Ok[ChainSourceResp](
+				&RemoveTxResponse{
+					Txid: req.Txid,
+				},
+			)
+		}
+
+		return fn.Err[ChainSourceResp](
+			fmt.Errorf("remove tx %s: %w", req.Txid, err),
+		)
+	}
+
+	return fn.Ok[ChainSourceResp](&RemoveTxResponse{Txid: req.Txid})
 }
 
 // handleBroadcastTx processes a transaction broadcast request by submitting
