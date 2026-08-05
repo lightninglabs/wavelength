@@ -407,6 +407,168 @@ func TestSendOORSubmitsMultipleRecipients(t *testing.T) {
 	require.Empty(t, testWallet.unlockBatches())
 }
 
+// TestSendOORReservesExactManagedCustomInputs verifies that outpoint-only
+// custom inputs use the wallet's durable spend reservation path, select
+// precisely the caller-named VTXOs, and retain ordinary recipient fanout.
+func TestSendOORReservesExactManagedCustomInputs(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	recipientKeyA, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	recipientKeyB, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	const (
+		inputAmount     = btcutil.Amount(744)
+		recipientAmount = int64(inputAmount)
+		totalAmount     = 2 * inputAmount
+		floor           = btcutil.Amount(700)
+		exitDelay       = uint32(10)
+	)
+
+	vtxoStore, _, _ := newSendOORTestStores(t)
+	input1, _ := newSendOORTestVTXO(
+		t, operatorKey.PubKey(), 0x61, inputAmount,
+	)
+	input2, _ := newSendOORTestVTXO(
+		t, operatorKey.PubKey(), 0x62, inputAmount,
+	)
+	require.NoError(t, vtxoStore.SaveVTXO(ctx, input1))
+	require.NoError(t, vtxoStore.SaveVTXO(ctx, input2))
+
+	testWallet := &sendOORTestWallet{
+		selections: [][]wallet.SelectedVTXO{{
+			selectedVTXOFromDescriptor(input2),
+			selectedVTXOFromDescriptor(input1),
+		}},
+	}
+
+	system := actor.NewActorSystem()
+	t.Cleanup(func() {
+		shutdownCtx, cancel := context.WithTimeout(
+			context.Background(), 5*time.Second,
+		)
+		defer cancel()
+
+		require.NoError(t, system.Shutdown(shutdownCtx))
+	})
+
+	walletKey := actor.NewServiceKey[
+		wallet.WalletMsg, wallet.WalletResp,
+	](
+		"send-oor-exact-test-wallet",
+	)
+	walletRef := walletKey.Spawn(
+		system, "send-oor-exact-test-wallet", testWallet,
+	)
+
+	sessionHash := chainhash.HashH([]byte("send-oor-exact-session"))
+	oorActor := &capturingSendOORActor{
+		response: &oor.StartTransferResponse{
+			SessionID: oor.SessionID(sessionHash),
+		},
+	}
+	oorKey := oor.NewServiceKey()
+	oorKey.Spawn(system, "send-oor-exact-test-actor", oorActor)
+
+	walletReady := make(chan struct{})
+	close(walletReady)
+
+	server := &Server{
+		cfg:         &Config{},
+		log:         btclog.Disabled,
+		walletReady: walletReady,
+		chainParams: &chaincfg.RegressionNetParams,
+		serverConn: newBufconnClient(t, &fakeArkService{
+			getInfoResponse: &arkrpc.GetInfoResponse{
+				Pubkey: operatorKey.
+					PubKey().
+					SerializeCompressed(),
+				VtxoExitDelay: exitDelay,
+				DustLimit:     int64(floor),
+			},
+		}),
+		actorSystem: system,
+		vtxoStore:   vtxoStore,
+		walletRef:   fn.Some(walletRef),
+	}
+
+	recipientA := sendOORPolicyRecipient(
+		t, recipientKeyA.PubKey(), operatorKey.PubKey(), exitDelay,
+		recipientAmount,
+	)
+	recipientB := sendOORPolicyRecipient(
+		t, recipientKeyB.PubKey(), operatorKey.PubKey(), exitDelay,
+		recipientAmount,
+	)
+	requestedOutpoints := []wire.OutPoint{
+		input2.Outpoint, input1.Outpoint,
+	}
+
+	resp, err := NewRPCServer(server).SendOOR(
+		ctx, &waverpc.SendOORRequest{
+			Recipients: []*waverpc.Output{
+				recipientA, recipientB,
+			},
+			CustomInputs: []*waverpc.CustomOORInput{
+				{Outpoint: requestedOutpoints[0].String()},
+				{Outpoint: requestedOutpoints[1].String()},
+			},
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, "submitted", resp.GetStatus())
+	require.Len(t, resp.GetRecipientOutpoints(), 2)
+
+	selectReqs := testWallet.selectionRequests()
+	require.Len(t, selectReqs, 1)
+	require.Equal(t, totalAmount, selectReqs[0].TargetAmount)
+	require.Equal(t, floor, selectReqs[0].MinChangeAmount)
+	require.Equal(t, requestedOutpoints, selectReqs[0].Outpoints)
+
+	requests := oorActor.capturedRequests()
+	require.Len(t, requests, 1)
+	require.Len(t, requests[0].Inputs, 2)
+	require.Len(t, requests[0].Recipients, 2)
+	require.Equal(
+		t, requestedOutpoints[0], requests[0].Inputs[0].VTXO.Outpoint,
+	)
+	require.Equal(
+		t, requestedOutpoints[1], requests[0].Inputs[1].VTXO.Outpoint,
+	)
+}
+
+// TestClassifyCustomOORInputsRejectsMixedModes verifies a request cannot
+// silently bypass durable wallet reservation by mixing a managed outpoint with
+// an explicitly described custom-policy input.
+func TestClassifyCustomOORInputsRejectsMixedModes(t *testing.T) {
+	t.Parallel()
+
+	op1 := wire.OutPoint{
+		Hash:  chainhash.HashH([]byte("managed-custom-input")),
+		Index: 1,
+	}
+	op2 := wire.OutPoint{
+		Hash:  chainhash.HashH([]byte("explicit-custom-input")),
+		Index: 2,
+	}
+
+	_, _, err := classifyCustomOORInputs([]*waverpc.CustomOORInput{
+		{Outpoint: op1.String()},
+		{
+			Outpoint:  op2.String(),
+			AmountSat: 1000,
+		},
+	})
+	require.ErrorContains(t, err, "cannot mix outpoint-only managed")
+}
+
 // TestSendOORRejectsTooManyRecipients verifies the daemon rejects oversized
 // OOR fanout before resolving scripts or selecting wallet inputs. The OOR
 // actor also has request-size limits, but the RPC layer does enough per
@@ -483,12 +645,12 @@ func TestSendOORRejectsDuplicateRecipientOutputs(t *testing.T) {
 	require.ErrorContains(t, err, "recipient 1 duplicates recipient 0")
 }
 
-// TestSendOORRejectsCustomInputsWithMultipleRecipients verifies the daemon
-// keeps custom-input sends single-recipient. Custom inputs carry per-input
-// signing material for specialized spend paths, so widening them should happen
-// as a separate protocol change rather than accidentally piggybacking on
-// wallet-selected fanout.
-func TestSendOORRejectsCustomInputsWithMultipleRecipients(t *testing.T) {
+// TestSendOORRejectsExplicitCustomInputsWithMultipleRecipients verifies the
+// daemon keeps custom-spend sends single-recipient. These inputs carry
+// per-input signing material, unlike outpoint-only managed exact inputs.
+func TestSendOORRejectsExplicitCustomInputsWithMultipleRecipients(
+	t *testing.T) {
+
 	t.Parallel()
 
 	operatorKey, err := btcec.NewPrivateKey()
@@ -532,6 +694,12 @@ func TestSendOORRejectsCustomInputsWithMultipleRecipients(t *testing.T) {
 		t, recipientKeyB.PubKey(), operatorKey.PubKey(), exitDelay,
 		amountSat,
 	)
+	customOutpoint := wire.OutPoint{
+		Hash: chainhash.HashH(
+			[]byte("explicit-custom-multi-recipient"),
+		),
+		Index: 0,
+	}
 
 	_, err = NewRPCServer(server).SendOOR(
 		t.Context(), &waverpc.SendOORRequest{
@@ -541,13 +709,14 @@ func TestSendOORRejectsCustomInputsWithMultipleRecipients(t *testing.T) {
 			},
 			DryRun: true,
 			CustomInputs: []*waverpc.CustomOORInput{{
-				Outpoint: "00:0",
+				Outpoint:  customOutpoint.String(),
+				AmountSat: amountSat,
 			}},
 		},
 	)
 	require.Equal(t, codes.InvalidArgument, status.Code(err))
 	require.ErrorContains(
-		t, err, "custom inputs require exactly one recipient",
+		t, err, "explicit custom inputs require exactly one recipient",
 	)
 }
 

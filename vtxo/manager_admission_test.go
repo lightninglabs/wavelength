@@ -882,6 +882,117 @@ func TestSelectAndReserveSpendSuccess(t *testing.T) {
 	require.True(t, ok, "expected SpendingState, got %T", ref.state)
 }
 
+// TestSelectAndReserveSpendExactOutpoints verifies an exact-input request
+// reserves only the named managed VTXOs, preserves their order, and permits an
+// exact spend even when each input is individually below the change floor.
+func TestSelectAndReserveSpendExactOutpoints(t *testing.T) {
+	t.Parallel()
+
+	large := makeDescriptor(t, 50_000, 0)
+	small1 := makeDescriptor(t, 744, 1)
+	small2 := makeDescriptor(t, 744, 2)
+
+	mgr, store := newTestManager(t, []*Descriptor{
+		large, small1, small2,
+	})
+	store.On(
+		"ListVTXOsByStatus", t.Context(), VTXOStatusLive,
+	).Return([]*Descriptor{large, small1, small2}, nil)
+
+	result := mgr.Receive(t.Context(), &SelectAndReserveSpendRequest{
+		TargetAmount:    1488,
+		MinChangeAmount: 1000,
+		Outpoints: []wire.OutPoint{
+			small2.Outpoint, small1.Outpoint,
+		},
+	})
+	resp, err := result.Unpack()
+	require.NoError(t, err)
+
+	spendResp, ok := resp.(*SelectAndReserveSpendResponse)
+	require.True(t, ok)
+	require.Equal(t, btcutil.Amount(1488), spendResp.TotalSelected)
+	require.Len(t, spendResp.SelectedVTXOs, 2)
+	require.Equal(t, []wire.OutPoint{
+		small2.Outpoint, small1.Outpoint,
+	}, []wire.OutPoint{
+		spendResp.SelectedVTXOs[0].Outpoint,
+		spendResp.SelectedVTXOs[1].Outpoint,
+	})
+
+	for _, op := range []wire.OutPoint{
+		small1.Outpoint, small2.Outpoint,
+	} {
+		ref, ok := mgr.actors[op].(*mockVTXOActorRef)
+		require.True(t, ok)
+		require.IsType(t, &SpendingState{}, ref.state)
+	}
+
+	largeRef, ok := mgr.actors[large.Outpoint].(*mockVTXOActorRef)
+	require.True(t, ok)
+	require.IsType(t, &LiveState{}, largeRef.state)
+
+	result = mgr.Receive(t.Context(), &CompleteSpendRequest{
+		Outpoints: []wire.OutPoint{
+			small2.Outpoint, small1.Outpoint,
+		},
+	})
+	_, err = result.Unpack()
+	require.NoError(t, err)
+
+	for _, op := range []wire.OutPoint{
+		small1.Outpoint, small2.Outpoint,
+	} {
+		ref, ok := mgr.actors[op].(*mockVTXOActorRef)
+		require.True(t, ok)
+		require.IsType(t, &SpentState{}, ref.state)
+	}
+}
+
+// TestSelectAndReserveSpendExactLockedOutpoint verifies an exact input that
+// fell out of the live projection because its durable status is locked remains
+// a retryable liquidity error after the manager's in-memory marks are lost.
+func TestSelectAndReserveSpendExactLockedOutpoint(t *testing.T) {
+	t.Parallel()
+
+	for _, lockedStatus := range []VTXOStatus{
+		VTXOStatusPendingForfeit,
+		VTXOStatusForfeiting,
+		VTXOStatusSpending,
+	} {
+		t.Run(lockedStatus.String(), func(t *testing.T) {
+			t.Parallel()
+
+			locked := makeDescriptor(t, 50_000, 0)
+			locked.Status = lockedStatus
+
+			mgr, store := newTestManager(t, nil)
+			store.On(
+				"ListVTXOsByStatus", t.Context(),
+				VTXOStatusLive,
+			).Return([]*Descriptor{}, nil)
+			store.On(
+				"GetVTXO", t.Context(), locked.Outpoint,
+			).Return(locked, nil)
+
+			result := mgr.Receive(
+				t.Context(), &SelectAndReserveSpendRequest{
+					TargetAmount: 40_000,
+					Outpoints: []wire.OutPoint{
+						locked.Outpoint,
+					},
+				},
+			)
+			_, err := result.Unpack()
+			require.ErrorIs(t, err, ErrVTXOLiquidityLocked)
+			require.NotErrorIs(
+				t, err, ErrInsufficientSpendableFunds,
+			)
+			require.ErrorContains(t, err, lockedStatus.String())
+		})
+	}
+}
+
 // TestSelectAndReserveRespawnGuards verifies the self-heal path for a
 // live-in-DB but actorless selection candidate fails closed: a store miss
 // and a non-live row both surface as reservation errors instead of spawning

@@ -2660,9 +2660,8 @@ func (a *Ark) releaseManagerForfeit(ctx context.Context,
 	}
 }
 
-// handleSelectAndLockVTXOs forwards a spend selection request to the VTXO
-// manager. The manager runs largest-first coin selection and atomically
-// reserves VTXOs for OOR spending by transitioning them to SpendingState.
+// handleSelectAndLockVTXOs forwards a spend selection or exact-input request
+// to the VTXO manager, which reserves the inputs in SpendingState.
 func (a *Ark) handleSelectAndLockVTXOs(ctx context.Context,
 	req *SelectAndLockVTXOsRequest) fn.Result[WalletResp] {
 
@@ -2674,6 +2673,7 @@ func (a *Ark) handleSelectAndLockVTXOs(ctx context.Context,
 		ctx, &actormsg.SelectAndReserveSpendRequest{
 			TargetAmount:    req.TargetAmount,
 			MinChangeAmount: req.MinChangeAmount,
+			Outpoints:       req.Outpoints,
 		},
 	)
 	if err != nil {

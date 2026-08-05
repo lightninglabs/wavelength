@@ -547,10 +547,9 @@ func (m *DropCustomRefreshVTXOsResponse) MessageType() string {
 func (m *DropCustomRefreshVTXOsResponse) walletRespSealed() {}
 
 // SelectAndLockVTXOsRequest asks the wallet actor to select VTXOs covering a
-// target amount and atomically lock them to prevent double-spends. The locked
-// VTXOs are returned as descriptors that the caller can use to build OOR
-// transfer inputs. If the transfer fails, the caller should send an
-// UnlockVTXOsRequest to release the locks.
+// target amount, or use explicitly named managed VTXOs, and atomically lock
+// them to prevent double-spends. If the transfer fails, the caller should send
+// an UnlockVTXOsRequest to release the locks.
 type SelectAndLockVTXOsRequest struct {
 	actor.BaseMessage
 
@@ -561,6 +560,11 @@ type SelectAndLockVTXOsRequest struct {
 	// MinChangeAmount, when positive, asks selection to avoid a
 	// non-zero residual below this amount. Exact spends are still valid.
 	MinChangeAmount btcutil.Amount
+
+	// Outpoints, when non-empty, identifies the exact managed VTXOs to
+	// lock instead of running coin selection. The requested order is
+	// preserved in the response.
+	Outpoints []wire.OutPoint
 }
 
 // MessageType returns the message type identifier for logging and debugging.

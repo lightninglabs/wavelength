@@ -1888,6 +1888,7 @@ func (m *Manager) spawnVTXOActor(ctx context.Context, vtxo *Descriptor) (
 type reserveParams struct {
 	targetAmount    btcutil.Amount
 	minChangeAmount btcutil.Amount
+	exactOutpoints  []wire.OutPoint
 	reserveEvent    actormsg.VTXOActorMsg
 	rollback        func(ctx context.Context, ops []wire.OutPoint)
 	ask             func(context.Context, VTXOActorRef,
@@ -1904,11 +1905,9 @@ type reserveParams struct {
 	detached bool
 }
 
-// selectAndReserveVTXOs performs largest-first coin selection and
-// atomically reserves each selected VTXO by sending reserveEvent to
-// its actor. On partial failure the rollback function is called for
-// already-reserved outpoints. Returns the selected VTXO details and
-// total amount on success.
+// selectAndReserveVTXOs selects the requested liquidity and reserves each VTXO
+// by sending reserveEvent to its actor. On partial failure the rollback
+// function is called for already-reserved outpoints.
 func (m *Manager) selectAndReserveVTXOs(ctx context.Context, p reserveParams) (
 	[]SelectedVTXO, btcutil.Amount, error) {
 
@@ -1954,34 +1953,10 @@ func (m *Manager) selectAndReserveVTXOs(ctx context.Context, p reserveParams) (
 		})
 	}
 
-	// Run largest-first selection through the shared selector. Map its
-	// typed outcomes back onto the manager's liquidity diagnostics: a
-	// dust-change rejection is reported verbatim, while any shortfall
-	// (including an empty candidate set) is refined into the
-	// locked-vs-absent distinction.
-	res, err := coinselect.LargestFirst(
-		candidates, func(d *Descriptor) btcutil.Amount {
-			return d.Amount
-		}, coinselect.Request{
-			Target:    p.targetAmount,
-			MinChange: p.minChangeAmount,
-		},
-	)
-	switch {
-	case errors.Is(err, coinselect.ErrChangeBelowMin):
-		change := res.Total - p.targetAmount
-
-		return nil, 0, fmt.Errorf("change %d is below minimum change "+
-			"amount %d", change, p.minChangeAmount)
-
-	case errors.Is(err, coinselect.ErrSelectionShortfall),
-		errors.Is(err, coinselect.ErrNoCandidates):
-		return nil, 0, m.insufficientLiquidityError(ctx, candidates, p)
-
-	case err != nil:
+	selected, err := m.selectReservationCandidates(ctx, candidates, p)
+	if err != nil {
 		return nil, 0, err
 	}
-	selected := res.Selected
 
 	// Reserve each selected VTXO via its actor. Track successfully
 	// reserved outpoints so we can roll back on partial failure.
@@ -2075,6 +2050,130 @@ func (m *Manager) selectAndReserveVTXOs(ctx context.Context, p reserveParams) (
 	return selectedVTXOs, totalSelected, nil
 }
 
+// selectReservationCandidates returns either the caller's exact managed
+// VTXOs or a largest-first selection that covers the requested amount.
+func (m *Manager) selectReservationCandidates(ctx context.Context,
+	candidates []*Descriptor, p reserveParams) ([]*Descriptor, error) {
+
+	if len(p.exactOutpoints) > 0 {
+		return m.selectExactReservationCandidates(ctx, candidates, p)
+	}
+
+	// Run largest-first selection through the shared selector. Map its
+	// typed outcomes back onto the manager's liquidity diagnostics: a
+	// dust-change rejection is reported verbatim, while any shortfall
+	// (including an empty candidate set) is refined into the
+	// locked-vs-absent distinction.
+	res, err := coinselect.LargestFirst(
+		candidates, func(d *Descriptor) btcutil.Amount {
+			return d.Amount
+		}, coinselect.Request{
+			Target:    p.targetAmount,
+			MinChange: p.minChangeAmount,
+		},
+	)
+	switch {
+	case errors.Is(err, coinselect.ErrChangeBelowMin):
+		change := res.Total - p.targetAmount
+
+		return nil, fmt.Errorf("change %d is below minimum change "+
+			"amount %d", change, p.minChangeAmount)
+
+	case errors.Is(err, coinselect.ErrSelectionShortfall),
+		errors.Is(err, coinselect.ErrNoCandidates):
+		return nil, m.insufficientLiquidityError(ctx, candidates, p)
+
+	case err != nil:
+		return nil, err
+	}
+
+	return res.Selected, nil
+}
+
+// selectExactReservationCandidates validates and returns exact managed inputs
+// without substituting other wallet liquidity.
+func (m *Manager) selectExactReservationCandidates(ctx context.Context,
+	candidates []*Descriptor, p reserveParams) ([]*Descriptor, error) {
+
+	byOutpoint := make(map[wire.OutPoint]*Descriptor, len(candidates))
+	for _, candidate := range candidates {
+		byOutpoint[candidate.Outpoint] = candidate
+	}
+
+	selected := make([]*Descriptor, 0, len(p.exactOutpoints))
+	seen := make(map[wire.OutPoint]struct{}, len(p.exactOutpoints))
+	var total btcutil.Amount
+	for _, op := range p.exactOutpoints {
+		if _, ok := seen[op]; ok {
+			return nil, fmt.Errorf("duplicate exact spend "+
+				"outpoint %s", op)
+		}
+		seen[op] = struct{}{}
+
+		if m.isReserved(op) {
+			return nil, fmt.Errorf("%w: exact spend outpoint %s "+
+				"is already reserved", ErrVTXOLiquidityLocked,
+				op)
+		}
+
+		candidate, ok := byOutpoint[op]
+		if !ok {
+			return nil, m.exactSpendUnavailableError(ctx, op)
+		}
+
+		selected = append(selected, candidate)
+		total += candidate.Amount
+	}
+
+	if total < p.targetAmount {
+		return nil, fmt.Errorf("%w: exact inputs total %d, need %d",
+			ErrInsufficientSpendableFunds, total, p.targetAmount)
+	}
+
+	change := total - p.targetAmount
+	if change > 0 && change < p.minChangeAmount {
+		return nil, fmt.Errorf("change %d is below minimum change "+
+			"amount %d", change, p.minChangeAmount)
+	}
+
+	return selected, nil
+}
+
+// exactSpendUnavailableError distinguishes a temporarily locked exact input
+// from one that is terminal, expired, or unknown. The live selection
+// projection cannot make that distinction because it excludes every non-live
+// status before exact-input matching.
+func (m *Manager) exactSpendUnavailableError(ctx context.Context,
+	op wire.OutPoint) error {
+
+	desc, err := m.cfg.Store.GetVTXO(ctx, op)
+	switch {
+	case errors.Is(err, ErrVTXONotFound), desc == nil && err == nil:
+		return fmt.Errorf("%w: exact spend outpoint %s is unknown",
+			ErrInsufficientSpendableFunds, op)
+
+	case err != nil:
+		return fmt.Errorf("look up exact spend outpoint %s: %w", op,
+			err)
+	}
+
+	switch desc.Status {
+	case VTXOStatusLive, VTXOStatusPendingForfeit,
+		VTXOStatusForfeiting, VTXOStatusSpending:
+		return fmt.Errorf("%w: exact spend outpoint %s has status %s",
+			ErrVTXOLiquidityLocked, op, desc.Status)
+
+	case VTXOStatusForfeited, VTXOStatusSpent,
+		VTXOStatusUnilateralExit, VTXOStatusFailed,
+		VTXOStatusExpired:
+		return fmt.Errorf("%w: exact spend outpoint %s has status %s",
+			ErrInsufficientSpendableFunds, op, desc.Status)
+	}
+
+	return fmt.Errorf("%w: exact spend outpoint %s has unknown status %d",
+		ErrInsufficientSpendableFunds, op, desc.Status)
+}
+
 // insufficientLiquidityError distinguishes a true spendable-funds shortfall
 // from liquidity that is present but unavailable because another operation has
 // already moved it out of LiveState.
@@ -2111,16 +2210,15 @@ func (m *Manager) insufficientLiquidityError(ctx context.Context,
 		ErrInsufficientSpendableFunds, p.targetAmount, liveTotal)
 }
 
-// handleSelectAndReserveSpend selects VTXOs covering the target amount using
-// largest-first coin selection, then atomically reserves them for an OOR
-// spend by Asking each VTXO actor to process SpendReserveEvent. If any
-// reservation fails, already-reserved VTXOs are rolled back.
+// handleSelectAndReserveSpend selects or resolves exact VTXOs and reserves
+// them for an OOR spend by sending each actor SpendReserveEvent.
 func (m *Manager) handleSelectAndReserveSpend(ctx context.Context,
 	req *SelectAndReserveSpendRequest) fn.Result[ManagerResp] {
 
 	vtxos, total, err := m.selectAndReserveVTXOs(ctx, reserveParams{
 		targetAmount:    req.TargetAmount,
 		minChangeAmount: req.MinChangeAmount,
+		exactOutpoints:  req.Outpoints,
 		reserveEvent:    &SpendReserveEvent{},
 		rollback:        m.rollbackSpend,
 		ask:             m.askVTXOActor,
