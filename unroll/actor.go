@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"time"
 
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
@@ -151,12 +152,24 @@ type behavior struct {
 	session *Session
 	pending *actorCheckpoint
 
-	sweepTx           *wire.MsgTx
-	blockSubActive    bool
-	spendWatchActive  bool
-	proofSpendWatches map[wire.OutPoint]struct{}
-	terminalNotified  bool
-	exitCostNotified  bool
+	sweepTx                    *wire.MsgTx
+	blockSubActive             bool
+	spendWatchActive           bool
+	proofSpendWatches          map[wire.OutPoint]struct{}
+	terminalNotified           bool
+	exitCostNotified           bool
+	abandonedBroadcastsRemoved bool
+
+	// failedBroadcastTxids records every txid txconfirm has reported as
+	// failed during this actor lifetime. It exists because applyFailedEvent
+	// strips the failing txid from PlannerState.InFlightTxids before it
+	// stamps FailReason, so by the time the terminal cleanup reads planner
+	// state the transaction that actually killed the job is no longer
+	// listed there — and that is precisely the transaction lnd is still
+	// rebroadcasting (wavelength#609). Kept in memory only: the registry
+	// restores non-terminal records, so a terminal job never re-runs the
+	// cleanup after a restart and has nothing to reload.
+	failedBroadcastTxids map[chainhash.Hash]struct{}
 
 	// requiredLockTime caches the exit policy's absolute nLockTime once the
 	// policy has been resolved (in startSweep). The standard timeout policy
@@ -290,6 +303,8 @@ func (b *behavior) dispatch(ctx context.Context, ax actor.Exec[unrollTx],
 		})
 
 	case *TxFailedMsg:
+		b.recordFailedBroadcast(m.Txid)
+
 		return b.handleEvent(ctx, ax, &TxFailedEvent{
 			Txid:   m.Txid,
 			Reason: b.failureReasonForTx(m.Txid, m.Reason),
@@ -741,6 +756,13 @@ func safeTxOutPkScript(tx *wire.MsgTx, index uint32) ([]byte, error) {
 // behaviour exactly.
 const proofNodeHeightHintLookback uint32 = 10000
 
+// removeAbandonedBroadcastTimeout bounds each best-effort wallet RemoveTx RPC
+// issued on the terminal-failure cleanup path. lnd's RemoveTransaction is a
+// fast local wallet mutation, so 30s is generous headroom for a heavily loaded
+// node while still guaranteeing that a hung or unresponsive backend cannot leak
+// the detached cleanup goroutine indefinitely (wavelength#609).
+const removeAbandonedBroadcastTimeout = 30 * time.Second
+
 // proofNodeHeightHint returns the earliest safe confirmation height hint for
 // proof-graph transactions given the actor's current best height. Roots and
 // intermediate OOR checkpoint ancestors can confirm before the target
@@ -914,6 +936,8 @@ func (b *behavior) ensureNodeConfirmed(ctx context.Context,
 	}
 
 	if ensureResp.State == txconfirm.TxStateFailed {
+		b.recordFailedBroadcast(txid)
+
 		return b.driveEvent(ctx, ax, &TxFailedEvent{
 			Txid: txid,
 			Reason: b.failureReasonForTx(
@@ -2158,6 +2182,17 @@ func (b *behavior) notifyRegistryIfTerminal(ctx context.Context) {
 		return
 	}
 
+	// On a terminal failure, ask the wallet backend to drop the job's
+	// broadcast-but-unconfirmed transactions so a full-node wallet stops
+	// perpetually rebroadcasting a proof (or sweep) tx that can never
+	// confirm now that the exit has failed (wavelength#609). Gated by its
+	// own once-flag so it is independent of the registry handoff below and
+	// does not re-issue removals on every subsequent terminal tick.
+	if phase == PhaseFailed && !b.abandonedBroadcastsRemoved {
+		b.removeAbandonedBroadcasts(ctx, job)
+		b.abandonedBroadcastsRemoved = true
+	}
+
 	if b.cfg.RegistryRef == nil || b.terminalNotified {
 		return
 	}
@@ -2194,6 +2229,123 @@ func (b *behavior) notifyRegistryIfTerminal(ctx context.Context) {
 	}
 
 	b.terminalNotified = true
+}
+
+// recordFailedBroadcast notes that txconfirm reported txid as failed, so the
+// terminal cleanup can still ask the wallet to drop it. The FSM removes a
+// failing txid from PlannerState.InFlightTxids as it stamps the failure, which
+// would otherwise hide the one transaction most in need of removal
+// (wavelength#609).
+//
+// A proof-node failure is terminal by construction: an operator-signed proof
+// node cannot be rebuilt or replaced, and txconfirm has already evicted the
+// transaction (TxStateFailed is terminal) and released its fee-input lease. So
+// the transaction is provably dead and nothing else is still working on it.
+func (b *behavior) recordFailedBroadcast(txid chainhash.Hash) {
+	if b.failedBroadcastTxids == nil {
+		b.failedBroadcastTxids = make(map[chainhash.Hash]struct{})
+	}
+
+	b.failedBroadcastTxids[txid] = struct{}{}
+}
+
+// removeAbandonedBroadcasts asks the chain backend to drop the job's
+// broadcast-but-unconfirmed transactions from the wallet after a terminal
+// failure, so a full-node wallet stops perpetually rebroadcasting a proof (or
+// sweep) transaction that can never confirm now that the exit has failed
+// (wavelength#609). Only in-flight (submitted, not yet confirmed) transactions
+// are removed; confirmed transactions are on-chain and are never rebroadcast.
+// The removal is best-effort: a failure is logged and does not affect the
+// terminal handoff, and a backend without the wallet-removal capability
+// (chainsource.TxRemover) treats the request as a no-op.
+func (b *behavior) removeAbandonedBroadcasts(ctx context.Context,
+	job *JobState) {
+
+	if b.cfg.ChainSource == nil || job == nil {
+		return
+	}
+
+	seen := make(map[chainhash.Hash]struct{})
+	txids := make(
+		[]chainhash.Hash, 0, len(job.PlannerState.InFlightTxids)+1,
+	)
+	for _, txid := range job.PlannerState.InFlightTxids {
+		if _, dup := seen[txid]; dup {
+			continue
+		}
+		seen[txid] = struct{}{}
+		txids = append(txids, txid)
+	}
+
+	// Include the sweep tx if it was broadcast (advanced past pending); a
+	// materialization failure leaves the sweep pending, so this is nil
+	// then.
+	if sweepTxid := effectiveSweepTxid(
+		job.PlannerState, b.sweepTx,
+	); sweepTxid != nil {
+
+		if _, dup := seen[*sweepTxid]; !dup {
+			seen[*sweepTxid] = struct{}{}
+			txids = append(txids, *sweepTxid)
+		}
+	}
+
+	// Finally, include every transaction txconfirm reported as failed. The
+	// FSM drops a failing txid from InFlightTxids as it stamps the failure,
+	// so this is the only place the rejected transaction — the one lnd is
+	// still rebroadcasting — reappears (wavelength#609). A confirmed
+	// transaction is still excluded: it is on-chain, never rebroadcast, and
+	// lnd refuses to remove it.
+	for txid := range b.failedBroadcastTxids {
+		if _, dup := seen[txid]; dup {
+			continue
+		}
+		if containsHash(job.PlannerState.ConfirmedTxids, txid) {
+			continue
+		}
+
+		seen[txid] = struct{}{}
+		txids = append(txids, txid)
+	}
+
+	if len(txids) == 0 {
+		return
+	}
+
+	// Map iteration is unordered; sort so the removal sequence (and the
+	// resulting log lines) are deterministic across runs.
+	sortHashes(txids)
+
+	// Fire the removals off the actor Receive goroutine. This cleanup is
+	// pure best-effort housekeeping — the terminal outcome is already
+	// decided — so it must never sit in front of the terminal registry
+	// handoff below. A slow or hung lnd RemoveTransaction RPC on a
+	// synchronous Ask would otherwise wedge the actor's single Receive
+	// goroutine, stalling the terminal notification and every later message
+	// for this target. Detaching mirrors txconfirm's async wallet-lease
+	// release. Each op carries its own timeout so a stuck backend bounds
+	// the goroutine's lifetime, and cancellation is detached from the
+	// request ctx so a caller disconnect cannot suppress the cleanup.
+	chainSource := b.cfg.ChainSource
+	log := b.log
+	go func() {
+		for _, txid := range txids {
+			opCtx, cancel := context.WithTimeout(
+				context.WithoutCancel(ctx),
+				removeAbandonedBroadcastTimeout,
+			)
+			_, err := chainSource.Ask(
+				opCtx, &chainsource.RemoveTxRequest{Txid: txid},
+			).Await(opCtx).Unpack()
+			cancel()
+			if err != nil {
+				log.WarnS(opCtx, "Failed to remove abandoned "+
+					"broadcast on terminal failure", err,
+					slog.String("txid", txid.String()),
+				)
+			}
+		}
+	}()
 }
 
 // emitExitCostIfCompleted sends the final unilateral exit miner fee to the
