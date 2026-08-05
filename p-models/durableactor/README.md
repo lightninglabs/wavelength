@@ -85,6 +85,53 @@ two ways it can go wrong: the unstable profile re-derives a fresh broadcast id
 on replay (a second distinct broadcast), and the unfenced profile lets the stale
 consumer overwrite a newer checkpoint with an older level (a regression).
 
+### Ingress dispatch deferral and redrive
+
+`src/ingress_deferral.p` models the connection actor's ingress dispatch
+pipeline (`serverconn/ingress.go`, `dispatch_deferral.go`,
+`dispatch_replay.go`). Where `src/ingress_fold.p` treats every dispatch as a
+durable enqueue that lives and dies with the write transaction, this model
+takes the four destinations apart, because only one of them is transactional:
+
+| Kind | When it lands | Survives a rollback |
+|---|---|---|
+| `IngressDurableTarget` | inside the write transaction | no |
+| `IngressMemoryTarget` | `TryTell` into a fixed-capacity mailbox, from inside the transaction but not in it | yes |
+| `IngressNonTxRequest` | answered over the network before the transaction opens | yes, and it left the process |
+| `IngressWaiterResponse` | handed to a live in-memory waiter before the transaction | yes |
+
+The bounded in-memory target is the one that can refuse. A full mailbox
+defers: the cursor commits at the deferred envelope's own sequence number, so
+the prefix is acked and the deferred envelope is not, and the redrive re-pulls
+from there with the batch clamped and the served-request watermark applied.
+
+`IngressPipelineConfig` is the profile switch that makes the model falsifiable.
+The production profile is `(NonParkingDeferral, track_tx_deliveries = true,
+served_watermark = true)`; each counterexample flips exactly one field:
+
+- `ParkingBlockingSend` is the shipped bug — a blocking send into a full
+  fixed-capacity mailbox from inside the write transaction, which parks the
+  process's only mailbox puller with the database's single writer held, and
+  logs nothing.
+- `track_tx_deliveries = false` removes `deliveredOutsideTx`, so a store that
+  replays its transaction body after a retryable error hands the same envelope
+  to the bounded target once per attempt. The durable half replays harmlessly
+  because the rollback undid it; the `TryTell` does not.
+- `served_watermark = false` removes `redriveState.servedNonTxSeq`, so a
+  hoisted request that sits in the pull window while an unrelated actor stays
+  wedged is answered once per backoff cycle.
+
+The model states the residual honestly rather than asserting it away: a nonTx
+request is answered ahead of the commit, so a crash in between genuinely
+repeats it. `IngressNonTxRequestServedOncePerIncarnation` keys on the process
+incarnation for exactly that reason, and rejects only a repeat within one
+lifetime.
+
+It also declines to flatter the implementation. Removing the redrive clamp
+while keeping the watermark breaks no property here, because the second answer
+the clamp would prevent is the one the watermark suppresses. The clamp earns
+its place as a bound on repeated work, not as a second safety net.
+
 ### Spec monitors
 
 P does **not** activate spec monitors globally; each test case attaches the
@@ -132,6 +179,40 @@ ones it wants with `assert <spec> in { ... }`.
   the negative `tcMailboxStaleStageRegressesCounterexample` runs the unfenced
   profile with no in-machine assertion, so the checkpoint regression is raised
   solely by this monitor — the lost-update the lease fence prevents.
+- `IngressCursorCoversOnlyCommittedEnvelopes` is the ingress cursor contract:
+  a persisted cursor never covers an envelope whose local enqueue did not
+  commit. `tcIngressFoldNoLoss` checks it; the two negatives
+  `tcIngressEagerCursorCounterexample` and
+  `tcIngressCheckpointFirstCounterexample` run the two ordering bugs it exists
+  to catch.
+- `IngressCursorCoversOnlyHandledEnvelopes` is its delivery-side companion,
+  strengthened to cover the three non-transactional paths as well: the
+  committed cursor may only cover envelopes some target actually received.
+  This is what rejects a cursor running past an envelope a full mailbox
+  refused, which is how backpressure turns into loss.
+- `IngressMemoryTargetNoTxScopedDuplicate` and
+  `IngressMemoryTargetAtLeastOnceBounded` bound the duplicates. The first says
+  a bounded in-memory target never sees an envelope twice within one folded
+  dispatch, however many times the store replays the transaction body; the
+  second says redelivery across redrives and crashes happens at most once per
+  epoch, so the duplicate count is bounded by how many times the loop went
+  around. Both catch the missing `deliveredOutsideTx` record independently,
+  via `tcIngressUntrackedRetryDuplicateCounterexample` and
+  `tcIngressMonitorCatchesRetryDuplicate`.
+- `IngressNonTxRequestServedOncePerIncarnation` bounds the one delivery that
+  leaves the process before the commit. Removing the watermark
+  (`tcIngressUnwatermarkedServeCounterexample`) gets a second answer sent to a
+  request the operator had already had answered.
+- `IngressWriterNeverParks` is the headline property: delivery into a bounded
+  in-memory mailbox must never block the ingress goroutine, because it is the
+  process's only consumer of the remote mailbox and it holds the database's
+  single writer while it works. `tcIngressParkedWriterCounterexample` reaches
+  the park on the first full mailbox.
+- `IngressBacklogEventuallyDrains` is the progress half: deferring must delay
+  the stream, never stop it. `tcIngressDeferralLiveness` checks it holds, and
+  `tcIngressParkedWriterStarvesCounterexample` runs the same wedge under it so
+  the failure also shows up the way an operator sees it — the cursor stops
+  advancing and the stream never drains.
 
 The Go bridge in `bridge/` replays JSON model traces from `traces/` against the real
 `db/actordelivery` SQLite store. This keeps the P model tied to the SQL claim
@@ -163,8 +244,9 @@ Two representational details matter when writing P scenarios or bridge traces:
 ./p-models/scripts/check.sh
 ```
 
-The script compiles `durableactor/infra.pproj`, checks
-`tcMailboxCorrelationKeyFIFO`, then runs the Go bridge tests.
+The script compiles `durableactor/infra.pproj`, runs every green test case
+and every counterexample test case, then runs the Go bridge tests. A
+counterexample that finds no bug fails the script.
 
 To demonstrate that the model would have found the original bug, run:
 

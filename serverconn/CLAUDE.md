@@ -107,4 +107,5 @@ background ingress polling with event routing.
 - [docs/mailbox_architecture.md](../docs/mailbox_architecture.md) — Three-layer mailbox system.
 - [docs/mailbox_transport_serverconn_clientconn.md](../docs/mailbox_transport_serverconn_clientconn.md) — Transport split between serverconn (client-side) and clientconn (server-side).
 - [docs/durable_actor_architecture.md](../docs/durable_actor_architecture.md) — Durable actor internals.
+- [p-models/durableactor/README.md](../p-models/durableactor/README.md) — P models of the ingress cursor fold and of the dispatch deferral/redrive against bounded in-memory mailboxes.
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map.
