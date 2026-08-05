@@ -202,6 +202,12 @@ func (h *IncomingVTXOHandler) emitReceived(ctx context.Context, status string) {
 }
 
 // Receive processes IncomingVTXOEvent messages.
+// The incoming-VTXO dispatch is a single flat switch over event kinds; adding
+// provisional-lineage registration pushed it a few lines past the length limit,
+// but splitting the switch would obscure the 1:1 event->handler mapping without
+// reducing real complexity.
+//
+//nolint:funlen
 func (h *IncomingVTXOHandler) Receive(ctx context.Context,
 	msg IncomingVTXOMsg) fn.Result[IncomingVTXOResp] {
 
