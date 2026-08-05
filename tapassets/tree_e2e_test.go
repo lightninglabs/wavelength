@@ -19,6 +19,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chaincfg/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	tapsdk "github.com/lightninglabs/tap-sdk"
@@ -29,6 +30,8 @@ import (
 	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
+	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/stretchr/testify/require"
 )
 
@@ -306,8 +309,8 @@ func TestAssetTreeE2E(t *testing.T) {
 	require.NoError(t, err)
 
 	batch := commitTreeBatchAnchor(
-		t, h, wallet, client, assetRef, exportRef, mintProof, 1_500,
-		rootCosigners, sweepLeaf,
+		t, h, wallet, client, assetRef, mintProof, 1_500, rootCosigners,
+		sweepLeaf,
 	)
 
 	// Build leaf policies and the anchor lookup keyed by owner.
@@ -342,18 +345,7 @@ func TestAssetTreeE2E(t *testing.T) {
 			return TreeLeafAnchor{}, fmt.Errorf("no leaf anchor " +
 				"for node")
 		},
-		Root: TreeRootAssetSource{
-			ProofFile: batch.proofFile,
-			Verifier: &proofInventoryVerifier{
-				client:    client,
-				assetRef:  assetRef,
-				amount:    1_500,
-				anchor:    sdkOutpoint(batch.outpoint),
-				assetRoot: batch.assetRoot,
-			},
-			SigningTweak:  batch.signingTweak,
-			BatchPkScript: batch.pkScript,
-		},
+		Root:   batch.commit.RootSource,
 		Digest: tapsdk.Hash(digest),
 	}
 
@@ -379,7 +371,9 @@ func TestAssetTreeE2E(t *testing.T) {
 	signAssetTree(t, built, assetCtx, operator, users)
 	require.NoError(t, built.VerifySigned())
 
-	// Confirm the batch anchor before unrolling on top of it.
+	// The tree was built and signed against the unconfirmed commitment
+	// transition; only now does the batch anchor hit the chain.
+	publishBatchAnchor(t, h, batch.commit)
 	h.GenerateAndWait(1)
 
 	// Force the entire tree on-chain, parent before child, through v3
@@ -387,31 +381,30 @@ func TestAssetTreeE2E(t *testing.T) {
 	publishTreePackages(t, h, built)
 }
 
-// treeE2EBatch bundles the committed batch anchor's binding material.
+// treeE2EBatch bundles the caller-funded batch anchor: the sealed commit
+// (with the tree root source), the batch outpoint, and the final funded
+// transaction awaiting broadcast.
 type treeE2EBatch struct {
-	outpoint     wire.OutPoint
-	output       *wire.TxOut
-	pkScript     []byte
-	signingTweak []byte
-	assetRoot    tapsdk.Hash
-	proofFile    []byte
+	commit   *BatchAnchorCommit
+	outpoint wire.OutPoint
+	output   *wire.TxOut
 }
 
-// commitTreeBatchAnchor anchors the minted asset beneath the tree's batch
-// output: a wallet-funded custom anchor whose output carries the MuSig2
-// aggregate internal key with the sweep leaf as tapscript sibling, signed
-// by the harness LND wallet, published through tapd, and confirmed.
+// commitTreeBatchAnchor commits the minted asset beneath the tree's batch
+// output on a caller-funded anchor transaction, mirroring the operator's
+// commitment-transaction flow: derive the composed script before funding,
+// fund with an LND wallet UTXO, then seal against the final transaction.
+// The transaction is not broadcast; the tree builds and signs first.
 func commitTreeBatchAnchor(t *testing.T, h *harness.Harness,
-	wallet *tapsdk.Wallet, client tapsdk.Client,
-	assetRef, exportRef tapsdk.AssetRef, mintProof []byte, amount uint64,
-	rootCosigners []*btcec.PublicKey,
+	wallet *tapsdk.Wallet, client tapsdk.Client, assetRef tapsdk.AssetRef,
+	mintProof []byte, amount uint64, rootCosigners []*btcec.PublicKey,
 	sweepLeaf txscript.TapLeaf) *treeE2EBatch {
 
 	t.Helper()
 	ctx := t.Context()
 
-	// Locate the mint anchor in tapd's inventory, mirroring the
-	// onboarding flow's input verification.
+	// Locate the mint anchor in tapd's inventory: the tranche the
+	// commitment transition spends.
 	verified, err := client.VerifyProof(ctx, mintProof)
 	require.NoError(t, err)
 	require.True(t, verified.Valid)
@@ -430,145 +423,132 @@ func commitTreeBatchAnchor(t *testing.T, h *harness.Harness,
 	}
 	require.NotNil(t, anchor, "mint anchor not in tapd inventory")
 
-	rootInternal, err := tree.ComputeInternalKey(rootCosigners)
-	require.NoError(t, err)
-
-	batchValue := int64(treeE2ELeafSats) * 3
-	anchorPSBT, err := onboardingAnchorPSBT(tip.Outpoint, batchValue)
-	require.NoError(t, err)
-
 	anchorInternalKey, err := btcec.ParsePubKey(anchor.InternalKey[:])
 	require.NoError(t, err)
-	anchorSigner, err := tapsdk.ParseXOnlyPubKey(
-		schnorr.SerializePubKey(anchorInternalKey),
-	)
-	require.NoError(t, err)
-
-	feeRate, err := tapsdk.NewFeeRateSatPerVByte(1)
-	require.NoError(t, err)
-
-	request := &tapsdk.CustomAnchorRequest{
-		Inputs: []tapsdk.CustomAssetInput{{
-			ID:        "tree-e2e-batch-input",
-			AssetRef:  assetRef,
-			Amount:    amount,
-			ProofFile: append([]byte(nil), mintProof...),
-			Witness: tapsdk.CustomAssetWitnessPlan{
-				Mode: tapsdk.CustomAssetWitnessBackendSigner,
-			},
-		}},
-		Outputs: []tapsdk.CustomAssetOutput{{
-			ID:                "tree-e2e-batch-output",
-			AssetRef:          assetRef,
-			Amount:            amount,
-			AnchorOutputIndex: 0,
-			AnchorValueSat:    uint64(batchValue),
-			Script: tapsdk.CustomAssetScriptPlan{
-				Mode:   tapsdk.CustomAssetScriptWallet,
-				Wallet: &tapsdk.CustomAssetWalletScriptPlan{},
-			},
-			Anchor: anchorPlan(
-				rootInternal, []txscript.TapLeaf{sweepLeaf},
-			),
-		}},
-		AnchorPSBT: anchorPSBT,
-		Funding: tapsdk.CustomAnchorFundingPlan{
-			Mode: tapsdk.CustomAnchorFundingWalletFunded,
-			WalletFunded: &tapsdk.CustomAnchorWalletFunding{
-				ChangeOutput: tapsdk.AnchorChangeOutput{
-					Mode: tapsdk.AnchorChangeOutputAdd,
-				},
-				Fee: tapsdk.AnchorFee{
-					Mode:    tapsdk.AnchorFeeSatPerVByte,
-					FeeRate: feeRate,
-				},
-				MaxFeeSat: 100_000,
-				CustomLockID: treeE2ELockID(
-					"tree-e2e-batch",
-				),
-			},
-		},
-		PassiveAssets: tapsdk.CustomAnchorPassiveAssets{
-			Policy: tapsdk.CustomAnchorPassiveReject,
-		},
-		LossPolicy: tapsdk.CustomAnchorLossPolicy{
-			Mode: tapsdk.CustomAnchorLossReject,
-		},
-		SigningPlans: []tapsdk.CustomAnchorInputSigningPlan{{
-			InputIndex: 0,
-			KeyPath: &tapsdk.CustomAnchorKeyPathSigningPlan{
-				Signer: anchorSigner,
-			},
-		}},
+	trancheOutpoint := wire.OutPoint{
+		Hash:  chainhash.Hash(tip.Outpoint.Txid),
+		Index: tip.Outpoint.Index,
 	}
 
-	driver := &sdkDriver{wallet: wallet}
-	committed, err := driver.CommitOnboarding(
-		ctx, request, &proofInventoryVerifier{
-			client:    client,
-			assetRef:  assetRef,
-			amount:    amount,
-			anchor:    tip.Outpoint,
-			assetRoot: anchor.TaprootAssetRoot,
+	batchValue := int64(treeE2ELeafSats) * 3
+	req := &BatchAnchorRequest{
+		AssetRef: assetRef,
+		Amount:   amount,
+		Source: BatchAnchorSource{
+			ProofFile: append([]byte(nil), mintProof...),
+			Verifier: &proofInventoryVerifier{
+				client:    client,
+				assetRef:  assetRef,
+				amount:    amount,
+				anchor:    tip.Outpoint,
+				assetRoot: anchor.TaprootAssetRoot,
+			},
+			AnchorOutpoint:    trancheOutpoint,
+			AnchorInternalKey: anchorInternalKey,
 		},
+		Cosigners:      rootCosigners,
+		SweepLeaf:      sweepLeaf,
+		Digest:         tapsdk.Hash(sha256.Sum256([]byte(t.Name()))),
+		OutputIndex:    0,
+		OutputValueSat: batchValue,
+	}
+
+	committer, err := NewBatchAnchorCommitter(wallet)
+	require.NoError(t, err)
+
+	// Derive the composed batch script against the pre-funding template.
+	templateTx := wire.NewMsgTx(2)
+	templateTx.AddTxIn(wire.NewTxIn(&trancheOutpoint, nil, nil))
+	placeholder, err := txscript.PayToTaprootScript(
+		txscript.ComputeTaprootKeyNoScript(&arkscript.ARKNUMSKey),
 	)
 	require.NoError(t, err)
-	require.Len(t, committed.outputs, 1)
-	out := committed.outputs[0]
+	templateTx.AddTxOut(&wire.TxOut{
+		Value:    batchValue,
+		PkScript: placeholder,
+	})
+	template, err := psbt.NewFromUnsignedTx(templateTx)
+	require.NoError(t, err)
 
-	// Sign the funded anchor with the harness LND wallet and publish
-	// through tapd.
-	packet, err := psbtutil.Parse(committed.anchorPSBT)
+	derived, err := committer.DeriveScript(ctx, req, template)
+	require.NoError(t, err)
+
+	// Fund deterministically with an LND wallet UTXO: the derived
+	// script lands on the batch output, change returns to the wallet.
+	lndUtxos, err := h.LND.WalletKit.ListUnspent(ctx, 1, 0x7fffffff)
+	require.NoError(t, err)
+	var feeUtxo *lnwallet.Utxo
+	for _, candidate := range lndUtxos {
+		if candidate.Value >= 1_000_000 {
+			feeUtxo = candidate
+			break
+		}
+	}
+	require.NotNil(t, feeUtxo, "no LND utxo large enough to fund")
+
+	// Change goes to a fresh P2WPKH address: tapd requires the taproot
+	// internal key of every non-asset P2TR output to build exclusion
+	// proofs, and segwit v0 outputs sidestep that requirement.
+	changeAddr, err := h.LND.WalletKit.NextAddr(
+		ctx, "", walletrpc.AddressType_WITNESS_PUBKEY_HASH, true,
+	)
+	require.NoError(t, err)
+	changeScript, err := txscript.PayToAddrScript(changeAddr)
+	require.NoError(t, err)
+
+	fundedTx := templateTx.Copy()
+	fundedTx.TxOut[0].PkScript = append([]byte(nil), derived.PkScript...)
+	fundedTx.AddTxIn(wire.NewTxIn(&feeUtxo.OutPoint, nil, nil))
+	change := int64(feeUtxo.Value) + anchor.AmtSat - batchValue -
+		treeE2EChildFee
+	require.Positive(t, change)
+	fundedTx.AddTxOut(&wire.TxOut{
+		Value:    change,
+		PkScript: changeScript,
+	})
+
+	funded, err := psbt.NewFromUnsignedTx(fundedTx)
+	require.NoError(t, err)
+	funded.Inputs[1].WitnessUtxo = &wire.TxOut{
+		Value:    int64(feeUtxo.Value),
+		PkScript: append([]byte(nil), feeUtxo.PkScript...),
+	}
+
+	commit, err := committer.Commit(ctx, req, funded, derived)
+	require.NoError(t, err)
+
+	return &treeE2EBatch{
+		commit: commit,
+		outpoint: wire.OutPoint{
+			Hash:  fundedTx.TxHash(),
+			Index: req.OutputIndex,
+		},
+		output: wire.NewTxOut(batchValue, derived.PkScript),
+	}
+}
+
+// publishBatchAnchor signs the funding input, finalizes, and broadcasts
+// the committed batch anchor transaction.
+func publishBatchAnchor(t *testing.T, h *harness.Harness,
+	commit *BatchAnchorCommit) {
+
+	t.Helper()
+	ctx := t.Context()
+
+	packet, err := psbtutil.Parse(commit.AnchorPSBT)
 	require.NoError(t, err)
 	signed, err := h.LND.WalletKit.SignPsbt(ctx, packet)
 	require.NoError(t, err)
 	finalized, _, err := h.LND.WalletKit.FinalizePsbt(ctx, signed, "")
 	require.NoError(t, err)
-	finalBytes, err := psbtutil.Serialize(finalized)
-	require.NoError(t, err)
 
+	finalTx, err := psbt.Extract(finalized)
+	require.NoError(t, err)
 	require.NoError(
-		t, driver.PublishOnboarding(
-			ctx, committed.packageBytes, finalBytes,
+		t, h.LND.WalletKit.PublishTransaction(
+			ctx, finalTx, "tree-e2e-batch-anchor",
 		),
 	)
-	h.GenerateAndWait(6)
-
-	committedPacket, err := psbtutil.Parse(committed.anchorPSBT)
-	require.NoError(t, err)
-	batchTx := committedPacket.UnsignedTx
-	outIndex := out.anchorOutputIndex
-	batchOutpoint := wire.OutPoint{
-		Hash:  chainhash.Hash(out.anchorOutpoint.Txid),
-		Index: out.anchorOutpoint.Index,
-	}
-
-	// Export and verify the batch anchor's proof once tapd has seen the
-	// confirmation.
-	var proofFile []byte
-	require.Eventually(t, func() bool {
-		exported, exportErr := client.ExportProof(
-			ctx, exportRef, out.scriptKey, &out.anchorOutpoint,
-		)
-		if exportErr != nil || exported == nil ||
-			len(exported.RawProofFile) == 0 {
-			return false
-		}
-		proofFile = exported.RawProofFile
-
-		return true
-	}, treeE2ETimeout, time.Second, "batch anchor proof never exported")
-
-	return &treeE2EBatch{
-		outpoint: batchOutpoint,
-		output: wire.NewTxOut(
-			batchValue, batchTx.TxOut[outIndex].PkScript,
-		),
-		pkScript:     batchTx.TxOut[outIndex].PkScript,
-		signingTweak: out.taprootMerkleRoot[:],
-		assetRoot:    out.taprootAssetRoot,
-		proofFile:    proofFile,
-	}
 }
 
 // treeE2ELeafAnchor compiles a standard VTXO policy for one leaf owner and
@@ -939,13 +919,6 @@ func exportTreeE2EProof(t *testing.T, client tapsdk.Client,
 	require.True(t, verified.Valid)
 
 	return exported.RawProofFile
-}
-
-// treeE2ELockID derives a deterministic wallet lock id.
-func treeE2ELockID(label string) []byte {
-	digest := sha256.Sum256([]byte(label))
-
-	return digest[:]
 }
 
 // keyHex returns the compressed hex encoding of a public key.
