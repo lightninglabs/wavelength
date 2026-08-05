@@ -20,7 +20,9 @@ single regression test for the exact SQL row sequence.
 ## Layout
 
 - `durableactor/` models the durable actor mailbox and the
-  per-correlation-key FIFO claim contract.
+  per-correlation-key FIFO claim contract, plus the connection actor's
+  ingress cursor fold and its dispatch deferral against bounded in-memory
+  mailboxes.
 - `durableactor/bridge/` replays checked-in traces against the real Go
   `db/actordelivery` store so the model stays connected to the shipped
   implementation.
@@ -49,9 +51,30 @@ be overtaken by a later same-key successor. The new rule,
 for the same mailbox and correlation key blocks later same-key rows, even when
 the predecessor is leased or waiting for retry.
 
+## Ingress Dispatch
+
+The ingress models cover the connection actor's pull-dispatch-checkpoint loop,
+which is where an envelope stops being a mailbox row and becomes a delivery to
+a local actor.
+
+`durableactor/src/ingress_fold.p` states the cursor contract: the persisted
+cursor may never cover an envelope whose local enqueue did not durably commit.
+
+`durableactor/src/ingress_deferral.p` states the delivery contract the fold
+model abstracts away. The dispatch table has four kinds of destination and
+only one of them is transactional, so a rollback undoes some deliveries and
+not others — and one of the destinations is a fixed-capacity in-memory mailbox
+that can refuse a message outright. The model says a full target must produce
+a deferral rather than a blocking send, that the committed cursor stops at the
+undelivered envelope, that a replayed transaction body does not re-send what
+it already handed over, and that a request answered ahead of the commit is
+answered at most once per process lifetime however many times the redrive
+re-pulls it. The pre-fix implementation is reachable through a configuration
+profile, so each fix has a counterexample test case that removes it and fails.
+
 ## Running
 
-Run the current green suite with:
+Run the whole suite with:
 
 ```shell
 ./p-models/scripts/check.sh
@@ -60,11 +83,14 @@ Run the current green suite with:
 That script:
 
 1. compiles `p-models/durableactor/infra.pproj`;
-2. runs the default P testcase, `tcMailboxCorrelationKeyFIFO`;
-3. runs `go test ./p-models/durableactor/bridge`.
+2. runs every green test case, each of which must find zero bugs;
+3. runs every counterexample test case, each of which must find the bug it
+   exists to catch — a clean run there fails the script, because a model that
+   no longer detects its own failure mode is worthless;
+4. runs `go test ./p-models/durableactor/bridge`.
 
-To demonstrate that the model would have found the original same-key reorder
-bug, run the intentional negative testcase:
+To see one of the counterexamples on its own, for instance the original
+same-key reorder:
 
 ```shell
 p check PGenerated/PChecker/net8.0/MailboxInfraModels.dll \
@@ -74,8 +100,7 @@ p check PGenerated/PChecker/net8.0/MailboxInfraModels.dll \
 ```
 
 That check runs the ideal same-key FIFO property against the legacy claim rule
-and should report one bug. The default `check.sh` suite does not run this
-negative testcase because it is expected to fail.
+and should report one bug.
 
 ## Adding Models
 

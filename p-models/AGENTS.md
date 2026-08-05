@@ -6,14 +6,16 @@ Executable P-language state-machine models plus Go bridge tests, used to
 check concurrency and crash-recovery invariants that plain unit tests
 struggle to cover across independent actors. Currently models the durable
 actor mailbox (correlation-key FIFO claim, lease/ack/nack, Stage/Commit
-exactly-once).
+exactly-once) and the connection actor's ingress dispatch pipeline (cursor
+fold, deferral and redrive against bounded in-memory mailboxes).
 
 ## Key Types
 
 - `durableactor/` — the P model project (`infra.pproj`) and its traces for
   the durable mailbox: enqueue idempotence, per-mailbox/priority/order lease
   selection, per-correlation-key FIFO blocking, ack/nack/lease-expiry/
-  dead-letter, and Stage/Commit replay-safety.
+  dead-letter, Stage/Commit replay-safety, and the connection actor's ingress
+  cursor fold and dispatch deferral against bounded in-memory mailboxes.
 - `durableactor/bridge` — Go package (`mailbox_trace.go` +
   `crash_restart_test.go`, `outbox_fold_test.go`) that replays checked-in
   traces against the real `db/actordelivery` store, keeping the model

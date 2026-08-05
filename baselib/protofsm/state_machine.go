@@ -17,6 +17,15 @@ const (
 	// pollInterval is the interval at which we'll poll the SendWhen
 	// predicate if specified.
 	pollInterval = time.Millisecond * 100
+
+	// DefaultStateQueryTimeout bounds a state query that the caller did not
+	// bound itself. A query is answered from driveMachine's top-level
+	// select, so it is only ever slow when the machine is mid-transition,
+	// and a caller reading state has no use for an answer that arrives
+	// after the transition it was racing has finished. Callers with a
+	// context of their own should pass it to CurrentStateWithContext
+	// instead.
+	DefaultStateQueryTimeout = time.Second
 )
 
 var (
@@ -317,9 +326,20 @@ func (s *StateMachine[InternalEvent, OutboxEvent, Env]) Receive(
 	return future.Await(ctx)
 }
 
-// CurrentState returns the current state of the state machine.
+// CurrentState returns the current state of the state machine, waiting up to
+// DefaultStateQueryTimeout for the machine to answer.
+//
+// A caller that has a context to spend should prefer CurrentStateWithContext,
+// so the query also ends when the caller does. This variant deliberately runs
+// on a plain timer rather than deriving a context from context.Background: a
+// derived context inside this shared generic makes contextcheck flag every
+// no-arg caller in every consuming package, and this wrapper exists precisely
+// for the call sites that have no context to pass.
 func (s *StateMachine[InternalEvent, OutboxEvent, Env]) CurrentState() (
 	State[InternalEvent, OutboxEvent, Env], error) {
+
+	timer := time.NewTimer(DefaultStateQueryTimeout)
+	defer timer.Stop()
 
 	query := stateQuery[InternalEvent, OutboxEvent, Env]{
 		CurrentState: make(
@@ -327,11 +347,71 @@ func (s *StateMachine[InternalEvent, OutboxEvent, Env]) CurrentState() (
 		),
 	}
 
-	if !fn.SendOrQuit(s.stateQuery, query, s.quit) {
+	// Both halves share the single timer, mirroring the shared deadline
+	// the context variant gets from WithTimeout.
+	select {
+	case s.stateQuery <- query:
+	case <-timer.C:
+		return nil, context.DeadlineExceeded
+
+	case <-s.quit:
 		return nil, ErrStateMachineShutdown
 	}
 
-	return fn.RecvOrTimeout(query.CurrentState, time.Second)
+	select {
+	case state := <-query.CurrentState:
+		return state, nil
+
+	case <-timer.C:
+		return nil, context.DeadlineExceeded
+
+	case <-s.quit:
+		return nil, ErrStateMachineShutdown
+	}
+}
+
+// CurrentStateWithContext returns the current state of the state machine,
+// giving up when ctx is done.
+//
+// Both halves of the exchange are bounded, and the request half is the one that
+// matters: driveMachine serves state queries only from its top-level select, so
+// it is deaf to them for as long as it is inside a transition, and the request
+// channel is unbuffered. A send with no escape therefore parks the caller for
+// the full duration of whatever ProcessEvent the machine is running — which for
+// a transition doing network or signing work is unbounded. Selecting on ctx is
+// what turns that park into an error the caller can degrade on.
+func (s *StateMachine[InternalEvent, OutboxEvent, Env]) CurrentStateWithContext(
+	ctx context.Context) (State[InternalEvent, OutboxEvent, Env], error) {
+
+	query := stateQuery[InternalEvent, OutboxEvent, Env]{
+		CurrentState: make(
+			chan State[InternalEvent, OutboxEvent, Env], 1,
+		),
+	}
+
+	select {
+	case s.stateQuery <- query:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+
+	case <-s.quit:
+		return nil, ErrStateMachineShutdown
+	}
+
+	// Once the query is accepted the reply is immediate: driveMachine
+	// writes it into the buffered reply channel from the same select arm
+	// that took the query. The wait is bounded anyway, so a machine that
+	// stops in between cannot park the caller either.
+	select {
+	case state := <-query.CurrentState:
+		return state, nil
+
+	case <-ctx.Done():
+		return nil, ctx.Err()
+
+	case <-s.quit:
+		return nil, ErrStateMachineShutdown
+	}
 }
 
 // StateSubscriber represents an active subscription to be notified of new

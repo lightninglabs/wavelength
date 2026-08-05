@@ -449,7 +449,7 @@ func TestRunFoldedDispatchRejectsMismatchedEnvelope(t *testing.T) {
 			_, err := conn.runFoldedDispatch(
 				t.Context(), store,
 				[]*mailboxpb.Envelope{tc.env},
-				tc.env.EventSeq+1, AckState{},
+				tc.env.EventSeq+1, AckState{}, &redriveState{},
 			)
 			require.Error(t, err)
 			require.True(

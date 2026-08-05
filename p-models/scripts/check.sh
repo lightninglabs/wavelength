@@ -151,6 +151,46 @@ check_green tcOutboxFold
 # completes the outbox without a durable enqueue loses the message.
 check_negative tcOutboxSplitWriteCounterexample 1
 
+# The ingress cursor fold must never persist a cursor covering an envelope
+# whose local enqueue did not commit, under nondeterministic batch sizes,
+# rolled-back commits, and crash-restarts.
+check_green tcIngressFoldNoLoss
+
+# The two ways the fold's ordering can be broken must both be caught by the
+# IngressCursorCoversOnlyCommittedEnvelopes monitor: keeping an eagerly
+# advanced in-memory cursor after a rollback, and checkpointing the cursor in
+# its own commit ahead of the enqueues.
+check_negative tcIngressEagerCursorCounterexample 1
+check_negative tcIngressCheckpointFirstCounterexample 1
+
+# Ingress dispatch into a BOUNDED in-memory mailbox: a full target must defer
+# rather than park, the committed cursor must stop at the undelivered
+# envelope, a replayed transaction body must not re-send what it already
+# handed over, and a hoisted request must be answered once per process
+# lifetime however many times the redrive re-pulls it.
+check_green tcIngressDeferralNoLoss
+
+# Deferring must delay the stream, never stop it: once the target keeps up the
+# cursor reaches the end.
+check_green tcIngressDeferralLiveness
+
+# The pre-fix blocking send must be caught two independent ways: as a safety
+# violation by IngressWriterNeverParks, and as the starvation an operator
+# actually sees by IngressBacklogEventuallyDrains.
+check_negative tcIngressParkedWriterCounterexample 1
+check_negative tcIngressParkedWriterStarvesCounterexample 1
+
+# Dropping the per-invocation delivery record must be caught two independent
+# ways: as a duplicate within one folded dispatch, and as two deliveries in
+# one redrive epoch.
+check_negative tcIngressUntrackedRetryDuplicateCounterexample 1
+check_negative tcIngressMonitorCatchesRetryDuplicate 1
+
+# Dropping the served watermark must be caught by
+# IngressNonTxRequestServedOncePerIncarnation: a redrive answers a hoisted
+# request the operator has already had answered.
+check_negative tcIngressUnwatermarkedServeCounterexample 1
+
 echo ""
 echo "=== Go Bridge Conformance ==="
 go test ./p-models/durableactor/bridge
