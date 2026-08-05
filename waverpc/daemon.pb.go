@@ -10186,6 +10186,114 @@ func (x *VHTLCRecoveryStatus) GetUnilateralRefundWithoutReceiverDelay() int32 {
 	return 0
 }
 
+type SignOutSwapHtlcAckRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// payment_hash is the 32-byte Lightning payment hash.
+	PaymentHash []byte `protobuf:"bytes,1,opt,name=payment_hash,json=paymentHash,proto3" json:"payment_hash,omitempty"`
+	// amount_sat is the accepted vHTLC output amount.
+	AmountSat uint64 `protobuf:"varint,2,opt,name=amount_sat,json=amountSat,proto3" json:"amount_sat,omitempty"`
+	// vhtlc_pk_script is the accepted vHTLC output script.
+	VhtlcPkScript []byte `protobuf:"bytes,3,opt,name=vhtlc_pk_script,json=vhtlcPkScript,proto3" json:"vhtlc_pk_script,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SignOutSwapHtlcAckRequest) Reset() {
+	*x = SignOutSwapHtlcAckRequest{}
+	mi := &file_daemon_proto_msgTypes[119]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SignOutSwapHtlcAckRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SignOutSwapHtlcAckRequest) ProtoMessage() {}
+
+func (x *SignOutSwapHtlcAckRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_daemon_proto_msgTypes[119]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SignOutSwapHtlcAckRequest.ProtoReflect.Descriptor instead.
+func (*SignOutSwapHtlcAckRequest) Descriptor() ([]byte, []int) {
+	return file_daemon_proto_rawDescGZIP(), []int{119}
+}
+
+func (x *SignOutSwapHtlcAckRequest) GetPaymentHash() []byte {
+	if x != nil {
+		return x.PaymentHash
+	}
+	return nil
+}
+
+func (x *SignOutSwapHtlcAckRequest) GetAmountSat() uint64 {
+	if x != nil {
+		return x.AmountSat
+	}
+	return 0
+}
+
+func (x *SignOutSwapHtlcAckRequest) GetVhtlcPkScript() []byte {
+	if x != nil {
+		return x.VhtlcPkScript
+	}
+	return nil
+}
+
+type SignOutSwapHtlcAckResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// signature is the 64-byte BIP-340 Schnorr signature.
+	Signature     []byte `protobuf:"bytes,1,opt,name=signature,proto3" json:"signature,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SignOutSwapHtlcAckResponse) Reset() {
+	*x = SignOutSwapHtlcAckResponse{}
+	mi := &file_daemon_proto_msgTypes[120]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SignOutSwapHtlcAckResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SignOutSwapHtlcAckResponse) ProtoMessage() {}
+
+func (x *SignOutSwapHtlcAckResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_daemon_proto_msgTypes[120]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SignOutSwapHtlcAckResponse.ProtoReflect.Descriptor instead.
+func (*SignOutSwapHtlcAckResponse) Descriptor() ([]byte, []int) {
+	return file_daemon_proto_rawDescGZIP(), []int{120}
+}
+
+func (x *SignOutSwapHtlcAckResponse) GetSignature() []byte {
+	if x != nil {
+		return x.Signature
+	}
+	return nil
+}
+
 var File_daemon_proto protoreflect.FileDescriptor
 
 const file_daemon_proto_rawDesc = "" +
@@ -10884,7 +10992,14 @@ const file_daemon_proto_rawDesc = "" +
 	"\x0frefund_locktime\x18\x16 \x01(\x05R\x0erefundLocktime\x124\n" +
 	"\x16unilateral_claim_delay\x18\x17 \x01(\x05R\x14unilateralClaimDelay\x126\n" +
 	"\x17unilateral_refund_delay\x18\x18 \x01(\x05R\x15unilateralRefundDelay\x12V\n" +
-	"(unilateral_refund_without_receiver_delay\x18\x19 \x01(\x05R$unilateralRefundWithoutReceiverDelay*\x8d\x01\n" +
+	"(unilateral_refund_without_receiver_delay\x18\x19 \x01(\x05R$unilateralRefundWithoutReceiverDelay\"\x85\x01\n" +
+	"\x19SignOutSwapHtlcAckRequest\x12!\n" +
+	"\fpayment_hash\x18\x01 \x01(\fR\vpaymentHash\x12\x1d\n" +
+	"\n" +
+	"amount_sat\x18\x02 \x01(\x04R\tamountSat\x12&\n" +
+	"\x0fvhtlc_pk_script\x18\x03 \x01(\fR\rvhtlcPkScript\":\n" +
+	"\x1aSignOutSwapHtlcAckResponse\x12\x1c\n" +
+	"\tsignature\x18\x01 \x01(\fR\tsignature*\x8d\x01\n" +
 	"\vWalletState\x12\x1c\n" +
 	"\x18WALLET_STATE_UNSPECIFIED\x10\x00\x12\x15\n" +
 	"\x11WALLET_STATE_NONE\x10\x01\x12\x17\n" +
@@ -10974,7 +11089,7 @@ const file_daemon_proto_rawDesc = "" +
 	"\x1eVHTLC_RECOVERY_STATE_COMPLETED\x10\t\x12\"\n" +
 	"\x1eVHTLC_RECOVERY_STATE_CANCELLED\x10\n" +
 	"\x12\x1f\n" +
-	"\x1bVHTLC_RECOVERY_STATE_FAILED\x10\v2\xd2\x1e\n" +
+	"\x1bVHTLC_RECOVERY_STATE_FAILED\x10\v2\xb1\x1f\n" +
 	"\rDaemonService\x12<\n" +
 	"\aGetInfo\x12\x17.waverpc.GetInfoRequest\x1a\x18.waverpc.GetInfoResponse\x12<\n" +
 	"\aGenSeed\x12\x17.waverpc.GenSeedRequest\x1a\x18.waverpc.GenSeedResponse\x12E\n" +
@@ -11026,7 +11141,8 @@ const file_daemon_proto_rawDesc = "" +
 	"\x15EscalateVHTLCRecovery\x12%.waverpc.EscalateVHTLCRecoveryRequest\x1a&.waverpc.EscalateVHTLCRecoveryResponse\x12`\n" +
 	"\x13CancelVHTLCRecovery\x12#.waverpc.CancelVHTLCRecoveryRequest\x1a$.waverpc.CancelVHTLCRecoveryResponse\x12i\n" +
 	"\x16GetVHTLCRecoveryStatus\x12&.waverpc.GetVHTLCRecoveryStatusRequest\x1a'.waverpc.GetVHTLCRecoveryStatusResponse\x12`\n" +
-	"\x13ListVHTLCRecoveries\x12#.waverpc.ListVHTLCRecoveriesRequest\x1a$.waverpc.ListVHTLCRecoveriesResponseB-Z+github.com/lightninglabs/wavelength/waverpcb\x06proto3"
+	"\x13ListVHTLCRecoveries\x12#.waverpc.ListVHTLCRecoveriesRequest\x1a$.waverpc.ListVHTLCRecoveriesResponse\x12]\n" +
+	"\x12SignOutSwapHtlcAck\x12\".waverpc.SignOutSwapHtlcAckRequest\x1a#.waverpc.SignOutSwapHtlcAckResponseB-Z+github.com/lightninglabs/wavelength/waverpcb\x06proto3"
 
 var (
 	file_daemon_proto_rawDescOnce sync.Once
@@ -11041,7 +11157,7 @@ func file_daemon_proto_rawDescGZIP() []byte {
 }
 
 var file_daemon_proto_enumTypes = make([]protoimpl.EnumInfo, 11)
-var file_daemon_proto_msgTypes = make([]protoimpl.MessageInfo, 120)
+var file_daemon_proto_msgTypes = make([]protoimpl.MessageInfo, 122)
 var file_daemon_proto_goTypes = []any{
 	(WalletState)(0),                                               // 0: waverpc.WalletState
 	(VTXOStatus)(0),                                                // 1: waverpc.VTXOStatus
@@ -11173,7 +11289,9 @@ var file_daemon_proto_goTypes = []any{
 	(*ListVHTLCRecoveriesRequest)(nil),                             // 127: waverpc.ListVHTLCRecoveriesRequest
 	(*ListVHTLCRecoveriesResponse)(nil),                            // 128: waverpc.ListVHTLCRecoveriesResponse
 	(*VHTLCRecoveryStatus)(nil),                                    // 129: waverpc.VHTLCRecoveryStatus
-	nil,                                                            // 130: waverpc.LeaveVTXOsRequest.DestinationsEntry
+	(*SignOutSwapHtlcAckRequest)(nil),                              // 130: waverpc.SignOutSwapHtlcAckRequest
+	(*SignOutSwapHtlcAckResponse)(nil),                             // 131: waverpc.SignOutSwapHtlcAckResponse
+	nil,                                                            // 132: waverpc.LeaveVTXOsRequest.DestinationsEntry
 }
 var file_daemon_proto_depIdxs = []int32{
 	0,   // 0: waverpc.GetInfoResponse.wallet_state:type_name -> waverpc.WalletState
@@ -11210,7 +11328,7 @@ var file_daemon_proto_depIdxs = []int32{
 	72,  // 31: waverpc.SubmitForfeitParticipantSignaturesRequest.signatures:type_name -> waverpc.ForfeitParticipantSignature
 	60,  // 32: waverpc.LeaveVTXOsRequest.outpoints:type_name -> waverpc.OutpointSelection
 	75,  // 33: waverpc.LeaveVTXOsRequest.default_destination:type_name -> waverpc.LeaveDestination
-	130, // 34: waverpc.LeaveVTXOsRequest.destinations:type_name -> waverpc.LeaveVTXOsRequest.DestinationsEntry
+	132, // 34: waverpc.LeaveVTXOsRequest.destinations:type_name -> waverpc.LeaveVTXOsRequest.DestinationsEntry
 	75,  // 35: waverpc.SendOnChainRequest.destination:type_name -> waverpc.LeaveDestination
 	85,  // 36: waverpc.SweepBoardingUTXOsResponse.sweepable_outputs:type_name -> waverpc.BoardingSweepOutput
 	88,  // 37: waverpc.BoardingSweep.inputs:type_name -> waverpc.BoardingSweepInput
@@ -11290,53 +11408,55 @@ var file_daemon_proto_depIdxs = []int32{
 	123, // 111: waverpc.DaemonService.CancelVHTLCRecovery:input_type -> waverpc.CancelVHTLCRecoveryRequest
 	125, // 112: waverpc.DaemonService.GetVHTLCRecoveryStatus:input_type -> waverpc.GetVHTLCRecoveryStatusRequest
 	127, // 113: waverpc.DaemonService.ListVHTLCRecoveries:input_type -> waverpc.ListVHTLCRecoveriesRequest
-	12,  // 114: waverpc.DaemonService.GetInfo:output_type -> waverpc.GetInfoResponse
-	15,  // 115: waverpc.DaemonService.GenSeed:output_type -> waverpc.GenSeedResponse
-	17,  // 116: waverpc.DaemonService.InitWallet:output_type -> waverpc.InitWalletResponse
-	19,  // 117: waverpc.DaemonService.UnlockWallet:output_type -> waverpc.UnlockWalletResponse
-	21,  // 118: waverpc.DaemonService.GetBalance:output_type -> waverpc.GetBalanceResponse
-	26,  // 119: waverpc.DaemonService.ListVTXOs:output_type -> waverpc.ListVTXOsResponse
-	28,  // 120: waverpc.DaemonService.NewAddress:output_type -> waverpc.NewAddressResponse
-	30,  // 121: waverpc.DaemonService.NewReceiveScript:output_type -> waverpc.NewReceiveScriptResponse
-	32,  // 122: waverpc.DaemonService.ReceiveAuthKey:output_type -> waverpc.ReceiveAuthKeyResponse
-	34,  // 123: waverpc.DaemonService.SignReceiveAuthMessage:output_type -> waverpc.SignReceiveAuthMessageResponse
-	36,  // 124: waverpc.DaemonService.SignReceiveAuthMessageCompact:output_type -> waverpc.SignReceiveAuthMessageCompactResponse
-	38,  // 125: waverpc.DaemonService.ReceiveAuthECDH:output_type -> waverpc.ReceiveAuthECDHResponse
-	40,  // 126: waverpc.DaemonService.GetIndexedVTXOByPkScript:output_type -> waverpc.GetIndexedVTXOByPkScriptResponse
-	42,  // 127: waverpc.DaemonService.GetVTXOExpiryInfo:output_type -> waverpc.GetVTXOExpiryInfoResponse
-	44,  // 128: waverpc.DaemonService.GetIndexedOORSessionByTxid:output_type -> waverpc.GetIndexedOORSessionByTxidResponse
-	47,  // 129: waverpc.DaemonService.SendVTXO:output_type -> waverpc.SendVTXOResponse
-	51,  // 130: waverpc.DaemonService.SendOOR:output_type -> waverpc.SendOORResponse
-	54,  // 131: waverpc.DaemonService.PrepareOOR:output_type -> waverpc.PrepareOORResponse
-	56,  // 132: waverpc.DaemonService.SignOORCustomInput:output_type -> waverpc.SignOORCustomInputResponse
-	58,  // 133: waverpc.DaemonService.SignVTXOForfeit:output_type -> waverpc.SignVTXOForfeitResponse
-	62,  // 134: waverpc.DaemonService.RefreshVTXOs:output_type -> waverpc.RefreshVTXOsResponse
-	68,  // 135: waverpc.DaemonService.RefreshCustomVTXOs:output_type -> waverpc.RefreshCustomVTXOsResponse
-	71,  // 136: waverpc.DaemonService.ListPendingForfeitParticipantSignatureRequests:output_type -> waverpc.ListPendingForfeitParticipantSignatureRequestsResponse
-	74,  // 137: waverpc.DaemonService.SubmitForfeitParticipantSignatures:output_type -> waverpc.SubmitForfeitParticipantSignaturesResponse
-	77,  // 138: waverpc.DaemonService.LeaveVTXOs:output_type -> waverpc.LeaveVTXOsResponse
-	79,  // 139: waverpc.DaemonService.SendOnChain:output_type -> waverpc.SendOnChainResponse
-	81,  // 140: waverpc.DaemonService.Board:output_type -> waverpc.BoardResponse
-	83,  // 141: waverpc.DaemonService.JoinNextRound:output_type -> waverpc.JoinNextRoundResponse
-	86,  // 142: waverpc.DaemonService.SweepBoardingUTXOs:output_type -> waverpc.SweepBoardingUTXOsResponse
-	90,  // 143: waverpc.DaemonService.ListBoardingSweeps:output_type -> waverpc.ListBoardingSweepsResponse
-	96,  // 144: waverpc.DaemonService.ListRounds:output_type -> waverpc.ListRoundsResponse
-	95,  // 145: waverpc.DaemonService.GetRound:output_type -> waverpc.GetRoundResponse
-	98,  // 146: waverpc.DaemonService.WatchRounds:output_type -> waverpc.WatchRoundsResponse
-	101, // 147: waverpc.DaemonService.ListOORSessions:output_type -> waverpc.ListOORSessionsResponse
-	103, // 148: waverpc.DaemonService.GetOORSession:output_type -> waverpc.GetOORSessionResponse
-	105, // 149: waverpc.DaemonService.EstimateFee:output_type -> waverpc.EstimateFeeResponse
-	108, // 150: waverpc.DaemonService.GetFeeHistory:output_type -> waverpc.GetFeeHistoryResponse
-	111, // 151: waverpc.DaemonService.ListTransactions:output_type -> waverpc.ListTransactionsResponse
-	113, // 152: waverpc.DaemonService.Unroll:output_type -> waverpc.UnrollResponse
-	118, // 153: waverpc.DaemonService.GetUnrollStatus:output_type -> waverpc.GetUnrollStatusResponse
-	120, // 154: waverpc.DaemonService.ArmVHTLCRecovery:output_type -> waverpc.ArmVHTLCRecoveryResponse
-	122, // 155: waverpc.DaemonService.EscalateVHTLCRecovery:output_type -> waverpc.EscalateVHTLCRecoveryResponse
-	124, // 156: waverpc.DaemonService.CancelVHTLCRecovery:output_type -> waverpc.CancelVHTLCRecoveryResponse
-	126, // 157: waverpc.DaemonService.GetVHTLCRecoveryStatus:output_type -> waverpc.GetVHTLCRecoveryStatusResponse
-	128, // 158: waverpc.DaemonService.ListVHTLCRecoveries:output_type -> waverpc.ListVHTLCRecoveriesResponse
-	114, // [114:159] is the sub-list for method output_type
-	69,  // [69:114] is the sub-list for method input_type
+	130, // 114: waverpc.DaemonService.SignOutSwapHtlcAck:input_type -> waverpc.SignOutSwapHtlcAckRequest
+	12,  // 115: waverpc.DaemonService.GetInfo:output_type -> waverpc.GetInfoResponse
+	15,  // 116: waverpc.DaemonService.GenSeed:output_type -> waverpc.GenSeedResponse
+	17,  // 117: waverpc.DaemonService.InitWallet:output_type -> waverpc.InitWalletResponse
+	19,  // 118: waverpc.DaemonService.UnlockWallet:output_type -> waverpc.UnlockWalletResponse
+	21,  // 119: waverpc.DaemonService.GetBalance:output_type -> waverpc.GetBalanceResponse
+	26,  // 120: waverpc.DaemonService.ListVTXOs:output_type -> waverpc.ListVTXOsResponse
+	28,  // 121: waverpc.DaemonService.NewAddress:output_type -> waverpc.NewAddressResponse
+	30,  // 122: waverpc.DaemonService.NewReceiveScript:output_type -> waverpc.NewReceiveScriptResponse
+	32,  // 123: waverpc.DaemonService.ReceiveAuthKey:output_type -> waverpc.ReceiveAuthKeyResponse
+	34,  // 124: waverpc.DaemonService.SignReceiveAuthMessage:output_type -> waverpc.SignReceiveAuthMessageResponse
+	36,  // 125: waverpc.DaemonService.SignReceiveAuthMessageCompact:output_type -> waverpc.SignReceiveAuthMessageCompactResponse
+	38,  // 126: waverpc.DaemonService.ReceiveAuthECDH:output_type -> waverpc.ReceiveAuthECDHResponse
+	40,  // 127: waverpc.DaemonService.GetIndexedVTXOByPkScript:output_type -> waverpc.GetIndexedVTXOByPkScriptResponse
+	42,  // 128: waverpc.DaemonService.GetVTXOExpiryInfo:output_type -> waverpc.GetVTXOExpiryInfoResponse
+	44,  // 129: waverpc.DaemonService.GetIndexedOORSessionByTxid:output_type -> waverpc.GetIndexedOORSessionByTxidResponse
+	47,  // 130: waverpc.DaemonService.SendVTXO:output_type -> waverpc.SendVTXOResponse
+	51,  // 131: waverpc.DaemonService.SendOOR:output_type -> waverpc.SendOORResponse
+	54,  // 132: waverpc.DaemonService.PrepareOOR:output_type -> waverpc.PrepareOORResponse
+	56,  // 133: waverpc.DaemonService.SignOORCustomInput:output_type -> waverpc.SignOORCustomInputResponse
+	58,  // 134: waverpc.DaemonService.SignVTXOForfeit:output_type -> waverpc.SignVTXOForfeitResponse
+	62,  // 135: waverpc.DaemonService.RefreshVTXOs:output_type -> waverpc.RefreshVTXOsResponse
+	68,  // 136: waverpc.DaemonService.RefreshCustomVTXOs:output_type -> waverpc.RefreshCustomVTXOsResponse
+	71,  // 137: waverpc.DaemonService.ListPendingForfeitParticipantSignatureRequests:output_type -> waverpc.ListPendingForfeitParticipantSignatureRequestsResponse
+	74,  // 138: waverpc.DaemonService.SubmitForfeitParticipantSignatures:output_type -> waverpc.SubmitForfeitParticipantSignaturesResponse
+	77,  // 139: waverpc.DaemonService.LeaveVTXOs:output_type -> waverpc.LeaveVTXOsResponse
+	79,  // 140: waverpc.DaemonService.SendOnChain:output_type -> waverpc.SendOnChainResponse
+	81,  // 141: waverpc.DaemonService.Board:output_type -> waverpc.BoardResponse
+	83,  // 142: waverpc.DaemonService.JoinNextRound:output_type -> waverpc.JoinNextRoundResponse
+	86,  // 143: waverpc.DaemonService.SweepBoardingUTXOs:output_type -> waverpc.SweepBoardingUTXOsResponse
+	90,  // 144: waverpc.DaemonService.ListBoardingSweeps:output_type -> waverpc.ListBoardingSweepsResponse
+	96,  // 145: waverpc.DaemonService.ListRounds:output_type -> waverpc.ListRoundsResponse
+	95,  // 146: waverpc.DaemonService.GetRound:output_type -> waverpc.GetRoundResponse
+	98,  // 147: waverpc.DaemonService.WatchRounds:output_type -> waverpc.WatchRoundsResponse
+	101, // 148: waverpc.DaemonService.ListOORSessions:output_type -> waverpc.ListOORSessionsResponse
+	103, // 149: waverpc.DaemonService.GetOORSession:output_type -> waverpc.GetOORSessionResponse
+	105, // 150: waverpc.DaemonService.EstimateFee:output_type -> waverpc.EstimateFeeResponse
+	108, // 151: waverpc.DaemonService.GetFeeHistory:output_type -> waverpc.GetFeeHistoryResponse
+	111, // 152: waverpc.DaemonService.ListTransactions:output_type -> waverpc.ListTransactionsResponse
+	113, // 153: waverpc.DaemonService.Unroll:output_type -> waverpc.UnrollResponse
+	118, // 154: waverpc.DaemonService.GetUnrollStatus:output_type -> waverpc.GetUnrollStatusResponse
+	120, // 155: waverpc.DaemonService.ArmVHTLCRecovery:output_type -> waverpc.ArmVHTLCRecoveryResponse
+	122, // 156: waverpc.DaemonService.EscalateVHTLCRecovery:output_type -> waverpc.EscalateVHTLCRecoveryResponse
+	124, // 157: waverpc.DaemonService.CancelVHTLCRecovery:output_type -> waverpc.CancelVHTLCRecoveryResponse
+	126, // 158: waverpc.DaemonService.GetVHTLCRecoveryStatus:output_type -> waverpc.GetVHTLCRecoveryStatusResponse
+	128, // 159: waverpc.DaemonService.ListVHTLCRecoveries:output_type -> waverpc.ListVHTLCRecoveriesResponse
+	131, // 160: waverpc.DaemonService.SignOutSwapHtlcAck:output_type -> waverpc.SignOutSwapHtlcAckResponse
+	115, // [115:161] is the sub-list for method output_type
+	69,  // [69:115] is the sub-list for method input_type
 	69,  // [69:69] is the sub-list for extension type_name
 	69,  // [69:69] is the sub-list for extension extendee
 	0,   // [0:69] is the sub-list for field type_name
@@ -11379,7 +11499,7 @@ func file_daemon_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_daemon_proto_rawDesc), len(file_daemon_proto_rawDesc)),
 			NumEnums:      11,
-			NumMessages:   120,
+			NumMessages:   122,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

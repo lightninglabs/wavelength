@@ -39,6 +39,9 @@ http:
     - selector: waverpc.DaemonService.ReceiveAuthECDH
       post: /v1/daemon/receive-auth-ecdh
       body: "*"
+    - selector: waverpc.DaemonService.SignOutSwapHtlcAck
+      post: /v1/daemon/sign-out-swap-htlc-ack
+      body: "*"
     - selector: waverpc.DaemonService.GetIndexedVTXOByPkScript
       post: /v1/daemon/get-indexed-vtxo-by-pk-script
       body: "*"
