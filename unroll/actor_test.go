@@ -2549,6 +2549,57 @@ func TestTerminalFailureRemovesAbandonedBroadcasts(t *testing.T) {
 		"terminal failure must remove the in-flight proof tx (#609)")
 }
 
+// TestRejectedProofTxIsRemovedOnTerminalFailure covers wavelength#609's own
+// scenario: txconfirm hard-rejects a proof tx, which is the transaction lnd
+// keeps rebroadcasting from its wallet queue. The FSM strips that txid from
+// InFlightTxids as it stamps the failure, so removal must not be driven from
+// planner state alone — otherwise the one transaction that needs dropping is
+// the one transaction never dropped.
+//
+// This is the safest removal path there is: an operator-signed proof node
+// cannot be rebuilt or replaced, so the failure is terminal by construction,
+// and txconfirm has already evicted the tx (TxStateFailed is terminal) and
+// released its fee-input lease. Nothing else is still trying to land it.
+func TestRejectedProofTxIsRemovedOnTerminalFailure(t *testing.T) {
+	proof := buildLinearProof(t)
+	desc := testDescriptor(t, proof.TargetOutpoint(), proof.CSVDelay())
+	rootTxid := proof.RootTxids()[0]
+
+	unrollActor, beh, txconfirmRef, _ := newActorHarness(t, proof, desc)
+
+	chainSource, ok := beh.cfg.ChainSource.(*fakeChainSourceRef)
+	require.True(t, ok)
+
+	txconfirmRef.setImmediateFailed(rootTxid, "rejected")
+
+	mustAsk(t, unrollActor.Ref(), &StartUnrollRequest{
+		Height:  100,
+		Trigger: TriggerManual,
+	})
+
+	require.Eventually(t, func() bool {
+		stateResp, ok := mustAsk(
+			t, unrollActor.Ref(), &GetStateRequest{},
+		).(*GetStateResp)
+		require.True(t, ok)
+
+		return stateResp.Phase == PhaseFailed
+	}, testTimeout, 10*time.Millisecond)
+
+	// The rejected proof tx must be removed from the wallet even though the
+	// FSM already dropped it from InFlightTxids.
+	require.Eventually(t, func() bool {
+		for _, txid := range chainSource.removedTxSnapshot() {
+			if txid == rootTxid {
+				return true
+			}
+		}
+
+		return false
+	}, testTimeout, 10*time.Millisecond,
+		"the rejected proof tx must be removed from the wallet (#609)")
+}
+
 // TestAbandonedBroadcastRemovalSkipsConfirmedTxids verifies that the terminal
 // cleanup removes only in-flight (broadcast-but-unconfirmed) transactions and
 // never a confirmed one: a confirmed tx is on-chain, so removing it from the
