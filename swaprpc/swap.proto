@@ -138,6 +138,11 @@ message RequestChannelIdRequest {
     // capability on the receive intent and only routes a credit-attach
     // receive through the swap-server-funded in-ark leg when it is set.
     bool supports_in_ark_credit = 5;
+
+    // account_authorization proves control of client_vhtlc_pubkey for this
+    // exact request. Swap servers require it before consulting or reserving
+    // account credits.
+    CreditAccountAuthorization account_authorization = 6;
 }
 
 // RequestChannelIdResponse returns the route hint paths for one receive
@@ -375,6 +380,10 @@ message CreateInSwapRequest {
     // max_credit_sat is the maximum credit amount the caller authorizes this
     // payment to reserve. Zero means credit use is not allowed.
     uint64 max_credit_sat = 5;
+
+    // account_authorization proves control of account_pubkey for this exact
+    // request whenever account_pubkey is set.
+    CreditAccountAuthorization account_authorization = 6;
 }
 
 // CreateInSwapResponse returns the negotiated parameters for one in-swap.
@@ -426,6 +435,10 @@ message QuoteInSwapRequest {
     // use. Zero means the quote reports whether credits are required but does
     // not apply optional credits.
     uint64 max_credit_sat = 4;
+
+    // account_authorization proves control of account_pubkey for this exact
+    // request whenever account_pubkey is set.
+    CreditAccountAuthorization account_authorization = 5;
 }
 
 // QuoteInSwapResponse returns the non-binding preview for one invoice send.
@@ -480,6 +493,19 @@ message CreditQuote {
     uint64 ark_funding_sat = 5;
 }
 
+// CreditAccountAuthorization proves control of the credit account identity
+// key for one exact request. The server rejects expired and reused nonces.
+message CreditAccountAuthorization {
+    // expires_at_unix is the unix timestamp after which the proof is invalid.
+    int64 expires_at_unix = 1;
+
+    // nonce is a caller-generated 32-byte unique value.
+    bytes nonce = 2;
+
+    // signature is a 64-byte BIP-340 Schnorr signature by the account key.
+    bytes signature = 3;
+}
+
 message CreateCreditRequest {
     // account_pubkey identifies the wallet credit account.
     bytes account_pubkey = 1;
@@ -495,6 +521,10 @@ message CreateCreditRequest {
     // memo is embedded into server-owned Lightning receive invoices when the
     // source is LIGHTNING_RECEIVE.
     string memo = 5;
+
+    // account_authorization proves control of account_pubkey for this exact
+    // request.
+    CreditAccountAuthorization account_authorization = 6;
 }
 
 message CreateCreditResponse {
@@ -522,6 +552,10 @@ message RedeemCreditRequest {
     string idempotency_key = 2;
     uint64 amount_sat = 3;
     bytes destination_pubkey = 4;
+
+    // account_authorization proves control of account_pubkey for this exact
+    // request.
+    CreditAccountAuthorization account_authorization = 5;
 }
 
 message RedeemCreditResponse {
@@ -535,6 +569,10 @@ message RedeemCreditResponse {
 message ListCreditsRequest {
     bytes account_pubkey = 1;
     uint32 limit = 2;
+
+    // account_authorization proves control of account_pubkey for this exact
+    // request.
+    CreditAccountAuthorization account_authorization = 3;
 }
 
 message ListCreditsResponse {

@@ -65,6 +65,7 @@ const (
 	DaemonService_GetVHTLCRecoveryStatus_FullMethodName                         = "/waverpc.DaemonService/GetVHTLCRecoveryStatus"
 	DaemonService_ListVHTLCRecoveries_FullMethodName                            = "/waverpc.DaemonService/ListVHTLCRecoveries"
 	DaemonService_SignOutSwapHtlcAck_FullMethodName                             = "/waverpc.DaemonService/SignOutSwapHtlcAck"
+	DaemonService_SignCreditAccountAuthorization_FullMethodName                 = "/waverpc.DaemonService/SignCreditAccountAuthorization"
 )
 
 // DaemonServiceClient is the client API for DaemonService service.
@@ -263,6 +264,9 @@ type DaemonServiceClient interface {
 	// SignOutSwapHtlcAck signs the accepted terms of an out-swap vHTLC with
 	// the daemon identity key.
 	SignOutSwapHtlcAck(ctx context.Context, in *SignOutSwapHtlcAckRequest, opts ...grpc.CallOption) (*SignOutSwapHtlcAckResponse, error)
+	// SignCreditAccountAuthorization signs one canonical swap credit-account
+	// request digest with the daemon identity key.
+	SignCreditAccountAuthorization(ctx context.Context, in *SignCreditAccountAuthorizationRequest, opts ...grpc.CallOption) (*SignCreditAccountAuthorizationResponse, error)
 }
 
 type daemonServiceClient struct {
@@ -742,6 +746,16 @@ func (c *daemonServiceClient) SignOutSwapHtlcAck(ctx context.Context, in *SignOu
 	return out, nil
 }
 
+func (c *daemonServiceClient) SignCreditAccountAuthorization(ctx context.Context, in *SignCreditAccountAuthorizationRequest, opts ...grpc.CallOption) (*SignCreditAccountAuthorizationResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SignCreditAccountAuthorizationResponse)
+	err := c.cc.Invoke(ctx, DaemonService_SignCreditAccountAuthorization_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // DaemonServiceServer is the server API for DaemonService service.
 // All implementations must embed UnimplementedDaemonServiceServer
 // for forward compatibility.
@@ -938,6 +952,9 @@ type DaemonServiceServer interface {
 	// SignOutSwapHtlcAck signs the accepted terms of an out-swap vHTLC with
 	// the daemon identity key.
 	SignOutSwapHtlcAck(context.Context, *SignOutSwapHtlcAckRequest) (*SignOutSwapHtlcAckResponse, error)
+	// SignCreditAccountAuthorization signs one canonical swap credit-account
+	// request digest with the daemon identity key.
+	SignCreditAccountAuthorization(context.Context, *SignCreditAccountAuthorizationRequest) (*SignCreditAccountAuthorizationResponse, error)
 	mustEmbedUnimplementedDaemonServiceServer()
 }
 
@@ -1085,6 +1102,9 @@ func (UnimplementedDaemonServiceServer) ListVHTLCRecoveries(context.Context, *Li
 }
 func (UnimplementedDaemonServiceServer) SignOutSwapHtlcAck(context.Context, *SignOutSwapHtlcAckRequest) (*SignOutSwapHtlcAckResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SignOutSwapHtlcAck not implemented")
+}
+func (UnimplementedDaemonServiceServer) SignCreditAccountAuthorization(context.Context, *SignCreditAccountAuthorizationRequest) (*SignCreditAccountAuthorizationResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SignCreditAccountAuthorization not implemented")
 }
 func (UnimplementedDaemonServiceServer) mustEmbedUnimplementedDaemonServiceServer() {}
 func (UnimplementedDaemonServiceServer) testEmbeddedByValue()                       {}
@@ -1928,6 +1948,24 @@ func _DaemonService_SignOutSwapHtlcAck_Handler(srv interface{}, ctx context.Cont
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DaemonService_SignCreditAccountAuthorization_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SignCreditAccountAuthorizationRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).SignCreditAccountAuthorization(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_SignCreditAccountAuthorization_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).SignCreditAccountAuthorization(ctx, req.(*SignCreditAccountAuthorizationRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // DaemonService_ServiceDesc is the grpc.ServiceDesc for DaemonService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -2114,6 +2152,10 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SignOutSwapHtlcAck",
 			Handler:    _DaemonService_SignOutSwapHtlcAck_Handler,
+		},
+		{
+			MethodName: "SignCreditAccountAuthorization",
+			Handler:    _DaemonService_SignCreditAccountAuthorization_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

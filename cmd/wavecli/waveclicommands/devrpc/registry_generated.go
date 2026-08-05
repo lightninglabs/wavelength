@@ -339,6 +339,13 @@ func generatedRegistry() []serviceSpec {
 					Output:   "waverpc.SignOutSwapHtlcAckResponse",
 					Comments: "SignOutSwapHtlcAck signs the accepted terms of an out-swap vHTLC with\nthe daemon identity key.",
 				},
+				{
+					Name:     "SignCreditAccountAuthorization",
+					Aliases:  []string{"sign-credit-account-authorization"},
+					Input:    "waverpc.SignCreditAccountAuthorizationRequest",
+					Output:   "waverpc.SignCreditAccountAuthorizationResponse",
+					Comments: "SignCreditAccountAuthorization signs one canonical swap credit-account\nrequest digest with the daemon identity key.",
+				},
 			},
 		},
 		{
