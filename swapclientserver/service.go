@@ -408,7 +408,8 @@ func newSwapClientService(ctx context.Context, rpcServer *waved.RPCServer,
 	}
 
 	swapClients, err := newSwapServerClients(
-		cfg, swapAddr, rpcServer.SignMailboxAuth, clientCerts,
+		cfg, swapAddr, rpcServer.SignMailboxAuth,
+		rpcServer.SignCreditAccountAuth, clientCerts,
 	)
 	if err != nil {
 		_ = store.Close()
@@ -603,6 +604,7 @@ func installVTXOForfeitParticipantSigner(rpcServer *waved.RPCServer,
 // daemon-owned outbound transport.
 func newSwapServerClients(cfg *waved.SwapConfig, swapAddr string,
 	sign serverconn.MailboxAuthSigner,
+	creditSigner swaps.CreditAccountAuthorizationSigner,
 	clientCerts clientTLSCertProvider) (*swapServerClients, error) {
 
 	switch cfg.ServerTransport {
@@ -621,7 +623,9 @@ func newSwapServerClients(cfg *waved.SwapConfig, swapAddr string,
 		}
 
 		return &swapServerClients{
-			server: swaps.NewGRPCSwapServerConn(swapConn),
+			server: swaps.NewGRPCSwapServerConn(
+				swapConn, creditSigner,
+			),
 			mailbox: serverconn.NewAuthenticatedMailboxClient(
 				mailboxpb.NewMailboxServiceClient(swapConn),
 				sign,
@@ -639,7 +643,9 @@ func newSwapServerClients(cfg *waved.SwapConfig, swapAddr string,
 		transport := restclient.New(baseURL, opts...)
 
 		return &swapServerClients{
-			server: swaps.NewRESTSwapServerConn(baseURL, opts...),
+			server: swaps.NewAuthenticatedRESTSwapServerConn(
+				baseURL, creditSigner, opts...,
+			),
 			mailbox: serverconn.NewAuthenticatedMailboxClient(
 				restclient.NewMailboxServiceClientFromClient(
 					transport,
