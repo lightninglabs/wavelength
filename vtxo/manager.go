@@ -2274,10 +2274,6 @@ func (m *Manager) exactSpendUnavailableError(ctx context.Context,
 		ErrInsufficientSpendableFunds, op, desc.Status)
 }
 
-// insufficientLiquidityError distinguishes a true spendable-funds shortfall
-// from liquidity that is present but unavailable because another operation has
-// already moved it out of LiveState.
-// lineageCommitmentTxids returns the deduped set of commitment txids in a
 // LineageCommitmentTxIDs returns the deduped set of commitment txids in a
 // VTXO's lineage: its direct commitment tx plus every distinct cross-commitment
 // ancestor batch recorded in its ancestry. A round-direct or same-commitment

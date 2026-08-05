@@ -3255,6 +3255,12 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 		releaseCustomInputs bool
 	)
 
+	// The custom-input path threads reservation, build, fail-closed lineage
+	// gating and maturity checks that must stay in this branch; the
+	// emergent nesting after the canonicality gate landed is inherent to
+	// the ordered validation, not accidental structure.
+	//
+	//nolint:nestif
 	if len(req.CustomInputs) > 0 && !exactManagedInputs {
 		phaseStart = time.Now()
 		// Explicit custom inputs bypass wallet selection and build
