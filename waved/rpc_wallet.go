@@ -14,6 +14,7 @@ import (
 	"github.com/lightninglabs/lndclient"
 	"github.com/lightninglabs/wavelength/btcwbackend"
 	"github.com/lightninglabs/wavelength/lwwallet"
+	"github.com/lightninglabs/wavelength/swaprpc"
 	"github.com/lightninglabs/wavelength/walletcore"
 	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -104,6 +105,56 @@ func (r *RPCServer) ReceiveAuthECDH(ctx context.Context,
 
 	return &waverpc.ReceiveAuthECDHResponse{
 		SharedSecret: sharedSecret[:],
+	}, nil
+}
+
+// SignOutSwapHtlcAck signs accepted out-swap vHTLC terms with the daemon
+// identity key.
+func (r *RPCServer) SignOutSwapHtlcAck(ctx context.Context,
+	req *waverpc.SignOutSwapHtlcAckRequest) (
+	*waverpc.SignOutSwapHtlcAckResponse, error) {
+
+	if len(req.GetPaymentHash()) != lntypes.HashSize {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"payment_hash must be %d bytes", lntypes.HashSize)
+	}
+	if req.GetAmountSat() == 0 {
+		return nil, status.Error(
+			codes.InvalidArgument, "amount_sat must be positive",
+		)
+	}
+	if len(req.GetVhtlcPkScript()) == 0 {
+		return nil, status.Error(
+			codes.InvalidArgument,
+			"vhtlc_pk_script must be provided",
+		)
+	}
+	if err := r.requireWalletReady(); err != nil {
+		return nil, err
+	}
+	if r.server.clientKeyDesc.PubKey == nil {
+		return nil, status.Error(
+			codes.FailedPrecondition, "identity key is not ready",
+		)
+	}
+
+	var paymentHash lntypes.Hash
+	copy(paymentHash[:], req.GetPaymentHash())
+	msg := swaprpc.OutSwapHTLCAckMessage(
+		r.server.clientKeyDesc.PubKey, paymentHash, req.GetAmountSat(),
+		req.GetVhtlcPkScript(),
+	)
+	sig, err := r.server.signTaggedSchnorr(
+		ctx, msg, []byte(swaprpc.OutSwapHTLCAckTag),
+		"out-swap HTLC acknowledgement",
+	)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "sign out-swap HTLC "+
+			"acknowledgement: %v", err)
+	}
+
+	return &waverpc.SignOutSwapHtlcAckResponse{
+		Signature: sig.Serialize(),
 	}, nil
 }
 

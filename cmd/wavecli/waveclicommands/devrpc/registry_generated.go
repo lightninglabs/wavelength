@@ -332,6 +332,13 @@ func generatedRegistry() []serviceSpec {
 					Output:   "waverpc.ListVHTLCRecoveriesResponse",
 					Comments: "ListVHTLCRecoveries returns all durable recovery rows for operator\ninspection. Armed rows are dormant; callers must use\nEscalateVHTLCRecovery to start costly on-chain recovery.",
 				},
+				{
+					Name:     "SignOutSwapHtlcAck",
+					Aliases:  []string{"sign-out-swap-htlc-ack"},
+					Input:    "waverpc.SignOutSwapHtlcAckRequest",
+					Output:   "waverpc.SignOutSwapHtlcAckResponse",
+					Comments: "SignOutSwapHtlcAck signs the accepted terms of an out-swap vHTLC with\nthe daemon identity key.",
+				},
 			},
 		},
 		{

@@ -1168,9 +1168,33 @@ func (s *ReceiveSession) acknowledgeOutSwapHTLC(ctx context.Context) error {
 	if s.clientPubKey == nil {
 		return fmt.Errorf("client vHTLC pubkey is not configured")
 	}
+	if s.client.daemon == nil {
+		return fmt.Errorf("client daemon connection is not configured")
+	}
+	if len(s.vhtlcPkScript) == 0 {
+		return fmt.Errorf("vHTLC pkScript is not configured")
+	}
+
+	amountSat := s.expectedVHTLCSat
+	if amountSat == 0 {
+		if s.amountSat <= 0 {
+			return fmt.Errorf("vHTLC amount is not configured")
+		}
+
+		amountSat = uint64(s.amountSat)
+	}
+	ackSignature, err := s.client.daemon.SignOutSwapHTLCAck(
+		ctx, s.PaymentHash, amountSat, s.vhtlcPkScript,
+	)
+	if err != nil {
+		return newRetryableActionError(
+			fmt.Errorf("sign out-swap HTLC acknowledgement: %w",
+				err),
+		)
+	}
 
 	if err := s.client.server.AcknowledgeOutSwapHTLC(
-		ctx, s.PaymentHash, s.clientPubKey,
+		ctx, s.PaymentHash, s.clientPubKey, ackSignature,
 	); err != nil {
 
 		err = fmt.Errorf("acknowledge out-swap HTLC: %w", err)

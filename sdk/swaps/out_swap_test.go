@@ -20,6 +20,7 @@ import (
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
+	"github.com/lightninglabs/wavelength/swaprpc"
 	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/lightningnetwork/lnd/invoices"
@@ -620,6 +621,92 @@ func TestReceiveSessionAcksServerForCreditAssistedOutSwap(t *testing.T) {
 			clientPriv.PubKey(),
 		),
 	)
+	require.NotNil(t, serverConn.lastServerAckSig)
+	require.Equal(t, 1, daemonConn.ackSignCalls)
+	require.Equal(t, hash, daemonConn.lastAckSignHash)
+	require.Equal(t, uint64(1_100), daemonConn.lastAckSignAmount)
+	require.Equal(t, session.vhtlcPkScript, daemonConn.lastAckSignScript)
+	require.Zero(t, session.pendingHTLCAckCursor)
+}
+
+// TestReceiveSessionAcksServerForCreditAssistedInArk verifies the
+// swap-server-funded in-ark leg does not take the direct p2p ACK bypass.
+func TestReceiveSessionAcksServerForCreditAssistedInArk(t *testing.T) {
+	t.Parallel()
+
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	serverPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	preimage := lntypes.Preimage{0x0a, 0x0b, 0x0c}
+	hash := preimage.Hash()
+	serverConn := &testSwapServerConn{}
+	daemonConn := &testDaemonConn{}
+	client := NewSwapClient(serverConn, daemonConn, nil, nil)
+
+	cfg := VHTLCConfig{
+		RefundLocktime:                       144,
+		UnilateralClaimDelay:                 12,
+		UnilateralRefundDelay:                24,
+		UnilateralRefundWithoutReceiverDelay: 36,
+		SwapServerPubkey: serverPriv.PubKey().
+			SerializeCompressed(),
+	}
+
+	ackCalls := 0
+	client.outEvents = &testIncomingEventReceiver{
+		notification: &IncomingVHTLCNotification{
+			InArk: &InArkHtlcEvent{
+				PaymentHash:        hash,
+				AmountSat:          1_100,
+				RequestedAmountSat: 300,
+				AttachedCreditSat:  800,
+				SenderPubkey:       serverPriv.PubKey(),
+				VHTLCConfig:        cfg,
+			},
+			AckCursor: 25,
+			Ack: func(context.Context) error {
+				ackCalls++
+
+				return nil
+			},
+		},
+	}
+
+	session := &ReceiveSession{
+		client:            client,
+		amountSat:         300,
+		expectedVHTLCSat:  1_100,
+		attachedCreditSat: 800,
+		state:             ReceiveStateInvoiceCreated,
+		PaymentHash:       hash,
+		clientPubKey:      clientPriv.PubKey(),
+		operatorPubKey:    operatorPriv.PubKey(),
+	}
+
+	err = session.waitForHTLCEvent(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, ReceiveStateHTLCEventAccepted, session.State())
+	require.Equal(t, SettlementTypeInArk, session.settlementType)
+	require.Equal(t, 1, ackCalls)
+	require.Equal(t, 1, serverConn.serverAckCalls)
+	require.Equal(t, hash, serverConn.lastServerAckHash)
+	require.True(
+		t,
+		serverConn.lastServerAckPubkey.IsEqual(
+			clientPriv.PubKey(),
+		),
+	)
+	require.NotNil(t, serverConn.lastServerAckSig)
+	require.Equal(t, 1, daemonConn.ackSignCalls)
+	require.Equal(t, hash, daemonConn.lastAckSignHash)
+	require.Equal(t, uint64(1_100), daemonConn.lastAckSignAmount)
+	require.Equal(t, session.vhtlcPkScript, daemonConn.lastAckSignScript)
 	require.Zero(t, session.pendingHTLCAckCursor)
 }
 
@@ -902,6 +989,7 @@ type testSwapServerConn struct {
 	lastAmountSat       btcutil.Amount
 	lastServerAckHash   lntypes.Hash
 	lastServerAckPubkey *btcec.PublicKey
+	lastServerAckSig    *schnorr.Signature
 
 	lastSupportsInArkCredit bool
 
@@ -1028,11 +1116,13 @@ func (c *testSwapServerConn) AckOutSwapHtlc(_ context.Context, _ lntypes.Hash,
 
 // AcknowledgeOutSwapHTLC records the server-side durable acceptance ACK.
 func (c *testSwapServerConn) AcknowledgeOutSwapHTLC(_ context.Context,
-	paymentHash lntypes.Hash, vhtlcPubkey *btcec.PublicKey) error {
+	paymentHash lntypes.Hash, vhtlcPubkey *btcec.PublicKey,
+	ackSignature *schnorr.Signature) error {
 
 	c.serverAckCalls++
 	c.lastServerAckHash = paymentHash
 	c.lastServerAckPubkey = vhtlcPubkey
+	c.lastServerAckSig = ackSignature
 	if len(c.serverAckErrs) > 0 {
 		err := c.serverAckErrs[0]
 		c.serverAckErrs = c.serverAckErrs[1:]
@@ -1733,6 +1823,11 @@ type testDaemonConn struct {
 	signForfeitErr    error
 	signForfeitCalls  int
 	lastSignForfeit   *waverpc.SignVTXOForfeitRequest
+	ackSignErr        error
+	ackSignCalls      int
+	lastAckSignHash   lntypes.Hash
+	lastAckSignAmount uint64
+	lastAckSignScript []byte
 }
 
 // BlockHeight returns the configured best block height.
@@ -1992,6 +2087,28 @@ func (d *testDaemonConn) IdentityPubKey(context.Context) (*btcec.PublicKey,
 	error) {
 
 	return d.identityKey, nil
+}
+
+// SignOutSwapHTLCAck signs accepted terms with a deterministic test key.
+func (d *testDaemonConn) SignOutSwapHTLCAck(_ context.Context,
+	paymentHash lntypes.Hash, amountSat uint64, vhtlcPkScript []byte) (
+	*schnorr.Signature, error) {
+
+	d.ackSignCalls++
+	d.lastAckSignHash = paymentHash
+	d.lastAckSignAmount = amountSat
+	d.lastAckSignScript = bytes.Clone(vhtlcPkScript)
+	if d.ackSignErr != nil {
+		return nil, d.ackSignErr
+	}
+
+	keyBytes := sha256.Sum256([]byte("test out-swap ack identity"))
+	privKey, _ := btcec.PrivKeyFromBytes(keyBytes[:])
+	digest := swaprpc.OutSwapHTLCAckDigest(
+		privKey.PubKey(), paymentHash, amountSat, vhtlcPkScript,
+	)
+
+	return schnorr.Sign(privKey, digest[:])
 }
 
 // OperatorPubKey returns the configured operator key.
@@ -2675,6 +2792,10 @@ func TestReceiveSessionResumesAfterAckedHTLCEvent(t *testing.T) {
 	require.True(
 		t, session.clientPubKey.IsEqual(serverConn.lastServerAckPubkey),
 	)
+	require.NotNil(t, serverConn.lastServerAckSig)
+	require.Equal(t, 1, daemonConn.ackSignCalls)
+	require.Equal(t, uint64(42_000), daemonConn.lastAckSignAmount)
+	require.Equal(t, session.vhtlcPkScript, daemonConn.lastAckSignScript)
 	require.Zero(t, session.pendingHTLCAckCursor)
 
 	resumeServer := &testSwapServerConn{

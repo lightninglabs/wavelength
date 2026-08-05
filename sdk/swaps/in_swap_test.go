@@ -109,7 +109,7 @@ func (c *testInSwapServerConn) RequestChannelID(_ context.Context,
 
 // AcknowledgeOutSwapHTLC is unused in these tests.
 func (c *testInSwapServerConn) AcknowledgeOutSwapHTLC(context.Context,
-	lntypes.Hash, *btcec.PublicKey) error {
+	lntypes.Hash, *btcec.PublicKey, *schnorr.Signature) error {
 
 	return nil
 }

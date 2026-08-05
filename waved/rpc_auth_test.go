@@ -52,6 +52,7 @@ func TestWavedRPCPermissionsMapsMutatingMethods(t *testing.T) {
 		waverpc.DaemonService_ReceiveAuthKey_FullMethodName,
 		waverpc.DaemonService_RefreshVTXOs_FullMethodName,
 		waverpc.DaemonService_SignReceiveAuthMessage_FullMethodName,
+		waverpc.DaemonService_SignOutSwapHtlcAck_FullMethodName,
 		fullDaemonMethod("SubmitForfeitParticipantSignatures"),
 	} {
 		ops, ok := wavedRPCPermissions[fullMethod]

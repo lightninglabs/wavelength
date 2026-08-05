@@ -194,6 +194,10 @@ message AcknowledgeOutSwapHtlcRequest {
     // registered. The server checks it against the persisted out-swap before
     // treating the acknowledgement as valid.
     bytes client_vhtlc_pubkey = 2;
+
+    // acknowledgement_signature is the receiver's BIP-340 signature over
+    // the accepted vHTLC terms.
+    bytes acknowledgement_signature = 3;
 }
 
 // AcknowledgeOutSwapHtlcResponse is empty on success.

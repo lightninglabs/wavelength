@@ -433,6 +433,19 @@ func (c *DaemonServiceClient) ReceiveAuthECDH(ctx context.Context,
 	return out, err
 }
 
+// SignOutSwapHtlcAck signs accepted out-swap vHTLC terms.
+func (c *DaemonServiceClient) SignOutSwapHtlcAck(ctx context.Context,
+	in *waverpc.SignOutSwapHtlcAckRequest, _ ...grpc.CallOption) (
+	*waverpc.SignOutSwapHtlcAckResponse, error) {
+
+	out := new(waverpc.SignOutSwapHtlcAckResponse)
+	err := c.client.Post(
+		ctx, "/v1/daemon/sign-out-swap-htlc-ack", in, out,
+	)
+
+	return out, err
+}
+
 // GetIndexedVTXOByPkScript looks up one indexed VTXO by pkScript.
 func (c *DaemonServiceClient) GetIndexedVTXOByPkScript(ctx context.Context,
 	in *waverpc.GetIndexedVTXOByPkScriptRequest, _ ...grpc.CallOption) (

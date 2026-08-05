@@ -6,6 +6,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chaincfg/v2"
 	"github.com/btcsuite/btclog/v2"
@@ -699,7 +700,8 @@ type SwapServerConn interface {
 	// AcknowledgeOutSwapHTLC tells the server this receiver validated and
 	// durably accepted the out-swap HTLC event.
 	AcknowledgeOutSwapHTLC(ctx context.Context, paymentHash lntypes.Hash,
-		vhtlcPubkey *btcec.PublicKey) error
+		vhtlcPubkey *btcec.PublicKey,
+		ackSignature *schnorr.Signature) error
 
 	// CreateInSwap initiates an Ark->LN swap on the server.
 	CreateInSwap(ctx context.Context, invoice string, maxFeeSat uint64,
@@ -788,6 +790,12 @@ type DaemonConn interface {
 
 	// IdentityPubKey returns the client's identity pubkey.
 	IdentityPubKey(ctx context.Context) (*btcec.PublicKey, error)
+
+	// SignOutSwapHTLCAck signs accepted out-swap vHTLC terms with the
+	// daemon identity key.
+	SignOutSwapHTLCAck(ctx context.Context, paymentHash lntypes.Hash,
+		amountSat uint64,
+		vhtlcPkScript []byte) (*schnorr.Signature, error)
 
 	// OperatorPubKey returns the Ark operator's pubkey.
 	OperatorPubKey(ctx context.Context) (*btcec.PublicKey, error)

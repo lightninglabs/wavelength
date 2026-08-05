@@ -64,6 +64,7 @@ const (
 	DaemonService_CancelVHTLCRecovery_FullMethodName                            = "/waverpc.DaemonService/CancelVHTLCRecovery"
 	DaemonService_GetVHTLCRecoveryStatus_FullMethodName                         = "/waverpc.DaemonService/GetVHTLCRecoveryStatus"
 	DaemonService_ListVHTLCRecoveries_FullMethodName                            = "/waverpc.DaemonService/ListVHTLCRecoveries"
+	DaemonService_SignOutSwapHtlcAck_FullMethodName                             = "/waverpc.DaemonService/SignOutSwapHtlcAck"
 )
 
 // DaemonServiceClient is the client API for DaemonService service.
@@ -259,6 +260,9 @@ type DaemonServiceClient interface {
 	// inspection. Armed rows are dormant; callers must use
 	// EscalateVHTLCRecovery to start costly on-chain recovery.
 	ListVHTLCRecoveries(ctx context.Context, in *ListVHTLCRecoveriesRequest, opts ...grpc.CallOption) (*ListVHTLCRecoveriesResponse, error)
+	// SignOutSwapHtlcAck signs the accepted terms of an out-swap vHTLC with
+	// the daemon identity key.
+	SignOutSwapHtlcAck(ctx context.Context, in *SignOutSwapHtlcAckRequest, opts ...grpc.CallOption) (*SignOutSwapHtlcAckResponse, error)
 }
 
 type daemonServiceClient struct {
@@ -728,6 +732,16 @@ func (c *daemonServiceClient) ListVHTLCRecoveries(ctx context.Context, in *ListV
 	return out, nil
 }
 
+func (c *daemonServiceClient) SignOutSwapHtlcAck(ctx context.Context, in *SignOutSwapHtlcAckRequest, opts ...grpc.CallOption) (*SignOutSwapHtlcAckResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SignOutSwapHtlcAckResponse)
+	err := c.cc.Invoke(ctx, DaemonService_SignOutSwapHtlcAck_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // DaemonServiceServer is the server API for DaemonService service.
 // All implementations must embed UnimplementedDaemonServiceServer
 // for forward compatibility.
@@ -921,6 +935,9 @@ type DaemonServiceServer interface {
 	// inspection. Armed rows are dormant; callers must use
 	// EscalateVHTLCRecovery to start costly on-chain recovery.
 	ListVHTLCRecoveries(context.Context, *ListVHTLCRecoveriesRequest) (*ListVHTLCRecoveriesResponse, error)
+	// SignOutSwapHtlcAck signs the accepted terms of an out-swap vHTLC with
+	// the daemon identity key.
+	SignOutSwapHtlcAck(context.Context, *SignOutSwapHtlcAckRequest) (*SignOutSwapHtlcAckResponse, error)
 	mustEmbedUnimplementedDaemonServiceServer()
 }
 
@@ -1065,6 +1082,9 @@ func (UnimplementedDaemonServiceServer) GetVHTLCRecoveryStatus(context.Context, 
 }
 func (UnimplementedDaemonServiceServer) ListVHTLCRecoveries(context.Context, *ListVHTLCRecoveriesRequest) (*ListVHTLCRecoveriesResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListVHTLCRecoveries not implemented")
+}
+func (UnimplementedDaemonServiceServer) SignOutSwapHtlcAck(context.Context, *SignOutSwapHtlcAckRequest) (*SignOutSwapHtlcAckResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SignOutSwapHtlcAck not implemented")
 }
 func (UnimplementedDaemonServiceServer) mustEmbedUnimplementedDaemonServiceServer() {}
 func (UnimplementedDaemonServiceServer) testEmbeddedByValue()                       {}
@@ -1890,6 +1910,24 @@ func _DaemonService_ListVHTLCRecoveries_Handler(srv interface{}, ctx context.Con
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DaemonService_SignOutSwapHtlcAck_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SignOutSwapHtlcAckRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).SignOutSwapHtlcAck(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_SignOutSwapHtlcAck_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).SignOutSwapHtlcAck(ctx, req.(*SignOutSwapHtlcAckRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // DaemonService_ServiceDesc is the grpc.ServiceDesc for DaemonService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -2072,6 +2110,10 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListVHTLCRecoveries",
 			Handler:    _DaemonService_ListVHTLCRecoveries_Handler,
+		},
+		{
+			MethodName: "SignOutSwapHtlcAck",
+			Handler:    _DaemonService_SignOutSwapHtlcAck_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{
