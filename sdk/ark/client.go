@@ -12,6 +12,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/lightninglabs/wavelength/swaprpc"
 	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"google.golang.org/grpc"
@@ -520,6 +521,35 @@ func (c *Client) SignOutSwapHTLCAck(ctx context.Context,
 	if err != nil {
 		return nil, fmt.Errorf("parse out-swap HTLC "+
 			"acknowledgement: %w", err)
+	}
+
+	return sig, nil
+}
+
+// SignCreditAccountAuth asks the daemon identity key to authorize one
+// canonical swap credit-account request.
+func (c *Client) SignCreditAccountAuth(ctx context.Context, accountKey []byte,
+	requestDigest [32]byte, expiresAtUnix int64,
+	nonce [swaprpc.CreditAccountNonceSize]byte) (*schnorr.Signature,
+	error) {
+
+	resp, err := c.daemon.SignCreditAccountAuthorization(
+		ctx, &waverpc.SignCreditAccountAuthorizationRequest{
+			AccountPubkey: accountKey,
+			RequestDigest: requestDigest[:],
+			ExpiresAtUnix: expiresAtUnix,
+			Nonce:         nonce[:],
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("sign credit account authorization: %w",
+			err)
+	}
+
+	sig, err := schnorr.ParseSignature(resp.GetSignature())
+	if err != nil {
+		return nil, fmt.Errorf("parse credit account authorization: %w",
+			err)
 	}
 
 	return sig, nil
