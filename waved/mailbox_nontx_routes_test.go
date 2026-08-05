@@ -35,8 +35,13 @@ func TestNonTxRoutesResolveToMuxBridge(t *testing.T) {
 
 	dispatchers, nonTxRoutes := s.buildRPCDispatchers(nil)
 
-	// The event router's own map is the set of durable Tell dispatchers.
-	// Anything marked non-transactional must not be one of them.
+	// The event router's own map is the set of dispatchers that deliver
+	// into a local actor mailbox and therefore belong inside the folded
+	// write transaction. Not all of them are durable Tells any more — the
+	// round and incoming-VTXO routes hand off to a bounded in-memory
+	// mailbox instead — but every one of them still commits with the
+	// cursor, which is what makes marking any of them non-transactional
+	// wrong.
 	durable := s.buildEventRoutes().AsDispatcherMap()
 
 	require.NotEmpty(t, nonTxRoutes)

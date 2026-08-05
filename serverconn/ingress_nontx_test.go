@@ -226,7 +226,7 @@ func TestRunFoldedDispatchServesRequestsOutsideTx(t *testing.T) {
 	}
 
 	newState, err := probe.conn.runFoldedDispatch(
-		t.Context(), store, envelopes, 3, AckState{},
+		t.Context(), store, envelopes, 3, AckState{}, &redriveState{},
 	)
 	require.NoError(t, err)
 
@@ -275,7 +275,7 @@ func TestRunFoldedDispatchRequestFailureHoldsCursor(t *testing.T) {
 
 	state := AckState{PullCursor: 1}
 	newState, err := probe.conn.runFoldedDispatch(
-		t.Context(), store, envelopes, 3, state,
+		t.Context(), store, envelopes, 3, state, &redriveState{},
 	)
 	require.ErrorIs(t, err, serveErr)
 
@@ -315,7 +315,7 @@ func TestRunFoldedDispatchValidatesBeforeAnyDelivery(t *testing.T) {
 
 	state := AckState{PullCursor: 1}
 	newState, err := probe.conn.runFoldedDispatch(
-		t.Context(), store, envelopes, 3, state,
+		t.Context(), store, envelopes, 3, state, &redriveState{},
 	)
 	require.Error(t, err)
 	require.True(t, probe.conn.checkPermanentStatus(t.Context(), err))
@@ -363,7 +363,7 @@ func TestDispatchBatchSkipsMislabeledNonTxKinds(t *testing.T) {
 	}
 
 	newState, err := probe.conn.runFoldedDispatch(
-		t.Context(), store, envelopes, 4, AckState{},
+		t.Context(), store, envelopes, 4, AckState{}, &redriveState{},
 	)
 	require.NoError(t, err)
 
