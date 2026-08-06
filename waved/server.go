@@ -3621,6 +3621,10 @@ func (s *Server) handleInboundRPC(ctx context.Context,
 		// It also fixes an absent ReplyTo. That used to produce an
 		// empty recipient, which the mailbox store rejects outright,
 		// so the caller lost its answer entirely.
+		//
+		// Rpc.ReplyTo is therefore advisory from the responder's
+		// point of view: producers still set it, and nothing here
+		// reads it.
 		Recipient: env.Sender,
 		Headers:   headers,
 		Body:      body,

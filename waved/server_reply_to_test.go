@@ -65,6 +65,7 @@ func TestHandleInboundRPCAnswersTheSender(t *testing.T) {
 	const (
 		operatorMailboxID = "operator-1"
 		otherMailboxID    = "somebody-else"
+		daemonMailboxID   = "this-daemon"
 	)
 
 	tests := []struct {
@@ -90,6 +91,7 @@ func TestHandleInboundRPCAnswersTheSender(t *testing.T) {
 			edge := &recordingReplyEdge{}
 			s := newCompatTestServer(t, edge)
 			s.mailboxMux = mailboxrpc.NewServeMux()
+			s.localMailboxID = daemonMailboxID
 
 			env := &mailboxpb.Envelope{
 				Sender: operatorMailboxID,
@@ -113,6 +115,12 @@ func TestHandleInboundRPCAnswersTheSender(t *testing.T) {
 			)
 			require.NotEqual(
 				t, otherMailboxID, edge.sent[0].Recipient,
+			)
+
+			// The other half of the envelope: the response is from
+			// us, whoever it is addressed to.
+			require.Equal(
+				t, daemonMailboxID, edge.sent[0].Sender,
 			)
 		})
 	}
