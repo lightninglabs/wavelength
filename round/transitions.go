@@ -652,12 +652,40 @@ func (s *PendingRoundAssembly) processEvent(ctx context.Context,
 			), nil
 		}
 
-		// Validate that outputs don't exceed inputs.
-		if totalOutput > totalInput {
+		// Validate that the fixed outputs don't exceed inputs. The
+		// designated change output's target is advisory under the
+		// seal-time fee handshake — the server stamps it with the
+		// residual (Σin − Σfixed − fee) at seal — so it must not
+		// count against the input budget here. The change marker is
+		// only stamped further below over the composed intent, so
+		// exclude the target designateChangeMarker will pick: the
+		// first non-fixed output.
+		fixedOutput := totalOutput
+		if len(s.VTXOs)+len(s.Leaves) > 1 {
+			changeIdx := -1
+			for i, vtxo := range s.VTXOs {
+				if vtxo.FixedAmount {
+					continue
+				}
+				if vtxo.IsChange {
+					changeIdx = i
+
+					break
+				}
+				if changeIdx == -1 {
+					changeIdx = i
+				}
+			}
+			if changeIdx != -1 {
+				fixedOutput -= s.VTXOs[changeIdx].Amount
+			}
+		}
+		if fixedOutput > totalInput {
 			return failWithNotification(
 				"outputs exceed inputs",
-				fmt.Errorf("total output (%d) exceeds total "+
-					"input (%d)", totalOutput, totalInput),
+				fmt.Errorf("total fixed output (%d) exceeds "+
+					"total input (%d)", fixedOutput,
+					totalInput),
 				true,
 				fn.None[RoundID](),
 			), nil
@@ -668,9 +696,9 @@ func (s *PendingRoundAssembly) processEvent(ctx context.Context,
 		// composition time: the binding fee arrives later via the
 		// JoinRoundQuote message and is checked in
 		// QuoteReceivedState against env.MaxOperatorFee. The
-		// balance invariant (outputs <= inputs) stays here as a
-		// sanity guard.
-		intentAmountDelta := totalInput - totalOutput
+		// balance invariant (fixed outputs <= inputs) stays here as
+		// a sanity guard.
+		intentAmountDelta := totalInput - fixedOutput
 
 		env.Log.InfoS(ctx, "Intent balance check passed; "+
 			"authoritative operator fee pending seal-time quote",
