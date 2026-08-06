@@ -405,6 +405,17 @@ message VTXORequest {
     // implicit-change exception is disabled and the intent must include a
     // separate fee-bearing change output if fees need to be paid.
     bool fixed_amount = 5;
+
+    // asset_ref identifies the Taproot Asset the client requests this
+    // VTXO to carry (group key reference for grouped assets). Empty for
+    // Bitcoin-only VTXOs. Asset requests are only accepted by operators
+    // running asset rounds for the same asset; they carry a fixed
+    // target_amount_sat and never act as the change output.
+    string asset_ref = 6;
+
+    // asset_amount is the requested Taproot Asset amount. Required
+    // (non-zero) when asset_ref is set, zero otherwise.
+    uint64 asset_amount = 7;
 }
 
 // ForfeitRequest specifies a VTXO the client wants to forfeit.

@@ -248,9 +248,16 @@ func (m *TreeMaterializer) MaterializeNode(ctx context.Context, node *tree.Node,
 		params.Input, committed.packageBytes,
 	)
 
-	// Re-register the subtree total now that the node carries its input,
-	// so the amount stays resolvable on extracted or deserialized clones.
-	m.cfg.AssetContext.SetNodeAssetAmount(node, amount)
+	// Re-register the subtree total now that the node carries its
+	// input, so the amount stays resolvable on extracted or
+	// deserialized clones. The structure pass's node-keyed total is
+	// authoritative: the resolved input amount is zero for the root,
+	// whose amount the proof verifier authenticates at commit time,
+	// and writing that zero would clobber a single-leaf tree's only
+	// node.
+	m.cfg.AssetContext.SetNodeAssetAmount(
+		node, m.cfg.AssetContext.NodeAssetAmount(node),
+	)
 
 	return m.prepareChildren(
 		node, params.Input, source, committedTx, committed, outputSpecs,
