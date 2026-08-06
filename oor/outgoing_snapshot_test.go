@@ -7,6 +7,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/wire/v2"
+	clientdb "github.com/lightninglabs/wavelength/db"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
 	"github.com/stretchr/testify/require"
@@ -66,6 +67,56 @@ func TestNewOutgoingSnapshotFinalizeSentMinimality(t *testing.T) {
 	require.NotEmpty(t, snapshot.CheckpointPSBTs)
 	require.NotNil(t, snapshot.TransferInputSnapshots)
 	require.Len(t, snapshot.TransferInputSnapshots, 1)
+}
+
+// TestOutgoingRegistryRecordSuppliesOnlyArtifactBearingProof verifies the
+// registry bridge offers canonical recipient proof from a live outgoing phase
+// but does not mistake the intentionally minimal terminal snapshot for proof.
+func TestOutgoingRegistryRecordSuppliesOnlyArtifactBearingProof(t *testing.T) {
+	t.Parallel()
+
+	ark, checkpoints := testOutboxPSBTPair(t)
+	sessionID, err := sessionIDFromArk(ark)
+	require.NoError(t, err)
+
+	const idempotencyKey = "artifact-proof-key"
+	awaiting := &AwaitingFinalizeAccepted{
+		SessionID:            sessionID,
+		ArkPSBT:              ark,
+		FinalCheckpointPSBTs: checkpoints,
+		TransferInputs:       testRetryTransferInputs(t),
+		IdempotencyKey:       idempotencyKey,
+	}
+
+	proofRecord, err := outgoingRegistryRecord(sessionID, awaiting)
+	require.NoError(t, err)
+	require.NotEmpty(t, proofRecord.OutgoingSnapshotData)
+	require.Equal(
+		t, proofRecord.SnapshotVersion,
+		proofRecord.OutgoingSnapshotVersion,
+	)
+
+	recipients, err := OutgoingSnapshotRecipients(
+		proofRecord.OutgoingSnapshotData,
+	)
+	require.NoError(t, err)
+	require.NotEmpty(t, recipients)
+
+	terminalRecord, err := outgoingRegistryRecord(
+		sessionID, &Completed{
+			IdempotencyKey: idempotencyKey,
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, idempotencyKey, terminalRecord.IdempotencyKey)
+	require.Empty(t, terminalRecord.OutgoingSnapshotData)
+	require.Zero(t, terminalRecord.OutgoingSnapshotVersion)
+	require.Equal(
+		t, clientdb.OORSessionStatusCompleted, terminalRecord.Status,
+	)
+
+	_, err = OutgoingSnapshotRecipients(terminalRecord.SnapshotData)
+	require.Error(t, err)
 }
 
 // TestSnapshotRetryMetadataRoundTrip verifies that RetryAfter and retry

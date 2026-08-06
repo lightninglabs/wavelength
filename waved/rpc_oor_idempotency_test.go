@@ -861,6 +861,72 @@ func TestSendOORReturnsExistingIdempotencyKeyBeforeWalletSelection(
 	require.Equal(t, btcutil.Amount(amountSat), selectReqs[0].TargetAmount)
 	require.Equal(t, btcutil.Amount(1), selectReqs[0].MinChangeAmount)
 
+	// A sender can ingest its own OOR change under the same session id. The
+	// incoming lifecycle must advance independently without hiding the
+	// outgoing recipient snapshot needed to prove a keyed replay.
+	sessionID, err := chainhash.NewHashFromStr(firstResp.SessionId)
+	require.NoError(t, err)
+
+	outgoingRecord, err := registryStore.GetSession(ctx, *sessionID)
+	require.NoError(t, err)
+	require.NotEmpty(t, outgoingRecord.OutgoingSnapshotData)
+	proofRecipients, err := oor.OutgoingSnapshotRecipients(
+		outgoingRecord.OutgoingSnapshotData,
+	)
+	require.NoError(t, err)
+	require.Len(t, proofRecipients, 1)
+	require.Equal(
+		t, firstResp.RecipientOutpoints[0], fmt.Sprintf("%s:%d",
+			firstResp.SessionId, proofRecipients[0].OutputIndex),
+	)
+
+	// The real terminal outgoing bridge intentionally emits a minimal
+	// snapshot with no Ark PSBT. Model that persisted update and verify the
+	// database keeps the earlier artifact-bearing proof while status
+	// advances.
+	require.NoError(
+		t,
+		registryStore.UpsertSession(
+			ctx, db.OORSessionRegistryRecord{
+				SessionID:       *sessionID,
+				ActorID:         outgoingRecord.ActorID,
+				Direction:       db.OORSessionDirectionOutgoing,
+				Phase:           "completed",
+				IdempotencyKey:  idempotencyKey,
+				Status:          db.OORSessionStatusCompleted,
+				SnapshotData:    []byte{0xff},
+				SnapshotVersion: 5,
+				FlowVersion:     outgoingRecord.FlowVersion,
+				CreatedAt:       outgoingRecord.CreatedAt,
+			},
+		),
+	)
+
+	terminalRecord, err := registryStore.GetSession(ctx, *sessionID)
+	require.NoError(t, err)
+	require.Equal(t, []byte{0xff}, terminalRecord.SnapshotData)
+	require.Equal(
+		t, outgoingRecord.OutgoingSnapshotData,
+		terminalRecord.OutgoingSnapshotData,
+	)
+
+	require.NoError(
+		t,
+		registryStore.UpsertSession(
+			ctx, db.OORSessionRegistryRecord{
+				SessionID:       *sessionID,
+				ActorID:         outgoingRecord.ActorID,
+				Direction:       db.OORSessionDirectionIncoming,
+				Phase:           "completed",
+				Status:          db.OORSessionStatusCompleted,
+				SnapshotData:    []byte{0x02},
+				SnapshotVersion: 1,
+				FlowVersion:     outgoingRecord.FlowVersion,
+				CreatedAt:       outgoingRecord.CreatedAt,
+			},
+		),
+	)
+
 	secondResp, err := rpcServer.SendOOR(ctx, &waverpc.SendOORRequest{
 		Recipients:     []*waverpc.Output{recipient},
 		IdempotencyKey: idempotencyKey,

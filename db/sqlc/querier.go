@@ -336,9 +336,9 @@ type Querier interface {
 	// skips them: only a pending or completed operation answers for an op_key.
 	LookupActiveCreditOperationByKey(ctx context.Context, opKey string) (CreditOperation, error)
 	// Status 2 = Failed (anchored to Go iota in
-	// db/oor_session_registry_store.go OORSessionStatus). Failed sessions never
-	// dedup a keyed retry, so the lookup skips them: only a pending or completed
-	// session answers for an idempotency key.
+	// db/oor_session_registry_store.go OORSessionStatus). A failed outgoing
+	// session releases its key, while an incoming failure for a successfully sent
+	// session keeps deduplicating against the retained outgoing status.
 	LookupActiveOORSessionRegistryByIdempotencyKey(ctx context.Context, idempotencyKey sql.NullString) (OorSessionRegistry, error)
 	MarkBoardingSweepInputSpentByOutpoint(ctx context.Context, arg MarkBoardingSweepInputSpentByOutpointParams) (int64, error)
 	MarkBoardingSweepInputStatus(ctx context.Context, arg MarkBoardingSweepInputStatusParams) error

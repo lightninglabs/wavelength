@@ -87,6 +87,16 @@ type OORSessionRegistryRecord struct {
 	// SnapshotVersion is the encoding version of SnapshotData.
 	SnapshotVersion int32
 
+	// OutgoingSnapshotData is the first canonical outgoing snapshot proven
+	// to contain recipient artifacts. It remains immutable across terminal
+	// outgoing and incoming updates so keyed replay can prove the original
+	// recipient without disturbing current recovery state.
+	OutgoingSnapshotData []byte
+
+	// OutgoingSnapshotVersion is the encoding version of
+	// OutgoingSnapshotData.
+	OutgoingSnapshotVersion int32
+
 	// FlowVersion is the permanent OOR flow version this session was
 	// conducted under (distinct from SnapshotVersion, which versions only
 	// the resume blob's encoding). Stamped at creation and validated on
@@ -142,39 +152,57 @@ func (s *OORSessionRegistryStoreDB) UpsertSession(ctx context.Context,
 		createdAt = nowUnix
 	}
 
+	var (
+		outgoingSnapshotData    []byte
+		outgoingSnapshotVersion sql.NullInt32
+		outgoingStatus          sql.NullInt32
+	)
+	if len(record.OutgoingSnapshotData) != 0 {
+		outgoingSnapshotData = record.OutgoingSnapshotData
+		outgoingSnapshotVersion = sql.NullInt32{
+			Int32: record.OutgoingSnapshotVersion,
+			Valid: true,
+		}
+	}
+	if record.Direction == OORSessionDirectionOutgoing {
+		outgoingStatus = sql.NullInt32{
+			Int32: int32(record.Status),
+			Valid: true,
+		}
+	}
+
+	params := sqlc.UpsertOORSessionRegistryParams{
+		SessionID: record.SessionID[:],
+		ActorID:   record.ActorID,
+		Direction: int32(record.Direction),
+		Phase:     record.Phase,
+		IdempotencyKey: sql.NullString{
+			String: record.IdempotencyKey,
+			Valid:  record.IdempotencyKey != "",
+		},
+		Status: int32(record.Status),
+		LastError: sql.NullString{
+			String: record.LastError,
+			Valid:  record.LastError != "",
+		},
+		SnapshotData:    record.SnapshotData,
+		SnapshotVersion: record.SnapshotVersion,
+		CreatedAt:       createdAt,
+		UpdatedAt:       nowUnix,
+
+		// flow_version is write-once (not in the ON CONFLICT update
+		// set); the oor package stamps the value and applies the load
+		// guard, since db cannot import oor.
+		FlowVersion: int32(record.FlowVersion),
+	}
+	params.OutgoingSnapshotData = outgoingSnapshotData
+	params.OutgoingSnapshotVersion = outgoingSnapshotVersion
+	params.OutgoingStatus = outgoingStatus
+
 	return s.ExecTx(
 		ctx, WriteTxOption(),
 		func(q *sqlc.Queries) error {
-			return q.UpsertOORSessionRegistry(
-				ctx,
-				sqlc.UpsertOORSessionRegistryParams{
-					SessionID: record.SessionID[:],
-					ActorID:   record.ActorID,
-					Direction: int32(record.Direction),
-					Phase:     record.Phase,
-					IdempotencyKey: sql.NullString{
-						String: record.IdempotencyKey,
-						Valid: record.IdempotencyKey !=
-							"",
-					},
-					Status: int32(record.Status),
-					LastError: sql.NullString{
-						String: record.LastError,
-						Valid:  record.LastError != "",
-					},
-					SnapshotData:    record.SnapshotData,
-					SnapshotVersion: record.SnapshotVersion,
-					CreatedAt:       createdAt,
-					UpdatedAt:       nowUnix,
-
-					// flow_version is write-once (not in
-					// the ON CONFLICT update set); the oor
-					// package stamps the value and applies
-					// the load guard, since db cannot
-					// import oor.
-					FlowVersion: int32(record.FlowVersion),
-				},
-			)
+			return q.UpsertOORSessionRegistry(ctx, params)
 		},
 	)
 }
@@ -341,16 +369,18 @@ func oorSessionRecordFromRow(row sqlc.OorSessionRegistry) (
 	copy(sessionID[:], row.SessionID)
 
 	record := OORSessionRegistryRecord{
-		SessionID:       sessionID,
-		ActorID:         row.ActorID,
-		Direction:       OORSessionDirection(row.Direction),
-		Phase:           row.Phase,
-		Status:          OORSessionStatus(row.Status),
-		SnapshotData:    row.SnapshotData,
-		SnapshotVersion: row.SnapshotVersion,
-		FlowVersion:     oorpb.FlowVersion(row.FlowVersion),
-		CreatedAt:       time.Unix(row.CreatedAt, 0),
-		UpdatedAt:       time.Unix(row.UpdatedAt, 0),
+		SessionID:               sessionID,
+		ActorID:                 row.ActorID,
+		Direction:               OORSessionDirection(row.Direction),
+		Phase:                   row.Phase,
+		Status:                  OORSessionStatus(row.Status),
+		SnapshotData:            row.SnapshotData,
+		SnapshotVersion:         row.SnapshotVersion,
+		OutgoingSnapshotData:    row.OutgoingSnapshotData,
+		OutgoingSnapshotVersion: row.OutgoingSnapshotVersion.Int32,
+		FlowVersion:             oorpb.FlowVersion(row.FlowVersion),
+		CreatedAt:               time.Unix(row.CreatedAt, 0),
+		UpdatedAt:               time.Unix(row.UpdatedAt, 0),
 	}
 
 	if row.IdempotencyKey.Valid {
