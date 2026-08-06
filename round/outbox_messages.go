@@ -325,6 +325,8 @@ func (m *JoinRoundRequest) ToProto() fn.Result[proto.Message] {
 			IsChange:        req.IsChange,
 			FixedAmount:     req.FixedAmount,
 			PolicyTemplate:  policyTemplate,
+			AssetRef:        req.AssetRef,
+			AssetAmount:     req.AssetAmount,
 		}
 		if req.SigningKey.PubKey != nil {
 			vr.SigningKey = req.SigningKey.PubKey.

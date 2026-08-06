@@ -276,6 +276,16 @@ type VTXORequest struct {
 	// output is not eligible for the implicit-change exception.
 	FixedAmount bool
 
+	// AssetRef identifies the Taproot Asset this VTXO must carry (group
+	// key reference for grouped assets). Empty for Bitcoin-only VTXOs.
+	// Asset requests carry a fixed Amount and never act as the change
+	// output.
+	AssetRef string
+
+	// AssetAmount is the requested Taproot Asset amount. Non-zero
+	// exactly when AssetRef is set.
+	AssetAmount uint64
+
 	// PolicyTemplate is the semantic arkscript policy for the requested
 	// output. This is the authoritative join-round representation.
 	PolicyTemplate []byte
