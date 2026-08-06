@@ -563,6 +563,8 @@ func (m *JoinRoundRequest) FromProto(p proto.Message) error {
 			IsChange:       vr.IsChange,
 			FixedAmount:    vr.FixedAmount,
 			PolicyTemplate: bytes.Clone(vr.PolicyTemplate),
+			AssetRef:       vr.AssetRef,
+			AssetAmount:    vr.AssetAmount,
 		}
 
 		if len(vr.SigningKey) > 0 {
