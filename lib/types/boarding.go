@@ -400,6 +400,12 @@ type BoardingRequest struct {
 	// policy tree. Authenticated by the composed-script recompute.
 	// 32 bytes when AssetRef is set.
 	AssetCommitmentLeafHash []byte
+
+	// AssetWitness is the boarded asset's OP_TRUE witness stack. It
+	// carries no authority — the asset script key is anyone-can-spend
+	// by design — so it stays outside the auth digest; a wrong stack
+	// fails the sealed commit.
+	AssetWitness [][]byte
 }
 
 // BoardingInputSignature represents the client's signature for a boarding
