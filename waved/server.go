@@ -3605,8 +3605,23 @@ func (s *Server) handleInboundRPC(ctx context.Context,
 	}
 
 	responseEnv := &mailboxpb.Envelope{
-		Sender:    s.localMailboxID,
-		Recipient: env.Rpc.ReplyTo,
+		Sender: s.localMailboxID,
+
+		// A response belongs to whoever sent the request, so address
+		// it to the sender rather than to the request's ReplyTo.
+		//
+		// The two agree for every producer in this repo: each sets
+		// Sender and Rpc.ReplyTo to the same LocalMailboxID (see
+		// serverconn/unary_facade.go, serverconn/actor.go,
+		// serverconn/heartbeat.go and the operator's clientconn
+		// equivalents). So this changes nothing for a well-formed
+		// peer, and it stops a request choosing a destination that
+		// disagrees with where it came from.
+		//
+		// It also fixes an absent ReplyTo. That used to produce an
+		// empty recipient, which the mailbox store rejects outright,
+		// so the caller lost its answer entirely.
+		Recipient: env.Sender,
 		Headers:   headers,
 		Body:      body,
 		Rpc: &mailboxpb.RpcMeta{
