@@ -1309,12 +1309,18 @@ type BoardingRequest struct {
 	AssetDigest []byte `protobuf:"bytes,6,opt,name=asset_digest,json=assetDigest,proto3" json:"asset_digest,omitempty"`
 	// asset_proof is the boarded asset's confirmed proof file. The
 	// operator verifies the chain and recomputes the boarding output's
-	// composed script from the policy template plus the proof's asset
-	// commitment root, requiring byte equality with the on-chain
+	// composed script from the policy template plus the disclosed
+	// commitment leaf hash, requiring byte equality with the on-chain
 	// script.
-	AssetProof    []byte `protobuf:"bytes,7,opt,name=asset_proof,json=assetProof,proto3" json:"asset_proof,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	AssetProof []byte `protobuf:"bytes,7,opt,name=asset_proof,json=assetProof,proto3" json:"asset_proof,omitempty"`
+	// asset_commitment_leaf_hash is the tap hash of the boarding
+	// output's asset commitment leaf. The composed-script recompute
+	// authenticates it, and it is the tapscript sibling the operator
+	// needs to assemble the collaborative spend's control block.
+	// 32 bytes when asset_ref is set.
+	AssetCommitmentLeafHash []byte `protobuf:"bytes,8,opt,name=asset_commitment_leaf_hash,json=assetCommitmentLeafHash,proto3" json:"asset_commitment_leaf_hash,omitempty"`
+	unknownFields           protoimpl.UnknownFields
+	sizeCache               protoimpl.SizeCache
 }
 
 func (x *BoardingRequest) Reset() {
@@ -1392,6 +1398,13 @@ func (x *BoardingRequest) GetAssetDigest() []byte {
 func (x *BoardingRequest) GetAssetProof() []byte {
 	if x != nil {
 		return x.AssetProof
+	}
+	return nil
+}
+
+func (x *BoardingRequest) GetAssetCommitmentLeafHash() []byte {
+	if x != nil {
+		return x.AssetCommitmentLeafHash
 	}
 	return nil
 }
@@ -3021,7 +3034,7 @@ const file_round_proto_rawDesc = "" +
 	"\x17ClientRoundStatusReport\x12\x19\n" +
 	"\bround_id\x18\x01 \x01(\fR\aroundId\x126\n" +
 	"\x06status\x18\x02 \x01(\x0e2\x1e.round.v1.RoundLifecycleStatusR\x06status\x12\x16\n" +
-	"\x06detail\x18\x03 \x01(\tR\x06detail\"\x89\x02\n" +
+	"\x06detail\x18\x03 \x01(\tR\x06detail\"\xc6\x02\n" +
 	"\x0fBoardingRequest\x12.\n" +
 	"\boutpoint\x18\x01 \x01(\v2\x12.round.v1.OutpointR\boutpoint\x12'\n" +
 	"\x0fpolicy_template\x18\x02 \x01(\fR\x0epolicyTemplate\x12\x19\n" +
@@ -3030,7 +3043,8 @@ const file_round_proto_rawDesc = "" +
 	"\fasset_amount\x18\x05 \x01(\x04R\vassetAmount\x12!\n" +
 	"\fasset_digest\x18\x06 \x01(\fR\vassetDigest\x12\x1f\n" +
 	"\vasset_proof\x18\a \x01(\fR\n" +
-	"assetProof\"\x83\x02\n" +
+	"assetProof\x12;\n" +
+	"\x1aasset_commitment_leaf_hash\x18\b \x01(\fR\x17assetCommitmentLeafHash\"\x83\x02\n" +
 	"\vVTXORequest\x12*\n" +
 	"\x11target_amount_sat\x18\x01 \x01(\x03R\x0ftargetAmountSat\x12'\n" +
 	"\x0fpolicy_template\x18\x02 \x01(\fR\x0epolicyTemplate\x12\x1f\n" +
