@@ -1389,7 +1389,16 @@ type VTXORequest struct {
 	// exactly. When this is set on a single-output intent, the single-output
 	// implicit-change exception is disabled and the intent must include a
 	// separate fee-bearing change output if fees need to be paid.
-	FixedAmount   bool `protobuf:"varint,5,opt,name=fixed_amount,json=fixedAmount,proto3" json:"fixed_amount,omitempty"`
+	FixedAmount bool `protobuf:"varint,5,opt,name=fixed_amount,json=fixedAmount,proto3" json:"fixed_amount,omitempty"`
+	// asset_ref identifies the Taproot Asset the client requests this
+	// VTXO to carry (group key reference for grouped assets). Empty for
+	// Bitcoin-only VTXOs. Asset requests are only accepted by operators
+	// running asset rounds for the same asset; they carry a fixed
+	// target_amount_sat and never act as the change output.
+	AssetRef string `protobuf:"bytes,6,opt,name=asset_ref,json=assetRef,proto3" json:"asset_ref,omitempty"`
+	// asset_amount is the requested Taproot Asset amount. Required
+	// (non-zero) when asset_ref is set, zero otherwise.
+	AssetAmount   uint64 `protobuf:"varint,7,opt,name=asset_amount,json=assetAmount,proto3" json:"asset_amount,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1457,6 +1466,20 @@ func (x *VTXORequest) GetFixedAmount() bool {
 		return x.FixedAmount
 	}
 	return false
+}
+
+func (x *VTXORequest) GetAssetRef() string {
+	if x != nil {
+		return x.AssetRef
+	}
+	return ""
+}
+
+func (x *VTXORequest) GetAssetAmount() uint64 {
+	if x != nil {
+		return x.AssetAmount
+	}
+	return 0
 }
 
 // ForfeitRequest specifies a VTXO the client wants to forfeit.
@@ -2956,14 +2979,16 @@ const file_round_proto_rawDesc = "" +
 	"\x0fBoardingRequest\x12.\n" +
 	"\boutpoint\x18\x01 \x01(\v2\x12.round.v1.OutpointR\boutpoint\x12'\n" +
 	"\x0fpolicy_template\x18\x02 \x01(\fR\x0epolicyTemplate\x12\x19\n" +
-	"\btx_proof\x18\x03 \x01(\fR\atxProof\"\xc3\x01\n" +
+	"\btx_proof\x18\x03 \x01(\fR\atxProof\"\x83\x02\n" +
 	"\vVTXORequest\x12*\n" +
 	"\x11target_amount_sat\x18\x01 \x01(\x03R\x0ftargetAmountSat\x12'\n" +
 	"\x0fpolicy_template\x18\x02 \x01(\fR\x0epolicyTemplate\x12\x1f\n" +
 	"\vsigning_key\x18\x03 \x01(\fR\n" +
 	"signingKey\x12\x1b\n" +
 	"\tis_change\x18\x04 \x01(\bR\bisChange\x12!\n" +
-	"\ffixed_amount\x18\x05 \x01(\bR\vfixedAmount\"\x9f\x01\n" +
+	"\ffixed_amount\x18\x05 \x01(\bR\vfixedAmount\x12\x1b\n" +
+	"\tasset_ref\x18\x06 \x01(\tR\bassetRef\x12!\n" +
+	"\fasset_amount\x18\a \x01(\x04R\vassetAmount\"\x9f\x01\n" +
 	"\x0eForfeitRequest\x127\n" +
 	"\rvtxo_outpoint\x18\x01 \x01(\v2\x12.round.v1.OutpointR\fvtxoOutpoint\x12&\n" +
 	"\x0fauth_spend_path\x18\x02 \x01(\fR\rauthSpendPath\x12,\n" +
