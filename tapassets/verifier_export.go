@@ -13,7 +13,7 @@ type InventoryVerifierClient = proofInventoryClient
 // inventory: the proof tip must match the expected asset, amount, and
 // anchor outpoint, and that anchor must appear in tapd's managed-UTXO
 // inventory with the expected Taproot Asset commitment root. Round
-// integrations use it to verify tranche proofs at plan and commit time.
+// integrations use it to verify funding-UTXO proofs at plan and commit time.
 func NewInventoryVerifier(client InventoryVerifierClient,
 	assetRef tapsdk.AssetRef, amount uint64, anchor wire.OutPoint,
 	assetRoot tapsdk.Hash) tapsdk.ConfirmedProofVerifier {

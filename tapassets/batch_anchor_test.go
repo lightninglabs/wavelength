@@ -150,8 +150,8 @@ func newBatchAnchorFixture(t *testing.T) (*BatchAnchorCommitter,
 	)
 	require.NoError(t, err)
 
-	trancheOutpoint := wire.OutPoint{
-		Hash:  chainhash.HashH([]byte("tranche")),
+	fundingOutpoint := wire.OutPoint{
+		Hash:  chainhash.HashH([]byte("funding-utxo")),
 		Index: 1,
 	}
 	assetRef := tapsdk.AssetRefFromAssetID(
@@ -166,8 +166,8 @@ func newBatchAnchorFixture(t *testing.T) (*BatchAnchorCommitter,
 		AssetRef: assetRef,
 		Amount:   1_500,
 		Source: BatchAnchorSource{
-			ProofFile:         []byte("tranche-proof"),
-			AnchorOutpoint:    trancheOutpoint,
+			ProofFile:         []byte("funding-proof"),
+			AnchorOutpoint:    fundingOutpoint,
 			AnchorInternalKey: anchorKey.PubKey(),
 		},
 		Cosigners: []*btcec.PublicKey{
@@ -180,7 +180,7 @@ func newBatchAnchorFixture(t *testing.T) (*BatchAnchorCommitter,
 	}
 
 	template := wire.NewMsgTx(2)
-	template.AddTxIn(wire.NewTxIn(&trancheOutpoint, nil, nil))
+	template.AddTxIn(wire.NewTxIn(&fundingOutpoint, nil, nil))
 	template.AddTxOut(&wire.TxOut{
 		Value:    30_000,
 		PkScript: []byte{0x51},
@@ -414,15 +414,15 @@ func TestBatchAnchorRequestGuards(t *testing.T) {
 	committer, req, template := newBatchAnchorFixture(t)
 	ctx := context.Background()
 
-	// The template must spend the tranche anchor.
+	// The template must spend the funding anchor.
 	foreignTx := template.UnsignedTx.Copy()
 	foreignTx.TxIn[0].PreviousOutPoint.Index++
 	foreign, err := psbt.NewFromUnsignedTx(foreignTx)
 	require.NoError(t, err)
 	_, err = committer.DeriveScript(ctx, req, foreign)
-	require.ErrorContains(t, err, "does not spend the tranche anchor")
+	require.ErrorContains(t, err, "does not spend the funding anchor")
 
-	// The tranche proof is mandatory.
+	// The funding proof is mandatory.
 	broken := *req
 	broken.Source.ProofFile = nil
 	_, err = committer.DeriveScript(ctx, &broken, template)
