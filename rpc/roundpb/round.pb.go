@@ -1319,8 +1319,14 @@ type BoardingRequest struct {
 	// needs to assemble the collaborative spend's control block.
 	// 32 bytes when asset_ref is set.
 	AssetCommitmentLeafHash []byte `protobuf:"bytes,8,opt,name=asset_commitment_leaf_hash,json=assetCommitmentLeafHash,proto3" json:"asset_commitment_leaf_hash,omitempty"`
-	unknownFields           protoimpl.UnknownFields
-	sizeCache               protoimpl.SizeCache
+	// asset_witness is the boarded asset's OP_TRUE witness stack, the
+	// script-path data the round's commitment transition spends the
+	// asset with. It carries no authority — the asset script key is
+	// anyone-can-spend by design, custody being the Bitcoin-level
+	// boarding policy — and a wrong stack fails the sealed commit.
+	AssetWitness  [][]byte `protobuf:"bytes,9,rep,name=asset_witness,json=assetWitness,proto3" json:"asset_witness,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *BoardingRequest) Reset() {
@@ -1405,6 +1411,13 @@ func (x *BoardingRequest) GetAssetProof() []byte {
 func (x *BoardingRequest) GetAssetCommitmentLeafHash() []byte {
 	if x != nil {
 		return x.AssetCommitmentLeafHash
+	}
+	return nil
+}
+
+func (x *BoardingRequest) GetAssetWitness() [][]byte {
+	if x != nil {
+		return x.AssetWitness
 	}
 	return nil
 }
@@ -3034,7 +3047,7 @@ const file_round_proto_rawDesc = "" +
 	"\x17ClientRoundStatusReport\x12\x19\n" +
 	"\bround_id\x18\x01 \x01(\fR\aroundId\x126\n" +
 	"\x06status\x18\x02 \x01(\x0e2\x1e.round.v1.RoundLifecycleStatusR\x06status\x12\x16\n" +
-	"\x06detail\x18\x03 \x01(\tR\x06detail\"\xc6\x02\n" +
+	"\x06detail\x18\x03 \x01(\tR\x06detail\"\xeb\x02\n" +
 	"\x0fBoardingRequest\x12.\n" +
 	"\boutpoint\x18\x01 \x01(\v2\x12.round.v1.OutpointR\boutpoint\x12'\n" +
 	"\x0fpolicy_template\x18\x02 \x01(\fR\x0epolicyTemplate\x12\x19\n" +
@@ -3044,7 +3057,8 @@ const file_round_proto_rawDesc = "" +
 	"\fasset_digest\x18\x06 \x01(\fR\vassetDigest\x12\x1f\n" +
 	"\vasset_proof\x18\a \x01(\fR\n" +
 	"assetProof\x12;\n" +
-	"\x1aasset_commitment_leaf_hash\x18\b \x01(\fR\x17assetCommitmentLeafHash\"\x83\x02\n" +
+	"\x1aasset_commitment_leaf_hash\x18\b \x01(\fR\x17assetCommitmentLeafHash\x12#\n" +
+	"\rasset_witness\x18\t \x03(\fR\fassetWitness\"\x83\x02\n" +
 	"\vVTXORequest\x12*\n" +
 	"\x11target_amount_sat\x18\x01 \x01(\x03R\x0ftargetAmountSat\x12'\n" +
 	"\x0fpolicy_template\x18\x02 \x01(\fR\x0epolicyTemplate\x12\x1f\n" +
