@@ -7,6 +7,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightningnetwork/lnd/input"
@@ -385,6 +386,92 @@ func (t *Tree) ValidatePath(signingKey *btcec.PublicKey,
 
 	// Confirm operator key is present as co-signer to enable collaborative
 	// spending path.
+	if !ContainsCosigner(leaf.CoSigners, operatorKey) {
+		return nil, fmt.Errorf("leaf does not include operator key " +
+			"in co-signers")
+	}
+
+	return clientTree, nil
+}
+
+// ValidatePathForAsset validates the tree path for an asset VTXO leaf.
+// Structural validation mirrors ValidatePath — one leaf per signing key,
+// anchor output shape, operator cosigner presence, exact Bitcoin amount —
+// but the leaf output script equality is replaced by asset-context
+// checks: the composed script commits the asset into the leaf's taproot
+// key, and recomputing it byte-for-byte requires the leaf proof material
+// that is only delivered when the VTXO is spent. What the client pins
+// here instead is the asset identity and the exact asset amount its
+// leaf's subtree carries.
+func (t *Tree) ValidatePathForAsset(signingKey *btcec.PublicKey,
+	expectedLeaf LeafDescriptor, operatorKey *btcec.PublicKey,
+	expectedAssetRef string, expectedAssetAmount uint64) (*Tree, error) {
+
+	if t == nil {
+		return nil, fmt.Errorf("tree is nil")
+	}
+	if signingKey == nil {
+		return nil, fmt.Errorf("signing key cannot be nil")
+	}
+	if expectedAssetRef == "" || expectedAssetAmount == 0 {
+		return nil, fmt.Errorf("asset ref and amount are required")
+	}
+	if t.AssetContext == nil {
+		return nil, fmt.Errorf("tree carries no asset context")
+	}
+	if t.AssetContext.AssetRef() != expectedAssetRef {
+		return nil, fmt.Errorf("tree asset %q != requested asset %q",
+			t.AssetContext.AssetRef(), expectedAssetRef)
+	}
+
+	// Extract and structurally verify the client's path.
+	clientTree, err := t.ExtractPathForCoSigners(signingKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract client path: %w", err)
+	}
+	if err := clientTree.Verify(); err != nil {
+		return nil, fmt.Errorf("extracted tree structure invalid: %w",
+			err)
+	}
+
+	leaves := clientTree.Root.GetLeafNodes()
+	if len(leaves) != 1 {
+		return nil, fmt.Errorf("expected exactly 1 leaf, got %d",
+			len(leaves))
+	}
+	leaf := leaves[0]
+
+	if len(leaf.Outputs) != NumLeafOutputs {
+		return nil, fmt.Errorf("leaf should have %d outputs, got %d",
+			NumLeafOutputs, len(leaf.Outputs))
+	}
+	vtxoOutput := leaf.Outputs[0]
+
+	// The composed output must at least be a taproot output; its key is
+	// re-derived and proven at spend time.
+	if !txscript.IsPayToTaproot(vtxoOutput.PkScript) {
+		return nil, fmt.Errorf("asset VTXO output is not P2TR")
+	}
+
+	if len(leaf.Outputs[1].PkScript) > 0 &&
+		leaf.Outputs[1].Value != 0 {
+		return nil, fmt.Errorf("anchor output should have value "+
+			"0, got %d", leaf.Outputs[1].Value)
+	}
+
+	// Exact Bitcoin amount, exact asset amount.
+	if vtxoOutput.Value != int64(expectedLeaf.Amount) {
+		return nil, fmt.Errorf("VTXO output value %d != expected %d",
+			vtxoOutput.Value, expectedLeaf.Amount)
+	}
+	if got := t.AssetContext.NodeAssetAmount(leaf); got !=
+		expectedAssetAmount {
+		return nil, fmt.Errorf("leaf asset amount %d != requested %d",
+			got, expectedAssetAmount)
+	}
+
+	// Confirm operator key is present as co-signer to enable
+	// collaborative spending.
 	if !ContainsCosigner(leaf.CoSigners, operatorKey) {
 		return nil, fmt.Errorf("leaf does not include operator key " +
 			"in co-signers")
