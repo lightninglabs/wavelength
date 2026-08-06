@@ -1861,3 +1861,30 @@ func TestForfeitSignatureValidity(t *testing.T) {
 	err = engine.Execute()
 	require.NoError(t, err, "VTXO input signature verification failed")
 }
+
+// TestPendingForfeitEventFromForfeiting asserts a duplicate cooperative
+// commitment is refused with an error naming the round that holds the coin.
+// This is the failure a user meets when a second leave races the first
+// (wavelength#577), so it must be actionable rather than a Go event type.
+func TestPendingForfeitEventFromForfeiting(t *testing.T) {
+	t.Parallel()
+
+	h := newVTXOTestHarness(t)
+	vtxo := h.newTestDescriptor()
+
+	const roundID = "019fd94b-a1e6-7422-a625-e90c75599e72"
+
+	h.withState(&ForfeitingState{
+		VTXO:       vtxo,
+		NewRoundID: roundID,
+	})
+
+	_, err := h.sendEvent(&round.PendingForfeitEvent{})
+	require.ErrorIs(t, err, ErrForfeitInFlight)
+	require.Contains(t, err.Error(), vtxo.Outpoint.String())
+	require.Contains(t, err.Error(), roundID)
+
+	// The coin must stay committed to its existing round; a refused
+	// duplicate cannot disturb the forfeit already in flight.
+	assertState[*ForfeitingState](h)
+}

@@ -1156,6 +1156,21 @@ func (s *ForfeitingState) ProcessEvent(ctx context.Context, event VTXOEvent,
 			},
 		}, nil
 
+	case *PendingForfeitEvent:
+		// A second cooperative commitment for a coin whose forfeit
+		// signature has already left the box. Refusing is correct —
+		// the round holding it owns the coin until it resolves — but
+		// this refusal lands in front of a user who asked to leave or
+		// refresh the VTXO, so it must name what holds the coin
+		// instead of reporting a Go event type (wavelength#577).
+		//
+		// Admission paths reject this case before it gets here; the
+		// error still has to be actionable, because a claim that
+		// races the pre-check arrives with nothing else to explain it.
+		return nil, fmt.Errorf("%w (outpoint %s, state %s, round %s)",
+			ErrForfeitInFlight, s.VTXO.Outpoint,
+			VTXOStatusForfeiting, s.NewRoundID)
+
 	default:
 		return nil, fmt.Errorf("forfeiting: bad event: %T", event)
 	}
