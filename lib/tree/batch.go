@@ -303,6 +303,53 @@ func BuildConnectorTree(batchOutpoint wire.OutPoint, batchOutput *wire.TxOut,
 func BuildBatchOutput(vtxos []VTXODescriptor, operatorMuSigKey *btcec.PublicKey,
 	sweepKey *btcec.PublicKey, sweepDelay uint32) (*wire.TxOut, error) {
 
+	spec, err := BuildBatchOutputSpec(
+		vtxos, operatorMuSigKey, sweepKey, sweepDelay,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return spec.Output, nil
+}
+
+// BatchOutputSpec is one batch output together with the taproot material
+// observers of the commitment transaction need: the untweaked MuSig2
+// aggregate and the sweep leaf. Taproot Asset exclusion proofs require
+// both on the PSBT output (BIP-371) to prove the output carries no asset
+// commitment.
+type BatchOutputSpec struct {
+	// Output is the batch output.
+	Output *wire.TxOut
+
+	// InternalKey is the untweaked MuSig2 aggregate of the operator and
+	// every leaf cosigner.
+	InternalKey *btcec.PublicKey
+
+	// SweepLeaf is the operator's timeout leaf: the output key's only
+	// tapscript commitment.
+	SweepLeaf txscript.TapLeaf
+}
+
+// TapTreeBytes serializes the output's tapscript tree in the BIP-371
+// PSBT_OUT_TAP_TREE encoding: one entry per leaf of depth, leaf version,
+// and length-prefixed script.
+func (s *BatchOutputSpec) TapTreeBytes() []byte {
+	var buf bytes.Buffer
+	buf.WriteByte(0) // Depth: the sweep leaf is the whole tree.
+	buf.WriteByte(byte(s.SweepLeaf.LeafVersion))
+	_ = wire.WriteVarInt(&buf, 0, uint64(len(s.SweepLeaf.Script)))
+	buf.Write(s.SweepLeaf.Script)
+
+	return buf.Bytes()
+}
+
+// BuildBatchOutputSpec builds one batch output and exposes its taproot
+// binding material.
+func BuildBatchOutputSpec(vtxos []VTXODescriptor,
+	operatorMuSigKey *btcec.PublicKey, sweepKey *btcec.PublicKey,
+	sweepDelay uint32) (*BatchOutputSpec, error) {
+
 	if len(vtxos) == 0 {
 		return nil, fmt.Errorf("batch output requires at least one " +
 			"VTXO")
@@ -378,9 +425,13 @@ func BuildBatchOutput(vtxos []VTXODescriptor, operatorMuSigKey *btcec.PublicKey,
 			err)
 	}
 
-	return &wire.TxOut{
-		Value:    int64(totalAmount),
-		PkScript: pkScript,
+	return &BatchOutputSpec{
+		Output: &wire.TxOut{
+			Value:    int64(totalAmount),
+			PkScript: pkScript,
+		},
+		InternalKey: aggKey.PreTweakedKey,
+		SweepLeaf:   sweepTapLeaf,
 	}, nil
 }
 
