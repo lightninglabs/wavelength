@@ -360,6 +360,28 @@ message BoardingRequest {
     // tx_proof is the optional serialized SPV proof that the boarding UTXO
     // exists. Empty if the server verifies via its own chain source.
     bytes tx_proof = 3;
+
+    // asset_ref identifies the Taproot Asset carried by the boarding
+    // output (group key reference for grouped assets). Empty for
+    // Bitcoin-only boarding.
+    string asset_ref = 4;
+
+    // asset_amount is the asset amount the boarding output carries.
+    // Non-zero exactly when asset_ref is set.
+    uint64 asset_amount = 5;
+
+    // asset_digest scopes the boarding output's deterministic OP_TRUE
+    // asset script key. The operator recomputes the key from it and
+    // rejects proofs whose script key differs, since assets at any
+    // other key could never be spent by the round. 32 bytes when set.
+    bytes asset_digest = 6;
+
+    // asset_proof is the boarded asset's confirmed proof file. The
+    // operator verifies the chain and recomputes the boarding output's
+    // composed script from the policy template plus the proof's asset
+    // commitment root, requiring byte equality with the on-chain
+    // script.
+    bytes asset_proof = 7;
 }
 
 // VTXORequest specifies a VTXO the client wants to receive.

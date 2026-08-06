@@ -1294,7 +1294,25 @@ type BoardingRequest struct {
 	PolicyTemplate []byte `protobuf:"bytes,2,opt,name=policy_template,json=policyTemplate,proto3" json:"policy_template,omitempty"`
 	// tx_proof is the optional serialized SPV proof that the boarding UTXO
 	// exists. Empty if the server verifies via its own chain source.
-	TxProof       []byte `protobuf:"bytes,3,opt,name=tx_proof,json=txProof,proto3" json:"tx_proof,omitempty"`
+	TxProof []byte `protobuf:"bytes,3,opt,name=tx_proof,json=txProof,proto3" json:"tx_proof,omitempty"`
+	// asset_ref identifies the Taproot Asset carried by the boarding
+	// output (group key reference for grouped assets). Empty for
+	// Bitcoin-only boarding.
+	AssetRef string `protobuf:"bytes,4,opt,name=asset_ref,json=assetRef,proto3" json:"asset_ref,omitempty"`
+	// asset_amount is the asset amount the boarding output carries.
+	// Non-zero exactly when asset_ref is set.
+	AssetAmount uint64 `protobuf:"varint,5,opt,name=asset_amount,json=assetAmount,proto3" json:"asset_amount,omitempty"`
+	// asset_digest scopes the boarding output's deterministic OP_TRUE
+	// asset script key. The operator recomputes the key from it and
+	// rejects proofs whose script key differs, since assets at any
+	// other key could never be spent by the round. 32 bytes when set.
+	AssetDigest []byte `protobuf:"bytes,6,opt,name=asset_digest,json=assetDigest,proto3" json:"asset_digest,omitempty"`
+	// asset_proof is the boarded asset's confirmed proof file. The
+	// operator verifies the chain and recomputes the boarding output's
+	// composed script from the policy template plus the proof's asset
+	// commitment root, requiring byte equality with the on-chain
+	// script.
+	AssetProof    []byte `protobuf:"bytes,7,opt,name=asset_proof,json=assetProof,proto3" json:"asset_proof,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1346,6 +1364,34 @@ func (x *BoardingRequest) GetPolicyTemplate() []byte {
 func (x *BoardingRequest) GetTxProof() []byte {
 	if x != nil {
 		return x.TxProof
+	}
+	return nil
+}
+
+func (x *BoardingRequest) GetAssetRef() string {
+	if x != nil {
+		return x.AssetRef
+	}
+	return ""
+}
+
+func (x *BoardingRequest) GetAssetAmount() uint64 {
+	if x != nil {
+		return x.AssetAmount
+	}
+	return 0
+}
+
+func (x *BoardingRequest) GetAssetDigest() []byte {
+	if x != nil {
+		return x.AssetDigest
+	}
+	return nil
+}
+
+func (x *BoardingRequest) GetAssetProof() []byte {
+	if x != nil {
+		return x.AssetProof
 	}
 	return nil
 }
@@ -2975,11 +3021,16 @@ const file_round_proto_rawDesc = "" +
 	"\x17ClientRoundStatusReport\x12\x19\n" +
 	"\bround_id\x18\x01 \x01(\fR\aroundId\x126\n" +
 	"\x06status\x18\x02 \x01(\x0e2\x1e.round.v1.RoundLifecycleStatusR\x06status\x12\x16\n" +
-	"\x06detail\x18\x03 \x01(\tR\x06detail\"\x85\x01\n" +
+	"\x06detail\x18\x03 \x01(\tR\x06detail\"\x89\x02\n" +
 	"\x0fBoardingRequest\x12.\n" +
 	"\boutpoint\x18\x01 \x01(\v2\x12.round.v1.OutpointR\boutpoint\x12'\n" +
 	"\x0fpolicy_template\x18\x02 \x01(\fR\x0epolicyTemplate\x12\x19\n" +
-	"\btx_proof\x18\x03 \x01(\fR\atxProof\"\x83\x02\n" +
+	"\btx_proof\x18\x03 \x01(\fR\atxProof\x12\x1b\n" +
+	"\tasset_ref\x18\x04 \x01(\tR\bassetRef\x12!\n" +
+	"\fasset_amount\x18\x05 \x01(\x04R\vassetAmount\x12!\n" +
+	"\fasset_digest\x18\x06 \x01(\fR\vassetDigest\x12\x1f\n" +
+	"\vasset_proof\x18\a \x01(\fR\n" +
+	"assetProof\"\x83\x02\n" +
 	"\vVTXORequest\x12*\n" +
 	"\x11target_amount_sat\x18\x01 \x01(\x03R\x0ftargetAmountSat\x12'\n" +
 	"\x0fpolicy_template\x18\x02 \x01(\fR\x0epolicyTemplate\x12\x1f\n" +
