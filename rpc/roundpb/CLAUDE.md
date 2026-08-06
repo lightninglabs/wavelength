@@ -52,9 +52,14 @@ distinction.
 - Method name constants in `service.go` must match the proto service
   definition; mismatches silently drop events at the mailbox router.
 - `TreeFromProto` enforces a pre-order invariant (child index > parent
-  index) and bounds child/output indices; this is what prevents a
-  malicious server from encoding cycles or out-of-range references in a
-  `VTXOTree` and DoS-ing tree traversal. Do not relax these checks.
+  index), a **single-parent** invariant (no node may be named as a child
+  twice), and bounds on child/output indices; this is what prevents a
+  malicious server from encoding cycles, shared children, or
+  out-of-range references in a `VTXOTree` and DoS-ing tree traversal. Do
+  not relax these checks. The pre-order check alone does **not** imply
+  single-parent: two parents at indices 0 and 1 can both name child 5
+  and both satisfy `childIdx > i`, which decodes a DAG whose shared
+  subtree every recursive walk re-visits once per path reaching it.
 - `ValidateFlowVersion` must reject any `FlowVersion` other than the
   versions this build implements (currently only `FlowVersionV1`); never
   make it permissive by default.
