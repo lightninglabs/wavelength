@@ -60,6 +60,7 @@ const (
 	joinRoundAuthBoardAssetRefRecordType    tlv.Type = 4
 	joinRoundAuthBoardAssetAmountRecordType tlv.Type = 5
 	joinRoundAuthBoardAssetDigestRecordType tlv.Type = 6
+	joinRoundAuthBoardAssetLeafRecordType   tlv.Type = 7
 )
 
 const (
@@ -410,6 +411,7 @@ func decodeJoinAuthBoardingRequest(raw []byte) (*BoardingRequest, error) {
 		assetRef    []byte
 		assetAmount uint64
 		assetDigest []byte
+		assetLeaf   []byte
 	)
 
 	stream, err := tlv.NewStream(
@@ -430,6 +432,9 @@ func decodeJoinAuthBoardingRequest(raw []byte) (*BoardingRequest, error) {
 		),
 		tlv.MakePrimitiveRecord(
 			joinRoundAuthBoardAssetDigestRecordType, &assetDigest,
+		),
+		tlv.MakePrimitiveRecord(
+			joinRoundAuthBoardAssetLeafRecordType, &assetLeaf,
 		),
 	)
 	if err != nil {
@@ -475,11 +480,12 @@ func decodeJoinAuthBoardingRequest(raw []byte) (*BoardingRequest, error) {
 	}
 
 	req := &BoardingRequest{
-		Outpoint:       outpoint,
-		PolicyTemplate: bytes.Clone(policy),
-		AssetRef:       string(assetRef),
-		AssetAmount:    assetAmount,
-		AssetDigest:    bytes.Clone(assetDigest),
+		Outpoint:                outpoint,
+		PolicyTemplate:          bytes.Clone(policy),
+		AssetRef:                string(assetRef),
+		AssetAmount:             assetAmount,
+		AssetDigest:             bytes.Clone(assetDigest),
+		AssetCommitmentLeafHash: bytes.Clone(assetLeaf),
 	}
 
 	_, err = req.DecodePolicyTemplate()
@@ -937,15 +943,16 @@ func encodeJoinAuthBoardingRequest(req *BoardingRequest) ([]byte, error) {
 		),
 	}
 
-	// Asset boarding binds the asset identity, amount, and OP_TRUE
-	// digest into the auth digest so the operator cannot alter any of
-	// them. The proof file itself is chain-authenticated and stays
-	// outside the signature. Bitcoin-only boarding keeps the
-	// historical record set, preserving its digests.
+	// Asset boarding binds the asset identity, amount, OP_TRUE digest,
+	// and the commitment leaf hash into the auth digest so the operator
+	// cannot alter any of them. The proof file itself is
+	// chain-authenticated and stays outside the signature. Bitcoin-only
+	// boarding keeps the historical record set, preserving its digests.
 	if req.AssetRef != "" {
 		assetRef := []byte(req.AssetRef)
 		assetAmount := req.AssetAmount
 		assetDigest := req.AssetDigest
+		assetLeaf := req.AssetCommitmentLeafHash
 		records = append(
 			records, tlv.MakePrimitiveRecord(
 				joinRoundAuthBoardAssetRefRecordType, &assetRef,
@@ -957,6 +964,10 @@ func encodeJoinAuthBoardingRequest(req *BoardingRequest) ([]byte, error) {
 			tlv.MakePrimitiveRecord(
 				joinRoundAuthBoardAssetDigestRecordType,
 				&assetDigest,
+			),
+			tlv.MakePrimitiveRecord(
+				joinRoundAuthBoardAssetLeafRecordType,
+				&assetLeaf,
 			),
 		)
 	}

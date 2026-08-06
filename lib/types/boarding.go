@@ -378,6 +378,12 @@ type BoardingRequest struct {
 
 	// AssetProof is the boarded asset's confirmed proof file.
 	AssetProof []byte
+
+	// AssetCommitmentLeafHash is the tap hash of the boarding output's
+	// asset commitment leaf, the tapscript sibling of the boarding
+	// policy tree. Authenticated by the composed-script recompute.
+	// 32 bytes when AssetRef is set.
+	AssetCommitmentLeafHash []byte
 }
 
 // BoardingInputSignature represents the client's signature for a boarding
