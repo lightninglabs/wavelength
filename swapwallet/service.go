@@ -592,7 +592,8 @@ func (s *Service) fetchBalance(ctx context.Context) (
 	// sweep plus both in-flight VTXO buckets. confirmed_sat is VTXO-live
 	// only.
 	resp := &wavewalletrpc.BalanceResponse{
-		ConfirmedSat: bal.GetVtxoBalanceSat(),
+		ConfirmedSat:              bal.GetVtxoBalanceSat(),
+		TemporarilyUnavailableSat: bal.GetVtxoTemporarilyUnavailableSat(),
 		PendingInSat: bal.GetBoardingConfirmedSat() +
 			bal.GetBoardingUnconfirmedSat() +
 			bal.GetBoardingAdoptedSat(),

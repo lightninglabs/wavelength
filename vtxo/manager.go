@@ -109,7 +109,18 @@ type ManagerConfig struct {
 	// gate. Because the reducer is fail-closed, the gate must only be
 	// activated once the batch producers (round, OOR) register their
 	// batches, or every unregistered VTXO is excluded.
-	BatchCanonicality batchcanon.Store
+	BatchCanonicality batchcanon.Reader
+
+	// RedriveConsumerForfeit, when set, is invoked (via the VTXO actor)
+	// after a VTXO's forfeiture marker is durably persisted, passing the
+	// consuming batch. It asks the batch canonicality manager to re-resolve
+	// any terminal consumer edge for that batch, closing the race where the
+	// consumer became terminally conflict-finalized before the forfeiture
+	// marker existed (so the earlier resolution deferred and would strand
+	// the consumed VTXO until restart, lumos#454). Nil disables the
+	// redrive.
+	RedriveConsumerForfeit func(ctx context.Context,
+		consumerBatch chainhash.Hash) error
 
 	// Log is an optional logger for this manager instance. If None, the
 	// manager falls back to extracting a logger from context via
@@ -1024,6 +1035,46 @@ func (m *Manager) handleVTXOsMaterialized(ctx context.Context,
 func (m *Manager) handleForceUnroll(ctx context.Context,
 	req *ForceUnrollRequest) fn.Result[ManagerResp] {
 
+	// Gate the unroll point of no return on the VTXO's batch lineage, the
+	// same fail-closed check coin selection and forfeit selection apply: a
+	// VTXO whose lineage is not a ready, confirmed member of the canonical
+	// chain (reorged-out/limbo, conflict-invalidated, or fail-closed
+	// missing/reconciling) must not enter UnilateralExitState and create
+	// proof/sweep side effects for funding that may have left the chain.
+	// Fraud response routes straight into this path, so without the gate a
+	// missing/reorged-lineage VTXO could still trigger a unilateral exit.
+	// Both objectively-invalidated and reversibly-limbo lineage are
+	// refused; the derived availability is surfaced so the caller can tell
+	// them apart.
+	if m.cfg.BatchCanonicality != nil {
+		desc, err := m.cfg.Store.GetVTXO(ctx, req.Outpoint)
+		if err != nil {
+			return fn.Err[ManagerResp](
+				fmt.Errorf("load vtxo for unroll lineage "+
+					"gate %s: %w", req.Outpoint, err),
+			)
+		}
+
+		blocked, avail, err := batchcanon.LineageBlocked(
+			ctx, m.cfg.BatchCanonicality,
+			LineageCommitmentTxIDs(desc)...,
+		)
+		if err != nil {
+			return fn.Err[ManagerResp](
+				fmt.Errorf("unroll lineage gate %s: %w",
+					req.Outpoint, err),
+			)
+		}
+		if blocked {
+			return fn.Err[ManagerResp](
+				fmt.Errorf("refusing force-unroll of %s: "+
+					"batch lineage is not admissible "+
+					"(availability=%s)", req.Outpoint,
+					avail),
+			)
+		}
+	}
+
 	actorRef, ok := m.actors[req.Outpoint]
 	if !ok {
 		// No live actor. This is the common shape for the vHTLC
@@ -1871,6 +1922,7 @@ func (m *Manager) spawnVTXOActor(ctx context.Context, vtxo *Descriptor) (
 		RefreshFeeQuoter:         m.cfg.RefreshFeeQuoter,
 		FetchOperatorKey:         m.cfg.FetchOperatorKey,
 		ForfeitParticipantSigner: m.cfg.ForfeitParticipantSigner,
+		NotifyForfeitPersisted:   m.cfg.RedriveConsumerForfeit,
 	}
 
 	vtxoActor := NewVTXOActor(ctx, actorCfg)
@@ -2196,10 +2248,7 @@ func (m *Manager) exactSpendUnavailableError(ctx context.Context,
 		ErrInsufficientSpendableFunds, op, desc.Status)
 }
 
-// insufficientLiquidityError distinguishes a true spendable-funds shortfall
-// from liquidity that is present but unavailable because another operation has
-// already moved it out of LiveState.
-// lineageCommitmentTxids returns the deduped set of commitment txids in a
+// LineageCommitmentTxIDs returns the deduped set of commitment txids in a
 // VTXO's lineage: its direct commitment tx plus every distinct cross-commitment
 // ancestor batch recorded in its ancestry. A round-direct or same-commitment
 // OOR VTXO yields one txid; a cross-commitment multi-input OOR VTXO (born from
@@ -2207,7 +2256,11 @@ func (m *Manager) exactSpendUnavailableError(ctx context.Context,
 // batch. The direct commitment txid is included even when the ancestry slice is
 // empty (e.g. an incoming VTXO materialized without its commitment tree) so the
 // gate still governs the leaf by its batch. The zero hash is skipped.
-func lineageCommitmentTxids(desc *Descriptor) []chainhash.Hash {
+func LineageCommitmentTxIDs(desc *Descriptor) []chainhash.Hash {
+	if desc == nil {
+		return nil
+	}
+
 	seen := make(map[chainhash.Hash]struct{}, len(desc.Ancestry)+1)
 	txids := make([]chainhash.Hash, 0, len(desc.Ancestry)+1)
 
@@ -2257,7 +2310,7 @@ func (m *Manager) gateUnavailableLineage(ctx context.Context,
 
 		blocked, avail, err := batchcanon.LineageBlocked(
 			ctx, m.cfg.BatchCanonicality,
-			lineageCommitmentTxids(desc)...,
+			LineageCommitmentTxIDs(desc)...,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("lineage gate %s: %w",
@@ -2278,6 +2331,9 @@ func (m *Manager) gateUnavailableLineage(ctx context.Context,
 	return kept, nil
 }
 
+// insufficientLiquidityError distinguishes a true spendable-funds shortfall
+// from liquidity that is present but unavailable because another operation has
+// already moved it out of LiveState.
 func (m *Manager) insufficientLiquidityError(ctx context.Context,
 	liveCandidates []*Descriptor, p reserveParams) error {
 

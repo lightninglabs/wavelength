@@ -214,6 +214,9 @@ func (m *Manager) Receive(ctx context.Context,
 	case *inputSpendDoneMsg:
 		m.handleInputSpendDone(ctx, v)
 
+	case *ConsumerForfeitPersistedMsg:
+		m.handleConsumerForfeitPersisted(ctx, v.ConsumerBatch)
+
 	default:
 		return fn.Err[ManagerResp](
 			fmt.Errorf("unknown batchcanon message: %T", msg),
@@ -326,6 +329,9 @@ func validateRegistration(req *RegisterBatchRequest,
 	}
 	if len(req.ConfirmationPkScript) == 0 {
 		return fmt.Errorf("batch confirmation pkScript is required")
+	}
+	if req.CSVExpiryDelta <= 0 {
+		return fmt.Errorf("batch CSV expiry delta must be positive")
 	}
 	if len(req.ConsumedInputs) == 0 {
 		return fmt.Errorf("batch must register every consumed input")
@@ -1050,10 +1056,53 @@ func observationComplete(w *batchWatch) bool {
 	return true
 }
 
+// GetBatch implements batchcanon.Reader with the manager's in-memory overlay so
+// the wired admission gate fails closed the instant a reorg/conflict
+// observation cannot be persisted. The gate reads availability through this
+// method; when an in-memory watch is not ready — most importantly after an
+// ApplyObservation write failed in persistObservation — the returned record is
+// forced not-ready, so LineageAvailability derives LineageReconciling (never
+// usable) even though the stale durable row still reads ready. The overlay only
+// ever downgrades ready->not-ready, never the reverse, so it is strictly
+// fail-closed. Without it the gate would admit a VTXO whose commitment just
+// left the best chain until a restart durably reconciled the row.
+//
+// The durable read and the watch snapshot are taken under the SAME m.mu that
+// Receive holds for the whole of message processing, so they observe one
+// consistent point in time relative to any concurrent persist. Reading the
+// store outside the lock races a reorg that lands between the read and the
+// snapshot: the read returns Provisional@r, the reorg then persists a complete
+// ReorgedOut@(r+1) snapshot (leaving w.ready=true), and the overlay below would
+// not downgrade the already-read stale record — admitting it.
+func (m *Manager) GetBatch(ctx context.Context, txid chainhash.Hash) (*Record,
+	error) {
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	record, err := m.cfg.Store.GetBatch(ctx, txid)
+	if err != nil {
+		return nil, err
+	}
+
+	if w, watched := m.watches[txid]; watched && !w.ready &&
+		record.Ready() {
+
+		notReady := *record
+		notReady.ReadyGeneration = fn.None[uint64]()
+
+		return &notReady, nil
+	}
+
+	return record, nil
+}
+
 // persistObservation atomically writes the complete in-memory view. On any
-// error the manager's overlay closes admission immediately, even if the old
-// durable row was usable; restart reconciliation closes it durably before
-// re-arming watches.
+// error the in-memory watch is marked not-ready; the wired admission gate reads
+// through Manager.GetBatch, whose overlay forces such a batch not-ready even
+// though the stale durable row still reads ready, so admission closes
+// immediately. Restart reconciliation then closes it durably before re-arming
+// watches.
 func (m *Manager) persistObservation(ctx context.Context, w *batchWatch) {
 	inputs := make([]InputObservation, 0, len(w.inputs))
 	for outpoint, input := range w.inputs {
@@ -1312,6 +1361,36 @@ func (m *Manager) redriveConsumersForCreator(ctx context.Context,
 	}
 
 	return nil
+}
+
+// handleConsumerForfeitPersisted redrives terminal consumer-edge resolution for
+// a batch whose consumed-VTXO forfeiture marker has just become durable. It is
+// the event-driven complement to the restart-time redrive
+// (redriveTerminalConsumerLifecycles): when a consumer batch reaches a terminal
+// state before its ForfeitedBy(consumer) marker exists, the original resolution
+// defers on the revision compare-and-swap, and no further batchcanon event is
+// guaranteed. The marker's arrival is exactly the evidence change that can now
+// let the terminal restore succeed. Resolution is gated on the consumer being
+// Ready and terminal, so a not-yet-final consumer (the common case, since the
+// marker is usually written well before finality) is a harmless no-op.
+func (m *Manager) handleConsumerForfeitPersisted(ctx context.Context,
+	consumerBatch chainhash.Hash) {
+
+	record, err := m.cfg.Store.GetBatch(ctx, consumerBatch)
+	if err != nil {
+		// No record yet (or a transient read error): the restart-time
+		// redrive remains the backstop, so treat this as a no-op.
+		m.logger(ctx).DebugS(ctx, "No batch record to redrive on "+
+			"forfeit persist",
+			slog.String("batch", consumerBatch.String()))
+
+		return
+	}
+	if !record.Ready() || !terminalState(record.State) {
+		return
+	}
+
+	m.handleConsumerLifecycle(ctx, consumerBatch, record.State)
 }
 
 // releaseSpendWatches unregisters the per-input spend watches for a batch,
