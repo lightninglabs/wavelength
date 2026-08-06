@@ -4936,6 +4936,13 @@ func (r *RPCServer) Unroll(ctx context.Context, req *waverpc.UnrollRequest) (
 		admissionCtx, &actormsg.ForceUnrollRequest{
 			Outpoint: outpoint,
 			Reason:   "manual RPC request",
+
+			// Without this the request carries the zero value,
+			// which admits as UnrollTriggerCriticalExpiry: a
+			// hand-typed unroll then records as the expiry safety
+			// net, so the job's persisted provenance names a
+			// trigger that never fired.
+			Trigger: actormsg.UnrollTriggerManual,
 		},
 	).Await(admissionCtx).Unpack()
 	if askErr != nil {
