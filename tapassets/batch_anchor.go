@@ -415,6 +415,7 @@ func (c *BatchAnchorCommitter) buildRequest(req *BatchAnchorRequest,
 		},
 		SigningPlans: batchSigningPlans(
 			anchorTx, req.Source.AnchorOutpoint, anchorSigner,
+			len(req.Source.Witness) != 0,
 		),
 	}
 
@@ -423,14 +424,20 @@ func (c *BatchAnchorCommitter) buildRequest(req *BatchAnchorRequest,
 
 // batchSigningPlans classifies every anchor input: the funding UTXO input is a
 // tapd key spend, every other input is caller-signed funding.
+// batchSigningPlans assigns per-input signing plans: tapd's wallet key
+// signs the funding input unless the caller marked it caller-signed (a
+// boarded funding input is a boarding input at the Bitcoin level, signed
+// by its owner through the round's boarding-signature flow); every other
+// input is caller-signed by definition.
 func batchSigningPlans(tx *wire.MsgTx, funding wire.OutPoint,
-	anchorSigner tapsdk.XOnlyPubKey) []tapsdk.CustomAnchorInputSigningPlan {
+	anchorSigner tapsdk.XOnlyPubKey,
+	callerSigned bool) []tapsdk.CustomAnchorInputSigningPlan {
 
 	plans := make(
 		[]tapsdk.CustomAnchorInputSigningPlan, 0, len(tx.TxIn),
 	)
 	for idx, txIn := range tx.TxIn {
-		if txIn.PreviousOutPoint == funding {
+		if txIn.PreviousOutPoint == funding && !callerSigned {
 			plans = append(
 				plans, tapsdk.CustomAnchorInputSigningPlan{
 					InputIndex: uint32(idx),
