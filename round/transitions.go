@@ -2422,14 +2422,32 @@ func (s *CommitmentTxReceivedState) processEvent(ctx context.Context,
 			}
 
 			// Search through all VTXO trees to find the one
-			// containing this VTXO request.
+			// containing this VTXO request. Asset requests pin
+			// the leaf's asset identity and amount instead of
+			// the composed output script, which is only provable
+			// with the proof material delivered at spend time.
 			var clientTree *tree.Tree
 			var validateErr error
 			for _, vtxoTree := range s.VTXOTreePaths {
-				clientTree, validateErr = vtxoTree.ValidatePath(
-					vtxoReq.SigningKey.PubKey, expectedLeaf,
-					treeCosignKey,
-				)
+				if vtxoReq.AssetRef != "" {
+					clientTree, validateErr =
+						vtxoTree.ValidatePathForAsset(
+							vtxoReq.SigningKey.
+								PubKey,
+							expectedLeaf,
+							treeCosignKey,
+							vtxoReq.AssetRef,
+							vtxoReq.AssetAmount,
+						)
+				} else {
+					clientTree, validateErr =
+						vtxoTree.ValidatePath(
+							vtxoReq.SigningKey.
+								PubKey,
+							expectedLeaf,
+							treeCosignKey,
+						)
+				}
 				if validateErr == nil {
 					// Found the VTXO in this tree.
 					break
@@ -2736,6 +2754,15 @@ func (s *CommitmentTxValidatedState) processEvent(ctx context.Context,
 					signerKey[:], err)
 			}
 
+			// Asset trees vary the signing tweak per node; the
+			// lookup overrides the sweep root wherever the tree
+			// carries one.
+			var tweakLookup tree.TaprootTweakLookup
+			if clientTree.AssetContext != nil {
+				tweakLookup = clientTree.AssetContext.
+					TweakLookup()
+			}
+
 			sessionJobs = append(
 				sessionJobs, CreateSignerSessionJob{
 					SignerKey:          signerKey,
@@ -2744,6 +2771,7 @@ func (s *CommitmentTxValidatedState) processEvent(ctx context.Context,
 					SweepTapscriptRoot: sweepTweak,
 					PrevOuts:           prevOutFetcher,
 					Root:               root,
+					TweakLookup:        tweakLookup,
 				},
 			)
 		}
@@ -4208,9 +4236,21 @@ func verifyVTXOTreeRoot(commitmentTx *wire.MsgTx, commitmentTxID chainhash.Hash,
 	// output whose key is not the aggregate of the declared cosigners,
 	// leaving the co-signed tree unable to ever spend it. We recompute from
 	// the declared parameters rather than trusting Root.FinalKey, which is
-	// itself operator-supplied.
+	// itself operator-supplied. Asset trees tweak the batch output with
+	// the combined root (sweep leaf plus asset commitment), carried as
+	// the root node's signing tweak; the recompute proves the co-signed
+	// aggregate can spend the committed output either way.
+	rootTweak := vtxoTree.SweepTapscriptRoot
+	if vtxoTree.AssetContext != nil {
+		tweak := vtxoTree.AssetContext.SigningTweak(
+			vtxoTree.Root.Input,
+		)
+		if len(tweak) > 0 {
+			rootTweak = tweak
+		}
+	}
 	finalKey, err := tree.ComputeFinalKey(
-		vtxoTree.Root.CoSigners, vtxoTree.SweepTapscriptRoot,
+		vtxoTree.Root.CoSigners, rootTweak,
 	)
 	if err != nil {
 		return fmt.Errorf("recompute tree root key: %w", err)
