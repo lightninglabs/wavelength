@@ -1809,7 +1809,7 @@ func buildBoardingIntentFromWallet(walletIntent *wallet.BoardingIntent) (
 func (a *RoundClientActor) handleVTXORequests(ctx context.Context,
 	msg *RegisterVTXORequestsRequest) fn.Result[actormsg.RoundActorResp] {
 
-	if len(msg.Amounts) == 0 {
+	if len(msg.Amounts) == 0 && len(msg.AssetRequests) == 0 {
 		return fn.Err[actormsg.RoundActorResp](
 			fmt.Errorf("VTXO request amounts are empty"),
 		)
@@ -1822,7 +1822,9 @@ func (a *RoundClientActor) handleVTXORequests(ctx context.Context,
 		)
 	}
 
-	requests := make([]types.VTXORequest, 0, len(msg.Amounts))
+	requests := make(
+		[]types.VTXORequest, 0, len(msg.Amounts)+len(msg.AssetRequests),
+	)
 	for i, amount := range msg.Amounts {
 		if amount <= 0 {
 			return fn.Err[actormsg.RoundActorResp](
@@ -1857,6 +1859,35 @@ func (a *RoundClientActor) handleVTXORequests(ctx context.Context,
 		// that marker centrally via designateChangeMarker over
 		// the fully-composed intent, so this loop leaves
 		// IsChange unset.
+
+		requests = append(requests, *req)
+	}
+
+	// Asset VTXO requests ride the same intent with the asset identity
+	// and amount attached; their Bitcoin amount is fixed so the seal
+	// quote can never shrink the carrier value, and they never act as
+	// the change output.
+	for i, assetReq := range msg.AssetRequests {
+		if assetReq.AmountSat <= 0 || assetReq.AssetAmount == 0 ||
+			assetReq.AssetRef == "" {
+			return fn.Err[actormsg.RoundActorResp](
+				fmt.Errorf("asset VTXO request %d is "+
+					"incomplete", i),
+			)
+		}
+
+		req, err := a.buildVTXORequest(
+			ctx, assetReq.AmountSat, types.VTXOOriginUnknown,
+		)
+		if err != nil {
+			return fn.Err[actormsg.RoundActorResp](
+				fmt.Errorf("build asset VTXO request %d: %w",
+					i, err),
+			)
+		}
+		req.AssetRef = assetReq.AssetRef
+		req.AssetAmount = assetReq.AssetAmount
+		req.FixedAmount = true
 
 		requests = append(requests, *req)
 	}
