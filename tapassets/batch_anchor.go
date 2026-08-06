@@ -331,7 +331,24 @@ func (c *BatchAnchorCommitter) buildRequest(req *BatchAnchorRequest,
 			err)
 	}
 
-	anchorBytes, err := psbtutil.Serialize(anchor)
+	// Hand tapd a copy with the funding input's caller metadata
+	// cleared: the operator packet carries a synthetic key-spend
+	// appearance for its funding wallet's weight estimator, but tapd
+	// resolves its own input and fills the real derivation material —
+	// which the wallet backing tapd later needs to sign the input.
+	sanitized, err := psbt.NewFromUnsignedTx(anchor.UnsignedTx.Copy())
+	if err != nil {
+		return nil, nil, fmt.Errorf("clone anchor PSBT: %w", err)
+	}
+	copy(sanitized.Inputs, anchor.Inputs)
+	copy(sanitized.Outputs, anchor.Outputs)
+	for idx, txIn := range sanitized.UnsignedTx.TxIn {
+		if txIn.PreviousOutPoint == req.Source.AnchorOutpoint {
+			sanitized.Inputs[idx] = psbt.PInput{}
+		}
+	}
+
+	anchorBytes, err := psbtutil.Serialize(sanitized)
 	if err != nil {
 		return nil, nil, fmt.Errorf("serialize anchor PSBT: %w", err)
 	}
