@@ -389,6 +389,13 @@ message BoardingRequest {
     // needs to assemble the collaborative spend's control block.
     // 32 bytes when asset_ref is set.
     bytes asset_commitment_leaf_hash = 8;
+
+    // asset_witness is the boarded asset's OP_TRUE witness stack, the
+    // script-path data the round's commitment transition spends the
+    // asset with. It carries no authority — the asset script key is
+    // anyone-can-spend by design, custody being the Bitcoin-level
+    // boarding policy — and a wrong stack fails the sealed commit.
+    repeated bytes asset_witness = 9;
 }
 
 // VTXORequest specifies a VTXO the client wants to receive.
