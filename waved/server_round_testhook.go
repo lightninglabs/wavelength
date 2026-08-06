@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/lightninglabs/wavelength/round"
 )
 
@@ -42,6 +43,36 @@ func (s *Server) TriggerRoundRegistration(ctx context.Context) error {
 	result := future.Await(ctx)
 	if err := result.Err(); err != nil {
 		return fmt.Errorf("failed to trigger round registration: %w",
+			err)
+	}
+
+	return nil
+}
+
+// RegisterAssetVTXORequest registers one Taproot Asset VTXO request with
+// the client round actor: the next round intent asks the operator's asset
+// round for a leaf carrying assetAmount units anchored by amountSat. The
+// same context-detachment rationale as TriggerRoundRegistration applies.
+func (s *Server) RegisterAssetVTXORequest(ctx context.Context,
+	amountSat btcutil.Amount, assetRef string, assetAmount uint64) error {
+
+	if s.actorSystem == nil {
+		return fmt.Errorf("actor system not initialized")
+	}
+
+	askCtx := context.WithoutCancel(ctx)
+
+	roundRef := round.NewServiceKey().Ref(s.actorSystem)
+	future := roundRef.Ask(askCtx, &round.RegisterVTXORequestsRequest{
+		AssetRequests: []round.AssetVTXORequest{{
+			AmountSat:   amountSat,
+			AssetRef:    assetRef,
+			AssetAmount: assetAmount,
+		}},
+	})
+	result := future.Await(ctx)
+	if err := result.Err(); err != nil {
+		return fmt.Errorf("failed to register asset VTXO request: %w",
 			err)
 	}
 

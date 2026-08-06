@@ -210,6 +210,24 @@ type RegisterVTXORequestsRequest struct {
 	actor.BaseMessage
 
 	Amounts []btcutil.Amount
+
+	// AssetRequests are Taproot Asset VTXO requests: each asks the
+	// operator's asset round for a leaf carrying AssetAmount units
+	// anchored by AmountSat.
+	AssetRequests []AssetVTXORequest
+}
+
+// AssetVTXORequest asks for one asset VTXO in the next round.
+type AssetVTXORequest struct {
+	// AmountSat is the leaf output's Bitcoin carrier value.
+	AmountSat btcutil.Amount
+
+	// AssetRef identifies the requested asset (group reference for
+	// grouped assets).
+	AssetRef string
+
+	// AssetAmount is the requested asset amount.
+	AssetAmount uint64
 }
 
 // MessageType returns the message type name.
