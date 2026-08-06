@@ -1632,6 +1632,9 @@ func (a *RoundClientActor) Receive(ctx context.Context,
 	case *RegisterVTXORequestsRequest:
 		return a.handleVTXORequests(ctx, m)
 
+	case *RegisterAssetBoardingRequest:
+		return a.handleAssetBoarding(ctx, m)
+
 	case *VTXORequestsReceived:
 		return a.handleVTXORequestsReceived(ctx, m)
 
@@ -1802,6 +1805,86 @@ func buildBoardingIntentFromWallet(walletIntent *wallet.BoardingIntent) (
 		BoardingIntent: *walletIntent,
 		Request:        boardingReq,
 	}, nil
+}
+
+// handleAssetBoarding assembles a confirmed asset boarding output into a
+// boarding intent and forwards it to an assembling round. The wallet's
+// address watcher cannot recognize composed outputs, so the caller
+// supplies the intent material directly.
+func (a *RoundClientActor) handleAssetBoarding(ctx context.Context,
+	msg *RegisterAssetBoardingRequest) fn.Result[actormsg.RoundActorResp] {
+
+	if msg.ConfTx == nil ||
+		int(msg.Outpoint.Index) >= len(msg.ConfTx.TxOut) {
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("asset boarding confirmation is invalid"),
+		)
+	}
+	output := msg.ConfTx.TxOut[msg.Outpoint.Index]
+
+	policyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
+		msg.KeyDesc.PubKey, msg.OperatorKey, msg.ExitDelay,
+	)
+	if err != nil {
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("encode boarding policy: %w", err),
+		)
+	}
+
+	intent := BoardingIntent{
+		BoardingIntent: wallet.BoardingIntent{
+			Address: wallet.BoardingAddress{
+				KeyDesc:     msg.KeyDesc,
+				OperatorKey: msg.OperatorKey,
+				ExitDelay:   msg.ExitDelay,
+			},
+			Outpoint: msg.Outpoint,
+			ChainInfo: wallet.BoardingChainInfo{
+				ConfHeight: msg.ConfHeight,
+				ConfTx:     msg.ConfTx,
+				OutPoint:   msg.Outpoint,
+				Amount:     btcutil.Amount(output.Value),
+			},
+		},
+		Request: types.BoardingRequest{
+			Outpoint:       &msg.Outpoint,
+			PolicyTemplate: policyTemplate,
+			AssetRef:       msg.AssetRef,
+			AssetAmount:    msg.AssetAmount,
+			AssetDigest:    msg.AssetDigest,
+			AssetProof:     msg.AssetProof,
+			AssetCommitmentLeafHash: msg.
+				AssetCommitmentLeafHash,
+			AssetWitness: msg.AssetWitness,
+		},
+	}
+
+	roundFSM := a.findAssemblingRound()
+	if roundFSM == nil {
+		roundFSM, err = a.createNewRound(ctx)
+		if err != nil {
+			return fn.Err[actormsg.RoundActorResp](
+				fmt.Errorf("create round for asset "+
+					"boarding: %w", err),
+			)
+		}
+	}
+
+	pkg := &IntentPackage{Intents: Intents{
+		Boarding: []BoardingIntent{
+			intent,
+		},
+	}}
+	if err := a.askEventAndProcessOutbox(ctx, roundFSM, pkg); err != nil {
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("FSM error processing asset boarding: %w",
+				err),
+		)
+	}
+
+	return fn.Ok[actormsg.RoundActorResp](&RegisterVTXORequestsResponse{
+		Success: true,
+	})
 }
 
 // handleVTXORequests processes client-submitted VTXO requests and forwards
