@@ -78,3 +78,26 @@ func (s *Server) RegisterAssetVTXORequest(ctx context.Context,
 
 	return nil
 }
+
+// RegisterAssetBoarding registers a confirmed asset boarding output with
+// the client round actor: the next round intent boards it, disclosing
+// the asset material the operator authenticates. The same
+// context-detachment rationale as TriggerRoundRegistration applies.
+func (s *Server) RegisterAssetBoarding(ctx context.Context,
+	req *round.RegisterAssetBoardingRequest) error {
+
+	if s.actorSystem == nil {
+		return fmt.Errorf("actor system not initialized")
+	}
+
+	askCtx := context.WithoutCancel(ctx)
+
+	roundRef := round.NewServiceKey().Ref(s.actorSystem)
+	future := roundRef.Ask(askCtx, req)
+	result := future.Await(ctx)
+	if err := result.Err(); err != nil {
+		return fmt.Errorf("failed to register asset boarding: %w", err)
+	}
+
+	return nil
+}
