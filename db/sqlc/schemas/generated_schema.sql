@@ -540,7 +540,8 @@ CREATE INDEX idx_oor_packages_direction_updated
 
 CREATE UNIQUE INDEX idx_oor_session_registry_idempotency_key
     ON oor_session_registry(idempotency_key)
-    WHERE idempotency_key IS NOT NULL AND status != 2;
+    WHERE idempotency_key IS NOT NULL
+      AND COALESCE(outgoing_status, status) != 2;
 
 CREATE INDEX idx_oor_session_registry_status_created
     ON oor_session_registry(status, created_at ASC);
@@ -895,7 +896,7 @@ CREATE TABLE oor_session_registry (
     created_at BIGINT NOT NULL,
 
     -- updated_at is the unix timestamp of the latest row update.
-    updated_at BIGINT NOT NULL,
+    updated_at BIGINT NOT NULL, outgoing_snapshot_data BLOB, outgoing_snapshot_version INTEGER, outgoing_status INTEGER,
 
     PRIMARY KEY (session_id)
 );

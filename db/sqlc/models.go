@@ -223,18 +223,21 @@ type OorRecipientCursor struct {
 }
 
 type OorSessionRegistry struct {
-	SessionID       []byte
-	ActorID         string
-	Direction       int32
-	Phase           string
-	IdempotencyKey  sql.NullString
-	Status          int32
-	LastError       sql.NullString
-	SnapshotData    []byte
-	SnapshotVersion int32
-	FlowVersion     int32
-	CreatedAt       int64
-	UpdatedAt       int64
+	SessionID               []byte
+	ActorID                 string
+	Direction               int32
+	Phase                   string
+	IdempotencyKey          sql.NullString
+	Status                  int32
+	LastError               sql.NullString
+	SnapshotData            []byte
+	SnapshotVersion         int32
+	FlowVersion             int32
+	CreatedAt               int64
+	UpdatedAt               int64
+	OutgoingSnapshotData    []byte
+	OutgoingSnapshotVersion sql.NullInt32
+	OutgoingStatus          sql.NullInt32
 }
 
 type OorVtxoBinding struct {

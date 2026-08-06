@@ -2,6 +2,7 @@ package oor
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/btcsuite/btcd/chainhash/v2"
 	clientdb "github.com/lightninglabs/wavelength/db"
@@ -105,7 +106,7 @@ func outgoingRegistryRecord(sessionID SessionID,
 		lastError = snapshot.FailReason
 	}
 
-	return clientdb.OORSessionRegistryRecord{
+	record := clientdb.OORSessionRegistryRecord{
 		SessionID:       chainhash.Hash(sessionID),
 		ActorID:         ActorIDForSession(sessionID),
 		Direction:       clientdb.OORSessionDirectionOutgoing,
@@ -127,7 +128,24 @@ func outgoingRegistryRecord(sessionID SessionID,
 		// be mis-stamped V1 unless the session's own version is
 		// threaded through here (and its incoming twin below).
 		FlowVersion: oorpb.FlowVersionV1,
-	}, nil
+	}
+
+	// Terminal outgoing snapshots intentionally omit the Ark PSBT because
+	// they are resume no-ops. Supply recipient proof only from a snapshot
+	// whose canonical Ark artifacts decode successfully; the database keeps
+	// the first such proof immutable across every later lifecycle update.
+	if len(snapshot.ArkPSBT) != 0 {
+		if _, err := OutgoingSnapshotRecipients(raw); err != nil {
+			return clientdb.OORSessionRegistryRecord{}, fmt.Errorf(
+				"validate outgoing recipient "+
+					"proof: %w", err)
+		}
+
+		record.OutgoingSnapshotData = raw
+		record.OutgoingSnapshotVersion = int32(snapshot.Version)
+	}
+
+	return record, nil
 }
 
 // incomingRegistryRecord builds a registry record from a live incoming FSM

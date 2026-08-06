@@ -239,6 +239,104 @@ func TestOORSessionRegistryLookupActiveByIdempotencyKey(t *testing.T) {
 	require.ErrorIs(t, err, ErrOORSessionNotFound)
 }
 
+// TestOORSessionRegistryIncomingUpsertPreservesIdempotencyKey verifies that a
+// sender receiving its own OOR package cannot erase the outgoing dispatch
+// identity when both lifecycle directions share one session registry row.
+func TestOORSessionRegistryIncomingUpsertPreservesIdempotencyKey(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newOORSessionRegistryStoreForTest(t)
+
+	sid := sessionHash(0x41)
+	outgoing := OORSessionRegistryRecord{
+		SessionID:      sid,
+		ActorID:        "actor-shared-session",
+		Direction:      OORSessionDirectionOutgoing,
+		Phase:          "submit_sent",
+		IdempotencyKey: "durable-dispatch-key",
+		Status:         OORSessionStatusPending,
+		SnapshotData: []byte{
+			0x01,
+		},
+		SnapshotVersion: 1,
+	}
+	outgoing.OutgoingSnapshotData = outgoing.SnapshotData
+	outgoing.OutgoingSnapshotVersion = outgoing.SnapshotVersion
+	require.NoError(t, store.UpsertSession(ctx, outgoing))
+
+	// A same-session write cannot replace the first non-empty binding and
+	// thereby free the original dispatch key for a duplicate transfer.
+	rebound := outgoing
+	rebound.IdempotencyKey = "replacement-dispatch-key"
+	require.NoError(t, store.UpsertSession(ctx, rebound))
+
+	stored, err := store.GetSession(ctx, sid)
+	require.NoError(t, err)
+	require.Equal(t, outgoing.IdempotencyKey, stored.IdempotencyKey)
+
+	_, err = store.LookupActiveSessionByIdempotencyKey(
+		ctx, rebound.IdempotencyKey,
+	)
+	require.ErrorIs(t, err, ErrOORSessionNotFound)
+
+	// The terminal outgoing snapshot omits recipient artifacts by design.
+	// Advancing to it must retain the first artifact-rich snapshot as
+	// proof.
+	terminal := outgoing
+	terminal.Phase = "completed"
+	terminal.Status = OORSessionStatusCompleted
+	terminal.SnapshotData = []byte{0xff}
+	terminal.SnapshotVersion = 5
+	terminal.OutgoingSnapshotData = nil
+	terminal.OutgoingSnapshotVersion = 0
+	require.NoError(t, store.UpsertSession(ctx, terminal))
+
+	// The real incoming lifecycle has no caller idempotency key, but it
+	// upserts the same session id after the sender observes its change.
+	incoming := OORSessionRegistryRecord{
+		SessionID: sid,
+		ActorID:   outgoing.ActorID,
+		Direction: OORSessionDirectionIncoming,
+		Phase:     "completed",
+		Status:    OORSessionStatusCompleted,
+		SnapshotData: []byte{
+			0x02,
+		},
+		SnapshotVersion: 1,
+	}
+	require.NoError(t, store.UpsertSession(ctx, incoming))
+
+	stored, err = store.GetSession(ctx, sid)
+	require.NoError(t, err)
+	require.Equal(t, OORSessionDirectionIncoming, stored.Direction)
+	require.Equal(t, incoming.SnapshotData, stored.SnapshotData)
+	require.Equal(t, outgoing.IdempotencyKey, stored.IdempotencyKey)
+	require.Equal(t, outgoing.SnapshotData, stored.OutgoingSnapshotData)
+	require.Equal(
+		t, outgoing.SnapshotVersion, stored.OutgoingSnapshotVersion,
+	)
+
+	// A retry must still resolve the original session instead of admitting
+	// a second transfer after the incoming upsert.
+	deduped, err := store.LookupActiveSessionByIdempotencyKey(
+		ctx, outgoing.IdempotencyKey,
+	)
+	require.NoError(t, err)
+	require.Equal(t, sid, deduped.SessionID)
+
+	// A failure in the separate incoming lifecycle cannot release a key for
+	// an outgoing transfer that already completed successfully.
+	incoming.Status = OORSessionStatusFailed
+	require.NoError(t, store.UpsertSession(ctx, incoming))
+
+	deduped, err = store.LookupActiveSessionByIdempotencyKey(
+		ctx, outgoing.IdempotencyKey,
+	)
+	require.NoError(t, err)
+	require.Equal(t, sid, deduped.SessionID)
+}
+
 // TestOORSessionRegistryIdempotencyKeyUniqueIndex verifies the partial UNIQUE
 // index: two live rows can never carry the same idempotency key, while a
 // failed row drops out of the index so a retry row can reuse its key.

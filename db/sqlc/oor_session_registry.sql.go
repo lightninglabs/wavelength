@@ -11,7 +11,7 @@ import (
 )
 
 const GetOORSessionRegistry = `-- name: GetOORSessionRegistry :one
-SELECT session_id, actor_id, direction, phase, idempotency_key, status, last_error, snapshot_data, snapshot_version, flow_version, created_at, updated_at FROM oor_session_registry
+SELECT session_id, actor_id, direction, phase, idempotency_key, status, last_error, snapshot_data, snapshot_version, flow_version, created_at, updated_at, outgoing_snapshot_data, outgoing_snapshot_version, outgoing_status FROM oor_session_registry
 WHERE session_id = $1
 `
 
@@ -31,12 +31,15 @@ func (q *Queries) GetOORSessionRegistry(ctx context.Context, sessionID []byte) (
 		&i.FlowVersion,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.OutgoingSnapshotData,
+		&i.OutgoingSnapshotVersion,
+		&i.OutgoingStatus,
 	)
 	return i, err
 }
 
 const ListAllOORSessionRegistry = `-- name: ListAllOORSessionRegistry :many
-SELECT session_id, actor_id, direction, phase, idempotency_key, status, last_error, snapshot_data, snapshot_version, flow_version, created_at, updated_at FROM oor_session_registry
+SELECT session_id, actor_id, direction, phase, idempotency_key, status, last_error, snapshot_data, snapshot_version, flow_version, created_at, updated_at, outgoing_snapshot_data, outgoing_snapshot_version, outgoing_status FROM oor_session_registry
 ORDER BY created_at ASC
 `
 
@@ -62,6 +65,9 @@ func (q *Queries) ListAllOORSessionRegistry(ctx context.Context) ([]OorSessionRe
 			&i.FlowVersion,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.OutgoingSnapshotData,
+			&i.OutgoingSnapshotVersion,
+			&i.OutgoingStatus,
 		); err != nil {
 			return nil, err
 		}
@@ -77,7 +83,7 @@ func (q *Queries) ListAllOORSessionRegistry(ctx context.Context) ([]OorSessionRe
 }
 
 const ListNonTerminalOORSessionRegistry = `-- name: ListNonTerminalOORSessionRegistry :many
-SELECT session_id, actor_id, direction, phase, idempotency_key, status, last_error, snapshot_data, snapshot_version, flow_version, created_at, updated_at FROM oor_session_registry
+SELECT session_id, actor_id, direction, phase, idempotency_key, status, last_error, snapshot_data, snapshot_version, flow_version, created_at, updated_at, outgoing_snapshot_data, outgoing_snapshot_version, outgoing_status FROM oor_session_registry
 WHERE status NOT IN (1, 2)
 ORDER BY created_at ASC
 `
@@ -106,6 +112,9 @@ func (q *Queries) ListNonTerminalOORSessionRegistry(ctx context.Context) ([]OorS
 			&i.FlowVersion,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.OutgoingSnapshotData,
+			&i.OutgoingSnapshotVersion,
+			&i.OutgoingStatus,
 		); err != nil {
 			return nil, err
 		}
@@ -121,14 +130,15 @@ func (q *Queries) ListNonTerminalOORSessionRegistry(ctx context.Context) ([]OorS
 }
 
 const LookupActiveOORSessionRegistryByIdempotencyKey = `-- name: LookupActiveOORSessionRegistryByIdempotencyKey :one
-SELECT session_id, actor_id, direction, phase, idempotency_key, status, last_error, snapshot_data, snapshot_version, flow_version, created_at, updated_at FROM oor_session_registry
-WHERE idempotency_key = $1 AND status != 2
+SELECT session_id, actor_id, direction, phase, idempotency_key, status, last_error, snapshot_data, snapshot_version, flow_version, created_at, updated_at, outgoing_snapshot_data, outgoing_snapshot_version, outgoing_status FROM oor_session_registry
+WHERE idempotency_key = $1
+  AND COALESCE(outgoing_status, status) != 2
 `
 
 // Status 2 = Failed (anchored to Go iota in
-// db/oor_session_registry_store.go OORSessionStatus). Failed sessions never
-// dedup a keyed retry, so the lookup skips them: only a pending or completed
-// session answers for an idempotency key.
+// db/oor_session_registry_store.go OORSessionStatus). A failed outgoing
+// session releases its key, while an incoming failure for a successfully sent
+// session keeps deduplicating against the retained outgoing status.
 func (q *Queries) LookupActiveOORSessionRegistryByIdempotencyKey(ctx context.Context, idempotencyKey sql.NullString) (OorSessionRegistry, error) {
 	row := q.db.QueryRowContext(ctx, LookupActiveOORSessionRegistryByIdempotencyKey, idempotencyKey)
 	var i OorSessionRegistry
@@ -145,6 +155,9 @@ func (q *Queries) LookupActiveOORSessionRegistryByIdempotencyKey(ctx context.Con
 		&i.FlowVersion,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.OutgoingSnapshotData,
+		&i.OutgoingSnapshotVersion,
+		&i.OutgoingStatus,
 	)
 	return i, err
 }
@@ -154,35 +167,63 @@ const UpsertOORSessionRegistry = `-- name: UpsertOORSessionRegistry :exec
 INSERT INTO oor_session_registry (
     session_id, actor_id, direction, phase, idempotency_key, status,
     last_error, snapshot_data, snapshot_version, created_at, updated_at,
-    flow_version
+    flow_version, outgoing_snapshot_data, outgoing_snapshot_version,
+    outgoing_status
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+    $13,
+    $14,
+    $15
 )
 ON CONFLICT (session_id) DO UPDATE SET
     actor_id = EXCLUDED.actor_id,
     direction = EXCLUDED.direction,
     phase = EXCLUDED.phase,
-    idempotency_key = EXCLUDED.idempotency_key,
+    -- A sender can receive its own session without an outgoing dispatch key.
+    -- The first durable binding is immutable: later same-session writes may
+    -- repeat it, but can neither erase it nor replace it with another key.
+    idempotency_key = COALESCE(
+        oor_session_registry.idempotency_key,
+        EXCLUDED.idempotency_key
+    ),
     status = EXCLUDED.status,
     last_error = EXCLUDED.last_error,
     snapshot_data = EXCLUDED.snapshot_data,
     snapshot_version = EXCLUDED.snapshot_version,
+    -- Recipient proof is the first artifact-rich outgoing snapshot. Later
+    -- terminal outgoing snapshots intentionally omit the Ark PSBT, while an
+    -- incoming lifecycle takes ownership of the shared current snapshot.
+    outgoing_snapshot_data = COALESCE(
+        oor_session_registry.outgoing_snapshot_data,
+        EXCLUDED.outgoing_snapshot_data
+    ),
+    outgoing_snapshot_version = COALESCE(
+        oor_session_registry.outgoing_snapshot_version,
+        EXCLUDED.outgoing_snapshot_version
+    ),
+    outgoing_status = COALESCE(
+        EXCLUDED.outgoing_status,
+        oor_session_registry.outgoing_status
+    ),
     updated_at = EXCLUDED.updated_at
 `
 
 type UpsertOORSessionRegistryParams struct {
-	SessionID       []byte
-	ActorID         string
-	Direction       int32
-	Phase           string
-	IdempotencyKey  sql.NullString
-	Status          int32
-	LastError       sql.NullString
-	SnapshotData    []byte
-	SnapshotVersion int32
-	CreatedAt       int64
-	UpdatedAt       int64
-	FlowVersion     int32
+	SessionID               []byte
+	ActorID                 string
+	Direction               int32
+	Phase                   string
+	IdempotencyKey          sql.NullString
+	Status                  int32
+	LastError               sql.NullString
+	SnapshotData            []byte
+	SnapshotVersion         int32
+	CreatedAt               int64
+	UpdatedAt               int64
+	FlowVersion             int32
+	OutgoingSnapshotData    []byte
+	OutgoingSnapshotVersion sql.NullInt32
+	OutgoingStatus          sql.NullInt32
 }
 
 // OOR session registry control-plane queries.
@@ -200,6 +241,9 @@ func (q *Queries) UpsertOORSessionRegistry(ctx context.Context, arg UpsertOORSes
 		arg.CreatedAt,
 		arg.UpdatedAt,
 		arg.FlowVersion,
+		arg.OutgoingSnapshotData,
+		arg.OutgoingSnapshotVersion,
+		arg.OutgoingStatus,
 	)
 	return err
 }

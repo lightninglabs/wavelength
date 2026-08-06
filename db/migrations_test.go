@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	admigration "github.com/lightninglabs/wavelength/db/actordelivery/migrations"
 	dbmigrate "github.com/lightninglabs/wavelength/db/migrate"
 	"github.com/lightninglabs/wavelength/db/sqlc"
+	"github.com/lightningnetwork/lnd/clock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -89,6 +91,144 @@ func TestMigrationDowngrade(t *testing.T) {
 	// less than the current version. This simulates downgrading.
 	err := db.ExecuteMigrations(TargetLatest, WithLatestVersion(0))
 	require.ErrorIs(t, err, dbmigrate.ErrMigrationDowngrade)
+}
+
+// TestOOROutgoingSnapshotMigration verifies migration 17 preserves proof from
+// artifact-bearing outgoing phases while artifact-free v16 rows fail closed.
+func TestOOROutgoingSnapshotMigration(t *testing.T) {
+	ctx := t.Context()
+	db := NewTestDBWithVersion(t, 16)
+
+	insertSession := transformByteLiterals(t, db.BaseDB, `
+		INSERT INTO oor_session_registry (
+			session_id, actor_id, direction, phase, idempotency_key,
+			status, snapshot_data, snapshot_version, flow_version,
+			created_at, updated_at
+		) VALUES
+			(
+				X'010203', 'outgoing-actor', 1, 'submit_sent',
+				'durable-dispatch-key', 0, X'aabbcc', 4, 0,
+				10, 20
+			),
+			(
+				X'040506', 'terminal-actor', 1, 'completed',
+				'legacy-terminal-key', 1, X'ddeeff', 4, 0,
+				10, 20
+			),
+			(
+				X'070809', 'local-update-actor', 1,
+				'local_vtxo_update',
+				'legacy-local-update-key', 0,
+				X'112233', 4, 0, 10, 20
+			)
+	`)
+	_, err := db.ExecContext(ctx, insertSession)
+	require.NoError(t, err)
+
+	require.NoError(t, db.ExecuteMigrations(TargetLatest))
+
+	var (
+		outgoingSnapshot        []byte
+		outgoingSnapshotVersion int32
+		outgoingStatus          int32
+	)
+	err = db.QueryRowContext(
+		ctx, `SELECT outgoing_snapshot_data,
+			outgoing_snapshot_version, outgoing_status
+			FROM oor_session_registry
+			WHERE idempotency_key = 'durable-dispatch-key'`,
+	).Scan(
+		&outgoingSnapshot, &outgoingSnapshotVersion, &outgoingStatus,
+	)
+	require.NoError(t, err)
+	require.Equal(t, []byte{0xaa, 0xbb, 0xcc}, outgoingSnapshot)
+	require.EqualValues(t, 4, outgoingSnapshotVersion)
+	require.EqualValues(t, OORSessionStatusPending, outgoingStatus)
+
+	var (
+		terminalSnapshot []byte
+		terminalStatus   int32
+	)
+	err = db.QueryRowContext(
+		ctx, `SELECT outgoing_snapshot_data, outgoing_status
+			FROM oor_session_registry
+			WHERE idempotency_key = 'legacy-terminal-key'`,
+	).Scan(&terminalSnapshot, &terminalStatus)
+	require.NoError(t, err)
+	require.Nil(t, terminalSnapshot)
+	require.EqualValues(t, OORSessionStatusCompleted, terminalStatus)
+
+	var localUpdateSnapshot []byte
+	err = db.QueryRowContext(
+		ctx, `SELECT outgoing_snapshot_data
+			FROM oor_session_registry
+			WHERE idempotency_key = 'legacy-local-update-key'`,
+	).Scan(&localUpdateSnapshot)
+	require.NoError(t, err)
+	require.Nil(t, localUpdateSnapshot)
+}
+
+// TestOOROutgoingSnapshotDowngradeReleasesFailedKey verifies migration 17 can
+// downgrade after a failed outgoing session and its successful retry share a
+// key under the newer direction-aware uniqueness rule.
+func TestOOROutgoingSnapshotDowngradeReleasesFailedKey(t *testing.T) {
+	ctx := t.Context()
+	sqlDB := NewTestDB(t)
+	store := NewStore(
+		sqlDB.DB, sqlDB.Queries, sqlDB.Backend(), btclog.Disabled,
+	).NewOORSessionRegistryStore(clock.NewDefaultClock())
+
+	const dispatchKey = "failed-then-retried-key"
+	failedID := sessionHash(0x71)
+	failed := OORSessionRegistryRecord{
+		SessionID:      failedID,
+		ActorID:        "failed-outgoing",
+		Direction:      OORSessionDirectionOutgoing,
+		Phase:          "failed",
+		IdempotencyKey: dispatchKey,
+		Status:         OORSessionStatusFailed,
+		SnapshotData: []byte{
+			0x01,
+		},
+		SnapshotVersion: 5,
+	}
+	require.NoError(t, store.UpsertSession(ctx, failed))
+
+	retryID := sessionHash(0x72)
+	retry := failed
+	retry.SessionID = retryID
+	retry.ActorID = "successful-retry"
+	retry.Phase = "completed"
+	retry.Status = OORSessionStatusCompleted
+	retry.SnapshotData = []byte{0x02}
+	require.NoError(t, store.UpsertSession(ctx, retry))
+
+	// A later incoming lifecycle changes the failed row current status, but
+	// outgoing_status keeps it released under version 17.
+	failed.Direction = OORSessionDirectionIncoming
+	failed.Phase = "completed"
+	failed.Status = OORSessionStatusCompleted
+	failed.IdempotencyKey = ""
+	failed.SnapshotData = []byte{0x03}
+	require.NoError(t, store.UpsertSession(ctx, failed))
+
+	require.NoError(t, sqlDB.ExecuteMigrations(TargetVersion(16)))
+
+	var keyedRows int
+	err := sqlDB.QueryRowContext(
+		ctx, `SELECT COUNT(*) FROM oor_session_registry
+			WHERE idempotency_key = $1`, dispatchKey,
+	).Scan(&keyedRows)
+	require.NoError(t, err)
+	require.Equal(t, 1, keyedRows)
+
+	var failedKey sql.NullString
+	err = sqlDB.QueryRowContext(
+		ctx, `SELECT idempotency_key FROM oor_session_registry
+			WHERE session_id = $1`, failedID[:],
+	).Scan(&failedKey)
+	require.NoError(t, err)
+	require.False(t, failedKey.Valid)
 }
 
 // findDBBackupFilePath walks the directory of the given database file path and

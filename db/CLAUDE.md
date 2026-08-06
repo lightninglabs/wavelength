@@ -71,7 +71,7 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
   safety bounds enforced during `DeserializeTree`.
 - `resolveInputPackage` / `loadPackageBundleBySessionID` — two-stage
   OOR ancestry resolver (`oor_unroll_resolver.go`).
-- `LatestMigrationVersion = 16` — current schema version.
+- `LatestMigrationVersion = 17` — current schema version.
 - `PendingIntentPersistenceStore` — implements `wallet.PendingIntentStore`,
   the persistence half of the generic restart-safe intent outbox (header
   `pending_intents` + per-kind detail tables + `pending_intent_anchors`).
@@ -222,6 +222,11 @@ when adding one.
   later checkpoint must not clear what an earlier one recorded. Rows
   predating the column read back zero, which the confirmation path treats
   as "unknown" and leaves the expiry unstamped rather than wrong.
+- `000017_oor_outgoing_snapshot` — retains the first artifact-bearing outgoing
+  OOR snapshot beside the shared session row's current lifecycle snapshot. A
+  terminal or same-session incoming upsert can advance recovery state without
+  erasing the immutable dispatch key or recipient proof. Legacy artifact-free
+  phases remain unbackfilled so replay fails closed.
 
 ## Deep Docs
 

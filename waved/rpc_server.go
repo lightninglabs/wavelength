@@ -4066,7 +4066,17 @@ func (r *RPCServer) resolveExistingOORRecipientOutpoints(ctx context.Context,
 		return nil
 	}
 
-	recipients, err := oor.OutgoingSnapshotRecipients(record.SnapshotData)
+	outgoingSnapshot := record.OutgoingSnapshotData
+	if len(outgoingSnapshot) == 0 &&
+		record.Direction == db.OORSessionDirectionOutgoing {
+
+		// Keep non-database SessionRegistryStore implementations
+		// compatible while they migrate to the dedicated retained
+		// snapshot field.
+		outgoingSnapshot = record.SnapshotData
+	}
+
+	recipients, err := oor.OutgoingSnapshotRecipients(outgoingSnapshot)
 	if err != nil {
 		r.server.log.WarnS(ctx, "Unable to decode existing OOR "+
 			"recipients", err,
