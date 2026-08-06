@@ -10,16 +10,24 @@ import "fmt"
 // it.
 type FlowVersion uint32
 
-// FlowVersionV1 is the only round flow version this build understands. It is
-// stamped when the operator creates the round and read back whenever the round
-// is loaded, so a future, genuinely different round flow can be introduced
-// additively without ambiguity about how an existing round was conducted.
-// Until that future version exists, every round is V1.
+// FlowVersionV1 is the original round flow version. It is stamped when the
+// operator creates the round and read back whenever the round is loaded, so a
+// future, genuinely different round flow can be introduced additively without
+// ambiguity about how an existing round was conducted.
 //
 // The versions are zero-indexed: V1 is the Go zero value, so an unstamped
 // object and an omitted wire field both read as V1 with no normalization step,
-// and a NOT NULL DEFAULT 0 column defaults to V1. V2 will be 1, and so on.
+// and a NOT NULL DEFAULT 0 column defaults to V1.
 const FlowVersionV1 FlowVersion = 0
+
+// FlowVersionV2 is the asset-aware round flow: trees may carry Taproot Asset
+// commitments (per-node signing tweaks on the wire), and every tree
+// transaction of the round -- asset-bearing or not -- uses the RBF-signalling
+// input sequence instead of the final one, which changes every node txid.
+const FlowVersionV2 FlowVersion = 1
+
+// latestFlowVersion is the newest round flow version this build understands.
+const latestFlowVersion = FlowVersionV2
 
 // ValidateFlowVersion fails closed on any round flow version this build does
 // not understand -- i.e. any value past the latest this build knows. It is the
@@ -28,9 +36,9 @@ const FlowVersionV1 FlowVersion = 0
 // version means the round was conducted under rules this software does not
 // implement, so it is rejected rather than acted upon.
 func ValidateFlowVersion(v FlowVersion) error {
-	if v != FlowVersionV1 {
+	if v > latestFlowVersion {
 		return fmt.Errorf("unknown round flow version %d (this build "+
-			"understands only version %d)", v, FlowVersionV1)
+			"understands up to version %d)", v, latestFlowVersion)
 	}
 
 	return nil

@@ -61,6 +61,16 @@ type TreeRootAssetSource struct {
 	// BatchPkScript is the batch output's final on-chain script, used
 	// to bind the root node's key material fail-closed.
 	BatchPkScript []byte
+
+	// expectedSteps bind the unconfirmed steps already inside ProofPath
+	// to their exact anchor transactions, so child paths extend from
+	// the right depth. Populated by BatchAnchorCommitter.
+	expectedSteps []*expectedUnconfirmedAnchor
+
+	// proofPath is the in-process form of ProofPath, set by
+	// BatchAnchorCommitter to skip a redundant decode-validate cycle.
+	// It wins over the serialized fields when present.
+	proofPath *tapsdk.AssetProofPath
 }
 
 // TreeMaterializerConfig configures asset tree materialization.
@@ -238,6 +248,10 @@ func (m *TreeMaterializer) MaterializeNode(ctx context.Context, node *tree.Node,
 		params.Input, committed.packageBytes,
 	)
 
+	// Re-register the subtree total now that the node carries its input,
+	// so the amount stays resolvable on extracted or deserialized clones.
+	m.cfg.AssetContext.SetNodeAssetAmount(node, amount)
+
 	return m.prepareChildren(
 		node, params.Input, source, committedTx, committed, outputSpecs,
 	)
@@ -255,7 +269,7 @@ func (m *TreeMaterializer) resolveInput(input wire.OutPoint) (*assetSpendSource,
 		return handoff.source, handoff.amount,
 			handoff.signingTweak[:], handoff.pkScript, nil
 	}
-	m.currentSteps = nil
+	m.currentSteps = m.cfg.Root.expectedSteps
 
 	// No handoff means this is the root node spending the batch output.
 	root := m.cfg.Root
@@ -282,6 +296,9 @@ func (m *TreeMaterializer) resolveInput(input wire.OutPoint) (*assetSpendSource,
 		verifier: root.Verifier,
 	}
 	switch {
+	case root.proofPath != nil:
+		source.proofPath = root.proofPath.Clone()
+
 	case len(root.ProofFile) != 0:
 		source.proofFile = append([]byte(nil), root.ProofFile...)
 
@@ -315,7 +332,7 @@ func (m *TreeMaterializer) buildTemplate(node *tree.Node) (*psbt.Packet,
 	tx := wire.NewMsgTx(3)
 	tx.AddTxIn(&wire.TxIn{
 		PreviousOutPoint: node.Input,
-		Sequence:         wire.MaxTxInSequenceNum,
+		Sequence:         node.TxSequence(),
 	})
 
 	var specs []treeOutputSpec

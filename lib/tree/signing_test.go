@@ -25,9 +25,7 @@ type mockMuSig2Signer struct {
 
 type mockSession struct {
 	info           *input.MuSig2SessionInfo
-	nonces         *musig2.Nonces
 	musigSession   *musig2.Session
-	otherNonces    [][66]byte
 	allNoncesKnown bool
 	combinedNonce  *[66]byte
 }
@@ -78,7 +76,12 @@ func (m *mockMuSig2Signer) MuSig2CreateSession(version input.MuSig2Version,
 		return nil, err
 	}
 
-	musigSession, err := ctx.NewSession()
+	// The session must sign with the same nonces we advertise in the
+	// session info below, so hand them to the session explicitly instead
+	// of letting NewSession generate a second, unrelated pair.
+	musigSession, err := ctx.NewSession(
+		musig2.WithPreGeneratedNonce(nonces),
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -93,9 +96,7 @@ func (m *mockMuSig2Signer) MuSig2CreateSession(version input.MuSig2Version,
 			SessionID:   sessionID,
 			PublicNonce: nonces.PubNonce,
 		},
-		nonces:       nonces,
 		musigSession: musigSession,
-		otherNonces:  nil,
 	}
 
 	m.sessions[sessionID] = mockSess
@@ -138,13 +139,17 @@ func (m *mockMuSig2Signer) MuSig2RegisterCombinedNonce(
 	// Store the combined nonce.
 	session.combinedNonce = &aggNonce
 
-	// Register the aggregated nonce with the musig session.
-	haveAll, err := session.musigSession.RegisterPubNonce(aggNonce)
+	// Tree signing distributes only the pre-aggregated nonce, so install
+	// it directly. Registering it via RegisterPubNonce would treat the
+	// aggregate as one peer's nonce, double-counting our own share in the
+	// session's combined nonce and leaving haveAll false for any session
+	// with more than two signers.
+	err := session.musigSession.RegisterCombinedNonce(aggNonce)
 	if err != nil {
 		return err
 	}
 
-	session.allNoncesKnown = haveAll
+	session.allNoncesKnown = true
 
 	return nil
 }
@@ -1070,6 +1075,28 @@ func TestMusig2PubNonce(t *testing.T) {
 	})
 }
 
+// combinePartialSig folds one counterparty partial signature into the
+// signer's own session for the given transaction and returns the final
+// combined signature. Combining triggers btcd's internal verification of the
+// aggregate against the tweaked combined key, so this is the step that
+// surfaces nonce bookkeeping bugs a lone partial signature cannot reveal.
+func combinePartialSig(t *testing.T, signer *mockMuSig2Signer,
+	txSession *TxSignerSession,
+	partial *musig2.PartialSignature) *schnorr.Signature {
+
+	t.Helper()
+
+	finalSig, haveAll, err := signer.MuSig2CombineSig(
+		txSession.signSession.SessionID,
+		[]*musig2.PartialSignature{partial},
+	)
+	require.NoError(t, err)
+	require.True(t, haveAll)
+	require.NotNil(t, finalSig)
+
+	return finalSig
+}
+
 // TestFullSigningFlow tests the complete signing workflow.
 func TestFullSigningFlow(t *testing.T) {
 	t.Run("complete 2-party signing for single transaction",
@@ -1137,8 +1164,10 @@ func TestFullSigningFlow(t *testing.T) {
 			err = session2.RegisterAggNonces(aggNonceSet)
 			require.NoError(t, err)
 
-			// Phase 3: Generate partial signatures.
-			partialSigs1, err := session1.Signatures(true)
+			// Phase 3: Generate partial signatures. Signer 1
+			// skips cleanup so its session stays alive to act as
+			// the coordinator and combine both shares below.
+			partialSigs1, err := session1.Signatures(false)
 			require.NoError(t, err)
 			require.Len(t, partialSigs1, 1)
 			require.NotNil(t, partialSigs1[leafTXID])
@@ -1148,10 +1177,17 @@ func TestFullSigningFlow(t *testing.T) {
 			require.Len(t, partialSigs2, 1)
 			require.NotNil(t, partialSigs2[leafTXID])
 
-			// Note: In production, a coordinator would combine
-			// these partial signatures. For this test, we verify
-			// that the signing workflow completes successfully and
-			// generates partial signatures from both parties.
+			// Phase 4: Combine the partial signatures and verify
+			// the aggregate against the leaf's final taproot key.
+			txSession := session1.txs[leafTXID]
+			finalSig := combinePartialSig(
+				t, signer1, txSession, partialSigs2[leafTXID],
+			)
+			require.True(
+				t, finalSig.Verify(
+					txSession.sigHash[:], finalKey,
+				),
+			)
 		})
 
 	t.Run("complete 2-party signing for tree with multiple txs",
@@ -1264,8 +1300,10 @@ func TestFullSigningFlow(t *testing.T) {
 			err = session2.RegisterAggNonces(aggNonceSet)
 			require.NoError(t, err)
 
-			// Generate partial signatures for all txs.
-			partialSigs1, err := session1.Signatures(true)
+			// Generate partial signatures for all txs. Signer 1
+			// skips cleanup so its sessions stay alive to combine
+			// the shares for every transaction below.
+			partialSigs1, err := session1.Signatures(false)
 			require.NoError(t, err)
 			require.Len(t, partialSigs1, 3)
 
@@ -1273,14 +1311,32 @@ func TestFullSigningFlow(t *testing.T) {
 			require.NoError(t, err)
 			require.Len(t, partialSigs2, 3)
 
-			// Verify all partial signatures were generated.
-			for txid := range session1.txs {
-				require.NotNil(t, partialSigs1[txid])
-				require.NotNil(t, partialSigs2[txid])
+			// Index each node's final key by transaction ID so
+			// every combined signature can be verified against
+			// the key its transaction actually commits to.
+			finalKeys := make(map[TxID]*btcec.PublicKey)
+			for node := range root.NodesIter() {
+				txid, err := node.TXID()
+				require.NoError(t, err)
+				finalKeys[txid] = node.FinalKey
 			}
 
-			// Note: In production, a coordinator would combine
-			// these partial signatures to create final
-			// signatures.
+			// Combine both shares for every transaction and
+			// verify each aggregate signature.
+			for txid, txSession := range session1.txs {
+				require.NotNil(t, partialSigs1[txid])
+				require.NotNil(t, partialSigs2[txid])
+
+				finalSig := combinePartialSig(
+					t, signer1, txSession,
+					partialSigs2[txid],
+				)
+				require.True(
+					t, finalSig.Verify(
+						txSession.sigHash[:],
+						finalKeys[txid],
+					),
+				)
+			}
 		})
 }
