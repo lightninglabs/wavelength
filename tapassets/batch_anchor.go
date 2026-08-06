@@ -17,32 +17,32 @@ import (
 	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
 )
 
-// BatchAnchorSource identifies the confirmed asset tranche a commitment
+// BatchAnchorSource identifies the confirmed asset funding UTXO a commitment
 // transition spends: its proof, the Bitcoin outpoint anchoring it (which
 // must be an input of the anchor transaction), and the tapd-owned internal
 // key authorizing that input's key spend.
 type BatchAnchorSource struct {
-	// ProofFile is the tranche's complete confirmed proof file.
+	// ProofFile is the funding UTXO's complete confirmed proof file.
 	ProofFile []byte
 
 	// Witness is the caller-provided asset witness stack. Empty selects
-	// tapd's backend signer, for tranches whose asset script key is
+	// tapd's backend signer, for funding UTXOs whose asset script key is
 	// wallet-owned.
 	Witness [][]byte
 
-	// Verifier verifies the tranche proof when building each commit.
+	// Verifier verifies the funding UTXO proof when building each commit.
 	Verifier tapsdk.ConfirmedProofVerifier
 
-	// AnchorOutpoint is the Bitcoin outpoint anchoring the tranche.
+	// AnchorOutpoint is the Bitcoin outpoint anchoring the funding UTXO.
 	AnchorOutpoint wire.OutPoint
 
 	// AnchorInternalKey is the tapd anchor internal key that signs the
-	// tranche input's key spend.
+	// funding input's key spend.
 	AnchorInternalKey *btcec.PublicKey
 }
 
 // BatchAnchorRequest describes one asset batch output on a caller-funded
-// anchor transaction: the whole tranche moves into a single output whose
+// anchor transaction: the whole funding UTXO moves into a single output whose
 // taproot key is the cosigner aggregate tweaked with the combined tapscript
 // root. Full-value transitions produce no split commitment, so the derived
 // roots are independent of output reordering by the funding wallet.
@@ -50,11 +50,11 @@ type BatchAnchorRequest struct {
 	// AssetRef identifies the asset carried by the batch output.
 	AssetRef tapsdk.AssetRef
 
-	// Amount is the tranche's full asset amount; the batch output
+	// Amount is the funding UTXO's full asset amount; the batch output
 	// carries all of it.
 	Amount uint64
 
-	// Source identifies the tranche the transition spends.
+	// Source identifies the funding UTXO the transition spends.
 	Source BatchAnchorSource
 
 	// Cosigners aggregate into the batch output's internal key.
@@ -112,8 +112,8 @@ type BatchAnchorCommit struct {
 	PackageBytes []byte
 
 	// AnchorPSBT is the tapd-processed anchor PSBT. It carries tapd's
-	// signature for the tranche input; the caller signs its own funding
-	// inputs and finalizes.
+	// signature for the funding UTXO input; the caller signs its own
+	// funding inputs and finalizes.
 	AnchorPSBT []byte
 
 	// Script echoes the validated batch output derivation.
@@ -143,7 +143,7 @@ func NewBatchAnchorCommitter(wallet *tapsdk.Wallet) (*BatchAnchorCommitter,
 }
 
 // DeriveScript computes the composed batch output script before the anchor
-// transaction is funded. The template must already spend the tranche's
+// transaction is funded. The template must already spend the funding UTXO's
 // anchor outpoint and carry the batch output at its planned index; funding
 // later adds inputs and change but must not touch the derived script.
 func (c *BatchAnchorCommitter) DeriveScript(ctx context.Context,
@@ -297,10 +297,10 @@ func (c *BatchAnchorCommitter) buildRequest(req *BatchAnchorRequest,
 		return nil, nil, fmt.Errorf("batch asset amount is required")
 	}
 	if len(req.Source.ProofFile) == 0 {
-		return nil, nil, fmt.Errorf("tranche proof file is required")
+		return nil, nil, fmt.Errorf("funding proof file is required")
 	}
 	if req.Source.AnchorInternalKey == nil {
-		return nil, nil, fmt.Errorf("tranche anchor internal key is " +
+		return nil, nil, fmt.Errorf("funding anchor internal key is " +
 			"required")
 	}
 	if len(req.SweepLeaf.Script) == 0 {
@@ -311,17 +311,17 @@ func (c *BatchAnchorCommitter) buildRequest(req *BatchAnchorRequest,
 			"required")
 	}
 
-	// The anchor transaction must spend the tranche's anchor outpoint.
-	spendsTranche := false
+	// The anchor transaction must spend the funding UTXO's anchor outpoint.
+	spendsFunding := false
 	for _, txIn := range anchorTx.TxIn {
 		if txIn.PreviousOutPoint == req.Source.AnchorOutpoint {
-			spendsTranche = true
+			spendsFunding = true
 			break
 		}
 	}
-	if !spendsTranche {
+	if !spendsFunding {
 		return nil, nil, fmt.Errorf("anchor transaction does not "+
-			"spend the tranche anchor %s",
+			"spend the funding anchor %s",
 			req.Source.AnchorOutpoint)
 	}
 
@@ -350,7 +350,7 @@ func (c *BatchAnchorCommitter) buildRequest(req *BatchAnchorRequest,
 		schnorr.SerializePubKey(req.Source.AnchorInternalKey),
 	)
 	if err != nil {
-		return nil, nil, fmt.Errorf("tranche anchor signer: %w", err)
+		return nil, nil, fmt.Errorf("funding anchor signer: %w", err)
 	}
 
 	request := &tapsdk.CustomAnchorRequest{
@@ -404,16 +404,16 @@ func (c *BatchAnchorCommitter) buildRequest(req *BatchAnchorRequest,
 	return request, internalKey, nil
 }
 
-// batchSigningPlans classifies every anchor input: the tranche input is a
+// batchSigningPlans classifies every anchor input: the funding UTXO input is a
 // tapd key spend, every other input is caller-signed funding.
-func batchSigningPlans(tx *wire.MsgTx, tranche wire.OutPoint,
+func batchSigningPlans(tx *wire.MsgTx, funding wire.OutPoint,
 	anchorSigner tapsdk.XOnlyPubKey) []tapsdk.CustomAnchorInputSigningPlan {
 
 	plans := make(
 		[]tapsdk.CustomAnchorInputSigningPlan, 0, len(tx.TxIn),
 	)
 	for idx, txIn := range tx.TxIn {
-		if txIn.PreviousOutPoint == tranche {
+		if txIn.PreviousOutPoint == funding {
 			plans = append(
 				plans, tapsdk.CustomAnchorInputSigningPlan{
 					InputIndex: uint32(idx),
