@@ -6,7 +6,6 @@ import (
 
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
-	treePkg "github.com/lightninglabs/wavelength/lib/tree"
 	"github.com/stretchr/testify/require"
 )
 
@@ -316,21 +315,21 @@ func TestTreeFromProtoDiamondDAG(t *testing.T) {
 		},
 	}
 
-	// TreeFromProto rejects diamond DAGs because the shared
-	// child (node 3) would be referenced by node 2 at index 3,
-	// but node 1 already claims it. The pre-order invariant
-	// prevents this since shared children violate the tree
-	// property.
+	// Nodes 1 and 2 both name node 3 as their child. Every forward
+	// reference is valid, so the pre-order invariant (childIdx > i)
+	// admits this shape: it catches cycles, not shared children.
+	// Detecting the diamond needs a record of which parent already
+	// claimed each child, which TreeFromProto now keeps.
 	//
-	// NOTE: The pre-order invariant (childIdx > i) alone allows
-	// this specific diamond shape since all forward references
-	// are valid. However, the diamond is still structurally
-	// accepted here. The pre-order check primarily prevents
-	// cycles; diamond detection would require tracking parent
-	// counts. This test documents the current behavior.
+	// This test used to assert the opposite and document the gap as
+	// accepted behaviour. It is the gap that mattered: what decodes
+	// here is a DAG, not a tree, and a recursive walk re-visits the
+	// shared subtree once per path reaching it, so a linear-sized
+	// message buys exponential work downstream.
 	tree, err := TreeFromProto(pt)
-	require.NoError(t, err)
-	require.NotNil(t, tree)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "must not share children")
+	require.Nil(t, tree)
 }
 
 // =====================================================================
@@ -1066,41 +1065,25 @@ func TestTreeFromProtoDiamondDoubleVisit(t *testing.T) {
 		},
 	}
 
-	// NOTE: The pre-order invariant (childIdx > i) does not
-	// prevent all diamond DAGs -- only those with back-edges.
-	// This specific diamond shape uses only forward references
-	// and is still accepted. Diamond detection would require a
-	// parent-count tracker. This test documents the current
-	// behavior: the diamond is accepted but the shared child
-	// is visited twice during traversal.
+	// This shape is why the single-parent check exists. It uses
+	// only forward references, so the pre-order invariant
+	// (childIdx > i) admits it, and what decodes is a DAG whose
+	// shared child sits on two distinct root-to-node paths.
+	//
+	// This test used to accept the decode and then demonstrate the
+	// consequence: a depth-first walk reached the shared child once
+	// per path, so it counted two visits for one node. That is the
+	// amplification in miniature -- at depth d a chain of shared
+	// children turns a linear message into 2^d visits, and the walks
+	// that do this are spread across the codebase rather than
+	// gathered behind one guard.
+	//
+	// So the fix is at the decode boundary, and the assertion moves
+	// with it: the DAG never becomes a tree.Node graph at all, which
+	// is what makes every downstream walk safe without auditing each
+	// one for re-visit behaviour.
 	tree, err := TreeFromProto(pt)
-	require.NoError(t, err)
-	require.NotNil(t, tree)
-
-	// Count how many times each node pointer is visited during
-	// a manual depth-first traversal (simulating ForEach).
-	visitCount := make(map[*treePkg.Node]int)
-	var walk func(n *treePkg.Node)
-	walk = func(n *treePkg.Node) {
-		if n == nil {
-			return
-		}
-		visitCount[n]++
-		// Stop if we detect we already visited this node to
-		// prevent infinite recursion in the test.
-		if visitCount[n] > 1 {
-			return
-		}
-		for _, child := range n.Children {
-			walk(child)
-		}
-	}
-	walk(tree.Root)
-
-	// The shared child (goNodes[3]) is visited twice.
-	sharedChild := tree.Root.Children[0].Children[0]
-	require.Equal(
-		t, 2, visitCount[sharedChild],
-		"diamond: shared child visited twice",
-	)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "must not share children")
+	require.Nil(t, tree)
 }
