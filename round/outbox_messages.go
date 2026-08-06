@@ -288,11 +288,13 @@ func (m *JoinRoundRequest) ToProto() fn.Result[proto.Message] {
 		}
 
 		br := &roundpb.BoardingRequest{
-			PolicyTemplate: policyTemplate,
-			AssetRef:       req.AssetRef,
-			AssetAmount:    req.AssetAmount,
-			AssetDigest:    req.AssetDigest,
-			AssetProof:     req.AssetProof,
+			PolicyTemplate:          policyTemplate,
+			AssetRef:                req.AssetRef,
+			AssetAmount:             req.AssetAmount,
+			AssetDigest:             req.AssetDigest,
+			AssetProof:              req.AssetProof,
+			AssetCommitmentLeafHash: req.AssetCommitmentLeafHash,
+			AssetWitness:            req.AssetWitness,
 		}
 		if req.Outpoint != nil {
 			br.Outpoint = roundpb.OutpointToProto(
