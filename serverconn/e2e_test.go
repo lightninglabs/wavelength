@@ -205,9 +205,14 @@ func (s *testServer) handleRequest(ctx context.Context,
 		ProtocolVersion:    1,
 		ArkProtocolVersion: 1,
 		Sender:             s.serverMailboxID,
-		Recipient:          env.Rpc.ReplyTo,
-		Headers:            headers,
-		Body:               body,
+
+		// Mirror the production responder (waved's handleInboundRPC),
+		// which answers the envelope sender rather than the request's
+		// ReplyTo. The two are equal here, so this changes nothing
+		// today -- it keeps the double honest if they ever diverge.
+		Recipient: env.Sender,
+		Headers:   headers,
+		Body:      body,
 		Rpc: &mailboxpb.RpcMeta{
 			Kind:          mailboxpb.RpcMeta_KIND_RESPONSE,
 			CorrelationId: env.Rpc.CorrelationId,
