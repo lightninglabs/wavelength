@@ -291,7 +291,7 @@ func TestAssetTreeE2E(t *testing.T) {
 	require.True(t, record.AssetRef.IsGroupRef())
 
 	// Commits and verifiers identify the asset by its group-aware ref;
-	// proof exports address the tranche by issuance id.
+	// proof exports address the concrete issuance by its id.
 	assetRef := record.AssetRef
 	exportRef := tapsdk.AssetRefFromAssetID(record.Genesis.IssuanceID)
 	mintProof := exportTreeE2EProof(
@@ -403,7 +403,7 @@ func commitTreeBatchAnchor(t *testing.T, h *harness.Harness,
 	t.Helper()
 	ctx := t.Context()
 
-	// Locate the mint anchor in tapd's inventory: the tranche the
+	// Locate the mint anchor in tapd's inventory: the funding UTXO the
 	// commitment transition spends.
 	verified, err := client.VerifyProof(ctx, mintProof)
 	require.NoError(t, err)
@@ -425,7 +425,7 @@ func commitTreeBatchAnchor(t *testing.T, h *harness.Harness,
 
 	anchorInternalKey, err := btcec.ParsePubKey(anchor.InternalKey[:])
 	require.NoError(t, err)
-	trancheOutpoint := wire.OutPoint{
+	fundingOutpoint := wire.OutPoint{
 		Hash:  chainhash.Hash(tip.Outpoint.Txid),
 		Index: tip.Outpoint.Index,
 	}
@@ -443,7 +443,7 @@ func commitTreeBatchAnchor(t *testing.T, h *harness.Harness,
 				anchor:    tip.Outpoint,
 				assetRoot: anchor.TaprootAssetRoot,
 			},
-			AnchorOutpoint:    trancheOutpoint,
+			AnchorOutpoint:    fundingOutpoint,
 			AnchorInternalKey: anchorInternalKey,
 		},
 		Cosigners:      rootCosigners,
@@ -458,7 +458,7 @@ func commitTreeBatchAnchor(t *testing.T, h *harness.Harness,
 
 	// Derive the composed batch script against the pre-funding template.
 	templateTx := wire.NewMsgTx(2)
-	templateTx.AddTxIn(wire.NewTxIn(&trancheOutpoint, nil, nil))
+	templateTx.AddTxIn(wire.NewTxIn(&fundingOutpoint, nil, nil))
 	placeholder, err := txscript.PayToTaprootScript(
 		txscript.ComputeTaprootKeyNoScript(&arkscript.ARKNUMSKey),
 	)
