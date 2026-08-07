@@ -147,6 +147,23 @@ type DurableMailboxConfig struct {
 	// depends on a wake because the poll ticker is the fallback.
 	WakeBuffer int
 
+	// SoftHighWatermark is the persistent backlog depth at which the
+	// mailbox starts logging that its consumer is falling behind. Sends
+	// still succeed. Zero (the default) disables the soft warning. The
+	// check only runs when Store implements MailboxDepthStore; a value
+	// above HardHighWatermark is lowered to it at construction.
+	SoftHighWatermark int
+
+	// HardHighWatermark is the persistent backlog depth at which Send
+	// refuses new messages with ErrMailboxSaturated, shedding load at the
+	// producer instead of growing the backlog without bound. Zero (the
+	// default) disables the bound. Messages with priority >=
+	// RestartPriority are exempt so recovery always lands. Depth is read
+	// through a TTL-cached probe plus a local sent-since-probe delta, so
+	// enforcement is approximate within the probe window but the common
+	// send path never pays for an extra COUNT query.
+	HardHighWatermark int
+
 	// SingleWorkerLeaseless enables the leaseless peek consume path. When
 	// set, Receive claims the next message with a READ-only PeekNextMessage
 	// instead of the write-transaction LeaseNextMessage, and yields a
@@ -315,6 +332,14 @@ type DurableMailbox[M TLVMessage, R any] struct {
 	// actorCtx is the actor's lifecycle context.
 	actorCtx context.Context
 
+	// depthStore is non-nil when cfg.Store can report mailbox backlog
+	// depth, which is what the watermark admission check reads. Resolved
+	// once at construction so the send path pays no type assertion.
+	depthStore MailboxDepthStore
+
+	// depth caches the probed backlog depth for the watermark check.
+	depth depthProbe
+
 	// promiseRegistry maps message IDs to in-flight promises for Ask
 	// messages. This allows the delivery to complete the promise after
 	// processing.
@@ -342,6 +367,13 @@ func NewDurableMailbox[M TLVMessage, R any](
 		cfg.PollInterval, cfg.MaxPollInterval,
 	)
 
+	// Resolve the watermark pair the same way: a soft warning above the
+	// hard refusal would make failing sends the operator's first signal,
+	// so it is lowered to the hard value instead.
+	cfg.SoftHighWatermark, cfg.HardHighWatermark = normalizeWatermarks(
+		cfg.SoftHighWatermark, cfg.HardHighWatermark,
+	)
+
 	m := &DurableMailbox[M, R]{
 		cfg:             cfg,
 		clock:           cfg.Clock.UnwrapOr(clock.NewDefaultClock()),
@@ -363,6 +395,13 @@ func NewDurableMailbox[M TLVMessage, R any](
 		m.cancelWake = registrar.RegisterMailboxWake(
 			m.cfg.MailboxID, m.Wake,
 		)
+	}
+
+	// Resolve the depth surface once so the watermark check on the send
+	// path is a nil test rather than a per-send type assertion. A store
+	// without the surface simply runs without watermarks.
+	if depthStore, ok := cfg.Store.(MailboxDepthStore); ok {
+		m.depthStore = depthStore
 	}
 
 	return m
@@ -420,6 +459,20 @@ func (m *DurableMailbox[M, R]) Send(ctx context.Context,
 		return ErrMailboxClosed
 	}
 
+	// Determine priority before the watermark check so restart-priority
+	// messages can be exempted from admission control.
+	priority := 0
+	if pm, ok := any(env.message).(PriorityMessage); ok {
+		priority = pm.Priority()
+	}
+
+	// Admit or refuse the send against the configured backlog watermarks
+	// BEFORE encoding or registering a promise, so a refusal needs no
+	// cleanup and TrySend/TryTell inherit the check for free.
+	if err := m.checkWatermarks(ctx, priority); err != nil {
+		return err
+	}
+
 	payload, err := m.cfg.Codec.Encode(env.message)
 	if err != nil {
 		return fmt.Errorf("encode mailbox message: %w", err)
@@ -446,12 +499,6 @@ func (m *DurableMailbox[M, R]) Send(ctx context.Context,
 		m.promiseRegistryMu.Lock()
 		m.promiseRegistry[id] = env.promise
 		m.promiseRegistryMu.Unlock()
-	}
-
-	// Determine priority.
-	priority := 0
-	if pm, ok := any(env.message).(PriorityMessage); ok {
-		priority = pm.Priority()
 	}
 
 	// Enqueue the message. CorrelationKey opts the message into the
