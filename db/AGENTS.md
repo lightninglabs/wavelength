@@ -197,13 +197,40 @@ when adding one.
   constraint on `vtxo_ancestry_paths`: fragment identity is
   (commitment_txid, tree_path), so an OOR spend of inputs at different
   leaves of one commitment tree persists one row per leaf.
+- `000015_ledger_round_uuid` — adds `ledger_entries.round_uuid`, the
+  canonical TEXT UUID mirror of the raw 16-byte `round_id` BLOB, plus a
+  partial index. The ledger and the round tables historically stored the
+  same identifier in different encodings, and no BLOB↔TEXT conversion
+  exists in the SQL dialect subset shared by SQLite and Postgres; the
+  TEXT mirror makes ledger rows joinable against `rounds.round_id` /
+  `vtxos.forfeit_round_id` (e.g. the `ListVTXOsByStatus` settlement fee
+  join). New inserts stamp it via `roundUUIDText`; existing rows are
+  backfilled by the version-15 Go post-migration step
+  (`backfillLedgerRoundUUIDs` in `post_migration_checks.go`), wired into
+  both store constructors via `makePostStepCallbacks` (its first
+  production user). A crash between the post-step and the clean
+  SetVersion leaves the migration dirty and the next boot fails with
+  ErrDirty; forcing the version and re-running is safe because the
+  backfill guards on `round_uuid IS NULL` and re-executes as a no-op.
+- `000016_round_sweep_delay` — adds `rounds.sweep_delay`. A round is
+  checkpointed at `input_sig_sent` and can confirm after a restart; the
+  confirmation handler derives each new VTXO's absolute batch expiry as
+  `confirmation_height + sweep_delay`, so a delay held only in memory made
+  a resumed round stamp `BatchExpiry == CreatedHeight` and the wallet read
+  the VTXO back as already expired. `InsertRound` only adopts a non-zero
+  incoming value, since the delay is fixed for the life of a round and a
+  later checkpoint must not clear what an earlier one recorded. Rows
+  predating the column read back zero, which the confirmation path treats
+  as "unknown" and leaves the expiry unstamped rather than wrong.
 
 ## Deep Docs
 
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map.
-- `000016_round_sweep_delay` — adds `rounds.sweep_delay` so a round that
-  confirms after a restart can still derive each new VTXO's absolute batch
-  expiry (`confirmation_height + sweep_delay`). `InsertRound` only adopts a
-  non-zero incoming value; rows predating the column read back zero, which
-  the confirmation path treats as unknown and leaves the expiry unstamped
-  rather than wrong.
+- [docs/postgres_isolation.md](../docs/postgres_isolation.md) — Isolation
+  policy: read-only Postgres transactions run at `REPEATABLE READ` with
+  `READ ONLY` (no `SIRead` predicate locks, never a 40001), writers stay
+  `SERIALIZABLE`. Also holds the write-path snapshot-isolation audit and the
+  inventory of the six partial unique indexes that any new `ON CONFLICT`
+  target has to be checked against, along with the caveat that a conflict
+  target can also miss a plain unique constraint declared inline in a
+  `CREATE TABLE`.

@@ -122,10 +122,20 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
 - `Config.EagerRoundJoin` defaults via `defaultEagerRoundJoin()`: `false` on
   the standalone build, `true` under the `wavewalletrpc` build tag.
 - `registerOOREventRoutes` checks for a typed `*oorpb.SubmitRejectedError`
-  before the generic error path, so an OOR rejection drives a
-  non-retryable `OutboxErrorEvent` instead of an `Adapt` error that would
-  stall the serverconn ingress cursor on the offending envelope
-  (`server.go`).
+  before the generic error path, so an OOR rejection drives an
+  `OutboxErrorEvent` instead of an `Adapt` error that would stall the
+  serverconn ingress cursor on the offending envelope (`server.go`).
+  `oorRejectRetry` classifies the event's `Retryable` flag: it is `false`
+  (terminal) for every typed reject except the two transient codes,
+  `OOR_REJECT_INPUT_NOT_SPENDABLE` (the operator has not yet caught up to the
+  input's commitment confirmation) and `OOR_REJECT_USER_BALANCE` (the
+  recipient mailbox is over its balance cap), which re-drive the submit after
+  `oorTransientRejectRetryDelay`. That retry is now bounded: the FSM's
+  `AwaitingSubmitAccepted` transition (`handleSubmitOutboxError` in
+  `oor/transitions.go`) gives up terminally once the cumulative retry window
+  exceeds `OORConfig.MaxTransientSubmitRetry` (default 1h), persisting the
+  window start (`FirstRejectUnixNanos`) in the outgoing snapshot (version 5)
+  so the bound survives restarts.
 - `operatorTermsFromResponse` and daemon `GetInfo` must preserve
   `FreeRefreshWindowBlocks` end to end.
 - The VTXO manager reads `FreeRefreshWindowBlocks` from the latest cached
