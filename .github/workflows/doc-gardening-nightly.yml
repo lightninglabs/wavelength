@@ -150,6 +150,15 @@ jobs:
           # by keeping BOT_GITHUB_TOKEN a fine-grained PAT scoped to only
           # these repos; log readers are first-party. Accepted on that
           # basis.
+          # Suppress the `Co-Authored-By: Claude` trailer so sweep commits
+          # are attributed to the deploy bot alone. This must be done here
+          # rather than by telling the model not to write the trailer: the
+          # CLI appends it as a post-processing step AFTER the model writes
+          # the message file, so a prompt constraint cannot prevent it.
+          # Note this is the action's `settings` input, which takes inline
+          # JSON or a file path — there is no `--settings` CLI flag to pass
+          # through claude_args.
+          settings: '{"includeCoAuthoredBy": false}'
           show_full_output: "true"
           prompt: |
             You are running in a nightly GitHub Actions cron job. Your job
