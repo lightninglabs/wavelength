@@ -93,10 +93,16 @@ state transitions and validation rules live under [Invariants](#invariants).
 ### Misc
 
 - `TimeoutPhase` (`fsm_timeouts.go`) — `TimeoutPhaseForfeitCollection`
-  (forfeit-signature collection window) and `TimeoutPhaseRegistration`
+  (forfeit-signature collection window), `TimeoutPhaseRegistration`
   (IntentSentState admission window; on expiry the FSM fails the round
   recoverably and emits `ReleaseForfeitReservation` so forfeit-reserved
-  inputs are not stranded — wavelength#653). Timeout outbox messages
+  inputs are not stranded — wavelength#653),
+  `TimeoutPhaseRefreshRegistration` (quiet period that coalesces
+  expiry-driven refreshes before registering their assembling round), and
+  `TimeoutPhaseStatusReconcile` (InputSigSentState liveness clock; on expiry
+  the FSM probes the operator with `QueryRoundStatus` and re-arms with
+  exponential backoff capped at `statusReconcileMaxBackoffShift` — see the
+  reconcile invariant below). Timeout outbox messages
   (`StartTimeoutReq`/`CancelTimeoutReq`) key on `RoundKeyStr` so temp-keyed
   rounds (pre-admission) can be timed.
 - `MaxQuoteEntriesPerClient = 1024` (`from_proto.go`) — bounds quote
@@ -114,6 +120,12 @@ state transitions and validation rules live under [Invariants](#invariants).
   selects `defaultRegistrationTimeout` (60 s); negative disables the timeout
   (round waits indefinitely). Bounds how long forfeit-reserved inputs sit
   stranded when the server never responds (wavelength#653).
+- `RoundClientConfig.StatusReconcileTimeout` — how long `InputSigSentState`
+  waits with no confirmation, no resolved failure, and no status answer
+  before probing the operator with `QueryRoundStatus` (wavelength#844); it
+  doubles as the retry interval between probes. Zero selects
+  `defaultStatusReconcileTimeout` (90 s); negative disables the reconcile
+  entirely, leaving only the wavelength#823 startup sweep.
 - `computeClientOperatorFee(intents, ownedVTXOs) int64` —
   Σ(boarding inputs) + Σ(forfeited VTXOs) − Σ(owned output VTXOs) −
   Σ(cooperative leave outputs), clamped to zero. Carried on
@@ -167,6 +179,31 @@ state transitions and validation rules live under [Invariants](#invariants).
 - Round state is checkpointed atomically after tree validation — a
   crash before checkpoint means the client has no record of sent
   signatures.
+- **The status-reconcile clock is armed for the whole of
+  `InputSigSentState`** (wavelength#844, wavelength#1051). Every door into
+  that state arms it whenever `env.StatusReconcileTimeout > 0`, and every
+  exit disarms it. There are three doors: `forfeitCollectionOutbox`
+  (forfeit-bearing rounds), the `PartialSigsSentState` →
+  `InputSigSentState` transition (boarding-only rounds, which never enter
+  forfeit collection), and `recoverActiveRounds` on restart. Arming is
+  **not** gated on `len(Intents.Forfeits) > 0`: for a forfeit-bearing round
+  the probe gates the reservation release on an authoritative dead answer,
+  but for *any* round it is the sole liveness clock in the checkpointed
+  state — an operator that rolls the round back before broadcast produces
+  no confirmation and no failure, so an unarmed boarding-only round strands
+  its deposit until the CSV expires.
+- **Reconcile outbox ordering.** `processOutbox` abandons the rest of the
+  outbox on the first failing `Tell`, and the FSM has already checkpointed
+  by dispatch time, so the arm (`StartTimeoutReq`) must **lead** the
+  fallible sends (`SubmitVTXOForfeitSigsToServer`,
+  `SubmitForfeitSigRequest`, `RegisterConfirmationRequest`) — a mid-flight
+  send error would otherwise commit the state with no clock. The disarm
+  (`CancelTimeoutReq`, via `reconcileDisarmEvents` /
+  `appendReconcileDisarm` in `fsm_timeouts.go`) must **trail** every
+  delivery on the exit paths — confirmation notifications, the forfeit
+  release, and the terminal job drop — since cleanup must never gate
+  delivery. A cancel that never lands only leaks a one-shot timer, which
+  fires into a terminal state and self-loops.
 - Primary FSM handles interactive phases (through `InputSigSent`); a
   dedicated FSM per round handles confirmation monitoring.
 - **Arm timeouts before fallible outbox effects.** `processOutbox` stops at the
