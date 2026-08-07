@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"sort"
 
+	btcaddr "github.com/btcsuite/btcd/address/v2"
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
@@ -715,4 +716,16 @@ func joinAuthValidUntil(currentHeight uint32) uint32 {
 	}
 
 	return currentHeight + joinRoundAuthWindowBlocks
+}
+
+// mustPayToAddrScript returns the address's pkScript, or nil when it
+// cannot be encoded. Callers compare against a known-good script, so a
+// nil result fails the comparison rather than masking the error.
+func mustPayToAddrScript(address btcaddr.Address) []byte {
+	script, err := txscript.PayToAddrScript(address)
+	if err != nil {
+		return nil
+	}
+
+	return script
 }
