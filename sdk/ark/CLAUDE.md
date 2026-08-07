@@ -67,8 +67,9 @@ transport, without duplicating Ark runtime behavior.
 - `WrapDaemonServer` owns only the private bufconn transport and gRPC
   server; it does not own the caller's `DaemonServer` runtime. `Close()`
   tears down only the private transport.
-- `ServerInfo` is a bootstrap-time operator-terms snapshot; refresh after
-  reconnect is not wired through yet.
+- `ServerInfo` is a bootstrap-time operator-terms snapshot, including the
+  advisory `FreeRefreshWindowBlocks`; refresh after reconnect is not wired
+  through yet.
 - Pre-1.0, some methods intentionally return `waverpc` protobuf types
   directly. Those passthrough APIs are not yet treated as stable SDK-owned
   models.
