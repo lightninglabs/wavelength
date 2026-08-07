@@ -102,6 +102,13 @@ type OnboardingResult struct {
 	OperatorKey        *btcec.PublicKey
 	ExitDelay          uint32
 	ConfirmationHeight int32
+
+	// Digest scopes the output's deterministic asset script key.
+	Digest tapsdk.Hash
+
+	// OPTrueWitness is the asset-level OP_TRUE witness stack a round's
+	// commitment transition spends the boarded output with.
+	OPTrueWitness [][]byte
 }
 
 type onboardingDriver interface {
@@ -252,7 +259,7 @@ func (o *Onboarder) Onboard(ctx context.Context, request *OnboardingRequest) (
 		return nil, err
 	}
 	result, err := onboardingResultFromCommit(
-		request, state, ownerKey, policy, committed,
+		request, state, ownerKey, policy, digest, committed,
 	)
 	if err != nil {
 		return nil, err
@@ -553,7 +560,7 @@ func (o *Onboarder) verifyInput(ctx context.Context,
 
 func onboardingResultFromCommit(request *OnboardingRequest,
 	state *onboardingState, ownerKey keychain.KeyDescriptor,
-	policy *arkscript.VTXOPolicy,
+	policy *arkscript.VTXOPolicy, digest tapsdk.Hash,
 	committed *commitResult) (*OnboardingResult, error) {
 
 	if committed == nil || len(committed.inputs) != 1 ||
@@ -660,6 +667,8 @@ func onboardingResultFromCommit(request *OnboardingRequest,
 		OwnerKey:         ownerKey,
 		OperatorKey:      request.OperatorKey,
 		ExitDelay:        request.ExitDelay,
+		Digest:           digest,
+		OPTrueWitness:    cloneByteSlices(output.opTrueWitness),
 	}, nil
 }
 
