@@ -54,6 +54,11 @@ const (
 	// entityActivity covers the unified ledger, transaction history, and
 	// activity inspection.
 	entityActivity = "activity"
+
+	// entityDeadLetter covers the dead-letter operator surface:
+	// inspecting, requeueing, and purging messages a durable actor
+	// abandoned after exhausting delivery retries.
+	entityDeadLetter = "deadletter"
 )
 
 // wavedEntities is the full set of logical macaroon entities. The read-only
@@ -70,6 +75,7 @@ var wavedEntities = []string{
 	entityRecovery,
 	entityFees,
 	entityActivity,
+	entityDeadLetter,
 }
 
 var wavedRPCPermissions = newWavedRPCPermissions()
@@ -153,6 +159,14 @@ func newWavedRPCPermissions() map[string][]bakery.Op {
 	grant(
 		daemon, entityRecovery, "write", "ArmVHTLCRecovery",
 		"EscalateVHTLCRecovery", "CancelVHTLCRecovery",
+	)
+	grant(
+		daemon, entityDeadLetter, "read", "ListDeadLetters",
+		"GetDeadLetter",
+	)
+	grant(
+		daemon, entityDeadLetter, "write", "RequeueDeadLetter",
+		"PurgeDeadLetters",
 	)
 
 	swap := swapclientrpc.SwapClientService_ServiceDesc.ServiceName

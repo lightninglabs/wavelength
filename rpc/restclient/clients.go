@@ -844,6 +844,53 @@ func (c *DaemonServiceClient) ListVHTLCRecoveries(ctx context.Context,
 	return out, err
 }
 
+// ListDeadLetters returns dead-lettered actor messages for operator
+// inspection.
+func (c *DaemonServiceClient) ListDeadLetters(ctx context.Context,
+	in *waverpc.ListDeadLettersRequest, _ ...grpc.CallOption) (
+	*waverpc.ListDeadLettersResponse, error) {
+
+	out := new(waverpc.ListDeadLettersResponse)
+	err := c.client.Post(ctx, "/v1/daemon/list-dead-letters", in, out)
+
+	return out, err
+}
+
+// GetDeadLetter returns a single dead letter by ID.
+func (c *DaemonServiceClient) GetDeadLetter(ctx context.Context,
+	in *waverpc.GetDeadLetterRequest, _ ...grpc.CallOption) (
+	*waverpc.GetDeadLetterResponse, error) {
+
+	out := new(waverpc.GetDeadLetterResponse)
+	err := c.client.Post(ctx, "/v1/daemon/get-dead-letter", in, out)
+
+	return out, err
+}
+
+// RequeueDeadLetter re-enqueues a dead letter into its original actor
+// mailbox.
+func (c *DaemonServiceClient) RequeueDeadLetter(ctx context.Context,
+	in *waverpc.RequeueDeadLetterRequest, _ ...grpc.CallOption) (
+	*waverpc.RequeueDeadLetterResponse, error) {
+
+	out := new(waverpc.RequeueDeadLetterResponse)
+	err := c.client.Post(ctx, "/v1/daemon/requeue-dead-letter", in, out)
+
+	return out, err
+}
+
+// PurgeDeadLetters permanently deletes dead letters older than the given
+// age.
+func (c *DaemonServiceClient) PurgeDeadLetters(ctx context.Context,
+	in *waverpc.PurgeDeadLettersRequest, _ ...grpc.CallOption) (
+	*waverpc.PurgeDeadLettersResponse, error) {
+
+	out := new(waverpc.PurgeDeadLettersResponse)
+	err := c.client.Post(ctx, "/v1/daemon/purge-dead-letters", in, out)
+
+	return out, err
+}
+
 // NewSwapClientServiceClient creates a SwapClientService REST client.
 func NewSwapClientServiceClient(addr string,
 	opts ...Option) swapclientrpc.SwapClientServiceClient {
