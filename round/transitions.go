@@ -3378,7 +3378,32 @@ func (s *PartialSigsSentState) processEvent(ctx context.Context,
 			),
 		)
 
-		outboxMsgs := []ClientOutMsg{
+		// This is the boarding-only door into InputSigSentState: the
+		// round carried no forfeit mappings, so it never passed
+		// through forfeit collection and never saw the arming there.
+		// It still checkpoints at the same point of no return, which
+		// makes the reconcile clock its sole liveness timer. Without
+		// it, an operator that dies before broadcasting leaves a
+		// client that never restarts with no exit at all: no
+		// commitment can confirm, no failure ever arrives, and the
+		// deposit strands until the CSV expires (wavelength#1051).
+		//
+		// Arm before the requests go out, not after. processOutbox
+		// stops at the first failed Tell, so a mailbox hiccup on the
+		// sig or registration request would otherwise commit this
+		// state with no clock behind it, unarmed until a restart.
+		// Arming early is harmless: the probe answers in-flight or
+		// dead, and both are safe.
+		outboxMsgs := make([]ClientOutMsg, 0, 3)
+		if env.StatusReconcileTimeout > 0 {
+			outboxMsgs = append(outboxMsgs, &StartTimeoutReq{
+				RoundKey: RoundKeyStr(s.RoundID.KeyString()),
+				Phase:    TimeoutPhaseStatusReconcile,
+				Duration: env.StatusReconcileTimeout,
+			})
+		}
+		outboxMsgs = append(
+			outboxMsgs,
 			forfeitSigReq,
 			&RegisterConfirmationRequest{
 				CallerID:    callerID,
@@ -3387,7 +3412,7 @@ func (s *PartialSigsSentState) processEvent(ctx context.Context,
 				TargetConfs: env.OperatorTerms.MinConfirmations,
 				HeightHint:  env.StartHeight,
 			},
-		}
+		)
 
 		// Checkpoint the round state at the "point of no return".
 		// After sending boarding input signatures, the server may
