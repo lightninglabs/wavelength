@@ -79,6 +79,14 @@ func NewRuntime(cfg ConnectorConfig) (*Runtime, error) {
 	// historical single-sender behavior for callers that leave it unset.
 	durableCfg.NumWorkers = cfg.EgressWorkers
 
+	// Bound the egress backlog with the shared default watermarks: an
+	// operator that stays unreachable long enough to park ten thousand
+	// undelivered events is better served by producers failing loudly
+	// (and their retry policies backing off) than by a backlog that grows
+	// for as long as the outage lasts.
+	durableCfg.SoftHighWatermark = actor.DefaultSoftHighWatermark
+	durableCfg.HardHighWatermark = actor.DefaultHardHighWatermark
+
 	// A permanent version error is not retryable: dead-letter the failing
 	// durable message immediately instead of retrying it forever. All other
 	// (transient) failures keep the default exponential-backoff policy.

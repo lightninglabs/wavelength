@@ -384,6 +384,13 @@ func (a *LedgerActor) Start(ctx context.Context) error {
 	](
 		a.actorID, a, a.bindStores, a.cfg.DeliveryStore, codec,
 	)
+
+	// Bound the ledger's durable backlog with the shared default
+	// watermarks so a wedged consumer sheds load at the producer instead
+	// of growing its backlog without bound.
+	durableCfg.SoftHighWatermark = actor.DefaultSoftHighWatermark
+	durableCfg.HardHighWatermark = actor.DefaultHardHighWatermark
+
 	durable, err := actor.NewDurableActor(durableCfg).Unpack()
 	if err != nil {
 		return fmt.Errorf("build ledger durable actor: %w", err)
