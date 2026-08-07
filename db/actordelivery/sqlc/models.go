@@ -17,14 +17,20 @@ type AskResult struct {
 }
 
 type DeadLetter struct {
-	ID            string
-	Source        string
-	ActorID       string
-	MessageType   string
-	Payload       []byte
-	FailureReason string
-	Attempts      int32
-	CreatedAt     int64
+	ID              string
+	Source          string
+	ActorID         string
+	MessageType     string
+	Payload         []byte
+	FailureReason   string
+	Attempts        int32
+	CreatedAt       int64
+	PromiseID       sql.NullString
+	CallbackActorID sql.NullString
+	CorrelationID   sql.NullString
+	CorrelationKey  sql.NullString
+	Priority        int32
+	MaxAttempts     int32
 }
 
 type FsmCheckpoint struct {
