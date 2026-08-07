@@ -21,7 +21,12 @@ other services can reuse durable actor storage without pulling unrelated tables.
   `RegisterMailboxWake(mailboxID, wake func())` registers a targeted,
   per-mailbox wake: `ExecTx` tracks which mailbox IDs actually received an
   enqueue inside the transaction and, on commit, fires only those consumers'
-  callbacks instead of broadcasting to every registered mailbox.
+  callbacks instead of broadcasting to every registered mailbox. Also
+  implements `actor.MailboxDepthStore` (`MailboxDepth`, `MailboxDepths`):
+  `COUNT(*)` reads of `mailbox_messages` — leased rows included, rows are
+  deleted on ack — backing the durable mailbox's watermark admission check
+  and the `waved_mailbox_depth` scrape gauges. The prefix of
+  `idx_mailbox_messages_available` covers the single-mailbox count.
 - `TxActorDeliveryStore` — Transaction-scoped delivery store wrapping a live
   `*sql.Tx`. Implements `actor.DeliveryStore` directly against the transaction
   without additional `ExecTx` wrapping. `EnqueueOutbox` sets a shared

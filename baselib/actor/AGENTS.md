@@ -58,6 +58,27 @@ crash-safe at-least-once delivery with exactly-once deduplication.
   false for Tells, DurableAsks, and redelivered asks whose caller is gone.
 - `ChannelMailbox[M, R]` — In-memory channel-based mailbox (non-durable, for lightweight actors).
 - `Mailbox[M, R]` — Interface for actor message queues: `Send(ctx, env) error` (blocking; returns `ErrMailboxClosed`, `ErrActorTerminated`, or a context error on failure), `TrySend(env) error` (non-blocking), `Receive(ctx) iter.Seq[envelope]`, `Close()`, `IsClosed() bool`, `Drain() iter.Seq[envelope]`.
+- `ErrMailboxSaturated` / backlog watermarks — The durable analogue of
+  `ErrMailboxFull`. `DurableMailboxConfig.SoftHighWatermark` /
+  `HardHighWatermark` (flowing through `DurableActorConfig`) bound the
+  persistent backlog: past the soft mark the mailbox logs one warning per
+  breach episode, at or past the hard mark `Send` refuses with
+  `ErrMailboxSaturated` BEFORE encoding or promise registration (so
+  `TrySend`/`TryTell` inherit the check and a refusal needs no cleanup).
+  Both default to 0 (disabled); consumer sites opt in with
+  `DefaultSoftHighWatermark` (1000) / `DefaultHardHighWatermark` (10000).
+  Priority `>= RestartPriority` is always exempt so recovery lands. Depth is
+  read via a 1s TTL-cached probe plus a local sent-since-probe delta
+  (one-sided: overshoots, never undershoots), and a probe failure fails
+  OPEN. The OutboxPublisher's folded delivery path bypasses `Send` and is
+  deliberately unthrottled.
+- `MailboxDepthStore` / `MailboxDepthCount` — Narrow, optional read surface
+  (`MailboxDepth(ctx, mailboxID)`, `MailboxDepths(ctx)`) discovered by type
+  assertion on the `DeliveryStore`, deliberately NOT embedded in it (test
+  doubles stay small). Backing reads are `COUNT(*)` of `mailbox_messages`
+  rows — leased rows included, rows are deleted on ack — so depth is exactly
+  the undelivered backlog. Consumed by the watermark check and the
+  `waved_mailbox_depth`/`waved_mailbox_backlog` scrape gauges.
 - `isExpectedShutdownErr(err) bool` — Internal helper that classifies errors as expected during teardown: context cancellation/deadline, closed DB handle ("sql: database is closed", "sql: connection is already closed", "use of closed network connection"). Used by the lease loop to demote shutdown-path failures to debug instead of warn-flooding test artifacts at itest tail.
 - `Message.CorrelationKey() string` — Per-message FIFO key consumed by the
   durable mailbox's claim path. Non-empty keys participate in per-key FIFO:
