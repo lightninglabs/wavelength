@@ -566,23 +566,57 @@ func batchRootSource(req *BatchAnchorRequest, out commitOutput,
 	finalTx *wire.MsgTx,
 	derived *BatchAnchorScript) (TreeRootAssetSource, error) {
 
-	// The first source carries the selected lineage; the co-inputs of
-	// a multi-source batch ride as additional confirmed bases on a V1
-	// path, bound to the transition by the path verifier.
+	step := tapsdk.AssetProofPathStep{
+		TransitionProof: append([]byte(nil), out.proofBlob...),
+	}
+
+	// The transition names one of its inputs as the lineage it
+	// continues, and the backend — not the caller — chooses which. The
+	// path's confirmed base must be that input's proof; the remaining
+	// sources ride along as additional bases on a V1 path, bound to the
+	// transition by the path verifier. A single source is unambiguously
+	// that input, so only a batch of several has to be asked.
+	baseIndex := 0
+	previousOutpoint := sdkOutpoint(req.Sources[0].AnchorOutpoint)
+	if len(req.Sources) > 1 {
+		summary, err := step.Summary()
+		if err != nil {
+			return TreeRootAssetSource{}, fmt.Errorf("summarize "+
+				"batch transition: %w", err)
+		}
+		previousOutpoint = summary.PreviousAnchorOutpoint
+
+		baseIndex = -1
+		for i := range req.Sources {
+			outpoint := sdkOutpoint(req.Sources[i].AnchorOutpoint)
+			if outpoint == previousOutpoint {
+				baseIndex = i
+
+				break
+			}
+		}
+		if baseIndex < 0 {
+			return TreeRootAssetSource{}, fmt.Errorf("batch "+
+				"transition continues %v, which is not a "+
+				"batched source", previousOutpoint)
+		}
+	}
+
 	path := &tapsdk.AssetProofPath{
 		Version: tapsdk.AssetProofPathVersionV0,
 		ConfirmedBaseProof: append(
-			[]byte(nil), req.Sources[0].ProofFile...,
+			[]byte(nil), req.Sources[baseIndex].ProofFile...,
 		),
-		Steps: []tapsdk.AssetProofPathStep{{
-			TransitionProof: append(
-				[]byte(nil), out.proofBlob...,
-			),
-		}},
+		Steps: []tapsdk.AssetProofPathStep{
+			step,
+		},
 	}
 	if len(req.Sources) > 1 {
 		path.Version = tapsdk.AssetProofPathVersionV1
-		for i := 1; i < len(req.Sources); i++ {
+		for i := range req.Sources {
+			if i == baseIndex {
+				continue
+			}
 			path.AdditionalBaseProofs = append(
 				path.AdditionalBaseProofs,
 				append(
@@ -595,7 +629,7 @@ func batchRootSource(req *BatchAnchorRequest, out commitOutput,
 
 	expected := &expectedUnconfirmedAnchor{
 		stepIndex:        0,
-		previousOutpoint: sdkOutpoint(req.Sources[0].AnchorOutpoint),
+		previousOutpoint: previousOutpoint,
 		anchorOutpoint:   out.anchorOutpoint,
 		transaction:      serializeTx(finalTx),
 	}
