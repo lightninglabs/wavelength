@@ -303,6 +303,12 @@ type Querier interface {
 	// full descriptors (pubkey parsing, taproot script reconstruction, policy
 	// template decode) and the batched ancestry-path query on the hot path.
 	ListVTXOSelectionCandidatesByStatus(ctx context.Context, status int32) ([]ListVTXOSelectionCandidatesByStatusRow, error)
+	// ListVTXOsAllStatuses returns every VTXO regardless of status. Mirrors
+	// ListVTXOsByStatus's settlement join so terminal states still surface
+	// forfeit-round settlement info. Named distinctly from the pre-existing
+	// unjoined ListAllVTXOs (round.sql), which round-side callers use for
+	// their own purposes.
+	ListVTXOsAllStatuses(ctx context.Context) ([]ListVTXOsAllStatusesRow, error)
 	ListVTXOsByRound(ctx context.Context, roundID string) ([]Vtxo, error)
 	// VTXO status and lifecycle queries.
 	// These queries support the vtxo.VTXOStore interface for VTXO lifecycle

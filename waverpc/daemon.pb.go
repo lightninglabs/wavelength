@@ -2145,7 +2145,9 @@ func (x *VTXOSettlement) GetFeeSat() int64 {
 type ListVTXOsRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// status_filter restricts the response to VTXOs matching this status.
-	// If VTXO_STATUS_UNSPECIFIED (default), all statuses are returned.
+	// If VTXO_STATUS_UNSPECIFIED (default), every VTXO except
+	// VTXO_STATUS_FORFEITED and VTXO_STATUS_SPENT is returned; set show_all
+	// to include those too.
 	StatusFilter VTXOStatus `protobuf:"varint,1,opt,name=status_filter,json=statusFilter,proto3,enum=waverpc.VTXOStatus" json:"status_filter,omitempty"`
 	// min_amount_sat excludes VTXOs below this value.
 	MinAmountSat int64 `protobuf:"varint,2,opt,name=min_amount_sat,json=minAmountSat,proto3" json:"min_amount_sat,omitempty"`
@@ -2155,8 +2157,12 @@ type ListVTXOsRequest struct {
 	// consumers (balance views, coin selection) that never inspect the
 	// PSBTs. The default keeps the full response for compatibility.
 	ExcludeCheckpointPsbts bool `protobuf:"varint,3,opt,name=exclude_checkpoint_psbts,json=excludeCheckpointPsbts,proto3" json:"exclude_checkpoint_psbts,omitempty"`
-	unknownFields          protoimpl.UnknownFields
-	sizeCache              protoimpl.SizeCache
+	// show_all returns every VTXO regardless of status, including
+	// VTXO_STATUS_FORFEITED and VTXO_STATUS_SPENT. Mutually exclusive with
+	// status_filter.
+	ShowAll       bool `protobuf:"varint,4,opt,name=show_all,json=showAll,proto3" json:"show_all,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ListVTXOsRequest) Reset() {
@@ -2206,6 +2212,13 @@ func (x *ListVTXOsRequest) GetMinAmountSat() int64 {
 func (x *ListVTXOsRequest) GetExcludeCheckpointPsbts() bool {
 	if x != nil {
 		return x.ExcludeCheckpointPsbts
+	}
+	return false
+}
+
+func (x *ListVTXOsRequest) GetShowAll() bool {
+	if x != nil {
+		return x.ShowAll
 	}
 	return false
 }
@@ -10402,11 +10415,12 @@ const file_daemon_proto_rawDesc = "" +
 	"\x0eVTXOSettlement\x12\x12\n" +
 	"\x04txid\x18\x01 \x01(\tR\x04txid\x12\x16\n" +
 	"\x06height\x18\x02 \x01(\x05R\x06height\x12\x17\n" +
-	"\afee_sat\x18\x03 \x01(\x03R\x06feeSat\"\xac\x01\n" +
+	"\afee_sat\x18\x03 \x01(\x03R\x06feeSat\"\xc7\x01\n" +
 	"\x10ListVTXOsRequest\x128\n" +
 	"\rstatus_filter\x18\x01 \x01(\x0e2\x13.waverpc.VTXOStatusR\fstatusFilter\x12$\n" +
 	"\x0emin_amount_sat\x18\x02 \x01(\x03R\fminAmountSat\x128\n" +
-	"\x18exclude_checkpoint_psbts\x18\x03 \x01(\bR\x16excludeCheckpointPsbts\"8\n" +
+	"\x18exclude_checkpoint_psbts\x18\x03 \x01(\bR\x16excludeCheckpointPsbts\x12\x19\n" +
+	"\bshow_all\x18\x04 \x01(\bR\ashowAll\"8\n" +
 	"\x11ListVTXOsResponse\x12#\n" +
 	"\x05vtxos\x18\x01 \x03(\v2\r.waverpc.VTXOR\x05vtxos\"\x13\n" +
 	"\x11NewAddressRequest\".\n" +

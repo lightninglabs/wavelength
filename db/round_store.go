@@ -141,6 +141,9 @@ type RoundStore interface {
 		arg sqlc.ListVTXOsExcludingStatusesParams) (
 		[]sqlc.ListVTXOsExcludingStatusesRow, error)
 
+	ListVTXOsAllStatuses(ctx context.Context) (
+		[]sqlc.ListVTXOsAllStatusesRow, error)
+
 	// ListVTXOSelectionCandidatesByStatus returns the lightweight
 	// (outpoint, amount, pkScript) projection coin selection runs on,
 	// avoiding the full descriptor decode on the per-payment hot path.

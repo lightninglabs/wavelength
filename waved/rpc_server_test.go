@@ -2,6 +2,7 @@ package waved
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"testing"
@@ -19,6 +20,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/lightninglabs/wavelength/arkrpc"
 	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/db"
 	"github.com/lightninglabs/wavelength/lib/actormsg"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	oortx "github.com/lightninglabs/wavelength/lib/tx/oor"
@@ -28,6 +30,7 @@ import (
 	"github.com/lightninglabs/wavelength/unroll"
 	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightninglabs/wavelength/waverpc"
+	"github.com/lightningnetwork/lnd/clock"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
@@ -1481,6 +1484,81 @@ func TestListVTXOsPendingRoundSkipsConfirmedRounds(t *testing.T) {
 			"VTXO_STATUS_LIVE in the store; they must not "+
 			"double-report here",
 	)
+}
+
+// TestListVTXOsShowAll verifies that show_all returns every VTXO
+// regardless of status (including forfeited and spent, which the
+// default listing excludes), and that combining show_all with
+// status_filter is rejected as mutually exclusive.
+func TestListVTXOsShowAll(t *testing.T) {
+	t.Parallel()
+
+	sqlDB := db.NewTestDB(t)
+	roundDB := db.NewTransactionExecutor(
+		sqlDB.BaseDB,
+		func(tx *sql.Tx) db.RoundStore {
+			return sqlDB.WithTx(tx)
+		},
+		btclog.Disabled,
+	)
+	vtxoStore := db.NewVTXOPersistenceStore(
+		roundDB, clock.NewDefaultClock(),
+	)
+
+	liveDesc := newRefreshEstimateVTXO(t, 0x01, 10_000, 900)
+	forfeitedDesc := newRefreshEstimateVTXO(t, 0x02, 10_000, 900)
+	spentDesc := newRefreshEstimateVTXO(t, 0x03, 10_000, 900)
+
+	require.NoError(t, vtxoStore.SaveVTXO(t.Context(), liveDesc))
+	require.NoError(t, vtxoStore.SaveVTXO(t.Context(), forfeitedDesc))
+	require.NoError(t, vtxoStore.SaveVTXO(t.Context(), spentDesc))
+	require.NoError(
+		t,
+		vtxoStore.UpdateVTXOStatus(
+			t.Context(), forfeitedDesc.Outpoint,
+			vtxo.VTXOStatusForfeited,
+		),
+	)
+	require.NoError(
+		t,
+		vtxoStore.UpdateVTXOStatus(
+			t.Context(), spentDesc.Outpoint, vtxo.VTXOStatusSpent,
+		),
+	)
+
+	walletReady := make(chan struct{})
+	close(walletReady)
+	srv := &RPCServer{server: &Server{
+		walletReady: walletReady,
+		vtxoStore:   vtxoStore,
+	}}
+
+	defaultResp, err := srv.ListVTXOs(
+		t.Context(), &waverpc.ListVTXOsRequest{},
+	)
+	require.NoError(t, err)
+	require.Len(
+		t, defaultResp.Vtxos, 1,
+		"forfeited and spent should be excluded by default",
+	)
+
+	allResp, err := srv.ListVTXOs(
+		t.Context(), &waverpc.ListVTXOsRequest{
+			ShowAll: true,
+		},
+	)
+	require.NoError(t, err)
+	require.Len(
+		t, allResp.Vtxos, 3,
+		"show_all must include forfeited and spent VTXOs",
+	)
+
+	_, err = srv.ListVTXOs(t.Context(), &waverpc.ListVTXOsRequest{
+		ShowAll:      true,
+		StatusFilter: waverpc.VTXOStatus_VTXO_STATUS_LIVE,
+	})
+	require.Error(t, err)
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
 }
 
 // TestQueryRoundStatesEarlyStateOmitsCommitmentTxid verifies that

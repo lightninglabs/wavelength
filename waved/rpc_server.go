@@ -1225,16 +1225,24 @@ func roundStateLabel(s waverpc.RoundState) string {
 // ListVTXOs returns the set of VTXOs known to the wallet, optionally
 // filtered by status and minimum amount. When no status filter is given,
 // every VTXO except VTXO_STATUS_FORFEITED and VTXO_STATUS_SPENT is
-// returned. The VTXO_STATUS_PENDING_ROUND filter is special: it bypasses
-// the on-disk store and projects each upcoming VTXO from the live round
-// actor as a synthetic VTXO entry, giving callers a way to see the outputs
-// they have signed for but which have not yet been created by an on-chain
+// returned; show_all overrides that default to return every VTXO
+// regardless of status, and is mutually exclusive with status_filter. The
+// VTXO_STATUS_PENDING_ROUND filter is special: it bypasses the on-disk
+// store and projects each upcoming VTXO from the live round actor as a
+// synthetic VTXO entry, giving callers a way to see the outputs they have
+// signed for but which have not yet been created by an on-chain
 // commitment.
 func (r *RPCServer) ListVTXOs(ctx context.Context,
 	req *waverpc.ListVTXOsRequest) (*waverpc.ListVTXOsResponse, error) {
 
 	if err := r.requireWalletReady(); err != nil {
 		return nil, err
+	}
+
+	if req.ShowAll && req.StatusFilter !=
+		waverpc.VTXOStatus_VTXO_STATUS_UNSPECIFIED {
+		return nil, status.Errorf(codes.InvalidArgument, "show_all "+
+			"and status_filter are mutually exclusive")
 	}
 
 	if req.StatusFilter ==
@@ -1247,18 +1255,22 @@ func (r *RPCServer) ListVTXOs(ctx context.Context,
 			"initialized")
 	}
 
-	// Fetch VTXOs from the store. When a specific status filter
-	// is provided, query the DB directly for that status so
-	// terminal states (spent, forfeited) are reachable. When
-	// unspecified, return every VTXO except forfeited and spent ones.
+	// Fetch VTXOs from the store. When a specific status filter is
+	// provided, query the DB directly for that status so terminal
+	// states (spent, forfeited) are reachable. When show_all is set,
+	// return every VTXO regardless of status. Otherwise, return every
+	// VTXO except forfeited and spent ones.
 	var (
 		dbVTXOs []*vtxo.Descriptor
 		err     error
 	)
 
-	if req.StatusFilter !=
-		waverpc.VTXOStatus_VTXO_STATUS_UNSPECIFIED {
+	vtxoStore := r.server.vtxoStore
+	switch {
+	case req.ShowAll:
+		dbVTXOs, err = vtxoStore.ListVTXOsAllStatusesLight(ctx)
 
+	case req.StatusFilter != waverpc.VTXOStatus_VTXO_STATUS_UNSPECIFIED:
 		domainStatus, sErr := protoStatusToDomain(
 			req.StatusFilter,
 		)
@@ -1270,11 +1282,11 @@ func (r *RPCServer) ListVTXOs(ctx context.Context,
 		// The listing response never carries ancestry, so the light
 		// variants skip the ancestry side-table join (whose TLV tree
 		// fragments grow with OOR chain depth) entirely.
-		dbVTXOs, err = r.server.vtxoStore.ListVTXOsByStatusLight(
+		dbVTXOs, err = vtxoStore.ListVTXOsByStatusLight(
 			ctx, domainStatus,
 		)
-	} else {
-		vtxoStore := r.server.vtxoStore
+
+	default:
 		dbVTXOs, err = vtxoStore.ListVTXOsExcludingStatusesLight(
 			ctx, vtxo.VTXOStatusForfeited, vtxo.VTXOStatusSpent,
 		)
