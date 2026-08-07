@@ -130,9 +130,10 @@ func (s *Server) AssetBoardingDisclosure(ctx context.Context,
 		return nil, fmt.Errorf("replay onboarding: %w", err)
 	}
 
-	leafHash := tapassets.CommitmentLeafHash(
-		result.TaprootAssetRoot, result.AssetAmount,
-	)
+	// tapd's Taproot Asset root is the commitment leaf hash itself: the
+	// onboarding output branches it directly with the policy root, so
+	// it is exactly the sibling the operator needs disclosed.
+	leafHash := result.TaprootAssetRoot
 
 	// The disclosure is only usable if the operator can rebuild the
 	// on-chain script from it, so reject a mismatch here rather than
