@@ -109,6 +109,12 @@ erDiagram
         TEXT failure_reason
         INTEGER attempts
         INTEGER created_at "Idx"
+        TEXT promise_id "Nullable"
+        TEXT callback_actor_id "Nullable"
+        TEXT correlation_id "Nullable"
+        TEXT correlation_key "Nullable"
+        INTEGER priority "Default=0"
+        INTEGER max_attempts "Default=10"
     }
 ```
 
@@ -278,7 +284,9 @@ checkpoint and sends a RestartMessage to resume from the saved state.
 ### dead_letters
 
 Failed messages after max_attempts or unrecoverable errors. Supports debugging
-and manual intervention for operational recovery.
+and manual intervention for operational recovery: the daemon's dead-letter
+monitor surfaces new rows (log + metrics), and the `wavecli deadletter`
+operator surface can requeue or purge them.
 
 **Key fields**:
 - `id`: Original message ID for correlation.
@@ -290,6 +298,20 @@ and manual intervention for operational recovery.
 - `failure_reason`: Human-readable description of why the message failed.
 
 - `attempts`: Number of delivery attempts before dead-lettering.
+
+- `promise_id`, `callback_actor_id`, `correlation_id`, `correlation_key`,
+  `priority`, `max_attempts`: The full routing identity of the original
+  mailbox row, projected by `MoveMailboxToDeadLetter` so a requeue can
+  reconstruct the message exactly. Rows dead-lettered before migration
+  000002 carry NULLs / column defaults and requeue with fresh-enqueue
+  defaults.
+
+**Requeue semantics**: `RequeueDeadLetter` re-enqueues the payload as a NEW
+mailbox message (fresh UUIDv7, attempts reset, available immediately, routing
+fields preserved) and deletes the dead letter in one transaction. The fresh
+ID is required for correctness: the retry-exhaustion path records the
+original ID in `processed_messages` before dead-lettering, so a same-ID
+requeue would be skipped by deduplication.
 
 **Indexes**:
 - `idx_dead_letters_actor`: For querying dead letters by actor.

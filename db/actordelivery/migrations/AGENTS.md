@@ -13,11 +13,15 @@ generic `db/migrate` orchestration layer.
   `"actor_delivery_schema_migrations"`), `DatabaseName` (default
   `"actor_delivery"`), `LatestVersion` (downgrade guard, default
   `LatestMigrationVersion`), optional `Log btclog.Logger`.
-- `LatestMigrationVersion = 1` — Current schema version; bump when adding a
-  new SQL migration file. The single `000001_durable_mailbox` migration
-  already includes the nullable `correlation_key` column on
-  `mailbox_messages` and the filtered composite index that backs the
+- `LatestMigrationVersion = 2` — Current schema version; bump when adding a
+  new SQL migration file. `000001_durable_mailbox` lays down the full
+  durable-mailbox schema, including the nullable `correlation_key` column
+  on `mailbox_messages` and the filtered composite index that backs the
   per-correlation-key FIFO anti-join in `LeaseNextMailboxMessage`.
+  `000002_dead_letter_requeue` widens `dead_letters` with the routing
+  columns (`promise_id`, `callback_actor_id`, `correlation_id`,
+  `correlation_key`, `priority`, `max_attempts`) that make an operator
+  requeue able to reconstruct the original mailbox message.
 - `RunMigrations(db, backend, cfg)` — Applies actor-delivery migrations.
   Validates inputs, applies `Config` defaults, delegates to
   `dbmigrate.RunMigrations` with postgres schema token replacements.

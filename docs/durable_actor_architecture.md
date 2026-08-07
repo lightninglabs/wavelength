@@ -14,6 +14,7 @@ semantics, recovery mechanisms, and type-erased actor discovery.
 6. [Recovery and Restart Flow](#recovery-and-restart-flow)
 7. [TypeAssertingRef and MapRef Pattern](#typeassertingref-and-mapref-pattern)
 8. [DurableAsk: Crash-Safe Request-Response](#durableask-crash-safe-request-response)
+9. [Dead-Letter Contract](#dead-letter-contract)
 
 ---
 
@@ -887,6 +888,95 @@ flowchart TD
 | Caller may crash before response | DurableAsk |
 | Response must survive restarts | DurableAsk |
 | Fire-and-forget | Tell |
+
+---
+
+## Dead-Letter Contract
+
+A dead letter is a message the framework durably accepted and then abandoned.
+Because the enqueue was durable, abandonment is never silent or final by
+default: every dead letter is parked in the `dead_letters` table, surfaced by
+the daemon, and recoverable by an operator. This section is the contract for
+who writes dead letters, who owns them afterwards, and how they come back.
+
+### When a message dead-letters
+
+Four paths in the framework write to the dead-letter store, all for
+mailbox-sourced messages:
+
+1. **Retry exhaustion (transactional path)**: a Tell whose
+   `TellRetryPolicy` gives up inside `handleResultInTx`. The message is also
+   marked processed, so its original ID is permanently retired.
+2. **Retry exhaustion (classic path)**: the same decision in
+   `handleResult`, with reason `"retry policy exhausted: ..."`.
+3. **Poison messages**: a message that cannot be decoded or repeatedly
+   crashes the consume path, dead-lettered by the mailbox with a
+   `"poison message"` reason.
+4. **Max attempts on Nack**: `Delivery.Nack` when `ShouldDeadLetter()`
+   reports the attempt budget is spent.
+
+Outbox messages do NOT land here: a failed outbox delivery flips the
+`outbox_messages.status` column to `'dead_letter'` instead. The
+`dead_letters.source` column exists for a future unification, but every row
+written today has `source = 'mailbox'`.
+
+The projection into `dead_letters` carries the full routing identity of the
+mailbox row (priority, retry budget, ask plumbing, correlation key), which is
+what makes faithful requeue possible.
+
+### Who owns a parked dead letter
+
+**The DeadLetterMonitor observes.** A daemon-owned background service scans
+for newly parked entries, logs each exactly once at error level (bounded
+detail lines plus a summary under a flood), summarizes the backlog left by
+previous runs at startup, and feeds the metrics. The scan pages with a
+strict `(created_at, id)` keyset cursor, so a flood of same-second entries
+pages through cleanly, and rows stamped in the still-open wall-clock second
+are deferred one tick (dead-letter IDs are minted at enqueue time, so a
+later same-second write can sort before the cursor). On a multi-writer
+store, a writer whose clock lags the cursor can park entries the
+incremental scan misses; the count gauges are cursor-free and still see
+them, as does the next restart's backlog summary. The metrics:
+
+- `waved_dead_letters` / `waved_actor_dead_letters{actor_id}` — scrape
+  gauges of what is parked right now.
+- `waved_dead_letters_observed_total` — monotone history of observations.
+
+**The operator recovers.** The `wavecli deadletter` subtree (and the
+corresponding `DaemonService` RPCs) provides `list`, `inspect`, `requeue`,
+and `purge`. Requeue and purge are consent-gated; purge additionally
+requires an explicit age.
+
+**Retention is opt-in.** The monitor's sweep deletes entries older than the
+configured `deadletter.retention`; the default (zero) keeps dead letters
+forever, because a parked entry can carry a value-bearing message and
+silent aging-out would recreate the original problem.
+
+### Requeue semantics
+
+`RequeueDeadLetter` re-enqueues the original payload as a **new** mailbox
+message in a single transaction: fresh UUIDv7 ID, attempts reset to zero,
+available immediately, every routing field preserved, and the dead letter
+deleted. The fresh ID is a correctness requirement, not a convenience: the
+retry-exhaustion path records the original ID in `processed_messages`
+before dead-lettering, so a same-ID requeue would be silently skipped by
+deduplication (and masked by the enqueue's `ON CONFLICT DO NOTHING`).
+
+A requeued message re-enters the normal delivery lifecycle: it burns
+attempts again, and if its failure cause was not actually fixed it will
+land back in the dead-letter queue with a fresh reason. Requeue after
+fixing the cause, not as a retry button.
+
+### Relation to the in-memory DLO
+
+The non-durable actor system's `DLO` ref (`ActorConfig.DLO`, the
+`dead-letters` actor in `ActorSystem`) is a **different, weaker mechanism**:
+it receives messages whose in-memory delivery failed outright (terminated
+actor, closed mailbox), logs them, and drops them. It is advisory
+visibility for fire-and-forget in-memory sends, not a queue, and nothing is
+recoverable from it. The durable contract above applies only to messages
+that were durably enqueued; anything that must survive and be recoverable
+belongs on a durable actor.
 
 ---
 

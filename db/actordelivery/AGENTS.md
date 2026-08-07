@@ -48,6 +48,17 @@ other services can reuse durable actor storage without pulling unrelated tables.
   fence; the multi-worker pool keeps lease + fenced ack. The by-ID nack
   increments attempts because the peek does not, preserving dead-lettering
   on max attempts.
+- **Dead-letter operator surface** — `Store` implements
+  `actor.DeadLetterStore` on top of `actor.DeliveryStore`. Migration
+  `000002_dead_letter_requeue` widened `dead_letters` with the routing
+  columns (`promise_id`, `callback_actor_id`, `correlation_id`,
+  `correlation_key`, `priority`, `max_attempts`) that
+  `MoveMailboxToDeadLetter` now projects, so `RequeueDeadLetter` can
+  atomically re-enqueue the payload (fresh UUIDv7, attempts reset, routing
+  preserved) and delete the dead letter in one `ExecTx`. A successful
+  requeue fires the targeted mailbox wake. Pre-migration rows read back
+  with enqueue defaults. `PurgeDeadLetters` reports removed-row counts via
+  the `:execrows` `CleanupOldDeadLetters` query.
 - `BatchedActorDeliveryQueries` — Batched transaction wrapper for
   `ActorDeliveryQueries`.
 - `MigrationOption` — Functional options for migration configuration
