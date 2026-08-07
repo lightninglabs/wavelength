@@ -8,9 +8,11 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/build"
+	"github.com/lightninglabs/wavelength/lib/actormsg"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/lib/tx"
 	"github.com/lightninglabs/wavelength/lib/types"
@@ -981,6 +983,27 @@ func (s *PendingForfeitState) ProcessEvent(ctx context.Context, event VTXOEvent,
 	}
 }
 
+// forfeitSignatureIssued reports whether this VTXO's forfeit signature has
+// already left the client.
+//
+// This is the line between an exit that can still work and one that cannot.
+// Before the signature goes out, the client is the only party able to spend
+// the coin, so a unilateral exit is a real recovery. After it goes out, the
+// operator holds a fully-signed transaction spending this coin into a
+// connector of the new commitment and can broadcast it whenever it likes. An
+// exit started past that point has to confirm the whole ancestry and then wait
+// out the exit CSV, while the forfeit is spendable immediately -- so the exit
+// races it and loses.
+//
+// Both fields are checked because either one alone is enough to mean the
+// signature exists: ForfeitTxID is stamped by ForfeitSignedEvent, and ForfeitTx
+// is the retained signed transaction restored on crash recovery.
+func (s *ForfeitingState) forfeitSignatureIssued() bool {
+	var zeroTxID chainhash.Hash
+
+	return s.ForfeitTxID != zeroTxID || s.ForfeitTx != nil
+}
+
 // ProcessEvent handles events in ForfeitingState. The VTXO is being forfeited
 // and waiting for the new commitment transaction to confirm.
 func (s *ForfeitingState) ProcessEvent(ctx context.Context, event VTXOEvent,
@@ -1042,7 +1065,18 @@ func (s *ForfeitingState) ProcessEvent(ctx context.Context, event VTXOEvent,
 		// while racing an already-spendable operator sweep — and
 		// escalating would abort the in-flight cooperative spend that
 		// IS the recovery. Staying put lets it finish.
-		if expiryStatus == ExpiryStatusCritical {
+		// The same reasoning rules out escalating once the forfeit
+		// signature has left, whatever the deadline says: the operator
+		// can spend this coin into a connector immediately, so the
+		// exit races a transaction that has already won
+		// (wavelength#845). This is defence in depth against a coin
+		// stranded in Forfeiting by the reconciliation gap in
+		// wavelength#844 -- such a coin is not expiring at all, it is
+		// already spent, so exiting it is pointless, and losing if the
+		// exit ever funded its CPFP and confirmed.
+		if expiryStatus == ExpiryStatusCritical &&
+			!s.forfeitSignatureIssued() {
+
 			blocksRemaining := BlocksUntilExpiry(s.VTXO, evt.Height)
 
 			// Non-terminal exit: no VTXOTerminatedNotification, so
@@ -1085,6 +1119,28 @@ func (s *ForfeitingState) ProcessEvent(ctx context.Context, event VTXOEvent,
 		}, nil
 
 	case *ForceUnrollEvent:
+		// A critical-expiry admission is refused once the forfeit
+		// signature has left, for the same reason the block-epoch path
+		// above declines to escalate: the operator can spend this coin
+		// into a connector immediately, so the exit races a
+		// transaction that has already won (wavelength#845). The
+		// chain-resolver bridge admits expiry-driven exits through
+		// this event too, so guarding only the block-epoch branch
+		// would leave the same doomed exit reachable by another door.
+		//
+		// Manual and fraud-spend triggers are deliberately still
+		// honoured. A fraud spend means the operator has already moved
+		// against us and exiting is the correct response, and a manual
+		// unroll is an explicit operator decision that should not be
+		// silently dropped. Only the automatic path, which fires on a
+		// coin nobody chose to exit, is suppressed.
+		if evt.Trigger == actormsg.UnrollTriggerCriticalExpiry &&
+			s.forfeitSignatureIssued() {
+			return &VTXOStateTransition{
+				NextState: s,
+			}, nil
+		}
+
 		// Client requested unilateral exit while a forfeit is
 		// mid-flight. The on-chain recovery path doesn't depend
 		// on the forfeit signature landing, so we escalate to
@@ -1155,6 +1211,21 @@ func (s *ForfeitingState) ProcessEvent(ctx context.Context, event VTXOEvent,
 				Recoverable: evt.Recoverable,
 			},
 		}, nil
+
+	case *PendingForfeitEvent:
+		// A second cooperative commitment for a coin whose forfeit
+		// signature has already left the box. Refusing is correct —
+		// the round holding it owns the coin until it resolves — but
+		// this refusal lands in front of a user who asked to leave or
+		// refresh the VTXO, so it must name what holds the coin
+		// instead of reporting a Go event type (wavelength#577).
+		//
+		// Admission paths reject this case before it gets here; the
+		// error still has to be actionable, because a claim that
+		// races the pre-check arrives with nothing else to explain it.
+		return nil, fmt.Errorf("%w (outpoint %s, state %s, round %s)",
+			ErrForfeitInFlight, s.VTXO.Outpoint,
+			VTXOStatusForfeiting, s.NewRoundID)
 
 	default:
 		return nil, fmt.Errorf("forfeiting: bad event: %T", event)

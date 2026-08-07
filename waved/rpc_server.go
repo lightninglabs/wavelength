@@ -2403,6 +2403,18 @@ func (r *RPCServer) LeaveVTXOs(ctx context.Context,
 		}
 	}
 
+	// Drop (or reject) targets that cannot be committed to a round.
+	// ListLiveVTXOs above returns every non-terminal VTXO, so
+	// selection=all would otherwise hand the wallet coins already
+	// committed to another round and fail the whole batch on the first
+	// one. This runs before the dry_run echo so the preview stays a
+	// truthful validity probe rather than listing outpoints the real
+	// dispatch is guaranteed to refuse.
+	targets, err := r.admitLeaveTargets(ctx, targets, !leaveAll)
+	if err != nil {
+		return nil, err
+	}
+
 	// For dry_run, echo the outpoints without touching the
 	// wallet or the operator. Matches RefreshVTXOs semantics; the
 	// short-circuit stays before the wallet-ready gate so callers
@@ -4924,6 +4936,13 @@ func (r *RPCServer) Unroll(ctx context.Context, req *waverpc.UnrollRequest) (
 		admissionCtx, &actormsg.ForceUnrollRequest{
 			Outpoint: outpoint,
 			Reason:   "manual RPC request",
+
+			// Without this the request carries the zero value,
+			// which admits as UnrollTriggerCriticalExpiry: a
+			// hand-typed unroll then records as the expiry safety
+			// net, so the job's persisted provenance names a
+			// trigger that never fired.
+			Trigger: actormsg.UnrollTriggerManual,
 		},
 	).Await(admissionCtx).Unpack()
 	if askErr != nil {

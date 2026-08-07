@@ -1111,47 +1111,89 @@ func signForfeitParticipantRequest(t *testing.T,
 func TestForfeitingStateCriticalExpiry(t *testing.T) {
 	t.Parallel()
 
-	h := newVTXOTestHarness(t)
-	vtxo := h.newTestDescriptor()
-	vtxo.BatchExpiry = 1000
+	// Critical expiry escalates a forfeit that is still mid-flight, and
+	// must NOT escalate one whose signature has already left. Past that
+	// point the operator holds a fully-signed spend of this coin into a
+	// connector and can broadcast whenever it likes, so the exit races a
+	// transaction that has already won: pointless if it never funds its
+	// CPFP, and losing if it does (wavelength#845).
+	//
+	// This test previously asserted the opposite. It seeded both
+	// ForfeitTxID and ForfeitTx -- a signature that had demonstrably left
+	// -- and required escalation, which is the behaviour the issue was
+	// filed about.
+	tests := []struct {
+		name           string
+		signatureSent  bool
+		wantEscalation bool
+	}{{
+		name:           "signature not yet sent escalates",
+		signatureSent:  false,
+		wantEscalation: true,
+	}, {
+		name:           "signature already sent stays put",
+		signatureSent:  true,
+		wantEscalation: false,
+	}}
 
-	h.withExpiryConfig(&ExpiryConfig{
-		RefreshThresholdBlocks:  200,
-		CriticalThresholdBlocks: 50,
-		TreeDepthMultiplier:     1,
-	})
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	forfeitTx := wire.NewMsgTx(2)
-	h.withState(&ForfeitingState{
-		VTXO:              vtxo,
-		NewRoundID:        "round-stalled",
-		ConnectorOutpoint: h.newTestOutpoint(),
-		ForfeitTxID:       forfeitTx.TxHash(),
-		ForfeitTx:         forfeitTx,
-	})
+			h := newVTXOTestHarness(t)
+			vtxo := h.newTestDescriptor()
+			vtxo.BatchExpiry = 1000
 
-	// Block height within critical threshold while waiting for forfeit
-	// confirmation. Should escalate to chain resolver.
-	evt := h.newBlockEpochEvent(970)
+			h.withExpiryConfig(&ExpiryConfig{
+				RefreshThresholdBlocks:  200,
+				CriticalThresholdBlocks: 50,
+				TreeDepthMultiplier:     1,
+			})
 
-	// Setup mock for status update.
-	h.store.On(
-		"UpdateVTXOStatus",
-		h.ctx,
-		vtxo.Outpoint,
-		VTXOStatusUnilateralExit,
-	).Return(nil)
+			state := &ForfeitingState{
+				VTXO:              vtxo,
+				NewRoundID:        "round-stalled",
+				ConnectorOutpoint: h.newTestOutpoint(),
+			}
+			if tc.signatureSent {
+				forfeitTx := wire.NewMsgTx(2)
+				state.ForfeitTxID = forfeitTx.TxHash()
+				state.ForfeitTx = forfeitTx
+			}
+			h.withState(state)
 
-	_, err := h.sendEvent(evt)
-	require.NoError(t, err)
+			if tc.wantEscalation {
+				h.store.On(
+					"UpdateVTXOStatus",
+					h.ctx,
+					vtxo.Outpoint,
+					VTXOStatusUnilateralExit,
+				).Return(nil)
+			}
 
-	assertState[*UnilateralExitState](h)
+			// Block height inside the critical threshold.
+			_, err := h.sendEvent(h.newBlockEpochEvent(970))
+			require.NoError(t, err)
 
-	// Should emit ExpiringNotification but NOT a
-	// VTXOTerminatedNotification: the exit is observed, not fire-and-forget
-	// (wavelength#602).
-	assertOutboxContains[*ExpiringNotification](h)
-	assertOutboxLacks[*VTXOTerminatedNotification](h)
+			if !tc.wantEscalation {
+				// Staying in Forfeiting is the whole point: the
+				// coin is not expiring, it is spent, and the
+				// reconciliation that retires it is #844's job.
+				assertState[*ForfeitingState](h)
+				assertOutboxLacks[*ExpiringNotification](h)
+
+				return
+			}
+
+			assertState[*UnilateralExitState](h)
+
+			// Emits ExpiringNotification but NOT a
+			// VTXOTerminatedNotification: the exit is observed,
+			// not fire-and-forget (wavelength#602).
+			assertOutboxContains[*ExpiringNotification](h)
+			assertOutboxLacks[*VTXOTerminatedNotification](h)
+		})
+	}
 }
 
 // TestForfeitSignedEventPreservesForfeitTx verifies that handling
@@ -1860,4 +1902,110 @@ func TestForfeitSignatureValidity(t *testing.T) {
 
 	err = engine.Execute()
 	require.NoError(t, err, "VTXO input signature verification failed")
+}
+
+// TestPendingForfeitEventFromForfeiting asserts a duplicate cooperative
+// commitment is refused with an error naming the round that holds the coin.
+// This is the failure a user meets when a second leave races the first
+// (wavelength#577), so it must be actionable rather than a Go event type.
+func TestPendingForfeitEventFromForfeiting(t *testing.T) {
+	t.Parallel()
+
+	h := newVTXOTestHarness(t)
+	vtxo := h.newTestDescriptor()
+
+	const roundID = "019fd94b-a1e6-7422-a625-e90c75599e72"
+
+	h.withState(&ForfeitingState{
+		VTXO:       vtxo,
+		NewRoundID: roundID,
+	})
+
+	_, err := h.sendEvent(&round.PendingForfeitEvent{})
+	require.ErrorIs(t, err, ErrForfeitInFlight)
+	require.Contains(t, err.Error(), vtxo.Outpoint.String())
+	require.Contains(t, err.Error(), roundID)
+
+	// The coin must stay committed to its existing round; a refused
+	// duplicate cannot disturb the forfeit already in flight.
+	assertState[*ForfeitingState](h)
+}
+
+// TestForfeitingStateForceUnrollTriggers pins which unilateral-exit triggers
+// survive a forfeit whose signature has already left.
+//
+// The chain-resolver bridge admits expiry-driven exits through ForceUnrollEvent
+// as well as through the block-epoch path, so guarding only the latter would
+// leave the same doomed exit reachable by another door (wavelength#845).
+//
+// Manual and fraud-spend stay honoured on purpose. A fraud spend means the
+// operator has already moved against us and exiting is the correct response; a
+// manual unroll is an explicit decision that should not be silently dropped.
+// Only the automatic trigger, which fires on a coin nobody chose to exit, is
+// suppressed.
+func TestForfeitingStateForceUnrollTriggers(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		trigger        actormsg.UnrollTrigger
+		wantEscalation bool
+	}{{
+		name:           "critical expiry suppressed",
+		trigger:        actormsg.UnrollTriggerCriticalExpiry,
+		wantEscalation: false,
+	}, {
+		name:           "manual still honoured",
+		trigger:        actormsg.UnrollTriggerManual,
+		wantEscalation: true,
+	}, {
+		name:           "fraud spend still honoured",
+		trigger:        actormsg.UnrollTriggerFraudSpend,
+		wantEscalation: true,
+	}}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newVTXOTestHarness(t)
+			vtxo := h.newTestDescriptor()
+
+			// The signature has left in every case here; the
+			// trigger is the only variable.
+			forfeitTx := wire.NewMsgTx(2)
+			h.withState(&ForfeitingState{
+				VTXO:              vtxo,
+				NewRoundID:        "round-stalled",
+				ConnectorOutpoint: h.newTestOutpoint(),
+				ForfeitTxID:       forfeitTx.TxHash(),
+				ForfeitTx:         forfeitTx,
+			})
+
+			if tc.wantEscalation {
+				h.store.On(
+					"UpdateVTXOStatus",
+					h.ctx,
+					vtxo.Outpoint,
+					VTXOStatusUnilateralExit,
+				).Return(nil)
+			}
+
+			_, err := h.sendEvent(&ForceUnrollEvent{
+				Reason:  "test",
+				Trigger: tc.trigger,
+			})
+			require.NoError(t, err)
+
+			if !tc.wantEscalation {
+				assertState[*ForfeitingState](h)
+				assertOutboxLacks[*ExpiringNotification](h)
+
+				return
+			}
+
+			assertState[*UnilateralExitState](h)
+			assertOutboxContains[*ExpiringNotification](h)
+		})
+	}
 }

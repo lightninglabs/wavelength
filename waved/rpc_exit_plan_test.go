@@ -7,6 +7,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chaincfg/v2"
 	"github.com/lightninglabs/wavelength/unroll"
+	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -274,6 +275,112 @@ func TestExitPlanEntrySurfacesStructuralInfeasibility(t *testing.T) {
 			require.Equal(
 				t, tc.wantReason, entry.InfeasibilityReason,
 			)
+		})
+	}
+}
+
+// TestExitPlanEntryRefusesCommittedVTXO asserts the exit preview reports a
+// VTXO committed to a cooperative round as un-exitable.
+//
+// Previewing it as fundable is what escalated wavelength#577 into a near
+// miss: a user whose cooperative leave was already in flight was told
+// can_start=true, shortfall=0, and reached for --force-unroll-ack on a coin
+// the operator held a signed forfeit for.
+func TestExitPlanEntryRefusesCommittedVTXO(t *testing.T) {
+	t.Parallel()
+
+	for _, committed := range []vtxo.VTXOStatus{
+		vtxo.VTXOStatusPendingForfeit, vtxo.VTXOStatusForfeiting,
+	} {
+		t.Run(committed.String(), func(t *testing.T) {
+			t.Parallel()
+
+			r, store := newLeaveAdmissionServer(t)
+			desc := saveVTXOWithStatus(t, store, 0x61, committed)
+
+			entry, verdict := r.exitPlanEntry(
+				t.Context(), desc.Outpoint.String(), 1,
+				unroll.ExitFundingSnapshot{},
+			)
+
+			require.Error(t, entry.Err)
+			require.Contains(
+				t, entry.Err.Error(),
+				"cannot exit unilaterally",
+			)
+			require.Contains(
+				t, entry.Err.Error(), desc.Outpoint.String(),
+			)
+
+			// An entry carrying Err is excluded from the batch
+			// can_start aggregate, so the preview cannot report a
+			// ready exit for this coin.
+			require.False(t, entry.CanStart)
+			require.Zero(t, verdict.RequiredWalletInputs)
+
+			// No funding address may be allocated: there is no
+			// shortfall to fund, and the block clears on its own
+			// when the round resolves.
+			require.Empty(t, entry.FundingAddress)
+		})
+	}
+}
+
+// TestExitPlanRoundCommitmentScope asserts the preview only blocks on a round
+// commitment. A VTXO already exiting must still get a real preview, since its
+// exit job status is the answer the caller wants.
+func TestExitPlanRoundCommitmentScope(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		status  vtxo.VTXOStatus
+		blocked bool
+	}{
+		{
+			vtxo.VTXOStatusLive,
+			false,
+		},
+		{
+			vtxo.VTXOStatusExpired,
+			false,
+		},
+		{
+			vtxo.VTXOStatusPendingForfeit,
+			true,
+		},
+		{
+			vtxo.VTXOStatusForfeiting,
+			true,
+		},
+		{
+			vtxo.VTXOStatusUnilateralExit,
+			false,
+		},
+		{
+			vtxo.VTXOStatusSpending,
+			false,
+		},
+		{
+			vtxo.VTXOStatusForfeited,
+			false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.status.String(), func(t *testing.T) {
+			t.Parallel()
+
+			err := exitPlanRoundCommitment(&vtxo.Descriptor{
+				Status: test.status,
+			})
+
+			if !test.blocked {
+				require.NoError(t, err)
+
+				return
+			}
+
+			require.ErrorIs(t, err, vtxo.ErrForfeitInFlight)
 		})
 	}
 }
