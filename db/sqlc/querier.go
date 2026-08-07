@@ -328,6 +328,11 @@ type Querier interface {
 	// a forfeit_round_id, instead of aggregating every fee row in the ledger on
 	// every call.
 	ListVTXOsByStatus(ctx context.Context, status int32) ([]ListVTXOsByStatusRow, error)
+	// ListVTXOsExcludingStatuses returns all VTXOs except those with either of
+	// the two given statuses. Mirrors ListVTXOsByStatus's settlement join so
+	// terminal states (e.g. UnilateralExit) still surface forfeit-round
+	// settlement info.
+	ListVTXOsExcludingStatuses(ctx context.Context, arg ListVTXOsExcludingStatusesParams) ([]ListVTXOsExcludingStatusesRow, error)
 	ListWalletUTXOLog(ctx context.Context, arg ListWalletUTXOLogParams) ([]WalletUtxoLog, error)
 	ListWalletUTXOLogByBlock(ctx context.Context, blockHeight int32) ([]WalletUtxoLog, error)
 	ListWalletUTXOLogByClassification(ctx context.Context, arg ListWalletUTXOLogByClassificationParams) ([]WalletUtxoLog, error)

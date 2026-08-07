@@ -1223,11 +1223,13 @@ func roundStateLabel(s waverpc.RoundState) string {
 }
 
 // ListVTXOs returns the set of VTXOs known to the wallet, optionally
-// filtered by status and minimum amount. The VTXO_STATUS_PENDING_ROUND
-// filter is special: it bypasses the on-disk store and projects each
-// upcoming VTXO from the live round actor as a synthetic VTXO entry,
-// giving callers a way to see the outputs they have signed for but
-// which have not yet been created by an on-chain commitment.
+// filtered by status and minimum amount. When no status filter is given,
+// every VTXO except VTXO_STATUS_FORFEITED and VTXO_STATUS_SPENT is
+// returned. The VTXO_STATUS_PENDING_ROUND filter is special: it bypasses
+// the on-disk store and projects each upcoming VTXO from the live round
+// actor as a synthetic VTXO entry, giving callers a way to see the outputs
+// they have signed for but which have not yet been created by an on-chain
+// commitment.
 func (r *RPCServer) ListVTXOs(ctx context.Context,
 	req *waverpc.ListVTXOsRequest) (*waverpc.ListVTXOsResponse, error) {
 
@@ -1248,7 +1250,7 @@ func (r *RPCServer) ListVTXOs(ctx context.Context,
 	// Fetch VTXOs from the store. When a specific status filter
 	// is provided, query the DB directly for that status so
 	// terminal states (spent, forfeited) are reachable. When
-	// unspecified, return all non-terminal (live) VTXOs.
+	// unspecified, return every VTXO except forfeited and spent ones.
 	var (
 		dbVTXOs []*vtxo.Descriptor
 		err     error
@@ -1272,7 +1274,10 @@ func (r *RPCServer) ListVTXOs(ctx context.Context,
 			ctx, domainStatus,
 		)
 	} else {
-		dbVTXOs, err = r.server.vtxoStore.ListLiveVTXOsLight(ctx)
+		vtxoStore := r.server.vtxoStore
+		dbVTXOs, err = vtxoStore.ListVTXOsExcludingStatusesLight(
+			ctx, vtxo.VTXOStatusForfeited, vtxo.VTXOStatusSpent,
+		)
 	}
 
 	if err != nil {

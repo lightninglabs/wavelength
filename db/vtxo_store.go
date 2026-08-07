@@ -463,6 +463,48 @@ func (s *VTXOPersistenceStore) ListVTXOsByStatusLight(ctx context.Context,
 	return result, err
 }
 
+// ListVTXOsExcludingStatusesLight returns every VTXO except those with
+// either of the two given statuses, with a nil Ancestry on every entry. See
+// ListLiveVTXOsLight for why listing-only consumers skip the ancestry side
+// table.
+func (s *VTXOPersistenceStore) ListVTXOsExcludingStatusesLight(
+	ctx context.Context, status1, status2 vtxo.VTXOStatus) (
+	[]*vtxo.Descriptor, error) {
+
+	readTxOpts := ReadTxOption()
+
+	var result []*vtxo.Descriptor
+
+	err := s.db.ExecTx(ctx, readTxOpts, func(q RoundStore) error {
+		rows, err := q.ListVTXOsExcludingStatuses(
+			ctx, sqlc.ListVTXOsExcludingStatusesParams{
+				Status:   int32(status1),
+				Status_2: int32(status2),
+			},
+		)
+		if err != nil {
+			return fmt.Errorf("list VTXOs excluding statuses: %w",
+				err)
+		}
+
+		// A non-nil empty index keeps rowToDescriptor on the preloaded
+		// (zero ancestry) path, matching rowsToDescriptorsNoAncestry.
+		noAncestry := map[wire.OutPoint][]vtxo.Ancestry{}
+		descs, err := s.excludingStatusRowsToDescriptors(
+			ctx, q, rows, noAncestry,
+		)
+		if err != nil {
+			return err
+		}
+
+		result = descs
+
+		return nil
+	})
+
+	return result, err
+}
+
 // byStatusRowsToDescriptors converts the joined by-status rows to descriptors
 // using the supplied (possibly empty) preloaded ancestry index, then stamps
 // the settlement txid/height carried by the LEFT JOIN onto rounds. The join
@@ -488,6 +530,38 @@ func (s *VTXOPersistenceStore) byStatusRowsToDescriptors(ctx context.Context,
 		// Settlement stays None.
 		// The txid, height, and round-level operator fee are attached
 		// together, as they all describe the same forfeit round.
+		if len(row.SettlementTxid) == chainhash.HashSize {
+			var settle vtxo.Settlement
+			copy(settle.TxID[:], row.SettlementTxid)
+			if row.SettlementHeight.Valid {
+				settle.Height = row.SettlementHeight.Int32
+			}
+			settle.FeeSat = row.SettlementFeeSat
+			desc.Settlement = fn.Some(settle)
+		}
+
+		descs = append(descs, desc)
+	}
+
+	return descs, nil
+}
+
+// excludingStatusRowsToDescriptors converts the joined excluding-statuses
+// rows to descriptors. It mirrors byStatusRowsToDescriptors, which it cannot
+// share directly since sqlc generates a distinct row type per query.
+func (s *VTXOPersistenceStore) excludingStatusRowsToDescriptors(
+	ctx context.Context, q RoundStore,
+	rows []sqlc.ListVTXOsExcludingStatusesRow,
+	preloaded map[wire.OutPoint][]vtxo.Ancestry) ([]*vtxo.Descriptor,
+	error) {
+
+	descs := make([]*vtxo.Descriptor, 0, len(rows))
+	for _, row := range rows {
+		desc, err := s.rowToDescriptor(ctx, q, row.Vtxo, preloaded)
+		if err != nil {
+			return nil, fmt.Errorf("convert VTXO: %w", err)
+		}
+
 		if len(row.SettlementTxid) == chainhash.HashSize {
 			var settle vtxo.Settlement
 			copy(settle.TxID[:], row.SettlementTxid)

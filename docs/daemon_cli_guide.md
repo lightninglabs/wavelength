@@ -664,7 +664,7 @@ The VTXO inventory and onchain history are not part of the activity feed.
 Use the `ark` subtree for those:
 
 ```bash
-wavecli ark vtxos list          # live VTXO inventory
+wavecli ark vtxos list          # VTXO inventory (excludes forfeited, spent)
 wavecli ark listtransactions    # raw transaction / onchain history
 wavecli ark sweep list          # boarding-timeout sweep records
 ```
