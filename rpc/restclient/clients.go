@@ -446,6 +446,20 @@ func (c *DaemonServiceClient) SignOutSwapHtlcAck(ctx context.Context,
 	return out, err
 }
 
+// SignCreditAccountAuthorization signs one swap credit-account request.
+func (c *DaemonServiceClient) SignCreditAccountAuthorization(
+	ctx context.Context, in *waverpc.SignCreditAccountAuthorizationRequest,
+	_ ...grpc.CallOption) (*waverpc.SignCreditAccountAuthorizationResponse,
+	error) {
+
+	out := new(waverpc.SignCreditAccountAuthorizationResponse)
+	err := c.client.Post(
+		ctx, "/v1/daemon/sign-credit-account-authorization", in, out,
+	)
+
+	return out, err
+}
+
 // GetIndexedVTXOByPkScript looks up one indexed VTXO by pkScript.
 func (c *DaemonServiceClient) GetIndexedVTXOByPkScript(ctx context.Context,
 	in *waverpc.GetIndexedVTXOByPkScriptRequest, _ ...grpc.CallOption) (

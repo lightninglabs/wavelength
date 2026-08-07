@@ -10,6 +10,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"math/big"
 	"net"
@@ -51,6 +52,7 @@ type fakeDaemonService struct {
 	lastIndexedOORReq  *waverpc.GetIndexedOORSessionByTxidRequest
 	lastSendOORReq     *waverpc.SendOORRequest
 	lastOutSwapAckReq  *waverpc.SignOutSwapHtlcAckRequest
+	lastCreditAuthReq  *waverpc.SignCreditAccountAuthorizationRequest
 }
 
 const (
@@ -502,6 +504,39 @@ func (f *fakeDaemonService) SignOutSwapHtlcAck(_ context.Context,
 	}
 
 	return &waverpc.SignOutSwapHtlcAckResponse{
+		Signature: sig.Serialize(),
+	}, nil
+}
+
+// SignCreditAccountAuthorization signs a canonical credit-account request
+// with the fake daemon identity key.
+func (f *fakeDaemonService) SignCreditAccountAuthorization(_ context.Context,
+	req *waverpc.SignCreditAccountAuthorizationRequest) (
+	*waverpc.SignCreditAccountAuthorizationResponse, error) {
+
+	f.mu.Lock()
+	f.lastCreditAuthReq = req
+	f.mu.Unlock()
+	if !bytes.Equal(
+		req.GetAccountPubkey(),
+		fakeIdentityPrivKey().PubKey().SerializeCompressed(),
+	) {
+		return nil, fmt.Errorf("credit account key does not match " +
+			"identity")
+	}
+
+	var requestDigest [32]byte
+	copy(requestDigest[:], req.GetRequestDigest())
+	digest := swaprpc.CreditAccountAuthDigest(
+		req.GetAccountPubkey(), requestDigest, req.GetExpiresAtUnix(),
+		req.GetNonce(),
+	)
+	sig, err := schnorr.Sign(fakeIdentityPrivKey(), digest[:])
+	if err != nil {
+		return nil, err
+	}
+
+	return &waverpc.SignCreditAccountAuthorizationResponse{
 		Signature: sig.Serialize(),
 	}, nil
 }
@@ -962,6 +997,39 @@ func TestDialRemotePolicyHelpers(t *testing.T) {
 	require.Equal(t, ackHash[:], ackReq.GetPaymentHash())
 	require.Equal(t, uint64(42_000), ackReq.GetAmountSat())
 	require.Equal(t, ackScript, ackReq.GetVhtlcPkScript())
+
+	creditRequestDigest := [32]byte{7, 8, 9}
+	creditNonce := [swaprpc.CreditAccountNonceSize]byte{10, 11, 12}
+	creditExpiry := time.Now().Add(time.Minute).Unix()
+	creditSig, err := client.SignCreditAccountAuth(
+		context.Background(),
+		fakeIdentityPrivKey().PubKey().SerializeCompressed(),
+		creditRequestDigest, creditExpiry, creditNonce,
+	)
+	require.NoError(t, err)
+	creditDigest := swaprpc.CreditAccountAuthDigest(
+		fakeIdentityPrivKey().PubKey().SerializeCompressed(),
+		creditRequestDigest, creditExpiry, creditNonce[:],
+	)
+	require.True(
+		t,
+		creditSig.Verify(
+			creditDigest[:], fakeIdentityPrivKey().PubKey(),
+		),
+	)
+
+	service.mu.Lock()
+	creditAuthReq := service.lastCreditAuthReq
+	service.mu.Unlock()
+	require.Equal(
+		t, creditRequestDigest[:], creditAuthReq.GetRequestDigest(),
+	)
+	require.Equal(
+		t, fakeIdentityPrivKey().PubKey().SerializeCompressed(),
+		creditAuthReq.GetAccountPubkey(),
+	)
+	require.Equal(t, creditExpiry, creditAuthReq.GetExpiresAtUnix())
+	require.Equal(t, creditNonce[:], creditAuthReq.GetNonce())
 
 	remotePriv, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
