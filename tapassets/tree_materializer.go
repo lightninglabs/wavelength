@@ -3,8 +3,10 @@ package tapassets
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/psbt/v2"
@@ -718,9 +720,16 @@ func boundFinalKey(cosigners []*btcec.PublicKey, tweak,
 		return nil, err
 	}
 	if !bytes.Equal(script, spentPkScript) {
-		return nil, fmt.Errorf("%d cosigners and signing tweak %x "+
+		keys := make([]string, len(cosigners))
+		for i, cosigner := range cosigners {
+			keys[i] = hex.EncodeToString(
+				cosigner.SerializeCompressed(),
+			)
+		}
+
+		return nil, fmt.Errorf("cosigners [%s] and signing tweak %x "+
 			"derive script %x, but the spent output is %x",
-			len(cosigners), tweak, script, spentPkScript)
+			strings.Join(keys, " "), tweak, script, spentPkScript)
 	}
 
 	return finalKey, nil
