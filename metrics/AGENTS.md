@@ -23,9 +23,16 @@ OOR/round state).
   across the worker pool.
 - `SystemCollector` / `SystemStatsQuerier` — `prometheus.Collector` that
   queries live client state on each scrape (VTXO inventory/value, wallet
-  balance, block height, `oor_sessions_by_state`, `rounds_by_status`). Each
-  querier method is collected independently; an error only suppresses that
-  method's gauges for the scrape.
+  balance, block height, `oor_sessions_by_state`, `rounds_by_status`, and
+  dead-letter counts: `waved_dead_letters` emits an explicit zero when the
+  queue is clean, `waved_actor_dead_letters{actor_id}` one series per actor
+  holding entries). Each querier method is collected independently; an
+  error only suppresses that method's gauges for the scrape.
+- `DeadLettersObservedTotal` — unlabelled counter incremented by the
+  daemon's dead-letter monitor as it first observes each parked entry; the
+  monotone complement to the scrape gauges. Deliberately without an
+  `actor_id` label, since per-session durable actors would leak counter
+  children for the process lifetime.
 - `Server` / `ServerConfig` — opt-in HTTP `/metrics` endpoint; disabled
   unless `ServerConfig.ListenAddr` is set.
 - `GRPCClientMetrics` — shared `go-grpc-middleware/providers/prometheus`

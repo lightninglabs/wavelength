@@ -301,6 +301,11 @@ type Server struct {
 
 	outboxPublisher *actor.OutboxPublisher
 
+	// deadLetterMonitor surfaces and garbage-collects dead-lettered
+	// actor messages. It runs from database initialization until
+	// shutdown, independent of wallet or server-connection state.
+	deadLetterMonitor *actor.DeadLetterMonitor
+
 	// proofKeyBackend derives wallet-managed keys and produces proof
 	// signers for daemon-owned receive scripts and indexer identity.
 	proofKeyBackend proofkeys.Backend
@@ -1305,6 +1310,21 @@ func (s *Server) run(ctx context.Context, shutdownFn func()) error {
 		if err := s.stopMetricsServer(shutdownCtx); err != nil {
 			s.log.WarnS(shutdownCtx, "Metrics server shutdown "+
 				"failed", err)
+		}
+	}()
+
+	// Start the dead-letter monitor now that the delivery store exists.
+	// It owns the observability and retention half of the dead-letter
+	// contract: newly parked entries are logged and counted, and the
+	// opt-in retention sweep ages old entries out. It runs regardless of
+	// wallet or server-connection state, since dead letters accrue from
+	// any durable actor.
+	if err := s.startDeadLetterMonitor(); err != nil {
+		return err
+	}
+	defer func() {
+		if s.deadLetterMonitor != nil {
+			s.deadLetterMonitor.Stop()
 		}
 	}()
 

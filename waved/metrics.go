@@ -255,3 +255,30 @@ func (a *systemStatsAdapter) GetRoundStatsByStatus(ctx context.Context) (
 
 	return a.srv.rpcServer.liveRoundsByStatus(ctx)
 }
+
+// GetDeadLetterCounts returns the parked dead letters grouped by actor,
+// read from the delivery store's operator surface. The store exists from
+// database initialization on, which precedes the metrics server start.
+func (a *systemStatsAdapter) GetDeadLetterCounts(ctx context.Context) (
+	[]metrics.DeadLetterCountRow, error) {
+
+	dlStore, ok := a.srv.deliveryStore.(actor.DeadLetterStore)
+	if !ok {
+		return nil, fmt.Errorf("delivery store not ready")
+	}
+
+	counts, err := dlStore.CountDeadLettersByActor(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	rows := make([]metrics.DeadLetterCountRow, len(counts))
+	for i, count := range counts {
+		rows[i] = metrics.DeadLetterCountRow{
+			ActorID: count.ActorID,
+			Count:   count.Count,
+		}
+	}
+
+	return rows, nil
+}

@@ -201,9 +201,18 @@ SET
 WHERE lease_until IS NOT NULL AND lease_until < $1;
 
 -- name: MoveMailboxToDeadLetter :exec
--- Move a failed message to the dead letter queue.
-INSERT INTO dead_letters (id, source, actor_id, message_type, payload, failure_reason, attempts, created_at)
-SELECT m.id, 'mailbox', m.mailbox_id, m.message_type, m.payload, $2, m.attempts, $3
+-- Move a failed message to the dead letter queue. The projection carries the
+-- full routing identity of the mailbox row (ask plumbing, priority, retry
+-- budget, and the per-key FIFO tag) so an operator-driven requeue can
+-- reconstruct the message exactly as it was originally enqueued.
+INSERT INTO dead_letters (
+    id, source, actor_id, message_type, payload, failure_reason, attempts,
+    created_at, promise_id, callback_actor_id, correlation_id,
+    correlation_key, priority, max_attempts
+)
+SELECT m.id, 'mailbox', m.mailbox_id, m.message_type, m.payload, $2,
+       m.attempts, $3, m.promise_id, m.callback_actor_id, m.correlation_id,
+       m.correlation_key, m.priority, m.max_attempts
 FROM mailbox_messages m
 WHERE m.id = $1;
 
@@ -380,6 +389,26 @@ WHERE source = $1
 ORDER BY created_at DESC
 LIMIT $2;
 
+-- name: ListDeadLetters :many
+-- List dead letters across all actors, newest first, with offset pagination
+-- for the operator surface.
+SELECT * FROM dead_letters
+ORDER BY created_at DESC, id DESC
+LIMIT $1 OFFSET $2;
+
+-- name: ListDeadLettersSince :many
+-- List dead letters strictly after the (created_at, id) cursor, oldest
+-- first. Used by the dead-letter monitor's incremental scan: strict keyset
+-- pagination guarantees progress through a flood of same-second entries (a
+-- created_at-only boundary would return the same first page forever) and
+-- makes every row surface exactly once with no caller-side dedup. An empty
+-- id with created_at = T yields everything from second T on, since every
+-- id collates after the empty string.
+SELECT * FROM dead_letters
+WHERE created_at > $1 OR (created_at = $1 AND id > $2)
+ORDER BY created_at ASC, id ASC
+LIMIT $3;
+
 -- name: DeleteDeadLetter :exec
 -- Delete a dead letter after manual processing.
 DELETE FROM dead_letters WHERE id = $1;
@@ -388,6 +417,14 @@ DELETE FROM dead_letters WHERE id = $1;
 -- Count total dead letters.
 SELECT COUNT(*) FROM dead_letters;
 
--- name: CleanupOldDeadLetters :exec
--- Delete dead letters older than a threshold.
+-- name: CountDeadLettersByActor :many
+-- Count dead letters grouped by actor, for per-actor metrics and health.
+SELECT actor_id, COUNT(*) AS count
+FROM dead_letters
+GROUP BY actor_id
+ORDER BY actor_id;
+
+-- name: CleanupOldDeadLetters :execrows
+-- Delete dead letters older than a threshold, reporting how many rows the
+-- retention sweep removed.
 DELETE FROM dead_letters WHERE created_at < $1;

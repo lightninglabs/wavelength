@@ -158,6 +158,7 @@ func newRootCmd(devMode bool) *cobra.Command {
 	advancedCmds := []*cobra.Command{
 		newArkCmd(),
 		newRecoveryCmd(),
+		newDeadLetterCmd(),
 		devrpc.NewDevCmd(
 			devrpc.Config{
 				GetConn:     getDaemonConn,

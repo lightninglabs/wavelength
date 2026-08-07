@@ -65,6 +65,10 @@ const (
 	DaemonService_GetVHTLCRecoveryStatus_FullMethodName                         = "/waverpc.DaemonService/GetVHTLCRecoveryStatus"
 	DaemonService_ListVHTLCRecoveries_FullMethodName                            = "/waverpc.DaemonService/ListVHTLCRecoveries"
 	DaemonService_SignOutSwapHtlcAck_FullMethodName                             = "/waverpc.DaemonService/SignOutSwapHtlcAck"
+	DaemonService_ListDeadLetters_FullMethodName                                = "/waverpc.DaemonService/ListDeadLetters"
+	DaemonService_GetDeadLetter_FullMethodName                                  = "/waverpc.DaemonService/GetDeadLetter"
+	DaemonService_RequeueDeadLetter_FullMethodName                              = "/waverpc.DaemonService/RequeueDeadLetter"
+	DaemonService_PurgeDeadLetters_FullMethodName                               = "/waverpc.DaemonService/PurgeDeadLetters"
 )
 
 // DaemonServiceClient is the client API for DaemonService service.
@@ -263,6 +267,20 @@ type DaemonServiceClient interface {
 	// SignOutSwapHtlcAck signs the accepted terms of an out-swap vHTLC with
 	// the daemon identity key.
 	SignOutSwapHtlcAck(ctx context.Context, in *SignOutSwapHtlcAckRequest, opts ...grpc.CallOption) (*SignOutSwapHtlcAckResponse, error)
+	// ListDeadLetters returns dead-lettered actor messages (messages a
+	// durable actor abandoned after exhausting delivery retries) for
+	// operator inspection, newest first.
+	ListDeadLetters(ctx context.Context, in *ListDeadLettersRequest, opts ...grpc.CallOption) (*ListDeadLettersResponse, error)
+	// GetDeadLetter returns a single dead letter by ID, including its
+	// payload.
+	GetDeadLetter(ctx context.Context, in *GetDeadLetterRequest, opts ...grpc.CallOption) (*GetDeadLetterResponse, error)
+	// RequeueDeadLetter re-enqueues a dead letter into its original actor
+	// mailbox under a fresh message ID (attempts reset, routing preserved)
+	// and removes it from the dead-letter queue.
+	RequeueDeadLetter(ctx context.Context, in *RequeueDeadLetterRequest, opts ...grpc.CallOption) (*RequeueDeadLetterResponse, error)
+	// PurgeDeadLetters permanently deletes dead letters older than the
+	// given age.
+	PurgeDeadLetters(ctx context.Context, in *PurgeDeadLettersRequest, opts ...grpc.CallOption) (*PurgeDeadLettersResponse, error)
 }
 
 type daemonServiceClient struct {
@@ -742,6 +760,46 @@ func (c *daemonServiceClient) SignOutSwapHtlcAck(ctx context.Context, in *SignOu
 	return out, nil
 }
 
+func (c *daemonServiceClient) ListDeadLetters(ctx context.Context, in *ListDeadLettersRequest, opts ...grpc.CallOption) (*ListDeadLettersResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListDeadLettersResponse)
+	err := c.cc.Invoke(ctx, DaemonService_ListDeadLetters_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) GetDeadLetter(ctx context.Context, in *GetDeadLetterRequest, opts ...grpc.CallOption) (*GetDeadLetterResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetDeadLetterResponse)
+	err := c.cc.Invoke(ctx, DaemonService_GetDeadLetter_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) RequeueDeadLetter(ctx context.Context, in *RequeueDeadLetterRequest, opts ...grpc.CallOption) (*RequeueDeadLetterResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RequeueDeadLetterResponse)
+	err := c.cc.Invoke(ctx, DaemonService_RequeueDeadLetter_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) PurgeDeadLetters(ctx context.Context, in *PurgeDeadLettersRequest, opts ...grpc.CallOption) (*PurgeDeadLettersResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PurgeDeadLettersResponse)
+	err := c.cc.Invoke(ctx, DaemonService_PurgeDeadLetters_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // DaemonServiceServer is the server API for DaemonService service.
 // All implementations must embed UnimplementedDaemonServiceServer
 // for forward compatibility.
@@ -938,6 +996,20 @@ type DaemonServiceServer interface {
 	// SignOutSwapHtlcAck signs the accepted terms of an out-swap vHTLC with
 	// the daemon identity key.
 	SignOutSwapHtlcAck(context.Context, *SignOutSwapHtlcAckRequest) (*SignOutSwapHtlcAckResponse, error)
+	// ListDeadLetters returns dead-lettered actor messages (messages a
+	// durable actor abandoned after exhausting delivery retries) for
+	// operator inspection, newest first.
+	ListDeadLetters(context.Context, *ListDeadLettersRequest) (*ListDeadLettersResponse, error)
+	// GetDeadLetter returns a single dead letter by ID, including its
+	// payload.
+	GetDeadLetter(context.Context, *GetDeadLetterRequest) (*GetDeadLetterResponse, error)
+	// RequeueDeadLetter re-enqueues a dead letter into its original actor
+	// mailbox under a fresh message ID (attempts reset, routing preserved)
+	// and removes it from the dead-letter queue.
+	RequeueDeadLetter(context.Context, *RequeueDeadLetterRequest) (*RequeueDeadLetterResponse, error)
+	// PurgeDeadLetters permanently deletes dead letters older than the
+	// given age.
+	PurgeDeadLetters(context.Context, *PurgeDeadLettersRequest) (*PurgeDeadLettersResponse, error)
 	mustEmbedUnimplementedDaemonServiceServer()
 }
 
@@ -1085,6 +1157,18 @@ func (UnimplementedDaemonServiceServer) ListVHTLCRecoveries(context.Context, *Li
 }
 func (UnimplementedDaemonServiceServer) SignOutSwapHtlcAck(context.Context, *SignOutSwapHtlcAckRequest) (*SignOutSwapHtlcAckResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SignOutSwapHtlcAck not implemented")
+}
+func (UnimplementedDaemonServiceServer) ListDeadLetters(context.Context, *ListDeadLettersRequest) (*ListDeadLettersResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListDeadLetters not implemented")
+}
+func (UnimplementedDaemonServiceServer) GetDeadLetter(context.Context, *GetDeadLetterRequest) (*GetDeadLetterResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetDeadLetter not implemented")
+}
+func (UnimplementedDaemonServiceServer) RequeueDeadLetter(context.Context, *RequeueDeadLetterRequest) (*RequeueDeadLetterResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RequeueDeadLetter not implemented")
+}
+func (UnimplementedDaemonServiceServer) PurgeDeadLetters(context.Context, *PurgeDeadLettersRequest) (*PurgeDeadLettersResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method PurgeDeadLetters not implemented")
 }
 func (UnimplementedDaemonServiceServer) mustEmbedUnimplementedDaemonServiceServer() {}
 func (UnimplementedDaemonServiceServer) testEmbeddedByValue()                       {}
@@ -1928,6 +2012,78 @@ func _DaemonService_SignOutSwapHtlcAck_Handler(srv interface{}, ctx context.Cont
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DaemonService_ListDeadLetters_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListDeadLettersRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).ListDeadLetters(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_ListDeadLetters_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).ListDeadLetters(ctx, req.(*ListDeadLettersRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_GetDeadLetter_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetDeadLetterRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).GetDeadLetter(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_GetDeadLetter_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).GetDeadLetter(ctx, req.(*GetDeadLetterRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_RequeueDeadLetter_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RequeueDeadLetterRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).RequeueDeadLetter(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_RequeueDeadLetter_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).RequeueDeadLetter(ctx, req.(*RequeueDeadLetterRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_PurgeDeadLetters_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PurgeDeadLettersRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).PurgeDeadLetters(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_PurgeDeadLetters_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).PurgeDeadLetters(ctx, req.(*PurgeDeadLettersRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // DaemonService_ServiceDesc is the grpc.ServiceDesc for DaemonService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -2114,6 +2270,22 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SignOutSwapHtlcAck",
 			Handler:    _DaemonService_SignOutSwapHtlcAck_Handler,
+		},
+		{
+			MethodName: "ListDeadLetters",
+			Handler:    _DaemonService_ListDeadLetters_Handler,
+		},
+		{
+			MethodName: "GetDeadLetter",
+			Handler:    _DaemonService_GetDeadLetter_Handler,
+		},
+		{
+			MethodName: "RequeueDeadLetter",
+			Handler:    _DaemonService_RequeueDeadLetter_Handler,
+		},
+		{
+			MethodName: "PurgeDeadLetters",
+			Handler:    _DaemonService_PurgeDeadLetters_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

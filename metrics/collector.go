@@ -54,6 +54,19 @@ type WalletBalance struct {
 	UnconfirmedSat int64
 }
 
+// DeadLetterCountRow holds a per-actor dead-letter tally. It mirrors the
+// actor store's grouped count so the collector stays free of the actor
+// package's persistence types.
+type DeadLetterCountRow struct {
+	// ActorID identifies the actor whose mailbox the dead letters came
+	// from.
+	ActorID string
+
+	// Count is the number of dead letters currently parked for the
+	// actor.
+	Count int64
+}
+
 // SystemStatsQuerier is the full scrape-time data source the
 // SystemCollector reads. It mirrors the lumosd server's querier so client
 // and server dashboards share query structure. Each method is queried
@@ -82,6 +95,11 @@ type SystemStatsQuerier interface {
 	// GetRoundStatsByStatus returns a count of currently-live rounds
 	// grouped by status label.
 	GetRoundStatsByStatus(ctx context.Context) (map[string]int64, error)
+
+	// GetDeadLetterCounts returns the currently parked dead-letter
+	// messages grouped by actor ID. An empty slice means a clean queue
+	// and still emits an explicit zero total.
+	GetDeadLetterCounts(ctx context.Context) ([]DeadLetterCountRow, error)
 }
 
 // Metric descriptors for the scrape-driven gauges.
@@ -134,6 +152,16 @@ var (
 		"Number of currently-live rounds by status.",
 		[]string{"status"}, nil,
 	)
+	deadLettersDesc = prometheus.NewDesc(
+		prometheus.BuildFQName(namespace, "", "dead_letters"),
+		"Number of parked dead-letter messages awaiting operator "+
+			"action.", nil, nil,
+	)
+	actorDeadLettersDesc = prometheus.NewDesc(
+		prometheus.BuildFQName(namespace, "", "actor_dead_letters"),
+		"Number of parked dead-letter messages by actor.",
+		[]string{"actor_id"}, nil,
+	)
 )
 
 // liveStatus is the VTXO status label whose value is summed into the
@@ -171,6 +199,8 @@ func (c *SystemCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- blockHeightDesc
 	ch <- oorSessionsDesc
 	ch <- roundsByStatusDesc
+	ch <- deadLettersDesc
+	ch <- actorDeadLettersDesc
 }
 
 // Collect queries the client's live system state and emits the scrape
@@ -189,6 +219,7 @@ func (c *SystemCollector) Collect(ch chan<- prometheus.Metric) {
 	c.collectBlockHeight(ctx, ch)
 	c.collectOORSessions(ctx, ch)
 	c.collectRounds(ctx, ch)
+	c.collectDeadLetters(ctx, ch)
 }
 
 // collectVTXOStats emits the VTXO inventory gauges (count and value by
@@ -285,6 +316,36 @@ func (c *SystemCollector) collectOORSessions(ctx context.Context,
 			state,
 		)
 	}
+}
+
+// collectDeadLetters emits the dead-letter gauges: the unlabeled total
+// (explicitly zero when the queue is clean, so alerts can rely on the
+// series existing) and one labelled sample per actor currently holding
+// dead letters.
+func (c *SystemCollector) collectDeadLetters(ctx context.Context,
+	ch chan<- prometheus.Metric) {
+
+	rows, err := c.querier.GetDeadLetterCounts(ctx)
+	if err != nil {
+		c.log.Debugf("Dead-letter counts skipped during scrape: %v",
+			err)
+
+		return
+	}
+
+	var total int64
+	for _, row := range rows {
+		total += row.Count
+
+		ch <- prometheus.MustNewConstMetric(
+			actorDeadLettersDesc, prometheus.GaugeValue,
+			float64(row.Count), row.ActorID,
+		)
+	}
+
+	ch <- prometheus.MustNewConstMetric(
+		deadLettersDesc, prometheus.GaugeValue, float64(total),
+	)
 }
 
 // collectRounds emits the live rounds-by-status gauge.

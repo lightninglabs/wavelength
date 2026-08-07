@@ -84,6 +84,19 @@ let the swap FSM arm and cancel recovery automatically.
 | `recovery escalate [id]` | `EscalateVHTLCRecovery` | Start on-chain unroll for an armed row; requires `--yes` on non-TTY stdin |
 | `recovery cancel [id]` | `CancelVHTLCRecovery` | Record that cooperative settlement won; drop the armed row |
 
+### `deadletter.*` advanced commands
+
+Operator recovery for dead-lettered actor messages (messages a durable actor
+abandoned after exhausting delivery retries). Same visibility posture as
+`recovery.*`: hidden from default `--help`, absent from schema/MCP.
+
+| Command | RPC | Description |
+|---------|-----|-------------|
+| `deadletter list` | `ListDeadLetters` | List parked dead letters, newest first (`--actor-id`, `--limit`, `--offset`) |
+| `deadletter inspect [id]` | `GetDeadLetter` | Show one dead letter, payload included |
+| `deadletter requeue [id]` | `RequeueDeadLetter` | Re-enqueue under a fresh message ID; requires `--yes` on non-TTY stdin |
+| `deadletter purge --older-than 720h` | `PurgeDeadLetters` | Permanently delete old entries; explicit age required, `--yes` on non-TTY stdin |
+
 ### `dev.*` advanced commands
 
 Generated low-level daemon RPC CLI; see [`devrpc/`](devrpc/). Hidden from

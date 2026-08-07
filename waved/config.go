@@ -424,6 +424,30 @@ type Config struct {
 	// non-empty listen address. A value type so a zero-value Config can
 	// never carry a nil metrics config into the start path.
 	Metrics metrics.ServerConfig `mapstructure:"metrics"`
+
+	// DeadLetter configures the dead-letter monitor that surfaces and
+	// garbage-collects messages parked after exhausting their delivery
+	// retries. A value type so a zero-value Config can never carry a nil
+	// dead-letter config into the start path.
+	DeadLetter DeadLetterConfig `mapstructure:"deadletter"`
+}
+
+// DeadLetterConfig groups the dead-letter monitor knobs.
+type DeadLetterConfig struct {
+	// ScanInterval is how often the monitor scans for newly parked dead
+	// letters. Zero applies the monitor's default (30s).
+	ScanInterval time.Duration `mapstructure:"scan-interval"`
+
+	// SweepInterval is how often the retention purge and the
+	// expired-entry cleanup (deduplication records and ask results) run.
+	// Zero applies the monitor's default (1h).
+	SweepInterval time.Duration `mapstructure:"sweep-interval"`
+
+	// Retention is how long dead letters are kept before the retention
+	// sweep deletes them. Zero (the default) disables the purge: dead
+	// letters can carry value-bearing messages, so aging them out is an
+	// explicit operator opt-in.
+	Retention time.Duration `mapstructure:"retention"`
 }
 
 // DBConfig groups the per-backend database tuning knobs. Only the SQLite
@@ -1195,6 +1219,22 @@ func (c *Config) Validate() error {
 	if c.MaxOperatorFeeSat <= 0 {
 		return fmt.Errorf("maxoperatorfeesat must be positive: got %d",
 			c.MaxOperatorFeeSat)
+	}
+
+	// The dead-letter knobs are durations where zero means "default"
+	// (scan) or "disabled" (retention); negative values are always a
+	// misconfiguration.
+	if c.DeadLetter.ScanInterval < 0 {
+		return fmt.Errorf("deadletter.scan-interval must not be "+
+			"negative: got %v", c.DeadLetter.ScanInterval)
+	}
+	if c.DeadLetter.SweepInterval < 0 {
+		return fmt.Errorf("deadletter.sweep-interval must not be "+
+			"negative: got %v", c.DeadLetter.SweepInterval)
+	}
+	if c.DeadLetter.Retention < 0 {
+		return fmt.Errorf("deadletter.retention must not be "+
+			"negative: got %v", c.DeadLetter.Retention)
 	}
 	if c.AutoRefreshFeeRatePPM > 1_000_000 {
 		return fmt.Errorf("autorefreshfeerateppm must not exceed "+

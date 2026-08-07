@@ -27,6 +27,32 @@ crash-safe at-least-once delivery with exactly-once deduplication.
 - `Message` — Sealed interface for all actor messages (must embed `BaseMessage`).
 - `MessageCodec` — TLV-based codec for message serialization/deserialization.
 - `DeliveryStore` / `TxAwareDeliveryStore` — Interfaces for durable mailbox persistence (enqueue, claim, ack, dead-letter). The leaseless single-worker fast path adds `PeekNextMessage` (read-only claim, no lease, no attempts bump; yields an empty lease token), `AckMessageByID` (unfenced delete), and `NackMessageByID` (unfenced release that increments attempts). A `DurableActor` enables it (via `DurableMailboxConfig.SingleWorkerLeaseless`) strictly when `NumWorkers == 1` AND the behavior is the Read/Commit (Right/`TxBehavior`) path, eliminating the per-message lease write transaction. The multi-worker pool and the classic path are byte-for-byte unchanged: they keep `LeaseNextMessage` and the lease-fenced ack. Ack/nack route to the by-ID ops automatically whenever the delivery's lease token is empty; `Delivery.ShouldDeadLetter` counts the in-flight attempt as `Attempts + 1` on the leaseless path so the dead-letter boundary matches the leased path (where attempts is pre-incremented at lease).
+- `DeadLetterStore` — Operator-facing surface over the dead-letter queue,
+  deliberately separate from `DeliveryStore` (the runtime only writes dead
+  letters; widening `DeliveryStore` would force every test double to grow
+  operations the runtime never calls). Operations: `ListAllDeadLetters`
+  (global, offset-paginated), `ListDeadLettersSince` (incremental scan via
+  a strict `(created_at, id)` keyset cursor, so same-second floods page
+  through and every row surfaces exactly once),
+  `CountDeadLetters` / `CountDeadLettersByActor`, `RequeueDeadLetter`, and
+  `PurgeDeadLetters` (retention). `RequeueDeadLetter` re-enqueues under a
+  FRESH message ID with attempts reset and routing preserved; the fresh ID
+  is load-bearing because retry exhaustion marks the original ID processed,
+  so a same-ID requeue would be dedup-skipped. Typed errors:
+  `ErrDeadLetterNotFound`, `ErrDeadLetterNotRequeueable`.
+- `DeadLetterMonitor` / `DeadLetterMonitorConfig` — Background service
+  (OutboxPublisher lifecycle shape) that surfaces each newly parked dead
+  letter exactly once (error-level detail lines bounded per scan +
+  `OnDeadLetter` hook for metrics), summarizes the pre-existing backlog at
+  startup, and applies the opt-in retention sweep. The scan defers rows
+  stamped in the still-open wall-clock second: dead-letter IDs are minted
+  at enqueue time, so a later same-second write can sort before the keyset
+  cursor, and only a closed second is safe to advance past. Also drives
+  `MaintenanceStore.CleanupExpired` (dedup entries + ask results GC) on the
+  sweep cadence — the monitor is that method's only periodic caller.
+  Retention zero (the default) never purges.
+- `MaintenanceStore` — Narrow janitorial interface (`CleanupExpired`)
+  satisfied by any `DeliveryStore`.
 - `DurableActor` — Actor variant with crash-safe mailbox backed by SQL persistence. Provides `Wait(ctx)` to block until the actor stops and `StopAndWait(ctx)` to request a graceful shutdown and then wait.
 - `DurableActorConfig[M, R]` — Configuration struct for `DurableActor`: behavior, store, codec, clock, DLO, WaitGroup, `TellRetryPolicy`, lease/heartbeat/poll durations, max attempts, cleanup timeout, deduplication TTL, and `NumWorkers`.
 - `DurableActorConfig.NumWorkers` — How many concurrent worker loops drain the actor's single mailbox. Default and any value `<= 1` is one worker (strictly-sequential processing). A value `> 1` turns the actor into a competing-consumer pool: that many goroutines each lease distinct messages via `LeaseNextMailboxMessage`, so independent messages run in parallel while per-correlation-key FIFO still keeps same-key messages ordered. Only for behaviors whose handlers are concurrency-safe and hold no writer across their side effects (e.g. the serverconn egress sender on the Read/Commit path). `NewDurableActor` **fails closed** with `ErrConcurrentClassicBehavior` when `NumWorkers > 1` is paired with a classic (`Left`) `ActorBehavior`, since the classic path wraps the whole `Receive` in one write transaction and assumes sequential delivery; pools are only valid on the Read/Commit (`TxBehavior`) path. The test-only `DurableActorConfig.AllowConcurrentClassicBehavior()` escape hatch bypasses the guard for the egress benchmark that measures the forbidden config; production code must never call it.

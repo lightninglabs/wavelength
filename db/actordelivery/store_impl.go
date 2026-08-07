@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/db"
 	adsqlc "github.com/lightninglabs/wavelength/db/actordelivery/sqlc"
@@ -37,6 +38,10 @@ type (
 	SaveCheckpointParams   = adsqlc.SaveFSMCheckpointParams
 	DeadLetterInsertParams = adsqlc.MoveMailboxToDeadLetterParams
 	ListDeadLettersParams  = adsqlc.ListDeadLettersByActorParams
+
+	ListAllDeadLettersParams   = adsqlc.ListDeadLettersParams
+	ListDeadLettersSinceParams = adsqlc.ListDeadLettersSinceParams
+	DeadLetterCountRow         = adsqlc.CountDeadLettersByActorRow
 )
 
 // ActorDeliveryQueries is the interface that groups all actor delivery-related
@@ -117,6 +122,22 @@ type ActorDeliveryQueries interface {
 
 	ListDeadLettersByActor(ctx context.Context,
 		arg ListDeadLettersParams) ([]DeadLetterRow, error)
+
+	ListDeadLetters(ctx context.Context,
+		arg ListAllDeadLettersParams) ([]DeadLetterRow, error)
+
+	ListDeadLettersSince(ctx context.Context,
+		arg ListDeadLettersSinceParams) ([]DeadLetterRow, error)
+
+	CountDeadLetters(ctx context.Context) (int64, error)
+
+	CountDeadLettersByActor(ctx context.Context) (
+		[]DeadLetterCountRow,
+		error,
+	)
+
+	CleanupOldDeadLetters(ctx context.Context,
+		createdAt int64) (int64, error)
 
 	DeleteDeadLetter(ctx context.Context, id string) error
 
@@ -974,16 +995,8 @@ func (s *Store) GetDeadLetter(ctx context.Context, id string) (
 			return err
 		}
 
-		result = &actor.DeadLetter{
-			ID:            row.ID,
-			Source:        row.Source,
-			ActorID:       row.ActorID,
-			MessageType:   row.MessageType,
-			Payload:       row.Payload,
-			FailureReason: row.FailureReason,
-			Attempts:      int(row.Attempts),
-			CreatedAt:     time.Unix(row.CreatedAt, 0),
-		}
+		dl := deadLetterFromRow(row)
+		result = &dl
 
 		return nil
 	})
@@ -1011,19 +1024,110 @@ func (s *Store) ListDeadLetters(ctx context.Context, actorID string,
 			return err
 		}
 
-		result = make([]actor.DeadLetter, len(rows))
-		for i, row := range rows {
-			createdAt := time.Unix(row.CreatedAt, 0)
+		result = deadLettersFromRows(rows)
 
-			result[i] = actor.DeadLetter{
-				ID:            row.ID,
-				Source:        row.Source,
-				ActorID:       row.ActorID,
-				MessageType:   row.MessageType,
-				Payload:       row.Payload,
-				FailureReason: row.FailureReason,
-				Attempts:      int(row.Attempts),
-				CreatedAt:     createdAt,
+		return nil
+	})
+
+	return result, err
+}
+
+// ListAllDeadLetters lists dead letters across all actors, newest first, with
+// offset pagination for the operator surface.
+func (s *Store) ListAllDeadLetters(ctx context.Context, limit, offset int) (
+	[]actor.DeadLetter, error) {
+
+	readTxOpts := db.ReadTxOption()
+
+	var result []actor.DeadLetter
+
+	err := s.db.ExecTx(ctx, readTxOpts, func(q ActorDeliveryQueries) error {
+		rows, err := q.ListDeadLetters(
+			ctx,
+			ListAllDeadLettersParams{
+				Limit:  int32(limit),
+				Offset: int32(offset),
+			},
+		)
+		if err != nil {
+			return err
+		}
+
+		result = deadLettersFromRows(rows)
+
+		return nil
+	})
+
+	return result, err
+}
+
+// ListDeadLettersSince lists dead letters strictly after the (since,
+// afterID) cursor, oldest first in (created_at, id) order. Strict keyset
+// pagination guarantees an incremental scanner makes progress through a
+// flood of same-second entries and sees every row exactly once.
+func (s *Store) ListDeadLettersSince(ctx context.Context, since time.Time,
+	afterID string, limit int) ([]actor.DeadLetter, error) {
+
+	readTxOpts := db.ReadTxOption()
+
+	var result []actor.DeadLetter
+
+	err := s.db.ExecTx(ctx, readTxOpts, func(q ActorDeliveryQueries) error {
+		rows, err := q.ListDeadLettersSince(
+			ctx,
+			ListDeadLettersSinceParams{
+				CreatedAt: since.Unix(),
+				ID:        afterID,
+				Limit:     int32(limit),
+			},
+		)
+		if err != nil {
+			return err
+		}
+
+		result = deadLettersFromRows(rows)
+
+		return nil
+	})
+
+	return result, err
+}
+
+// CountDeadLetters counts all parked dead letters.
+func (s *Store) CountDeadLetters(ctx context.Context) (int64, error) {
+	readTxOpts := db.ReadTxOption()
+
+	var count int64
+
+	err := s.db.ExecTx(ctx, readTxOpts, func(q ActorDeliveryQueries) error {
+		var err error
+		count, err = q.CountDeadLetters(ctx)
+
+		return err
+	})
+
+	return count, err
+}
+
+// CountDeadLettersByActor tallies parked dead letters per actor.
+func (s *Store) CountDeadLettersByActor(ctx context.Context) (
+	[]actor.DeadLetterCount, error) {
+
+	readTxOpts := db.ReadTxOption()
+
+	var result []actor.DeadLetterCount
+
+	err := s.db.ExecTx(ctx, readTxOpts, func(q ActorDeliveryQueries) error {
+		rows, err := q.CountDeadLettersByActor(ctx)
+		if err != nil {
+			return err
+		}
+
+		result = make([]actor.DeadLetterCount, len(rows))
+		for i, row := range rows {
+			result[i] = actor.DeadLetterCount{
+				ActorID: row.ActorID,
+				Count:   row.Count,
 			}
 		}
 
@@ -1031,6 +1135,151 @@ func (s *Store) ListDeadLetters(ctx context.Context, actorID string,
 	})
 
 	return result, err
+}
+
+// RequeueDeadLetter atomically re-enqueues a dead letter into its original
+// mailbox and removes it from the dead-letter queue, returning the new
+// mailbox message ID.
+//
+// The re-enqueue mints a fresh message ID rather than reusing the original.
+// The retry-exhaustion path records the original ID in processed_messages
+// before dead-lettering, so a same-ID requeue would be silently skipped by
+// deduplication, and the enqueue's ON CONFLICT DO NOTHING would mask the
+// collision. Every routing field of the original message (priority, retry
+// budget, ask plumbing, correlation key) is preserved; attempts reset to
+// zero and the message becomes available immediately. The ID is minted
+// outside the transaction closure so a retried transaction re-inserts the
+// same row instead of a second one.
+//
+// Callers must NOT invoke this inside an ambient ExecTx transaction: the
+// success return, the post-commit wake, and any caller-side logging would
+// all fire before the ambient transaction commits, so a later rollback
+// would yield a phantom success with the dead letter still parked. The
+// operator RPC path (the only intended caller) runs outside any
+// transaction.
+func (s *Store) RequeueDeadLetter(ctx context.Context, id string) (string,
+	error) {
+
+	newID := uuid.Must(uuid.NewV7()).String()
+
+	var mailboxID string
+
+	writeTxOpts := db.WriteTxOption()
+
+	txBody := func(q ActorDeliveryQueries) error {
+		row, err := q.GetDeadLetter(ctx, id)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return actor.ErrDeadLetterNotFound
+			}
+
+			return err
+		}
+
+		// Only mailbox-sourced dead letters carry a target mailbox to
+		// return to; outbox-sourced rows have no requeue semantics.
+		if row.Source != "mailbox" {
+			return fmt.Errorf("%w: source %q",
+				actor.ErrDeadLetterNotRequeueable, row.Source)
+		}
+
+		mailboxID = row.ActorID
+		now := s.clock.Now().Unix()
+
+		err = q.EnqueueMailboxMessage(
+			ctx,
+			EnqueueMailboxParams{
+				ID:              newID,
+				MailboxID:       row.ActorID,
+				MessageType:     row.MessageType,
+				Payload:         row.Payload,
+				PromiseID:       row.PromiseID,
+				CallbackActorID: row.CallbackActorID,
+				CorrelationID:   row.CorrelationID,
+				Priority:        row.Priority,
+				AvailableAt:     now,
+				MaxAttempts:     row.MaxAttempts,
+				CreatedAt:       now,
+				CorrelationKey:  row.CorrelationKey,
+			},
+		)
+		if err != nil {
+			return err
+		}
+
+		return q.DeleteDeadLetter(ctx, id)
+	}
+
+	err := s.db.ExecTx(ctx, writeTxOpts, txBody)
+	if err != nil {
+		return "", err
+	}
+
+	// Rouse the target consumer so the requeued message is picked up
+	// immediately rather than at the next poll. When this requeue joined
+	// an ambient ExecTx, the note defers the wake to that transaction's
+	// commit; the direct wake below is then merely spurious (the consumer
+	// re-polls and finds nothing until commit), and the poll ticker
+	// remains the cross-process fallback either way.
+	noteMailboxEnqueued(ctx, mailboxID)
+	s.notifyMailboxWake(map[string]struct{}{mailboxID: {}})
+
+	return newID, nil
+}
+
+// PurgeDeadLetters deletes dead letters created before the threshold,
+// returning how many rows the retention sweep removed.
+func (s *Store) PurgeDeadLetters(ctx context.Context, olderThan time.Time) (
+	int64, error) {
+
+	writeTxOpts := db.WriteTxOption()
+
+	var removed int64
+
+	err := s.db.ExecTx(
+		ctx, writeTxOpts,
+		func(q ActorDeliveryQueries) error {
+			var err error
+			removed, err = q.CleanupOldDeadLetters(
+				ctx, olderThan.Unix(),
+			)
+
+			return err
+		},
+	)
+
+	return removed, err
+}
+
+// deadLetterFromRow maps a dead-letter row to its actor-layer projection.
+func deadLetterFromRow(row DeadLetterRow) actor.DeadLetter {
+	return actor.DeadLetter{
+		ID:              row.ID,
+		Source:          row.Source,
+		ActorID:         row.ActorID,
+		MessageType:     row.MessageType,
+		Payload:         row.Payload,
+		FailureReason:   row.FailureReason,
+		Attempts:        int(row.Attempts),
+		CreatedAt:       time.Unix(row.CreatedAt, 0),
+		PromiseID:       fromNullString(row.PromiseID),
+		CallbackActorID: fromNullString(row.CallbackActorID),
+		CorrelationID:   fromNullString(row.CorrelationID),
+		CorrelationKey:  fromNullString(row.CorrelationKey),
+		Priority:        int(row.Priority),
+		MaxAttempts:     int(row.MaxAttempts),
+	}
+}
+
+// deadLettersFromRows maps a slice of dead-letter rows to their actor-layer
+// projections.
+func deadLettersFromRows(rows []DeadLetterRow) []actor.DeadLetter {
+	result := make([]actor.DeadLetter, len(rows))
+	for i, row := range rows {
+		result[i] = deadLetterFromRow(row)
+	}
+
+	return result
 }
 
 // DeleteDeadLetter removes a dead letter after manual processing.
@@ -1548,16 +1797,9 @@ func (s *TxActorDeliveryStore) GetDeadLetter(ctx context.Context, id string) (
 		return nil, err
 	}
 
-	return &actor.DeadLetter{
-		ID:            row.ID,
-		Source:        row.Source,
-		ActorID:       row.ActorID,
-		MessageType:   row.MessageType,
-		Payload:       row.Payload,
-		FailureReason: row.FailureReason,
-		Attempts:      int(row.Attempts),
-		CreatedAt:     time.Unix(row.CreatedAt, 0),
-	}, nil
+	dl := deadLetterFromRow(row)
+
+	return &dl, nil
 }
 
 // ListDeadLetters lists dead letters for an actor with pagination.
@@ -1575,21 +1817,7 @@ func (s *TxActorDeliveryStore) ListDeadLetters(ctx context.Context,
 		return nil, err
 	}
 
-	result := make([]actor.DeadLetter, len(rows))
-	for i, row := range rows {
-		result[i] = actor.DeadLetter{
-			ID:            row.ID,
-			Source:        row.Source,
-			ActorID:       row.ActorID,
-			MessageType:   row.MessageType,
-			Payload:       row.Payload,
-			FailureReason: row.FailureReason,
-			Attempts:      int(row.Attempts),
-			CreatedAt:     time.Unix(row.CreatedAt, 0),
-		}
-	}
-
-	return result, nil
+	return deadLettersFromRows(rows), nil
 }
 
 // DeleteDeadLetter removes a dead letter after manual processing.
@@ -1851,6 +2079,10 @@ func (s *TxAwareActorDeliveryStore) execTxAttempt(ctx context.Context,
 
 // Compile-time check that Store implements actor.DeliveryStore.
 var _ actor.DeliveryStore = (*Store)(nil)
+
+// Compile-time check to ensure Store implements the operator-facing
+// dead-letter surface.
+var _ actor.DeadLetterStore = (*Store)(nil)
 
 // Compile-time check that Store can wake same-process outbox publishers.
 var _ actor.OutboxWakeRegistrar = (*Store)(nil)

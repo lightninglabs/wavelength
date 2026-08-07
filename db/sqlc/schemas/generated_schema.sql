@@ -378,7 +378,7 @@ CREATE TABLE dead_letters (
 
     -- created_at is the unix timestamp when the message was dead-lettered.
     created_at BIGINT NOT NULL
-);
+, promise_id TEXT, callback_actor_id TEXT, correlation_id TEXT, correlation_key TEXT, priority INTEGER NOT NULL DEFAULT 0, max_attempts INTEGER NOT NULL DEFAULT 10);
 
 CREATE TABLE exit_funding_addresses (
     -- target_outpoint_hash identifies the target VTXO transaction.

@@ -55,6 +55,14 @@ func (m *mockVTXOQuerier) GetRoundStatsByStatus(_ context.Context) (
 	return nil, nil
 }
 
+// GetDeadLetterCounts implements SystemStatsQuerier; unavailable in this
+// VTXO-focused double so the dead-letter gauges stay out of the way.
+func (m *mockVTXOQuerier) GetDeadLetterCounts(_ context.Context) (
+	[]DeadLetterCountRow, error) {
+
+	return nil, errors.New("not supported")
+}
+
 // TestSystemCollectorCollect verifies the scrape-driven collector emits
 // the expected count, value, and spendable-balance samples for a range
 // of VTXO inventories, and emits nothing on a query failure.
@@ -187,12 +195,13 @@ waved_vtxos_value_satoshis{status="spent"} 9000
 // values for every data source, used to exercise the extended scrape
 // gauges (wallet balance, block height, OOR sessions, rounds).
 type fullMockQuerier struct {
-	balance    WalletBalance
-	height     int64
-	oor        map[string]int64
-	rounds     map[string]int64
-	balanceErr error
-	heightErr  error
+	balance     WalletBalance
+	height      int64
+	oor         map[string]int64
+	rounds      map[string]int64
+	deadLetters []DeadLetterCountRow
+	balanceErr  error
+	heightErr   error
 }
 
 func (m *fullMockQuerier) GetVTXOStatsByStatus(_ context.Context) (
@@ -221,6 +230,12 @@ func (m *fullMockQuerier) GetRoundStatsByStatus(_ context.Context) (
 	map[string]int64, error) {
 
 	return m.rounds, nil
+}
+
+func (m *fullMockQuerier) GetDeadLetterCounts(_ context.Context) (
+	[]DeadLetterCountRow, error) {
+
+	return m.deadLetters, nil
 }
 
 // TestSystemCollectorExtendedGauges verifies the wallet-balance,
@@ -311,6 +326,67 @@ waved_rounds_by_status{status="joined"} 1
 				"waved_rounds_by_status",
 			),
 		)
+	})
+}
+
+// TestSystemCollectorDeadLetters verifies the dead-letter gauges: labelled
+// per-actor samples, the unlabeled total, and the explicit zero total when
+// the queue is clean.
+func TestSystemCollectorDeadLetters(t *testing.T) {
+	t.Parallel()
+
+	t.Run("parked entries", func(t *testing.T) {
+		t.Parallel()
+
+		q := &fullMockQuerier{
+			deadLetters: []DeadLetterCountRow{
+				{
+					ActorID: "round-actor",
+					Count:   2,
+				},
+				{
+					ActorID: "oor-registry",
+					Count:   1,
+				},
+			},
+		}
+		c := NewSystemCollector(q, fn.None[btclog.Logger]())
+
+		const want = `
+# HELP waved_dead_letters Number of parked dead-letter messages ` +
+			`awaiting operator action.
+# TYPE waved_dead_letters gauge
+waved_dead_letters 3
+# HELP waved_actor_dead_letters Number of parked dead-letter messages ` +
+			`by actor.
+# TYPE waved_actor_dead_letters gauge
+waved_actor_dead_letters{actor_id="round-actor"} 2
+waved_actor_dead_letters{actor_id="oor-registry"} 1
+`
+		err := testutil.CollectAndCompare(
+			c, strings.NewReader(want),
+			"waved_dead_letters", "waved_actor_dead_letters",
+		)
+		require.NoError(t, err)
+	})
+
+	t.Run("clean queue emits explicit zero", func(t *testing.T) {
+		t.Parallel()
+
+		q := &fullMockQuerier{}
+		c := NewSystemCollector(q, fn.None[btclog.Logger]())
+
+		const want = `
+# HELP waved_dead_letters Number of parked dead-letter messages ` +
+			`awaiting operator action.
+# TYPE waved_dead_letters gauge
+waved_dead_letters 0
+`
+		err := testutil.CollectAndCompare(
+			c, strings.NewReader(want),
+			"waved_dead_letters", "waved_actor_dead_letters",
+		)
+		require.NoError(t, err)
 	})
 }
 

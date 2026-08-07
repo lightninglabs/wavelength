@@ -28,13 +28,16 @@ type Querier interface {
 	CleanupExpiredAskResults(ctx context.Context, expiresAt int64) error
 	// Delete expired deduplication entries.
 	CleanupExpiredProcessedMessages(ctx context.Context, expiresAt int64) error
-	// Delete dead letters older than a threshold.
-	CleanupOldDeadLetters(ctx context.Context, createdAt int64) error
+	// Delete dead letters older than a threshold, reporting how many rows the
+	// retention sweep removed.
+	CleanupOldDeadLetters(ctx context.Context, createdAt int64) (int64, error)
 	// Mark an outbox message as successfully delivered. The claim token must match
 	// to prevent stale publishers from completing messages they no longer own.
 	CompleteOutboxMessage(ctx context.Context, arg CompleteOutboxMessageParams) error
 	// Count total dead letters.
 	CountDeadLetters(ctx context.Context) (int64, error)
+	// Count dead letters grouped by actor, for per-actor metrics and health.
+	CountDeadLettersByActor(ctx context.Context) ([]CountDeadLettersByActorRow, error)
 	// Count pending messages for an actor's mailbox.
 	CountPendingMailboxMessages(ctx context.Context, arg CountPendingMailboxMessagesParams) (int64, error)
 	// Count pending outbox messages.
@@ -128,10 +131,21 @@ type Querier interface {
 	// m.attempts < m.max_attempts, so this just brings the anti-join
 	// predicate into agreement with the eligibility predicate.
 	LeaseNextMailboxMessage(ctx context.Context, arg LeaseNextMailboxMessageParams) (MailboxMessage, error)
+	// List dead letters across all actors, newest first, with offset pagination
+	// for the operator surface.
+	ListDeadLetters(ctx context.Context, arg ListDeadLettersParams) ([]DeadLetter, error)
 	// List dead letters for a specific actor.
 	ListDeadLettersByActor(ctx context.Context, arg ListDeadLettersByActorParams) ([]DeadLetter, error)
 	// List dead letters by source type (mailbox or outbox).
 	ListDeadLettersBySource(ctx context.Context, arg ListDeadLettersBySourceParams) ([]DeadLetter, error)
+	// List dead letters strictly after the (created_at, id) cursor, oldest
+	// first. Used by the dead-letter monitor's incremental scan: strict keyset
+	// pagination guarantees progress through a flood of same-second entries (a
+	// created_at-only boundary would return the same first page forever) and
+	// makes every row surface exactly once with no caller-side dedup. An empty
+	// id with created_at = T yields everything from second T on, since every
+	// id collates after the empty string.
+	ListDeadLettersSince(ctx context.Context, arg ListDeadLettersSinceParams) ([]DeadLetter, error)
 	// List all FSM checkpoints (for debugging/admin).
 	ListFSMCheckpoints(ctx context.Context) ([]FsmCheckpoint, error)
 	// List all messages for an actor's mailbox (for debugging).
@@ -147,7 +161,10 @@ type Querier interface {
 	// =============================================================================
 	// Record that a message has been processed for deduplication.
 	MarkMessageProcessed(ctx context.Context, arg MarkMessageProcessedParams) error
-	// Move a failed message to the dead letter queue.
+	// Move a failed message to the dead letter queue. The projection carries the
+	// full routing identity of the mailbox row (ask plumbing, priority, retry
+	// budget, and the per-key FIFO tag) so an operator-driven requeue can
+	// reconstruct the message exactly as it was originally enqueued.
 	MoveMailboxToDeadLetter(ctx context.Context, arg MoveMailboxToDeadLetterParams) error
 	// Move a failed outbox message to the dead letter queue.
 	MoveOutboxToDeadLetter(ctx context.Context, arg MoveOutboxToDeadLetterParams) error

@@ -181,6 +181,27 @@ var (
 		[]string{"task"},
 	)
 
+	// DeadLettersObservedTotal counts dead letters as the dead-letter
+	// monitor first observes them. The waved_dead_letters gauge reports
+	// what is parked right now (and falls when entries are requeued or
+	// purged); this counter is the monotone history a rate() alert needs
+	// to catch messages that were parked and later cleared between
+	// scrapes.
+	//
+	// Deliberately unlabelled: actor IDs include per-session durable
+	// actors, so an actor_id label would accumulate one counter child
+	// per session for the process lifetime. Per-actor attribution lives
+	// on the self-limiting waved_actor_dead_letters gauge and in the
+	// monitor's log lines.
+	DeadLettersObservedTotal = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "dead_letters_observed_total",
+			Help: "Dead-lettered messages observed by the " +
+				"monitor.",
+		},
+	)
+
 	// OORTransferDurationSeconds observes the wall-clock duration of
 	// outgoing OOR (async) transfers from the SendOOR call entry to its
 	// terminal outcome, labelled by status. The duration is measured at
@@ -234,6 +255,7 @@ func allCollectors() []prometheus.Collector {
 		ServerConnLastIngressEventTimestamp,
 		ServerConnIngressDeferredTotal,
 		BackgroundTaskErrorsTotal,
+		DeadLettersObservedTotal,
 		GRPCClientMetrics,
 	}
 }

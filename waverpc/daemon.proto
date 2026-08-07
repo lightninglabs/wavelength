@@ -266,6 +266,27 @@ service DaemonService {
     // the daemon identity key.
     rpc SignOutSwapHtlcAck (SignOutSwapHtlcAckRequest)
         returns (SignOutSwapHtlcAckResponse);
+
+    // ListDeadLetters returns dead-lettered actor messages (messages a
+    // durable actor abandoned after exhausting delivery retries) for
+    // operator inspection, newest first.
+    rpc ListDeadLetters (ListDeadLettersRequest)
+        returns (ListDeadLettersResponse);
+
+    // GetDeadLetter returns a single dead letter by ID, including its
+    // payload.
+    rpc GetDeadLetter (GetDeadLetterRequest) returns (GetDeadLetterResponse);
+
+    // RequeueDeadLetter re-enqueues a dead letter into its original actor
+    // mailbox under a fresh message ID (attempts reset, routing preserved)
+    // and removes it from the dead-letter queue.
+    rpc RequeueDeadLetter (RequeueDeadLetterRequest)
+        returns (RequeueDeadLetterResponse);
+
+    // PurgeDeadLetters permanently deletes dead letters older than the
+    // given age.
+    rpc PurgeDeadLetters (PurgeDeadLettersRequest)
+        returns (PurgeDeadLettersResponse);
 }
 
 // WalletState mirrors the daemon's in-process wallet lifecycle enum:
@@ -2839,4 +2860,109 @@ message SignOutSwapHtlcAckRequest {
 message SignOutSwapHtlcAckResponse {
     // signature is the 64-byte BIP-340 Schnorr signature.
     bytes signature = 1;
+}
+
+message DeadLetter {
+    // id is the dead letter's identifier (the original message ID).
+    string id = 1;
+
+    // source is where the message originated: 'mailbox' or 'outbox'.
+    string source = 2;
+
+    // actor_id is the actor whose mailbox the message was addressed to.
+    string actor_id = 3;
+
+    // message_type is the human-readable message type name.
+    string message_type = 4;
+
+    // failure_reason describes why the message was dead-lettered.
+    string failure_reason = 5;
+
+    // attempts is the number of delivery attempts before dead-lettering.
+    int32 attempts = 6;
+
+    // created_at is the unix timestamp (seconds) of dead-lettering.
+    int64 created_at = 7;
+
+    // payload is the TLV-encoded message body. Empty in list responses
+    // unless include_payload was set.
+    bytes payload = 8;
+
+    // priority is the mailbox processing priority of the original message.
+    int32 priority = 9;
+
+    // max_attempts is the retry budget the original message carried.
+    int32 max_attempts = 10;
+
+    // promise_id is the ask-result key for Ask messages (empty for Tell).
+    string promise_id = 11;
+
+    // callback_actor_id routes DurableAsk responses (empty otherwise).
+    string callback_actor_id = 12;
+
+    // correlation_id links DurableAsk requests to responses.
+    string correlation_id = 13;
+
+    // correlation_key is the per-message FIFO lane tag (empty when
+    // unkeyed).
+    string correlation_key = 14;
+}
+
+message ListDeadLettersRequest {
+    // actor_id restricts the listing to one actor's dead letters when
+    // non-empty.
+    string actor_id = 1;
+
+    // limit caps the number of entries returned. Zero applies the default
+    // of 100.
+    int32 limit = 2;
+
+    // offset skips that many entries for pagination. Only honored on the
+    // global (unfiltered) listing.
+    int32 offset = 3;
+
+    // include_payload includes each entry's TLV payload in the response.
+    bool include_payload = 4;
+}
+
+message ListDeadLettersResponse {
+    // dead_letters are the parked entries, newest first.
+    repeated DeadLetter dead_letters = 1;
+
+    // total_count is the total number of parked dead letters across all
+    // actors, independent of filtering and pagination.
+    int64 total_count = 2;
+}
+
+message GetDeadLetterRequest {
+    // id is the dead letter's identifier.
+    string id = 1;
+}
+
+message GetDeadLetterResponse {
+    // dead_letter is the requested entry, payload included.
+    DeadLetter dead_letter = 1;
+}
+
+message RequeueDeadLetterRequest {
+    // id is the dead letter's identifier.
+    string id = 1;
+}
+
+message RequeueDeadLetterResponse {
+    // new_message_id is the fresh mailbox message ID the payload was
+    // re-enqueued under.
+    string new_message_id = 1;
+}
+
+message PurgeDeadLettersRequest {
+    // older_than_seconds deletes entries dead-lettered more than this many
+    // seconds ago. Must be positive; zero is rejected so an empty request
+    // can never wholesale-delete the queue.
+    int64 older_than_seconds = 1;
+}
+
+message PurgeDeadLettersResponse {
+    // removed is the number of entries the purge deleted.
+    int64 removed = 1;
 }

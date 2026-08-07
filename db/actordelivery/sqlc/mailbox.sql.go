@@ -136,14 +136,18 @@ func (q *Queries) CleanupExpiredProcessedMessages(ctx context.Context, expiresAt
 	return err
 }
 
-const CleanupOldDeadLetters = `-- name: CleanupOldDeadLetters :exec
+const CleanupOldDeadLetters = `-- name: CleanupOldDeadLetters :execrows
 DELETE FROM dead_letters WHERE created_at < $1
 `
 
-// Delete dead letters older than a threshold.
-func (q *Queries) CleanupOldDeadLetters(ctx context.Context, createdAt int64) error {
-	_, err := q.db.ExecContext(ctx, CleanupOldDeadLetters, createdAt)
-	return err
+// Delete dead letters older than a threshold, reporting how many rows the
+// retention sweep removed.
+func (q *Queries) CleanupOldDeadLetters(ctx context.Context, createdAt int64) (int64, error) {
+	result, err := q.db.ExecContext(ctx, CleanupOldDeadLetters, createdAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const CompleteOutboxMessage = `-- name: CompleteOutboxMessage :exec
@@ -175,6 +179,42 @@ func (q *Queries) CountDeadLetters(ctx context.Context) (int64, error) {
 	var count int64
 	err := row.Scan(&count)
 	return count, err
+}
+
+const CountDeadLettersByActor = `-- name: CountDeadLettersByActor :many
+SELECT actor_id, COUNT(*) AS count
+FROM dead_letters
+GROUP BY actor_id
+ORDER BY actor_id
+`
+
+type CountDeadLettersByActorRow struct {
+	ActorID string
+	Count   int64
+}
+
+// Count dead letters grouped by actor, for per-actor metrics and health.
+func (q *Queries) CountDeadLettersByActor(ctx context.Context) ([]CountDeadLettersByActorRow, error) {
+	rows, err := q.db.QueryContext(ctx, CountDeadLettersByActor)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CountDeadLettersByActorRow
+	for rows.Next() {
+		var i CountDeadLettersByActorRow
+		if err := rows.Scan(&i.ActorID, &i.Count); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const CountPendingMailboxMessages = `-- name: CountPendingMailboxMessages :one
@@ -435,7 +475,7 @@ func (q *Queries) GetAskResult(ctx context.Context, promiseID string) (AskResult
 
 const GetDeadLetter = `-- name: GetDeadLetter :one
 
-SELECT id, source, actor_id, message_type, payload, failure_reason, attempts, created_at FROM dead_letters WHERE id = $1
+SELECT id, source, actor_id, message_type, payload, failure_reason, attempts, created_at, promise_id, callback_actor_id, correlation_id, correlation_key, priority, max_attempts FROM dead_letters WHERE id = $1
 `
 
 // =============================================================================
@@ -454,6 +494,12 @@ func (q *Queries) GetDeadLetter(ctx context.Context, id string) (DeadLetter, err
 		&i.FailureReason,
 		&i.Attempts,
 		&i.CreatedAt,
+		&i.PromiseID,
+		&i.CallbackActorID,
+		&i.CorrelationID,
+		&i.CorrelationKey,
+		&i.Priority,
+		&i.MaxAttempts,
 	)
 	return i, err
 }
@@ -665,8 +711,59 @@ func (q *Queries) LeaseNextMailboxMessage(ctx context.Context, arg LeaseNextMail
 	return i, err
 }
 
+const ListDeadLetters = `-- name: ListDeadLetters :many
+SELECT id, source, actor_id, message_type, payload, failure_reason, attempts, created_at, promise_id, callback_actor_id, correlation_id, correlation_key, priority, max_attempts FROM dead_letters
+ORDER BY created_at DESC, id DESC
+LIMIT $1 OFFSET $2
+`
+
+type ListDeadLettersParams struct {
+	Limit  int32
+	Offset int32
+}
+
+// List dead letters across all actors, newest first, with offset pagination
+// for the operator surface.
+func (q *Queries) ListDeadLetters(ctx context.Context, arg ListDeadLettersParams) ([]DeadLetter, error) {
+	rows, err := q.db.QueryContext(ctx, ListDeadLetters, arg.Limit, arg.Offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []DeadLetter
+	for rows.Next() {
+		var i DeadLetter
+		if err := rows.Scan(
+			&i.ID,
+			&i.Source,
+			&i.ActorID,
+			&i.MessageType,
+			&i.Payload,
+			&i.FailureReason,
+			&i.Attempts,
+			&i.CreatedAt,
+			&i.PromiseID,
+			&i.CallbackActorID,
+			&i.CorrelationID,
+			&i.CorrelationKey,
+			&i.Priority,
+			&i.MaxAttempts,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const ListDeadLettersByActor = `-- name: ListDeadLettersByActor :many
-SELECT id, source, actor_id, message_type, payload, failure_reason, attempts, created_at FROM dead_letters
+SELECT id, source, actor_id, message_type, payload, failure_reason, attempts, created_at, promise_id, callback_actor_id, correlation_id, correlation_key, priority, max_attempts FROM dead_letters
 WHERE actor_id = $1
 ORDER BY created_at DESC
 LIMIT $2
@@ -696,6 +793,12 @@ func (q *Queries) ListDeadLettersByActor(ctx context.Context, arg ListDeadLetter
 			&i.FailureReason,
 			&i.Attempts,
 			&i.CreatedAt,
+			&i.PromiseID,
+			&i.CallbackActorID,
+			&i.CorrelationID,
+			&i.CorrelationKey,
+			&i.Priority,
+			&i.MaxAttempts,
 		); err != nil {
 			return nil, err
 		}
@@ -711,7 +814,7 @@ func (q *Queries) ListDeadLettersByActor(ctx context.Context, arg ListDeadLetter
 }
 
 const ListDeadLettersBySource = `-- name: ListDeadLettersBySource :many
-SELECT id, source, actor_id, message_type, payload, failure_reason, attempts, created_at FROM dead_letters
+SELECT id, source, actor_id, message_type, payload, failure_reason, attempts, created_at, promise_id, callback_actor_id, correlation_id, correlation_key, priority, max_attempts FROM dead_letters
 WHERE source = $1
 ORDER BY created_at DESC
 LIMIT $2
@@ -741,6 +844,70 @@ func (q *Queries) ListDeadLettersBySource(ctx context.Context, arg ListDeadLette
 			&i.FailureReason,
 			&i.Attempts,
 			&i.CreatedAt,
+			&i.PromiseID,
+			&i.CallbackActorID,
+			&i.CorrelationID,
+			&i.CorrelationKey,
+			&i.Priority,
+			&i.MaxAttempts,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const ListDeadLettersSince = `-- name: ListDeadLettersSince :many
+SELECT id, source, actor_id, message_type, payload, failure_reason, attempts, created_at, promise_id, callback_actor_id, correlation_id, correlation_key, priority, max_attempts FROM dead_letters
+WHERE created_at > $1 OR (created_at = $1 AND id > $2)
+ORDER BY created_at ASC, id ASC
+LIMIT $3
+`
+
+type ListDeadLettersSinceParams struct {
+	CreatedAt int64
+	ID        string
+	Limit     int32
+}
+
+// List dead letters strictly after the (created_at, id) cursor, oldest
+// first. Used by the dead-letter monitor's incremental scan: strict keyset
+// pagination guarantees progress through a flood of same-second entries (a
+// created_at-only boundary would return the same first page forever) and
+// makes every row surface exactly once with no caller-side dedup. An empty
+// id with created_at = T yields everything from second T on, since every
+// id collates after the empty string.
+func (q *Queries) ListDeadLettersSince(ctx context.Context, arg ListDeadLettersSinceParams) ([]DeadLetter, error) {
+	rows, err := q.db.QueryContext(ctx, ListDeadLettersSince, arg.CreatedAt, arg.ID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []DeadLetter
+	for rows.Next() {
+		var i DeadLetter
+		if err := rows.Scan(
+			&i.ID,
+			&i.Source,
+			&i.ActorID,
+			&i.MessageType,
+			&i.Payload,
+			&i.FailureReason,
+			&i.Attempts,
+			&i.CreatedAt,
+			&i.PromiseID,
+			&i.CallbackActorID,
+			&i.CorrelationID,
+			&i.CorrelationKey,
+			&i.Priority,
+			&i.MaxAttempts,
 		); err != nil {
 			return nil, err
 		}
@@ -913,8 +1080,14 @@ func (q *Queries) MarkMessageProcessed(ctx context.Context, arg MarkMessageProce
 }
 
 const MoveMailboxToDeadLetter = `-- name: MoveMailboxToDeadLetter :exec
-INSERT INTO dead_letters (id, source, actor_id, message_type, payload, failure_reason, attempts, created_at)
-SELECT m.id, 'mailbox', m.mailbox_id, m.message_type, m.payload, $2, m.attempts, $3
+INSERT INTO dead_letters (
+    id, source, actor_id, message_type, payload, failure_reason, attempts,
+    created_at, promise_id, callback_actor_id, correlation_id,
+    correlation_key, priority, max_attempts
+)
+SELECT m.id, 'mailbox', m.mailbox_id, m.message_type, m.payload, $2,
+       m.attempts, $3, m.promise_id, m.callback_actor_id, m.correlation_id,
+       m.correlation_key, m.priority, m.max_attempts
 FROM mailbox_messages m
 WHERE m.id = $1
 `
@@ -925,7 +1098,10 @@ type MoveMailboxToDeadLetterParams struct {
 	CreatedAt     int64
 }
 
-// Move a failed message to the dead letter queue.
+// Move a failed message to the dead letter queue. The projection carries the
+// full routing identity of the mailbox row (ask plumbing, priority, retry
+// budget, and the per-key FIFO tag) so an operator-driven requeue can
+// reconstruct the message exactly as it was originally enqueued.
 func (q *Queries) MoveMailboxToDeadLetter(ctx context.Context, arg MoveMailboxToDeadLetterParams) error {
 	_, err := q.db.ExecContext(ctx, MoveMailboxToDeadLetter, arg.ID, arg.FailureReason, arg.CreatedAt)
 	return err

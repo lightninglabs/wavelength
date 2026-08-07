@@ -116,6 +116,14 @@ type DaemonServiceMailboxServer interface {
 	ListVHTLCRecoveries(ctx context.Context, req *ListVHTLCRecoveriesRequest) (*ListVHTLCRecoveriesResponse, error)
 	// SignOutSwapHtlcAck handles SignOutSwapHtlcAck.
 	SignOutSwapHtlcAck(ctx context.Context, req *SignOutSwapHtlcAckRequest) (*SignOutSwapHtlcAckResponse, error)
+	// ListDeadLetters handles ListDeadLetters.
+	ListDeadLetters(ctx context.Context, req *ListDeadLettersRequest) (*ListDeadLettersResponse, error)
+	// GetDeadLetter handles GetDeadLetter.
+	GetDeadLetter(ctx context.Context, req *GetDeadLetterRequest) (*GetDeadLetterResponse, error)
+	// RequeueDeadLetter handles RequeueDeadLetter.
+	RequeueDeadLetter(ctx context.Context, req *RequeueDeadLetterRequest) (*RequeueDeadLetterResponse, error)
+	// PurgeDeadLetters handles PurgeDeadLetters.
+	PurgeDeadLetters(ctx context.Context, req *PurgeDeadLettersRequest) (*PurgeDeadLettersResponse, error)
 }
 
 // RegisterDaemonServiceMailboxServer registers handlers for DaemonService.
@@ -579,6 +587,46 @@ func RegisterDaemonServiceMailboxServer(r rpc.Router, impl DaemonServiceMailboxS
 		}
 
 		return impl.SignOutSwapHtlcAck(ctx, req)
+	})
+	r.Handle("waverpc.DaemonService", "ListDeadLetters", func() proto.Message {
+		return &ListDeadLettersRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*ListDeadLettersRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.ListDeadLetters(ctx, req)
+	})
+	r.Handle("waverpc.DaemonService", "GetDeadLetter", func() proto.Message {
+		return &GetDeadLetterRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*GetDeadLetterRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.GetDeadLetter(ctx, req)
+	})
+	r.Handle("waverpc.DaemonService", "RequeueDeadLetter", func() proto.Message {
+		return &RequeueDeadLetterRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*RequeueDeadLetterRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.RequeueDeadLetter(ctx, req)
+	})
+	r.Handle("waverpc.DaemonService", "PurgeDeadLetters", func() proto.Message {
+		return &PurgeDeadLettersRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*PurgeDeadLettersRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.PurgeDeadLetters(ctx, req)
 	})
 }
 
@@ -1633,6 +1681,98 @@ func (c *DaemonServiceMailboxClient) SignOutSwapHtlcAck(ctx context.Context, req
 	}
 
 	resp := new(SignOutSwapHtlcAckResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// ListDeadLetters calls the ListDeadLetters RPC.
+func (c *DaemonServiceMailboxClient) ListDeadLetters(ctx context.Context, req *ListDeadLettersRequest, opts ...rpc.RPCOptions) (*ListDeadLettersResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "waverpc.DaemonService",
+		Method:  "ListDeadLetters",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(ListDeadLettersResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// GetDeadLetter calls the GetDeadLetter RPC.
+func (c *DaemonServiceMailboxClient) GetDeadLetter(ctx context.Context, req *GetDeadLetterRequest, opts ...rpc.RPCOptions) (*GetDeadLetterResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "waverpc.DaemonService",
+		Method:  "GetDeadLetter",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(GetDeadLetterResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// RequeueDeadLetter calls the RequeueDeadLetter RPC.
+func (c *DaemonServiceMailboxClient) RequeueDeadLetter(ctx context.Context, req *RequeueDeadLetterRequest, opts ...rpc.RPCOptions) (*RequeueDeadLetterResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "waverpc.DaemonService",
+		Method:  "RequeueDeadLetter",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(RequeueDeadLetterResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// PurgeDeadLetters calls the PurgeDeadLetters RPC.
+func (c *DaemonServiceMailboxClient) PurgeDeadLetters(ctx context.Context, req *PurgeDeadLettersRequest, opts ...rpc.RPCOptions) (*PurgeDeadLettersResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "waverpc.DaemonService",
+		Method:  "PurgeDeadLetters",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(PurgeDeadLettersResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}
