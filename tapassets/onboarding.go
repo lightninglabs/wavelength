@@ -51,6 +51,16 @@ type OnboardingRequest struct {
 	MaxFeeSat          uint64
 	OperatorKey        *btcec.PublicKey
 	ExitDelay          uint32
+
+	// RoundBoarding keys the new anchor's asset output to a
+	// digest-scoped OP_TRUE script instead of a tapd wallet key, so a
+	// round's operator can build the transition that spends it. Custody
+	// is unaffected: it rests on the composed Bitcoin output, which
+	// still requires the owner's collaborative-leaf signature.
+	//
+	// Without it the asset output is wallet-keyed and only the owner's
+	// own tapd can spend it, which is what the OOR flow needs.
+	RoundBoarding bool
 }
 
 // OnboardingKeyDeriver returns the next wallet-owned standard VTXO key.
@@ -105,6 +115,11 @@ type OnboardingResult struct {
 
 	// Digest scopes the output's deterministic asset script key.
 	Digest tapsdk.Hash
+
+	// ScriptKey is the committed asset script key. An OP_TRUE boarding
+	// output is absent from tapd's wallet inventory, so this is the
+	// only handle for exporting its proof.
+	ScriptKey tapsdk.PubKey
 
 	// OPTrueWitness is the asset-level OP_TRUE witness stack a round's
 	// commitment transition spends the boarded output with.
@@ -301,6 +316,15 @@ func (o *Onboarder) Onboard(ctx context.Context, request *OnboardingRequest) (
 		}
 	}
 
+	// A boarding output is admitted by the round that consumes it, not
+	// as a direct VTXO: registering it here would leave the operator
+	// tracking the same outpoint twice.
+	if request.RoundBoarding {
+		result.Status = OnboardingStatusReady
+
+		return result, nil
+	}
+
 	if !state.Registered {
 		registration, registerErr := o.registrar(
 			ctx, OnboardingRegistration{
@@ -419,10 +443,9 @@ func (o *Onboarder) commit(ctx context.Context, request *OnboardingRequest,
 			Amount:            request.AssetAmount,
 			AnchorOutputIndex: 0,
 			AnchorValueSat:    uint64(outputValue),
-			Script: tapsdk.CustomAssetScriptPlan{
-				Mode:   tapsdk.CustomAssetScriptWallet,
-				Wallet: &tapsdk.CustomAssetWalletScriptPlan{},
-			},
+			Script: onboardingScriptPlan(
+				request, requestDigest,
+			),
 			Anchor: anchorPlan(
 				policy.InternalKey, policyTapLeaves(policy),
 			),
@@ -664,6 +687,7 @@ func onboardingResultFromCommit(request *OnboardingRequest,
 		PolicyTemplate:   append([]byte(nil), state.PolicyTemplate...),
 		PkScript:         pkScript,
 		TaprootAssetRoot: root,
+		ScriptKey:        output.scriptKey,
 		OwnerKey:         ownerKey,
 		OperatorKey:      request.OperatorKey,
 		ExitDelay:        request.ExitDelay,
@@ -793,6 +817,7 @@ func onboardingRequestDigest(request *OnboardingRequest) tapsdk.Hash {
 	_ = binary.Write(&value, binary.BigEndian, request.MaxFeeSat)
 	writeDigestBytes(&value, request.OperatorKey.SerializeCompressed())
 	_ = binary.Write(&value, binary.BigEndian, request.ExitDelay)
+	_ = binary.Write(&value, binary.BigEndian, request.RoundBoarding)
 	digest := sha256.Sum256(value.Bytes())
 
 	return tapsdk.Hash(digest)
@@ -902,4 +927,30 @@ func policyTapLeaves(policy *arkscript.VTXOPolicy) []txscript.TapLeaf {
 	}
 
 	return leaves
+}
+
+// onboardingScriptPlan selects the new anchor's asset script key. Round
+// boarding needs an OP_TRUE key so the operator can spend the asset when
+// it builds the round's transition; every other flow keeps a wallet key so
+// only the owner's own tapd can.
+func onboardingScriptPlan(request *OnboardingRequest,
+	digest tapsdk.Hash) tapsdk.CustomAssetScriptPlan {
+
+	if !request.RoundBoarding {
+		return tapsdk.CustomAssetScriptPlan{
+			Mode:   tapsdk.CustomAssetScriptWallet,
+			Wallet: &tapsdk.CustomAssetWalletScriptPlan{},
+		}
+	}
+
+	return tapsdk.CustomAssetScriptPlan{
+		Mode: tapsdk.CustomAssetScriptOPTrue,
+		OPTrue: &tapsdk.CustomAssetOPTrueScriptPlan{
+			InternalKey: tapsdk.KeyDescriptor{
+				RawKeyBytes: deterministicKey(
+					digest, "onboarding-boarding",
+				),
+			},
+		},
+	}
 }

@@ -104,11 +104,11 @@ func (s *Server) RegisterAssetBoarding(ctx context.Context,
 	return nil
 }
 
-// AssetBoardingDisclosure replays an idempotent Taproot Asset onboarding
-// by request ID and assembles the round boarding disclosure from its
-// result. The caller supplies the confirmation transaction (ConfTx) and
-// the boarded outpoint's exported proof file (AssetProof) before
-// registering the boarding.
+// AssetBoardingDisclosure performs (or, on a repeat call, replays) an
+// idempotent round-boarding onboarding and assembles the disclosure the
+// operator authenticates from its result. The caller supplies the
+// confirmation (ConfTx and ConfHeight) and the boarded outpoint's
+// exported proof file (AssetProof) before registering the boarding.
 func (s *Server) AssetBoardingDisclosure(ctx context.Context,
 	req *tapassets.OnboardingRequest) (*round.RegisterAssetBoardingRequest,
 	error) {
@@ -124,6 +124,13 @@ func (s *Server) AssetBoardingDisclosure(ctx context.Context,
 	}
 	req.OperatorKey = terms.PubKey
 	req.ExitDelay = terms.VTXOExitDelay
+
+	// Only a boarding-mode onboarding produces an output the operator
+	// can spend at the asset layer, so refuse to describe any other.
+	if !req.RoundBoarding {
+		return nil, fmt.Errorf("boarding disclosure requires a " +
+			"round-boarding onboarding request")
+	}
 
 	result, err := onboarder.Onboard(ctx, req)
 	if err != nil {
@@ -154,7 +161,6 @@ func (s *Server) AssetBoardingDisclosure(ctx context.Context,
 		KeyDesc:                 result.OwnerKey,
 		OperatorKey:             result.OperatorKey,
 		ExitDelay:               result.ExitDelay,
-		ConfHeight:              result.ConfirmationHeight,
 		AssetRef:                result.AssetRef,
 		AssetAmount:             result.AssetAmount,
 		AssetDigest:             result.Digest[:],
