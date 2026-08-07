@@ -108,6 +108,12 @@ func NewOpActor(cfg OpActorConfig) (*OpActor, error) {
 	)
 	durableCfg.Log = cfg.Log
 
+	// Bound the credit actor's durable backlog with the shared default
+	// watermarks so a wedged consumer sheds load at the producer instead
+	// of growing its backlog without bound.
+	durableCfg.SoftHighWatermark = actor.DefaultSoftHighWatermark
+	durableCfg.HardHighWatermark = actor.DefaultHardHighWatermark
+
 	durable, err := actor.NewDurableActor(durableCfg).Unpack()
 	if err != nil {
 		return nil, err

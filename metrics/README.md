@@ -47,6 +47,8 @@ label cardinality tracks live inventory.
 | `waved_block_height` | gauge | — | scrape (chain backend) | Best block height seen by the client's chain backend. |
 | `waved_oor_sessions_by_state` | gauge | `state` | scrape (OOR actor) | Currently-tracked (live) OOR sessions by state, e.g. `pending`. Lifetime totals live in `oor_transfers_*_total`. |
 | `waved_rounds_by_status` | gauge | `status` | scrape (round actor) | Currently-live rounds by status, e.g. `joined`, `confirmed`. Lifetime totals live in `rounds_*_total`. |
+| `waved_mailbox_backlog` | gauge | — | scrape (delivery store) | Total messages pending across all durable mailboxes. Emits an explicit `0` when every mailbox is drained, so "all clear" and "scrape broke" are distinguishable. |
+| `waved_mailbox_depth` | gauge | `mailbox_id` | scrape (delivery store) | Pending messages in one durable mailbox, leased (in-flight) rows included. Only mailboxes currently holding messages are reported, so per-session actor IDs never accumulate as permanent series. A mailbox that sits near its hard watermark (default 10000) is refusing new sends with `ErrMailboxSaturated`; the soft watermark (default 1000) logs a warning first. |
 
 The on-chain wallet balance complements the off-chain VTXO value: together they
 give a full picture of client funds. The `*_by_state` / `*_by_status` gauges
@@ -127,7 +129,7 @@ stall.
 |--------|------|--------|--------|-------------|
 | `waved_serverconn_last_ingress_poll_timestamp_seconds` | gauge | — | connector (ingress loop) | Unix timestamp of the last `Pull` that returned to the ingress loop, including an empty long-poll. Fresh at the long-poll cadence on an idle client, so staleness means the loop goroutine itself is gone. |
 | `waved_serverconn_last_ingress_event_timestamp_seconds` | gauge | — | connector (ingress loop) | Unix timestamp of the last pulled batch the loop delivered and committed, including a partial commit made while backpressure held the rest. Only advances on real traffic, so on its own it cannot tell an idle client from a wedged one; a fresh poll stamp with a stale event stamp says the loop is running but dispatch is not getting through. |
-| `waved_serverconn_ingress_dispatch_deferred_total` | counter | `service`, `method` | connector (ingress loop) | Redrives a full target actor mailbox turned away, by the route of the envelope that was refused. One increment per re-pull that could not deliver, **not** one per queued envelope: the loop meets the full mailbox once and stops there, so the envelopes behind the first are never attempted. Nothing is lost — the refused envelope is unacknowledged and re-pulled after a short backoff — but a rate that does not fall back to zero means a local actor has stopped draining. |
+| `waved_serverconn_ingress_dispatch_deferred_total` | counter | `service`, `method` | connector (ingress loop) | Redrives a target actor turned away for want of room — a full in-memory mailbox, or a durable mailbox past its hard backlog watermark — by the route of the envelope that was refused. One increment per re-pull that could not deliver, **not** one per queued envelope: the loop meets the refusal once and stops there, so the envelopes behind the first are never attempted. Nothing is lost — the refused envelope is unacknowledged and re-pulled after a short backoff — but a rate that does not fall back to zero means a local actor has stopped draining. Cross-reference `waved_mailbox_depth` to tell the two refusals apart: a durable refusal shows the target's mailbox pinned at its hard watermark. |
 
 ### Alerting
 
@@ -165,6 +167,21 @@ Both gauges are unlabelled, which assumes one connector per process — true tod
 (`waved/server.go` constructs exactly one). A second one would silently make each
 gauge the max of the two and the first alert blind; add a `mailbox_id` label
 before that happens.
+
+**A durable consumer is falling behind.** The depth gauges see the backlog long
+before the hard watermark starts refusing sends. A warning at the soft
+watermark gives the operator the same head start the log line does:
+
+```
+waved_mailbox_depth > 1000
+```
+
+for 10m, which filters the transient burst a healthy consumer drains on its
+own. A mailbox pinned at the hard watermark (default 10000) is actively
+shedding load — new sends fail with `ErrMailboxSaturated` — and warrants a
+page, because at that depth something downstream has stopped, not slowed.
+
+## gRPC Client Metrics
 
 ## gRPC Client Metrics
 

@@ -82,6 +82,25 @@ type SystemStatsQuerier interface {
 	// GetRoundStatsByStatus returns a count of currently-live rounds
 	// grouped by status label.
 	GetRoundStatsByStatus(ctx context.Context) (map[string]int64, error)
+
+	// GetMailboxDepths returns the pending backlog of every durable
+	// mailbox currently holding at least one message. Mailboxes with an
+	// empty backlog are absent, which keeps the scrape bounded by the
+	// number of backed-up actors. Implementations should return an error
+	// (so the scrape skips the gauges) when the delivery store cannot
+	// report depth.
+	GetMailboxDepths(ctx context.Context) ([]MailboxDepthRow, error)
+}
+
+// MailboxDepthRow holds the pending backlog of one durable mailbox, as
+// reported by the delivery store at scrape time.
+type MailboxDepthRow struct {
+	// MailboxID identifies the mailbox (typically the actor ID).
+	MailboxID string
+
+	// Depth is the number of messages parked in the mailbox, leased or
+	// not.
+	Depth int64
 }
 
 // Metric descriptors for the scrape-driven gauges.
@@ -134,6 +153,17 @@ var (
 		"Number of currently-live rounds by status.",
 		[]string{"status"}, nil,
 	)
+	mailboxBacklogDesc = prometheus.NewDesc(
+		prometheus.BuildFQName(namespace, "", "mailbox_backlog"),
+		"Total number of messages pending across all durable "+
+			"mailboxes.", nil, nil,
+	)
+	mailboxDepthDesc = prometheus.NewDesc(
+		prometheus.BuildFQName(namespace, "", "mailbox_depth"),
+		"Number of messages pending in a durable mailbox. Only "+
+			"mailboxes currently holding messages are reported.",
+		[]string{"mailbox_id"}, nil,
+	)
 )
 
 // liveStatus is the VTXO status label whose value is summed into the
@@ -171,6 +201,8 @@ func (c *SystemCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- blockHeightDesc
 	ch <- oorSessionsDesc
 	ch <- roundsByStatusDesc
+	ch <- mailboxBacklogDesc
+	ch <- mailboxDepthDesc
 }
 
 // Collect queries the client's live system state and emits the scrape
@@ -189,6 +221,7 @@ func (c *SystemCollector) Collect(ch chan<- prometheus.Metric) {
 	c.collectBlockHeight(ctx, ch)
 	c.collectOORSessions(ctx, ch)
 	c.collectRounds(ctx, ch)
+	c.collectMailboxDepths(ctx, ch)
 }
 
 // collectVTXOStats emits the VTXO inventory gauges (count and value by
@@ -304,4 +337,35 @@ func (c *SystemCollector) collectRounds(ctx context.Context,
 			float64(count), status,
 		)
 	}
+}
+
+// collectMailboxDepths emits the durable-mailbox backlog gauges: the
+// unlabelled total, and one labelled series per mailbox currently holding
+// messages. The total is emitted even at zero, so dashboards and alert
+// rules can tell "every mailbox drained" apart from "the scrape broke";
+// the per-mailbox series appear only while their mailbox is backed up, so
+// per-session actor IDs never accumulate as permanent label children.
+func (c *SystemCollector) collectMailboxDepths(ctx context.Context,
+	ch chan<- prometheus.Metric) {
+
+	rows, err := c.querier.GetMailboxDepths(ctx)
+	if err != nil {
+		c.log.Debugf("Mailbox depth query skipped during scrape: %v",
+			err)
+
+		return
+	}
+
+	var total int64
+	for _, row := range rows {
+		total += row.Depth
+		ch <- prometheus.MustNewConstMetric(
+			mailboxDepthDesc, prometheus.GaugeValue,
+			float64(row.Depth), row.MailboxID,
+		)
+	}
+
+	ch <- prometheus.MustNewConstMetric(
+		mailboxBacklogDesc, prometheus.GaugeValue, float64(total),
+	)
 }

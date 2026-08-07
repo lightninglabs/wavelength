@@ -265,6 +265,13 @@ func NewOORRegistryActor(cfg OORRegistryConfig) (*OORRegistryActor, error) {
 	)
 	durableCfg.Log = cfg.Log
 
+	// Bound the registry's durable backlog with the shared default
+	// watermarks. The ingress dispatch path classifies the resulting
+	// ErrMailboxSaturated as a deferral, so a backed-up registry stalls
+	// the serverconn cursor instead of deepening its own backlog.
+	durableCfg.SoftHighWatermark = actor.DefaultSoftHighWatermark
+	durableCfg.HardHighWatermark = actor.DefaultHardHighWatermark
+
 	// A deferred self-transfer hint redelivers on a long flat backoff and
 	// never dead-letters: the terminal-reap redrive is the fast path, so
 	// the durable copy is purely the crash-safety net, and the default

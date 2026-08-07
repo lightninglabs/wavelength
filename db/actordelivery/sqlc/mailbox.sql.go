@@ -177,6 +177,61 @@ func (q *Queries) CountDeadLetters(ctx context.Context) (int64, error) {
 	return count, err
 }
 
+const CountMailboxMessages = `-- name: CountMailboxMessages :one
+SELECT COUNT(*) FROM mailbox_messages
+WHERE mailbox_id = $1
+`
+
+// Count every row currently parked in one mailbox, leased or not. Rows are
+// deleted on ack, so COUNT(*) is exactly the undelivered backlog. This is the
+// depth the durable mailbox's watermark admission check reads; the prefix of
+// idx_mailbox_messages_available covers the mailbox_id equality scan.
+func (q *Queries) CountMailboxMessages(ctx context.Context, mailboxID string) (int64, error) {
+	row := q.db.QueryRowContext(ctx, CountMailboxMessages, mailboxID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const CountMailboxMessagesByMailbox = `-- name: CountMailboxMessagesByMailbox :many
+SELECT mailbox_id, COUNT(*) AS depth
+FROM mailbox_messages
+GROUP BY mailbox_id
+ORDER BY mailbox_id
+`
+
+type CountMailboxMessagesByMailboxRow struct {
+	MailboxID string
+	Depth     int64
+}
+
+// Report the backlog of every mailbox currently holding at least one message,
+// for the scrape-time depth gauges. Mailboxes with an empty backlog produce
+// no row, which keeps the result bounded by the number of backed-up actors
+// rather than the number of actors that have ever existed.
+func (q *Queries) CountMailboxMessagesByMailbox(ctx context.Context) ([]CountMailboxMessagesByMailboxRow, error) {
+	rows, err := q.db.QueryContext(ctx, CountMailboxMessagesByMailbox)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CountMailboxMessagesByMailboxRow
+	for rows.Next() {
+		var i CountMailboxMessagesByMailboxRow
+		if err := rows.Scan(&i.MailboxID, &i.Depth); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const CountPendingMailboxMessages = `-- name: CountPendingMailboxMessages :one
 SELECT COUNT(*) FROM mailbox_messages
 WHERE mailbox_id = $1

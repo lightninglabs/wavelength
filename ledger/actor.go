@@ -384,6 +384,18 @@ func (a *LedgerActor) Start(ctx context.Context) error {
 	](
 		a.actorID, a, a.bindStores, a.cfg.DeliveryStore, codec,
 	)
+
+	// The ledger gets a SOFT watermark only, never the hard refusal. Its
+	// producers are fire-and-forget Tells that log-and-continue on
+	// failure with no redrive path, so a refused send is not backpressure
+	// but a permanently missing accounting leg: the double-entry balance
+	// and the audit trail would stay silently incomplete after the
+	// backlog drains. A deep-but-eventually-complete backlog is the
+	// better failure mode for an audit trail; the soft warning (and the
+	// waved_mailbox_depth gauge) keeps the depth observable and
+	// alertable.
+	durableCfg.SoftHighWatermark = actor.DefaultSoftHighWatermark
+
 	durable, err := actor.NewDurableActor(durableCfg).Unpack()
 	if err != nil {
 		return fmt.Errorf("build ledger durable actor: %w", err)

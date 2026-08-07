@@ -191,6 +191,24 @@ SELECT COUNT(*) FROM mailbox_messages
 WHERE mailbox_id = $1
   AND (lease_until IS NULL OR lease_until < $2);
 
+-- name: CountMailboxMessages :one
+-- Count every row currently parked in one mailbox, leased or not. Rows are
+-- deleted on ack, so COUNT(*) is exactly the undelivered backlog. This is the
+-- depth the durable mailbox's watermark admission check reads; the prefix of
+-- idx_mailbox_messages_available covers the mailbox_id equality scan.
+SELECT COUNT(*) FROM mailbox_messages
+WHERE mailbox_id = $1;
+
+-- name: CountMailboxMessagesByMailbox :many
+-- Report the backlog of every mailbox currently holding at least one message,
+-- for the scrape-time depth gauges. Mailboxes with an empty backlog produce
+-- no row, which keeps the result bounded by the number of backed-up actors
+-- rather than the number of actors that have ever existed.
+SELECT mailbox_id, COUNT(*) AS depth
+FROM mailbox_messages
+GROUP BY mailbox_id
+ORDER BY mailbox_id;
+
 -- name: ExpireMailboxLeases :exec
 -- Release all expired leases so messages can be redelivered.
 -- Called periodically by a background cleanup task.

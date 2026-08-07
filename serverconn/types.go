@@ -58,10 +58,11 @@ const ackStateType = mailboxconn.CheckpointStateType
 // that captures a ServiceKey reference for the target actor.
 //
 // An error wrapping ErrDispatchDeferred is the one non-failure a dispatcher may
-// return: the target's in-memory mailbox had no room. The envelope is untouched
-// and unacknowledged, and the ingress loop re-pulls it after a backoff. A
-// dispatcher must never park waiting for room, because one goroutine dispatches
-// every inbound route in the process.
+// return: the target refused the envelope for want of room, either a full
+// in-memory mailbox or a durable mailbox past its hard backlog watermark. The
+// envelope is untouched and unacknowledged, and the ingress loop re-pulls it
+// after a backoff. A dispatcher must never park waiting for room, because one
+// goroutine dispatches every inbound route in the process.
 type EnvelopeDispatcher func(
 	ctx context.Context, env *mailboxpb.Envelope,
 ) error

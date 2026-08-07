@@ -76,6 +76,12 @@ type ActorDeliveryQueries interface {
 
 	ExpireMailboxLeases(ctx context.Context, leaseUntil sql.NullInt64) error
 
+	CountMailboxMessages(ctx context.Context,
+		mailboxID string) (int64, error)
+
+	CountMailboxMessagesByMailbox(ctx context.Context) (
+		[]adsqlc.CountMailboxMessagesByMailboxRow, error)
+
 	// Ask result operations.
 	InsertAskResult(ctx context.Context, arg InsertAskResultParams) error
 
@@ -1090,6 +1096,56 @@ func (s *Store) CleanupExpired(ctx context.Context) error {
 	)
 }
 
+// MailboxDepth returns the number of messages currently parked in the given
+// mailbox, leased or not. Rows are deleted on ack, so the count is exactly the
+// undelivered backlog; the prefix of idx_mailbox_messages_available covers the
+// scan. This is the read behind the durable mailbox's watermark admission
+// check, part of the actor.MailboxDepthStore surface.
+func (s *Store) MailboxDepth(ctx context.Context, mailboxID string) (int64,
+	error) {
+
+	readTxOpts := db.ReadTxOption()
+
+	var depth int64
+	err := s.db.ExecTx(ctx, readTxOpts, func(q ActorDeliveryQueries) error {
+		var err error
+		depth, err = q.CountMailboxMessages(ctx, mailboxID)
+
+		return err
+	})
+
+	return depth, err
+}
+
+// MailboxDepths returns the backlog of every mailbox currently holding at
+// least one message, for the scrape-time depth gauges. Mailboxes with an
+// empty backlog are absent from the result.
+func (s *Store) MailboxDepths(ctx context.Context) ([]actor.MailboxDepthCount,
+	error) {
+
+	readTxOpts := db.ReadTxOption()
+
+	var result []actor.MailboxDepthCount
+	err := s.db.ExecTx(ctx, readTxOpts, func(q ActorDeliveryQueries) error {
+		rows, err := q.CountMailboxMessagesByMailbox(ctx)
+		if err != nil {
+			return err
+		}
+
+		result = make([]actor.MailboxDepthCount, 0, len(rows))
+		for _, row := range rows {
+			result = append(result, actor.MailboxDepthCount{
+				MailboxID: row.MailboxID,
+				Depth:     row.Depth,
+			})
+		}
+
+		return nil
+	})
+
+	return result, err
+}
+
 // Helper functions for SQL type conversions.
 
 // toNullString converts a string to sql.NullString.
@@ -1858,6 +1914,10 @@ var _ actor.OutboxWakeRegistrar = (*Store)(nil)
 // Compile-time check that Store can wake same-process mailbox receive loops
 // after a folded outbox enqueue commits.
 var _ actor.MailboxWakeRegistrar = (*Store)(nil)
+
+// Compile-time check that Store exposes the mailbox depth surface the durable
+// mailbox's watermark check and the metrics scrape discover by assertion.
+var _ actor.MailboxDepthStore = (*Store)(nil)
 
 // Compile-time check that TxAwareActorDeliveryStore implements
 // actor.TxAwareDeliveryStore.

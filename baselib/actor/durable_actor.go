@@ -115,6 +115,19 @@ type DurableActorConfig[M TLVMessage, R any] struct {
 	// Default: 10.
 	MaxAttempts int
 
+	// SoftHighWatermark is the persistent backlog depth at which the
+	// actor's mailbox starts logging that its consumer is falling behind.
+	// Zero (the default) disables the warning. See
+	// DurableMailboxConfig.SoftHighWatermark.
+	SoftHighWatermark int
+
+	// HardHighWatermark is the persistent backlog depth at which sends to
+	// the actor's mailbox are refused with ErrMailboxSaturated. Zero (the
+	// default) disables the bound; control-priority messages and
+	// outbox-propagated deliveries are always exempt. See
+	// DurableMailboxConfig.HardHighWatermark.
+	HardHighWatermark int
+
 	// CleanupTimeout specifies the maximum duration for OnStop cleanup.
 	// Default: 5 seconds.
 	CleanupTimeout time.Duration
@@ -385,14 +398,16 @@ func NewDurableActor[M TLVMessage, R any](
 	// normalizes zero and inverted values, so an actor config that predates
 	// MaxPollInterval still lands on the default ceiling.
 	mailboxCfg := DurableMailboxConfig{
-		MailboxID:       cfg.ID,
-		Store:           cfg.Store,
-		Codec:           cfg.Codec,
-		Clock:           cfg.Clock,
-		LeaseDuration:   cfg.LeaseDuration,
-		PollInterval:    cfg.PollInterval,
-		MaxPollInterval: cfg.MaxPollInterval,
-		MaxAttempts:     cfg.MaxAttempts,
+		MailboxID:         cfg.ID,
+		Store:             cfg.Store,
+		Codec:             cfg.Codec,
+		Clock:             cfg.Clock,
+		LeaseDuration:     cfg.LeaseDuration,
+		PollInterval:      cfg.PollInterval,
+		MaxPollInterval:   cfg.MaxPollInterval,
+		MaxAttempts:       cfg.MaxAttempts,
+		SoftHighWatermark: cfg.SoftHighWatermark,
+		HardHighWatermark: cfg.HardHighWatermark,
 
 		// Size the wake channel to the worker count so a burst of
 		// enqueues can rouse every idle worker at once.

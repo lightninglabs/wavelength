@@ -182,6 +182,13 @@ or balance reconciliation. Required emission pairs:
   events.
 - Fire-and-forget: `LedgerResp` is always nil; callers `Tell`, never
   `Ask`.
+- **Soft watermark only, never a hard one.** The actor opts into
+  `SoftHighWatermark` for backlog observability but deliberately leaves
+  `HardHighWatermark` disabled: producers log-and-continue on a failed
+  `Tell` with no redrive path, so a hard `ErrMailboxSaturated` refusal
+  would not be backpressure but a permanently missing accounting leg. A
+  deep-but-eventually-complete backlog is the better failure mode for an
+  audit trail.
 - TLV stream encoding. `decodeAmountSat` narrows `uint64` to `int64`
   (rejects values past `MaxInt64`); `decodeFixedBytes` enforces exact
   lengths (`RoundID=16`, `SessionID=32`, `OutpointHash=32`).

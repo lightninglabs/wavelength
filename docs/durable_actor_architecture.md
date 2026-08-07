@@ -9,11 +9,12 @@ semantics, recovery mechanisms, and type-erased actor discovery.
 1. [Overview](#overview)
 2. [OutboxPublisher CDC Pattern](#outboxpublisher-cdc-pattern)
 3. [DurableMailbox Message Lifecycle](#durablemailbox-message-lifecycle)
-4. [Actor System Architecture](#actor-system-architecture)
-5. [Lease-Based Delivery Semantics](#lease-based-delivery-semantics)
-6. [Recovery and Restart Flow](#recovery-and-restart-flow)
-7. [TypeAssertingRef and MapRef Pattern](#typeassertingref-and-mapref-pattern)
-8. [DurableAsk: Crash-Safe Request-Response](#durableask-crash-safe-request-response)
+4. [Backpressure Watermarks](#backpressure-watermarks)
+5. [Actor System Architecture](#actor-system-architecture)
+6. [Lease-Based Delivery Semantics](#lease-based-delivery-semantics)
+7. [Recovery and Restart Flow](#recovery-and-restart-flow)
+8. [TypeAssertingRef and MapRef Pattern](#typeassertingref-and-mapref-pattern)
+9. [DurableAsk: Crash-Safe Request-Response](#durableask-crash-safe-request-response)
 
 ---
 
@@ -269,6 +270,101 @@ debug delivery issues and design retry strategies.
 7. **Dead Letter**: After `max_attempts` failures, the message is moved to
    `dead_letters` with the failure reason. Dead letters require manual inspection
    and can be replayed or deleted.
+
+---
+
+## Backpressure Watermarks
+
+A durable mailbox has no in-memory capacity, so the `ErrMailboxFull` signal
+that bounds a channel mailbox never fires for it: every `Tell` lands as a
+database row and the backlog grows for as long as the consumer lags. Backlog
+watermarks are the durable analogue of that bound.
+
+### Semantics
+
+Two thresholds on `DurableMailboxConfig` (flowing through
+`DurableActorConfig`), both measured against the mailbox's persistent backlog
+(`COUNT(*)` of its `mailbox_messages` rows, leased or not — rows are deleted
+on ack, so the count is exactly the undelivered backlog):
+
+- **`SoftHighWatermark`** (site default `actor.DefaultSoftHighWatermark`,
+  1000): crossing it logs a warning, once per breach episode. Sends still
+  succeed. This is the operator's early signal that a consumer is falling
+  behind.
+- **`HardHighWatermark`** (site default `actor.DefaultHardHighWatermark`,
+  10000): at or past it, `Send` refuses the message with
+  `ErrMailboxSaturated` before encoding anything, so a refusal needs no
+  cleanup and `TrySend`/`TryTell` inherit the check for free. The message was
+  not enqueued; the caller sheds, stashes, or retries after the consumer
+  drains.
+
+Both default to zero (disabled) on the config structs; the bound is opted
+into per actor. Two message classes are always exempt:
+
+- **Control-priority messages** (`priority >= actor.ControlPriority`, which
+  includes `RestartPriority`): the restart, restore, and resume messages
+  that would un-wedge a stuck actor must not be refused by the very backlog
+  they exist to drain. Boot-time restores (`RestoreNonTerminalRequest` in
+  OOR, `ResumeUnrollRequest` in unroll, `ResumeCreditOpRequest` in credit)
+  carry this priority because the daemon treats their failure as fatal: a
+  refusal there would turn a backed-up mailbox into a restart crash loop.
+- **Outbox-propagated deliveries** (detected via the outbox ID the
+  publisher stamps into the context): the message was already accepted at
+  its true producer and durably committed to the outbox, so refusing the
+  CDC hand-off sheds nothing. Worse, the publisher's claim path bumps
+  delivery attempts in its own transaction, so repeated refusals would
+  dead-letter the committed outbox row (and any DurableAsk response it
+  carries) instead of exerting backpressure.
+
+A store that does not implement `actor.MailboxDepthStore` runs without
+watermarks entirely, and a failed depth probe fails OPEN (the send is
+admitted): a broken monitoring read must not become message loss.
+
+### The probe
+
+The depth read is TTL-cached (one second) with a local count of sends
+accepted since the last probe added on top, so the common send path pays no
+extra query. The estimate is one-sided for local traffic (local sends push
+it up immediately, acks surface at the next probe; overshooting is the safe
+direction for an admission check), while sends from other processes stay
+invisible for up to one window, so the bound is approximate rather than
+exact. The probe is single-flighted (concurrent senders use the cached
+estimate rather than stacking behind the query) and runs with the sender's
+ambient transaction stripped (`WithoutTx`): joining a SERIALIZABLE writer
+would take predicate locks over the whole mailbox partition and manufacture
+serialization conflicts with the consumer's acks, precisely when the system
+is already contended.
+
+### Who refuses, and what callers do
+
+- **serverconn ingress** classifies `ErrMailboxSaturated` from a durable
+  target exactly like `ErrMailboxFull` from a bounded in-memory one: the
+  envelope defers, the cursor stalls, and the loop re-pulls after a backoff
+  (see `serverconn/dispatch_deferral.go`). A backed-up durable actor
+  therefore exerts backpressure on the operator stream instead of deepening
+  its own backlog.
+- **Local producers** (RPC handlers, other actors) see the error from
+  `Tell`/`Ask` and propagate it; at ten thousand parked messages, failing
+  loudly is the only move that helps.
+- **The OutboxPublisher's folded delivery path is exempt** via the outbox-ID
+  context marker described above, so CDC delivery is never refused and the
+  claim-expiry retry contract is untouched.
+
+**Known residual**: an actor turn that Tells into a saturated peer inside
+its own commit (e.g. an OOR session's transport send into serverconn
+egress) fails the whole turn, which nacks the INBOUND message and burns one
+of its finite delivery attempts; a long enough saturation episode
+dead-letters it. The dead-letter tooling (#1119) makes those visible and
+requeueable, and the planned postpone semantics (re-enqueue without burning
+attempts) are the structural fix; until then, saturation-driven turn
+failures ride the ordinary retry/dead-letter path.
+
+### Observability
+
+The scrape-time gauges `waved_mailbox_backlog` (unlabelled total, explicit
+zero) and `waved_mailbox_depth{mailbox_id}` (one series per backed-up
+mailbox) read the same store surface; see `metrics/README.md` for the
+alerting recipes.
 
 ---
 

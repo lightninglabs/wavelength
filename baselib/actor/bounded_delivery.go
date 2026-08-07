@@ -56,7 +56,10 @@ type NonParkingTeller[M Message] interface {
 // enqueue into the caller's transaction, and guessing the other way would
 // silently break that atomicity for a reference implemented elsewhere.
 //
-// Callers must handle ErrMailboxFull. Treating it as a delivery failure and
+// Callers must handle ErrMailboxFull, and its durable analogue
+// ErrMailboxSaturated when the target's mailbox carries backlog watermarks:
+// both mean the target refused for want of room and expects the caller to
+// stash, redrive, or shed. Treating either as a delivery failure and
 // dropping the message converts backpressure into silent message loss, which
 // for an at-least-once transport is worse than the stall it replaces.
 func TellWithoutParking[M Message](ctx context.Context, ref TellOnlyRef[M],
@@ -84,8 +87,12 @@ func (ref *actorRefImpl[M, R]) TellWithoutParkingTo(ctx context.Context,
 }
 
 // TellWithoutParkingTo keeps the plain Tell: a durable mailbox has no
-// capacity, so its enqueue waits on a database write inside the caller's
-// transaction instead of on the receiving actor draining its queue.
+// in-memory capacity, so its enqueue waits on a database write inside the
+// caller's transaction instead of on the receiving actor draining its queue.
+// The write itself never parks on the consumer; what it can do is refuse
+// with ErrMailboxSaturated when the mailbox carries backlog watermarks and
+// the backlog is past the hard one, which the caller handles like
+// ErrMailboxFull.
 func (ref *durableActorRefImpl[M, R]) TellWithoutParkingTo(ctx context.Context,
 	msg M) fn.Result[bool] {
 
