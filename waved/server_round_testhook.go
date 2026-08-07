@@ -6,8 +6,10 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/round"
 	"github.com/lightninglabs/wavelength/tapassets"
+	"github.com/lightninglabs/wavelength/wallet"
 )
 
 // TriggerRoundRegistration injects an IntentRequested event into the client
@@ -92,6 +94,13 @@ func (s *Server) RegisterAssetBoarding(ctx context.Context,
 		return fmt.Errorf("actor system not initialized")
 	}
 
+	// The wallet never derived this address, so nothing has recorded the
+	// boarding it funds. The round checkpoints its intents against those
+	// records, so they have to exist before the round sees it.
+	if err := s.persistAssetBoarding(ctx, req); err != nil {
+		return err
+	}
+
 	askCtx := context.WithoutCancel(ctx)
 
 	roundRef := round.NewServiceKey().Ref(s.actorSystem)
@@ -102,6 +111,58 @@ func (s *Server) RegisterAssetBoarding(ctx context.Context,
 	}
 
 	return nil
+}
+
+// persistAssetBoarding records the composed boarding output as a boarding
+// address and a confirmed intent, the rows a round's own checkpoint
+// references.
+func (s *Server) persistAssetBoarding(ctx context.Context,
+	req *round.RegisterAssetBoardingRequest) error {
+
+	if req.ConfTx == nil ||
+		int(req.Outpoint.Index) >= len(req.ConfTx.TxOut) {
+		return fmt.Errorf("asset boarding confirmation is invalid")
+	}
+	output := req.ConfTx.TxOut[req.Outpoint.Index]
+
+	policyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
+		req.KeyDesc.PubKey, req.OperatorKey, req.ExitDelay,
+	)
+	if err != nil {
+		return fmt.Errorf("encode boarding policy: %w", err)
+	}
+	address, tapscript, err := arkscript.ComposedBoardingAddress(
+		policyTemplate, [32]byte(req.AssetCommitmentLeafHash),
+		req.KeyDesc.PubKey, req.OperatorKey, req.ExitDelay,
+		s.chainParams,
+	)
+	if err != nil {
+		return fmt.Errorf("compose asset boarding address: %w", err)
+	}
+
+	store := s.newBoardingStore()
+	boardingAddr := &wallet.BoardingAddress{
+		Address:     address,
+		Tapscript:   tapscript,
+		KeyDesc:     req.KeyDesc,
+		OperatorKey: req.OperatorKey,
+		ExitDelay:   req.ExitDelay,
+	}
+	if err := store.InsertBoardingAddress(ctx, boardingAddr); err != nil {
+		return fmt.Errorf("persist asset boarding address: %w", err)
+	}
+
+	return store.InsertBoardingIntents(ctx, wallet.BoardingIntent{
+		Address:  *boardingAddr,
+		Outpoint: req.Outpoint,
+		ChainInfo: wallet.BoardingChainInfo{
+			ConfHeight: req.ConfHeight,
+			ConfTx:     req.ConfTx,
+			OutPoint:   req.Outpoint,
+			Amount:     btcutil.Amount(output.Value),
+		},
+		Status: wallet.BoardingStatusConfirmed,
+	})
 }
 
 // AssetBoardingDisclosure performs (or, on a repeat call, replays) an
