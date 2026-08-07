@@ -13,6 +13,7 @@ import (
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/google/uuid"
 	"github.com/lightninglabs/wavelength/baselib/protofsm"
+	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/lib/tree"
 	"github.com/lightninglabs/wavelength/lib/types"
 	"github.com/lightninglabs/wavelength/rpc/roundpb"
@@ -340,6 +341,12 @@ type BoardingIntent struct {
 	// Request is the original boarding request details. It targets
 	// a boarding address by outpoint and includes additional metadata.
 	Request types.BoardingRequest
+
+	// AuthSpend overrides the standard timeout proof path used for
+	// join-round authorization. A composed asset boarding output needs
+	// the disclosed commitment leaf hash as an extra control-block
+	// sibling, which the standard policy-only path does not carry.
+	AuthSpend *arkscript.SpendPath
 }
 
 // ConfInfo contains chain information about when a round's commitment

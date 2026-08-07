@@ -1668,7 +1668,19 @@ func (a *RoundClientActor) handleAssetBoarding(ctx context.Context,
 		)
 	}
 
+	authSpend, err := arkscript.ComposedBoardingAuthSpend(
+		[32]byte(msg.AssetCommitmentLeafHash), msg.KeyDesc.PubKey,
+		msg.OperatorKey, msg.ExitDelay,
+	)
+	if err != nil {
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("compose asset boarding auth spend: %w",
+				err),
+		)
+	}
+
 	intent := BoardingIntent{
+		AuthSpend: authSpend,
 		BoardingIntent: wallet.BoardingIntent{
 			Address: wallet.BoardingAddress{
 				Address:     address,
