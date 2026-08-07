@@ -299,21 +299,41 @@ on ack, so the count is exactly the undelivered backlog):
   drains.
 
 Both default to zero (disabled) on the config structs; the bound is opted
-into per actor. Messages with priority `>= RestartPriority` are always
-exempt, because the `RestartMessage` that would un-wedge a stuck actor must
-not be refused by the very backlog it exists to drain. A store that does not
-implement `actor.MailboxDepthStore` runs without watermarks entirely, and a
-failed depth probe fails OPEN (the send is admitted): a broken monitoring
-read must not become message loss.
+into per actor. Two message classes are always exempt:
+
+- **Control-priority messages** (`priority >= actor.ControlPriority`, which
+  includes `RestartPriority`): the restart, restore, and resume messages
+  that would un-wedge a stuck actor must not be refused by the very backlog
+  they exist to drain. Boot-time restores (`RestoreNonTerminalRequest` in
+  OOR, `ResumeUnrollRequest` in unroll, `ResumeCreditOpRequest` in credit)
+  carry this priority because the daemon treats their failure as fatal: a
+  refusal there would turn a backed-up mailbox into a restart crash loop.
+- **Outbox-propagated deliveries** (detected via the outbox ID the
+  publisher stamps into the context): the message was already accepted at
+  its true producer and durably committed to the outbox, so refusing the
+  CDC hand-off sheds nothing. Worse, the publisher's claim path bumps
+  delivery attempts in its own transaction, so repeated refusals would
+  dead-letter the committed outbox row (and any DurableAsk response it
+  carries) instead of exerting backpressure.
+
+A store that does not implement `actor.MailboxDepthStore` runs without
+watermarks entirely, and a failed depth probe fails OPEN (the send is
+admitted): a broken monitoring read must not become message loss.
 
 ### The probe
 
 The depth read is TTL-cached (one second) with a local count of sends
 accepted since the last probe added on top, so the common send path pays no
-extra query. The estimate is deliberately one-sided: local sends push it up
-immediately, while acks and remote sends only surface at the next probe.
-Overshooting is the safe direction for an admission check, and the
-enforcement error is bounded by one probe window.
+extra query. The estimate is one-sided for local traffic (local sends push
+it up immediately, acks surface at the next probe; overshooting is the safe
+direction for an admission check), while sends from other processes stay
+invisible for up to one window, so the bound is approximate rather than
+exact. The probe is single-flighted (concurrent senders use the cached
+estimate rather than stacking behind the query) and runs with the sender's
+ambient transaction stripped (`WithoutTx`): joining a SERIALIZABLE writer
+would take predicate locks over the whole mailbox partition and manufacture
+serialization conflicts with the consumer's acks, precisely when the system
+is already contended.
 
 ### Who refuses, and what callers do
 
@@ -326,11 +346,18 @@ enforcement error is bounded by one probe window.
 - **Local producers** (RPC handlers, other actors) see the error from
   `Tell`/`Ask` and propagate it; at ten thousand parked messages, failing
   loudly is the only move that helps.
-- **The OutboxPublisher's folded delivery path is deliberately unthrottled**:
-  it enqueues into the target mailbox inside the publisher's own write
-  transaction, bypassing `DurableMailbox.Send`, so CDC delivery is never
-  refused. Throttling it would only move the backlog from the target mailbox
-  to the outbox table while breaking the claim-expiry retry contract.
+- **The OutboxPublisher's folded delivery path is exempt** via the outbox-ID
+  context marker described above, so CDC delivery is never refused and the
+  claim-expiry retry contract is untouched.
+
+**Known residual**: an actor turn that Tells into a saturated peer inside
+its own commit (e.g. an OOR session's transport send into serverconn
+egress) fails the whole turn, which nacks the INBOUND message and burns one
+of its finite delivery attempts; a long enough saturation episode
+dead-letters it. The dead-letter tooling (#1119) makes those visible and
+requeueable, and the planned postpone semantics (re-enqueue without burning
+attempts) are the structural fix; until then, saturation-driven turn
+failures ride the ordinary retry/dead-letter path.
 
 ### Observability
 

@@ -67,11 +67,22 @@ crash-safe at-least-once delivery with exactly-once deduplication.
   `TrySend`/`TryTell` inherit the check and a refusal needs no cleanup).
   Both default to 0 (disabled); consumer sites opt in with
   `DefaultSoftHighWatermark` (1000) / `DefaultHardHighWatermark` (10000).
-  Priority `>= RestartPriority` is always exempt so recovery lands. Depth is
-  read via a 1s TTL-cached probe plus a local sent-since-probe delta
-  (one-sided: overshoots, never undershoots), and a probe failure fails
-  OPEN. The OutboxPublisher's folded delivery path bypasses `Send` and is
-  deliberately unthrottled.
+  Two exemptions: priority `>= ControlPriority` (restart plus the
+  boot-critical restore/resume messages — `RestoreNonTerminalRequest`,
+  `ResumeUnrollRequest`, `ResumeCreditOpRequest` — whose refusal would be a
+  fatal-boot crash loop), and outbox-propagated deliveries (detected via
+  the outbox-ID context marker; the publisher's claim path bumps attempts
+  in its own tx, so a refusal would dead-letter a committed CDC row rather
+  than shed load). Depth is read via a 1s TTL-cached, single-flighted probe
+  (run outside the mutex AND outside the sender's ambient tx via
+  `WithoutTx` — joining a SERIALIZABLE writer would take whole-partition
+  predicate locks) plus a local sent-since-probe delta (one-sided for local
+  traffic; remote sends invisible for up to one window). A probe failure
+  falls back to the cached estimate, or fails OPEN with no baseline. The
+  soft episode is evaluated before the hard refusal so the warning fires
+  even when the first probe already reads saturated. Known residual: an
+  in-turn Tell into a saturated peer fails the sender's turn and burns the
+  inbound message's attempts (postpone semantics are the planned fix).
 - `MailboxDepthStore` / `MailboxDepthCount` — Narrow, optional read surface
   (`MailboxDepth(ctx, mailboxID)`, `MailboxDepths(ctx)`) discovered by type
   assertion on the `DeliveryStore`, deliberately NOT embedded in it (test
