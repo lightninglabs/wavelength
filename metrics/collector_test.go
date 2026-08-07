@@ -55,6 +55,14 @@ func (m *mockVTXOQuerier) GetRoundStatsByStatus(_ context.Context) (
 	return nil, nil
 }
 
+// GetMailboxDepths implements SystemStatsQuerier; unavailable in this
+// VTXO-focused double so the depth gauges stay out of the way.
+func (m *mockVTXOQuerier) GetMailboxDepths(_ context.Context) (
+	[]MailboxDepthRow, error) {
+
+	return nil, errors.New("not supported")
+}
+
 // TestSystemCollectorCollect verifies the scrape-driven collector emits
 // the expected count, value, and spendable-balance samples for a range
 // of VTXO inventories, and emits nothing on a query failure.
@@ -191,8 +199,10 @@ type fullMockQuerier struct {
 	height     int64
 	oor        map[string]int64
 	rounds     map[string]int64
+	depths     []MailboxDepthRow
 	balanceErr error
 	heightErr  error
+	depthsErr  error
 }
 
 func (m *fullMockQuerier) GetVTXOStatsByStatus(_ context.Context) (
@@ -221,6 +231,12 @@ func (m *fullMockQuerier) GetRoundStatsByStatus(_ context.Context) (
 	map[string]int64, error) {
 
 	return m.rounds, nil
+}
+
+func (m *fullMockQuerier) GetMailboxDepths(_ context.Context) (
+	[]MailboxDepthRow, error) {
+
+	return m.depths, m.depthsErr
 }
 
 // TestSystemCollectorExtendedGauges verifies the wallet-balance,
@@ -309,6 +325,85 @@ waved_rounds_by_status{status="joined"} 1
 			t, 2, testutil.CollectAndCount(
 				c, "waved_oor_sessions_by_state",
 				"waved_rounds_by_status",
+			),
+		)
+	})
+}
+
+// TestSystemCollectorMailboxDepths verifies the durable-mailbox backlog
+// gauges: one labelled series per backed-up mailbox, an unlabelled total
+// that is emitted even when every mailbox is drained (explicit zero), and
+// full suppression when the depth query fails.
+func TestSystemCollectorMailboxDepths(t *testing.T) {
+	t.Parallel()
+
+	t.Run("backed up mailboxes", func(t *testing.T) {
+		t.Parallel()
+
+		q := &fullMockQuerier{
+			depths: []MailboxDepthRow{
+				{
+					MailboxID: "ledger",
+					Depth:     4,
+				},
+				{
+					MailboxID: "serverconn-egress",
+					Depth:     2,
+				},
+			},
+		}
+		c := NewSystemCollector(q, fn.None[btclog.Logger]())
+
+		const want = `
+# HELP waved_mailbox_backlog Total number of messages pending across ` +
+			`all durable mailboxes.
+# TYPE waved_mailbox_backlog gauge
+waved_mailbox_backlog 6
+# HELP waved_mailbox_depth Number of messages pending in a durable ` +
+			`mailbox. Only mailboxes currently holding messages ` +
+			`are reported.
+# TYPE waved_mailbox_depth gauge
+waved_mailbox_depth{mailbox_id="ledger"} 4
+waved_mailbox_depth{mailbox_id="serverconn-egress"} 2
+`
+		err := testutil.CollectAndCompare(
+			c, strings.NewReader(want),
+			"waved_mailbox_backlog", "waved_mailbox_depth",
+		)
+		require.NoError(t, err)
+	})
+
+	t.Run("drained emits explicit zero total", func(t *testing.T) {
+		t.Parallel()
+
+		q := &fullMockQuerier{}
+		c := NewSystemCollector(q, fn.None[btclog.Logger]())
+
+		const want = `
+# HELP waved_mailbox_backlog Total number of messages pending across ` +
+			`all durable mailboxes.
+# TYPE waved_mailbox_backlog gauge
+waved_mailbox_backlog 0
+`
+		err := testutil.CollectAndCompare(
+			c, strings.NewReader(want),
+			"waved_mailbox_backlog", "waved_mailbox_depth",
+		)
+		require.NoError(t, err)
+	})
+
+	t.Run("query error suppresses depth gauges", func(t *testing.T) {
+		t.Parallel()
+
+		q := &fullMockQuerier{
+			depthsErr: errors.New("store cannot report depth"),
+		}
+		c := NewSystemCollector(q, fn.None[btclog.Logger]())
+
+		require.Zero(
+			t, testutil.CollectAndCount(
+				c, "waved_mailbox_backlog",
+				"waved_mailbox_depth",
 			),
 		)
 	})
