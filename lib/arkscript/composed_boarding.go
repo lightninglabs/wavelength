@@ -129,3 +129,67 @@ func composedTapBranch(left, right [32]byte) [32]byte {
 		),
 	)
 }
+
+// ComposeSpendInfoWithSibling extends a policy-only leaf's control block
+// with one extra top-level sibling, so the leaf can be spent from a
+// composed output whose tap tree branches the policy root with that
+// sibling. The output-key parity is recomputed for the composed root.
+func ComposeSpendInfoWithSibling(info *SpendInfo,
+	sibling [32]byte) (*SpendInfo, error) {
+
+	if info == nil {
+		return nil, fmt.Errorf("spend info is required")
+	}
+	controlBlock, err := txscript.ParseControlBlock(info.ControlBlock)
+	if err != nil {
+		return nil, fmt.Errorf("parse control block: %w", err)
+	}
+
+	policyRoot := controlBlock.RootHash(info.WitnessScript)
+	composedRoot := composedTapBranch([32]byte(policyRoot), sibling)
+	outputKey := txscript.ComputeTaprootOutputKey(
+		controlBlock.InternalKey, composedRoot[:],
+	)
+
+	composed := *controlBlock
+	composed.OutputKeyYIsOdd = outputKey.SerializeCompressed()[0] == 0x03
+	composed.InclusionProof = append(
+		append(
+			[]byte(nil), controlBlock.InclusionProof...,
+		),
+		sibling[:]...,
+	)
+
+	encoded, err := composed.ToBytes()
+	if err != nil {
+		return nil, fmt.Errorf("encode composed control block: %w", err)
+	}
+
+	return &SpendInfo{
+		WitnessScript: append([]byte(nil), info.WitnessScript...),
+		ControlBlock:  encoded,
+	}, nil
+}
+
+// ComposedBoardingAuthSpend returns the unilateral-timeout spend path for
+// a composed boarding output. Join-round authorization proves ownership
+// over the timeout leaf, which on a composed output needs the disclosed
+// commitment leaf hash as an additional control-block sibling.
+func ComposedBoardingAuthSpend(commitmentLeafHash [32]byte,
+	ownerKey, operatorKey *btcec.PublicKey, exitDelay uint32) (*SpendPath,
+	error) {
+
+	plain, err := NewVTXOSpendInfoFromPolicy(
+		ownerKey, operatorKey, exitDelay, 1,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("boarding timeout spend info: %w", err)
+	}
+
+	composed, err := ComposeSpendInfoWithSibling(plain, commitmentLeafHash)
+	if err != nil {
+		return nil, err
+	}
+
+	return &SpendPath{SpendInfo: composed}, nil
+}
