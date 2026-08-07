@@ -45,10 +45,9 @@ func newMultiKeyMuSig2Signer(
 }
 
 // MuSig2CreateSession dispatches to the key named by the locator index.
-func (m *multiKeyMuSig2Signer) MuSig2CreateSession(
-	version input.MuSig2Version, keyLoc keychain.KeyLocator,
-	signers []*btcec.PublicKey, tweaks *input.MuSig2Tweaks,
-	otherNonces [][musig2.PubNonceSize]byte,
+func (m *multiKeyMuSig2Signer) MuSig2CreateSession(version input.MuSig2Version,
+	keyLoc keychain.KeyLocator, signers []*btcec.PublicKey,
+	tweaks *input.MuSig2Tweaks, otherNonces [][musig2.PubNonceSize]byte,
 	localNonces *musig2.Nonces) (*input.MuSig2SessionInfo, error) {
 
 	inner, ok := m.byIndex[keyLoc.Index]
@@ -69,8 +68,8 @@ func (m *multiKeyMuSig2Signer) MuSig2CreateSession(
 }
 
 // sessionOwner resolves the inner mock a session was created on.
-func (m *multiKeyMuSig2Signer) sessionOwner(
-	sessionID input.MuSig2SessionID) (*mockMuSig2Signer, error) {
+func (m *multiKeyMuSig2Signer) sessionOwner(sessionID input.MuSig2SessionID) (
+	*mockMuSig2Signer, error) {
 
 	inner, ok := m.owner[sessionID]
 	if !ok {
@@ -82,8 +81,8 @@ func (m *multiKeyMuSig2Signer) sessionOwner(
 
 // MuSig2RegisterNonces delegates to the session's owner.
 func (m *multiKeyMuSig2Signer) MuSig2RegisterNonces(
-	sessionID input.MuSig2SessionID,
-	nonces [][musig2.PubNonceSize]byte) (bool, error) {
+	sessionID input.MuSig2SessionID, nonces [][musig2.PubNonceSize]byte) (
+	bool, error) {
 
 	inner, err := m.sessionOwner(sessionID)
 	if err != nil {
@@ -131,8 +130,7 @@ func (m *multiKeyMuSig2Signer) MuSig2Sign(sessionID input.MuSig2SessionID,
 }
 
 // MuSig2CombineSig delegates to the session's owner.
-func (m *multiKeyMuSig2Signer) MuSig2CombineSig(
-	sessionID input.MuSig2SessionID,
+func (m *multiKeyMuSig2Signer) MuSig2CombineSig(sessionID input.MuSig2SessionID,
 	partialSigs []*musig2.PartialSignature) (*schnorr.Signature, bool,
 	error) {
 
