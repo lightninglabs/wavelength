@@ -6,6 +6,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/lightninglabs/wavelength/round"
+	"github.com/lightninglabs/wavelength/tapassets"
 )
 
 // TriggerRoundRegistration injects an IntentRequested event into the client
@@ -100,4 +101,47 @@ func (s *Server) RegisterAssetBoarding(ctx context.Context,
 	}
 
 	return nil
+}
+
+// AssetBoardingDisclosure replays an idempotent Taproot Asset onboarding
+// by request ID and assembles the round boarding disclosure from its
+// result. The caller supplies the chain confirmation (ConfTx and
+// ConfHeight) and the boarded outpoint's exported proof file
+// (AssetProof) before registering the boarding.
+func (s *Server) AssetBoardingDisclosure(ctx context.Context,
+	req *tapassets.OnboardingRequest) (*round.RegisterAssetBoardingRequest,
+	error) {
+
+	onboarder := s.cfg.TaprootAssetOnboarder
+	if onboarder == nil {
+		return nil, fmt.Errorf("taproot asset onboarding is not " +
+			"configured")
+	}
+	terms := s.loadOperatorTerms()
+	if terms == nil || terms.PubKey == nil || terms.VTXOExitDelay == 0 {
+		return nil, fmt.Errorf("operator terms are not ready")
+	}
+	req.OperatorKey = terms.PubKey
+	req.ExitDelay = terms.VTXOExitDelay
+
+	result, err := onboarder.Onboard(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("replay onboarding: %w", err)
+	}
+
+	leafHash := tapassets.CommitmentLeafHash(
+		result.TaprootAssetRoot, result.AssetAmount,
+	)
+
+	return &round.RegisterAssetBoardingRequest{
+		Outpoint:                result.Outpoint,
+		KeyDesc:                 result.OwnerKey,
+		OperatorKey:             result.OperatorKey,
+		ExitDelay:               result.ExitDelay,
+		AssetRef:                result.AssetRef,
+		AssetAmount:             result.AssetAmount,
+		AssetDigest:             result.Digest[:],
+		AssetCommitmentLeafHash: leafHash[:],
+		AssetWitness:            result.OPTrueWitness,
+	}, nil
 }
