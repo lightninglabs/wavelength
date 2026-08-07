@@ -434,8 +434,9 @@ func commitTreeBatchAnchor(t *testing.T, h *harness.Harness,
 	req := &BatchAnchorRequest{
 		AssetRef: assetRef,
 		Amount:   amount,
-		Source: BatchAnchorSource{
+		Sources: []BatchAnchorSource{{
 			ProofFile: append([]byte(nil), mintProof...),
+			Amount:    amount,
 			Verifier: &proofInventoryVerifier{
 				client:    client,
 				assetRef:  assetRef,
@@ -445,7 +446,7 @@ func commitTreeBatchAnchor(t *testing.T, h *harness.Harness,
 			},
 			AnchorOutpoint:    fundingOutpoint,
 			AnchorInternalKey: anchorInternalKey,
-		},
+		}},
 		Cosigners:      rootCosigners,
 		SweepLeaf:      sweepLeaf,
 		Digest:         tapsdk.Hash(sha256.Sum256([]byte(t.Name()))),
