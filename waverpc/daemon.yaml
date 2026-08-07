@@ -141,3 +141,15 @@ http:
     - selector: waverpc.DaemonService.ListVHTLCRecoveries
       post: /v1/daemon/list-vhtlc-recoveries
       body: "*"
+    - selector: waverpc.DaemonService.ListDeadLetters
+      post: /v1/daemon/list-dead-letters
+      body: "*"
+    - selector: waverpc.DaemonService.GetDeadLetter
+      post: /v1/daemon/get-dead-letter
+      body: "*"
+    - selector: waverpc.DaemonService.RequeueDeadLetter
+      post: /v1/daemon/requeue-dead-letter
+      body: "*"
+    - selector: waverpc.DaemonService.PurgeDeadLetters
+      post: /v1/daemon/purge-dead-letters
+      body: "*"

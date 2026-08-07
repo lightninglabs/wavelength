@@ -10294,6 +10294,573 @@ func (x *SignOutSwapHtlcAckResponse) GetSignature() []byte {
 	return nil
 }
 
+type DeadLetter struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// id is the dead letter's identifier (the original message ID).
+	Id string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// source is where the message originated: 'mailbox' or 'outbox'.
+	Source string `protobuf:"bytes,2,opt,name=source,proto3" json:"source,omitempty"`
+	// actor_id is the actor whose mailbox the message was addressed to.
+	ActorId string `protobuf:"bytes,3,opt,name=actor_id,json=actorId,proto3" json:"actor_id,omitempty"`
+	// message_type is the human-readable message type name.
+	MessageType string `protobuf:"bytes,4,opt,name=message_type,json=messageType,proto3" json:"message_type,omitempty"`
+	// failure_reason describes why the message was dead-lettered.
+	FailureReason string `protobuf:"bytes,5,opt,name=failure_reason,json=failureReason,proto3" json:"failure_reason,omitempty"`
+	// attempts is the number of delivery attempts before dead-lettering.
+	Attempts int32 `protobuf:"varint,6,opt,name=attempts,proto3" json:"attempts,omitempty"`
+	// created_at is the unix timestamp (seconds) of dead-lettering.
+	CreatedAt int64 `protobuf:"varint,7,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	// payload is the TLV-encoded message body. Empty in list responses
+	// unless include_payload was set.
+	Payload []byte `protobuf:"bytes,8,opt,name=payload,proto3" json:"payload,omitempty"`
+	// priority is the mailbox processing priority of the original message.
+	Priority int32 `protobuf:"varint,9,opt,name=priority,proto3" json:"priority,omitempty"`
+	// max_attempts is the retry budget the original message carried.
+	MaxAttempts int32 `protobuf:"varint,10,opt,name=max_attempts,json=maxAttempts,proto3" json:"max_attempts,omitempty"`
+	// promise_id is the ask-result key for Ask messages (empty for Tell).
+	PromiseId string `protobuf:"bytes,11,opt,name=promise_id,json=promiseId,proto3" json:"promise_id,omitempty"`
+	// callback_actor_id routes DurableAsk responses (empty otherwise).
+	CallbackActorId string `protobuf:"bytes,12,opt,name=callback_actor_id,json=callbackActorId,proto3" json:"callback_actor_id,omitempty"`
+	// correlation_id links DurableAsk requests to responses.
+	CorrelationId string `protobuf:"bytes,13,opt,name=correlation_id,json=correlationId,proto3" json:"correlation_id,omitempty"`
+	// correlation_key is the per-message FIFO lane tag (empty when
+	// unkeyed).
+	CorrelationKey string `protobuf:"bytes,14,opt,name=correlation_key,json=correlationKey,proto3" json:"correlation_key,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *DeadLetter) Reset() {
+	*x = DeadLetter{}
+	mi := &file_daemon_proto_msgTypes[121]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeadLetter) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeadLetter) ProtoMessage() {}
+
+func (x *DeadLetter) ProtoReflect() protoreflect.Message {
+	mi := &file_daemon_proto_msgTypes[121]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeadLetter.ProtoReflect.Descriptor instead.
+func (*DeadLetter) Descriptor() ([]byte, []int) {
+	return file_daemon_proto_rawDescGZIP(), []int{121}
+}
+
+func (x *DeadLetter) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *DeadLetter) GetSource() string {
+	if x != nil {
+		return x.Source
+	}
+	return ""
+}
+
+func (x *DeadLetter) GetActorId() string {
+	if x != nil {
+		return x.ActorId
+	}
+	return ""
+}
+
+func (x *DeadLetter) GetMessageType() string {
+	if x != nil {
+		return x.MessageType
+	}
+	return ""
+}
+
+func (x *DeadLetter) GetFailureReason() string {
+	if x != nil {
+		return x.FailureReason
+	}
+	return ""
+}
+
+func (x *DeadLetter) GetAttempts() int32 {
+	if x != nil {
+		return x.Attempts
+	}
+	return 0
+}
+
+func (x *DeadLetter) GetCreatedAt() int64 {
+	if x != nil {
+		return x.CreatedAt
+	}
+	return 0
+}
+
+func (x *DeadLetter) GetPayload() []byte {
+	if x != nil {
+		return x.Payload
+	}
+	return nil
+}
+
+func (x *DeadLetter) GetPriority() int32 {
+	if x != nil {
+		return x.Priority
+	}
+	return 0
+}
+
+func (x *DeadLetter) GetMaxAttempts() int32 {
+	if x != nil {
+		return x.MaxAttempts
+	}
+	return 0
+}
+
+func (x *DeadLetter) GetPromiseId() string {
+	if x != nil {
+		return x.PromiseId
+	}
+	return ""
+}
+
+func (x *DeadLetter) GetCallbackActorId() string {
+	if x != nil {
+		return x.CallbackActorId
+	}
+	return ""
+}
+
+func (x *DeadLetter) GetCorrelationId() string {
+	if x != nil {
+		return x.CorrelationId
+	}
+	return ""
+}
+
+func (x *DeadLetter) GetCorrelationKey() string {
+	if x != nil {
+		return x.CorrelationKey
+	}
+	return ""
+}
+
+type ListDeadLettersRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// actor_id restricts the listing to one actor's dead letters when
+	// non-empty.
+	ActorId string `protobuf:"bytes,1,opt,name=actor_id,json=actorId,proto3" json:"actor_id,omitempty"`
+	// limit caps the number of entries returned. Zero applies the default
+	// of 100.
+	Limit int32 `protobuf:"varint,2,opt,name=limit,proto3" json:"limit,omitempty"`
+	// offset skips that many entries for pagination. Only honored on the
+	// global (unfiltered) listing.
+	Offset int32 `protobuf:"varint,3,opt,name=offset,proto3" json:"offset,omitempty"`
+	// include_payload includes each entry's TLV payload in the response.
+	IncludePayload bool `protobuf:"varint,4,opt,name=include_payload,json=includePayload,proto3" json:"include_payload,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *ListDeadLettersRequest) Reset() {
+	*x = ListDeadLettersRequest{}
+	mi := &file_daemon_proto_msgTypes[122]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListDeadLettersRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListDeadLettersRequest) ProtoMessage() {}
+
+func (x *ListDeadLettersRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_daemon_proto_msgTypes[122]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListDeadLettersRequest.ProtoReflect.Descriptor instead.
+func (*ListDeadLettersRequest) Descriptor() ([]byte, []int) {
+	return file_daemon_proto_rawDescGZIP(), []int{122}
+}
+
+func (x *ListDeadLettersRequest) GetActorId() string {
+	if x != nil {
+		return x.ActorId
+	}
+	return ""
+}
+
+func (x *ListDeadLettersRequest) GetLimit() int32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+func (x *ListDeadLettersRequest) GetOffset() int32 {
+	if x != nil {
+		return x.Offset
+	}
+	return 0
+}
+
+func (x *ListDeadLettersRequest) GetIncludePayload() bool {
+	if x != nil {
+		return x.IncludePayload
+	}
+	return false
+}
+
+type ListDeadLettersResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// dead_letters are the parked entries, newest first.
+	DeadLetters []*DeadLetter `protobuf:"bytes,1,rep,name=dead_letters,json=deadLetters,proto3" json:"dead_letters,omitempty"`
+	// total_count is the total number of parked dead letters across all
+	// actors, independent of filtering and pagination.
+	TotalCount    int64 `protobuf:"varint,2,opt,name=total_count,json=totalCount,proto3" json:"total_count,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListDeadLettersResponse) Reset() {
+	*x = ListDeadLettersResponse{}
+	mi := &file_daemon_proto_msgTypes[123]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListDeadLettersResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListDeadLettersResponse) ProtoMessage() {}
+
+func (x *ListDeadLettersResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_daemon_proto_msgTypes[123]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListDeadLettersResponse.ProtoReflect.Descriptor instead.
+func (*ListDeadLettersResponse) Descriptor() ([]byte, []int) {
+	return file_daemon_proto_rawDescGZIP(), []int{123}
+}
+
+func (x *ListDeadLettersResponse) GetDeadLetters() []*DeadLetter {
+	if x != nil {
+		return x.DeadLetters
+	}
+	return nil
+}
+
+func (x *ListDeadLettersResponse) GetTotalCount() int64 {
+	if x != nil {
+		return x.TotalCount
+	}
+	return 0
+}
+
+type GetDeadLetterRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// id is the dead letter's identifier.
+	Id            string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetDeadLetterRequest) Reset() {
+	*x = GetDeadLetterRequest{}
+	mi := &file_daemon_proto_msgTypes[124]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetDeadLetterRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetDeadLetterRequest) ProtoMessage() {}
+
+func (x *GetDeadLetterRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_daemon_proto_msgTypes[124]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetDeadLetterRequest.ProtoReflect.Descriptor instead.
+func (*GetDeadLetterRequest) Descriptor() ([]byte, []int) {
+	return file_daemon_proto_rawDescGZIP(), []int{124}
+}
+
+func (x *GetDeadLetterRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+type GetDeadLetterResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// dead_letter is the requested entry, payload included.
+	DeadLetter    *DeadLetter `protobuf:"bytes,1,opt,name=dead_letter,json=deadLetter,proto3" json:"dead_letter,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetDeadLetterResponse) Reset() {
+	*x = GetDeadLetterResponse{}
+	mi := &file_daemon_proto_msgTypes[125]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetDeadLetterResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetDeadLetterResponse) ProtoMessage() {}
+
+func (x *GetDeadLetterResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_daemon_proto_msgTypes[125]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetDeadLetterResponse.ProtoReflect.Descriptor instead.
+func (*GetDeadLetterResponse) Descriptor() ([]byte, []int) {
+	return file_daemon_proto_rawDescGZIP(), []int{125}
+}
+
+func (x *GetDeadLetterResponse) GetDeadLetter() *DeadLetter {
+	if x != nil {
+		return x.DeadLetter
+	}
+	return nil
+}
+
+type RequeueDeadLetterRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// id is the dead letter's identifier.
+	Id            string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RequeueDeadLetterRequest) Reset() {
+	*x = RequeueDeadLetterRequest{}
+	mi := &file_daemon_proto_msgTypes[126]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RequeueDeadLetterRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RequeueDeadLetterRequest) ProtoMessage() {}
+
+func (x *RequeueDeadLetterRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_daemon_proto_msgTypes[126]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RequeueDeadLetterRequest.ProtoReflect.Descriptor instead.
+func (*RequeueDeadLetterRequest) Descriptor() ([]byte, []int) {
+	return file_daemon_proto_rawDescGZIP(), []int{126}
+}
+
+func (x *RequeueDeadLetterRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+type RequeueDeadLetterResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// new_message_id is the fresh mailbox message ID the payload was
+	// re-enqueued under.
+	NewMessageId  string `protobuf:"bytes,1,opt,name=new_message_id,json=newMessageId,proto3" json:"new_message_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RequeueDeadLetterResponse) Reset() {
+	*x = RequeueDeadLetterResponse{}
+	mi := &file_daemon_proto_msgTypes[127]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RequeueDeadLetterResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RequeueDeadLetterResponse) ProtoMessage() {}
+
+func (x *RequeueDeadLetterResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_daemon_proto_msgTypes[127]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RequeueDeadLetterResponse.ProtoReflect.Descriptor instead.
+func (*RequeueDeadLetterResponse) Descriptor() ([]byte, []int) {
+	return file_daemon_proto_rawDescGZIP(), []int{127}
+}
+
+func (x *RequeueDeadLetterResponse) GetNewMessageId() string {
+	if x != nil {
+		return x.NewMessageId
+	}
+	return ""
+}
+
+type PurgeDeadLettersRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// older_than_seconds deletes entries dead-lettered more than this many
+	// seconds ago. Must be positive; zero is rejected so an empty request
+	// can never wholesale-delete the queue.
+	OlderThanSeconds int64 `protobuf:"varint,1,opt,name=older_than_seconds,json=olderThanSeconds,proto3" json:"older_than_seconds,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *PurgeDeadLettersRequest) Reset() {
+	*x = PurgeDeadLettersRequest{}
+	mi := &file_daemon_proto_msgTypes[128]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PurgeDeadLettersRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PurgeDeadLettersRequest) ProtoMessage() {}
+
+func (x *PurgeDeadLettersRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_daemon_proto_msgTypes[128]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PurgeDeadLettersRequest.ProtoReflect.Descriptor instead.
+func (*PurgeDeadLettersRequest) Descriptor() ([]byte, []int) {
+	return file_daemon_proto_rawDescGZIP(), []int{128}
+}
+
+func (x *PurgeDeadLettersRequest) GetOlderThanSeconds() int64 {
+	if x != nil {
+		return x.OlderThanSeconds
+	}
+	return 0
+}
+
+type PurgeDeadLettersResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// removed is the number of entries the purge deleted.
+	Removed       int64 `protobuf:"varint,1,opt,name=removed,proto3" json:"removed,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PurgeDeadLettersResponse) Reset() {
+	*x = PurgeDeadLettersResponse{}
+	mi := &file_daemon_proto_msgTypes[129]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PurgeDeadLettersResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PurgeDeadLettersResponse) ProtoMessage() {}
+
+func (x *PurgeDeadLettersResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_daemon_proto_msgTypes[129]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PurgeDeadLettersResponse.ProtoReflect.Descriptor instead.
+func (*PurgeDeadLettersResponse) Descriptor() ([]byte, []int) {
+	return file_daemon_proto_rawDescGZIP(), []int{129}
+}
+
+func (x *PurgeDeadLettersResponse) GetRemoved() int64 {
+	if x != nil {
+		return x.Removed
+	}
+	return 0
+}
+
 var File_daemon_proto protoreflect.FileDescriptor
 
 const file_daemon_proto_rawDesc = "" +
@@ -10999,7 +11566,48 @@ const file_daemon_proto_rawDesc = "" +
 	"amount_sat\x18\x02 \x01(\x04R\tamountSat\x12&\n" +
 	"\x0fvhtlc_pk_script\x18\x03 \x01(\fR\rvhtlcPkScript\":\n" +
 	"\x1aSignOutSwapHtlcAckResponse\x12\x1c\n" +
-	"\tsignature\x18\x01 \x01(\fR\tsignature*\x8d\x01\n" +
+	"\tsignature\x18\x01 \x01(\fR\tsignature\"\xc8\x03\n" +
+	"\n" +
+	"DeadLetter\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x16\n" +
+	"\x06source\x18\x02 \x01(\tR\x06source\x12\x19\n" +
+	"\bactor_id\x18\x03 \x01(\tR\aactorId\x12!\n" +
+	"\fmessage_type\x18\x04 \x01(\tR\vmessageType\x12%\n" +
+	"\x0efailure_reason\x18\x05 \x01(\tR\rfailureReason\x12\x1a\n" +
+	"\battempts\x18\x06 \x01(\x05R\battempts\x12\x1d\n" +
+	"\n" +
+	"created_at\x18\a \x01(\x03R\tcreatedAt\x12\x18\n" +
+	"\apayload\x18\b \x01(\fR\apayload\x12\x1a\n" +
+	"\bpriority\x18\t \x01(\x05R\bpriority\x12!\n" +
+	"\fmax_attempts\x18\n" +
+	" \x01(\x05R\vmaxAttempts\x12\x1d\n" +
+	"\n" +
+	"promise_id\x18\v \x01(\tR\tpromiseId\x12*\n" +
+	"\x11callback_actor_id\x18\f \x01(\tR\x0fcallbackActorId\x12%\n" +
+	"\x0ecorrelation_id\x18\r \x01(\tR\rcorrelationId\x12'\n" +
+	"\x0fcorrelation_key\x18\x0e \x01(\tR\x0ecorrelationKey\"\x8a\x01\n" +
+	"\x16ListDeadLettersRequest\x12\x19\n" +
+	"\bactor_id\x18\x01 \x01(\tR\aactorId\x12\x14\n" +
+	"\x05limit\x18\x02 \x01(\x05R\x05limit\x12\x16\n" +
+	"\x06offset\x18\x03 \x01(\x05R\x06offset\x12'\n" +
+	"\x0finclude_payload\x18\x04 \x01(\bR\x0eincludePayload\"r\n" +
+	"\x17ListDeadLettersResponse\x126\n" +
+	"\fdead_letters\x18\x01 \x03(\v2\x13.waverpc.DeadLetterR\vdeadLetters\x12\x1f\n" +
+	"\vtotal_count\x18\x02 \x01(\x03R\n" +
+	"totalCount\"&\n" +
+	"\x14GetDeadLetterRequest\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"M\n" +
+	"\x15GetDeadLetterResponse\x124\n" +
+	"\vdead_letter\x18\x01 \x01(\v2\x13.waverpc.DeadLetterR\n" +
+	"deadLetter\"*\n" +
+	"\x18RequeueDeadLetterRequest\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"A\n" +
+	"\x19RequeueDeadLetterResponse\x12$\n" +
+	"\x0enew_message_id\x18\x01 \x01(\tR\fnewMessageId\"G\n" +
+	"\x17PurgeDeadLettersRequest\x12,\n" +
+	"\x12older_than_seconds\x18\x01 \x01(\x03R\x10olderThanSeconds\"4\n" +
+	"\x18PurgeDeadLettersResponse\x12\x18\n" +
+	"\aremoved\x18\x01 \x01(\x03R\aremoved*\x8d\x01\n" +
 	"\vWalletState\x12\x1c\n" +
 	"\x18WALLET_STATE_UNSPECIFIED\x10\x00\x12\x15\n" +
 	"\x11WALLET_STATE_NONE\x10\x01\x12\x17\n" +
@@ -11089,7 +11697,7 @@ const file_daemon_proto_rawDesc = "" +
 	"\x1eVHTLC_RECOVERY_STATE_COMPLETED\x10\t\x12\"\n" +
 	"\x1eVHTLC_RECOVERY_STATE_CANCELLED\x10\n" +
 	"\x12\x1f\n" +
-	"\x1bVHTLC_RECOVERY_STATE_FAILED\x10\v2\xb1\x1f\n" +
+	"\x1bVHTLC_RECOVERY_STATE_FAILED\x10\v2\x8c\"\n" +
 	"\rDaemonService\x12<\n" +
 	"\aGetInfo\x12\x17.waverpc.GetInfoRequest\x1a\x18.waverpc.GetInfoResponse\x12<\n" +
 	"\aGenSeed\x12\x17.waverpc.GenSeedRequest\x1a\x18.waverpc.GenSeedResponse\x12E\n" +
@@ -11142,7 +11750,11 @@ const file_daemon_proto_rawDesc = "" +
 	"\x13CancelVHTLCRecovery\x12#.waverpc.CancelVHTLCRecoveryRequest\x1a$.waverpc.CancelVHTLCRecoveryResponse\x12i\n" +
 	"\x16GetVHTLCRecoveryStatus\x12&.waverpc.GetVHTLCRecoveryStatusRequest\x1a'.waverpc.GetVHTLCRecoveryStatusResponse\x12`\n" +
 	"\x13ListVHTLCRecoveries\x12#.waverpc.ListVHTLCRecoveriesRequest\x1a$.waverpc.ListVHTLCRecoveriesResponse\x12]\n" +
-	"\x12SignOutSwapHtlcAck\x12\".waverpc.SignOutSwapHtlcAckRequest\x1a#.waverpc.SignOutSwapHtlcAckResponseB-Z+github.com/lightninglabs/wavelength/waverpcb\x06proto3"
+	"\x12SignOutSwapHtlcAck\x12\".waverpc.SignOutSwapHtlcAckRequest\x1a#.waverpc.SignOutSwapHtlcAckResponse\x12T\n" +
+	"\x0fListDeadLetters\x12\x1f.waverpc.ListDeadLettersRequest\x1a .waverpc.ListDeadLettersResponse\x12N\n" +
+	"\rGetDeadLetter\x12\x1d.waverpc.GetDeadLetterRequest\x1a\x1e.waverpc.GetDeadLetterResponse\x12Z\n" +
+	"\x11RequeueDeadLetter\x12!.waverpc.RequeueDeadLetterRequest\x1a\".waverpc.RequeueDeadLetterResponse\x12W\n" +
+	"\x10PurgeDeadLetters\x12 .waverpc.PurgeDeadLettersRequest\x1a!.waverpc.PurgeDeadLettersResponseB-Z+github.com/lightninglabs/wavelength/waverpcb\x06proto3"
 
 var (
 	file_daemon_proto_rawDescOnce sync.Once
@@ -11157,7 +11769,7 @@ func file_daemon_proto_rawDescGZIP() []byte {
 }
 
 var file_daemon_proto_enumTypes = make([]protoimpl.EnumInfo, 11)
-var file_daemon_proto_msgTypes = make([]protoimpl.MessageInfo, 122)
+var file_daemon_proto_msgTypes = make([]protoimpl.MessageInfo, 131)
 var file_daemon_proto_goTypes = []any{
 	(WalletState)(0),                                               // 0: waverpc.WalletState
 	(VTXOStatus)(0),                                                // 1: waverpc.VTXOStatus
@@ -11291,7 +11903,16 @@ var file_daemon_proto_goTypes = []any{
 	(*VHTLCRecoveryStatus)(nil),                                    // 129: waverpc.VHTLCRecoveryStatus
 	(*SignOutSwapHtlcAckRequest)(nil),                              // 130: waverpc.SignOutSwapHtlcAckRequest
 	(*SignOutSwapHtlcAckResponse)(nil),                             // 131: waverpc.SignOutSwapHtlcAckResponse
-	nil,                                                            // 132: waverpc.LeaveVTXOsRequest.DestinationsEntry
+	(*DeadLetter)(nil),                                             // 132: waverpc.DeadLetter
+	(*ListDeadLettersRequest)(nil),                                 // 133: waverpc.ListDeadLettersRequest
+	(*ListDeadLettersResponse)(nil),                                // 134: waverpc.ListDeadLettersResponse
+	(*GetDeadLetterRequest)(nil),                                   // 135: waverpc.GetDeadLetterRequest
+	(*GetDeadLetterResponse)(nil),                                  // 136: waverpc.GetDeadLetterResponse
+	(*RequeueDeadLetterRequest)(nil),                               // 137: waverpc.RequeueDeadLetterRequest
+	(*RequeueDeadLetterResponse)(nil),                              // 138: waverpc.RequeueDeadLetterResponse
+	(*PurgeDeadLettersRequest)(nil),                                // 139: waverpc.PurgeDeadLettersRequest
+	(*PurgeDeadLettersResponse)(nil),                               // 140: waverpc.PurgeDeadLettersResponse
+	nil,                                                            // 141: waverpc.LeaveVTXOsRequest.DestinationsEntry
 }
 var file_daemon_proto_depIdxs = []int32{
 	0,   // 0: waverpc.GetInfoResponse.wallet_state:type_name -> waverpc.WalletState
@@ -11328,7 +11949,7 @@ var file_daemon_proto_depIdxs = []int32{
 	72,  // 31: waverpc.SubmitForfeitParticipantSignaturesRequest.signatures:type_name -> waverpc.ForfeitParticipantSignature
 	60,  // 32: waverpc.LeaveVTXOsRequest.outpoints:type_name -> waverpc.OutpointSelection
 	75,  // 33: waverpc.LeaveVTXOsRequest.default_destination:type_name -> waverpc.LeaveDestination
-	132, // 34: waverpc.LeaveVTXOsRequest.destinations:type_name -> waverpc.LeaveVTXOsRequest.DestinationsEntry
+	141, // 34: waverpc.LeaveVTXOsRequest.destinations:type_name -> waverpc.LeaveVTXOsRequest.DestinationsEntry
 	75,  // 35: waverpc.SendOnChainRequest.destination:type_name -> waverpc.LeaveDestination
 	85,  // 36: waverpc.SweepBoardingUTXOsResponse.sweepable_outputs:type_name -> waverpc.BoardingSweepOutput
 	88,  // 37: waverpc.BoardingSweep.inputs:type_name -> waverpc.BoardingSweepInput
@@ -11362,104 +11983,114 @@ var file_daemon_proto_depIdxs = []int32{
 	9,   // 65: waverpc.VHTLCRecoveryStatus.action:type_name -> waverpc.VHTLCRecoveryAction
 	10,  // 66: waverpc.VHTLCRecoveryStatus.state:type_name -> waverpc.VHTLCRecoveryState
 	7,   // 67: waverpc.VHTLCRecoveryStatus.unroll_status:type_name -> waverpc.UnrollJobStatus
-	75,  // 68: waverpc.LeaveVTXOsRequest.DestinationsEntry.value:type_name -> waverpc.LeaveDestination
-	11,  // 69: waverpc.DaemonService.GetInfo:input_type -> waverpc.GetInfoRequest
-	14,  // 70: waverpc.DaemonService.GenSeed:input_type -> waverpc.GenSeedRequest
-	16,  // 71: waverpc.DaemonService.InitWallet:input_type -> waverpc.InitWalletRequest
-	18,  // 72: waverpc.DaemonService.UnlockWallet:input_type -> waverpc.UnlockWalletRequest
-	20,  // 73: waverpc.DaemonService.GetBalance:input_type -> waverpc.GetBalanceRequest
-	25,  // 74: waverpc.DaemonService.ListVTXOs:input_type -> waverpc.ListVTXOsRequest
-	27,  // 75: waverpc.DaemonService.NewAddress:input_type -> waverpc.NewAddressRequest
-	29,  // 76: waverpc.DaemonService.NewReceiveScript:input_type -> waverpc.NewReceiveScriptRequest
-	31,  // 77: waverpc.DaemonService.ReceiveAuthKey:input_type -> waverpc.ReceiveAuthKeyRequest
-	33,  // 78: waverpc.DaemonService.SignReceiveAuthMessage:input_type -> waverpc.SignReceiveAuthMessageRequest
-	35,  // 79: waverpc.DaemonService.SignReceiveAuthMessageCompact:input_type -> waverpc.SignReceiveAuthMessageCompactRequest
-	37,  // 80: waverpc.DaemonService.ReceiveAuthECDH:input_type -> waverpc.ReceiveAuthECDHRequest
-	39,  // 81: waverpc.DaemonService.GetIndexedVTXOByPkScript:input_type -> waverpc.GetIndexedVTXOByPkScriptRequest
-	41,  // 82: waverpc.DaemonService.GetVTXOExpiryInfo:input_type -> waverpc.GetVTXOExpiryInfoRequest
-	43,  // 83: waverpc.DaemonService.GetIndexedOORSessionByTxid:input_type -> waverpc.GetIndexedOORSessionByTxidRequest
-	46,  // 84: waverpc.DaemonService.SendVTXO:input_type -> waverpc.SendVTXORequest
-	48,  // 85: waverpc.DaemonService.SendOOR:input_type -> waverpc.SendOORRequest
-	52,  // 86: waverpc.DaemonService.PrepareOOR:input_type -> waverpc.PrepareOORRequest
-	55,  // 87: waverpc.DaemonService.SignOORCustomInput:input_type -> waverpc.SignOORCustomInputRequest
-	57,  // 88: waverpc.DaemonService.SignVTXOForfeit:input_type -> waverpc.SignVTXOForfeitRequest
-	61,  // 89: waverpc.DaemonService.RefreshVTXOs:input_type -> waverpc.RefreshVTXOsRequest
-	67,  // 90: waverpc.DaemonService.RefreshCustomVTXOs:input_type -> waverpc.RefreshCustomVTXOsRequest
-	70,  // 91: waverpc.DaemonService.ListPendingForfeitParticipantSignatureRequests:input_type -> waverpc.ListPendingForfeitParticipantSignatureRequestsRequest
-	73,  // 92: waverpc.DaemonService.SubmitForfeitParticipantSignatures:input_type -> waverpc.SubmitForfeitParticipantSignaturesRequest
-	76,  // 93: waverpc.DaemonService.LeaveVTXOs:input_type -> waverpc.LeaveVTXOsRequest
-	78,  // 94: waverpc.DaemonService.SendOnChain:input_type -> waverpc.SendOnChainRequest
-	80,  // 95: waverpc.DaemonService.Board:input_type -> waverpc.BoardRequest
-	82,  // 96: waverpc.DaemonService.JoinNextRound:input_type -> waverpc.JoinNextRoundRequest
-	84,  // 97: waverpc.DaemonService.SweepBoardingUTXOs:input_type -> waverpc.SweepBoardingUTXOsRequest
-	87,  // 98: waverpc.DaemonService.ListBoardingSweeps:input_type -> waverpc.ListBoardingSweepsRequest
-	93,  // 99: waverpc.DaemonService.ListRounds:input_type -> waverpc.ListRoundsRequest
-	94,  // 100: waverpc.DaemonService.GetRound:input_type -> waverpc.GetRoundRequest
-	97,  // 101: waverpc.DaemonService.WatchRounds:input_type -> waverpc.WatchRoundsRequest
-	100, // 102: waverpc.DaemonService.ListOORSessions:input_type -> waverpc.ListOORSessionsRequest
-	102, // 103: waverpc.DaemonService.GetOORSession:input_type -> waverpc.GetOORSessionRequest
-	104, // 104: waverpc.DaemonService.EstimateFee:input_type -> waverpc.EstimateFeeRequest
-	106, // 105: waverpc.DaemonService.GetFeeHistory:input_type -> waverpc.GetFeeHistoryRequest
-	109, // 106: waverpc.DaemonService.ListTransactions:input_type -> waverpc.ListTransactionsRequest
-	112, // 107: waverpc.DaemonService.Unroll:input_type -> waverpc.UnrollRequest
-	114, // 108: waverpc.DaemonService.GetUnrollStatus:input_type -> waverpc.GetUnrollStatusRequest
-	119, // 109: waverpc.DaemonService.ArmVHTLCRecovery:input_type -> waverpc.ArmVHTLCRecoveryRequest
-	121, // 110: waverpc.DaemonService.EscalateVHTLCRecovery:input_type -> waverpc.EscalateVHTLCRecoveryRequest
-	123, // 111: waverpc.DaemonService.CancelVHTLCRecovery:input_type -> waverpc.CancelVHTLCRecoveryRequest
-	125, // 112: waverpc.DaemonService.GetVHTLCRecoveryStatus:input_type -> waverpc.GetVHTLCRecoveryStatusRequest
-	127, // 113: waverpc.DaemonService.ListVHTLCRecoveries:input_type -> waverpc.ListVHTLCRecoveriesRequest
-	130, // 114: waverpc.DaemonService.SignOutSwapHtlcAck:input_type -> waverpc.SignOutSwapHtlcAckRequest
-	12,  // 115: waverpc.DaemonService.GetInfo:output_type -> waverpc.GetInfoResponse
-	15,  // 116: waverpc.DaemonService.GenSeed:output_type -> waverpc.GenSeedResponse
-	17,  // 117: waverpc.DaemonService.InitWallet:output_type -> waverpc.InitWalletResponse
-	19,  // 118: waverpc.DaemonService.UnlockWallet:output_type -> waverpc.UnlockWalletResponse
-	21,  // 119: waverpc.DaemonService.GetBalance:output_type -> waverpc.GetBalanceResponse
-	26,  // 120: waverpc.DaemonService.ListVTXOs:output_type -> waverpc.ListVTXOsResponse
-	28,  // 121: waverpc.DaemonService.NewAddress:output_type -> waverpc.NewAddressResponse
-	30,  // 122: waverpc.DaemonService.NewReceiveScript:output_type -> waverpc.NewReceiveScriptResponse
-	32,  // 123: waverpc.DaemonService.ReceiveAuthKey:output_type -> waverpc.ReceiveAuthKeyResponse
-	34,  // 124: waverpc.DaemonService.SignReceiveAuthMessage:output_type -> waverpc.SignReceiveAuthMessageResponse
-	36,  // 125: waverpc.DaemonService.SignReceiveAuthMessageCompact:output_type -> waverpc.SignReceiveAuthMessageCompactResponse
-	38,  // 126: waverpc.DaemonService.ReceiveAuthECDH:output_type -> waverpc.ReceiveAuthECDHResponse
-	40,  // 127: waverpc.DaemonService.GetIndexedVTXOByPkScript:output_type -> waverpc.GetIndexedVTXOByPkScriptResponse
-	42,  // 128: waverpc.DaemonService.GetVTXOExpiryInfo:output_type -> waverpc.GetVTXOExpiryInfoResponse
-	44,  // 129: waverpc.DaemonService.GetIndexedOORSessionByTxid:output_type -> waverpc.GetIndexedOORSessionByTxidResponse
-	47,  // 130: waverpc.DaemonService.SendVTXO:output_type -> waverpc.SendVTXOResponse
-	51,  // 131: waverpc.DaemonService.SendOOR:output_type -> waverpc.SendOORResponse
-	54,  // 132: waverpc.DaemonService.PrepareOOR:output_type -> waverpc.PrepareOORResponse
-	56,  // 133: waverpc.DaemonService.SignOORCustomInput:output_type -> waverpc.SignOORCustomInputResponse
-	58,  // 134: waverpc.DaemonService.SignVTXOForfeit:output_type -> waverpc.SignVTXOForfeitResponse
-	62,  // 135: waverpc.DaemonService.RefreshVTXOs:output_type -> waverpc.RefreshVTXOsResponse
-	68,  // 136: waverpc.DaemonService.RefreshCustomVTXOs:output_type -> waverpc.RefreshCustomVTXOsResponse
-	71,  // 137: waverpc.DaemonService.ListPendingForfeitParticipantSignatureRequests:output_type -> waverpc.ListPendingForfeitParticipantSignatureRequestsResponse
-	74,  // 138: waverpc.DaemonService.SubmitForfeitParticipantSignatures:output_type -> waverpc.SubmitForfeitParticipantSignaturesResponse
-	77,  // 139: waverpc.DaemonService.LeaveVTXOs:output_type -> waverpc.LeaveVTXOsResponse
-	79,  // 140: waverpc.DaemonService.SendOnChain:output_type -> waverpc.SendOnChainResponse
-	81,  // 141: waverpc.DaemonService.Board:output_type -> waverpc.BoardResponse
-	83,  // 142: waverpc.DaemonService.JoinNextRound:output_type -> waverpc.JoinNextRoundResponse
-	86,  // 143: waverpc.DaemonService.SweepBoardingUTXOs:output_type -> waverpc.SweepBoardingUTXOsResponse
-	90,  // 144: waverpc.DaemonService.ListBoardingSweeps:output_type -> waverpc.ListBoardingSweepsResponse
-	96,  // 145: waverpc.DaemonService.ListRounds:output_type -> waverpc.ListRoundsResponse
-	95,  // 146: waverpc.DaemonService.GetRound:output_type -> waverpc.GetRoundResponse
-	98,  // 147: waverpc.DaemonService.WatchRounds:output_type -> waverpc.WatchRoundsResponse
-	101, // 148: waverpc.DaemonService.ListOORSessions:output_type -> waverpc.ListOORSessionsResponse
-	103, // 149: waverpc.DaemonService.GetOORSession:output_type -> waverpc.GetOORSessionResponse
-	105, // 150: waverpc.DaemonService.EstimateFee:output_type -> waverpc.EstimateFeeResponse
-	108, // 151: waverpc.DaemonService.GetFeeHistory:output_type -> waverpc.GetFeeHistoryResponse
-	111, // 152: waverpc.DaemonService.ListTransactions:output_type -> waverpc.ListTransactionsResponse
-	113, // 153: waverpc.DaemonService.Unroll:output_type -> waverpc.UnrollResponse
-	118, // 154: waverpc.DaemonService.GetUnrollStatus:output_type -> waverpc.GetUnrollStatusResponse
-	120, // 155: waverpc.DaemonService.ArmVHTLCRecovery:output_type -> waverpc.ArmVHTLCRecoveryResponse
-	122, // 156: waverpc.DaemonService.EscalateVHTLCRecovery:output_type -> waverpc.EscalateVHTLCRecoveryResponse
-	124, // 157: waverpc.DaemonService.CancelVHTLCRecovery:output_type -> waverpc.CancelVHTLCRecoveryResponse
-	126, // 158: waverpc.DaemonService.GetVHTLCRecoveryStatus:output_type -> waverpc.GetVHTLCRecoveryStatusResponse
-	128, // 159: waverpc.DaemonService.ListVHTLCRecoveries:output_type -> waverpc.ListVHTLCRecoveriesResponse
-	131, // 160: waverpc.DaemonService.SignOutSwapHtlcAck:output_type -> waverpc.SignOutSwapHtlcAckResponse
-	115, // [115:161] is the sub-list for method output_type
-	69,  // [69:115] is the sub-list for method input_type
-	69,  // [69:69] is the sub-list for extension type_name
-	69,  // [69:69] is the sub-list for extension extendee
-	0,   // [0:69] is the sub-list for field type_name
+	132, // 68: waverpc.ListDeadLettersResponse.dead_letters:type_name -> waverpc.DeadLetter
+	132, // 69: waverpc.GetDeadLetterResponse.dead_letter:type_name -> waverpc.DeadLetter
+	75,  // 70: waverpc.LeaveVTXOsRequest.DestinationsEntry.value:type_name -> waverpc.LeaveDestination
+	11,  // 71: waverpc.DaemonService.GetInfo:input_type -> waverpc.GetInfoRequest
+	14,  // 72: waverpc.DaemonService.GenSeed:input_type -> waverpc.GenSeedRequest
+	16,  // 73: waverpc.DaemonService.InitWallet:input_type -> waverpc.InitWalletRequest
+	18,  // 74: waverpc.DaemonService.UnlockWallet:input_type -> waverpc.UnlockWalletRequest
+	20,  // 75: waverpc.DaemonService.GetBalance:input_type -> waverpc.GetBalanceRequest
+	25,  // 76: waverpc.DaemonService.ListVTXOs:input_type -> waverpc.ListVTXOsRequest
+	27,  // 77: waverpc.DaemonService.NewAddress:input_type -> waverpc.NewAddressRequest
+	29,  // 78: waverpc.DaemonService.NewReceiveScript:input_type -> waverpc.NewReceiveScriptRequest
+	31,  // 79: waverpc.DaemonService.ReceiveAuthKey:input_type -> waverpc.ReceiveAuthKeyRequest
+	33,  // 80: waverpc.DaemonService.SignReceiveAuthMessage:input_type -> waverpc.SignReceiveAuthMessageRequest
+	35,  // 81: waverpc.DaemonService.SignReceiveAuthMessageCompact:input_type -> waverpc.SignReceiveAuthMessageCompactRequest
+	37,  // 82: waverpc.DaemonService.ReceiveAuthECDH:input_type -> waverpc.ReceiveAuthECDHRequest
+	39,  // 83: waverpc.DaemonService.GetIndexedVTXOByPkScript:input_type -> waverpc.GetIndexedVTXOByPkScriptRequest
+	41,  // 84: waverpc.DaemonService.GetVTXOExpiryInfo:input_type -> waverpc.GetVTXOExpiryInfoRequest
+	43,  // 85: waverpc.DaemonService.GetIndexedOORSessionByTxid:input_type -> waverpc.GetIndexedOORSessionByTxidRequest
+	46,  // 86: waverpc.DaemonService.SendVTXO:input_type -> waverpc.SendVTXORequest
+	48,  // 87: waverpc.DaemonService.SendOOR:input_type -> waverpc.SendOORRequest
+	52,  // 88: waverpc.DaemonService.PrepareOOR:input_type -> waverpc.PrepareOORRequest
+	55,  // 89: waverpc.DaemonService.SignOORCustomInput:input_type -> waverpc.SignOORCustomInputRequest
+	57,  // 90: waverpc.DaemonService.SignVTXOForfeit:input_type -> waverpc.SignVTXOForfeitRequest
+	61,  // 91: waverpc.DaemonService.RefreshVTXOs:input_type -> waverpc.RefreshVTXOsRequest
+	67,  // 92: waverpc.DaemonService.RefreshCustomVTXOs:input_type -> waverpc.RefreshCustomVTXOsRequest
+	70,  // 93: waverpc.DaemonService.ListPendingForfeitParticipantSignatureRequests:input_type -> waverpc.ListPendingForfeitParticipantSignatureRequestsRequest
+	73,  // 94: waverpc.DaemonService.SubmitForfeitParticipantSignatures:input_type -> waverpc.SubmitForfeitParticipantSignaturesRequest
+	76,  // 95: waverpc.DaemonService.LeaveVTXOs:input_type -> waverpc.LeaveVTXOsRequest
+	78,  // 96: waverpc.DaemonService.SendOnChain:input_type -> waverpc.SendOnChainRequest
+	80,  // 97: waverpc.DaemonService.Board:input_type -> waverpc.BoardRequest
+	82,  // 98: waverpc.DaemonService.JoinNextRound:input_type -> waverpc.JoinNextRoundRequest
+	84,  // 99: waverpc.DaemonService.SweepBoardingUTXOs:input_type -> waverpc.SweepBoardingUTXOsRequest
+	87,  // 100: waverpc.DaemonService.ListBoardingSweeps:input_type -> waverpc.ListBoardingSweepsRequest
+	93,  // 101: waverpc.DaemonService.ListRounds:input_type -> waverpc.ListRoundsRequest
+	94,  // 102: waverpc.DaemonService.GetRound:input_type -> waverpc.GetRoundRequest
+	97,  // 103: waverpc.DaemonService.WatchRounds:input_type -> waverpc.WatchRoundsRequest
+	100, // 104: waverpc.DaemonService.ListOORSessions:input_type -> waverpc.ListOORSessionsRequest
+	102, // 105: waverpc.DaemonService.GetOORSession:input_type -> waverpc.GetOORSessionRequest
+	104, // 106: waverpc.DaemonService.EstimateFee:input_type -> waverpc.EstimateFeeRequest
+	106, // 107: waverpc.DaemonService.GetFeeHistory:input_type -> waverpc.GetFeeHistoryRequest
+	109, // 108: waverpc.DaemonService.ListTransactions:input_type -> waverpc.ListTransactionsRequest
+	112, // 109: waverpc.DaemonService.Unroll:input_type -> waverpc.UnrollRequest
+	114, // 110: waverpc.DaemonService.GetUnrollStatus:input_type -> waverpc.GetUnrollStatusRequest
+	119, // 111: waverpc.DaemonService.ArmVHTLCRecovery:input_type -> waverpc.ArmVHTLCRecoveryRequest
+	121, // 112: waverpc.DaemonService.EscalateVHTLCRecovery:input_type -> waverpc.EscalateVHTLCRecoveryRequest
+	123, // 113: waverpc.DaemonService.CancelVHTLCRecovery:input_type -> waverpc.CancelVHTLCRecoveryRequest
+	125, // 114: waverpc.DaemonService.GetVHTLCRecoveryStatus:input_type -> waverpc.GetVHTLCRecoveryStatusRequest
+	127, // 115: waverpc.DaemonService.ListVHTLCRecoveries:input_type -> waverpc.ListVHTLCRecoveriesRequest
+	130, // 116: waverpc.DaemonService.SignOutSwapHtlcAck:input_type -> waverpc.SignOutSwapHtlcAckRequest
+	133, // 117: waverpc.DaemonService.ListDeadLetters:input_type -> waverpc.ListDeadLettersRequest
+	135, // 118: waverpc.DaemonService.GetDeadLetter:input_type -> waverpc.GetDeadLetterRequest
+	137, // 119: waverpc.DaemonService.RequeueDeadLetter:input_type -> waverpc.RequeueDeadLetterRequest
+	139, // 120: waverpc.DaemonService.PurgeDeadLetters:input_type -> waverpc.PurgeDeadLettersRequest
+	12,  // 121: waverpc.DaemonService.GetInfo:output_type -> waverpc.GetInfoResponse
+	15,  // 122: waverpc.DaemonService.GenSeed:output_type -> waverpc.GenSeedResponse
+	17,  // 123: waverpc.DaemonService.InitWallet:output_type -> waverpc.InitWalletResponse
+	19,  // 124: waverpc.DaemonService.UnlockWallet:output_type -> waverpc.UnlockWalletResponse
+	21,  // 125: waverpc.DaemonService.GetBalance:output_type -> waverpc.GetBalanceResponse
+	26,  // 126: waverpc.DaemonService.ListVTXOs:output_type -> waverpc.ListVTXOsResponse
+	28,  // 127: waverpc.DaemonService.NewAddress:output_type -> waverpc.NewAddressResponse
+	30,  // 128: waverpc.DaemonService.NewReceiveScript:output_type -> waverpc.NewReceiveScriptResponse
+	32,  // 129: waverpc.DaemonService.ReceiveAuthKey:output_type -> waverpc.ReceiveAuthKeyResponse
+	34,  // 130: waverpc.DaemonService.SignReceiveAuthMessage:output_type -> waverpc.SignReceiveAuthMessageResponse
+	36,  // 131: waverpc.DaemonService.SignReceiveAuthMessageCompact:output_type -> waverpc.SignReceiveAuthMessageCompactResponse
+	38,  // 132: waverpc.DaemonService.ReceiveAuthECDH:output_type -> waverpc.ReceiveAuthECDHResponse
+	40,  // 133: waverpc.DaemonService.GetIndexedVTXOByPkScript:output_type -> waverpc.GetIndexedVTXOByPkScriptResponse
+	42,  // 134: waverpc.DaemonService.GetVTXOExpiryInfo:output_type -> waverpc.GetVTXOExpiryInfoResponse
+	44,  // 135: waverpc.DaemonService.GetIndexedOORSessionByTxid:output_type -> waverpc.GetIndexedOORSessionByTxidResponse
+	47,  // 136: waverpc.DaemonService.SendVTXO:output_type -> waverpc.SendVTXOResponse
+	51,  // 137: waverpc.DaemonService.SendOOR:output_type -> waverpc.SendOORResponse
+	54,  // 138: waverpc.DaemonService.PrepareOOR:output_type -> waverpc.PrepareOORResponse
+	56,  // 139: waverpc.DaemonService.SignOORCustomInput:output_type -> waverpc.SignOORCustomInputResponse
+	58,  // 140: waverpc.DaemonService.SignVTXOForfeit:output_type -> waverpc.SignVTXOForfeitResponse
+	62,  // 141: waverpc.DaemonService.RefreshVTXOs:output_type -> waverpc.RefreshVTXOsResponse
+	68,  // 142: waverpc.DaemonService.RefreshCustomVTXOs:output_type -> waverpc.RefreshCustomVTXOsResponse
+	71,  // 143: waverpc.DaemonService.ListPendingForfeitParticipantSignatureRequests:output_type -> waverpc.ListPendingForfeitParticipantSignatureRequestsResponse
+	74,  // 144: waverpc.DaemonService.SubmitForfeitParticipantSignatures:output_type -> waverpc.SubmitForfeitParticipantSignaturesResponse
+	77,  // 145: waverpc.DaemonService.LeaveVTXOs:output_type -> waverpc.LeaveVTXOsResponse
+	79,  // 146: waverpc.DaemonService.SendOnChain:output_type -> waverpc.SendOnChainResponse
+	81,  // 147: waverpc.DaemonService.Board:output_type -> waverpc.BoardResponse
+	83,  // 148: waverpc.DaemonService.JoinNextRound:output_type -> waverpc.JoinNextRoundResponse
+	86,  // 149: waverpc.DaemonService.SweepBoardingUTXOs:output_type -> waverpc.SweepBoardingUTXOsResponse
+	90,  // 150: waverpc.DaemonService.ListBoardingSweeps:output_type -> waverpc.ListBoardingSweepsResponse
+	96,  // 151: waverpc.DaemonService.ListRounds:output_type -> waverpc.ListRoundsResponse
+	95,  // 152: waverpc.DaemonService.GetRound:output_type -> waverpc.GetRoundResponse
+	98,  // 153: waverpc.DaemonService.WatchRounds:output_type -> waverpc.WatchRoundsResponse
+	101, // 154: waverpc.DaemonService.ListOORSessions:output_type -> waverpc.ListOORSessionsResponse
+	103, // 155: waverpc.DaemonService.GetOORSession:output_type -> waverpc.GetOORSessionResponse
+	105, // 156: waverpc.DaemonService.EstimateFee:output_type -> waverpc.EstimateFeeResponse
+	108, // 157: waverpc.DaemonService.GetFeeHistory:output_type -> waverpc.GetFeeHistoryResponse
+	111, // 158: waverpc.DaemonService.ListTransactions:output_type -> waverpc.ListTransactionsResponse
+	113, // 159: waverpc.DaemonService.Unroll:output_type -> waverpc.UnrollResponse
+	118, // 160: waverpc.DaemonService.GetUnrollStatus:output_type -> waverpc.GetUnrollStatusResponse
+	120, // 161: waverpc.DaemonService.ArmVHTLCRecovery:output_type -> waverpc.ArmVHTLCRecoveryResponse
+	122, // 162: waverpc.DaemonService.EscalateVHTLCRecovery:output_type -> waverpc.EscalateVHTLCRecoveryResponse
+	124, // 163: waverpc.DaemonService.CancelVHTLCRecovery:output_type -> waverpc.CancelVHTLCRecoveryResponse
+	126, // 164: waverpc.DaemonService.GetVHTLCRecoveryStatus:output_type -> waverpc.GetVHTLCRecoveryStatusResponse
+	128, // 165: waverpc.DaemonService.ListVHTLCRecoveries:output_type -> waverpc.ListVHTLCRecoveriesResponse
+	131, // 166: waverpc.DaemonService.SignOutSwapHtlcAck:output_type -> waverpc.SignOutSwapHtlcAckResponse
+	134, // 167: waverpc.DaemonService.ListDeadLetters:output_type -> waverpc.ListDeadLettersResponse
+	136, // 168: waverpc.DaemonService.GetDeadLetter:output_type -> waverpc.GetDeadLetterResponse
+	138, // 169: waverpc.DaemonService.RequeueDeadLetter:output_type -> waverpc.RequeueDeadLetterResponse
+	140, // 170: waverpc.DaemonService.PurgeDeadLetters:output_type -> waverpc.PurgeDeadLettersResponse
+	121, // [121:171] is the sub-list for method output_type
+	71,  // [71:121] is the sub-list for method input_type
+	71,  // [71:71] is the sub-list for extension type_name
+	71,  // [71:71] is the sub-list for extension extendee
+	0,   // [0:71] is the sub-list for field type_name
 }
 
 func init() { file_daemon_proto_init() }
@@ -11499,7 +12130,7 @@ func file_daemon_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_daemon_proto_rawDesc), len(file_daemon_proto_rawDesc)),
 			NumEnums:      11,
-			NumMessages:   122,
+			NumMessages:   131,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
