@@ -218,7 +218,8 @@ func (m *TreeMaterializer) MaterializeNode(ctx context.Context, node *tree.Node,
 	// output's script exactly.
 	finalKey, err := boundFinalKey(node.CoSigners, tweak, spentPkScript)
 	if err != nil {
-		return nil, fmt.Errorf("node %s: %w", params.Input, err)
+		return nil, fmt.Errorf("node %s (%d children): %w",
+			params.Input, len(node.Children), err)
 	}
 
 	template, outputSpecs, err := m.buildTemplate(node)
