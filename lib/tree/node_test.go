@@ -1,7 +1,9 @@
 package tree
 
 import (
+	"bytes"
 	"fmt"
+	"sort"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -1495,4 +1497,36 @@ func TestPrettyPrint(t *testing.T) {
 		require.Contains(t, output, "K0")
 		require.Contains(t, output, "K1")
 	})
+}
+
+// TestComputeKeysDoNotReorderCosigners proves key aggregation leaves the
+// caller's cosigner set untouched. MuSig2 sorts the slice it is given in
+// place, and callers identify participants by position — the tree-signing
+// key is first — so a reorder here silently hands back the wrong key.
+func TestComputeKeysDoNotReorderCosigners(t *testing.T) {
+	t.Parallel()
+
+	// Three keys whose serialized order is deliberately not sorted.
+	var cosigners []*btcec.PublicKey
+	for len(cosigners) < 3 {
+		key, err := btcec.NewPrivateKey()
+		require.NoError(t, err)
+		cosigners = append(cosigners, key.PubKey())
+	}
+	sort.Slice(cosigners, func(i, j int) bool {
+		return bytes.Compare(
+			cosigners[i].SerializeCompressed(),
+			cosigners[j].SerializeCompressed(),
+		) > 0
+	})
+
+	original := append([]*btcec.PublicKey(nil), cosigners...)
+
+	_, err := ComputeInternalKey(cosigners)
+	require.NoError(t, err)
+	require.Equal(t, original, cosigners, "internal key reordered the set")
+
+	_, err = ComputeFinalKey(cosigners, make([]byte, 32))
+	require.NoError(t, err)
+	require.Equal(t, original, cosigners, "final key reordered the set")
 }

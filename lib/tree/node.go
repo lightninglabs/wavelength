@@ -238,12 +238,20 @@ func ComputeInternalKey(cosigners []*btcec.PublicKey) (*btcec.PublicKey,
 		return cosigners[0], nil
 	}
 
-	aggKey, _, _, err := musig2.AggregateKeys(cosigners, true)
+	aggKey, _, _, err := musig2.AggregateKeys(sortableCopy(cosigners), true)
 	if err != nil {
 		return nil, fmt.Errorf("failed to aggregate keys: %w", err)
 	}
 
 	return aggKey.PreTweakedKey, nil
+}
+
+// sortableCopy returns a copy of the cosigner set for MuSig2 aggregation.
+// AggregateKeys sorts the slice it is handed in place, which would silently
+// reorder a caller's set — and callers that identify a participant by
+// position (the operator first, say) would then read the wrong key.
+func sortableCopy(cosigners []*btcec.PublicKey) []*btcec.PublicKey {
+	return append([]*btcec.PublicKey(nil), cosigners...)
 }
 
 // ComputeFinalKey computes the final aggregated public key for signing.
@@ -268,7 +276,8 @@ func ComputeFinalKey(cosigners []*btcec.PublicKey,
 
 	// Multi-key case: use MuSig2 aggregation with taproot tweak.
 	aggKey, _, _, err := musig2.AggregateKeys(
-		cosigners, true, musig2.WithTaprootKeyTweak(sweepTapscriptRoot),
+		sortableCopy(cosigners), true,
+		musig2.WithTaprootKeyTweak(sweepTapscriptRoot),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to aggregate keys: %w", err)
