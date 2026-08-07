@@ -166,6 +166,41 @@ Both gauges are unlabelled, which assumes one connector per process — true tod
 gauge the max of the two and the first alert blind; add a `mailbox_id` label
 before that happens.
 
+## Dead Letters
+
+A dead letter is a message a durable actor abandoned after exhausting its
+delivery retries. The daemon durably accepted it, so a parked entry is a
+breach of the delivery contract that requires operator action: inspect it
+with `wavecli deadletter list`, then requeue or purge it. The gauges are
+scrape-driven (read from the delivery store on each scrape); the counter is
+incremented by the dead-letter monitor as it first observes each entry.
+
+| Metric | Type | Labels | Source | Description |
+|--------|------|--------|--------|-------------|
+| `waved_dead_letters` | gauge | — | scrape (delivery store) | Number of dead letters currently parked. Explicitly `0` when the queue is clean, so absence of the series means metrics are off, not that all is well. Falls when entries are requeued, deleted, or purged by retention. |
+| `waved_actor_dead_letters` | gauge | `actor_id` | scrape (delivery store) | Parked dead letters by owning actor. A series exists only while its actor holds entries, so the label stays bounded by live parked state. |
+| `waved_dead_letters_observed_total` | counter | — | daemon (dead-letter monitor) | Dead letters as first observed by the monitor. Monotone, so it catches entries that were parked and cleared between scrapes of the gauge. Deliberately unlabelled: per-session durable actors would make an `actor_id` label a cardinality leak on a counter that never forgets a child; per-actor attribution lives on the gauge and the monitor's log lines. |
+
+### Alerting
+
+Any parked dead letter is operator-actionable:
+
+```
+waved_dead_letters > 0
+```
+
+for 5m (gives an auto-requeue or a fast-fingered operator room to clear a
+transient). To catch park-and-clear churn the gauge can miss between scrapes,
+alert on the observation rate as well:
+
+```
+increase(waved_dead_letters_observed_total[1h]) > 0
+```
+
+For triage, the gauge's `actor_id` label names the mailbox that gave up:
+`round-actor` and the OOR registries are value-bearing paths. The monitor's
+error-level log lines carry the same attribution per entry.
+
 ## gRPC Client Metrics
 
 Per-method **client-side** metrics for calls `waved` makes to the ark
