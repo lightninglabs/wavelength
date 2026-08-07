@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/lightninglabs/lndclient"
@@ -47,6 +48,11 @@ type TapdHarness struct {
 
 	// TapdRestPort is the host port mapped to tapd REST.
 	TapdRestPort string
+
+	// TapdContainerName is the tapd container's Docker network name.
+	// Other containers on the harness network reach this tapd at
+	// TapdContainerName:10029, e.g. as a universe proof courier.
+	TapdContainerName string
 
 	// LNDTLSCert is the path to the LND TLS cert.
 	LNDTLSCert string
@@ -416,6 +422,9 @@ func (th *TapdHarness) setupLNDPaths() {
 func (th *TapdHarness) setupTapdPaths() {
 	th.TapdGRPCPort = th.tapd.GetPort("10029/tcp")
 	th.TapdRestPort = th.tapd.GetPort("8089/tcp")
+	th.TapdContainerName = strings.TrimPrefix(
+		th.tapd.Container.Name, "/",
+	)
 	th.h.Logf(
 		"%s tapd gRPC=127.0.0.1:%s REST=127.0.0.1:%s", th.Name,
 		th.TapdGRPCPort, th.TapdRestPort,
