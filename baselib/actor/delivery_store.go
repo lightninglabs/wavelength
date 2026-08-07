@@ -2,6 +2,7 @@ package actor
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -467,6 +468,111 @@ type DeadLetter struct {
 
 	// CreatedAt is when the message was dead-lettered.
 	CreatedAt time.Time
+
+	// PromiseID is the ask-result key the original message carried (empty
+	// for Tell messages).
+	PromiseID string
+
+	// CallbackActorID routes DurableAsk responses (empty otherwise).
+	CallbackActorID string
+
+	// CorrelationID links DurableAsk requests to responses (empty
+	// otherwise).
+	CorrelationID string
+
+	// CorrelationKey is the per-message FIFO lane tag (empty when
+	// unkeyed).
+	CorrelationKey string
+
+	// Priority is the mailbox processing priority of the original
+	// message.
+	Priority int
+
+	// MaxAttempts is the retry budget the original message carried.
+	// Rows dead-lettered before the requeue migration report the
+	// enqueue default.
+	MaxAttempts int
+}
+
+// DeadLetterCount is a per-actor dead-letter tally, used by metrics and
+// health surfaces.
+type DeadLetterCount struct {
+	// ActorID identifies the actor whose mailbox the dead letters came
+	// from.
+	ActorID string
+
+	// Count is the number of dead letters currently parked for the actor.
+	Count int64
+}
+
+// ErrDeadLetterNotFound is returned by requeue when no dead letter exists
+// with the given ID. Distinct from a nil Get result so mutating callers get
+// a hard error rather than a silent no-op.
+var ErrDeadLetterNotFound = fmt.Errorf("dead letter not found")
+
+// ErrDeadLetterNotRequeueable is returned when a dead letter cannot be
+// requeued, e.g. its source is not a mailbox message.
+var ErrDeadLetterNotRequeueable = fmt.Errorf("dead letter not requeueable")
+
+// DeadLetterStore is the operator-facing surface over the dead-letter queue:
+// enumeration for visibility, requeue for recovery, and purge for retention.
+// The concrete delivery stores implement it alongside DeliveryStore, but it
+// is deliberately a separate interface: the actor runtime only ever writes
+// dead letters, so widening DeliveryStore would force every test double to
+// grow operations the runtime never calls.
+//
+// A dead letter is terminal until an operator (or an operator-driven tool)
+// acts on it. Requeue re-enqueues the original payload as a NEW mailbox
+// message: a fresh message ID, attempts reset to zero, availability now, and
+// every routing field (priority, retry budget, ask plumbing, correlation
+// key) preserved from the original. The fresh ID is load-bearing, not
+// cosmetic. The retry-exhaustion path records the original ID in
+// processed_messages before dead-lettering, so re-enqueueing under the same
+// ID would be silently skipped by deduplication, and the enqueue's
+// ON CONFLICT DO NOTHING would mask the collision.
+type DeadLetterStore interface {
+	// GetDeadLetter retrieves a specific dead letter message. Returns
+	// (nil, nil) when no dead letter exists with the ID.
+	GetDeadLetter(ctx context.Context, id string) (*DeadLetter, error)
+
+	// ListDeadLetters lists dead letters for an actor, newest first.
+	ListDeadLetters(ctx context.Context, actorID string,
+		limit int) ([]DeadLetter, error)
+
+	// ListAllDeadLetters lists dead letters across all actors, newest
+	// first, with offset pagination for the operator surface.
+	ListAllDeadLetters(ctx context.Context, limit,
+		offset int) ([]DeadLetter, error)
+
+	// ListDeadLettersSince lists dead letters strictly after the
+	// (since, afterID) cursor, oldest first in (created_at, id) order.
+	// Strict keyset pagination guarantees an incremental scanner makes
+	// progress through a flood of same-second entries and sees every row
+	// exactly once with no caller-side dedup. An empty afterID with
+	// since = T yields everything from second T on.
+	ListDeadLettersSince(ctx context.Context, since time.Time,
+		afterID string, limit int) ([]DeadLetter, error)
+
+	// CountDeadLetters counts all parked dead letters.
+	CountDeadLetters(ctx context.Context) (int64, error)
+
+	// CountDeadLettersByActor tallies parked dead letters per actor.
+	CountDeadLettersByActor(ctx context.Context) ([]DeadLetterCount, error)
+
+	// RequeueDeadLetter atomically re-enqueues a dead letter into its
+	// original mailbox and removes it from the dead-letter queue,
+	// returning the new mailbox message ID. Only 'mailbox'-sourced dead
+	// letters are requeueable. Returns ErrDeadLetterNotFound when the ID
+	// does not exist and ErrDeadLetterNotRequeueable for other sources.
+	RequeueDeadLetter(ctx context.Context, id string) (string, error)
+
+	// DeleteDeadLetter removes a dead letter after manual processing.
+	DeleteDeadLetter(ctx context.Context, id string) error
+
+	// PurgeDeadLetters deletes dead letters created before the threshold,
+	// returning how many rows the retention sweep removed.
+	PurgeDeadLetters(ctx context.Context,
+		olderThan time.Time) (int64, error)
 }
 
 // TxAwareDeliveryStore extends DeliveryStore with transaction execution
