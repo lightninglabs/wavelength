@@ -165,6 +165,15 @@ func (m *DurableMailbox[M, R]) checkWatermarks(ctx context.Context,
 	// uncommitted enqueues, so the probe only needs committed state.
 	if stale && !m.depth.probing {
 		m.depth.probing = true
+
+		// Snapshot the delta before releasing the mutex: sends that
+		// race the probe increment it while the COUNT runs, and their
+		// rows are enqueued after their check returns, so the COUNT
+		// cannot see them. Subtracting the snapshot (rather than
+		// zeroing) keeps those racing increments in the estimate,
+		// preserving the local no-undershoot property across the
+		// probe window.
+		preProbeSent := m.depth.sentSinceProbe
 		m.depth.mu.Unlock()
 
 		depth, err := m.depthStore.MailboxDepth(
@@ -183,7 +192,7 @@ func (m *DurableMailbox[M, R]) checkWatermarks(ctx context.Context,
 		} else {
 			m.depth.probedAt = m.clock.Now()
 			m.depth.depth = depth
-			m.depth.sentSinceProbe = 0
+			m.depth.sentSinceProbe -= preProbeSent
 		}
 	}
 
