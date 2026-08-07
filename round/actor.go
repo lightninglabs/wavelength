@@ -2,6 +2,7 @@
 package round
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"errors"
@@ -1831,9 +1832,31 @@ func (a *RoundClientActor) handleAssetBoarding(ctx context.Context,
 		)
 	}
 
+	// The wallet never derived this address, so the composed script
+	// material the round's auth and witness assembly need is rebuilt
+	// from the disclosure.
+	address, tapscript, err := arkscript.ComposedBoardingAddress(
+		policyTemplate, [32]byte(msg.AssetCommitmentLeafHash),
+		msg.KeyDesc.PubKey, msg.OperatorKey, msg.ExitDelay,
+		a.cfg.ChainParams,
+	)
+	if err != nil {
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("compose asset boarding address: %w", err),
+		)
+	}
+	if !bytes.Equal(output.PkScript, mustPayToAddrScript(address)) {
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("composed asset boarding address does not "+
+				"match the confirmed output %s", msg.Outpoint),
+		)
+	}
+
 	intent := BoardingIntent{
 		BoardingIntent: wallet.BoardingIntent{
 			Address: wallet.BoardingAddress{
+				Address:     address,
+				Tapscript:   tapscript,
 				KeyDesc:     msg.KeyDesc,
 				OperatorKey: msg.OperatorKey,
 				ExitDelay:   msg.ExitDelay,
