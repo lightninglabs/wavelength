@@ -1,6 +1,7 @@
 package waved
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 
@@ -105,9 +106,9 @@ func (s *Server) RegisterAssetBoarding(ctx context.Context,
 
 // AssetBoardingDisclosure replays an idempotent Taproot Asset onboarding
 // by request ID and assembles the round boarding disclosure from its
-// result. The caller supplies the chain confirmation (ConfTx and
-// ConfHeight) and the boarded outpoint's exported proof file
-// (AssetProof) before registering the boarding.
+// result. The caller supplies the confirmation transaction (ConfTx) and
+// the boarded outpoint's exported proof file (AssetProof) before
+// registering the boarding.
 func (s *Server) AssetBoardingDisclosure(ctx context.Context,
 	req *tapassets.OnboardingRequest) (*round.RegisterAssetBoardingRequest,
 	error) {
@@ -133,11 +134,26 @@ func (s *Server) AssetBoardingDisclosure(ctx context.Context,
 		result.TaprootAssetRoot, result.AssetAmount,
 	)
 
+	// The disclosure is only usable if the operator can rebuild the
+	// on-chain script from it, so reject a mismatch here rather than
+	// letting the round admission report an opaque script error.
+	composed, _, _, err := tapassets.ComposedBoardingScript(
+		result.PolicyTemplate, leafHash,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("compose boarding script: %w", err)
+	}
+	if !bytes.Equal(composed, result.PkScript) {
+		return nil, fmt.Errorf("composed script %x does not match the "+
+			"onboarded output script %x", composed, result.PkScript)
+	}
+
 	return &round.RegisterAssetBoardingRequest{
 		Outpoint:                result.Outpoint,
 		KeyDesc:                 result.OwnerKey,
 		OperatorKey:             result.OperatorKey,
 		ExitDelay:               result.ExitDelay,
+		ConfHeight:              result.ConfirmationHeight,
 		AssetRef:                result.AssetRef,
 		AssetAmount:             result.AssetAmount,
 		AssetDigest:             result.Digest[:],
