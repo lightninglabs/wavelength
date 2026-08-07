@@ -718,8 +718,9 @@ func boundFinalKey(cosigners []*btcec.PublicKey, tweak,
 		return nil, err
 	}
 	if !bytes.Equal(script, spentPkScript) {
-		return nil, fmt.Errorf("cosigners and signing tweak do not " +
-			"reproduce the spent output script")
+		return nil, fmt.Errorf("%d cosigners and signing tweak %x "+
+			"derive script %x, but the spent output is %x",
+			len(cosigners), tweak, script, spentPkScript)
 	}
 
 	return finalKey, nil
