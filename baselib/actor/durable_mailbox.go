@@ -158,10 +158,14 @@ type DurableMailboxConfig struct {
 	// refuses new messages with ErrMailboxSaturated, shedding load at the
 	// producer instead of growing the backlog without bound. Zero (the
 	// default) disables the bound. Messages with priority >=
-	// RestartPriority are exempt so recovery always lands. Depth is read
-	// through a TTL-cached probe plus a local sent-since-probe delta, so
-	// enforcement is approximate within the probe window but the common
-	// send path never pays for an extra COUNT query.
+	// ControlPriority (restart and boot restore/resume messages) are
+	// exempt so recovery always lands, as are outbox-propagated CDC
+	// deliveries (the message was already accepted at its true producer;
+	// refusing the hand-off would dead-letter a committed row instead of
+	// shedding load). Depth is read through a TTL-cached probe plus a
+	// local sent-since-probe delta, so enforcement is approximate within
+	// the probe window but the common send path never pays for an extra
+	// COUNT query.
 	HardHighWatermark int
 
 	// SingleWorkerLeaseless enables the leaseless peek consume path. When

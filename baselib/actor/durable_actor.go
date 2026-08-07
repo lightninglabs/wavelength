@@ -123,8 +123,9 @@ type DurableActorConfig[M TLVMessage, R any] struct {
 
 	// HardHighWatermark is the persistent backlog depth at which sends to
 	// the actor's mailbox are refused with ErrMailboxSaturated. Zero (the
-	// default) disables the bound; restart-priority messages are always
-	// exempt. See DurableMailboxConfig.HardHighWatermark.
+	// default) disables the bound; control-priority messages and
+	// outbox-propagated deliveries are always exempt. See
+	// DurableMailboxConfig.HardHighWatermark.
 	HardHighWatermark int
 
 	// CleanupTimeout specifies the maximum duration for OnStop cleanup.

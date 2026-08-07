@@ -27,13 +27,21 @@ type depthReportingStore struct {
 	// probes counts MailboxDepth calls, so tests can assert the TTL cache
 	// is actually suppressing probes on the send path.
 	probes int
+
+	// sawAmbientTx records whether any probe arrived with a database
+	// transaction still in its context. The watermark probe must strip
+	// the sender's ambient transaction, so tests assert this stays false.
+	sawAmbientTx bool
 }
 
 // MailboxDepth reports the configured depth and counts the probe.
-func (d *depthReportingStore) MailboxDepth(_ context.Context, _ string) (int64,
-	error) {
+func (d *depthReportingStore) MailboxDepth(ctx context.Context, _ string) (
+	int64, error) {
 
 	d.probes++
+	if HasTx(ctx) {
+		d.sawAmbientTx = true
+	}
 	if d.probeErr != nil {
 		return 0, d.probeErr
 	}
@@ -149,6 +157,76 @@ func TestHardWatermarkRestartPriorityExempt(t *testing.T) {
 	// The exemption short-circuits before the probe, so the depth surface
 	// is never consulted for a restart message.
 	require.Equal(t, 0, store.probes)
+}
+
+// TestControlPriorityExempt asserts that a control-priority message (the
+// tier boot-time restore/resume messages sit at) is admitted at saturation,
+// without ever consulting the depth surface.
+func TestControlPriorityExempt(t *testing.T) {
+	t.Parallel()
+
+	mailbox, store, _ := newWatermarkMailbox(t, 0, 5)
+	store.depth = 500
+
+	err := mailbox.Send(
+		context.Background(), watermarkTestEnv(ControlPriority),
+	)
+	require.NoError(t, err)
+	require.Equal(t, 0, store.probes)
+}
+
+// TestOutboxDeliveryExemptFromWatermarks asserts that an outbox-propagated
+// send (the CDC hand-off, marked by the outbox ID the publisher stamps into
+// the context) is admitted at saturation: the message was already accepted
+// at its true producer, so refusing the hand-off would dead-letter a
+// committed outbox row instead of shedding load.
+func TestOutboxDeliveryExemptFromWatermarks(t *testing.T) {
+	t.Parallel()
+
+	mailbox, store, _ := newWatermarkMailbox(t, 0, 5)
+	store.depth = 500
+
+	ctx := WithOutboxID(context.Background(), generateID())
+	require.NoError(t, mailbox.Send(ctx, watermarkTestEnv(0)))
+
+	store.mu.Lock()
+	require.Len(t, store.messages, 1)
+	store.mu.Unlock()
+
+	require.Equal(t, 0, store.probes)
+}
+
+// TestProbeStripsAmbientTx asserts that the depth probe never runs inside
+// the sender's ambient database transaction: joining a writer's transaction
+// would take predicate locks over the whole mailbox partition and
+// manufacture serialization conflicts with the consumer's acks.
+func TestProbeStripsAmbientTx(t *testing.T) {
+	t.Parallel()
+
+	mailbox, store, _ := newWatermarkMailbox(t, 0, 5)
+	store.depth = 1
+
+	ctx := WithTx(context.Background(), nil)
+	require.True(t, HasTx(ctx))
+
+	require.NoError(t, mailbox.Send(ctx, watermarkTestEnv(0)))
+	require.Equal(t, 1, store.probes)
+	require.False(t, store.sawAmbientTx)
+}
+
+// TestSoftEpisodeOpensAtSaturation asserts that a backlog that enters
+// saturation within one probe window still opens the soft-watermark episode:
+// the operator's designed first signal must fire at or before the first
+// refused send.
+func TestSoftEpisodeOpensAtSaturation(t *testing.T) {
+	t.Parallel()
+
+	mailbox, store, _ := newWatermarkMailbox(t, 3, 5)
+	store.depth = 10
+
+	err := mailbox.Send(context.Background(), watermarkTestEnv(0))
+	require.ErrorIs(t, err, ErrMailboxSaturated)
+	require.True(t, mailbox.depth.softBreached)
 }
 
 // TestWatermarkLocalDeltaCrossesHard asserts that sends accepted inside one

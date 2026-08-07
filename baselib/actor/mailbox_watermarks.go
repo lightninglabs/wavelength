@@ -15,8 +15,10 @@ import (
 // backlog depth (with a TTL-cached probe so the common path costs nothing)
 // and refuses new sends with ErrMailboxSaturated once the depth crosses a
 // configured hard high watermark, with a soft watermark below it that only
-// logs. Restart-priority messages are exempt so recovery always lands, and a
-// mailbox with no watermarks configured behaves exactly as before.
+// logs. Control-priority messages (restore/resume/restart) and
+// outbox-propagated CDC deliveries are exempt so recovery and committed
+// hand-offs always land, and a mailbox with no watermarks configured behaves
+// exactly as before.
 
 const (
 	// DefaultSoftHighWatermark is the backlog depth at which a durable
@@ -36,9 +38,11 @@ const (
 	// depthProbeTTL bounds how often the watermark check issues a real
 	// COUNT query against the store. Between probes the check works off
 	// the cached depth plus a local count of sends accepted since the
-	// probe, so the estimate only ever overshoots (sends from other
-	// processes are missed until the next probe, but so are acks, and
-	// acks are what shrink the backlog). A one-second window keeps the
+	// probe: within the window, LOCAL sends can only push the estimate up
+	// (acks that shrink the backlog surface at the next probe), which is
+	// the safe direction for an admission check. Sends from other
+	// processes or replicas are invisible for up to one window, so the
+	// bound is approximate, not exact. A one-second window keeps the
 	// probe cost negligible against the write each send already performs.
 	depthProbeTTL = time.Second
 )
@@ -75,15 +79,22 @@ type MailboxDepthStore interface {
 // depthProbe caches the mailbox's probed backlog depth so the watermark check
 // on the send path does not issue a COUNT query per send. Between probes the
 // estimate is the probed depth plus the sends this mailbox accepted since,
-// which is deliberately one-sided: local sends push the estimate up
-// immediately, while acks (and remote sends) only surface at the next probe.
-// Overshooting is the safe direction for an admission check.
+// which is deliberately one-sided for LOCAL traffic: local sends push the
+// estimate up immediately, while acks only surface at the next probe.
+// Overshooting is the safe direction for an admission check; remote sends
+// remain invisible for up to one probe window, so the bound is approximate.
 type depthProbe struct {
 	mu sync.Mutex
 
 	// probedAt is when the cached depth was last read from the store. The
 	// zero value forces a probe on the first checked send.
 	probedAt time.Time
+
+	// probing is true while one sender runs the COUNT query outside the
+	// mutex. It single-flights the probe: concurrent senders keep using
+	// the cached estimate instead of stacking up behind the query or
+	// issuing duplicates.
+	probing bool
 
 	// depth is the backlog depth reported by the last probe.
 	depth int64
@@ -99,9 +110,10 @@ type depthProbe struct {
 
 // checkWatermarks admits or refuses a send against the mailbox's configured
 // backlog watermarks. It returns nil when watermarks are disabled, the store
-// cannot report depth, the message carries restart priority, or the estimated
-// depth is below the hard watermark. It returns an error wrapping
-// ErrMailboxSaturated when the estimate is at or above the hard watermark.
+// cannot report depth, the message is exempt (control priority or an
+// outbox-propagated delivery), or the estimated depth is below the hard
+// watermark. It returns an error wrapping ErrMailboxSaturated when the
+// estimate is at or above the hard watermark.
 //
 // A probe failure fails OPEN: refusing delivery because a monitoring read
 // broke would convert an observability fault into message loss, which is
@@ -114,11 +126,24 @@ func (m *DurableMailbox[M, R]) checkWatermarks(ctx context.Context,
 		return nil
 	}
 
-	// Recovery and other framework-priority messages always land: a
-	// saturated mailbox usually means the actor is wedged or gone, and the
-	// RestartMessage that would un-wedge it must not be refused by the
-	// very backlog it exists to drain.
-	if priority >= RestartPriority {
+	// Control and restart messages always land: a saturated mailbox
+	// usually means the actor is wedged or gone, and the restore/resume
+	// message that would un-wedge it must not be refused by the very
+	// backlog it exists to drain.
+	if priority >= ControlPriority {
+		return nil
+	}
+
+	// Outbox-propagated deliveries are exempt: the message was already
+	// accepted at its true producer and durably committed to the outbox,
+	// so refusing the CDC hand-off here sheds nothing — it only strands a
+	// committed message. Worse, the publisher's claim path bumps delivery
+	// attempts in its own transaction, so repeated refusals would
+	// dead-letter the outbox row (and any DurableAsk response it carries)
+	// instead of exerting backpressure. The publisher stamps the outbox ID
+	// into the context on every folded delivery, which is exactly the
+	// marker keyed off here.
+	if _, fromOutbox := OutboxIDFromContext(ctx); fromOutbox {
 		return nil
 	}
 
@@ -126,37 +151,57 @@ func (m *DurableMailbox[M, R]) checkWatermarks(ctx context.Context,
 	defer m.depth.mu.Unlock()
 
 	now := m.clock.Now()
-	if m.depth.probedAt.IsZero() ||
-		now.Sub(m.depth.probedAt) >= depthProbeTTL {
+	stale := m.depth.probedAt.IsZero() ||
+		now.Sub(m.depth.probedAt) >= depthProbeTTL
 
-		depth, err := m.depthStore.MailboxDepth(ctx, m.cfg.MailboxID)
+	// Refresh the cached depth, single-flighted: only one sender runs the
+	// COUNT while concurrent senders keep using the cached estimate. The
+	// query runs OUTSIDE the mutex (so senders never park behind a slow
+	// read) and OUTSIDE the caller's ambient transaction: joining a
+	// sender's SERIALIZABLE write transaction would take predicate locks
+	// over the whole mailbox partition and manufacture rw-conflicts with
+	// the consumer's concurrent acks, exactly when the system is already
+	// contended. The local delta already accounts for this sender's own
+	// uncommitted enqueues, so the probe only needs committed state.
+	if stale && !m.depth.probing {
+		m.depth.probing = true
+		m.depth.mu.Unlock()
+
+		depth, err := m.depthStore.MailboxDepth(
+			WithoutTx(ctx), m.cfg.MailboxID,
+		)
+
+		m.depth.mu.Lock()
+		m.depth.probing = false
+
 		if err != nil {
 			log := logger(m.actorCtx)
 			log.WarnS(ctx, "Mailbox depth probe failed, "+
-				"admitting send unchecked", err,
+				"falling back to cached estimate", err,
 				slog.String("mailbox_id", m.cfg.MailboxID),
 			)
-
-			return nil
+		} else {
+			m.depth.probedAt = m.clock.Now()
+			m.depth.depth = depth
+			m.depth.sentSinceProbe = 0
 		}
+	}
 
-		m.depth.probedAt = now
-		m.depth.depth = depth
-		m.depth.sentSinceProbe = 0
+	// No baseline at all -- the first probe failed or is still in flight
+	// on another sender -- fails open.
+	if m.depth.probedAt.IsZero() {
+		return nil
 	}
 
 	estimate := m.depth.depth + m.depth.sentSinceProbe
 
-	if hard > 0 && estimate >= int64(hard) {
-		return fmt.Errorf("mailbox %s backlog %d at hard watermark "+
-			"%d: %w", m.cfg.MailboxID, estimate, hard,
-			ErrMailboxSaturated)
-	}
-
-	// The soft watermark only logs, once per breach episode: the first
-	// send that pushes the estimate over it opens the episode, and the
-	// first checked send after the estimate falls back under it closes
-	// the episode.
+	// Evaluate the soft-watermark episode BEFORE the hard refusal, so a
+	// backlog that enters saturation within one probe window still opens
+	// the episode: the soft warning must fire at or before the first
+	// refused send, or failing sends would be the operator's first signal.
+	// The episode logs once per breach: the first check that finds the
+	// estimate over the soft mark opens it, and the first check after it
+	// falls back under closes it.
 	if soft > 0 {
 		breached := estimate >= int64(soft)
 		switch {
@@ -180,6 +225,12 @@ func (m *DurableMailbox[M, R]) checkWatermarks(ctx context.Context,
 			)
 		}
 		m.depth.softBreached = breached
+	}
+
+	if hard > 0 && estimate >= int64(hard) {
+		return fmt.Errorf("mailbox %s backlog %d at hard watermark "+
+			"%d: %w", m.cfg.MailboxID, estimate, hard,
+			ErrMailboxSaturated)
 	}
 
 	// Count this send into the estimate now, before the enqueue runs: a
