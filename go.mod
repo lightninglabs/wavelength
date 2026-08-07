@@ -63,7 +63,7 @@ require (
 	github.com/btcsuite/btcd/txscript/v2 v2.0.0
 	github.com/btcsuite/btcd/wire/v2 v2.0.0
 	github.com/lightninglabs/go-wasmsqlite v0.0.0-20260627090804-0dce68fc5287
-	github.com/lightninglabs/tap-sdk v0.1.1-0.20260805122215-1a976d08253a
+	github.com/lightninglabs/tap-sdk v0.1.1-0.20260807094521-3ec65e74d731
 )
 
 require (

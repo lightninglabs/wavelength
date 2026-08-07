@@ -165,11 +165,12 @@ func newBatchAnchorFixture(t *testing.T) (*BatchAnchorCommitter,
 	req := &BatchAnchorRequest{
 		AssetRef: assetRef,
 		Amount:   1_500,
-		Source: BatchAnchorSource{
+		Sources: []BatchAnchorSource{{
 			ProofFile:         []byte("funding-proof"),
+			Amount:            1_500,
 			AnchorOutpoint:    fundingOutpoint,
 			AnchorInternalKey: anchorKey.PubKey(),
-		},
+		}},
 		Cosigners: []*btcec.PublicKey{
 			operatorKey.PubKey(), userKey.PubKey(),
 		},
@@ -262,13 +263,13 @@ func TestBatchAnchorDeriveAndCommit(t *testing.T) {
 	// the funded transaction.
 	path := commit.RootSource.proofPath
 	require.NotNil(t, path)
-	require.Equal(t, req.Source.ProofFile, path.ConfirmedBaseProof)
+	require.Equal(t, req.Sources[0].ProofFile, path.ConfirmedBaseProof)
 	require.Len(t, path.Steps, 1)
 
 	require.Len(t, commit.RootSource.expectedSteps, 1)
 	step := commit.RootSource.expectedSteps[0]
 	require.Equal(
-		t, sdkOutpoint(req.Source.AnchorOutpoint),
+		t, sdkOutpoint(req.Sources[0].AnchorOutpoint),
 		step.previousOutpoint,
 	)
 	require.Equal(
@@ -422,11 +423,14 @@ func TestBatchAnchorRequestGuards(t *testing.T) {
 	_, err = committer.DeriveScript(ctx, req, foreign)
 	require.ErrorContains(t, err, "does not spend the funding anchor")
 
-	// The funding proof is mandatory.
+	// The funding proof is mandatory. The shallow copy shares the
+	// sources slice, so the broken source is a fresh slice.
 	broken := *req
-	broken.Source.ProofFile = nil
+	brokenSource := req.Sources[0]
+	brokenSource.ProofFile = nil
+	broken.Sources = []BatchAnchorSource{brokenSource}
 	_, err = committer.DeriveScript(ctx, &broken, template)
-	require.ErrorContains(t, err, "proof file is required")
+	require.ErrorContains(t, err, "proof file 0 is required")
 
 	// The asset amount is mandatory.
 	broken = *req
