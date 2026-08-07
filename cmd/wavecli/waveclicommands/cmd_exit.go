@@ -83,9 +83,20 @@ func walletExit(cmd *cobra.Command, _ []string) error {
 		)
 	}
 	if forceAck != "" && onchainAddress != "" {
+
+		// Say which flag to drop, and why. Stating the constraint
+		// alone invites dropping --onchain-address, which swaps a
+		// cooperative leave for a unilateral exit — the more
+		// dangerous of the two, and not what a caller who supplied a
+		// destination was asking for.
 		return invalidArgs(
-			fmt.Errorf("--onchain-address cannot be combined " +
-				"with --force-unroll-ack"),
+			fmt.Errorf("--onchain-address cannot be combined "+
+				"with --force-unroll-ack: a unilateral exit "+
+				"spends the VTXO back to this wallet's own "+
+				"backing address, so there is no destination "+
+				"to choose. Drop --force-unroll-ack to "+
+				"cooperatively leave to %s instead",
+				onchainAddress),
 		)
 	}
 
@@ -111,9 +122,54 @@ func walletExit(cmd *cobra.Command, _ []string) error {
 				return fmt.Errorf("exit: %w", err)
 			}
 
-			return printWalletProto(resp)
+			if err := printWalletProto(resp); err != nil {
+				return err
+			}
+
+			printExitModeNotice(cmd, resp, outpoint)
+
+			return nil
 		},
 	)
+}
+
+// printExitModeNotice explains on stderr which of the two exits actually ran
+// and how to follow it.
+//
+// The verb is named `exit` but queues a cooperative leave by default, so a
+// user who meant "get my funds out unilaterally" reads the accepted response
+// as the command having ignored them. The report behind wavelength#577
+// escalated from exactly that misreading: a queued leave was taken for a
+// no-op and the same command was re-run minutes later. stdout keeps its
+// machine-readable JSON; this is for the human at the terminal.
+func printExitModeNotice(cmd *cobra.Command, resp *wavewalletrpc.ExitResponse,
+	outpoint string) {
+
+	switch resp.GetMode() {
+	case wavewalletrpc.ExitMode_EXIT_MODE_COOPERATIVE:
+		fmt.Fprintf(
+			cmd.ErrOrStderr(),
+			"queued a cooperative leave of %s to %s. This is "+
+				"not a unilateral exit: it completes when "+
+				"the next round confirms, and the VTXO "+
+				"stays committed until then. Track it with "+
+				"`wavecli list`.\n", outpoint,
+			resp.GetOnchainAddress(),
+		)
+
+	case wavewalletrpc.ExitMode_EXIT_MODE_UNILATERAL:
+		fmt.Fprintf(
+			cmd.ErrOrStderr(),
+			"started a unilateral exit of %s. Track it with "+
+				"`wavecli exit status --outpoint %s`.\n",
+			outpoint, outpoint,
+		)
+
+	case wavewalletrpc.ExitMode_EXIT_MODE_UNSPECIFIED:
+		// A daemon older than the mode field. Saying nothing beats
+		// guessing which exit ran, since the whole point of the
+		// notice is to be right about that.
+	}
 }
 
 // newExitStatusCmd builds the `exit status` subcommand. It dials
