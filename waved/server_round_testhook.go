@@ -119,11 +119,15 @@ func (s *Server) AssetBoardingDisclosure(ctx context.Context,
 			"configured")
 	}
 	terms := s.loadOperatorTerms()
-	if terms == nil || terms.PubKey == nil || terms.VTXOExitDelay == 0 {
+	if terms == nil || terms.PubKey == nil || terms.BoardingExitDelay == 0 {
 		return nil, fmt.Errorf("operator terms are not ready")
 	}
 	req.OperatorKey = terms.PubKey
-	req.ExitDelay = terms.VTXOExitDelay
+
+	// The output is spent as a round boarding input, so it carries the
+	// boarding exit delay; the shorter VTXO delay would leave the
+	// operator too little margin and admission rejects it.
+	req.ExitDelay = terms.BoardingExitDelay
 
 	// Only a boarding-mode onboarding produces an output the operator
 	// can spend at the asset layer, so refuse to describe any other.
