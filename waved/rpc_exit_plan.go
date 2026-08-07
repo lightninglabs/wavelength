@@ -11,6 +11,7 @@ import (
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/lightninglabs/wavelength/db"
 	"github.com/lightninglabs/wavelength/unroll"
+	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightninglabs/wavelength/wallet"
 	"github.com/lightninglabs/wavelength/waverpc"
 	"google.golang.org/grpc/codes"
@@ -224,6 +225,20 @@ func (r *RPCServer) exitPlanEntry(ctx context.Context, raw string,
 		}
 
 		entry.Err = fmt.Errorf("get VTXO: %w", err)
+
+		return entry, verdict
+	}
+
+	// A VTXO committed to a cooperative round cannot be exited
+	// unilaterally, and no amount of wallet funding changes that: the
+	// operator holds a forfeit for it, so the exit path refuses the coin
+	// outright. Pricing it anyway answers a question that is not the
+	// blocking one and reports a ready exit for a coin that will be
+	// refused — which is exactly what sends a user reaching for
+	// --force-unroll-ack (wavelength#577, #845).
+	if commitErr := exitPlanRoundCommitment(desc); commitErr != nil {
+		entry.Err = fmt.Errorf("cannot exit unilaterally: %w",
+			commitErr)
 
 		return entry, verdict
 	}
@@ -655,4 +670,22 @@ func (r *RPCServer) exitSummaryEntry(ctx context.Context,
 	entry.EstNetRecoveredSat = int64(f.NetRecoveredSat)
 
 	return entry
+}
+
+// exitPlanRoundCommitment returns the round commitment blocking a unilateral
+// exit, or nil when the VTXO is not committed to one.
+//
+// It reuses the forfeit-admission predicate so the exit preview and the leave
+// admission filter cannot drift on which lifecycle states count as committed,
+// and narrows to that one class deliberately: a VTXO already exiting still
+// wants a real preview (its exit job status is the useful answer), and a
+// terminal one is reported by the pricing path as it always was.
+func exitPlanRoundCommitment(desc *vtxo.Descriptor) error {
+	if err := vtxo.CheckForfeitAdmission(desc); errors.Is(
+		err, vtxo.ErrForfeitInFlight,
+	) {
+		return err
+	}
+
+	return nil
 }
