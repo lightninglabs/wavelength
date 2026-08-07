@@ -987,6 +987,18 @@ func (s *ForfeitingState) ProcessEvent(ctx context.Context, event VTXOEvent,
 	env *VTXOEnvironment) (*VTXOStateTransition, error) {
 
 	switch evt := event.(type) {
+	case *PendingForfeitEvent:
+		// A second leave/refresh tried to reserve a forfeit for a
+		// VTXO that is already mid-forfeit in a round. Reject with a
+		// clear, descriptive error rather than falling through to the
+		// generic "bad event" default. This is the authoritative
+		// backstop for the manager's up-front LIVE-status admission
+		// check, which can race a just-persisted status write
+		// (wavelength#577).
+		return nil, fmt.Errorf("forfeiting: VTXO %s already "+
+			"forfeiting in round %s, cannot reserve forfeit "+
+			"again", s.VTXO.Outpoint, s.NewRoundID)
+
 	case *ForfeitSignedEvent:
 		// Forfeit tx has been signed and submitted. Update the txid
 		// and stay in this state. Preserve the ForfeitTx for crash

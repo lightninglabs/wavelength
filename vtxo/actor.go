@@ -415,6 +415,17 @@ func (a *VTXOActor) Receive(ctx context.Context,
 		slog.String("current_state", fmt.Sprintf("%T", a.state)),
 	)
 
+	// Non-mutating state query: reply with the current state without
+	// running the FSM. The manager uses this to reject a forfeit
+	// reservation for a VTXO already committed to a forfeit round up
+	// front (wavelength#577).
+	if _, ok := event.(*round.GetStateRequest); ok {
+		return fn.Ok[actormsg.VTXOActorResp](VTXOActorResponse{
+			PriorState: a.state,
+			NewState:   a.state,
+		})
+	}
+
 	vtxoEvent, ok := event.(VTXOEvent)
 	if !ok {
 		return fn.Err[actormsg.VTXOActorResp](

@@ -1638,6 +1638,32 @@ func TestForfeitReleasedFromForfeiting(t *testing.T) {
 	require.Equal(t, VTXOStatusLive, su.NewStatus)
 }
 
+// TestForfeitingStateRejectsPendingForfeit verifies that a duplicate
+// PendingForfeitEvent arriving while a VTXO is already Forfeiting in a round
+// is rejected with a clear, descriptive error rather than the generic
+// "forfeiting: bad event" default. This is the authoritative backstop for the
+// manager's up-front LIVE-status admission check (wavelength#577).
+func TestForfeitingStateRejectsPendingForfeit(t *testing.T) {
+	t.Parallel()
+
+	h := newVTXOTestHarness(t)
+	vtxo := h.newTestDescriptor()
+
+	h.withState(&ForfeitingState{
+		VTXO:       vtxo,
+		NewRoundID: "round-123",
+	})
+
+	_, err := h.sendEvent(&round.PendingForfeitEvent{})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "already forfeiting")
+	require.Contains(t, err.Error(), "round-123")
+	require.NotContains(t, err.Error(), "bad event")
+
+	// The VTXO stays in ForfeitingState.
+	assertState[*ForfeitingState](h)
+}
+
 // TestSpendingStateResumeStaysInSpending verifies that SpendingState stays in
 // SpendingState on ResumeVTXOEvent. The OOR session will resume and later
 // release or complete the claim.

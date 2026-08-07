@@ -18,6 +18,7 @@ import (
 	"github.com/lightninglabs/wavelength/coinselect"
 	"github.com/lightninglabs/wavelength/lib/actormsg"
 	"github.com/lightninglabs/wavelength/lib/types"
+	"github.com/lightninglabs/wavelength/round"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/mock"
@@ -68,6 +69,19 @@ func (m *mockVTXOActorRef) Ask(ctx context.Context,
 	msg actormsg.VTXOActorMsg) actor.Future[actormsg.VTXOActorResp] {
 
 	promise := actor.NewPromise[actormsg.VTXOActorResp]()
+
+	// Non-mutating state query: reply with the current state without
+	// running the FSM (mirrors the real actor's handling).
+	if _, ok := msg.(*round.GetStateRequest); ok {
+		promise.Complete(
+			fn.Ok[actormsg.VTXOActorResp](VTXOActorResponse{
+				PriorState: m.state,
+				NewState:   m.state,
+			}),
+		)
+
+		return promise.Future()
+	}
 
 	vtxoEvent, ok := msg.(VTXOEvent)
 	if !ok {
@@ -1515,8 +1529,9 @@ func TestReserveForfeitRejectedWhenSpending(t *testing.T) {
 	require.True(t, ok, "expected LiveState, got %T", ref1.state)
 
 	// Post-restart shape: the in-memory mark is gone but the child's
-	// durable Spending state survived. The actor-level rejection then
-	// guards the same invariant, and vtxo1 is rolled back to Live.
+	// durable Spending state survived. The manager now rejects the
+	// reservation up front via its state query (vtxo2 is Spending), so
+	// neither actor is touched and vtxo1 stays Live.
 	mgr.dropReserved(vtxo2.Outpoint)
 
 	result = mgr.Receive(t.Context(), &ReserveForfeitRequest{
@@ -1526,12 +1541,59 @@ func TestReserveForfeitRejectedWhenSpending(t *testing.T) {
 	})
 	_, err = result.Unpack()
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "cannot accept pending forfeit")
+	require.Contains(t, err.Error(), "cannot reserve forfeit")
+	require.Contains(t, err.Error(), "vtxo is Spending")
 
 	_, ok = ref1.state.(*LiveState)
 	require.True(
 		t, ok, "expected LiveState after rollback, got %T", ref1.state,
 	)
+}
+
+// TestReserveForfeitRejectedWhenAlreadyForfeiting verifies that forfeit
+// reservation is rejected up front, at the manager admission point, when the
+// VTXO actor is no longer in LiveState (e.g. already Forfeiting in a round).
+// A second leave/refresh for the same VTXO must surface a clear error here
+// rather than being accepted and only failing deep in the child FSM with a
+// cryptic "forfeiting: bad event: *round.PendingForfeitEvent" (wavelength#577).
+func TestReserveForfeitRejectedWhenAlreadyForfeiting(t *testing.T) {
+	t.Parallel()
+
+	vtxo := makeDescriptor(t, 50000, 0)
+
+	// Simulate a VTXO already committed to a forfeit round: the actor is
+	// in ForfeitingState, as if restored from VTXOStatusForfeiting.
+	mgr := &Manager{
+		cfg: &ManagerConfig{
+			Store:      &MockVTXOStore{},
+			RoundActor: newMockRoundActorRef(t),
+		},
+		actors: make(map[wire.OutPoint]VTXOActorRef),
+	}
+	mgr.actors[vtxo.Outpoint] = newMockVTXOActorRef(
+		vtxo.Outpoint.String(),
+		&ForfeitingState{
+			VTXO:       vtxo,
+			NewRoundID: "round-123",
+		},
+	)
+
+	result := mgr.Receive(t.Context(), &ReserveForfeitRequest{
+		Outpoints: []wire.OutPoint{vtxo.Outpoint},
+	})
+	_, err := result.Unpack()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "cannot reserve forfeit")
+	require.Contains(t, err.Error(), "vtxo is Forfeiting")
+
+	// The actor was never touched: it stays in ForfeitingState.
+	refAny, ok := mgr.actors[vtxo.Outpoint]
+	require.True(t, ok, "actor not found for vtxo")
+	ref, ok := refAny.(*mockVTXOActorRef)
+	require.True(t, ok, "expected *mockVTXOActorRef, got %T", refAny)
+
+	_, ok = ref.state.(*ForfeitingState)
+	require.True(t, ok, "expected ForfeitingState, got %T", ref.state)
 }
 
 // TestReserveForfeitTimeoutRollsBackReservedVTXOs verifies that a blocked

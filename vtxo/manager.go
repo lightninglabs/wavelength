@@ -461,6 +461,28 @@ func (m *Manager) askForfeitVTXOActor(ctx context.Context, ref VTXOActorRef,
 	return ref.Ask(askCtx, msg).Await(askCtx)
 }
 
+// askVTXOState asks a child VTXO actor for its current FSM state without
+// dispatching a state-mutating event. It is used to validate forfeit
+// admission up front so a duplicate leave/refresh for an already-committed
+// VTXO fails with a clear error at the manager boundary rather than deep in
+// the child FSM (wavelength#577).
+func (m *Manager) askVTXOState(ctx context.Context,
+	ref VTXOActorRef) (VTXOState, error) {
+
+	result := m.askForfeitVTXOActor(ctx, ref, &round.GetStateRequest{})
+	resp, err := result.Unpack()
+	if err != nil {
+		return nil, err
+	}
+
+	stateResp, ok := resp.(VTXOActorResponse)
+	if !ok {
+		return nil, fmt.Errorf("unexpected response type: %T", resp)
+	}
+
+	return stateResp.PriorState, nil
+}
+
 // rollbackContext returns a bounded context for best-effort local rollback.
 // Rollback should not inherit a canceled RPC context, because admission may
 // have partially reserved child VTXOs before the caller timed out.
@@ -2753,7 +2775,8 @@ func (m *Manager) handleReserveForfeit(ctx context.Context,
 	// would otherwise still read LiveState and accept a conflicting
 	// forfeit reservation.
 	for _, op := range outpoints {
-		if _, ok := m.actors[op]; !ok {
+		ref, ok := m.actors[op]
+		if !ok {
 			return fn.Err[ManagerResp](
 				fmt.Errorf("no actor for outpoint %s", op),
 			)
@@ -2763,6 +2786,38 @@ func (m *Manager) handleReserveForfeit(ctx context.Context,
 			return fn.Err[ManagerResp](
 				fmt.Errorf("%w: outpoint %s is spend-reserved",
 					ErrVTXOLiquidityLocked, op),
+			)
+		}
+
+		// Reject forfeit reservation for a VTXO that is no longer
+		// LIVE. A VTXO already committed to a forfeit round
+		// (PendingForfeit / Forfeiting) or in any other non-Live
+		// lifecycle state must not be re-reserved; the child FSM
+		// would otherwise reject the duplicate PendingForfeitEvent
+		// deep in the state machine with a cryptic "bad event"
+		// error. Surface a clear, up-front error instead so a
+		// second leave/refresh for the same VTXO fails at admission
+		// (wavelength#577).
+		state, err := m.askVTXOState(ctx, ref)
+		if err != nil {
+			return fn.Err[ManagerResp](
+				fmt.Errorf("query vtxo %s state for "+
+					"forfeit reserve: %w", op, err),
+			)
+		}
+		// Live and Expired VTXOs are admissible for forfeit: an
+		// expired VTXO that missed its refresh window is reclaimed by
+		// forfeiting it in an ordinary round, so expiry is not a dead
+		// end. Every other non-Live state (PendingForfeit, Forfeiting,
+		// Spending, terminal) must not be re-reserved.
+		switch state.(type) {
+		case *LiveState, *ExpiredState:
+		default:
+			return fn.Err[ManagerResp](
+				fmt.Errorf("cannot reserve forfeit for "+
+					"outpoint %s: vtxo is %s (only LIVE "+
+					"or EXPIRED VTXOs can be forfeited)",
+					op, state),
 			)
 		}
 	}

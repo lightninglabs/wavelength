@@ -249,6 +249,25 @@ func (e *PendingForfeitEvent) MessageType() string {
 	return "PendingForfeitEvent"
 }
 
+// GetStateRequest asks a VTXO actor for its current FSM state without
+// dispatching a state-mutating event. The manager uses it to validate
+// admission up front — e.g. rejecting a forfeit reservation for a VTXO
+// already committed to a forfeit round — so a duplicate leave/refresh fails
+// with a clear error at the manager boundary instead of deep in the child
+// FSM (wavelength#577). The actor replies with a VTXOActorResponse whose
+// PriorState/NewState both equal the current state.
+type GetStateRequest struct {
+	actor.BaseMessage
+}
+
+// VTXOActorMsg implements actormsg.VTXOActorMsg marker interface.
+func (e *GetStateRequest) VTXOActorMsg() {}
+
+// MessageType returns the message type for logging.
+func (e *GetStateRequest) MessageType() string {
+	return "GetStateRequest"
+}
+
 // =============================================================================
 // Messages TO VTXO Manager
 // =============================================================================
