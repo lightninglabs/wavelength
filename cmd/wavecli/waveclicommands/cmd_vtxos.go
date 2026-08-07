@@ -48,7 +48,9 @@ func newVTXOsListCmd() *cobra.Command {
 		Short: "List VTXOs",
 		Long: "Returns VTXOs known to the wallet, " +
 			"optionally filtered by status and " +
-			"minimum amount.",
+			"minimum amount. By default, forfeited and " +
+			"spent VTXOs are excluded; use --show-all to " +
+			"include them.",
 		RunE: vtxosList,
 	}
 
@@ -58,6 +60,11 @@ func newVTXOsListCmd() *cobra.Command {
 
 	cmd.Flags().Int64("min-amount", 0,
 		"minimum amount in sats")
+
+	cmd.Flags().Bool("show-all", false,
+		"show every VTXO regardless of status, including "+
+			"forfeited and spent ones; mutually exclusive "+
+			"with --status")
 
 	addListOutputFlags(cmd, "VTXO")
 
@@ -76,6 +83,12 @@ func vtxosList(cmd *cobra.Command, _ []string) error {
 	if err := parseRequest(cmd, req, func() error {
 		statusStr, _ := cmd.Flags().GetString("status")
 		minAmount, _ := cmd.Flags().GetInt64("min-amount")
+		showAll, _ := cmd.Flags().GetBool("show-all")
+
+		if showAll && statusStr != "" {
+			return fmt.Errorf("--show-all and --status are " +
+				"mutually exclusive")
+		}
 
 		if statusStr != "" {
 			statusFilter, ok := parseVTXOStatus(
@@ -97,6 +110,7 @@ func vtxosList(cmd *cobra.Command, _ []string) error {
 		}
 
 		req.MinAmountSat = minAmount
+		req.ShowAll = showAll
 
 		return nil
 	}); err != nil {

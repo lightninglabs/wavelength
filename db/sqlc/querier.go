@@ -303,6 +303,12 @@ type Querier interface {
 	// full descriptors (pubkey parsing, taproot script reconstruction, policy
 	// template decode) and the batched ancestry-path query on the hot path.
 	ListVTXOSelectionCandidatesByStatus(ctx context.Context, status int32) ([]ListVTXOSelectionCandidatesByStatusRow, error)
+	// ListVTXOsAllStatuses returns every VTXO regardless of status. Mirrors
+	// ListVTXOsByStatus's settlement join so terminal states still surface
+	// forfeit-round settlement info. Named distinctly from the pre-existing
+	// unjoined ListAllVTXOs (round.sql), which round-side callers use for
+	// their own purposes.
+	ListVTXOsAllStatuses(ctx context.Context) ([]ListVTXOsAllStatusesRow, error)
 	ListVTXOsByRound(ctx context.Context, roundID string) ([]Vtxo, error)
 	// VTXO status and lifecycle queries.
 	// These queries support the vtxo.VTXOStore interface for VTXO lifecycle
@@ -328,6 +334,11 @@ type Querier interface {
 	// a forfeit_round_id, instead of aggregating every fee row in the ledger on
 	// every call.
 	ListVTXOsByStatus(ctx context.Context, status int32) ([]ListVTXOsByStatusRow, error)
+	// ListVTXOsExcludingStatuses returns all VTXOs except those with either of
+	// the two given statuses. Mirrors ListVTXOsByStatus's settlement join so
+	// terminal states (e.g. UnilateralExit) still surface forfeit-round
+	// settlement info.
+	ListVTXOsExcludingStatuses(ctx context.Context, arg ListVTXOsExcludingStatusesParams) ([]ListVTXOsExcludingStatusesRow, error)
 	ListWalletUTXOLog(ctx context.Context, arg ListWalletUTXOLogParams) ([]WalletUtxoLog, error)
 	ListWalletUTXOLogByBlock(ctx context.Context, blockHeight int32) ([]WalletUtxoLog, error)
 	ListWalletUTXOLogByClassification(ctx context.Context, arg ListWalletUTXOLogByClassificationParams) ([]WalletUtxoLog, error)
