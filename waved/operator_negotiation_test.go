@@ -57,10 +57,9 @@ func activeArkPolicy(version uint32) *arkrpc.ArkVersionPolicy {
 // canned GetInfo response, used to drive the bootstrap negotiation without a
 // real transport.
 type stubArkServiceClient struct {
-	resp        *arkrpc.GetInfoResponse
-	err         error
-	calls       int
-	registerErr error
+	resp  *arkrpc.GetInfoResponse
+	err   error
+	calls int
 }
 
 // GetInfo returns the canned response.

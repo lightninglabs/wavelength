@@ -1,20 +1,12 @@
 package waveclicommands
 
 import (
-	"context"
 	"fmt"
 	"os"
-	"time"
 
 	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/spf13/cobra"
 )
-
-const taprootAssetOnboardingPollInterval = 5 * time.Second
-
-type taprootAssetOnboardCall func(context.Context,
-	*waverpc.OnboardTaprootAssetRequest) (
-	*waverpc.OnboardTaprootAssetResponse, error)
 
 // newTaprootAssetsCmd builds the prototype Taproot Asset command subtree.
 func newTaprootAssetsCmd() *cobra.Command {

@@ -612,10 +612,3 @@ func testOnboarder(driver onboardingDriver, inventory proofInventoryClient,
 		},
 	}
 }
-
-func (o commitOutput) wireOutpoint() wire.OutPoint {
-	return wire.OutPoint{
-		Hash:  o.anchorOutpoint.Txid,
-		Index: o.anchorOutpoint.Index,
-	}
-}
