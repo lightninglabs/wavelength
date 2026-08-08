@@ -1,6 +1,7 @@
 package round
 
 import (
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
@@ -9,6 +10,7 @@ import (
 	"github.com/lightninglabs/wavelength/timeout"
 	"github.com/lightninglabs/wavelength/wallet"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/keychain"
 )
 
 // ClientMsg embeds actormsg.RoundReceivable for messages that can be sent to a
@@ -216,6 +218,47 @@ type RegisterVTXORequestsRequest struct {
 	// anchored by AmountSat.
 	AssetRequests []AssetVTXORequest
 }
+
+// RegisterAssetBoardingRequest registers a confirmed asset boarding
+// output with the round actor. The wallet's address watcher cannot
+// recognize composed outputs, so the caller supplies the full intent
+// material: the boarding key, chain confirmation, and the asset
+// disclosure the operator authenticates.
+type RegisterAssetBoardingRequest struct {
+	actor.BaseMessage
+
+	// Outpoint is the boarded UTXO.
+	Outpoint wire.OutPoint
+
+	// KeyDesc is the client's boarding key.
+	KeyDesc keychain.KeyDescriptor
+
+	// OperatorKey and ExitDelay parameterize the boarding policy.
+	OperatorKey *btcec.PublicKey
+	ExitDelay   uint32
+
+	// ConfTx and ConfHeight are the boarded output's confirmation.
+	ConfTx     *wire.MsgTx
+	ConfHeight int32
+
+	// AssetRef, AssetAmount, AssetDigest, AssetProof,
+	// AssetCommitmentLeafHash, and AssetWitness form the boarding
+	// disclosure the operator verifies.
+	AssetRef                string
+	AssetAmount             uint64
+	AssetDigest             []byte
+	AssetProof              []byte
+	AssetCommitmentLeafHash []byte
+	AssetWitness            [][]byte
+}
+
+// MessageType returns the message type name.
+func (m *RegisterAssetBoardingRequest) MessageType() string {
+	return "RegisterAssetBoardingRequest"
+}
+
+// RoundReceivable implements actormsg.RoundReceivable marker interface.
+func (m *RegisterAssetBoardingRequest) RoundReceivable() {}
 
 // AssetVTXORequest asks for one asset VTXO in the next round.
 type AssetVTXORequest struct {

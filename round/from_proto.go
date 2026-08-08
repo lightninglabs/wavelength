@@ -243,6 +243,24 @@ func (e *CommitmentTxBuilt) FromProto(p proto.Message) error {
 		}
 	}
 
+	// Carry the sealed package behind each of this client's asset
+	// leaves, keyed by the leaf outpoint it created.
+	if len(pb.AssetLeafPackages) > 0 {
+		e.AssetLeafPackages = make(
+			map[wire.OutPoint][]byte, len(pb.AssetLeafPackages),
+		)
+		for key, pkg := range pb.AssetLeafPackages {
+			outpoint, opErr := roundpb.OutpointFromMapKey(key)
+			if opErr != nil {
+				return fmt.Errorf("asset_leaf_packages[%q]: %w",
+					key, opErr)
+			}
+			e.AssetLeafPackages[outpoint] = append(
+				[]byte(nil), pkg...,
+			)
+		}
+	}
+
 	// Convert connector leaf map. The server sends ConnectorLeafInfo
 	// with LeafOutpoint and LeafOutput, which maps to the client's
 	// ConnectorLeafInfo with ConnectorOutpoint, ConnectorPkScript, and

@@ -57,11 +57,9 @@ func activeArkPolicy(version uint32) *arkrpc.ArkVersionPolicy {
 // canned GetInfo response, used to drive the bootstrap negotiation without a
 // real transport.
 type stubArkServiceClient struct {
-	resp         *arkrpc.GetInfoResponse
-	err          error
-	calls        int
-	registerResp *arkrpc.RegisterTaprootAssetVTXOResponse
-	registerErr  error
+	resp  *arkrpc.GetInfoResponse
+	err   error
+	calls int
 }
 
 // GetInfo returns the canned response.
@@ -129,21 +127,6 @@ func (s *stubArkServiceClient) EstimateFee(_ context.Context,
 	*arkrpc.EstimateFeeResponse, error) {
 
 	return &arkrpc.EstimateFeeResponse{}, nil
-}
-
-// RegisterTaprootAssetVTXO is unused by these negotiation tests.
-func (s *stubArkServiceClient) RegisterTaprootAssetVTXO(_ context.Context,
-	_ *arkrpc.RegisterTaprootAssetVTXORequest, _ ...grpc.CallOption) (
-	*arkrpc.RegisterTaprootAssetVTXOResponse, error) {
-
-	if s.registerErr != nil {
-		return nil, s.registerErr
-	}
-	if s.registerResp != nil {
-		return s.registerResp, nil
-	}
-
-	return &arkrpc.RegisterTaprootAssetVTXOResponse{}, nil
 }
 
 // testOperatorPubKeyBytes returns a valid compressed secp256k1 public key for

@@ -276,6 +276,10 @@ type CommitmentTxReceivedState struct {
 	// VTXOTreePaths maps commitment tx output indices to VTXO tree paths.
 	VTXOTreePaths map[int]*tree.Tree
 
+	// AssetLeafPackages maps this client's asset leaf outpoints to the
+	// sealed tap-sdk package that created each one.
+	AssetLeafPackages map[wire.OutPoint][]byte
+
 	// TreeCosignKey is the operator's per-round VTXO-tree MuSig2 cosigner
 	// key delivered with the commitment tx. Used to validate the VTXO tree
 	// (and, via the extracted client trees, sign it) instead of the global
@@ -349,6 +353,10 @@ type CommitmentTxValidatedState struct {
 	// VTXOTreePaths maps commitment tx output indices to VTXO tree paths.
 	VTXOTreePaths map[int]*tree.Tree
 
+	// AssetLeafPackages maps this client's asset leaf outpoints to the
+	// sealed tap-sdk package that created each one.
+	AssetLeafPackages map[wire.OutPoint][]byte
+
 	// SweepDelay is this round's batch-wide absolute-timelock in blocks
 	// for the VTXO-tree sweep leaf, carried through the signing ceremony
 	// so batch expiry can be computed on confirmation. Delivered per round
@@ -414,6 +422,10 @@ type ForfeitSignaturesCollectingState struct {
 	// VTXOTreePaths maps commitment tx output indices to VTXO tree paths.
 	VTXOTreePaths map[int]*tree.Tree
 
+	// AssetLeafPackages maps this client's asset leaf outpoints to the
+	// sealed tap-sdk package that created each one.
+	AssetLeafPackages map[wire.OutPoint][]byte
+
 	// SweepDelay is this round's batch-wide absolute-timelock in blocks
 	// for the VTXO-tree sweep leaf, carried through the signing ceremony
 	// so batch expiry can be computed on confirmation. Delivered per round
@@ -473,6 +485,10 @@ type NoncesSentState struct {
 
 	// VTXOTreePaths maps commitment tx output indices to VTXO tree paths.
 	VTXOTreePaths map[int]*tree.Tree
+
+	// AssetLeafPackages maps this client's asset leaf outpoints to the
+	// sealed tap-sdk package that created each one.
+	AssetLeafPackages map[wire.OutPoint][]byte
 
 	// SweepDelay is this round's batch-wide absolute-timelock in blocks
 	// for the VTXO-tree sweep leaf, carried through the signing ceremony
@@ -534,6 +550,10 @@ type NoncesAggregatedState struct {
 
 	// VTXOTreePaths maps commitment tx output indices to VTXO tree paths.
 	VTXOTreePaths map[int]*tree.Tree
+
+	// AssetLeafPackages maps this client's asset leaf outpoints to the
+	// sealed tap-sdk package that created each one.
+	AssetLeafPackages map[wire.OutPoint][]byte
 
 	// SweepDelay is this round's batch-wide absolute-timelock in blocks
 	// for the VTXO-tree sweep leaf, carried through the signing ceremony
@@ -599,6 +619,10 @@ type PartialSigsSentState struct {
 	// VTXOTreePaths maps commitment tx output indices to VTXO tree paths.
 	VTXOTreePaths map[int]*tree.Tree
 
+	// AssetLeafPackages maps this client's asset leaf outpoints to the
+	// sealed tap-sdk package that created each one.
+	AssetLeafPackages map[wire.OutPoint][]byte
+
 	// SweepDelay is this round's batch-wide absolute-timelock in blocks
 	// for the VTXO-tree sweep leaf, carried through the signing ceremony
 	// so batch expiry can be computed on confirmation. Delivered per round
@@ -659,6 +683,10 @@ type InputSigSentState struct {
 
 	// VTXOTreePaths maps commitment tx output indices to VTXO tree paths.
 	VTXOTreePaths map[int]*tree.Tree
+
+	// AssetLeafPackages maps this client's asset leaf outpoints to the
+	// sealed tap-sdk package that created each one.
+	AssetLeafPackages map[wire.OutPoint][]byte
 
 	// SweepDelay is this round's batch-wide absolute-timelock in blocks
 	// for the VTXO-tree sweep leaf, carried through the signing ceremony

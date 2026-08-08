@@ -2,6 +2,7 @@
 package round
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"errors"
@@ -1451,6 +1452,9 @@ func (a *RoundClientActor) Receive(ctx context.Context,
 	case *RegisterVTXORequestsRequest:
 		return a.handleVTXORequests(ctx, m)
 
+	case *RegisterAssetBoardingRequest:
+		return a.handleAssetBoarding(ctx, m)
+
 	case *VTXORequestsReceived:
 		return a.handleVTXORequestsReceived(ctx, m)
 
@@ -1618,6 +1622,120 @@ func buildBoardingIntentFromWallet(walletIntent *wallet.BoardingIntent) (
 		BoardingIntent: *walletIntent,
 		Request:        boardingReq,
 	}, nil
+}
+
+// handleAssetBoarding assembles a confirmed asset boarding output into a
+// boarding intent and forwards it to an assembling round. The wallet's
+// address watcher cannot recognize composed outputs, so the caller
+// supplies the intent material directly.
+func (a *RoundClientActor) handleAssetBoarding(ctx context.Context,
+	msg *RegisterAssetBoardingRequest) fn.Result[actormsg.RoundActorResp] {
+
+	if msg.ConfTx == nil ||
+		int(msg.Outpoint.Index) >= len(msg.ConfTx.TxOut) {
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("asset boarding confirmation is invalid"),
+		)
+	}
+	output := msg.ConfTx.TxOut[msg.Outpoint.Index]
+
+	policyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
+		msg.KeyDesc.PubKey, msg.OperatorKey, msg.ExitDelay,
+	)
+	if err != nil {
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("encode boarding policy: %w", err),
+		)
+	}
+
+	// The wallet never derived this address, so the composed script
+	// material the round's auth and witness assembly need is rebuilt
+	// from the disclosure.
+	address, tapscript, err := arkscript.ComposedBoardingAddress(
+		policyTemplate, [32]byte(msg.AssetCommitmentLeafHash),
+		msg.KeyDesc.PubKey, msg.OperatorKey, msg.ExitDelay,
+		a.cfg.ChainParams,
+	)
+	if err != nil {
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("compose asset boarding address: %w", err),
+		)
+	}
+	if !bytes.Equal(output.PkScript, mustPayToAddrScript(address)) {
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("composed asset boarding address does not "+
+				"match the confirmed output %s", msg.Outpoint),
+		)
+	}
+
+	authSpend, err := arkscript.ComposedBoardingAuthSpend(
+		[32]byte(msg.AssetCommitmentLeafHash), msg.KeyDesc.PubKey,
+		msg.OperatorKey, msg.ExitDelay,
+	)
+	if err != nil {
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("compose asset boarding auth spend: %w",
+				err),
+		)
+	}
+
+	intent := BoardingIntent{
+		AuthSpend: authSpend,
+		BoardingIntent: wallet.BoardingIntent{
+			Address: wallet.BoardingAddress{
+				Address:     address,
+				Tapscript:   tapscript,
+				KeyDesc:     msg.KeyDesc,
+				OperatorKey: msg.OperatorKey,
+				ExitDelay:   msg.ExitDelay,
+			},
+			Outpoint: msg.Outpoint,
+			ChainInfo: wallet.BoardingChainInfo{
+				ConfHeight: msg.ConfHeight,
+				ConfTx:     msg.ConfTx,
+				OutPoint:   msg.Outpoint,
+				Amount:     btcutil.Amount(output.Value),
+			},
+		},
+		Request: types.BoardingRequest{
+			Outpoint:       &msg.Outpoint,
+			PolicyTemplate: policyTemplate,
+			AssetRef:       msg.AssetRef,
+			AssetAmount:    msg.AssetAmount,
+			AssetDigest:    msg.AssetDigest,
+			AssetProof:     msg.AssetProof,
+			AssetCommitmentLeafHash: msg.
+				AssetCommitmentLeafHash,
+			AssetWitness: msg.AssetWitness,
+		},
+	}
+
+	roundFSM := a.findAssemblingRound()
+	if roundFSM == nil {
+		roundFSM, err = a.createNewRound(ctx)
+		if err != nil {
+			return fn.Err[actormsg.RoundActorResp](
+				fmt.Errorf("create round for asset "+
+					"boarding: %w", err),
+			)
+		}
+	}
+
+	pkg := &IntentPackage{Intents: Intents{
+		Boarding: []BoardingIntent{
+			intent,
+		},
+	}}
+	if err := a.askEventAndProcessOutbox(ctx, roundFSM, pkg); err != nil {
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("FSM error processing asset boarding: %w",
+				err),
+		)
+	}
+
+	return fn.Ok[actormsg.RoundActorResp](&RegisterVTXORequestsResponse{
+		Success: true,
+	})
 }
 
 // handleVTXORequests processes client-submitted VTXO requests and forwards

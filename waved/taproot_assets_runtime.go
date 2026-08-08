@@ -100,6 +100,19 @@ func registerTaprootAssets(_ context.Context, _ *grpc.Server,
 		func(ctx context.Context, outpoint wire.OutPoint) ([]byte,
 			error) {
 
+			// A VTXO created inside a round carries its own
+			// sealed package on its row; only an OOR-created
+			// output needs the artifact store.
+			sealed, err := rpcServer.roundAssetLeafPackage(
+				ctx, outpoint,
+			)
+			if err != nil {
+				return nil, err
+			}
+			if len(sealed) > 0 {
+				return sealed, nil
+			}
+
 			if artifactStore == nil {
 				return nil, fmt.Errorf("OOR artifact store " +
 					"is unavailable")
@@ -148,4 +161,30 @@ func registerTaprootAssets(_ context.Context, _ *grpc.Server,
 	}
 
 	return closeWallet, nil
+}
+
+// roundAssetLeafPackage returns the sealed tap-sdk package behind an
+// asset VTXO the daemon received as a round tree leaf, or nil when the
+// outpoint is not one. A leaf carries its package on its own row: the
+// operator hands it over with the round's batch info, and it is the only
+// source for the leaf's proof path and OP_TRUE witness.
+func (r *RPCServer) roundAssetLeafPackage(ctx context.Context,
+	outpoint wire.OutPoint) ([]byte, error) {
+
+	if r == nil || r.server == nil || r.server.vtxoStore == nil {
+		return nil, nil
+	}
+
+	// A miss is expected: an OOR-created output has no VTXO row here and
+	// the artifact store answers for it. Treat any lookup failure as
+	// "not a round leaf" rather than failing the spend outright.
+	desc, err := r.server.vtxoStore.GetVTXO(ctx, outpoint)
+	if err != nil {
+		return nil, nil //nolint:nilerr
+	}
+	if desc == nil {
+		return nil, nil
+	}
+
+	return bytes.Clone(desc.TaprootAssetSealedPackage), nil
 }

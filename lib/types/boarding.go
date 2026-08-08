@@ -362,6 +362,34 @@ type BoardingRequest struct {
 	// maybeRebuildBoardingProof recovery path reconstructs it from the
 	// chain backend for any persisted intent that lacks one.
 	TxProof fn.Option[proof.TxProof]
+
+	// AssetRef identifies the Taproot Asset carried by the boarding
+	// output (group key reference for grouped assets). Empty for
+	// Bitcoin-only boarding.
+	AssetRef string
+
+	// AssetAmount is the asset amount the boarding output carries.
+	// Non-zero exactly when AssetRef is set.
+	AssetAmount uint64
+
+	// AssetDigest scopes the boarding output's deterministic OP_TRUE
+	// asset script key. 32 bytes when AssetRef is set.
+	AssetDigest []byte
+
+	// AssetProof is the boarded asset's confirmed proof file.
+	AssetProof []byte
+
+	// AssetCommitmentLeafHash is the tap hash of the boarding output's
+	// asset commitment leaf, the tapscript sibling of the boarding
+	// policy tree. Authenticated by the composed-script recompute.
+	// 32 bytes when AssetRef is set.
+	AssetCommitmentLeafHash []byte
+
+	// AssetWitness is the boarded asset's OP_TRUE witness stack. It
+	// carries no authority — the asset script key is anyone-can-spend
+	// by design — so it stays outside the auth digest; a wrong stack
+	// fails the sealed commit.
+	AssetWitness [][]byte
 }
 
 // BoardingInputSignature represents the client's signature for a boarding

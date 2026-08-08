@@ -3,6 +3,7 @@ package tapassets
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -17,13 +18,17 @@ import (
 	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
 )
 
-// BatchAnchorSource identifies the confirmed asset funding UTXO a commitment
-// transition spends: its proof, the Bitcoin outpoint anchoring it (which
-// must be an input of the anchor transaction), and the tapd-owned internal
-// key authorizing that input's key spend.
+// BatchAnchorSource identifies one confirmed asset funding UTXO a
+// commitment transition spends: its proof, its amount, the Bitcoin
+// outpoint anchoring it (which must be an input of the anchor
+// transaction), and the internal key authorizing that input's spend.
 type BatchAnchorSource struct {
 	// ProofFile is the funding UTXO's complete confirmed proof file.
 	ProofFile []byte
+
+	// Amount is this funding UTXO's asset amount. The request's total
+	// must equal the sum across all sources.
+	Amount uint64
 
 	// Witness is the caller-provided asset witness stack. Empty selects
 	// tapd's backend signer, for funding UTXOs whose asset script key is
@@ -50,12 +55,14 @@ type BatchAnchorRequest struct {
 	// AssetRef identifies the asset carried by the batch output.
 	AssetRef tapsdk.AssetRef
 
-	// Amount is the funding UTXO's full asset amount; the batch output
-	// carries all of it.
+	// Amount is the batch output's total asset amount: the sum of the
+	// funding sources' amounts, all of which move beneath the batch
+	// output.
 	Amount uint64
 
-	// Source identifies the funding UTXO the transition spends.
-	Source BatchAnchorSource
+	// Sources identify the funding UTXOs the transition spends. Every
+	// source anchors one input of the anchor transaction.
+	Sources []BatchAnchorSource
 
 	// Cosigners aggregate into the batch output's internal key.
 	Cosigners []*btcec.PublicKey
@@ -160,7 +167,9 @@ func (c *BatchAnchorCommitter) DeriveScript(ctx context.Context,
 		return nil, err
 	}
 
-	previews, err := c.driver.Preview(ctx, request, req.Source.Verifier)
+	previews, err := c.driver.Preview(
+		ctx, request, sourcesVerifier(req.Sources),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("preview batch anchor: %w", err)
 	}
@@ -217,7 +226,9 @@ func (c *BatchAnchorCommitter) Commit(ctx context.Context,
 		return nil, err
 	}
 
-	committed, err := c.driver.Commit(ctx, request, req.Source.Verifier)
+	committed, err := c.driver.Commit(
+		ctx, request, sourcesVerifier(req.Sources),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("commit batch anchor: %w", err)
 	}
@@ -296,12 +307,45 @@ func (c *BatchAnchorCommitter) buildRequest(req *BatchAnchorRequest,
 	if req.Amount == 0 {
 		return nil, nil, fmt.Errorf("batch asset amount is required")
 	}
-	if len(req.Source.ProofFile) == 0 {
-		return nil, nil, fmt.Errorf("funding proof file is required")
-	}
-	if req.Source.AnchorInternalKey == nil {
-		return nil, nil, fmt.Errorf("funding anchor internal key is " +
+	if len(req.Sources) == 0 {
+		return nil, nil, fmt.Errorf("at least one funding source is " +
 			"required")
+	}
+	var sourceTotal uint64
+	for i := range req.Sources {
+		source := &req.Sources[i]
+		if len(source.ProofFile) == 0 {
+			return nil, nil, fmt.Errorf("funding proof file %d is "+
+				"required", i)
+		}
+		if source.AnchorInternalKey == nil {
+			return nil, nil, fmt.Errorf("funding anchor internal "+
+				"key %d is required", i)
+		}
+		if source.Amount == 0 {
+			return nil, nil, fmt.Errorf("funding amount %d is "+
+				"required", i)
+		}
+		sourceTotal += source.Amount
+
+		// The anchor transaction must spend every funding UTXO's
+		// anchor outpoint.
+		spendsFunding := false
+		for _, txIn := range anchorTx.TxIn {
+			if txIn.PreviousOutPoint == source.AnchorOutpoint {
+				spendsFunding = true
+				break
+			}
+		}
+		if !spendsFunding {
+			return nil, nil, fmt.Errorf("anchor transaction does "+
+				"not spend the funding anchor %s",
+				source.AnchorOutpoint)
+		}
+	}
+	if sourceTotal != req.Amount {
+		return nil, nil, fmt.Errorf("funding sources carry %d units, "+
+			"the batch carries %d", sourceTotal, req.Amount)
 	}
 	if len(req.SweepLeaf.Script) == 0 {
 		return nil, nil, fmt.Errorf("sweep leaf is required")
@@ -309,20 +353,6 @@ func (c *BatchAnchorCommitter) buildRequest(req *BatchAnchorRequest,
 	if req.Digest == (tapsdk.Hash{}) {
 		return nil, nil, fmt.Errorf("batch script key digest is " +
 			"required")
-	}
-
-	// The anchor transaction must spend the funding UTXO's anchor outpoint.
-	spendsFunding := false
-	for _, txIn := range anchorTx.TxIn {
-		if txIn.PreviousOutPoint == req.Source.AnchorOutpoint {
-			spendsFunding = true
-			break
-		}
-	}
-	if !spendsFunding {
-		return nil, nil, fmt.Errorf("anchor transaction does not "+
-			"spend the funding anchor %s",
-			req.Source.AnchorOutpoint)
 	}
 
 	internalKey, err := tree.ComputeInternalKey(req.Cosigners)
@@ -343,8 +373,12 @@ func (c *BatchAnchorCommitter) buildRequest(req *BatchAnchorRequest,
 	copy(sanitized.Inputs, anchor.Inputs)
 	copy(sanitized.Outputs, anchor.Outputs)
 	for idx, txIn := range sanitized.UnsignedTx.TxIn {
-		if txIn.PreviousOutPoint == req.Source.AnchorOutpoint {
-			sanitized.Inputs[idx] = psbt.PInput{}
+		for i := range req.Sources {
+			outpoint := req.Sources[i].AnchorOutpoint
+			if txIn.PreviousOutPoint == outpoint {
+				sanitized.Inputs[idx] = psbt.PInput{}
+				break
+			}
 		}
 	}
 
@@ -353,33 +387,36 @@ func (c *BatchAnchorCommitter) buildRequest(req *BatchAnchorRequest,
 		return nil, nil, fmt.Errorf("serialize anchor PSBT: %w", err)
 	}
 
-	witnessPlan := tapsdk.CustomAssetWitnessPlan{
-		Mode: witnessBackendSigner,
-	}
-	if len(req.Source.Witness) != 0 {
-		witnessPlan = tapsdk.CustomAssetWitnessPlan{
-			Mode:  witnessCallerProvided,
-			Stack: cloneByteSlices(req.Source.Witness),
+	inputs := make([]tapsdk.CustomAssetInput, 0, len(req.Sources))
+	for i := range req.Sources {
+		source := &req.Sources[i]
+		witnessPlan := tapsdk.CustomAssetWitnessPlan{
+			Mode: witnessBackendSigner,
 		}
+		if len(source.Witness) != 0 {
+			witnessPlan = tapsdk.CustomAssetWitnessPlan{
+				Mode:  witnessCallerProvided,
+				Stack: cloneByteSlices(source.Witness),
+			}
+		}
+		inputs = append(inputs, tapsdk.CustomAssetInput{
+			ID:       fmt.Sprintf("batch-anchor-input-%d", i),
+			AssetRef: req.AssetRef,
+			Amount:   source.Amount,
+			ProofFile: append(
+				[]byte(nil), source.ProofFile...,
+			),
+			Witness: witnessPlan,
+		})
 	}
 
-	anchorSigner, err := tapsdk.ParseXOnlyPubKey(
-		schnorr.SerializePubKey(req.Source.AnchorInternalKey),
-	)
+	plans, err := batchSigningPlans(anchorTx, req.Sources)
 	if err != nil {
-		return nil, nil, fmt.Errorf("funding anchor signer: %w", err)
+		return nil, nil, err
 	}
 
 	request := &tapsdk.CustomAnchorRequest{
-		Inputs: []tapsdk.CustomAssetInput{{
-			ID:       "batch-anchor-input",
-			AssetRef: req.AssetRef,
-			Amount:   req.Amount,
-			ProofFile: append(
-				[]byte(nil), req.Source.ProofFile...,
-			),
-			Witness: witnessPlan,
-		}},
+		Inputs: inputs,
 		Outputs: []tapsdk.CustomAssetOutput{{
 			ID:                "batch-anchor-output",
 			AssetRef:          req.AssetRef,
@@ -413,30 +450,54 @@ func (c *BatchAnchorCommitter) buildRequest(req *BatchAnchorRequest,
 		LossPolicy: tapsdk.CustomAnchorLossPolicy{
 			Mode: tapsdk.CustomAnchorLossReject,
 		},
-		SigningPlans: batchSigningPlans(
-			anchorTx, req.Source.AnchorOutpoint, anchorSigner,
-		),
+		SigningPlans: plans,
 	}
 
 	return request, internalKey, nil
 }
 
-// batchSigningPlans classifies every anchor input: the funding UTXO input is a
-// tapd key spend, every other input is caller-signed funding.
-func batchSigningPlans(tx *wire.MsgTx, funding wire.OutPoint,
-	anchorSigner tapsdk.XOnlyPubKey) []tapsdk.CustomAnchorInputSigningPlan {
+// batchSigningPlans assigns per-input signing plans. A funding input
+// whose source carries a caller-provided witness is caller-signed (a
+// boarded funding input is a boarding input at the Bitcoin level, signed
+// by its owner through the round's boarding-signature flow); a
+// wallet-owned funding input is a tapd key spend under its source's
+// anchor internal key; every other input is caller-signed by definition.
+func batchSigningPlans(tx *wire.MsgTx,
+	sources []BatchAnchorSource) ([]tapsdk.CustomAnchorInputSigningPlan,
+	error) {
+
+	type fundingPlan struct {
+		callerSigned bool
+		signer       tapsdk.XOnlyPubKey
+	}
+	funding := make(map[wire.OutPoint]fundingPlan, len(sources))
+	for i := range sources {
+		source := &sources[i]
+		signer, err := tapsdk.ParseXOnlyPubKey(
+			schnorr.SerializePubKey(source.AnchorInternalKey),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("funding anchor signer %d: %w",
+				i, err)
+		}
+		funding[source.AnchorOutpoint] = fundingPlan{
+			callerSigned: len(source.Witness) != 0,
+			signer:       signer,
+		}
+	}
 
 	plans := make(
 		[]tapsdk.CustomAnchorInputSigningPlan, 0, len(tx.TxIn),
 	)
 	for idx, txIn := range tx.TxIn {
-		if txIn.PreviousOutPoint == funding {
+		plan, ok := funding[txIn.PreviousOutPoint]
+		if ok && !plan.callerSigned {
 			plans = append(
 				plans, tapsdk.CustomAnchorInputSigningPlan{
 					InputIndex: uint32(idx),
 					KeyPath: &tapsdk.
 						CustomAnchorKeyPathSigningPlan{
-						Signer: anchorSigner,
+						Signer: plan.signer,
 					},
 				},
 			)
@@ -451,7 +512,52 @@ func batchSigningPlans(tx *wire.MsgTx, funding wire.OutPoint,
 		})
 	}
 
-	return plans
+	return plans, nil
+}
+
+// sourcesVerifier verifies each confirmed funding proof against the
+// source that claims it: a proof passes when any source's verifier
+// accepts it, and every source's verifier pins its own tip claim, so a
+// proof can only satisfy the source it actually belongs to.
+func sourcesVerifier(
+	sources []BatchAnchorSource) tapsdk.ConfirmedProofVerifier {
+
+	verifiers := make([]tapsdk.ConfirmedProofVerifier, 0, len(sources))
+	for i := range sources {
+		if sources[i].Verifier != nil {
+			verifiers = append(verifiers, sources[i].Verifier)
+		}
+	}
+
+	return &multiSourceVerifier{verifiers: verifiers}
+}
+
+// multiSourceVerifier fans a proof out to the per-source verifiers.
+type multiSourceVerifier struct {
+	verifiers []tapsdk.ConfirmedProofVerifier
+}
+
+// VerifyConfirmedProof accepts a proof any per-source verifier accepts.
+func (v *multiSourceVerifier) VerifyConfirmedProof(ctx context.Context,
+	proofFile []byte) (*tapsdk.ConfirmedProofVerification, error) {
+
+	if len(v.verifiers) == 0 {
+		return nil, fmt.Errorf("no funding source verifiers")
+	}
+
+	var errs []error
+	for _, verifier := range v.verifiers {
+		verification, err := verifier.VerifyConfirmedProof(
+			ctx, proofFile,
+		)
+		if err == nil {
+			return verification, nil
+		}
+		errs = append(errs, err)
+	}
+
+	return nil, fmt.Errorf("no funding source accepts the proof: %w",
+		errors.Join(errs...))
 }
 
 // batchRootSource assembles the compact-path root source chaining a tree
@@ -460,21 +566,70 @@ func batchRootSource(req *BatchAnchorRequest, out commitOutput,
 	finalTx *wire.MsgTx,
 	derived *BatchAnchorScript) (TreeRootAssetSource, error) {
 
+	step := tapsdk.AssetProofPathStep{
+		TransitionProof: append([]byte(nil), out.proofBlob...),
+	}
+
+	// The transition names one of its inputs as the lineage it
+	// continues, and the backend — not the caller — chooses which. The
+	// path's confirmed base must be that input's proof; the remaining
+	// sources ride along as additional bases on a V1 path, bound to the
+	// transition by the path verifier. A single source is unambiguously
+	// that input, so only a batch of several has to be asked.
+	baseIndex := 0
+	previousOutpoint := sdkOutpoint(req.Sources[0].AnchorOutpoint)
+	if len(req.Sources) > 1 {
+		summary, err := step.Summary()
+		if err != nil {
+			return TreeRootAssetSource{}, fmt.Errorf("summarize "+
+				"batch transition: %w", err)
+		}
+		previousOutpoint = summary.PreviousAnchorOutpoint
+
+		baseIndex = -1
+		for i := range req.Sources {
+			outpoint := sdkOutpoint(req.Sources[i].AnchorOutpoint)
+			if outpoint == previousOutpoint {
+				baseIndex = i
+
+				break
+			}
+		}
+		if baseIndex < 0 {
+			return TreeRootAssetSource{}, fmt.Errorf("batch "+
+				"transition continues %v, which is not a "+
+				"batched source", previousOutpoint)
+		}
+	}
+
 	path := &tapsdk.AssetProofPath{
 		Version: tapsdk.AssetProofPathVersionV0,
 		ConfirmedBaseProof: append(
-			[]byte(nil), req.Source.ProofFile...,
+			[]byte(nil), req.Sources[baseIndex].ProofFile...,
 		),
-		Steps: []tapsdk.AssetProofPathStep{{
-			TransitionProof: append(
-				[]byte(nil), out.proofBlob...,
-			),
-		}},
+		Steps: []tapsdk.AssetProofPathStep{
+			step,
+		},
+	}
+	if len(req.Sources) > 1 {
+		path.Version = tapsdk.AssetProofPathVersionV1
+		for i := range req.Sources {
+			if i == baseIndex {
+				continue
+			}
+			path.AdditionalBaseProofs = append(
+				path.AdditionalBaseProofs,
+				append(
+					[]byte(nil),
+					req.Sources[i].ProofFile...,
+				),
+			)
+		}
 	}
 
 	expected := &expectedUnconfirmedAnchor{
 		stepIndex:        0,
-		previousOutpoint: sdkOutpoint(req.Source.AnchorOutpoint),
+		previousOutpoint: previousOutpoint,
 		anchorOutpoint:   out.anchorOutpoint,
 		transaction:      serializeTx(finalTx),
 	}
@@ -483,7 +638,7 @@ func batchRootSource(req *BatchAnchorRequest, out commitOutput,
 		proofPath: path,
 		Witness:   cloneByteSlices(out.opTrueWitness),
 		Verifier: &treePathVerifier{
-			base: req.Source.Verifier,
+			base: sourcesVerifier(req.Sources),
 			steps: []*expectedUnconfirmedAnchor{
 				expected,
 			},

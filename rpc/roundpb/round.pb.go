@@ -353,9 +353,14 @@ type TreeNode struct {
 	SigningTweak []byte `protobuf:"bytes,7,opt,name=signing_tweak,json=signingTweak,proto3" json:"signing_tweak,omitempty"`
 	// asset_amount is the total asset amount carried by this node's
 	// subtree. Zero for Bitcoin-only trees.
-	AssetAmount   uint64 `protobuf:"varint,8,opt,name=asset_amount,json=assetAmount,proto3" json:"asset_amount,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	AssetAmount uint64 `protobuf:"varint,8,opt,name=asset_amount,json=assetAmount,proto3" json:"asset_amount,omitempty"`
+	// asset_commitment_root is the node output's Taproot Asset commitment
+	// root. A leaf owner needs it to reproduce the composed output script
+	// it was paid to, and to record the VTXO as asset-bearing. Empty for
+	// Bitcoin-only trees.
+	AssetCommitmentRoot []byte `protobuf:"bytes,9,opt,name=asset_commitment_root,json=assetCommitmentRoot,proto3" json:"asset_commitment_root,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *TreeNode) Reset() {
@@ -442,6 +447,13 @@ func (x *TreeNode) GetAssetAmount() uint64 {
 		return x.AssetAmount
 	}
 	return 0
+}
+
+func (x *TreeNode) GetAssetCommitmentRoot() []byte {
+	if x != nil {
+		return x.AssetCommitmentRoot
+	}
+	return nil
 }
 
 // VTXOTree is a flattened representation of a VTXO or connector tree.
@@ -837,9 +849,16 @@ type ClientBatchInfo struct {
 	// under which the operator created this round. The client records the
 	// same value so both sides agree on how the round was conducted. Today
 	// the only understood value is 1.
-	FlowVersion   uint32 `protobuf:"varint,10,opt,name=flow_version,json=flowVersion,proto3" json:"flow_version,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	FlowVersion uint32 `protobuf:"varint,10,opt,name=flow_version,json=flowVersion,proto3" json:"flow_version,omitempty"`
+	// asset_leaf_packages maps a client asset leaf's outpoint to the
+	// sealed tap-sdk package that created it, keyed in the standard
+	// "hash:index" form. It is what lets the owner build the proof path
+	// and OP_TRUE witness for spending that leaf later, so it is scoped
+	// to the client's own leaves — every other node's package stays
+	// operator-side.
+	AssetLeafPackages map[string][]byte `protobuf:"bytes,11,rep,name=asset_leaf_packages,json=assetLeafPackages,proto3" json:"asset_leaf_packages,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *ClientBatchInfo) Reset() {
@@ -940,6 +959,13 @@ func (x *ClientBatchInfo) GetFlowVersion() uint32 {
 		return x.FlowVersion
 	}
 	return 0
+}
+
+func (x *ClientBatchInfo) GetAssetLeafPackages() map[string][]byte {
+	if x != nil {
+		return x.AssetLeafPackages
+	}
+	return nil
 }
 
 // ClientAwaitingInputSigsResp notifies a client that the server is ready
@@ -1294,7 +1320,37 @@ type BoardingRequest struct {
 	PolicyTemplate []byte `protobuf:"bytes,2,opt,name=policy_template,json=policyTemplate,proto3" json:"policy_template,omitempty"`
 	// tx_proof is the optional serialized SPV proof that the boarding UTXO
 	// exists. Empty if the server verifies via its own chain source.
-	TxProof       []byte `protobuf:"bytes,3,opt,name=tx_proof,json=txProof,proto3" json:"tx_proof,omitempty"`
+	TxProof []byte `protobuf:"bytes,3,opt,name=tx_proof,json=txProof,proto3" json:"tx_proof,omitempty"`
+	// asset_ref identifies the Taproot Asset carried by the boarding
+	// output (group key reference for grouped assets). Empty for
+	// Bitcoin-only boarding.
+	AssetRef string `protobuf:"bytes,4,opt,name=asset_ref,json=assetRef,proto3" json:"asset_ref,omitempty"`
+	// asset_amount is the asset amount the boarding output carries.
+	// Non-zero exactly when asset_ref is set.
+	AssetAmount uint64 `protobuf:"varint,5,opt,name=asset_amount,json=assetAmount,proto3" json:"asset_amount,omitempty"`
+	// asset_digest scopes the boarding output's deterministic OP_TRUE
+	// asset script key. The operator recomputes the key from it and
+	// rejects proofs whose script key differs, since assets at any
+	// other key could never be spent by the round. 32 bytes when set.
+	AssetDigest []byte `protobuf:"bytes,6,opt,name=asset_digest,json=assetDigest,proto3" json:"asset_digest,omitempty"`
+	// asset_proof is the boarded asset's confirmed proof file. The
+	// operator verifies the chain and recomputes the boarding output's
+	// composed script from the policy template plus the disclosed
+	// commitment leaf hash, requiring byte equality with the on-chain
+	// script.
+	AssetProof []byte `protobuf:"bytes,7,opt,name=asset_proof,json=assetProof,proto3" json:"asset_proof,omitempty"`
+	// asset_commitment_leaf_hash is the tap hash of the boarding
+	// output's asset commitment leaf. The composed-script recompute
+	// authenticates it, and it is the tapscript sibling the operator
+	// needs to assemble the collaborative spend's control block.
+	// 32 bytes when asset_ref is set.
+	AssetCommitmentLeafHash []byte `protobuf:"bytes,8,opt,name=asset_commitment_leaf_hash,json=assetCommitmentLeafHash,proto3" json:"asset_commitment_leaf_hash,omitempty"`
+	// asset_witness is the boarded asset's OP_TRUE witness stack, the
+	// script-path data the round's commitment transition spends the
+	// asset with. It carries no authority — the asset script key is
+	// anyone-can-spend by design, custody being the Bitcoin-level
+	// boarding policy — and a wrong stack fails the sealed commit.
+	AssetWitness  [][]byte `protobuf:"bytes,9,rep,name=asset_witness,json=assetWitness,proto3" json:"asset_witness,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1346,6 +1402,48 @@ func (x *BoardingRequest) GetPolicyTemplate() []byte {
 func (x *BoardingRequest) GetTxProof() []byte {
 	if x != nil {
 		return x.TxProof
+	}
+	return nil
+}
+
+func (x *BoardingRequest) GetAssetRef() string {
+	if x != nil {
+		return x.AssetRef
+	}
+	return ""
+}
+
+func (x *BoardingRequest) GetAssetAmount() uint64 {
+	if x != nil {
+		return x.AssetAmount
+	}
+	return 0
+}
+
+func (x *BoardingRequest) GetAssetDigest() []byte {
+	if x != nil {
+		return x.AssetDigest
+	}
+	return nil
+}
+
+func (x *BoardingRequest) GetAssetProof() []byte {
+	if x != nil {
+		return x.AssetProof
+	}
+	return nil
+}
+
+func (x *BoardingRequest) GetAssetCommitmentLeafHash() []byte {
+	if x != nil {
+		return x.AssetCommitmentLeafHash
+	}
+	return nil
+}
+
+func (x *BoardingRequest) GetAssetWitness() [][]byte {
+	if x != nil {
+		return x.AssetWitness
 	}
 	return nil
 }
@@ -2888,7 +2986,7 @@ const file_round_proto_rawDesc = "" +
 	"\foutput_index\x18\x02 \x01(\rR\voutputIndex\":\n" +
 	"\x05TxOut\x12\x14\n" +
 	"\x05value\x18\x01 \x01(\x03R\x05value\x12\x1b\n" +
-	"\tpk_script\x18\x02 \x01(\fR\bpkScript\"\xf7\x02\n" +
+	"\tpk_script\x18\x02 \x01(\fR\bpkScript\"\xab\x03\n" +
 	"\bTreeNode\x12(\n" +
 	"\x05input\x18\x01 \x01(\v2\x12.round.v1.OutpointR\x05input\x12)\n" +
 	"\aoutputs\x18\x02 \x03(\v2\x0f.round.v1.TxOutR\aoutputs\x12\x1d\n" +
@@ -2898,7 +2996,8 @@ const file_round_proto_rawDesc = "" +
 	"\x06amount\x18\x05 \x01(\x03R\x06amount\x12\x1c\n" +
 	"\tsignature\x18\x06 \x01(\fR\tsignature\x12#\n" +
 	"\rsigning_tweak\x18\a \x01(\fR\fsigningTweak\x12!\n" +
-	"\fasset_amount\x18\b \x01(\x04R\vassetAmount\x1a;\n" +
+	"\fasset_amount\x18\b \x01(\x04R\vassetAmount\x122\n" +
+	"\x15asset_commitment_root\x18\t \x01(\fR\x13assetCommitmentRoot\x1a;\n" +
 	"\rChildrenEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\rR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\rR\x05value:\x028\x01\"\xf2\x01\n" +
@@ -2929,7 +3028,7 @@ const file_round_proto_rawDesc = "" +
 	"\x11ClientSuccessResp\x12\x19\n" +
 	"\bround_id\x18\x01 \x01(\fR\aroundId\x12R\n" +
 	"\x1baccepted_boarding_outpoints\x18\x02 \x03(\v2\x12.round.v1.OutpointR\x19acceptedBoardingOutpoints\x12J\n" +
-	"\x17accepted_vtxo_outpoints\x18\x03 \x03(\v2\x12.round.v1.OutpointR\x15acceptedVtxoOutpoints\"\x98\x05\n" +
+	"\x17accepted_vtxo_outpoints\x18\x03 \x03(\v2\x12.round.v1.OutpointR\x15acceptedVtxoOutpoints\"\xc0\x06\n" +
 	"\x0fClientBatchInfo\x12\x19\n" +
 	"\bround_id\x18\x01 \x01(\fR\aroundId\x12\x1d\n" +
 	"\n" +
@@ -2944,13 +3043,17 @@ const file_round_proto_rawDesc = "" +
 	"\vforfeit_key\x18\t \x01(\fR\n" +
 	"forfeitKey\x12!\n" +
 	"\fflow_version\x18\n" +
-	" \x01(\rR\vflowVersion\x1aT\n" +
+	" \x01(\rR\vflowVersion\x12`\n" +
+	"\x13asset_leaf_packages\x18\v \x03(\v20.round.v1.ClientBatchInfo.AssetLeafPackagesEntryR\x11assetLeafPackages\x1aT\n" +
 	"\x12VtxoTreePathsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\x05R\x03key\x12(\n" +
 	"\x05value\x18\x02 \x01(\v2\x12.round.v1.VTXOTreeR\x05value:\x028\x01\x1a`\n" +
 	"\x15ConnectorLeafMapEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x121\n" +
-	"\x05value\x18\x02 \x01(\v2\x1b.round.v1.ConnectorLeafInfoR\x05value:\x028\x01\"8\n" +
+	"\x05value\x18\x02 \x01(\v2\x1b.round.v1.ConnectorLeafInfoR\x05value:\x028\x01\x1aD\n" +
+	"\x16AssetLeafPackagesEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\fR\x05value:\x028\x01\"8\n" +
 	"\x1bClientAwaitingInputSigsResp\x12\x19\n" +
 	"\bround_id\x18\x01 \x01(\fR\aroundId\"\xbb\x01\n" +
 	"\x13ClientVTXOAggNonces\x12\x19\n" +
@@ -2975,11 +3078,18 @@ const file_round_proto_rawDesc = "" +
 	"\x17ClientRoundStatusReport\x12\x19\n" +
 	"\bround_id\x18\x01 \x01(\fR\aroundId\x126\n" +
 	"\x06status\x18\x02 \x01(\x0e2\x1e.round.v1.RoundLifecycleStatusR\x06status\x12\x16\n" +
-	"\x06detail\x18\x03 \x01(\tR\x06detail\"\x85\x01\n" +
+	"\x06detail\x18\x03 \x01(\tR\x06detail\"\xeb\x02\n" +
 	"\x0fBoardingRequest\x12.\n" +
 	"\boutpoint\x18\x01 \x01(\v2\x12.round.v1.OutpointR\boutpoint\x12'\n" +
 	"\x0fpolicy_template\x18\x02 \x01(\fR\x0epolicyTemplate\x12\x19\n" +
-	"\btx_proof\x18\x03 \x01(\fR\atxProof\"\x83\x02\n" +
+	"\btx_proof\x18\x03 \x01(\fR\atxProof\x12\x1b\n" +
+	"\tasset_ref\x18\x04 \x01(\tR\bassetRef\x12!\n" +
+	"\fasset_amount\x18\x05 \x01(\x04R\vassetAmount\x12!\n" +
+	"\fasset_digest\x18\x06 \x01(\fR\vassetDigest\x12\x1f\n" +
+	"\vasset_proof\x18\a \x01(\fR\n" +
+	"assetProof\x12;\n" +
+	"\x1aasset_commitment_leaf_hash\x18\b \x01(\fR\x17assetCommitmentLeafHash\x12#\n" +
+	"\rasset_witness\x18\t \x03(\fR\fassetWitness\"\x83\x02\n" +
 	"\vVTXORequest\x12*\n" +
 	"\x11target_amount_sat\x18\x01 \x01(\x03R\x0ftargetAmountSat\x12'\n" +
 	"\x0fpolicy_template\x18\x02 \x01(\fR\x0epolicyTemplate\x12\x1f\n" +
@@ -3136,7 +3246,7 @@ func file_round_proto_rawDescGZIP() []byte {
 }
 
 var file_round_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_round_proto_msgTypes = make([]protoimpl.MessageInfo, 45)
+var file_round_proto_msgTypes = make([]protoimpl.MessageInfo, 46)
 var file_round_proto_goTypes = []any{
 	(RoundFailureCode)(0),                // 0: round.v1.RoundFailureCode
 	(RoundLifecycleStatus)(0),            // 1: round.v1.RoundLifecycleStatus
@@ -3180,12 +3290,13 @@ var file_round_proto_goTypes = []any{
 	nil,                                  // 39: round.v1.TreeNode.ChildrenEntry
 	nil,                                  // 40: round.v1.ClientBatchInfo.VtxoTreePathsEntry
 	nil,                                  // 41: round.v1.ClientBatchInfo.ConnectorLeafMapEntry
-	nil,                                  // 42: round.v1.ClientVTXOAggNonces.AggNoncesEntry
-	nil,                                  // 43: round.v1.ClientVTXOAggSigs.AggSigsEntry
-	nil,                                  // 44: round.v1.SubmitNoncesRequest.NoncesEntry
-	nil,                                  // 45: round.v1.SignerNonces.TxNoncesEntry
-	nil,                                  // 46: round.v1.SubmitPartialSigRequest.SignaturesEntry
-	nil,                                  // 47: round.v1.SignerPartialSigs.TxSigsEntry
+	nil,                                  // 42: round.v1.ClientBatchInfo.AssetLeafPackagesEntry
+	nil,                                  // 43: round.v1.ClientVTXOAggNonces.AggNoncesEntry
+	nil,                                  // 44: round.v1.ClientVTXOAggSigs.AggSigsEntry
+	nil,                                  // 45: round.v1.SubmitNoncesRequest.NoncesEntry
+	nil,                                  // 46: round.v1.SignerNonces.TxNoncesEntry
+	nil,                                  // 47: round.v1.SubmitPartialSigRequest.SignaturesEntry
+	nil,                                  // 48: round.v1.SignerPartialSigs.TxSigsEntry
 }
 var file_round_proto_depIdxs = []int32{
 	3,  // 0: round.v1.TreeNode.input:type_name -> round.v1.Outpoint
@@ -3201,55 +3312,56 @@ var file_round_proto_depIdxs = []int32{
 	3,  // 10: round.v1.ClientSuccessResp.accepted_vtxo_outpoints:type_name -> round.v1.Outpoint
 	40, // 11: round.v1.ClientBatchInfo.vtxo_tree_paths:type_name -> round.v1.ClientBatchInfo.VtxoTreePathsEntry
 	41, // 12: round.v1.ClientBatchInfo.connector_leaf_map:type_name -> round.v1.ClientBatchInfo.ConnectorLeafMapEntry
-	42, // 13: round.v1.ClientVTXOAggNonces.agg_nonces:type_name -> round.v1.ClientVTXOAggNonces.AggNoncesEntry
-	43, // 14: round.v1.ClientVTXOAggSigs.agg_sigs:type_name -> round.v1.ClientVTXOAggSigs.AggSigsEntry
-	0,  // 15: round.v1.ClientRoundFailedResp.failure_code:type_name -> round.v1.RoundFailureCode
-	1,  // 16: round.v1.ClientRoundStatusReport.status:type_name -> round.v1.RoundLifecycleStatus
-	3,  // 17: round.v1.BoardingRequest.outpoint:type_name -> round.v1.Outpoint
-	3,  // 18: round.v1.ForfeitRequest.vtxo_outpoint:type_name -> round.v1.Outpoint
-	17, // 19: round.v1.JoinRoundRequest.boarding_requests:type_name -> round.v1.BoardingRequest
-	18, // 20: round.v1.JoinRoundRequest.vtxo_requests:type_name -> round.v1.VTXORequest
-	19, // 21: round.v1.JoinRoundRequest.forfeit_requests:type_name -> round.v1.ForfeitRequest
-	20, // 22: round.v1.JoinRoundRequest.leave_requests:type_name -> round.v1.LeaveRequest
-	21, // 23: round.v1.JoinRoundRequest.auth:type_name -> round.v1.JoinRoundAuth
-	24, // 24: round.v1.JoinRoundQuote.vtxo_quotes:type_name -> round.v1.VTXOQuote
-	25, // 25: round.v1.JoinRoundQuote.leave_quotes:type_name -> round.v1.LeaveQuote
-	23, // 26: round.v1.JoinRoundQuote.breakdown:type_name -> round.v1.FeeBreakdown
-	2,  // 27: round.v1.JoinRoundQuote.reject_reason:type_name -> round.v1.QuoteReason
-	44, // 28: round.v1.SubmitNoncesRequest.nonces:type_name -> round.v1.SubmitNoncesRequest.NoncesEntry
-	45, // 29: round.v1.SignerNonces.tx_nonces:type_name -> round.v1.SignerNonces.TxNoncesEntry
-	46, // 30: round.v1.SubmitPartialSigRequest.signatures:type_name -> round.v1.SubmitPartialSigRequest.SignaturesEntry
-	47, // 31: round.v1.SignerPartialSigs.tx_sigs:type_name -> round.v1.SignerPartialSigs.TxSigsEntry
-	3,  // 32: round.v1.BoardingInputSignature.outpoint:type_name -> round.v1.Outpoint
-	33, // 33: round.v1.SubmitForfeitSigRequest.signatures:type_name -> round.v1.BoardingInputSignature
-	3,  // 34: round.v1.ForfeitTxSig.vtxo_outpoint:type_name -> round.v1.Outpoint
-	35, // 35: round.v1.ForfeitTxSig.participant_sigs:type_name -> round.v1.ForfeitParticipantSig
-	36, // 36: round.v1.SubmitVTXOForfeitSigsRequest.forfeit_txs:type_name -> round.v1.ForfeitTxSig
-	6,  // 37: round.v1.ClientBatchInfo.VtxoTreePathsEntry.value:type_name -> round.v1.VTXOTree
-	7,  // 38: round.v1.ClientBatchInfo.ConnectorLeafMapEntry.value:type_name -> round.v1.ConnectorLeafInfo
-	30, // 39: round.v1.SubmitNoncesRequest.NoncesEntry.value:type_name -> round.v1.SignerNonces
-	32, // 40: round.v1.SubmitPartialSigRequest.SignaturesEntry.value:type_name -> round.v1.SignerPartialSigs
-	22, // 41: round.v1.RoundService.JoinRound:input_type -> round.v1.JoinRoundRequest
-	27, // 42: round.v1.RoundService.AcceptQuote:input_type -> round.v1.JoinRoundAccept
-	28, // 43: round.v1.RoundService.RejectQuote:input_type -> round.v1.JoinRoundReject
-	29, // 44: round.v1.RoundService.SubmitNonces:input_type -> round.v1.SubmitNoncesRequest
-	31, // 45: round.v1.RoundService.SubmitPartialSigs:input_type -> round.v1.SubmitPartialSigRequest
-	34, // 46: round.v1.RoundService.SubmitForfeitSigs:input_type -> round.v1.SubmitForfeitSigRequest
-	37, // 47: round.v1.RoundService.SubmitVTXOForfeitSigs:input_type -> round.v1.SubmitVTXOForfeitSigsRequest
-	38, // 48: round.v1.RoundService.QueryRoundStatus:input_type -> round.v1.QueryRoundStatusRequest
-	9,  // 49: round.v1.RoundService.JoinRound:output_type -> round.v1.ClientSuccessResp
-	9,  // 50: round.v1.RoundService.AcceptQuote:output_type -> round.v1.ClientSuccessResp
-	9,  // 51: round.v1.RoundService.RejectQuote:output_type -> round.v1.ClientSuccessResp
-	12, // 52: round.v1.RoundService.SubmitNonces:output_type -> round.v1.ClientVTXOAggNonces
-	13, // 53: round.v1.RoundService.SubmitPartialSigs:output_type -> round.v1.ClientVTXOAggSigs
-	11, // 54: round.v1.RoundService.SubmitForfeitSigs:output_type -> round.v1.ClientAwaitingInputSigsResp
-	9,  // 55: round.v1.RoundService.SubmitVTXOForfeitSigs:output_type -> round.v1.ClientSuccessResp
-	9,  // 56: round.v1.RoundService.QueryRoundStatus:output_type -> round.v1.ClientSuccessResp
-	49, // [49:57] is the sub-list for method output_type
-	41, // [41:49] is the sub-list for method input_type
-	41, // [41:41] is the sub-list for extension type_name
-	41, // [41:41] is the sub-list for extension extendee
-	0,  // [0:41] is the sub-list for field type_name
+	42, // 13: round.v1.ClientBatchInfo.asset_leaf_packages:type_name -> round.v1.ClientBatchInfo.AssetLeafPackagesEntry
+	43, // 14: round.v1.ClientVTXOAggNonces.agg_nonces:type_name -> round.v1.ClientVTXOAggNonces.AggNoncesEntry
+	44, // 15: round.v1.ClientVTXOAggSigs.agg_sigs:type_name -> round.v1.ClientVTXOAggSigs.AggSigsEntry
+	0,  // 16: round.v1.ClientRoundFailedResp.failure_code:type_name -> round.v1.RoundFailureCode
+	1,  // 17: round.v1.ClientRoundStatusReport.status:type_name -> round.v1.RoundLifecycleStatus
+	3,  // 18: round.v1.BoardingRequest.outpoint:type_name -> round.v1.Outpoint
+	3,  // 19: round.v1.ForfeitRequest.vtxo_outpoint:type_name -> round.v1.Outpoint
+	17, // 20: round.v1.JoinRoundRequest.boarding_requests:type_name -> round.v1.BoardingRequest
+	18, // 21: round.v1.JoinRoundRequest.vtxo_requests:type_name -> round.v1.VTXORequest
+	19, // 22: round.v1.JoinRoundRequest.forfeit_requests:type_name -> round.v1.ForfeitRequest
+	20, // 23: round.v1.JoinRoundRequest.leave_requests:type_name -> round.v1.LeaveRequest
+	21, // 24: round.v1.JoinRoundRequest.auth:type_name -> round.v1.JoinRoundAuth
+	24, // 25: round.v1.JoinRoundQuote.vtxo_quotes:type_name -> round.v1.VTXOQuote
+	25, // 26: round.v1.JoinRoundQuote.leave_quotes:type_name -> round.v1.LeaveQuote
+	23, // 27: round.v1.JoinRoundQuote.breakdown:type_name -> round.v1.FeeBreakdown
+	2,  // 28: round.v1.JoinRoundQuote.reject_reason:type_name -> round.v1.QuoteReason
+	45, // 29: round.v1.SubmitNoncesRequest.nonces:type_name -> round.v1.SubmitNoncesRequest.NoncesEntry
+	46, // 30: round.v1.SignerNonces.tx_nonces:type_name -> round.v1.SignerNonces.TxNoncesEntry
+	47, // 31: round.v1.SubmitPartialSigRequest.signatures:type_name -> round.v1.SubmitPartialSigRequest.SignaturesEntry
+	48, // 32: round.v1.SignerPartialSigs.tx_sigs:type_name -> round.v1.SignerPartialSigs.TxSigsEntry
+	3,  // 33: round.v1.BoardingInputSignature.outpoint:type_name -> round.v1.Outpoint
+	33, // 34: round.v1.SubmitForfeitSigRequest.signatures:type_name -> round.v1.BoardingInputSignature
+	3,  // 35: round.v1.ForfeitTxSig.vtxo_outpoint:type_name -> round.v1.Outpoint
+	35, // 36: round.v1.ForfeitTxSig.participant_sigs:type_name -> round.v1.ForfeitParticipantSig
+	36, // 37: round.v1.SubmitVTXOForfeitSigsRequest.forfeit_txs:type_name -> round.v1.ForfeitTxSig
+	6,  // 38: round.v1.ClientBatchInfo.VtxoTreePathsEntry.value:type_name -> round.v1.VTXOTree
+	7,  // 39: round.v1.ClientBatchInfo.ConnectorLeafMapEntry.value:type_name -> round.v1.ConnectorLeafInfo
+	30, // 40: round.v1.SubmitNoncesRequest.NoncesEntry.value:type_name -> round.v1.SignerNonces
+	32, // 41: round.v1.SubmitPartialSigRequest.SignaturesEntry.value:type_name -> round.v1.SignerPartialSigs
+	22, // 42: round.v1.RoundService.JoinRound:input_type -> round.v1.JoinRoundRequest
+	27, // 43: round.v1.RoundService.AcceptQuote:input_type -> round.v1.JoinRoundAccept
+	28, // 44: round.v1.RoundService.RejectQuote:input_type -> round.v1.JoinRoundReject
+	29, // 45: round.v1.RoundService.SubmitNonces:input_type -> round.v1.SubmitNoncesRequest
+	31, // 46: round.v1.RoundService.SubmitPartialSigs:input_type -> round.v1.SubmitPartialSigRequest
+	34, // 47: round.v1.RoundService.SubmitForfeitSigs:input_type -> round.v1.SubmitForfeitSigRequest
+	37, // 48: round.v1.RoundService.SubmitVTXOForfeitSigs:input_type -> round.v1.SubmitVTXOForfeitSigsRequest
+	38, // 49: round.v1.RoundService.QueryRoundStatus:input_type -> round.v1.QueryRoundStatusRequest
+	9,  // 50: round.v1.RoundService.JoinRound:output_type -> round.v1.ClientSuccessResp
+	9,  // 51: round.v1.RoundService.AcceptQuote:output_type -> round.v1.ClientSuccessResp
+	9,  // 52: round.v1.RoundService.RejectQuote:output_type -> round.v1.ClientSuccessResp
+	12, // 53: round.v1.RoundService.SubmitNonces:output_type -> round.v1.ClientVTXOAggNonces
+	13, // 54: round.v1.RoundService.SubmitPartialSigs:output_type -> round.v1.ClientVTXOAggSigs
+	11, // 55: round.v1.RoundService.SubmitForfeitSigs:output_type -> round.v1.ClientAwaitingInputSigsResp
+	9,  // 56: round.v1.RoundService.SubmitVTXOForfeitSigs:output_type -> round.v1.ClientSuccessResp
+	9,  // 57: round.v1.RoundService.QueryRoundStatus:output_type -> round.v1.ClientSuccessResp
+	50, // [50:58] is the sub-list for method output_type
+	42, // [42:50] is the sub-list for method input_type
+	42, // [42:42] is the sub-list for extension type_name
+	42, // [42:42] is the sub-list for extension extendee
+	0,  // [0:42] is the sub-list for field type_name
 }
 
 func init() { file_round_proto_init() }
@@ -3263,7 +3375,7 @@ func file_round_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_round_proto_rawDesc), len(file_round_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   45,
+			NumMessages:   46,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

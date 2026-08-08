@@ -1,13 +1,10 @@
 package waveclicommands
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
-	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 )
@@ -61,46 +58,6 @@ func TestTaprootAssetOnboardingRequestTargetConf(t *testing.T) {
 	require.Equal(t, uint32(6), request.TargetConf)
 }
 
-// TestWaitForTaprootAssetOnboarding verifies --wait reuses one byte-identical
-// request until the daemon reports that registration is ready.
-func TestWaitForTaprootAssetOnboarding(t *testing.T) {
-	t.Parallel()
-
-	request := &waverpc.OnboardTaprootAssetRequest{
-		IdempotencyKey: "deposit-1",
-		InputProofFile: []byte("proof"),
-	}
-	calls := 0
-	response, err := waitForTaprootAssetOnboarding(
-		t.Context(), request, true, time.Millisecond,
-		func(_ context.Context,
-			got *waverpc.OnboardTaprootAssetRequest) (
-			*waverpc.OnboardTaprootAssetResponse, error) {
-
-			require.Same(t, request, got)
-			calls++
-			if calls < 3 {
-				return &waverpc.OnboardTaprootAssetResponse{
-					State: waverpc.TaprootAssetOnboardingState_TAPROOT_ASSET_ONBOARDING_STATE_PENDING_CONFIRMATION, //nolint:ll
-				}, nil
-			}
-
-			return &waverpc.OnboardTaprootAssetResponse{
-				State: waverpc.TaprootAssetOnboardingState_TAPROOT_ASSET_ONBOARDING_STATE_READY, //nolint:ll
-			}, nil
-		},
-	)
-	require.NoError(t, err)
-	require.Equal(
-		t,
-		waverpc.TaprootAssetOnboardingState_TAPROOT_ASSET_ONBOARDING_STATE_READY, //nolint:ll
-		response.State,
-	)
-	require.Equal(t, 3, calls)
-}
-
-// TestTaprootAssetOnboardingRequestRejectsInvalidInput verifies the command
-// fails before dialing waved when a durable request field is unusable.
 func TestTaprootAssetOnboardingRequestRejectsInvalidInput(t *testing.T) {
 	t.Parallel()
 

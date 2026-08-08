@@ -32,12 +32,6 @@ const (
 	onboardingDustFloorSat  = uint64(330)
 )
 
-// ErrOnboardingPendingConfirmation means the exact published asset anchor is
-// not confirmed deeply enough for the operator to admit it yet. Retrying the
-// same request is safe and reuses the sealed package and final anchor PSBT.
-var ErrOnboardingPendingConfirmation = errors.New("taproot asset onboarding " +
-	"pending confirmation")
-
 // OnboardingRequest selects one complete Taproot Asset proof and the standard
 // Wavelength policy that will own its new on-chain anchor.
 type OnboardingRequest struct {
@@ -56,52 +50,32 @@ type OnboardingRequest struct {
 // OnboardingKeyDeriver returns the next wallet-owned standard VTXO key.
 type OnboardingKeyDeriver func(context.Context) (*keychain.KeyDescriptor, error)
 
-// OnboardingRegistration is the credential-free package sent to the
-// operator after tap-sdk has committed and Wavelength has signed the anchor.
-type OnboardingRegistration struct {
-	TransferPackage    []byte
-	FinalAnchorPSBT    []byte
-	PolicyTemplate     []byte
-	TaprootAssetRoot   tapsdk.Hash
-	TaprootAssetRef    string
-	TaprootAssetAmount uint64
-}
-
-// OnboardingRegistrationResult is the operator's confirmed admission result.
-type OnboardingRegistrationResult struct {
-	Outpoint           wire.OutPoint
-	ConfirmationHeight int32
-}
-
-// OnboardingRegistrar admits one confirmed direct-on-chain asset VTXO.
-type OnboardingRegistrar func(context.Context, OnboardingRegistration) (
-	*OnboardingRegistrationResult, error)
-
-// OnboardingStatus is the durable stage visible to the daemon RPC.
-type OnboardingStatus uint8
-
-const (
-	OnboardingStatusUnknown OnboardingStatus = iota
-	OnboardingStatusPendingConfirmation
-	OnboardingStatusReady
-)
-
 // OnboardingResult contains the local descriptor material for the admitted
 // direct-on-chain VTXO. The final asset proof remains managed by tapd.
 type OnboardingResult struct {
-	Status             OnboardingStatus
-	Outpoint           wire.OutPoint
-	ValueSat           int64
-	AssetRef           string
-	AssetAmount        uint64
-	ActualFeeSat       uint64
-	PolicyTemplate     []byte
-	PkScript           []byte
-	TaprootAssetRoot   chainhash.Hash
-	OwnerKey           keychain.KeyDescriptor
-	OperatorKey        *btcec.PublicKey
-	ExitDelay          uint32
-	ConfirmationHeight int32
+	Outpoint         wire.OutPoint
+	ValueSat         int64
+	AssetRef         string
+	AssetAmount      uint64
+	ActualFeeSat     uint64
+	PolicyTemplate   []byte
+	PkScript         []byte
+	TaprootAssetRoot chainhash.Hash
+	OwnerKey         keychain.KeyDescriptor
+	OperatorKey      *btcec.PublicKey
+	ExitDelay        uint32
+
+	// Digest scopes the output's deterministic asset script key.
+	Digest tapsdk.Hash
+
+	// ScriptKey is the committed asset script key. An OP_TRUE boarding
+	// output is absent from tapd's wallet inventory, so this is the
+	// only handle for exporting its proof.
+	ScriptKey tapsdk.PubKey
+
+	// OPTrueWitness is the asset-level OP_TRUE witness stack a round's
+	// commitment transition spends the boarded output with.
+	OPTrueWitness [][]byte
 }
 
 type onboardingDriver interface {
@@ -121,7 +95,6 @@ type OnboarderConfig struct {
 	Store          Store
 	Signer         tapsdk.AnchorSigner
 	DeriveOwnerKey OnboardingKeyDeriver
-	Registrar      OnboardingRegistrar
 }
 
 // Onboarder moves a tapd-managed confirmed asset anchor into a standard
@@ -132,23 +105,20 @@ type Onboarder struct {
 	store          Store
 	signer         tapsdk.AnchorSigner
 	deriveOwnerKey OnboardingKeyDeriver
-	registrar      OnboardingRegistrar
 	mu             sync.Mutex
 }
 
 type onboardingState struct {
-	Version            uint16      `json:"version"`
-	RequestDigest      tapsdk.Hash `json:"request_digest"`
-	Attempt            string      `json:"attempt,omitempty"`
-	OwnerPubKey        []byte      `json:"owner_pub_key"`
-	OwnerKeyFamily     int32       `json:"owner_key_family"`
-	OwnerKeyIndex      uint32      `json:"owner_key_index"`
-	PolicyTemplate     []byte      `json:"policy_template"`
-	TransferPackage    []byte      `json:"transfer_package,omitempty"`
-	FinalAnchorPSBT    []byte      `json:"final_anchor_psbt,omitempty"`
-	Published          bool        `json:"published"`
-	Registered         bool        `json:"registered"`
-	ConfirmationHeight int32       `json:"confirmation_height,omitempty"`
+	Version         uint16      `json:"version"`
+	RequestDigest   tapsdk.Hash `json:"request_digest"`
+	Attempt         string      `json:"attempt,omitempty"`
+	OwnerPubKey     []byte      `json:"owner_pub_key"`
+	OwnerKeyFamily  int32       `json:"owner_key_family"`
+	OwnerKeyIndex   uint32      `json:"owner_key_index"`
+	PolicyTemplate  []byte      `json:"policy_template"`
+	TransferPackage []byte      `json:"transfer_package,omitempty"`
+	FinalAnchorPSBT []byte      `json:"final_anchor_psbt,omitempty"`
+	Published       bool        `json:"published"`
 }
 
 // NewOnboarder constructs the tap-sdk-backed onboarding workflow.
@@ -168,10 +138,6 @@ func NewOnboarder(cfg OnboarderConfig) (*Onboarder, error) {
 		return nil, fmt.Errorf("taproot asset owner key deriver is " +
 			"required")
 	}
-	if cfg.Registrar == nil {
-		return nil, fmt.Errorf("taproot asset onboarding registrar " +
-			"is required")
-	}
 
 	return &Onboarder{
 		driver: &sdkDriver{
@@ -181,7 +147,6 @@ func NewOnboarder(cfg OnboarderConfig) (*Onboarder, error) {
 		store:          cfg.Store,
 		signer:         cfg.Signer,
 		deriveOwnerKey: cfg.DeriveOwnerKey,
-		registrar:      cfg.Registrar,
 	}, nil
 }
 
@@ -192,8 +157,7 @@ func (o *Onboarder) Onboard(ctx context.Context, request *OnboardingRequest) (
 
 	if o == nil || o.driver == nil || o.inventory == nil ||
 		o.store == nil ||
-		o.signer == nil || o.deriveOwnerKey == nil ||
-		o.registrar == nil {
+		o.signer == nil || o.deriveOwnerKey == nil {
 		return nil, fmt.Errorf("taproot asset onboarder is not " +
 			"configured")
 	}
@@ -252,7 +216,7 @@ func (o *Onboarder) Onboard(ctx context.Context, request *OnboardingRequest) (
 		return nil, err
 	}
 	result, err := onboardingResultFromCommit(
-		request, state, ownerKey, policy, committed,
+		request, state, ownerKey, policy, digest, committed,
 	)
 	if err != nil {
 		return nil, err
@@ -293,59 +257,6 @@ func (o *Onboarder) Onboard(ctx context.Context, request *OnboardingRequest) (
 			return nil, err
 		}
 	}
-
-	if !state.Registered {
-		registration, registerErr := o.registrar(
-			ctx, OnboardingRegistration{
-				TransferPackage: append(
-					[]byte(nil), state.TransferPackage...,
-				),
-				FinalAnchorPSBT: append(
-					[]byte(nil), state.FinalAnchorPSBT...,
-				),
-				PolicyTemplate: append(
-					[]byte(nil), state.PolicyTemplate...,
-				),
-				TaprootAssetRoot: tapsdk.Hash(
-					result.TaprootAssetRoot,
-				),
-				TaprootAssetRef:    result.AssetRef,
-				TaprootAssetAmount: result.AssetAmount,
-			},
-		)
-		if errors.Is(registerErr, ErrOnboardingPendingConfirmation) {
-			result.Status = OnboardingStatusPendingConfirmation
-
-			return result, nil
-		}
-		if registerErr != nil {
-			return nil, fmt.Errorf("register onboarding VTXO: %w",
-				registerErr)
-		}
-		if registration == nil {
-			return nil, fmt.Errorf("operator returned empty " +
-				"onboarding registration")
-		}
-		if registration.Outpoint != result.Outpoint {
-			return nil, fmt.Errorf("operator registered " +
-				"unexpected onboarding outpoint")
-		}
-		if registration.ConfirmationHeight <= 0 {
-			return nil, fmt.Errorf("operator returned invalid " +
-				"onboarding confirmation height")
-		}
-
-		state.Registered = true
-		state.ConfirmationHeight = registration.ConfirmationHeight
-		if err := o.storeState(
-			ctx, request.RequestID, state,
-		); err != nil {
-			return nil, err
-		}
-	}
-
-	result.Status = OnboardingStatusReady
-	result.ConfirmationHeight = state.ConfirmationHeight
 
 	return result, nil
 }
@@ -412,10 +323,7 @@ func (o *Onboarder) commit(ctx context.Context, request *OnboardingRequest,
 			Amount:            request.AssetAmount,
 			AnchorOutputIndex: 0,
 			AnchorValueSat:    uint64(outputValue),
-			Script: tapsdk.CustomAssetScriptPlan{
-				Mode:   tapsdk.CustomAssetScriptWallet,
-				Wallet: &tapsdk.CustomAssetWalletScriptPlan{},
-			},
+			Script:            boardingScriptPlan(requestDigest),
 			Anchor: anchorPlan(
 				policy.InternalKey, policyTapLeaves(policy),
 			),
@@ -553,7 +461,7 @@ func (o *Onboarder) verifyInput(ctx context.Context,
 
 func onboardingResultFromCommit(request *OnboardingRequest,
 	state *onboardingState, ownerKey keychain.KeyDescriptor,
-	policy *arkscript.VTXOPolicy,
+	policy *arkscript.VTXOPolicy, digest tapsdk.Hash,
 	committed *commitResult) (*OnboardingResult, error) {
 
 	if committed == nil || len(committed.inputs) != 1 ||
@@ -657,9 +565,12 @@ func onboardingResultFromCommit(request *OnboardingRequest,
 		PolicyTemplate:   append([]byte(nil), state.PolicyTemplate...),
 		PkScript:         pkScript,
 		TaprootAssetRoot: root,
+		ScriptKey:        output.scriptKey,
 		OwnerKey:         ownerKey,
 		OperatorKey:      request.OperatorKey,
 		ExitDelay:        request.ExitDelay,
+		Digest:           digest,
+		OPTrueWitness:    cloneByteSlices(output.opTrueWitness),
 	}, nil
 }
 
@@ -893,4 +804,22 @@ func policyTapLeaves(policy *arkscript.VTXOPolicy) []txscript.TapLeaf {
 	}
 
 	return leaves
+}
+
+// boardingScriptPlan keys the new anchor's asset output to a
+// digest-scoped OP_TRUE script, so the operator of the round that
+// consumes it can build the transition that spends it. Custody is
+// unaffected: it rests on the composed Bitcoin output, which still
+// requires the owner's collaborative-leaf signature.
+func boardingScriptPlan(digest tapsdk.Hash) tapsdk.CustomAssetScriptPlan {
+	return tapsdk.CustomAssetScriptPlan{
+		Mode: tapsdk.CustomAssetScriptOPTrue,
+		OPTrue: &tapsdk.CustomAssetOPTrueScriptPlan{
+			InternalKey: tapsdk.KeyDescriptor{
+				RawKeyBytes: deterministicKey(
+					digest, "onboarding-boarding",
+				),
+			},
+		},
+	}
 }

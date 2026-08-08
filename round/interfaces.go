@@ -13,6 +13,7 @@ import (
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/google/uuid"
 	"github.com/lightninglabs/wavelength/baselib/protofsm"
+	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/lib/tree"
 	"github.com/lightninglabs/wavelength/lib/types"
 	"github.com/lightninglabs/wavelength/rpc/roundpb"
@@ -340,6 +341,12 @@ type BoardingIntent struct {
 	// Request is the original boarding request details. It targets
 	// a boarding address by outpoint and includes additional metadata.
 	Request types.BoardingRequest
+
+	// AuthSpend overrides the standard timeout proof path used for
+	// join-round authorization. A composed asset boarding output needs
+	// the disclosed commitment leaf hash as an extra control-block
+	// sibling, which the standard policy-only path does not carry.
+	AuthSpend *arkscript.SpendPath
 }
 
 // ConfInfo contains chain information about when a round's commitment
@@ -500,6 +507,19 @@ type ClientVTXO struct {
 	// is being used in a context where the round is not yet known (e.g.,
 	// during FSM state transitions before persistence).
 	RoundID fn.Option[RoundID]
+
+	// TaprootAssetRoot, TaprootAssetRef, and TaprootAssetAmount record
+	// the asset an asset leaf carries. They are what mark the VTXO as
+	// asset-bearing, which keeps its carrier out of ordinary Bitcoin
+	// coin selection.
+	TaprootAssetRoot   *chainhash.Hash
+	TaprootAssetRef    string
+	TaprootAssetAmount uint64
+
+	// TaprootAssetSealedPackage is the sealed tap-sdk package that
+	// created this asset leaf. Spending it out of round rebuilds the
+	// compact proof path and the OP_TRUE witness from it.
+	TaprootAssetSealedPackage []byte
 
 	// Origin is the classification the wallet stamped on the
 	// source VTXORequest at intent-composition time

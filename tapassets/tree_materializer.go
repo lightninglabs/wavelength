@@ -3,8 +3,10 @@ package tapassets
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/psbt/v2"
@@ -216,7 +218,8 @@ func (m *TreeMaterializer) MaterializeNode(ctx context.Context, node *tree.Node,
 	// output's script exactly.
 	finalKey, err := boundFinalKey(node.CoSigners, tweak, spentPkScript)
 	if err != nil {
-		return nil, fmt.Errorf("node %s: %w", params.Input, err)
+		return nil, fmt.Errorf("node %s (%d children): %w",
+			params.Input, len(node.Children), err)
 	}
 
 	template, outputSpecs, err := m.buildTemplate(node)
@@ -247,6 +250,15 @@ func (m *TreeMaterializer) MaterializeNode(ctx context.Context, node *tree.Node,
 	m.cfg.AssetContext.SetSealedPackage(
 		params.Input, committed.packageBytes,
 	)
+
+	// A leaf node's single output is the VTXO itself, so record its
+	// asset commitment root: the owner needs it to reproduce the
+	// composed script it was paid to, and to know the VTXO carries
+	// assets at all. Branch outputs commit to their children instead.
+	if len(node.Children) == 0 && len(committed.outputs) == 1 {
+		root := committed.outputs[0].taprootAssetRoot
+		m.cfg.AssetContext.SetLeafAssetRoot(params.Input, root[:])
+	}
 
 	// Re-register the subtree total now that the node carries its
 	// input, so the amount stays resolvable on extracted or
@@ -718,8 +730,16 @@ func boundFinalKey(cosigners []*btcec.PublicKey, tweak,
 		return nil, err
 	}
 	if !bytes.Equal(script, spentPkScript) {
-		return nil, fmt.Errorf("cosigners and signing tweak do not " +
-			"reproduce the spent output script")
+		keys := make([]string, len(cosigners))
+		for i, cosigner := range cosigners {
+			keys[i] = hex.EncodeToString(
+				cosigner.SerializeCompressed(),
+			)
+		}
+
+		return nil, fmt.Errorf("cosigners [%s] and signing tweak %x "+
+			"derive script %x, but the spent output is %x",
+			strings.Join(keys, " "), tweak, script, spentPkScript)
 	}
 
 	return finalKey, nil
