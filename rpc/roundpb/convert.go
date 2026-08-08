@@ -246,9 +246,10 @@ func TreeToProto(t *tree.Tree) (*VTXOTree, error) {
 		SweepTapscriptRoot: t.SweepTapscriptRoot,
 	}
 
-	// Asset-aware trees carry their per-node asset data on the wire:
-	// the tree's asset reference, and each node's signing tweak and
-	// subtree asset amount. Sealed packages stay operator-side.
+	// Asset-aware trees carry their per-node asset data on the wire: the
+	// tree's asset reference, each node's signing tweak and subtree
+	// asset amount, and a leaf's own commitment root. Sealed packages
+	// stay operator-side.
 	if t.AssetContext != nil {
 		pt.AssetRef = t.AssetContext.AssetRef()
 		for node, idx := range nodeIndex {
@@ -257,6 +258,9 @@ func TreeToProto(t *tree.Tree) (*VTXOTree, error) {
 				node.Input,
 			)
 			pn.AssetAmount = t.AssetContext.NodeAssetAmount(node)
+			pn.AssetCommitmentRoot = t.AssetContext.LeafAssetRoot(
+				node.Input,
+			)
 		}
 	}
 
@@ -505,6 +509,9 @@ func TreeFromProto(pt *VTXOTree,
 				)
 			}
 			assetCtx.SetNodeAssetAmount(node, pn.AssetAmount)
+			assetCtx.SetLeafAssetRoot(
+				node.Input, pn.AssetCommitmentRoot,
+			)
 		}
 
 		if len(node.CoSigners) == 0 {
@@ -562,7 +569,8 @@ func treeHasAssetData(pt *VTXOTree) bool {
 		return true
 	}
 	for _, pn := range pt.Nodes {
-		if len(pn.SigningTweak) > 0 || pn.AssetAmount != 0 {
+		if len(pn.SigningTweak) > 0 || pn.AssetAmount != 0 ||
+			len(pn.AssetCommitmentRoot) > 0 {
 			return true
 		}
 	}

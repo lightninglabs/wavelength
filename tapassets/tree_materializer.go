@@ -251,6 +251,15 @@ func (m *TreeMaterializer) MaterializeNode(ctx context.Context, node *tree.Node,
 		params.Input, committed.packageBytes,
 	)
 
+	// A leaf node's single output is the VTXO itself, so record its
+	// asset commitment root: the owner needs it to reproduce the
+	// composed script it was paid to, and to know the VTXO carries
+	// assets at all. Branch outputs commit to their children instead.
+	if len(node.Children) == 0 && len(committed.outputs) == 1 {
+		root := committed.outputs[0].taprootAssetRoot
+		m.cfg.AssetContext.SetLeafAssetRoot(params.Input, root[:])
+	}
+
 	// Re-register the subtree total now that the node carries its
 	// input, so the amount stays resolvable on extracted or
 	// deserialized clones. The structure pass's node-keyed total is

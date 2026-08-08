@@ -22,6 +22,7 @@ import (
 	"github.com/lightninglabs/wavelength/lib/types"
 	"github.com/lightninglabs/wavelength/round"
 	"github.com/lightninglabs/wavelength/rpc/roundpb"
+	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightningnetwork/lnd/clock"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -1687,6 +1688,19 @@ func (s *RoundPersistenceStore) domainVTXOToInsertParams(ctx context.Context,
 		policyTemplate = encodedPolicy
 	}
 
+	assetRef, assetAmount, err := encodeClientVTXOAssetMetadata(
+		vtxo.TaprootAssetRoot, vtxo.TaprootAssetRef,
+		vtxo.TaprootAssetAmount,
+	)
+	if err != nil {
+		return InsertVTXOParams{}, fmt.Errorf("encode client VTXO "+
+			"asset metadata: %w", err)
+	}
+	var assetRoot []byte
+	if vtxo.TaprootAssetRoot != nil {
+		assetRoot = vtxo.TaprootAssetRoot[:]
+	}
+
 	return InsertVTXOParams{
 		OutpointHash:   vtxo.Outpoint.Hash[:],
 		OutpointIndex:  int32(vtxo.Outpoint.Index),
@@ -1711,6 +1725,12 @@ func (s *RoundPersistenceStore) domainVTXOToInsertParams(ctx context.Context,
 		// descriptor-heal path so the write-once construction_version
 		// is set deliberately at creation rather than defaulted.
 		ConstructionVersion: int32(arkrpc.ConstructionVersionV1),
+
+		// An asset leaf's identity travels with the row: it is what
+		// keeps the carrier out of ordinary Bitcoin coin selection.
+		TaprootAssetRoot:   assetRoot,
+		TaprootAssetRef:    assetRef,
+		TaprootAssetAmount: assetAmount,
 	}, nil
 }
 
@@ -2161,3 +2181,16 @@ func (s *RoundPersistenceStore) ListRoundsPaginated(ctx context.Context,
 // Compile-time checks that RoundPersistenceStore implements the interfaces.
 var _ round.RoundStore = (*RoundPersistenceStore)(nil)
 var _ round.VTXOStore = (*RoundPersistenceStore)(nil)
+
+// encodeClientVTXOAssetMetadata maps a round leaf's asset identity onto
+// its nullable SQL columns. It exists at package scope because
+// domainVTXOToInsertParams shadows the vtxo package with its parameter.
+func encodeClientVTXOAssetMetadata(root *chainhash.Hash, ref string,
+	amount uint64) (sql.NullString, []byte, error) {
+
+	return encodeTaprootAssetMetadata(&vtxo.Descriptor{
+		TaprootAssetRoot:   root,
+		TaprootAssetRef:    ref,
+		TaprootAssetAmount: amount,
+	})
+}

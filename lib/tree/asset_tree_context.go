@@ -32,6 +32,12 @@ type AssetTreeContext struct {
 	// extraction (which clones nodes) and serialization.
 	amountsByInput map[wire.OutPoint]uint64
 
+	// leafRootsByInput holds the asset commitment root of the leaf VTXO
+	// each leaf node creates, keyed by that node's input outpoint. It is
+	// what a leaf owner needs to reproduce the composed output script it
+	// was paid to, and to record the VTXO as asset-bearing.
+	leafRootsByInput map[wire.OutPoint][]byte
+
 	// tweaksByInput holds the taproot signing tweak for the node
 	// transaction spending each outpoint: the parent output's combined
 	// tapscript root, committing to both the sweep leaf and the asset
@@ -54,10 +60,11 @@ type AssetTreeContext struct {
 // NewAssetTreeContext returns an empty asset tree context.
 func NewAssetTreeContext() *AssetTreeContext {
 	return &AssetTreeContext{
-		amountsByNode:   make(map[*Node]uint64),
-		amountsByInput:  make(map[wire.OutPoint]uint64),
-		tweaksByInput:   make(map[wire.OutPoint][]byte),
-		packagesByInput: make(map[wire.OutPoint][]byte),
+		amountsByNode:    make(map[*Node]uint64),
+		amountsByInput:   make(map[wire.OutPoint]uint64),
+		leafRootsByInput: make(map[wire.OutPoint][]byte),
+		tweaksByInput:    make(map[wire.OutPoint][]byte),
+		packagesByInput:  make(map[wire.OutPoint][]byte),
 	}
 }
 
@@ -164,4 +171,36 @@ func aggregateAssetAmounts(node *Node, leafAssets map[*Node]uint64,
 	ctx.SetNodeAssetAmount(node, total)
 
 	return total, nil
+}
+
+// SetLeafAssetRoot records the asset commitment root of the leaf VTXO
+// created by the node spending the given outpoint.
+func (c *AssetTreeContext) SetLeafAssetRoot(input wire.OutPoint, root []byte) {
+	if c == nil || len(root) == 0 {
+		return
+	}
+
+	c.leafRootsByInput[input] = append([]byte(nil), root...)
+}
+
+// LeafAssetRoot returns the asset commitment root of the leaf VTXO
+// created by the node spending the given outpoint, or nil when the node
+// is not an asset leaf.
+func (c *AssetTreeContext) LeafAssetRoot(input wire.OutPoint) []byte {
+	if c == nil {
+		return nil
+	}
+
+	return c.leafRootsByInput[input]
+}
+
+// LeafAssetRoot returns the asset commitment root of the leaf VTXO
+// created by the node spending the given outpoint, or nil when the tree
+// carries no asset context.
+func (t *Tree) LeafAssetRoot(input wire.OutPoint) []byte {
+	if t == nil {
+		return nil
+	}
+
+	return t.AssetContext.LeafAssetRoot(input)
 }
