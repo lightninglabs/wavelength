@@ -229,6 +229,20 @@ type Stoppable interface {
 	// context has a deadline for cleanup operations. Implementations should
 	// release resources and return promptly, respecting the context
 	// deadline to avoid blocking system shutdown.
+	//
+	// On a DurableActor it is ALSO called mid-life, once per supervised
+	// restart, and so may run more than once over the actor's lifetime.
+	// Two consequences follow. It must be idempotent, because a restart
+	// that then fails to carry itself out is a real path. And it must
+	// leave the behavior able to serve a new generation of messages: the
+	// restart reuses the same behavior instance and rebuilds its state
+	// from the checkpoint via the RestartMessage, so releasing a resource
+	// here means the behavior has to be willing to reacquire it, not
+	// assume it is being thrown away.
+	//
+	// A panic escaping OnStop is recovered rather than allowed to take the
+	// process down, since a restart calls it precisely when the behavior's
+	// invariants are known to be broken. It terminates the actor.
 	OnStop(ctx context.Context) error
 }
 

@@ -116,8 +116,38 @@ type DurableActorConfig[M TLVMessage, R any] struct {
 	MaxAttempts int
 
 	// CleanupTimeout specifies the maximum duration for OnStop cleanup.
+	// It also bounds the checkpoint reload and RestartMessage enqueue that
+	// a supervised restart performs.
 	// Default: 5 seconds.
 	CleanupTimeout time.Duration
+
+	// MaxRestarts is how many times the actor may be restarted from its
+	// checkpoint inside RestartWindow after its behavior panics. Once the
+	// budget is broken the actor terminates PERMANENTLY instead of
+	// restarting again.
+	//
+	// Zero normalizes to DefaultMaxRestarts, which is UnlimitedRestarts:
+	// by default a panicking actor restarts for as long as it keeps
+	// panicking. That is deliberate. Restarting forever is strictly no
+	// worse than the nack-and-continue loop supervision replaces, and both
+	// are rate-limited by the nack backoff, whereas a finite budget adds a
+	// failure mode the runtime did not have: the actor dies for good and
+	// keeps looking alive to anyone who is not watching.
+	//
+	// Setting a finite budget WITHOUT registering a Watch observer trades
+	// a crash loop for unobserved permanent death, which is usually the
+	// worse of the two. Set it only where the owner reacts to the
+	// TerminationRestartIntensityExceeded notification, and reach for
+	// RecommendedMaxRestarts when you do.
+	// Default: UnlimitedRestarts.
+	MaxRestarts int
+
+	// RestartWindow is the width of the sliding window over which
+	// MaxRestarts is counted. Restarts older than this age out, so an
+	// actor that panics once an hour restarts forever while one that
+	// panics five times in a minute is put down.
+	// Default: 60s.
+	RestartWindow time.Duration
 
 	// DeduplicationTTL is how long to keep processed message IDs for
 	// deduplication. Should exceed the maximum possible redelivery window.
@@ -215,6 +245,8 @@ func DefaultDurableActorConfig[M TLVMessage, R any](
 		CleanupTimeout:    5 * time.Second,
 		DeduplicationTTL:  24 * time.Hour,
 		NumWorkers:        1,
+		MaxRestarts:       DefaultMaxRestarts,
+		RestartWindow:     DefaultRestartWindow,
 	}
 }
 
@@ -305,6 +337,54 @@ type DurableActor[M TLVMessage, R any] struct {
 	// at construction.
 	numWorkers int
 
+	// codec serializes messages. The supervision path needs it to encode
+	// the RestartMessage it enqueues when restarting from a checkpoint.
+	codec *MessageCodec
+
+	// restarts enforces the restart intensity budget. It is owned by the
+	// supervision goroutine.
+	restarts *restartTracker
+
+	// stopHookRun records that the behavior's OnStop hook has already run
+	// for the current behavior generation, so a restart that stops the
+	// behavior and then fails does not stop it a second time on the way
+	// out. Supervision clears it when a new generation starts. It is owned
+	// by the supervision goroutine.
+	stopHookRun bool
+
+	// lastRestartMsgID is the mailbox row ID of the RestartMessage this
+	// supervisor enqueued most recently. The next restart deletes it
+	// before enqueueing a fresh one, so a run of restarts leaves at most
+	// one restart row behind rather than one per restart. It is owned by
+	// the supervision goroutine.
+	lastRestartMsgID string
+
+	// restartPending records that the restart path enqueued a
+	// RestartMessage for the generation about to start, which lets a
+	// worker pool hold its warm-up barrier for that row unconditionally
+	// rather than guessing at it. It is owned by the supervision
+	// goroutine and consumed when the generation starts.
+	restartPending bool
+
+	// supervisionMu guards runCancel and pendingPanic, both of which are
+	// written by a worker goroutine and read by the supervision goroutine.
+	supervisionMu sync.Mutex
+
+	// runCancel cancels the current generation of worker loops. Restart
+	// works by cancelling it (which drains every worker) rather than by
+	// cancelling the actor's lifetime context, so the mailbox, ID and Ref
+	// survive untouched across a restart.
+	runCancel context.CancelFunc
+
+	// pendingPanic holds the panic that a worker recovered and that
+	// supervision has not yet acted on. Only the first panic of a
+	// generation is retained: the rest of the workers are being torn down
+	// anyway, and one restart answers all of them.
+	pendingPanic error
+
+	// watchers holds the registered termination watchers.
+	watchers *watcherRegistry
+
 	// startOnce ensures the actor's processing loop starts only once.
 	startOnce sync.Once
 
@@ -313,6 +393,11 @@ type DurableActor[M TLVMessage, R any] struct {
 
 	// started records whether Start has launched the processing loop.
 	started atomic.Bool
+
+	// stopRequested records whether Stop was called, which is what lets
+	// supervision report a graceful termination apart from a lifetime
+	// context that was cancelled from elsewhere.
+	stopRequested atomic.Bool
 
 	// done closes once the processing loop has exited.
 	done chan struct{}
@@ -473,6 +558,16 @@ func NewDurableActor[M TLVMessage, R any](
 	mailboxCfg.SingleWorkerLeaseless = numWorkers == 1 &&
 		cfg.Behavior.IsRight()
 
+	// Resolve the restart intensity budget. A zero MaxRestarts is "unset"
+	// and normalizes to DefaultMaxRestarts, which is UnlimitedRestarts: a
+	// finite budget kills the actor permanently, so it is opt-in for
+	// owners that watch for the event rather than something a config
+	// inherits by omission.
+	maxRestarts := cfg.MaxRestarts
+	if maxRestarts == 0 {
+		maxRestarts = DefaultMaxRestarts
+	}
+
 	actor := &DurableActor[M, R]{
 		id:                cfg.ID,
 		behavior:          cfg.Behavior,
@@ -489,7 +584,15 @@ func NewDurableActor[M TLVMessage, R any](
 		cleanupTimeout:    cfg.CleanupTimeout,
 		deduplicationTTL:  deduplicationTTL,
 		numWorkers:        numWorkers,
-		done:              make(chan struct{}),
+		codec:             cfg.Codec,
+		restarts: newRestartTracker(
+			maxRestarts, cfg.RestartWindow,
+			cfg.Clock.UnwrapOr(
+				clock.NewDefaultClock(),
+			),
+		),
+		watchers: newWatcherRegistry(),
+		done:     make(chan struct{}),
 	}
 
 	// Create and cache the actor's reference.
@@ -500,7 +603,9 @@ func NewDurableActor[M TLVMessage, R any](
 	return fn.Ok(actor)
 }
 
-// Start initiates the actor's message processing loops.
+// Start initiates the actor's message processing loops. It is idempotent: only
+// the first call launches the supervision goroutine, and a supervised restart
+// deliberately does not go back through it.
 func (a *DurableActor[M, R]) Start() {
 	a.startOnce.Do(func() {
 		a.started.Store(true)
@@ -514,41 +619,374 @@ func (a *DurableActor[M, R]) Start() {
 			a.wg.Add(1)
 		}
 
-		// Launch numWorkers competing lease loops over the one shared
-		// mailbox. With numWorkers == 1 this is the historical
-		// single-loop behavior. A supervisor goroutine joins them and
-		// runs teardown once, so the actor's done / Wg / Stoppable
-		// semantics are unchanged regardless of the worker count.
-		var workers sync.WaitGroup
-		for i := 0; i < a.numWorkers; i++ {
-			workers.Add(1)
-
-			go a.worker(&workers)
-		}
-
-		go func() {
-			workers.Wait()
-			a.teardown()
-
-			if a.wg != nil {
-				a.wg.Done()
-			}
-
-			close(a.done)
-		}()
+		go a.supervise()
 	})
 }
 
+// supervise owns the actor's worker generations. It runs one generation of
+// numWorkers lease loops at a time and joins them; when a generation ends
+// because the behavior panicked, it restarts the actor from its persisted
+// checkpoint and runs a fresh generation, and when a generation ends for any
+// other reason (or the restart budget is spent) it tears the actor down and
+// publishes the termination notification.
+//
+// The restart deliberately bypasses the Once-guarded Start and Stop. Those
+// guard the actor's public lifecycle, which a restart does not touch: the ID,
+// the mailbox, and the Ref are the same objects afterwards, so callers holding
+// an ActorRef never observe the restart beyond a pause in processing.
+//
+// In-flight Ask promises do not survive a restart as pending work, and they
+// are not silently dropped either. The panicking turn's own promise is
+// completed with the panic error by the normal result handling before the
+// restart is requested. A sibling worker's turn sees its generation context
+// cancelled, returns a context error, and has its promise completed with that
+// error; its durable bookkeeping still runs on a detached context. A message
+// that had not yet been handed to the behavior is simply redelivered after the
+// restart, and because the mailbox's promise registry lives on the mailbox
+// (which the restart does not touch), its caller still gets the eventual
+// result. DurableAsk responses are unaffected: they travel through the outbox,
+// so a restart just delays them.
+func (a *DurableActor[M, R]) supervise() {
+	var info TerminationInfo
+
+	for {
+		// Each generation gets its own context, derived from the
+		// actor's lifetime context. Cancelling it drains every worker
+		// without terminating the mailbox, which is what lets senders
+		// keep enqueueing across the restart gap.
+		runCtx, runCancel := context.WithCancel(a.ctx)
+		a.setRunCancel(runCancel)
+
+		// A new generation gets a fresh behavior teardown budget: the
+		// hook may run once more before this generation is finished
+		// with, either for a restart or for the terminal teardown.
+		a.stopHookRun = false
+
+		// A pool warms up one worker at a time. Launching the whole
+		// pool at once would let one worker take the generation's
+		// RestartMessage while a sibling takes the row behind it, so a
+		// normal turn could run against the behavior while the restart
+		// handler was still rebuilding it. RestartPriority orders the
+		// claims but not the turns, so the ordering guarantee needs
+		// this barrier to actually hold. A single-worker actor is
+		// already strictly sequential, so it gets a nil barrier and
+		// the identical code path with nothing to pay for.
+		var workers sync.WaitGroup
+		workers.Add(a.numWorkers)
+
+		// restartPending is set by the restart path, which enqueued the
+		// row itself and can therefore hold the barrier for it
+		// unconditionally. A boot generation cannot: the owner
+		// prepends that row before Start, so the actor never sees it
+		// and the barrier falls back to ordering the first claim.
+		barrier := newWarmupBarrier(
+			a.numWorkers > 1, a.restartPending,
+		)
+		a.restartPending = false
+
+		go a.worker(runCtx, &workers, barrier)
+
+		// The idle window is the mailbox's own poll floor, so a
+		// generation that starts against an empty mailbox fans out on
+		// the same cadence the mailbox already polls at rather than
+		// introducing a second timing knob.
+		barrier.wait(runCtx, a.mailbox.cfg.PollInterval)
+
+		// The rest of the pool always launches, even when the barrier
+		// was released by cancellation: they exit immediately against
+		// the done context, and launching unconditionally keeps the
+		// WaitGroup count honest.
+		for i := 1; i < a.numWorkers; i++ {
+			go a.worker(runCtx, &workers, nil)
+		}
+
+		workers.Wait()
+
+		// Every worker of this generation is gone. Release the
+		// generation context before deciding what happens next.
+		runCancel()
+		a.setRunCancel(nil)
+
+		done, terminal := a.superviseGeneration()
+		if done {
+			info = terminal
+
+			break
+		}
+	}
+
+	// The actor is finished either way, so cancel the lifetime context
+	// before tearing down. On the graceful path Stop already did this; on
+	// a terminal failure it is what makes further sends fail fast instead
+	// of piling up in a mailbox nothing will ever drain.
+	a.cancel()
+
+	a.teardown()
+	a.publishTermination(info)
+
+	if a.wg != nil {
+		a.wg.Done()
+	}
+
+	close(a.done)
+}
+
+// superviseGeneration decides what happens after a worker generation has
+// fully drained. It reports whether the actor is finished (along with the
+// termination info to publish) or whether supervision should run another
+// generation.
+func (a *DurableActor[M, R]) superviseGeneration() (bool, TerminationInfo) {
+	panicErr := a.takePendingPanic()
+
+	// A generation that ended without a panic ended because the actor's
+	// lifetime context was cancelled, which is the graceful path. The same
+	// holds for a panic that raced a Stop: the actor is going away, so
+	// there is nothing to restart into.
+	if panicErr == nil || a.ctx.Err() != nil {
+		return true, a.terminationInfo(TerminationStopped, nil)
+	}
+
+	// The behavior panicked. Spend a unit of restart budget before doing
+	// any restart work, so a finite budget bounds every flavour of restart
+	// below, including the degraded one.
+	if !a.restarts.record() {
+		logger(a.ctx).ErrorS(a.ctx, "Durable actor exceeded restart "+
+			"intensity, terminating",
+			panicErr,
+			"actor_id", a.id,
+			"restarts", a.restarts.count(),
+		)
+
+		return true, a.terminationInfo(
+			TerminationRestartIntensityExceeded, panicErr,
+		)
+	}
+
+	// An actor whose codec never registered the RestartMessage cannot be
+	// handed its checkpoint back, and the full restart would then be
+	// strictly WORSE than what it replaces: a mid-life OnStop against a
+	// behavior instance that is reused anyway, with no state rebuild to
+	// show for it. Degrade to cycling the worker generation and leave the
+	// behavior alone. We check this before the teardown, not after, so the
+	// degraded path never pays the OnStop it cannot benefit from.
+	if !a.codec.Supports(RestartTLVType) {
+		logger(a.ctx).WarnS(a.ctx, "Cycling durable actor workers "+
+			"without checkpoint restore: codec has no "+
+			"RestartMessage",
+			panicErr,
+			"actor_id", a.id,
+			"restarts", a.restarts.count(),
+		)
+
+		return false, TerminationInfo{}
+	}
+
+	// Tear the panicking behavior down so it can release whatever it was
+	// holding, then re-run the startup path: the persisted checkpoint is
+	// reloaded and a RestartMessage is enqueued at RestartPriority,
+	// exactly as a process restart would do.
+	if err := a.runStopHook(); err != nil {
+		logger(a.ctx).ErrorS(a.ctx, "Durable actor cleanup panicked "+
+			"during restart, terminating",
+			err,
+			"actor_id", a.id,
+			"restarts", a.restarts.count(),
+		)
+
+		return true, a.terminationInfo(TerminationRestartFailed, err)
+	}
+
+	if err := a.restartFromCheckpoint(); err != nil {
+		// A restart that races Stop fails here on a cancelled or closed
+		// store. That is the graceful path, not a supervision failure.
+		if a.ctx.Err() != nil {
+			return true, a.terminationInfo(
+				TerminationStopped, nil,
+			)
+		}
+
+		logger(a.ctx).ErrorS(a.ctx, "Durable actor restart failed, "+
+			"terminating",
+			err,
+			"actor_id", a.id,
+			"restarts", a.restarts.count(),
+		)
+
+		return true, a.terminationInfo(TerminationRestartFailed, err)
+	}
+
+	logger(a.ctx).InfoS(a.ctx, "Restarted durable actor from checkpoint",
+		"actor_id", a.id,
+		"restarts", a.restarts.count(),
+		"reason", panicErr.Error(),
+	)
+
+	return false, TerminationInfo{}
+}
+
+// terminationInfo builds the notification published to watchers for the given
+// reason and failure.
+func (a *DurableActor[M, R]) terminationInfo(reason TerminationReason,
+	err error) TerminationInfo {
+
+	// Stop is what normally ends the actor. A lifetime context that went
+	// away without a Stop call is reported separately so a watcher can
+	// tell an orderly shutdown from one imposed from outside.
+	//
+	// Two caveats worth stating rather than pretending away. First,
+	// TerminationContextCancelled is currently unreachable: the lifetime
+	// context is rooted at context.Background and Stop is the only thing
+	// that cancels it, so the reason exists for the construction path that
+	// takes an externally owned context and would otherwise have no way to
+	// report itself. Second, this read of stopRequested is not ordered
+	// against a concurrent Stop, so a Stop landing in the same instant as
+	// an unrelated exit can be reported either way. Both readings describe
+	// the same event (the actor was shut down rather than failed), so the
+	// ambiguity costs a watcher nothing.
+	if reason == TerminationStopped && !a.stopRequested.Load() {
+		reason = TerminationContextCancelled
+	}
+
+	exhausted := reason == TerminationRestartIntensityExceeded
+
+	return TerminationInfo{
+		ActorID:           a.id,
+		Reason:            reason,
+		Err:               err,
+		Restarts:          a.restarts.count(),
+		RestartsExhausted: exhausted,
+	}
+}
+
+// setRunCancel publishes the current generation's cancel function so a worker
+// that recovers a panic can drain the whole generation.
+func (a *DurableActor[M, R]) setRunCancel(cancel context.CancelFunc) {
+	a.supervisionMu.Lock()
+	defer a.supervisionMu.Unlock()
+
+	a.runCancel = cancel
+}
+
+// requestRestart records a recovered behavior panic and cancels the current
+// worker generation so supervision can restart the actor from its checkpoint.
+// It never blocks: the only work it does is a short critical section plus a
+// context cancellation, so a worker calling it on its way out cannot park.
+func (a *DurableActor[M, R]) requestRestart(panicErr error) {
+	a.supervisionMu.Lock()
+
+	// Keep only the first panic of the generation. The other workers are
+	// being torn down regardless, and one restart answers all of them.
+	if a.pendingPanic == nil {
+		a.pendingPanic = panicErr
+	}
+	cancel := a.runCancel
+
+	a.supervisionMu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
+}
+
+// takePendingPanic returns and clears the panic recorded for the generation
+// that just ended, or nil when the generation ended for another reason.
+func (a *DurableActor[M, R]) takePendingPanic() error {
+	a.supervisionMu.Lock()
+	defer a.supervisionMu.Unlock()
+
+	panicErr := a.pendingPanic
+	a.pendingPanic = nil
+
+	return panicErr
+}
+
+// restartFromCheckpoint re-runs the durable actor's startup path against the
+// persisted state: it reloads the FSM checkpoint and prepends a RestartMessage
+// at RestartPriority so the behavior rebuilds its in-memory state from the
+// checkpoint before it sees any other message. This is the same pair of steps
+// an owner performs when booting the actor for the first time, which is why
+// the restart needs no cooperation from the behavior beyond its existing
+// RestartMessage handling.
+//
+// The work runs on a detached, bounded context so a Stop landing mid-restart
+// cannot leave the mailbox without its restart message; the next generation
+// notices the cancelled lifetime context and exits gracefully instead.
+func (a *DurableActor[M, R]) restartFromCheckpoint() error {
+	ctx, cancel := context.WithTimeout(
+		context.WithoutCancel(a.ctx), a.cleanupTimeout,
+	)
+	defer cancel()
+
+	// Drop the restart row this supervisor enqueued last time round if it
+	// is somehow still pending, so a run of restarts leaves at most one
+	// restart row in the mailbox rather than one per restart. A row that
+	// was already consumed makes this a harmless no-op, and a failure here
+	// is not worth failing the restart over: the worst case is the extra
+	// row we were trying to avoid.
+	if a.lastRestartMsgID != "" {
+		if err := a.store.DeleteMessage(
+			ctx, a.lastRestartMsgID,
+		); err != nil {
+
+			logger(a.ctx).WarnS(a.ctx, "Failed to drop stale "+
+				"restart message",
+				err,
+				"actor_id", a.id,
+				"delivery_id", a.lastRestartMsgID)
+		}
+
+		a.lastRestartMsgID = ""
+	}
+
+	checkpoint, err := a.store.LoadCheckpoint(ctx, a.id)
+	if err != nil {
+		return fmt.Errorf("load checkpoint: %w", err)
+	}
+
+	id, err := PrependRestartMessageWithID(
+		ctx, a.store, a.codec, a.id, checkpoint,
+	)
+	if err != nil {
+		return fmt.Errorf("prepend restart message: %w", err)
+	}
+	a.lastRestartMsgID = id
+
+	// The next generation now has a restart row waiting for it, which is
+	// what lets a pool hold its warm-up barrier for that row rather than
+	// inferring one from the first claim.
+	a.restartPending = true
+
+	return nil
+}
+
 // worker runs a single lease loop, draining deliveries from the shared mailbox
-// until the actor context is cancelled. When the actor runs more than one
+// until the generation context is cancelled. When the actor runs more than one
 // worker they compete for distinct messages via the store's lease, so
 // independent messages process in parallel; the per-correlation-key FIFO claim
 // keeps same-key messages ordered across workers.
-func (a *DurableActor[M, R]) worker(wg *sync.WaitGroup) {
+//
+// A behavior panic ends the worker: the delivery's ack/nack bookkeeping has
+// already run by then, and the worker hands the panic to supervision, which
+// drains its siblings and restarts the actor from its checkpoint rather than
+// letting further messages run against in-memory state the panic may have
+// corrupted.
+//
+// A non-nil warmup marks this as the generation's warm-up worker, the one the
+// rest of a pool waits behind. It holds the barrier across a RestartMessage
+// turn and opens it for anything else, so a checkpoint hand-off completes
+// before any sibling can run a normal turn against the same behavior.
+func (a *DurableActor[M, R]) worker(ctx context.Context, wg *sync.WaitGroup,
+	warmup *warmupBarrier) {
+
 	defer wg.Done()
 
+	// Whatever ends this worker, the rest of the pool must not stay parked
+	// behind it. A panic, a closed mailbox, and a cancelled generation all
+	// land here.
+	defer warmup.open()
+
 	// Process messages from the durable mailbox.
-	for env := range a.mailbox.Receive(a.ctx) {
+	for env := range a.mailbox.Receive(ctx) {
 		// Extract the Delivery from the envelope. For DurableMailbox,
 		// the delivery is passed directly in env.delivery, eliminating
 		// the need for a global map lookup.
@@ -556,7 +994,7 @@ func (a *DurableActor[M, R]) worker(wg *sync.WaitGroup) {
 		if !ok || delivery == nil {
 			// This shouldn't happen for properly configured durable
 			// actors, but handle gracefully.
-			logger(a.ctx).WarnS(a.ctx, "No delivery found in "+
+			logger(ctx).WarnS(ctx, "No delivery found in "+
 				"envelope", nil,
 				"actor_id", a.id,
 				"msg_type", env.message.MessageType())
@@ -564,13 +1002,40 @@ func (a *DurableActor[M, R]) worker(wg *sync.WaitGroup) {
 			continue
 		}
 
-		a.processDelivery(delivery)
+		// Recording the claim is what tells the barrier's idle tick
+		// that a hand-off is in progress rather than absent.
+		warmup.noteClaim()
+
+		// The pool waits behind a restart turn and nothing else. A
+		// first claim of any other message proves this generation had
+		// no hand-off waiting, since RestartPriority would have won
+		// the claim, so the pool fans out before that message is even
+		// processed rather than serializing behind it.
+		restart := isRestartDelivery(delivery)
+		if !restart {
+			warmup.open()
+		}
+
+		panicErr := a.processDelivery(ctx, delivery)
+
+		// The hand-off is resolved either way: the restore committed,
+		// failed and dead-lettered, or panicked. All three release the
+		// pool.
+		if restart {
+			warmup.open()
+		}
+
+		if panicErr != nil {
+			a.requestRestart(panicErr)
+
+			return
+		}
 	}
 }
 
 // teardown closes the mailbox and runs the Stoppable cleanup hook exactly once,
-// after every worker loop has exited. The supervisor goroutine started in Start
-// invokes it before signaling done.
+// after the last worker generation has exited. The supervision goroutine
+// invokes it before publishing the termination notification.
 func (a *DurableActor[M, R]) teardown() {
 	// The actor's context has been cancelled and all workers have exited.
 	// Close the mailbox.
@@ -579,9 +1044,54 @@ func (a *DurableActor[M, R]) teardown() {
 	// For durable mailboxes, we don't drain to DLO since messages persist
 	// in the database and will be picked up on restart.
 
-	// If a classic behavior implements Stoppable, call OnStop. The
-	// Read/Commit (Right) path has no Stoppable hook of its own; its owner
-	// manages cleanup.
+	// A restart that tore the behavior down and then failed already ran the
+	// hook for this generation, so runStopHook is a no-op there rather than
+	// a second OnStop for one teardown.
+	_ = a.runStopHook()
+
+	logger(a.ctx).DebugS(a.ctx, "Durable actor terminated",
+		"actor_id", a.id,
+	)
+}
+
+// runStopHook calls the behavior's OnStop cleanup hook when it implements
+// Stoppable, bounded by the configured cleanup timeout. Both the final
+// teardown and a supervised restart run it: a restart is a behavior teardown
+// followed by a checkpoint-driven rebuild, so the behavior gets the same
+// chance to release resources it would get on a real stop.
+//
+// It is idempotent per behavior generation. A restart that runs the hook and
+// then fails to carry the restart out falls through to the terminal teardown,
+// and the behavior must not be stopped twice for the one teardown; supervision
+// clears the flag when it starts a new generation.
+//
+// The hook runs with panic recovery, and returns the recovered panic when it
+// panics. That matters more here than it looks: on the restart path OnStop is
+// invoked precisely when the behavior's invariants are known to be broken, so
+// a cleanup that trips over the same corrupt state is a realistic outcome and
+// must not take the process down with it.
+func (a *DurableActor[M, R]) runStopHook() (hookErr error) {
+	if a.stopHookRun {
+		return nil
+	}
+	a.stopHookRun = true
+
+	defer func() {
+		if r := recover(); r != nil {
+			err := newBehaviorPanic(r)
+
+			logger(a.ctx).ErrorS(a.ctx, "Panic during durable "+
+				"actor cleanup",
+				err,
+				"actor_id", a.id,
+				"stack", string(err.Stack()))
+
+			hookErr = err
+		}
+	}()
+
+	// The Read/Commit (Right) path has no Stoppable hook of its own; its
+	// owner manages cleanup.
 	a.behavior.WhenLeft(func(b ActorBehavior[M, R]) {
 		stoppable, ok := b.(Stoppable)
 		if !ok {
@@ -599,18 +1109,84 @@ func (a *DurableActor[M, R]) teardown() {
 		}
 	})
 
-	logger(a.ctx).DebugS(a.ctx, "Durable actor terminated",
+	return nil
+}
+
+// publishTermination delivers the terminal notification to every registered
+// watcher. Delivery is non-blocking by construction (one buffered value per
+// single-use channel), so a watcher that never reads cannot hold up the
+// actor's shutdown.
+func (a *DurableActor[M, R]) publishTermination(info TerminationInfo) {
+	if !a.watchers.publish(info) {
+		return
+	}
+
+	logger(a.ctx).DebugS(a.ctx, "Published durable actor termination",
 		"actor_id", a.id,
+		"reason", info.Reason.String(),
+		"restarts", info.Restarts,
 	)
+}
+
+// Watch registers interest in the actor's terminal lifecycle event and returns
+// a channel that receives exactly one TerminationInfo and is then closed. The
+// channel is buffered and written once, so the actor's shutdown path never
+// blocks on a watcher that is slow or gone.
+//
+// Registering after the actor has already terminated returns a channel that is
+// already loaded with the notification, so there is no race between Watch and
+// the actor stopping. Cancelling ctx deregisters the watcher and closes the
+// channel without a notification, which is how a caller that lost interest
+// releases its registration.
+//
+// The notification is published when the supervision loop exits, or by Stop
+// for an actor that was never started. An actor that is neither started nor
+// stopped never publishes one and a watcher on it waits forever, so pass a
+// cancellable ctx if that is a state your caller can reach.
+func (a *DurableActor[M, R]) Watch(ctx context.Context) <-chan TerminationInfo {
+	ch, id, terminated := a.watchers.add()
+	if terminated {
+		return ch
+	}
+
+	// Deregister the watcher if the caller's context goes away first. The
+	// goroutine retires on the publish rather than on the actor's done
+	// channel, so it does not outlive an actor that is stopped without
+	// ever having been started, whose done channel never closes.
+	if cancelled := ctx.Done(); cancelled != nil {
+		published := a.watchers.done()
+
+		go func() {
+			select {
+			case <-cancelled:
+				a.watchers.remove(id)
+
+			case <-published:
+			}
+		}()
+	}
+
+	return ch
 }
 
 // processDelivery handles a single message delivery with deduplication,
 // transaction wrapping, panic recovery, lease heartbeating, and automatic
-// ack/nack based on result.
-func (a *DurableActor[M, R]) processDelivery(delivery *Delivery[M, R]) {
+// ack/nack based on result. The ctx is the calling worker's generation
+// context, so a supervised restart interrupts in-flight processing.
+//
+// It returns the recovered panic when the behavior panicked, and nil in every
+// other case, including a behavior that merely returned a failed result. All
+// of the delivery's ack, nack, and dead-letter bookkeeping has already run by
+// the time a panic is returned, so the poison message has burned an attempt
+// before supervision restarts the actor. That ordering is what keeps a
+// deterministic poison message climbing toward max_attempts and the dead
+// letter queue instead of restarting the actor forever.
+func (a *DurableActor[M, R]) processDelivery(ctx context.Context,
+	delivery *Delivery[M, R]) error {
+
 	// Create a context for processing. Ask/DurableAsk messages merge the
-	// actor and caller contexts so request deadlines can still interrupt
-	// synchronous work. Tell messages use only the actor context, matching
+	// worker and caller contexts so request deadlines can still interrupt
+	// synchronous work. Tell messages use only the worker context, matching
 	// non-durable actor semantics: once a fire-and-forget message is
 	// durably enqueued, later caller cancellation must not cancel
 	// processing.
@@ -620,9 +1196,9 @@ func (a *DurableActor[M, R]) processDelivery(delivery *Delivery[M, R]) {
 	if delivery.CallerCtx != nil &&
 		(delivery.IsAsk() || delivery.IsDurableAsk()) {
 
-		processCtx, cancel = mergeContexts(a.ctx, delivery.CallerCtx)
+		processCtx, cancel = mergeContexts(ctx, delivery.CallerCtx)
 	} else {
-		processCtx = a.ctx
+		processCtx = ctx
 		cancel = func() {}
 	}
 	defer cancel()
@@ -664,7 +1240,7 @@ func (a *DurableActor[M, R]) processDelivery(delivery *Delivery[M, R]) {
 				"duplicate", err,
 				"delivery_id", delivery.ID)
 
-			return
+			return nil
 		}
 		if rows == 0 {
 			// A zero-row ack means the row was not deleted. On the
@@ -688,35 +1264,62 @@ func (a *DurableActor[M, R]) processDelivery(delivery *Delivery[M, R]) {
 			}
 		}
 
-		return
+		return nil
 	}
 
 	// If the actor opted into the Read/Commit execution path (a Right
 	// behavior), drive it through the Exec handle. Construction guarantees
 	// a tx-aware store is present in this case.
 	if a.behavior.IsRight() {
-		a.processWithExec(
+		return a.processWithExec(
 			processCtx, delivery,
 			a.behavior.RightToSome().UnsafeFromSome(),
 		)
-
-		return
 	}
 
 	// If we have a transaction-aware store, wrap processing in a
 	// transaction.
 	if a.txAwareStore != nil {
-		a.processInTransaction(processCtx, delivery)
-	} else {
-		a.processWithoutTransaction(processCtx, delivery)
+		return a.processInTransaction(processCtx, delivery)
 	}
+
+	return a.processWithoutTransaction(processCtx, delivery)
+}
+
+// isRestartDelivery reports whether the delivery carries a RestartMessage,
+// which the runtime must never nack for retry.
+//
+// A restart message is enqueued with MaxAttempts 1 so it is delivered exactly
+// once. Nacking one would leave a row whose attempts already equal its
+// max_attempts: the claim query will not lease it again, and nothing will ever
+// dead-letter it either, so it strands in the mailbox forever. Under a
+// restart-forever budget a behavior that keeps failing its restore would
+// accumulate one stranded row per restart. Dead-lettering a failed restart
+// instead is both terminal and visible, at the price of making restore
+// handlers responsible for their own idempotency, which
+// PrependRestartMessageWithID documents.
+func isRestartDelivery[M TLVMessage, R any](delivery *Delivery[M, R]) bool {
+	return IsRestartMessage(delivery.Message)
+}
+
+// panicFrom extracts the recovered behavior panic from a result, or nil when
+// the result did not come from a panic. It is the single place the runtime
+// decides "this failure means the behavior's in-memory state is suspect".
+func panicFrom[R any](result fn.Result[R]) error {
+	err := result.Err()
+	if err == nil || !isBehaviorPanic(err) {
+		return nil
+	}
+
+	return err
 }
 
 // processInTransaction wraps message processing in a database transaction.
 // All FSM state changes, outbox writes, and deduplication marks happen
-// atomically within this transaction.
+// atomically within this transaction. It returns the recovered panic when the
+// behavior panicked, after the transaction's ack/nack bookkeeping has run.
 func (a *DurableActor[M, R]) processInTransaction(ctx context.Context,
-	delivery *Delivery[M, R]) {
+	delivery *Delivery[M, R]) error {
 
 	// Capture the behavior result so we can complete the in-memory
 	// promise only after the transaction commits successfully. This
@@ -735,6 +1338,18 @@ func (a *DurableActor[M, R]) processInTransaction(ctx context.Context,
 		// Execute behavior with panic recovery.
 		behaviorResult = a.executeBehaviorSafely(txCtx, delivery)
 
+		// The classic path wraps the WHOLE Receive in this one
+		// transaction, so a behavior that panicked half way through
+		// left its own partial writes sitting in it. Committing those
+		// alongside the nack would persist exactly the torn state the
+		// restart is supposed to escape, and the checkpoint reload
+		// would hand it straight back. Return the panic instead, which
+		// rolls the transaction back; the message's own ack/nack
+		// bookkeeping is redone below outside it.
+		if panicErr := panicFrom(behaviorResult); panicErr != nil {
+			return panicErr
+		}
+
 		// Handle the result within the transaction. This determines
 		// whether to ack, nack for retry, or dead-letter. We only mark
 		// as processed if we're not going to retry - otherwise the
@@ -743,6 +1358,28 @@ func (a *DurableActor[M, R]) processInTransaction(ctx context.Context,
 			txCtx, delivery, behaviorResult, store,
 		)
 	})
+
+	// The behavior panicked and its writes rolled back with the
+	// transaction, so nothing was acked, nacked, or dead-lettered inside
+	// it. Run that bookkeeping now on finishNonTx's detached, bounded
+	// context, which is what keeps the poison message burning an attempt
+	// (and eventually dead-lettering) even though the turn persisted
+	// nothing. The promise is no longer deferred because there is no
+	// commit left to wait for: the result is an error either way.
+	if panicErr := panicFrom(behaviorResult); panicErr != nil {
+		logger(ctx).WarnS(ctx,
+			"Rolled back a panicking turn, nacking message",
+			panicErr,
+			"actor_id", a.id,
+			"delivery_id", delivery.ID,
+			"msg_type", delivery.Message.MessageType(),
+		)
+
+		delivery.deferPromise = false
+		a.finishNonTx(ctx, delivery, behaviorResult)
+
+		return panicErr
+	}
 
 	if err != nil {
 		logger(ctx).WarnS(ctx,
@@ -753,9 +1390,17 @@ func (a *DurableActor[M, R]) processInTransaction(ctx context.Context,
 			"msg_type", delivery.Message.MessageType(),
 		)
 
-		// Transaction failed - Nack for retry.
+		// Transaction failed - Nack for retry. The nack is a durable
+		// write that must land even if the actor context is cancelled
+		// mid-failure, so it runs detached and bounded exactly as
+		// finishNonTx's bookkeeping does.
+		nackCtx, cancelNack := context.WithTimeout(
+			context.WithoutCancel(ctx), a.cleanupTimeout,
+		)
+		defer cancelNack()
+
 		if nackErr := delivery.Nack(
-			ctx, err, 10*time.Second,
+			nackCtx, err, 10*time.Second,
 		); nackErr != nil {
 
 			logger(ctx).WarnS(ctx, "Failed to nack after tx failure",
@@ -763,7 +1408,7 @@ func (a *DurableActor[M, R]) processInTransaction(ctx context.Context,
 				"delivery_id", delivery.ID)
 		}
 
-		return
+		return nil
 	}
 
 	// Transaction committed -- now it is safe to complete the
@@ -771,12 +1416,15 @@ func (a *DurableActor[M, R]) processInTransaction(ctx context.Context,
 	if delivery.IsAsk() && delivery.Promise != nil {
 		delivery.Promise.Complete(behaviorResult)
 	}
+
+	return panicFrom(behaviorResult)
 }
 
 // processWithoutTransaction handles message processing when no transaction
-// support is available.
+// support is available. It returns the recovered panic when the behavior
+// panicked, after the ack/nack bookkeeping has run.
 func (a *DurableActor[M, R]) processWithoutTransaction(ctx context.Context,
-	delivery *Delivery[M, R]) {
+	delivery *Delivery[M, R]) error {
 
 	// Start the heartbeat goroutine for lease extension.
 	heartbeatDone := make(chan struct{})
@@ -788,6 +1436,8 @@ func (a *DurableActor[M, R]) processWithoutTransaction(ctx context.Context,
 
 	// Hand the result to the shared non-transactional ack/nack bookkeeping.
 	a.finishNonTx(ctx, delivery, result)
+
+	return panicFrom(result)
 }
 
 // finishNonTx applies ack/nack/dead-letter bookkeeping for a result that was
@@ -873,9 +1523,10 @@ func (a *DurableActor[M, R]) finishNonTx(ctx context.Context,
 // The behavior does any slow side-effect IO without holding the writer, then
 // commits state plus the lease-fenced ack in one short transaction. A lease
 // heartbeat runs for the duration so a long IO middle does not let the lease
-// expire underneath an in-progress Commit.
+// expire underneath an in-progress Commit. It returns the recovered panic when
+// the behavior panicked, after the ack/nack bookkeeping has run.
 func (a *DurableActor[M, R]) processWithExec(ctx context.Context,
-	delivery *Delivery[M, R], tb BoundTxBehavior[M, R]) {
+	delivery *Delivery[M, R], tb BoundTxBehavior[M, R]) error {
 
 	// The Read/Commit execution path does not yet support DurableAsk. On
 	// this path the message is acked inside the behavior's own Commit, so
@@ -887,7 +1538,7 @@ func (a *DurableActor[M, R]) processWithExec(ctx context.Context,
 	if delivery.IsDurableAsk() {
 		a.rejectDurableAskOnExecPath(ctx, delivery)
 
-		return
+		return nil
 	}
 
 	// Extend the lease while the behavior does IO outside the writer tx.
@@ -949,7 +1600,7 @@ func (a *DurableActor[M, R]) processWithExec(ctx context.Context,
 			delivery.Promise.Complete(result)
 		}
 
-		return
+		return panicFrom(result)
 	}
 
 	// The behavior returned without committing: it either failed before
@@ -969,6 +1620,8 @@ func (a *DurableActor[M, R]) processWithExec(ctx context.Context,
 	// the success path you MUST call ax.Commit (even with an empty closure,
 	// as the serverconn egress sender does) to get the lease fence.
 	a.finishNonTx(ctx, delivery, result)
+
+	return panicFrom(result)
 }
 
 // rejectDurableAskOnExecPath fails a DurableAsk delivered to a Read/Commit
@@ -1045,20 +1698,24 @@ func (a *DurableActor[M, R]) rejectDurableAskOnExecPath(ctx context.Context,
 }
 
 // runExecSafely runs a TxBehavior with panic recovery, converting a panic into
-// an error result so the caller treats it as a non-committed failure.
+// an error result so the caller treats it as a non-committed failure. The
+// error is a behaviorPanic rather than a plain error, which is what tells the
+// worker to hand the failure to supervision for a restart instead of letting
+// the next message run against state the panic may have corrupted.
 func (a *DurableActor[M, R]) runExecSafely(ctx context.Context,
 	delivery *Delivery[M, R], tb BoundTxBehavior[M, R], core *execCore) (
 	result fn.Result[R]) {
 
 	defer func() {
 		if r := recover(); r != nil {
-			err := fmt.Errorf("panic: %v", r)
+			err := newBehaviorPanic(r)
 
 			logger(ctx).ErrorS(ctx, "Panic during tx message "+
 				"processing",
 				err,
 				"actor_id", a.id,
-				"delivery_id", delivery.ID)
+				"delivery_id", delivery.ID,
+				"stack", string(err.Stack()))
 
 			result = fn.Err[R](err)
 		}
@@ -1067,19 +1724,22 @@ func (a *DurableActor[M, R]) runExecSafely(ctx context.Context,
 	return tb.run(ctx, core, delivery.Message)
 }
 
-// executeBehaviorSafely runs the behavior with panic recovery.
+// executeBehaviorSafely runs the behavior with panic recovery. As in
+// runExecSafely, the recovered panic becomes a behaviorPanic so supervision
+// can tell it apart from a behavior that simply returned an error.
 func (a *DurableActor[M, R]) executeBehaviorSafely(ctx context.Context,
 	delivery *Delivery[M, R]) (result fn.Result[R]) {
 
 	defer func() {
 		if r := recover(); r != nil {
-			err := fmt.Errorf("panic: %v", r)
+			err := newBehaviorPanic(r)
 
 			logger(ctx).ErrorS(ctx, "Panic during message "+
 				"processing",
 				err,
 				"actor_id", a.id,
-				"delivery_id", delivery.ID)
+				"delivery_id", delivery.ID,
+				"stack", string(err.Stack()))
 
 			result = fn.Err[R](err)
 		}
@@ -1170,6 +1830,9 @@ func (a *DurableActor[M, R]) handleResultInTx(
 
 		// Apply Tell retry policy.
 		retry, delay := a.tellRetryPolicy(err, effectiveAttempts)
+		if retry && isRestartDelivery(delivery) {
+			retry = false
+		}
 		if retry {
 			// Don't mark as processed - we want retry to work.
 			// nackMessage routes a leaseless (empty-token) delivery
@@ -1288,6 +1951,9 @@ func (a *DurableActor[M, R]) handleResult(ctx context.Context,
 
 		// Apply Tell retry policy.
 		retry, delay := a.tellRetryPolicy(err, effectiveAttempts)
+		if retry && isRestartDelivery(delivery) {
+			retry = false
+		}
 		if retry {
 			if nackErr := delivery.Nack(
 				ctx, err, delay,
@@ -1453,10 +2119,28 @@ func (a *DurableActor[M, R]) writeAskResponseToOutbox(
 	return nil
 }
 
-// Stop signals the actor to terminate.
+// Stop signals the actor to terminate. Cancelling the lifetime context ends
+// the current worker generation and, because supervision only restarts while
+// that context is live, ends the actor for good rather than triggering another
+// restart.
 func (a *DurableActor[M, R]) Stop() {
 	a.stopOnce.Do(func() {
+		a.stopRequested.Store(true)
+
 		a.cancel()
+
+		// An actor that was never started has no supervision loop to
+		// publish its termination, and a watcher registered against it
+		// would otherwise wait for a notification nobody will ever
+		// send. Publish it here instead. A Start that races this loses
+		// harmlessly: publishing is first-wins, and the supervision
+		// loop it launches exits immediately against the cancelled
+		// lifetime context.
+		if !a.started.Load() {
+			a.publishTermination(
+				a.terminationInfo(TerminationStopped, nil),
+			)
+		}
 	})
 }
 

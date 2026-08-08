@@ -3,6 +3,7 @@ package actor
 import (
 	"context"
 	"errors"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -62,6 +63,11 @@ type mockDeliveryStore struct {
 	// edge while leaving the message peek-eligible.
 	injectNackError error
 
+	// injectCheckpointError causes only LoadCheckpoint to fail, which is
+	// how the supervised restart's TerminationRestartFailed path is
+	// reached without breaking the rest of the store.
+	injectCheckpointError error
+
 	// peekCount counts PeekNextMessage calls. Used to assert that the
 	// receive loop backs off after a failed leaseless nack instead of
 	// tight-spinning re-peeks of the same eligible row.
@@ -118,6 +124,42 @@ func (m *mockDeliveryStore) EnqueueMessage(ctx context.Context,
 	return nil
 }
 
+// claimOrder returns the mailbox's claim-eligible messages in the order the
+// real SQL hands them out: highest priority first, then oldest, using the
+// UUIDv7 message ID as the age tiebreak the way the query's id ordering does.
+//
+// Iterating the map directly (as this mock used to) picks an arbitrary
+// message, which is fine while a test has one message in flight and quietly
+// wrong as soon as ordering is the thing under test. RestartPriority only
+// means anything if the claim honours it.
+func (m *mockDeliveryStore) claimOrder(mailboxID string,
+	now time.Time) []*LeasedMessage {
+
+	var eligible []*LeasedMessage
+	for _, msg := range m.messages {
+		if msg.MailboxID != mailboxID {
+			continue
+		}
+
+		// Skip if already leased and not expired.
+		if msg.LeaseToken != "" && msg.LeaseUntil.After(now) {
+			continue
+		}
+
+		eligible = append(eligible, msg)
+	}
+
+	sort.Slice(eligible, func(i, j int) bool {
+		if eligible[i].Priority != eligible[j].Priority {
+			return eligible[i].Priority > eligible[j].Priority
+		}
+
+		return eligible[i].ID < eligible[j].ID
+	})
+
+	return eligible
+}
+
 func (m *mockDeliveryStore) LeaseNextMessage(ctx context.Context,
 	mailboxID string, leaseToken string, leaseDuration time.Duration) (
 	*LeasedMessage, error) {
@@ -131,16 +173,7 @@ func (m *mockDeliveryStore) LeaseNextMessage(ctx context.Context,
 
 	now := time.Now()
 
-	for _, msg := range m.messages {
-		if msg.MailboxID != mailboxID {
-			continue
-		}
-
-		// Skip if already leased and not expired.
-		if msg.LeaseToken != "" && msg.LeaseUntil.After(now) {
-			continue
-		}
-
+	for _, msg := range m.claimOrder(mailboxID, now) {
 		// Lease this message.
 		msg.LeaseToken = leaseToken
 		msg.LeaseUntil = now.Add(leaseDuration)
@@ -170,16 +203,7 @@ func (m *mockDeliveryStore) PeekNextMessage(ctx context.Context,
 
 	now := time.Now()
 
-	for _, msg := range m.messages {
-		if msg.MailboxID != mailboxID {
-			continue
-		}
-
-		// Skip if leased and not expired.
-		if msg.LeaseToken != "" && msg.LeaseUntil.After(now) {
-			continue
-		}
-
+	for _, msg := range m.claimOrder(mailboxID, now) {
 		// Skip if attempts exhausted, matching the SQL eligibility.
 		if msg.Attempts >= msg.MaxAttempts {
 			continue
@@ -614,6 +638,10 @@ func (m *mockDeliveryStore) LoadCheckpoint(ctx context.Context,
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	if m.injectCheckpointError != nil {
+		return nil, m.injectCheckpointError
+	}
 
 	return m.checkpoints[actorID], nil
 }

@@ -146,6 +146,7 @@ func (b *mockBehavior) setDelay(d time.Duration) {
 type stoppableMockBehavior struct {
 	*mockBehavior
 	stopCalled atomic.Bool
+	stopCount  atomic.Int32
 	stopErr    error
 }
 
@@ -157,6 +158,7 @@ func newStoppableMockBehavior(result fn.Result[int]) *stoppableMockBehavior {
 
 func (b *stoppableMockBehavior) OnStop(ctx context.Context) error {
 	b.stopCalled.Store(true)
+	b.stopCount.Add(1)
 
 	return b.stopErr
 }
@@ -183,6 +185,25 @@ type mockTxAwareStore struct {
 	// completing and the transaction committing, and is used to
 	// verify that promises are not completed prematurely.
 	txPostCallbackHook func()
+
+	// txErr records the FIRST error an ExecTx callback returned, which is
+	// what a real store would roll the transaction back on. It is
+	// first-wins rather than last-wins because a later successful
+	// transaction (a restart turn, say) would otherwise erase the evidence
+	// a test is waiting for.
+	txErr atomic.Pointer[error]
+}
+
+// firstTxErr returns the first error an ExecTx callback returned, or nil when
+// none has failed. Tests use it to assert that a panicking turn asked the
+// store for a rollback rather than committing its partial writes.
+func (m *mockTxAwareStore) firstTxErr() error {
+	stored := m.txErr.Load()
+	if stored == nil {
+		return nil
+	}
+
+	return *stored
 }
 
 func newMockTxAwareStore() *mockTxAwareStore {
@@ -205,7 +226,13 @@ func (m *mockTxAwareStore) ExecTx(
 	}
 
 	// Execute the function with the same store (simulating a transaction).
-	if err := fn(ctx, m.mockDeliveryStore); err != nil {
+	// The returned error is recorded because it is what a real store rolls
+	// the transaction back on, which is the only observable difference
+	// between committing a panicking turn's writes and discarding them.
+	err := fn(ctx, m.mockDeliveryStore)
+	if err != nil {
+		m.txErr.CompareAndSwap(nil, &err)
+
 		return err
 	}
 
@@ -407,7 +434,7 @@ func TestDurableActorAskRespectsCallerContextAfterEnqueue(t *testing.T) {
 		MaxAttempts: 3,
 	}
 
-	actor.processDelivery(&Delivery[*actorTestMsg, int]{
+	actor.processDelivery(actor.ctx, &Delivery[*actorTestMsg, int]{
 		ID:          deliveryID,
 		Message:     msg,
 		Promise:     NewPromise[int](),

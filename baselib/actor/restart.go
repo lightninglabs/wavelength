@@ -157,6 +157,28 @@ func PrependRestartMessage(
 	checkpoint *Checkpoint,
 ) error {
 
+	_, err := PrependRestartMessageWithID(
+		ctx, store, codec, mailboxID, checkpoint,
+	)
+
+	return err
+}
+
+// PrependRestartMessageWithID is PrependRestartMessage with the enqueued row's
+// ID returned. A caller that prepends repeatedly over an actor's lifetime (the
+// supervision kernel, which prepends one per restart) uses the ID to delete its
+// previous row before writing the next, so a run of restarts leaves at most one
+// restart row in the mailbox rather than one per restart.
+//
+// Note that the row is enqueued with MaxAttempts 1 because it must be
+// delivered exactly once. The runtime therefore never retries a restart
+// message whose turn failed, and sends it straight to the dead letter queue
+// instead, so a handler that rebuilds state from the checkpoint gets one shot
+// and must be idempotent.
+func PrependRestartMessageWithID(ctx context.Context, store DeliveryStore,
+	codec *MessageCodec, mailboxID string,
+	checkpoint *Checkpoint) (string, error) {
+
 	msg := &RestartMessage{
 		Checkpoint: fn.OptionFromPtr(checkpoint),
 	}
@@ -164,14 +186,14 @@ func PrependRestartMessage(
 	// Encode the message.
 	payload, err := codec.Encode(msg)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	// Generate a UUID v7 for the message (time-ordered, RFC 9562).
 	id := uuid.Must(uuid.NewV7()).String()
 
 	// Enqueue with highest priority to ensure front-of-queue processing.
-	return store.EnqueueMessage(ctx, EnqueueParams{
+	err = store.EnqueueMessage(ctx, EnqueueParams{
 		ID:          id,
 		MailboxID:   mailboxID,
 		MessageType: msg.MessageType(),
@@ -183,6 +205,11 @@ func PrependRestartMessage(
 		// Restart message should only be delivered once.
 		MaxAttempts: 1,
 	})
+	if err != nil {
+		return "", err
+	}
+
+	return id, nil
 }
 
 // IsRestartMessage returns true if the message is a RestartMessage.

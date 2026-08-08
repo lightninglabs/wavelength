@@ -464,9 +464,22 @@ func (r *oorRegistryBehavior) Receive(ctx context.Context, msg OORDurableMsg,
 
 	switch m := msg.(type) {
 	case *actor.RestartMessage:
-		// The active set is rebuilt by RestoreNonTerminal; the restart
-		// message carries no state to persist.
-		return fn.Ok[ActorResp](&DriveEventResponse{})
+		// A restart message reaches a live registry in exactly one
+		// case: the actor's supervisor restarted it after this
+		// behavior panicked. The framework reuses the same behavior
+		// instance across the restart, so the goroutine-owned routing
+		// state (the active child set and any staged handoff) is
+		// whatever the panic left behind. Drop the staged handoff,
+		// which belonged to the turn that died, and re-run the same
+		// non-terminal restore the boot path uses so the active set is
+		// reconciled against the durable rows again. The restore skips
+		// sessions that are already resident, so re-running it against
+		// a mostly-intact active set is cheap and idempotent.
+		r.pendingHandoff = nil
+
+		return r.handleRestoreNonTerminal(
+			ctx, &RestoreNonTerminalRequest{},
+		)
 
 	case *GetStateRequest:
 		return r.routeAsk(ctx, m.SessionID, m)
