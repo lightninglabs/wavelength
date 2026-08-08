@@ -2,6 +2,7 @@ package actor
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"sync"
 	"sync/atomic"
@@ -48,9 +49,18 @@ type supervisedBehavior struct {
 	// observe or block inside the turn.
 	onReceive func(ctx context.Context, value uint64)
 
+	// failRestarts makes the RestartMessage handler fail, which is the
+	// shape that would otherwise strand or pile up restart rows.
+	failRestarts bool
+
 	// stopCalls counts OnStop invocations, which supervision runs once per
 	// restart plus once at final teardown.
 	stopCalls atomic.Int32
+
+	// stopPanics makes OnStop panic. Supervision must recover it rather
+	// than let a cleanup that tripped over the same corrupt state take the
+	// process down.
+	stopPanics atomic.Bool
 }
 
 // Receive implements ActorBehavior over the generic TLVMessage type.
@@ -60,7 +70,12 @@ func (b *supervisedBehavior) Receive(ctx context.Context,
 	if restart, ok := msg.(*RestartMessage); ok {
 		b.mu.Lock()
 		b.restarts = append(b.restarts, restart.Checkpoint)
+		failRestarts := b.failRestarts
 		b.mu.Unlock()
+
+		if failRestarts {
+			return fn.Err[int](errors.New("restore failed"))
+		}
 
 		return fn.Ok(0)
 	}
@@ -93,6 +108,10 @@ func (b *supervisedBehavior) Receive(ctx context.Context,
 // the behavior down before restarting it.
 func (b *supervisedBehavior) OnStop(context.Context) error {
 	b.stopCalls.Add(1)
+
+	if b.stopPanics.Load() {
+		panic("supervised behavior cleanup panic")
+	}
 
 	return nil
 }
@@ -598,6 +617,19 @@ type supervisedExecBehavior struct {
 	// crash-loop the actor out of its restart budget.
 	panics atomic.Int32
 
+	// panicBarrier, when set, holds each panicking turn until every
+	// participant has arrived, so several workers panic inside the SAME
+	// generation rather than one per restart.
+	panicBarrier *sync.WaitGroup
+
+	// barrierArrivals counts turns that reached the barrier. Only the
+	// first barrierSize of them panic; the redelivered messages commit so
+	// the actor settles after exactly one restart.
+	barrierArrivals atomic.Int32
+
+	// barrierSize is how many turns the barrier waits for.
+	barrierSize int32
+
 	// values counts the committed non-restart turns.
 	values int
 }
@@ -632,6 +664,19 @@ func (b *supervisedExecBehavior) Receive(ctx context.Context, msg TLVMessage,
 		b.cancelled.Add(1)
 
 		return fn.Err[int](ctx.Err())
+
+	case test.Value.Val == 1 && b.panicBarrier != nil:
+		// Wait for every participant to arrive so the panics land in
+		// one generation rather than one per restart. Only the first
+		// pass panics; the redelivered messages fall through to the
+		// Commit below so the actor settles after one restart.
+		if b.barrierArrivals.Add(1) <= b.barrierSize {
+			b.panics.Add(1)
+			b.panicBarrier.Done()
+			b.panicBarrier.Wait()
+
+			panic("supervised exec behavior concurrent panic")
+		}
 
 	case test.Value.Val == 1 && b.panics.Add(1) == 1:
 		// Release the parked turns from the panic itself, so the
@@ -721,19 +766,22 @@ func TestDurableActorMultiWorkerRestartDrainsPool(t *testing.T) {
 	require.NoError(t, a.ctx.Err())
 }
 
-// TestDurableActorRestartWithoutRestartCodec verifies that an actor whose
-// codec never registered the RestartMessage still restarts, but skips the
-// checkpoint hand-off instead of enqueueing a message its own consumer cannot
-// decode (which would dead-letter on every restart).
+// TestDurableActorRestartWithoutRestartCodec verifies the degraded restart for
+// an actor whose codec never registered the RestartMessage. Such an actor
+// cannot be handed its checkpoint back, so the restart cycles the worker
+// generation and otherwise leaves the behavior alone: no undecodable message
+// is enqueued behind the poison one, and crucially no mid-life OnStop is run
+// against a behavior instance that is reused anyway and gets no state rebuild
+// out of the deal.
 func TestDurableActorRestartWithoutRestartCodec(t *testing.T) {
 	t.Parallel()
 
 	store := newMockDeliveryStore()
-	behavior := newMockBehavior(fn.Ok(42))
+	behavior := newStoppableMockBehavior(fn.Ok(42))
 	behavior.panicOnReceive = true
 
 	// newActorTestCodec deliberately carries no RestartMessage.
-	cfg := DefaultDurableActorConfig(
+	cfg := DefaultDurableActorConfig[*actorTestMsg, int](
 		"test-actor", behavior, store, newActorTestCodec(),
 	)
 	cfg.PollInterval = 10 * time.Millisecond
@@ -770,7 +818,547 @@ func TestDurableActorRestartWithoutRestartCodec(t *testing.T) {
 	}
 	store.mu.Unlock()
 
+	// The behavior was never torn down mid-life, because a teardown it
+	// cannot be rebuilt from is strictly worse than leaving it running.
+	require.False(t, behavior.stopCalled.Load())
+
 	require.NoError(t, a.ctx.Err())
+
+	// The terminal stop still runs the hook exactly once.
+	require.NoError(t, a.StopAndWait(context.Background()))
+	require.True(t, behavior.stopCalled.Load())
+	require.Equal(t, int32(1), behavior.stopCount.Load())
+}
+
+// TestDurableActorRestartRacingStop verifies that a Stop landing while a
+// restart is in flight ends the actor gracefully rather than being reported as
+// a supervision failure, and that StopAndWait still returns.
+func TestDurableActorRestartRacingStop(t *testing.T) {
+	t.Parallel()
+
+	store := newMockDeliveryStore()
+	behavior := &supervisedBehavior{
+		shouldPanic: func(uint64) bool { return true },
+	}
+
+	a := newSupervisedActor(
+		t, store, behavior,
+		func(cfg *DurableActorConfig[TLVMessage, int]) {
+			cfg.MaxAttempts = 100
+			cfg.TellRetryPolicy = func(error, int) (bool,
+				time.Duration) {
+
+				return true, time.Millisecond
+			}
+		},
+	)
+
+	watch := a.Watch(context.Background())
+
+	a.Start()
+	tellSupervised(t, a, 1)
+
+	// Let the restart loop get going, then stop into the middle of it.
+	require.Eventually(t, func() bool {
+		return a.restarts.count() >= 1
+	}, 5*time.Second, time.Millisecond)
+
+	require.NoError(t, a.StopAndWait(context.Background()))
+
+	info := <-watch
+	require.Equal(t, TerminationStopped, info.Reason)
+	require.False(t, info.RestartsExhausted)
+	require.NoError(t, info.Err)
+}
+
+// TestDurableActorRestartFailedTerminates verifies the TerminationRestartFailed
+// path: a restart that is within budget but cannot be carried out (here the
+// checkpoint load fails) terminates the actor and reports the failure rather
+// than restarting into a behavior with no state.
+func TestDurableActorRestartFailedTerminates(t *testing.T) {
+	t.Parallel()
+
+	store := newMockDeliveryStore()
+	behavior := &supervisedBehavior{
+		shouldPanic: func(uint64) bool { return true },
+	}
+
+	loadErr := errors.New("checkpoint store is wedged")
+	store.injectCheckpointError = loadErr
+
+	a := newSupervisedActor(
+		t, store, behavior,
+		func(cfg *DurableActorConfig[TLVMessage, int]) {
+			cfg.TellRetryPolicy = func(error, int) (bool,
+				time.Duration) {
+
+				return false, 0
+			}
+		},
+	)
+
+	watch := a.Watch(context.Background())
+
+	a.Start()
+	defer a.Stop()
+
+	tellSupervised(t, a, 1)
+
+	var info TerminationInfo
+	select {
+	case info = <-watch:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for termination")
+	}
+
+	require.Equal(t, TerminationRestartFailed, info.Reason)
+	require.False(t, info.RestartsExhausted)
+	require.ErrorIs(t, info.Err, loadErr)
+	require.Equal(t, 1, info.Restarts)
+
+	require.NoError(t, a.Wait(context.Background()))
+	require.Error(t, a.ctx.Err())
+}
+
+// TestDurableActorCleanupPanicTerminates verifies that a behavior whose OnStop
+// panics during a restart is recovered rather than taking the process down,
+// and is reported as a failed restart.
+func TestDurableActorCleanupPanicTerminates(t *testing.T) {
+	t.Parallel()
+
+	store := newMockDeliveryStore()
+	behavior := &supervisedBehavior{
+		shouldPanic: func(uint64) bool { return true },
+	}
+	behavior.stopPanics.Store(true)
+
+	a := newSupervisedActor(
+		t, store, behavior,
+		func(cfg *DurableActorConfig[TLVMessage, int]) {
+			cfg.TellRetryPolicy = func(error, int) (bool,
+				time.Duration) {
+
+				return false, 0
+			}
+		},
+	)
+
+	watch := a.Watch(context.Background())
+
+	a.Start()
+	defer a.Stop()
+
+	tellSupervised(t, a, 1)
+
+	var info TerminationInfo
+	select {
+	case info = <-watch:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for termination")
+	}
+
+	require.Equal(t, TerminationRestartFailed, info.Reason)
+	require.True(t, isBehaviorPanic(info.Err))
+
+	// The hook panicked on the restart path and is not run a second time
+	// by the terminal teardown, so one teardown means one OnStop.
+	require.NoError(t, a.Wait(context.Background()))
+	require.Equal(t, int32(1), behavior.stopCalls.Load())
+}
+
+// TestDurableActorConcurrentPanicsRecordOneRestart verifies that two workers
+// panicking inside the SAME generation cost one unit of restart budget, not
+// two. Charging per panicking worker would let a pool burn a finite budget
+// N times faster than a single-worker actor for the same fault.
+func TestDurableActorConcurrentPanicsRecordOneRestart(t *testing.T) {
+	t.Parallel()
+
+	const numWorkers = 4
+
+	store := newMockTxAwareStore()
+	behavior := &supervisedExecBehavior{}
+
+	// Two of the four workers panic together: each parks on the barrier
+	// until both have arrived, so both panics land in one generation.
+	var barrier sync.WaitGroup
+	barrier.Add(2)
+	behavior.panicBarrier = &barrier
+	behavior.barrierSize = 2
+
+	cfg := DefaultDurableTxActorConfig[TLVMessage, int, DeliveryStore](
+		"supervised-actor", behavior, identityStoreFactory, store,
+		newSupervisedCodec(),
+	)
+	cfg.PollInterval = 10 * time.Millisecond
+	cfg.MaxPollInterval = 10 * time.Millisecond
+	cfg.NumWorkers = numWorkers
+	cfg.MaxAttempts = 100
+	cfg.TellRetryPolicy = func(error, int) (bool, time.Duration) {
+		return true, time.Millisecond
+	}
+
+	a := NewDurableActor(cfg).UnwrapOrFail(t)
+	a.Start()
+	defer a.Stop()
+
+	for i := 0; i < 2; i++ {
+		msg := &actorTestMsg{
+			Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(1)),
+		}
+		require.NoError(t, a.Ref().Tell(context.Background(), msg))
+	}
+
+	// Both panics land, and the generation they shared is restarted once.
+	require.Eventually(t, func() bool {
+		return behavior.panics.Load() >= 2
+	}, 10*time.Second, 10*time.Millisecond)
+
+	require.Eventually(t, func() bool {
+		return behavior.restartCount() >= 1
+	}, 10*time.Second, 10*time.Millisecond)
+
+	require.Equal(t, 1, a.restarts.count())
+}
+
+// TestDurableActorPanicRollsBackBehaviorWrites verifies that the classic
+// transactional path rolls the panicking turn's own writes back rather than
+// committing them alongside the nack. The whole Receive runs inside one
+// transaction there, so committing would persist exactly the torn state the
+// restart exists to escape.
+func TestDurableActorPanicRollsBackBehaviorWrites(t *testing.T) {
+	t.Parallel()
+
+	store := newMockTxAwareStore()
+	behavior := &supervisedBehavior{
+		shouldPanic: func(uint64) bool { return true },
+	}
+
+	cfg := DefaultDurableActorConfig[TLVMessage, int](
+		"supervised-actor", behavior, store, newSupervisedCodec(),
+	)
+	cfg.PollInterval = 10 * time.Millisecond
+	cfg.MaxPollInterval = 10 * time.Millisecond
+	cfg.TellRetryPolicy = func(error, int) (bool, time.Duration) {
+		return false, 0
+	}
+
+	a := NewDurableActor(cfg).UnwrapOrFail(t)
+	a.Start()
+	defer a.Stop()
+
+	tellSupervised(t, a, 1)
+
+	// The panic reached ExecTx as the transaction's error, which is what
+	// makes the store roll the behavior's writes back.
+	require.Eventually(t, func() bool {
+		return store.firstTxErr() != nil
+	}, 5*time.Second, 10*time.Millisecond)
+
+	require.True(t, isBehaviorPanic(store.firstTxErr()))
+
+	// The bookkeeping still ran outside the rolled-back transaction, so
+	// the poison message was dead-lettered rather than left in place.
+	require.Eventually(t, func() bool {
+		store.mu.Lock()
+		defer store.mu.Unlock()
+
+		return len(store.deadLetters) == 1
+	}, 5*time.Second, 10*time.Millisecond)
+
+	require.Eventually(t, func() bool {
+		return behavior.restartCount() >= 1
+	}, 5*time.Second, 10*time.Millisecond)
+}
+
+// TestDurableActorKeepsOneRestartRow verifies the restart row hygiene: a run
+// of restarts leaves at most one restart message in the mailbox, and a restart
+// turn that fails dead-letters rather than stranding a row that nothing will
+// ever lease or reap again.
+func TestDurableActorKeepsOneRestartRow(t *testing.T) {
+	t.Parallel()
+
+	store := newMockDeliveryStore()
+
+	// The restore handler fails every time, which is the shape that piles
+	// rows up: each restart enqueues one and the handler never consumes it
+	// cleanly.
+	behavior := &supervisedBehavior{
+		shouldPanic:  func(uint64) bool { return true },
+		failRestarts: true,
+	}
+
+	a := newSupervisedActor(
+		t, store, behavior,
+		func(cfg *DurableActorConfig[TLVMessage, int]) {
+			cfg.MaxAttempts = 100
+			cfg.TellRetryPolicy = func(error, int) (bool,
+				time.Duration) {
+
+				return true, time.Millisecond
+			}
+		},
+	)
+
+	a.Start()
+	defer a.Stop()
+
+	tellSupervised(t, a, 1)
+
+	require.Eventually(t, func() bool {
+		return behavior.restartCount() >= 3
+	}, 10*time.Second, time.Millisecond)
+
+	// Never more than one restart row pending at a time, and a failed
+	// restart turn ends up in the dead letter queue rather than stranded
+	// at attempts == max_attempts.
+	store.mu.Lock()
+	pending := 0
+	for _, m := range store.messages {
+		if m.MessageType == "actor.Restart" {
+			pending++
+		}
+	}
+	deadRestarts := 0
+	for _, dl := range store.deadLetters {
+		if dl.MessageType == "actor.Restart" {
+			deadRestarts++
+		}
+	}
+	store.mu.Unlock()
+
+	require.LessOrEqual(t, pending, 1)
+	require.Positive(t, deadRestarts)
+}
+
+// TestDurableActorWatchOnNeverStartedActor verifies that stopping an actor
+// that was never started still publishes a termination, so a watcher on it
+// does not wait forever for a supervision loop that will never run.
+func TestDurableActorWatchOnNeverStartedActor(t *testing.T) {
+	t.Parallel()
+
+	store := newMockDeliveryStore()
+	behavior := &supervisedBehavior{}
+
+	a := newSupervisedActor(t, store, behavior, nil)
+
+	watch := a.Watch(context.Background())
+	a.Stop()
+
+	select {
+	case info := <-watch:
+		require.Equal(t, TerminationStopped, info.Reason)
+		require.Zero(t, info.Restarts)
+
+	case <-time.After(5 * time.Second):
+		t.Fatal("never-started actor published no termination")
+	}
+
+	_, ok := <-watch
+	require.False(t, ok)
+
+	// A watcher that registers afterwards is served from the recorded
+	// notification just as it is for a started actor.
+	late := <-a.Watch(context.Background())
+	require.Equal(t, TerminationStopped, late.Reason)
+}
+
+// restoringExecBehavior models the shape every durable adopter in this repo
+// actually has: a Read/Commit behavior holding in-memory state that mirrors a
+// durable row, plus a reload guard it arms whenever that mirror might have run
+// ahead of the row. credit.opBehavior and oor.sessionBehavior arm exactly this
+// guard on a rolled-back Commit, and (since supervision landed) on a restart
+// message too. It exists so the restart contract is tested against a behavior
+// that can actually diverge, rather than one for which any handler would pass.
+type restoringExecBehavior struct {
+	mu sync.Mutex
+
+	// store is the durable row this behavior mirrors.
+	store *mockTxAwareStore
+
+	// actorID keys the checkpoint that holds the durable value.
+	actorID string
+
+	// value is the in-memory mirror of the durable row: the analogue of
+	// credit's rec or oor's fsm.
+	value int64
+
+	// commitFailed is the reload guard. When set, the next turn rebuilds
+	// value from the durable row before it does anything else.
+	commitFailed bool
+
+	// observed records the value each observe turn saw AFTER any reload,
+	// which is what the test asserts against.
+	observed []int64
+
+	// restarts counts the restart messages seen.
+	restarts int
+}
+
+// restore rebuilds the in-memory value from the durable checkpoint.
+func (b *restoringExecBehavior) restore(ctx context.Context) error {
+	checkpoint, err := b.store.LoadCheckpoint(ctx, b.actorID)
+	if err != nil {
+		return err
+	}
+
+	if checkpoint == nil || len(checkpoint.StateData) != 8 {
+		b.value = 0
+
+		return nil
+	}
+
+	b.value = int64(binary.BigEndian.Uint64(checkpoint.StateData))
+
+	return nil
+}
+
+// Receive implements TxBehavior. Value 1 advances the in-memory mirror past
+// the durable row and then panics, which is the divergence a restart has to
+// undo. Value 2 observes the mirror after any pending reload.
+func (b *restoringExecBehavior) Receive(ctx context.Context, msg TLVMessage,
+	ax Exec[DeliveryStore]) fn.Result[int] {
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if _, ok := msg.(*RestartMessage); ok {
+		b.restarts++
+
+		// The seam: the framework reuses this instance across the
+		// restart, so arm the reload rather than treating the message
+		// as a no-op.
+		b.commitFailed = true
+
+		if err := ax.Commit(ctx, noOpCommit); err != nil {
+			return fn.Err[int](err)
+		}
+
+		return fn.Ok(0)
+	}
+
+	test, ok := msg.(*actorTestMsg)
+	if !ok {
+		return fn.Err[int](errors.New("unexpected message type"))
+	}
+
+	if test.Value.Val == 1 {
+		// Advance the mirror past the durable row, then die before
+		// anything could persist it.
+		b.value += 100
+
+		panic("restoring exec behavior panic")
+	}
+
+	if b.commitFailed {
+		if err := b.restore(ctx); err != nil {
+			return fn.Err[int](err)
+		}
+		b.commitFailed = false
+	}
+
+	b.observed = append(b.observed, b.value)
+
+	if err := ax.Commit(ctx, noOpCommit); err != nil {
+		return fn.Err[int](err)
+	}
+
+	return fn.Ok(0)
+}
+
+// observations returns the values the observe turns saw.
+func (b *restoringExecBehavior) observations() []int64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return append([]int64(nil), b.observed...)
+}
+
+// restartCount returns how many restart messages the behavior has seen.
+func (b *restoringExecBehavior) restartCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.restarts
+}
+
+// TestDurableActorRestartReloadsDivergedState verifies the restart contract
+// end to end against a behavior that can actually diverge. The behavior
+// advances its in-memory mirror past the durable row and then panics, and the
+// next message must see the durable value rather than the stale advance.
+//
+// This is the test that fails if a RestartMessage handler treats the message
+// as a no-op, which is exactly what every Read/Commit adopter did before
+// supervision existed: the framework reuses the behavior INSTANCE across a
+// restart, so the reload has to come from the handler.
+func TestDurableActorRestartReloadsDivergedState(t *testing.T) {
+	t.Parallel()
+
+	const durableValue = int64(7)
+
+	store := newMockTxAwareStore()
+
+	// The durable row the behavior mirrors.
+	var stateData [8]byte
+	binary.BigEndian.PutUint64(stateData[:], uint64(durableValue))
+	require.NoError(
+		t,
+		store.SaveCheckpoint(
+			context.Background(), CheckpointParams{
+				ActorID:   "supervised-actor",
+				StateType: "MirrorState",
+				StateData: stateData[:],
+				Version:   1,
+			},
+		),
+	)
+
+	behavior := &restoringExecBehavior{
+		store:   store,
+		actorID: "supervised-actor",
+		value:   durableValue,
+	}
+
+	cfg := DefaultDurableTxActorConfig[TLVMessage, int, DeliveryStore](
+		"supervised-actor", behavior, identityStoreFactory, store,
+		newSupervisedCodec(),
+	)
+	cfg.PollInterval = 10 * time.Millisecond
+	cfg.MaxPollInterval = 10 * time.Millisecond
+
+	// Give up on the poison message immediately so it does not keep
+	// re-panicking behind the observation.
+	cfg.TellRetryPolicy = func(error, int) (bool, time.Duration) {
+		return false, 0
+	}
+
+	a := NewDurableActor(cfg).UnwrapOrFail(t)
+	a.Start()
+	defer a.Stop()
+
+	// Diverge and die.
+	msg := &actorTestMsg{
+		Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(1)),
+	}
+	require.NoError(t, a.Ref().Tell(context.Background(), msg))
+
+	require.Eventually(t, func() bool {
+		return behavior.restartCount() >= 1
+	}, 10*time.Second, 10*time.Millisecond)
+
+	// Observe after the restart.
+	observe := &actorTestMsg{
+		Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(2)),
+	}
+	require.NoError(t, a.Ref().Tell(context.Background(), observe))
+
+	require.Eventually(t, func() bool {
+		return len(behavior.observations()) >= 1
+	}, 10*time.Second, 10*time.Millisecond)
+
+	// The stale in-memory advance did not survive the restart: the turn
+	// after it saw durable truth. Without the handler arming its reload
+	// guard this would be durableValue + 100.
+	require.Equal(t, []int64{durableValue}, behavior.observations())
 }
 
 // TestRestartTrackerSlidingWindow verifies the intensity budget is a sliding
@@ -812,8 +1400,10 @@ func TestRestartTrackerUnlimited(t *testing.T) {
 }
 
 // TestDurableActorRestartBudgetDefaults verifies the intensity budget defaults
-// on: both the default config and a hand-built config that never mentions
-// MaxRestarts land on the bounded default rather than an unlimited budget.
+// OFF: a finite budget kills the actor permanently, so both the default config
+// and a hand-built config that never mentions MaxRestarts must land on
+// unlimited rather than inheriting a kill switch. A finite budget is honored
+// only when it is asked for.
 func TestDurableActorRestartBudgetDefaults(t *testing.T) {
 	t.Parallel()
 
@@ -821,14 +1411,20 @@ func TestDurableActorRestartBudgetDefaults(t *testing.T) {
 	codec := newSupervisedCodec()
 	behavior := &supervisedBehavior{}
 
+	require.Equal(t, UnlimitedRestarts, DefaultMaxRestarts)
+
 	cfg := DefaultDurableActorConfig[TLVMessage, int](
 		"a", behavior, store, codec,
 	)
-	require.Equal(t, DefaultMaxRestarts, cfg.MaxRestarts)
+	require.Equal(t, UnlimitedRestarts, cfg.MaxRestarts)
 	require.Equal(t, DefaultRestartWindow, cfg.RestartWindow)
 
-	// A hand-built config with a zero MaxRestarts is normalized to the
-	// default, not to an unbounded crash loop.
+	defaulted := NewDurableActor(cfg).UnwrapOrFail(t)
+	require.Equal(t, UnlimitedRestarts, defaulted.restarts.max)
+
+	// A hand-built config with a zero MaxRestarts normalizes to unlimited
+	// too, so a config that predates supervision cannot acquire a silent
+	// kill switch by omission.
 	bare := DurableActorConfig[TLVMessage, int]{
 		ID:       "a",
 		Behavior: NewClassicBehavior[TLVMessage, int](behavior),
@@ -836,13 +1432,13 @@ func TestDurableActorRestartBudgetDefaults(t *testing.T) {
 		Codec:    codec,
 	}
 	bareActor := NewDurableActor(bare).UnwrapOrFail(t)
-	require.Equal(t, DefaultMaxRestarts, bareActor.restarts.max)
+	require.Equal(t, UnlimitedRestarts, bareActor.restarts.max)
 	require.Equal(t, DefaultRestartWindow, bareActor.restarts.window)
 
-	// The opt-out is honored verbatim.
-	cfg.MaxRestarts = UnlimitedRestarts
-	unlimited := NewDurableActor(cfg).UnwrapOrFail(t)
-	require.Equal(t, UnlimitedRestarts, unlimited.restarts.max)
+	// An explicitly chosen finite budget is honored verbatim.
+	cfg.MaxRestarts = RecommendedMaxRestarts
+	finite := NewDurableActor(cfg).UnwrapOrFail(t)
+	require.Equal(t, RecommendedMaxRestarts, finite.restarts.max)
 }
 
 // TestTerminationReasonString verifies every reason renders a stable name.

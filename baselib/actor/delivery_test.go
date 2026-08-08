@@ -62,6 +62,11 @@ type mockDeliveryStore struct {
 	// edge while leaving the message peek-eligible.
 	injectNackError error
 
+	// injectCheckpointError causes only LoadCheckpoint to fail, which is
+	// how the supervised restart's TerminationRestartFailed path is
+	// reached without breaking the rest of the store.
+	injectCheckpointError error
+
 	// peekCount counts PeekNextMessage calls. Used to assert that the
 	// receive loop backs off after a failed leaseless nack instead of
 	// tight-spinning re-peeks of the same eligible row.
@@ -614,6 +619,10 @@ func (m *mockDeliveryStore) LoadCheckpoint(ctx context.Context,
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	if m.injectCheckpointError != nil {
+		return nil, m.injectCheckpointError
+	}
 
 	return m.checkpoints[actorID], nil
 }
