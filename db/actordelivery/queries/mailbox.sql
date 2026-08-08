@@ -163,6 +163,37 @@ SET
     attempts = attempts + 1
 WHERE id = $1;
 
+-- name: PostponeMailboxMessage :execrows
+-- Release a message for redelivery after a delay WITHOUT burning a delivery
+-- attempt: the fenced (leased) claim pre-incremented attempts, so the
+-- decrement here restores the retry budget to exactly what it was before
+-- this delivery. The CASE clamp guards the invariant rather than trusting
+-- it: attempts is always >= 1 under a valid lease, but a clamped decrement
+-- can never wrap a corrupt row negative. Validates lease_token to prevent
+-- stale postpones. This is the attempt-preserving counterpart to
+-- NackMailboxMessage, used when a behavior reports "not now" (a postpone)
+-- rather than a failure.
+UPDATE mailbox_messages
+SET
+    lease_token = NULL,
+    lease_until = NULL,
+    available_at = $3,
+    attempts = CASE WHEN attempts > 0 THEN attempts - 1 ELSE 0 END
+WHERE id = $1 AND lease_token = $2;
+
+-- name: PostponeMailboxMessageByID :execrows
+-- Leaseless single-worker counterpart to PostponeMailboxMessage: releases the
+-- message by ID without validating a lease token and leaves attempts
+-- UNTOUCHED, because the leaseless peek never incremented it. Stale expired
+-- lease metadata is cleared so the persisted row matches the leaseless state
+-- machine, mirroring NackMailboxMessageByID.
+UPDATE mailbox_messages
+SET
+    lease_token = NULL,
+    lease_until = NULL,
+    available_at = $2
+WHERE id = $1;
+
 -- name: NackMailboxMessage :execrows
 -- Release message for redelivery after retry delay.
 -- Clears lease and sets new available_at.
