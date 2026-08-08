@@ -362,6 +362,11 @@ type Querier interface {
 	// PullActivityEvents returns transition rows strictly after the cursor in
 	// event_seq order, the resumable-subscribe replay primitive.
 	PullActivityEvents(ctx context.Context, arg PullActivityEventsParams) ([]ActivityEvent, error)
+	// Returns a boarding intent adopted by a dead round to 'confirmed'. The
+	// commitment never broadcast, so the UTXO is exactly as it was before the
+	// round: re-boardable, and sweepable again. Guarded on 'adopted' so a later
+	// sweep that already moved the intent on is never clobbered.
+	RevertAdoptedBoardingIntent(ctx context.Context, arg RevertAdoptedBoardingIntentParams) error
 	SumBoardingIntentAmountsByStatus(ctx context.Context, status string) (interface{}, error)
 	SumUnspentVTXOAmounts(ctx context.Context) (interface{}, error)
 	UpdateBoardingIntentStatus(ctx context.Context, arg UpdateBoardingIntentStatusParams) error
