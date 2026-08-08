@@ -127,6 +127,26 @@ type Querier interface {
 	// exhausted row is already filtered out of the outer candidate set by
 	// m.attempts < m.max_attempts, so this just brings the anti-join
 	// predicate into agreement with the eligibility predicate.
+	//
+	// CAVEAT (postpone + keyed lanes + multiple workers). That agreement has a
+	// boundary case that postpone can turn into a FIFO inversion. A predecessor
+	// leased on its FINAL attempt (attempts == max_attempts after the claim
+	// pre-increment) is invisible to this anti-join while it is still being
+	// processed, so a competing worker may claim its same-key successor. That is
+	// harmless when the predecessor can only ack or dead-letter, which is true for
+	// ack and nack. A postpone breaks it: the predecessor is released with attempts
+	// DECREMENTED back below max_attempts, so it becomes claim-eligible again and
+	// reprocesses AFTER the successor already ran, inverting per-key order.
+	//
+	// No adopter combines all three preconditions today (keyed correlation lanes,
+	// NumWorkers > 1, and a postponing behavior), so the SQL is deliberately left
+	// alone rather than complicated for a hypothetical. Per-key FIFO therefore
+	// holds for a postponing consumer only when the actor is single-worker, or
+	// when the lane's messages never reach their final attempt. Before wiring a
+	// postponing behavior onto a keyed lane with a worker pool, fix this first:
+	// the intended repair is to add a lease-liveness disjunct so a predecessor
+	// that is currently leased still blocks its successors regardless of its
+	// attempts, rather than relying on the attempts predicate alone.
 	LeaseNextMailboxMessage(ctx context.Context, arg LeaseNextMailboxMessageParams) (MailboxMessage, error)
 	// List dead letters for a specific actor.
 	ListDeadLettersByActor(ctx context.Context, arg ListDeadLettersByActorParams) ([]DeadLetter, error)
