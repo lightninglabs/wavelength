@@ -103,6 +103,26 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/oor.<Sym
   registry's `ensureChild` choke point, the only path that makes a session
   resident, so every admission path (RPC, routed message, boot restore)
   shares the same bound.
+- Over-cap rejection on a Tell-driven routed path is a **postpone**, not a
+  failure: being at the cap is a not-now condition that clears when a resident
+  session terminates and is reaped, so nacking the routed hint would spend one
+  of its finite attempts (and eventually dead-letter a valid incoming
+  transfer) for a condition it did not cause. `handleResolveIncoming` and
+  `handleDriveEvent`'s lazy restore wrap the rejection as
+  `fmt.Errorf("%w: %w", errIncomingAdmissionCapped,
+  actor.Postpone(incomingCapBackoff))`, so the consume path releases the
+  delivery on a 5s backoff with attempts intact while boot restore's skip
+  check keeps matching the sentinel. The Ask-driven `StartTransferRequest` is
+  deliberately excluded (it is outgoing, so the incoming cap never applies,
+  and a postponed Ask gets ordinary error treatment anyway), and boot restore
+  keeps skipping over-cap rows rather than aborting.
+- A deferred self-transfer hint postpones on `selfHintRedeliveryBackoff` (30s
+  flat) rather than riding a custom never-dead-letter `TellRetryPolicy`. The
+  old policy suppressed the dead-letter write but could not stop `attempts`
+  from climbing, and both the claim and peek queries filter on `attempts <
+  max_attempts`, so after ten deferrals the durable crash-safety copy fell out
+  of the eligible set and silently stopped redelivering. The registry now uses
+  the default Tell retry policy for everything else.
 - Witness/script decode bounds mirror consensus limits:
   `maxConditionWitnessItems = 64` items of at most 520 bytes each (Bitcoin's
   `MAX_SCRIPT_ELEMENT_SIZE`), enforced on both encode and decode.

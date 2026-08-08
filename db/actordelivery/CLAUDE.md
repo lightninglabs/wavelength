@@ -48,6 +48,18 @@ other services can reuse durable actor storage without pulling unrelated tables.
   fence; the multi-worker pool keeps lease + fenced ack. The by-ID nack
   increments attempts because the peek does not, preserving dead-lettering
   on max attempts.
+- **Attempt-preserving postpone** — `PostponeMailboxMessage` (lease-fenced:
+  validates `lease_token`, sets a new `available_at`, and *decrements*
+  attempts to compensate the increment the leased claim already applied, with
+  a `CASE WHEN attempts > 0` clamp so a corrupt row can never wrap negative)
+  and `PostponeMailboxMessageByID` (unfenced by-id counterpart that sets
+  `available_at` and leaves attempts untouched, because the leaseless peek
+  never incremented them). Exposed on both `Store` and
+  `TxActorDeliveryStore` as `PostponeMessage` and `PostponeMessageByID`.
+  These back `actor.Postpone(delay)`: a behavior that cannot handle a message
+  *yet* releases it for redelivery with its retry budget byte-identical to
+  what it was before the delivery, rather than spending an attempt on a
+  transient not-now condition.
 - `BatchedActorDeliveryQueries` — Batched transaction wrapper for
   `ActorDeliveryQueries`.
 - `MigrationOption` — Functional options for migration configuration
@@ -86,6 +98,15 @@ other services can reuse durable actor storage without pulling unrelated tables.
   metadata from a previous leased claim. The by-ID nack path clears that stale
   metadata while incrementing attempts, preserving the leaseless p-model:
   `peek -> empty-token delivery -> by-ID ack/nack`.
+- A postpone must leave the retry budget exactly as it found it, which is why
+  the fenced and by-id variants differ: the fenced query decrements (the lease
+  pre-incremented) and the by-id query does not (the peek never incremented).
+  Getting this backwards would either walk a postponing message toward
+  `max_attempts` or let it drift the counter downward on every release. Both
+  the claim and the peek queries filter on `attempts < max_attempts`, so a row
+  that reaches the cap does not merely become dead-letter-eligible, it leaves
+  the eligible set entirely; only a postpone keeps a waiting message
+  claim-eligible indefinitely.
 
 ## Deep Docs
 

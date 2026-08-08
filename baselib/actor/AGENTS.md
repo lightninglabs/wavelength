@@ -26,13 +26,28 @@ crash-safe at-least-once delivery with exactly-once deduplication.
 - `Receptionist` — Service locator mapping `ServiceKey` → `ActorRef` for decoupled actor wiring.
 - `Message` — Sealed interface for all actor messages (must embed `BaseMessage`).
 - `MessageCodec` — TLV-based codec for message serialization/deserialization.
-- `DeliveryStore` / `TxAwareDeliveryStore` — Interfaces for durable mailbox persistence (enqueue, claim, ack, dead-letter). The leaseless single-worker fast path adds `PeekNextMessage` (read-only claim, no lease, no attempts bump; yields an empty lease token), `AckMessageByID` (unfenced delete), and `NackMessageByID` (unfenced release that increments attempts). A `DurableActor` enables it (via `DurableMailboxConfig.SingleWorkerLeaseless`) strictly when `NumWorkers == 1` AND the behavior is the Read/Commit (Right/`TxBehavior`) path, eliminating the per-message lease write transaction. The multi-worker pool and the classic path are byte-for-byte unchanged: they keep `LeaseNextMessage` and the lease-fenced ack. Ack/nack route to the by-ID ops automatically whenever the delivery's lease token is empty; `Delivery.ShouldDeadLetter` counts the in-flight attempt as `Attempts + 1` on the leaseless path so the dead-letter boundary matches the leased path (where attempts is pre-incremented at lease).
+- `DeliveryStore` / `TxAwareDeliveryStore` — Interfaces for durable mailbox persistence (enqueue, claim, ack, dead-letter). The leaseless single-worker fast path adds `PeekNextMessage` (read-only claim, no lease, no attempts bump; yields an empty lease token), `AckMessageByID` (unfenced delete), and `NackMessageByID` (unfenced release that increments attempts). Postpone adds the same fenced/unfenced pair: `PostponeMessage` (lease-fenced release that decrements attempts to compensate the lease-time bump) and `PostponeMessageByID` (unfenced release that leaves attempts untouched, since the peek never bumped them). A `DurableActor` enables it (via `DurableMailboxConfig.SingleWorkerLeaseless`) strictly when `NumWorkers == 1` AND the behavior is the Read/Commit (Right/`TxBehavior`) path, eliminating the per-message lease write transaction. The multi-worker pool and the classic path are byte-for-byte unchanged: they keep `LeaseNextMessage` and the lease-fenced ack. Ack/nack route to the by-ID ops automatically whenever the delivery's lease token is empty; `Delivery.ShouldDeadLetter` counts the in-flight attempt as `Attempts + 1` on the leaseless path so the dead-letter boundary matches the leased path (where attempts is pre-incremented at lease).
 - `DurableActor` — Actor variant with crash-safe mailbox backed by SQL persistence. Provides `Wait(ctx)` to block until the actor stops and `StopAndWait(ctx)` to request a graceful shutdown and then wait.
 - `DurableActorConfig[M, R]` — Configuration struct for `DurableActor`: behavior, store, codec, clock, DLO, WaitGroup, `TellRetryPolicy`, lease/heartbeat/poll durations, max attempts, cleanup timeout, deduplication TTL, and `NumWorkers`.
 - `DurableActorConfig.NumWorkers` — How many concurrent worker loops drain the actor's single mailbox. Default and any value `<= 1` is one worker (strictly-sequential processing). A value `> 1` turns the actor into a competing-consumer pool: that many goroutines each lease distinct messages via `LeaseNextMailboxMessage`, so independent messages run in parallel while per-correlation-key FIFO still keeps same-key messages ordered. Only for behaviors whose handlers are concurrency-safe and hold no writer across their side effects (e.g. the serverconn egress sender on the Read/Commit path). `NewDurableActor` **fails closed** with `ErrConcurrentClassicBehavior` when `NumWorkers > 1` is paired with a classic (`Left`) `ActorBehavior`, since the classic path wraps the whole `Receive` in one write transaction and assumes sequential delivery; pools are only valid on the Read/Commit (`TxBehavior`) path. The test-only `DurableActorConfig.AllowConcurrentClassicBehavior()` escape hatch bypasses the guard for the egress benchmark that measures the forbidden config; production code must never call it.
 - `DefaultDurableActorConfig[M, R]()` — Constructor returning a `DurableActorConfig` with safe defaults (30s lease, 10 max attempts, 1s poll floor / 30s poll ceiling, DefaultTellRetryPolicy).
 - `DurableActorConfig.PollInterval` / `MaxPollInterval` — Floor and ceiling of the idle mailbox poll backoff (defaults 1s / 30s). The fallback poll is NOT the delivery path: a same-process enqueue signals the mailbox's wake channel, and the store's post-commit `RegisterMailboxWake` callback rouses the exact mailbox a committed transaction enqueued into, so delivery latency is unaffected by how far the backoff has decayed. Each consecutive empty poll roughly doubles the wait from `PollInterval` up to `MaxPollInterval`; any wake or successfully claimed message snaps it back to the floor. This matters at scale because on a Postgres-backed store every empty poll is a full SERIALIZABLE write transaction that updates no rows, so thousands of resident-but-idle actors polling at a fixed 1Hz become a pure transaction tax. The timer is never stopped: since `RegisterMailboxWake` is same-process only, the poll remains the sole discovery mechanism for a row enqueued by another process or replica, which makes `MaxPollInterval` the worst-case cross-process/cross-replica delivery latency. A zero value normalizes to the default and a ceiling below the floor is raised to the floor (constant cadence, never a shrinking wait).
-- `TellRetryPolicy` — Function type `func(lastErr error, attempts int) (bool, time.Duration)` determining retry behavior for failed Tell messages. Return `(false, _)` to dead-letter immediately. A policy may stop retries early, but cannot extend the durable `MaxAttempts` ceiling.
+- `Postpone(delay) error` / `PostponeError` / `ErrPostponed` — The
+  attempt-preserving alternative to a nack, for a behavior that cannot handle
+  a message *yet* (a capacity cap, a peer still draining) as opposed to one
+  that failed. Returning `actor.Postpone(delay)` from a Tell turn releases the
+  message for redelivery after `delay` with `attempts` unchanged and without
+  marking it processed. Detection matches anywhere in the wrap chain, so a
+  behavior may annotate it (`fmt.Errorf("%w: %w", errCapped,
+  actor.Postpone(d))`). `ErrPostponed` is the `errors.Is` sentinel;
+  `*PostponeError.Delay` carries the backoff. Pass a real delay: zero or
+  negative makes the message immediately claim-eligible, which against an
+  unchanged condition is a busy loop against the database.
+- `TellRetryPolicy` — Function type `func(lastErr error, attempts int) (bool,
+  time.Duration)` determining retry behavior for failed Tell messages. Return
+  `(false, _)` to dead-letter immediately. A policy may stop retries early,
+  but cannot extend the durable `MaxAttempts` ceiling. A postpone is detected
+  *before* this policy is consulted and never reaches it.
 - `DefaultTellRetryPolicy` — Exponential backoff policy: up to 5 attempts, starting at 1s, capped at 60s.
 - `Checkpoint` — Serializable actor state snapshot for recovery.
 - `WithoutOutboxID` — Context helper that strips the propagated outbox ID so child operations do not inherit the parent's delivery tracking scope.
@@ -111,6 +126,35 @@ crash-safe at-least-once delivery with exactly-once deduplication.
   the message. A `context.WithTimeout` around `Tell` is the weaker option: it
   burns the entire deadline against a peer that is already wedged.
 - During daemon teardown, the underlying DB is closed before every actor's lease loop has wound down. The lease loop uses `isExpectedShutdownErr` to demote these "database is closed" errors to debug level; real operational errors still surface as warnings because neither the actor context nor the outer context is done in those cases.
+- **Postpone preserves the attempt budget; nack spends it.** A nack increments
+  `attempts` on every release, and both the claim and the peek queries filter
+  on `attempts < max_attempts`, so a repeatedly-nacked message first
+  dead-letters and then (if a policy suppresses the dead-letter write) falls
+  out of the eligible set entirely. A postpone leaves the budget exactly as it
+  was: the fenced `PostponeMessage` decrements to compensate the lease-time
+  increment, and the leaseless `PostponeMessageByID` leaves it untouched
+  because the peek never bumped it. An "always retry" `TellRetryPolicy` is
+  **not** a substitute for a postpone; it only stops the dead-letter write
+  while the row still goes dark at `max_attempts`.
+- **Postpone is Tell-only.** An Ask has a caller parked on the promise, so
+  postponing it would strand that caller for the length of the delay with
+  nothing to observe. An Ask behavior returning a `PostponeError` gets ordinary
+  error treatment (the promise completes with it) and the caller decides
+  whether to re-issue. A behavior serving the same condition over both a routed
+  Tell and an RPC Ask should postpone on the Tell path only.
+- **A postponed message never auto-dead-letters, so behaviors bound their own
+  horizon.** This is the deliberate cost of the feature: postpone removes the
+  only mechanism that would eventually give up. A behavior that postpones
+  against a condition that never clears postpones forever. The framework cannot
+  bound this, because only the behavior knows when waiting stops making sense.
+  Track the wait (in behavior state or in the message) and return a real error
+  once it is no longer justified, so the normal nack path can dead-letter it.
+- **A postponed head still blocks its correlation-key lane.** Postpone does not
+  exempt a message from per-key FIFO: the row is still in the mailbox, so no
+  later same-key message is claim-eligible until it drains, and every further
+  postpone extends the block. Blocking is bounded to the key, not the mailbox,
+  but a long backoff on a busy key is a throughput decision, not just a retry
+  decision. Unkeyed messages have no such interaction.
 - **Per-correlation-key FIFO claim.** Two messages in the same mailbox that
   share a non-empty `CorrelationKey()` are processed in emission order
   regardless of retry backoff. Without this invariant, a transient Tell
