@@ -1361,6 +1361,327 @@ func TestDurableActorRestartReloadsDivergedState(t *testing.T) {
 	require.Equal(t, []int64{durableValue}, behavior.observations())
 }
 
+// gatedExecBehavior is a Read/Commit behavior whose restart handler parks on a
+// gate, so a test can hold a generation's checkpoint hand-off open and watch
+// what the rest of a worker pool does meanwhile.
+type gatedExecBehavior struct {
+	// gate releases the restore turn when closed.
+	gate chan struct{}
+
+	// entered closes when a restore turn has begun, which is the moment
+	// the warm-up barrier is provably holding the pool.
+	entered   chan struct{}
+	enterOnce sync.Once
+
+	// normals counts committed non-restart turns. Nothing may increment it
+	// while the gate is shut.
+	normals atomic.Int32
+
+	// panics makes the first delivery of value 1 panic, which is how the
+	// test provokes the supervised restart it wants to observe.
+	panics atomic.Int32
+
+	// failRestore makes the restore turn fail rather than park, which must
+	// still release the pool.
+	failRestore bool
+}
+
+// Receive implements TxBehavior over the generic TLVMessage type.
+func (b *gatedExecBehavior) Receive(ctx context.Context, msg TLVMessage,
+	ax Exec[DeliveryStore]) fn.Result[int] {
+
+	if _, ok := msg.(*RestartMessage); ok {
+		b.enterOnce.Do(func() { close(b.entered) })
+
+		if b.failRestore {
+			return fn.Err[int](errors.New("restore failed"))
+		}
+
+		// Park until the test opens the gate. The context arm is what
+		// lets a Stop landing mid-barrier unwedge this turn.
+		select {
+		case <-b.gate:
+		case <-ctx.Done():
+			return fn.Err[int](ctx.Err())
+		}
+
+		if err := ax.Commit(ctx, noOpCommit); err != nil {
+			return fn.Err[int](err)
+		}
+
+		return fn.Ok(0)
+	}
+
+	test, ok := msg.(*actorTestMsg)
+	if !ok {
+		return fn.Err[int](errors.New("unexpected message type"))
+	}
+
+	if test.Value.Val == 1 && b.panics.Add(1) == 1 {
+		panic("gated exec behavior panic")
+	}
+
+	if err := ax.Commit(ctx, noOpCommit); err != nil {
+		return fn.Err[int](err)
+	}
+
+	// Only the backlog counts. The message that provoked the restart is
+	// redelivered afterwards and commits harmlessly, but counting it would
+	// make the backlog assertions read as an off-by-one rather than as the
+	// ordering property they are about.
+	if test.Value.Val != 1 {
+		b.normals.Add(1)
+	}
+
+	return fn.Ok(0)
+}
+
+// newGatedPoolActor builds a competing-consumer pool over a gatedExecBehavior.
+func newGatedPoolActor(t *testing.T, store *mockTxAwareStore,
+	behavior *gatedExecBehavior,
+	numWorkers int) *DurableActor[TLVMessage, int] {
+
+	t.Helper()
+
+	cfg := DefaultDurableTxActorConfig[TLVMessage, int, DeliveryStore](
+		"supervised-actor", behavior, identityStoreFactory, store,
+		newSupervisedCodec(),
+	)
+	cfg.PollInterval = 10 * time.Millisecond
+	cfg.MaxPollInterval = 10 * time.Millisecond
+	cfg.NumWorkers = numWorkers
+	cfg.MaxAttempts = 100
+	cfg.TellRetryPolicy = func(error, int) (bool, time.Duration) {
+		return true, time.Millisecond
+	}
+
+	return NewDurableActor(cfg).UnwrapOrFail(t)
+}
+
+// newGatedBehavior builds a gated behavior with its channels wired.
+func newGatedBehavior() *gatedExecBehavior {
+	return &gatedExecBehavior{
+		gate:    make(chan struct{}),
+		entered: make(chan struct{}),
+	}
+}
+
+// TestDurableActorPoolWarmupBarrierHoldsRestart verifies the ordering
+// guarantee under a competing-consumer pool: while a restart hand-off is being
+// processed, no sibling worker may run a normal turn against the same behavior
+// instance.
+//
+// RestartPriority orders the CLAIMS, not the turns. Launching a pool all at
+// once lets one worker take the restart message while a sibling immediately
+// takes the row behind it, so a normal turn runs against a behavior that is
+// still rebuilding itself from the checkpoint. The warm-up barrier is what
+// turns the documented "processed before all other messages" into something
+// that actually holds.
+func TestDurableActorPoolWarmupBarrierHoldsRestart(t *testing.T) {
+	t.Parallel()
+
+	const (
+		numWorkers = 4
+		backlog    = 6
+	)
+
+	store := newMockTxAwareStore()
+	behavior := newGatedBehavior()
+
+	a := newGatedPoolActor(t, store, behavior, numWorkers)
+	a.Start()
+	defer a.Stop()
+
+	// Provoke a supervised restart. The framework enqueues the restart
+	// message itself, so the barrier holds for it unconditionally rather
+	// than inferring it from the first claim.
+	panicMsg := &actorTestMsg{
+		Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(1)),
+	}
+	require.NoError(t, a.Ref().Tell(context.Background(), panicMsg))
+
+	// Wait until the restore turn is parked in the gate. From here on the
+	// barrier is provably shut and only the warm-up worker exists.
+	select {
+	case <-behavior.entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("restore turn never started")
+	}
+
+	// Queue a backlog behind the parked restore. Every one of these is
+	// claim-eligible, so a pool that had fanned out would drain them.
+	for i := 0; i < backlog; i++ {
+		msg := &actorTestMsg{
+			Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(2)),
+		}
+		require.NoError(t, a.Ref().Tell(context.Background(), msg))
+	}
+
+	// Nothing may run while the hand-off is open. The window is many poll
+	// intervals wide, so a pool that fanned out early would be caught.
+	require.Never(t, func() bool {
+		return behavior.normals.Load() > 0
+	}, 500*time.Millisecond, 10*time.Millisecond)
+
+	// Release the restore and the pool fans out to drain the backlog.
+	close(behavior.gate)
+
+	require.Eventually(t, func() bool {
+		return behavior.normals.Load() == int32(backlog)
+	}, 10*time.Second, 10*time.Millisecond)
+
+	require.NoError(t, a.ctx.Err())
+}
+
+// TestDurableActorPoolWarmupBarrierReleasesOnFailedRestore verifies the
+// barrier cannot wedge a pool when the restore turn fails. A failed restart
+// turn is dead-lettered rather than retried, so the hand-off is resolved and
+// the pool must fan out.
+func TestDurableActorPoolWarmupBarrierReleasesOnFailedRestore(t *testing.T) {
+	t.Parallel()
+
+	const (
+		numWorkers = 4
+		backlog    = 6
+	)
+
+	store := newMockTxAwareStore()
+	behavior := newGatedBehavior()
+	behavior.failRestore = true
+
+	a := newGatedPoolActor(t, store, behavior, numWorkers)
+	a.Start()
+	defer a.Stop()
+
+	panicMsg := &actorTestMsg{
+		Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(1)),
+	}
+	require.NoError(t, a.Ref().Tell(context.Background(), panicMsg))
+
+	select {
+	case <-behavior.entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("restore turn never started")
+	}
+
+	for i := 0; i < backlog; i++ {
+		msg := &actorTestMsg{
+			Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(2)),
+		}
+		require.NoError(t, a.Ref().Tell(context.Background(), msg))
+	}
+
+	// The restore failed, so the barrier releases and the backlog drains.
+	require.Eventually(t, func() bool {
+		return behavior.normals.Load() == int32(backlog)
+	}, 10*time.Second, 10*time.Millisecond)
+
+	// The failed restart went to the dead letter queue rather than being
+	// retried into a second barrier.
+	require.Eventually(t, func() bool {
+		store.mu.Lock()
+		defer store.mu.Unlock()
+
+		for _, dl := range store.deadLetters {
+			if dl.MessageType == "actor.Restart" {
+				return true
+			}
+		}
+
+		return false
+	}, 10*time.Second, 10*time.Millisecond)
+}
+
+// TestDurableActorPoolWarmupBarrierStopUnblocks verifies that a Stop landing
+// while the barrier is shut terminates the actor cleanly rather than parking
+// shutdown behind a restore that will never finish.
+func TestDurableActorPoolWarmupBarrierStopUnblocks(t *testing.T) {
+	t.Parallel()
+
+	store := newMockTxAwareStore()
+	behavior := newGatedBehavior()
+
+	// The gate is never opened: only the generation context can end the
+	// restore turn.
+	a := newGatedPoolActor(t, store, behavior, 4)
+
+	watch := a.Watch(context.Background())
+
+	a.Start()
+
+	panicMsg := &actorTestMsg{
+		Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(1)),
+	}
+	require.NoError(t, a.Ref().Tell(context.Background(), panicMsg))
+
+	select {
+	case <-behavior.entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("restore turn never started")
+	}
+
+	stopped := make(chan error, 1)
+	go func() {
+		stopCtx, cancel := context.WithTimeout(
+			context.Background(), 10*time.Second,
+		)
+		defer cancel()
+
+		stopped <- a.StopAndWait(stopCtx)
+	}()
+
+	select {
+	case err := <-stopped:
+		require.NoError(t, err)
+
+	case <-time.After(10 * time.Second):
+		t.Fatal("shutdown parked behind the warm-up barrier")
+	}
+
+	info := <-watch
+	require.Equal(t, TerminationStopped, info.Reason)
+}
+
+// TestDurableActorPoolWithoutRestartFansOut verifies the barrier costs a pool
+// nothing when there is no hand-off to order: the first claim of a normal
+// message releases it before that message is even processed, so the pool is at
+// full width for the work behind it.
+func TestDurableActorPoolWithoutRestartFansOut(t *testing.T) {
+	t.Parallel()
+
+	const numWorkers = 4
+
+	store := newMockTxAwareStore()
+	behavior := &supervisedExecBehavior{}
+	behavior.parking.Store(true)
+
+	cfg := DefaultDurableTxActorConfig[TLVMessage, int, DeliveryStore](
+		"supervised-actor", behavior, identityStoreFactory, store,
+		newSupervisedCodec(),
+	)
+	cfg.PollInterval = 10 * time.Millisecond
+	cfg.MaxPollInterval = 10 * time.Millisecond
+	cfg.NumWorkers = numWorkers
+	cfg.MaxAttempts = 100
+
+	a := NewDurableActor(cfg).UnwrapOrFail(t)
+	a.Start()
+	defer a.Stop()
+
+	// Every worker parks inside its turn, so reaching numWorkers parked
+	// turns is only possible once the whole pool is running.
+	for i := 0; i < numWorkers; i++ {
+		msg := &actorTestMsg{
+			Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(0)),
+		}
+		require.NoError(t, a.Ref().Tell(context.Background(), msg))
+	}
+
+	require.Eventually(t, func() bool {
+		return behavior.parked.Load() == numWorkers
+	}, 10*time.Second, 10*time.Millisecond)
+}
+
 // TestRestartTrackerSlidingWindow verifies the intensity budget is a sliding
 // window: restarts inside the window count against the budget, and restarts
 // that have aged out do not.
