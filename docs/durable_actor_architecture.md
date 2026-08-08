@@ -635,6 +635,59 @@ flowchart LR
     C -.->|Time passes| D
 ```
 
+### In-Process Supervision: Panic-Driven Restart
+
+A crash is not the only way an actor's in-memory state goes bad. A behavior
+that panics mid-turn leaves whatever it was mutating half-updated, and the
+runtime used to recover the panic, nack the message, and feed the next one to
+that same, now-suspect behavior instance. The supervision kernel closes that
+gap by turning a panic into the in-process equivalent of the crash recovery
+above.
+
+The runtime distinguishes the two failure shapes. A behavior that *returns* an
+error is an ordinary message failure and retries per the `TellRetryPolicy`. A
+behavior that *panics* is converted into a `behaviorPanic`, which the worker
+recognises and hands to the actor's supervision loop.
+
+The restart sequence is:
+
+1. The delivery's normal ack/nack/dead-letter bookkeeping runs first, so the
+   message that triggered the panic burns an attempt exactly as it does today.
+   This ordering is what keeps a deterministic poison message climbing toward
+   `max_attempts` and the dead letter queue instead of restarting the actor
+   forever.
+2. Supervision cancels the current worker *generation*, which drains every
+   worker of a `NumWorkers > 1` pool, not just the one that panicked.
+3. The behavior's `OnStop` hook runs (bounded by `CleanupTimeout`) if it
+   implements `Stoppable`.
+4. The startup path re-runs: `LoadCheckpoint` followed by
+   `PrependRestartMessage`, so the behavior rebuilds from its persisted FSM
+   state before it sees any other message.
+5. A fresh generation of `NumWorkers` loops starts on the same mailbox.
+
+The actor's public identity is untouched: same ID, same `DurableMailbox`, same
+`Ref`. Senders keep enqueueing across the restart gap, and the mailbox's
+promise registry survives, so a message that had not yet reached the behavior
+is redelivered afterwards and its caller still gets a result. The turns that
+were in flight do not survive: the panicking turn's promise is completed with
+the panic error, and a sibling worker's turn sees its generation context
+cancelled and completes its promise with that context error.
+
+Restarts are bounded by a BEAM-style intensity budget,
+`DurableActorConfig.MaxRestarts` restarts inside `RestartWindow` (default 5 per
+60s, tracked in a sliding window). Breaking the budget is terminal: the actor
+logs at error level, cancels its lifetime context so further sends fail fast,
+tears down, and publishes its termination to watchers.
+
+`(*DurableActor).Watch(ctx)` is how another component observes that terminal
+event. It returns a channel that receives exactly one `TerminationInfo` and is
+then closed, carrying the reason (stopped, context cancelled, restart intensity
+exceeded, restart failed), the failure behind it, the lifetime restart count,
+and whether the restart budget was exhausted. Delivery is non-blocking by
+construction, so a slow watcher can never park the actor's shutdown path.
+
+---
+
 ---
 
 ## TypeAssertingRef and MapRef Pattern
