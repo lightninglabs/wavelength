@@ -372,18 +372,32 @@ func TreeFromProto(pt *VTXOTree,
 		goNodes[i] = node
 	}
 
-	// Wire up children references. We enforce two structural
+	// Wire up children references. We enforce three structural
 	// invariants:
 	//
 	// 1. Pre-order invariant: childIdx > i. Since flattenNode
 	//    serializes in pre-order, children always have higher
-	//    indices than parents. This prevents cycles (self-refs,
-	//    mutual refs, back-edges) and diamond DAGs (shared
-	//    children) in a single check.
+	//    indices than parents. This prevents cycles: self-refs,
+	//    mutual refs and back-edges.
 	//
-	// 2. Output index bounds: outIdx must be within the parent
+	// 2. Single parent: no node may be named as a child twice.
+	//    The pre-order check alone does NOT give this, contrary to
+	//    what this comment used to claim. Two parents at indices 0
+	//    and 1 can both name child 5 and both satisfy childIdx > i,
+	//    which decodes a DAG rather than a tree. Every recursive
+	//    walk over the result then re-visits the shared subtree once
+	//    per path that reaches it, so a decoder that accepts a
+	//    shared child hands the rest of the system exponential work
+	//    from a linear-sized message.
+	//
+	// 3. Output index bounds: outIdx must be within the parent
 	//    node's output count. Without this, downstream code that
 	//    accesses Outputs[outIdx] would panic.
+	//
+	// parentOf records the parent that claimed each child, so a
+	// second claim can name both of them.
+	parentOf := make(map[uint32]int, len(pt.Nodes))
+
 	for i, pn := range pt.Nodes {
 		for outIdx, childIdx := range pn.Children {
 			if childIdx <= uint32(i) {
@@ -391,6 +405,14 @@ func TreeFromProto(pt *VTXOTree,
 					"%d must be > parent index (cycle or "+
 					"back-reference)", i, childIdx)
 			}
+
+			if prev, dup := parentOf[childIdx]; dup {
+				return nil, fmt.Errorf("node[%d] child index "+
+					"%d is already a child of node[%d]; "+
+					"tree must not share children", i,
+					childIdx, prev)
+			}
+			parentOf[childIdx] = i
 
 			if int(childIdx) >= len(goNodes) {
 				return nil, fmt.Errorf("node[%d] child index "+
