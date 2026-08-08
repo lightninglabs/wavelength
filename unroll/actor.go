@@ -245,6 +245,25 @@ func (b *behavior) Receive(ctx context.Context, msg Msg,
 		return fn.Ok[Resp](b.stateResponse(ctx))
 	}
 
+	// A restart message reaches a live behavior in exactly one case: the
+	// actor's supervisor restarted it after this behavior panicked. The
+	// framework reuses the same behavior instance across the restart, so a
+	// panic that advanced b.pending or b.sweepTx in memory past the last
+	// Staged checkpoint would otherwise survive it. Re-run the same
+	// checkpoint restore the constructor runs, which overwrites both from
+	// the durable row. It drives no FSM transition and writes nothing, so
+	// it returns before the Commit like the status probe above.
+	if _, ok := msg.(*restartMsg); ok {
+		if err := b.restoreCheckpoint(ctx); err != nil {
+			return fn.Err[Resp](
+				fmt.Errorf("restore checkpoint on restart: %w",
+					err),
+			)
+		}
+
+		return fn.Ok[Resp](b.stateResponse(ctx))
+	}
+
 	// Run the FSM pipeline. Every checkpoint write inside is a short,
 	// lock-releasing Stage and the slow txconfirm IO runs with no writer
 	// transaction held; dispatch never commits.

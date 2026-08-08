@@ -801,5 +801,30 @@ func newCodec() *actor.MessageCodec {
 		func() actor.TLVMessage { return &SpendObservedMsg{} },
 	)
 
+	// The actor framework prepends its own RestartMessage when it restarts
+	// this actor from its checkpoint. Register the adapter rather than the
+	// framework type directly: the durable mailbox casts every decoded
+	// message to Msg, and the bare framework type does not satisfy this
+	// package's seal, so an unadapted restart would fail that cast and
+	// dead-letter instead of restoring.
+	codec.MustRegister(
+		actor.RestartTLVType,
+		func() actor.TLVMessage { return &restartMsg{} },
+	)
+
 	return codec
 }
+
+// restartMsg adapts the actor framework's RestartMessage into this package's
+// sealed message surface. It adds nothing but the seal: encoding, decoding,
+// the TLV type, and the restart priority are all the embedded framework
+// message's.
+type restartMsg struct {
+	actor.RestartMessage
+}
+
+// unrollMsgSealed implements the Msg interface seal.
+func (m *restartMsg) unrollMsgSealed() {}
+
+// Compile-time check that the restart adapter is a durable unroll message.
+var _ Msg = (*restartMsg)(nil)
