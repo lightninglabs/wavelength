@@ -2484,15 +2484,89 @@ func TestOORRegistryOverCapAdmissionPostpones(t *testing.T) {
 func TestOORRegistryDefaultCapBackoff(t *testing.T) {
 	t.Parallel()
 
+	ctx := t.Context()
+
 	b, _ := newTestRegistryBehavior(newFakeRegistryStore())
 	require.Equal(t, incomingCapBackoff, b.capPostponeBackoff())
 	require.Positive(t, b.capPostponeBackoff())
+	require.Equal(t, overCapPostponeHorizon, b.capPostponeHorizon())
+	require.Positive(t, b.capPostponeHorizon())
 
 	// A non-cap error passes through untouched: only the cap is a not-now
 	// condition.
 	other := errors.New("boom")
-	require.Equal(t, other, b.postponeOverCap(other))
-	require.NotErrorIs(t, b.postponeOverCap(other), actor.ErrPostponed)
+	require.Equal(t, other, b.postponeOverCap(ctx, other))
+	require.NotErrorIs(t, b.postponeOverCap(ctx, other), actor.ErrPostponed)
+}
+
+// TestOORRegistryOverCapPostponeHorizon verifies the registry bounds its own
+// postpone horizon, which postpone requires of every adopter: because a
+// postponed message never climbs toward max_attempts, nothing else will ever
+// give up on it. A capped hint younger than the horizon postpones, one that has
+// been waiting past it fails with the plain sentinel so the ordinary nack path
+// dead-letters it. Without this bound an operator streaming fabricated session
+// ids would pin a churn queue on the single-worker registry forever.
+func TestOORRegistryOverCapPostponeHorizon(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 7, 12, 0, 0, 0, time.UTC)
+
+	const horizon = 10 * time.Minute
+
+	b, rec := newTestRegistryBehavior(newFakeRegistryStore())
+	b.cfg.IncomingHandler = &fakeRecipientFilter{owned: true}
+	b.cfg.Limits.MaxConcurrentIncomingSessions = 1
+	b.cfg.Clock = clock.NewTestClock(now)
+	b.capHorizon = horizon
+
+	ownedScript := []byte{0x51, 0x20, 0xaa, 0xbb}
+	admit := func(ctx context.Context, seed byte) fn.Result[ActorResp] {
+		return b.Receive(ctx, &ResolveIncomingTransferRequest{
+			SessionID:         oorSessionID(seed),
+			RecipientPkScript: ownedScript,
+		}, fakeExec{})
+	}
+
+	// Fill the only incoming slot so every later admission is over cap.
+	require.True(t, admit(t.Context(), 0x01).IsOk())
+	require.Equal(t, 1, rec.spawns)
+
+	// A hint enqueued one minute ago is still inside the horizon, so it
+	// postpones and keeps its attempt budget.
+	fresh := actor.WithDeliveryEnqueuedAtForTest(
+		t.Context(), now.Add(-time.Minute),
+	)
+	res := admit(fresh, 0x02)
+	require.True(t, res.IsErr())
+	require.ErrorIs(t, res.Err(), errIncomingAdmissionCapped)
+	require.ErrorIs(t, res.Err(), actor.ErrPostponed)
+
+	// Exactly at the horizon the postpone stops: the hint has had its wait
+	// and now fails for real so the nack path can dead-letter it.
+	atHorizon := actor.WithDeliveryEnqueuedAtForTest(
+		t.Context(), now.Add(-horizon),
+	)
+	res = admit(atHorizon, 0x03)
+	require.True(t, res.IsErr())
+	require.ErrorIs(t, res.Err(), errIncomingAdmissionCapped)
+	require.NotErrorIs(t, res.Err(), actor.ErrPostponed)
+
+	// Well past the horizon behaves the same way.
+	stale := actor.WithDeliveryEnqueuedAtForTest(
+		t.Context(), now.Add(-2*horizon),
+	)
+	res = admit(stale, 0x04)
+	require.True(t, res.IsErr())
+	require.NotErrorIs(t, res.Err(), actor.ErrPostponed)
+
+	// A delivery with no enqueue timestamp carries no horizon information,
+	// so it postpones rather than being treated as infinitely old.
+	res = admit(t.Context(), 0x05)
+	require.True(t, res.IsErr())
+	require.ErrorIs(t, res.Err(), actor.ErrPostponed)
+
+	// None of the rejected hints spawned a child.
+	require.Equal(t, 1, rec.spawns)
 }
 
 // TestOORRegistryOverCapHintKeepsAttempts drives an over-cap incoming hint
