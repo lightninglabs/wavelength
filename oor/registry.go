@@ -1048,7 +1048,7 @@ func (r *oorRegistryBehavior) handleDriveEvent(ctx context.Context,
 		// postpone it so the event waits for a slot with its attempt
 		// budget intact rather than dead-lettering an event whose
 		// session row is still very much alive.
-		return fn.Err[ActorResp](r.postponeOverCap(err))
+		return fn.Err[ActorResp](r.postponeOverCap(ctx, err))
 	}
 	if child == nil {
 		// lookupOrRestore returns a nil child for both a truly-unknown
@@ -1181,7 +1181,7 @@ func (r *oorRegistryBehavior) handleResolveIncoming(ctx context.Context,
 		// ensureChild is the choke point behind the pre-check above, so
 		// it can still reject at the cap on a path the pre-check
 		// exempted; give that rejection the same postpone treatment.
-		return fn.Err[ActorResp](r.postponeOverCap(err))
+		return fn.Err[ActorResp](r.postponeOverCap(ctx, err))
 	}
 
 	if !existed {
@@ -1434,7 +1434,13 @@ func (r *oorRegistryBehavior) handleResumeSession(ctx context.Context,
 
 	child, err := r.lookupOrRestore(ctx, req.SessionID)
 	if err != nil {
-		return fn.Err[ActorResp](err)
+
+		// A resume arrives as a Tell from the retry callback, so it
+		// gets the same over-cap treatment as a routed drive-event: a
+		// session that cannot be made resident right now is over cap,
+		// not broken, and nacking its resume would dead-letter a real
+		// delivery for a condition that clears on its own.
+		return fn.Err[ActorResp](r.postponeOverCap(ctx, err))
 	}
 	if child == nil {
 		r.logger(ctx).DebugS(
