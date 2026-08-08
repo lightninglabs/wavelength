@@ -773,6 +773,23 @@ func (a *ServerConnectionActor) Receive(ctx context.Context, msg ServerConnMsg,
 	ax actor.Exec[egressTx]) fn.Result[ServerConnResp] {
 
 	switch m := msg.(type) {
+	case *restartMsg:
+		// The egress sender keeps no per-turn state that a checkpoint
+		// could restore, so a supervised restart has nothing to rebuild
+		// here. Each turn reads its whole input from the durable
+		// message, converts it, sends it over the edge, and consumes
+		// the message in one Commit; nothing carries over between
+		// turns. What in-memory state the connector does hold belongs
+		// to the CONNECTION, not to a turn: the unary response
+		// registry, the last-send timestamp, the cached
+		// incompatibility, and the ingress cancel are all owned by the
+		// ingress loop and its callers, and a panicking egress turn
+		// cannot leave any of them half-written. Consuming the restart
+		// as an explicit no-op is therefore the whole restore, and
+		// saying so here is what keeps it from looking like an
+		// oversight.
+		return fn.Ok[ServerConnResp](&SendClientEventResponse{})
+
 	case *SendClientEventRequest:
 		return a.handleSendClientEvent(ctx, m, ax)
 
@@ -1314,8 +1331,30 @@ func NewServerConnCodec() *actor.MessageCodec {
 		},
 	)
 
+	// The actor framework prepends its own RestartMessage when it restarts
+	// the egress actor from its checkpoint. Register the adapter rather
+	// than the framework type directly: the durable mailbox casts every
+	// decoded message to ServerConnMsg, and the bare framework type does
+	// not satisfy this package's seal, so an unadapted restart would fail
+	// that cast and dead-letter instead of being handled.
+	codec.MustRegister(
+		actor.RestartTLVType,
+		func() actor.TLVMessage { return &restartMsg{} },
+	)
+
 	return codec
 }
+
+// restartMsg adapts the actor framework's RestartMessage into this package's
+// sealed message surface. It adds nothing but the seal: encoding, decoding,
+// the TLV type, and the restart priority are all the embedded framework
+// message's.
+type restartMsg struct {
+	actor.RestartMessage
+}
+
+// serverConnMsgSealed implements the ServerConnMsg interface seal.
+func (m *restartMsg) serverConnMsgSealed() {}
 
 // Compile-time interface checks.
 var (
