@@ -1894,7 +1894,7 @@ func (a *RoundClientActor) handleAssetBoarding(ctx context.Context,
 		},
 	}
 
-	roundFSM := a.findAssemblingRound()
+	roundFSM := a.findAssemblingRound(ctx)
 	if roundFSM == nil {
 		roundFSM, err = a.createNewRound(ctx)
 		if err != nil {

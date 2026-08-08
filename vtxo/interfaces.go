@@ -398,6 +398,12 @@ type Descriptor struct {
 	// this VTXO. Amount remains the separate Bitcoin carrier value.
 	TaprootAssetAmount uint64
 
+	// TaprootAssetSealedPackage is the sealed tap-sdk package that
+	// created this VTXO, present only for an asset leaf received from a
+	// round. Spending it out of round rebuilds the compact proof path
+	// and the OP_TRUE witness from it.
+	TaprootAssetSealedPackage []byte
+
 	// ClientKey is the client's key descriptor for this VTXO.
 	ClientKey keychain.KeyDescriptor
 

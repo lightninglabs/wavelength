@@ -1731,6 +1731,9 @@ func (s *RoundPersistenceStore) domainVTXOToInsertParams(ctx context.Context,
 		TaprootAssetRoot:   assetRoot,
 		TaprootAssetRef:    assetRef,
 		TaprootAssetAmount: assetAmount,
+		TaprootAssetSealedPackage: bytes.Clone(
+			vtxo.TaprootAssetSealedPackage,
+		),
 	}, nil
 }
 

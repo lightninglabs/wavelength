@@ -2007,6 +2007,7 @@ func (s *RoundJoinedState) processEvent(ctx context.Context, event ClientEvent,
 				CommitmentTx:         evt.Tx,
 				TxID:                 txid,
 				VTXOTreePaths:        evt.VTXOTreePaths,
+				AssetLeafPackages:    evt.AssetLeafPackages,
 				TreeCosignKey:        evt.TreeCosignKey,
 				ConnectorOperatorKey: evt.ConnectorOperatorKey,
 				SweepKey:             evt.SweepKey,
@@ -2582,6 +2583,7 @@ func (s *CommitmentTxReceivedState) processEvent(ctx context.Context,
 				RoundID:              s.RoundID,
 				CommitmentTx:         s.CommitmentTx,
 				VTXOTreePaths:        s.VTXOTreePaths,
+				AssetLeafPackages:    s.AssetLeafPackages,
 				SweepDelay:           s.SweepDelay,
 				FlowVersion:          s.FlowVersion,
 				ForfeitKey:           s.ForfeitKey,
@@ -2722,6 +2724,7 @@ func (s *CommitmentTxValidatedState) processEvent(ctx context.Context,
 					RoundID:           s.RoundID,
 					CommitmentTx:      s.CommitmentTx,
 					VTXOTreePaths:     s.VTXOTreePaths,
+					AssetLeafPackages: s.AssetLeafPackages,
 					SweepDelay:        s.SweepDelay,
 					FlowVersion:       s.FlowVersion,
 					ForfeitKey:        s.ForfeitKey,
@@ -2841,6 +2844,7 @@ func (s *CommitmentTxValidatedState) processEvent(ctx context.Context,
 				RoundID:              s.RoundID,
 				CommitmentTx:         s.CommitmentTx,
 				VTXOTreePaths:        s.VTXOTreePaths,
+				AssetLeafPackages:    s.AssetLeafPackages,
 				SweepDelay:           s.SweepDelay,
 				FlowVersion:          s.FlowVersion,
 				ForfeitKey:           s.ForfeitKey,
@@ -3032,6 +3036,7 @@ func (s *ForfeitSignaturesCollectingState) waitForMoreForfeitSignatures(
 			RoundID:              s.RoundID,
 			CommitmentTx:         s.CommitmentTx,
 			VTXOTreePaths:        s.VTXOTreePaths,
+			AssetLeafPackages:    s.AssetLeafPackages,
 			SweepDelay:           s.SweepDelay,
 			FlowVersion:          s.FlowVersion,
 			ForfeitKey:           s.ForfeitKey,
@@ -3239,16 +3244,17 @@ func (s *ForfeitSignaturesCollectingState) inputSigSentState(
 ) *InputSigSentState {
 
 	return &InputSigSentState{
-		RoundID:        s.RoundID,
-		CommitmentTx:   s.CommitmentTx,
-		VTXOTreePaths:  s.VTXOTreePaths,
-		SweepDelay:     s.SweepDelay,
-		FlowVersion:    s.FlowVersion,
-		ForfeitKey:     s.ForfeitKey,
-		Intents:        s.Intents.Clone(),
-		ClientTrees:    s.ClientTrees,
-		InputSigs:      boardingInputSigs,
-		ForfeitedVTXOs: forfeitedVTXOs,
+		RoundID:           s.RoundID,
+		CommitmentTx:      s.CommitmentTx,
+		VTXOTreePaths:     s.VTXOTreePaths,
+		AssetLeafPackages: s.AssetLeafPackages,
+		SweepDelay:        s.SweepDelay,
+		FlowVersion:       s.FlowVersion,
+		ForfeitKey:        s.ForfeitKey,
+		Intents:           s.Intents.Clone(),
+		ClientTrees:       s.ClientTrees,
+		InputSigs:         boardingInputSigs,
+		ForfeitedVTXOs:    forfeitedVTXOs,
 	}
 }
 
@@ -3318,6 +3324,7 @@ func (s *NoncesSentState) processEvent(ctx context.Context, event ClientEvent,
 				RoundID:              s.RoundID,
 				CommitmentTx:         s.CommitmentTx,
 				VTXOTreePaths:        s.VTXOTreePaths,
+				AssetLeafPackages:    s.AssetLeafPackages,
 				SweepDelay:           s.SweepDelay,
 				FlowVersion:          s.FlowVersion,
 				ForfeitKey:           s.ForfeitKey,
@@ -3458,6 +3465,7 @@ func (s *NoncesAggregatedState) processEvent(ctx context.Context,
 				RoundID:              s.RoundID,
 				CommitmentTx:         s.CommitmentTx,
 				VTXOTreePaths:        s.VTXOTreePaths,
+				AssetLeafPackages:    s.AssetLeafPackages,
 				SweepDelay:           s.SweepDelay,
 				FlowVersion:          s.FlowVersion,
 				ForfeitKey:           s.ForfeitKey,
@@ -3691,15 +3699,16 @@ func (s *PartialSigsSentState) processEvent(ctx context.Context,
 		// recover to InputSigSentState. For boarding-only rounds,
 		// ForfeitedVTXOs is nil.
 		nextState := &InputSigSentState{
-			RoundID:       s.RoundID,
-			CommitmentTx:  s.CommitmentTx,
-			VTXOTreePaths: s.VTXOTreePaths,
-			SweepDelay:    s.SweepDelay,
-			FlowVersion:   s.FlowVersion,
-			ForfeitKey:    s.ForfeitKey,
-			Intents:       s.Intents.Clone(),
-			ClientTrees:   s.ClientTrees,
-			InputSigs:     boardingInputSigs,
+			RoundID:           s.RoundID,
+			CommitmentTx:      s.CommitmentTx,
+			VTXOTreePaths:     s.VTXOTreePaths,
+			AssetLeafPackages: s.AssetLeafPackages,
+			SweepDelay:        s.SweepDelay,
+			FlowVersion:       s.FlowVersion,
+			ForfeitKey:        s.ForfeitKey,
+			Intents:           s.Intents.Clone(),
+			ClientTrees:       s.ClientTrees,
+			InputSigs:         boardingInputSigs,
 		}
 		// Checkpointing may outlive the triggering actor request, so
 		// use a detached context for the local store write.
@@ -3816,6 +3825,7 @@ func (s *PartialSigsSentState) transitionToForfeitCollection(
 			RoundID:              s.RoundID,
 			CommitmentTx:         s.CommitmentTx,
 			VTXOTreePaths:        s.VTXOTreePaths,
+			AssetLeafPackages:    s.AssetLeafPackages,
 			SweepDelay:           s.SweepDelay,
 			FlowVersion:          s.FlowVersion,
 			ForfeitKey:           s.ForfeitKey,
@@ -4538,8 +4548,8 @@ func leafNonAnchorAmount(leaf *tree.Node) (btcutil.Amount, error) {
 // pkScripts are skipped: the client still co-signs their tree path, but it
 // must not persist them as spendable local balance.
 func buildClientVTXOs(ctx context.Context, checker OwnedScriptChecker,
-	intents Intents, trees map[SignerKey]*tree.Tree,
-	roundID RoundID) ([]*ClientVTXO, error) {
+	intents Intents, trees map[SignerKey]*tree.Tree, roundID RoundID,
+	assetLeafPackages map[wire.OutPoint][]byte) ([]*ClientVTXO, error) {
 
 	vtxos := make([]*ClientVTXO, 0)
 	for _, req := range intents.VTXOs {
@@ -4660,6 +4670,16 @@ func buildClientVTXOs(ctx context.Context, checker OwnedScriptChecker,
 			vtxo.TaprootAssetRoot = root
 			vtxo.TaprootAssetRef = req.AssetRef
 			vtxo.TaprootAssetAmount = req.AssetAmount
+
+			// Spending this leaf out of round rebuilds its proof
+			// path and OP_TRUE witness from the sealed package
+			// the operator handed over; there is no other source.
+			sealed := assetLeafPackages[*outpoint]
+			if len(sealed) == 0 {
+				return nil, fmt.Errorf("asset leaf %s has no "+
+					"sealed package", outpoint)
+			}
+			vtxo.TaprootAssetSealedPackage = sealed
 		}
 		if isStandard {
 			vtxo.Expiry = params.ExitDelay
@@ -4859,7 +4879,7 @@ func (s *InputSigSentState) ProcessEvent(ctx context.Context, event ClientEvent,
 
 		vtxos, err := buildClientVTXOs(
 			ctx, env.OwnedScriptChecker, s.Intents, s.ClientTrees,
-			s.RoundID,
+			s.RoundID, s.AssetLeafPackages,
 		)
 		if err != nil {
 

@@ -232,6 +232,14 @@ message ClientBatchInfo {
     // same value so both sides agree on how the round was conducted. Today
     // the only understood value is 1.
     uint32 flow_version = 10;
+
+    // asset_leaf_packages maps a client asset leaf's outpoint to the
+    // sealed tap-sdk package that created it, keyed in the standard
+    // "hash:index" form. It is what lets the owner build the proof path
+    // and OP_TRUE witness for spending that leaf later, so it is scoped
+    // to the client's own leaves — every other node's package stays
+    // operator-side.
+    map<string, bytes> asset_leaf_packages = 11;
 }
 
 // ClientAwaitingInputSigsResp notifies a client that the server is ready
