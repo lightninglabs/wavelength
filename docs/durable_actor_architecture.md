@@ -670,7 +670,44 @@ The restart sequence is:
 4. The startup path re-runs: `LoadCheckpoint` followed by
    `PrependRestartMessageWithID`, so the behavior can rebuild from its
    persisted FSM state before it sees any other message.
-5. A fresh generation of `NumWorkers` loops starts on the same mailbox.
+5. A fresh generation of `NumWorkers` loops starts on the same mailbox, one
+   worker at a time behind a warm-up barrier (see below).
+
+#### Ordering the hand-off under a worker pool
+
+`RestartMessage` carries `RestartPriority`, which makes the claim query hand it
+out before every other row. Under `NumWorkers > 1` that orders the *claims* and
+not the *turns*, which is a weaker thing than it sounds: launch the whole pool
+at once and one worker takes the restart while a sibling immediately takes the
+row behind it, so a normal turn runs against a behavior instance that is still
+rebuilding itself from the checkpoint. The documented guarantee that a restart
+message is processed before all other messages needs more than a priority to
+hold.
+
+So a generation warms up one worker at a time. The supervisor launches a single
+worker, and the rest of the pool waits until that worker has resolved the
+generation's restart hand-off. For a row supervision enqueued itself (any
+supervised restart) the barrier waits for that row unconditionally. For the
+boot hand-off, which an owner prepends before `Start` and which the actor
+therefore never sees, the barrier orders the first claim instead and releases on
+an idle tick, which orders the common case without being able to prove a row was
+ever there.
+
+The release rule is shaped so the barrier cannot wedge a pool that has no
+hand-off waiting for it:
+
+- A first claim of anything other than a restart message releases the pool
+  *before* that message is processed, so a generation with no hand-off pays
+  nothing and never serializes behind its first turn.
+- A restore that fails is dead-lettered, and a restore that panics tears the
+  generation down. Both resolve the hand-off, and both release the pool.
+- Whatever ends the warm-up worker releases the pool, including a closed
+  mailbox.
+- A `Stop` landing mid-barrier releases it through the generation context, so
+  shutdown never parks behind a restore.
+
+A single-worker actor is already strictly sequential, so it gets no barrier and
+runs the identical code path with nothing to pay for.
 
 #### What "restart" does and does not mean
 
