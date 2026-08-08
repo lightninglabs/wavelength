@@ -579,6 +579,15 @@ func (s *memCheckpointStore) PostponeMessage(ctx context.Context, id,
 		return 0, nil
 	}
 
+	// The fenced postpone validates the lease token exactly as the fenced
+	// nack does. Skipping the check here would let a stale consumer's
+	// postpone decrement the attempts of a row another consumer now owns,
+	// which is the corruption the fence exists to prevent, and the mock
+	// would report a zero-row release as success.
+	if msg.leased.LeaseToken != leaseToken {
+		return 0, nil
+	}
+
 	msg.leased.LeaseToken = ""
 	msg.leased.LeaseUntil = time.Time{}
 	if msg.leased.Attempts > 0 {
