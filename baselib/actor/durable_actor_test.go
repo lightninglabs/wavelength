@@ -407,7 +407,7 @@ func TestDurableActorAskRespectsCallerContextAfterEnqueue(t *testing.T) {
 		MaxAttempts: 3,
 	}
 
-	actor.processDelivery(&Delivery[*actorTestMsg, int]{
+	actor.processDelivery(actor.ctx, &Delivery[*actorTestMsg, int]{
 		ID:          deliveryID,
 		Message:     msg,
 		Promise:     NewPromise[int](),
