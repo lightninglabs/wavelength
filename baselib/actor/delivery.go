@@ -61,6 +61,16 @@ type Delivery[M TLVMessage, R any] struct {
 	// MaxAttempts is the maximum allowed attempts before dead-lettering.
 	MaxAttempts int
 
+	// EnqueuedAt is when the message was first persisted to the mailbox.
+	// It is a property of the durable row, not of this delivery, so it
+	// survives every redelivery: neither a nack nor a postpone rewrites
+	// it. That makes it the one wall-clock reference a behavior can use to
+	// bound how long a message has been waiting without keeping per-message
+	// state of its own, which matters when the message stream is
+	// attacker-controlled and any in-memory map would be unbounded. See
+	// DeliveryEnqueuedAt for the behavior-facing accessor.
+	EnqueuedAt time.Time
+
 	// store is the backing store for persisting ack/nack operations.
 	store DeliveryStore
 
@@ -323,6 +333,44 @@ func (d *Delivery[M, R]) Nack(
 	return nil
 }
 
+// Postpone releases the message for redelivery after retryAfter WITHOUT
+// burning a delivery attempt: unlike Nack, it never routes toward the
+// dead-letter table and leaves the message's retry budget exactly as it was
+// before this delivery. Use it for "not now" conditions (a capacity slot, a
+// peer draining) rather than failures. Because attempts never advance, a
+// perpetually-unmet condition postpones forever; the behavior owns bounding
+// that horizon.
+func (d *Delivery[M, R]) Postpone(ctx context.Context,
+	retryAfter time.Duration) error {
+
+	d.mu.Lock()
+	if d.acked {
+		d.mu.Unlock()
+
+		return ErrAlreadyAcked
+	}
+	d.mu.Unlock()
+
+	rowsAffected, err := postponeMessage(
+		ctx, d.store, d.ID, d.LeaseToken, retryAfter,
+	)
+	if err != nil {
+		d.setMutationFailed()
+
+		return fmt.Errorf("postpone message: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		return ErrLeaseExpired
+	}
+
+	d.mu.Lock()
+	d.acked = true
+	d.mu.Unlock()
+
+	return nil
+}
+
 // Extend prolongs the lease for long-running message processing. This should
 // be called periodically for messages that take longer than the default lease
 // duration. Returns an error if the lease has already expired.
@@ -377,6 +425,7 @@ func newDelivery[M TLVMessage, R any](
 		LeaseUntil:      msg.LeaseUntil,
 		Attempts:        msg.Attempts,
 		MaxAttempts:     msg.MaxAttempts,
+		EnqueuedAt:      msg.CreatedAt,
 		store:           store,
 		acked:           false,
 
