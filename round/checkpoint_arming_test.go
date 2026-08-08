@@ -251,7 +251,8 @@ func TestReconcileArmingRespectsDisabled(t *testing.T) {
 // TestRestartDoorArmsReconcileClock covers the third door: a checkpointed
 // round reloaded from the store on startup. The two live doors build their
 // outbox from the transition that carries them into the state, but nothing
-// re-derives that outbox across a restart, so recoverActiveRounds has to arm
+// re-derives that outbox across a restart, so the resume loop in Start has
+// to arm
 // the clock itself. A boarding-only round is exactly the case that used to be
 // gated out here, which mattered doubly: while the live door was unarmed, the
 // restart path was the only thing that could still rescue such a round, and

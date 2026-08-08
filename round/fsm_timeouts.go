@@ -92,32 +92,17 @@ func cancelStatusReconcileTimeout(roundID RoundID) ClientOutMsg {
 	}
 }
 
-// reconcileDisarmEvents builds the emitted-event option that disarms the
-// status-reconcile clock on an exit from InputSigSentState. The clock is armed
-// for the whole of that state, so every exit disarms it; the gate mirrors the
-// arm sites so no cancel is emitted for a timer that was never scheduled.
-func reconcileDisarmEvents(roundID RoundID,
-	env *ClientEnvironment) fn.Option[ClientEmittedEvent] {
-
-	if env.StatusReconcileTimeout <= 0 {
-		return fn.None[ClientEmittedEvent]()
-	}
-
-	return fn.Some(ClientEmittedEvent{
-		Outbox: []ClientOutMsg{
-			cancelStatusReconcileTimeout(roundID),
-		},
-	})
-}
-
 // appendReconcileDisarm adds the status-reconcile disarm to the end of a
-// transition's outbox, for exits that have already queued messages of their
-// own. Disarming is cleanup and must stay behind every delivery: processOutbox
-// abandons the rest of the outbox on the first failing Tell, and a cancel is
-// one of the few entries that can fail, so a cancel sitting ahead of a
-// notification lets a saturated timeout actor suppress it. Trailing costs
-// nothing, since a cancel that never lands only leaks a one-shot timer, which
-// fires into a terminal state and self-loops.
+// transition's outbox. The clock is armed for the whole of InputSigSentState,
+// so every exit disarms it, and the gate mirrors the arm sites so no cancel is
+// emitted for a timer that was never scheduled.
+//
+// The disarm always goes last, even on an exit whose outbox is otherwise
+// empty. processOutbox abandons the rest of the outbox on the first failing
+// Tell, and a cancel is one of the few entries that can fail, so a cancel
+// sitting ahead of a notification lets a saturated timeout actor suppress it.
+// Trailing costs nothing, since a cancel that never lands only leaks a
+// one-shot timer, which fires into a terminal state and self-loops.
 func appendReconcileDisarm(transition *ClientStateTransition, roundID RoundID,
 	env *ClientEnvironment) *ClientStateTransition {
 

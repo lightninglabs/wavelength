@@ -65,6 +65,10 @@ state transitions and validation rules live under [Invariants](#invariants).
   Called at intent-build time for change/refresh outputs and inside
   `handleRegisterIntent` for entries with a non-zero `KeyLocator`.
 - `VTXOStore`, `RoundStore` — VTXO and round FSM persistence.
+  `RoundStore.FailRound(ctx, roundID)` is the terminal-failure
+  counterpart to `FinalizeRound`: it retires a checkpointed round's row
+  and returns the boarding intents it adopted to the live pool
+  (wavelength#1051).
 
 ### Actor Layer (`actor.go`, `actor_messages.go`, `vtxo_messages.go`)
 
@@ -185,13 +189,24 @@ state transitions and validation rules live under [Invariants](#invariants).
   exit disarms it. There are three doors: `forfeitCollectionOutbox`
   (forfeit-bearing rounds), the `PartialSigsSentState` →
   `InputSigSentState` transition (boarding-only rounds, which never enter
-  forfeit collection), and `recoverActiveRounds` on restart. Arming is
+  forfeit collection), and the `ListActiveRounds` resume loop in
+  `RoundClientActor.Start` on restart. Arming is
   **not** gated on `len(Intents.Forfeits) > 0`: for a forfeit-bearing round
   the probe gates the reservation release on an authoritative dead answer,
   but for *any* round it is the sole liveness clock in the checkpointed
   state — an operator that rolls the round back before broadcast produces
   no confirmation and no failure, so an unarmed boarding-only round strands
   its deposit until the CSV expires.
+- **Only an authoritative dead answer retires a round.** The dead-answer
+  exit from `InputSigSentState` is the one that emits
+  `RoundFailedNotification`, which is what drives the actor's
+  `retireFailedRound` and so the durable `FailRound` write. The other
+  exits stay silent deliberately: the delivered-failure shortcut is also
+  where `handleCancelRound` injects a synthetic `BoardingFailed`, and a
+  local cancel proves nothing about the operator, while the confirmation
+  exits have a commitment on chain and so a spent deposit. Only the
+  operator's dead verdict rules the commitment out, which is the same
+  trust boundary the wavelength#844 forfeit release already accepts.
 - **Reconcile outbox ordering.** `processOutbox` abandons the rest of the
   outbox on the first failing `Tell`, and the FSM has already checkpointed
   by dispatch time, so the arm (`StartTimeoutReq`) must **lead** the
