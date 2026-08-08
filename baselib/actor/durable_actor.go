@@ -794,6 +794,17 @@ func (a *DurableActor[M, R]) terminationInfo(reason TerminationReason,
 	// Stop is what normally ends the actor. A lifetime context that went
 	// away without a Stop call is reported separately so a watcher can
 	// tell an orderly shutdown from one imposed from outside.
+	//
+	// Two caveats worth stating rather than pretending away. First,
+	// TerminationContextCancelled is currently unreachable: the lifetime
+	// context is rooted at context.Background and Stop is the only thing
+	// that cancels it, so the reason exists for the construction path that
+	// takes an externally owned context and would otherwise have no way to
+	// report itself. Second, this read of stopRequested is not ordered
+	// against a concurrent Stop, so a Stop landing in the same instant as
+	// an unrelated exit can be reported either way. Both readings describe
+	// the same event (the actor was shut down rather than failed), so the
+	// ambiguity costs a watcher nothing.
 	if reason == TerminationStopped && !a.stopRequested.Load() {
 		reason = TerminationContextCancelled
 	}
@@ -863,21 +874,6 @@ func (a *DurableActor[M, R]) takePendingPanic() error {
 // cannot leave the mailbox without its restart message; the next generation
 // notices the cancelled lifetime context and exits gracefully instead.
 func (a *DurableActor[M, R]) restartFromCheckpoint() error {
-	// An actor whose codec never registered the RestartMessage cannot
-	// decode one, so enqueueing it would only produce a dead letter. Warn
-	// loudly and restart without the checkpoint hand-off rather than
-	// filling the dead letter table on every restart: the behavior never
-	// opted into checkpoint restore in the first place.
-	if !a.codec.Supports(RestartTLVType) {
-		logger(a.ctx).WarnS(a.ctx, "Restarting durable actor without "+
-			"checkpoint restore: codec has no RestartMessage",
-			nil,
-			"actor_id", a.id,
-		)
-
-		return nil
-	}
-
 	ctx, cancel := context.WithTimeout(
 		context.WithoutCancel(a.ctx), a.cleanupTimeout,
 	)
@@ -1068,8 +1064,10 @@ func (a *DurableActor[M, R]) publishTermination(info TerminationInfo) {
 // channel without a notification, which is how a caller that lost interest
 // releases its registration.
 //
-// The notification is published when the supervision loop exits, so an actor
-// that was never started never publishes one.
+// The notification is published when the supervision loop exits, or by Stop
+// for an actor that was never started. An actor that is neither started nor
+// stopped never publishes one and a watcher on it waits forever, so pass a
+// cancellable ctx if that is a state your caller can reach.
 func (a *DurableActor[M, R]) Watch(ctx context.Context) <-chan TerminationInfo {
 	ch, id, terminated := a.watchers.add()
 	if terminated {
@@ -1081,12 +1079,14 @@ func (a *DurableActor[M, R]) Watch(ctx context.Context) <-chan TerminationInfo {
 	// channel, so it does not outlive an actor that is stopped without
 	// ever having been started, whose done channel never closes.
 	if cancelled := ctx.Done(); cancelled != nil {
+		published := a.watchers.done()
+
 		go func() {
 			select {
 			case <-cancelled:
 				a.watchers.remove(id)
 
-			case <-a.done:
+			case <-published:
 			}
 		}()
 	}
@@ -2053,6 +2053,19 @@ func (a *DurableActor[M, R]) Stop() {
 		a.stopRequested.Store(true)
 
 		a.cancel()
+
+		// An actor that was never started has no supervision loop to
+		// publish its termination, and a watcher registered against it
+		// would otherwise wait for a notification nobody will ever
+		// send. Publish it here instead. A Start that races this loses
+		// harmlessly: publishing is first-wins, and the supervision
+		// loop it launches exits immediately against the cancelled
+		// lifetime context.
+		if !a.started.Load() {
+			a.publishTermination(
+				a.terminationInfo(TerminationStopped, nil),
+			)
+		}
 	})
 }
 

@@ -12,8 +12,6 @@ import (
 )
 
 const (
-	// DefaultMaxRestarts is how many behavior restarts a durable actor
-	// tolerates inside DefaultRestartWindow before it gives up and
 	// UnlimitedRestarts is the DurableActorConfig.MaxRestarts value that
 	// disables the intensity budget entirely, letting the actor restart
 	// from its checkpoint for as long as it keeps panicking. It is the
@@ -265,13 +263,26 @@ type watcherRegistry struct {
 	// info is the published termination notification. It is only
 	// meaningful once terminated is set.
 	info TerminationInfo
+
+	// published closes once the terminal notification has been delivered.
+	// A watcher's cleanup goroutine parks on it rather than on the actor's
+	// done channel, which never closes for an actor that was stopped
+	// without ever being started.
+	published chan struct{}
 }
 
 // newWatcherRegistry builds an empty registry.
 func newWatcherRegistry() *watcherRegistry {
 	return &watcherRegistry{
-		watchers: make(map[uint64]chan TerminationInfo),
+		watchers:  make(map[uint64]chan TerminationInfo),
+		published: make(chan struct{}),
 	}
+}
+
+// done returns a channel that closes once the terminal notification has been
+// published.
+func (w *watcherRegistry) done() <-chan struct{} {
+	return w.published
 }
 
 // add registers a new watcher. It returns the channel to hand to the caller,
@@ -344,6 +355,8 @@ func (w *watcherRegistry) publish(info TerminationInfo) bool {
 		close(ch)
 		delete(w.watchers, id)
 	}
+
+	close(w.published)
 
 	return true
 }
