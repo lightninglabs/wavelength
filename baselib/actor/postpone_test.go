@@ -179,6 +179,80 @@ func TestDurableActorPostponeDoesNotBurnAttempts(t *testing.T) {
 	store.mu.Unlock()
 }
 
+// TestDurableActorPostponeInTransaction covers the postpone branch of
+// handleResultInTx, the path a classic behavior takes when the actor has a
+// tx-aware store. That branch is a separate implementation from the non-tx
+// tail exercised above, so a regression in it would otherwise pass the suite:
+// it must release the message without marking it processed, without burning an
+// attempt, and without consulting the retry policy.
+func TestDurableActorPostponeInTransaction(t *testing.T) {
+	t.Parallel()
+
+	store := newMockTxAwareStore()
+	codec := newActorTestCodec()
+
+	var deliveries atomic.Int32
+	behavior := newMockBehavior(fn.Err[int](Postpone(time.Millisecond)))
+	behavior.onReceive = func(ctx context.Context, msg *actorTestMsg) {
+		// Succeed on the third delivery. Under the never-retry policy
+		// below a nack would have dead-lettered on the first.
+		if deliveries.Add(1) >= 3 {
+			behavior.setResult(fn.Ok(11))
+		}
+	}
+
+	// Passing the tx-aware store as the delivery store is what selects the
+	// transaction path: construction type-asserts it up to
+	// TxAwareDeliveryStore.
+	cfg := DefaultDurableActorConfig(
+		"tx-postpone-actor", behavior, store, codec,
+	)
+	cfg.PollInterval = 10 * time.Millisecond
+
+	// Fail the test if the retry policy is consulted for a postpone: the
+	// tx path must detect it first, exactly as the non-tx tail does.
+	cfg.TellRetryPolicy = func(err error, attempts int) (bool,
+		time.Duration) {
+
+		if _, ok := postponeDelay(err); ok {
+			t.Errorf("retry policy consulted for a postpone")
+		}
+
+		return false, 0
+	}
+
+	a := NewDurableActor(cfg).UnwrapOrFail(t)
+	a.Start()
+	defer a.Stop()
+
+	msg := &actorTestMsg{
+		Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(11)),
+	}
+	require.NoError(t, a.Ref().Tell(context.Background(), msg))
+
+	// The message survives two postponed deliveries on the transaction
+	// path and completes on the third.
+	require.Eventually(t, func() bool {
+		store.mu.Lock()
+		defer store.mu.Unlock()
+
+		return len(store.messages) == 0 && len(store.deadLetters) == 0
+	}, 5*time.Second, 10*time.Millisecond)
+
+	require.GreaterOrEqual(t, deliveries.Load(), int32(3))
+	require.True(t, store.txExecuted.Load())
+
+	// A postpone is not a nack: the tx path must never have taken the nack
+	// branch, and nothing dead-lettered despite a policy that would have
+	// dead-lettered a nack on the very first failure.
+	require.False(t, store.nackCalled.Load())
+
+	store.mu.Lock()
+	require.Empty(t, store.deadLetters)
+	require.NotEmpty(t, store.processed)
+	store.mu.Unlock()
+}
+
 // TestDeliveryEnqueuedAtFromContext verifies the enqueue timestamp a
 // postponing behavior uses to bound its own horizon is plumbed from the
 // durable row onto the processing context, and that absence is distinguishable

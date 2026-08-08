@@ -1183,10 +1183,31 @@ func (a *DurableActor[M, R]) handleResultInTx(
 				"delay", delay,
 			)
 
-			_, ppErr := postponeMessage(
+			rows, ppErr := postponeMessage(
 				ctx, store, delivery.ID, delivery.LeaseToken,
 				delay,
 			)
+			if ppErr == nil && rows == 0 {
+				// The row was not released, which on the leased
+				// path means the lease expired or was claimed
+				// by another consumer. The attempt this
+				// delivery took therefore stays uncompensated
+				// and the message redelivers on the ordinary
+				// lease-expiry path instead of the requested
+				// delay. This mirrors how the nack path treats
+				// a zero-row release, but it is worth a line in
+				// the log: a postpone that silently did not
+				// happen is otherwise invisible, since the
+				// postpone path logs at debug and never warns.
+				logger(ctx).DebugS(
+					ctx,
+					"Postpone released no row (lease lost)",
+					"actor_id", a.id,
+					"delivery_id", delivery.ID,
+					"msg_type",
+					delivery.Message.MessageType(),
+				)
+			}
 
 			return ppErr
 		}
