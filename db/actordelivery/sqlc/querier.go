@@ -188,6 +188,22 @@ type Querier interface {
 	// failure (nack) path via NackMailboxMessageByID so a repeatedly-failing
 	// message still climbs to max_attempts and dead-letters.
 	PeekNextMailboxMessage(ctx context.Context, arg PeekNextMailboxMessageParams) (MailboxMessage, error)
+	// Release a message for redelivery after a delay WITHOUT burning a delivery
+	// attempt: the fenced (leased) claim pre-incremented attempts, so the
+	// decrement here restores the retry budget to exactly what it was before
+	// this delivery. The CASE clamp guards the invariant rather than trusting
+	// it: attempts is always >= 1 under a valid lease, but a clamped decrement
+	// can never wrap a corrupt row negative. Validates lease_token to prevent
+	// stale postpones. This is the attempt-preserving counterpart to
+	// NackMailboxMessage, used when a behavior reports "not now" (a postpone)
+	// rather than a failure.
+	PostponeMailboxMessage(ctx context.Context, arg PostponeMailboxMessageParams) (int64, error)
+	// Leaseless single-worker counterpart to PostponeMailboxMessage: releases the
+	// message by ID without validating a lease token and leaves attempts
+	// UNTOUCHED, because the leaseless peek never incremented it. Stale expired
+	// lease metadata is cleared so the persisted row matches the leaseless state
+	// machine, mirroring NackMailboxMessageByID.
+	PostponeMailboxMessageByID(ctx context.Context, arg PostponeMailboxMessageByIDParams) (int64, error)
 	// =============================================================================
 	// FSM Checkpoints
 	// =============================================================================

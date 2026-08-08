@@ -1078,6 +1078,66 @@ func (q *Queries) PeekNextMailboxMessage(ctx context.Context, arg PeekNextMailbo
 	return i, err
 }
 
+const PostponeMailboxMessage = `-- name: PostponeMailboxMessage :execrows
+UPDATE mailbox_messages
+SET
+    lease_token = NULL,
+    lease_until = NULL,
+    available_at = $3,
+    attempts = CASE WHEN attempts > 0 THEN attempts - 1 ELSE 0 END
+WHERE id = $1 AND lease_token = $2
+`
+
+type PostponeMailboxMessageParams struct {
+	ID          string
+	LeaseToken  sql.NullString
+	AvailableAt int64
+}
+
+// Release a message for redelivery after a delay WITHOUT burning a delivery
+// attempt: the fenced (leased) claim pre-incremented attempts, so the
+// decrement here restores the retry budget to exactly what it was before
+// this delivery. The CASE clamp guards the invariant rather than trusting
+// it: attempts is always >= 1 under a valid lease, but a clamped decrement
+// can never wrap a corrupt row negative. Validates lease_token to prevent
+// stale postpones. This is the attempt-preserving counterpart to
+// NackMailboxMessage, used when a behavior reports "not now" (a postpone)
+// rather than a failure.
+func (q *Queries) PostponeMailboxMessage(ctx context.Context, arg PostponeMailboxMessageParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, PostponeMailboxMessage, arg.ID, arg.LeaseToken, arg.AvailableAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const PostponeMailboxMessageByID = `-- name: PostponeMailboxMessageByID :execrows
+UPDATE mailbox_messages
+SET
+    lease_token = NULL,
+    lease_until = NULL,
+    available_at = $2
+WHERE id = $1
+`
+
+type PostponeMailboxMessageByIDParams struct {
+	ID          string
+	AvailableAt int64
+}
+
+// Leaseless single-worker counterpart to PostponeMailboxMessage: releases the
+// message by ID without validating a lease token and leaves attempts
+// UNTOUCHED, because the leaseless peek never incremented it. Stale expired
+// lease metadata is cleared so the persisted row matches the leaseless state
+// machine, mirroring NackMailboxMessageByID.
+func (q *Queries) PostponeMailboxMessageByID(ctx context.Context, arg PostponeMailboxMessageByIDParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, PostponeMailboxMessageByID, arg.ID, arg.AvailableAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const SaveFSMCheckpoint = `-- name: SaveFSMCheckpoint :exec
 
 INSERT INTO fsm_checkpoints (actor_id, state_type, state_data, version, updated_at)
