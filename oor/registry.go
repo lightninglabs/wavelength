@@ -53,13 +53,48 @@ var ErrOutgoingAdmissionExpired = errors.New("outgoing OOR admission " +
 // behind the SQLITE_BUSY bursts observed at high payment rates).
 const selfHintRedeliveryBackoff = 30 * time.Second
 
-// incomingCapBackoff is how long an over-cap incoming admission driven by a
-// routed durable message waits before it is redelivered. Being over the
-// concurrency cap is a not-now condition that clears the moment an earlier
-// session terminates and is reaped, so the wait only needs to be long enough
-// that a stream of capped hints does not spin the registry goroutine, and
-// short enough that a freed slot is picked up promptly.
+// incomingCapBackoff is the postpone delay applied to an over-cap incoming
+// admission driven by a routed durable message. Being over the concurrency cap
+// is a not-now condition that clears when an earlier session terminates and is
+// reaped, so the delay only needs to be long enough that a stream of capped
+// hints does not spin the single-worker registry goroutine.
+//
+// This is a floor on the wait, not the wait itself. A postponed row becomes
+// claim-eligible after the delay, but nothing signals the mailbox wake channel
+// at that moment, so it is rediscovered by the idle poll backoff, which climbs
+// from PollInterval toward MaxPollInterval (1s to 30s by default). The
+// effective redelivery gap for a capped hint is therefore roughly 5 to 35
+// seconds. That is well inside overCapPostponeHorizon either way, so the
+// horizon still admits dozens of retries before giving up.
 const incomingCapBackoff = 5 * time.Second
+
+// overCapPostponeHorizon bounds how long the registry will keep postponing one
+// over-cap incoming hint before it gives up and lets the message fail for
+// real.
+//
+// Postpone deliberately removes the attempt-based give-up mechanism, so a
+// behavior that postpones has to supply its own horizon or the message waits
+// forever. That obligation has teeth here because the hint stream is
+// operator-controlled: every redelivery of a capped hint re-runs
+// validateIncomingAdmission (a wallet-ownership DB query) and
+// resolveSelfTransfer (a registry-row read) before the cap check rejects it
+// again, so an operator streaming fabricated session ids could otherwise build
+// a permanent churn queue against the single-worker registry that no amount of
+// waiting drains.
+//
+// Ten minutes is long enough that an honest hint outlives any realistic
+// transient burst (the cap defaults to 1024 resident sessions, and a slot
+// frees on every terminal reap), and short enough that a hostile backlog
+// converts into dead letters on a human timescale rather than accumulating.
+// Past the horizon the plain capped error takes over, so the ordinary nack
+// path applies, the message dead-letters, and it lands in the dead-letter
+// table where it is visible and requeue-able rather than silently churning.
+//
+// The horizon is measured against the durable row's enqueue time
+// (actor.DeliveryEnqueuedAt), never against behavior-side state: a map keyed
+// on a session id the operator chooses would itself be the unbounded resource
+// this is meant to protect.
+const overCapPostponeHorizon = 10 * time.Minute
 
 // detachedWaitTimeout bounds the registry's detached-continuation wait on a
 // child's response. OnComplete spawns a goroutine that parks on
@@ -391,6 +426,12 @@ type oorRegistryBehavior struct {
 	// default); tests shrink it so a capped redelivery lands inside the
 	// test's own deadline.
 	capBackoff time.Duration
+
+	// capHorizon bounds how long one over-cap hint may keep postponing
+	// before it is failed to the dead-letter path. Zero means
+	// overCapPostponeHorizon (the package default); tests shrink it to
+	// assert the give-up boundary without waiting out ten minutes.
+	capHorizon time.Duration
 }
 
 // detachWaitTimeout returns the configured detached-continuation wait bound,
@@ -413,6 +454,16 @@ func (r *oorRegistryBehavior) capPostponeBackoff() time.Duration {
 	return incomingCapBackoff
 }
 
+// capPostponeHorizon returns the configured over-cap postpone horizon, falling
+// back to the package default when unset.
+func (r *oorRegistryBehavior) capPostponeHorizon() time.Duration {
+	if r.capHorizon > 0 {
+		return r.capHorizon
+	}
+
+	return overCapPostponeHorizon
+}
+
 // postponeOverCap converts an over-cap admission rejection into a postpone
 // request, leaving every other error untouched. Being over the concurrency cap
 // is a transient not-now condition that clears when a resident session
@@ -421,14 +472,46 @@ func (r *oorRegistryBehavior) capPostponeBackoff() time.Duration {
 // time. A postpone releases the delivery on a backoff with its attempt budget
 // fully intact instead.
 //
+// The postpone is bounded. Because a postponed message never climbs toward
+// max_attempts, the framework has no give-up mechanism left, so this is the
+// behavior discharging its own obligation to bound the wait: past
+// capPostponeHorizon, measured from the durable row's own enqueue time, the
+// plain capped error is returned instead and the ordinary nack path
+// dead-letters the message. Without that bound an operator streaming
+// fabricated session ids would build a churn queue on the single-worker
+// registry that never drains, since every redelivery re-runs the ownership
+// query and the self-transfer lookup before the cap rejects it again.
+//
+// The age reference is the delivery's enqueue timestamp, not behavior-side
+// state, precisely because the session ids in that stream are operator-chosen:
+// any map keyed on them would be the unbounded resource this is defending. A
+// delivery with no timestamp (a directly-invoked behavior in a test, or a
+// store that does not report one) postpones as before, since absence means "no
+// horizon information", not "infinitely old".
+//
 // Callers must restrict this to the Tell-driven routed-message path. An
 // Ask-driven admission has a caller parked on the promise, and the framework
 // gives a postponed Ask ordinary error treatment, so the caller is better
 // served by the bare sentinel. The double %w keeps errIncomingAdmissionCapped
 // matchable (boot restore's skip check and the RPC surface both rely on it)
 // while adding the postpone to the same wrap chain.
-func (r *oorRegistryBehavior) postponeOverCap(err error) error {
+func (r *oorRegistryBehavior) postponeOverCap(ctx context.Context,
+	err error) error {
+
 	if !errors.Is(err, errIncomingAdmissionCapped) {
+		return err
+	}
+
+	horizon := r.capPostponeHorizon()
+	enqueuedAt, ok := actor.DeliveryEnqueuedAt(ctx)
+	if ok && r.registryNow().Sub(enqueuedAt) >= horizon {
+		r.logger(ctx).WarnS(ctx, "Over-cap incoming OOR hint exceeded "+
+			"its postpone horizon; failing it to the dead-letter "+
+			"path", err,
+			btclog.Fmt("enqueued_at", "%s", enqueuedAt),
+			btclog.Fmt("horizon", "%s", horizon),
+		)
+
 		return err
 	}
 
@@ -1083,7 +1166,9 @@ func (r *oorRegistryBehavior) handleResolveIncoming(ctx context.Context,
 			)
 
 			return fn.Err[ActorResp](
-				r.postponeOverCap(errIncomingAdmissionCapped),
+				r.postponeOverCap(
+					ctx, errIncomingAdmissionCapped,
+				),
 			)
 		}
 	}
