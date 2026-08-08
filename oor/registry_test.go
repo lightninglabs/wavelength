@@ -1148,6 +1148,14 @@ func TestOORRegistrySelfTransferParkAndRedrive(t *testing.T) {
 	require.Len(t, b.parkedSelfHints, 1)
 	require.Empty(t, rec.recorded())
 
+	// The defer is a postpone on the long self-transfer backoff, not a
+	// nack: the durable copy is the crash-safety net for a wait with no
+	// bound, so it must keep its attempt budget for as long as the
+	// outgoing session runs.
+	var deferPostpone *actor.PostponeError
+	require.ErrorAs(t, res.Err(), &deferPostpone)
+	require.Equal(t, selfHintRedeliveryBackoff, deferPostpone.Delay)
+
 	// A terminal notification before the row flips is a no-op for the
 	// park: admission re-checks the row on the redriven copy, so the
 	// premature redrive simply re-parks. Flip the row terminal first to
