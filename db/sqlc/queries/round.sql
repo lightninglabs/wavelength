@@ -136,10 +136,10 @@ INSERT INTO vtxos (
 	operator_pubkey, batch_expiry, chain_depth,
 	created_height, commitment_txid, spent, creation_time, last_update_time,
 	construction_version, taproot_asset_root, taproot_asset_ref,
-	taproot_asset_amount
+	taproot_asset_amount, taproot_asset_sealed_package
 ) VALUES (
 	$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-	$17, $18, $19, $20
+	$17, $18, $19, $20, $21
 )
 ON CONFLICT (outpoint_hash, outpoint_index) DO UPDATE SET
     pk_script = CASE WHEN excluded.pk_script IS NOT NULL AND length(excluded.pk_script) > 0 THEN excluded.pk_script ELSE vtxos.pk_script END,
@@ -175,6 +175,11 @@ ON CONFLICT (outpoint_hash, outpoint_index) DO UPDATE SET
 			AND excluded.taproot_asset_amount IS NOT NULL AND length(excluded.taproot_asset_amount) > 0
 			THEN excluded.taproot_asset_amount
 		ELSE vtxos.taproot_asset_amount
+	END,
+	taproot_asset_sealed_package = CASE
+		WHEN excluded.taproot_asset_sealed_package IS NOT NULL AND length(excluded.taproot_asset_sealed_package) > 0
+			THEN excluded.taproot_asset_sealed_package
+		ELSE vtxos.taproot_asset_sealed_package
 	END,
 	last_update_time = excluded.last_update_time;
 
