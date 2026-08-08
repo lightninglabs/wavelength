@@ -52,6 +52,15 @@ SET status = 'confirmed',
     last_update_time = $5
 WHERE round_id = $1;
 
+-- name: RevertAdoptedBoardingIntent :exec
+-- Returns a boarding intent adopted by a dead round to 'confirmed'. The
+-- commitment never broadcast, so the UTXO is exactly as it was before the
+-- round: re-boardable, and sweepable again. Guarded on 'adopted' so a later
+-- sweep that already moved the intent on is never clobbered.
+UPDATE boarding_intents
+SET status = 'confirmed', last_update_time = $3
+WHERE outpoint_hash = $1 AND outpoint_index = $2 AND status = 'adopted';
+
 -- Round boarding intents queries.
 
 -- name: InsertRoundBoardingIntent :exec
