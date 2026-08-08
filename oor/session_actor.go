@@ -383,9 +383,24 @@ func (b *sessionBehavior) Receive(ctx context.Context, msg OORDurableMsg,
 
 	switch msg.(type) {
 	case *actor.RestartMessage:
-		// Restore already ran at construction; the restart message
-		// carries no state to persist, so the framework consumes it via
-		// the non-transactional ack path.
+		// A restart message reaches a live behavior in exactly one
+		// case: the actor's supervisor restarted it after this
+		// behavior panicked. The panic may have left b.fsm advanced in
+		// memory past the last durably-committed snapshot, and the
+		// framework reuses this same behavior instance across the
+		// restart, so consuming the message as a no-op would hand that
+		// stale advance to the next driving event. Arm the same reload
+		// guard the failed-commit path uses: the next turn stops the
+		// stale FSM and rebuilds it from the registry row before it
+		// dispatches.
+		//
+		// The rebuild is deferred to that turn rather than run here
+		// because restore() starts an FSM goroutine that must outlive
+		// the turn, and because the framework delivers the restart
+		// message with max_attempts 1 and dead-letters (rather than
+		// retries) a restart turn that fails.
+		b.commitFailed = true
+
 		return fn.Ok[ActorResp](&DriveEventResponse{})
 
 	case *GetStateRequest:
