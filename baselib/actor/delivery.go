@@ -61,6 +61,16 @@ type Delivery[M TLVMessage, R any] struct {
 	// MaxAttempts is the maximum allowed attempts before dead-lettering.
 	MaxAttempts int
 
+	// EnqueuedAt is when the message was first persisted to the mailbox.
+	// It is a property of the durable row, not of this delivery, so it
+	// survives every redelivery: neither a nack nor a postpone rewrites
+	// it. That makes it the one wall-clock reference a behavior can use to
+	// bound how long a message has been waiting without keeping per-message
+	// state of its own, which matters when the message stream is
+	// attacker-controlled and any in-memory map would be unbounded. See
+	// DeliveryEnqueuedAt for the behavior-facing accessor.
+	EnqueuedAt time.Time
+
 	// store is the backing store for persisting ack/nack operations.
 	store DeliveryStore
 
@@ -415,6 +425,7 @@ func newDelivery[M TLVMessage, R any](
 		LeaseUntil:      msg.LeaseUntil,
 		Attempts:        msg.Attempts,
 		MaxAttempts:     msg.MaxAttempts,
+		EnqueuedAt:      msg.CreatedAt,
 		store:           store,
 		acked:           false,
 

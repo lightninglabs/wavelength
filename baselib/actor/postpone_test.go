@@ -178,3 +178,53 @@ func TestDurableActorPostponeDoesNotBurnAttempts(t *testing.T) {
 	require.NotEmpty(t, store.processed)
 	store.mu.Unlock()
 }
+
+// TestDeliveryEnqueuedAtFromContext verifies the enqueue timestamp a
+// postponing behavior uses to bound its own horizon is plumbed from the
+// durable row onto the processing context, and that absence is distinguishable
+// from a zero time. A behavior that could not tell those apart would treat
+// every store that omits the timestamp as reporting an infinitely old message.
+func TestDeliveryEnqueuedAtFromContext(t *testing.T) {
+	t.Parallel()
+
+	// No delivery in scope: no timestamp, and the zero value is not
+	// mistaken for a real one.
+	_, ok := DeliveryEnqueuedAt(context.Background())
+	require.False(t, ok)
+
+	// A zero enqueue time is not stamped, so it still reports absence
+	// rather than an epoch-aged message.
+	zeroCtx := withDeliveryEnqueuedAt(context.Background(), time.Time{})
+	_, ok = DeliveryEnqueuedAt(zeroCtx)
+	require.False(t, ok)
+
+	enqueuedAt := time.Date(2026, 8, 7, 12, 0, 0, 0, time.UTC)
+	ctx := withDeliveryEnqueuedAt(context.Background(), enqueuedAt)
+
+	got, ok := DeliveryEnqueuedAt(ctx)
+	require.True(t, ok)
+	require.True(t, enqueuedAt.Equal(got))
+}
+
+// TestDeliveryCarriesEnqueuedAt verifies newDelivery copies the mailbox row's
+// creation time onto the delivery. That timestamp is the horizon reference for
+// every postponing behavior, and unlike attempts it must survive redelivery
+// untouched, so it has to come from the row rather than from the claim.
+func TestDeliveryCarriesEnqueuedAt(t *testing.T) {
+	t.Parallel()
+
+	createdAt := time.Date(2026, 8, 7, 9, 30, 0, 0, time.UTC)
+	leased := &LeasedMessage{
+		ID:          "enq-1",
+		MailboxID:   "actor-enq",
+		LeaseToken:  "token-enq",
+		Attempts:    1,
+		MaxAttempts: 10,
+		CreatedAt:   createdAt,
+	}
+
+	delivery := newDelivery[*actorTestMsg, int](
+		leased, &actorTestMsg{}, nil, nil, newMockDeliveryStore(),
+	)
+	require.True(t, createdAt.Equal(delivery.EnqueuedAt))
+}
