@@ -2446,7 +2446,7 @@ func TestInputSigSentState(t *testing.T) {
 					ownedReq.SigningKey.PubKey,
 				): ownedTree,
 			},
-			testRoundIDTr("owned-only"),
+			testRoundIDTr("owned-only"), nil,
 		)
 		require.NoError(t, err)
 		require.Len(t, vtxos, 1)
@@ -2478,7 +2478,7 @@ func TestInputSigSentState(t *testing.T) {
 			map[SignerKey]*tree.Tree{NewSignerKey(
 				local.req.SigningKey.PubKey,
 			): local.tree},
-			testRoundIDTr("owned-zero-locator"),
+			testRoundIDTr("owned-zero-locator"), nil,
 		)
 		require.NoError(t, err)
 		require.Len(t, vtxos, 1)
@@ -2510,7 +2510,7 @@ func TestInputSigSentState(t *testing.T) {
 				map[SignerKey]*tree.Tree{NewSignerKey(
 					local.req.SigningKey.PubKey,
 				): local.tree},
-				testRoundIDTr("owned-distinct-signer"),
+				testRoundIDTr("owned-distinct-signer"), nil,
 			)
 			require.NoError(t, err)
 			require.Len(t, vtxos, 1)
@@ -3716,6 +3716,10 @@ func TestBuildClientVTXOsMarksAssetLeaves(t *testing.T) {
 	vtxoTree.AssetContext.SetLeafAssetRoot(leaf.Input, assetRoot[:])
 
 	signerKey := SignerKey(req.SigningKey.PubKey.SerializeCompressed())
+	leafOutpoint, err := leaf.GetNonAnchorOutpoint()
+	require.NoError(t, err)
+	sealed := []byte("sealed-tap-sdk-package")
+
 	vtxos, err := buildClientVTXOs(
 		t.Context(), nil, Intents{
 			VTXOs: []types.VTXORequest{req},
@@ -3723,6 +3727,7 @@ func TestBuildClientVTXOsMarksAssetLeaves(t *testing.T) {
 			signerKey: vtxoTree,
 		},
 		testRoundIDTr("round-asset"),
+		map[wire.OutPoint][]byte{*leafOutpoint: sealed},
 	)
 	require.NoError(t, err)
 	require.Len(t, vtxos, 1)
@@ -3740,4 +3745,8 @@ func TestBuildClientVTXOsMarksAssetLeaves(t *testing.T) {
 	// to, not the plain policy script.
 	require.Equal(t, composed, got.PkScript)
 	require.NotEqual(t, req.PkScript, got.PkScript)
+
+	// Spending the leaf out of round rebuilds its proof path and
+	// OP_TRUE witness from this package; there is no other source.
+	require.Equal(t, sealed, got.TaprootAssetSealedPackage)
 }

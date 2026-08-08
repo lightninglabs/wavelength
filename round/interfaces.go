@@ -526,6 +526,11 @@ type ClientVTXO struct {
 	TaprootAssetRef    string
 	TaprootAssetAmount uint64
 
+	// TaprootAssetSealedPackage is the sealed tap-sdk package that
+	// created this asset leaf. Spending it out of round rebuilds the
+	// compact proof path and the OP_TRUE witness from it.
+	TaprootAssetSealedPackage []byte
+
 	// Origin is the classification the wallet stamped on the
 	// source VTXORequest at intent-composition time
 	// (boarding / refresh / in-round transfer). Used by
