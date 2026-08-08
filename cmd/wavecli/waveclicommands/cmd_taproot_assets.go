@@ -32,8 +32,7 @@ func newTaprootAssetsCmd() *cobra.Command {
 	return cmd
 }
 
-// newTaprootAssetOnboardCmd creates the durable direct-deposit command. A
-// caller reruns the same command until the response state becomes READY.
+// newTaprootAssetOnboardCmd creates the durable boarding-output command.
 func newTaprootAssetOnboardCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "onboard",
@@ -43,10 +42,11 @@ func newTaprootAssetOnboardCmd() *cobra.Command {
 			"The current prototype requires tapd and waved to " +
 			"use the same LND wallet, which supplies any " +
 			"additional Bitcoin needed for the visible carrier " +
-			"value, miner fee, and wallet change. Pass --wait, " +
-			"or preserve " +
-			"every flag and rerun this command after " +
-			"confirmation when the response state is pending.",
+			"value, miner fee, and wallet change. The output is " +
+			"an ordinary on-chain output until a round boards " +
+			"it; rerunning with the same idempotency key and " +
+			"flags returns the same output rather than making " +
+			"another.",
 		Args: cobra.NoArgs,
 		RunE: onboardTaprootAsset,
 	}
@@ -81,16 +81,12 @@ func newTaprootAssetOnboardCmd() *cobra.Command {
 	flags.Uint64(
 		"max-fee-sat", 0, "hard upper bound for the on-chain miner fee",
 	)
-	flags.Bool(
-		"wait", false,
-		"retry the same durable request until the anchor is ready",
-	)
 
 	return cmd
 }
 
 // onboardTaprootAsset reads the proof bytes and invokes the durable daemon
-// workflow. A pending-confirmation response is successful and safe to retry.
+// workflow.
 func onboardTaprootAsset(cmd *cobra.Command, _ []string) error {
 	request, err := taprootAssetOnboardingRequest(cmd)
 	if err != nil {
@@ -103,59 +99,12 @@ func onboardTaprootAsset(cmd *cobra.Command, _ []string) error {
 	}
 	defer conn.Close()
 
-	wait, _ := cmd.Flags().GetBool("wait")
-	response, err := waitForTaprootAssetOnboarding(
-		cmd.Context(), request, wait,
-		taprootAssetOnboardingPollInterval,
-		func(ctx context.Context,
-			request *waverpc.OnboardTaprootAssetRequest) (
-			*waverpc.OnboardTaprootAssetResponse, error) {
-
-			return client.OnboardTaprootAsset(ctx, request)
-		},
-	)
+	response, err := client.OnboardTaprootAsset(cmd.Context(), request)
 	if err != nil {
 		return fmt.Errorf("OnboardTaprootAsset RPC failed: %w", err)
 	}
 
 	return printJSON(response)
-}
-
-// waitForTaprootAssetOnboarding retries only pending-confirmation responses.
-// Every attempt reuses the exact request object and therefore the same proof
-// bytes and idempotency key.
-func waitForTaprootAssetOnboarding(ctx context.Context,
-	request *waverpc.OnboardTaprootAssetRequest, wait bool,
-	pollInterval time.Duration,
-	call taprootAssetOnboardCall) (*waverpc.OnboardTaprootAssetResponse,
-	error) {
-
-	for {
-		response, err := call(ctx, request)
-		if err != nil {
-			return nil, err
-		}
-		if !wait || response.GetState() !=
-			waverpc.TaprootAssetOnboardingState_TAPROOT_ASSET_ONBOARDING_STATE_PENDING_CONFIRMATION { //nolint:ll
-
-			return response, nil
-		}
-
-		timer := time.NewTimer(pollInterval)
-		select {
-		case <-ctx.Done():
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
-
-			return nil, ctx.Err()
-
-		case <-timer.C:
-		}
-	}
 }
 
 // taprootAssetOnboardingRequest validates the prototype CLI contract and

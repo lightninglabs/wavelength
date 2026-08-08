@@ -190,13 +190,6 @@ func (s *Server) AssetBoardingDisclosure(ctx context.Context,
 	// operator too little margin and admission rejects it.
 	req.ExitDelay = terms.BoardingExitDelay
 
-	// Only a boarding-mode onboarding produces an output the operator
-	// can spend at the asset layer, so refuse to describe any other.
-	if !req.RoundBoarding {
-		return nil, fmt.Errorf("boarding disclosure requires a " +
-			"round-boarding onboarding request")
-	}
-
 	result, err := onboarder.Onboard(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("replay onboarding: %w", err)
