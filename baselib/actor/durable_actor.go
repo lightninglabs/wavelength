@@ -1104,6 +1104,22 @@ func (a *DurableActor[M, R]) processDelivery(ctx context.Context,
 	return a.processWithoutTransaction(processCtx, delivery)
 }
 
+// isRestartDelivery reports whether the delivery carries a RestartMessage,
+// which the runtime must never nack for retry.
+//
+// A restart message is enqueued with MaxAttempts 1 so it is delivered exactly
+// once. Nacking one would leave a row whose attempts already equal its
+// max_attempts: the claim query will not lease it again, and nothing will ever
+// dead-letter it either, so it strands in the mailbox forever. Under a
+// restart-forever budget a behavior that keeps failing its restore would
+// accumulate one stranded row per restart. Dead-lettering a failed restart
+// instead is both terminal and visible, at the price of making restore
+// handlers responsible for their own idempotency, which
+// PrependRestartMessageWithID documents.
+func isRestartDelivery[M TLVMessage, R any](delivery *Delivery[M, R]) bool {
+	return IsRestartMessage(delivery.Message)
+}
+
 // panicFrom extracts the recovered behavior panic from a result, or nil when
 // the result did not come from a panic. It is the single place the runtime
 // decides "this failure means the behavior's in-memory state is suspect".
@@ -1632,6 +1648,9 @@ func (a *DurableActor[M, R]) handleResultInTx(
 
 		// Apply Tell retry policy.
 		retry, delay := a.tellRetryPolicy(err, effectiveAttempts)
+		if retry && isRestartDelivery(delivery) {
+			retry = false
+		}
 		if retry {
 			// Don't mark as processed - we want retry to work.
 			// nackMessage routes a leaseless (empty-token) delivery
@@ -1750,6 +1769,9 @@ func (a *DurableActor[M, R]) handleResult(ctx context.Context,
 
 		// Apply Tell retry policy.
 		retry, delay := a.tellRetryPolicy(err, effectiveAttempts)
+		if retry && isRestartDelivery(delivery) {
+			retry = false
+		}
 		if retry {
 			if nackErr := delivery.Nack(
 				ctx, err, delay,
