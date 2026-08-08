@@ -845,10 +845,15 @@ func (a *DurableActor[M, R]) finishNonTx(ctx context.Context,
 		// handleResult.
 		shouldMarkProcessed = false
 	} else if delivery.IsTell() && result.Err() != nil {
-		retry, _ := a.tellRetryPolicy(
+		// A postponed message always redelivers, so marking it
+		// processed here would dedup-skip the redelivery. Failures
+		// consult the retry policy as before.
+		if _, postponed := postponeDelay(result.Err()); postponed {
+			shouldMarkProcessed = false
+		} else if retry, _ := a.tellRetryPolicy(
 			result.Err(), delivery.EffectiveAttempts(),
-		)
-		if retry {
+		); retry {
+
 			shouldMarkProcessed = false
 		}
 	}
@@ -1157,6 +1162,27 @@ func (a *DurableActor[M, R]) handleResultInTx(
 
 	// For Tell messages, handle based on success/error.
 	if err := result.Err(); err != nil {
+		// A postpone is control flow, not a failure: release the
+		// message without burning an attempt and without marking it
+		// processed, so it redelivers with its retry budget intact.
+		if delay, ok := postponeDelay(err); ok {
+			logger(ctx).DebugS(
+				ctx,
+				"Durable actor Tell message postponed",
+				"actor_id", a.id,
+				"delivery_id", delivery.ID,
+				"msg_type", delivery.Message.MessageType(),
+				"delay", delay,
+			)
+
+			_, ppErr := postponeMessage(
+				ctx, store, delivery.ID, delivery.LeaseToken,
+				delay,
+			)
+
+			return ppErr
+		}
+
 		effectiveAttempts := delivery.EffectiveAttempts()
 		logger(ctx).WarnS(ctx,
 			"Durable actor Tell message failed",
@@ -1275,6 +1301,33 @@ func (a *DurableActor[M, R]) handleResult(ctx context.Context,
 
 	// For Tell messages, handle based on success/error.
 	if err := result.Err(); err != nil {
+		// A postpone is control flow, not a failure: release the
+		// message without burning an attempt so it redelivers with
+		// its retry budget intact.
+		if delay, ok := postponeDelay(err); ok {
+			logger(ctx).DebugS(
+				ctx,
+				"Durable actor Tell message postponed",
+				"actor_id", a.id,
+				"delivery_id", delivery.ID,
+				"msg_type", delivery.Message.MessageType(),
+				"delay", delay,
+			)
+
+			if ppErr := delivery.Postpone(
+				ctx, delay,
+			); ppErr != nil {
+
+				logger(ctx).WarnS(ctx, "Failed to postpone "+
+					"Tell message",
+					ppErr,
+					"actor_id", a.id,
+					"delivery_id", delivery.ID)
+			}
+
+			return
+		}
+
 		effectiveAttempts := delivery.EffectiveAttempts()
 		logger(ctx).WarnS(ctx,
 			"Durable actor Tell message failed",

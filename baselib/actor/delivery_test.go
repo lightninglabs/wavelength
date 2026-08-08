@@ -297,6 +297,60 @@ func (m *mockDeliveryStore) NackMessageByID(ctx context.Context, id string,
 	return 1, nil
 }
 
+// PostponeMessage releases a leased message without burning an attempt,
+// mirroring the real store: the decrement compensates the increment the
+// lease took at claim, clamped at zero.
+func (m *mockDeliveryStore) PostponeMessage(ctx context.Context, id,
+	leaseToken string, retryAfter time.Duration) (int64, error) {
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.injectError != nil {
+		return 0, m.injectError
+	}
+
+	msg, ok := m.messages[id]
+	if !ok {
+		return 0, nil
+	}
+
+	if msg.LeaseToken != leaseToken {
+		return 0, nil
+	}
+
+	msg.LeaseToken = ""
+	msg.LeaseUntil = time.Time{}
+	if msg.Attempts > 0 {
+		msg.Attempts--
+	}
+
+	return 1, nil
+}
+
+// PostponeMessageByID releases a message by ID without touching attempts,
+// mirroring the unfenced leaseless postpone (the peek never bumped them).
+func (m *mockDeliveryStore) PostponeMessageByID(ctx context.Context, id string,
+	retryAfter time.Duration) (int64, error) {
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.injectError != nil {
+		return 0, m.injectError
+	}
+
+	msg, ok := m.messages[id]
+	if !ok {
+		return 0, nil
+	}
+
+	msg.LeaseToken = ""
+	msg.LeaseUntil = time.Time{}
+
+	return 1, nil
+}
+
 func (m *mockDeliveryStore) ExtendLease(ctx context.Context, id,
 	leaseToken string, extension time.Duration) (int64, error) {
 
