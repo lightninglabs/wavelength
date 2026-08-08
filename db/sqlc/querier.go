@@ -77,6 +77,16 @@ type Querier interface {
 	// finalized lineage on top of a partially-written round-create row.
 	DeleteVTXOAncestryPaths(ctx context.Context, arg DeleteVTXOAncestryPathsParams) error
 	EscalateVHTLCRecoveryJob(ctx context.Context, arg EscalateVHTLCRecoveryJobParams) (int64, error)
+	// Retires a checkpointed round whose fate is known to be dead. Moving the row
+	// out of 'input_sig_sent' is what stops ListActiveRounds re-hydrating it on
+	// every start.
+	//
+	// The status guard is load-bearing, not defensive: it is what makes the
+	// retirement unable to touch a round whose commitment confirmed. Only a round
+	// still sitting at the checkpoint can be retired, so a stale or misrouted call
+	// against a confirmed round reports zero rows and the caller leaves its
+	// deposits alone.
+	FailRound(ctx context.Context, arg FailRoundParams) (int64, error)
 	FailVHTLCRecoveryJob(ctx context.Context, arg FailVHTLCRecoveryJobParams) (int64, error)
 	FinalizeRound(ctx context.Context, arg FinalizeRoundParams) error
 	// GetActivityEntry returns one entry by its canonical id.
@@ -387,6 +397,15 @@ type Querier interface {
 	// budget. The exact kind, failed status, and legacy error guard prevent this
 	// compatibility repair from weakening the normal terminal-to-pending rule.
 	RepairCreditReceivePollCapActivity(ctx context.Context, arg RepairCreditReceivePollCapActivityParams) (int64, error)
+	// Returns every boarding intent adopted by one dead round to 'confirmed'. The
+	// commitment never broadcast, so the UTXO is exactly as it was before the
+	// round: re-boardable, and sweepable again.
+	//
+	// Two guards. The 'adopted' predicate means a sweep that has already moved an
+	// intent on is never clobbered. The EXISTS binds the revert to intents this
+	// round actually adopted, so a round can never release a deposit another round
+	// has since taken.
+	RevertRoundAdoptedBoardingIntents(ctx context.Context, arg RevertRoundAdoptedBoardingIntentsParams) error
 	SumBoardingIntentAmountsByStatus(ctx context.Context, status string) (interface{}, error)
 	SumUnspentVTXOAmounts(ctx context.Context) (interface{}, error)
 	UpdateBoardingIntentStatus(ctx context.Context, arg UpdateBoardingIntentStatusParams) error
