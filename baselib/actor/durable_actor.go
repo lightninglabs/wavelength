@@ -1131,6 +1131,18 @@ func (a *DurableActor[M, R]) processInTransaction(ctx context.Context,
 		// Execute behavior with panic recovery.
 		behaviorResult = a.executeBehaviorSafely(txCtx, delivery)
 
+		// The classic path wraps the WHOLE Receive in this one
+		// transaction, so a behavior that panicked half way through
+		// left its own partial writes sitting in it. Committing those
+		// alongside the nack would persist exactly the torn state the
+		// restart is supposed to escape, and the checkpoint reload
+		// would hand it straight back. Return the panic instead, which
+		// rolls the transaction back; the message's own ack/nack
+		// bookkeeping is redone below outside it.
+		if panicErr := panicFrom(behaviorResult); panicErr != nil {
+			return panicErr
+		}
+
 		// Handle the result within the transaction. This determines
 		// whether to ack, nack for retry, or dead-letter. We only mark
 		// as processed if we're not going to retry - otherwise the
@@ -1139,6 +1151,28 @@ func (a *DurableActor[M, R]) processInTransaction(ctx context.Context,
 			txCtx, delivery, behaviorResult, store,
 		)
 	})
+
+	// The behavior panicked and its writes rolled back with the
+	// transaction, so nothing was acked, nacked, or dead-lettered inside
+	// it. Run that bookkeeping now on finishNonTx's detached, bounded
+	// context, which is what keeps the poison message burning an attempt
+	// (and eventually dead-lettering) even though the turn persisted
+	// nothing. The promise is no longer deferred because there is no
+	// commit left to wait for: the result is an error either way.
+	if panicErr := panicFrom(behaviorResult); panicErr != nil {
+		logger(ctx).WarnS(ctx,
+			"Rolled back a panicking turn, nacking message",
+			panicErr,
+			"actor_id", a.id,
+			"delivery_id", delivery.ID,
+			"msg_type", delivery.Message.MessageType(),
+		)
+
+		delivery.deferPromise = false
+		a.finishNonTx(ctx, delivery, behaviorResult)
+
+		return panicErr
+	}
 
 	if err != nil {
 		logger(ctx).WarnS(ctx,
@@ -1149,9 +1183,17 @@ func (a *DurableActor[M, R]) processInTransaction(ctx context.Context,
 			"msg_type", delivery.Message.MessageType(),
 		)
 
-		// Transaction failed - Nack for retry.
+		// Transaction failed - Nack for retry. The nack is a durable
+		// write that must land even if the actor context is cancelled
+		// mid-failure, so it runs detached and bounded exactly as
+		// finishNonTx's bookkeeping does.
+		nackCtx, cancelNack := context.WithTimeout(
+			context.WithoutCancel(ctx), a.cleanupTimeout,
+		)
+		defer cancelNack()
+
 		if nackErr := delivery.Nack(
-			ctx, err, 10*time.Second,
+			nackCtx, err, 10*time.Second,
 		); nackErr != nil {
 
 			logger(ctx).WarnS(ctx, "Failed to nack after tx failure",
@@ -1159,9 +1201,7 @@ func (a *DurableActor[M, R]) processInTransaction(ctx context.Context,
 				"delivery_id", delivery.ID)
 		}
 
-		// The transaction failing does not change whether the behavior
-		// itself panicked, so the panic still reaches supervision.
-		return panicFrom(behaviorResult)
+		return nil
 	}
 
 	// Transaction committed -- now it is safe to complete the
