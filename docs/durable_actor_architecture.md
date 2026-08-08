@@ -655,15 +655,58 @@ The restart sequence is:
    message that triggered the panic burns an attempt exactly as it does today.
    This ordering is what keeps a deterministic poison message climbing toward
    `max_attempts` and the dead letter queue instead of restarting the actor
-   forever.
+   forever. On the classic path, where the whole `Receive` runs inside one
+   framework transaction, that bookkeeping is deliberately redone OUTSIDE the
+   transaction: supervision returns the panic from the transaction to force a
+   rollback of the behavior's own partial writes, because committing them
+   alongside the nack would persist the torn state the restart exists to escape
+   and the checkpoint reload would hand it straight back.
 2. Supervision cancels the current worker *generation*, which drains every
-   worker of a `NumWorkers > 1` pool, not just the one that panicked.
+   worker of a `NumWorkers > 1` pool, not just the one that panicked. Several
+   workers panicking together cost one restart between them, not one each.
 3. The behavior's `OnStop` hook runs (bounded by `CleanupTimeout`) if it
-   implements `Stoppable`.
+   implements `Stoppable`. A panic escaping that hook is recovered rather than
+   allowed to take the process down, and terminates the actor.
 4. The startup path re-runs: `LoadCheckpoint` followed by
-   `PrependRestartMessage`, so the behavior rebuilds from its persisted FSM
-   state before it sees any other message.
+   `PrependRestartMessageWithID`, so the behavior can rebuild from its
+   persisted FSM state before it sees any other message.
 5. A fresh generation of `NumWorkers` loops starts on the same mailbox.
+
+#### What "restart" does and does not mean
+
+This is the part worth being precise about, because the name oversells it. The
+framework does **not** rebuild the behavior. It stops the workers, optionally
+calls `OnStop`, and redelivers a `RestartMessage`; the same Go value keeps
+serving afterwards with whatever fields the panic left behind. The clean slate
+therefore exists exactly when the actor's `RestartMessage` handler rebuilds
+every piece of in-memory state from the durable row, and not otherwise.
+
+Every durable behavior in this repo that carries in-memory state carries a
+reload seam for this already, because a rolled-back `Commit` poses the same
+problem: `credit.opBehavior` and `oor.sessionBehavior` arm a `commitFailed`
+guard that reloads before the next dispatch, `oor.oorRegistryBehavior` re-runs
+its non-terminal restore, and `unroll.behavior` re-runs `restoreCheckpoint`.
+Their `RestartMessage` handlers use those seams. A behavior with no in-memory
+turn state, such as the `serverconn` egress sender, may consume the message as
+a no-op, but it should say so and say why rather than leave the reader
+guessing.
+
+Two constraints follow for handler authors. The restart message is enqueued
+with `MaxAttempts` 1 and the runtime dead-letters rather than nacks a restart
+turn that fails (a nacked row at `attempts == max_attempts` is neither
+leasable nor reapable, so it would strand in the mailbox forever), which makes
+restore handlers responsible for their own idempotency. And `OnStop` now runs
+mid-life, once per restart, so it must be idempotent and must leave the
+behavior able to serve a new generation rather than assuming it is being
+discarded.
+
+An actor whose codec never registered the `RestartMessage` cannot be handed its
+checkpoint at all. Supervision checks that up front, before tearing anything
+down, and degrades to cycling the worker generation with no `OnStop` and no
+restore: a teardown the behavior cannot be rebuilt from is strictly worse than
+leaving it running.
+
+#### Identity, promises, and intensity
 
 The actor's public identity is untouched: same ID, same `DurableMailbox`, same
 `Ref`. Senders keep enqueueing across the restart gap, and the mailbox's
@@ -673,20 +716,32 @@ were in flight do not survive: the panicking turn's promise is completed with
 the panic error, and a sibling worker's turn sees its generation context
 cancelled and completes its promise with that context error.
 
-Restarts are bounded by a BEAM-style intensity budget,
-`DurableActorConfig.MaxRestarts` restarts inside `RestartWindow` (default 5 per
-60s, tracked in a sliding window). Breaking the budget is terminal: the actor
-logs at error level, cancels its lifetime context so further sends fail fast,
-tears down, and publishes its termination to watchers.
+Restarts can be bounded by a BEAM-style intensity budget,
+`DurableActorConfig.MaxRestarts` restarts inside `RestartWindow`, tracked in a
+sliding window. It defaults **off** (`DefaultMaxRestarts` is
+`UnlimitedRestarts`). Restarting forever is no worse than the nack-and-continue
+loop supervision replaces, since both are rate-limited by the nack backoff,
+whereas a finite budget introduces a failure mode the runtime did not have:
+breaking it is terminal, and a terminated actor still holds its ID and its
+mailbox rows, so it keeps looking alive to anything that is not watching. Set a
+finite budget only where the owner wires `Watch` and reacts to it;
+`RecommendedMaxRestarts` (5 per 60s) is the value to reach for when you do.
+Breaking the budget makes the actor log at error level, cancel its lifetime
+context so further sends fail fast, tear down, and publish its termination.
 
-`(*DurableActor).Watch(ctx)` is how another component observes that terminal
+Supervision also keeps the mailbox tidy across a long run of restarts: each
+restart deletes the restart row the previous one enqueued before writing its
+own, so at most one restart row is pending at a time rather than one per
+restart.
+
+`(*DurableActor).Watch(ctx)` is how another component observes the terminal
 event. It returns a channel that receives exactly one `TerminationInfo` and is
 then closed, carrying the reason (stopped, context cancelled, restart intensity
 exceeded, restart failed), the failure behind it, the lifetime restart count,
 and whether the restart budget was exhausted. Delivery is non-blocking by
 construction, so a slow watcher can never park the actor's shutdown path.
-
----
+`Stop` publishes the notification for an actor that was never started, so a
+watcher on one does not wait forever.
 
 ---
 
