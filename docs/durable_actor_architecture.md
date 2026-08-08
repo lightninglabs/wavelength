@@ -327,7 +327,7 @@ whether the delivery holds a lease token, exactly as `ackMessage` and
 `nackMessage` decide:
 
 - **Fenced** (`PostponeMessage`, non-empty lease token). The leased claim
-  pre-incremented `attempts`, so the postpone query decrements it to
+  pre-incremented `attempts`, so a successful postpone query decrements it to
   compensate, restoring the retry budget to what it was before this delivery.
   The decrement is clamped (`CASE WHEN attempts > 0`), so a corrupt row can
   never wrap negative.
@@ -335,13 +335,36 @@ whether the delivery holds a lease token, exactly as `ackMessage` and
   peek takes no lease and never incremented `attempts`, so the query leaves it
   alone. There is no lease to validate, so the release is by ID.
 
-Either way the message's retry budget after a postpone is byte-identical to
-what it was before the delivery. That matters more than it looks: both the
-claim and the peek queries filter on `attempts < max_attempts`, so a row whose
-attempts reach the cap is not just dead-letter-eligible, it falls out of the
-eligible set entirely. An "always retry" `TellRetryPolicy` does not save such a
-row, it only stops the dead-letter write; the row still goes dark. Postpone is
-the only release that keeps a waiting message claim-eligible indefinitely.
+Either way the message's retry budget after a successful postpone is
+byte-identical to what it was before the delivery.
+
+There is one fenced-path exception. If a classic transaction turn loses its
+lease before commit, the fenced postpone updates zero rows. The actor rolls the
+transaction back so the stale consumer cannot ack or dead-letter another
+owner's row. The rollback also discards the compensating decrement, while the
+earlier lease claim's increment remains committed. That lost turn therefore
+spends one attempt. Repeated cross-process lease loss can exhaust the row
+without producing a dead letter. No current classic-path behavior returns a
+postpone; close this gap before adopting it on that path where competing
+runtime owners are possible.
+
+That matters more than it looks, because an "always retry" `TellRetryPolicy` is
+not a substitute. Such a policy cannot stop `attempts` from climbing:
+
+- **Non-transaction path** (`handleResult` via `Delivery.Nack`, used by the
+  classic non-tx path and by the Read/Commit path's `finishNonTx` tail). `Nack`
+  checks `ShouldDeadLetter` before releasing, so the message dead-letters at
+  exhaustion no matter what the policy said. The policy does not keep it alive;
+  it only chooses the delay right up until the boundary.
+- **Transaction path** (`handleResultInTx`, a classic behavior on a tx-aware
+  store). The retry branch checks `ShouldDeadLetter` before calling the store's
+  nack. At exhaustion it falls through to `MarkProcessed` and
+  `MoveToDeadLetter`, matching the non-transaction path.
+
+On both paths, a policy override is the wrong tool for "wait indefinitely": it
+dead-letters at exhaustion. Postpone is the only release that keeps a waiting
+message claim-eligible without spending the budget while the consumer retains
+ownership.
 
 ### Tell-Only Semantics
 
@@ -366,11 +389,34 @@ The framework cannot bound this for you, because only the behavior knows when
 waiting stops making sense. A capacity cap that clears in seconds and an
 operator response that may never come deserve different horizons, and a
 generic attempt counter cannot tell them apart. **A behavior that postpones
-must bound its own horizon**: track how long it has been waiting (in its own
-state, or in the message) and return a real error once the wait is no longer
-justified, so the normal nack path can dead-letter it. If a behavior genuinely
-wants to wait forever, that is a legitimate choice, but it must be a choice,
-not an oversight.
+must bound its own horizon**: track how long it has been waiting and return a
+real error once the wait is no longer justified, so the normal nack path can
+dead-letter it. If a behavior genuinely wants to wait forever, that is a
+legitimate choice, but it must be a choice, not an oversight.
+
+The framework supplies the reference for that bound:
+
+```go
+enqueuedAt, ok := actor.DeliveryEnqueuedAt(ctx)
+if ok && time.Since(enqueuedAt) >= myHorizon {
+        return errCondition // Ordinary nack path, dead-letters.
+}
+
+return fmt.Errorf("%w: %w", errCondition, actor.Postpone(backoff))
+```
+
+`DeliveryEnqueuedAt` reports when the message was first persisted, taken from
+the durable row's `created_at`. Neither a nack nor a postpone rewrites that
+column, so it survives every redelivery and measures the true age of the wait.
+
+Prefer it over behavior-side state whenever the message stream is
+attacker-controlled. A map keyed on anything the sender chooses (a session id,
+a request id) is unbounded by construction, so the bookkeeping meant to protect
+the actor becomes the resource the attacker grows. The row's own age costs
+nothing to consult and cannot be inflated by fabricating new messages. Note
+that the second return distinguishes "no timestamp available" from "age zero":
+treat absence as no horizon information rather than as an infinitely old
+message.
 
 ### Correlation-Key Interaction
 
@@ -387,6 +433,30 @@ busy key is a throughput decision, not just a retry decision. Unkeyed messages
 have no such interaction: the postponed row simply loses its place in the
 global `available_at` order until it becomes eligible again.
 
+**Scope of the FIFO guarantee.** For a postponing consumer, per-key ordering
+holds when **either** the actor is single-worker (`NumWorkers <= 1`) **or** the
+lane's messages never reach their final attempt. Both hold for every adopter
+today, so this is a constraint to respect rather than a bug to work around.
+
+The gap is a boundary case in the claim query's anti-join, which passes over a
+predecessor that has exhausted its retry budget (`m2.attempts <
+m2.max_attempts`, so a dead row cannot wedge its lane forever). A predecessor
+leased on its *final* attempt already satisfies `attempts == max_attempts`, so
+it is invisible to the anti-join while it is still being processed, and a
+competing worker may claim its same-key successor. With only ack and nack that
+is harmless, since the predecessor can then only complete or dead-letter. A
+postpone breaks it: the release decrements `attempts` back below the cap, so
+the predecessor becomes eligible again and reprocesses *after* the successor
+already ran, inverting per-key order.
+
+No adopter combines all three preconditions (keyed lanes, `NumWorkers > 1`, and
+a postponing behavior), so the SQL is deliberately left alone rather than
+complicated for a hypothetical. Future work, required before wiring a
+postponing behavior onto a keyed lane with a worker pool: add a lease-liveness
+disjunct to the anti-join so a currently-leased predecessor blocks its
+successors regardless of its attempts, instead of relying on the attempts
+predicate alone.
+
 ### Adopter: OOR Over-Cap Admission
 
 The `oor` registry bounds how many incoming receive sessions one daemon keeps
@@ -402,23 +472,46 @@ condition it did not cause, and a daemon that stayed full long enough would
 dead-letter a perfectly valid incoming transfer.
 
 The registry now postpones instead, on the Tell-driven routed paths only:
-`handleResolveIncoming` (the hint the event router pushes) and
-`handleDriveEvent`'s lazy restore of an already-admitted session. Both wrap the
-postpone alongside the existing `errIncomingAdmissionCapped` sentinel with a
-double `%w`, so boot restore's skip check keeps matching the sentinel while the
-consume path sees the postpone. `StartTransferRequest` is untouched: it arrives
-as an Ask from the RPC layer, and it is outgoing, so the incoming cap never
-applies to it. Boot restore keeps its own treatment as well, skipping over-cap
-rows rather than aborting the boot.
+`handleResolveIncoming` (the hint the event router pushes), `handleDriveEvent`'s
+lazy restore of an already-admitted session, and `handleResumeSession` (the
+retry callback's timer expiry). All three wrap the postpone alongside the
+existing `errIncomingAdmissionCapped` sentinel with a double `%w`, so boot
+restore's skip check keeps matching the sentinel while the consume path sees the
+postpone. `StartTransferRequest` is untouched: it arrives as an Ask from the RPC
+layer, and it is outgoing, so the incoming cap never applies to it. Boot restore
+keeps its own treatment as well, skipping over-cap rows rather than aborting the
+boot.
+
+The registry bounds the wait, as every postponing behavior must.
+`overCapPostponeHorizon` (10 minutes) is measured against
+`actor.DeliveryEnqueuedAt`, and past it the plain sentinel is returned so the
+ordinary nack path dead-letters the hint into a table where it is visible and
+requeue-able. The bound is load-bearing rather than decorative here, because the
+hint stream is operator-controlled: every redelivery of a capped hint re-runs
+the wallet-ownership query and the self-transfer row read before the cap
+rejects it again, so an unbounded postpone would let an operator streaming
+fabricated session ids build a permanent churn queue against the single-worker
+registry. Deriving the age from the row rather than from a per-session map is
+the same point in miniature: the map would be keyed on ids the operator picks.
 
 The deferred self-transfer hint in the same registry is the second adopter. It
 previously carried a custom `TellRetryPolicy` that answered "retry in 30
-seconds, always" so the hint would never dead-letter while its outgoing session
-ran. That worked until the tenth deferral, at which point `attempts` reached
-`max_attempts` and the row fell out of the eligible set: it never
-dead-lettered, exactly as promised, and it also never redelivered again.
-Postponing on the same 30 second backoff gives the intended semantics, and the
+seconds, always", intending that the hint never dead-letter while its outgoing
+session ran. That intent was never actually achieved. The registry runs the
+Read/Commit path, whose `finishNonTx` tail releases through `Delivery.Nack`,
+and `Nack` checks `ShouldDeadLetter` before the release: the tenth deferral
+dead-lettered the hint regardless of what the policy answered. Postponing on
+the same 30 second backoff gives the intended semantics for real, and the
 registry went back to the default Tell retry policy for everything else.
+
+This adopter deliberately has no time horizon. The hint names the wallet's own
+change output, so discarding it while its outgoing session is still pending is
+worse than retaining it. Normal completion triggers an immediate terminal-reap
+redrive; the durable 30 second copy covers a crash or missed redrive. If the
+outgoing session never becomes terminal, the hint remains in the mailbox and
+does not appear in `dead_letters`. Operators should watch the age of
+non-terminal outgoing OOR sessions and inspect the registry mailbox when one is
+stuck.
 
 ---
 

@@ -43,6 +43,17 @@ crash-safe at-least-once delivery with exactly-once deduplication.
   `*PostponeError.Delay` carries the backoff. Pass a real delay: zero or
   negative makes the message immediately claim-eligible, which against an
   unchanged condition is a busy loop against the database.
+- `DeliveryEnqueuedAt(ctx) (time.Time, bool)` — When the message currently
+  being processed was first persisted, read from the durable row's `created_at`
+  and stamped onto the processing context by the consume path (once, above the
+  fork into the three execution paths, so all of them agree). Neither a nack
+  nor a postpone rewrites that column, so it survives every redelivery. This is
+  the intended horizon reference for a postponing behavior, and the reason it
+  is row-derived rather than behavior-derived: per-message state keyed on a
+  sender-chosen id is unbounded when the message stream is attacker-controlled.
+  The bool is false outside a delivery and for a store that reports no
+  timestamp. `Delivery.EnqueuedAt` is the same value on the delivery itself;
+  `WithDeliveryEnqueuedAtForTest` stamps a context for cross-package tests.
 - `TellRetryPolicy` — Function type `func(lastErr error, attempts int) (bool,
   time.Duration)` determining retry behavior for failed Tell messages. Return
   `(false, _)` to dead-letter immediately. A policy may stop retries early,
@@ -128,14 +139,25 @@ crash-safe at-least-once delivery with exactly-once deduplication.
 - During daemon teardown, the underlying DB is closed before every actor's lease loop has wound down. The lease loop uses `isExpectedShutdownErr` to demote these "database is closed" errors to debug level; real operational errors still surface as warnings because neither the actor context nor the outer context is done in those cases.
 - **Postpone preserves the attempt budget; nack spends it.** A nack increments
   `attempts` on every release, and both the claim and the peek queries filter
-  on `attempts < max_attempts`, so a repeatedly-nacked message first
-  dead-letters and then (if a policy suppresses the dead-letter write) falls
-  out of the eligible set entirely. A postpone leaves the budget exactly as it
-  was: the fenced `PostponeMessage` decrements to compensate the lease-time
-  increment, and the leaseless `PostponeMessageByID` leaves it untouched
-  because the peek never bumped it. An "always retry" `TellRetryPolicy` is
-  **not** a substitute for a postpone; it only stops the dead-letter write
-  while the row still goes dark at `max_attempts`.
+  on `attempts < max_attempts`. A successful postpone leaves the budget exactly
+  as it was: the fenced `PostponeMessage` decrements to compensate the
+  lease-time increment, and the leaseless `PostponeMessageByID` leaves it
+  untouched because the peek never bumped it. An "always retry"
+  `TellRetryPolicy` is **not** a substitute. Both the non-tx path
+  (`handleResult` via `Delivery.Nack`, including the Read/Commit `finishNonTx`
+  tail) and the classic tx path (`handleResultInTx`) enforce
+  `ShouldDeadLetter` before retry release. A policy can stop retries early or
+  choose the delay, but it cannot extend `MaxAttempts`. Only a postpone can
+  express an attempt-preserving wait.
+- **Fenced postpone is attempt-neutral only while the consumer still owns the
+  lease.** A classic tx turn whose fenced postpone matches zero rows has lost
+  its lease, so the actor rolls the transaction back rather than letting the
+  stale consumer ack or dead-letter another owner's row. That rollback also
+  discards the compensating decrement, while the earlier lease claim's
+  increment remains committed. The lost turn therefore spends one attempt.
+  Repeated cross-process lease loss can exhaust the row without a dead letter.
+  No current classic-path behavior returns a postpone. Close this gap before
+  adopting postpone on that path where competing runtime owners are possible.
 - **Postpone is Tell-only.** An Ask has a caller parked on the promise, so
   postponing it would strand that caller for the length of the delay with
   nothing to observe. An Ask behavior returning a `PostponeError` gets ordinary
@@ -147,14 +169,29 @@ crash-safe at-least-once delivery with exactly-once deduplication.
   only mechanism that would eventually give up. A behavior that postpones
   against a condition that never clears postpones forever. The framework cannot
   bound this, because only the behavior knows when waiting stops making sense.
-  Track the wait (in behavior state or in the message) and return a real error
-  once it is no longer justified, so the normal nack path can dead-letter it.
+  Track the wait and return a real error once it is no longer justified, so the
+  normal nack path can dead-letter it. Use `DeliveryEnqueuedAt(ctx) (time.Time,
+  bool)` for that: it reports the durable row's `created_at`, which neither a
+  nack nor a postpone rewrites, so it measures the true age of the wait across
+  every redelivery. Prefer it over behavior-side state whenever the message
+  stream is attacker-controlled, since a map keyed on a sender-chosen id is
+  itself unbounded. The bool distinguishes "no timestamp" from "age zero";
+  treat absence as no horizon information.
 - **A postponed head still blocks its correlation-key lane.** Postpone does not
   exempt a message from per-key FIFO: the row is still in the mailbox, so no
   later same-key message is claim-eligible until it drains, and every further
   postpone extends the block. Blocking is bounded to the key, not the mailbox,
   but a long backoff on a busy key is a throughput decision, not just a retry
-  decision. Unkeyed messages have no such interaction.
+  decision. Unkeyed messages have no such interaction. **Scope:** per-key FIFO
+  holds for a postponing consumer only when the actor is single-worker OR the
+  lane's messages never reach their final attempt. A predecessor leased on its
+  final attempt is invisible to the claim anti-join (`m2.attempts <
+  m2.max_attempts`), so a pool worker can claim its successor; a postpone then
+  decrements the predecessor back below the cap and it reprocesses after the
+  successor, inverting order. No adopter combines keyed lanes with
+  `NumWorkers > 1` and postpone today, so the SQL is left alone; adding a
+  lease-liveness disjunct to the anti-join is the prerequisite for that
+  combination.
 - **Per-correlation-key FIFO claim.** Two messages in the same mailbox that
   share a non-empty `CorrelationKey()` are processed in emission order
   regardless of retry backoff. Without this invariant, a transient Tell
