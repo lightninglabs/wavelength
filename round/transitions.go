@@ -4627,19 +4627,28 @@ func (s *InputSigSentState) ProcessEvent(ctx context.Context, event ClientEvent,
 		// carries the same authority a probe would return, so this
 		// round needs no reconcile; disarm the clock it armed on the
 		// way into this state.
+		//
+		// Deliberately no RoundFailedNotification, so the round is not
+		// retired durably here. handleCancelRound injects a synthetic
+		// BoardingFailed and lands on this same branch, and a local
+		// cancel proves nothing about the operator: the commitment may
+		// still broadcast. Returning the deposit to the boardable pool
+		// on that evidence would let it be spent into a second round
+		// while the first can still confirm. The round instead settles
+		// durably on the next dead answer, which is the only verdict
+		// that rules the commitment out.
 		if len(s.Intents.Forfeits) == 0 ||
 			env.StatusReconcileTimeout <= 0 {
-			return &ClientStateTransition{
-				NextState: &ClientFailedState{
-					Reason:      evt.Reason,
-					Error:       evt.Error,
-					Recoverable: evt.Recoverable,
-					FailureCode: evt.FailureCode,
-				},
-				NewEvents: reconcileDisarmEvents(
-					s.RoundID, env,
-				),
-			}, nil
+			return appendReconcileDisarm(
+				&ClientStateTransition{
+					NextState: &ClientFailedState{
+						Reason:      evt.Reason,
+						Error:       evt.Error,
+						Recoverable: evt.Recoverable,
+						FailureCode: evt.FailureCode,
+					},
+				}, s.RoundID, env,
+			), nil
 		}
 
 		// Forfeit signatures are already out, so the notification alone
@@ -4765,6 +4774,28 @@ func (s *InputSigSentState) ProcessEvent(ctx context.Context, event ClientEvent,
 			slog.Int("forfeit_count", len(s.Intents.Forfeits)),
 		)
 
+		// This is the one exit from InputSigSentState that carries an
+		// authoritative verdict, so it is the one that announces the
+		// failure. The notification is what drives the actor's durable
+		// retirement: the checkpoint row moves out of input_sig_sent
+		// and the deposits this round adopted go back to the live
+		// pool. Neither is safe without the operator's dead answer,
+		// which is why the delivered-failure shortcut below does not
+		// announce (a user cancel reaches it through the same branch
+		// and proves nothing about the commitment) and the
+		// confirmation paths never do (their commitment confirmed, so
+		// the deposit is spent).
+		//
+		// Announcing here also closes an observability gap, since a
+		// checkpointed round reaching its terminal state previously
+		// went uncounted.
+		announce := &RoundFailedNotification{
+			RoundID:       fn.Some(s.RoundID),
+			Reason:        failure.Reason,
+			Recoverable:   failure.Recoverable,
+			OriginalError: failure.Error,
+		}
+
 		transition := &ClientStateTransition{
 			NextState: &ClientFailedState{
 				Reason:      failure.Reason,
@@ -4772,6 +4803,9 @@ func (s *InputSigSentState) ProcessEvent(ctx context.Context, event ClientEvent,
 				Recoverable: failure.Recoverable,
 				FailureCode: failure.FailureCode,
 			},
+			NewEvents: fn.Some(ClientEmittedEvent{
+				Outbox: []ClientOutMsg{announce},
+			}),
 		}
 
 		// The release is safe here for the same reason it is safe in
@@ -4810,23 +4844,31 @@ func (s *InputSigSentState) ProcessEvent(ctx context.Context, event ClientEvent,
 		)
 		if err != nil {
 
-			// Error carried into failed state. This is an exit
-			// from InputSigSentState like any other, so it disarms
+			// Error carried into failed state. It disarms but does
+			// not announce: the commitment confirmed on the way
+			// into this branch, so the boarding UTXO is spent.
+			// Retiring the round here would hand a spent deposit
+			// back to the boardable pool. The FSM failing while
+			// the round succeeded on-chain is a local bug to fix,
+			// not a dead round to reclaim.
+			//
+			// This is an exit from InputSigSentState like any
+			// other, so it disarms
 			// the reconcile clock too: the confirmation already
 			// resolved the round's fate, and leaving the one-shot
 			// armed would fire a probe at a round that has settled
 			// terminally.
-			return &ClientStateTransition{ //nolint:nilerr
-				NextState: &ClientFailedState{
-					Reason: "failed to build client " +
-						"VTXOs",
-					Error:       err,
-					Recoverable: false,
-				},
-				NewEvents: reconcileDisarmEvents(
-					s.RoundID, env,
-				),
-			}, nil
+			//nolint:nilerr
+			return appendReconcileDisarm(
+				&ClientStateTransition{
+					NextState: &ClientFailedState{
+						Reason: "failed to build " +
+							"client VTXOs",
+						Error:       err,
+						Recoverable: false,
+					},
+				}, s.RoundID, env,
+			), nil
 		}
 
 		env.Log.InfoS(

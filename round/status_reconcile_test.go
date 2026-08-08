@@ -10,6 +10,7 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/lib/types"
 	"github.com/lightninglabs/wavelength/rpc/roundpb"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
 )
 
@@ -636,5 +637,82 @@ func TestConfirmationDisarmTrailsNotifications(t *testing.T) {
 		t, doneIdx, cancelIdx, "disarm precedes the terminal "+
 			"notifications, so a rejected cancel would "+
 			"withhold confirmed funds",
+	)
+}
+
+// TestDeadStatusAnnouncesRoundFailure pins the emission the durable
+// retirement hangs off. The actor retires a dead round's checkpoint row and
+// releases its deposits when it sees a RoundFailedNotification, so a dead
+// answer that fails the round in memory without announcing it leaves the row
+// active and the deposit adopted forever: the wavelength#1051 strand, moved
+// from the FSM into the database. Every other exit from InputSigSentState
+// stays silent on purpose, so this is the only site that closes it.
+func TestDeadStatusAnnouncesRoundFailure(t *testing.T) {
+	t.Parallel()
+
+	roundID := reconcileRoundID(0xc1)
+	s := reconcileState(roundID, nil)
+
+	tr, err := s.ProcessEvent(
+		context.Background(),
+		&RoundStatusReported{
+			RoundID: roundID,
+			Status:  roundpb.RoundLifecycleStatus_ROUND_STATUS_DEAD,
+			Detail:  "round unknown to operator",
+		},
+		reconcileEnv(),
+	)
+	require.NoError(t, err)
+
+	_, ok := tr.NextState.(*ClientFailedState)
+	require.True(t, ok, "expected ClientFailedState, got %T", tr.NextState)
+
+	outbox := tr.NewEvents.UnwrapOr(ClientEmittedEvent{}).Outbox
+
+	notify, ok := findOutbox[*RoundFailedNotification](outbox)
+	require.True(
+		t, ok, "dead answer did not announce the failure, so the "+
+			"round is never retired and its deposit stays adopted",
+	)
+	require.Equal(t, fn.Some(roundID), notify.RoundID)
+
+	// The announcement is a delivery, so the disarm trails it for the same
+	// reason it trails the release and the job drop.
+	notifyIdx := outboxIndexOf[*RoundFailedNotification](outbox)
+	cancelIdx := outboxIndexOf[*CancelTimeoutReq](outbox)
+	require.NotEqual(t, -1, cancelIdx, "dead answer left the clock armed")
+	require.Less(
+		t, notifyIdx, cancelIdx, "disarm precedes the "+
+			"announcement, so a rejected cancel would suppress "+
+			"the retirement",
+	)
+}
+
+// TestDeliveredFailureDoesNotAnnounce pins the deliberate silence on the
+// delivered-failure shortcut. handleCancelRound injects a synthetic
+// BoardingFailed onto this same branch, and a local cancel proves nothing
+// about the operator: the commitment may still broadcast. Announcing here
+// would retire the round and hand the deposit back to the boardable pool
+// while it can still be spent by that commitment.
+func TestDeliveredFailureDoesNotAnnounce(t *testing.T) {
+	t.Parallel()
+
+	s := reconcileState(reconcileRoundID(0xc2), nil)
+
+	tr, err := s.ProcessEvent(context.Background(), &BoardingFailed{
+		Reason:      "User requested cancellation",
+		Recoverable: true,
+	}, reconcileEnv())
+	require.NoError(t, err)
+
+	_, ok := tr.NextState.(*ClientFailedState)
+	require.True(t, ok, "expected ClientFailedState, got %T", tr.NextState)
+
+	outbox := tr.NewEvents.UnwrapOr(ClientEmittedEvent{}).Outbox
+	_, announced := findOutbox[*RoundFailedNotification](outbox)
+	require.False(
+		t, announced, "a delivered failure retired the round, "+
+			"which releases the deposit on a verdict that does "+
+			"not rule out the commitment",
 	)
 }

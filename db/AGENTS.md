@@ -25,8 +25,15 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
 - `RoundStore` / `RoundPersistenceStore` — round-state interface +
   concrete `BatchedTx[RoundStore]`-backed store
   (`InsertRound`/`Get`/`GetByCommitmentTxid`/`ListActive`/`ListByStatus`/
-  `UpdateStatus`/`Finalize` plus boarding-intent / VTXO-request /
-  client-tree queries).
+  `UpdateStatus`/`Finalize`/`FailRound` plus boarding-intent /
+  VTXO-request / client-tree queries).
+- `RoundPersistenceStore.FailRound(ctx, roundID)` — terminal-failure
+  counterpart to `FinalizeRound`. In one transaction it moves the round
+  row to `failed` and returns every boarding intent that round adopted
+  to `confirmed`. It is the exact inverse of the `CommitState`
+  checkpoint write, and shares that write's transaction for the same
+  reason: the round row and the intent statuses are a single fact about
+  where the deposit lives.
 - `RoundSummary` / `VTXOSummary` — lightweight projections for
   paginated listing (avoids deserializing full trees).
 - `VTXOPersistenceStore` — VTXO descriptor store
@@ -139,6 +146,21 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/db.<Symb
 - Transaction atomicity: entire checkpoint succeeds or none.
 - Boarding intents persist from registration until round completion
   or failure.
+- A dead round returns its adopted boarding intents to `confirmed`, not
+  `failed` (wavelength#1051). A round that never broadcast its
+  commitment leaves the boarding UTXO exactly as it was, so `confirmed`
+  is the truthful status: it returns the deposit to the boardable pool
+  and makes it sweepable again, since `boardingIntentSweepable` excludes
+  `adopted` and would otherwise never sweep the intent, CSV expiry or
+  not.
+- `FailRound` is safe to call on any round, because two guards decide
+  whether anything moves. The round update matches only a row still at
+  `input_sig_sent`, and the deposits are released only if it did, so a
+  round whose commitment confirmed keeps its intents (they remain
+  literally `adopted`; the listing queries hide them by joining on round
+  status rather than by rewriting them). The intent update is scoped to
+  that round's own adopted intents, so it can neither release a deposit
+  another round has since taken nor clobber a sweep already in flight.
 - `boarding_sweeps` rows are never deleted; the daemon resumes
   spend-watch and rebroadcast on restart from
   `ListPendingBoardingSweeps`. `MarkBoardingSweepFailed` restores
