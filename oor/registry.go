@@ -60,6 +60,14 @@ var ErrIdempotencyKeyConflict = errors.New("outgoing OOR session is bound to " +
 // behind the SQLITE_BUSY bursts observed at high payment rates).
 const selfHintRedeliveryBackoff = 30 * time.Second
 
+// incomingCapBackoff is how long an over-cap incoming admission driven by a
+// routed durable message waits before it is redelivered. Being over the
+// concurrency cap is a not-now condition that clears the moment an earlier
+// session terminates and is reaped, so the wait only needs to be long enough
+// that a stream of capped hints does not spin the registry goroutine, and
+// short enough that a freed slot is picked up promptly.
+const incomingCapBackoff = 5 * time.Second
+
 // detachedWaitTimeout bounds the registry's detached-continuation wait on a
 // child's response. OnComplete spawns a goroutine that parks on
 // DetachedAsk.CallerCtx. On the registry's durable (Read/Stage/Commit) path
@@ -400,6 +408,12 @@ type oorRegistryBehavior struct {
 	// leaking when a child future never resolves under an uncancellable
 	// caller context.
 	detachedWaitTimeout time.Duration
+
+	// capBackoff is how long an over-cap incoming admission postpones its
+	// routed durable message. Zero means incomingCapBackoff (the package
+	// default); tests shrink it so a capped redelivery lands inside the
+	// test's own deadline.
+	capBackoff time.Duration
 }
 
 // detachWaitTimeout returns the configured detached-continuation wait bound,
@@ -410,6 +424,38 @@ func (r *oorRegistryBehavior) detachWaitTimeout() time.Duration {
 	}
 
 	return detachedWaitTimeout
+}
+
+// capPostponeBackoff returns the configured over-cap redelivery backoff,
+// falling back to the package default when unset.
+func (r *oorRegistryBehavior) capPostponeBackoff() time.Duration {
+	if r.capBackoff > 0 {
+		return r.capBackoff
+	}
+
+	return incomingCapBackoff
+}
+
+// postponeOverCap converts an over-cap admission rejection into a postpone
+// request, leaving every other error untouched. Being over the concurrency cap
+// is a transient not-now condition that clears when a resident session
+// terminates and frees a slot, so nacking the routed message that triggered it
+// would walk an innocent hint toward the dead-letter table one redelivery at a
+// time. A postpone releases the delivery on a backoff with its attempt budget
+// fully intact instead.
+//
+// Callers must restrict this to the Tell-driven routed-message path. An
+// Ask-driven admission has a caller parked on the promise, and the framework
+// gives a postponed Ask ordinary error treatment, so the caller is better
+// served by the bare sentinel. The double %w keeps errIncomingAdmissionCapped
+// matchable (boot restore's skip check and the RPC surface both rely on it)
+// while adding the postpone to the same wrap chain.
+func (r *oorRegistryBehavior) postponeOverCap(err error) error {
+	if !errors.Is(err, errIncomingAdmissionCapped) {
+		return err
+	}
+
+	return fmt.Errorf("%w: %w", err, actor.Postpone(r.capPostponeBackoff()))
 }
 
 // admissionHandoff records an outgoing admission whose caller promise must be
@@ -1019,7 +1065,13 @@ func (r *oorRegistryBehavior) handleDriveEvent(ctx context.Context,
 
 	child, err := r.lookupOrRestore(ctx, req.SessionID)
 	if err != nil {
-		return fn.Err[ActorResp](err)
+
+		// A routed event for an already-admitted incoming session that
+		// cannot be made resident right now is over cap, not broken:
+		// postpone it so the event waits for a slot with its attempt
+		// budget intact rather than dead-lettering an event whose
+		// session row is still very much alive.
+		return fn.Err[ActorResp](r.postponeOverCap(err))
 	}
 	if child == nil {
 		// lookupOrRestore returns a nil child for both a truly-unknown
@@ -1099,9 +1151,11 @@ func (r *oorRegistryBehavior) handleResolveIncoming(ctx context.Context,
 	// unanswered hints (each a distinct fabricated session id over an owned
 	// receive script) cannot pin unbounded goroutines, mailboxes, and rows.
 	// A resident session forwarding a follow-up hint is exempt: it already
-	// counts against the cap. The hint is retried by transport, so an
-	// over-cap rejection is recoverable once earlier sessions terminate and
-	// are reaped.
+	// counts against the cap. The rejection is a postpone rather than a
+	// plain error, so the routed hint redelivers on a backoff with its
+	// attempt budget intact and admits as soon as an earlier session
+	// terminates and is reaped, instead of dead-lettering for a condition
+	// it did nothing to cause.
 	if !existed {
 		maxIncoming := r.cfg.Limits.MaxConcurrentIncomingSessions
 		if _, counted := r.incoming[req.SessionID]; !counted &&
@@ -1122,7 +1176,9 @@ func (r *oorRegistryBehavior) handleResolveIncoming(ctx context.Context,
 				slog.Uint64("cap", uint64(maxIncoming)),
 			)
 
-			return fn.Err[ActorResp](errIncomingAdmissionCapped)
+			return fn.Err[ActorResp](
+				r.postponeOverCap(errIncomingAdmissionCapped),
+			)
 		}
 	}
 
@@ -1130,7 +1186,11 @@ func (r *oorRegistryBehavior) handleResolveIncoming(ctx context.Context,
 		req.SessionID, clientdb.OORSessionDirectionIncoming,
 	)
 	if err != nil {
-		return fn.Err[ActorResp](err)
+
+		// ensureChild is the choke point behind the pre-check above, so
+		// it can still reject at the cap on a path the pre-check
+		// exempted; give that rejection the same postpone treatment.
+		return fn.Err[ActorResp](r.postponeOverCap(err))
 	}
 
 	if !existed {
