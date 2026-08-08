@@ -123,14 +123,23 @@ type DurableActorConfig[M TLVMessage, R any] struct {
 
 	// MaxRestarts is how many times the actor may be restarted from its
 	// checkpoint inside RestartWindow after its behavior panics. Once the
-	// budget is broken the actor terminates permanently instead of
-	// restarting again, which is what stops a deterministic panic from
-	// turning into an unbounded crash loop.
+	// budget is broken the actor terminates PERMANENTLY instead of
+	// restarting again.
 	//
-	// Zero normalizes to DefaultMaxRestarts, so a hand-built config gets
-	// the bound rather than an accidental unlimited budget. Set it to
-	// UnlimitedRestarts to opt out on purpose.
-	// Default: 5.
+	// Zero normalizes to DefaultMaxRestarts, which is UnlimitedRestarts:
+	// by default a panicking actor restarts for as long as it keeps
+	// panicking. That is deliberate. Restarting forever is strictly no
+	// worse than the nack-and-continue loop supervision replaces, and both
+	// are rate-limited by the nack backoff, whereas a finite budget adds a
+	// failure mode the runtime did not have: the actor dies for good and
+	// keeps looking alive to anyone who is not watching.
+	//
+	// Setting a finite budget WITHOUT registering a Watch observer trades
+	// a crash loop for unobserved permanent death, which is usually the
+	// worse of the two. Set it only where the owner reacts to the
+	// TerminationRestartIntensityExceeded notification, and reach for
+	// RecommendedMaxRestarts when you do.
+	// Default: UnlimitedRestarts.
 	MaxRestarts int
 
 	// RestartWindow is the width of the sliding window over which
@@ -528,11 +537,11 @@ func NewDurableActor[M TLVMessage, R any](
 	mailboxCfg.SingleWorkerLeaseless = numWorkers == 1 &&
 		cfg.Behavior.IsRight()
 
-	// Resolve the restart intensity budget. A zero MaxRestarts is treated
-	// as "unset" and normalized to the default rather than to an unlimited
-	// budget, so a hand-built config that predates supervision still gets
-	// a bound; UnlimitedRestarts (any negative value) is the deliberate
-	// opt-out.
+	// Resolve the restart intensity budget. A zero MaxRestarts is "unset"
+	// and normalizes to DefaultMaxRestarts, which is UnlimitedRestarts: a
+	// finite budget kills the actor permanently, so it is opt-in for
+	// owners that watch for the event rather than something a config
+	// inherits by omission.
 	maxRestarts := cfg.MaxRestarts
 	if maxRestarts == 0 {
 		maxRestarts = DefaultMaxRestarts

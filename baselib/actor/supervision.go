@@ -14,21 +14,32 @@ import (
 const (
 	// DefaultMaxRestarts is how many behavior restarts a durable actor
 	// tolerates inside DefaultRestartWindow before it gives up and
-	// terminates permanently. It matches the BEAM's default one_for_one
-	// supervisor intensity.
-	DefaultMaxRestarts = 5
-
-	// DefaultRestartWindow is the width of the sliding window over which
-	// DefaultMaxRestarts is counted.
-	DefaultRestartWindow = 60 * time.Second
-
 	// UnlimitedRestarts is the DurableActorConfig.MaxRestarts value that
 	// disables the intensity budget entirely, letting the actor restart
-	// from its checkpoint forever. It is an explicit opt-in: a zero
-	// MaxRestarts normalizes to DefaultMaxRestarts instead, so a
-	// hand-built config cannot end up with an unbounded crash loop by
-	// forgetting a field.
+	// from its checkpoint for as long as it keeps panicking. It is the
+	// default, because restarting forever is strictly no worse than the
+	// nack-and-continue loop supervision replaces (both are rate-limited
+	// by the nack backoff), while a finite budget introduces a genuinely
+	// new failure mode: silent permanent death.
 	UnlimitedRestarts = -1
+
+	// DefaultMaxRestarts is the restart budget a durable actor gets when
+	// its config does not choose one. It is UnlimitedRestarts: a finite
+	// intensity budget kills the actor for good, which is only a safe
+	// trade where the actor's owner is watching for that event, so it has
+	// to be chosen rather than inherited. See
+	// DurableActorConfig.MaxRestarts.
+	DefaultMaxRestarts = UnlimitedRestarts
+
+	// RecommendedMaxRestarts is the intensity an owner that does wire a
+	// Watch observer should reach for. It matches the BEAM's default
+	// one_for_one supervisor intensity, counted over
+	// DefaultRestartWindow.
+	RecommendedMaxRestarts = 5
+
+	// DefaultRestartWindow is the width of the sliding window a finite
+	// MaxRestarts is counted over when the config does not set one.
+	DefaultRestartWindow = 60 * time.Second
 )
 
 // TerminationReason classifies why a durable actor's supervision loop exited.
