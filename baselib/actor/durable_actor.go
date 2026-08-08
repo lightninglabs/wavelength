@@ -629,6 +629,13 @@ func (a *DurableActor[M, R]) processDelivery(delivery *Delivery[M, R]) {
 	}
 	defer cancel()
 
+	// Expose the durable row's enqueue time to the behavior. This is the
+	// only wall-clock reference a postponing behavior can use to bound its
+	// own horizon without keeping per-message state, so it is stamped here,
+	// above the fork into the three execution paths, rather than in any one
+	// of them.
+	processCtx = withDeliveryEnqueuedAt(processCtx, delivery.EnqueuedAt)
+
 	logger(processCtx).TraceS(processCtx, "Durable actor processing message",
 		"actor_id", a.id,
 		"msg_type", delivery.Message.MessageType(),
@@ -1124,6 +1131,7 @@ func (a *DurableActor[M, R]) handleResultInTx(
 		LeaseUntil:      delivery.LeaseUntil,
 		Attempts:        delivery.Attempts,
 		MaxAttempts:     delivery.MaxAttempts,
+		EnqueuedAt:      delivery.EnqueuedAt,
 		store:           store,
 		deferPromise:    delivery.deferPromise,
 	}

@@ -21,6 +21,60 @@ import (
 // postpones must bound its own horizon (give up with a real error once the
 // wait stops making sense), or accept that the message waits forever.
 
+// deliveryEnqueuedAtKey keys the current delivery's enqueue timestamp in the
+// processing context.
+type deliveryEnqueuedAtKey struct{}
+
+// withDeliveryEnqueuedAt stamps the current delivery's enqueue timestamp onto
+// the processing context. The consume path calls this once per delivery,
+// before the behavior runs, so every execution path (tx fold, non-tx tail, and
+// the Read/Commit Exec handle) exposes the same value. A zero timestamp is not
+// stamped, so a store that does not report one leaves DeliveryEnqueuedAt
+// reporting absence rather than a bogus epoch age.
+func withDeliveryEnqueuedAt(ctx context.Context,
+	enqueuedAt time.Time) context.Context {
+
+	if enqueuedAt.IsZero() {
+		return ctx
+	}
+
+	return context.WithValue(ctx, deliveryEnqueuedAtKey{}, enqueuedAt)
+}
+
+// DeliveryEnqueuedAt reports when the message currently being processed was
+// first persisted to the mailbox, and whether that timestamp is available at
+// all. The value comes from the durable row and survives every redelivery,
+// since neither a nack nor a postpone rewrites it.
+//
+// This is the intended way for a postponing behavior to bound its own horizon.
+// Postpone deliberately removes the attempt-based give-up mechanism, so a
+// behavior that waits on an external condition needs some other reference to
+// decide when waiting has stopped making sense. Deriving that from the row
+// rather than from behavior-side state matters whenever the message stream is
+// attacker-controlled: a per-message map keyed on anything the sender chooses
+// is unbounded by construction, while the row's own age costs nothing to
+// consult and cannot be inflated by fabricating new messages.
+//
+// The second return is false outside a delivery (so a behavior invoked
+// directly in a test sees no timestamp) and for a store that does not report
+// one. Treat absence as "no horizon information", not as "age zero".
+func DeliveryEnqueuedAt(ctx context.Context) (time.Time, bool) {
+	enqueuedAt, ok := ctx.Value(deliveryEnqueuedAtKey{}).(time.Time)
+
+	return enqueuedAt, ok
+}
+
+// WithDeliveryEnqueuedAtForTest stamps a delivery enqueue timestamp onto ctx
+// so a behavior in another package can be unit tested against its postpone
+// horizon without standing up a durable actor and a real mailbox row. It is
+// the exported form of what the consume path does for every delivery, and it
+// exists only for tests.
+func WithDeliveryEnqueuedAtForTest(ctx context.Context,
+	enqueuedAt time.Time) context.Context {
+
+	return withDeliveryEnqueuedAt(ctx, enqueuedAt)
+}
+
 // ErrPostponed is the sentinel matched by errors.Is for postpone requests.
 // Behaviors construct one with Postpone; the consume path detects it and
 // releases the delivery without burning an attempt.
