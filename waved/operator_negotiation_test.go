@@ -153,6 +153,16 @@ func TestOperatorTermsFreeRefreshWindow(t *testing.T) {
 	require.Equal(t, uint32(72), terms.FreeRefreshWindowBlocks)
 }
 
+// TestClientSupportedArkVersionsKeepsV2Disabled verifies that merely defining
+// the reorg-safety compatibility boundary cannot negotiate it prematurely.
+func TestClientSupportedArkVersionsKeepsV2Disabled(t *testing.T) {
+	t.Parallel()
+
+	versions := clientSupportedArkVersions()
+	require.Equal(t, []uint32{arkrpc.ArkProtocolVersionV1}, versions)
+	require.NotContains(t, versions, arkrpc.ArkProtocolVersionV2)
+}
+
 // TestNegotiateArkBootstrapZeroSelection proves the client refuses to bootstrap
 // when the operator returns a zero selection (no common version, or a
 // pre-versioning server). There is no legacy fallback.

@@ -66,11 +66,17 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/unroll.<
   terminal outcome is forwarded to the VTXO manager as a
   `vtxo.ExitOutcomeNotification` so VTXO lifecycle tracks the unroll's
   terminal on-chain result rather than the user's intent to exit
-  (wavelength#602): a clean failure (`!HadOnChainFootprint`) →
+  (wavelength#602): a failure with neither a locally recorded footprint nor
+  chain-boundary uncertainty (`!HadOnChainFootprint && !ReliveUnsafe`) →
   `ExitOutcomeRecoverable` (roll back to live), a completed exit →
-  `ExitOutcomeConfirmed` (retire to spent). `UnrollTerminatedMsg` carries
-  `HadOnChainFootprint`, computed by `jobHadOnChainFootprint` (any
-  confirmed/in-flight proof node or a non-pending sweep). It also carries
+  `ExitOutcomeConfirmed` (retire to spent). The live actor sets
+  `ReliveUnsafe` before every chain-boundary attempt; only objective
+  canonical-absence evidence or an explicit `DefinitelyNotBroadcast`
+  response may clear it. An ambiguous rejection, absence, or timeout
+  therefore leaves the VTXO held in unilateral exit.
+  `UnrollTerminatedMsg` carries `HadOnChainFootprint`, computed by
+  `jobHadOnChainFootprint` (any confirmed/in-flight proof node or a
+  non-pending sweep), and the durable `ReliveUnsafe` guard. It also carries
   the child's `ExitPolicyKind`, which the child stamps from its own durable
   exit policy (`exitPolicyKind`), so the terminal message is self-contained:
   it stays authoritative after the registry has evicted its in-memory
@@ -99,8 +105,8 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/unroll.<
   repeat after termination returns `Created=false` with the historical
   `ActorID`, never clobbering the sweep txid / failure reason. The one
   exception is a **recoverable** terminal failure
-  (`RecoverableFailure`): the prior exit failed cleanly with no on-chain
-  footprint and the VTXO was rolled back to live (wavelength#602), so
+  (`RecoverableFailure`): objective canonical-absence evidence allowed the
+  VTXO to roll back to live (wavelength#602), so
   a fresh `EnsureUnrollRequest` re-admits (spawns a new child,
   overwriting the stale record) instead of deduping — otherwise a
   recovered VTXO could never be unrolled again. Any existing unroll job
@@ -257,8 +263,9 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/unroll.<
   `r.active`, `r.pending`, AND `Store.GetRecord` before spawning so
   a repeat for an already-terminal outpoint returns the historical
   `ActorID` and never overwrites stored sweep txid / failure reason.
-  A **recoverable** terminal failure is the deliberate exception: the
-  VTXO was rolled back to live (wavelength#602), so `handleEnsure`
+  A **recoverable** terminal failure is the deliberate exception: objective
+  canonical-absence evidence allowed the VTXO to roll back to live
+  (wavelength#602), so `handleEnsure`
   falls through both the `r.pending` and `Store.GetRecord` arms to
   re-admit a fresh exit rather than strand the recovered coin.
 - **Fail-closed on restore gaps.** `handleEnsure` validates restorable
