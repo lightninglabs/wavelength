@@ -564,6 +564,53 @@ func (s *memCheckpointStore) NackMessage(ctx context.Context, id,
 	return 1, nil
 }
 
+// PostponeMessage releases a message without burning an attempt, mirroring
+// the fenced attempt-preserving postpone (decrement clamped at zero).
+func (s *memCheckpointStore) PostponeMessage(ctx context.Context, id,
+	leaseToken string, retryAfter time.Duration) (int64, error) {
+
+	_ = ctx
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	msg, ok := s.messages[id]
+	if !ok {
+		return 0, nil
+	}
+
+	msg.leased.LeaseToken = ""
+	msg.leased.LeaseUntil = time.Time{}
+	if msg.leased.Attempts > 0 {
+		msg.leased.Attempts--
+	}
+	msg.availableAt = time.Now().Add(retryAfter)
+
+	return 1, nil
+}
+
+// PostponeMessageByID releases a message by ID without touching attempts,
+// mirroring the unfenced leaseless postpone.
+func (s *memCheckpointStore) PostponeMessageByID(ctx context.Context, id string,
+	retryAfter time.Duration) (int64, error) {
+
+	_ = ctx
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	msg, ok := s.messages[id]
+	if !ok {
+		return 0, nil
+	}
+
+	msg.leased.LeaseToken = ""
+	msg.leased.LeaseUntil = time.Time{}
+	msg.availableAt = time.Now().Add(retryAfter)
+
+	return 1, nil
+}
+
 // NackMessageByID releases a message by ID without lease-token validation and
 // increments attempts, mirroring the unfenced leaseless nack.
 func (s *memCheckpointStore) NackMessageByID(ctx context.Context, id string,
