@@ -359,6 +359,13 @@ type DurableActor[M TLVMessage, R any] struct {
 	// the supervision goroutine.
 	lastRestartMsgID string
 
+	// restartPending records that the restart path enqueued a
+	// RestartMessage for the generation about to start, which lets a
+	// worker pool hold its warm-up barrier for that row unconditionally
+	// rather than guessing at it. It is owned by the supervision
+	// goroutine and consumed when the generation starts.
+	restartPending bool
+
 	// supervisionMu guards runCancel and pendingPanic, both of which are
 	// written by a worker goroutine and read by the supervision goroutine.
 	supervisionMu sync.Mutex
@@ -655,11 +662,42 @@ func (a *DurableActor[M, R]) supervise() {
 		// with, either for a restart or for the terminal teardown.
 		a.stopHookRun = false
 
+		// A pool warms up one worker at a time. Launching the whole
+		// pool at once would let one worker take the generation's
+		// RestartMessage while a sibling takes the row behind it, so a
+		// normal turn could run against the behavior while the restart
+		// handler was still rebuilding it. RestartPriority orders the
+		// claims but not the turns, so the ordering guarantee needs
+		// this barrier to actually hold. A single-worker actor is
+		// already strictly sequential, so it gets a nil barrier and
+		// the identical code path with nothing to pay for.
 		var workers sync.WaitGroup
-		for i := 0; i < a.numWorkers; i++ {
-			workers.Add(1)
+		workers.Add(a.numWorkers)
 
-			go a.worker(runCtx, &workers)
+		// restartPending is set by the restart path, which enqueued the
+		// row itself and can therefore hold the barrier for it
+		// unconditionally. A boot generation cannot: the owner
+		// prepends that row before Start, so the actor never sees it
+		// and the barrier falls back to ordering the first claim.
+		barrier := newWarmupBarrier(
+			a.numWorkers > 1, a.restartPending,
+		)
+		a.restartPending = false
+
+		go a.worker(runCtx, &workers, barrier)
+
+		// The idle window is the mailbox's own poll floor, so a
+		// generation that starts against an empty mailbox fans out on
+		// the same cadence the mailbox already polls at rather than
+		// introducing a second timing knob.
+		barrier.wait(runCtx, a.mailbox.cfg.PollInterval)
+
+		// The rest of the pool always launches, even when the barrier
+		// was released by cancellation: they exit immediately against
+		// the done context, and launching unconditionally keeps the
+		// WaitGroup count honest.
+		for i := 1; i < a.numWorkers; i++ {
+			go a.worker(runCtx, &workers, nil)
 		}
 
 		workers.Wait()
@@ -913,6 +951,11 @@ func (a *DurableActor[M, R]) restartFromCheckpoint() error {
 	}
 	a.lastRestartMsgID = id
 
+	// The next generation now has a restart row waiting for it, which is
+	// what lets a pool hold its warm-up barrier for that row rather than
+	// inferring one from the first claim.
+	a.restartPending = true
+
 	return nil
 }
 
@@ -927,8 +970,20 @@ func (a *DurableActor[M, R]) restartFromCheckpoint() error {
 // drains its siblings and restarts the actor from its checkpoint rather than
 // letting further messages run against in-memory state the panic may have
 // corrupted.
-func (a *DurableActor[M, R]) worker(ctx context.Context, wg *sync.WaitGroup) {
+//
+// A non-nil warmup marks this as the generation's warm-up worker, the one the
+// rest of a pool waits behind. It holds the barrier across a RestartMessage
+// turn and opens it for anything else, so a checkpoint hand-off completes
+// before any sibling can run a normal turn against the same behavior.
+func (a *DurableActor[M, R]) worker(ctx context.Context, wg *sync.WaitGroup,
+	warmup *warmupBarrier) {
+
 	defer wg.Done()
+
+	// Whatever ends this worker, the rest of the pool must not stay parked
+	// behind it. A panic, a closed mailbox, and a cancelled generation all
+	// land here.
+	defer warmup.open()
 
 	// Process messages from the durable mailbox.
 	for env := range a.mailbox.Receive(ctx) {
@@ -947,10 +1002,30 @@ func (a *DurableActor[M, R]) worker(ctx context.Context, wg *sync.WaitGroup) {
 			continue
 		}
 
-		if panicErr := a.processDelivery(
-			ctx, delivery,
-		); panicErr != nil {
+		// Recording the claim is what tells the barrier's idle tick
+		// that a hand-off is in progress rather than absent.
+		warmup.noteClaim()
 
+		// The pool waits behind a restart turn and nothing else. A
+		// first claim of any other message proves this generation had
+		// no hand-off waiting, since RestartPriority would have won
+		// the claim, so the pool fans out before that message is even
+		// processed rather than serializing behind it.
+		restart := isRestartDelivery(delivery)
+		if !restart {
+			warmup.open()
+		}
+
+		panicErr := a.processDelivery(ctx, delivery)
+
+		// The hand-off is resolved either way: the restore committed,
+		// failed and dead-lettered, or panicked. All three release the
+		// pool.
+		if restart {
+			warmup.open()
+		}
+
+		if panicErr != nil {
 			a.requestRestart(panicErr)
 
 			return

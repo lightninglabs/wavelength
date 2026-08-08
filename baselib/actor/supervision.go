@@ -1,6 +1,7 @@
 package actor
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"runtime/debug"
@@ -359,4 +360,134 @@ func (w *watcherRegistry) publish(info TerminationInfo) bool {
 	close(w.published)
 
 	return true
+}
+
+// warmupBarrier holds the rest of a competing-consumer pool behind the first
+// message of a worker generation, so a RestartMessage hand-off is not raced by
+// a sibling worker claiming the next row.
+//
+// The problem it solves is specific to NumWorkers > 1. A RestartMessage
+// carries RestartPriority so the claim query hands it out first, but "first"
+// only orders the claims, not the turns: launching the whole pool at once lets
+// one worker take the restart while a sibling immediately takes the row behind
+// it, and a normal turn then runs against the same behavior instance while the
+// restart handler is still rebuilding it from the checkpoint. The documented
+// guarantee that a restart message is processed before all other messages
+// needs the pool to warm up one worker at a time to actually hold.
+//
+// The release rule is deliberately shaped so that it cannot wedge a pool that
+// has no hand-off waiting for it. The warm-up worker holds the barrier only
+// across a restart turn; the first claim of anything else opens it before that
+// message is even processed, and a generation whose mailbox turns out to be
+// empty opens it on the first idle tick. Whatever ends the warm-up worker
+// opens it too, so a panic, a dead-lettered restore, or a closed mailbox all
+// release the pool rather than stranding it at one worker.
+type warmupBarrier struct {
+	// released closes when the pool may fan out.
+	released chan struct{}
+
+	// openOnce keeps the close idempotent, since several paths race to
+	// open the barrier (the warm-up worker's claim, its exit, and the
+	// idle tick).
+	openOnce sync.Once
+
+	// claimed records that the warm-up worker has taken at least one
+	// message. It is what separates "the restart turn is still running"
+	// from "there was never a hand-off here", which the idle tick would
+	// otherwise be unable to tell apart.
+	claimed atomic.Bool
+
+	// required records that supervision KNOWS a restart row is waiting for
+	// this generation, because it enqueued that row itself. It disables
+	// the idle tick, which is what makes the guarantee exact rather than
+	// timing-dependent on the path this kernel creates: without it a tick
+	// that fired before the warm-up worker got its first claim would fan
+	// the pool out into the very race the barrier exists to prevent.
+	required atomic.Bool
+}
+
+// newWarmupBarrier returns a barrier when one is wanted, and nil otherwise. A
+// nil barrier is a working no-op through every method below, so a
+// single-worker actor (which is already strictly sequential and needs no
+// barrier at all) runs the identical code path with nothing to pay for.
+//
+// A required barrier is one supervision enqueued the restart row for, so it
+// waits for that row unconditionally. A barrier that is merely wanted covers
+// the boot hand-off, which an owner enqueues before Start and which the actor
+// therefore cannot see: there the barrier waits for the first claim and lets
+// an idle tick release it, which orders the common case without being able to
+// prove a row was ever there.
+func newWarmupBarrier(wanted, required bool) *warmupBarrier {
+	if !wanted {
+		return nil
+	}
+
+	b := &warmupBarrier{
+		released: make(chan struct{}),
+	}
+	b.required.Store(required)
+
+	return b
+}
+
+// noteClaim records that the warm-up worker has taken a message.
+func (b *warmupBarrier) noteClaim() {
+	if b == nil {
+		return
+	}
+
+	b.claimed.Store(true)
+}
+
+// open releases the pool. It is safe to call from any goroutine and any number
+// of times.
+func (b *warmupBarrier) open() {
+	if b == nil {
+		return
+	}
+
+	b.openOnce.Do(func() {
+		close(b.released)
+	})
+}
+
+// wait blocks until the pool may fan out: until the warm-up worker resolves
+// the generation's restart hand-off, until the generation is cancelled, or
+// until an idle tick proves there was no hand-off waiting in the first place.
+//
+// The idle tick only opens the barrier while nothing has been claimed AND the
+// barrier is not required. Once the warm-up worker has taken a message the
+// tick is inert, so a restore that takes longer than one idle period is waited
+// out rather than raced; and a required barrier ignores the tick entirely,
+// because supervision knows the row is there and a tick that beat the worker
+// to its first claim would fan the pool out into the race the barrier exists
+// to prevent.
+func (b *warmupBarrier) wait(ctx context.Context, idle time.Duration) {
+	if b == nil {
+		return
+	}
+
+	if idle <= 0 {
+		idle = defaultPollInterval
+	}
+
+	ticker := time.NewTicker(idle)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-b.released:
+			return
+
+		case <-ctx.Done():
+			return
+
+		case <-ticker.C:
+			if !b.required.Load() && !b.claimed.Load() {
+				b.open()
+
+				return
+			}
+		}
+	}
 }
