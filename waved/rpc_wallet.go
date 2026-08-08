@@ -179,9 +179,9 @@ func (r *RPCServer) deriveReceiveAuthKey(ctx context.Context,
 				"connected")
 		}
 
-		lndSvc := r.server.lnd.UnsafeFromSome()
+		services := r.server.lnd.UnsafeFromSome().Services()
 
-		base, err = lndSvc.Signer.DeriveSharedKey(
+		base, err = services.Signer.DeriveSharedKey(
 			ctx, lndclient.SharedKeyNUMS,
 			lndclient.SharedKeyLocator,
 		)
@@ -534,8 +534,8 @@ func (r *RPCServer) deriveIdentityPubkey(ctx context.Context) (string, error) {
 			return "", fmt.Errorf("lnd wallet not connected")
 		}
 
-		lndSvc := r.server.lnd.UnsafeFromSome()
-		desc, err = lndSvc.WalletKit.DeriveKey(ctx, &loc)
+		services := r.server.lnd.UnsafeFromSome().Services()
+		desc, err = services.WalletKit.DeriveKey(ctx, &loc)
 
 	case WalletTypeLwwallet:
 		// GetInfo is intentionally callable before InitWallet /

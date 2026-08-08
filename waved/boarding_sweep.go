@@ -34,12 +34,12 @@ func (s *Server) newSweepWallet() (unroll.SweepWallet, error) {
 			return nil, fmt.Errorf("lnd wallet not initialized")
 		}
 
-		lndSvc := s.lnd.UnsafeFromSome()
+		services := s.lnd.UnsafeFromSome().Services()
 		clientWallet := lndbackend.NewClientWallet(
-			lndSvc.Signer, lndSvc.WalletKit,
+			services.Signer, services.WalletKit,
 		)
 		boardingBackend := lndbackend.NewBoardingBackend(
-			lndSvc.WalletKit, lndSvc.ChainKit,
+			services.WalletKit, services.ChainKit,
 		)
 
 		return &lndUnrollWallet{
