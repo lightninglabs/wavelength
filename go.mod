@@ -236,3 +236,6 @@ replace google.golang.org/protobuf => github.com/lightninglabs/protobuf-go-hex-d
 
 // Use local baselib for development and CI.
 replace github.com/lightninglabs/wavelength/baselib => ./baselib
+
+// Use the independent creation KDF API until btcwallet PR #1298 merges.
+replace github.com/btcsuite/btcwallet => github.com/Roasbeef/btcwallet v0.0.0-20260724000651-fa5ec465bbf7
