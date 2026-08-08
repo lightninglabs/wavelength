@@ -183,6 +183,32 @@ type mockTxAwareStore struct {
 	// completing and the transaction committing, and is used to
 	// verify that promises are not completed prematurely.
 	txPostCallbackHook func()
+
+	// txWrites models durable state a behavior writes inside the
+	// transaction, and txMu guards it. ExecTx snapshots its length before
+	// running fn and truncates back to that length when fn returns an
+	// error, giving the mock the rollback semantics a real store provides.
+	// Without this a test cannot tell a committed turn from a rolled-back
+	// one, since the mock otherwise mutates its maps in place.
+	txMu     sync.Mutex
+	txWrites []string
+}
+
+// recordTxWrite appends a write made by a behavior inside the transaction.
+// ExecTx discards it again if the transaction rolls back.
+func (m *mockTxAwareStore) recordTxWrite(write string) {
+	m.txMu.Lock()
+	defer m.txMu.Unlock()
+
+	m.txWrites = append(m.txWrites, write)
+}
+
+// committedTxWrites returns the writes that survived their transaction.
+func (m *mockTxAwareStore) committedTxWrites() []string {
+	m.txMu.Lock()
+	defer m.txMu.Unlock()
+
+	return append([]string(nil), m.txWrites...)
 }
 
 func newMockTxAwareStore() *mockTxAwareStore {
@@ -204,8 +230,18 @@ func (m *mockTxAwareStore) ExecTx(
 		return errors.New("simulated tx failure")
 	}
 
+	// Snapshot the behavior-visible write log so a failed callback rolls
+	// back to exactly the state it found, the way a real transaction does.
+	m.txMu.Lock()
+	writesBefore := len(m.txWrites)
+	m.txMu.Unlock()
+
 	// Execute the function with the same store (simulating a transaction).
 	if err := fn(ctx, m.mockDeliveryStore); err != nil {
+		m.txMu.Lock()
+		m.txWrites = m.txWrites[:writesBefore]
+		m.txMu.Unlock()
+
 		return err
 	}
 

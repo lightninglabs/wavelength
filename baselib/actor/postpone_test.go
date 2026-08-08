@@ -253,6 +253,93 @@ func TestDurableActorPostponeInTransaction(t *testing.T) {
 	store.mu.Unlock()
 }
 
+// TestPostponeRollsBackAfterLostLease verifies the transaction path abandons a
+// turn whose lease was stolen while the behavior ran, rather than committing
+// under a row it no longer owns.
+//
+// The fenced postpone matches no rows once the lease token has changed, which
+// is the only signal that another consumer took over. The turn must then roll
+// back so the behavior's writes vanish, and it must NOT fall through to
+// Delivery.Nack: that path dead-letters once the attempt budget is spent, and
+// its dead-letter arm runs MoveToDeadLetter and DeleteMessage by ID with no
+// lease check, so a stale consumer could delete a message its legitimate owner
+// is actively processing.
+func TestPostponeRollsBackAfterLostLease(t *testing.T) {
+	t.Parallel()
+
+	store := newMockTxAwareStore()
+	codec := newActorTestCodec()
+
+	// Put the delivery on its final attempt so a nack would dead-letter
+	// immediately. That makes the "no nack" assertion meaningful: if the
+	// lost lease leaked into the nack path, the row would be gone.
+	const maxAttempts = 1
+
+	var deliveries atomic.Int32
+	behavior := newMockBehavior(fn.Err[int](Postpone(time.Hour)))
+	behavior.onReceive = func(ctx context.Context, msg *actorTestMsg) {
+		deliveries.Add(1)
+
+		// The behavior writes durable state, which must not survive a
+		// rolled-back turn.
+		store.recordTxWrite("write-from-stale-consumer")
+
+		// Steal the lease mid-turn, exactly as an expiry followed by
+		// another consumer's claim would: the row is still there, but
+		// its token no longer matches the one this delivery holds.
+		store.mu.Lock()
+		for id := range store.messages {
+			store.messages[id].LeaseToken = "stolen-by-other"
+		}
+		store.mu.Unlock()
+	}
+
+	cfg := DefaultDurableActorConfig(
+		"lost-lease-actor", behavior, store, codec,
+	)
+	cfg.PollInterval = 10 * time.Millisecond
+	cfg.MaxAttempts = maxAttempts
+
+	a := NewDurableActor(cfg).UnwrapOrFail(t)
+	a.Start()
+	defer a.Stop()
+
+	msg := &actorTestMsg{
+		Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(21)),
+	}
+	require.NoError(t, a.Ref().Tell(context.Background(), msg))
+
+	// Wait for the turn that loses the lease to run.
+	require.Eventually(t, func() bool {
+		return deliveries.Load() >= 1
+	}, 5*time.Second, 10*time.Millisecond)
+
+	// Give the consume path room to do the wrong thing if it is going to.
+	time.Sleep(200 * time.Millisecond)
+
+	// The behavior's writes rolled back with the transaction: nothing it
+	// staged under the stolen row may survive.
+	require.Empty(t, store.committedTxWrites())
+
+	// The row still belongs to its new owner: not dead-lettered, not
+	// deleted, and still carrying the thief's lease token.
+	store.mu.Lock()
+	require.Len(t, store.messages, 1)
+	for _, queued := range store.messages {
+		require.Equal(t, "stolen-by-other", queued.LeaseToken)
+	}
+	require.Empty(t, store.deadLetters)
+
+	// Nor was it marked processed: dedup must not swallow the redelivery
+	// the legitimate owner is about to perform.
+	require.Empty(t, store.processed)
+	store.mu.Unlock()
+
+	// And the stale consumer never nacked, which is what would have
+	// dead-lettered the row at this attempt count.
+	require.False(t, store.nackCalled.Load())
+}
+
 // TestDeliveryEnqueuedAtFromContext verifies the enqueue timestamp a
 // postponing behavior uses to bound its own horizon is plumbed from the
 // durable row onto the processing context, and that absence is distinguishable

@@ -14,6 +14,24 @@ import (
 	"github.com/lightningnetwork/lnd/fn/v2"
 )
 
+// errLostLeaseMidTurn reports that a lease-fenced release inside the
+// transaction path matched no rows, which means this consumer no longer owns
+// the message: the lease expired while the behavior was running and another
+// consumer claimed it.
+//
+// It is returned from handleResultInTx for one reason only, to roll the
+// transaction back, so the behavior's writes vanish rather than committing
+// under a row somebody else now governs. processInTransaction recognizes it
+// and returns without nacking, dead-lettering, or marking processed.
+//
+// The "without nacking" part is the load-bearing half. Delivery.Nack's
+// dead-letter arm is unfenced: it calls MoveToDeadLetter and DeleteMessage by
+// ID with no lease-token check, so routing a stale consumer through it would
+// let us dead-letter (and delete) a message its legitimate owner is actively
+// processing. Rolling back and walking away leaves the row entirely to that
+// owner, whose own turn decides its fate.
+var errLostLeaseMidTurn = errors.New("lease lost mid-turn; rolling back")
+
 // TellRetryPolicy determines whether a failed Tell message should be retried
 // and how long to wait before the next attempt. A policy may stop retries
 // early, but it cannot extend the durable MaxAttempts ceiling.
@@ -754,6 +772,31 @@ func (a *DurableActor[M, R]) processInTransaction(ctx context.Context,
 	})
 
 	if err != nil {
+		// Losing the lease mid-turn is not a transaction failure to
+		// retry, it is a change of ownership. The rollback has already
+		// undone the behavior's writes, which is the correctness
+		// requirement, and the message now belongs to whichever
+		// consumer holds the lease. Do nothing further: no nack, no
+		// dead-letter, no processed mark.
+		//
+		// Nacking here would be actively harmful. Delivery.Nack
+		// dead-letters when the attempt budget is spent, and that arm
+		// is unfenced (MoveToDeadLetter and DeleteMessage run by ID
+		// with no lease check), so this stale consumer could delete a
+		// row its legitimate owner is in the middle of processing.
+		// Walking away leaves the row and its outcome to that owner.
+		if errors.Is(err, errLostLeaseMidTurn) {
+			logger(ctx).WarnS(ctx,
+				"Rolled back turn after losing lease",
+				err,
+				"actor_id", a.id,
+				"delivery_id", delivery.ID,
+				"msg_type", delivery.Message.MessageType(),
+			)
+
+			return
+		}
+
 		logger(ctx).WarnS(ctx,
 			"Transaction failed, nacking message",
 			err,
@@ -1106,6 +1149,49 @@ func (a *DurableActor[M, R]) executeBehaviorSafely(ctx context.Context,
 	return classic.Receive(ctx, delivery.Message)
 }
 
+// releasedRowsInTx interprets the row count from a release performed inside
+// the transaction path, where a zero count has two very different meanings
+// depending on whether the release was fenced.
+//
+// An unfenced (leaseless, empty-token) release that matched no rows just means
+// the row is already gone, which is benign: the original processing consumed
+// it and this is a duplicate. A fenced release that matched no rows means the
+// lease-token comparison failed, so the lease expired mid-turn and another
+// consumer owns the message now. That is not something to retry past, it is a
+// reason to abandon the turn: returning errLostLeaseMidTurn rolls the
+// transaction back so the behavior's writes never commit under a row this
+// consumer no longer holds.
+//
+// The op argument names the release ("Postpone" or "Nack") for the log line.
+func (a *DurableActor[M, R]) releasedRowsInTx(ctx context.Context,
+	delivery *Delivery[M, R], rows int64, op string) error {
+
+	if rows != 0 {
+		return nil
+	}
+
+	if delivery.LeaseToken == "" {
+		logger(ctx).DebugS(ctx, "Release found row already gone",
+			"actor_id", a.id,
+			"delivery_id", delivery.ID,
+			"op", op,
+			"msg_type", delivery.Message.MessageType(),
+		)
+
+		return nil
+	}
+
+	logger(ctx).WarnS(ctx, "Release matched no rows; rolling back turn",
+		errLostLeaseMidTurn,
+		"actor_id", a.id,
+		"delivery_id", delivery.ID,
+		"op", op,
+		"msg_type", delivery.Message.MessageType(),
+	)
+
+	return errLostLeaseMidTurn
+}
+
 // handleResultInTx handles the result within a transaction.
 // It determines whether to ack, nack for retry, or dead-letter, and only
 // marks the message as processed when we won't retry (to avoid dedup issues).
@@ -1189,29 +1275,13 @@ func (a *DurableActor[M, R]) handleResultInTx(
 				ctx, store, delivery.ID, delivery.LeaseToken,
 				delay,
 			)
-			if ppErr == nil && rows == 0 {
-				// The row was not released, which on the leased
-				// path means the lease expired or was claimed
-				// by another consumer. The attempt this
-				// delivery took therefore stays uncompensated
-				// and the message redelivers on the ordinary
-				// lease-expiry path instead of the requested
-				// delay. This mirrors how the nack path treats
-				// a zero-row release, but it is worth a line in
-				// the log: a postpone that silently did not
-				// happen is otherwise invisible, since the
-				// postpone path logs at debug and never warns.
-				logger(ctx).DebugS(
-					ctx,
-					"Postpone released no row (lease lost)",
-					"actor_id", a.id,
-					"delivery_id", delivery.ID,
-					"msg_type",
-					delivery.Message.MessageType(),
-				)
+			if ppErr != nil {
+				return ppErr
 			}
 
-			return ppErr
+			return a.releasedRowsInTx(
+				ctx, delivery, rows, "Postpone",
+			)
 		}
 
 		effectiveAttempts := delivery.EffectiveAttempts()
@@ -1236,12 +1306,15 @@ func (a *DurableActor[M, R]) handleResultInTx(
 			// Don't mark as processed - we want retry to work.
 			// nackMessage routes a leaseless (empty-token) delivery
 			// to the by-ID nack, which increments attempts.
-			_, nackErr := nackMessage(
+			rows, nackErr := nackMessage(
 				ctx, store, delivery.ID, delivery.LeaseToken,
 				delay,
 			)
+			if nackErr != nil {
+				return nackErr
+			}
 
-			return nackErr
+			return a.releasedRowsInTx(ctx, delivery, rows, "Nack")
 		}
 
 		// Max retries exceeded - dead letter. Mark as processed since
