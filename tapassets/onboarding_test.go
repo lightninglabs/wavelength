@@ -18,10 +18,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestOnboarderResumesPendingConfirmation proves the PoC crosses its three
-// external side effects in order and never rebuilds, resigns, or republishes
-// after a restart. The operator always receives byte-identical artifacts.
-func TestOnboarderResumesPendingConfirmation(t *testing.T) {
+// TestOnboarderResumesWithoutRebuilding proves onboarding crosses its
+// external side effects in order — commit, sign, publish — and that a
+// restart mid-flight never rebuilds, resigns, or republishes any of them.
+func TestOnboarderResumesWithoutRebuilding(t *testing.T) {
 	t.Parallel()
 
 	request, inventory, owner := testOnboardingRequest(t)
@@ -30,22 +30,6 @@ func TestOnboarderResumesPendingConfirmation(t *testing.T) {
 	require.NoError(t, err)
 
 	var deriveCalls, signCalls int
-	var registrations []OnboardingRegistration
-	registrar := func(_ context.Context,
-		registration OnboardingRegistration) (
-		*OnboardingRegistrationResult, error) {
-
-		registrations = append(registrations, registration)
-		if len(registrations) == 1 {
-			return nil, ErrOnboardingPendingConfirmation
-		}
-		outpoint := driver.result.outputs[0].wireOutpoint()
-
-		return &OnboardingRegistrationResult{
-			Outpoint:           outpoint,
-			ConfirmationHeight: 321,
-		}, nil
-	}
 	newOnboarder := func() *Onboarder {
 		return &Onboarder{
 			driver:    driver,
@@ -69,28 +53,21 @@ func TestOnboarderResumesPendingConfirmation(t *testing.T) {
 
 				return &key, nil
 			},
-			registrar: registrar,
 		}
 	}
 
 	result, err := newOnboarder().Onboard(t.Context(), request)
 	require.NoError(t, err)
-	require.Equal(t, OnboardingStatusPendingConfirmation, result.Status)
 	require.Equal(t, 1, deriveCalls)
 	require.Equal(t, 1, signCalls)
 	require.Equal(t, 1, driver.commits)
 	require.Equal(t, 1, driver.verifications)
 	require.Equal(t, 1, driver.publishes)
-	require.Len(t, registrations, 1)
 	require.Equal(t, int64(1_000), result.ValueSat)
 	require.Equal(t, uint64(250), result.ActualFeeSat)
 	require.NotZero(t, result.TaprootAssetRoot)
 	require.Equal(t, request.AssetRef, result.AssetRef)
 	require.Equal(t, request.AssetAmount, result.AssetAmount)
-	require.Equal(t, request.AssetRef, registrations[0].TaprootAssetRef)
-	require.Equal(
-		t, request.AssetAmount, registrations[0].TaprootAssetAmount,
-	)
 	require.NotEmpty(t, result.PolicyTemplate)
 	require.NotEmpty(t, result.PkScript)
 
@@ -98,28 +75,22 @@ func TestOnboarderResumesPendingConfirmation(t *testing.T) {
 	inventory.err = errors.New("tapd unavailable")
 	result, err = newOnboarder().Onboard(t.Context(), request)
 	require.NoError(t, err)
-	require.Equal(t, OnboardingStatusReady, result.Status)
-	require.Equal(t, int32(321), result.ConfirmationHeight)
 	require.Equal(t, uint64(250), result.ActualFeeSat)
 	require.Equal(t, 1, deriveCalls)
 	require.Equal(t, 1, signCalls)
 	require.Equal(t, 1, driver.commits)
 	require.Equal(t, 2, driver.verifications)
 	require.Equal(t, 1, driver.publishes)
-	require.Len(t, registrations, 2)
-	require.Equal(t, registrations[0], registrations[1])
 
-	// Once admitted, another retry is a local read and validation only.
+	// Another retry is a local read and validation only.
 	result, err = newOnboarder().Onboard(t.Context(), request)
 	require.NoError(t, err)
-	require.Equal(t, OnboardingStatusReady, result.Status)
 	require.Equal(t, uint64(250), result.ActualFeeSat)
 	require.Equal(t, 1, deriveCalls)
 	require.Equal(t, 1, signCalls)
 	require.Equal(t, 1, driver.commits)
 	require.Equal(t, 3, driver.verifications)
 	require.Equal(t, 1, driver.publishes)
-	require.Len(t, registrations, 2)
 
 	dto := driver.requests[0]
 	require.Equal(
@@ -155,9 +126,12 @@ func TestOnboarderResumesPendingConfirmation(t *testing.T) {
 		t, tapsdk.CustomAssetWitnessBackendSigner,
 		dto.Inputs[0].Witness.Mode,
 	)
+	// The boarding output is anyone-can-spend at the asset layer so the
+	// round's operator can build the transition that consumes it.
 	require.Equal(
-		t, tapsdk.CustomAssetScriptWallet, dto.Outputs[0].Script.Mode,
+		t, tapsdk.CustomAssetScriptOPTrue, dto.Outputs[0].Script.Mode,
 	)
+	require.NotNil(t, dto.Outputs[0].Script.OPTrue)
 	require.Equal(t, uint64(1_000), dto.Outputs[0].AnchorValueSat)
 	require.Len(t, dto.Outputs[0].Anchor.Tapscript.TapLeaves, 2)
 	committed, err := psbtutil.Parse(driver.result.anchorPSBT)
@@ -361,12 +335,6 @@ func TestOnboarderRejectsInvalidFundingSummary(t *testing.T) {
 			require.NoError(t, err)
 			onboarder := testOnboarder(
 				driver, inventory, store, owner,
-				func(context.Context, OnboardingRegistration) (
-					*OnboardingRegistrationResult, error) {
-
-					return nil,
-						ErrOnboardingPendingConfirmation
-				},
 			)
 
 			_, err = onboarder.Onboard(t.Context(), request)
@@ -389,11 +357,6 @@ func TestOnboarderRejectsIdempotencyRewrite(t *testing.T) {
 	require.NoError(t, err)
 	onboarder := testOnboarder(
 		driver, inventory, store, owner,
-		func(_ context.Context, _ OnboardingRegistration) (
-			*OnboardingRegistrationResult, error) {
-
-			return nil, ErrOnboardingPendingConfirmation
-		},
 	)
 	_, err = onboarder.Onboard(t.Context(), request)
 	require.NoError(t, err)
@@ -417,14 +380,7 @@ func TestOnboarderRejectsPassiveAssets(t *testing.T) {
 	driver := newFakeOnboardingDriver()
 	store, err := NewFileStore(t.TempDir())
 	require.NoError(t, err)
-	onboarder := testOnboarder(
-		driver, inventory, store, owner,
-		func(context.Context, OnboardingRegistration) (
-			*OnboardingRegistrationResult, error) {
-
-			return nil, nil
-		},
-	)
+	onboarder := testOnboarder(driver, inventory, store, owner)
 
 	_, err = onboarder.Onboard(t.Context(), request)
 	require.ErrorContains(t, err, "requires one isolated asset")
@@ -444,14 +400,7 @@ func TestOnboarderStopsAfterAmbiguousCommit(t *testing.T) {
 	}
 	store, err := NewFileStore(t.TempDir())
 	require.NoError(t, err)
-	onboarder := testOnboarder(
-		driver, inventory, store, owner,
-		func(context.Context, OnboardingRegistration) (
-			*OnboardingRegistrationResult, error) {
-
-			return nil, nil
-		},
-	)
+	onboarder := testOnboarder(driver, inventory, store, owner)
 
 	_, err = onboarder.Onboard(t.Context(), request)
 	require.ErrorIs(t, err, ErrReconciliationRequired)
@@ -645,7 +594,7 @@ func testOnboardingRequest(t *testing.T) (*OnboardingRequest, *fakeInventory,
 
 func testOnboarder(driver onboardingDriver, inventory proofInventoryClient,
 	store Store, owner keychain.KeyDescriptor,
-	registrar OnboardingRegistrar) *Onboarder {
+) *Onboarder {
 
 	return &Onboarder{
 		driver:    driver,
@@ -661,7 +610,6 @@ func testOnboarder(driver onboardingDriver, inventory proofInventoryClient,
 
 			return &key, nil
 		},
-		registrar: registrar,
 	}
 }
 

@@ -1,35 +1,24 @@
 package waved
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"math"
 
-	"github.com/btcsuite/btcd/btcutil/v2"
-	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/google/uuid"
 	tapsdk "github.com/lightninglabs/tap-sdk"
-	"github.com/lightninglabs/wavelength/arkrpc"
-	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/lib/tx/psbtutil"
 	"github.com/lightninglabs/wavelength/lib/types"
-	"github.com/lightninglabs/wavelength/round"
 	"github.com/lightninglabs/wavelength/tapassets"
-	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/lightningnetwork/lnd/keychain"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
-const (
-	assetOnboardingPending = waverpc.TaprootAssetOnboardingState_TAPROOT_ASSET_ONBOARDING_STATE_PENDING_CONFIRMATION //nolint:ll
-	assetOnboardingReady   = waverpc.TaprootAssetOnboardingState_TAPROOT_ASSET_ONBOARDING_STATE_READY                //nolint:ll
-)
+const ()
 
 // TaprootAssetOnboardingService is the programmatic client-side orchestration
 // boundary. Only waved's optional tapd adapter implements it in production.
@@ -66,7 +55,6 @@ func (r *RPCServer) ConfigureTaprootAssetOnboarding(wallet *tapsdk.Wallet,
 				ctx, types.VTXOOwnerKeyFamily,
 			)
 		},
-		Registrar: r.server.registerTaprootAssetOnboarding,
 	})
 	if err != nil {
 		return err
@@ -180,28 +168,6 @@ func (r *RPCServer) OnboardTaprootAsset(ctx context.Context,
 			[]byte(nil), result.TaprootAssetRoot[:]...,
 		),
 	}
-	switch result.Status {
-	case tapassets.OnboardingStatusPendingConfirmation:
-		response.State = assetOnboardingPending
-
-	case tapassets.OnboardingStatusReady:
-		desc, materializeErr := r.materializeTaprootAssetOnboarding(
-			ctx, result,
-		)
-		if materializeErr != nil {
-			return nil, status.Errorf(codes.Internal,
-				"materialize onboarded Taproot Asset: %v",
-				materializeErr)
-		}
-		response.State = assetOnboardingReady
-		response.ConfirmationHeight = desc.CreatedHeight
-
-	default:
-		return nil, status.Error(
-			codes.Internal,
-			"onboarding service returned unknown state",
-		)
-	}
 
 	return response, nil
 }
@@ -248,151 +214,3 @@ func signTaprootAssetOnboardingAnchor(ctx context.Context,
 
 	return psbtutil.Serialize(finalized)
 }
-
-func (s *Server) registerTaprootAssetOnboarding(ctx context.Context,
-	registration tapassets.OnboardingRegistration) (
-	*tapassets.OnboardingRegistrationResult, error) {
-
-	client := s.operatorArkClient()
-	if client == nil {
-		return nil, fmt.Errorf("operator connection not initialized")
-	}
-	response, err := client.RegisterTaprootAssetVTXO(
-		ctx, &arkrpc.RegisterTaprootAssetVTXORequest{
-			TransferPackage: append(
-				[]byte(nil), registration.TransferPackage...,
-			),
-			FinalAnchorPsbt: append(
-				[]byte(nil), registration.FinalAnchorPSBT...,
-			),
-			VtxoPolicyTemplate: append(
-				[]byte(nil), registration.PolicyTemplate...,
-			),
-			TaprootAssetRoot: append(
-				[]byte(nil),
-				registration.TaprootAssetRoot[:]...,
-			),
-			TaprootAssetRef:    registration.TaprootAssetRef,
-			TaprootAssetAmount: registration.TaprootAssetAmount,
-		},
-	)
-	if status.Code(err) == codes.FailedPrecondition {
-		return nil, tapassets.ErrOnboardingPendingConfirmation
-	}
-	if err != nil {
-		return nil, err
-	}
-	if response == nil || len(response.GetTxid()) != chainhash.HashSize {
-		return nil, fmt.Errorf("operator returned invalid onboarding " +
-			"outpoint")
-	}
-	var txid chainhash.Hash
-	copy(txid[:], response.GetTxid())
-
-	return &tapassets.OnboardingRegistrationResult{
-		Outpoint: wire.OutPoint{
-			Hash:  txid,
-			Index: response.GetOutputIndex(),
-		},
-		ConfirmationHeight: response.GetConfirmationHeight(),
-	}, nil
-}
-
-func (r *RPCServer) materializeTaprootAssetOnboarding(ctx context.Context,
-	result *tapassets.OnboardingResult) (*vtxo.Descriptor, error) {
-
-	if result == nil || result.Status != tapassets.OnboardingStatusReady ||
-		result.ConfirmationHeight <= 0 {
-		return nil, fmt.Errorf("ready onboarding result is required")
-	}
-	if r.server.vtxoStore == nil || !r.server.vtxoMgrRef.IsSome() {
-		return nil, fmt.Errorf("VTXO runtime is not ready")
-	}
-	tapscript, err := arkscript.VTXOTapScript(
-		result.OwnerKey.PubKey, result.OperatorKey, result.ExitDelay,
-	)
-	if err != nil {
-		return nil, err
-	}
-	root := result.TaprootAssetRoot
-	desc := &vtxo.Descriptor{
-		Outpoint:           result.Outpoint,
-		Amount:             btcutil.Amount(result.ValueSat),
-		TaprootAssetRef:    result.AssetRef,
-		TaprootAssetAmount: result.AssetAmount,
-		PolicyTemplate: append(
-			[]byte(nil), result.PolicyTemplate...,
-		),
-		PkScript:         append([]byte(nil), result.PkScript...),
-		TaprootAssetRoot: &root,
-		ClientKey:        result.OwnerKey,
-		OperatorKey:      result.OperatorKey,
-		TapScript:        tapscript,
-		RoundID: taprootAssetOnboardingRoundID(
-			result.Outpoint.Hash,
-		).String(),
-		CommitmentTxID: result.Outpoint.Hash,
-		BatchExpiry:    math.MaxInt32,
-		RelativeExpiry: result.ExitDelay,
-		CreatedHeight:  result.ConfirmationHeight,
-		Status:         vtxo.VTXOStatusLive,
-	}
-	if err := r.server.vtxoStore.SaveVTXO(ctx, desc); err != nil {
-		existing, getErr := r.server.vtxoStore.GetVTXO(
-			ctx, desc.Outpoint,
-		)
-		if getErr != nil || !sameOnboardedVTXO(existing, desc) {
-			return nil, err
-		}
-		desc = existing
-	}
-
-	err = r.server.vtxoMgrRef.UnsafeFromSome().Tell(
-		ctx, &vtxo.VTXOsMaterializedNotification{
-			VTXOs: []*vtxo.Descriptor{desc},
-		},
-	)
-	if err != nil {
-		return nil, fmt.Errorf("notify VTXO manager: %w", err)
-	}
-
-	return desc, nil
-}
-
-// taprootAssetOnboardingRoundID derives a stable UUID for the minimal local
-// round row required by the client VTXO schema. Direct onboarding has no Ark
-// round of its own, so the anchor txid is namespaced into a synthetic ID that
-// remains parseable anywhere ordinary round rows are listed.
-func taprootAssetOnboardingRoundID(anchorTxid chainhash.Hash) round.RoundID {
-	const domain = "wavelength/taproot-assets/onboarding-round/v1"
-
-	name := make([]byte, 0, len(domain)+len(anchorTxid))
-	name = append(name, []byte(domain)...)
-	name = append(name, anchorTxid[:]...)
-
-	return round.RoundID(uuid.NewSHA1(uuid.NameSpaceOID, name))
-}
-
-func sameOnboardedVTXO(left, right *vtxo.Descriptor) bool {
-	if left == nil || right == nil || left.Outpoint != right.Outpoint ||
-		left.Amount != right.Amount ||
-		left.TaprootAssetRef != right.TaprootAssetRef ||
-		left.TaprootAssetAmount != right.TaprootAssetAmount ||
-		left.TaprootAssetRoot == nil ||
-		right.TaprootAssetRoot == nil ||
-		*left.TaprootAssetRoot != *right.TaprootAssetRoot ||
-		left.RelativeExpiry != right.RelativeExpiry ||
-		left.CreatedHeight != right.CreatedHeight ||
-		left.ClientKey.PubKey == nil || right.ClientKey.PubKey == nil ||
-		left.OperatorKey == nil || right.OperatorKey == nil {
-		return false
-	}
-
-	return bytes.Equal(left.PolicyTemplate, right.PolicyTemplate) &&
-		bytes.Equal(left.PkScript, right.PkScript) &&
-		left.ClientKey.KeyLocator == right.ClientKey.KeyLocator &&
-		left.ClientKey.PubKey.IsEqual(right.ClientKey.PubKey) &&
-		left.OperatorKey.IsEqual(right.OperatorKey)
-}
-
-var _ TaprootAssetOnboardingService = (*tapassets.Onboarder)(nil)
