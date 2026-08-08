@@ -208,6 +208,9 @@ type RoundStore interface {
 	UpdateBoardingIntentStatus(ctx context.Context,
 		arg sqlc.UpdateBoardingIntentStatusParams) error
 
+	RevertAdoptedBoardingIntent(ctx context.Context,
+		arg sqlc.RevertAdoptedBoardingIntentParams) error
+
 	// ClearPendingIntentAnchorByOutpoint deletes the pending-intent
 	// anchor row bound to one outpoint. Called from CommitState in the
 	// same transaction that records the round adopting the anchored
@@ -800,6 +803,61 @@ func (s *RoundPersistenceStore) FinalizeRound(ctx context.Context,
 		}
 
 		return q.FinalizeRound(ctx, params)
+	})
+}
+
+// FailRound retires a checkpointed round whose fate is known to be dead, and
+// returns the boarding intents it adopted to the live pool.
+//
+// This is the exact inverse of the checkpoint write in CommitState, and it
+// runs in one transaction for the same reason that one does: the round row
+// and the intent statuses are a single fact about where the deposit lives,
+// and a crash between the two halves would leave the deposit accounted for in
+// a round that no longer exists.
+//
+// Intents revert to 'confirmed' rather than 'failed'. Nothing on-chain
+// failed: a dead round proves the commitment was never broadcast, so the
+// boarding UTXO is exactly as it was before the round started. 'confirmed'
+// restores that truth, which both returns the deposit to the boardable pool
+// and makes it sweepable again (boardingIntentSweepable excludes 'adopted',
+// so an intent left adopted by a dead round is never swept, with or without
+// its CSV expiring).
+func (s *RoundPersistenceStore) FailRound(ctx context.Context,
+	roundID round.RoundID) error {
+
+	writeTxOpts := WriteTxOption()
+	nowUnix := s.clock.Now().Unix()
+	roundIDStr := roundID.String()
+
+	return s.db.ExecTx(ctx, writeTxOpts, func(q RoundStore) error {
+		intents, err := q.GetRoundBoardingIntents(ctx, roundIDStr)
+		if err != nil {
+			return fmt.Errorf("fetch round intents: %w", err)
+		}
+
+		for _, intent := range intents {
+			err := q.RevertAdoptedBoardingIntent(
+				ctx, sqlc.RevertAdoptedBoardingIntentParams{
+					OutpointHash:   intent.OutpointHash,
+					OutpointIndex:  intent.OutpointIndex,
+					LastUpdateTime: nowUnix,
+				},
+			)
+			if err != nil {
+				return fmt.Errorf("revert boarding intent: %w",
+					err)
+			}
+		}
+
+		// Reuse the generic status setter rather than adding a
+		// dedicated query: unlike FinalizeRound, which also records
+		// the txid and confirmation height, retiring a round is
+		// purely a status move.
+		return q.UpdateRoundStatus(ctx, sqlc.UpdateRoundStatusParams{
+			RoundID:        roundIDStr,
+			Status:         "failed",
+			LastUpdateTime: nowUnix,
+		})
 	})
 }
 
