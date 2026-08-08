@@ -52,7 +52,7 @@ var ErrOutgoingAdmissionExpired = errors.New("outgoing OOR admission " +
 var ErrIdempotencyKeyConflict = errors.New("outgoing OOR session is bound to " +
 	"a different idempotency key")
 
-// selfHintRedeliveryBackoff is the flat redelivery backoff for a deferred
+// selfHintRedeliveryBackoff is the flat postpone backoff for a deferred
 // self-transfer hint's durable delivery. The terminal-reap redrive is the
 // fast path, so the durable copy only needs to cover a crash or a missed
 // redrive; a long flat delay keeps the per-payment defer from amplifying
@@ -279,22 +279,6 @@ func NewOORRegistryActor(cfg OORRegistryConfig) (*OORRegistryActor, error) {
 		cfg.DeliveryStore, newOORActorCodec(cfg.Limits),
 	)
 	durableCfg.Log = cfg.Log
-
-	// A deferred self-transfer hint redelivers on a long flat backoff and
-	// never dead-letters: the terminal-reap redrive is the fast path, so
-	// the durable copy is purely the crash-safety net, and the default
-	// exponential policy would both amplify write load while the writer
-	// is saturated and dead-letter the hint after five attempts if the
-	// outgoing session outlives the backoff schedule.
-	durableCfg.TellRetryPolicy = func(err error, attempts int) (bool,
-		time.Duration) {
-
-		if errors.Is(err, errSelfTransferDeferred) {
-			return true, selfHintRedeliveryBackoff
-		}
-
-		return actor.DefaultTellRetryPolicy(err, attempts)
-	}
 
 	registry, err := actor.NewDurableActor(durableCfg).Unpack()
 	if err != nil {
@@ -1133,6 +1117,18 @@ func (r *oorRegistryBehavior) handleResolveIncoming(ctx context.Context,
 		// backoff as the crash-safety fallback.
 		if errors.Is(err, errSelfTransferDeferred) {
 			r.parkSelfHint(req)
+
+			// A deferred hint is waiting on the outgoing session,
+			// not failing, so postpone rather than nack: the
+			// durable copy keeps its attempt budget and stays
+			// claim-eligible for as long as the wait lasts.
+			return fn.Err[ActorResp](
+				fmt.Errorf(
+					"%w: %w", err, actor.Postpone(
+						selfHintRedeliveryBackoff,
+					),
+				),
+			)
 		}
 
 		return fn.Err[ActorResp](err)
@@ -1245,9 +1241,10 @@ func (r *oorRegistryBehavior) resolveSelfTransfer(ctx context.Context,
 	if record.Direction != clientdb.OORSessionDirectionOutgoing {
 		return nil
 	}
-	// Deferring is an error so the durable delivery is retained (nacked on
-	// the long self-transfer backoff); the caller parks the hint for the
-	// event-driven redrive at the outgoing session's terminal reap.
+	// Deferring is an error so the durable delivery is retained; the caller
+	// turns it into a postpone on the long self-transfer backoff and parks
+	// the hint for the event-driven redrive at the outgoing session's
+	// terminal reap.
 	if !record.Status.IsTerminal() {
 		r.logger(ctx).DebugS(ctx,
 			"Deferring incoming self-transfer hint until "+
