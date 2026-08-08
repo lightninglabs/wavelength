@@ -14,6 +14,7 @@ import (
 	"github.com/btcsuite/btcwallet/walletdb"
 	_ "github.com/lightninglabs/go-wasmsqlite"
 	"github.com/lightninglabs/wavelength/internal/sqlbase"
+	"github.com/lightninglabs/wavelength/internal/wasmhost"
 	"github.com/lightningnetwork/lnd/lnwallet/btcwallet"
 )
 
@@ -24,6 +25,11 @@ const (
 	wasmWalletDBBusyTimeoutMS   = "30000"
 	wasmWalletDBMaxConnections  = 1
 	wasmWalletDBFileNamePattern = "/wallet-%016x.db"
+
+	// nodeWalletDBFileName is the wallet store's name on a real filesystem,
+	// where the containing directory already distinguishes one wallet from
+	// another and the hashed browser name would only hide it.
+	nodeWalletDBFileName = "wallet.db"
 )
 
 // newWalletLoaderOptions opens btcwallet through an OPFS-backed SQLite
@@ -105,14 +111,36 @@ func openWASMWalletDB(dbDir string) (walletdb.DB, error) {
 	return nil, fmt.Errorf("open OPFS wallet database: %w", lastErr)
 }
 
-// wasmWalletDBDSN returns a go-wasmsqlite DSN for btcwallet's SQL walletdb.
+// wasmWalletDBDSN returns a go-wasmsqlite DSN for btcwallet's SQL walletdb,
+// pointed at whichever durable storage the js/wasm host provides.
 func wasmWalletDBDSN(dbDir string) string {
 	values := url.Values{}
-	values.Set("file", wasmWalletDBFileName(dbDir))
-	values.Set("vfs", "opfs")
+	values.Set("vfs", wasmhost.SQLiteVFS())
+	if wasmhost.UnderNode() {
+		// The wallet database lives beside the daemon's own databases
+		// on a real filesystem, under the name the caller asked for.
+		values.Set(
+			"file", filepath.Join(dbDir, nodeWalletDBFileName),
+		)
+	} else {
+		values.Set("file", wasmWalletDBFileName(dbDir))
+	}
 	values.Set("mode", "rwc")
 	values.Set("busy_timeout", wasmWalletDBBusyTimeoutMS)
+
+	// WAL survives here only because of the locking_mode=EXCLUSIVE pragma
+	// below. No wasm VFS implements xShmMap, so this is SQLite's WAL-without-
+	// shared-memory mode, which holds the WAL index on the heap and requires
+	// the connection to already be exclusive. The driver applies the pragmas
+	// first and then checks the journal mode it actually got, so dropping the
+	// exclusive lock would fail the open rather than silently move the wallet
+	// onto the rollback journal.
 	values.Set("journal_mode", "WAL")
+
+	// The wallet's seed and key state have no second copy anywhere, so an
+	// in-memory substitute for the store would be worse than not starting.
+	values.Set("require_persistent", "true")
+
 	values.Set(
 		"pragma",
 		strings.Join(
@@ -128,7 +156,8 @@ func wasmWalletDBDSN(dbDir string) string {
 }
 
 // wasmWalletDBFileName maps a native wallet DB directory to a stable
-// origin-local OPFS database name.
+// origin-local OPFS database name. It is a browser concern only; a Node host
+// keeps the real directory.
 func wasmWalletDBFileName(dbDir string) string {
 	normalized := filepath.ToSlash(filepath.Clean(dbDir))
 	normalized = strings.TrimSpace(normalized)
