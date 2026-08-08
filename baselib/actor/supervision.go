@@ -1,0 +1,338 @@
+package actor
+
+import (
+	"errors"
+	"fmt"
+	"runtime/debug"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/lightningnetwork/lnd/clock"
+)
+
+const (
+	// DefaultMaxRestarts is how many behavior restarts a durable actor
+	// tolerates inside DefaultRestartWindow before it gives up and
+	// terminates permanently. It matches the BEAM's default one_for_one
+	// supervisor intensity.
+	DefaultMaxRestarts = 5
+
+	// DefaultRestartWindow is the width of the sliding window over which
+	// DefaultMaxRestarts is counted.
+	DefaultRestartWindow = 60 * time.Second
+
+	// UnlimitedRestarts is the DurableActorConfig.MaxRestarts value that
+	// disables the intensity budget entirely, letting the actor restart
+	// from its checkpoint forever. It is an explicit opt-in: a zero
+	// MaxRestarts normalizes to DefaultMaxRestarts instead, so a
+	// hand-built config cannot end up with an unbounded crash loop by
+	// forgetting a field.
+	UnlimitedRestarts = -1
+)
+
+// TerminationReason classifies why a durable actor's supervision loop exited.
+// Exactly one reason is reported per actor, carried on the single
+// TerminationInfo delivered to every registered watcher.
+type TerminationReason uint8
+
+const (
+	// TerminationStopped means the actor exited because Stop (or
+	// StopAndWait) was called. This is the graceful path: every worker
+	// drained out, the mailbox was closed, and the behavior's OnStop hook
+	// ran.
+	TerminationStopped TerminationReason = iota
+
+	// TerminationContextCancelled means the actor's lifetime context was
+	// cancelled without Stop having been called. The actor's context is
+	// currently rooted at context.Background, so this reason is reserved
+	// for a future construction path that accepts an externally owned
+	// lifetime context.
+	TerminationContextCancelled
+
+	// TerminationRestartIntensityExceeded means the behavior panicked more
+	// often than the configured MaxRestarts / RestartWindow budget allows,
+	// so supervision gave up rather than restarting the actor again. Err
+	// carries the panic that broke the budget.
+	TerminationRestartIntensityExceeded
+
+	// TerminationRestartFailed means a restart was within budget but could
+	// not be carried out: the FSM checkpoint would not load, or the
+	// RestartMessage would not enqueue. Restarting anyway would hand the
+	// behavior a blank slate in place of its persisted state, so the actor
+	// terminates instead. Err carries the failure.
+	TerminationRestartFailed
+)
+
+// String returns a human readable name for the termination reason.
+func (r TerminationReason) String() string {
+	switch r {
+	case TerminationStopped:
+		return "stopped"
+
+	case TerminationContextCancelled:
+		return "context_cancelled"
+
+	case TerminationRestartIntensityExceeded:
+		return "restart_intensity_exceeded"
+
+	case TerminationRestartFailed:
+		return "restart_failed"
+
+	default:
+		return fmt.Sprintf("unknown(%d)", uint8(r))
+	}
+}
+
+// TerminationInfo describes how and why a durable actor stopped. It is the
+// single value delivered on every channel handed out by
+// (*DurableActor).Watch.
+type TerminationInfo struct {
+	// ActorID is the ID of the actor that terminated.
+	ActorID string
+
+	// Reason classifies the termination.
+	Reason TerminationReason
+
+	// Err carries the failure behind a terminal-failure reason: the panic
+	// for TerminationRestartIntensityExceeded, the bookkeeping error for
+	// TerminationRestartFailed. It is nil for the graceful reasons.
+	Err error
+
+	// Restarts is how many times the actor was restarted from its
+	// checkpoint over its whole lifetime, counting the restart that broke
+	// the intensity budget.
+	Restarts int
+
+	// RestartsExhausted reports whether the actor died because it ran out
+	// of restart budget, as opposed to being stopped or failing to
+	// restart.
+	RestartsExhausted bool
+}
+
+// behaviorPanic is the error a recovered behavior panic is converted into. It
+// is what separates "the behavior returned an error" (an ordinary, retryable
+// message failure) from "the behavior panicked" (its in-memory state is now
+// suspect, so the actor must be restarted from its checkpoint). Both the
+// recovered value and the stack captured at the recover site are retained so
+// the termination notification carries something an operator can act on.
+type behaviorPanic struct {
+	// value is the value that was passed to panic.
+	value any
+
+	// stack is the goroutine stack captured at the recover site.
+	stack []byte
+}
+
+// newBehaviorPanic wraps a recovered panic value along with the current stack.
+func newBehaviorPanic(value any) *behaviorPanic {
+	return &behaviorPanic{
+		value: value,
+		stack: debug.Stack(),
+	}
+}
+
+// Error implements the error interface. The rendering matches the message the
+// runtime produced before supervision existed ("panic: <value>"), so the
+// nack, dead-letter reason, and log strings a panicking behavior generates are
+// unchanged.
+func (p *behaviorPanic) Error() string {
+	return fmt.Sprintf("panic: %v", p.value)
+}
+
+// Stack returns the goroutine stack captured where the panic was recovered.
+func (p *behaviorPanic) Stack() []byte {
+	return p.stack
+}
+
+// isBehaviorPanic reports whether err came from a panicking behavior rather
+// than from a behavior that returned a failed result.
+func isBehaviorPanic(err error) bool {
+	var bp *behaviorPanic
+
+	return errors.As(err, &bp)
+}
+
+// restartTracker enforces a BEAM-style restart intensity budget: at most max
+// restarts inside a sliding window of the configured width. It is only ever
+// touched from the supervision goroutine, so it carries no lock of its own.
+type restartTracker struct {
+	// max is how many restarts are allowed inside window. A negative value
+	// disables the budget.
+	max int
+
+	// window is the width of the sliding window.
+	window time.Duration
+
+	// clock supplies the current time so tests can drive the window
+	// deterministically.
+	clock clock.Clock
+
+	// stamps holds the times of the restarts still inside the window, in
+	// ascending order. It is written and read only by the supervision
+	// goroutine.
+	stamps []time.Time
+
+	// total counts every restart the actor has ever taken, including the
+	// ones that have since aged out of the window. It is atomic because it
+	// is the one field observers outside supervision read.
+	total atomic.Int64
+}
+
+// newRestartTracker builds a tracker over the given budget. A non-positive
+// window falls back to DefaultRestartWindow.
+func newRestartTracker(max int, window time.Duration,
+	clk clock.Clock) *restartTracker {
+
+	if window <= 0 {
+		window = DefaultRestartWindow
+	}
+
+	return &restartTracker{
+		max:    max,
+		window: window,
+		clock:  clk,
+	}
+}
+
+// record registers one restart at the current time and reports whether the
+// actor is still inside its intensity budget. It returns false when the
+// restart being recorded is the one that breaks the budget, which is the
+// signal for supervision to terminate the actor permanently.
+func (r *restartTracker) record() bool {
+	now := r.clock.Now()
+	r.total.Add(1)
+
+	// Drop the restarts that have aged out of the sliding window, reusing
+	// the backing array so a long-lived actor that restarts occasionally
+	// does not grow the slice without bound.
+	cutoff := now.Add(-r.window)
+	kept := r.stamps[:0]
+	for _, ts := range r.stamps {
+		if ts.After(cutoff) {
+			kept = append(kept, ts)
+		}
+	}
+	r.stamps = append(kept, now)
+
+	// A negative budget is the explicit "restart forever" opt-in.
+	if r.max < 0 {
+		return true
+	}
+
+	return len(r.stamps) <= r.max
+}
+
+// count returns how many restarts the actor has taken over its whole lifetime.
+// It is safe to call from any goroutine.
+func (r *restartTracker) count() int {
+	return int(r.total.Load())
+}
+
+// watcherRegistry holds the termination watchers registered against a durable
+// actor. Delivery is one buffered value per watcher followed by a close, so
+// notifying watchers can never park the actor's shutdown path no matter how
+// slowly a watcher reads.
+type watcherRegistry struct {
+	// mu guards every field below. It is held across the notification
+	// sends, which is safe precisely because those sends cannot block.
+	mu sync.Mutex
+
+	// watchers maps a registration handle to the channel to notify. A
+	// handle is removed as soon as it has been notified or its watching
+	// context was cancelled.
+	watchers map[uint64]chan TerminationInfo
+
+	// nextID is the next registration handle to hand out.
+	nextID uint64
+
+	// terminated records whether the termination notification has already
+	// been published, so a watcher that registers afterwards is served
+	// immediately from info instead of waiting forever.
+	terminated bool
+
+	// info is the published termination notification. It is only
+	// meaningful once terminated is set.
+	info TerminationInfo
+}
+
+// newWatcherRegistry builds an empty registry.
+func newWatcherRegistry() *watcherRegistry {
+	return &watcherRegistry{
+		watchers: make(map[uint64]chan TerminationInfo),
+	}
+}
+
+// add registers a new watcher. It returns the channel to hand to the caller,
+// the registration handle, and whether the actor had already terminated. In
+// that last case the channel comes back already loaded with the notification
+// and closed, and the handle is not registered.
+func (w *watcherRegistry) add() (chan TerminationInfo, uint64, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	// A buffer of one is what makes the eventual send unconditionally
+	// non-blocking: exactly one value is ever sent per channel.
+	ch := make(chan TerminationInfo, 1)
+
+	if w.terminated {
+		ch <- w.info
+		close(ch)
+
+		return ch, 0, true
+	}
+
+	id := w.nextID
+	w.nextID++
+	w.watchers[id] = ch
+
+	return ch, id, false
+}
+
+// remove deregisters a watcher that is no longer interested and closes its
+// channel, so a caller ranging over it observes the end of the stream. It is a
+// no-op once the watcher has been notified.
+func (w *watcherRegistry) remove(id uint64) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	ch, ok := w.watchers[id]
+	if !ok {
+		return
+	}
+
+	delete(w.watchers, id)
+	close(ch)
+}
+
+// publish records the terminal notification and delivers it to every
+// registered watcher exactly once. Each send targets a single-use buffered
+// channel, so no watcher can park the actor's shutdown path. It reports
+// whether this call was the one that published; later calls are no-ops.
+func (w *watcherRegistry) publish(info TerminationInfo) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if w.terminated {
+		return false
+	}
+
+	w.terminated = true
+	w.info = info
+
+	for id, ch := range w.watchers {
+		// The channel has a buffer of one and is written exactly once,
+		// so this send always succeeds. The default arm exists so a
+		// future change cannot quietly reintroduce a shutdown path
+		// that blocks on a watcher.
+		select {
+		case ch <- info:
+		default:
+		}
+
+		close(ch)
+		delete(w.watchers, id)
+	}
+
+	return true
+}
