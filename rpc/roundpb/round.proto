@@ -64,6 +64,12 @@ message TreeNode {
     // asset_amount is the total asset amount carried by this node's
     // subtree. Zero for Bitcoin-only trees.
     uint64 asset_amount = 8;
+
+    // asset_commitment_root is the node output's Taproot Asset commitment
+    // root. A leaf owner needs it to reproduce the composed output script
+    // it was paid to, and to record the VTXO as asset-bearing. Empty for
+    // Bitcoin-only trees.
+    bytes asset_commitment_root = 9;
 }
 
 // VTXOTree is a flattened representation of a VTXO or connector tree.

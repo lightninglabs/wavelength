@@ -353,9 +353,14 @@ type TreeNode struct {
 	SigningTweak []byte `protobuf:"bytes,7,opt,name=signing_tweak,json=signingTweak,proto3" json:"signing_tweak,omitempty"`
 	// asset_amount is the total asset amount carried by this node's
 	// subtree. Zero for Bitcoin-only trees.
-	AssetAmount   uint64 `protobuf:"varint,8,opt,name=asset_amount,json=assetAmount,proto3" json:"asset_amount,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	AssetAmount uint64 `protobuf:"varint,8,opt,name=asset_amount,json=assetAmount,proto3" json:"asset_amount,omitempty"`
+	// asset_commitment_root is the node output's Taproot Asset commitment
+	// root. A leaf owner needs it to reproduce the composed output script
+	// it was paid to, and to record the VTXO as asset-bearing. Empty for
+	// Bitcoin-only trees.
+	AssetCommitmentRoot []byte `protobuf:"bytes,9,opt,name=asset_commitment_root,json=assetCommitmentRoot,proto3" json:"asset_commitment_root,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *TreeNode) Reset() {
@@ -442,6 +447,13 @@ func (x *TreeNode) GetAssetAmount() uint64 {
 		return x.AssetAmount
 	}
 	return 0
+}
+
+func (x *TreeNode) GetAssetCommitmentRoot() []byte {
+	if x != nil {
+		return x.AssetCommitmentRoot
+	}
+	return nil
 }
 
 // VTXOTree is a flattened representation of a VTXO or connector tree.
@@ -2960,7 +2972,7 @@ const file_round_proto_rawDesc = "" +
 	"\foutput_index\x18\x02 \x01(\rR\voutputIndex\":\n" +
 	"\x05TxOut\x12\x14\n" +
 	"\x05value\x18\x01 \x01(\x03R\x05value\x12\x1b\n" +
-	"\tpk_script\x18\x02 \x01(\fR\bpkScript\"\xf7\x02\n" +
+	"\tpk_script\x18\x02 \x01(\fR\bpkScript\"\xab\x03\n" +
 	"\bTreeNode\x12(\n" +
 	"\x05input\x18\x01 \x01(\v2\x12.round.v1.OutpointR\x05input\x12)\n" +
 	"\aoutputs\x18\x02 \x03(\v2\x0f.round.v1.TxOutR\aoutputs\x12\x1d\n" +
@@ -2970,7 +2982,8 @@ const file_round_proto_rawDesc = "" +
 	"\x06amount\x18\x05 \x01(\x03R\x06amount\x12\x1c\n" +
 	"\tsignature\x18\x06 \x01(\fR\tsignature\x12#\n" +
 	"\rsigning_tweak\x18\a \x01(\fR\fsigningTweak\x12!\n" +
-	"\fasset_amount\x18\b \x01(\x04R\vassetAmount\x1a;\n" +
+	"\fasset_amount\x18\b \x01(\x04R\vassetAmount\x122\n" +
+	"\x15asset_commitment_root\x18\t \x01(\fR\x13assetCommitmentRoot\x1a;\n" +
 	"\rChildrenEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\rR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\rR\x05value:\x028\x01\"\xf2\x01\n" +

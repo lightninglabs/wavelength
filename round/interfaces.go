@@ -508,6 +508,14 @@ type ClientVTXO struct {
 	// during FSM state transitions before persistence).
 	RoundID fn.Option[RoundID]
 
+	// TaprootAssetRoot, TaprootAssetRef, and TaprootAssetAmount record
+	// the asset an asset leaf carries. They are what mark the VTXO as
+	// asset-bearing, which keeps its carrier out of ordinary Bitcoin
+	// coin selection.
+	TaprootAssetRoot   *chainhash.Hash
+	TaprootAssetRef    string
+	TaprootAssetAmount uint64
+
 	// Origin is the classification the wallet stamped on the
 	// source VTXORequest at intent-composition time
 	// (boarding / refresh / in-round transfer). Used by

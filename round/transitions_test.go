@@ -3636,3 +3636,61 @@ func TestRefreshOnlyRoundValidation(t *testing.T) {
 	// Should emit GenerateNonces internal event.
 	assertTransitionEmitsInternalEvent[*GenerateNonces](h, transition)
 }
+
+// TestBuildClientVTXOsMarksAssetLeaves proves a round asset leaf is
+// persisted as asset-bearing and pays to its composed script. Both matter
+// beyond bookkeeping: coin selection skips a VTXO only when it carries an
+// asset commitment root, so a leaf without one is spendable as ordinary
+// sats and the asset it carries is destroyed.
+func TestBuildClientVTXOsMarksAssetLeaves(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHarness(t)
+	owned := mkReq(t, h.operatorPubKey, 7, true)
+	req, vtxoTree := owned.req, owned.tree
+
+	const assetRef = "tapr1qqqasset"
+	const assetAmount = uint64(900)
+	req.AssetRef = assetRef
+	req.AssetAmount = assetAmount
+
+	// The leaf pays to the policy tree composed with its asset
+	// commitment, which is what the operator discloses per node.
+	assetRoot := chainhash.HashH([]byte("leaf-asset-commitment"))
+	composed, _, _, err := arkscript.ComposedBoardingScript(
+		req.PolicyTemplate, assetRoot,
+	)
+	require.NoError(t, err)
+
+	leaf := vtxoTree.Root.GetLeafNodes()[0]
+	leaf.Outputs[0].PkScript = composed
+	vtxoTree.AssetContext = tree.NewAssetTreeContext()
+	vtxoTree.AssetContext.SetAssetRef(assetRef)
+	vtxoTree.AssetContext.SetLeafAssetRoot(leaf.Input, assetRoot[:])
+
+	signerKey := SignerKey(req.SigningKey.PubKey.SerializeCompressed())
+	vtxos, err := buildClientVTXOs(
+		t.Context(), nil, Intents{
+			VTXOs: []types.VTXORequest{req},
+		}, map[SignerKey]*tree.Tree{
+			signerKey: vtxoTree,
+		},
+		testRoundIDTr("round-asset"),
+	)
+	require.NoError(t, err)
+	require.Len(t, vtxos, 1)
+
+	got := vtxos[0]
+	require.NotNil(
+		t, got.TaprootAssetRoot,
+		"an asset leaf without a root is spendable as plain sats",
+	)
+	require.Equal(t, assetRoot, *got.TaprootAssetRoot)
+	require.Equal(t, assetRef, got.TaprootAssetRef)
+	require.EqualValues(t, assetAmount, got.TaprootAssetAmount)
+
+	// The stored script must be the composed one the leaf actually pays
+	// to, not the plain policy script.
+	require.Equal(t, composed, got.PkScript)
+	require.NotEqual(t, req.PkScript, got.PkScript)
+}

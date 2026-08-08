@@ -4378,6 +4378,34 @@ func buildClientVTXOs(ctx context.Context, checker OwnedScriptChecker,
 
 		policyTemplate, _ := req.EffectivePolicyTemplate()
 
+		// An asset leaf pays to the composed script — the policy
+		// tree branched with the leaf's asset commitment — not the
+		// plain policy script derived above. Rebuilding it from the
+		// disclosed root and requiring it to match the leaf output
+		// both fixes the stored script and proves the operator put
+		// this owner's assets where it said it would.
+		assetRoot := clientTree.LeafAssetRoot(leaf.Input)
+		if req.AssetRef != "" {
+			if len(assetRoot) != chainhash.HashSize {
+				return nil, fmt.Errorf("asset leaf %s has no "+
+					"commitment root", outpoint)
+			}
+			composed, _, _, err := arkscript.
+				ComposedBoardingScript(
+					policyTemplate, [32]byte(assetRoot),
+				)
+			if err != nil {
+				return nil, fmt.Errorf("compose asset leaf "+
+					"script: %w", err)
+			}
+			if !bytes.Equal(composed, leaf.Outputs[0].PkScript) {
+				return nil, fmt.Errorf("asset leaf %s script "+
+					"does not match its commitment root",
+					outpoint)
+			}
+			pkScript = composed
+		}
+
 		// Stamp the round-direct ancestry fragment now. The
 		// CommitmentTxID is filled in later by the confirmation
 		// path once evt.TxID is known; persisting with a zero
@@ -4397,6 +4425,16 @@ func buildClientVTXOs(ctx context.Context, checker OwnedScriptChecker,
 			Ancestry:       ancestry,
 			RoundID:        fn.Some(roundID),
 			Origin:         req.Origin,
+		}
+		if req.AssetRef != "" {
+			root, err := chainhash.NewHash(assetRoot)
+			if err != nil {
+				return nil, fmt.Errorf("asset leaf %s "+
+					"commitment root: %w", outpoint, err)
+			}
+			vtxo.TaprootAssetRoot = root
+			vtxo.TaprootAssetRef = req.AssetRef
+			vtxo.TaprootAssetAmount = req.AssetAmount
 		}
 		if isStandard {
 			vtxo.Expiry = params.ExitDelay
