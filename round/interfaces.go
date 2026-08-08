@@ -457,6 +457,19 @@ type RoundStore interface {
 	FinalizeRound(ctx context.Context, roundID RoundID, txid chainhash.Hash,
 		confInfo ConfInfo) error
 
+	// FailRound retires a checkpointed round whose fate is known to be
+	// dead, and returns the boarding intents it adopted to the live pool.
+	// It is the terminal-failure counterpart to FinalizeRound: without it
+	// the round row stays in ListActiveRounds and is re-hydrated on every
+	// start, and its deposits stay adopted, which keeps them out of the
+	// sweep and pinned against the board limit forever.
+	//
+	// Intents revert to BoardingStatusConfirmed, not
+	// BoardingStatusFailed: a dead round proves the commitment never
+	// broadcast, so nothing on-chain failed and the UTXO is exactly as it
+	// was before the round.
+	FailRound(ctx context.Context, roundID RoundID) error
+
 	// FailForfeitIntents terminally fails the pending send intents anchored
 	// to the given forfeited VTXO outpoints, recording the reason and typed
 	// failure code. It is the terminal-failure counterpart to the anchor

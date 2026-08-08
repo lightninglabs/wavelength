@@ -1161,6 +1161,27 @@ func (q *Queries) MarkVTXOSpent(ctx context.Context, arg MarkVTXOSpentParams) er
 	return err
 }
 
+const RevertAdoptedBoardingIntent = `-- name: RevertAdoptedBoardingIntent :exec
+UPDATE boarding_intents
+SET status = 'confirmed', last_update_time = $3
+WHERE outpoint_hash = $1 AND outpoint_index = $2 AND status = 'adopted'
+`
+
+type RevertAdoptedBoardingIntentParams struct {
+	OutpointHash   []byte
+	OutpointIndex  int32
+	LastUpdateTime int64
+}
+
+// Returns a boarding intent adopted by a dead round to 'confirmed'. The
+// commitment never broadcast, so the UTXO is exactly as it was before the
+// round: re-boardable, and sweepable again. Guarded on 'adopted' so a later
+// sweep that already moved the intent on is never clobbered.
+func (q *Queries) RevertAdoptedBoardingIntent(ctx context.Context, arg RevertAdoptedBoardingIntentParams) error {
+	_, err := q.db.ExecContext(ctx, RevertAdoptedBoardingIntent, arg.OutpointHash, arg.OutpointIndex, arg.LastUpdateTime)
+	return err
+}
+
 const SumUnspentVTXOAmounts = `-- name: SumUnspentVTXOAmounts :one
 SELECT COALESCE(SUM(amount), 0) as total FROM vtxos
 WHERE spent = FALSE
