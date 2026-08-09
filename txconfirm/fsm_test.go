@@ -148,6 +148,7 @@ func TestTrackedTxFSMFeeBumpFlow(t *testing.T) {
 			Progress: trackedTxProgress{
 				LastBroadcastHeight: fn.Some[int32](103),
 				CurrentFeeRate:      11,
+				ChildTxid:           copyHash(&data.Txid),
 			},
 		},
 	).Await(t.Context()).Unpack()
@@ -160,6 +161,28 @@ func TestTrackedTxFSMFeeBumpFlow(t *testing.T) {
 	require.Equal(t, fn.Some[int32](103), awaiting.LastBroadcastHeight)
 	require.Equal(t, int64(11), awaiting.CurrentFeeRate)
 	require.Equal(t, 1, awaiting.BumpCount)
+	require.Equal(t, &data.Txid, awaiting.ChildTxid)
+
+	_, err = fsm.AskEvent(
+		t.Context(), &trackedTxFeeBumpStarted{},
+	).Await(t.Context()).Unpack()
+	require.NoError(t, err)
+
+	_, err = fsm.AskEvent(
+		t.Context(), &trackedTxFeeBumpFailed{
+			AttemptHeight: 106,
+		},
+	).Await(t.Context()).Unpack()
+	require.NoError(t, err)
+
+	awaiting, ok = mustCurrentTrackedTxState(
+		t, fsm,
+	).(*trackedTxStateAwaitingConfirmation)
+	require.True(t, ok)
+	require.Equal(t, fn.Some[int32](106), awaiting.LastBroadcastHeight)
+	require.Equal(t, int64(11), awaiting.CurrentFeeRate)
+	require.Equal(t, 1, awaiting.BumpCount)
+	require.Equal(t, &data.Txid, awaiting.ChildTxid)
 }
 
 // TestTrackedTxFSMFailureAndInvalidTransitions verifies terminal failure
