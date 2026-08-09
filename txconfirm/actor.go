@@ -1004,12 +1004,8 @@ func (a *TxBroadcasterActor) handleBumpNow(ctx context.Context,
 			"txid", entry.data.Txid)
 
 		_ = a.advanceTrackedTxFSM(
-			ctx, entry, &trackedTxBroadcastAccepted{
-				Progress: trackedTxProgress{
-					LastBroadcastHeight: fn.Some(
-						a.bestHeight,
-					),
-				},
+			ctx, entry, &trackedTxFeeBumpFailed{
+				AttemptHeight: a.bestHeight,
 			},
 		)
 
@@ -1368,14 +1364,9 @@ func (a *TxBroadcasterActor) handleBlockObserved(ctx context.Context,
 						"txid", entry.data.Txid)
 				}
 
-				progress := trackedTxProgress{
-					LastBroadcastHeight: fn.Some(
-						a.bestHeight,
-					),
-				}
 				_ = a.advanceTrackedTxFSM(
-					ctx, entry, &trackedTxBroadcastAccepted{
-						Progress: progress,
+					ctx, entry, &trackedTxFeeBumpFailed{
+						AttemptHeight: a.bestHeight,
 					},
 				)
 			}
