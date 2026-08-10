@@ -375,3 +375,40 @@ func TestBoardingSweepPkScript(t *testing.T) {
 // Compile-time assertions that the test wallet satisfies SweepSigner.
 var _ SweepSigner = (*testBoardingSweepWallet)(nil)
 var _ input.Signature = testBoardingSweepSignature{}
+
+// TestBoardingIntentCarriesAsset verifies the sweep's asset detector: a
+// plain boarding intent compiles from its own policy triple, a composed
+// one does not — its address embeds an asset commitment branch whose
+// timeout sweep would destroy the committed assets.
+func TestBoardingIntentCarriesAsset(t *testing.T) {
+	t.Parallel()
+
+	plain := testBoardingSweepIntent(t, 10_000, 100, 10)
+	carries, err := boardingIntentCarriesAsset(plain)
+	require.NoError(t, err)
+	require.False(t, carries)
+
+	// Recompose the same policy with an asset commitment leaf hash the
+	// way an asset boarding address is built.
+	policyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
+		plain.Address.KeyDesc.PubKey, plain.Address.OperatorKey,
+		plain.Address.ExitDelay,
+	)
+	require.NoError(t, err)
+
+	leafHash := [32]byte{0x42}
+	address, tapscript, err := arkscript.ComposedBoardingAddress(
+		policyTemplate, leafHash, plain.Address.KeyDesc.PubKey,
+		plain.Address.OperatorKey, plain.Address.ExitDelay,
+		&chaincfg.RegressionNetParams,
+	)
+	require.NoError(t, err)
+
+	composed := plain
+	composed.Address.Address = address
+	composed.Address.Tapscript = tapscript
+
+	carries, err = boardingIntentCarriesAsset(composed)
+	require.NoError(t, err)
+	require.True(t, carries)
+}

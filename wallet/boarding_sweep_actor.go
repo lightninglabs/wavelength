@@ -677,6 +677,21 @@ func (a *Ark) handleSweepBoardingUTXOs(ctx context.Context,
 		if bestHeight < maturity {
 			continue
 		}
+
+		// A composed boarding output carries an asset commitment; the
+		// plain timeout sweep would destroy it. Withhold the output
+		// and leave it under the owner's exit leaf.
+		carriesAsset, err := boardingIntentCarriesAsset(intent)
+		if err != nil || carriesAsset {
+			log.WarnS(ctx, "Skipping asset-bearing boarding "+
+				"output in sweep", err,
+				slog.String(
+					"outpoint", intent.Outpoint.String(),
+				),
+			)
+
+			continue
+		}
 		mature = append(mature, intent)
 
 		resp.SweepableOutputs = append(

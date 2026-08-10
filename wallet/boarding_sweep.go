@@ -92,6 +92,43 @@ func boardingSweepMaturityHeight(intent BoardingIntent) int32 {
 	return intent.ChainInfo.ConfHeight + int32(intent.Address.ExitDelay)
 }
 
+// boardingIntentCarriesAsset reports whether a boarding intent pays to a
+// composed output rather than the plain boarding policy: the stored
+// address does not compile from the intent's own (owner, operator, delay)
+// triple alone, so it embeds an asset commitment as an extra tap branch.
+// Sweeping such an output through the plain timeout path would destroy
+// the committed assets while recovering only the carrier sats.
+func boardingIntentCarriesAsset(intent BoardingIntent) (bool, error) {
+	addr := intent.Address
+	if addr.KeyDesc.PubKey == nil || addr.OperatorKey == nil {
+		return false, fmt.Errorf("boarding address is missing keys")
+	}
+
+	plain, err := arkscript.VTXOTapScript(
+		addr.KeyDesc.PubKey, addr.OperatorKey, addr.ExitDelay,
+	)
+	if err != nil {
+		return false, fmt.Errorf("derive plain boarding script: %w",
+			err)
+	}
+	outputKey, err := plain.TaprootKey()
+	if err != nil {
+		return false, fmt.Errorf("derive plain boarding key: %w", err)
+	}
+	plainScript, err := txscript.PayToTaprootScript(outputKey)
+	if err != nil {
+		return false, fmt.Errorf("derive plain boarding pkscript: %w",
+			err)
+	}
+
+	storedScript, err := txscript.PayToAddrScript(addr.Address)
+	if err != nil {
+		return false, fmt.Errorf("boarding address pkscript: %w", err)
+	}
+
+	return !bytes.Equal(storedScript, plainScript), nil
+}
+
 // boardingSweepTargetOutput returns the actual txout being swept.
 func boardingSweepTargetOutput(intent BoardingIntent) (*wire.TxOut, error) {
 	tx := intent.ChainInfo.ConfTx
