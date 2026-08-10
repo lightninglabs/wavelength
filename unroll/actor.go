@@ -688,6 +688,17 @@ func (b *behavior) currentHeightHint() uint32 {
 func (b *behavior) resolveExitSpendPolicy(ctx context.Context) (ExitSpendPolicy,
 	error) {
 
+	// The final sweep spends the target to a plain wallet output. For an
+	// asset-bearing VTXO that spend would destroy the asset commitment
+	// while recovering only the carrier sats, so the sweep is withheld:
+	// the unroll has already put the composed output on chain under the
+	// owner's exit leaf, which is the exit itself. Claiming the assets
+	// from that anchor takes an asset-aware transaction.
+	if b.desc != nil && b.desc.TaprootAssetRoot != nil {
+		return nil, fmt.Errorf("target carries a Taproot Asset: " +
+			"sweep withheld to preserve the asset commitment")
+	}
+
 	req := ExitSpendPolicyRequest{
 		Kind:               b.exitPolicyKind(),
 		Ref:                b.exitPolicyRef(),
