@@ -1736,7 +1736,7 @@ func (a *Ark) handleRefreshVTXOs(ctx context.Context,
 			VTXOOutpoint: &op,
 			Amount:       vtxo.Amount,
 		})
-		vtxos = append(vtxos, types.VTXORequest{
+		request := types.VTXORequest{
 			PolicyTemplate: policyTemplate,
 			Amount:         vtxo.Amount,
 			OwnerKey:       vtxo.ClientKey,
@@ -1749,7 +1749,18 @@ func (a *Ark) handleRefreshVTXOs(ctx context.Context,
 			// debit on transfers_out, leaving only the
 			// operator fee as the net vtxo_balance change.
 			Origin: types.VTXOOriginRoundRefresh,
-		})
+		}
+
+		// An asset leaf reissues its units through the round's
+		// asset transition. The carrier value is fixed so the seal
+		// quote can never shrink it, and the request never acts as
+		// the change output.
+		if vtxo.TaprootAssetRef != "" {
+			request.AssetRef = vtxo.TaprootAssetRef
+			request.AssetAmount = vtxo.TaprootAssetAmount
+			request.FixedAmount = true
+		}
+		vtxos = append(vtxos, request)
 	}
 
 	// Reserve the forfeit inputs through the VTXO manager before
