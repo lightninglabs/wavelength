@@ -175,6 +175,41 @@ func TestLiveStateBlockEpochNeedsRefresh(t *testing.T) {
 	assertOutboxContains[*ForfeitRequest](h)
 }
 
+// TestLiveStateBlockEpochNeedsRefreshAssetVTXO verifies that an
+// asset-bearing VTXO never auto-forfeits into a refresh round: a refresh
+// carries no asset transition, so forfeiting the leaf would destroy the
+// asset commitment. The VTXO stays live; only the critical-expiry
+// escalation (tree broadcast) applies to it.
+func TestLiveStateBlockEpochNeedsRefreshAssetVTXO(t *testing.T) {
+	t.Parallel()
+
+	h := newVTXOTestHarness(t)
+	vtxo := h.newTestDescriptor()
+	vtxo.BatchExpiry = 1000
+	vtxo.CreatedHeight = 100
+	root := chainhash.Hash{0x42}
+	vtxo.TaprootAssetRoot = &root
+
+	h.withExpiryConfig(&ExpiryConfig{
+		RefreshThresholdBlocks:  200,
+		CriticalThresholdBlocks: 50,
+		TreeDepthMultiplier:     1,
+	})
+
+	h.withState(&LiveState{
+		VTXO:              vtxo,
+		LastCheckedHeight: 100,
+	})
+
+	// Same refresh-window height as the plain-VTXO test above, but no
+	// forfeit is requested and no status changes: the coin stays live.
+	_, err := h.sendEvent(h.newBlockEpochEvent(850))
+	require.NoError(t, err)
+
+	assertState[*LiveState](h)
+	require.Empty(t, h.outboxMessages)
+}
+
 // TestPendingForfeitEventFromLiveState verifies that a round-driven pending
 // forfeit commit moves the VTXO into PendingForfeitState without emitting a
 // round request back out. The round actor already owns the intent package in
