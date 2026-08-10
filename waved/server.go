@@ -4186,13 +4186,15 @@ func (s *Server) initWalletActor(ctx context.Context,
 		}
 
 		return &wallet.VTXODescriptor{
-			Outpoint:       desc.Outpoint,
-			Amount:         desc.Amount,
-			PolicyTemplate: desc.PolicyTemplate,
-			PkScript:       desc.PkScript,
-			Expiry:         desc.RelativeExpiry,
-			ClientKey:      desc.ClientKey,
-			OperatorKey:    desc.OperatorKey,
+			Outpoint:           desc.Outpoint,
+			Amount:             desc.Amount,
+			PolicyTemplate:     desc.PolicyTemplate,
+			PkScript:           desc.PkScript,
+			Expiry:             desc.RelativeExpiry,
+			ClientKey:          desc.ClientKey,
+			OperatorKey:        desc.OperatorKey,
+			TaprootAssetRef:    desc.TaprootAssetRef,
+			TaprootAssetAmount: desc.TaprootAssetAmount,
 		}, nil
 	})
 

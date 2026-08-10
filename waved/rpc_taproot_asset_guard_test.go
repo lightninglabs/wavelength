@@ -57,9 +57,11 @@ func TestRefreshAllSkipsAssetVTXOs(t *testing.T) {
 	)
 }
 
-// TestRefreshExplicitRejectsAssetVTXO ensures a directly named
-// asset-bearing VTXO is rejected instead of being destroyed by a round.
-func TestRefreshExplicitRejectsAssetVTXO(t *testing.T) {
+// TestRefreshExplicitAcceptsAssetVTXO ensures a directly named
+// asset-bearing VTXO enters the refresh preview: the wallet reissues
+// its units through the round's asset transition, so the old blanket
+// rejection no longer applies.
+func TestRefreshExplicitAcceptsAssetVTXO(t *testing.T) {
 	t.Parallel()
 
 	const height = int32(900)
@@ -70,7 +72,7 @@ func TestRefreshExplicitRejectsAssetVTXO(t *testing.T) {
 	assetDesc := newAssetGuardVTXO(t, 0x03)
 	require.NoError(t, vtxoStore.SaveVTXO(t.Context(), assetDesc))
 
-	_, err := r.RefreshVTXOs(
+	resp, err := r.RefreshVTXOs(
 		t.Context(), &waverpc.RefreshVTXOsRequest{
 			Selection: &waverpc.RefreshVTXOsRequest_Outpoints{
 				Outpoints: &waverpc.OutpointSelection{
@@ -82,8 +84,8 @@ func TestRefreshExplicitRejectsAssetVTXO(t *testing.T) {
 			DryRun: true,
 		},
 	)
-	require.Equal(t, codes.InvalidArgument, status.Code(err))
-	require.ErrorContains(t, err, "cannot be refreshed")
+	require.NoError(t, err)
+	require.NotNil(t, resp)
 }
 
 // TestLeaveAllSkipsAssetVTXOs ensures selection=all never routes an

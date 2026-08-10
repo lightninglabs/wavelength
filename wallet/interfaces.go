@@ -60,6 +60,15 @@ type VTXODescriptor struct {
 
 	// OperatorKey is the operator's public key for collaborative spends.
 	OperatorKey *btcec.PublicKey
+
+	// TaprootAssetRef is the canonical reference of the Taproot Asset
+	// this VTXO carries, empty for a Bitcoin-only VTXO. A refresh must
+	// reissue the same asset through the round's asset transition.
+	TaprootAssetRef string
+
+	// TaprootAssetAmount is the number of asset units riding on this
+	// VTXO.
+	TaprootAssetAmount uint64
 }
 
 // VTXOReader provides read-only access to VTXO descriptors. The wallet uses
