@@ -1086,6 +1086,8 @@ github.com/lightninglabs/tap-sdk v0.1.1-0.20260808182145-9d7785c9e99d h1:YQrqp5Q
 github.com/lightninglabs/tap-sdk v0.1.1-0.20260808182145-9d7785c9e99d/go.mod h1:RI0Z+A0ySP5itemPcUcSe8czEjczOzRk9IK6zaF9rnc=
 github.com/lightninglabs/tap-sdk v0.1.1-0.20260808183551-5be3d28f91b5 h1:VHSStSmn9LunEyyOI5szaN2Pnj3gKoa9QqXxOL1meVo=
 github.com/lightninglabs/tap-sdk v0.1.1-0.20260808183551-5be3d28f91b5/go.mod h1:RI0Z+A0ySP5itemPcUcSe8czEjczOzRk9IK6zaF9rnc=
+github.com/lightninglabs/tap-sdk v0.1.1-0.20260810103129-7c691597f424 h1:vcyFzQRO8bSPH8B5KEhIupjR0s8ZA3viuLTjoSHSJhs=
+github.com/lightninglabs/tap-sdk v0.1.1-0.20260810103129-7c691597f424/go.mod h1:RI0Z+A0ySP5itemPcUcSe8czEjczOzRk9IK6zaF9rnc=
 github.com/lightninglabs/taproot-assets v0.7.1-0.20260804093026-95bd8d412bef h1:4vHoQMzUkpkPoNKHT+QdTUbWoWaz0T5CDx6CWsforXM=
 github.com/lightninglabs/taproot-assets v0.7.1-0.20260804093026-95bd8d412bef/go.mod h1:fm0WaNsDpP7jEgR9zMap3hpum7lXVDtjsi783MW9BxY=
 github.com/lightninglabs/taproot-assets/taprpc v1.1.1-0.20260804093026-95bd8d412bef h1:3uhbpFZUp3JwLxSlhdelA56g0dULFfcYlC6Q/wQICk0=
