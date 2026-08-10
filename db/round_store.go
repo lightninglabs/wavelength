@@ -1878,19 +1878,47 @@ func (s *RoundPersistenceStore) dbVTXOToDomainVTXO(ctx context.Context,
 		copy(commitmentTxID[:], dbVTXO.CommitmentTxid)
 	}
 
+	// Rehydrate the leaf's asset identity: a forfeit of an asset leaf
+	// must build its proof and forfeit spends against the composed
+	// output, which is only recognizable through these fields.
+	var taprootAssetRoot *chainhash.Hash
+	if len(dbVTXO.TaprootAssetRoot) > 0 {
+		if len(dbVTXO.TaprootAssetRoot) != chainhash.HashSize {
+			return nil, fmt.Errorf("invalid Taproot Asset root "+
+				"length: %d", len(dbVTXO.TaprootAssetRoot))
+		}
+
+		root := &chainhash.Hash{}
+		copy(root[:], dbVTXO.TaprootAssetRoot)
+		taprootAssetRoot = root
+	}
+	taprootAssetRef, taprootAssetAmount, err := decodeTaprootAssetMetadata(
+		taprootAssetRoot, dbVTXO.TaprootAssetRef,
+		dbVTXO.TaprootAssetAmount,
+	)
+	if err != nil {
+		return nil, err
+	}
+
 	return &round.ClientVTXO{
-		Outpoint:       outpoint,
-		Amount:         btcutil.Amount(dbVTXO.Amount),
-		PolicyTemplate: policyTemplate,
-		PkScript:       dbVTXO.PkScript,
-		Expiry:         expiry,
-		OwnerKey:       ownerKey,
-		OperatorKey:    operatorPubkey,
-		Ancestry:       ancestry,
-		RoundID:        roundIDOpt,
-		CommitmentTxID: commitmentTxID,
-		BatchExpiry:    dbVTXO.BatchExpiry,
-		CreatedHeight:  dbVTXO.CreatedHeight,
+		Outpoint:           outpoint,
+		Amount:             btcutil.Amount(dbVTXO.Amount),
+		PolicyTemplate:     policyTemplate,
+		PkScript:           dbVTXO.PkScript,
+		Expiry:             expiry,
+		OwnerKey:           ownerKey,
+		OperatorKey:        operatorPubkey,
+		Ancestry:           ancestry,
+		RoundID:            roundIDOpt,
+		CommitmentTxID:     commitmentTxID,
+		BatchExpiry:        dbVTXO.BatchExpiry,
+		CreatedHeight:      dbVTXO.CreatedHeight,
+		TaprootAssetRoot:   taprootAssetRoot,
+		TaprootAssetRef:    taprootAssetRef,
+		TaprootAssetAmount: taprootAssetAmount,
+		TaprootAssetSealedPackage: bytes.Clone(
+			dbVTXO.TaprootAssetSealedPackage,
+		),
 	}, nil
 }
 
