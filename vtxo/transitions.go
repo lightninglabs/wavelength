@@ -304,6 +304,17 @@ func (s *LiveState) handleBlockEpoch(ctx context.Context, evt *BlockEpochEvent,
 		}, nil
 
 	case ExpiryStatusNeedsRefresh:
+		// A refresh round carries no asset transition, so forfeiting
+		// an asset-bearing VTXO into one would destroy the asset
+		// commitment while preserving only its carrier sats. Stay
+		// live; the critical-expiry escalation below still protects
+		// the coin by broadcasting its tree.
+		if s.VTXO.TaprootAssetRoot != nil {
+			return &VTXOStateTransition{
+				NextState: s,
+			}, nil
+		}
+
 		// Request cooperative forfeit before expiry becomes critical.
 		// LastCheckedHeight carries the current block height into
 		// the outbox so the actor's operator-fee quoter can compute
