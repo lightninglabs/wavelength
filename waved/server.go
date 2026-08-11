@@ -27,6 +27,7 @@ import (
 	btcwalletpkg "github.com/btcsuite/btcwallet/wallet"
 	"github.com/btcsuite/btcwallet/wtxmgr"
 	"github.com/lightninglabs/lndclient"
+	"github.com/lightninglabs/wavelength/arkchannel/unrollbridge"
 	"github.com/lightninglabs/wavelength/arkrpc"
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/btcwbackend"
@@ -341,6 +342,7 @@ type Server struct {
 	oorRegistry        *oor.OORRegistryActor
 	creditRegistry     *credit.Registry
 	vhtlcRecoveryStore *db.VHTLCRecoveryStoreDB
+	arkChannelStore    *db.ArkChannelStoreDB
 	vhtlcRecovery      *coordinator.Service
 	vhtlcPreimages     *unrollpolicy.PreimageResolverRegistry
 
@@ -5538,6 +5540,8 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 	s.ueStore = ueStore
 	recoveryStore := dbStore.NewVHTLCRecoveryStore(s.clk)
 	s.vhtlcRecoveryStore = recoveryStore
+	channelStore := dbStore.NewArkChannelStore(s.clk)
+	s.arkChannelStore = channelStore
 	preimages := s.vhtlcPreimages
 	vtxoStore := dbStore.NewVTXOStore(s.clk)
 
@@ -5629,9 +5633,12 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 		),
 		Log:                        fn.Some(s.subLogger("UNRL")),
 		MaxSweepFeeRateSatPerVByte: s.unrollMaxFeeRate(),
-		ExitSpendPolicyResolver: unrollpolicy.ExitSpendPolicyResolver{
-			Jobs:     recoveryStore,
-			Preimage: preimages,
+		ExitSpendPolicyResolver: unroll.PolicyResolvers{
+			unrollpolicy.ExitSpendPolicyResolver{
+				Jobs:     recoveryStore,
+				Preimage: preimages,
+			},
+			unrollbridge.Resolver{Channels: channelStore},
 		},
 		VTXOExitObserver: exitObserver,
 	})
