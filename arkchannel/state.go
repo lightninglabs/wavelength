@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/baselib/protofsm"
 	"github.com/lightningnetwork/lnd/fn/v2"
@@ -164,6 +165,30 @@ func PendingAction(snapshot Snapshot) (Action, error) {
 			Backing: snapshot.Backing.Clone(),
 		}, nil
 
+	case PhaseCoopClosing:
+		return &NegotiateCooperativeClose{
+			Terms:   snapshot.Terms.Clone(),
+			Source:  snapshot.Source.Clone(),
+			Backing: snapshot.Backing.Clone(),
+			Request: snapshot.CooperativeCloseRequest.Clone(),
+		}, nil
+
+	case PhaseCoopCloseSigned:
+		return &PublishCooperativeClose{
+			Terms:  snapshot.Terms.Clone(),
+			Source: snapshot.Source.Clone(),
+			Close:  snapshot.CooperativeClose.Clone(),
+		}, nil
+
+	case PhaseCoopClosePublished:
+		return &FinalizeCooperativeClose{
+			Terms:   snapshot.Terms.Clone(),
+			Source:  snapshot.Source.Clone(),
+			Backing: snapshot.Backing.Clone(),
+			Request: snapshot.CooperativeCloseRequest.Clone(),
+			Close:   snapshot.CooperativeClose.Clone(),
+		}, nil
+
 	default:
 		return nil, nil
 	}
@@ -242,6 +267,23 @@ func applyEvent(next *Snapshot, event Event) (bool, error) {
 		next.Phase = PhaseClosed
 
 		return true, nil
+
+	case *RequestCooperativeClose:
+		return applyCooperativeCloseRequest(next, event.Request)
+
+	case *CooperativeCloseSigned:
+		return applyCooperativeCloseSigned(
+			next, event.Close, event.Party,
+		)
+
+	case *CooperativeClosePublished:
+		return applyCooperativeClosePublished(next, event.TxID)
+
+	case *CooperativeCloseFinalized:
+		return applyCooperativeCloseFinalized(next, event.Party)
+
+	case *CooperativeCloseAborted:
+		return applyCooperativeCloseAborted(next)
 
 	case *Fail:
 		return applyFailure(next, event.Reason)
@@ -404,7 +446,10 @@ func applyChannelActive(next *Snapshot,
 	channelPoint wire.OutPoint) (bool, error) {
 
 	if next.Phase == PhaseActive || next.Phase == PhaseMaterializing ||
-		next.Phase == PhaseOnChain || next.Phase == PhaseClosed {
+		next.Phase == PhaseOnChain || next.Phase == PhaseCoopClosing ||
+		next.Phase == PhaseCoopCloseSigned ||
+		next.Phase == PhaseCoopClosePublished ||
+		next.Phase == PhaseClosed {
 
 		if next.Backing.ChannelPoint == channelPoint {
 			return false, nil
@@ -442,6 +487,173 @@ func applyBackingPublished(next *Snapshot, txID [32]byte) (bool, error) {
 
 	next.BackingPublished = true
 	next.Phase = PhaseOnChain
+
+	return true, nil
+}
+
+// applyCooperativeCloseRequest fixes all payout terms before either endpoint
+// quiesces its native lnd link.
+func applyCooperativeCloseRequest(next *Snapshot,
+	request CooperativeCloseRequest) (bool, error) {
+
+	if err := request.Validate(); err != nil {
+		return false, err
+	}
+	if next.CooperativeCloseRequest != nil {
+		if cooperativeCloseRequestsEqual(
+			*next.CooperativeCloseRequest, request,
+		) {
+			return false, nil
+		}
+
+		return false, fmt.Errorf("channel already has another " +
+			"cooperative close request")
+	}
+	if next.Phase != PhaseActive {
+		return false, fmt.Errorf("cannot cooperatively close "+
+			"channel from %s", next.Phase)
+	}
+	clone := request.Clone()
+	next.CooperativeCloseRequest = &clone
+	next.Phase = PhaseCoopClosing
+
+	return true, nil
+}
+
+// applyCooperativeCloseSigned stores the fully signed settlement and one
+// endpoint's durable acknowledgement. Publication becomes replayable only
+// after both endpoint databases acknowledge the same transaction.
+func applyCooperativeCloseSigned(next *Snapshot, settlement CooperativeClose,
+	party Party) (bool, error) {
+
+	if next.CooperativeCloseRequest == nil || next.Source == nil {
+		return false, fmt.Errorf("cooperative close request is missing")
+	}
+	if party != PartyClient && party != PartyHub {
+		return false, fmt.Errorf("unknown cooperative close party %d",
+			party)
+	}
+	if err := settlement.Validate(
+		next.Terms, *next.Source, *next.CooperativeCloseRequest,
+	); err != nil {
+		return false, err
+	}
+	if next.Phase != PhaseCoopClosing &&
+		next.Phase != PhaseCoopCloseSigned &&
+		next.Phase != PhaseCoopClosePublished &&
+		next.Phase != PhaseClosed {
+		return false, fmt.Errorf("cannot sign cooperative "+
+			"close from %s", next.Phase)
+	}
+	changed := false
+	if next.CooperativeClose != nil {
+		if !cooperativeClosesEqual(
+			*next.CooperativeClose, settlement,
+		) {
+			return false, fmt.Errorf("channel already has " +
+				"another cooperative close transaction")
+		}
+	} else {
+		clone := settlement.Clone()
+		next.CooperativeClose = &clone
+		changed = true
+	}
+	switch party {
+	case PartyClient:
+		if !next.ClientCloseSigned {
+			next.ClientCloseSigned = true
+			changed = true
+		}
+
+	case PartyHub:
+		if !next.HubCloseSigned {
+			next.HubCloseSigned = true
+			changed = true
+		}
+	}
+	if next.ClientCloseSigned && next.HubCloseSigned &&
+		next.Phase == PhaseCoopClosing {
+
+		next.Phase = PhaseCoopCloseSigned
+		changed = true
+	}
+
+	return changed, nil
+}
+
+// applyCooperativeClosePublished verifies the unroller confirmed the exact
+// direct VTXO settlement before lnd state can be archived.
+func applyCooperativeClosePublished(next *Snapshot,
+	txID chainhash.Hash) (bool, error) {
+
+	if next.CooperativeClose == nil {
+		return false, fmt.Errorf("signed cooperative close is missing")
+	}
+	if next.CooperativeClose.TxID != txID {
+		return false, fmt.Errorf("published cooperative close does " +
+			"not match")
+	}
+	if next.Phase == PhaseCoopClosePublished || next.Phase == PhaseClosed {
+		return false, nil
+	}
+	if next.Phase != PhaseCoopCloseSigned {
+		return false, fmt.Errorf("cannot publish cooperative "+
+			"close from %s", next.Phase)
+	}
+	next.Phase = PhaseCoopClosePublished
+
+	return true, nil
+}
+
+// applyCooperativeCloseFinalized records one lnd archival acknowledgement and
+// closes the Ark FSM only after both endpoint databases are complete.
+func applyCooperativeCloseFinalized(next *Snapshot, party Party) (bool, error) {
+	if next.CooperativeClose == nil ||
+		next.Phase != PhaseCoopClosePublished &&
+			next.Phase != PhaseClosed {
+		return false, fmt.Errorf("cannot finalize cooperative "+
+			"close from %s", next.Phase)
+	}
+	changed := false
+	switch party {
+	case PartyClient:
+		if !next.ClientCloseFinalized {
+			next.ClientCloseFinalized = true
+			changed = true
+		}
+
+	case PartyHub:
+		if !next.HubCloseFinalized {
+			next.HubCloseFinalized = true
+			changed = true
+		}
+
+	default:
+		return false, fmt.Errorf("unknown cooperative close party %d",
+			party)
+	}
+	if !changed {
+		return false, nil
+	}
+	if next.ClientCloseFinalized && next.HubCloseFinalized {
+		next.Phase = PhaseClosed
+	}
+
+	return true, nil
+}
+
+// applyCooperativeCloseAborted permits recovery only before a fully signed
+// direct VTXO spend is durable.
+func applyCooperativeCloseAborted(next *Snapshot) (bool, error) {
+	if next.Phase == PhaseActive && next.CooperativeCloseRequest == nil {
+		return false, nil
+	}
+	if next.Phase != PhaseCoopClosing || next.CooperativeClose != nil {
+		return false, fmt.Errorf("cannot abort cooperative "+
+			"close from %s", next.Phase)
+	}
+	next.CooperativeCloseRequest = nil
+	next.Phase = PhaseActive
 
 	return true, nil
 }
@@ -519,6 +731,36 @@ func advance(next *Snapshot) (Action, error) {
 			Backing: next.Backing.Clone(),
 		}, nil
 
+	case PhaseCoopClosing:
+		return &NegotiateCooperativeClose{
+			Terms:   next.Terms.Clone(),
+			Source:  next.Source.Clone(),
+			Backing: next.Backing.Clone(),
+			Request: next.CooperativeCloseRequest.Clone(),
+		}, nil
+
+	case PhaseCoopCloseSigned:
+		return &PublishCooperativeClose{
+			Terms:  next.Terms.Clone(),
+			Source: next.Source.Clone(),
+			Close:  next.CooperativeClose.Clone(),
+		}, nil
+
+	case PhaseCoopClosePublished:
+		if next.ClientCloseFinalized && next.HubCloseFinalized {
+			next.Phase = PhaseClosed
+
+			return nil, nil
+		}
+
+		return &FinalizeCooperativeClose{
+			Terms:   next.Terms.Clone(),
+			Source:  next.Source.Clone(),
+			Backing: next.Backing.Clone(),
+			Request: next.CooperativeCloseRequest.Clone(),
+			Close:   next.CooperativeClose.Clone(),
+		}, nil
+
 	case PhaseCancelling:
 		if !next.OORAborted {
 			return &AbortOOR{
@@ -567,7 +809,8 @@ func validateSnapshot(snapshot Snapshot) error {
 	if err := snapshot.Terms.Validate(); err != nil {
 		return err
 	}
-	if snapshot.Phase < PhaseRequested || snapshot.Phase > PhaseFailed {
+	if snapshot.Phase < PhaseRequested ||
+		snapshot.Phase > PhaseCoopClosePublished {
 		return fmt.Errorf("unknown channel phase %d", snapshot.Phase)
 	}
 	if snapshot.Source != nil {
@@ -600,6 +843,9 @@ func validateSnapshot(snapshot Snapshot) error {
 		snapshot.Phase == PhaseActive ||
 		snapshot.Phase == PhaseMaterializing ||
 		snapshot.Phase == PhaseOnChain ||
+		snapshot.Phase == PhaseCoopClosing ||
+		snapshot.Phase == PhaseCoopCloseSigned ||
+		snapshot.Phase == PhaseCoopClosePublished ||
 		snapshot.Phase == PhaseClosed
 	if requiresBacking && !backingReady(snapshot) {
 		return fmt.Errorf("phase %s requires finalized backing",
@@ -615,6 +861,9 @@ func validateSnapshot(snapshot Snapshot) error {
 	if snapshot.BackingPublished && snapshot.Phase != PhaseOnChain &&
 		snapshot.Phase != PhaseClosed {
 		return fmt.Errorf("published backing requires on-chain phase")
+	}
+	if err := validateCooperativeCloseSnapshot(snapshot); err != nil {
+		return err
 	}
 	if (snapshot.Phase == PhaseCancelling ||
 		snapshot.Phase == PhaseFailed) && snapshot.Failure == "" {
@@ -650,8 +899,9 @@ func validateSnapshot(snapshot Snapshot) error {
 				"terminal OOR facts")
 		}
 
-	case PhaseActivating, PhaseActive, PhaseMaterializing,
-		PhaseOnChain, PhaseClosed:
+	case PhaseActivating, PhaseActive, PhaseMaterializing, PhaseOnChain,
+		PhaseClosed, PhaseCoopClosing, PhaseCoopCloseSigned,
+		PhaseCoopClosePublished:
 
 		if !snapshot.OORFinalized || snapshot.OORAborted {
 			return fmt.Errorf("channel advanced before OOR " +
@@ -678,8 +928,114 @@ func validateSnapshot(snapshot Snapshot) error {
 				"prepared OOR")
 		}
 	}
+
 	if snapshot.Phase == PhaseOnChain && !snapshot.BackingPublished {
 		return fmt.Errorf("on-chain phase requires published backing")
+	}
+
+	return nil
+}
+
+// validateCooperativeCloseSnapshot checks artifacts and acknowledgements owned
+// by the direct settlement lifecycle.
+func validateCooperativeCloseSnapshot(snapshot Snapshot) error {
+	if snapshot.CooperativeCloseRequest != nil {
+		request := snapshot.CooperativeCloseRequest
+		if err := request.Validate(); err != nil {
+			return err
+		}
+	}
+	if snapshot.CooperativeClose != nil {
+		if snapshot.Source == nil ||
+			snapshot.CooperativeCloseRequest == nil {
+
+			return fmt.Errorf("cooperative close has no request " +
+				"or source")
+		}
+		if err := snapshot.CooperativeClose.Validate(
+			snapshot.Terms, *snapshot.Source,
+			*snapshot.CooperativeCloseRequest,
+		); err != nil {
+			return err
+		}
+	}
+	if (snapshot.ClientCloseSigned || snapshot.HubCloseSigned ||
+		snapshot.ClientCloseFinalized || snapshot.HubCloseFinalized) &&
+		snapshot.CooperativeClose == nil {
+
+		return fmt.Errorf("close acknowledgements require signed " +
+			"settlement")
+	}
+
+	switch snapshot.Phase {
+	case PhaseCoopClosing:
+		if snapshot.CooperativeCloseRequest == nil ||
+			snapshot.ClientCloseFinalized ||
+			snapshot.HubCloseFinalized {
+
+			return fmt.Errorf("cooperative closing phase has " +
+				"invalid facts")
+		}
+		if snapshot.CooperativeClose == nil &&
+			(snapshot.ClientCloseSigned ||
+				snapshot.HubCloseSigned) {
+
+			return fmt.Errorf("cooperative close acknowledgement " +
+				"has no artifact")
+		}
+		if snapshot.CooperativeClose != nil &&
+			(!snapshot.ClientCloseSigned &&
+				!snapshot.HubCloseSigned ||
+				snapshot.ClientCloseSigned &&
+					snapshot.HubCloseSigned) {
+
+			return fmt.Errorf("cooperative close staging has " +
+				"invalid acknowledgements")
+		}
+
+	case PhaseCoopCloseSigned:
+		if snapshot.CooperativeCloseRequest == nil ||
+			snapshot.CooperativeClose == nil ||
+			!snapshot.ClientCloseSigned ||
+			!snapshot.HubCloseSigned ||
+			snapshot.ClientCloseFinalized ||
+			snapshot.HubCloseFinalized {
+
+			return fmt.Errorf("signed cooperative close has " +
+				"invalid facts")
+		}
+
+	case PhaseCoopClosePublished:
+		if snapshot.CooperativeClose == nil ||
+			!snapshot.ClientCloseSigned ||
+			!snapshot.HubCloseSigned {
+
+			return fmt.Errorf("published cooperative close is " +
+				"missing")
+		}
+
+	case PhaseClosed:
+		if snapshot.CooperativeClose != nil &&
+			(!snapshot.ClientCloseSigned ||
+				!snapshot.HubCloseSigned ||
+				!snapshot.ClientCloseFinalized ||
+				!snapshot.HubCloseFinalized) {
+
+			return fmt.Errorf("cooperative close lacks endpoint " +
+				"finalization")
+		}
+
+	default:
+		if snapshot.CooperativeCloseRequest != nil ||
+			snapshot.CooperativeClose != nil ||
+			snapshot.ClientCloseSigned ||
+			snapshot.HubCloseSigned ||
+			snapshot.ClientCloseFinalized ||
+			snapshot.HubCloseFinalized {
+
+			return fmt.Errorf("phase %s has cooperative "+
+				"close facts", snapshot.Phase)
+		}
 	}
 
 	return nil
@@ -703,4 +1059,28 @@ func bindingsEqual(a, b VTXOBinding) bool {
 func backingsEqual(a, b Backing) bool {
 	return a.ChannelPoint == b.ChannelPoint &&
 		string(a.Transaction) == string(b.Transaction)
+}
+
+// cooperativeCloseRequestsEqual checks immutable payout instructions.
+func cooperativeCloseRequestsEqual(a, b CooperativeCloseRequest) bool {
+	return a.Initiator == b.Initiator && a.FeeRate == b.FeeRate &&
+		string(a.ClientDeliveryScript) ==
+			string(b.ClientDeliveryScript) &&
+		string(a.HubDeliveryScript) == string(b.HubDeliveryScript)
+}
+
+// cooperativeClosesEqual checks the complete signed settlement artifact.
+func cooperativeClosesEqual(a, b CooperativeClose) bool {
+	return a.TxID == b.TxID &&
+		cooperativeCloseProposalsEqual(a.Proposal, b.Proposal)
+}
+
+// cooperativeCloseProposalsEqual checks canonical unsigned settlement facts.
+func cooperativeCloseProposalsEqual(a, b CooperativeCloseProposal) bool {
+	return a.CommitmentHeight == b.CommitmentHeight &&
+		a.ClientBalance == b.ClientBalance &&
+		a.HubBalance == b.HubBalance &&
+		a.ClientOutput == b.ClientOutput &&
+		a.HubOutput == b.HubOutput &&
+		a.Fee == b.Fee && string(a.Transaction) == string(b.Transaction)
 }

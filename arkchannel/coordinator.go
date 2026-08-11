@@ -264,6 +264,10 @@ func snapshotsEqual(a, b Snapshot) bool {
 		a.OORFinalized != b.OORFinalized ||
 		a.OORAborted != b.OORAborted ||
 		a.BackingPublished != b.BackingPublished ||
+		a.ClientCloseSigned != b.ClientCloseSigned ||
+		a.HubCloseSigned != b.HubCloseSigned ||
+		a.ClientCloseFinalized != b.ClientCloseFinalized ||
+		a.HubCloseFinalized != b.HubCloseFinalized ||
 		a.Failure != b.Failure {
 		return false
 	}
@@ -275,6 +279,22 @@ func snapshotsEqual(a, b Snapshot) bool {
 		return false
 	}
 	if a.Backing != nil && !backingsEqual(*a.Backing, *b.Backing) {
+		return false
+	}
+	if (a.CooperativeCloseRequest == nil) !=
+		(b.CooperativeCloseRequest == nil) ||
+		(a.CooperativeClose == nil) != (b.CooperativeClose == nil) {
+		return false
+	}
+	if a.CooperativeCloseRequest != nil &&
+		!cooperativeCloseRequestsEqual(
+			*a.CooperativeCloseRequest, *b.CooperativeCloseRequest,
+		) {
+		return false
+	}
+	if a.CooperativeClose != nil && !cooperativeClosesEqual(
+		*a.CooperativeClose, *b.CooperativeClose,
+	) {
 		return false
 	}
 

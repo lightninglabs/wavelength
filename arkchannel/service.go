@@ -130,6 +130,51 @@ func (s *Service) Apply(ctx context.Context, id ID, event Event) (Record,
 	return record, nil
 }
 
+// RecordChannelEvent persists one fact without executing its resulting action.
+// Paired endpoint protocols use this as a barrier so both databases contain an
+// irreversible close artifact before either side publishes or archives it.
+func (s *Service) RecordChannelEvent(ctx context.Context, id ID, event Event) (
+	Record, error) {
+
+	record, _, err := s.coordinator.Apply(ctx, id, event)
+
+	return record, err
+}
+
+// ResumeChannelAction executes the action implied by one already durable
+// channel record.
+func (s *Service) ResumeChannelAction(ctx context.Context, id ID) (Record,
+	error) {
+
+	record, actions, err := s.coordinator.Resume(ctx, id)
+	if err != nil {
+		return Record{}, err
+	}
+	if err := s.execute(ctx, id, actions); err != nil {
+		return Record{}, err
+	}
+	if len(actions) == 0 {
+		return record, nil
+	}
+
+	return s.coordinator.Get(ctx, id)
+}
+
+// RequestCooperativeClose starts direct settlement of an active channel-policy
+// VTXO without materializing the unpublished lnd channel point.
+func (s *Service) RequestCooperativeClose(ctx context.Context, id ID,
+	request CooperativeCloseRequest) (Record, error) {
+
+	return s.Apply(ctx, id, &RequestCooperativeClose{Request: request})
+}
+
+// GetChannel returns the latest durable channel record without executing its
+// pending action. Cross-endpoint coordinators use this after a paired barrier
+// to avoid returning a stale pre-action acknowledgement.
+func (s *Service) GetChannel(ctx context.Context, id ID) (Record, error) {
+	return s.coordinator.Get(ctx, id)
+}
+
 // Materialize asks the unroller to publish ancestry before the backing.
 func (s *Service) Materialize(ctx context.Context, id ID) (Record, error) {
 	return s.Apply(ctx, id, &Materialize{})

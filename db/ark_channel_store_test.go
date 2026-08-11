@@ -11,6 +11,9 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/wavelength/arkchannel"
 	"github.com/lightningnetwork/lnd/clock"
+	"github.com/lightningnetwork/lnd/input"
+	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/stretchr/testify/require"
 )
@@ -90,6 +93,135 @@ func TestArkChannelStoreRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, records, 1)
 	require.Equal(t, terms.ID, records[0].Snapshot.Terms.ID)
+}
+
+// TestArkChannelStoreCooperativeCloseRoundTrip verifies the compact SQL facts
+// reconstruct and script-validate the exact signed direct VTXO settlement.
+func TestArkChannelStoreCooperativeCloseRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	store := newArkChannelStoreForTest(t)
+	coordinator, err := arkchannel.NewCoordinator(store)
+	require.NoError(t, err)
+	terms := testArkChannelTerms(t, arkchannel.KindPromotion, 8)
+	clientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	hubKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	terms.VTXO.ClientArkKey = testArkChannelCompressedKey(clientKey)
+	terms.VTXO.HubArkKey = testArkChannelCompressedKey(hubKey)
+	terms.VTXO.ArkOperatorKey = testArkChannelCompressedKey(operatorKey)
+	binding := testArkChannelBinding(terms)
+	backing := testArkChannelBacking(t, terms, binding)
+	_, err = coordinator.Request(t.Context(), terms)
+	require.NoError(t, err)
+	for _, event := range []arkchannel.Event{
+		&arkchannel.BindVTXO{
+			Binding: binding,
+		},
+		&arkchannel.BackingSigned{
+			Backing: backing,
+		},
+		&arkchannel.FundingFinalized{
+			Party: arkchannel.PartyClient,
+		},
+		&arkchannel.FundingFinalized{
+			Party: arkchannel.PartyHub,
+		},
+		&arkchannel.OORFinalized{
+			SessionID: binding.OORSessionID,
+		},
+		&arkchannel.ChannelActive{
+			ChannelPointHash:  backing.ChannelPoint.Hash,
+			ChannelPointIndex: backing.ChannelPoint.Index,
+		},
+	} {
+		_, _, err = coordinator.Apply(t.Context(), terms.ID, event)
+		require.NoError(t, err)
+	}
+	request := arkchannel.CooperativeCloseRequest{
+		Initiator: arkchannel.PartyClient,
+		ClientDeliveryScript: append(
+			[]byte{0x00, 0x14}, bytes.Repeat([]byte{1}, 20)...,
+		),
+		HubDeliveryScript: append(
+			[]byte{0x00, 0x14}, bytes.Repeat([]byte{2}, 20)...,
+		),
+		FeeRate: chainfee.SatPerKWeight(1_000),
+	}
+	_, _, err = coordinator.Apply(
+		t.Context(), terms.ID, &arkchannel.RequestCooperativeClose{
+			Request: request,
+		},
+	)
+	require.NoError(t, err)
+	template, err := arkchannel.NewCooperativeCloseTemplate(
+		terms, binding, request, 70_000, 30_000, 9,
+	)
+	require.NoError(t, err)
+	clientSig := testArkChannelCloseSignature(
+		t, template, terms, arkchannel.PartyClient, clientKey,
+	)
+	hubSig := testArkChannelCloseSignature(
+		t, template, terms, arkchannel.PartyHub, hubKey,
+	)
+	operatorDesc, err := template.OperatorSignDescriptor(
+		terms, keychain.KeyDescriptor{
+			PubKey: operatorKey.PubKey(),
+		},
+	)
+	require.NoError(t, err)
+	operatorSig, err := input.NewMockSigner(
+		[]*btcec.PrivateKey{operatorKey}, nil,
+	).SignOutputRaw(
+		testArkChannelProposalTx(t, template.Proposal()), operatorDesc,
+	)
+	require.NoError(t, err)
+	settlement, err := template.Complete(
+		terms, binding, request, clientSig, hubSig, operatorSig,
+	)
+	require.NoError(t, err)
+	for _, event := range []arkchannel.Event{
+		&arkchannel.CooperativeCloseSigned{
+			Close: settlement,
+			Party: arkchannel.PartyClient,
+		},
+		&arkchannel.CooperativeCloseSigned{
+			Close: settlement,
+			Party: arkchannel.PartyHub,
+		},
+		&arkchannel.CooperativeClosePublished{
+			TxID: settlement.TxID,
+		},
+		&arkchannel.CooperativeCloseFinalized{
+			Party: arkchannel.PartyClient,
+		},
+	} {
+		_, _, err = coordinator.Apply(t.Context(), terms.ID, event)
+		require.NoError(t, err)
+	}
+
+	loaded, err := store.Get(t.Context(), terms.ID)
+	require.NoError(t, err)
+	require.Equal(
+		t, arkchannel.PhaseCoopClosePublished, loaded.Snapshot.Phase,
+	)
+	require.Equal(t, request, *loaded.Snapshot.CooperativeCloseRequest)
+	require.Equal(t, settlement, *loaded.Snapshot.CooperativeClose)
+	require.True(t, loaded.Snapshot.ClientCloseFinalized)
+	require.False(t, loaded.Snapshot.HubCloseFinalized)
+
+	_, _, err = coordinator.Apply(
+		t.Context(), terms.ID, &arkchannel.CooperativeCloseFinalized{
+			Party: arkchannel.PartyHub,
+		},
+	)
+	require.NoError(t, err)
+	loaded, err = store.Get(t.Context(), terms.ID)
+	require.NoError(t, err)
+	require.Equal(t, arkchannel.PhaseClosed, loaded.Snapshot.Phase)
 }
 
 // TestArkChannelStoreNotFound verifies the shared coordinator sentinel.
@@ -247,4 +379,50 @@ func testArkChannelBacking(t *testing.T, terms arkchannel.Terms,
 			Hash: tx.TxHash(),
 		},
 	}
+}
+
+// testArkChannelCompressedKey encodes one policy key.
+func testArkChannelCompressedKey(key *btcec.PrivateKey) [33]byte {
+	var encoded [33]byte
+	copy(encoded[:], key.PubKey().SerializeCompressed())
+
+	return encoded
+}
+
+// testArkChannelCloseSignature signs one endpoint's immediate VTXO role.
+func testArkChannelCloseSignature(t *testing.T,
+	template *arkchannel.CooperativeCloseTemplate, terms arkchannel.Terms,
+	party arkchannel.Party, key *btcec.PrivateKey) input.Signature {
+
+	t.Helper()
+	desc, err := template.SignDescriptor(
+		terms, party, keychain.KeyDescriptor{
+			PubKey: key.PubKey(),
+		},
+	)
+	require.NoError(t, err)
+	sig, err := input.NewMockSigner(
+		[]*btcec.PrivateKey{key}, nil,
+	).SignOutputRaw(
+		testArkChannelProposalTx(t, template.Proposal()), desc,
+	)
+	require.NoError(t, err)
+
+	return sig
+}
+
+// testArkChannelProposalTx decodes one unsigned close proposal.
+func testArkChannelProposalTx(t *testing.T,
+	proposal arkchannel.CooperativeCloseProposal) *wire.MsgTx {
+
+	t.Helper()
+	tx := wire.NewMsgTx(2)
+	require.NoError(
+		t,
+		tx.Deserialize(
+			bytes.NewReader(proposal.Transaction),
+		),
+	)
+
+	return tx
 }

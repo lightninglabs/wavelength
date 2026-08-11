@@ -106,6 +106,18 @@ const (
 
 	// PhaseFailed means negotiation failed before the no-failure boundary.
 	PhaseFailed
+
+	// PhaseCoopClosing means both endpoints must quiesce lnd and agree on
+	// one clean commitment state before signing a direct VTXO settlement.
+	PhaseCoopClosing
+
+	// PhaseCoopCloseSigned means the fully signed direct VTXO settlement is
+	// durable and must be published rather than materializing the backing.
+	PhaseCoopCloseSigned
+
+	// PhaseCoopClosePublished means the direct settlement confirmed through
+	// the unroller and both lnd databases must archive the channel.
+	PhaseCoopClosePublished
 )
 
 // String returns the durable name of a coordination phase.
@@ -140,6 +152,15 @@ func (p Phase) String() string {
 
 	case PhaseFailed:
 		return "failed"
+
+	case PhaseCoopClosing:
+		return "coop_closing"
+
+	case PhaseCoopCloseSigned:
+		return "coop_close_signed"
+
+	case PhaseCoopClosePublished:
+		return "coop_close_published"
 
 	default:
 		return "unknown"
@@ -422,16 +443,22 @@ func (b Backing) Validate(terms Terms, source VTXOBinding) error {
 
 // Snapshot is the complete Ark-owned durable state for one channel.
 type Snapshot struct {
-	Terms            Terms
-	Phase            Phase
-	Source           *VTXOBinding
-	Backing          *Backing
-	ClientFinalized  bool
-	HubFinalized     bool
-	OORFinalized     bool
-	OORAborted       bool
-	BackingPublished bool
-	Failure          string
+	Terms                   Terms
+	Phase                   Phase
+	Source                  *VTXOBinding
+	Backing                 *Backing
+	ClientFinalized         bool
+	HubFinalized            bool
+	OORFinalized            bool
+	OORAborted              bool
+	BackingPublished        bool
+	CooperativeCloseRequest *CooperativeCloseRequest
+	CooperativeClose        *CooperativeClose
+	ClientCloseSigned       bool
+	HubCloseSigned          bool
+	ClientCloseFinalized    bool
+	HubCloseFinalized       bool
+	Failure                 string
 }
 
 // Clone returns a snapshot without aliases to mutable fields.
@@ -444,6 +471,14 @@ func (s Snapshot) Clone() Snapshot {
 	if s.Backing != nil {
 		backing := s.Backing.Clone()
 		s.Backing = &backing
+	}
+	if s.CooperativeCloseRequest != nil {
+		request := s.CooperativeCloseRequest.Clone()
+		s.CooperativeCloseRequest = &request
+	}
+	if s.CooperativeClose != nil {
+		settlement := s.CooperativeClose.Clone()
+		s.CooperativeClose = &settlement
 	}
 
 	return s

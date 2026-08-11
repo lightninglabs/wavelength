@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS ark_channels (
     funder_delay BIGINT NOT NULL,
     min_exit_delay BIGINT NOT NULL,
 
-	phase INTEGER NOT NULL CHECK (phase BETWEEN 1 AND 10),
+	phase INTEGER NOT NULL CHECK (phase BETWEEN 1 AND 13),
 	oor_session_id BLOB,
 	source_index BIGINT,
 	source_amount BIGINT,
@@ -34,6 +34,19 @@ CREATE TABLE IF NOT EXISTS ark_channels (
 	oor_finalized BOOLEAN NOT NULL DEFAULT FALSE,
 	oor_aborted BOOLEAN NOT NULL DEFAULT FALSE,
     backing_published BOOLEAN NOT NULL DEFAULT FALSE,
+	close_initiator INTEGER CHECK (close_initiator IN (1, 2)),
+	close_client_script BLOB,
+	close_hub_script BLOB,
+	close_fee_rate_sat_per_kw BIGINT,
+	cooperative_close_tx BLOB,
+	cooperative_close_txid BLOB,
+	close_commitment_height BIGINT,
+	close_client_balance BIGINT,
+	close_hub_balance BIGINT,
+	client_close_signed BOOLEAN NOT NULL DEFAULT FALSE,
+	hub_close_signed BOOLEAN NOT NULL DEFAULT FALSE,
+	client_close_finalized BOOLEAN NOT NULL DEFAULT FALSE,
+	hub_close_finalized BOOLEAN NOT NULL DEFAULT FALSE,
     failure TEXT,
 
     revision BIGINT NOT NULL CHECK (revision > 0),
@@ -52,6 +65,20 @@ CREATE TABLE IF NOT EXISTS ark_channels (
         (backing_tx IS NOT NULL AND channel_point_txid IS NOT NULL AND
          channel_point_index IS NOT NULL)
     ),
+	CHECK (
+		(close_initiator IS NULL AND close_client_script IS NULL AND
+		 close_hub_script IS NULL AND close_fee_rate_sat_per_kw IS NULL) OR
+		(close_initiator IS NOT NULL AND close_client_script IS NOT NULL AND
+		 close_hub_script IS NOT NULL AND close_fee_rate_sat_per_kw IS NOT NULL)
+	),
+	CHECK (
+		(cooperative_close_tx IS NULL AND cooperative_close_txid IS NULL AND
+		 close_commitment_height IS NULL AND close_client_balance IS NULL AND
+		 close_hub_balance IS NULL) OR
+		(cooperative_close_tx IS NOT NULL AND cooperative_close_txid IS NOT NULL AND
+		 close_commitment_height IS NOT NULL AND close_client_balance IS NOT NULL AND
+		 close_hub_balance IS NOT NULL)
+	),
     CHECK (channel_delay >= 0 AND channel_delay <= 4294967295),
     CHECK (funder_delay >= 0 AND funder_delay <= 4294967295),
     CHECK (min_exit_delay >= 0 AND min_exit_delay <= 4294967295)

@@ -15,6 +15,7 @@ import (
 	"github.com/lightninglabs/wavelength/arkchannel"
 	"github.com/lightninglabs/wavelength/db/sqlc"
 	"github.com/lightningnetwork/lnd/clock"
+	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 )
 
 const initialArkChannelRevision = int64(1)
@@ -220,20 +221,33 @@ func (s *ArkChannelStoreDB) CompareAndSwap(ctx context.Context,
 
 // arkChannelMutableFields is the shared SQL representation of mutable state.
 type arkChannelMutableFields struct {
-	phase             int32
-	oorSessionID      []byte
-	sourceIndex       sql.NullInt64
-	sourceAmount      sql.NullInt64
-	sourceArkTx       []byte
-	backingTx         []byte
-	channelPointTxID  []byte
-	channelPointIndex sql.NullInt64
-	clientFinalized   bool
-	hubFinalized      bool
-	oorFinalized      bool
-	oorAborted        bool
-	backingPublished  bool
-	failure           sql.NullString
+	phase                 int32
+	oorSessionID          []byte
+	sourceIndex           sql.NullInt64
+	sourceAmount          sql.NullInt64
+	sourceArkTx           []byte
+	backingTx             []byte
+	channelPointTxID      []byte
+	channelPointIndex     sql.NullInt64
+	clientFinalized       bool
+	hubFinalized          bool
+	oorFinalized          bool
+	oorAborted            bool
+	backingPublished      bool
+	closeInitiator        sql.NullInt32
+	closeClientScript     []byte
+	closeHubScript        []byte
+	closeFeeRate          sql.NullInt64
+	cooperativeCloseTx    []byte
+	cooperativeCloseTxID  []byte
+	closeCommitmentHeight sql.NullInt64
+	closeClientBalance    sql.NullInt64
+	closeHubBalance       sql.NullInt64
+	clientCloseSigned     bool
+	hubCloseSigned        bool
+	clientCloseFinalized  bool
+	hubCloseFinalized     bool
+	failure               sql.NullString
 }
 
 // mutableArkChannelFields converts optional snapshot fields for sqlc.
@@ -241,12 +255,16 @@ func mutableArkChannelFields(snapshot arkchannel.Snapshot) (
 	arkChannelMutableFields, error) {
 
 	fields := arkChannelMutableFields{
-		phase:            int32(snapshot.Phase),
-		clientFinalized:  snapshot.ClientFinalized,
-		hubFinalized:     snapshot.HubFinalized,
-		oorFinalized:     snapshot.OORFinalized,
-		oorAborted:       snapshot.OORAborted,
-		backingPublished: snapshot.BackingPublished,
+		phase:                int32(snapshot.Phase),
+		clientFinalized:      snapshot.ClientFinalized,
+		hubFinalized:         snapshot.HubFinalized,
+		oorFinalized:         snapshot.OORFinalized,
+		oorAborted:           snapshot.OORAborted,
+		backingPublished:     snapshot.BackingPublished,
+		clientCloseSigned:    snapshot.ClientCloseSigned,
+		hubCloseSigned:       snapshot.HubCloseSigned,
+		clientCloseFinalized: snapshot.ClientCloseFinalized,
+		hubCloseFinalized:    snapshot.HubCloseFinalized,
 		failure: sql.NullString{
 			String: snapshot.Failure,
 			Valid:  snapshot.Failure != "",
@@ -278,6 +296,43 @@ func mutableArkChannelFields(snapshot arkchannel.Snapshot) (
 			Valid: true,
 		}
 	}
+	if snapshot.CooperativeCloseRequest != nil {
+		request := snapshot.CooperativeCloseRequest
+		fields.closeInitiator = sql.NullInt32{
+			Int32: int32(request.Initiator),
+			Valid: true,
+		}
+		fields.closeClientScript = slices.Clone(
+			request.ClientDeliveryScript,
+		)
+		fields.closeHubScript = slices.Clone(request.HubDeliveryScript)
+		fields.closeFeeRate = sql.NullInt64{
+			Int64: int64(request.FeeRate),
+			Valid: true,
+		}
+	}
+	if snapshot.CooperativeClose != nil {
+		settlement := snapshot.CooperativeClose
+		if settlement.Proposal.CommitmentHeight > math.MaxInt64 {
+			return arkChannelMutableFields{}, fmt.Errorf(
+				"cooperative close commitment height is out " +
+					"of range")
+		}
+		fields.cooperativeCloseTx = slices.Clone(settlement.Transaction)
+		fields.cooperativeCloseTxID = slices.Clone(settlement.TxID[:])
+		fields.closeCommitmentHeight = sql.NullInt64{
+			Int64: int64(settlement.Proposal.CommitmentHeight),
+			Valid: true,
+		}
+		fields.closeClientBalance = sql.NullInt64{
+			Int64: int64(settlement.Proposal.ClientBalance),
+			Valid: true,
+		}
+		fields.closeHubBalance = sql.NullInt64{
+			Int64: int64(settlement.Proposal.HubBalance),
+			Valid: true,
+		}
+	}
 
 	return fields, nil
 }
@@ -293,41 +348,60 @@ func insertArkChannelParams(snapshot arkchannel.Snapshot,
 	terms := snapshot.Terms
 
 	return sqlc.InsertArkChannelParams{
-		ChannelID:         slices.Clone(terms.ID[:]),
-		Kind:              int32(terms.Kind),
-		Funder:            int32(terms.Funder),
-		PendingChannelID:  slices.Clone(terms.PendingChannelID[:]),
-		ReservedScid:      encodeSCID(terms.ReservedSCID),
-		Capacity:          int64(terms.Capacity),
-		ClientNodeKey:     slices.Clone(terms.ClientNodeKey[:]),
-		HubNodeKey:        slices.Clone(terms.HubNodeKey[:]),
-		PaymentHash:       slices.Clone(terms.PaymentHash[:]),
-		ClientArkKey:      slices.Clone(terms.VTXO.ClientArkKey[:]),
-		HubArkKey:         slices.Clone(terms.VTXO.HubArkKey[:]),
-		ArkOperatorKey:    slices.Clone(terms.VTXO.ArkOperatorKey[:]),
-		ClientChannelKey:  slices.Clone(terms.VTXO.ClientChannelKey[:]),
-		HubChannelKey:     slices.Clone(terms.VTXO.HubChannelKey[:]),
-		FunderKey:         slices.Clone(terms.VTXO.FunderKey[:]),
-		ChannelDelay:      int64(terms.VTXO.ChannelDelay),
-		FunderDelay:       int64(terms.VTXO.FunderDelay),
-		MinExitDelay:      int64(terms.VTXO.MinExitDelay),
-		Phase:             fields.phase,
-		OorSessionID:      fields.oorSessionID,
-		SourceIndex:       fields.sourceIndex,
-		SourceAmount:      fields.sourceAmount,
-		SourceArkTx:       fields.sourceArkTx,
-		BackingTx:         fields.backingTx,
-		ChannelPointTxid:  fields.channelPointTxID,
-		ChannelPointIndex: fields.channelPointIndex,
-		ClientFinalized:   fields.clientFinalized,
-		HubFinalized:      fields.hubFinalized,
-		OorFinalized:      fields.oorFinalized,
-		OorAborted:        fields.oorAborted,
-		BackingPublished:  fields.backingPublished,
-		Failure:           fields.failure,
-		Revision:          initialArkChannelRevision,
-		CreatedAt:         now,
-		UpdatedAt:         now,
+		ChannelID:        slices.Clone(terms.ID[:]),
+		Kind:             int32(terms.Kind),
+		Funder:           int32(terms.Funder),
+		PendingChannelID: slices.Clone(terms.PendingChannelID[:]),
+		ReservedScid:     encodeSCID(terms.ReservedSCID),
+		Capacity:         int64(terms.Capacity),
+		ClientNodeKey:    slices.Clone(terms.ClientNodeKey[:]),
+		HubNodeKey:       slices.Clone(terms.HubNodeKey[:]),
+		PaymentHash:      slices.Clone(terms.PaymentHash[:]),
+		ClientArkKey:     slices.Clone(terms.VTXO.ClientArkKey[:]),
+		HubArkKey:        slices.Clone(terms.VTXO.HubArkKey[:]),
+		ArkOperatorKey: slices.Clone(
+			terms.VTXO.ArkOperatorKey[:],
+		),
+		ClientChannelKey: slices.Clone(
+			terms.VTXO.ClientChannelKey[:],
+		),
+		HubChannelKey: slices.Clone(
+			terms.VTXO.HubChannelKey[:],
+		),
+		FunderKey:             slices.Clone(terms.VTXO.FunderKey[:]),
+		ChannelDelay:          int64(terms.VTXO.ChannelDelay),
+		FunderDelay:           int64(terms.VTXO.FunderDelay),
+		MinExitDelay:          int64(terms.VTXO.MinExitDelay),
+		Phase:                 fields.phase,
+		OorSessionID:          fields.oorSessionID,
+		SourceIndex:           fields.sourceIndex,
+		SourceAmount:          fields.sourceAmount,
+		SourceArkTx:           fields.sourceArkTx,
+		BackingTx:             fields.backingTx,
+		ChannelPointTxid:      fields.channelPointTxID,
+		ChannelPointIndex:     fields.channelPointIndex,
+		ClientFinalized:       fields.clientFinalized,
+		HubFinalized:          fields.hubFinalized,
+		OorFinalized:          fields.oorFinalized,
+		OorAborted:            fields.oorAborted,
+		BackingPublished:      fields.backingPublished,
+		CloseInitiator:        fields.closeInitiator,
+		CloseClientScript:     fields.closeClientScript,
+		CloseHubScript:        fields.closeHubScript,
+		CloseFeeRateSatPerKw:  fields.closeFeeRate,
+		CooperativeCloseTx:    fields.cooperativeCloseTx,
+		CooperativeCloseTxid:  fields.cooperativeCloseTxID,
+		CloseCommitmentHeight: fields.closeCommitmentHeight,
+		CloseClientBalance:    fields.closeClientBalance,
+		CloseHubBalance:       fields.closeHubBalance,
+		ClientCloseSigned:     fields.clientCloseSigned,
+		HubCloseSigned:        fields.hubCloseSigned,
+		ClientCloseFinalized:  fields.clientCloseFinalized,
+		HubCloseFinalized:     fields.hubCloseFinalized,
+		Failure:               fields.failure,
+		Revision:              initialArkChannelRevision,
+		CreatedAt:             now,
+		UpdatedAt:             now,
 	}, nil
 }
 
@@ -341,23 +415,36 @@ func compareAndSwapArkChannelParams(snapshot arkchannel.Snapshot, revision,
 	}
 
 	return sqlc.CompareAndSwapArkChannelParams{
-		ChannelID:         slices.Clone(snapshot.Terms.ID[:]),
-		Revision:          revision,
-		Phase:             fields.phase,
-		OorSessionID:      fields.oorSessionID,
-		SourceIndex:       fields.sourceIndex,
-		SourceAmount:      fields.sourceAmount,
-		SourceArkTx:       fields.sourceArkTx,
-		BackingTx:         fields.backingTx,
-		ChannelPointTxid:  fields.channelPointTxID,
-		ChannelPointIndex: fields.channelPointIndex,
-		ClientFinalized:   fields.clientFinalized,
-		HubFinalized:      fields.hubFinalized,
-		OorFinalized:      fields.oorFinalized,
-		OorAborted:        fields.oorAborted,
-		BackingPublished:  fields.backingPublished,
-		Failure:           fields.failure,
-		UpdatedAt:         now,
+		ChannelID:             slices.Clone(snapshot.Terms.ID[:]),
+		Revision:              revision,
+		Phase:                 fields.phase,
+		OorSessionID:          fields.oorSessionID,
+		SourceIndex:           fields.sourceIndex,
+		SourceAmount:          fields.sourceAmount,
+		SourceArkTx:           fields.sourceArkTx,
+		BackingTx:             fields.backingTx,
+		ChannelPointTxid:      fields.channelPointTxID,
+		ChannelPointIndex:     fields.channelPointIndex,
+		ClientFinalized:       fields.clientFinalized,
+		HubFinalized:          fields.hubFinalized,
+		OorFinalized:          fields.oorFinalized,
+		OorAborted:            fields.oorAborted,
+		BackingPublished:      fields.backingPublished,
+		CloseInitiator:        fields.closeInitiator,
+		CloseClientScript:     fields.closeClientScript,
+		CloseHubScript:        fields.closeHubScript,
+		CloseFeeRateSatPerKw:  fields.closeFeeRate,
+		CooperativeCloseTx:    fields.cooperativeCloseTx,
+		CooperativeCloseTxid:  fields.cooperativeCloseTxID,
+		CloseCommitmentHeight: fields.closeCommitmentHeight,
+		CloseClientBalance:    fields.closeClientBalance,
+		CloseHubBalance:       fields.closeHubBalance,
+		ClientCloseSigned:     fields.clientCloseSigned,
+		HubCloseSigned:        fields.hubCloseSigned,
+		ClientCloseFinalized:  fields.clientCloseFinalized,
+		HubCloseFinalized:     fields.hubCloseFinalized,
+		Failure:               fields.failure,
+		UpdatedAt:             now,
 	}, nil
 }
 
@@ -450,14 +537,18 @@ func arkChannelRecordFromRow(row sqlc.ArkChannel) (arkchannel.Record, error) {
 	terms.Capacity = btcutil.Amount(row.Capacity)
 
 	snapshot := arkchannel.Snapshot{
-		Terms:            terms,
-		Phase:            arkchannel.Phase(row.Phase),
-		ClientFinalized:  row.ClientFinalized,
-		HubFinalized:     row.HubFinalized,
-		OORFinalized:     row.OorFinalized,
-		OORAborted:       row.OorAborted,
-		BackingPublished: row.BackingPublished,
-		Failure:          row.Failure.String,
+		Terms:                terms,
+		Phase:                arkchannel.Phase(row.Phase),
+		ClientFinalized:      row.ClientFinalized,
+		HubFinalized:         row.HubFinalized,
+		OORFinalized:         row.OorFinalized,
+		OORAborted:           row.OorAborted,
+		BackingPublished:     row.BackingPublished,
+		ClientCloseSigned:    row.ClientCloseSigned,
+		HubCloseSigned:       row.HubCloseSigned,
+		ClientCloseFinalized: row.ClientCloseFinalized,
+		HubCloseFinalized:    row.HubCloseFinalized,
+		Failure:              row.Failure.String,
 	}
 	source, err := arkChannelSourceFromRow(row, terms)
 	if err != nil {
@@ -469,6 +560,18 @@ func arkChannelRecordFromRow(row sqlc.ArkChannel) (arkchannel.Record, error) {
 		return arkchannel.Record{}, err
 	}
 	snapshot.Backing = backing
+	closeRequest, err := arkChannelCloseRequestFromRow(row)
+	if err != nil {
+		return arkchannel.Record{}, err
+	}
+	snapshot.CooperativeCloseRequest = closeRequest
+	cooperativeClose, err := arkChannelCooperativeCloseFromRow(
+		row, terms, source, closeRequest,
+	)
+	if err != nil {
+		return arkchannel.Record{}, err
+	}
+	snapshot.CooperativeClose = cooperativeClose
 
 	if row.Revision <= 0 {
 		return arkchannel.Record{}, fmt.Errorf("invalid channel "+
@@ -546,6 +649,99 @@ func arkChannelBackingFromRow(row sqlc.ArkChannel) (*arkchannel.Backing,
 			Index: index,
 		},
 	}, nil
+}
+
+// arkChannelCloseRequestFromRow decodes the optional cooperative-close request
+// group.
+func arkChannelCloseRequestFromRow(row sqlc.ArkChannel) (
+	*arkchannel.CooperativeCloseRequest, error) {
+
+	if !row.CloseInitiator.Valid {
+		if len(row.CloseClientScript) != 0 ||
+			len(row.CloseHubScript) != 0 ||
+			row.CloseFeeRateSatPerKw.Valid {
+			return nil, fmt.Errorf("cooperative close request is " +
+				"incomplete")
+		}
+
+		return nil, nil
+	}
+	if len(row.CloseClientScript) == 0 || len(row.CloseHubScript) == 0 ||
+		!row.CloseFeeRateSatPerKw.Valid {
+		return nil, fmt.Errorf("cooperative close request is " +
+			"incomplete")
+	}
+	request := &arkchannel.CooperativeCloseRequest{
+		Initiator: arkchannel.Party(row.CloseInitiator.Int32),
+		ClientDeliveryScript: slices.Clone(
+			row.CloseClientScript,
+		),
+		HubDeliveryScript: slices.Clone(row.CloseHubScript),
+		FeeRate: chainfee.SatPerKWeight(
+			row.CloseFeeRateSatPerKw.Int64,
+		),
+	}
+	if err := request.Validate(); err != nil {
+		return nil, err
+	}
+
+	return request, nil
+}
+
+// arkChannelCooperativeCloseFromRow rebuilds the canonical unsigned proposal
+// from compact SQL facts and attaches the persisted signed witness.
+func arkChannelCooperativeCloseFromRow(row sqlc.ArkChannel,
+	terms arkchannel.Terms, source *arkchannel.VTXOBinding,
+	request *arkchannel.CooperativeCloseRequest) (
+	*arkchannel.CooperativeClose, error) {
+
+	if len(row.CooperativeCloseTx) == 0 {
+		if len(row.CooperativeCloseTxid) != 0 ||
+			row.CloseCommitmentHeight.Valid ||
+			row.CloseClientBalance.Valid ||
+			row.CloseHubBalance.Valid {
+			return nil, fmt.Errorf("cooperative close artifact " +
+				"is incomplete")
+		}
+
+		return nil, nil
+	}
+	if source == nil || request == nil ||
+		len(row.CooperativeCloseTxid) == 0 ||
+		!row.CloseCommitmentHeight.Valid ||
+		!row.CloseClientBalance.Valid || !row.CloseHubBalance.Valid {
+		return nil, fmt.Errorf("cooperative close artifact is " +
+			"incomplete")
+	}
+	if row.CloseCommitmentHeight.Int64 < 0 ||
+		row.CloseClientBalance.Int64 < 0 ||
+		row.CloseHubBalance.Int64 < 0 {
+		return nil, fmt.Errorf("cooperative close artifact has " +
+			"negative values")
+	}
+	txID, err := chainhash.NewHash(row.CooperativeCloseTxid)
+	if err != nil {
+		return nil, fmt.Errorf("decode cooperative close txid: %w", err)
+	}
+	template, err := arkchannel.NewCooperativeCloseTemplate(
+		terms, *source, *request,
+		btcutil.Amount(row.CloseClientBalance.Int64),
+		btcutil.Amount(row.CloseHubBalance.Int64),
+		uint64(row.CloseCommitmentHeight.Int64),
+	)
+	if err != nil {
+		return nil, err
+	}
+	settlement := &arkchannel.CooperativeClose{
+		Proposal:    template.Proposal(),
+		Transaction: slices.Clone(row.CooperativeCloseTx),
+		TxID:        *txID,
+	}
+	if err := settlement.Validate(terms, *source, *request); err != nil {
+		return nil, err
+	}
+
+	return settlement, nil
 }
 
 // copyFixed rejects corrupt fixed-width SQL blobs.

@@ -69,6 +69,19 @@ type ChannelMaterializer interface {
 	MaterializeChannel(context.Context, ID, VTXOBinding, Backing) error
 }
 
+// ChannelCooperativeCloser coordinates clean lnd state, direct VTXO
+// settlement, publication, and local lnd archival across paired endpoints.
+type ChannelCooperativeCloser interface {
+	NegotiateCooperativeClose(context.Context, ID, Terms, VTXOBinding,
+		Backing, CooperativeCloseRequest) error
+
+	PublishCooperativeClose(context.Context, ID, Terms, VTXOBinding,
+		CooperativeClose) error
+
+	FinalizeCooperativeClose(context.Context, ID, Terms, Backing,
+		VTXOBinding, CooperativeCloseRequest, CooperativeClose) error
+}
+
 // NativeExecutor routes durable Ark actions into native lnd and the unroller.
 type NativeExecutor struct {
 	localParty   Party
@@ -76,12 +89,14 @@ type NativeExecutor struct {
 	negotiator   FundingNegotiator
 	oor          OORTransferController
 	materializer ChannelMaterializer
+	closer       ChannelCooperativeCloser
 }
 
 // NewNativeExecutor constructs the thin native subsystem adapter.
 func NewNativeExecutor(localParty Party, funding VirtualFundingActivator,
 	negotiator FundingNegotiator, oor OORTransferController,
-	materializer ChannelMaterializer) (*NativeExecutor, error) {
+	materializer ChannelMaterializer,
+	closer ChannelCooperativeCloser) (*NativeExecutor, error) {
 
 	if localParty != PartyClient && localParty != PartyHub {
 		return nil, fmt.Errorf("local channel party is required")
@@ -98,6 +113,9 @@ func NewNativeExecutor(localParty Party, funding VirtualFundingActivator,
 	if materializer == nil {
 		return nil, fmt.Errorf("channel materializer is required")
 	}
+	if closer == nil {
+		return nil, fmt.Errorf("channel cooperative closer is required")
+	}
 
 	return &NativeExecutor{
 		localParty:   localParty,
@@ -105,6 +123,7 @@ func NewNativeExecutor(localParty Party, funding VirtualFundingActivator,
 		negotiator:   negotiator,
 		oor:          oor,
 		materializer: materializer,
+		closer:       closer,
 	}, nil
 }
 
@@ -152,6 +171,23 @@ func (e *NativeExecutor) Execute(ctx context.Context, id ID,
 			ctx, id, action.Source, action.Backing,
 		)
 
+	case *NegotiateCooperativeClose:
+		return e.closer.NegotiateCooperativeClose(
+			ctx, id, action.Terms, action.Source, action.Backing,
+			action.Request,
+		)
+
+	case *PublishCooperativeClose:
+		return e.closer.PublishCooperativeClose(
+			ctx, id, action.Terms, action.Source, action.Close,
+		)
+
+	case *FinalizeCooperativeClose:
+		return e.closer.FinalizeCooperativeClose(
+			ctx, id, action.Terms, action.Backing, action.Source,
+			action.Request, action.Close,
+		)
+
 	default:
 		return fmt.Errorf("unknown Ark channel action %T", action)
 	}
@@ -162,7 +198,7 @@ func (e *NativeExecutor) Execute(ctx context.Context, id ID,
 func (e *NativeExecutor) BindChannelEventSink(sink ChannelEventSink) error {
 	var bindErrors []error
 	for _, component := range []any{
-		e.negotiator, e.oor, e.materializer,
+		e.negotiator, e.oor, e.materializer, e.closer,
 	} {
 		binder, ok := component.(ChannelEventSinkBinder)
 		if !ok {

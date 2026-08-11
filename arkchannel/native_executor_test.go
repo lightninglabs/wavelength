@@ -16,6 +16,7 @@ type nativeExecutorHarness struct {
 	abortedID    ID
 	cancelledID  ID
 	publishedID  ID
+	closeID      ID
 	boundSinks   int
 	validations  int
 }
@@ -88,6 +89,35 @@ func (h *nativeExecutorHarness) MaterializeChannel(_ context.Context, id ID,
 	return nil
 }
 
+// NegotiateCooperativeClose records direct close negotiation.
+func (h *nativeExecutorHarness) NegotiateCooperativeClose(_ context.Context,
+	id ID, _ Terms, _ VTXOBinding, _ Backing,
+	_ CooperativeCloseRequest) error {
+
+	h.closeID = id
+
+	return nil
+}
+
+// PublishCooperativeClose records direct close publication.
+func (h *nativeExecutorHarness) PublishCooperativeClose(_ context.Context,
+	id ID, _ Terms, _ VTXOBinding, _ CooperativeClose) error {
+
+	h.closeID = id
+
+	return nil
+}
+
+// FinalizeCooperativeClose records lnd archival.
+func (h *nativeExecutorHarness) FinalizeCooperativeClose(_ context.Context,
+	id ID, _ Terms, _ Backing, _ VTXOBinding, _ CooperativeCloseRequest,
+	_ CooperativeClose) error {
+
+	h.closeID = id
+
+	return nil
+}
+
 // TestNativeExecutorRoutesOnlySubsystemBoundaries verifies the adapter has no
 // channel state of its own.
 func TestNativeExecutorRoutesOnlySubsystemBoundaries(t *testing.T) {
@@ -95,11 +125,11 @@ func TestNativeExecutorRoutesOnlySubsystemBoundaries(t *testing.T) {
 
 	harness := &nativeExecutorHarness{}
 	executor, err := NewNativeExecutor(
-		PartyClient, harness, harness, harness, harness,
+		PartyClient, harness, harness, harness, harness, harness,
 	)
 	require.NoError(t, err)
 	require.NoError(t, executor.BindChannelEventSink(harnessSink{}))
-	require.Equal(t, 3, harness.boundSinks)
+	require.Equal(t, 4, harness.boundSinks)
 	terms := testTerms(t, KindPromotion)
 	source := testBinding(terms)
 	backing := testBacking(t, terms, source)
@@ -181,7 +211,7 @@ func TestNativeExecutorFencesOORActionsToFunder(t *testing.T) {
 
 	harness := &nativeExecutorHarness{}
 	executor, err := NewNativeExecutor(
-		PartyHub, harness, harness, harness, harness,
+		PartyHub, harness, harness, harness, harness, harness,
 	)
 	require.NoError(t, err)
 	terms := testTerms(t, KindPromotion)
@@ -226,10 +256,11 @@ func (harnessSink) Apply(context.Context, ID, Event) (Record, error) {
 }
 
 var (
-	_ VirtualFundingActivator = (*nativeExecutorHarness)(nil)
-	_ FundingNegotiator       = (*nativeExecutorHarness)(nil)
-	_ OORTransferController   = (*nativeExecutorHarness)(nil)
-	_ ChannelMaterializer     = (*nativeExecutorHarness)(nil)
-	_ ChannelEventSinkBinder  = (*nativeExecutorHarness)(nil)
-	_ ChannelEventSink        = harnessSink{}
+	_ VirtualFundingActivator  = (*nativeExecutorHarness)(nil)
+	_ FundingNegotiator        = (*nativeExecutorHarness)(nil)
+	_ OORTransferController    = (*nativeExecutorHarness)(nil)
+	_ ChannelMaterializer      = (*nativeExecutorHarness)(nil)
+	_ ChannelCooperativeCloser = (*nativeExecutorHarness)(nil)
+	_ ChannelEventSinkBinder   = (*nativeExecutorHarness)(nil)
+	_ ChannelEventSink         = harnessSink{}
 )
