@@ -374,9 +374,10 @@ func exitPlanEntryFromProto(e *wavewalletrpc.ExitPlanEntry) ExitPlanEntry {
 		ExitStatus: exitJobStatusFromProto(
 			e.GetExitStatus(),
 		),
-		SweepTxid: e.GetSweepTxid(),
-		LastError: e.GetLastError(),
-		Err:       e.GetError(),
+		SweepTxid:       e.GetSweepTxid(),
+		LastError:       e.GetLastError(),
+		RoundCommitment: e.GetRoundCommitment(),
+		Err:             e.GetError(),
 	}
 }
 
@@ -398,6 +399,9 @@ func exitInfeasibilityReasonFromProto(
 
 	case wavewalletrpc.ExitInfeasibilityReason_EXIT_INFEASIBILITY_REASON_WALLET_TOO_FEW_INPUTS: //nolint:ll
 		return ExitInfeasibilityReasonWalletTooFewInputs
+
+	case wavewalletrpc.ExitInfeasibilityReason_EXIT_INFEASIBILITY_REASON_ROUND_COMMITTED: //nolint:ll
+		return ExitInfeasibilityReasonRoundCommitted
 
 	default:
 		return ExitInfeasibilityReasonUnspecified

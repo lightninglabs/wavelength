@@ -433,6 +433,14 @@ const (
 	// fewer usable confirmed UTXOs than the VTXO has independent ancestry
 	// paths, so it lacks distinct CPFP fee inputs.
 	ExitInfeasibilityReason_EXIT_INFEASIBILITY_REASON_WALLET_TOO_FEW_INPUTS ExitInfeasibilityReason = 4
+	// EXIT_INFEASIBILITY_REASON_ROUND_COMMITTED — the VTXO is committed to
+	// a cooperative round, so a leave or refresh already owns it and will
+	// normally resolve it without an exit. This is advisory rather than a
+	// block: the manual unroll path still performs the exit, which is the
+	// only recovery left if the operator is unreachable and the round's
+	// commitment never confirms. The funding figures are therefore still
+	// computed, and round_commitment names what holds the coin.
+	ExitInfeasibilityReason_EXIT_INFEASIBILITY_REASON_ROUND_COMMITTED ExitInfeasibilityReason = 5
 )
 
 // Enum value maps for ExitInfeasibilityReason.
@@ -443,6 +451,7 @@ var (
 		2: "EXIT_INFEASIBILITY_REASON_UNECONOMICAL",
 		3: "EXIT_INFEASIBILITY_REASON_WALLET_UNDERFUNDED",
 		4: "EXIT_INFEASIBILITY_REASON_WALLET_TOO_FEW_INPUTS",
+		5: "EXIT_INFEASIBILITY_REASON_ROUND_COMMITTED",
 	}
 	ExitInfeasibilityReason_value = map[string]int32{
 		"EXIT_INFEASIBILITY_REASON_UNSPECIFIED":           0,
@@ -450,6 +459,7 @@ var (
 		"EXIT_INFEASIBILITY_REASON_UNECONOMICAL":          2,
 		"EXIT_INFEASIBILITY_REASON_WALLET_UNDERFUNDED":    3,
 		"EXIT_INFEASIBILITY_REASON_WALLET_TOO_FEW_INPUTS": 4,
+		"EXIT_INFEASIBILITY_REASON_ROUND_COMMITTED":       5,
 	}
 )
 
@@ -3540,8 +3550,16 @@ type ExitPlanEntry struct {
 	// inputs, also reflected in funding_shortfall_sat). It is
 	// EXIT_INFEASIBILITY_REASON_UNSPECIFIED when can_start is true.
 	InfeasibilityReason ExitInfeasibilityReason `protobuf:"varint,15,opt,name=infeasibility_reason,json=infeasibilityReason,proto3,enum=wavewalletrpc.ExitInfeasibilityReason" json:"infeasibility_reason,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// round_commitment describes the cooperative round holding this VTXO,
+	// naming the outpoint, its lifecycle state, and the round id when one
+	// has been stamped. It is set alongside
+	// EXIT_INFEASIBILITY_REASON_ROUND_COMMITTED and is advisory: the exit
+	// is still priced and the manual unroll path still performs it, so the
+	// funding figures above remain the ones a recovery needs. Empty when
+	// the VTXO is not committed to a round.
+	RoundCommitment string `protobuf:"bytes,16,opt,name=round_commitment,json=roundCommitment,proto3" json:"round_commitment,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *ExitPlanEntry) Reset() {
@@ -3677,6 +3695,13 @@ func (x *ExitPlanEntry) GetInfeasibilityReason() ExitInfeasibilityReason {
 		return x.InfeasibilityReason
 	}
 	return ExitInfeasibilityReason_EXIT_INFEASIBILITY_REASON_UNSPECIFIED
+}
+
+func (x *ExitPlanEntry) GetRoundCommitment() string {
+	if x != nil {
+		return x.RoundCommitment
+	}
+	return ""
 }
 
 // GetExitPlanResponse returns one ExitPlanEntry per requested outpoint, plus
@@ -5889,7 +5914,7 @@ const file_wallet_proto_rawDesc = "" +
 	"\x12GetExitPlanRequest\x12\x1c\n" +
 	"\toutpoints\x18\x01 \x03(\tR\toutpoints\x12\x1f\n" +
 	"\vconf_target\x18\x02 \x01(\rR\n" +
-	"confTarget\"\xdc\x05\n" +
+	"confTarget\"\x87\x06\n" +
 	"\rExitPlanEntry\x12\x1a\n" +
 	"\boutpoint\x18\x01 \x01(\tR\boutpoint\x12'\n" +
 	"\x0ffunding_address\x18\x02 \x01(\tR\x0efundingAddress\x125\n" +
@@ -5909,7 +5934,8 @@ const file_wallet_proto_rawDesc = "" +
 	"\n" +
 	"last_error\x18\r \x01(\tR\tlastError\x12\x14\n" +
 	"\x05error\x18\x0e \x01(\tR\x05error\x12Y\n" +
-	"\x14infeasibility_reason\x18\x0f \x01(\x0e2&.wavewalletrpc.ExitInfeasibilityReasonR\x13infeasibilityReason\"\x9c\x02\n" +
+	"\x14infeasibility_reason\x18\x0f \x01(\x0e2&.wavewalletrpc.ExitInfeasibilityReasonR\x13infeasibilityReason\x12)\n" +
+	"\x10round_commitment\x18\x10 \x01(\tR\x0froundCommitment\"\x9c\x02\n" +
 	"\x13GetExitPlanResponse\x122\n" +
 	"\x05plans\x18\x01 \x03(\v2\x1c.wavewalletrpc.ExitPlanEntryR\x05plans\x122\n" +
 	"\x16fee_rate_sat_per_vbyte\x18\x02 \x01(\x03R\x12feeRateSatPerVbyte\x12\x1b\n" +
@@ -6084,13 +6110,14 @@ const file_wallet_proto_rawDesc = "" +
 	"\bExitMode\x12\x19\n" +
 	"\x15EXIT_MODE_UNSPECIFIED\x10\x00\x12\x19\n" +
 	"\x15EXIT_MODE_COOPERATIVE\x10\x01\x12\x18\n" +
-	"\x14EXIT_MODE_UNILATERAL\x10\x02*\x87\x02\n" +
+	"\x14EXIT_MODE_UNILATERAL\x10\x02*\xb6\x02\n" +
 	"\x17ExitInfeasibilityReason\x12)\n" +
 	"%EXIT_INFEASIBILITY_REASON_UNSPECIFIED\x10\x00\x12.\n" +
 	"*EXIT_INFEASIBILITY_REASON_SWEEP_BELOW_DUST\x10\x01\x12*\n" +
 	"&EXIT_INFEASIBILITY_REASON_UNECONOMICAL\x10\x02\x120\n" +
 	",EXIT_INFEASIBILITY_REASON_WALLET_UNDERFUNDED\x10\x03\x123\n" +
-	"/EXIT_INFEASIBILITY_REASON_WALLET_TOO_FEW_INPUTS\x10\x04*\xea\x01\n" +
+	"/EXIT_INFEASIBILITY_REASON_WALLET_TOO_FEW_INPUTS\x10\x04\x12-\n" +
+	")EXIT_INFEASIBILITY_REASON_ROUND_COMMITTED\x10\x05*\xea\x01\n" +
 	"\rExitJobStatus\x12\x1f\n" +
 	"\x1bEXIT_JOB_STATUS_UNSPECIFIED\x10\x00\x12\x1b\n" +
 	"\x17EXIT_JOB_STATUS_PENDING\x10\x01\x12!\n" +

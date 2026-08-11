@@ -620,6 +620,12 @@ type ExitPlanEntry struct {
 	SweepTxid    string
 	LastError    string
 
+	// RoundCommitment names the cooperative round holding this VTXO, or
+	// is empty when it is not committed to one. It is advisory: the entry
+	// is still priced and the manual exit still performs it, so the
+	// funding figures remain the ones a recovery needs.
+	RoundCommitment string
+
 	// Err is a per-outpoint failure (empty on success).
 	Err string
 }
@@ -637,6 +643,7 @@ const (
 	ExitInfeasibilityReasonUneconomical       ExitInfeasibilityReason = "uneconomical"          //nolint:ll
 	ExitInfeasibilityReasonWalletUnderfunded  ExitInfeasibilityReason = "wallet_underfunded"    //nolint:ll
 	ExitInfeasibilityReasonWalletTooFewInputs ExitInfeasibilityReason = "wallet_too_few_inputs" //nolint:ll
+	ExitInfeasibilityReasonRoundCommitted     ExitInfeasibilityReason = "round_committed"       //nolint:ll
 )
 
 // GetExitPlanResult describes the combined backing-wallet funding plan for

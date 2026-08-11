@@ -97,6 +97,27 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   (`newSweepWallet`, one of `lndUnrollWallet` / `lwUnrollWallet` /
   `btcwUnrollWallet`), which is structurally compatible with both
   `unroll.SweepWallet` and the wallet actor's `SweepSigner`.
+- `LeaveVTXOs` filters its targets through `admitLeaveTargets` before
+  dispatch, which runs `vtxo.CheckForfeitAdmission` over each descriptor.
+  The two selection modes fail in opposite directions on purpose: an
+  explicitly named outpoint is refused with `FailedPrecondition` naming
+  the round that holds it, since silently dropping it would report a
+  queued leave that never happens, while a `selection=all` sweep drops it
+  (`ListLiveVTXOs` returns every non-terminal VTXO, so one in-flight coin
+  would otherwise sink the batch). Every drop is logged with its outpoint
+  and admission error and counted into `skipped_count`, so `queued_count=0`
+  over a fully committed wallet stays distinguishable from an empty one.
+  The filter is advisory; the VTXO FSM refuses a late claim in both
+  `PendingForfeit` and `Forfeiting`.
+- `GetExitPlan` reports a round commitment as an **advisory**, never as a
+  per-entry error: the entry is still priced, and `CanStart` is lowered
+  with `unroll.ExitRoundCommitted` plus a `RoundCommitment` naming the
+  coin. This must stay an advisory because `Unroll` short-circuits only on
+  `VTXOStatusUnilateralExit` and the FSM escalates a manual trigger from
+  both committed states — so the exit being warned about is one the exit
+  command performs, and it is the only recovery when the operator is
+  unreachable and the commitment never confirms. Failing the entry would
+  contradict `Unroll` and withhold the funding figures that recovery needs.
 - `RefreshVTXOs` dry-run short-circuits before the wallet-ready gate
   (LeaveVTXOs parity) and attaches a best-effort advisory fee estimate
   (`rpc_refresh_estimate.go`): explicit outpoints are deduped and

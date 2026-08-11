@@ -201,9 +201,19 @@ func (s *Service) forceUnroll(ctx context.Context,
 	*wavewalletrpc.ExitResponse, error) {
 
 	if req.GetOnchainAddress() != "" {
+
+		// Name the safe way out of the conflict. Stating the
+		// constraint alone invites clearing onchain_address, which
+		// silently converts a cooperative leave into a unilateral
+		// exit rather than rejecting an ambiguous request.
 		return nil, status.Error(
-			codes.InvalidArgument,
-			"onchain_address cannot be set with force_unroll_ack",
+			codes.InvalidArgument, "onchain_address cannot be "+
+				"set with force_unroll_ack: a unilateral "+
+				"exit spends the VTXO back to this "+
+				"wallet's own backing address, so there is "+
+				"no destination to choose. Clear "+
+				"force_unroll_ack to leave cooperatively "+
+				"to the given address instead",
 		)
 	}
 	if ack != forceUnrollAck {
@@ -322,6 +332,7 @@ func (s *Service) getExitPlan(ctx context.Context,
 			InfeasibilityReason: infeasibilityReasonFromUnroll(
 				entry.InfeasibilityReason,
 			),
+			RoundCommitment: errorString(entry.RoundCommitment),
 		})
 	}
 
@@ -569,6 +580,9 @@ func infeasibilityReasonFromUnroll(
 
 	case unroll.ExitWalletTooFewInputs:
 		return wavewalletrpc.ExitInfeasibilityReason_EXIT_INFEASIBILITY_REASON_WALLET_TOO_FEW_INPUTS //nolint:ll
+
+	case unroll.ExitRoundCommitted:
+		return wavewalletrpc.ExitInfeasibilityReason_EXIT_INFEASIBILITY_REASON_ROUND_COMMITTED //nolint:ll
 
 	default:
 		return wavewalletrpc.ExitInfeasibilityReason_EXIT_INFEASIBILITY_REASON_UNSPECIFIED //nolint:ll
