@@ -303,79 +303,9 @@ func (h *IncomingVTXOHandler) Receive(ctx context.Context,
 		return fn.Ok[IncomingVTXOResp](nil)
 	}
 
-	// Build the tapscript for the descriptor.
-	operatorKey := rec.OperatorPubKey
-	exitDelay := uint32(rec.ExitDelay)
-
-	tapscript, err := arkscript.VTXOTapScript(
-		rec.ClientKey.PubKey, operatorKey, exitDelay,
-	)
-	if err != nil {
-		h.log.WarnS(ctx, "Failed to derive tapscript "+
-			"for incoming VTXO", err,
-			slog.String("outpoint", outpoint.String()))
-
+	desc, ok := h.buildIncomingDescriptor(ctx, evt, outpoint, pkScript, rec)
+	if !ok {
 		return fn.Ok[IncomingVTXOResp](nil)
-	}
-
-	// Use the commitment tx ID from the event, which references
-	// the round's commitment transaction. This is distinct from
-	// the leaf txid in the outpoint.
-	var commitTxID chainhash.Hash
-	if len(evt.CommitmentTxid) == chainhash.HashSize {
-		copy(commitTxID[:], evt.CommitmentTxid)
-	}
-
-	policyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
-		rec.ClientKey.PubKey, operatorKey, exitDelay,
-	)
-	if err != nil {
-		h.log.WarnS(ctx, "Failed to encode policy for incoming VTXO",
-			err,
-			slog.String("outpoint", outpoint.String()),
-		)
-
-		return fn.Ok[IncomingVTXOResp](nil)
-	}
-
-	assetRoot, assetRef, assetAmount, err :=
-		incomingTaprootAssetMetadata(evt)
-	if err != nil {
-		h.log.WarnS(ctx, "Invalid incoming Taproot Asset metadata",
-			err,
-			slog.String("outpoint", outpoint.String()),
-		)
-
-		return fn.Ok[IncomingVTXOResp](nil)
-	}
-
-	desc := &Descriptor{
-		Outpoint:           outpoint,
-		Amount:             btcutil.Amount(evt.ValueSat),
-		PolicyTemplate:     policyTemplate,
-		PkScript:           pkScript,
-		TaprootAssetRoot:   assetRoot,
-		TaprootAssetRef:    assetRef,
-		TaprootAssetAmount: assetAmount,
-		ClientKey:          rec.ClientKey,
-		OperatorKey:        operatorKey,
-		TapScript:          tapscript,
-		RoundID:            evt.RoundId,
-		CommitmentTxID:     commitTxID,
-		BatchExpiry:        evt.BatchExpiryHeight,
-		RelativeExpiry:     evt.RelativeExpiry,
-		Status:             VTXOStatusLive,
-	}
-	if assetRoot != nil {
-		err := validateIncomingAssetScript(desc, pkScript)
-		if err != nil {
-			h.log.WarnS(ctx, "Incoming asset metadata does not bind "+
-				"the VTXO script", err,
-				slog.String("outpoint", outpoint.String()),
-			)
-
-			return fn.Ok[IncomingVTXOResp](nil)
-		}
 	}
 
 	// Resolve ancestry before persisting so the descriptor lands
@@ -436,6 +366,93 @@ func (h *IncomingVTXOHandler) Receive(ctx context.Context,
 	)
 
 	return fn.Ok[IncomingVTXOResp](nil)
+}
+
+// buildIncomingDescriptor derives the scripts and asset metadata for an
+// incoming VTXO event and assembles the descriptor. A false return means
+// the event is malformed or does not bind its own script material; the
+// caller drops it without materializing.
+func (h *IncomingVTXOHandler) buildIncomingDescriptor(ctx context.Context,
+	evt *arkrpc.IncomingVTXOEvent, outpoint wire.OutPoint, pkScript []byte,
+	rec *OwnedReceiveScript) (*Descriptor, bool) {
+
+	operatorKey := rec.OperatorPubKey
+	exitDelay := uint32(rec.ExitDelay)
+
+	tapscript, err := arkscript.VTXOTapScript(
+		rec.ClientKey.PubKey, operatorKey, exitDelay,
+	)
+	if err != nil {
+		h.log.WarnS(ctx, "Failed to derive tapscript "+
+			"for incoming VTXO", err,
+			slog.String("outpoint", outpoint.String()))
+
+		return nil, false
+	}
+
+	// Use the commitment tx ID from the event, which references
+	// the round's commitment transaction. This is distinct from
+	// the leaf txid in the outpoint.
+	var commitTxID chainhash.Hash
+	if len(evt.CommitmentTxid) == chainhash.HashSize {
+		copy(commitTxID[:], evt.CommitmentTxid)
+	}
+
+	policyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
+		rec.ClientKey.PubKey, operatorKey, exitDelay,
+	)
+	if err != nil {
+		h.log.WarnS(ctx, "Failed to encode policy for incoming VTXO",
+			err,
+			slog.String("outpoint", outpoint.String()),
+		)
+
+		return nil, false
+	}
+
+	assetRoot, assetRef, assetAmount, err :=
+		incomingTaprootAssetMetadata(evt)
+	if err != nil {
+		h.log.WarnS(ctx, "Invalid incoming Taproot Asset metadata",
+			err,
+			slog.String("outpoint", outpoint.String()),
+		)
+
+		return nil, false
+	}
+
+	desc := &Descriptor{
+		Outpoint:           outpoint,
+		Amount:             btcutil.Amount(evt.ValueSat),
+		PolicyTemplate:     policyTemplate,
+		PkScript:           pkScript,
+		TaprootAssetRoot:   assetRoot,
+		TaprootAssetRef:    assetRef,
+		TaprootAssetAmount: assetAmount,
+		ClientKey:          rec.ClientKey,
+		OperatorKey:        operatorKey,
+		TapScript:          tapscript,
+		RoundID:            evt.RoundId,
+		CommitmentTxID:     commitTxID,
+		BatchExpiry:        evt.BatchExpiryHeight,
+		RelativeExpiry:     evt.RelativeExpiry,
+		Status:             VTXOStatusLive,
+	}
+	if assetRoot != nil {
+		if err := validateIncomingAssetScript(
+			desc, pkScript,
+		); err != nil {
+
+			h.log.WarnS(ctx, "Incoming asset metadata does not bind "+
+				"the VTXO script", err,
+				slog.String("outpoint", outpoint.String()),
+			)
+
+			return nil, false
+		}
+	}
+
+	return desc, true
 }
 
 func (h *IncomingVTXOHandler) hydrateIncomingAncestry(ctx context.Context,
