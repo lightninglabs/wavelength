@@ -212,13 +212,14 @@ func (r *RPCServer) ClientTLSCerts() ([]tls.Certificate, error) {
 		return nil, fmt.Errorf("daemon server unavailable")
 	}
 
-	if r.server.clientKeyDesc.PubKey == nil {
+	identityDesc := r.server.loadClientKeyDesc()
+	if identityDesc.PubKey == nil {
 		return nil, fmt.Errorf("identity key not yet derived; wallet " +
 			"not ready")
 	}
 
 	clientCert, err := serverconn.GenerateClientTLSCert(
-		r.server.clientKeyDesc.PubKey,
+		identityDesc.PubKey,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("generate client TLS cert: %w", err)
@@ -637,13 +638,26 @@ func (r *RPCServer) GetInfo(ctx context.Context, _ *waverpc.GetInfoRequest) (
 	// intentionally differs from the
 	// public node key above and must stay aligned with the indexer proof
 	// signer used for script-scoped VTXO queries.
-	identityPubkey, err := r.deriveIdentityPubkey(ctx)
-	if err != nil {
-		r.server.log.WarnS(ctx, "Unable to derive daemon identity key",
-			err,
-		)
+	identityDesc := r.server.loadClientKeyDesc()
+	if identityKey := identityDesc.PubKey; identityKey != nil {
+		// The daemon derives and stores this stable key before mailbox
+		// bootstrap. Avoid deriving it again on every status read:
+		// BtcWalletKeyRing.DeriveKey opens a walletdb write
+		// transaction, which can block an otherwise read-only GetInfo
+		// call behind an unrelated wallet writer.
+		resp.IdentityPubkey = fmt.Sprintf("%x",
+			identityKey.SerializeCompressed())
 	} else {
-		resp.IdentityPubkey = identityPubkey
+		identityPubkey, err := r.deriveIdentityPubkey(ctx)
+		if err != nil {
+			r.server.log.WarnS(
+				ctx,
+				"Unable to derive daemon identity key",
+				err,
+			)
+		} else {
+			resp.IdentityPubkey = identityPubkey
+		}
 	}
 
 	// Populate lwwallet fields if the lightweight wallet is active.
@@ -1800,8 +1814,9 @@ func (r *RPCServer) RefreshCustomVTXOs(ctx context.Context,
 		return nil, status.Errorf(codes.Unavailable, "fetch operator "+
 			"terms: %v", err)
 	}
+	identityDesc := r.server.loadClientKeyDesc()
 	if err := r.enrichCustomRefreshInputs(
-		ctx, inputs, r.server.clientKeyDesc, terms.PubKey,
+		ctx, inputs, identityDesc, terms.PubKey,
 	); err != nil {
 		return nil, err
 	}
@@ -3223,10 +3238,10 @@ func (r *RPCServer) SendOOR(ctx context.Context, req *waverpc.SendOORRequest) (
 		inputSelectDuration = time.Since(phaseStart)
 
 		phaseStart = time.Now()
+		identityDesc := r.server.loadClientKeyDesc()
 		selectedInputs, err = BuildCustomTransferInputs(
-			ctx, r.server.vtxoStore, req.CustomInputs,
-			r.server.clientKeyDesc, terms.PubKey,
-			terms.VTXOExitDelay,
+			ctx, r.server.vtxoStore, req.CustomInputs, identityDesc,
+			terms.PubKey, terms.VTXOExitDelay,
 		)
 		buildInputsDuration = time.Since(phaseStart)
 		if err != nil {
@@ -3541,9 +3556,10 @@ func (r *RPCServer) PrepareOOR(ctx context.Context,
 		return nil, err
 	}
 
+	identityDesc := r.server.loadClientKeyDesc()
 	selectedInputs, err := BuildCustomTransferInputs(
-		ctx, r.server.vtxoStore, req.GetCustomInputs(),
-		r.server.clientKeyDesc, terms.PubKey, terms.VTXOExitDelay,
+		ctx, r.server.vtxoStore, req.GetCustomInputs(), identityDesc,
+		terms.PubKey, terms.VTXOExitDelay,
 	)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "build custom "+
@@ -3675,10 +3691,11 @@ func (r *RPCServer) SignOORCustomInput(ctx context.Context,
 			"operator terms: %v", err)
 	}
 
+	identityDesc := r.server.loadClientKeyDesc()
 	inputs, err := BuildCustomTransferInputs(
 		ctx, r.server.vtxoStore,
-		[]*waverpc.CustomOORInput{req.GetCustomInput()},
-		r.server.clientKeyDesc, terms.PubKey, terms.VTXOExitDelay,
+		[]*waverpc.CustomOORInput{req.GetCustomInput()}, identityDesc,
+		terms.PubKey, terms.VTXOExitDelay,
 	)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "build custom "+
@@ -3832,7 +3849,8 @@ func (r *RPCServer) SignVTXOForfeit(ctx context.Context,
 		return nil, status.Errorf(codes.InvalidArgument, "resolve "+
 			"signing keys: %v", err)
 	}
-	if !containsSigningKey(signingKeys, r.server.clientKeyDesc.PubKey) {
+	identityDesc := r.server.loadClientKeyDesc()
+	if !containsSigningKey(signingKeys, identityDesc.PubKey) {
 		return nil, status.Errorf(codes.InvalidArgument, "daemon "+
 			"identity key is not required by spend path")
 	}
@@ -3887,7 +3905,7 @@ func (r *RPCServer) SignVTXOForfeit(ctx context.Context,
 
 	sigHashes := txscript.NewTxSigHashes(forfeitTx, prevFetcher)
 	signDesc := spendPath.SpendInfo.BuildSignDescriptor(
-		r.server.clientKeyDesc, vtxoOutput, sigHashes, prevFetcher,
+		identityDesc, vtxoOutput, sigHashes, prevFetcher,
 		arktx.ForfeitVTXOInputIndex,
 	)
 	sig, err := signer.SignOutputRaw(forfeitTx, signDesc)
@@ -3901,7 +3919,7 @@ func (r *RPCServer) SignVTXOForfeit(ctx context.Context,
 	}
 
 	return &waverpc.SignVTXOForfeitResponse{
-		Pubkey:    r.server.clientKeyDesc.PubKey.SerializeCompressed(),
+		Pubkey:    identityDesc.PubKey.SerializeCompressed(),
 		Signature: sig.Serialize(),
 	}, nil
 }

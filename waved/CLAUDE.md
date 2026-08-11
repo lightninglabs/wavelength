@@ -12,8 +12,9 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
 
 - `Server` — main daemon. Owns the wallet, DB, chainsource actor, gRPC
   server, and `ActorSystem`. Caches `localMailboxID` (pubkey-derived),
-  `authSigHex` (Schnorr auth), and a single `clk` (`clock.Clock`) shared by
-  all sub-stores for deterministic time injection.
+  `authSigHex` (Schnorr auth), `clientKeyDesc` (the stable daemon identity
+  descriptor), and a single `clk` (`clock.Clock`) shared by all sub-stores
+  for deterministic time injection.
 - `RPCServer` — implements the gRPC `DaemonService`. Most write RPCs
   (`Board`, `SendVTXO`, `SendOOR`, `SweepBoardingUTXOs`, `SendOnChain`)
   validate input locally then `Ask` the relevant actor; `GetRound` and
@@ -159,6 +160,13 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   so the bound survives restarts.
 - `operatorTermsFromResponse` and daemon `GetInfo` must preserve
   `FreeRefreshWindowBlocks` end to end.
+- `deriveIdentityKeyEarly` publishes `clientKeyDesc` before mailbox bootstrap.
+  `GetInfo` reuses this descriptor instead of deriving the same key for every
+  status request because btcwallet-backed derivation opens a wallet database
+  write transaction. Before the descriptor is available, `GetInfo` keeps its
+  pre-initialization fallback. All descriptor reads and startup writes go
+  through `loadClientKeyDesc` and `storeClientKeyDesc` because `GetInfo` is
+  callable while startup is publishing the value.
 - The VTXO manager reads `FreeRefreshWindowBlocks` from the latest cached
   operator terms on each expiry check. It delays automatic refresh to the
   window boundary only when the local dynamic critical threshold plus retry
