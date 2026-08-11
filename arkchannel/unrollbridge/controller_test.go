@@ -5,15 +5,21 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/arkchannel"
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/unroll"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/input"
+	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/stretchr/testify/require"
 )
@@ -71,8 +77,10 @@ func (*fixedChannelStore) CompareAndSwap(context.Context, arkchannel.ID, uint64,
 
 // materializerRef captures admission and reports the backing as published.
 type materializerRef struct {
-	request *unroll.EnsureUnrollRequest
-	txid    chainhash.Hash
+	request       *unroll.EnsureUnrollRequest
+	txid          chainhash.Hash
+	completeAfter int
+	statusCalls   int
 }
 
 // ID returns the fake actor identity.
@@ -102,11 +110,16 @@ func (r *materializerRef) Ask(_ context.Context,
 		response = &unroll.EnsureUnrollResp{Created: true}
 
 	case *unroll.GetStatusRequest:
+		r.statusCalls++
+		phase := unroll.PhaseSweepBroadcast
+		if r.completeAfter > 0 && r.statusCalls >= r.completeAfter {
+			phase = unroll.PhaseCompleted
+		}
 		response = &unroll.GetStatusResp{
 			Found:          true,
-			Phase:          unroll.PhaseSweepBroadcast,
+			Phase:          phase,
 			SweepTxid:      &r.txid,
-			ExitPolicyKind: ExitPolicyKind,
+			ExitPolicyKind: r.request.ExitPolicyKind,
 		}
 	}
 	promise.Complete(fn.Ok(response))
@@ -189,8 +202,81 @@ func TestControllerAdmitsChannelPolicy(t *testing.T) {
 	require.Equal(t, ref.txid, sink.event.TxID)
 }
 
+// TestCooperativeCloseExitPolicyReturnsDirectSettlement proves the unroller
+// receives the exact immediate spend of the channel-policy VTXO, not the
+// delayed VTXO-to-channel backing transaction.
+func TestCooperativeCloseExitPolicyReturnsDirectSettlement(t *testing.T) {
+	t.Parallel()
+
+	record := cooperativeCloseRecord(t)
+	resolver := Resolver{Channels: &fixedChannelStore{record: record}}
+	policy, err := resolver.ResolveExitSpendPolicy(
+		t.Context(), unroll.ExitSpendPolicyRequest{
+			Kind: CooperativeCloseExitPolicyKind,
+			Ref:  channelRef(record.Snapshot.Terms.ID),
+		},
+	)
+	require.NoError(t, err)
+	require.Zero(t, policy.CSVDelay())
+
+	tx, err := policy.BuildSpendTx(t.Context(), unroll.ExitSpendRequest{
+		TargetOutpoint: record.Snapshot.Source.OutPoint,
+		TargetOutput: &wire.TxOut{
+			Value:    int64(record.Snapshot.Source.Amount),
+			PkScript: record.Snapshot.Source.PkScript,
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, record.Snapshot.CooperativeClose.TxID, tx.TxHash())
+	require.Equal(
+		t, record.Snapshot.Source.OutPoint, tx.TxIn[0].PreviousOutPoint,
+	)
+	require.NotEqual(
+		t, record.Snapshot.Backing.ChannelPoint,
+		tx.TxIn[0].PreviousOutPoint,
+	)
+}
+
+// TestControllerWaitsForCooperativeCloseConfirmation verifies lnd archival
+// cannot start merely because the direct settlement reached the mempool.
+func TestControllerWaitsForCooperativeCloseConfirmation(t *testing.T) {
+	t.Parallel()
+
+	record := cooperativeCloseRecord(t)
+	ref := &materializerRef{
+		txid:          record.Snapshot.CooperativeClose.TxID,
+		completeAfter: 2,
+	}
+	controller, err := NewController(ref)
+	require.NoError(t, err)
+	controller.pollInterval = time.Millisecond
+	require.NoError(
+		t,
+		controller.SettleCooperativeClose(
+			t.Context(), record.Snapshot.Terms.ID,
+			*record.Snapshot.Source,
+			*record.Snapshot.CooperativeClose,
+		),
+	)
+	require.NotNil(t, ref.request)
+	require.Equal(
+		t, CooperativeCloseExitPolicyKind, ref.request.ExitPolicyKind,
+	)
+	require.Equal(t, 2, ref.statusCalls)
+}
+
 // channelRecord creates one durable, OOR-finalized channel fixture.
 func channelRecord(t *testing.T) arkchannel.Record {
+	record, _ := channelRecordWithKeys(t)
+
+	return record
+}
+
+// channelRecordWithKeys creates a durable channel fixture and retains the
+// policy keys needed to construct a valid direct cooperative settlement.
+func channelRecordWithKeys(t *testing.T) (arkchannel.Record,
+	[]*btcec.PrivateKey) {
+
 	t.Helper()
 
 	keys := make([]*btcec.PrivateKey, 8)
@@ -284,7 +370,74 @@ func channelRecord(t *testing.T) arkchannel.Record {
 			Backing:      &backing,
 			OORFinalized: true,
 		},
+	}, keys
+}
+
+// cooperativeCloseRecord adds a fully signed canonical settlement to the
+// ordinary active-channel fixture.
+func cooperativeCloseRecord(t *testing.T) arkchannel.Record {
+	t.Helper()
+
+	record, keys := channelRecordWithKeys(t)
+	p2trScript := func(key *btcec.PrivateKey) []byte {
+		return append(
+			[]byte{txscript.OP_1, txscript.OP_DATA_32},
+			schnorr.SerializePubKey(key.PubKey())...,
+		)
 	}
+	request := arkchannel.CooperativeCloseRequest{
+		Initiator:            arkchannel.PartyClient,
+		ClientDeliveryScript: p2trScript(keys[0]),
+		HubDeliveryScript:    p2trScript(keys[1]),
+		FeeRate:              chainfee.SatPerKWeight(1_000),
+	}
+	template, err := arkchannel.NewCooperativeCloseTemplate(
+		record.Snapshot.Terms, *record.Snapshot.Source, request,
+		btcutil.Amount(40_000), btcutil.Amount(60_000), 7,
+	)
+	require.NoError(t, err)
+	proposal := template.Proposal()
+	tx := wire.NewMsgTx(2)
+	require.NoError(
+		t,
+		tx.Deserialize(
+			bytes.NewReader(proposal.Transaction),
+		),
+	)
+	sign := func(party arkchannel.Party, key *btcec.PrivateKey,
+		operator bool) input.Signature {
+
+		keyDesc := keychain.KeyDescriptor{PubKey: key.PubKey()}
+		var desc *input.SignDescriptor
+		if operator {
+			desc, err = template.OperatorSignDescriptor(
+				record.Snapshot.Terms, keyDesc,
+			)
+		} else {
+			desc, err = template.SignDescriptor(
+				record.Snapshot.Terms, party, keyDesc,
+			)
+		}
+		require.NoError(t, err)
+		sig, err := input.NewMockSigner(
+			[]*btcec.PrivateKey{key}, nil,
+		).SignOutputRaw(tx, desc)
+		require.NoError(t, err)
+
+		return sig
+	}
+	settlement, err := template.Complete(
+		record.Snapshot.Terms, *record.Snapshot.Source, request,
+		sign(arkchannel.PartyClient, keys[2], false),
+		sign(arkchannel.PartyHub, keys[3], false),
+		sign(0, keys[4], true),
+	)
+	require.NoError(t, err)
+	record.Snapshot.Phase = arkchannel.PhaseCoopCloseSigned
+	record.Snapshot.CooperativeCloseRequest = &request
+	record.Snapshot.CooperativeClose = &settlement
+
+	return record
 }
 
 // channelRef returns the durable hexadecimal channel policy reference.
