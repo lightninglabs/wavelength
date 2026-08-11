@@ -49,6 +49,7 @@ type CreatedAssetProofSource struct {
 	CarrierValueSat    int64
 	AssetRef           string
 	AssetAmount        uint64
+	ScriptKey          [33]byte
 	TaprootAssetRoot   chainhash.Hash
 	ProofSourceKind    ProofSourceKind
 	ProofSourceID      [32]byte
@@ -199,6 +200,7 @@ func resolveCreatedAssetProofSource(committed *commitResult,
 		CarrierValueSat:  selected.anchorValueSat,
 		AssetRef:         selected.assetRef.String(),
 		AssetAmount:      selected.amount,
+		ScriptKey:        selected.scriptKey,
 		TaprootAssetRoot: chainhash.Hash(selected.taprootAssetRoot),
 		ProofSourceKind:  sourceKind,
 		ProofSourceID:    [32]byte(input.proofSource.contentID),
