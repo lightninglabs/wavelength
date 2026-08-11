@@ -31,6 +31,14 @@ background ingress polling with event routing.
 - `NewAuthenticatedMailboxClient` — `mailboxpb.MailboxServiceClient` decorator
   that signs and attaches the `x-mailbox-auth-sig` header to every `Send`
   before forwarding to the wrapped edge transport.
+- `SendResponseError` — Exported wrapper over the package-internal
+  `edgeResponseError` (`compatibility.go`) for the one `Edge.Send` call site
+  outside this package: `waved` answering an inbound mailbox RPC on its own
+  edge client. Maps a `(*mailboxpb.SendResponse, error)` pair to the single
+  error the caller should return — transport error wrapped with `op`, nil
+  response reported as a transport error, non-OK `Status` converted to a
+  `*mailboxconn.StatusError` — or nil when the send was accepted. It does not
+  drive the incompatibility transition; callers still pass the error on.
 - `AckState` — Four-cursor watermark state machine (PullCursor, DispatchCommittedTo, AckTarget, AckCommittedTo).
 - `SendUnaryRequest` — Durable typed unary request that becomes a real unary RPC after commit. The response arrives via KIND_RESPONSE and, if no in-memory waiter exists, falls back to durable route dispatch via the EventRouter.
 - `DurableUnaryRequestBuilder` — Interface for proof-gated request-body construction. Implementations build the actual proto request (e.g., with signed proofs) at send time, not at persist time. The interface is provided via `ConnectorConfig.DurableUnaryBuilder`.
@@ -84,6 +92,12 @@ background ingress polling with event routing.
   the logical request (see `mailboxrpc.Retry`). `SendRPC` mints a fresh key
   only when the caller leaves `RPCOptions.IdempotencyKey` empty, which is
   correct for a single-shot call and defeats deduplication for a retry.
+- A mailbox rejection (unknown recipient, empty recipient, version mismatch)
+  travels back as `SendResponse.Status.Ok = false`, **not** as a gRPC error,
+  so no `Edge.Send` caller may discard the response and check only `err` —
+  that reports a dropped envelope as a successful dispatch. Inside the
+  package every path routes through `edgeResponseError`; outside it, use the
+  exported `SendResponseError`.
 - Ingress loop checkpoints pull cursor and ack state; on restart, resumes from checkpoint.
 - `DurableUnaryQuery` values are handled generically in `ServerConnectionActor.Receive` via `buildDurableUnary`: the query is converted to a `SendUnaryRequest` using the configured `DurableUnaryRequestBuilder`. Adding a new durable indexer query type requires only implementing `DurableUnaryQuery` — no new `Receive` case is needed.
 - `DurableUnaryQuery` implementations must produce stable identity bytes in `BuildBody` so that `MsgID` and `IdempotencyKey` are deterministic across restarts (auto-derived via `mailboxconn.StableEventMsgID` / `StableEventIdempotencyKey` when the caller leaves them empty).

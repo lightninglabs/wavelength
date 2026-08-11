@@ -136,6 +136,24 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   exceeds `OORConfig.MaxTransientSubmitRetry` (default 1h), persisting the
   window start (`FirstRejectUnixNanos`) in the outgoing snapshot (version 5)
   so the bound survives restarts.
+- `handleInboundRPC` (the mux bridge registered by `buildRPCDispatchers` for
+  every `NonTxRoutes` dispatcher) addresses its response envelope to
+  `env.Sender`, **not** to `env.Rpc.ReplyTo`. Every producer in this repo sets
+  both to the same `LocalMailboxID` (`serverconn/unary_facade.go`,
+  `serverconn/actor.go`, `serverconn/heartbeat.go`, and the operator's
+  `clientconn` equivalents), so the two agree for a well-formed peer; routing
+  by sender stops a request naming a destination that disagrees with its
+  origin, and stops an absent `ReplyTo` producing an empty recipient that the
+  mailbox store rejects outright. `Rpc.ReplyTo` is therefore advisory from the
+  responder's side: producers still set it, nothing here reads it. An empty
+  `env.Sender` is refused up front (the ingress version check only compares the
+  version fields, so nothing upstream asserts it) and the ingress loop logs the
+  dispatch error.
+- The response `Edge.Send` in `handleInboundRPC` folds the send status in
+  alongside the transport error via `serverconn.SendResponseError`. A mailbox
+  rejection arrives as `Status.Ok = false` rather than as an error, so checking
+  only `err` would report a dropped answer as a successful dispatch and leave
+  the caller blocked on its correlation ID until it times out.
 - `operatorTermsFromResponse` and daemon `GetInfo` must preserve
   `FreeRefreshWindowBlocks` end to end.
 - The VTXO manager reads `FreeRefreshWindowBlocks` from the latest cached
