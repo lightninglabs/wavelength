@@ -1087,3 +1087,161 @@ func TestTreeFromProtoDiamondDoubleVisit(t *testing.T) {
 	require.Contains(t, err.Error(), "must not share children")
 	require.Nil(t, tree)
 }
+
+// =====================================================================
+// FINDING-M2: Single-parent plus forward-edges still admits a forest.
+// Severity: LOW (bounded by the node cap, but linear waste per node)
+//
+// "Every node has at most one parent" describes a forest, not a tree:
+// nothing requires a node to be reachable from index 0. A sender could
+// therefore pad a message up to the node cap with nodes no walk from
+// Root will ever reach, and every one of them was still deserialized
+// and run through ComputeFinalKey, a MuSig2 aggregation with a sort and
+// a copy per node.
+// =====================================================================
+
+// shapeTreeNode builds a minimal TreeNode carrying the given child
+// wiring. Only the shape matters to the tests below, so the payload
+// fields hold the cheapest values the decoder accepts.
+func shapeTreeNode(idx uint32, children map[uint32]uint32) *TreeNode {
+	hash := chainhash.Hash{byte(idx + 1)}
+
+	// Two outputs is the smallest count that lets one node name two
+	// distinct children.
+	outputs := []*TxOut{{
+		Value: 500,
+		PkScript: []byte{
+			0x51,
+		},
+	}, {
+		Value: 500,
+		PkScript: []byte{
+			0x51,
+		},
+	}}
+
+	return &TreeNode{
+		Input: &Outpoint{
+			TxHash:      hash[:],
+			OutputIndex: idx,
+		},
+		Outputs:  outputs,
+		Children: children,
+		Amount:   1000,
+	}
+}
+
+// shapeVTXOTree wraps nodes into a VTXOTree with a valid batch outpoint
+// and output, so any error observed comes from the node wiring.
+func shapeVTXOTree(nodes ...*TreeNode) *VTXOTree {
+	hash := chainhash.Hash{0xba}
+
+	return &VTXOTree{
+		Nodes: nodes,
+		BatchOutpoint: &Outpoint{
+			TxHash:      hash[:],
+			OutputIndex: 0,
+		},
+		BatchOutput: &TxOut{
+			Value: 1000,
+			PkScript: []byte{
+				0x51,
+			},
+		},
+	}
+}
+
+// TestTreeFromProtoRejectsUnreachableNodes covers the two forest shapes
+// that pass every per-edge check: a node nobody claims, and a detached
+// second root carrying its own subtree.
+func TestTreeFromProtoRejectsUnreachableNodes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		nodes []*TreeNode
+	}{{
+		// The root claims nothing, so node 1 is detached.
+		name: "orphan node",
+		nodes: []*TreeNode{
+			shapeTreeNode(0, nil),
+			shapeTreeNode(1, nil),
+		},
+	}, {
+		// Node 1 is a second root with its own subtree.
+		name: "detached second root",
+		nodes: []*TreeNode{
+			shapeTreeNode(0, nil),
+			shapeTreeNode(1, map[uint32]uint32{0: 2}),
+			shapeTreeNode(2, nil),
+		},
+	}}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := TreeFromProto(shapeVTXOTree(tc.nodes...))
+			require.Error(t, err)
+			require.ErrorContains(
+				t, err, "unreachable nodes or multiple roots",
+			)
+			require.Nil(t, got)
+		})
+	}
+}
+
+// TestTreeFromProtoReportsWildIndexAsOutOfRange pins the diagnostic
+// ordering. A repeated out-of-range index used to be reported as a
+// sharing violation, which sends whoever is reading the log looking for
+// a tree-shape bug when the real problem is a wild index.
+func TestTreeFromProtoReportsWildIndexAsOutOfRange(t *testing.T) {
+	t.Parallel()
+
+	pt := shapeVTXOTree(
+		shapeTreeNode(
+			0, map[uint32]uint32{
+				0: 999,
+				1: 999,
+			},
+		),
+		shapeTreeNode(1, nil),
+	)
+
+	got, err := TreeFromProto(pt)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "out of range")
+	require.NotContains(t, err.Error(), "share children")
+	require.Nil(t, got)
+}
+
+// TestTreeFromProtoAcceptsWellFormedTree guards against the reachability
+// check rejecting anything a legitimate producer emits: flattenNode
+// always yields one connected pre-order tree, so a plain branching shape
+// must still decode with its wiring intact.
+func TestTreeFromProtoAcceptsWellFormedTree(t *testing.T) {
+	t.Parallel()
+
+	pt := shapeVTXOTree(
+		shapeTreeNode(
+			0, map[uint32]uint32{
+				0: 1,
+				1: 2,
+			},
+		),
+		shapeTreeNode(
+			1, map[uint32]uint32{
+				0: 3,
+			},
+		),
+		shapeTreeNode(2, nil),
+		shapeTreeNode(3, nil),
+	)
+
+	got, err := TreeFromProto(pt)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.Len(t, got.Root.Children, 2)
+	require.Len(t, got.Root.Children[0].Children, 1)
+	require.Empty(t, got.Root.Children[1].Children)
+}

@@ -394,6 +394,11 @@ func TreeFromProto(pt *VTXOTree,
 	//    node's output count. Without this, downstream code that
 	//    accesses Outputs[outIdx] would panic.
 	//
+	// The bounds check runs before the single-parent check so a wild
+	// index is reported as out of range rather than as a sharing
+	// violation, and so parentOf never records an index that was
+	// never valid in the first place.
+	//
 	// parentOf records the parent that claimed each child, so a
 	// second claim can name both of them.
 	parentOf := make(map[uint32]int, len(pt.Nodes))
@@ -406,6 +411,11 @@ func TreeFromProto(pt *VTXOTree,
 					"back-reference)", i, childIdx)
 			}
 
+			if int(childIdx) >= len(goNodes) {
+				return nil, fmt.Errorf("node[%d] child index "+
+					"%d out of range", i, childIdx)
+			}
+
 			if prev, dup := parentOf[childIdx]; dup {
 				return nil, fmt.Errorf("node[%d] child index "+
 					"%d is already a child of node[%d]; "+
@@ -413,11 +423,6 @@ func TreeFromProto(pt *VTXOTree,
 					childIdx, prev)
 			}
 			parentOf[childIdx] = i
-
-			if int(childIdx) >= len(goNodes) {
-				return nil, fmt.Errorf("node[%d] child index "+
-					"%d out of range", i, childIdx)
-			}
 
 			if int(outIdx) >= len(goNodes[i].Outputs) {
 				return nil, fmt.Errorf("node[%d] child output "+
@@ -428,6 +433,25 @@ func TreeFromProto(pt *VTXOTree,
 
 			goNodes[i].Children[outIdx] = goNodes[childIdx]
 		}
+	}
+
+	// The three checks above give "every node has at most one
+	// parent", which describes a forest, not a tree: nothing so far
+	// requires a node to be reachable from index 0. A sender could
+	// therefore pad the message with nodes no walk from Root will
+	// ever reach, and every one of them would still be deserialized
+	// and, far more expensively, run through ComputeFinalKey below
+	// (a MuSig2 aggregation with a sort and a copy per node).
+	//
+	// Since every node other than the root must be claimed exactly
+	// once, counting the claims pins the decoded shape to a single
+	// connected tree rooted at index 0 and lets the loop below skip
+	// work nobody can reach. flattenNode always emits exactly this
+	// shape, so no well-formed producer is affected.
+	if len(parentOf) != len(pt.Nodes)-1 {
+		return nil, fmt.Errorf("tree has %d nodes but only %d are "+
+			"claimed as children; unreachable nodes or "+
+			"multiple roots", len(pt.Nodes), len(parentOf))
 	}
 
 	// Compute FinalKey for each node now that we have the

@@ -60,6 +60,16 @@ distinction.
   single-parent: two parents at indices 0 and 1 can both name child 5
   and both satisfy `childIdx > i`, which decodes a DAG whose shared
   subtree every recursive walk re-visits once per path reaching it.
+- `TreeFromProto` additionally requires every node other than the root
+  to be claimed exactly once, so the decoded shape is a single connected
+  tree rather than a forest. Without it a sender can pad a message up to
+  the node cap with nodes no walk from `Root` reaches, each of which is
+  still deserialized and run through `tree.ComputeFinalKey`.
+- The same three structural invariants plus a node cap
+  (`DefaultMaxTreePathNodes`) are enforced by `arkrpc.TreePathToTree`,
+  the sibling decoder on the untrusted indexer receive path. Keep the
+  two in step: a shape rejected by one and accepted by the other is a
+  gap, not a difference in trust level.
 - `ValidateFlowVersion` must reject any `FlowVersion` other than the
   versions this build implements (currently only `FlowVersionV1`); never
   make it permissive by default.
