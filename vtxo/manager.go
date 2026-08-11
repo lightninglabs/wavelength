@@ -1096,6 +1096,32 @@ func (m *Manager) handleForceUnroll(ctx context.Context,
 		})
 	}
 
+	// ForfeitingState suppresses the admission once the forfeit signature
+	// has left, because the operator can spend the coin into a connector
+	// immediately and the exit would race a transaction that has already
+	// won. That refusal is also a self-loop on a non-terminal state, so
+	// neither check above catches it and the caller would again be told
+	// an exit was accepted for a job that was never scheduled.
+	//
+	// Prior and new state both being ForfeitingState is exactly that
+	// suppression: every other ForceUnrollEvent handler leaves this state
+	// for UnilateralExitState.
+	_, priorForfeiting := actorResp.PriorState.(*ForfeitingState)
+	_, newForfeiting := actorResp.NewState.(*ForfeitingState)
+
+	if priorForfeiting && newForfeiting {
+		m.logger(ctx).InfoS(ctx, "Force-unroll refused on issued "+
+			"forfeit signature",
+			slog.String("outpoint", req.Outpoint.String()),
+		)
+
+		return fn.Ok[ManagerResp](&ForceUnrollResponse{
+			Accepted: false,
+			Reason: "forfeit signature already issued; recover " +
+				"via the round holding this VTXO",
+		})
+	}
+
 	m.logger(ctx).InfoS(ctx, "Force-unroll accepted by VTXO actor",
 		slog.String("outpoint", req.Outpoint.String()),
 		slog.String("reason", reason),

@@ -140,3 +140,83 @@ func TestHandleForceUnrollAbsentActorTerminalDescriptor(t *testing.T) {
 	require.Equal(t, "already terminal", forceResp.Reason)
 	store.AssertExpectations(t)
 }
+
+// TestHandleForceUnrollForfeitSignatureIssued asserts the manager reports the
+// ForfeitingState suppression as a refusal rather than as an accepted exit.
+//
+// Once the forfeit signature has left, ForfeitingState declines a
+// critical-expiry admission and self-loops. That self-loop is neither a
+// terminal state nor ExpiredState, so it fell through the two no-op checks
+// and the caller was told Accepted:true for a job that was never scheduled —
+// the exact "uniform Accepted:true that masks work that was never scheduled"
+// the Ask-not-Tell design exists to prevent.
+func TestHandleForceUnrollForfeitSignatureIssued(t *testing.T) {
+	t.Parallel()
+
+	vtxo := makeDescriptor(t, 50_000, 14)
+
+	forfeitTx := wire.NewMsgTx(2)
+	mgr, _, ref := newExitTestManager(t, vtxo, &ForfeitingState{
+		VTXO:        vtxo,
+		NewRoundID:  "round-stalled",
+		ForfeitTxID: forfeitTx.TxHash(),
+		ForfeitTx:   forfeitTx,
+	})
+
+	// UnrollTriggerCriticalExpiry is the empty-string zero value, so this
+	// is also what any caller that forgets to set Trigger lands on.
+	resp := mgr.Receive(t.Context(), &actormsg.ForceUnrollRequest{
+		Outpoint: vtxo.Outpoint,
+		Trigger:  actormsg.UnrollTriggerCriticalExpiry,
+	})
+	unpacked, err := resp.Unpack()
+	require.NoError(t, err)
+
+	forceResp, ok := unpacked.(*ForceUnrollResponse)
+	require.True(t, ok)
+	require.False(t, forceResp.Accepted)
+	require.Equal(
+		t, "forfeit signature already issued; recover via the round "+
+			"holding this VTXO", forceResp.Reason,
+	)
+
+	// Nothing was scheduled, which is the whole point: the actor stays
+	// where it was.
+	require.IsType(t, &ForfeitingState{}, ref.state)
+}
+
+// TestHandleForceUnrollManualFromForfeitingAccepted is the control: a manual
+// trigger still escalates from ForfeitingState even with the signature
+// issued, and must still report Accepted. It is the only lever left when the
+// operator is unreachable and the commitment never confirms, so the refusal
+// above must be scoped to the automatic trigger alone.
+func TestHandleForceUnrollManualFromForfeitingAccepted(t *testing.T) {
+	t.Parallel()
+
+	vtxo := makeDescriptor(t, 50_000, 15)
+
+	forfeitTx := wire.NewMsgTx(2)
+	mgr, store, ref := newExitTestManager(t, vtxo, &ForfeitingState{
+		VTXO:        vtxo,
+		NewRoundID:  "round-stalled",
+		ForfeitTxID: forfeitTx.TxHash(),
+		ForfeitTx:   forfeitTx,
+	})
+
+	store.On(
+		"UpdateVTXOStatus", t.Context(), vtxo.Outpoint,
+		VTXOStatusUnilateralExit,
+	).Return(nil).Maybe()
+
+	resp := mgr.Receive(t.Context(), &actormsg.ForceUnrollRequest{
+		Outpoint: vtxo.Outpoint,
+		Trigger:  actormsg.UnrollTriggerManual,
+	})
+	unpacked, err := resp.Unpack()
+	require.NoError(t, err)
+
+	forceResp, ok := unpacked.(*ForceUnrollResponse)
+	require.True(t, ok)
+	require.True(t, forceResp.Accepted)
+	require.IsType(t, &UnilateralExitState{}, ref.state)
+}
