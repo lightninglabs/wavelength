@@ -111,6 +111,15 @@ func testArkChannelTerms(t *testing.T, kind arkchannel.Kind,
 	require.NoError(t, err)
 	hubKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
+	newPolicyKey := func() [33]byte {
+		key, err := btcec.NewPrivateKey()
+		require.NoError(t, err)
+
+		var serialized [33]byte
+		copy(serialized[:], key.PubKey().SerializeCompressed())
+
+		return serialized
+	}
 
 	var clientNodeKey, hubNodeKey [33]byte
 	copy(clientNodeKey[:], clientKey.PubKey().SerializeCompressed())
@@ -130,14 +139,16 @@ func testArkChannelTerms(t *testing.T, kind arkchannel.Kind,
 		Capacity:      btcutil.Amount(100_000),
 		ClientNodeKey: clientNodeKey,
 		HubNodeKey:    hubNodeKey,
-		PolicyTemplate: []byte{
-			seed,
-			3,
-		},
-		PkScript: []byte{
-			0x51,
-			0x20,
-			seed,
+		VTXO: arkchannel.VTXOTerms{
+			ClientArkKey:     newPolicyKey(),
+			HubArkKey:        newPolicyKey(),
+			ArkOperatorKey:   newPolicyKey(),
+			ClientChannelKey: newPolicyKey(),
+			HubChannelKey:    newPolicyKey(),
+			FunderKey:        newPolicyKey(),
+			ChannelDelay:     144,
+			FunderDelay:      576,
+			MinExitDelay:     144,
 		},
 	}
 	if kind == arkchannel.KindReceiveIntent {
@@ -151,6 +162,11 @@ func testArkChannelTerms(t *testing.T, kind arkchannel.Kind,
 
 // testArkChannelBinding creates an exact VTXO binding fixture.
 func testArkChannelBinding(terms arkchannel.Terms) arkchannel.VTXOBinding {
+	policy, pkScript, err := terms.VTXO.Artifacts()
+	if err != nil {
+		panic(err)
+	}
+
 	return arkchannel.VTXOBinding{
 		OutPoint: wire.OutPoint{
 			Hash: chainhash.Hash{
@@ -165,8 +181,8 @@ func testArkChannelBinding(terms arkchannel.Terms) arkchannel.VTXOBinding {
 			terms.ID[0],
 			6,
 		},
-		PolicyTemplate: append([]byte(nil), terms.PolicyTemplate...),
-		PkScript:       append([]byte(nil), terms.PkScript...),
+		PolicyTemplate: policy,
+		PkScript:       pkScript,
 	}
 }
 

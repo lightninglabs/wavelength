@@ -71,8 +71,15 @@ type ArkChannel struct {
 	ClientNodeKey     []byte
 	HubNodeKey        []byte
 	PaymentHash       []byte
-	PolicyTemplate    []byte
-	PkScript          []byte
+	ClientArkKey      []byte
+	HubArkKey         []byte
+	ArkOperatorKey    []byte
+	ClientChannelKey  []byte
+	HubChannelKey     []byte
+	FunderKey         []byte
+	ChannelDelay      int64
+	FunderDelay       int64
+	MinExitDelay      int64
 	Phase             int32
 	SourceTxid        []byte
 	SourceIndex       sql.NullInt64

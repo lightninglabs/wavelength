@@ -9,6 +9,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
+	"github.com/lightninglabs/wavelength/lib/arkscript"
 )
 
 // ID is the stable identifier shared by both sides of an Ark channel.
@@ -147,6 +148,73 @@ func (p Phase) IsTerminal() bool {
 	return p == PhaseClosed || p == PhaseFailed
 }
 
+// VTXOTerms identify every key role and relative delay in the channel VTXO.
+// Persisting semantics instead of derived script bytes gives both peers one
+// canonical policy representation to validate.
+type VTXOTerms struct {
+	ClientArkKey     [33]byte
+	HubArkKey        [33]byte
+	ArkOperatorKey   [33]byte
+	ClientChannelKey [33]byte
+	HubChannelKey    [33]byte
+	FunderKey        [33]byte
+	ChannelDelay     uint32
+	FunderDelay      uint32
+	MinExitDelay     uint32
+}
+
+// Artifacts derives and validates the canonical channel policy and P2TR
+// script from semantic terms.
+func (t VTXOTerms) Artifacts() ([]byte, []byte, error) {
+	clientArkKey, err := parseChannelKey("client Ark", t.ClientArkKey)
+	if err != nil {
+		return nil, nil, err
+	}
+	hubArkKey, err := parseChannelKey("hub Ark", t.HubArkKey)
+	if err != nil {
+		return nil, nil, err
+	}
+	operatorKey, err := parseChannelKey("Ark operator", t.ArkOperatorKey)
+	if err != nil {
+		return nil, nil, err
+	}
+	clientChannelKey, err := parseChannelKey(
+		"client channel", t.ClientChannelKey,
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+	hubChannelKey, err := parseChannelKey(
+		"hub channel", t.HubChannelKey,
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+	funderKey, err := parseChannelKey("funder", t.FunderKey)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	policy, pkScript, err := arkscript.EncodeChannelVTXOArtifacts(
+		arkscript.ChannelVTXOParams{
+			ClientArkKey:     clientArkKey,
+			HubArkKey:        hubArkKey,
+			ArkOperatorKey:   operatorKey,
+			ClientChannelKey: clientChannelKey,
+			HubChannelKey:    hubChannelKey,
+			FunderKey:        funderKey,
+			ChannelDelay:     t.ChannelDelay,
+			FunderDelay:      t.FunderDelay,
+			MinExitDelay:     t.MinExitDelay,
+		},
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("derive channel VTXO: %w", err)
+	}
+
+	return policy, pkScript, nil
+}
+
 // Terms are immutable facts shared by client and hub.
 type Terms struct {
 	ID               ID
@@ -158,15 +226,11 @@ type Terms struct {
 	ClientNodeKey    [33]byte
 	HubNodeKey       [33]byte
 	PaymentHash      [32]byte
-	PolicyTemplate   []byte
-	PkScript         []byte
+	VTXO             VTXOTerms
 }
 
-// Clone returns terms without aliases to mutable byte slices.
+// Clone returns an isolated copy of immutable terms.
 func (t Terms) Clone() Terms {
-	t.PolicyTemplate = slices.Clone(t.PolicyTemplate)
-	t.PkScript = slices.Clone(t.PkScript)
-
 	return t
 }
 
@@ -181,11 +245,8 @@ func (t Terms) Validate() error {
 	if t.Capacity <= 0 {
 		return fmt.Errorf("channel capacity must be positive")
 	}
-	if len(t.PolicyTemplate) == 0 {
-		return fmt.Errorf("channel VTXO policy is required")
-	}
-	if len(t.PkScript) == 0 {
-		return fmt.Errorf("channel VTXO script is required")
+	if _, _, err := t.VTXO.Artifacts(); err != nil {
+		return err
 	}
 	if err := validateNodeKey("client", t.ClientNodeKey); err != nil {
 		return err
@@ -260,10 +321,14 @@ func (b VTXOBinding) Validate(terms Terms) error {
 	if b.CommitmentTxID == (chainhash.Hash{}) {
 		return fmt.Errorf("VTXO commitment transaction is required")
 	}
-	if !bytes.Equal(b.PolicyTemplate, terms.PolicyTemplate) {
+	policy, pkScript, err := terms.VTXO.Artifacts()
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(b.PolicyTemplate, policy) {
 		return fmt.Errorf("VTXO policy does not match channel terms")
 	}
-	if !bytes.Equal(b.PkScript, terms.PkScript) {
+	if !bytes.Equal(b.PkScript, pkScript) {
 		return fmt.Errorf("VTXO script does not match channel terms")
 	}
 
@@ -365,4 +430,14 @@ func validateNodeKey(name string, raw [33]byte) error {
 	}
 
 	return nil
+}
+
+// parseChannelKey validates and parses one compressed policy key.
+func parseChannelKey(name string, raw [33]byte) (*btcec.PublicKey, error) {
+	key, err := btcec.ParsePubKey(raw[:])
+	if err != nil {
+		return nil, fmt.Errorf("invalid %s key: %w", name, err)
+	}
+
+	return key, nil
 }

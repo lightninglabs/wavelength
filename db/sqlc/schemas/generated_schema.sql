@@ -88,8 +88,15 @@ CREATE TABLE ark_channels (
     client_node_key BLOB NOT NULL,
     hub_node_key BLOB NOT NULL,
     payment_hash BLOB NOT NULL,
-    policy_template BLOB NOT NULL,
-    pk_script BLOB NOT NULL,
+    client_ark_key BLOB NOT NULL,
+    hub_ark_key BLOB NOT NULL,
+    ark_operator_key BLOB NOT NULL,
+    client_channel_key BLOB NOT NULL,
+    hub_channel_key BLOB NOT NULL,
+    funder_key BLOB NOT NULL,
+    channel_delay BIGINT NOT NULL,
+    funder_delay BIGINT NOT NULL,
+    min_exit_delay BIGINT NOT NULL,
 
     phase INTEGER NOT NULL CHECK (phase BETWEEN 1 AND 10),
     source_txid BLOB,
@@ -124,7 +131,10 @@ CREATE TABLE ark_channels (
          channel_point_index IS NULL) OR
         (backing_tx IS NOT NULL AND channel_point_txid IS NOT NULL AND
          channel_point_index IS NOT NULL)
-    )
+    ),
+    CHECK (channel_delay >= 0 AND channel_delay <= 4294967295),
+    CHECK (funder_delay >= 0 AND funder_delay <= 4294967295),
+    CHECK (min_exit_delay >= 0 AND min_exit_delay <= 4294967295)
 );
 
 CREATE TABLE ask_results (

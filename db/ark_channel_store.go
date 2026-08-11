@@ -257,8 +257,15 @@ func insertArkChannelParams(snapshot arkchannel.Snapshot,
 		ClientNodeKey:     slices.Clone(terms.ClientNodeKey[:]),
 		HubNodeKey:        slices.Clone(terms.HubNodeKey[:]),
 		PaymentHash:       slices.Clone(terms.PaymentHash[:]),
-		PolicyTemplate:    slices.Clone(terms.PolicyTemplate),
-		PkScript:          slices.Clone(terms.PkScript),
+		ClientArkKey:      slices.Clone(terms.VTXO.ClientArkKey[:]),
+		HubArkKey:         slices.Clone(terms.VTXO.HubArkKey[:]),
+		ArkOperatorKey:    slices.Clone(terms.VTXO.ArkOperatorKey[:]),
+		ClientChannelKey:  slices.Clone(terms.VTXO.ClientChannelKey[:]),
+		HubChannelKey:     slices.Clone(terms.VTXO.HubChannelKey[:]),
+		FunderKey:         slices.Clone(terms.VTXO.FunderKey[:]),
+		ChannelDelay:      int64(terms.VTXO.ChannelDelay),
+		FunderDelay:       int64(terms.VTXO.FunderDelay),
+		MinExitDelay:      int64(terms.VTXO.MinExitDelay),
 		Phase:             fields.phase,
 		SourceTxid:        fields.sourceTxID,
 		SourceIndex:       fields.sourceIndex,
@@ -340,6 +347,56 @@ func arkChannelRecordFromRow(row sqlc.ArkChannel) (arkchannel.Record, error) {
 	); err != nil {
 		return arkchannel.Record{}, err
 	}
+	if err := copyFixed(
+		terms.VTXO.ClientArkKey[:], row.ClientArkKey, "client Ark key",
+	); err != nil {
+		return arkchannel.Record{}, err
+	}
+	if err := copyFixed(
+		terms.VTXO.HubArkKey[:], row.HubArkKey, "hub Ark key",
+	); err != nil {
+		return arkchannel.Record{}, err
+	}
+	if err := copyFixed(
+		terms.VTXO.ArkOperatorKey[:], row.ArkOperatorKey,
+		"Ark operator key",
+	); err != nil {
+		return arkchannel.Record{}, err
+	}
+	if err := copyFixed(
+		terms.VTXO.ClientChannelKey[:], row.ClientChannelKey,
+		"client channel key",
+	); err != nil {
+		return arkchannel.Record{}, err
+	}
+	if err := copyFixed(
+		terms.VTXO.HubChannelKey[:], row.HubChannelKey,
+		"hub channel key",
+	); err != nil {
+		return arkchannel.Record{}, err
+	}
+	if err := copyFixed(
+		terms.VTXO.FunderKey[:], row.FunderKey, "funder key",
+	); err != nil {
+		return arkchannel.Record{}, err
+	}
+	channelDelay, err := decodeDelay(row.ChannelDelay, "channel delay")
+	if err != nil {
+		return arkchannel.Record{}, err
+	}
+	funderDelay, err := decodeDelay(row.FunderDelay, "funder delay")
+	if err != nil {
+		return arkchannel.Record{}, err
+	}
+	minExitDelay, err := decodeDelay(
+		row.MinExitDelay, "minimum exit delay",
+	)
+	if err != nil {
+		return arkchannel.Record{}, err
+	}
+	terms.VTXO.ChannelDelay = channelDelay
+	terms.VTXO.FunderDelay = funderDelay
+	terms.VTXO.MinExitDelay = minExitDelay
 	reservedSCID, err := decodeSCID(row.ReservedScid)
 	if err != nil {
 		return arkchannel.Record{}, err
@@ -348,8 +405,6 @@ func arkChannelRecordFromRow(row sqlc.ArkChannel) (arkchannel.Record, error) {
 	terms.Funder = arkchannel.Party(row.Funder)
 	terms.ReservedSCID = reservedSCID
 	terms.Capacity = btcutil.Amount(row.Capacity)
-	terms.PolicyTemplate = slices.Clone(row.PolicyTemplate)
-	terms.PkScript = slices.Clone(row.PkScript)
 
 	snapshot := arkchannel.Snapshot{
 		Terms:            terms,
@@ -412,6 +467,10 @@ func arkChannelSourceFromRow(row sqlc.ArkChannel,
 	if !row.RoundID.Valid {
 		return nil, fmt.Errorf("source round ID is missing")
 	}
+	policy, pkScript, err := terms.VTXO.Artifacts()
+	if err != nil {
+		return nil, err
+	}
 
 	return &arkchannel.VTXOBinding{
 		OutPoint: wire.OutPoint{
@@ -421,8 +480,8 @@ func arkChannelSourceFromRow(row sqlc.ArkChannel,
 		Amount:         btcutil.Amount(row.SourceAmount.Int64),
 		RoundID:        row.RoundID.String,
 		CommitmentTxID: *commitmentTxID,
-		PolicyTemplate: slices.Clone(terms.PolicyTemplate),
-		PkScript:       slices.Clone(terms.PkScript),
+		PolicyTemplate: policy,
+		PkScript:       pkScript,
 	}, nil
 }
 
@@ -492,6 +551,15 @@ func decodeIndex(index sql.NullInt64, field string) (uint32, error) {
 	}
 
 	return uint32(index.Int64), nil
+}
+
+// decodeDelay rejects corrupt SQL values before narrowing to BIP-68 fields.
+func decodeDelay(delay int64, field string) (uint32, error) {
+	if delay < 0 || delay > math.MaxUint32 {
+		return 0, fmt.Errorf("%s %d is out of range", field, delay)
+	}
+
+	return uint32(delay), nil
 }
 
 var _ arkchannel.Store = (*ArkChannelStoreDB)(nil)

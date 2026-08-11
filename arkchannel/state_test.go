@@ -265,6 +265,31 @@ func TestReceiveIntentRejectsUnsafeTerms(t *testing.T) {
 	require.ErrorContains(t, err, "hub funded")
 }
 
+// TestChannelTermsRejectUnsafeRefundDelay verifies a funder cannot reclaim the
+// VTXO before the channel parties have the configured reaction window.
+func TestChannelTermsRejectUnsafeRefundDelay(t *testing.T) {
+	t.Parallel()
+
+	terms := testTerms(t, KindPromotion)
+	terms.VTXO.FunderDelay = terms.VTXO.ChannelDelay + 431
+
+	_, err := NewState(terms)
+	require.ErrorContains(t, err, "preserve the reaction window")
+}
+
+// TestBindingRejectsDifferentChannelPolicy verifies the round cannot bind an
+// arbitrary output while retaining otherwise valid channel terms.
+func TestBindingRejectsDifferentChannelPolicy(t *testing.T) {
+	t.Parallel()
+
+	terms := testTerms(t, KindPromotion)
+	binding := testBinding(terms)
+	binding.PolicyTemplate[0] ^= 1
+
+	err := binding.Validate(terms)
+	require.ErrorContains(t, err, "policy does not match")
+}
+
 // TestBackingMustBeSignedAndBound rejects a transaction that lnd could not
 // safely activate against the exact VTXO.
 func TestBackingMustBeSignedAndBound(t *testing.T) {
@@ -448,6 +473,15 @@ func testTerms(t *testing.T, kind Kind) Terms {
 	require.NoError(t, err)
 	hubKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
+	newPolicyKey := func() [33]byte {
+		key, err := btcec.NewPrivateKey()
+		require.NoError(t, err)
+
+		var serialized [33]byte
+		copy(serialized[:], key.PubKey().SerializeCompressed())
+
+		return serialized
+	}
 
 	var clientNodeKey, hubNodeKey [33]byte
 	copy(clientNodeKey[:], clientKey.PubKey().SerializeCompressed())
@@ -469,16 +503,16 @@ func testTerms(t *testing.T, kind Kind) Terms {
 		Capacity:      btcutil.Amount(100_000),
 		ClientNodeKey: clientNodeKey,
 		HubNodeKey:    hubNodeKey,
-		PolicyTemplate: []byte{
-			1,
-			3,
-			3,
-			7,
-		},
-		PkScript: []byte{
-			0x51,
-			0x20,
-			byte(kind),
+		VTXO: VTXOTerms{
+			ClientArkKey:     newPolicyKey(),
+			HubArkKey:        newPolicyKey(),
+			ArkOperatorKey:   newPolicyKey(),
+			ClientChannelKey: newPolicyKey(),
+			HubChannelKey:    newPolicyKey(),
+			FunderKey:        newPolicyKey(),
+			ChannelDelay:     144,
+			FunderDelay:      576,
+			MinExitDelay:     144,
 		},
 	}
 	if kind == KindReceiveIntent {
@@ -493,6 +527,10 @@ func testTerms(t *testing.T, kind Kind) Terms {
 // testBinding creates one exact round output for channel terms.
 func testBinding(terms Terms) VTXOBinding {
 	commitmentTxID := chainhash.Hash{11, byte(terms.Kind)}
+	policy, pkScript, err := terms.VTXO.Artifacts()
+	if err != nil {
+		panic(err)
+	}
 
 	return VTXOBinding{
 		OutPoint: wire.OutPoint{
@@ -505,8 +543,8 @@ func testBinding(terms Terms) VTXOBinding {
 		Amount:         terms.Capacity + 1_000,
 		RoundID:        "round-1",
 		CommitmentTxID: commitmentTxID,
-		PolicyTemplate: append([]byte(nil), terms.PolicyTemplate...),
-		PkScript:       append([]byte(nil), terms.PkScript...),
+		PolicyTemplate: policy,
+		PkScript:       pkScript,
 	}
 }
 

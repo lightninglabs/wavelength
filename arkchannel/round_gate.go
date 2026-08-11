@@ -150,18 +150,18 @@ func matchReceiveOutput(records []Record,
 			isReceive := kind == KindReceiveIntent
 			canBindRound := record.Snapshot.Phase <=
 				PhaseAwaitingConfirmation
-			if !isReceive || !canBindRound ||
-				!bytes.Equal(
-					record.Snapshot.Terms.PkScript,
-					output.PkScript,
-				) {
-
+			if !isReceive || !canBindRound {
 				continue
 			}
-			if !bytes.Equal(
-				record.Snapshot.Terms.PolicyTemplate,
-				output.PolicyTemplate,
-			) {
+			policy, pkScript, err := record.Snapshot.Terms.VTXO.
+				Artifacts()
+			if err != nil {
+				return nil, nil, err
+			}
+			if !bytes.Equal(pkScript, output.PkScript) {
+				continue
+			}
+			if !bytes.Equal(policy, output.PolicyTemplate) {
 				return nil, nil, fmt.Errorf("channel VTXO " +
 					"policy mismatch")
 			}

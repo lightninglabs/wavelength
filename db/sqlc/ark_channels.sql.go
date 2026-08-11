@@ -81,7 +81,7 @@ func (q *Queries) CompareAndSwapArkChannel(ctx context.Context, arg CompareAndSw
 }
 
 const GetArkChannel = `-- name: GetArkChannel :one
-SELECT channel_id, kind, funder, pending_channel_id, reserved_scid, capacity, client_node_key, hub_node_key, payment_hash, policy_template, pk_script, phase, source_txid, source_index, source_amount, round_id, commitment_txid, backing_tx, channel_point_txid, channel_point_index, client_finalized, hub_finalized, round_committed, round_confirmed, backing_published, failure, revision, created_at, updated_at FROM ark_channels
+SELECT channel_id, kind, funder, pending_channel_id, reserved_scid, capacity, client_node_key, hub_node_key, payment_hash, client_ark_key, hub_ark_key, ark_operator_key, client_channel_key, hub_channel_key, funder_key, channel_delay, funder_delay, min_exit_delay, phase, source_txid, source_index, source_amount, round_id, commitment_txid, backing_tx, channel_point_txid, channel_point_index, client_finalized, hub_finalized, round_committed, round_confirmed, backing_published, failure, revision, created_at, updated_at FROM ark_channels
 WHERE channel_id = $1
 `
 
@@ -98,8 +98,15 @@ func (q *Queries) GetArkChannel(ctx context.Context, channelID []byte) (ArkChann
 		&i.ClientNodeKey,
 		&i.HubNodeKey,
 		&i.PaymentHash,
-		&i.PolicyTemplate,
-		&i.PkScript,
+		&i.ClientArkKey,
+		&i.HubArkKey,
+		&i.ArkOperatorKey,
+		&i.ClientChannelKey,
+		&i.HubChannelKey,
+		&i.FunderKey,
+		&i.ChannelDelay,
+		&i.FunderDelay,
+		&i.MinExitDelay,
 		&i.Phase,
 		&i.SourceTxid,
 		&i.SourceIndex,
@@ -126,15 +133,17 @@ const InsertArkChannel = `-- name: InsertArkChannel :execrows
 
 INSERT INTO ark_channels (
     channel_id, kind, funder, pending_channel_id, reserved_scid, capacity,
-    client_node_key, hub_node_key, payment_hash, policy_template, pk_script,
-    phase, source_txid, source_index, source_amount, round_id,
-    commitment_txid, backing_tx, channel_point_txid, channel_point_index,
-    client_finalized, hub_finalized, round_committed, round_confirmed,
-    backing_published, failure, revision, created_at, updated_at
+    client_node_key, hub_node_key, payment_hash, client_ark_key,
+    hub_ark_key, ark_operator_key, client_channel_key, hub_channel_key,
+    funder_key, channel_delay, funder_delay, min_exit_delay, phase,
+    source_txid, source_index, source_amount, round_id, commitment_txid,
+    backing_tx, channel_point_txid, channel_point_index, client_finalized,
+    hub_finalized, round_committed, round_confirmed, backing_published,
+    failure, revision, created_at, updated_at
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
     $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27,
-    $28, $29
+    $28, $29, $30, $31, $32, $33, $34, $35, $36
 )
 ON CONFLICT (channel_id) DO NOTHING
 `
@@ -149,8 +158,15 @@ type InsertArkChannelParams struct {
 	ClientNodeKey     []byte
 	HubNodeKey        []byte
 	PaymentHash       []byte
-	PolicyTemplate    []byte
-	PkScript          []byte
+	ClientArkKey      []byte
+	HubArkKey         []byte
+	ArkOperatorKey    []byte
+	ClientChannelKey  []byte
+	HubChannelKey     []byte
+	FunderKey         []byte
+	ChannelDelay      int64
+	FunderDelay       int64
+	MinExitDelay      int64
 	Phase             int32
 	SourceTxid        []byte
 	SourceIndex       sql.NullInt64
@@ -183,8 +199,15 @@ func (q *Queries) InsertArkChannel(ctx context.Context, arg InsertArkChannelPara
 		arg.ClientNodeKey,
 		arg.HubNodeKey,
 		arg.PaymentHash,
-		arg.PolicyTemplate,
-		arg.PkScript,
+		arg.ClientArkKey,
+		arg.HubArkKey,
+		arg.ArkOperatorKey,
+		arg.ClientChannelKey,
+		arg.HubChannelKey,
+		arg.FunderKey,
+		arg.ChannelDelay,
+		arg.FunderDelay,
+		arg.MinExitDelay,
 		arg.Phase,
 		arg.SourceTxid,
 		arg.SourceIndex,
@@ -211,7 +234,7 @@ func (q *Queries) InsertArkChannel(ctx context.Context, arg InsertArkChannelPara
 }
 
 const ListNonTerminalArkChannels = `-- name: ListNonTerminalArkChannels :many
-SELECT channel_id, kind, funder, pending_channel_id, reserved_scid, capacity, client_node_key, hub_node_key, payment_hash, policy_template, pk_script, phase, source_txid, source_index, source_amount, round_id, commitment_txid, backing_tx, channel_point_txid, channel_point_index, client_finalized, hub_finalized, round_committed, round_confirmed, backing_published, failure, revision, created_at, updated_at FROM ark_channels
+SELECT channel_id, kind, funder, pending_channel_id, reserved_scid, capacity, client_node_key, hub_node_key, payment_hash, client_ark_key, hub_ark_key, ark_operator_key, client_channel_key, hub_channel_key, funder_key, channel_delay, funder_delay, min_exit_delay, phase, source_txid, source_index, source_amount, round_id, commitment_txid, backing_tx, channel_point_txid, channel_point_index, client_finalized, hub_finalized, round_committed, round_confirmed, backing_published, failure, revision, created_at, updated_at FROM ark_channels
 WHERE phase NOT IN (9, 10)
 ORDER BY created_at ASC, channel_id ASC
 `
@@ -235,8 +258,15 @@ func (q *Queries) ListNonTerminalArkChannels(ctx context.Context) ([]ArkChannel,
 			&i.ClientNodeKey,
 			&i.HubNodeKey,
 			&i.PaymentHash,
-			&i.PolicyTemplate,
-			&i.PkScript,
+			&i.ClientArkKey,
+			&i.HubArkKey,
+			&i.ArkOperatorKey,
+			&i.ClientChannelKey,
+			&i.HubChannelKey,
+			&i.FunderKey,
+			&i.ChannelDelay,
+			&i.FunderDelay,
+			&i.MinExitDelay,
 			&i.Phase,
 			&i.SourceTxid,
 			&i.SourceIndex,
