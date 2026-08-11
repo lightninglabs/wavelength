@@ -5,6 +5,7 @@ package swapwallet
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
 	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
@@ -13,6 +14,23 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
+
+// blockingCreditService models an external credit endpoint whose transport
+// accepts a request but never responds until the caller's context expires.
+type blockingCreditService struct {
+	*fakeSwapService
+}
+
+// ListCredits pins the incident shape by waiting only for caller cancellation;
+// it must not hold the local wallet balance open beyond its enrichment bound.
+func (b *blockingCreditService) ListCredits(ctx context.Context,
+	_ *swapclientrpc.ListCreditsRequest) (
+	*swapclientrpc.ListCreditsResponse, error) {
+
+	<-ctx.Done()
+
+	return nil, ctx.Err()
+}
 
 // newServiceFixture builds a Service with fake deps so each gRPC handler
 // can be exercised without a real daemon.
@@ -321,6 +339,8 @@ func TestServiceBalanceSurfacesInFlightVTXOs(t *testing.T) {
 	}
 }
 
+// TestServiceBalanceIncludesCredits verifies a healthy remote credit snapshot
+// enriches the authoritative local satoshi balance without replacing it.
 func TestServiceBalanceIncludesCredits(t *testing.T) {
 	t.Parallel()
 
@@ -342,6 +362,48 @@ func TestServiceBalanceIncludesCredits(t *testing.T) {
 	require.Equal(t, uint64(6_789), resp.GetCreditReservedSat())
 	require.Equal(t, 1, swap.listCreditsCalls)
 	require.Equal(t, uint32(1), swap.listCreditsLast.GetLimit())
+}
+
+// TestServiceBalanceDegradesWhenCreditsAreUnavailable verifies optional remote
+// credit enrichment cannot turn an otherwise valid local balance snapshot into
+// a refresh error. A later refresh may fill in the omitted credit fields.
+func TestServiceBalanceDegradesWhenCreditsAreUnavailable(t *testing.T) {
+	t.Parallel()
+
+	svc, swap, rpc := newServiceFixture(t)
+	rpc.getBalanceResp = &waverpc.GetBalanceResponse{
+		VtxoBalanceSat: 75_000,
+	}
+	swap.listCreditsErr = context.DeadlineExceeded
+
+	resp, err := svc.Balance(
+		t.Context(), &wavewalletrpc.BalanceRequest{},
+	)
+	require.NoError(t, err)
+	require.Equal(t, int64(75_000), resp.GetConfirmedSat())
+	require.Zero(t, resp.GetCreditAvailableSat())
+	require.Zero(t, resp.GetCreditReservedSat())
+}
+
+// TestServiceBalanceBoundsStalledCreditRead verifies a transport that never
+// answers cannot suppress the daemon-local balance snapshot indefinitely.
+func TestServiceBalanceBoundsStalledCreditRead(t *testing.T) {
+	svc, swap, rpc := newServiceFixture(t)
+	rpc.getBalanceResp = &waverpc.GetBalanceResponse{
+		VtxoBalanceSat: 75_000,
+	}
+	svc.deps.SwapService = &blockingCreditService{
+		fakeSwapService: swap,
+	}
+	svc.creditReadTimeout = 10 * time.Millisecond
+
+	started := time.Now()
+	resp, err := svc.Balance(
+		t.Context(), &wavewalletrpc.BalanceRequest{},
+	)
+	require.NoError(t, err)
+	require.Equal(t, int64(75_000), resp.GetConfirmedSat())
+	require.Less(t, time.Since(started), time.Second)
 }
 
 // TestServiceBalanceKeepsAdoptedBoardingPending pins issue #542: after a
