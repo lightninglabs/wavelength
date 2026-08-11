@@ -107,6 +107,28 @@ func (n *VirtualFundingNotifier) RegisterVirtualFunding(
 	return nil
 }
 
+// UnregisterVirtualFunding rolls back a registration if lnd rejects the PSBT
+// before it creates a confirmation subscription. Active or confirmed funding
+// records cannot be removed.
+func (n *VirtualFundingNotifier) UnregisterVirtualFunding(
+	txid chainhash.Hash) error {
+
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	record, ok := n.virtualFunding[txid]
+	if !ok {
+		return nil
+	}
+	if record.confirmed || len(record.registrations) != 0 {
+		return fmt.Errorf("virtual funding transaction %s is active",
+			txid)
+	}
+	delete(n.virtualFunding, txid)
+
+	return nil
+}
+
 // RegisterConfirmationsNtfn intercepts only registered virtual funding txids.
 // Every other confirmation remains owned by the underlying chain notifier.
 func (n *VirtualFundingNotifier) RegisterConfirmationsNtfn(txid *chainhash.Hash,

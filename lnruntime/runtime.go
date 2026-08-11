@@ -48,6 +48,7 @@ type RuntimeConfig struct {
 	WitnessBeacon contractcourt.WitnessBeacon
 	SelfNode      route.Vertex
 	Clock         clock.Clock
+	Funding       *FundingConfig
 
 	LocalChannelClose      func([]byte, *htlcswitch.ChanClose)
 	FetchLastChannelUpdate func(lnwire.ShortChannelID) (
@@ -67,6 +68,7 @@ type Runtime struct {
 	switcher       *htlcswitch.Switch
 	interceptor    *htlcswitch.InterceptableSwitch
 	payments       *FixedRoutePayments
+	funding        *FundingRuntime
 	sigPool        *lnwallet.SigPool
 
 	mu      sync.Mutex
@@ -191,6 +193,16 @@ func NewRuntime(cfg RuntimeConfig) (*Runtime, error) {
 		return nil, err
 	}
 
+	var fundingRuntime *FundingRuntime
+	if cfg.Funding != nil {
+		fundingRuntime, err = newFundingRuntime(
+			cfg, switcher, *cfg.Funding,
+		)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	return &Runtime{
 		cfg:            cfg,
 		onionProcessor: onionProcessor,
@@ -199,6 +211,7 @@ func NewRuntime(cfg RuntimeConfig) (*Runtime, error) {
 		switcher:       switcher,
 		interceptor:    interceptor,
 		payments:       payments,
+		funding:        fundingRuntime,
 		sigPool:        lnwallet.NewSigPool(1, cfg.Signer),
 	}, nil
 }
@@ -293,6 +306,19 @@ func (r *Runtime) Start() error {
 
 		return err
 	}
+	if r.funding != nil {
+		if err := r.funding.Start(); err != nil {
+			_ = r.payments.Stop()
+			_ = r.interceptor.Stop()
+			_ = r.switcher.Stop()
+			_ = r.invoices.Stop()
+			_ = r.onionProcessor.Stop()
+			_ = r.htlcNotifier.Stop()
+			_ = r.sigPool.Stop()
+
+			return err
+		}
+	}
 
 	r.started = true
 
@@ -312,9 +338,14 @@ func (r *Runtime) Stop() error {
 		return nil
 	}
 
+	var fundingErr error
+	if r.funding != nil {
+		fundingErr = r.funding.Stop()
+	}
+
 	return errors.Join(
-		r.payments.Stop(), r.interceptor.Stop(), r.switcher.Stop(),
-		r.invoices.Stop(), r.onionProcessor.Stop(),
+		fundingErr, r.payments.Stop(), r.interceptor.Stop(),
+		r.switcher.Stop(), r.invoices.Stop(), r.onionProcessor.Stop(),
 		r.htlcNotifier.Stop(), r.sigPool.Stop(),
 	)
 }
@@ -462,6 +493,11 @@ func (r *Runtime) Invoices() *invoices.InvoiceRegistry {
 // Payments exposes fixed-route execution and lnd control-tower accounting.
 func (r *Runtime) Payments() *FixedRoutePayments {
 	return r.payments
+}
+
+// Funding exposes lnd's native external funding lifecycle when configured.
+func (r *Runtime) Funding() *FundingRuntime {
+	return r.funding
 }
 
 // GetLink returns an active native lnd channel link by short channel ID.
