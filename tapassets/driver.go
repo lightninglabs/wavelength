@@ -365,3 +365,39 @@ func (e *commitResponseError) Error() string {
 func (e *commitResponseError) Unwrap() error {
 	return e.err
 }
+
+// CommitClaim commits a claim transition whose anchor transaction the
+// caller finalizes and tap-sdk publishes with the claim label.
+func (d *sdkDriver) CommitClaim(ctx context.Context,
+	request *tapsdk.CustomAnchorRequest,
+	verifier tapsdk.ConfirmedProofVerifier) (*commitResult, error) {
+
+	if d == nil || d.wallet == nil {
+		return nil, fmt.Errorf("tap-sdk wallet is required")
+	}
+
+	builder := d.wallet.NewCustomAnchorTxBuilder()
+	if verifier != nil {
+		builder.SetConfirmedProofVerifier(verifier)
+	}
+	plan, err := builder.Build(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+
+	result, err := plan.Commit(ctx, tapsdk.CustomAnchorCommitOptions{
+		Publish: tapsdk.CustomAnchorPublishMetadata{
+			Label: "wavelength-claim",
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	converted, err := commitResultFromPackage(result)
+	if err != nil {
+		return nil, &commitResponseError{err: err}
+	}
+
+	return converted, nil
+}
