@@ -176,32 +176,12 @@ func ClaimAssetVTXO(ctx context.Context, wallet *tapsdk.Wallet,
 		}
 	}
 
-	// The anchor output script is a fixed point of the transition: the
-	// asset commitment does not depend on the anchor transaction, so a
-	// preview over a placeholder template derives the final script.
+	// The wallet script plan derives a fresh asset script key at commit
+	// time, so the anchor output script is only knowable once tapd
+	// commits: the template ships a placeholder and the committed
+	// transaction carries the authoritative script.
 	driver := &sdkDriver{wallet: wallet}
-	placeholder, err := claimAnchorPSBT(req, nil)
-	if err != nil {
-		return nil, err
-	}
-	previews, err := driver.Preview(ctx, buildRequest(placeholder), nil)
-	if err != nil {
-		return nil, fmt.Errorf("preview claim commitment: %w", err)
-	}
-	if len(previews) != 1 {
-		return nil, fmt.Errorf("claim preview returned %d outputs, "+
-			"expected 1", len(previews))
-	}
-	merkleRoot := previews[0].merkleRoot
-	outputKey := txscript.ComputeTaprootOutputKey(
-		internalPub, merkleRoot[:],
-	)
-	claimScript, err := txscript.PayToTaprootScript(outputKey)
-	if err != nil {
-		return nil, fmt.Errorf("derive claim anchor script: %w", err)
-	}
-
-	anchorPSBT, err := claimAnchorPSBT(req, claimScript)
+	anchorPSBT, err := claimAnchorPSBT(req, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -211,11 +191,26 @@ func ClaimAssetVTXO(ctx context.Context, wallet *tapsdk.Wallet,
 	if err != nil {
 		return nil, fmt.Errorf("commit claim transition: %w", err)
 	}
-	if len(committed.outputs) != 1 || committed.outputs[0].
-		taprootMerkleRoot != merkleRoot {
-		return nil, fmt.Errorf("committed claim diverges from its " +
-			"preview")
+	if len(committed.outputs) != 1 ||
+		committed.outputs[0].anchorOutputIndex != 0 ||
+		committed.outputs[0].anchorValueSat != outputValue ||
+		committed.outputs[0].scriptMode !=
+			tapsdk.CustomAssetScriptWallet ||
+		committed.outputs[0].amount != req.AssetAmount {
+		return nil, fmt.Errorf("committed claim diverges from the " +
+			"request")
 	}
+	committedPacket, err := psbtutil.Parse(committed.anchorPSBT)
+	if err != nil {
+		return nil, fmt.Errorf("parse committed claim PSBT: %w", err)
+	}
+	if len(committedPacket.UnsignedTx.TxOut) != 1 ||
+		len(committedPacket.UnsignedTx.TxIn) != 1 ||
+		committedPacket.UnsignedTx.TxIn[0].Sequence != req.ExitDelay {
+		return nil, fmt.Errorf("committed claim transaction shape " +
+			"diverges from the template")
+	}
+	claimScript := committedPacket.UnsignedTx.TxOut[0].PkScript
 
 	finalPSBT, err := req.SignExit(ctx, committed.anchorPSBT)
 	if err != nil {
