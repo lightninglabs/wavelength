@@ -1046,6 +1046,15 @@ message ExitPlanEntry {
     // inputs, also reflected in funding_shortfall_sat). It is
     // EXIT_INFEASIBILITY_REASON_UNSPECIFIED when can_start is true.
     ExitInfeasibilityReason infeasibility_reason = 15;
+
+    // round_commitment describes the cooperative round holding this VTXO,
+    // naming the outpoint, its lifecycle state, and the round id when one
+    // has been stamped. It is set alongside
+    // EXIT_INFEASIBILITY_REASON_ROUND_COMMITTED and is advisory: the exit
+    // is still priced and the manual unroll path still performs it, so the
+    // funding figures above remain the ones a recovery needs. Empty when
+    // the VTXO is not committed to a round.
+    string round_commitment = 16;
 }
 
 // ExitInfeasibilityReason enumerates why a unilateral exit was judged
@@ -1079,6 +1088,15 @@ enum ExitInfeasibilityReason {
     // fewer usable confirmed UTXOs than the VTXO has independent ancestry
     // paths, so it lacks distinct CPFP fee inputs.
     EXIT_INFEASIBILITY_REASON_WALLET_TOO_FEW_INPUTS = 4;
+
+    // EXIT_INFEASIBILITY_REASON_ROUND_COMMITTED — the VTXO is committed to
+    // a cooperative round, so a leave or refresh already owns it and will
+    // normally resolve it without an exit. This is advisory rather than a
+    // block: the manual unroll path still performs the exit, which is the
+    // only recovery left if the operator is unreachable and the round's
+    // commitment never confirms. The funding figures are therefore still
+    // computed, and round_commitment names what holds the coin.
+    EXIT_INFEASIBILITY_REASON_ROUND_COMMITTED = 5;
 }
 
 // GetExitPlanResponse returns one ExitPlanEntry per requested outpoint, plus
