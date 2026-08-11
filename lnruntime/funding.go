@@ -1,6 +1,7 @@
 package lnruntime
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -547,6 +548,32 @@ func (f *FundingRuntime) ProcessMessage(message lnwire.Message,
 	default:
 		return fmt.Errorf("unsupported funding message %T", message)
 	}
+}
+
+// ProcessMessageSync dispatches one native funding message and waits until
+// lnd's funding coordinator has handled it. Durable ingress uses this before
+// acknowledging the application transport envelope.
+func (f *FundingRuntime) ProcessMessageSync(ctx context.Context,
+	message lnwire.Message, peer lnpeer.Peer) error {
+
+	switch message.(type) {
+	case *lnwire.OpenChannel, *lnwire.AcceptChannel,
+		*lnwire.FundingCreated, *lnwire.FundingSigned,
+		*lnwire.ChannelReady, *lnwire.Warning, *lnwire.Error:
+
+		return f.manager.ProcessFundingMsgSync(ctx, message, peer)
+
+	default:
+		return fmt.Errorf("unsupported funding message %T", message)
+	}
+}
+
+// IsPendingChannel reports whether lnd's funding manager still owns the
+// message's temporary channel ID for this peer.
+func (f *FundingRuntime) IsPendingChannel(channelID lnwire.ChannelID,
+	peer lnpeer.Peer) bool {
+
+	return f.manager.IsPendingChannel(channelID, peer)
 }
 
 // AddLocalAlias associates a reserved future SCID with an active virtual

@@ -1,6 +1,7 @@
 package lnruntime
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -474,7 +475,93 @@ func (r *Runtime) AddLink(state *chanstate.OpenChannel, cfg LinkConfig) (
 // HandleChannelMessage dispatches one incoming commitment or HTLC update to
 // the native lnd link selected by the message's channel ID.
 func (r *Runtime) HandleChannelMessage(message lnwire.LinkUpdater) error {
-	link, err := r.switcher.GetLink(message.TargetChanID())
+	return r.handleChannelMessage(message.TargetChanID(), message)
+}
+
+// HandlePeerMessage routes one authenticated BOLT message to the native lnd
+// subsystem that owns it.
+func (r *Runtime) HandlePeerMessage(ctx context.Context,
+	message lnwire.Message, peer lnpeer.Peer) error {
+
+	if message == nil {
+		return fmt.Errorf("lnd peer message is required")
+	}
+	if peer == nil {
+		return fmt.Errorf("lnd peer is required")
+	}
+
+	switch message := message.(type) {
+	case *lnwire.OpenChannel, *lnwire.AcceptChannel,
+		*lnwire.FundingCreated, *lnwire.FundingSigned,
+		*lnwire.ChannelReady:
+
+		if r.funding == nil {
+			return fmt.Errorf("lnd funding runtime is disabled")
+		}
+
+		return r.funding.ProcessMessageSync(ctx, message, peer)
+
+	case *lnwire.Warning:
+		return r.handlePeerWarningOrError(
+			ctx, message.ChanID, message, peer,
+		)
+
+	case *lnwire.Error:
+		return r.handlePeerWarningOrError(
+			ctx, message.ChanID, message, peer,
+		)
+
+	case lnwire.LinkUpdater:
+		return r.HandleChannelMessage(message)
+
+	case *lnwire.ChannelReestablish:
+		return r.handleChannelMessage(message.ChanID, message)
+
+	case *lnwire.Ping:
+		if message.NumPongBytes > lnwire.MaxPongBytes {
+			return nil
+		}
+
+		pong := lnwire.NewPong(make([]byte, message.NumPongBytes))
+
+		return peer.SendMessage(false, pong)
+
+	case *lnwire.Pong, *lnwire.NodeAnnouncement1,
+		*lnwire.ChannelAnnouncement1, *lnwire.ChannelUpdate1:
+
+		return nil
+
+	default:
+		return fmt.Errorf("unsupported lnd peer message %T", message)
+	}
+}
+
+// PeerMessageHandler binds authenticated mailbox ingress to one logical lnd
+// peer.
+func (r *Runtime) PeerMessageHandler(peer lnpeer.Peer) PeerEventHandler {
+	return func(ctx context.Context, message lnwire.Message) error {
+		return r.HandlePeerMessage(ctx, message, peer)
+	}
+}
+
+// handlePeerWarningOrError routes errors for pending channels through the
+// funding coordinator and active-channel errors through the channel link.
+func (r *Runtime) handlePeerWarningOrError(ctx context.Context,
+	channelID lnwire.ChannelID, message lnwire.Message,
+	peer lnpeer.Peer) error {
+
+	if r.funding != nil && r.funding.IsPendingChannel(channelID, peer) {
+		return r.funding.ProcessMessageSync(ctx, message, peer)
+	}
+
+	return r.handleChannelMessage(channelID, message)
+}
+
+// handleChannelMessage finds the native link and queues one channel update.
+func (r *Runtime) handleChannelMessage(channelID lnwire.ChannelID,
+	message lnwire.Message) error {
+
+	link, err := r.switcher.GetLink(channelID)
 	if err != nil {
 		return fmt.Errorf("find lnd channel link: %w", err)
 	}
